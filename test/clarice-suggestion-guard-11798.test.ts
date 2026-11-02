@@ -29,7 +29,9 @@ const REAL = { from: "os resultado", to: "os resultados", rule: "Concordância" 
 
 test("#11798: whitespace-only é ruído", () => {
   assert.equal(classifyClariceNoise("Pesquisadores", "\n\nPesquisadores"), "whitespace_only");
-  assert.equal(classifyClariceNoise("a  b", "a b"), "whitespace_only");
+  // `"a  b"→"a b"` deixou de ser ruído no #11867 (espaço no meio da linha é
+  // correção); a diferença na borda do trecho continua ruído.
+  assert.equal(classifyClariceNoise("palavra", " palavra "), "whitespace_only");
 });
 
 test("#11798: to com resto de JSON/código é ruído", () => {

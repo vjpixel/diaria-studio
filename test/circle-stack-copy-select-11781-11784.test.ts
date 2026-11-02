@@ -173,9 +173,16 @@ describe("data padrão do /diaria-stack pula ciclo publicado (#11784)", () => {
     assert.match(r.banner, /publicado/);
   });
 
-  it("ciclo base não publicado fica na regra do publicador", () => {
+  it("ciclo base não publicado no fim de semana também avança (#11868: a task não enviaria a segunda vencida)", () => {
     const r = resolveSkillDefaultMonday(new Date(2026, 10, 1, 20), states([]));
-    assert.equal(r.publishMonday, "261026");
+    assert.equal(r.publishMonday, "261102");
+    assert.equal(r.advanced, true);
+    assert.match(r.banner, /AAMMDD explícito/);
+  });
+
+  it("ciclo base não publicado de segunda a quinta fica na regra do publicador", () => {
+    const r = resolveSkillDefaultMonday(new Date(2026, 10, 5, 20), states([]));
+    assert.equal(r.publishMonday, "261102");
     assert.equal(r.advanced, false);
   });
 
@@ -186,9 +193,10 @@ describe("data padrão do /diaria-stack pula ciclo publicado (#11784)", () => {
     assert.match(r.banner, /já está publicado/);
   });
 
-  it("estado ambíguo (unknown) não salta", () => {
+  it("estado ambíguo (unknown) no fim de semana avança e diz que é ambíguo (#11868)", () => {
     const r = resolveSkillDefaultMonday(new Date(2026, 10, 1, 20), () => "unknown");
-    assert.equal(r.publishMonday, "261026");
+    assert.equal(r.publishMonday, "261102");
+    assert.match(r.banner, /ambíguo/);
   });
 
   it("a skill manda resolver pela CLI, e o publicador sem data segue na regra antiga", () => {

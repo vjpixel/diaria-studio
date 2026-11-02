@@ -78,7 +78,8 @@ describe("#11828: collab do Reel feito à mão que o timer registra", () => {
 
   it("o caminho `already` do timer em publish-shorts.ts chama a conferência e passa os avisos adiante", () => {
     const src = readFileSync(resolve(ROOT, "scripts/publish-shorts.ts"), "utf8");
-    const i = src.indexOf('if (step.kind === "already") {');
+    // #11870: o bloco passou a cobrir também o achado da reconferência antes do publish.
+    const i = src.indexOf("if (already) {");
     assert.ok(i > 0, "bloco already do timer não encontrado");
     const block = src.slice(i, src.indexOf("continue;", i));
     assert.match(block, /instagramTimerAlreadyCollabWarnings\(/);
