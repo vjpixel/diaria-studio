@@ -18,10 +18,17 @@
  * `publishing.shorts.corte_via_timer`, Instagram, perfil do LinkedIn e
  * Threads do corte saem pelo timer do 300 (`Diaria-Shorts-Cortes`).
  *
- * Uso: npx tsx scripts/video-extra-verticals.ts AAMMDD [--blocks PATH] [--video-dir DIR]
+ * Uso: npx tsx scripts/video-extra-verticals.ts AAMMDD [--blocks PATH] [--drive-ids corte=ID,...] [--video-dir DIR]
  *   --blocks:    default `{edição}/_internal/video-montagem/blocks.json`
+ *   --drive-ids: id no Drive do export de cada corte (`…_V{n}-{corte}.mp4`
+ *                de `Final/`). PREFERIDO: o comando sai com `--from-drive`,
+ *                que baixa para `data/cortes/{slug}/` e acompanha o timer do
+ *                300 (#11906). Vence o `--video-dir` para o mesmo corte.
  *   --video-dir: pasta local com os exports (a `Final/` da edição no Drive
- *                for desktop); acha `…_V{n}-{corte}.mp4` de cada corte.
+ *                for desktop); acha `…_V{n}-{corte}.mp4` de cada corte. Fora
+ *                de `data/` (ex.: `G:/` no Neo), o comando sai com `--video`
+ *                e um `[aviso]`: o 300 não acha esse caminho e Instagram,
+ *                perfil do LinkedIn e Threads do corte caem em `missing-video`.
  *
  * Saída: JSON no stdout (`{ edition, extras: ExtraVerticalPlan[] }`).
  * Exit: 0 = plano pronto (inclusive sem extras); 1 = algum extra com
@@ -36,16 +43,18 @@ import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { loadShortScheduleConfig } from "./lib/diaria/short-video.ts";
 import { parseBlocksFile } from "./lib/diaria/video-montage.ts";
-import { extraVerticalSpecs, matchCorteExports, planExtraVerticals } from "./lib/diaria/extra-verticals.ts";
+import { extraVerticalSpecs, matchCorteExports, parseDriveIds, planExtraVerticals } from "./lib/diaria/extra-verticals.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const USAGE = "uso: video-extra-verticals.ts AAMMDD [--blocks PATH] [--video-dir DIR]";
+const USAGE = "uso: video-extra-verticals.ts AAMMDD [--blocks PATH] [--drive-ids corte=ID,...] [--video-dir DIR]";
 
 export function blocksPathFor(edition: string): string {
   return join(editionDirFor(edition), "_internal", "video-montagem", "blocks.json");
 }
 
-export function main(argv: string[] = process.argv.slice(2)): number {
+export function main(argv: string[] = process.argv.slice(2), opts: { root?: string; dataDir?: string } = {}): number {
+  const root = opts.root ?? ROOT;
+  const dataDir = opts.dataDir ?? join(root, "data");
   const { values, positional } = parseArgs(argv);
   const edition = positional[0];
   if (!edition || !/^\d{6}$/.test(edition)) {
@@ -66,10 +75,20 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     console.error(`blocks.json é da edição ${parsed.file.edition}, não ${edition}`);
     return 2;
   }
-  const sched = loadShortScheduleConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
+  const sched = loadShortScheduleConfig(JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8")));
   const cortes = extraVerticalSpecs(parsed.file).map((s) => s.corte as string);
   let videos: Record<string, string> = {};
+  let driveIds: Record<string, string> = {};
   const extraWarnings: string[] = [];
+  if (values["drive-ids"] !== undefined) {
+    const d = parseDriveIds(values["drive-ids"]);
+    if (!d.ok) {
+      console.error(d.error);
+      return 2;
+    }
+    driveIds = d.ids;
+    for (const c of Object.keys(driveIds)) if (!cortes.includes(c)) extraWarnings.push(`--drive-ids: corte "${c}" não está no blocks.json (cortes: ${cortes.join(", ") || "nenhum"}); ignorado`);
+  }
   const dir = values["video-dir"];
   if (dir !== undefined && cortes.length) {
     const abs = resolve(dir);
@@ -82,7 +101,7 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     videos = m.videos;
     for (const [corte, names] of Object.entries(m.ambiguous)) extraWarnings.push(`corte "${corte}": ${names.length} exports em ${abs} (${names.join(", ")}); escolha um e passe --video no comando`);
   }
-  const extras = planExtraVerticals({ edition, file: parsed.file, sched, videos });
+  const extras = planExtraVerticals({ edition, file: parsed.file, sched, videos, driveIds, dataDir });
   for (const w of extraWarnings) console.error(`[aviso] ${w}`);
   for (const x of extras) {
     for (const p of x.premises) console.error(`[premissa] ${x.corte}: ${p}`);

@@ -16,9 +16,14 @@ import {
   extraVerticalTime,
   matchCorteExports,
   nthBusinessDayAfter,
+  parseDriveIds,
   planExtraVerticals,
   shellQuote,
 } from "../scripts/lib/diaria/extra-verticals.ts";
+import { main as extraVerticalsMain } from "../scripts/video-extra-verticals.ts";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadShortScheduleConfig } from "../scripts/lib/diaria/short-video.ts";
 
 const [YT, OUT] = defaultSequences();
@@ -173,5 +178,85 @@ describe("#11900: plano de publicação das verticais extras", () => {
   it("shellQuote escapa aspas simples", () => {
     assert.equal(shellQuote("abc-1"), "abc-1");
     assert.equal(shellQuote("it's"), `'it'"'"'s'`);
+  });
+});
+
+describe("#11906 review: fonte do vídeo acompanha o timer do 300", () => {
+  const spec = { ...SOBERANA, order: ["titulo", "resumo_curto", "comentario"] as SequenceSpec["order"] };
+  const file = { blocks, sequences: [YT, OUT, spec] };
+  const neoVideo = "G:/Meu Drive/YouTube/261103/Final/Diaria comentada_Vertical_V1-soberana.mp4";
+
+  it("com id do Drive, o comando usa --from-drive (nunca --video), sem aviso", () => {
+    const [x] = planExtraVerticals({ edition: "261103", file, sched: SCHED, videos: { soberana: neoVideo }, driveIds: { soberana: "1AbC_dEf" }, dataDir: "/repo/data" });
+    assert.match(x.command ?? "", / --from-drive 1AbC_dEf$/);
+    assert.doesNotMatch(x.command ?? "", /--video/);
+    assert.equal(x.driveId, "1AbC_dEf");
+    assert.equal(x.video, null);
+    assert.deepEqual(x.warnings, []);
+    assert.ok(x.premises.some((p) => /from-drive.*data\/cortes\/soberana-261103/.test(p)));
+  });
+
+  it("vídeo local fora de data/: comando com --video, mas aviso explícito de missing-video e a troca por --from-drive", () => {
+    const [x] = planExtraVerticals({ edition: "261103", file, sched: SCHED, videos: { soberana: "/mnt/g/Final/Diaria comentada_Vertical_V1-soberana.mp4" }, dataDir: "/repo/data" });
+    assert.ok(x.command?.includes("--video"));
+    assert.equal(x.warnings.length, 1);
+    assert.match(x.warnings[0], /fora de data\//);
+    assert.match(x.warnings[0], /Diaria-Shorts-Cortes/);
+    assert.match(x.warnings[0], /missing-video/);
+    assert.match(x.warnings[0], /--from-drive/);
+  });
+
+  it("vídeo local dentro de data/: sem aviso", () => {
+    const [x] = planExtraVerticals({ edition: "261103", file, sched: SCHED, videos: { soberana: "/repo/data/cortes/soberana-261103/v.mp4" }, dataDir: "/repo/data" });
+    assert.deepEqual(x.warnings, []);
+  });
+
+  it("sem vídeo nenhum: o problema sugere --drive-ids primeiro", () => {
+    const [x] = planExtraVerticals({ edition: "261103", file, sched: SCHED });
+    assert.ok(x.problems.some((p) => /--drive-ids soberana=ID/.test(p)));
+  });
+
+  it("parseDriveIds: corte=ID separado por vírgula; malformado é erro", () => {
+    assert.deepEqual(parseDriveIds("soberana=1a, chips=2b"), { ok: true, ids: { soberana: "1a", chips: "2b" } });
+    assert.equal(parseDriveIds("soberana").ok, false);
+    assert.equal(parseDriveIds("=1a").ok, false);
+    assert.equal(parseDriveIds("a=1,a=2").ok, false);
+    assert.equal(parseDriveIds(" , ").ok, false);
+  });
+
+  it("CLI: --video-dir fora de data/ imprime [aviso]; --drive-ids troca para --from-drive", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "extra-verticals-11906-"));
+    const errs: string[] = [];
+    const outs: string[] = [];
+    const origErr = console.error;
+    const origLog = console.log;
+    console.error = (...a: unknown[]) => void errs.push(a.join(" "));
+    console.log = (...a: unknown[]) => void outs.push(a.join(" "));
+    try {
+      const finalDir = join(tmp, "Final");
+      mkdirSync(finalDir);
+      writeFileSync(join(finalDir, "Diaria comentada_Vertical_V1-soberana.mp4"), "");
+      const blocksPath = join(tmp, "blocks.json");
+      writeFileSync(blocksPath, JSON.stringify({ edition: "261103", sequences: [YT, OUT, { ...spec, hook: "Gancho." }], blocks }));
+      const dataDir = join(tmp, "data");
+      assert.equal(extraVerticalsMain(["261103", "--blocks", blocksPath, "--video-dir", finalDir], { dataDir }), 0);
+      assert.ok(errs.some((e) => /^\[aviso\] soberana: .*missing-video/.test(e)), errs.join("\n"));
+      const plan1 = JSON.parse(outs.join("\n"));
+      assert.match(plan1.extras[0].command, /--video /);
+
+      errs.length = 0;
+      outs.length = 0;
+      assert.equal(extraVerticalsMain(["261103", "--blocks", blocksPath, "--video-dir", finalDir, "--drive-ids", "soberana=1AbC"], { dataDir }), 0);
+      assert.ok(!errs.some((e) => /missing-video/.test(e)), errs.join("\n"));
+      assert.match(JSON.parse(outs.join("\n")).extras[0].command, /--from-drive 1AbC$/);
+
+      errs.length = 0;
+      assert.equal(extraVerticalsMain(["261103", "--blocks", blocksPath, "--drive-ids", "soberana"], { dataDir }), 2);
+      assert.ok(errs.some((e) => /não é corte=ID/.test(e)));
+    } finally {
+      console.error = origErr;
+      console.log = origLog;
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

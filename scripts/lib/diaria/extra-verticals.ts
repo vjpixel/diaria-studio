@@ -23,10 +23,20 @@
  * lista (`rotation_times`, em ciclo), nunca o mesmo da principal do dia.
  *
  * Feriado não é conhecido aqui: "dia útil" = segunda a sexta.
+ *
+ * Fonte do vídeo (#11906, review): o `corte.json` grava o caminho do `--video`
+ * e quem re-executa os destinos pendentes é o timer do 300
+ * (`Diaria-Shorts-Cortes`). Caminho fora de `data/` (ex.: `G:/...` do Drive
+ * for desktop no Neo) não existe no 300, e Instagram, perfil do LinkedIn e
+ * Threads caem em `missing-video`. Por isso o plano PREFERE `--from-drive {id}`
+ * (baixa para `data/cortes/{slug}/`, que sincroniza) quando o id do arquivo no
+ * Drive é conhecido; com só o caminho local fora de `data/`, o comando sai com
+ * `--video`, mas com aviso explícito em `warnings` e a instrução de trocar.
  */
 
 import { resolveShortTime, type ShortScheduleConfig } from "./short-video.ts";
 import { corteSuffixOf } from "./drive-video-source.ts";
+import { corteVideoPortabilityWarning } from "./short-corte.ts";
 import { itemInTarget, type BlockItem, type BlocksFile, type SequenceSpec } from "./video-montage.ts";
 
 const AAMMDD_RE = /^(\d{2})(\d{2})(\d{2})$/;
@@ -118,7 +128,10 @@ export interface ExtraVerticalPlan {
   hhmm: string;
   title: string | null;
   hook: string | null;
+  /** Caminho local do export (`--video`), quando o comando usa ele. */
   video: string | null;
+  /** Id do export no Drive (`--from-drive`), preferido sobre `video`. */
+  driveId: string | null;
   premises: string[];
   /** O que impede o comando; vazio = `command` pronto. */
   problems: string[];
@@ -129,13 +142,17 @@ export interface ExtraVerticalPlan {
 
 /**
  * Pure: o plano de cada vertical extra da edição. `videos` = export local de
- * cada corte (chave = `corte`), quando conhecido.
+ * cada corte (chave = `corte`), `driveIds` = id do export no Drive (chave =
+ * `corte`, preferido), `dataDir` = `data/` absoluto desta máquina, para avisar
+ * quando o `--video` local não acompanha o timer do 300.
  */
 export function planExtraVerticals(input: {
   edition: string;
   file: Pick<BlocksFile, "blocks" | "sequences">;
   sched: ShortScheduleConfig;
   videos?: Readonly<Record<string, string>>;
+  driveIds?: Readonly<Record<string, string>>;
+  dataDir?: string;
 }): ExtraVerticalPlan[] {
   return extraVerticalSpecs(input.file).map((spec, idx) => {
     const corte = spec.corte as string;
@@ -154,9 +171,21 @@ export function planExtraVerticals(input: {
     const hook = extraVerticalHook(input.file, spec);
     if (!hook) problems.push(`corte "${corte}" sem gancho: informe "hook" na sequência ou um resumo_curto com texto nesta vertical`);
     else if (hook.how !== "hook") premises.push(`gancho do ${hook.how} desta vertical (o "hook" da sequência sobrepõe)`);
-    const video = input.videos?.[corte] ?? null;
-    if (!video) problems.push(`export do corte ("${spec.name}.mp4") não encontrado: passe --video-dir com a pasta Final/ local, ou rode o comando com --from-drive {id}`);
     const slug = extraVerticalSlug(corte, input.edition);
+    const driveId = input.driveIds?.[corte]?.trim() || null;
+    const video = driveId ? null : (input.videos?.[corte] ?? null);
+    if (driveId) {
+      premises.push(`vídeo pelo --from-drive ${driveId}: baixa para data/cortes/${slug}/, que o timer do 300 alcança`);
+    } else if (!video) {
+      problems.push(`export do corte ("${spec.name}.mp4") não encontrado: passe --drive-ids ${corte}=ID (id do arquivo em Final/ no Drive, preferido) ou --video-dir com a pasta Final/ local`);
+    } else if (input.dataDir) {
+      const portability = corteVideoPortabilityWarning(video, input.dataDir);
+      if (portability) {
+        warnings.push(
+          `${portability}. O timer do 300 (Diaria-Shorts-Cortes) não acha esse caminho e Instagram, perfil do LinkedIn e Threads do corte caem em missing-video: troque no comando --video ${shellQuote(video)} por --from-drive {id de "${spec.name}.mp4" no Drive}, ou rode o plano com --drive-ids ${corte}=ID`,
+        );
+      }
+    }
     const command = problems.length
       ? null
       : [
@@ -166,9 +195,9 @@ export function planExtraVerticals(input: {
           `--at ${time.hhmm}`,
           `--title ${shellQuote(title as string)}`,
           `--hook ${shellQuote(hook!.text)}`,
-          `--video ${shellQuote(video as string)}`,
+          driveId ? `--from-drive ${shellQuote(driveId)}` : `--video ${shellQuote(video as string)}`,
         ].join(" ");
-    return { corte, slug, sequenceName: spec.name, date, hhmm: time.hhmm, title, hook: hook?.text ?? null, video, premises, problems, warnings, command };
+    return { corte, slug, sequenceName: spec.name, date, hhmm: time.hhmm, title, hook: hook?.text ?? null, video, driveId, premises, problems, warnings, command };
   });
 }
 
@@ -188,4 +217,22 @@ export function matchCorteExports(
     else if (hits.length > 1) ambiguous[corte] = hits.map((h) => h.name);
   }
   return { videos, ambiguous };
+}
+
+/**
+ * Pure: `--drive-ids corte1=ID1,corte2=ID2` → mapa corte → id. Entrada
+ * malformada (sem `=`, corte ou id vazio, corte repetido) é erro.
+ */
+export function parseDriveIds(raw: string): { ok: true; ids: Record<string, string> } | { ok: false; error: string } {
+  const ids: Record<string, string> = {};
+  for (const part of raw.split(",").map((p) => p.trim()).filter(Boolean)) {
+    const eq = part.indexOf("=");
+    const corte = eq < 0 ? "" : part.slice(0, eq).trim();
+    const id = eq < 0 ? "" : part.slice(eq + 1).trim();
+    if (!corte || !id) return { ok: false, error: `--drive-ids: "${part}" não é corte=ID` };
+    if (corte in ids) return { ok: false, error: `--drive-ids: corte "${corte}" repetido` };
+    ids[corte] = id;
+  }
+  if (!Object.keys(ids).length) return { ok: false, error: "--drive-ids vazio" };
+  return { ok: true, ids };
 }
