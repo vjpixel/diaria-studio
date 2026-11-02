@@ -46,6 +46,8 @@ function makeDeps(overrides: Partial<KitRefreshSocialEditionUrlDeps> = {}): KitR
     readSocialMd:
       overrides.readSocialMd ?? ((dir) => files.get(`${dir}:social`) ?? `## d1\n\nTexto do post. Mais em ${STUB_URL} #IA\n`),
     writeSocialMd: overrides.writeSocialMd ?? ((dir, content) => files.set(`${dir}:social`, content)),
+    writeTransition: overrides.writeTransition ?? (() => {}),
+    clearTransition: overrides.clearTransition ?? (() => {}),
   };
 }
 
@@ -355,23 +357,6 @@ describe("main() — integração (guard de CLI)", () => {
       process.exitCode = undefined;
       await main(root);
       assert.equal(process.exitCode, 1);
-    } finally {
-      process.exitCode = undefined;
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("backend != kit: exitCode 0, resolved: false, reason backend_not_kit, nenhuma chamada de rede", async () => {
-    const root = mkdtempSync(join(tmpdir(), "kit-refresh-social-main-"));
-    try {
-      writePlatformConfig(root, "beehiiv");
-      globalThis.fetch = (async () => {
-        throw new Error("não deveria chamar fetch");
-      }) as typeof fetch;
-      process.argv = ["node", "kit-refresh-social-edition-url.ts", "--edition-dir", root];
-      process.exitCode = undefined;
-      await main(root);
-      assert.equal(process.exitCode, 0);
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });

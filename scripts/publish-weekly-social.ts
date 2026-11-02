@@ -132,8 +132,9 @@
  * um post não-enriquecido entra no ranking com `ratePct: 0` E
  * `hasClickData: true`, indistinguível de "genuinamente zero cliques" — a
  * seleção por clique silenciosamente deixa de competir de verdade pra esses
- * itens. Rode `--manifest-only` + `beehiiv-clicks-enricher` (Passo 1 do
- * SKILL.md) antes de recorrer à flag.
+ * itens. Desde o #11225 o `beehiiv-clicks-enricher` foi aposentado: post
+ * antigo da Beehiiv sem clicks por link não é mais enriquecido, e a flag é
+ * a única saída quando a janela pega um deles.
  *
  * **Origem Beehiiv/Kit (#6185):** a SELEÇÃO por clique (ranking dos
  * candidatos, `windowPostsUnified` abaixo) lê o cache unificado Beehiiv+Kit
@@ -767,18 +768,17 @@ export async function main(
       process.exit(1);
       return;
     }
-    // stdout só com o JSON (o Passo 2c redireciona pra arquivo): o log
-    // narrativo da seleção vai pro stderr enquanto este modo roda.
-    const originalLog = console.log;
-    emitJson = (text) => originalLog(text);
-    console.log = (...args: unknown[]) => console.error(...args);
-    try {
-      const okManifest = await runOneMode(mode, saturday, flags, values, dataRoot, opts);
-      if (!okManifest) process.exit(1);
-    } finally {
-      console.log = originalLog;
-      emitJson = (text) => console.log(text);
-    }
+    // stdout só com o JSON (o Passo 2c redireciona pra arquivo).
+    const okManifest = await withJsonOnlyStdout(() => runOneMode(mode, saturday, flags, values, dataRoot, opts));
+    if (!okManifest) process.exit(1);
+    return;
+  }
+  // #11738: --images-only também é consumido via JSON.parse(stdout) — a
+  // narrativa da seleção (e qualquer console.log dos geradores de card) vai
+  // pro stderr, stdout fica só com o objeto JSON final.
+  if (flags.has("images-only")) {
+    const okImages = await withJsonOnlyStdout(() => runOneMode(mode, saturday, flags, values, dataRoot, opts));
+    if (!okImages) process.exit(1);
     return;
   }
   const ok = await runOneMode(mode, saturday, flags, values, dataRoot, opts);
@@ -787,8 +787,28 @@ export async function main(
   }
 }
 
-/** Saída de JSON puro no stdout em `--summary-manifest` (#11062) — o resto do log vai pro stderr nesse modo. */
+/**
+ * Saída de JSON puro no stdout em `--summary-manifest` (#11062) e
+ * `--images-only` (#11738) — o resto do log vai pro stderr nesses modos.
+ */
 let emitJson: (text: string) => void = (text) => console.log(text);
+
+/**
+ * Roda `fn` com `console.log` redirecionado pro stderr; só `emitJson` escreve
+ * no stdout (pelo `console.log` original). Restaura os dois no fim, mesmo em
+ * exceção.
+ */
+async function withJsonOnlyStdout<T>(fn: () => Promise<T>): Promise<T> {
+  const originalLog = console.log;
+  emitJson = (text) => originalLog(text);
+  console.log = (...args: unknown[]) => console.error(...args);
+  try {
+    return await fn();
+  } finally {
+    console.log = originalLog;
+    emitJson = (text) => console.log(text);
+  }
+}
 
 /** `platform.config.json` — leitura apenas, nunca escrito por este script. */
 function readPlatformConfig(): any {
@@ -931,12 +951,11 @@ async function runOneMode(
 
   // #4456-style manifest mode (mesmo padrão de `select-linkedin-weekly.ts
   // --manifest-only`): resolvido ANTES de qualquer console.log narrativo,
-  // pra stdout ficar JSON puro e parseável pelo caller (a skill dispatcha
-  // `beehiiv-clicks-enricher` a partir deste output).
+  // pra stdout ficar JSON puro e parseável pelo caller (diagnóstico desde o
+  // #11225, que aposentou o `beehiiv-clicks-enricher` que consumia isto).
   if (manifestOnly) {
     // #5330: "highlights" não ranqueia por clique — não há nada pra
-    // enriquecer, o manifest sai sempre vazio (evita rodar
-    // beehiiv-clicks-enricher à toa quando o modo nem usa esse dado).
+    // enriquecer, o manifest sai sempre vazio.
     const manifest = mode === "highlights" ? [] : identifyInstagramPostsNeedingClicks(windowPosts);
     console.log(
       JSON.stringify(
@@ -1106,7 +1125,7 @@ async function runOneMode(
   const manifest = mode === "clicked" ? identifyInstagramPostsNeedingClicks(windowPosts) : [];
   if (manifest.length > 0) {
     warnings.push(
-      `${manifest.length} post(s) da janela ainda sem clicks enriquecidos no cache — rode --manifest-only, dispatche beehiiv-clicks-enricher, e re-rode antes de confiar na seleção.`,
+      `${manifest.length} post(s) da janela ainda sem clicks enriquecidos no cache (posts antigos da Beehiiv; o beehiiv-clicks-enricher foi aposentado no #11225, então eles não serão mais enriquecidos).`,
     );
   }
   const suspiciousPicks = items.filter((c) => hasSuspiciousCommercialLanguage(`${c.title} ${c.body}`));
@@ -1149,7 +1168,7 @@ async function runOneMode(
       "",
       forceIncompleteClickData
         ? "--force-incomplete-click-data presente: prosseguindo mesmo assim (confirmação explícita do editor)."
-        : "Rode --manifest-only, dispatche beehiiv-clicks-enricher (Passo 1 do SKILL.md), e re-rode antes de confiar na seleção. Se esta incompletude for aceitável (edição genuinamente ainda não confirmada, etc.), rode de novo com --force-incomplete-click-data para confirmar e publicar assim mesmo. Sem a flag, o script aborta.",
+        : "Edição sem post no cache: rode `npx tsx scripts/kit-sync.ts` e re-rode. Post antigo da Beehiiv sem clicks por link não tem mais como ser enriquecido (o beehiiv-clicks-enricher foi aposentado no #11225). Se esta incompletude for aceitável, rode de novo com --force-incomplete-click-data para confirmar e publicar assim mesmo. Sem a flag, o script aborta.",
       "=".repeat(72),
       "",
     ].join("\n");
@@ -1643,7 +1662,7 @@ async function runOneMode(
   // (mesmo contrato de `--manifest-only`, pra caller fazer JSON.parse
   // direto): ordem = capa, item 1..N na ordem de publicação, CTA.
   if (imagesOnly) {
-    console.log(
+    emitJson(
       JSON.stringify(
         {
           saturday,

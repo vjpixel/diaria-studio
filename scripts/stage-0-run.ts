@@ -37,11 +37,12 @@
  *         nunca aborta sozinho — a confirmação [c/a] é decisão do editor)
  *     0h.1 + 0h.3. beehiiv-sync.ts + kit-sync.ts (#7570, mesmo batch,
  *         escritor de `data/kit-cache/broadcasts/`) + build-link-ctr.ts
- *         (0h.2, o enrichment via subagent `beehiiv-clicks-enricher`, é OUT
- *         — ver abaixo; kit-sync não tem 0h.2 equivalente, clicks/stats do
- *         Kit são REST comum buscados no próprio script)
+ *         (o 0h.2, enrichment via subagent `beehiiv-clicks-enricher`, foi
+ *         aposentado no #11225; clicks/stats do Kit são REST comum buscados
+ *         no próprio kit-sync)
  *   0i. update-audience.ts + snapshot-audience-profile.ts (sequencial, após
- *       o batch).
+ *       o batch) + commit-audience-snapshot.ts (#11733: abre/atualiza a PR
+ *       do snapshot a partir de um worktree temporário, fail-soft).
  *   0j. find-pending-issue-drafts.ts (script). Se vazio, no-op. Se não-vazio,
  *       NUNCA dispara o subagent `auto-reporter` sozinho — isso exige decisão
  *       humana (s/n/d) — vira `pendingHumanDecision`.
@@ -68,12 +69,6 @@
  *       #11225: a conta é só arquivo histórico (não envia desde #7388) e o
  *       conector fora do ar nunca pode bloquear a edição — `--mcp-beehiiv`
  *       continua aceito por compatibilidade, mas é opcional.
- *   0h.2. Enrichment de clicks via `Agent(subagent_type="beehiiv-clicks-
- *       enricher")` — dispatch de subagente, fora do alcance de um script
- *       Node. Se `beehiiv-sync.ts` (0h.1) devolver `posts_needing_clicks`
- *       não-vazio, o resultado inclui `pendingAgentDispatch` com o manifest
- *       já persistido em disco — o orchestrator faz o dispatch e, se quiser,
- *       roda `verify-clicks-enrichment.ts` por conta própria (#4732) depois.
  *   0h.4. Drain de exit-history via `Agent(subagent_type="beehiiv-exit-
  *       history-drain")` (#10710/#7248) — o script só decide se precisa
  *       (`planExitHistoryDispatch`: manifest ausente/incompleto) e devolve
@@ -986,36 +981,21 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     logEvent(deps, opts.edition, "warn", "check-dedup-freshness falhou inesperadamente", { details: { code: freshnessRes.code } });
   }
 
-  // 0h.1 — beehiiv-sync; posts_needing_clicks vira dispatch pendente (0h.2).
-  if (beehiivSyncRes.code === 0) {
-    const syncJson = parseStepJson<{ posts_needing_clicks?: Array<{ id: string; title: string; email_clicks?: number }> }>(beehiivSyncRes.stdout);
-    const manifest = syncJson?.posts_needing_clicks ?? [];
-    if (manifest.length > 0) {
-      const manifestPath = `${editionDir}/_internal/posts-needing-clicks.json`;
-      let manifestWritten = true;
-      try {
-        deps.writeFile(resolve(deps.rootDir, manifestPath), JSON.stringify(manifest, null, 2) + "\n");
-      } catch (err) {
-        manifestWritten = false;
-        // fail-soft — mesmo padrão do resto do bloco 0h — mas registrado,
-        // nunca engolido: um manifest fantasma faria o orchestrator
-        // despachar beehiiv-clicks-enricher sem arquivo pra ler.
-        logEvent(deps, opts.edition, "warn", "0h.2 — falha ao gravar posts-needing-clicks.json", {
-          details: { manifestPath, error: err instanceof Error ? err.message : String(err) },
-        });
-        report.note(`⚠️  0h.2 — falha ao gravar ${manifestPath}: manifest não persistido (fail-soft, não bloqueia Stage 0).`);
-      }
-      if (manifestWritten) {
-        pendingAgentDispatch.push({
-          step: "0h.2",
-          agent: "beehiiv-clicks-enricher",
-          detail: `${manifest.length} post(s) precisam de enrichment de clicks — dispatch via Agent(subagent_type="beehiiv-clicks-enricher"), 1 item por linha "post_id=<id> title=<title>"; validar depois com verify-clicks-enrichment.ts (#4732). Opcional — arquivo histórico da Beehiiv: conector fora do ar = warn e segue, nunca bloqueia (#11225)`,
-          manifestPath,
-        });
-      }
-    }
-  } else {
+  // 0h.1 — beehiiv-sync. O 0h.2 (enrichment de clicks via subagent
+  // `beehiiv-clicks-enricher`) foi aposentado no #11225: a Beehiiv é só
+  // arquivo histórico e não publica edição nova, então `posts_needing_clicks`
+  // não gera mais dispatch. O manifest ainda sai no stdout do beehiiv-sync e
+  // é ignorado aqui.
+  if (beehiivSyncRes.code !== 0) {
     logEvent(deps, opts.edition, "warn", "beehiiv-sync falhou — CTR pode ficar desatualizado");
+  } else {
+    const discarded =
+      parseStepJson<{ posts_needing_clicks?: unknown[] }>(beehiivSyncRes.stdout)?.posts_needing_clicks?.length ?? 0;
+    if (discarded > 0) {
+      logEvent(deps, opts.edition, "info", "0h.2 aposentado (#11225) — posts_needing_clicks descartado", {
+        details: { posts_needing_clicks: discarded },
+      });
+    }
   }
 
   // 0h.4 — exit-history da Beehiiv (#10710). O agent `beehiiv-exit-history-drain`
@@ -1047,12 +1027,16 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     logEvent(deps, opts.edition, "warn", "kit-sync falhou — CTR/carrossel semanal podem ficar com dado Kit desatualizado");
   }
 
-  // 0h.3 — build CTR (sequencial após 0h.1; roda mesmo sem 0h.2, fail-soft).
+  // 0h.3 — build CTR (sequencial após 0h.1, fail-soft).
   softStep(deps, report, "build-link-ctr (0h.3)", "scripts/build-link-ctr.ts", []);
 
   // --- 0i: audience refresh (sequencial, depende de 0h) ---
   softStep(deps, report, "update-audience (0i)", "scripts/update-audience.ts", []);
   softStep(deps, report, "snapshot-audience-profile (0i)", "scripts/snapshot-audience-profile.ts", ["--edition-dir", editionDir]);
+  // #11733: o 0i regrava context/audience-profile.md e docs/audience-history/
+  // no checkout e ninguém commitava. A PR sai de um worktree temporário (o
+  // checkout não recebe add/commit), uma por vez; nunca mergeia.
+  softStep(deps, report, "commit-audience-snapshot (0i)", "scripts/commit-audience-snapshot.ts", []);
 
   // --- 0j: pending issue drafts (script detecta; decisão s/n/d é humana) ---
   const draftsResult = deps.exec("scripts/find-pending-issue-drafts.ts", ["--current", opts.edition, "--window", "3"]);

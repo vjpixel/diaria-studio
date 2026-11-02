@@ -56,7 +56,7 @@ describe("checkKitHtmlSize (#6506)", () => {
     const dir = makeEditionDir();
     const rootDir = makeRootDir("kit");
     try {
-      assert.deepEqual(checkKitHtmlSize(dir, rootDir), []);
+      assert.deepEqual(checkKitHtmlSize(dir), []);
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(rootDir, { recursive: true, force: true });
@@ -68,7 +68,7 @@ describe("checkKitHtmlSize (#6506)", () => {
     const rootDir = makeRootDir("kit");
     try {
       writeHtmlOfSize(resolve(dir, "_internal", "newsletter-final-kit.html"), 90_000);
-      assert.deepEqual(checkKitHtmlSize(dir, rootDir), []);
+      assert.deepEqual(checkKitHtmlSize(dir), []);
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(rootDir, { recursive: true, force: true });
@@ -80,7 +80,7 @@ describe("checkKitHtmlSize (#6506)", () => {
     const rootDir = makeRootDir("kit");
     try {
       writeHtmlOfSize(resolve(dir, "_internal", "newsletter-final-kit.html"), KIT_HTML_SIZE_ERROR_BYTES);
-      assert.deepEqual(checkKitHtmlSize(dir, rootDir), []);
+      assert.deepEqual(checkKitHtmlSize(dir), []);
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(rootDir, { recursive: true, force: true });
@@ -92,7 +92,7 @@ describe("checkKitHtmlSize (#6506)", () => {
     const rootDir = makeRootDir("kit");
     try {
       writeHtmlOfSize(resolve(dir, "_internal", "newsletter-final-kit.html"), 105_000);
-      const violations = checkKitHtmlSize(dir, rootDir);
+      const violations = checkKitHtmlSize(dir);
       assert.equal(violations.length, 1);
       assert.equal(violations[0].rule, "kit-html-too-large");
       assert.equal(violations[0].severity, "error");
@@ -106,34 +106,6 @@ describe("checkKitHtmlSize (#6506)", () => {
     }
   });
 
-  it('acima do threshold, backend "beehiiv" (migração em curso, Kit ainda não é o canal real) → WARNING (não bloqueia)', () => {
-    const dir = makeEditionDir();
-    const rootDir = makeRootDir("beehiiv");
-    try {
-      writeHtmlOfSize(resolve(dir, "_internal", "newsletter-final-kit.html"), 105_000);
-      const violations = checkKitHtmlSize(dir, rootDir);
-      assert.equal(violations.length, 1);
-      assert.equal(violations[0].severity, "warning");
-      assert.match(violations[0].message, /não é "kit"/);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(rootDir, { recursive: true, force: true });
-    }
-  });
-
-  it("acima do threshold, platform.config.json ausente (fail-soft) → WARNING, nunca lança", () => {
-    const dir = makeEditionDir();
-    const rootDir = mkdtempSync(join(tmpdir(), "stage4-kit-html-size-noconfig-")); // sem platform.config.json
-    try {
-      writeHtmlOfSize(resolve(dir, "_internal", "newsletter-final-kit.html"), 105_000);
-      const violations = checkKitHtmlSize(dir, rootDir);
-      assert.equal(violations.length, 1);
-      assert.equal(violations[0].severity, "warning");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(rootDir, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("STAGE_4_RULES registry (#6506)", () => {

@@ -42,7 +42,6 @@ const PRIORITY = [
   "scripts/run-fact-checker.ts",
   "scripts/refresh-destaque-sources.ts",
   "scripts/select-use-melhor-post.ts",
-  "scripts/fix-post-slug.ts",
   "scripts/late-refresh-candidates.ts",
   "scripts/verify-accessibility.ts",
   "scripts/prep-manual-publish.ts",
@@ -144,15 +143,6 @@ describe("entry points migrados propagam o código (#9911)", () => {
     const r = run("scripts/verify-stage-4-dispatch.ts", []);
     assert.equal(r.status, 2, r.stderr);
   });
-
-  it("fix-post-slug sem BEEHIIV_API_KEY sai 2 via CliExit (de dentro de loadConfig)", () => {
-    // String vazia: loadProjectEnv não sobrescreve var já presente, então um
-    // .env local com a key não transforma o teste em chamada de rede.
-    const r = run("scripts/fix-post-slug.ts", ["--post-id", "x", "--slug", "y"], { BEEHIIV_API_KEY: "" });
-    assert.equal(r.status, 2, r.stderr);
-    assert.match(r.stderr, /BEEHIIV_API_KEY não definida/);
-    assert.doesNotMatch(r.stderr, /Fatal/);
-  });
 });
 
 /**
@@ -237,7 +227,6 @@ const BATCH_3 = [
   "scripts/clarice-stripe-delta.ts",
   "scripts/delete-test-schedules.ts",
   "scripts/inject-poll-token.ts",
-  "scripts/sync-apoio-nivel-beehiiv.ts",
   "scripts/sync-cursos-subscribers-kv.ts",
 ];
 

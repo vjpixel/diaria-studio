@@ -115,7 +115,6 @@ describe("runEvaluation — promoção pro Kit checa o estado ANTES do POST (#87
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
-        newsletterBackend: "kit",
         kitApiKey: "kkey",
       });
 
@@ -155,7 +154,6 @@ describe("runEvaluation — promoção pro Kit checa o estado ANTES do POST (#87
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
-        newsletterBackend: "kit",
         kitApiKey: "kkey",
       });
 
@@ -176,7 +174,7 @@ describe("runEvaluation — promoção pro Kit checa o estado ANTES do POST (#87
         // 403 (não >=500/429) — não-retriável em kitFetch, evita pagar o
         // backoff real de fetchWithRetry neste teste (mesmo padrão do
         // #7382, ver "falha ao checar status Kit (HTTP 403 ...)" em
-        // test/evaluate-brevo-diaria-7382.test.ts).
+        // test/evaluate-brevo-diaria-7382.test.ts, removido no #11225).
         return jsonRes(403, { error: "boom" });
       }
       if (u.includes("api.kit.com")) {
@@ -196,7 +194,6 @@ describe("runEvaluation — promoção pro Kit checa o estado ANTES do POST (#87
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
-        newsletterBackend: "kit",
         kitApiKey: "kkey",
       });
 

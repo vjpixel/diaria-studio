@@ -195,22 +195,9 @@ describe("parseEditorResponse (#1238)", () => {
     assert.equal(parseEditorResponse("   "), null);
   });
 
-  it("número fora do range 1-16 → null (#6179: range estendido pro Kit)", () => {
-    assert.equal(parseEditorResponse("17"), null);
-    assert.equal(parseEditorResponse("0,1"), null);
-  });
-
-  it("'15' → Kit auto (canais não mencionados ficam manual) (#6179)", () => {
-    const c = parseEditorResponse("15");
-    assert.ok(c);
-    assert.equal(c.kit, "auto");
-    assert.equal(c.newsletter, "manual");
-  });
-
-  it("'16' → Kit manual (#6179)", () => {
-    const c = parseEditorResponse("16");
-    assert.ok(c);
-    assert.equal(c.kit, "manual");
+  it("número fora do range 1-14 → null (#11225: 15/16 eram do canal Kit paralelo)", () => {
+    for (const fora of ["15", "16", "17", "0,1"]) assert.equal(parseEditorResponse(fora), null, fora);
+    assert.ok(parseEditorResponse("14"));
   });
 
   it("'7' → Instagram auto (canais não mencionados ficam manual) (#49)", () => {
@@ -403,72 +390,6 @@ describe("canal Brevo diária (#5772)", () => {
   });
 });
 
-describe("canal Kit (#6162/#6179)", () => {
-  it("autoApproveConsent/defaultAutoConsent incluem kit auto", () => {
-    assert.equal(autoApproveConsent().kit, "auto");
-    assert.equal(defaultAutoConsent().kit, "auto");
-  });
-
-  it("defaultManualConsent inclui kit manual", () => {
-    assert.equal(defaultManualConsent().kit, "manual");
-  });
-
-  it("'kit' é canal válido em --skip", () => {
-    const c = parseSkipFlag("kit");
-    assert.ok(c, "kit deve ser um canal válido em --skip");
-    assert.equal(c.kit, "manual");
-    assert.equal(c.newsletter, "auto");
-    assert.equal(c.linkedin, "auto");
-  });
-
-  it("'all' → kit auto; 'none' → kit skipped", () => {
-    assert.equal(parseEditorResponse("all")?.kit, "auto");
-    assert.equal(parseEditorResponse("none")?.kit, "skipped");
-  });
-
-  it("hasAnyAutoChannel true quando só kit é auto (#6179)", () => {
-    assert.equal(
-      hasAnyAutoChannel({
-        newsletter: "manual",
-        linkedin: "manual",
-        facebook: "manual",
-        instagram: "manual",
-        threads: "manual",
-        twitter: "manual",
-        brevo: "manual",
-        kit: "auto",
-        source: "x",
-      }),
-      true,
-    );
-  });
-
-  it("hasAnyAutoChannel false quando tudo manual incluindo kit (#6179)", () => {
-    assert.equal(hasAnyAutoChannel(defaultManualConsent()), false);
-  });
-
-  it("allChannelsSkipped false quando kit não-skipped mas resto skipped (#6179)", () => {
-    assert.equal(
-      allChannelsSkipped({
-        newsletter: "skipped",
-        linkedin: "skipped",
-        facebook: "skipped",
-        instagram: "skipped",
-        threads: "skipped",
-        twitter: "skipped",
-        brevo: "skipped",
-        kit: "manual",
-        source: "x",
-      }),
-      false,
-    );
-  });
-
-  it("allChannelsSkipped true quando tudo skipped incluindo kit (#6179)", () => {
-    const c = parseEditorResponse("none")!;
-    assert.equal(allChannelsSkipped(c), true);
-  });
-});
 
 describe("canal YouTube (#10659, §5b-youtube)", () => {
   it("'youtube' é canal válido em --skip e só ele vira manual", () => {
@@ -476,7 +397,6 @@ describe("canal YouTube (#10659, §5b-youtube)", () => {
     assert.ok(c, "youtube deve ser um canal válido em --skip");
     assert.equal(c.youtube, "manual");
     assert.equal(c.newsletter, "auto");
-    assert.equal(c.kit, "auto");
     assert.equal(parseSkipFlag("linkedin")?.youtube, "auto");
   });
 

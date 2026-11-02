@@ -117,7 +117,7 @@ export interface ApoiadoresState {
    * canal.
    *
    * Existe porque o 2xx da criação não é prova de que o filtro pegou —
-   * mesma disciplina de `kit-diaria-stage5-dispatch.ts` (#6582), o canal
+   * mesma disciplina de `kit-diaria-stage5-dispatch.ts` (removido no #11225) (#6582), o canal
    * irmão de mesmo perfil de risco. `false` é registro de INCIDENTE, não
    * estado normal: significa que existe um rascunho no Kit cuja audiência
    * precisa ser conferida à mão antes de qualquer disparo.

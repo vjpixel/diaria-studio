@@ -239,6 +239,37 @@ export function checkMonthlySendingCredit(draft: string): MonthlySendingCreditRe
   return { ok: offending.length === 0, offending };
 }
 
+// ─── Desconto da Clarice: um número só por e-mail — #11810 ─────────────────
+
+export interface DiscountConsistencyResult {
+  ok: boolean;
+  /** Percentuais distintos achados em "até N% de desconto", em ordem de aparição. */
+  percents: number[];
+}
+
+/** "até 67% de desconto", "até 63% de desconto", tolerando "ate", vírgula
+ * decimal e espaço antes do `%`. Exige "até" para não pegar os descontos de
+ * cupom ("25% de desconto no plano mensal"), que são outra coisa. */
+const UP_TO_DISCOUNT_RE = /\bat[ée]\s+(\d{1,3}(?:[.,]\d+)?)\s*%\s+de\s+desconto/gi;
+
+/**
+ * #11810: nos ciclos 2607-08 a 2610-11 o CLARICE — DIVULGAÇÃO dizia
+ * "acumulando até 67% de desconto" e o CTA do CLARICE — TUTORIAL (preenchido
+ * à mão a partir do Doc "Laboratório Clarice") dizia "até 63% de desconto" —
+ * dois números no mesmo e-mail. Qual é o certo depende da Clarice (não está
+ * no repo), então o check não escolhe: só aponta a divergência. Advisory, não
+ * FATAL — copy de parceiro não deve travar a Etapa 2; o aviso chega ao gate
+ * da Etapa 4.
+ */
+export function checkDiscountConsistency(draft: string): DiscountConsistencyResult {
+  const percents: number[] = [];
+  for (const m of draft.matchAll(UP_TO_DISCOUNT_RE)) {
+    const n = Number(m[1].replace(",", "."));
+    if (!percents.includes(n)) percents.push(n);
+  }
+  return { ok: percents.length <= 1, percents };
+}
+
 export interface ImageRenderProbeResult {
   ok: boolean;
   imgCount: number;
@@ -402,6 +433,14 @@ function main(): void {
 
   if (hasWarning) {
     console.log("[lint-monthly] Um ou mais destaques excedem o limite — revisar antes de publicar.");
+  }
+
+  const discountCheck = checkDiscountConsistency(text);
+  if (!discountCheck.ok) {
+    console.log(
+      `[lint-monthly] ⚠  desconto divergente no mesmo e-mail: ${discountCheck.percents.map((p) => `até ${p}%`).join(" vs ")} ` +
+      "— unificar com o número do CLARICE — DIVULGAÇÃO antes de publicar. Ver #11810.",
+    );
   }
 
   process.exit(0);

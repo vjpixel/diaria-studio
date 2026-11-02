@@ -55,8 +55,8 @@
  *   srt AAMMDD [--seq instagram|outras-redes] [--from-raw] [--force]
  *       legendas das verticais. Retranscreve o áudio montado (cache por trechos +
  *       identidade do áudio); --from-raw remapeia o transcript do bruto.
- *   preview AAMMDD [--seq instagram|outras-redes]   (default outras-redes; sempre refaz)
- *   review AAMMDD [--seq instagram|outras-redes]    (default outras-redes; sempre refaz)
+ *   preview AAMMDD [--seq instagram|outras-redes]   (default única vertical; sempre refaz)
+ *   review AAMMDD [--seq instagram|outras-redes]    (default única vertical; sempre refaz)
  *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes] [--no-text]
  *       revisão do EXPORT do Premiere (#11557): formato contra o destino (proporção,
  *       faixa preta, fps, teto do vertical), loudness/true peak, estalos e fragmentos
@@ -117,15 +117,18 @@ import {
   LOUDNORM_TARGET,
   PREVIEW_SUBTITLE_STYLE,
   SILENCE_DETECT,
+  SPEECH_DEFAULTS,
   alignPunctuationToScript,
   applyVocabularyToWords,
   assembleClips,
   buildSequencePlan,
   buildXmeml,
   clockTime,
+  collapsedTakeSuspects,
   cuesToSrt,
   cutPoints,
   defaultSequences,
+  describeCollapsedSuspect,
   effectiveFormat,
   effectiveFraming,
   effectiveSource,
@@ -178,6 +181,8 @@ import {
   SHORTS_MAX_S,
   shortsWarning,
   suggestedDurations,
+  verticalTargetCheck,
+  verticalTargetWarning,
   type DecupagemPlan,
 } from "./lib/diaria/video-montage-docs.ts";
 import {
@@ -381,7 +386,26 @@ export function planHashOf(blocksText: string, sourceJson: Buffer | string, sile
 function planHash(ctx: Ctx, blocksText: string): string {
   const sil = f(ctx, "silences.json");
   const tr = f(ctx, "transcript.json");
-  return planHashOf(blocksText, readFileSync(f(ctx, "source.json")), existsSync(sil) ? readFileSync(sil) : null, existsSync(tr) ? readFileSync(tr) : null);
+  // #11754: as retranscrições de janela podem trocar a tomada de um trecho colapsado; entram no hash junto do transcript.
+  const patches = retranscribedFiles(ctx).map((p) => readFileSync(p));
+  const trBuf = existsSync(tr) ? Buffer.concat([readFileSync(tr), ...patches]) : null;
+  return planHashOf(blocksText, readFileSync(f(ctx, "source.json")), existsSync(sil) ? readFileSync(sil) : null, trBuf);
+}
+
+/** As retranscrições de janela (`retranscribe-{de}-{até}.json`, no tempo do bruto), em ordem de nome (#11754). */
+export const RETRANSCRIBED_FILE = /^retranscribe-\d+(?:\.\d+)?-\d+(?:\.\d+)?\.json$/;
+function retranscribedFiles(ctx: Pick<Ctx, "stateDir">): string[] {
+  if (!existsSync(ctx.stateDir)) return [];
+  return readdirSync(ctx.stateDir)
+    .filter((n) => RETRANSCRIBED_FILE.test(n))
+    .sort()
+    .map((n) => f(ctx, n));
+}
+
+/** Aviso quando o `silences.json` foi detectado com pausa mínima maior que o corte (#11753): as pausas entre as duas não saem. */
+export function silenceDetectStaleWarning(metaMinDurationS: number | undefined, minGapS: number = SPEECH_DEFAULTS.minGapS): string | null {
+  if (metaMinDurationS === undefined || metaMinDurationS <= minGapS + 1e-9) return null;
+  return `silences.json detectado com pausa mínima de ${metaMinDurationS} s, acima do corte de ${minGapS} s (#11753): pausas entre os dois ficam no XML; rodar transcribe de novo nesta máquina para redetectar os silêncios`;
 }
 
 function silences(ctx: Ctx): Interval[] {
@@ -393,11 +417,15 @@ function plans(ctx: Ctx) {
   const source = sourceFor(ctx, file);
   const vocab = loadVocab();
   const sil = silences(ctx);
+  const metaPath = f(ctx, "silences.meta.json");
+  const stale = silenceDetectStaleWarning(existsSync(metaPath) ? readJson<{ minDurationS?: number }>(metaPath, "silences.meta.json").minDurationS : undefined);
+  if (stale) console.error(`[aviso] ${stale}`);
   const { blocks, errors, warnings } = resolveBlocks(file, nonEmptyWords(f(ctx, "transcript.json"), "transcript.json (rode transcribe)"), {
     durationS: source.durationS,
     silences: sil,
     rules: vocab.rules,
     aliases: vocab.aliases,
+    retranscribed: retranscribedFiles(ctx).map((p) => readJson<Transcript>(p, basename(p))),
   });
   for (const w of warnings) console.error(`[aviso] ${w}`);
   if (errors.length) throw new Error(`blocks.json com problema:\n  - ${errors.join("\n  - ")}`);
@@ -797,6 +825,9 @@ export function parsePixelF0Arg(raw: string | undefined): number | undefined {
 function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
   const segments = tr.segments;
+  // Tomada colapsada (#11754): avisar antes de decidir, com a janela do retranscribe.
+  const silPath = f(ctx, "silences.json");
+  for (const line of collapsedSegmentWarnings(ctx.edition, segments, existsSync(silPath) ? readJson<Interval[]>(silPath, "silences.json") : [], tr.duration)) console.error(`[aviso] ${line}`);
   const plan = loadDecupagemPlan(ctx, segments);
   if (!plan) {
     // 1ª passada: a listagem numerada e o molde do plano, para a skill classificar (#11361).
@@ -840,6 +871,24 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
 }
 
 /**
+ * Um aviso por segmento com suspeita de tomada colapsada (#11754): o Whisper
+ * registrou uma tomada só onde houve várias. Numeração 1-based da listagem.
+ */
+export function collapsedSegmentWarnings(edition: string, segments: Segment[], silences: Interval[], durationS?: number): string[] {
+  const out: string[] = [];
+  segments.forEach((s, i) => {
+    const sus = collapsedTakeSuspects(s.words ?? [], silences, { durationS });
+    if (!sus.length) return;
+    const w = sus[0].window;
+    out.push(
+      `segmento ${i + 1} (${clockTime(s.start)}–${clockTime(s.end)}): possível tomada colapsada, ${describeCollapsedSuspect(sus[0])}: ` +
+        `retranscribe ${edition} --from ${w.start.toFixed(1)} --to ${w.end.toFixed(1)} antes de decidir; com as tomadas separadas, a última vale, salvo aprovação da direção (#11754)`,
+    );
+  });
+  return out;
+}
+
+/**
  * Retranscreve só um trecho do bruto (#11364), sem VAD e sem
  * `condition_on_previous_text`: comentário da direção e começo de frase depois
  * de pausa saem errados na transcrição longa ("bom" por "primeiro" na 261028).
@@ -861,6 +910,7 @@ function cmdRetranscribe(ctx: Ctx, from: string | undefined, to: string | undefi
   writeJson(out, shifted);
   for (const s of shifted.segments) console.log(`[${clockTime(s.start)}–${clockTime(s.end)}] ${s.text.trim()}`);
   console.error(`[video-montagem] retranscrição do trecho: ${out} (o transcript.json fica como está; a correção vai no text do decupagem-plan.json)`);
+  console.error("[video-montagem] item do blocks.json com tomada colapsada coberto por esta janela passa a usar a tomada separada aqui (a última, salvo aprovação da direção) no próximo roteiro/build (#11754)");
   return 0;
 }
 
@@ -878,12 +928,17 @@ function cmdFrame(ctx: Ctx, at: string | undefined): number {
 }
 
 function cmdRoteiro(ctx: Ctx): number {
-  const { source, plans: ps, resolved } = plans(ctx);
+  const { file, source, plans: ps, resolved } = plans(ctx);
   // As linhas "alternativa" da decupagem viram as opções B, C… do roteiro (#11361).
   const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
   const dplan = loadDecupagemPlan(ctx, tr.segments);
   const alternatives = dplan ? alternativesFromDecupagem(buildDecupagemDoc(dplan, tr.segments, loadVocab().rules)) : undefined;
-  const md = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives });
+  const sil = silences(ctx);
+  for (const p of ps) {
+    const t = verticalTargetCheck(p, resolved, source.fps, { targetS: file.verticalTargetS, silences: sil });
+    if (t) console.error(`[aviso] ${verticalTargetWarning(p.spec.name, t)}`);
+  }
+  const md = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil });
   writeFileAtomic(f(ctx, "roteiro.md"), md);
   process.stdout.write(md);
   return 0;
@@ -999,7 +1054,15 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
   return { plans: out, info: { applied: true, thresholdDb, edgeWindows: windows.size, edgesRetranscribed: heard !== null }, warnings };
 }
 
-const rawOf = (c: PlannedClip): RawClip => ({ block: c.block, srcIn: c.srcIn, srcOut: c.srcOut, ...(c.script ? { script: c.script } : {}), ...(c.parts ? { parts: c.parts } : {}) });
+const rawOf = (c: PlannedClip): RawClip => ({
+  block: c.block,
+  srcIn: c.srcIn,
+  srcOut: c.srcOut,
+  ...(c.script ? { script: c.script } : {}),
+  ...(c.parts ? { parts: c.parts } : {}),
+  // O corte de pausa curta segue sem troca de zoom depois do refino (#11753).
+  ...(c.keepScale ? { keepScale: true as const } : {}),
+});
 
 /** Uma linha do relato por ajuste de corte (#11500). */
 export function adjustmentLine(a: CutAdjustment): string {
@@ -1008,7 +1071,7 @@ export function adjustmentLine(a: CutAdjustment): string {
 }
 
 function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true): number {
-  const { file, source, plans: ps0, hash } = plans(ctx);
+  const { file, source, plans: ps0, hash, resolved } = plans(ctx);
   const refined = refineCuts(ctx, ps0, source, audioRefine);
   const ps = refined.plans;
   for (const w of refined.warnings) console.error(`[aviso] ${w}`);
@@ -1024,6 +1087,8 @@ function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true): number {
     problems += p.missingBlocks.length + p.dropped.length;
     const over = shortsWarning(p, source.fps);
     if (over) console.error(`[aviso] ${over}`);
+    const target = verticalTargetCheck(p, resolved, source.fps, { targetS: file.verticalTargetS, silences: silences(ctx) });
+    if (target) console.error(`[aviso] ${verticalTargetWarning(p.spec.name, target)}`);
   }
   if (problems && !allowMissing) {
     console.error(`[erro] ${problems} problema(s) acima: corrigir o blocks.json (outra tomada, intervalo maior) ou rodar com --allow-missing`);

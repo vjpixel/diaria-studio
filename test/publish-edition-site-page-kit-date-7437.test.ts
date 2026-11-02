@@ -52,7 +52,7 @@ describe("#7437 readEditionInputs — publishedAtIso não fica null pra edição
     const dir = makeKitEditionDir("260905");
     const rootDir = makeRootWithBackend("kit");
     try {
-      const result = readEditionInputs(dir, "um-slug-qualquer", rootDir);
+      const result = readEditionInputs(dir, "um-slug-qualquer");
       assert.ok(result);
       assert.equal(result!.publishedAtIso, "2026-09-05T00:00:00.000Z");
     } finally {
@@ -76,7 +76,7 @@ describe("#7437 readEditionInputs — publishedAtIso não fica null pra edição
         }),
         "utf8",
       );
-      const result = readEditionInputs(dir, "um-slug-qualquer", rootDir);
+      const result = readEditionInputs(dir, "um-slug-qualquer");
       assert.ok(result);
       assert.equal(result!.publishedAtIso, "2026-09-05T09:00:00.000Z");
     } finally {
@@ -90,7 +90,7 @@ describe("#7437 readEditionInputs — publishedAtIso não fica null pra edição
     const rootDir = makeRootWithBackend("kit");
     try {
       writeFileSync(join(dir, "_internal", "newsletter-kit-published.json"), "{ não é json", "utf8");
-      const result = readEditionInputs(dir, "um-slug-qualquer", rootDir);
+      const result = readEditionInputs(dir, "um-slug-qualquer");
       assert.ok(result);
       assert.equal(result!.publishedAtIso, "2026-09-05T00:00:00.000Z");
     } finally {
@@ -106,7 +106,7 @@ describe("#7437 readEditionInputs — publishedAtIso não fica null pra edição
     writeFileSync(join(dir, "_internal", "newsletter-final.html"), "<p>corpo Kit</p>", "utf8");
     const rootDir = makeRootWithBackend("kit");
     try {
-      const result = readEditionInputs(dir, "um-slug-qualquer", rootDir);
+      const result = readEditionInputs(dir, "um-slug-qualquer");
       assert.ok(result);
       assert.equal(result!.publishedAtIso, null);
     } finally {
@@ -120,7 +120,7 @@ describe("#7437 readEditionInputs — publishedAtIso não fica null pra edição
     const rootDir = makeRootWithBackend("kit");
     writeFileSync(join(dir, "02-reviewed.md"), ["TÍTULO", "Título da edição Kit"].join("\n"), "utf8");
     try {
-      const inputs = readEditionInputs(dir, "edicao-kit-do-dia", rootDir);
+      const inputs = readEditionInputs(dir, "edicao-kit-do-dia");
       assert.ok(inputs);
       const result = buildEditionArchivePost(inputs!);
       assert.ok(result.ok, result.ok ? undefined : result.reason);

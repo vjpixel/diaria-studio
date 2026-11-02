@@ -346,28 +346,6 @@ describe("#4530 — canal Brevo Pending (reativar/evaluate) entra no inventário
     });
   });
 
-  it("scripts/evaluate-brevo-diaria.ts emite o triplo de BREVO_DIARIA_PROMOCAO_SCORE_UTM no POST de criação", async () => {
-    const evalSrc = await import("../scripts/evaluate-brevo-diaria.ts");
-    let body: unknown;
-    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
-      const method = init?.method ?? "GET";
-      if (method === "POST") {
-        body = JSON.parse(init!.body as string);
-        return new Response(JSON.stringify({}), { status: 200 });
-      }
-      return new Response(null, { status: 404 }); // GET inicial — nunca existiu
-    }) as typeof fetch;
-    await evalSrc.promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl);
-    assert.deepEqual(body, {
-      email: "a@b.com",
-      send_welcome_email: false,
-      double_opt_override: "off", // #5095 — isenção do double opt-in da publicação
-      utm_source: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
-      utm_medium: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
-      utm_campaign: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
-      referring_site: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
-    });
-  });
 });
 
 describe("#4536/#4537/#4553 — pills do PARA ENCERRAR + resíduos de UTM/fixture", () => {

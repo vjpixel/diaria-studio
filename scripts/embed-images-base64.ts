@@ -53,6 +53,9 @@ function mimeFor(filename: string, declared: string | undefined): string {
   return EXT_MIME[extname(filename).toLowerCase()] ?? "application/octet-stream";
 }
 
+const SITE_ICON_PREFIX = "https://diar.ia.br/icons/";
+const SITE_ICON_URL_RE = /https:\/\/diar\.ia\.br\/icons\/[A-Za-z0-9_\-./]+\.(?:png|jpe?g|gif|webp)/g;
+
 export interface EmbedResult {
   html: string;
   embedded: string[];
@@ -69,6 +72,7 @@ export function embedImagesAsDataUri(
   html: string,
   images: Record<string, PublicImage>,
   editionDir: string,
+  siteAssetsDir?: string,
 ): EmbedResult {
   const embedded: string[] = [];
   const missing: string[] = [];
@@ -88,6 +92,25 @@ export function embedImagesAsDataUri(
     const dataUri = `data:${mimeFor(img.filename, img.mime_type)};base64,${bytes.toString("base64")}`;
     result = result.split(img.url).join(dataUri);
     embedded.push(img.filename);
+  }
+
+  if (siteAssetsDir) {
+    // Ícones do rodapé ("Siga a diar.ia.br:") ficam em https://diar.ia.br/icons/...,
+    // fora de 06-public-images.json — sem isto o preview (CSP do Artifact, offline)
+    // mostra imagem quebrada.
+    const iconUrls = new Set(result.match(SITE_ICON_URL_RE) ?? []);
+    for (const url of iconUrls) {
+      const rel = url.slice(SITE_ICON_PREFIX.length);
+      const localPath = join(siteAssetsDir, "icons", rel);
+      if (!existsSync(localPath)) {
+        missing.push(`icons/${rel}`);
+        continue;
+      }
+      const bytes = readFileSync(localPath);
+      const dataUri = `data:${mimeFor(rel, undefined)};base64,${bytes.toString("base64")}`;
+      result = result.split(url).join(dataUri);
+      embedded.push(`icons/${rel}`);
+    }
   }
 
   return { html: result, embedded, missing };
@@ -117,7 +140,12 @@ function main(): void {
   const html = readFileSync(htmlPath, "utf8");
   const imagesFile = JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile;
 
-  const result = embedImagesAsDataUri(html, imagesFile.images ?? {}, editionDir);
+  const result = embedImagesAsDataUri(
+    html,
+    imagesFile.images ?? {},
+    editionDir,
+    join(ROOT, "workers", "site", "public"),
+  );
 
   writeFileSync(outPath, result.html, "utf8");
 

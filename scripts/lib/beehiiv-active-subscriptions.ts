@@ -7,9 +7,10 @@
  * do #6269 já tinha cumprido o papel em 04/09/2026, "só na Beehiiv: 0").
  *
  * A função continua com 3 consumidores vivos, por isso mora aqui e não foi
- * apagada junto com o CLI: `reconcile-send-audiences.ts` (ramo legado
- * `backend = "beehiiv"`), `audit-kit-diaria-exclusivity.ts` e
- * `kit-gmail-warmup-ramp.ts`.
+ * apagada junto com o CLI: `reconcile-send-audiences.ts` (ativo residual da
+ * Beehiiv entra na conta de órfãos), `kit-gmail-warmup-ramp.ts` e
+ * `kit-ramp-cohort.ts` (`audit-kit-diaria-exclusivity.ts` saiu no #11775).
+ * Devolve o e-mail como a API manda, sem normalizar.
  */
 
 import { beehiivApiBase } from "./beehiiv-config.ts";
@@ -17,6 +18,8 @@ import { parseRetryAfterSecs } from "./brevo-client.ts";
 import { hasMorePages } from "../sync-cursos-subscribers-kv.ts";
 
 const PER_PAGE = 100;
+/** Retentativas de 429 por página, antes de falhar alto. */
+const MAX_RETRIES = 3;
 
 interface BeehiivSubscriptionApi {
   email: string;
@@ -51,7 +54,13 @@ export function computeRetryWaitMs(headers: Headers): number {
  * `backup-beehiiv.ts`). Falha loud em qualquer `!res.ok` ou truncamento:
  * uma leitura parcial nunca pode virar "conjunto completo" em silêncio.
  */
-export async function fetchActiveBeehiivEmails(apiKey: string, publicationId: string): Promise<string[]> {
+export async function fetchActiveBeehiivEmails(
+  apiKey: string,
+  publicationId: string,
+  opts: { sleepFn?: (ms: number) => Promise<void> } = {},
+): Promise<string[]> {
+  const sleepFn = opts.sleepFn ?? sleep;
+  let retries = 0;
   const out: string[] = [];
   let page = 1;
   let more = true;
@@ -63,13 +72,18 @@ export async function fetchActiveBeehiivEmails(apiKey: string, publicationId: st
     );
     if (res.status === 429) {
       await res.body?.cancel().catch(() => {});
-      await sleep(computeRetryWaitMs(res.headers));
+      if (retries >= MAX_RETRIES) {
+        throw new Error(`Beehiiv API 429 em /subscriptions (página ${page}) depois de ${MAX_RETRIES} retentativas`);
+      }
+      retries++;
+      await sleepFn(computeRetryWaitMs(res.headers));
       continue;
     }
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
       throw new Error(`Beehiiv API ${res.status} em /subscriptions (página ${page})`);
     }
+    retries = 0;
     const body = (await res.json()) as Page<BeehiivSubscriptionApi>;
     const got = body.data ?? [];
     for (const s of got) out.push(s.email);

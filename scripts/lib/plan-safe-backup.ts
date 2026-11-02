@@ -128,6 +128,37 @@ export function recoverPlanFromSafeBackup(planPath: string): PlanSafeBackupRecov
   return { status: "unrecoverable", backups: backupPaths };
 }
 
+/**
+ * Leitura SOMENTE LEITURA da cópia de conflito (#11768): devolve o conteúdo
+ * do `plan-*-safeBackup-*.json` válido mais recente ao lado de `planPath`,
+ * sem gravar nada no disco. Para exibidores (statusline) que rodam a cada
+ * ~30s em toda máquina e não podem virar escritores no `data/` sincronizado
+ * pelo OneDrive — o restauro (`recoverPlanFromSafeBackup`) fica com os
+ * leitores da própria rodada (coordenador, gates, run-nightly-chain).
+ * `null` quando o basename não é `plan.json`, não há backup ou nenhum é um
+ * objeto JSON válido.
+ */
+export function readLatestPlanSafeBackup(planPath: string): Record<string, unknown> | null {
+  return findLatestValidPlanSafeBackup(planPath)?.plan ?? null;
+}
+
+/**
+ * Mesmo critério de `readLatestPlanSafeBackup`, devolvendo também o arquivo e
+ * o mtime da cópia lida — a statusline mede a idade da rodada pelo mtime
+ * (`isStaleDevelopPlan`); sem `plan.json` em disco, a idade é a do backup
+ * (o que o restauro de `recoverPlanFromSafeBackup` preservaria). Só leitura.
+ */
+export function findLatestValidPlanSafeBackup(
+  planPath: string,
+): { path: string; mtimeMs: number; plan: Record<string, unknown> } | null {
+  if (basename(planPath) !== "plan.json") return null;
+  for (const b of findPlanSafeBackups(dirname(planPath))) {
+    const raw = isValidPlanJson(b.path);
+    if (raw !== null) return { path: b.path, mtimeMs: b.mtimeMs, plan: JSON.parse(raw) as Record<string, unknown> };
+  }
+  return null;
+}
+
 /** Mensagem humana (stderr) para os status que exigem atenção; `null` em `clean`. */
 export function describePlanSafeBackupRecovery(planPath: string, r: PlanSafeBackupRecovery): string | null {
   switch (r.status) {

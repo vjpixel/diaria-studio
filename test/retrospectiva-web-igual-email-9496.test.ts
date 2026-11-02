@@ -354,3 +354,46 @@ describe("#9496 — ciclos antigos, sem nada Clarice-only, não perdem conteúdo
     }
   });
 });
+
+describe("página da retrospectiva leva as imagens dos destaques", () => {
+  const URL_D1 = "https://eia.diar.ia.br/img/img-teste-04-d1-2x1.jpg";
+  const mk = (manifest: object) => {
+    const dir = mkdtempSync(join(tmpdir(), "ret-img-"));
+    mkdirSync(join(dir, "_internal"));
+    writeFileSync(join(dir, "_internal", "public-images.json"), JSON.stringify(manifest));
+    return dir;
+  };
+
+  it("URL do manifest vira <figure> na página e no trecho", () => {
+    const dir = mk({ images: { d1: { url: URL_D1 } } });
+    try {
+      const opts = articleBuildOptionsForCycle(dir);
+      assert.equal(opts.destaqueImageUrls?.[1], URL_D1);
+      assert.ok(buildArticleHtml(DRAFT, CICLO, opts).html.includes(URL_D1));
+      assert.ok(buildArticleTeaserHtml(DRAFT, CICLO, opts).html.includes(URL_D1));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("crédito só com sidecar do ciclo, nunca pelo gerador atual do config", () => {
+    const dir = mk({ images: { d1: { url: URL_D1 } } });
+    try {
+      assert.equal(articleBuildOptionsForCycle(dir).destaqueImageCaption, undefined);
+      writeFileSync(join(dir, "_internal", "04-d1-generator.json"), JSON.stringify({ generator: "gemini" }));
+      assert.match(articleBuildOptionsForCycle(dir).destaqueImageCaption ?? "", /Gemini/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("imagem no disco sem URL no manifest aborta", () => {
+    const dir = mk({ images: {} });
+    try {
+      writeFileSync(join(dir, "04-d1-2x1.jpg"), "x");
+      assert.throws(() => articleBuildOptionsForCycle(dir), /04-d1-2x1\.jpg/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

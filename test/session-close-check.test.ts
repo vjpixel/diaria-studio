@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -64,6 +64,56 @@ describe("session closure evidence", () => {
     });
     assert.deepEqual(result.checkedWorktrees, ["/repo/extra", "/repo/moved"]);
   });
+  it("does not block on line-ending-only diffs nor routine audience snapshots (#11733)", () => {
+    const status = " M scripts/lib/crlf.ts\nM  scripts/lib/real.ts\n M context/audience-profile.md\n"
+      + "?? docs/audience-history/2026-10-22.md\n?? _tmp.ts\n";
+    const result = checkSessionClose("/repo", session, [], (cmd, args) => {
+      if (args[0] === "status") return status;
+      if (args[0] === "diff") return "scripts/lib/real.ts\ncontext/audience-profile.md\n";
+      return clean(cmd, args);
+    });
+    assert.equal(result.canClose, false);
+    assert.equal(result.pending.length, 1);
+    assert.ok(result.pending[0].includes("real.ts") && result.pending[0].includes("_tmp.ts"));
+    assert.ok(!result.pending[0].includes("crlf.ts") && !result.pending[0].includes("audience"));
+    assert.equal(result.ignored.length, 3);
+  });
+  it("keeps every modification blocking when the EOL-insensitive diff fails", () => {
+    const result = checkSessionClose("/repo", session, [], (cmd, args) => {
+      if (args[0] === "status") return " M scripts/lib/crlf.ts\n";
+      if (args[0] === "diff") throw new Error("no HEAD");
+      return clean(cmd, args);
+    });
+    assert.equal(result.canClose, false);
+    assert.ok(result.pending.some(p => p.includes("crlf.ts")));
+  });
+  it("certifies a real checkout whose only dirt is CRLF and audience snapshots (#11733)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "session-close-eol-"));
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+    try {
+      git("init", "-b", "feature/own");
+      git("config", "user.email", "test@example.test"); git("config", "user.name", "Test");
+      git("config", "core.autocrlf", "false");
+      writeFileSync(join(dir, "lib.ts"), "a\nb\n");
+      // As in the repo, the history dir is tracked (older snapshots committed), so status lists files, not "?? docs/".
+      mkdirSync(join(dir, "docs", "audience-history"), { recursive: true });
+      writeFileSync(join(dir, "docs", "audience-history", "2026-10-21.md"), "old");
+      git("add", "lib.ts", "docs"); git("commit", "-m", "base");
+      git("branch", "base"); git("branch", "--set-upstream-to=base");
+      writeFileSync(join(dir, "lib.ts"), "a\r\nb\r\n");
+      writeFileSync(join(dir, "docs", "audience-history", "2026-10-29.md"), "snapshot");
+      const run = (cmd: string, args: string[]) => cmd === "gh" ? "[]" : git(...args);
+      const ok = checkSessionClose(dir, { ...session, worktrees: [{ path: dir }] }, [], run);
+      assert.deepEqual(ok.errors, []);
+      assert.deepEqual(ok.pending, []);
+      assert.equal(ok.canClose, true);
+      assert.equal(ok.ignored.length, 2);
+      writeFileSync(join(dir, "lib.ts"), "a\r\nc\r\n");
+      const dirty = checkSessionClose(dir, { ...session, worktrees: [{ path: dir }] }, [], run);
+      assert.equal(dirty.canClose, false);
+      assert.ok(dirty.pending.some(p => p.includes("lib.ts")));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it("detects real untracked changes and commits ahead of an upstream", () => {
     const dir = mkdtempSync(join(tmpdir(), "session-close-"));
     const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
@@ -81,5 +131,19 @@ describe("session closure evidence", () => {
       assert.ok(result.pending.some(p => p.includes("não enviados") && p.includes("(1)")));
       assert.deepEqual(result.errors, []);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it("ignores dirty files last written before the session started, never ones written after or unknown (#11733)", () => {
+    const started = Date.parse(session.startedAt);
+    const run = (cmd: string, args: string[]) =>
+      args[0] === "status" ? "?? old.ts\n?? new.ts\n M mod-old.ts\n?? unknown.ts\n?? dir/\n" : clean(cmd, args);
+    const mtimes: Record<string, number> = {
+      "/repo/own/old.ts": started - 1000, "/repo/own/new.ts": started + 1000, "/repo/own/mod-old.ts": started - 1,
+    };
+    const result = checkSessionClose("/repo", session, [], run, abs => mtimes[abs]);
+    assert.equal(result.ignored.length, 2);
+    const pending = result.pending.join("\n");
+    assert.ok(pending.includes("new.ts") && pending.includes("unknown.ts") && pending.includes("dir/"));
+    assert.ok(!/\?\? old\.ts/.test(pending) && !pending.includes("mod-old.ts"));
+    assert.equal(result.canClose, false);
   });
 });

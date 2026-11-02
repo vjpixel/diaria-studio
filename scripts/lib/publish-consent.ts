@@ -24,9 +24,6 @@ export interface PublishConsent {
   twitter: Mode;
   /** #5772 — canal Brevo diária (segmento Pending, reativação). Default "auto" como os demais. */
   brevo: Mode;
-  /** #6162 — canal Kit PARALELO (#6126/#6048). Gate duplo: além deste
-   *  consent, só roda se `kit_diaria.enabled === true` em platform.config. */
-  kit: Mode;
   /** #10659 — vídeo horizontal do dia (Drive → YouTube, §5b-youtube do Stage 5).
    *  Opcional só pela leitura de consent gravado antes do #10659: ausente = "auto".
    *  Fora de `hasAnyAutoChannel`/`allChannelsSkipped` (não depende de imagem
@@ -49,7 +46,6 @@ export function autoApproveConsent(): PublishConsent {
     threads: "auto",
     twitter: "auto",
     brevo: "auto",
-      kit: "auto",
     youtube: "auto",
     source: "auto_approve_default",
   };
@@ -69,7 +65,6 @@ export function defaultAutoConsent(): PublishConsent {
     threads: "auto",
     twitter: "auto",
     brevo: "auto",
-      kit: "auto",
     youtube: "auto",
     source: "default_auto",
   };
@@ -89,10 +84,26 @@ export function defaultManualConsent(): PublishConsent {
     threads: "manual",
     twitter: "manual",
     brevo: "manual",
-      kit: "manual",
     youtube: "manual",
     source: "default_manual",
   };
+}
+
+const SKIP_CHANNELS = ["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter", "brevo", "youtube"] as const;
+
+/**
+ * #11225: `--skip kit` desligava o canal paralelo Kit diária, que saiu. Aceitar
+ * o token sem efeito daria falsa segurança: o editor acharia que segurou o
+ * e-mail, e o Kit é o único canal da diária.
+ */
+const RETIRED_KIT_SKIP_MESSAGE =
+  "`--skip kit` saiu no #11225: o e-mail da diária é o canal `newsletter`, use --skip newsletter.";
+
+/** Mensagem de erro de `--skip` inválido, nomeando o caso do token `kit`. */
+export function describeInvalidSkip(input: string): string {
+  const tokens = input.trim().toLowerCase().split(/[,\s]+/).filter(Boolean);
+  const hint = tokens.includes("kit") ? `${RETIRED_KIT_SKIP_MESSAGE} ` : "";
+  return `--skip inválido: ${JSON.stringify(input)}. ${hint}Use lista CSV de canais: ${SKIP_CHANNELS.join(", ")}.`;
 }
 
 /**
@@ -105,14 +116,15 @@ export function defaultManualConsent(): PublishConsent {
  *   - "linkedin,facebook" → linkedin + facebook manual
  *   - "newsletter,linkedin,facebook,instagram" → tudo manual
  *
- * Retorna null pra input inválido (tokens não reconhecidos).
+ * Retorna null pra input inválido (tokens não reconhecidos), inclusive o token
+ * `kit` (#11225), que `describeInvalidSkip` explica.
  */
 export function parseSkipFlag(input: string): PublishConsent | null {
   const trimmed = input.trim().toLowerCase();
   if (!trimmed) {
     return { ...defaultAutoConsent(), source: "skip_flag_empty" };
   }
-  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter", "brevo", "kit", "youtube"]);
+  const VALID = new Set<string>(SKIP_CHANNELS);
   const tokens = trimmed
     .split(/[,\s]+/)
     .filter(Boolean);
@@ -126,7 +138,6 @@ export function parseSkipFlag(input: string): PublishConsent | null {
     threads: skipped.has("threads") ? "manual" : "auto",
     twitter: skipped.has("twitter") ? "manual" : "auto",
     brevo: skipped.has("brevo") ? "manual" : "auto",
-    kit: skipped.has("kit") ? "manual" : "auto",
     youtube: skipped.has("youtube") ? "manual" : "auto",
     source: `skip_flag_${[...skipped].sort().join("_")}`,
   };
@@ -136,15 +147,14 @@ export function parseSkipFlag(input: string): PublishConsent | null {
  * Parseia a resposta do editor no gate 4b. Aceita:
  *   - "all" → tudo auto
  *   - "none" → tudo skipped
- *   - Lista CSV de números 1-12:
- *     1=Beehiiv auto, 2=Beehiiv manual
+ *   - Lista CSV de números 1-14:
+ *     1=Newsletter auto, 2=Newsletter manual
  *     3=LinkedIn auto, 4=LinkedIn manual
  *     5=Facebook auto, 6=Facebook manual
  *     7=Instagram auto, 8=Instagram manual
  *     9=Threads auto, 10=Threads manual
  *     11=Twitter/X auto, 12=Twitter/X manual
  *     13=Brevo diária auto, 14=Brevo diária manual
- *     15=Kit auto, 16=Kit manual
  *
  * Números conflitantes (1 e 2 ambos, etc) usam o último que aparece.
  * Canais não-mencionados na resposta ficam manual (default conservador).
@@ -163,7 +173,6 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       threads: "auto",
       twitter: "auto",
       brevo: "auto",
-      kit: "auto",
       youtube: "auto",
       source: "editor_response_all",
     };
@@ -177,7 +186,6 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       threads: "skipped",
       twitter: "skipped",
       brevo: "skipped",
-      kit: "skipped",
       youtube: "skipped",
       source: "editor_response_none",
     };
@@ -188,7 +196,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     .split(/[,\s]+/)
     .filter(Boolean)
     .map((s) => parseInt(s, 10));
-  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 16)) {
+  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 14)) {
     return null;
   }
 
@@ -197,7 +205,6 @@ export function parseEditorResponse(input: string): PublishConsent | null {
   // #2479: Threads = 9 (auto) / 10 (manual).
   // #3994: Twitter/X = 11 (auto) / 12 (manual).
   // #5772: Brevo diária = 13 (auto) / 14 (manual).
-  // #6179: Kit = 15 (auto) / 16 (manual).
   const out: PublishConsent = {
     newsletter: "manual",
     linkedin: "manual",
@@ -206,7 +213,6 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     threads: "manual",
     twitter: "manual",
     brevo: "manual",
-      kit: "manual",
     youtube: "manual",
     source: `editor_response_${nums.join("_")}`,
   };
@@ -225,8 +231,6 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     else if (n === 12) out.twitter = "manual";
     else if (n === 13) out.brevo = "auto";
     else if (n === 14) out.brevo = "manual";
-    else if (n === 15) out.kit = "auto";
-    else if (n === 16) out.kit = "manual";
   }
   return out;
 }
@@ -245,8 +249,7 @@ export function hasAnyAutoChannel(consent: PublishConsent): boolean {
     consent.instagram === "auto" ||
     consent.threads === "auto" ||
     consent.twitter === "auto" ||
-    consent.brevo === "auto" ||
-    consent.kit === "auto"
+    consent.brevo === "auto"
   );
 }
 
@@ -273,7 +276,6 @@ export function allChannelsSkipped(consent: PublishConsent): boolean {
     consent.instagram === "skipped" &&
     consent.threads === "skipped" &&
     consent.twitter === "skipped" &&
-    consent.brevo === "skipped" &&
-    consent.kit === "skipped"
+    consent.brevo === "skipped"
   );
 }

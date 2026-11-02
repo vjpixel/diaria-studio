@@ -9,7 +9,7 @@ Atualiza o perfil de audiência a partir das respostas mais recentes do survey n
 
 **Desde #5192, `scripts/audience-run.ts` é o *glue* determinístico** — mesmo padrão do #4941 (`clarice-novos-run.ts`): esta skill nunca reimplementa o fluxo, extrai valor de um passo e injeta no próximo à mão; ela invoca o script, que faz a resolução de config, a validação fail-soft das respostas, a gravação de `data/audience-raw.json` no formato certo e o disparo de `update-audience.ts`.
 
-**Por que não é 100% script (achado #5192).** `refresh-dedup.ts` prova que POSTS saem por REST com `BEEHIIV_API_KEY` — mas surveys não são o mesmo recurso. Verificado sem tocar credencial real (doc pública + sondagem HTTP sem key: rotas conhecidas como `GET /publications`, `.../custom_fields`, `.../polls` devolvem 401 — existem, só falta auth; toda variante de rota pra surveys devolve 404 — não existe). `mcp__claude_ai_Beehiiv__list_surveys`/`list_survey_responses` não têm equivalente REST público — são MCP-only, mesma classe de `list_post_clicks`/`list_post_subscriber_engagement` (`beehiiv-clicks-enricher`). Por isso o fluxo tem exatamente 2 chamadas MCP que **precisam** continuar sendo feitas por uma sessão com acesso ao conector — o script cuida de tudo em volta.
+**Por que não é 100% script (achado #5192).** `refresh-dedup.ts` prova que POSTS saem por REST com `BEEHIIV_API_KEY` — mas surveys não são o mesmo recurso. Verificado sem tocar credencial real (doc pública + sondagem HTTP sem key: rotas conhecidas como `GET /publications`, `.../custom_fields`, `.../polls` devolvem 401 — existem, só falta auth; toda variante de rota pra surveys devolve 404 — não existe). `mcp__claude_ai_Beehiiv__list_surveys`/`list_survey_responses` não têm equivalente REST público — são MCP-only, mesma classe de `list_post_clicks`/`list_post_subscriber_engagement` (o `beehiiv-clicks-enricher`, aposentado no #11225, usava a primeira). Por isso o fluxo tem exatamente 2 chamadas MCP que **precisam** continuar sendo feitas por uma sessão com acesso ao conector — o script cuida de tudo em volta.
 
 ## Execução
 
@@ -83,8 +83,7 @@ Internamente pagina `GET /forms/{id}/submissions` até esgotar
 zero mudança em `update-audience.ts`. Requer `TALLY_API_KEY` (.env).
 
 **Ainda não existe seleção automática entre Tally e Beehiiv** (achado do
-review, PR #6084) — `publishing.newsletter.backend` só é lido por
-`publish-newsletter-kit.ts` hoje, nada branching aqui. Escolher qual dos
+review, PR #6084). Escolher qual dos
 dois rodar (`fetch-tally-audience.ts` ou o fluxo Beehiiv acima) é decisão
 manual de quem invoca a skill. Wiring de switch automático é trabalho
 futuro do #461, sem issue própria ainda.

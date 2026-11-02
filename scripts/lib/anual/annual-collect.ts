@@ -146,7 +146,7 @@ export function dedupKey(post: UnifiedCachedPost): string | null {
 /**
  * Sufixos de assunto que marcam uma cópia SEGMENTADA da mesma edição, não uma
  * edição nova (#8035). Mesma edição diária, disparada por audiência distinta
- * — hoje só o piloto Patronos (`schedule-kit-diaria.ts` aplica `"- patronos"`
+ * — hoje só o piloto Patronos (`schedule-kit-diaria.ts` (removido no #11225) aplica `"- patronos"`
  * no assunto de um broadcast que já existe pro público geral). Lista curta e
  * explícita de propósito: um regex vago aqui devoraria edições reais cujo
  * título termine com um hífen legítimo.

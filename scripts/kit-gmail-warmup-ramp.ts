@@ -99,7 +99,7 @@ import { findTagIdByName, tagSubscriber, listSubscriberTags } from "./lib/kit-br
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { listAllSubscribersForTag, findKitSubscriberByEmail, fetchSubscriberTagIds } from "./kit-ramp-cohort.ts";
 import { createOrUpdateSubscriber, listAllKitSubscribers } from "./lib/kit-subscribers.ts";
-import { isApoioNivel, type ApoioNivel } from "./sync-apoio-nivel-beehiiv.ts";
+import { isApoioNivel, type ApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
 import { resolveBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { fetchActiveBeehiivEmails } from "./lib/beehiiv-active-subscriptions.ts";
 import {
@@ -170,7 +170,7 @@ async function resolveApoioNivelByEmail(): Promise<Map<string, ApoioNivel>> {
 
 /**
  * Resolve o id da tag de audiência, abortando se ela não existir — falha
- * segura, mesmo padrão de `resolveAudienceTagId` em `kit-diaria-channel.ts`.
+ * segura, mesmo padrão de `resolveAudienceTagId` em `kit-diaria-audience.ts`.
  * Resolvida no INÍCIO da rodada (não só no caminho de `--push`) porque a
  * reconciliação out-of-band do #6964 precisa ler a tag também em dry-run.
  */
@@ -179,7 +179,7 @@ async function resolveAudienceTagId(tagName: string): Promise<number> {
   if (tagId === null) {
     throw new Error(
       `[kit-gmail-warmup-ramp] tag "${tagName}" (kit_diaria.audience_tag) não encontrada no Kit — abortando ` +
-        `sem taguear ninguém (falha segura, mesmo padrão de resolveAudienceTagId em kit-diaria-channel.ts).`,
+        `sem taguear ninguém (falha segura, mesmo padrão de resolveAudienceTagId em kit-diaria-audience.ts).`,
     );
   }
   return tagId;

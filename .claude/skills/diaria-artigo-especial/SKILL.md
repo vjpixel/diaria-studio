@@ -52,8 +52,7 @@ state file) ou `--so-divulgacao` → pular direto pro Passo 0, como antes.
 
 ## Classificação de execução
 
-`windows` → **Develop**, nunca Overnight (mesma regra de `/diaria-apoios-sync`
-e do próprio #5751 documentado em `CLAUDE.md`). O Passo 3 (apoia.se) exige
+`windows` → **Develop**, nunca Overnight (mesma regra do #5751 documentado em `CLAUDE.md`). O Passo 3 (apoia.se) exige
 Claude in Chrome com o editor logado — sem navegador utilizável, a skill
 inteira não fecha de ponta a ponta.
 As Etapas A-E (produção) não precisam de navegador logado, mas têm gates
@@ -228,7 +227,7 @@ quando o tema é sobre a diar.ia.br, como no `o-jev`), gravada em
    inteiro do `draft.md` — `Skill("humanizador", ...)`, passada completa
    (todos os padrões, não amostra), preservando o frontmatter e as linhas
    `## ` como estão. Depois `mcp__clarice__correct_text` parágrafo a
-   parágrafo, aceitando as sugestões (mesma disciplina do Stage 2, #4514),
+   parágrafo, aceitando as sugestões depois de salvar as sugestões em `{S}.json` (array `[{from,to,...}]`), rodar `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` e aplicar só o filtrado (ruído do MCP, #11798; exit ≠ 0 = não aplicar, avisar o editor); mesma disciplina do Stage 2, #4514),
    exceto as que quebram marca, nome próprio ou a sintaxe do draft.
 
 3. **Iteração no chat.** Mostrar o texto ao editor e iterar como uma edição
@@ -344,8 +343,7 @@ fluxo é o mesmo de antes do #9099.
 
 ## Passo 0 — preflight
 
-1. **Capacidade de navegador** (mesmo padrão de `/diaria-apoios-sync` Passo
-   0, #5209): `npx tsx scripts/lib/browser-capability.ts`.
+1. **Capacidade de navegador** (#5209): `npx tsx scripts/lib/browser-capability.ts`.
    - `unavailable`/`unknown` → HALT (a menos que `--skip apoiase` cubra o
      único canal que precisa de Chrome):
      ```
@@ -444,7 +442,7 @@ e:
 mcp__clarice__correct_text(<texto humanizado>)
 ```
 
-Aplicar todas as sugestões da Clarice incondicionalmente (mesma disciplina
+Aplicar todas as sugestões da Clarice incondicionalmente, após salvar as sugestões em `{S}.json` (array `[{from,to,...}]`), rodar `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` e aplicar só o filtrado (ruído do MCP, #11798; exit ≠ 0 = não aplicar, avisar o editor) (mesma disciplina
 do Stage 2 diário — #4514), exceto sugestão que corrompa marca/identificador
 técnico. Gravar o texto final (humanizado + corrigido) de volta nos 4
 arquivos.

@@ -22,7 +22,7 @@
  *
  * O `2` é deliberadamente distinto do `3`: "ninguém clicou" e "a chamada
  * falhou" levam a ações opostas (esperar vs. investigar), e colapsá-los num
- * código só foi exatamente o bug P1 do review em `schedule-kit-diaria.ts`
+ * código só foi exatamente o bug P1 do review em `schedule-kit-diaria.ts` (removido no #11225)
  * (#6162), onde o 2 virava 0.
  */
 import { loadProjectEnv } from "./lib/env-loader.ts";

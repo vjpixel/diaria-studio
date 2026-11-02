@@ -471,6 +471,62 @@ export async function postInstagramFirstComment(
 }
 
 /**
+ * #11750 — permissões que autorizam `POST /{ig-media-id}/comments`. Mesma
+ * lista de `INSTAGRAM_COMMENT_PERMISSIONS` em `scripts/publish-instagram.ts`
+ * (o Worker não importa de `scripts/`): Facebook Login usa
+ * `instagram_manage_comments`, Instagram Login usaria
+ * `instagram_business_manage_comments`. Qualquer uma basta.
+ */
+export const INSTAGRAM_COMMENT_PERMISSIONS: readonly string[] = [
+  "instagram_manage_comments",
+  "instagram_business_manage_comments",
+];
+
+export type InstagramCommentScope = { ok: true; granted: boolean } | { ok: false; reason: string };
+
+/**
+ * #11750 — sonda (só leitura, `GET /me/permissions`) se o token DO WORKER
+ * pode comentar. É o token que publica o 1º comentário no `--schedule`, e
+ * pode ter escopo diferente do `.env` local. NUNCA lança: falha de rede,
+ * HTTP de erro ou JSON inválido voltam como `{ ok: false, reason }` — o
+ * publish trata como "sem prova do escopo" (linha da bio, sem comentário).
+ */
+export async function probeInstagramCommentScope(creds: InstagramCreds): Promise<InstagramCommentScope> {
+  try {
+    const res = await fetch(`https://graph.facebook.com/${creds.apiVersion}/me/permissions`, {
+      method: "GET",
+      // Token no header Authorization, nunca na query string (#7779).
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { ok: false, reason: `permissões: resposta não-JSON HTTP ${res.status}` };
+    }
+    const apiError = (data as { error?: { message?: unknown } } | null)?.error;
+    if (!res.ok || apiError) {
+      const msg = typeof apiError?.message === "string" ? apiError.message : `HTTP ${res.status}`;
+      return { ok: false, reason: `permissões: ${msg}` };
+    }
+    const list = (data as { data?: unknown } | null)?.data;
+    // Formato inesperado = sem prova do escopo (fail-closed).
+    const granted =
+      Array.isArray(list) &&
+      list.some((p) => {
+        if (!p || typeof p !== "object") return false;
+        const { permission, status } = p as { permission?: unknown; status?: unknown };
+        return typeof permission === "string" && INSTAGRAM_COMMENT_PERMISSIONS.includes(permission) && status === "granted";
+      });
+    return { ok: true, granted };
+  } catch (e) {
+    return { ok: false, reason: `permissões: fetch falhou: ${(e as Error).message}` };
+  }
+}
+
+/**
  * Sequência de 2 passos (idêntica a scripts/publish-instagram.ts):
  *   (1) POST /{ig-user-id}/media          → cria media container
  *   (2) POST /{ig-user-id}/media_publish   → publica o container

@@ -11,8 +11,8 @@
  * Beehiiv não expõe isso (mesmo gap documentado em `MCP_ONLY_GAPS` de
  * `scripts/backup-beehiiv.ts`). MCPs só são chamáveis de dentro de uma
  * sessão Claude (top-level ou subagent com a tool no escopo) — nunca de
- * scripts TS standalone. O agent `beehiiv-engagement-backup` (molde:
- * `.claude/agents/beehiiv-clicks-enricher.md`) faz o fetch paginado e pipa
+ * scripts TS standalone. O agent `beehiiv-engagement-backup` (molde: o
+ * `beehiiv-clicks-enricher`, aposentado no #11225) faz o fetch paginado e pipa
  * o resultado acumulado pra este script, que persiste em disco.
  *
  * Formato do JSONL: 1 linha = 1 registro CRU retornado pela MCP (sem

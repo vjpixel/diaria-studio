@@ -36,7 +36,10 @@
  * com a idade do arquivo mais recente da edição (`scripts/lib/
  * sentinel-absence-hint.ts`). Em `assert`, a mesma dica sai só com
  * `--sync-hint` (o `assert` também é o resume check do orchestrator, onde
- * sentinel ausente é o caso normal de "stage ainda não rodou").
+ * sentinel ausente é o caso normal de "stage ainda não rodou"). Com
+ * `--sync-hint`, o exit 2 (sentinel presente, outputs ausentes: sync parcial)
+ * também imprime a dica. `find-current-edition.ts --stage N` sem candidatos e
+ * o exit 4 do `stale-edition-guard.ts` mostram a mesma idade.
  *
  * `write` (#6009): antes de gravar o sentinel de um stage 1-6 no layout
  * padrão da diária (sem `--dir`, `--edition` AAMMDD), roda as regras de
@@ -55,8 +58,6 @@ import { getRulesForStage } from "./lib/invariant-checks/index.ts";
 import type { InvariantViolation } from "./lib/invariant-checks/types.ts";
 import {
   findWrongBackendNewsletterOutputs,
-  loadNewsletterBackend,
-  type NewsletterBackend,
 } from "./lib/newsletter-backend.ts";
 import { captureStage2Baseline, type CaptureOutcome } from "./lib/editor-request-snapshots.ts";
 import { captureStage1Records, type CaptureStage1Result } from "./lib/stage1-funnel.ts";
@@ -310,13 +311,12 @@ export function checkStageInvariantsForWrite(
 export function checkBackendOutputsForWrite(
   step: number,
   outputs: string[],
-  backend: NewsletterBackend = loadNewsletterBackend(),
-): { passed: boolean; wrongOutputs: string[]; backend: NewsletterBackend } {
+): { passed: boolean; wrongOutputs: string[] } {
   if (step !== 5 && step !== 6) {
-    return { passed: true, wrongOutputs: [], backend };
+    return { passed: true, wrongOutputs: [] };
   }
-  const wrongOutputs = findWrongBackendNewsletterOutputs(outputs, backend);
-  return { passed: wrongOutputs.length === 0, wrongOutputs, backend };
+  const wrongOutputs = findWrongBackendNewsletterOutputs(outputs);
+  return { passed: wrongOutputs.length === 0, wrongOutputs };
 }
 
 /**
@@ -424,20 +424,17 @@ function main(): void {
       // dígitos) — ver docstring de checkStageInvariantsForWrite.
       const editionIsAammdd = /^\d{6}$/.test(args.edition);
       if (!args.dir && editionIsAammdd) {
-        // #7963: gate SEM bypass — outputs citando o artefato de newsletter
-        // do backend OPOSTO ao ativo é sempre um erro de contabilidade
-        // (ver docstring de checkBackendOutputsForWrite), nunca um
-        // falso-positivo conhecido como o check-invariants abaixo pode ser.
-        // Guard só chama loadNewsletterBackend() (leitura de disco) pros
-        // Stages 5/6, que são os únicos que o guard cobre — evita I/O
-        // supérfluo em todo write dos Stages 1-4.
+        // #7963: gate SEM bypass — outputs citando o artefato legado da Beehiiv
+        // é sempre um erro de contabilidade (ver docstring de
+        // checkBackendOutputsForWrite), nunca um falso-positivo conhecido como
+        // o check-invariants abaixo pode ser.
         if (step === 5 || step === 6) {
           const backendResult = checkBackendOutputsForWrite(step, outputs);
           if (!backendResult.passed) {
             console.error(
-              `[error] sentinel step ${step} NÃO escrito — outputs cita artefato do backend ERRADO ` +
-                `para publishing.newsletter.backend="${backendResult.backend}": ${backendResult.wrongOutputs.join(", ")}. ` +
-                `Esse backend nunca escreve esse arquivo — corrija --outputs pro artefato do backend ativo (#7963).`,
+              `[error] sentinel step ${step} NÃO escrito — outputs cita artefato legado da Beehiiv: ` +
+                `${backendResult.wrongOutputs.join(", ")}. ` +
+                `O envio é só Kit e nunca escreve esse arquivo — corrija --outputs pra newsletter-kit-published.json (#7963).`,
             );
             process.exit(1);
           }
@@ -562,6 +559,11 @@ function main(): void {
       // outputs_missing
       const missing = result.missingOutputs.join(", ");
       console.error(`[error] sentinel step ${step} presente mas outputs ausentes: ${missing}`);
+      // #11729: o sentinel pode ter chegado pelo OneDrive antes dos outputs
+      // (sync parcial) — mesma dica, com os outputs que faltam.
+      if (syncHint) {
+        console.error(`[aviso] ${describeSentinelAbsence(editionDir, args.edition, result.missingOutputs)}`);
+      }
       process.exit(2);
     }
 

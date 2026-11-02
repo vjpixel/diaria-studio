@@ -1,6 +1,6 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { embedImagesAsDataUri } from "../scripts/embed-images-base64.ts";
@@ -87,5 +87,26 @@ describe("embedImagesAsDataUri", () => {
     const result = embedImagesAsDataUri(html, images, dir);
     assert.equal(result.embedded.length, 1);
     assert.ok(result.html.includes("data:image/png;base64,"));
+  });
+});
+
+describe("embedImagesAsDataUri — ícones do site (rodapé 'Siga a diar.ia.br:')", () => {
+  const site = mkdtempSync(join(tmpdir(), "embed-site-"));
+  mkdirSync(join(site, "icons", "social"), { recursive: true });
+  writeFileSync(join(site, "icons", "social", "x.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  after(() => rmSync(site, { recursive: true, force: true }));
+
+  it("embute https://diar.ia.br/icons/... a partir de workers/site/public", () => {
+    const html = `<img src="https://diar.ia.br/icons/social/x.png"><img src="https://diar.ia.br/icons/social/nada.png">`;
+    const result = embedImagesAsDataUri(html, {}, site, site);
+    assert.ok(result.html.includes("data:image/png;base64,"));
+    assert.ok(!result.html.includes("icons/social/x.png"));
+    assert.deepEqual(result.embedded, ["icons/social/x.png"]);
+    assert.deepEqual(result.missing, ["icons/social/nada.png"]);
+  });
+
+  it("sem siteAssetsDir mantém a URL remota (comportamento anterior)", () => {
+    const html = `<img src="https://diar.ia.br/icons/social/x.png">`;
+    assert.equal(embedImagesAsDataUri(html, {}, site).html, html);
   });
 });

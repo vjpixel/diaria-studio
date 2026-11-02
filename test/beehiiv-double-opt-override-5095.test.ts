@@ -16,12 +16,9 @@
  * atualizado 08/07/2026).
  *
  * Isso é inofensivo pra quem chega pelo site (é o efeito desejado), mas é
- * destrutivo em 2 caminhos nossos que DELETAM o registro existente e recriam
- * do zero — `workers/reativar` e `scripts/evaluate-brevo-diaria`. Sem o
- * override, cada rodada apaga um assinante ATIVO e o recria em `pending`. O
- * `evaluate` roda desassistido todo dia às 05:30 BRT
- * (`Diaria-Brevo-Diaria-Evaluate`), então a regressão seria silenciosa, diária
- * e cumulativa — a pior combinação possível.
+ * destrutivo no caminho que DELETA o registro existente e recria do zero —
+ * `workers/reativar` (até o #11225, também `scripts/evaluate-brevo-diaria`). Sem
+ * o override, cada rodada apaga um assinante ATIVO e o recria em `pending`.
  *
  * ## Por que a detecção é grosseira DE PROPÓSITO (revisão da PR #5096)
  *
@@ -60,7 +57,6 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * mais recebe e-mail, sem volta programática.
  */
 const CREATE_CALL_SITES = [
-  "scripts/evaluate-brevo-diaria.ts",
   "workers/cursos/src/subscribe.ts",
   "workers/poll/src/subscribe.ts",
   "workers/reativar/src/index.ts",
@@ -71,6 +67,9 @@ const CREATE_CALL_SITES = [
  * POST vai pra OUTRO endpoint. Entrar aqui exige motivo verificável.
  */
 const POST_TO_OTHER_ENDPOINT: Record<string, string> = {
+  // #11225: a promoção na Beehiiv saiu. O único POST é no form de sistema do Kit;
+  // sobre subscriptions da Beehiiv sobraram GET e PUT `unsubscribe`.
+  "scripts/evaluate-brevo-diaria.ts": "POST vai pra /forms/{id}/subscribers do Kit, não /subscriptions",
   // O único POST deste script é `/custom_fields` (cria o campo `poll_token`,
   // idempotente). Sobre subscriptions ele só faz GET paginado e PATCH.
   "scripts/inject-poll-token.ts": "POST vai pra /custom_fields, não /subscriptions",

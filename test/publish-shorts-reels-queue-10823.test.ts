@@ -65,12 +65,12 @@ describe("#10823 plano: Instagram com horário futuro vai pra fila do Worker", (
   });
 
   it("--now publica na hora mesmo com fila pronta (nada a agendar)", () => {
-    const plan = planShortsPublish({ ...base, now: BEFORE, forceNow: true, instagramQueue: { ready: true, account: "diaria" } });
+    const plan = planShortsPublish({ ...base, now: BEFORE, forceNow: true, publicVideo: { ready: true }, instagramQueue: { ready: true, account: "diaria" } });
     assert.equal(plan.items.find((i) => i.destination === "instagram")!.action, "publish");
   });
 
   it("horário já passou → publish direto, não enqueue", () => {
-    const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T20:00:00Z"), instagramQueue: { ready: true, account: "diaria" } });
+    const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T20:00:00Z"), publicVideo: { ready: true }, instagramQueue: { ready: true, account: "diaria" } });
     assert.equal(plan.items.find((i) => i.destination === "instagram")!.action, "publish");
   });
 });

@@ -73,7 +73,6 @@ async function evaluate(statistics: Record<string, unknown>, push: boolean) {
       kitApiKey: "k",
       listId: 7,
       log: () => {},
-      newsletterBackend: "kit",
       appendKitSemAberturaLog: (line) => {
         kitLog.push(line);
       },

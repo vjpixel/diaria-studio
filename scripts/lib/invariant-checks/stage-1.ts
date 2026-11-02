@@ -595,6 +595,16 @@ function checkUrlMatchesArticleUrl(editionDir: string): InvariantViolation[] {
  * itens sem link oficial de produto chegaram a LANÇAMENTOS e só foram
  * pegos tarde, com o `url-bucket` (#165) e `validate-lancamentos.ts` (#1968)
  * em contradição no gate final).
+ *
+ * #11748: severity `warning`, não `error`. O item sem sinal de produto é
+ * resolvido mecanicamente no Stage 2 §2a (`validate-lancamentos --approved`
+ * auto-demove pra RADAR, #4339) — exigir no Stage 1 o que só o Stage 2 resolve
+ * travava o `pipeline-sentinel write --step 1` (que recusa com qualquer
+ * `error`, #6009) no caminho `--auto`, sem editor pra mover o item, e o runner
+ * não detectava a conclusão (#6827). Rodar a demoção dentro do Stage 1 não
+ * serve: o sentinel congela `01-approved.gate1.json`/`stage1-funnel.json`
+ * (write-once, #9372), que passariam a registrar o estado pós-demoção em vez
+ * do aprovado no gate 1. O aviso continua no relatório do post-gate.
  */
 function checkLancamentoHasProductSignal(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "01-approved.json");
@@ -617,9 +627,10 @@ function checkLancamentoHasProductSignal(editionDir: string): InvariantViolation
       message:
         `${summary.not_a_tool.length} item(ns) em lancamento[] sem sinal POSITIVO de produto ` +
         `(#1968) — ${details}. Mova para radar/notícias, ou — se for ferramenta legítima de ` +
-        `slug atípico — adicione a URL a seed/lancamentos-tool-allowlist.txt.`,
+        `slug atípico — adicione a URL a seed/lancamentos-tool-allowlist.txt. Sem ação, o ` +
+        `Stage 2 §2a move o item pra RADAR sozinho (#4339, #11748).`,
       source_issue: "#6440",
-      severity: "error",
+      severity: "warning", // #11748 — Stage 2 §2a auto-demove; error travava o sentinel do Stage 1
       file: path,
     },
   ];
@@ -689,7 +700,7 @@ export const STAGE_1_RULES: InvariantRule[] = [
   },
   {
     id: "lancamento-has-product-signal",
-    description: "lancamento[] nunca contém item sem sinal POSITIVO de produto (#1968, backstop #6440)",
+    description: "lancamento[] nunca contém item sem sinal POSITIVO de produto (#1968, backstop #6440, warning-only #11748)",
     source_issue: "#6440",
     stage: 1,
     run: checkLancamentoHasProductSignal,

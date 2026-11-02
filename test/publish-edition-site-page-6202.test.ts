@@ -525,7 +525,7 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
       const rootDir = makeRootWithBackend("kit");
       try {
         assert.throws(
-          () => readEditionInputs(dir, undefined, rootDir),
+          () => readEditionInputs(dir, undefined),
           (err: unknown) => err instanceof EditionInputsInvalid && /Kit/.test((err as Error).message),
         );
       } finally {
@@ -543,7 +543,7 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
         // null (code 2) mesmo com --slug passado, contradizendo a própria
         // instrução de §6d-site ("passe --slug explicitamente"). Agora
         // `slugOverride` ignora `05-published.json` por completo.
-        const result = readEditionInputs(dir, "um-slug-qualquer", rootDir);
+        const result = readEditionInputs(dir, "um-slug-qualquer");
         assert.deepEqual(result, {
           html: "<p>corpo Kit</p>",
           postUrl: "https://diar.ia.br/p/um-slug-qualquer",
@@ -557,34 +557,6 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
       }
     });
 
-    it("backend beehiiv (default) com o mesmo estado de arquivos ⇒ continua null benigno (code 2)", () => {
-      const dir = makeKitLikeEditionDir();
-      const rootDir = makeRootWithBackend("beehiiv");
-      try {
-        assert.equal(readEditionInputs(dir, undefined, rootDir), null);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-        rmSync(rootDir, { recursive: true, force: true });
-      }
-    });
-
-    it("#7420: --slug bypassa 05-published.json ausente independente do backend (beehiiv também)", () => {
-      const dir = makeKitLikeEditionDir();
-      const rootDir = makeRootWithBackend("beehiiv");
-      try {
-        const result = readEditionInputs(dir, "outro-slug", rootDir);
-        assert.deepEqual(result, {
-          html: "<p>corpo Kit</p>",
-          postUrl: "https://diar.ia.br/p/outro-slug",
-          title: "",
-          subtitle: null,
-          publishedAtIso: null,
-        });
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-        rmSync(rootDir, { recursive: true, force: true });
-      }
-    });
   });
 });
 

@@ -417,68 +417,9 @@ export function maskOrphansForJson(orphans: readonly OrphanEntry[]): OrphanEntry
   return orphans.map((o) => ({ email: maskEmail(o.email), activeIn: o.activeIn }));
 }
 
-// ---------------------------------------------------------------------------
-// Armadilha de medição #1 (#7385): a Beehiiv entrega uma quantidade
-// CONSTANTE a menos do que tem de ativos — medido nos últimos 4 envios:
-// 485/488, 463/466, 415/418, 314/317 (sempre ~3 a menos). Não é erro: são
-// endereços `active` que a Beehiiv não entrega por razão própria (ver corpo
-// da issue). Um guard que comparasse `recipients === activeCount` cru
-// alarmaria TODO dia por causa deste gap normal — as duas constantes abaixo
-// dão a tolerância.
-// ---------------------------------------------------------------------------
-
-/** Piso absoluto de tolerância — folga sobre o gap medido (~3) pra não
- *  alarmar por flutuação de 1-2 e-mails de edição pra edição. */
-export const BEEHIIV_DELIVERY_GAP_TOLERANCE_ABS = 6;
-
-/** Piso percentual de tolerância (1% dos ativos) — cresce com a base, pra
- *  quando a base for grande o bastante que 6 de folga absoluta fique
- *  apertado demais. O maior dos dois pisos vence (ver `checkBeehiivDeliveryGap`). */
-export const BEEHIIV_DELIVERY_GAP_TOLERANCE_PCT = 0.01;
-
-export interface DeliveryGapCheck {
-  ok: boolean;
-  /** `activeCount - recipientsCount`. `NaN` só quando a entrada é inválida
-   *  (`ok: false` nesse caso, `reason` explica). */
-  gap: number;
-  tolerated: number;
-  reason?: string;
-}
-
-/**
- * Pure: `true` (via `ok`) quando o gap entre ativos e destinatários reais da
- * Beehiiv está dentro da folga normal documentada acima — `false` quando o
- * gap é maior que o tolerado (investigar: entrega degradando de verdade) OU
- * quando `recipientsCount > activeCount` (inesperado — destinatário que não
- * está entre os ativos contados não devia existir).
- */
-export function checkBeehiivDeliveryGap(activeCount: number, recipientsCount: number): DeliveryGapCheck {
-  if (!Number.isInteger(activeCount) || activeCount < 0) {
-    return { ok: false, gap: NaN, tolerated: NaN, reason: `activeCount inválido: ${String(activeCount)}.` };
-  }
-  if (!Number.isInteger(recipientsCount) || recipientsCount < 0) {
-    return { ok: false, gap: NaN, tolerated: NaN, reason: `recipientsCount inválido: ${String(recipientsCount)}.` };
-  }
-  const tolerated = Math.max(BEEHIIV_DELIVERY_GAP_TOLERANCE_ABS, Math.ceil(activeCount * BEEHIIV_DELIVERY_GAP_TOLERANCE_PCT));
-  const gap = activeCount - recipientsCount;
-  if (gap < 0) {
-    return {
-      ok: false,
-      gap,
-      tolerated,
-      reason: `destinatários reais (${recipientsCount}) > ativos contados (${activeCount}) — inesperado, investigar.`,
-    };
-  }
-  if (gap > tolerated) {
-    return {
-      ok: false,
-      gap,
-      tolerated,
-      reason: `gap de entrega (${gap}) excede a tolerância (${tolerated}) sobre ${activeCount} ativos — pode ser degradação real de entrega, não o gap normal (~3).`,
-    };
-  }
-  return { ok: true, gap, tolerated };
-}
+// Armadilha de medição #1 (#7385, gap constante da Beehiiv): o check
+// `checkBeehiivDeliveryGap` saiu no #11775 — a Beehiiv não envia desde o
+// #11225, então não há entrega dela a medir.
 
 // ---------------------------------------------------------------------------
 // Armadilha de medição #2 (#7385): `GET /v3/emailCampaigns/{id}` da Brevo

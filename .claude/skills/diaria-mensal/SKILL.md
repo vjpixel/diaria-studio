@@ -23,11 +23,10 @@ Produz uma edição **mensal** da diar.ia.br consolidando os destaques publicado
 
 Espelha o papel do Stage 0 da diária (setup + checks pré-edição, #2795) — sem gate, sem checkpoint (roda sempre, não é skippável por natureza).
 
-- Beehiiv MCP funcional (conector nativo do Claude Code).
-- `platform.config.json → beehiiv.publicationId` populado.
+- `KIT_API_KEY` disponível (env/Doppler): a coleta (`fetch-monthly-posts.ts`) e os cliques (`kit-clicks-enrich.ts`) leem o Kit pela API REST. O backend de leitura é `platform.config.json → publishing.newsletter.read_backend` (default `"kit"` desde o #11225); a Beehiiv é só arquivo histórico e não entra no preflight (#11787).
 - `context/audience-profile.md`, `context/editorial-rules.md`, `context/templates/newsletter-monthly.md` existem e não são placeholders.
 
-**Não há dependência de `data/editions/{AAMMDD}/` local.** O digest puxa direto do Beehiiv, funcionando em qualquer máquina.
+**`data/editions/{AAMMDD}/` local é preferido, não obrigatório.** `collect-monthly.ts` parseia o `02-reviewed.md` de cada edição presente em disco (modo local, #2791) e cai pro raw-post só nas edições que faltarem.
 
 ## Resume check global (checkpoints unificados com a diária, #2795)
 
@@ -60,7 +59,7 @@ npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step N --dir "data
 
 ## Etapa 1 — Coleta e Análise
 
-### 1a. Coleta via Beehiiv MCP
+### 1a. Coleta (Kit, `fetch-monthly-posts.ts`)
 
 **Resume check (#400):**
 ```bash
@@ -74,11 +73,15 @@ RAW_DESTAQUES=$(test -f data/monthly/$CYCLE/_internal/raw-destaques.json && echo
 - `RAW_POSTS > 0` e `RAW_DESTAQUES = no` → pular 1a, executar 1b.
 - `RAW_POSTS = 0` → executar 1a e 1b (mesmo que `_internal/raw-destaques.json` exista — pode ser de run anterior via fallback local, #400).
 
-**Coleta (inline — não via subagente, #403):** Chamar os MCPs Beehiiv **diretamente** neste contexto:
-1. `mcp__claude_ai_Beehiiv__list_posts` — `publication_id`, `status="confirmed"`, `per_page=50`. Paginar e filtrar client-side pela janela do mês `[${CYCLE:0:4}]` (mês do conteúdo = YYMM).
-2. Para cada post: derivar `AAMMDD` do `published_at`, `id_prefix` (8 chars sem `post_`). Path: `data/monthly/$CYCLE/raw-posts/post_{id_prefix}_{AAMMDD}.txt`. Pular se já existe (resume). Caso contrário: `mcp__claude_ai_Beehiiv__get_post_content` → gravar `markdown` (preferido) ou `html` (fallback).
+**Coleta (script, #403/#11787):** a coleta é REST pelo backend de leitura (`publishing.newsletter.read_backend`, Kit desde o #11225), sem MCP:
+```bash
+npx tsx scripts/fetch-monthly-posts.ts --cycle $CYCLE
+```
+Grava `data/monthly/$CYCLE/raw-posts/post_{id8}_{AAMMDD}.txt` por broadcast do mês (pula os que já existem, resume). Os raw-posts são obrigatórios mesmo quando `collect-monthly.ts` parseia tudo em modo local: é deles que `kit-clicks-enrich.ts` tira a lista de broadcasts e que `monthly-click-sections.ts` (1d) tira as edições do mês. Sem raw-posts, o enrich devolve lista vazia e a 1d aborta, com o parse OK.
 
-Se `posts_found = 0`, abortar.
+Se `posts_found = 0`, abortar. `posts_with_html_fallback` conta só os posts gravados como HTML bruto (conversão sem nenhum destaque) e deve ficar em 0 num ciclo Kit desde o #11817. Valor acima de 0 é sinal de template novo que o conversor não reconhece: ler os warnings do post. Não trava nada enquanto as edições estiverem em `data/editions/` (o parse vem do `02-reviewed.md`, modo local); só a edição sem pasta local depende do raw-post e pode sair com 0 destaques (warning do `collect-monthly.ts`).
+
+**Cliques (antes da 1d):** `npx tsx scripts/kit-clicks-enrich.ts --cycle $CYCLE` (lista derivada dos raw-posts).
 
 **Parse:**
 ```bash
@@ -118,9 +121,9 @@ Após o analista, rodar o ranking determinístico por cliques, que substitui o b
 npx tsx scripts/monthly-click-sections.ts --cycle $CYCLE
 ```
 
-Fontes: per-link click data em `data/beehiiv-cache/posts/*.json` (enriquecido via `beehiiv-clicks-enricher`) ou, pra edições publicadas via Kit (#6186 — a diária trocou pro Kit em 26/08/2026 #6114 e voltou pro Beehiiv no mesmo dia #6491; não presumir qual backend está ativo agora, `platform.config.json` é quem decide), `data/kit-cache/posts/kit_*.json` (enriquecido via `npx tsx scripts/kit-clicks-enrich.ts --cycle $CYCLE` — REST direto, `scripts/lib/kit-client.ts::getBroadcastClicks`; substitui o agent `kit-clicks-enricher`/MCP, aposentado no #7600 depois do downgrade do plano Kit pro free ter derrubado `mcp__kit__*` atrás de um gate de plano pago) — `monthly-click-sections.ts` detecta qual dos dois caches tem o arquivo pra cada edição, sem flag manual, e um mês pode legitimamente misturar os dois backends. Além disso, seções publicadas em `data/editions/{AAMMDD}/02-reviewed.md`.
+Fontes: per-link click data em `data/beehiiv-cache/posts/*.json` (arquivo histórico; o `beehiiv-clicks-enricher` que o enriquecia foi aposentado no #11225) ou, pra edições publicadas via Kit (#6186 — a diária trocou pro Kit em 26/08/2026 #6114 e voltou pro Beehiiv no mesmo dia #6491; não presumir qual backend está ativo agora, `platform.config.json` é quem decide), `data/kit-cache/posts/kit_*.json` (enriquecido via `npx tsx scripts/kit-clicks-enrich.ts --cycle $CYCLE` — REST direto, `scripts/lib/kit-client.ts::getBroadcastClicks`; substitui o agent `kit-clicks-enricher`/MCP, aposentado no #7600 depois do downgrade do plano Kit pro free ter derrubado `mcp__kit__*` atrás de um gate de plano pago) — `monthly-click-sections.ts` detecta qual dos dois caches tem o arquivo pra cada edição, sem flag manual, e um mês pode legitimamente misturar os dois backends. Além disso, seções publicadas em `data/editions/{AAMMDD}/02-reviewed.md`.
 
-**Use Melhor emprestado (#1568):** se as edições diárias do mês forem anteriores à criação da seção Use Melhor (ex.: meses até ~maio/2026), não há tutoriais-fonte no próprio mês. Nesse caso, emprestar a 1ª semana do mês seguinte (que já tem a seção) via `--use-melhor-source AAMMDD:prefix,...` (o `prefix` é o id curto do post no Beehiiv). Garantir que essas edições estejam enriquecidas com clicks antes (rodar `beehiiv-clicks-enricher` nelas). Ex. para o digest de maio (ciclo 2605-06):
+**Use Melhor emprestado (#1568):** se as edições diárias do mês forem anteriores à criação da seção Use Melhor (ex.: meses até ~maio/2026), não há tutoriais-fonte no próprio mês. Nesse caso, emprestar a 1ª semana do mês seguinte (que já tem a seção) via `--use-melhor-source AAMMDD:prefix,...` (o `prefix` é o id curto do post no Beehiiv). Essas edições precisam já ter clicks no cache (o `beehiiv-clicks-enricher` foi aposentado no #11225; edição antiga da Beehiiv sem clicks por link não é mais enriquecida, e o Use Melhor emprestado sai com o que o cache tiver). Ex. para o digest de maio (ciclo 2605-06):
 ```bash
 npx tsx scripts/monthly-click-sections.ts --cycle 2605-06 \
   --use-melhor-source 260601:32c6c918,260602:d7adab86,260603:e8b02883,260604:a2fe05de
@@ -209,19 +212,28 @@ Se falhar: warning, seguir com o arquivo original (não bloqueia).
 
 ### 2d. Clarice
 
-1. Ler `data/monthly/$CYCLE/draft.md`.
-2. Chamar `mcp__clarice__correct_text` passando o texto completo.
-3. Salvar sugestões: `data/monthly/$CYCLE/_internal/02-clarice-suggestions.json`.
-4. Aplicar:
+**Nunca mandar o draft inteiro numa chamada só (#11812):** o cliente MCP corta em 30s e o draft mensal inteiro estoura esse teto (01/11/2026). O draft vai em blocos, todas as seções incluídas (APRESENTAÇÃO, destaques, USE MELHOR, RADAR, rodapé), sem tirar URLs à mão.
+
+1. Dividir em blocos de até 2.500 chars (`CLARICE_MCP_CHUNK_MAX_CHARS`):
 ```bash
-npx tsx scripts/clarice-apply.ts \
-  --text-file data/monthly/$CYCLE/draft.md \
-  --suggestions data/monthly/$CYCLE/_internal/02-clarice-suggestions.json \
+npx tsx scripts/clarice-mcp-chunks.ts split \
+  --in data/monthly/$CYCLE/draft.md \
+  --out-dir data/monthly/$CYCLE/_internal/clarice-chunks
+```
+   O stdout lista os blocos a enviar (`send`), cada um com `file` e `suggestionsFile`.
+2. Para cada bloco, **um de cada vez** (nunca em paralelo, #4952): ler o `file`, chamar `mcp__clarice__correct_text` com esse conteúdo e gravar a resposta (array de `{from, to, ...}`) em `suggestionsFile` via `Write` com `JSON.stringify(sugestoes, null, 2)`. Bloco que estourar o tempo ou der erro: seguir para o próximo sem gravar o arquivo (o merge registra o bloco em `missing_chunks`). Se for repetido, `split --max-chars 1500` divide mais fino.
+3. Juntar e aplicar (apply no próprio bloco, âncora única por bloco; o ruído de quebra de parágrafo e resto de código do #11798 é recusado sozinho):
+```bash
+npx tsx scripts/clarice-mcp-chunks.ts merge \
+  --in data/monthly/$CYCLE/draft.md \
+  --out-dir data/monthly/$CYCLE/_internal/clarice-chunks \
   --out data/monthly/$CYCLE/draft.md \
+  --suggestions-out data/monthly/$CYCLE/_internal/02-clarice-suggestions.json \
   --report data/monthly/$CYCLE/_internal/02-clarice-report.json
 ```
+   Não re-aplicar `02-clarice-suggestions.json` com `clarice-apply.ts` no texto inteiro: âncora única no bloco pode ser ambígua no texto todo. Exit 3 = o `draft.md` mudou depois do split: refazer os passos 1-3.
 
-Se `clarice-apply.ts` falhar: warning, seguir com o arquivo original (não bloqueia).
+Se o MCP falhar em todos os blocos, ou `clarice-mcp-chunks.ts` falhar: warning, seguir com o arquivo original (não bloqueia).
 
 ### Checkpoint Etapa 2 (#5321 — deixou de ser gate interativo)
 
@@ -311,10 +323,10 @@ arquivos já existentes em vez de insistir na geração). Só cai pra
 — ciclo antigo arquivado sem essas imagens, ou edge-case do
 `select-eia-edition.ts`.
 ```bash
-DAILY_EIA_DIR="data/editions/$EAI_EDITION"
+DAILY_EIA_DIR="data/editions/${EAI_EDITION:0:4}/$EAI_EDITION"  # layout nested {AAMM}/{AAMMDD}
 if [ -f "$DAILY_EIA_DIR/01-eia.md" ] && [ -f "$DAILY_EIA_DIR/01-eia-A.jpg" ] && [ -f "$DAILY_EIA_DIR/01-eia-B.jpg" ]; then
   echo "[etapa-3] Reusando É IA? já aprovado da edição diária $EAI_EDITION (evita gerar imagem nova)."
-  cp "$DAILY_EIA_DIR/01-eia.md" "data/monthly/$CYCLE/01-eia.md"
+  npx tsx scripts/lib/mensal/monthly-eia-copy.ts "$DAILY_EIA_DIR/01-eia.md" "data/monthly/$CYCLE/01-eia.md"  # #11790: remove "Resultado da última edição" da diária
   cp "$DAILY_EIA_DIR/01-eia-A.jpg" "data/monthly/$CYCLE/01-eia-A.jpg"
   cp "$DAILY_EIA_DIR/01-eia-B.jpg" "data/monthly/$CYCLE/01-eia-B.jpg"
   mkdir -p "data/monthly/$CYCLE/_internal"
@@ -578,10 +590,11 @@ Fact-check (_internal/04-fact-check.json):
 [se LIVROS_PROMO_PRESENT != "1" — #7862]
 ⚠️ Box LIVROS sem imagem — 04-livros-promo.jpg ausente/não capturado neste ciclo (`scripts/capture-livros-promo.ts`, requer Chrome, roda só no `neo`). O box sai só-texto (título/descrição/link intactos, sem `<img>` quebrado) — nunca bloqueia o envio. Rodar a captura manualmente antes do gate se quiser a imagem neste ciclo.
 
-⚠️  Seções CLARICE — DIVULGAÇÃO e CLARICE — TUTORIAL são PLACEHOLDERS
-    ([Placeholder — inserir aqui...]) — preenchidas manualmente pela Clarice
-    antes do envio real, NÃO pelo pipeline. O preview acima mostra o
-    placeholder literal, não o conteúdo final dessas 2 seções.
+⚠️  Seção CLARICE — TUTORIAL é PLACEHOLDER ([Placeholder — inserir aqui...]):
+    preencher com o próximo tutorial do Doc "Laboratório Clarice" no Drive
+    (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY) — título e passos mudam
+    a cada ciclo — e registrar no Doc qual saiu. O preview acima mostra o
+    placeholder literal. (CLARICE — DIVULGAÇÃO é texto fixo desde #11788.)
 
 Aprovar? sim / editar / retry
 ```
@@ -777,10 +790,10 @@ O fluxo `clarice-build-edition-sends → clarice-split-cells → clarice-schedul
 **Passo obrigatório antes do `clarice-schedule-sends --schedule`**: setar o gabarito do É IA?:
 
 ```bash
-npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition {AAMMDD} [--answer A|B]
+npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition $CYCLE --answer A|B
 ```
 
-Onde `{AAMMDD}` é a data da edição diária selecionada pelo É IA? mensal (ex: `260531`). Se `--answer` for omitido, lê `ai_side` de `data/editions/{AAMMDD}/_internal/01-eia-meta.json`.
+`--edition` é o **ciclo** (o mesmo `$CYCLE`, ex: `2610-11`), nunca a data AAMMDD da edição diária selecionada pelo É IA? mensal: o Worker grava o gabarito da brand clarice sob o ciclo e recusa AAMMDD (#4157), e o `close-poll.ts` recusa antes da rede (#11809). `--answer` é obrigatório com `--brand clarice`: pegue o `ai_side` de `data/editions/{AAMMDD}/_internal/01-eia-meta.json` da edição diária de onde saiu a imagem do É IA? mensal.
 
 Este comando grava `data/monthly/$CYCLE/_internal/.close-poll-clarice.json`. Sem ele, `clarice-schedule-sends --schedule` falhará com:
 

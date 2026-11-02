@@ -26,7 +26,7 @@
  *                    1º dia de cada outro bloco pedido, pro test_email
  *   --schedule       agenda TODAS as campanhas criadas (nas datas/horários do plano)
  *                    REQUER que o gabarito É IA? tenha sido setado antes via:
- *                      npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {AAMMDD} [--answer A|B]
+ *                      npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {cycle} --answer A|B
  *                    Use --skip-eia-guard para pular esta verificação (não recomendado).
  *   --skip-eia-guard pula a verificação de gabarito É IA? no --schedule (ex: após setado manualmente)
  *   --allow-imminent #7047: pula SÓ a checagem de antecedência mínima (2h default,
@@ -45,7 +45,7 @@
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --create
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --send-test
  *   # ANTES do --schedule: setar gabarito É IA? (#2009)
- *   npx tsx scripts/close-poll.ts --brand clarice --cycle 2605-06 --edition {AAMMDD} [--answer A|B]
+ *   npx tsx scripts/close-poll.ts --brand clarice --cycle 2605-06 --edition 2605-06 --answer A|B
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --schedule
  *
  * Uso típico blocos seguintes (após checkpoint do vencedor A/B/C):
@@ -435,8 +435,8 @@ export function checkEiaGuard(
         `\n❌  ERRO: gabarito É IA? não setado para o ciclo ${cycle}.\n` +
         `   O marker esperado não existe: ${eiaMarkerPath}\n\n` +
         `   Execute ANTES de agendar:\n` +
-        `     npx tsx scripts/close-poll.ts --brand clarice --cycle ${cycle} --edition {AAMMDD} [--answer A|B]\n\n` +
-        `   (Onde {AAMMDD} é a data do É IA? selecionado para a edição mensal — ex: 260531)\n\n` +
+        `     npx tsx scripts/close-poll.ts --brand clarice --cycle ${cycle} --edition ${cycle} --answer A|B\n\n` +
+        `   (--edition é o próprio ciclo, nunca AAMMDD — #11809; --answer = ai_side do É IA? do mês)\n\n` +
         `   Se o gabarito já foi setado por outro meio, use --skip-eia-guard para pular.\n`,
     };
   }

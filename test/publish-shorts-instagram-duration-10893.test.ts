@@ -47,7 +47,8 @@ describe("#10893 teto de duração do Reels pela API do Instagram", () => {
     assert.equal(INSTAGRAM_REELS_API_MAX_SECONDS, 40);
     assert.equal(loadInstagramApiMaxSeconds({}, "vjpixel"), 40);
     assert.equal(loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: 90 } } }, "vjpixel"), 90);
-    assert.equal(loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: null } } }, "vjpixel"), null);
+    assert.equal(loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: null } } }, "vjpixel"), 40, "null não vale na rota rupload (#11355)");
+    assert.equal(loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: null } } }, null), null);
     for (const bad of [0, -1, "40", Number.NaN]) {
       assert.throws(() => loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: bad } } }, "vjpixel"), /instagram_api_max_seconds/);
     }
@@ -72,8 +73,9 @@ describe("#10893 teto de duração do Reels pela API do Instagram", () => {
     const g = ig as { caption?: string; detail: string };
     assert.match(g.detail, /113\.9 s/);
     assert.match(g.detail, /--mark instagram=URL/);
-    // #11390: o passo à mão segue a rota do editor (@vjpixel autor, @diar.ia.br colaboradora), não a da API.
-    assert.match(g.detail, /como @vjpixel \(autor\), com a @diar\.ia\.br como colaboradora/);
+    // #11794: o passo à mão tem a mesma autoria da API (@diar.ia.br autora, @vjpixel em collab).
+    assert.match(g.detail, /como @diar\.ia\.br \(autora\), com a @vjpixel em collab/);
+    assert.doesNotMatch(g.detail, /enquanto o collab/);
     assert.doesNotMatch(g.detail, /como a autora/);
     assert.match(g.caption ?? "", /link da bio/);
     // #10933: o post manual também ocupa o horário da conta — reserva o slot na grade.
@@ -94,9 +96,9 @@ describe("#10893 teto de duração do Reels pela API do Instagram", () => {
     assert.ok(p.slots.some((s) => s.destination === "instagram"));
   });
 
-  it("teto desligado no config (null): 113,9 s volta a ir pela API", () => {
+  it("null no config não desliga o teto da @vjpixel (rupload, #11355): 113,9 s segue no passo guiado", () => {
     const p = plan({ videoDurationSeconds: 113.9, config: { publishing: { shorts: { ...shortsCfg(), instagram_api_max_seconds: null } } } });
-    assert.equal(p.items.find((i) => i.destination === "instagram")!.action, "enqueue");
+    assert.equal(p.items.find((i) => i.destination === "instagram")!.action, "guided");
   });
 
   it("duração medida mas ilegível (null): segue pela API com aviso; não medida (ausente): sem aviso", () => {

@@ -275,7 +275,10 @@ export function main(): void {
       // Se merge completou, scorer-chunk já foi consumido — podemos limpar também.
       // Se merge NÃO completou mas scored-chunk existe, scoring pode estar em curso
       // ou parcialmente concluído → preservar para evitar re-scoring desnecessário.
-      if (entry.startsWith("scored-chunk-") && entry.endsWith(".json")) {
+      // #11749: o marcador de conclusão `scored-chunk-*.json.done` segue o
+      // destino do chunk — um marcador órfão de run anterior faria o merge
+      // (`--require-done`) aceitar um chunk novo que o agente ainda grava.
+      if (entry.startsWith("scored-chunk-") && (entry.endsWith(".json") || entry.endsWith(".json.done"))) {
         if (mergeCompleted) {
           // Merge já consumiu os chunks — limpar é seguro.
           rmSync(resolve(absOutDir, entry), { force: true });

@@ -853,15 +853,19 @@ describe("main(): dispatch mockado", () => {
       // O teste passar sem registrar nenhum intercept É a prova de que
       // --images-only nunca chama o Worker.
       //
-      // O caminho normal (sem --manifest-only) imprime narrativa (seleção,
-      // warnings) ANTES do JSON final — diferente do atalho de
-      // --manifest-only, que sai cedo com 1 console.log só. Captura por
-      // CHAMADA (não concatenado numa string só) e pega a ÚLTIMA — é o
-      // console.log(JSON.stringify(...)) do bloco --images-only.
-      const calls: string[] = [];
+      // #11738: stdout é JSON PURO — o caller faz JSON.parse(stdout) sem
+      // fatiar. A narrativa da seleção (modo=..., warnings) vai pro stderr.
+      // Captura o stdout INTEIRO concatenado (não a última chamada): uma
+      // linha de log antes do JSON quebraria o parse, que é o bug da issue.
+      let out = "";
+      let err = "";
       const originalLog = console.log;
+      const originalError = console.error;
       console.log = (...args: unknown[]) => {
-        calls.push(args.map(String).join(" "));
+        out += args.map(String).join(" ") + "\n";
+      };
+      console.error = (...args: unknown[]) => {
+        err += args.map(String).join(" ") + "\n";
       };
       try {
         await main(
@@ -870,9 +874,12 @@ describe("main(): dispatch mockado", () => {
         );
       } finally {
         console.log = originalLog;
+        console.error = originalError;
       }
 
-      const parsed = JSON.parse(calls[calls.length - 1]);
+      assert.match(out.trimStart(), /^\{/, `stdout deveria começar no JSON, veio: ${out.slice(0, 200)}`);
+      const parsed = JSON.parse(out);
+      assert.match(err, /\[publish-weekly-social\] modo=clicked/, "narrativa da seleção deveria ir pro stderr");
       assert.equal(parsed.mode, "clicked");
       assert.equal(parsed.saturday, saturdayStr);
       // D2 (8%) vence D1 (2%) — mesma ordem que o dispatch real usaria.

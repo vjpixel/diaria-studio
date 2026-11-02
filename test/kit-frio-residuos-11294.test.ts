@@ -346,7 +346,6 @@ describe("premissa B: unlink relido (#11294 item 3)", () => {
           kitApiKey: "k",
           listId: 7,
           log: () => {},
-          newsletterBackend: "kit",
         });
       },
     );

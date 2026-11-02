@@ -338,23 +338,6 @@ describe("main() — integração (guard de CLI)", () => {
     }
   });
 
-  it("backend != kit: exitCode 2, nenhuma chamada de rede (mesmo guard do script irmão publish-newsletter-kit.ts)", async () => {
-    const root = mkdtempSync(join(tmpdir(), "kit-schedule-main-"));
-    try {
-      writePlatformConfig(root, "beehiiv");
-      globalThis.fetch = (async () => {
-        throw new Error("não deveria chamar fetch");
-      }) as typeof fetch;
-      process.argv = ["node", "schedule-newsletter-kit.ts", "--edition-dir", root, "--scheduled-at", "2026-08-26T09:00:00.000Z"];
-      process.exitCode = undefined;
-      await main(root);
-      assert.equal(process.exitCode, 2);
-    } finally {
-      process.exitCode = undefined;
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it("draft ausente: exitCode 3, sem chamada de rede (backend kit confirmado, mas nada pra agendar)", async () => {
     const root = mkdtempSync(join(tmpdir(), "kit-schedule-main-"));
     try {

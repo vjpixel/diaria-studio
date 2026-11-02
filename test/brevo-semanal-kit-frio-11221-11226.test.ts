@@ -274,7 +274,6 @@ describe("runEvaluation — kit-sem-abertura suprimido volta pro Kit com frio, N
           kitApiKey: "k",
           listId: 7,
           log: () => {},
-          newsletterBackend: "kit",
           unsubscribeKitSemAberturaDeps: {
             unsubscribe: async () => {
               unsubscribeCalls++;
@@ -314,7 +313,6 @@ describe("runEvaluation — kit-sem-abertura suprimido volta pro Kit com frio, N
           kitApiKey: "k",
           listId: 7,
           log: () => {},
-          newsletterBackend: "kit",
           unsubscribeKitSemAberturaDeps: { unsubscribe: async () => void unsubscribeCalls++, getState: async () => "active" },
           kitFrioFullyOn: true,
           kitFrioTagDeps: { findTagId: async () => 900, tag: async () => {}, listTags: async () => [] },
@@ -404,7 +402,6 @@ describe("runEvaluation — regime semanal (#11226)", () => {
           kitApiKey: "k",
           listId: 7,
           log: () => {},
-          newsletterBackend: "kit",
           semanalDesdeMs: desde,
           nowMs: desde + DAY,
           kitActivateFormId: "9839463",
@@ -453,7 +450,6 @@ describe("runEvaluation — premissa B: frio NÃO plenamente ligado (#11221 revi
           kitApiKey: "k",
           listId: 7,
           log: () => {},
-          newsletterBackend: "kit",
           unsubscribeKitSemAberturaDeps: { unsubscribe: async () => void unsubscribeCalls++, getState: async () => "active" },
           kitFrioTagDeps: { findTagId: async () => 900, tag: async (t, id) => void kitTagOps.push(`tag ${t} ${id}`), listTags: async () => [] },
           kitEnvioBrevoTagDeps: { findTagId: async () => 555, untag: async (t, id) => void kitTagOps.push(`untag ${t} ${id}`), listTags: async () => [] },
@@ -549,7 +545,6 @@ describe("runEvaluation — clique na Brevo: guards da ativação no Kit (#11226
           kitApiKey: "k",
           listId: 7,
           log: (m) => void logs.push(m),
-          newsletterBackend: "kit",
           semanalDesdeMs: desde,
           nowMs: desde + DAY,
           kitActivateFormId: opts.activateFormId,
@@ -1066,7 +1061,7 @@ describe("restore-kit-sem-abertura-frio (#11221)", () => {
       "e@x.com:suprimido_aguardando_frio",
     ]);
   });
-  it("cancelled vai pro painel (a API não reativa); active ganha as tags", () => {
+  it("cancelled por supressão nossa vai pra lista de reativação (passo painel, vínculo ao form de sistema, #11801); active ganha as tags", () => {
     assert.equal(decideKitRestore("cancelled", [], "descadastrado_por_supressao"), "painel");
     assert.equal(decideKitRestore("active", ["envio-brevo"], "in_brevo"), "tags");
     assert.equal(decideKitRestore("active", ["frio"], "suprimido_aguardando_frio"), "ja_ok");

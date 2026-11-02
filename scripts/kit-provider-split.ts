@@ -41,7 +41,7 @@
  *
  * Alternativa ao `--broadcast <id>` cru: resolve o broadcast do canal Kit
  * paralelo da edição via `_internal/kit-diaria-published.json`
- * (`readEditionKitBroadcastId`, escrito por `kit-diaria-stage5-dispatch.ts`
+ * (`readEditionKitBroadcastId`, escrito por `kit-diaria-stage5-dispatch.ts` (removido no #11225)
  * na Etapa 5) e, além de imprimir a tabela, PERSISTE o resultado — mesma
  * disciplina de `data/geo-citations/history.jsonl`
  * (`scripts/lib/geo-citation-monitor.ts`): 1 snapshot dentro da edição
@@ -346,8 +346,8 @@ export function resolveEditionArg(argv: string[]): string | undefined {
 
 /**
  * Shape mínimo de `_internal/kit-diaria-published.json` que este script lê —
- * ver `scripts/lib/kit-diaria-channel.ts::KitDiariaPublished` pro shape
- * completo (escrito por `kit-diaria-stage5-dispatch.ts` na Etapa 5). Só
+ * ver `scripts/lib/kit-diaria-channel.ts::KitDiariaPublished` (removido no #11225) pro shape
+ * completo (escrito por `kit-diaria-stage5-dispatch.ts` (removido no #11225) na Etapa 5). Só
  * `broadcast_id` importa aqui.
  */
 interface KitDiariaPublishedMinimal {
@@ -379,7 +379,7 @@ export function newsletterKitPublishedPath(editionDirPath: string): string {
 
 /**
  * Resolve o broadcast Kit de uma edição — tenta primeiro o canal paralelo
- * (`kit-diaria-published.json`, `kit-diaria-stage5-dispatch.ts`) e, se
+ * (`kit-diaria-published.json`, `kit-diaria-stage5-dispatch.ts` (removido no #11225)) e, se
  * ausente, cai pro backend primário (`newsletter-kit-published.json`,
  * `publish-newsletter-kit.ts` — único caminho desde a migração de #7388 em
  * 04/09/2026, #8318). Lança com mensagem acionável quando NENHUM dos dois
@@ -405,9 +405,8 @@ export function readEditionKitBroadcastId(
   }
   if (raw === undefined) {
     throw new Error(
-      `[kit-provider-split] não encontrado: nem ${candidates[0]} (canal Kit paralelo, ` +
-        `kit-diaria-stage5-dispatch.ts, Etapa 5) nem ${candidates[1]} (backend Kit primário, ` +
-        `publish-newsletter-kit.ts) — a edição ainda não foi despachada por nenhum dos dois canais Kit.`,
+      `[kit-provider-split] não encontrado: nem ${candidates[1]} (publish-newsletter-kit.ts, Etapa 5) ` +
+        `nem ${candidates[0]} (canal Kit paralelo, só edições antigas) — a edição ainda não foi despachada pelo Kit.`,
     );
   }
   let parsed: KitDiariaPublishedMinimal;

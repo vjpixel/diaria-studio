@@ -84,6 +84,26 @@ function readOrchestratorFiles(): Record<string, string> {
   return contents;
 }
 
+/**
+ * Recorta a lista "Regras de apresentação:" do playbook do Stage 4 pela
+ * estrutura, não por uma janela fixa de caracteres (#11752). A seção é o
+ * cabeçalho seguido da lista de bullets contígua: termina na primeira linha
+ * em branco (ou no fim do arquivo). Antes, o teste olhava só os 2000
+ * caracteres depois do cabeçalho, e um bullet novo empurrava
+ * `{social_critic_block}` para fora da janela (#11735 teve de encurtar texto
+ * útil do playbook só para o teste passar).
+ *
+ * Devolve `null` se o cabeçalho não existir.
+ */
+function extractPresentationRulesSection(md: string): string | null {
+  const header = "Regras de apresentação:";
+  const start = md.indexOf(header);
+  if (start === -1) return null;
+  const rest = md.slice(start).replace(/\r\n/g, "\n");
+  const blank = rest.search(/\n[ \t]*\n/);
+  return blank === -1 ? rest : rest.slice(0, blank);
+}
+
 function writeSnapshot(contents: Record<string, string>): void {
   writeFileSync(SNAPSHOT_PATH, serializeSnapshot(ORCHESTRATOR_FILES, buildSnapshot(ORCHESTRATOR_FILES, contents)), "utf8");
 }
@@ -315,7 +335,13 @@ describe("orchestrator-prompt (#634)", () => {
       // #10659 (25/10): +11 linhas — §5b-youtube nova (baixa do Drive o
       // horizontal com "final" no nome e sobe agendado, fail-soft, antes do
       // dispatch social). Passo EXECUTADO. Teto 540→555.
-      "orchestrator-stage-5.md": 555,
+      // #11698 (01/11): +15 linhas — guard de data/ defasado (--step 5),
+      // frescor por sha256 e trava da edição antes da 1ª escrita, renovação
+      // da trava antes do §5c e release com tombstone no §5h. Passos
+      // EXECUTADOS (fail-closed). Teto 555→570. Fixer do review (+7):
+      // renovação da trava no §5f/§5h e aviso de hash nos ramos de correção.
+      // Teto 570→580.
+      "orchestrator-stage-5.md": 580,
       // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
       // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491
       // linhas pós-fix do #4574 (guard de slug ganhou --out + log-event +
@@ -1067,13 +1093,25 @@ describe("#4505 item 3: critic pass social opcional (§4c.6d)", () => {
   });
 
   it("'Regras de apresentação' documenta {social_critic_block} (presente só quando habilitado)", () => {
-    const regrasIdx = stage4.indexOf("Regras de apresentação:");
-    assert.ok(regrasIdx !== -1);
-    const regrasSection = stage4.slice(regrasIdx, regrasIdx + 2000);
+    const regrasSection = extractPresentationRulesSection(stage4);
+    assert.ok(regrasSection !== null, "'Regras de apresentação:' não encontrado no playbook do Stage 4");
     assert.ok(
       regrasSection.includes("{social_critic_block}"),
       "'Regras de apresentação' precisa documentar a regra de {social_critic_block}",
     );
+  });
+
+  it("'Regras de apresentação' é recortada como lista de bullets contígua, não como janela de caracteres (#11752)", () => {
+    const regrasSection = extractPresentationRulesSection(stage4);
+    assert.ok(regrasSection !== null);
+    const lines = regrasSection.split("\n").slice(1);
+    assert.ok(lines.length >= 3, "a lista de regras de apresentação parece vazia ou truncada");
+    for (const line of lines) {
+      assert.ok(
+        /^\s*- /.test(line) || /^\s+\S/.test(line),
+        `linha fora do formato de bullet dentro de 'Regras de apresentação': ${line.slice(0, 80)}`,
+      );
+    }
   });
 
   it("o passo 7 do loop 'ajustar' (§4d.1) menciona re-rodar o critic pass quando habilitado", () => {
@@ -1544,5 +1582,39 @@ describe("#7243: revalidação final do erro intencional em §4e cobre auto_appr
       /Exit 0.*seguir normalmente, em qualquer modo/s.test(bloco),
       "§4e precisa deixar claro que exit 0 (inclui wrong_value ausente, que é warning) segue sem distinção entre modos",
     );
+  });
+});
+
+describe("extractPresentationRulesSection (#11752)", () => {
+  const bullet = (n: number) => `- \`{bloco_${n}}\` = ${"texto descritivo longo da regra. ".repeat(6)}`;
+
+  it("acha {social_critic_block} mesmo bem além de 2000 caracteres do cabeçalho (regressão do #11735)", () => {
+    const filler = Array.from({ length: 20 }, (_, i) => bullet(i)).join("\n");
+    const md = `intro\n\nRegras de apresentação:\n${filler}\n- \`{social_critic_block}\` = stdout do critic.\n\nLogar a resposta:\n`;
+    const section = extractPresentationRulesSection(md);
+    assert.ok(section !== null);
+    assert.ok(
+      section.indexOf("{social_critic_block}") > 2000,
+      "fixture precisa pôr o placeholder além da antiga janela de 2000 caracteres",
+    );
+    assert.ok(section.includes("{social_critic_block}"));
+  });
+
+  it("não vaza para depois da lista: placeholder só numa seção posterior não conta", () => {
+    const md = `Regras de apresentação:\n${bullet(1)}\n${bullet(2)}\n\nLogar a resposta:\n- \`{social_critic_block}\` fora da lista\n`;
+    const section = extractPresentationRulesSection(md);
+    assert.ok(section !== null);
+    assert.ok(!section.includes("{social_critic_block}"));
+    assert.ok(!section.includes("Logar a resposta"));
+  });
+
+  it("tolera CRLF e lista que vai até o fim do arquivo", () => {
+    const md = `Regras de apresentação:\r\n${bullet(1)}\r\n- \`{social_critic_block}\` = x`;
+    const section = extractPresentationRulesSection(md);
+    assert.ok(section !== null && section.includes("{social_critic_block}"));
+  });
+
+  it("devolve null sem o cabeçalho", () => {
+    assert.equal(extractPresentationRulesSection("nada aqui"), null);
   });
 });

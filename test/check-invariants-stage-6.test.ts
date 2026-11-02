@@ -3,12 +3,8 @@
  *
  * Cobertura dedicada do Stage 6 (#1007 Fase 1, `scripts/lib/invariant-checks/stage-6.ts`)
  * — nenhum teste direto existia antes desta PR (`check-invariants-stage.test.ts`
- * cobre stages 0-5). Foco principal: a regra nova `whatsapp-slug-guard-ok`
- * (#4570 fechado com backstop determinístico em #4574) — sem ela, o guard
- * GATE-BLOCKING de slug do bloco WhatsApp dependia 100% de um agente LLM ler
- * e seguir a prosa do orchestrator, sem nenhuma verificação em código de que
- * o guard rodou, rodou corretamente, ou passou (achado convergente
- * pr-test-analyzer + silent-failure-hunter no review consolidado da PR #4574).
+ * cobre stages 0-5). A regra `whatsapp-slug-guard-ok` (#4574) saiu no #11225:
+ * o problema de slug era só da UI da Beehiiv.
  */
 
 import { describe, it, beforeEach } from "node:test";
@@ -21,13 +17,11 @@ import {
   checkStep5Sentinel,
   checkScheduledAt,
   checkEditionReport,
-  checkWhatsappSlugGuard,
   checkStep6Sentinel,
   checkSitePagePublished,
   checkSitePagePrMerged,
   buildKitDraftStaleMessage,
   buildKitDraftRefreshInstructions,
-  readKitDiariaState,
   isBrevoDiariaActiveForEdition,
 } from "../scripts/lib/invariant-checks/stage-6.ts";
 import { getRulesForStage } from "../scripts/lib/invariant-checks/index.ts";
@@ -39,27 +33,19 @@ function makeFixtureEdition(): string {
 }
 
 describe("STAGE_6_RULES registry (#4574)", () => {
-  it("contém a entry whatsapp-slug-guard-ok, stage 6, source_issue #4574", () => {
-    const entry = STAGE_6_RULES.find((r) => r.id === "whatsapp-slug-guard-ok");
-    assert.ok(entry !== undefined, "STAGE_6_RULES deve conter 'whatsapp-slug-guard-ok'");
-    assert.equal(entry!.stage, 6);
-    assert.equal(entry!.source_issue, "#4574");
-  });
-
-  it("getRulesForStage(6) inclui whatsapp-slug-guard-ok junto das demais 5 regras pré-existentes", () => {
+  it("getRulesForStage(6) lista as regras do Stage 6", () => {
     const rules = getRulesForStage(6);
     const ids = rules.map((r) => r.id);
     assert.ok(ids.includes("step-5-sentinel-exists"));
     assert.ok(ids.includes("scheduled-at-present"));
     assert.ok(ids.includes("edition-report-exists"));
-    assert.ok(ids.includes("whatsapp-slug-guard-ok"));
     assert.ok(ids.includes("step-6-sentinel-exists"));
     assert.ok(ids.includes("site-page-published"));
     assert.ok(ids.includes("site-sitemap-no-orphans"));
     assert.ok(ids.includes("sync-code-ran"));
     assert.ok(ids.includes("kit-draft-fresh"));
     assert.ok(ids.includes("site-page-pr-merged"));
-    assert.equal(ids.length, 10, `esperava 10 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
+    assert.equal(ids.length, 9, `esperava 9 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
   });
 
   it("contém a entry site-page-published, stage 6, source_issue #7578 (GATE-BLOCKING desde a decisão do editor de 07/09/2026)", () => {
@@ -67,89 +53,6 @@ describe("STAGE_6_RULES registry (#4574)", () => {
     assert.ok(entry !== undefined, "STAGE_6_RULES deve conter 'site-page-published'");
     assert.equal(entry!.stage, 6);
     assert.equal(entry!.source_issue, "#7578");
-  });
-});
-
-describe("checkWhatsappSlugGuard (#4574)", () => {
-  let fixture: string;
-
-  beforeEach(() => {
-    fixture = makeFixtureEdition();
-  });
-
-  it("falha quando whatsapp-slug-check.json ausente — guard não rodou (silêncio ≠ passou)", () => {
-    const v = checkWhatsappSlugGuard(fixture, "beehiiv");
-    assert.equal(v.length, 1);
-    assert.equal(v[0].rule, "whatsapp-slug-guard-ok");
-    assert.equal(v[0].severity, "error");
-    assert.equal(v[0].source_issue, "#4574");
-    assert.match(v[0].message, /não rodou/);
-    rmSync(fixture, { recursive: true, force: true });
-  });
-
-  it("passa quando whatsapp-slug-check.json existe com ok:true", () => {
-    writeFileSync(
-      join(fixture, "_internal", "whatsapp-slug-check.json"),
-      JSON.stringify({
-        ok: true,
-        expectedSlug: "titulo-do-d1",
-        actualSlug: "titulo-do-d1",
-        checkedAt: new Date().toISOString(),
-      }),
-    );
-    const v = checkWhatsappSlugGuard(fixture, "beehiiv");
-    assert.equal(v.length, 0);
-    rmSync(fixture, { recursive: true, force: true });
-  });
-
-  it("falha quando whatsapp-slug-check.json existe com ok:false (guard rodou e detectou divergência)", () => {
-    writeFileSync(
-      join(fixture, "_internal", "whatsapp-slug-check.json"),
-      JSON.stringify({
-        ok: false,
-        expectedSlug: "hacker-chines-usa-deepseek",
-        actualSlug: "hacker-chin-s-usa-deepseek",
-        checkedAt: new Date().toISOString(),
-      }),
-    );
-    const v = checkWhatsappSlugGuard(fixture, "beehiiv");
-    assert.equal(v.length, 1);
-    assert.equal(v[0].rule, "whatsapp-slug-guard-ok");
-    assert.equal(v[0].severity, "error");
-    assert.match(v[0].message, /hacker-chines-usa-deepseek/);
-    assert.match(v[0].message, /hacker-chin-s-usa-deepseek/);
-    rmSync(fixture, { recursive: true, force: true });
-  });
-
-  it("falha quando o arquivo existe mas não é JSON parseável", () => {
-    writeFileSync(join(fixture, "_internal", "whatsapp-slug-check.json"), "{ not valid json");
-    const v = checkWhatsappSlugGuard(fixture, "beehiiv");
-    assert.equal(v.length, 1);
-    assert.equal(v[0].rule, "whatsapp-slug-guard-parseable");
-    assert.equal(v[0].severity, "error");
-    rmSync(fixture, { recursive: true, force: true });
-  });
-
-  it("falha quando ok está ausente do JSON (shape inesperado — não confundir com true)", () => {
-    writeFileSync(
-      join(fixture, "_internal", "whatsapp-slug-check.json"),
-      JSON.stringify({ expectedSlug: "foo" }),
-    );
-    const v = checkWhatsappSlugGuard(fixture, "beehiiv");
-    assert.equal(v.length, 1);
-    assert.equal(v[0].rule, "whatsapp-slug-guard-ok");
-    rmSync(fixture, { recursive: true, force: true });
-  });
-
-  // #7388 (achado ao vivo, edição 260904): backend "kit" pula esta checagem
-  // inteira — §6d do orchestrator-stage-6.md documenta que o problema de
-  // slug da UI da Beehiiv não tem equivalente no Kit. Sem este skip, o
-  // check bloqueava o Stage 6 de TODA edição desde a migração de backend em
-  // #7388, mesmo com o arquivo nunca devendo existir nesse caminho.
-  it("backend kit: passa mesmo com whatsapp-slug-check.json ausente (checagem não se aplica)", () => {
-    const v = checkWhatsappSlugGuard(fixture, "kit");
-    assert.equal(v.length, 0);
-    rmSync(fixture, { recursive: true, force: true });
   });
 });
 
@@ -189,29 +92,13 @@ describe("demais regras do Stage 6 — cobertura básica (nenhum teste direto ex
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  // #6114 (switchover, 26/08/2026): este caso passava `backend` implícito e
-  // lia `platform.config.json` REAL — verde só enquanto o default do repo
-  // fosse "beehiiv". Virar a chave pro Kit quebrou o teste sem que nada em
-  // `checkScheduledAt` mudasse, que é a definição de teste acoplado à forma do
-  // ambiente (#6222). Agora injeta o backend, como os casos "kit"/"beehiiv
-  // explícito" abaixo já faziam.
-  it("checkScheduledAt passa com scheduled_at presente (backend beehiiv)", () => {
-    writeFileSync(
-      join(fixture, "_internal", "05-published.json"),
-      JSON.stringify({ scheduled_at: "2026-08-05T09:00:00Z" }),
-    );
-    const v = checkScheduledAt(fixture, "beehiiv");
-    assert.equal(v.length, 0);
-    rmSync(fixture, { recursive: true, force: true });
-  });
-
   // #464 (achado do review, PR #6096): antes desta PR, checkScheduledAt só
   // olhava pra 05-published.json — bloqueava severity=error TODA edição
   // com backend "kit" (que nunca escreve esse arquivo), independente do
   // Schedule do Kit ter funcionado ou não. `backendOverride` (2º arg, só
   // pra teste — produção sempre lê platform.config.json de verdade).
   it("backend kit: falha quando newsletter-kit-published.json ausente (não olha mais 05-published.json)", () => {
-    const v = checkScheduledAt(fixture, "kit");
+    const v = checkScheduledAt(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "scheduled-at-present");
     assert.match(v[0].message, /newsletter-kit-published\.json/);
@@ -220,7 +107,7 @@ describe("demais regras do Stage 6 — cobertura básica (nenhum teste direto ex
 
   it("backend kit: falha quando newsletter-kit-published.json não tem scheduled_at nem status=scheduled", () => {
     writeFileSync(join(fixture, "_internal", "newsletter-kit-published.json"), JSON.stringify({ broadcast_id: 42, status: "draft" }));
-    const v = checkScheduledAt(fixture, "kit");
+    const v = checkScheduledAt(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "scheduled-at-present");
     rmSync(fixture, { recursive: true, force: true });
@@ -228,7 +115,7 @@ describe("demais regras do Stage 6 — cobertura básica (nenhum teste direto ex
 
   it("backend kit: falha quando status='published' (status Kit do caminho feliz é 'scheduled', não 'published' como Beehiiv)", () => {
     writeFileSync(join(fixture, "_internal", "newsletter-kit-published.json"), JSON.stringify({ broadcast_id: 42, status: "published" }));
-    const v = checkScheduledAt(fixture, "kit");
+    const v = checkScheduledAt(fixture);
     assert.equal(v.length, 1, "status='published' não é um status Kit válido — só 'scheduled' ou scheduled_at presente");
     rmSync(fixture, { recursive: true, force: true });
   });
@@ -238,25 +125,14 @@ describe("demais regras do Stage 6 — cobertura básica (nenhum teste direto ex
       join(fixture, "_internal", "newsletter-kit-published.json"),
       JSON.stringify({ broadcast_id: 42, scheduled_at: "2026-08-26T09:00:00Z" }),
     );
-    const v = checkScheduledAt(fixture, "kit");
+    const v = checkScheduledAt(fixture);
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });
 
   it("backend kit: passa com status='scheduled' mesmo sem scheduled_at (idempotência do #6096 já cobre o caso real)", () => {
     writeFileSync(join(fixture, "_internal", "newsletter-kit-published.json"), JSON.stringify({ broadcast_id: 42, status: "scheduled" }));
-    const v = checkScheduledAt(fixture, "kit");
-    assert.equal(v.length, 0);
-    rmSync(fixture, { recursive: true, force: true });
-  });
-
-  // #6114: era "comportamento idêntico ao default (sem override)". Depois que
-  // o caso acima passou a injetar "beehiiv", os dois viraram o MESMO teste —
-  // e o que este afirmava (paridade com o default implícito) deixou de ser
-  // verificável sem ler o config real, que é justamente o acoplamento removido.
-  it("backend beehiiv explícito: 05-published.json com scheduled_at basta", () => {
-    writeFileSync(join(fixture, "_internal", "05-published.json"), JSON.stringify({ status: "published" }));
-    const v = checkScheduledAt(fixture, "beehiiv");
+    const v = checkScheduledAt(fixture);
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });
@@ -520,40 +396,6 @@ describe("kit-draft-fresh — correção aponta pro teste pela UI, --send-test s
     const s = buildKitDraftRefreshInstructions("data/editions/2610/261018");
     assert.ok(s.includes("publish-newsletter-kit.ts data/editions/2610/261018 --draft-only-for-ui-test"));
     assert.ok(!s.includes("{EDITION_DIR}"));
-  });
-});
-
-describe("kit-draft-fresh — Kit diária nomeada quando o estado existe (#9445)", () => {
-  const base = { what: "02-reviewed.md", when: "2026-10-02T10:00:00Z", editionDir: "data/editions/261002" };
-
-  it("sem estado da Kit diária → não menciona o canal", () => {
-    for (const brevo of [false, true]) {
-      const msg = buildKitDraftStaleMessage({ ...base, brevoDiariaEnabled: brevo, kitDiaria: null });
-      assert.ok(!msg.includes("kit-diaria-stage5-dispatch.ts"));
-    }
-  });
-
-  it("com estado → comando exato + apagar broadcast e estado (re-run sozinho é no-op)", () => {
-    for (const brevo of [false, true]) {
-      const msg = buildKitDraftStaleMessage({ ...base, brevoDiariaEnabled: brevo, kitDiaria: { broadcastId: 777 } });
-      assert.ok(msg.includes("`npx tsx scripts/kit-diaria-stage5-dispatch.ts data/editions/261002`"));
-      assert.ok(!msg.includes("kit-diaria-stage5-dispatch.ts data/editions/261002 --send-test"), "--send-test não grava estado — nunca é o comando de recriação");
-      assert.ok(msg.includes("data/editions/261002/_internal/kit-diaria-published.json"));
-      assert.match(msg, /broadcast 777/);
-      assert.match(msg, /Kit diária/);
-      assert.ok(msg.includes("publish-newsletter-kit.ts"), "Kit principal continua nomeado");
-    }
-  });
-
-  it("readKitDiariaState lê o broadcast_id do arquivo da edição", () => {
-    const dir = mkdtempSync(join(tmpdir(), "kd-9445-"));
-    assert.equal(readKitDiariaState(dir), null);
-    mkdirSync(join(dir, "_internal"), { recursive: true });
-    writeFileSync(join(dir, "_internal", "kit-diaria-published.json"), JSON.stringify({ broadcast_id: 42 }));
-    assert.deepEqual(readKitDiariaState(dir), { broadcastId: 42 });
-    writeFileSync(join(dir, "_internal", "kit-diaria-published.json"), "{quebrado");
-    assert.deepEqual(readKitDiariaState(dir), { broadcastId: null });
-    rmSync(dir, { recursive: true, force: true });
   });
 });
 

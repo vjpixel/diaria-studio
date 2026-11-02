@@ -80,8 +80,8 @@ export function shortInstagramVideoFileName(aammdd: string): string {
  * #11265: quem publica o Reels do Instagram com horário futuro.
  *   - `timer-300` (default, decisão do editor 27/10/2026): o timer do 300
  *     (`Diaria-Shorts-Instagram`) roda `publish-shorts.ts --only instagram
- *     --publish --instagram-timer` no horário do vertical e sobe pelo upload
- *     resumível da Graph API, sem URL pública. A rodada do `/diaria-shorts`
+ *     --publish --instagram-timer` no horário do vertical; na @diar.ia.br o
+ *     vídeo vai ao R2 e o container sai por `video_url` (#11355). A rodada do `/diaria-shorts`
  *     devolve `skip_delegated`, como o `linkedin_profile` (#10982).
  *   - `worker-r2` (#10823, opção antiga): sobe o vertical pro R2 e põe o
  *     Reels na fila do Worker `diaria-linkedin-cron`. Exige os 5 secrets do
@@ -582,7 +582,8 @@ export function loadShortScheduleConfig(config: unknown): ShortScheduleConfig {
 export interface ShortTime {
   /** HH:MM em BRT, no dia da edição. */
   hhmm: string;
-  source: "rotation" | "default";
+  /** `explicit` (#11795): corte avulso com `--at`, fora do teste do #10831. */
+  source: "rotation" | "default" | "explicit";
   /** Explicação curta pra premissa do plano. */
   reason: string;
 }
@@ -616,7 +617,8 @@ export interface ShortSlot {
   hhmm: string;
   /** `test-schedule` = horário do teste do #10831 mantido; o resto vem do planner. */
   /** `timer-300` (#11265): Instagram pelo timer do 300, sempre no horário do vertical, fora da grade. */
-  rule: "test-schedule" | "timer-300" | SlotRule;
+  /** `explicit` (#11795): horário do corte avulso (`--at`), mantido em todos os destinos como o do teste. */
+  rule: "test-schedule" | "timer-300" | "explicit" | SlotRule;
   premise: string;
   warning?: string;
 }
@@ -733,7 +735,10 @@ export function planShortSlots(input: {
     .filter((x): x is { dest: ShortDestination; account: string; also: string[] } => x.account !== null);
   const withAlso = (also: string[]) => (also.length ? { alsoAccounts: also } : {});
 
-  if (input.time.source === "rotation") {
+  if (input.time.source === "rotation" || input.time.source === "explicit") {
+    // #11795: o horário explícito do corte avulso é mantido como o do teste (o
+    // editor escolheu), mas nunca leva o rótulo nem a premissa do teste.
+    const explicit = input.time.source === "explicit";
     const t = Date.parse(input.timeAt);
     return api.map(({ dest, account, also }) => {
       const mine = new Set([account, ...also]);
@@ -746,13 +751,15 @@ export function planShortSlots(input: {
         ...withAlso(also),
         at: new Date(t).toISOString(),
         hhmm: input.time.hhmm,
-        rule: "test-schedule",
-        premise: `teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)`,
+        rule: explicit ? "explicit" : "test-schedule",
+        premise: explicit
+          ? "horário explícito do corte avulso (--at, #11795) tem precedência sobre a grade (#10819)"
+          : `teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)`,
       };
       if (close.length) {
         slot.warning =
-          `${dest.id}: o horário do teste (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
-          `(${[...new Set(close)].join(", ")} BRT) — mantido por causa do teste; mova à mão se não quiser colado`;
+          `${dest.id}: o horário ${explicit ? "do corte" : "do teste"} (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
+          `(${[...new Set(close)].join(", ")} BRT) — mantido ${explicit ? "porque o horário do corte é explícito" : "por causa do teste"}; mova à mão se não quiser colado`;
       }
       return slot;
     });
@@ -864,23 +871,23 @@ export type WorkerInstagramAccount = "diaria" | "vjpixel";
 export const INSTAGRAM_ENV_ACCOUNT_KEY: WorkerInstagramAccount = "diaria";
 
 /**
- * #11390: rota do Reels postado à mão (Passo B3b do `/diaria-publica-video`,
- * Chrome ou app), a que o editor usa: @vjpixel é o AUTOR e a @diar.ia.br entra
- * como colaboradora. É o inverso da rota da API (autora @diar.ia.br com a
- * @vjpixel em collab, #11223, `instagram_author_page`/`instagram_collaborators`).
- * Enquanto o convite de collab está pendente, o post só aparece no perfil do
- * autor, então o `--confirm-instagram` procura também nele (`authorPage` = slug
- * de `publishing.social.facebook.pages` cuja conta vinculada é a @vjpixel).
+ * #11390/#11794: rota do Reels postado à mão (Passo B3b do `/diaria-publica-video`,
+ * Chrome ou app). Decisão do editor (02/11/2026, #11794): a @diar.ia.br é a
+ * AUTORA e a @vjpixel entra em collab, igual à rota da API (#11223). `authorPage`
+ * = slug de `publishing.social.facebook.pages` da conta autora; com
+ * `instagram_author_page: null` (a conta do env) ela é a própria conta da API
+ * (`instagramAccountKey`), e o post à mão aparece nela depois do processamento
+ * (30 a 60 s depois do Share).
  */
 export const INSTAGRAM_CHROME_ROUTE = {
-  authorUsername: "vjpixel",
-  authorPage: "vjpixel",
-  collaboratorUsername: "diar.ia.br",
+  authorUsername: "diar.ia.br",
+  authorPage: INSTAGRAM_ENV_ACCOUNT_KEY,
+  collaboratorUsername: "vjpixel",
 } as const;
 
-/** #11390: a rota do B3b em texto, pros avisos e alarmes (nunca "como a autora"). */
+/** #11390/#11794: a rota do B3b em texto, pros avisos e alarmes. */
 export function instagramChromeRouteText(): string {
-  return `como @${INSTAGRAM_CHROME_ROUTE.authorUsername} (autor), com a @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} como colaboradora`;
+  return `como @${INSTAGRAM_CHROME_ROUTE.authorUsername} (autora), com a @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} em collab`;
 }
 
 /**
@@ -900,6 +907,20 @@ export function instagramAccountKey(authorPage: string | null): InstagramAccount
   return authorPage ?? INSTAGRAM_ENV_ACCOUNT_KEY;
 }
 
+/** #11355: como o vídeo do Reels chega à Meta. */
+export type InstagramReelUploadRoute = "video_url" | "rupload";
+
+/**
+ * Pure (#11355): rota do Reels pela autora. Na @diar.ia.br é `video_url`: o
+ * rupload processa de forma síncrona e a Meta encerra a requisição em ~32,5 s
+ * (23 casos em 01/11/2026), enquanto a `video_url` deu 6/6 FINISHED de 45 a 75 s.
+ * A @vjpixel, sem medição nova na `video_url` (2207076 com 113,9 s, #10893),
+ * segue no rupload.
+ */
+export function instagramReelUploadRoute(authorPage: string | null): InstagramReelUploadRoute {
+  return instagramAccountKey(authorPage) === INSTAGRAM_ENV_ACCOUNT_KEY ? "video_url" : "rupload";
+}
+
 function validMaxSeconds(v: unknown, field: string): number | null {
   if (v === null) return null;
   if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
@@ -911,16 +932,19 @@ function validMaxSeconds(v: unknown, field: string): number | null {
 /**
  * Teto de duração do Reels pela API para a conta que publica (#10916). O teto
  * é POR CONTA: a @vjpixel aceita 40 s e recusa 42 s (#10893, 22/10/2026). Na
- * @diar.ia.br as medições divergem — sintéticos de até 55 s passaram em 23/10
- * (#10916), mas um sintético de 40 s (22/10) e o vertical REAL de 49,9 s (27/10)
- * foram recusados —, então o config usa 30 s, o maior valor sem recusa
- * registrada (#11281). Os valores vivem no config, não aqui. Ordem:
+ * @diar.ia.br o config usa `null`, sem teto: o limite medido era o tempo do
+ * rupload, e a conta publica por `video_url` (#11355,
+ * `instagramReelUploadRoute`). Os valores vivem no config, não aqui. Ordem:
  *   1. `publishing.shorts.instagram_api_max_seconds_by_account[chave]`, com a
  *      chave de `instagramAccountKey(authorPage)`;
  *   2. `publishing.shorts.instagram_api_max_seconds` (legado, vale pra
  *      qualquer conta);
  *   3. `INSTAGRAM_REELS_API_MAX_SECONDS` (40 s).
- * Em 1 e 2, `null` desliga o teto (a API decide). Valor inválido LANÇA, em
+ * Em 1 e 2, `null` desliga o teto (a API decide), mas só na conta da rota
+ * `video_url`. Na rota `rupload` o limite existe de qualquer forma (a Meta
+ * encerra a requisição, #11355): lá `null` vale o teto padrão, com premissa no
+ * log (`nullIgnored`), e o vídeo longo vai pro passo guiado em vez de falhar.
+ * Valor inválido LANÇA, em
  * QUALQUER entrada do mapa (não só na da conta ativa): um teto quebrado
  * mandaria o Reels pro rupload que já sabemos que falha, ou tiraria da API um
  * vídeo que caberia — e um typo na conta inativa não pode esperar a troca de
@@ -937,9 +961,19 @@ export interface InstagramApiMaxSecondsResolution {
   source: "by_account" | "legacy" | "default";
   /** O mapa por conta existe (mesmo que sem esta conta). */
   hasMap: boolean;
+  /** O config pediu `null` numa conta da rota `rupload`: vale o teto padrão (#11355). */
+  nullIgnored?: true;
 }
 
 export function resolveInstagramApiMaxSeconds(config: unknown, authorPage: string | null): InstagramApiMaxSecondsResolution {
+  const res = resolveConfiguredInstagramMaxSeconds(config, authorPage);
+  if (res.maxSeconds === null && instagramReelUploadRoute(authorPage) === "rupload") {
+    return { ...res, maxSeconds: INSTAGRAM_REELS_API_MAX_SECONDS, nullIgnored: true };
+  }
+  return res;
+}
+
+function resolveConfiguredInstagramMaxSeconds(config: unknown, authorPage: string | null): InstagramApiMaxSecondsResolution {
   const key = instagramAccountKey(authorPage);
   const shorts = (config as any)?.publishing?.shorts;
   if (!shorts || typeof shorts !== "object") return { maxSeconds: INSTAGRAM_REELS_API_MAX_SECONDS, key, source: "default", hasMap: false };
@@ -966,6 +1000,9 @@ export function resolveInstagramApiMaxSeconds(config: unknown, authorPage: strin
  * aparecer no log em vez de passar calado. null = nada a declarar.
  */
 export function instagramApiMaxSecondsPremise(r: InstagramApiMaxSecondsResolution): string | null {
+  if (r.nullIgnored) {
+    return `teto do Reels pela API: ${r.maxSeconds} s na conta "${r.key}" — o config pede null (sem teto), que só vale na rota video_url, e esta conta sobe pelo rupload (#11355)`;
+  }
   if (!r.hasMap || r.source === "by_account") return null;
   const value = r.maxSeconds === null ? "sem teto" : `${r.maxSeconds} s`;
   const from =

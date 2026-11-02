@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkKitBackend, readState, normalizeChosenSubject } from "../scripts/publish-annual-kit.ts";
+import { readState, normalizeChosenSubject } from "../scripts/publish-annual-kit.ts";
 import { tipoFromSlug } from "../scripts/lib/anual/annual-window.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,25 +40,6 @@ describe("assunto sem prefixo numérico (#7587 item 6)", () => {
   it("string vazia continua vazia (o caller decide o que fazer com assunto vazio)", () => {
     assert.equal(normalizeChosenSubject(""), "");
     assert.equal(normalizeChosenSubject("   \n"), "");
-  });
-});
-
-describe("guard de backend (#5608)", () => {
-  it("aceita apenas backend kit", () => {
-    assert.equal(checkKitBackend({ publishing: { newsletter: { backend: "kit" } } }).ok, true);
-  });
-
-  it("recusa qualquer outro backend, dizendo qual encontrou", () => {
-    const r = checkKitBackend({ publishing: { newsletter: { backend: "beehiiv" } } });
-    assert.equal(r.ok, false);
-    assert.ok(r.reason?.includes("beehiiv"));
-  });
-
-  it("REGRESSÃO #11225: config sem a chave conta como \"kit\" (Beehiiv é só arquivo histórico)", () => {
-    // Até o #11225 era recusa. O default do backend virou "kit" em todo o
-    // repo (`parseNewsletterBackend`); só o literal "beehiiv" recusa aqui.
-    assert.equal(checkKitBackend({}).ok, true);
-    assert.equal(checkKitBackend({ publishing: {} }).ok, true);
   });
 });
 

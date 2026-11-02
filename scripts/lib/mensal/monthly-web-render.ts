@@ -61,6 +61,7 @@ import {
   type MonthlyUtmProfile,
 } from "./monthly-render.ts";
 import { slugifySecao } from "../shared/utm-registry.ts";
+import { parseSocialInviteIcons, renderSocialInviteIconsHtml } from "../shared/encerramento-snippet.ts";
 
 /** Insumos do render web — os mesmos que `draftToEmail` recebe, por nome. */
 export interface MonthlyWebRenderInput {
@@ -237,7 +238,19 @@ function renderEncerramentoWeb(body: string): string {
     );
     parts.push(`<p class="pills">${pills.join("")}</p>`);
   }
-  if (last) parts.push(`<div class="panel"><div class="panel-body"><p>${inline(last)}</p></div></div>`);
+  if (last) {
+    // Mesmo convite do e-mail (#11483): "Siga a diar.ia.br:" + ícones, centralizado.
+    const icons = parseSocialInviteIcons(last);
+    parts.push(
+      icons
+        ? `<div class="panel"><div class="panel-body" style="text-align:center;"><p>${inline(icons.lead)}</p>${renderSocialInviteIconsHtml(icons.links, {
+            textColor: "inherit",
+            fontFamily: "inherit",
+            hrefFor: (_label, url) => normalizeKnownUrl(url),
+          })}</div></div>`
+        : `<div class="panel"><div class="panel-body"><p>${inline(last)}</p></div></div>`,
+    );
+  }
   parts.push("</section>");
   return parts.join("\n");
 }

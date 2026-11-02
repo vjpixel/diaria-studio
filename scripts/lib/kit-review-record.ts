@@ -2,7 +2,7 @@
  * kit-review-record.ts (#9594)
  *
  * Registro por edição do resultado do loop `review-test-email` (§5f do Stage 5)
- * quando `publishing.newsletter.backend === "kit"`. O backend Beehiiv grava
+ * (o envio é só Kit desde o #11225). O backend Beehiiv, removido, gravava
  * `review_*` dentro de `_internal/05-published.json`; o Kit não tem esse
  * arquivo (schema `KitNewsletterPublished` não carrega `review_*`), e até o
  * #9594 o resultado só ia pro `data/run-log.jsonl` — sem nada por edição que

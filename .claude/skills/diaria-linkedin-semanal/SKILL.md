@@ -154,15 +154,14 @@ O **ciclo** (`{YY}w{WW}`, ex: `26w31`) é derivado da semana de CONTEÚDO
     daqui que vem o clique que conta hoje.** O envio migrou pro Kit em
     04/09/2026 (#7388/#7386) e a Beehiiv ficou com 0 assinantes ativos.
   - `data/beehiiv-cache/posts/*.json` (`scripts/beehiiv-sync.ts`) — arquivo
-    histórico, e a única origem que o Passo 1 abaixo consegue enriquecer.
+    histórico. Não é mais enriquecido: o `beehiiv-clicks-enricher` foi
+    aposentado no #11225.
 
-  **A seleção por clique (Passo 2) lê os DOIS unificados; o manifest de
-  enriquecimento do Passo 1 é Beehiiv-only de propósito** — "precisa de
-  enriquecimento via MCP `list_post_clicks`" é um conceito que só existe do
-  lado Beehiiv (o Kit é REST comum, `kit-sync.ts` já traz cliques e
-  aberturas junto). Não confundir os dois caminhos: um manifest vazio no
-  Passo 1 **não** significa "sem dado de clique" — significa que não há nada
-  Beehiiv a enriquecer.
+  **A seleção por clique (Passo 2) lê os DOIS unificados.** O manifest do
+  `--manifest-only` (passo 1b) é Beehiiv-only e hoje só diagnóstico: um
+  manifest vazio **não** significa "sem dado de clique" (o Kit é REST comum,
+  `kit-sync.ts` já traz cliques e aberturas junto), e um não-vazio aponta
+  post antigo da Beehiiv que não será mais enriquecido.
 
   Quando a mesma data tem post nas duas origens (janela de rampa,
   ~260817–260903), **o Kit vence** e o script avisa que o sinal do
@@ -192,35 +191,14 @@ seleção sairia com **0 cliques pra semana inteira, em silêncio** — o
 manifest do passo 1b NÃO cobre isso (é Beehiiv-only, ver abaixo). Foi
 exatamente o que aconteceu em 08/09/2026 (#7629).
 
-**1b. Checar o que falta enriquecer do lado Beehiiv:**
-
-```bash
-npx tsx scripts/select-linkedin-weekly.ts --publish-monday {AAMMDD} --manifest-only
-```
-
-Imprime `{cycle, contentWindow, editionsFound, posts_needing_clicks}`.
-**Por que este passo existe:** o gate de estabilização de CTR do pipeline
-diário (`MIN_AGE_DAYS_FOR_CLICKS = 7`, `scripts/lib/shared/ctr-config.ts`)
-NUNCA enriquece posts com menos de 7 dias — e os posts desta janela têm
-entre 2 e 6 dias no momento em que esta skill roda (domingo, semana que
-acabou de terminar). Sem este passo explícito, a seleção rodaria com
-clicks zerados pra toda a semana.
-
-Se `posts_needing_clicks` for não-vazio:
-
-```
-Agent(subagent_type="beehiiv-clicks-enricher", prompt=<manifest items uma por linha>)
-```
-
-Mesmo agent reusado do Stage 0 diário (0h.2) — cada item do prompt no
-formato `post_id=<id> title=<title>`, um por linha. **Não reinventar** um
-enricher próprio — MCP `list_post_clicks` só roda de subagent/top-level
-com a tool declarada, nunca de script TS standalone (ver docstring de
-`scripts/lib/weekly-linkedin-clicks.ts`).
-
-Se `posts_needing_clicks` já vier vazio (todos os posts da semana já
-enriquecidos — ex: alguém já rodou o Stage 0 de uma edição posterior que
-puxou esses posts pro gate normal), pule direto pro Passo 2.
+**1b. Lado Beehiiv: sem enrichment desde o #11225.** O agent
+`beehiiv-clicks-enricher` foi aposentado (a Beehiiv é só arquivo histórico e
+não publica edição nova; a semana inteira sai pelo Kit, coberto pelo 1a).
+`select-linkedin-weekly.ts --publish-monday {AAMMDD} --manifest-only` segue
+disponível como diagnóstico: `posts_needing_clicks` não-vazio só acontece se
+a janela pegar uma edição antiga publicada pela Beehiiv. Nesse caso, seguir
+com os cliques que já estão no cache e registrar o aviso no resumo, sem
+tentar enriquecer.
 
 ## Passo 2 — Rodar a seleção de verdade
 
@@ -300,6 +278,21 @@ Outros destaques da semana: {N} edições na seleção (o render tira o que já 
 
 Aprovar seleção? sim / trocar {N} por outro candidato / abortar
 ```
+
+**Trocar o Use Melhor (#11777).** Se o editor pedir outro Use Melhor, re-rode
+a seleção com a URL do candidato escolhido (precisa estar entre os itens
+`use_melhor` da janela; fora deles é erro explícito, exit 2, igual ao
+`--picks`):
+
+```bash
+npx tsx scripts/select-linkedin-weekly.ts --publish-monday {AAMMDD} \
+  --use-melhor-url {url}
+```
+
+A escolha fica gravada em `useMelhorOverride` no `ln-selection.json` e é
+reaplicada em toda re-rodada sem a flag (inclusive a do `--picks`). Nunca
+edite o `ln-selection.json` à mão para isso. Para voltar ao automático (maior
+taxa), re-rode com `--use-melhor-auto`.
 
 **Abertura e fecho têm TEXTO PADRÃO fixo, sem pergunta (#8025, decisão do
 editor 12/09/2026).** Antes deste ponto a skill pedia ao editor 1 parágrafo
@@ -434,7 +427,7 @@ mcp__clarice__correct_text(<texto humanizado>)
 ```
 
 Aplique **todas** as sugestões da Clarice, incondicionalmente (texto curto
-— não precisa de `clarice-apply.ts`) — nunca apresente as sugestões como
+— não precisa de `clarice-apply.ts`. Antes de aplicar, salvar as sugestões em `{S}.json` (array `[{from,to,...}]`), rodar `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` e aplicar só o filtrado (ruído do MCP, #11798; exit ≠ 0 = não aplicar, avisar o editor). Nunca apresente as sugestões como
 menu de escolha ao editor, relate o que mudou depois de aplicar, não
 negocie antes (#4514). **Única exceção:** sugestão que corrompa
 identificador técnico ou nome de marca (ex: `diar.ia` → `diária` quebraria
@@ -719,7 +712,7 @@ texto do post de feed é redação nova a cada ciclo. Antes de entregá-lo:
 1. `Skill("humanizador", ...)` no processo completo de 9 passos (mesma
    chamada do Passo 5);
 2. `mcp__clarice__correct_text` sobre o resultado, aplicando **todas** as
-   sugestões (mesma regra do Passo 5, #4514; exceção só pra marca ou
+   sugestões legítimas (filtradas por `clarice-filter.ts`, #11798; mesma regra do Passo 5, #4514; exceção só pra marca ou
    identificador técnico, sinalizada ao editor);
 3. conferir que o texto final tem **zero travessões** (nem `—` nem `–`).
 

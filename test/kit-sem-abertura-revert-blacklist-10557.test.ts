@@ -100,7 +100,6 @@ async function evaluate(opts: { putStatus?: number; stillTagged?: boolean }) {
       kitApiKey: "k",
       listId: 7,
       log: () => {},
-      newsletterBackend: "kit",
       appendKitSemAberturaLog: (line) => logLines.push(line),
       unsubscribeKitSemAberturaDeps: {
         unsubscribe: async (id: number) => {

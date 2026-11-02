@@ -1,14 +1,14 @@
 /**
  * apoio-email-heuristics.ts (#4490 causa 3)
  *
- * `diffApoioTags` (`scripts/sync-apoio-nivel-beehiiv.ts`) casa um apoiador da
- * apoia.se contra uma subscription Beehiiv por E-MAIL EXATO. Medido ao vivo
+ * `diffApoioTags` (`scripts/lib/apoio-nivel-sync.ts`) casa um apoiador da
+ * apoia.se contra uma assinatura no Kit por E-MAIL EXATO. Medido ao vivo
  * em 260802: 5 dos 21 contatos usam um e-mail diferente em cada sistema —
- * `diffApoioTags` os relatava como "sem nenhuma subscription Beehiiv casada
+ * `diffApoioTags` os relatava como "sem nenhuma assinatura no Kit casada
  * (não é erro)", uma leitura que soa conclusiva ("não assina a newsletter")
  * mas era falsa pra 4 deles:
  *
- *   | Apoiador | apoia.se                        | Beehiiv                    |
+ *   | Apoiador | apoia.se                        | assinatura                 |
  *   |----------|----------------------------------|-----------------------------|
  *   | MURILO   | murilo.sarno@online.uscs.edu.br  | murilosarno@gmail.com       |
  *   | Vanessa  | creek.soup.8q@icloud.com (alias) | vanessaventuracontato@gmail.com |
@@ -26,12 +26,12 @@
  *
  *   (a) local-part normalizado (sem pontuação/case) idêntico — cobre Gmail
  *       dot-insensitivity e variação de maiúsculas (ex: MURILO).
- *   (b) nome do contato aparece no local-part do e-mail Beehiiv, ou
+ *   (b) nome do contato aparece no local-part do e-mail assinante, ou
  *       vice-versa — cobre alias que preserva o primeiro nome (ex: Vanessa).
- *   (c) domínio do e-mail Beehiiv não é um provedor público comum E é
+ *   (c) domínio do e-mail assinante não é um provedor público comum E é
  *       textualmente parecido (Levenshtein) com o nome do contato — cobre
  *       domínio próprio (ex: Hugo, hugopenna.com).
- *   (d) local-part do e-mail Beehiiv é textualmente parecido (Levenshtein,
+ *   (d) local-part do e-mail assinante é textualmente parecido (Levenshtein,
  *       distância pequena relativa ao tamanho) com QUALQUER e-mail já
  *       conhecido do contato — cobre typo/variação de grafia (ex: Fabiana,
  *       fbartholo vs fabartholo).
@@ -155,9 +155,9 @@ function isCloseMatch(a: string, b: string): boolean {
 
 /**
  * Pure: gera candidatos heurísticos de e-mail pra um apoiador que NÃO casou
- * por e-mail exato contra nenhuma subscription Beehiiv (`current`). NUNCA
+ * por e-mail exato contra nenhuma assinatura no Kit (`current`). NUNCA
  * decide sozinho — só sugere, com o motivo da suspeita (`reason`), pra
- * confirmação manual do editor. Um mesmo assinante Beehiiv nunca aparece 2x
+ * confirmação manual do editor. Um mesmo assinante nunca aparece 2x
  * na lista (a 1ª heurística que casar decide o motivo).
  */
 export function findEmailMatchCandidates(
@@ -192,7 +192,7 @@ export function findEmailMatchCandidates(
         subscriptionId: sub.subscriptionId,
         email: sub.email,
         reason: "name-in-local-part",
-        detail: "nome do contato aparece no local-part do e-mail Beehiiv",
+        detail: "nome do contato aparece no local-part do e-mail assinante",
       });
       continue;
     }
@@ -207,7 +207,7 @@ export function findEmailMatchCandidates(
           subscriptionId: sub.subscriptionId,
           email: sub.email,
           reason: "own-domain",
-          detail: "domínio do e-mail Beehiiv parece pessoal e é similar ao nome do contato",
+          detail: "domínio do e-mail assinante parece pessoal e é similar ao nome do contato",
         });
         continue;
       }

@@ -9,8 +9,8 @@
  * Cobre, ponto a ponto, o que o corpo da issue pede:
  *   - a comparação usa audiência de ENVIO (não presença na base) nas 3
  *     plataformas;
- *   - a folga constante da Beehiiv (~3 abaixo do total ativo, medida em
- *     485/488, 463/466, 415/418, 314/317) não dispara alarme;
+ *   - (a folga constante da Beehiiv, `checkBeehiivDeliveryGap`, saiu no
+ *     #11775: a Beehiiv não envia desde o #11225);
  *   - `globalStats` zerado por falta do parâmetro `?statistics=globalStats`
  *     é DETECTADO e tratado como "não medido", nunca confundido com "zero
  *     enviado real".
@@ -23,18 +23,14 @@ import {
   maskSendAudiencesResultForJson,
   findOrphans,
   maskOrphansForJson,
-  checkBeehiivDeliveryGap,
-  BEEHIIV_DELIVERY_GAP_TOLERANCE_ABS,
   looksLikeMissingGlobalStatsParam,
   resolveBrevoCampaignRecipients,
   type EmailSource,
 } from "../scripts/lib/beehiiv-kit-reconcile.ts";
 import {
-  beehiivSendAudience,
   buildDivergenceFindings,
   decideOutcome,
   resolveGuardExitCode,
-  shouldUseAllActiveAsKitAudience,
 } from "../scripts/reconcile-send-audiences.ts";
 import { EDITOR_SEED_EMAILS } from "../scripts/lib/editor-copy.ts";
 
@@ -120,6 +116,18 @@ describe("findOrphans (#7385) — ativo em alguma plataforma, fora de toda audi�
     assert.equal(orphans.length, 0);
   });
 
+  it("#11225: ativo só na Beehiiv, que não envia mais, é órfão", () => {
+    const active: EmailSource[] = [
+      { name: "kit", emails: ["k@x.com"] },
+      { name: "beehiiv", emails: ["so-beehiiv@x.com"] },
+    ];
+    const sendAudience: EmailSource[] = [
+      { name: "kit", emails: ["k@x.com"] },
+      { name: "brevo", emails: [] },
+    ];
+    assert.deepEqual(findOrphans(active, sendAudience), [{ email: "so-beehiiv@x.com", activeIn: ["beehiiv"] }]);
+  });
+
   it("nenhum ativo em nenhuma plataforma — nenhum órfão (não confundir ausente com órfão)", () => {
     const orphans = findOrphans([{ name: "kit", emails: [] }], [{ name: "kit", emails: [] }]);
     assert.equal(orphans.length, 0);
@@ -130,51 +138,6 @@ describe("findOrphans (#7385) — ativo em alguma plataforma, fora de toda audi�
     const masked = maskOrphansForJson(orphans);
     assert.equal(masked[0].email, "j***@example.com");
     assert.deepEqual(masked[0].activeIn, ["kit"]);
-  });
-});
-
-describe("checkBeehiivDeliveryGap (#7385) — armadilha de medição #2: folga constante NÃO alarma", () => {
-  const measured: Array<[number, number]> = [
-    [488, 485],
-    [466, 463],
-    [418, 415],
-    [317, 314],
-  ];
-  for (const [active, recipients] of measured) {
-    it(`gap medido real ${active}/${recipients} — ok, não alarma`, () => {
-      const check = checkBeehiivDeliveryGap(active, recipients);
-      assert.equal(check.ok, true);
-      assert.equal(check.gap, active - recipients);
-    });
-  }
-
-  it("gap zero (entrega perfeita) — ok", () => {
-    const check = checkBeehiivDeliveryGap(100, 100);
-    assert.equal(check.ok, true);
-    assert.equal(check.gap, 0);
-  });
-
-  it("gap muito acima do tolerado — não-ok, investigar", () => {
-    const check = checkBeehiivDeliveryGap(500, 400); // gap=100, bem acima da tolerância
-    assert.equal(check.ok, false);
-    assert.match(check.reason ?? "", /excede a tolerância/);
-  });
-
-  it("recipients > active — inesperado, não-ok", () => {
-    const check = checkBeehiivDeliveryGap(100, 105);
-    assert.equal(check.ok, false);
-    assert.match(check.reason ?? "", /inesperado/);
-  });
-
-  it("entrada inválida (negativo/não-inteiro) — não-ok, mensagem explica", () => {
-    assert.equal(checkBeehiivDeliveryGap(-1, 0).ok, false);
-    assert.equal(checkBeehiivDeliveryGap(10, -1).ok, false);
-    assert.equal(checkBeehiivDeliveryGap(10.5, 5).ok, false);
-  });
-
-  it("tolerância nunca cai abaixo do piso absoluto mesmo pra base pequena", () => {
-    const check = checkBeehiivDeliveryGap(10, 10 - BEEHIIV_DELIVERY_GAP_TOLERANCE_ABS);
-    assert.equal(check.ok, true);
   });
 });
 
@@ -237,14 +200,14 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       [{ name: "kit", emails: ["a@x.com"] }, { name: "beehiiv", emails: ["b@x.com"] }],
       [{ name: "kit", emails: ["a@x.com"] }, { name: "beehiiv", emails: ["b@x.com"] }],
     );
-    const outcome = decideOutcome(audience, orphans, [], 1);
+    const outcome = decideOutcome(audience, orphans, []);
     assert.equal(outcome.blocking, false);
   });
 
   it("com órfão — bloqueia", () => {
     const audience = reconcileSendAudiences([{ name: "kit", emails: [] }]);
     const orphans = findOrphans([{ name: "kit", emails: ["preso@x.com"] }], [{ name: "kit", emails: [] }]);
-    const outcome = decideOutcome(audience, orphans, [], 0);
+    const outcome = decideOutcome(audience, orphans, []);
     assert.equal(outcome.blocking, true);
   });
 
@@ -253,95 +216,8 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       { name: "kit", emails: ["dup@x.com"] },
       { name: "beehiiv", emails: ["dup@x.com"] },
     ]);
-    const outcome = decideOutcome(audience, [], [], 0);
+    const outcome = decideOutcome(audience, [], []);
     assert.equal(outcome.blocking, true);
-  });
-
-  it("gap de entrega Beehiiv medido e dentro da tolerância não bloqueia sozinho", () => {
-    const audience = reconcileSendAudiences([{ name: "beehiiv", emails: Array.from({ length: 317 }, (_, i) => `e${i}@x.com`) }]);
-    const outcome = decideOutcome(
-      audience,
-      [],
-      [{ platform: "beehiiv", measured: true, recipients: 314 }],
-      317,
-      "beehiiv", // #11225: gap da Beehiiv só é medido no ramo legado explícito
-    );
-    assert.equal(outcome.blocking, false);
-    assert.equal(outcome.beehiivDeliveryGap?.ok, true);
-  });
-
-  // REGRESSÃO #7482 (decisão do editor, 10/09/2026): 0 ativos na Beehiiv +
-  // backend=kit é o estado ESPERADO pós-migração — o "destinatários reais"
-  // positivo que ainda aparece é resíduo do último envio ANTES da migração
-  // terminar, não uma medição de canal errado. Sem este guard, comparar 314
-  // contra 0 sempre reporta "inesperado, investigar" mesmo sendo normal.
-  it("0 ativos na Beehiiv + backend=kit: pula o gap check, nunca alarma 'inesperado' (#7482)", () => {
-    const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
-    const outcome = decideOutcome(
-      audience,
-      [],
-      [{ platform: "beehiiv", measured: true, recipients: 314 }],
-      0,
-      "kit",
-    );
-    assert.equal(outcome.beehiivGapSkippedPostMigration, true);
-    assert.equal(outcome.beehiivDeliveryGap, null);
-  });
-
-  it("0 ativos na Beehiiv + backend=beehiiv explícito (legado): continua alarmando normalmente", () => {
-    const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
-    const outcome = decideOutcome(
-      audience,
-      [],
-      [{ platform: "beehiiv", measured: true, recipients: 314 }],
-      0,
-      "beehiiv",
-    );
-    assert.equal(outcome.beehiivGapSkippedPostMigration, false);
-    assert.equal(outcome.beehiivDeliveryGap?.ok, false);
-  });
-
-  it("REGRESSÃO #11225: backend AUSENTE conta como \"kit\" — pula o gap check da Beehiiv (arquivo histórico)", () => {
-    const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
-    const outcome = decideOutcome(
-      audience,
-      [],
-      [{ platform: "beehiiv", measured: true, recipients: 314 }],
-      0,
-      undefined,
-    );
-    assert.equal(outcome.beehiivGapSkippedPostMigration, true);
-    assert.equal(outcome.beehiivDeliveryGap, null);
-    assert.equal(outcome.kitAudienceIsAllActive, true);
-  });
-
-  // REGRESSÃO #7482 (16/09/2026): o skip exigia 0 ativos e quebrou quando a
-  // Beehiiv passou a contar 1 ativo residual — "314 > 1, inesperado". Com
-  // backend=kit a Beehiiv não envia a diária, qualquer que seja a contagem.
-  it("Beehiiv com ativo residual (1) + backend=kit: pula o gap check mesmo assim (#7482)", () => {
-    const audience = reconcileSendAudiences([{ name: "beehiiv", emails: ["a@x.com"] }]);
-    const outcome = decideOutcome(
-      audience,
-      [],
-      [{ platform: "beehiiv", measured: true, recipients: 314 }],
-      1,
-      "kit",
-    );
-    assert.equal(outcome.beehiivGapSkippedPostMigration, true);
-    assert.equal(outcome.beehiivDeliveryGap, null);
-  });
-
-  it("Beehiiv com ativos + backend=beehiiv: gap check continua rodando normalmente", () => {
-    const audience = reconcileSendAudiences([{ name: "beehiiv", emails: ["a@x.com"] }]);
-    const outcome = decideOutcome(
-      audience,
-      [],
-      [{ platform: "beehiiv", measured: true, recipients: 314 }],
-      317,
-      "beehiiv",
-    );
-    assert.equal(outcome.beehiivGapSkippedPostMigration, false);
-    assert.equal(outcome.beehiivDeliveryGap?.ok, true);
   });
 
   // REGRESSÃO #7482 (16/09/2026): as 5 "sobreposições bloqueantes" medidas
@@ -352,7 +228,7 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       { name: "kit", emails: ["Sonda@X.com", "a@x.com"] },
       { name: "brevo", emails: ["sonda@x.com"] },
     ]);
-    const outcome = decideOutcome(audience, [], [], 0, "kit", ["sonda@x.com"]);
+    const outcome = decideOutcome(audience, [], [], ["sonda@x.com"]);
     assert.equal(outcome.audience.overlapCount, 0);
     assert.equal(outcome.seedOverlapsExempted, 1);
     assert.equal(outcome.blocking, false);
@@ -363,7 +239,7 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       { name: "kit", emails: ["sonda@x.com", "real@x.com"] },
       { name: "brevo", emails: ["sonda@x.com", "real@x.com"] },
     ]);
-    const outcome = decideOutcome(audience, [], [], 0, "kit", ["sonda@x.com"]);
+    const outcome = decideOutcome(audience, [], [], ["sonda@x.com"]);
     assert.equal(outcome.audience.overlapCount, 1);
     assert.equal(outcome.audience.overlaps[0].email, "real@x.com");
     assert.equal(outcome.blocking, true);
@@ -375,66 +251,11 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       { name: "kit", emails: [seed] },
       { name: "brevo", emails: [seed] },
     ]);
-    const outcome = decideOutcome(audience, [], [], 0, "kit");
+    const outcome = decideOutcome(audience, [], []);
     assert.equal(outcome.blocking, false);
     assert.equal(outcome.seedOverlapsExempted, 1);
   });
 
-  it("decideOutcome expõe kitAudienceIsAllActive no GuardOutcome (#7482 fleet review — paridade com beehiivGapSkippedPostMigration)", () => {
-    const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
-    const withKitBackend = decideOutcome(audience, [], [], 0, "kit");
-    assert.equal(withKitBackend.kitAudienceIsAllActive, true);
-    const withoutKitBackend = decideOutcome(audience, [], [], 0, "beehiiv");
-    assert.equal(withoutKitBackend.kitAudienceIsAllActive, false);
-  });
-});
-
-describe("shouldUseAllActiveAsKitAudience (#7482, achado 16/09/2026) — audiência de envio do Kit pós-migração", () => {
-  it("backend=kit: audiência de envio é TODO ativo, não a tag rampa-kit (publish-newsletter-kit.ts manda pra buildAllSubscribersFilter)", () => {
-    assert.equal(shouldUseAllActiveAsKitAudience("kit"), true);
-  });
-
-  it("backend=beehiiv explícito (legado): a tag continua sendo a audiência de envio", () => {
-    assert.equal(shouldUseAllActiveAsKitAudience("beehiiv"), false);
-  });
-
-  it("REGRESSÃO #11225: backend ausente/typo conta como \"kit\" — só o literal \"beehiiv\" cai no ramo legado", () => {
-    assert.equal(shouldUseAllActiveAsKitAudience(undefined), true);
-    assert.equal(shouldUseAllActiveAsKitAudience(""), true);
-    assert.equal(shouldUseAllActiveAsKitAudience("outro-backend-hipotetico"), true);
-  });
-});
-
-// REGRESSÃO #7482 (16/09/2026): 1 ativo residual na Beehiiv, também ativo no
-// Kit, aparecia como "sobreposição Beehiiv×Kit" — mas com backend=kit a
-// Beehiiv não envia a diária.
-describe("beehiivSendAudience (#7482) — Beehiiv fora da audiência de envio com backend=kit", () => {
-  it("backend=kit: audiência de envio vazia; residual ativo em Beehiiv e Kit não é sobreposição", () => {
-    const beehiivActive = ["residual@x.com"];
-    const sources: EmailSource[] = [
-      { name: "kit", emails: ["residual@x.com"] },
-      { name: "beehiiv", emails: beehiivSendAudience("kit", beehiivActive) },
-    ];
-    assert.equal(reconcileSendAudiences(sources).overlapCount, 0);
-  });
-
-  it("backend=kit: ativo SÓ na Beehiiv continua aparecendo como órfão", () => {
-    const beehiivActive = ["so-beehiiv@x.com"];
-    const sources: EmailSource[] = [
-      { name: "kit", emails: [] },
-      { name: "beehiiv", emails: beehiivSendAudience("kit", beehiivActive) },
-    ];
-    const orphans = findOrphans([{ name: "beehiiv", emails: beehiivActive }], sources);
-    assert.equal(orphans.length, 1);
-  });
-
-  it("backend=beehiiv explícito (legado): ativos da Beehiiv são a audiência de envio", () => {
-    assert.deepEqual(beehiivSendAudience("beehiiv", ["a@x.com"]), ["a@x.com"]);
-  });
-
-  it("REGRESSÃO #11225: backend ausente conta como \"kit\" — Beehiiv fora da audiência de envio", () => {
-    assert.deepEqual(beehiivSendAudience(undefined, ["a@x.com"]), []);
-  });
 });
 
 // #7482 (decisão do editor, 16/09/2026): divergência vira issue PRÓPRIA em
@@ -443,7 +264,7 @@ describe("beehiivSendAudience (#7482) — Beehiiv fora da audiência de envio co
 describe("buildDivergenceFindings (#7482) — achado vira issue própria", () => {
   it("guard limpo: nenhum finding (a issue conta execução limpa e fecha)", () => {
     const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
-    const outcome = decideOutcome(audience, [], [], 0, "kit", []);
+    const outcome = decideOutcome(audience, [], [], []);
     assert.deepEqual(buildDivergenceFindings(outcome), []);
   });
 
@@ -453,7 +274,7 @@ describe("buildDivergenceFindings (#7482) — achado vira issue própria", () =>
       { name: "brevo", emails: ["dup@x.com"] },
     ]);
     const orphans = findOrphans([{ name: "kit", emails: ["preso@x.com"] }], [{ name: "kit", emails: [] }]);
-    const outcome = decideOutcome(audience, orphans, [], 0, "kit", []);
+    const outcome = decideOutcome(audience, orphans, [], []);
     const findings = buildDivergenceFindings(outcome);
     assert.equal(findings.length, 1);
     const [f] = findings;
@@ -467,14 +288,14 @@ describe("buildDivergenceFindings (#7482) — achado vira issue própria", () =>
   it("fingerprint não muda quando as contagens mudam (senão fecha a issue como resolvida sem ter sido)", () => {
     const one = decideOutcome(
       reconcileSendAudiences([{ name: "kit", emails: ["d@x.com"] }, { name: "brevo", emails: ["d@x.com"] }]),
-      [], [], 0, "kit", [],
+      [], [], [],
     );
     const two = decideOutcome(
       reconcileSendAudiences([
         { name: "kit", emails: ["d@x.com", "e@x.com"] },
         { name: "brevo", emails: ["d@x.com", "e@x.com"] },
       ]),
-      [], [], 0, "kit", [],
+      [], [], [],
     );
     assert.equal(buildDivergenceFindings(one)[0].fingerprint, buildDivergenceFindings(two)[0].fingerprint);
     assert.notEqual(buildDivergenceFindings(one)[0].contentSignature, buildDivergenceFindings(two)[0].contentSignature);
@@ -485,7 +306,7 @@ describe("buildDivergenceFindings (#7482) — achado vira issue própria", () =>
       { name: "kit", emails: ["sonda@x.com"] },
       { name: "brevo", emails: ["sonda@x.com"] },
     ]);
-    decideOutcome(audience, [], [], 0, "kit", ["sonda@x.com"]);
+    decideOutcome(audience, [], [], ["sonda@x.com"]);
     assert.equal(audience.overlapCount, 1);
   });
 
@@ -505,7 +326,7 @@ describe("buildDivergenceFindings (#7482) — achado vira issue própria", () =>
         { name: "kit", emails: ["fulano.secreto@gmail.com"] },
         { name: "brevo", emails: ["fulano.secreto@gmail.com"] },
       ]),
-      [], [], 0, "kit", [],
+      [], [], [],
     );
     assert.doesNotMatch(buildDivergenceFindings(outcome)[0].body, /fulano\.secreto@gmail\.com/);
   });

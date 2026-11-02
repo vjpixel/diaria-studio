@@ -40,6 +40,7 @@ import {
   loadUseMelhorPostConfigState,
 } from "./lib/use-melhor-post.ts"; // #9568
 import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts"; // #9568
+import { readInstagramCommentScopeGranted } from "./lib/instagram-comment-scope.ts"; // #11750
 import {
   finalizeUseMelhorPostText,
   finalizeUseMelhorTextChannelPostText,
@@ -306,6 +307,9 @@ export interface GroupedBlock {
   /** #10451: o que cada canal do bloco acrescenta no publish (CTA, linha de
    *  engajamento), fora do `03-social.md`. Só canais com alguma linha. */
   publishAdditions?: PublishAddition[];
+  /** #11800: linhas por canal sob o rótulo (horário efetivo, imagem que a
+   *  rede leva). Só o preview da Retrospectiva preenche. */
+  details?: string[];
 }
 
 export interface PublishAddition {
@@ -316,6 +320,17 @@ export interface PublishAddition {
 
 /** #11724: o permalink da edição ainda não existe no gate 4 (Stage 5 o resolve). */
 export const PREVIEW_EDITION_URL_PLACEHOLDER = "{edition_url}";
+
+/** #11750: o que o preview precisa saber do publish sem fazer rede. */
+export interface PreviewPublishOptions {
+  /**
+   * O token que vai comentar no Instagram tem `instagram_manage_comments`?
+   * Lido de `_internal/instagram-comment-scope.json`
+   * (`readInstagramCommentScopeGranted`). Omitido/`false` = linha da bio no
+   * 4º post, o mesmo fallback fail-closed do `publish-instagram.ts`.
+   */
+  instagramCommentScope?: boolean;
+}
 
 /**
  * #10451: canais que recebem `injectChannelLine` no publish, por seção:
@@ -340,6 +355,7 @@ export function publishAdditionsFor(
   destaqueKey: string,
   /** Subconjunto dos canais da seção (o `## um` pode virar 2 blocos, #10087). */
   channelKeys: readonly string[] = channelKeysForSection(sectionName),
+  opts: PreviewPublishOptions = {},
 ): PublishAddition[] {
   const isUseMelhor = destaqueKey === USE_MELHOR_POST_ID;
   if (!isUseMelhor && !/^d\d+$/.test(destaqueKey)) return [];
@@ -350,9 +366,12 @@ export function publishAdditionsFor(
     if (!channel) continue;
     // #11724: no 4º post o publish aponta o permalink da edição (resolvido só no
     // Stage 5, `05-edition-url.txt`) — o preview mostra o placeholder no lugar.
+    // #11750: no Instagram o publish só aponta o comentário quando o token que
+    // comenta tem o escopo; sem prova disso, a linha da bio (igual ao publish).
+    const withEditionUrl = isUseMelhor && (channel !== "instagram" || opts.instagramCommentScope === true);
     const lines = channelPublishLines(channel, {
       useMelhor: isUseMelhor,
-      ...(isUseMelhor && { editionUrl: PREVIEW_EDITION_URL_PLACEHOLDER }),
+      ...(withEditionUrl && { editionUrl: PREVIEW_EDITION_URL_PLACEHOLDER }),
     });
     if (lines.length) out.push({ channel: formatChannelLabels([key]), lines });
   }
@@ -394,6 +413,7 @@ export function useMelhorBlocksForSection(
   post: Post,
   /** #10451: título da 1ª linha da legenda (`plan.captionTitle`); omitido = sem título. */
   captionTitle?: string,
+  opts: PreviewPublishOptions = {}, // #11750
 ): GroupedBlock[] {
   const keys = channelKeysForSection(sectionName);
   const textKeys = keys.filter((k) => USE_MELHOR_TEXT_CHANNELS.has(k));
@@ -403,7 +423,7 @@ export function useMelhorBlocksForSection(
   const block = (blockKeys: readonly string[], main: string): GroupedBlock => {
     // O publish aplica a UTM do 4º post DEPOIS de injetar a linha do canal —
     // o link do CTA do Facebook sai com `utm_content` do USE MELHOR.
-    const publishAdditions = publishAdditionsFor(sectionName, USE_MELHOR_POST_ID, blockKeys).map((a) => ({
+    const publishAdditions = publishAdditionsFor(sectionName, USE_MELHOR_POST_ID, blockKeys, opts).map((a) => ({
       ...a,
       lines: a.lines.map(applyUseMelhorUtmToText),
     }));
@@ -455,6 +475,7 @@ export function groupByDestaque(
   postPixelImageNum = "1",
   /** #10451: título da 1ª linha da legenda do `## um` (`plan.captionTitle`). */
   useMelhorCaptionTitle?: string,
+  opts: PreviewPublishOptions = {}, // #11750
 ): DestaqueGroup[] {
   const groups = new Map<string, DestaqueGroup>();
   for (const platform of platforms) {
@@ -484,7 +505,7 @@ export function groupByDestaque(
         });
       }
       if (key === USE_MELHOR_POST_ID) {
-        groups.get(key)!.blocks.push(...useMelhorBlocksForSection(platform.name, post, useMelhorCaptionTitle)); // #10087
+        groups.get(key)!.blocks.push(...useMelhorBlocksForSection(platform.name, post, useMelhorCaptionTitle, opts)); // #10087
       } else {
         const publishAdditions = publishAdditionsFor(platform.name, key); // #10451
         groups.get(key)!.blocks.push({ channels, post, ...(publishAdditions.length && { publishAdditions }) });
@@ -525,6 +546,7 @@ function renderGroupedBlock(block: GroupedBlock, color: string): string {
   return `
       <div class="channel-block">
         <div class="channel-label">${escHtml(block.channels)} <span class="char-count">${chars} chars</span></div>
+        ${block.details?.length ? `<div class="channel-details">${block.details.map((d) => `<div>${escHtml(d)}</div>`).join("")}</div>` : ""}
         <div class="post-body">
           ${mainParas}
           ${hashtags}
@@ -629,63 +651,8 @@ export function renderDestaqueGroup(group: DestaqueGroup, color: string): string
   </div>`;
 }
 
-export function buildSocialHtml(
-  platforms: Platform[],
-  imageUrls: ImageMap,
-  postPixelImageNum = "1",
-  editionDir?: string,
-  /** #9568: linha(s) de status do 4º post (USE MELHOR) — aviso no topo do preview. Omitido = nada. */
-  useMelhorNotice?: string[],
-  /** #10451: título da 1ª linha da legenda do `## um` — `resolveUseMelhorCaptionTitle`. Omitido = sem título. */
-  useMelhorCaptionTitle?: string,
-): string {
-  // #8681/#8809: legenda de TESTE do Instagram (`_internal/instagram-test.json`).
-  // Desde #3991 o `03-social.md` real tem uma seção `# Social` ÚNICA
-  // compartilhada por LinkedIn/Facebook/Instagram — sobrescrever `post.main`
-  // do jeito que o #8774/#8781 faziam (procurando `p.name.includes("instagram")`)
-  // nunca casava com `# Social` (fix inerte, #8809) E, se casasse, teria
-  // trocado o texto de LinkedIn/Facebook também, já que os 3 canais
-  // compartilham o MESMO Post object dentro do grupo `# Social`.
-  //
-  // Duas seções possíveis, dois comportamentos:
-  //   - `# Instagram` própria (legado pré-#3991, exclusiva do canal): seguro
-  //     mutar `post.main` direto — não há LinkedIn/Facebook nesse bloco pra
-  //     colidir.
-  //   - `# Social` (formato atual, texto único): a legenda de override vira
-  //     um BLOCO SEPARADO ("Instagram (override de teste)") dentro do grupo
-  //     do destaque, injetado logo abaixo, depois de `groupByDestaque` — o
-  //     bloco original de `# Social` continua intacto pra LinkedIn/Facebook.
-  let instagramOverrideCaption: string | null = null;
-  let hasDedicatedInstagramSection = false;
-  if (editionDir) {
-    try {
-      const override = readInstagramTestOverride(editionDir);
-      if (override?.caption) {
-        instagramOverrideCaption = override.caption;
-        for (const p of platforms) {
-          if (p.name.trim().toLowerCase() === "instagram") {
-            hasDedicatedInstagramSection = true;
-            for (const post of p.posts) post.main = instagramOverrideCaption;
-          }
-        }
-      }
-    } catch (e) {
-      // #8809: catch vazio engolia override malformado em silêncio — logar
-      // (fail-soft continua: preview sem override é aceitável, mas o editor
-      // vê o motivo no terminal/log do Studio em vez de um mistério).
-      console.error(
-        `[render-social-html] #8809: _internal/instagram-test.json inválido — ignorando override no preview: ${(e as Error).message}`,
-      );
-    }
-  }
-  return `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Social Preview</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+/** CSS do preview — compartilhado pelo preview da diária e o da Retrospectiva (#11800). */
+const SOCIAL_PREVIEW_CSS = `  * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: #f0f2f5;
@@ -801,6 +768,7 @@ export function buildSocialHtml(
     text-transform: uppercase;
     color: #0a66c2;
   }
+  .channel-details { padding: 4px 16px 0; font-size: 13px; color: #555; }
   .char-count {
     float: right;
     font-weight: 400;
@@ -826,14 +794,73 @@ export function buildSocialHtml(
     color: #555;
     line-height: 1.5;
   }
-</style>
+`;
+
+export function buildSocialHtml(
+  platforms: Platform[],
+  imageUrls: ImageMap,
+  postPixelImageNum = "1",
+  editionDir?: string,
+  /** #9568: linha(s) de status do 4º post (USE MELHOR) — aviso no topo do preview. Omitido = nada. */
+  useMelhorNotice?: string[],
+  /** #10451: título da 1ª linha da legenda do `## um` — `resolveUseMelhorCaptionTitle`. Omitido = sem título. */
+  useMelhorCaptionTitle?: string,
+  opts: PreviewPublishOptions = {}, // #11750
+): string {
+  // #8681/#8809: legenda de TESTE do Instagram (`_internal/instagram-test.json`).
+  // Desde #3991 o `03-social.md` real tem uma seção `# Social` ÚNICA
+  // compartilhada por LinkedIn/Facebook/Instagram — sobrescrever `post.main`
+  // do jeito que o #8774/#8781 faziam (procurando `p.name.includes("instagram")`)
+  // nunca casava com `# Social` (fix inerte, #8809) E, se casasse, teria
+  // trocado o texto de LinkedIn/Facebook também, já que os 3 canais
+  // compartilham o MESMO Post object dentro do grupo `# Social`.
+  //
+  // Duas seções possíveis, dois comportamentos:
+  //   - `# Instagram` própria (legado pré-#3991, exclusiva do canal): seguro
+  //     mutar `post.main` direto — não há LinkedIn/Facebook nesse bloco pra
+  //     colidir.
+  //   - `# Social` (formato atual, texto único): a legenda de override vira
+  //     um BLOCO SEPARADO ("Instagram (override de teste)") dentro do grupo
+  //     do destaque, injetado logo abaixo, depois de `groupByDestaque` — o
+  //     bloco original de `# Social` continua intacto pra LinkedIn/Facebook.
+  let instagramOverrideCaption: string | null = null;
+  let hasDedicatedInstagramSection = false;
+  if (editionDir) {
+    try {
+      const override = readInstagramTestOverride(editionDir);
+      if (override?.caption) {
+        instagramOverrideCaption = override.caption;
+        for (const p of platforms) {
+          if (p.name.trim().toLowerCase() === "instagram") {
+            hasDedicatedInstagramSection = true;
+            for (const post of p.posts) post.main = instagramOverrideCaption;
+          }
+        }
+      }
+    } catch (e) {
+      // #8809: catch vazio engolia override malformado em silêncio — logar
+      // (fail-soft continua: preview sem override é aceitável, mas o editor
+      // vê o motivo no terminal/log do Studio em vez de um mistério).
+      console.error(
+        `[render-social-html] #8809: _internal/instagram-test.json inválido — ignorando override no preview: ${(e as Error).message}`,
+      );
+    }
+  }
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Social Preview</title>
+<style>
+${SOCIAL_PREVIEW_CSS}</style>
 </head>
 <body>
 <div class="container">
 <h1>Social Preview</h1>
 ${useMelhorNotice?.length ? `<div class="platform-note use-melhor-notice">${useMelhorNotice.map((l) => escHtml(l)).join("<br>")}</div>` : ""}
 ${(() => {
-  const groups = groupByDestaque(platforms, imageUrls, postPixelImageNum, useMelhorCaptionTitle);
+  const groups = groupByDestaque(platforms, imageUrls, postPixelImageNum, useMelhorCaptionTitle, opts);
   // #8681/#8809: injeta a legenda de override como bloco SEPARADO em todo
   // destaque numerado (d1/d2/d3) — mesma semântica de `publish-instagram.ts`
   // (`testOverride?.caption` aplicado a "todos os destaques"). Só quando NÃO
@@ -877,6 +904,137 @@ ${(() => {
     ${groups.map(g => renderDestaqueGroup(g, "#0a66c2")).join("\n")}
   </div>`;
 })()}
+</div>
+</body>
+</html>`;
+}
+
+// ── Modo Retrospectiva (#11800) ─────────────────────────────────────────
+//
+// O gate do `/diaria-mensal-apoiadores` (Passo 2) mostra os posts públicos no
+// MESMO artefato das edições diárias. A entrada não é um `03-social.md`: é o
+// resultado do `publish-retrospectiva-social.ts --dry-run` (texto final, horário
+// do planner e imagens de cada rede). Por isso o modo não mostra o aviso do 4º
+// post (USE MELHOR) nem as linhas de `publishAdditionsFor` — o
+// `publish-retrospectiva-social.ts` não chama `injectChannelLine`, o texto que
+// ele devolve já é o publicado.
+
+/** Um post de uma rede, como o dry-run o despacharia. */
+export interface RetrospectivaPreviewChannelPost {
+  /** Rótulo da rede ("💼 LinkedIn página", "📘 Facebook (diaria)"). */
+  channel: string;
+  /** Horário efetivo (ISO) vindo do planner; `null` = não resolvido. */
+  scheduledAt: string | null;
+  /** Que imagem a rede leva ("capa 4:5", "carrossel de 5 ..."). */
+  image: string;
+  text: string;
+}
+
+export interface RetrospectivaPreviewHistoria {
+  /** "d1" | "d2" | "d3". */
+  key: string;
+  title: string;
+  /** Capa + slides (data URI ou URL); vazio = sem galeria. */
+  slides: { label: string; url: string }[];
+  posts: RetrospectivaPreviewChannelPost[];
+}
+
+export interface RetrospectivaPreviewInput {
+  /** Título da página (ex.: "Retrospectiva de Outubro — posts públicos"). */
+  heading: string;
+  /** Avisos no topo (posts pulados/falhos, warnings do pré-voo). */
+  notices: string[];
+  historias: RetrospectivaPreviewHistoria[];
+  /** Post MANUAL do perfil LinkedIn (`divulgacao/linkedin-perfil.md`). */
+  linkedinPerfil?: { text: string; scheduledAt: string | null } | null;
+}
+
+/** Horário em BRT legível no gate ("sáb 08/11 09:45 BRT"); ISO inválido volta cru. */
+export function formatPreviewScheduledAt(iso: string | null): string {
+  if (!iso) return "horário não resolvido";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      weekday: "short",
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    })
+      .formatToParts(d)
+      .map((p) => [p.type, p.value]),
+  );
+  const weekday = String(parts.weekday ?? "").replace(/\.$/, "");
+  return `${weekday} ${parts.day}/${parts.month} ${parts.hour}:${parts.minute} BRT`;
+}
+
+/**
+ * Pura: grupos do preview da Retrospectiva — um por história (galeria do
+ * carrossel + um bloco por TEXTO distinto, com as redes que o publicam e,
+ * por rede, horário e imagem) e, por último, o post manual do perfil.
+ */
+export function groupRetrospectivaPreview(input: RetrospectivaPreviewInput): DestaqueGroup[] {
+  const groups: DestaqueGroup[] = [];
+  for (const h of input.historias) {
+    const byText = new Map<string, RetrospectivaPreviewChannelPost[]>();
+    for (const p of h.posts) {
+      const list = byText.get(p.text) ?? [];
+      list.push(p);
+      byText.set(p.text, list);
+    }
+    const blocks: GroupedBlock[] = [...byText.entries()].map(([text, posts]) => ({
+      channels: posts.map((p) => p.channel).join(" · "),
+      post: { destaque: h.key, main: text, hashtags: "" },
+      details: posts.map((p) => `${p.channel}: ${formatPreviewScheduledAt(p.scheduledAt)} · imagem: ${p.image}`),
+    }));
+    groups.push({
+      key: h.key,
+      label: `História ${h.key.replace(/\D/g, "")} — ${h.title}`,
+      imageUrl: "",
+      ...(h.slides.length && { carouselImages: h.slides }),
+      blocks,
+    });
+  }
+  if (input.linkedinPerfil) {
+    const label = formatChannelLabels(["linkedin"]) + " perfil (MANUAL, colar à mão)";
+    groups.push({
+      key: "linkedin-perfil",
+      label: "Post manual — perfil LinkedIn (vjpixel)",
+      imageUrl: "",
+      blocks: [
+        {
+          channels: label,
+          post: { destaque: "linkedin-perfil", main: input.linkedinPerfil.text, hashtags: "" },
+          details: [`${label}: ${formatPreviewScheduledAt(input.linkedinPerfil.scheduledAt)} · imagem: nenhuma (só texto)`],
+        },
+      ],
+    });
+  }
+  return groups;
+}
+
+/** #11800: HTML standalone do preview da Retrospectiva, mesmo visual do Social Preview da diária. */
+export function buildRetrospectivaSocialHtml(input: RetrospectivaPreviewInput): string {
+  const groups = groupRetrospectivaPreview(input);
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Social Preview</title>
+<style>
+${SOCIAL_PREVIEW_CSS}</style>
+</head>
+<body>
+<div class="container">
+<h1>${escHtml(input.heading)}</h1>
+${input.notices.length ? `<div class="platform-note retrospectiva-notice">${input.notices.map((l) => escHtml(l)).join("<br>")}</div>` : ""}
+  <div class="platform">
+    ${groups.map((g) => renderDestaqueGroup(g, "#0a66c2")).join("\n")}
+  </div>
 </div>
 </body>
 </html>`;
@@ -956,6 +1114,8 @@ function main(): void {
     undefined,
     useMelhorNotice,
     resolveUseMelhorCaptionTitle(dirname(mdPath), resolve(import.meta.dirname, "..")),
+    // #11750: escopo de comentário do Instagram gravado pela sonda (sem rede aqui).
+    { instagramCommentScope: readInstagramCommentScopeGranted(dirname(mdPath)) },
   );
   writeFileSync(outPath, html);
 

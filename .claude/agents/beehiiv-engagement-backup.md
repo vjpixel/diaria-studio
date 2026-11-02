@@ -35,13 +35,13 @@ tratar isso na #7279, que é a issue dona do problema de nome de conector.
 
 O cruzamento assinante × edição — quem abriu/clicou em QUAL post, e quando — nunca foi capturado por nenhum backup do projeto. O backup semanal (`scripts/backup-beehiiv.ts`) cobre tudo que a API REST pública expõe, mas declara esse buraco explicitamente em `MCP_ONLY_GAPS`. A única forma de obter esse dado é via MCP (`list_post_subscriber_engagement`, e `list_post_click_subscribers` pra identidade por clique) — chamáveis só de dentro de uma sessão Claude com a tool no escopo, nunca de scripts TS standalone.
 
-Este agent é o molde de `beehiiv-clicks-enricher` (mesmo padrão pra `list_post_clicks`) aplicado ao gap de engagement: como subagent, NÃO consome contexto da conversa parent, permitindo drenar 100+ posts numa única invocação sem estourar a janela do editor.
+Este agent é o molde de `beehiiv-clicks-enricher` (aposentado no #11225; mesmo padrão pra `list_post_clicks`) aplicado ao gap de engagement: como subagent, NÃO consome contexto da conversa parent, permitindo drenar 100+ posts numa única invocação sem estourar a janela do editor.
 
 **Janela de urgência:** a conta Beehiiv é Launch/free (sem pressão de custo), mas o envio da diária já migrou pro Kit (#6114) — este dado só sobrevive enquanto o acesso Beehiiv existir. Não é incêndio, é irreversível se adiado demais.
 
 ## Input (no prompt do invocador)
 
-O invocador passará uma lista de posts, um por linha, no mesmo formato de `beehiiv-clicks-enricher`:
+O invocador passará uma lista de posts, um por linha (formato herdado do `beehiiv-clicks-enricher`, aposentado no #11225):
 
 ```
 post_id=<id> title=<short title>
@@ -81,7 +81,7 @@ Para cada post no input:
    - Capture exit code; se != 0, log erro e prossiga (não aborte o batch inteiro).
    - **Exit code 3 é o guard de replace-vazio** (mesma disciplina do `apply-mcp-clicks.ts` #4836) — só dispara na 1ª página (sem `--append`) de um post que já tinha JSONL não-vazio de uma invocação anterior: o script recusou substituir um JSONL NÃO-VAZIO pelo payload vazio que a MCP retornou. **NÃO** reinvoque com `--allow-empty-replace` por conta própria — você não tem como distinguir "MCP confirmou zero engajamento agora" de "resposta truncada/malformada". Trate como `fail` no summary com o motivo `guard-empty-replace`. (Páginas seguintes com `--append` nunca disparam esse guard — mesclar uma página vazia não apaga nada.)
 
-4. **Confirme a persistência lendo o disco de volta** (mesma disciplina de `beehiiv-clicks-enricher` #4958) — exit code 0 só prova que o script rodou sem erro, não que o write persistiu como esperado. Depois de cada chamada do passo 3, cheque a saída JSON do próprio script (`{post_id, before_count, after_count, status}`) — em REPLACE (1ª página), `after_count` deve bater com o tamanho da página que você enviou; em `--append` (páginas seguintes), `after_count` deve ser ≥ `before_count` (pode ser igual ao anterior + tamanho da página nova, ou um pouco menor se houve overlap de `subscriber_id` deduplicado — nunca menor que `before_count`). Se `after_count < before_count` num `--append`, algo está errado (isso não deveria acontecer — mescla nunca reduz); trate como `fail` com o motivo `write-mismatch`.
+4. **Confirme a persistência lendo o disco de volta** (disciplina herdada do `beehiiv-clicks-enricher`, #4958) — exit code 0 só prova que o script rodou sem erro, não que o write persistiu como esperado. Depois de cada chamada do passo 3, cheque a saída JSON do próprio script (`{post_id, before_count, after_count, status}`) — em REPLACE (1ª página), `after_count` deve bater com o tamanho da página que você enviou; em `--append` (páginas seguintes), `after_count` deve ser ≥ `before_count` (pode ser igual ao anterior + tamanho da página nova, ou um pouco menor se houve overlap de `subscriber_id` deduplicado — nunca menor que `before_count`). Se `after_count < before_count` num `--append`, algo está errado (isso não deveria acontecer — mescla nunca reduz); trate como `fail` com o motivo `write-mismatch`.
 
 5. **Logue progresso conciso** em stderr — uma linha por post:
    ```

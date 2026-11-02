@@ -53,7 +53,7 @@
  *   npx tsx scripts/sync-cursos-subscribers-kv.ts --force-empty-guard # ignora o guard de fonte suspeita-vazia (#7338)
  *
  * Env:
- *   BEEHIIV_API_KEY          obrigatório se subscriber_backend="beehiiv" (default)
+ *   BEEHIIV_API_KEY          obrigatório se subscriber_backend="beehiiv" (arquivo; default "kit" desde o #11225)
  *   BEEHIIV_PUBLICATION_ID   opcional — fallback platform.config.json
  *   KIT_API_KEY              obrigatório se subscriber_backend="kit"
  *   CLOUDFLARE_ACCOUNT_ID    obrigatório pro write real (não pro --dry-run)
@@ -90,7 +90,7 @@ const MAX_RETRIES = 3;
 /** Guard: se a Beehiiv devolver menos que este % do que tinha na última
  *  rodada registrada, algo está errado (auth/paginação, ou — achado ao vivo
  *  #7338 — a fonte em si foi zerada por uma migração de plataforma), não
- *  "todo mundo cancelou". Mesmo valor/racional de `sync-beehiiv-subscribers-kit.ts`
+ *  "todo mundo cancelou". Mesmo valor/racional de `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225)
  *  (`EMPTY_GUARD_RATIO`, #6092). */
 const EMPTY_GUARD_RATIO = 0.5;
 
@@ -490,7 +490,7 @@ function statePath(rootDir: string): string {
  *  bug noutros scripts), e este script rodaria sobre uma base de 0 achando
  *  que é o número real, apagando as chaves de quem de fato tem acesso ao
  *  curso. Mesmo shape/racional de `evaluateEmptyGuard` em
- *  `sync-beehiiv-subscribers-kit.ts` (#6092) — sem histórico prévio (1ª
+ *  `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225) (#6092) — sem histórico prévio (1ª
  *  rodada), sempre passa.
  *
  *  #7485: `backend` é OPCIONAL de propósito — estado legado gravado antes
@@ -661,7 +661,7 @@ export async function main(rootDirOverride?: string): Promise<number | void> {
   // (`diffStaleSubscriberKeys`); uma fonte suspeita-vazia apagaria o KV
   // inteiro em vez de "ninguém mudou". `--force-empty-guard` é o escape
   // hatch e NUNCA atualiza o baseline persistido (mesmo padrão de
-  // `sync-beehiiv-subscribers-kit.ts`, #6092) — só uma rodada que passou
+  // `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225), #6092) — só uma rodada que passou
   // pelo guard normalmente grava estado, pra não perpetuar um número
   // degradado como "normal".
   const previousState = readKvSyncState(rootDir);

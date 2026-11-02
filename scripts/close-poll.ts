@@ -12,6 +12,7 @@
  *
  * Para o É IA? mensal (fluxo multi-campanha Clarice):
  *   npx tsx scripts/close-poll.ts --edition 2605-06 --brand clarice --cycle 2605-06
+ *   (--edition = o próprio ciclo; AAMMDD é recusado localmente desde #11809)
  *
  * #2115: --edition agora aceita o formato de ciclo 2605-06 (novo canônico)
  * além do legado AAMMDD 260531 — mas não intercambiáveis para todo brand.
@@ -256,6 +257,25 @@ export function validateStatsNumericFields(stats: {
   };
 }
 
+/**
+ * Pure (#11809): `--brand clarice` só aceita `--edition` no formato de ciclo
+ * (`YYMM-MM`, ex. `2610-11`). O Worker já rejeita AAMMDD para brand anual
+ * (#4157, 400 em `handleAdminCorrect`), mas só DEPOIS da chamada de rede e com
+ * a mensagem genérica de formato diário — e os SKILL.md de
+ * `/diaria-clarice-envio` e `/diaria-mensal` orientavam `--edition {AAMMDD}`.
+ * Recusar aqui, antes da rede, com a forma correta na mensagem.
+ * Retorna `null` quando ok, ou a mensagem de erro.
+ */
+export function checkBrandEditionFormat(brand: string | null, edition: string, cycle?: string): string | null {
+  if (brand !== "clarice") return null;
+  if (isValidMonthlyCycle(edition)) return null;
+  const suggestion = cycle && isValidMonthlyCycle(cycle) ? cycle : "YYMM-MM (ex.: 2610-11)";
+  return (
+    `[close-poll] --brand clarice exige --edition no formato de ciclo, não AAMMDD (recebido: ${edition}). ` +
+    `Use --edition ${suggestion} — o mesmo valor do --cycle (#11809, #4157).`
+  );
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
@@ -302,6 +322,13 @@ async function main(): Promise<void> {
   // pro editor corrigir manualmente o gabarito do brand `web` se necessário
   // (o caminho normal é o mirror automático logo abaixo, no branch default).
   const brand = values["brand"] && values["brand"] !== "diaria" ? values["brand"] : null;
+
+  // #11809: formato da edição × brand, antes de qualquer chamada de rede.
+  const brandEditionError = checkBrandEditionFormat(brand, edition, values["cycle"]);
+  if (brandEditionError) {
+    console.error(brandEditionError);
+    process.exit(1);
+  }
 
   // #3031: resolveEditionDir resolve o path REAL da edição (flat ou nested,
   // #3024) em vez de montar data/editions/{edition} à força — que só existe

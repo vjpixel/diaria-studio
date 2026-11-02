@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 129 invariants.
+**Total**: 127 invariants.
 
 ## Static (estrutura do repo)
 
@@ -36,7 +36,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `categorized-has-eia-section` | 01-categorized.md inclui seção '## É IA?' (#481) | #481 |
 | `coverage-line-present` | 01-approved.json tem coverage.line (#592) | #592 |
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true (#3916, #3918, warning-only) | #3916 |
-| `lancamento-has-product-signal` | lancamento[] nunca contém item sem sinal POSITIVO de produto (#1968, backstop #6440) | #6440 |
+| `lancamento-has-product-signal` | lancamento[] nunca contém item sem sinal POSITIVO de produto (#1968, backstop #6440, warning-only #11748) | #6440 |
 | `no-missing-summary-highlights` | highlights[] nunca contém item com article.summary ausente/vazio (#5081) | #5081 |
 | `no-placeholder-title-highlights` | highlights[] nunca contém item com título placeholder não-enriquecido (#4102) | #4102 |
 | `no-use-melhor-highlights` | highlights[] nunca contém item do bucket USE MELHOR/tutorial (#3436) | #3436 |
@@ -101,7 +101,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `intra-edition-fact-recurrence` | Item do pool com a mesma história de um destaque ou de outro item da edição (heurístico, warning-only) | #11173 |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
 | `kit-fixture-audit` | assinante de fixture de teste (ex: ana@example.com) ATIVO na base Kit de produção (#6336) | #6336 |
-| `kit-html-too-large` | _internal/newsletter-final-kit.html acima de 104448 bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506, error só quando backend ativo é "kit"; warning até lá) | #6506 |
+| `kit-html-too-large` | _internal/newsletter-final-kit.html acima de 104448 bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506) | #6506 |
 | `max-content-items` | rascunho do Gate 4 com no máximo 13 conteúdos (destaques + seções secundárias) (#9785) | #9785 |
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
 | `newsletter-html-not-behind-reviewed` | newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245; error desde #10258 — bloqueia o sentinel do Stage 4; reviewed só tocado, com sha256 igual ao carimbo do render, não acusa) | #10245 |
@@ -143,7 +143,6 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `facebook-page-id-set` | Page ID de cada página Facebook habilitada presente no env (FACEBOOK_PAGE_ID na diaria, #10458) | #facebook |
 | `facebook-token-set` | Token de cada página Facebook habilitada presente no env (FACEBOOK_PAGE_ACCESS_TOKEN na diaria, #10458) | #facebook |
 | `instagram-creds-set` | INSTAGRAM_BUSINESS_ACCOUNT_ID + INSTAGRAM_ACCESS_TOKEN presentes — ausente pula Instagram (#49) | #49 |
-| `kit-diaria-exclusive-audience-dispatched` | canal Kit paralelo (kit_diaria.enabled=true) precisa ter despachado com broadcast_id — audiência pode ser EXCLUSIVA (#6582/#6504) | #6582 |
 | `linkedin-worker-token-set` | DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971) | #971 |
 | `linkedin-worker-url-https` | DIARIA_LINKEDIN_CRON_URL deve ser HTTPS quando presente (#971) | #971 |
 | `linkedin-worker-url-set` | DIARIA_LINKEDIN_CRON_URL env var presente — ausente degrada pra Make webhook (#971) | #971 |
@@ -165,15 +164,14 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | id | descrição | issue |
 |---|---|---|
 | `edition-report-exists` | _internal/edition-report.html escrito pelo send-edition-report.ts (#1510) | #1510 |
-| `kit-draft-fresh` | backend Kit: o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428); o aviso nomeia também o re-run da Brevo diária quando ela participou da edição (#9442) | #9428 |
-| `scheduled-at-present` | 05-published.json tem scheduled_at ou status=published (#1694) | #1694 |
+| `kit-draft-fresh` | o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428); o aviso nomeia também o re-run da Brevo diária quando ela participou da edição (#9442) | #9428 |
+| `scheduled-at-present` | newsletter-kit-published.json tem scheduled_at ou status=published (#1694) | #1694 |
 | `site-page-pr-merged` | PR da página do site registrado em _internal/site-page-published.json está MERGED e a página não está defasada (slug/insumos, #10207) — GATE-BLOCKING: a Etapa 6 não termina sem o merge, o PR é aberto no início da Etapa 5 sem esperar (#10160) | #10160 |
 | `site-page-published` | _internal/site-page-published.json registra published:true — GATE-BLOCKING desde #7578 (era warning, #7283) | #7578 |
 | `site-sitemap-no-orphans` | toda página em workers/site/public/p/ tem entrada no sitemap.xml — sem isso a página é invisível no buscador E no arquivo (#7578) | #7578 |
 | `step-5-sentinel-exists` | _internal/.step-5-done.json escrito pelo Stage 5 (#1694) | #1694 |
 | `step-6-sentinel-exists` | _internal/.step-6-done.json escrito pelo pipeline-sentinel (#1694) | #1694 |
 | `sync-code-ran` | marker de sync-code.ts presente e em dia — /diaria-6-agendamento standalone (retomada, #7983) nunca passa pelo Passo -3 de /diaria-5-publicacao quando o editor não a encadeou; sem isso §6b-site pode rodar com código defasado e reproduzir o exit 3 do #8786/#8684 mesmo já tendo o fix de #8636 em origin/master. | #8786 |
-| `whatsapp-slug-guard-ok` | _internal/whatsapp-slug-check.json presente com ok:true (#4570, backstop #4574) | #4574 |
 
 ---
 

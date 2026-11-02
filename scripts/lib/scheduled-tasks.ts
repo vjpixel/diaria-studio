@@ -696,25 +696,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#10734",
   },
   {
-    // #6093: mantém o Kit convergente com os assinantes ativos da Beehiiv
-    // (cria/reativa quem falta) — sem recorrência, o Kit volta a congelar
-    // no próximo assinante novo (comportamento observado antes do #6091:
-    // Kit travado em 585, todos `created_at: 2026-08-24`). Pré-requisito de
-    // QUALQUER switchover real do épico #461. Guard de blast radius (lista
-    // do Kit suspeita-vazia) já embutido no próprio script — nenhum guard
-    // adicional aqui. Horário 09:25 (issue sugeriu 09:20, mas esse minuto
-    // já é ocupado pela Diaria-Sunset-Weekly, domingo 09:20 -- dailies
-    // rodam todo dia da semana, então colidiriam nos domingos; 09:25 segue
-    // na mesma janela livre entre Diaria-Cursos-Kv-Sync (09:15) e os checks
-    // de drift matinais (09:30 em diante), sem colisão).
-    name: "Diaria-Kit-Subscriber-Sync",
-    description: "sync diario de assinantes ativos Beehiiv -> Kit (--push)",
-    steps: [{ key: "sync", script: "scripts/sync-beehiiv-subscribers-kit.ts", args: ["--push"] }],
-    logPath: "kit-subscriber-sync/.sync.log",
-    schedule: { kind: "daily", hour: 9, minute: 25 },
-    issue: "#461, #6091, #6092, #6093",
-  },
-  {
     name: "Diaria-Brevo-Diaria-Evaluate",
     description: "evaluate diario do canal brevo_diaria (--push)",
     steps: [{ key: "evaluate", script: "scripts/evaluate-brevo-diaria.ts", args: ["--push"] }],
@@ -937,23 +918,24 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Circle-Stack-Weekly-Preview",
     description:
-      "prévia semanal do Radar de Notícias Stack (Circle da Stack) em DRY-RUN + aviso ao editor; nunca publica (#10904)",
-    // `--notify` sem `--publish-monday`: o script assume a segunda de hoje ou
-    // a anterior (`currentOrPreviousMondayAAMMDD` — catch-up do
-    // Persistent=true numa terça cai no ciclo já fechado, nunca no seguinte),
-    // gera seleção editável + prévia `.md` do ciclo e abre/reusa 1 issue
-    // `bloqueio-execucao` por ciclo: "prévia pronta" se `draft`, "estado
-    // ambíguo" se `unknown`, nada se `published` (`resolveCircleStackState`).
-    // NUNCA `--publish` aqui (premissa da sessão develop 261023): o webhook
-    // da Stack publica na hora, sem rascunho, numa comunidade de terceiro —
-    // o envio fica manual até o editor decidir automatizar.
-    steps: [{ key: "preview", script: "scripts/publish-circle-stack.ts", args: ["--notify"] }],
+      "prévia semanal do Radar de Notícias Stack (Circle da Stack) em DRY-RUN + aviso ao editor; nunca publica (#10904, #11778)",
+    // `--notify --next-monday` (#11778): mira a PRÓXIMA segunda de publicação
+    // (`nextMondayAAMMDD`, inclusiva — catch-up do Persistent=true que caia na
+    // própria segunda cedo ainda pega o ciclo do dia), gera seleção editável +
+    // prévia `.md` do ciclo e abre/reusa 1 issue `bloqueio-execucao` por
+    // ciclo: "prévia pronta" se `draft`, "estado ambíguo" se `unknown`, nada
+    // se `published` (`resolveCircleStackState`). NUNCA `--publish` aqui: o
+    // envio é a task `Diaria-Circle-Stack-Weekly-Publish` abaixo, que só sai
+    // com aprovação do editor.
+    steps: [{ key: "preview", script: "scripts/publish-circle-stack.ts", args: ["--notify", "--next-monday"] }],
     logPath: "weekly/.circle-stack-preview.log",
-    // Segunda 07:30 BRT — o ciclo da semana anterior (seg-sex) já fechou e a
-    // edição de segunda já saiu às 06:00. Única weekly de segunda do
-    // registro (as demais são domingo/sexta/sábado); nenhuma daily em 07:30
-    // (vizinhas: 07:10, 07:20, 07:46) e `interval` só cai em :00.
-    schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 7, minute: 30 },
+    // Sábado 09:25 BRT (#11778; era segunda 07:30, DEPOIS do envio de 06:00).
+    // A semana de conteúdo (seg-sex) fechou: a edição de sexta foi revisada na
+    // quinta. Sobra o fim de semana para o editor rodar `/diaria-stack` e
+    // aprovar antes de segunda 06:00. Slot livre: weeklies de sábado em
+    // 03:40/04:30/07:00, dailies vizinhas em 09:20/09:30, nenhuma em 09:25, e
+    // `interval` só cai em :00.
+    schedule: { kind: "weekly", dayOfWeek: "Saturday", hour: 9, minute: 25 },
     // #10977: sem `data/` montado o script grava seleção/prévia vazias (ou
     // falha sem edição nenhuma) e o aviso ao editor sai errado.
     guard: {
@@ -961,7 +943,33 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       abortMessage:
         "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem gerar a previa da Stack.",
     },
-    issue: "#10904, #10977",
+    issue: "#10904, #10977, #11778",
+  },
+  {
+    name: "Diaria-Circle-Stack-Weekly-Publish",
+    description:
+      "envio semanal do Radar de Notícias Stack às segundas 06:00 BRT, só de ciclo aprovado pelo editor, com e-mail do resultado (#11778)",
+    // `publish-circle-stack-scheduled.ts` sem args: ciclo = segunda de hoje;
+    // só envia se hoje FOR essa segunda (catch-up do Persistent=true num
+    // outro dia vira "Não enviado") E se `_internal/circle-stack-approval.json`
+    // bater o sha256 da seleção atual (gravado por `--approve` no fim do
+    // `/diaria-stack`). Chama o publicador UMA vez, nunca `--force`, e manda
+    // e-mail ao editor em todos os desfechos (Publicado / Ambíguo / Falhou /
+    // Não enviado) via `sendPushNotification`.
+    steps: [{ key: "publish", script: "scripts/publish-circle-stack-scheduled.ts" }],
+    logPath: "weekly/.circle-stack-publish.log",
+    // Segunda 06:00 BRT (pedido do editor, 01/11/2026). Única weekly de
+    // segunda do registro; nenhuma daily em 06:00 (vizinhas 06:05/06:15);
+    // interval de 4h não bate em 06:00.
+    schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 6, minute: 0 },
+    // Sem data/weekly a seleção e a aprovação não existem: abortar em vez de
+    // mandar um "Não enviado" enganoso (o problema é a junction, não o editor).
+    guard: {
+      requiredFile: "weekly",
+      abortMessage:
+        "data/weekly nao encontrado -- provavel junction data/ nao montada; abortando sem tentar o envio da Stack.",
+    },
+    issue: "#11778",
   },
   {
     name: "Diaria-Hub-Drift-Check",
@@ -1231,7 +1239,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Shorts-Instagram",
     description:
-      "publica o Reels do vertical no Instagram no horário do vertical, pelo upload resumível da Graph API (sem URL pública), com o corte _Instagram_ do Drive (#11265)",
+      "publica o Reels do vertical no Instagram no horário do vertical, com o vídeo no R2 e o container por video_url, com o corte _Instagram_ do Drive (#11265, #11355)",
     steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
     logPath: "shorts/.instagram-timer.log",
     // Diária 06:32 BRT (#11265, decisão do editor 27/10/2026: timer no 300 em
@@ -3530,11 +3538,19 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
  *   continua sendo lido pelo relatório de CAC e pela apuração do teste.
  *   Desarmar `diaria-microsoft-ads-spend-ingest.{service,timer}` na `300` é
  *   ação manual do editor; até lá, o disparo diário vira no-op aqui.
+ * - `"Diaria-Kit-Subscriber-Sync"` — removida no #11225 (decisão do editor,
+ *   28/10/2026: a Beehiiv é só arquivo histórico). Rodava
+ *   `sync-beehiiv-subscribers-kit.ts --push` (ponte Beehiiv -> Kit, #6093),
+ *   removido junto; a auto-confirmação de `evaluate-brevo-diaria.ts`, último
+ *   caminho que dependia dele, passou a escrever direto no Kit. Desarmar
+ *   `diaria-kit-subscriber-sync.{service,timer}` na `300` é ação manual;
+ *   até lá, o disparo diário vira no-op aqui.
  */
 export const RETIRED_TASK_NAMES: ReadonlySet<string> = new Set([
   "Diaria-Clarice-Novos-Abort-Alarm",
   "Diaria-Microsoft-Ads-Editorial-Reasons",
   "Diaria-Microsoft-Ads-Spend-Ingest",
+  "Diaria-Kit-Subscriber-Sync",
 ]);
 
 /** `true` quando `name` é uma task retirada conhecida (ver `RETIRED_TASK_NAMES`). */
@@ -3579,7 +3595,9 @@ export function listDisabledScheduledTaskNames(): string[] {
 // `Diaria-Task-Never-Armed-Alarm` alarmar "nunca armada". O registro aqui é a
 // definição versionada (nome, cron, prompt) que o coordenador usa pra criar ou
 // recriar a task; o prompt é um PONTEIRO pro roteiro no repo, nunca a cópia
-// (padrão do `relatorio-diario-teste-2608`, #8246).
+// (padrão do `relatorio-diario-teste-2608`, #8246). Desde #11779 (todo
+// agendamento no `300`, decisão do editor de 01/11/2026) cada entrada carrega
+// `serverException`: o motivo de não rodar no `300` e quando foi reconferido.
 // ---------------------------------------------------------------------------
 
 export interface DesktopScheduledTaskDefinition {
@@ -3601,6 +3619,20 @@ export interface DesktopScheduledTaskDefinition {
    */
   readonly prompt: string;
   readonly issue: string;
+  /**
+   * Por que esta task NÃO roda no `300` (#11779). Desde 01/11/2026 todo
+   * agendamento acontece no `300`, decisão do editor; task local do app só
+   * existe como exceção justificada, com a decisão que a manteve e a data da
+   * última vez que alguém conferiu se o motivo ainda vale.
+   */
+  readonly serverException: {
+    /** O que o `300` não tem (ex.: Chrome logado) e por que não há caminho sem ele. */
+    readonly reason: string;
+    /** Issue onde o editor decidiu manter a exceção. */
+    readonly decidedIn: string;
+    /** Data (AAAA-MM-DD) da última reconferência do motivo. */
+    readonly reviewedOn: string;
+  };
 }
 
 export const DESKTOP_SCHEDULED_TASKS: readonly DesktopScheduledTaskDefinition[] = [
@@ -3623,12 +3655,29 @@ export const DESKTOP_SCHEDULED_TASKS: readonly DesktopScheduledTaskDefinition[] 
       "Regras: a edição é a de hoje em BRT (o script calcula sozinho, não passe data); rode o script do plano pela ferramenta Bash com timeout de 600000 ms; só clique no Studio quando o plano disser action=link; nunca altere outro campo do vídeo nem digite senha; nunca pergunte nada (ninguém está olhando): na dúvida, registre failed e alerte. Termine com um resumo de uma linha: edição, ação final e IDs.",
     ].join("\n"),
     issue: "#10811",
+    serverException: {
+      reason:
+        "O vínculo do vídeo relacionado só existe no YouTube Studio: a YouTube Data API v3 não tem campo nem endpoint de escrita para ele (reconferido em 02/11/2026, docs/youtube-short-related-video.md). Sem API, o clique é do Claude in Chrome logado no @diariabr, que o 300 não tem.",
+      decidedIn: "#11779",
+      reviewedOn: "2026-11-02",
+    },
   },
 ];
 
 /** Linhas da listagem `--desktop` (uma por task, separadas por tab). */
 export function renderDesktopScheduledTasksTable(tasks: readonly DesktopScheduledTaskDefinition[] = DESKTOP_SCHEDULED_TASKS): string {
-  return tasks.map((t) => [t.taskId, t.machine, t.cronExpression, t.playbook, t.issue].join("\t")).join("\n");
+  return tasks
+    .map((t) =>
+      [
+        t.taskId,
+        t.machine,
+        t.cronExpression,
+        t.playbook,
+        t.issue,
+        `exceção ao 300: ${t.serverException.decidedIn}, revisada em ${t.serverException.reviewedOn}`,
+      ].join("\t"),
+    )
+    .join("\n");
 }
 
 // ---------------------------------------------------------------------------

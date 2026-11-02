@@ -8,8 +8,8 @@
  *   `scripts/lib/kit-attribution.ts`) e o `include[]=attribution` na
  *   listagem (`scripts/lib/kit-subscribers.ts`).
  * - Parte B: `promoteKitSubscription` (`scripts/evaluate-brevo-diaria.ts`)
- *   e o sync em lote (`scripts/sync-beehiiv-subscribers-kit.ts`) passam a
- *   mandar `fields` — antes iam sem nenhum.
+ *   e o sync em lote (`scripts/sync-beehiiv-subscribers-kit.ts`, aposentado
+ *   no #11225) passam a mandar `fields` — antes iam sem nenhum.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -21,11 +21,9 @@ import {
 import { listKitSubscribersPage } from "../scripts/lib/kit-subscribers.ts";
 import {
   KIT_SCORE_PROMOTION_SIGNUP_MARKER,
-  KIT_BEEHIIV_SYNC_SIGNUP_MARKER,
   KIT_ORIGEM_CADASTRO_FIELD_NAME,
 } from "../scripts/lib/shared/kit-signup-origin.ts";
 import { promoteKitSubscription } from "../scripts/evaluate-brevo-diaria.ts";
-import { buildBeehiivSyncKitFields } from "../scripts/sync-beehiiv-subscribers-kit.ts";
 import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "../scripts/lib/shared/utm-registry.ts";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -165,14 +163,6 @@ describe("promoteKitSubscription monta fields a partir do registry (#6425 Parte 
       utm_campaign: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
       referring_site: BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
       [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_SCORE_PROMOTION_SIGNUP_MARKER,
-    });
-  });
-});
-
-describe("buildBeehiivSyncKitFields (#6425 Parte B — sync-beehiiv-subscribers-kit.ts)", () => {
-  it("grava o marcador origem_cadastro proprio do sync em lote", () => {
-    assert.deepEqual(buildBeehiivSyncKitFields(), {
-      [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_BEEHIIV_SYNC_SIGNUP_MARKER,
     });
   });
 });

@@ -444,19 +444,19 @@ describe("fetchTestEmail: teste pela UI não registrado (#10395)", () => {
   });
 });
 
-// #9905: no Beehiiv, `test_email_sent_at` é gravado DEPOIS do clique em Send
-// test (playbook §8 / fix-3 passo 3). Usado como `--sent-after`, o corte
-// (`sentAfterMs - 5s`) cai depois do `internalDate` do teste atual e o descarta
-// (exit 3 a cada run). O §5f passo 0 só pode ancorar o Kit.
-describe("Stage 5 §5f passo 0: --sent-after só no Kit (#9905)", () => {
+// #9905: no Beehiiv, `test_email_sent_at` era gravado DEPOIS do clique em Send
+// test. Usado como `--sent-after`, o corte (`sentAfterMs - 5s`) caía depois do
+// `internalDate` do teste atual e o descartava (exit 3 a cada run). Desde o
+// #11225 o §5f passo 0 só conhece o Kit, ancorado no `test_sent_at`.
+describe("Stage 5 §5f passo 0: --sent-after só no Kit (#9905, #11225)", () => {
   const stage5 = readFileSync(resolve(import.meta.dirname, "../.claude/agents/orchestrator-stage-5.md"), "utf8");
   const line = stage5.split("\n").find((l) => l.includes("scripts/fetch-test-email.ts --edition-dir")) ?? "";
 
   it("não usa test_email_sent_at do Beehiiv como âncora", () => {
     assert.ok(line, "linha do fetch-test-email.ts não encontrada no orchestrator-stage-5.md");
-    assert.doesNotMatch(line, /Beehiiv `test_email_sent_at`/);
-    assert.match(line, /Beehiiv nunca passa `--sent-after`/);
-    assert.match(line, /só Kit: `\{ISO\}` = `test_sent_at`/);
+    assert.doesNotMatch(line, /test_email_sent_at/);
+    assert.match(line, /--platform kit/);
+    assert.match(line, /`\{ISO\}` = `test_sent_at`/);
   });
 
   it("cenário do bug: âncora gravada depois do clique descarta o teste atual", () => {

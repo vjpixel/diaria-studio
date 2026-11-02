@@ -147,7 +147,7 @@ describe("invariantes do Stage 5 com send_unknown (#11105)", () => {
       { newsletter: "manual", linkedin: "auto" },
     );
     try {
-      const v = checkConsentBinding(dir, "beehiiv");
+      const v = checkConsentBinding(dir);
       assert.equal(v.some((x) => x.rule === "consent-binding-linkedin"), false, JSON.stringify(v));
     } finally {
       rmSync(dir, { recursive: true, force: true });

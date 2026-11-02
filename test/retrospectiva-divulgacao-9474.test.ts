@@ -13,13 +13,14 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  RETROSPECTIVA_PUBLIC_CTA,
   contentMonthLabel,
   deriveEmailChannelState,
   parseRetrospectivaSkip,
   publicPostCtaProblems,
   readRetrospectivaDivulgacaoState,
   retrospectivaDivulgacaoStatePath,
+  retrospectivaCtaUrl,
+  retrospectivaPublicCta,
   retrospectivaUrl,
   writeRetrospectivaDivulgacaoState,
 } from "../scripts/lib/mensal/retrospectiva-divulgacao.ts";
@@ -118,21 +119,36 @@ describe("URL e mês do ciclo (mês de CONTEÚDO, não de envio)", () => {
   });
 });
 
-describe("CTA dos posts públicos — nunca a URL paywalled", () => {
-  const ok = `A Retrospectiva de setembro olha o mês por três ângulos.\n\n${RETROSPECTIVA_PUBLIC_CTA}`;
-  it("texto com a linha literal e sem URL direta passa", () => {
-    assert.deepEqual(publicPostCtaProblems(ok), []);
+// #11802 (decisão do editor, 01/11/2026): o CTA aponta para a página da
+// retrospectiva do ciclo, não mais para o apoia.se.
+describe("CTA dos posts públicos — a página da retrospectiva do ciclo (#11802)", () => {
+  const CICLO = "2609-10";
+  const CTA = retrospectivaPublicCta(CICLO);
+  const ok = `A Retrospectiva de setembro olha o mês por três ângulos.\n\n${CTA}`;
+  it("a linha de CTA é a frase do editor com a URL do mês de conteúdo, sem esquema", () => {
+    assert.equal(CTA, "Apoie nosso trabalho e leia a retrospectiva completa em: retrospectiva.diar.ia.br/2609");
+    assert.equal(retrospectivaCtaUrl("2610-11"), "retrospectiva.diar.ia.br/2610");
+    assert.throws(() => retrospectivaPublicCta("2609"));
   });
-  it("URL direta (host canônico ou legado) reprova, mesmo com o CTA", () => {
-    assert.equal(publicPostCtaProblems(`${ok}\nhttps://retrospectiva.diar.ia.br/2609`).length, 1);
-    assert.equal(publicPostCtaProblems(`${ok}\nartigo.diar.ia.br/2609-10`).length, 1);
+  it("texto com a linha literal do ciclo passa (a URL do próprio ciclo, inclusive repetida, é aceita)", () => {
+    assert.deepEqual(publicPostCtaProblems(ok, CICLO), []);
+    assert.deepEqual(publicPostCtaProblems(`${ok}\nhttps://retrospectiva.diar.ia.br/2609.`, CICLO), []);
   });
-  it("sem a linha literal de CTA reprova", () => {
-    assert.match(publicPostCtaProblems("Leia em apoia.se/diaria").join(), /linha literal/);
+  it("URL de retrospectiva de OUTRO ciclo, do host legado ou sem path reprova, mesmo com o CTA", () => {
+    assert.match(publicPostCtaProblems(`${ok}\nhttps://retrospectiva.diar.ia.br/2608`, CICLO).join(), /não é a página do ciclo/);
+    assert.equal(publicPostCtaProblems(`${ok}\nartigo.diar.ia.br/2609-10`, CICLO).length, 1);
+    assert.equal(publicPostCtaProblems(`${ok}\nartigo.diar.ia.br/2609`, CICLO).length, 1);
+    assert.equal(publicPostCtaProblems(`${ok}\nretrospectiva.diar.ia.br`, CICLO).length, 1);
   });
-  it("o CTA literal em si nunca contém a URL paywalled", () => {
-    assert.ok(!/retrospectiva\.diar\.ia\.br/.test(RETROSPECTIVA_PUBLIC_CTA));
-    assert.match(RETROSPECTIVA_PUBLIC_CTA, /apoia\.se\/diaria$/);
+  it("sem a linha literal de CTA reprova — inclusive o CTA antigo, do apoia.se", () => {
+    assert.match(publicPostCtaProblems("Leia em retrospectiva.diar.ia.br/2609", CICLO).join(), /linha literal/);
+    assert.match(
+      publicPostCtaProblems("Texto.\n\nApoie nosso trabalho e leia a retrospectiva completa em: apoia.se/diaria", CICLO).join(),
+      /linha literal/,
+    );
+  });
+  it("o CTA de um ciclo não serve para outro", () => {
+    assert.ok(publicPostCtaProblems(`Texto.\n\n${retrospectivaPublicCta("2610-11")}`, CICLO).length >= 1);
   });
 });
 
@@ -321,28 +337,30 @@ describe("check-retrospectiva-divulgacao — CTA no post do PERFIL (colado à m�
     mkdirSync(join(tmp, "divulgacao"), { recursive: true });
     writeFileSync(join(tmp, "divulgacao", file), text);
   }
-  const OK = `Chamada.\n\n${RETROSPECTIVA_PUBLIC_CTA}\n`;
+  const CICLO = "2609-10";
+  const OK = `Chamada.\n\n${retrospectivaPublicCta(CICLO)}\n`;
   // #9508: os posts por história (página LinkedIn + 4 redes) têm teste próprio
   // (retrospectiva-social-9500); aqui só o perfil.
   const POSTS = "facebook,instagram,threads,x,linkedin:d1,linkedin:d2,linkedin:d3";
 
-  it("perfil com a URL paywalled reprova", () => {
-    write("linkedin-perfil.md", `${OK}https://retrospectiva.diar.ia.br/2609\n`);
-    const r = checkRetrospectivaDivulgacaoTexts(tmp, POSTS);
+  it("perfil com URL de retrospectiva de outro ciclo reprova; com o CTA do ciclo passa", () => {
+    write("linkedin-perfil.md", `${OK}https://retrospectiva.diar.ia.br/2608\n`);
+    const r = checkRetrospectivaDivulgacaoTexts(tmp, CICLO, POSTS);
     assert.equal(r.length, 1);
-    assert.match(r[0].problems.join(), /paywalled/);
+    assert.match(r[0].problems.join(), /não é a página do ciclo/);
     write("linkedin-perfil.md", OK);
-    assert.deepEqual(checkRetrospectivaDivulgacaoTexts(tmp, POSTS)[0].problems, []);
+    assert.deepEqual(checkRetrospectivaDivulgacaoTexts(tmp, CICLO, POSTS)[0].problems, []);
   });
   it("arquivo ausente reprova; --skip linkedin não checa nada; token inválido lança", () => {
-    assert.match(checkRetrospectivaDivulgacaoTexts(tmp, POSTS)[0].problems.join(), /ausente/);
-    assert.deepEqual(checkRetrospectivaDivulgacaoTexts(tmp, "linkedin,facebook,instagram,threads,x"), []);
-    assert.throws(() => checkRetrospectivaDivulgacaoTexts(tmp, "linkdin"), /linkdin/);
+    assert.match(checkRetrospectivaDivulgacaoTexts(tmp, CICLO, POSTS)[0].problems.join(), /ausente/);
+    assert.deepEqual(checkRetrospectivaDivulgacaoTexts(tmp, CICLO, "linkedin,facebook,instagram,threads,x"), []);
+    assert.throws(() => checkRetrospectivaDivulgacaoTexts(tmp, CICLO, "linkdin"), /linkdin/);
   });
-  it("CTA tolera CRLF e espaços em volta; host sem esquema e maiúsculas também reprovam", () => {
-    assert.deepEqual(publicPostCtaProblems(`Texto.\r\n\r\n  ${RETROSPECTIVA_PUBLIC_CTA}  \r\n`), []);
-    assert.equal(publicPostCtaProblems(`${OK}veja RETROSPECTIVA.DIAR.IA.BR/2609`).length, 1);
-    assert.equal(publicPostCtaProblems(`${OK}outra.diar.ia.br/x`).length, 0);
+  it("CTA tolera CRLF e espaços em volta; outro ciclo sem esquema e em maiúsculas também reprova", () => {
+    assert.deepEqual(publicPostCtaProblems(`Texto.\r\n\r\n  ${retrospectivaPublicCta(CICLO)}  \r\n`, CICLO), []);
+    assert.equal(publicPostCtaProblems(`${OK}veja RETROSPECTIVA.DIAR.IA.BR/2608`, CICLO).length, 1);
+    assert.deepEqual(publicPostCtaProblems(`${OK}veja RETROSPECTIVA.DIAR.IA.BR/2609`, CICLO), []);
+    assert.equal(publicPostCtaProblems(`${OK}outra.diar.ia.br/x`, CICLO).length, 0);
   });
 });
 

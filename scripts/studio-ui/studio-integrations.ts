@@ -195,7 +195,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     envVars: ["KIT_API_KEY"],
     probe: "kit",
     note:
-      "Newsletter — backend de ENVIO real desde 26/08/2026 (#6114, platform.config.json > publishing.newsletter.backend) e de cadastro dos 3 workers de assinatura desde #6339 (SUBSCRIBE_BACKEND=kit). Leitura de histórico ainda aponta pra Beehiiv (read_backend) até o Kit acumular volume real de edições public:true.",
+      "Newsletter — único canal de ENVIO da diária (#7388, #11225) e de cadastro dos 3 workers de assinatura desde #6339 (SUBSCRIBE_BACKEND=kit). Leitura de histórico ainda aponta pra Beehiiv (read_backend) até o Kit acumular volume real de edições public:true.",
   },
   {
     id: "brave_search",

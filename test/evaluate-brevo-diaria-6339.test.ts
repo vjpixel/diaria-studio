@@ -7,7 +7,7 @@
  * switchover do #6114 (`publishing.newsletter.backend === "kit"`) — a
  * Beehiiv não publica mais nada, então a promoção só chegava aos
  * assinantes de fato via a ponte temporária de sync
- * (`scripts/sync-beehiiv-subscribers-kit.ts`), até 24h de atraso, e some no
+ * (`scripts/sync-beehiiv-subscribers-kit.ts` (aposentado no #11225)), até 24h de atraso, e some no
  * dia em que alguém aposentar essa ponte.
  *
  * Este arquivo cobre o novo par `promoteKitSubscription`/
@@ -157,7 +157,6 @@ describe("runEvaluation — newsletterBackend ramifica a promoção (#6339)", ()
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
-        newsletterBackend: "kit",
         kitApiKey: "kkey",
       });
 
@@ -206,7 +205,6 @@ describe("runEvaluation — newsletterBackend ramifica a promoção (#6339)", ()
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
-        newsletterBackend: "kit",
         // kitApiKey ausente de propósito
       });
       // #4398: falha por contato nunca aborta o run inteiro — o erro lançado
@@ -225,53 +223,4 @@ describe("runEvaluation — newsletterBackend ramifica a promoção (#6339)", ()
     }
   });
 
-  it('newsletterBackend omitido (default) → preserva o caminho Beehiiv pré-#6339, resolution_reason continua "score_threshold"', async () => {
-    let byEmailCalls = 0;
-    globalThis.fetch = (async (u: string | URL, init?: RequestInit) => {
-      const url = String(u);
-      if (url.includes("api.kit.com")) {
-        // #7382 — checagem cross-plataforma antes de promover pra Beehiiv:
-        // contato NÃO existe no Kit, promoção pra Beehiiv segue normal.
-        return jsonRes(200, { subscribers: [], pagination: {} });
-      }
-      if (url.includes("subscriptions/by_email/")) {
-        byEmailCalls++;
-        if (byEmailCalls === 1) return jsonRes(200, { data: { status: "pending" } });
-        if (byEmailCalls === 2) return jsonRes(200, { data: { id: "sub_x", status: "pending" } });
-        return jsonRes(200, { data: { status: "active" } });
-      }
-      if (init?.method === "DELETE") return new Response(null, { status: 204 });
-      if (url.includes("/publications/pub_1/subscriptions") && init?.method === "POST") return jsonRes(200, {});
-      if (init?.method === "PUT") return jsonRes(200, {});
-      return jsonRes(200, {
-        statistics: {
-          messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }],
-          opened: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }],
-        },
-      });
-    }) as typeof fetch;
-
-    try {
-      const contacts = [contact("default-backend@b.com")];
-      const result = await runEvaluation({
-        contacts,
-        store: { contacts },
-        push: true,
-        publicationId: "pub_1",
-        beehiivApiKey: "bkey",
-        brevoApiKey: "brkey",
-        listId: 7,
-        log: () => {},
-        kitApiKey: "kkey", // #7382 — necessário pra checagem cross-plataforma antes de promover
-        // newsletterBackend omitido de propósito
-      });
-      assert.equal(result.failed, 0);
-      assert.equal(result.promoted, 1);
-      assert.equal(result.skippedActiveOnKit, 0, "#7382 — contato não está no Kit, promoção segue normal");
-      const stored = findContact(result.store, "default-backend@b.com");
-      assert.equal(stored!.resolution_reason, "score_threshold");
-    } finally {
-      restore();
-    }
-  });
 });

@@ -20,8 +20,15 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *                                                           # registra destino GUIADO já feito
  *   npx tsx scripts/publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID] [--url URL]
  *                                                           # registra o Reels postado no Chrome (lê /media, #10915;
- *                                                           # #11390: procura também no perfil do @vjpixel, autor da
- *                                                           # rota do Chrome, e aceita o permalink com --url)
+ *                                                           # #11794: a autora à mão é a @diar.ia.br, a conta da API;
+ *                                                           # aceita o permalink com --url)
+ *   npx tsx scripts/publish-shorts.ts --corte SLUG --date AAMMDD --at HH:MM --title T --hook H
+ *     (--video PATH | --from-drive FILE_ID) [--cover JPG] [--publish] [--only ...] [--now]
+ *                                                           # corte AVULSO, fora de edição (#11795): título e gancho
+ *                                                           # explícitos, registro em data/cortes/SLUG/ (corte.json +
+ *                                                           # 06-shorts-published.json), R2 em shorts/cortes/, horário
+ *                                                           # explícito fora do teste do #10831, sem timers do 300.
+ *                                                           # Re-execução e --mark só com --corte SLUG.
  *
  * Destinos (config `publishing.shorts`, default = decisão do editor):
  *   - `facebook:{slug}` (API) — cada slug de `publishing.shorts.facebook_pages`,
@@ -41,7 +48,9 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     `instagram_collaborators` entram como collab (aceitam o convite no app);
  *     depois do publish o script relê os collaborators da mídia e avisa se o
  *     convite foi descartado (#10820). No dry-run confere também se o token da
- *     página tem `instagram_content_publish` (#10820). Acima do teto de
+ *     página tem `instagram_content_publish` (#10820). Na @diar.ia.br o
+ *     container é criado com `video_url` (R2) em vez do rupload, sem teto de
+ *     duração (#11355); as outras autoras seguem no rupload. Acima do teto de
  *     duração DA AUTORA (`instagram_api_max_seconds_by_account`, #10916) vira
  *     passo guiado no Chrome: o `--publish` gera a versão comprimida em
  *     `_internal/`, mirando 9,5 MB (abaixo do limite de 10 MB do file_upload;
@@ -109,9 +118,10 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * O Instagram não agenda Reels pela API. Desde #11265 (decisão do editor,
  * 27/10/2026) quem publica é o timer do 300 (`publishing.shorts.instagram_backend`
  * = "timer-300", default): `scripts/shorts-instagram-timer.ts` roda esta CLI com
- * `--only instagram --publish --instagram-timer` no horário do vertical, pelo
- * upload resumível da Graph API (sem URL pública), e as outras rodadas
- * devolvem o `instagram` como `skip_delegated`. A rodada do timer grava no
+ * `--only instagram --publish --instagram-timer` no horário do vertical, com
+ * o vídeo no R2 e o container por `video_url` (@diar.ia.br, #11355; o rupload
+ * para em ~32,5 s de processamento e recusa os verticais reais), e as outras
+ * rodadas devolvem o `instagram` como `skip_delegated`. A rodada do timer grava no
  * registro próprio (`06-shorts-published.instagram-timer.json`), confere
  * antes na conta (`/media`, só leitura) se o Reels da edição já saiu por fora,
  * e passadas 3 h do horário vira `skip_late` (o timer avisa o editor).
@@ -120,8 +130,7 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * `diaria-linkedin-cron`; sem Worker, sem R2 ou com autora que o Worker não
  * conhece, fica pendente até rodar de novo depois do horário (ou `--now`).
  * O R2 foi habilitado depois (#10772), mas o editor manteve o `timer-300`
- * (#11411: o timer funciona e o corte `_Instagram_` do Drive não chega ao R2;
- * racional em `docs/scheduled-tasks-registry.md`). X e Threads, que só
+ * (#11411: o timer funciona; racional em `docs/scheduled-tasks-registry.md`). X e Threads, que só
  * recebem o vídeo por URL pública, usam o R2 independente do
  * `instagram_backend` (`r2.ready`); só sem os secrets dele ficam pulados com
  * aviso (manuais).
@@ -138,10 +147,9 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * posts que as skills de divulgação agendaram pro mesmo dia.
  *
  * Link da edição: `--edition-url` > `_internal/05-edition-url.txt` (gravado no
- * Stage 5) > slug derivado do título do D1. Com `publishing.newsletter.backend`
- * = "kit" o derivado é premissa, não aviso: é a mesma regra com que o Stage 5
- * grava `05-edition-url.txt` (#7420), então o vertical pode sair antes da
- * Etapa 5 (fluxo do #10943). Com "beehiiv" segue aviso (o slug pode divergir).
+ * Stage 5) > slug derivado do título do D1. O derivado é premissa, não aviso: é
+ * a mesma regra com que o Stage 5 grava `05-edition-url.txt` (#7420), então o
+ * vertical pode sair antes da Etapa 5 (fluxo do #10943).
  *
  * Registro por destino em `{edição}/_internal/06-shorts-published.json`
  * (escrita atômica, logo após cada destino). Destino registrado é pulado.
@@ -159,8 +167,9 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -168,6 +177,21 @@ import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
+import {
+  CORTE_SPEC_FILE,
+  corteBaseCommand,
+  corteR2Key,
+  corteRelDir,
+  corteShortTime,
+  corteTextInput,
+  corteVideoFileName,
+  corteVideoPortabilityWarning,
+  corteVideoRef,
+  mergeCorteSpec,
+  resolveCorteVideo,
+  parseCorteSpec,
+  type CorteSpec,
+} from "./lib/diaria/short-corte.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/facebook-pages.ts";
 import {
@@ -179,8 +203,12 @@ import {
   facebookUploadRoute,
   INSTAGRAM_CHROME_ROUTE,
   INSTAGRAM_ENV_ACCOUNT_KEY,
+  instagramAccountKey,
   REELS_NEWSLETTER_SENTENCE,
   instagramApiMaxSecondsPremise,
+  instagramReelUploadRoute,
+  shortInstagramVideoFileName,
+  type InstagramReelUploadRoute,
   instagramChromeRouteText,
   instagramReelsApiFit,
   isDestinationDone,
@@ -247,7 +275,7 @@ import {
   mergeGrids,
   type ScheduledSlot,
 } from "./lib/social-slot-planner.ts";
-import { loadR2UploadConfig, reuseOrUploadToR2 } from "./lib/r2-object-upload.ts";
+import { loadR2UploadConfig, r2ObjectHasBody, r2PublicUrl, reuseOrUploadToR2 } from "./lib/r2-object-upload.ts";
 import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
@@ -273,7 +301,6 @@ import {
   threadsProfilePreflight,
   type ThreadsTimerGateFailure,
 } from "./lib/threads-personal-video.ts";
-import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 import {
   CHROME_UPLOAD_MAX_BYTES,
   buildChromeUploadFfmpegPasses,
@@ -288,6 +315,8 @@ import {
 } from "./lib/diaria/instagram-chrome-upload.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+/** #11795: link de referência do corte avulso (nenhum texto do vertical leva link, #11617). */
+export const DIARIA_HOME_URL = "https://diar.ia.br";
 const GRAPH = "https://graph.facebook.com";
 const GRAPH_VIDEO = "https://graph-video.facebook.com";
 const RUPLOAD = "https://rupload.facebook.com";
@@ -307,7 +336,7 @@ export const LINKEDIN_TIMER_DETAIL =
  */
 export const INSTAGRAM_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-Instagram, publishing.shorts.instagram_backend = timer-300) no horário do vertical, " +
-  "com o corte _Instagram_ do Drive pela API; se não conseguir, volta a tentar sozinho de hora em hora até 3 h depois do horário do vertical " +
+  "com o vertical único do Drive pela API; se não conseguir, volta a tentar sozinho de hora em hora até 3 h depois do horário do vertical " +
   "e, se ainda assim o Reels não sair (acima do teto da API, credencial, falha), abre um alarme para o editor. " +
   "Para publicar pela API mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor: o lock do timer não cruza máquina e o Reels sai duplicado) " +
   "só esse destino com --only instagram --instagram-timer --publish " +
@@ -335,8 +364,17 @@ export const THREADS_TIMER_DETAIL =
  * editor postar à mão o que outra máquina vai publicar duplica o post.
  */
 export function publicVideoUnavailableReason(backend: InstagramBackend, r2Missing: readonly string[]): string {
+  const cause = publicVideoUnavailableCause(backend, r2Missing);
+  return backend === "timer-300" ? `${cause} — fica pendente; publica numa máquina com os secrets do R2 (ou à mão, registrando com --mark)` : cause;
+}
+
+/**
+ * Pure: só a causa, sem o "fica pendente" de X/Threads. É o que o Instagram do
+ * timer cita (#11355): ali quem responde é o alarme, com o que fazer no corpo.
+ */
+export function publicVideoUnavailableCause(backend: InstagramBackend, r2Missing: readonly string[]): string {
   return backend === "timer-300"
-    ? "sem URL pública do vertical: R2 não configurado nesta máquina (faltam os secrets R2_*/SHORTS_R2_*; o bucket existe desde 27/10/2026, #10772/#11265) — fica pendente; publica numa máquina com os secrets do R2 (ou à mão, registrando com --mark)"
+    ? "sem URL pública do vertical: R2 não configurado nesta máquina (faltam os secrets R2_*/SHORTS_R2_*; o bucket existe desde 27/10/2026, #10772/#11265)"
     : `falta ${r2Missing.join(", ")}`;
 }
 
@@ -460,9 +498,16 @@ const OWNER_SCHEDULE_MIN_LEAD_MS = 10 * 60_000;
  */
 export function assignShortsDestinationOwners(
   items: readonly ShortsPlanItem[],
-  ctx: { aammdd: string; now: Date; instagramViaTimer: boolean; writer?: ShortsRegistryWriter },
+  ctx: {
+    aammdd: string;
+    now: Date;
+    instagramViaTimer: boolean;
+    writer?: ShortsRegistryWriter;
+    /** #11795: comando base do corte avulso (`--corte SLUG`); os passos guiados re-executam por ele, sem a skill da edição. */
+    baseCommand?: string;
+  },
 ): ShortsDestinationOwner[] {
-  const base = `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}`;
+  const base = ctx.baseCommand ?? `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}`;
   const owners: ShortsDestinationOwner[] = [];
   for (const item of items) {
     const { destination, action } = item;
@@ -495,6 +540,21 @@ export function assignShortsDestinationOwners(
     } else if (action === "guided") {
       const at = item.at;
       const later = at !== undefined && Date.parse(at) - ctx.now.getTime() > OWNER_SCHEDULE_MIN_LEAD_MS;
+      if (ctx.baseCommand) {
+        // #11795: o corte não tem skill de re-execução (a `/diaria-publica-video` só conhece edição) e o
+        // comando do corte só imprime o plano de um passo guiado: o agente desta rodada é o dono real.
+        owners.push({
+          destination,
+          action,
+          by: "agent",
+          ...(at !== undefined ? { at } : {}),
+          note:
+            `passo guiado (Chrome) do corte, executado pelo agente nesta rodada` +
+            (later ? `: agendar na própria plataforma para ${at}, ou publicar e registrar com --mark` : "") +
+            ` (re-executar ${ctx.baseCommand} só reimprime o plano)`,
+        });
+        continue;
+      }
       owners.push(
         later
           ? {
@@ -502,7 +562,7 @@ export function assignShortsDestinationOwners(
               action,
               by: "agent-scheduled-task",
               at,
-              command: `/diaria-publica-video ${ctx.aammdd} --so vertical`,
+              command: ctx.baseCommand ?? `/diaria-publica-video ${ctx.aammdd} --so vertical`,
               note: `passo guiado da skill (Chrome) às ${at}: a skill agenda a própria re-execução para esse horário`,
             }
           : { destination, action, by: "agent", note: "passo guiado da skill (Chrome), executado pelo agente nesta rodada" },
@@ -527,6 +587,12 @@ export interface ShortsPlanInput {
   instagramReady: boolean;
   /** Por que o Instagram não está pronto (vira o aviso do plano). */
   instagramNotReadyReason?: string;
+  /**
+   * Plano B na conta sem teto (#11355) ou com o vertical dentro do teto (#11774): trata o Instagram como passo guiado com
+   * este motivo, sem olhar a duração. Só o `prepare-instagram-guided.ts` passa,
+   * e ele nunca publica; a rodada que publica segue pela API.
+   */
+  instagramGuidedFallback?: string;
   /** Avisos do Instagram pronto mas não totalmente conferido (ex.: escopo do token, #10820). */
   instagramWarnings?: string[];
   /**
@@ -549,7 +615,7 @@ export interface ShortsPlanInput {
    * #10772: dá pra servir o vertical por URL pública (R2)? O X (Buffer) só
    * recebe vídeo por URL. Ausente = não → X pulado com aviso.
    */
-  publicVideo?: { ready: true } | { ready: false; reason: string };
+  publicVideo?: { ready: true } | { ready: false; reason: string; cause?: string };
   /**
    * #11070: credencial do canal (`YOUTUBE_*`, `missingYouTubeCredentials`).
    * Pronta → o Short sobe pela Data API; ausente ou não pronta → passo guiado.
@@ -582,42 +648,43 @@ export interface ShortsPlanInput {
    * + `06-shorts-published.json`. Ausente = grade vazia.
    */
   grid?: ScheduledSlot[];
-}
-
-/**
- * Pure (#10943): `publishing.newsletter.backend` do config já carregado. Mesmo
- * fallback de `loadNewsletterBackend` (lib/newsletter-backend.ts): default
- * "kit" desde o #11225 — só o literal "beehiiv" é "beehiiv".
- */
-export function newsletterBackendOf(config: unknown): "kit" | "beehiiv" {
-  const backend = (config as { publishing?: { newsletter?: { backend?: unknown } } } | null)?.publishing?.newsletter?.backend;
-  return parseNewsletterBackend(backend);
+  /**
+   * #11795: corte avulso (`--corte SLUG`). Título e gancho explícitos no lugar
+   * do D1 (`reviewedMd` é ignorado), horário explícito fora do teste do
+   * #10831, sem delegar aos timers do 300 (eles não enxergam a pasta do corte)
+   * e re-execuções pelo comando do corte.
+   */
+  corte?: { slug: string; hhmm: string; title: string; hook: string };
 }
 
 /** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */
 export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const premises: string[] = [];
   const warnings: string[] = [];
-  const d1 = parseDestaques(input.reviewedMd).find((d) => d.n === 1);
+  const corte = input.corte;
+  // #11795: o corte está fora do teste de horário por definição; o texto do skip_late não pode citá-lo.
+  const lateReason = corte ? "passou do horário do corte (--at)" : "fora do horário do teste (#10831)";
+  const d1 = corte ? { n: 1, ...corteTextInput(corte) } : parseDestaques(input.reviewedMd).find((d) => d.n === 1);
   if (!d1) throw new Error("02-reviewed.md sem DESTAQUE 1 — nada para derivar o vídeo curto");
 
-  const editionUrl: string = input.editionUrl ?? deriveEditionUrl(d1.title);
-  if (input.editionUrl) {
+  const editionUrl: string = input.editionUrl ?? (corte ? DIARIA_HOME_URL : deriveEditionUrl(d1.title));
+  if (corte) {
+    // #11795: o corte não é de edição — nenhum texto do vertical leva link (#11617), então o link é só referência do plano.
+    premises.push(`corte avulso "${corte.slug}": título e gancho explícitos (sem D1); link de referência ${editionUrl}${input.editionUrl ? ` (${input.editionUrlSource ?? "--edition-url"})` : ""}`);
+  } else if (input.editionUrl) {
     premises.push(`link da edição: ${editionUrl} (${input.editionUrlSource ?? "--edition-url"})`);
-  } else if (newsletterBackendOf(input.config) === "kit") {
-    // #10943 item 3: no fluxo novo o vertical sai ANTES da Etapa 5, então
-    // `05-edition-url.txt` ainda não existe. Com backend "kit" o Stage 5 grava
-    // exatamente `deriveEditionUrl(D1)` (publish-newsletter-kit.ts, #7420): o
-    // link derivado aqui é o mesmo que o Stage 5 vai gravar, não um palpite.
-    premises.push(`link da edição: ${editionUrl} (derivado do título do D1 — mesma regra do Stage 5 com backend kit, #7420)`);
   } else {
-    premises.push(`link da edição derivado do slug do título do D1: ${editionUrl} (metadado do plano; não usado no texto do vertical)`);
+    // #10943 item 3: no fluxo novo o vertical sai ANTES da Etapa 5, então
+    // `05-edition-url.txt` ainda não existe. O Stage 5 grava exatamente
+    // `deriveEditionUrl(D1)` (publish-newsletter-kit.ts, #7420): o link derivado
+    // aqui é o mesmo que o Stage 5 vai gravar, não um palpite.
+    premises.push(`link da edição: ${editionUrl} (derivado do título do D1 — mesma regra do Stage 5, #7420)`);
   }
   const d1In = { title: d1.title, body: d1.body };
   const youtube = buildYouTubeShortMetadata({ d1: d1In });
 
   // #10831: o vertical tem horário próprio (nunca as 06:00 do horizontal).
-  const time = resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd);
+  const time = corte ? corteShortTime(corte.hhmm) : resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd);
   const shortTime = { ...time, at: resolveEditionScheduledAt(input.aammdd, time.hhmm) };
   premises.push(`horário do vertical: ${time.hhmm} BRT (${time.reason})`);
   if (input.forceNow) premises.push("--now: publica na hora");
@@ -649,7 +716,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const igMaxPremise = instagramApiMaxSecondsPremise(igMaxRes);
   if (igMaxPremise && destinations.some((d) => d.id === "instagram")) premises.push(igMaxPremise);
   const igAccountLabel = cfg.instagramAuthorPage === null ? "da diar.ia.br (env)" : `vinculada à página ${cfg.instagramAuthorPage}`;
-  const igFit = instagramReelsApiFit(input.videoDurationSeconds ?? null, igMax, igAccountLabel);
+  const igFit = input.instagramGuidedFallback
+    ? ({ fits: false, reason: input.instagramGuidedFallback } as const)
+    : instagramReelsApiFit(input.videoDurationSeconds ?? null, igMax, igAccountLabel);
   // Sem credencial (ou acima do teto, no Instagram) o destino não sai pela API — não disputa a grade nem gera premissa de horário.
   function publishable(d: ShortDestination): boolean {
     if (d.kind === "facebook_page") return !input.pages.find((p) => p.slug === d.slug)!.missing.length;
@@ -670,7 +739,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // grade, fora da rotação os dois divergiam (261117: shortTime 12:00, slot
   // 19:30) e o Reels nunca saía. Ele entra na grade como post fixo, pros
   // outros destinos se espaçarem em volta dele.
-  const instagramViaTimer = cfg.instagramBackend === "timer-300";
+  // #11795: o corte avulso nunca delega aos timers do 300 (eles procuram a pasta da edição).
+  const instagramViaTimer = cfg.instagramBackend === "timer-300" && !corte;
   const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
   const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
   const fixedInstagram = instagramViaTimer ? slotDestinations.find((d) => d.kind === "instagram") : undefined;
@@ -693,7 +763,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   ];
   const slotOf = new Map(slots.map((s) => [s.destination, s]));
   for (const s of slots) {
-    if (s.rule === "timer-300") premises.push(`${s.destination}: ${s.hhmm} BRT (${s.premise})`);
+    if (s.rule === "timer-300" || s.rule === "explicit") premises.push(`${s.destination}: ${s.hhmm} BRT (${s.premise})`);
     else if (s.rule !== "test-schedule") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
     if (s.warning) warnings.push(s.warning);
   }
@@ -729,9 +799,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   };
   const profileLate = lateFor("linkedin_profile");
   // #10982: com o timer do 300 dono do vídeo do perfil, a rodada da skill não o publica.
-  const profileDelegated = cfg.linkedinProfileViaTimer && input.writer !== "linkedin-timer";
+  const profileDelegated = cfg.linkedinProfileViaTimer && input.writer !== "linkedin-timer" && !corte;
   // #11410: idem pro Threads pessoal.
-  const threadsDelegated = cfg.threadsProfileViaTimer && input.writer !== "threads-timer";
+  const threadsDelegated = cfg.threadsProfileViaTimer && input.writer !== "threads-timer" && !corte;
 
   // #10772 F1: o repost da página só existe se o vídeo do perfil já está
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
@@ -811,7 +881,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       if (profileLate) {
         const nowCmd = lateNowArgs(dest.id, input.writer);
         const detail =
-          `${profileLate} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
+          `${profileLate} — ${lateReason}, esta rodada não publica sozinha. ` +
           `O agente publica com ${nowCmd} (ou registra com --mark linkedin_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`linkedin_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
@@ -903,7 +973,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       const late = lateFor(dest.id);
       if (late) {
         const detail =
-          `${late} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
+          `${late} — ${lateReason}, esta rodada não publica sozinha. ` +
           `O agente publica com ${lateNowArgs(dest.id, input.writer)} (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`threads_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
@@ -962,11 +1032,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       const slot = slotOf.get(dest.id);
       const hhmm = slot?.hhmm ?? time.hhmm;
       // #10915: o --publish gera a versão comprimida pro file_upload do Chrome (campo `upload` do item).
-      // #11390: a rota à mão é a do editor (@vjpixel autor, @diar.ia.br colaboradora), não a da API.
+      // #11794: a rota à mão tem a mesma autoria da API (@diar.ia.br autora, @vjpixel em collab).
       const detail =
         `${igFit.reason} — poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video, com o arquivo mirando 9,5 MB, abaixo do limite de 10 MB do file_upload, que o --publish gera em _internal/) ` +
         `ou no app, ${instagramChromeRouteText()}, às ${hhmm} BRT do dia da edição (slot reservado na grade, #10933), ` +
-        `e registre com --confirm-instagram (procura também no perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} enquanto o collab está pendente; ou --url URL do Reel) ou --mark instagram=URL`;
+        `e registre com --confirm-instagram (lê a conta da @${INSTAGRAM_CHROME_ROUTE.authorUsername}; ou --url URL do Reel) ou --mark instagram=URL`;
       warnings.push(`instagram: ${detail}`);
       let caption: string | undefined;
       try {
@@ -993,11 +1063,23 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       warnings.push(`instagram: ${(e as Error).message}`);
       return { destination: dest.id, mode: "api", action: "skip_invalid", detail: (e as Error).message };
     }
+    // #11355: na @diar.ia.br o Reels depende da URL pública. Sem R2 o publish não
+    // chega a tentar: o timer alarma citando o R2 (`cause`), e a limpeza do
+    // vertical não conta o destino como terminal (#11478).
+    const publishOrBlocked = (text: string): ShortsPlanItem => {
+      if (instagramReelUploadRoute(cfg.instagramAuthorPage) === "video_url" && input.publicVideo?.ready !== true) {
+        const why = input.publicVideo?.ready === false ? (input.publicVideo.cause ?? input.publicVideo.reason) : "não conferido";
+        const detail = `o Reels da @diar.ia.br sobe por URL pública (video_url, #11355), indisponível nesta rodada: ${why}`;
+        warnings.push(`instagram: ${detail}`);
+        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail, cause: "public_video" };
+      }
+      return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null };
+    };
     const slot = slotOf.get(dest.id)!;
     const schedule = scheduleFor(slot);
     if (instagramViaTimer) {
       // #11265: rodada do timer do 300. Antes do horário espera; até 3 h depois
-      // publica (upload resumível, sem URL pública); depois disso não publica
+      // publica (`video_url` na @diar.ia.br, #11355); depois disso não publica
       // sozinho fora do horário do teste (#10831), mesmo teto do linkedin_profile.
       if (schedule.mode === "scheduled") {
         return {
@@ -1012,12 +1094,12 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       const late = lateFor(dest.id);
       if (late) {
         const detail =
-          `${late} — fora do horário do teste (#10831), não publica sozinho. ` +
+          `${late} — ${lateReason}, não publica sozinho. ` +
           `Publique à mão (Passo B3b) e registre com --confirm-instagram ou --mark instagram=URL, ou rode com --now para publicar mesmo assim`;
         warnings.push(`instagram: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
-      return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
+      return publishOrBlocked(caption);
     }
     if (schedule.mode === "scheduled") {
       // #10823: a fila do Worker publica no horário (o Instagram não agenda Reels pela API).
@@ -1043,13 +1125,19 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         detail: `o Instagram não agenda Reels pela API — a skill agenda a re-execução para depois das ${slot.hhmm} BRT (owners, #11550).${why}`,
       };
     }
-    return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
+    return publishOrBlocked(caption);
   }
 
   // #11547: o que cada destino faz com a capa (Still) — ver scripts/lib/diaria/short-cover.ts.
   const coverCtx = { coverPath: input.coverPath ?? null, coverUploadReady: input.coverUploadReady === true, bufferOffsetMs: input.coverBufferOffsetMs ?? null };
   const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination, planCoverDestination(i, coverCtx)])) };
-  const owners = assignShortsDestinationOwners(items, { aammdd: input.aammdd, now: input.now, instagramViaTimer, writer: input.writer });
+  const owners = assignShortsDestinationOwners(items, {
+    aammdd: input.aammdd,
+    now: input.now,
+    instagramViaTimer,
+    writer: input.writer,
+    ...(corte ? { baseCommand: corteBaseCommand(corte.slug) } : {}),
+  });
   return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
 }
 
@@ -1186,17 +1274,51 @@ async function readJson(res: Response): Promise<any> {
   return res.json().catch(() => ({}));
 }
 
+/**
+ * #11774: teto de cada chamada à Graph (`graphPost`/`graphGet`). Sem ele, uma
+ * conexão travada segurava o lock do timer até a idade de lock velho (90 min,
+ * `SHORTS_TIMER_LOCK_STALE_MS`), e aí outra rodada podia publicar junto.
+ */
+export const GRAPH_REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * #11774: a Graph RESPONDEU com erro (HTTP não-ok, `error` no JSON ou resposta
+ * sem o campo esperado). Falha de transporte (timeout, conexão) não vira esta
+ * classe: ela não prova o que aconteceu do outro lado.
+ */
+export class GraphResponseError extends Error {
+  readonly status: number;
+  /** `error.code` da Graph (190 = token inválido ou revogado). */
+  readonly code: number | null;
+  constructor(message: string, status: number, code: number | null) {
+    super(message);
+    this.name = "GraphResponseError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/** Token inválido/revogado (OAuthException 190): repetir a consulta não adianta. */
+export function isGraphAuthError(e: unknown): boolean {
+  return e instanceof GraphResponseError && e.code === 190;
+}
+
+function graphError(method: string, path: string, res: Response, json: any): GraphResponseError {
+  const code = typeof json?.error?.code === "number" ? json.error.code : null;
+  return new GraphResponseError(`${method} ${path}: ${res.status} ${JSON.stringify(json?.error ?? json)}`, res.status, code);
+}
+
 async function graphPost(deps: GraphDeps, path: string, params: Record<string, string>, apiVersion: string, base = GRAPH): Promise<any> {
-  const res = await deps.fetch(`${base}/${apiVersion}/${path}`, { method: "POST", body: new URLSearchParams(params) });
+  const res = await deps.fetch(`${base}/${apiVersion}/${path}`, { method: "POST", body: new URLSearchParams(params), signal: AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS) });
   const json = await readJson(res);
-  if (!res.ok || json.error) throw new Error(`POST ${path}: ${res.status} ${JSON.stringify(json.error ?? json)}`);
+  if (!res.ok || json.error) throw graphError("POST", path, res, json);
   return json;
 }
 
 async function graphGet(deps: GraphDeps, path: string, params: Record<string, string>, apiVersion: string): Promise<any> {
-  const res = await deps.fetch(`${GRAPH}/${apiVersion}/${path}?${new URLSearchParams(params)}`);
+  const res = await deps.fetch(`${GRAPH}/${apiVersion}/${path}?${new URLSearchParams(params)}`, { signal: AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS) });
   const json = await readJson(res);
-  if (!res.ok || json.error) throw new Error(`GET ${path}: ${res.status} ${JSON.stringify(json.error ?? json)}`);
+  if (!res.ok || json.error) throw graphError("GET", path, res, json);
   return json;
 }
 
@@ -1248,6 +1370,42 @@ export interface PublishOutcome {
   unconfirmed?: boolean;
   /** Avisos pós-publicação (ex.: convite de collab descartado, #10820). */
   warnings?: string[];
+  /** #11355: outro processo registrou o destino antes do publish; nada saiu nesta rodada e `entry` é o registro dele. */
+  alreadyRegistered?: true;
+}
+
+/**
+ * #11869: o `finish` do Facebook (`/videos` ou `video_reels`) falhou sem resposta
+ * definitiva da Graph — timeout de 60 s (`GRAPH_REQUEST_TIMEOUT_MS`), queda de
+ * conexão ou 5xx. A Meta pode ter processado o `finish` e agendado (ou
+ * publicado) o vídeo. Tratar como falha comum fazia a próxima rodada subir o
+ * vídeo de novo e criar um 2º Reel na página pública; `publishFacebookReel`
+ * converte este erro num registro `send_unknown` (conta como feito, nunca
+ * re-posta), como o `media_publish` do Instagram (#11774).
+ */
+export class FacebookFinishUncertainError extends Error {
+  readonly videoId: string;
+  constructor(message: string, videoId: string) {
+    super(message);
+    this.name = "FacebookFinishUncertainError";
+    this.videoId = videoId;
+  }
+}
+
+/**
+ * #11869: o `finish` do upload do Facebook. Resposta da Graph com erro 4xx (ou
+ * 200 sem `success: true`) prova que o `finish` não valeu e lança o erro comum;
+ * falha de transporte ou 5xx lança `FacebookFinishUncertainError`.
+ */
+async function facebookFinish(deps: GraphDeps, path: string, params: Record<string, string>, apiVersion: string, base: string, videoId: string): Promise<void> {
+  let done: any;
+  try {
+    done = await graphPost(deps, path, params, apiVersion, base);
+  } catch (e) {
+    if (mediaPublishFailureIsDefinitive(e)) throw e;
+    throw new FacebookFinishUncertainError(`POST ${path} (finish) sem resposta definitiva: ${(e as Error).message}`, videoId);
+  }
+  if (done.success !== true) throw new Error(`POST ${path} (finish) sem success: ${JSON.stringify(done)}`);
 }
 
 /** Teto de blocos do upload resumable — só existe pra nunca virar loop infinito (o servidor dita o tamanho do bloco). */
@@ -1310,8 +1468,7 @@ export async function uploadFacebookVideoResumable(
     finish.published = "false";
     finish.scheduled_publish_time = String(Math.floor(Date.parse(scheduledAt) / 1000));
   }
-  const done = await graphPost(deps, path, finish, apiVersion, GRAPH_VIDEO);
-  if (done.success !== true) throw new Error(`POST ${path} (finish) sem success: ${JSON.stringify(done)}`);
+  await facebookFinish(deps, path, finish, apiVersion, GRAPH_VIDEO, videoId); // #11869
   return videoId;
 }
 
@@ -1347,6 +1504,8 @@ export async function setFacebookVideoThumbnail(
 /**
  * Reels numa Página. ≤90 s: `video_reels` (start → rupload → finish). >90 s: `/videos` resumable (#10815).
  * #11547: com `cover`, aplica a capa logo depois do upload (as duas rotas).
+ * #11869: `finish` sem resposta definitiva (timeout, conexão, 5xx) devolve o
+ * registro `send_unknown` com o `video_id`, sem esperar processamento nem capa.
  */
 export async function publishFacebookReel(
   deps: GraphDeps,
@@ -1362,22 +1521,40 @@ export async function publishFacebookReel(
   const route = facebookUploadRoute(mp4DurationSeconds(file));
   let videoId: string;
 
-  if (route === "video_reels") {
-    const start = await graphPost(deps, `${page.pageId}/video_reels`, { upload_phase: "start", access_token: page.token }, apiVersion);
-    videoId = start.video_id;
-    if (!videoId) throw new Error(`video_reels start sem video_id: ${JSON.stringify(start)}`);
-    await ruploadBinary(deps, start.upload_url ?? `${RUPLOAD}/video-upload/${apiVersion}/${videoId}`, page.token, file);
-    const finish: Record<string, string> = { upload_phase: "finish", video_id: videoId, description: caption, access_token: page.token };
-    if (scheduledAt) {
-      finish.video_state = "SCHEDULED";
-      finish.scheduled_publish_time = String(Math.floor(Date.parse(scheduledAt) / 1000));
+  try {
+    if (route === "video_reels") {
+      const start = await graphPost(deps, `${page.pageId}/video_reels`, { upload_phase: "start", access_token: page.token }, apiVersion);
+      videoId = start.video_id;
+      if (!videoId) throw new Error(`video_reels start sem video_id: ${JSON.stringify(start)}`);
+      await ruploadBinary(deps, start.upload_url ?? `${RUPLOAD}/video-upload/${apiVersion}/${videoId}`, page.token, file);
+      const finish: Record<string, string> = { upload_phase: "finish", video_id: videoId, description: caption, access_token: page.token };
+      if (scheduledAt) {
+        finish.video_state = "SCHEDULED";
+        finish.scheduled_publish_time = String(Math.floor(Date.parse(scheduledAt) / 1000));
+      } else {
+        finish.video_state = "PUBLISHED";
+      }
+      await facebookFinish(deps, `${page.pageId}/video_reels`, finish, apiVersion, GRAPH, videoId); // #11869
     } else {
-      finish.video_state = "PUBLISHED";
+      videoId = await uploadFacebookVideoResumable(deps, page, apiVersion, file, caption, scheduledAt);
     }
-    const done = await graphPost(deps, `${page.pageId}/video_reels`, finish, apiVersion);
-    if (done.success !== true) throw new Error(`video_reels finish sem success: ${JSON.stringify(done)}`);
-  } else {
-    videoId = await uploadFacebookVideoResumable(deps, page, apiVersion, file, caption, scheduledAt);
+  } catch (e) {
+    if (!(e instanceof FacebookFinishUncertainError)) throw e;
+    // #11869: o finish pode ter valido do lado da Meta — registra estado incerto, nunca re-posta sozinho.
+    const at = deps.now().toISOString();
+    return {
+      entry: {
+        destination: facebookDestinationId(page.slug),
+        status: "send_unknown",
+        id: e.videoId,
+        scheduled_at: scheduledAt,
+        at,
+      },
+      warnings: [
+        `${e.message}: o vídeo ${e.videoId} PODE estar ${scheduledAt ? "agendado" : "no ar"} na página — confira no Meta Business Suite antes de repostar; ` +
+          `se não estiver, apague a entrada de ${facebookDestinationId(page.slug)} do registro e rode de novo`,
+      ],
+    };
   }
 
   const confirmed = await waitFacebookProcessing(deps, videoId, page.token, apiVersion);
@@ -1495,38 +1672,169 @@ export async function resolveInstagramAuthor(
   };
 }
 
-/** Reels no Instagram: container resumable → rupload → espera FINISHED → media_publish. */
+/** #11355: como o Reels chega à Meta: bytes pelo rupload ou URL pública que ela baixa. */
+export type InstagramReelSource = Buffer | { videoUrl: string };
+
+/**
+ * #11355: chave do vertical no R2 para o Reels. O arquivo genérico divide o
+ * objeto com X e Threads; o corte próprio do Instagram (o timer passa `--video`
+ * com ele) tem chave própria, senão o PUT trocaria o vídeo que a Buffer ainda
+ * vai baixar pro X. A chave do corte leva o hash do conteúdo: trocado o corte no
+ * Drive, a URL muda e nenhum cache serve o vídeo velho para a Meta.
+ */
+export function instagramR2VideoKey(aammdd: string, videoPath: string, file: Buffer): string {
+  const generic = shortVideoFileName(aammdd);
+  if (basename(videoPath) === generic) return `shorts/${generic}`;
+  const hash = createHash("sha256").update(file).digest("hex").slice(0, 12);
+  return `shorts/${shortInstagramVideoFileName(aammdd).replace(/\.mp4$/, "")}-${hash}.mp4`;
+}
+
+/** #11355: a rota do Reels nesta rodada e, na `video_url`, onde o vídeo fica no R2. */
+export type InstagramReelRouteChoice =
+  | { route: "rupload" }
+  /** `genericKey`: objeto do vertical genérico, que serve se o corte for idêntico a ele; null quando `key` já é ele. */
+  | { route: "video_url"; key: string; genericKey: string | null };
+
+/** Pure (#11355): a ligação entre a autora, o arquivo e a rota, fora do `main()` para ter teste. */
+export function instagramReelRouteChoice(input: {
+  authorPage: string | null;
+  aammdd: string;
+  videoPath: string;
+  file: Buffer;
+  /** #11795: corte avulso — o Reels usa o mesmo objeto do corte que X e Threads (`corteR2Key`), nunca a chave da edição. */
+  corteVideoKey?: string;
+}): InstagramReelRouteChoice {
+  if (instagramReelUploadRoute(input.authorPage) === "rupload") return { route: "rupload" };
+  if (input.corteVideoKey) return { route: "video_url", key: input.corteVideoKey, genericKey: null };
+  const key = instagramR2VideoKey(input.aammdd, input.videoPath, input.file);
+  const generic = `shorts/${shortVideoFileName(input.aammdd)}`;
+  return { route: "video_url", key, genericKey: key === generic ? null : generic };
+}
+
+/**
+ * #11355: URL do vídeo do Reels. Corte idêntico ao vertical genérico já no
+ * bucket reaproveita aquele objeto, sem duplicar o conteúdo em duas chaves.
+ */
+export async function instagramReelVideoUrl(
+  choice: Extract<InstagramReelRouteChoice, { route: "video_url" }>,
+  deps: { urlIfSameContent: (key: string) => Promise<string | null>; upload: (key: string) => Promise<string> },
+): Promise<string> {
+  const reused = choice.genericKey ? await deps.urlIfSameContent(choice.genericKey) : null;
+  return reused ?? deps.upload(choice.key);
+}
+
+/**
+ * #11355: reconferência do registro logo antes do `media_publish`, sem custo de
+ * rede (o processamento leva até 72 s, e o `--mark` ou `--confirm-instagram` de
+ * outro processo pode ter entrado nesse meio tempo). Registro ilegível lança.
+ */
+export function instagramPublishRecheck(
+  dir: string,
+  aammdd: string,
+  onFresh: (fresh: ShortsPublishedFile) => void,
+  read: (dir: string, aammdd: string) => ShortsPublishedFile = readShortsRegistry,
+): () => ShortPublishedEntry | null {
+  return () => {
+    const recheck = recheckBeforePublish(dir, aammdd, "instagram", read);
+    if (recheck.kind === "unreadable") throw new Error(recheck.error);
+    if (recheck.kind === "proceed") return null;
+    onFresh(recheck.fresh);
+    return recheck.entry;
+  };
+}
+
+/**
+ * #11355 (porta `containerWasPublished` do Worker, #10877): o que o container diz
+ * depois de uma falha no `media_publish`. Timeout ou 5xx não provam que o Reels
+ * não saiu. `unknown` = a consulta falhou ou não trouxe o estado.
+ */
+async function instagramContainerPublishState(deps: GraphDeps, containerId: string, token: string, apiVersion: string): Promise<"published" | "finished" | "not_published" | "unknown"> {
+  try {
+    const code = (await graphGet(deps, containerId, { fields: "status_code", access_token: token }, apiVersion)).status_code;
+    if (typeof code !== "string" || !code) return "unknown";
+    if (code === "FINISHED") return "finished"; // #11774: pronto, e o publish pode estar em andamento
+    return code === "PUBLISHED" ? "published" : "not_published";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * #11774: a falha do `media_publish` prova que a Meta recusou? Só uma resposta
+ * da Graph abaixo de 500 prova (4xx, ou 200 sem o id da mídia). Timeout, conexão caída ou 5xx deixam o publish possivelmente
+ * em andamento: o container ainda aparece FINISHED (não PUBLISHED) e relançar
+ * faria a próxima rodada depender só do gate do `/media`.
+ */
+export function mediaPublishFailureIsDefinitive(e: unknown): boolean {
+  return e instanceof GraphResponseError && e.status < 500;
+}
+
+/**
+ * #11355: fonte e capa do Reels, pela rota da autora. Na rota `video_url` a capa
+ * sobe ANTES do vídeo: o upload da capa roda a poda de retenção de `shorts/`
+ * (#10923), que apagaria um vertical mais velho que 7 dias reaproveitado antes
+ * dela. Nesta ordem, o HEAD do vídeo vê o 404 da poda e sobe de novo. Falha no
+ * upload do vídeo lança antes de qualquer container.
+ */
+export async function resolveInstagramReelInputs(input: {
+  route: InstagramReelUploadRoute;
+  file: Buffer;
+  uploadCover: () => Promise<ReelCoverUpload>;
+  uploadVideo: () => Promise<string>;
+}): Promise<{ source: InstagramReelSource; cover: ReelCoverUpload }> {
+  const cover = await input.uploadCover();
+  if (input.route === "rupload") return { source: input.file, cover };
+  return { source: { videoUrl: await input.uploadVideo() }, cover };
+}
+
+/**
+ * Reels no Instagram → espera FINISHED → media_publish. Duas rotas de container
+ * (#11355): `video_url` (a Meta baixa e processa sem o prazo de uma requisição,
+ * mesmos parâmetros de `fireInstagramReels` no Worker) ou resumable + rupload.
+ * O poll de até 10 min cobre o pior caso medido na `video_url`, 72 s.
+ */
 export async function publishInstagramReel(
   deps: GraphDeps,
   igUserId: string,
   token: string,
   apiVersion: string,
-  file: Buffer,
+  source: InstagramReelSource,
   caption: string,
   collaborators: string[] = [],
   cover?: ReelCoverUpload,
+  /** `beforePublish`: devolve o registro de outro processo (não publica) ou null; lançar também não publica. */
+  opts: { beforePublish?: () => ShortPublishedEntry | null | Promise<ShortPublishedEntry | null> } = {},
 ): Promise<PublishOutcome> {
   const coverUrl = reelCoverUrl(cover);
-  const params: Record<string, string> = { media_type: "REELS", upload_type: "resumable", caption, share_to_feed: "true", access_token: token };
+  const file = Buffer.isBuffer(source) ? source : null;
+  const params: Record<string, string> = {
+    media_type: "REELS",
+    ...(Buffer.isBuffer(source) ? { upload_type: "resumable" } : { video_url: source.videoUrl }),
+    caption,
+    share_to_feed: "true",
+    access_token: token,
+  };
   // #10790: collab — a Graph API recebe a lista como JSON; cada conta aceita o convite no app.
   if (coverUrl) params.cover_url = coverUrl;
   if (collaborators.length) params.collaborators = JSON.stringify(collaborators);
   const container = await graphPost(deps, `${igUserId}/media`, params, apiVersion);
   const containerId: string = container.id;
   if (!containerId) throw new Error(`media (REELS) sem id: ${JSON.stringify(container)}`);
-  try {
-    await ruploadBinary(deps, container.uri ?? `${RUPLOAD}/ig-api-upload/${apiVersion}/${containerId}`, token, file);
-  } catch (e) {
-    const msg = (e as Error).message;
-    // #10893: é assim que o teto de duração aparece — o rupload aceita os bytes e recusa no processamento.
-    if (/ProcessingFailedError/.test(msg)) {
-      throw new Error(
-        `${msg} — padrão do teto de duração do Reels pela API (#10893); poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video) ou no app ` +
-          `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL ` +
-          `(ajuste o teto desta conta em publishing.shorts.instagram_api_max_seconds_by_account se ele mudou, #10916)`,
-      );
+  if (file) {
+    try {
+      await ruploadBinary(deps, container.uri ?? `${RUPLOAD}/ig-api-upload/${apiVersion}/${containerId}`, token, file);
+    } catch (e) {
+      const msg = (e as Error).message;
+      // #10893: é assim que o teto de duração aparece — o rupload aceita os bytes e recusa no processamento.
+      if (/ProcessingFailedError/.test(msg)) {
+        throw new Error(
+          `${msg} — padrão do teto de duração do Reels pela API (#10893); poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video) ou no app ` +
+            `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL ` +
+            `(ajuste o teto desta conta em publishing.shorts.instagram_api_max_seconds_by_account se ele mudou, #10916)`,
+        );
+      }
+      throw e;
     }
-    throw e;
   }
   let last = "";
   for (let i = 0; ; i++) {
@@ -1535,19 +1843,50 @@ export async function publishInstagramReel(
     try {
       st = await graphGet(deps, containerId, { fields: "status_code,status", access_token: token }, apiVersion);
     } catch (e) {
+      // #11774: token revogado (190) não melhora com o tempo — falha já, sem 10 min de poll.
+      if (isGraphAuthError(e)) throw new Error(`container ${containerId}: token do Instagram recusado (${(e as Error).message}) — renove o token da página autora`);
       // Falha transitória na consulta não joga fora o upload — tenta de novo até o teto.
       last = (e as Error).message;
       deps.log(`[aviso] instagram: status do container falhou (${last}) — tentando de novo`);
       await deps.sleep(10_000);
       continue;
     }
-    last = st.status_code;
+    // #11774: o `status` (texto da Meta) acompanha o código no erro de tempo esgotado.
+    last = [st.status_code, st.status].filter((x) => typeof x === "string" && x).join(" ");
     if (st.status_code === "FINISHED") break;
-    if (st.status_code === "ERROR" || st.status_code === "EXPIRED") throw new Error(`container ${containerId}: ${st.status_code} ${st.status ?? ""}`);
+    if (st.status_code === "ERROR" || st.status_code === "EXPIRED") {
+      // #11355: o Reels não saiu; a rota à mão segue valendo.
+      const hint = file ? "" : " — pela rota video_url (#11355); se persistir, poste pelo Chrome (Passo B3b do /diaria-publica-video) e registre com --confirm-instagram";
+      throw new Error(`container ${containerId}: ${st.status_code} ${st.status ?? ""}${hint}`);
+    }
     await deps.sleep(10_000);
   }
-  const pub = await graphPost(deps, `${igUserId}/media_publish`, { creation_id: containerId, access_token: token }, apiVersion);
-  if (!pub.id) throw new Error(`media_publish sem id: ${JSON.stringify(pub)}`);
+  const registered = (await opts.beforePublish?.()) ?? null;
+  if (registered) return { entry: registered, alreadyRegistered: true };
+  let pub: any;
+  try {
+    pub = await graphPost(deps, `${igUserId}/media_publish`, { creation_id: containerId, access_token: token }, apiVersion);
+    // Resposta 200 sem id: a Graph respondeu, o publish não está em andamento (#11774).
+    if (!pub.id) throw new GraphResponseError(`media_publish sem id: ${JSON.stringify(pub)}`, 200, null);
+  } catch (e) {
+    const failure = (e as Error).message;
+    const container = await instagramContainerPublishState(deps, containerId, token, apiVersion);
+    // #11774: container FINISHED depois de timeout/5xx não prova que o publish não segue em andamento.
+    const state = container === "finished" ? (mediaPublishFailureIsDefinitive(e) ? "not_published" : "unknown") : container;
+    if (state === "not_published") throw e;
+    const at = deps.now().toISOString();
+    if (state === "published") {
+      // Sem o id da mídia não há permalink: o registro sai sem `url` e o timer pede a conferência.
+      return {
+        entry: withCoverRecord({ destination: "instagram", status: "published", id: containerId, scheduled_at: null, at }, reelCoverRecord(cover)),
+        warnings: [`media_publish falhou (${failure}), mas o container ${containerId} está PUBLISHED: o Reels está no ar, sem permalink no registro — não reposte; registre com --mark instagram=URL`],
+      };
+    }
+    return {
+      entry: withCoverRecord({ destination: "instagram", status: "send_unknown", id: `send_unknown-${at}`, scheduled_at: null, at }, reelCoverRecord(cover)),
+      warnings: [`media_publish falhou (${failure}) e a consulta do container ${containerId} também: o Reels PODE estar no ar — confira a conta antes de repostar; registre com --mark instagram=URL`],
+    };
+  }
   let url: string | undefined;
   try {
     url = (await graphGet(deps, pub.id, { fields: "permalink", access_token: token }, apiVersion)).permalink;
@@ -1851,10 +2190,10 @@ export function decideInstagramConfirm(input: {
 }
 
 /**
- * #11390: recusas da conta da API em que vale procurar no perfil do autor da
- * rota do Chrome (`INSTAGRAM_CHROME_ROUTE`): nada da edição na conta (o post
- * só aparece na @diar.ia.br depois que o convite de collab é aceito), ou o
- * `--media-id` escolhido não está entre as mídias dela. Ambíguo e janela
+ * #11390/#11794: recusas da conta da API em que vale procurar no perfil do autor
+ * da rota do Chrome (`INSTAGRAM_CHROME_ROUTE`), quando ele é outra conta (só com
+ * `instagram_author_page` apontando para outra página): nada da edição na conta,
+ * ou o `--media-id` escolhido não está entre as mídias dela. Ambíguo e janela
  * incompleta não: lá a conta já tem candidato e quem escolhe é o editor.
  */
 const CHROME_AUTHOR_FALLBACK_CAUSES: ReadonlySet<string> = new Set(["none", "no-match", "media-id"]);
@@ -1868,11 +2207,11 @@ export interface InstagramConfirmAcrossAccounts {
 }
 
 /**
- * #11390: o `--confirm-instagram` procura primeiro na conta da API e, se ela
- * não tem o Reels da edição, no perfil do autor da rota do Chrome
- * (@vjpixel), onde o post fica enquanto o collab com a @diar.ia.br está
- * pendente. `chromeAuthor` null = o perfil não é consultável (sem credencial,
- * ou é a mesma conta da API); o motivo vem em `chromeAuthorUnavailable`.
+ * #11390/#11794: o `--confirm-instagram` procura primeiro na conta da API e, se
+ * ela não tem o Reels da edição, no perfil do autor da rota do Chrome, quando
+ * ele é outra conta. Na config de produção a autora é a própria conta da API e
+ * não há segundo perfil. `chromeAuthor` null = o perfil não é consultável (sem
+ * credencial, ou é a mesma conta da API); o motivo vem em `chromeAuthorUnavailable`.
  * Falha na leitura do perfil nunca derruba a decisão da conta da API.
  */
 export async function decideInstagramConfirmAcrossAccounts(deps: {
@@ -1898,8 +2237,7 @@ export async function decideInstagramConfirmAcrossAccounts(deps: {
 
 /**
  * Pure (#11390): `--confirm-instagram --url URL` registra o Reel pela URL que
- * o editor copiou (o post do collab pendente, sem acesso ao perfil do autor
- * pela API). Só aceita permalink do instagram.com (`/reel/`, `/reels/`, `/p/`,
+ * o editor copiou (sem conferência pela API). Só aceita permalink do instagram.com (`/reel/`, `/reels/`, `/p/`,
  * com ou sem o usuário antes); a query (`?igsh=...`) sai do registro.
  */
 export function instagramConfirmUrlEntry(url: string, nowIso: string): { ok: true; entry: ShortPublishedEntry } | { ok: false; error: string } {
@@ -1918,9 +2256,12 @@ export interface ChromeAuthorResolution {
 }
 
 /**
- * #11390: o leitor do perfil do autor da rota do Chrome (@vjpixel), só leitura.
- * `reader` null = não consultável (mesma conta da API, sem credencial, ou a
- * leitura falhou — `readFailed`, #11427), com o motivo em `unavailable`.
+ * #11390: o leitor do perfil do autor da rota do Chrome (@diar.ia.br, #11794), só
+ * leitura. `reader` null = não consultável (mesma conta da API, sem credencial, ou
+ * a leitura falhou — `readFailed`, #11427), com o motivo em `unavailable`.
+ * Compara por `instagramAccountKey`: `instagram_author_page: null` (a conta do
+ * env) e a página `diaria` são a mesma conta, e nenhuma credencial de página é
+ * pedida nesse caso.
  */
 export async function resolveChromeAuthorReader(
   apiAuthorPage: string | null,
@@ -1928,10 +2269,41 @@ export async function resolveChromeAuthorReader(
   igApiVersion: string,
   deps: Pick<GraphDeps, "fetch"> = defaultGraphDeps,
 ): Promise<ChromeAuthorResolution> {
-  if (apiAuthorPage === INSTAGRAM_CHROME_ROUTE.authorPage) return { reader: null, unavailable: "é a mesma conta da API", sameAccount: true };
+  if (instagramAccountKey(apiAuthorPage) === instagramAccountKey(INSTAGRAM_CHROME_ROUTE.authorPage)) return { reader: null, unavailable: "é a mesma conta da API", sameAccount: true };
   const resolved = await resolveInstagramAuthor(deps, INSTAGRAM_CHROME_ROUTE.authorPage, pages, igApiVersion, { igUserId: "", token: "" }, { readOnly: true });
   if (resolved.ready) return { reader: resolved };
   return { reader: null, unavailable: resolved.reason, ...(resolved.readFailed ? { readFailed: true as const } : {}) };
+}
+
+/**
+ * Pure (#11794): o perfil do autor resolvido → as deps do
+ * `decideInstagramConfirmAcrossAccounts`. Mesma conta da API não tem segundo
+ * perfil a consultar, então a recusa não leva nota de "perfil não consultado".
+ */
+export function confirmChromeAuthorDeps(
+  chrome: ChromeAuthorResolution,
+  readFor: (igUserId: string, token: string) => () => Promise<InstagramConfirmDecision>,
+): { chromeAuthor: (() => Promise<InstagramConfirmDecision>) | null; chromeAuthorUnavailable?: string } {
+  if (chrome.reader) return { chromeAuthor: readFor(chrome.reader.igUserId, chrome.reader.token) };
+  if (chrome.sameAccount || chrome.unavailable === undefined) return { chromeAuthor: null };
+  return { chromeAuthor: null, chromeAuthorUnavailable: chrome.unavailable };
+}
+
+/**
+ * Pure (#11794): de quem o `--confirm-instagram` cobra o collab. O Reels achado na
+ * conta da autora da rota do Chrome (no perfil dela ou porque ela é a conta da
+ * API) exige a @vjpixel mesmo que `instagram_collaborators` mude; em outra conta
+ * da API, valem só os do config.
+ */
+export function instagramConfirmExpectedCollabs(input: {
+  account: InstagramConfirmAcrossAccounts["account"];
+  sameAccount: boolean;
+  configCollaborators: string[];
+}): string[] {
+  const routeCollab: string = INSTAGRAM_CHROME_ROUTE.collaboratorUsername;
+  if (input.account === "chrome-author") return [routeCollab];
+  if (!input.sameAccount) return input.configCollaborators;
+  return input.configCollaborators.includes(routeCollab) ? input.configCollaborators : [...input.configCollaborators, routeCollab];
 }
 
 /**
@@ -1962,24 +2334,27 @@ export function timerChromeAuthorDeps(
 
 /**
  * #11389/#11390 (fix do review do PR #11395): a conferência da conta ANTES de o
- * timer publicar olha também o perfil do autor da rota do Chrome. Um Reels
- * postado à mão (@vjpixel autor, collab pendente) não aparece na conta da API
- * até o convite ser aceito; sem isto o timer publicaria de novo, em conta
- * pública. Regras:
+ * timer publicar olha também o perfil do autor da rota do Chrome, quando ele é
+ * outra conta. Na config de produção (#11794) a autora à mão é a própria conta da
+ * API: o Reels aparece nela depois do processamento (30 a 60 s), e a leitura da
+ * API basta; uma rodada dentro desses segundos não o vê e publica. Reel só na
+ * @vjpixel não é lido, risco aceito (#11794: nunca postar por essa conta). Com
+ * `instagram_author_page` em outra página, um Reels à mão não apareceria na conta
+ * da API e o timer publicaria de novo, em conta pública. Regras:
  * - a conta da API acha o Reels, ou bloqueia (ambíguo/janela) → vale ela;
  * - nada na conta da API → a decisão do perfil do autor, se ele achou ou
  *   bloqueou; se ele também não tem nada, segue a da API (publica);
  * - leitura do perfil que falha → propaga (o gate vira `read-failed` e não
  *   publica: fail-closed, igual à leitura da conta da API);
- *   inclui a leitura da conta vinculada à página `vjpixel` com a credencial
+ *   inclui a leitura da conta vinculada à página do autor com a credencial
  *   presente (#11427, `timerChromeAuthorDeps`): é transitória, não
  *   `author-unchecked`;
  * - perfil não consultável por ser a mesma conta da API (`chromeAuthor` null,
  *   sem `chromeAuthorUnavailable`) → segue a da API: ela já é o perfil do autor;
- * - perfil não consultável por falta da credencial da página `vjpixel`
+ * - perfil não consultável por falta da credencial da página do autor
  *   (`chromeAuthor` null com `chromeAuthorUnavailable`) → fail-closed (#11421):
  *   lança `InstagramTimerGateError` `author-unchecked` e não publica. Um Reels
- *   postado à mão com collab pendente seria invisível e a API duplicaria o post
+ *   postado à mão seria invisível e a API duplicaria o post
  *   em conta pública; o timer alarma para o editor postar pelo Chrome ou prover
  *   a credencial. Só vale quando a conta da API não tem nada: achado/bloqueio
  *   nela continua decidindo sozinho.
@@ -1995,7 +2370,7 @@ export async function decideInstagramTimerAcrossAccounts(deps: {
   if (!deps.chromeAuthor) {
     if (deps.chromeAuthorUnavailable === undefined) return primary;
     throw new InstagramTimerGateError(
-      `o perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não foi conferido (${deps.chromeAuthorUnavailable}) — um Reels postado à mão com collab pendente não aparece na conta da API; o timer não publica sem conferir. Poste pelo Chrome (collab) ou forneça a credencial da página ${INSTAGRAM_CHROME_ROUTE.authorPage} no 300`,
+      `o perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não foi conferido (${deps.chromeAuthorUnavailable}) — um Reels postado à mão fica nesse perfil, não na conta da API; o timer não publica sem conferir. Poste pelo Chrome ou forneça a credencial da página ${INSTAGRAM_CHROME_ROUTE.authorPage} no 300`,
       "author-unchecked",
     );
   }
@@ -2032,7 +2407,7 @@ export function instagramTimerPreflight(decision: InstagramConfirmDecision): Ins
  * `read-failed` = a leitura do `/media` falhou; `persist-failed` = o Reels foi
  * ACHADO na conta, mas o registro não foi gravado (`entry` = o achado);
  * `author-unchecked` (#11421) = nada na conta da API, mas o perfil do autor da
- * rota do Chrome (@vjpixel) não pôde ser conferido (sem credencial).
+ * rota do Chrome, sendo outra conta, não pôde ser conferido (sem credencial).
  */
 export type InstagramTimerGateFailure = "blocked" | "read-failed" | "persist-failed" | "author-unchecked";
 
@@ -2110,6 +2485,50 @@ export async function instagramTimerPublishStep<T>(deps: {
   const gate = await deps.gate();
   if (gate.kind === "already") return gate;
   return { kind: "published", outcome: await deps.publish() };
+}
+
+/**
+ * #11828: o timer achou o Reels feito à mão na conta e o registrou sem publicar.
+ * Relê `/{media}/collaborators` e devolve um aviso quando falta um collab
+ * esperado (a @vjpixel, na rota do Chrome). Nunca lança nem bloqueia: o registro
+ * já foi gravado e o Reels está no ar. `registry` não relê, porque nada foi
+ * gravado nesta rodada (o registro veio de antes).
+ */
+export async function instagramTimerAlreadyCollabWarnings(
+  deps: Pick<GraphDeps, "fetch">,
+  input: { matchedBy: InstagramTimerAlreadyMatch; mediaId: string; token: string; apiVersion: string; expected: string[] },
+): Promise<string[]> {
+  if (input.matchedBy === "registry" || input.expected.length === 0) return [];
+  return checkInstagramCollaborators(deps, input.mediaId, input.token, input.apiVersion, input.expected);
+}
+
+/**
+ * #11774: a reconferência logo antes do `media_publish` na rodada do timer. O
+ * gate da conta roda antes do upload no R2; o upload e o processamento levam
+ * minutos, e um Share feito por fora nesse meio tempo não está no registro
+ * local. Por isso, depois do registro local (sem custo de rede), o gate da conta
+ * roda de novo: Reels achado → grava e não publica; gate que lança → não publica
+ * (o erro segue como `cause: "preflight"`).
+ */
+export function instagramTimerBeforePublish(deps: {
+  local: () => ShortPublishedEntry | null;
+  gate: () => ReturnType<typeof instagramTimerGate>;
+  /**
+   * #11870: o gate da conta achou o Reels nesta reconferência (e gravou). Leva o
+   * `matchedBy` ao chamador, que relê os collabs como no passo `already` do
+   * início da rodada (#11828). O achado no registro local não chama: nada foi
+   * gravado por esta rodada.
+   */
+  onAlready?: (hit: { entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch }) => void;
+}): () => Promise<ShortPublishedEntry | null> {
+  return async () => {
+    const local = deps.local();
+    if (local) return local;
+    const gate = await deps.gate();
+    if (gate.kind !== "already") return null;
+    deps.onAlready?.({ entry: gate.entry, matchedBy: gate.matchedBy });
+    return gate.entry;
+  };
 }
 
 /**
@@ -2495,6 +2914,11 @@ export async function publishYouTubeShort(input: {
   onBeforeBytes?: (entry: ShortPublishedEntry) => void;
   /** #11547: capa (JPEG) — `thumbnails.set` depois do insert; falha não desfaz o Short. */
   cover?: Buffer | null;
+  /**
+   * #11795: corte avulso — só o título conta como "já está no canal". A marca
+   * da edição e o dia acusariam o Short da EDIÇÃO do mesmo dia.
+   */
+  matchTitleOnly?: boolean;
 }): Promise<PublishOutcome> {
   const missing = missingYouTubeCredentials(input.env);
   if (missing.length) throw new Error(`faltam ${missing.join(", ")} no ambiente (rode scripts/youtube-oauth-setup.ts)`);
@@ -2523,7 +2947,7 @@ export async function publishYouTubeShort(input: {
       video: input.file,
       contentType: "video/mp4",
       thumbnail: input.cover ?? null,
-      ...(input.force ? {} : { existingVideoCheck: { aammdd: input.aammdd, title: input.title, kind: "short" as const } }),
+      ...(input.force ? {} : { existingVideoCheck: { aammdd: input.aammdd, title: input.title, kind: "short" as const, ...(input.matchTitleOnly ? { titleOnly: true } : {}) } }),
       ...(input.onBeforeBytes ? { beforeVideoBytes: () => input.onBeforeBytes!(unknownEntry()) } : {}),
     });
   } catch (e) {
@@ -2650,6 +3074,28 @@ export function loadScheduledGrid(
 ): ScheduledSlot[] {
   const local = loadEditionGrid(dir, published, instagramAccount, warn, opts.instagramCollaborators ?? []);
   return opts.workerQueue === undefined ? local : mergeGrids(local, gridFromWorkerQueue(opts.workerQueue));
+}
+
+/**
+ * #11795: grade da edição do dia, vista pelo corte avulso. Só leitura e
+ * fail-soft: pasta ausente = grade vazia; registro ilegível = aviso.
+ */
+export function loadEditionDayGrid(
+  editionDir: string,
+  aammdd: string,
+  instagramAccount: string | null,
+  instagramCollaborators: readonly string[],
+  warn: (m: string) => void,
+): ScheduledSlot[] {
+  if (!existsSync(editionDir)) return [];
+  let published: ShortsPublishedFile;
+  try {
+    published = readShortsRegistry(editionDir, aammdd);
+  } catch (e) {
+    warn(`registro do vertical da edição ${aammdd} ilegível (${(e as Error).message}) — a grade do corte segue sem ele`);
+    published = { aammdd, entries: [] };
+  }
+  return loadEditionGrid(editionDir, published, instagramAccount, warn, instagramCollaborators);
 }
 
 function loadEditionGrid(
@@ -2887,8 +3333,11 @@ const USAGE =
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO] [--thumbnail-offset MS]\n" +
-  "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API: conta da diar.ia.br e perfil do @vjpixel, #11390)\n" +
-  "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel (collab pendente, #11390)";
+  "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API: conta da diar.ia.br, #11794)\n" +
+  "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel, sem conferir na API (#11390)\n" +
+  "     publish-shorts.ts --corte SLUG --date AAMMDD --at HH:MM --title T --hook H (--video PATH | --from-drive ID) [--cover JPG] [--publish] [--only ...] [--now]\n" +
+  "                                                                                 # corte avulso fora de edição (#11795): registro em data/cortes/SLUG/, re-execução só com --corte SLUG\n" +
+  "                                                                                 # (o dry-run também grava data/cortes/SLUG/corte.json: registra o corte; --from-drive baixa sempre para essa pasta)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
 export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video"] as const;
@@ -2921,6 +3370,8 @@ export function parseShortsCliArgs(argv: string[]):
   const candidates = [...new Set([values["edition"], ...positionalOut].filter((x): x is string => typeof x === "string"))];
   if (candidates.length > 1) return { ok: false, error: `edição ambígua: ${candidates.join(", ")}` };
   const aammdd = candidates[0];
+  // #11795: no corte avulso a data vem de --date (ou do corte.json); o AAMMDD posicional é opcional.
+  if (!aammdd && values["corte"] !== undefined) return { ok: true, aammdd: "", flags, values, positional: positionalOut };
   if (!aammdd || !/^\d{6}$/.test(aammdd)) return { ok: false, error: "AAMMDD ausente ou inválido" };
   return { ok: true, aammdd, flags, values, positional: positionalOut };
 }
@@ -2949,6 +3400,60 @@ function configuredInstagramBackend(): InstagramBackend | "unreadable" {
   }
 }
 
+/** #11795: flags que não valem no corte avulso (timers do 300 e conferência do Instagram são da edição). */
+export const CORTE_FORBIDDEN_FLAGS = ["linkedin-timer", "instagram-timer", "threads-timer", "confirm-instagram"] as const;
+
+/**
+ * #11795: prepara a rodada do corte avulso — lê `data/cortes/{slug}/corte.json`,
+ * aplica as flags desta rodada, grava a spec se mudou e copia a capa
+ * (`--cover`) pra pasta do corte. Lança em spec ilegível ou incompleta.
+ */
+export function prepareCorteRun(input: {
+  slug: string;
+  dir: string;
+  values: Record<string, string>;
+  positionalDate: string;
+  log: (line: string) => void;
+}): CorteSpec {
+  const specPath = join(input.dir, CORTE_SPEC_FILE);
+  const existing = existsSync(specPath) ? parseCorteSpec(readFileSync(specPath, "utf8"), specPath) : null;
+  const { values } = input;
+  if (values["video"] !== undefined && values["from-drive"] !== undefined) {
+    throw new Error("--corte: passe --video OU --from-drive, não os dois (o --from-drive baixa sempre para a pasta do corte)");
+  }
+  if (values["date"] !== undefined && input.positionalDate && values["date"] !== input.positionalDate) {
+    throw new Error(`data ambígua: --date ${values["date"]} e AAMMDD ${input.positionalDate}`);
+  }
+  // #11825: o --from-drive baixa SEMPRE para data/cortes/{slug}/corte-{slug}.mp4, nunca para o `video`
+  // já registrado (que pode ser o arquivo original do editor); o caminho fica relativo à pasta do corte.
+  const video = values["video"] !== undefined
+    ? corteVideoRef(input.dir, resolve(values["video"]))
+    : values["from-drive"] !== undefined
+      ? corteVideoFileName(input.slug)
+      : undefined;
+  const merged = mergeCorteSpec(input.slug, existing, {
+    date: values["date"] ?? (input.positionalDate || undefined),
+    at: values["at"],
+    title: values["title"],
+    hook: values["hook"],
+    video,
+  });
+  if (!merged.ok) throw new Error(merged.error);
+  if (merged.changed.length) {
+    mkdirSync(input.dir, { recursive: true });
+    writeFileAtomic(specPath, JSON.stringify(merged.spec, null, 2) + "\n");
+    input.log(`[ok] corte "${input.slug}": ${existing ? `atualizado (${merged.changed.join(", ")})` : "registrado"} em ${specPath}`);
+  }
+  if (values["cover"] !== undefined) {
+    const src = resolve(values["cover"]);
+    if (!existsSync(src)) throw new Error(`--cover: ${src} não existe`);
+    mkdirSync(input.dir, { recursive: true });
+    copyFileSync(src, join(input.dir, SHORT_COVER_FILE));
+    input.log(`[ok] corte "${input.slug}": capa copiada para ${join(input.dir, SHORT_COVER_FILE)}`);
+  }
+  return merged.spec;
+}
+
 async function main(): Promise<number> {
   const parsed = parseShortsCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
@@ -2956,8 +3461,34 @@ async function main(): Promise<number> {
     console.error(USAGE);
     return 2;
   }
-  const { flags, values, aammdd } = parsed;
-  const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
+  const { flags, values } = parsed;
+  let aammdd = parsed.aammdd;
+  // #11795: corte avulso — pasta, registro, data, título e gancho próprios, fora de data/editions/.
+  const corteSlug = values["corte"];
+  let corte: CorteSpec | null = null;
+  if (corteSlug !== undefined) {
+    const forbidden = CORTE_FORBIDDEN_FLAGS.filter((f) => flags.has(f));
+    if (forbidden.length) {
+      console.error(`publish-shorts: --corte não combina com ${forbidden.map((f) => `--${f}`).join(", ")} (timers e conferência do Instagram são da edição; registre à mão com --mark)`);
+      return 2;
+    }
+    if (values["edition"] !== undefined) {
+      console.error("publish-shorts: --corte usa --date AAMMDD, não --edition");
+      return 2;
+    }
+    const corteDir = resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corteSlug)));
+    try {
+      corte = prepareCorteRun({ slug: corteSlug, dir: corteDir, values, positionalDate: aammdd, log: (l) => console.error(l) });
+    } catch (e) {
+      console.error(`publish-shorts: ${(e as Error).message}`);
+      return 2;
+    }
+    aammdd = corte.date;
+    console.error(`[premissa] corte avulso "${corte.slug}": ${corte.date} às ${corte.hhmm} BRT, vídeo ${resolveCorteVideo(corteDir, corte.video)}, registro em ${corteDir}`);
+    const portability = corteVideoPortabilityWarning(resolveCorteVideo(corteDir, corte.video), join(ROOT, "data"));
+    if (portability) console.error(`[aviso] ${portability}`);
+  }
+  const dir = corte ? resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corte.slug))) : resolve(values["edition-dir"] ?? editionDirFor(aammdd));
   // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
   // toda gravação relê do disco e troca só a própria entrada, sob lock.
   const linkedinTimer = flags.has("linkedin-timer");
@@ -2974,9 +3505,13 @@ async function main(): Promise<number> {
   const writer = shortsRegistryWriterFor(linkedinTimer, instagramTimer, threadsTimer);
   const publishedPath = shortsRegistryPath(dir, writer);
   let published = readShortsRegistry(dir, aammdd);
-  const cleanup = () => cleanupPublishedVideo({ dir, edition: aammdd, kind: "vertical",
-    config: () => loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))),
-    keepVideo: flags.has("keep-video"), log: console.error });
+  // #11795: o vídeo do corte é do editor (ou da pasta de cortes) — a limpeza do vertical da edição nunca o apaga.
+  const cleanup = () => {
+    if (corte) return;
+    cleanupPublishedVideo({ dir, edition: aammdd, kind: "vertical",
+      config: () => loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))),
+      keepVideo: flags.has("keep-video"), log: console.error });
+  };
   const persist = (entry: ShortPublishedEntry): ShortsPublishedFile => persistShortEntry(dir, aammdd, writer, entry);
 
   if (values["mark"]) {
@@ -3032,11 +3567,11 @@ async function main(): Promise<number> {
   }
 
   const reviewedPath = join(dir, "02-reviewed.md");
-  if (!existsSync(reviewedPath)) {
+  if (!corte && !existsSync(reviewedPath)) {
     console.error(`publish-shorts: ${reviewedPath} não existe`);
     return 1;
   }
-  const videoPath = resolve(values["video"] ?? join(dir, shortVideoFileName(aammdd)));
+  const videoPath = corte ? resolveCorteVideo(dir, corte.video) : resolve(values["video"] ?? join(dir, shortVideoFileName(aammdd)));
   if (values["from-drive"] && !existsSync(videoPath) && shortsVideoTerminal(dir, aammdd,
     loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))))) {
     cleanup();
@@ -3106,8 +3641,8 @@ async function main(): Promise<number> {
   const threadsCreds = readThreadsPersonalCreds(process.env);
   // #11070: Short pela Data API com a credencial do horizontal (YOUTUBE_*, youtube-oauth-setup.ts).
   const ytMissing = missingYouTubeCredentials(process.env);
-  // #11265: a fila do Worker (e o R2) só entra com o backend antigo; com o
-  // timer do 300 nada aqui cobra os secrets do R2.
+  // #11265: a fila do Worker só entra com o backend antigo. O R2 é cobrado no
+  // plano: X, Threads e, desde o #11355, o Reels da @diar.ia.br dependem dele.
   const instagramQueue =
     shortsCfg.instagramBackend === "worker-r2"
       ? resolveInstagramQueueReadiness({
@@ -3136,7 +3671,8 @@ async function main(): Promise<number> {
       coverPath: shortCover.path,
       coverUploadReady: r2.ready,
       coverBufferOffsetMs: bufferOffsetMs,
-      reviewedMd: readFileSync(reviewedPath, "utf8"),
+      reviewedMd: corte ? "" : readFileSync(reviewedPath, "utf8"),
+      ...(corte ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook } } : {}),
       now: new Date(),
       config,
       pages,
@@ -3146,7 +3682,7 @@ async function main(): Promise<number> {
       instagramQueue,
       linkedinPersonal: liCreds.ok ? { ready: true } : { ready: false, reason: liCreds.reason },
       threadsPersonal: threadsCreds.ready ? { ready: true } : { ready: false, reason: threadsCreds.reason },
-      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(shortsCfg.instagramBackend, r2.missing) },
+      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(shortsCfg.instagramBackend, r2.missing), cause: publicVideoUnavailableCause(shortsCfg.instagramBackend, r2.missing) },
       youtubeApi: ytMissing.length ? { ready: false, reason: `faltam ${ytMissing.join(", ")} no ambiente` } : { ready: true },
       writer,
       published,
@@ -3156,10 +3692,14 @@ async function main(): Promise<number> {
       editionUrlSource: editionUrlIn.source,
       forceNow: flags.has("now"),
       only: onlyList,
-      grid: loadScheduledGrid(dir, published, shortsCfg.instagramAuthorPage, warnGrid, {
-        instagramCollaborators: shortsCfg.instagramCollaborators,
-        workerQueue,
-      }),
+      grid: [
+        ...loadScheduledGrid(dir, published, shortsCfg.instagramAuthorPage, warnGrid, {
+          instagramCollaborators: shortsCfg.instagramCollaborators,
+          workerQueue,
+        }),
+        // #11795: o corte disputa as contas com a edição do mesmo dia (só leitura, fail-soft).
+        ...(corte ? loadEditionDayGrid(editionDirFor(aammdd), aammdd, shortsCfg.instagramAuthorPage, shortsCfg.instagramCollaborators, warnGrid) : []),
+      ],
     });
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
@@ -3196,25 +3736,37 @@ async function main(): Promise<number> {
     preflight?: InstagramTimerGateFailure | ThreadsTimerGateFailure;
   }> = [];
   // Sobe o vertical no máximo uma vez por rodada (Instagram agendado, X e Threads pessoal usam).
-  // #11410: objeto do dia já no bucket com o mesmo tamanho é reaproveitado (sem novo PUT).
-  let uploaded: Promise<string> | null = null;
-  const uploadVideo = () => {
+  // #11410/#11432: objeto do dia já no bucket com o mesmo conteúdo (tamanho e ETag) é reaproveitado (sem novo PUT).
+  // #11355: memo por chave, porque o corte do Instagram tem objeto próprio.
+  const uploadedByKey = new Map<string, Promise<string>>();
+  // #11774: chaves do R2 que esta rodada usa (capa e vertical); a poda de retenção
+  // de `shorts/` no upload seguinte não as apaga, mesmo de edição com mais de 7 dias.
+  const r2KeysInUse = new Set<string>();
+  const uploadVideoAt = (key: string) => {
     if (!r2.ready) throw new Error(`R2 não configurado (${r2.missing.join(", ")})`);
-    uploaded ??= reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, `shorts/${shortVideoFileName(aammdd)}`, file, "video/mp4").then((r) => {
-      console.error(`[ok] vertical no R2 ${r.reused ? "reaproveitado (mesmo tamanho, sem novo upload)" : "enviado"}: ${r.url}`);
-      return r.url;
-    });
+    let uploaded = uploadedByKey.get(key);
+    if (!uploaded) {
+      r2KeysInUse.add(key);
+      uploaded = reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, key, file, "video/mp4", { keep: [...r2KeysInUse] }).then((r) => {
+        console.error(`[ok] vertical no R2 ${r.reused ? "reaproveitado (mesmo conteúdo, sem novo upload)" : "enviado"}: ${r.url}`);
+        return r.url;
+      });
+      uploadedByKey.set(key, uploaded);
+    }
     return uploaded;
   };
+  const uploadVideo = () => uploadVideoAt(corte ? corteR2Key(corte.slug, "video") : `shorts/${shortVideoFileName(aammdd)}`);
   let uploadedCover: Promise<ReelCoverUpload> | undefined;
   const uploadCover = async (): Promise<ReelCoverUpload> => {
     if (!plan.cover.path) return undefined;
     // #11679: capa local presente e R2 indisponível também fica no registro (`cover.ok: false`).
     if (!r2.ready) return { error: `capa não enviada ao R2: R2 não configurado (${r2.missing.join(", ")})` };
     const coverPath = plan.cover.path;
+    const coverKey = corte ? corteR2Key(corte.slug, "cover") : `shorts/${aammdd}-cover.jpg`;
+    r2KeysInUse.add(coverKey);
     uploadedCover ??= uploadCoverOrFallback(
       () => reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config,
-        `shorts/${aammdd}-cover.jpg`, readFileSync(coverPath), "image/jpeg").then((r) => r.url),
+        coverKey, readFileSync(coverPath), "image/jpeg", { keep: [...r2KeysInUse] }).then((r) => r.url),
       (line) => console.error(line),
     );
     return uploadedCover;
@@ -3280,6 +3832,7 @@ async function main(): Promise<number> {
           file,
           cover: shortCover.bytes,
           force: flags.has("force-youtube"),
+          matchTitleOnly: corte !== null,
           // Grava send_unknown antes do PUT: um processo morto no upload não duplica o Short.
           onBeforeBytes: (marker) => {
             published = persist(marker);
@@ -3320,16 +3873,52 @@ async function main(): Promise<number> {
       } else if (item.destination === "instagram") {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
         const author = igAuthor;
-        const publishReel = async () => publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators, await uploadCover());
+        const publishReel = async (
+          accountGate?: () => ReturnType<typeof instagramTimerGate>,
+          onRecheckAlready?: (hit: { entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch }) => void, // #11870
+        ) => {
+          const choice = instagramReelRouteChoice({
+            authorPage: shortsCfg.instagramAuthorPage,
+            aammdd,
+            videoPath,
+            file,
+            ...(corte ? { corteVideoKey: corteR2Key(corte.slug, "video") } : {}),
+          });
+          const { source, cover } = await resolveInstagramReelInputs({
+            route: choice.route,
+            file,
+            uploadCover,
+            uploadVideo: async () => {
+              if (choice.route !== "video_url") throw new Error("a rota rupload não usa o R2");
+              return instagramReelVideoUrl(choice, {
+                urlIfSameContent: async (key) => {
+                  if (!r2.ready) return null;
+                  const same = await r2ObjectHasBody({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, key, file);
+                  if (same) {
+                    r2KeysInUse.add(key); // #11774: o reaproveitado também fica fora da poda
+                    console.error(`[ok] corte do Instagram igual ao vertical genérico: reaproveita ${key}`);
+                  }
+                  return same ? r2PublicUrl(r2.config, key) : null;
+                },
+                upload: uploadVideoAt,
+              });
+            },
+          });
+          const localRecheck = instagramPublishRecheck(dir, aammdd, (fresh) => {
+            published = fresh;
+          });
+          const beforePublish = accountGate ? instagramTimerBeforePublish({ local: localRecheck, gate: accountGate, onAlready: onRecheckAlready }) : localRecheck;
+          return publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, source, item.caption, shortsCfg.instagramCollaborators, cover, { beforePublish });
+        };
         if (writer === "instagram-timer") {
           // #11265: o timer confere a conta antes — um Share feito por fora sem
           // --confirm-instagram não está no registro, mas está no /media.
           const ctx = instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
-          // Fix do review do PR #11395: o gate olha também o perfil do @vjpixel (Reels à mão com collab pendente).
+          // Fix do review do PR #11395: o gate olha também o perfil do autor à mão, se for outra conta (#11794: na produção, é a mesma).
           const chrome = await resolveChromeAuthorReader(shortsCfg.instagramAuthorPage, pages, igApiVersion);
           // #11421: sem a credencial da página do autor, o gate não publica (fail-closed) se a conta da API não tiver o Reels.
           // #11427: leitura que falhou com a credencial presente vira `read-failed` (nova tentativa), não `author-unchecked`.
-          if (!chrome.reader) console.error(`[aviso] instagram: perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não consultável (${chrome.unavailable ?? "sem motivo"})${chrome.sameAccount ? "" : chrome.readFailed ? " — leitura falhou; o timer não publica pela API sem conferir e tenta de novo na próxima rodada" : " — o timer não publica pela API sem conferir"}`);
+          if (!chrome.reader && !chrome.sameAccount) console.error(`[aviso] instagram: perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não consultável (${chrome.unavailable ?? "sem motivo"})${chrome.readFailed ? " — leitura falhou; o timer não publica pela API sem conferir e tenta de novo na próxima rodada" : " — o timer não publica pela API sem conferir"}`);
           const readFor = (igUserId: string, token: string) => () =>
             readAndDecideInstagramConfirm(defaultGraphDeps, {
               igUserId,
@@ -3341,28 +3930,58 @@ async function main(): Promise<number> {
               nowIso: new Date().toISOString(),
               expectedAtIso: ctx.expectedAtIso,
             });
+          // #11828: em qual conta o gate achou o Reels (e com que token reler os collabs).
+          let foundIn: { account: "primary" | "chrome-author"; token: string } = { account: "primary", token: author.token };
+          const tagged = (account: "primary" | "chrome-author", token: string, read: () => Promise<InstagramConfirmDecision>) => async () => {
+            const d = await read();
+            if (d.kind === "register") foundIn = { account, token };
+            return d;
+          };
+          const accountGate = () =>
+            instagramTimerGate({
+              decide: () =>
+                decideInstagramTimerAcrossAccounts({
+                  primary: tagged("primary", author.token, readFor(author.igUserId, author.token)),
+                  ...timerChromeAuthorDeps(chrome, (igUserId, token) => tagged("chrome-author", token, readFor(igUserId, token))),
+                }),
+              persist: (entry) => {
+                published = persist(entry);
+              },
+            });
+          // #11870: o gate re-rodado antes do media_publish também pode achar o Reels; guarda o matchedBy dele.
+          const recheck: { hit: { entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch } | null } = { hit: null };
           const step = await instagramTimerPublishStep({
-            gate: () =>
-              instagramTimerGate({
-                decide: () =>
-                  decideInstagramTimerAcrossAccounts({
-                    primary: readFor(author.igUserId, author.token),
-                    ...timerChromeAuthorDeps(chrome, readFor),
-                  }),
-                persist: (entry) => {
-                  published = persist(entry);
-                },
+            gate: accountGate,
+            // #11774: o mesmo gate roda de novo logo antes do media_publish.
+            publish: () =>
+              publishReel(accountGate, (hit) => {
+                recheck.hit = hit;
               }),
-            publish: publishReel,
           });
-          if (step.kind === "already") {
-            results.push({ destination: item.destination, ok: true, entry: step.entry, alreadyRegistered: true, matchedBy: step.matchedBy });
-            console.error(`[aviso] instagram: o Reels da edição já está na conta (${step.matchedBy}, ${step.entry.url ?? step.entry.id}) — registrado, não publica de novo`);
+          const already =
+            step.kind === "already"
+              ? { entry: step.entry, matchedBy: step.matchedBy, when: "" }
+              : step.outcome.alreadyRegistered && recheck.hit
+                ? { entry: recheck.hit.entry, matchedBy: recheck.hit.matchedBy, when: " na reconferência antes do publish" }
+                : null;
+          if (already) {
+            // #11828/#11870: o Reels feito à mão pode ter saído sem o convite da @vjpixel; avisa sem bloquear o registro.
+            const collabWarnings = await instagramTimerAlreadyCollabWarnings(deps, {
+              matchedBy: already.matchedBy,
+              mediaId: already.entry.id,
+              token: foundIn.token,
+              apiVersion: igApiVersion,
+              expected: instagramConfirmExpectedCollabs({ account: foundIn.account, sameAccount: chrome.sameAccount === true, configCollaborators: shortsCfg.instagramCollaborators }),
+            });
+            results.push({ destination: item.destination, ok: true, entry: already.entry, alreadyRegistered: true, matchedBy: already.matchedBy, ...(collabWarnings.length ? { warnings: collabWarnings } : {}) });
+            console.error(`[aviso] instagram: o Reels da edição já está na conta${already.when} (${already.matchedBy}, ${already.entry.url ?? already.entry.id}) — registrado, não publica de novo`);
+            for (const w of collabWarnings) console.error(`[aviso] instagram: ${w}`);
             continue;
           }
+          if (step.kind !== "published") continue; // inalcançável: `already` acima cobre esse caso
           outcome = step.outcome;
         } else {
-          outcome = await publishReel();
+          outcome = await publishReel(); // sem gate da conta fora do timer (o registro local segue valendo)
         }
       } else {
         const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
@@ -3380,6 +3999,11 @@ async function main(): Promise<number> {
         results.push({ destination: item.destination, ok: false, error: msg });
       }
       console.error(`[erro] ${item.destination}: ${msg}`);
+      continue;
+    }
+    if (outcome.alreadyRegistered) {
+      results.push({ destination: item.destination, ok: true, entry: outcome.entry, alreadyRegistered: true });
+      console.error(`[aviso] ${item.destination}: registrado por outro processo antes do publish (${outcome.entry.status}${outcome.entry.url ? `, ${outcome.entry.url}` : ""}) — não publica de novo`);
       continue;
     }
     const { unconfirmed } = outcome;
@@ -3428,7 +4052,16 @@ async function main(): Promise<number> {
     for (const w of attached.warnings) console.error(`[aviso] ${w}`);
   }
   // #11550: os itens podem ter mudado depois do plano (repost bloqueado, upload do Chrome) — os donos acompanham.
-  plan = { ...plan, owners: assignShortsDestinationOwners(plan.items, { aammdd, now: new Date(), instagramViaTimer: shortsCfg.instagramBackend === "timer-300", writer }) };
+  plan = {
+    ...plan,
+    owners: assignShortsDestinationOwners(plan.items, {
+      aammdd,
+      now: new Date(),
+      instagramViaTimer: shortsCfg.instagramBackend === "timer-300" && !corte,
+      writer,
+      ...(corte ? { baseCommand: corteBaseCommand(corte.slug) } : {}),
+    }),
+  };
   const summary = {
     published: results.filter((r) => r.ok && r.entry?.status === "published").length,
     scheduled: results.filter((r) => r.ok && r.entry?.status === "scheduled").length,
@@ -3526,7 +4159,7 @@ function instagramConfirmContext(
  * e só vale o Reels com o marcador desta edição na legenda
  * (`decideInstagramConfirm`); ambíguo → recusa e pede `--media-id`.
  */
-async function confirmInstagram(
+export async function confirmInstagram(
   aammdd: string,
   dir: string,
   persist: (entry: ShortPublishedEntry) => ShortsPublishedFile,
@@ -3535,7 +4168,10 @@ async function confirmInstagram(
   mediaIdFlag: string | undefined,
   editionUrlFlag: string | undefined,
   urlFlag?: string,
+  /** #11794: I/O injetável para testar o wiring; o default é a Graph real e o config do repo. */
+  io: { graph?: GraphDeps; config?: unknown } = {},
 ): Promise<number> {
+  const graph = io.graph ?? defaultGraphDeps;
   const already = instagramAlreadyRegistered(published);
   if (already) {
     const e = already.entry;
@@ -3545,7 +4181,7 @@ async function confirmInstagram(
     }
     return already.exitCode;
   }
-  // #11390: o editor colou o permalink (o Reel do collab pendente, no perfil do autor).
+  // #11390: o editor colou o permalink do Reel.
   if (urlFlag !== undefined) {
     const built = instagramConfirmUrlEntry(urlFlag, new Date().toISOString());
     if (!built.ok) {
@@ -3563,11 +4199,11 @@ async function confirmInstagram(
     console.error(`publish-shorts: --since inválido: ${sinceFlag}`);
     return 2;
   }
-  const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  const config: any = io.config ?? JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
   const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
   const igApiVersion = process.env.INSTAGRAM_API_VERSION || apiVersion;
   const cfg = loadShortsConfig(config);
-  const author = await resolveInstagramAuthor(defaultGraphDeps, cfg.instagramAuthorPage, pages, igApiVersion, {
+  const author = await resolveInstagramAuthor(graph, cfg.instagramAuthorPage, pages, igApiVersion, {
     igUserId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? "",
     token: process.env.INSTAGRAM_ACCESS_TOKEN ?? "",
   });
@@ -3586,13 +4222,13 @@ async function confirmInstagram(
     nowIso: new Date().toISOString(),
     expectedAtIso: ctx.expectedAtIso,
   };
-  // #11390: o Reels do B3b é postado pela @vjpixel com a @diar.ia.br em collab;
-  // até o convite ser aceito ele só aparece no perfil do autor.
-  const { reader: chromeReader, unavailable: chromeAuthorUnavailable } = await resolveChromeAuthorReader(cfg.instagramAuthorPage, pages, igApiVersion);
+  // #11794: o Reels do B3b é postado pela @diar.ia.br com a @vjpixel em collab.
+  // Na config de produção ela é a conta da API; outro perfil só com outra autora no config.
+  const chrome = await resolveChromeAuthorReader(cfg.instagramAuthorPage, pages, igApiVersion, graph);
+  const chromeReader = chrome.reader;
   const across = await decideInstagramConfirmAcrossAccounts({
-    primary: () => readAndDecideInstagramConfirm(defaultGraphDeps, { ...readInput, igUserId: author.igUserId, token: author.token }),
-    chromeAuthor: chromeReader ? () => readAndDecideInstagramConfirm(defaultGraphDeps, { ...readInput, igUserId: chromeReader.igUserId, token: chromeReader.token }) : null,
-    chromeAuthorUnavailable,
+    primary: () => readAndDecideInstagramConfirm(graph, { ...readInput, igUserId: author.igUserId, token: author.token }),
+    ...confirmChromeAuthorDeps(chrome, (igUserId, token) => () => readAndDecideInstagramConfirm(graph, { ...readInput, igUserId, token })),
   });
   const decision = across.decision;
   const reader = across.account === "chrome-author" && chromeReader ? chromeReader : author;
@@ -3614,14 +4250,14 @@ async function confirmInstagram(
     warnings.push(`a legenda não tem o título nem o gancho do D1; registrado pelo único Reels no formato do vertical perto das ${ctx.expectedAtIso} (#10978) — confira o permalink`);
   }
   if (!entry.url) warnings.push(`a mídia ${entry.id} veio sem permalink — o id fica no registro`);
-  // Collab esperado: na rota do Chrome é a @diar.ia.br (o post é do @vjpixel); na da API, os do config.
-  const expectedCollabs: string[] = across.account === "chrome-author" ? [INSTAGRAM_CHROME_ROUTE.collaboratorUsername] : cfg.instagramCollaborators;
+  // #11794: o Reels da autora da rota do Chrome sempre cobra o collab da @vjpixel.
+  const expectedCollabs = instagramConfirmExpectedCollabs({ account: across.account, sameAccount: chrome.sameAccount === true, configCollaborators: cfg.instagramCollaborators });
   if (across.account === "chrome-author") {
     warnings.push(`achado no perfil do ${who} (rota do Chrome, #11390): o Reel aparece na @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} quando o convite de collab for aceito`);
   }
   if (expectedCollabs.length) {
     try {
-      const collab = await graphGet(defaultGraphDeps, `${entry.id}/collaborators`, { fields: "username,invite_status", access_token: reader.token }, igApiVersion);
+      const collab = await graphGet(graph, `${entry.id}/collaborators`, { fields: "username,invite_status", access_token: reader.token }, igApiVersion);
       warnings.push(...collabInviteWarnings(collab?.data, expectedCollabs, { reportPending: true }));
     } catch (e) {
       warnings.push(`não deu pra conferir o collab (${(e as Error).message}) — confira no app`);

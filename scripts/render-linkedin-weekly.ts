@@ -89,12 +89,19 @@ export function resolveCoverImageSourcePath(editionsRootDir: string, headlineOne
  * ocorrência em `linkifyWordmark` (`weekly-linkedin-render.ts`) — desde o
  * #8819 a âncora ancora só o wordmark (", newsletter de IA" que segue vira
  * texto puro fora do `<a>`), não há mais extensão pra reconferir aqui.
+ *
+ * #11776 (01/11/2026, decisão do editor, ciclo 26w44): 2 parágrafos (corte
+ * depois de "usar melhor as IAs."; a linha em branco é o separador que
+ * `paragraphsHtml` já entende) e sem o "Assine grátis." final: o convite fica
+ * só no CTA da abertura (`CTA_ABERTURA_LABEL`, "Assinar a edição diária
+ * grátis").
  */
 export const DEFAULT_OPENING =
   "Desde o ano passado, escrevo a diar.ia.br, newsletter de IA que sai por e-mail de segunda a sexta: " +
-  "5 minutos por dia para se manter atualizado e usar melhor as IAs. Aqui no LinkedIn, trago toda segunda " +
-  "os três destaques que mais renderam cliques na semana. As cinco edições completas ficam com os títulos " +
-  "no fim do post. Assine grátis.";
+  "5 minutos por dia para se manter atualizado e usar melhor as IAs." +
+  "\n\n" +
+  "Aqui no LinkedIn, trago toda segunda os três destaques que mais renderam cliques na semana. " +
+  "As cinco edições completas ficam com os títulos no fim do post.";
 
 /** #8025 — texto padrão de fecho, mesma origem/evidência do `DEFAULT_OPENING` acima. */
 export const DEFAULT_CLOSING =

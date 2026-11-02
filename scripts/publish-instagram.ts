@@ -78,6 +78,21 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substi
 import { runCli } from "./lib/cli-exit.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { readResolvedEditionUrl } from "./lib/edition-url.ts"; // #11724 — permalink da edição no 4º post
+import {
+  INSTAGRAM_COMMENT_PERMISSIONS,
+  probeInstagramCommentPermission,
+  probeWorkerInstagramCommentScope,
+  resolveInstagramWorkerUrl,
+  writeInstagramCommentScopeRecord,
+  type InstagramCommentScopeProbe,
+} from "./lib/instagram-comment-scope.ts"; // #11731, #11750
+// #11731: reexportados daqui por compatibilidade — a fonte mora em lib/ desde o #11750.
+export {
+  INSTAGRAM_COMMENT_PERMISSIONS,
+  hasInstagramCommentPermission,
+  probeInstagramCommentPermission,
+  type InstagramCommentScopeProbe,
+} from "./lib/instagram-comment-scope.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
 import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305, #10541
 import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #10201
@@ -463,6 +478,73 @@ export async function postInstagramComment(
   }
 }
 
+
+/**
+ * #11731: só deixa o permalink seguir para o 4º post (legenda "Link da edição
+ * no primeiro comentário." + `firstComment`) quando o token comprovadamente
+ * pode comentar. Sem escopo ou sonda falha → `editionUrl: null` (linha da bio,
+ * sem comentário) + aviso. Pure.
+ */
+export function gateEditionUrlOnCommentScope(
+  editionUrl: string | null,
+  probe: InstagramCommentScopeProbe | null,
+  /** #11750: de quem é o token sondado — muda só o texto do aviso. */
+  source: "worker" | "local" = "local",
+): { editionUrl: string | null; warning: string | null } {
+  if (!editionUrl) return { editionUrl: null, warning: null };
+  if (probe?.ok && probe.granted) return { editionUrl, warning: null };
+  const tokenLabel = source === "worker" ? "token do Worker" : "token do .env";
+  const motivo = !probe
+    ? "sonda de permissões não rodou"
+    : probe.ok
+      ? `${tokenLabel} sem ${INSTAGRAM_COMMENT_PERMISSIONS.join("/")}`
+      : `sonda de permissões falhou no ${tokenLabel} (${probe.reason})`;
+  const fix =
+    source === "worker"
+      ? "Renove o secret INSTAGRAM_ACCESS_TOKEN do Worker diaria-linkedin-cron com instagram_manage_comments para reativar o comentário."
+      : "Renove o INSTAGRAM_ACCESS_TOKEN do .env com instagram_manage_comments para reativar o comentário.";
+  return {
+    editionUrl: null,
+    warning:
+      `[publish-instagram] #11731: ${motivo} — 4º post (USE MELHOR) sai com a linha da bio e sem 1º comentário. ` +
+      fix,
+  };
+}
+
+/**
+ * #11750: decide o permalink do 4º post (e, com ele, o 1º comentário).
+ *
+ * - Legenda de TESTE (`_internal/instagram-test.json` com `caption`): a
+ *   legenda gerada nem vai ao ar, então nada de comentário — sem sonda.
+ * - `--schedule`: quem comenta é o Worker, com o PRÓPRIO token → sonda no
+ *   Worker (`probeWorker`). Publicação imediata → token do `.env` (`probeLocal`).
+ * - Sem permalink resolvido: sem sonda, sem comentário.
+ *
+ * Grava a decisão em `_internal/instagram-comment-scope.json` (fail-soft)
+ * para o re-render do preview ler sem rede.
+ */
+export async function resolveUseMelhorCommentEditionUrl(input: {
+  editionDir: string;
+  schedule: boolean;
+  hasTestCaptionOverride: boolean;
+  probeWorker: () => Promise<InstagramCommentScopeProbe>;
+  probeLocal: () => Promise<InstagramCommentScopeProbe>;
+  readEditionUrl?: (editionDir: string) => string | null;
+  writeRecord?: typeof writeInstagramCommentScopeRecord;
+}): Promise<{ editionUrl: string | null; warning: string | null }> {
+  if (input.hasTestCaptionOverride) return { editionUrl: null, warning: null };
+  const resolvedEditionUrl = (input.readEditionUrl ?? readResolvedEditionUrl)(input.editionDir); // #11724
+  if (!resolvedEditionUrl) return { editionUrl: null, warning: null };
+  const source = input.schedule ? "worker" : "local";
+  const probe = input.schedule ? await input.probeWorker() : await input.probeLocal();
+  try {
+    (input.writeRecord ?? writeInstagramCommentScopeRecord)(input.editionDir, probe, source);
+  } catch (e) {
+    console.warn(`[publish-instagram] #11750: não gravou o registro de escopo: ${(e as Error).message}`);
+  }
+  return gateEditionUrlOnCommentScope(resolvedEditionUrl, probe, source);
+}
+
 /**
  * Enfileira um post Instagram no Worker `diaria-linkedin-cron` (#3817 — Worker
  * generalizado pra suportar `channel: "instagram"` além de LinkedIn). O
@@ -593,11 +675,7 @@ async function main(): Promise<number | void> {
   let workerUrl = "";
   let workerToken = "";
   if (doSchedule) {
-    workerUrl =
-      process.env.DIARIA_LINKEDIN_CRON_URL ??
-      platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
-      platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
-      "";
+    workerUrl = resolveInstagramWorkerUrl(platformConfig); // #11750 — mesma precedência da sonda do Stage 4
     workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
     // #923-like fail-fast (publish-linkedin.ts): sem Worker configurado,
     // --schedule não tem pra onde ir — a API do Instagram não agenda nativo
@@ -644,7 +722,8 @@ async function main(): Promise<number | void> {
       `SKIP: ${missing} ausente(s) — Instagram não publicado nesta edição.\n` +
         "Configure em .env para habilitar o Instagram.\n" +
         "  INSTAGRAM_BUSINESS_ACCOUNT_ID: developers.facebook.com/apps/ → Instagram → Business Account ID\n" +
-        "  INSTAGRAM_ACCESS_TOKEN: developers.facebook.com/tools/explorer/ (escopos: instagram_basic, instagram_content_publish)",
+        "  INSTAGRAM_ACCESS_TOKEN: usuário do sistema (Business Settings, app Vigil.ia.br; com instagram_manage_comments), " +
+        "nunca o Graph Explorer (expira em horas). Ver docs/secret-rotation.md (#11804)",
     );
     return 0;
   }
@@ -727,6 +806,26 @@ async function main(): Promise<number | void> {
   // (motivo logado), D1/D2/D3 seguem idênticos.
   const umPlan = planUseMelhorDispatch(editionDir, platformConfig);
   reportUseMelhorPlan("instagram", umPlan, { editionId: editionDate, rootDir: ROOT });
+  // #11731: o comentário com o permalink (#11724) só é prometido na legenda
+  // quando o token QUE VAI COMENTAR pode comentar. A sonda é só leitura e roda
+  // também em --test-mode; só quando há 4º post pronto E permalink (senão não
+  // há o que decidir). #11750: no --schedule quem comenta é o Worker, com o
+  // PRÓPRIO secret INSTAGRAM_ACCESS_TOKEN — a pergunta vai pra ele
+  // (`GET /instagram/comment-scope`), não pro token do .env.
+  // #11750: com override de legenda de TESTE, a legenda gerada (e a linha do
+  // comentário) nem vai ao ar — nada de 1º comentário nesse caso.
+  let umEditionUrl: string | null = null;
+  if (umPlan.status === "ready") {
+    const decided = await resolveUseMelhorCommentEditionUrl({
+      editionDir,
+      schedule: doSchedule,
+      hasTestCaptionOverride: Boolean(testOverride?.caption),
+      probeWorker: () => probeWorkerInstagramCommentScope(workerUrl, workerToken),
+      probeLocal: () => probeInstagramCommentPermission(accessToken, apiVersion),
+    });
+    if (decided.warning) console.warn(decided.warning);
+    umEditionUrl = decided.editionUrl;
+  }
   const umPost =
     umPlan.status === "ready"
       ? buildUseMelhorInstagramPost({
@@ -734,7 +833,7 @@ async function main(): Promise<number | void> {
           plan: umPlan,
           images: (publicImages as { images?: Record<string, { url?: string }> }).images,
           editionDir,
-          editionUrl: readResolvedEditionUrl(editionDir), // #11724
+          editionUrl: umEditionUrl, // #11724, gated por escopo de comentário (#11731)
         })
       : null;
   if (umPost && !umPost.ok) reportUseMelhorSkip("instagram", umPost.reason, { editionId: editionDate, rootDir: ROOT });

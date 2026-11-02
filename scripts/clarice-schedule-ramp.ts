@@ -96,7 +96,7 @@
  *     --subject "Assunto do digest" --create
  *   npx tsx scripts/clarice-schedule-ramp.ts --cycle 2606-07 --send-test
  *   # ANTES do --schedule: setar o gabarito É IA? do ciclo (#2009, mesmo guard do pipeline canônico)
- *   npx tsx scripts/close-poll.ts --brand clarice --cycle 2606-07 --edition {AAMMDD} --answer A
+ *   npx tsx scripts/close-poll.ts --brand clarice --cycle 2606-07 --edition 2606-07 --answer A
  *   npx tsx scripts/clarice-schedule-ramp.ts --cycle 2606-07 --schedule
  *
  * Estado em `{ciclo}/ramp/ramp-summary.json` (idempotência: --build-audience

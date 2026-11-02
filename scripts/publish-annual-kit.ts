@@ -26,7 +26,7 @@
  *   npx tsx scripts/publish-annual-kit.ts --slug 2026-aniversario
  *   npx tsx scripts/publish-annual-kit.ts --slug 2026-aniversario --send-test
  *
- * Exit codes: 0 ok · 1 uso/erro · 2 backend != "kit" · 3 lint crítico · 7 assunto vazio.
+ * Exit codes: 0 ok · 1 uso/erro · 3 lint crítico · 7 assunto vazio.
  */
 
 import "dotenv/config";
@@ -48,7 +48,6 @@ import { relinkAnnualEditionHtml } from "./lib/anual/annual-relink.ts";
 import { filterPublicEditionsWithWarning, loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
 import { lintAnnualDraft } from "./lint-annual-draft.ts";
 import { tipoFromSlug, type AnnualTipo } from "./lib/anual/annual-window.ts";
-import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -73,22 +72,6 @@ export interface AnnualPublishedState {
   test_broadcast_ids: number[];
   created_at: string;
   updated_at: string;
-}
-
-/** Guard do #5608: nenhuma execução deste script deve autenticar pela API paga. */
-export function checkKitBackend(config: { publishing?: { newsletter?: { backend?: string } } }): {
-  ok: boolean;
-  reason?: string;
-} {
-  const backend = config.publishing?.newsletter?.backend;
-  // #11225: chave ausente conta como "kit"; só o literal "beehiiv" (legado) recusa.
-  if (parseNewsletterBackend(backend) !== "kit") {
-    return {
-      ok: false,
-      reason: `publishing.newsletter.backend = ${JSON.stringify(backend)} — este script só roda com "kit".`,
-    };
-  }
-  return { ok: true };
 }
 
 /**
@@ -137,12 +120,6 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
   }
 
   const platformConfig = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
-  const backendCheck = checkKitBackend(platformConfig);
-  if (!backendCheck.ok) {
-    log(`ERRO: ${backendCheck.reason}`);
-    process.exitCode = 2;
-    return;
-  }
 
   const paths = annualPaths(slug, resolve(rootDir, "data/annual"));
   if (!existsSync(paths.draft)) {
@@ -218,7 +195,7 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
       const posts = filterPublicEditionsWithWarning(loadUnifiedEditionCache(), "publish-annual-kit");
       // #7613 (achado do self-review da #7587 item 2): sem sourceOverride,
       // buildRelink cai no default "clarice" — errado aqui, o canal da anual
-      // é Kit (ver publishing.newsletter.backend), não Clarice.
+      // é Kit (único backend de envio desde o #11225), não Clarice.
       const relinked = relinkAnnualEditionHtml(html, raw.destaques ?? [], posts, `anual-${slug}`, "kit");
       html = relinked.html;
       log(

@@ -113,7 +113,7 @@ export const AGENT_EVAL_EXCLUDED_AGENTS: readonly AgentEvalExclusion[] = [
   ...excludedGroup(["analyst-anual", "analyst-monthly"], "analistas de seleção temática dos pipelines anual/mensal — julgamento holístico Opus, fora do escopo de graders mecânicos da #8143."),
   ...excludedGroup(["auto-reporter"], "agent de triagem de issue a partir de sinais da edição — não produz texto de destaque/social, nenhum grader mecânico dos 4 da #8143 se aplica."),
   ...excludedGroup(
-    ["beehiiv-clicks-enricher", "beehiiv-engagement-backup", "beehiiv-exit-history-drain"],
+    ["beehiiv-engagement-backup", "beehiiv-exit-history-drain"],
     "agents de dreno de dado via MCP (paginação/persistência) — não geram texto editorial, fora do escopo de graders de prosa.",
   ),
   ...excludedGroup(["discovery-searcher", "source-researcher"], "agents de pesquisa (Haiku) — coletam candidatos, não escrevem o texto final; fora do escopo declarado da #8143."),

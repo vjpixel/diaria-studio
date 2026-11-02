@@ -444,6 +444,12 @@ export interface EditionVideoCriteria {
    * valer como marca (o horizontal da MESMA edição o carrega). Default `long`.
    */
   kind?: "long" | "short";
+  /**
+   * #11795: só com `kind: "short"` — corte avulso, fora de edição. Só o
+   * título igual conta: a marca da edição e o dia acusariam o Short da EDIÇÃO
+   * publicado no mesmo dia.
+   */
+  titleOnly?: boolean;
 }
 
 /** Como o vídeo existente foi reconhecido (do sinal mais forte ao mais fraco). */
@@ -524,7 +530,9 @@ export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVide
       // #11070: só o Short conta; utm_campaign é do horizontal, não marca o Short.
       if (!isShort) continue;
       let matchedBy: EditionVideoMatch | null = null;
-      if (token.test(title) || tags.some((t) => token.test(t))) matchedBy = "edition-tag";
+      if (criteria.titleOnly) {
+        if (want && normalizeTitle(title) === want) matchedBy = "title";
+      } else if (token.test(title) || tags.some((t) => token.test(t))) matchedBy = "edition-tag";
       else if (want && normalizeTitle(title) === want) matchedBy = "title";
       else if (inDay(v.status?.publishAt) || inDay(v.snippet?.publishedAt)) matchedBy = "period";
       if (matchedBy) {

@@ -34,6 +34,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import {
   autoApproveConsent,
+  describeInvalidSkip,
   defaultAutoConsent,
   defaultManualConsent,
   parseEditorResponse,
@@ -85,10 +86,10 @@ function usage(): string {
     "  --default-auto              tudo auto, default de Stage 5 (#1326) — source: default_auto",
     "  --default-manual            manual em todos os canais (LEGACY — source: default_manual)",
     "  --skip <channels>           tudo auto exceto canais listados (--skip newsletter,linkedin)",
-    "                              canais válidos: newsletter, linkedin, facebook, instagram, threads, twitter, brevo, kit, youtube",
+    "                              canais válidos: newsletter, linkedin, facebook, instagram, threads, twitter, brevo, youtube",
     "  --editor-response <input>   parse resposta do gate ('all', 'none', '1,3,5,7,9,11,13')",
     "                              9=Threads auto, 10=Threads manual, 11=Twitter/X auto, 12=Twitter/X manual",
-    "                              13=Brevo diária auto, 14=Brevo diária manual, 15=Kit auto, 16=Kit manual",
+    "                              13=Brevo diária auto, 14=Brevo diária manual",
     "",
     "Opcional:",
     "  --out <path>                override do default data/editions/{AAMMDD}/_internal/05-publish-consent.json",
@@ -131,9 +132,7 @@ export function mainCli(argv: string[]): number {
   } else if (args.skip != null) {
     const parsed = parseSkipFlag(args.skip);
     if (!parsed) {
-      console.error(
-        `Erro: --skip inválido: ${JSON.stringify(args.skip)}. Use lista CSV de canais: newsletter, linkedin, facebook, instagram, threads, twitter.`,
-      );
+      console.error(`Erro: ${describeInvalidSkip(args.skip)}`);
       return 1;
     }
     consent = parsed;
