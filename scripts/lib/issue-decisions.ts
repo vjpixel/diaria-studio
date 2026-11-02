@@ -413,6 +413,10 @@ export interface AcaoAdiada {
   motivo: string;
   /** Qual sessão pediu. */
   sessao: SessionKind;
+  /** (#11916) ISO 8601 opcional — fim do adiamento. Quando presente e
+   * parseável, substitui o cooldown default de `ACAO_ADIADA_COOLDOWN_DAYS`
+   * (ex: editor pediu "repergunte em 7 horas"). */
+  ate?: string;
 }
 
 /**
@@ -464,6 +468,7 @@ export function formatAcaoAdiadaMarker(opts: AcaoAdiada): string {
     acao: opts.acao,
     motivo: opts.motivo,
     sessao: opts.sessao,
+    ...(opts.ate ? { ate: opts.ate } : {}),
   };
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
   return `${ACAO_ADIADA_MARKER_PREFIX}${encoded}${ACAO_ADIADA_MARKER_SUFFIX}`;
@@ -480,7 +485,8 @@ function isValidAcaoAdiada(value: unknown): value is AcaoAdiada {
     // `motivo` vazio é VÁLIDO — "agora não" sem justificativa é uma resposta
     // legítima, e exigir texto aqui empurraria o caller a inventar um.
     typeof v.motivo === "string" &&
-    (v.sessao === "continuo" || v.sessao === "overnight" || v.sessao === "develop")
+    (v.sessao === "continuo" || v.sessao === "overnight" || v.sessao === "develop") &&
+    (v.ate === undefined || typeof v.ate === "string")
   );
 }
 
@@ -563,6 +569,9 @@ export function isAcaoAdiadaAtiva(
   // Futuro → fail-open (ver docstring). `pedidoEm === now` ainda suprime:
   // é o adiamento acabado de gravar, o caso mais comum de todos.
   if (pedidoEm > now) return false;
+  // #11916 — `ate` parseável vale no lugar do cooldown default; ilegível cai no default.
+  const ate = adiada.ate ? new Date(adiada.ate).getTime() : Number.NaN;
+  if (!Number.isNaN(ate)) return now < ate;
   const idadeDias = (now - pedidoEm) / 86_400_000;
   return idadeDias < ACAO_ADIADA_COOLDOWN_DAYS;
 }
@@ -660,9 +669,19 @@ export function acaoAdiadaMarkerFromArgs(
   if (sessao !== "continuo" && sessao !== "overnight" && sessao !== "develop") {
     return { error: `--sessao inválido: ${sessao} (continuo|overnight|develop)` };
   }
+  const horasRaw = val("--cooldown-horas");
+  let ate: string | undefined;
+  if (horasRaw !== undefined) {
+    const horas = Number(horasRaw);
+    if (!Number.isFinite(horas) || horas <= 0) {
+      return { error: `--cooldown-horas inválido: ${horasRaw} (número > 0)` };
+    }
+    ate = new Date(now.getTime() + horas * 3_600_000).toISOString();
+  }
   return {
     marker: formatAcaoAdiadaMarker({
       pedido_em: now.toISOString(),
+      ...(ate ? { ate } : {}),
       acao,
       motivo: (val("--motivo") ?? "").trim(),
       sessao,

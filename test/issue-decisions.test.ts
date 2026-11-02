@@ -34,6 +34,7 @@ import {
   parseExecutionBlockMarkers,
   latestExecutionBlockFor,
   ACAO_ADIADA_COOLDOWN_DAYS,
+  acaoAdiadaMarkerFromArgs,
   formatAcaoAdiadaMarker,
   parseAcaoAdiadaMarkers,
   latestAcaoAdiadaFor,
@@ -468,6 +469,19 @@ describe("#7708 isAcaoAdiadaAtiva — o cooldown", () => {
     assert.equal(isAcaoAdiadaAtiva(adiada(0), { now: agora }), true);
     assert.equal(isAcaoAdiadaAtiva(adiada(ACAO_ADIADA_COOLDOWN_DAYS - 1), { now: agora }), true);
     assert.equal(isAcaoAdiadaAtiva(adiada(ACAO_ADIADA_COOLDOWN_DAYS + 1), { now: agora }), false);
+  });
+
+  it("#11916 — `ate` de 7h: ativo antes, inativo depois; sem `ate` segue 7 dias", () => {
+    const pedido = new Date("2026-09-09T12:00:00Z");
+    const ate = new Date(pedido.getTime() + 7 * 3_600_000).toISOString();
+    const a: AcaoAdiada = { pedido_em: pedido.toISOString(), acao: "x", motivo: "", sessao: "develop", ate };
+    assert.equal(isAcaoAdiadaAtiva(a, { now: new Date(pedido.getTime() + 6 * 3_600_000) }), true);
+    assert.equal(isAcaoAdiadaAtiva(a, { now: new Date(pedido.getTime() + 7 * 3_600_000 + 1) }), false);
+    assert.deepEqual(parseAcaoAdiadaMarkers([formatAcaoAdiadaMarker(a)]), [a]);
+    const sem = { ...a, ate: undefined };
+    assert.equal(isAcaoAdiadaAtiva(sem, { now: new Date(pedido.getTime() + 8 * 3_600_000) }), true);
+    const cli = acaoAdiadaMarkerFromArgs(["--acao", "x", "--cooldown-horas", "7"], pedido);
+    assert.equal("marker" in cli && parseAcaoAdiadaMarkers([cli.marker])[0].ate, ate);
   });
 
   it("exatamente no limite do cooldown já NÃO suprime (janela é aberta em cima)", () => {
