@@ -29,6 +29,10 @@ A escolha entre 1, 2 e 3 é do editor (#10811).
 
 Opção 1. Task local `diaria-short-video-relacionado` no Neo (app Claude desktop, dias úteis 06:05 BRT, logo depois de o horizontal publicar e antes do slot mais cedo do Short), exceção à regra "tasks só no servidor". O plano determinístico é `scripts/youtube-short-related-plan.ts` (lógica em `scripts/lib/diaria/youtube-short-related.ts`): resolve os IDs, confirma pela API que o horizontal está público e devolve `link`/`wait`/`skip`/`alert`. O clique no Studio segue o roteiro `.claude/skills/diaria-publica-video/short-related-task.md`; o resultado fica em `_internal/06-short-related.json`. Definição da task: `DESKTOP_SCHEDULED_TASKS` em `scripts/lib/scheduled-tasks.ts`.
 
+## Reconferência (02/11/2026, #11779)
+
+Pedida pelo editor quando todo agendamento passou para o `300`: haveria agora um caminho sem navegador? Não. O resource `videos` segue com as mesmas partes (`snippet`, `contentDetails`, `status`, `statistics`, `paidProductPlacementDetails`, `player`, `topicDetails`, `recordingDetails`, `fileDetails`, `processingDetails`, `suggestions`, `liveStreamingDetails`, `brandPartner`, `localizations`), e o histórico de revisões não tem entrada nova depois de 15/10/2026 nem menção a vídeo relacionado de Shorts. A task segue no Neo como exceção documentada em `docs/scheduled-tasks-registry.md` e em `serverException` de `DESKTOP_SCHEDULED_TASKS`.
+
 ## Fontes
 
 - Resource `videos` (YouTube Data API v3): https://developers.google.com/youtube/v3/docs/videos
