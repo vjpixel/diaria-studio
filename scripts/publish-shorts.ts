@@ -3699,13 +3699,29 @@ export function prepareCorteRun(input: {
 }
 
 /**
- * #11912: grava no `corte.json` a autorização do `--publish --confirm-publish`
- * (chamado só depois da confirmação). `onlyRaw` é o `--only` da rodada.
+ * #11912: grava no `corte.json` a autorização do `--publish --confirm-publish`.
+ * `main` chama só depois de TODAS as validações que podem abortar a rodada
+ * (confirmação, escopo dos timers, plano com o `--only`, vídeo presente) e
+ * antes do 1º envio: um `--publish` que sai com exit 2 não deixa o corte
+ * autorizado. `onlyRaw` é o `--only` da rodada; `known` são os destinos
+ * válidos da config (`knownDestinationIds`). Destino desconhecido lança antes
+ * de ler ou gravar qualquer coisa: nome errado no marcador faria o timer
+ * ignorar o destino certo em silêncio, sem alarme `late`.
  */
-export function recordCortePublishAuthorization(dir: string, onlyRaw: string | undefined, nowIso: string, log: (line: string) => void): void {
+export function recordCortePublishAuthorization(
+  dir: string,
+  onlyRaw: string | undefined,
+  known: ReadonlySet<string>,
+  nowIso: string,
+  log: (line: string) => void,
+): void {
+  const only = onlyRaw ? onlyRaw.split(",").map((s) => s.trim()).filter(Boolean) : null;
+  const unknown = (only ?? []).filter((d) => !known.has(d));
+  if (unknown.length) {
+    throw new Error(`"pode publicar" não gravado: --only com destino desconhecido: ${unknown.join(", ")} (válidos: ${[...known].join(", ")})`);
+  }
   const specPath = join(dir, CORTE_SPEC_FILE);
   const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
-  const only = onlyRaw ? onlyRaw.split(",").map((s) => s.trim()).filter(Boolean) : null;
   const next = withCortePublishAuthorization(spec, only, nowIso);
   if (!next.changed) return;
   writeFileAtomic(specPath, JSON.stringify(next.spec, null, 2) + "\n");
@@ -3838,11 +3854,6 @@ async function main(): Promise<number> {
   const dir = corte ? resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corte.slug))) : resolve(values["edition-dir"] ?? editionDirFor(aammdd));
   // #11911: `--edition-dir` fora de data/editions/{AAMMDD}: nada é delegado aos timers do 300.
   const editionDirOverride = corte ? undefined : nonCanonicalEditionDir(dir, editionDirFor(aammdd));
-  // #11912: só o --publish confirmado do corte grava o "pode publicar" (e o --only usado) no
-  // corte.json; o timer do 300 não publica sem ele. Dry-run, --mark e --update-scheduled nunca.
-  if (corte && flags.has("publish") && !flags.has("update-scheduled") && !values["mark"]) {
-    recordCortePublishAuthorization(dir, values["only"], new Date().toISOString(), (l) => console.error(l));
-  }
   // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
   // toda gravação relê do disco e troca só a própria entrada, sob lock.
   const linkedinTimer = flags.has("linkedin-timer");
@@ -4079,6 +4090,18 @@ async function main(): Promise<number> {
   if (!file) {
     console.error(`publish-shorts: vídeo curto ausente em ${videoPath}`);
     return 1;
+  }
+  // #11912: só o --publish confirmado do corte grava o "pode publicar" (e o --only usado) no
+  // corte.json; o timer do 300 não publica sem ele. Dry-run, --mark e --update-scheduled já
+  // saíram acima. Fica DEPOIS de todas as validações que abortam (confirmação, escopo dos
+  // timers, plano com o --only, vídeo) e ANTES do 1º envio.
+  if (corte) {
+    try {
+      recordCortePublishAuthorization(dir, values["only"], knownDestinationIds(shortsCfg), new Date().toISOString(), (l) => console.error(l));
+    } catch (e) {
+      console.error(`publish-shorts: ${(e as Error).message}`);
+      return 2;
+    }
   }
   console.error(`[premissa] duração ${duration === null ? "desconhecida" : `${duration.toFixed(1)} s`} → Facebook via ${facebookUploadRoute(duration)}`);
   const deps = defaultGraphDeps;

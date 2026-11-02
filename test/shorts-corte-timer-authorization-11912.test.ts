@@ -37,6 +37,7 @@ const shorts = {
   corte_via_timer: true,
 };
 const CONFIG = { publishing: { shorts } };
+const KNOWN = new Set(["youtube_shorts", "facebook:diaria", "instagram", "linkedin_profile", "threads_profile"]);
 const authorized = (dests: "all" | string[]): CorteSpec => ({ ...BASE, publish_confirmed_at: "2026-11-02T20:00:00.000Z", publish_confirmed_destinations: dests });
 
 describe("#11912 decideCorteTimerRun exige o 'pode publicar'", () => {
@@ -100,7 +101,7 @@ describe("#11912 marcador de autorização no corte.json", () => {
     prepareCorteRun({ slug: BASE.slug, dir, values, positionalDate: "", log: () => {} });
     const read = () => parseCorteSpec(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), "corte.json");
     assert.equal(corteAuthorizedDestinations(read()), null, "o dry-run grava o corte.json SEM autorização");
-    recordCortePublishAuthorization(dir, "instagram", "2026-11-02T20:00:00.000Z", () => {});
+    recordCortePublishAuthorization(dir, "instagram", KNOWN, "2026-11-02T20:00:00.000Z", () => {});
     prepareCorteRun({ slug: BASE.slug, dir, values, positionalDate: "", log: () => {} });
     assert.deepEqual(corteAuthorizedDestinations(read()), ["instagram"], "mesmo plano: a autorização segue");
     const logs: string[] = [];
@@ -109,14 +110,47 @@ describe("#11912 marcador de autorização no corte.json", () => {
     assert.ok(logs.some((l) => /autorização de publicação anterior caiu/.test(l)), logs.join("\n"));
   });
 
-  it("publish-shorts grava a autorização só no --publish confirmado (depois da checagem da confirmação)", () => {
+  it("--only com destino desconhecido: lança e nada é gravado (nem os destinos válidos da mesma lista)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "corte-11912-only-"));
+    const values = { date: BASE.date, at: BASE.hhmm, title: BASE.title, hook: BASE.hook, video: join(dir, BASE.video) };
+    prepareCorteRun({ slug: BASE.slug, dir, values, positionalDate: "", log: () => {} });
+    const before = readFileSync(join(dir, CORTE_SPEC_FILE), "utf8");
+    const logs: string[] = [];
+    assert.throws(() => recordCortePublishAuthorization(dir, "instagram,instagran", KNOWN, AT, (l) => logs.push(l)), /destino desconhecido: instagran/);
+    assert.equal(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), before, "corte.json intacto");
+    assert.equal(corteAuthorizedDestinations(parseCorteSpec(before, "corte.json")), null);
+    assert.deepEqual(logs, []);
+    // destino válido para a config da rodada: grava
+    recordCortePublishAuthorization(dir, "facebook:diaria", KNOWN, AT, () => {});
+    assert.deepEqual(corteAuthorizedDestinations(parseCorteSpec(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), "corte.json")), ["facebook:diaria"]);
+  });
+
+  // Trava de FONTE (a ligação no `main` não roda em teste: o guard de publicação
+  // proíbe executar o publish-shorts com --publish). Garante que a gravação vem
+  // depois de TODAS as validações que abortam e antes do 1º envio.
+  it("publish-shorts grava a autorização só depois das validações que abortam e antes do 1º envio", () => {
     const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
-    const call = src.indexOf("recordCortePublishAuthorization(dir,");
+    const mainStart = src.indexOf("async function main(): Promise<number>");
+    assert.ok(mainStart > 0);
+    const call = src.indexOf("recordCortePublishAuthorization(dir,", mainStart);
     assert.ok(call > 0);
-    const guard = src.lastIndexOf('if (corte && flags.has("publish") && !flags.has("update-scheduled") && !values["mark"])', call);
-    assert.ok(guard > 0 && call - guard < 200, "a chamada fica dentro do if do --publish do corte");
-    const confirm = src.lastIndexOf("publishConfirmationError({", call);
-    assert.ok(confirm > 0 && confirm < guard, "a confirmação (#11741) é checada antes de gravar");
+    assert.equal(src.indexOf("recordCortePublishAuthorization(dir,", call + 1), -1, "uma única chamada");
+    const before = (needle: string, label: string) => {
+      const i = src.indexOf(needle, mainStart);
+      assert.ok(i > 0 && i < call, `${label} vem antes da gravação`);
+    };
+    before("publishConfirmationError({", "confirmação (#11741)");
+    before("if (values[\"mark\"]) {", "--mark (sai sem gravar)");
+    before("const scopeErr =", "escopo dos timers");
+    before('if (flags.has("update-scheduled")) {', "--update-scheduled (sai sem gravar)");
+    before("plan = planShortsPublish({", "plano (valida o --only contra a config)");
+    before('if (!flags.has("publish")) {', "dry-run (sai sem gravar)");
+    before("vídeo curto ausente em ${videoPath}`);\n    return 1;", "vídeo ausente");
+    const firstSend = src.indexOf("for (const item of plan.items)", mainStart);
+    assert.ok(firstSend > call, "a gravação vem antes do 1º envio (o timer depende dela)");
+    const window = src.slice(call - 400, call + 300);
+    assert.match(window, /knownDestinationIds\(shortsCfg\)/, "valida os nomes contra os destinos da config");
+    assert.match(window, /return 2;/, "destino desconhecido aborta com exit 2");
   });
 });
 
@@ -155,7 +189,7 @@ describe("#11912 runCorteTimerFor: dry-run -> nada; --publish confirmado -> só 
 
   it("depois do --publish confirmado com --only: o timer publica só esses destinos", async () => {
     const dir = corteDir();
-    recordCortePublishAuthorization(dir, "instagram,linkedin_profile,youtube", "2026-11-02T20:00:00.000Z", () => {});
+    recordCortePublishAuthorization(dir, "instagram,linkedin_profile,youtube_shorts", KNOWN, "2026-11-02T20:00:00.000Z", () => {});
     const calls: string[][] = [];
     const alarms: Array<{ destination: string; key: CorteTimerAlarmKey }> = [];
     await runCorteTimerFor(dir, false, deps(at(10 * 60_000), calls, alarms));
