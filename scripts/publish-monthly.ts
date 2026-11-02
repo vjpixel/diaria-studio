@@ -26,11 +26,20 @@
  *                          checagem (nunca a de "no futuro").
  *   --allow-imminent       #7047: pula a checagem de antecedência mínima do --schedule-at
  *   --update-existing N    Atualiza campanha existente (id N) em vez de criar nova
+ *   --new-campaign         #11808: força criar campanha nova mesmo havendo rascunho
+ *                          registrado em _internal/05-published.json (ver "Resume")
  *   --dry-run              Valida inputs e gera HTML preview local sem chamar a API
  *
  * Mutuamente exclusivos: --send-test, --send-now, --schedule-at.
  *
  * Output: data/monthly/{YYMM}/_internal/05-published.json
+ *
+ * Resume (#11808): o id da campanha é gravado em 05-published.json LOGO depois
+ * do POST/PUT, antes do dispatch (/sendTest, /sendNow, scheduledAt). Se o
+ * dispatch falhar (ex.: 429), o registro fica com `status: "draft"` + `error`.
+ * Uma re-execução sem --update-existing lê esse registro e, se a campanha
+ * registrada ainda está `draft` na Brevo, faz PUT nela em vez de criar outra
+ * (antes, rodar de novo duplicava a campanha). --new-campaign desliga isso.
  *
  * Pré-requisitos:
  *   - BREVO_CLARICE_API_KEY definido no ambiente (ou .env)
@@ -164,6 +173,7 @@ interface ParsedArgs {
   sendTestTo: string | null;       // override do destinatário do test email (#1015)
   scheduleAt: string | null;       // timestamp ISO 8601 pra agendamento (#1015)
   updateExisting: number | null;   // campaign_id pra reusar (#1015)
+  newCampaign: boolean;            // #11808: ignora o registro de resume e cria campanha nova
 }
 
 /**
@@ -186,6 +196,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
   let scheduleAt: string | null = null;
   let updateExisting: number | null = null;
   let allowImminent = false; // #7047
+  let newCampaign = false; // #11808
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--yymm" && i + 1 < argv.length) {
@@ -200,6 +211,8 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
       dryRun = true;
     } else if (argv[i] === "--allow-imminent") {
       allowImminent = true; // #7047
+    } else if (argv[i] === "--new-campaign") {
+      newCampaign = true; // #11808
     } else if (argv[i] === "--list-id" && i + 1 < argv.length) {
       const raw = argv[++i];
       const n = parseInt(raw, 10);
@@ -285,14 +298,56 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
       "Uso: publish-monthly.ts --cycle YYMM-MM [--list-id N]\n" +
       "                         [--send-test [--send-test-to <email>]]\n" +
       "                         [--send-now] [--schedule-at <ISO>]\n" +
-      "                         [--update-existing <campaign_id>] [--dry-run]\n" +
+      "                         [--update-existing <campaign_id> | --new-campaign] [--dry-run]\n" +
       "Legado: --yymm YYMM (deriva ciclo automaticamente)\n" +
       "Exemplo: --cycle 2605-06 --list-id 9 --send-test --send-test-to felipe@clarice.ai\n",
     );
     throw new CliExit(1);
   }
 
-  return { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting };
+  if (newCampaign && updateExisting !== null) {
+    process.stderr.write("ERRO: --new-campaign e --update-existing são mutuamente exclusivos.\n");
+    throw new CliExit(1);
+  }
+
+  return { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting, newCampaign };
+}
+
+// ─── Resume do registro de campanha (#11808) ───────────────────────────────
+
+/** Status do registro local que ainda indicam campanha não disparada pra lista. */
+const RESUMABLE_RECORD_STATUSES = new Set(["draft", "test_sent"]);
+
+/**
+ * #11808: lê `_internal/05-published.json` e devolve o id da campanha se o
+ * registro aponta pra uma campanha que nunca foi disparada pra lista
+ * (`draft`/`test_sent`). `null` se não há registro, se ele é ilegível ou se a
+ * campanha já foi enviada/agendada — nesses casos o fluxo cria uma campanha
+ * nova, como antes. Só lê disco; a conferência do status real na Brevo é do
+ * chamador.
+ */
+export function readResumableCampaignId(internalDir: string): number | null {
+  const path = resolve(internalDir, "05-published.json");
+  if (!existsSync(path)) return null;
+  let rec: unknown;
+  try {
+    rec = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    process.stderr.write(`warn: ${path} ilegível (${(e as Error).message}) — ignorando para resume.\n`);
+    return null;
+  }
+  if (!rec || typeof rec !== "object") return null;
+  const { campaign_id, status } = rec as { campaign_id?: unknown; status?: unknown };
+  if (typeof campaign_id !== "number" || !Number.isInteger(campaign_id) || campaign_id <= 0) return null;
+  if (typeof status !== "string" || !RESUMABLE_RECORD_STATUSES.has(status)) return null;
+  return campaign_id;
+}
+
+function writePublished(internalDir: string, published: MonthlyPublished): string {
+  if (!existsSync(internalDir)) mkdirSync(internalDir, { recursive: true });
+  const outputPath = resolve(internalDir, "05-published.json");
+  writeFileSync(outputPath, JSON.stringify(published, null, 2) + "\n");
+  return outputPath;
 }
 
 // #1844: camada de render (escHtml/render*/draftToEmail/parse) → scripts/lib/mensal/monthly-render.ts. Re-export no topo; main() importa.
@@ -441,7 +496,7 @@ export async function main(
     if (e instanceof CliExit) return e.code;
     throw e;
   }
-  const { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting } = parsed;
+  const { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting, newCampaign } = parsed;
 
   // #1015: --send-test, --send-now e --schedule-at são 3 ações mutuamente exclusivas.
   const actions = [sendTest && "--send-test", sendNow && "--send-now", scheduleAt && "--schedule-at"].filter(Boolean);
@@ -643,13 +698,22 @@ export async function main(
     campaignName = `${campaignName} — Teste ${nextTestNumber}`;
   }
 
+  // #11808: candidato a resume — campanha registrada por uma execução anterior
+  // que criou o rascunho mas não chegou a disparar (ex.: 429 no /sendTest).
+  const internalDirPath = resolve(monthlyDir, "_internal");
+  const resumeCandidate = updateExisting === null && !newCampaign
+    ? readResumableCampaignId(internalDirPath)
+    : null;
+
   if (dryRun) {
-    const internalDir = resolve(monthlyDir, "_internal");
+    const internalDir = internalDirPath;
     if (!existsSync(internalDir)) mkdirSync(internalDir, { recursive: true });
     const previewPath = resolve(internalDir, `preview-list${effectiveListId ?? "default"}.html`);
     writeFileSync(previewPath, html);
     const action = updateExisting !== null
       ? `atualizada (id=${updateExisting})`
+      : resumeCandidate !== null
+      ? `reaproveitada do registro anterior (id=${resumeCandidate}, se ainda draft na Brevo)`
       : "criada";
     const dispatchLabel = scheduleAt
       ? `\n  Dispatch: AGENDADO pra ${scheduleAt}`
@@ -679,7 +743,45 @@ export async function main(
     `  Assinantes:     ${listInfo.totalSubscribers}\n\n`
   );
 
+  // #11808: confere o candidato a resume na Brevo. Só reaproveita campanha
+  // ainda `draft`; apagada (404) → cria nova. Qualquer outro status (sent,
+  // queued, in_process, suspended, archive) diverge do registro local, que
+  // dizia "não disparada": um dispatch anterior pode ter saído apesar do erro,
+  // então aborta em vez de criar (e talvez enviar) uma segunda campanha. Erro
+  // de rede/429 no GET também propaga: criar às cegas é o que duplicaria.
+  let resumedId: number | null = null;
+  if (resumeCandidate !== null) {
+    try {
+      const prev = await brevoGetCampaign(apiKey, resumeCandidate);
+      if (prev.status === "draft") {
+        resumedId = resumeCandidate;
+        process.stdout.write(
+          `Resume (#11808): campanha ${resumeCandidate} registrada em 05-published.json segue draft — atualizando em vez de criar outra.\n` +
+          `  (passe --new-campaign para forçar uma campanha nova)\n`,
+        );
+      } else {
+        process.stderr.write(
+          `ERRO (#11808): 05-published.json registra a campanha ${resumeCandidate} como não disparada, ` +
+          `mas na Brevo ela está em status "${prev.status}" — um dispatch anterior pode ter saído.\n` +
+          `Confira no painel (https://app.brevo.com/campaign/email/${resumeCandidate}/edit) e rode de novo com ` +
+          `--new-campaign (cria outra) ou --update-existing <id>.\n`,
+        );
+        return 1;
+      }
+    } catch (e) {
+      if (/\(404\)/.test((e as Error).message)) {
+        process.stdout.write(
+          `Resume (#11808): campanha ${resumeCandidate} registrada não existe mais na Brevo (404) — criando campanha nova.\n`,
+        );
+      } else {
+        throw e;
+      }
+    }
+  }
+
   // #1015: --update-existing reusa campanha existente (PUT), default cria nova (POST).
+  // #11808: o resume entra pelo mesmo caminho de PUT, já com o status conferido.
+  const existingTarget = updateExisting ?? resumedId;
   let campaignId: number;
   if (updateExisting !== null) {
     // Pre-check: campanha existe e não está em status terminal (sent).
@@ -711,6 +813,21 @@ export async function main(
     });
     campaignId = updateExisting;
     process.stdout.write(`Campanha atualizada: id=${campaignId} (--update-existing)\n`);
+  } else if (resumedId !== null) {
+    await brevoPut(apiKey, `/emailCampaigns/${resumedId}`, {
+      name: campaignName,
+      subject,
+      previewText,
+      sender: {
+        name: brevo.sender_name,
+        email: brevo.sender_email,
+      },
+      ...(brevo.reply_to ? { replyTo: brevo.reply_to } : {}),
+      recipients: { listIds: [effectiveListId] },
+      htmlContent: html,
+    });
+    campaignId = resumedId;
+    process.stdout.write(`Campanha atualizada: id=${campaignId} (resume #11808)\n`);
   } else {
     const campaignResp = await brevoPost(apiKey, "/emailCampaigns", {
       name: campaignName,
@@ -743,68 +860,83 @@ export async function main(
     preview_text: previewText,
     status: "draft",
     brevo_dashboard_url: dashboardUrl,
-    updated_existing: updateExisting !== null ? true : undefined,
+    updated_existing: existingTarget !== null ? true : undefined,
     list_id: listInfo.id,
     list_name: listInfo.name,
     list_subscribers: listInfo.totalSubscribers,
     created_at: new Date().toISOString(),
   };
 
-  // Send test email — destinatário pode ser overrideado via --send-test-to (#1015)
-  if (sendTest) {
-    const testRecipient = sendTestTo ?? brevo.test_email;
-    await brevoPost(apiKey, `/emailCampaigns/${campaignId}/sendTest`, {
-      emailTo: [testRecipient],
-    });
+  // #11808: registra o id ANTES do dispatch. Se /sendTest, /sendNow ou o
+  // agendamento falharem (429, sender, rede), a próxima execução encontra a
+  // campanha e a reaproveita em vez de criar uma duplicada.
+  const internalDir = internalDirPath;
+  writePublished(internalDir, published);
 
-    // Counter só persiste após sucesso do /sendTest — evita "queimar" números
-    // se a API falhar (rate limit, sender unverified, etc.).
-    if (nextTestNumber > 0) {
-      const counterPath = resolve(monthlyDir, "_internal/test-counter.txt");
-      writeFileSync(counterPath, String(nextTestNumber));
+  try {
+    // Send test email — destinatário pode ser overrideado via --send-test-to (#1015)
+    if (sendTest) {
+      const testRecipient = sendTestTo ?? brevo.test_email;
+      await brevoPost(apiKey, `/emailCampaigns/${campaignId}/sendTest`, {
+        emailTo: [testRecipient],
+      });
+
+      // Counter só persiste após sucesso do /sendTest — evita "queimar" números
+      // se a API falhar (rate limit, sender unverified, etc.).
+      if (nextTestNumber > 0) {
+        const counterPath = resolve(monthlyDir, "_internal/test-counter.txt");
+        writeFileSync(counterPath, String(nextTestNumber));
+      }
+
+      published.status = "test_sent";
+      published.test_email = testRecipient;
+      published.test_sent_at = new Date().toISOString();
+
+      const sourceLabel = sendTestTo ? "--send-test-to flag" : "platform.config.json";
+      process.stdout.write(
+        `Email de teste enviado para: ${testRecipient} (fonte: ${sourceLabel})\n`,
+      );
     }
 
-    published.status = "test_sent";
-    published.test_email = testRecipient;
-    published.test_sent_at = new Date().toISOString();
+    // Send campaign now (real dispatch para a lista)
+    if (sendNow) {
+      await brevoPost(apiKey, `/emailCampaigns/${campaignId}/sendNow`, {});
+      published.status = "sent";
+      published.sent_at = new Date().toISOString();
+      process.stdout.write(
+        `Campanha disparada para lista ${listInfo.id} ("${listInfo.name}", ${listInfo.totalSubscribers} assinante${listInfo.totalSubscribers === 1 ? "" : "s"}).\n`,
+      );
+    }
 
-    const sourceLabel = sendTestTo ? "--send-test-to flag" : "platform.config.json";
-    process.stdout.write(
-      `Email de teste enviado para: ${testRecipient} (fonte: ${sourceLabel})\n`,
+    // #1015: agenda dispatch futuro via PUT /emailCampaigns/{id} { scheduledAt }
+    if (scheduleAt) {
+      await brevoPut(apiKey, `/emailCampaigns/${campaignId}`, {
+        scheduledAt: scheduleAt,
+      });
+      published.status = "scheduled";
+      published.scheduled_at = scheduleAt;
+      const localTime = new Date(scheduleAt).toLocaleString("pt-BR", {
+        timeZone: "America/Sao_Paulo",
+      });
+      process.stdout.write(
+        `Campanha agendada pra ${scheduleAt} (BRT: ${localTime}) → lista ${listInfo.id} ("${listInfo.name}", ${listInfo.totalSubscribers} assinantes).\n`,
+      );
+    }
+  } catch (e) {
+    // #11808: o dispatch falhou depois de a campanha existir — grava o erro no
+    // registro (status segue o da última etapa concluída, tipicamente "draft")
+    // e propaga, para a re-execução reconciliar em vez de duplicar.
+    published.error = (e as Error).message;
+    const failedPath = writePublished(internalDir, published);
+    process.stderr.write(
+      `ERRO no dispatch da campanha ${campaignId}: ${published.error}\n` +
+      `Registro salvo em ${failedPath} — rode de novo para reaproveitar a campanha ${campaignId} (sem duplicar).\n`,
     );
-  }
-
-  // Send campaign now (real dispatch para a lista)
-  if (sendNow) {
-    await brevoPost(apiKey, `/emailCampaigns/${campaignId}/sendNow`, {});
-    published.status = "sent";
-    published.sent_at = new Date().toISOString();
-    process.stdout.write(
-      `Campanha disparada para lista ${listInfo.id} ("${listInfo.name}", ${listInfo.totalSubscribers} assinante${listInfo.totalSubscribers === 1 ? "" : "s"}).\n`,
-    );
-  }
-
-  // #1015: agenda dispatch futuro via PUT /emailCampaigns/{id} { scheduledAt }
-  if (scheduleAt) {
-    await brevoPut(apiKey, `/emailCampaigns/${campaignId}`, {
-      scheduledAt: scheduleAt,
-    });
-    published.status = "scheduled";
-    published.scheduled_at = scheduleAt;
-    const localTime = new Date(scheduleAt).toLocaleString("pt-BR", {
-      timeZone: "America/Sao_Paulo",
-    });
-    process.stdout.write(
-      `Campanha agendada pra ${scheduleAt} (BRT: ${localTime}) → lista ${listInfo.id} ("${listInfo.name}", ${listInfo.totalSubscribers} assinantes).\n`,
-    );
+    throw e;
   }
 
   // Save output
-  const internalDir = resolve(monthlyDir, "_internal");
-  if (!existsSync(internalDir)) mkdirSync(internalDir, { recursive: true });
-
-  const outputPath = resolve(internalDir, "05-published.json");
-  writeFileSync(outputPath, JSON.stringify(published, null, 2) + "\n");
+  const outputPath = writePublished(internalDir, published);
 
   process.stdout.write(`Output salvo: ${outputPath}\n`);
 }
