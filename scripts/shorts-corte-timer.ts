@@ -244,8 +244,9 @@ export function interpretCorteTimerOutput(exitCode: number | null, stdout: strin
   }
   // #11912: o filho (`--require-corte-authorization`) recusou sem publicar nada: o motivo vira o alarme certo.
   if (typeof out?.authorization_refused === "string") {
-    const refused: Record<string, CorteTimerAlarmKey> = { revoked: "revoked", "content-changed": "content-changed", "missing-content": "missing-video" };
-    const key = refused[out.authorization_refused] ?? "revoked";
+    const refused: Record<string, CorteTimerAlarmKey> = { revoked: "revoked", "content-changed": "content-changed", "missing-content": "missing-video", "spec-unreadable": "crash" };
+    // #11923: motivo desconhecido (timer e filho em versões diferentes) não vira "revoked" enganoso.
+    const key = refused[out.authorization_refused] ?? "crash";
     const detail = `o publish-shorts recusou sem publicar (${out.authorization_refused}): ${String(out.reason ?? "sem motivo")}`;
     return pending.map((destination) => ({ destination, kind: "alarm", key, detail }));
   }
@@ -493,9 +494,15 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
       console.log(`${LOG_PREFIX} ${spec.slug} ${o.destination}: ${o.kind}${o.kind === "alarm" ? ` (${o.key})` : ""} — ${o.detail}`);
       if (o.kind !== "alarm") continue;
       // A recusa do filho relê o corte: a variante é a da queda/arquivo de agora.
-      const variant = o.key === "revoked" || o.key === "content-changed"
-        ? corteAlarmVariant(o.key, parseCorteSpec(readFileSync(specPath, "utf8"), specPath), corteContentFingerprint(dir, spec))
-        : undefined;
+      // #11923: se reler falha (OneDrive), segue sem variante — o alarme não pode se perder por isso.
+      let variant: string | undefined;
+      if (o.key === "revoked" || o.key === "content-changed") {
+        try {
+          variant = corteAlarmVariant(o.key, parseCorteSpec(readFileSync(specPath, "utf8"), specPath), corteContentFingerprint(dir, spec));
+        } catch (e) {
+          console.error(`${LOG_PREFIX} ${spec.slug}: variante do alarme "${o.key}" indisponível (${(e as Error).message}); segue sem ela`);
+        }
+      }
       const delivered = await alarm(dir, spec, o.destination, o.key, o.detail, variant);
       if (!delivered || o.key !== "late") failed = true;
     }

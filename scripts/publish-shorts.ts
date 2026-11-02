@@ -3834,7 +3834,7 @@ export function recordCortePublishAuthorization(
 }
 
 /** #11912: por que o filho do timer recusou; o timer mapeia para o alarme (`interpretCorteTimerOutput`). */
-export type CorteAuthorizationRefusal = "revoked" | "content-changed" | "missing-content";
+export type CorteAuthorizationRefusal = "revoked" | "content-changed" | "missing-content" | "spec-unreadable";
 
 /**
  * #11912: `--require-corte-authorization` (o filho do timer do 300). Confere,
@@ -3878,6 +3878,21 @@ export function corteRunSpecDrift(fresh: CorteSpec, used: CorteSpec): string[] {
  * terem dado certo. Nunca lança: o motivo de não restaurar volta no JSON.
  */
 export function restoreCorteAuthorizationAfterUpdate(
+  dir: string,
+  nowIso: string,
+  known: ReadonlySet<string>,
+  only: readonly string[] | null,
+  log: (line: string) => void,
+): { restored: true; destinations: string[] } | { restored: false; reason: string } {
+  try {
+    return restoreCorteAuthorizationAfterUpdateUnsafe(dir, nowIso, known, only, log);
+  } catch (e) {
+    // #11923: as atualizações já deram certo; uma leitura/escrita falha aqui não pode perder o JSON final.
+    return { restored: false, reason: `falha ao regravar o "pode publicar": ${(e as Error).message}` };
+  }
+}
+
+function restoreCorteAuthorizationAfterUpdateUnsafe(
   dir: string,
   nowIso: string,
   known: ReadonlySet<string>,
@@ -4315,7 +4330,8 @@ async function main(): Promise<number> {
         ? { refused: "revoked", reason: `o corte.json mudou durante a rodada (${drift.join(", ")}): nada publicado com o plano velho` }
         : corteRunAuthorizationError(fresh, onlyList, corteContent);
     } catch (e) {
-      refusal = { refused: "revoked", reason: (e as Error).message };
+      // #11923: falha ao reler o corte.json (EBUSY do OneDrive, JSON pela metade) não é revogação.
+      refusal = { refused: "spec-unreadable", reason: `corte.json ilegível nesta rodada: ${(e as Error).message}` };
     }
     if (refusal) {
       console.error(`publish-shorts: --require-corte-authorization: ${refusal.reason} — nada publicado`);
