@@ -18,7 +18,7 @@
  *    inesperado.
  *  - **Não expõe segredo nem identidade.** A saída de `claude auth status`
  *    traz e-mail, orgId e nome da organização. Este módulo extrai SÓ o campo
- *    `authMethod` (e `apiProvider`, valor de enum) e nunca devolve nem loga o
+ *    `authMethod` e nunca devolve nem loga o
  *    resto, nem o stdout/stderr cru. Também não lê arquivos de credencial.
  *  - Roda com o MESMO env que o dispatch usa (o chamador passa o env já
  *    filtrado por `claudeCliEnv`), então o veredito vale pra sessão real.

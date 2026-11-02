@@ -354,7 +354,7 @@ export function main(
     try {
       auth = checkAuthFn(resolveClaudeBinFn());
     } catch (e) {
-      auth = { status: "unverifiable", message: `auth do claude: NÃO VERIFICÁVEL — ${(e as Error).message}` };
+      auth = { status: "unverifiable", message: `auth do claude: NÃO VERIFICÁVEL — erro no preflight (${(e as Error).name})` };
     }
     if (auth.status !== "subscription") {
       console.error(`[${nowIso()}] ${auth.message}`);

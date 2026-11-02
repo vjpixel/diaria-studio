@@ -757,6 +757,13 @@ export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_D
     return 1;
   }
 
+  // 0. Auth (#11887), ANTES do review: o review também sobe `claude -p`, então
+  // auth fora da assinatura bloquearia só o overnight e ainda cobraria o review.
+  if (preflightAuthBlocked(claudeBin, deps)) {
+    deps.log(`cadeia noturna: fim review=skipped overnight=auth-not-subscription exit=${EXIT_CLAUDE_AUTH_NOT_SUBSCRIPTION}`);
+    return EXIT_CLAUDE_AUTH_NOT_SUBSCRIPTION;
+  }
+
   // 1. Review. Qualquer desfecho segue pro passo 2.
   let review: ReviewOutcome;
   try {
@@ -778,8 +785,6 @@ export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_D
     overnight = { status: "skipped-active-session", exitCode: null };
   } else if (preflightUntrusted(repoRootAbs, deps)) {
     overnight = { status: "untrusted-workspace", exitCode: null };
-  } else if (preflightAuthBlocked(claudeBin, deps)) {
-    overnight = { status: "auth-not-subscription", exitCode: null };
   } else {
     deps.log(`overnight: claude --print /diaria-overnight ${AGENDADO_FLAG} (${NIGHTLY_OVERNIGHT_MODEL}/${NIGHTLY_OVERNIGHT_EFFORT})`);
     try {

@@ -118,7 +118,7 @@ describe("cadeia noturna (#11887)", () => {
     const h = harness("api_key");
     const code = chainMain(repo, h.deps);
     assert.equal(code, EXIT_CLAUDE_AUTH_NOT_SUBSCRIPTION);
-    assert.ok(!h.calls.some((c) => c.includes("diaria-overnight")), "overnight não pode ter sido despachado");
+    assert.equal(h.calls.length, 0, "nem review nem overnight podem ter sido despachados");
     assert.ok(h.lines.some((l) => /authMethod=api_key/.test(l)));
     assert.ok(!h.lines.some((l) => /example\.com|org-segredo/.test(l)));
   });
