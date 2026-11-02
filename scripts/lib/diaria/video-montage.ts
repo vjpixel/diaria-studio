@@ -1025,6 +1025,15 @@ export interface SequenceSpec {
   order: BlockKey[];
   /** Escala (%) alternada nos cortes (clipes contíguos fundidos antes, #11503): [base, punch-in]. */
   scales: [number, number];
+  /**
+   * Vertical extra que sai pelo modo corte do `publish-shorts.ts`, não pelo
+   * fluxo da edição (261103: a 2ª vertical, sobre IA soberana). O nome é o da
+   * vertical normal com `-{corte}` no fim (`Diaria comentada_Vertical_V1-soberana`);
+   * o `target` é só a chave interna (único por plano) e não precisa casar com o
+   * nome. O export não vai para `Final/`: lá, 2 verticais do mesmo destino
+   * deixam o publicador da edição `ambiguous`.
+   */
+  corte?: string;
 }
 
 /** O bruto, como o `transcribe` mediu (`source.json`, a fonte única). */
@@ -1188,8 +1197,11 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         if (typeof s.target !== "string" || !SEQUENCE_TARGETS.includes(s.target as SequenceTarget)) errors.push(`${label}: target fora de ${SEQUENCE_TARGETS.join("/")}`);
         else if (seen.has(s.target)) errors.push(`${label}: target ${s.target} repetido`);
         else seen.add(s.target);
+        if (s.corte !== undefined && (typeof s.corte !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s.corte))) errors.push(`${label}: corte precisa ser um slug (minúsculas, dígitos e hífen)`);
         if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${label}: sem name`);
-        else if (videoTargetOf(s.name) !== s.target) {
+        else if (typeof s.corte === "string") {
+          if (!s.name.endsWith(`-${s.corte}`)) errors.push(`${label}: o nome "${s.name}" de um corte precisa terminar em -${s.corte}`);
+        } else if (videoTargetOf(s.name) !== s.target) {
           errors.push(`${label}: o nome "${s.name}" não indica o destino ${s.target} (export cairia no destino errado da pasta Final/)`);
         }
         if (!Number.isInteger(s.width) || !Number.isInteger(s.height) || (s.width as number) <= 0 || (s.height as number) <= 0) errors.push(`${label}: width/height inteiros positivos`);
