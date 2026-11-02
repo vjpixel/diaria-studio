@@ -314,7 +314,7 @@ arquivos já existentes em vez de insistir na geração). Só cai pra
 DAILY_EIA_DIR="data/editions/$EAI_EDITION"
 if [ -f "$DAILY_EIA_DIR/01-eia.md" ] && [ -f "$DAILY_EIA_DIR/01-eia-A.jpg" ] && [ -f "$DAILY_EIA_DIR/01-eia-B.jpg" ]; then
   echo "[etapa-3] Reusando É IA? já aprovado da edição diária $EAI_EDITION (evita gerar imagem nova)."
-  cp "$DAILY_EIA_DIR/01-eia.md" "data/monthly/$CYCLE/01-eia.md"
+  npx tsx scripts/lib/mensal/monthly-eia-copy.ts "$DAILY_EIA_DIR/01-eia.md" "data/monthly/$CYCLE/01-eia.md"  # #11790: remove "Resultado da última edição" da diária
   cp "$DAILY_EIA_DIR/01-eia-A.jpg" "data/monthly/$CYCLE/01-eia-A.jpg"
   cp "$DAILY_EIA_DIR/01-eia-B.jpg" "data/monthly/$CYCLE/01-eia-B.jpg"
   mkdir -p "data/monthly/$CYCLE/_internal"
