@@ -130,6 +130,16 @@ describe("#8960 — checkSwapCooldown", () => {
     assert.equal(result.pedidoEm, "2026-09-28T09:00:00Z");
   });
 
+  it("#11916 — `ate` podre no marcador -> cooldown ATIVO (fail-closed, nunca libera --send)", () => {
+    const marker = formatAcaoAdiadaMarker({ pedido_em: "2026-09-28T09:00:00Z", acao: "google-ads-swap --send", motivo: "ainda não", sessao: "develop", ate: "nao-e-data" });
+    assert.equal(checkSwapCooldown([marker], now).active, true);
+  });
+
+  it("#11916 — `ate` válido já vencido -> cooldown EXPIRADO antes dos 7 dias", () => {
+    const marker = formatAcaoAdiadaMarker({ pedido_em: "2026-09-28T02:00:00Z", acao: "google-ads-swap --send", motivo: "em 7 horas", sessao: "develop", ate: "2026-09-28T09:00:00Z" });
+    assert.equal(checkSwapCooldown([marker], now).active, false);
+  });
+
   it("acao-adiada pedida há mais de 7 dias -> cooldown EXPIRADO", () => {
     const marker = formatAcaoAdiadaMarker({ pedido_em: "2026-09-10T09:00:00Z", acao: "google-ads-swap --send", motivo: "ainda não", sessao: "develop" });
     const result = checkSwapCooldown([marker], now);

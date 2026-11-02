@@ -38,6 +38,7 @@ import {
   parseAcaoAdiadaMarkers,
   latestAcaoAdiadaFor,
   isAcaoAdiadaAtiva,
+  acaoAdiadaMarkerFromArgs,
   trustedCommentBodiesFromIssueViewJson,
   type IssueDecision,
   type ExecutionBlock,
@@ -636,5 +637,90 @@ describe("#9752 — fetchCommentBodies só confia em autor com vínculo com o re
     assert.ok(rStart >= 0);
     const rFn = src.slice(rStart, src.indexOf("\n}\n", rStart));
     assert.match(rFn, /trustedCommentBodiesFromIssueViewJson\(result\.stdout\)/);
+  });
+});
+
+describe("#11916 acao-adiada — prazo explícito (`ate`) menor que 7 dias", () => {
+  const pedidoEm = "2026-11-02T10:00:00Z";
+  const comAte = (ate?: string): AcaoAdiada => ({
+    pedido_em: pedidoEm,
+    acao: "rodar o probe",
+    motivo: "me pergunte de novo em 7 horas",
+    sessao: "develop",
+    ...(ate !== undefined ? { ate } : {}),
+  });
+  const horasDepois = (h: number) => new Date(Date.parse(pedidoEm) + h * 3_600_000);
+
+  it("o cenário da issue: adiamento de 7h para de suprimir depois de 7h", () => {
+    const a = comAte("2026-11-02T17:00:00Z");
+    assert.equal(isAcaoAdiadaAtiva(a, { now: horasDepois(6.9) }), true);
+    assert.equal(isAcaoAdiadaAtiva(a, { now: horasDepois(7) }), false);
+    assert.equal(isAcaoAdiadaAtiva(a, { now: horasDepois(8) }), false);
+  });
+
+  it("sem `ate`, o default de 7 dias segue igual", () => {
+    const a = comAte();
+    assert.equal(isAcaoAdiadaAtiva(a, { now: horasDepois(8) }), true);
+    assert.equal(isAcaoAdiadaAtiva(a, { now: horasDepois(ACAO_ADIADA_COOLDOWN_DAYS * 24 - 1) }), true);
+    assert.equal(isAcaoAdiadaAtiva(a, { now: horasDepois(ACAO_ADIADA_COOLDOWN_DAYS * 24) }), false);
+  });
+
+  it("`ate` além do default é limitado a 7 dias (só encurta, nunca estende)", () => {
+    const a = comAte("2027-11-02T10:00:00Z");
+    assert.equal(isAcaoAdiadaAtiva(a, { now: horasDepois(ACAO_ADIADA_COOLDOWN_DAYS * 24 + 1) }), false);
+  });
+
+  it("`ate` podre não suprime (fail-open)", () => {
+    assert.equal(isAcaoAdiadaAtiva(comAte("nao-e-data"), { now: horasDepois(1) }), false);
+  });
+
+  it("sintoma novo segue reabrindo mesmo com `ate` no futuro", () => {
+    const bloco: ExecutionBlock = {
+      recorded_at: "2026-11-03",
+      motivo: "sintoma",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "sintoma" },
+    };
+    assert.equal(isAcaoAdiadaAtiva(comAte("2026-11-05T10:00:00Z"), { now: horasDepois(30), blocoMaisRecente: bloco }), false);
+  });
+
+  it("round-trip preserva `ate`; marcador sem `ate` não ganha a chave", () => {
+    const com = comAte("2026-11-02T17:00:00Z");
+    assert.deepEqual(parseAcaoAdiadaMarkers([formatAcaoAdiadaMarker(com)]), [com]);
+    const sem = parseAcaoAdiadaMarkers([formatAcaoAdiadaMarker(comAte())]);
+    assert.equal("ate" in sem[0]!, false);
+  });
+
+  it("`ate` de tipo errado invalida o marcador", () => {
+    const raw = Buffer.from(JSON.stringify({ ...comAte(), ate: 123 }), "utf8").toString("base64");
+    assert.deepEqual(parseAcaoAdiadaMarkers([`<!-- acao-adiada: ${raw} -->`]), []);
+  });
+
+  it("CLI --cooldown-horas 7 grava `ate` = now + 7h", () => {
+    const now = new Date(pedidoEm);
+    const r = acaoAdiadaMarkerFromArgs(["--print-acao-adiada-marker", "--acao", "rodar o probe", "--cooldown-horas", "7"], now);
+    assert.ok("marker" in r);
+    const [parsed] = parseAcaoAdiadaMarkers([r.marker]);
+    assert.equal(parsed!.ate, "2026-11-02T17:00:00.000Z");
+    assert.equal(isAcaoAdiadaAtiva(parsed!, { now: horasDepois(7) }), false);
+  });
+
+  it("CLI sem --cooldown-horas não grava `ate`", () => {
+    const r = acaoAdiadaMarkerFromArgs(["--print-acao-adiada-marker", "--acao", "x"], new Date(pedidoEm));
+    assert.ok("marker" in r);
+    assert.equal(parseAcaoAdiadaMarkers([r.marker])[0]!.ate, undefined);
+  });
+
+  for (const bad of ["0", "-3", "abc", "", String(ACAO_ADIADA_COOLDOWN_DAYS * 24 + 1)]) {
+    it(`CLI --cooldown-horas ${JSON.stringify(bad)} é erro de uso`, () => {
+      const args = ["--print-acao-adiada-marker", "--acao", "x", "--cooldown-horas", ...(bad === "" ? [] : [bad])];
+      assert.ok("error" in acaoAdiadaMarkerFromArgs(args, new Date(pedidoEm)));
+    });
+  }
+
+  it("CLI aceita o teto exato (24 × dias) e fração de hora", () => {
+    for (const ok of [String(ACAO_ADIADA_COOLDOWN_DAYS * 24), "0.5"]) {
+      assert.ok("marker" in acaoAdiadaMarkerFromArgs(["--print-acao-adiada-marker", "--acao", "x", "--cooldown-horas", ok]));
+    }
   });
 });

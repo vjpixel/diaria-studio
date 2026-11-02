@@ -456,7 +456,10 @@ estourou".
   `formatAcaoAdiadaMarker` (`scripts/lib/issue-decisions.ts`) com a ação
   pedida e o motivo, se ele deu um. Não rotear nada — o track não mudou. O
   marcador some sozinho depois de `ACAO_ADIADA_COOLDOWN_DAYS` (7 dias) ou
-  quando um sintoma novo aparecer. Mesmo marcador para o "nem eu destravo"
+  quando um sintoma novo aparecer. Se o editor deu prazo menor ("me pergunte
+  de novo em 7 horas", #11916), gerar com `--cooldown-horas N` (`--print-acao-adiada-marker`):
+  o marcador ganha `ate` e a pergunta volta em N horas. Prazo maior que 7
+  dias não existe (a flag recusa). Mesmo marcador para o "nem eu destravo"
   da pergunta de direção do Passo 3 (#10216) — ali o track também fica.
 - **"Não é isso, o problema é outro"**: a ação que imaginamos estava errada.
   Isso é informação de conteúdo, não adiamento — comentar o que o editor
