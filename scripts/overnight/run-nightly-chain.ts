@@ -76,7 +76,17 @@ import {
   type WorkspaceTrustResult,
 } from "../lib/claude-workspace-trust.ts";
 
+import {
+  EXIT_AUTH_NOT_SUBSCRIPTION,
+  authBlocksRun,
+  checkClaudeAuthMethod,
+  collectClaudeAuthEvidence,
+  formatClaudeAuthEvidence,
+  type ClaudeAuthResult,
+} from "../lib/claude-auth-method.ts";
+
 export { EXIT_WORKSPACE_UNTRUSTED } from "../lib/claude-workspace-trust.ts";
+export { EXIT_AUTH_NOT_SUBSCRIPTION } from "../lib/claude-auth-method.ts";
 
 /** Script do review, relativo à raiz do repo. */
 export const DAILY_REVIEW_SCRIPT = "hermes/scripts/opus-daily-diff-review.sh";
@@ -425,6 +435,14 @@ export interface NightlyChainDeps {
    * `DEFAULT_DEPS` sempre liga.
    */
   checkWorkspaceTrust?: (repoRootAbs: string, env: NodeJS.ProcessEnv) => WorkspaceTrustResult;
+  /**
+   * Preflight de método de auth do CLI (#11887), chamado antes do review e do
+   * overnight com o MESMO ambiente que o filho recebe. Opcional como o de
+   * confiança: ausente, não roda; o `DEFAULT_DEPS` sempre liga.
+   */
+  checkClaudeAuth?: (repoRootAbs: string, claudeBin: string, env: NodeJS.ProcessEnv) => ClaudeAuthResult;
+  /** Linha de evidência não sensível quando o auth bloqueia (#11887). Opcional. */
+  describeAuthEvidence?: (repoRootAbs: string, env: NodeJS.ProcessEnv) => string;
 }
 
 /** Nome da task no registro (`scripts/lib/scheduled-tasks.ts`) que dispara este runner. */
@@ -575,6 +593,8 @@ export const DEFAULT_DEPS: NightlyChainDeps = {
   readReviewSummary,
   findRoundTrace: findRoundTraceSince,
   checkWorkspaceTrust: (root, env) => checkWorkspaceTrust(root, { env }),
+  checkClaudeAuth: (_root, bin, env) => checkClaudeAuthMethod(bin, env),
+  describeAuthEvidence: (root, env) => formatClaudeAuthEvidence(collectClaudeAuthEvidence({ env, repoRootAbs: root })),
 };
 
 export function runReview(repoRootAbs: string, claudeBin: string, deps: NightlyChainDeps): ReviewOutcome {
@@ -699,6 +719,38 @@ function preflightUntrusted(repoRootAbs: string, deps: NightlyChainDeps): boolea
   return true;
 }
 
+/**
+ * Preflight de auth (#11887). true = NÃO subir nenhuma sessão (nem o review,
+ * que também é um `claude -p`). Sondado com `buildOvernightEnv`, o ambiente
+ * que o filho recebe de fato. `unknown` só avisa; exceção no check também
+ * (o preflight não pode virar causa de parada quando não concluiu).
+ */
+function preflightAuthBlocks(repoRootAbs: string, claudeBin: string, deps: NightlyChainDeps): boolean {
+  if (!deps.checkClaudeAuth) return false;
+  const childEnv = buildOvernightEnv(deps.env);
+  let auth: ClaudeAuthResult;
+  try {
+    auth = deps.checkClaudeAuth(repoRootAbs, claudeBin, childEnv);
+  } catch (e) {
+    deps.log(`cadeia noturna: AVISO — preflight de auth falhou (${(e as Error).message}); seguindo sem checar (#11887)`);
+    return false;
+  }
+  if (!authBlocksRun(auth)) {
+    deps.log(`cadeia noturna: ${auth.status === "unknown" ? "AVISO — " : ""}${auth.message}`);
+    return false;
+  }
+  deps.log(`cadeia noturna: PULADA — ${auth.message}`);
+  if (deps.describeAuthEvidence) {
+    try {
+      // Evidência do ambiente CRU da unit (antes do filtro): é onde mora a causa.
+      deps.log(`cadeia noturna: ${deps.describeAuthEvidence(repoRootAbs, deps.env)}`);
+    } catch (e) {
+      deps.log(`cadeia noturna: evidência de auth indisponível (${(e as Error).message})`);
+    }
+  }
+  return true;
+}
+
 export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_DEPS): number {
   // Toda linha vai pro `log` (stdout → log final do task-runner) E, na hora,
   // pro log incremental (#10672) — inclusive as que `runOvernight` emite.
@@ -720,6 +772,13 @@ export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_D
     // Sem binário nem o review nem o overnight rodam — falha dura, nomeada.
     deps.log(`cadeia noturna: FALHOU — binário claude não encontrado: ${(e as Error).message}`);
     return 1;
+  }
+
+  // 0. Auth do CLI (#11887): sessão fora da assinatura viola o #5608 — nem
+  // o review nem o overnight sobem, e a unit sai `failed` (alarme de units).
+  if (preflightAuthBlocks(repoRootAbs, claudeBin, deps)) {
+    deps.log(`cadeia noturna: fim review=pulado overnight=auth-not-subscription exit=${EXIT_AUTH_NOT_SUBSCRIPTION}`);
+    return EXIT_AUTH_NOT_SUBSCRIPTION;
   }
 
   // 1. Review. Qualquer desfecho segue pro passo 2.
