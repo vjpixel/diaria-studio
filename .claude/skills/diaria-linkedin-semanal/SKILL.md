@@ -427,7 +427,7 @@ mcp__clarice__correct_text(<texto humanizado>)
 ```
 
 Aplique **todas** as sugestões da Clarice, incondicionalmente (texto curto
-— não precisa de `clarice-apply.ts`, mas filtre o ruído antes: grave as sugestões em um JSON e passe por `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json`; aplique só o filtrado (descarta o ruído do servidor MCP: só quebra de linha / resto de código, #11798).) — nunca apresente as sugestões como
+— não precisa de `clarice-apply.ts`. Antes de aplicar, salvar as sugestões em `{S}.json` (array `[{from,to,...}]`), rodar `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` e aplicar só o filtrado (ruído do MCP, #11798; exit ≠ 0 = não aplicar, avisar o editor). Nunca apresente as sugestões como
 menu de escolha ao editor, relate o que mudou depois de aplicar, não
 negocie antes (#4514). **Única exceção:** sugestão que corrompa
 identificador técnico ou nome de marca (ex: `diar.ia` → `diária` quebraria

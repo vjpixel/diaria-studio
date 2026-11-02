@@ -442,7 +442,7 @@ e:
 mcp__clarice__correct_text(<texto humanizado>)
 ```
 
-Aplicar todas as sugestões da Clarice incondicionalmente, após `npx tsx scripts/clarice-filter.ts` (descarta o ruído do MCP, #11798) (mesma disciplina
+Aplicar todas as sugestões da Clarice incondicionalmente, após salvar as sugestões em `{S}.json` (array `[{from,to,...}]`), rodar `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` e aplicar só o filtrado (ruído do MCP, #11798; exit ≠ 0 = não aplicar, avisar o editor) (mesma disciplina
 do Stage 2 diário — #4514), exceto sugestão que corrompa marca/identificador
 técnico. Gravar o texto final (humanizado + corrigido) de volta nos 4
 arquivos.
