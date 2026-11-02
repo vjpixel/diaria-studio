@@ -36,7 +36,10 @@
  * com a idade do arquivo mais recente da edição (`scripts/lib/
  * sentinel-absence-hint.ts`). Em `assert`, a mesma dica sai só com
  * `--sync-hint` (o `assert` também é o resume check do orchestrator, onde
- * sentinel ausente é o caso normal de "stage ainda não rodou").
+ * sentinel ausente é o caso normal de "stage ainda não rodou"). Com
+ * `--sync-hint`, o exit 2 (sentinel presente, outputs ausentes: sync parcial)
+ * também imprime a dica. `find-current-edition.ts --stage N` sem candidatos e
+ * o exit 4 do `stale-edition-guard.ts` mostram a mesma idade.
  *
  * `write` (#6009): antes de gravar o sentinel de um stage 1-6 no layout
  * padrão da diária (sem `--dir`, `--edition` AAMMDD), roda as regras de
@@ -556,6 +559,11 @@ function main(): void {
       // outputs_missing
       const missing = result.missingOutputs.join(", ");
       console.error(`[error] sentinel step ${step} presente mas outputs ausentes: ${missing}`);
+      // #11729: o sentinel pode ter chegado pelo OneDrive antes dos outputs
+      // (sync parcial) — mesma dica, com os outputs que faltam.
+      if (syncHint) {
+        console.error(`[aviso] ${describeSentinelAbsence(editionDir, args.edition, result.missingOutputs)}`);
+      }
       process.exit(2);
     }
 
