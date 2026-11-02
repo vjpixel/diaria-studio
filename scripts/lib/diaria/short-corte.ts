@@ -27,7 +27,7 @@
  *     vídeo e da capa), nunca da simples existência do arquivo.
  */
 
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ShortTime } from "./short-video.ts";
 
@@ -118,7 +118,7 @@ export function corteRelDir(slug: string): string {
 /**
  * #11911: escape explícito do `publish-shorts.ts` para rodar de uma pasta que
  * nenhum timer nem vigia enxerga — no modo corte, fora de `data/cortes/{slug}/`;
- * no modo edição, fora de `data/editions/{AAMMDD}/`.
+ * no modo edição, fora de `data/editions/{AAMM}/{AAMMDD}/`.
  */
 export const ALLOW_UNWATCHED_DIR_FLAG = "allow-unwatched-dir";
 
@@ -126,7 +126,9 @@ export const ALLOW_UNWATCHED_DIR_FLAG = "allow-unwatched-dir";
  * #11911: caminho real de `p` mesmo que ele (ou o fim dele) ainda não exista —
  * resolve o maior ancestral existente e reanexa o resto. `data/` é symlink pro
  * OneDrive e a pasta do corte nasce na 1ª rodada, então `realpath` puro falharia
- * justamente no caso comum.
+ * justamente no caso comum. Só sobe ao ancestral quando o caminho não existe
+ * (`ENOENT`/`ENOTDIR`); qualquer outro erro (permissão, laço de symlink) é
+ * relançado, nunca tratado como "pasta nova".
  */
 export function realpathLenient(p: string, realpath: (p: string) => string = realpathSync): string {
   const abs = resolve(p);
@@ -135,7 +137,9 @@ export function realpathLenient(p: string, realpath: (p: string) => string = rea
   for (;;) {
     try {
       return join(realpath(cur), ...rest);
-    } catch {
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException | null)?.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw e;
       const parent = dirname(cur);
       if (parent === cur) return abs;
       rest.unshift(basename(cur));
@@ -154,11 +158,16 @@ export type CorteDirCheck =
  * Puro (#11911): a pasta do corte (`--edition-dir`, ou a canônica) é
  * `data/cortes/{slug}/` do repo? Só ela é vista pelo timer do 300
  * (`Diaria-Shorts-Cortes`) e pelo vigia de cortes sem dono
- * (`corte-owner-watch.ts`): em 02/11/2026 um corte rodado de
- * `~/diaria-cortes/...` ficou fora dos dois e o Reels sumiu sem alarme.
+ * (`corte-owner-watch.ts`). Em 02/11/2026 o vertical de um corte rodou no modo
+ * EDIÇÃO com `--edition-dir ~/diaria-cortes/...`, e os timers de Instagram da
+ * edição, que só procuram a pasta canônica, ficaram cegos (o timer e o vigia do
+ * corte ainda não existiam ou não estavam armados). Esta conferência impede o
+ * mesmo buraco no modo corte.
  * A comparação é pelo caminho REAL (symlink e `..` resolvidos), nunca pelo texto.
  * Fora dela: recusa, a menos do escape `--allow-unwatched-dir`, que devolve o
- * aviso de que nenhum alarme de destino faltante cobre o corte.
+ * aviso de que nenhum alarme de destino faltante cobre o corte. O escape também
+ * é recusado quando `data/cortes/{slug}/corte.json` já existe: o timer e o vigia
+ * continuariam lendo o corte canônico (talvez já autorizado) e publicariam de novo.
  */
 export function checkCorteDir(input: {
   slug: string;
@@ -167,6 +176,7 @@ export function checkCorteDir(input: {
   cortesRoot: string;
   allowUnwatched: boolean;
   realpath?: (p: string) => string;
+  exists?: (p: string) => boolean;
 }): CorteDirCheck {
   const real = (p: string) => realpathLenient(p, input.realpath);
   const actual = real(input.dir);
@@ -181,6 +191,15 @@ export function checkCorteDir(input: {
         `a pasta do corte ${where} fica fora de ${corteRelDir(input.slug)}/: o timer do 300 (${CORTE_TIMER_TASK}) e o vigia de cortes sem dono só leem ${CORTES_REL_DIR}/, então nenhum destino que faltar deste corte gera alarme. ` +
         `Mova ou registre o corte em ${corteRelDir(input.slug)}/ (rode sem --edition-dir; o --video pode apontar para o arquivo onde ele estiver). ` +
         `Para rodar mesmo assim, sem alarme, passe --${ALLOW_UNWATCHED_DIR_FLAG} (#11911)`,
+    };
+  }
+  const canonicalSpec = join(input.cortesRoot, input.slug, CORTE_SPEC_FILE);
+  if ((input.exists ?? existsSync)(canonicalSpec)) {
+    return {
+      ok: false,
+      error:
+        `--${ALLOW_UNWATCHED_DIR_FLAG} recusado: ${canonicalSpec} já existe, e o timer ${CORTE_TIMER_TASK} e o vigia de cortes sem dono continuariam lendo esse corte canônico (e publicariam de novo o que ele tiver autorizado). ` +
+        `Revogue a autorização do corte canônico (um --corte ${input.slug} sem --edition-dir que mude título, gancho, data ou horário derruba o "pode publicar", #11912) ou use outro slug para a pasta de fora (#11911)`,
     };
   }
   return {
