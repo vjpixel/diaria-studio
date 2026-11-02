@@ -256,7 +256,7 @@ describe("data/snippets/encerramento-social-apoio.md — mecanismo de load/rende
 
 describe("#10761 — YouTube no convite social", () => {
   it("inclui o canal aprovado só no convite, sem criar pill avulsa", () => {
-    assert.ok(SOCIAL_INVITE.endsWith("[X](https://x.com/diariabr) [YouTube](https://www.youtube.com/@diariabr)"));
+    assert.ok(SOCIAL_INVITE.includes("[YouTube](https://www.youtube.com/@diariabr)"));
     assert.doesNotMatch(CURADORIA_PILLS, /YouTube|youtube/);
   });
 
@@ -283,14 +283,14 @@ describe("#10761 — YouTube no convite social", () => {
 });
 
 describe("SOCIAL_INVITE / CURADORIA_PILLS — blocos fixos, mesma constante em diária e mensal (#4413/#4411, drift-guard)", () => {
-  it("SOCIAL_INVITE menciona os 6 canais na ordem LinkedIn > Instagram > Threads > Facebook > X > YouTube", () => {
+  it("SOCIAL_INVITE menciona os 6 canais na ordem YouTube > Instagram > LinkedIn > Threads > Facebook > X", () => {
     const order = [
-      DIARIA_LINKEDIN_PAGE_URL,
+      DIARIA_YOUTUBE_URL,
       DIARIA_INSTAGRAM_URL,
+      DIARIA_LINKEDIN_PAGE_URL,
       DIARIA_THREADS_URL,
       DIARIA_FACEBOOK_PAGE_URL,
       DIARIA_X_URL,
-      DIARIA_YOUTUBE_URL,
     ].map((url) => SOCIAL_INVITE.indexOf(url));
     assert.ok(order.every((i) => i >= 0), "algum canal está ausente do SOCIAL_INVITE");
     for (let i = 1; i < order.length; i++) {

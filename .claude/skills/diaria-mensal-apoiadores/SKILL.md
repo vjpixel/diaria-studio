@@ -596,8 +596,8 @@ Ciclo cujo Passo 1 rodou antes do #9845 (só tem `box-gancho.md`): gerar só o
 `box-temas.md` com a mesma instrução do item 3 do Passo 1, sem refazer os
 outros textos.
 Reescreve só o corpo de `data/snippets/retrospectiva-apoiadores.md` (título,
-parágrafo dos temas, URL do CTA — edição cirúrgica, #495; o bloco do tier,
-parágrafo + lista de benefícios de R$25, fica estável; arquivo ainda no
+parágrafo dos temas em negrito, URL do CTA — edição cirúrgica, #495; o texto
+geral dos apoiadores, sem valor e sem lista de benefícios, fica estável; arquivo ainda no
 formato anterior, com `A Retrospectiva de {Mês} é: ...`, é migrado sozinho,
 #9845; `RetrospectivaBoxFormatError` se o formato divergiu: ajustar à mão 1x, ver
 `context/snippets/README.md`) e pina o **slot 2**
