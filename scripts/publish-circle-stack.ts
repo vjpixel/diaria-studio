@@ -38,14 +38,15 @@
  *      o ciclo "unknown" (o post pode ter saído), nunca "draft".
  *      Após publicar, fecha a issue de aviso do ciclo (fail-soft).
  *
- * Task semanal `Diaria-Circle-Stack-Weekly-Preview` (segunda 07:30 BRT,
- * `scripts/lib/scheduled-tasks.ts`): roda em DRY-RUN com `--notify` — gera a
- * seleção + prévia do ciclo e abre/reusa uma issue `bloqueio-execucao` avisando
- * o editor. NUNCA publica sozinha: o post sai publicado na hora numa
- * comunidade de terceiro, então `--publish` fica manual até o editor decidir
- * automatizar. Sem `--publish-monday`, assume a segunda de hoje ou a anterior
- * (≤ hoje): o timer tem `Persistent=true`, e um catch-up numa terça precisa
- * cair no ciclo cuja semana de conteúdo já fechou. Com estado "unknown" o aviso
+ * Task semanal `Diaria-Circle-Stack-Weekly-Preview` (sábado 10:00 BRT desde a
+ * #11778, `scripts/lib/scheduled-tasks.ts`): roda em DRY-RUN com `--notify
+ * --next-monday` — gera a seleção + prévia do ciclo da PRÓXIMA segunda e
+ * abre/reusa uma issue `bloqueio-execucao` avisando o editor. A prévia nunca
+ * publica. O envio de segunda 06:00 BRT é outra task
+ * (`Diaria-Circle-Stack-Weekly-Publish`, `publish-circle-stack-scheduled.ts`,
+ * #11778), que só envia ciclo aprovado pelo editor e avisa o resultado por
+ * e-mail. Sem `--publish-monday` nem `--next-monday`, assume a segunda de hoje
+ * ou a anterior (≤ hoje). Com estado "unknown" o aviso
  * é outro ("estado ambíguo, conferir no Radar antes de --publish"); com
  * `circle_stack.enabled = false` o aviso é pulado (e isso é logado). O mesmo
  * `--notify` fecha os avisos de ciclos ANTERIORES ainda abertos (#10965):
@@ -57,7 +58,8 @@
  * envio sem `--force` (#10977). O `--publish` do ciclo pega um lock exclusivo
  * (`circle-stack-published.json.lock`) antes de ler o estado (#10977), e recusa
  * seleção com link não oficial em Lançamentos/Use melhor (#11004) ou título em
- * inglês (#11005) — no dry-run essas linhas saem como avisos.
+ * inglês (#11005) — no dry-run essas linhas saem como avisos. Toda trava que
+ * recusa o envio antes da rede lança `CircleStackPublishRefusal` (#11778).
  *
  * Doppler/.env: `STACK_WEBHOOK_URL` (URL do webhook n8n — fora do repo, que é
  * público) e `STACK_WEBHOOK_KEY` (enviado em `X-Webhook-Key`).
@@ -68,6 +70,7 @@
  *   npx tsx scripts/publish-circle-stack.ts --hello   (post de teste "Olá, mundo")
  *   npx tsx scripts/publish-circle-stack.ts --notify   (task semanal: dry-run + aviso ao editor;
  *                                                       ignorado junto com --publish)
+ *   npx tsx scripts/publish-circle-stack.ts --notify --next-monday   (prévia de sábado, #11778)
  *   (opcionais: --reselect, --opening-file <path>, --closing-file <path>, --force, --data-root <dir>)
  *   --closing-file: a ÚLTIMA linha do arquivo vira a cauda de "[Assine a diar.ia.br](url). {linha}";
  *   linhas anteriores saem como parágrafos antes dela.
@@ -82,6 +85,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
   currentOrPreviousMondayAAMMDD,
   isValidWeeklyCycle,
+  nextMondayAAMMDD,
   resolveWeeklyLinkedinCycle,
   weeklyLinkedinRelDir,
 } from "./lib/weekly-linkedin-cycle.ts";
@@ -133,6 +137,19 @@ import {
 } from "./lib/circle-stack-translate.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Recusa de uma trava do `--publish` (#11778): nada foi enviado porque o config,
+ * a seleção, o estado do ciclo ou o lock barraram o envio ANTES da rede. A task
+ * agendada de segunda (`publish-circle-stack-scheduled.ts`) separa isto de uma
+ * falha real ("Não enviado" x "Falhou") pela classe do erro, nunca pelo texto.
+ */
+export class CircleStackPublishRefusal extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CircleStackPublishRefusal";
+  }
+}
 
 export interface CircleStackConfig {
   enabled: boolean;
@@ -287,7 +304,13 @@ export function buildCircleStackReadyFinding(
       `- Prévia: \`${mdPath}\``,
       `- Seleção editável: \`data/weekly/${cycle}/_internal/circle-stack-selection.json\``,
       "",
-      "Para publicar (sai PUBLICADO na hora, sem rascunho):",
+      "O envio é automático na segunda às 06:00 BRT (task `Diaria-Circle-Stack-Weekly-Publish`, #11778), mas só sai se o ciclo estiver APROVADO. Escrever o texto próprio e aprovar com `/diaria-stack`, que termina em:",
+      "",
+      "```",
+      `npx tsx scripts/publish-circle-stack-scheduled.ts --approve --publish-monday ${publishMonday}`,
+      "```",
+      "",
+      "Sem aprovação, a task não envia e manda o e-mail \"Não enviado\". Envio manual na hora (sai PUBLICADO, sem rascunho):",
       "",
       "```",
       `npx tsx scripts/publish-circle-stack.ts --publish-monday ${publishMonday} --publish`,
@@ -476,7 +499,7 @@ export async function publishCircleStackCycle(input: PublishCircleStackCycleInpu
   try {
     const state = resolveCircleStackState(readCircleStackPublishedState(statePath), cycle);
     const blockReason = circleStackPublishBlockReason(state, cycle, statePath);
-    if (blockReason && !force) throw new Error(blockReason);
+    if (blockReason && !force) throw new CircleStackPublishRefusal(blockReason);
 
     const attempt: CircleStackPublishedState = { cycle, title, attempted_at: now().toISOString() };
     writeFileAtomic(statePath, JSON.stringify(attempt, null, 2));
@@ -519,7 +542,7 @@ export function acquireCircleStackPublishLock(lockPath: string): () => void {
     } catch {
       // sumiu entre o open e o stat: outro processo acabou de liberar.
     }
-    throw new Error(
+    throw new CircleStackPublishRefusal(
       `Outro --publish da Stack está em andamento (lock ${lockPath}${age}). ` +
         "Se nenhum está rodando (processo morto), confira o Radar e apague o arquivo antes de tentar de novo.",
     );
@@ -740,10 +763,16 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
   }
 
   let publishMonday = getStringArg(argv, "publish-monday", { example: "261026" });
-  if (!publishMonday) {
-    // Default da task semanal de segunda (#10904): a segunda de hoje ou a
-    // anterior — o timer tem Persistent=true, e um catch-up numa terça não
-    // pode cair na segunda seguinte (semana de conteúdo ainda incompleta).
+  if (!publishMonday && hasFlag(argv, "next-monday")) {
+    // #11778: a prévia roda no sábado, antes do envio agendado de segunda 06:00,
+    // então mira a PRÓXIMA segunda (a própria data, se hoje já for segunda —
+    // catch-up do Persistent=true que caia na segunda cedo).
+    publishMonday = nextMondayAAMMDD(new Date());
+    console.log(`--next-monday: assumindo ${publishMonday} (próxima segunda de publicação).`);
+  } else if (!publishMonday) {
+    // Default manual (#10904): a segunda de hoje ou a anterior — um catch-up
+    // numa terça não pode cair na segunda seguinte (semana de conteúdo ainda
+    // incompleta).
     publishMonday = currentOrPreviousMondayAAMMDD(new Date());
     console.log(`--publish-monday não informado — assumindo ${publishMonday} (segunda de hoje ou a anterior).`);
   }
@@ -856,17 +885,17 @@ ${rendered.markdown}
   }
 
   if (hasFlag(argv, "notify")) console.log("--notify ignorado junto com --publish.");
-  if (!cfg.enabled) throw new Error("circle_stack.enabled = false — publicação desligada no config");
+  if (!cfg.enabled) throw new CircleStackPublishRefusal("circle_stack.enabled = false — publicação desligada no config");
   if (violations.length > 0) {
-    throw new Error(
+    throw new CircleStackPublishRefusal(
       `Seleção ${selectionPath} fora das regras do canal — corrija e rode de novo:\n` +
         violations.map((v) => `  - ${v}`).join("\n"),
     );
   }
   const reviewBlock = circleStackFreshTranslationBlockReason(pendingReviewThisRun, selectionPath);
-  if (reviewBlock) throw new Error(reviewBlock);
+  if (reviewBlock) throw new CircleStackPublishRefusal(reviewBlock);
   if (unreviewedTitles.length > 0) {
-    throw new Error(
+    throw new CircleStackPublishRefusal(
       `Seleção ${selectionPath} com título(s) sem sinal de português ainda não revisado(s) — corrija e rode de novo:\n` +
         unreviewedTitles.map((v) => `  - ${v}`).join("\n"),
     );
