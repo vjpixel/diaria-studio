@@ -116,7 +116,8 @@ Na ordem da diária. `{C}` = o `circle-stack-copy.json`.
    Skill("humanizador", "Leia {C}, humanize SÓ os campos opening e notes[].stackNote (passe completo), calibrando a voz com data/past-editions-recent.md, e salve no mesmo arquivo sem tocar cycle nem url. Tetos: opening curta, alvo ~200 e no máximo 280 caracteres, uma ideia por frase e sem aposto longo; cada stackNote 240 caracteres e no máximo 2 frases. Sem markdown, sem URL, sem emoji, sem seta.")
    ```
 2. Clarice: `mcp__clarice__correct_text` sobre a abertura e sobre cada
-   `stackNote`, uma chamada por vez (serial, #4952). Aplicar as sugestões
+   `stackNote`, uma chamada por vez (serial, #4952). Filtrar as sugestões com
+   `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` (ruído do MCP, #11798) e aplicar as filtradas
    (aceitar as sugestões da Clarice é o padrão do projeto) e regravar `{C}`.
    Clarice indisponível = halt banner (#738), nunca seguir em silêncio.
 
