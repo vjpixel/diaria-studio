@@ -50,8 +50,13 @@ export function useMelhorEditionCall(editionId: string): string | null {
 /** Chamada datada: "na edição de 30/10" (dia/mês com 1 ou 2 dígitos). */
 const DATED_CALL_RE = /\bna\s+edi[çc][ãa]o\s+de\s+(\d{1,2})\/(\d{1,2})\b/i;
 
-/** Chamada relativa que envelhece ("edição de hoje", "edição do dia", "edição de amanhã"). */
-const RELATIVE_CALL_RE = /\bedi[çc][ãa]o\s+(?:de\s+hoje|do\s+dia|de\s+amanh[ãa]|de\s+ontem)\b/i;
+/**
+ * Chamada relativa que envelhece ("edição de hoje", "edição do dia", "edição de amanhã").
+ * O fim usa `(?![\p{L}\p{N}_])` com a flag `u`, não `\b` (#11824): sem `u`, `ã`
+ * não é caractere de palavra e `\b` não existe entre "amanhã" e o espaço/ponto
+ * seguinte, então a grafia correta com acento passava sem aviso.
+ */
+const RELATIVE_CALL_RE = /\bedi[çc][ãa]o\s+(?:de\s+hoje|do\s+dia|de\s+amanh[ãa]|de\s+ontem)(?![\p{L}\p{N}_])/iu;
 
 /** Contagem do que falta: "3 das 15", "5 dos 20", "faltam 12", "outras 12 dicas". */
 const MISSING_COUNT_RES: RegExp[] = [

@@ -445,7 +445,8 @@ export function interpretInstagramTimerOutput(exitCode: number | null, stdout: s
       if (!result.alreadyRegistered && warnings.length) {
         return { kind: "alarm", key: "collab", failed: false, detail: `Reels publicado (${e.status} ${where}) com aviso: ${warnings.join("; ")}` };
       }
-      return { kind: "done", detail: `${result.alreadyRegistered ? "já estava na conta/registro" : "publicado"}: ${e.status} ${where}` };
+      // #11828: Reels feito à mão registrado sem o collab esperado — o aviso sai no detalhe, sem alarme (o registro vale).
+      return { kind: "done", detail: `${result.alreadyRegistered ? "já estava na conta/registro" : "publicado"}: ${e.status} ${where}${result.alreadyRegistered ? warned : ""}` };
     }
     if (e) {
       // Inclui o gate que ACHOU o Reels na conta e não conseguiu gravar (cause "preflight", persist-failed).
