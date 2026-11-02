@@ -81,16 +81,16 @@ export const OTHER_HIGHLIGHTS_HEADING = "Outros destaques da semana";
  * existe um ponto de entrada acima da dobra (o bloco Use Melhor, que ficava
  * no meio, tinha CTA próprio até o #8025 — removido, decisão do editor).
  *
- * Deliberadamente a MAIS sóbria dos dois CTAs restantes: verbo no
- * infinitivo, sem "grátis", sem seta. É a forma do braço A do CTA-01
- * (`docs/experiments/cta-ab-mensal-2606-07.md`), o único que sobreviveu ao
- * teste sem degradar entrega. A densidade promocional acima da dobra foi o
- * gatilho identificado lá, então o CTA com mais peso fica só no fim
- * (`cta-fim`) da peça.
+ * Verbo no infinitivo, sem seta. Até o #11776 era também sem "grátis" (forma
+ * do braço A do CTA-01, `docs/experiments/cta-ab-mensal-2606-07.md`, o único
+ * que sobreviveu ao teste sem degradar entrega). Desde 01/11/2026 (#11776,
+ * decisão do editor, ciclo 26w44) o "grátis" entra no rótulo e sai do texto
+ * da abertura, que antes terminava em "Assine grátis.": o convite fica só
+ * aqui, no CTA, e a densidade promocional acima da dobra não aumenta.
  *
- * NÃO reintroduza "grátis"/seta/imperativo aqui — há teste travando isso.
+ * NÃO reintroduza seta/imperativo aqui — há teste travando o rótulo exato.
  */
-const CTA_ABERTURA_LABEL = "Assinar a edição diária";
+export const CTA_ABERTURA_LABEL = "Assinar a edição diária grátis";
 
 /**
  * #8025 (12/09/2026, decisão do editor): o bloco Use Melhor deixou de levar

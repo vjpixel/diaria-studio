@@ -327,11 +327,47 @@ export function selectUseMelhor(
   candidatesIn: WeeklyRankedCandidate[],
   headlineUrls: Set<string>,
 ): WeeklyRankedCandidate | undefined {
-  const deduped = dedupeCandidatesByUrl(candidatesIn);
-  const pool = deduped
+  return useMelhorPool(candidatesIn, headlineUrls)[0];
+}
+
+/** Pool elegível do bloco Use Melhor, ordenado por taxa (o 1º é o que `selectUseMelhor` escolhe). Pure. */
+export function useMelhorPool(
+  candidatesIn: WeeklyRankedCandidate[],
+  headlineUrls: Set<string>,
+): WeeklyRankedCandidate[] {
+  return dedupeCandidatesByUrl(candidatesIn)
     .filter((c) => !c.excluded && c.section === "use_melhor" && !headlineUrls.has(normalizeUrl(c.url)))
     .sort(byRateDescThenTitle);
-  return pool[0];
+}
+
+export interface ResolveUseMelhorOverrideResult {
+  /** Candidato escolhido pelo editor — só populado quando `error === null`. */
+  selected: WeeklyRankedCandidate | undefined;
+  /** `null` em sucesso; motivo legível quando a URL não é candidata elegível. */
+  error: string | null;
+}
+
+/**
+ * Pure (#11777): troca manual do Use Melhor (`--use-melhor-url`). A URL
+ * precisa ser um candidato do MESMO pool que `selectUseMelhor` considera
+ * (seção `use_melhor` da janela, não excluído por comercial/próprio, fora das
+ * manchetes) — comparação por `normalizeUrl`, igual ao `--picks`. Qualquer
+ * outra URL é erro explícito, nunca cai em silêncio no automático.
+ */
+export function resolveUseMelhorOverride(
+  candidatesIn: WeeklyRankedCandidate[],
+  headlineUrls: Set<string>,
+  overrideUrl: string,
+): ResolveUseMelhorOverrideResult {
+  const target = normalizeUrl(overrideUrl);
+  const pool = useMelhorPool(candidatesIn, headlineUrls);
+  const hit = pool.find((c) => normalizeUrl(c.url) === target);
+  if (hit) return { selected: hit, error: null };
+  const poolList = pool.length > 0 ? pool.map((c) => `${c.url} ("${c.title}")`).join(", ") : "nenhum";
+  return {
+    selected: undefined,
+    error: `"${overrideUrl}" não é candidato de Use Melhor nesta janela. Candidatos elegíveis: ${poolList}.`,
+  };
 }
 
 export interface ApplyPendingPicksResult {

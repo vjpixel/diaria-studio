@@ -147,6 +147,29 @@ describe("render-linkedin-weekly.ts — abertura/fecho padrão sem pergunta (#80
     }
   });
 
+  it("#11776: abertura padrão em 2 parágrafos, sem 'Assine grátis.' e CTA 'Assinar a edição diária grátis'", () => {
+    const root = mkTmpRoot();
+    try {
+      writeSelection(root, "26w45", "260810");
+      process.argv = ["node", "render-linkedin-weekly.ts", "--cycle", "26w45"];
+      renderMain(root);
+
+      const html = readFileSync(join(root, "data/weekly/26w45/ln-26w45.html"), "utf8");
+      // 1. Dois parágrafos: o 1º fecha em "usar melhor as IAs.", o 2º abre em "Aqui no LinkedIn".
+      assert.match(html, /usar melhor as IAs\.<\/p>\n<p>Aqui no LinkedIn, trago toda segunda/);
+      assert.match(html, /<p>Aqui no LinkedIn, trago toda segunda os três destaques que mais renderam cliques na semana\. As cinco edições completas ficam com os títulos no fim do post\.<\/p>/);
+      // 2. "Assine grátis." sumiu do texto da abertura.
+      assert.ok(!DEFAULT_OPENING.includes("Assine grátis"), "DEFAULT_OPENING não termina mais em 'Assine grátis.'");
+      assert.ok(!html.includes("fim do post. Assine grátis."), "abertura renderizada sem 'Assine grátis.'");
+      // 3. CTA da abertura com o rótulo novo, UTM cta-abertura preservado.
+      assert.match(html, /<p><a href="[^"]*utm_content=cta-abertura">Assinar a edição diária grátis<\/a><\/p>/);
+      // Wordmark segue pré-linkado com UTM mencao-abertura (#8819).
+      assert.match(html, /utm_content=mencao-abertura">diar\.ia\.br<\/a>, newsletter de IA/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("--opening/--closing explícitos continuam sobrescrevendo o default", () => {
     const root = mkTmpRoot();
     try {

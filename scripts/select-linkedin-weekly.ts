@@ -36,9 +36,21 @@
  * URL fora do grupo, repetida) — nunca completa/trunca em silêncio. Passar
  * `--picks` quando não há `pendingGroup` pendente também é erro.
  *
+ * **`--use-melhor-url <url>`** (#11777): troca manual do Use Melhor (o
+ * automático é o de maior taxa, `selectUseMelhor`). A URL precisa ser
+ * candidata `use_melhor` elegível da janela — senão erro explícito (exit 2),
+ * igual ao `--picks`. A escolha fica gravada em `useMelhorOverride` no
+ * `ln-selection.json` e é REAPLICADA nas re-rodadas seguintes sem a flag
+ * (inclusive a do `--picks`): re-rodar a seleção não desfaz mais a troca em
+ * silêncio. Se a URL gravada deixar de ser candidata, a re-rodada falha
+ * (exit 2) em vez de voltar ao automático. **`--use-melhor-auto`** apaga a
+ * escolha gravada e volta ao de maior taxa.
+ *
  * Uso:
  *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD [--manifest-only]
  *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --picks url1,url2
+ *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --use-melhor-url URL
+ *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --use-melhor-auto
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -71,6 +83,7 @@ import {
   computeHeadlineCap,
   selectHeadlines,
   selectUseMelhor,
+  resolveUseMelhorOverride,
   applyPendingPicks,
   editorialTiebreakScore,
   type WeeklyRankedCandidate,
@@ -191,8 +204,21 @@ export function main(rootDirOverride?: string) {
     ? picksArg.split(",").map((s) => s.trim()).filter(Boolean)
     : null;
 
+  const useMelhorUrlArg = getArg(argv, "use-melhor-url").trim();
+  const useMelhorAuto = hasFlag(argv, "use-melhor-auto");
+
   if (!publishMonday) {
-    console.error("Uso: select-linkedin-weekly.ts --publish-monday AAMMDD [--manifest-only] [--picks url1,url2]");
+    console.error(
+      "Uso: select-linkedin-weekly.ts --publish-monday AAMMDD [--manifest-only] [--picks url1,url2] [--use-melhor-url URL | --use-melhor-auto]",
+    );
+    process.exit(2);
+  }
+  if (hasFlag(argv, "use-melhor-url") && !useMelhorUrlArg) {
+    console.error("--use-melhor-url precisa de uma URL (candidato use_melhor da janela).");
+    process.exit(2);
+  }
+  if (useMelhorUrlArg && useMelhorAuto) {
+    console.error("--use-melhor-url e --use-melhor-auto são excludentes — escolha um.");
     process.exit(2);
   }
 
@@ -295,7 +321,30 @@ export function main(rootDirOverride?: string) {
 
   const headlineUrls = new Set(finalHeadlines.map((c) => normalizeUrl(c.url)));
 
-  const useMelhor = selectUseMelhor(ranked, headlineUrls);
+  // #11777: troca manual do Use Melhor. Precedência: flag explícita >
+  // escolha gravada na rodada anterior (`useMelhorOverride`) > automático.
+  // `--use-melhor-auto` descarta a gravada.
+  const outDir = join(rootDir, weeklyLinkedinRelDir(cycle), "_internal");
+  const outPath = join(outDir, "ln-selection.json");
+  const persistedOverride = useMelhorAuto ? null : readPersistedUseMelhorOverride(outPath);
+  const useMelhorOverride = useMelhorUrlArg || persistedOverride || null;
+  let useMelhor: WeeklyRankedCandidate | undefined;
+  if (useMelhorOverride) {
+    const resolved = resolveUseMelhorOverride(ranked, headlineUrls, useMelhorOverride);
+    if (resolved.error) {
+      const origem = useMelhorUrlArg
+        ? "--use-melhor-url inválido"
+        : `Use Melhor escolhido manualmente numa rodada anterior (useMelhorOverride em ${outPath}) não é mais candidato`;
+      console.error(
+        `${origem}: ${resolved.error}` +
+          (useMelhorUrlArg ? "" : " Passe --use-melhor-url com outro candidato ou --use-melhor-auto para voltar ao de maior taxa."),
+      );
+      process.exit(2);
+    }
+    useMelhor = resolved.selected;
+  } else {
+    useMelhor = selectUseMelhor(ranked, headlineUrls);
+  }
 
   // #4456 (decisão do editor, 260802): "Edições da semana" lista as
   // edições da janela com D1 parseável (até 5), não só as que perderam a
@@ -455,15 +504,16 @@ export function main(rootDirOverride?: string) {
     headlineCandidatesRanked: headlineResult.headlineEligible,
     excludedCandidates: headlineResult.excluded,
     useMelhor: useMelhor ?? null,
+    // #11777: URL do Use Melhor escolhido à mão (`--use-melhor-url`), reaplicada
+    // nas re-rodadas; `null` = automático (maior taxa).
+    useMelhorOverride,
     weeklyEditions,
     postsNeedingClicks: manifest,
     warnings,
     generatedAt: new Date().toISOString(),
   };
 
-  const outDir = join(rootDir, weeklyLinkedinRelDir(cycle), "_internal");
   mkdirSync(outDir, { recursive: true });
-  const outPath = join(outDir, "ln-selection.json");
   writeFileSync(outPath, JSON.stringify(output, null, 2), "utf8");
 
   // Colunas de exibição pedidas pelo gate (#5109): taxa, cliques/opens
@@ -475,6 +525,11 @@ export function main(rootDirOverride?: string) {
   }
 
   console.log(`OK: ciclo ${cycle} — ${finalHeadlines.length} manchete(s), Use Melhor ${useMelhor ? "✓" : "✗"}, ${weeklyEditions.length} em Edições da semana → ${outPath}`);
+  if (useMelhorOverride && useMelhor) {
+    console.log(
+      `  Use Melhor escolhido manualmente${useMelhorUrlArg ? "" : " (gravado numa rodada anterior)"}: ${useMelhor.title} — --use-melhor-auto volta ao de maior taxa.`,
+    );
+  }
   for (const h of finalHeadlines) {
     console.log(`  ${fmtCandidate(h)}`);
   }
@@ -497,6 +552,21 @@ export function main(rootDirOverride?: string) {
     manifestCount: manifest.length,
     postCutoverBeehiiv,
   });
+}
+
+/**
+ * Lê `useMelhorOverride` de um `ln-selection.json` anterior (#11777). Arquivo
+ * ausente, ilegível ou sem o campo → `null` (automático). Exportada para teste.
+ */
+export function readPersistedUseMelhorOverride(selectionPath: string): string | null {
+  if (!existsSync(selectionPath)) return null;
+  try {
+    const prev = JSON.parse(readFileSync(selectionPath, "utf8")) as { useMelhorOverride?: unknown };
+    return typeof prev.useMelhorOverride === "string" && prev.useMelhorOverride.trim() ? prev.useMelhorOverride.trim() : null;
+  } catch {
+    console.error(`Aviso: ${selectionPath} ilegível — ignorando a escolha manual de Use Melhor gravada, se havia.`);
+    return null;
+  }
 }
 
 /**

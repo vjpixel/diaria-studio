@@ -31,7 +31,7 @@ import { renderLinkedinWeeklyHtml, type WeeklyLinkedinRenderInput } from "../scr
 
 // Hrefs com `&amp;` (não `&` cru) entre params — exatamente o que `escapeHtml`
 // produz no HTML fonte real.
-const CTA_ABERTURA = `<a href="https://diar.ia.br/?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w34&amp;utm_content=cta-abertura">Assinar a edição diária</a>`;
+const CTA_ABERTURA = `<a href="https://diar.ia.br/?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w34&amp;utm_content=cta-abertura">Assinar a edição diária grátis</a>`;
 const CTA_FIM = `<a href="https://diar.ia.br/?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w34&amp;utm_content=cta-fim">Assine grátis, é rapidinho →</a>`;
 const MENCAO = `<a href="https://diar.ia.br/?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w34&amp;utm_content=mencao-abertura">diar.ia.br, newsletter de IA</a>`;
 
@@ -218,14 +218,14 @@ describe("auditLinkedinPaste — regressão: UTM perdida em href real (escapeHtm
     const sourceHtml = renderLinkedinWeeklyHtml(REAL_RENDER_INPUT).html;
     const sourceAnchors = extractAnchorsFromHtml(sourceHtml);
     // Simula o dano real: a âncora do CTA de abertura perde a query inteira no paste.
-    const pastedAnchors = sourceAnchors.map((a) => (a.text === "Assinar a edição diária" ? { ...a, href: "https://diar.ia.br/" } : a));
+    const pastedAnchors = sourceAnchors.map((a) => (a.text === "Assinar a edição diária grátis" ? { ...a, href: "https://diar.ia.br/" } : a));
     const result = auditLinkedinPaste({
       sourceHtml,
       pastedAnchors,
       pastedTextLength: stripHtmlToText(sourceHtml).length,
     });
     assert.equal(result.ok, false);
-    assert.ok(result.issues.some((i) => /utm_campaign divergente/.test(i) && i.includes("Assinar a edição diária")), result.issues.join("\n"));
+    assert.ok(result.issues.some((i) => /utm_campaign divergente/.test(i) && i.includes("Assinar a edição diária grátis")), result.issues.join("\n"));
   });
 });
 
@@ -280,11 +280,11 @@ describe("auditLinkedinPaste — UTM ausente/divergente numa âncora preservada"
 
   it("flags UTM ausente (href virou link cru sem query) numa âncora com texto preservado", () => {
     const sourceHtml = sourceHtmlWith(CTA_ABERTURA, CTA_FIM);
-    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).map((a) => (a.text === "Assinar a edição diária" ? { ...a, href: "https://diar.ia.br/" } : a));
+    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).map((a) => (a.text === "Assinar a edição diária grátis" ? { ...a, href: "https://diar.ia.br/" } : a));
     const input: LinkedinPasteAuditInput = { sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length };
     const result = auditLinkedinPaste(input);
     assert.equal(result.ok, false);
-    assert.ok(result.issues.some((i) => /utm_campaign divergente/.test(i) && i.includes("Assinar a edição diária")), result.issues.join("\n"));
+    assert.ok(result.issues.some((i) => /utm_campaign divergente/.test(i) && i.includes("Assinar a edição diária grátis")), result.issues.join("\n"));
   });
 
   it("âncora da fonte SEM UTM: href colado batendo (mesmo sem UTM pra comparar) -> ok:true", () => {
@@ -315,10 +315,10 @@ describe("auditLinkedinPaste — UTM ausente/divergente numa âncora preservada"
 
   it("flags href COLADO malformado (texto preservado, mas link virou algo não-parseável) como issue distinta", () => {
     const sourceHtml = sourceHtmlWith(CTA_ABERTURA, CTA_FIM);
-    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).map((a) => (a.text === "Assinar a edição diária" ? { ...a, href: "not a valid url" } : a));
+    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).map((a) => (a.text === "Assinar a edição diária grátis" ? { ...a, href: "not a valid url" } : a));
     const result = auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length });
     assert.equal(result.ok, false);
-    assert.ok(result.issues.some((i) => /href COLADO não é uma URL válida/.test(i) && i.includes("Assinar a edição diária")), result.issues.join("\n"));
+    assert.ok(result.issues.some((i) => /href COLADO não é uma URL válida/.test(i) && i.includes("Assinar a edição diária grátis")), result.issues.join("\n"));
   });
 });
 
@@ -438,10 +438,10 @@ describe("auditLinkedinPaste — bug de split de âncora 'diar.ia.br' nu (PR #59
 
   it("não emite o hint do PR #5987 quando a âncora perdida não começa com o wordmark", () => {
     const sourceHtml = sourceHtmlWith(CTA_ABERTURA, CTA_FIM);
-    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).filter((a) => a.text !== "Assinar a edição diária");
+    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).filter((a) => a.text !== "Assinar a edição diária grátis");
     const result = auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length });
     assert.equal(result.ok, false);
-    const anchorIssue = result.issues.find((i) => i.includes("Assinar a edição diária"));
+    const anchorIssue = result.issues.find((i) => i.includes("Assinar a edição diária grátis"));
     assert.ok(anchorIssue, result.issues.join("\n"));
     assert.ok(!/PR #5987/.test(anchorIssue!), anchorIssue);
   });
@@ -478,7 +478,7 @@ describe("isWordmarkAnchorText (#10385)", () => {
   it("não casa texto que não começa no wordmark nem continuação alfanumérica", () => {
     assert.ok(!isWordmarkAnchorText("Assine em diar.ia.br"));
     assert.ok(!isWordmarkAnchorText("diar.ia.br2"));
-    assert.ok(!isWordmarkAnchorText("Assinar a edição diária"));
+    assert.ok(!isWordmarkAnchorText("Assinar a edição diária grátis"));
   });
 });
 
@@ -501,7 +501,7 @@ describe("auditLinkedinPaste — #10385: âncora só com o wordmark tem o href r
 
   it("CTA comum (texto não-wordmark) com UTM perdida NÃO recebe o hint do #10385", () => {
     const sourceHtml = sourceHtmlWith(mencaoAtual, CTA_ABERTURA, CTA_FIM);
-    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).map((a) => (a.text === "Assinar a edição diária" ? { ...a, href: "https://diar.ia.br/" } : a));
+    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).map((a) => (a.text === "Assinar a edição diária grátis" ? { ...a, href: "https://diar.ia.br/" } : a));
     const result = auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length });
     assert.equal(result.ok, false);
     assert.ok(!result.issues.some((i) => i.includes(WORDMARK_HREF_REWRITE_HINT)), result.issues.join("\n"));
