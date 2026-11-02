@@ -5,7 +5,8 @@
  * servia `public/p/{slug}/index.html`/`public/index.html` direto, sem
  * script nenhum na frente. O acervo é gerado por `scripts/gen-archive-pages.ts`
  * a partir de `data/beehiiv-cache/posts/*.json` (gated por
- * `publishing.newsletter.read_backend`, hoje ainda `"beehiiv"`) — uma edição
+ * `publishing.newsletter.read_backend`, que era `"beehiiv"` quando este Worker
+ * ganhou script; virou `"kit"` no #8142) — uma edição
  * publicada só pelo Kit (desde o switchover de ENVIO do #6114, 26/08/2026)
  * nunca entra nesse cache, então a página estática nunca é gerada e
  * `/p/{slug}` responde 404 no nosso domínio pra toda edição nova.

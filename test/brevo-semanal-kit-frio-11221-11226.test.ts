@@ -1061,7 +1061,7 @@ describe("restore-kit-sem-abertura-frio (#11221)", () => {
       "e@x.com:suprimido_aguardando_frio",
     ]);
   });
-  it("cancelled vai pro painel (a API não reativa); active ganha as tags", () => {
+  it("cancelled por supressão nossa vai pra lista de reativação (passo painel, vínculo ao form de sistema, #11801); active ganha as tags", () => {
     assert.equal(decideKitRestore("cancelled", [], "descadastrado_por_supressao"), "painel");
     assert.equal(decideKitRestore("active", ["envio-brevo"], "in_brevo"), "tags");
     assert.equal(decideKitRestore("active", ["frio"], "suprimido_aguardando_frio"), "ja_ok");

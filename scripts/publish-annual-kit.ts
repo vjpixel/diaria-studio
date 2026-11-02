@@ -195,7 +195,7 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
       const posts = filterPublicEditionsWithWarning(loadUnifiedEditionCache(), "publish-annual-kit");
       // #7613 (achado do self-review da #7587 item 2): sem sourceOverride,
       // buildRelink cai no default "clarice" — errado aqui, o canal da anual
-      // é Kit (ver publishing.newsletter.backend), não Clarice.
+      // é Kit (único backend de envio desde o #11225), não Clarice.
       const relinked = relinkAnnualEditionHtml(html, raw.destaques ?? [], posts, `anual-${slug}`, "kit");
       html = relinked.html;
       log(

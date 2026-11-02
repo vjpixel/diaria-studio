@@ -4,9 +4,9 @@
  *
  * Renderiza o fragmento HTML do canal Kit (`esp: "kit"`) e grava em
  * `_internal/newsletter-final-kit.html` — SEM nenhuma chamada de rede,
- * mesmo quando `platform.config.json` → `publishing.newsletter.backend`
- * ainda é `"beehiiv"` (estado atual, migração Kit em curso, label
- * `kit-migration`). Existe pra dar visibilidade ao tamanho do e-mail Kit
+ * (nasceu quando o envio ainda era Beehiiv, com a migração Kit em curso;
+ * desde o #11225 o envio é só Kit e a chave `publishing.newsletter.backend`
+ * não existe mais). Existe pra dar visibilidade ao tamanho do e-mail Kit
  * ANTES do cutover — sem isto, `checkKitHtmlSize`
  * (`scripts/lib/invariant-checks/stage-4.ts`) nunca teria o que medir, e o
  * primeiro sinal de "passou de 102 KB" só apareceria depois que o backend

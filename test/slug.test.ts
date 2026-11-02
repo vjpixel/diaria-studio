@@ -4,14 +4,14 @@
  * Regressão pros exemplos EXATOS do corpo da issue #7280 ("41% do acervo tem
  * URL pública com acento destruído — e há dois padrões distintos"). Nenhum
  * teste unitário cobria `scripts/lib/slug.ts` até aqui — `slugify`/`seoSlug`
- * só eram exercitados indiretamente via `fix-post-slug.test.ts` (fixtures
- * sem acento) e `check-whatsapp-slug-guard.test.ts` (slug já pronto,
- * sem cobrir o cálculo de `seoSlug` a partir de título acentuado).
+ * só eram exercitados indiretamente via `fix-post-slug.test.ts` e
+ * `check-whatsapp-slug-guard.test.ts` (os dois saíram junto com os scripts
+ * no #11775), sem cobrir o cálculo de `seoSlug` a partir de título acentuado.
  *
  * Achado da investigação #7280: `slugify`/`seoSlug`, o caminho ATIVO hoje
  * (`context/publishers/beehiiv-playbook.md` §4a seta manualmente antes do
- * Schedule; §9/#4570 é gate-blocking pós-Schedule via
- * `scripts/lib/whatsapp-slug-guard.ts`), já produz o comportamento correto —
+ * Schedule; §9/#4570 era o guard pós-Schedule, removido no #11775),
+ * já produz o comportamento correto —
  * NFD-normaliza, remove os diacríticos combinantes, e NUNCA insere hífen no
  * lugar do caractere acentuado. Os dois padrões quebrados descritos na issue
  * ("decomposição": `lanc-a`, `na-o` — o diacrítico decomposto vira hífen em

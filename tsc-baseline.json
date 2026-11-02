@@ -56,7 +56,6 @@
   "test/categorize-edge-cases.test.ts::TS2322": 1,
   "test/categorize-overrides-misc.test.ts::TS2741": 17,
   "test/categorize-overrides-misc.test.ts::TS2783": 2,
-  "test/check-whatsapp-slug-guard.test.ts::TS2339": 1,
   "test/clarice-build-segment-cohort-recency.test.ts::TS2322": 4,
   "test/clarice-build-segment-cohort-recency.test.ts::TS2578": 1,
   "test/clarice-build-segment-hold.test.ts::TS2322": 2,

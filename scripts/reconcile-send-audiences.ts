@@ -26,7 +26,8 @@
  *        ainda entram nas fontes de órfãos.
  *      - Brevo: contatos da lista `brevo_diaria.list_id` (a campanha diária
  *        mira a lista inteira).
- *   2. **Destinatários reais do último envio** de cada plataforma —
+ *   2. **Destinatários reais do último envio** de Kit e Brevo (a Beehiiv
+ *      não envia desde o #11225, então não é medida, #11775) —
  *      informativo, sujeito às 2 armadilhas de medição documentadas no
  *      corpo da issue (ver `scripts/lib/beehiiv-kit-reconcile.ts`):
  *      `resolveBrevoCampaignRecipients` recusa ler
@@ -76,7 +77,7 @@ import { fileURLToPath } from "node:url";
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { resolveBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
+import { resolveBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { findTagIdByName, listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
 import { listBroadcasts, listAllBroadcasts, getBroadcastStats, type KitBroadcastSummary } from "./lib/kit-client.ts";
@@ -124,37 +125,13 @@ function readPlatformConfig(): PlatformConfig {
 /** Última entrega REAL medida por plataforma — `null` quando não foi
  *  possível medir (fail-soft, não impede o resto do guard de rodar). */
 export interface RecentDeliveryMeasurement {
-  platform: "beehiiv" | "kit" | "brevo";
+  platform: "kit" | "brevo";
   measured: boolean;
   recipients?: number;
   reason?: string;
   /** #10400: o que foi medido (id/assunto do broadcast, descartes) — só
    *  observabilidade, nenhum consumidor decide por este campo. */
   detail?: string;
-}
-
-async function measureBeehiivRecentDelivery(
-  apiKey: string,
-  publicationId: string,
-): Promise<RecentDeliveryMeasurement> {
-  try {
-    const res = await fetch(
-      `${beehiivApiBase()}/publications/${publicationId}/posts?order_by=publish_date&direction=desc&limit=1&expand[]=stats`,
-      { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
-    );
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => {});
-      return { platform: "beehiiv", measured: false, reason: `Beehiiv API ${res.status} em /posts` };
-    }
-    const body = (await res.json()) as { data?: Array<{ stats?: { email?: { recipients?: number } } }> };
-    const recipients = body.data?.[0]?.stats?.email?.recipients;
-    if (typeof recipients !== "number") {
-      return { platform: "beehiiv", measured: false, reason: "post mais recente sem stats.email.recipients" };
-    }
-    return { platform: "beehiiv", measured: true, recipients };
-  } catch (e) {
-    return { platform: "beehiiv", measured: false, reason: (e as Error).message };
-  }
 }
 
 /**
@@ -308,7 +285,7 @@ export function decideOutcome(
 
 function formatReport(outcome: GuardOutcome): string {
   const lines: string[] = [];
-  lines.push(`${LOG_PREFIX} audiência de envio — Kit (tag) × Beehiiv (ativos) × Brevo (lista diária)`);
+  lines.push(`${LOG_PREFIX} audiência de envio — Kit (ativos) × Brevo (lista diária)`);
   for (const s of outcome.audience.sources) {
     lines.push(`  ${s.name}: ${s.total} (hash ${s.hash.slice(0, 12)}…)`);
   }
@@ -495,7 +472,6 @@ async function main(): Promise<void> {
 
   process.stderr.write(`${LOG_PREFIX} medindo destinatários reais do último envio por plataforma…\n`);
   const recentDelivery = await Promise.all([
-    measureBeehiivRecentDelivery(beehiivConfig.config.apiKey, beehiivConfig.config.publicationId),
     measureKitRecentDelivery(),
     measureBrevoRecentDelivery(brevoApiKey, brevoListId),
   ]);

@@ -722,7 +722,8 @@ async function main(): Promise<number | void> {
       `SKIP: ${missing} ausente(s) — Instagram não publicado nesta edição.\n` +
         "Configure em .env para habilitar o Instagram.\n" +
         "  INSTAGRAM_BUSINESS_ACCOUNT_ID: developers.facebook.com/apps/ → Instagram → Business Account ID\n" +
-        "  INSTAGRAM_ACCESS_TOKEN: developers.facebook.com/tools/explorer/ (escopos: instagram_basic, instagram_content_publish; instagram_manage_comments para o 1º comentário do 4º post, #11731)",
+        "  INSTAGRAM_ACCESS_TOKEN: usuário do sistema (Business Settings, app Vigil.ia.br; com instagram_manage_comments), " +
+        "nunca o Graph Explorer (expira em horas). Ver docs/secret-rotation.md (#11804)",
     );
     return 0;
   }
