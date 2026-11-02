@@ -84,7 +84,7 @@ A diar.ia.br mantém uma curadoria de livros sobre IA, cada título com nota da 
 
 **CLARICE — TUTORIAL**
 
-[Placeholder — inserir aqui o próximo tutorial da sequência do Doc "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais (`→ [texto](url)`, vira botão — mesmo formato do CTA acima). Muda a cada ciclo.]
+[Placeholder — inserir aqui o próximo tutorial da sequência do Doc "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais (`→ [texto](url)`, vira botão — mesmo formato do CTA acima). Muda a cada ciclo. Se o CTA citar desconto, usar o mesmo "até N%" do CLARICE — DIVULGAÇÃO, nunca um segundo número no mesmo e-mail (#11810).]
 
 → [texto do CTA](https://clarice.ai/?via=diaria)
 

@@ -781,10 +781,10 @@ O fluxo `clarice-build-edition-sends → clarice-split-cells → clarice-schedul
 **Passo obrigatório antes do `clarice-schedule-sends --schedule`**: setar o gabarito do É IA?:
 
 ```bash
-npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition {AAMMDD} [--answer A|B]
+npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition $CYCLE --answer A|B
 ```
 
-Onde `{AAMMDD}` é a data da edição diária selecionada pelo É IA? mensal (ex: `260531`). Se `--answer` for omitido, lê `ai_side` de `data/editions/{AAMMDD}/_internal/01-eia-meta.json`.
+`--edition` é o **ciclo** (o mesmo `$CYCLE`, ex: `2610-11`), nunca a data AAMMDD da edição diária selecionada pelo É IA? mensal: o Worker grava o gabarito da brand clarice sob o ciclo e recusa AAMMDD (#4157), e o `close-poll.ts` recusa antes da rede (#11809). `--answer` é obrigatório com `--brand clarice`: pegue o `ai_side` de `data/editions/{AAMMDD}/_internal/01-eia-meta.json` da edição diária de onde saiu a imagem do É IA? mensal.
 
 Este comando grava `data/monthly/$CYCLE/_internal/.close-poll-clarice.json`. Sem ele, `clarice-schedule-sends --schedule` falhará com:
 

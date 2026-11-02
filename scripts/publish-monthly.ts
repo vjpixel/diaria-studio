@@ -427,7 +427,7 @@ export async function main(
     // #4157: --edition precisa ser o formato de CICLO (ex: 2605-06) pra
     // brand clarice — AAMMDD é rejeitado pelo Worker (sobrescreveria o
     // gabarito de uma edição diária real que compartilha o mesmo AAMMDD).
-    `   + npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {cycle} [--answer A|B]\n` +
+    `   + npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {cycle} --answer A|B\n` +
     `     (ANTES do clarice-schedule-sends --schedule)\n` +
     `   Este script será removido em release futuro.\n\n`,
   );

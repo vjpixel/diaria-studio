@@ -558,7 +558,9 @@ npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --key {di
 # 6. Gabarito É IA? — OBRIGATÓRIO antes de agendar. Confira
 #    _internal/.close-poll-clarice.json do ciclo ANTES de chegar aqui — o
 #    guard só roda neste passo 6 (--schedule), não no --create acima.
-npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition {AAMMDD}
+#    --edition é o CICLO (o mesmo $CYCLE), nunca AAMMDD — o close-poll recusa
+#    AAMMDD com --brand clarice (#11809). --answer é obrigatório com essa brand.
+npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition $CYCLE --answer {A|B}
 
 # 7. Agendar (--group + --key, SEM --schedule-at — a data já foi fixada no --create)
 npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --key {dia}-A --schedule
@@ -592,7 +594,7 @@ npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} \
 npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --send-test
 
 # 6. Gabarito É IA?
-npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition {AAMMDD}
+npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition $CYCLE --answer {A|B}
 
 # 7. Agendar
 npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --schedule
