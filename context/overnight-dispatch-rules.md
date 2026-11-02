@@ -242,6 +242,13 @@ não cita alguma issue com `Closes`/`REFS`: reescrever o arquivo e corrigir via
 recusa o corpo que não cita as issues (`--allow-missing-issue-marker` só
 quando a omissão é intencional).
 
+**`--body-file` grava; `--verify-body` só confere (#11930).** Para EDITAR o
+corpo (acrescentar `removal-declaration:`, trocar um `Closes`), reescrever o
+arquivo e rodar `--body-file`; o `--verify-body` não escreve nada e avisa isso
+em stderr. Os dois juntos (ou `--verify-body` com `--body`) saem `exit 1` sem
+tocar a PR: na rodada 261102b (PR #11915) a edição "feita" com `--verify-body`
+não persistiu e o check seguiu vermelho.
+
 **`--verify-body` também confere o commit da PR (#11566).** Branch de PR
 mergeada por squash fica no remoto (o merge não usa `--delete-branch`), e a
 2ª PR da mesma issue reaproveita o nome: o `git push -u` é recusado como

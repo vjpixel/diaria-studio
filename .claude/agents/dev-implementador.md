@@ -28,6 +28,11 @@ contra branch sobrada de PR mergeada, #11587). Se o worktree recebido for do
 studio para uma issue do design, pare e reporte ao coordenador em vez de
 implementar.
 
+**Corpo da PR: `--body-file` grava, `--verify-body` só confere (#11930).** Para
+editar o corpo (ex.: acrescentar `removal-declaration:`), reescreva o arquivo e
+rode `gh-pr-safe-edit.ts --pr N --body-file arquivo.md`; o `--verify-body` não
+escreve nada, e combinado com `--body-file`/`--body` o helper recusa (`exit 1`).
+
 ## Por que este agent existe (#9081, #9530)
 
 O `effort` de um subagente `general-purpose` é herdado do turno que o dispara
