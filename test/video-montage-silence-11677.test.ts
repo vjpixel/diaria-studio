@@ -11,7 +11,8 @@ const silences = [{ start: 484.8, end: 490 }];
 it("#11677: início esticado sobre silêncio não causa fala difere no intervalo explícito", () => {
   const result = resolveBlocks({ edition: "261030", blocks: { comentario: [{ start: 490, end: 493.46, text: "que funciona" }] } }, words, { ...source, silences });
   assert.deepEqual(result.errors, []);
-  assert.deepEqual(result.warnings, []);
+  // "funciona" sintética com 2,46 s de som cai na suspeita de tomada colapsada (#11754), aviso de outra natureza; aqui importa só não haver "fala difere".
+  assert.deepEqual(result.warnings.filter((w) => !w.includes("#11754")), []);
   assert.equal(result.blocks.comentario?.[0].words[0].start, 490);
   assert.equal(words[0].start, 484.84, "não modifica o transcript");
 });
