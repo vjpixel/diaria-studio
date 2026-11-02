@@ -227,6 +227,7 @@ import {
   shortsRegistryWriterFor,
   type ShortsRegistryWriter,
 } from "./lib/diaria/shorts-published-store.ts";
+import { clearShortSending, markShortSending } from "./lib/diaria/shorts-sending-marker.ts";
 import {
   buildYouTubeInsertRequest,
   buildYouTubeTags,
@@ -3424,6 +3425,25 @@ async function main(): Promise<number> {
       continue;
     }
     if (item.action !== "publish" && item.action !== "enqueue") continue;
+    // #11741 (finding P2 da PR #11827): marca "envio em curso" ANTES de publicar.
+    // O registro só recebe o destino depois do aceite; sem a marca, a releitura
+    // logo após uma interrupção (processo ainda vivo) sairia `nothing-since`.
+    // A marca só fica quando o processo morre no meio ou o aceite não foi registrado.
+    try {
+      markShortSending(dir, aammdd, writer, { destination: item.destination, started_at: new Date().toISOString(), pid: process.pid });
+    } catch (e) {
+      const msg = `marcador de envio não gravado (${(e as Error).message}) — não publica sem ele`;
+      results.push({ destination: item.destination, ok: false, error: msg });
+      console.error(`[erro] ${item.destination}: ${msg}`);
+      continue;
+    }
+    const clearSending = () => {
+      try {
+        clearShortSending(dir, aammdd, writer, item.destination);
+      } catch (e) {
+        console.error(`[aviso] ${item.destination}: marcador de envio não apagado (${(e as Error).message}) — a releitura vai acusá-lo como "pode ter saído"`);
+      }
+    };
     let outcome: PublishOutcome;
     try {
       if (item.action === "enqueue") {
@@ -3483,8 +3503,9 @@ async function main(): Promise<number> {
             } catch (e) {
               results.push({ destination: item.destination, ok: false, entry: pre.entry, error: `registro não gravado: ${(e as Error).message}`, cause: "preflight" });
               console.error(`[erro] threads_profile: o vídeo JÁ ESTÁ no perfil (${pre.entry.url ?? pre.entry.id}) mas o registro não foi gravado: ${(e as Error).message}`);
-              continue;
+              continue; // marca de envio fica: o vídeo está no perfil e o registro não diz
             }
+            clearSending();
             results.push({ destination: item.destination, ok: true, entry: pre.entry, alreadyRegistered: true });
             console.error(`[aviso] threads_profile: o vídeo da edição já está no perfil (${pre.entry.url ?? pre.entry.id}) — registrado, não publica de novo`);
             continue;
@@ -3558,6 +3579,7 @@ async function main(): Promise<number> {
             publish: publishReel,
           });
           if (step.kind === "already") {
+            clearSending();
             results.push({ destination: item.destination, ok: true, entry: step.entry, alreadyRegistered: true, matchedBy: step.matchedBy });
             console.error(`[aviso] instagram: o Reels da edição já está na conta (${step.matchedBy}, ${step.entry.url ?? step.entry.id}) — registrado, não publica de novo`);
             continue;
@@ -3571,6 +3593,9 @@ async function main(): Promise<number> {
         outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt, shortCover.bytes);
       }
     } catch (e) {
+      // Recusa da plataforma/gate: o destino não saiu por esta rodada (envio
+      // ambíguo vira `send_unknown` no registro, não exceção).
+      clearSending();
       const msg = e instanceof Error ? e.message : String(e);
       if (e instanceof InstagramTimerGateError) {
         // #11265: o gate não deixou publicar — o timer não pode tratar isso como "o publish falhou".
@@ -3585,6 +3610,7 @@ async function main(): Promise<number> {
       continue;
     }
     if (outcome.alreadyRegistered) {
+      clearSending();
       results.push({ destination: item.destination, ok: true, entry: outcome.entry, alreadyRegistered: true });
       console.error(`[aviso] ${item.destination}: registrado por outro processo antes do publish (${outcome.entry.status}${outcome.entry.url ? `, ${outcome.entry.url}` : ""}) — não publica de novo`);
       continue;
@@ -3602,8 +3628,9 @@ async function main(): Promise<number> {
           `NÃO rode --publish de novo para este destino sem antes registrá-lo em ${publishedPath}.`,
       );
       results.push({ destination: item.destination, ok: false, entry, error: `registro não gravado: ${(e as Error).message}` });
-      continue;
+      continue; // marca de envio fica: a plataforma aceitou e o registro não diz
     }
+    clearSending();
     results.push({ destination: item.destination, ok: true, entry, unconfirmed, ...(outcome.warnings?.length ? { warnings: outcome.warnings } : {}) });
     const where = item.action === "enqueue" ? `na fila do Worker para ${entry.scheduled_at} (key ${entry.id})` : (entry.url ?? entry.id);
     console.error(`[ok] ${item.destination}: ${entry.status} (estado ${state}) ${where}${unconfirmed ? " (processamento não confirmado em 5 min — confira)" : ""}`);

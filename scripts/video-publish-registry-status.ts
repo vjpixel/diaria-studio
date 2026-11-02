@@ -22,6 +22,14 @@
  * caso de `in_progress`/`upload_indeterminado`/`send_unknown`): relatar ao
  * editor, nunca publicar de novo.
  *
+ * Envio em curso do vertical (finding P2 da PR #11827): o registro do
+ * vertical só recebe o destino DEPOIS do aceite da plataforma. O
+ * `publish-shorts.ts` grava antes uma marca por destino
+ * (`_internal/06-shorts-sending*.json`, `lib/diaria/shorts-sending-marker.ts`);
+ * marca sem entrada no registro gravada depois dela vai para `sending` e para
+ * `registered_since` — o destino pode estar saindo agora. Com marca em aberto o
+ * veredito nunca é `nothing-since`.
+ *
  * Saída: JSON no stdout. Exit 0 = registros lidos; exit 1 = algum registro
  * ilegível (não dá para saber o que saiu: conferir as contas antes de
  * qualquer nova chamada); exit 2 = uso.
@@ -33,6 +41,7 @@ import { readShortsRegistry } from "./lib/diaria/shorts-published-store.ts";
 import type { ShortsPublishedFile } from "./lib/diaria/short-video.ts";
 import { readPublishedRecord, type PublishedRecordRead } from "./publish-youtube.ts";
 import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
+import { openSendingMarks, readShortsSending, type ShortSendingMark } from "./lib/diaria/shorts-sending-marker.ts";
 
 export type RegistryRead<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -41,6 +50,15 @@ export interface VideoRegistryStatusInput {
   since: string | null;
   youtube: RegistryRead<PublishedRecordRead>;
   shorts: RegistryRead<ShortsPublishedFile>;
+  /** Marcas de "envio em curso" do vertical (todas as do disco; o resumo filtra as em aberto). */
+  sending: RegistryRead<ShortSendingMark[]>;
+}
+
+export interface SendingStatusLine {
+  destination: string;
+  started_at: string;
+  pid?: number;
+  since_match?: boolean;
 }
 
 export interface YouTubeStatusLine {
@@ -67,7 +85,13 @@ export interface VideoRegistryStatus {
   since: string | null;
   youtube: YouTubeStatusLine;
   shorts: { kind: "ok"; entries: ShortsStatusLine[] } | { kind: "unreadable"; error: string };
-  /** Só com `since`: destinos com registro em `at >= since` (`youtube` para o horizontal). */
+  /** Destinos do vertical com envio começado e sem registro depois dele: podem ter saído (ou estar saindo). */
+  sending: { kind: "ok"; marks: SendingStatusLine[] } | { kind: "unreadable"; error: string };
+  /**
+   * Só com `since`: destinos com registro em `at >= since` (`youtube` para o
+   * horizontal) mais TODO destino com envio em aberto, de qualquer horário
+   * (marca anterior ao corte é de um processo que morreu no meio: também pode ter saído).
+   */
   registered_since: string[] | null;
   verdict: "unreadable" | "registered-since" | "nothing-since" | "no-cutoff";
   message: string;
@@ -108,14 +132,34 @@ export function summarizeVideoRegistries(input: VideoRegistryStatusInput): Video
       }
     : { kind: "unreadable", error: input.shorts.error };
 
-  const unreadable = youtube.kind === "unreadable" || shorts.kind === "unreadable";
+  let sending: VideoRegistryStatus["sending"];
+  if (!input.sending.ok) sending = { kind: "unreadable", error: input.sending.error };
+  else if (!input.shorts.ok) sending = { kind: "ok", marks: [] }; // registro ilegível já vira `unreadable`
+  else {
+    sending = {
+      kind: "ok",
+      marks: openSendingMarks(input.sending.value, input.shorts.value.entries).map((m) => {
+        const line: SendingStatusLine = { destination: m.destination, started_at: m.started_at, ...(m.pid !== undefined ? { pid: m.pid } : {}) };
+        const sm = sinceMatch(m.started_at, sinceMs);
+        return sm === undefined ? line : { ...line, since_match: sm };
+      }),
+    };
+  }
+
+  const unreadable = youtube.kind === "unreadable" || shorts.kind === "unreadable" || sending.kind === "unreadable";
   let registered: string[] | null = null;
   if (sinceMs !== null) {
-    registered = [
+    const done = [
       ...(youtube.since_match ? ["youtube"] : []),
       ...(shorts.kind === "ok" ? shorts.entries.filter((e) => e.since_match).map((e) => e.destination) : []),
     ];
+    const inFlight = sending.kind === "ok" ? sending.marks.map((m) => m.destination).filter((d) => !done.includes(d)) : [];
+    registered = [...done, ...inFlight];
   }
+  const inFlightNote =
+    sending.kind === "ok" && sending.marks.length > 0
+      ? ` Envio começado e sem registro (pode estar saindo agora ou ter saído sem registro): ${sending.marks.map((m) => m.destination).join(", ")} — conferir a conta antes de qualquer coisa.`
+      : "";
 
   let verdict: VideoRegistryStatus["verdict"];
   let message: string;
@@ -125,17 +169,18 @@ export function summarizeVideoRegistries(input: VideoRegistryStatusInput): Video
       "registro ilegível: não dá para saber o que saiu — conferir o canal/as contas antes de qualquer nova chamada de publisher (#11741)";
   } else if (registered === null) {
     verdict = "no-cutoff";
-    message = "sem --since: estado atual dos registros, sem corte de tempo";
+    message = "sem --since: estado atual dos registros, sem corte de tempo." + inFlightNote;
   } else if (registered.length > 0) {
     verdict = "registered-since";
     message =
       `registrado desde ${input.since}: ${registered.join(", ")} — o processo da chamada interrompida pode ter seguido vivo e publicado. ` +
-      "Relatar ao editor como saído (estado normalizado, #573) e nunca publicar esses destinos de novo (#11741)";
+      "Relatar ao editor como saído (estado normalizado, #573) e nunca publicar esses destinos de novo (#11741)." +
+      inFlightNote;
   } else {
     verdict = "nothing-since";
-    message = `nada registrado desde ${input.since}. A interrupção conta como "não": nova chamada só com novo "pode publicar" do editor (#11741)`;
+    message = `nada registrado nem em envio desde ${input.since}. A interrupção conta como "não": nova chamada só com novo "pode publicar" do editor (#11741)`;
   }
-  return { aammdd: input.aammdd, since: input.since, youtube, shorts, registered_since: registered, verdict, message };
+  return { aammdd: input.aammdd, since: input.since, youtube, shorts, sending, registered_since: registered, verdict, message };
 }
 
 function readSafely<T>(read: () => T): RegistryRead<T> {
@@ -167,6 +212,7 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     since,
     youtube: readSafely(() => readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd)),
     shorts: readSafely(() => readShortsRegistry(dir, aammdd)),
+    sending: readSafely(() => readShortsSending(dir, aammdd)),
   });
   console.log(JSON.stringify(status, null, 2));
   console.error(`[${status.verdict}] ${status.message}`);

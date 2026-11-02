@@ -147,6 +147,7 @@ describe("#11741 releitura do registro depois da interrupção", () => {
     ok: true as const,
     value: { aammdd: AAMMDD, entries: entries.map((e) => ({ id: "x", status: e.status ?? "published", ...e })) as never },
   });
+  const noSending = { ok: true as const, value: [] };
 
   it("cenário real de 261030: upload 13:43:23 depois da chamada rejeitada → registered-since", () => {
     const s = summarizeVideoRegistries({
@@ -158,13 +159,14 @@ describe("#11741 releitura do registro depois da interrupção", () => {
         { destination: "facebook:diaria", at: "2026-10-30T13:52:50.000Z" },
         { destination: "threads_profile", at: "2026-10-30T13:20:00.000Z" },
       ]),
+      sending: noSending,
     });
     assert.equal(s.verdict, "registered-since");
     assert.deepEqual(s.registered_since, ["youtube", "youtube_shorts", "facebook:diaria"]);
     assert.match(s.message, /nunca publicar esses destinos de novo/);
   });
   it("nada depois do corte → nothing-since (a interrupção é um não)", () => {
-    const s = summarizeVideoRegistries({ aammdd: AAMMDD, since, youtube: { ok: true, value: { kind: "none" } }, shorts: shorts([]) });
+    const s = summarizeVideoRegistries({ aammdd: AAMMDD, since, youtube: { ok: true, value: { kind: "none" } }, shorts: shorts([]), sending: noSending });
     assert.equal(s.verdict, "nothing-since");
     assert.deepEqual(s.registered_since, []);
   });
@@ -174,16 +176,17 @@ describe("#11741 releitura do registro depois da interrupção", () => {
       since,
       youtube: { ok: true, value: { kind: "pending", sentinel: { aammdd: AAMMDD, status: "in_progress", at: "2026-10-30T13:43:10.000Z" } as never } },
       shorts: shorts([]),
+      sending: noSending,
     });
     assert.deepEqual(s.registered_since, ["youtube"]);
     assert.equal(s.youtube.status, "in_progress");
   });
   it("registro sem data legível nunca some do corte", () => {
-    const s = summarizeVideoRegistries({ aammdd: AAMMDD, since, youtube: { ok: true, value: { kind: "none" } }, shorts: shorts([{ destination: "x", at: "?" }]) });
+    const s = summarizeVideoRegistries({ aammdd: AAMMDD, since, youtube: { ok: true, value: { kind: "none" } }, shorts: shorts([{ destination: "x", at: "?" }]), sending: noSending });
     assert.deepEqual(s.registered_since, ["x"]);
   });
   it("registro ilegível → unreadable", () => {
-    const s = summarizeVideoRegistries({ aammdd: AAMMDD, since, youtube: { ok: false, error: "json" }, shorts: shorts([]) });
+    const s = summarizeVideoRegistries({ aammdd: AAMMDD, since, youtube: { ok: false, error: "json" }, shorts: shorts([]), sending: noSending });
     assert.equal(s.verdict, "unreadable");
   });
   it("CLI lê os arquivos reais da edição (só leitura)", () => {
