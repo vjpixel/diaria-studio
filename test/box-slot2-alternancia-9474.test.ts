@@ -122,7 +122,7 @@ describe("snippet retrospectiva-apoiadores.md", () => {
     assert.ok(!s.includes("Mantenedor)"), 'sem "(plano Mantenedor)"');
     // #11205: a marca nunca é "Diar.ia"; o bloco é um parágrafo geral, sem valor nem lista de benefícios.
     assert.ok(TIER_BLOCK.includes('Apoiadores do Conselho e do Núcleo'));
-    assert.ok(!/R$s?d/.test(TIER_BLOCK));
+    assert.ok(!/R\$\s?\d/.test(TIER_BLOCK));
     assert.ok(!/Diar\.ia\b|Quem torna/.test(s), 'sem o nome antigo da página nem a grafia "Diar.ia"');
   });
 

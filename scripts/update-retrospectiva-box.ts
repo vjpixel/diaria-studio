@@ -27,8 +27,9 @@
  *
  * Regras do editor (#9845): o TÍTULO da retrospectiva não entra no box; entram
  * os 3 temas principais do ciclo (frases curtas, minúsculas, sem ponto final —
- * `--temas "a|b|c"`), a frase sobre ligar os pontos e as tendências, e a lista
- * completa de benefícios de R$25 (`TIER_BLOCK`, estável entre ciclos).
+ * `--temas "a|b|c"`, gravados em negrito), a frase sobre ligar os pontos e as
+ * tendências, e o texto geral dos apoiadores (`TIER_BLOCK`, sem valor e sem lista
+ * de benefícios, estável entre ciclos).
  *
  * Edição cirúrgica (#495): num arquivo PRÉ-EXISTENTE só 3 linhas são trocadas
  * (título, parágrafo dos temas, URL do CTA); header de comentário e bloco do
@@ -92,12 +93,11 @@ export const RETROSPECTIVA_BOX_HEADER = `<!--
 nome: Retrospectiva do Mês
 categoria: Retrospectiva
 retrospectiva-apoiadores.md — box de divulgação da Retrospectiva do Mês
-(recompensa Conselho/Núcleo, R$25+). Slot 2, ALTERNANDO com
+(recompensa Conselho/Núcleo). Slot 2, ALTERNANDO com
 artigo-especial-apoiadores.md (quem publica por último ocupa o slot, #9474).
 Reescrito por scripts/update-retrospectiva-box.ts (/diaria-mensal-apoiadores)
 a cada ciclo — não editar título/parágrafo dos temas/URL do CTA à mão aqui, o
-próximo ciclo sobrescreve (o bloco do tier, parágrafo + lista de benefícios,
-segue estável). Formato: context/snippets/README.md.
+próximo ciclo sobrescreve (o texto geral dos apoiadores segue estável). Formato: context/snippets/README.md.
 -->`;
 
 /**

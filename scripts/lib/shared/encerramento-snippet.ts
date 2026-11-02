@@ -56,7 +56,7 @@ import {
  * Facebook → X (redação original: LinkedIn → Instagram → Threads → Facebook → X → YouTube; reordenada a pedido do editor, 261101. Antes dela, o Facebook caiu do 2º pro 4º lugar em relação à redação
  * anterior). Sempre o ÚLTIMO parágrafo da seção `PARA ENCERRAR`
  * (invariante do #3219/#3368, preservada). O TEXTO mudou no #11483 (ver
- * abaixo); bloco fixo e ordem das redes seguem iguais.
+ * abaixo); o bloco fixo segue igual, a ordem das redes mudou (acima).
  */
 /**
  * #11483 (pedido do editor, 28/10/2026, revisa o texto do #4413): o convite
@@ -82,6 +82,12 @@ export const SOCIAL_INVITE_LEGACY_PREFIX =
  * edições já costuradas carregam, e re-renderizá-las não deve mudar nada. */
 export const SOCIAL_INVITE_LEGACY =
   `${SOCIAL_INVITE_LEGACY_PREFIX} **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}), [X](${DIARIA_X_URL}) ou [YouTube](${DIARIA_YOUTUBE_URL}).`;
+
+/** `SOCIAL_INVITE` com ícones na ordem anterior (LinkedIn, Instagram, Threads,
+ * Facebook, X, YouTube; #11483 até a reordenação de 261101). Edições costuradas
+ * nesse intervalo carregam este texto; o drift não deve acusá-las. */
+export const SOCIAL_INVITE_ICONS_ORDER_LEGACY =
+  `${SOCIAL_INVITE_PREFIX} [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL}) [YouTube](${DIARIA_YOUTUBE_URL})`;
 
 /**
  * #10781: o parágrafo é o convite social? Casa pelo PREFIXO estável
@@ -213,6 +219,7 @@ export function detectSocialInviteDrift(markdown: string): SocialInviteDrift | n
     // #11483: edição costurada antes da troca pelos ícones carrega o texto
     // corrido; é o esperado, não drift.
     if (p === SOCIAL_INVITE_LEGACY) return null;
+    if (p === SOCIAL_INVITE_ICONS_ORDER_LEGACY) return null;
     if (isSocialInviteParagraph(p)) {
       // Redação legada "Agora que chegou…" é aceita pelo renderer de propósito
       // (#1148) — não reclamar de edição antiga só por isso.
