@@ -413,6 +413,15 @@ export interface AcaoAdiada {
   motivo: string;
   /** Qual sessão pediu. */
   sessao: SessionKind;
+  /**
+   * ISO 8601 — prazo explícito do adiamento, quando o editor pediu repergunta
+   * ANTES do default ("me pergunte de novo em 7 horas", #11916). Ausente = o
+   * cooldown default de `ACAO_ADIADA_COOLDOWN_DAYS`. Só ENCURTA: um `ate`
+   * além de `pedido_em + ACAO_ADIADA_COOLDOWN_DAYS` é limitado ao default
+   * (ver `isAcaoAdiadaAtiva`), então um ano digitado errado nunca esconde a
+   * issue por mais de 7 dias.
+   */
+  ate?: string;
 }
 
 /**
@@ -459,11 +468,14 @@ const ACAO_ADIADA_MARKER_SUFFIX = " -->";
 
 /** Gera o marcador de ação adiada. Determinístico. */
 export function formatAcaoAdiadaMarker(opts: AcaoAdiada): string {
-  const payload = {
+  // `ate` só entra no payload quando existe: o marcador sem prazo explícito
+  // continua byte a byte igual ao de antes do #11916.
+  const payload: AcaoAdiada = {
     pedido_em: opts.pedido_em,
     acao: opts.acao,
     motivo: opts.motivo,
     sessao: opts.sessao,
+    ...(opts.ate !== undefined ? { ate: opts.ate } : {}),
   };
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
   return `${ACAO_ADIADA_MARKER_PREFIX}${encoded}${ACAO_ADIADA_MARKER_SUFFIX}`;
@@ -480,7 +492,10 @@ function isValidAcaoAdiada(value: unknown): value is AcaoAdiada {
     // `motivo` vazio é VÁLIDO — "agora não" sem justificativa é uma resposta
     // legítima, e exigir texto aqui empurraria o caller a inventar um.
     typeof v.motivo === "string" &&
-    (v.sessao === "continuo" || v.sessao === "overnight" || v.sessao === "develop")
+    (v.sessao === "continuo" || v.sessao === "overnight" || v.sessao === "develop") &&
+    // `ate` é opcional (#11916); presente, precisa ser string. Data podre não
+    // invalida o marcador inteiro: `isAcaoAdiadaAtiva` trata (fail-open).
+    (v.ate === undefined || typeof v.ate === "string")
   );
 }
 
@@ -531,6 +546,12 @@ export function latestAcaoAdiadaFor(commentsBodies: readonly string[]): AcaoAdia
  * limitado pelo gatilho 1 — no pior caso a pergunta volta em
  * `ACAO_ADIADA_COOLDOWN_DAYS` dias, nunca "nunca".
  *
+ * **Prazo explícito (`ate`, #11916)** substitui o gatilho 1 quando o editor
+ * pediu repergunta mais cedo ("em 7 horas"): a supressão vale até
+ * `min(ate, pedido_em + ACAO_ADIADA_COOLDOWN_DAYS)`. Só encurta — um `ate`
+ * mais longe que o default é limitado a ele. `ate` que não parseia →
+ * `false` (fail-open, mesmo critério abaixo).
+ *
  * `pedido_em` inválido (não-data) → `false` (não suprime). Fail-open é o
  * lado certo aqui: na dúvida, perguntar de novo é recuperável; suprimir pra
  * sempre por causa de um timestamp podre não é.
@@ -563,8 +584,16 @@ export function isAcaoAdiadaAtiva(
   // Futuro → fail-open (ver docstring). `pedidoEm === now` ainda suprime:
   // é o adiamento acabado de gravar, o caso mais comum de todos.
   if (pedidoEm > now) return false;
-  const idadeDias = (now - pedidoEm) / 86_400_000;
-  return idadeDias < ACAO_ADIADA_COOLDOWN_DAYS;
+  const prazoDefault = pedidoEm + ACAO_ADIADA_COOLDOWN_DAYS * 86_400_000;
+  // #11916 — prazo explícito (`ate`) só encurta o default, nunca estende.
+  // `ate` podre (não-data) → fail-open, mesmo critério do `pedido_em` podre.
+  let prazo = prazoDefault;
+  if (adiada.ate !== undefined) {
+    const ate = new Date(adiada.ate).getTime();
+    if (Number.isNaN(ate)) return false;
+    prazo = Math.min(ate, prazoDefault);
+  }
+  return now < prazo;
 }
 
 // ─── CLI wrapper (busca via gh, imprime a decisão mais recente ou nada) ────
@@ -642,9 +671,14 @@ export function fetchCommentBodiesResult(
 
 /**
  * #10216 — monta o marcador `acao-adiada` a partir de argv
- * (`--print-acao-adiada-marker --acao "..." [--motivo "..."] [--sessao develop]`),
- * pra o playbook do `/diaria-desbloqueia` não compor base64 à mão. Pura:
- * devolve o marcador ou uma mensagem de erro de uso.
+ * (`--print-acao-adiada-marker --acao "..." [--motivo "..."] [--sessao develop]
+ * [--cooldown-horas N]`), pra o playbook do `/diaria-desbloqueia` não compor
+ * base64 à mão. Pura: devolve o marcador ou uma mensagem de erro de uso.
+ *
+ * `--cooldown-horas N` (#11916): o editor pediu repergunta em N horas — grava
+ * `ate = now + N h`. N precisa ser número > 0 e ≤ 24 × `ACAO_ADIADA_COOLDOWN_DAYS`
+ * (a flag só encurta o default; pedir mais que isso é erro de uso, não um
+ * adiamento longo silenciosamente truncado).
  */
 export function acaoAdiadaMarkerFromArgs(
   args: readonly string[],
@@ -660,12 +694,23 @@ export function acaoAdiadaMarkerFromArgs(
   if (sessao !== "continuo" && sessao !== "overnight" && sessao !== "develop") {
     return { error: `--sessao inválido: ${sessao} (continuo|overnight|develop)` };
   }
+  let ate: string | undefined;
+  if (args.includes("--cooldown-horas")) {
+    const raw = (val("--cooldown-horas") ?? "").trim();
+    const horas = raw === "" ? Number.NaN : Number(raw);
+    const maxHoras = ACAO_ADIADA_COOLDOWN_DAYS * 24;
+    if (!Number.isFinite(horas) || horas <= 0 || horas > maxHoras) {
+      return { error: `--cooldown-horas inválido: ${raw || "(vazio)"} (número > 0 e ≤ ${maxHoras})` };
+    }
+    ate = new Date(now.getTime() + horas * 3_600_000).toISOString();
+  }
   return {
     marker: formatAcaoAdiadaMarker({
       pedido_em: now.toISOString(),
       acao,
       motivo: (val("--motivo") ?? "").trim(),
       sessao,
+      ...(ate !== undefined ? { ate } : {}),
     }),
   };
 }

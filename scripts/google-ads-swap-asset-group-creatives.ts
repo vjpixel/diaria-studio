@@ -253,6 +253,10 @@ export function checkSwapCooldown(
   if (pedidoEmMs > now.getTime()) {
     return { active: true, pedidoEm: adiada.pedido_em, motivo: `pedido_em no futuro no marcador acao-adiada ("${adiada.pedido_em}") — fail-closed` };
   }
+  // #11916 — `ate` (prazo explícito) podre também é fail-open lá; aqui ativo.
+  if (adiada.ate !== undefined && Number.isNaN(new Date(adiada.ate).getTime())) {
+    return { active: true, pedidoEm: adiada.pedido_em, motivo: `ate inválido no marcador acao-adiada ("${adiada.ate}") — fail-closed` };
+  }
   // `blocoMaisRecente` deliberadamente NÃO é repassado: um
   // `bloqueio-execucao` novo reabre a PERGUNTA no fluxo de desbloqueio, mas
   // é um motivo a mais para não executar — nunca pode desarmar o cooldown.
