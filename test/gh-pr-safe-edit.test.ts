@@ -11,7 +11,7 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,6 +31,7 @@ import {
   type GhRunFn,
 } from "../scripts/lib/gh-pr-safe-edit.ts";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
+import { FAKE_GH_SKIP_WIN32, fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 function ok(stdout = ""): GhSpawnResult {
   return { status: 0, stdout, stderr: "" };
@@ -469,21 +470,26 @@ describe("--verify-body não grava (#11930)", () => {
   const SCRIPT = "scripts/lib/gh-pr-safe-edit.ts";
   const tmp = mkdtempSync(join(tmpdir(), "safe-edit-11930-"));
   after(() => rmSync(tmp, { recursive: true, force: true }));
-  // `gh` falso primeiro no PATH: registra a chamada e falha — nenhum teste
-  // aqui alcança o GitHub de verdade.
+  // `gh` falso primeiro no PATH via helper do #11487 (sonda + credencial
+  // neutralizada + delimitador da plataforma): registra a chamada e falha —
+  // nenhum teste aqui alcança o GitHub de verdade. A sonda responde antes da
+  // linha que grava o log, então não conta como chamada.
   const binDir = join(tmp, "bin");
   const ghLog = join(tmp, "gh-calls.log");
   mkdirSync(binDir, { recursive: true });
-  writeFileSync(join(binDir, "gh"), `#!/bin/sh\necho "$@" >> "${ghLog}"\necho "gh falso" >&2\nexit 1\n`);
-  chmodSync(join(binDir, "gh"), 0o755);
+  writeFakeGh(binDir, `#!/bin/sh\necho "$@" >> "${ghLog}"\necho "gh falso" >&2\nexit 1\n`);
   const bodyFile = join(tmp, "body.md");
   writeFileSync(bodyFile, "Closes #11930\n\nremoval-declaration: x\n");
 
+  // Lazy: a sonda roda na 1ª chamada, nunca no carregamento (no Windows os
+  // testes de CLI são pulados e a sonda nem chega a rodar).
+  let cliEnv: NodeJS.ProcessEnv | undefined;
   function runCli(args: string[]) {
+    cliEnv ??= fakeGhEnv(binDir);
     rmSync(ghLog, { force: true });
     const r = spawnSync(process.execPath, ["--import", "tsx", SCRIPT, ...args], {
       encoding: "utf8",
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      env: cliEnv,
     });
     return { ...r, ghCalled: existsSync(ghLog) };
   }
@@ -496,7 +502,7 @@ describe("--verify-body não grava (#11930)", () => {
     assert.equal(verifyBodyConflictError({ "body-file": "x.md" }, new Set()), null);
   });
 
-  it("CLI: --verify-body --body-file sai 1 com mensagem clara, sem chamar o gh", () => {
+  it("CLI: --verify-body --body-file sai 1 com mensagem clara, sem chamar o gh", { skip: FAKE_GH_SKIP_WIN32 }, () => {
     for (const args of [
       ["--pr", "11915", "--verify-body", "--body-file", bodyFile],
       ["--pr", "11915", "--body-file", bodyFile, "--verify-body"],
@@ -509,7 +515,7 @@ describe("--verify-body não grava (#11930)", () => {
     }
   });
 
-  it("CLI: --verify-body sozinho avisa em stderr que não grava", () => {
+  it("CLI: --verify-body sozinho avisa em stderr que não grava", { skip: FAKE_GH_SKIP_WIN32 }, () => {
     const r = runCli(["--pr", "11915", "--verify-body", "--issues", "11930"]);
     assert.ok(r.stderr.includes(VERIFY_BODY_READ_ONLY_NOTICE), r.stderr);
     // o gh falso falha → o helper segue fail-closed (exit 1), mas o aviso já saiu.
