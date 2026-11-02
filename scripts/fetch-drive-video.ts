@@ -10,6 +10,13 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  *     [--target youtube|outras-redes|instagram]
  *     [--folder-id ID] [--window-hours N] [--edition-dir DIR]
  *     [--download [--max-mb N]] [--promote] [--dry-run] [--force]
+ *   npx tsx scripts/fetch-drive-video.ts --edition AAMMDD --corte SLUG[,SLUG...] [--folder-id ID]
+ *
+ * **Modo corte (#11900).** Acha o export de cada vertical extra da edição
+ * (`…_V{n}-{corte}.mp4` em `{AAMMDD}/Final/`, ou a versão mais alta em
+ * `Editados/`) e imprime o id, mais o `video-extra-verticals.ts --drive-ids`
+ * pronto. Só identifica (`runFetchCorteExports`, `selectCorteExport`): o
+ * download é do modo corte do `publish-shorts.ts --from-drive`.
  *
  * **Sem `--download`, só planeja (#11551).** Na 261029 uma checagem por ssh no
  * 300 baixou 312 MB sem pedir. Agora o default lista, resolve o arquivo e
@@ -103,8 +110,10 @@ import {
   isMp4VideoFile,
   isPromotedCopy,
   isVerticalCutCandidate,
+  selectCorteExport,
   selectDriveVideo,
   targetOrientation,
+  type CorteExportSelection,
   type DriveVideoFile,
   type DriveVideoScope,
   type DriveVideoSelection,
@@ -728,10 +737,126 @@ export async function runFetchDriveVideo(
   }
 }
 
+// ── Verticais extras (cortes, #11900) ─────────────────────────────────────
+
+export interface CorteExportResult {
+  corte: string;
+  selection: CorteExportSelection["kind"];
+  file?: DescribedDriveFile;
+  premise?: string;
+  reason?: string;
+  candidates?: DescribedDriveFile[];
+}
+
+export type FetchCorteExportsOutput =
+  | { edition: string; folder_id: string; action: "error"; phase: "folder" | "list"; error: string }
+  | { edition: string; folder_id: string; action: "needs-editor"; selection: "duplicate-edition-folder"; folders: DescribedDriveFolder[] }
+  | {
+      edition: string;
+      folder_id: string;
+      action: "cortes";
+      edition_folder_id: string | null;
+      final_folder_ids: string[];
+      cortes: CorteExportResult[];
+      /** `corte=ID,...` dos achados, pronto para o `--drive-ids` do `video-extra-verticals.ts`; `null` sem nenhum. */
+      drive_ids: string | null;
+      next_command: string | null;
+    };
+
+/**
+ * Acha no Drive o export de cada vertical extra (#11900): `…_V{n}-{corte}.mp4`
+ * em `{AAMMDD}/Final/` (ou `Editados/`, versão mais alta). Só identifica: não
+ * baixa nem copia nada; o download é do modo corte do `publish-shorts.ts`
+ * (`--from-drive`, para `data/cortes/{slug}/`, que o timer do 300 alcança).
+ * Exit 0 = todos achados ou só faltando (fail-soft, como o `none` da edição);
+ * 3 = algum ambíguo ou subpasta da edição duplicada; 1 = Drive inacessível.
+ */
+export async function runFetchCorteExports(
+  deps: FetchDriveVideoDeps,
+  input: { aammdd: string; folderId: string; cortes: string[]; timeouts?: FetchDriveVideoTimeouts },
+  log: (line: string) => void,
+): Promise<{ exitCode: number; output: FetchCorteExportsOutput }> {
+  const { aammdd, folderId, cortes } = input;
+  const timeouts = input.timeouts ?? DEFAULT_FETCH_DRIVE_VIDEO_TIMEOUTS;
+  const base = { edition: aammdd, folder_id: folderId };
+  let phase: "folder" | "list" = "folder";
+  const files: DriveVideoFile[] = [];
+  const finalFolderIds: string[] = [];
+  let editionFolderId: string | null = null;
+  try {
+    await assertDriveFolderAccessible(deps, folderId, timeouts.listMs);
+    phase = "list";
+    const root = await listDriveChildren(deps, folderId, timeouts.listMs);
+    const editionFolders = root.filter((f) => f.mimeType === FOLDER_MIME && f.name.trim() === aammdd);
+    if (editionFolders.length > 1) {
+      const folders = editionFolders.map((f) => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime ?? null }));
+      log(`[aviso] ${folders.length} subpastas "${aammdd}" na pasta do Drive (${folders.map((f) => f.id).join(", ")}) — junte ou renomeie; nada escolhido`);
+      return { exitCode: 3, output: { ...base, action: "needs-editor", selection: "duplicate-edition-folder", folders } };
+    }
+    if (editionFolders.length === 1) {
+      editionFolderId = editionFolders[0].id;
+      const inside = await listDriveChildren(deps, editionFolderId, timeouts.listMs);
+      for (const folder of inside.filter((f) => f.mimeType === FOLDER_MIME)) {
+        const edited = isEditedFolderName(folder.name);
+        if (!edited && !isFinalFolderName(folder.name)) continue;
+        finalFolderIds.push(folder.id);
+        const children = await listDriveChildren(deps, folder.id, timeouts.listMs);
+        files.push(
+          ...children
+            .filter((f) => f.mimeType !== FOLDER_MIME)
+            .map((f) => ({ ...f, scope: "final-folder" as const, ...(edited ? { editedFolder: true } : {}) })),
+        );
+      }
+    } else {
+      log(`[aviso] sem subpasta ${aammdd}/ na pasta do Drive — o export do corte mora em ${aammdd}/Final/`);
+    }
+  } catch (e) {
+    const message = (e as Error).message;
+    log(`fetch-drive-video: ${message}`);
+    if (!(e instanceof DriveFolderInaccessibleError)) log("fetch-drive-video: se for token/credencial, renovar com `npx tsx scripts/oauth-setup.ts`");
+    return { exitCode: 1, output: { ...base, action: "error", phase, error: message } };
+  }
+
+  const results: CorteExportResult[] = cortes.map((corte) => {
+    const sel = selectCorteExport(files, corte);
+    if (sel.kind === "found") {
+      if (sel.premise) log(`[premissa] ${corte}: ${sel.premise}`);
+      log(`[ok] corte ${corte}: ${describeForLog(sel.file)}`);
+      return { corte, selection: "found", file: describeFile(sel.file), ...(sel.premise ? { premise: sel.premise } : {}) };
+    }
+    if (sel.kind === "ambiguous") {
+      log(`[aviso] corte ${corte}: ${sel.candidates.length} exports — escolha do editor: ${sel.candidates.map(describeForLog).join(" | ")}`);
+      return { corte, selection: "ambiguous", candidates: sel.candidates.map(describeFile) };
+    }
+    const reason = editionFolderId === null ? `sem subpasta ${aammdd}/ no Drive` : sel.reason;
+    log(`[aviso] corte ${corte}: ${reason} — nada escolhido; quando o export subir, rodar de novo`);
+    return { corte, selection: "none", reason };
+  });
+  const found = results.filter((r) => r.file);
+  const driveIds = found.length ? found.map((r) => `${r.corte}=${r.file!.id}`).join(",") : null;
+  const next = driveIds ? `npx tsx scripts/video-extra-verticals.ts ${aammdd} --drive-ids ${driveIds}` : null;
+  if (next) log(`[ok] próximo passo: ${next}`);
+  return {
+    exitCode: results.some((r) => r.selection === "ambiguous") ? 3 : 0,
+    output: { ...base, action: "cortes", edition_folder_id: editionFolderId, final_folder_ids: finalFolderIds, cortes: results, drive_ids: driveIds, next_command: next },
+  };
+}
+
+/** `--corte a,b` → slugs válidos sem repetição, ou erro de uso. */
+export function parseCorteList(raw: string): { ok: true; cortes: string[] } | { ok: false; error: string } {
+  const cortes = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!cortes.length) return { ok: false, error: "--corte sem slug" };
+  const bad = cortes.filter((c) => !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(c));
+  if (bad.length) return { ok: false, error: `--corte: ${bad.map((b) => JSON.stringify(b)).join(", ")} não é slug (minúsculas, dígitos e hífen, como o "corte" do blocks.json)` };
+  if (new Set(cortes).size !== cortes.length) return { ok: false, error: "--corte: slug repetido" };
+  return { ok: true, cortes };
+}
+
 // ── CLI ───────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "uso: fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical [--target youtube|outras-redes|instagram] [--folder-id ID] [--window-hours N] [--edition-dir DIR] [--download [--max-mb N]] [--promote] [--dry-run] [--force]";
+  "uso: fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical [--target youtube|outras-redes|instagram] [--folder-id ID] [--window-hours N] [--edition-dir DIR] [--download [--max-mb N]] [--promote] [--dry-run] [--force]\n" +
+  "     fetch-drive-video.ts --edition AAMMDD --corte SLUG[,SLUG...] [--folder-id ID]   (export das verticais extras, #11900; só identifica)";
 
 export function readYouTubeDriveConfig(config: unknown): { folderId: string | null; windowHours: number | null; maxDownloadMb?: number | null } {
   const yt = (config as { publishing?: { youtube?: { drive_folder_id?: unknown; drive_window_hours?: unknown; drive_max_download_mb?: unknown } } })
@@ -815,6 +940,34 @@ export function parseFetchDriveVideoArgs(
   };
 }
 
+/**
+ * Parse puro do modo corte (#11900): `--edition AAMMDD --corte a[,b] [--folder-id ID]`.
+ * `null` = o argv não é do modo corte (sem `--corte`). Flags do vídeo da edição
+ * (orientação, destino, download, promoção, capa) não combinam com ele.
+ */
+export function parseFetchCorteArgs(
+  argv: string[],
+  cfg: ReturnType<typeof readYouTubeDriveConfig>,
+): { ok: true; aammdd: string; folderId: string; cortes: string[] } | { ok: false; error: string } | null {
+  const { flags, values, positional } = parseArgs(argv);
+  if (values["corte"] === undefined && !flags.has("corte")) return null;
+  if (flags.has("corte")) return { ok: false, error: "--corte sem valor" };
+  const foreign = ["orientation", "target", "window-hours", "edition-dir", "download", "promote", "max-mb", "force", "dry-run"].filter(
+    (f) => flags.has(f) || values[f] !== undefined,
+  );
+  if (positional.length || foreign.length) {
+    const what = [...positional, ...foreign.map((f) => `--${f}`)];
+    return { ok: false, error: `--corte só identifica o export (o download é do publish-shorts.ts --from-drive); fora do lugar: ${what.join(", ")}` };
+  }
+  const aammdd = values["edition"];
+  if (!aammdd || !/^\d{6}$/.test(aammdd)) return { ok: false, error: "--edition AAMMDD ausente ou inválido" };
+  const list = parseCorteList(values["corte"]);
+  if (!list.ok) return list;
+  const folderId = values["folder-id"]?.trim() || cfg.folderId;
+  if (!folderId) return { ok: false, error: "sem pasta — passe --folder-id ou preencha publishing.youtube.drive_folder_id" };
+  return { ok: true, aammdd, folderId, cortes: list.cortes };
+}
+
 async function main(): Promise<number> {
   try {
     let cfg: ReturnType<typeof readYouTubeDriveConfig>;
@@ -823,6 +976,16 @@ async function main(): Promise<number> {
     } catch (e) {
       console.error(`fetch-drive-video: platform.config.json ilegível: ${(e as Error).message}`);
       return 2;
+    }
+    const corteArgs = parseFetchCorteArgs(process.argv.slice(2), cfg);
+    if (corteArgs && !corteArgs.ok) {
+      console.error(`fetch-drive-video: ${corteArgs.error}\n${USAGE}`);
+      return 2;
+    }
+    if (corteArgs) {
+      const outcome = await runFetchCorteExports(defaultFetchDriveVideoDeps, corteArgs, (line) => console.error(line));
+      console.log(JSON.stringify(outcome.output, null, 2));
+      return outcome.exitCode;
     }
     const args = parseFetchDriveVideoArgs(process.argv.slice(2), cfg);
     if (!args.ok) {
