@@ -89,7 +89,7 @@ export function extraVerticalHook(file: Pick<BlocksFile, "blocks">, spec: Sequen
   for (const key of ["resumo_curto", "resumo"] as const) {
     if (!spec.order.includes(key)) continue;
     const text = (file.blocks[key] ?? [])
-      .filter((it) => itemInTarget(it, spec.target))
+      .filter((it) => itemInTarget(it, spec))
       .map(itemText)
       .filter(Boolean)
       .join(" ");

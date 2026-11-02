@@ -58,19 +58,22 @@
  *       blocks.json ou o título do D1 (`02-reviewed.md`); --title-mode text (default, gerador
  *       de texto do FCP7, e o PNG transparente sai junto como reserva), png (o PNG como clipe na
  *       V2) ou off. Os dois aguardam a conferência no 1º import do Premiere.
- *   srt AAMMDD [--seq instagram|outras-redes] [--from-raw] [--force]
+ *   srt AAMMDD [--seq instagram|outras-redes|{corte}] [--from-raw] [--force]
  *       legendas das verticais. Retranscreve o áudio montado (cache por trechos +
  *       identidade do áudio); --from-raw remapeia o transcript do bruto.
- *   preview AAMMDD [--seq instagram|outras-redes]   (default única vertical; sempre refaz)
- *   review AAMMDD [--seq instagram|outras-redes]    (default única vertical; sempre refaz)
- *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes] [--no-text]
+ *   preview AAMMDD [--seq instagram|outras-redes|{corte}]   (default a vertical da edição; sempre refaz)
+ *   review AAMMDD [--seq instagram|outras-redes|{corte}]    (default a vertical da edição; sempre refaz)
+ *       `--seq` (#11900): o slug do corte escolhe aquela vertical extra (várias por
+ *       plano); o destino escolhe a sequência sem corte dele, ou o único corte dele.
+ *       Arquivos de trabalho por sequência: seq-{corte|destino}.wav, previa-…, review-….
+ *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes|{corte}] [--no-text]
  *       revisão do EXPORT do Premiere (#11557): formato contra o destino (proporção,
  *       faixa preta, fps, teto do vertical), loudness/true peak, estalos e fragmentos
  *       nas emendas e, com `plan.json` válido, o texto contra o roteiro da versão
  *       (transcreve o export; `--no-text` pula). Destino pelo nome do arquivo
  *       (`_Youtube_`/`_Instagram_`/`_Outras redes_`) ou `--seq`. Saída: tabela
  *       (#, tempo no export, tempo no bruto, o que está, correção) no stdout e em
- *       `review-final-{destino}.md`/`.json` no state dir. Só lê o export.
+ *       `review-final-{destino ou corte}.md`/`.json` no state dir. Só lê o export.
  * srt, preview e review recusam um `plan.json` defasado (blocks.json ou
  * source.json mudaram depois do build); preview recusa um SRT mais velho que o
  * plano; review recusa uma prévia mais velha que o plano.
@@ -128,6 +131,7 @@ import {
   SPEECH_DEFAULTS,
   alignPunctuationToScript,
   applyVocabularyToWords,
+  sequenceKey,
   assembleClips,
   audioGainFor,
   buildSequencePlan,
@@ -175,6 +179,7 @@ import {
   type ScreenTitleXml,
   type Segment,
   type SequencePlan,
+  type SequenceKey,
   type SequenceSpec,
   type SequenceTarget,
   type SourceInfo,
@@ -473,11 +478,28 @@ function loadPlan(ctx: Ctx): PlanFile {
   return pf;
 }
 
-function pickPlan(all: SequencePlan[], target: string | undefined, verticalOnly: boolean): SequencePlan[] {
+/**
+ * As sequências que o `--seq` escolhe (#11900): pela identidade
+ * (`sequenceKey`: o slug do corte, ou o destino da sequência sem corte); sem
+ * nenhuma com essa identidade, pelo destino (`--seq instagram` ainda acha o
+ * corte de target `instagram` de um `blocks.json` de 1 extra). `single` (prévia,
+ * revisão) recusa um destino que casa mais de uma sequência, citando os slugs.
+ */
+export function pickPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte" | "width" | "height"> }>(
+  all: P[],
+  seq: string | undefined,
+  verticalOnly: boolean,
+  single = false,
+): P[] {
   const pool = verticalOnly ? all.filter((p) => p.spec.height > p.spec.width) : all;
-  if (!target) return pool;
-  const hit = pool.filter((p) => p.spec.target === target);
-  if (hit.length === 0) throw new Error(`--seq ${target}: nenhuma sequência${verticalOnly ? " vertical" : ""} com esse destino`);
+  if (!seq) return pool;
+  const byKey = pool.filter((p) => sequenceKey(p.spec) === seq);
+  const hit = byKey.length ? byKey : pool.filter((p) => p.spec.target === seq);
+  const kind = verticalOnly ? " vertical" : "";
+  if (hit.length === 0) {
+    throw new Error(`--seq ${seq}: nenhuma sequência${kind} com esse destino ou corte (há: ${pool.map((p) => sequenceKey(p.spec)).join(", ") || "nenhuma"})`);
+  }
+  if (single && hit.length > 1) throw new Error(`--seq ${seq}: ${hit.length} sequências${verticalOnly ? " verticais" : ""} com esse destino; escolha pelo corte (${hit.map((p) => sequenceKey(p.spec)).join(", ")})`);
   return hit;
 }
 
@@ -1232,12 +1254,12 @@ function seqWords(ctx: Ctx, plan: SequencePlan, source: SourceInfo, fromRaw: boo
   const audio = join(ctx.workDir, "audio.wav");
   if (!existsSync(audio)) throw new Error(`áudio do bruto ausente (${audio}): rode transcribe de novo nesta máquina, ou use --from-raw`);
   const ranges = sequenceSourceRanges(plan, source.fps);
-  const wav = join(ctx.workDir, `seq-${plan.spec.target}.wav`);
-  const out = f(ctx, `seq-${plan.spec.target}.transcript.json`);
+  const wav = join(ctx.workDir, `seq-${sequenceKey(plan.spec)}.wav`);
+  const out = f(ctx, `seq-${sequenceKey(plan.spec)}.transcript.json`);
   // A transcrição em cache vale só para os MESMOS trechos do MESMO áudio:
   // um build novo (loop da autorrevisão) ou um transcribe refeito a invalidam.
   const st = statSync(audio);
-  const keyPath = f(ctx, `seq-${plan.spec.target}.cache-key.json`);
+  const keyPath = f(ctx, `seq-${sequenceKey(plan.spec)}.cache-key.json`);
   const key = JSON.stringify({ ranges, audio: { path: audio, size: st.size, mtimeMs: st.mtimeMs }, durationS: source.durationS });
   const fresh = existsSync(keyPath) && readFileSync(keyPath, "utf8").trim() === key;
   if (!existsSync(out) || !fresh || ctx.force) {
@@ -1257,8 +1279,8 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
   const vocab = loadVocab();
   const rules = [...vocab.rules, ...(file.vocabulary ?? [])];
   mkdirSync(ctx.outDir, { recursive: true });
-  for (const plan of pickPlan(pf.plans, target, true)) {
-    const heard = applyVocabularyToWords(seqWords(ctx, plan, pf.source, fromRaw), rules, plan.spec.target, (w) => console.error(`[aviso] ${w}`));
+  for (const plan of pickPlans(pf.plans, target, true)) {
+    const heard = applyVocabularyToWords(seqWords(ctx, plan, pf.source, fromRaw), rules, plan.spec, (w) => console.error(`[aviso] ${w}`));
     const words = alignPunctuationToScript(heard, plan.script, vocab.aliases);
     const path = join(ctx.outDir, srtFileName(plan.spec.name));
     writeFileAtomic(path, cuesToSrt(segmentCues(words)));
@@ -1269,13 +1291,13 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
 
 function cmdPreview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
-  const [plan] = pickPlan(pf.plans, target ?? "outras-redes", true);
+  const [plan] = pickPlans(pf.plans, target ?? "outras-redes", true, true);
   if (pf.framingAssumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (o mesmo do build)");
   const fps = pf.source.fps;
   const srt = join(ctx.outDir, srtFileName(plan.spec.name));
   const planPath = f(ctx, "plan.json");
   if (existsSync(srt) && mtime(srt) < mtime(planPath)) throw new Error(`${srt} é mais velho que o plan.json: rode srt de novo antes da prévia`);
-  const dir = join(ctx.workDir, `previa-${plan.spec.target}`);
+  const dir = join(ctx.workDir, `previa-${sequenceKey(plan.spec)}`);
   mkdirSync(dir, { recursive: true });
   const list: string[] = [];
   plan.clips.forEach((c, i) => {
@@ -1294,7 +1316,7 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
     vf.push("-vf", `subtitles=leg.srt:force_style='${PREVIEW_SUBTITLE_STYLE}'`);
   } else console.error(`[aviso] sem ${srt}: a prévia sai sem legenda (rode srt antes)`);
   mkdirSync(ctx.outDir, { recursive: true });
-  const out = join(ctx.outDir, previewFileName(ctx.edition, plan.spec.corte ?? plan.spec.target));
+  const out = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   run("ffmpeg", [
     "-y", "-v", "error", "-i", "joined.mp4", ...vf, "-af", LOUDNORM_TARGET,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "previa.mp4",
@@ -1302,7 +1324,7 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
   copyFileSync(join(dir, "previa.mp4"), out);
   // 14 quadros (7x2) espalhados pela prévia inteira, qualquer que seja a duração.
   const dur = Math.max(1, plan.durationFrames / fps);
-  const sheet = f(ctx, `previa-${plan.spec.target}.jpg`);
+  const sheet = f(ctx, `previa-${sequenceKey(plan.spec)}.jpg`);
   run("ffmpeg", ["-y", "-v", "error", "-i", join(dir, "previa.mp4"), "-vf", `fps=${(14 / dur).toFixed(4)},scale=270:-1,tile=7x2`, "-frames:v", "1", sheet]);
   console.log(JSON.stringify({ preview: out, sheet }, null, 2));
   return 0;
@@ -1310,14 +1332,14 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
 
 function cmdReview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
-  const [plan] = pickPlan(pf.plans, target ?? "outras-redes", true);
-  const preview = join(ctx.outDir, previewFileName(ctx.edition, plan.spec.corte ?? plan.spec.target));
+  const [plan] = pickPlans(pf.plans, target ?? "outras-redes", true, true);
+  const preview = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   if (!existsSync(preview)) throw new Error(`prévia ausente: ${preview} (rode preview)`);
   if (mtime(preview) < mtime(f(ctx, "plan.json"))) throw new Error(`${preview} é mais velha que o plan.json: rode preview de novo`);
   mkdirSync(ctx.workDir, { recursive: true });
-  const wav = join(ctx.workDir, `review-${plan.spec.target}.wav`);
+  const wav = join(ctx.workDir, `review-${sequenceKey(plan.spec)}.wav`);
   run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", preview, "-ac", "1", "-ar", "16000", wav]);
-  const trPath = f(ctx, `review-${plan.spec.target}.transcript.json`);
+  const trPath = f(ctx, `review-${sequenceKey(plan.spec)}.transcript.json`);
   transcribeWithPython(ctx, wav, trPath, { vad: false });
   const durationS = Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", preview]).stdout.trim());
   if (!Number.isFinite(durationS) || durationS <= 0) throw new Error(`duração da prévia ilegível no ffprobe (${preview})`);
@@ -1327,7 +1349,7 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
     ...x,
     srcAt: exportTimeToRaw(x.at, plan, pf.source.fps),
   }));
-  writeJson(f(ctx, `review-${plan.spec.target}.json`), { preview, durationS, findings });
+  writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings });
   console.log(JSON.stringify({ preview, durationS, findings }, null, 2));
   return 0;
 }
@@ -1338,19 +1360,32 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
  * no plano; sem ela, erro (nunca a vertical da edição, que tem outro roteiro).
  */
 export function reviewFinalTarget(file: string, seq: string | undefined, specs: Array<Pick<SequenceSpec, "target" | "corte">> = []): VideoTarget {
+  return reviewFinalSequence(file, seq, specs).target;
+}
+
+/**
+ * O destino (formato esperado) e a identidade da sequência do export (#11900):
+ * a identidade escolhe o plano e nomeia os arquivos (`review-final-{key}.md`),
+ * então 2 cortes de mesmo destino não se sobrescrevem. `--seq` aceita o
+ * destino ou o slug de um corte do plano.
+ */
+export function reviewFinalSequence(file: string, seq: string | undefined, specs: Array<Pick<SequenceSpec, "target" | "corte">> = []): { target: VideoTarget; key: SequenceKey } {
   if (seq !== undefined) {
-    if (!(VIDEO_TARGETS as readonly string[]).includes(seq)) throw new Error(`--seq deve ser ${VIDEO_TARGETS.join(", ")} (veio ${seq})`);
-    return seq as VideoTarget;
+    const byCorte = specs.find((s) => s.corte === seq);
+    if (byCorte) return { target: byCorte.target, key: seq };
+    const cortes = specs.flatMap((s) => (s.corte ? [s.corte] : []));
+    if (!(VIDEO_TARGETS as readonly string[]).includes(seq)) throw new Error(`--seq deve ser ${[...VIDEO_TARGETS, ...cortes].join(", ")} (veio ${seq})`);
+    return { target: seq as VideoTarget, key: seq };
   }
   const corte = corteSuffixOf(basename(file));
   if (corte) {
     const hit = specs.find((s) => s.corte === corte);
     if (!hit) throw new Error(`${basename(file)} é o corte "${corte}", sem sequência com esse corte no plan.json: rode build ou passe --seq`);
-    return hit.target;
+    return { target: hit.target, key: corte };
   }
   const t = exportTarget(basename(file));
   if (!t) throw new Error(`destino não reconhecido no nome ${basename(file)} (_Youtube_, _Instagram_, _Outras redes_): passe --seq`);
-  return t;
+  return { target: t, key: t };
 }
 
 function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefined, withText: boolean): number {
@@ -1363,7 +1398,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   } catch {
     // sem plano válido: o aviso sai abaixo, onde o plano é lido de novo
   }
-  const target = reviewFinalTarget(path, seq, planSpecs);
+  const { target, key } = reviewFinalSequence(path, seq, planSpecs);
   const findings: FinalReviewFinding[] = [];
 
   const probeJson = JSON.parse(run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", path]).stdout) as {
@@ -1380,9 +1415,11 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   let planFps: number | null = null;
   try {
     const pf = loadPlan(ctx);
-    plan = pf.plans.find((p) => p.spec.target === target) ?? null;
+    // Pela identidade; sem ela, o único plano do destino (`--seq instagram` num blocks.json de 1 extra).
+    const sameTarget = pf.plans.filter((p) => p.spec.target === target);
+    plan = pf.plans.find((p) => sequenceKey(p.spec) === key) ?? (sameTarget.length === 1 ? sameTarget[0] : null);
     planFps = pf.source.audioOnly ? null : pf.source.fps;
-    if (!plan) console.error(`[aviso] plan.json sem a sequência ${target}: texto não comparado com o roteiro`);
+    if (!plan) console.error(`[aviso] plan.json sem a sequência ${key}: texto não comparado com o roteiro`);
   } catch (e) {
     console.error(`[aviso] sem plan.json válido (${(e as Error).message}): texto não comparado, sem tempo no bruto`);
   }
@@ -1414,19 +1451,19 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
 
   if (withText && plan) {
     mkdirSync(ctx.workDir, { recursive: true });
-    const wav = join(ctx.workDir, `review-final-${target}.wav`);
+    const wav = join(ctx.workDir, `review-final-${key}.wav`);
     run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", wav]);
-    const trPath = f(ctx, `review-final-${target}.transcript.json`);
+    const trPath = f(ctx, `review-final-${key}.transcript.json`);
     transcribeWithPython(ctx, wav, trPath, { vad: false });
     findings.push(...checkText({ words: nonEmptyWords(trPath, "transcrição do export"), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
   }
 
   const table = finalReviewTable(findings);
   mkdirSync(ctx.stateDir, { recursive: true });
-  writeFileAtomic(f(ctx, `review-final-${target}.md`), `# Revisão do export: ${basename(path)}\n\n${table}`);
-  writeJson(f(ctx, `review-final-${target}.json`), { file: path, target, probe, crop, loudness: loud, findings });
+  writeFileAtomic(f(ctx, `review-final-${key}.md`), `# Revisão do export: ${basename(path)}\n\n${table}`);
+  writeJson(f(ctx, `review-final-${key}.json`), { file: path, target, sequence: key, probe, crop, loudness: loud, findings });
   process.stdout.write(table);
-  console.error(`[video-montagem] review-final: ${findings.length} achado(s) em ${basename(path)} (destino ${target}); tabela em ${f(ctx, `review-final-${target}.md`)}`);
+  console.error(`[video-montagem] review-final: ${findings.length} achado(s) em ${basename(path)} (sequência ${key}, destino ${target}); tabela em ${f(ctx, `review-final-${key}.md`)}`);
   return 0;
 }
 

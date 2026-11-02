@@ -36,8 +36,11 @@ describe("sequência de corte no blocks.json", () => {
     assert.match(errs([YT, OUT, { ...SOBERANA, corte: "IA Soberana", name: "Diaria comentada_Vertical_V1-IA Soberana" }]).join("\n"), /corte precisa ser um slug/);
   });
 
-  it("o target interno continua único", () => {
-    assert.match(errs([YT, OUT, { ...SOBERANA, target: "outras-redes" }]).join("\n"), /target outras-redes repetido/);
+  it("a identidade é o corte (#11900): o corte pode repetir o destino da vertical da edição, o slug não repete", () => {
+    assert.deepEqual(errs([YT, OUT, { ...SOBERANA, target: "outras-redes" }]), []);
+    assert.match(errs([YT, OUT, SOBERANA, { ...SOBERANA, target: "outras-redes" }]).join("\n"), /corte soberana repetido/);
+    // Sem corte, o destino segue único.
+    assert.match(errs([YT, OUT, OUT]).join("\n"), /target outras-redes repetido/);
   });
 });
 
