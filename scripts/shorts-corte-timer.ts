@@ -13,13 +13,17 @@
  *
  *   1. varre `data/cortes/*\/corte.json`;
  *   2. `decideCorteTimerRun` (puro): `publishing.shorts.corte_via_timer`
- *      desligado, ou nenhum dos três destinos pendente no registro do corte
+ *      desligado, corte sem o "pode publicar" no `corte.json` (#11912: só o
+ *      `--publish --confirm-publish` do corte grava `publish_confirmed_at` e os
+ *      destinos do `--only`; dry-run nunca, e sem ele nem o `late` sai), ou
+ *      nenhum dos três destinos autorizados pendente no registro do corte
  *      (inclusive `send_unknown` e as cópias de conflito do OneDrive) → nada a
  *      fazer; antes do `--at` → espera; até 3 h depois → publica; depois →
  *      alarme `late` (até 48 h depois do horário; corte mais velho é ignorado);
  *   3. `publish-shorts.ts --corte SLUG --only {pendentes} --publish --now
- *      --confirm-publish {data}`: a autorização é a decisão do editor que ligou o
- *      config e registrou o corte (#11741, mesma regra dos timers da edição);
+ *      --confirm-publish {data}`: a autorização é o "pode publicar" do editor
+ *      gravado no `corte.json` pelo `--publish` confirmado (#11741, #11912), e
+ *      os pendentes são só os destinos que ele autorizou;
  *   4. `interpretCorteTimerOutput` (puro) lê o JSON e devolve um desfecho por
  *      destino; cada falha vira um alarme ao editor (`notifyEditor`, issue +
  *      e-mail), um por destino e motivo, sem repetir a cada hora
@@ -55,6 +59,7 @@ import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/
 import { MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import { loadShortsConfig, parseShortsPublishedFile } from "./lib/diaria/short-video.ts";
 import { CORTE_SPEC_FILE, CORTE_TIMER_TASK, CORTES_REL_DIR, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
+import { corteAuthorizedDestinations } from "./lib/diaria/short-corte.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { corteUnscheduledDestinations } from "./lib/diaria/corte-owner-watch.ts";
 import { acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
@@ -119,13 +124,28 @@ export function decideCorteTimerRun(input: {
 }): CorteTimerDecision {
   const cfg = loadShortsConfig(input.config);
   if (!cfg.corteViaTimer) return { kind: "skip", reason: "publishing.shorts.corte_via_timer = false (a skill agenda a re-execução)" };
+  // #11912: sem o "pode publicar" (gravado só pelo --publish --confirm-publish do corte) o
+  // timer não publica nem alarma `late`: corte nunca aprovado não está atrasado.
+  const authorized = corteAuthorizedDestinations(input.spec);
+  if (!authorized) {
+    return { kind: "skip", reason: 'sem o "pode publicar": o corte.json não tem publish_confirmed_at (só o --publish --confirm-publish do corte grava; o dry-run nunca autoriza, #11912)' };
+  }
   const done = new Set<string>();
   for (const { path, raw } of input.registryRaws) {
     // Registro ilegível lança: nunca vira "nada publicado" (duplicaria o post).
     for (const e of parseShortsPublishedFile(raw, input.spec.date, path).entries) done.add(e.destination);
   }
-  const pending = corteTimerDestinations(input.config).filter((d) => !done.has(d));
-  if (!pending.length) return { kind: "skip", reason: "nenhum destino do timer pendente (todos registrados ou desligados no config)" };
+  const enabled = corteTimerDestinations(input.config);
+  // #11912: só os destinos do --only autorizado; os deixados de fora nunca saem pelo timer.
+  const allowed = authorized === "all" ? enabled : enabled.filter((d) => authorized.includes(d));
+  const pending = allowed.filter((d) => !done.has(d));
+  if (!pending.length) {
+    const left = enabled.filter((d) => !allowed.includes(d) && !done.has(d));
+    return {
+      kind: "skip",
+      reason: `nenhum destino do timer pendente (todos registrados ou desligados no config)${left.length ? `; fora do "pode publicar" (--only autorizado): ${left.join(", ")}` : ""}`,
+    };
+  }
   const at = resolveEditionScheduledAt(input.spec.date, input.spec.hhmm);
   const deltaMs = input.now.getTime() - Date.parse(at);
   if (deltaMs < 0) return { kind: "wait", reason: `antes do horário do corte (${input.spec.hhmm} BRT de ${input.spec.date})`, at };

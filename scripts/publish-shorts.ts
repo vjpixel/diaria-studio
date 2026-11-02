@@ -212,6 +212,7 @@ import {
   parseCorteSpec,
   type CorteSpec,
 } from "./lib/diaria/short-corte.ts";
+import { corteAuthorizedDestinations, withCortePublishAuthorization } from "./lib/diaria/short-corte.ts";
 import { planScheduledUpdates, type ScheduledUpdateItem } from "./lib/diaria/short-scheduled-update.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/facebook-pages.ts";
@@ -571,7 +572,7 @@ export function assignShortsDestinationOwners(
           by: "timer-300",
           task: CORTE_TIMER_TASK,
           at: item.scheduledAt,
-          note: `o timer do 300 (${CORTE_TIMER_TASK}, de hora em hora) publica na 1ª execução depois de ${item.scheduledAt}, até 3 h, e alarma o editor se o destino falhar`,
+          note: `o timer do 300 (${CORTE_TIMER_TASK}, de hora em hora) publica na 1ª execução depois de ${item.scheduledAt}, até 3 h, e alarma o editor se o destino falhar; só depois do --publish --confirm-publish do corte (o "pode publicar", #11912), nunca a partir do dry-run`,
         });
       } else if (destination === "instagram" && ctx.instagramViaTimer) {
         owners.push({ destination, action, by: "timer-300", task: SHORTS_TIMER_TASKS.instagram, at: item.scheduledAt, note: "rodada do timer do 300: ele mesmo publica depois do horário" });
@@ -842,7 +843,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // #11795: quem roda de novo depois do horário um destino cuja API não agenda.
   const pendingRunner = (hhmm: string): string =>
     corte && cfg.corteViaTimer
-      ? `o timer do 300 (${CORTE_TIMER_TASK}) publica na 1ª execução depois das ${hhmm} BRT e alarma se falhar (owners, #11795)`
+      ? `o timer do 300 (${CORTE_TIMER_TASK}) publica na 1ª execução depois das ${hhmm} BRT e alarma se falhar, só com o --publish confirmado (owners, #11795, #11912)`
       : `a skill agenda a re-execução para depois das ${hhmm} BRT (owners, #11550)`;
   const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
   const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
@@ -3682,6 +3683,10 @@ export function prepareCorteRun(input: {
     mkdirSync(input.dir, { recursive: true });
     writeFileAtomic(specPath, JSON.stringify(merged.spec, null, 2) + "\n");
     input.log(`[ok] corte "${input.slug}": ${existing ? `atualizado (${merged.changed.join(", ")})` : "registrado"} em ${specPath}`);
+    // #11912: o plano mudou, então o "pode publicar" anterior (sobre o plano antigo) não vale mais.
+    if (existing && corteAuthorizedDestinations(existing)) {
+      input.log(`[aviso] corte "${input.slug}": a autorização de publicação anterior caiu (o plano mudou); o timer do 300 só publica depois de um novo --publish --confirm-publish`);
+    }
   }
   if (values["cover"] !== undefined) {
     const src = resolve(values["cover"]);
@@ -3691,6 +3696,21 @@ export function prepareCorteRun(input: {
     input.log(`[ok] corte "${input.slug}": capa copiada para ${join(input.dir, SHORT_COVER_FILE)}`);
   }
   return merged.spec;
+}
+
+/**
+ * #11912: grava no `corte.json` a autorização do `--publish --confirm-publish`
+ * (chamado só depois da confirmação). `onlyRaw` é o `--only` da rodada.
+ */
+export function recordCortePublishAuthorization(dir: string, onlyRaw: string | undefined, nowIso: string, log: (line: string) => void): void {
+  const specPath = join(dir, CORTE_SPEC_FILE);
+  const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
+  const only = onlyRaw ? onlyRaw.split(",").map((s) => s.trim()).filter(Boolean) : null;
+  const next = withCortePublishAuthorization(spec, only, nowIso);
+  if (!next.changed) return;
+  writeFileAtomic(specPath, JSON.stringify(next.spec, null, 2) + "\n");
+  const dests = next.spec.publish_confirmed_destinations;
+  log(`[ok] corte "${spec.slug}": "pode publicar" gravado em ${specPath} (destinos: ${dests === "all" ? "todos" : (dests ?? []).join(", ")})`);
 }
 
 /**
@@ -3818,6 +3838,11 @@ async function main(): Promise<number> {
   const dir = corte ? resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corte.slug))) : resolve(values["edition-dir"] ?? editionDirFor(aammdd));
   // #11911: `--edition-dir` fora de data/editions/{AAMMDD}: nada é delegado aos timers do 300.
   const editionDirOverride = corte ? undefined : nonCanonicalEditionDir(dir, editionDirFor(aammdd));
+  // #11912: só o --publish confirmado do corte grava o "pode publicar" (e o --only usado) no
+  // corte.json; o timer do 300 não publica sem ele. Dry-run, --mark e --update-scheduled nunca.
+  if (corte && flags.has("publish") && !flags.has("update-scheduled") && !values["mark"]) {
+    recordCortePublishAuthorization(dir, values["only"], new Date().toISOString(), (l) => console.error(l));
+  }
   // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
   // toda gravação relê do disco e troca só a própria entrada, sob lock.
   const linkedinTimer = flags.has("linkedin-timer");

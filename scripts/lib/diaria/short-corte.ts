@@ -39,6 +39,14 @@ export interface CorteSpec {
   hook: string;
   /** Caminho do vertical: relativo à pasta do corte quando está nela (`corteVideoRef`), senão absoluto. */
   video: string;
+  /**
+   * #11912: o "pode publicar" do editor. Só o `--publish --confirm-publish`
+   * do corte grava (`withCortePublishAuthorization`); o dry-run nunca. Sem
+   * ele, o timer do 300 (`Diaria-Shorts-Cortes`) não publica nada.
+   */
+  publish_confirmed_at?: string;
+  /** #11912: destinos que o `--publish` confirmado autorizou (o `--only` usado; `"all"` = sem `--only`). */
+  publish_confirmed_destinations?: "all" | string[];
 }
 
 export const CORTE_SPEC_FILE = "corte.json";
@@ -149,6 +157,14 @@ function corteSpecProblems(data: unknown): string[] {
   if (!(str("title") ?? "").trim()) problems.push("title vazio (--title)");
   if (!(str("hook") ?? "").trim()) problems.push("hook vazio (--hook)");
   if (!(str("video") ?? "").trim()) problems.push("video vazio (--video ou --from-drive)");
+  // #11912: autorização malformada lança (nunca vira "autorizado", nem some em silêncio).
+  const at = d["publish_confirmed_at"];
+  const dests = d["publish_confirmed_destinations"];
+  if ((at === undefined) !== (dests === undefined)) problems.push("publish_confirmed_at e publish_confirmed_destinations andam juntos");
+  if (at !== undefined && (typeof at !== "string" || Number.isNaN(Date.parse(at)))) problems.push("publish_confirmed_at precisa ser data ISO");
+  if (dests !== undefined && dests !== "all" && !(Array.isArray(dests) && dests.length > 0 && dests.every((x) => typeof x === "string" && x.trim()))) {
+    problems.push('publish_confirmed_destinations precisa ser "all" ou lista de destinos');
+  }
   return problems;
 }
 
@@ -166,6 +182,11 @@ export interface CorteFlags {
  * vence). Devolve a spec válida, se ela mudou (pra gravar), ou os problemas.
  * Mudar título, gancho ou horário depois de algum destino registrado só vale
  * para os destinos ainda não publicados: quem chama avisa.
+ *
+ * #11912: a spec devolvida nunca carrega a autorização (`publish_confirmed_*`).
+ * Quando o plano muda (`changed` não vazio) e quem chama grava, a autorização
+ * anterior cai junto: o "pode publicar" foi dado sobre o plano antigo. Sem
+ * mudança, nada é gravado e a autorização do arquivo continua valendo.
  */
 export function mergeCorteSpec(
   slug: string,
@@ -176,7 +197,7 @@ export function mergeCorteSpec(
   if (slugErr) return { ok: false, error: slugErr };
   if (existing && existing.slug !== slug) return { ok: false, error: `corte.json é do corte "${existing.slug}", não de "${slug}"` };
   const pick = (v: string | undefined) => (v === undefined ? undefined : v.trim());
-  const candidate = {
+  const candidate: CorteSpec = {
     slug,
     date: pick(flags.date) ?? existing?.date ?? "",
     hhmm: pick(flags.at) ?? existing?.hhmm ?? "",
@@ -191,4 +212,33 @@ export function mergeCorteSpec(
   const keys: (keyof CorteSpec)[] = ["date", "hhmm", "title", "hook", "video"];
   const changed = existing ? keys.filter((k) => existing[k] !== candidate[k]) : keys;
   return { ok: true, spec: candidate, changed };
+}
+
+/**
+ * #11912: destinos que o editor autorizou ("pode publicar") para o corte, ou
+ * `null` quando o `corte.json` não tem autorização (só dry-run): aí o timer
+ * do 300 não publica nada.
+ */
+export function corteAuthorizedDestinations(spec: CorteSpec): "all" | string[] | null {
+  if (!spec.publish_confirmed_at || spec.publish_confirmed_destinations === undefined) return null;
+  return spec.publish_confirmed_destinations;
+}
+
+/**
+ * Pure (#11912): grava a autorização do `--publish --confirm-publish` do
+ * corte. `only` é o `--only` da rodada (`null` = sem `--only`, todos os
+ * destinos). Soma à autorização que o arquivo já tem (o "pode publicar"
+ * anterior, sobre o mesmo plano, segue valendo); `changed` só quando o
+ * conjunto cresce, então a re-execução do timer (o `--only` dele é sempre um
+ * subconjunto do autorizado) não regrava o arquivo.
+ */
+export function withCortePublishAuthorization(spec: CorteSpec, only: readonly string[] | null, nowIso: string): { spec: CorteSpec; changed: boolean } {
+  if (only !== null && only.length === 0) return { spec, changed: false };
+  const current = corteAuthorizedDestinations(spec);
+  let next: "all" | string[];
+  if (current === "all" || only === null) next = "all";
+  else next = [...(current ?? []), ...only.filter((d) => !(current ?? []).includes(d))];
+  const same = current !== null && (next === "all" ? current === "all" : current !== "all" && next.length === current.length);
+  if (same) return { spec, changed: false };
+  return { spec: { ...spec, publish_confirmed_at: nowIso, publish_confirmed_destinations: next }, changed: true };
 }

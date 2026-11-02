@@ -34,7 +34,8 @@ import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
-const SPEC: CorteSpec = { slug: "tratar-ia-como-humano", date: "261102", hhmm: "08:00", title: "Tratar IA como humano", hook: "Por que dar nome ao chatbot muda o jeito que você usa.", video: "corte-tratar-ia-como-humano.mp4" };
+// #11912: com o "pode publicar" gravado (o timer não age sem ele; o caso sem autorização está em shorts-corte-timer-authorization-11912).
+const SPEC: CorteSpec = { slug: "tratar-ia-como-humano", date: "261102", hhmm: "08:00", title: "Tratar IA como humano", hook: "Por que dar nome ao chatbot muda o jeito que você usa.", video: "corte-tratar-ia-como-humano.mp4", publish_confirmed_at: "2026-11-01T20:00:00.000Z", publish_confirmed_destinations: "all" };
 const AT = "2026-11-02T11:00:00.000Z"; // 08:00 BRT
 const shorts = {
   facebook_pages: ["diaria"],
