@@ -52,8 +52,8 @@ import {
  * #4413: convite social FIXO — texto único, idêntico em diário e mensal,
  * nunca editável por edição (decisão do editor, 260801, comentário do
  * #4413/#4421 — já publicado no ciclo 2607-08, 9 campanhas #102–#110,
- * ~30 mil pessoas). Ordem das redes: LinkedIn → Instagram → Threads →
- * Facebook → X → YouTube (o Facebook caiu do 2º pro 4º lugar em relação à redação
+ * ~30 mil pessoas). Ordem das redes: YouTube → Instagram → LinkedIn → Threads →
+ * Facebook → X (redação original: LinkedIn → Instagram → Threads → Facebook → X → YouTube; reordenada a pedido do editor, 261101. Antes dela, o Facebook caiu do 2º pro 4º lugar em relação à redação
  * anterior). Sempre o ÚLTIMO parágrafo da seção `PARA ENCERRAR`
  * (invariante do #3219/#3368, preservada). O TEXTO mudou no #11483 (ver
  * abaixo); bloco fixo e ordem das redes seguem iguais.
@@ -70,7 +70,7 @@ import {
 export const SOCIAL_INVITE_PREFIX = "Siga a **diar.ia.br**:";
 
 export const SOCIAL_INVITE =
-  `${SOCIAL_INVITE_PREFIX} [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL}) [YouTube](${DIARIA_YOUTUBE_URL})`;
+  `${SOCIAL_INVITE_PREFIX} [YouTube](${DIARIA_YOUTUBE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL})`;
 
 /** Prefixo da redação anterior ao #11483 (#4413), em texto corrido. Edições
  * costuradas até a 261029 têm este texto em `02-reviewed.md`. */
@@ -103,7 +103,7 @@ export function isSocialInviteParagraph(text: string): boolean {
 
 /** #11483: chave do ícone (nome do arquivo em `assets/social-icons/` e em
  * `workers/site/public/icons/social/`), na ordem do convite. */
-export const SOCIAL_INVITE_ICON_KEYS = ["linkedin", "instagram", "threads", "facebook", "x", "youtube"] as const;
+export const SOCIAL_INVITE_ICON_KEYS = ["youtube", "instagram", "linkedin", "threads", "facebook", "x"] as const;
 export type SocialInviteIconKey = (typeof SOCIAL_INVITE_ICON_KEYS)[number];
 
 /** Rótulo do link no markdown → chave do ícone. */
@@ -180,9 +180,9 @@ export function renderSocialInviteIconsHtml(
     const inner = icon
       ? `<img src="${socialInviteIconUrl(icon)}" width="${px}" height="${px}" alt="${escAttr(label)}" style="display:block;border:0;">`
       : escAttr(label);
-    return `<a href="${href}" target="_blank" rel="noopener noreferrer nofollow" style="display:inline-block;margin:0 14px 0 0;vertical-align:middle;color:${opts.textColor};text-decoration:none;">${inner}</a>`;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer nofollow" style="display:inline-block;margin:0 12px;vertical-align:middle;color:${opts.textColor};text-decoration:none;">${inner}</a>`;
   });
-  return `<p style="margin:12px 0 0;line-height:${px}px;font-family:${opts.fontFamily};font-size:14px;color:${opts.textColor};">${anchors.join("")}</p>`;
+  return `<p style="margin:12px 0 0;text-align:center;line-height:${px}px;font-family:${opts.fontFamily};font-size:14px;color:${opts.textColor};">${anchors.join("")}</p>`;
 }
 
 /** Rótulos dos links de rede no convite social — usados pra reconhecer um

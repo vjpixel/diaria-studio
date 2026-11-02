@@ -26,7 +26,7 @@ import { buildParaEncerrar } from "../scripts/stitch-newsletter.ts";
 import { recolorSvg } from "../scripts/gen-social-invite-icons.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const NETWORKS = ["LinkedIn", "Instagram", "Threads", "Facebook", "X", "YouTube"];
+const NETWORKS = ["YouTube", "Instagram", "LinkedIn", "Threads", "Facebook", "X"];
 
 function encerrarWith(invite: string): string {
   return `Texto de apoio qualquer.\n\n${CURADORIA_PILLS}\n\n${invite}`;

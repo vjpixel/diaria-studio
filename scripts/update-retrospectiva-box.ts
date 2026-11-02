@@ -19,14 +19,9 @@
  *
  *   **Retrospectiva de {Mês}**
  *
- *   Três temas marcaram o mês: {tema 1}, {tema 2} e {tema 3}. A Retrospectiva liga esses pontos e mostra as tendências por trás deles.
+ *   Três temas marcaram o mês: **{tema 1}**, **{tema 2}** e **{tema 3}**. A Retrospectiva liga esses pontos e mostra as tendências por trás deles.
  *
- *   Quem apoia a partir de R$25/mês recebe:
- *
- *   - a Retrospectiva do Mês por e-mail, com a edição completa na web
- *   - o Artigo Especial mensal
- *   - voto no tema do próximo Artigo Especial
- *   - nome na página "Apoiadores(as)" (opcional)
+ *   Apoiadores do Conselho e do Núcleo recebem a Retrospectiva por e-mail e outras recompensas exclusivas.
  *
  *   [Ler a Retrospectiva](https://retrospectiva.diar.ia.br/{AAMM})
  *
@@ -106,20 +101,14 @@ segue estável). Formato: context/snippets/README.md.
 -->`;
 
 /**
- * Bloco do tier (#9845): parágrafo + lista completa de benefícios de quem
- * apoia a partir de R$25 (Conselho = tudo dos planos anteriores, mais a
- * Retrospectiva e a votação). Estável entre ciclos — o script só o escreve no
+ * Bloco do tier (#9845, encurtado a pedido do editor em 261101: um parágrafo
+ * geral, sem valor e sem lista de benefícios) para os níveis que recebem a
+ * Retrospectiva (Conselho/Núcleo). Estável entre ciclos — o script só o escreve no
  * seed e na migração do formato antigo; num arquivo já no formato novo ele
  * fica intocado (o editor pode ajustá-lo à mão).
  */
-export const TIER_BLOCK = [
-  "Quem apoia a partir de R$25/mês recebe:",
-  "",
-  "- a Retrospectiva do Mês por e-mail, com a edição completa na web",
-  "- o Artigo Especial mensal",
-  "- voto no tema do próximo Artigo Especial",
-  '- nome na página "Apoiadores(as)" (opcional)',
-].join("\n");
+export const TIER_BLOCK =
+  "Apoiadores do Conselho e do Núcleo recebem a Retrospectiva por e-mail e outras recompensas exclusivas.";
 
 /** Frase fixa que fecha o parágrafo dos temas (texto aprovado, #9845). */
 const TEMAS_CLOSING = "A Retrospectiva liga esses pontos e mostra as tendências por trás deles.";
@@ -192,7 +181,7 @@ function buildTitleLine(mesLabel: string): string {
 }
 function buildTemasParagraph(temas: readonly string[]): string {
   const [t1, t2, t3] = normalizeTemas(temas);
-  return `Três temas marcaram o mês: ${t1}, ${t2} e ${t3}. ${TEMAS_CLOSING}`;
+  return `Três temas marcaram o mês: **${t1}**, **${t2}** e **${t3}**. ${TEMAS_CLOSING}`;
 }
 function buildCtaLine(url: string): string {
   return `[Ler a Retrospectiva](${url})`;

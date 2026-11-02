@@ -83,14 +83,9 @@ const INPUT = {
  */
 const APPROVED_BODY_2609 = `**Retrospectiva de Setembro**
 
-Três temas marcaram o mês: agentes de IA que saíram do teste e invadiram governos e empresas, modelos mais capazes com mais risco e preço menor e empresas brasileiras colocando agentes para trabalhar. A Retrospectiva liga esses pontos e mostra as tendências por trás deles.
+Três temas marcaram o mês: **agentes de IA que saíram do teste e invadiram governos e empresas**, **modelos mais capazes com mais risco e preço menor** e **empresas brasileiras colocando agentes para trabalhar**. A Retrospectiva liga esses pontos e mostra as tendências por trás deles.
 
-Quem apoia a partir de R$25/mês recebe:
-
-- a Retrospectiva do Mês por e-mail, com a edição completa na web
-- o Artigo Especial mensal
-- voto no tema do próximo Artigo Especial
-- nome na página "Apoiadores(as)" (opcional)
+Apoiadores do Conselho e do Núcleo recebem a Retrospectiva por e-mail e outras recompensas exclusivas.
 
 [Ler a Retrospectiva](https://retrospectiva.diar.ia.br/2609)
 `;
@@ -125,27 +120,28 @@ describe("snippet retrospectiva-apoiadores.md", () => {
     assert.ok(s.includes(TIER_BLOCK));
     assert.ok(!/ é: /.test(s), "o título da retrospectiva não entra no box");
     assert.ok(!s.includes("Mantenedor)"), 'sem "(plano Mantenedor)"');
-    // #11205: a página é a aba "Apoiadores(as)" do apoia.se; a marca nunca é "Diar.ia".
-    assert.ok(TIER_BLOCK.includes('nome na página "Apoiadores(as)" (opcional)'));
+    // #11205: a marca nunca é "Diar.ia"; o bloco é um parágrafo geral, sem valor nem lista de benefícios.
+    assert.ok(TIER_BLOCK.includes('Apoiadores do Conselho e do Núcleo'));
+    assert.ok(!/R$s?d/.test(TIER_BLOCK));
     assert.ok(!/Diar\.ia\b|Quem torna/.test(s), 'sem o nome antigo da página nem a grafia "Diar.ia"');
   });
 
   it("temas: trim e ponto final removidos antes de montar o parágrafo", () => {
     const s = buildDefaultRetrospectivaBox({ ...INPUT, temas: [" um tema. ", "dois", "três."] });
-    assert.match(s, /^Três temas marcaram o mês: um tema, dois e três\. A Retrospectiva liga esses pontos e mostra as tendências por trás deles\.$/m);
+    assert.match(s, /^Três temas marcaram o mês: \*\*um tema\*\*, \*\*dois\*\* e \*\*três\*\*\. A Retrospectiva liga esses pontos e mostra as tendências por trás deles\.$/m);
   });
 
   it("update cirúrgico no formato novo: troca título/temas/URL e preserva header + tier editados à mão", () => {
-    const original = buildDefaultRetrospectivaBox(INPUT).replace("- o Artigo Especial mensal", "- o Artigo Especial mensal (editado à mão)");
+    const original = buildDefaultRetrospectivaBox(INPUT).replace("outras recompensas exclusivas.", "outras recompensas exclusivas (editado à mão).");
     const next = applyRetrospectivaBoxUpdate(original, {
       mesLabel: "Outubro",
       temas: ["tema a", "tema b", "tema c"],
       url: "https://retrospectiva.diar.ia.br/2610",
     });
     assert.match(next, /^\*\*Retrospectiva de Outubro\*\*$/m);
-    assert.match(next, /^Três temas marcaram o mês: tema a, tema b e tema c\. A Retrospectiva liga/m);
+    assert.match(next, /^Três temas marcaram o mês: \*\*tema a\*\*, \*\*tema b\*\* e \*\*tema c\*\*\. A Retrospectiva liga/m);
     assert.match(next, /^\[Ler a Retrospectiva\]\(https:\/\/retrospectiva\.diar\.ia\.br\/2610\)$/m);
-    assert.ok(next.includes("- o Artigo Especial mensal (editado à mão)"));
+    assert.ok(next.includes("outras recompensas exclusivas (editado à mão)."));
     assert.ok(next.startsWith(RETROSPECTIVA_BOX_HEADER));
     assert.ok(!next.includes("Setembro"));
     assert.equal((next.match(/^Três temas/gm) ?? []).length, 1);
@@ -189,7 +185,7 @@ describe("snippet retrospectiva-apoiadores.md", () => {
 
   it("temas com padrões de substituição ($&, $') entram literais (novo e migração)", () => {
     const temas = ["IA custa $& por mês", "preço $' de verdade", "fim $1"];
-    const expected = "Três temas marcaram o mês: IA custa $& por mês, preço $' de verdade e fim $1.";
+    const expected = "Três temas marcaram o mês: **IA custa $& por mês**, **preço $' de verdade** e **fim $1**.";
     assert.ok(applyRetrospectivaBoxUpdate(buildDefaultRetrospectivaBox(INPUT), { ...INPUT, temas }).includes(expected));
     assert.ok(applyRetrospectivaBoxUpdate(LEGACY_FILE, { ...INPUT, temas }).includes(expected));
   });
@@ -397,8 +393,8 @@ describe("box da Retrospectiva pinado de fato RENDERIZA no slot 2 (cross-módulo
       });
       const box = extractBoxDivulgacao2(out);
       assert.ok(box, "o box da Retrospectiva deve aparecer no slot 2");
-      assert.match(box!, /Três temas marcaram o mês: agentes de IA/);
-      assert.match(box!, /voto no tema do próximo Artigo Especial/);
+      assert.match(box!, /Três temas marcaram o mês: \*\*agentes de IA/);
+      assert.match(box!, /outras recompensas exclusivas/);
       assert.match(box!, /retrospectiva\.diar\.ia\.br\/2609/);
     } finally {
       rmSync(dir, { recursive: true, force: true });

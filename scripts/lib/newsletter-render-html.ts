@@ -2463,7 +2463,7 @@ export function renderEncerrar(text: string, conviteAmigoHtml: string | null = n
   const ctaBox = ctaBlock
     ? `
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr>
-    <td style="background:${SURFACE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
+    <td style="background:${SURFACE};border-radius:12px;padding:${PAD_BOX_OUTLINE};${ctaIcons ? "text-align:center;" : ""}">
       ${ctaInner}
     </td>
   </tr></table>`
