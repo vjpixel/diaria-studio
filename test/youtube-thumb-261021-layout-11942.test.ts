@@ -167,12 +167,17 @@ describe("#11942 composição no padrão da 261021", () => {
       hook: "Superinteligência descontrolada amanhã?",
     });
     const { info, px } = await raw(jpeg);
+    // O `?` do gancho é teal (#00A0A0: r=0, g=160, b=160) e, com a métrica da
+    // fonte de fallback do runner do CI, desce até a linha y=650: sem filtrar o
+    // verde, a varredura lia o `?` como retrato (x=1238) e o teste dependia da
+    // fonte instalada. O retrato é azul puro (g baixo); o teal nunca passa.
     let portraitRight = -1;
     for (let x = 0; x < info.width; x++) {
-      const [r, , b] = px(x, 650);
-      if (b > 150 && r < 80) portraitRight = x;
+      const [r, g, b] = px(x, 650);
+      if (b > 150 && r < 80 && g < 80) portraitRight = x;
     }
-    assert.ok(portraitRight > 650, `retrato chega à base até x=${portraitRight}`);
+    // Geometria pura: 1000x700 em 704x720 (inside) → 704 de largura, termina em x≈703.
+    assert.ok(portraitRight > 650 && portraitRight <= 706, `retrato chega à base até x=${portraitRight}`);
     const box = await brightBox(jpeg);
     assert.ok(
       box.minX >= portraitRight - BOTTOM_HOOK_PORTRAIT_OVERLAP - 4,
