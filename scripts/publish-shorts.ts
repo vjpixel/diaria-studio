@@ -224,6 +224,8 @@ import {
   realpathLenient,
   resolveCorteVideo,
   parseCorteSpec,
+  samePathOnPlatform,
+  shellQuote,
   type CorteSpec,
 } from "./lib/diaria/short-corte.ts";
 import {
@@ -400,6 +402,21 @@ export const THREADS_TIMER_DETAIL =
   "Para publicar mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor e o post pode sair duplicado) " +
   "só esse destino com --only threads_profile --threads-timer --publish --confirm-publish AAMMDD " +
   "(confira antes que o vídeo não está no perfil; o --threads-timer recusa qualquer outro destino)";
+
+/**
+ * #11964: por que um destino do timer do corte (`CORTE_TIMER_DESTINATIONS`) não
+ * sai na rodada manual do corte com `publishing.shorts.corte_via_timer` ligado,
+ * a partir de 10 min antes do horário até 3 h depois: é a janela em que o timer
+ * do 300 publica. As duas rodadas publicando o mesmo destino ao mesmo tempo
+ * duplicam o post (a conferência da conta só vê o post que já está no ar).
+ */
+export function corteTimerDelegatedDetail(slug: string): string {
+  return (
+    `sai pelo timer do 300 (${CORTE_TIMER_TASK}, de hora em hora, publishing.shorts.corte_via_timer), que é o dono deste destino do horário do corte até 3 h depois e alarma se falhar; ` +
+    `esta rodada não o publica para não sair em dobro com o timer (#11964). O timer só publica com o "pode publicar" (--publish --confirm-publish do corte). ` +
+    `Para publicar já, rode NO 300 o próprio timer: npx tsx scripts/shorts-corte-timer.ts --corte ${slug}`
+  );
+}
 
 /**
  * #11265: motivo do pulo de X/Threads quando o R2 NÃO está configurado (só é
@@ -580,12 +597,22 @@ export function assignShortsDestinationOwners(
   },
 ): ShortsDestinationOwner[] {
   // #11911: a pasta fora da canônica só roda com o escape — a re-execução leva os dois.
-  const dirArg = ctx.editionDirOverride !== undefined ? ` --edition-dir ${JSON.stringify(ctx.editionDirOverride)} --${ALLOW_UNWATCHED_DIR_FLAG}` : "";
+  // #11944: aspas simples de shell (com JSON.stringify, `$` e crase do caminho seriam expandidos).
+  const dirArg = ctx.editionDirOverride !== undefined ? ` --edition-dir ${shellQuote(ctx.editionDirOverride)} --${ALLOW_UNWATCHED_DIR_FLAG}` : "";
   const base = ctx.baseCommand ?? `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}${dirArg}`;
   const owners: ShortsDestinationOwner[] = [];
   for (const item of items) {
     const { destination, action } = item;
-    if (action === "skip_delegated") {
+    if (action === "skip_delegated" && ctx.corteTimer && CORTE_TIMER_DESTINATIONS.includes(destination)) {
+      // #11964: no corte, o dono é o timer do corte (não os timers da edição).
+      owners.push({
+        destination,
+        action,
+        by: "timer-300",
+        task: CORTE_TIMER_TASK,
+        note: `o timer do 300 (${CORTE_TIMER_TASK}, de hora em hora) publica na próxima execução, até 3 h depois do horário do corte, e alarma se falhar; só com o "pode publicar" do --publish --confirm-publish (#11912, #11964)`,
+      });
+    } else if (action === "skip_delegated") {
       const task = SHORTS_TIMER_TASKS[destination];
       owners.push({ destination, action, by: "timer-300", ...(task ? { task } : {}), note: `o timer do 300${task ? ` (${task})` : ""} publica no horário do vertical e alarma se não sair` });
     } else if (action === "pending_schedule") {
@@ -737,7 +764,17 @@ export interface ShortsPlanInput {
    * #10831, sem delegar aos timers do 300 (eles não enxergam a pasta do corte)
    * e re-execuções pelo comando do corte.
    */
-  corte?: { slug: string; hhmm: string; title: string; hook: string };
+  corte?: {
+    slug: string;
+    hhmm: string;
+    title: string;
+    hook: string;
+    /**
+     * #11964: esta rodada é o filho do timer do corte (`--require-corte-authorization`).
+     * Só ele publica os destinos do timer na janela do horário; a rodada manual os delega.
+     */
+    timerRun?: boolean;
+  };
   /**
    * #11911: `--edition-dir` fora de `data/editions/{AAMM}/{AAMMDD}` (fora do corte).
    * Os timers do 300 só procuram a pasta canônica da edição: delegar a eles um
@@ -762,9 +799,15 @@ export interface ShortsPlanInput {
  * Puro (#11911): `--edition-dir` aponta para fora da pasta canônica da edição?
  * Devolve o caminho a passar ao plano (`editionDirOverride`), ou `undefined`.
  */
-export function nonCanonicalEditionDir(dir: string, canonicalDir: string, realpath: (p: string) => string = safeRealpath): string | undefined {
+export function nonCanonicalEditionDir(
+  dir: string,
+  canonicalDir: string,
+  realpath: (p: string) => string = safeRealpath,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
   // Compara pelo caminho real: `data/` é symlink pro OneDrive, e o mesmo diretório por outro caminho não é "fora".
-  return realpath(resolve(dir)) === realpath(resolve(canonicalDir)) ? undefined : resolve(dir);
+  // #11944: no Windows sem diferenciar maiúsculas (o NTFS não diferencia).
+  return samePathOnPlatform(realpath(resolve(dir)), realpath(resolve(canonicalDir)), platform) ? undefined : resolve(dir);
 }
 
 /** #11911: pasta canônica da edição, absoluta pela raiz do repo (não pelo cwd). */
@@ -944,6 +987,18 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     corteTimer
       ? `o timer do 300 (${CORTE_TIMER_TASK}) publica na 1ª execução depois das ${hhmm} BRT e alarma se falhar, só com o --publish confirmado (owners, #11795, #11912)`
       : `a skill agenda a re-execução para depois das ${hhmm} BRT (owners, #11550)`;
+  // #11964: na janela em que o timer do corte publica (de 10 min antes do horário, quando a
+  // rodada já publicaria na hora, até o teto de 3 h), só o filho do timer publica os destinos
+  // dele. A rodada manual (com ou sem --now) os delega: as duas no mesmo destino duplicam o post.
+  // Antes da janela segue `pending_schedule` (o timer é o dono); depois, `skip_late` (o timer já
+  // não publica e só alarma, então a rodada manual com --now é segura).
+  const corteTimerOwnsNow = (destination: string): boolean => {
+    if (!corte || !corteTimer || corte.timerRun === true || !CORTE_TIMER_DESTINATIONS.includes(destination)) return false;
+    // Reels acima do teto da API: o timer também não publica (vira passo guiado); o passo fica com esta rodada.
+    if (destination === "instagram" && !igFit.fits) return false;
+    const deltaMs = input.now.getTime() - Date.parse(shortTime.at);
+    return deltaMs >= -OWNER_SCHEDULE_MIN_LEAD_MS && deltaMs <= MAX_FIRE_LATENESS_MS;
+  };
   const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
   const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
   const fixedInstagram = instagramViaTimer ? slotDestinations.find((d) => d.kind === "instagram") : undefined;
@@ -1020,6 +1075,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (!dest) return "o vídeo do perfil (linkedin_profile) não está registrado nem nesta rodada";
     if (!publishable(dest)) return "o vídeo do perfil (linkedin_profile) não sai nesta rodada (sem credencial)";
     if (profileDelegated) return `o vídeo do perfil (linkedin_profile) ${LINKEDIN_TIMER_DETAIL}`;
+    if (corte && corteTimerOwnsNow("linkedin_profile")) return `o vídeo do perfil (linkedin_profile) ${corteTimerDelegatedDetail(corte.slug)}`;
     if (profileLate) return `o vídeo do perfil (linkedin_profile) não sai nesta rodada (${profileLate})`;
     try {
       socialText("linkedin");
@@ -1050,6 +1106,10 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   function planDestination(dest: ShortDestination): ShortsPlanItem {
     if (isDestinationDone(input.published, dest.id)) {
       return { destination: dest.id, mode: dest.mode, action: "skip_done" };
+    }
+    if (corte && corteTimerOwnsNow(dest.id)) {
+      // #11964: o timer do corte publica este destino agora; esta rodada não (sairia em dobro).
+      return { destination: dest.id, mode: "api", action: "skip_delegated", detail: corteTimerDelegatedDetail(corte.slug) };
     }
     if (dest.kind === "youtube_shorts") {
       // #11070: Data API com publishAt (o horizontal provou em 23/10 que o
@@ -1366,14 +1426,20 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // #11547: o que cada destino faz com a capa (Still) — ver scripts/lib/diaria/short-cover.ts.
   const coverCtx = { coverPath: input.coverPath ?? null, coverUploadReady: input.coverUploadReady === true, bufferOffsetMs: input.coverBufferOffsetMs ?? null };
   const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination, planCoverDestination(i, coverCtx)])) };
-  const owners = assignShortsDestinationOwners(items, {
-    aammdd: input.aammdd,
-    now: input.now,
-    instagramViaTimer,
-    writer: input.writer,
-    ...(corte ? { baseCommand: corteBaseCommand(corte.slug, corteOutside?.dir), corteTimer } : {}),
-    ...(!corte && input.editionDirOverride !== undefined ? { editionDirOverride: input.editionDirOverride } : {}),
-  });
+  // #11944: a regra de dono mora só em `ownersContextAfterPublish` (o recálculo depois do publish usa a mesma).
+  const owners = assignShortsDestinationOwners(
+    items,
+    ownersContextAfterPublish({
+      aammdd: input.aammdd,
+      now: input.now,
+      instagramBackend: cfg.instagramBackend,
+      corteViaTimer: cfg.corteViaTimer,
+      ...(input.writer !== undefined ? { writer: input.writer } : {}),
+      ...(corte ? { corteSlug: corte.slug } : {}),
+      ...(corteOutside ? { corteOutsideDir: corteOutside.dir } : {}),
+      ...(!corte && input.editionDirOverride !== undefined ? { editionDirOverride: input.editionDirOverride } : {}),
+    }),
+  );
   return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
 }
 
@@ -4054,6 +4120,18 @@ function restoreCorteAuthorizationAfterUpdateUnsafe(
 }
 
 /**
+ * Puro (#11955): os destinos cuja falha no `--update-scheduled` segura a
+ * regravação do "pode publicar" do corte. O `youtube_shorts` não entra: a falha
+ * dele (escopo do token, vídeo já no ar) tem contorno no YouTube Studio e não
+ * muda o que o timer do 300 publica (LinkedIn e Threads pessoais, Instagram);
+ * sem isso uma falha só no YouTube deixava os timers parados até um
+ * `--publish --confirm-publish` extra.
+ */
+export function corteRestoreBlockingFailures(results: ReadonlyArray<{ destination: string; ok: boolean }>): string[] {
+  return results.filter((r) => !r.ok && r.destination !== "youtube_shorts").map((r) => r.destination);
+}
+
+/**
  * #11795: `--update-scheduled` — troca texto e capa dos destinos já
  * AGENDADOS com o título/gancho atuais (D1 da edição, ou `corte.json`) e a capa
  * da pasta. Sem `--publish`, só o plano; com ele (e `--confirm-publish`,
@@ -4145,10 +4223,15 @@ async function runUpdateScheduled(input: {
   // de conteúdo), dentro do --only (senão Instagram/LinkedIn pessoal/Threads do corte nunca saem).
   let corteAuthorization: ReturnType<typeof restoreCorteAuthorizationAfterUpdate> | null = null;
   if (corte) {
-    corteAuthorization = results.every((r) => r.ok)
+    // #11955: falha só no YouTube (escopo do token, Short já no ar) não segura o "pode publicar" dos outros.
+    const blocking = corteRestoreBlockingFailures(results);
+    corteAuthorization = !blocking.length
       ? restoreCorteAuthorizationAfterUpdate(dir, new Date().toISOString(), known, input.only, (l) => console.error(l))
-      : { restored: false, reason: "alguma atualização falhou: o \"pode publicar\" não volta numa rodada parcial" };
+      : { restored: false, reason: `a atualização de ${blocking.join(", ")} falhou: o "pode publicar" não volta numa rodada parcial` };
     if (!corteAuthorization.restored) console.error(`[aviso] corte "${corte.slug}": "pode publicar" não regravado — ${corteAuthorization.reason}`);
+    else if (results.some((r) => !r.ok)) {
+      console.error(`[aviso] corte "${corte.slug}": o youtube_shorts não foi atualizado (troque título/descrição no YouTube Studio), mas o "pode publicar" dos outros destinos voltou (#11955)`);
+    }
   }
   console.log(JSON.stringify({ dry_run: false, update_scheduled: true, aammdd, items, results, ...revokedOut, ...(corteAuthorization ? { corte_authorization: corteAuthorization } : {}) }, null, 2));
   return results.some((r) => !r.ok) ? 1 : 0;
@@ -4435,7 +4518,8 @@ async function main(): Promise<number> {
       coverUploadReady: r2.ready,
       coverBufferOffsetMs: bufferOffsetMs,
       reviewedMd: corte ? "" : readFileSync(reviewedPath, "utf8"),
-      ...(corte ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook } } : {}),
+      // #11964: o filho do timer (--require-corte-authorization) é o único que publica os destinos do timer na janela.
+      ...(corte ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook, timerRun: requireCorteAuth } } : {}),
       // #11911: pasta fora de data/editions/{AAMM}/{AAMMDD} — os timers do 300 não a enxergam.
       ...(editionDirOverride !== undefined ? { editionDirOverride } : {}),
       ...(unwatchedEditionWarning !== undefined ? { unwatchedEditionWarning } : {}),
@@ -4670,7 +4754,7 @@ async function main(): Promise<number> {
               // 1ª linha do texto = o título do D1 (ou do corte) como o post o leva (cortado com … se não coube).
               caption: item.caption,
               corte: corte !== null,
-              sameDayOtherIds: sameDayOtherRegisteredIds(corte !== null, aammdd, THREADS_PROFILE_DESTINATION),
+              sameDayOtherIds: sameDayOtherRegisteredIds(corte?.slug ?? null, aammdd, THREADS_PROFILE_DESTINATION),
             }),
             now: () => new Date(),
           });
@@ -4741,7 +4825,7 @@ async function main(): Promise<number> {
           // título e o gancho do corte e sem contar o Reels da edição do dia.
           const ctx = corte ? corteInstagramConfirmContext(corte) : instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
           // #11913: na edição, o Reels dos cortes do dia (a extra) também não conta.
-          const ignoreIds = sameDayOtherRegisteredIds(corte !== null, aammdd, "instagram");
+          const ignoreIds = sameDayOtherRegisteredIds(corte?.slug ?? null, aammdd, "instagram");
           // Fix do review do PR #11395: o gate olha também o perfil do autor à mão, se for outra conta (#11794: na produção, é a mesma).
           const chrome = await resolveChromeAuthorReader(shortsCfg.instagramAuthorPage, pages, igApiVersion);
           // #11421: sem a credencial da página do autor, o gate não publica (fail-closed) se a conta da API não tiver o Reels.
@@ -5042,6 +5126,8 @@ export function sameDayCorteRegisteredIds(
   destination: string,
   warn: (m: string) => void,
   read: (dir: string, aammdd: string) => ShortsPublishedFile = readShortsRegistry,
+  /** #11965: o corte que está publicando (a pasta = slug) não desconta o próprio registro. */
+  exceptSlug?: string,
 ): string[] {
   if (!existsSync(cortesDir)) return [];
   let names: string[];
@@ -5053,6 +5139,7 @@ export function sameDayCorteRegisteredIds(
   }
   const ids: string[] = [];
   for (const name of names) {
+    if (exceptSlug !== undefined && name === exceptSlug) continue;
     const dir = join(cortesDir, name);
     const specPath = join(dir, CORTE_SPEC_FILE);
     if (!existsSync(specPath)) continue;
@@ -5070,15 +5157,35 @@ export function sameDayCorteRegisteredIds(
 }
 
 /**
- * #11742/#11795/#11913: os ids do mesmo dia que a conferência da conta de UM
- * lado desconta — no corte, os da edição do dia; na edição, os dos cortes do
- * dia.
+ * #11742/#11795/#11913/#11965: os ids do mesmo dia que a conferência da conta
+ * de UM lado desconta — no corte, os da edição do dia E os dos OUTROS cortes do
+ * dia (#11965: o 2º corte do dia era bloqueado pelo vídeo já registrado do 1º);
+ * na edição, os dos cortes do dia. `corteSlug` = a rodada é do corte com esse slug.
  */
-function sameDayOtherRegisteredIds(corte: boolean, aammdd: string, destination: string): string[] {
-  const warn = (m: string) => console.error(`[aviso] ${m}`);
-  return corte
-    ? editionDayRegisteredIds(editionDirFor(aammdd), aammdd, destination, warn)
-    : sameDayCorteRegisteredIds(join(ROOT, "data", "cortes"), aammdd, destination, warn);
+export function sameDayOtherRegisteredIdsFor(input: {
+  corteSlug: string | null;
+  aammdd: string;
+  destination: string;
+  editionDir: string;
+  cortesDir: string;
+  warn: (m: string) => void;
+  read?: (dir: string, aammdd: string) => ShortsPublishedFile;
+}): string[] {
+  const read = input.read ?? readShortsRegistry;
+  const cortes = sameDayCorteRegisteredIds(input.cortesDir, input.aammdd, input.destination, input.warn, read, input.corteSlug ?? undefined);
+  if (input.corteSlug === null) return cortes;
+  return [...editionDayRegisteredIds(input.editionDir, input.aammdd, input.destination, input.warn, read), ...cortes];
+}
+
+function sameDayOtherRegisteredIds(corteSlug: string | null, aammdd: string, destination: string): string[] {
+  return sameDayOtherRegisteredIdsFor({
+    corteSlug,
+    aammdd,
+    destination,
+    editionDir: editionDirFor(aammdd),
+    cortesDir: join(ROOT, CORTES_REL_DIR),
+    warn: (m) => console.error(`[aviso] ${m}`),
+  });
 }
 
 /**

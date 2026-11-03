@@ -118,7 +118,11 @@ describe("#11795 interpretCorteTimerOutput: cada falha vira alarme por destino",
   it("o alarme cita o corte, o destino e os comandos do corte; o ambíguo nunca manda postar sem conferir", () => {
     const a = buildCorteTimerAlarm({ spec: SPEC, destination: "instagram", key: "publish-failed", reason: "x" });
     assert.match(a.subject, /tratar-ia-como-humano.*instagram/);
-    assert.match(a.body, /--corte tratar-ia-como-humano --only instagram --publish --now --confirm-publish 261102/);
+    assert.match(a.body, /--corte tratar-ia-como-humano --mark instagram=URL/);
+    // #11964: até 3 h depois do horário, "publicar agora" é rodar o próprio timer (o publish-shorts manual delega o destino).
+    assert.match(a.body, /Publicar agora: `npx tsx scripts\/shorts-corte-timer\.ts --corte tratar-ia-como-humano`/);
+    const late = buildCorteTimerAlarm({ spec: SPEC, destination: "instagram", key: "late", reason: "x" });
+    assert.match(late.body, /--corte tratar-ia-como-humano --only instagram --publish --now --confirm-publish 261102/);
     const b = buildCorteTimerAlarm({ spec: SPEC, destination: "threads_profile", key: "send-unknown", reason: "x" });
     assert.match(b.body, /NÃO poste de novo sem conferir/);
   });

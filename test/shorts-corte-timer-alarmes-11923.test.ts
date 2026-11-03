@@ -63,7 +63,7 @@ describe("#11923", () => {
 
   it("2: a variante do alarme que relê o corte é calculada em try/catch (fonte)", () => {
     const src = readFileSync(new URL("../scripts/shorts-corte-timer.ts", import.meta.url), "utf8");
-    assert.match(src, /let variant = rereads \? undefined[\s\S]*try \{[\s\S]*corteAlarmVariant\(o\.key[\s\S]*\} catch/);
+    assert.match(src, /let variant = corteAlarmVariant\(o\.key, spec, null\);\s*if \(rereads\) \{\s*try \{[\s\S]*corteAlarmVariant\(o\.key[\s\S]*\} catch/); // #11967: sem a releitura, a variante do plano
   });
 });
 
