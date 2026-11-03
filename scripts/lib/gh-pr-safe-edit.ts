@@ -440,9 +440,9 @@ function usage(): string {
     "--body-file recusa corpo que não cita (Closes/REFS) as issues da PR — da branch, ou de --issues (#10698).\n" +
     "--verify-body confere o corpo ATUAL da PR do mesmo jeito; rodar logo após `gh pr create`.\n" +
     "  SÓ CONFERE, NÃO GRAVA (#11930): para editar o corpo use --body-file; combinado com --body-file/--body/--add-label é recusado (#11934).\n" +
-    "--body-file e --add-label são chamadas separadas: os dois juntos são recusados (#11937).\n" +
     "  Também confere que o headRefOid da PR é o HEAD local (#11566) — do checkout em --worktree (default cwd);\n" +
-    "  checkout em outra branch, fora do git ou só ATRÁS da PR (HEAD local ancestral do da PR) só gera aviso."
+    "  checkout em outra branch, fora do git ou só ATRÁS da PR (HEAD local ancestral do da PR) só gera aviso.\n" +
+    "--body-file e --add-label são chamadas separadas: os dois juntos são recusados (#11937)."
   );
 }
 
