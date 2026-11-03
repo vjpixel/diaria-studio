@@ -663,6 +663,19 @@ _SEM_CLAIM_MARKER = re.compile(r"\bsem\s+(?:\w+\s+){0,1}$", re.IGNORECASE)
 _SEM_CLAIM_WINDOW = 20
 
 
+# #12046: relatório real de 03/11/2026 15:50 UTC descreve uma tentativa
+# recusada e um claim concorrente ativo. Ambos têm keyword + ref, mas não
+# declaram claim próprio. Ancorar o predicado ao keyword/lista evita que
+# "deploy recusado" ou "sem claim concorrente" apaguem um claim registrado.
+_NON_OWN_CLAIM = re.compile(
+    r"\bclaims?\s+(?:d[aoe]s?\s+)?" + _REF_LIST.pattern
+    + r"\s+(?:(?:foi|foram)\s+)?recusad[oa]s?\b"
+    + r"|\bclaims?\s+concorrentes?\s+ativ[oa]s?\s+(?:n[ao]s?|em)\s+"
+    + _REF_LIST.pattern,
+    re.IGNORECASE,
+)
+
+
 def _is_negated_claim_keyword(segment: str, keyword_start: int, keyword_text: str) -> bool:
     """True quando um marcador de negação ('não'/'nunca'/'nenhum(a)') aparece
     dentro de `_NEGATION_WINDOW` caracteres imediatamente ANTES do keyword de
@@ -682,6 +695,8 @@ def _is_negated_claim_keyword(segment: str, keyword_start: int, keyword_text: st
     E (qualquer keyword): nega quando "sem" está colado ao keyword, com no
     máximo 1 palavra no meio (`_SEM_CLAIM_MARKER`) — "permanece sem claim"
     é ausência de claim (#10563)."""
+    if _NON_OWN_CLAIM.match(segment, keyword_start):
+        return True
     if _ABSENT_CLAIM.match(segment, keyword_start):
         return True
     window_start = max(0, keyword_start - _NEGATION_WINDOW)
