@@ -20,7 +20,10 @@
  * registro gravada depois dela conta como "pode ter saído" e nunca deixa o
  * veredito virar `nothing-since`. O publisher não consulta a marca (uma marca
  * órfã de um crash travaria o destino para sempre); a proteção vem da regra da
- * skill de reler o status antes de qualquer nova chamada.
+ * skill de reler o status antes de qualquer nova chamada. #12001: o timer do
+ * corte (`shorts-corte-timer.ts`, `corteInFlightDestinations`) também lê: marca
+ * aberta com até 90 min tira o destino da execução (outra rodada o publica
+ * agora); mais velha não segura nada (mesmo cuidado com a marca órfã).
  *
  * Um arquivo por escritor (mesmo motivo do registro, #11157): os timers do 300
  * e as rodadas do neo nunca escrevem o mesmo arquivo pelo OneDrive.

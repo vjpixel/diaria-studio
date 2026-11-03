@@ -133,6 +133,38 @@ const URL_LIKE = new RegExp(
     String.raw`|[A-Za-z0-9-]\.[a-z0-9-]+\.[a-z]{2,}(?![\p{L}\p{N}])|[A-Za-z0-9-]\.[a-z]{2,}\/`,
   "u",
 );
+/**
+ * Domínio de sufixo fora da lista (#11993): `Bolt.new`, `Pika.art`, `Manus.im`,
+ * `Notion.so`, `deepmind.google`. O padrão antigo (`x.yy` qualquer) volta como
+ * fallback, mas só com sufixo ASCII minúsculo inteiro até a fronteira de palavra
+ * (`ok.então` não casa: `ã` é letra e corta o sufixo) e que não seja palavra
+ * portuguesa comum (`funciona.depois`, `isso.de novo` seguem sendo falta de
+ * espaço, #11974).
+ */
+const BARE_DOMAIN = /[A-Za-z0-9-]\.([a-z]{2,})(?![\p{L}\p{N}])/gu;
+/**
+ * Palavras portuguesas só-ASCII que podem vir coladas depois de um ponto. Sem
+ * `so` (`só` sem acento): colide com `Notion.so`, e a grafia sem acento já é erro.
+ */
+const PT_WORDS_AFTER_DOT = new Set(
+  (
+    "de do da dos das no na nos nas num numa em um uma uns umas se me te lhe " +
+    "ao aos as os ou mas que por para pra pro com sem sob sobre entre ate apos " +
+    "depois antes agora ainda assim logo pois porque quando onde como mais menos " +
+    "bem mal sim nao ja tambem isso isto aquilo aqui ali la cada todo toda " +
+    "todos todas tudo nada nem muito muita muitos muitas pouco outro outra outros " +
+    "outras eu tu ele ela eles elas voce voces nosso nossa seu sua seus suas meu " +
+    "minha foi era sao ser ter tem vai vao fazer faz hoje ontem amanha sempre nunca " +
+    "talvez enfim alias inclusive entao veja vale olha confira leia saiba"
+  ).split(" "),
+);
+
+function hasBareDomain(word: string): boolean {
+  for (const m of word.matchAll(BARE_DOMAIN)) {
+    if (!PT_WORDS_AFTER_DOT.has(m[1])) return true;
+  }
+  return false;
+}
 /** Ênfase/markup inline: negrito, itálico, tachado, tabela, título. */
 const INLINE_MARKUP = /[*_~|#]/;
 
@@ -153,7 +185,7 @@ function touchesUrlOrMarkup(from: string, to: string): boolean {
     for (const v of [f, t]) {
       const { left, right, atLineStart } = tokenAround(v.chars, v.gaps, k);
       const word = left + right;
-      if (URL_LIKE.test(word) || INLINE_MARKUP.test(word)) return true;
+      if (URL_LIKE.test(word) || hasBareDomain(word) || INLINE_MARKUP.test(word)) return true;
       if (atLineStart && LINE_MARKER.test(word)) return true;
     }
   }

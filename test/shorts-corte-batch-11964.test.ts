@@ -14,17 +14,20 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CORTE_CRASH_STALE_VARIANT,
   CORTE_TIMER_CHILD_TIMEOUT_MS,
+  CORTE_TIMER_HORIZON_MS,
   buildCorteTimerAlarm,
   corteAlarmId,
   corteAlarmSeverity,
   corteAlarmVariant,
   corteCrashAlarmVariant,
+  corteLastChangeMs,
   corteTimerTimeoutOutcomes,
   runCorteTimerFor,
   type CorteTimerAlarmKey,
@@ -37,7 +40,8 @@ import {
   sameDayOtherRegisteredIdsFor,
   assignShortsDestinationOwners,
 } from "../scripts/publish-shorts.ts";
-import { CORTE_SPEC_FILE, CORTE_TIMER_TASK, checkCorteDir, corteBaseCommand, samePathOnPlatform, shellQuote, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
+import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
+import { CORTE_SPEC_FILE, CORTE_TIMER_INTERVAL_MS, CORTE_TIMER_TASK, checkCorteDir, corteBaseCommand, samePathOnPlatform, shellQuote, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { SHORTS_TIMER_LOCK_STALE_MS } from "../scripts/lib/diaria/vertical-download-guard.ts";
 import { TIMER_LOCK_STALE_MS } from "../scripts/shorts-linkedin-profile-timer.ts";
 import { explainYouTubeUploadError, youtubeScopeInsufficientMessage } from "../scripts/lib/diaria/youtube-upload.ts";
@@ -214,7 +218,7 @@ describe("#11967 variante de data em todo alarme do timer do corte", () => {
     assert.equal(corteCrashAlarmVariant(new Date("2026-11-03T12:00:00Z")), "2026-11-03");
     assert.notEqual(corteCrashAlarmVariant(new Date("2026-11-03T12:00:00Z")), corteCrashAlarmVariant(new Date("2026-11-04T12:00:00Z")));
     const src = readFileSync(new URL("../scripts/shorts-corte-timer.ts", import.meta.url), "utf8");
-    assert.match(src, /"todos", "crash", [^\n]*corteCrashAlarmVariant\(deps\.now\)/);
+    assert.match(src, /"todos", "crash", [^\n]*corteCrashAlarmVariant\(deps\.now, corteLastChangeMs\(dir\)\)/);
   });
 
   it("revoked/content-changed seguem com as variantes próprias (data da queda, sha256)", () => {
@@ -305,5 +309,67 @@ describe("#11944 resíduos do guard de pasta vigiada", () => {
     const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
     const plan = src.slice(src.indexOf("export function planShortsPublish("), src.indexOf("export async function uploadCoverOrFallback("));
     assert.match(plan, /const owners = assignShortsDestinationOwners\(\s*items,\s*ownersContextAfterPublish\(/);
+  });
+});
+
+describe("#11995 todos:crash de corte antigo quebrado não repete todo dia para sempre", () => {
+  const NOW = new Date("2026-11-03T12:00:00Z");
+  it("dentro do horizonte de 48 h (última mudança do corte) segue um aviso por dia", () => {
+    const recent = NOW.getTime() - 47 * 3_600_000;
+    assert.equal(corteCrashAlarmVariant(NOW, recent), "2026-11-03");
+    assert.notEqual(corteCrashAlarmVariant(NOW, recent), corteCrashAlarmVariant(new Date("2026-11-04T12:00:00Z"), NOW.getTime()));
+  });
+
+  it("cenário da issue: corte de agosto corrompido — além do horizonte a variante é fixa (mesmo id em dias diferentes)", () => {
+    const august = Date.parse("2026-08-15T12:00:00Z");
+    const d1 = corteCrashAlarmVariant(NOW, august);
+    const d2 = corteCrashAlarmVariant(new Date("2026-11-04T12:00:00Z"), august);
+    assert.equal(d1, CORTE_CRASH_STALE_VARIANT);
+    assert.equal(corteAlarmId("todos", "crash", d1), corteAlarmId("todos", "crash", d2));
+    assert.equal(CORTE_TIMER_HORIZON_MS, 48 * 3_600_000);
+  });
+
+  it("sem mtime conhecida (null/undefined/NaN) mantém a diária: na dúvida, avisa", () => {
+    for (const v of [null, undefined, Number.NaN]) assert.equal(corteCrashAlarmVariant(NOW, v), "2026-11-03");
+  });
+
+  it("corteLastChangeMs lê a mtime do corte.json; sem ele, a da pasta; pasta inexistente dá null", () => {
+    const root = mkdtempSync(join(tmpdir(), "corte-11995-"));
+    const dir = join(root, SLUG);
+    mkdirSync(dir, { recursive: true });
+    assert.equal(typeof corteLastChangeMs(dir), "number");
+    writeFileSync(join(dir, CORTE_SPEC_FILE), "{corrompido");
+    const old = new Date("2026-08-15T12:00:00Z");
+    utimesSync(join(dir, CORTE_SPEC_FILE), old, old);
+    assert.equal(corteLastChangeMs(dir), old.getTime());
+    assert.equal(corteCrashAlarmVariant(NOW, corteLastChangeMs(dir)), CORTE_CRASH_STALE_VARIANT);
+    assert.equal(corteLastChangeMs(join(root, "nao-existe")), null);
+  });
+});
+
+describe("#11996 corte avulso: não delega ao timer quando a próxima execução dele já cai em late", () => {
+  it("a cadência do timer bate com a registrada da task (de hora em hora)", () => {
+    const task = getScheduledTaskByName(CORTE_TIMER_TASK)!;
+    assert.deepEqual(task.schedule, { kind: "interval", hours: CORTE_TIMER_INTERVAL_MS / 3_600_000 });
+  });
+
+  it("cenário da issue: corte às 08:00 e rodada manual às 10:50 — a rodada publica, não delega", () => {
+    const p = planShortsPublish({ ...base, now: at(170 * MIN) });
+    for (const d of TIMER_DESTS) assert.equal(action(p, d), "publish", d);
+    const withNow = planShortsPublish({ ...base, now: at(170 * MIN), forceNow: true });
+    for (const d of TIMER_DESTS) assert.equal(action(withNow, d), "publish", d);
+  });
+
+  it("limite: até teto − cadência delega; 1 min depois, a rodada manual fica com o destino", () => {
+    const edge = MAX_FIRE_LATENESS_MS - CORTE_TIMER_INTERVAL_MS;
+    const atEdge = planShortsPublish({ ...base, now: at(edge) });
+    for (const d of TIMER_DESTS) assert.equal(action(atEdge, d), "skip_delegated", d);
+    const after = planShortsPublish({ ...base, now: at(edge + MIN) });
+    for (const d of TIMER_DESTS) assert.equal(action(after, d), "publish", d);
+  });
+
+  it("o filho do timer segue publicando até o teto (a janela do timer não encolheu)", () => {
+    const p = planShortsPublish({ ...base, corte: { ...base.corte, timerRun: true }, now: at(MAX_FIRE_LATENESS_MS - 5 * MIN), forceNow: true });
+    for (const d of TIMER_DESTS) assert.equal(action(p, d), "publish", d);
   });
 });

@@ -37,10 +37,20 @@
  *                           sequências abertura → comentário → CTA → fecho.
  *   retranscribe AAMMDD --from S --to S
  *                           retranscreve só o trecho (até 60 s; sem VAD, sem condition_on_previous_text)
- *                           antes de declarar dúvida (#11364); não mexe no transcript.json
- *   frame AAMMDD --at S    frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
+ *                           antes de declarar dúvida (#11364); não mexe no transcript.json. Com --sub (#11958),
+ *                           em subjanelas de 4 s (passo 2 s), para achar falso começo/repetição que a janela
+ *                           inteira engole: o roteiro propõe o corte na linha "repetição" (Gate 2)
+ *   frame AAMMDD --at S    frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade) e, ao lado,
+ *                           `frame-{S}-orientacoes.jpg` com o bruto e o espelhado lado a lado + a premissa do
+ *                           espelhamento (#11959: metadado da câmera, publishing.video.mirrored_default ou default)
  *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
  *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz)
+ *   fact-check-input AAMMDD (#11956)
+ *                           os itens da fala que vão ao ar (união das versões, com a fala ouvida
+ *                           quando difere), o hash deles e o caminho das fontes do D1 do Stage 4, em
+ *                           `fact-check-input.json`: entrada do agent `fact-checker` em `mode: "video"`,
+ *                           que grava `fact-check.json`; o `roteiro` põe os achados graves no Doc do
+ *                           Gate 2, com o trecho do bruto e a proposta de corte
  *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode text|png|off]
  *       (#11935) grava um XML por sequência ({nome da sequência}.xml); `--seq` grava só uma, e só ela muda no plan.json (#11969)
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
@@ -59,9 +69,16 @@
  *       blocks.json ou o título do D1 (`02-reviewed.md`); --title-mode text (default, gerador
  *       de texto do FCP7, e o PNG transparente sai junto como reserva), png (o PNG como clipe na
  *       V2) ou off. Os dois aguardam a conferência no 1º import do Premiere.
- *   srt AAMMDD [--seq instagram|outras-redes|{corte}] [--from-raw] [--force]
- *       legendas das verticais. Retranscreve o áudio montado (cache por trechos +
- *       identidade do áudio); --from-raw remapeia o transcript do bruto.
+ *   srt AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--from-raw] [--force]
+ *       legendas de todas as sequências (#11957: o horizontal também; --seq escolhe uma).
+ *       Retranscreve o áudio montado (cache por trechos + identidade do áudio);
+ *       --from-raw remapeia o transcript do bruto. O texto é o do roteiro,
+ *       alinhado aos tempos da fala (#11960, `forceAlignToScript`): palavra do
+ *       roteiro sem par ganha tempo interpolado, palavra ouvida sem par sai quando
+ *       cai antes/depois do roteiro, perto de corte ou em silêncio ([aviso] lista).
+ *       O do horizontal sai também como `diaria-comentada-{AAMMDD}.srt` na pasta
+ *       da edição (data/editions), o que o `publish-youtube.ts --upload` envia;
+ *       cópia editada à mão depois do último srt fica, salvo --force.
  *   preview AAMMDD [--seq instagram|outras-redes|{corte}]   (default a vertical da edição; sempre refaz)
  *   review AAMMDD [--seq instagram|outras-redes|{corte}]    (default a vertical da edição; sempre refaz)
  *       `--seq` (#11900): o slug do corte escolhe aquela vertical extra (várias por
@@ -130,7 +147,6 @@ import {
   PREVIEW_SUBTITLE_STYLE,
   SILENCE_DETECT,
   SPEECH_DEFAULTS,
-  alignPunctuationToScript,
   applyVocabularyToWords,
   sequenceKey,
   assembleClips,
@@ -147,6 +163,8 @@ import {
   effectiveFraming,
   effectiveSource,
   firstTitledVertical,
+  forceAlignToScript,
+  forcedAlignmentNotes,
   framingFor,
   loudnessWarning,
   makeMatcher,
@@ -154,11 +172,14 @@ import {
   trimWordsToSilences,
   isVerticalSpec,
   offsetTranscript,
+  subWindows,
   parseBlocksFile,
   retranscribeWindow,
   parseLoudnormJson,
   parseFrameRate,
   parseProbe,
+  mirroredDefaultFrom,
+  mirroredPremise,
   parseSilenceDetect,
   pickRawSource,
   previewClipArgs,
@@ -196,6 +217,7 @@ import {
   checkDecupagemCriteria,
   decupagemMarkdown,
   decupagemPlanTemplate,
+  mdCell,
   parseDecupagemPlan,
   roteiroMarkdown,
   segmentListing,
@@ -269,6 +291,8 @@ export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { stripInlineMarkdown } from "./lib/diaria/youtube-video.ts";
+import { youtubeCaptionFileName } from "./lib/diaria/youtube-captions.ts";
+import { factCheckItems, factCheckItemsSha256, factCheckSection, parseVideoFactCheck } from "./lib/diaria/video-fact-check.ts";
 import sharp from "sharp";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -276,7 +300,7 @@ const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
 const VOCAB_FILE = join(ROOT, "context", "video-montagem", "vocabulario.json");
 export { DEFAULT_DRIVE_ROOT };
 
-const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|decupagem|retranscribe|frame|roteiro|build|srt|preview|review|review-final|upload> AAMMDD [opções]
+const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|decupagem|retranscribe|frame|roteiro|fact-check-input|build|srt|preview|review|review-final|upload> AAMMDD [opções]
   ver o cabeçalho de scripts/video-montagem.ts e .claude/skills/diaria-video-montagem/SKILL.md`;
 
 interface Ctx {
@@ -354,6 +378,36 @@ function nonEmptyWords(path: string, what: string): Word[] {
   return words;
 }
 
+/** `publishing.video.mirrored_default` do config (#11959); config ilegível = `null` (vale o default do código, com aviso). */
+function configMirroredDefault(): boolean | null {
+  try {
+    return mirroredDefaultFrom(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
+  } catch (e) {
+    console.error(`[aviso] platform.config.json ilegível (${(e as Error).message}): espelhamento pelo default do código (#11959)`);
+    return null;
+  }
+}
+
+/**
+ * Frame do bruto nas duas orientações, lado a lado (#11959): esquerda = o
+ * bruto como gravado, direita = espelhado. A leitura da caneca e do pôster
+ * decide o `mirrored` sem depender do palpite do `source.json` (na 261103 a
+ * câmera traseira não espelhava e o frame desespelhado pareceu certo).
+ */
+function cmdFrameOrientations(ctx: Ctx, at: string | undefined): number {
+  const t = Number(at);
+  if (at === undefined || !Number.isFinite(t) || t < 0) throw new Error("frame exige --at SEGUNDOS");
+  const measured = measuredSource(ctx);
+  const override = existsSync(f(ctx, "blocks.json")) ? loadBlocks(ctx).file.mirrored : undefined;
+  const out = f(ctx, `frame-${t.toFixed(1)}-orientacoes.jpg`);
+  const vf = "scale=960:-2,split[a][b];[b]hflip[m];[a][m]hstack=inputs=2,drawgrid=w=iw/20:h=ih/10:t=1:c=white@0.4";
+  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", String(t), "-i", measured.path, "-frames:v", "1", "-filter_complex", vf, out]);
+  console.log(out);
+  console.error("[video-montagem] lado a lado: esquerda = bruto como gravado, direita = espelhado; o lado em que a caneca e o pôster leem certo é a orientação real (#11959)");
+  console.error(`[premissa] ${mirroredPremise(measured, override)} (#11959)`);
+  return 0;
+}
+
 function measuredSource(ctx: Ctx): SourceInfo {
   return readJson<SourceInfo>(f(ctx, "source.json"), "source.json (rode transcribe)");
 }
@@ -424,8 +478,8 @@ function planHash(ctx: Ctx, blocksText: string): string {
   return planHashOf(blocksText, readFileSync(f(ctx, "source.json")), existsSync(sil) ? readFileSync(sil) : null, trBuf);
 }
 
-/** As retranscrições de janela (`retranscribe-{de}-{até}.json`, no tempo do bruto), em ordem de nome (#11754). */
-export const RETRANSCRIBED_FILE = /^retranscribe-\d+(?:\.\d+)?-\d+(?:\.\d+)?\.json$/;
+/** As retranscrições de janela (`retranscribe-{de}-{até}.json`, no tempo do bruto, #11754) e as subjanelas (`retranscribe-sub-…`, #11958), em ordem de nome. */
+export const RETRANSCRIBED_FILE = /^retranscribe-(?:sub-)?\d+(?:\.\d+)?-\d+(?:\.\d+)?\.json$/;
 function retranscribedFiles(ctx: Pick<Ctx, "stateDir">): string[] {
   if (!existsSync(ctx.stateDir)) return [];
   return readdirSync(ctx.stateDir)
@@ -806,7 +860,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   if (cached) source = cached;
   else {
     const probe = run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", src]).stdout;
-    source = parseProbe(probe, srcPath);
+    source = parseProbe(probe, srcPath, { mirroredDefault: configMirroredDefault() });
     writeJson(sourcePath, source);
     wroteSource = true;
     redo = true;
@@ -815,6 +869,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     console.error(`[video-montagem] bruto só de áudio: ${source.path} (${source.durationS.toFixed(1)} s) — modo áudio: transcrição, decupagem e roteiro; build/srt/prévia/review param antes (#11552)`);
   } else {
     console.error(`[video-montagem] bruto: ${source.path} (${source.width}x${source.height}, ${source.fps} fps, ${source.durationS.toFixed(1)} s)`);
+    console.error(`[premissa] ${mirroredPremise(source)} (#11959)`);
   }
 
   const audio = join(ctx.workDir, "audio.wav");
@@ -1012,12 +1067,13 @@ export function collapsedSegmentWarnings(edition: string, segments: Segment[], s
  * de pausa saem errados na transcrição longa ("bom" por "primeiro" na 261028).
  * Imprime os segmentos no tempo do bruto; não mexe no `transcript.json`.
  */
-function cmdRetranscribe(ctx: Ctx, from: string | undefined, to: string | undefined): number {
+function cmdRetranscribe(ctx: Ctx, from: string | undefined, to: string | undefined, sub = false): number {
   const source = measuredSource(ctx);
   const w = retranscribeWindow(from, to, source.durationS);
   if (!w.ok) throw new Error(w.error);
   const audio = join(ctx.workDir, "audio.wav");
   if (!existsSync(audio)) throw new Error(`áudio do bruto ausente (${audio}): rode transcribe de novo nesta máquina`);
+  if (sub) return retranscribeSubWindows(ctx, audio, w.window);
   const tag = `${w.window.start.toFixed(1)}-${w.window.end.toFixed(1)}`;
   const wav = join(ctx.workDir, `retranscribe-${tag}.wav`);
   run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", w.window.start.toFixed(3), "-to", w.window.end.toFixed(3), "-i", audio, "-ac", "1", "-ar", "16000", wav]);
@@ -1029,6 +1085,37 @@ function cmdRetranscribe(ctx: Ctx, from: string | undefined, to: string | undefi
   for (const s of shifted.segments) console.log(`[${clockTime(s.start)}–${clockTime(s.end)}] ${s.text.trim()}`);
   console.error(`[video-montagem] retranscrição do trecho: ${out} (o transcript.json fica como está; a correção vai no text do decupagem-plan.json)`);
   console.error("[video-montagem] item do blocks.json com tomada colapsada coberto por esta janela passa a usar a tomada separada aqui (a última, salvo aprovação da direção) no próximo roteiro/build (#11754)");
+  return 0;
+}
+
+/**
+ * `retranscribe --sub` (#11958): a janela em subjanelas curtas (`subWindows`,
+ * 4 s com passo de 2 s), numa chamada só do Python, sem VAD e sem
+ * `condition_on_previous_text`. Cada subjanela vira um `retranscribe-{de}-{até}.json`
+ * como o da janela inteira; o `roteiro`/`build` juntam as que cobrem uma
+ * tomada colapsada e procuram o falso começo (`findRepetitionCut`).
+ */
+function retranscribeSubWindows(ctx: Ctx, audio: string, window: Interval): number {
+  const wins = subWindows(window).map((w) => ({ key: `${w.start.toFixed(1)}-${w.end.toFixed(1)}`, start: w.start, end: w.end }));
+  mkdirSync(ctx.workDir, { recursive: true });
+  const winFile = join(ctx.workDir, "retranscribe-sub-windows.json");
+  const raw = join(ctx.workDir, "retranscribe-sub.raw.json");
+  writeFileSync(winFile, JSON.stringify(wins));
+  console.error(`[video-montagem] retranscrevendo ${wins.length} subjanela(s) de ${window.start.toFixed(1)}–${window.end.toFixed(1)} s (sem VAD, #11958)…`);
+  const vocab = loadVocab();
+  run(ctx.python, ["-P", PY_HELPER, audio, raw, "--windows", winFile, "--no-condition", "--initial-prompt", vocab.whisper_prompt ?? ""], {
+    env: { ...process.env, HF_HUB_OFFLINE: "1" },
+    inheritStderr: true,
+  });
+  const out = readJson<{ windows: Array<{ key: string; start: number; end: number; segments: Segment[] }> }>(raw, "retranscrição das subjanelas");
+  for (const w of out.windows) {
+    // Prefixo próprio: nunca sobrescreve a retranscrição da janela inteira de mesmo intervalo.
+    const path = f(ctx, `retranscribe-sub-${w.key}.json`);
+    const t: Transcript = { segments: w.segments, sub: { window: { start: w.start, end: w.end } } };
+    writeJson(path, t);
+    console.log(`== ${w.key} s: ${w.segments.map((s) => s.text.trim()).join(" ") || "(nada)"}`);
+  }
+  console.error("[video-montagem] subjanelas gravadas como retranscribe-sub-*.json: o roteiro/build procuram o falso começo nelas e propõem o corte na linha repetição (#11958)");
   return 0;
 }
 
@@ -1056,9 +1143,57 @@ function cmdRoteiro(ctx: Ctx): number {
     const t = verticalTargetCheck(p, resolved, source.fps, { targetS: file.verticalTargetS, silences: sil });
     if (t) console.error(`[aviso] ${verticalTargetWarning(p.spec.name, t)}`);
   }
-  const md = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil });
+  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil });
+  // #11956: os achados do fact-check da fala entram no Doc do Gate 2.
+  const fcPath = f(ctx, VIDEO_FACT_CHECK_FILE);
+  let fc: ReturnType<typeof parseVideoFactCheck> | null = null;
+  let fcError: string | null = null;
+  if (existsSync(fcPath)) {
+    try { fc = parseVideoFactCheck(readJson<unknown>(fcPath, VIDEO_FACT_CHECK_FILE)); } catch (e) { fcError = (e as Error).message; }
+  }
+  const section = factCheckSection(fc, factCheckItems(ps, resolved));
+  if (fcError) {
+    // Ilegível não é "não rodou": o Doc diz o motivo, e o roteiro sai assim mesmo.
+    section.lines.splice(2, 1, `**[aviso] fact-check ilegível (${mdCell(fcError)}):** rodar o agent de novo antes de aprovar o Gate 2.`);
+    console.error(`[aviso] ${fcPath} ilegível: ${fcError}; rode o agent fact-checker (mode video) de novo (#11956)`);
+  } else if (!fc) console.error(`[aviso] sem ${fcPath}: rode o fact-check da fala (Passo 3a, fact-check-input + agent fact-checker mode video) antes do Gate 2 (#11956)`);
+  else if (section.stale) console.error("[aviso] o roteiro mudou depois do fact-check: frases novas não foram checadas; rode o Passo 3a de novo (#11956)");
+  if (section.graves) console.error(`[aviso] fact-check: ${section.graves} achado(s) grave(s) em aberto na fala (seção "Fact-check da fala" do roteiro, #11956)`);
+  const md = `${base.trimEnd()}\n\n${section.lines.join("\n")}`;
   writeFileAtomic(f(ctx, "roteiro.md"), md);
   process.stdout.write(md);
+  return 0;
+}
+
+/** Saída do agent `fact-checker` em `mode: "video"` (#11956), no state dir. */
+export const VIDEO_FACT_CHECK_FILE = "fact-check.json";
+/** Entrada do agent (#11956), no state dir. */
+export const VIDEO_FACT_CHECK_INPUT_FILE = "fact-check-input.json";
+
+/**
+ * `fact-check-input` (#11956): os itens que vão ao ar (a união das versões,
+ * com a fala ouvida quando difere do pedido), o hash deles e onde estão as
+ * fontes do D1 baixadas no Stage 4 (`_internal/fact-check-sources/`).
+ */
+function cmdFactCheckInput(ctx: Ctx): number {
+  const { plans: ps, resolved } = plans(ctx);
+  const items = factCheckItems(ps, resolved);
+  const sourcesDir = join(editionDirFor(ctx.edition), "_internal", "fact-check-sources");
+  const manifest = join(sourcesDir, "manifest.json");
+  if (!existsSync(manifest)) console.error(`[aviso] sem ${manifest}: as fontes do D1 não foram baixadas (Stage 4, run-fact-checker.ts); o agent cai no WebFetch da URL do D1 (#11956)`);
+  const input = {
+    mode: "video" as const,
+    edition: ctx.edition,
+    items_sha256: factCheckItemsSha256(items),
+    items,
+    sources_dir: sourcesDir,
+    approved_json_path: join(editionDirFor(ctx.edition), "_internal", "01-approved.json"),
+    out_path: f(ctx, VIDEO_FACT_CHECK_FILE),
+  };
+  const path = f(ctx, VIDEO_FACT_CHECK_INPUT_FILE);
+  writeJson(path, input);
+  console.error(`[video-montagem] fact-check-input: ${items.length} item(ns) da fala; agent fact-checker com mode "video", input ${path}, out ${input.out_path}`);
+  console.log(path);
   return 0;
 }
 
@@ -1409,18 +1544,60 @@ function seqWords(ctx: Ctx, plan: SequencePlan, source: SourceInfo, fromRaw: boo
   return nonEmptyWords(out, `transcrição da sequência ${plan.spec.name}`);
 }
 
+/**
+ * A cópia do SRT do horizontal na pasta da edição (`diaria-comentada-{AAMMDD}.srt`,
+ * #11957) é a que o `publish-youtube.ts --upload` envia, e a `/diaria-publica-video`
+ * corrige à mão ali mesmo. Rodar `srt` de novo só a sobrescreve se ela é a que o
+ * `srt` gravou da última vez (o hash em `youtube-srt.json`), ou com `--force`.
+ */
+export function youtubeSrtCopyDecision(input: { existing: string | null; recordedSha256: string | null; force: boolean }): "write" | "keep-edited" {
+  if (input.existing === null || input.force) return "write";
+  const sha = createHash("sha256").update(input.existing).digest("hex");
+  return sha === input.recordedSha256 ? "write" : "keep-edited";
+}
+
+/** O horizontal: a única sequência cujo SRT vai para o upload do YouTube (#11957). */
+export const isYoutubeSpec = (s: Pick<SequenceSpec, "target" | "corte" | "width" | "height">) => s.target === "youtube" && s.corte === undefined && !isVerticalSpec(s);
+
+/** As sequências do `srt` (#11957): sem `--seq`, todas, o horizontal também; com ele, a escolhida (`youtube` inclusive). */
+export function srtPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte" | "width" | "height"> }>(all: P[], seq: string | undefined): P[] {
+  return pickPlans(all, seq, false);
+}
+
+function writeYoutubeSrtCopy(ctx: Ctx, srt: string): void {
+  const dir = editionDirFor(ctx.edition);
+  const path = join(dir, youtubeCaptionFileName(ctx.edition));
+  const recordPath = f(ctx, "youtube-srt.json");
+  const record = existsSync(recordPath) ? readJson<{ sha256?: string }>(recordPath, "youtube-srt.json") : null;
+  const decision = youtubeSrtCopyDecision({ existing: existsSync(path) ? readFileSync(path, "utf8") : null, recordedSha256: record?.sha256 ?? null, force: ctx.force });
+  if (decision === "keep-edited") {
+    console.error(`[aviso] ${path} foi editado depois do último srt: mantido (o novo está no out dir; --force sobrescreve, #11957)`);
+    return;
+  }
+  mkdirSync(dir, { recursive: true });
+  writeFileAtomic(path, srt);
+  writeJson(recordPath, { path, sha256: createHash("sha256").update(srt).digest("hex"), writtenAt: new Date().toISOString() });
+  console.error(`[premissa] legenda do horizontal no tempo da sequência montada (${path}, a que o publish-youtube.ts --upload envia); se a edição fina no Premiere mudou os tempos, conferir contra o export antes de subir (#11957)`);
+  console.log(path);
+}
+
 function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number {
   const pf = loadPlan(ctx);
   const { file } = loadBlocks(ctx);
   const vocab = loadVocab();
   const rules = [...vocab.rules, ...(file.vocabulary ?? [])];
   mkdirSync(ctx.outDir, { recursive: true });
-  for (const plan of pickPlans(pf.plans, target, true)) {
+  const fps = pf.source.fps;
+  for (const plan of srtPlans(pf.plans, target)) {
     const heard = applyVocabularyToWords(seqWords(ctx, plan, pf.source, fromRaw), rules, plan.spec, (w) => console.error(`[aviso] ${w}`));
-    const words = alignPunctuationToScript(heard, plan.script, vocab.aliases);
+    // #11960: o texto do roteiro no tempo da fala, não o texto ouvido.
+    const aligned = forceAlignToScript(heard, plan.script, { aliases: vocab.aliases, cuts: cutPoints(plan, fps), endS: plan.durationFrames / fps });
+    for (const n of forcedAlignmentNotes(plan.spec.name, aligned)) console.error(n);
+    const srt = cuesToSrt(segmentCues(aligned.words));
     const path = join(ctx.outDir, srtFileName(plan.spec.name));
-    writeFileAtomic(path, cuesToSrt(segmentCues(words)));
+    writeFileAtomic(path, srt);
     console.log(path);
+    if (isYoutubeSpec(plan.spec)) writeYoutubeSrtCopy(ctx, srt);
   }
   return 0;
 }
@@ -1616,7 +1793,7 @@ export const DRIVE_UPLOADS_FILE = "drive-uploads.json";
 /** Saída quando o comando deu certo e só o upload para o Drive falhou (as saídas estão no out dir). */
 export const EXIT_UPLOAD_FAILED = 4;
 
-export const SUBCOMMANDS = ["transcribe", "decupagem", "retranscribe", "frame", "roteiro", "build", "srt", "preview", "review", "review-final", "upload"] as const;
+export const SUBCOMMANDS = ["transcribe", "decupagem", "retranscribe", "frame", "roteiro", "fact-check-input", "build", "srt", "preview", "review", "review-final", "upload"] as const;
 export type Subcommand = (typeof SUBCOMMANDS)[number];
 /** Subcomandos cujas saídas sobem para a pasta da edição no modo API. */
 export const DRIVE_UPLOAD_COMMANDS: readonly Subcommand[] = ["build", "srt", "preview"];
@@ -1913,13 +2090,17 @@ async function runCommand(
     }
     case "decupagem":
       return cmdDecupagem(ctx, parsePixelF0Arg(values["pixel-f0"]));
-    case "frame":
+    case "frame": {
       await needLocalBruto();
-      return cmdFrame(ctx, values["at"]);
+      const code = cmdFrame(ctx, values["at"]);
+      return code === 0 ? cmdFrameOrientations(ctx, values["at"]) : code;
+    }
     case "retranscribe":
-      return cmdRetranscribe(ctx, values["from"], values["to"]);
+      return cmdRetranscribe(ctx, values["from"], values["to"], flags.has("sub"));
     case "roteiro":
       return cmdRoteiro(ctx);
+    case "fact-check-input":
+      return cmdFactCheckInput(ctx);
     case "build":
       if (flags.has("xml-flop") || "xml-flop" in values) {
         console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");

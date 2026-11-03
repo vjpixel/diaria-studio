@@ -284,6 +284,22 @@ export function corteShortTime(hhmm: string): ShortTime {
  */
 export const CORTE_TIMER_TASK = "Diaria-Shorts-Cortes";
 
+/**
+ * #11996: cadência da `CORTE_TIMER_TASK` (`schedule: { kind: "interval", hours: 1 }`
+ * em `scripts/lib/scheduled-tasks.ts`; igualdade travada por teste). Delegar ao
+ * timer quando falta menos que isso para o teto de 3 h (`MAX_FIRE_LATENESS_MS`)
+ * deixa a próxima execução dele cair em `late` (só alarma, não publica).
+ */
+export const CORTE_TIMER_INTERVAL_MS = 60 * 60_000;
+
+/**
+ * Lock O_EXCL do timer do corte, na pasta do corte (`acquireTimerLock`). #12001:
+ * mora aqui porque o `publish-shorts.ts` toma o MESMO lock quando a rodada manual
+ * publica um destino do timer (a última hora antes do teto de 3 h, #11996): o
+ * timer que roda junto na mesma máquina acha o lock de pé e sai sem publicar.
+ */
+export const CORTE_TIMER_LOCK_FILE = "_internal/.shorts-corte-timer.lock";
+
 /** Destinos do corte que ficam `pending_schedule` antes do horário: a API deles não agenda. */
 export const CORTE_TIMER_DESTINATIONS: readonly string[] = ["linkedin_profile", "threads_profile", "instagram"];
 
