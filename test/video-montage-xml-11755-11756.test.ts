@@ -143,8 +143,8 @@ describe("#11756: título em texto na abertura da vertical", () => {
     assert.equal(screenTitleSpan(plan(SPEC_V, [])), null);
   });
 
-  it("quebra em linhas de até 20 caracteres", () => {
-    assert.deepEqual(wrapScreenTitle("Pais acusam ChatGPT de matar sua filha"), ["Pais acusam ChatGPT", "de matar sua filha"]);
+  it("quebra em linhas de até 22 caracteres (#11941; eram 20)", () => {
+    assert.deepEqual(wrapScreenTitle("Pais acusam ChatGPT de matar sua filha"), ["Pais acusam ChatGPT de", "matar sua filha"]);
     assert.deepEqual(wrapScreenTitle("GPT 6.1 Terra está mais barato e mais eficaz"), ["GPT 6.1 Terra está", "mais barato e mais", "eficaz"]);
   });
 
@@ -153,17 +153,17 @@ describe("#11756: título em texto na abertura da vertical", () => {
     const seqs = xml.split("<sequence ").slice(1);
     assert.equal(seqs.length, 2);
     assert.doesNotMatch(seqs[0], /generatoritem/, "o horizontal do YouTube não leva título na tela");
-    const gens = seqs[1].match(/<generatoritem[\s\S]*?<\/generatoritem>/g) ?? [];
+    const gens = (seqs[1].match(/<generatoritem[\s\S]*?<\/generatoritem>/g) ?? []).filter((x) => x.includes("<name>titulo-tela</name>"));
     assert.equal(gens.length, 1);
     const g = gens[0];
     assert.match(g, /<start>0<\/start><end>105<\/end><in>0<\/in><out>105<\/out>/);
     assert.match(g, /<effectid>Text<\/effectid>[\s\S]*<effecttype>generator<\/effecttype>/);
-    assert.match(g, /<parameterid>str<\/parameterid><name>Text<\/name><value>Pais acusam ChatGPT&#13;de matar sua filha<\/value>/);
+    assert.match(g, /<parameterid>str<\/parameterid><name>Text<\/name><value>Pais acusam ChatGPT de&#10;matar sua filha<\/value>/);
     assert.match(g, /<parameterid>fontname<\/parameterid><name>Font<\/name><value>Georgia<\/value>/);
     assert.match(g, /<parameterid>fontstyle<\/parameterid>[\s\S]*?<value>2<\/value>/, "negrito");
-    // V2 = 2ª faixa de vídeo, depois da dos clipes.
+    // V2 = fundo (#11941), V3 = texto, depois da faixa dos clipes.
     const video = seqs[1].slice(seqs[1].indexOf("<video>"), seqs[1].indexOf("</video>"));
-    assert.equal((video.match(/<track>/g) ?? []).length, 2);
+    assert.equal((video.match(/<track>/g) ?? []).length, 3);
     assert.ok(video.indexOf("<generatoritem") > video.indexOf('<clipitem id="v'));
   });
 
@@ -195,7 +195,7 @@ describe("#11756: título em texto na abertura da vertical", () => {
   it("PNG de reserva: SVG transparente do tamanho da vertical, escapado, e a 1ª vertical com título dá o tamanho", () => {
     const svg = screenTitleSvg("IA & você", 1080, 1920);
     assert.match(svg, /width="1080" height="1920"/);
-    assert.doesNotMatch(svg, /<rect/, "sem fundo: o PNG sai com alfa");
+    assert.match(svg, /<rect [^>]*fill="#000000" fill-opacity="0.7"/, "fundo preto a 70% (#11941); fora dele o PNG sai com alfa");
     assert.match(svg, /IA &amp; você/);
     assert.match(svg, /font-weight="700"/);
     assert.equal(isVerticalSpec(SPEC_H), false);
