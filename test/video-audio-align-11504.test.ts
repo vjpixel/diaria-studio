@@ -385,7 +385,7 @@ describe("transcribe com binários falsos (#11504)", { skip: process.platform ==
     assert.ok(existsSync(join(dir, "source.json")), "o resto do transcribe rodou");
     const high = join(root, "keep-work", "audio-high-48k.wav");
     assert.equal(parseWavPcm16(readFileSync(high)).sampleRate, 48000, "#11940: análise de agudos separada do Whisper");
-    assert.equal(JSON.parse(readFileSync(join(dir, "silences.meta.json"), "utf8")).highBandVersion, 11940);
+    assert.equal(JSON.parse(readFileSync(join(dir, "silences.meta.json"), "utf8")).highBandVersion, 11968, "#11968: limiar relativo da banda alta refaz o silences.json");
     const calls = readFileSync(env.FAKE_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as string[]);
     assert.ok(calls.some((c) => c.includes("highpass=f=3000") && c.includes("48000")));
   });
