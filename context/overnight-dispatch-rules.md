@@ -643,6 +643,19 @@ stderr, ou `exit 1`), tratar como **falha real da reivindicação**, nunca
 como ruído a ignorar — parar e diagnosticar antes de seguir pro dispatch,
 mesma disciplina de qualquer outro `exit 1` inesperado.
 
+**Onda inteira num claim só (#12010):** para reivindicar as issues de uma
+onda antes do fan-out, usar `npx tsx scripts/lib/session-registry.ts
+claim-issue --kind {kind} --issues A,B,C` (também standalone), nunca N
+`claim-issue --issue` seguidos ou em paralelo. Na rodada 261103 as claims
+da onda, em paralelo e depois em série, fizeram o registro reconstruir a
+âncora a partir de cópias de conflito do OneDrive: dentro da máquina as
+escritas já se serializam (lock + CAS, #6952) e nenhuma claim se perdeu, mas
+cada escrita é um rename na âncora sincronizada, e a rajada de renames é o
+que o cliente do OneDrive transforma em `-safeBackup-NNNN`. O `--issues`
+grava a onda numa escrita, imprime uma linha por issue e sai `exit 1` se
+alguma não terminou reivindicada (as outras ficam reivindicadas; tratar a
+recusada como no `--issue`).
+
 ## 19. Nunca montar corpo de issue/PR via `printf`/`echo -e` (#6004)
 
 `printf` do Bash trata `%` como format specifier no primeiro argumento — um

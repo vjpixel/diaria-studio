@@ -4,7 +4,8 @@
  * caía na própria segunda e o `--approve` passava no guard do #11868 (que só
  * recusava segunda anterior a hoje): a aprovação ficava gravada sem
  * consumidor e o editor achava que o post sairia. Hora fixada em todos os
- * casos (relógio local, o mesmo de `formatAAMMDD`).
+ * casos como instante UTC de uma hora BRT (#11883: a função lê America/Sao_Paulo,
+ * não o relógio local).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -17,7 +18,9 @@ import { isCircleStackScheduledRunPast } from "../scripts/lib/circle-stack-sched
 import { resolveWeeklyLinkedinCycle } from "../scripts/lib/weekly-linkedin-cycle.ts";
 
 const MONDAY = "261109";
-const mondayAt = (h: number, m = 0) => () => new Date(2026, 10, 9, h, m, 0);
+/** Instante de `dd/11/2026 h:m` em BRT (UTC-3, sem horário de verão). */
+const brt = (dd: number, h: number, m = 0) => new Date(Date.UTC(2026, 10, dd, h + 3, m, 0));
+const mondayAt = (h: number, m = 0) => () => brt(9, h, m);
 
 function setupCycle(dataRoot: string, publishMonday: string) {
   const paths = resolveCyclePaths(dataRoot, publishMonday);
@@ -49,8 +52,8 @@ describe("Stack: aprovação na segunda depois do envio das 06:00 (#11877)", () 
   it("isCircleStackScheduledRunPast: só a partir das 06:00 da própria segunda", () => {
     assert.equal(isCircleStackScheduledRunPast(mondayAt(5, 59)(), MONDAY), false);
     assert.equal(isCircleStackScheduledRunPast(mondayAt(6, 0)(), MONDAY), true);
-    assert.equal(isCircleStackScheduledRunPast(new Date(2026, 10, 8, 23, 0), MONDAY), false); // domingo
-    assert.equal(isCircleStackScheduledRunPast(new Date(2026, 10, 10, 1, 0), MONDAY), true); // terça
+    assert.equal(isCircleStackScheduledRunPast(brt(8, 23, 0), MONDAY), false); // domingo
+    assert.equal(isCircleStackScheduledRunPast(brt(10, 1, 0), MONDAY), true); // terça
   });
 
   it("approveCircleStackCycle recusa a segunda de hoje às 10:00, aponta o envio manual e não grava aprovação", () => {
@@ -90,7 +93,7 @@ describe("Stack: aprovação na segunda depois do envio das 06:00 (#11877)", () 
   });
 
   it("no fim de semana a data avançada nunca vem com scheduledRunPast", () => {
-    const r = resolveSkillDefaultMonday(new Date(2026, 10, 7, 15), () => "draft");
+    const r = resolveSkillDefaultMonday(brt(7, 15), () => "draft");
     assert.equal(r.publishMonday, MONDAY);
     assert.equal(r.scheduledRunPast, false);
   });

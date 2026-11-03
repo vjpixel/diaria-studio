@@ -165,8 +165,10 @@ import {
   firstTitledVertical,
   forceAlignToScript,
   forcedAlignmentNotes,
+  frameCropOverlays,
   framingFor,
   loudnessWarning,
+  mugFramingWarnings,
   makeMatcher,
   mapWordsToSequence,
   trimWordsToSilences,
@@ -1122,13 +1124,18 @@ function retranscribeSubWindows(ctx: Ctx, audio: string, window: Interval): numb
 function cmdFrame(ctx: Ctx, at: string | undefined): number {
   const t = Number(at);
   if (at === undefined || !Number.isFinite(t) || t < 0) throw new Error("frame exige --at SEGUNDOS");
-  // Antes do gate 1 não há blocks.json: vale o mirrored do source.json.
-  const source = existsSync(f(ctx, "blocks.json")) ? sourceFor(ctx, loadBlocks(ctx).file) : sourceFor(ctx);
+  // Antes do gate 1 não há blocks.json: vale o mirrored do source.json (e o framing da 261027).
+  const blocks = existsSync(f(ctx, "blocks.json")) ? loadBlocks(ctx).file : null;
+  const source = blocks ? sourceFor(ctx, blocks) : sourceFor(ctx);
+  const { framing } = effectiveFraming(blocks ?? {});
   const out = f(ctx, `frame-${t.toFixed(1)}.jpg`);
-  const vf = `${source.mirrored ? "hflip," : ""}scale=960:-2,drawgrid=w=iw/10:h=ih/10:t=1:c=white@0.6`;
+  // #11939: os recortes de cada escala sobre o bruto desespelhado, antes do scale, em px do bruto.
+  const overlays = frameCropOverlays(source, framing);
+  const vf = `${source.mirrored ? "hflip," : ""}${overlays.filters.join(",")},scale=960:-2,drawgrid=w=iw/10:h=ih/10:t=1:c=white@0.6`;
   run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", String(t), "-i", source.path, "-frames:v", "1", "-vf", vf, out]);
   console.log(out);
-  console.error(`[video-montagem] mirrored=${source.mirrored}; grade em décimos: centro do rosto (faceX) e linha dos olhos (eyeY) em fração do quadro, no framing do blocks.json`);
+  for (const w of overlays.warnings) console.error(`[aviso] ${w}`);
+  console.error(`[video-montagem] mirrored=${source.mirrored}; grade em décimos: centro do rosto (faceX), linha dos olhos (eyeY) e caixa da caneca (framing.mug) em fração do quadro, no framing do blocks.json; recortes: amarelo = horizontal 50/62%, ciano = verticais 115/130%, magenta = caneca (#11939)`);
   return 0;
 }
 
@@ -1422,6 +1429,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   let problems = 0;
   // #11935: --seq grava só o XML daquela sequência e só ela barra o build; #11969: e só ela muda no plan.json.
   const picked = pickPlans(ps, seq, false);
+  // #11939: a caneca é esforço, nunca barra o build; o relato diz onde ela não sai inteira.
+  for (const w of mugFramingWarnings(picked, source, framing)) console.error(`[aviso] ${w}`);
   for (const p of picked) {
     const d = p.durationFrames / source.fps;
     console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}`);
@@ -1606,6 +1615,7 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", true, true);
   if (pf.framingAssumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (o mesmo do build)");
+  for (const w of mugFramingWarnings([plan], pf.source, pf.framing)) console.error(`[aviso] ${w}`);
   const fps = pf.source.fps;
   const srt = join(ctx.outDir, srtFileName(plan.spec.name));
   const planPath = f(ctx, "plan.json");
@@ -1666,8 +1676,11 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   const highBandWarnings = pf.cutRefine?.highBandWarnings?.[sequenceKey(plan.spec)]
     ?? ["build sem verificação de banda alta: rode build com o bruto disponível (#11940)"];
   for (const warning of highBandWarnings) console.error(`[aviso] ${warning}`);
-  writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings, highBandWarnings });
-  console.log(JSON.stringify({ preview, durationS, findings, highBandWarnings }, null, 2));
+  // #11939: a caneca na folha de frames da prévia; o cálculo diz em que escala ela não sai inteira.
+  const mugWarnings = mugFramingWarnings([plan], pf.source, pf.framing);
+  for (const warning of mugWarnings) console.error(`[aviso] ${warning}`);
+  writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings, highBandWarnings, mugWarnings });
+  console.log(JSON.stringify({ preview, durationS, findings, highBandWarnings, mugWarnings }, null, 2));
   return 0;
 }
 

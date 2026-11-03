@@ -95,6 +95,12 @@
  *     quando a âncora sumiu com a sessão VIVA — e cópias de conflito órfãs
  *     dela ainda estão frescas — o registro é RECONSTRUÍDO a partir delas em
  *     vez de recriado zerado, com `[ALERTA: ...]` na mensagem.)
+ *   npx tsx scripts/lib/session-registry.ts claim-issue --kind ... --issues A,B,C [--force]
+ *     (#12010: a onda inteira numa escrita só da âncora — mesma semântica por
+ *     issue do `--issue`, uma linha de resultado por issue, `exit 1` se
+ *     alguma não terminou reivindicada. Preferir isto a N `claim-issue`
+ *     seguidos: a rajada de renames na âncora sincronizada pelo OneDrive é o
+ *     que gera as cópias de conflito, ver `claimIssuesCheckAndSet`.)
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire --pr N
@@ -3363,6 +3369,166 @@ export function claimIssueAutoRegistering(
   }
   registerSession(repoRoot, kind, sessionId, { tag, startedAt: now });
   const retried = claimIssueCheckAndSet(repoRoot, kind, sessionId, issueNumber, tag, now, options);
+  return { ...retried, autoRegistered: true, autoRegisterMode: "fresh" };
+}
+
+/** #12010 — desfecho de UMA issue dentro de um claim em lote. */
+export interface BatchClaimIssueEntry extends ClaimIssueResult {
+  issue: ClaimIssueTarget;
+  /** `#N` ou `owner/repo#N` — o mesmo rótulo das mensagens do CLI. */
+  label: string;
+}
+
+/** #12010 — resultado de `claimIssuesCheckAndSet`. */
+export interface BatchClaimIssuesResult {
+  /** `true` só quando TODAS as issues do lote terminaram reivindicadas pela sessão. */
+  ok: boolean;
+  /** Uma entrada por issue distinta, na ordem pedida. */
+  entries: BatchClaimIssueEntry[];
+  /** Quantas escritas no arquivo-âncora o lote fez: 0 (nada novo a gravar) ou 1. */
+  writes: 0 | 1;
+}
+
+/**
+ * Claim de VÁRIAS issues numa escrita só do arquivo-âncora (#12010).
+ *
+ * **O problema que isto ataca.** O coordenador reivindica as issues de uma
+ * onda antes do fan-out. Feito com N `claim-issue` (em paralelo ou em série),
+ * isso dá N read-modify-write do mesmo arquivo em segundos. Dentro da mesma
+ * máquina essas escritas já se serializam (`writeJsonSafeWithCas`, lock
+ * `{path}.lock`, #6952) e a união do read-path não perde claim — o que a
+ * rodada 261103 mediu foi outra coisa: cada escrita é um write-then-rename
+ * (inode novo) num diretório sincronizado pelo OneDrive, e a rajada de
+ * renames é o que faz o cliente transformar a âncora em cópia de conflito
+ * (`-safeBackup-NNNN`), deixando o `claim-issue` seguinte sem âncora e
+ * caindo na reconstrução do #7003. Na mesma rodada, até claims em SÉRIE
+ * reconstruíram a âncora — então serializar mais não resolve; o que reduz a
+ * janela é escrever MENOS vezes. Este lote grava a onda inteira numa escrita.
+ *
+ * Semântica por issue idêntica a `claimIssueCheckAndSet` (já-minha é no-op de
+ * sucesso, de outra sessão ativa é recusa, `force` toma). A recusa de uma
+ * issue NÃO impede as outras do lote: é o mesmo resultado de N chamadas
+ * independentes, só que numa escrita. Issues repetidas no pedido contam uma
+ * vez. A checagem contra outras sessões, como no claim individual, é feita
+ * fora do lock da âncora (o lock é do arquivo DESTA sessão; as outras sessões
+ * escrevem arquivos próprios).
+ */
+export function claimIssuesCheckAndSet(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  issues: readonly ClaimIssueTarget[],
+  tag: string = machineTag(),
+  now: string = new Date().toISOString(),
+  options: ClaimIssueOptions = {},
+): BatchClaimIssuesResult {
+  const distinct: { issue: ClaimIssueTarget; label: string; target: ResolvedClaimTarget }[] = [];
+  const seen = new Set<string>();
+  for (const issue of issues) {
+    const label = claimTargetLabel(issue);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    distinct.push({ issue, label, target: resolveClaimTarget(issue) });
+  }
+  if (distinct.length === 0) throw new Error("claimIssuesCheckAndSet: lista de issues vazia (#12010)");
+
+  const path = sessionFilePath(repoRoot, kind, tag, sessionId);
+  const current = readJsonSafe<SessionRecord>(path);
+  if (!current) {
+    return {
+      ok: false,
+      writes: 0,
+      entries: distinct.map(({ issue, label }) => ({ issue, label, ok: false, reason: "no-op-session-missing" })),
+    };
+  }
+
+  const nowMs = Date.parse(now);
+  const checkMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const entries: BatchClaimIssueEntry[] = [];
+  const toAdd: ResolvedClaimTarget[] = [];
+  for (const { issue, label, target } of distinct) {
+    if (recordHoldsClaim(current, target)) {
+      entries.push({ issue, label, ok: true, reason: "already-own" });
+      continue;
+    }
+    const other = isIssueClaimedByOther(repoRoot, issue, sessionId, checkMs);
+    if (other && !options.force) {
+      entries.push({ issue, label, ok: false, reason: "blocked-by-other", blockedBy: other });
+      continue;
+    }
+    entries.push(
+      other
+        ? { issue, label, ok: true, reason: "forced-override", blockedBy: other }
+        : { issue, label, ok: true, reason: "claimed" },
+    );
+    toAdd.push(target);
+  }
+
+  if (toAdd.length > 0) {
+    writeJsonSafeWithCas(
+      path,
+      (fresh) => {
+        if (!fresh) throw new Error("claimIssuesCheckAndSet: sessão sumiu entre a leitura e a escrita");
+        let record = fresh;
+        for (const target of toAdd) record = withClaimAdded(record, target, now);
+        return { ...record, lastHeartbeat: now };
+      },
+      (onDisk) => onDisk?.lastHeartbeat === now && toAdd.every((t) => recordHoldsClaim(onDisk, t)),
+    );
+  }
+  return { ok: entries.every((e) => e.ok), entries, writes: toAdd.length > 0 ? 1 : 0 };
+}
+
+/** #12010 — `claimIssuesCheckAndSet` com o mesmo auto-registro/reconstrução de `claimIssueAutoRegistering`. */
+export interface BatchClaimIssuesAutoRegisterResult extends BatchClaimIssuesResult {
+  autoRegistered: boolean;
+  autoRegisterMode?: "fresh" | "recovered-from-orphan-backups";
+  recoveredClaims?: number[];
+  recoveredForeignClaims?: string[];
+  recoveredFromFiles?: number;
+}
+
+/**
+ * Versão em lote de `claimIssueAutoRegistering` (#12010): sessão sem âncora
+ * passa pelo mesmo caminho (reconstrução a partir das cópias órfãs vivas,
+ * #7003, ou auto-registro do zero, #6369) UMA vez para o lote inteiro, em vez
+ * de uma vez por issue.
+ */
+export function claimIssuesAutoRegistering(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  issues: readonly ClaimIssueTarget[],
+  tag: string = machineTag(),
+  now: string = new Date().toISOString(),
+  options: ClaimIssueOptions = {},
+): BatchClaimIssuesAutoRegisterResult {
+  const first = claimIssuesCheckAndSet(repoRoot, kind, sessionId, issues, tag, now, options);
+  if (!first.entries.some((e) => e.reason === "no-op-session-missing")) {
+    return { ...first, autoRegistered: false };
+  }
+  const recovered = recoverAnchorFromOrphanBackups(repoRoot, kind, sessionId, tag, now);
+  if (recovered) {
+    warnAnchorRecoveredFromOrphanBackups(
+      "claim-issue --issues",
+      sessionId,
+      sessionFilePath(repoRoot, kind, tag, sessionId),
+      recovered,
+    );
+    const retried = claimIssuesCheckAndSet(repoRoot, kind, sessionId, issues, tag, now, options);
+    return {
+      ...retried,
+      autoRegistered: true,
+      autoRegisterMode: "recovered-from-orphan-backups",
+      recoveredClaims: [...(recovered.record.claimed_issues ?? [])],
+      ...((recovered.record.claimed_foreign_issues ?? []).length > 0
+        ? { recoveredForeignClaims: [...(recovered.record.claimed_foreign_issues ?? [])] }
+        : {}),
+      recoveredFromFiles: recovered.files.length,
+    };
+  }
+  registerSession(repoRoot, kind, sessionId, { tag, startedAt: now });
+  const retried = claimIssuesCheckAndSet(repoRoot, kind, sessionId, issues, tag, now, options);
   return { ...retried, autoRegistered: true, autoRegisterMode: "fresh" };
 }
 
@@ -6861,6 +7027,28 @@ export function requireClaimIssue(
 }
 
 /**
+ * #12010 — `--issues A,B,owner/repo#C` do `claim-issue` em lote. Cada item
+ * passa pela mesma validação de `requireClaimIssue` (repo na allowlist,
+ * coerência com `--repo`). `--issue` e `--issues` juntos são erro: um pedido
+ * ambíguo nunca vira claim parcial.
+ */
+export function requireClaimIssueList(
+  values: Record<string, string | undefined>,
+  flags: ReadonlySet<string>,
+  allowedRepos: readonly string[],
+): ClaimIssueTarget[] {
+  if (values.issue !== undefined || flags.has("issue")) {
+    throw new Error("use --issue N (uma issue) OU --issues A,B,C (lote), nunca os dois (#12010)");
+  }
+  const parts = (values.issues ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (parts.length === 0) throw new Error("--issues deve listar ao menos uma issue (ex: --issues 101,102) (#12010)");
+  return parts.map((part) => requireClaimIssue({ ...values, issue: part }, flags, allowedRepos));
+}
+
+/**
  * Resolve a raiz do checkout PRINCIPAL do repositório (#6372) — nunca
  * `process.cwd()` nem `git rev-parse --show-toplevel`, os dois candidatos
  * óbvios que devolvem o WORKTREE atual em vez do checkout principal.
@@ -7108,6 +7296,60 @@ function main(): void {
       case "claim-issue": {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
+        if (values.issues !== undefined || flags.has("issues")) {
+          // #12010: a onda inteira numa escrita só da âncora — ver `claimIssuesCheckAndSet`.
+          const issues = requireClaimIssueList(values, flags, loadIssueRepos(repoRoot));
+          const batch = claimIssuesAutoRegistering(repoRoot, kind, sessionId, issues, undefined, undefined, {
+            force: flags.has("force"),
+          });
+          const recoveredLabels = recoveredClaimLabels(batch);
+          if (batch.autoRegistered) {
+            process.stdout.write(
+              batch.autoRegisterMode === "recovered-from-orphan-backups"
+                ? `session-registry: claim-issue --issues [ALERTA: a ÂNCORA desta sessão SUMIU do disco com a sessão VIVA — ` +
+                    `reconstruída de ${batch.recoveredFromFiles} cópia(s) de conflito do OneDrive, ` +
+                    `${recoveredLabels.length} claim(s) recuperada(s)` +
+                    `${recoveredLabels.length > 0 ? `: ${recoveredLabels.join(", ")}` : ""}` +
+                    ". Isto é escrita concorrente, não sessão nova — ver #7002/#7003]\n"
+                : "session-registry: claim-issue --issues [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do claim, ver #6369]\n",
+            );
+          }
+          for (const entry of batch.entries) {
+            const owner = entry.blockedBy;
+            switch (entry.reason) {
+              case "claimed":
+                process.stdout.write(`session-registry: claim-issue ${entry.label} ok (claimed)\n`);
+                break;
+              case "already-own":
+                process.stdout.write(`session-registry: claim-issue ${entry.label} ok (already-own, no-op)\n`);
+                break;
+              case "forced-override":
+                process.stdout.write(
+                  `session-registry: claim-issue ${entry.label} ok (FORCED — tomado de ${owner?.kind}-${owner?.sessionId} ` +
+                    `desde ${owner?.startedAt}, heartbeat ${owner?.lastHeartbeat})\n`,
+                );
+                break;
+              case "no-op-session-missing":
+                process.stdout.write(
+                  `session-registry: claim-issue ${entry.label} no-op (sessão inexistente mesmo após tentativa de auto-registro)\n`,
+                );
+                break;
+              case "blocked-by-other":
+                process.stdout.write(
+                  `session-registry: claim-issue ${entry.label} RECUSADO — já está reivindicada por ` +
+                    `${owner?.kind}-${owner?.machineTag}-${owner?.sessionId} (desde ${owner?.startedAt}, ` +
+                    `último heartbeat ${owner?.lastHeartbeat}). Use --force para tomar mesmo assim.\n`,
+                );
+                break;
+            }
+          }
+          process.stdout.write(
+            `session-registry: claim-issue --issues ${batch.entries.filter((e) => e.ok).length}/${batch.entries.length} ok, ` +
+              `${batch.writes} escrita(s) na âncora [repoRoot=${repoRoot}]\n`,
+          );
+          if (!batch.ok) process.exitCode = 1;
+          break;
+        }
         // #10618: aceita owner/repo#N de qualquer repo da allowlist `issue_repos`.
         const issue = requireClaimIssue(values, flags, loadIssueRepos(repoRoot));
         const issueLabel = claimTargetLabel(issue);
