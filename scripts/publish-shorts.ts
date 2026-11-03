@@ -3270,8 +3270,10 @@ export async function publishYouTubeShort(input: {
  * e o offset da Buffer derivado do Still que a gerou (sidecar de
  * `fetch-drive-video.ts`). Capa vazia/ausente → `path: null`. Nunca lança:
  * leitura falha vira "sem capa" com aviso — a capa nunca barra o vídeo.
+ * #11923: na leitura falha, `unreadable` traz o motivo (a capa EXISTE): o
+ * "pode publicar" do corte não é gravado com `cover_sha256: null` por isso.
  */
-export function readShortCover(dir: string, log: (line: string) => void = () => {}): { path: string | null; bytes: Buffer | null; bufferOffsetMs: number | null } {
+export function readShortCover(dir: string, log: (line: string) => void = () => {}): { path: string | null; bytes: Buffer | null; bufferOffsetMs: number | null; unreadable?: string } {
   const path = join(dir, SHORT_COVER_FILE);
   try {
     if (!existsSync(path) || statSync(path).size === 0) return { path: null, bytes: null, bufferOffsetMs: null };
@@ -3281,7 +3283,7 @@ export function readShortCover(dir: string, log: (line: string) => void = () => 
     return { path, bytes, bufferOffsetMs: bufferThumbnailOffsetMs(source) };
   } catch (e) {
     log(`[aviso] capa do vertical ilegível (${(e as Error).message}) — segue sem capa`);
-    return { path: null, bytes: null, bufferOffsetMs: null };
+    return { path: null, bytes: null, bufferOffsetMs: null, unreadable: (e as Error).message };
   }
 }
 
@@ -3881,7 +3883,19 @@ export function syncCorteAuthorizationWithContent(
 ): CorteSpec {
   const specPath = join(dir, CORTE_SPEC_FILE);
   const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
-  if (!corteAuthorizedDestinations(spec)) return spec;
+  if (!corteAuthorizedDestinations(spec)) {
+    // #11923: título e --cover na mesma rodada: a queda `plan` já gravada (antes da cópia da capa)
+    // vira `content` quando o arquivo deixa de ser o aprovado — o alarme diz o motivo certo e o
+    // --update-scheduled não promete devolver o que não devolve.
+    if (spec.publish_revoked_reason_kind !== "plan" || !spec.publish_revoked_content) return spec;
+    const prior = corteContentCheck(spec.publish_revoked_content, corteContentFingerprint(dir, spec));
+    if (prior.kind !== "changed") return spec;
+    const { publish_revoked_content: _approved, ...rest } = spec;
+    const next: CorteSpec = { ...rest, publish_revoked_at: nowIso, publish_revoked_reason_kind: "content" };
+    io.log(`[aviso] corte "${spec.slug}": ${prior.reason}; a queda do "pode publicar" passa a ser por conteúdo (só um novo --publish --confirm-publish devolve)`);
+    writeFileAtomic(specPath, JSON.stringify(next, null, 2) + "\n");
+    return next;
+  }
   const check = corteContentCheck(spec.publish_confirmed_content, corteContentFingerprint(dir, spec));
   if (check.kind !== "changed") return spec;
   const next = revokeCorteAuthorization(spec, nowIso, check.reason, "content", io);
@@ -3900,7 +3914,10 @@ export function syncCorteAuthorizationWithContent(
  * desconhecido lança antes de ler ou gravar qualquer coisa: nome errado no
  * marcador faria o timer ignorar o destino certo. `content` é a impressão
  * digital dos bytes que esta rodada publica (o vídeo já lido e a capa do
- * `readShortCover`); vídeo ausente lança.
+ * `readShortCover`); vídeo ausente lança. #11923: `coverUnreadable` (o
+ * `unreadable` do `readShortCover`: a capa existe e a leitura falhou) também
+ * lança — gravar `cover_sha256: null` faria o timer alarmar `content-changed`
+ * falso quando a capa voltasse a ser lida.
  */
 export function recordCortePublishAuthorization(
   dir: string,
@@ -3909,11 +3926,15 @@ export function recordCortePublishAuthorization(
   content: CorteContentFingerprint,
   nowIso: string,
   log: (line: string) => void,
+  coverUnreadable?: string,
 ): void {
   const only = onlyRaw ? onlyRaw.split(",").map((s) => s.trim()).filter(Boolean) : null;
   const unknown = (only ?? []).filter((d) => !known.has(d));
   if (unknown.length) {
     throw new Error(`"pode publicar" não gravado: --only com destino desconhecido: ${unknown.join(", ")} (válidos: ${[...known].join(", ")})`);
+  }
+  if (coverUnreadable !== undefined) {
+    throw new Error(`"pode publicar" não gravado: a capa do corte existe mas não pôde ser lida (${coverUnreadable}); rode de novo quando o arquivo estiver acessível`);
   }
   const specPath = join(dir, CORTE_SPEC_FILE);
   const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
@@ -3925,7 +3946,7 @@ export function recordCortePublishAuthorization(
 }
 
 /** #11912: por que o filho do timer recusou; o timer mapeia para o alarme (`interpretCorteTimerOutput`). */
-export type CorteAuthorizationRefusal = "revoked" | "content-changed" | "missing-content" | "spec-unreadable";
+export type CorteAuthorizationRefusal = "revoked" | "content-changed" | "missing-content" | "spec-unreadable" | "replanned";
 
 /**
  * #11912: `--require-corte-authorization` (o filho do timer do 300). Confere,
@@ -3957,6 +3978,32 @@ export function corteRunAuthorizationError(
  */
 export function corteRunSpecDrift(fresh: CorteSpec, used: CorteSpec): string[] {
   return (["title", "hook", "date", "hhmm", "video"] as const).filter((k) => fresh[k] !== used[k]);
+}
+
+/**
+ * Puro: a recusa do filho do timer (`--require-corte-authorization`), com o
+ * `corte.json` relido logo antes de publicar (`fresh`) e a spec com que a
+ * rodada montou título e gancho (`used`). `null` = pode publicar.
+ *
+ * #11923: plano que mudou no meio da rodada com o "pode publicar" do plano
+ * NOVO já gravado (o editor restaurou enquanto o filho rodava) é `replanned`:
+ * nada sai com o plano velho, mas o timer não alarma `revoked` (a próxima
+ * execução publica o plano novo). Sem autorização para o plano novo segue
+ * `revoked`.
+ */
+export function corteTimerChildRefusal(
+  fresh: CorteSpec,
+  used: CorteSpec,
+  only: readonly string[] | null,
+  content: CorteContentFingerprint,
+): { refused: CorteAuthorizationRefusal; reason: string } | null {
+  const drift = corteRunSpecDrift(fresh, used);
+  const authError = corteRunAuthorizationError(fresh, only, content);
+  if (!drift.length) return authError;
+  const changed = `o corte.json mudou durante a rodada (${drift.join(", ")}): nada publicado com o plano velho`;
+  return authError === null
+    ? { refused: "replanned", reason: `${changed}; o plano novo já tem o "pode publicar" e sai na próxima execução do timer` }
+    : { refused: "revoked", reason: changed };
 }
 
 /**
@@ -4448,11 +4495,7 @@ async function main(): Promise<number> {
     const specPath = join(dir, CORTE_SPEC_FILE);
     let refusal: { refused: CorteAuthorizationRefusal; reason: string } | null;
     try {
-      const fresh = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
-      const drift = corteRunSpecDrift(fresh, corte);
-      refusal = drift.length
-        ? { refused: "revoked", reason: `o corte.json mudou durante a rodada (${drift.join(", ")}): nada publicado com o plano velho` }
-        : corteRunAuthorizationError(fresh, onlyList, corteContent);
+      refusal = corteTimerChildRefusal(parseCorteSpec(readFileSync(specPath, "utf8"), specPath), corte, onlyList, corteContent);
     } catch (e) {
       // #11923: falha ao reler o corte.json (EBUSY do OneDrive, JSON pela metade) não é revogação.
       refusal = { refused: "spec-unreadable", reason: `corte.json ilegível nesta rodada: ${(e as Error).message}` };
@@ -4464,7 +4507,7 @@ async function main(): Promise<number> {
     }
   } else if (corte && corteContent) {
     try {
-      recordCortePublishAuthorization(dir, values["only"], knownDestinationIds(shortsCfg), corteContent, new Date().toISOString(), (l) => console.error(l));
+      recordCortePublishAuthorization(dir, values["only"], knownDestinationIds(shortsCfg), corteContent, new Date().toISOString(), (l) => console.error(l), shortCover.unreadable);
     } catch (e) {
       console.error(`publish-shorts: ${(e as Error).message}`);
       return 2;

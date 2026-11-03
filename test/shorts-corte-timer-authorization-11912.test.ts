@@ -559,8 +559,8 @@ describe("#11912: o filho do timer só confere a autorização, nunca concede ne
     const record = main.indexOf("recordCortePublishAuthorization(dir,");
     assert.ok(check > 0 && record > check);
     const block = main.slice(check, record);
-    assert.match(block, /corteRunSpecDrift\(fresh, corte\)/);
-    assert.match(block, /corteRunAuthorizationError\(fresh, onlyList, corteContent\)/);
+    // #11923: drift + conferência da autorização vivem em corteTimerChildRefusal (testada no comportamento).
+    assert.match(block, /corteTimerChildRefusal\(parseCorteSpec\([^)]*\), specPath\), corte, onlyList, corteContent\)/);
     assert.match(block, /authorization_refused: refusal\.refused/);
     assert.match(block, /return 2;[\s\S]*\} else if \(corte && corteContent\) \{/);
   });
