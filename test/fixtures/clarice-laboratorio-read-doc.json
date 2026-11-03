@@ -1,0 +1,614 @@
+{
+ "content": {
+  "documentId": "1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY",
+  "tabs": [
+   {
+    "documentTab": {
+     "body": {
+      "content": [
+       {
+        "sectionBreak": {
+         "sectionStyle": {
+          "sectionType": "CONTINUOUS"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Laboratório Clarice\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "HEADING_1"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Preparado por:",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          },
+          {
+           "textRun": {
+            "content": " Pixel (Diar.ia)    ",
+            "textStyle": {}
+           }
+          },
+          {
+           "textRun": {
+            "content": "Para revisão de:",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          },
+          {
+           "textRun": {
+            "content": " Felipe (Clarice)\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Cada edição mensal terá uma seção curta com um tutorial. A ordem abaixo é uma sugestão editorial — começa pela funcionalidade central (Revisar) e expande para casos mais específicos.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "\n",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Padrões adotados:",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          },
+          {
+           "textRun": {
+            "content": " 80–120 palavras por tutorial · 3 a 5 passos · linguagem direta · sem screenshots · CTA com link direto. Estrutura completa documentada em context/templates/clarice-tutorial.md.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "horizontalRule": {
+            "textStyle": {}
+           }
+          },
+          {
+           "textRun": {
+            "content": "1. Revisar (correção, clareza, concisão)\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "HEADING_2"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "A Clarice classifica as sugestões em três categorias: correção, clareza e concisão. Você escolhe quais aplicar.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Cole ou digite o texto na área de revisão.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.1"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Em ",
+            "textStyle": {}
+           }
+          },
+          {
+           "textRun": {
+            "content": "Geral",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          },
+          {
+           "textRun": {
+            "content": ", configure público, estilo, intenção e domínio.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.1"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Clique em ",
+            "textStyle": {}
+           }
+          },
+          {
+           "textRun": {
+            "content": "Revisar",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          },
+          {
+           "textRun": {
+            "content": ".\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.1"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "As sugestões aparecem coloridas no painel direito — correção (vermelho), clareza (azul), concisão (verde). Aceite, dispense ou ajuste uma a uma.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.1"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Dica: Ctrl+Z desfaz, Ctrl+Y refaz, e o documento salva automaticamente.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "→ Assine agora e ganhe até 63% de desconto\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "horizontalRule": {
+            "textStyle": {}
+           }
+          },
+          {
+           "textRun": {
+            "content": "2. Personalizar o tom da revisão\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "HEADING_2"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "A Clarice não é um corretor genérico. Você define público, estilo, intenção e domínio antes de revisar.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Abra um documento e clique em ",
+            "textStyle": {}
+           }
+          },
+          {
+           "textRun": {
+            "content": "Geral",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          },
+          {
+           "textRun": {
+            "content": " no topo.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.2"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Selecione o público — Geral, Especialista ou Técnico.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.2"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Escolha o estilo — Informal, Neutro ou Formal.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.2"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Defina a intenção (Informar, Descrever, Convencer, Narrar) e o domínio (Negócios, Acadêmico, Casual, Criativo, Geral).\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.2"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Dica: configure antes de revisar. As mesmas configurações ficam por padrão nos próximos textos.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "→ Assine agora e ganhe até 63% de desconto\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "horizontalRule": {
+            "textStyle": {}
+           }
+          },
+          {
+           "textRun": {
+            "content": "Notas \n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "HEADING_2"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Detalhes técnicos a confirmar:",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          },
+          {
+           "textRun": {
+            "content": " URL específica de cada feature (link direto para \"Parafrasear\", \"Humanizar\", etc.) aumenta CTR. Se não houver deep-link, o link genérico clarice.ai funciona.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.9"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Voz personalizada (#8):",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          },
+          {
+           "textRun": {
+            "content": " precisa de confirmação se o fluxo descrito está correto — extraído do guia mas sem screenshots da feature ativa.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.9"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Chat (#6):",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          },
+          {
+           "textRun": {
+            "content": " idem; descrição é alta-nível, vale validar se as perguntas-exemplo são coerentes com o que a feature oferece hoje.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.9"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Próximos tutoriais:",
+            "textStyle": {
+             "bold": true
+            }
+           }
+          },
+          {
+           "textRun": {
+            "content": " se a Clarice lançar features novas durante o ciclo da newsletter, o template em clarice-tutorial.md aceita facilmente novos itens. Encaminhar PDFs ou docs para Pixel.\n",
+            "textStyle": {}
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         },
+         "bullet": {
+          "listId": "kix.list.9"
+         }
+        }
+       },
+       {
+        "paragraph": {
+         "elements": [
+          {
+           "textRun": {
+            "content": "Documento vivo. Atualize conforme tutoriais forem usados ou ajustados após feedback do leitor.\n",
+            "textStyle": {
+             "fontSize": {
+              "magnitude": 8,
+              "unit": "PT"
+             },
+             "foregroundColor": {
+              "color": {
+               "rgbColor": {
+                "blue": 0.53333336,
+                "green": 0.53333336,
+                "red": 0.53333336
+               }
+              }
+             },
+             "italic": true
+            }
+           }
+          }
+         ],
+         "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT"
+         }
+        }
+       }
+      ]
+     }
+    }
+   }
+  ]
+ }
+}

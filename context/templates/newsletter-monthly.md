@@ -84,9 +84,19 @@ A diar.ia.br mantém uma curadoria de livros sobre IA, cada título com nota da 
 
 **CLARICE — TUTORIAL**
 
-[Placeholder — inserir aqui o próximo tutorial da sequência do Doc "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais (`→ [texto](url)`, vira botão — mesmo formato do CTA acima). Muda a cada ciclo. Se o CTA citar desconto, usar o mesmo "até N%" do CLARICE — DIVULGAÇÃO, nunca um segundo número no mesmo e-mail (#11810).]
+[Título do tutorial — o primeiro ainda não usado (ordem do Doc) do "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY), escolhido por `scripts/clarice-tutorial-next.ts` e lido de `_internal/clarice-tutorial.json` (#11836)]
 
-→ [texto do CTA](https://clarice.ai/?via=diaria)
+[Intro de 1 parágrafo, do Doc.]
+
+1. [Passo 1]
+2. [Passo 2]
+3. [Passo 3 (um item por passo, quantos o Doc trouxer)]
+
+Dica: [dica do Doc]
+
+→ [{CTA do Doc, com o "até N%" da DIVULGAÇÃO}](https://clarice.ai/precos-planos?via=diaria)
+
+[Sem `_internal/clarice-tutorial.json` (conector indisponível, Doc ou log inválido, Doc esgotado ou ciclo fora da lista), a seção sai como placeholder `[Placeholder — inserir aqui o primeiro tutorial ainda não usado...]` e o gate 4 avisa. O "até N%" do CTA é o mesmo do CLARICE — DIVULGAÇÃO, nunca um segundo número no mesmo e-mail (#11810).]
 
 ---
 
@@ -210,7 +220,7 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 ## Regras de preenchimento
 
 - **APRESENTAÇÃO (#2913): boilerplate fixo, NUNCA editorial.** Preâmbulo Clarice × diar.ia.br + CTA de prioridade + linha de descadastro — o texto é sempre o mesmo, mês a mês (só o merge tag `{{ unsubscribe }}` varia por envio). Emitir literalmente o texto do bloco acima, sem parafrasear. Links fixos: `[Clarice](https://clarice.ai/?via=diaria)` (2×), `[aqui](https://diar.ia.br/?utm_source=clarice)` (cadastro gratuito — `diar.ia.br` é o href canônico desde 260723, redirect no Cloudflare preserva a query string, #2613/#3971), `[descadastrar aqui]({{ unsubscribe }})`. `diar.ia.br` aparece em **texto plano** (não como link markdown) na primeira frase — o render aplica o wordmark da marca automaticamente (`applyBrandWordmark`); virar link markdown quebra o wordmark. **O wordmark não é clicável** (decisão do editor 260727): aparecia 4× por edição apontando pra raiz do site, não convertia, e somado ao "aqui" e ao botão dava 7 âncoras pro mesmo destino — densidade promocional no eixo que o CTA-01 apontou como gatilho de spam. Nome de marca no meio da prosa é reconhecimento, não call-to-action; quem converte é o "aqui" e o botão do encerramento. Gramática: "na Clarice" (não "em Clarice"). Faltou na edição 2606-07 (reinserida manualmente) — daí morar no template.
-- **CLARICE — DIVULGAÇÃO (#11788): texto FIXO.** Idêntico desde o ciclo 2607-08 (até 2610-11 dizia "até 67%"; 63% desde 2611-12, #11810) — emitir literalmente o bloco acima (título, 3 parágrafos, cupons NEWS25/NEWS50 e o CTA para `clarice.ai/precos-planos?via=diaria`), sem parafrasear. Mudar o texto é decisão do editor e se faz aqui E no passo 5 do `writer-monthly` (as duas cópias andam juntas, `test/monthly-clarice-divulgacao-fixa-11788.test.ts`). **CLARICE — TUTORIAL** é a única seção Clarice que muda a cada ciclo: fonte é o Doc "Laboratório Clarice" no Drive (id `1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY`, 8 tutoriais em sequência); já saíram #2 (2605-06), #3 (2606-07), #4 (2607-08), #5 (2608-09), "Simplificar", fora da lista (2609-10), e #6 (2610-11). Segue placeholder até o writer conseguir ler o Doc.
+- **CLARICE — DIVULGAÇÃO (#11788): texto FIXO.** Idêntico desde o ciclo 2607-08 (até 2610-11 dizia "até 67%"; 63% desde 2611-12, #11810) — emitir literalmente o bloco acima (título, 3 parágrafos, cupons NEWS25/NEWS50 e o CTA para `clarice.ai/precos-planos?via=diaria`), sem parafrasear. Mudar o texto é decisão do editor e se faz aqui E no passo 5 do `writer-monthly` (as duas cópias andam juntas, `test/monthly-clarice-divulgacao-fixa-11788.test.ts`). **CLARICE — TUTORIAL** é a única seção Clarice que muda a cada ciclo: fonte é o Doc "Laboratório Clarice" no Drive (id `1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY`, tutoriais numerados na ordem do Doc); o que já saiu fica em `data/monthly/clarice-tutorial-log.json`, fora do git (semeado com #1 em 2604-05, rotulado LABORATÓRIO CLARICE com o título "Editar, revisar e humanizar texto em português", #2 em 2605-06, #3 em 2606-07, #4 em 2607-08, #5 em 2608-09, "Simplificar", fora da lista, em 2609-10, e #6 em 2610-11). Desde o #11836 a Etapa 2 lê o Doc pelo conector Google Docs, `scripts/clarice-tutorial-next.ts --record` escolhe o primeiro tutorial ainda não usado (idempotente por ciclo) e o `writer-monthly` preenche a seção com ele; sem o tutorial (conector fora, Doc ou log inválido, log ausente, Doc esgotado), placeholder + aviso no gate 4.
 - **Tema dos destaques**: cobertura específica do mês — Brasil, empresa (Anthropic, OpenAI, Google, DeepSeek), área (regulação, agentes, open source, benchmarks). **Brasil é sempre um dos 3** (regra editorial do `analyst-monthly`).
 - **Título narrativo**: descreve o arco do tema, não um artigo isolado. Exemplos: "Brasil acelera regulação de IA em abril", "Anthropic dobra aposta em agentes", "Open source ganha terreno em modelos de raciocínio".
 - **Conexão entre artigos**: cada destaque tem N artigos de suporte (de edições diferentes do mês). O texto narra o tema como sequência — use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.

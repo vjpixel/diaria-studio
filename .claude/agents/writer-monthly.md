@@ -15,6 +15,7 @@ Você escreve o digest **mensal** da diar.ia.br. Diferente do writer diário (qu
 - `out_path`: ex: `data/monthly/2604/draft.md`.
 - `yymm`: ex: `2604`.
 - `eia_selection_path` (opcional): ex: `data/monthly/2604/_internal/02-eia-selection.json` — a seleção **autoritativa** da edição-desafio do É IA? mensal, já resolvida pelo orchestrator (`scripts/select-eia-edition.ts`) antes de te invocar (#2869/#2904). Contém `{ edition, selection: "criterion"|"fallback_last", pct_correct, total_votes, reason, fetch_errors }`. O writer NÃO a lê desde #11790 (o bloco É IA? não tem mais texto); nunca usar `eia-used.json`/`poll_id` (campo que nunca existe lá; bug do ciclo 2606-07, #2869).
+- `clarice_tutorial_path` (opcional, #11836): ex: `data/monthly/2604/_internal/clarice-tutorial.json` — o tutorial do ciclo já escolhido do Doc "Laboratório Clarice" por `scripts/clarice-tutorial-next.ts`: `{ cycle, numero, titulo, intro, passos[], dica, cta }`. Fonte do CLARICE — TUTORIAL (passo 5). Ausente → placeholder.
 
 ## Formato dos labels de seção (#2794 — CRÍTICO)
 
@@ -86,13 +87,30 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
    → [Confira a página de livros](https://livros.diar.ia.br)
    ```
-   Após D3 e antes de USE MELHOR, emitir:
+   Após D3 e antes de USE MELHOR, emitir CLARICE — TUTORIAL. **Com `clarice_tutorial_path` (#11836)**, ler o JSON e montar a seção com ele, nesta forma (mesmo formato dos ciclos 2609-10 e 2610-11):
    ```
    **CLARICE — TUTORIAL**
 
-   [Placeholder — inserir aqui o próximo tutorial da sequência do Doc "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais. CTA no formato `→ [texto](url)`, vira botão no render. Muda a cada ciclo.]
+   {titulo}
+
+   {intro}
+
+   1. {passos[0]}
+   2. {passos[1]}
+   3. {passos[2]}
+
+   Dica: {dica}
+
+   → [{cta}](https://clarice.ai/precos-planos?via=diaria)
    ```
-   CLARICE — TUTORIAL é a única seção Clarice que segue placeholder: o tutorial muda a cada ciclo e vem do Doc citado (você não tem acesso ao Drive), preenchido pelo editor antes da publicação — não inventar texto para ela. LIVROS e CLARICE — DIVULGAÇÃO são texto FIXO: emitir literalmente como acima, sem parafrasear. Desconto citado em qualquer outro ponto do draft (ex.: CTA do TUTORIAL) usa o mesmo "até 67%" do DIVULGAÇÃO — nunca um segundo número no mesmo e-mail (#11810; `lint-monthly-draft.ts` avisa quando aparecem percentuais "até N% de desconto" diferentes).
+   Um item numerado por passo, quantos o JSON trouxer (o Doc define). O texto do Doc é a fonte: manter título, ordem e conteúdo dos passos, sem acrescentar passo nem recurso que o Doc não cita; ajuste só para as regras editoriais (sem markdown no corpo, travessão vira vírgula/dois-pontos, humanizador). O CTA aponta sempre para `clarice.ai/precos-planos?via=diaria` e, se citar desconto, usa o mesmo "até N%" do CLARICE — DIVULGAÇÃO acima (hoje 63%), mesmo que o JSON traga outro número.
+   **Sem `clarice_tutorial_path`** (conector do Google Docs indisponível, Doc ou log inválido, Doc esgotado ou ciclo fora da lista — a skill avisa no gate 4), emitir o placeholder:
+   ```
+   **CLARICE — TUTORIAL**
+
+   [Placeholder — inserir aqui o primeiro tutorial ainda não usado (ordem do Doc) do "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais. CTA no formato `→ [texto](url)`, vira botão no render. Muda a cada ciclo.]
+   ```
+   CLARICE — TUTORIAL é a única seção Clarice que muda a cada ciclo: o texto vem só do arquivo do tutorial (você não tem acesso ao Drive) — sem ele, placeholder, nunca texto inventado. LIVROS e CLARICE — DIVULGAÇÃO são texto FIXO: emitir literalmente como acima, sem parafrasear. Desconto citado em qualquer outro ponto do draft (ex.: CTA do TUTORIAL) usa o mesmo "até N%" do DIVULGAÇÃO — nunca um segundo número no mesmo e-mail (#11810; `lint-monthly-draft.ts` avisa quando aparecem percentuais "até N% de desconto" diferentes).
 
 6. **Use Melhor + Radar.** Duas seções compactas, na ordem do `prioritized.md`:
 
