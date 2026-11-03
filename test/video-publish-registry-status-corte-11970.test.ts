@@ -106,6 +106,14 @@ describe("#11970: releitura do registro do corte", () => {
       assert.match(r.err, /corte\.json ausente/);
     });
   });
+  it("regressão #11975: sem corte.json COM AAMMDD (slug errado) → exit 1, nunca nothing-since", () => {
+    withRoot((root) => {
+      const r = run(["--corte", "fluxo-26114", DATE, "--since", since], root);
+      assert.equal(r.code, 1);
+      assert.equal(r.out, "");
+      assert.match(r.err, /corte\.json ausente/);
+    });
+  });
   it("corte.json ilegível → exit 1", () => {
     withRoot((root, corteDir) => {
       writeFileSync(join(corteDir, "corte.json"), "{");

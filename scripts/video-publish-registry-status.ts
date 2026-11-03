@@ -214,8 +214,8 @@ const USAGE =
 /**
  * #11970: pasta e data do corte. A data sai do `corte.json` (é a que o
  * registro do corte carrega); um AAMMDD posicional diferente é erro de uso.
- * Sem `corte.json` legível e sem AAMMDD, não dá para ler o registro: exit 1
- * (mesmo sentido de `unreadable`, conferir as contas).
+ * Sem `corte.json` legível, com ou sem AAMMDD, não dá para ler o registro:
+ * exit 1 (mesmo sentido de `unreadable`, conferir as contas).
  */
 function resolveCorte(
   slug: string,
@@ -230,11 +230,14 @@ function resolveCorte(
   const dir = editionDirOverride !== undefined ? resolve(editionDirOverride) : join(root, corteRelDir(slug));
   const specPath = join(dir, CORTE_SPEC_FILE);
   if (!existsSync(specPath)) {
-    if (positionalDate !== undefined) return { ok: true, dir, aammdd: positionalDate };
+    // Sempre exit 1, com ou sem AAMMDD: aceitar a data faria um slug errado
+    // (`--corte fluxo-26114 261104`) ler uma pasta vazia e responder
+    // `nothing-since`. O prepareCorteRun grava o corte.json antes de qualquer
+    // envio, então corte que publicou algo sempre tem o arquivo (#11975).
     return {
       ok: false,
       code: 1,
-      error: `${specPath} ausente: slug errado ou corte que nunca rodou — passe o AAMMDD do corte ou confira o slug; até lá, conferir as contas antes de qualquer nova chamada (#11970)`,
+      error: `${specPath} ausente: slug errado ou corte que nunca rodou — confira o slug; até lá, conferir as contas antes de qualquer nova chamada (#11970)`,
     };
   }
   let date: string;
