@@ -137,7 +137,7 @@ describe("#11911 porta 1: --edition-dir fora de data/editions não delega aos ti
   });
 
   it("fora da pasta canônica: nada é delegado, o Instagram fica pendente com dono e comando com o --edition-dir", () => {
-    const p = planShortsPublish({ ...base, editionDirOverride: OUT });
+    const p = planShortsPublish({ ...base, editionDirOverride: OUT, unwatchedEditionWarning: "pasta externa" });
     for (const d of ["instagram", "linkedin_profile", "threads_profile"]) assert.notEqual(item(p, d).action, "skip_delegated", d);
     assert.equal(item(p, "instagram").action, "pending_schedule");
     const owner = p.owners.find((o) => o.destination === "instagram");
@@ -149,7 +149,7 @@ describe("#11911 porta 1: --edition-dir fora de data/editions não delega aos ti
   });
 
   it("o aviso só cita o que o --only deixa no plano", () => {
-    const p = planShortsPublish({ ...base, editionDirOverride: OUT, only: ["youtube_shorts"] });
+    const p = planShortsPublish({ ...base, editionDirOverride: OUT, unwatchedEditionWarning: "pasta externa", only: ["youtube_shorts"] });
     assert.ok(!p.warnings.some((w) => w.includes("não enxergam esta pasta")), p.warnings.join("\n"));
   });
 

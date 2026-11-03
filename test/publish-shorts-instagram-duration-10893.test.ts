@@ -25,7 +25,7 @@ const pages: ResolvedFacebookPage[] = [
   { slug: "vjpixel", enabled: false, pageId: "937", token: "tok", missing: [], utmContent: "page-vjpixel" },
 ];
 
-function plan(extra: Partial<Parameters<typeof planShortsPublish>[0]> = {}) {
+function plan(extra: Partial<Extract<Parameters<typeof planShortsPublish>[0], { corte?: undefined; editionDirOverride?: undefined }>> = {}) {
   return planShortsPublish({
     aammdd: "261022",
     reviewedMd: reviewed,
