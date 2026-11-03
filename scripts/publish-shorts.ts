@@ -208,6 +208,7 @@ import { deriveEditionUrl } from "./lib/edition-url.ts";
 import {
   CORTE_SPEC_FILE,
   CORTE_TIMER_DESTINATIONS,
+  CORTE_TIMER_INTERVAL_MS,
   CORTE_TIMER_TASK,
   ALLOW_UNWATCHED_DIR_FLAG,
   CORTES_REL_DIR,
@@ -988,7 +989,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       ? `o timer do 300 (${CORTE_TIMER_TASK}) publica na 1ª execução depois das ${hhmm} BRT e alarma se falhar, só com o --publish confirmado (owners, #11795, #11912)`
       : `a skill agenda a re-execução para depois das ${hhmm} BRT (owners, #11550)`;
   // #11964: na janela em que o timer do corte publica (de 10 min antes do horário, quando a
-  // rodada já publicaria na hora, até o teto de 3 h), só o filho do timer publica os destinos
+  // rodada já publicaria na hora, até uma cadência do timer antes do teto de 3 h, #11996), só o filho do timer publica os destinos
   // dele. A rodada manual (com ou sem --now) os delega: as duas no mesmo destino duplicam o post.
   // Antes da janela segue `pending_schedule` (o timer é o dono); depois, `skip_late` (o timer já
   // não publica e só alarma, então a rodada manual com --now é segura).
@@ -997,7 +998,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     // Reels acima do teto da API: o timer também não publica (vira passo guiado); o passo fica com esta rodada.
     if (destination === "instagram" && !igFit.fits) return false;
     const deltaMs = input.now.getTime() - Date.parse(shortTime.at);
-    return deltaMs >= -OWNER_SCHEDULE_MIN_LEAD_MS && deltaMs <= MAX_FIRE_LATENESS_MS;
+    // #11996: com menos de uma cadência do timer até o teto, a próxima execução dele já cai em
+    // `late` (só alarma): delegar ali deixava o post sem sair. A rodada manual fica com o destino.
+    return deltaMs >= -OWNER_SCHEDULE_MIN_LEAD_MS && deltaMs <= MAX_FIRE_LATENESS_MS - CORTE_TIMER_INTERVAL_MS;
   };
   const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
   const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
