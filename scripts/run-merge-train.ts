@@ -84,6 +84,7 @@ import { reconcileReport, realGhJson } from "./reconcile-overnight-report.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { existsSync } from "node:fs";
+import { recordTrainMergedTimeline } from "./lib/overnight-unit-timeline.ts";
 
 const DEFAULT_MAX_BATCH_SIZE = 3; // "K não deve ser grande. Começar em 3." — issue #6300
 const VALID_KINDS = ["overnight", "develop", "continuo"] as const;
@@ -326,6 +327,15 @@ async function main() {
       ...(ciPollIntervalMs !== undefined ? { ciPollIntervalMs } : {}),
     });
     allOutcomes.push(...outcomes);
+    if (reportPath) {
+      try {
+        recordTrainMergedTimeline(join(dirname(reportPath), "plan.json"),
+          outcomes.filter((o) => o.status === "merged" || o.status === "solo-merged").flatMap((o) => o.batch.prs),
+          new Date().toISOString());
+      } catch (err) {
+        console.warn(`run-merge-train: timeline não persistida: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   console.log(`run-merge-train: ${allOutcomes.length} resultado(s):`);

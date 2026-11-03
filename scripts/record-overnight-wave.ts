@@ -31,6 +31,7 @@ import {
   type WaveIssueId,
 } from "./lib/overnight-waves.ts";
 import { formatIssueRef, legacyIssueNumber, parseIssueRef } from "./lib/issue-repos.ts";
+import { recordUnitTimeline } from "./lib/overnight-unit-timeline.ts";
 
 const INT = /^\d+$/;
 
@@ -100,13 +101,19 @@ if (isMainModule(import.meta.url)) {
   const existingWaves = Array.isArray(plan.waves) ? (plan.waves as import("./lib/overnight-waves.ts").OvernightWaveRecord[]) : [];
   const dup = findDuplicateWave(existingWaves, record);
   if (dup) {
+    // Also repair waves recorded before automatic timeline persistence (#12011).
+    const next = recordUnitTimeline(plan, dup.units.flatMap((u) => u.issues), "dispatch", dup.composed_at);
+    const repaired = JSON.stringify(next) !== JSON.stringify(plan);
+    if (repaired) writeFileAtomic(values.plan, JSON.stringify(next, null, 2) + "\n");
+    // Contrato da mensagem preservado: nenhuma 2ª onda é gravada, então segue
+    // sendo "no-op idempotente"; o reparo de timeline é sinalizado à parte.
     console.log(
-      `[record-overnight-wave] onda idêntica já registrada em ${dup.composed_at} (dentro da janela de dedup) — nada gravado, no-op idempotente`,
+      `[record-overnight-wave] onda idêntica já registrada em ${dup.composed_at} (dentro da janela de dedup) — nenhuma onda nova gravada, no-op idempotente${repaired ? "; timeline reparada" : ""}`,
     );
     process.exit(0);
   }
 
-  const next = appendWave(plan, record);
+  const next = appendWave(recordUnitTimeline(plan, record.units.flatMap((u) => u.issues), "dispatch", record.composed_at), record);
   const check = checkOvernightWaves(next);
   if (check.status === "invalid") {
     console.error(`[record-overnight-wave] plan.waves existente inválido, nada gravado: ${check.problems.join("; ")}`);
