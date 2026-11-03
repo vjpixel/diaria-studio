@@ -412,11 +412,76 @@ export function speechCutWarnings(clips: Array<Pick<RawClip, "block" | "srcIn" |
 }
 
 /** #11940: banda acima de 3 kHz, medida no bruto a 48 kHz.
- * -51 dBFS é o limiar medido na 261103 (piso -63 + 12 dB).
+ * -51 dBFS é o limiar medido na 261103 (piso -63 + 12 dB), e é o PISO do
+ * limiar: desde o #11968 ele sobe com o piso de ruído do próprio bruto
+ * (`highBandThresholdDb`), senão um bruto quente ou com chiado acima de 3 kHz
+ * nunca cai abaixo de -51 e o `silences.json` sai vazio.
  * Só silêncio sustentado por 80 ms permite fechar/abrir uma borda, com
  * 30 ms de ar; a montagem quantiza depois para os quadros do vídeo.
  */
-export const SIBILANTS = { sampleRate: 48000, highpassHz: 3000, thresholdDb: -51, quietS: 0.08, airS: 0.03, windowS: 0.4 } as const;
+export const SIBILANTS = {
+  sampleRate: 48000,
+  highpassHz: 3000,
+  thresholdDb: -51,
+  quietS: 0.08,
+  airS: 0.03,
+  windowS: 0.4,
+  /** #11968: o limiar relativo fica `aboveFloorDb` acima do piso medido. */
+  aboveFloorDb: 12,
+  /** Percentil do envelope tomado como piso de ruído (quadros de silêncio digital fora). */
+  floorPercentile: 0.01,
+  /** Teto do limiar relativo: acima disso já é fala, não piso. */
+  maxThresholdDb: -30,
+} as const;
+
+export interface HighBandThreshold {
+  thresholdDb: number;
+  /** Piso de ruído medido (percentil baixo do envelope), ausente sem quadros úteis. */
+  floorDb?: number;
+  medianDb?: number;
+  /** `fixed` = o -51 do #11940 venceu; `relative` = subiu com o piso do bruto (#11968). */
+  how: "fixed" | "relative";
+}
+
+const thresholdCache = new WeakMap<Envelope, HighBandThreshold>();
+
+/**
+ * Limiar de silêncio da banda alta relativo ao bruto (#11968): piso de ruído
+ * (percentil `floorPercentile`, sem os quadros de silêncio digital) +
+ * `aboveFloorDb`, nunca abaixo do -51 do #11940 nem acima do ponto médio entre
+ * o piso e a mediana (a mediana é fala; o limiar não pode alcançá-la) nem de
+ * `maxThresholdDb`. Mesma ideia do `silenceNoiseDb` no grave (#11351).
+ */
+export function highBandThresholdDb(env: Envelope): HighBandThreshold {
+  const hit = thresholdCache.get(env);
+  if (hit) return hit;
+  const vals = Array.from(env.db).filter((d) => Number.isFinite(d) && d > ENVELOPE_DEFAULTS.floorDb).sort((a, b) => a - b);
+  let out: HighBandThreshold = { thresholdDb: SIBILANTS.thresholdDb, how: "fixed" };
+  if (vals.length) {
+    const floorDb = vals[Math.min(vals.length - 1, Math.floor(SIBILANTS.floorPercentile * vals.length))];
+    const medianDb = vals[Math.floor(vals.length / 2)];
+    const rel = Math.min(floorDb + SIBILANTS.aboveFloorDb, (floorDb + medianDb) / 2, SIBILANTS.maxThresholdDb);
+    out = rel > SIBILANTS.thresholdDb
+      ? { thresholdDb: Math.round(rel * 10) / 10, floorDb, medianDb, how: "relative" }
+      : { thresholdDb: SIBILANTS.thresholdDb, floorDb, medianDb, how: "fixed" };
+  }
+  thresholdCache.set(env, out);
+  return out;
+}
+
+/**
+ * Aviso do transcribe (#11968): a interseção com a banda alta tirou mais da
+ * metade das pausas do grave. É o sintoma do limiar alto demais para o bruto
+ * (o caso em que nenhuma pausa sairia), não um corte que se possa conferir
+ * depois sem o aviso.
+ */
+export function intersectionLossWarning(low: Interval[], kept: Interval[], minDurationS: number, highThreshold: HighBandThreshold): string | null {
+  const n = low.filter((q) => q.end - q.start >= minDurationS).length;
+  if (n === 0) return null;
+  const k = kept.filter((q) => q.end - q.start >= minDurationS).length;
+  if (k >= n / 2) return null;
+  return `a banda alta (>3 kHz, limiar ${highThreshold.thresholdDb} dBFS${highThreshold.floorDb !== undefined ? `, piso ${Math.round(highThreshold.floorDb)} dBFS` : ""}) deixou ${k} de ${n} pausas do grave no silences.json: poucos cortes de pausa vão sair; conferir o chiado do bruto ou o limiar (#11968)`;
+}
 
 /** Interseção: só é pausa se grave E agudo estão em silêncio. */
 export function intersectSilences(low: Interval[], high: Interval[]): Interval[] {
@@ -432,11 +497,11 @@ export function intersectSilences(low: Interval[], high: Interval[]): Interval[]
 }
 
 /** Silêncios sustentados no envelope da banda alta (RMS, sem pico isolado). */
-export function highBandSilences(env: Envelope): Interval[] {
+export function highBandSilences(env: Envelope, thresholdDb = highBandThresholdDb(env).thresholdDb): Interval[] {
   const out: Interval[] = [];
   let start: number | undefined;
   for (let i = 0; i <= env.db.length; i++) {
-    if (i < env.db.length && env.db[i] <= SIBILANTS.thresholdDb) {
+    if (i < env.db.length && env.db[i] <= thresholdDb) {
       start ??= i * env.hopS;
     } else if (start !== undefined) {
       const end = i * env.hopS;
@@ -450,12 +515,24 @@ export function highBandSilences(env: Envelope): Interval[] {
 /** Proteção final, depois da retranscrição: só expande, nunca come fala.
  * Busca ar para fora do trecho selecionado. Não avança sobre a palavra vizinha;
  * sem espaço seguro mantém o corte e deixa o aviso para revisão humana.
+ * `heard` (#11968), por clipe e na mesma ordem: as palavras da retranscrição
+ * das bordas. Elas também contam como vizinhas, porque o som fora do roteiro
+ * que a passada B cortou (ou que o transcript principal nem tem) só aparece
+ * nelas; sem isso a expansão reabria a hesitação já tirada.
  */
-export function preserveSibilants(raws: RawClip[], env: Envelope, words: Word[], durationS: number, fps?: number): { clips: RawClip[]; adjustments: CutAdjustment[] } {
+export function preserveSibilants(
+  raws: RawClip[],
+  env: Envelope,
+  words: Word[],
+  durationS: number,
+  fps?: number,
+  heard?: ReadonlyArray<Word[] | undefined>,
+): { clips: RawClip[]; adjustments: CutAdjustment[] } {
   const quiet = highBandSilences(env);
   const adjustments: CutAdjustment[] = [];
-  const clips = raws.map((r) => {
-    const { prev, next } = clipWordContext(words, r.srcIn, r.srcOut);
+  const clips = raws.map((r, idx) => {
+    const extra = (heard?.[idx] ?? []).filter((w) => w.text.trim());
+    const { prev, next } = clipWordContext(extra.length ? [...words, ...extra] : words, r.srcIn, r.srcOut);
     let { srcIn, srcOut } = r;
     const lo = Math.max(0, srcIn - SIBILANTS.windowS, prev?.end ?? 0);
     const hi = Math.min(durationS, srcOut + SIBILANTS.windowS, next?.start ?? durationS);
@@ -495,5 +572,6 @@ export function highBandCutWarnings(clips: Array<Pick<RawClip, "block" | "srcIn"
 
 /** Normaliza os limiares, preservando atividade em qualquer banda no refino. */
 export function combinedCutEnvelope(low: Envelope, high: Envelope, lowThresholdDb: number): Envelope {
-  return { hopS: low.hopS, db: Float64Array.from(low.db, (db, i) => Math.max(db, dbAt(high, i * low.hopS) - SIBILANTS.thresholdDb + lowThresholdDb)) };
+  const highThresholdDb = highBandThresholdDb(high).thresholdDb;
+  return { hopS: low.hopS, db: Float64Array.from(low.db, (db, i) => Math.max(db, dbAt(high, i * low.hopS) - highThresholdDb + lowThresholdDb)) };
 }

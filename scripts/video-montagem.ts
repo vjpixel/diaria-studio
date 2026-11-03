@@ -42,13 +42,13 @@
  *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
  *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz)
  *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode text|png|off]
- *       (#11935) grava um XML por sequência ({nome da sequência}.xml); `--seq` grava só uma, plan.json guarda todas
+ *       (#11935) grava um XML por sequência ({nome da sequência}.xml); `--seq` grava só uma, e só ela muda no plan.json (#11969)
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Clipes contíguos no bruto viram um só e o zoom alterna só nos cortes (#11503). Os cortes
  *       são refinados pelo áudio do bruto (#11500, `lib/diaria/video-cut-refine.ts`): vale de
  *       energia a ±0,4 s, som fora do roteiro na borda (bordas retranscritas sem VAD, cache em
  *       `edge-retranscribe.json`), corte ainda em plena fala vira [aviso]; cada ajuste sai no
- *       relato e em `plan.json` (`cutAdjustments`, `cutRefine`). A banda alta (>3 kHz, -51 dBFS) protege fonemas com 30 ms de ar e 80 ms de silêncio (#11940). Sem `audio.wav` nesta máquina,
+ *       relato e em `plan.json` (`cutAdjustments`, `cutRefine`). A banda alta (>3 kHz, -51 dBFS ou mais com o piso do bruto, #11968) protege fonemas com 30 ms de ar e 80 ms de silêncio (#11940). Sem `audio.wav` nesta máquina,
  *       ou com --no-audio-refine, os cortes ficam como os tempos do Whisper, com [aviso].
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
  *       Vertical montada acima de 3:00 (Shorts) sai como [aviso] com quanto passa (#11377); o
@@ -225,7 +225,9 @@ import {
   SIBILANTS,
   combinedCutEnvelope,
   highBandSilences,
+  highBandThresholdDb,
   intersectSilences,
+  intersectionLossWarning,
   preserveSibilants,
   highBandCutWarnings,
   edgeWindowsFor,
@@ -475,6 +477,66 @@ interface PlanFile {
   plans: SequencePlan[];
   /** O refino dos cortes pelo áudio (#11500); ausente em plano anterior a ele. */
   cutRefine?: CutRefineInfo;
+  /**
+   * #11969: quando o XML de cada sequência (`sequenceKey`) foi gravado, em ms.
+   * Com `--seq`, as outras sequências guardam o instante do build que as
+   * gravou: é contra ele (e não o mtime do plan.json) que srt/prévia conferem.
+   */
+  builtAt?: Record<string, number>;
+}
+
+/**
+ * O `plan.json` de um build (#11969). Sem `--seq` (`pickedKeys` = todas), é o
+ * plano novo inteiro. Com `--seq`, só as sequências reconstruídas entram do
+ * plano novo; as outras ficam como o build anterior as gravou (o XML delas no
+ * disco é o daquele build), e só se o plano anterior tiver o MESMO hash: com
+ * blocks.json/source.json/silences.json/transcript.json mudados, o XML antigo
+ * delas não corresponde mais às entradas, então elas SAEM do plan.json (srt e
+ * prévia recusam até um build delas) em vez de entrar sem conferência.
+ */
+export function mergeBuildPlan(input: {
+  next: Omit<PlanFile, "builtAt">;
+  pickedKeys: ReadonlySet<string>;
+  prev: PlanFile | null;
+  now: number;
+}): { plan: PlanFile; kept: string[]; dropped: string[] } {
+  const { next, pickedKeys, prev, now } = input;
+  const keyOf = (p: SequencePlan) => sequenceKey(p.spec);
+  const sameInputs = prev !== null && prev.hash === next.hash;
+  const prevByKey = new Map((sameInputs ? prev.plans : []).map((p) => [keyOf(p), p]));
+  const kept: string[] = [];
+  const dropped: string[] = [];
+  const plans: SequencePlan[] = [];
+  const builtAt: Record<string, number> = {};
+  const highBandWarnings: Record<string, string[]> = {};
+  for (const p of next.plans) {
+    const k = keyOf(p);
+    if (pickedKeys.has(k)) {
+      plans.push(p);
+      builtAt[k] = now;
+      const w = next.cutRefine?.highBandWarnings?.[k];
+      if (w) highBandWarnings[k] = w;
+      continue;
+    }
+    const old = prevByKey.get(k);
+    if (!old) {
+      dropped.push(k);
+      continue;
+    }
+    plans.push(old);
+    kept.push(k);
+    builtAt[k] = prev?.builtAt?.[k] ?? 0;
+    const w = prev?.cutRefine?.highBandWarnings?.[k];
+    if (w) highBandWarnings[k] = w;
+  }
+  const cutRefine = next.cutRefine ? { ...next.cutRefine, ...(next.cutRefine.highBandWarnings ? { highBandWarnings } : {}) } : undefined;
+  return { plan: { ...next, plans, ...(cutRefine ? { cutRefine } : {}), builtAt }, kept, dropped };
+}
+
+/** Instante do build da sequência no plano (#11969); plano antigo sem `builtAt` = o mtime do plan.json. */
+export function sequenceBuiltAt(pf: Pick<PlanFile, "builtAt">, key: string, planMtimeMs: number): number {
+  const t = pf.builtAt?.[key];
+  return typeof t === "number" && t > 0 ? t : planMtimeMs;
 }
 
 /** O plano do último build, recusado se o blocks.json ou o source.json mudaram depois dele. */
@@ -775,16 +837,23 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   const silMetaPath = f(ctx, "silences.meta.json");
   const silMeta = existsSync(silMetaPath) ? readJson<{ noiseDb?: number; minDurationS?: number; highBandVersion?: number }>(silMetaPath, "silences.meta.json") : null;
   // silences.json sem meta (anterior ao #11351) ou com outro limiar é refeito.
-  const silStale = !existsSync(join(ctx.workDir, "audio-high-48k.wav")) || !existsSync(join(ctx.workDir, "audio-high-48k.meta.json")) || !silMeta || silMeta.highBandVersion !== 11940 || silMeta.noiseDb !== threshold.noiseDb || silMeta.minDurationS !== SILENCE_DETECT.minDurationS;
+  const silStale = !existsSync(join(ctx.workDir, "audio-high-48k.wav")) || !existsSync(join(ctx.workDir, "audio-high-48k.meta.json")) || !silMeta || silMeta.highBandVersion !== 11968 || silMeta.noiseDb !== threshold.noiseDb || silMeta.minDurationS !== SILENCE_DETECT.minDurationS;
   if (redo || !existsSync(silPath) || silStale) {
     const { stderr } = run("ffmpeg", [
       "-hide_banner", "-nostats", "-i", audio,
       "-af", `silencedetect=noise=${threshold.noiseDb}dB:d=${SILENCE_DETECT.minDurationS}`, "-f", "null", "-",
     ]);
-    const highQuiet = highBandSilences(highBandEnvelope(ctx, source));
-    writeJson(silPath, intersectSilences(parseSilenceDetect(stderr, source.durationS), highQuiet)
-      .filter((q) => q.end - q.start >= SILENCE_DETECT.minDurationS));
-    writeJson(silMetaPath, { noiseDb: threshold.noiseDb, minDurationS: SILENCE_DETECT.minDurationS, how: threshold.how, highBandVersion: 11940 });
+    const highEnv = highBandEnvelope(ctx, source);
+    // #11968: limiar da banda alta relativo ao piso do bruto, nunca o -51 fixo sozinho.
+    const highThreshold = highBandThresholdDb(highEnv);
+    const low = parseSilenceDetect(stderr, source.durationS);
+    const kept = intersectSilences(low, highBandSilences(highEnv, highThreshold.thresholdDb))
+      .filter((q) => q.end - q.start >= SILENCE_DETECT.minDurationS);
+    writeJson(silPath, kept);
+    writeJson(silMetaPath, { noiseDb: threshold.noiseDb, minDurationS: SILENCE_DETECT.minDurationS, how: threshold.how, highBandVersion: 11968, highBand: highThreshold });
+    console.error(`[video-montagem] banda alta a ${highThreshold.thresholdDb} dBFS (${highThreshold.how === "relative" ? "relativo ao piso do bruto" : "piso do #11940"}): ${kept.length} pausa(s) no silences.json`);
+    const loss = intersectionLossWarning(low, kept, SILENCE_DETECT.minDurationS, highThreshold);
+    if (loss) console.error(`[aviso] ${loss}`);
   }
   console.error(`[video-montagem] silencedetect a ${threshold.noiseDb} dB (${threshold.how === "relative" ? "relativo ao loudness do bruto" : threshold.how === "override" ? "--silence-db" : "padrão, loudness não medido"})`);
 
@@ -1121,7 +1190,10 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
       for (const n of b.notes) warnings.push(`${p.spec.name}: ${n}`);
     }
     if (highEnv) {
-      const protectedEdges = preserveSibilants(clips, highEnv, words, source.durationS, source.fps);
+      // #11968: as palavras retranscritas das bordas também limitam a expansão,
+      // senão ela reabre o som fora do roteiro que a passada B acabou de tirar.
+      const heardPerClip = heard ? stageA[i].clips.map((c) => edgeWindowsFor(c, source.durationS).flatMap((w) => heard!.get(w.key) ?? [])) : undefined;
+      const protectedEdges = preserveSibilants(clips, highEnv, words, source.durationS, source.fps, heardPerClip);
       clips = protectedEdges.clips;
       adjustments.push(...protectedEdges.adjustments);
     }
@@ -1210,7 +1282,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   const { framing, assumed } = effectiveFraming(file);
   if (assumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (rosto em 48% da largura, olhos em 54% da altura)");
   let problems = 0;
-  // #11935: --seq grava só o XML daquela sequência (plan.json guarda todas) e só ela barra o build.
+  // #11935: --seq grava só o XML daquela sequência e só ela barra o build; #11969: e só ela muda no plan.json.
   const picked = pickPlans(ps, seq, false);
   for (const p of picked) {
     const d = p.durationFrames / source.fps;
@@ -1286,8 +1358,21 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte }));
     xmlPaths.push(xmlPath);
   }
-  const pf: PlanFile = { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps, cutRefine: refined.info };
-  writeJson(f(ctx, "plan.json"), pf);
+  // #11969: com --seq, só as sequências reconstruídas (e conferidas acima) mudam no plan.json.
+  const planPath = f(ctx, "plan.json");
+  let prevPlan: PlanFile | null = null;
+  if (seq && existsSync(planPath)) {
+    try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): só a sequência do --seq entra no plano novo`); }
+  }
+  const merged = mergeBuildPlan({
+    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps, cutRefine: refined.info },
+    pickedKeys: new Set(picked.map((p) => sequenceKey(p.spec))),
+    prev: prevPlan,
+    now: Date.now(),
+  });
+  if (merged.dropped.length) console.error(`[aviso] --seq ${seq}: ${merged.dropped.join(", ")} fora do plan.json (entradas mudaram desde o build delas, e o XML delas é o antigo); rode build sem --seq, ou com --seq de cada uma, antes de srt/preview delas (#11969)`);
+  if (merged.kept.length) console.error(`[video-montagem] --seq ${seq}: ${merged.kept.join(", ")} mantida(s) no plan.json como o build anterior gravou (#11969)`);
+  writeJson(planPath, merged.plan);
   if (source.mirrored) console.error("[premissa] bruto espelhado: aplicar Horizontal Flip nos clipes no Premiere (o Premiere ignora o Flop do XML, #11358)");
   for (const x of xmlPaths) console.log(x);
   return 0;
@@ -1344,7 +1429,8 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
   const fps = pf.source.fps;
   const srt = join(ctx.outDir, srtFileName(plan.spec.name));
   const planPath = f(ctx, "plan.json");
-  if (existsSync(srt) && mtime(srt) < mtime(planPath)) throw new Error(`${srt} é mais velho que o plan.json: rode srt de novo antes da prévia`);
+  // #11969: contra o build DESTA sequência, não o último build de qualquer uma.
+  if (existsSync(srt) && mtime(srt) < sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(planPath))) throw new Error(`${srt} é mais velho que o build de ${plan.spec.name} no plan.json: rode srt de novo antes da prévia`);
   const dir = join(ctx.workDir, `previa-${sequenceKey(plan.spec)}`);
   mkdirSync(dir, { recursive: true });
   const list: string[] = [];
@@ -1383,7 +1469,7 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", true, true);
   const preview = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   if (!existsSync(preview)) throw new Error(`prévia ausente: ${preview} (rode preview)`);
-  if (mtime(preview) < mtime(f(ctx, "plan.json"))) throw new Error(`${preview} é mais velha que o plan.json: rode preview de novo`);
+  if (mtime(preview) < sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(f(ctx, "plan.json")))) throw new Error(`${preview} é mais velha que o build de ${plan.spec.name} no plan.json: rode preview de novo`);
   mkdirSync(ctx.workDir, { recursive: true });
   const wav = join(ctx.workDir, `review-${sequenceKey(plan.spec)}.wav`);
   run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", preview, "-ac", "1", "-ar", "16000", wav]);
