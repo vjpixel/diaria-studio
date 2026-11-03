@@ -529,7 +529,7 @@ Rodar em foreground com `--detach` (nunca em background nem com `&`, #9686 — m
 ```bash
 LIVROS_PROMO_PRESENT=$(node -e "try{const j=JSON.parse(require('fs').readFileSync('data/monthly/$CYCLE/_internal/public-images.json','utf8'));console.log(j.images && j.images.livros_promo ? '1':'0')}catch(e){console.log('0')}")
 ```
-`LIVROS_PROMO_PRESENT=0` alimenta o item de aviso do resumo consolidado (4e) — nunca bloqueia (o box degrada com elegância pra só-texto, título/descrição/link intactos, sem `<img>` quebrado).
+`LIVROS_PROMO_PRESENT=0` alimenta o item de aviso do resumo consolidado (4e) — nunca bloqueia (o box degrada com elegância pra só-texto, título/descrição/link intactos, sem `<img>` quebrado). Desde o #12040 o template emite `**CADASTRO**` no lugar do `**LIVROS**`: o aviso só vale para draft que ainda tenha `**LIVROS**` (ciclo antigo ou colado à mão).
 
 ### 4c. Lint do draft (sumarizado)
 
@@ -604,7 +604,7 @@ Fact-check (_internal/04-fact-check.json):
 [se Etapa 3 sinalizou selection == "fallback_last" — #5321, aviso repetido aqui já que a Etapa 3 não pausa mais]
 ⚠️ É IA? do recap: NENHUMA edição do mês teve poll elegível — usando o último dia ({EAI_EDITION}) por fallback. Motivo: {reason}. Responda "trocar-eia AAMMDD" pra escolher outra edição manualmente.
 
-[se LIVROS_PROMO_PRESENT != "1" — #7862]
+[se o draft tem `**LIVROS**` e LIVROS_PROMO_PRESENT != "1" — #7862, #12040]
 ⚠️ Box LIVROS sem imagem — 04-livros-promo.jpg ausente/não capturado neste ciclo (`scripts/capture-livros-promo.ts`, requer Chrome, roda só no `neo`). O box sai só-texto (título/descrição/link intactos, sem `<img>` quebrado) — nunca bloqueia o envio. Rodar a captura manualmente antes do gate se quiser a imagem neste ciclo.
 
 [se CLARICE_TUTORIAL_STATUS == "ok" — #11836]

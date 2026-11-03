@@ -152,6 +152,9 @@ export function isClariceOnlySection(label: string): boolean {
  * `filterDraftForApoiadores`; o envio Clarice usa `draftToEmail` direto e
  * continua com os dois boxes.
  *
+ * #12040: `CADASTRO` (convite pra assinar a diária, que substituiu o LIVROS na
+ * Clarice News) também sai — apoiador já recebe a diária.
+ *
  * Fora daqui, de propósito: `LIVRO`/`LIVRO DO MÊS` (indicação editorial de UM
  * livro, não o box da página de curadoria) e as pílulas de curadoria do
  * rodapé (Cursos, Livros, Equipamentos), cuja retirada a issue deixou para
@@ -160,7 +163,7 @@ export function isClariceOnlySection(label: string): boolean {
  * que este filtro corta. @pure
  */
 export function isApoiadoresExcludedBox(label: string): boolean {
-  return label === "DIVULGAÇÃO" || label === "LIVROS";
+  return label === "DIVULGAÇÃO" || label === "LIVROS" || label === "CADASTRO";
 }
 
 /**

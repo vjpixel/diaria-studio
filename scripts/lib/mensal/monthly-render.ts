@@ -752,10 +752,13 @@ export function parseCtaLine(line: string): { label: string; rawUrl: string } | 
   return { label, rawUrl: linkM[2] };
 }
 
-export function renderCtaButton(line: string): string {
+export function renderCtaButton(line: string, posicao = "cta"): string {
   const cta = parseCtaLine(line);
   if ("text" in cta) return `<p style="margin:16px 0 0 0;font-family:${FONT_SANS};color:${INK};">${renderInline(cta.text)}</p>`;
-  const url = normalizeKnownUrl(cta.rawUrl, "cta"); // #2975: CTA pro host de marca também ganha UTM clarice (#4040: posição `cta`)
+  // #2975: CTA pro host de marca também ganha UTM clarice (#4040: posição `cta`).
+  // #12040: `posicao` própria pro box CADASTRO — com `cta` ele somaria cliques
+  // no mesmo `utm_campaign` dos botões de LIVROS/DIVULGAÇÃO.
+  const url = normalizeKnownUrl(cta.rawUrl, posicao);
   const { label } = cta;
   // Botão CTA (decisão final do editor 2026-06-09): pill "contorno" — fundo
   // paper #FBFAF6 + borda 1px bege, radius 999px, texto INK bold 16px (tamanho
@@ -851,14 +854,14 @@ export function parseBoxChunk(chunk: string, noSubtitle = false): { subtitle: st
   return { subtitle, blocks };
 }
 
-export function renderClariceBox(chunk: string, headerLabelText: string, imageUrl?: string, noSubtitle = false, imageAlt?: string): string {
+export function renderClariceBox(chunk: string, headerLabelText: string, imageUrl?: string, noSubtitle = false, imageAlt?: string, ctaPosicao = "cta"): string {
   const { subtitle, blocks } = parseBoxChunk(chunk, noSubtitle);
   const renderedBlocks = blocks.map((b) => {
     if (b.kind === "ol") {
       const items = b.items.map((item) => `<li style="margin:0 0 8px 0;">${renderInline(item)}</li>`).join("\n");
       return `<ol style="margin:0 0 16px 0;padding-left:24px;color:${INK};">${items}</ol>`;
     }
-    if (b.kind === "cta") return renderCtaButton(b.line);
+    if (b.kind === "cta") return renderCtaButton(b.line, ctaPosicao);
     return `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(b.text)}</p>`;
   });
 
@@ -891,6 +894,24 @@ export function renderClariceBox(chunk: string, headerLabelText: string, imageUr
 export function renderDivulgacaoBox(chunk: string): string {
   const d = parseDivulgacaoChunk(chunk);
   return renderClariceBox(d.chunk, "Divulgação", d.imageUrl, false, d.imageAlt);
+}
+
+/** Rótulo (kicker) do box CADASTRO (#12040) — compartilhado com o render web. */
+export const CADASTRO_BOX_KICKER = "Newsletter diária";
+
+/** Posição UTM do botão do box CADASTRO (#12040): `utm_campaign=clarice-{ciclo}-box-cadastro`. */
+export const CADASTRO_CTA_POSICAO = "box-cadastro";
+
+/**
+ * Box CADASTRO (#12040, decisão do editor 03/11/2026): convite para assinar a
+ * diária no espaço que era do box LIVROS. A Clarice News não tem espaço
+ * livre, então a chamada entrou NO LUGAR do LIVROS (4 cliques na onda de
+ * 03/11, destino repetido nas pílulas do rodapé), nunca como bloco a mais.
+ * Sem imagem, e com posição UTM própria pra medir o botão separado dos
+ * demais CTAs.
+ */
+export function renderCadastroBox(chunk: string): string {
+  return renderClariceBox(chunk, CADASTRO_BOX_KICKER, undefined, false, undefined, CADASTRO_CTA_POSICAO);
 }
 
 /**
@@ -1543,7 +1564,7 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
 //      o label `PREVIEW`; sem essa restrição um teste real capturou esse
 //      exato colapso — 3 seções em vez de 2 porque "Preview" virou boundary).
 const FIXED_LABEL_RE_NO_BOLD =
-  /^(REMETENTE|ASSUNTO(\s*\(\s*3\s*OP[ÇC][ÕO]ES\s*\))?|PREVIEW|APRESENTA[ÇC][ÃA]O|INTRO|DIVULGA[ÇC][ÃA]O|LIVROS|LIVRO( DO M[ÊE]S)?|LABORAT[ÓO]RIO CLARICE|USE MELHOR( DO M[ÊE]S)?|RADAR( DO M[ÊE]S)?|OUTRAS NOT[ÍI]CIAS DO M[ÊE]S|ENCERRAMENTO|PARA ENCERRAR)$/;
+  /^(REMETENTE|ASSUNTO(\s*\(\s*3\s*OP[ÇC][ÕO]ES\s*\))?|PREVIEW|APRESENTA[ÇC][ÃA]O|INTRO|DIVULGA[ÇC][ÃA]O|LIVROS|CADASTRO|LIVRO( DO M[ÊE]S)?|LABORAT[ÓO]RIO CLARICE|USE MELHOR( DO M[ÊE]S)?|RADAR( DO M[ÊE]S)?|OUTRAS NOT[ÍI]CIAS DO M[ÊE]S|ENCERRAMENTO|PARA ENCERRAR)$/;
 // "É IA?" não-bold só é label quando é a linha INTEIRA ("É IA?") ou seguido de
 // travessão ("É IA? — DESTAQUE DO MÊS") — NUNCA prosa que começa com a pergunta
 // ("É IA? do mês: duas versões..."), que senão vira 2ª seção e renderiza o card
@@ -1565,7 +1586,7 @@ export function isSectionLabel(line: string): boolean {
     // pra "USE MELHOR"/"RADAR" (igual ao diário). Sufixo opcional cobre ambos.
     // "RADAR"/"USE MELHOR" são ancorados ao fim ($) porque são palavras comuns:
     // sem o $, uma linha 100%-bold tipo **RADAR DA OPENAI** viraria seção espúria.
-    return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DIVULGAÇÃO$|LIVROS$|LIVRO(\s+DO\s+M[ÊE]S)?$|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
+    return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DIVULGAÇÃO$|LIVROS$|CADASTRO$|LIVRO(\s+DO\s+M[ÊE]S)?$|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
       normalized
     );
   }
@@ -1620,6 +1641,7 @@ export type SectionKind =
   | { kind: "apresentacao" }
   | { kind: "divulgacao" }
   | { kind: "livros" }
+  | { kind: "cadastro" }
   | { kind: "livro" }
   | { kind: "destaque"; n: number }
   | { kind: "clarice" }
@@ -1641,6 +1663,7 @@ export function classifySection(label: string): SectionKind {
   if (["APRESENTAÇÃO", "APRESENTACAO"].includes(label)) return { kind: "apresentacao" };
   if (label === "DIVULGAÇÃO") return { kind: "divulgacao" };
   if (label === "LIVROS") return { kind: "livros" };
+  if (label === "CADASTRO") return { kind: "cadastro" };
   if (label === "LIVRO" || label === "LIVRO DO MÊS") return { kind: "livro" };
   // DESTAQUE — aceita `DESTAQUE N | TEMA` antigo E `DESTAQUE N\] TEMA` novo.
   const destaqueMatch = label.match(/^DESTAQUE\s+(\d+)/);
@@ -1776,6 +1799,10 @@ export function draftToEmail(
         // LIVROS: box promovendo a página de curadoria de livros da diar.ia.br (bege),
         // igual ao box de livros da diária. Reusa o box do Clarice com rótulo "Livros".
         bodyParts.push(renderClariceBox(chunk, "Livros", livrosImageUrl));
+        break;
+      case "cadastro":
+        // CADASTRO (#12040): convite pra assinar a diária, no espaço que era do LIVROS.
+        bodyParts.push(renderCadastroBox(chunk));
         break;
       case "livro":
         // LIVRO: box de indicação de UM livro (bege). Kicker = CATEGORIA da seção

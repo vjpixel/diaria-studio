@@ -66,13 +66,13 @@ Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50
 
 ---
 
-**LIVROS**
+**CADASTRO**
 
-Curadoria de livros sobre IA
+Receba a diar.ia.br de segunda a sexta
 
-A diar.ia.br mantém uma curadoria de livros sobre IA, cada título com nota da Amazon, resenha e link de compra, e filtros por idioma, nível e tema. Encontre sua próxima leitura em segundos.
+Você recebe esta curadoria uma vez por mês. Se quiser mais, a diar.ia.br, que produz esta newsletter conosco, publica uma edição diária e gratuita: 5 minutos para se manter atualizado e usar melhor as IAs. É só se cadastrar no site.
 
-→ [Confira a página de livros](https://livros.diar.ia.br)
+→ [Assinar a edição diária](https://diar.ia.br/)
 
 ---
 

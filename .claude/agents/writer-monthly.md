@@ -62,7 +62,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial"/"AI" quando o sujeito concreto couber (#4825, inclusive no título narrativo — ver acima); sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
 
-5. **Seções Clarice/Livros (#6881: ordem D1 → CLARICE—DIVULGAÇÃO → D2 → LIVROS → D3 → CLARICE—TUTORIAL — LIVROS entrou entre D2 e D3, CLARICE—TUTORIAL moveu de "entre D2 e D3" pra "entre D3 e USE MELHOR").** Após D1 e antes de D2, emitir (label em negrito — #2794):
+5. **Seções Clarice/Cadastro (#6881: ordem D1 → CLARICE—DIVULGAÇÃO → D2 → CADASTRO → D3 → CLARICE—TUTORIAL; #12040: CADASTRO ocupa o espaço que era do LIVROS).** Após D1 e antes de D2, emitir (label em negrito — #2794):
    ```
    **CLARICE — DIVULGAÇÃO**
 
@@ -77,15 +77,15 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    → [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)
    ```
    CLARICE — DIVULGAÇÃO é texto FIXO (#11788 — idêntico nos ciclos 2607-08 a 2610-11): emitir literalmente como acima, sem parafrasear. O `→` faz o CTA virar botão no render (`renderCtaButton`).
-   Após D2 e antes de D3, emitir **LIVROS** — curadoria GERAL de livros sobre IA, texto FIXO (não é "Livro do mês"/resenha de 1 título — isso é outro box, label `LIVRO`, mid-body, opcional, ver seção "Boxes de divulgação mid-body" do template):
+   Após D2 e antes de D3, emitir **CADASTRO** — convite pra assinar a edição diária, texto FIXO. Substituiu o box LIVROS (#12040, decisão do editor 03/11/2026: a Clarice News não tem espaço livre, e o LIVROS era o box com menos clique). A curadoria de livros continua nas pílulas do PARA ENCERRAR; não emitir mais `**LIVROS**`:
    ```
-   **LIVROS**
+   **CADASTRO**
 
-   Curadoria de livros sobre IA
+   Receba a diar.ia.br de segunda a sexta
 
-   A diar.ia.br mantém uma curadoria de livros sobre IA, cada título com nota da Amazon, resenha e link de compra, e filtros por idioma, nível e tema. Encontre sua próxima leitura em segundos.
+   Você recebe esta curadoria uma vez por mês. Se quiser mais, a diar.ia.br, que produz esta newsletter conosco, publica uma edição diária e gratuita: 5 minutos para se manter atualizado e usar melhor as IAs. É só se cadastrar no site.
 
-   → [Confira a página de livros](https://livros.diar.ia.br)
+   → [Assinar a edição diária](https://diar.ia.br/)
    ```
    Após D3 e antes de USE MELHOR, emitir CLARICE — TUTORIAL. **Com `clarice_tutorial_path` (#11836)**, ler o JSON e montar a seção com ele, nesta forma (mesmo formato dos ciclos 2609-10 e 2610-11):
    ```
@@ -110,7 +110,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
    [Placeholder — inserir aqui o primeiro tutorial ainda não usado (ordem do Doc) do "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais. CTA no formato `→ [texto](url)`, vira botão no render. Muda a cada ciclo.]
    ```
-   CLARICE — TUTORIAL é a única seção Clarice que muda a cada ciclo: o texto vem só do arquivo do tutorial (você não tem acesso ao Drive) — sem ele, placeholder, nunca texto inventado. LIVROS e CLARICE — DIVULGAÇÃO são texto FIXO: emitir literalmente como acima, sem parafrasear. Desconto citado em qualquer outro ponto do draft (ex.: CTA do TUTORIAL) usa o mesmo "até N%" do DIVULGAÇÃO — nunca um segundo número no mesmo e-mail (#11810; `lint-monthly-draft.ts` avisa quando aparecem percentuais "até N% de desconto" diferentes).
+   CLARICE — TUTORIAL é a única seção Clarice que muda a cada ciclo: o texto vem só do arquivo do tutorial (você não tem acesso ao Drive) — sem ele, placeholder, nunca texto inventado. CADASTRO e CLARICE — DIVULGAÇÃO são texto FIXO: emitir literalmente como acima, sem parafrasear. Desconto citado em qualquer outro ponto do draft (ex.: CTA do TUTORIAL) usa o mesmo "até N%" do DIVULGAÇÃO — nunca um segundo número no mesmo e-mail (#11810; `lint-monthly-draft.ts` avisa quando aparecem percentuais "até N% de desconto" diferentes).
 
 6. **Use Melhor + Radar.** Duas seções compactas, na ordem do `prioritized.md`:
 
@@ -158,7 +158,7 @@ Da diar.ia.br:
    - `**APRESENTAÇÃO**` presente entre PREVIEW e INTRO, texto literal do boilerplate, com os 3 links corretos (#2913)
    - Intro 2-3 frases sem citar destaques
    - 3 destaques completos (cabeçalho + parágrafos + fio condutor); sem bloco "Para aprofundar"
-   - Ordem das seções (#6881): D1 → CLARICE—DIVULGAÇÃO → D2 → LIVROS → D3 → CLARICE—TUTORIAL → USE MELHOR → RADAR → É IA? → PARA ENCERRAR — `**LIVROS**` presente entre D2 e D3, texto fixo literal, CTA com `→`
+   - Ordem das seções (#6881, #12040): D1 → CLARICE—DIVULGAÇÃO → D2 → CADASTRO → D3 → CLARICE—TUTORIAL → USE MELHOR → RADAR → É IA? → PARA ENCERRAR — `**CADASTRO**` presente entre D2 e D3, texto fixo literal, CTA com `→`; nenhum `**LIVROS**`
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? presente — só o label + a linha-placeholder, sem recap (#11790) — e encerramento presentes

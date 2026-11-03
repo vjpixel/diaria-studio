@@ -217,15 +217,19 @@ async function main(): Promise<void> {
     }
     // #editor: imagem do box de curadoria de livros (04-livros-promo.jpg), igual à diária.
     // #2802: upload extraído pra lib/mensal/monthly-image-upload.ts (compartilhado com publish-monthly).
-    try {
-      livrosImageUrl = await uploadLivrosImage(monthlyDir, eiaEdition, ROOT);
-      if (livrosImageUrl) {
-        console.error(`Imagem de livros enviada: ${livrosImageUrl}`);
-      } else {
-        console.error("warn: 04-livros-promo.jpg ausente — box de livros sem imagem");
+    // #12040: draft sem `**LIVROS**` (o template agora emite CADASTRO no lugar)
+    // não usa a imagem — sem isso o warn de imagem ausente sairia todo ciclo.
+    if (/^\**LIVROS\**\s*$/m.test(draft)) {
+      try {
+        livrosImageUrl = await uploadLivrosImage(monthlyDir, eiaEdition, ROOT);
+        if (livrosImageUrl) {
+          console.error(`Imagem de livros enviada: ${livrosImageUrl}`);
+        } else {
+          console.error("warn: 04-livros-promo.jpg ausente — box de livros sem imagem");
+        }
+      } catch (e) {
+        console.error(`warn: upload da imagem de livros falhou — ${(e as Error).message}`);
       }
-    } catch (e) {
-      console.error(`warn: upload da imagem de livros falhou — ${(e as Error).message}`);
     }
   }
 
