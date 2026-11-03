@@ -63,9 +63,14 @@ export function buildCodexPrompt(sd) {
   }
   p += `Image description:\n${sd.positive}\n`;
   if (sd.negative) p += `\nDo NOT include any of the following: ${sd.negative}\n`;
-  p += `
+  // #11942 (review da #11946): no modo identity o enquadramento é o close-up do
+  // prompt ("face large"); a instrução de headroom generoso puxaria contra ele
+  // e deixaria a cabeça pequena. Nos demais modos ela segue valendo.
+  if (sd.reference_mode !== 'identity') {
+    p += `
 Leave generous empty headroom above any head or main subject; never crop the top of a subject.
 `;
+  }
   p += `\nDo not write any code and do not ask questions. When the file ${OUT_NAME} exists, reply with just "done".`;
   return p;
 }

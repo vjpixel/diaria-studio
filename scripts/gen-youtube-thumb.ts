@@ -62,7 +62,7 @@
  * Georgia precisa existir na máquina (guard `assertBrandSerifAvailable`, #4090).
  */
 
-import { copyFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
@@ -210,6 +210,10 @@ function thumbMirrored(dir: string, flags: Set<string>, values: Record<string, s
  * #11942: grava um prompt do `codex-image.js` por expressão (o frame escolhido
  * como referência de identidade) e imprime os comandos de geração.
  */
+const STALE_PORTRAIT_FILE = new RegExp(
+  `^(retrato-\\d+\\.jpg|prompt-\\d+\\.json|${THUMB_PORTRAITS_SHEET.replace(".", "\\.")}|${THUMB_PORTRAIT_PICKED.replace(".", "\\.")})$`,
+);
+
 function portraitPrompts(dir: string, values: Record<string, string>): number {
   const expressions = parseExpressions(values["expressions"]);
   const ref = resolve(values["ref"] ?? join(dir, THUMB_FRAMES_DIR, THUMB_FRAME_PICKED));
@@ -219,6 +223,12 @@ function portraitPrompts(dir: string, values: Record<string, string>): number {
   }
   const outDir = join(dir, THUMB_PORTRAITS_DIR);
   mkdirSync(outDir, { recursive: true });
+  // Review da #11946: opções, folha e escolha de uma rodada anterior seriam
+  // aceitas em silêncio pelo --portrait-sheet/--pick-portrait desta rodada
+  // (outra expressão no mesmo número, ou um N a mais). Nova rodada começa limpa.
+  for (const f of readdirSync(outDir)) {
+    if (STALE_PORTRAIT_FILE.test(f)) rmSync(join(outDir, f), { force: true });
+  }
   const options = expressions.map((expression, i) => {
     const n = i + 1;
     const prompt = join(outDir, portraitPromptFileName(n));

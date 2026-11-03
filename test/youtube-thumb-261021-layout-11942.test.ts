@@ -224,6 +224,12 @@ describe("#11942 retrato por IA com expressão editável", () => {
     // Sem reference_mode, a referência segue sendo outpaint (#11228).
     assert.match(buildCodexPrompt({ positive: "x", reference_images: ["/a.jpg"] }), /outpaint/);
   });
+
+  it("codex-image.js: identity não anexa o headroom generoso (puxaria contra o close-up); os outros modos mantêm", () => {
+    assert.doesNotMatch(buildCodexPrompt(buildPortraitPrompt("desconfiado", "/abs/f.png")), /headroom/);
+    assert.match(buildCodexPrompt({ positive: "x", reference_images: ["/a.jpg"] }), /generous empty headroom/);
+    assert.match(buildCodexPrompt({ positive: "x" }), /generous empty headroom/);
+  });
 });
 
 describe("#11942 CLI: opções de retrato", () => {
@@ -266,6 +272,39 @@ describe("#11942 CLI: opções de retrato", () => {
       const pick = run(["--pick-portrait", "2", "--edition-dir", dir]);
       assert.equal(pick.status, 0, pick.stderr);
       assert.deepEqual(readFileSync(join(dir, THUMB_PORTRAITS_DIR, "escolhido.jpg")), readFileSync(out.options[1].out));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--portrait-prompts de nova rodada apaga retrato-N.jpg, folha e escolha da rodada anterior (review #11946)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "thumb-11942-stale-"));
+    try {
+      const ref = join(dir, "frame.png");
+      writeFileSync(ref, await rgba(64, 80, [120, 90, 60], 1));
+      const first = run(["--portrait-prompts", "--expressions", "desconfiado,surpreso,preocupado", "--ref", ref, "--edition-dir", dir]);
+      assert.equal(first.status, 0, first.stderr);
+      const pdir = join(dir, THUMB_PORTRAITS_DIR);
+      const jpg = await sharp({ create: { width: 108, height: 135, channels: 3, background: { r: 90, g: 90, b: 90 } } }).jpeg().toBuffer();
+      for (const n of [1, 2, 3]) writeFileSync(join(pdir, `retrato-${n}.jpg`), jpg);
+      writeFileSync(join(pdir, "opcoes.jpg"), jpg);
+      writeFileSync(join(pdir, "escolhido.jpg"), jpg);
+      writeFileSync(join(pdir, "prompt-3.json"), "{}");
+      writeFileSync(join(pdir, "outro.txt"), "fica");
+
+      const second = run(["--portrait-prompts", "--expressions", "serio,ironico", "--ref", ref, "--edition-dir", dir]);
+      assert.equal(second.status, 0, second.stderr);
+      for (const f of ["retrato-1.jpg", "retrato-2.jpg", "retrato-3.jpg", "opcoes.jpg", "escolhido.jpg", "prompt-3.json"]) {
+        assert.ok(!existsSync(join(pdir, f)), `${f} da rodada anterior deveria ter sido apagado`);
+      }
+      assert.ok(existsSync(join(pdir, "prompt-1.json")) && existsSync(join(pdir, "prompt-2.json")));
+      assert.ok(existsSync(join(pdir, "outro.txt")), "arquivo fora do padrão não é tocado");
+
+      // Sem as opções novas, a folha falha em vez de usar as velhas; o N=3 velho sumiu.
+      const sheet = run(["--portrait-sheet", "--edition-dir", dir]);
+      assert.equal(sheet.status, 1);
+      assert.match(sheet.stderr, /retrato-1\.jpg/);
+      assert.equal(run(["--pick-portrait", "3", "--edition-dir", dir]).status, 1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
