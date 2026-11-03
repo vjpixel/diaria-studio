@@ -101,6 +101,12 @@ describe("#11964 rodada manual do corte não publica destino do timer na janela 
     assert.equal(action(p, "linkedin_page_repost"), "skip_invalid");
   });
 
+  it("Reels acima do teto da API não é delegado (o timer também não publica): segue o passo guiado desta rodada", () => {
+    const p = planShortsPublish({ ...base, config: { publishing: { shorts: { ...shorts, instagram_api_max_seconds_by_account: { diaria: 30 } } } }, now: at(20 * MIN) });
+    assert.equal(action(p, "instagram"), "guided");
+    assert.equal(action(p, "linkedin_profile"), "skip_delegated");
+  });
+
   it("--now na janela também delega (o timer pode estar publicando ao mesmo tempo)", () => {
     const p = planShortsPublish({ ...base, now: at(30 * MIN), forceNow: true });
     for (const d of TIMER_DESTS) assert.equal(action(p, d), "skip_delegated", d);

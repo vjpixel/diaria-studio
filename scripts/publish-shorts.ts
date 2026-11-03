@@ -994,6 +994,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // não publica e só alarma, então a rodada manual com --now é segura).
   const corteTimerOwnsNow = (destination: string): boolean => {
     if (!corte || !corteTimer || corte.timerRun === true || !CORTE_TIMER_DESTINATIONS.includes(destination)) return false;
+    // Reels acima do teto da API: o timer também não publica (vira passo guiado); o passo fica com esta rodada.
+    if (destination === "instagram" && !igFit.fits) return false;
     const deltaMs = input.now.getTime() - Date.parse(shortTime.at);
     return deltaMs >= -OWNER_SCHEDULE_MIN_LEAD_MS && deltaMs <= MAX_FIRE_LATENESS_MS;
   };
