@@ -21,7 +21,7 @@
  * #2818 (self-review finding 1): o guardrail crítico acima só cobre o
  * subconjunto de labels que causa zero-imagem/zero-seção se perdido. Um
  * segundo check (`checkOptionalSectionIntegrity`) generaliza pros labels
- * OPCIONAIS (CLARICE —, LIVROS, PREVIEW, REMETENTE,
+ * OPCIONAIS (CLARICE —, LIVROS, CADASTRO, PREVIEW, REMETENTE,
  * LABORATÓRIO CLARICE, OUTRAS NOTÍCIAS DO MÊS): se PRESENTES no draft,
  * exige que sejam reconhecidos como seção — sem exigir presença.
  *
@@ -100,7 +100,7 @@ export function checkSectionIntegrity(draft: string): SectionIntegrityResult {
 
 /**
  * Labels OPCIONAIS — podem faltar em drafts legítimos (CLARICE é mensal e às
- * vezes omitida, LIVROS é um box promocional opcional, PREVIEW/REMETENTE só
+ * vezes omitida, LIVROS/CADASTRO são boxes promocionais opcionais, PREVIEW/REMETENTE só
  * existem no header, LABORATÓRIO CLARICE nem sempre roda). Diferente de
  * REQUIRED_SECTION_CHECKS, a AUSÊNCIA aqui nunca é falha.
  *
@@ -125,6 +125,7 @@ export const OPTIONAL_SECTION_CHECKS: ReadonlyArray<{ name: string; presentRe: R
   { name: "REMETENTE", presentRe: /^\**REMETENTE\**\s*$/m, re: /^REMETENTE\b/i },
   { name: "PREVIEW", presentRe: /^\**PREVIEW\**\s*$/m, re: /^PREVIEW\b/i },
   { name: "LIVROS", presentRe: /^\**LIVROS\**\s*$/m, re: /^LIVROS\b/i },
+  { name: "CADASTRO", presentRe: /^\**CADASTRO\**\s*$/m, re: /^CADASTRO\b/i }, // #12040
   // #8824: label puro "DIVULGAÇÃO" (ex: box da imersão, context/templates/
   // newsletter-monthly.md) — distinto de "CLARICE — DIVULGAÇÃO" (checado
   // abaixo por "CLARICE —"). presentRe exige que a linha comece com

@@ -152,6 +152,9 @@ export function isClariceOnlySection(label: string): boolean {
  * `filterDraftForApoiadores`; o envio Clarice usa `draftToEmail` direto e
  * continua com os dois boxes.
  *
+ * #12040: `CADASTRO` (convite pra assinar a diária, que substituiu o LIVROS na
+ * Clarice News) também sai — apoiador já recebe a diária.
+ *
  * Fora daqui, de propósito: `LIVRO`/`LIVRO DO MÊS` (indicação editorial de UM
  * livro, não o box da página de curadoria) e as pílulas de curadoria do
  * rodapé (Cursos, Livros, Equipamentos), cuja retirada a issue deixou para
@@ -160,7 +163,7 @@ export function isClariceOnlySection(label: string): boolean {
  * que este filtro corta. @pure
  */
 export function isApoiadoresExcludedBox(label: string): boolean {
-  return label === "DIVULGAÇÃO" || label === "LIVROS";
+  return label === "DIVULGAÇÃO" || label === "LIVROS" || label === "CADASTRO";
 }
 
 /**
@@ -230,8 +233,8 @@ export function stripRecomendacaoDiariaBlock(sectionBody: string): string {
 /**
  * Preprocessa `draft.md` (o MESMO arquivo usado pelo envio Clarice) pra
  * variante Beehiiv (#4482, decisão 3): remove por inteiro as seções
- * `APRESENTAÇÃO`/`CLARICE — *` (sem substituição), os boxes `DIVULGAÇÃO` e
- * `LIVROS` (#11806, `isApoiadoresExcludedBox`) e o box "Recomendação da
+ * `APRESENTAÇÃO`/`CLARICE — *` (sem substituição), os boxes `DIVULGAÇÃO`,
+ * `LIVROS` e `CADASTRO` (#11806/#12040, `isApoiadoresExcludedBox`) e o box "Recomendação da
  * equipe da Clarice" quando colado dentro de outra seção (ex.: entre
  * destaques). Reusa `splitByLabels`/`normalizeLabel` de `monthly-render.ts`
  * — mesmo parser que `draftToEmail` usa internamente, então o resultado

@@ -45,6 +45,7 @@ export const MENSAL_POSICOES = [
   "wordmark", // wordmark automático `diar.ia`/`diar.ia.br` — sufixado com a seção corrente
   "inline",   // link markdown `[texto](url)` no meio do parágrafo
   "cta",      // botão CTA `→ [texto](url)`
+  "box-cadastro", // botão do box CADASTRO (#12040)
   "titulo",   // título de destaque linkado
   "pill",     // pill link (Radar / Use Melhor / Outras notícias)
 ] as const;
