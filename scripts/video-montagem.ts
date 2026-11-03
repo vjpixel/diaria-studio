@@ -1253,7 +1253,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       screenTitle = titleMode === "png" ? { text: t.text, mode: "png", pngPath: titlePngXmlPath(mediaPath, ctx.edition) } : { text: t.text, mode: "text" };
       console.error(
         `[premissa] título na vertical (${t.how === "blocks" ? "screenTitle do blocks.json" : "título do D1; screenTitle no blocks.json sobrepõe"}): "${t.text}", ` +
-          (titleMode === "png" ? `PNG ${png} na V2` : `gerador de texto do FCP7 na V2 (reserva: ${png}; --title-mode png se o Premiere recusar o gerador)`) +
+          (titleMode === "png" ? `PNG ${png} na V2` : `gerador de texto do FCP7 na V3 sobre fundo preto 70% na V2 (reserva: ${png}; --title-mode png se o Premiere recusar o gerador)`) +
           "; conferir no 1º import (#11756)",
       );
     } else if (t.how === "missing") console.error("[aviso] vertical sem título: sem screenTitle no blocks.json e sem D1 em 02-reviewed.md (#11756)");

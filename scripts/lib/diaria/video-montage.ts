@@ -1942,15 +1942,81 @@ export function isVerticalSpec(spec: Pick<SequenceSpec, "width" | "height">): bo
   return spec.height > spec.width;
 }
 
-/** Estilo do título: serifada, branca, negrito, centrada no topo (o lettering das verticais 261028-261030). */
+/**
+ * Estilo do título: serifada, branca, negrito, centrada no topo (o lettering
+ * das verticais 261028-261030), sobre um fundo preto a 70% (#11941).
+ *
+ * Medidas em pixel de uma vertical de `refWidth` (1080) de largura; outra
+ * largura escala junto (`screenTitleLayout`). `fontPx` é o tamanho que a letra
+ * deve TER na tela, não o número que vai no XML: ver `xmlSizeRefWidth`.
+ */
 export const SCREEN_TITLE_STYLE = {
   font: "Georgia",
-  sizePx: 80,
-  /** Máximo de caracteres por linha (Georgia negrito a 80 px cabe ~20 em 1080 px com margem). */
-  maxLineChars: 20,
+  refWidth: 1080,
+  /** Altura da letra na tela, numa vertical de 1080 px (#11941: 80 no XML passou da largura no import da 261103). */
+  fontPx: 64,
+  /**
+   * `[premissa]` #11941: o `fontsize` do gerador "Text" do FCP7 não é pixel da
+   * sequência. Premissa sem medição (não há Premiere neste executor): o
+   * Premiere lê o tamanho como o de um quadro de referência de 720 px de
+   * largura (o SD do FCP7, onde o tamanho 36 padrão do gerador foi desenhado)
+   * e escala pela largura da sequência. Com ela, 80 virava 120 px numa
+   * vertical de 1080, e 20 caracteres de Georgia negrito (~1440 px) passavam
+   * da largura, como o editor viu. O XML leva `fontPx * xmlSizeRefWidth / largura`.
+   * Se o 1º import mostrar outro fator, é só esta constante.
+   */
+  xmlSizeRefWidth: 720,
+  /** Largura média de um caractere de Georgia negrito, em em (estimativa para quebrar linha e medir o fundo). */
+  avgCharEm: 0.6,
+  /** Máximo de caracteres por linha: 22 x 0,6 x 64 = 845 px, dentro dos 1080 menos margem e respiro do fundo. */
+  maxLineChars: 22,
+  /** Entrelinha, em múltiplos do tamanho da letra. */
+  lineHeightEm: 1.2,
   /** Centro do bloco de texto: fração da altura a partir do centro (negativo = acima); -0,35 = 15% do topo. */
   originVert: -0.35,
+  /** Margem mínima entre o fundo e a borda lateral do quadro, em px de 1080. */
+  marginPx: 54,
+  /** Respiro do fundo em volta do texto, em px de 1080. */
+  padXPx: 40,
+  padYPx: 28,
+  /** Opacidade do fundo preto, em % (pedido do editor, #11941). */
+  backgroundOpacityPct: 70,
+  /**
+   * `[premissa]` #11941: separador de linha DENTRO do texto do gerador. O
+   * `&#13;` (CR, o que o FCP7 exporta) abriu uma caixa por linha no Premiere
+   * (261103); o `&#10;` (LF) é a quebra de linha que não é fim de parágrafo, e
+   * o texto inteiro vai num `str` só, num gerador só. Conferir no 1º import.
+   */
+  xmlLineBreak: "&#10;",
 } as const;
+
+/** Geometria do título numa sequência (#11941): tamanho da letra, linhas e a caixa do fundo, em px da sequência. */
+export interface ScreenTitleLayout {
+  lines: string[];
+  fontPx: number;
+  lineH: number;
+  /** Centro vertical do bloco de texto. */
+  centerY: number;
+  /** Caixa do fundo preto (x/y = canto superior esquerdo). */
+  box: { x: number; y: number; w: number; h: number };
+  /** Valor do `fontsize` do gerador "Text" no XML (ver `SCREEN_TITLE_STYLE.xmlSizeRefWidth`). */
+  xmlFontSize: number;
+}
+
+export function screenTitleLayout(text: string, width: number, height: number): ScreenTitleLayout {
+  const st = SCREEN_TITLE_STYLE;
+  const k = width / st.refWidth;
+  const lines = wrapScreenTitle(text);
+  const fontPx = st.fontPx * k;
+  const lineH = fontPx * st.lineHeightEm;
+  const centerY = height / 2 + st.originVert * height;
+  const longest = Math.max(0, ...lines.map((l) => l.length));
+  const maxW = width - 2 * st.marginPx * k;
+  const w = Math.min(longest * st.avgCharEm * fontPx + 2 * st.padXPx * k, maxW);
+  const h = lines.length * lineH + 2 * st.padYPx * k;
+  const box = { x: Math.round((width - w) / 2), y: Math.round(centerY - h / 2), w: Math.round(w), h: Math.round(h) };
+  return { lines, fontPx, lineH, centerY, box, xmlFontSize: Math.round((fontPx * st.xmlSizeRefWidth) / width) };
+}
 
 /** Quebra o título em linhas de até `maxChars` (palavra maior que isso fica inteira na linha). */
 export function wrapScreenTitle(text: string, maxChars: number = SCREEN_TITLE_STYLE.maxLineChars): string[] {
@@ -1984,23 +2050,61 @@ export function firstTitledVertical(plans: SequencePlan[]): SequencePlan | null 
 }
 
 /**
- * Título em texto na faixa V2 das verticais (#11756). `text` = gerador de
+ * Título em texto nas verticais (#11756; V2 fundo + V3 texto desde #11941). `text` = gerador de
  * texto do FCP7 (`generatoritem` "Text"); `png` = o PNG transparente do
  * tamanho da sequência (`pngPath`, já no caminho que o Premiere vai abrir)
  * como clipe, fallback se o Premiere recusar o gerador.
  */
 export type ScreenTitleXml = { text: string; mode: "text" } | { text: string; mode: "png"; pngPath: string };
 
-function textGenerator(id: string, lines: string[], len: number, start: number, rate: string): string {
+const xmlParam = (pid: string, name: string, body: string) => `<parameter><parameterid>${pid}</parameterid><name>${name}</name>${body}</parameter>\n`;
+
+/** Valor de 0 a 100 com 2 casas (Crop/Opacity do FCP7 são em %). */
+const pct = (v: number) => String(Math.round(Math.min(100, Math.max(0, v)) * 100) / 100);
+
+/**
+ * Fundo do título (#11941): gerador "Color" do FCP7 (matte preto) recortado
+ * pelo filtro Crop na caixa de `screenTitleLayout` e com Opacity a 70%. Fica
+ * na faixa logo abaixo do texto (V2 = fundo, V3 = texto). Crop e Opacity são
+ * filtros de movimento do FCP7 em %, os que o import de XML do Premiere lê
+ * junto com o Basic Motion (premissa, conferir no 1º import).
+ */
+function backgroundGenerator(id: string, layout: ScreenTitleLayout, width: number, height: number, len: number, start: number, rate: string): string {
+  const { box } = layout;
+  const crop = (pid: string, v: number) => xmlParam(pid, pid, `<valuemin>0</valuemin><valuemax>100</valuemax><value>${pct(v)}</value>`);
+  return (
+    `<generatoritem id="${id}"><name>titulo-fundo</name><enabled>TRUE</enabled><duration>${len}</duration>\n` +
+    `${rate}<start>${start}</start><end>${start + len}</end><in>0</in><out>${len}</out><anamorphic>FALSE</anamorphic><alphatype>none</alphatype>\n` +
+    `<effect><name>Color</name><effectid>Color</effectid><effectcategory>Matte</effectcategory><effecttype>generator</effecttype><mediatype>video</mediatype>\n` +
+    xmlParam("fillcolor", "Color", `<value><alpha>255</alpha><red>0</red><green>0</green><blue>0</blue></value>`) +
+    `</effect>\n` +
+    `<filter><effect><name>Crop</name><effectid>crop</effectid><effectcategory>motion</effectcategory><effecttype>motion</effecttype><mediatype>video</mediatype>\n` +
+    crop("left", (box.x / width) * 100) +
+    crop("right", ((width - box.x - box.w) / width) * 100) +
+    crop("top", (box.y / height) * 100) +
+    crop("bottom", ((height - box.y - box.h) / height) * 100) +
+    `</effect></filter>\n` +
+    `<filter><effect><name>Opacity</name><effectid>opacity</effectid><effectcategory>motion</effectcategory><effecttype>motion</effecttype><mediatype>video</mediatype>\n` +
+    xmlParam("opacity", "opacity", `<valuemin>0</valuemin><valuemax>100</valuemax><value>${SCREEN_TITLE_STYLE.backgroundOpacityPct}</value>`) +
+    `</effect></filter></generatoritem>`
+  );
+}
+
+/**
+ * O título num gerador "Text" só (#11941): o texto inteiro num `str`, com as
+ * linhas separadas por `xmlLineBreak` (uma caixa, não uma por linha), e o
+ * `fontsize` convertido de `fontPx` pela premissa de `xmlSizeRefWidth`.
+ */
+function textGenerator(id: string, layout: ScreenTitleLayout, len: number, start: number, rate: string): string {
   const st = SCREEN_TITLE_STYLE;
-  const p = (pid: string, name: string, body: string) => `<parameter><parameterid>${pid}</parameterid><name>${name}</name>${body}</parameter>\n`;
+  const p = xmlParam;
   return (
     `<generatoritem id="${id}"><name>titulo-tela</name><enabled>TRUE</enabled><duration>${len}</duration>\n` +
     `${rate}<start>${start}</start><end>${start + len}</end><in>0</in><out>${len}</out><anamorphic>FALSE</anamorphic><alphatype>black</alphatype>\n` +
     `<effect><name>Text</name><effectid>Text</effectid><effectcategory>Text</effectcategory><effecttype>generator</effecttype><mediatype>video</mediatype>\n` +
-    p("str", "Text", `<value>${lines.map(escapeXml).join("&#13;")}</value>`) +
+    p("str", "Text", `<value>${layout.lines.map(escapeXml).join(st.xmlLineBreak)}</value>`) +
     p("fontname", "Font", `<value>${st.font}</value>`) +
-    p("fontsize", "Size", `<valuemin>0</valuemin><valuemax>1000</valuemax><value>${st.sizePx}</value>`) +
+    p("fontsize", "Size", `<valuemin>0</valuemin><valuemax>1000</valuemax><value>${layout.xmlFontSize}</value>`) +
     p("fontstyle", "Style", `<valuemin>1</valuemin><valuemax>4</valuemax><value>2</value>`) +
     p("fontalign", "Alignment", `<valuemin>1</valuemin><valuemax>3</valuemax><value>2</value>`) +
     p("fontcolor", "Font Color", `<value><alpha>255</alpha><red>255</red><green>255</green><blue>255</blue></value>`) +
@@ -2010,21 +2114,21 @@ function textGenerator(id: string, lines: string[], len: number, start: number, 
 }
 
 /**
- * SVG transparente com o título (fallback PNG, #11756): mesmo estilo do
- * gerador, linhas centradas em torno de `originVert`. Sem fundo: o
- * rasterizador (sharp) grava o PNG com alfa. Fonte: Georgia, com fallback
- * serif onde ela não existe (o raster é por máquina).
+ * SVG com o título (fallback PNG, #11756): mesmo estilo e mesma geometria do
+ * gerador (`screenTitleLayout`), linhas centradas em torno de `originVert`,
+ * sobre o fundo preto a 70% (#11941). Fora da caixa o PNG é transparente (o
+ * sharp grava com alfa). Fonte: Georgia, com fallback serif onde ela não
+ * existe (o raster é por máquina).
  */
 export function screenTitleSvg(text: string, width: number, height: number): string {
   const st = SCREEN_TITLE_STYLE;
-  const lines = wrapScreenTitle(text);
-  const lineH = Math.round(st.sizePx * 1.2);
-  const centerY = height / 2 + st.originVert * height;
-  const firstBaseline = centerY - ((lines.length - 1) * lineH) / 2 + st.sizePx * 0.35;
+  const { lines, fontPx, lineH, centerY, box } = screenTitleLayout(text, width, height);
+  const firstBaseline = centerY - ((lines.length - 1) * lineH) / 2 + fontPx * 0.35;
   const tspans = lines.map((l, i) => `<text x="${width / 2}" y="${Math.round(firstBaseline + i * lineH)}">${escapeXml(l)}</text>`).join("\n  ");
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
-    `<g font-family="${st.font}, 'DejaVu Serif', serif" font-size="${st.sizePx}" font-weight="700" fill="#FFFFFF" text-anchor="middle">\n  ${tspans}\n</g>\n</svg>\n`
+    `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" fill="#000000" fill-opacity="${st.backgroundOpacityPct / 100}"/>\n` +
+    `<g font-family="${st.font}, 'DejaVu Serif', serif" font-size="${Math.round(fontPx)}" font-weight="700" fill="#FFFFFF" text-anchor="middle">\n  ${tspans}\n</g>\n</svg>\n`
   );
 }
 
@@ -2039,8 +2143,9 @@ export function screenTitleSvg(text: string, width: number, height: number): str
  * Horizontal Flip é aplicado à mão.
  *
  * `audioGain` (#11755): o Audio Levels em cada clipe de áudio. `screenTitle`
- * (#11756): faixa V2 com o título nas sequências verticais, no trecho de
- * `screenTitleSpan`. Os dois são premissas a conferir no 1º import.
+ * (#11756): o título nas sequências verticais, no trecho de `screenTitleSpan`
+ * (modo text: V2 = fundo preto a 70%, V3 = texto, #11941; modo png: o PNG com
+ * o fundo na V2). Os dois são premissas a conferir no 1º import.
  */
 export function buildXmeml(
   plans: SequencePlan[],
@@ -2085,7 +2190,15 @@ export function buildXmeml(
     if (!span || span.end <= span.start) return "";
     const len = span.end - span.start;
     const id = `titulo-${si + 1}`;
-    if (title.mode === "text") return `\n<track>${textGenerator(id, wrapScreenTitle(title.text), len, span.start, rate)}</track>`;
+    if (title.mode === "text") {
+      // #11941: V2 = fundo preto a 70%, V3 = o texto numa caixa só.
+      const layout = screenTitleLayout(title.text, plan.spec.width, plan.spec.height);
+      return (
+        `\n<track>${backgroundGenerator(`titulo-fundo-${si + 1}`, layout, plan.spec.width, plan.spec.height, len, span.start, rate)}</track>` +
+        `\n<track>${textGenerator(id, layout, len, span.start, rate)}</track>`
+      );
+    }
+    // PNG (#11941): o fundo já vem desenhado no próprio PNG, num clipe só.
     // PNG parado: duração do arquivo longa (a do bruto), recortada pelo in/out do clipe.
     const known = pngFileIds.get(title.pngPath);
     const fileId = known ?? (pngFileIds.size === 0 ? "file-titulo" : `file-titulo-${pngFileIds.size + 1}`);

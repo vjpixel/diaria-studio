@@ -406,6 +406,23 @@ export function verifyBodyConflictError(values: Record<string, string>, flags: S
   );
 }
 
+/**
+ * #11937: em `main()` o ramo `--body-file` retorna antes do ramo `--add-label`
+ * — com os dois na mesma chamada o corpo era gravado, o helper saía 0 e a
+ * label nunca era aplicada. Mesma classe do #11930/#11934: recusa o par com
+ * erro (antes de qualquer escrita) em vez de executar só metade.
+ * Devolve a mensagem de erro, ou `null` se a combinação é válida.
+ */
+export function bodyFileAddLabelConflictError(values: Record<string, string>, flags: Set<string>): string | null {
+  const has = (k: string) => values[k] !== undefined || flags.has(k);
+  if (!has("add-label") || !(has("body-file") || has("body"))) return null;
+  const corpo = has("body-file") ? "--body-file" : "--body";
+  return (
+    `${corpo} e --add-label não combinam numa chamada só (o corpo era gravado e a label descartada em silêncio, #11937). ` +
+    `Rode em duas chamadas: --pr N --body-file arquivo.md e depois --pr N --add-label a,b.`
+  );
+}
+
 /** Aviso em stderr do modo `--verify-body` sozinho (#11930). */
 export const VERIFY_BODY_READ_ONLY_NOTICE =
   "[gh-pr-safe-edit] --verify-body só confere o corpo atual da PR, não grava nada; para editar o corpo use --body-file arquivo.md (#11930).";
@@ -422,9 +439,10 @@ function usage(): string {
     "Substitui `gh pr edit --body`/`--add-label` (falha em silêncio, #6292) por REST + verificação pós-escrita.\n" +
     "--body-file recusa corpo que não cita (Closes/REFS) as issues da PR — da branch, ou de --issues (#10698).\n" +
     "--verify-body confere o corpo ATUAL da PR do mesmo jeito; rodar logo após `gh pr create`.\n" +
-    "  SÓ CONFERE, NÃO GRAVA (#11930): para editar o corpo use --body-file; os dois juntos (ou com --body) são recusados.\n" +
+    "  SÓ CONFERE, NÃO GRAVA (#11930): para editar o corpo use --body-file; combinado com --body-file/--body/--add-label é recusado (#11934).\n" +
     "  Também confere que o headRefOid da PR é o HEAD local (#11566) — do checkout em --worktree (default cwd);\n" +
-    "  checkout em outra branch, fora do git ou só ATRÁS da PR (HEAD local ancestral do da PR) só gera aviso."
+    "  checkout em outra branch, fora do git ou só ATRÁS da PR (HEAD local ancestral do da PR) só gera aviso.\n" +
+    "--body-file e --add-label são chamadas separadas: os dois juntos são recusados (#11937)."
   );
 }
 
@@ -477,6 +495,13 @@ async function main() {
   const conflict = verifyBodyConflictError(values, flags);
   if (conflict) {
     console.error(`[gh-pr-safe-edit] ${conflict}\n\n${usage()}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const labelConflict = bodyFileAddLabelConflictError(values, flags);
+  if (labelConflict) {
+    console.error(`[gh-pr-safe-edit] ${labelConflict}\n\n${usage()}`);
     process.exitCode = 1;
     return;
   }
