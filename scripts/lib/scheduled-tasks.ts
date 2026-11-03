@@ -1884,7 +1884,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Beehiiv-Backup",
     description: "snapshot semanal da publicacao Beehiiv (assinantes com origem + engajamento, posts, segmentos)",
-    steps: [{ key: "backup", script: "scripts/backup-beehiiv.ts" }],
+    // #11413: 2º passo envia a cópia off-site (tar.gz + AES-256-GCM) do
+    // snapshot do dia e o dump dos votos do É IA? (KV POLL) pro bucket R2
+    // privado `diaria-backup`. Mesmo timer, sem task nova: o runner roda os
+    // passos em sequência sempre, então o snapshot local vale mesmo se o
+    // off-site falhar, e a falha do off-site sai com exit próprio + issue de
+    // alarme (`scripts/backup-offsite.ts`). A `description` não mudou de
+    // propósito: ela vira o `Description=` do unit systemd, e o passo novo
+    // entra sem regenerar o unit (o runner lê os passos em tempo de execução).
+    steps: [
+      { key: "backup", script: "scripts/backup-beehiiv.ts" },
+      { key: "offsite", script: "scripts/backup-offsite.ts" },
+    ],
     logPath: "beehiiv-backup/.backup.log",
     // Domingo 03:00 BRT — o primeiro timer do dia, antes do Diaria-Seo-Weekly
     // (04:10, o mais cedo já registrado) e de qualquer daily (a mais cedo é

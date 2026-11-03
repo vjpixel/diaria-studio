@@ -197,3 +197,57 @@ export function createKvRestOps(cfg: KvRestConfig): KvOps {
   };
   return ops;
 }
+
+/** Erro HTTP do KV REST com o status (o caller distingue 401/403 de falha transitória). */
+export class KvRestHttpError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "KvRestHttpError";
+    this.status = status;
+  }
+}
+
+/** Teto de chaves por chamada do bulk get da Cloudflare. */
+export const KV_BULK_GET_MAX_KEYS = 100;
+
+/**
+ * #11413: lê até `KV_BULK_GET_MAX_KEYS` valores numa chamada
+ * (`POST .../bulk/get`, `type: "text"`). Chave inexistente volta `null` no
+ * mapa. O dump dos votos do É IA? usa isto em vez de um GET por chave: são
+ * milhares de chaves `vote:` e o limite global da API é ~1.200 requests a
+ * cada 5 minutos. Lança em status != 2xx ou envelope inválido (o caller
+ * decide se cai no GET individual).
+ */
+export async function kvRestBulkGet(cfg: KvRestConfig, keys: readonly string[]): Promise<Map<string, string | null>> {
+  if (keys.length === 0) return new Map();
+  if (keys.length > KV_BULK_GET_MAX_KEYS) {
+    throw new Error(`kvRestBulkGet: no máximo ${KV_BULK_GET_MAX_KEYS} chaves por chamada (recebeu ${keys.length})`);
+  }
+  const rawFetch: KvFetch = cfg.fetchFn ?? ((url, init) => fetch(url, init));
+  const base = `${API_BASE}/accounts/${encodeURIComponent(cfg.accountId)}/storage/kv/namespaces/${encodeURIComponent(cfg.namespaceId)}`;
+  const res = await rawFetch(`${base}/bulk/get`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${cfg.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ keys, type: "text" }),
+    signal: AbortSignal.timeout(cfg.timeoutMs ?? KV_REST_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new KvRestHttpError(`KV REST bulk get falhou: HTTP ${res.status} — ${await errorDetail(res)}`, res.status);
+  const text = await res.text();
+  let json: { success?: boolean; errors?: unknown; result?: { values?: unknown } } | null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`KV REST bulk get devolveu corpo não-JSON: ${text.slice(0, 200)}`);
+  }
+  const values = json?.result?.values;
+  if (!json || json.success === false || values === null || typeof values !== "object") {
+    throw new Error(`KV REST bulk get devolveu envelope inválido: ${JSON.stringify(json?.errors ?? [])}`);
+  }
+  const out = new Map<string, string | null>();
+  for (const k of keys) {
+    const v = (values as Record<string, unknown>)[k];
+    out.set(k, v === undefined || v === null ? null : typeof v === "string" ? v : JSON.stringify(v));
+  }
+  return out;
+}

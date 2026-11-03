@@ -23,7 +23,9 @@
  * engagement são MCP-only (`list_post_clicks`, `list_post_subscriber_engagement`,
  * cháveis só do top-level Claude — ver beehiiv-sync.ts) e NÃO entram neste MVP;
  * o manifest sinaliza esses gaps em `mcp_only_gaps`. Votos do É IA? vivem no
- * Worker KV (fora do Beehiiv) — backup separado (out of scope, ver issue).
+ * Worker KV (fora do Beehiiv) — o dump deles sai no backup off-site
+ * (`scripts/backup-offsite.ts`, #11413), 2º passo da mesma task, que também
+ * envia este snapshot cifrado pro bucket R2 privado `diaria-backup`.
  *
  * Uso:
  *   npx tsx scripts/backup-beehiiv.ts                  # backup completo de hoje

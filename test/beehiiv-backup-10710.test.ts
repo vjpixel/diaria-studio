@@ -27,6 +27,13 @@ import { exitHistoryDrainStatus } from "../scripts/lib/beehiiv-exit-history.ts";
 import { planExitHistoryDispatch } from "../scripts/stage-0-run.ts";
 import { main as alarmMain } from "../scripts/beehiiv-backup-staleness-alarm.ts";
 
+// #11413: o main() lista o R2 de verdade por default — teste nenhum pode
+// alcançar o bucket nem depender do .env da máquina.
+const REMOTE_OK_DEPS = {
+  skipEnvLoad: true,
+  checkRemote: async () => ({ configured: true as const, ok: true, fingerprint: null, prefixes: [] }),
+};
+
 // Os 13 snapshots que o relatório de 10/10/2026 (data/gc-data-dir/.gc.log) listava.
 const SNAPSHOTS_261010 = [
   "2026-06-05",
@@ -177,7 +184,7 @@ describe("#10710 — beehiiv-backup-staleness-alarm.ts --dry-run cobre os 2 chec
       mkdirSync(join(root, `${cur}-01`), { recursive: true });
       writeFileSync(join(root, `${cur}-01`, "subscribers.jsonl"), "");
       const statePath = join(root, "state.json");
-      await alarmMain(["--dry-run", "--root", root, "--state", statePath]);
+      await alarmMain(["--dry-run", "--root", root, "--state", statePath], REMOTE_OK_DEPS);
       const out = logs.join("\n");
       assert.match(out, /exit-history: missing/);
       assert.match(out, /registraria alarme \(beehiiv-exit-history\)/);
