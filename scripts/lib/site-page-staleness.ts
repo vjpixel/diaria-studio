@@ -33,11 +33,21 @@ export const SITE_PAGE_EXPECTED_SLUG_FIELD = "expectedSlug";
  * travar o Schedule por isso aqui seria bloquear sem ter o que republicar.
  * `currentDigest`/`state.sourceDigest` ausentes (state anterior ao #10190, ou
  * insumo sumido) pulam só a checagem de conteúdo.
+ *
+ * #11954: `currentReviewedDigest` é o digest do `02-reviewed.md` atual
+ * (`sitePageReviewedDigest`). O `sourceDigest` sozinho não vê edição no corpo
+ * do `02-reviewed.md` (box, destaque, Radar): a página é gerada de
+ * `newsletter-final.html`, que só o pré-render do Stage 4 regera, e o
+ * publisher do Kit monta o e-mail direto do `.md`. Editar o `.md` depois da
+ * publicação deixava HTML e digest iguais, e a trava devolvia `merged` com a
+ * página antiga. Ausente no state (anterior ao #11954) ou no disco → pula só
+ * esta checagem.
  */
 export function sitePageStaleness(
   state: Record<string, unknown>,
   expectedSlug: string | undefined,
   currentDigest: string | undefined,
+  currentReviewedDigest?: string,
 ): string | null {
   const stateSlug = typeof state.slug === "string" ? state.slug : undefined;
   if (expectedSlug !== undefined && stateSlug !== expectedSlug) {
@@ -53,8 +63,24 @@ export function sitePageStaleness(
       "a página no PR é anterior a uma correção do Stage 5"
     );
   }
+  const stateReviewed = typeof state[SITE_PAGE_REVIEWED_DIGEST_FIELD] === "string"
+    ? (state[SITE_PAGE_REVIEWED_DIGEST_FIELD] as string)
+    : undefined;
+  if (stateReviewed !== undefined && currentReviewedDigest !== undefined && stateReviewed !== currentReviewedDigest) {
+    return (
+      "02-reviewed.md mudou depois da publicação da página (#11954) — re-renderizar " +
+      "_internal/newsletter-final.html (render-newsletter-html.ts + substitute-image-urls.ts) " +
+      "ANTES de republicar, senão a página sai de novo com o texto antigo"
+    );
+  }
   return null;
 }
+
+/**
+ * Campo do state file com o digest do `02-reviewed.md` no momento da
+ * publicação da página (#11954). Gravado por `writeSitePageState`.
+ */
+export const SITE_PAGE_REVIEWED_DIGEST_FIELD = "reviewedDigest";
 
 /** Slug explícito registrado pela trava no state (#10207), ou `undefined`. */
 export function recordedExpectedSlug(state: Record<string, unknown>): string | undefined {
