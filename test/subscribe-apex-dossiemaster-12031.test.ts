@@ -6,10 +6,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolveSubscribeUtm } from "../workers/poll/src/subscribe.ts";
-import { isAllowedClientInternalUtmSource, isAllowedClientUtmSource } from "../scripts/lib/shared/client-utm-allowlist.ts";
-import { findUtmEmitter, knownUtmSources } from "../scripts/lib/shared/utm-registry.ts";
+import { CLIENT_UTM_INTERNAL_ORGANIC_SOURCES, isAllowedClientInternalUtmSource, isAllowedClientUtmSource } from "../scripts/lib/shared/client-utm-allowlist.ts";
+import { DOSSIEMASTER_UTM_SOURCE, findUtmEmitter, knownUtmSources } from "../scripts/lib/shared/utm-registry.ts";
 
 describe("apex aceita utm_source do Dossiê Master (#12031)", () => {
+  it("o literal da allowlist é o mesmo source do registry", () => {
+    assert.ok((CLIENT_UTM_INTERNAL_ORGANIC_SOURCES as readonly string[]).includes(DOSSIEMASTER_UTM_SOURCE));
+  });
+
   it("catalogado no inventário (#5205)", () => {
     assert.ok(knownUtmSources().includes("dossiemaster"));
     assert.equal(findUtmEmitter("dossiemaster")?.source, "dossiemaster");

@@ -253,6 +253,8 @@ export function buildArtigoEspecialEmailCampaign(ano: string, slug: string): str
  * (`client-utm-allowlist.ts`) — sem isso o cadastro cai em `diaria-apex`.
  */
 export const EVENTO_EMAIL_UTM_SOURCE = "evento-email";
+/** #12031: emitido pelo repo externo vjpixel/dossiemaster (site/build_prod.mjs); mediums `topo`/`rodape`. */
+export const DOSSIEMASTER_UTM_SOURCE = "dossiemaster";
 export const EVENTO_EMAIL_UTM_MEDIUM = "email";
 
 /**
@@ -1094,15 +1096,15 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "dossiemaster",
     label: "Dossiê Master (box de cadastro, topo e rodapé)",
-    source: "dossiemaster",
-    medium: "rodape",
+    source: DOSSIEMASTER_UTM_SOURCE,
+    medium: "{medium}",
     campaignPattern: "cadastro",
     originFile: "scripts/lib/shared/utm-registry.ts",
     description:
       "Box 'Site feito com IA... se cadastre em diar.ia.br' das páginas de diar.ia.br/dossiemaster, " +
       "servidas pelo repo privado vjpixel/dossiemaster (site/build_prod.mjs; deploy manual do Worker). " +
       "Dois mediums comparam a posição do box: `rodape` (original) e `topo` (#12031). Sem render neste repo, " +
-      "por isso o `originFile` é o próprio registry.",
+      "por isso o `originFile` é o próprio registry. O `/utms` ainda não corta assinantes por `utm_medium`: a comparação topo x rodapé exige esse corte (issue de acompanhamento).",
     status: "ativo",
   },
   {
