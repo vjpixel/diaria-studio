@@ -680,7 +680,7 @@ describe("#11912: autorização derrubada vira alarme, e o --update-scheduled co
     const restore = fn.indexOf("restoreCorteAuthorizationAfterUpdate(");
     assert.ok(dry > 0 && exec > dry && restore > exec, "o restore vem depois das atualizações");
     assert.match(fn.slice(dry, exec), /planCorteAuthorizationRestore\([\s\S]*input\.only, known\)[\s\S]*regravaria o "pode publicar"[\s\S]*corte_authorization_restore_preview/);
-    assert.match(fn.slice(exec), /results\.every\(\(r\) => r\.ok\)\s*\?\s*restoreCorteAuthorizationAfterUpdate\(dir, [^,]+, known, input\.only,/);
+    assert.match(fn.slice(exec), /corteRestoreBlockingFailures\(results\)[\s\S]*!blocking\.length\s*\?\s*restoreCorteAuthorizationAfterUpdate\(dir, [^,]+, known, input\.only,/); // #11955: só o YouTube falhando não segura
     assert.match(fn, /corte_authorization: corteAuthorization/);
     const main = MAIN();
     assert.match(main, /runUpdateScheduled\(\{[^}]*corteRevocations \}\)/);

@@ -74,7 +74,8 @@ const RETRYABLE_UPLOAD_STATUS = new Set([500, 502, 503, 504]);
 /** Etapas que lançam `YouTubeUploadError` (antes do vídeo estar confirmado). */
 export type YouTubeUploadStep = "token" | "channel" | "insert" | "upload";
 /** Etapas de chamada à API, inclusive as pós-upload que não lançam. */
-export type YouTubeApiStep = YouTubeUploadStep | "thumbnail" | "reread";
+/** `update` (#11955): o `videos.update` do `--update-scheduled`, que pede `youtube.force-ssl` (o `youtube.upload` não cobre). */
+export type YouTubeApiStep = YouTubeUploadStep | "thumbnail" | "reread" | "update";
 
 export class YouTubeUploadError extends Error {
   constructor(
@@ -166,7 +167,7 @@ export function explainYouTubeUploadError(status: number, body: string, step?: Y
     return "o canal atingiu o limite de uploads do YouTube — suba à mão no Studio mais tarde";
   }
   if (status === 403 && /insufficientPermissions|insufficient authentication scopes|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(body)) {
-    return "token sem o escopo youtube.upload — refaça o consentimento deixando todos os escopos marcados (`scripts/youtube-oauth-setup.ts`)";
+    return youtubeScopeInsufficientMessage(step);
   }
   if (status === 403 && /accessNotConfigured|has not been used|is disabled/i.test(body)) {
     return "YouTube Data API v3 não está ativada no projeto GCP do client OAuth";
@@ -177,6 +178,21 @@ export function explainYouTubeUploadError(status: number, body: string, step?: Y
       : `o YouTube recusou (403 forbidden${step ? `, etapa ${step}` : ""}) — o token não tem permissão para essa operação neste canal`;
   }
   return `YouTube API respondeu ${status}: ${body.slice(0, 300)}`;
+}
+
+/**
+ * #11955: o escopo que falta depende da etapa. `videos.update` (o
+ * `--update-scheduled`) pede `youtube.force-ssl` (ou `youtube`); o
+ * `youtube.upload` só cobre `videos.insert` e `thumbnails.set`. Antes a
+ * mensagem citava sempre o `youtube.upload`, e o token que acabara de subir o
+ * Short parecia "sem upload". `videos.list` (`reread`) e `channels.list`
+ * (`channel`) pedem `youtube.readonly`.
+ */
+export function youtubeScopeInsufficientMessage(step?: YouTubeApiStep): string {
+  const redo = "refaça o consentimento com `npx tsx scripts/youtube-oauth-setup.ts` deixando todos os escopos marcados (e `npm run sync-env` no 300)";
+  if (step === "update") return `token sem o escopo youtube.force-ssl, que o videos.update (troca de título/descrição do vídeo agendado) exige; o youtube.upload só cobre o upload e a capa — ${redo}`;
+  if (step === "reread" || step === "channel") return `token sem o escopo youtube.readonly (leitura do vídeo/canal) — ${redo}`;
+  return `token sem o escopo youtube.upload — ${redo}`;
 }
 
 /** Troca o refresh token por um access token. */
@@ -457,7 +473,7 @@ export async function updateScheduledVideo(
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ id: videoId, snippet }),
   });
-  if (!put.ok) throw new Error(explainYouTubeUploadError(put.status, await errorSnippet(put), "insert"));
+  if (!put.ok) throw new Error(explainYouTubeUploadError(put.status, await errorSnippet(put), "update"));
   const thumbnail = { attempted: false, ok: false, error: null as string | null };
   if (input.thumbnail) {
     thumbnail.attempted = true;

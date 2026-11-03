@@ -126,10 +126,10 @@ describe("#11913 cenário da issue: extra às 06:30, principal às 12:00", () =>
   it("wiring: as duas conferências da rodada passam os ids do outro lado do dia, na edição também", () => {
     const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
     const branch = src.slice(src.indexOf("} else if (item.destination === THREADS_PROFILE_DESTINATION) {"), src.indexOf('} else if (item.destination === "instagram") {'));
-    assert.ok(branch.includes("sameDayOtherIds: sameDayOtherRegisteredIds(corte !== null, aammdd, THREADS_PROFILE_DESTINATION)"), "Threads");
+    assert.ok(branch.includes("sameDayOtherIds: sameDayOtherRegisteredIds(corte?.slug ?? null, aammdd, THREADS_PROFILE_DESTINATION)"), "Threads");
     const ig = src.slice(src.indexOf('} else if (item.destination === "instagram") {'));
-    assert.ok(ig.includes('const ignoreIds = sameDayOtherRegisteredIds(corte !== null, aammdd, "instagram");'), "Instagram");
-    const helper = src.slice(src.indexOf("function sameDayOtherRegisteredIds("), src.indexOf("function sameDayOtherRegisteredIds(") + 600);
+    assert.ok(ig.includes('const ignoreIds = sameDayOtherRegisteredIds(corte?.slug ?? null, aammdd, "instagram");'), "Instagram");
+    const helper = src.slice(src.indexOf("export function sameDayOtherRegisteredIdsFor("), src.indexOf("export function sameDayOtherRegisteredIdsFor(") + 800); // #11965: miolo testável
     assert.ok(helper.includes("sameDayCorteRegisteredIds("), "a edição desconta os cortes do dia");
   });
 });
