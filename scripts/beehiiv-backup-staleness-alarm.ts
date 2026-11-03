@@ -10,6 +10,12 @@
  * nesta semana" no journal de `check-acquisition-health.ts` (domingo 03:30),
  * que roda logo depois e nunca dispara e-mail sozinho pra esse caso.
  *
+ * Desde #11413 confere também a cópia off-site no bucket R2 privado
+ * `diaria-backup` (`scripts/backup-offsite.ts`): o objeto mais recente de
+ * `beehiiv/` e de `eia-votes/` (ListObjectsV2 assinado, credencial
+ * `R2_BACKUP_*`) precisa ter até 7 dias. Credencial ausente vira achado,
+ * nunca "ok".
+ *
  * Desde #10710 faz mais 2 checks independentes, cada um com fingerprint
  * próprio: cobertura mensal (mês fechado sem nenhum snapshot = snapshots
  * apagados depois de gravados) e exit-history (`exit-history/manifest.json`
@@ -45,6 +51,7 @@ import { notifyEditor } from "./lib/editor-notify.ts";
 import { latestSnapshotDate, isSubscribersSnapshotUsable, listSnapshotDates } from "./lib/beehiiv-backup-snapshots.ts";
 import { exitHistoryDrainStatus } from "./lib/beehiiv-exit-history.ts";
 import { snapshotDateToEpochSeconds } from "./lib/acquisition-health.ts";
+import { checkRemoteOffsiteBackup, describeRemotePrefix } from "./lib/backup-offsite.ts";
 import {
   evaluateBeehiivBackupStalenessAlarm,
   shouldSendBeehiivBackupStalenessAlarm,
@@ -57,6 +64,7 @@ import {
   buildCoverageAlarmEmail,
   computeExitHistoryFingerprint,
   buildExitHistoryAlarmEmail,
+  buildRemoteOffsiteAlarmEmail,
   planFingerprintedAlarm,
   type BeehiivBackupStalenessAlarmState,
 } from "./lib/beehiiv-backup-staleness-alarm.ts";
@@ -76,6 +84,7 @@ export function loadState(statePath: string): BeehiivBackupStalenessAlarmState {
       lastAlarmedFingerprint: str(raw.lastAlarmedFingerprint),
       lastCoverageFingerprint: str(raw.lastCoverageFingerprint),
       lastExitHistoryFingerprint: str(raw.lastExitHistoryFingerprint),
+      lastRemoteFingerprint: str(raw.lastRemoteFingerprint),
     };
   } catch {
     return emptyBeehiivBackupStalenessAlarmState();
@@ -170,6 +179,31 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   } else if (exitAction === "reset") {
     // #10780: manifest voltou a `complete` — zera, senão incompleto → completo → incompleto passa calado.
     state = { ...state, lastExitHistoryFingerprint: null };
+    if (!isDryRun) saveState(state, statePath);
+  }
+
+  // 4) cópia off-site no R2 (#11413): o objeto mais recente de beehiiv/ e de
+  //    eia-votes/ no bucket privado diaria-backup tem até MAX_AGE_DAYS.
+  //    Credencial ausente é achado, nunca "ok".
+  const remote = await checkRemoteOffsiteBackup({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, process.env, MAX_AGE_DAYS);
+  const remoteLines = remote.configured ? remote.prefixes.map(describeRemotePrefix) : [];
+  console.log(
+    `${LOG_PREFIX} cópia off-site: ${remote.configured ? (remote.ok ? "ok" : "PROBLEMA") : `credencial ausente (${remote.missing.join(", ")})`}` +
+      (remoteLines.length ? `\n  ${remoteLines.join("\n  ")}` : ""),
+  );
+  const remoteAction = planFingerprintedAlarm(remote.ok ? null : remote.fingerprint, state.lastRemoteFingerprint);
+  if (remoteAction === "send" && remote.fingerprint) {
+    const { subject, body } = buildRemoteOffsiteAlarmEmail({
+      missingCredentials: remote.configured ? null : remote.missing,
+      lines: remoteLines,
+      maxAgeDays: MAX_AGE_DAYS,
+    });
+    if (await notify("backup-offsite-remote", remote.fingerprint, subject, body)) {
+      state = { ...state, lastRemoteFingerprint: remote.fingerprint };
+      saveState(state, statePath);
+    }
+  } else if (remoteAction === "reset") {
+    state = { ...state, lastRemoteFingerprint: null };
     if (!isDryRun) saveState(state, statePath);
   }
 

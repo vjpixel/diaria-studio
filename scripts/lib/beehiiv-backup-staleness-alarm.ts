@@ -108,10 +108,12 @@ export interface BeehiivBackupStalenessAlarmState {
   /** #10710 — idempotência dos 2 checks extras, independente do principal. */
   lastCoverageFingerprint?: string | null;
   lastExitHistoryFingerprint?: string | null;
+  /** #11413 — idempotência do check da cópia off-site no R2. */
+  lastRemoteFingerprint?: string | null;
 }
 
 export function emptyBeehiivBackupStalenessAlarmState(): BeehiivBackupStalenessAlarmState {
-  return { lastAlarmedFingerprint: null, lastCoverageFingerprint: null, lastExitHistoryFingerprint: null };
+  return { lastAlarmedFingerprint: null, lastCoverageFingerprint: null, lastExitHistoryFingerprint: null, lastRemoteFingerprint: null };
 }
 
 /** Fingerprint estável: veredito + data do snapshot mais recente conhecido
@@ -254,6 +256,39 @@ export function buildExitHistoryAlarmEmail(status: string): { subject: string; b
     "O que fazer: numa sessão Claude Code com o conector Beehiiv, despachar " +
       'Agent(subagent_type="beehiiv-exit-history-drain"). O Stage 0 da edição diária já despacha sozinho enquanto o ' +
       "manifest não estiver completo (pendingAgentDispatch 0h.4 de scripts/stage-0-run.ts).",
+  ].join("\n");
+  return { subject, body };
+}
+
+// ---------------------------------------------------------------------------
+// Cópia off-site no R2 (#11413)
+// ---------------------------------------------------------------------------
+
+/**
+ * Corpo do alarme da cópia remota. `lines` vem de `describeRemotePrefix`
+ * (`scripts/lib/backup-offsite.ts`); `missingCredentials` preenchido = a
+ * credencial do bucket não está no ambiente (achado, nunca "ok").
+ */
+export function buildRemoteOffsiteAlarmEmail(input: { missingCredentials: string[] | null; lines: string[]; maxAgeDays: number }): {
+  subject: string;
+  body: string;
+} {
+  const subject = input.missingCredentials
+    ? `⚠️ Backup off-site: credencial do bucket ausente (${input.missingCredentials.join(", ")})`
+    : `⚠️ Backup off-site (R2 diaria-backup): cópia remota ausente ou velha`;
+  const body = [
+    "Alarme automático da cópia off-site dos backups (#11413), conferida pelo Diaria-Beehiiv-Backup-Staleness-Alarm.",
+    "",
+    ...(input.missingCredentials
+      ? [
+          `Variáveis ausentes no ambiente: ${input.missingCredentials.join(", ")}.`,
+          "Sem elas não dá pra conferir a cópia remota; isso é um achado, não um ok.",
+        ]
+      : [`Limite: ${input.maxAgeDays} dia(s) desde o objeto mais recente de cada prefixo.`, "", ...input.lines]),
+    "",
+    "A cópia é enviada pelo 2º passo da task Diaria-Beehiiv-Backup (scripts/backup-offsite.ts), domingo 03:00 BRT.",
+    "Para repetir à mão: doppler run -- npx tsx scripts/backup-offsite.ts",
+    "Detalhes: docs/beehiiv-backup-setup.md.",
   ].join("\n");
   return { subject, body };
 }

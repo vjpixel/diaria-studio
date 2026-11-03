@@ -31,11 +31,20 @@
 
 import { createHash, createHmac } from "node:crypto";
 
-export interface R2UploadConfig {
+/**
+ * #11413: o mínimo pra falar com um bucket pela API S3 (sem URL pública). O
+ * backup off-site (`scripts/lib/backup-offsite.ts`) usa só isto, num bucket
+ * PRIVADO e com credencial própria; os verticais/imagens usam
+ * `R2UploadConfig`, que acrescenta a base pública.
+ */
+export interface R2BucketAccess {
   accountId: string;
   accessKeyId: string;
   secretAccessKey: string;
   bucket: string;
+}
+
+export interface R2UploadConfig extends R2BucketAccess {
   /** Base pública https, sem barra no fim. */
   publicBase: string;
 }
@@ -197,25 +206,42 @@ export const R2_RETENTION_POLICIES: readonly { prefix: string; maxAgeDays: numbe
 export const R2_PUT_TIMEOUT_MS = 15 * 60_000;
 export const R2_REQUEST_TIMEOUT_MS = 60_000;
 
-function s3Host(config: R2UploadConfig): string {
+function s3Host(config: R2BucketAccess): string {
   return `${config.accountId}.r2.cloudflarestorage.com`;
 }
 
 async function signedFetch(
   deps: R2UploadDeps,
-  config: R2UploadConfig,
+  config: R2BucketAccess,
   method: string,
   key: string,
   query?: Record<string, string>,
 ): Promise<Response> {
+  return signedR2Request(deps, config, method, key, { query });
+}
+
+/**
+ * #11413: request S3 assinado ao bucket, pela API (nunca pela URL pública).
+ * `key` vazio = o próprio bucket (ListObjectsV2). Com `body`, o hash do corpo
+ * entra na assinatura (PUT). Timeout: `timeoutMs`, default
+ * `R2_REQUEST_TIMEOUT_MS` (PUT de corpo grande deve passar `R2_PUT_TIMEOUT_MS`).
+ */
+export async function signedR2Request(
+  deps: R2UploadDeps,
+  config: R2BucketAccess,
+  method: string,
+  key: string,
+  opts: { query?: Record<string, string>; body?: Buffer; headers?: Record<string, string>; timeoutMs?: number } = {},
+): Promise<Response> {
   const host = s3Host(config);
   const path = key ? `/${config.bucket}/${key}` : `/${config.bucket}`;
-  const payloadHash = sha256Hex("");
+  const payloadHash = sha256Hex(opts.body ?? "");
   const headers = signS3Request({
     method,
     host,
     path,
-    query,
+    query: opts.query,
+    headers: opts.headers,
     payloadHash,
     region: "auto",
     service: "s3",
@@ -223,8 +249,10 @@ async function signedFetch(
     secretAccessKey: config.secretAccessKey,
     now: deps.now(),
   });
-  const qs = canonicalQuery(query);
-  return deps.fetch(`https://${host}${encodePath(path)}${qs ? `?${qs}` : ""}`, { method, headers, signal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS) });
+  const qs = canonicalQuery(opts.query);
+  const init: RequestInit = { method, headers, signal: AbortSignal.timeout(opts.timeoutMs ?? R2_REQUEST_TIMEOUT_MS) };
+  if (opts.body) init.body = new Uint8Array(opts.body);
+  return deps.fetch(`https://${host}${encodePath(path)}${qs ? `?${qs}` : ""}`, init);
 }
 
 const decodeXml = (s: string) =>
@@ -258,7 +286,7 @@ export interface R2PruneResult {
  */
 export async function pruneR2Prefix(
   deps: R2UploadDeps,
-  config: R2UploadConfig,
+  config: R2BucketAccess,
   opts: { prefix: string; maxAgeDays: number; keep?: readonly string[] },
 ): Promise<R2PruneResult> {
   const out: R2PruneResult = { deleted: [], errors: [] };

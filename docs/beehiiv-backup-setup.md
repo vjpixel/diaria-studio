@@ -18,7 +18,7 @@ Issue: [#5229](https://github.com/vjpixel/diaria-studio/issues/5229) (registro d
 
 **`expand[]=stats` no `subscribers.jsonl` (#5229):** traz `open_rate`/`total_received`/`total_unique_clicked` POR ASSINANTE, no mesmo ponto no tempo que a origem (`utm_source`). Sem isso o snapshot registrava a origem mas não o engajamento, e análise de coorte por canal de aquisição (`cohort-engagement.ts`) precisa dos dois juntos — sem o snapshot, essa análise refaz a chamada à API ao vivo, o que mede o engajamento de HOJE contra uma coorte de ONTEM. O `expand[]=stats` também é o que torna o snapshot capaz de reconstruir a origem destruída pela promoção Brevo→Beehiiv (`DELETE`+`CREATE` sobrescreve `utm_source`).
 
-**Cobertura:** só o que a REST pública do Beehiiv expõe. Per-link clicks e per-subscriber engagement detalhado são MCP-only (`list_post_clicks`, `list_post_subscriber_engagement` — chamáveis só do top-level Claude) e não entram neste backup; o `manifest.json` sinaliza esse gap em `mcp_only_gaps`. Votos do É IA? vivem no Worker KV, fora do Beehiiv — fora de escopo.
+**Cobertura:** só o que a REST pública do Beehiiv expõe. Per-link clicks e per-subscriber engagement detalhado são MCP-only (`list_post_clicks`, `list_post_subscriber_engagement` — chamáveis só do top-level Claude) e não entram neste backup; o `manifest.json` sinaliza esse gap em `mcp_only_gaps`. Votos do É IA? vivem no Worker KV, fora do Beehiiv: o snapshot local não os cobre, mas a cópia off-site (abaixo, #11413) inclui um dump deles.
 
 ## Cadência: semanal, domingo 03:00 BRT (06:00 UTC)
 
@@ -68,3 +68,38 @@ O alarme semanal (`beehiiv-backup-staleness-alarm.ts`) checa também:
 
 - **Cobertura mensal:** todo mês fechado desde 2026-08 precisa ter ao menos 1 snapshot. Se a perda de um mês for definitiva, listar o mês em `BEEHIIV_BACKUP_ACKNOWLEDGED_LOST_MONTHS` (`scripts/lib/beehiiv-backup-staleness-alarm.ts`).
 - **Exit-history:** `exit-history/manifest.json` precisa existir com `complete: true`. O drain é feito pelo agent `beehiiv-exit-history-drain` (#7248), que só roda numa sessão com o conector Beehiiv; o Stage 0 da diária devolve o dispatch (`pendingAgentDispatch` `0h.4`) enquanto o manifest não estiver completo.
+- **Cópia off-site (#11413):** o objeto mais recente de `beehiiv/` e de `eia-votes/` no bucket R2 `diaria-backup` precisa ter até 7 dias. Credencial do bucket ausente no ambiente é achado (`remote:no-credentials`), nunca "ok".
+
+## Cópia off-site criptografada (#11413)
+
+O snapshot local vive só no OneDrive (`data/`), que já lotou uma vez (#10957) e já apagou snapshots por remoção remota (14/10/2026). Desde a #11413 o 2º passo da mesma task (`scripts/backup-offsite.ts`, sem timer novo) envia uma cópia compactada e criptografada para o bucket R2 **privado** `diaria-backup`:
+
+| Objeto | Conteúdo |
+|---|---|
+| `beehiiv/{AAAA-MM-DD}.tar.gz.enc` | tar + gzip do diretório do snapshot do dia |
+| `eia-votes/{AAAA-MM-DD}.jsonl.gz.enc` | JSONL `{key, value}` das chaves `vote:`, `score:` e `correct:` do KV `POLL` (nunca as imagens) |
+
+- **Bucket:** sem r2.dev, sem domínio; lifecycle `retencao-8-semanas` (apaga após 56 dias), configurado no painel. Credencial S3 própria, restrita ao bucket (`R2_BACKUP_ACCESS_KEY_ID`/`R2_BACKUP_SECRET_ACCESS_KEY`); endpoint sai de `R2_ACCOUNT_ID`. Nunca as credenciais dos shorts, nunca URL pública: toda leitura, inclusive a conferência pós-upload, usa a API S3 assinada.
+- **Cifra:** AES-256-GCM (`scripts/lib/backup-offsite-crypto.ts`), cabeçalho versionado `DIARIABK` + versão + keyId + IV + tag. A chave (`BACKUP_ENCRYPTION_KEY`, 32 bytes em base64) fica no Doppler `diaria-studio/dev` e numa 2ª cópia com o editor (Bitwarden), nunca no bucket. **Rotação:** guardar a chave antiga nos dois cofres enquanto houver backup cifrado com ela (56 dias); a restauração lê outra var com `--key-env`.
+- **Quando sobe:** só se o snapshot do dia for bem-sucedido (diretório + `manifest.json` + `isSubscribersSnapshotUsable`). Senão o Beehiiv é pulado com log (o alarme acima já cobre o snapshot ruim) e os votos sobem do mesmo jeito.
+- **Conferência:** depois do PUT, HEAD assinado com o mesmo tamanho e ETag igual ao MD5 do corpo.
+- **Falha:** issue de alarme via `notifyEditor` (`check: backup-offsite`, fingerprint `backup-offsite-failed:{tipo}`) e exit 1 do passo. O snapshot local continua valendo.
+- **Faixa grátis:** 10 GB divididos com os verticais; cada upload loga o tamanho no `.backup.log`.
+- **Votos:** leitura do KV pela API REST (`CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN`, bulk get de 100 chaves por chamada, com queda para GET por chave). Zero chaves `vote:` é falha (token ou namespace errado), não um backup vazio.
+
+```bash
+doppler run -- npx tsx scripts/backup-offsite.ts --dry-run          # empacota, cifra e mede; não envia
+doppler run -- npx tsx scripts/backup-offsite.ts                    # snapshot de hoje (UTC) + votos
+doppler run -- npx tsx scripts/backup-offsite.ts --date 2026-11-08 --only beehiiv
+```
+
+### Restauração
+
+```bash
+doppler run -- npx tsx scripts/restore-backup-offsite.ts --list
+doppler run -- npx tsx scripts/restore-backup-offsite.ts --latest beehiiv --out /tmp/restore-beehiiv
+doppler run -- npx tsx scripts/restore-backup-offsite.ts --key eia-votes/2026-11-08.jsonl.gz.enc --out /tmp/restore-votos
+doppler run -- npx tsx scripts/restore-backup-offsite.ts --file ./copia.tar.gz.enc --out /tmp/r   # arquivo já baixado
+```
+
+Baixa pela API assinada, autentica e decifra (chave errada ou byte alterado falham alto, sem escrever nada) e extrai em `--out`, que precisa estar vazia. Voltar o conteúdo para `data/beehiiv-backup/` é passo manual, depois de conferir.

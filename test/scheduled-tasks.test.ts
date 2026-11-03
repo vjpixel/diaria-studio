@@ -428,7 +428,8 @@ describe("#5229 — Diaria-Beehiiv-Backup registrada, semanal, systemd-only", ()
     assert.ok(t, "Diaria-Beehiiv-Backup ausente de SCHEDULED_TASKS");
     assert.deepEqual(
       t!.steps.map((s) => s.script),
-      ["scripts/backup-beehiiv.ts"],
+      // #11413: 2º passo, cópia off-site cifrada no R2 — sempre DEPOIS do snapshot.
+      ["scripts/backup-beehiiv.ts", "scripts/backup-offsite.ts"],
     );
     assert.deepEqual(t!.schedule, { kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 0 });
   });
