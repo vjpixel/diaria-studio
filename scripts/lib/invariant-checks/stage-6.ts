@@ -18,7 +18,12 @@ import { findOrphanSlugs, listPageSlugs, slugsInSitemap } from "../site-sitemap-
 import { checkSyncCodeMarker } from "../sync-code-marker.ts"; // #8786
 import { changedSourceFilesOnDisk, kitContentHash, type SourceHashes } from "../kit-draft-freshness.ts"; // #9428
 import { renderKitPayload, loadPlatformConfig } from "../../publish-newsletter-kit.ts"; // #9428
-import { deriveSlugFromD1, sitePageReviewedDigest, sitePageSourceDigest } from "../../publish-edition-site-page.ts"; // #10207, #11954
+import {
+  deriveSlugFromD1,
+  sitePageCurrentReviewedSha256,
+  sitePageReviewedDigest,
+  sitePageSourceDigest,
+} from "../../publish-edition-site-page.ts"; // #10207, #11954, #11987
 import { recordedExpectedSlug, sitePageStaleness } from "../site-page-staleness.ts"; // #10207
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -503,7 +508,7 @@ export const defaultSitePageStaleness: SitePageStalenessFn = (editionDir, state)
   } catch {
     reviewedDigest = undefined;
   }
-  return sitePageStaleness(state, expected, digest, reviewedDigest);
+  return sitePageStaleness(state, expected, digest, reviewedDigest, sitePageCurrentReviewedSha256(editionDir)); // #11987
 };
 
 function checkSitePagePrMerged(

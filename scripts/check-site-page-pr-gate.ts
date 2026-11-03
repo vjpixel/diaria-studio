@@ -44,7 +44,10 @@
  *     página mudaram desde a publicação (`state.sourceDigest` ≠
  *     `sitePageSourceDigest` atual), ou o `02-reviewed.md` mudou desde a
  *     publicação (`state.reviewedDigest` ≠ `sitePageReviewedDigest`, #11954 —
- *     edição no corpo que não re-renderiza o HTML). Vale MESMO com o PR já mergeado: o
+ *     edição no corpo que não re-renderiza o HTML), ou o HTML publicado saiu
+ *     de outra versão do `02-reviewed.md` (`state.htmlRenderedFromReviewedSha256`,
+ *     copiado do carimbo do render, ≠ sha256 do `.md` atual, #11987 —
+ *     republicação sem re-render). Vale MESMO com o PR já mergeado: o
  *     §5b-site congela slug e conteúdo no início da Etapa 5, e o loop de fix
  *     do §5f / `kit-draft-fresh` (#9428) podem mudar o D1 depois — o e-mail
  *     sairia apontando pra `/p/{slug-novo}` com a página em `/p/{slug-velho}`.
@@ -104,6 +107,7 @@ import {
   deriveSlugFromD1,
   makeSessionRegistryMergeLock,
   parsePrNumberFromUrl,
+  sitePageCurrentReviewedSha256,
   sitePageReviewedDigest,
   sitePageSourceDigest,
   waitAndMergeSitePagePr,
@@ -253,7 +257,13 @@ function evaluateGate(rootDir: string, editionDirAbs: string, deps: SitePagePrGa
   } catch {
     reviewedDigest = undefined;
   }
-  const stale = sitePageStaleness(state, resolveExpectedSlug(editionDirAbs, deps.expectedSlug), digest, reviewedDigest);
+  const stale = sitePageStaleness(
+    state,
+    resolveExpectedSlug(editionDirAbs, deps.expectedSlug),
+    digest,
+    reviewedDigest,
+    sitePageCurrentReviewedSha256(editionDirAbs), // #11987
+  );
   if (stale) return { kind: "stale", ...(prNumber !== undefined ? { prNumber } : {}), reason: stale };
   if (prNumber === undefined) {
     return { kind: "no-pr", reason: `PR da página não identificado no state file (branch site-publish/${String(state.slug ?? "?")})` };
