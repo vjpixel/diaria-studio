@@ -30,7 +30,9 @@ import {
   shellSingleQuote,
   buildUpdatedCommand,
   detectChainedSessionIdRisk,
+  stripTextHeredocBodies,
 } from "../.claude/hooks/inject-session-id.mjs";
+import { stripHeredocSpans as siblingStripHeredocSpans } from "../.claude/hooks/block-worktree-bare-push.mjs";
 // #7836 — fonte única (ver scripts/lib/session-id-required-subcommands.ts).
 // Iterar sobre ESTA lista em vez de reproduzir os nomes à mão aqui é o que
 // fecha a classe de omissão da issue: se um subcomando novo entrar na lista
@@ -695,6 +697,154 @@ describe("invocação vs menção (#7264/#7281)", () => {
       "npx tsx scripts/overnight-session-marker.ts --start 2>&1 | tail -3",
     );
     assert.notEqual(risk, null);
+  });
+});
+
+describe("mensagem nomeia o alvo real e heredoc de texto não bloqueia (#12029)", () => {
+  it("caso real — cd … && cleanup-merged-worktrees.ts | tail: mensagem cita esse script, não os outros", () => {
+    const risk = detectChainedSessionIdRisk(
+      "cd /home/x/diaria-studio && npx tsx scripts/cleanup-merged-worktrees.ts 2>&1 | tail -6",
+    );
+    assert.notEqual(risk, null);
+    assert.match(risk, /cleanup-merged-worktrees\.ts/);
+    assert.doesNotMatch(risk, /session-registry\.ts/);
+    assert.doesNotMatch(risk, /overnight-session-marker\.ts/);
+    assert.doesNotMatch(risk, /plan-path\.ts/);
+  });
+
+  for (const [script, invocation] of [
+    ["effective-model-probe.ts", "npx tsx scripts/effective-model-probe.ts"],
+    ["edition-lock.ts", "npx tsx scripts/lib/edition-lock.ts acquire"],
+    ["resolve-overnight-plan-path.ts", "npx tsx scripts/resolve-overnight-plan-path.ts"],
+  ]) {
+    it(`mensagem cita ${script} quando é ele o alvo encadeado`, () => {
+      const risk = detectChainedSessionIdRisk(`git pull && ${invocation}`);
+      assert.notEqual(risk, null);
+      assert.ok(risk.includes(script), risk);
+    });
+  }
+
+  it("dois alvos invocados no mesmo bloco → a mensagem cita os dois", () => {
+    const risk = detectChainedSessionIdRisk(
+      "npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue 1 && " +
+        "npx tsx scripts/cleanup-merged-worktrees.ts",
+    );
+    assert.notEqual(risk, null);
+    assert.match(risk, /session-registry\.ts/);
+    assert.match(risk, /cleanup-merged-worktrees\.ts/);
+  });
+
+  it("alvo de leitura (list-active) seguido de alvo incondicional → bloqueia (antes parava no 1º alvo)", () => {
+    const risk = detectChainedSessionIdRisk(
+      "npx tsx scripts/lib/session-registry.ts list-active; npx tsx scripts/cleanup-merged-worktrees.ts",
+    );
+    assert.notEqual(risk, null);
+    assert.match(risk, /cleanup-merged-worktrees\.ts/);
+    assert.doesNotMatch(risk, /session-registry\.ts/);
+  });
+
+  it("heredoc de texto que só CITA a invocação no corpo → null", () => {
+    const command =
+      "cat > /tmp/notas.md <<'EOF'\n" +
+      "Rode `npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue 1` standalone.\n" +
+      "E depois npx tsx scripts/cleanup-merged-worktrees.ts.\n" +
+      "EOF";
+    assert.equal(detectChainedSessionIdRisk(command), null);
+  });
+
+  it("heredoc sem aspas, variante <<- e corpo lido por python → null", () => {
+    assert.equal(
+      detectChainedSessionIdRisk(
+        "gh issue comment 1 --body-file - <<EOF\nnpx tsx scripts/overnight-session-marker.ts --start\nEOF",
+      ),
+      null,
+    );
+    assert.equal(
+      detectChainedSessionIdRisk(
+        "cat <<-EOF > f\n\tnpx tsx scripts/resolve-develop-plan-path.ts\n\tEOF",
+      ),
+      null,
+    );
+    assert.equal(
+      detectChainedSessionIdRisk(
+        "python3 - <<'PY'\ns = 'npx tsx scripts/cleanup-merged-worktrees.ts'\nPY",
+      ),
+      null,
+    );
+  });
+
+  it("heredoc de texto + invocação real FORA do corpo → continua bloqueando", () => {
+    const command =
+      "cat > /tmp/f.md <<'EOF'\n" +
+      "texto citando npx tsx scripts/lib/session-registry.ts claim-issue\n" +
+      "EOF\n" +
+      "npx tsx scripts/cleanup-merged-worktrees.ts";
+    const risk = detectChainedSessionIdRisk(command);
+    assert.notEqual(risk, null);
+    assert.match(risk, /cleanup-merged-worktrees\.ts/);
+    assert.doesNotMatch(risk, /session-registry\.ts/);
+  });
+
+  it("invocação real na linha de abertura do heredoc → continua bloqueando", () => {
+    const risk = detectChainedSessionIdRisk(
+      "npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue 1 <<'EOF'\nx\nEOF",
+    );
+    assert.notEqual(risk, null);
+  });
+
+  it("heredoc alimentando um shell (bash <<EOF) → o corpo é comando, continua bloqueando", () => {
+    for (const opener of ["bash <<'EOF'", "sh <<EOF", "ssh host <<EOF", "cd x && bash -s <<EOF"]) {
+      const risk = detectChainedSessionIdRisk(
+        `${opener}\nnpx tsx scripts/cleanup-merged-worktrees.ts\nEOF`,
+      );
+      assert.notEqual(risk, null, opener);
+    }
+  });
+
+  it("heredoc sem terminador: corpo de texto até o fim é removido; com shell, mantido", () => {
+    assert.equal(
+      detectChainedSessionIdRisk("cat <<'EOF'\nnpx tsx scripts/cleanup-merged-worktrees.ts"),
+      null,
+    );
+    assert.notEqual(
+      detectChainedSessionIdRisk("bash <<'EOF'\nnpx tsx scripts/cleanup-merged-worktrees.ts"),
+      null,
+    );
+  });
+
+  // Paridade com as cópias irmãs de `stripHeredocSpans` (#7896) fora do caso
+  // de shell — mesmos casos de HEREDOC_CASES em
+  // test/hook-command-tokenizer-parity-7896.test.ts.
+  for (const input of [
+    "",
+    "git push origin master",
+    "cat <<EOF\ngit push\nEOF",
+    "cat <<'EOF'\nrm -rf /\nEOF",
+    "cat <<-EOF\n  git push\n  EOF",
+    "gh issue create --body-file - <<'EOF'\nrode git push depois\nEOF\necho done",
+    "echo sem heredoc && git push origin main",
+    "cat <<< foo\ngit push\nfoo",
+    "cat <<<EOF\ngit push\nEOF",
+    "echo $((1<<2))\ngit push",
+  ]) {
+    it(`paridade com stripHeredocSpans (#7896) para: ${JSON.stringify(input)}`, () => {
+      assert.equal(stripTextHeredocBodies(input), siblingStripHeredocSpans(input));
+    });
+  }
+
+  it("diverge de propósito da cópia irmã quando o heredoc alimenta um shell", () => {
+    const input = "bash <<'EOF'\ngit push\nEOF";
+    assert.equal(stripTextHeredocBodies(input), input);
+    assert.notEqual(siblingStripHeredocSpans(input), input);
+  });
+
+  it("stripTextHeredocBodies preserva a linha de abertura e o que vem depois do terminador", () => {
+    assert.equal(
+      stripTextHeredocBodies("cat <<'EOF'\ncorpo\nEOF\necho fim"),
+      "cat <<'EOF'\n\necho fim",
+    );
+    // `<<<` é here-string, não heredoc.
+    assert.equal(stripTextHeredocBodies("cat <<< foo\nlinha"), "cat <<< foo\nlinha");
   });
 });
 

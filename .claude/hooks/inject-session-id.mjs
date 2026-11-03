@@ -382,10 +382,98 @@ function isScriptInvoked(command, targetName) {
  * NOME do script fora de posição de chamada).
  */
 function matchesInjectableTarget(command) {
+  return matchedInjectableTargets(command).length > 0;
+}
+
+/**
+ * #12029: nomes (`target.match`) de TODOS os alvos de `SESSION_ID_TARGETS`
+ * invocados em `command` com subcomando/flag que exige `--session-id`. Fonte
+ * única da mensagem de bloqueio de `detectChainedSessionIdRisk` — antes a
+ * mensagem era uma string fixa que citava só 4 dos 7 alvos (um
+ * `cleanup-merged-worktrees.ts … | tail` era barrado com uma mensagem que
+ * falava de session-registry/marker/resolve-*-plan-path).
+ *
+ * Varre todos os alvos em vez de parar no primeiro invocado (comportamento
+ * anterior de `matchesInjectableTarget`): um bloco com
+ * `session-registry.ts list-active` (leitura, não exige a flag) seguido de
+ * `cleanup-merged-worktrees.ts` retornava `false` no 1º alvo e nunca olhava
+ * o 2º — falso negativo, o lado errado para este guard.
+ */
+function matchedInjectableTargets(command) {
+  const names = [];
   for (const target of SESSION_ID_TARGETS) {
-    if (isScriptInvoked(command, target.match)) return target.needsSessionId(command);
+    if (isScriptInvoked(command, target.match) && target.needsSessionId(command)) {
+      names.push(target.match);
+    }
   }
-  return false;
+  return names;
+}
+
+/**
+ * #12029: remove o CORPO de heredocs (`<<EOF … EOF`, `<<'EOF' … EOF`,
+ * `<<-EOF … EOF`), preservando a linha de abertura e tudo depois do
+ * terminador. Cópia de `stripHeredocSpans` dos hooks irmãos
+ * (`block-unsafe-shared-checkout-ops.mjs` e cia. — hooks self-contained,
+ * paridade travada em `test/hook-command-tokenizer-parity-7896.test.ts`),
+ * com UMA diferença deliberada, conservadora: o corpo é MANTIDO quando a
+ * linha de abertura alimenta um shell (`bash`, `sh`, `zsh`, `source`,
+ * `eval`, `ssh`, `xargs`…) — ali o corpo é comando, não texto, e
+ * uma invocação de alvo nele tem de continuar bloqueada. Por isso esta cópia
+ * se chama `stripTextHeredocBodies`, não `stripHeredocSpans`: os irmãos
+ * aceitam o falso negativo do `bash <<EOF`; este guard não (falso negativo
+ * aqui quebra a injeção de --session-id em silêncio, falso positivo só pede
+ * para separar a chamada).
+ *
+ * Corpo lido por outra linguagem (`python3 - <<'PY'`, `node <<EOF`) conta
+ * como texto: uma invocação `npx tsx …/alvo.ts` ali só roda via subprocess
+ * da própria linguagem, e é exatamente o caso de script que monta arquivo
+ * citando os nomes (falso positivo batido ao implementar este fix).
+ *
+ * Terminador ausente: o corpo vai até o fim da string (mesma leitura do
+ * shell) — removido também, exceto no caso do shell.
+ */
+const HEREDOC_INTERPRETER_RE =
+  /(?:^|[\s;&|(`])(?:bash|sh|zsh|dash|ksh|fish|source|\.|eval|ssh|xargs)(?=\s|$)/;
+export function stripTextHeredocBodies(command) {
+  if (typeof command !== "string") return command;
+  const startRe = /(?<!<)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  let result = "";
+  let lastIndex = 0;
+  let m;
+  while ((m = startRe.exec(command)) !== null) {
+    if (m.index < lastIndex) continue; // dentro de um heredoc já removido
+    if (insideArithmetic(command, m.index)) continue; // `$((a<<b))` é shift
+    const delim = m[2];
+    const isDashVariant = m[0].startsWith("<<-");
+    const markerEnd = m.index + m[0].length;
+    const lineEnd = command.indexOf("\n", markerEnd);
+    if (lineEnd === -1) break; // sem corpo: nada a remover
+    const lineStart = command.lastIndexOf("\n", m.index - 1) + 1;
+    const bodyStart = lineEnd + 1;
+    const terminatorRe = new RegExp(`^${isDashVariant ? "[ \t]*" : ""}${delim}[ \t]*$`, "m");
+    const termMatch = terminatorRe.exec(command.slice(bodyStart));
+    const stripEnd = termMatch ? bodyStart + termMatch.index + termMatch[0].length : command.length;
+    if (HEREDOC_INTERPRETER_RE.test(command.slice(lineStart, m.index))) {
+      // Corpo é comando: mantém, e pula para depois dele.
+      startRe.lastIndex = bodyStart;
+      continue;
+    }
+    result += command.slice(lastIndex, bodyStart);
+    lastIndex = stripEnd;
+    startRe.lastIndex = stripEnd;
+  }
+  result += command.slice(lastIndex);
+  return result;
+}
+
+/** `true` quando `index` cai dentro de `((...))`/`$((...))` aberto na mesma
+ * linha — ali `<<` é shift aritmético, não heredoc (#9214). Cópia idêntica
+ * à dos hooks irmãos. */
+function insideArithmetic(command, index) {
+  const lineStart = command.lastIndexOf("\n", index - 1) + 1;
+  const before = command.slice(lineStart, index);
+  const open = before.lastIndexOf("((");
+  return open !== -1 && before.indexOf("))", open) === -1;
 }
 
 /** Decide se `command` é candidato a injeção — script-alvo + subcomando reconhecido. */
@@ -429,10 +517,15 @@ export function detectChainedSessionIdRisk(command) {
   if (typeof command !== "string" || command.trim() === "") return null;
   if (!isChainedCommand(command)) return null;
   if (alreadyHasSessionId(command)) return null;
-  if (!matchesInjectableTarget(command)) return null;
+  // #12029: nome de alvo que aparece só no CORPO de um heredoc de texto
+  // (`cat > f <<'EOF' … EOF`, `gh issue create --body-file - <<'EOF'`) é
+  // menção, não invocação. O encadeamento continua lido do comando inteiro
+  // (o heredoc em si já é multi-linha); só o casamento de alvo ignora o corpo.
+  const matched = matchedInjectableTargets(stripTextHeredocBodies(command));
+  if (matched.length === 0) return null;
   return (
     "Comando encadeado (&&, ;, |, ||, ou múltiplas linhas) contém uma chamada a " +
-    "session-registry.ts / overnight-session-marker.ts / resolve-*-plan-path.ts " +
+    `${matched.join(" / ")} ` +
     "que exige --session-id. O hook de injeção automática (#5156) só atua em " +
     "comando STANDALONE — encadeado, a chamada sairia com '--session-id ausente' " +
     "(exit 1), erro que pode se perder no meio da saída do bloco ou ser engolido " +
