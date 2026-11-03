@@ -1106,6 +1106,8 @@ export const AUDIO_ONLY_FPS = 30;
 export interface Framing {
   faceX: number;
   eyeY: number;
+  /** Caixa da caneca no bruto já desespelhado, em frações do quadro. Opcional, esforço sem sacrificar o rosto (#11939). */
+  mug?: { left: number; right: number; top: number; bottom: number };
 }
 
 export interface VocabRule {
@@ -1200,6 +1202,10 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
   if (raw.source !== undefined && !isObj(raw.source)) errors.push("source (legado) precisa ser objeto");
   if (raw.framing !== undefined) {
     const fr = raw.framing;
+    if (isObj(fr) && fr.mug !== undefined) {
+      const m = fr.mug;
+      if (!isObj(m) || ![m.left, m.right, m.top, m.bottom].every(v => isNum(v) && v >= 0 && v <= 1) || !(Number(m.left) < Number(m.right)) || !(Number(m.top) < Number(m.bottom))) errors.push("framing.mug precisa de left < right e top < bottom entre 0 e 1");
+    }
     if (!isObj(fr) || !isNum(fr.faceX) || !isNum(fr.eyeY) || fr.faceX < 0 || fr.faceX > 1 || fr.eyeY < 0 || fr.eyeY > 1) {
       errors.push("framing precisa de faceX e eyeY entre 0 e 1 (fração do quadro)");
     }
@@ -1803,7 +1809,11 @@ export function buildSequencePlan(
 /** Olhos a ~40% da altura do quadro (#11208). */
 export const EYE_LINE_FRACTION = 0.4;
 
+export const MAX_MUG_SHIFT = 0.02;
+
 export interface FramingResult {
+  /** Caneca não cabe sem ultrapassar o limite editorial; nunca impede build. */
+  warning?: string;
   /** Recorte no bruto (px, já desespelhado); `w`/`h` pares para o ffmpeg, na proporção da sequência. */
   crop: { x: number; y: number; w: number; h: number };
   /**
@@ -1849,12 +1859,29 @@ export function framingFor(input: {
   }
   const w = Math.min(input.srcW - (input.srcW % 2), even(wf));
   const h = Math.min(input.srcH - (input.srcH % 2), even(hf));
-  const x = Math.round(clamp(input.framing.faceX * input.srcW - w / 2, 0, input.srcW - w));
+  const faceX = clamp(input.framing.faceX * input.srcW - w / 2, 0, input.srcW - w);
+  let selectedX = faceX;
+  let warning: string | undefined;
   const y = Math.round(clamp(input.framing.eyeY * input.srcH - eyeFrac * h, 0, input.srcH - h));
+  const mug = input.framing.mug;
+  if (mug) {
+    // Menor deslocamento que contém a caixa inteira, mantendo olhos e escala.
+    const lo = Math.max(0, mug.right * input.srcW - w);
+    const hi = Math.min(input.srcW - w, mug.left * input.srcW);
+    const candidate = clamp(faceX, lo, hi);
+    if (lo <= hi && mug.top * input.srcH >= y && mug.bottom * input.srcH <= y + h &&
+        Math.abs(candidate - faceX) <= MAX_MUG_SHIFT * input.srcW + 1e-8) {
+      selectedX = candidate;
+    } else {
+      warning = "caneca não cabe no recorte com deslocamento de até 2% da largura bruta; mantendo rosto centrado";
+    }
+  }
+  // Arredondar em direção ao rosto para nunca exceder 2%, nem por um pixel.
+  const x = selectedX > faceX ? Math.floor(selectedX) : selectedX < faceX ? Math.ceil(selectedX) : Math.round(faceX);
   const dx = (input.srcW / 2 - (x + w / 2)) * s;
   const dy = (input.srcH / 2 - (y + h / 2)) * s;
   const r4 = (v: number) => Math.round(v * 10000) / 10000 || 0;
-  return { crop: { x, y, w, h }, center: { horiz: r4(dx / input.seqW), vert: r4(dy / input.seqH) }, scalePct: Math.round(s * 10000) / 100 };
+  return { ...(warning ? { warning } : {}), crop: { x, y, w, h }, center: { horiz: r4(dx / input.seqW), vert: r4(dy / input.seqH) }, scalePct: Math.round(s * 10000) / 100 };
 }
 
 // ── XML FCP7 (xmeml v4) ───────────────────────────────────────────────────

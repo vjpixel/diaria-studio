@@ -960,10 +960,20 @@ function cmdFrame(ctx: Ctx, at: string | undefined): number {
   // Antes do gate 1 não há blocks.json: vale o mirrored do source.json.
   const source = existsSync(f(ctx, "blocks.json")) ? sourceFor(ctx, loadBlocks(ctx).file) : sourceFor(ctx);
   const out = f(ctx, `frame-${t.toFixed(1)}.jpg`);
-  const vf = `${source.mirrored ? "hflip," : ""}scale=960:-2,drawgrid=w=iw/10:h=ih/10:t=1:c=white@0.6`;
+  const framing = effectiveFraming(existsSync(f(ctx, "blocks.json")) ? loadBlocks(ctx).file : {}).framing;
+  const boxes = [
+    { seqW: 1920, seqH: 1080, scales: [50, 62], color: "yellow" },
+    { seqW: 1080, seqH: 1920, scales: [115, 130], color: "cyan" },
+  ].flatMap(({ seqW, seqH, scales, color }) => scales.map(scalePct => {
+    const fr = framingFor({ srcW: source.width, srcH: source.height, seqW, seqH, scalePct, framing });
+    if (fr.warning) console.error(`[aviso] frame ${seqW}x${seqH} ${scalePct}%: ${fr.warning}`);
+    const { x, y, w, h } = fr.crop;
+    return `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${color}@0.8:t=4`;
+  }));
+  const vf = `${source.mirrored ? "hflip," : ""}${boxes.join(",")},scale=960:-2,drawgrid=w=iw/10:h=ih/10:t=1:c=white@0.6`;
   run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", String(t), "-i", source.path, "-frames:v", "1", "-vf", vf, out]);
   console.log(out);
-  console.error(`[video-montagem] mirrored=${source.mirrored}; grade em décimos: centro do rosto (faceX) e linha dos olhos (eyeY) em fração do quadro, no framing do blocks.json`);
+  console.error(`[video-montagem] mirrored=${source.mirrored}; grade em décimos: centro do rosto (faceX) e linha dos olhos (eyeY) em fração do quadro, no framing do blocks.json; recortes: amarelo horizontal 50/62%, ciano vertical 115/130%`);
   return 0;
 }
 
@@ -1169,6 +1179,10 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   if (assumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (rosto em 48% da largura, olhos em 54% da altura)");
   let problems = 0;
   for (const p of ps) {
+    for (const scalePct of new Set(p.clips.map(c => c.scale))) {
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing });
+      if (fr.warning) console.error(`[aviso] ${p.spec.name} (${scalePct}%): ${fr.warning}`);
+    }
     const d = p.durationFrames / source.fps;
     console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}`);
     if (p.missingBlocks.length) console.error(`   faltam no blocks.json: ${p.missingBlocks.join(", ")}`);
