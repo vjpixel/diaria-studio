@@ -459,24 +459,50 @@ release_merge_lock() {
 # sem julgamento (ver o docblock do script TS). Fail-soft: o merge já
 # aconteceu; falha aqui vira erro de infra do tick (entregue no resumo, com o
 # motivo), nunca aborta o tick nem toca no merge. Só fora da janela do lock.
+#
+# `not-merged` (review da PR #12043, finding 1): o CLI relê o `state` da PR e
+# a API do GitHub pode ainda responder `OPEN` logo depois do `gh pr merge`
+# (consistência eventual), apesar do MERGE_CONFIRMED=1 que guarda a chamada.
+# Ignorar em silêncio perdia a escrita sem rastro. Reconfere com teto fixo
+# (PENDING_DATA_WRITES_ATTEMPTS tentativas no total, PENDING_DATA_WRITES_RETRY_SLEEP
+# segundos entre elas — nunca laço sem teto); se ainda não-mergeada, vira erro
+# de infra do tick (aviso no resumo + log), sem mudar o exit code nem o merge.
 PENDING_DATA_WRITES=0
 PENDING_DATA_WRITES_SUMMARY=""
+PENDING_DATA_WRITES_ATTEMPTS="${PENDING_DATA_WRITES_ATTEMPTS:-3}"
+PENDING_DATA_WRITES_RETRY_SLEEP="${PENDING_DATA_WRITES_RETRY_SLEEP:-3}"
 register_pending_data_writes() {
-  local pr="$1" out rc err outcome issue stderr_tmp
-  stderr_tmp="$(mktemp)"
-  set +e
-  out=$(npx tsx scripts/register-pending-data-writes.ts --pr "$pr" 2>"$stderr_tmp")
-  rc=$?
-  set -e
-  err=$(cat "$stderr_tmp" 2>/dev/null || true)
-  rm -f "$stderr_tmp"
+  local pr="$1" out rc err outcome issue stderr_tmp state attempt=1
+  local max_attempts="${PENDING_DATA_WRITES_ATTEMPTS:-3}"
+  while :; do
+    stderr_tmp="$(mktemp)"
+    set +e
+    out=$(npx tsx scripts/register-pending-data-writes.ts --pr "$pr" 2>"$stderr_tmp")
+    rc=$?
+    set -e
+    err=$(cat "$stderr_tmp" 2>/dev/null || true)
+    rm -f "$stderr_tmp"
+    outcome=""
+    [ "$rc" -eq 0 ] && outcome=$(printf '%s' "$out" | jq -r '.outcome // empty' 2>/dev/null || true)
+    if [ "$outcome" != "not-merged" ] || [ "$attempt" -ge "$max_attempts" ]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    sleep "${PENDING_DATA_WRITES_RETRY_SLEEP:-3}"
+  done
   if [ "$rc" -ne 0 ]; then
     echo "[continuo-pr-review] PR #$pr: mergeada, mas o registro da escrita pendente em data/ falhou (rc=$rc, não bloqueante) — conferir a seção no corpo da PR à mão: ${out:-$err}" >&2
     INFRA_ERRORS=$((INFRA_ERRORS + 1))
     log_infra_error "$pr" "pending_data_writes_rc=$rc" "PR mergeada; registro da escrita pendente em data/ falhou, conferir a seção no corpo à mão: ${out:-$err}"
     return 0
   fi
-  outcome=$(printf '%s' "$out" | jq -r '.outcome // empty' 2>/dev/null || true)
+  if [ "$outcome" = "not-merged" ]; then
+    state=$(printf '%s' "$out" | jq -r '.state // empty' 2>/dev/null || true)
+    echo "[continuo-pr-review] PR #$pr: merge confirmado, mas a API ainda reporta state=${state:-?} após $attempt tentativa(s) — escrita pendente em data/ NÃO registrada (não bloqueante), conferir a seção no corpo da PR à mão" >&2
+    INFRA_ERRORS=$((INFRA_ERRORS + 1))
+    log_infra_error "$pr" "pending_data_writes_not_merged" "PR mergeada, mas a API reportou state=${state:-?} após $attempt tentativa(s); escrita pendente em data/ não registrada, conferir a seção no corpo à mão"
+    return 0
+  fi
   if [ "$outcome" = "registered" ]; then
     issue=$(printf '%s' "$out" | jq -r '.issue // empty' 2>/dev/null || true)
     PENDING_DATA_WRITES=$((PENDING_DATA_WRITES + 1))

@@ -71,6 +71,13 @@ mkdir -p "$WORKDIR/bin"
 cat > "$WORKDIR/bin/npx" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$CALLS_LOG"
+# FAKE_NOT_MERGED_TIMES=k: as k primeiras chamadas respondem not-merged
+# (API ainda OPEN logo após o merge), as seguintes devolvem FAKE_OUT.
+n=$(wc -l < "$CALLS_LOG")
+if [ "$n" -le "${FAKE_NOT_MERGED_TIMES:-0}" ]; then
+  printf '%s' '{"outcome":"not-merged","pr":42,"state":"OPEN"}'
+  exit 0
+fi
 printf '%s' "${FAKE_OUT:-}"
 [ -n "${FAKE_ERR:-}" ] && printf '%s' "$FAKE_ERR" >&2
 exit "${FAKE_RC:-0}"
@@ -78,11 +85,13 @@ EOF
 chmod +x "$WORKDIR/bin/npx"
 
 run_case() {
-  # $1 = FAKE_OUT, $2 = FAKE_RC
+  # $1 = FAKE_OUT, $2 = FAKE_RC, $3 = FAKE_NOT_MERGED_TIMES (default 0)
+  : > "$WORKDIR/calls.log"
   (
     export PATH="$WORKDIR/bin:$PATH"
     export CALLS_LOG="$WORKDIR/calls.log"
-    export FAKE_OUT="$1" FAKE_RC="$2"
+    export FAKE_OUT="$1" FAKE_RC="$2" FAKE_NOT_MERGED_TIMES="${3:-0}"
+    PENDING_DATA_WRITES_RETRY_SLEEP=0
     REPO="$WORKDIR/repo"
     INFRA_ERROR_LOG="$WORKDIR/infra-errors.jsonl"
     INFRA_ERRORS=0
@@ -114,6 +123,21 @@ rm -f "$WORKDIR/infra-errors.jsonl"
 OUT=$(run_case '{"outcome":"failed","pr":42,"error":"HTTP 502"}' 1)
 assert_contains "falha vira erro de infra, sem abortar" "$OUT" "rc=0 pending=0 infra=1"
 assert_contains "log de infra registra o código" "$(cat "$WORKDIR/infra-errors.jsonl" 2>/dev/null)" '"exit_code":"pending_data_writes_rc=1"'
+
+# 5. Review PR #12043, finding 1: not-merged transitório (API ainda OPEN logo
+# após o merge) é reconferido e, quando a API alcança, registra normalmente.
+OUT=$(run_case '{"outcome":"registered","pr":42,"issue":778,"url":"u","action":"created","writes":[]}' 0 2)
+assert_contains "not-merged transitório é reconferido e registra" "$OUT" "pending=1 infra=0"
+assert_contains "resumo cita a issue após retentativa" "$OUT" "PR #42 -> issue #778;"
+assert_eq "3 chamadas (2 not-merged + 1 registered)" "$(wc -l < "$WORKDIR/calls.log" | tr -d ' ')" "3"
+
+# 6. not-merged persistente: teto de tentativas respeitado (sem laço infinito),
+# vira erro de infra com aviso no log — nunca silêncio — sem abortar.
+rm -f "$WORKDIR/infra-errors.jsonl"
+OUT=$(run_case '{"outcome":"registered","pr":42,"issue":779}' 0 99)
+assert_contains "not-merged persistente vira erro de infra, sem abortar" "$OUT" "rc=0 pending=0 infra=1"
+assert_eq "teto de 3 tentativas" "$(wc -l < "$WORKDIR/calls.log" | tr -d ' ')" "3"
+assert_contains "log de infra registra not-merged" "$(cat "$WORKDIR/infra-errors.jsonl" 2>/dev/null)" '"exit_code":"pending_data_writes_not_merged"'
 
 if [ "$FAILED" -eq 0 ]; then
   echo "TODOS OS TESTES PASSARAM"
