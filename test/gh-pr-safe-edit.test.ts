@@ -498,6 +498,7 @@ describe("--verify-body não grava (#11930)", () => {
     assert.match(verifyBodyConflictError({ "body-file": "x.md" }, new Set(["verify-body"]))!, /NÃO grava.*--body-file/);
     assert.match(verifyBodyConflictError({ body: "texto" }, new Set(["verify-body"]))!, /--body\b/);
     assert.match(verifyBodyConflictError({}, new Set(["verify-body", "body"]))!, /--body/);
+    assert.match(verifyBodyConflictError({ "add-label": "x" }, new Set(["verify-body"]))!, /NÃO grava.*--add-label/);
     assert.equal(verifyBodyConflictError({}, new Set(["verify-body"])), null);
     assert.equal(verifyBodyConflictError({ "body-file": "x.md" }, new Set()), null);
   });
@@ -507,6 +508,8 @@ describe("--verify-body não grava (#11930)", () => {
       ["--pr", "11915", "--verify-body", "--body-file", bodyFile],
       ["--pr", "11915", "--body-file", bodyFile, "--verify-body"],
       ["--pr", "11915", "--verify-body", "--body", "removal-declaration: x"],
+      ["--pr", "11915", "--verify-body", "--add-label", "x"],
+      ["--pr", "11915", "--add-label", "x", "--verify-body"],
     ]) {
       const r = runCli(args);
       assert.equal(r.status, 1, `${args.join(" ")}: ${r.stderr}`);
