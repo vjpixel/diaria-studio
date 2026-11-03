@@ -184,8 +184,12 @@ Grava `$SEL_JSON` com o `EiaSelectionResult` completo (`edition`, `selection: "c
      --doc-json data/monthly/$CYCLE/_internal/clarice-laboratorio.json \
      --record --out data/monthly/$CYCLE/_internal/clarice-tutorial.json
    ```
-   (`--doc-text` no lugar de `--doc-json` se gravou texto.) O script devolve o primeiro tutorial do Doc ainda não usado segundo `context/clarice-tutorial-log.json` e grava a entrada do ciclo no log. Rodar de novo no mesmo ciclo devolve o mesmo tutorial, sem avançar a sequência. A mudança em `context/clarice-tutorial-log.json` é versionada: entra num commit/PR no fechamento do ciclo (sem ela, a próxima mensal em outra máquina repete o tutorial).
-3. **Fail-soft, nunca bloqueia a mensal.** Conector indisponível, `exit 1` (Doc não parseia) ou `kind: "esgotado"`/`"fora-da-lista"` → não passar `clarice_tutorial_path`; o writer emite o placeholder e o gate 4 avisa (4e). Guardar o motivo em `CLARICE_TUTORIAL_STATUS` (`ok`, `conector-indisponivel`, `doc-invalido`, `esgotado`, `fora-da-lista`) para o aviso.
+   (`--doc-text` no lugar de `--doc-json` se gravou texto.) O script devolve o primeiro tutorial ainda não usado (ordem do Doc) segundo `data/monthly/clarice-tutorial-log.json` (fora do git; `data/` sincroniza entre as máquinas) e grava a entrada do ciclo no log, depois de gravar o `--out`. Rodar de novo no mesmo ciclo devolve o mesmo tutorial, sem avançar a sequência. Toda entrada do log é conferida por número E título contra o Doc.
+3. **Fail-soft, nunca bloqueia a mensal.** Fora do `kind: "tutorial"`, não passar `clarice_tutorial_path`: o writer emite o placeholder e o gate 4 avisa (4e). Guardar o motivo em `CLARICE_TUTORIAL_STATUS` e, em `exit 1`, a linha do stderr (`clarice-tutorial-next [reason]: ...`) em `CLARICE_TUTORIAL_DETAIL`:
+   - `ok`: `kind: "tutorial"`.
+   - `conector-indisponivel`: o `read_doc` falhou.
+   - `esgotado` / `fora-da-lista`: o `kind` do stdout (exit 0).
+   - `exit 1` → o `reason` do stdout: `doc-invalido` (estrutura do Doc mudou), `log-ausente` (o log não existe: nunca recomeça do #1), `log-invalido` (log malformado), `log-diverge-do-doc` (entrada do log não bate com o Doc: Doc reordenado ou reescrito), `io` (leitura/escrita), `uso` (bug de invocação).
 
 Disparar `writer-monthly` via `Agent`:
 - `prioritized_path = data/monthly/$CYCLE/prioritized.md`
@@ -605,15 +609,33 @@ Fact-check (_internal/04-fact-check.json):
 
 [se CLARICE_TUTORIAL_STATUS == "ok" — #11836]
 CLARICE — TUTORIAL: tutorial #{numero} "{titulo}" do Doc "Laboratório Clarice"
-    (primeiro ainda não usado; registrado em context/clarice-tutorial-log.json).
-    Conferir no preview. Para trocar, editar o draft e a entrada do ciclo no log.
+    (primeiro ainda não usado, ordem do Doc). O log JÁ foi gravado na Etapa 2
+    (data/monthly/clarice-tutorial-log.json). Conferir no preview. Para trocar,
+    editar o draft E a entrada do ciclo {CYCLE} nesse log (número + título do
+    tutorial novo), senão a próxima mensal pula o tutorial errado.
 
-[se CLARICE_TUTORIAL_STATUS != "ok"]
+[se CLARICE_TUTORIAL_STATUS == "fora-da-lista"]
+⚠️  CLARICE — TUTORIAL: o ciclo {CYCLE} já está no log com "{entry.titulo}",
+    fora do Doc "Laboratório Clarice"; escrever esse texto no draft no lugar do
+    placeholder (o log não muda).
+
+[se CLARICE_TUTORIAL_STATUS não é "ok" nem "fora-da-lista"]
 ⚠️  Seção CLARICE — TUTORIAL é PLACEHOLDER ([Placeholder — inserir aqui...]),
-    motivo: {CLARICE_TUTORIAL_STATUS}. Preencher com o próximo tutorial do Doc
-    "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY)
-    e registrar o ciclo em context/clarice-tutorial-log.json. Com "esgotado",
-    os tutoriais do Doc acabaram: escrever um novo no Doc ou decidir o conteúdo.
+    motivo: {CLARICE_TUTORIAL_STATUS}{, CLARICE_TUTORIAL_DETAIL se exit 1}.
+    O que fazer, por motivo:
+    - conector-indisponivel / io: reconectar e rodar o passo 2a-2 de novo, ou
+      preencher à mão com o primeiro tutorial ainda não usado (ordem do Doc
+      "Laboratório Clarice", id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY)
+      e acrescentar a entrada do ciclo em data/monthly/clarice-tutorial-log.json.
+    - doc-invalido: a estrutura do Doc mudou (o stderr diz onde); corrigir o
+      Doc ou o parser (scripts/lib/mensal/clarice-tutorial.ts).
+    - log-ausente: data/monthly/clarice-tutorial-log.json sumiu; restaurar
+      (data/ sincroniza entre as máquinas). Nunca recriar vazio: a sequência
+      recomeçaria do #1, que já saiu.
+    - log-invalido / log-diverge-do-doc: corrigir a entrada apontada no stderr
+      (log malformado, ou Doc reordenado/reescrito) e rodar o 2a-2 de novo.
+    - esgotado: os tutoriais do Doc acabaram; escrever um novo no Doc ou
+      decidir o conteúdo.
     O preview acima mostra o placeholder literal. (CLARICE — DIVULGAÇÃO é texto fixo desde #11788.)
 
 Aprovar? sim / editar / retry

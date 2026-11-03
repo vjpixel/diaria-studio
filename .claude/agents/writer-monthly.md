@@ -103,12 +103,12 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
    → [{cta}](https://clarice.ai/precos-planos?via=diaria)
    ```
-   Um item numerado por passo (3 ou 4, conforme o JSON). O texto do Doc é a fonte: manter título, ordem e conteúdo dos passos, sem acrescentar passo nem recurso que o Doc não cita; ajuste só para as regras editoriais (sem markdown no corpo, travessão vira vírgula/dois-pontos, humanizador). O CTA aponta sempre para `https://clarice.ai/precos-planos?via=diaria` e, se citar desconto, usa o mesmo "até N%" do CLARICE — DIVULGAÇÃO acima (hoje 63%), mesmo que o JSON traga outro número.
-   **Sem `clarice_tutorial_path`** (conector do Google Docs indisponível ou Doc esgotado — a skill avisa no gate 4), emitir o placeholder:
+   Um item numerado por passo, quantos o JSON trouxer (o Doc define). O texto do Doc é a fonte: manter título, ordem e conteúdo dos passos, sem acrescentar passo nem recurso que o Doc não cita; ajuste só para as regras editoriais (sem markdown no corpo, travessão vira vírgula/dois-pontos, humanizador). O CTA aponta sempre para `https://clarice.ai/precos-planos?via=diaria` e, se citar desconto, usa o mesmo "até N%" do CLARICE — DIVULGAÇÃO acima (hoje 63%), mesmo que o JSON traga outro número.
+   **Sem `clarice_tutorial_path`** (conector do Google Docs indisponível, Doc ou log inválido, Doc esgotado ou ciclo fora da lista — a skill avisa no gate 4), emitir o placeholder:
    ```
    **CLARICE — TUTORIAL**
 
-   [Placeholder — inserir aqui o próximo tutorial da sequência do Doc "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais. CTA no formato `→ [texto](url)`, vira botão no render. Muda a cada ciclo.]
+   [Placeholder — inserir aqui o primeiro tutorial ainda não usado (ordem do Doc) do "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais. CTA no formato `→ [texto](url)`, vira botão no render. Muda a cada ciclo.]
    ```
    CLARICE — TUTORIAL é a única seção Clarice que muda a cada ciclo: o texto vem só do arquivo do tutorial (você não tem acesso ao Drive) — sem ele, placeholder, nunca texto inventado. LIVROS e CLARICE — DIVULGAÇÃO são texto FIXO: emitir literalmente como acima, sem parafrasear. Desconto citado em qualquer outro ponto do draft (ex.: CTA do TUTORIAL) usa o mesmo "até N%" do DIVULGAÇÃO — nunca um segundo número no mesmo e-mail (#11810; `lint-monthly-draft.ts` avisa quando aparecem percentuais "até N% de desconto" diferentes).
 

@@ -50,7 +50,7 @@ function promptBlock(md: string, label: string): string {
   return normalize(lines.slice(start, end < 0 ? undefined : end));
 }
 
-describe("#11788 — CLARICE — DIVULGAÇÃO é texto fixo; só o TUTORIAL é placeholder", () => {
+describe("#11788 — CLARICE — DIVULGAÇÃO é texto fixo; só o TUTORIAL muda por ciclo (Doc, placeholder de fallback)", () => {
   const tpl = templateBlock(TEMPLATE, LABEL);
   const prompt = promptBlock(PROMPT, LABEL);
 
