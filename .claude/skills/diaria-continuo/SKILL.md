@@ -367,8 +367,12 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   `context/overnight-dispatch-rules.md`; lembrete #11835).** Depois do
   `git pull` pós-merge, ler o corpo da PR mergeada e aplicar cada linha da
   seção `Escrita pendente em data/` no checkout principal (Edit cirúrgico,
-  #495). Esta skill não grava `report.md`: o registro vai na entrada da
-  unidade no `plan.json`; o que não der pra gravar fica lá como pendente.
+  #495). No trem de merge (#6300), ler o corpo de CADA PR ORIGINAL do lote
+  (os números passados em `--prs`), nunca o do PR-trem: `buildTrainPrBody`
+  não copia os corpos e as originais terminam fechadas. Esta skill não grava
+  `report.md`: o registro vai na entrada da unidade no `plan.json`
+  (`escrita data/: aplicada` ou `escrita data/: pendente: {motivo}`), e a
+  unidade só conta como concluída com esse registro.
 - **Reusa o formato de `plan.json`** descrito em
   `.claude/skills/diaria-overnight/SKILL.md` (Fase 0, passo 7) — mesmos
   campos (`issues[]`, `timeline`, `stall_events`, `resume_state`, etc.) sob
