@@ -81,15 +81,21 @@ import {
   injectRetrospectivaHeadMeta,
 } from "../../../scripts/lib/shared/retrospectiva-seo.ts"; // #7720
 import {
-  RETROSPECTIVA_BASE_URL,
   RETROSPECTIVAS_PUBLICADAS,
   injectOutrasRetrospectivasNav,
   renderRetrospectivaIndexPage,
 } from "../../../scripts/lib/shared/retrospectiva-index.ts"; // #12032
 
 /** Host canônico — usado na `Sitemap:` do robots.txt, no `canonical`/`og:url`
- *  das páginas, e como destino dos redirects (legado e `.workers.dev`). */
-export const RETROSPECTIVA_HOST = RETROSPECTIVA_BASE_URL;
+ *  das páginas, e como destino dos redirects (legado e `.workers.dev`).
+ *
+ *  Fica LITERAL (não alias de `RETROSPECTIVA_BASE_URL` do módulo compartilhado
+ *  do #12032): o guard de robots.txt por host (`analyzeHostBranching`, #7733)
+ *  resolve o destino dos redirects de `anual.`/`artigo.` lendo o valor literal
+ *  desta const no fonte — um alias de import o deixa sem resolução e reprova
+ *  o Worker. A igualdade com `RETROSPECTIVA_BASE_URL` é travada em
+ *  `test/retrospectiva-index-12032.test.ts`. */
+export const RETROSPECTIVA_HOST = "https://retrospectiva.diar.ia.br";
 
 /** Hosts que este Worker atende SÓ para redirecionar (#7658). */
 export const LEGACY_ANUAL_HOST = "anual.diar.ia.br";

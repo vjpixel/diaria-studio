@@ -14,10 +14,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import worker, { PATHS_COM_TRECHO, handleGet, type Env } from "../workers/retrospectiva/src/index.ts";
+import worker, { PATHS_COM_TRECHO, RETROSPECTIVA_HOST, handleGet, type Env } from "../workers/retrospectiva/src/index.ts";
 import { buildArchiveHtml, buildRetrospectivaNav } from "../workers/arquivo/src/render-archive.ts";
 import {
   RETROSPECTIVAS_PUBLICADAS,
+  RETROSPECTIVA_BASE_URL,
   RETROSPECTIVA_NAV_MARKER,
   injectOutrasRetrospectivasNav,
   renderOutrasRetrospectivasNav,
@@ -171,5 +172,14 @@ describe("#12032 — o bloco do arquivo não cita '{mês} de {ano}'", () => {
     const html = buildArchiveHtml([{ loc: "https://diar.ia.br/p/edicao-a", lastmod: "2026-07-27" }], {});
     assert.doesNotMatch(html, /agosto de 2026/);
     assert.match(html, />agosto\/2026</);
+  });
+});
+
+describe("RETROSPECTIVA_HOST literal no Worker (#12032 x #7733)", () => {
+  it("é literal (o guard de robots por host lê o fonte) e igual a RETROSPECTIVA_BASE_URL", async () => {
+    assert.equal(RETROSPECTIVA_HOST, RETROSPECTIVA_BASE_URL);
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../workers/retrospectiva/src/index.ts", import.meta.url), "utf8");
+    assert.match(src, /export const RETROSPECTIVA_HOST = "https:\/\/[^"]+";/);
   });
 });
