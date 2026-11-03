@@ -198,6 +198,9 @@ run_scenario() {
     eval "$ACQUIRE_SRC"
     eval "$RELEASE_SRC"
     eval "$TRY_MERGE_GATE_SRC"
+    # #12034: registro de escrita pendente pós-merge, coberto à parte em
+    # test/continuo-pr-review-pending-data-writes-12034.test.sh.
+    register_pending_data_writes() { :; }
     set +e
     try_merge_gate 4242
     set -e

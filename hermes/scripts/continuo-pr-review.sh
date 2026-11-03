@@ -449,6 +449,43 @@ release_merge_lock() {
   fi
 }
 
+# #12034: depois de um merge CONFIRMADO no studio, registra a seção
+# `Escrita pendente em data/` (item 35 de context/overnight-dispatch-rules.md,
+# #11780) do corpo da PR. Quem mergeia no contínuo é este script, não uma
+# sessão que lê o SKILL.md, então o lembrete do #11835 não chegava aqui e a
+# escrita ficava sem ninguém aplicar. `register-pending-data-writes.ts` abre
+# (ou reusa) uma issue de alarme com as linhas: NÃO aplica a escrita — o
+# formato é prosa, sem gramática que permita gravar no `data/` compartilhado
+# sem julgamento (ver o docblock do script TS). Fail-soft: o merge já
+# aconteceu; falha aqui vira erro de infra do tick (entregue no resumo, com o
+# motivo), nunca aborta o tick nem toca no merge. Só fora da janela do lock.
+PENDING_DATA_WRITES=0
+PENDING_DATA_WRITES_SUMMARY=""
+register_pending_data_writes() {
+  local pr="$1" out rc err outcome issue stderr_tmp
+  stderr_tmp="$(mktemp)"
+  set +e
+  out=$(npx tsx scripts/register-pending-data-writes.ts --pr "$pr" 2>"$stderr_tmp")
+  rc=$?
+  set -e
+  err=$(cat "$stderr_tmp" 2>/dev/null || true)
+  rm -f "$stderr_tmp"
+  if [ "$rc" -ne 0 ]; then
+    echo "[continuo-pr-review] PR #$pr: mergeada, mas o registro da escrita pendente em data/ falhou (rc=$rc, não bloqueante) — conferir a seção no corpo da PR à mão: ${out:-$err}" >&2
+    INFRA_ERRORS=$((INFRA_ERRORS + 1))
+    log_infra_error "$pr" "pending_data_writes_rc=$rc" "PR mergeada; registro da escrita pendente em data/ falhou, conferir a seção no corpo à mão: ${out:-$err}"
+    return 0
+  fi
+  outcome=$(printf '%s' "$out" | jq -r '.outcome // empty' 2>/dev/null || true)
+  if [ "$outcome" = "registered" ]; then
+    issue=$(printf '%s' "$out" | jq -r '.issue // empty' 2>/dev/null || true)
+    PENDING_DATA_WRITES=$((PENDING_DATA_WRITES + 1))
+    PENDING_DATA_WRITES_SUMMARY="${PENDING_DATA_WRITES_SUMMARY} PR #$pr -> issue #${issue:-?};"
+    echo "[continuo-pr-review] PR #$pr: escrita pendente em data/ registrada na issue #${issue:-?}: $out" >&2
+  fi
+  return 0
+}
+
 # #6926: portão de merge — chama scripts/check-continuo-merge-gate.ts
 # (lógica pura em scripts/lib/continuo-merge-gate.ts) e age no veredito.
 # NUNCA invocado de dentro do `--allowedTools` da sessão do modelo (essa
@@ -607,6 +644,11 @@ try_merge_gate() {
       # script) — mesma ordem de `mergeSoloPr`.
       release_merge_lock
       trap - EXIT
+
+      # #12034: fora da janela do lock, só no studio (o design não tem data/).
+      if [ "$MERGE_CONFIRMED" -eq 1 ] && [ -z "${TARGET_REPO:-}" ]; then
+        register_pending_data_writes "$pr"
+      fi
       ;;
     1)
       # Editor (09/09): stdout é a entrega curta no Telegram; o JSON cru do gate
@@ -1032,6 +1074,8 @@ NOTIFY=0
 [ "$((FAILED + INFRA_ERRORS))" -gt 0 ] 2>/dev/null && NOTIFY=1
 # #8767: PR fechada pelo resolvedor é decisão terminal — o editor fica sabendo.
 [ "${STUCK_CLOSED:-0}" -gt 0 ] 2>/dev/null && NOTIFY=1
+# #12034: PR mergeada com escrita pendente em data/ — alguém precisa aplicar.
+[ "$PENDING_DATA_WRITES" -gt 0 ] 2>/dev/null && NOTIFY=1
 
 # `bloqueadas-por-lock` só aparece quando NÃO-zero: o docblock de
 # LOCK_BLOCKED chama esse contador de "sinal agregado de isto aconteceu N
@@ -1055,6 +1099,9 @@ if [ "$ESCALATED_NEW" -gt 0 ]; then
 fi
 if [ "${STUCK_CLOSED:-0}" -gt 0 ] || [ "${STUCK_UPDATED:-0}" -gt 0 ]; then
   echo "[continuo-pr-review] resolvedor de PRs travadas (#8767): ${STUCK_CLOSED:-0} fechada(s), ${STUCK_UPDATED:-0} com master trazido pra branch — detalhes nos comentários de cada PR"
+fi
+if [ "$PENDING_DATA_WRITES" -gt 0 ]; then
+  echo "[continuo-pr-review] $PENDING_DATA_WRITES PR(s) mergeada(s) com escrita pendente em data/ (#12034) — aplicar no checkout principal e fechar a issue:$PENDING_DATA_WRITES_SUMMARY"
 fi
 if [ "$REJECTED_NEW" -gt 0 ]; then
   echo "[continuo-pr-review] $REJECTED_NEW PR(s) rejeitada(s) agora — consertar ou fechar (label continuo-rejeitado)"
