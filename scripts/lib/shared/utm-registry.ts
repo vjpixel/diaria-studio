@@ -1092,6 +1092,20 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     status: "ativo",
   },
   {
+    id: "dossiemaster",
+    label: "Dossiê Master (box de cadastro, topo e rodapé)",
+    source: "dossiemaster",
+    medium: "rodape",
+    campaignPattern: "cadastro",
+    originFile: "scripts/lib/shared/utm-registry.ts",
+    description:
+      "Box 'Site feito com IA... se cadastre em diar.ia.br' das páginas de diar.ia.br/dossiemaster, " +
+      "servidas pelo repo privado vjpixel/dossiemaster (site/build_prod.mjs; deploy manual do Worker). " +
+      "Dois mediums comparam a posição do box: `rodape` (original) e `topo` (#12031). Sem render neste repo, " +
+      "por isso o `originFile` é o próprio registry.",
+    status: "ativo",
+  },
+  {
     id: "retrospectiva-mensal",
     label: "Retrospectiva do Mês (apoia.se, web)",
     source: RETROSPECTIVA_MENSAL_UTM_SOURCE,
