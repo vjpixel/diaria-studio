@@ -72,7 +72,7 @@ Pasta `Mentoria Fluxo/VTSD/YouTube` (`publishing.youtube.drive_folder_id`), uma 
 
 **Variações (#11385).** A pasta também vale como "Finais" ou "Versão final"; sem `.mp4` nela, o fetch procura em **`{AAMMDD}/Editado/`** (e "Editados", "Edição", "Exportado"), com a mesma regra de destino — na 261028 o horizontal veio em `Editado/Diaria comentada_Youtube_FINAL.mp4`. Se ainda assim o fetch disser `none` e o arquivo estiver no Drive com outro nome ou lugar, subir direto do caminho do Drive for desktop: `publish-youtube.ts {AAMMDD} --upload --confirm-publish {AAMMDD} --video "G:/…/arquivo.mp4"` (Passo A3, depois do "pode publicar"), sem esperar o editor mover nada.
 
-Desde #11491 há uma única vertical. Para edições antigas, na falta de `_Vertical_`, escolher `_Outras redes_` e por último `_Instagram_`, inclusive no timer e no Passo B3b. Ao lado de `Final/` fica o **bruto** (ex.: `20261026_191548.mp4`, 4K HEVC) — fonte do retrato da capa (Passo A2).
+Desde #11491 há uma única vertical. Para edições antigas, na falta de `_Vertical_`, escolher `_Outras redes_` e por último `_Instagram_`, inclusive no timer e no Passo B3b. Ao lado de `Final/` fica o **bruto** (ex.: `20261026_191548.mp4`, 4K HEVC) — referência de identidade do retrato da capa (Passo A2, #11942).
 
 `scripts/fetch-drive-video.ts --edition {AAMMDD} --orientation horizontal|vertical [--target youtube|outras-redes|instagram]` escolhe o arquivo: com `.mp4` em `Final/`, só ela conta e o sufixo decide (sem exigir "final" no nome; a proporção do Drive só exclui um arquivo de orientação contrária). Sem `Final/` (edições antigas), vale a regra de 25/10/2026: `.mp4` com "final" como palavra no nome ("pré-final", "não final" e "finalizando" não contam), na subpasta `{AAMMDD}/` (sem janela; a raiz é ignorada quando ela existe), ou solto na raiz nas últimas 36h. Saídas:
 
@@ -99,13 +99,13 @@ O script tem três modos, e exatamente um é obrigatório (sem nenhum, ou com ma
 
 O JSON no stdout traz título, descrição (resumo + link da edição com UTM + CTA com UTM youtube), 6 tags e o agendamento (06:00 BRT, ou na hora se já passou). No stderr, as linhas `[premissa]` e `[aviso]`. Título, descrição e tags vão no upload do Passo A3 (e no relato); só no fallback do Passo A5 o editor os cola no Studio.
 
-### Passo A2 — Capa no padrão diar.ia.br (#10800, #11220, #11228)
+### Passo A2 — Capa no padrão diar.ia.br (#10800, #11220, #11228, #11942)
 
-Regra do editor: **a única imagem realista é o editor.** Todo o resto é pintura Van Gogh/impasto, a linguagem das imagens de destaque. Referências aprovadas: `data/editions/2610/261021/04-youtube-thumb.jpg`, `261022/04-youtube-thumb.jpg` e, no padrão atual (gancho no topo), `261027/04-youtube-thumb.jpg`. A proposta da IA do YouTube Studio não serve (261022: laboratório e escorpião fotorrealistas, reprovada). Sem `04-youtube-thumb.jpg` o YouTube gera a dele (no #1 veio com contorno neon).
+Regra do editor: **a única imagem realista é o editor.** Todo o resto é pintura Van Gogh/impasto, a linguagem das imagens de destaque. **Padrão desde 03/11/2026 (#11942): o da 261021** (`data/editions/2610/261021/04-youtube-thumb.jpg`, "IA ladra?"), que o editor apontou como a melhor capa até agora: close-up do editor (cabeça e ombros, à esquerda) gerado por IA com o frame só como referência ("minha imagem deve ser só uma referência. pode editar minha expressão"), expressão combinando com o gancho, gancho grande embaixo à direita, cena do D1 à direita com vinheta nas bordas. O padrão de 261027 (frame recortado de corpo inteiro, gancho no topo) foi recusado na 261103 e só sai com `--layout top` a pedido do editor. A proposta da IA do YouTube Studio não serve (261022: laboratório e escorpião fotorrealistas, reprovada). Sem `04-youtube-thumb.jpg` o YouTube gera a dele (no #1 veio com contorno neon).
 
 **Horizontal (`04-youtube-thumb.jpg`, 1280x720):**
 
-1. **Gancho:** 2 a 4 palavras derivadas do D1, pergunta ou tensão (ex.: "IA ladra?", "IA antiveneno?", "Google Photos te vigia?"). Propor e seguir com ele; o editor aprova vendo a capa no item 6.
+1. **Gancho:** 2 a 4 palavras derivadas do D1, pergunta ou tensão (ex.: "IA ladra?", "IA antiveneno?", "Google Photos te vigia?"). Propor e seguir com ele; o editor aprova vendo a capa no item 7. O gancho decide a expressão do retrato (item 3).
 2. **Frame do retrato, do BRUTO (#11228).** O frame do vídeo final (1080p) sai com baixa resolução; o bruto 4K, ao lado de `Final/` na subpasta `{AAMMDD}/`, dá um recorte nítido. Achar o id do bruto (conector do Drive, ou a listagem da subpasta) e extrair as opções direto da Drive API, sem baixar os gigabytes:
 
    ```bash
@@ -114,29 +114,42 @@ Regra do editor: **a única imagem realista é o editor.** Todo o resto é pintu
 
    Sem o bruto no Drive (na 261029 a subpasta só tinha o áudio e o `Final/`), o fallback explícito é o horizontal do `Final/`: `--frames-from-drive {FILE_ID_DO_FINAL} --from-final` (o id sai de `fetch-drive-video.ts --edition {AAMMDD} --orientation horizontal --dry-run`). Não espelha (a exportação já vem certa), o `--pick-frame` desses frames também não, e o `[aviso]` da resolução menor vai para o relato (#11532).
 
-   Grava `_internal/youtube-thumb-frames/frame-{N}.png` e a folha numerada `opcoes.jpg` (5 instantes no miolo do vídeo por padrão). **Mostrar a folha ao editor; ele escolhe o número** (critério: olhando para a câmera, boca fechada, mãos fora do quadro). Nunca escolher sozinho. Depois:
+   Grava `_internal/youtube-thumb-frames/frame-{N}.png` e a folha numerada `opcoes.jpg` (5 instantes no miolo do vídeo por padrão). **Mostrar a folha ao editor; ele escolhe o número** (critério desde #11942: rosto nítido, bem iluminado e de frente, porque o frame é só a referência de identidade; a expressão sai do item 3). Nunca escolher sozinho. Depois:
 
    ```bash
    npx tsx scripts/gen-youtube-thumb.ts {AAMMDD} --pick-frame {N}
    ```
 
    que copia o escolhido para `_internal/youtube-thumb-frames/escolhido.png`.
-3. **Recorte:** `rembg` modelo `birefnet-portrait` (só a pessoa, PNG com transparência). No **Neo (Windows do editor)**, o ambiente de `docs/setup.md` (#11071): `.venv-rembg/Scripts/python.exe scripts/setup-rembg.py --input _internal/youtube-thumb-frames/escolhido.png --output retrato.png`. No **`300` (Linux)**, desde #11223: `.venv-rembg/bin/python scripts/setup-rembg.py --input _internal/youtube-thumb-frames/escolhido.png --output retrato.png`. Se ausente/inválido, parar com a instrução de setup que o `check-video-env.ts` imprime (`py -3.11 scripts/setup-rembg.py` no Neo; `uv python install 3.11.9` + `setup-rembg.py` no `300`, `docs/setup.md`); nunca instalar improvisado ou substituir o recorte silenciosamente. Sem o venv na máquina, deixar o passo para o Neo e seguir com o resto.
-4. **Fundo:** outpaint da `04-d1-2x1.jpg` para 16:9 pelo Codex, com a imagem como referência (#11228), o objeto do D1 menor e inteiro à direita e o terço esquerdo livre, em pintura impasto nítida. Nunca desfoque:
+3. **Retrato em close-up pelo Codex, com folha de expressões (#11942).** O frame escolhido vira referência de identidade; o Codex gera uma foto nova, cabeça e ombros, com a expressão pedida. Escolher 2 ou 3 expressões que combinem com o gancho (`desconfiado`, a da 261021, é o default para gancho em pergunta; as outras são `surpreso`, `preocupado`, `serio`, `ironico`, `intrigado`):
+
+   ```bash
+   npx tsx scripts/gen-youtube-thumb.ts {AAMMDD} --portrait-prompts [--expressions desconfiado,surpreso,preocupado]
+   ```
+
+   Grava `_internal/youtube-thumb-portraits/prompt-{N}.json` (com `reference_mode: "identity"`, que faz o `codex-image.js` pedir a mesma pessoa numa foto nova em vez de outpaint) e imprime um comando `node scripts/codex-image.js …/prompt-{N}.json …/retrato-{N}.jpg` por opção. Rodar os comandos e montar a folha:
+
+   ```bash
+   npx tsx scripts/gen-youtube-thumb.ts {AAMMDD} --portrait-sheet
+   ```
+
+   **Mostrar `_internal/youtube-thumb-portraits/opcoes.jpg` ao editor; ele escolhe o número** (a identidade tem de ser a dele; se nenhuma servir, refazer com outras expressões ou outro frame). Depois `npx tsx scripts/gen-youtube-thumb.ts {AAMMDD} --pick-portrait {N}`, que copia a opção para `_internal/youtube-thumb-portraits/escolhido.jpg`. Sem o Codex na máquina (no `300`, o login venceu em 03/11/2026: `Failed to refresh token … 401`; `codex login` refaz), deixar a capa para o Neo; o recorte direto do frame (padrão anterior) só se o editor pedir.
+4. **Recorte:** `rembg` modelo `birefnet-portrait` (só a pessoa, PNG com transparência) sobre o retrato escolhido. No **Neo (Windows do editor)**, o ambiente de `docs/setup.md` (#11071): `.venv-rembg/Scripts/python.exe scripts/setup-rembg.py --input _internal/youtube-thumb-portraits/escolhido.jpg --output retrato.png`. No **`300` (Linux)**, desde #11223: `.venv-rembg/bin/python scripts/setup-rembg.py --input _internal/youtube-thumb-portraits/escolhido.jpg --output retrato.png`. Se ausente/inválido, parar com a instrução de setup que o `check-video-env.ts` imprime (`py -3.11 scripts/setup-rembg.py` no Neo; `uv python install 3.11.9` + `setup-rembg.py` no `300`, `docs/setup.md`); nunca instalar improvisado ou substituir o recorte silenciosamente. Sem o venv na máquina, deixar o passo para o Neo e seguir com o resto.
+5. **Fundo:** outpaint da `04-d1-2x1.jpg` para 16:9 pelo Codex, com a imagem como referência (#11228), o objeto do D1 menor e inteiro à direita e o terço esquerdo livre, em pintura impasto nítida. Nunca desfoque:
 
    ```bash
    node scripts/codex-image.js prompt-fundo.json fundo-16x9.jpg --ref data/editions/{AAMM}/{AAMMDD}/04-d1-2x1.jpg
    ```
 
    `prompt-fundo.json` com `positive` (a cena e a regra do terço esquerdo livre) e `final_width: 1536`, `final_height: 864`. O `--ref` anexa a imagem ao `codex exec -i` e o prompt pede para estender a cena mantendo a pintura.
-5. **Composição** (determinística):
+6. **Composição** (determinística):
 
    ```bash
    npx tsx scripts/gen-youtube-thumb.ts {AAMMDD} --hook "IA ladra?" --portrait retrato.png --background fundo-16x9.jpg --enhance-portrait
    ```
 
-   Grava `04-youtube-thumb.jpg` (≤ 2 MB): fundo sem desfoque, gradiente escuro no **topo** (até 45% da altura), retrato à esquerda na base, gancho em Georgia bold cor papel no canto **superior direito** com o `?` em teal (#11220). O gancho encolhe sozinho para não invadir a cabeça do retrato (#11228); abaixo de 320 px vira `[aviso]` (encurtar o gancho). `--enhance-portrait` aplica o realce aprovado em 261027: contraste +25% (`linear(1.25, -32)`), nitidez e saturação leve, preservando o alfa do rembg. Retrato sem transparência é recusado. Sem `--background` usa a `04-d1-2x1.jpg` crua com recorte central e um `[aviso]`. Precisa de Georgia instalada (guard #4090).
-6. **Mostrar ao editor antes de subir** (pedido explícito). As capas de 261021 e 261022 já publicadas não são regeneradas.
+   Grava `04-youtube-thumb.jpg` (≤ 2 MB) no layout `bottom`, o default desde #11942: fundo sem desfoque com vinheta nas bordas e gradiente escuro na **base** (até 45% da altura), retrato em close-up à esquerda (até 55% da largura, altura inteira, colado na base), gancho em Georgia bold cor papel no canto **inferior direito** com o `?` em teal. O gancho pode passar por cima do ombro, como na 261021, mas encolhe sozinho para não cobrir mais de 160 px do retrato; abaixo de 320 px vira `[aviso]` (encurtar o gancho). Com `--layout top` sai o padrão de 261027 (#11220: gradiente no topo, gancho no canto superior direito, encolhido para não invadir a cabeça, #11228). `--enhance-portrait` aplica o realce aprovado em 261027: contraste +25% (`linear(1.25, -32)`), nitidez e saturação leve, preservando o alfa do rembg. Retrato sem transparência é recusado. Sem `--background` usa a `04-d1-2x1.jpg` crua com recorte central e um `[aviso]`. Precisa de Georgia instalada (guard #4090).
+7. **Mostrar ao editor antes de subir** (pedido explícito). As capas de 261021 e 261022 já publicadas não são regeneradas.
 
 **Short (`04-youtube-short-capa.jpg`):** um frame do próprio vídeo vertical em que aparece o lettering do título do D1 (só nos ~3,5 s iniciais; depois entra a vinheta). Escolher o frame com a melhor expressão (olhando pra câmera, boca fechada ou sorriso, mãos fora do quadro):
 

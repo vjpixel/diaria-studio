@@ -64,6 +64,7 @@ describe("#11220 gancho no topo à direita", () => {
       background: await rgba(1280, 720, [0, 0, 0], 1),
       portrait: await rgba(10, 10, [0, 0, 0], 0.02),
       hook: "Google Photos te vigia?",
+      layout: "top", // #11942: o default virou bottom
     });
     assert.deepEqual(warnings, []);
     const box = await brightBox(jpeg);
@@ -77,6 +78,7 @@ describe("#11220 gancho no topo à direita", () => {
       background: await rgba(1280, 720, [240, 240, 240], 1),
       portrait: await rgba(10, 10, [0, 0, 0], 0.02),
       hook: "IA ladra?",
+      layout: "top", // #11942
     });
     const { data, info } = await sharp(jpeg).raw().toBuffer({ resolveWithObject: true });
     const lum = (x: number, y: number) => {
@@ -119,6 +121,7 @@ describe("#11228 gancho não invade a cabeça do retrato", () => {
       background: await rgba(1280, 720, [0, 0, 0], 1),
       portrait,
       hook: "Google Photos te vigia?",
+      layout: "top", // #11942: o default virou bottom
     });
     // Onde o retrato (azul) termina na altura do gancho, medido na imagem:
     const { data, info } = await sharp(jpeg).raw().toBuffer({ resolveWithObject: true });
@@ -171,6 +174,7 @@ describe("#11228 realce do retrato", () => {
       portrait,
       hook: "IA ladra?",
       enhancePortrait: true,
+      layout: "top", // #11942: no bottom a vinheta escurece a base
     });
     const { data, info } = await sharp(jpeg).raw().toBuffer({ resolveWithObject: true });
     // Canto inferior direito do terço do retrato, fora da pessoa: segue azul (o fundo do recorte não virou opaco).
