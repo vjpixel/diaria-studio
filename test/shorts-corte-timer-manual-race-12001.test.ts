@@ -188,7 +188,7 @@ describe("#12001 regressão: timer e rodada manual concorrentes na mesma pasta d
     const timer = lockAt(dir, TAIL);
     assert.ok(timer);
     assert.equal(acquireTimerLock(join(dir, CORTE_TIMER_LOCK_FILE), at(TAIL + MIN).getTime()), null);
-    assert.match(corteTimerLockBusyError(SLUG), /está publicando o corte "corte-12001" agora/);
+    assert.match(corteTimerLockBusyError(SLUG), /outra execução \(manual ou timer\) está com o lock do corte "corte-12001" agora/);
     timer!();
     assert.equal(existsSync(join(dir, CORTE_TIMER_LOCK_FILE)), false);
   });
