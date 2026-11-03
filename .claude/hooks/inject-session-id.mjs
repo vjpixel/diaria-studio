@@ -303,42 +303,329 @@ const SESSION_ID_TARGETS = [
  */
 export function isChainedCommand(command) {
   if (typeof command !== "string") return false;
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (inSingleQuote) {
-      if (ch === "'") inSingleQuote = false;
-      continue;
-    }
-    if (inDoubleQuote) {
-      if (ch === "\\") {
-        i++; // escapa o próximo caractere (inclusive \" ) — não fecha a aspa
-        continue;
-      }
-      if (ch === '"') inDoubleQuote = false;
-      continue;
-    }
-    // Fora de qualquer aspa.
-    if (ch === "\\") {
-      i++; // escapa o próximo caractere (ex: `\;`) — suprime a detecção
-      continue;
-    }
-    if (ch === "'") {
-      inSingleQuote = true;
-      continue;
-    }
-    if (ch === '"') {
-      inDoubleQuote = true;
-      continue;
-    }
+  const { stoppedAt, unclosed } = scanShell(command, (i, ch, kind) => {
+    if (kind !== "plain") return false;
     if (ch === "\n" || ch === "\r") return true;
     if (ch === ";") return true;
     if (ch === "|") return true; // cobre `|` e `||` — ambos disparam
-    if (ch === "&" && command[i + 1] === "&") return true;
-  }
+    return ch === "&" && command[i + 1] === "&";
+  });
+  if (stoppedAt !== -1) return true;
   // Aspa não fechada: comando malformado, fail-closed.
-  return inSingleQuote || inDoubleQuote;
+  return unclosed;
+}
+
+/**
+ * #12050: scanner de aspas/escape/comentário compartilhado por
+ * `isChainedCommand` e por `stripSafeDataHeredocBodies`. As regras de aspas e
+ * escape são as documentadas em `isChainedCommand` acima (extraídas dele sem
+ * mudança); comentário é opcional (`comments: true`) porque `isChainedCommand`
+ * nunca reconheceu `#` e continua sem reconhecer.
+ *
+ * `visit(i, ch, kind)` é chamado para cada caractere visto, com `kind`:
+ * - `plain`: fora de aspas, sem escape (é onde metacaractere vale);
+ * - `quote`: a própria aspa que abre ou fecha uma citação;
+ * - `single` / `double`: conteúdo de aspas simples / duplas;
+ * - `escape`: a `\` (fora de aspas ou dentro de aspas duplas);
+ * - `escaped`: o caractere consumido por essa `\`;
+ * - `comment`: o `#` que abre um comentário e o texto até a quebra de linha
+ *   (a `\n` que fecha o comentário volta como `plain`).
+ * Retornar `true` de `visit` para a varredura. Devolve `stoppedAt` (índice
+ * onde parou, ou -1) e `unclosed` (terminou dentro de aspas).
+ */
+function scanShell(command, visit, { start = 0, end = command.length, comments = false } = {}) {
+  let mode = "plain"; // plain | single | double | comment
+  const stopped = (i) => ({ stoppedAt: i, unclosed: false });
+  for (let i = start; i < end; i++) {
+    const ch = command[i];
+    if (mode === "comment") {
+      if (ch === "\n") {
+        mode = "plain";
+        if (visit(i, ch, "plain")) return stopped(i);
+      } else if (visit(i, ch, "comment")) return stopped(i);
+      continue;
+    }
+    if (mode === "single") {
+      const kind = ch === "'" ? "quote" : "single";
+      if (ch === "'") mode = "plain";
+      if (visit(i, ch, kind)) return stopped(i);
+      continue;
+    }
+    if (ch === "\\") {
+      // Fora de aspas ou dentro de aspas duplas: consome o próximo caractere.
+      if (visit(i, ch, "escape")) return stopped(i);
+      i++;
+      if (i < end && visit(i, command[i], "escaped")) return stopped(i);
+      continue;
+    }
+    if (mode === "double") {
+      const kind = ch === '"' ? "quote" : "double";
+      if (ch === '"') mode = "plain";
+      if (visit(i, ch, kind)) return stopped(i);
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      mode = ch === "'" ? "single" : "double";
+      if (visit(i, ch, "quote")) return stopped(i);
+      continue;
+    }
+    if (comments && ch === "#" && (i === start || /[\s;&|()]/.test(command[i - 1]))) {
+      mode = "comment";
+      if (visit(i, ch, "comment")) return stopped(i);
+      continue;
+    }
+    if (visit(i, ch, "plain")) return stopped(i);
+  }
+  return { stoppedAt: -1, unclosed: mode === "single" || mode === "double" };
+}
+
+/**
+ * #12050: quebra a linha de abertura de um heredoc em palavras e operadores
+ * de redirecionamento, com as regras de `scanShell`. Devolve `null` (não dá
+ * para afirmar que é um comando simples de dados) quando aparece qualquer
+ * coisa fora do caso trivial: `;`, `|`, `&`, `(`, `)`, `$(`/crase (inclusive
+ * dentro de aspas duplas, onde o shell ainda executa), aspa não fechada ou
+ * quebra de linha (continuação com `\`).
+ */
+function tokenizeHeredocOpening(line) {
+  if (line.includes("\n")) return null;
+  const tokens = [];
+  let word = null;
+  let denied = false;
+  let lastOpIndex = -2;
+  const flush = () => {
+    if (word) tokens.push(word);
+    word = null;
+  };
+  const ensureWord = () => {
+    if (!word) word = { type: "word", raw: "", value: "" };
+    return word;
+  };
+  const { unclosed } = scanShell(
+    line,
+    (i, ch, kind) => {
+      if (kind === "comment") {
+        flush();
+        return false;
+      }
+      if ((kind === "plain" || kind === "double") && (ch === "`" || (ch === "$" && line[i + 1] === "("))) {
+        denied = true;
+        return true;
+      }
+      if (kind === "plain") {
+        if (ch === " " || ch === "\t") {
+          flush();
+          return false;
+        }
+        if (/[;|&()]/.test(ch)) {
+          denied = true;
+          return true;
+        }
+        const last = tokens[tokens.length - 1];
+        if (ch === "<" || ch === ">" || (ch === "-" && !word && last?.type === "op" && last.value === "<<" && lastOpIndex === i - 1)) {
+          if (!word && last?.type === "op" && lastOpIndex === i - 1) {
+            last.value += ch;
+          } else {
+            flush();
+            tokens.push({ type: "op", value: ch });
+          }
+          lastOpIndex = i;
+          return false;
+        }
+        const w = ensureWord();
+        w.raw += ch;
+        w.value += ch;
+        return false;
+      }
+      const w = ensureWord();
+      w.raw += ch;
+      if (kind !== "quote" && kind !== "escape") w.value += ch;
+      return false;
+    },
+    { comments: true },
+  );
+  flush();
+  if (denied || unclosed) return null;
+  return tokens;
+}
+
+const HEREDOC_TAG_QUOTED = /^(['"])([A-Za-z0-9_.-]+)\1$/;
+const UNSAFE_PATH_CHARS = /[$*?[\]{}~`]/;
+
+/**
+ * #12050: decide se a linha de abertura `line` é um heredoc de DADOS cujo
+ * corpo pode sair da checagem. Devolve `{ tag, dashed, paths }` ou `null`.
+ * Condições (as do contrato da issue, condições 2 e 4; a 1 é de quem chama):
+ * - delimitador inteiro entre aspas (`<<'TAG'`/`<<"TAG"`): sem aspas, o shell
+ *   expande `$(...)` e crase no corpo;
+ * - consumidor numa allowlist curta: `cat` sem argumentos (com ou sem `>`/`>>`
+ *   para arquivo), `tee [-a] arquivo…`, `gh … --body-file -` / `-F -`;
+ * - `paths`: arquivos escritos, para a condição 5 (ninguém executa depois).
+ */
+function analyzeDataHeredocOpening(line) {
+  const tokens = tokenizeHeredocOpening(line);
+  if (!tokens) return null;
+  const opIndexes = tokens.flatMap((t, idx) => (t.type === "op" && t.value.startsWith("<<") ? [idx] : []));
+  if (opIndexes.length !== 1) return null;
+  const opIdx = opIndexes[0];
+  const op = tokens[opIdx].value;
+  if (op !== "<<" && op !== "<<-") return null;
+  const delim = tokens[opIdx + 1];
+  if (!delim || delim.type !== "word") return null;
+  const tagMatch = HEREDOC_TAG_QUOTED.exec(delim.raw);
+  if (!tagMatch) return null;
+  const rest = tokens.filter((_, idx) => idx !== opIdx && idx !== opIdx + 1);
+  const argv = [];
+  const paths = [];
+  for (let k = 0; k < rest.length; k++) {
+    const t = rest[k];
+    if (t.type === "op") {
+      if (t.value !== ">" && t.value !== ">>") return null;
+      const target = rest[k + 1];
+      if (!target || target.type !== "word" || target.value === "" || UNSAFE_PATH_CHARS.test(target.value)) {
+        return null;
+      }
+      paths.push(target.value);
+      k++;
+      continue;
+    }
+    argv.push(t.value);
+  }
+  const [cmd, ...args] = argv;
+  if (cmd === "cat") {
+    if (args.length !== 0) return null;
+  } else if (cmd === "tee") {
+    const files = args.filter((a) => a !== "-a" && a !== "--append");
+    if (files.length === 0) return null;
+    for (const f of files) {
+      if (f.startsWith("-") || UNSAFE_PATH_CHARS.test(f)) return null;
+      paths.push(f);
+    }
+  } else if (cmd === "gh") {
+    const readsStdin = args.some(
+      (a, idx) => a === "--body-file=-" || ((a === "--body-file" || a === "-F") && args[idx + 1] === "-"),
+    );
+    if (!readsStdin) return null;
+  } else {
+    return null;
+  }
+  return { tag: tagMatch[2], dashed: op === "<<-", paths };
+}
+
+/**
+ * #12050 condição 5: `true` se `rest` (o comando depois do terminador)
+ * referencia algum arquivo escrito pelo heredoc em posição que não seja
+ * `--body-file P` / `--body-file=P` / `-F P`. Conservador de propósito:
+ * qualquer outra menção (`bash P`, `source P`, `. P`, `node P`, `chmod +x P`,
+ * `./P`, `cat P | sh`, só o nome do arquivo depois de um `cd`) conta como uso
+ * do arquivo, e o corpo fica na checagem.
+ */
+function restUsesWrittenFile(rest, paths) {
+  for (const p of paths) {
+    const base = p.split("/").pop();
+    if (!base) return true;
+    let from = 0;
+    for (;;) {
+      const at = rest.indexOf(base, from);
+      if (at === -1) break;
+      from = at + base.length;
+      let wordStart = at;
+      while (wordStart > 0 && !/\s/.test(rest[wordStart - 1])) wordStart--;
+      const word = rest.slice(wordStart, from + (rest.slice(from).match(/^\S*/)?.[0].length ?? 0));
+      if (word.startsWith("--body-file=")) continue;
+      const before = rest.slice(0, wordStart).trimEnd();
+      const prevWord = before.slice(before.search(/\S*$/));
+      if (prevWord === "--body-file" || prevWord === "-F") continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * #12050: devolve `command` sem o CORPO dos heredocs de dados — só para a
+ * checagem de `detectChainedSessionIdRisk`, nunca para executar nem para
+ * injetar. Um corpo que só cita o nome de um alvo (`cat > /tmp/x.md
+ * <<'EOF'` … `session-registry.ts` … `EOF`) deixa de ser lido como invocação.
+ *
+ * Fail-closed em todo caso fora do contrato: qualquer heredoc do comando que
+ * não satisfaça TODAS as condições faz a função devolver `command` intacto
+ * (nenhum corpo removido, nem o de outro heredoc seguro). As condições:
+ * 1. o `<<` está fora de aspas e de comentário (`scanShell`);
+ * 2. delimitador entre aspas (`analyzeDataHeredocOpening`);
+ * 3. o terminador existe numa linha que é exatamente a TAG (com tabs iniciais
+ *    no `<<-`);
+ * 4. consumidor de dados na allowlist (`analyzeDataHeredocOpening`), sem `|`
+ *    na abertura;
+ * 5. nada depois do terminador usa o arquivo escrito (`restUsesWrittenFile`);
+ * 6. a linha seguinte ao terminador não começa com `|`.
+ * Mais um: se o resto do comando define função ou alias (`cat() {`,
+ * `alias cat=…`, `function …`), o consumidor pode não ser o `cat`/`tee`/`gh`
+ * de verdade, e nada é removido.
+ *
+ * Linha de abertura, linha do terminador e o resto do comando permanecem —
+ * uma invocação real do alvo fora do corpo continua sendo vista.
+ */
+export function stripSafeDataHeredocBodies(command) {
+  if (typeof command !== "string" || !command.includes("<<")) return command;
+  const out = [];
+  let pos = 0;
+  let stripped = false;
+  while (pos < command.length) {
+    const heredocOps = [];
+    const { stoppedAt } = scanShell(
+      command,
+      (i, ch, kind) => {
+        if (kind !== "plain") return false;
+        if (ch === "\n") return true;
+        if (ch === "<" && command[i + 1] === "<" && command[i - 1] !== "<" && command[i + 2] !== "<") {
+          heredocOps.push(i);
+        }
+        return false;
+      },
+      { start: pos, comments: true },
+    );
+    const lineEnd = stoppedAt === -1 ? command.length : stoppedAt;
+    const line = command.slice(pos, lineEnd);
+    if (heredocOps.length === 0) {
+      out.push(command.slice(pos, Math.min(lineEnd + 1, command.length)));
+      pos = lineEnd + 1;
+      continue;
+    }
+    if (heredocOps.length !== 1 || stoppedAt === -1) return command;
+    const opening = analyzeDataHeredocOpening(line);
+    if (!opening) return command;
+    // Condição 3: o terminador existe.
+    let cursor = lineEnd + 1;
+    let terminatorEnd = -1;
+    while (cursor <= command.length) {
+      const nl = command.indexOf("\n", cursor);
+      const end = nl === -1 ? command.length : nl;
+      const bodyLine = command.slice(cursor, end);
+      const candidate = opening.dashed ? bodyLine.replace(/^\t+/, "") : bodyLine;
+      if (candidate === opening.tag) {
+        terminatorEnd = end;
+        break;
+      }
+      if (nl === -1) break;
+      cursor = nl + 1;
+    }
+    if (terminatorEnd === -1) return command;
+    const rest = command.slice(terminatorEnd);
+    // Condição 6: pipe logo depois do terminador.
+    if (/^\n[ \t]*\|/.test(rest)) return command;
+    // Condição 5: o arquivo escrito não é usado depois.
+    if (restUsesWrittenFile(rest, opening.paths)) return command;
+    out.push(line + "\n" + command.slice(cursor, terminatorEnd) + (terminatorEnd < command.length ? "\n" : ""));
+    stripped = true;
+    pos = terminatorEnd + 1;
+  }
+  if (!stripped) return command;
+  const result = out.join("");
+  if (/(?:^|[\s;&|(])(?:alias|function)\s/.test(result) || /(?:^|[\s;&|(])(?:cat|tee|gh)\s*\(\s*\)/.test(result)) {
+    return command;
+  }
+  return result;
 }
 
 /**
@@ -449,8 +736,13 @@ export function alreadyHasSessionId(command) {
 export function detectChainedSessionIdRisk(command) {
   if (typeof command !== "string" || command.trim() === "") return null;
   if (!isChainedCommand(command)) return null;
-  if (alreadyHasSessionId(command)) return null;
-  const matched = matchedInjectableTargets(command);
+  // #12050: corpo de heredoc de DADOS (delimitador citado, consumidor
+  // cat/tee/gh --body-file -, ninguém executa o arquivo depois) não é
+  // invocação — sai da checagem. O `--session-id` também é procurado só fora
+  // desse corpo: uma menção à flag no texto não cobre a chamada real.
+  const checked = stripSafeDataHeredocBodies(command);
+  if (alreadyHasSessionId(checked)) return null;
+  const matched = matchedInjectableTargets(checked);
   if (matched.length === 0) return null;
   return (
     "Comando encadeado (&&, ;, |, ||, ou múltiplas linhas) contém uma chamada a " +

@@ -30,6 +30,7 @@ import {
   shellSingleQuote,
   buildUpdatedCommand,
   detectChainedSessionIdRisk,
+  stripSafeDataHeredocBodies,
 } from "../.claude/hooks/inject-session-id.mjs";
 // #7836 — fonte única (ver scripts/lib/session-id-required-subcommands.ts).
 // Iterar sobre ESTA lista em vez de reproduzir os nomes à mão aqui é o que
@@ -783,6 +784,101 @@ describe("heredoc não abre buraco no bloqueio de encadeado (#12029, regressão)
       assert.match(risk as string, /cleanup-merged-worktrees\.ts/);
     });
   }
+});
+
+// #12050: o corpo de um heredoc de DADOS sai da checagem só quando as 6
+// condições do contrato valem juntas. Cada caso "bloqueia" abaixo viola UMA
+// condição e mantém as outras, para provar que cada uma sozinha segura o corpo.
+describe("heredoc de dados com delimitador citado não bloqueia por citar alvo (#12050)", () => {
+  const TARGET = "npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue 1";
+  const BODY = `Nota: rode ${TARGET} isolado.`;
+
+  const liberados: Array<[string, string]> = [
+    [
+      "cat > arquivo <<'EOF' + gh issue create --body-file arquivo",
+      `cat > /tmp/x.md <<'EOF'\n${BODY}\nEOF\ngh issue create --title t --body-file /tmp/x.md`,
+    ],
+    ["gh issue comment --body-file - <<'EOF'", `gh issue comment 1 --body-file - <<'EOF'\n${BODY}\nEOF`],
+    ['delimitador em aspas duplas <<"EOF"', `cat > /tmp/x.md <<"EOF"\n${BODY}\nEOF\ngh pr create --body-file /tmp/x.md`],
+    ["cat >> arquivo", `cat >> /tmp/x.md <<'EOF'\n${BODY}\nEOF`],
+    ["tee arquivo", `tee /tmp/x.md <<'EOF'\n${BODY}\nEOF\ngh issue edit 1 --body-file=/tmp/x.md`],
+    ["gh -F -", `gh issue create --title t -F - <<'EOF'\n${BODY}\nEOF`],
+    ["<<- com terminador indentado por tab", `cat > /tmp/x.md <<-'EOF'\n${BODY}\n\t\tEOF`],
+    ["cat sem redirecionamento", `cat <<'EOF'\n${BODY}\nEOF`],
+  ];
+  for (const [label, command] of liberados) {
+    it(`libera: ${label}`, () => {
+      assert.equal(detectChainedSessionIdRisk(command), null, command);
+      assert.doesNotMatch(stripSafeDataHeredocBodies(command), /session-registry\.ts/);
+    });
+  }
+
+  const bloqueados: Array<[string, string]> = [
+    // 1. `<<` dentro de aspas ou de comentário: não é heredoc, o "corpo" é comando.
+    ["(1) <<'EOF' dentro de aspas", `echo "cat > /tmp/x.md <<'EOF'"\n${TARGET}\nEOF`],
+    ["(1) <<'EOF' em comentário", `# cat > /tmp/x.md <<'EOF'\n${TARGET}\nEOF`],
+    // 2. delimitador sem aspas: o shell expande o corpo.
+    ["(2) <<EOF sem aspas", `cat > /tmp/x.md <<EOF\n${TARGET}\nEOF`],
+    ["(2) delimitador parcialmente citado", `cat > /tmp/x.md <<'EO'F\n${TARGET}\nEOF`],
+    // 3. terminador ausente ou diferente da TAG exata.
+    ["(3) terminador ausente", `cat > /tmp/x.md <<'EOF'\n${TARGET}`],
+    ["(3) terminador com espaço depois", `cat > /tmp/x.md <<'EOF'\n${TARGET}\nEOF \nfim`],
+    ["(3) tab antes do terminador sem <<-", `cat > /tmp/x.md <<'EOF'\n${TARGET}\n\tEOF`],
+    // 4. consumidor fora da allowlist, ou abertura que não é um comando simples.
+    ["(4) bash <<'EOF'", `bash <<'EOF'\n${TARGET}\nEOF`],
+    ["(4) sh <<'EOF'", `sh <<'EOF'\n${TARGET}\nEOF`],
+    ["(4) python <<'EOF'", `python <<'EOF'\n${TARGET}\nEOF`],
+    ["(4) xargs <<'EOF'", `xargs -I{} sh -c {} <<'EOF'\n${TARGET}\nEOF`],
+    ["(4) eval $(cat <<'EOF' …)", `eval $(cat <<'EOF'\n${TARGET}\nEOF\n)`],
+    ["(4) gh sem --body-file -", `gh issue create --body-file /tmp/y.md <<'EOF'\n${TARGET}\nEOF`],
+    ["(4) cat com argumento", `cat - <<'EOF'\n${TARGET}\nEOF`],
+    ["(4) abertura encadeada com &&", `cd /tmp && cat > x.md <<'EOF'\n${TARGET}\nEOF`],
+    ["(4) $(...) na abertura dentro de aspas duplas", `gh issue create --title "$(date)" --body-file - <<'EOF'\n${TARGET}\nEOF`],
+    ["(4) abertura com | no fim", `cat <<'EOF' |\n${TARGET}\nEOF`],
+    ["(4) abertura com | depois do heredoc", `cat <<'EOF' | sh\n${TARGET}\nEOF`],
+    // 5. o arquivo escrito é executado depois do terminador.
+    ["(5) bash P", `cat > /tmp/r.sh <<'EOF'\n${TARGET}\nEOF\nbash /tmp/r.sh`],
+    ["(5) sh P", `cat > /tmp/r.sh <<'EOF'\n${TARGET}\nEOF\nsh /tmp/r.sh`],
+    ["(5) source P", `cat > /tmp/r.sh <<'EOF'\n${TARGET}\nEOF\nsource /tmp/r.sh`],
+    ["(5) . P", `cat > /tmp/r.sh <<'EOF'\n${TARGET}\nEOF\n. /tmp/r.sh`],
+    ["(5) node P", `tee /tmp/r.js <<'EOF'\n${TARGET}\nEOF\nnode /tmp/r.js`],
+    ["(5) python P", `cat > /tmp/r.py <<'EOF'\n${TARGET}\nEOF\npython /tmp/r.py`],
+    ["(5) chmod +x P && ./P", `cat > r.sh <<'EOF'\n${TARGET}\nEOF\nchmod +x r.sh && ./r.sh`],
+    ["(5) usado depois de --body-file também", `cat > /tmp/r.sh <<'EOF'\n${TARGET}\nEOF\ngh issue create --body-file /tmp/r.sh; bash /tmp/r.sh`],
+    // 6. pipe na linha seguinte ao terminador.
+    ["(6) | na linha depois do terminador", `cat <<'EOF'\n${TARGET}\nEOF\n| bash`],
+    // Extras do fail-closed.
+    ["consumidor redefinido como função", `cat() { bash; }\ncat > /tmp/x.md <<'EOF'\n${TARGET}\nEOF`],
+    ["invocação real fora do corpo, depois do terminador", `cat > /tmp/x.md <<'EOF'\n${BODY}\nEOF\n${TARGET}`],
+    ["--session-id só no corpo não cobre a chamada real", `cat > /tmp/x.md <<'EOF'\nuse --session-id\nEOF\n${TARGET}`],
+  ];
+  for (const [label, command] of bloqueados) {
+    it(`bloqueia: ${label}`, () => {
+      const risk = detectChainedSessionIdRisk(command);
+      assert.notEqual(risk, null, command);
+      assert.match(risk as string, /session-registry\.ts/);
+    });
+  }
+
+  it("heredoc inseguro no mesmo comando segura também o corpo do seguro", () => {
+    const command = `cat > /tmp/x.md <<'EOF'\n${BODY}\nEOF\nbash <<'X'\n${TARGET}\nX`;
+    assert.equal(stripSafeDataHeredocBodies(command), command);
+    assert.notEqual(detectChainedSessionIdRisk(command), null);
+  });
+
+  it("dois heredocs seguros seguidos: os dois corpos saem, abertura e terminador ficam", () => {
+    const command = `cat > /tmp/a.md <<'A'\n${BODY}\nA\ncat > /tmp/b.md <<'B'\n${BODY}\nB\ngh issue create --body-file /tmp/a.md`;
+    assert.equal(
+      stripSafeDataHeredocBodies(command),
+      "cat > /tmp/a.md <<'A'\nA\ncat > /tmp/b.md <<'B'\nB\ngh issue create --body-file /tmp/a.md",
+    );
+    assert.equal(detectChainedSessionIdRisk(command), null);
+  });
+
+  it("comando sem heredoc volta intacto", () => {
+    const command = `git pull && ${TARGET}`;
+    assert.equal(stripSafeDataHeredocBodies(command), command);
+  });
 });
 
 describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)", () => {
