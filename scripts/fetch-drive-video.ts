@@ -18,6 +18,13 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  * pronto. Só identifica (`runFetchCorteExports`, `selectCorteExport`): o
  * download é do modo corte do `publish-shorts.ts --from-drive`.
  *
+ * **Corte fora do padrão e Still do corte (#11950).** Os cortes do
+ * `blocks.json` da montagem (`loadCorteRefs`) dão o slug e o `screenTitle`:
+ * export com um deles no nome (`…_Vertical_IA Soberana_Edição 08_V2.mp4`) e
+ * Still `…_V{n}-{slug}.….Still….jpg` são do corte, nunca da vertical da
+ * edição (sem `ambiguous-cover` por causa deles); o modo corte devolve também
+ * a Still do corte (`cover`, para o `--cover`).
+ *
  * **Sem `--download`, só planeja (#11551).** Na 261029 uma checagem por ssh no
  * 300 baixou 312 MB sem pedir. Agora o default lista, resolve o arquivo e
  * imprime o plano (`action: "dry-run"`, com nome, id, tamanho e destino), sem
@@ -103,6 +110,8 @@ import {
   DRIVE_VIDEO_WINDOW_HOURS,
   VIDEO_TARGETS,
   defaultVideoTarget,
+  corteCoverCandidates,
+  corteOfName,
   driveCoverCandidates,
   isEditedFolderName,
   PROMOTED_FROM_PROPERTY,
@@ -114,6 +123,7 @@ import {
   selectDriveVideo,
   targetOrientation,
   type CorteExportSelection,
+  type CorteRef,
   type DriveVideoFile,
   type DriveVideoScope,
   type DriveVideoSelection,
@@ -196,6 +206,12 @@ export interface FetchDriveVideoInput {
   /** Teto do download em bytes (#11551); acima dele, sem `force`, nada é baixado. `null`/ausente = sem teto. */
   maxBytes?: number | null;
   timeouts?: FetchDriveVideoTimeouts;
+  /**
+   * Cortes da edição (#11950): export e Still de corte nunca concorrem com a
+   * vertical da edição. Ausente = lido do `blocks.json` da montagem em
+   * `editionDir` (`loadCorteRefs`, fail-soft).
+   */
+  cortes?: readonly CorteRef[];
 }
 
 /** Teto default do download do horizontal (#11551), em MB; `publishing.youtube.drive_max_download_mb` sobrepõe. */
@@ -429,6 +445,32 @@ function readUploadRecord(path: string, aammdd: string): { done: true; url: stri
   return { done: false };
 }
 
+/**
+ * #11950: os cortes do `blocks.json` da montagem
+ * (`{editionDir}/_internal/video-montagem/blocks.json`): slug e `screenTitle`
+ * de cada sequência com `corte`. Leitura solta (só esses dois campos) e
+ * fail-soft: arquivo ausente = nenhum corte; ilegível = aviso e nenhum corte
+ * (os nomes no padrão `_V{n}-{slug}` continuam reconhecidos sem a lista).
+ */
+export function loadCorteRefs(editionDir: string, log: (line: string) => void): CorteRef[] {
+  const path = join(editionDir, "_internal", "video-montagem", "blocks.json");
+  if (!existsSync(path)) return [];
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as { sequences?: unknown };
+    if (!Array.isArray(raw.sequences)) return [];
+    const refs: CorteRef[] = [];
+    for (const s of raw.sequences as Array<Record<string, unknown>>) {
+      if (!s || typeof s !== "object" || typeof s.corte !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s.corte)) continue;
+      refs.push({ corte: s.corte, screenTitle: typeof s.screenTitle === "string" && s.screenTitle.trim() ? s.screenTitle : null });
+    }
+    if (refs.length) log(`[premissa] cortes do blocks.json: ${refs.map((r) => r.screenTitle ? `${r.corte} ("${r.screenTitle}")` : r.corte).join(", ")} — export e Still deles não contam como a vertical da edição (#11950)`);
+    return refs;
+  } catch (e) {
+    log(`[aviso] blocks.json ilegível (${path}: ${(e as Error).message}); cortes reconhecidos só pelo padrão _V{n}-{slug} no nome (#11950)`);
+    return [];
+  }
+}
+
 export async function runFetchDriveVideo(
   deps: FetchDriveVideoDeps,
   input: FetchDriveVideoInput,
@@ -443,6 +485,7 @@ export async function runFetchDriveVideo(
   // registro do vertical são do corte "Outras redes", então não encurtam.
   const instagramCut = target === "instagram";
   const timeouts = input.timeouts ?? DEFAULT_FETCH_DRIVE_VIDEO_TIMEOUTS;
+  const corteRefs = input.cortes ?? (orientation === "vertical" ? loadCorteRefs(input.editionDir, log) : []);
   const localPath = join(
     input.editionDir,
     orientation === "horizontal" ? youtubeVideoFileName(aammdd) : shortVideoFileName(aammdd),
@@ -545,6 +588,7 @@ export async function runFetchDriveVideo(
         windowHours: input.windowHours,
         editionFolderPresent: true,
         target,
+        cortes: corteRefs,
       });
       // #11419: para o Instagram, "Final/ com .mp4 mas sem `_Instagram_`" é o
       // caso NORMAL (sem corte próprio, vale o genérico) — nunca um sinal de
@@ -555,7 +599,8 @@ export async function runFetchDriveVideo(
       // por exemplo) não diz nada sobre o corte do Instagram: não conta aqui.
       // #11428: só um corte VERTICAL do editor em Final/ barra Editado/; o
       // horizontal sozinho lá não diz nada sobre o corte do Instagram.
-      const skipEdited = instagramCut && finalFiles.some((f) => isVerticalCutCandidate(f) && !isPromotedCopy(f));
+      // #11950: o export de um corte em Final/ não é o corte do Instagram.
+      const skipEdited = instagramCut && finalFiles.some((f) => isVerticalCutCandidate(f) && !isPromotedCopy(f) && corteOfName(f.name, corteRefs) === null);
       if (probe.kind === "none" && skipEdited) {
         log(`[premissa] Final/ tem .mp4 e nenhum do destino instagram — sem corte próprio do Instagram; Editado/ não é consultada para vídeos (#11419)`);
       }
@@ -593,11 +638,12 @@ export async function runFetchDriveVideo(
     windowHours: input.windowHours,
     editionFolderPresent: editionFolderId !== null,
     target,
+    cortes: corteRefs,
   });
   const withFolder: OutputWithFolder = { ...base, edition_folder_id: editionFolderId, final_folder_ids: finalFolderIds, target };
 
   const coverPath = join(input.editionDir, orientation === "horizontal" ? "04-youtube-thumb.jpg" : "04-youtube-short-capa.jpg");
-  const covers = driveCoverCandidates(coverFiles, orientation);
+  const covers = driveCoverCandidates(coverFiles, orientation, corteRefs);
   const localCoverExists = existsSync(coverPath) && statSync(coverPath).size > 0;
   // #11650: a ambiguidade só importa quando a capa do Drive seria usada. Com a
   // capa local presente e sem --force (#11636), o Still do Drive é ignorado de
@@ -746,6 +792,11 @@ export interface CorteExportResult {
   premise?: string;
   reason?: string;
   candidates?: DescribedDriveFile[];
+  /**
+   * #11950: a Still do corte (`…_V1-soberana.….Still002.jpg`), para o
+   * `--cover` do modo corte. Só identifica, como o vídeo; 2+ = o editor escolhe.
+   */
+  cover: { selection: "found"; file: DescribedDriveFile } | { selection: "none" } | { selection: "ambiguous"; candidates: DescribedDriveFile[] };
 }
 
 export type FetchCorteExportsOutput =
@@ -773,10 +824,19 @@ export type FetchCorteExportsOutput =
  */
 export async function runFetchCorteExports(
   deps: FetchDriveVideoDeps,
-  input: { aammdd: string; folderId: string; cortes: string[]; timeouts?: FetchDriveVideoTimeouts },
+  input: {
+    aammdd: string;
+    folderId: string;
+    cortes: string[];
+    timeouts?: FetchDriveVideoTimeouts;
+    /** #11950: `screenTitle` de cada corte (do `blocks.json`), para achar o export nomeado pelo título. */
+    corteRefs?: readonly CorteRef[];
+  },
   log: (line: string) => void,
 ): Promise<{ exitCode: number; output: FetchCorteExportsOutput }> {
   const { aammdd, folderId, cortes } = input;
+  const known = input.corteRefs ?? [];
+  const corteRefs: CorteRef[] = [...known, ...cortes.filter((c) => !known.some((r) => r.corte === c)).map((corte) => ({ corte }))];
   const timeouts = input.timeouts ?? DEFAULT_FETCH_DRIVE_VIDEO_TIMEOUTS;
   const base = { edition: aammdd, folder_id: folderId };
   let phase: "folder" | "list" = "folder";
@@ -818,19 +878,26 @@ export async function runFetchCorteExports(
   }
 
   const results: CorteExportResult[] = cortes.map((corte) => {
-    const sel = selectCorteExport(files, corte);
+    const stills = corteCoverCandidates(files, corte, corteRefs);
+    const cover: CorteExportResult["cover"] =
+      stills.length === 1 ? { selection: "found", file: describeFile(stills[0]) }
+      : stills.length > 1 ? { selection: "ambiguous", candidates: stills.map(describeFile) }
+      : { selection: "none" };
+    if (stills.length === 1) log(`[ok] capa do corte ${corte}: ${describeForLog(stills[0])}`);
+    else if (stills.length > 1) log(`[aviso] corte ${corte}: ${stills.length} Stills — capa fica com o editor: ${stills.map(describeForLog).join(" | ")}`);
+    const sel = selectCorteExport(files, corte, corteRefs);
     if (sel.kind === "found") {
       if (sel.premise) log(`[premissa] ${corte}: ${sel.premise}`);
       log(`[ok] corte ${corte}: ${describeForLog(sel.file)}`);
-      return { corte, selection: "found", file: describeFile(sel.file), ...(sel.premise ? { premise: sel.premise } : {}) };
+      return { corte, selection: "found", file: describeFile(sel.file), ...(sel.premise ? { premise: sel.premise } : {}), cover };
     }
     if (sel.kind === "ambiguous") {
       log(`[aviso] corte ${corte}: ${sel.candidates.length} exports — escolha do editor: ${sel.candidates.map(describeForLog).join(" | ")}`);
-      return { corte, selection: "ambiguous", candidates: sel.candidates.map(describeFile) };
+      return { corte, selection: "ambiguous", candidates: sel.candidates.map(describeFile), cover };
     }
     const reason = editionFolderId === null ? `sem subpasta ${aammdd}/ no Drive` : sel.reason;
     log(`[aviso] corte ${corte}: ${reason} — nada escolhido; quando o export subir, rodar de novo`);
-    return { corte, selection: "none", reason };
+    return { corte, selection: "none", reason, cover };
   });
   const found = results.filter((r) => r.file);
   const driveIds = found.length ? found.map((r) => `${r.corte}=${r.file!.id}`).join(",") : null;
@@ -983,7 +1050,9 @@ async function main(): Promise<number> {
       return 2;
     }
     if (corteArgs) {
-      const outcome = await runFetchCorteExports(defaultFetchDriveVideoDeps, corteArgs, (line) => console.error(line));
+      const log = (line: string) => console.error(line);
+      const corteRefs = loadCorteRefs(editionDirFor(corteArgs.aammdd), log);
+      const outcome = await runFetchCorteExports(defaultFetchDriveVideoDeps, { ...corteArgs, corteRefs }, log);
       console.log(JSON.stringify(outcome.output, null, 2));
       return outcome.exitCode;
     }
