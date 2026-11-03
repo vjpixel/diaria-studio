@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseWavPcm16 } from "../scripts/lib/diaria/video-cut-refine.ts";
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "../scripts/lib/diaria/video-audio-align.ts";
 import type { Transcript, Word } from "../scripts/lib/diaria/video-montage.ts";
 import { keptTranscriptWarning, main, planHashOf, setAsideOnTranscriptChange } from "../scripts/video-montagem.ts";
@@ -286,7 +287,7 @@ if (tool === "ffmpeg") {
   else {
     const h = Buffer.alloc(44 + 3200);
     h.write("RIFF", 0); h.writeUInt32LE(36 + 3200, 4); h.write("WAVE", 8); h.write("fmt ", 12); h.writeUInt32LE(16, 16);
-    h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(16000, 24); h.writeUInt32LE(32000, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34);
+    h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(Number(args[args.indexOf("-ar") + 1] ?? 16000), 24); h.writeUInt32LE(Number(args[args.indexOf("-ar") + 1] ?? 16000) * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34);
     h.write("data", 36); h.writeUInt32LE(3200, 40);
     writeFileSync(outs[0], h);
   }
@@ -382,6 +383,11 @@ describe("transcribe com binários falsos (#11504)", { skip: process.platform ==
     assert.match(readFileSync(join(dir, "transcript.json"), "utf8"), /MANUAL/);
     assert.match(r.err, /mantido.*--from-audio/s, "duração 106,5 s × bruto 120 s aponta o --from-audio");
     assert.ok(existsSync(join(dir, "source.json")), "o resto do transcribe rodou");
+    const high = join(root, "keep-work", "audio-high-48k.wav");
+    assert.equal(parseWavPcm16(readFileSync(high)).sampleRate, 48000, "#11940: análise de agudos separada do Whisper");
+    assert.equal(JSON.parse(readFileSync(join(dir, "silences.meta.json"), "utf8")).highBandVersion, 11940);
+    const calls = readFileSync(env.FAKE_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as string[]);
+    assert.ok(calls.some((c) => c.includes("highpass=f=3000") && c.includes("48000")));
   });
 
   it("--force retranscreve o bruto inteiro", async () => {

@@ -38,6 +38,7 @@ import {
   type RawClip,
   type TokenMatcher,
   type Word,
+  type Interval,
 } from "./video-montage.ts";
 
 const round3 = (x: number) => Math.round(x * 1000) / 1000;
@@ -286,7 +287,11 @@ export function edgeExtras(input: {
   thresholdDb: number;
   match?: TokenMatcher;
 }): EdgeDecision {
-  const eq = input.match ?? tokensMatch;
+  const baseEq = input.match ?? tokensMatch;
+  // Homófonos de borda: o Whisper pode ouvir "a" onde o roteiro diz "há".
+  // Esta tolerância fica restrita ao refino; não muda o matcher da decupagem.
+  const homophone = (s: string) => normalizeToken(s) === "ha" ? "a" : normalizeToken(s);
+  const eq: TokenMatcher = (a, b) => baseEq(a, b) || homophone(a) === homophone(b);
   const { srcIn, srcOut } = input.clip;
   const H = input.heard.filter((w) => w.text.trim() && w.end > srcIn + 0.02 && w.start < srcOut - 0.02);
   const Ht = H.map((w) => normalizeToken(w.text));
@@ -404,4 +409,91 @@ export function speechCutWarnings(clips: Array<Pick<RawClip, "block" | "srcIn" |
     }
   }
   return out;
+}
+
+/** #11940: banda acima de 3 kHz, medida no bruto a 48 kHz.
+ * -51 dBFS é o limiar medido na 261103 (piso -63 + 12 dB).
+ * Só silêncio sustentado por 80 ms permite fechar/abrir uma borda, com
+ * 30 ms de ar; a montagem quantiza depois para os quadros do vídeo.
+ */
+export const SIBILANTS = { sampleRate: 48000, highpassHz: 3000, thresholdDb: -51, quietS: 0.08, airS: 0.03, windowS: 0.4 } as const;
+
+/** Interseção: só é pausa se grave E agudo estão em silêncio. */
+export function intersectSilences(low: Interval[], high: Interval[]): Interval[] {
+  const out: Interval[] = [];
+  let i = 0, j = 0;
+  while (i < low.length && j < high.length) {
+    const start = Math.max(low[i].start, high[j].start);
+    const end = Math.min(low[i].end, high[j].end);
+    if (end > start) out.push({ start, end });
+    if (low[i].end < high[j].end) i++; else j++;
+  }
+  return out;
+}
+
+/** Silêncios sustentados no envelope da banda alta (RMS, sem pico isolado). */
+export function highBandSilences(env: Envelope): Interval[] {
+  const out: Interval[] = [];
+  let start: number | undefined;
+  for (let i = 0; i <= env.db.length; i++) {
+    if (i < env.db.length && env.db[i] <= SIBILANTS.thresholdDb) {
+      start ??= i * env.hopS;
+    } else if (start !== undefined) {
+      const end = i * env.hopS;
+      if (end - start >= SIBILANTS.quietS - 1e-9) out.push({ start, end });
+      start = undefined;
+    }
+  }
+  return out;
+}
+
+/** Proteção final, depois da retranscrição: só expande, nunca come fala.
+ * Busca ar para fora do trecho selecionado. Não avança sobre a palavra vizinha;
+ * sem espaço seguro mantém o corte e deixa o aviso para revisão humana.
+ */
+export function preserveSibilants(raws: RawClip[], env: Envelope, words: Word[], durationS: number, fps?: number): { clips: RawClip[]; adjustments: CutAdjustment[] } {
+  const quiet = highBandSilences(env);
+  const adjustments: CutAdjustment[] = [];
+  const clips = raws.map((r) => {
+    const { prev, next } = clipWordContext(words, r.srcIn, r.srcOut);
+    let { srcIn, srcOut } = r;
+    const lo = Math.max(0, srcIn - SIBILANTS.windowS, prev?.end ?? 0);
+    const hi = Math.min(durationS, srcOut + SIBILANTS.windowS, next?.start ?? durationS);
+    const safe = (t: number) => quiet.some((q) => q.start + SIBILANTS.airS <= t + 1e-9 && q.end - SIBILANTS.airS >= t - 1e-9);
+    const rendered = (t: number) => fps ? Math.round(t * fps) / fps : t;
+    if (!safe(rendered(srcIn))) {
+      const q = quiet.filter((q) => q.start + SIBILANTS.airS <= srcIn && q.end - SIBILANTS.airS >= lo).at(-1);
+      if (q) {
+        const target = Math.min(srcIn, q.end - SIBILANTS.airS);
+        const at = fps ? Math.floor(target * fps) / fps : target;
+        if (at >= lo && safe(at)) srcIn = round3(at);
+      }
+    }
+    if (!safe(rendered(srcOut))) {
+      const q = quiet.find((q) => q.end - SIBILANTS.airS >= srcOut && q.start + SIBILANTS.airS <= hi);
+      if (q) {
+        const target = Math.max(srcOut, q.start + SIBILANTS.airS);
+        const at = fps ? Math.ceil(target * fps) / fps : target;
+        if (at <= hi && safe(at)) srcOut = round3(at);
+      }
+    }
+    for (const [edge, from, to] of [["in", r.srcIn, srcIn], ["out", r.srcOut, srcOut]] as const) {
+      if (from !== to) adjustments.push({ block: r.block, edge, from, to, reason: "preservar fonema agudo: silêncio de 80 ms com 30 ms de ar (#11940)" });
+    }
+    return { ...r, srcIn, srcOut };
+  });
+  return { clips, adjustments };
+}
+
+/** Verificação independente da proteção, inclusive se ela não encontrou espaço. */
+export function highBandCutWarnings(clips: Array<Pick<RawClip, "block" | "srcIn" | "srcOut">>, env: Envelope): string[] {
+  const quiet = highBandSilences(env);
+  return clips.flatMap((c) => ([ ["entrada", c.srcIn], ["saída", c.srcOut] ] as const).flatMap(([edge, t]) =>
+    quiet.some((q) => t >= q.start + SIBILANTS.airS - 1e-9 && t <= q.end - SIBILANTS.airS + 1e-9)
+      ? [] : [`${c.block}: ${edge} em ${t.toFixed(2)} s do bruto sem margem de silêncio na banda alta (>3 kHz): possível fonema cortado; conferir no Premiere (#11940)`]));
+}
+
+/** Normaliza os limiares, preservando atividade em qualquer banda no refino. */
+export function combinedCutEnvelope(low: Envelope, high: Envelope, lowThresholdDb: number): Envelope {
+  return { hopS: low.hopS, db: Float64Array.from(low.db, (db, i) => Math.max(db, dbAt(high, i * low.hopS) - SIBILANTS.thresholdDb + lowThresholdDb)) };
 }

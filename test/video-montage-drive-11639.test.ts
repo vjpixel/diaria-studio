@@ -570,6 +570,8 @@ describe("#11639/#11640 wiring do modo API (Drive falso)", () => {
     const reg = JSON.stringify({ edition: ED, id: "A", name: "A.mp4", size: 3, modifiedTime: null, folderId: "pasta-ed", localPath: brutoA });
     writeFileSync(join(state, BRUTO_DRIVE_FILE), reg);
     for (const p of [join(work, "audio.wav"), join(state, "loudness.json"), join(state, "transcript.json")]) writeFileSync(p, "{}");
+    assert.deepEqual(transcribePrecheck({ stateDir: state, workDir: work, force: false }, brutoA), { action: "fetch" }, "#11940: cache antigo precisa do bruto para extrair agudos");
+    for (const name of ["audio-high-48k.wav", "audio-high-48k.meta.json"]) writeFileSync(join(work, name), "{}");
     const listing = () => json({ files: [{ ...entry("A.mp4", 3), id: "A" }] });
     const ready = fakeDeps([folderList, listing]);
     const got = await fetchBruto({ stateDir: state, edition: ED, workDir: work, force: false }, makeDriveSession(ED, cache, ready.deps, () => "root"));
