@@ -103,7 +103,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
    → [{cta}](https://clarice.ai/precos-planos?via=diaria)
    ```
-   Um item numerado por passo, quantos o JSON trouxer (o Doc define). O texto do Doc é a fonte: manter título, ordem e conteúdo dos passos, sem acrescentar passo nem recurso que o Doc não cita; ajuste só para as regras editoriais (sem markdown no corpo, travessão vira vírgula/dois-pontos, humanizador). O CTA aponta sempre para `https://clarice.ai/precos-planos?via=diaria` e, se citar desconto, usa o mesmo "até N%" do CLARICE — DIVULGAÇÃO acima (hoje 63%), mesmo que o JSON traga outro número.
+   Um item numerado por passo, quantos o JSON trouxer (o Doc define). O texto do Doc é a fonte: manter título, ordem e conteúdo dos passos, sem acrescentar passo nem recurso que o Doc não cita; ajuste só para as regras editoriais (sem markdown no corpo, travessão vira vírgula/dois-pontos, humanizador). O CTA aponta sempre para `clarice.ai/precos-planos?via=diaria` e, se citar desconto, usa o mesmo "até N%" do CLARICE — DIVULGAÇÃO acima (hoje 63%), mesmo que o JSON traga outro número.
    **Sem `clarice_tutorial_path`** (conector do Google Docs indisponível, Doc ou log inválido, Doc esgotado ou ciclo fora da lista — a skill avisa no gate 4), emitir o placeholder:
    ```
    **CLARICE — TUTORIAL**
