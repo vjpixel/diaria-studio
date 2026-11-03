@@ -38,7 +38,7 @@ import {
   DIARIA_INSTAGRAM_URL,
   DIARIA_THREADS_URL,
   DIARIA_X_URL, // #4829
-  DIARIA_YOUTUBE_URL, // #4829
+  DIARIA_YOUTUBE_SUBSCRIBE_URL, // #4829, #12069
   DIARIA_EIA_URL, // #3904
 } from "../canonical-urls.ts"; // #2645/#2790 — reusa as URLs canônicas (mesmas que a diária)
 
@@ -1438,7 +1438,7 @@ const SOCIAL_LINKS: ReadonlyArray<{ label: string; url: string }> = [
   { label: "Threads", url: DIARIA_THREADS_URL },
   { label: "Facebook", url: DIARIA_FACEBOOK_PAGE_URL },
   { label: "X", url: DIARIA_X_URL },
-  { label: "YouTube", url: DIARIA_YOUTUBE_URL },
+  { label: "YouTube", url: DIARIA_YOUTUBE_SUBSCRIBE_URL }, // #12069: CTA de inscrição
 ];
 
 /**

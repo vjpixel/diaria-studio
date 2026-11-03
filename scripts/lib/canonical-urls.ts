@@ -117,6 +117,18 @@ export const DIARIA_YOUTUBE_SLUG = "youtube.com/@diariabr";
 export const DIARIA_YOUTUBE_URL = `https://www.${DIARIA_YOUTUBE_SLUG}`;
 
 /**
+ * #12069: link de INSCRIÇÃO no canal. `?sub_confirmation=1` abre o YouTube já
+ * com o pop-up "Inscrever-se em diar.ia.br?" (um clique a menos). Só para CTA
+ * de inscrição (convite "Siga a diar.ia.br", rodapé social, boxes); link pra
+ * vídeo específico, fallback "assista" e comparação/identificação do canal
+ * seguem com `DIARIA_YOUTUBE_URL`/`DIARIA_YOUTUBE_SLUG`, que não mudaram de
+ * semântica. O path continua `/@diariabr`: quem casa por substring do slug
+ * (`build-link-ctr.ts`, `ownChannels`) e quem zera a querystring
+ * (`canonicalize`, `baseUrl`) reconhece o mesmo canal.
+ */
+export const DIARIA_YOUTUBE_SUBSCRIBE_URL = `${DIARIA_YOUTUBE_URL}?sub_confirmation=1`;
+
+/**
  * URL canônica de apoio financeiro via Apoia.se (#3219) — CTA de apoio à
  * curadoria no bloco ENCERRAMENTO/PARA ENCERRAR (diário e mensal). Ver
  * `data/snippets/encerramento-social-apoio.md`.

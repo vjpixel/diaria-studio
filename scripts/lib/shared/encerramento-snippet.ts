@@ -34,6 +34,7 @@ import {
   DIARIA_FACEBOOK_PAGE_URL,
   DIARIA_X_URL,
   DIARIA_YOUTUBE_URL,
+  DIARIA_YOUTUBE_SUBSCRIBE_URL,
   DIARIA_CURSOS_URL,
   DIARIA_LIVROS_URL,
   DIARIA_AMAZON_LOJA_URL,
@@ -69,8 +70,13 @@ import {
  */
 export const SOCIAL_INVITE_PREFIX = "Siga a **diar.ia.br**:";
 
+/**
+ * #12069: o link do YouTube é o de INSCRIÇÃO (`?sub_confirmation=1`, abre o
+ * pop-up "Inscrever-se"). As redações legadas abaixo continuam com
+ * `DIARIA_YOUTUBE_URL`: é o texto que as edições já costuradas carregam.
+ */
 export const SOCIAL_INVITE =
-  `${SOCIAL_INVITE_PREFIX} [YouTube](${DIARIA_YOUTUBE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL})`;
+  `${SOCIAL_INVITE_PREFIX} [YouTube](${DIARIA_YOUTUBE_SUBSCRIBE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL})`;
 
 /** Prefixo da redação anterior ao #11483 (#4413), em texto corrido. Edições
  * costuradas até a 261029 têm este texto em `02-reviewed.md`. */
@@ -88,6 +94,12 @@ export const SOCIAL_INVITE_LEGACY =
  * nesse intervalo carregam este texto; o drift não deve acusá-las. */
 export const SOCIAL_INVITE_ICONS_ORDER_LEGACY =
   `${SOCIAL_INVITE_PREFIX} [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL}) [YouTube](${DIARIA_YOUTUBE_URL})`;
+
+/** `SOCIAL_INVITE` na ordem atual, mas com o link do canal sem
+ * `?sub_confirmation=1` (reordenação de 261101 até o #12069). Edições
+ * costuradas nesse intervalo carregam este texto; o drift não deve acusá-las. */
+export const SOCIAL_INVITE_PLAIN_YOUTUBE_LEGACY =
+  `${SOCIAL_INVITE_PREFIX} [YouTube](${DIARIA_YOUTUBE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL})`;
 
 /**
  * #10781: o parágrafo é o convite social? Casa pelo PREFIXO estável
@@ -220,6 +232,7 @@ export function detectSocialInviteDrift(markdown: string): SocialInviteDrift | n
     // corrido; é o esperado, não drift.
     if (p === SOCIAL_INVITE_LEGACY) return null;
     if (p === SOCIAL_INVITE_ICONS_ORDER_LEGACY) return null;
+    if (p === SOCIAL_INVITE_PLAIN_YOUTUBE_LEGACY) return null;
     if (isSocialInviteParagraph(p)) {
       // Redação legada "Agora que chegou…" é aceita pelo renderer de propósito
       // (#1148) — não reclamar de edição antiga só por isso.

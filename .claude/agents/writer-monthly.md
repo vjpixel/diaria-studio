@@ -147,7 +147,7 @@ Da diar.ia.br:
 ```
    3. O convite social — texto FIXO, idêntico ao diário, nunca parafrasear (#4413, decisão do editor 260801, constante `SOCIAL_INVITE` em `scripts/lib/shared/encerramento-snippet.ts`):
 
-      `Siga a **diar.ia.br**: [YouTube](https://www.youtube.com/@diariabr) [Instagram](https://www.instagram.com/diar.ia.br) [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) [Threads](https://www.threads.net/@diar.ia.br) [Facebook](https://www.facebook.com/diar.ia.br) [X](https://x.com/diariabr)`
+      `Siga a **diar.ia.br**: [YouTube](https://www.youtube.com/@diariabr?sub_confirmation=1) [Instagram](https://www.instagram.com/diar.ia.br) [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) [Threads](https://www.threads.net/@diar.ia.br) [Facebook](https://www.facebook.com/diar.ia.br) [X](https://x.com/diariabr)`
 
       O render troca cada link pelo ícone da rede (#11483): escrever os links separados só por espaço, sem vírgula nem "ou", senão o convite sai em texto corrido.
 

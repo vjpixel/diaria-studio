@@ -78,7 +78,7 @@ import {
   DIARIA_INSTAGRAM_URL,
   DIARIA_THREADS_URL,
   DIARIA_X_URL,
-  DIARIA_YOUTUBE_URL,
+  DIARIA_YOUTUBE_SUBSCRIBE_URL,
   DIARIA_APOIASE_URL,
 } from "../scripts/lib/canonical-urls.ts";
 
@@ -256,7 +256,8 @@ describe("data/snippets/encerramento-social-apoio.md — mecanismo de load/rende
 
 describe("#10761 — YouTube no convite social", () => {
   it("inclui o canal aprovado só no convite, sem criar pill avulsa", () => {
-    assert.ok(SOCIAL_INVITE.includes("[YouTube](https://www.youtube.com/@diariabr)"));
+    // #12069: link de inscrição (abre o pop-up "Inscrever-se").
+    assert.ok(SOCIAL_INVITE.includes("[YouTube](https://www.youtube.com/@diariabr?sub_confirmation=1)"));
     assert.doesNotMatch(CURADORIA_PILLS, /YouTube|youtube/);
   });
 
@@ -268,7 +269,7 @@ describe("#10761 — YouTube no convite social", () => {
     const painel = tables.at(-1)?.[0] ?? "";
     assert.match(painel, /border-radius:12px/);
     // #11483: o link do YouTube vira o ícone, com o nome da rede no alt.
-    assert.match(painel, /href="https:\/\/www\.youtube\.com\/@diariabr"[^>]*><img src="https:\/\/diar\.ia\.br\/icons\/social\/youtube\.png"[^>]*alt="YouTube"/);
+    assert.match(painel, /href="https:\/\/www\.youtube\.com\/@diariabr\?sub_confirmation=1"[^>]*><img src="https:\/\/diar\.ia\.br\/icons\/social\/youtube\.png"[^>]*alt="YouTube"/);
     assert.match(painel, /Siga a /);
   });
 
@@ -278,14 +279,15 @@ describe("#10761 — YouTube no convite social", () => {
     assert.ok(convite);
     const html = renderEncerramento(convite.trim().slice(1, -1));
     // #11483: o mensal usa o mesmo render de ícones da diária.
-    assert.match(html, /href="https:\/\/www\.youtube\.com\/@diariabr"[^>]*><img src="https:\/\/diar\.ia\.br\/icons\/social\/youtube\.png"/);
+    // #12069: o mensal passa a URL por `normalizeKnownUrl`; a query de inscrição sobrevive.
+    assert.match(html, /href="https:\/\/www\.youtube\.com\/@diariabr\?sub_confirmation=1"[^>]*><img src="https:\/\/diar\.ia\.br\/icons\/social\/youtube\.png"/);
   });
 });
 
 describe("SOCIAL_INVITE / CURADORIA_PILLS — blocos fixos, mesma constante em diária e mensal (#4413/#4411, drift-guard)", () => {
   it("SOCIAL_INVITE menciona os 6 canais na ordem YouTube > Instagram > LinkedIn > Threads > Facebook > X", () => {
     const order = [
-      DIARIA_YOUTUBE_URL,
+      DIARIA_YOUTUBE_SUBSCRIBE_URL,
       DIARIA_INSTAGRAM_URL,
       DIARIA_LINKEDIN_PAGE_URL,
       DIARIA_THREADS_URL,
