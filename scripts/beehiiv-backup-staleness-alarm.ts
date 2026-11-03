@@ -56,6 +56,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { notifyEditor, type NotifyEditorFinding, type NotifyEditorResult } from "./lib/editor-notify.ts";
 import { latestSnapshotDate, isSubscribersSnapshotUsable, listSnapshotDates } from "./lib/beehiiv-backup-snapshots.ts";
@@ -249,8 +250,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: AlarmMa
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`${LOG_PREFIX} erro:`, e);
-    process.exit(1);
-  });
+  // #9911: runCli grava process.exitCode em vez de process.exit, para o
+  // fetch do check remoto (#11413) não ser cortado no meio.
+  runCli(() => main(), { onError: (e) => console.error(`${LOG_PREFIX} erro:`, e) });
 }
