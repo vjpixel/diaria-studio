@@ -129,7 +129,9 @@ export function factCheckProposal(claim: VideoFactClaim, item: FactCheckItem): s
 
 /**
  * Seção do Doc do Gate 2. `fc` ausente = o passo não rodou (aviso no Doc).
- * Achado cujo trecho saiu do roteiro (editor já cortou) vira "resolvido".
+ * Achado cujo trecho saiu do roteiro (editor já cortou) vira "resolvido", mas
+ * só com o roteiro mudado (`stale`); sem mudança, claim não localizado segue em
+ * aberto como "não localizado, conferir" (#11994).
  */
 export function factCheckSection(fc: VideoFactCheck | null, items: FactCheckItem[]): { lines: string[]; graves: number; stale: boolean } {
   const lines = ["## Fact-check da fala (#11956)", ""];
@@ -149,7 +151,17 @@ export function factCheckSection(fc: VideoFactCheck | null, items: FactCheckItem
       const it = locateClaim(c, items);
       const why = [c.verdict, c.note, c.source_url].filter(Boolean).join(": ");
       if (!it) {
-        lines.push(`| ${k + 1} | ${mdCell(c.item)} | ${mdCell(c.claim)} |  | ${mdCell(why)} | resolvido: o trecho saiu do roteiro |`);
+        // "Resolvido" só se o roteiro mudou (#11994): com o mesmo roteiro, um
+        // claim não localizado é paráfrase ou junção de frases do agent, e o
+        // achado continua em aberto.
+        if (stale) {
+          lines.push(`| ${k + 1} | ${mdCell(c.item)} | ${mdCell(c.claim)} |  | ${mdCell(why)} | resolvido: o trecho saiu do roteiro |`);
+          return;
+        }
+        open++;
+        const byId = items.find((i) => i.id === c.item);
+        const where = byId ? `${BLOCK_LABELS[byId.block]} [${byId.index}]` : c.item;
+        lines.push(`| ${k + 1} | ${mdCell(where)} | ${mdCell(c.claim)} | ${byId ? span(byId) : ""} | ${mdCell(why)} | trecho não localizado no roteiro, conferir${byId ? ` o item ${mdCell(byId.id)}` : ""} |`);
         return;
       }
       open++;
