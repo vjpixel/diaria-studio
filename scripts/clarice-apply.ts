@@ -127,7 +127,7 @@ export function applyClariceSuggestions(
 
     // Ruído do servidor MCP (#11798): só whitespace, ou `to` injetando quebra
     // de linha/caractere de código. Nunca é correção de texto — recusar.
-    const noise = classifyClariceNoise(s.from, s.to);
+    const noise = classifyClariceNoise(s.from, s.to, patched);
     if (noise) {
       skipped.push({ ...s, reason: noise, count: 0 });
       continue;
