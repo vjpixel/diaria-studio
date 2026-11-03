@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Fri, 30 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Tue, 03 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Só o Claude Opus 5.5 supera a IA aberta da Mistral no teste às cegas</title>
+      <link>https://diar.ia.br/p/so-o-claude-opus-5-5-supera-a-ia-aberta-da-mistral-no-teste</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/so-o-claude-opus-5-5-supera-a-ia-aberta-da-mistral-no-teste</guid>
+      <pubDate>Tue, 03 Nov 2026 09:00:00 GMT</pubDate>
+      <description>O candidato com 278 entrevistas não era humano | Agentes invadiram a Anthropic pela porta dos fundos</description>
+    </item>
     <item>
       <title>Pais acusam ChatGPT de matar sua filha</title>
       <link>https://diar.ia.br/p/pais-acusam-chatgpt-de-matar-sua-filha</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/marca-d-agua-do-claude-cai-em-horas</guid>
       <pubDate>Fri, 21 Aug 2026 09:00:00 GMT</pubDate>
       <description>Sua empresa é dado de treino alheio | ATS: o filtro que decide seu currículo</description>
-    </item>
-    <item>
-      <title>OpenAI pausa treinamento após invasão crítica</title>
-      <link>https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica</guid>
-      <pubDate>Thu, 20 Aug 2026 09:00:00 GMT</pubDate>
-      <description>OpenAI chega ao Brasil com foco em empresas | Promessa de menos trabalho esbarra em 90h</description>
     </item>
   </channel>
 </rss>
