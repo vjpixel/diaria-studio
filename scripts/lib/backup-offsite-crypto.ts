@@ -43,17 +43,33 @@ export const BACKUP_HEADER_LEN = BACKUP_AAD_LEN + TAG_LEN;
 
 export const BACKUP_KEY_ENV = "BACKUP_ENCRYPTION_KEY";
 
+const KEY_LEN = 32;
+
+declare const backupKeyBrand: unique symbol;
+/**
+ * Chave AES-256 já validada (32 bytes). Só sai de `parseBackupKey` ou
+ * `backupKeyFromBytes`, e é o que `encryptBackup`/`decryptBackup` exigem
+ * (#11961): antes só o `encryptBackup` conferia o tamanho, e o decrypt
+ * dependia de quem chamava ter passado pelo parse.
+ */
+export type BackupKey = Buffer & { readonly [backupKeyBrand]: true };
+
+/** Valida o tamanho e marca o Buffer como `BackupKey`. Mensagem nunca ecoa o valor. */
+export function backupKeyFromBytes(bytes: Buffer, what: string = "chave AES-256"): BackupKey {
+  if (bytes.length !== KEY_LEN) throw new Error(`${what} precisa ter ${KEY_LEN} bytes (tem ${bytes.length})`);
+  return bytes as BackupKey;
+}
+
 /**
  * Decodifica a chave (base64, 32 bytes). Lança com mensagem que nunca ecoa o
  * valor. `envName` só entra na mensagem.
  */
-export function parseBackupKey(raw: string | undefined, envName: string = BACKUP_KEY_ENV): Buffer {
+export function parseBackupKey(raw: string | undefined, envName: string = BACKUP_KEY_ENV): BackupKey {
   const v = raw?.trim();
   if (!v) throw new Error(`${envName} ausente`);
   if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(v)) throw new Error(`${envName} não é base64 válido`);
   const key = Buffer.from(v.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-  if (key.length !== 32) throw new Error(`${envName} precisa ter 32 bytes depois do base64 (tem ${key.length})`);
-  return key;
+  return backupKeyFromBytes(key, `${envName} depois do base64`);
 }
 
 /** Identificador público da chave: Buffer de 8 bytes (16 caracteres em hex nas mensagens). */
@@ -62,8 +78,7 @@ export function backupKeyId(key: Buffer): Buffer {
 }
 
 /** Cifra `plain`. `iv` só é injetável pra teste; em produção é aleatório. */
-export function encryptBackup(plain: Buffer, key: Buffer, iv: Buffer = randomBytes(IV_LEN)): Buffer {
-  if (key.length !== 32) throw new Error("chave AES-256 precisa ter 32 bytes");
+export function encryptBackup(plain: Buffer, key: BackupKey, iv: Buffer = randomBytes(IV_LEN)): Buffer {
   if (iv.length !== IV_LEN) throw new Error(`IV precisa ter ${IV_LEN} bytes`);
   const aad = Buffer.concat([BACKUP_MAGIC, Buffer.from([BACKUP_FORMAT_VERSION]), backupKeyId(key), iv]);
   const cipher = createCipheriv("aes-256-gcm", key, iv, { authTagLength: TAG_LEN });
@@ -77,7 +92,7 @@ export function encryptBackup(plain: Buffer, key: Buffer, iv: Buffer = randomByt
  * desconhecida, a chave é outra (keyId diferente) ou qualquer byte foi
  * alterado (tag GCM não confere).
  */
-export function decryptBackup(blob: Buffer, key: Buffer): Buffer {
+export function decryptBackup(blob: Buffer, key: BackupKey): Buffer {
   if (blob.length < BACKUP_HEADER_LEN) throw new Error(`arquivo cifrado curto demais (${blob.length} bytes)`);
   if (!blob.subarray(0, BACKUP_MAGIC.length).equals(BACKUP_MAGIC)) throw new Error("não é um backup cifrado diar.ia.br (magic não confere)");
   const version = blob[BACKUP_MAGIC.length];

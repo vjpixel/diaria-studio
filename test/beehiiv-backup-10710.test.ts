@@ -31,7 +31,7 @@ import { main as alarmMain } from "../scripts/beehiiv-backup-staleness-alarm.ts"
 // alcançar o bucket nem depender do .env da máquina.
 const REMOTE_OK_DEPS = {
   skipEnvLoad: true,
-  checkRemote: async () => ({ configured: true as const, ok: true, fingerprint: null, prefixes: [] }),
+  checkRemote: async () => ({ configured: true as const, ok: true as const, fingerprint: null, prefixes: [] }),
 };
 
 // Os 13 snapshots que o relatório de 10/10/2026 (data/gc-data-dir/.gc.log) listava.

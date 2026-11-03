@@ -34,7 +34,7 @@ import { resolve, join } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
-import { BACKUP_KEY_ENV, decryptBackup, parseBackupKey } from "./lib/backup-offsite-crypto.ts";
+import { BACKUP_KEY_ENV, decryptBackup, parseBackupKey, type BackupKey } from "./lib/backup-offsite-crypto.ts";
 import {
   dateFromOffsiteKey,
   extractTarGz,
@@ -63,7 +63,7 @@ const LOG = "[restore-backup-offsite]";
  * Lança em qualquer falha sem deixar `outDir` criada pela metade; `outDir`
  * não vazia é recusada.
  */
-export function restoreBlob(blob: Buffer, key: Buffer, kind: OffsiteKind, name: string, outDir: string, tar: TarRunner = systemTar): string {
+export function restoreBlob(blob: Buffer, key: BackupKey, kind: OffsiteKind, name: string, outDir: string, tar: TarRunner = systemTar): string {
   const existed = existsSync(outDir);
   if (existed && readdirSync(outDir).length > 0) throw new Error(`--out ${outDir} não está vazia — escolha uma pasta nova`);
   const plain = decryptBackup(blob, key);
@@ -135,7 +135,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Restore
     err(`${LOG} não sei o tipo de "${name0}" (esperado beehiiv/….tar.gz.enc ou eia-votes/….jsonl.gz.enc)`);
     return 2;
   }
-  let encKey: Buffer;
+  let encKey: BackupKey;
   try {
     encKey = parseBackupKey(env[keyEnv], keyEnv);
   } catch (e) {

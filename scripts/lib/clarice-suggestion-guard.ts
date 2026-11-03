@@ -112,8 +112,27 @@ function tokenAround(
 
 /** Marcador de bloco markdown no início da linha: lista, lista numerada, título, citação. */
 const LINE_MARKER = /^(?:[-*+]|\d+[.)]|#{1,6}|>)/;
-/** URL, link markdown ou domínio (`openai.com` — TLD minúsculo, pra não pegar `fim.Começo`). */
-const URL_LIKE = /:\/\/|\]\(|www\.|[A-Za-z0-9-]\.[a-z]{2,}/;
+/**
+ * TLDs comuns no texto da edição. Domínio "solto" só conta como domínio quando o
+ * sufixo é um destes e termina em fronteira de palavra (#11974): sem a lista,
+ * `ok.então` e `funciona.depois` (falta de espaço real depois do ponto, antes de
+ * minúscula) casavam como domínio e a correção da Clarice era recusada. Fora
+ * da lista, de propósito, TLDs que são palavra em português (`de`, `me`, `se`,
+ * `es`...): `isso.de novo` é falta de espaço, não domínio alemão.
+ */
+const COMMON_TLDS =
+  "com|br|ai|io|org|net|dev|app|co|tv|gov|edu|info|news|blog|tech|xyz|sh|ly|gg|pt|uk|fr|eu|jp|cn";
+/**
+ * URL, link markdown ou domínio. Domínio é: `openai.com`/`diar.ia.br` (TLD da
+ * lista em fronteira de palavra), host com 2+ pontos ASCII (`blog.google.com`)
+ * ou `x.y/caminho`. TLD minúsculo pra não pegar `fim.Começo`; lista + fronteira
+ * pra não pegar `ok.então` (#11974).
+ */
+const URL_LIKE = new RegExp(
+  String.raw`:\/\/|\]\(|www\.|[A-Za-z0-9-]\.(?:${COMMON_TLDS})(?![\p{L}\p{N}])` +
+    String.raw`|[A-Za-z0-9-]\.[a-z0-9-]+\.[a-z]{2,}(?![\p{L}\p{N}])|[A-Za-z0-9-]\.[a-z]{2,}\/`,
+  "u",
+);
 /** Ênfase/markup inline: negrito, itálico, tachado, tabela, título. */
 const INLINE_MARKUP = /[*_~|#]/;
 

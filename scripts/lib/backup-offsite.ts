@@ -27,7 +27,7 @@ import { spawnSync } from "node:child_process";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import { kvRestBulkGet, KvRestHttpError, KV_BULK_GET_MAX_KEYS, type KvRestConfig } from "./cloudflare-kv-rest.ts";
-import { BACKUP_KEY_ENV, parseBackupKey } from "./backup-offsite-crypto.ts";
+import { BACKUP_KEY_ENV, parseBackupKey, type BackupKey } from "./backup-offsite-crypto.ts";
 import {
   etagConflictsBody,
   etagMatchesBody,
@@ -95,22 +95,44 @@ export function loadOffsiteAccess(env: Record<string, string | undefined>): Offs
   };
 }
 
-export type OffsiteConfigResult = { ready: true; access: R2BucketAccess; key: Buffer } | { ready: false; missing: string[] };
+/**
+ * `missing` = nomes de variável ausentes (vazias); `invalid` = motivo de uma
+ * variável presente mas malformada (hoje só a chave de cifra), nunca o valor
+ * (#11961: antes os dois iam juntos em `missing`, e "ausente" e "malformada"
+ * pedem ações diferentes). `ready: false` sempre tem ao menos um dos dois.
+ */
+export type OffsiteConfigResult =
+  | { ready: true; access: R2BucketAccess; key: BackupKey }
+  | { ready: false; missing: string[]; invalid: string[] };
+
+/** Linha única dos problemas de `OffsiteConfigResult` não pronto, pro log/alarme. */
+export function describeOffsiteConfigProblems(r: { missing: readonly string[]; invalid: readonly string[] }): string {
+  const parts: string[] = [];
+  if (r.missing.length) parts.push(`ausente: ${r.missing.join(", ")}`);
+  if (r.invalid.length) parts.push(`inválida: ${r.invalid.join("; ")}`);
+  return parts.join("; ");
+}
 
 /**
  * Credencial + chave de cifra (`BACKUP_ENCRYPTION_KEY`, ou `keyEnv`). Chave
- * malformada entra em `missing` com o motivo, nunca com o valor.
+ * ausente entra em `missing` (o nome); malformada, em `invalid` com o motivo,
+ * nunca com o valor.
  */
 export function loadOffsiteConfig(env: Record<string, string | undefined>, keyEnv: string = BACKUP_KEY_ENV): OffsiteConfigResult {
   const acc = loadOffsiteAccess(env);
   const missing = acc.ready ? [] : [...acc.missing];
-  let key: Buffer | null = null;
-  try {
-    key = parseBackupKey(env[keyEnv], keyEnv);
-  } catch (e) {
-    missing.push((e as Error).message);
+  const invalid: string[] = [];
+  let key: BackupKey | null = null;
+  if (!env[keyEnv]?.trim()) {
+    missing.push(keyEnv);
+  } else {
+    try {
+      key = parseBackupKey(env[keyEnv], keyEnv);
+    } catch (e) {
+      invalid.push((e as Error).message);
+    }
   }
-  if (!acc.ready || !key || missing.length) return { ready: false, missing };
+  if (!acc.ready || !key) return { ready: false, missing, invalid };
   return { ready: true, access: acc.access, key };
 }
 
@@ -416,17 +438,21 @@ export function kvRestDumpSource(
 
 export type RemoteVerdict = "ok" | "missing" | "stale" | "error";
 
-export interface RemotePrefixStatus {
-  kind: OffsiteKind;
-  verdict: RemoteVerdict;
-  latestKey: string | null;
-  ageDays: number | null;
-  error?: string;
-}
+/**
+ * Veredito de um prefixo, discriminado por `verdict` (#11961): `ok`/`stale`
+ * sempre têm o objeto mais recente e a idade; `missing`/`error` nunca têm; só
+ * `error` tem a mensagem.
+ */
+export type RemotePrefixStatus =
+  | { kind: OffsiteKind; verdict: "ok" | "stale"; latestKey: string; ageDays: number }
+  | { kind: OffsiteKind; verdict: "missing"; latestKey: null; ageDays: null }
+  | { kind: OffsiteKind; verdict: "error"; latestKey: null; ageDays: null; error: string };
 
+/** `ok` e `fingerprint` casados (#11961): ok ⇔ fingerprint null. */
 export type RemoteOffsiteEvaluation =
   | { configured: false; missing: string[]; ok: false; fingerprint: string; prefixes: [] }
-  | { configured: true; ok: boolean; fingerprint: string | null; prefixes: RemotePrefixStatus[] };
+  | { configured: true; ok: true; fingerprint: null; prefixes: RemotePrefixStatus[] }
+  | { configured: true; ok: false; fingerprint: string; prefixes: RemotePrefixStatus[] };
 
 /**
  * @pure — veredito por prefixo. Mais recente e idade pela DATA DA CHAVE
@@ -487,7 +513,7 @@ export async function checkRemoteOffsiteBackup(
     prefixes.push(evaluateRemotePrefix(kind, listing, nowMs, maxAgeDays));
   }
   const fingerprint = remoteOffsiteFingerprint(prefixes);
-  return { configured: true, ok: fingerprint === null, fingerprint, prefixes };
+  return fingerprint === null ? { configured: true, ok: true, fingerprint, prefixes } : { configured: true, ok: false, fingerprint, prefixes };
 }
 
 /** Linha legível de um prefixo, pro log e pro corpo do alarme. */

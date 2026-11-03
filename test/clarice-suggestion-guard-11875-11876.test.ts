@@ -55,6 +55,10 @@ test("#11875: variações do mesmo defeito também são recusadas", () => {
   // itálico e domínio .br
   assert.equal(classifyClariceNoise("_itálico_ aqui", "_ itálico_ aqui"), "whitespace_only");
   assert.equal(classifyClariceNoise("veja diar.ia.br agora", "veja diar. ia.br agora"), "whitespace_only");
+  // domínio continua protegido com a lista de TLDs (#11974)
+  assert.equal(classifyClariceNoise("em microsoft.ai hoje", "em microsoft. ai hoje"), "whitespace_only");
+  assert.equal(classifyClariceNoise("em blog.google.com hoje", "em blog. google.com hoje"), "whitespace_only");
+  assert.equal(classifyClariceNoise("em blog.google/produtos hoje", "em blog. google/produtos hoje"), "whitespace_only");
   // marcador no começo de uma linha que não é a primeira do trecho
   assert.equal(classifyClariceNoise("texto\n- item", "texto\n-item"), "whitespace_only");
 });
@@ -72,6 +76,10 @@ test("#11875/#11876: os 5 pares legítimos do #11867 continuam passando", () => 
   assert.equal(classifyClariceNoise("a  b", "a b"), null);
   // falta de espaço depois do ponto antes de maiúscula não é domínio
   assert.equal(classifyClariceNoise("fim.Começo", "fim. Começo"), null);
+  // ...nem antes de minúscula (#11974): `ok.ent` casava o padrão de domínio
+  assert.equal(classifyClariceNoise("ok.então vamos", "ok. então vamos"), null);
+  assert.equal(classifyClariceNoise("funciona.depois disso", "funciona. depois disso"), null);
+  assert.equal(classifyClariceNoise("isso.de novo", "isso. de novo"), null);
   // correção real no mesmo trecho que um link, longe do link
   assert.equal(
     classifyClariceNoise("veja [o site](https://x.com) com texto,outro", "veja [o site](https://x.com) com texto, outro"),

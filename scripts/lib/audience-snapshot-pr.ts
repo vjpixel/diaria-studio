@@ -125,5 +125,10 @@ export function buildSnapshotPrBody(entries: SnapshotStatusEntry[]): string {
     "PR rolante: enquanto esta estiver aberta, os próximos Stage 0 empilham commits aqui em vez de abrir outra. O script não mergeia; depois do merge, o `sync-code.ts` da próxima edição descarta as cópias locais idênticas a origin/master.",
     "",
     "no-regression-test: dado gerado (snapshot de audiência), sem código executável",
+    // #11971: a PR rolante empilha ~165 linhas por Stage 0 e passa do limiar
+    // de 500 adições do gate #7115 em ~3 edições; sem esta linha o check fica
+    // vermelho a cada commit novo. O gate relê o corpo pela API (#7140), e o
+    // corpo só é escrito na criação, então a linha precisa nascer com ela.
+    "removal-declaration: dado gerado (snapshot de audiência), nada a remover",
   ].join("\n");
 }

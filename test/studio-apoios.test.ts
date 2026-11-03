@@ -68,6 +68,7 @@ import {
   type SegmentsInfo,
   type SegmentsCache,
 } from "../scripts/studio-ui/studio-apoios.ts";
+import { buildSegmentsCache } from "../scripts/sync-apoio-segments-kit.ts";
 import type { ApoiaSeEnv, BackerStatus } from "../scripts/lib/apoia-se.ts";
 import type { DrainApoiaSeResult, DrainedPromessa } from "../scripts/lib/apoia-se-gmail-drain.ts";
 
@@ -595,6 +596,28 @@ describe("deriveSegments (#4437 Entrega 2)", () => {
       "b@x.com": makeSegmentsInfo({ segments: [], apoioNivel: "" }),
     };
     assert.equal(deriveSegments(contact, cache), first);
+  });
+
+  it("formato REAL do cache: e-mail sem nível ('Apoio — Nenhum') antes do patrono não mascara o nível (#11972)", () => {
+    const cache = buildSegmentsCache([
+      { subscriptionId: "1", email: "sem-nivel@x.com", apoioNivel: "" },
+      { subscriptionId: "2", email: "patrono@x.com", apoioNivel: "patrono" },
+    ]);
+    // pré-condição: a produção grava lista NÃO vazia para quem não tem nível
+    assert.deepEqual(cache["sem-nivel@x.com"].segments, ["Apoio — Nenhum"]);
+    const contact = makeContact({ emails: ["sem-nivel@x.com", "patrono@x.com"] });
+    const result = deriveSegments(contact, cache);
+    assert.equal(result?.apoioNivel, "patrono");
+    assert.ok(result?.segments.includes("Apoio — Patrono"));
+  });
+
+  it("formato REAL do cache: só e-mails sem nível -> 'Apoio — Nenhum' (#11972)", () => {
+    const cache = buildSegmentsCache([
+      { subscriptionId: "1", email: "a@x.com", apoioNivel: "" },
+      { subscriptionId: "2", email: "b@x.com", apoioNivel: "" },
+    ]);
+    const contact = makeContact({ emails: ["a@x.com", "b@x.com", "fora@x.com"] });
+    assert.deepEqual(deriveSegments(contact, cache)?.segments, ["Apoio — Nenhum"]);
   });
 });
 

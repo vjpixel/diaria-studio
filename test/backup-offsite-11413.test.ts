@@ -12,12 +12,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 
-import { backupKeyId, BACKUP_HEADER_LEN, decryptBackup, encryptBackup, parseBackupKey } from "../scripts/lib/backup-offsite-crypto.ts";
+import { backupKeyFromBytes, backupKeyId, BACKUP_HEADER_LEN, decryptBackup, encryptBackup, parseBackupKey } from "../scripts/lib/backup-offsite-crypto.ts";
 import {
   BACKUP_OFFSITE_BUCKET,
   checkRemoteOffsiteBackup,
   dateFromOffsiteKey,
+  describeOffsiteConfigProblems,
   dumpKvPrefixes,
+  evaluateRemotePrefix,
   kvRestDumpSource,
   loadOffsiteAccess,
   loadOffsiteConfig,
@@ -25,10 +27,12 @@ import {
   remoteOffsiteFingerprint,
   tarGzDirectory,
   type KvDumpSource,
+  type RemoteOffsiteEvaluation,
+  type RemotePrefixStatus,
   type TarRunner,
 } from "../scripts/lib/backup-offsite.ts";
 import { kvRestBulkGet } from "../scripts/lib/cloudflare-kv-rest.ts";
-import { runOffsiteBackup, offsiteFailureFingerprint } from "../scripts/backup-offsite.ts";
+import { runOffsiteBackup, offsiteFailureFingerprint, type OffsiteStepResult } from "../scripts/backup-offsite.ts";
 import { kindFromKey, restoreBlob } from "../scripts/restore-backup-offsite.ts";
 import { buildRemoteOffsiteAlarmEmail } from "../scripts/lib/beehiiv-backup-staleness-alarm.ts";
 
@@ -62,7 +66,7 @@ describe("#11413 cifra AES-256-GCM", () => {
 
   it("chave errada falha alto, apontando o keyId (nunca a chave)", () => {
     const enc = encryptBackup(Buffer.from("segredo"), KEY);
-    const other = Buffer.alloc(32, 9);
+    const other = backupKeyFromBytes(Buffer.alloc(32, 9));
     assert.throws(() => decryptBackup(enc, other), (e: Error) => {
       assert.match(e.message, /outra chave/);
       assert.ok(e.message.includes(backupKeyId(KEY).toString("hex")));
@@ -132,10 +136,31 @@ describe("#11413 chave do objeto e config", () => {
     assert.equal(ok.ready && ok.access.accessKeyId, "bk-id");
   });
 
-  it("chave de cifra inválida entra em missing com o motivo", () => {
+  it("chave de cifra malformada entra em invalid com o motivo, não em missing (#11961)", () => {
     const r = loadOffsiteConfig({ ...ENV, BACKUP_ENCRYPTION_KEY: "AAAA" });
     assert.equal(r.ready, false);
-    assert.match((!r.ready && r.missing.join(";")) || "", /32 bytes/);
+    assert.deepEqual(!r.ready && r.missing, []);
+    assert.match((!r.ready && r.invalid.join(";")) || "", /32 bytes/);
+    assert.ok(!r.ready && !r.invalid.join(";").includes("AAAA"));
+  });
+
+  it("chave de cifra ausente entra em missing pelo nome, invalid fica vazio (#11961)", () => {
+    const { BACKUP_ENCRYPTION_KEY: _k, ...noKey } = ENV;
+    const r = loadOffsiteConfig(noKey);
+    assert.equal(r.ready, false);
+    assert.deepEqual(!r.ready && r.missing, ["BACKUP_ENCRYPTION_KEY"]);
+    assert.deepEqual(!r.ready && r.invalid, []);
+    assert.equal(!r.ready && describeOffsiteConfigProblems(r), "ausente: BACKUP_ENCRYPTION_KEY");
+  });
+
+  it("BackupKey: backupKeyFromBytes recusa tamanho errado, e encrypt/decrypt só aceitam a chave validada (#11961)", () => {
+    assert.throws(() => backupKeyFromBytes(Buffer.alloc(16)), /32 bytes \(tem 16\)/);
+    const k = backupKeyFromBytes(Buffer.alloc(32, 3));
+    assert.ok(decryptBackup(encryptBackup(Buffer.from("x"), k), k).equals(Buffer.from("x")));
+    // @ts-expect-error Buffer cru não é BackupKey: o tipo exige passar pelo parse
+    encryptBackup(Buffer.from("x"), Buffer.alloc(32));
+    // @ts-expect-error idem no decrypt (antes só o encrypt conferia o tamanho)
+    assert.throws(() => decryptBackup(encryptBackup(Buffer.from("x"), k), Buffer.alloc(32)));
   });
 });
 
@@ -211,7 +236,7 @@ describe("#11413 runOffsiteBackup", () => {
       { env: ENV, r2: s.deps, tar: tarStub, kvSource: () => votesSource(), log: (m) => logs.push(m) },
     );
     assert.deepEqual(
-      res.map((r) => [r.kind, r.status, r.key, r.etagVerified]),
+      res.map((r) => [r.kind, r.status, r.key, r.status === "uploaded" ? r.etagVerified : undefined]),
       [
         ["beehiiv", "uploaded", "beehiiv/2026-11-08.tar.gz.enc", true],
         ["eia-votes", "uploaded", "eia-votes/2026-11-08.jsonl.gz.enc", true],
@@ -242,7 +267,7 @@ describe("#11413 runOffsiteBackup", () => {
         { env, r2: s.deps, tar: tarStub, kvSource: () => votesSource(), log: () => {} },
       );
       assert.deepEqual(res.map((r) => r.status), ["failed", "failed"]);
-      assert.match(res[0].detail!, /configuração ausente/);
+      assert.match("detail" in res[0] ? res[0].detail : "", /configuração ausente/);
     }
     assert.equal(s.calls.length, 0);
   });
@@ -287,7 +312,7 @@ describe("#11413 runOffsiteBackup", () => {
       { env: ENV, r2: s.deps, tar: tarStub, kvSource: () => votesSource(), log: () => {} },
     );
     assert.deepEqual(res.map((r) => r.status), ["skipped", "uploaded"]);
-    assert.match(res[0].detail!, /não existe/);
+    assert.match("detail" in res[0] ? res[0].detail : "", /não existe/);
 
     writeFileSync(join(root, "2026-11-01", "manifest.json"), JSON.stringify({ endpoints: [{ key: "subscribers", file: "subscribers.jsonl", status: "error", error: "boom" }] }));
     const res2 = await runOffsiteBackup(
@@ -474,8 +499,58 @@ describe("#11413 restauração (tar real do sistema)", { skip: !hasTar && "tar a
     assert.equal(readFileSync(file, "utf8"), d.jsonl);
 
     const out2 = join(mkdtempSync(join(tmpdir(), "restore-11413-")), "votes");
-    assert.throws(() => restoreBlob(enc, Buffer.alloc(32, 1), "eia-votes", "eia-votes/2026-11-08.jsonl.gz.enc", out2), /outra chave/);
+    assert.throws(() => restoreBlob(enc, backupKeyFromBytes(Buffer.alloc(32, 1)), "eia-votes", "eia-votes/2026-11-08.jsonl.gz.enc", out2), /outra chave/);
     assert.equal(existsSync(out2), false, "chave errada não cria --out");
   });
 });
 
+
+describe("#11961 — tipos que impõem os invariantes", () => {
+  it("RemotePrefixStatus: ok/stale têm objeto e idade; missing/error não; só error tem mensagem", () => {
+    const now = Date.parse("2026-11-08T12:00:00Z");
+    const ok = evaluateRemotePrefix("beehiiv", { objects: [{ key: "beehiiv/2026-11-08.tar.gz.enc", lastModified: new Date(now) }] }, now, 7);
+    assert.equal(ok.verdict, "ok");
+    if (ok.verdict === "ok" || ok.verdict === "stale") {
+      const k: string = ok.latestKey; // sem `| null` depois do narrowing
+      const a: number = ok.ageDays;
+      assert.ok(k && a >= 0);
+    }
+    const missing = evaluateRemotePrefix("beehiiv", { objects: [] }, now, 7);
+    assert.deepEqual(missing, { kind: "beehiiv", verdict: "missing", latestKey: null, ageDays: null });
+    const err = evaluateRemotePrefix("beehiiv", { error: "boom" }, now, 7);
+    assert.equal(err.verdict === "error" && err.error, "boom");
+    // @ts-expect-error `ok` sem latestKey/ageDays não é um RemotePrefixStatus
+    const bad: RemotePrefixStatus = { kind: "beehiiv", verdict: "ok", latestKey: null, ageDays: null };
+    // @ts-expect-error `error` exige a mensagem
+    const bad2: RemotePrefixStatus = { kind: "beehiiv", verdict: "error", latestKey: null, ageDays: null };
+    assert.ok(bad && bad2);
+  });
+
+  it("RemoteOffsiteEvaluation: ok e fingerprint casados", () => {
+    // @ts-expect-error ok: true com fingerprint não-nulo é incoerente
+    const bad: RemoteOffsiteEvaluation = { configured: true, ok: true, fingerprint: "remote:x", prefixes: [] };
+    // @ts-expect-error ok: false sem fingerprint é incoerente
+    const bad2: RemoteOffsiteEvaluation = { configured: true, ok: false, fingerprint: null, prefixes: [] };
+    assert.ok(bad && bad2);
+  });
+
+  it("OffsiteStepResult: uploaded exige bytes+etagVerified; failed exige detail", () => {
+    // @ts-expect-error uploaded sem etagVerified
+    const bad: OffsiteStepResult = { kind: "beehiiv", status: "uploaded", key: "k", bytes: 1 };
+    // @ts-expect-error failed sem detail
+    const bad2: OffsiteStepResult = { kind: "beehiiv", status: "failed", key: "k" };
+    const good: OffsiteStepResult = { kind: "beehiiv", status: "failed", detail: "configuração ausente" };
+    assert.ok(bad && bad2 && good);
+  });
+
+  it("runOffsiteBackup com chave malformada: failed com o motivo em 'inválida', sem ecoar o valor", async () => {
+    const r = await runOffsiteBackup(
+      { date: "2026-11-08", only: "eia-votes", dryRun: true, backupRoot: "/nao-existe" },
+      { env: { ...ENV, BACKUP_ENCRYPTION_KEY: "AAAA" }, r2: { fetch: async () => new Response(""), now: () => new Date() }, log: () => {} },
+    );
+    assert.equal(r.length, 1);
+    assert.equal(r[0].status, "failed");
+    assert.match(r[0].status === "failed" ? r[0].detail : "", /inválida: .*32 bytes/);
+    assert.ok(!(r[0].status === "failed" && r[0].detail.includes("AAAA")));
+  });
+});
