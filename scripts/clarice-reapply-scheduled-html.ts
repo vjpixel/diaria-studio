@@ -74,6 +74,19 @@
  * `emitLoudBanner()` (banner vermelho estilo halt-banner, #737) nomeando a
  * campanha e o que fazer pra recolocá-la na fila, nunca em erro silencioso.
  *
+ * #12053 — o GET-verify pós-PUT comparava o HTML por igualdade exata, e a
+ * Brevo grava o HTML normalizado (`&amp;` dentro de `href` volta como `&`).
+ * Como o render sempre escreve `&amp;` nos links com UTM, a checagem falhava
+ * em TODA reaplicação real e a campanha ficava presa em `suspended` (#395,
+ * 03/11/2026). Agora a comparação passa os dois lados por
+ * `normalizeHtmlForVerify` (só a equivalência `&amp;`/`&#38;`/`&#x26;` ↔ `&`;
+ * qualquer outra diferença continua reprovando). E a recuperação de uma
+ * campanha presa tem caminho próprio, sempre manual e explícito:
+ * `--reschedule-suspended --campaign-id N --scheduled-at ISO --apply` só
+ * reagenda (nunca toca HTML), e só uma campanha que esteja `suspended` — o
+ * banner de "presa" imprime o comando pronto. Nunca reagenda sozinho depois
+ * de um GET-verify falho: o operador confere o HTML antes.
+ *
  * Fases:
  *   (default, sem --apply) dry-run: lista o que faria, NÃO escreve nada.
  *   --apply                 executa: revalida status ao vivo campanha-a-campanha
@@ -89,6 +102,8 @@
  *   npx tsx scripts/clarice-reapply-scheduled-html.ts --cycle 2606-07                          # dry-run (default)
  *   npx tsx scripts/clarice-reapply-scheduled-html.ts --cycle 2606-07 --apply                   # descoberta por nome, escreve
  *   npx tsx scripts/clarice-reapply-scheduled-html.ts --cycle 2606-07 --campaign-id 99 --apply  # pula a descoberta por nome (#4082)
+ *   npx tsx scripts/clarice-reapply-scheduled-html.ts --cycle 2606-07 --campaign-id 99 \
+ *     --reschedule-suspended --scheduled-at 2026-07-27T14:00:00.000Z --apply                  # recupera campanha presa (#12053)
  *
  * ATENÇÃO: este script NUNCA deve ser rodado contra a Brevo real a partir de
  * uma sessão automatizada sem supervisão direta do editor — ele existe pra
@@ -290,6 +305,58 @@ export function buildPlanLines(toUpdate: BrevoCampaignListItem[], skipped: Brevo
 }
 
 /**
+ * #12053: `&amp;` (e as formas numéricas `&#38;`/`&#x26;`) que NÃO iniciam
+ * outra entidade. `&amp;utm_medium=` casa; `&amp;lt;` não — aquilo é o texto
+ * literal "&lt;", e virar "<" seria mudança real de conteúdo.
+ */
+const ESCAPED_AMPERSAND_RE = /&(?:amp|#0*38|#x0*26);(?!(?:[a-z][a-z0-9]*|#[0-9]+|#x[0-9a-f]+);)/gi;
+
+/**
+ * Normalização usada SÓ na comparação do GET-verify (#12053) — o HTML que
+ * vai no PUT nunca passa por aqui. A Brevo grava o `htmlContent` com `&amp;`
+ * dentro de `href` desfeito em `&` (achado ao vivo na campanha #395, ciclo
+ * 2610-11); o render (`cloudflare-preview.html`) sempre escreve `&amp;` nos
+ * links com UTM. As duas formas são o mesmo HTML para o navegador.
+ *
+ * Deliberadamente mínima: só a equivalência do `&`. Espaço, quebra de linha,
+ * aspas e qualquer outra entidade continuam contando como diferença — um
+ * afrouxamento maior aceitaria HTML realmente diferente (link trocado,
+ * parágrafo faltando) como "verificado". Pure.
+ */
+export function normalizeHtmlForVerify(html: string): string {
+  return html.replace(ESCAPED_AMPERSAND_RE, "&");
+}
+
+export type HtmlVerifyResult =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+/**
+ * GET-verify do `htmlContent` (#12053): compara esperado × devolvido pela
+ * Brevo após `normalizeHtmlForVerify` nos DOIS lados. No caso de falha, a
+ * razão nomeia o 1º ponto divergente (offset + trecho dos dois lados), para o
+ * operador decidir se o HTML gravado está certo antes de reagendar. Pure.
+ */
+export function verifyReappliedHtml(expected: string, actual: string | undefined): HtmlVerifyResult {
+  if (typeof actual !== "string") {
+    return { ok: false, reason: "GET-verify pós-PUT htmlContent: a Brevo não devolveu htmlContent." };
+  }
+  const a = normalizeHtmlForVerify(expected);
+  const b = normalizeHtmlForVerify(actual);
+  if (a === b) return { ok: true };
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  const snippet = (s: string): string => JSON.stringify(s.slice(Math.max(0, i - 40), i + 80));
+  return {
+    ok: false,
+    reason:
+      `GET-verify pós-PUT htmlContent: corpo não bate com o esperado (mesmo normalizando &amp; ↔ &). ` +
+      `1ª divergência no offset ${i} (normalizado; esperado ${a.length} chars, Brevo ${b.length}): ` +
+      `esperado ${snippet(a)} | Brevo ${snippet(b)}`,
+  };
+}
+
+/**
  * PUT só de `htmlContent` — nunca subject/scheduledAt/recipients. Único
  * callsite de escrita de conteúdo deste script. Chamado com a campanha já
  * SUSPENSA (a Brevo recusa este PUT numa campanha `queued` — #4082 item 3).
@@ -488,6 +555,126 @@ export class StuckSuspendedCampaignError extends Error {
   }
 }
 
+/** Comando de recuperação impresso no banner de "presa" (#12053). Pure. */
+export function rescheduleSuspendedCommand(cycle: string, campaignId: number, scheduledAt: string | null | undefined): string {
+  return (
+    `npx tsx scripts/clarice-reapply-scheduled-html.ts --cycle ${cycle} --campaign-id ${campaignId} ` +
+    `--reschedule-suspended --scheduled-at ${scheduledAt ?? "<ISO original>"} --apply`
+  );
+}
+
+/**
+ * Texto de ação do banner de campanha presa em `suspended` (#12053). Nunca
+ * reagenda sozinho — o operador confere o HTML gravado e roda o comando de
+ * recuperação, que só reagenda (não toca HTML). Pure.
+ */
+export function stuckSuspendedAction(opts: {
+  cycle: string;
+  campaignId: number;
+  scheduledAt: string | null | undefined;
+  htmlPutAccepted: boolean;
+}): string {
+  const { cycle, campaignId, scheduledAt, htmlPutAccepted } = opts;
+  const check = htmlPutAccepted
+    ? `o PUT do HTML novo FOI aceito — confira o htmlContent da campanha #${campaignId} na Brevo (a divergência ` +
+      `está no motivo acima) antes de reagendar`
+    : `o HTML novo NÃO foi gravado (a campanha #${campaignId} segue com o HTML anterior) — decida se reagenda ` +
+      `assim ou corrige o HTML antes`;
+  return (
+    `AÇÃO IMEDIATA: ${check}. Para reagendar no horário original (${scheduledAt}), sem tocar o HTML: ` +
+    `${rescheduleSuspendedCommand(cycle, campaignId, scheduledAt)} ` +
+    `(sem --apply, só mostra o estado). Alternativa manual: PUT /emailCampaigns/${campaignId} ` +
+    `{"scheduledAt":"${scheduledAt}"} ou a UI "Schedule". Sem essa ação o envio NÃO VAI SAIR — ` +
+    `a campanha fica presa em "suspended" indefinidamente.`
+  );
+}
+
+/**
+ * Margem mínima entre agora e o `scheduledAt` de um reagendamento manual
+ * (#12053). Horário passado ou colado ao presente é como a Brevo pode
+ * interpretar "enviar agora" (mesma classe de risco do #5939) — recusa.
+ */
+export const RESCHEDULE_MIN_LEAD_MS = 5 * 60 * 1000;
+
+/**
+ * Valida o `--scheduled-at` de um reagendamento manual (#12053): ISO
+ * parseável e pelo menos `RESCHEDULE_MIN_LEAD_MS` no futuro. Retorna a
+ * mensagem de erro ou `undefined`. Pure.
+ */
+export function validateRescheduleAt(scheduledAtIso: string, now: Date): string | undefined {
+  const t = Date.parse(scheduledAtIso);
+  if (!Number.isFinite(t)) return `--scheduled-at inválido: "${scheduledAtIso}" (esperado ISO 8601, ex: 2026-11-07T09:00:00.000Z).`;
+  if (t - now.getTime() < RESCHEDULE_MIN_LEAD_MS) {
+    return (
+      `--scheduled-at ${scheduledAtIso} está no passado ou a menos de ${RESCHEDULE_MIN_LEAD_MS / 60000} min — ` +
+      `reagendar assim pode disparar o envio na hora (#5939). Escolha um horário futuro.`
+    );
+  }
+  return undefined;
+}
+
+export interface RescheduleSuspendedResult {
+  campaignId: number;
+  status: string;
+  scheduledAt?: string | null;
+  totalSubscribers: number;
+}
+
+/**
+ * Recuperação de campanha presa em `suspended` (#12053): só reagenda — nunca
+ * toca htmlContent/subject/listas. Mesmo PUT de reagendamento do fluxo de
+ * `applyReapply` (`PUT /emailCampaigns/{id}` com `{scheduledAt}`, nunca
+ * `PUT /status` sem horário, #5939).
+ *
+ * Recusa (sem escrever nada) se a campanha não estiver `suspended` — uma
+ * campanha `queued`/`sent`/`draft` não é o caso de recuperação — ou se o
+ * horário não passar em `validateRescheduleAt`. Depois do PUT, GET-verify:
+ * status pré-envio e `scheduledAt` no mesmo instante pedido; senão lança.
+ * Com `apply: false` só lê e descreve (nenhum PUT).
+ */
+export async function rescheduleSuspendedCampaign(
+  apiKey: string,
+  campaignId: number,
+  scheduledAtIso: string,
+  opts: { apply: boolean; now?: Date },
+): Promise<RescheduleSuspendedResult | null> {
+  const invalid = validateRescheduleAt(scheduledAtIso, opts.now ?? new Date());
+  if (invalid) throw new Error(invalid);
+
+  const before = await fetchCampaignById(apiKey, campaignId);
+  if (before.status !== "suspended") {
+    throw new Error(
+      `Campanha #${campaignId} está "${before.status}", não "suspended" — --reschedule-suspended só recupera ` +
+      `campanha suspensa. Nada foi tocado.`,
+    );
+  }
+  const listIds = [...(before.recipients?.lists ?? [])];
+  const totalSubscribers = await sumListSubscribers(apiKey, listIds);
+  const anomaly = detectZeroAudienceAnomaly("antes", listIds, totalSubscribers);
+  if (anomaly) throw new Error(`Campanha #${campaignId}: ${anomaly} Nada foi tocado.`);
+
+  console.error(
+    `  #${campaignId} ${before.name} — status=suspended, listas [${listIds.join(",")}], ` +
+    `${totalSubscribers} destinatários; reagendar para ${scheduledAtIso}.`,
+  );
+  if (!opts.apply) {
+    console.error(`dry-run — use --apply para reagendar (só scheduledAt; o HTML não é tocado).`);
+    return null;
+  }
+
+  await brevoPut(apiKey, `/emailCampaigns/${campaignId}`, { scheduledAt: scheduledAtIso });
+  const after = await fetchCampaignById(apiKey, campaignId);
+  const sameInstant = typeof after.scheduledAt === "string" && Date.parse(after.scheduledAt) === Date.parse(scheduledAtIso);
+  if (!isSchedulableStatus(after.status) || !sameInstant) {
+    throw new Error(
+      `GET-verify pós-reagendamento da campanha #${campaignId}: status="${after.status}", ` +
+      `scheduledAt="${after.scheduledAt}" (esperava queued/scheduled em ${scheduledAtIso}). Confira na Brevo AGORA.`,
+    );
+  }
+  console.error(`✓ #${campaignId} reagendada: status=${after.status}, scheduledAt=${after.scheduledAt}.`);
+  return { campaignId, status: after.status, scheduledAt: after.scheduledAt, totalSubscribers };
+}
+
 /**
  * Aplica o reapply numa única campanha: suspend → PUT htmlContent (GET-verify)
  * → PUT scheduledAt (mesmo valor exato de antes) → GET final comparando
@@ -545,13 +732,19 @@ export async function applyReapply(
   await setCampaignStatus(apiKey, candidate.id, "suspended");
   console.error(`✓ #${candidate.id} suspensa (era "${fresh.status}") — reaplicando html...`);
 
+  // #12053: o banner de "presa" muda conforme o PUT do HTML já tenha sido
+  // aceito (conferir o HTML gravado antes de reagendar) ou não (o HTML antigo
+  // continua lá).
+  let htmlPutAccepted = false;
   try {
     await reapplyHtml(apiKey, candidate.id, html);
+    htmlPutAccepted = true;
 
     const afterHtml = await fetchCampaignById(apiKey, candidate.id);
-    if (afterHtml.htmlContent !== html) {
-      throw new Error("GET-verify pós-PUT htmlContent: corpo não bate com o esperado.");
-    }
+    // #12053: a Brevo normaliza `&amp;` → `&` no save — comparar exato
+    // reprovava toda reaplicação real e deixava a campanha suspensa.
+    const verify = verifyReappliedHtml(html, afterHtml.htmlContent);
+    if (!verify.ok) throw new Error(verify.reason);
 
     await brevoPut(apiKey, `/emailCampaigns/${candidate.id}`, { scheduledAt: expected.scheduledAt });
   } catch (e) {
@@ -559,11 +752,12 @@ export async function applyReapply(
     emitLoudBanner({
       stage: `clarice-reapply-scheduled-html --cycle ${cycle}`,
       reason: `campanha #${candidate.id} (${candidate.name}) ficou SUSPENSA e NÃO foi reagendada: ${message}`,
-      action:
-        `AÇÃO IMEDIATA: abra a campanha #${candidate.id} na Brevo. Se o htmlContent estiver correto, ` +
-        `reagende manualmente para ${expected.scheduledAt} (PUT /emailCampaigns/${candidate.id} ` +
-        `{"scheduledAt":"${expected.scheduledAt}"} ou pela UI "Schedule"). Sem essa ação o envio NÃO VAI SAIR — ` +
-        `a campanha fica presa em "suspended" indefinidamente.`,
+      action: stuckSuspendedAction({
+        cycle,
+        campaignId: candidate.id,
+        scheduledAt: expected.scheduledAt,
+        htmlPutAccepted,
+      }),
     });
     // Finding 1 (#4142): erro distinto (não o `e` genérico) pra que
     // `runApplyBatch` consiga distinguir "presa suspensa" (abortar o lote)
@@ -818,10 +1012,27 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
+  // #12053: modo de recuperação — só reagenda campanha presa em "suspended".
+  const rescheduleOnly = argv.includes("--reschedule-suspended");
+  const rescheduleAt = getArg(argv, "scheduled-at");
+  if (rescheduleOnly && (campaignIdArg === undefined || !rescheduleAt)) {
+    console.error("--reschedule-suspended exige --campaign-id N e --scheduled-at ISO (o horário original, impresso no banner).");
+    process.exit(1);
+  }
+
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   if (!apiKey) {
     console.error("BREVO_CLARICE_API_KEY não definida.");
     process.exit(1);
+  }
+
+  if (rescheduleOnly) {
+    console.error(
+      `\n📋 clarice-reapply-scheduled-html --cycle ${cycle} --campaign-id ${campaignIdArg} --reschedule-suspended ` +
+      `(só reagenda; HTML não é tocado — #12053)`,
+    );
+    await rescheduleSuspendedCampaign(apiKey, campaignIdArg!, rescheduleAt, { apply });
+    return;
   }
 
   assertNoAbTestForSingleHtmlPath(resolveMonthlyDir(cycle), "clarice-reapply-scheduled-html.ts"); // #9308
