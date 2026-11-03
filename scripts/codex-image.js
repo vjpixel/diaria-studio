@@ -6,6 +6,9 @@
 // no JSON do prompt anexa a imagem ao `codex exec -i`. É o outpaint da capa do
 // YouTube: `04-d1-2x1.jpg` como referência, alvo 16:9 (final_width/height),
 // pedindo o objeto do D1 menor e inteiro à direita e o terço esquerdo livre.
+// Com `reference_mode: "identity"` no JSON (#11942), a referência é só de
+// identidade (o retrato do editor a partir do frame do vídeo): o prompt pede
+// uma foto NOVA, com a expressão e o enquadramento descritos, em vez de outpaint.
 //
 // O Codex não expõe a escolha do modelo de imagem (a ferramenta image_generation é
 // interna); só o modelo "orquestrador" (-m). A conta ChatGPT recusa o default do
@@ -50,7 +53,11 @@ export function buildCodexPrompt(sd) {
   let p = `Use the built-in image generation tool to create ONE image and save it as ${OUT_NAME} in the current working directory.\n`;
   p += `Format: ${targetAspectText(sd.final_width, sd.final_height)}. The image must fill the entire canvas edge to edge, with no frame, border or visible canvas.\n\n`;
   const refs = Array.isArray(sd.reference_images) ? sd.reference_images : [];
-  if (refs.length) {
+  if (refs.length && sd.reference_mode === 'identity') {
+    // #11942: retrato do editor para a capa do YouTube. O frame do vídeo é só
+    // referência de identidade: a expressão e o enquadramento vêm do prompt.
+    p += `The attached image${refs.length > 1 ? 's show' : ' shows'} a real person and ${refs.length > 1 ? 'are' : 'is'} ONLY an identity reference: keep the same person (face shape, eyes, nose, hair, beard, skin tone, age) and the same clothing, but create a NEW photo with the framing, pose and facial expression described below. Do not copy the original pose, expression or background, and do not paint it: it must look like a real photo.\n\n`;
+  } else if (refs.length) {
     // #11228: outpaint com referência (capa do YouTube a partir da 04-d1-2x1.jpg).
     p += `The attached image${refs.length > 1 ? 's are references' : ' is the reference'}: keep ${refs.length > 1 ? 'their' : 'its'} subject, painting style, palette and brushwork, and extend the scene to the new format (outpaint) instead of inventing a different picture.\n\n`;
   }
