@@ -28,6 +28,14 @@ Decisão do editor (briefing do overnight 261102), depois de 261030: duas chamad
    npx tsx scripts/video-publish-registry-status.ts {AAMMDD} --since {ISO da chamada interrompida}
    ```
 
+   Se a chamada interrompida foi do **modo corte** (`publish-shorts.ts --corte {slug} ...`: vertical extra ou corte avulso, "Vertical que não é de edição" abaixo), o registro e as marcas de envio ficam em `data/cortes/{slug}/`, não na pasta da edição, e o comando acima responde `nothing-since` mesmo com o corte publicado. Para o corte, rodar (a data sai do `corte.json`; com `--allow-unwatched-dir`, acrescentar o mesmo `--edition-dir` da chamada, #11970):
+
+   ```bash
+   npx tsx scripts/video-publish-registry-status.ts --corte {slug} --since {ISO da chamada interrompida}
+   ```
+
+   Sem `corte.json` (slug errado ou corte que nunca rodou) sai exit 1, como `unreadable`.
+
    - `verdict: "registered-since"` — o processo seguiu vivo e gravou os destinos de `registered_since` (`youtube` é o horizontal), ou começou a enviá-los: um destino em `sending` tem envio começado e ainda sem registro (o `publish-shorts` grava a marca `_internal/06-shorts-sending*.json` antes de publicar e só a apaga quando o destino termina) — pode estar saindo agora ou ter saído sem registro. Relatar ao editor que eles saíram (estado normalizado pelo #573: `in_progress`/`upload_indeterminado`/`send_unknown` são "pode ter saído, conferir"), nunca chamar o publisher de novo para eles e não seguir para outra parte sem dizer isso.
    - `verdict: "nothing-since"` — nada saiu ainda. A interrupção é um "não": nova chamada só com novo "pode publicar". Se o editor confirmar de novo, rodar o status outra vez logo antes (um processo sobrevivente pode terminar o envio minutos depois).
    - exit 1 (`unreadable`) — não dá para saber o que saiu: conferir o canal e as contas antes de qualquer nova chamada.
