@@ -209,6 +209,7 @@ import {
   CORTE_SPEC_FILE,
   CORTE_TIMER_DESTINATIONS,
   CORTE_TIMER_INTERVAL_MS,
+  CORTE_TIMER_LOCK_FILE,
   CORTE_TIMER_TASK,
   ALLOW_UNWATCHED_DIR_FLAG,
   CORTES_REL_DIR,
@@ -296,6 +297,7 @@ import {
   type ShortsRegistryWriter,
 } from "./lib/diaria/shorts-published-store.ts";
 import { clearShortSending, markShortSending } from "./lib/diaria/shorts-sending-marker.ts";
+import { acquireTimerLock } from "./lib/diaria/timer-lock.ts";
 import {
   buildYouTubeInsertRequest,
   buildYouTubeTags,
@@ -3378,6 +3380,26 @@ export type PrePublishRecheck =
  * registro ilegível nunca vira "publica" (`unreadable`), destino já registrado
  * por outro processo vira `already`.
  */
+/**
+ * Puro (#12001): destinos do timer do corte que ESTA rodada vai publicar (na
+ * última hora antes do teto de 3 h a rodada manual não delega mais, #11996,
+ * e o timer ainda pode passar). Não vazio = a rodada toma o lock do timer do
+ * corte (`CORTE_TIMER_LOCK_FILE`) durante os envios. O filho do timer
+ * (`timerRun`) nunca toma: quem o chamou já está com o lock.
+ */
+export function corteManualTimerDestinations(items: readonly ShortsPlanItem[], corte: { timerRun?: boolean } | null | undefined): string[] {
+  if (!corte || corte.timerRun === true) return [];
+  return items.filter((i) => (i.action === "publish" || i.action === "enqueue") && CORTE_TIMER_DESTINATIONS.includes(i.destination)).map((i) => i.destination);
+}
+
+/** #12001: motivo da recusa quando o timer do corte está com o lock (nada enviado nesses destinos). */
+export function corteTimerLockBusyError(slug: string): string {
+  return (
+    `o timer do 300 (${CORTE_TIMER_TASK}) está publicando o corte "${slug}" agora (${CORTE_TIMER_LOCK_FILE} de pé): nada enviado neste destino para não duplicar o post. ` +
+    "Rode de novo em alguns minutos: a rodada relê o registro e só publica o que o timer não registrou (#12001)"
+  );
+}
+
 export function recheckBeforePublish(
   dir: string,
   aammdd: string,
@@ -4656,7 +4678,38 @@ async function main(): Promise<number> {
     );
     return uploadedCover;
   };
+  // #12001: a rodada manual que publica destinos do timer do corte (a última hora antes do teto,
+  // #11996) toma o MESMO lock do timer: o timer que passar junto acha o lock e sai sem publicar,
+  // e se o timer já está com ele, esses destinos não saem por aqui. Falha ao tomar = recusa.
+  const corteLockDests = corteManualTimerDestinations(plan.items, corte ? { timerRun: requireCorteAuth } : null);
+  let corteLockBusy: string | null = null;
+  let releaseCorteLock = () => {};
+  if (corte && corteLockDests.length) {
+    let rel: (() => void) | null = null;
+    try {
+      rel = acquireTimerLock(join(dir, CORTE_TIMER_LOCK_FILE));
+    } catch (e) {
+      corteLockBusy = `lock do timer do corte não tomado (${(e as Error).message}): nada enviado neste destino para não duplicar o post com o timer (#12001)`;
+    }
+    if (rel) {
+      let released = false;
+      releaseCorteLock = () => {
+        if (released) return;
+        released = true;
+        rel!();
+      };
+      // Exceção no meio dos envios não deixa o lock de pé por 90 min (só SIGKILL deixa).
+      process.once("exit", releaseCorteLock);
+    } else if (!corteLockBusy) {
+      corteLockBusy = corteTimerLockBusyError(corte.slug);
+    }
+  }
   for (const item of plan.items) {
+    if (corteLockBusy && corteLockDests.includes(item.destination)) {
+      results.push({ destination: item.destination, ok: false, error: corteLockBusy });
+      console.error(`[erro] ${item.destination}: ${corteLockBusy}`);
+      continue;
+    }
     if (item.action === "buffer" || item.action === "publish" || item.action === "enqueue") {
       // #11157: reconfere no disco antes de publicar — outro escritor pode ter
       // registrado o destino depois da leitura do início da rodada.
@@ -4949,6 +5002,7 @@ async function main(): Promise<number> {
     console.error(`[ok] ${item.destination}: ${entry.status} (estado ${state}) ${where}${unconfirmed ? " (processamento não confirmado em 5 min — confira)" : ""}`);
     for (const w of outcome.warnings ?? []) console.error(`[aviso] ${item.destination}: ${w}`);
   }
+  releaseCorteLock();
   const finalItems = blockRepostOnProfileFailure(plan.items, results);
   if (finalItems !== plan.items) {
     console.error("[aviso] linkedin_page_repost: o vídeo do perfil falhou ou ficou em send_unknown nesta rodada — repost não oferecido");

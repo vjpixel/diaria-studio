@@ -41,9 +41,16 @@
  * Lock O_EXCL por corte em `_internal/.shorts-corte-timer.lock`. O filho tem
  * teto de 75 min (`CORTE_TIMER_CHILD_TIMEOUT_MS`, abaixo dos 90 min de lock
  * velho, #11966): estourado, vira alarme `child-timeout` (conferir a conta).
- * #11964: o lock só serializa execuções do timer; quem impede a rodada manual
- * de publicar junto é o plano do publish-shorts, que entrega os três destinos
- * ao timer (`skip_delegated`) de 10 min antes do horário até 3 h depois.
+ * #11964: quem impede a rodada manual de publicar junto é o plano do
+ * publish-shorts, que entrega os três destinos ao timer (`skip_delegated`) de
+ * 10 min antes do horário até 1 h antes do teto de 3 h (#11996). #12001: na
+ * última hora a rodada manual publica sozinha e o timer ainda pode passar;
+ * as duas não publicam o mesmo destino porque (1) a rodada manual que publica
+ * um destino do timer toma o MESMO lock (`CORTE_TIMER_LOCK_FILE`): o timer
+ * que acha o lock de pé sai sem publicar, e a rodada manual que acha o lock do
+ * timer não publica esses destinos; (2) a decisão do timer pula o destino com
+ * marca "envio em curso" recente (`corteInFlightDestinations`). Entre máquinas
+ * as duas proteções dependem de o OneDrive ter sincronizado o lock ou a marca.
  *
  * Conferência da conta antes de publicar (#11795, fecha o limite do review do
  * PR #11894): o `publish-shorts --corte` passa o Instagram pela mesma
@@ -71,13 +78,15 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/editor-notify.ts";
 import { MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
-import { knownDestinationIds, loadShortsConfig, parseShortsPublishedFile } from "./lib/diaria/short-video.ts";
-import { CORTE_SPEC_FILE, CORTE_TIMER_TASK, CORTES_REL_DIR, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
+import { knownDestinationIds, loadShortsConfig, parseShortsPublishedFile, type ShortPublishedEntry } from "./lib/diaria/short-video.ts";
+import { CORTE_SPEC_FILE, CORTE_TIMER_LOCK_FILE, CORTE_TIMER_TASK, CORTES_REL_DIR, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
+import { openSendingMarks, readShortsSending, type ShortSendingMark } from "./lib/diaria/shorts-sending-marker.ts";
+import { SHORTS_TIMER_LOCK_STALE_MS } from "./lib/diaria/vertical-download-guard.ts";
 import { corteAuthorizedDestinations, corteContentCheck, corteRevokedDestinations, type CorteContentFingerprint } from "./lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "./lib/diaria/corte-content.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { corteUnscheduledDestinations } from "./lib/diaria/corte-owner-watch.ts";
-import { acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
+import { acquireTimerLock } from "./lib/diaria/timer-lock.ts";
 import { alarmDelivery, emailPending, nextAlarmState, parseAlarmState } from "./lib/diaria/shorts-timer-alarm-state.ts";
 import { publishConfirmArgs, publishConfirmSuffix } from "./lib/diaria/publish-confirm.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
@@ -85,8 +94,7 @@ import type { ShortsPlanItem } from "./publish-shorts.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[shorts-corte-timer]";
-export { CORTES_REL_DIR };
-export const CORTE_TIMER_LOCK_FILE = "_internal/.shorts-corte-timer.lock";
+export { CORTES_REL_DIR, CORTE_TIMER_LOCK_FILE };
 export const CORTE_TIMER_ALARM_STATE_FILE = "_internal/.shorts-corte-timer-alarm.json";
 /** Depois disto o corte não é mais olhado (nem pra alarmar): o `late` já saiu dentro da janela. */
 export const CORTE_TIMER_HORIZON_MS = 48 * 3_600_000;
@@ -147,8 +155,9 @@ export interface CorteTimerSideAlarm {
 export type CorteTimerDecision =
   | { kind: "skip"; reason: string; alarms?: CorteTimerSideAlarm[] }
   | { kind: "wait"; reason: string; at: string }
-  | { kind: "late"; reason: string; at: string; pending: string[]; alarms?: CorteTimerSideAlarm[] }
-  | { kind: "publish"; at: string; pending: string[]; alarms?: CorteTimerSideAlarm[] };
+  /** `inFlight` (#12001): destinos com envio em curso por outra rodada, fora de `pending` nesta execução. */
+  | { kind: "late"; reason: string; at: string; pending: string[]; alarms?: CorteTimerSideAlarm[]; inFlight?: string[] }
+  | { kind: "publish"; at: string; pending: string[]; alarms?: CorteTimerSideAlarm[]; inFlight?: string[] };
 
 /** Puro: o que fazer com um corte nesta execução, antes de tocar em qualquer API. */
 export function decideCorteTimerRun(input: {
@@ -156,6 +165,13 @@ export function decideCorteTimerRun(input: {
   spec: CorteSpec;
   /** Todos os arquivos do registro do corte (`readShortsRegistryRaws`). */
   registryRaws: ReadonlyArray<{ path: string; raw: string }>;
+  /**
+   * #12001: marcas "envio em curso" do corte (`readShortsSending`, todos os
+   * escritores). Destino com marca aberta e recente (`corteInFlightDestinations`)
+   * está sendo publicado por outra rodada agora: o timer não publica nem alarma
+   * `late` nele nesta execução.
+   */
+  sendingMarks?: ReadonlyArray<ShortSendingMark>;
   now: Date;
 }): CorteTimerDecision {
   const cfg = loadShortsConfig(input.config);
@@ -166,10 +182,15 @@ export function decideCorteTimerRun(input: {
   const authorized = corteAuthorizedDestinations(spec) ?? [];
   const revoked = corteRevokedDestinations(spec);
   const done = new Set<string>();
+  const entries: ShortPublishedEntry[] = [];
   for (const { path, raw } of input.registryRaws) {
     // Registro ilegível lança: nunca vira "nada publicado" (duplicaria o post).
-    for (const e of parseShortsPublishedFile(raw, spec.date, path).entries) done.add(e.destination);
+    for (const e of parseShortsPublishedFile(raw, spec.date, path).entries) {
+      done.add(e.destination);
+      entries.push(e);
+    }
   }
+  const inFlight = corteInFlightDestinations(input.sendingMarks ?? [], entries, input.now);
   const enabled = corteTimerDestinations(input.config);
   const at = resolveEditionScheduledAt(spec.date, spec.hhmm);
   const deltaMs = input.now.getTime() - Date.parse(at);
@@ -203,14 +224,22 @@ export function decideCorteTimerRun(input: {
   }
   // #11912: só os destinos do --only autorizado; os deixados de fora nunca saem pelo timer.
   const allowed = enabled.filter((d) => authorized.includes(d));
-  const pending = allowed.filter((d) => !done.has(d));
-  if (!pending.length) {
+  const unregistered = allowed.filter((d) => !done.has(d));
+  if (!unregistered.length) {
     const left = enabled.filter((d) => !allowed.includes(d) && !done.has(d));
     return {
       kind: "skip",
       reason: `nenhum destino do timer pendente (todos registrados ou desligados no config)${left.length ? `; fora do "pode publicar" (--only autorizado): ${left.join(", ")}` : ""}`,
       ...withAlarms,
     };
+  }
+  // #12001: outra rodada (a manual da última hora antes do teto, #11996, ou um filho anterior do
+  // timer) está publicando estes destinos agora: publicar junto duplicaria o post.
+  const busy = unregistered.filter((d) => inFlight.has(d));
+  const pending = unregistered.filter((d) => !inFlight.has(d));
+  const withBusy = busy.length ? { inFlight: busy } : {};
+  if (!pending.length) {
+    return { kind: "skip", reason: `envio em curso por outra rodada (marca em _internal/06-shorts-sending*.json): ${busy.join(", ")}; a próxima execução relê o registro`, ...withAlarms };
   }
   if (deltaMs < 0) return { kind: "wait", reason: `antes do horário do corte (${spec.hhmm} BRT de ${spec.date})`, at };
   if (deltaMs > CORTE_TIMER_HORIZON_MS) return { kind: "skip", reason: `horário do corte passou há mais de ${CORTE_TIMER_HORIZON_MS / 3_600_000} h` };
@@ -221,9 +250,29 @@ export function decideCorteTimerRun(input: {
       pending,
       reason: `${spec.hhmm} BRT de ${spec.date} passou há ${Math.round(deltaMs / 60_000)} min (teto ${MAX_FIRE_LATENESS_MS / 3_600_000} h) e ${pending.join(", ")} não está registrado`,
       ...withAlarms,
+      ...withBusy,
     };
   }
-  return { kind: "publish", at, pending, ...withAlarms };
+  return { kind: "publish", at, pending, ...withAlarms, ...withBusy };
+}
+
+/**
+ * Puro (#12001): destinos com envio em curso agora — marca "envio em curso"
+ * (`06-shorts-sending*.json`, gravada pelo publish-shorts antes de cada envio,
+ * #11741) ainda aberta (sem entrada no registro gravada depois dela,
+ * `openSendingMarks`) e com até `SHORTS_TIMER_LOCK_STALE_MS` (90 min, a mesma
+ * idade de lock velho). Marca mais velha é de processo que morreu no meio: não
+ * segura o destino para sempre (o comportamento de antes do #12001 vale para
+ * ela). Data da marca ilegível também não segura (não há como saber a idade).
+ */
+export function corteInFlightDestinations(marks: ReadonlyArray<ShortSendingMark>, entries: ReadonlyArray<ShortPublishedEntry>, now: Date): Set<string> {
+  const out = new Set<string>();
+  for (const m of openSendingMarks(marks, entries)) {
+    const started = Date.parse(m.started_at);
+    if (Number.isNaN(started)) continue;
+    if (now.getTime() - started <= SHORTS_TIMER_LOCK_STALE_MS) out.add(m.destination);
+  }
+  return out;
 }
 
 /**
@@ -545,7 +594,11 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
   const alarm = deps.alarm ?? ((d, s, dest, key, reason, variant) => corteAlarm(d, s, dest, key, reason, deps.notify, variant));
   const specPath = join(dir, CORTE_SPEC_FILE);
   const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
-  const decision = decideCorteTimerRun({ config: deps.config, spec, registryRaws: readShortsRegistryRaws(dir), now: deps.now });
+  // #12001: marca ilegível lança (vira o alarme `crash` do main), nunca "nada em curso".
+  const decision = decideCorteTimerRun({ config: deps.config, spec, registryRaws: readShortsRegistryRaws(dir), sendingMarks: readShortsSending(dir, spec.date), now: deps.now });
+  if ((decision.kind === "publish" || decision.kind === "late") && decision.inFlight?.length) {
+    console.log(`${LOG_PREFIX} ${spec.slug}: envio em curso por outra rodada, fica de fora desta execução: ${decision.inFlight.join(", ")}`);
+  }
   if (decision.kind === "wait") {
     console.log(`${LOG_PREFIX} ${spec.slug}: esperando — ${decision.reason}`);
     return 0;

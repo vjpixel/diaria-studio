@@ -53,7 +53,8 @@ import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarm
  */
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { acquireTimerLock } from "./lib/diaria/timer-lock.ts";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -193,31 +194,8 @@ export function interpretDriveLookup(exitCode: number | null, stdout: string): D
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
 }
 
-/** Lock O_EXCL; devolve o release, ou null se outra execução está no meio. */
-export function acquireTimerLock(path: string, now: number = Date.now()): (() => void) | null {
-  mkdirSync(dirname(path), { recursive: true });
-  const tryOpen = () => {
-    try {
-      closeSync(openSync(path, "wx"));
-      return true;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
-      throw e;
-    }
-  };
-  if (!tryOpen()) {
-    let age = 0;
-    try {
-      age = now - statSync(path).mtimeMs;
-    } catch {
-      age = 0;
-    }
-    if (age <= TIMER_LOCK_STALE_MS) return null;
-    rmSync(path, { force: true });
-    if (!tryOpen()) return null;
-  }
-  return () => rmSync(path, { force: true });
-}
+/** Lock O_EXCL; devolve o release, ou null se outra execução está no meio (#12001: mora em `lib/diaria/timer-lock.ts`). */
+export { acquireTimerLock };
 
 /** Motivos já avisados ao editor nesta edição (não repete o mesmo a cada hora, #11618). */
 export const LINKEDIN_TIMER_ALARM_STATE_FILE = "_internal/.shorts-linkedin-timer-alarm.json";
