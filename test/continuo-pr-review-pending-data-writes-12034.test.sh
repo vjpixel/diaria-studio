@@ -61,7 +61,7 @@ else
   FAILED=$((FAILED + 1))
 fi
 # Alarme no stdout do tick (entrega ao Telegram).
-assert_contains "NOTIFY liga com escrita pendente" "$(cat "$SCRIPT")" '[ "$PENDING_DATA_WRITES" -gt 0 ] 2>/dev/null && NOTIFY=1'
+assert_contains "NOTIFY liga com escrita pendente" "$(cat "$SCRIPT")" '[ "${PENDING_DATA_WRITES:-0}" -gt 0 ] 2>/dev/null && NOTIFY=1'
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT

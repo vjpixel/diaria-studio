@@ -1101,7 +1101,9 @@ NOTIFY=0
 # #8767: PR fechada pelo resolvedor é decisão terminal — o editor fica sabendo.
 [ "${STUCK_CLOSED:-0}" -gt 0 ] 2>/dev/null && NOTIFY=1
 # #12034: PR mergeada com escrita pendente em data/ — alguém precisa aplicar.
-[ "$PENDING_DATA_WRITES" -gt 0 ] 2>/dev/null && NOTIFY=1
+# `:-0` como o STUCK_CLOSED acima: o bloco de entrega é extraído e executado
+# isolado por test/hermes-cron-entrega-so-com-problema.test.sh sob `set -u`.
+[ "${PENDING_DATA_WRITES:-0}" -gt 0 ] 2>/dev/null && NOTIFY=1
 
 # `bloqueadas-por-lock` só aparece quando NÃO-zero: o docblock de
 # LOCK_BLOCKED chama esse contador de "sinal agregado de isto aconteceu N
@@ -1126,8 +1128,8 @@ fi
 if [ "${STUCK_CLOSED:-0}" -gt 0 ] || [ "${STUCK_UPDATED:-0}" -gt 0 ]; then
   echo "[continuo-pr-review] resolvedor de PRs travadas (#8767): ${STUCK_CLOSED:-0} fechada(s), ${STUCK_UPDATED:-0} com master trazido pra branch — detalhes nos comentários de cada PR"
 fi
-if [ "$PENDING_DATA_WRITES" -gt 0 ]; then
-  echo "[continuo-pr-review] $PENDING_DATA_WRITES PR(s) mergeada(s) com escrita pendente em data/ (#12034) — aplicar no checkout principal e fechar a issue:$PENDING_DATA_WRITES_SUMMARY"
+if [ "${PENDING_DATA_WRITES:-0}" -gt 0 ]; then
+  echo "[continuo-pr-review] ${PENDING_DATA_WRITES:-0} PR(s) mergeada(s) com escrita pendente em data/ (#12034) — aplicar no checkout principal e fechar a issue:${PENDING_DATA_WRITES_SUMMARY:-}"
 fi
 if [ "$REJECTED_NEW" -gt 0 ]; then
   echo "[continuo-pr-review] $REJECTED_NEW PR(s) rejeitada(s) agora — consertar ou fechar (label continuo-rejeitado)"
