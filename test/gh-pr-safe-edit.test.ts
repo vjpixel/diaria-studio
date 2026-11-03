@@ -28,6 +28,7 @@ import {
   setPrBodyRest,
   VERIFY_BODY_READ_ONLY_NOTICE,
   verifyBodyConflictError,
+  bodyFileAddLabelConflictError,
   type GhRunFn,
 } from "../scripts/lib/gh-pr-safe-edit.ts";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
@@ -514,6 +515,28 @@ describe("--verify-body não grava (#11930)", () => {
       const r = runCli(args);
       assert.equal(r.status, 1, `${args.join(" ")}: ${r.stderr}`);
       assert.match(r.stderr, /--verify-body só confere o corpo atual da PR e NÃO grava/);
+      assert.equal(r.ghCalled, false, `não devia chamar o gh: ${args.join(" ")}`);
+    }
+  });
+
+  // #11937: o ramo --body-file retornava antes do --add-label — corpo gravado,
+  // exit 0, label descartada em silêncio. Agora o par é recusado antes do gh.
+  it("helper puro: --body-file/--body + --add-label é conflito; cada um sozinho não (#11937)", () => {
+    assert.match(bodyFileAddLabelConflictError({ "body-file": "x.md", "add-label": "a" }, new Set())!, /--body-file e --add-label.*#11937/);
+    assert.match(bodyFileAddLabelConflictError({ body: "t", "add-label": "a" }, new Set())!, /--body e --add-label/);
+    assert.match(bodyFileAddLabelConflictError({ "body-file": "x.md" }, new Set(["add-label"]))!, /--add-label/);
+    assert.equal(bodyFileAddLabelConflictError({ "body-file": "x.md" }, new Set()), null);
+    assert.equal(bodyFileAddLabelConflictError({ "add-label": "a" }, new Set()), null);
+  });
+
+  it("CLI: --body-file + --add-label sai 1 sem chamar o gh, nas duas ordens (#11937)", { skip: FAKE_GH_SKIP_WIN32 }, () => {
+    for (const args of [
+      ["--pr", "11936", "--body-file", bodyFile, "--add-label", "no-regression-test"],
+      ["--pr", "11936", "--add-label", "no-regression-test", "--body-file", bodyFile],
+    ]) {
+      const r = runCli(args);
+      assert.equal(r.status, 1, `${args.join(" ")}: ${r.stderr}`);
+      assert.match(r.stderr, /--body-file e --add-label não combinam/);
       assert.equal(r.ghCalled, false, `não devia chamar o gh: ${args.join(" ")}`);
     }
   });

@@ -245,9 +245,12 @@ quando a omissão é intencional).
 **`--body-file` grava; `--verify-body` só confere (#11930).** Para EDITAR o
 corpo (acrescentar `removal-declaration:`, trocar um `Closes`), reescrever o
 arquivo e rodar `--body-file`; o `--verify-body` não escreve nada e avisa isso
-em stderr. Os dois juntos (ou `--verify-body` com `--body`) saem `exit 1` sem
-tocar a PR: na rodada 261102b (PR #11915) a edição "feita" com `--verify-body`
-não persistiu e o check seguiu vermelho.
+em stderr. `--verify-body` combinado com `--body-file`, `--body` ou
+`--add-label` (#11934) sai `exit 1` sem tocar a PR: na rodada 261102b (PR
+#11915) a edição "feita" com `--verify-body` não persistiu e o check seguiu
+vermelho. `--body-file` (ou `--body`) com `--add-label` na mesma chamada
+também sai `exit 1` (#11937): antes o corpo era gravado e a label descartada
+em silêncio. Corpo e label são duas chamadas.
 
 **`--verify-body` também confere o commit da PR (#11566).** Branch de PR
 mergeada por squash fica no remoto (o merge não usa `--delete-branch`), e a

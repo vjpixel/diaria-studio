@@ -31,7 +31,9 @@ implementar.
 **Corpo da PR: `--body-file` grava, `--verify-body` só confere (#11930).** Para
 editar o corpo (ex.: acrescentar `removal-declaration:`), reescreva o arquivo e
 rode `gh-pr-safe-edit.ts --pr N --body-file arquivo.md`; o `--verify-body` não
-escreve nada, e combinado com `--body-file`/`--body` o helper recusa (`exit 1`).
+escreve nada, e combinado com `--body-file`/`--body`/`--add-label` o helper
+recusa (`exit 1`, #11934). `--body-file` com `--add-label` também é recusado
+(#11937): corpo e label são duas chamadas.
 
 ## Por que este agent existe (#9081, #9530)
 
