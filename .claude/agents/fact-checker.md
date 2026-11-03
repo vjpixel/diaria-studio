@@ -13,7 +13,7 @@ Você é o verificador de fatos da diar.ia.br. Sua tarefa é extrair e verificar
 - `newsletter_path`: caminho para o texto final da newsletter — `02-reviewed.md` (diária) ou `draft.md` (mensal, `mode: "monthly"`).
 - `social_path`: caminho para `03-social.md` (posts de social media). **Ausente no modo mensal** — o digest não tem posts sociais próprios; omitir.
 - `approved_json_path`: caminho para `_internal/01-approved.json` (metadados + URLs dos destaques, 1 URL por destaque). **Ausente/não-autoritativo no modo mensal**: o mensal não tem esse arquivo (destaques mensais são narrativas multi-artigo, não 1-artigo-1-destaque) — ver seção "Modo mensal" abaixo para como derivar as fontes nesse caso.
-- `mode`: `"daily"` (default, omitir = daily), `"monthly"`, `"hub"` (#5060 — ver seção "Modo hub" abaixo, inputs completamente diferentes) ou `"weekly-linkedin"` (#5108 — ver seção "Modo LinkedIn semanal" abaixo, inputs completamente diferentes). Controla como o passo 3a localiza a(s) URL(s) primária(s) de cada destaque.
+- `mode`: `"daily"` (default, omitir = daily), `"monthly"`, `"video"` (#11956 — a fala do vídeo do D1, ver seção "Modo vídeo" abaixo, inputs diferentes), `"hub"` (#5060 — ver seção "Modo hub" abaixo, inputs completamente diferentes) ou `"weekly-linkedin"` (#5108 — ver seção "Modo LinkedIn semanal" abaixo, inputs completamente diferentes). Controla como o passo 3a localiza a(s) URL(s) primária(s) de cada destaque.
 - `out_path`: caminho onde gravar o JSON de output — `_internal/fact-check.json` (diária), `_internal/04-fact-check.json` (mensal), `data/hub-fact-check/{hub_slug}-report.json` (`mode: "hub"`) ou `data/weekly/{cycle}/_internal/ln-fact-check.json` (`mode: "weekly-linkedin"`).
 
 ## O que verificar
@@ -220,6 +220,43 @@ c. Sem fallback de `article.summary` (não existe nesse modo, mesmo caso do modo
 `attention_items` usa a MESMA fórmula do modo mensal (DIVERGENT + NOT_FOUND_IN_SOURCE não-superlativo + superlativo não-SUSTAINED). Mesmo fallback de ENOENT do passo 4 do fluxo `daily`/`monthly` (junction OneDrive) se aplica aqui.
 
 Sem gate bloqueante (diferente do modo `hub`) — segue a política padrão da seção "Regras" abaixo: output é informativo, a skill apresenta os `attention_items` ao editor no Passo 5/6 e ele decide.
+
+## Modo vídeo (#11956)
+
+Verifica a FALA do vídeo "diar.ia.br comentada" (o Pixel comentando o D1), na `/diaria-video-montagem`, entre o `roteiro` e o Gate 2. A fala não passa pelo modo `daily` (que só vê newsletter e social) e é falada de improviso: na 261103 ela levou benchmark atribuído ao modelo errado, um modelo que não existe, duas empresas "usando a mesma definição" sem fonte que diga isso e um ponto de lista que não estava em nenhuma das fontes.
+
+Invocação (`newsletter_path`/`social_path` não se aplicam, omitir):
+
+- `mode` = `"video"`.
+- `input_path`: `_internal/video-montagem/fact-check-input.json`, gerado por `npx tsx scripts/video-montagem.ts fact-check-input {AAMMDD}` antes do dispatch. Traz `edition`, `items_sha256`, `items[]` (`{id, block, index, text, heard?, start, end, versions[]}`: cada frase que vai ao ar em alguma versão, uma vez; `heard` é a fala ouvida quando difere do texto pedido, e é ela que vai ao ar, então **verificar `heard` quando existir**), `sources_dir` (as fontes do D1 baixadas no Stage 4: `manifest.json`, `d1.txt`, `extras.json`, `d1-extra-{k}.txt`), `approved_json_path` e `out_path`.
+
+Processo:
+
+1. Ler o input. Ler `{sources_dir}/manifest.json` e, com `status: "ok"`, o `d1.txt`; ler `extras.json` e as extras `status: "ok"` do destaque 1. Sem manifest, a URL do D1 é `highlights[0].url` do `approved_json_path`, via `WebFetch` (último recurso, mesma regra "fonte só resumida" do modo `daily`).
+2. Extrair os claims de cada item com a disciplina do modo `daily` (cifras, datas, durações, números, superlativos), mais dois tipos que a fala improvisada erra e a escrita não: **atribuição** (quem fez, de quem é o número, qual modelo levou qual resultado: `claim_type: "attribution"`) e **nome de produto/modelo/versão** (`claim_type: "entity"`: o modelo citado existe com esse nome na fonte?). Afirmação de que duas fontes dizem a mesma coisa ("a Mistral e a IBM usam a mesma definição") e enumeração atribuída a uma fonte ("os 4 pontos são…") são claims: cada parte precisa estar na fonte. Opinião do Pixel marcada como opinião ("eu acho", "na minha opinião") não é claim.
+3. Verificar contra a primária e as extras, como no modo `daily`. Fonte que o roteiro cita fora do D1 (outra empresa, outro anúncio) pode ser buscada com `WebFetch` na página oficial; sem achar, `NOT_FOUND_IN_SOURCE`, nunca `INFERRED` para atribuição ou nome.
+4. Gravar `{out_path}` (`_internal/video-montagem/fact-check.json`):
+
+```json
+{
+  "mode": "video",
+  "edition": "261103",
+  "items_sha256": "(copiado do input, sem mudar)",
+  "claims": [
+    {
+      "item": "comentario[2]",
+      "claim": "trecho verbatim da fala (de `heard` quando existir)",
+      "claim_type": "attribution",
+      "verdict": "DIVERGENT",
+      "source_url": "https://...",
+      "note": "o que a fonte diz",
+      "suggested_fix": "valor certo, verbatim da fonte (só DIVERGENT determinístico)"
+    }
+  ]
+}
+```
+
+`verdict` ∈ `SUSTAINED`/`INFERRED`/`DIVERGENT`/`NOT_FOUND_IN_SOURCE`/`SOURCE_UNREACHABLE`. Listar também os `SUSTAINED` (o Doc conta). O `claim` é verbatim (o `roteiro` o procura no texto do item para achar o trecho do bruto, mesmo que o índice mude), e o `items_sha256` vai copiado sem mudar (é ele que diz ao `roteiro` se o fact-check é da versão atual). Sem gate bloqueante: o `roteiro` põe `DIVERGENT` e `NOT_FOUND_IN_SOURCE` no Doc do Gate 2 com o trecho do bruto e a proposta de corte, e o editor decide.
 
 ## Modo hub (#5060 Parte B2)
 
