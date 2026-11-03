@@ -20,6 +20,13 @@
  * timer só publica (e só alarma `late`) o corte com o "pode publicar" do
  * editor gravado no `corte.json` (#11912); esta vigia ainda não olha o
  * marcador e alarma também o corte que só passou pelo dry-run.
+ *
+ * #11986: com `corte_via_timer: true`, se o próprio `Diaria-Shorts-Cortes`
+ * não roda (desarmado, quebrando antes de chegar ao corte), ninguém alarma o
+ * `late`. A vigia lê o heartbeat do timer (`corte-timer-heartbeat.ts`): corte
+ * com o destino autorizado (o "pode publicar") ainda sem registro depois do
+ * horário (até 48 h) e heartbeat velho vira alarme `timer-stale`, uma vez por
+ * corte, destino e plano.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -29,10 +36,11 @@ import { resolveEditionScheduledAt } from "../edition-scheduled-at.ts";
 import { notifyEditor, type NotifyEditorDeps } from "../editor-notify.ts";
 import { MAX_FIRE_LATENESS_MS } from "../linkedin-personal.ts";
 import { publishConfirmSuffix } from "./publish-confirm.ts";
-import { CORTE_SPEC_FILE, CORTE_TIMER_DESTINATIONS, CORTE_TIMER_TASK, corteBaseCommand, parseCorteSpec, type CorteSpec } from "./short-corte.ts";
+import { CORTE_SPEC_FILE, CORTE_TIMER_DESTINATIONS, CORTE_TIMER_TASK, corteAuthorizedDestinations, corteBaseCommand, parseCorteSpec, type CorteSpec } from "./short-corte.ts";
 import { loadShortsConfig, parseShortsPublishedFile } from "./short-video.ts";
 import { readShortsRegistryRaws } from "./shorts-published-store.ts";
 import { alarmDelivery, emailPending, nextAlarmState, parseAlarmState } from "./shorts-timer-alarm-state.ts";
+import { corteTimerHeartbeatStale, describeCorteTimerHeartbeat, readCorteTimerHeartbeat, type CorteTimerHeartbeat } from "./corte-timer-heartbeat.ts";
 
 /** Depois disto o corte não é mais olhado (mesmo horizonte do timer do corte). */
 export const CORTE_WATCH_HORIZON_MS = 48 * 3_600_000;
@@ -61,6 +69,8 @@ export interface CorteWatchFinding {
   spec: CorteSpec;
   destination: string;
   reason: string;
+  /** `no-owner` (default, #11911) ou `timer-stale` (#11986: o timer do corte é o dono e não roda). */
+  kind?: "no-owner" | "timer-stale";
 }
 
 /**
@@ -90,8 +100,57 @@ export function findCortesWithoutOwner(input: { config: unknown; destination: st
   return out;
 }
 
+/**
+ * Puro (#11986): com `corte_via_timer` ligado, os cortes com `destination`
+ * autorizado e sem registro depois do horário (até 48 h) quando o heartbeat do
+ * timer do corte está velho ou ausente. Registro ilegível lança, como acima.
+ */
+export function findCortesWithStaleTimer(input: { config: unknown; destination: string; cortes: readonly CorteWatchInput[]; heartbeat: CorteTimerHeartbeat; now: Date }): CorteWatchFinding[] {
+  const cfg = loadShortsConfig(input.config);
+  if (!cfg.corteViaTimer) return [];
+  if (!corteUnscheduledDestinations(input.config).includes(input.destination)) return [];
+  if (!corteTimerHeartbeatStale(input.heartbeat, input.now)) return [];
+  const out: CorteWatchFinding[] = [];
+  for (const c of input.cortes) {
+    // Só o que o timer publicaria: sem o "pode publicar" do destino, o timer também não age (#11912).
+    if (!(corteAuthorizedDestinations(c.spec) ?? []).includes(input.destination)) continue;
+    const deltaMs = input.now.getTime() - Date.parse(resolveEditionScheduledAt(c.spec.date, c.spec.hhmm));
+    if (deltaMs < 0 || deltaMs > CORTE_WATCH_HORIZON_MS) continue;
+    const done = c.registryRaws.some(({ path, raw }) => parseShortsPublishedFile(raw, c.spec.date, path).entries.some((e) => e.destination === input.destination));
+    if (done) continue;
+    out.push({
+      dir: c.dir,
+      spec: c.spec,
+      destination: input.destination,
+      kind: "timer-stale",
+      reason:
+        `${c.spec.hhmm} BRT de ${c.spec.date} passou há ${Math.round(deltaMs / 60_000)} min, ${input.destination} não está no registro do corte e o timer dono dele (${CORTE_TIMER_TASK}) não roda: ` +
+        describeCorteTimerHeartbeat(input.heartbeat, input.now),
+    });
+  }
+  return out;
+}
+
+/** Puro (#11986): assunto e corpo do alarme do timer do corte parado. */
+export function buildCorteTimerStaleAlarm(f: CorteWatchFinding, checkTask: string): { subject: string; body: string } {
+  const base = corteBaseCommand(f.spec.slug);
+  const body = [
+    `Achado automático da task \`${checkTask}\` (vigia dos cortes avulsos, \`scripts/lib/diaria/corte-owner-watch.ts\`, #11986).`,
+    "",
+    `Corte: "${f.spec.title}" (${f.spec.slug}), ${f.spec.hhmm} BRT de ${f.spec.date}. Destino: ${f.destination}.`,
+    `Motivo: ${f.reason}.`,
+    "",
+    `Com publishing.shorts.corte_via_timer ligado, a rodada manual entregou este destino ao \`${CORTE_TIMER_TASK}\`, que é quem publica e alarma; parado, nada sai e nenhum outro alarme avisa.`,
+    "Confira a conta antes de qualquer coisa (o post pode ter saído à mão sem registro).",
+    `- Se o vídeo do corte está lá: registre com \`${base} --mark ${f.destination}=URL\`.`,
+    `- Se não está: no 300, confira a task \`${CORTE_TIMER_TASK}\` (\`npx tsx scripts/lib/scheduled-tasks.ts --list\`) e rode \`npx tsx scripts/shorts-corte-timer.ts --corte ${f.spec.slug}\` (até 3 h depois do horário; passadas as 3 h, \`${base} --only ${f.destination} --publish --now ${publishConfirmSuffix(f.spec.date)}\`).`,
+  ].join("\n");
+  return { subject: `[diar.ia.br] Corte "${f.spec.slug}" no ${f.destination}: o timer ${CORTE_TIMER_TASK} não roda`, body };
+}
+
 /** Puro: assunto e corpo do alarme. */
 export function buildCorteWatchAlarm(f: CorteWatchFinding, checkTask: string): { subject: string; body: string } {
+  if (f.kind === "timer-stale") return buildCorteTimerStaleAlarm(f, checkTask);
   const base = corteBaseCommand(f.spec.slug);
   const body = [
     `Achado automático da task \`${checkTask}\` (vigia dos cortes avulsos, \`scripts/lib/diaria/corte-owner-watch.ts\`, #11911).`,
@@ -141,7 +200,12 @@ export async function watchCortesWithoutOwner(destination: string, dryRun: boole
   const log = deps.log ?? ((l: string) => console.log(l));
   let findings: CorteWatchFinding[];
   try {
-    findings = findCortesWithoutOwner({ config: deps.config, destination, cortes: readCortes(deps.cortesDir), now: deps.now });
+    const cortes = readCortes(deps.cortesDir);
+    findings = [
+      ...findCortesWithoutOwner({ config: deps.config, destination, cortes, now: deps.now }),
+      // #11986: o heartbeat mora em data/cortes/ (ao lado das pastas de corte).
+      ...findCortesWithStaleTimer({ config: deps.config, destination, cortes, heartbeat: readCorteTimerHeartbeat(deps.cortesDir), now: deps.now }),
+    ];
   } catch (e) {
     log(`[corte-owner-watch] ${destination}: leitura dos cortes falhou — ${e instanceof Error ? e.message : String(e)}`);
     return false;
@@ -151,7 +215,8 @@ export async function watchCortesWithoutOwner(destination: string, dryRun: boole
     log(`[corte-owner-watch] ${f.spec.slug} ${destination}: ${f.reason}`);
     if (dryRun) continue;
     const statePath = join(f.dir, corteWatchAlarmStateFile(destination));
-    const id = `${destination}:no-owner`;
+    // #11986: o timer parado avisa de novo num corte replanejado (variante do plano).
+    const id = f.kind === "timer-stale" ? `${destination}:timer-stale:${f.spec.date}-${f.spec.hhmm}` : `${destination}:no-owner`;
     try {
       const stateRaw = existsSync(statePath) ? readFileSync(statePath, "utf8") : null;
       const state = parseAlarmState(stateRaw);

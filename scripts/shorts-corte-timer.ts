@@ -61,8 +61,21 @@
  * `account-check` (`acao`, nunca manda postar de novo); leitura que falha →
  * `account-read-failed` (tenta de novo na próxima hora).
  *
+ * #11985: marca "envio em curso" velha e sem desfecho (o filho morto pelo teto,
+ * um crash) num destino que o publish-shorts não confere na conta antes de
+ * publicar (`linkedin_profile`) segura o destino: alarme `sending-orphan`, e
+ * o timer não publica de novo até o editor conferir a conta e registrar
+ * (`--mark`) ou liberar (`--clear-sending`).
+ *
+ * #11986: toda execução (fora do dry-run) grava o heartbeat
+ * `data/cortes/.shorts-corte-timer-heartbeat.json` no início e no fim; a vigia
+ * dos cortes (timers da edição) alarma o corte pendente com o timer parado, e a
+ * rodada manual avisa ao delegar a um timer parado.
+ *
  * Uso: npx tsx scripts/shorts-corte-timer.ts [--corte SLUG] [--dry-run]
+ *      npx tsx scripts/shorts-corte-timer.ts --corte SLUG --clear-sending DESTINO
  *   --dry-run: decide e imprime os comandos, sem publicar e sem alarme.
+ *   --clear-sending: apaga a marca de envio do destino (não publica nada).
  *
  * Exit: 0 = feito, nada a fazer, esperando ou avisado; 1 = falha (publish,
  * alarme não entregue, exceção); 2 = uso.
@@ -80,13 +93,14 @@ import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/
 import { MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import { knownDestinationIds, loadShortsConfig, parseShortsPublishedFile, type ShortPublishedEntry } from "./lib/diaria/short-video.ts";
 import { CORTE_SPEC_FILE, CORTE_TIMER_LOCK_FILE, CORTE_TIMER_TASK, CORTES_REL_DIR, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
-import { openSendingMarks, readShortsSending, type ShortSendingMark } from "./lib/diaria/shorts-sending-marker.ts";
+import { clearShortSendingAll, openSendingMarks, readShortsSending, type ShortSendingMark } from "./lib/diaria/shorts-sending-marker.ts";
 import { SHORTS_TIMER_LOCK_STALE_MS } from "./lib/diaria/vertical-download-guard.ts";
 import { corteAuthorizedDestinations, corteContentCheck, corteRevokedDestinations, type CorteContentFingerprint } from "./lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "./lib/diaria/corte-content.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { corteUnscheduledDestinations } from "./lib/diaria/corte-owner-watch.ts";
 import { acquireTimerLock } from "./lib/diaria/timer-lock.ts";
+import { writeCorteTimerHeartbeat } from "./lib/diaria/corte-timer-heartbeat.ts";
 import { alarmDelivery, emailPending, nextAlarmState, parseAlarmState } from "./lib/diaria/shorts-timer-alarm-state.ts";
 import { publishConfirmArgs, publishConfirmSuffix } from "./lib/diaria/publish-confirm.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
@@ -124,10 +138,25 @@ export type CorteTimerAlarmKey =
   /** #11912: o "pode publicar" cita um destino que a config atual não conhece: nunca filtrado em silêncio. */
   | "unknown-destination"
   /** #11966: o publish-shorts passou do teto e foi morto: o envio pode ter saído sem registro. */
-  | "child-timeout";
+  | "child-timeout"
+  /**
+   * #11985: marca "envio em curso" sem desfecho, velha (processo morto no meio,
+   * ex.: o filho morto pelo teto), num destino que o publish-shorts não confere
+   * na conta (`linkedin_profile`): o timer não publica de novo até o editor liberar.
+   */
+  | "sending-orphan";
 
 /** O post pode estar (ou está) no ar: `acao`, e o corpo nunca manda publicar de novo. */
-const MAYBE_PUBLISHED_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["send-unknown", "published-unregistered", "account-check", "child-timeout"]);
+const MAYBE_PUBLISHED_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["send-unknown", "published-unregistered", "account-check", "child-timeout", "sending-orphan"]);
+
+/**
+ * #11985: destinos em que o publish-shorts confere a conta antes de publicar
+ * (Instagram, `instagramTimerGate`; Threads pessoal, `threadsProfilePreflight`):
+ * o post repetido é barrado ali, e a marca velha sem desfecho não segura o
+ * destino (#12001). Fora desta lista (hoje só o `linkedin_profile`, e todo
+ * destino novo até provar o contrário), marca velha sem desfecho segura.
+ */
+export const CORTE_ACCOUNT_RECHECK_DESTINATIONS: ReadonlySet<string> = new Set(["instagram", "threads_profile"]);
 
 /** Motivos em que a próxima execução (até 3 h depois do horário) tenta de novo sozinha. */
 const RETRY_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["missing-video", "credentials", "public-video", "publish-failed", "account-read-failed", "no-output", "crash"]);
@@ -143,12 +172,13 @@ export const corteTimerDestinations = corteUnscheduledDestinations;
 /**
  * #11912: alarme que acompanha a decisão, independente de publicar: destino
  * cujo "pode publicar" caiu e segue pendente (`revoked`) ou destino autorizado
- * que a config não conhece (`unknown-destination`). Só no horário (até o
+ * que a config não conhece (`unknown-destination`). #11985: destino preso por
+ * marca de envio sem desfecho (`sending-orphan`). Só no horário (até o
  * horizonte), como o `late`.
  */
 export interface CorteTimerSideAlarm {
   destination: string;
-  key: "revoked" | "unknown-destination";
+  key: "revoked" | "unknown-destination" | "sending-orphan";
   reason: string;
 }
 
@@ -191,6 +221,9 @@ export function decideCorteTimerRun(input: {
     }
   }
   const inFlight = corteInFlightDestinations(input.sendingMarks ?? [], entries, input.now);
+  // #11985: envio interrompido sem desfecho (ex.: filho morto pelo teto) num destino sem conferência da conta.
+  const orphans = corteOrphanSendingMarks(input.sendingMarks ?? [], entries, input.now);
+  const orphaned = new Set(orphans.map((m) => m.destination));
   const enabled = corteTimerDestinations(input.config);
   const at = resolveEditionScheduledAt(spec.date, spec.hhmm);
   const deltaMs = input.now.getTime() - Date.parse(at);
@@ -212,6 +245,13 @@ export function decideCorteTimerRun(input: {
         destination: d,
         key: "revoked",
         reason: `o "pode publicar" do ${d} caiu em ${spec.publish_revoked_at} (${spec.publish_revoked_reason_kind === "plan" ? "o plano mudou" : "o vídeo/capa mudou"}) e ele não saiu: o timer não publica sem um novo --publish --confirm-publish`,
+      });
+    }
+    for (const m of orphans.filter((x) => enabled.includes(x.destination) && authorized.includes(x.destination) && !done.has(x.destination))) {
+      alarms.push({
+        destination: m.destination,
+        key: "sending-orphan",
+        reason: `o envio de ${m.destination} começou em ${m.started_at} e ficou sem desfecho (processo encerrado no meio, ex.: o teto do filho): o post pode ter saído, e o timer não publica de novo este destino até a marca ser liberada`,
       });
     }
   }
@@ -236,10 +276,16 @@ export function decideCorteTimerRun(input: {
   // #12001: outra rodada (a manual da última hora antes do teto, #11996, ou um filho anterior do
   // timer) está publicando estes destinos agora: publicar junto duplicaria o post.
   const busy = unregistered.filter((d) => inFlight.has(d));
-  const pending = unregistered.filter((d) => !inFlight.has(d));
+  // #11985: destino preso pela marca sem desfecho: nunca pendente (republicar duplicaria o post).
+  const held = unregistered.filter((d) => !inFlight.has(d) && orphaned.has(d));
+  const pending = unregistered.filter((d) => !inFlight.has(d) && !orphaned.has(d));
   const withBusy = busy.length ? { inFlight: busy } : {};
   if (!pending.length) {
-    return { kind: "skip", reason: `envio em curso por outra rodada (marca em _internal/06-shorts-sending*.json): ${busy.join(", ")}; a próxima execução relê o registro`, ...withAlarms };
+    const parts = [
+      ...(busy.length ? [`envio em curso por outra rodada (marca em _internal/06-shorts-sending*.json): ${busy.join(", ")}; a próxima execução relê o registro`] : []),
+      ...(held.length ? [`envio sem desfecho, pode ter saído (#11985): ${held.join(", ")}; o timer não publica até a marca ser liberada (--clear-sending)`] : []),
+    ];
+    return { kind: "skip", reason: parts.join("; "), ...withAlarms };
   }
   if (deltaMs < 0) return { kind: "wait", reason: `antes do horário do corte (${spec.hhmm} BRT de ${spec.date})`, at };
   if (deltaMs > CORTE_TIMER_HORIZON_MS) return { kind: "skip", reason: `horário do corte passou há mais de ${CORTE_TIMER_HORIZON_MS / 3_600_000} h` };
@@ -262,8 +308,9 @@ export function decideCorteTimerRun(input: {
  * #11741) ainda aberta (sem entrada no registro gravada depois dela,
  * `openSendingMarks`) e com até `SHORTS_TIMER_LOCK_STALE_MS` (90 min, a mesma
  * idade de lock velho). Marca mais velha é de processo que morreu no meio: não
- * segura o destino para sempre (o comportamento de antes do #12001 vale para
- * ela). Data da marca ilegível também não segura (não há como saber a idade).
+ * conta como "em curso" (data ilegível também não, não há como saber a idade).
+ * #11985: nos destinos sem conferência da conta ela segura o destino por outro
+ * caminho (`corteOrphanSendingMarks`).
  */
 export function corteInFlightDestinations(marks: ReadonlyArray<ShortSendingMark>, entries: ReadonlyArray<ShortPublishedEntry>, now: Date): Set<string> {
   const out = new Set<string>();
@@ -273,6 +320,20 @@ export function corteInFlightDestinations(marks: ReadonlyArray<ShortSendingMark>
     if (now.getTime() - started <= SHORTS_TIMER_LOCK_STALE_MS) out.add(m.destination);
   }
   return out;
+}
+
+/**
+ * Puro (#11985): marcas "envio em curso" sem desfecho e fora do "em curso"
+ * (`corteInFlightDestinations`: mais velhas que 90 min ou com data ilegível)
+ * em destino que o publish-shorts não confere na conta antes de publicar
+ * (fora de `CORTE_ACCOUNT_RECHECK_DESTINATIONS`). O processo morreu no meio
+ * (o filho morto pelo teto de 75 min, #11966, ou um crash): o post pode ter
+ * saído, e republicar duplicaria. O destino fica preso até o editor conferir a
+ * conta e registrar (`--mark`) ou liberar (`--clear-sending`).
+ */
+export function corteOrphanSendingMarks(marks: ReadonlyArray<ShortSendingMark>, entries: ReadonlyArray<ShortPublishedEntry>, now: Date): ShortSendingMark[] {
+  const inFlight = corteInFlightDestinations(marks, entries, now);
+  return openSendingMarks(marks, entries).filter((m) => !inFlight.has(m.destination) && !CORTE_ACCOUNT_RECHECK_DESTINATIONS.has(m.destination));
 }
 
 /**
@@ -385,11 +446,17 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
   ];
   let subject: string;
   if (MAYBE_PUBLISHED_KEYS.has(key)) {
-    lines.push(
-      "Confira a conta antes de qualquer coisa; NÃO poste de novo sem conferir.",
-      `- Se o vídeo do corte está lá: registre com ${mark}.`,
-      `- Se não está: publique com ${manual} (no 300; até 3 h depois do horário, passadas as 3 h com \`${base} --only ${destination} --publish --now ${publishConfirmSuffix(spec.date)}\`) e confira.`,
-    );
+    lines.push("Confira a conta antes de qualquer coisa; NÃO poste de novo sem conferir.", `- Se o vídeo do corte está lá: registre com ${mark}.`);
+    if (key === "sending-orphan") {
+      // #11985: enquanto a marca existir o timer não publica este destino; rodar o timer não adianta.
+      lines.push(
+        `- Se não está: libere o destino com \`${corteClearSendingCommand(spec.slug, destination)}\` (no 300) e o timer publica na próxima execução, até 3 h depois do horário; passadas as 3 h, depois de liberar, com \`${base} --only ${destination} --publish --now ${publishConfirmSuffix(spec.date)}\`.`,
+      );
+    } else {
+      lines.push(
+        `- Se não está: publique com ${manual} (no 300; até 3 h depois do horário, passadas as 3 h com \`${base} --only ${destination} --publish --now ${publishConfirmSuffix(spec.date)}\`) e confira.`,
+      );
+    }
     if (key === "account-check") {
       lines.push(`- Se o vídeo que a conferência acusou é de outra edição ou outro corte, a publicação pelo script vai parar no mesmo ponto: poste à mão e registre com ${mark}.`);
     }
@@ -423,6 +490,28 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
     subject = `[diar.ia.br] Corte "${spec.slug}" não saiu no ${destination} pelo timer do 300 (${key})`;
   }
   return { subject, body: lines.join("\n") };
+}
+
+/** #11985: comando que libera o destino preso por marca de envio sem desfecho. */
+export function corteClearSendingCommand(slug: string, destination: string): string {
+  return `npx tsx scripts/shorts-corte-timer.ts --corte ${slug} --clear-sending ${destination}`;
+}
+
+/**
+ * #11985: `--clear-sending DEST` — apaga a marca "envio em curso" de DEST em
+ * todos os arquivos de marcas do corte, depois de o editor conferir na conta
+ * que o envio interrompido não saiu. Não publica nada. Devolve o exit code.
+ */
+export function clearCorteSending(dir: string, destination: string, log: (line: string) => void = console.log): number {
+  const specPath = join(dir, CORTE_SPEC_FILE);
+  const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
+  const removed = clearShortSendingAll(dir, spec.date, destination);
+  log(
+    removed
+      ? `${LOG_PREFIX} ${spec.slug}: ${removed} marca(s) de envio de ${destination} apagada(s); a próxima execução do timer publica o destino se ele seguir pendente e autorizado`
+      : `${LOG_PREFIX} ${spec.slug}: nenhuma marca de envio de ${destination} — nada a liberar`,
+  );
+  return 0;
 }
 
 /**
@@ -698,11 +787,37 @@ async function main(): Promise<number> {
   const dryRun = flags.has("dry-run");
   const cortesDir = join(ROOT, CORTES_REL_DIR);
   const only = values["corte"];
-  const dirs = listCorteDirs(cortesDir).filter((d) => !only || basename(d) === only);
-  if (only && !dirs.length) {
-    console.error(`uso: shorts-corte-timer.ts [--corte SLUG] [--dry-run] — corte "${only}" sem ${CORTE_SPEC_FILE} em ${cortesDir}`);
+  const clearDest = values["clear-sending"];
+  // `--clear-sending` sem valor vira flag no parseArgs: nunca cai na execução normal (publicaria).
+  if (flags.has("clear-sending") || (clearDest !== undefined && (!only || !clearDest))) {
+    console.error("uso: shorts-corte-timer.ts --corte SLUG --clear-sending DESTINO — libera o destino preso por marca de envio sem desfecho (#11985)");
     return 2;
   }
+  const dirs = listCorteDirs(cortesDir).filter((d) => !only || basename(d) === only);
+  if (only && !dirs.length) {
+    console.error(`uso: shorts-corte-timer.ts [--corte SLUG] [--dry-run] [--clear-sending DESTINO] — corte "${only}" sem ${CORTE_SPEC_FILE} em ${cortesDir}`);
+    return 2;
+  }
+  // #11985: só apaga a marca (o editor conferiu a conta); não publica, não grava heartbeat.
+  if (clearDest !== undefined) return clearCorteSending(dirs[0], clearDest);
+  // #11986: sinal de vida no início e no fim; a vigia dos cortes e a rodada manual leem.
+  const beat = (phase: "start" | "end") => {
+    if (dryRun) return;
+    try {
+      writeCorteTimerHeartbeat(cortesDir, new Date(), phase);
+    } catch (e) {
+      console.error(`${LOG_PREFIX} heartbeat (${phase}) não gravado: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  beat("start");
+  try {
+    return await runCortes(dirs, cortesDir, dryRun);
+  } finally {
+    beat("end");
+  }
+}
+
+async function runCortes(dirs: string[], cortesDir: string, dryRun: boolean): Promise<number> {
   if (!dirs.length) {
     console.log(`${LOG_PREFIX} nenhum corte em ${cortesDir} — nada a fazer`);
     return 0;
