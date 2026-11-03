@@ -233,8 +233,8 @@ export function stripRecomendacaoDiariaBlock(sectionBody: string): string {
 /**
  * Preprocessa `draft.md` (o MESMO arquivo usado pelo envio Clarice) pra
  * variante Beehiiv (#4482, decisão 3): remove por inteiro as seções
- * `APRESENTAÇÃO`/`CLARICE — *` (sem substituição), os boxes `DIVULGAÇÃO` e
- * `LIVROS` (#11806, `isApoiadoresExcludedBox`) e o box "Recomendação da
+ * `APRESENTAÇÃO`/`CLARICE — *` (sem substituição), os boxes `DIVULGAÇÃO`,
+ * `LIVROS` e `CADASTRO` (#11806/#12040, `isApoiadoresExcludedBox`) e o box "Recomendação da
  * equipe da Clarice" quando colado dentro de outra seção (ex.: entre
  * destaques). Reusa `splitByLabels`/`normalizeLabel` de `monthly-render.ts`
  * — mesmo parser que `draftToEmail` usa internamente, então o resultado

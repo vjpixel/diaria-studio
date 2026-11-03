@@ -528,8 +528,9 @@ Rodar em foreground com `--detach` (nunca em background nem com `&`, #9686 — m
 **Checar `livros_promo` no manifest (#7862).** `monthly-preview-cloudflare.ts` já loga `warn: 04-livros-promo.jpg ausente` no stderr quando a captura (Chrome, roda só no `neo`) não rodou pro ciclo — mas esse warning saía só no log do script, DEPOIS do ponto em que o editor aprovaria o gate, então passava batido (2 ciclos seguidos, 2607-08 e 2608-09). Extrair pro banner do gate (4e) em vez de deixar só no log:
 ```bash
 LIVROS_PROMO_PRESENT=$(node -e "try{const j=JSON.parse(require('fs').readFileSync('data/monthly/$CYCLE/_internal/public-images.json','utf8'));console.log(j.images && j.images.livros_promo ? '1':'0')}catch(e){console.log('0')}")
+LIVROS_IN_DRAFT=$(grep -cE '^\**LIVROS\**\s*$' data/monthly/$CYCLE/draft.md)
 ```
-`LIVROS_PROMO_PRESENT=0` alimenta o item de aviso do resumo consolidado (4e) — nunca bloqueia (o box degrada com elegância pra só-texto, título/descrição/link intactos, sem `<img>` quebrado). Desde o #12040 o template emite `**CADASTRO**` no lugar do `**LIVROS**`: o aviso só vale para draft que ainda tenha `**LIVROS**` (ciclo antigo ou colado à mão).
+`LIVROS_PROMO_PRESENT=0` alimenta o item de aviso do resumo consolidado (4e) — nunca bloqueia (o box degrada com elegância pra só-texto, título/descrição/link intactos, sem `<img>` quebrado). Desde o #12040 o template emite `**CADASTRO**` no lugar do `**LIVROS**`: o aviso só vale quando `LIVROS_IN_DRAFT` > 0 (ciclo antigo ou box colado à mão).
 
 ### 4c. Lint do draft (sumarizado)
 
@@ -604,7 +605,7 @@ Fact-check (_internal/04-fact-check.json):
 [se Etapa 3 sinalizou selection == "fallback_last" — #5321, aviso repetido aqui já que a Etapa 3 não pausa mais]
 ⚠️ É IA? do recap: NENHUMA edição do mês teve poll elegível — usando o último dia ({EAI_EDITION}) por fallback. Motivo: {reason}. Responda "trocar-eia AAMMDD" pra escolher outra edição manualmente.
 
-[se o draft tem `**LIVROS**` e LIVROS_PROMO_PRESENT != "1" — #7862, #12040]
+[se LIVROS_IN_DRAFT > 0 e LIVROS_PROMO_PRESENT != "1" — #7862, #12040]
 ⚠️ Box LIVROS sem imagem — 04-livros-promo.jpg ausente/não capturado neste ciclo (`scripts/capture-livros-promo.ts`, requer Chrome, roda só no `neo`). O box sai só-texto (título/descrição/link intactos, sem `<img>` quebrado) — nunca bloqueia o envio. Rodar a captura manualmente antes do gate se quiser a imagem neste ciclo.
 
 [se CLARICE_TUTORIAL_STATUS == "ok" — #11836]

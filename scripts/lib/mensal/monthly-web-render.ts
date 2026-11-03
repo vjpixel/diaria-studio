@@ -306,7 +306,8 @@ export function draftToWebArticle(input: MonthlyWebRenderInput): { subject: stri
           break;
         case "cadastro":
           // #12040: a página passa por `filterDraftForApoiadores`, que corta o
-          // box; este case só mantém o dispatch igual ao do e-mail.
+          // box; este case só evita que um draft não filtrado caia no fallback.
+          // O botão aqui sai com a posição `cta` do `renderCtaWeb`, não `box-cadastro`.
           parts.push(renderBoxWeb(chunk, CADASTRO_BOX_KICKER));
           break;
         case "livro":

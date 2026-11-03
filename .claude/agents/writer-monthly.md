@@ -85,7 +85,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
    Você recebe esta curadoria uma vez por mês. Se quiser mais, a diar.ia.br, que produz esta newsletter conosco, publica uma edição diária e gratuita: 5 minutos para se manter atualizado e usar melhor as IAs. É só se cadastrar no site.
 
-   → [Assinar a edição diária](https://diar.ia.br/)
+   → [Assinar a edição diária](https://diar.ia.br/?utm_source=clarice)
    ```
    Após D3 e antes de USE MELHOR, emitir CLARICE — TUTORIAL. **Com `clarice_tutorial_path` (#11836)**, ler o JSON e montar a seção com ele, nesta forma (mesmo formato dos ciclos 2609-10 e 2610-11):
    ```

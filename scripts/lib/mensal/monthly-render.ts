@@ -756,8 +756,8 @@ export function renderCtaButton(line: string, posicao = "cta"): string {
   const cta = parseCtaLine(line);
   if ("text" in cta) return `<p style="margin:16px 0 0 0;font-family:${FONT_SANS};color:${INK};">${renderInline(cta.text)}</p>`;
   // #2975: CTA pro host de marca também ganha UTM clarice (#4040: posição `cta`).
-  // #12040: `posicao` própria pro box CADASTRO — com `cta` ele somaria cliques
-  // no mesmo `utm_campaign` dos botões de LIVROS/DIVULGAÇÃO.
+  // #12040: `posicao` própria pro box CADASTRO — `-cta` foi o botão do LIVROS
+  // nos ciclos anteriores, e reusar o mesmo `utm_campaign` misturaria as séries.
   const url = normalizeKnownUrl(cta.rawUrl, posicao);
   const { label } = cta;
   // Botão CTA (decisão final do editor 2026-06-09): pill "contorno" — fundo
@@ -905,8 +905,9 @@ export const CADASTRO_CTA_POSICAO = "box-cadastro";
 /**
  * Box CADASTRO (#12040, decisão do editor 03/11/2026): convite para assinar a
  * diária no espaço que era do box LIVROS. A Clarice News não tem espaço
- * livre, então a chamada entrou NO LUGAR do LIVROS (4 cliques na onda de
- * 03/11, destino repetido nas pílulas do rodapé), nunca como bloco a mais.
+ * livre, então a chamada entrou NO LUGAR do LIVROS, nunca como bloco a mais.
+ * O LIVROS foi o escolhido por ter 4 cliques na onda de 03/11 e destino
+ * repetido nas pílulas do rodapé.
  * Sem imagem, e com posição UTM própria pra medir o botão separado dos
  * demais CTAs.
  */

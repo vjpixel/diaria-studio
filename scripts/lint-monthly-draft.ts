@@ -21,7 +21,7 @@
  * #2818 (self-review finding 1): o guardrail crítico acima só cobre o
  * subconjunto de labels que causa zero-imagem/zero-seção se perdido. Um
  * segundo check (`checkOptionalSectionIntegrity`) generaliza pros labels
- * OPCIONAIS (CLARICE —, LIVROS, PREVIEW, REMETENTE,
+ * OPCIONAIS (CLARICE —, LIVROS, CADASTRO, PREVIEW, REMETENTE,
  * LABORATÓRIO CLARICE, OUTRAS NOTÍCIAS DO MÊS): se PRESENTES no draft,
  * exige que sejam reconhecidos como seção — sem exigir presença.
  *
@@ -100,7 +100,7 @@ export function checkSectionIntegrity(draft: string): SectionIntegrityResult {
 
 /**
  * Labels OPCIONAIS — podem faltar em drafts legítimos (CLARICE é mensal e às
- * vezes omitida, LIVROS é um box promocional opcional, PREVIEW/REMETENTE só
+ * vezes omitida, LIVROS/CADASTRO são boxes promocionais opcionais, PREVIEW/REMETENTE só
  * existem no header, LABORATÓRIO CLARICE nem sempre roda). Diferente de
  * REQUIRED_SECTION_CHECKS, a AUSÊNCIA aqui nunca é falha.
  *

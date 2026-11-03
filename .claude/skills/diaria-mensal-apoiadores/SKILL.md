@@ -39,7 +39,8 @@ qualquer publicação e **state por canal** pra retomar com segurança.
 Reusa o MESMO `draft.md` que vai pra Clarice, trocando só a AUDIÊNCIA (tag
 `kit_apoiadores.audience_tag`) e removendo o conteúdo Clarice-only e os boxes
 `DIVULGAÇÃO` e `LIVROS` (#11806, decisão do editor 01/11/2026: quem paga pela
-retrospectiva não recebe anúncio). O corte é `filterDraftForApoiadores`, o
+retrospectiva não recebe anúncio), além do `CADASTRO` (#12040: apoiador já
+recebe a diária). O corte é `filterDraftForApoiadores`, o
 mesmo filtro da página e do e-mail; o envio Clarice segue com os dois boxes.
 
 > **Histórico do canal de e-mail (#7655):** o envio de 04/08/2026 (ciclo
