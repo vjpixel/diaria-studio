@@ -26,6 +26,9 @@
 import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { appendFileWithRetry } from "./lib/source-runs.ts";
+import { recordUnitTimeline } from "./lib/overnight-unit-timeline.ts";
+import { readPlanJson } from "./lib/plan-safe-backup.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 
 type Level = "info" | "warn" | "error";
 
@@ -110,6 +113,27 @@ const event: LogEvent = {
 };
 
 const logPath = getLogPath();
+// Lifecycle events already emitted by the coordinator also persist the timeline.
+// Never create a plan or infer the round from the current date (#12011).
+if ((event.agent === "overnight" || event.agent === "develop") &&
+    event.edition && /^\d{6}[a-z0-9-]*$/i.test(event.edition) &&
+    details && typeof details === "object" && !Array.isArray(details)) {
+  const d = details as Record<string, unknown>;
+  const name = event.message === "fix_iteration" && Number.isInteger(d.tentativa) && Number(d.tentativa) > 0
+    ? `fix_iteration_${d.tentativa}` : event.message;
+  if (/^(dispatch|pr_opened|ci_green|merged|draft|pulada|fix_iteration_[1-9]\d*)$/.test(name) &&
+      Array.isArray(d.issues) && d.issues.every((id) => typeof id === "number" || typeof id === "string")) {
+    const planPath = resolve(process.cwd(), "data", event.agent, event.edition, "plan.json");
+    try {
+      const read = readPlanJson(planPath);
+      if (read.status !== "ok") throw new Error(read.message);
+      const next = recordUnitTimeline(read.plan as Record<string, unknown>, d.issues, name, event.timestamp);
+      if (JSON.stringify(next) !== JSON.stringify(read.plan)) writeFileAtomic(planPath, JSON.stringify(next, null, 2) + "\n");
+    } catch (err) {
+      console.warn(`[log-event] timeline não persistida: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
 mkdirSync(dirname(logPath), { recursive: true });
 // #8634: retry curto com backoff (3x) no append — OneDrive Files On-Demand
 // pode retornar UNKNOWN (errno=-4094)/EPERM/EBUSY/EACCES quando o sync agent

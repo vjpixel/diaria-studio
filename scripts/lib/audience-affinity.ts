@@ -413,7 +413,7 @@ const RE_CONSUMER_TOOL = /\b(notebooklm|notebook lm|gemini|chatgpt|chat gpt|clau
  * `guide` foi adicionado: equivalente EN de `guia` — sem ele, tutoriais EN eram sistematicamente
  * menos prováveis de atingir o threshold vs PT-BR equivalentes.
  */
-const RE_CLOSED_SCOPE = /\b(guia|guia pratico|guia prático|tutorial|guide|quickstart|getting started|mini[- ]?curso|introdução|introducao|iniciante|para iniciantes|beginners?|primeiros passos|hello[- ]world|hands[- ]?on|pratica|prática|exercicio|exercício)\b/i;
+const RE_CLOSED_SCOPE = /\b(guia|guia pratico|guia prático|tutorial|guide|quickstart|getting started|mini[- ]?curso|introdução|introducao|iniciante|para iniciantes|beginners?|primeiros passos|hello[- ]world|hands[- ]?on|pratica|prática|exercicio|exercício)(?![\p{L}\p{N}_])/iu;
 
 /** Regex de idioma PT-BR explícito no conteúdo ou origem.
  * `\.com\.br\/` substituído por `\.com\.br\b` — a versão anterior exigia path component

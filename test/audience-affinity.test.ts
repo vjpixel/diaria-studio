@@ -932,3 +932,24 @@ describe("detectHandsOnShort — regressões pass2 (#2143 pass2)", () => {
       "'2 hours' deve detectar time_estimate");
   });
 });
+
+describe("#11855: fronteira Unicode de closed_scope", () => {
+  it("não trata guia seguido de letra acentuada como palavra completa", () => {
+    for (const article of [
+      { title: "guiaé em 5 minutos" },
+      { summary: "guiaé em 5 minutos" },
+    ]) {
+      const result = detectHandsOnShort(article);
+      assert.deepEqual(result.signals, ["time_estimate"]);
+      assert.equal(result.isHandsOn, false);
+    }
+  });
+
+  it("mantém palavras completas acentuadas seguidas de pontuação", () => {
+    for (const word of ["guia prático", "introdução", "exercício"]) {
+      const result = detectHandsOnShort({ title: `${word}: em 5 minutos` });
+      assert.deepEqual(result.signals, ["time_estimate", "closed_scope"]);
+      assert.equal(result.isHandsOn, true);
+    }
+  });
+});

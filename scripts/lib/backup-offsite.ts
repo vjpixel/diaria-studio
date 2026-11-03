@@ -78,12 +78,24 @@ export function dateFromOffsiteKey(key: string): string | null {
 /** Credencial S3 do bucket de backup (sem a chave de cifra). */
 export const BACKUP_OFFSITE_ACCESS_ENV = ["R2_ACCOUNT_ID", "R2_BACKUP_ACCESS_KEY_ID", "R2_BACKUP_SECRET_ACCESS_KEY"] as const;
 
-export type OffsiteAccessResult = { ready: true; access: R2BucketAccess } | { ready: false; missing: string[] };
+/**
+ * Lista com ao menos um item (#11961): "não pronto" sem motivo, ou "sem
+ * credencial" sem dizer qual, é estado que o tipo não deixa montar.
+ */
+export type NonEmptyList<T> = [T, ...T[]];
+
+/** Type guard de `NonEmptyList`. */
+export function isNonEmptyList<T>(xs: T[]): xs is NonEmptyList<T> {
+  return xs.length > 0;
+}
+
+/** `ready: false` sempre diz qual variável falta (#11961). */
+export type OffsiteAccessResult = { ready: true; access: R2BucketAccess } | { ready: false; missing: NonEmptyList<string> };
 
 /** Credencial de acesso ao bucket (listar/ler/gravar). Não exige a chave de cifra. */
 export function loadOffsiteAccess(env: Record<string, string | undefined>): OffsiteAccessResult {
-  const missing = BACKUP_OFFSITE_ACCESS_ENV.filter((n) => !env[n]?.trim());
-  if (missing.length) return { ready: false, missing: [...missing] };
+  const missing: string[] = BACKUP_OFFSITE_ACCESS_ENV.filter((n) => !env[n]?.trim());
+  if (isNonEmptyList(missing)) return { ready: false, missing };
   return {
     ready: true,
     access: {
@@ -99,11 +111,14 @@ export function loadOffsiteAccess(env: Record<string, string | undefined>): Offs
  * `missing` = nomes de variável ausentes (vazias); `invalid` = motivo de uma
  * variável presente mas malformada (hoje só a chave de cifra), nunca o valor
  * (#11961: antes os dois iam juntos em `missing`, e "ausente" e "malformada"
- * pedem ações diferentes). `ready: false` sempre tem ao menos um dos dois.
+ * pedem ações diferentes). `ready: false` sempre tem ao menos um dos dois, e
+ * é o tipo que garante: um `ready: false` com as duas listas vazias não
+ * compila.
  */
 export type OffsiteConfigResult =
   | { ready: true; access: R2BucketAccess; key: BackupKey }
-  | { ready: false; missing: string[]; invalid: string[] };
+  | { ready: false; missing: NonEmptyList<string>; invalid: string[] }
+  | { ready: false; missing: string[]; invalid: NonEmptyList<string> };
 
 /** Linha única dos problemas de `OffsiteConfigResult` não pronto, pro log/alarme. */
 export function describeOffsiteConfigProblems(r: { missing: readonly string[]; invalid: readonly string[] }): string {
@@ -132,8 +147,12 @@ export function loadOffsiteConfig(env: Record<string, string | undefined>, keyEn
       invalid.push((e as Error).message);
     }
   }
-  if (!acc.ready || !key) return { ready: false, missing, invalid };
-  return { ready: true, access: acc.access, key };
+  if (acc.ready && key) return { ready: true, access: acc.access, key };
+  if (isNonEmptyList(missing)) return { ready: false, missing, invalid };
+  if (isNonEmptyList(invalid)) return { ready: false, missing, invalid };
+  // Inalcançável: acesso não pronto já pôs nomes em `missing`, e chave nula
+  // veio de `missing.push(keyEnv)` ou de `invalid.push(...)`.
+  throw new Error("loadOffsiteConfig: configuração não pronta sem motivo (bug)");
 }
 
 // ---------------------------------------------------------------------------
@@ -448,9 +467,12 @@ export type RemotePrefixStatus =
   | { kind: OffsiteKind; verdict: "missing"; latestKey: null; ageDays: null }
   | { kind: OffsiteKind; verdict: "error"; latestKey: null; ageDays: null; error: string };
 
-/** `ok` e `fingerprint` casados (#11961): ok ⇔ fingerprint null. */
+/**
+ * `ok` e `fingerprint` casados (#11961): ok ⇔ fingerprint null.
+ * `configured: false` sempre nomeia a variável que falta.
+ */
 export type RemoteOffsiteEvaluation =
-  | { configured: false; missing: string[]; ok: false; fingerprint: string; prefixes: [] }
+  | { configured: false; missing: NonEmptyList<string>; ok: false; fingerprint: string; prefixes: [] }
   | { configured: true; ok: true; fingerprint: null; prefixes: RemotePrefixStatus[] }
   | { configured: true; ok: false; fingerprint: string; prefixes: RemotePrefixStatus[] };
 

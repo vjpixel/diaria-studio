@@ -297,7 +297,8 @@ import {
   type ShortsRegistryWriter,
 } from "./lib/diaria/shorts-published-store.ts";
 import { clearShortSending, markShortSending } from "./lib/diaria/shorts-sending-marker.ts";
-import { acquireTimerLock } from "./lib/diaria/timer-lock.ts";
+import { acquireTimerLock, TIMER_LOCK_HEARTBEAT_MS } from "./lib/diaria/timer-lock.ts";
+import { corteTimerHeartbeatStale, describeCorteTimerHeartbeat, readCorteTimerHeartbeat, type CorteTimerHeartbeat } from "./lib/diaria/corte-timer-heartbeat.ts";
 import {
   buildYouTubeInsertRequest,
   buildYouTubeTags,
@@ -796,6 +797,13 @@ export interface ShortsPlanInput {
   corteOutside?: { dir: string; warning: string };
   /** #11911: modo edição com `--edition-dir` fora da pasta canônica aceito por `--allow-unwatched-dir`: entra em `warnings`. */
   unwatchedEditionWarning?: string;
+  /**
+   * #11986: heartbeat do timer do corte (`readCorteTimerHeartbeat`). Presente e
+   * velho com destinos entregues ao timer = aviso em `warnings` (o timer pode
+   * estar parado e nada publicar esses destinos). Ausente (testes, filho do
+   * timer) = sem conferência.
+   */
+  corteTimerHeartbeat?: CorteTimerHeartbeat;
 }
 
 /**
@@ -878,6 +886,14 @@ export function ownersContextAfterPublish(input: {
         ? { editionDirOverride: input.editionDirOverride }
         : {}),
   };
+}
+
+/** Puro (#11986): aviso da rodada que entrega destinos a um timer do corte sem execução recente. */
+export function corteTimerStaleWarning(delegated: readonly string[], hb: CorteTimerHeartbeat, now: Date): string {
+  return (
+    `timer do corte (${CORTE_TIMER_TASK}) sem execução recente — ${describeCorteTimerHeartbeat(hb, now)}: ${delegated.join(", ")} ficam com ele e não saem se ele estiver parado (desarmado ou 300 fora do ar). ` +
+    "Confira a task no 300 antes de contar com o timer; a vigia dos cortes no 300 alarma por e-mail se o horário passar com ele parado (#11986)"
+  );
 }
 
 /** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */
@@ -1431,6 +1447,13 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // #11547: o que cada destino faz com a capa (Still) — ver scripts/lib/diaria/short-cover.ts.
   const coverCtx = { coverPath: input.coverPath ?? null, coverUploadReady: input.coverUploadReady === true, bufferOffsetMs: input.coverBufferOffsetMs ?? null };
   const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination, planCoverDestination(i, coverCtx)])) };
+  // #11986: delegar a um timer parado deixa os destinos sem sair por até 3 h, sem alarme do timer.
+  if (corteTimer && input.corteTimerHeartbeat && corteTimerHeartbeatStale(input.corteTimerHeartbeat, input.now)) {
+    const delegated = items
+      .filter((i) => CORTE_TIMER_DESTINATIONS.includes(i.destination) && (i.action === "skip_delegated" || i.action === "pending_schedule"))
+      .map((i) => i.destination);
+    if (delegated.length) warnings.push(corteTimerStaleWarning(delegated, input.corteTimerHeartbeat, input.now));
+  }
   // #11944: a regra de dono mora só em `ownersContextAfterPublish` (o recálculo depois do publish usa a mesma).
   const owners = assignShortsDestinationOwners(
     items,
@@ -4579,6 +4602,8 @@ async function main(): Promise<number> {
       ...(editionDirOverride !== undefined ? { editionDirOverride } : {}),
       ...(unwatchedEditionWarning !== undefined ? { unwatchedEditionWarning } : {}),
       ...(corteOutside ? { corteOutside } : {}),
+      // #11986: a rodada manual confere se o timer do corte, a quem entrega destinos, está vivo.
+      ...(corte && !requireCorteAuth ? { corteTimerHeartbeat: readCorteTimerHeartbeat(join(ROOT, CORTES_REL_DIR)) } : {}),
       now: new Date(),
       config,
       pages,
@@ -4717,7 +4742,7 @@ async function main(): Promise<number> {
   if (corte && corteLockDests.length) {
     let rel: (() => void) | null = null;
     try {
-      rel = acquireTimerLock(join(dir, CORTE_TIMER_LOCK_FILE));
+      rel = acquireTimerLock(join(dir, CORTE_TIMER_LOCK_FILE), Date.now(), { heartbeatMs: TIMER_LOCK_HEARTBEAT_MS }); // #12005: rodada sem teto renova o lock
     } catch (e) {
       corteLockBusy = `lock do timer do corte não tomado (${(e as Error).message}): nada enviado neste destino para não duplicar o post com o timer (#12001)`;
     }

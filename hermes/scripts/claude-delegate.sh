@@ -617,7 +617,12 @@ for MODEL in "${MODELS[@]}"; do
     # detectar trabalho parcial (branch/commit/worktree/PR) se o codex
     # falhar no meio — ver o ABORT com exit 95 mais abaixo.
     CODEX_LANE_STATE_BEFORE=$(codex_lane_snapshot_state "$CWD")
-    OUT=$(printf '%s' "$PROMPT" | codex_lane_run "$TIMEOUT" "$CWD" "$ATTEMPT_LOG")
+    # #12012: `exit "${PIPESTATUS[1]}"` — o rc da tentativa é o do processo
+    # do modelo, nunca o do `printf` que alimenta o prompt. Com `pipefail`,
+    # um processo que sai sem ler o stdin inteiro deixava o `printf` com
+    # SIGPIPE e o pipeline devolvia 141 mesmo com a resposta no stdout
+    # (flake do teste "e2e: spend cap do workspace", CI da PR #11938).
+    OUT=$(printf '%s' "$PROMPT" | codex_lane_run "$TIMEOUT" "$CWD" "$ATTEMPT_LOG"; exit "${PIPESTATUS[1]}")
   elif is_subscription_lane_model "$MODEL"; then
     # #7649: elo final de assinatura claude.ai. SEM nenhuma das 8 vars de
     # auth/gateway (ANTHROPIC_*, CLAUDE_CODE_USE_BEDROCK/VERTEX) — `unset`
@@ -669,7 +674,7 @@ for MODEL in "${MODELS[@]}"; do
         --model "$SUBSCRIPTION_LANE_CLAUDE_MODEL" \
         --allowedTools "$TOOLS" \
         ${ATTEMPT_EFFORT:+--effort "$ATTEMPT_EFFORT"} 2> "$ATTEMPT_LOG"
-    ))
+    ); exit "${PIPESTATUS[1]}")  # #12012: rc do claude, não do printf (ver ramo codex acima)
   else
     OUT=$(printf '%s' "$PROMPT" | (
       export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
@@ -691,7 +696,7 @@ for MODEL in "${MODELS[@]}"; do
         --allowedTools "$TOOLS" \
         --max-budget-usd "$BUDGET" \
         ${EFFORT:+--effort "$EFFORT"} 2> "$ATTEMPT_LOG"
-    ))
+    ); exit "${PIPESTATUS[1]}")  # #12012: rc do claude, não do printf (ver ramo codex acima)
   fi
   RC=$?
   ATTEMPT_DURATION_S=$(( $(date +%s) - ATTEMPT_START_TS ))

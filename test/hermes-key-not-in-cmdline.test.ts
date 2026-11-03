@@ -145,7 +145,9 @@ describe("claude-delegate.sh — chave fora do cmdline (#6718)", () => {
     }
     const iClaude = lines.slice(iExport).findIndex((l) => l.includes("claude -p"));
     const iClaudeAbs = iClaude >= 0 ? iExport + iClaude : -1;
-    const iClose = lines.findIndex((l, i) => i > iSub && l.trim() === "))");
+    // #12012: o fechamento passou a ser `); exit "${PIPESTATUS[1]}")` (rc do
+    // claude, não do printf do prompt); `))` puro segue aceito.
+    const iClose = lines.findIndex((l, i) => i > iSub && /^\)(?:; exit "\$\{PIPESTATUS\[1\]\}")?\)$/.test(l.trim()));
     const iRc = lines.findIndex((l) => l.trim() === "RC=$?");
     assert.ok(iSub >= 0, "subshell do OUT=$(printf ... | ( não encontrado ANTES do export — a estrutura do fix #6718 mudou");
     assert.ok(iExport > iSub, "ANTHROPIC_AUTH_TOKEN exportado FORA do bloco do wrapper: se este trecho for colado/fonteado num shell interativo (o padrão do incidente #5608), a var sequestra sessões da assinatura claude.ai — o export tem que ficar dentro do subshell do OUT=$(...)");

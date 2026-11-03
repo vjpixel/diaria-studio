@@ -126,6 +126,8 @@ export const KNOWN_MCP_PREFIXES = [
   "mcp__claude_ai_Beehiiv__",
   "mcp__claude_ai_Gmail__",
   "mcp__claude_ai_Buffer__",
+  // #11836: a Etapa 2a-2 do /diaria-mensal lê o Doc "Laboratório Clarice".
+  "mcp__claude_ai_Google_Docs__",
 ] as const;
 
 // A claude.ai connector id looks like a raw UUID segment

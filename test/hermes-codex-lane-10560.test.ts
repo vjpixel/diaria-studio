@@ -216,9 +216,9 @@ function writeSessionFile(id = "hermes-cron-test-20261019T000000Z") {
   return id;
 }
 
-function runWrapper(env: NodeJS.ProcessEnv, args: string[] = [], cwd = repo) {
+function runWrapper(env: NodeJS.ProcessEnv, args: string[] = [], cwd = repo, input = "implemente a issue de teste") {
   return spawnSync("bash", [WRAPPER, "--cwd", cwd, "--timeout", "20", ...args], {
-    input: "implemente a issue de teste",
+    input,
     encoding: "utf8",
     env,
     timeout: 60_000,
@@ -736,6 +736,60 @@ describe("#10560 — stderr real de cota esgotada (codex-rs rust-v0.159.1)", () 
     );
     assert.equal(r.status, 95, r.stderr);
     assert.ok(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")), "marcador de cota não gravado");
+  });
+});
+
+// #12012: o flake do "e2e: spend cap do workspace" (CI da PR #11938) era o
+// elo `sonnet` saindo rc=141 com a resposta já no stdout. O fake `claude`
+// deste arquivo não lê o stdin; se ele sai antes de o `printf` que alimenta o
+// prompt terminar de escrever, o `printf` leva SIGPIPE e, com `pipefail`, o rc
+// do pipeline virava 141 — a tentativa era dada como falha, e a cadeia
+// terminava em "todos os modelos falharam". Com o prompt curto do teste isso
+// depende de escalonamento (raro); com um prompt maior que o buffer do pipe
+// (64 KiB no Linux) o `printf` ainda está escrevendo quando o processo sai,
+// em toda execução. O claude real também pode sair sem ler o stdin inteiro
+// (erro de flag, preflight), e o rc que vale é o dele, não o do alimentador.
+describe("#12012 — rc da tentativa é o do processo do modelo, não o do printf do prompt", { skip: SKIP_WIN32 }, () => {
+  const BIG_PROMPT = "x".repeat(512 * 1024);
+
+  it("elo de assinatura: prompt maior que o buffer do pipe + claude que não lê stdin → sucesso, sem rc=141", () => {
+    writeSessionFile();
+    const r = runWrapper(wrapperEnv(), [], repo, BIG_PROMPT);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /resposta fake claude/);
+    assert.doesNotMatch(r.stderr, /rc=141/);
+  });
+
+  it("e2e spend cap com prompt grande: codex cai por cota e o sonnet responde", () => {
+    writeSessionFile();
+    const f = join(runTmp, "codex-stderr.txt");
+    writeFileSync(f, upstreamStderr(UPSTREAM_SPEND_CAP, { transcript: true }), "utf8");
+    const r = runWrapper(
+      wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "stderr-file", CODEX_STUB_STDERR_FILE: f }),
+      [],
+      repo,
+      BIG_PROMPT,
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /resposta fake claude/);
+    assert.match(r.stderr, /falhou model=codex:gpt-6\.1-sol rc=1: RATE-LIMIT\/QUOTA/);
+    assert.doesNotMatch(r.stderr, /rc=141/);
+  });
+
+  it("o rc real do processo continua passando: claude que falha sem ler stdin não vira sucesso", () => {
+    writeSessionFile();
+    const failBin = join(runTmp, "fail-bin");
+    mkdirSync(failBin);
+    writeFileSync(
+      join(failBin, "claude"),
+      ['#!/usr/bin/env bash', 'if [ "$1" = "--version" ]; then echo "1.0.0 (fake)"; exit 0; fi', 'echo "erro qualquer" >&2', "exit 3", ""].join("\n"),
+    );
+    chmodSync(join(failBin, "claude"), 0o755);
+    const env = wrapperEnv();
+    env.PATH = `${failBin}:${env.PATH}`;
+    const r = runWrapper(env, [], repo, BIG_PROMPT);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /falhou model=sonnet rc=3\b/);
   });
 });
 

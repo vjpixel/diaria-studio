@@ -49,6 +49,15 @@ describe("getDate", () => {
 });
 
 describe("isBrazilianTheme", () => {
+  it("#11855: reconhece Itaú isolado com outra empresa tier 2", () => {
+    for (const title of ["Itaú e Nubank investem em IA", "Nubank anuncia parceria com Itaú."]) {
+      assert.equal(isBrazilianTheme({ title }), true, title);
+    }
+    assert.equal(isBrazilianTheme({ summary: "Itaú-Unibanco e Nubank investem em IA" }), true);
+    assert.equal(isBrazilianTheme({ title: "Itaúzinho e Nubank investem em IA" }), false);
+    assert.equal(isBrazilianTheme({ title: "Itaú investe em IA" }), false);
+  });
+
   it("detecta palavra Brasil", () => {
     assert.ok(isBrazilianTheme({ title: "Brasil lidera em IA na América Latina" }));
   });

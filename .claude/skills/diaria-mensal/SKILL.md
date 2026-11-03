@@ -175,12 +175,29 @@ npx tsx scripts/select-eia-edition.ts --month ${CYCLE:0:4} --cycle $CYCLE --out-
 
 Grava `$SEL_JSON` com o `EiaSelectionResult` completo (`edition`, `selection: "criterion"|"fallback_last"`, `pct_correct`, `total_votes`, `reason`, `fetch_errors` — schema de `scripts/select-eia-edition.ts`). Nunca bloqueia: `select-eia-edition.ts` sempre grava algo mesmo em fallback (#2869). A Etapa 3 reusa este mesmo arquivo (não recalcula) pra garantir que texto e imagem do É IA? apontem pra a MESMA edição.
 
+### 2a-2. CLARICE — TUTORIAL do Doc "Laboratório Clarice" (#11836)
+
+1. Ler o Doc pelo conector: `mcp__claude_ai_Google_Docs__read_doc` com documentId `1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY`. Gravar o resultado em `data/monthly/$CYCLE/_internal/clarice-laboratorio.json` (o JSON como veio) ou em `.txt` (texto, com `[HEADING_N] ` antes de cada heading).
+2. Escolher e registrar:
+   ```bash
+   npx tsx scripts/clarice-tutorial-next.ts --cycle $CYCLE \
+     --doc-json data/monthly/$CYCLE/_internal/clarice-laboratorio.json \
+     --record --out data/monthly/$CYCLE/_internal/clarice-tutorial.json
+   ```
+   (`--doc-text` no lugar de `--doc-json` se gravou texto.) O script devolve o primeiro tutorial ainda não usado (ordem do Doc) segundo `data/monthly/clarice-tutorial-log.json` (fora do git; `data/` sincroniza entre as máquinas) e grava a entrada do ciclo no log, depois de gravar o `--out`. Rodar de novo no mesmo ciclo devolve o mesmo tutorial, sem avançar a sequência. Toda entrada do log é conferida por número E título contra o Doc.
+3. **Fail-soft, nunca bloqueia a mensal.** Fora do `kind: "tutorial"`, não passar `clarice_tutorial_path`: o writer emite o placeholder e o gate 4 avisa (4e). Guardar o motivo em `CLARICE_TUTORIAL_STATUS` e, em `exit 1`, a linha do stderr (`clarice-tutorial-next [reason]: ...`) em `CLARICE_TUTORIAL_DETAIL`:
+   - `ok`: `kind: "tutorial"`.
+   - `conector-indisponivel`: o `read_doc` falhou.
+   - `esgotado` / `fora-da-lista`: o `kind` do stdout (exit 0).
+   - `exit 1` → o `reason` do stdout: `doc-invalido` (estrutura do Doc mudou), `log-ausente` (o log não existe: nunca recomeça do #1), `log-invalido` (log malformado), `log-diverge-do-doc` (entrada do log não bate com o Doc: Doc reordenado ou reescrito), `io` (leitura/escrita), `uso` (bug de invocação).
+
 Disparar `writer-monthly` via `Agent`:
 - `prioritized_path = data/monthly/$CYCLE/prioritized.md`
 - `raw_path = data/monthly/$CYCLE/_internal/raw-destaques.json`
 - `out_path = data/monthly/$CYCLE/draft.md`
 - `yymm = ${CYCLE:0:4}`
 - `eia_selection_path = data/monthly/$CYCLE/_internal/02-eia-selection.json` (#2904 — seleção autoritativa do É IA?, gerada no passo 2a acima; substitui a instrução stale de ler `poll_id` de `eia-used.json`)
+- `clarice_tutorial_path = data/monthly/$CYCLE/_internal/clarice-tutorial.json` — só quando o passo 2a-2 terminou com `kind: "tutorial"` (#11836); senão omitir, e o writer emite o placeholder.
 
 O agente escreve `draft.md` + gera `_internal/02-d1-prompt.md` (prompt Van Gogh impasto do D1 para Etapa 3).
 
@@ -590,11 +607,36 @@ Fact-check (_internal/04-fact-check.json):
 [se LIVROS_PROMO_PRESENT != "1" — #7862]
 ⚠️ Box LIVROS sem imagem — 04-livros-promo.jpg ausente/não capturado neste ciclo (`scripts/capture-livros-promo.ts`, requer Chrome, roda só no `neo`). O box sai só-texto (título/descrição/link intactos, sem `<img>` quebrado) — nunca bloqueia o envio. Rodar a captura manualmente antes do gate se quiser a imagem neste ciclo.
 
-⚠️  Seção CLARICE — TUTORIAL é PLACEHOLDER ([Placeholder — inserir aqui...]):
-    preencher com o próximo tutorial do Doc "Laboratório Clarice" no Drive
-    (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY) — título e passos mudam
-    a cada ciclo — e registrar no Doc qual saiu. O preview acima mostra o
-    placeholder literal. (CLARICE — DIVULGAÇÃO é texto fixo desde #11788.)
+[se CLARICE_TUTORIAL_STATUS == "ok" — #11836]
+CLARICE — TUTORIAL: tutorial #{numero} "{titulo}" do Doc "Laboratório Clarice"
+    (primeiro ainda não usado, ordem do Doc). O log JÁ foi gravado na Etapa 2
+    (data/monthly/clarice-tutorial-log.json). Conferir no preview. Para trocar,
+    editar o draft E a entrada do ciclo {CYCLE} nesse log (número + título do
+    tutorial novo), senão a próxima mensal pula o tutorial errado.
+
+[se CLARICE_TUTORIAL_STATUS == "fora-da-lista"]
+⚠️  CLARICE — TUTORIAL: o ciclo {CYCLE} já está no log com "{entry.titulo}",
+    fora do Doc "Laboratório Clarice"; escrever esse texto no draft no lugar do
+    placeholder (o log não muda).
+
+[se CLARICE_TUTORIAL_STATUS não é "ok" nem "fora-da-lista"]
+⚠️  Seção CLARICE — TUTORIAL é PLACEHOLDER ([Placeholder — inserir aqui...]),
+    motivo: {CLARICE_TUTORIAL_STATUS}{, CLARICE_TUTORIAL_DETAIL se exit 1}.
+    O que fazer, por motivo:
+    - conector-indisponivel / io: reconectar e rodar o passo 2a-2 de novo, ou
+      preencher à mão com o primeiro tutorial ainda não usado (ordem do Doc
+      "Laboratório Clarice", id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY)
+      e acrescentar a entrada do ciclo em data/monthly/clarice-tutorial-log.json.
+    - doc-invalido: a estrutura do Doc mudou (o stderr diz onde); corrigir o
+      Doc ou o parser (scripts/lib/mensal/clarice-tutorial.ts).
+    - log-ausente: data/monthly/clarice-tutorial-log.json sumiu; restaurar
+      (data/ sincroniza entre as máquinas). Nunca recriar vazio: a sequência
+      recomeçaria do #1, que já saiu.
+    - log-invalido / log-diverge-do-doc: corrigir a entrada apontada no stderr
+      (log malformado, ou Doc reordenado/reescrito) e rodar o 2a-2 de novo.
+    - esgotado: os tutoriais do Doc acabaram; escrever um novo no Doc ou
+      decidir o conteúdo.
+    O preview acima mostra o placeholder literal. (CLARICE — DIVULGAÇÃO é texto fixo desde #11788.)
 
 Aprovar? sim / editar / retry
 ```
@@ -761,6 +803,7 @@ Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 - `_internal/raw-destaques.json` — coleta bruta (Etapa 1)
 - `_internal/monthly-clicks.json` — ranking por cliques Use Melhor + Radar (Etapa 1d)
 - `prioritized.md` — destaques aprovados + Use Melhor + Radar (Etapa 1)
+- `_internal/clarice-laboratorio.{json,txt}` + `_internal/clarice-tutorial.json` — Doc "Laboratório Clarice" lido pelo conector e o tutorial escolhido do ciclo (Etapa 2a-2, #11836)
 - `draft.md` — texto final (Etapa 2)
 - `_internal/02-d1-prompt.md` — prompt imagem D1 (Etapa 2)
 - `04-d1-2x1.jpg` + `04-d1-1x1.jpg` — imagem D1 (Etapa 3)
