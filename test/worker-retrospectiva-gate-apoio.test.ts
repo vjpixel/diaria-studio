@@ -227,11 +227,12 @@ describe("handleGet — cenário 4: e-mail ausente/inválido → fail-closed (#3
     assert.match(body, /exclusivo para apoiadores/i);
   });
 
-  it("path sem ciclo (/) → 400, mesmo com e-mail válido", async () => {
+  it("path sem ciclo (/) → índice público (#12032), nunca a edição completa, mesmo com e-mail válido", async () => {
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
     const res = await handleGet(new Request(`https://retrospectiva.diar.ia.br/?email=apoiador10@x.com`), env);
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 200);
+    assert.ok(!(await res.text()).includes(ARTICLE_HTML), "o índice nunca serve conteúdo pago");
   });
 });
 

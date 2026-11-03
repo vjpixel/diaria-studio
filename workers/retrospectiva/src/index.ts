@@ -54,8 +54,8 @@
  *   GET /{path}            → sem `?email=`: trecho + convite (cadastro ou apoio)
  *   GET /{path}?email=...  → passou no gate: edição completa do KV
  *   GET /{path}?entrar=1   → form "já é cadastrado/apoiador? entre com seu e-mail"
- *   GET /                  → 400 (path obrigatório)
- *   GET /sitemap.xml       → paths com trecho publicado
+ *   GET /                  → índice público das retrospectivas publicadas (#12032; era 400)
+ *   GET /sitemap.xml       → índice + paths com trecho publicado
  *   GET /robots.txt        → robots.txt próprio (#4777)
  *   * outros métodos       → 405
  */
@@ -80,10 +80,16 @@ import {
   buildRetrospectivaJsonLd,
   injectRetrospectivaHeadMeta,
 } from "../../../scripts/lib/shared/retrospectiva-seo.ts"; // #7720
+import {
+  RETROSPECTIVA_BASE_URL,
+  RETROSPECTIVAS_PUBLICADAS,
+  injectOutrasRetrospectivasNav,
+  renderRetrospectivaIndexPage,
+} from "../../../scripts/lib/shared/retrospectiva-index.ts"; // #12032
 
 /** Host canônico — usado na `Sitemap:` do robots.txt, no `canonical`/`og:url`
  *  das páginas, e como destino dos redirects (legado e `.workers.dev`). */
-export const RETROSPECTIVA_HOST = "https://retrospectiva.diar.ia.br";
+export const RETROSPECTIVA_HOST = RETROSPECTIVA_BASE_URL;
 
 /** Hosts que este Worker atende SÓ para redirecionar (#7658). */
 export const LEGACY_ANUAL_HOST = "anual.diar.ia.br";
@@ -111,26 +117,21 @@ function htmlResponse(body: string, status = 200): Response {
 }
 
 /**
- * Paths com trecho público, do mais recente para o mais antigo — lista
- * explícita, mesmo racional de antes do #7658: `list()` no KV custaria uma
- * chamada por request de sitemap e traria também paths sem trecho publicado.
- * Acrescentar um path aqui é o que o torna descobrível; publicar o `:teaser`
- * no KV é o que o torna legível — os dois são deliberados.
+ * Paths com trecho público, do mais recente para o mais antigo. Desde o
+ * #12032 a lista mora em `scripts/lib/shared/retrospectiva-index.ts`
+ * (`RETROSPECTIVAS_PUBLICADAS`) e alimenta, além do sitemap, o índice `/`, a
+ * nav "Outras retrospectivas" dos trechos e o bloco na raiz do `arquivo`.
+ * Reexportada com o nome antigo porque a doc das skills e
+ * `verify-retrospectiva-page.ts` citam este nome.
  *
- * Os 4 ciclos mensais aqui são os MESMOS que o `artigo-mensal` já listava
- * (`CICLOS_COM_TRECHO`, #7580), traduzidos pro path novo. A #7658 levanta como
- * pergunta em aberto se o trecho PAGO deve mesmo ser indexado — mas essa
- * decisão já tinha sido tomada no #7580 (e o host já está submetido ao GSC), e
- * uma migração de domínio não é o lugar de revertê-la em silêncio: o que muda
- * aqui é ONDE o conteúdo mora, não o que é indexável. Se o editor decidir tirar
- * o mensal do índice, é uma linha nesta lista.
- *
- * A anual entra quando tiver trecho publicado — hoje nenhuma tem.
+ * O racional de lista explícita (e não `list()` no KV) e da decisão de
+ * indexar o trecho pago (#7580) segue valendo; ver o módulo compartilhado.
  */
-export const PATHS_COM_TRECHO: readonly string[] = ["2608", "2607", "2606", "2605"];
+export const PATHS_COM_TRECHO: readonly string[] = RETROSPECTIVAS_PUBLICADAS;
 
 function buildSitemapXml(): string {
-  const urls = PATHS_COM_TRECHO.map(
+  // #12032: o índice `/` entra no sitemap junto com as edições.
+  const urls = ["", ...PATHS_COM_TRECHO].map(
     (p) => `  <url>
     <loc>${RETROSPECTIVA_HOST}/${p}</loc>
   </url>`,
@@ -244,7 +245,7 @@ async function cadastroTeaserResponse(env: Env, path: string, canonical: string)
   if (!teaser) return htmlResponse(anual.renderNoTeaser(canonical, path));
   try {
     const rendered = anual.renderTeaserWithSignup(teaser, canonical, path);
-    return htmlResponse(injectSeo(rendered, teaser, canonical, true));
+    return htmlResponse(injectOutrasRetrospectivasNav(injectSeo(rendered, teaser, canonical, true), path));
   } catch (e) {
     console.error(`[retrospectiva] trecho presente mas não injetável: ${e instanceof Error ? e.message : e}`);
     return htmlResponse(anual.renderNoTeaser(canonical, path));
@@ -311,7 +312,9 @@ async function apoioTeaserResponse(env: Env, path: string, canonical: string): P
   if (!teaser) return htmlResponse(mensal.renderPaywall(path));
   try {
     const rendered = mensal.renderTeaserWithPaywall(teaser, path);
-    return htmlResponse(injectSeo(rendered, teaser, canonical, false, "#retrospectiva-paywall"));
+    return htmlResponse(
+      injectOutrasRetrospectivasNav(injectSeo(rendered, teaser, canonical, false, "#retrospectiva-paywall"), path),
+    );
   } catch (e) {
     console.error(`[retrospectiva] trecho mensal não injetável: ${e instanceof Error ? e.message : e}`);
     return htmlResponse(mensal.renderPaywall(path));
@@ -359,6 +362,15 @@ async function handleApoio(request: Request, env: Env, classified: Retrospectiva
 
 export async function handleGet(request: Request, env: Env, fetchImpl: typeof fetch = fetch): Promise<Response> {
   const url = new URL(request.url);
+  // #12032: a raiz é o índice público das retrospectivas (era 400). Só a
+  // raiz exata: `?email=`/`?entrar=` aqui não têm edição a que se referir, e
+  // o índice não consulta gate nenhum.
+  if (url.pathname === "/" || url.pathname === "") {
+    return new Response(renderRetrospectivaIndexPage(), {
+      status: 200,
+      headers: { ...HTML_HEADERS, "Cache-Control": "public, max-age=3600" },
+    });
+  }
   const classified = classifyRetrospectivaPath(url.pathname);
 
   if (!classified) {

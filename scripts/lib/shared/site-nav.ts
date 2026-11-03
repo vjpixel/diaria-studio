@@ -94,7 +94,9 @@ function crossHostUrl(base: string, path = ""): string {
  * removida no #8498, evitava linkar pra `retrospectiva.diar.ia.br` pelo mesmo motivo).
  * Implementar o item corretamente exige uma página-índice pública nova em
  * `retrospectiva.diar.ia.br` (ou decisão editorial equivalente) — fora do
- * escopo mecânico desta PR.
+ * escopo mecânico desta PR. Atualização (#12032): o `/` do host passou a ser
+ * esse índice (200, lista derivada de `RETROSPECTIVAS_PUBLICADAS`); o item de
+ * menu em si continua fora, pela questão do gate acima.
  */
 const NAV_ITEM_DEFS: readonly SiteNavItemDef[] = [
   // RELATIVOS (`/archive`, `/apoiar/ir`) — todo consumidor desta nav é servido
