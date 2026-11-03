@@ -1344,7 +1344,13 @@ classifica `develop`, com a mesma precedência de `windows`.
   aplica a mesma checagem de caminho protegido aos redirects). Entregar o
   que estiver fora de `.claude/` com `REFS #N, NÃO CLOSES (escrita em
   .claude/ negada no modo agendado, #11255)` e reportar ao coordenador quais
-  arquivos de `.claude/` faltaram.
+  arquivos de `.claude/` faltaram. Guard mecânico desde o #12009 (overnight
+  261103, unidade #11990: um SKILL.md alterado por script Python no Bash):
+  `.claude/hooks/block-bash-protected-path-write.mjs` (`PreToolUse`/`Bash`,
+  toda sessão) nega redirect, `tee`, `sed -i`/`perl -i`, `cp`/`mv`/`rm`/…,
+  `find -exec`/`xargs` e código de interpretador (`python -c`, heredoc,
+  `node -e`, script em `/tmp`) que tenham caminho protegido como alvo;
+  leitura segue livre. Lista e detecção: `scripts/lib/protected-path-bash-write.mjs`.
 - **Coordenador no modo agendado:** issue que voltou assim (ou que, pelo
   corpo, só mexe em `.claude/`) é roteada com `npx tsx scripts/route-issue.ts
   --issue N --track develop --motivo claude-dir --reason "<arquivos de
