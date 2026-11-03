@@ -40,6 +40,7 @@
 import { AGENT_EVAL_LABEL } from "../check-agent-eval-required.ts";
 import { hasNewOrModifiedTest, isBugfixPr } from "../check-pr-bugfix.ts";
 import { AGENT_FILE_RE, classifyAgentEvalEligibility } from "./agent-eval-trigger-allowlist.ts";
+import { buildAggregatedPendingDataWritesSection, type PendingDataWrite } from "./pending-data-writes.ts";
 
 export interface TrainCandidate {
   /** Número do PR — só usado como identidade/ordem, nunca interpretado. Único dentro de um mesmo `candidates[]` (ver guard em `composeTrainBatches`). */
@@ -215,6 +216,14 @@ export interface TrainPrInfo {
    * casos o PR conta como "precisa da label de gate", o lado conservador.
    */
   readonly changedFiles?: readonly string[] | null;
+  /**
+   * Itens da seção `Escrita pendente em data/` do corpo da PR original
+   * (item 35 de `context/overnight-dispatch-rules.md`, #11780), via
+   * `extractPendingDataWrites`. Replicados no corpo do PR-trem e impressos
+   * no fim do trem (#12026): a original termina FECHADA, não mergeada, e o
+   * corpo dela deixa de ser o da PR mergeada. Ausente = não lida.
+   */
+  readonly pendingDataWrites?: readonly PendingDataWrite[];
 }
 
 /** Label de exceção do gate de regressão (#633) — mesma string de `hasExceptionLabel` em `check-pr-bugfix.ts`. */
@@ -397,8 +406,23 @@ export function buildTrainPrBody(batch: TrainBatch, prInfos: readonly TrainPrInf
     `Refs ${batch.prs.map((n) => `#${n}`).join(", ")} — NÃO CLOSES (fechamento acontece no squash-merge deste PR-trem, não aqui).\n\n` +
     `${buildTrainRemovalDeclaration(batch, prInfos)}\n\n` +
     buildTrainNoRegressionTestLine(batch, prInfos) +
+    buildTrainPendingDataWritesBlock(batch, prInfos) +
     `Nunca mergear este PR isoladamente por engano — ele É o merge, mas o commit squash usa uma mensagem própria com \`Closes\` pras issues.`
   );
+}
+
+/**
+ * Seção `Escrita pendente em data/` do PR-trem (#12026): agrega as das PRs
+ * do lote, para quem ler só o PR mergeado (o coordenador lê o corpo da PR
+ * mergeada, item 35). Termina em `\n\n` quando presente; vazia quando
+ * nenhuma PR do lote declarou escrita.
+ */
+export function buildTrainPendingDataWritesBlock(batch: TrainBatch, prInfos: readonly TrainPrInfo[]): string {
+  const byNumber = new Map(prInfos.map((p) => [p.pr, p]));
+  const section = buildAggregatedPendingDataWritesSection(
+    batch.prs.map((pr) => ({ pr, writes: byNumber.get(pr)?.pendingDataWrites ?? [] })),
+  );
+  return section ? `${section}\n\n` : "";
 }
 
 /**

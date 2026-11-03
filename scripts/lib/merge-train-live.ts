@@ -77,6 +77,7 @@ import {
 } from "./merge-train.ts";
 import { evaluatePrChecksGate } from "./pr-checks-gate.ts";
 import { extractRemovalDeclaration } from "./pr-removal-declaration.ts"; // #10848
+import { extractPendingDataWrites, type PendingDataWrite } from "./pending-data-writes.ts"; // #12026
 import { evaluatePrRetido, type PrRetidoResult } from "./pr-retido-para-editor.ts";
 import { checkReviewThreads, EXIT_OK as THREADS_EXIT_OK } from "../resolve-review-threads.ts"; // #11269
 
@@ -245,7 +246,22 @@ export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPr
     labels: parseLabelNames(p.labels),
     changedFiles: parseChangedFiles(p.files, p.changedFiles),
     commits: Array.isArray(p.commits) ? p.commits : [],
+    pendingDataWrites: readPendingDataWrites(runner, prNumber, p.body ?? ""),
   };
+}
+
+/**
+ * Seção `Escrita pendente em data/` da PR (#12026). Fail-soft: o parser é
+ * texto puro, mas qualquer exceção vira aviso e lista vazia — coletar a
+ * escrita nunca pode impedir o merge do lote.
+ */
+function readPendingDataWrites(runner: TrainRunner, prNumber: number, body: string): PendingDataWrite[] {
+  try {
+    return [...extractPendingDataWrites(body).writes];
+  } catch (err) {
+    runner.warn(`PR #${prNumber}: seção "Escrita pendente em data/" ilegível, ignorada (#12026): ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
 }
 
 /** `labels` de `gh pr view --json labels` → nomes; shape inesperado = não lidas (#11019). */

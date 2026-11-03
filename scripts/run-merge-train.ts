@@ -34,6 +34,13 @@
  * `--report <report.md>` (#11461): ao terminar, reconcilia o relatório da
  * rodada com o estado real das PRs (`reconcile-overnight-report.ts`), fail-soft.
  *
+ * Escrita pendente em `data/` (#12026): no fim, para cada PR mergeado (no
+ * PR-trem ou solo) cuja seção `Escrita pendente em data/` (item 35 de
+ * `context/overnight-dispatch-rules.md`) tinha itens, o stdout traz o bloco
+ * `run-merge-train: ESCRITA PENDENTE em data/ …` e uma linha
+ * `run-merge-train: escrita-pendente-json {…}` (por PR). O trem não aplica
+ * nada: quem aplica é o coordenador, depois do merge. Nunca muda o exit code.
+ *
  * Exit codes:
  *   0 = todos os PRs ADMITIDOS no trem terminaram em `merged`/`solo-merged`.
  *       NÃO significa "todo PR passado entrou": PR fechado pulado (`--prs` ou
@@ -67,6 +74,7 @@
 
 import { isMainModule, parseArgs, getIntArg, getStringArg } from "./lib/cli-args.ts";
 import { composeTrainBatches, summarizeTrainCiRuns, type TrainCandidate, type TrainPrInfo } from "./lib/merge-train.ts";
+import type { PrPendingDataWrites } from "./lib/pending-data-writes.ts";
 import { filesForPr, discoverOpenPrs, parsePrsArg } from "./lib/merge-train-discovery.ts";
 import {
   screenTrainPrs,
@@ -117,6 +125,47 @@ export function reconcileReportAtTrainEnd(
     gh: realGhJson,
   });
   return { level: r.exitCode === 0 ? "log" : "warn", message: `run-merge-train: reconcile do relatório (#11461): ${r.message}` };
+}
+
+/**
+ * Escrita pendente em `data/` das PRs que de fato mergearam (#12026). Só
+ * `merged`/`solo-merged`: a escrita pertence ao estado pós-merge (item 35),
+ * PR não mergeado não tem nada a aplicar ainda. Ordem dos outcomes, sem
+ * repetir PR; PR sem itens fica de fora.
+ */
+export function collectMergedPendingDataWrites(
+  outcomes: readonly TrainBatchOutcome[],
+  prInfos: readonly TrainPrInfo[],
+): PrPendingDataWrites[] {
+  const byNumber = new Map(prInfos.map((p) => [p.pr, p]));
+  const seen = new Set<number>();
+  const out: PrPendingDataWrites[] = [];
+  for (const o of outcomes) {
+    if (o.status !== "merged" && o.status !== "solo-merged") continue;
+    for (const pr of o.batch.prs) {
+      if (seen.has(pr)) continue;
+      seen.add(pr);
+      const writes = byNumber.get(pr)?.pendingDataWrites ?? [];
+      if (writes.length > 0) out.push({ pr, writes });
+    }
+  }
+  return out;
+}
+
+/** Linhas de stdout do bloco de escrita pendente (#12026) — vazio sem pendência. */
+export function formatPendingDataWritesReport(list: readonly PrPendingDataWrites[]): string[] {
+  if (list.length === 0) return [];
+  const lines = [
+    `run-merge-train: ESCRITA PENDENTE em data/ (#11780, #12026) — ${list.length} PR(s) mergeada(s) declararam escrita; aplicar no checkout principal agora (item 35):`,
+  ];
+  for (const p of list) {
+    lines.push(`  PR #${p.pr}:`);
+    for (const w of p.writes) lines.push(`    - ${w.line}`);
+  }
+  for (const p of list) {
+    lines.push(`run-merge-train: escrita-pendente-json ${JSON.stringify({ pr: p.pr, writes: p.writes })}`);
+  }
+  return lines;
 }
 
 function printOutcome(o: TrainBatchOutcome): string {
@@ -340,6 +389,25 @@ async function main() {
 
   console.log(`run-merge-train: ${allOutcomes.length} resultado(s):`);
   for (const o of allOutcomes) console.log(printOutcome(o));
+
+  // #12026: fail-soft — o merge já aconteceu (ou não); isto é só o rastro da
+  // escrita pendente, nunca muda o exit code.
+  try {
+    const pending = collectMergedPendingDataWrites(allOutcomes, prInfos);
+    for (const line of formatPendingDataWritesReport(pending)) console.log(line);
+    if (pending.length > 0) {
+      logEvent({
+        edition: null,
+        stage: null,
+        agent: kind,
+        level: "warn",
+        message: "merge_train_pending_data_writes",
+        details: { prs: pending.map((p) => ({ pr: p.pr, writes: p.writes.map((w) => w.line) })) },
+      });
+    }
+  } catch (err) {
+    console.error(`run-merge-train: AVISO — coleta de "Escrita pendente em data/" falhou (#12026), conferir o corpo das PRs mergeadas à mão: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Instrumentação de medição antes/depois (#6300, último critério de
   // aceite: "runs de CI por issue mergeada"). Derivado dos outcomes já
