@@ -501,6 +501,44 @@ def test_regressao_11177_contagem_de_track_nao_e_total():
     assert chk["status"] == "indeterminate", chk
 
 
+def test_regressao_12046_claim_recusado_e_concorrente():
+    """Transcript real: cron_5d791ef6fc2c_20261103_123826, mensagens
+    109869: claim recusado por overnight; 109872/109873: relatório gravado
+    com sucesso (banco ~/.hermes/state.db consultado em modo somente leitura).
+    O relatório descreve recusa de claim, não uma reivindicação própria.
+    """
+    mod = _load_module()
+    relatorio = """## Tick 12:50 BRT
+### Trabalhado
+PRs #12006 e #11989 verificadas (review independente e branch consistentes; não mergeadas). Na #12013 o CI test falha por expectativa desatualizada em test/overnight-waves-report.test.ts:228; tentativa delegada não alterou código: claim da #12011 recusado por sessão overnight ativa.
+### Pendente para próximo tick
+#12013 segue aberta com CI vermelho; PRs contínuas abertas 3/3, sem reivindicar issue nova.
+### Decisões/bloqueios registrados
+Marcador continuo-ci-fix-tentado aplicado à #12013 antes da tentativa. Harness: os três modelos :free retornaram 401 User not found; Codex identificou a falha e parou corretamente pelo claim concorrente. Registro desta sessão encerrado; working tree limpa.
+### Parada
+Claim concorrente ativo na #12011; não tocar na unidade enquanto a sessão overnight a reivindica.
+### Perguntas (se houver)
+Nenhuma.
+"""
+    for texto in (relatorio,
+                  "claim da #12011 recusado por sessão overnight ativa.",
+                  "Claim concorrente ativo na #12011; não tocar na unidade."):
+        assert mod.extract_claimed_issue_refs(texto) == {}, texto
+        check = mod.check_claimed_issues(texto, set(), True, session_correlated=True)
+        assert check["status"] == "not_applicable", check
+
+    # Negação pertence ao predicado da claim: não pode esconder outro claim
+    # próprio, nem se o mesmo número tiver uma tentativa recusada antes.
+    for texto in (
+        "Claim da #12011 recusado; reivindiquei #12012.",
+        "Claim da #12011 recusado. Claim da #12011 registrado neste tick.",
+        "Claim da #12011 registrado; deploy recusado por sessão overnight.",
+        "Claim da #12011 registrado sem claim concorrente ativo.",
+    ):
+        check = mod.check_claimed_issues(texto, set(), True, session_correlated=True)
+        assert check["status"] == "fabrication_suspected", (texto, check)
+
+
 def test_regressao_10563_sem_claim_e_liberei():
     """#10563: relatório REAL do tick 16:14 UTC de 19/10/2026 (verbatim, só
     a URL do comentário encurtada). "#10560 permanece sem claim por rejeição
@@ -1550,6 +1588,7 @@ def main() -> int:
         test_regressao_8521_negacao_nao_e_claim()
         test_regressao_8863_nenhuma_e_antes_do_claim()
         test_regressao_8863_antes_do_nao_apaga_claim_real()
+        test_regressao_12046_claim_recusado_e_concorrente()
         test_regressao_11039_claims_inexistentes()
         test_regressao_11177_contagem_de_track_nao_e_total()
         test_regressao_10563_sem_claim_e_liberei()
