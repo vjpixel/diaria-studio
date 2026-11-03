@@ -24,8 +24,9 @@ export const YOUTUBE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/youtube.upload",
   // channels.list?mine=true — confirmar QUAL canal foi autorizado.
   "https://www.googleapis.com/auth/youtube.readonly",
-  // captions.insert — legenda SRT do horizontal (#11384). Tokens anteriores
-  // não o têm: o publish-youtube.ts segue sem legenda e manda rodar o setup.
+  // captions.insert — legenda SRT do horizontal (#11384) — e videos.update, a
+  // troca de título/descrição do `--update-scheduled` (#11955). Tokens
+  // anteriores não o têm: o publish-youtube.ts segue sem legenda e manda rodar o setup.
   "https://www.googleapis.com/auth/youtube.force-ssl",
 ] as const;
 

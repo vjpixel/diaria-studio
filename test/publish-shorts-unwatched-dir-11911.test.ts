@@ -38,7 +38,7 @@ import {
   parseShortsCliArgs,
   planShortsPublish,
 } from "../scripts/publish-shorts.ts";
-import { ALLOW_UNWATCHED_DIR_FLAG, CORTE_SPEC_FILE, checkCorteDir, corteBaseCommand, realpathLenient } from "../scripts/lib/diaria/short-corte.ts";
+import { ALLOW_UNWATCHED_DIR_FLAG, CORTE_SPEC_FILE, checkCorteDir, corteBaseCommand, realpathLenient, shellQuote } from "../scripts/lib/diaria/short-corte.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -221,7 +221,7 @@ describe("#11911 plano do corte aceito fora de data/cortes/", () => {
       const owner = p.owners.find((o) => o.destination === d)!;
       assert.equal(owner.by, "agent-scheduled-task", d);
       assert.equal(owner.command, `${corteBaseCommand(SLUG, fora)} --only ${d} --publish --confirm-publish 261102`, d);
-      assert.match(owner.command!, /--edition-dir "\/home\/x\/diaria-cortes\/261102-tratar-ia-como-humano" --allow-unwatched-dir/);
+      assert.match(owner.command!, /--edition-dir \/home\/x\/diaria-cortes\/261102-tratar-ia-como-humano --allow-unwatched-dir/);
     }
   });
 
@@ -360,7 +360,7 @@ describe("#11911 modo edição: --edition-dir fora de data/editions/{AAMM}/{AAMM
     assert.ok(p.warnings.some((w) => w.includes("fica fora de data/editions/2611/261102")), p.warnings.join("\n"));
     const owner = p.owners.find((o) => o.destination === "instagram")!;
     assert.equal(owner.by, "agent-scheduled-task");
-    assert.ok(owner.command!.includes(`--edition-dir ${JSON.stringify(fora)} --allow-unwatched-dir --only instagram`), owner.command);
+    assert.ok(owner.command!.includes(`--edition-dir ${shellQuote(fora)} --allow-unwatched-dir --only instagram`), owner.command);
   });
 });
 
@@ -375,13 +375,13 @@ describe("#11911 donos recalculados depois da publicação (ownersContextAfterPu
     assert.equal(ctx.instagramViaTimer, false);
     const [o] = assignShortsDestinationOwners(items, ctx);
     assert.equal(o.by, "agent-scheduled-task");
-    assert.ok(o.command!.includes(`--edition-dir ${JSON.stringify(fora)} --allow-unwatched-dir`), o.command);
+    assert.ok(o.command!.includes(`--edition-dir ${shellQuote(fora)} --allow-unwatched-dir`), o.command);
   });
 
   it("skip_late (o agente publica com --now) também leva a pasta e o escape, na edição e no corte", () => {
     const [e] = assignShortsDestinationOwners(late, ownersContextAfterPublish({ aammdd: "261102", now, instagramBackend: "timer-300", corteViaTimer: true, editionDirOverride: fora }));
     assert.equal(e.action, "skip_late");
-    assert.ok(e.command!.includes(`--edition-dir ${JSON.stringify(fora)} --allow-unwatched-dir`), e.command);
+    assert.ok(e.command!.includes(`--edition-dir ${shellQuote(fora)} --allow-unwatched-dir`), e.command);
     const [c] = assignShortsDestinationOwners(late, ownersContextAfterPublish({ aammdd: "261102", now, instagramBackend: "timer-300", corteViaTimer: true, corteSlug: SLUG, corteOutsideDir: fora }));
     assert.ok(c.command!.startsWith(corteBaseCommand(SLUG, fora)), c.command);
     assert.ok(c.command!.includes("--allow-unwatched-dir"), c.command);

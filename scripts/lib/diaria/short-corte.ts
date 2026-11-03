@@ -148,6 +148,25 @@ export function realpathLenient(p: string, realpath: (p: string) => string = rea
   }
 }
 
+/**
+ * #11944 item 2: dois caminhos REAIS (`realpathLenient`) são a mesma pasta? No
+ * Windows (`win32`) a comparação ignora maiúsculas: o NTFS não as distingue, e
+ * um `--edition-dir` com outra caixa era recusado como "fora da pasta
+ * canônica". Nas demais plataformas, comparação exata.
+ */
+export function samePathOnPlatform(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+/**
+ * #11944 item 4: aspas simples de shell POSIX para os comandos de re-execução
+ * que o plano imprime. `JSON.stringify` usa aspas duplas, dentro das quais o
+ * shell ainda expande `$` e crase.
+ */
+export function shellQuote(s: string): string {
+  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'"'"'`)}'`;
+}
+
 /** #11911: desfecho da conferência da pasta do corte (`checkCorteDir`). */
 export type CorteDirCheck =
   | { ok: true; outside: false }
@@ -177,11 +196,13 @@ export function checkCorteDir(input: {
   allowUnwatched: boolean;
   realpath?: (p: string) => string;
   exists?: (p: string) => boolean;
+  /** #11944: plataforma da comparação (default `process.platform`). */
+  platform?: NodeJS.Platform;
 }): CorteDirCheck {
   const real = (p: string) => realpathLenient(p, input.realpath);
   const actual = real(input.dir);
   const canonical = real(join(input.cortesRoot, input.slug));
-  if (actual === canonical) return { ok: true, outside: false };
+  if (samePathOnPlatform(actual, canonical, input.platform)) return { ok: true, outside: false };
   const dir = resolve(input.dir);
   const where = actual === dir ? dir : `${dir} (caminho real ${actual})`;
   if (!input.allowUnwatched) {
@@ -269,7 +290,7 @@ export const CORTE_TIMER_DESTINATIONS: readonly string[] = ["linkedin_profile", 
 /** Comando base das re-execuções (`owners` do plano): o resto vem do `corte.json`. */
 export function corteBaseCommand(slug: string, outsideDir?: string): string {
   // #11911: corte fora de data/cortes/ (--allow-unwatched-dir): a re-execução volta à mesma pasta.
-  const outside = outsideDir !== undefined ? ` --edition-dir ${JSON.stringify(outsideDir)} --${ALLOW_UNWATCHED_DIR_FLAG}` : "";
+  const outside = outsideDir !== undefined ? ` --edition-dir ${shellQuote(outsideDir)} --${ALLOW_UNWATCHED_DIR_FLAG}` : "";
   return `npx tsx scripts/publish-shorts.ts --corte ${slug}${outside}`;
 }
 
