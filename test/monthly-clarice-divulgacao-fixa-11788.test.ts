@@ -5,9 +5,10 @@
  * 2610-11, mas o template e o writer-monthly emitiam placeholder e o gate da
  * Etapa 4 dizia que a Clarice preenchia. Agora é texto FIXO, em DUAS cópias
  * que andam juntas (template + passo 5 do prompt — mesma lição do #9591: trocar
- * só o template não muda o que o writer emite). O CLARICE — TUTORIAL segue
- * placeholder (muda a cada ciclo) apontando para o Doc "Laboratório Clarice", e
- * o gate só avisa sobre ele.
+ * só o template não muda o que o writer emite). O CLARICE — TUTORIAL muda a
+ * cada ciclo: desde o #11836 vem do Doc "Laboratório Clarice" (escolhido por
+ * `scripts/clarice-tutorial-next.ts`), com placeholder só de fallback, e o
+ * gate só avisa sobre ele.
  */
 
 import { describe, it } from "node:test";
@@ -65,16 +66,26 @@ describe("#11788 — CLARICE — DIVULGAÇÃO é texto fixo; só o TUTORIAL é p
     assert.ok(tpl.includes("→ [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)"));
   });
 
-  it("CLARICE — TUTORIAL segue placeholder nas duas cópias, apontando para o Doc 'Laboratório Clarice'", () => {
-    for (const block of [templateBlock(TEMPLATE, TUTORIAL_LABEL), promptBlock(PROMPT, TUTORIAL_LABEL)]) {
-      assert.match(block, /\[Placeholder/);
-      assert.ok(block.includes(DOC_ID));
-    }
+  it("CLARICE — TUTORIAL vem do Doc 'Laboratório Clarice' (#11836), com placeholder só de fallback", () => {
+    const tpl = templateBlock(TEMPLATE, TUTORIAL_LABEL);
+    assert.ok(tpl.includes(DOC_ID));
+    assert.ok(tpl.includes("clarice-tutorial.json"));
+    assert.ok(tpl.includes("https://clarice.ai/precos-planos?via=diaria"));
+    // Prompt: 1º bloco cercado = seção preenchida pelo JSON; o placeholder (com o Doc) é o fallback.
+    const filled = promptBlock(PROMPT, TUTORIAL_LABEL);
+    assert.ok(!/\[Placeholder/.test(filled));
+    assert.ok(filled.includes("Dica: {dica}"));
+    assert.ok(filled.includes("(https://clarice.ai/precos-planos?via=diaria)"));
+    assert.ok(PROMPT.includes("clarice_tutorial_path"));
+    const fallback = PROMPT.slice(PROMPT.indexOf("**Sem `clarice_tutorial_path`**"));
+    assert.match(fallback, /\[Placeholder/);
+    assert.ok(fallback.includes(DOC_ID));
   });
 
   it("gate da Etapa 4 avisa só sobre o TUTORIAL (nunca mais chama a DIVULGAÇÃO de placeholder)", () => {
     assert.ok(!/DIVULGAÇÃO e CLARICE — TUTORIAL são PLACEHOLDERS/.test(SKILL));
-    assert.match(SKILL, /CLARICE — TUTORIAL é PLACEHOLDER/);
+    assert.match(SKILL, /CLARICE — TUTORIAL é PLACEHOLDER[\s\S]*motivo: \{CLARICE_TUTORIAL_STATUS\}/);
+    assert.match(SKILL, /clarice-tutorial-next\.ts --cycle \$CYCLE/);
     assert.ok(!/preenchidas manualmente pela Clarice/.test(SKILL));
   });
 });
