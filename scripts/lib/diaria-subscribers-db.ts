@@ -168,8 +168,9 @@ export function isPlatform(value: unknown): value is Platform {
  * `ingestKitConfirmations` (`kit-subscribers-ingest.ts`, #11846): grava
  * `confirm` na transição `inactive -> active` entre 2 snapshots, com `ts` =
  * dia do snapshot (aproximação de até 1 dia). O tipo existiu primeiro pra
- * desbloquear os consumidores (`isEventType`, o registry de métricas); a
- * ligação do ingestor ao CLI diário fica como passo seguinte.
+ * desbloquear os consumidores (`isEventType`, o registry de métricas). Quem
+ * chama todo dia é `diaria-subscribers-ingest-kit.ts --write`, via
+ * `ingestKitConfirmationsFromSnapshots` (últimos 7 pares de snapshots).
  */
 export const EVENT_TYPES = [
   "sent",

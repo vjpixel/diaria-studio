@@ -1249,6 +1249,20 @@ export const AUDIO_ONLY_FPS = 30;
 export interface Framing {
   faceX: number;
   eyeY: number;
+  /**
+   * Caixa da caneca diar.ia.br no bruto já desespelhado, em fração do quadro
+   * (#11939). Opcional: sem ela o recorte é só pelo rosto, como antes. Com
+   * ela, `framingFor` desloca o recorte em direção à caneca até
+   * `MUG_MAX_FACE_SHIFT` da largura do bruto; o rosto continua a prioridade.
+   */
+  mug?: MugBox;
+}
+
+export interface MugBox {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
 }
 
 export interface VocabRule {
@@ -1345,6 +1359,13 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
     const fr = raw.framing;
     if (!isObj(fr) || !isNum(fr.faceX) || !isNum(fr.eyeY) || fr.faceX < 0 || fr.faceX > 1 || fr.eyeY < 0 || fr.eyeY > 1) {
       errors.push("framing precisa de faceX e eyeY entre 0 e 1 (fração do quadro)");
+    }
+    if (isObj(fr) && fr.mug !== undefined) {
+      const m = fr.mug;
+      const inUnit = (v: unknown) => isNum(v) && v >= 0 && v <= 1;
+      if (!isObj(m) || ![m.left, m.right, m.top, m.bottom].every(inUnit) || !((m.left as number) < (m.right as number)) || !((m.top as number) < (m.bottom as number))) {
+        errors.push("framing.mug precisa de left < right e top < bottom, entre 0 e 1 (fração do quadro desespelhado)");
+      }
     }
   }
   if (!isObj(raw.blocks)) errors.push("blocks precisa ser um objeto");
@@ -1981,6 +2002,60 @@ export interface FramingResult {
   center: { horiz: number; vert: number };
   /** Escala efetiva (%): a pedida, ou maior quando o bruto é pequeno demais para ela (ex.: 1080p). */
   scalePct: number;
+  /**
+   * Só com `framing.mug` (#11939): quanto da caneca o recorte mostra.
+   * `inteira` = a caixa cabe; `parcial` = parte dela (deslocamento no limite);
+   * `fora` = nem no limite ela aparece, o recorte fica centrado no rosto.
+   */
+  mug?: "inteira" | "parcial" | "fora";
+  /** Deslocamento do recorte em relação ao centrado no rosto, em fração da largura do bruto (+ = direita). */
+  mugShift?: number;
+  /** `[aviso]` para o relato quando a caneca não sai inteira; nunca aborta o build. */
+  warning?: string;
+}
+
+/**
+ * Quanto o recorte pode sair do centro do rosto para mostrar a caneca, em
+ * fração da largura do bruto (#11939): o editor aceitou 2% na 261103 (`faceX`
+ * 0,48 → 0,50) e recusou 7% (0,55), que descentralizava o rosto.
+ */
+export const MUG_MAX_FACE_SHIFT = 0.02;
+
+/**
+ * Posição horizontal do recorte com a caneca como esforço (#11939). Ordem:
+ * (1) o menor deslocamento que deixa a caixa inteira, se não passa do limite;
+ * (2) senão, o deslocamento no limite em direção à caneca, se assim ela
+ * aparece em parte (o meio-termo da 261103); (3) senão, o recorte centrado no
+ * rosto. Arredonda sempre em direção ao rosto, para nunca passar do limite.
+ */
+function mugCropX(a: { faceCropX: number; w: number; y: number; h: number; srcW: number; srcH: number; mug: MugBox }): { x: number; mug: "inteira" | "parcial" | "fora" } {
+  const { faceCropX, w, y, h, srcW, srcH, mug } = a;
+  const maxX = srcW - w;
+  const limit = MUG_MAX_FACE_SHIFT * srcW;
+  const mL = mug.left * srcW;
+  const mR = mug.right * srcW;
+  const mT = mug.top * srcH;
+  const mB = mug.bottom * srcH;
+  const vFull = mT >= y && mB <= y + h;
+  const vAny = mT < y + h && mB > y;
+  const towardFace = (x: number) => (x > faceCropX ? Math.floor(x) : x < faceCropX ? Math.ceil(x) : Math.round(x));
+  const centered = { x: Math.round(faceCropX), mug: "fora" as const };
+  if (!vAny) return centered;
+  const lo = Math.max(0, mR - w);
+  const hi = Math.min(maxX, mL);
+  if (lo <= hi) {
+    const x = clamp(faceCropX, lo, hi);
+    if (Math.abs(x - faceCropX) <= limit + 1e-9) {
+      const xi = towardFace(x);
+      // O arredondamento em direção ao rosto pode deixar 1 px da caixa fora: conta como inteira.
+      return { x: xi, mug: vFull ? "inteira" : "parcial" };
+    }
+  }
+  const dir = (mL + mR) / 2 >= faceCropX + w / 2 ? 1 : -1;
+  const x = clamp(faceCropX + dir * limit, 0, maxX);
+  const xi = towardFace(x);
+  if (mL < xi + w && mR > xi) return { x: xi, mug: "parcial" };
+  return centered;
 }
 
 const even = (x: number) => Math.max(2, Math.round(x / 2) * 2);
@@ -2016,12 +2091,75 @@ export function framingFor(input: {
   }
   const w = Math.min(input.srcW - (input.srcW % 2), even(wf));
   const h = Math.min(input.srcH - (input.srcH % 2), even(hf));
-  const x = Math.round(clamp(input.framing.faceX * input.srcW - w / 2, 0, input.srcW - w));
+  const faceCropX = clamp(input.framing.faceX * input.srcW - w / 2, 0, input.srcW - w);
   const y = Math.round(clamp(input.framing.eyeY * input.srcH - eyeFrac * h, 0, input.srcH - h));
+  const mugBox = input.framing.mug;
+  const withMug = mugBox ? mugCropX({ faceCropX, w, y, h, srcW: input.srcW, srcH: input.srcH, mug: mugBox }) : null;
+  const x = withMug ? withMug.x : Math.round(faceCropX);
   const dx = (input.srcW / 2 - (x + w / 2)) * s;
   const dy = (input.srcH / 2 - (y + h / 2)) * s;
   const r4 = (v: number) => Math.round(v * 10000) / 10000 || 0;
-  return { crop: { x, y, w, h }, center: { horiz: r4(dx / input.seqW), vert: r4(dy / input.seqH) }, scalePct: Math.round(s * 10000) / 100 };
+  const base: FramingResult = { crop: { x, y, w, h }, center: { horiz: r4(dx / input.seqW), vert: r4(dy / input.seqH) }, scalePct: Math.round(s * 10000) / 100 };
+  if (!withMug) return base;
+  const mugShift = r4((x - Math.round(faceCropX)) / input.srcW);
+  const pct = (v: number) => `${(Math.abs(v) * 100).toFixed(1).replace(".", ",")}%`;
+  const warning = withMug.mug === "inteira" ? undefined
+    : withMug.mug === "parcial" ? `caneca só em parte no recorte (deslocamento de ${pct(mugShift)} da largura do bruto, limite ${pct(MUG_MAX_FACE_SHIFT)}; rosto prioritário)`
+    : `caneca fora do recorte: mostrá-la exigiria descentralizar o rosto mais que ${pct(MUG_MAX_FACE_SHIFT)} da largura do bruto; recorte centrado no rosto`;
+  return { ...base, mug: withMug.mug, mugShift, ...(warning ? { warning } : {}) };
+}
+
+/**
+ * Um `[aviso]` por sequência e escala em que a caneca não sai inteira
+ * (#11939), para o relato do `build`, da prévia e da `review`. Sem
+ * `framing.mug`, uma linha só dizendo que a caneca não foi conferida.
+ */
+export function mugFramingWarnings(
+  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number }; clips: ReadonlyArray<{ scale: number }> }>,
+  source: { width: number; height: number },
+  framing: Framing,
+): string[] {
+  if (!framing.mug) return ["framing sem mug: a caneca não entrou no cálculo do recorte (ler a caixa dela no frame e gravar framing.mug)"];
+  const out: string[] = [];
+  for (const p of plans) {
+    for (const scalePct of [...new Set(p.clips.map((c) => c.scale))].sort((a, b) => a - b)) {
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing });
+      if (fr.warning) out.push(`${p.spec.name} (${scalePct}%): ${fr.warning}`);
+    }
+  }
+  return out;
+}
+
+/** Escalas que o `frame` desenha (#11939): as do horizontal e as das verticais. */
+export const FRAME_PREVIEW_CROPS: ReadonlyArray<{ seqW: number; seqH: number; scales: readonly number[]; color: string }> = [
+  { seqW: 1920, seqH: 1080, scales: [50, 62], color: "yellow" },
+  { seqW: 1080, seqH: 1920, scales: [115, 130], color: "cyan" },
+];
+
+/**
+ * Filtros `drawbox` do `frame` (#11939): o recorte de cada escala desenhado
+ * no bruto (já desespelhado), para conferir rosto e caneca de uma vez, e a
+ * caixa da caneca em magenta quando o `framing` a traz. Cada linha de aviso
+ * vem com a escala.
+ */
+export function frameCropOverlays(source: { width: number; height: number }, framing: Framing): { filters: string[]; warnings: string[] } {
+  const filters: string[] = [];
+  const warnings: string[] = [];
+  for (const { seqW, seqH, scales, color } of FRAME_PREVIEW_CROPS) {
+    for (const scalePct of scales) {
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW, seqH, scalePct, framing });
+      const { x, y, w, h } = fr.crop;
+      filters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${color}@0.8:t=4`);
+      if (fr.warning) warnings.push(`${seqW}x${seqH} ${scalePct}%: ${fr.warning}`);
+    }
+  }
+  const m = framing.mug;
+  if (m) {
+    const x = Math.round(m.left * source.width);
+    const y = Math.round(m.top * source.height);
+    filters.push(`drawbox=x=${x}:y=${y}:w=${Math.round(m.right * source.width) - x}:h=${Math.round(m.bottom * source.height) - y}:color=magenta@0.9:t=3`);
+  }
+  return { filters, warnings };
 }
 
 // ── XML FCP7 (xmeml v4) ───────────────────────────────────────────────────

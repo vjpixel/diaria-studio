@@ -64,7 +64,12 @@ import {
   type EventType,
 } from "./diaria-subscribers-db.ts";
 import type { KitSubscriberSummary } from "./kit-subscribers.ts";
-import type { SubscriberStateTransition } from "./subscriber-state-snapshot.ts";
+import {
+  diffSubscriberStateSnapshots,
+  listSubscriberStateSnapshotDates,
+  readSubscriberStateSnapshotFile,
+  type SubscriberStateTransition,
+} from "./subscriber-state-snapshot.ts";
 import { REATIVACAO_UTM_SOURCES } from "./metrics/acquisition-class.ts"; // #8235
 import { normalizeKey } from "./shared/attribution-keys.ts"; // #8235
 
@@ -605,4 +610,64 @@ export function ingestKitConfirmations(
     else alreadyKnown++;
   }
   return { newEvents, alreadyKnown };
+}
+
+/** Quantos pares de snapshots consecutivos `ingestKitConfirmationsFromSnapshots`
+ *  relê por execução (#11846). 7 pares = 8 dias de snapshot: cobre uma semana
+ *  de ingestão perdida sem reler o histórico inteiro todo dia. */
+export const CONFIRM_SNAPSHOT_PAIRS_DEFAULT = 7;
+
+export interface KitConfirmationsFromSnapshotsResult {
+  /** Datas (do snapshot MAIS NOVO de cada par) efetivamente comparadas. */
+  datesProcessed: string[];
+  newEvents: number;
+  alreadyKnown: number;
+  /** Transições `inactive -> active` puladas por falta de e-mail em
+   *  `emailById` — visível pro chamador em vez de sumir em silêncio. */
+  skippedNoEmail: number;
+}
+
+/**
+ * Liga o produtor do evento `confirm` (#11846) aos snapshots diários gravados
+ * por `scripts/subscriber-state-snapshot.ts`: compara os `maxPairs` últimos
+ * pares de snapshots consecutivos sob `root` e grava, via
+ * `ingestKitConfirmations`, cada transição `inactive -> active` com `ts` no
+ * dia do snapshot mais novo do par. Reler pares já processados é inofensivo
+ * (chave natural + `INSERT OR IGNORE`), então uma execução perdida é
+ * recuperada na seguinte, dentro da janela. `root` ausente ou com menos de 2
+ * snapshots = nada a fazer (zeros), nunca erro. Lê só disco local e escreve
+ * só no `db`.
+ */
+export function ingestKitConfirmationsFromSnapshots(
+  db: DatabaseSync,
+  root: string,
+  emailById: ReadonlyMap<number, string>,
+  opts: { maxPairs?: number; now?: string } = {},
+): KitConfirmationsFromSnapshotsResult {
+  const maxPairs = opts.maxPairs ?? CONFIRM_SNAPSHOT_PAIRS_DEFAULT;
+  const now = opts.now ?? new Date().toISOString();
+  const dates = listSubscriberStateSnapshotDates(root);
+  const window = dates.slice(Math.max(0, dates.length - (maxPairs + 1)));
+  const result: KitConfirmationsFromSnapshotsResult = { datesProcessed: [], newEvents: 0, alreadyKnown: 0, skippedNoEmail: 0 };
+  if (window.length < 2) return result;
+  let prev = readSubscriberStateSnapshotFile(root, window[0]);
+  for (let i = 1; i < window.length; i++) {
+    const date = window[i];
+    const curr = readSubscriberStateSnapshotFile(root, date);
+    // Snapshot vazio (arquivo ausente/corrompido) não serve de base nem de
+    // alvo: comparar contra ele faria todo mundo "aparecer" (from: null) ou
+    // esconderia a transição. Pula o par e mantém o último snapshot válido.
+    if (curr.length === 0) continue;
+    if (prev.length > 0) {
+      const transitions = diffSubscriberStateSnapshots(prev, curr);
+      const r = ingestKitConfirmations(db, transitions, emailById, date, now);
+      const confirmTransitions = transitions.filter((t) => t.from === "inactive" && t.to === "active").length;
+      result.datesProcessed.push(date);
+      result.newEvents += r.newEvents;
+      result.alreadyKnown += r.alreadyKnown;
+      result.skippedNoEmail += confirmTransitions - r.newEvents - r.alreadyKnown;
+    }
+    prev = curr;
+  }
+  return result;
 }
