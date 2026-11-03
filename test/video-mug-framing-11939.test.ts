@@ -86,12 +86,12 @@ describe("framingFor com caneca (#11939)", () => {
   });
 
   it("caneca fora da faixa vertical do recorte: centrado, aviso", () => {
-    const centered = framingFor({ ...HORIZ, scalePct: 62, framing: face });
-    const fr = framingFor({ ...HORIZ, scalePct: 62, framing: { ...face, mug: { ...mug261103, top: 0.98, bottom: 0.999 } } });
-    if (centered.crop.y + centered.crop.h <= 0.98 * SRC.srcH) {
-      assert.equal(fr.mug, "fora");
-      assert.deepEqual(fr.crop, centered.crop);
-    }
+    const centered = framingFor({ ...VERT, scalePct: 130, framing: face });
+    // Recorte vertical a 130% começa em ~26% da altura: caixa em 0..10% fica acima dele.
+    assert.ok(centered.crop.y > 0.1 * SRC.srcH);
+    const fr = framingFor({ ...VERT, scalePct: 130, framing: { ...face, mug: { ...mug261103, top: 0, bottom: 0.1 } } });
+    assert.equal(fr.mug, "fora");
+    assert.deepEqual(fr.crop, centered.crop);
   });
 
   it("horizontal (50/62%) com a caneca da 261103: já cabe, recorte não muda", () => {
