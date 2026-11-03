@@ -57,6 +57,8 @@ export interface Transcript {
   duration?: number;
   model?: string;
   segments: Segment[];
+  /** Subjanela do `retranscribe --sub` (#11958), com a janela no bruto: só a busca do falso começo a lê. */
+  sub?: { window: Interval };
 }
 
 /** Todas as palavras do transcript, em ordem. */
@@ -651,6 +653,10 @@ export interface CollapsedTakeSuspect {
   kind: "intervalo" | "palavra-longa";
   /** Onde, no bruto: o fim da palavra antes do vão (ou o começo da palavra longa). */
   at: number;
+  /** Fim do trecho suspeito: o começo da palavra depois do vão (ou o fim da palavra longa), #11958. */
+  end: number;
+  /** Índice, nas palavras do trecho, da palavra longa (ou da palavra antes do vão), #11958. */
+  word: number;
   /** Segundos de som sem palavra (fora dos silêncios). */
   audibleS: number;
   before: string;
@@ -695,11 +701,11 @@ export function collapsedTakeSuspects(words: Word[], silences: Interval[] = [], 
   const out: CollapsedTakeSuspect[] = [];
   ws.forEach((w, i) => {
     const inWord = audibleSeconds(w.start, w.end, silences);
-    if (inWord > gap) out.push({ kind: "palavra-longa", at: round3(w.start), audibleS: round3(inWord), before: w.text.trim(), window: windowAround(w.start) });
+    if (inWord > gap) out.push({ kind: "palavra-longa", at: round3(w.start), end: round3(w.end), word: i, audibleS: round3(inWord), before: w.text.trim(), window: windowAround(w.start) });
     const n = ws[i + 1];
     if (!n) return;
     const between = audibleSeconds(w.end, n.start, silences);
-    if (between > gap) out.push({ kind: "intervalo", at: round3(w.end), audibleS: round3(between), before: w.text.trim(), after: n.text.trim(), window: windowAround(w.end) });
+    if (between > gap) out.push({ kind: "intervalo", at: round3(w.end), end: round3(n.start), word: i, audibleS: round3(between), before: w.text.trim(), after: n.text.trim(), window: windowAround(w.end) });
   });
   return out;
 }
@@ -708,6 +714,134 @@ export function collapsedTakeSuspects(words: Word[], silences: Interval[] = [], 
 export function describeCollapsedSuspect(s: CollapsedTakeSuspect): string {
   const secs = `${s.audibleS.toFixed(1).replace(".", ",")} s`;
   return s.kind === "intervalo" ? `${secs} de som sem palavra entre "${s.before}" e "${s.after}"` : `"${s.before}" esticada por ${secs} de som`;
+}
+
+// ── Falso começo e repetição dentro do clipe (#11958) ────────────────────
+
+/**
+ * Falso começo que o Whisper engole (#11958, 261103): "duas… dois… duas
+ * linhas" e "de seus… de suas conversas" saíram no `transcript.json` como UMA
+ * palavra esticada sobre 2–4 s de fala, e a retranscrição da janela inteira
+ * também "achou uma tomada só". O que achou o corte, à mão, foram
+ * retranscrições em subjanelas de 3–5 s cruzadas com a energia. `windowS`/
+ * `hopS` = as subjanelas do `retranscribe --sub` (o arquivo leva `sub.window`,
+ * que separa a subjanela da retranscrição da janela inteira); o corte proposto tem de
+ * `minCutS` a `maxCutS` e pelo menos `minAudibleS` de som fora dos silêncios
+ * (é fala sem palavra, não pausa).
+ */
+export const REPETITION = { windowS: 4, hopS: 2, marginS: 1.5, minCutS: 0.3, maxCutS: 20, minAudibleS: 0.3, lookbackWords: 3 } as const;
+
+/** As subjanelas do `retranscribe --sub` (#11958): `windowS` com passo `hopS`, a última encostada no fim. */
+export function subWindows(w: Interval, windowS: number = REPETITION.windowS, hopS: number = REPETITION.hopS): Interval[] {
+  if (!(w.end > w.start)) return [];
+  if (w.end - w.start <= windowS + 1e-9) return [{ start: round3(w.start), end: round3(w.end) }];
+  const out: Interval[] = [];
+  for (let a = w.start; a + windowS < w.end - 1e-9; a += hopS) out.push({ start: round3(a), end: round3(a + windowS) });
+  out.push({ start: round3(w.end - windowS), end: round3(w.end) });
+  return out;
+}
+
+/** Janela sugerida para o `retranscribe --sub` em volta de uma suspeita: o trecho com `marginS` de cada lado, dentro da janela dela. */
+export function subRetranscribeWindow(s: Pick<CollapsedTakeSuspect, "at" | "end" | "window">): Interval {
+  return { start: round3(Math.max(s.window.start, s.at - REPETITION.marginS)), end: round3(Math.min(s.window.end, s.end + REPETITION.marginS)) };
+}
+
+/**
+ * Palavras de várias subjanelas sobrepostas, sem duplicar: a mesma palavra
+ * ouvida em duas subjanelas (sobreposição de mais da metade da mais curta)
+ * fica com a versão mais longe da borda da janela dela (na borda o Whisper
+ * corta ou inventa). Em ordem de tempo.
+ */
+export function mergeWindowWords(windows: Array<{ start: number; end: number; words: Word[] }>): Word[] {
+  const cands = windows.flatMap((p) =>
+    p.words.filter((w) => w.text.trim() !== "").map((w) => ({ w, edge: Math.min((w.start + w.end) / 2 - p.start, p.end - (w.start + w.end) / 2) })),
+  );
+  cands.sort((a, b) => b.edge - a.edge);
+  const kept: Word[] = [];
+  for (const c of cands) {
+    const clash = kept.some((k) => {
+      const inter = Math.min(k.end, c.w.end) - Math.max(k.start, c.w.start);
+      return inter > 0.5 * Math.max(1e-3, Math.min(k.end - k.start, c.w.end - c.w.start));
+    });
+    if (!clash) kept.push(c.w);
+  }
+  return kept.sort((a, b) => a.start - b.start);
+}
+
+/** Parecida o bastante para ser o mesmo começo de palavra num falso começo: igual, prefixo cortado ("organiz"), ou 2 letras trocadas com a mesma inicial ("dois"/"duas", "seus"/"suas"). */
+function falseStartLike(heard: string, wanted: string, match: TokenMatcher): boolean {
+  if (match(heard, wanted)) return true;
+  if (heard.length >= 3 && wanted.startsWith(heard)) return true;
+  return heard.length >= 3 && wanted.length >= 3 && heard[0] === wanted[0] && levenshtein(heard, wanted) <= 2;
+}
+
+export interface RepetitionCut {
+  /** O trecho a tirar, no bruto: do fim da palavra antes do falso começo ao começo da repetição final. */
+  cut: Interval;
+  /** O que a subjanela ouviu no trecho cortado. */
+  falseStart: string;
+  /** O começo da repetição que fica ("duas linhas"). */
+  restart: string;
+  /** Segundos de som fora dos silêncios dentro do corte (o cruzamento com a energia). */
+  audibleS: number;
+}
+
+/**
+ * O corte de um falso começo dentro do trecho (#11958): nas palavras das
+ * subjanelas (`heard`, já sem duplicata), a ÚLTIMA ocorrência do recomeço (as
+ * 1–2 palavras do trecho a partir da palavra suspeita, ou de até
+ * `lookbackWords` antes dela) precedida, dentro da suspeita, de outra
+ * ocorrência parecida do mesmo começo. O corte vai do fim da palavra antes do
+ * recomeço (no transcript do bruto) ao começo da repetição final, e só vale
+ * com fala de verdade dentro (`minAudibleS` fora dos silêncios): é a regra da
+ * tomada colapsada, a repetição final vale. `null` = as subjanelas não acharam
+ * repetição.
+ */
+export function findRepetitionCut(
+  itemWords: Word[],
+  suspect: Pick<CollapsedTakeSuspect, "at" | "end" | "word">,
+  heard: Word[],
+  silences: Interval[] = [],
+  match: TokenMatcher = tokensMatch,
+): RepetitionCut | null {
+  const ws = itemWords.filter((w) => w.text.trim() !== "");
+  const toks = ws.map((w) => normalizeToken(w.text));
+  const hs = heard.filter((w) => w.text.trim() !== "" && normalizeToken(w.text) !== "");
+  const ht = hs.map((w) => normalizeToken(w.text));
+  if (!ws.length || !hs.length || suspect.word < 0 || suspect.word >= ws.length) return null;
+  const lo = suspect.at - REPETITION.marginS;
+  const hi = suspect.end + REPETITION.marginS;
+  for (let r = suspect.word; r >= Math.max(0, suspect.word - REPETITION.lookbackWords); r--) {
+    const m = Math.min(2, toks.length - r);
+    // A repetição final: as `m` palavras do recomeço, em sequência, terminando dentro da suspeita (ou logo depois).
+    let last = -1;
+    for (let i = hs.length - m; i >= 0; i--) {
+      if (hs[i].start > hi || hs[i].start < lo) continue;
+      let ok = true;
+      for (let k = 0; k < m; k++) if (!match(ht[i + k], toks[r + k])) ok = false;
+      if (ok) {
+        last = i;
+        break;
+      }
+    }
+    if (last <= 0) continue;
+    const prevEnd = r > 0 ? ws[r - 1].end : null;
+    const first = hs.findIndex((w, i) => i < last && w.start >= Math.max(lo, (prevEnd ?? lo) - 0.3) && falseStartLike(ht[i], toks[r], match));
+    if (first < 0) continue;
+    const start = prevEnd !== null && prevEnd <= hs[first].start + 1e-6 ? prevEnd : hs[first].start;
+    const end = hs[last].start;
+    const len = end - start;
+    if (len < REPETITION.minCutS || len > REPETITION.maxCutS) continue;
+    const audible = audibleSeconds(start, end, silences);
+    if (audible < REPETITION.minAudibleS) continue;
+    return {
+      cut: { start: round3(start), end: round3(end) },
+      falseStart: joinWordTexts(hs.slice(first, last).map((w) => w.text.trim())),
+      restart: joinWordTexts(hs.slice(last, last + m).map((w) => w.text.trim())),
+      audibleS: round3(audible),
+    };
+  }
+  return null;
 }
 
 export type CollapsedPick =
@@ -1088,8 +1222,17 @@ export interface SourceInfo {
   durationS: number;
   width: number;
   height: number;
-  /** Bruto espelhado (a caneca aparece invertida). O `transcribe` grava true (premissa #11208); `blocks.json` sobrepõe. */
+  /**
+   * Bruto espelhado (a caneca aparece invertida). O `transcribe` decide pelo
+   * metadado da câmera, quando houver (traseira não espelha, #11959), senão
+   * pelo `publishing.video.mirrored_default` do config (true, a premissa do
+   * #11208); `blocks.json` sobrepõe.
+   */
   mirrored: boolean;
+  /** De onde veio o `mirrored` do `transcribe` (#11959); ausente em `source.json` anterior a ele. */
+  mirroredFrom?: MirroredFrom;
+  /** Câmera lida do metadado do bruto (#11959), quando houver. */
+  camera?: CameraFacing;
   /**
    * Bruto só de áudio (#11552, edição 261029): sem stream de vídeo, `width` e
    * `height` saem 0 e `fps` é o nominal `AUDIO_ONLY_FPS` (só a grade dos
@@ -1400,6 +1543,10 @@ export type ResolvedItem = {
     picked?: { takeNumber: number; completeTakes: number; why: string; from: Interval };
     /** Retranscrição da janela existe mas não separou as tomadas. */
     unresolved?: string;
+    /** Subjanelas curtas (`retranscribe --sub`) cobrem a suspeita (#11958). */
+    subChecked?: boolean;
+    /** Falso começo achado nas subjanelas (#11958): corte PROPOSTO, o editor aprova no Gate 2 (o intervalo do item não muda). */
+    repetition?: RepetitionCut;
   };
 } & ItemScope &
   ({ how: "take"; take: number; completeTakes: number } | { how: "explicit" });
@@ -1469,9 +1616,21 @@ export function resolveBlocks(
   const patches = (opts.retranscribed ?? [])
     .map((t) => {
       const ws = applyVocabularyToWords(trimWordsToSilences(transcriptWords(t), opts.silences ?? []), [...(opts.rules ?? []), ...(file.vocabulary ?? [])]);
-      return ws.length ? { segments: t.segments, words: ws, start: ws[0].start, end: ws[ws.length - 1].end } : null;
+      if (t.sub) return { sub: true, segments: t.segments, words: ws, start: t.sub.window.start, end: t.sub.window.end };
+      return ws.length ? { sub: false, segments: t.segments, words: ws, start: ws[0].start, end: ws[ws.length - 1].end } : null;
     })
     .filter((p): p is NonNullable<typeof p> => p !== null);
+  // Subjanelas (#11958, `retranscribe --sub`): juntas sem duplicar, só para achar o falso começo.
+  const subPatches = patches.filter((p) => p.sub);
+  const windowPatches = patches.filter((p) => !p.sub && p.words.length);
+  const repetitionOf = (ws: Word[], sus: CollapsedTakeSuspect): { subChecked: boolean; repetition?: RepetitionCut } => {
+    const near = subPatches.filter((p) => p.end >= sus.at - REPETITION.marginS && p.start <= sus.end + REPETITION.marginS);
+    if (!near.length) return { subChecked: false };
+    const rep = findRepetitionCut(ws, sus, mergeWindowWords(near), opts.silences ?? [], match);
+    return rep ? { subChecked: true, repetition: rep } : { subChecked: true };
+  };
+  const repetitionWarning = (label: string, rep: RepetitionCut) =>
+    `${label}: falso começo/repetição "${rep.falseStart}" (${rep.cut.start.toFixed(2)}–${rep.cut.end.toFixed(2)} s, ${rep.audibleS.toFixed(1)} s de fala sem palavra no transcript): corte proposto no roteiro, linha repetição, para aprovar no Gate 2 (#11958)`;
   const collapse = (
     label: string,
     span: Interval,
@@ -1487,17 +1646,25 @@ export function resolveBlocks(
     // A retranscrição que cobre as palavras do trecho; a mais recente na lista vence.
     const lo = ws[0].start;
     const hi = ws[ws.length - 1].end;
-    const patch = [...patches].reverse().find((p) => p.start <= lo + tol + 1 && p.end >= hi - tol - 1);
+    const patch = [...windowPatches].reverse().find((p) => p.start <= lo + tol + 1 && p.end >= hi - tol - 1);
+    const sub = repetitionOf(ws, suspects[0]);
+    const subInfo = { ...(sub.subChecked ? { subChecked: true } : {}), ...(sub.repetition ? { repetition: sub.repetition } : {}) };
     if (!patch || text === undefined || !mayPick) {
       const why = !mayPick ? "take explícito no blocks.json: tomada mantida" : text === undefined ? "intervalo sem text: não dá para separar as tomadas" : `retranscrever ${win.start.toFixed(1)}–${win.end.toFixed(1)} s e rodar de novo`;
       warnings.push(`${label}: possível tomada colapsada (${what}): ${why} (#11754)`);
-      return { info: { suspects } };
+      if (sub.repetition) warnings.push(repetitionWarning(label, sub.repetition));
+      return { info: { suspects, ...subInfo } };
     }
     const inside = patch.words.filter((w) => (w.start + w.end) / 2 >= span.start - tol && (w.start + w.end) / 2 <= span.end + tol);
     const pick = pickCollapsedTake(inside, patch.segments, text, { match });
     if (!pick.ok) {
-      warnings.push(`${label}: possível tomada colapsada (${what}); a retranscrição não separou as tomadas (${pick.reason}): o trecho segue inteiro, conferir no áudio (#11754)`);
-      return { info: { suspects, unresolved: pick.reason } };
+      if (sub.repetition) warnings.push(repetitionWarning(label, sub.repetition));
+      else {
+        const sw = subRetranscribeWindow(suspects[0]);
+        const next = sub.subChecked ? "as subjanelas também não acharam repetição: conferir no áudio" : `retranscrever em subjanelas (--sub --from ${sw.start.toFixed(1)} --to ${sw.end.toFixed(1)}) e rodar de novo (#11958)`;
+        warnings.push(`${label}: possível tomada colapsada (${what}); a retranscrição não separou as tomadas (${pick.reason}): o trecho segue inteiro, ${next} (#11754)`);
+      }
+      return { info: { suspects, unresolved: pick.reason, ...subInfo } };
     }
     warnings.push(
       `${label}: tomada colapsada (${what}): a retranscrição separou ${pick.completeTakes} tomadas; usando a ${pick.takeNumber}ª (${pick.why}), ${pick.interval.start.toFixed(2)}–${pick.interval.end.toFixed(2)} s (#11754)`,
@@ -2785,10 +2952,71 @@ export function parseFrameRate(r: string): number {
  * usa. Rotação de metadado (vídeo de celular gravado "em pé") não é tratada:
  * o bruto da diar.ia.br é horizontal sem rotação (261027).
  */
-export function parseProbe(json: string, path: string): SourceInfo {
+export type CameraFacing = "front" | "back";
+export type MirroredFrom = "camera-metadata" | "config" | "default";
+
+/** Default do espelhamento sem metadado da câmera nem config: a premissa do #11208 (o bruto da 261027 era espelhado). */
+export const MIRRORED_DEFAULT = true;
+
+/** `publishing.video.mirrored_default` do `platform.config.json` (#11959); `null` = ausente ou não booleano. */
+export function mirroredDefaultFrom(config: unknown): boolean | null {
+  const v = (config as { publishing?: { video?: { mirrored_default?: unknown } } })?.publishing?.video?.mirrored_default;
+  return typeof v === "boolean" ? v : null;
+}
+
+type ProbeTags = Record<string, unknown> | undefined;
+
+/**
+ * A câmera do bruto pelos metadados do ffprobe (#11959), quando o aparelho
+ * grava: o iPhone põe `com.apple.quicktime.camera.lens_model` ("iPhone 15 Pro
+ * back triple camera…", "… front camera …") e `…camera.identifier`
+ * ("Back"/"Front"). Só tags com "camera"/"lens"/"facing" no nome contam;
+ * nenhuma, ou as duas ao mesmo tempo, = `null` (sem leitura).
+ */
+export function cameraFacingFromTags(...tagSets: ProbeTags[]): CameraFacing | null {
+  let front = false;
+  let back = false;
+  for (const tags of tagSets) {
+    for (const [k, v] of Object.entries(tags ?? {})) {
+      if (!/camera|lens|facing/i.test(k) || typeof v !== "string") continue;
+      if (/\b(back|rear|traseira)\b/i.test(v)) back = true;
+      if (/\b(front|frontal|selfie)\b/i.test(v)) front = true;
+    }
+  }
+  return back === front ? null : back ? "back" : "front";
+}
+
+/**
+ * O `mirrored` do `transcribe` (#11959): câmera traseira não espelha, então
+ * `back` no metadado = false; câmera frontal e bruto sem metadado ficam com o
+ * default do config (o espelhamento da frontal depende do aparelho), e sem
+ * config com `MIRRORED_DEFAULT`.
+ */
+export function resolveMirrored(camera: CameraFacing | null, configDefault: boolean | null): { mirrored: boolean; mirroredFrom: MirroredFrom } {
+  if (camera === "back") return { mirrored: false, mirroredFrom: "camera-metadata" };
+  if (configDefault !== null) return { mirrored: configDefault, mirroredFrom: "config" };
+  return { mirrored: MIRRORED_DEFAULT, mirroredFrom: "default" };
+}
+
+/** A premissa do espelhamento em uma linha, para o `transcribe` e o `frame` registrarem no Gate 1 (#11959). */
+export function mirroredPremise(s: Pick<SourceInfo, "mirrored" | "mirroredFrom" | "camera">, override?: boolean): string {
+  if (override !== undefined && override !== s.mirrored) return `mirrored=${override} pelo blocks.json (o transcribe tinha gravado ${s.mirrored})`;
+  const how =
+    s.mirroredFrom === "camera-metadata"
+      ? "metadado da câmera: traseira, não espelha"
+      : s.mirroredFrom === "config"
+        ? `publishing.video.mirrored_default do config${s.camera === "front" ? " (câmera frontal no metadado: o espelho depende do aparelho)" : " (sem metadado da câmera)"}`
+        : s.mirroredFrom === "default"
+          ? "default do #11208, sem metadado da câmera nem config"
+          : "source.json anterior ao #11959, origem não registrada";
+  const ambiguous = s.mirroredFrom !== "camera-metadata";
+  return `mirrored=${s.mirrored} (${how})${ambiguous ? ": premissa, conferir no frame lado a lado no Gate 1 (o lado em que a caneca lê certo diz o valor: bruto = false, espelhado = true; o \"mirrored\" do blocks.json sobrepõe)" : ""}`;
+}
+
+export function parseProbe(json: string, path: string, opts: { mirroredDefault?: boolean | null } = {}): SourceInfo {
   const j = JSON.parse(json) as {
-    streams?: Array<{ codec_type?: string; width?: number; height?: number; r_frame_rate?: string; disposition?: { attached_pic?: number } }>;
-    format?: { duration?: string };
+    streams?: Array<{ codec_type?: string; width?: number; height?: number; r_frame_rate?: string; disposition?: { attached_pic?: number }; tags?: Record<string, unknown> }>;
+    format?: { duration?: string; tags?: Record<string, unknown> };
   };
   // Capa embutida num .m4a/.mp3 vem como stream de vídeo `attached_pic`: não é vídeo.
   const v = j.streams?.find((s) => s.codec_type === "video" && !s.disposition?.attached_pic);
@@ -2804,7 +3032,9 @@ export function parseProbe(json: string, path: string): SourceInfo {
   if (!Number.isInteger(fps)) {
     throw new Error(`fps ${fps} não inteiro: o XML usa timebase inteiro com NTSC=FALSE (premissa da 261027, 30 fps)`);
   }
-  return { path, fps, durationS: round3(durationS), width: v.width, height: v.height, mirrored: true };
+  const camera = cameraFacingFromTags(j.format?.tags, ...(j.streams ?? []).map((st) => st.tags));
+  const m = resolveMirrored(camera, opts.mirroredDefault ?? null);
+  return { path, fps, durationS: round3(durationS), width: v.width, height: v.height, mirrored: m.mirrored, mirroredFrom: m.mirroredFrom, ...(camera ? { camera } : {}) };
 }
 
 /**
