@@ -1237,25 +1237,21 @@
   <url>
     <loc>https://diar.ia.br/p/lula-promete-uma-ia-brasileira</loc>
     <lastmod>2026-10-29</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-10-29T00:00:00.000Z</news:publication_date>
-      <news:title>Lula promete uma IA brasileira</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/pais-acusam-chatgpt-de-matar-sua-filha</loc>
     <lastmod>2026-10-30</lastmod>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/so-o-claude-opus-5-5-supera-a-ia-aberta-da-mistral-no-teste</loc>
+    <lastmod>2026-11-03</lastmod>
     <news:news>
       <news:publication>
         <news:name>diar.ia.br</news:name>
         <news:language>pt</news:language>
       </news:publication>
-      <news:publication_date>2026-10-30T00:00:00.000Z</news:publication_date>
-      <news:title>Pais acusam ChatGPT de matar sua filha</news:title>
+      <news:publication_date>2026-11-03T00:00:00.000Z</news:publication_date>
+      <news:title>Só o Claude Opus 5.5 supera a IA aberta da Mistral no teste às cegas</news:title>
     </news:news>
   </url>
 </urlset>
