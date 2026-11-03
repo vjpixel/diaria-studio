@@ -86,9 +86,3 @@ describe("Paridade stripHeredocSpans da 4ª cópia (block-npm-install-node-modul
     });
   }
 });
-
-// #12029: `inject-session-id.mjs` tem uma 5ª cópia, `stripTextHeredocBodies`,
-// com uma divergência deliberada (mantém o corpo de `bash <<EOF`). A paridade
-// dela vive em `test/inject-session-id-hook.test.ts` — importar o hook aqui
-// somaria um TS7016 à catraca de tipos (o hook não tem `.d.mts`). Ao mexer
-// em HEREDOC_CASES aqui, espelhar lá.

@@ -30,9 +30,7 @@ import {
   shellSingleQuote,
   buildUpdatedCommand,
   detectChainedSessionIdRisk,
-  stripTextHeredocBodies,
 } from "../.claude/hooks/inject-session-id.mjs";
-import { stripHeredocSpans as siblingStripHeredocSpans } from "../.claude/hooks/block-worktree-bare-push.mjs";
 // #7836 — fonte única (ver scripts/lib/session-id-required-subcommands.ts).
 // Iterar sobre ESTA lista em vez de reproduzir os nomes à mão aqui é o que
 // fecha a classe de omissão da issue: se um subcomando novo entrar na lista
@@ -743,126 +741,48 @@ describe("mensagem nomeia o alvo real e heredoc de texto não bloqueia (#12029)"
     assert.doesNotMatch(risk, /session-registry\.ts/);
   });
 
-  it("heredoc de texto que só CITA a invocação no corpo → null", () => {
-    const command =
-      "cat > /tmp/notas.md <<'EOF'\n" +
-      "Rode `npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue 1` standalone.\n" +
-      "E depois npx tsx scripts/cleanup-merged-worktrees.ts.\n" +
-      "EOF";
-    assert.equal(detectChainedSessionIdRisk(command), null);
-  });
+});
 
-  it("heredoc sem aspas, variante <<- e corpo lido por python → null", () => {
-    assert.equal(
-      detectChainedSessionIdRisk(
-        "gh issue comment 1 --body-file - <<EOF\nnpx tsx scripts/overnight-session-marker.ts --start\nEOF",
-      ),
-      null,
-    );
-    assert.equal(
-      detectChainedSessionIdRisk(
-        "cat <<-EOF > f\n\tnpx tsx scripts/resolve-develop-plan-path.ts\n\tEOF",
-      ),
-      null,
-    );
-    assert.equal(
-      detectChainedSessionIdRisk(
-        "python3 - <<'PY'\ns = 'npx tsx scripts/cleanup-merged-worktrees.ts'\nPY",
-      ),
-      null,
-    );
-  });
-
-  it("heredoc de texto + invocação real FORA do corpo → continua bloqueando", () => {
-    const command =
-      "cat > /tmp/f.md <<'EOF'\n" +
-      "texto citando npx tsx scripts/lib/session-registry.ts claim-issue\n" +
-      "EOF\n" +
-      "npx tsx scripts/cleanup-merged-worktrees.ts";
-    const risk = detectChainedSessionIdRisk(command);
-    assert.notEqual(risk, null);
-    assert.match(risk, /cleanup-merged-worktrees\.ts/);
-    assert.doesNotMatch(risk, /session-registry\.ts/);
-  });
-
-  it("invocação real na linha de abertura do heredoc → continua bloqueando", () => {
-    const risk = detectChainedSessionIdRisk(
-      "npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue 1 <<'EOF'\nx\nEOF",
-    );
-    assert.notEqual(risk, null);
-  });
-
-  it("heredoc alimentando um shell (bash <<EOF) → o corpo é comando, continua bloqueando", () => {
-    for (const opener of [
-      "bash <<'EOF'",
-      "sh <<EOF",
-      "ssh host <<EOF",
-      "cd x && bash -s <<EOF",
-      "cat <<'EOF' | bash", // o shell vem DEPOIS do marcador, na mesma linha
-      "sudo -u x bash <<EOF",
-    ]) {
-      const risk = detectChainedSessionIdRisk(
-        `${opener}\nnpx tsx scripts/cleanup-merged-worktrees.ts\nEOF`,
-      );
-      assert.notEqual(risk, null, opener);
-    }
-  });
-
-  it("nome de shell só dentro de aspas na linha de abertura não transforma o corpo em comando", () => {
-    assert.equal(
-      detectChainedSessionIdRisk(
-        "gh issue create --title \"fix bash hook\" --body-file - <<'EOF'\n" +
-          "npx tsx scripts/cleanup-merged-worktrees.ts\nEOF",
-      ),
-      null,
-    );
-  });
-
-  it("heredoc sem terminador: corpo de texto até o fim é removido; com shell, mantido", () => {
-    assert.equal(
-      detectChainedSessionIdRisk("cat <<'EOF'\nnpx tsx scripts/cleanup-merged-worktrees.ts"),
-      null,
-    );
-    assert.notEqual(
-      detectChainedSessionIdRisk("bash <<'EOF'\nnpx tsx scripts/cleanup-merged-worktrees.ts"),
-      null,
-    );
-  });
-
-  // Paridade com as cópias irmãs de `stripHeredocSpans` (#7896) fora do caso
-  // de shell — mesmos casos de HEREDOC_CASES em
-  // test/hook-command-tokenizer-parity-7896.test.ts.
-  for (const input of [
-    "",
-    "git push origin master",
-    "cat <<EOF\ngit push\nEOF",
-    "cat <<'EOF'\nrm -rf /\nEOF",
-    "cat <<-EOF\n  git push\n  EOF",
-    "gh issue create --body-file - <<'EOF'\nrode git push depois\nEOF\necho done",
-    "echo sem heredoc && git push origin main",
-    "cat <<< foo\ngit push\nfoo",
-    "cat <<<EOF\ngit push\nEOF",
-    "echo $((1<<2))\ngit push",
-  ]) {
-    it(`paridade com stripHeredocSpans (#7896) para: ${JSON.stringify(input)}`, () => {
-      assert.equal(stripTextHeredocBodies(input), siblingStripHeredocSpans(input));
+// #12029 (parte do heredoc retirada da PR #12048): uma versão que ignorava o
+// corpo de heredoc de texto mediu falsos negativos — comandos que a base
+// bloqueia e que passariam a sair sem --session-id. Estes casos travam o
+// comportamento da base: TODOS continuam BLOQUEADOS. Quem tentar de novo
+// ignorar heredoc precisa passar por aqui.
+describe("heredoc não abre buraco no bloqueio de encadeado (#12029, regressão)", () => {
+  const TARGET = "npx tsx scripts/cleanup-merged-worktrees.ts";
+  const cases: Array<[string, string]> = [
+    // (a) marcador de heredoc dentro de aspas ou comentário, sem terminador,
+    // seguido de invocação real em outra linha.
+    ["(a) <<'EOF' dentro de aspas duplas (grep)", `grep -rn "<<'EOF'" scripts/\n${TARGET}`],
+    ["(a) <<EOF dentro de --body", `gh issue comment 1 --body "use cat <<EOF"\n${TARGET}`],
+    ["(a) <<EOF em comentário", `# usar <<EOF\n${TARGET}`],
+    // (b) substituição de comando no corpo de heredoc sem aspas: expande.
+    ["(b) $(...) no corpo sem aspas", `cat <<EOF\n$(${TARGET})\nEOF`],
+    ["(b) crase no corpo sem aspas", "cat <<EOF\n`" + TARGET + "`\nEOF"],
+    // (c) shells/executores que o regex de interpretador não reconhecia.
+    ["(c) /bin/bash <<'EOF'", `/bin/bash <<'EOF'\n${TARGET}\nEOF`],
+    ["(c) bash<<'EOF' sem espaço", `bash<<'EOF'\n${TARGET}\nEOF`],
+    ["(c) sudo -u x bash<<'EOF'", `sudo -u x bash<<'EOF'\n${TARGET}\nEOF`],
+    ["(c) parallel <<'EOF'", `parallel <<'EOF'\n${TARGET}\nEOF`],
+    // (d) heredoc grava script que é executado depois / pipe na linha seguinte.
+    ["(d) cat > r.sh <<'EOF' … EOF; bash r.sh", `cat > /tmp/r.sh <<'EOF'\n${TARGET}\nEOF\nbash /tmp/r.sh`],
+    ["(d) cat <<'EOF' | com bash na linha seguinte", `cat <<'EOF' |\nbash\n${TARGET}\nEOF`],
+    // (e) outra linguagem disparando o alvo por subprocess.
+    ["(e) node <<'EOF' com execSync", `node <<'EOF'\nrequire('child_process').execSync('${TARGET}')\nEOF`],
+    // casos que a versão anterior já cobria — seguem bloqueados.
+    ["texto em heredoc + invocação real depois do terminador", `cat > /tmp/f.md <<'EOF'\ntexto\nEOF\n${TARGET}`],
+    ["invocação na linha de abertura", `${TARGET} <<'EOF'\nx\nEOF`],
+    ["bash <<'EOF'", `bash <<'EOF'\n${TARGET}\nEOF`],
+    ["ssh host <<EOF", `ssh host <<EOF\n${TARGET}\nEOF`],
+    ["cat <<'EOF' | bash", `cat <<'EOF' | bash\n${TARGET}\nEOF`],
+  ];
+  for (const [label, command] of cases) {
+    it(`bloqueia: ${label}`, () => {
+      const risk = detectChainedSessionIdRisk(command);
+      assert.notEqual(risk, null, command);
+      assert.match(risk as string, /cleanup-merged-worktrees\.ts/);
     });
   }
-
-  it("diverge de propósito da cópia irmã quando o heredoc alimenta um shell", () => {
-    const input = "bash <<'EOF'\ngit push\nEOF";
-    assert.equal(stripTextHeredocBodies(input), input);
-    assert.notEqual(siblingStripHeredocSpans(input), input);
-  });
-
-  it("stripTextHeredocBodies preserva a linha de abertura e o que vem depois do terminador", () => {
-    assert.equal(
-      stripTextHeredocBodies("cat <<'EOF'\ncorpo\nEOF\necho fim"),
-      "cat <<'EOF'\n\necho fim",
-    );
-    // `<<<` é here-string, não heredoc.
-    assert.equal(stripTextHeredocBodies("cat <<< foo\nlinha"), "cat <<< foo\nlinha");
-  });
 });
 
 describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)", () => {
