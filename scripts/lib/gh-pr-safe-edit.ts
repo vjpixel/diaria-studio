@@ -391,17 +391,17 @@ export function parseIssuesFlag(raw: string | undefined): number[] | null {
  * #11930: `--verify-body` só CONFERE o corpo atual da PR — nunca grava. Na
  * rodada 261102b (PR #11915) uma linha `removal-declaration:` foi "editada"
  * com `--verify-body`, o helper saiu com sucesso e a edição não persistiu.
- * Combinar `--verify-body` com texto novo (`--body-file`/`--body`) é sempre
+ * Combinar `--verify-body` com escrita (`--body-file`/`--body`/`--add-label`, #11934) é sempre
  * engano de modo: recusa com erro em vez de conferir o corpo velho e sair 0.
  * Devolve a mensagem de erro, ou `null` se a combinação é válida.
  */
 export function verifyBodyConflictError(values: Record<string, string>, flags: Set<string>): string | null {
   if (!flags.has("verify-body") && values["verify-body"] === undefined) return null;
-  const novos = ["body-file", "body"].filter((k) => values[k] !== undefined || flags.has(k));
+  const novos = ["body-file", "body", "add-label"].filter((k) => values[k] !== undefined || flags.has(k));
   if (novos.length === 0) return null;
   return (
     `--verify-body só confere o corpo atual da PR e NÃO grava; não combina com ${novos.map((k) => `--${k}`).join("/")}. ` +
-    `Para gravar o corpo novo, rode só com --body-file arquivo.md (que já faz a mesma conferência antes de escrever); ` +
+    `Para gravar, rode sem --verify-body (--body-file arquivo.md já faz a mesma conferência antes de escrever; --add-label grava a label); ` +
     `depois, se quiser, --verify-body sozinho (#11930).`
   );
 }
