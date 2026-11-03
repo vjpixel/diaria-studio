@@ -145,16 +145,19 @@ const BARE_DOMAIN = /[A-Za-z0-9-]\.([a-z]{2,})(?![\p{L}\p{N}])/gu;
 /**
  * Palavras portuguesas só-ASCII que podem vir coladas depois de um ponto. Sem
  * `so` (`só` sem acento): colide com `Notion.so`, e a grafia sem acento já é erro.
+ * Demonstrativos e verbos comuns também são prosa após ponto (#12002).
  */
 const PT_WORDS_AFTER_DOT = new Set(
   (
     "de do da dos das no na nos nas num numa em um uma uns umas se me te lhe " +
     "ao aos as os ou mas que por para pra pro com sem sob sobre entre ate apos " +
     "depois antes agora ainda assim logo pois porque quando onde como mais menos " +
-    "bem mal sim nao ja tambem isso isto aquilo aqui ali la cada todo toda " +
+    "bem mal sim nao ja tambem isso isto aquilo esse essa esses essas este esta estes estas " +
+    "aquele aquela aqueles aquelas aqui ali la cada todo toda " +
     "todos todas tudo nada nem muito muita muitos muitas pouco outro outra outros " +
     "outras eu tu ele ela eles elas voce voces nosso nossa seu sua seus suas meu " +
-    "minha foi era sao ser ter tem vai vao fazer faz hoje ontem amanha sempre nunca " +
+    "minha foi era sao ser ter tem vai vao fazer faz pode podem deve devem vamos precisa precisam " +
+    "hoje ontem amanha sempre nunca " +
     "talvez enfim alias inclusive entao veja vale olha confira leia saiba"
   ).split(" "),
 );

@@ -310,7 +310,8 @@ import { evaluatePrChecksGate } from "./lib/pr-checks-gate.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { SITE_PAGE_REVIEWED_DIGEST_FIELD } from "./lib/site-page-staleness.ts";
+import { SITE_PAGE_HTML_RENDERED_FROM_FIELD, SITE_PAGE_REVIEWED_DIGEST_FIELD } from "./lib/site-page-staleness.ts";
+import { readRenderSourceStamp, REVIEWED_MD, sha256OfFileOrNull } from "./lib/newsletter-html-freshness.ts"; // #11987
 import { acquireMergeLock, releaseMergeLock } from "./lib/session-registry.ts";
 // #8645: backfill de SEO (image no JSON-LD a partir do hero) restrito a 1
 // slug + regeneração do índice paginado do acervo — ambos rodam como parte
@@ -3282,6 +3283,26 @@ export function sitePageMergeBlocker(state: {
   );
 }
 
+/**
+ * #11987: sha256 do `02-reviewed.md` que gerou o `newsletter-final.html` em
+ * disco, lido do carimbo do render (#10258). Gravado no state na publicação:
+ * o `reviewedDigest` (#11954) é o `.md` do momento, e uma republicação sem
+ * re-render o regrava com o `.md` editado sobre a página antiga. `undefined`
+ * sem carimbo (render anterior ao #10258) — a checagem fica pulada.
+ */
+export function sitePageHtmlRenderedFrom(editionDirAbs: string): string | undefined {
+  return readRenderSourceStamp(editionDirAbs)?.reviewed_sha256;
+}
+
+/**
+ * #11987: sha256 dos bytes atuais do `02-reviewed.md` — o mesmo algoritmo do
+ * carimbo do render (bytes crus, sem normalizar CRLF), pra comparar com
+ * `htmlRenderedFromReviewedSha256`. `undefined` sem o arquivo.
+ */
+export function sitePageCurrentReviewedSha256(editionDirAbs: string): string | undefined {
+  return sha256OfFileOrNull(join(editionDirAbs, REVIEWED_MD)) ?? undefined;
+}
+
 function safeReviewedDigest(editionDirAbs: string): string | undefined {
   try {
     return sitePageReviewedDigest(editionDirAbs);
@@ -3384,6 +3405,10 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
     // destaque) não muda `newsletter-final.html` sem re-render.
     [SITE_PAGE_REVIEWED_DIGEST_FIELD]:
       "published" in result && result.published === true ? safeReviewedDigest(editionDirAbs) : undefined,
+    // #11987: o `.md` que GEROU o HTML publicado (carimbo do render) — o
+    // `reviewedDigest` acima não distingue republicação sem re-render.
+    [SITE_PAGE_HTML_RENDERED_FROM_FIELD]:
+      "published" in result && result.published === true ? sitePageHtmlRenderedFrom(editionDirAbs) : undefined,
     [SITE_PAGE_LAST_PUBLISHED_FIELD]: lastPublished ?? undefined,
     [SITE_PAGE_PUBLISHED_SLUGS_FIELD]: publishedSlugs.length > 0 ? publishedSlugs : undefined,
     checked_at: new Date().toISOString(),
