@@ -26,12 +26,23 @@
  *   `\n` literal ou quebra real) em até 2 linhas alinhadas à direita, com até
  *   4 palavras POR LINHA ("Confiou no chatbot|e morreu").
  *
+ *   Desde a edição 261103 (#11942): o padrão volta a ser o da 261021 ("IA
+ *   ladra?"), que o editor apontou como a melhor capa. Layout `bottom`
+ *   (default): retrato em close-up grande à esquerda (até 55% da largura,
+ *   altura inteira, colado na base), gancho grande no canto INFERIOR direito
+ *   (pode passar por cima do ombro, como na referência, mas encolhe se fosse
+ *   invadir mais que isso), gradiente escuro na base e vinheta nas bordas. O
+ *   close-up vem do Codex com o frame do vídeo só como referência de
+ *   identidade (`youtube-thumb-portrait.ts`). O layout `top` (#11220) segue
+ *   disponível com `layout: "top"` / `--layout top`.
+ *
  *   Short (capa vertical): um frame do próprio vídeo vertical dentro da janela
  *   do lettering do título (~3,5 s iniciais) — `ffmpeg -ss {t}`; aqui só os
  *   argumentos e a checagem da janela.
  *
- * Referências aprovadas: `data/editions/2610/261021/04-youtube-thumb.jpg` e
- * `data/editions/2610/261022/04-youtube-thumb.jpg`.
+ * Referência do padrão (#11942): `data/editions/2610/261021/04-youtube-thumb.jpg`.
+ * Também aprovadas: `261022/04-youtube-thumb.jpg` e, no layout `top`,
+ * `261027/04-youtube-thumb.jpg`.
  */
 
 import sharp from "sharp";
@@ -74,6 +85,41 @@ const PORTRAIT_MAX_W_RATIO = 0.5;
  */
 export const GRADIENT_END_RATIO = 0.45;
 export const GRADIENT_MAX_OPACITY = 0.6;
+
+/**
+ * Layout da capa horizontal (#11942). `bottom` = padrão da 261021 (close-up à
+ * esquerda, gancho embaixo à direita, vinheta); `top` = padrão de 261027
+ * (#11220: retrato de corpo na base, gancho no topo).
+ */
+export type ThumbLayout = "bottom" | "top";
+export const THUMB_LAYOUTS: readonly ThumbLayout[] = ["bottom", "top"];
+export const DEFAULT_THUMB_LAYOUT: ThumbLayout = "bottom";
+
+/** Valida o `--layout`; ausente → default. Lança com as opções fora delas. */
+export function parseThumbLayout(raw: string | undefined): ThumbLayout {
+  if (raw === undefined) return DEFAULT_THUMB_LAYOUT;
+  const v = raw.trim().toLowerCase();
+  if ((THUMB_LAYOUTS as readonly string[]).includes(v)) return v as ThumbLayout;
+  throw new Error(`--layout ${JSON.stringify(raw)} inválido: use ${THUMB_LAYOUTS.join(" ou ")} (default ${DEFAULT_THUMB_LAYOUT}, #11942)`);
+}
+
+/** Layout `bottom` (#11942): close-up até 55% da largura, altura inteira. */
+const BOTTOM_PORTRAIT_MAX_W_RATIO = 0.55;
+const BOTTOM_PORTRAIT_MAX_H_RATIO = 1;
+/** Distância entre a base da caixa do gancho e a borda de baixo (#11942). */
+const HOOK_BOTTOM_MARGIN = 40;
+/**
+ * O gancho de baixo nunca começa antes de ~40% da largura (na 261021 começa
+ * em x≈560 de 1280): largura máxima 720.
+ */
+const BOTTOM_HOOK_MAX_WIDTH = 720;
+/**
+ * Quanto o gancho de baixo pode passar por cima do retrato (o ombro), em px.
+ * Na 261021 o "IA" cobre ~140 px da camiseta; acima disso o gancho encolhe.
+ */
+export const BOTTOM_HOOK_PORTRAIT_OVERLAP = 160;
+/** Vinheta (#11942): bordas escurecidas, centro da cena à direita intacto. */
+export const VIGNETTE_MAX_OPACITY = 0.7;
 
 export interface HookParts {
   /** Texto em cor papel (sem o `?` final). Com quebra, as linhas unidas por espaço. */
@@ -179,8 +225,20 @@ export function escapeXml(s: string): string {
  * Camada do gradiente escuro (fica ATRÁS do retrato, pra não apagá-lo). Desde
  * o #11220 é escura no topo, onde está o gancho, e some em 45% da altura.
  */
-export function buildGradientSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H): string {
+export function buildGradientSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H, position: "top" | "bottom" = "top"): string {
   const y1 = Math.round(h * GRADIENT_END_RATIO);
+  if (position === "bottom") {
+    // #11942: espelho do de cima — escuro na base, onde fica o gancho.
+    return (
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+      `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
+      `<stop offset="0" stop-color="#000" stop-opacity="0"/>` +
+      `<stop offset="1" stop-color="#000" stop-opacity="${GRADIENT_MAX_OPACITY}"/>` +
+      `</linearGradient></defs>` +
+      `<rect x="0" y="${h - y1}" width="${w}" height="${y1}" fill="url(#g)"/>` +
+      `</svg>`
+    );
+  }
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
     `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
@@ -188,6 +246,23 @@ export function buildGradientSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H): stri
     `<stop offset="1" stop-color="#000" stop-opacity="0"/>` +
     `</linearGradient></defs>` +
     `<rect x="0" y="0" width="${w}" height="${y1}" fill="url(#g)"/>` +
+    `</svg>`
+  );
+}
+
+/**
+ * Vinheta do layout `bottom` (#11942): radial elíptica, transparente no miolo
+ * (centrado um pouco à direita, onde fica a cena do D1) e escura nas bordas,
+ * como na capa de 261021. Fica atrás do retrato.
+ */
+export function buildVignetteSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H): string {
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+    `<defs><radialGradient id="v" cx="0.62" cy="0.42" r="0.75">` +
+    `<stop offset="0.45" stop-color="#000" stop-opacity="0"/>` +
+    `<stop offset="1" stop-color="#000" stop-opacity="${VIGNETTE_MAX_OPACITY}"/>` +
+    `</radialGradient></defs>` +
+    `<rect x="0" y="0" width="${w}" height="${h}" fill="url(#v)"/>` +
     `</svg>`
   );
 }
@@ -285,6 +360,17 @@ export function hookWidthBeside(portraitRight: number, thumbW = YOUTUBE_THUMB_W)
   return Math.min(HOOK_MAX_WIDTH, thumbW - HOOK_RIGHT_MARGIN - (portraitRight + 1 + HOOK_PORTRAIT_GAP));
 }
 
+/**
+ * Largura disponível para o gancho EMBAIXO à direita (#11942): ele pode passar
+ * por cima do retrato até `BOTTOM_HOOK_PORTRAIT_OVERLAP` px (o ombro, como na
+ * 261021), nunca mais que isso, e nunca passa de `BOTTOM_HOOK_MAX_WIDTH`.
+ */
+export function hookWidthBesideBottom(portraitRight: number, thumbW = YOUTUBE_THUMB_W): number {
+  if (portraitRight < 0) return BOTTOM_HOOK_MAX_WIDTH;
+  const startX = Math.max(0, portraitRight + 1 - BOTTOM_HOOK_PORTRAIT_OVERLAP);
+  return Math.min(BOTTOM_HOOK_MAX_WIDTH, thumbW - HOOK_RIGHT_MARGIN - startX);
+}
+
 /** Realce do retrato aprovado pelo editor em 261027 (#11228). */
 export const PORTRAIT_CONTRAST = { a: 1.25, b: -32 } as const;
 export const PORTRAIT_SATURATION = 1.08;
@@ -322,6 +408,8 @@ export interface ComposeThumbInput {
   hook: string;
   /** Aplica `enhancePortrait` antes de compor (#11228). Default: false. */
   enhancePortrait?: boolean;
+  /** Layout (#11942). Default: `bottom`, o padrão da 261021. */
+  layout?: ThumbLayout;
 }
 
 export interface ComposeThumbResult {
@@ -365,45 +453,67 @@ export async function composeYouTubeThumb(input: ComposeThumbInput): Promise<Com
     .resize(W, H, { fit: "cover", position: "centre" })
     .toBuffer();
 
-  // Retrato: apara a transparência em volta, cabe em 50% x 94%, colado à esquerda e na base.
+  const layout = input.layout ?? DEFAULT_THUMB_LAYOUT;
+  const bottom = layout === "bottom";
+
+  // Retrato: apara a transparência em volta e cola à esquerda, na base. No
+  // layout `top` cabe em 50% x 94%; no `bottom` (#11942) é o close-up grande,
+  // até 55% da largura e a altura inteira.
   const source = input.enhancePortrait ? await enhancePortrait(input.portrait) : input.portrait;
   const trimmed = await sharp(source).rotate().trim().png().toBuffer();
+  const [maxWRatio, maxHRatio] = bottom
+    ? [BOTTOM_PORTRAIT_MAX_W_RATIO, BOTTOM_PORTRAIT_MAX_H_RATIO]
+    : [PORTRAIT_MAX_W_RATIO, PORTRAIT_MAX_H_RATIO];
   const portrait = await sharp(trimmed)
-    .resize(Math.round(W * PORTRAIT_MAX_W_RATIO), Math.round(H * PORTRAIT_MAX_H_RATIO), { fit: "inside" })
+    .resize(Math.round(W * maxWRatio), Math.round(H * maxHRatio), { fit: "inside" })
     .png()
     .toBuffer();
   const ph = (await sharp(portrait).metadata()).height ?? 0;
-  let hookLayer = await renderHookLayer(input.hook);
+  const maxHookWidth = bottom ? BOTTOM_HOOK_MAX_WIDTH : HOOK_MAX_WIDTH;
+  let hookLayer = await renderHookLayer(input.hook, maxHookWidth);
+  const hookTop = (height: number) => (bottom ? H - HOOK_BOTTOM_MARGIN - height : HOOK_TOP_MARGIN);
 
-  // #11228: com o gancho no topo, ele não pode invadir a cabeça do retrato.
+  // #11228: no topo, o gancho não pode invadir a cabeça do retrato; #11942:
+  // embaixo, pode passar por cima do ombro só até BOTTOM_HOOK_PORTRAIT_OVERLAP.
   // Mede a parte opaca do retrato nas linhas do gancho e encolhe o gancho
-  // (equivale a reduzir a fonte) até caber ao lado, com folga.
+  // (equivale a reduzir a fonte) até caber.
   const portraitRaw = await sharp(portrait).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const rightEdge = portraitRightEdgeInRows(
     { data: portraitRaw.data, width: portraitRaw.info.width, height: portraitRaw.info.height, channels: portraitRaw.info.channels },
     H - ph,
-    HOOK_TOP_MARGIN,
-    HOOK_TOP_MARGIN + hookLayer.height,
+    hookTop(hookLayer.height),
+    hookTop(hookLayer.height) + hookLayer.height,
   );
-  const available = hookWidthBeside(rightEdge, W);
+  const available = bottom ? hookWidthBesideBottom(rightEdge, W) : hookWidthBeside(rightEdge, W);
   if (hookLayer.width > available) {
     if (available < HOOK_MIN_WIDTH) {
       warnings.push(
-        `gancho encostaria no retrato (só ${available}px livres ao lado da cabeça) — reduzido ao mínimo de ${HOOK_MIN_WIDTH}px e pode sobrepor; encurte o gancho ou use um retrato mais baixo`,
+        bottom
+          ? `gancho cobriria demais o retrato (só ${available}px livres à direita dele) — reduzido ao mínimo de ${HOOK_MIN_WIDTH}px e pode sobrepor; encurte o gancho ou use um close-up mais estreito`
+          : `gancho encostaria no retrato (só ${available}px livres ao lado da cabeça) — reduzido ao mínimo de ${HOOK_MIN_WIDTH}px e pode sobrepor; encurte o gancho ou use um retrato mais baixo`,
       );
     }
     hookLayer = await renderHookLayer(input.hook, Math.max(HOOK_MIN_WIDTH, available));
   }
 
+  // Embaixo, o gancho vai POR CIMA do retrato (cobre o ombro, como na 261021);
+  // a vinheta e o gradiente ficam atrás do retrato nos dois layouts.
+  const shading = bottom
+    ? [
+        { input: Buffer.from(buildVignetteSvg(W, H)), left: 0, top: 0 },
+        { input: Buffer.from(buildGradientSvg(W, H, "bottom")), left: 0, top: 0 },
+      ]
+    : [{ input: Buffer.from(buildGradientSvg(W, H, "top")), left: 0, top: 0 }];
+
   const compose = (quality: number) =>
     sharp(background)
       .composite([
-        { input: Buffer.from(buildGradientSvg(W, H)), left: 0, top: 0 },
+        ...shading,
         { input: portrait, left: 0, top: H - ph },
         {
           input: hookLayer.png,
           left: W - HOOK_RIGHT_MARGIN - hookLayer.width,
-          top: HOOK_TOP_MARGIN,
+          top: hookTop(hookLayer.height),
         },
       ])
       .flatten({ background: COLORS.ink })

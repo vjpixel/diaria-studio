@@ -174,6 +174,10 @@ export function decideCorteTimerRun(input: {
     for (const d of authorized.filter((x) => !known.has(x))) {
       alarms.push({ destination: d, key: "unknown-destination", reason: `o "pode publicar" do corte cita ${d}, que a config atual não conhece: o timer não publica nada nele` });
     }
+    // #11923: destino derrubado e depois renomeado na config também alarma (o `revoked` abaixo só vê os da config).
+    for (const d of revoked.filter((x) => !known.has(x) && !authorized.includes(x) && !done.has(x))) {
+      alarms.push({ destination: d, key: "unknown-destination", reason: `o "pode publicar" do ${d} caiu em ${spec.publish_revoked_at} e a config atual não conhece ${d}: o timer não publica nada nele` });
+    }
     const lost = enabled.filter((d) => revoked.includes(d) && !authorized.includes(d) && !done.has(d));
     for (const d of lost) {
       alarms.push({
@@ -244,6 +248,11 @@ export function interpretCorteTimerOutput(exitCode: number | null, stdout: strin
   }
   // #11912: o filho (`--require-corte-authorization`) recusou sem publicar nada: o motivo vira o alarme certo.
   if (typeof out?.authorization_refused === "string") {
+    // #11923: o plano mudou no meio da rodada e o novo já tem o "pode publicar": a próxima execução publica.
+    if (out.authorization_refused === "replanned") {
+      const detail = `o plano mudou durante a rodada e o novo já está autorizado; sai na próxima execução: ${String(out.reason ?? "sem motivo")}`;
+      return pending.map((destination) => ({ destination, kind: "wait", detail }));
+    }
     const refused: Record<string, CorteTimerAlarmKey> = { revoked: "revoked", "content-changed": "content-changed", "missing-content": "missing-video", "spec-unreadable": "crash" };
     // #11923: motivo desconhecido (timer e filho em versões diferentes) não vira "revoked" enganoso.
     const key = refused[out.authorization_refused] ?? "crash";
@@ -358,7 +367,9 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
  * #11912 (E): id do alarme (dedup e fingerprint). `revoked` e
  * `content-changed` levam a variante (a data da queda; o sha256 do arquivo
  * atual): uma 2ª queda, ou um 2º arquivo trocado, avisa de novo em vez de
- * cair no "já avisado" da 1ª.
+ * cair no "já avisado" da 1ª. #11923: `late` e `missing-video` levam a data e
+ * o horário do plano (replanejar o corte para outro dia avisa de novo);
+ * `unknown-destination`, a data da autorização (ou da queda) que cita o nome.
  */
 export function corteAlarmId(destination: string, key: CorteTimerAlarmKey, variant?: string): string {
   return variant ? `${destination}:${key}:${variant}` : `${destination}:${key}`;
@@ -368,6 +379,8 @@ export function corteAlarmId(destination: string, key: CorteTimerAlarmKey, varia
 export function corteAlarmVariant(key: CorteTimerAlarmKey, spec: CorteSpec, content: CorteContentFingerprint | null): string | undefined {
   if (key === "revoked") return spec.publish_revoked_at ?? spec.publish_confirmed_at;
   if (key === "content-changed" && content) return `${(content.video_sha256 ?? "sem-video").slice(0, 12)}-${(content.cover_sha256 ?? "sem-capa").slice(0, 12)}`;
+  if (key === "late" || key === "missing-video") return `${spec.date}-${spec.hhmm}`;
+  if (key === "unknown-destination") return spec.publish_confirmed_at ?? spec.publish_revoked_at ?? `${spec.date}-${spec.hhmm}`;
   return undefined;
 }
 
@@ -450,7 +463,7 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
     console.log(`${LOG_PREFIX} ${spec.slug}: ${decision.reason}`);
     if (dryRun) return 0;
     let ok = sideOk;
-    for (const d of decision.pending) ok = (await alarm(dir, spec, d, "late", decision.reason)) && ok;
+    for (const d of decision.pending) ok = (await alarm(dir, spec, d, "late", decision.reason, corteAlarmVariant("late", spec, null))) && ok;
     return ok ? 0 : 1;
   }
   const release = dryRun ? () => {} : acquireTimerLock(join(dir, CORTE_TIMER_LOCK_FILE), deps.now.getTime());
@@ -465,7 +478,7 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
       console.error(`${LOG_PREFIX} ${spec.slug}: ${reason}`);
       if (dryRun) return 0;
       let ok = sideOk;
-      for (const d of decision.pending) ok = (await alarm(dir, spec, d, "missing-video", reason)) && ok;
+      for (const d of decision.pending) ok = (await alarm(dir, spec, d, "missing-video", reason, corteAlarmVariant("missing-video", spec, null))) && ok;
       return ok ? 0 : 1;
     }
     // #11912: vídeo/capa trocados depois do "pode publicar" não saem (alarme, não silêncio); capa
@@ -495,8 +508,10 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
       if (o.kind !== "alarm") continue;
       // A recusa do filho relê o corte: a variante é a da queda/arquivo de agora.
       // #11923: se reler falha (OneDrive), segue sem variante — o alarme não pode se perder por isso.
-      let variant: string | undefined;
-      if (o.key === "revoked" || o.key === "content-changed") {
+      // #11923: os demais (late, missing-video) levam a variante do plano desta rodada.
+      const rereads = o.key === "revoked" || o.key === "content-changed";
+      let variant = rereads ? undefined : corteAlarmVariant(o.key, spec, null);
+      if (rereads) {
         try {
           variant = corteAlarmVariant(o.key, parseCorteSpec(readFileSync(specPath, "utf8"), specPath), corteContentFingerprint(dir, spec));
         } catch (e) {

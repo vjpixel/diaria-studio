@@ -107,6 +107,7 @@ describe("composeYouTubeThumb (#10800)", () => {
       background: await solid(1280, 720, [0, 0, 255]),
       portrait: await cutoutPortrait(),
       hook: "IA ladra?",
+      layout: "top", // #11942: o default virou bottom; este teste trava o layout top (#11220)
     });
     const { data, info } = await sharp(jpeg).raw().toBuffer({ resolveWithObject: true });
     const px = (x: number, y: number) => {
@@ -126,6 +127,7 @@ describe("composeYouTubeThumb (#10800)", () => {
       background: await solid(1280, 720, [0, 0, 0]),
       portrait: await sharp({ create: { width: 10, height: 10, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0.02 } } }).png().toBuffer(),
       hook: "Superinteligência descontrolada amanhã?",
+      layout: "top", // #11942
     });
     const { data, info } = await sharp(jpeg).raw().toBuffer({ resolveWithObject: true });
     let minX = Infinity;
