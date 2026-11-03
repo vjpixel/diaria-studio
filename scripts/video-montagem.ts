@@ -41,7 +41,8 @@
  *   frame AAMMDD --at S    frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
  *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
  *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz)
- *   build AAMMDD [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode text|png|off]
+ *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode text|png|off]
+ *       (#11935) grava um XML por sequência ({nome da sequência}.xml); `--seq` grava só uma, plan.json guarda todas
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Clipes contíguos no bruto viram um só e o zoom alterna só nos cortes (#11503). Os cortes
  *       são refinados pelo áudio do bruto (#11500, `lib/diaria/video-cut-refine.ts`): vale de
@@ -984,8 +985,9 @@ function cmdRoteiro(ctx: Ctx): number {
   return 0;
 }
 
-export function xmlFileName(edition: string): string {
-  return `${edition} - montagem (importar no Premiere).xml`;
+/** #11935: um XML por sequência, nomeado por ela (`Diaria comentada_Youtube_V1.xml`). */
+export function xmlFileName(seqName: string): string {
+  return `${seqName.replace(/[\\/:*?"<>|]/g, "-")}.xml`;
 }
 export function srtFileName(seqName: string): string {
   return `${seqName} - legendas.srt`;
@@ -1160,7 +1162,7 @@ export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: nu
   return `[premissa] ganho de áudio no XML: ${g.db > 0 ? "+" : ""}${g.db.toFixed(2)} dB em cada clipe (Audio Levels, limitado pelo ${why})${from}; conferir no 1º import se o Premiere aplicou (#11755); --no-audio-gain tira`;
 }
 
-async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "text"): Promise<number> {
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "text", seq?: string): Promise<number> {
   const { file, source, plans: ps0, hash, resolved } = plans(ctx);
   const refined = refineCuts(ctx, ps0, source, audioRefine);
   const ps = refined.plans;
@@ -1168,7 +1170,9 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   const { framing, assumed } = effectiveFraming(file);
   if (assumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (rosto em 48% da largura, olhos em 54% da altura)");
   let problems = 0;
-  for (const p of ps) {
+  // #11935: --seq grava só o XML daquela sequência (plan.json guarda todas) e só ela barra o build.
+  const picked = pickPlans(ps, seq, false);
+  for (const p of picked) {
     const d = p.durationFrames / source.fps;
     console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}`);
     if (p.missingBlocks.length) console.error(`   faltam no blocks.json: ${p.missingBlocks.join(", ")}`);
@@ -1235,13 +1239,17 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       console.error(`[premissa] título do corte "${corte}" (screenTitle da sequência): "${t.text}" (#11900)`);
     }
   }
-  const xml = buildXmeml(ps, source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte });
-  const xmlPath = join(ctx.outDir, xmlFileName(ctx.edition));
-  writeFileAtomic(xmlPath, xml);
+  // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
+  const xmlPaths: string[] = [];
+  for (const p of picked) {
+    const xmlPath = join(ctx.outDir, xmlFileName(p.spec.name));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte }));
+    xmlPaths.push(xmlPath);
+  }
   const pf: PlanFile = { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps, cutRefine: refined.info };
   writeJson(f(ctx, "plan.json"), pf);
   if (source.mirrored) console.error("[premissa] bruto espelhado: aplicar Horizontal Flip nos clipes no Premiere (o Premiere ignora o Flop do XML, #11358)");
-  console.log(xmlPath);
+  for (const x of xmlPaths) console.log(x);
   return 0;
 }
 
@@ -1785,7 +1793,7 @@ async function runCommand(
         console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");
         return 2;
       }
-      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)));
+      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq);
     case "srt":
       return cmdSrt(ctx, seq, flags.has("from-raw"));
     case "preview":
