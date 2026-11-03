@@ -19,6 +19,13 @@ import {
 } from "../scripts/lib/beehiiv-backup-staleness-alarm.ts";
 import { main as alarmMain } from "../scripts/beehiiv-backup-staleness-alarm.ts";
 
+// #11413: o main() lista o R2 de verdade por default — teste nenhum pode
+// alcançar o bucket nem depender do .env da máquina.
+const REMOTE_OK_DEPS = {
+  skipEnvLoad: true,
+  checkRemote: async () => ({ configured: true as const, ok: true, fingerprint: null, prefixes: [] }),
+};
+
 /** Simula N rodadas do alarme sobre um único campo de fingerprint. */
 function simulate(sequence: Array<string | null>): string[] {
   let last: string | null = null;
@@ -107,7 +114,7 @@ describe("#10780 — main() zera os fingerprints quando os checks voltam ao ok",
         }),
       );
 
-      await alarmMain(["--root", root, "--state", statePath]);
+      await alarmMain(["--root", root, "--state", statePath], REMOTE_OK_DEPS);
 
       const state = JSON.parse(readFileSync(statePath, "utf8"));
       assert.equal(state.lastCoverageFingerprint, null);
@@ -140,7 +147,7 @@ describe("#10780 — main() zera os fingerprints quando os checks voltam ao ok",
       });
       writeFileSync(statePath, seeded);
 
-      await alarmMain(["--dry-run", "--root", root, "--state", statePath]);
+      await alarmMain(["--dry-run", "--root", root, "--state", statePath], REMOTE_OK_DEPS);
 
       assert.equal(readFileSync(statePath, "utf8"), seeded);
     } finally {

@@ -284,7 +284,7 @@ export function buildRemoteOffsiteAlarmEmail(input: { missingCredentials: string
           `Variáveis ausentes no ambiente: ${input.missingCredentials.join(", ")}.`,
           "Sem elas não dá pra conferir a cópia remota; isso é um achado, não um ok.",
         ]
-      : [`Limite: ${input.maxAgeDays} dia(s) desde o objeto mais recente de cada prefixo.`, "", ...input.lines]),
+      : [`Limite: ${input.maxAgeDays} dia(s) desde a data (na chave) do objeto mais recente de cada prefixo.`, "", ...input.lines]),
     "",
     "A cópia é enviada pelo 2º passo da task Diaria-Beehiiv-Backup (scripts/backup-offsite.ts), domingo 03:00 BRT.",
     "Para repetir à mão: doppler run -- npx tsx scripts/backup-offsite.ts",

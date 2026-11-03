@@ -68,7 +68,7 @@ O alarme semanal (`beehiiv-backup-staleness-alarm.ts`) checa também:
 
 - **Cobertura mensal:** todo mês fechado desde 2026-08 precisa ter ao menos 1 snapshot. Se a perda de um mês for definitiva, listar o mês em `BEEHIIV_BACKUP_ACKNOWLEDGED_LOST_MONTHS` (`scripts/lib/beehiiv-backup-staleness-alarm.ts`).
 - **Exit-history:** `exit-history/manifest.json` precisa existir com `complete: true`. O drain é feito pelo agent `beehiiv-exit-history-drain` (#7248), que só roda numa sessão com o conector Beehiiv; o Stage 0 da diária devolve o dispatch (`pendingAgentDispatch` `0h.4`) enquanto o manifest não estiver completo.
-- **Cópia off-site (#11413):** o objeto mais recente de `beehiiv/` e de `eia-votes/` no bucket R2 `diaria-backup` precisa ter até 7 dias. Credencial do bucket ausente no ambiente é achado (`remote:no-credentials`), nunca "ok".
+- **Cópia off-site (#11413):** lista o bucket R2 `diaria-backup` pela API S3 assinada; o objeto mais recente de `beehiiv/` e de `eia-votes/` precisa ter até 7 dias, medidos pela data da chave (não pelo `LastModified`). Credencial do bucket ausente no ambiente é achado (`remote:no-credentials`), nunca "ok".
 
 ## Cópia off-site criptografada (#11413)
 
@@ -81,16 +81,17 @@ O snapshot local vive só no OneDrive (`data/`), que já lotou uma vez (#10957) 
 
 - **Bucket:** sem r2.dev, sem domínio; lifecycle `retencao-8-semanas` (apaga após 56 dias), configurado no painel. Credencial S3 própria, restrita ao bucket (`R2_BACKUP_ACCESS_KEY_ID`/`R2_BACKUP_SECRET_ACCESS_KEY`); endpoint sai de `R2_ACCOUNT_ID`. Nunca as credenciais dos shorts, nunca URL pública: toda leitura, inclusive a conferência pós-upload, usa a API S3 assinada.
 - **Cifra:** AES-256-GCM (`scripts/lib/backup-offsite-crypto.ts`), cabeçalho versionado `DIARIABK` + versão + keyId + IV + tag. A chave (`BACKUP_ENCRYPTION_KEY`, 32 bytes em base64) fica no Doppler `diaria-studio/dev` e numa 2ª cópia com o editor (Bitwarden), nunca no bucket. **Rotação:** guardar a chave antiga nos dois cofres enquanto houver backup cifrado com ela (56 dias); a restauração lê outra var com `--key-env`.
-- **Quando sobe:** só se o snapshot do dia for bem-sucedido (diretório + `manifest.json` + `isSubscribersSnapshotUsable`). Senão o Beehiiv é pulado com log (o alarme acima já cobre o snapshot ruim) e os votos sobem do mesmo jeito.
-- **Conferência:** depois do PUT, HEAD assinado com o mesmo tamanho e ETag igual ao MD5 do corpo.
+- **Quando sobe:** só se o snapshot do dia for bem-sucedido (diretório + `manifest.json` + `isSubscribersSnapshotUsable`). Senão o Beehiiv é pulado e os votos sobem do mesmo jeito; na execução agendada (sem `--date`) o pulo vira achado (`backup-offsite-skipped:beehiiv`), com exit 0. Os votos são sempre os de agora, então `--date` diferente de hoje exige `--only beehiiv`.
+- **Conferência:** depois do PUT, HEAD assinado com o mesmo tamanho e, quando comparável (PUT simples), ETag igual ao MD5 do corpo.
 - **Falha:** issue de alarme via `notifyEditor` (`check: backup-offsite`, fingerprint `backup-offsite-failed:{tipo}`) e exit 1 do passo. O snapshot local continua valendo.
-- **Faixa grátis:** 10 GB divididos com os verticais; cada upload loga o tamanho no `.backup.log`.
-- **Votos:** leitura do KV pela API REST (`CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN`, bulk get de 100 chaves por chamada, com queda para GET por chave). Zero chaves `vote:` é falha (token ou namespace errado), não um backup vazio.
+- **Faixa grátis:** 10 GB por conta, divididos com os verticais e as imagens públicas; cada upload loga o tamanho no `.backup.log`.
+- **Votos:** leitura do KV pela API REST (`CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN`, bulk get de 100 chaves por chamada). 401/403 falha na hora; outro erro tenta o bulk de novo com backoff e, se persistir, lê só aquele lote por GET por chave (limite da API: ~1.200 requests a cada 5 min). Falham: zero chaves `vote:`, `vote:` sem nenhuma `score:`, ou mais de `max(5, 0,5%)` chaves de um prefixo sumindo entre o list e o get.
+- **Variáveis:** no Doppler `diaria-studio/dev` **e** no `.env` do 300, porque a task systemd lê o `.env` (não roda sob `doppler run`): `R2_ACCOUNT_ID`, `R2_BACKUP_ACCESS_KEY_ID`, `R2_BACKUP_SECRET_ACCESS_KEY`, `BACKUP_ENCRYPTION_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`. Consequência aceita: a chave de cifra fica em texto no `.env` da mesma máquina que guarda os snapshots em claro; ela protege a cópia no bucket, não o 300.
 
 ```bash
 doppler run -- npx tsx scripts/backup-offsite.ts --dry-run          # empacota, cifra e mede; não envia
 doppler run -- npx tsx scripts/backup-offsite.ts                    # snapshot de hoje (UTC) + votos
-doppler run -- npx tsx scripts/backup-offsite.ts --date 2026-11-08 --only beehiiv
+doppler run -- npx tsx scripts/backup-offsite.ts --date 2026-11-08 --only beehiiv   # data antiga: só o Beehiiv
 ```
 
 ### Restauração
@@ -102,4 +103,4 @@ doppler run -- npx tsx scripts/restore-backup-offsite.ts --key eia-votes/2026-11
 doppler run -- npx tsx scripts/restore-backup-offsite.ts --file ./copia.tar.gz.enc --out /tmp/r   # arquivo já baixado
 ```
 
-Baixa pela API assinada, autentica e decifra (chave errada ou byte alterado falham alto, sem escrever nada) e extrai em `--out`, que precisa estar vazia. Voltar o conteúdo para `data/beehiiv-backup/` é passo manual, depois de conferir.
+Baixa pela API assinada, autentica e decifra (chave errada ou byte alterado falham alto, sem escrever nada) e extrai em `--out`, que precisa estar vazia; a extração vai por uma pasta temporária e só vira `--out` se der certo. `--latest` escolhe pela data da chave. Voltar o conteúdo para `data/beehiiv-backup/` é passo manual, depois de conferir.

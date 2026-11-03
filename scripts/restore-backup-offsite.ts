@@ -16,25 +16,34 @@
  *   doppler run -- npx tsx scripts/restore-backup-offsite.ts --file ./x.tar.gz.enc --out /tmp/r   # arquivo já baixado
  *   ... --key-env BACKUP_ENCRYPTION_KEY_OLD   # chave antiga, depois de uma rotação
  *
+ * `--latest` escolhe pela data da chave (não pelo `LastModified`, que só
+ * desempata): reenviar uma data antiga não a torna "a mais recente".
+ *
  * `--out` precisa estar vazia ou não existir (nunca sobrescreve um snapshot
- * em `data/beehiiv-backup/` por engano). Restaurar em `data/` é passo manual
- * depois de conferir o conteúdo.
+ * em `data/beehiiv-backup/` por engano). A extração vai pra uma pasta
+ * temporária ao lado e só é renomeada pra `--out` se der certo: falha de
+ * decifra ou do `tar` não deixa nada pela metade. Restaurar em `data/` é passo
+ * manual depois de conferir o conteúdo.
  *
  * Exit: 0 ok, 1 falha (download, chave, autenticação, extração), 2 uso inválido.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { resolve, join } from "node:path";
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
-import { decryptBackup, parseBackupKey } from "./lib/backup-offsite-crypto.ts";
+import { BACKUP_KEY_ENV, decryptBackup, parseBackupKey } from "./lib/backup-offsite-crypto.ts";
 import {
   dateFromOffsiteKey,
   extractTarGz,
   formatBytes,
   getOffsiteObject,
   gunzip,
+  isOffsiteKind,
+  kindFromKey,
+  latestOffsiteObject,
   listOffsiteObjects,
   loadOffsiteAccess,
   OFFSITE_KINDS,
@@ -45,105 +54,128 @@ import {
 } from "./lib/backup-offsite.ts";
 import type { R2UploadDeps } from "./lib/r2-object-upload.ts";
 
-const LOG = "[restore-backup-offsite]";
+export { kindFromKey };
 
-/** Tipo pelo sufixo (vale pra chave do bucket e pra arquivo local já baixado). */
-export function kindFromKey(key: string): OffsiteKind | null {
-  if (key.endsWith(".tar.gz.enc")) return "beehiiv";
-  if (key.endsWith(".jsonl.gz.enc")) return "eia-votes";
-  return null;
-}
+const LOG = "[restore-backup-offsite]";
 
 /**
  * Decifra e grava em `outDir`. Devolve o que foi escrito (pra log/teste).
- * Lança em qualquer falha; `outDir` não vazio é recusado.
+ * Lança em qualquer falha sem deixar `outDir` criada pela metade; `outDir`
+ * não vazia é recusada.
  */
 export function restoreBlob(blob: Buffer, key: Buffer, kind: OffsiteKind, name: string, outDir: string, tar: TarRunner = systemTar): string {
-  if (existsSync(outDir) && readdirSync(outDir).length > 0) throw new Error(`--out ${outDir} não está vazia — escolha uma pasta nova`);
+  const existed = existsSync(outDir);
+  if (existed && readdirSync(outDir).length > 0) throw new Error(`--out ${outDir} não está vazia — escolha uma pasta nova`);
   const plain = decryptBackup(blob, key);
-  mkdirSync(outDir, { recursive: true });
-  if (kind === "beehiiv") {
-    extractTarGz(plain, outDir, tar);
-    return outDir;
+  if (kind === "eia-votes") {
+    const jsonl = gunzip(plain);
+    mkdirSync(outDir, { recursive: true });
+    const target = join(outDir, `eia-votes-${dateFromOffsiteKey(name) ?? "sem-data"}.jsonl`);
+    writeFileSync(target, jsonl);
+    return target;
   }
-  const date = dateFromOffsiteKey(name) ?? "sem-data";
-  const target = join(outDir, `eia-votes-${date}.jsonl`);
-  writeFileSync(target, gunzip(plain));
-  return target;
+  const tmp = `${outDir}.restore-tmp-${randomBytes(4).toString("hex")}`;
+  mkdirSync(tmp, { recursive: true });
+  try {
+    extractTarGz(plain, tmp, tar);
+  } catch (e) {
+    rmSync(tmp, { recursive: true, force: true });
+    throw e;
+  }
+  if (existed) rmdirSync(outDir);
+  renameSync(tmp, outDir);
+  return outDir;
 }
 
-export async function main(argv: string[] = process.argv.slice(2), r2: R2UploadDeps = { fetch: (u, i) => fetch(u, i), now: () => new Date() }): Promise<number> {
-  loadProjectEnv();
-  const env = process.env;
+export interface RestoreMainDeps {
+  env?: Record<string, string | undefined>;
+  r2?: R2UploadDeps;
+  tar?: TarRunner;
+  log?: (m: string) => void;
+  skipEnvLoad?: boolean;
+}
+
+export async function main(argv: string[] = process.argv.slice(2), deps: RestoreMainDeps = {}): Promise<number> {
+  if (!deps.skipEnvLoad) loadProjectEnv();
+  const env = deps.env ?? process.env;
+  const r2 = deps.r2 ?? { fetch: (u, i) => fetch(u, i), now: () => new Date() };
+  const log = deps.log ?? ((m: string) => console.log(m));
+  const err = deps.log ?? ((m: string) => console.error(m));
   const file = getArg(argv, "file");
   const latest = getArg(argv, "latest");
   let objKey = getArg(argv, "key");
   const outArg = getArg(argv, "out");
-  const keyEnv = getArg(argv, "key-env") || "BACKUP_ENCRYPTION_KEY";
+  const keyEnv = getArg(argv, "key-env") || BACKUP_KEY_ENV;
 
   if (hasFlag(argv, "list")) {
     const acc = loadOffsiteAccess(env);
     if (!acc.ready) {
-      console.error(`${LOG} credencial ausente: ${acc.missing.join(", ")}`);
+      err(`${LOG} credencial ausente: ${acc.missing.join(", ")}`);
       return 1;
     }
     for (const kind of OFFSITE_KINDS) {
       const objs = await listOffsiteObjects(r2, acc.access, offsitePrefix(kind));
       objs.sort((a, b) => a.key.localeCompare(b.key));
-      console.log(`${kind}: ${objs.length} objeto(s)`);
-      for (const o of objs) console.log(`  ${o.key}  ${o.lastModified.toISOString()}`);
+      log(`${kind}: ${objs.length} objeto(s)`);
+      for (const o of objs) log(`  ${o.key}  ${o.lastModified.toISOString()}`);
     }
     return 0;
   }
 
   if ([file, latest, objKey].filter(Boolean).length !== 1 || !outArg) {
-    console.error(`${LOG} uso: (--key K | --latest beehiiv|eia-votes | --file F) --out DIR [--key-env NOME] | --list`);
+    err(`${LOG} uso: (--key K | --latest beehiiv|eia-votes | --file F) --out DIR [--key-env NOME] | --list`);
+    return 2;
+  }
+  if (latest && !isOffsiteKind(latest)) {
+    err(`${LOG} --latest inválido: "${latest}"`);
+    return 2;
+  }
+  const name0 = file || objKey || offsitePrefix(latest as OffsiteKind);
+  if (!latest && !kindFromKey(name0)) {
+    err(`${LOG} não sei o tipo de "${name0}" (esperado beehiiv/….tar.gz.enc ou eia-votes/….jsonl.gz.enc)`);
     return 2;
   }
   let encKey: Buffer;
   try {
     encKey = parseBackupKey(env[keyEnv], keyEnv);
   } catch (e) {
-    console.error(`${LOG} ${(e as Error).message}`);
+    err(`${LOG} ${(e as Error).message}`);
     return 1;
   }
   const outDir = resolve(outArg);
 
-  let blob: Buffer;
-  let name: string;
-  if (file) {
-    blob = readFileSync(resolve(file));
-    name = file;
-  } else {
-    const acc = loadOffsiteAccess(env);
-    if (!acc.ready) {
-      console.error(`${LOG} credencial ausente: ${acc.missing.join(", ")}`);
-      return 1;
-    }
-    if (latest) {
-      if (latest !== "beehiiv" && latest !== "eia-votes") {
-        console.error(`${LOG} --latest inválido: "${latest}"`);
-        return 2;
-      }
-      const objs = await listOffsiteObjects(r2, acc.access, offsitePrefix(latest));
-      if (objs.length === 0) {
-        console.error(`${LOG} nenhum objeto em ${offsitePrefix(latest)}`);
+  try {
+    let blob: Buffer;
+    let name: string;
+    if (file) {
+      blob = readFileSync(resolve(file));
+      name = file;
+    } else {
+      const acc = loadOffsiteAccess(env);
+      if (!acc.ready) {
+        err(`${LOG} credencial ausente: ${acc.missing.join(", ")}`);
         return 1;
       }
-      objKey = objs.reduce((a, b) => (b.lastModified > a.lastModified ? b : a)).key;
+      if (latest) {
+        const newest = latestOffsiteObject(await listOffsiteObjects(r2, acc.access, offsitePrefix(latest as OffsiteKind)));
+        if (!newest) {
+          err(`${LOG} nenhum objeto em ${offsitePrefix(latest as OffsiteKind)}`);
+          return 1;
+        }
+        objKey = newest.key;
+      }
+      blob = await getOffsiteObject(r2, acc.access, objKey);
+      name = objKey;
+      log(`${LOG} baixado ${objKey}: ${formatBytes(blob.length)}`);
     }
-    blob = await getOffsiteObject(r2, acc.access, objKey);
-    name = objKey;
-    console.log(`${LOG} baixado ${objKey}: ${formatBytes(blob.length)}`);
+    const kind = kindFromKey(name)!;
+    const written = restoreBlob(blob, encKey, kind, name, outDir, deps.tar ?? systemTar);
+    log(`${LOG} restaurado (${kind}) em ${written}`);
+    return 0;
+  } catch (e) {
+    err(`${LOG} falhou: ${(e as Error).message}`);
+    return 1;
   }
-  const kind = kindFromKey(name);
-  if (!kind) {
-    console.error(`${LOG} não sei o tipo de "${name}" (esperado beehiiv/….tar.gz.enc ou eia-votes/….jsonl.gz.enc)`);
-    return 2;
-  }
-  const written = restoreBlob(blob, encKey, kind, name, outDir);
-  console.log(`${LOG} restaurado (${kind}) em ${written}`);
-  return 0;
 }
 
 if (isMainModule(import.meta.url)) {

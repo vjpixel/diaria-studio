@@ -198,6 +198,16 @@ export function createKvRestOps(cfg: KvRestConfig): KvOps {
   return ops;
 }
 
+/** Erro HTTP do KV REST com o status (o caller distingue 401/403 de falha transitória). */
+export class KvRestHttpError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "KvRestHttpError";
+    this.status = status;
+  }
+}
+
 /** Teto de chaves por chamada do bulk get da Cloudflare. */
 export const KV_BULK_GET_MAX_KEYS = 100;
 
@@ -222,7 +232,7 @@ export async function kvRestBulkGet(cfg: KvRestConfig, keys: readonly string[]):
     body: JSON.stringify({ keys, type: "text" }),
     signal: AbortSignal.timeout(cfg.timeoutMs ?? KV_REST_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`KV REST bulk get falhou: HTTP ${res.status} — ${await errorDetail(res)}`);
+  if (!res.ok) throw new KvRestHttpError(`KV REST bulk get falhou: HTTP ${res.status} — ${await errorDetail(res)}`, res.status);
   const text = await res.text();
   let json: { success?: boolean; errors?: unknown; result?: { values?: unknown } } | null;
   try {

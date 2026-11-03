@@ -27,6 +27,11 @@
  * (`shorts/`). Por isso os nomes genéricos `R2_BUCKET`/`R2_PUBLIC_BASE`; os
  * `SHORTS_R2_*` continuam aceitos (são os que estão no Doppler hoje) e o
  * genérico vence quando os dois existem.
+ *
+ * #11413: `signedR2Request` (request S3 assinado pela API, nunca pela URL
+ * pública) e `R2BucketAccess` (credencial + bucket, sem base pública) são
+ * reaproveitados pelo backup off-site (`scripts/lib/backup-offsite.ts`), num
+ * bucket PRIVADO com credencial própria.
  */
 
 import { createHash, createHmac } from "node:crypto";
@@ -213,7 +218,7 @@ function s3Host(config: R2BucketAccess): string {
 async function signedFetch(
   deps: R2UploadDeps,
   config: R2BucketAccess,
-  method: string,
+  method: R2Method,
   key: string,
   query?: Record<string, string>,
 ): Promise<Response> {
@@ -226,10 +231,12 @@ async function signedFetch(
  * entra na assinatura (PUT). Timeout: `timeoutMs`, default
  * `R2_REQUEST_TIMEOUT_MS` (PUT de corpo grande deve passar `R2_PUT_TIMEOUT_MS`).
  */
+export type R2Method = "GET" | "PUT" | "HEAD" | "DELETE";
+
 export async function signedR2Request(
   deps: R2UploadDeps,
   config: R2BucketAccess,
-  method: string,
+  method: R2Method,
   key: string,
   opts: { query?: Record<string, string>; body?: Buffer; headers?: Record<string, string>; timeoutMs?: number } = {},
 ): Promise<Response> {

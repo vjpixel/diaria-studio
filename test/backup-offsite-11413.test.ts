@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -324,6 +324,7 @@ describe("#11413 dump dos votos do KV", () => {
         listed.push(prefix);
         if (prefix === "vote:") return Array.from({ length: 250 }, (_, i) => `vote:261108:u${String(i).padStart(3, "0")}@x.com`).reverse();
         if (prefix === "correct:") return ["correct:261108", "img-260101-01-eia-A.jpg"];
+        if (prefix === "score:") return ["score:u000@x.com"];
         return [];
       },
       async getMany(keys) {
@@ -333,10 +334,14 @@ describe("#11413 dump dos votos do KV", () => {
     };
     const d = await dumpKvPrefixes(src);
     assert.deepEqual(listed, ["vote:", "score:", "correct:"]);
-    assert.deepEqual(batches, [100, 100, 50, 1]);
-    assert.deepEqual(d.counts, { "vote:": 249, "score:": 0, "correct:": 1 });
+    assert.deepEqual(batches, [100, 100, 50, 1, 1]);
+    assert.deepEqual(d.counts, {
+      "vote:": { listed: 250, dumped: 249, skipped: 1 },
+      "score:": { listed: 1, dumped: 1, skipped: 0 },
+      "correct:": { listed: 1, dumped: 1, skipped: 0 },
+    });
     const lines = d.jsonl.trim().split("\n").map((l) => JSON.parse(l) as { key: string; value: string });
-    assert.equal(lines.length, 250);
+    assert.equal(lines.length, 251);
     assert.ok(lines.every((l) => !l.key.startsWith("img")), "imagens fora do dump");
     const keys = lines.map((l) => l.key);
     assert.deepEqual(keys, [...keys].sort());
@@ -364,11 +369,13 @@ describe("#11413 dump dos votos do KV", () => {
     const src = kvRestDumpSource(
       { accountId: "acc", token: "t", namespaceId: "ns", fetchFn },
       { list: async () => ["vote:1:a"], get: async (k) => `v-${k}` },
-      (m) => warns.push(m),
+      { warn: (m) => warns.push(m), sleep: async () => {} },
     );
     const d = await dumpKvPrefixes(src, ["vote:"]);
     assert.equal(d.jsonl, JSON.stringify({ key: "vote:1:a", value: "v-vote:1:a" }) + "\n");
     assert.equal(warns.length, 1);
+    assert.equal(d.fallbackCauses.length, 1);
+    assert.match(d.fallbackCauses[0], /HTTP 405/);
   });
 });
 
@@ -468,14 +475,7 @@ describe("#11413 restauração (tar real do sistema)", { skip: !hasTar && "tar a
 
     const out2 = join(mkdtempSync(join(tmpdir(), "restore-11413-")), "votes");
     assert.throws(() => restoreBlob(enc, Buffer.alloc(32, 1), "eia-votes", "eia-votes/2026-11-08.jsonl.gz.enc", out2), /outra chave/);
-    assert.deepEqual(readdirSyncSafe(out2), []);
+    assert.equal(existsSync(out2), false, "chave errada não cria --out");
   });
 });
 
-function readdirSyncSafe(d: string): string[] {
-  try {
-    return readdirSync(d);
-  } catch {
-    return [];
-  }
-}

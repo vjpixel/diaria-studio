@@ -56,7 +56,7 @@ export function parseBackupKey(raw: string | undefined, envName: string = BACKUP
   return key;
 }
 
-/** Identificador público da chave (hex, 16 caracteres). */
+/** Identificador público da chave: Buffer de 8 bytes (16 caracteres em hex nas mensagens). */
 export function backupKeyId(key: Buffer): Buffer {
   return createHash("sha256").update("diaria-backup-keyid:").update(key).digest().subarray(0, KEY_ID_LEN);
 }
