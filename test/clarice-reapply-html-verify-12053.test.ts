@@ -86,8 +86,9 @@ describe("normalizeHtmlForVerify / verifyReappliedHtml (#12053)", () => {
 });
 
 /** Brevo falsa com estado: guarda status/html/scheduledAt e registra os PUTs. */
-function fakeBrevo(opts: { status?: string; storeHtml?: (html: string) => string; scheduledAt?: string } = {}) {
+function fakeBrevo(opts: { status?: string; storeHtml?: (html: string) => string; scheduledAt?: string; name?: string } = {}) {
   const state = {
+    name: opts.name ?? mockCampaign().name,
     status: opts.status ?? "queued",
     htmlContent: "<html>antigo</html>",
     scheduledAt: opts.scheduledAt ?? "2026-11-06T09:00:00.000Z",
@@ -189,7 +190,7 @@ describe("rescheduleSuspendedCampaign (#12053 — recuperação manual)", () => 
   it("--apply: um único PUT scheduledAt (nunca PUT /status, nunca htmlContent) e GET-verify", async () => {
     const brevo = fakeBrevo({ status: "suspended" });
     await withFakes(brevo.fetchFn, async () => {
-      const r = await rescheduleSuspendedCampaign("fake-key", 395, at, { apply: true, now });
+      const r = await rescheduleSuspendedCampaign("fake-key", "2610-11", 395, at, { apply: true, now });
       assert.ok(r);
       assert.deepEqual(brevo.puts, [{ path: "/emailCampaigns/395", body: { scheduledAt: at } }]);
       assert.equal(brevo.state.status, "queued");
@@ -199,7 +200,7 @@ describe("rescheduleSuspendedCampaign (#12053 — recuperação manual)", () => 
   it("sem --apply: só lê, nenhum PUT", async () => {
     const brevo = fakeBrevo({ status: "suspended" });
     await withFakes(brevo.fetchFn, async () => {
-      assert.equal(await rescheduleSuspendedCampaign("fake-key", 395, at, { apply: false, now }), null);
+      assert.equal(await rescheduleSuspendedCampaign("fake-key", "2610-11", 395, at, { apply: false, now }), null);
       assert.equal(brevo.puts.length, 0);
     });
   });
@@ -207,8 +208,38 @@ describe("rescheduleSuspendedCampaign (#12053 — recuperação manual)", () => 
   it("campanha que não está suspensa: recusa sem escrever", async () => {
     const brevo = fakeBrevo({ status: "queued" });
     await withFakes(brevo.fetchFn, async () => {
-      await assert.rejects(() => rescheduleSuspendedCampaign("fake-key", 395, at, { apply: true, now }), /não "suspended"/);
+      await assert.rejects(() => rescheduleSuspendedCampaign("fake-key", "2610-11", 395, at, { apply: true, now }), /não "suspended"/);
       assert.equal(brevo.puts.length, 0);
+    });
+  });
+
+  // Regressão #12056: id errado apontando para campanha suspensa de OUTRO ciclo.
+  for (const apply of [true, false]) {
+    it(`campanha suspensa de outro ciclo: recusa sem nenhum PUT (${apply ? "--apply" : "dry-run"}) — #12056`, async () => {
+      const brevo = fakeBrevo({ status: "suspended", name: "Clarice 2609 grupo:d2-qua04" });
+      await withFakes(brevo.fetchFn, async () => {
+        await assert.rejects(
+          () => rescheduleSuspendedCampaign("fake-key", "2610-11", 395, at, { apply, now }),
+          (e: unknown) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            assert.match(msg, /"Clarice 2609 grupo:d2-qua04"/, "nomeia a campanha encontrada");
+            assert.match(msg, /ciclo 2610-11/, "nomeia o ciclo esperado");
+            assert.match(msg, /Nada foi tocado/);
+            return true;
+          },
+        );
+        assert.equal(brevo.puts.length, 0);
+        assert.equal(brevo.state.status, "suspended");
+      });
+    });
+  }
+
+  it("campanha do fluxo antigo (\"Clarice News {yymm}\") do ciclo certo continua reagendando — #12056", async () => {
+    const brevo = fakeBrevo({ status: "suspended", name: "Clarice News 2610 envio 3" });
+    await withFakes(brevo.fetchFn, async () => {
+      const r = await rescheduleSuspendedCampaign("fake-key", "2610-11", 395, at, { apply: true, now });
+      assert.ok(r);
+      assert.deepEqual(brevo.puts, [{ path: "/emailCampaigns/395", body: { scheduledAt: at } }]);
     });
   });
 
@@ -217,7 +248,7 @@ describe("rescheduleSuspendedCampaign (#12053 — recuperação manual)", () => 
     const fetchFn = (async () => { called = true; return json({}); }) as unknown as typeof globalThis.fetch;
     await withFakes(fetchFn, async () => {
       await assert.rejects(
-        () => rescheduleSuspendedCampaign("fake-key", 395, "2026-11-01T09:00:00.000Z", { apply: true, now }),
+        () => rescheduleSuspendedCampaign("fake-key", "2610-11", 395, "2026-11-01T09:00:00.000Z", { apply: true, now }),
         /#5939/,
       );
       assert.equal(called, false);
@@ -233,7 +264,7 @@ describe("rescheduleSuspendedCampaign (#12053 — recuperação manual)", () => 
       return res;
     }) as unknown as typeof globalThis.fetch;
     await withFakes(wrapped, async () => {
-      await assert.rejects(() => rescheduleSuspendedCampaign("fake-key", 395, at, { apply: true, now }), /GET-verify pós-reagendamento/);
+      await assert.rejects(() => rescheduleSuspendedCampaign("fake-key", "2610-11", 395, at, { apply: true, now }), /GET-verify pós-reagendamento/);
     });
   });
 });
@@ -268,6 +299,24 @@ describe("main() --reschedule-suspended (#12053)", () => {
         await main(["--cycle", "2610-11", "--campaign-id", "395", "--reschedule-suspended", "--scheduled-at", "2099-01-01T09:00:00.000Z"]);
         assert.equal(brevo.puts.length, 0);
         assert.match(errors.join("\n"), /dry-run/);
+      });
+    } finally {
+      if (origKey === undefined) delete process.env.BREVO_CLARICE_API_KEY;
+      else process.env.BREVO_CLARICE_API_KEY = origKey;
+    }
+  });
+
+  it("--cycle diferente do da campanha: main rejeita sem PUT, inclusive no dry-run (#12056)", async () => {
+    const origKey = process.env.BREVO_CLARICE_API_KEY;
+    process.env.BREVO_CLARICE_API_KEY = "fake-key";
+    const brevo = fakeBrevo({ status: "suspended" }); // "Clarice 2610 grupo:..."
+    try {
+      await withFakes(brevo.fetchFn, async () => {
+        await assert.rejects(
+          () => main(["--cycle", "2609-10", "--campaign-id", "395", "--reschedule-suspended", "--scheduled-at", "2099-01-01T09:00:00.000Z", "--apply"]),
+          /não é do ciclo 2609-10/,
+        );
+        assert.equal(brevo.puts.length, 0);
       });
     } finally {
       if (origKey === undefined) delete process.env.BREVO_CLARICE_API_KEY;

@@ -83,7 +83,8 @@
  * qualquer outra diferença continua reprovando). E a recuperação de uma
  * campanha presa tem caminho próprio, sempre manual e explícito:
  * `--reschedule-suspended --campaign-id N --scheduled-at ISO --apply` só
- * reagenda (nunca toca HTML), e só uma campanha que esteja `suspended` — o
+ * reagenda (nunca toca HTML), e só uma campanha que esteja `suspended` e
+ * cujo nome seja do `--cycle` informado (#12056: aqui o mismatch recusa) — o
  * banner de "presa" imprime o comando pronto. Nunca reagenda sozinho depois
  * de um GET-verify falho: o operador confere o HTML antes.
  *
@@ -627,13 +628,19 @@ export interface RescheduleSuspendedResult {
  * `PUT /status` sem horário, #5939).
  *
  * Recusa (sem escrever nada) se a campanha não estiver `suspended` — uma
- * campanha `queued`/`sent`/`draft` não é o caso de recuperação — ou se o
- * horário não passar em `validateRescheduleAt`. Depois do PUT, GET-verify:
- * status pré-envio e `scheduledAt` no mesmo instante pedido; senão lança.
- * Com `apply: false` só lê e descreve (nenhum PUT).
+ * campanha `queued`/`sent`/`draft` não é o caso de recuperação —, se o
+ * horário não passar em `validateRescheduleAt`, ou se o nome da campanha não
+ * bater com o ciclo informado (#12056). Ao contrário do reapply com
+ * `--campaign-id`, onde o mismatch de ciclo só avisa, aqui ele RECUSA: um id
+ * errado apontaria para uma campanha que o editor suspendeu de propósito, e
+ * reagendá-la dispara um envio real para a lista inteira. A recusa vale
+ * também no dry-run, para o operador ver antes do `--apply`. Depois do PUT,
+ * GET-verify: status pré-envio e `scheduledAt` no mesmo instante pedido;
+ * senão lança. Com `apply: false` só lê e descreve (nenhum PUT).
  */
 export async function rescheduleSuspendedCampaign(
   apiKey: string,
+  cycle: string,
   campaignId: number,
   scheduledAtIso: string,
   opts: { apply: boolean; now?: Date },
@@ -642,6 +649,16 @@ export async function rescheduleSuspendedCampaign(
   if (invalid) throw new Error(invalid);
 
   const before = await fetchCampaignById(apiKey, campaignId);
+  // #12056: mesmo critério de ciclo do caminho `--campaign-id` (helper único),
+  // mas aqui como recusa, antes de qualquer outra leitura ou escrita.
+  if (campaignCycleMismatchWarning(before, cycle) !== undefined) {
+    throw new Error(
+      `Campanha #${campaignId} se chama "${before.name}", que não é do ciclo ${cycle} ` +
+      `(esperado nome começando com ${cycleNamePrefixes(cycle).map((p) => `"${p}"`).join(" ou ")}) — ` +
+      `--reschedule-suspended recusa reagendar campanha de outro ciclo. Confira o --campaign-id e o --cycle. ` +
+      `Nada foi tocado.`,
+    );
+  }
   if (before.status !== "suspended") {
     throw new Error(
       `Campanha #${campaignId} está "${before.status}", não "suspended" — --reschedule-suspended só recupera ` +
@@ -1031,7 +1048,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       `\n📋 clarice-reapply-scheduled-html --cycle ${cycle} --campaign-id ${campaignIdArg} --reschedule-suspended ` +
       `(só reagenda; HTML não é tocado — #12053)`,
     );
-    await rescheduleSuspendedCampaign(apiKey, campaignIdArg!, rescheduleAt, { apply });
+    await rescheduleSuspendedCampaign(apiKey, cycle, campaignIdArg!, rescheduleAt, { apply });
     return;
   }
 
