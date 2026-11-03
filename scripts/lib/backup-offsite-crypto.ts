@@ -72,8 +72,12 @@ export function parseBackupKey(raw: string | undefined, envName: string = BACKUP
   return backupKeyFromBytes(key, `${envName} depois do base64`);
 }
 
-/** Identificador público da chave: Buffer de 8 bytes (16 caracteres em hex nas mensagens). */
-export function backupKeyId(key: Buffer): Buffer {
+/**
+ * Identificador público da chave: Buffer de 8 bytes (16 caracteres em hex nas
+ * mensagens). Exige `BackupKey` (#11961): o id de um Buffer não validado
+ * casaria com nada que `encryptBackup` produz.
+ */
+export function backupKeyId(key: BackupKey): Buffer {
   return createHash("sha256").update("diaria-backup-keyid:").update(key).digest().subarray(0, KEY_ID_LEN);
 }
 
