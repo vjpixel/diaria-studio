@@ -23,7 +23,7 @@ import { main as alarmMain } from "../scripts/beehiiv-backup-staleness-alarm.ts"
 // alcançar o bucket nem depender do .env da máquina.
 const REMOTE_OK_DEPS = {
   skipEnvLoad: true,
-  checkRemote: async () => ({ configured: true as const, ok: true, fingerprint: null, prefixes: [] }),
+  checkRemote: async () => ({ configured: true as const, ok: true as const, fingerprint: null, prefixes: [] }),
 };
 
 /** Simula N rodadas do alarme sobre um único campo de fingerprint. */

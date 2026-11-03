@@ -15,14 +15,21 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   buildSnapshotCommitTitle,
+  buildSnapshotPrBody,
   isAudienceSnapshotPath,
   newSnapshotBranchName,
   pickOpenSnapshotPr,
   selectSnapshotPaths,
 } from "../scripts/lib/audience-snapshot-pr.ts";
+import { hasRemovalDeclaration } from "../scripts/lib/pr-removal-declaration.ts";
 import { commitAudienceSnapshot, type CmdRunner, type SnapshotPrDeps } from "../scripts/commit-audience-snapshot.ts";
 
 describe("audience-snapshot-pr: parte pura", () => {
+  it("o corpo da PR rolante nasce com removal-declaration válida para o gate #7115 (#11971)", () => {
+    const body = buildSnapshotPrBody([{ code: "A", path: "docs/audience-history/2026-11-03.md" }]);
+    assert.equal(hasRemovalDeclaration(body), true);
+  });
+
   it("só os caminhos do 0i contam como snapshot", () => {
     assert.ok(isAudienceSnapshotPath("context/audience-profile.md"));
     assert.ok(isAudienceSnapshotPath("docs/audience-history/2026-10-22.md"));

@@ -12,7 +12,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, normalize, resolve } from "node:path";
 import {
   DEFAULT_DRIVE_ROOT,
   FOLDER_MIME,
@@ -399,15 +399,18 @@ describe("#11639 modo de acesso ao Drive", () => {
     assert.throws(() => driveModeFor({ ...base, fromDrive: true, noDriveApi: true }), /juntos/);
   });
 
+  // #11943: o código monta o caminho com `join`/`resolve` nativos (certo no
+  // Windows); o esperado passa pelo mesmo `normalize`/`resolve`, senão o teste
+  // compara `C:\home\u\...` com a string POSIX e falha só no Neo.
   it("work dir no modo API fica no cache em disco (o /tmp do 300 é tmpfs); no Neo, o tmp de sempre", () => {
-    assert.equal(workDirDefault("api", "/home/u/.cache/diaria-video-montagem/261030", "/tmp", "261030"), "/home/u/.cache/diaria-video-montagem/261030/work");
-    assert.equal(workDirDefault("local", "/x", "/tmp", "261030"), "/tmp/diaria-video-montagem/261030");
+    assert.equal(workDirDefault("api", "/home/u/.cache/diaria-video-montagem/261030", "/tmp", "261030"), normalize("/home/u/.cache/diaria-video-montagem/261030/work"));
+    assert.equal(workDirDefault("local", "/x", "/tmp", "261030"), normalize("/tmp/diaria-video-montagem/261030"));
   });
 
   it("cache em disco: --cache-dir > DIARIA_VIDEO_CACHE_DIR > ~/.cache, por edição", () => {
-    assert.equal(driveCacheDir("261030", undefined, undefined, "/home/u"), "/home/u/.cache/diaria-video-montagem/261030");
-    assert.equal(driveCacheDir("261030", undefined, "/mnt/big", "/home/u"), "/mnt/big/261030");
-    assert.equal(driveCacheDir("261030", "/x", "/mnt/big", "/home/u"), "/x/261030");
+    assert.equal(driveCacheDir("261030", undefined, undefined, "/home/u"), resolve("/home/u/.cache/diaria-video-montagem/261030"));
+    assert.equal(driveCacheDir("261030", undefined, "/mnt/big", "/home/u"), resolve("/mnt/big/261030"));
+    assert.equal(driveCacheDir("261030", "/x", "/mnt/big", "/home/u"), resolve("/x/261030"));
   });
 });
 

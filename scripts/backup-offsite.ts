@@ -67,6 +67,7 @@ import { isSubscribersSnapshotUsable, readBackupManifest } from "./lib/beehiiv-b
 import { createKvRestOps } from "./lib/cloudflare-kv-rest.ts";
 import {
   describeKvDump,
+  describeOffsiteConfigProblems,
   dumpKvPrefixes,
   formatBytes,
   gzip,
@@ -88,14 +89,16 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data/beehiiv-backup");
 const LOG = "[backup-offsite]";
 
-export interface OffsiteStepResult {
-  kind: OffsiteKind;
-  status: "uploaded" | "dry-run" | "skipped" | "failed";
-  key?: string;
-  bytes?: number;
-  etagVerified?: boolean;
-  detail?: string;
-}
+/**
+ * Resultado de um passo, discriminado por `status` (#11961): `uploaded` sempre
+ * tem `bytes` e `etagVerified`; `skipped` e `failed` sempre têm `detail`.
+ * `failed` sem `key` = falhou antes de montar a chave (configuração).
+ */
+export type OffsiteStepResult =
+  | { kind: OffsiteKind; status: "uploaded"; key: string; bytes: number; etagVerified: boolean }
+  | { kind: OffsiteKind; status: "dry-run"; key: string; bytes: number }
+  | { kind: OffsiteKind; status: "skipped"; key: string; detail: string }
+  | { kind: OffsiteKind; status: "failed"; key?: string; detail: string };
 
 export interface RunOffsiteOpts {
   date: string;
@@ -141,8 +144,8 @@ export async function runOffsiteBackup(opts: RunOffsiteOpts, deps: RunOffsiteDep
   const kinds: OffsiteKind[] = opts.only ? [opts.only] : ["beehiiv", "eia-votes"];
   const cfg = loadOffsiteConfig(deps.env);
   if (!cfg.ready) {
-    const detail = `configuração ausente/inválida: ${cfg.missing.join("; ")}`;
-    return kinds.map((kind) => ({ kind, status: "failed", detail }));
+    const detail = `configuração ausente/inválida: ${describeOffsiteConfigProblems(cfg)}`;
+    return kinds.map((kind): OffsiteStepResult => ({ kind, status: "failed", detail }));
   }
 
   const results: OffsiteStepResult[] = [];
@@ -188,7 +191,7 @@ export async function runOffsiteBackup(opts: RunOffsiteOpts, deps: RunOffsiteDep
 export const offsiteFailureFingerprint = (kind: OffsiteKind) => `backup-offsite-failed:${kind}`;
 export const offsiteSkippedFingerprint = (kind: OffsiteKind) => `backup-offsite-skipped:${kind}`;
 
-export function buildOffsiteFailureAlarm(r: OffsiteStepResult, date: string): { subject: string; body: string } {
+export function buildOffsiteFailureAlarm(r: Extract<OffsiteStepResult, { status: "skipped" | "failed" }>, date: string): { subject: string; body: string } {
   const skipped = r.status === "skipped";
   return {
     subject: skipped ? `⚠️ Backup off-site (${r.kind}) pulado em ${date}: snapshot não pronto` : `⚠️ Backup off-site (${r.kind}) falhou em ${date}`,
@@ -197,7 +200,7 @@ export function buildOffsiteFailureAlarm(r: OffsiteStepResult, date: string): { 
       "",
       `Tipo: ${r.kind}`,
       `Objeto: ${r.key ?? "n/d"} (bucket R2 privado diaria-backup)`,
-      `${skipped ? "Motivo" : "Erro"}: ${r.detail ?? "n/d"}`,
+      `${skipped ? "Motivo" : "Erro"}: ${r.detail}`,
       "",
       skipped
         ? "O snapshot do dia não existe ou não é utilizável, então nada subiu pro bucket. Rodar o backup local e depois o off-site."
@@ -250,14 +253,15 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Offsite
     kvSource: deps.kvSource,
     log,
   });
-  const failed = results.filter((r) => r.status === "failed");
+  const failed = results.filter((r): r is Extract<OffsiteStepResult, { status: "failed" }> => r.status === "failed");
   if (opts.dryRun) {
     for (const r of failed) err(`${LOG} --dry-run: falharia (${r.kind}): ${r.detail} — sem alarme no dry-run`);
     return failed.length ? 1 : 0;
   }
   // Pulo do Beehiiv na execução agendada (sem --date) também é achado; com
   // --date explícito, quem rodou à mão já vê o log.
-  const alarms = [...failed, ...(dateArg ? [] : results.filter((r) => r.status === "skipped"))];
+  const skipped = results.filter((r): r is Extract<OffsiteStepResult, { status: "skipped" }> => r.status === "skipped");
+  const alarms = [...failed, ...(dateArg ? [] : skipped)];
   const notifyFn = deps.notify ?? ((f, o) => notifyEditor(f, o));
   for (const r of alarms) {
     const { subject, body } = buildOffsiteFailureAlarm(r, date);

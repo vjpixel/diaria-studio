@@ -479,17 +479,27 @@ export function deriveVinculo(contact: ApoioContact, cache: VinculoCache): Vincu
  * confundir com `{ segments: [], ... }`, que significa "consultado, nenhum
  * segmento Apoio — * encontrado").
  */
+/** Segmento Kit de quem não tem `apoio_nivel` (`expectedKitSegmentsFor(null)`). */
+const APOIO_SEGMENT_NENHUM = "Apoio — Nenhum";
+
 export function deriveSegments(contact: ApoioContact, cache: SegmentsCache): SegmentsInfo | null {
+  // #11972: o cache real (`buildSegmentsCache`) grava `["Apoio — Nenhum"]`
+  // para todo assinante ativo SEM nível — lista NÃO vazia. "Segmento não
+  // vazio vence" fazia o e-mail sem nível listado antes mascarar o nível do
+  // outro e-mail do mesmo contato. Ordem: segmento de nível (qualquer um que
+  // não seja só "Nenhum") > `apoioNivel` preenchido > qualquer segmento > 1º hit.
   let withNivel: SegmentsInfo | null = null;
+  let onlyNenhum: SegmentsInfo | null = null;
   let fallback: SegmentsInfo | null = null;
   for (const email of normalizeEmailList(contact.emails)) {
     const info = cache[email];
     if (!info) continue;
-    if (info.segments.length > 0) return info;
+    if (info.segments.some((s) => s !== APOIO_SEGMENT_NENHUM)) return info;
     if (!withNivel && info.apoioNivel) withNivel = info;
+    if (!onlyNenhum && info.segments.length > 0) onlyNenhum = info;
     if (!fallback) fallback = info;
   }
-  return withNivel ?? fallback;
+  return withNivel ?? onlyNenhum ?? fallback;
 }
 
 // ── agregação de campanha (puro) ────────────────────────────────────────

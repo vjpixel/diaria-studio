@@ -549,7 +549,9 @@ export interface KitConfirmation {
  * estado anterior pra provar que esteve `inactive`.
  *
  * `ts` = dia do snapshot em que a transição APARECEU (`snapshotDate`,
- * `AAAA-MM-DD`, 00:00Z) — aproximação com erro de no máximo 1 dia; o
+ * `AAAA-MM-DD`, às 12:00Z — meio-dia UTC, 09:00 BRT, cai no mesmo dia
+ * civil em UTC e em BRT, então consulta por janela de dia não erra a
+ * fronteira; #11973) — aproximação com erro de no máximo 1 dia; o
  * `created_at` do cadastro NÃO serve (é o instante da inscrição, não da
  * confirmação). Chave natural `${email}:confirm:${snapshotDate}`, idempotente
  * com o `INSERT OR IGNORE` de `recordEvent`. Sem e-mail resolvido em
