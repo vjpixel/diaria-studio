@@ -384,7 +384,25 @@ describe("plano das sequências e xmeml (#11208)", () => {
     }
     assert.ok(!defaultSequences()[1].order.includes("abertura"), "verticais não têm apresentação");
     assert.equal(hasFinalInName(previewFileName("261027", "outras-redes")), false, "a prévia nunca vira 'final' para o fetch-drive-video");
-    assert.equal(hasFinalInName(xmlFileName("261027")), false);
+    assert.equal(hasFinalInName(xmlFileName("Diaria comentada_Youtube_V1")), false);
+    assert.equal(xmlFileName("Diaria comentada_Vertical_V1-previa soberana"), "Diaria comentada_Vertical_V1-previa soberana.xml");
+    assert.equal(xmlFileName("a/b:c"), "a-b-c.xml", "nome da sequência com caractere inválido em arquivo");
+  });
+
+  it("#11935: buildXmeml de uma sequência por vez deixa cada XML autossuficiente (definição do <file> em cada um)", () => {
+    const { file, words } = blocksFixture();
+    file.blocks.abertura = file.blocks.titulo;
+    const all = resolveAt(file, words).blocks;
+    const plans = defaultSequences().map((s) => buildSequencePlan({ ...s, order: s.order.filter((k) => k in all) }, all, [], SOURCE));
+    const xmls = plans.map((p) => buildXmeml([p], SOURCE, FRAMING));
+    for (const x of xmls) {
+      assert.equal((x.match(/<sequence /g) ?? []).length, 1);
+      assert.match(x, /<file id="file-1"><name>/, "definição completa do arquivo no próprio XML");
+      assert.equal(XMLValidator.validate(x), true);
+    }
+    // o XML único antigo só definia o arquivo na 1ª sequência
+    const joint = buildXmeml(plans, SOURCE, FRAMING);
+    assert.equal((joint.match(/<file id="file-1"><name>/g) ?? []).length, 1);
   });
 
   it("pathUrl troca barra invertida e codifica espaço e acento", () => {
