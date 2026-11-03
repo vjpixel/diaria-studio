@@ -71,6 +71,11 @@ import {
 } from "../../../scripts/lib/shared/geo-faq.ts"; // #4558 Parte B: estrutura GEO (FAQ + JSON-LD FAQPage/Article + autoria)
 import { HUB_META } from "./hubs/meta.ts"; // #4558 Parte A: navegação "Por tema" — só slug+rótulo, nunca o HTML gerado
 import type { HubMeta } from "./hubs/meta.ts";
+import {
+  RETROSPECTIVA_BASE_URL,
+  retrospectivaLinks,
+  type RetrospectivaLink,
+} from "../../../scripts/lib/shared/retrospectiva-index.ts"; // #12032
 import titlesCacheRaw from "./titles-cache.json";
 
 /** Shape de cada entrada do cache (espelha `ArquivoTitleEntry` de
@@ -428,6 +433,33 @@ export function buildTemaNav(hubs: readonly HubMeta[]): string {
 }
 
 /**
+ * Bloco "Retrospectivas" (#12032) — link pra CADA retrospectiva publicada
+ * (`RETROSPECTIVAS_PUBLICADAS`, a mesma lista do sitemap de
+ * `retrospectiva.diar.ia.br`) e pro índice do host. Medição de 02/11/2026:
+ * 3 de 4 retrospectivas fora do índice do Google, órfãs, sem link de página
+ * nenhuma. Esta raiz é uma das páginas mais indexadas do domínio, então
+ * linkar daqui é o caminho de crawl que faltava (mesmo remédio dos hubs de
+ * `/temas/`, `docs/seo-notes.md` Fatos 4/5).
+ *
+ * URLs absolutas e sem UTM: outro host, e o link é pra descoberta (a URL tem
+ * de bater com a do sitemap e do `canonical`).
+ *
+ * Rótulo CURTO ("julho/2026", `retrospectivaShortLabel`), nunca o longo nem
+ * em atributo: as seções de edição usam "{mês} de {ano}" como título, e
+ * `test/arquivo-render.test.ts` trava tanto a ordem da 1ª ocorrência de cada
+ * um quanto a AUSÊNCIA de um mês sem edição. Renderizado depois das seções,
+ * como `<nav>` e não `<section>` (o JSON-LD tem de vir depois da última
+ * `</section>`).
+ *
+ * Lista vazia → string vazia.
+ */
+export function buildRetrospectivaNav(links: readonly RetrospectivaLink[]): string {
+  if (links.length === 0) return "";
+  const items = links.map((l) => `<a href="${esc(l.url)}">${esc(l.shortLabel)}</a>`).join(" · ");
+  return `    <nav class="tema-index retro-index" aria-label="Retrospectivas">\n      <span class="tema-index-label">Retrospectivas</span>${items} · <a href="${esc(RETROSPECTIVA_BASE_URL)}/">Todas as retrospectivas</a>\n    </nav>`;
+}
+
+/**
  * Constrói o HTML completo da página de arquivo a partir das entradas cruas
  * do sitemap. Filtra pra `/p/*` (edições reais — exclui home/archive/tags/
  * subscribe/authors/etc), descarta entradas sem `lastmod` (não dá pra
@@ -575,6 +607,7 @@ ${renderCuradoriaCtaSubscribeForm(
       <p class="count">${count} ediç${count === 1 ? "ão" : "ões"} publicada${count === 1 ? "" : "s"}.</p>
 ${temaIndex}
 ${body}
+${buildRetrospectivaNav(retrospectivaLinks())}
 ${renderGeoFaqSection(geoFaq, { sectionId: "faq-arquivo" })}
     </div>
   </main>

@@ -236,11 +236,18 @@ describe("handleGet — cenário 6: ?entrar=1 mostra form de login, sem ele cai 
   });
 });
 
-describe("handleGet — sem slug (GET /) → 400 (#7581)", () => {
-  it("path raiz → 400, slug obrigatório", async () => {
+describe("handleGet — sem slug (GET /) → índice público (#7581, #12032)", () => {
+  it("path raiz → 200 com o índice; nunca consulta o Kit nem serve edição", async () => {
+    let kitConsultado = false;
+    const kit = (async () => {
+      kitConsultado = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
     const env = makeEnv(new Map(), { kitApiKey: "k" });
-    const res = await handleGet(req("https://retrospectiva.diar.ia.br/"), env, kitFetch([]));
-    assert.equal(res.status, 400);
+    const res = await handleGet(req("https://retrospectiva.diar.ia.br/?email=a@x.com"), env, kit);
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /<h1[^>]*>Retrospectivas<\/h1>/);
+    assert.equal(kitConsultado, false);
   });
 });
 

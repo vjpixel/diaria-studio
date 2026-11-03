@@ -124,7 +124,9 @@ describe("#7658 — o gate vem do FORMATO do path, não de qual Worker atendeu",
 
   it("path que não classifica → 400, nunca um gate chutado", async () => {
     const env = makeEnv(new Map(), null, "key");
-    for (const p of ["/", "/qualquer-coisa", "/2607-08", "/2026-aniversario"]) {
+    // `/` saiu desta lista no #12032: virou o índice público (200), coberto
+    // por `test/retrospectiva-index-12032.test.ts`.
+    for (const p of ["/qualquer-coisa", "/2607-08", "/2026-aniversario"]) {
       const res = await handleGet(new Request(`https://retrospectiva.diar.ia.br${p}?email=a@x.com`), env, kitFetch(["a@x.com"]));
       assert.equal(res.status, 400, `${p} deveria dar 400`);
     }
