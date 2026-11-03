@@ -103,9 +103,12 @@ if (isMainModule(import.meta.url)) {
   if (dup) {
     // Also repair waves recorded before automatic timeline persistence (#12011).
     const next = recordUnitTimeline(plan, dup.units.flatMap((u) => u.issues), "dispatch", dup.composed_at);
-    if (JSON.stringify(next) !== JSON.stringify(plan)) writeFileAtomic(values.plan, JSON.stringify(next, null, 2) + "\n");
+    const repaired = JSON.stringify(next) !== JSON.stringify(plan);
+    if (repaired) writeFileAtomic(values.plan, JSON.stringify(next, null, 2) + "\n");
+    // Contrato da mensagem preservado: nenhuma 2ª onda é gravada, então segue
+    // sendo "no-op idempotente"; o reparo de timeline é sinalizado à parte.
     console.log(
-      `[record-overnight-wave] onda idêntica já registrada em ${dup.composed_at} (dentro da janela de dedup) — sem nova onda; timeline preservada ou reparada`,
+      `[record-overnight-wave] onda idêntica já registrada em ${dup.composed_at} (dentro da janela de dedup) — nenhuma onda nova gravada, no-op idempotente${repaired ? "; timeline reparada" : ""}`,
     );
     process.exit(0);
   }

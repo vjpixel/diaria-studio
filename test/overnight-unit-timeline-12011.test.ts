@@ -47,8 +47,12 @@ it("wave CLI and lifecycle CLI populate a renderable timeline without manual pla
     const legacy = read();
     delete legacy.issues[1].timeline;
     writeFileSync(path, JSON.stringify(legacy));
-    run("record-overnight-wave.ts", ["--plan", path, "--units", "1;2"]);
+    const repairOut = run("record-overnight-wave.ts", ["--plan", path, "--units", "1;2"]);
+    assert.match(repairOut, /no-op idempotente; timeline reparada/);
     assert.equal(read().issues[1].timeline.dispatch, dispatch);
+    const noRepairOut = run("record-overnight-wave.ts", ["--plan", path, "--units", "1;2"]);
+    assert.match(noRepairOut, /no-op idempotente/);
+    assert.doesNotMatch(noRepairOut, /timeline reparada/);
     assert.equal(read().waves.length, 1);
     for (const message of ["pr_opened", "fix_iteration", "merged"]) {
       run("log-event.ts", ["--edition", "261103b", "--agent", "overnight", "--message", message,
@@ -79,5 +83,19 @@ it("confirmed train merges persist for every member before report.md exists", ()
     assert.equal(plan.issues["1"].timeline.dispatch, start);
     assert.equal(plan.issues["2"].timeline.merged, end);
     assert.equal(plan.issues["3"].timeline, undefined);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("train merge ignores another repo's issue whose PR shares the same number", () => {
+  const root = mkdtempSync(join(tmpdir(), "train-timeline-repo-12011-"));
+  const path = join(root, "plan.json");
+  writeFileSync(path, JSON.stringify({ issues: {
+    "7": { pr: 100 }, "vjpixel/diaria-design#7": { pr: 100 },
+  } }));
+  try {
+    recordTrainMergedTimeline(path, [100], end);
+    const plan = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(plan.issues["7"].timeline.merged, end);
+    assert.equal(plan.issues["vjpixel/diaria-design#7"].timeline, undefined);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

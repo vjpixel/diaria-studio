@@ -1,6 +1,6 @@
 /** Automatic timeline persistence for wave dispatch and lifecycle events (#12011). */
 import { normalizeIssues } from "./plan-issues-normalize.ts";
-import { issueKeyOfPlanEntry, toIssueKey } from "./issue-key.ts";
+import { isStudioIssueKey, issueKeyOfPlanEntry, toIssueKey } from "./issue-key.ts";
 import { readPlanJson } from "./plan-safe-backup.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 
@@ -35,8 +35,12 @@ export function recordTrainMergedTimeline(planPath: string, prs: readonly number
   if (prs.length === 0) return;
   const read = readPlanJson(planPath);
   if (read.status !== "ok") throw new Error(read.message);
-  const ids = normalizeIssues<Record<string, unknown>>(read.plan).filter((i) =>
-    prs.includes(Number(String(i.pr).replace(/^#/, "")))).map(issueKeyOfPlanEntry).filter((k) => k !== null);
+  // The train only merges diaria-studio PRs: a PR number is only meaningful
+  // for studio issues (another repo's PR may share the same number).
+  const ids = normalizeIssues<Record<string, unknown>>(read.plan)
+    .filter((i) => prs.includes(Number(String(i.pr).replace(/^#/, ""))))
+    .map(issueKeyOfPlanEntry)
+    .filter((k): k is NonNullable<typeof k> => k !== null && isStudioIssueKey(k));
   const next = recordUnitTimeline(read.plan, ids, "merged", timestamp);
   if (JSON.stringify(next) !== JSON.stringify(read.plan)) writeFileAtomic(planPath, JSON.stringify(next, null, 2) + "\n");
 }
