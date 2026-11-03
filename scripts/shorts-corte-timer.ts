@@ -62,7 +62,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -384,7 +384,8 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
  * o horário do plano (replanejar o corte para outro dia avisa de novo);
  * `unknown-destination`, a data da autorização (ou da queda) que cita o nome.
  * #11967: todo motivo sem variante própria leva a do plano; o `todos:crash` do
- * `main`, o dia da execução (`corteCrashAlarmVariant`).
+ * `main`, o dia da execução (`corteCrashAlarmVariant`), só até o horizonte
+ * de 48 h (#11995; depois, variante fixa).
  */
 export function corteAlarmId(destination: string, key: CorteTimerAlarmKey, variant?: string): string {
   return variant ? `${destination}:${key}:${variant}` : `${destination}:${key}`;
@@ -406,13 +407,45 @@ function corteAlarmPlanVariant(spec: Pick<CorteSpec, "date" | "hhmm">): string |
   return spec.date || spec.hhmm ? `${spec.date}-${spec.hhmm}` : undefined;
 }
 
+/** #11995: variante fixa do `todos:crash` de corte parado além do horizonte (avisa uma vez só). */
+export const CORTE_CRASH_STALE_VARIANT = "alem-do-horizonte";
+
 /**
  * Puro (#11967): variante do alarme `todos:crash` do `main` (exceção antes de
  * ler o corte, sem plano conhecido): o dia UTC da execução. Avisa de novo a
  * cada dia em que o corte segue quebrado, em vez de uma única vez na vida do corte.
+ *
+ * #11995: só dentro do horizonte do timer (`CORTE_TIMER_HORIZON_MS`, 48 h),
+ * contado da última mudança da pasta do corte (`lastChangeMs`, ver
+ * `corteLastChangeMs`). Corte antigo quebrado (ex.: `corte.json` de agosto
+ * corrompido por conflito do OneDrive) já não publica nada e lançaria em toda
+ * execução: com a variante diária, um alarme urgente novo por dia, para sempre.
+ * Além do horizonte a variante é fixa e o alarme sai uma vez só. Editar o
+ * corte (replanejar, consertar) renova a mtime e volta à variante diária.
+ * `lastChangeMs` ausente (stat falhou) mantém a diária: na dúvida, avisa.
  */
-export function corteCrashAlarmVariant(now: Date): string {
+export function corteCrashAlarmVariant(now: Date, lastChangeMs?: number | null): string {
+  if (typeof lastChangeMs === "number" && Number.isFinite(lastChangeMs) && now.getTime() - lastChangeMs > CORTE_TIMER_HORIZON_MS) {
+    return CORTE_CRASH_STALE_VARIANT;
+  }
   return now.toISOString().slice(0, 10);
+}
+
+/**
+ * #11995: instante da última mudança do corte, para o horizonte do
+ * `todos:crash`: a mtime do `corte.json` (o arquivo que o editor edita e que o
+ * `--publish --confirm-publish` regrava), ou a da pasta se o `corte.json` não
+ * responde ao stat. `null` se nenhum dos dois responde.
+ */
+export function corteLastChangeMs(dir: string): number | null {
+  for (const p of [join(dir, CORTE_SPEC_FILE), dir]) {
+    try {
+      return statSync(p).mtimeMs;
+    } catch {
+      // tenta o próximo; sem nenhum, `null` (variante diária).
+    }
+  }
+  return null;
 }
 
 /** Abre (ou reaproveita) a issue do alarme, manda o e-mail e grava o estado. `true` = entregue (ou já coberto). */
@@ -639,7 +672,7 @@ async function main(): Promise<number> {
       if (dryRun) continue;
       const spec: CorteSpec = { slug: basename(dir), date: "", hhmm: "", title: basename(dir), hook: "", video: "" };
       try {
-        await corteAlarm(dir, spec, "todos", "crash", `o timer falhou com exceção: ${msg}`, deps.notify, corteCrashAlarmVariant(deps.now));
+        await corteAlarm(dir, spec, "todos", "crash", `o timer falhou com exceção: ${msg}`, deps.notify, corteCrashAlarmVariant(deps.now, corteLastChangeMs(dir)));
       } catch (e2) {
         console.error(`${LOG_PREFIX} ${basename(dir)}: nem o alarme saiu: ${e2 instanceof Error ? e2.message : e2}`);
       }
