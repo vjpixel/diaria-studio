@@ -698,6 +698,93 @@ describe("invocação vs menção (#7264/#7281)", () => {
   });
 });
 
+describe("mensagem nomeia o alvo real e heredoc de texto não bloqueia (#12029)", () => {
+  it("caso real — cd … && cleanup-merged-worktrees.ts | tail: mensagem cita esse script, não os outros", () => {
+    const risk = detectChainedSessionIdRisk(
+      "cd /home/x/diaria-studio && npx tsx scripts/cleanup-merged-worktrees.ts 2>&1 | tail -6",
+    );
+    assert.notEqual(risk, null);
+    assert.match(risk, /cleanup-merged-worktrees\.ts/);
+    assert.doesNotMatch(risk, /session-registry\.ts/);
+    assert.doesNotMatch(risk, /overnight-session-marker\.ts/);
+    assert.doesNotMatch(risk, /plan-path\.ts/);
+  });
+
+  for (const [script, invocation] of [
+    ["effective-model-probe.ts", "npx tsx scripts/effective-model-probe.ts"],
+    ["edition-lock.ts", "npx tsx scripts/lib/edition-lock.ts acquire"],
+    ["resolve-overnight-plan-path.ts", "npx tsx scripts/resolve-overnight-plan-path.ts"],
+  ]) {
+    it(`mensagem cita ${script} quando é ele o alvo encadeado`, () => {
+      const risk = detectChainedSessionIdRisk(`git pull && ${invocation}`);
+      assert.notEqual(risk, null);
+      assert.ok(risk.includes(script), risk);
+    });
+  }
+
+  it("dois alvos invocados no mesmo bloco → a mensagem cita os dois", () => {
+    const risk = detectChainedSessionIdRisk(
+      "npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue 1 && " +
+        "npx tsx scripts/cleanup-merged-worktrees.ts",
+    );
+    assert.notEqual(risk, null);
+    assert.match(risk, /session-registry\.ts/);
+    assert.match(risk, /cleanup-merged-worktrees\.ts/);
+  });
+
+  it("alvo de leitura (list-active) seguido de alvo incondicional → bloqueia (antes parava no 1º alvo)", () => {
+    const risk = detectChainedSessionIdRisk(
+      "npx tsx scripts/lib/session-registry.ts list-active; npx tsx scripts/cleanup-merged-worktrees.ts",
+    );
+    assert.notEqual(risk, null);
+    assert.match(risk, /cleanup-merged-worktrees\.ts/);
+    assert.doesNotMatch(risk, /session-registry\.ts/);
+  });
+
+});
+
+// #12029 (parte do heredoc retirada da PR #12048): uma versão que ignorava o
+// corpo de heredoc de texto mediu falsos negativos — comandos que a base
+// bloqueia e que passariam a sair sem --session-id. Estes casos travam o
+// comportamento da base: TODOS continuam BLOQUEADOS. Quem tentar de novo
+// ignorar heredoc precisa passar por aqui.
+describe("heredoc não abre buraco no bloqueio de encadeado (#12029, regressão)", () => {
+  const TARGET = "npx tsx scripts/cleanup-merged-worktrees.ts";
+  const cases: Array<[string, string]> = [
+    // (a) marcador de heredoc dentro de aspas ou comentário, sem terminador,
+    // seguido de invocação real em outra linha.
+    ["(a) <<'EOF' dentro de aspas duplas (grep)", `grep -rn "<<'EOF'" scripts/\n${TARGET}`],
+    ["(a) <<EOF dentro de --body", `gh issue comment 1 --body "use cat <<EOF"\n${TARGET}`],
+    ["(a) <<EOF em comentário", `# usar <<EOF\n${TARGET}`],
+    // (b) substituição de comando no corpo de heredoc sem aspas: expande.
+    ["(b) $(...) no corpo sem aspas", `cat <<EOF\n$(${TARGET})\nEOF`],
+    ["(b) crase no corpo sem aspas", "cat <<EOF\n`" + TARGET + "`\nEOF"],
+    // (c) shells/executores que o regex de interpretador não reconhecia.
+    ["(c) /bin/bash <<'EOF'", `/bin/bash <<'EOF'\n${TARGET}\nEOF`],
+    ["(c) bash<<'EOF' sem espaço", `bash<<'EOF'\n${TARGET}\nEOF`],
+    ["(c) sudo -u x bash<<'EOF'", `sudo -u x bash<<'EOF'\n${TARGET}\nEOF`],
+    ["(c) parallel <<'EOF'", `parallel <<'EOF'\n${TARGET}\nEOF`],
+    // (d) heredoc grava script que é executado depois / pipe na linha seguinte.
+    ["(d) cat > r.sh <<'EOF' … EOF; bash r.sh", `cat > /tmp/r.sh <<'EOF'\n${TARGET}\nEOF\nbash /tmp/r.sh`],
+    ["(d) cat <<'EOF' | com bash na linha seguinte", `cat <<'EOF' |\nbash\n${TARGET}\nEOF`],
+    // (e) outra linguagem disparando o alvo por subprocess.
+    ["(e) node <<'EOF' com execSync", `node <<'EOF'\nrequire('child_process').execSync('${TARGET}')\nEOF`],
+    // casos que a versão anterior já cobria — seguem bloqueados.
+    ["texto em heredoc + invocação real depois do terminador", `cat > /tmp/f.md <<'EOF'\ntexto\nEOF\n${TARGET}`],
+    ["invocação na linha de abertura", `${TARGET} <<'EOF'\nx\nEOF`],
+    ["bash <<'EOF'", `bash <<'EOF'\n${TARGET}\nEOF`],
+    ["ssh host <<EOF", `ssh host <<EOF\n${TARGET}\nEOF`],
+    ["cat <<'EOF' | bash", `cat <<'EOF' | bash\n${TARGET}\nEOF`],
+  ];
+  for (const [label, command] of cases) {
+    it(`bloqueia: ${label}`, () => {
+      const risk = detectChainedSessionIdRisk(command);
+      assert.notEqual(risk, null, command);
+      assert.match(risk as string, /cleanup-merged-worktrees\.ts/);
+    });
+  }
+});
+
 describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)", () => {
   it("PreToolUse Bash real (payload via stdin) → injeta --session-id no updatedInput.command emitido", () => {
     const payload = {

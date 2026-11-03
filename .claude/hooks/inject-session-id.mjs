@@ -382,10 +382,31 @@ function isScriptInvoked(command, targetName) {
  * NOME do script fora de posição de chamada).
  */
 function matchesInjectableTarget(command) {
+  return matchedInjectableTargets(command).length > 0;
+}
+
+/**
+ * #12029: nomes (`target.match`) de TODOS os alvos de `SESSION_ID_TARGETS`
+ * invocados em `command` com subcomando/flag que exige `--session-id`. Fonte
+ * única da mensagem de bloqueio de `detectChainedSessionIdRisk` — antes a
+ * mensagem era uma string fixa que citava só 4 dos 7 alvos (um
+ * `cleanup-merged-worktrees.ts … | tail` era barrado com uma mensagem que
+ * falava de session-registry/marker/resolve-*-plan-path).
+ *
+ * Varre todos os alvos em vez de parar no primeiro invocado (comportamento
+ * anterior de `matchesInjectableTarget`): um bloco com
+ * `session-registry.ts list-active` (leitura, não exige a flag) seguido de
+ * `cleanup-merged-worktrees.ts` retornava `false` no 1º alvo e nunca olhava
+ * o 2º — falso negativo, o lado errado para este guard.
+ */
+function matchedInjectableTargets(command) {
+  const names = [];
   for (const target of SESSION_ID_TARGETS) {
-    if (isScriptInvoked(command, target.match)) return target.needsSessionId(command);
+    if (isScriptInvoked(command, target.match) && target.needsSessionId(command)) {
+      names.push(target.match);
+    }
   }
-  return false;
+  return names;
 }
 
 /** Decide se `command` é candidato a injeção — script-alvo + subcomando reconhecido. */
@@ -429,10 +450,11 @@ export function detectChainedSessionIdRisk(command) {
   if (typeof command !== "string" || command.trim() === "") return null;
   if (!isChainedCommand(command)) return null;
   if (alreadyHasSessionId(command)) return null;
-  if (!matchesInjectableTarget(command)) return null;
+  const matched = matchedInjectableTargets(command);
+  if (matched.length === 0) return null;
   return (
     "Comando encadeado (&&, ;, |, ||, ou múltiplas linhas) contém uma chamada a " +
-    "session-registry.ts / overnight-session-marker.ts / resolve-*-plan-path.ts " +
+    `${matched.join(" / ")} ` +
     "que exige --session-id. O hook de injeção automática (#5156) só atua em " +
     "comando STANDALONE — encadeado, a chamada sairia com '--session-id ausente' " +
     "(exit 1), erro que pode se perder no meio da saída do bloco ou ser engolido " +
