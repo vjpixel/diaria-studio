@@ -130,10 +130,11 @@ describe("#12001 decideCorteTimerRun respeita a marca 'envio em curso'", () => {
     if (d.kind === "publish") assert.equal(d.pending.length, 3);
   });
 
-  it("marca velha (processo morto no meio, > 90 min) não segura o destino para sempre", () => {
-    const d = decideCorteTimerRun({ config: CONFIG, spec: SPEC, registryRaws: [], sendingMarks: [mark("linkedin_profile", TAIL - SHORTS_TIMER_LOCK_STALE_MS - MIN)], now: at(TAIL) });
+  it("marca velha (processo morto no meio, > 90 min) não segura destino com conferência da conta", () => {
+    // #11985: Instagram e Threads conferem a conta antes de publicar; o linkedin_profile não (ver o teste do #11985).
+    const d = decideCorteTimerRun({ config: CONFIG, spec: SPEC, registryRaws: [], sendingMarks: [mark("instagram", TAIL - SHORTS_TIMER_LOCK_STALE_MS - MIN)], now: at(TAIL) });
     assert.equal(d.kind, "publish");
-    if (d.kind === "publish") assert.ok(d.pending.includes("linkedin_profile"));
+    if (d.kind === "publish") assert.ok(d.pending.includes("instagram"));
   });
 
   it("marca com entrada gravada depois dela é envio concluído: registrado, não pendente", () => {
@@ -232,7 +233,7 @@ describe("#12001 quem toma o lock no publish-shorts", () => {
     assert.equal(linkedinTimerLock, acquireTimerLock);
     const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
     assert.match(src, /corteManualTimerDestinations\(plan\.items, corte \? \{ timerRun: requireCorteAuth \} : null\)/);
-    assert.match(src, /acquireTimerLock\(join\(dir, CORTE_TIMER_LOCK_FILE\)\)[\s\S]*for \(const item of plan\.items\) \{\s*if \(corteLockBusy && corteLockDests\.includes\(item\.destination\)\)/);
+    assert.match(src, /acquireTimerLock\(join\(dir, CORTE_TIMER_LOCK_FILE\)[,)][\s\S]*for \(const item of plan\.items\) \{\s*if \(corteLockBusy && corteLockDests\.includes\(item\.destination\)\)/);
     assert.match(src, /\n  releaseCorteLock\(\);\n  const finalItems = blockRepostOnProfileFailure/);
     const timerSrc = readFileSync(new URL("../scripts/shorts-corte-timer.ts", import.meta.url), "utf8");
     assert.match(timerSrc, /sendingMarks: readShortsSending\(dir, spec\.date\)/);
