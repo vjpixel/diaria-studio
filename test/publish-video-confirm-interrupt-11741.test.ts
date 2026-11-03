@@ -106,7 +106,8 @@ describe("#11741 CLIs recusam sem confirmação, antes de qualquer I/O", () => {
     assert.match(r.stderr, /#11741/);
   });
   it("publish-shorts --publish confirmado passa do guard (para no 02-reviewed.md ausente, exit 1)", () => {
-    const r = run("publish-shorts.ts", ["--publish", "--confirm-publish", AAMMDD]);
+    // #11911: a pasta temporária fica fora de data/editions/: sem o escape, a recusa da pasta (exit 2) viria antes.
+    const r = run("publish-shorts.ts", ["--publish", "--confirm-publish", AAMMDD, "--allow-unwatched-dir"]);
     assert.equal(r.status, 1, r.stderr);
     assert.match(r.stderr, /02-reviewed\.md não existe/);
   });
