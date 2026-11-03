@@ -1080,6 +1080,60 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
   });
 });
 
+describe("main() — evento confirm a partir dos snapshots de estado (#11846)", () => {
+  function seedSnapshots(tmp: string): string {
+    const root = resolve(tmp, "data/subscriber-state-snapshots/kit");
+    const days: Record<string, string> = { "2026-11-01": "inactive", "2026-11-02": "active" };
+    for (const [date, state] of Object.entries(days)) {
+      mkdirSync(resolve(root, date), { recursive: true });
+      writeFileSync(resolve(root, date, "subscribers.jsonl"), JSON.stringify({ id: 1, state, created_at: "2026-10-30T10:00:00.000Z" }) + "\n");
+    }
+    return root;
+  }
+  const deps = (): KitIngestDeps => ({
+    listAllBroadcasts: async () => [],
+    readOnboardingExclusion: neutralOnboardingExclusion,
+    fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+    getBroadcastStats: async () => makeStats(0),
+    sleep: async () => {},
+    listAllRosterSubscribers: async () => [makeKitSub()],
+  });
+
+  it("com --write: lê os snapshots do data/ padrão e grava confirm no dia da transição", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-confirm-"));
+    seedSnapshots(tmp);
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const argv = [
+      "--db", dbPath,
+      "--manifest", resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json"),
+      "--captura-log", resolve(tmp, "data/metrics/captura-log.jsonl"),
+      "--kit-active-history", resolve(tmp, "data/metrics/kit-active-history.jsonl"),
+      "--write",
+    ];
+    await main(argv, deps());
+    await main(argv, deps()); // idempotente
+
+    const db = openDiariaSubscribersDb(dbPath);
+    const id = findSubscriberIdByAlias(db, "kit", "1", "roster@example.com");
+    const confirms = getSubscriberTimeline(db, id!).filter((e) => e.type === "confirm");
+    db.close();
+    assert.equal(confirms.length, 1);
+    assert.equal(confirms[0].ts, "2026-11-02T12:00:00.000Z");
+  });
+
+  it("sem --write: não grava confirm", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-confirm-dry-"));
+    seedSnapshots(tmp);
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    await main(["--db", dbPath, "--manifest", resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json")], deps());
+    const db = openDiariaSubscribersDb(dbPath);
+    const id = findSubscriberIdByAlias(db, "kit", "1", "roster@example.com");
+    const confirms = id === null ? [] : getSubscriberTimeline(db, id).filter((e) => e.type === "confirm");
+    db.close();
+    assert.equal(confirms.length, 0);
+  });
+});
+
 function existsSyncSafe(path: string): boolean {
   try {
     readFileSync(path);

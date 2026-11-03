@@ -52,10 +52,17 @@
  * após `ingestKitRoster` gravar) — piggyback sem chamada de rede nova. Ver
  * `scripts/lib/metrics/kit-active-history.ts` pro formato/leitura.
  *
+ * E, ainda no `--write` (#11846), grava o evento `confirm` (double opt-in)
+ * comparando os últimos snapshots diários de estado
+ * (`data/subscriber-state-snapshots/kit/`, `--snapshot-root` sobrepõe):
+ * transição `inactive -> active` vira `confirm` com `ts` no dia do snapshot.
+ * Só disco local, sem chamada de rede nova; falha avisa e segue
+ * (`ingestKitConfirmationsFromSnapshots`, `kit-subscribers-ingest.ts`).
+ *
  * Uso:
  *   npx tsx scripts/diaria-subscribers-ingest-kit.ts [--db <p>] [--manifest <p>]
  *     [--limit N] [--broadcast <id>] [--write] [--skip-roster] [--captura-log <p>]
- *     [--kit-active-history <p>] [--config <platform.config.json>]
+ *     [--kit-active-history <p>] [--config <platform.config.json>] [--snapshot-root <p>]
  *
  * Broadcasts de onboarding (lotes do transporte Kit, #7922) ficam FORA da
  * ingestão — ver `scripts/lib/onboarding-broadcast-exclusion.ts` (#7916).
@@ -87,7 +94,10 @@ import {
   ingestBroadcastUrlClicks,
   verifyKitIngestion,
   ingestKitRoster,
+  ingestKitConfirmationsFromSnapshots,
+  type KitConfirmationsFromSnapshotsResult,
 } from "./lib/kit-subscribers-ingest.ts";
+import { snapshotRootDefault } from "./lib/subscriber-state-snapshot.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { buildCapturaLogEntry, serializeCapturaLogEntry } from "./lib/metrics/captura-log.ts";
 import { buildKitActiveHistoryEntry, serializeKitActiveHistoryEntry } from "./lib/metrics/kit-active-history.ts";
@@ -467,6 +477,9 @@ export async function main(
   const shouldWriteRoster = hasFlag(argv, "write");
   const skipRoster = hasFlag(argv, "skip-roster"); // #6586-only regression fixtures não têm listAllRosterSubscribers
   let rosterSummary: { total: number; written: boolean; novosGravados: number; eventosEstado: number } | null = null;
+  // #11846: snapshots diários de estado do Kit, insumo do evento `confirm`.
+  const snapshotRoot = getArg(argv, "snapshot-root") || snapshotRootDefault(dataRoot);
+  let confirmSummary: KitConfirmationsFromSnapshotsResult | { error: string } | null = null;
 
   if (!skipRoster) {
     const capturaLogDir = dirname(capturaLogPath);
@@ -610,6 +623,25 @@ export async function main(
         db.close();
         throw e;
       }
+
+      // #11846: evento `confirm` a partir dos snapshots diários de estado
+      // (`subscriber-state-snapshot.ts`, task 23:55 BRT; esta roda 04:40, então
+      // o snapshot da véspera já está lá). Enriquecimento: o funil tem fallback
+      // pelo estado nativo do Kit, então falha aqui avisa e segue, sem derrubar
+      // o roster já gravado nem a ingestão de broadcasts abaixo.
+      try {
+        const emailById = new Map(roster.map((s) => [s.id, s.email_address]));
+        const r = ingestKitConfirmationsFromSnapshots(db, snapshotRoot, emailById);
+        confirmSummary = r;
+        console.error(
+          `  …confirm: ${r.newEvents} novo(s), ${r.alreadyKnown} já conhecido(s) em ${r.datesProcessed.length} par(es) de snapshot` +
+            (r.skippedNoEmail > 0 ? `; ⚠️ ${r.skippedNoEmail} transição(ões) inactive→active sem e-mail no roster, puladas` : "") +
+            ".",
+        );
+      } catch (e) {
+        confirmSummary = { error: e instanceof Error ? e.message : String(e) };
+        console.error(`❌ evento confirm (#11846) falhou — roster e broadcasts seguem: ${confirmSummary.error}`);
+      }
     } else {
       rosterSummary = { total: roster.length, written: false, novosGravados: 0, eventosEstado: 0 };
     }
@@ -715,6 +747,8 @@ export async function main(
         db: dbPath,
         manifest: manifestPath,
         roster: rosterSummary,
+        // #11846: `null` = não rodou (dry-run ou --skip-roster).
+        confirm_events: confirmSummary,
         // #7916: só broadcasts de EDIÇÃO — os lotes de onboarding já saíram
         // (listados em `onboarding_broadcasts_excluded`).
         broadcasts_total: broadcasts.length,
