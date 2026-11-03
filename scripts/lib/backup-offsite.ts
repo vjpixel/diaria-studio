@@ -436,7 +436,7 @@ export function kvRestDumpSource(
 // Alarme da cópia remota (consumido por beehiiv-backup-staleness-alarm.ts)
 // ---------------------------------------------------------------------------
 
-export type RemoteVerdict = "ok" | "missing" | "stale" | "error";
+type RemoteVerdict = "ok" | "missing" | "stale" | "error";
 
 /**
  * Veredito de um prefixo, discriminado por `verdict` (#11961): `ok`/`stale`
