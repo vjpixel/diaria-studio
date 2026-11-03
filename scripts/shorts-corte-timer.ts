@@ -136,12 +136,13 @@ export const corteTimerDestinations = corteUnscheduledDestinations;
 /**
  * #11912: alarme que acompanha a decisão, independente de publicar: destino
  * cujo "pode publicar" caiu e segue pendente (`revoked`) ou destino autorizado
- * que a config não conhece (`unknown-destination`). Só no horário (até o
+ * que a config não conhece (`unknown-destination`), ou envio sem desfecho
+ * (`send-unknown`, #11985). Só no horário (até o
  * horizonte), como o `late`.
  */
 export interface CorteTimerSideAlarm {
   destination: string;
-  key: "revoked" | "unknown-destination";
+  key: "revoked" | "unknown-destination" | "send-unknown";
   reason: string;
 }
 
