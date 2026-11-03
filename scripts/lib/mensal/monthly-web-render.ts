@@ -37,6 +37,7 @@ import { applyBrandWordmark } from "../shared/brand-wordmark.ts";
 import { FAVICON_DATA_URI } from "../shared/seo-meta.ts";
 import type { Brand } from "../../../workers/poll/src/lib.ts";
 import {
+  CADASTRO_BOX_KICKER,
   classifySection,
   eiaCreditContent,
   eiaEditionFromYymm,
@@ -302,6 +303,12 @@ export function draftToWebArticle(input: MonthlyWebRenderInput): { subject: stri
         }
         case "livros":
           parts.push(renderBoxWeb(chunk, "Livros", input.livrosImageUrl));
+          break;
+        case "cadastro":
+          // #12040: a página passa por `filterDraftForApoiadores`, que corta o
+          // box; este case só evita que um draft não filtrado caia no fallback.
+          // O botão aqui sai com a posição `cta` do `renderCtaWeb`, não `box-cadastro`.
+          parts.push(renderBoxWeb(chunk, CADASTRO_BOX_KICKER));
           break;
         case "livro":
           parts.push(renderBoxWeb(chunk, "Livro do mês", undefined, livroAbreComParagrafoDeLink(chunk)));

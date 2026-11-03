@@ -630,8 +630,9 @@ export async function main(
   // #2802: imagem do box de curadoria de livros (04-livros-promo.jpg) → URL pública no
   // KV, igual ao preview (monthly-preview-cloudflare.ts). Antes só o preview subia essa
   // imagem — o email real publicado via Brevo saía sem ela.
+  // #12040: mesma condição do preview — draft sem `**LIVROS**` não usa a imagem.
   let livrosImageUrl: string | undefined;
-  if (!dryRun) {
+  if (!dryRun && /^\**LIVROS\**\s*$/m.test(draft)) {
     try {
       livrosImageUrl = await uploadDeps.uploadLivrosImage(monthlyDir, eiaEdition, ROOT);
       if (livrosImageUrl) {
