@@ -432,6 +432,8 @@ export const SIBILANTS = {
   floorPercentile: 0.01,
   /** Teto do limiar relativo: acima disso já é fala, não piso. */
   maxThresholdDb: -30,
+  /** Distância mínima piso→mediana para o limiar relativo valer (senão, o fixo). */
+  minFloorGapDb: 6,
 } as const;
 
 export interface HighBandThreshold {
@@ -461,7 +463,9 @@ export function highBandThresholdDb(env: Envelope): HighBandThreshold {
     const floorDb = vals[Math.min(vals.length - 1, Math.floor(SIBILANTS.floorPercentile * vals.length))];
     const medianDb = vals[Math.floor(vals.length / 2)];
     const rel = Math.min(floorDb + SIBILANTS.aboveFloorDb, (floorDb + medianDb) / 2, SIBILANTS.maxThresholdDb);
-    out = rel > SIBILANTS.thresholdDb
+    // Piso colado na mediana (quase sem pausa, ou envelope chapado): não dá para
+    // separar piso de fala, e o limiar relativo trataria a fala como silêncio.
+    out = rel > SIBILANTS.thresholdDb && medianDb - floorDb >= SIBILANTS.minFloorGapDb
       ? { thresholdDb: Math.round(rel * 10) / 10, floorDb, medianDb, how: "relative" }
       : { thresholdDb: SIBILANTS.thresholdDb, floorDb, medianDb, how: "fixed" };
   }

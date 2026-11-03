@@ -56,6 +56,12 @@ describe("#11968: limiar relativo da banda alta", () => {
     assert.ok(t.thresholdDb < -36, `limiar ${t.thresholdDb} abaixo da fala`);
   });
 
+  it("envelope chapado (piso colado na fala) não vira tudo silêncio", () => {
+    const flat = env([], 5, -40, -40);
+    assert.equal(highBandThresholdDb(flat).thresholdDb, -51);
+    assert.deepEqual(highBandSilences(flat), []);
+  });
+
   it("silêncio digital (-120) não conta como piso", () => {
     const e = env([[0, 2], [3, 5]], 6, -42, -20);
     for (let i = 0; i < 20; i++) e.db[i] = -120;

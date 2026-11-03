@@ -1091,7 +1091,10 @@ function highBandEnvelope(ctx: Ctx, source: SourceInfo) {
   const audio = join(ctx.workDir, "audio-high-48k.wav");
   const meta = join(ctx.workDir, "audio-high-48k.meta.json");
   const st = statSync(source.path);
-  const key = JSON.stringify({ path: source.path, size: st.size, mtimeMs: st.mtimeMs, ...SIBILANTS });
+  // Só os campos do #11940 (na mesma ordem): os do limiar relativo (#11968) não
+  // mudam o WAV, e entrar na chave obrigaria a reextrair do bruto à toa.
+  const S = SIBILANTS;
+  const key = JSON.stringify({ path: source.path, size: st.size, mtimeMs: st.mtimeMs, sampleRate: S.sampleRate, highpassHz: S.highpassHz, thresholdDb: S.thresholdDb, quietS: S.quietS, airS: S.airS, windowS: S.windowS });
   if (ctx.force || !existsSync(audio) || !existsSync(meta) || readFileSync(meta, "utf8").trim() !== key) {
     mkdirSync(ctx.workDir, { recursive: true });
     rmSync(meta, { force: true });
