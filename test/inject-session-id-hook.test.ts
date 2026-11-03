@@ -846,6 +846,10 @@ describe("heredoc gh --body-file - não bloqueia por citar alvo no corpo (#12050
     ["delimitador sem aspas", `gh issue comment 1 --body-file - <<EOF\n$(${TARGET})\nEOF`],
     ["sem --body-file -", `gh issue comment 1 --body x ${H(TARGET)}`],
     ["| no fim da linha 1", `gh issue comment 1 --body-file - <<'EOF' | bash\n${TARGET}\nEOF`],
+    // `#` comenta o `<<'EOF'`: sem heredoc, o "corpo" roda como código (review da #12054).
+    ["# colado antes do <<", `gh issue comment 1 --body-file - #<<'EOF'\n${TARGET}\nEOF`],
+    ["# com espaço antes do <<", `gh issue comment 1 --body-file - # <<'EOF'\n${TARGET}\nEOF`],
+    ["# antes do --body-file", `gh issue comment 1 #--body-file - <<'EOF'\n${TARGET}\nEOF`],
     ["$() nos argumentos", `gh issue comment 1 --title "$(date)" --body-file - ${H(TARGET)}`],
     ["aspa aberta engolindo o <<", `gh issue comment 1 --body-file - --title "x <<'EOF'\n"; ${TARGET}\nEOF`],
     ["terminador ausente", `gh issue comment 1 --body-file - <<'EOF'\n${TARGET}`],

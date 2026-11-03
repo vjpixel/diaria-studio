@@ -447,7 +447,8 @@ export function alreadyHasSessionId(command) {
  * tem timeout e falha aberto).
  */
 const GH_BODY_HEREDOC_OPENING =
-  /^[ \t]*gh[ \t]+(?:issue|pr)[ \t]+(?:comment|create|edit)[ \t]([^;&|`$()<>{}\\]*)<<(['"])([A-Za-z_][A-Za-z0-9_]*)\2$/;
+  // `#` proibido: fora de aspas ele comenta o `<<'TAG'` e o "corpo" vira código (review da #12054).
+  /^[ \t]*gh[ \t]+(?:issue|pr)[ \t]+(?:comment|create|edit)[ \t]([^;&|`$()<>{}\\#]*)<<(['"])([A-Za-z_][A-Za-z0-9_]*)\2$/;
 const GH_BODY_FROM_STDIN = /(?:^|[ \t])(?:--body-file|-F)[ \t]+-(?:[ \t]|$)/;
 
 export function ghBodyHeredocOpeningLine(command) {
