@@ -20,6 +20,7 @@ import {
   describeOffsiteConfigProblems,
   dumpKvPrefixes,
   evaluateRemotePrefix,
+  isNonEmptyList,
   kvRestDumpSource,
   loadOffsiteAccess,
   loadOffsiteConfig,
@@ -27,12 +28,14 @@ import {
   remoteOffsiteFingerprint,
   tarGzDirectory,
   type KvDumpSource,
+  type OffsiteAccessResult,
+  type OffsiteConfigResult,
   type RemoteOffsiteEvaluation,
   type RemotePrefixStatus,
   type TarRunner,
 } from "../scripts/lib/backup-offsite.ts";
 import { kvRestBulkGet } from "../scripts/lib/cloudflare-kv-rest.ts";
-import { runOffsiteBackup, offsiteFailureFingerprint, type OffsiteStepResult } from "../scripts/backup-offsite.ts";
+import { buildOffsiteFailureAlarm, runOffsiteBackup, offsiteFailureFingerprint, type OffsiteStepResult } from "../scripts/backup-offsite.ts";
 import { kindFromKey, restoreBlob } from "../scripts/restore-backup-offsite.ts";
 import { buildRemoteOffsiteAlarmEmail } from "../scripts/lib/beehiiv-backup-staleness-alarm.ts";
 
@@ -540,7 +543,55 @@ describe("#11961 — tipos que impõem os invariantes", () => {
     // @ts-expect-error failed sem detail
     const bad2: OffsiteStepResult = { kind: "beehiiv", status: "failed", key: "k" };
     const good: OffsiteStepResult = { kind: "beehiiv", status: "failed", detail: "configuração ausente" };
-    assert.ok(bad && bad2 && good);
+    // @ts-expect-error skipped sem detail
+    const bad3: OffsiteStepResult = { kind: "beehiiv", status: "skipped", key: "k" };
+    // @ts-expect-error uploaded sem bytes
+    const bad4: OffsiteStepResult = { kind: "beehiiv", status: "uploaded", key: "k", etagVerified: true };
+    assert.ok(bad && bad2 && good && bad3 && bad4);
+  });
+
+  it("buildOffsiteFailureAlarm só aceita skipped/failed", () => {
+    const up: OffsiteStepResult = { kind: "beehiiv", status: "uploaded", key: "k", bytes: 1, etagVerified: true };
+    // @ts-expect-error um upload bem-sucedido não vira alarme de falha
+    assert.ok(buildOffsiteFailureAlarm(up, "2026-11-08").subject);
+  });
+
+  it("OffsiteConfigResult: ready: false sempre traz ao menos um motivo", () => {
+    // @ts-expect-error não pronto com as duas listas vazias
+    const bad: OffsiteConfigResult = { ready: false, missing: [], invalid: [] };
+    const onlyMissing: OffsiteConfigResult = { ready: false, missing: ["R2_ACCOUNT_ID"], invalid: [] };
+    const onlyInvalid: OffsiteConfigResult = { ready: false, missing: [], invalid: ["chave malformada"] };
+    assert.ok(bad && onlyMissing && onlyInvalid);
+    // runtime: os dois caminhos reais continuam com o motivo certo
+    const { R2_ACCOUNT_ID: _a, ...noAcc } = ENV;
+    const r = loadOffsiteConfig(noAcc);
+    assert.deepEqual(!r.ready && r.missing, ["R2_ACCOUNT_ID"]);
+    assert.deepEqual(!r.ready && r.invalid, []);
+  });
+
+  it("OffsiteAccessResult e RemoteOffsiteEvaluation sem credencial sempre nomeiam a variável", () => {
+    // @ts-expect-error sem credencial, mas sem dizer qual
+    const bad: OffsiteAccessResult = { ready: false, missing: [] };
+    // @ts-expect-error configured: false sem a variável que falta
+    const bad2: RemoteOffsiteEvaluation = { configured: false, missing: [], ok: false, fingerprint: "remote:no-credentials:", prefixes: [] };
+    assert.ok(bad && bad2);
+    const acc = loadOffsiteAccess({});
+    assert.deepEqual(!acc.ready && acc.missing, ["R2_ACCOUNT_ID", "R2_BACKUP_ACCESS_KEY_ID", "R2_BACKUP_SECRET_ACCESS_KEY"]);
+  });
+
+  it("isNonEmptyList", () => {
+    assert.equal(isNonEmptyList([]), false);
+    const xs: string[] = ["a"];
+    assert.ok(isNonEmptyList(xs));
+    if (isNonEmptyList(xs)) {
+      const first: string = xs[0]; // sem `| undefined` com noUncheckedIndexedAccess
+      assert.equal(first, "a");
+    }
+  });
+
+  it("backupKeyId exige BackupKey", () => {
+    // @ts-expect-error Buffer cru não tem keyId: só a chave validada
+    assert.equal(backupKeyId(Buffer.alloc(32)).length, 8);
   });
 
   it("runOffsiteBackup com chave malformada: failed com o motivo em 'inválida', sem ecoar o valor", async () => {

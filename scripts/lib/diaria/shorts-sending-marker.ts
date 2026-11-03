@@ -23,7 +23,11 @@
  * skill de reler o status antes de qualquer nova chamada. #12001: o timer do
  * corte (`shorts-corte-timer.ts`, `corteInFlightDestinations`) também lê: marca
  * aberta com até 90 min tira o destino da execução (outra rodada o publica
- * agora); mais velha não segura nada (mesmo cuidado com a marca órfã).
+ * agora). #11985: mais velha só segura o destino que o publish-shorts não
+ * confere na conta antes de publicar (`linkedin_profile`): vira alarme e o
+ * editor libera com `shorts-corte-timer.ts --corte SLUG --clear-sending DEST`
+ * (`clearShortSendingAll`); Instagram e Threads seguem com a conferência da
+ * conta, que barra o post repetido.
  *
  * Um arquivo por escritor (mesmo motivo do registro, #11157): os timers do 300
  * e as rodadas do neo nunca escrevem o mesmo arquivo pelo OneDrive.
@@ -100,7 +104,10 @@ function updateMarks(
   change: (marks: ShortSendingMark[]) => ShortSendingMark[],
   lockTimeoutMs: number,
 ): void {
-  const path = shortsSendingPath(editionDir, writer);
+  updateMarksAt(shortsSendingPath(editionDir, writer), aammdd, change, lockTimeoutMs);
+}
+
+function updateMarksAt(path: string, aammdd: string, change: (marks: ShortSendingMark[]) => ShortSendingMark[], lockTimeoutMs: number): void {
   mkdirSync(dirname(path), { recursive: true });
   withFileLock(
     `${path}.lock`,
@@ -137,6 +144,32 @@ export function clearShortSending(
   lockTimeoutMs = 30_000,
 ): void {
   updateMarks(editionDir, aammdd, writer, (marks) => marks.filter((m) => m.destination !== destination), lockTimeoutMs);
+}
+
+/**
+ * #11985: apaga a marca de `destination` em TODOS os arquivos de marcas da
+ * edição (todos os escritores e as cópias de conflito do OneDrive). É a saída
+ * do editor depois de conferir na conta que o envio interrompido não saiu: a
+ * marca sem desfecho segura o destino no timer do corte. Devolve quantas
+ * marcas saíram. Arquivo ilegível lança (nunca apaga às cegas).
+ */
+export function clearShortSendingAll(editionDir: string, aammdd: string, destination: string, lockTimeoutMs = 30_000): number {
+  const dir = join(editionDir, SENDING_DIR);
+  if (!existsSync(dir)) return 0;
+  let removed = 0;
+  for (const name of readdirSync(dir).filter(isShortsSendingFileName).sort()) {
+    updateMarksAt(
+      join(dir, name),
+      aammdd,
+      (marks) => {
+        const next = marks.filter((m) => m.destination !== destination);
+        removed += marks.length - next.length;
+        return next;
+      },
+      lockTimeoutMs,
+    );
+  }
+  return removed;
 }
 
 /**
