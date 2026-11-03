@@ -652,7 +652,7 @@ describe("loudness, bruto, probe (#11208)", () => {
   it("parseProbe: 4K 30 fps; fps fracionário recusa (timebase inteiro no XML)", () => {
     const probe = (rate: string) =>
       JSON.stringify({ streams: [{ codec_type: "audio" }, { codec_type: "video", width: 3840, height: 2160, r_frame_rate: rate }], format: { duration: "658.100000" } });
-    assert.deepEqual(parseProbe(probe("30/1"), "G:/x.mp4"), { path: "G:/x.mp4", fps: 30, durationS: 658.1, width: 3840, height: 2160, mirrored: true });
+    assert.deepEqual(parseProbe(probe("30/1"), "G:/x.mp4"), { path: "G:/x.mp4", fps: 30, durationS: 658.1, width: 3840, height: 2160, mirrored: true, mirroredFrom: "default" });
     assert.throws(() => parseProbe(probe("30000/1001"), "x"), /não inteiro/);
   });
 });

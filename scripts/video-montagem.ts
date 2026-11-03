@@ -37,8 +37,12 @@
  *                           sequências abertura → comentário → CTA → fecho.
  *   retranscribe AAMMDD --from S --to S
  *                           retranscreve só o trecho (até 60 s; sem VAD, sem condition_on_previous_text)
- *                           antes de declarar dúvida (#11364); não mexe no transcript.json
- *   frame AAMMDD --at S    frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
+ *                           antes de declarar dúvida (#11364); não mexe no transcript.json. Com --sub (#11958),
+ *                           em subjanelas de 4 s (passo 2 s), para achar falso começo/repetição que a janela
+ *                           inteira engole: o roteiro propõe o corte na linha "repetição" (Gate 2)
+ *   frame AAMMDD --at S    frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade) e, ao lado,
+ *                           `frame-{S}-orientacoes.jpg` com o bruto e o espelhado lado a lado + a premissa do
+ *                           espelhamento (#11959: metadado da câmera, publishing.video.mirrored_default ou default)
  *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
  *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz)
  *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode text|png|off]
@@ -154,11 +158,14 @@ import {
   trimWordsToSilences,
   isVerticalSpec,
   offsetTranscript,
+  subWindows,
   parseBlocksFile,
   retranscribeWindow,
   parseLoudnormJson,
   parseFrameRate,
   parseProbe,
+  mirroredDefaultFrom,
+  mirroredPremise,
   parseSilenceDetect,
   pickRawSource,
   previewClipArgs,
@@ -354,6 +361,36 @@ function nonEmptyWords(path: string, what: string): Word[] {
   return words;
 }
 
+/** `publishing.video.mirrored_default` do config (#11959); config ilegível = `null` (vale o default do código, com aviso). */
+function configMirroredDefault(): boolean | null {
+  try {
+    return mirroredDefaultFrom(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
+  } catch (e) {
+    console.error(`[aviso] platform.config.json ilegível (${(e as Error).message}): espelhamento pelo default do código (#11959)`);
+    return null;
+  }
+}
+
+/**
+ * Frame do bruto nas duas orientações, lado a lado (#11959): esquerda = o
+ * bruto como gravado, direita = espelhado. A leitura da caneca e do pôster
+ * decide o `mirrored` sem depender do palpite do `source.json` (na 261103 a
+ * câmera traseira não espelhava e o frame desespelhado pareceu certo).
+ */
+function cmdFrameOrientations(ctx: Ctx, at: string | undefined): number {
+  const t = Number(at);
+  if (at === undefined || !Number.isFinite(t) || t < 0) throw new Error("frame exige --at SEGUNDOS");
+  const measured = measuredSource(ctx);
+  const override = existsSync(f(ctx, "blocks.json")) ? loadBlocks(ctx).file.mirrored : undefined;
+  const out = f(ctx, `frame-${t.toFixed(1)}-orientacoes.jpg`);
+  const vf = "scale=960:-2,split[a][b];[b]hflip[m];[a][m]hstack=inputs=2,drawgrid=w=iw/20:h=ih/10:t=1:c=white@0.4";
+  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", String(t), "-i", measured.path, "-frames:v", "1", "-filter_complex", vf, out]);
+  console.log(out);
+  console.error("[video-montagem] lado a lado: esquerda = bruto como gravado, direita = espelhado; o lado em que a caneca e o pôster leem certo é a orientação real (#11959)");
+  console.error(`[premissa] ${mirroredPremise(measured, override)} (#11959)`);
+  return 0;
+}
+
 function measuredSource(ctx: Ctx): SourceInfo {
   return readJson<SourceInfo>(f(ctx, "source.json"), "source.json (rode transcribe)");
 }
@@ -424,8 +461,8 @@ function planHash(ctx: Ctx, blocksText: string): string {
   return planHashOf(blocksText, readFileSync(f(ctx, "source.json")), existsSync(sil) ? readFileSync(sil) : null, trBuf);
 }
 
-/** As retranscrições de janela (`retranscribe-{de}-{até}.json`, no tempo do bruto), em ordem de nome (#11754). */
-export const RETRANSCRIBED_FILE = /^retranscribe-\d+(?:\.\d+)?-\d+(?:\.\d+)?\.json$/;
+/** As retranscrições de janela (`retranscribe-{de}-{até}.json`, no tempo do bruto, #11754) e as subjanelas (`retranscribe-sub-…`, #11958), em ordem de nome. */
+export const RETRANSCRIBED_FILE = /^retranscribe-(?:sub-)?\d+(?:\.\d+)?-\d+(?:\.\d+)?\.json$/;
 function retranscribedFiles(ctx: Pick<Ctx, "stateDir">): string[] {
   if (!existsSync(ctx.stateDir)) return [];
   return readdirSync(ctx.stateDir)
@@ -806,7 +843,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   if (cached) source = cached;
   else {
     const probe = run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", src]).stdout;
-    source = parseProbe(probe, srcPath);
+    source = parseProbe(probe, srcPath, { mirroredDefault: configMirroredDefault() });
     writeJson(sourcePath, source);
     wroteSource = true;
     redo = true;
@@ -815,6 +852,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     console.error(`[video-montagem] bruto só de áudio: ${source.path} (${source.durationS.toFixed(1)} s) — modo áudio: transcrição, decupagem e roteiro; build/srt/prévia/review param antes (#11552)`);
   } else {
     console.error(`[video-montagem] bruto: ${source.path} (${source.width}x${source.height}, ${source.fps} fps, ${source.durationS.toFixed(1)} s)`);
+    console.error(`[premissa] ${mirroredPremise(source)} (#11959)`);
   }
 
   const audio = join(ctx.workDir, "audio.wav");
@@ -1012,12 +1050,13 @@ export function collapsedSegmentWarnings(edition: string, segments: Segment[], s
  * de pausa saem errados na transcrição longa ("bom" por "primeiro" na 261028).
  * Imprime os segmentos no tempo do bruto; não mexe no `transcript.json`.
  */
-function cmdRetranscribe(ctx: Ctx, from: string | undefined, to: string | undefined): number {
+function cmdRetranscribe(ctx: Ctx, from: string | undefined, to: string | undefined, sub = false): number {
   const source = measuredSource(ctx);
   const w = retranscribeWindow(from, to, source.durationS);
   if (!w.ok) throw new Error(w.error);
   const audio = join(ctx.workDir, "audio.wav");
   if (!existsSync(audio)) throw new Error(`áudio do bruto ausente (${audio}): rode transcribe de novo nesta máquina`);
+  if (sub) return retranscribeSubWindows(ctx, audio, w.window);
   const tag = `${w.window.start.toFixed(1)}-${w.window.end.toFixed(1)}`;
   const wav = join(ctx.workDir, `retranscribe-${tag}.wav`);
   run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", w.window.start.toFixed(3), "-to", w.window.end.toFixed(3), "-i", audio, "-ac", "1", "-ar", "16000", wav]);
@@ -1029,6 +1068,37 @@ function cmdRetranscribe(ctx: Ctx, from: string | undefined, to: string | undefi
   for (const s of shifted.segments) console.log(`[${clockTime(s.start)}–${clockTime(s.end)}] ${s.text.trim()}`);
   console.error(`[video-montagem] retranscrição do trecho: ${out} (o transcript.json fica como está; a correção vai no text do decupagem-plan.json)`);
   console.error("[video-montagem] item do blocks.json com tomada colapsada coberto por esta janela passa a usar a tomada separada aqui (a última, salvo aprovação da direção) no próximo roteiro/build (#11754)");
+  return 0;
+}
+
+/**
+ * `retranscribe --sub` (#11958): a janela em subjanelas curtas (`subWindows`,
+ * 4 s com passo de 2 s), numa chamada só do Python, sem VAD e sem
+ * `condition_on_previous_text`. Cada subjanela vira um `retranscribe-{de}-{até}.json`
+ * como o da janela inteira; o `roteiro`/`build` juntam as que cobrem uma
+ * tomada colapsada e procuram o falso começo (`findRepetitionCut`).
+ */
+function retranscribeSubWindows(ctx: Ctx, audio: string, window: Interval): number {
+  const wins = subWindows(window).map((w) => ({ key: `${w.start.toFixed(1)}-${w.end.toFixed(1)}`, start: w.start, end: w.end }));
+  mkdirSync(ctx.workDir, { recursive: true });
+  const winFile = join(ctx.workDir, "retranscribe-sub-windows.json");
+  const raw = join(ctx.workDir, "retranscribe-sub.raw.json");
+  writeFileSync(winFile, JSON.stringify(wins));
+  console.error(`[video-montagem] retranscrevendo ${wins.length} subjanela(s) de ${window.start.toFixed(1)}–${window.end.toFixed(1)} s (sem VAD, #11958)…`);
+  const vocab = loadVocab();
+  run(ctx.python, ["-P", PY_HELPER, audio, raw, "--windows", winFile, "--no-condition", "--initial-prompt", vocab.whisper_prompt ?? ""], {
+    env: { ...process.env, HF_HUB_OFFLINE: "1" },
+    inheritStderr: true,
+  });
+  const out = readJson<{ windows: Array<{ key: string; start: number; end: number; segments: Segment[] }> }>(raw, "retranscrição das subjanelas");
+  for (const w of out.windows) {
+    // Prefixo próprio: nunca sobrescreve a retranscrição da janela inteira de mesmo intervalo.
+    const path = f(ctx, `retranscribe-sub-${w.key}.json`);
+    const t: Transcript = { segments: w.segments, sub: { window: { start: w.start, end: w.end } } };
+    writeJson(path, t);
+    console.log(`== ${w.key} s: ${w.segments.map((s) => s.text.trim()).join(" ") || "(nada)"}`);
+  }
+  console.error("[video-montagem] subjanelas gravadas como retranscribe-sub-*.json: o roteiro/build procuram o falso começo nelas e propõem o corte na linha repetição (#11958)");
   return 0;
 }
 
@@ -1913,11 +1983,13 @@ async function runCommand(
     }
     case "decupagem":
       return cmdDecupagem(ctx, parsePixelF0Arg(values["pixel-f0"]));
-    case "frame":
+    case "frame": {
       await needLocalBruto();
-      return cmdFrame(ctx, values["at"]);
+      const code = cmdFrame(ctx, values["at"]);
+      return code === 0 ? cmdFrameOrientations(ctx, values["at"]) : code;
+    }
     case "retranscribe":
-      return cmdRetranscribe(ctx, values["from"], values["to"]);
+      return cmdRetranscribe(ctx, values["from"], values["to"], flags.has("sub"));
     case "roteiro":
       return cmdRoteiro(ctx);
     case "build":

@@ -33,11 +33,13 @@ import {
   sequenceInList,
   sequenceKey,
   speechParts,
+  subRetranscribeWindow,
   tokenize,
   tokensMatch,
   validateVocabRules,
   type BlockKey,
   type Interval,
+  type RepetitionCut,
   type ResolvedItem,
   type Segment,
   type SequencePlan,
@@ -637,6 +639,24 @@ const LETTERS = "ABCDEFGH";
  * anotado na coluna Bruto, e a vertical que passa de 3:00 ganha o `[aviso]`
  * com quanto passa (`shortsWarning`).
  */
+/**
+ * A linha **repetição** do roteiro (#11958): o falso começo que as subjanelas
+ * acharam e o corte proposto, já como os dois intervalos que substituem o item
+ * no `blocks.json` se o editor aprovar no Gate 2 (o item segue inteiro até lá).
+ */
+export function repetitionLine(label: string, what: string, item: Interval, rep: RepetitionCut): string {
+  const r2 = (x: number) => Math.round(x * 100) / 100;
+  const parts = [
+    ...(rep.cut.start - item.start > 0.05 ? [{ start: r2(item.start), end: r2(rep.cut.start) }] : []),
+    ...(item.end - rep.cut.end > 0.05 ? [{ start: r2(rep.cut.end), end: r2(item.end) }] : []),
+  ];
+  const json = parts.map((p) => `{"start": ${p.start}, "end": ${p.end}}`).join(", ");
+  return (
+    `- **repetição** ${label} (${what}): falso começo "${mdCell(rep.falseStart)}" em ${span(rep.cut.start, rep.cut.end)} (${sec(rep.audibleS)} de fala sem palavra no transcript), recomeço em "${mdCell(rep.restart)}". ` +
+    `Corte proposto ${rep.cut.start.toFixed(2)}–${rep.cut.end.toFixed(2)} s; aprovado, o item vira ${json} no blocks.json (mesmo targets/skip, text de cada parte do texto aprovado)`
+  );
+}
+
 export function roteiroMarkdown(
   edition: string,
   plans: SequencePlan[],
@@ -708,8 +728,14 @@ export function roteiroMarkdown(
         if (c.picked) {
           return [`- **tomada colapsada** ${BLOCK_LABELS[key]} [${i}] (${what}): a retranscrição separou ${c.picked.completeTakes} tomadas; usando a ${c.picked.takeNumber}ª (${c.picked.why}), ${span(it.interval.start, it.interval.end)}`];
         }
+        // Falso começo achado nas subjanelas (#11958): corte proposto, com os dois intervalos prontos para o blocks.json.
+        if (c.repetition) return [repetitionLine(`${BLOCK_LABELS[key]} [${i}]`, what, it.interval, c.repetition)];
         const w = c.suspects[0].window;
-        const todo = c.unresolved ? `a retranscrição não separou (${c.unresolved}): conferir no áudio` : `retranscrever ${w.start.toFixed(1)}–${w.end.toFixed(1)} s (\`retranscribe --from ${w.start.toFixed(1)} --to ${w.end.toFixed(1)}\`) e rodar o roteiro de novo`;
+        const sw = subRetranscribeWindow(c.suspects[0]);
+        const sub = `retranscrever em subjanelas (\`retranscribe ${edition} --from ${sw.start.toFixed(1)} --to ${sw.end.toFixed(1)} --sub\`) e rodar o roteiro de novo (#11958)`;
+        const todo = c.unresolved
+          ? `a retranscrição não separou (${c.unresolved}): ${c.subChecked ? "as subjanelas também não acharam repetição: conferir no áudio" : sub}`
+          : `retranscrever ${w.start.toFixed(1)}–${w.end.toFixed(1)} s (\`retranscribe --from ${w.start.toFixed(1)} --to ${w.end.toFixed(1)}\`) e rodar o roteiro de novo`;
         return [`- **tomada colapsada?** ${BLOCK_LABELS[key]} [${i}] (${what}): ${todo}`];
       }),
     );
