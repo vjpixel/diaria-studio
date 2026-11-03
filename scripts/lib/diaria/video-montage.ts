@@ -2389,6 +2389,123 @@ export function alignPunctuationToScript(words: Word[], script: string, aliases:
   return out;
 }
 
+/** Por que uma palavra ouvida sem par no roteiro saiu da legenda (#11960). */
+export type DroppedHeardReason = "depois do fim" | "antes do roteiro" | "perto de corte" | "em silêncio";
+
+export interface ForcedAlignment {
+  /** As palavras da legenda: o texto do roteiro, com o tempo da fala ouvida. */
+  words: Word[];
+  /** Ouvidas sem par no roteiro que saíram (alucinação, cauda de tomada, fala depois do fim). */
+  dropped: Array<{ word: Word; reason: DroppedHeardReason }>;
+  /** Ouvidas sem par no roteiro que ficaram (em plena fala, longe de corte): conferir. */
+  kept: Word[];
+  /** Palavras do roteiro sem par na fala ouvida, com o tempo interpolado entre as vizinhas. */
+  interpolated: string[];
+  /** Trechos em que o roteiro e a fala ouvida divergem palavra a palavra ("um" × "o"): fica o roteiro, no tempo do ouvido. */
+  substituted: Array<{ heard: string; script: string }>;
+}
+
+/** Tolerâncias do alinhamento forçado (#11960). */
+export const FORCED_ALIGN_DEFAULTS = { cutTolS: 0.4, silenceGapS: 0.3, guessWordS: 0.25 } as const;
+
+/** Divide `[a, b]` entre os tokens, pelo tamanho de cada um (o mesmo critério das regras do vocabulário). */
+function spreadTokens(tokens: string[], a: number, b: number): Word[] {
+  const end = Math.max(a, b);
+  const total = tokens.reduce((n, t) => n + Math.max(1, t.length), 0);
+  let acc = 0;
+  return tokens.map((t) => {
+    const s = a + ((end - a) * acc) / total;
+    acc += Math.max(1, t.length);
+    return { start: round3(s), end: round3(a + ((end - a) * acc) / total), text: t };
+  });
+}
+
+/**
+ * Alinhamento forçado do texto aprovado aos tempos da fala ouvida (#11960),
+ * base da legenda: o roteiro vence também no que o Whisper inventou ou pulou.
+ * Na 261103 a legenda saiu com "Tá," (cauda de "atrás" depois de um corte),
+ * "E aí E aí" depois do fim, "ele" pulado e "o" no lugar de "um".
+ *
+ * Casamento LCS como em `alignPunctuationToScript` (aliases, número partido).
+ * Entre dois pares casados:
+ * - roteiro e ouvido sem par dos dois lados: o texto do roteiro, no tempo do trecho ouvido;
+ * - só roteiro: tempo interpolado entre as vizinhas;
+ * - só ouvido: sai se está antes da 1ª ou depois da última palavra casada,
+ *   depois do fim da sequência, a até `cutTolS` de um corte, ou isolado por
+ *   `silenceGapS` dos dois lados; em plena fala fica, em `kept`, para conferir.
+ * Sem roteiro (texto vazio), devolve o ouvido como veio.
+ */
+export function forceAlignToScript(
+  heard: Word[],
+  script: string,
+  opts: { aliases?: VocabAlias[]; cuts?: number[]; endS?: number; cutTolS?: number; silenceGapS?: number; guessWordS?: number } = {},
+): ForcedAlignment {
+  const raw = script.split(/\s+/).filter((t) => normalizeToken(t));
+  const result: ForcedAlignment = { words: [], dropped: [], kept: [], interpolated: [], substituted: [] };
+  const cutTol = opts.cutTolS ?? FORCED_ALIGN_DEFAULTS.cutTolS;
+  const silenceGap = opts.silenceGapS ?? FORCED_ALIGN_DEFAULTS.silenceGapS;
+  const guess = opts.guessWordS ?? FORCED_ALIGN_DEFAULTS.guessWordS;
+  const cuts = opts.cuts ?? [];
+  const endS = opts.endS ?? Infinity;
+  let all = mergeSplitNumberTokens(heard, raw).map((w) => ({ ...w, text: w.text.trim() }));
+  // Fala que começa no fim da sequência ou depois dele não está no vídeo.
+  for (const w of all) if (w.start >= endS) result.dropped.push({ word: w, reason: "depois do fim" });
+  all = all.filter((w) => w.start < endS);
+  if (raw.length === 0) {
+    result.words = all;
+    return result;
+  }
+  const pairs = alignTokens(all.map((w) => normalizeToken(w.text)), raw.map(normalizeToken), makeMatcher(opts.aliases));
+  const nearCut = (w: Word) => cuts.some((c) => Math.abs(w.start - c) <= cutTol || Math.abs(w.end - c) <= cutTol);
+  const out = result.words;
+  let pi = -1;
+  let pj = -1;
+  for (const [i, j] of [...pairs, [all.length, raw.length] as [number, number]]) {
+    const gapH = all.slice(pi + 1, i);
+    const gapS = raw.slice(pj + 1, j);
+    const prev = out.length ? out[out.length - 1] : null;
+    const next = i < all.length ? all[i] : null;
+    const head = pi === -1 && i < all.length;
+    const tail = i === all.length;
+    if (gapS.length && gapH.length) {
+      out.push(...spreadTokens(gapS, gapH[0].start, gapH[gapH.length - 1].end));
+      result.substituted.push({ heard: joinWordTexts(gapH.map((w) => w.text)), script: joinWordTexts(gapS) });
+    } else if (gapS.length) {
+      const a = prev ? prev.end : next ? Math.max(0, next.start - guess * gapS.length) : 0;
+      const b = next ? next.start : Math.min(endS, a + guess * gapS.length);
+      out.push(...spreadTokens(gapS, a, b));
+      result.interpolated.push(...gapS);
+    } else {
+      gapH.forEach((w, k) => {
+        const before = k > 0 ? gapH[k - 1] : prev;
+        const after = k + 1 < gapH.length ? gapH[k + 1] : next;
+        const isolated = (!before || w.start - before.end >= silenceGap) && (!after || after.start - w.end >= silenceGap);
+        const reason: DroppedHeardReason | null = tail && pairs.length ? "depois do fim" : head || !pairs.length ? "antes do roteiro" : nearCut(w) ? "perto de corte" : isolated ? "em silêncio" : null;
+        if (reason) result.dropped.push({ word: w, reason });
+        else {
+          out.push(w);
+          result.kept.push(w);
+        }
+      });
+    }
+    if (i < all.length) out.push({ ...all[i], text: raw[j] });
+    pi = i;
+    pj = j;
+  }
+  return result;
+}
+
+/** As linhas `[aviso]`/`[premissa]` do alinhamento forçado de uma sequência (#11960). */
+export function forcedAlignmentNotes(seqName: string, a: ForcedAlignment): string[] {
+  const fmt = (w: Word) => `"${w.text}" (${w.start.toFixed(2)} s)`;
+  const notes: string[] = [];
+  if (a.dropped.length) notes.push(`[aviso] ${seqName}: ${a.dropped.length} palavra(s) ouvida(s) fora do roteiro descartada(s) da legenda: ${a.dropped.map((d) => `${fmt(d.word)} ${d.reason}`).join("; ")}`);
+  if (a.kept.length) notes.push(`[aviso] ${seqName}: ${a.kept.length} palavra(s) ouvida(s) fora do roteiro em plena fala ficaram na legenda (conferir): ${a.kept.map(fmt).join("; ")}`);
+  if (a.interpolated.length) notes.push(`[premissa] ${seqName}: palavra(s) do roteiro sem par na fala ouvida entraram com tempo interpolado: ${a.interpolated.join(" ")}`);
+  for (const s of a.substituted) notes.push(`[premissa] ${seqName}: ouvido "${s.heard}", legenda com o roteiro "${s.script}"`);
+  return notes;
+}
+
 /** Quebra de cue (#11208): >50 caracteres, pontuação final, ou vírgula depois de 30. */
 export const CUE_DEFAULTS = { maxChars: 50, commaMinChars: 30, wrapOver: 28, tailS: 0.3 } as const;
 
