@@ -147,6 +147,13 @@ import {
   youtubeCaptionFileName,
   type CaptionUploadResult,
 } from "./lib/diaria/youtube-captions.ts";
+import {
+  PODCAST_PLAYLIST_NOT_CONFIGURED,
+  describePodcastOutcome,
+  ensureVideoInPodcastPlaylist,
+  loadPodcastPlaylistId,
+  type PodcastPlaylistResult,
+} from "./lib/diaria/youtube-podcast-playlist.ts";
 import { d1SocialSlotAt, videoLinkEligibility } from "./lib/diaria/youtube-video-link-gate.ts";
 import { coverPrerequisites } from "./lib/diaria/video-env-check.ts";
 
@@ -330,6 +337,8 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
    * depois `--captions-only`).
    */
   captions?: CaptionUploadResult;
+  /** Playlist do podcast (#12068); ausente = passo não tentado (sem ID configurado). */
+  podcast?: PodcastPlaylistResult;
 }
 
 /**
@@ -377,6 +386,11 @@ export interface RunUploadInput {
    * link no D1. `null`/ausente: só vídeo `published` vira link.
    */
   d1SlotAt?: Date | null;
+  /**
+   * #12068: `publishing.youtube.podcast_playlist_id`. `null`/ausente = o vídeo
+   * não vai para o podcast (1 linha `[info]`). Só o horizontal passa por aqui.
+   */
+  podcastPlaylistId?: string | null;
 }
 
 export interface RunUploadOutcome {
@@ -565,8 +579,60 @@ function unconfirmedPeriodMatch(e: ExistingEditionVideoError, input: RunUploadIn
 /**
  * `--upload`: envia o plano de verdade e grava o registro. Separado do `main`
  * pra o teste injetar `deps.fetch` e o ambiente sem tocar a rede nem o `.env`.
+ * Depois de um desfecho com vídeo (enviado agora, já no canal ou já
+ * registrado), põe o vídeo na playlist do podcast (#12068, fail-soft).
  */
 export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUploadInput): Promise<RunUploadOutcome> {
+  const outcome = await runYouTubeUploadCore(deps, input);
+  return addToPodcastAfterUpload(deps, input, outcome);
+}
+
+/**
+ * #12068: passo do podcast. Só roda com vídeo confirmado (`record` + exit 0);
+ * nunca muda o exit code. Registro que já traz `podcast.ok` para a mesma
+ * playlist não gasta quota de novo.
+ */
+export async function addToPodcastAfterUpload(
+  deps: YouTubeUploadDeps,
+  input: Pick<RunUploadInput, "editionDir" | "env" | "log" | "podcastPlaylistId">,
+  outcome: RunUploadOutcome,
+): Promise<RunUploadOutcome> {
+  const rec = outcome.record;
+  if (!rec || outcome.exitCode !== 0) return outcome;
+  const playlistId = (input.podcastPlaylistId ?? "").trim();
+  if (!playlistId) {
+    input.log(PODCAST_PLAYLIST_NOT_CONFIGURED);
+    return outcome;
+  }
+  if (rec.podcast?.ok && rec.podcast.playlistId === playlistId) return outcome;
+  const missing = missingYouTubeCredentials(input.env);
+  if (missing.length > 0) {
+    input.log(`[aviso] vídeo NÃO adicionado ao podcast: faltam ${missing.join(", ")} no ambiente. O vídeo segue publicado.`);
+    return outcome;
+  }
+  const podcast = await ensureVideoInPodcastPlaylist(deps, {
+    creds: {
+      clientId: (input.env.GOOGLE_CLIENT_ID ?? "").trim(),
+      clientSecret: (input.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
+      refreshToken: (input.env.YOUTUBE_REFRESH_TOKEN ?? "").trim(),
+      channelId: (input.env.YOUTUBE_CHANNEL_ID ?? "").trim(),
+    },
+    playlistId,
+    videoId: rec.videoId,
+  });
+  input.log(describePodcastOutcome(podcast));
+  const record: YouTubePublishedRecord = { ...rec, podcast };
+  const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
+  try {
+    mkdirSync(dirname(recordPath), { recursive: true });
+    writeFileAtomic(recordPath, JSON.stringify(record, null, 2) + "\n");
+  } catch (e) {
+    input.log(`[aviso] resultado do podcast não gravado em ${recordPath}: ${(e as Error).message}`);
+  }
+  return { ...outcome, record };
+}
+
+async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInput): Promise<RunUploadOutcome> {
   const { plan, log } = input;
   const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
 
@@ -850,6 +916,16 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
   return { exitCode, record, skipped: false };
 }
 
+/** #12068: `publishing.youtube.podcast_playlist_id`; `null` se ausente ou ilegível (nunca lança). */
+function loadPodcastPlaylistIdFromConfig(): string | null {
+  try {
+    return loadPodcastPlaylistId(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
+  } catch (e) {
+    console.error(`[aviso] podcast_playlist_id não lido do platform.config.json (${(e as Error).message})`);
+    return null;
+  }
+}
+
 /** Horário do post do D1 pelo `platform.config.json`; `null` se não der (nunca lança). */
 function loadD1SlotAt(aammdd: string): Date | null {
   try {
@@ -983,6 +1059,7 @@ async function main(): Promise<number> {
     readFile: (p) => readFileSync(p),
     log: (line) => console.error(line),
     d1SlotAt: loadD1SlotAt(aammdd),
+    podcastPlaylistId: loadPodcastPlaylistIdFromConfig(),
   });
   if (outcome.record) console.log(JSON.stringify({ dry_run: false, skipped: outcome.skipped, ...outcome.record }, null, 2));
   cleanupPublishedVideo({ dir, edition: aammdd, kind: "horizontal", keepVideo: flags.has("keep-video"), log: console.error });

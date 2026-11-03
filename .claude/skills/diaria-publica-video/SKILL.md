@@ -204,6 +204,8 @@ npx tsx scripts/publish-youtube.ts {AAMMDD} --captions-only
 
 (`--force` envia outra faixa quando já há uma registrada.) Até o setup ser refeito, a legenda vai pelo Studio (Legendas → Enviar arquivo) e entra no relato como pendência do editor.
 
+**Podcast (#12068).** Com `publishing.youtube.podcast_playlist_id` preenchido, o `--upload` põe o horizontal na playlist do podcast (também quando o vídeo já estava no canal ou registrado; confere antes, não duplica) e grava `podcast` no registro; `null` = linha `[info]`, falha = `[aviso]`, nunca derruba o vídeo.
+
 ### Passo A4 — Link do vídeo no D1 (#10772, #10858, #11222)
 
 Depois do Passo A3 nada a fazer: o `--upload` já gravou `_internal/05-video-url.txt`. Este passo é para o link vindo de fora — vídeo subido pelo Studio (Passo A5) ou já no canal, com o link que o editor passou (`--video-url`, ou colado na conversa):
