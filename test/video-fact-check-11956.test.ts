@@ -92,6 +92,26 @@ describe("#11956: achados no Doc do Gate 2", () => {
     assert.match(s.lines.join("\n"), /o roteiro mudou depois do fact-check/);
   });
 
+  it("#11994: claim não localizado com o roteiro inalterado segue em aberto, nunca resolvido", () => {
+    // O agent juntou duas frases num claim só: nenhum item contém o texto, mas o roteiro é o mesmo (stale=false).
+    const s = factCheckSection(
+      fc([{ item: "comentario[1]", claim: "A Mistral e a IBM usam a mesma definição. Só no horizontal.", verdict: "NOT_FOUND_IN_SOURCE" }]),
+      items,
+    );
+    const md = s.lines.join("\n");
+    assert.equal(s.stale, false);
+    assert.equal(s.graves, 1, "conta como grave em aberto");
+    assert.doesNotMatch(md, /resolvido/);
+    assert.match(md, /Comentário \[1\].*00:24\.0–00:29\.0.*NOT_FOUND_IN_SOURCE.*trecho não localizado no roteiro, conferir o item comentario\[1\]/);
+    assert.match(md, /1 achado\(s\) grave\(s\) em aberto/);
+  });
+
+  it("#11994: claim não localizado de item inexistente, roteiro inalterado, também fica em aberto", () => {
+    const s = factCheckSection(fc([{ item: "comentario[9]", claim: "frase que nenhum item diz", verdict: "DIVERGENT" }]), items);
+    assert.equal(s.graves, 1);
+    assert.match(s.lines.join("\n"), /comentario\[9\].*trecho não localizado no roteiro, conferir \|/);
+  });
+
   it("o achado segue o trecho mesmo com o índice do item mudado", () => {
     const shifted = factCheckItems([H], { ...resolved, comentario: [item("Frase nova.", 18, 19), ...resolved.comentario!] });
     const it = locateClaim({ item: "comentario[1]", claim: "a mistral e a IBM usam", verdict: "DIVERGENT" }, shifted);
