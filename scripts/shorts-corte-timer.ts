@@ -19,7 +19,7 @@
  *      autorização existiu e caiu, `publish_revoked_*`, no horário vira alarme
  *      `revoked` para os destinos que ela cobria e seguem pendentes), ou
  *      nenhum dos três destinos autorizados pendente no registro do corte
- *      (inclusive `send_unknown` e as cópias de conflito do OneDrive) → nada a
+ *      (inclusive `send_unknown`, marcas de envio em aberto e cópias de conflito do OneDrive) → nada a
  *      fazer; antes do `--at` → espera; até 3 h depois → publica; depois →
  *      alarme `late` (até 48 h depois do horário; corte mais velho é ignorado);
  *   3. `publish-shorts.ts --corte SLUG --only {pendentes} --publish --now
@@ -75,6 +75,7 @@ import { knownDestinationIds, loadShortsConfig, parseShortsPublishedFile } from 
 import { CORTE_SPEC_FILE, CORTE_TIMER_TASK, CORTES_REL_DIR, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
 import { corteAuthorizedDestinations, corteContentCheck, corteRevokedDestinations, type CorteContentFingerprint } from "./lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "./lib/diaria/corte-content.ts";
+import { openSendingMarks, readShortsSending, type ShortSendingMark } from "./lib/diaria/shorts-sending-marker.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { corteUnscheduledDestinations } from "./lib/diaria/corte-owner-watch.ts";
 import { acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
@@ -156,6 +157,7 @@ export function decideCorteTimerRun(input: {
   spec: CorteSpec;
   /** Todos os arquivos do registro do corte (`readShortsRegistryRaws`). */
   registryRaws: ReadonlyArray<{ path: string; raw: string }>;
+  sendingMarks?: readonly ShortSendingMark[];
   now: Date;
 }): CorteTimerDecision {
   const cfg = loadShortsConfig(input.config);
@@ -165,11 +167,11 @@ export function decideCorteTimerRun(input: {
   // timer não publica nem alarma `late`: corte nunca aprovado não está atrasado.
   const authorized = corteAuthorizedDestinations(spec) ?? [];
   const revoked = corteRevokedDestinations(spec);
-  const done = new Set<string>();
-  for (const { path, raw } of input.registryRaws) {
-    // Registro ilegível lança: nunca vira "nada publicado" (duplicaria o post).
-    for (const e of parseShortsPublishedFile(raw, spec.date, path).entries) done.add(e.destination);
-  }
+  // #11985: registro/marca ilegível lança; envio sem desfecho nunca vira pendente.
+  const entries = input.registryRaws.flatMap(({ path, raw }) => parseShortsPublishedFile(raw, spec.date, path).entries);
+  const blocked = openSendingMarks(input.sendingMarks ?? [], entries);
+  const done = new Set<string>(blocked.map((m) => m.destination));
+  for (const e of entries) done.add(e.destination);
   const enabled = corteTimerDestinations(input.config);
   const at = resolveEditionScheduledAt(spec.date, spec.hhmm);
   const deltaMs = input.now.getTime() - Date.parse(at);
@@ -177,6 +179,9 @@ export function decideCorteTimerRun(input: {
   // #11912: lidos SEMPRE, mesmo com autorização (um --only menor depois da queda não silencia os outros).
   const alarms: CorteTimerSideAlarm[] = [];
   if (inWindow) {
+    for (const m of blocked.filter((m) => authorized.includes(m.destination))) {
+      alarms.push({ destination: m.destination, key: "send-unknown", reason: `envio iniciado em ${m.started_at} sem registro posterior: pode ter saído; confira a conta antes de liberar outro envio` });
+    }
     const known = knownDestinationIds(cfg);
     for (const d of authorized.filter((x) => !known.has(x))) {
       alarms.push({ destination: d, key: "unknown-destination", reason: `o "pode publicar" do corte cita ${d}, que a config atual não conhece: o timer não publica nada nele` });
@@ -208,7 +213,7 @@ export function decideCorteTimerRun(input: {
     const left = enabled.filter((d) => !allowed.includes(d) && !done.has(d));
     return {
       kind: "skip",
-      reason: `nenhum destino do timer pendente (todos registrados ou desligados no config)${left.length ? `; fora do "pode publicar" (--only autorizado): ${left.join(", ")}` : ""}`,
+      reason: `nenhum destino do timer pendente (todos registrados, com envio em aberto ou desligados no config)${left.length ? `; fora do "pode publicar" (--only autorizado): ${left.join(", ")}` : ""}`,
       ...withAlarms,
     };
   }
@@ -512,7 +517,7 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
   const alarm = deps.alarm ?? ((d, s, dest, key, reason, variant) => corteAlarm(d, s, dest, key, reason, deps.notify, variant));
   const specPath = join(dir, CORTE_SPEC_FILE);
   const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
-  const decision = decideCorteTimerRun({ config: deps.config, spec, registryRaws: readShortsRegistryRaws(dir), now: deps.now });
+  const decision = decideCorteTimerRun({ config: deps.config, spec, registryRaws: readShortsRegistryRaws(dir), sendingMarks: readShortsSending(dir, spec.date), now: deps.now });
   if (decision.kind === "wait") {
     console.log(`${LOG_PREFIX} ${spec.slug}: esperando — ${decision.reason}`);
     return 0;

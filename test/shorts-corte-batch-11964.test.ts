@@ -12,6 +12,7 @@
  * Sem rede: publish-shorts, alarme e leitura de registro são injetados.
  */
 
+import { markShortSending } from "../scripts/lib/diaria/shorts-sending-marker.ts";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -189,6 +190,35 @@ describe("#11966 teto do filho do timer do corte", () => {
     const body = buildCorteTimerAlarm({ spec: SPEC, destination: "instagram", key: "child-timeout", reason: "x" }).body;
     assert.match(body, /NÃO poste de novo sem conferir/);
   });
+
+  for (const registered of [false, true]) {
+    it(`#11985 timeout seguido de nova rodada não reenvia LinkedIn (${registered ? "send_unknown" : "sending-marker"})`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "corte-11985-"));
+      mkdirSync(join(dir, "_internal"));
+      const spec = { ...SPEC, publish_confirmed_destinations: ["linkedin_profile"] };
+      writeFileSync(join(dir, CORTE_SPEC_FILE), JSON.stringify(spec));
+      writeFileSync(join(dir, SPEC.video), "mp4");
+      let calls = 0;
+      const alarms: string[] = [];
+      const deps = {
+        config: CONFIG, now: at(10 * MIN), notify: { cwd: "/nao-usado" },
+        runScript: () => {
+          calls++;
+          markShortSending(dir, SPEC.date, "main", { destination: "linkedin_profile", started_at: at(10 * MIN).toISOString() });
+          if (registered) writeFileSync(join(dir, "_internal/06-shorts-published.json"), JSON.stringify({
+            aammdd: SPEC.date, entries: [{ destination: "linkedin_profile", status: "send_unknown", id: "urn:li:1", at: at(11 * MIN).toISOString() }],
+          }));
+          return { status: null, stdout: "", stderr: "", timedOut: true };
+        },
+        alarm: async (_d: string, _s: CorteSpec, _dest: string, key: CorteTimerAlarmKey) => { alarms.push(key); return true; },
+      };
+      assert.equal(await runCorteTimerFor(dir, false, deps), 1);
+      assert.deepEqual(alarms, ["child-timeout"]);
+      await runCorteTimerFor(dir, false, { ...deps, now: at(100 * MIN) });
+      assert.equal(calls, 1, "nova rodada dentro das 3 h não pode publicar outra vez");
+      if (!registered) assert.deepEqual(alarms, ["child-timeout", "send-unknown"]);
+    });
+  }
 
   it("corteTimerTimeoutOutcomes cita o teto e o fim do stderr", () => {
     const [o] = corteTimerTimeoutOutcomes(["instagram"], "linha final");
