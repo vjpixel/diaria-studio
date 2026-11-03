@@ -7,7 +7,7 @@
  *
  * Subcomandos e flags próprias:
  *   transcribe AAMMDD [--source PATH] [--force] [--silence-db DB]
- *       bruto → `source.json`, áudio 16 kHz, `loudness.json`, `silences.json`,
+ *       bruto → `source.json`, áudio 16 kHz (Whisper) e banda alta 48 kHz (cortes), `loudness.json`, `silences.json`,
  *       `transcript.json`. Pula o que já existe; `source.json` refeito (--force)
  *       refaz todos os derivados. O limiar do silencedetect é relativo ao
  *       loudness do bruto (#11351, `silenceNoiseDb`, gravado em
@@ -48,7 +48,7 @@
  *       são refinados pelo áudio do bruto (#11500, `lib/diaria/video-cut-refine.ts`): vale de
  *       energia a ±0,4 s, som fora do roteiro na borda (bordas retranscritas sem VAD, cache em
  *       `edge-retranscribe.json`), corte ainda em plena fala vira [aviso]; cada ajuste sai no
- *       relato e em `plan.json` (`cutAdjustments`, `cutRefine`). Sem `audio.wav` nesta máquina,
+ *       relato e em `plan.json` (`cutAdjustments`, `cutRefine`). A banda alta (>3 kHz, -51 dBFS) protege fonemas com 30 ms de ar e 80 ms de silêncio (#11940). Sem `audio.wav` nesta máquina,
  *       ou com --no-audio-refine, os cortes ficam como os tempos do Whisper, com [aviso].
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
  *       Vertical montada acima de 3:00 (Shorts) sai como [aviso] com quanto passa (#11377); o
@@ -222,6 +222,12 @@ import {
 } from "./lib/diaria/video-final-review.ts";
 import { corteSuffixOf, VIDEO_TARGETS, type VideoTarget } from "./lib/diaria/drive-video-source.ts";
 import {
+  SIBILANTS,
+  combinedCutEnvelope,
+  highBandSilences,
+  intersectSilences,
+  preserveSibilants,
+  highBandCutWarnings,
   edgeWindowsFor,
   energyEnvelope,
   parseWavPcm16,
@@ -638,7 +644,7 @@ function rollbackSourceSwitch(ctx: Ctx, prevSourceText: string | null, newPath: 
   if (prevSourceText !== null && prevPath === newPath) return "";
   if (prevSourceText === null) rmSync(f(ctx, "source.json"), { force: true });
   else writeFileAtomic(f(ctx, "source.json"), prevSourceText);
-  for (const p of [join(ctx.workDir, "audio.wav"), f(ctx, "loudness.json"), f(ctx, "silences.json"), f(ctx, "silences.meta.json")]) rmSync(p, { force: true });
+  for (const p of [join(ctx.workDir, "audio.wav"), join(ctx.workDir, "audio-high-48k.wav"), join(ctx.workDir, "audio-high-48k.meta.json"), f(ctx, "loudness.json"), f(ctx, "silences.json"), f(ctx, "silences.meta.json")]) rmSync(p, { force: true });
   return prevSourceText === null
     ? ". source.json removido (o bruto não foi trocado para o vídeo; o transcript.json ficou como estava)"
     : `. source.json voltou para ${prevPath ?? "o anterior"} (o bruto não foi trocado para o vídeo; o transcript.json ficou como estava)`;
@@ -692,7 +698,7 @@ export function transcribePrecheck(
   if (audioPath !== undefined && cached.path === normPath(audioPath)) return { action: "fetch" };
   if (cached.path !== src) return { action: "conflict", message: sourceConflictMessage(cached.path, src) };
   // Sem work dir conhecido não há como saber se o áudio existe: baixa.
-  const done = audioPath === undefined && ctx.workDir !== undefined && [join(ctx.workDir, "audio.wav"), f(ctx, "loudness.json"), f(ctx, "transcript.json")].every((p) => existsSync(p));
+  const done = audioPath === undefined && ctx.workDir !== undefined && [join(ctx.workDir, "audio.wav"), join(ctx.workDir, "audio-high-48k.wav"), join(ctx.workDir, "audio-high-48k.meta.json"), f(ctx, "loudness.json"), f(ctx, "transcript.json")].every((p) => existsSync(p));
   return done ? { action: "ready" } : { action: "fetch" };
 }
 
@@ -767,16 +773,18 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   const threshold = silenceNoiseDb(loud, silenceDb);
   const silPath = f(ctx, "silences.json");
   const silMetaPath = f(ctx, "silences.meta.json");
-  const silMeta = existsSync(silMetaPath) ? readJson<{ noiseDb?: number; minDurationS?: number }>(silMetaPath, "silences.meta.json") : null;
+  const silMeta = existsSync(silMetaPath) ? readJson<{ noiseDb?: number; minDurationS?: number; highBandVersion?: number }>(silMetaPath, "silences.meta.json") : null;
   // silences.json sem meta (anterior ao #11351) ou com outro limiar é refeito.
-  const silStale = !silMeta || silMeta.noiseDb !== threshold.noiseDb || silMeta.minDurationS !== SILENCE_DETECT.minDurationS;
+  const silStale = !existsSync(join(ctx.workDir, "audio-high-48k.wav")) || !existsSync(join(ctx.workDir, "audio-high-48k.meta.json")) || !silMeta || silMeta.highBandVersion !== 11940 || silMeta.noiseDb !== threshold.noiseDb || silMeta.minDurationS !== SILENCE_DETECT.minDurationS;
   if (redo || !existsSync(silPath) || silStale) {
     const { stderr } = run("ffmpeg", [
       "-hide_banner", "-nostats", "-i", audio,
       "-af", `silencedetect=noise=${threshold.noiseDb}dB:d=${SILENCE_DETECT.minDurationS}`, "-f", "null", "-",
     ]);
-    writeJson(silPath, parseSilenceDetect(stderr, source.durationS));
-    writeJson(silMetaPath, { noiseDb: threshold.noiseDb, minDurationS: SILENCE_DETECT.minDurationS, how: threshold.how });
+    const highQuiet = highBandSilences(highBandEnvelope(ctx, source));
+    writeJson(silPath, intersectSilences(parseSilenceDetect(stderr, source.durationS), highQuiet)
+      .filter((q) => q.end - q.start >= SILENCE_DETECT.minDurationS));
+    writeJson(silMetaPath, { noiseDb: threshold.noiseDb, minDurationS: SILENCE_DETECT.minDurationS, how: threshold.how, highBandVersion: 11940 });
   }
   console.error(`[video-montagem] silencedetect a ${threshold.noiseDb} dB (${threshold.how === "relative" ? "relativo ao loudness do bruto" : threshold.how === "override" ? "--silence-db" : "padrão, loudness não medido"})`);
 
@@ -1003,9 +1011,27 @@ export interface CutRefineInfo {
   /** Por que não rodou (ou rodou só a passada A). */
   reason?: string;
   thresholdDb?: number;
+  highBandWarnings?: Record<string, string[]>;
   /** Bordas retranscritas (janelas únicas, as verticais dividem as mesmas). */
   edgeWindows?: number;
   edgesRetranscribed?: boolean;
+}
+
+/** Cache separado do Whisper: nunca reamostrar o WAV de 16 kHz para medir agudos. */
+function highBandEnvelope(ctx: Ctx, source: SourceInfo) {
+  const audio = join(ctx.workDir, "audio-high-48k.wav");
+  const meta = join(ctx.workDir, "audio-high-48k.meta.json");
+  const st = statSync(source.path);
+  const key = JSON.stringify({ path: source.path, size: st.size, mtimeMs: st.mtimeMs, ...SIBILANTS });
+  if (ctx.force || !existsSync(audio) || !existsSync(meta) || readFileSync(meta, "utf8").trim() !== key) {
+    mkdirSync(ctx.workDir, { recursive: true });
+    rmSync(meta, { force: true });
+    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", source.path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", String(SIBILANTS.sampleRate), "-af", `highpass=f=${SIBILANTS.highpassHz}`, "-c:a", "pcm_s16le", audio]);
+    writeFileAtomic(meta, key + "\n");
+  }
+  const { samples, sampleRate } = parseWavPcm16(readFileSync(audio));
+  if (sampleRate !== SIBILANTS.sampleRate) throw new Error("banda alta deve ser medida a 48 kHz");
+  return energyEnvelope(samples, sampleRate);
 }
 
 /** Limiar do silêncio do bruto (o do último silencedetect, #11351); sem meta, o padrão. */
@@ -1065,11 +1091,16 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
     return { plans: ps, info: { applied: false, reason }, warnings: [`${reason}: cortes NÃO refinados pelo áudio; rode transcribe nesta máquina e build de novo`] };
   }
   const { sampleRate, samples } = parseWavPcm16(readFileSync(audio));
-  const env = energyEnvelope(samples, sampleRate);
+  let env = energyEnvelope(samples, sampleRate);
   const thresholdDb = silenceThresholdDb(ctx);
   const words = nonEmptyWords(f(ctx, "transcript.json"), "transcript.json");
   const match = makeMatcher(loadVocab().aliases);
   const warnings: string[] = [];
+  let highEnv: ReturnType<typeof energyEnvelope> | undefined;
+  try { highEnv = highBandEnvelope(ctx, source); }
+  catch (e) { warnings.push(`banda alta não conferida: ${(e as Error).message}; disponibilize o bruto e rode build de novo (#11940)`); }
+  if (highEnv) env = combinedCutEnvelope(env, highEnv, thresholdDb);
+  const highBandWarnings: Record<string, string[]> = {};
   // Passada A em todas as sequências.
   const stageA = ps.map((p) => snapClipEdges(p.clips.map(rawOf), env, words, { thresholdDb, durationS: source.durationS }));
   const windows = new Map<string, EdgeWindow>();
@@ -1089,12 +1120,21 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
       adjustments.push(...b.adjustments);
       for (const n of b.notes) warnings.push(`${p.spec.name}: ${n}`);
     }
+    if (highEnv) {
+      const protectedEdges = preserveSibilants(clips, highEnv, words, source.durationS, source.fps);
+      clips = protectedEdges.clips;
+      adjustments.push(...protectedEdges.adjustments);
+    }
     const assembled = assembleClips(p.spec, clips, source.fps);
     adjustments.push(...assembled.merges);
+    highBandWarnings[sequenceKey(p.spec)] = highEnv
+      ? highBandCutWarnings(assembled.clips.map((c) => ({ ...c, srcIn: c.frameIn / source.fps, srcOut: c.frameOut / source.fps })), highEnv)
+      : ["banda alta não conferida: bruto indisponível; possível fonema cortado (#11940)"];
+    warnings.push(...highBandWarnings[sequenceKey(p.spec)].map((w) => `${p.spec.name}: ${w}`));
     for (const w of speechCutWarnings(assembled.clips, env, thresholdDb)) warnings.push(`${p.spec.name}: ${w}`);
     return { ...p, clips: assembled.clips, durationFrames: assembled.durationFrames, cutAdjustments: adjustments };
   });
-  return { plans: out, info: { applied: true, thresholdDb, edgeWindows: windows.size, edgesRetranscribed: heard !== null }, warnings };
+  return { plans: out, info: { applied: true, thresholdDb, edgeWindows: windows.size, edgesRetranscribed: heard !== null, highBandWarnings }, warnings };
 }
 
 const rawOf = (c: PlannedClip): RawClip => ({
@@ -1357,8 +1397,11 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
     ...x,
     srcAt: exportTimeToRaw(x.at, plan, pf.source.fps),
   }));
-  writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings });
-  console.log(JSON.stringify({ preview, durationS, findings }, null, 2));
+  const highBandWarnings = pf.cutRefine?.highBandWarnings?.[sequenceKey(plan.spec)]
+    ?? ["build sem verificação de banda alta: rode build com o bruto disponível (#11940)"];
+  for (const warning of highBandWarnings) console.error(`[aviso] ${warning}`);
+  writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings, highBandWarnings });
+  console.log(JSON.stringify({ preview, durationS, findings, highBandWarnings }, null, 2));
   return 0;
 }
 
