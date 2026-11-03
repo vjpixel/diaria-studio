@@ -793,12 +793,29 @@ describe("mensagem nomeia o alvo real e heredoc de texto não bloqueia (#12029)"
   });
 
   it("heredoc alimentando um shell (bash <<EOF) → o corpo é comando, continua bloqueando", () => {
-    for (const opener of ["bash <<'EOF'", "sh <<EOF", "ssh host <<EOF", "cd x && bash -s <<EOF"]) {
+    for (const opener of [
+      "bash <<'EOF'",
+      "sh <<EOF",
+      "ssh host <<EOF",
+      "cd x && bash -s <<EOF",
+      "cat <<'EOF' | bash", // o shell vem DEPOIS do marcador, na mesma linha
+      "sudo -u x bash <<EOF",
+    ]) {
       const risk = detectChainedSessionIdRisk(
         `${opener}\nnpx tsx scripts/cleanup-merged-worktrees.ts\nEOF`,
       );
       assert.notEqual(risk, null, opener);
     }
+  });
+
+  it("nome de shell só dentro de aspas na linha de abertura não transforma o corpo em comando", () => {
+    assert.equal(
+      detectChainedSessionIdRisk(
+        "gh issue create --title \"fix bash hook\" --body-file - <<'EOF'\n" +
+          "npx tsx scripts/cleanup-merged-worktrees.ts\nEOF",
+      ),
+      null,
+    );
   });
 
   it("heredoc sem terminador: corpo de texto até o fim é removido; com shell, mantido", () => {

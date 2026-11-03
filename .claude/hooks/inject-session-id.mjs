@@ -453,7 +453,13 @@ export function stripTextHeredocBodies(command) {
     const terminatorRe = new RegExp(`^${isDashVariant ? "[ \t]*" : ""}${delim}[ \t]*$`, "m");
     const termMatch = terminatorRe.exec(command.slice(bodyStart));
     const stripEnd = termMatch ? bodyStart + termMatch.index + termMatch[0].length : command.length;
-    if (HEREDOC_INTERPRETER_RE.test(command.slice(lineStart, m.index))) {
+    // A linha de abertura INTEIRA conta (`cat <<'EOF' | bash` alimenta o
+    // shell depois do marcador), com o conteúdo citado apagado (`--title
+    // "fix bash"` é texto, não o shell que lê o corpo).
+    const openingLine = command
+      .slice(lineStart, lineEnd)
+      .replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, (q) => " ".repeat(q.length));
+    if (HEREDOC_INTERPRETER_RE.test(openingLine)) {
       // Corpo é comando: mantém, e pula para depois dele.
       startRe.lastIndex = bodyStart;
       continue;
