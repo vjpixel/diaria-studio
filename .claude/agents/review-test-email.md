@@ -54,6 +54,9 @@ O conector Gmail chega às vezes com prefixo UUID (`mcp__<uuid>__search_threads`
 
 ## Processo Beehiiv (só edição antiga, com `platform: "beehiiv"` explícito)
 
+> O Processo Kit (abaixo) é autossuficiente desde o #11848 e não lê este
+> bloco. O que valer para os dois ESPs e mudar aqui precisa mudar lá também.
+
 ### 0. Coletar unfixed_issues do publish-newsletter (#85)
 
 **Antes** de inspecionar o email, ler `{edition_dir}/05-published.json` e extrair `unfixed_issues[]` — problemas que o `publish-newsletter` **já detectou e não conseguiu auto-corrigir** durante a montagem do rascunho (encoding Unicode, template cleanup failed, imagem upload falhou, É IA? imagem missing, etc.).
@@ -812,18 +815,20 @@ Issues do processo Brevo usam prefixo `email:`. Não há `publish:` issues no fl
 
 ## Processo Kit (diário — backend Kit, #464)
 
-Usado quando `platform = "kit"`. **Não é uma checklist nova** — o conteúdo
-entregue é o MESMO fragmento HTML/estrutura do diário Beehiiv (mesmo
-`02-reviewed.md`, mesmo template, mesmos 2-3 destaques + É IA?). Este
-processo é o **Processo Beehiiv acima (seções 1 a 4) com estas
-substituições** — seguir tudo o que não é listado aqui exatamente como no
-Beehiiv, incluindo os lints determinísticos (`lint-test-email.ts`,
-`lint-test-email-structure.ts`) e o guard de confirmação independente antes
-de reportar link quebrado (seção 3c-guard).
+Usado quando `platform = "kit"` (ou `platform` ausente). **Seção
+autossuficiente (#11848):** tudo o que a revisão do e-mail de teste do Kit
+precisa está aqui, de K1 a K17 — busca no Gmail, sanidade do fetch, subject,
+checklist, os lints determinísticos (`lint-test-email.ts`,
+`lint-test-email-structure.ts`, `-encoding`, `-link-tracking`,
+`-image-freshness`, `-size`) e o guard de confirmação antes de reportar link
+quebrado. **Não ler o Processo Beehiiv acima** neste fluxo: ele fica só para
+reler edição antiga com `platform: "beehiiv"` explícito. O conteúdo entregue
+é o mesmo diário (mesmo `02-reviewed.md`, mesmo template, 2-3 destaques +
+É IA?); muda o ESP.
 
-**Pular a seção 0** (coleta de `unfixed_issues` do `publish-newsletter`) —
-o test-send do Kit não passa pelo `publish-newsletter`, que é quem produz
-esse arquivo. Não há issues `publish:` neste fluxo.
+**Não há coleta de `unfixed_issues`** (a seção 0 do Beehiiv): o test-send do
+Kit não passa pelo `publish-newsletter`, que é quem produz esse arquivo. Não
+há issues `publish:` neste fluxo.
 
 **Quem dispara o teste — dois caminhos (#10395).** Ler `test_mode` e
 `test_sent_at` de `{edition_dir}/_internal/newsletter-kit-published.json`:
@@ -835,7 +840,7 @@ esse arquivo. Não há issues `publish:` neste fluxo.
   `publish-newsletter-kit.ts --send-test` cria um broadcast descartável e o
   assunto chega com `[teste] ` na frente.
 
-### K1. Buscar o email via Gmail MCP (substitui a seção 1)
+### K1. Buscar o email via Gmail MCP
 
 > **Com `email_file` (#9000): pular esta seção** — ver "Modo pré-buscado" (o top-level já buscou a thread com o `subject`/`from` do Kit).
 
@@ -860,19 +865,94 @@ esse arquivo. Não há issues `publish:` neste fluxo.
    domínio `kit.com`/`convertkit.com` genérico — footer do email traz
    "Built with Kit" mas o envelope From é nosso).
 3. Se não encontrar, tentar a outra query (sem o prefixo, ou com ele no modo `ui`), com o mesmo corte por `test_sent_at`.
-4. Resto igual à seção 1 (ler via `get_thread`, sem fallback via Chrome (#8205), timeout 30s
-   → `inconclusive` fail-closed — mesma disciplina do #1212). Se as tools
-   `mcp__claude_ai_Gmail__*` não existirem, não há fallback executável (ver
-   seção "AVISO", #8953) — reportar `reason: "mcp_unavailable"` direto (#8902).
+4. Se encontrar, obter o `threadId` do resultado mais recente (respeitado o
+   corte por `test_sent_at`).
+5. Ler o conteúdo completo via `mcp__claude_ai_Gmail__get_thread` com
+   `threadId` e `messageFormat: "FULL_CONTENT"`. O Gmail MCP pode devolver só
+   partes MIME ou truncar o body de e-mails grandes. Com várias partes
+   (`parts[]`), preferir a `mimeType: text/html` (o que o leitor vê); sem
+   parte HTML, usar `text/plain`. Nunca concatenar partes de tipos diferentes.
+6. Se as tools `mcp__claude_ai_Gmail__*` não existirem nesta sessão, não há
+   fallback executável (ver seção "AVISO", #8953) — retornar direto (#8902):
+   ```json
+   { "status": "inconclusive", "issues": [], "platform": "kit", "reason": "mcp_unavailable", "details": "Tools mcp__claude_ai_Gmail__search_threads/get_thread indisponiveis nesta sessao — review NAO foi feito. Provavel conector Gmail desconectado ou exposto sob outro prefixo (#7279/#8902), sem fallback executável por este agent (#8953). Editor confere visualmente no gate de agendamento do Stage 6 (#8205)." }
+   ```
+6b. Se o Gmail MCP falhar por outro motivo (erro de conexão, nenhuma thread
+   nas duas queries), **não há fallback via Chrome (#8205)**: tratar como o
+   passo 7.
+7. Se o e-mail não aparecer em 30s, retornar **inconclusive** (fail-closed,
+   #1212):
+   ```json
+   { "status": "inconclusive", "issues": [], "platform": "kit", "reason": "not_found_timeout", "details": "Email de teste nao encontrado no Gmail apos 30s — review NAO foi feito. Editor confere visualmente no gate de agendamento do Stage 6 (#8205)." }
+   ```
+   **NUNCA retornar `status: ok` nem marcar `review_completed: true` neste
+   caminho** (#1212): antes do fix, "e-mail não encontrado" virava "review
+   limpo" sem verificação nenhuma (8/8 edições de 260505-260513 com
+   `review_final_issues=[]` e bugs visíveis).
 
-### K2. Subject esperado (substitui o item 0 da seção 3)
+### K1c. Sanidade de tamanho do fetch (#2317) — ANTES dos checks de conteúdo
+
+O Gmail MCP pode truncar o body e devolver só alguns KB; sem esta checagem o
+agente conclui `section_missing` para seções que existem além do corte.
+
+1. Gravar o corpo do e-mail (o resultado do `get_thread`, já em contexto) com
+   a tool `Write` em `{edition_dir}/_internal/.email-body.tmp` e medir os
+   bytes: `EMAIL_BODY_LEN=$(wc -c < "{edition_dir}/_internal/.email-body.tmp")`.
+   No modo pré-buscado (`email_file`), só medir o `email_file`, sem reescrever.
+2. Classificar o fetch com o helper determinístico:
+   ```bash
+   COMPLETENESS=$(npx tsx scripts/check-fetch-completeness.ts \
+     --email-len "$EMAIL_BODY_LEN" \
+     --html-path "{edition_dir}/_internal/newsletter-final.html")
+   # Saída: "complete" ou "incomplete". Exit 1 = HTML não encontrado ou arg inválido.
+   ```
+   Se o helper falhar (exit 1), assumir **complete** (fail-safe) e registrar
+   `info:check_completeness_failed: helper retornou erro — assumindo fetch completo`.
+
+**Fetch `incomplete`:** NÃO emitir `section_missing` para seção que não
+aparece no corpo. Para cada seção que "faltaria", conferir primeiro no
+`newsletter-final.html` local; se ela está lá, o MCP só não trouxe. Retornar
+com as issues já coletadas (subject do K2, se já checado):
+
+```json
+{
+  "status": "inconclusive",
+  "platform": "kit",
+  "issues": ["<subject checks já coletados>"],
+  "reason": "truncated_fetch",
+  "details": "Corpo do email obtido via Gmail MCP (EMAIL_BODY_LEN bytes) é muito menor que newsletter-final.html (FINAL_HTML_LEN bytes) — fetch provavelmente truncado. Checks de section_missing inconclusivos. Editor confere visualmente no gate de agendamento do Stage 6 (#8205)."
+}
+```
+
+Substituir `EMAIL_BODY_LEN`/`FINAL_HTML_LEN` pelos valores reais. Checks que
+não dependem do conteúdo completo (subject, links do cabeçalho) continuam
+valendo mesmo no `inconclusive`.
+
+**Fetch `complete`:** seguir com todos os checks.
+
+**Dump do e-mail:** salvar o conteúdo bruto em
+`{edition_dir}/_internal/test-email-{AAMMDD}.txt` (#2045) — é o
+`--email-file` de todos os lints abaixo.
+
+### K2. Subject esperado (#1645) — CRÍTICO, verificar PRIMEIRO
 
 O subject correto é `{edition_title}`, **com OU sem** o prefixo `[teste] `
 (minúsculo, espaço depois do colchete — ver K1.2): sem prefixo no caminho
 da UI (`test_mode: "ui"`, #10395), com prefixo no fallback `--send-test`.
-**Ausência do prefixo nunca é `subject_mismatch`** — comparar o restante
-como no item 0 original. Os mesmos 3 modos de falha (placeholder, título da
-edição anterior, divergência) se aplicam ao `{edition_title}`.
+**Ausência do prefixo nunca é `subject_mismatch`.** Comparar o restante com
+`edition_title` (ou o `subject` de `_internal/newsletter-kit-published.json`).
+Três modos de falha:
+- Subject é `New post` (ou um placeholder) → o título não persistiu.
+  `"email:subject_mismatch: subject é placeholder '{recebido}' — título não persistiu"`
+- Subject == título da **edição anterior** → o título da edição atual não foi
+  setado. `"email:subject_mismatch: subject == título da edição anterior '{prev}'"`
+- Subject diverge do esperado →
+  `"email:subject_mismatch: subject '{recebido}' diverge do esperado '{edition_title}'"`
+
+A comparação é **determinística** no `lint-test-email.ts` (K7) com
+`--subject-received`/`--subject-expected`/`--prev-title` — preferir isso a
+comparar à mão; o script normaliza o `[teste] ` (#11403). Subject errado mata
+o open rate: **subject_mismatch é blocker**, nunca falso-positivo.
 
 ### K3. Ressalvas de renderização específicas do Kit — NÃO reportar como issue
 
@@ -902,24 +982,288 @@ Achados ao vivo documentados em `scripts/publish-newsletter-kit.ts`
 ### K4. Ressalva NÃO CONFIRMADA — domínio de tracking de link
 
 **Diferente do restante desta seção, isto não foi verificado ao vivo.** O
-passo 3c (`lint-test-email-link-tracking.ts`) tem um allowlist de artefatos
+K10 (`lint-test-email-link-tracking.ts`) tem um allowlist de artefatos
 conhecidos (`beehiiv_footer_artifact`, `bot_blocked` em domínios Beehiiv
-específicos) — não se sabe ainda se o Kit envolve links em um domínio de
-tracking próprio (algo como `click.kit.com` ou um subdomínio nosso) da
-mesma forma que a Beehiiv faz com `link.diaria.beehiiv.com`. Rodar o passo
-3c normalmente, mas: se ele reportar `email:link_dead`/`link_redirect_chain_long`
+específicos). O Kit reescreve os links no click tracking
+(`*.click.kit-mail3.com/...`, K6 item 7), mas o comportamento do HEAD nesse
+domínio não foi calibrado como o da Beehiiv em `link.diaria.beehiiv.com`.
+Rodar o K10 normalmente, mas: se ele reportar `email:link_dead`/`link_redirect_chain_long`
 num domínio que não reconhece nenhum destino final esperado (nem o site de
-origem do link nem `diaria.beehiiv.com`), aplicar o mesmo guard de
-confirmação independente da seção 3c-guard antes de reportar — a
+origem do link nem `diaria.beehiiv.com`), aplicar o guard de
+confirmação independente do K11 antes de reportar — a
 allowlist desse script foi calibrada só contra artefatos da Beehiiv, então
 um falso-positivo específico do Kit ainda não tem entrada nela. Se
 confirmar um padrão novo e reproduzível, registrar como achado (não editar
 a allowlist só por suspeita).
 
-### K5. Retornar
+### K5. Convenções que evitam falso-positivo (#1949, #3941)
 
-Mesmo formato do Beehiiv (seção "Output" acima), com `"platform": "kit"`
-explícito:
+Um muro de falsos-positivos esconde o problema real e custa verificação
+manual a cada edição. Antes de registrar qualquer issue:
+
+1. **Ler o e-mail ENTREGUE (Gmail `FULL_CONTENT`)**, não o HTML cru do draft.
+   Merge tag ainda literal no e-mail entregue é defeito (K3), não artefato.
+2. **Design system (#1936):** manchetes em Georgia serif SEM negrito e
+   legenda do É IA? em sans SEM itálico são CORRETAS; réguas/bordas bege
+   (#EBE5D0) são estrutura do DS. Não flagar ausência de bold/itálico.
+3. **401/403 = bot-block** (a página existe para humanos). Não é link morto.
+4. **Timeout de link = warning, nunca blocker** (transiente).
+5. **Artefatos conhecidos de test-send (#3480/#3482):** link Amazon 404
+   (bot-block) e `fonts.gstatic.com`/`fonts.googleapis.com` 404 (degradação
+   cosmética de fonte). Não reportar.
+6. **429 de QUALQUER domínio = anti-bot**, nunca link quebrado (#3941).
+7. **"Seção ausente" só depois de grep/lint estruturado confirmar** (K6
+   item 6, K12) — nunca por impressão de leitura.
+8. **"Maiúsculas/acentuação inconsistente" só com o trecho EXATO citado.**
+   Ordinais (`8ª`, `1º`) são corretos; o lint de encoding (K13) separa
+   `char_dropped` (blocker) de `char_substituted` (aceitável).
+9. **"Emoji ausente" só é regressão contra uma referência concreta**
+   (edição anterior, `context/templates/`), nunca "eu esperava um emoji".
+10. **Imagem "unreachable" isolada nunca é problema definitivo** sem
+    cross-check em `{edition_dir}/06-public-images.json` (K15). Inconclusivo =
+    não reportar.
+
+Os lints determinísticos (K7, K10, K12-K15) já tratam 1/3/4/5/6/10 —
+**prefira o CLI** a julgar à mão.
+
+### K6. Checklist de estrutura
+
+Registrar cada item como `ok` ou `issue`:
+
+1. **Cor dos labels de categoria/seção.** O label no topo de cada destaque
+   (ex.: "LANÇAMENTO", "PESQUISA") na cor do template. Preto ou outra cor:
+   `"email:label_color_wrong: D{N} label '{texto}' aparece em cor preta, deveria ser verde do template"`
+2. **Destaques separados.** D1, D2 e D3 em containers visuais separados:
+   `"email:boxes_merged: D{N} e D{M} estao no mesmo box/container"`
+3. **É IA? separado** dos destaques:
+   `"email:eia_merged: Secao E IA? esta fundida com D{N}"`
+4. **Seções não duplicadas** (Lançamentos, Pesquisas, Outras Notícias, no
+   máximo 1 vez cada): `"email:section_duplicated: Secao '{nome}' aparece {X} vezes"`
+5. **Imagens.** Placeholder (URL `localhost`, "Ver imagem:", imagem ausente)
+   não é issue. URL real (Worker `/img/` ou Drive `uc?id=`) passa pelo lint
+   de freshness (K15).
+6. **Estrutura geral.** 3 destaques (ou 2), É IA? e ao menos 1 seção extra.
+   Seção que **parece** faltar nunca basta para registrar issue (#3941).
+   Protocolo em 2 etapas (#2317):
+   - Conferir primeiro em `{edition_dir}/_internal/newsletter-final.html`. Se
+     está no HTML local e não no e-mail: fetch `incomplete` (K1c) →
+     `inconclusive`; fetch completo → problema real.
+   - Ausente no HTML local E no e-mail → problema real.
+   Formatos (só com confirmação):
+   `"email:section_missing: Secao '{nome}' esperada mas nao encontrada no email nem no newsletter-final.html"`,
+   `"email:section_missing: Secao '{nome}' presente no newsletter-final.html mas ausente no email"`.
+   É IA? ausente nos dois:
+   `"email:section_missing_critical: Secao 'E IA?' ausente — template nao aplicado na montagem do e-mail"`
+7. **Links corretos.** Extrair as URLs clicáveis e comparar com as de
+   `{edition_dir}/02-reviewed.md`. Duas camadas de redirect: (1) o Gmail
+   proxeia via `https://www.google.com/url?q=...` (decodificar `q`); (2) o
+   Kit reescreve todo link no click tracking
+   (`*.click.kit-mail3.com/.../{destino em base64url}`, que o
+   `lint-test-email.ts` decodifica). Sem como resolver, usar o texto do link
+   ou o entorno para casar.
+   - URL esperada ausente: `"email:link_missing: URL '{url}' esperada no destaque/secao '{contexto}' nao encontrada no email"`
+   - Link com destino trocado: `"email:link_wrong: Link em '{contexto}' aponta para '{url_encontrada}' mas deveria ser '{url_esperada}'"`
+   - href vazio, `#` ou `javascript:`: `"email:link_broken: Link em '{contexto}' tem href invalido: '{href}'"`
+   Antes de reportar `link_wrong`/`link_broken`, aplicar o guard K11.
+
+### K7. Lint determinístico: versão, drift semântico e subject (#603, #630, #1645)
+
+```bash
+npx tsx scripts/lint-test-email.ts \
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
+  --source-md {edition_dir}/02-reviewed.md \
+  --edition {AAMMDD} \
+  --subject-received "{SUBJECT_RECEBIDO_DO_GMAIL}" \
+  --subject-expected "{edition_title}" \
+  --prev-title "{titulo_da_edicao_anterior_se_conhecido}" \
+  --out {edition_dir}/_internal/lint-result-{AAMMDD}.json
+# Exit 0 = sem blockers; 1 = ao menos 1 blocker; 2 = erro de uso.
+# Omitir --prev-title se desconhecido.
+```
+
+Ler `{edition_dir}/_internal/lint-result-{AAMMDD}.json`
+(`{ issues: [{ type, category, destaque, detail, source_md_value }], summary }`)
+e mapear:
+- `blocker` + `subject_mismatch` → `"email:subject_mismatch: {detail}"` (sempre blocker)
+- `blocker` + `vote_merge_tag_unresolved` → `"email:link_dead: {detail}"` (#11403: voto do É IA? com merge tag literal ou `email=` vazio no destino decodificado do click tracking)
+- `blocker` + `version_inconsistency` → `"email:version_inconsistency: {destaque} {detail} — source: {source_md_value}"`
+- `warning` + `semantic_drift` → `"email:semantic_drift: {destaque} {detail}"`
+- `info` + `intentional_error_confirmed` → `"info:intentional_error_confirmed: {destaque} {detail}"`
+
+Anexar todas ao `issues[]` final. Se o CLI falhar (exit 2, sem arquivo),
+seguir com os demais checks e registrar `"lint_cli_failed: {detalhe}"`.
+
+### K8. Formatação visual (#753) — prefixo `email:formatting:`
+
+Inspecionar os atributos de estilo do HTML entregue (lembrando o inlining do
+Kit, K3):
+1. **Títulos dos destaques:** serif sem negrito é CORRETO (DS #1936); a
+   hierarquia vem do tamanho. Só reportar título no MESMO tamanho/fonte do
+   corpo: `"email:formatting: D{N} título sem hierarquia visual de tamanho"`.
+2. **Legenda do É IA?:** sans sem itálico é CORRETO. Não flagar.
+3. **Labels de categoria** menores que o corpo (11-13px) e em caixa alta:
+   `"email:formatting: D{N} label de categoria sem estilo correto"`
+4. **Links** com sublinhado ou cor diferenciada:
+   `"email:formatting: link sem diferenciação visual em '{contexto}'"`
+5. **Fonte do corpo consistente (info-only):**
+   `"info:formatting: fonte inconsistente detectada em '{seção}'"` — `info:`,
+   nunca blocker (o Gmail reescreve CSS).
+
+### K9. Checks do post-mortem 260519 (#1371)
+
+- **Itálico markdown literal:** padrão `*texto*` literal no texto editorial
+  (regex `(?<!\*)\*(?!\*)[^*\n]{2,}\*(?!\*)` no plain-text, fora de URL/código):
+  `"email:italic_literal: '*{texto}*' literal sem conversão pra <em> — esperado itálico, ver #1364"`
+- **Leaderboard:** se `{edition_dir}/_internal/04-leaderboard-top1.json` tem
+  `top1[]` ou `podium[]` populados, ao menos um dos marcadores "Os campeões do É IA?" ou "Vencedores" aparece no body do e-mail (os textos de `renderLeaderboardTop1Row`, #9247). Senão:
+  `"email:leaderboard_missing: 04-leaderboard-top1.json tem top1[]/podium[] populados mas nem 'Os campeões do É IA?' nem 'Vencedores' aparecem no email — renderer pode ter falhado"`.
+  Vazios (Worker offline, mês sem votos): pular.
+- **Contagem do intro (só formato LEGADO "enviei N submissões", #10308):**
+  comparar N com `editor_blocks` de
+  `{edition_dir}/_internal/.marker-inject-inbox-urls.json`. Divergiu:
+  `"email:intro_count_mismatch: intro diz 'enviei {N} submissões' mas marker reporta editor_blocks={M}"`.
+  Intro no formato atual ("enviados por mim") ou marker ausente: pular.
+
+### K10. Link tracking via HEAD (#1248)
+
+```bash
+npx tsx scripts/lint-test-email-link-tracking.ts \
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
+  --out {edition_dir}/_internal/lint-link-tracking-{AAMMDD}.json
+# Exit 0 = nenhum blocker (timeout/bot_blocked/auth_required não contam, #1949).
+# Exit 1 = ao menos 1 blocker (link_dead ou link_redirect_chain_long).
+```
+
+Não passar `--send-mode generic` no Kit: essa flag é do "Send test email"
+genérico da Beehiiv (#6608). No Kit a merge tag do voto expande no test-send
+(K3), então tag literal no e-mail entregue vira `link_dead` (blocker), inclusive
+quando o `/vote` redireciona para `/jogar?...&from=post-web` com HTTP 200
+(`isPostWebRedirectTarget`, #4604 — conferir `details`).
+
+Saída: `{ total_urls_extracted, total_urls_checked, issues, skipped, passed }`,
+cada issue com `severity`. Mapear respeitando o severity:
+- `link_dead` (blocker) → `"email:link_dead: {url} → {details}"` (usar sempre `details`, nunca "HTTP {status}" fixo)
+- `link_redirect_chain_long` (blocker) → `"email:link_redirect_chain_long: {url} → {hops} hops"`
+- `link_timeout` (warning) → `"info:link_timeout: {url} (>5s, transiente)"`
+
+`skipped[]` (`auth_required`, `non_http`, `bot_blocked`, `rate_limited`,
+`amazon_bot_block`, `font_degradation`) fica no JSON para debug e **não vira
+issue**. Antes de manter um `link_dead`, aplicar o guard K11 e a ressalva K4
+(domínio de tracking do Kit).
+
+### K11. Confirmação independente antes de reportar link quebrado (#4694)
+
+O dump `test-email-{AAMMDD}.txt` é materializado por nós a partir do Gmail
+MCP; uma decodificação quoted-printable duplicada nessa leitura corrompe
+`=XY` com `XY` hex (em 260806, `edition=260806` virou `edition&0806` no dump,
+e o link funcionava no e-mail real). Antes de incluir `email:link_dead`,
+`email:link_broken` ou `email:link_wrong` no `issues[]` final:
+
+1. **Reconstruir a URL esperada** a partir de `newsletter-final.html` (fonte
+   pré-envio) ou do padrão de `scripts/lib/newsletter-render-html.ts`
+   (`buildVoteUrl` e afins). Se a única diferença for um `=` faltando
+   exatamente antes de 2 caracteres hex (`nome&HH...` contra `nome=HH...`),
+   é **suspeita de artefato de decodificação do dump**.
+2. **GET independente na URL reconstruída** (com o `=` restaurado). Se ela
+   resolve (200, ou redirect esperado), **não** reportar a URL do dump:
+   registrar `"info:link_decode_artifact: {url_dump} → provável double-decode do dump, URL reconstruída '{url_reconstruida}' resolve normalmente; ver #4694"`.
+3. **Só reportar `link_dead`/`link_broken` se a URL reconstruída também falhar.**
+4. Sem o padrão do item 1, ou sem URL-fonte para reconstruir, seguir o K10
+   normalmente — o guard é para o artefato de decode, não para suprimir
+   achado novo.
+
+### K12. Structural diff (#1248)
+
+```bash
+npx tsx scripts/lint-test-email-structure.ts \
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
+  --source-md {edition_dir}/02-reviewed.md \
+  --out {edition_dir}/_internal/lint-structure-{AAMMDD}.json
+# Exit 0 = estrutura bate. Exit 1 = ao menos 1 mismatch.
+```
+
+Mapear:
+- `eia_section_missing` → `"email:eia_section_missing: source tem É IA? mas email não"`
+- `section_missing` → `"email:section_missing: '{section}' presente no source com {N} itens, ausente no email"`
+- `destaque_count_mismatch` → `"email:destaque_count_mismatch: source {N}, email {M}"`
+
+Com fetch `incomplete` (K1c), suprimir os `section_missing` do `issues[]`
+final (downgrade para `inconclusive`); o JSON do CLI fica para debug.
+
+### K13. Encoding / caracteres especiais (#1248)
+
+```bash
+npx tsx scripts/lint-test-email-encoding.ts \
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
+  --source-md {edition_dir}/02-reviewed.md \
+  --out {edition_dir}/_internal/lint-encoding-{AAMMDD}.json
+# Exit 0 = sem char_dropped. Exit 1 = char_dropped detectado.
+```
+
+Mapear:
+- `char_dropped` → `"email:encoding_drop: {codepoint} '{char}' em '…{source_context}…'"`
+- `char_substituted` → `"info:encoding_subst: {codepoint} '{char}' → '{email_substitute}' (ASCII fallback aceitável)"`
+
+**#4629 — ordem literal:** codepoint primeiro (sem aspas), `'{char}'` entre
+aspas simples, `em`, `'{source_context}'` entre aspas simples. Nunca
+`{char} (U+{codepoint}) em '{context}'`: o parser determinístico
+(`extractEncodingDropCharAndContext`, `scripts/lib/agent-issue-validator.ts`)
+depende deste formato para reconhecer o emoji de kicker by-design (DS #1936).
+
+### K14. Tamanho do e-mail ENTREGUE (#9277)
+
+O corte do Gmail (~102 KB) vale para a **parte HTML**; o `sizeEstimate` do
+`get_thread` mede a mensagem MIME inteira e é só um TETO (#9311). Passar
+`--html-bytes` com o tamanho da parte `text/html` quando o payload expuser as
+partes; senão só `--size-estimate`. Omitir a flag cujo valor não existir.
+
+```bash
+npx tsx scripts/lint-test-email-size.ts \
+  [--html-bytes {tamanho_da_parte_text_html}] \
+  [--size-estimate {sizeEstimate_da_mensagem}] \
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
+  --local-html {edition_dir}/_internal/newsletter-final-kit.html \
+  --out {edition_dir}/_internal/lint-size-{AAMMDD}.json
+# Exit 1 = parte HTML (ou dump) acima do corte — não é erro do script: ler o JSON.
+```
+
+Mapear **todos com `info:`, nunca `email:`** (#9311 — cortar conteúdo é
+decisão editorial, o fix loop não resolve):
+- `delivered_size_over_clip` → `"info:delivered_size_over_clip: {detail}"`
+- `delivered_size_may_clip` → `"info:delivered_size_may_clip: {detail}"`
+- `delivered_size_near_clip` → `"info:delivered_size_near_clip: {detail}"` (#9823)
+- `delivered_size_unmeasured` → `"info:delivered_size_unmeasured"`
+
+### K15. Image freshness (#1212)
+
+```bash
+npx tsx scripts/lint-test-email-image-freshness.ts \
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
+  --edition-dir {edition_dir} \
+  --out {edition_dir}/_internal/lint-image-freshness-{AAMMDD}.json
+# Exit 0 = nenhum blocker. Exit 1 = ao menos 1 image_stale (mismatch de bytes CONFIRMADO).
+```
+
+Mapear respeitando o severity (#3941):
+- `image_stale` (blocker) → `"email:image_stale: {expected_local_file} — {details}"`
+- `image_unreachable` (warning) → `"info:image_unreachable: {expected_local_file} — {url} retornou erro após retries"`,
+  só se `{edition_dir}/06-public-images.json` NÃO confirmar a imagem no
+  Worker; confirmada lá, omitir a linha.
+
+Lint falhou (exit 2, sem arquivo): `info:lint_image_freshness_failed: {detalhe}` e seguir.
+
+### K16. Erro intencional (`intentional-errors.jsonl`)
+
+Toda edição traz 1 erro intencional (concurso mensal): detectar é correto,
+bloquear é incorreto. Antes de manter uma inconsistência de K7 como blocker,
+procurar em `data/intentional-errors.jsonl` uma entrada com a mesma
+`edition`, `is_feature: true`, mesmo `error_type` e mesmo `destaque`. Achou:
+`info:intentional_error_confirmed` (não-blocker). Não achou: blocker com a
+nota "verificar com editor antes de publicar".
+
+### K17. Retornar
+
+Formato com `"platform": "kit"` explícito:
 
 ```json
 {
@@ -929,3 +1273,15 @@ explícito:
   "issues": []
 }
 ```
+
+Com issues, a mesma forma com as strings em `issues[]`. Prefixos: `email:`
+para o que a inspeção do e-mail entregue achou (blocker, inclusive
+`email:formatting:`), `info:` para não-blocker. Não há `publish:` no Kit.
+
+Regras:
+- **Não corrigir nada.** Só diagnosticar (o Kit não tem modo fix; o Stage 5
+  registra `issues_unfixable` e o editor decide no gate do Stage 6).
+- **Ser específico.** Cada issue diz qual elemento está errado e o que
+  deveria ser.
+- **Não falhar por causa de imagem** que não carregou na prévia do Gmail; só
+  reportar estrutura quebrada ou `image_stale`.

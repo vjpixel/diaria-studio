@@ -23,7 +23,10 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  * export com um deles no nome (`…_Vertical_IA Soberana_Edição 08_V2.mp4`) e
  * Still `…_V{n}-{slug}.….Still….jpg` são do corte, nunca da vertical da
  * edição (sem `ambiguous-cover` por causa deles); o modo corte devolve também
- * a Still do corte (`cover`, para o `--cover`).
+ * a Still do corte (`cover`, para o `--cover`). Sem o `blocks.json` (máquina
+ * sem `data/`, montagem que não gravou cortes), só o padrão `_V{n}-{slug}`
+ * reconhece o corte; se a vertical sair `ambiguous` nesse caso, a saída traz
+ * `hint` pedindo o nome no padrão (#11988).
  *
  * **Sem `--download`, só planeja (#11551).** Na 261029 uma checagem por ssh no
  * 300 baixou 312 MB sem pedir. Agora o default lista, resolve o arquivo e
@@ -279,7 +282,13 @@ export type FetchDriveVideoOutput =
     })
   | (OutputWithFolder & { action: "error"; phase: "cover-download"; error: string })
   | (OutputWithFolder & { action: "none"; selection: "none"; reason: string })
-  | (OutputWithFolder & { action: "needs-editor"; selection: "ambiguous"; candidates: DescribedDriveFile[] })
+  | (OutputWithFolder & {
+      action: "needs-editor";
+      selection: "ambiguous";
+      candidates: DescribedDriveFile[];
+      /** #11988: presente quando a lista de cortes é desconhecida (sem `blocks.json`): como nomear o export do corte. */
+      hint?: string;
+    })
   | (OutputWithFolder & { action: "needs-editor"; selection: "orientation-unknown"; files: DescribedDriveFile[] })
   | (OutputWithFolder & { action: "print-id"; selection: "found"; file: DescribedDriveFile; next_command: string | null })
   | (OutputWithFolder & { action: "dry-run"; selection: "found"; file: DescribedDriveFile })
@@ -453,22 +462,51 @@ function readUploadRecord(path: string, aammdd: string): { done: true; url: stri
  * (os nomes no padrão `_V{n}-{slug}` continuam reconhecidos sem a lista).
  */
 export function loadCorteRefs(editionDir: string, log: (line: string) => void): CorteRef[] {
+  return loadCorteRefsWithStatus(editionDir, log).refs;
+}
+
+/**
+ * `"missing"`/`"unreadable"` = a lista de cortes é desconhecida (#11988): só os
+ * nomes no padrão `_V{n}-{slug}` saem da disputa com a vertical da edição.
+ * `"read"` = o `blocks.json` foi lido (com ou sem cortes).
+ */
+type CorteRefsStatus ="read" | "missing" | "unreadable";
+
+export function loadCorteRefsWithStatus(
+  editionDir: string,
+  log: (line: string) => void,
+): { refs: CorteRef[]; status: CorteRefsStatus; path: string } {
   const path = join(editionDir, "_internal", "video-montagem", "blocks.json");
-  if (!existsSync(path)) return [];
+  if (!existsSync(path)) return { refs: [], status: "missing", path };
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as { sequences?: unknown };
-    if (!Array.isArray(raw.sequences)) return [];
+    if (!Array.isArray(raw.sequences)) return { refs: [], status: "read", path };
     const refs: CorteRef[] = [];
     for (const s of raw.sequences as Array<Record<string, unknown>>) {
       if (!s || typeof s !== "object" || typeof s.corte !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s.corte)) continue;
       refs.push({ corte: s.corte, screenTitle: typeof s.screenTitle === "string" && s.screenTitle.trim() ? s.screenTitle : null });
     }
     if (refs.length) log(`[premissa] cortes do blocks.json: ${refs.map((r) => r.screenTitle ? `${r.corte} ("${r.screenTitle}")` : r.corte).join(", ")} — export e Still deles não contam como a vertical da edição (#11950)`);
-    return refs;
+    return { refs, status: "read", path };
   } catch (e) {
     log(`[aviso] blocks.json ilegível (${path}: ${(e as Error).message}); cortes reconhecidos só pelo padrão _V{n}-{slug} no nome (#11950)`);
-    return [];
+    return { refs: [], status: "unreadable", path };
   }
+}
+
+/**
+ * #11988: a vertical saiu `ambiguous` sem a lista de cortes (sem `blocks.json`
+ * da montagem, ou ilegível). Um export de corte nomeado só pelo título
+ * (`…_Vertical_IA Soberana_Edição 08_V2.mp4`) volta a disputar com a vertical
+ * da edição; a saída diz como desfazer em vez de deixar o editor adivinhar.
+ */
+export function corteNamingHint(status: Exclude<CorteRefsStatus, "read">, path: string): string {
+  const why = status === "missing" ? `sem o blocks.json da montagem (${path})` : `com o blocks.json da montagem ilegível (${path})`;
+  return (
+    `${why}, um export de corte só é reconhecido pelo nome no padrão _V{n}-{slug} ` +
+    `(ex.: "Diaria comentada_Vertical_V1-soberana.mp4"). Se um destes candidatos é um corte, ` +
+    `renomeie no Drive para esse padrão e rode de novo; se não, escolha o vídeo da edição.`
+  );
 }
 
 export async function runFetchDriveVideo(
@@ -485,7 +523,8 @@ export async function runFetchDriveVideo(
   // registro do vertical são do corte "Outras redes", então não encurtam.
   const instagramCut = target === "instagram";
   const timeouts = input.timeouts ?? DEFAULT_FETCH_DRIVE_VIDEO_TIMEOUTS;
-  const corteRefs = input.cortes ?? (orientation === "vertical" ? loadCorteRefs(input.editionDir, log) : []);
+  const loadedCortes = input.cortes === undefined && orientation === "vertical" ? loadCorteRefsWithStatus(input.editionDir, log) : null;
+  const corteRefs = input.cortes ?? loadedCortes?.refs ?? [];
   const localPath = join(
     input.editionDir,
     orientation === "horizontal" ? youtubeVideoFileName(aammdd) : shortVideoFileName(aammdd),
@@ -708,9 +747,11 @@ export async function runFetchDriveVideo(
   }
   if (sel.kind === "ambiguous") {
     log(`[aviso] ${sel.candidates.length} .mp4 ${orientation} finais (destino ${target}) — escolha do editor: ${sel.candidates.map(describeForLog).join(" | ")}`);
+    const hint = loadedCortes && loadedCortes.status !== "read" ? corteNamingHint(loadedCortes.status, loadedCortes.path) : undefined;
+    if (hint) log(`[aviso] ${hint} (#11988)`);
     return {
       exitCode: 3,
-      output: { ...withFolder, action: "needs-editor", selection: "ambiguous", candidates: sel.candidates.map(describeFile) },
+      output: { ...withFolder, action: "needs-editor", selection: "ambiguous", candidates: sel.candidates.map(describeFile), ...(hint ? { hint } : {}) },
     };
   }
   if (sel.kind === "orientation-unknown") {
