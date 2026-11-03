@@ -563,3 +563,82 @@ describe("detectKitConfirmations / ingestKitConfirmations (#11846)", () => {
     assert.equal(tl.filter((e) => e.type === "confirm").length, 1);
   });
 });
+
+describe("ingestKitConfirmationsFromSnapshots (#11846 — ligação aos snapshots diários)", () => {
+  async function setup(days: Record<string, Array<{ id: number; state: string }>>) {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const root = mkdtempSync(join(tmpdir(), "kit-confirm-snap-"));
+    for (const [date, recs] of Object.entries(days)) {
+      mkdirSync(join(root, date), { recursive: true });
+      writeFileSync(
+        join(root, date, "subscribers.jsonl"),
+        recs.map((r) => JSON.stringify({ ...r, created_at: "2026-10-01T00:00:00Z" }) + "\n").join(""),
+      );
+    }
+    return root;
+  }
+  const emails = new Map([[1, "um@x.com"], [2, "dois@x.com"]]);
+
+  it("grava confirm no dia do snapshot em que inactive->active apareceu; idempotente", async () => {
+    const { ingestKitConfirmationsFromSnapshots } = await import("../scripts/lib/kit-subscribers-ingest.ts");
+    const root = await setup({
+      "2026-11-01": [{ id: 1, state: "inactive" }, { id: 2, state: "inactive" }, { id: 3, state: "inactive" }],
+      "2026-11-02": [{ id: 1, state: "active" }, { id: 2, state: "inactive" }, { id: 3, state: "inactive" }],
+      "2026-11-03": [{ id: 1, state: "active" }, { id: 2, state: "active" }, { id: 3, state: "active" }],
+    });
+    const db = openDiariaSubscribersDb(":memory:");
+    const r = ingestKitConfirmationsFromSnapshots(db, root, emails, { now: "2026-11-03T07:40:00.000Z" });
+    assert.deepEqual(r, { datesProcessed: ["2026-11-02", "2026-11-03"], newEvents: 2, alreadyKnown: 0, skippedNoEmail: 1 });
+    const um = getSubscriberTimeline(db, findSubscriberIdsByEmail(db, "um@x.com")[0]).filter((e) => e.type === "confirm");
+    assert.equal(um.length, 1);
+    assert.equal(um[0].ts, "2026-11-02T12:00:00.000Z");
+    const again = ingestKitConfirmationsFromSnapshots(db, root, emails);
+    assert.equal(again.newEvents, 0);
+    assert.equal(again.alreadyKnown, 2);
+    db.close();
+  });
+
+  it("janela de maxPairs: par mais antigo fora da janela não é relido", async () => {
+    const { ingestKitConfirmationsFromSnapshots } = await import("../scripts/lib/kit-subscribers-ingest.ts");
+    const root = await setup({
+      "2026-11-01": [{ id: 1, state: "inactive" }],
+      "2026-11-02": [{ id: 1, state: "active" }],
+      "2026-11-03": [{ id: 1, state: "active" }],
+    });
+    const db = openDiariaSubscribersDb(":memory:");
+    const r = ingestKitConfirmationsFromSnapshots(db, root, emails, { maxPairs: 1 });
+    assert.deepEqual(r.datesProcessed, ["2026-11-03"]);
+    assert.equal(r.newEvents, 0);
+    db.close();
+  });
+
+  it("snapshot vazio no meio é pulado: compara contra o último válido, sem fabricar cadastro novo", async () => {
+    const { ingestKitConfirmationsFromSnapshots } = await import("../scripts/lib/kit-subscribers-ingest.ts");
+    const root = await setup({
+      "2026-11-01": [{ id: 1, state: "inactive" }],
+      "2026-11-02": [],
+      "2026-11-03": [{ id: 1, state: "active" }],
+    });
+    const db = openDiariaSubscribersDb(":memory:");
+    const r = ingestKitConfirmationsFromSnapshots(db, root, emails);
+    assert.deepEqual(r.datesProcessed, ["2026-11-03"]);
+    assert.equal(r.newEvents, 1);
+    db.close();
+  });
+
+  it("root ausente ou 1 snapshot só: zeros, sem erro", async () => {
+    const { ingestKitConfirmationsFromSnapshots } = await import("../scripts/lib/kit-subscribers-ingest.ts");
+    const db = openDiariaSubscribersDb(":memory:");
+    assert.deepEqual(ingestKitConfirmationsFromSnapshots(db, "/nao/existe/kit-snap", emails), {
+      datesProcessed: [],
+      newEvents: 0,
+      alreadyKnown: 0,
+      skippedNoEmail: 0,
+    });
+    const root = await setup({ "2026-11-01": [{ id: 1, state: "inactive" }] });
+    assert.equal(ingestKitConfirmationsFromSnapshots(db, root, emails).datesProcessed.length, 0);
+    db.close();
+  });
+});
