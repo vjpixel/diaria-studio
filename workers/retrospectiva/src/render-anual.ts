@@ -250,7 +250,8 @@ export function renderSlugNotFound(slug: string, canonical: string): string {
   return shell("diar.ia.br — edição não encontrada", "Retrospectiva anual não encontrada.", canonical, body);
 }
 
-/** 400 — nenhum slug informado no path (`GET /`). */
+/** 400 — path que não casa nenhum dos três formatos. (`GET /` deixou de cair
+ *  aqui no #12032: virou o índice público das retrospectivas.) */
 export function renderMissingSlug(canonical: string): string {
   const body = `
     <h1>Edição não informada</h1>

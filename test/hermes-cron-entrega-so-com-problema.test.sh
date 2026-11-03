@@ -135,6 +135,21 @@ assert_true \
   "pr-review: resolvedor que fechou PR entrega a linha no stdout (#8767)" \
   "$(echo "$OUT" | grep -q 'resolvedor de PRs travadas (#8767): 2 fechada' && echo 1 || echo 0)"
 
+# #12034: escrita pendente em data/ é notificada; o bloco de entrega não pode
+# quebrar sob `set -u` quando PENDING_DATA_WRITES* não vier definido (os
+# run_block acima já cobrem o caso ausente — antes do `:-0` todos morriam).
+OUT=$(bash -c "
+  set -euo pipefail
+  REVIEWED=1 MERGED=1 ESCALATED=0 REJECTED=0 ESCALATED_NEW=0 REJECTED_NEW=0
+  ESCALATED_RECURRING=0 ESCALATED_RECURRING_PRS='' FAILED=0 INFRA_ERRORS=0 LOCK_BLOCKED=0
+  INFRA_ERROR_SUMMARY='' INFRA_ERROR_LOG='$TMPDIR/infra.jsonl'
+  PENDING_DATA_WRITES=1 PENDING_DATA_WRITES_SUMMARY=' PR #7 -> issue #8;'
+  source '$BLOCK'
+" 2>/dev/null)
+assert_true \
+  "pr-review: PR mergeada com escrita pendente em data/ entrega a linha no stdout (#12034)" \
+  "$(echo "$OUT" | grep -q 'escrita pendente em data/ (#12034).*PR #7 -> issue #8' && echo 1 || echo 0)"
+
 # ── watch-continuo-health.sh ────────────────────────────────────────────────
 assert_true \
   "watch: nenhuma linha de rotina '[watch] ...' volta pro stdout (vão pro \$WATCH_LOG)" \

@@ -1417,3 +1417,14 @@ pós-merge. Registrar a aplicação no relatório da rodada (`report.md`, coluna
 de nota da unidade). Pendência que o coordenador também não consegue gravar
 (máquina sem `data/`, item 23) entra no relatório como pendente, com o texto
 da linha, para o editor ou a próxima rodada.
+
+**Lado mecânico (#12026, #12034).** No trem de merge a PR mergeada é o
+PR-trem e as originais terminam fechadas: `run-merge-train.ts` lê a seção de
+cada original (`scripts/lib/pending-data-writes.ts`), replica no corpo do
+PR-trem e imprime no fim do run o bloco `run-merge-train: ESCRITA PENDENTE em
+data/` (mais uma linha `escrita-pendente-json` por PR). No contínuo, quem
+mergeia é o `hermes/scripts/continuo-pr-review.sh`: depois do merge
+confirmado ele roda `scripts/register-pending-data-writes.ts`, que abre uma
+issue de alarme (`alarm-evento`, P2) com as linhas e avisa no resumo do tick.
+Nenhum dos dois aplica a escrita: o formato é prosa, e a aplicação segue com
+o coordenador, como acima.

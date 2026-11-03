@@ -86,6 +86,10 @@ function runTryMergeGate(repo: "studio" | "design"): string[] {
       extractFn("acquire_merge_lock_with_retry"),
       extractFn("release_merge_lock"),
       extractFn("try_merge_gate"),
+      // #12034: stub do registro de escrita pendente (coberto à parte em
+      // test/continuo-pr-review-pending-data-writes-12034.test.sh) — o evento
+      // prova que só o studio o chama, depois do release do lock.
+      'register_pending_data_writes() { echo "register-pending $1" >> "$EVENTS_LOG"; }',
       `select_review_repo ${repo}`,
       "try_merge_gate 26",
       'echo "after GH_REPO=${GH_REPO:-}" >> "$EVENTS_LOG"',
@@ -124,6 +128,7 @@ describe("continuo-pr-review.sh — PRs do vjpixel/diaria-design (#10900)", { sk
       "merge GH_REPO= 26",
       "pull",
       "merge-lock-release merge-lock-release --kind continuo-review --session-id continuo-review-test",
+      "register-pending 26",
       "after GH_REPO=",
       "reset GH_REPO=",
     ]);
