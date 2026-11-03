@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerCorteLockCleanup, corteTimerLockBusyError } from "../scripts/publish-shorts.ts";
 import { acquireTimerLock } from "../scripts/lib/diaria/timer-lock.ts";
@@ -25,7 +25,10 @@ for (const [signal, expected] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
       assert.equal(acquireTimerLock(path), null);
       const exited = once(child, "exit");
       child.kill(signal);
-      assert.deepEqual(await exited, [expected, null]);
+      // Re-emite o sinal com o handler removido (#9911: sem process.exit): morre pelo
+      // próprio sinal, status de shell 128+n = 130 (SIGINT) / 143 (SIGTERM).
+      assert.deepEqual(await exited, [null, signal]);
+      assert.equal(128 + constants.signals[signal], expected);
       assert.equal(existsSync(path), false);
       const release = acquireTimerLock(path);
       assert.ok(release);

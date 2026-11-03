@@ -3392,11 +3392,21 @@ export function corteManualTimerDestinations(items: readonly ShortsPlanItem[], c
   return items.filter((i) => (i.action === "publish" || i.action === "enqueue") && CORTE_TIMER_DESTINATIONS.includes(i.destination)).map((i) => i.destination);
 }
 
-/** #12004: libera o lock na conclusão, em exceção e nos sinais de parada capturáveis. */
+/**
+ * #12004: libera o lock na conclusão, em exceção e nos sinais de parada capturáveis.
+ * No sinal, libera o lock, remove o handler e re-emite o mesmo sinal: o processo morre
+ * pela disposição padrão (status 130 no SIGINT, 143 no SIGTERM), sem `process.exit()`,
+ * que o #9911 proíbe em script com fetch (`scripts/lib/cli-exit.ts`).
+ */
 export function registerCorteLockCleanup(release: () => void): () => void {
   let released = false;
-  const onSigint = () => { cleanup(); process.exit(130); };
-  const onSigterm = () => { cleanup(); process.exit(143); };
+  const reraise = (sig: "SIGINT" | "SIGTERM", code: number) => () => {
+    cleanup();
+    process.exitCode = code;
+    process.kill(process.pid, sig);
+  };
+  const onSigint = reraise("SIGINT", 130);
+  const onSigterm = reraise("SIGTERM", 143);
   const cleanup = () => {
     if (released) return;
     released = true;
