@@ -1584,6 +1584,23 @@ def main() -> int:
             )
             assert_true(f"{label} -> {want} (got {chk['status']})", chk["status"] == want)
 
+        # #11922: claims de outro kind (encerrado ou vivo) entram no registro
+        lc22 = td / "lc22" / "data" / "session-lifecycle.jsonl"
+        _write_lifecycle_event(lc22, "o1", tick_start14, tick_end14, kind="overnight",
+                               claimed_issues=[], claimed_issues_ever=[8515])
+        w0, w1 = tick_start14 - timedelta(minutes=45), tick_end14 + timedelta(minutes=45)
+        assert_true("22a ended overnight claim", 8515 in mod.other_kind_claims_in_window(lc22, w0, w1))
+        assert_true("22b continuo ignorado", mod.other_kind_claims_in_window(
+            lc22.parent / "x.jsonl", w0, w1) == set())
+        sd22 = td / "sess22"; sd22.mkdir()
+        (sd22 / "overnight-1.json").write_text(json.dumps({"kind": "overnight", "claimed_issues": [8515]}))
+        (sd22 / "continuo-1.json").write_text(json.dumps({"kind": "continuo", "claimed_issues": [9]}))
+        assert_true("22c live overnight", mod.other_kind_live_claims(sd22) == {8515})
+        # continuo vivo, sem ended: claim do overnight evita fabricacao
+        chk22 = mod.check_claimed_issues(
+            report_text_14, {8515}, True, session_correlated=True)
+        assert_true(f"22d -> ok (got {chk22['status']})", chk22["status"] == "ok")
+
         # snapshot contem #8515 -> ok
         _run16("16a-contem", [("s1", dict(claimed_issues=[8515], claimed_issues_ever=[8515]))], "ok")
         # ausente do snapshot e do historico, end real -> fabricacao

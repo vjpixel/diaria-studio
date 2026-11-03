@@ -1227,6 +1227,71 @@ def ended_continuo_events_in_window(
     return out
 
 
+def other_kind_claims_in_window(
+    lifecycle_log_path: Path,
+    window_start: dt.datetime,
+    window_end: dt.datetime,
+) -> set[int | str]:
+    """#11922: claims de sessoes `ended` de OUTRO kind (overnight/develop)
+    sobrepostas a janela do tick. O relatorio do continuo cita legitimamente
+    issue reivindicada por uma sessao concorrente ("pulada, reivindicada pelo
+    overnight"); a claim e real (passou por `claimIssueCheckAndSet`), so nao e
+    do continuo. Evento sem `claimed_issues_ever` e ignorado (nunca afirma
+    ausencia). Fail-soft, nunca lanca."""
+    out: set[int | str] = set()
+    try:
+        raw = lifecycle_log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line.strip())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("event") != "ended" or event.get("kind") in (None, "continuo"):
+            continue
+        started = _parse_iso(event.get("startedAt"))
+        heartbeat = _parse_iso(event.get("lastHeartbeat")) or started
+        if started is None or heartbeat is None:
+            continue
+        if not (window_start <= heartbeat and started <= window_end):
+            continue
+        ever = event.get("claimed_issues_ever")
+        if not isinstance(ever, list):
+            continue
+        for n in list(ever) + list(event.get("claimed_issues") or []):
+            try:
+                out.add(int(n))
+            except (TypeError, ValueError):
+                continue
+        out.update(_foreign_keys(event.get("claimed_foreign_issues_ever")))
+        out.update(_foreign_keys(event.get("claimed_foreign_issues")))
+    return out
+
+
+def other_kind_live_claims(sessions_dir: Path) -> set[int | str]:
+    """#11922: `claimed_issues` de registros vivos de overnight/develop."""
+    out: set[int | str] = set()
+    if not sessions_dir.is_dir():
+        return out
+    for f in sessions_dir.glob("*.json"):
+        try:
+            record = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict) or record.get("kind") in (None, "continuo"):
+            continue
+        for n in record.get("claimed_issues") or []:
+            try:
+                out.add(int(n))
+            except (TypeError, ValueError):
+                pass
+        out.update(_foreign_keys(record.get("claimed_foreign_issues")))
+    return out
+
+
 def _snapshot_from_events(events: list[dict]) -> set[int | str] | None:
     """#8521: UNIAO do historico de claims (`claimed_issues_ever`, que inclui
     claims liberadas por unclaim antes do `end`) de todos os eventos. Se
@@ -1657,6 +1722,14 @@ def run(
     )
     ended_events = ended_continuo_events_in_window(
         resolved_lifecycle_log, tick_window_start, tick_window_end
+    )
+    # #11922: claim real de sessao concorrente de outro kind (overnight/develop),
+    # viva ou encerrada, nao e fabricacao do tick. Vale com ou sem sessao
+    # continuo encerrada. Limite: nao verifica se o relatorio credita a sessao certa.
+    claimed_in_registry = (
+        claimed_in_registry
+        | other_kind_live_claims(sessions_dir)
+        | other_kind_claims_in_window(resolved_lifecycle_log, tick_window_start, tick_window_end)
     )
 
     # #8739 (revisado no review da PR #8745): "alguma sessao correlacionou
