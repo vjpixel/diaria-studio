@@ -3392,11 +3392,31 @@ export function corteManualTimerDestinations(items: readonly ShortsPlanItem[], c
   return items.filter((i) => (i.action === "publish" || i.action === "enqueue") && CORTE_TIMER_DESTINATIONS.includes(i.destination)).map((i) => i.destination);
 }
 
+/** #12004: libera o lock na conclusão, em exceção e nos sinais de parada capturáveis. */
+export function registerCorteLockCleanup(release: () => void): () => void {
+  let released = false;
+  const onSigint = () => { cleanup(); process.exit(130); };
+  const onSigterm = () => { cleanup(); process.exit(143); };
+  const cleanup = () => {
+    if (released) return;
+    released = true;
+    process.removeListener("exit", cleanup);
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+    release();
+  };
+  // SIGKILL não é capturável; nesse caso continua valendo a expiração do lock.
+  process.once("exit", cleanup);
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  return cleanup;
+}
+
 /** #12001: motivo da recusa quando o timer do corte está com o lock (nada enviado nesses destinos). */
 export function corteTimerLockBusyError(slug: string): string {
   return (
-    `o timer do 300 (${CORTE_TIMER_TASK}) está publicando o corte "${slug}" agora (${CORTE_TIMER_LOCK_FILE} de pé): nada enviado neste destino para não duplicar o post. ` +
-    "Rode de novo em alguns minutos: a rodada relê o registro e só publica o que o timer não registrou (#12001)"
+    `outra execução (manual ou timer) está com o lock do corte "${slug}" agora (${CORTE_TIMER_LOCK_FILE} de pé): nada enviado neste destino para não duplicar o post. ` +
+    "Rode de novo em alguns minutos: a rodada relê o registro e só publica o que ainda não foi registrado (#12001)"
   );
 }
 
@@ -4692,14 +4712,7 @@ async function main(): Promise<number> {
       corteLockBusy = `lock do timer do corte não tomado (${(e as Error).message}): nada enviado neste destino para não duplicar o post com o timer (#12001)`;
     }
     if (rel) {
-      let released = false;
-      releaseCorteLock = () => {
-        if (released) return;
-        released = true;
-        rel!();
-      };
-      // Exceção no meio dos envios não deixa o lock de pé por 90 min (só SIGKILL deixa).
-      process.once("exit", releaseCorteLock);
+      releaseCorteLock = registerCorteLockCleanup(rel);
     } else if (!corteLockBusy) {
       corteLockBusy = corteTimerLockBusyError(corte.slug);
     }
