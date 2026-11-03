@@ -38,7 +38,12 @@
  *      e-mail), um por destino e motivo, sem repetir a cada hora
  *      (`_internal/.shorts-corte-timer-alarm.json` na pasta do corte).
  *
- * Lock O_EXCL por corte em `_internal/.shorts-corte-timer.lock`.
+ * Lock O_EXCL por corte em `_internal/.shorts-corte-timer.lock`. O filho tem
+ * teto de 75 min (`CORTE_TIMER_CHILD_TIMEOUT_MS`, abaixo dos 90 min de lock
+ * velho, #11966): estourado, vira alarme `child-timeout` (conferir a conta).
+ * #11964: o lock só serializa execuções do timer; quem impede a rodada manual
+ * de publicar junto é o plano do publish-shorts, que entrega os três destinos
+ * ao timer (`skip_delegated`) de 10 min antes do horário até 3 h depois.
  *
  * Conferência da conta antes de publicar (#11795, fecha o limite do review do
  * PR #11894): o `publish-shorts --corte` passa o Instagram pela mesma
@@ -109,10 +114,12 @@ export type CorteTimerAlarmKey =
   /** #11912: o corte tinha "pode publicar", ele caiu (plano/conteúdo mudou) e o horário chegou com destinos pendentes. */
   | "revoked"
   /** #11912: o "pode publicar" cita um destino que a config atual não conhece: nunca filtrado em silêncio. */
-  | "unknown-destination";
+  | "unknown-destination"
+  /** #11966: o publish-shorts passou do teto e foi morto: o envio pode ter saído sem registro. */
+  | "child-timeout";
 
 /** O post pode estar (ou está) no ar: `acao`, e o corpo nunca manda publicar de novo. */
-const MAYBE_PUBLISHED_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["send-unknown", "published-unregistered", "account-check"]);
+const MAYBE_PUBLISHED_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["send-unknown", "published-unregistered", "account-check", "child-timeout"]);
 
 /** Motivos em que a próxima execução (até 3 h depois do horário) tenta de novo sozinha. */
 const RETRY_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["missing-video", "credentials", "public-video", "publish-failed", "account-read-failed", "no-output", "crash"]);
@@ -313,7 +320,13 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
   const { spec, destination, key, reason } = input;
   const base = corteBaseCommand(spec.slug);
   const mark = `\`${base} --mark ${destination}=URL\``;
-  const manual = `\`${base} --only ${destination} --publish --now ${publishConfirmSuffix(spec.date)}\``;
+  // #11964: até 3 h depois do horário o publish-shorts manual delega os destinos do timer (não publica
+  // em dobro com ele): "publicar agora" é rodar o próprio timer no 300. Depois das 3 h (`late`) o timer
+  // não publica mais, e aí sim o publish-shorts com --now.
+  const manual =
+    key === "late"
+      ? `\`${base} --only ${destination} --publish --now ${publishConfirmSuffix(spec.date)}\``
+      : `\`npx tsx scripts/shorts-corte-timer.ts --corte ${spec.slug}\``;
   const lines = [
     `Achado automático da task \`${CORTE_TIMER_TASK}\` (\`scripts/shorts-corte-timer.ts\`, #11795).`,
     "",
@@ -326,7 +339,7 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
     lines.push(
       "Confira a conta antes de qualquer coisa; NÃO poste de novo sem conferir.",
       `- Se o vídeo do corte está lá: registre com ${mark}.`,
-      `- Se não está: publique com ${manual} (no 300) e confira.`,
+      `- Se não está: publique com ${manual} (no 300; até 3 h depois do horário, passadas as 3 h com \`${base} --only ${destination} --publish --now ${publishConfirmSuffix(spec.date)}\`) e confira.`,
     );
     if (key === "account-check") {
       lines.push(`- Se o vídeo que a conferência acusou é de outra edição ou outro corte, a publicação pelo script vai parar no mesmo ponto: poste à mão e registre com ${mark}.`);
@@ -370,6 +383,8 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
  * cair no "já avisado" da 1ª. #11923: `late` e `missing-video` levam a data e
  * o horário do plano (replanejar o corte para outro dia avisa de novo);
  * `unknown-destination`, a data da autorização (ou da queda) que cita o nome.
+ * #11967: todo motivo sem variante própria leva a do plano; o `todos:crash` do
+ * `main`, o dia da execução (`corteCrashAlarmVariant`).
  */
 export function corteAlarmId(destination: string, key: CorteTimerAlarmKey, variant?: string): string {
   return variant ? `${destination}:${key}:${variant}` : `${destination}:${key}`;
@@ -377,11 +392,27 @@ export function corteAlarmId(destination: string, key: CorteTimerAlarmKey, varia
 
 /** Puro (#11912): a variante do id do alarme por motivo (ver `corteAlarmId`). */
 export function corteAlarmVariant(key: CorteTimerAlarmKey, spec: CorteSpec, content: CorteContentFingerprint | null): string | undefined {
-  if (key === "revoked") return spec.publish_revoked_at ?? spec.publish_confirmed_at;
+  if (key === "revoked") return spec.publish_revoked_at ?? spec.publish_confirmed_at ?? corteAlarmPlanVariant(spec);
   if (key === "content-changed" && content) return `${(content.video_sha256 ?? "sem-video").slice(0, 12)}-${(content.cover_sha256 ?? "sem-capa").slice(0, 12)}`;
-  if (key === "late" || key === "missing-video") return `${spec.date}-${spec.hhmm}`;
-  if (key === "unknown-destination") return spec.publish_confirmed_at ?? spec.publish_revoked_at ?? `${spec.date}-${spec.hhmm}`;
-  return undefined;
+  if (key === "unknown-destination") return spec.publish_confirmed_at ?? spec.publish_revoked_at ?? corteAlarmPlanVariant(spec);
+  // #11923 (late, missing-video) e #11967 (todos os demais): a data e o horário do plano. O estado
+  // dos alarmes fica na pasta do corte (por slug, não por data): sem a variante, o mesmo motivo
+  // num corte replanejado para outro dia caía no "já avisado" do plano antigo.
+  return corteAlarmPlanVariant(spec);
+}
+
+/** #11967: variante do plano (`{data}-{hh:mm}`); `undefined` só sem data nem horário (spec sintética). */
+function corteAlarmPlanVariant(spec: Pick<CorteSpec, "date" | "hhmm">): string | undefined {
+  return spec.date || spec.hhmm ? `${spec.date}-${spec.hhmm}` : undefined;
+}
+
+/**
+ * Puro (#11967): variante do alarme `todos:crash` do `main` (exceção antes de
+ * ler o corte, sem plano conhecido): o dia UTC da execução. Avisa de novo a
+ * cada dia em que o corte segue quebrado, em vez de uma única vez na vida do corte.
+ */
+export function corteCrashAlarmVariant(now: Date): string {
+  return now.toISOString().slice(0, 10);
 }
 
 /** Abre (ou reaproveita) a issue do alarme, manda o e-mail e grava o estado. `true` = entregue (ou já coberto). */
@@ -425,18 +456,55 @@ export async function corteAlarm(
 export interface CorteTimerRunDeps {
   config: unknown;
   now: Date;
-  /** Roda `npx tsx <args>` (o publish-shorts). */
-  runScript: (args: string[]) => { status: number | null; stdout: string; stderr: string };
+  /** Roda `npx tsx <args>` (o publish-shorts). `timedOut` (#11966): morto pelo teto. */
+  runScript: (args: string[]) => CorteTimerChildRun;
   notify: NotifyEditorDeps;
   /** Teste: troca o alarme real (notifyEditor). `variant`: ver `corteAlarmId`. */
   alarm?: (dir: string, spec: CorteSpec, destination: string, key: CorteTimerAlarmKey, reason: string, variant?: string) => Promise<boolean>;
 }
 
-function runTsx(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, ["--import", "tsx", ...args], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 });
-  if (r.error) throw r.error;
+/**
+ * #11966: teto do filho (`publish-shorts.ts`). Fica abaixo da idade de lock velho
+ * (`SHORTS_TIMER_LOCK_STALE_MS`, 90 min, a do `acquireTimerLock`): sem ele, um
+ * filho travado (upload do Reels, leitura do R2) segurava o lock e, passados os
+ * 90 min, a execução seguinte tomava o lock como velho e publicava junto com
+ * ele. Mesmo teto do timer do Instagram (`INSTAGRAM_TIMER_CHILD_TIMEOUT_MS`, #11774).
+ */
+export const CORTE_TIMER_CHILD_TIMEOUT_MS = 75 * 60_000;
+
+/** Saída do filho. `timedOut`: passou do teto e foi morto (o envio pode ter saído). */
+export interface CorteTimerChildRun {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut?: boolean;
+}
+
+function runTsx(args: string[]): CorteTimerChildRun {
+  const r = spawnSync(process.execPath, ["--import", "tsx", ...args], {
+    cwd: ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: CORTE_TIMER_CHILD_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  });
+  const timedOut = (r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+  if (r.error && !timedOut) throw r.error;
   if (r.stderr) process.stderr.write(r.stderr);
-  return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", ...(timedOut ? { timedOut: true } : {}) };
+}
+
+/**
+ * Puro (#11966): o filho morto pelo teto pode ter publicado algum destino sem
+ * registrar. Cada pendente vira o alarme `child-timeout` (`acao`: conferir a
+ * conta antes de qualquer coisa), nunca "falhou, tenta de novo".
+ */
+export function corteTimerTimeoutOutcomes(pending: readonly string[], stderrTail = ""): CorteDestinationOutcome[] {
+  const detail =
+    `o publish-shorts passou de ${CORTE_TIMER_CHILD_TIMEOUT_MS / 60_000} min e foi encerrado (#11966): o envio pode ter saído sem registro` +
+    (stderrTail ? `. Fim do stderr:\n${stderrTail}` : "");
+  return pending.map((destination) => ({ destination, kind: "alarm", key: "child-timeout", detail }));
 }
 
 /** Um corte: decide, publica os pendentes e alarma cada falha. Devolve o exit code parcial (0/1). */
@@ -501,21 +569,24 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
     }
     const r = deps.runScript(args);
     if (r.stdout) process.stdout.write(r.stdout.endsWith("\n") ? r.stdout : `${r.stdout}\n`);
-    const outcomes = interpretCorteTimerOutput(r.status, r.stdout, decision.pending, r.stderr.trimEnd().split("\n").slice(-15).join("\n"));
+    const stderrTail = r.stderr.trimEnd().split("\n").slice(-15).join("\n");
+    // #11966: filho morto pelo teto não é "sem JSON, tenta de novo": o envio pode ter saído.
+    const outcomes = r.timedOut ? corteTimerTimeoutOutcomes(decision.pending, stderrTail) : interpretCorteTimerOutput(r.status, r.stdout, decision.pending, stderrTail);
     let failed = !sideOk;
     for (const o of outcomes) {
       console.log(`${LOG_PREFIX} ${spec.slug} ${o.destination}: ${o.kind}${o.kind === "alarm" ? ` (${o.key})` : ""} — ${o.detail}`);
       if (o.kind !== "alarm") continue;
       // A recusa do filho relê o corte: a variante é a da queda/arquivo de agora.
-      // #11923: se reler falha (OneDrive), segue sem variante — o alarme não pode se perder por isso.
+      // #11923: se reler falha (OneDrive), segue com a variante do plano — o alarme não pode se perder por isso.
       // #11923: os demais (late, missing-video) levam a variante do plano desta rodada.
       const rereads = o.key === "revoked" || o.key === "content-changed";
-      let variant = rereads ? undefined : corteAlarmVariant(o.key, spec, null);
+      // #11967: sem a releitura, a variante do plano desta rodada (nunca o id fixo).
+      let variant = corteAlarmVariant(o.key, spec, null);
       if (rereads) {
         try {
           variant = corteAlarmVariant(o.key, parseCorteSpec(readFileSync(specPath, "utf8"), specPath), corteContentFingerprint(dir, spec));
         } catch (e) {
-          console.error(`${LOG_PREFIX} ${spec.slug}: variante do alarme "${o.key}" indisponível (${(e as Error).message}); segue sem ela`);
+          console.error(`${LOG_PREFIX} ${spec.slug}: variante do alarme "${o.key}" indisponível (${(e as Error).message}); segue com a do plano`);
         }
       }
       const delivered = await alarm(dir, spec, o.destination, o.key, o.detail, variant);
@@ -568,7 +639,7 @@ async function main(): Promise<number> {
       if (dryRun) continue;
       const spec: CorteSpec = { slug: basename(dir), date: "", hhmm: "", title: basename(dir), hook: "", video: "" };
       try {
-        await corteAlarm(dir, spec, "todos", "crash", `o timer falhou com exceção: ${msg}`, deps.notify);
+        await corteAlarm(dir, spec, "todos", "crash", `o timer falhou com exceção: ${msg}`, deps.notify, corteCrashAlarmVariant(deps.now));
       } catch (e2) {
         console.error(`${LOG_PREFIX} ${basename(dir)}: nem o alarme saiu: ${e2 instanceof Error ? e2.message : e2}`);
       }

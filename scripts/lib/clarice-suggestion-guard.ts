@@ -142,7 +142,8 @@ const INLINE_MARKUP = /[*_~|#]/;
  * a caminho dentro de link, ou cola/descola o marcador de negrito, lista e
  * título (`** negrito**`, `-item`, `##Título`). Olha só a palavra que encosta
  * em cada ponto onde o espaço mudou, nas duas versões, pra que uma correção
- * real no mesmo trecho que um link não seja recusada à toa.
+ * real no mesmo trecho que um link não seja recusada à toa. No apply, recebe
+ * o texto completo antes/depois da substituição (#11884), não só from/to.
  */
 function touchesUrlOrMarkup(from: string, to: string): boolean {
   const f = whitespaceGaps(from);
@@ -174,6 +175,15 @@ function isStructuralWhitespaceChange(from: string, to: string): boolean {
   if (countChar(to, "\n") !== countChar(from, "\n")) return true;
   if (linesShifted(from, to)) return true;
   if (trimLines(from) === trimLines(to)) return true;
+  // Borda/indentação/hard break continuam estruturais mesmo quando há
+  // também uma correção legítima no meio da linha (#11884).
+  const f = whitespaceGaps(from);
+  const t = whitespaceGaps(to);
+  for (let k = 0; k < f.gaps.length; k++) {
+    if (f.gaps[k] === t.gaps[k]) continue;
+    if (k === 0 || k === f.chars.length ||
+        f.gaps[k].includes("\n") || t.gaps[k].includes("\n")) return true;
+  }
   return touchesUrlOrMarkup(from, to);
 }
 
@@ -182,9 +192,10 @@ function isStructuralWhitespaceChange(from: string, to: string): boolean {
  * legítima (retorna `null`). Não julga se a correção é boa — só recusa as
  * formas que corrompem o texto quando aplicadas mecanicamente.
  *
+ * `text` opcional fornece o contexto atual de todas as ocorrências (#11884).
  * `from === to` não é ruído aqui (é no-op, os chamadores já tratam).
  */
-export function classifyClariceNoise(from: string, to: string): ClariceNoiseReason | null {
+export function classifyClariceNoise(from: string, to: string, text?: string): ClariceNoiseReason | null {
   if (from === to) return null;
 
   if (stripWhitespace(from) === stripWhitespace(to)) {
@@ -192,6 +203,19 @@ export function classifyClariceNoise(from: string, to: string): ClariceNoiseReas
     // (#11867 — antes toda diferença de espaço era recusada, inclusive
     // `afim de`→`a fim de`). Sem caractere visível novo, não há injeção de
     // código a checar abaixo.
+    // O trecho pode começar no meio de URL/markup. Avaliar cada ocorrência
+    // no texto atual preserva esse contexto, inclusive após applies anteriores.
+    if (text !== undefined && from.length > 0) {
+      let pos = text.indexOf(from);
+      if (pos !== -1) {
+        while (pos !== -1) {
+          const candidate = text.slice(0, pos) + to + text.slice(pos + from.length);
+          if (isStructuralWhitespaceChange(text, candidate)) return "whitespace_only";
+          pos = text.indexOf(from, pos + from.length);
+        }
+        return null;
+      }
+    }
     return isStructuralWhitespaceChange(from, to) ? "whitespace_only" : null;
   }
 

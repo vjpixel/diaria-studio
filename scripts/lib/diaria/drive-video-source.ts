@@ -159,6 +159,51 @@ export function corteSuffixOf(name: string): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
+/**
+ * Um corte da edição como o `blocks.json` o declara (#11950): o slug
+ * (`sequences[].corte`) e o título de tela da sequência (`screenTitle`), que o
+ * editor às vezes usa no nome do export em vez do slug.
+ */
+export interface CorteRef {
+  corte: string;
+  screenTitle?: string | null;
+}
+
+/**
+ * Palavras que já identificam a vertical da edição no nome: um corte com esse
+ * slug/título casaria com todo arquivo, então não serve para reconhecer corte.
+ */
+const RESERVED_CORTE_KEYS = new Set(["vertical", "final", "youtube", "instagram", "outras redes", "diaria", "comentada", "diaria comentada", "still"]);
+
+/** Minúsculas, sem acento, separadores e espaços colapsados, com espaço nas pontas (casamento por palavra). */
+function nameTokens(name: string): string {
+  return ` ${folderKey(name)} `;
+}
+
+/**
+ * O corte a que o arquivo pertence (#11950), ou `null` quando é da edição.
+ * Reconhece, nesta ordem:
+ * - o sufixo do padrão `_V{n}-{slug}` no fim do nome (`corteSuffixOf`);
+ * - o mesmo sufixo seguido de `.` (a Still do Premiere:
+ *   `Diaria comentada_Vertical_V1-soberana.00_00_00_00.Still002.jpg`);
+ * - com os cortes do `blocks.json`: o slug ou o `screenTitle` do corte como
+ *   palavras inteiras no nome (`Diaria comentada_Vertical_IA Soberana_Edição 08_V2.mp4`
+ *   → "IA Soberana" / "soberana"). Slug ou título que coincide com uma palavra
+ *   de destino ("vertical", "final"...) é ignorado.
+ */
+export function corteOfName(name: string, cortes: readonly CorteRef[] = []): string | null {
+  const strict = corteSuffixOf(name);
+  if (strict) return strict;
+  const still = /_v\d+-([a-z0-9]+(?:-[a-z0-9]+)*)(?=\.)/i.exec(name.normalize("NFC"));
+  if (still) return still[1].toLowerCase();
+  const tokens = nameTokens(name);
+  for (const ref of cortes) {
+    const keys = [folderKey(ref.corte), ref.screenTitle ? folderKey(ref.screenTitle) : ""];
+    if (keys.some((k) => k && !RESERVED_CORTE_KEYS.has(k) && tokens.includes(` ${k} `))) return ref.corte;
+  }
+  return null;
+}
+
 /** Janela default para arquivos soltos na raiz da pasta (decisão de 25/10). */
 export const DRIVE_VIDEO_WINDOW_HOURS = 36;
 
@@ -257,6 +302,12 @@ export interface SelectDriveVideoOptions {
    * Precisa casar com a orientação (`targetOrientation`).
    */
   target?: VideoTarget;
+  /**
+   * Cortes do `blocks.json` (#11950). Na vertical, arquivo de corte
+   * (`corteOfName`) nunca concorre com a vertical da edição; sem a lista, só
+   * os nomes no padrão `_V{n}-{slug}` são reconhecidos.
+   */
+  cortes?: readonly CorteRef[];
 }
 
 /** Orientação pela proporção; `null` sem largura/altura válidas. */
@@ -388,14 +439,16 @@ export function isVerticalCutCandidate(file: DriveVideoFile): boolean {
   return o === "vertical" || o === null;
 }
 
-export function selectDriveVideo(files: DriveVideoFile[], opts: SelectDriveVideoOptions): DriveVideoSelection {
+export function selectDriveVideo(allFiles: DriveVideoFile[], opts: SelectDriveVideoOptions): DriveVideoSelection {
+  // #11950: o export de um corte é uma 2ª vertical, que sai pelo modo corte.
+  const files = opts.orientation === "vertical" ? allFiles.filter((f) => corteOfName(f.name, opts.cortes) === null) : allFiles;
   const windowHours = opts.windowHours ?? DRIVE_VIDEO_WINDOW_HOURS;
   const target = opts.target ?? defaultVideoTarget(opts.orientation);
   if (targetOrientation(target) !== opts.orientation) {
     throw new Error(`destino ${target} é ${targetOrientation(target)}, não ${opts.orientation}`);
   }
   const editionFolderPresent =
-    opts.editionFolderPresent ?? files.some((f) => f.scope === "edition-folder" || f.scope === "final-folder");
+    opts.editionFolderPresent ?? allFiles.some((f) => f.scope === "edition-folder" || f.scope === "final-folder");
   const finals = files.filter((f) => isMp4VideoFile(f) && hasFinalInName(f.name));
 
   const finalFolderPool = files.filter((f) => f.scope === "final-folder" && isMp4VideoFile(f));
@@ -454,10 +507,11 @@ export type CorteExportSelection =
  * Recebe os arquivos já listados com `scope: "final-folder"` (e `editedFolder`
  * nos de `Editados/`); os demais escopos são ignorados.
  */
-export function selectCorteExport(files: DriveVideoFile[], corte: string): CorteExportSelection {
+export function selectCorteExport(files: DriveVideoFile[], corte: string, cortes: readonly CorteRef[] = []): CorteExportSelection {
   const promotedSources = new Set(files.filter(isPromotedCopy).map((f) => f.appProperties?.[PROMOTED_FROM_PROPERTY]));
   const pool = files.filter((f) => {
-    if (f.scope !== "final-folder" || !isMp4VideoFile(f) || corteSuffixOf(f.name) !== corte) return false;
+    // #11950: também o export nomeado pelo título do corte (`_Vertical_IA Soberana_Edição 08_V2.mp4`).
+    if (f.scope !== "final-folder" || !isMp4VideoFile(f) || corteOfName(f.name, cortes) !== corte) return false;
     if (f.editedFolder && promotedSources.has(f.id)) return false;
     const o = classifyOrientation(f);
     return o === null || o === "vertical";
@@ -481,11 +535,26 @@ export function selectCorteExport(files: DriveVideoFile[], corte: string): Corte
   return { kind: "ambiguous", corte, candidates: versions };
 }
 
-/** #11542: Premiere Export Frame; vertical stills serve todos os verticais. */
-export function driveCoverCandidates(files: DriveVideoFile[], orientation: VideoOrientation): DriveVideoFile[] {
+function isStillImage(f: DriveVideoFile): boolean {
+  return f.scope === "final-folder" && /still/i.test(f.name) && /\.(jpe?g|png)$/i.test(f.name);
+}
+
+/**
+ * #11542: Premiere Export Frame; vertical stills serve todos os verticais.
+ * #11950: a Still de um corte (`…_V1-soberana.00_00_00_00.Still002.jpg`, ou
+ * com o slug/título do corte no nome) é capa do corte, nunca da vertical da
+ * edição (`corteCoverCandidates`).
+ */
+export function driveCoverCandidates(files: DriveVideoFile[], orientation: VideoOrientation, cortes: readonly CorteRef[] = []): DriveVideoFile[] {
   return files.filter((f) => {
-    if (f.scope !== "final-folder" || !/still/i.test(f.name) || !/\.(jpe?g|png)$/i.test(f.name)) return false;
+    if (!isStillImage(f)) return false;
+    if (orientation === "vertical" && corteOfName(f.name, cortes) !== null) return false;
     const target = videoTargetOf(f.name.replace(/[()]/g, " "));
     return target !== null && targetOrientation(target) === orientation;
   });
+}
+
+/** #11950: as Stills de um corte (capa do `--cover` do modo corte). 2+ = o editor escolhe. */
+export function corteCoverCandidates(files: DriveVideoFile[], corte: string, cortes: readonly CorteRef[] = []): DriveVideoFile[] {
+  return files.filter((f) => isStillImage(f) && corteOfName(f.name, cortes) === corte);
 }

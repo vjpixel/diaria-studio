@@ -310,6 +310,7 @@ import { evaluatePrChecksGate } from "./lib/pr-checks-gate.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { SITE_PAGE_REVIEWED_DIGEST_FIELD } from "./lib/site-page-staleness.ts";
 import { acquireMergeLock, releaseMergeLock } from "./lib/session-registry.ts";
 // #8645: backfill de SEO (image no JSON-LD a partir do hero) restrito a 1
 // slug + regeneração do índice paginado do acervo — ambos rodam como parte
@@ -3236,6 +3237,20 @@ export function sitePageSourceDigest(editionDirAbs: string): string | undefined 
 }
 
 /**
+ * #11954: digest do `02-reviewed.md` inteiro (CRLF normalizado), gravado no
+ * state quando a página é publicada. O `sitePageSourceDigest` acima só vê o
+ * HTML já renderizado + TÍTULO/SUBTÍTULO, e o HTML não é regerado quando o
+ * editor mexe no corpo do `.md` depois do Stage 4 (o publisher do Kit lê o
+ * `.md` direto). Com este digest a trava do Stage 6 acusa a página defasada
+ * mesmo com o PR já mergeado. `undefined` sem `02-reviewed.md`.
+ */
+export function sitePageReviewedDigest(editionDirAbs: string): string | undefined {
+  const reviewedPath = join(editionDirAbs, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) return undefined;
+  return createHash("sha256").update(readFileSync(reviewedPath, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+}
+
+/**
  * #10160: estado do PR da página em 1 palavra — `merged` (merge confirmado),
  * `open` (PR identificado, ainda não mergeado — esperando CI/waiter, ou
  * travado) ou `none` (nenhum PR identificado). Derivado, nunca fonte da
@@ -3265,6 +3280,15 @@ export function sitePageMergeBlocker(state: {
     `BLOQUEIO: ${what}. Mergear ANTES do envio (06:00 BRT) — ` +
     `sem o merge, ${path} (link de WhatsApp do e-mail) dá 404 (#9278, #9326).`
   );
+}
+
+function safeReviewedDigest(editionDirAbs: string): string | undefined {
+  try {
+    return sitePageReviewedDigest(editionDirAbs);
+  } catch (e) {
+    process.stderr.write(`[site-page] aviso: reviewedDigest não calculado (${(e as Error).message})\n`);
+    return undefined;
+  }
 }
 
 function safeSourceDigest(editionDirAbs: string): string | undefined {
@@ -3356,6 +3380,10 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
     }) ?? undefined,
     // #10190: insumos da página publicada — a trava do Stage 6 republica se mudarem.
     sourceDigest: "published" in result && result.published === true ? safeSourceDigest(editionDirAbs) : undefined,
+    // #11954: `02-reviewed.md` da publicação — edição posterior no corpo (box,
+    // destaque) não muda `newsletter-final.html` sem re-render.
+    [SITE_PAGE_REVIEWED_DIGEST_FIELD]:
+      "published" in result && result.published === true ? safeReviewedDigest(editionDirAbs) : undefined,
     [SITE_PAGE_LAST_PUBLISHED_FIELD]: lastPublished ?? undefined,
     [SITE_PAGE_PUBLISHED_SLUGS_FIELD]: publishedSlugs.length > 0 ? publishedSlugs : undefined,
     checked_at: new Date().toISOString(),

@@ -211,7 +211,7 @@ export function applyChunkSuggestions(
 
     // Ruído do servidor (#11798): só whitespace, ou `to` injetando quebra de
     // linha/caractere de código. Paridade com clarice-apply.ts.
-    const noise = classifyClariceNoise(from, to);
+    const noise = classifyClariceNoise(from, to, text);
     if (noise) {
       log(`[clarice-chunk] SKIP: ${JSON.stringify(from)} → ${JSON.stringify(to)} (${noise})`);
       skipped.push({ ...suggestion, reason: noise });

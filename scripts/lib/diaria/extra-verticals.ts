@@ -40,7 +40,7 @@
 
 import { resolveShortTime, type ShortScheduleConfig } from "./short-video.ts";
 import { corteSuffixOf } from "./drive-video-source.ts";
-import { corteVideoPortabilityWarning } from "./short-corte.ts";
+import { corteVideoPortabilityWarning, shellQuote } from "./short-corte.ts";
 import { itemInTarget, type BlockItem, type BlocksFile, type SequenceSpec } from "./video-montage.ts";
 
 const AAMMDD_RE = /^(\d{2})(\d{2})(\d{2})$/;
@@ -116,10 +116,8 @@ export function extraVerticalTime(sched: ShortScheduleConfig, date: string): { h
   return { hhmm: principal, principal, collides: true, reason: `rotation_times só tem ${principal}: a extra cai no mesmo horário da vertical principal de ${date}` };
 }
 
-/** Aspas simples de shell POSIX. */
-export function shellQuote(s: string): string {
-  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'"'"'`)}'`;
-}
+/** Aspas simples de shell POSIX (#11944: mora em `short-corte.ts`, usada também pelos comandos do plano). */
+export { shellQuote };
 
 export interface ExtraVerticalPlan {
   corte: string;

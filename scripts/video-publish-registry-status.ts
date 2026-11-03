@@ -10,6 +10,15 @@
  *
  * Uso:
  *   npx tsx scripts/video-publish-registry-status.ts AAMMDD [--since ISO] [--edition-dir DIR]
+ *   npx tsx scripts/video-publish-registry-status.ts --corte SLUG [AAMMDD] [--since ISO] [--edition-dir DIR]
+ *
+ * Corte avulso e vertical extra (#11970): o modo corte do `publish-shorts.ts`
+ * (`--corte SLUG`, #11795/#11900) grava registro e marcas de envio em
+ * `data/cortes/{slug}/_internal/`, não na pasta da edição. Com `--corte SLUG`
+ * o status lê essa pasta (relativa à raiz do repo, como o publisher; o
+ * `--edition-dir` só sobrepõe para o corte rodado com `--allow-unwatched-dir`)
+ * e tira a data do `corte.json`. Sem isso, a releitura da edição respondia
+ * `nothing-since` para um corte que o processo sobrevivente publicou.
  *
  * Para que serve: a `/diaria-publica-video` roda isto depois de QUALQUER
  * interrupção ou rejeição de uma chamada de publisher, antes de seguir
@@ -34,7 +43,9 @@
  * ilegível (não dá para saber o que saiu: conferir as contas antes de
  * qualquer nova chamada); exit 2 = uso.
  */
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { readShortsRegistry } from "./lib/diaria/shorts-published-store.ts";
@@ -42,6 +53,9 @@ import type { ShortsPublishedFile } from "./lib/diaria/short-video.ts";
 import { readPublishedRecord, type PublishedRecordRead } from "./publish-youtube.ts";
 import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
 import { openSendingMarks, readShortsSending, type ShortSendingMark } from "./lib/diaria/shorts-sending-marker.ts";
+import { CORTE_SPEC_FILE, corteRelDir, parseCorteSpec, validateCorteSlug } from "./lib/diaria/short-corte.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export type RegistryRead<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -82,6 +96,8 @@ export interface ShortsStatusLine {
 
 export interface VideoRegistryStatus {
   aammdd: string;
+  /** #11970: só no modo `--corte` — o slug e a pasta lida. */
+  corte?: { slug: string; dir: string };
   since: string | null;
   youtube: YouTubeStatusLine;
   shorts: { kind: "ok"; entries: ShortsStatusLine[] } | { kind: "unreadable"; error: string };
@@ -191,12 +207,56 @@ function readSafely<T>(read: () => T): RegistryRead<T> {
   }
 }
 
-const USAGE = "uso: video-publish-registry-status.ts AAMMDD [--since ISO] [--edition-dir DIR]";
+const USAGE =
+  "uso: video-publish-registry-status.ts AAMMDD [--since ISO] [--edition-dir DIR]\n" +
+  "     video-publish-registry-status.ts --corte SLUG [AAMMDD] [--since ISO] [--edition-dir DIR]";
 
-export function main(argv: string[] = process.argv.slice(2)): number {
-  const { values, positional } = parseArgs(argv);
-  const aammdd = values["edition"] ?? positional[0];
-  if (!aammdd || !/^\d{6}$/.test(aammdd)) {
+/**
+ * #11970: pasta e data do corte. A data sai do `corte.json` (é a que o
+ * registro do corte carrega); um AAMMDD posicional diferente é erro de uso.
+ * Sem `corte.json` legível, com ou sem AAMMDD, não dá para ler o registro:
+ * exit 1 (mesmo sentido de `unreadable`, conferir as contas).
+ */
+function resolveCorte(
+  slug: string,
+  positionalDate: string | undefined,
+  editionDirOverride: string | undefined,
+  root: string,
+): { ok: true; dir: string; aammdd: string } | { ok: false; code: 1 | 2; error: string } {
+  const slugErr = validateCorteSlug(slug);
+  if (slugErr) return { ok: false, code: 2, error: slugErr };
+  if (positionalDate !== undefined && !/^\d{6}$/.test(positionalDate)) return { ok: false, code: 2, error: `AAMMDD inválido: ${positionalDate}` };
+  // Mesmo critério do publish-shorts: a pasta canônica é da raiz do repo; o --edition-dir, do cwd.
+  const dir = editionDirOverride !== undefined ? resolve(editionDirOverride) : join(root, corteRelDir(slug));
+  const specPath = join(dir, CORTE_SPEC_FILE);
+  if (!existsSync(specPath)) {
+    // Sempre exit 1, com ou sem AAMMDD: aceitar a data faria um slug errado
+    // (`--corte fluxo-26114 261104`) ler uma pasta vazia e responder
+    // `nothing-since`. O prepareCorteRun grava o corte.json antes de qualquer
+    // envio, então corte que publicou algo sempre tem o arquivo (#11975).
+    return {
+      ok: false,
+      code: 1,
+      error: `${specPath} ausente: slug errado ou corte que nunca rodou — confira o slug; até lá, conferir as contas antes de qualquer nova chamada (#11970)`,
+    };
+  }
+  let date: string;
+  try {
+    date = parseCorteSpec(readFileSync(specPath, "utf8"), specPath).date;
+  } catch (e) {
+    return { ok: false, code: 1, error: `${(e as Error).message} — não dá para saber a data do corte: conferir as contas antes de qualquer nova chamada (#11970)` };
+  }
+  if (positionalDate !== undefined && positionalDate !== date) {
+    return { ok: false, code: 2, error: `o corte "${slug}" é de ${date} (corte.json), não de ${positionalDate}` };
+  }
+  return { ok: true, dir, aammdd: date };
+}
+
+export function main(argv: string[] = process.argv.slice(2), root: string = ROOT): number {
+  const { flags, values, positional } = parseArgs(argv);
+  const corteSlug = values["corte"];
+  if (flags.has("corte")) {
+    console.error("video-publish-registry-status: --corte exige o SLUG do corte");
     console.error(USAGE);
     return 2;
   }
@@ -206,14 +266,41 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     console.error(USAGE);
     return 2;
   }
-  const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
-  const status = summarizeVideoRegistries({
+  let aammdd: string;
+  let dir: string;
+  let corte: VideoRegistryStatus["corte"];
+  if (corteSlug !== undefined) {
+    if (values["edition"] !== undefined) {
+      console.error("video-publish-registry-status: --corte usa a data do corte.json (ou AAMMDD posicional), não --edition");
+      console.error(USAGE);
+      return 2;
+    }
+    const r = resolveCorte(corteSlug, positional[0], values["edition-dir"], root);
+    if (!r.ok) {
+      console.error(`video-publish-registry-status: ${r.error}`);
+      if (r.code === 2) console.error(USAGE);
+      return r.code;
+    }
+    aammdd = r.aammdd;
+    dir = r.dir;
+    corte = { slug: corteSlug, dir };
+  } else {
+    const a = values["edition"] ?? positional[0];
+    if (!a || !/^\d{6}$/.test(a)) {
+      console.error(USAGE);
+      return 2;
+    }
+    aammdd = a;
+    dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
+  }
+  const summary = summarizeVideoRegistries({
     aammdd,
     since,
     youtube: readSafely(() => readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd)),
     shorts: readSafely(() => readShortsRegistry(dir, aammdd)),
     sending: readSafely(() => readShortsSending(dir, aammdd)),
   });
+  const status: VideoRegistryStatus = corte ? { ...summary, corte } : summary;
   console.log(JSON.stringify(status, null, 2));
   console.error(`[${status.verdict}] ${status.message}`);
   return status.verdict === "unreadable" ? 1 : 0;

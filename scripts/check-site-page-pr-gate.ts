@@ -42,7 +42,9 @@
  *     (`--expected-slug`, ou `seoSlug` do título do D1 atual em
  *     `02-reviewed.md` — o link de WhatsApp do e-mail), ou os insumos da
  *     página mudaram desde a publicação (`state.sourceDigest` ≠
- *     `sitePageSourceDigest` atual). Vale MESMO com o PR já mergeado: o
+ *     `sitePageSourceDigest` atual), ou o `02-reviewed.md` mudou desde a
+ *     publicação (`state.reviewedDigest` ≠ `sitePageReviewedDigest`, #11954 —
+ *     edição no corpo que não re-renderiza o HTML). Vale MESMO com o PR já mergeado: o
  *     §5b-site congela slug e conteúdo no início da Etapa 5, e o loop de fix
  *     do §5f / `kit-draft-fresh` (#9428) podem mudar o D1 depois — o e-mail
  *     sairia apontando pra `/p/{slug-novo}` com a página em `/p/{slug-velho}`.
@@ -102,6 +104,7 @@ import {
   deriveSlugFromD1,
   makeSessionRegistryMergeLock,
   parsePrNumberFromUrl,
+  sitePageReviewedDigest,
   sitePageSourceDigest,
   waitAndMergeSitePagePr,
   type GhRunner,
@@ -242,7 +245,15 @@ function evaluateGate(rootDir: string, editionDirAbs: string, deps: SitePagePrGa
   } catch {
     digest = undefined;
   }
-  const stale = sitePageStaleness(state, resolveExpectedSlug(editionDirAbs, deps.expectedSlug), digest);
+  // #11954: edição no corpo do 02-reviewed.md depois da publicação não muda o
+  // `sourceDigest` (o HTML não é re-renderizado) — só este digest a vê.
+  let reviewedDigest: string | undefined;
+  try {
+    reviewedDigest = sitePageReviewedDigest(editionDirAbs);
+  } catch {
+    reviewedDigest = undefined;
+  }
+  const stale = sitePageStaleness(state, resolveExpectedSlug(editionDirAbs, deps.expectedSlug), digest, reviewedDigest);
   if (stale) return { kind: "stale", ...(prNumber !== undefined ? { prNumber } : {}), reason: stale };
   if (prNumber === undefined) {
     return { kind: "no-pr", reason: `PR da página não identificado no state file (branch site-publish/${String(state.slug ?? "?")})` };

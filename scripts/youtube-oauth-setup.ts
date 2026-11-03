@@ -169,7 +169,7 @@ async function main(): Promise<number> {
   const optionalMissing = missingOptionalScopes(tokens.scope);
   if (optionalMissing.length > 0) {
     console.error(
-      `⚠ O consentimento não concedeu ${optionalMissing.join(", ")}: o vídeo sobe, mas a legenda SRT não (#11384). ` +
+      `⚠ O consentimento não concedeu ${optionalMissing.join(", ")}: o vídeo sobe, mas a legenda SRT não (#11384) e o --update-scheduled não troca título/descrição do vídeo agendado (videos.update, #11955). ` +
         "Rode o setup de novo deixando todos os escopos marcados.",
     );
   }

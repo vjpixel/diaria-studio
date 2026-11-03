@@ -32,7 +32,7 @@ import {
   readCortes,
   watchCortesWithoutOwner,
 } from "../scripts/lib/diaria/corte-owner-watch.ts";
-import { CORTE_SPEC_FILE, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
+import { CORTE_SPEC_FILE, shellQuote, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { runInstagramTimer, type InstagramTimerRunDeps } from "../scripts/shorts-instagram-timer.ts";
 import { runThreadsTimer, type ThreadsTimerRunDeps } from "../scripts/shorts-threads-profile-timer.ts";
 import { runLinkedinTimer, type LinkedinTimerRunDeps } from "../scripts/shorts-linkedin-profile-timer.ts";
@@ -143,7 +143,7 @@ describe("#11911 porta 1: --edition-dir fora de data/editions não delega aos ti
     const owner = p.owners.find((o) => o.destination === "instagram");
     assert.ok(owner, "o Instagram tem dono no plano");
     assert.equal(owner!.by, "agent-scheduled-task");
-    assert.ok(owner!.command?.includes(`--edition-dir ${JSON.stringify(OUT)}`), owner!.command);
+    assert.ok(owner!.command?.includes(`--edition-dir ${shellQuote(OUT)}`), owner!.command);
     assert.ok(owner!.command?.includes("--only instagram"), owner!.command);
     assert.ok(p.warnings.some((w) => w.includes("os timers do 300 não enxergam esta pasta") && w.includes("instagram") && w.includes("--corte SLUG")), p.warnings.join("\n"));
   });
