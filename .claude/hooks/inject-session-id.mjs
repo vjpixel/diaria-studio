@@ -422,6 +422,69 @@ export function alreadyHasSessionId(command) {
 }
 
 /**
+ * #12050: allowlist de FORMA EXATA para o único heredoc cujo corpo não é
+ * lido como invocação. Devolve a linha 1 quando o comando INTEIRO é:
+ *
+ *   gh (issue|pr) (comment|create|edit) ARGS <<'TAG'     (ou <<"TAG")
+ *   …corpo…
+ *   TAG
+ *   [só espaço/quebra de linha até o fim]
+ *
+ * com ARGS sem nenhum de ;&|`$()<>{}\ nem quebra de linha, aspas simples e
+ * duplas balanceadas, e `--body-file -` ou `-F -` entre os argumentos.
+ * Qualquer outra coisa (comando antes ou depois, dois heredocs, delimitador
+ * sem aspas, `gh api`, extensão do `gh`, `cat > arquivo`) devolve `null` e a
+ * checagem roda sobre o comando inteiro, exatamente como antes do #12050.
+ *
+ * Por que só `gh`: os subcomandos acima leem o stdin como texto do corpo e
+ * nunca o executam. `cat > arquivo` ficou de fora de propósito — o arquivo
+ * escrito pode ser executado depois por caminhos que nenhuma análise do
+ * comando vê (glob, `npm run`, `make`, hook do git, `.bashrc`, `BASH_ENV`),
+ * medidos como falsos negativos na 1ª versão da PR #12054.
+ *
+ * Parsing linear: split por `\n`, comparação de strings e regex ancorada sem
+ * quantificador aninhado — nunca backtracking sobre o comando inteiro (o hook
+ * tem timeout e falha aberto).
+ */
+const GH_BODY_HEREDOC_OPENING =
+  // `#` proibido: fora de aspas ele comenta o `<<'TAG'` e o "corpo" vira código (review da #12054).
+  /^[ \t]*gh[ \t]+(?:issue|pr)[ \t]+(?:comment|create|edit)[ \t]([^;&|`$()<>{}\\#]*)<<(['"])([A-Za-z_][A-Za-z0-9_]*)\2$/;
+const GH_BODY_FROM_STDIN = /(?:^|[ \t])(?:--body-file|-F)[ \t]+-(?:[ \t]|$)/;
+
+export function ghBodyHeredocOpeningLine(command) {
+  if (typeof command !== "string") return null;
+  const lines = command.split("\n");
+  const opening = GH_BODY_HEREDOC_OPENING.exec(lines[0]);
+  if (!opening) return null;
+  const args = opening[1];
+  const tag = opening[3];
+  if (!GH_BODY_FROM_STDIN.test(args)) return null;
+  // Aspas balanceadas: uma aspa aberta faria o `<<'TAG'` ficar DENTRO dela, e
+  // o "corpo" viraria continuação da linha 1, executável.
+  let quote = null;
+  for (const ch of args) {
+    if (quote) {
+      if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+    }
+  }
+  if (quote) return null;
+  let terminator = -1;
+  for (let k = 1; k < lines.length; k++) {
+    if (lines[k] === tag) {
+      terminator = k;
+      break;
+    }
+  }
+  if (terminator === -1) return null;
+  for (let k = terminator + 1; k < lines.length; k++) {
+    if (!/^[ \t]*$/.test(lines[k])) return null;
+  }
+  return lines[0];
+}
+
+/**
  * #7212: detecta o caso em que um comando ENCADEADO (`&&`/`;`/`|`/multi-linha)
  * invoca um dos scripts-alvo com um subcomando/flag que exige `--session-id`,
  * sem já trazer a flag explícita. Diferente de `needsSessionId` (que decide
@@ -450,7 +513,16 @@ export function detectChainedSessionIdRisk(command) {
   if (typeof command !== "string" || command.trim() === "") return null;
   if (!isChainedCommand(command)) return null;
   if (alreadyHasSessionId(command)) return null;
-  const matched = matchedInjectableTargets(command);
+  // #12050: `gh issue|pr comment|create|edit --body-file - <<'TAG'` com o
+  // comando INTEIRO nessa forma — só a linha 1 é checada. Qualquer outra
+  // forma (ou exceção no parser) checa o comando inteiro, como antes.
+  let checked;
+  try {
+    checked = ghBodyHeredocOpeningLine(command) ?? command;
+  } catch {
+    checked = command;
+  }
+  const matched = matchedInjectableTargets(checked);
   if (matched.length === 0) return null;
   return (
     "Comando encadeado (&&, ;, |, ||, ou múltiplas linhas) contém uma chamada a " +

@@ -30,6 +30,7 @@ import {
   shellSingleQuote,
   buildUpdatedCommand,
   detectChainedSessionIdRisk,
+  ghBodyHeredocOpeningLine,
 } from "../.claude/hooks/inject-session-id.mjs";
 // #7836 — fonte única (ver scripts/lib/session-id-required-subcommands.ts).
 // Iterar sobre ESTA lista em vez de reproduzir os nomes à mão aqui é o que
@@ -783,6 +784,102 @@ describe("heredoc não abre buraco no bloqueio de encadeado (#12029, regressão)
       assert.match(risk as string, /cleanup-merged-worktrees\.ts/);
     });
   }
+});
+
+// #12050: só um heredoc tem o corpo fora da checagem — o comando INTEIRO na
+// forma `gh (issue|pr) (comment|create|edit) … --body-file - <<'TAG'`, corpo,
+// `TAG`. Qualquer outra forma volta ao comportamento da base (96e9e357b). Os
+// casos "bloqueia" incluem os falsos negativos medidos pelos revisores da
+// 1ª versão da PR #12054 (8 deles executavam o alvo de verdade no bash).
+describe("heredoc gh --body-file - não bloqueia por citar alvo no corpo (#12050)", () => {
+  const TARGET = "npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue 1";
+  const BODY = `Nota: rode ${TARGET} isolado.`;
+
+  const liberados: Array<[string, string]> = [
+    ["gh issue comment 1 --body-file - <<'EOF'", `gh issue comment 1 --body-file - <<'EOF'\n${BODY}\nEOF`],
+    ['gh pr create --title "x" --body-file - <<\'EOF\'', `gh pr create --title "x" --body-file - <<'EOF'\n${BODY}\nEOF`],
+    ['gh issue create -F - <<"BODY" + espaço/quebra no fim', `gh issue create --title 'a b' -F - <<"BODY"\n${BODY}\nBODY\n  \n`],
+    ["gh pr edit com espaço inicial", `  gh pr edit 12 --body-file - <<'EOF'\n${BODY}\nEOF`],
+  ];
+  for (const [label, command] of liberados) {
+    it(`libera: ${label}`, () => {
+      assert.equal(detectChainedSessionIdRisk(command), null, command);
+      assert.equal(ghBodyHeredocOpeningLine(command), command.split("\n")[0]);
+    });
+  }
+
+  it("alvo citado na linha 1 continua contando", () => {
+    const command = `gh issue comment 1 --body "${TARGET}" --body-file - <<'EOF'\ntexto\nEOF`;
+    assert.notEqual(detectChainedSessionIdRisk(command), null);
+  });
+
+  const H = (body: string) => `<<'EOF'\n${body}\nEOF`;
+  const bloqueados: Array<[string, string]> = [
+    // Falsos negativos medidos na 1ª versão.
+    ["( cat <<'EOF' … ) | bash", `( cat ${H(TARGET)}\n) | bash`],
+    ["{ cat <<'EOF' … } | bash", `{ cat ${H(TARGET)}\n} | bash`],
+    ["bash <(cat <<'EOF' …)", `bash <(cat ${H(TARGET)}\n)`],
+    ["x=$(cat <<'EOF' …) ; eval \"$x\"", `x=$(cat ${H(TARGET)}\n) ; eval "$x"`],
+    ["for … do cat <<'EOF' … done | sh", `for i in 1; do cat ${H(TARGET)}\ndone | sh`],
+    ["glob bash /tmp/*.sh", `cat > /tmp/r.sh ${H(TARGET)}\nbash /tmp/*.sh`],
+    ['aspas no nome x.s"h"', `cat > /tmp/x.sh ${H(TARGET)}\nbash /tmp/x.s"h"`],
+    ["trap antes do heredoc", `trap 'bash /tmp/r.sh' EXIT\ncat > /tmp/r.sh ${H(TARGET)}`],
+    ["& antes do heredoc", `sleep 1 && bash /tmp/r.sh &\ncat > /tmp/r.sh ${H(TARGET)}`],
+    ["package.json + npm run", `cat > package.json <<'EOF'\n{"scripts":{"x":"${TARGET}"}}\nEOF\nnpm run x`],
+    ["Makefile + make", `cat > Makefile <<'EOF'\nx:\n\t${TARGET}\nEOF\nmake x`],
+    [".git/hooks", `cat > .git/hooks/post-checkout ${H(TARGET)}\ngit checkout -`],
+    [".bashrc", `cat >> ~/.bashrc ${H(TARGET)}\nbash -i -c true`],
+    ["BASH_ENV", `cat > /tmp/env.sh ${H(TARGET)}\nBASH_ENV=/tmp/env.sh bash -c true`],
+    ["eval 'cat(){ bash; }'", `eval 'cat(){ bash; }'\ncat ${H(TARGET)}`],
+    ["PATH= com cat falso", `PATH=/tmp/fake:$PATH\ncat ${H(TARGET)}`],
+    ["gh <extensão> --body-file -", `gh myext --body-file - ${H(TARGET)}`],
+    ["gh ext …", `gh ext exec x --body-file - ${H(TARGET)}`],
+    ["gh api --input -", `gh api repos/o/r/issues --input - ${H(TARGET)}`],
+    // cat > arquivo sempre volta à base.
+    ["cat > arquivo + gh --body-file arquivo", `cat > /tmp/x.md ${H(BODY)}\ngh issue create --body-file /tmp/x.md`],
+    // Comando a mais antes ou depois, dois heredocs.
+    ["comando antes", `cd /tmp\ngh issue comment 1 --body-file - ${H(TARGET)}`],
+    ["comando depois", `gh issue comment 1 --body-file - ${H(BODY)}\n${TARGET}`],
+    ["comando na linha 1 com &&", `git pull && gh issue comment 1 --body-file - ${H(TARGET)}`],
+    ["dois heredocs", `gh issue comment 1 --body-file - ${H(BODY)}\ngh issue comment 2 --body-file - ${H(TARGET)}`],
+    // Variações da linha 1 fora da forma exata.
+    ["delimitador sem aspas", `gh issue comment 1 --body-file - <<EOF\n$(${TARGET})\nEOF`],
+    ["sem --body-file -", `gh issue comment 1 --body x ${H(TARGET)}`],
+    ["| no fim da linha 1", `gh issue comment 1 --body-file - <<'EOF' | bash\n${TARGET}\nEOF`],
+    // `#` comenta o `<<'EOF'`: sem heredoc, o "corpo" roda como código (review da #12054).
+    ["# colado antes do <<", `gh issue comment 1 --body-file - #<<'EOF'\n${TARGET}\nEOF`],
+    ["# com espaço antes do <<", `gh issue comment 1 --body-file - # <<'EOF'\n${TARGET}\nEOF`],
+    ["# antes do --body-file", `gh issue comment 1 #--body-file - <<'EOF'\n${TARGET}\nEOF`],
+    ["$() nos argumentos", `gh issue comment 1 --title "$(date)" --body-file - ${H(TARGET)}`],
+    ["aspa aberta engolindo o <<", `gh issue comment 1 --body-file - --title "x <<'EOF'\n"; ${TARGET}\nEOF`],
+    ["terminador ausente", `gh issue comment 1 --body-file - <<'EOF'\n${TARGET}`],
+    ["terminador com tab", `gh issue comment 1 --body-file - <<'EOF'\n${TARGET}\n\tEOF`],
+  ];
+  for (const [label, command] of bloqueados) {
+    it(`bloqueia: ${label}`, () => {
+      assert.equal(ghBodyHeredocOpeningLine(command), null, command);
+      const risk = detectChainedSessionIdRisk(command);
+      assert.notEqual(risk, null, command);
+      assert.match(risk as string, /session-registry\.ts/);
+    });
+  }
+
+  it("desempenho: 200k caracteres sem espaço resolvem em < 50 ms", () => {
+    const blob = "a".repeat(200_000);
+    const commands = [
+      blob,
+      `gh issue comment 1 --body-file -${blob}`,
+      `gh issue comment 1 --body-file - <<'EOF'\n${blob}\nEOF`,
+      `gh issue comment 1 ${blob}<<'EOF'\n${blob}\n${TARGET}`,
+      `${blob}\n${blob}`,
+    ];
+    for (const command of commands) {
+      const t0 = performance.now();
+      detectChainedSessionIdRisk(command);
+      const elapsed = performance.now() - t0;
+      assert.ok(elapsed < 50, `${elapsed.toFixed(1)} ms para ${command.length} caracteres`);
+    }
+  });
 });
 
 describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)", () => {
