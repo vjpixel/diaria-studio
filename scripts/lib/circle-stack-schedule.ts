@@ -27,7 +27,6 @@
  */
 import { createHash } from "node:crypto";
 import type { CircleStackPublishedLike } from "./publish-state.ts";
-import { formatAAMMDD } from "./weekly-linkedin-cycle.ts";
 
 export const CIRCLE_STACK_APPROVAL_FILE = "circle-stack-approval.json";
 export const CIRCLE_STACK_RADAR_URL = "https://plataforma.stack.com.br/c/radar-de-noticias-stack";
@@ -97,20 +96,50 @@ export function isCircleStackPublishWindow(todayAAMMDD: string, publishMonday: s
   return todayAAMMDD === publishMonday;
 }
 
-/** Hora (BRT, relógio local do `300`) da task `Diaria-Circle-Stack-Weekly-Publish`. */
+/**
+ * Hora (BRT) da task `Diaria-Circle-Stack-Weekly-Publish`. O timer usa
+ * `OnCalendar=... America/Sao_Paulo`, então a hora vale em BRT qualquer que
+ * seja o fuso do processo (o `300` roda em Etc/UTC, #11883).
+ */
 export const CIRCLE_STACK_PUBLISH_HOUR = 6;
 
+/** Fuso do timer da task (`OnCalendar` em America/Sao_Paulo). */
+const CIRCLE_STACK_TIMEZONE ="America/Sao_Paulo";
+
+const BRT_WALL_CLOCK = new Intl.DateTimeFormat("en-US", {
+  timeZone: CIRCLE_STACK_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  hourCycle: "h23",
+});
+
 /**
- * Pure (#11877): a execução agendada da segunda `publishMonday` já passou?
- * Verdadeiro em qualquer dia depois dela e na própria segunda a partir das
- * 06:00 (relógio local, mesmo de `formatAAMMDD`). Depois disso o timer não
- * roda de novo (o catch-up do `Persistent=true` só cobre execução perdida),
- * então uma aprovação desse ciclo não teria consumidor.
+ * Pure (#11883): data (AAMMDD) e hora do instante `now` no fuso do timer,
+ * independente do `TZ` do processo.
+ */
+export function circleStackWallClock(now: Date): { aammdd: string; hour: number } {
+  const parts: Record<string, string> = {};
+  for (const p of BRT_WALL_CLOCK.formatToParts(now)) parts[p.type] = p.value;
+  const yy = String(Number(parts.year) % 100).padStart(2, "0");
+  return { aammdd: `${yy}${parts.month}${parts.day}`, hour: Number(parts.hour) };
+}
+
+/**
+ * Pure (#11877, #11883): a execução agendada da segunda `publishMonday` já
+ * passou? Verdadeiro em qualquer dia depois dela e na própria segunda a partir
+ * das 06:00 BRT. Data e hora saem em America/Sao_Paulo, o fuso do timer, e não
+ * do relógio local: no `300` (Etc/UTC) o relógio local marcava 06:00 às 03:00
+ * BRT e recusava a aprovação de uma execução que ainda ia rodar. Depois das
+ * 06:00 BRT o timer não roda de novo (o catch-up do `Persistent=true` só
+ * cobre execução perdida), então uma aprovação desse ciclo não teria
+ * consumidor.
  */
 export function isCircleStackScheduledRunPast(now: Date, publishMonday: string): boolean {
-  const today = formatAAMMDD(now);
+  const { aammdd: today, hour } = circleStackWallClock(now);
   if (today !== publishMonday) return today > publishMonday;
-  return now.getHours() >= CIRCLE_STACK_PUBLISH_HOUR;
+  return hour >= CIRCLE_STACK_PUBLISH_HOUR;
 }
 
 export type CircleStackScheduledOutcome =
