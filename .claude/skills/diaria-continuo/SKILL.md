@@ -648,7 +648,9 @@ aqui.
    #636/#633/#2959 intacta. Prioridade P0 > P1 > P2 > P3, mesmo critério do
    overnight. **`claim-issue` vale pra toda unidade, com ou sem fan-out
    (#5407):** o `claim de issue` citado em "Reuso da maquinaria" acima
-   (`claim-issue --kind continuo --issue N`) não é exclusivo do caminho de
+   (`claim-issue --kind continuo --issue N`; para mais de uma issue de uma
+   vez, `claim-issue --kind continuo --issues A,B,C`, uma escrita na âncora,
+   `exit 1` se alguma não terminou reivindicada, #12010) não é exclusivo do caminho de
    subagente/worktree — a `continuo` tem a mesma estrutura de
    coordenador-resolve-direto pra unidades pequenas que o develop tem
    (mesma correção aplicada lá); reivindicar a issue antes de começar a
