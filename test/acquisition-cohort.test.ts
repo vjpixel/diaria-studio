@@ -9,8 +9,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  aggregateCohortRowsByOrigin,
   buildAcquisitionCohortTable,
   isoToBrtDay,
+  type CohortRow,
   type CohortSubscriberInput,
   type KitSubscriptionStatus,
 } from "../scripts/lib/metrics/acquisition-cohort.ts";
@@ -241,5 +243,56 @@ describe("buildAcquisitionCohortTable — confirmado/pendente Kit nunca fabricad
     assert.equal(rows[0].total, 2);
     assert.equal(rows[0].confirmedKit, 1);
     assert.equal(rows[0].unconfirmedKit, 0);
+  });
+});
+
+describe("aggregateCohortRowsByOrigin (#10606, editor 03/11: sem coluna Dia)", () => {
+  const row = (r: Partial<CohortRow> & Pick<CohortRow, "day" | "total">): CohortRow => ({
+    utmSource: "kit-organico",
+    acquisitionClass: "organico" as CohortRow["acquisitionClass"],
+    confirmedKit: null,
+    unconfirmedKit: null,
+    ...r,
+  });
+
+  it("soma os dias numa linha por origem × classe, sem campo day", () => {
+    const out = aggregateCohortRowsByOrigin([
+      row({ day: "2026-09-01", total: 2, confirmedKit: 1, unconfirmedKit: 1 }),
+      row({ day: "2026-09-02", total: 3, confirmedKit: 3, unconfirmedKit: 0 }),
+      row({ day: "2026-09-02", utmSource: "linkedin", total: 1 }),
+    ]);
+    assert.equal(out.length, 2);
+    assert.deepEqual(out[0], { utmSource: "kit-organico", acquisitionClass: "organico", total: 5, confirmedKit: 4, unconfirmedKit: 1 });
+    assert.ok(out.every((r) => !("day" in r)));
+  });
+
+  it("null (sem sinal Kit) só quando nenhuma linha do grupo tem sinal; linha null soma como 0", () => {
+    const out = aggregateCohortRowsByOrigin([
+      row({ day: "2026-09-01", utmSource: "beehiiv", total: 4 }),
+      row({ day: "2026-09-02", utmSource: "beehiiv", total: 1 }),
+      row({ day: "2026-09-01", utmSource: "misto", total: 2 }),
+      row({ day: "2026-09-03", utmSource: "misto", total: 1, confirmedKit: 1, unconfirmedKit: 0 }),
+    ]);
+    const beehiiv = out.find((r) => r.utmSource === "beehiiv")!;
+    assert.equal(beehiiv.total, 5);
+    assert.equal(beehiiv.confirmedKit, null);
+    assert.equal(beehiiv.unconfirmedKit, null);
+    const misto = out.find((r) => r.utmSource === "misto")!;
+    assert.equal(misto.total, 3);
+    assert.equal(misto.confirmedKit, 1);
+    assert.equal(misto.unconfirmedKit, 0);
+  });
+
+  it("mesma origem em classes diferentes fica separada; ordem por cadastros desc", () => {
+    const out = aggregateCohortRowsByOrigin([
+      row({ day: "2026-09-01", utmSource: null, total: 1 }),
+      row({ day: "2026-09-01", utmSource: "x", acquisitionClass: "pago" as CohortRow["acquisitionClass"], total: 1 }),
+      row({ day: "2026-09-02", utmSource: "x", total: 7 }),
+    ]);
+    assert.deepEqual(out.map((r) => [r.utmSource, r.acquisitionClass, r.total]), [["x", "organico", 7], [null, "organico", 1], ["x", "pago", 1]]);
+  });
+
+  it("lista vazia devolve vazio", () => {
+    assert.deepEqual(aggregateCohortRowsByOrigin([]), []);
   });
 });

@@ -192,7 +192,7 @@ export interface OnboardingFunnelData {
   /** #7922: lotes do transporte Kit (produção e piloto separados). */
   kitLots: OnboardingKitLotsView;
   /** #10606: contagem por e-mail (escada + apoio D+30/90/180/360 + formulário),
-   *  tabela por pessoa (e-mail mascarado) e falhas em destaque. */
+   *  tabela por pessoa (e-mail completo, decisão do editor 03/11) e falhas em destaque. */
   followup: FollowupPanelView;
   apoiadorDataError: string | null;
   liveBrevoChecked: boolean;
