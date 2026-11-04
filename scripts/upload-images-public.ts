@@ -38,10 +38,19 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv(); // #1157 — carrega .env antes de process.env access (CLOUDFLARE_*)
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
-import { r2KeyForImageKey, readPublicImagesR2Settings, resolveR2ImageUploader, type R2ImageUploader } from "./lib/public-images-r2.ts"; // #11412
+import {
+  publicImagesR2InertMessage,
+  r2KeyForImageKey,
+  readPublicImagesR2Settings,
+  resolveR2ImageUploader,
+  summarizePublicImagesR2Coverage,
+  type PublicImagesR2Coverage,
+  type R2ImageUploader,
+} from "./lib/public-images-r2.ts"; // #11412, #12194
+import { logEvent, type RunLogEvent } from "./lib/run-log.ts"; // #12194
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { md5OfFile } from "./lib/shared/file-md5.ts"; // #6068 (era local, #1418)
@@ -113,6 +122,11 @@ export interface PublicImagesOutput {
    * silenciosa. Vazio na maioria das rodadas.
    */
   warnings: string[];
+  /**
+   * #12194: quantas imagens elegíveis da edição estão no R2 contra no KV, e se
+   * a migração ficou inerte (flag ligada, 0 no R2). Sempre presente.
+   */
+  r2_coverage: PublicImagesR2Coverage;
   /**
    * #10834: conferência do carrossel do 4º post antes do upload (modo
    * social/all). Ausente no modo newsletter e com `destaques` explícitos.
@@ -425,6 +439,13 @@ export interface UploadOptions {
   refreshUseMelhorCarousel?: (editionDir: string) => Promise<UseMelhorCarouselRefresh>;
   /** #10784: seam da geração da cópia do hero do D1 com play (default: sharp real). */
   ensureD1PlayImage?: (editionDir: string) => Promise<D1PlayImageResult>;
+  /**
+   * #12194: seam do `warn` no run-log quando a flag R2 está ligada e a edição
+   * caiu toda no KV. Default: `logEvent` real (data/run-log.jsonl) só com os
+   * uploaders reais; com uploaders injetados (testes), nada é gravado a menos
+   * que o teste passe este seam.
+   */
+  logRunEvent?: (event: RunLogEvent) => void;
 }
 
 export interface UploadDeps {
@@ -613,6 +634,10 @@ export async function uploadPublicImages(
   // implícita de platform.config.json nos testes (#2147 finding 6).
   let cfConfig: { kvNamespaceId: string; workerUrl: string } | null = null;
   let uploadToR2: R2ImageUploader | null = opts.uploaders?.uploadToR2 ?? null;
+  // #12194: a flag como o upload a viu. Uploader R2 injetado (testes) conta
+  // como ligada; com a config real, vale `public_images_r2.enabled` (inclusive
+  // ligada sem env, que é justamente o caso de alarme).
+  let r2FlagEnabled = uploadToR2 !== null;
   if (!opts.uploaders?.uploadToCloudflare) {
     const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
@@ -624,7 +649,9 @@ export async function uploadPublicImages(
     cfConfig = { kvNamespaceId, workerUrl };
     // #11412: R2 atrás da flag; sem credencial, avisa e segue no KV.
     if (opts.uploaders?.uploadToR2 === undefined) {
-      const r2 = resolveR2ImageUploader(readPublicImagesR2Settings(cfg), process.env, workerUrl);
+      const r2Settings = readPublicImagesR2Settings(cfg);
+      r2FlagEnabled = r2Settings.enabled;
+      const r2 = resolveR2ImageUploader(r2Settings, process.env, workerUrl);
       uploadToR2 = r2.uploader;
       if (r2.warning) warnings.push(r2.warning);
     }
@@ -724,11 +751,37 @@ export async function uploadPublicImages(
     "utf8",
   );
 
+  // #12194: flag ligada e a edição inteira no KV (env ausente, PUT/HEAD
+  // falhando em todas) — o fallback é seguro, mas sem isto a migração fica
+  // inerte sem ninguém ver. Aviso + `warn` no run-log, que
+  // `collect-edition-signals.ts` leva ao auto-reporter.
+  const r2Coverage = summarizePublicImagesR2Coverage(images, r2FlagEnabled);
+  if (r2Coverage.inert) {
+    const message = publicImagesR2InertMessage(r2Coverage);
+    warnings.push(message);
+    const logRunEvent = opts.logRunEvent ?? (opts.uploaders ? undefined : (e: RunLogEvent) => void logEvent(e));
+    const editionBase = basename(resolve(editionDir));
+    logRunEvent?.({
+      edition: /^\d{6}$/.test(editionBase) ? editionBase : null,
+      stage: null,
+      agent: "upload-images-public",
+      level: "warn",
+      message,
+      details: { eligible: r2Coverage.eligible, r2: r2Coverage.r2, kv: r2Coverage.kv, kv_keys: r2Coverage.kvKeys, mode },
+    });
+  }
+
   for (const w of warnings) {
     console.warn(`⚠️  upload-images-public: ${w}`);
   }
 
-  return { out_path: cachePath, images, warnings, ...(useMelhorCarousel && { use_melhor_carousel: useMelhorCarousel }) };
+  return {
+    out_path: cachePath,
+    images,
+    warnings,
+    r2_coverage: r2Coverage,
+    ...(useMelhorCarousel && { use_melhor_carousel: useMelhorCarousel }),
+  };
 }
 
 // #7596: hero2x1KeyFor migrou pra lib/shared/public-image-keys.ts (módulo
