@@ -1998,9 +1998,10 @@ export interface FramingResult {
    * Center do Basic Motion do xmeml: deslocamento do centro do clipe em
    * relação ao centro da sequência (px da sequência), dividido pela
    * largura/altura do BRUTO (positivo = direita/baixo). O Premiere lê o
-   * Center como fração da mídia original, sem escala: validado no import da
-   * 261104 (#12091), quando `0.1225` num bruto 3840 virou 470,4 px de
-   * Position. Até o #12091 o divisor era a sequência e o rosto saía à direita.
+   * Center como fração da mídia original, sem escala: unidade validada no
+   * import da 261104 (#12091), quando `0.1225` num bruto 3840 virou 470,4 px
+   * de Position; o valor corrigido está pendente de re-import. Até o #12091
+   * o divisor era a sequência e o rosto saía à direita.
    */
   center: { horiz: number; vert: number };
   /** Escala efetiva (%): a pedida, ou maior quando o bruto é pequeno demais para ela (ex.: 1080p). */
@@ -2361,8 +2362,9 @@ export function firstTitledVertical(plans: SequencePlan[]): SequencePlan | null 
 }
 
 /**
- * Título nas verticais (#11756). `png` (padrão desde o #12091, validado no
- * import da 261104) = o PNG transparente do tamanho da sequência (`pngPath`,
+ * Título nas verticais (#11756). `png` (padrão desde o #12091; pendente de
+ * conferência no 1º import com o PNG via XML: na 261104 o PNG foi arrastado
+ * à mão) = o PNG transparente do tamanho da sequência (`pngPath`,
  * já no caminho que o Premiere vai abrir) como clipe na V2, com o fundo a 70%
  * desenhado só na caixa; `text` (só com `--title-mode text`, não validado) =
  * gerador de texto do FCP7 (`generatoritem` "Text") na V3 sobre o fundo
@@ -2458,8 +2460,8 @@ export function screenTitleSvg(text: string, width: number, height: number): str
  *
  * `audioGain` (#11755): o Audio Levels em cada clipe de áudio. `screenTitle`
  * (#11756): o título nas sequências verticais, no trecho de `screenTitleSpan`
- * (modo png, o padrão: o PNG com o fundo na V2, validado no import da 261104,
- * #12091; modo text, só por flag: V2 = fundo preto a 70%, V3 = texto, #11941).
+ * (modo png, o padrão: o PNG com o fundo na V2, pendente de conferência no 1º
+ * import com o PNG via XML, #12091; modo text, só por flag: V2 = fundo preto a 70%, V3 = texto, #11941).
  */
 export function buildXmeml(
   plans: SequencePlan[],

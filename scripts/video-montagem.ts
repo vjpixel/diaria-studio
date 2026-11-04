@@ -51,7 +51,7 @@
  *                           `fact-check-input.json`: entrada do agent `fact-checker` em `mode: "video"`,
  *                           que grava `fact-check.json`; o `roteiro` põe os achados graves no Doc do
  *                           Gate 2, com o trecho do bruto e a proposta de corte
- *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode text|png|off]
+ *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|text|off]
  *       (#11935) grava um XML por sequência ({nome da sequência}.xml); `--seq` grava só uma, e só ela muda no plan.json (#11969)
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Clipes contíguos no bruto viram um só e o zoom alterna só nos cortes (#11503). Os cortes
@@ -66,8 +66,9 @@
  *       Ganho de áudio (#11755): Audio Levels em cada clipe de áudio, do `loudness.json`, para
  *       -14 LUFS com teto -1 dBTP (`audioGainFor`); --no-audio-gain tira. Título nas verticais
  *       (#11756): faixa V2 no bloco `titulo` (sem ele, no 1º bloco) com o `screenTitle` do
- *       blocks.json ou o título do D1 (`02-reviewed.md`); --title-mode png (padrão desde o #12091,
- *       validado no import da 261104: o PNG com fundo a 70% como clipe na V2), text (gerador de
+ *       blocks.json ou o título do D1 (`02-reviewed.md`); --title-mode png (padrão desde o #12091:
+ *       o PNG com fundo a 70% como clipe na V2, pendente de conferência no 1º import com o PNG
+ *       via XML), text (gerador de
  *       texto do FCP7 sobre fundo Color+Crop, só por flag, ainda não validado) ou off.
  *   srt AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--from-raw] [--force]
  *       legendas de todas as sequências (#11957: o horizontal também; --seq escolhe uma).
@@ -1479,9 +1480,9 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       await sharp(Buffer.from(screenTitleSvg(t.text, titled.spec.width, titled.spec.height))).png().toFile(png);
       screenTitle = screenTitleXmlFor(titleMode === "text" ? "text" : "png", t.text, titlePngXmlPath(mediaPath, ctx.edition));
       console.error(
-        `${titleMode === "png" ? "[video-montagem]" : "[premissa]"} título na vertical (${t.how === "blocks" ? "screenTitle do blocks.json" : "título do D1; screenTitle no blocks.json sobrepõe"}): "${t.text}", ` +
+        `[premissa] título na vertical (${t.how === "blocks" ? "screenTitle do blocks.json" : "título do D1; screenTitle no blocks.json sobrepõe"}): "${t.text}", ` +
           (titleMode === "png"
-            ? `PNG ${png} na V2 (padrão, validado no import da 261104, #12091)`
+            ? `PNG ${png} na V2 (padrão; pendente de conferência no 1º import com o PNG via XML, #12091)`
             : `gerador de texto do FCP7 na V3 sobre fundo Color+Crop 70% na V2 (--title-mode text, NÃO validado: na 261104 saiu com &#10; na tela e o fundo como bloco preto; PNG de reserva: ${png}); conferir no import (#12091)`),
       );
     } else if (t.how === "missing") console.error("[aviso] vertical sem título: sem screenTitle no blocks.json e sem D1 em 02-reviewed.md (#11756)");
@@ -1504,7 +1505,13 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       const png = join(ctx.outDir, titlePngFileName(ctx.edition, corte));
       await sharp(Buffer.from(screenTitleSvg(t.text, p.spec.width, p.spec.height))).png().toFile(png);
       screenTitleByCorte[corte] = screenTitleXmlFor(titleMode === "text" ? "text" : "png", t.text, titlePngXmlPath(mediaPath, ctx.edition, corte));
-      console.error(`[premissa] título do corte "${corte}" (screenTitle da sequência): "${t.text}" (#11900)`);
+      console.error(
+        `[premissa] título do corte "${corte}" (screenTitle da sequência): "${t.text}", ` +
+          (titleMode === "text"
+            ? `gerador de texto do FCP7 na V3 sobre fundo Color+Crop 70% na V2 (--title-mode text, NÃO validado; PNG de reserva: ${png})`
+            : `PNG ${png} na V2 (padrão; pendente de conferência no 1º import com o PNG via XML)`) +
+          " (#11900, #12091)",
+      );
     }
   }
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
