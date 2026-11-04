@@ -3356,17 +3356,20 @@ export function srtTimestamp(x: number): string {
   return `${p(h)}:${p(m)}:${p(s)},${p(ms, 3)}`;
 }
 
-/** SRT: fim de cada cue = min(fim + 0,3 s, início da próxima); a última termina na última palavra. */
-export function cuesToSrt(cues: Word[][], opts: { tailS?: number; wrapOver?: number } = {}): string {
+/** Tempo de cada cue no SRT: fim = min(fim + 0,3 s, início da próxima); a última termina na última palavra. */
+export function cueTimings(cues: Word[][], opts: { tailS?: number } = {}): Array<{ start: number; end: number; text: string }> {
   const tail = opts.tailS ?? CUE_DEFAULTS.tailS;
-  return cues
-    .map((c, i) => {
-      const last = c[c.length - 1];
-      const next = cues[i + 1];
-      const end = next ? Math.min(last.end + tail, next[0].start) : last.end;
-      const text = wrapCueText(joinWordTexts(c.map((w) => w.text)), opts.wrapOver);
-      return `${i + 1}\n${srtTimestamp(c[0].start)} --> ${srtTimestamp(end)}\n${text}\n`;
-    })
+  return cues.map((c, i) => {
+    const last = c[c.length - 1];
+    const next = cues[i + 1];
+    return { start: c[0].start, end: next ? Math.min(last.end + tail, next[0].start) : last.end, text: joinWordTexts(c.map((w) => w.text)) };
+  });
+}
+
+/** SRT: tempos de `cueTimings`, texto quebrado em 2 linhas acima de `wrapOver`. */
+export function cuesToSrt(cues: Word[][], opts: { tailS?: number; wrapOver?: number } = {}): string {
+  return cueTimings(cues, opts)
+    .map((c, i) => `${i + 1}\n${srtTimestamp(c.start)} --> ${srtTimestamp(c.end)}\n${wrapCueText(c.text, opts.wrapOver)}\n`)
     .join("\n");
 }
 
