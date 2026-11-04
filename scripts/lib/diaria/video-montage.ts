@@ -2456,15 +2456,42 @@ export function wrapScreenTitle(text: string, maxChars: number = SCREEN_TITLE_ST
 }
 
 /**
+ * Teto do título na tela (#11756), em segundos: na 261103 o editor deixou o
+ * título 7,5 s (0–225 quadros) e, na vertical "soberana", tirou o que o build
+ * estendia pela sequência inteira (84 s) para ~1,3 s. Nunca mais que isto.
+ */
+export const SCREEN_TITLE_MAX_S = 7.5;
+
+/**
  * Trecho da sequência que leva o título, em frames: os clipes do bloco
  * `titulo`; sem ele (gravação sem bloco de título, 261029), os clipes do 1º
  * bloco da sequência (o gancho). Sequência vazia = null.
+ *
+ * #11756: só a 1ª sequência CONTÍGUA de clipes do bloco (um corte cujo
+ * roteiro é um bloco só, ou um bloco que volta mais adiante, não estende o
+ * título até o fim), e, com `fps`, no máximo `SCREEN_TITLE_MAX_S`. Clipe
+ * fundido de blocos diferentes (`parts`) que começa no bloco fecha o trecho no
+ * fim do pedaço dele.
  */
-export function screenTitleSpan(plan: Pick<SequencePlan, "clips">): { start: number; end: number; block: BlockKey } | null {
+export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number): { start: number; end: number; block: BlockKey } | null {
   if (plan.clips.length === 0) return null;
-  const block: BlockKey = plan.clips.some((c) => c.block === "titulo") ? "titulo" : plan.clips[0].block;
-  const mine = plan.clips.filter((c) => c.block === block);
-  return { start: Math.min(...mine.map((c) => c.seqStart)), end: Math.max(...mine.map((c) => c.seqEnd)), block };
+  const clips = [...plan.clips].sort((a, b) => a.seqStart - b.seqStart);
+  const block: BlockKey = clips.some((c) => c.block === "titulo") ? "titulo" : clips[0].block;
+  const first = clips.findIndex((c) => c.block === block);
+  const start = clips[first].seqStart;
+  let end = start;
+  for (let i = first; i < clips.length && clips[i].block === block; i++) {
+    const c = clips[i];
+    const later = c.parts?.findIndex((p) => p.block !== block) ?? -1;
+    if (later > 0 && fps) {
+      // O clipe fundido muda de bloco no meio: o título vai até o fim do pedaço do bloco.
+      end = Math.max(end, Math.min(c.seqEnd, c.seqStart + Math.round((c.parts![later - 1].srcOut - c.srcIn) * fps)));
+      break;
+    }
+    end = Math.max(end, c.seqEnd);
+  }
+  if (fps) end = Math.min(end, start + Math.round(SCREEN_TITLE_MAX_S * fps));
+  return { start, end, block };
 }
 
 /** A 1ª vertical que leva título: o tamanho do PNG do fallback e quem define o `<file>` dele no XML. */
@@ -2656,7 +2683,7 @@ export function buildXmeml(
   const screenTitleTrack = (plan: SequencePlan, si: number): string => {
     const title = titleOf(plan.spec);
     if (!title || !isVerticalSpec(plan.spec)) return "";
-    const span = screenTitleSpan(plan);
+    const span = screenTitleSpan(plan, fps);
     if (!span || span.end <= span.start) return "";
     const len = span.end - span.start;
     const id = `titulo-${si + 1}`;
