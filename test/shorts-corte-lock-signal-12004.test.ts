@@ -2,7 +2,7 @@ import { it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerCorteLockCleanup, corteTimerLockBusyError } from "../scripts/publish-shorts.ts";
@@ -67,6 +67,49 @@ it("#12004 SIGTERM com renovação ativa libera o lock e nenhuma renovação o r
     assert.equal(existsSync(path), false);
     await new Promise((r) => setTimeout(r, 300)); // > 7 intervalos de renovação
     assert.equal(existsSync(path), false, "renovação tardia não recriou o lock");
+  } finally {
+    child.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// #12157: a renovação truncava e reescrevia o arquivo no lugar; quem lia o lock nessa janela
+// (o teste acima, ou outro processo conferindo o dono) via o arquivo vazio e o JSON.parse
+// estourava "Unexpected end of JSON input". Renovando a cada 1 ms em outro processo, nenhuma
+// leitura pode ver o lock vazio ou truncado, e nenhum temporário sobra no diretório.
+it("#12157 leitura concorrente nunca vê o lock vazio durante a renovação", { timeout: 15000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corte-beat-read-"));
+  const path = join(dir, ".shorts-corte-timer.lock");
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import { acquireTimerLock } from './scripts/lib/diaria/timer-lock.ts';
+    const release = acquireTimerLock(${JSON.stringify(path)}, Date.now(), { heartbeatMs: 1 });
+    setInterval(() => {}, 1000);
+    setTimeout(() => console.log('ready'), 50);
+    process.on('SIGTERM', () => { release(); process.exit(0); });
+  `], { stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    await once(child.stdout, "data");
+    let reads = 0;
+    let beats = 0;
+    const bad: string[] = [];
+    const end = Date.now() + 1500;
+    while (Date.now() < end) {
+      const raw = readFileSync(path, "utf8");
+      reads++;
+      try {
+        if (JSON.parse(raw).beat_at) beats++;
+      } catch {
+        bad.push(JSON.stringify(raw));
+      }
+      // Cede o processador ao filho de vez em quando (em CI com pouco núcleo o loop o sufocaria).
+      if (reads % 200 === 0) await new Promise((r) => setImmediate(r));
+    }
+    assert.deepEqual(bad.slice(0, 3), [], `${bad.length} de ${reads} leituras viram o lock vazio/truncado`);
+    assert.ok(beats > 0, "a renovação rodou durante as leituras");
+    const exited = once(child, "exit");
+    child.kill("SIGTERM");
+    await exited;
+    assert.deepEqual(readdirSync(dir), [], "release apagou o lock e nenhum temporário sobrou");
   } finally {
     child.kill("SIGKILL");
     rmSync(dir, { recursive: true, force: true });
