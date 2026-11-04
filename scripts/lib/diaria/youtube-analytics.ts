@@ -300,6 +300,44 @@ export function toRetentionPoints(rows: AnalyticsRow[]): Array<[number, number]>
 /** Edição e tipo de cada vídeo, a partir dos registros de upload das edições. */
 export type EditionVideoIndex = Map<string, { edition: string; kind: Exclude<VideoKind, "desconhecido"> }>;
 
+/**
+ * Vídeos publicados antes do upload pela API (#12224): as edições 261021 e
+ * 261022 não têm `05-youtube-published.json` nem o registro do Short, então o
+ * índice das pastas não os encontra e o relatório mostrava edição `?`. O par
+ * de cada edição sai do D1 (`02-reviewed.md`) casado com o título do vídeo; o
+ * horizontal é o título sem `#Shorts`. `MMyBVHVQELI` tem ~2 min e cairia em
+ * Short pela duração: o mapa fixa `horizontal`. Lista fechada — edição nova
+ * entra pelo registro da pasta, nunca aqui.
+ */
+export const PRE_API_EDITION_VIDEOS: ReadonlyArray<{ videoId: string; edition: string; kind: Exclude<VideoKind, "desconhecido"> }> = [
+  { videoId: "QRbXMprk9o0", edition: "261021", kind: "horizontal" }, // Você já viu IA mentir. Já viu roubar?
+  { videoId: "nhMUtgPPs4U", edition: "261021", kind: "short" },
+  { videoId: "MMyBVHVQELI", edition: "261022", kind: "horizontal" }, // Claude projetou proteínas contra veneno de escorpião
+  { videoId: "K3GqRK5gFds", edition: "261022", kind: "short" },
+];
+
+/**
+ * Índice das pastas acrescido do mapa fixo de `PRE_API_EDITION_VIDEOS`. O
+ * registro da pasta vence: se um dia a edição ganhar registro, ele manda.
+ */
+export function withPreApiEditionVideos(index: EditionVideoIndex, extra = PRE_API_EDITION_VIDEOS): EditionVideoIndex {
+  const out: EditionVideoIndex = new Map(index);
+  for (const v of extra) if (!out.has(v.videoId)) out.set(v.videoId, { edition: v.edition, kind: v.kind });
+  return out;
+}
+
+/**
+ * Reatribui edição e tipo de linhas já gravadas a partir do índice atual. O
+ * snapshot grava `edition: null` quando o vídeo não estava no índice naquele
+ * dia; o relatório relê o índice para não depender de regravar o histórico.
+ */
+export function applyEditionIndex(lines: VideoSnapshotLine[], index: EditionVideoIndex): VideoSnapshotLine[] {
+  return lines.map((l) => {
+    const hit = index.get(l.videoId);
+    return hit ? { ...l, edition: hit.edition, kind: hit.kind } : l;
+  });
+}
+
 export function toVideoSnapshotLines(input: {
   rows: AnalyticsRow[];
   capturedAt: string;
@@ -448,6 +486,8 @@ export function renderAnalyticsReport(input: {
   daily: ChannelDailyLine[];
   traffic: TrafficSourceLine[];
   videos: VideoSnapshotLine[];
+  /** Índice vídeo → edição atual; corrige linhas gravadas sem edição (#12224). */
+  index?: EditionVideoIndex;
 }): string {
   const lines: string[] = ["# YouTube Analytics — @diariabr", ""];
   const channel = latestByKey(input.channel, (l) => l.date).sort((a, b) => a.date.localeCompare(b.date));
@@ -456,7 +496,8 @@ export function renderAnalyticsReport(input: {
     lines.push(`> Aviso: última captura (${last.date}) sem dados de Analytics: ${last.analyticsError ?? last.analytics}`, "");
   }
 
-  const snap = latestVideoSnapshot(input.videos);
+  const latest = latestVideoSnapshot(input.videos);
+  const snap = input.index ? applyEditionIndex(latest, input.index) : latest;
   const byNet = (a: VideoSnapshotLine, b: VideoSnapshotLine) =>
     b.subscribersGained - b.subscribersLost - (a.subscribersGained - a.subscribersLost) || b.views - a.views;
   const groups: Array<[string, VideoKind]> = [
