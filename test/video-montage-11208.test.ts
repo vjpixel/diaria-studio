@@ -483,7 +483,8 @@ describe("enquadramento (#11208)", () => {
     assert.ok(alto.center.vert > 0, "recorte acima do centro do bruto: o clipe desce");
     // centro do recorte à esquerda do centro do bruto → o clipe vai para a direita
     assert.ok(r.center.horiz > 0);
-    assert.equal(r.center.horiz, Math.round((((1920 - (1380 + 470)) * 1.15) / 1080) * 10000) / 10000);
+    // #12091: deslocamento em px da sequência dividido pela largura do BRUTO (era / 1080, a da sequência).
+    assert.equal(r.center.horiz, Math.round((((1920 - (1380 + 470)) * 1.15) / 3840) * 10000) / 10000);
   });
 
   it("recorte encosta na borda em vez de sair do bruto; 50% no horizontal enche o quadro sem deslocar", () => {
