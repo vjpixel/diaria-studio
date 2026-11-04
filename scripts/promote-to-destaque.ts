@@ -528,7 +528,7 @@ export function promoteToDestaque(
     `Re-baixar a fonte do destaque novo e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${editionDir}/ — rodar UMA vez; passar o path da entrada de sources com destaque === ${position} como source_text_path ao writer-destaque.`,
     `Escrever o bloco **DESTAQUE ${position}** em 02-reviewed.md (writer-destaque) a partir do item promovido, substituindo o placeholder [RASCUNHO PENDENTE].`,
     `Depois de integrar o texto do writer-destaque: trocar no TÍTULO/SUBTÍTULO o título provisório pelo final — npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir ${editionDir} (até lá o invariante titulo-subtitulo-not-provisional do Stage 4 barra o gate, #9755)`,
-    `Escrever a seção ## ${d} em 03-social.md (# Social e # Curto).`,
+    `Escrever a seção ## ${d} em 03-social.md (# Social e # Curto) e a ## ${d}-cards em # Social (texto dos cards do carrossel, #12094).`,
     `Humanizar e passar a Clarice na seção nova ## ${d}, registrar cada passo com check-humanizer-social.ts --record-run (§4d.1 passo 6, #11534) e gravar o selo: npx tsx scripts/check-humanizer-social.ts --write --bypass-reason "seção ${d} nova (promote)" --edition-dir ${editionDir}` +
       (humanizerStaleBefore
         ? ` — ATENÇÃO: o 03-social.md já divergia do selo ANTES do promote, então as outras seções editadas depois da humanização também precisam passar pelo humanizador.`

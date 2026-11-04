@@ -7,6 +7,11 @@
  * regenerado aqui. Ver `scripts/lib/daily-carousel-card.ts` (miolo pure) pro
  * design completo.
  *
+ * Texto dos slides (#12094): a seção `## d{N}-cards` do `# Social`, escrita
+ * pelo `social-writer` só para o carrossel. Sem ela (edição anterior ao
+ * #12094), cai na legenda `## d{N}`, como antes. A legenda dos posts segue
+ * sendo `## d{N}` em todos os publishers.
+ *
  * Roda no Stage 3 (`stage-3-run.ts`), DEPOIS de `gen-social-card-4x5.ts` —
  * depende só de `03-social.md` (Stage 2) já existir, não da geração de
  * imagem em si.
@@ -71,7 +76,7 @@ import { readUseMelhorBlock } from "./lib/use-melhor-status.ts"; // #10834
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
-import { extractSection, extractDestaqueBlock } from "./lib/extract-section.ts";
+import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "./lib/extract-section.ts"; // #12094
 import { readCoverOverride } from "./gen-social-card-4x5.ts";
 import { readInstagramTestOverride, type CarouselCtaOverride } from "./lib/instagram-test-override.ts"; // #8681
 import { readCarouselKeepArt, CAROUSEL_KEEP_ART_FILENAME } from "./lib/carousel-keep-art.ts"; // #11210
@@ -161,8 +166,12 @@ export async function genCarouselCards(
   // muda e o 3º card não engole os parágrafos extras da legenda.
   const storedParagraphs = readCarouselCardParagraphs(editionDir);
   const cardParagraphs: CarouselCardParagraphs = {};
+  // #12094: os cards saem de `## d{N}-cards` (texto próprio do carrossel) e só
+  // caem pra legenda `## d{N}` em edição anterior à separação.
+  const cardSourceOf = (d: (typeof destaques)[number]) => (section ? extractCarouselCardsBlock(section, d) : null);
   const cardTextOf = (d: (typeof destaques)[number]): string | null => {
-    const dText = slideSourceText(editionDir, d, section ? extractDestaqueBlock(section, d) : null);
+    const src = cardSourceOf(d);
+    const dText = src?.source === "cards" ? cardsSectionText(editionDir, d, src.text) : slideSourceText(editionDir, d, src?.text ?? null);
     return dText ? resolveCarouselCardText(dText.trim(), storedParagraphs) : dText;
   };
   // #11210: destaques cuja arte o editor decidiu MANTER ficam fora da pré-passada
@@ -204,19 +213,19 @@ export async function genCarouselCards(
   // demais, e o editor descobria um por vez, em ciclos separados de
   // corrigir+re-rodar. Aqui ele recebe a lista inteira do que reescrever —
   // mesmo comportamento do invariante irmão `carousel-text-overflow` no Stage 4.
-  const transbordam: { destaque: string; slides: ReturnType<typeof findOverflowingCarouselSlides> }[] = [];
+  const transbordam: { destaque: string; sectionId: string; slides: ReturnType<typeof findOverflowingCarouselSlides> }[] = [];
   for (const d of destaques) {
     if (keepArt.has(d)) continue; // #11210: arte mantida — reportado como `skipped` abaixo
     const dText = cardTextOf(d);
     if (!dText) continue; // reportado como `skipped` no loop principal abaixo
     const slides = findOverflowingCarouselSlides(dText, ctaOverride);
-    if (slides.length > 0) transbordam.push({ destaque: d, slides });
+    if (slides.length > 0) transbordam.push({ destaque: d, sectionId: cardSourceOf(d)?.sectionId ?? d, slides });
   }
   if (transbordam.length > 0) {
     const detalhe = transbordam
       .map(
-        ({ destaque, slides }) =>
-          `  ${destaque}:\n` +
+        ({ destaque, sectionId, slides }) =>
+          `  ${destaque} (seção '## ${sectionId}'):\n` +
           slides.map((o) => `    · ${o.slot}: ${o.chars} chars → ${o.lines} linhas, ${o.excessPx}px além do card`).join("\n"),
       )
       .join("\n");
@@ -242,7 +251,7 @@ export async function genCarouselCards(
     }
     const dText = cardTextOf(d);
     if (!dText) {
-      skipped.push({ destaque: d, reason: `bloco '## ${d}' não encontrado em '# Social' de 03-social.md` });
+      skipped.push({ destaque: d, reason: `blocos '## ${d}-cards' e '## ${d}' não encontrados em '# Social' de 03-social.md` });
       continue;
     }
 
@@ -458,6 +467,16 @@ export async function refreshStaleUseMelhorCarousel(
  * tirada só do slide; a legenda continua com ela. Sem o arquivo (diária),
  * devolve o texto intacto.
  */
+/**
+ * (#12094) Texto dos slides quando ele vem de `## d{N}-cards`. A seção já é o
+ * texto do card, então o `slide_prefix` da anual (que é tirado da LEGENDA) não
+ * se aplica; o `slide_text` explícito de `social-cover.json` continua vencendo,
+ * igual em `slideSourceText`.
+ */
+export function cardsSectionText(editionDir: string, destaque: string, text: string): string {
+  return readCoverOverride(editionDir, destaque)?.slideText ?? text;
+}
+
 export function slideSourceText(editionDir: string, destaque: string, text: string | null): string | null {
   if (!text) return text;
   const cover = readCoverOverride(editionDir, destaque);

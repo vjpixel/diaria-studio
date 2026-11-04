@@ -13,7 +13,14 @@ import {
   machineTag,
   stripQuotedSpans,
   BLOCK_REASON,
+  resolveBranchCreateTargets,
+  mainRootsHitByTargets,
+  mainCheckoutRootOf,
+  tokenizeShellSegments,
 } from "../.claude/hooks/block-branch-checkout-main.mjs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 
 // #6509: guard MECÂNICO contra `git checkout -b`/`git switch -c` no checkout
 // PRINCIPAL compartilhado enquanto uma rodada overnight/develop/continuo
@@ -340,5 +347,204 @@ describe("BLOCK_REASON (#6509)", () => {
     assert.match(BLOCK_REASON, /#6509/);
     assert.match(BLOCK_REASON, /checkout principal/);
     assert.match(BLOCK_REASON, /worktree/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #12165: o alvo sai do PRÓPRIO comando (`cd <dir>` anterior e `git -C <dir>`),
+// não só do cwd da sessão. Achado ao vivo em 04/11/2026 (#12092):
+//   - falso positivo: `cd <worktree linkado> && git switch -c X` rodado de uma
+//     sessão no checkout principal era bloqueado;
+//   - furo: `git -C <checkout principal> switch -c X` rodado de um worktree
+//     linkado passava (o `-C` nem era reconhecido).
+// ---------------------------------------------------------------------------
+
+const HOOK_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", ".claude", "hooks", "block-branch-checkout-main.mjs");
+
+function makeFixture() {
+  const base = join(tmpdir(), `branch-guard-12165-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const main = join(base, "main");
+  const wt = join(main, ".claude", "worktrees", "agent-x");
+  const outsideWt = join(base, "scratch", "wt12092"); // worktree fora de .claude/worktrees/ (caso real da issue)
+  mkdirSync(join(main, ".git", "worktrees", "agent-x"), { recursive: true });
+  mkdirSync(join(main, ".git", "worktrees", "wt12092"), { recursive: true });
+  mkdirSync(join(main, "scripts"), { recursive: true });
+  mkdirSync(join(wt, "scripts"), { recursive: true });
+  mkdirSync(outsideWt, { recursive: true });
+  writeFileSync(join(wt, ".git"), `gitdir: ${join(main, ".git", "worktrees", "agent-x")}\n`, "utf8");
+  writeFileSync(join(outsideWt, ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt12092")}\n`, "utf8");
+  return { base, main, wt, outsideWt };
+}
+
+function writeCoordinator(main: string, sessionId: string) {
+  const dir = sessionsDir(main);
+  mkdirSync(dir, { recursive: true });
+  const now = new Date().toISOString();
+  writeFileSync(
+    join(dir, `overnight-${sessionId}.json`),
+    JSON.stringify({ kind: "overnight", sessionId, startedAt: now, lastHeartbeat: now, machineTag: machineTag() }),
+    "utf8",
+  );
+}
+
+function runHook(payload: Record<string, unknown>): string {
+  const r = spawnSync(process.execPath, [HOOK_PATH], { input: JSON.stringify(payload), encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout;
+}
+
+describe("resolveBranchCreateTargets (#12165) — alvo derivado do comando", () => {
+  const fx = makeFixture();
+  after(() => rmSync(fx.base, { recursive: true, force: true }));
+  const HOME = "/home/fake";
+
+  it("sem cd/-C: o alvo é o cwd da sessão", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout -b x", fx.main, HOME), [fx.main]);
+  });
+
+  it("`cd <abs> && git switch -c`: o alvo é o diretório do cd", () => {
+    assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.wt} && git switch -q -c fix/x`, fx.main, HOME), [fx.wt]);
+  });
+
+  it("`git -C <abs> switch -c`: o alvo é o -C (o -C antes era ignorado na detecção)", () => {
+    assert.deepEqual(resolveBranchCreateTargets(`git -C ${fx.main} switch -c x`, fx.wt, HOME), [fx.main]);
+  });
+
+  it("cd relativo e -C relativo compõem como no shell/git", () => {
+    assert.deepEqual(resolveBranchCreateTargets("cd scripts && git -C .. checkout -b x", fx.wt, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets("git -C .claude -C worktrees/agent-x switch -c x", fx.main, HOME), [fx.wt]);
+  });
+
+  it("vale o ÚLTIMO cd antes do git", () => {
+    assert.deepEqual(
+      resolveBranchCreateTargets(`cd ${fx.wt} && cd ${fx.main} && git checkout -b x`, fx.wt, HOME),
+      [fx.main],
+    );
+  });
+
+  it("cd dentro de subshell não vaza para fora dele", () => {
+    assert.deepEqual(resolveBranchCreateTargets(`(cd ${fx.wt}) && git checkout -b x`, fx.main, HOME), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets(`(cd ${fx.wt} && git checkout -b x)`, fx.main, HOME), [fx.wt]);
+  });
+
+  it("path entre aspas (com espaço) é lido inteiro", () => {
+    assert.deepEqual(resolveBranchCreateTargets(`cd "/tmp/a b" && git switch -c x`, fx.main, HOME), ["/tmp/a b"]);
+  });
+
+  it("`~` e `$HOME` expandem para o home", () => {
+    assert.deepEqual(resolveBranchCreateTargets("cd ~/repo && git switch -c x", fx.main, HOME), ["/home/fake/repo"]);
+    assert.deepEqual(resolveBranchCreateTargets("git -C $HOME/repo switch -c x", fx.main, HOME), ["/home/fake/repo"]);
+  });
+
+  it("fail-closed: variável, substituição, `cd -`, popd, --git-dir/--work-tree → não resolvido (null)", () => {
+    assert.deepEqual(resolveBranchCreateTargets("cd $W && git switch -c x", fx.wt, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets('git -C "$(pwd)" switch -c x', fx.wt, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets("cd - && git checkout -b x", fx.wt, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets("popd && git checkout -b x", fx.wt, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets(`git --work-tree=${fx.main} checkout -b x`, fx.wt, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets(`git --git-dir ${fx.main}/.git checkout -b x`, fx.wt, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets("git $OPTS switch -c x", fx.wt, HOME), [null]);
+  });
+
+  it("variável atribuída com valor literal antes no MESMO comando é expandida (forma do caso real, `W=...; cd $W`)", () => {
+    assert.deepEqual(resolveBranchCreateTargets(`W=${fx.wt}; cd $W && git switch -q -c x`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`export W=${fx.wt} && cd "\${W}" && git switch -c x`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`W=${fx.wt}\ngit -C "$W/scripts" switch -c x`, fx.main, HOME), [join(fx.wt, "scripts")]);
+    // valor dinâmico na atribuição, ou atribuição só dentro de subshell → segue não resolvido
+    assert.deepEqual(resolveBranchCreateTargets("W=$(pwd); cd $W && git switch -c x", fx.main, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets(`(W=${fx.wt}); cd $W && git switch -c x`, fx.main, HOME), [null]);
+    // `W=x git ...` é env do comando, não variável do shell para `$W` na mesma linha
+    assert.deepEqual(resolveBranchCreateTargets(`W=${fx.wt} git -C $W switch -c x`, fx.main, HOME), [null]);
+  });
+
+  it("variável em aspas simples é literal (não dinâmica)", () => {
+    assert.deepEqual(resolveBranchCreateTargets("cd '/tmp/$x' && git switch -c y", fx.main, HOME), ["/tmp/$x"]);
+  });
+
+  it("não cria branch → lista vazia (nada a decidir)", () => {
+    assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.main} && git switch master`, fx.wt, HOME), []);
+    assert.deepEqual(resolveBranchCreateTargets('gh pr create --body "rode git checkout -b x"', fx.main, HOME), []);
+    assert.deepEqual(resolveBranchCreateTargets("git -C /x log -b", fx.main, HOME), []);
+  });
+
+  it("isBranchCreateCheckoutCommand passa a reconhecer opções globais e VAR=x", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git -C /x switch -c y"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git -c core.x=1 checkout -b y"), true);
+    assert.equal(isBranchCreateCheckoutCommand("GIT_TRACE=1 git checkout -b y"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -b y 2>&1 | tail -3"), true);
+  });
+
+  it("tokenizeShellSegments separa `&&`/`;`/`|`/newline fora de aspas e mantém o conteúdo citado num token", () => {
+    const segs = tokenizeShellSegments('cd "a && b" && git x; y | z\nw', HOME).map((s: Array<{ value: string }>) =>
+      s.map((t) => t.value),
+    );
+    assert.deepEqual(segs, [["cd", "a && b"], ["git", "x"], ["y"], ["z"], ["w"]]);
+  });
+});
+
+describe("mainRootsHitByTargets / mainCheckoutRootOf (#12165)", () => {
+  const fx = makeFixture();
+  after(() => rmSync(fx.base, { recursive: true, force: true }));
+
+  it("mainCheckoutRootOf: principal → ele mesmo; worktree → principal pelo gitdir", () => {
+    assert.equal(mainCheckoutRootOf(fx.main), fx.main);
+    assert.equal(mainCheckoutRootOf(fx.wt), fx.main);
+    assert.equal(mainCheckoutRootOf(fx.outsideWt), fx.main);
+  });
+
+  it("alvo worktree linkado (inclusive subdiretório e fora de .claude/worktrees/) → nada atingido", () => {
+    assert.deepEqual(mainRootsHitByTargets([fx.wt, join(fx.wt, "scripts"), fx.outsideWt], fx.main), []);
+  });
+
+  it("alvo checkout principal (ou subdiretório dele) → principal atingido", () => {
+    assert.deepEqual(mainRootsHitByTargets([join(fx.main, "scripts")], fx.wt), [fx.main]);
+  });
+
+  it("alvo não resolvido → principal da sessão (fail-closed), mesmo com a sessão num worktree", () => {
+    assert.deepEqual(mainRootsHitByTargets([null], fx.wt), [fx.main]);
+  });
+});
+
+describe("hook end-to-end (#12165) — os dois casos da issue", () => {
+  const fx = makeFixture();
+  writeCoordinator(fx.main, "coord-1");
+  after(() => rmSync(fx.base, { recursive: true, force: true }));
+  const denied = (out: string) => out.includes('"permissionDecision":"deny"');
+  const hook = (cwd: string, command: string, sessionId = "outra-sessao") =>
+    runHook({ tool_name: "Bash", session_id: sessionId, cwd, tool_input: { command } });
+
+  it("regressão (falso positivo): sessão no principal, `cd <worktree linkado> && git switch -c` → LIBERA", () => {
+    const out = hook(fx.main, `cd ${fx.outsideWt} && git switch -q -c fix/12092-x`);
+    assert.equal(denied(out), false, out);
+  });
+
+  it("regressão (falso positivo, forma literal da issue): `W=<worktree>; cd $W && git switch -q -c` → LIBERA", () => {
+    const out = hook(fx.main, `W=${fx.outsideWt}\ncd $W && git switch -q -c fix/12092-x`);
+    assert.equal(denied(out), false, out);
+  });
+
+  it("regressão (furo): sessão num worktree, `git -C <principal> switch -c` → BLOQUEIA", () => {
+    const out = hook(fx.wt, `git -C ${fx.main} switch -c outra-branch`);
+    assert.equal(denied(out), true, out);
+  });
+
+  it("sessão num worktree, `cd <principal> && git checkout -b` → BLOQUEIA", () => {
+    assert.equal(denied(hook(fx.wt, `cd ${fx.main} && git checkout -b x`)), true);
+  });
+
+  it("comando comum de subagente: `git checkout -b X` com cwd no próprio worktree → LIBERA", () => {
+    assert.equal(denied(hook(fx.wt, "git checkout -b overnight/fix-1-x")), false);
+  });
+
+  it("sessão no principal, `git checkout -b` sem cd → BLOQUEIA (comportamento #6509 preservado)", () => {
+    assert.equal(denied(hook(fx.main, "git checkout -b x")), true);
+  });
+
+  it("alvo não resolvido (`cd $W`) com coordenadora alheia ativa → BLOQUEIA (fail-closed)", () => {
+    assert.equal(denied(hook(fx.wt, "cd $W && git switch -c x")), true);
+  });
+
+  it("a própria coordenadora no principal → LIBERA", () => {
+    assert.equal(denied(hook(fx.main, "git checkout -b x", "coord-1")), false);
   });
 });
