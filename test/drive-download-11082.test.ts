@@ -16,7 +16,9 @@ import { downloadDriveFile as reexported } from "../scripts/fetch-drive-video.ts
 import { downloadDriveFile } from "../scripts/lib/drive-download.ts";
 
 const ID = "1AbCdEfGhIjKlMnOp";
-const FAST = { metadataMs: 1_000, downloadMs: 5_000, idleMs: 80 };
+// Downloads bem-sucedidos precisam tolerar a disputa de I/O no CI paralelo.
+const FAST = { metadataMs: 5_000, downloadMs: 15_000, idleMs: 5_000 };
+const STALLED = { ...FAST, idleMs: 80 };
 
 function deps(opts: {
   meta?: { status?: number; name?: string; size?: string };
@@ -105,7 +107,7 @@ test(
       },
     });
     const { deps: d } = deps({ body: stalled });
-    await assert.rejects(downloadDriveFileById(d, ID, dest, FAST), /ocioso por 0.08s/);
+    await assert.rejects(downloadDriveFileById(d, ID, dest, STALLED), /ocioso por 0.08s/);
     assert.deepEqual(readdirSync(dir), []);
   }),
 );

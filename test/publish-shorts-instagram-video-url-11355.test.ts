@@ -38,7 +38,7 @@ const realShorts = realConfig.publishing.shorts;
 
 const SCHEDULE = { rotation_times: ["12:00", "19:00"], rotation_start: "2026-10-22", rotation_end: "2026-11-04", default_time: "12:00" };
 
-function planDiaria(extra: Partial<ShortsPlanInput> = {}, authorPage: string | null = null) {
+function planDiaria(extra: Partial<Extract<ShortsPlanInput, { corte?: undefined; editionDirOverride?: undefined }>> = {}, authorPage: string | null = null) {
   return planShortsPublish({
     aammdd: "261102",
     reviewedMd: "DESTAQUE 1 | X\n\n[Título do D1](https://a.com/x)\n\nCorpo do destaque. Segunda frase.\n",

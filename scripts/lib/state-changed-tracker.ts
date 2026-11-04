@@ -686,11 +686,12 @@ interface PlanIssueEntryLike {
 }
 
 /** Pure: motivo terminal "não trabalhada" de uma entrada, ou `null`. Aceita
- * as duas formas vistas em `plan.json`: `status: "pulada"` + `motivo`
+ * as formas vistas em `plan.json`: `status: "pulada"` ou
+ * `"fora-da-rodada-por-track"` + `motivo`
  * (develop 261018) e o motivo gravado direto em `status` (forma que
  * `findDeixadoPara300Buraco` também aceita). */
 function unworkedMotivo(entry: PlanIssueEntryLike, includeClaimed: boolean): string | null {
-  const candidates: unknown[] = [entry.status === "pulada" ? entry.motivo : undefined, entry.status];
+  const candidates: unknown[] = [["pulada", "fora-da-rodada-por-track"].includes(String(entry.status)) ? entry.motivo : undefined, entry.status];
   for (const c of candidates) {
     if (typeof c !== "string") continue;
     if (c === "bloqueio-externo") return c; // #11301: revalidar bloqueio inicial

@@ -41,6 +41,7 @@ import {
 } from "./lib/inbox-stats.ts"; // #592, #609, #1864, #3696, #3709
 import type { Article, Highlight, CategorizedJson, ApprovedJson } from "./lib/schemas/edition-state.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { dropDestaqueOnlyFromBuckets } from "./lib/destaque-upgrade.ts"; // #12193
 
 // #658 review: paths consistentes contra ROOT (não cwd) — segue padrão de
 // inbox-drain.ts e drive-sync.ts.
@@ -478,6 +479,29 @@ function main() {
     use_melhor: useMelhorResolved, // sempre array — consumers não precisam de ?? [] (#328)
     video: videoResolved, // sempre array
   };
+
+  // #12193: URL já publicada (seção não-destaque) entrou só como candidata a
+  // destaque. Se não ficou entre os destaques aprovados, sai de qualquer seção
+  // normal — repetir o link no RADAR/USE MELHOR continua proibido.
+  const poolBuckets: Record<string, Article[] | undefined> = {
+    lancamento: approved.lancamento,
+    radar: approved.radar,
+    use_melhor: approved.use_melhor,
+    video: approved.video,
+  };
+  const destaqueOnlyDropped = dropDestaqueOnlyFromBuckets(
+    poolBuckets,
+    highlights.map((h) => h.url).filter((u): u is string => typeof u === "string" && u.length > 0),
+  );
+  approved.lancamento = poolBuckets.lancamento ?? [];
+  approved.radar = poolBuckets.radar ?? [];
+  approved.use_melhor = poolBuckets.use_melhor ?? [];
+  approved.video = poolBuckets.video ?? [];
+  for (const d of destaqueOnlyDropped) {
+    console.error(
+      `[apply-gate-edits] #12193: ${d.url} saiu de ${d.bucket} — URL repetida só pode voltar como destaque (${d.note})`,
+    );
+  }
 
   // #592 + #609: linha de cobertura — submissões / descobertos / selecionados
   const platformConfigPath = resolve(ROOT, "platform.config.json");

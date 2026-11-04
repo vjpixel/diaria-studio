@@ -57,7 +57,7 @@
 
 import { readFileSync } from "node:fs";
 import { loadR2UploadConfig, uploadToR2, type R2UploadConfig, type R2UploadDeps } from "./r2-object-upload.ts";
-import { r2KeyForImageKey } from "./shared/kv-image.ts";
+import { isContentAddressedImageKey, r2KeyForImageKey } from "./shared/kv-image.ts";
 
 export { r2KeyForImageKey };
 
@@ -160,4 +160,70 @@ export function resolveR2ImageUploader(
     };
   }
   return { uploader: makeR2ImageUploader(r2.config, workerUrl) };
+}
+
+/**
+ * #12194: prefixo estável da `message` do `warn` que `upload-images-public.ts`
+ * grava no run-log quando a flag está ligada e nenhuma imagem elegível da
+ * edição foi pro R2. `collect-edition-signals.ts`
+ * (`signalsFromPublicImagesR2Inert`) casa por este prefixo e o transforma em
+ * signal do auto-reporter, sem depender de `--include-test-warnings`.
+ */
+export const PUBLIC_IMAGES_R2_INERT_LOG_PREFIX = "public_images_r2_inert:";
+
+/** Entrada de `06-public-images.json` no que a contagem precisa (estrutural, sem importar o uploader). */
+export interface PublicImageTargetEntry {
+  file_id?: string;
+  target?: string;
+}
+
+export interface PublicImagesR2Coverage {
+  /** Flag `public_images_r2.enabled` (ou uploader R2 injetado) no momento do upload. */
+  flagEnabled: boolean;
+  /** Entradas que PODERIAM estar no R2: key content-addressed `img-{AAMMDD}-…` hospedada no R2 ou no KV. */
+  eligible: number;
+  /** Elegíveis com `target: "r2"`. */
+  r2: number;
+  /** Elegíveis com `target: "cloudflare"` (KV). */
+  kv: number;
+  /** Chaves (do mapa) das elegíveis que ficaram no KV, na ordem do mapa. */
+  kvKeys: string[];
+  /** Flag ligada, ≥1 elegível e 0 no R2: a migração está inerte nesta edição. */
+  inert: boolean;
+}
+
+/**
+ * #12194: conta, nas entradas de `06-public-images.json`, quantas imagens
+ * elegíveis ao R2 estão de fato no R2 contra no KV. Elegível = `file_id` com
+ * forma R2 (`r2KeyForImageKey` não-nulo) E content-addressed
+ * (`isContentAddressedImageKey`: o É IA? de convenção fixa, `noCacheBust`, tem
+ * forma R2 mas sempre fica no KV, ver `shouldUploadToR2`) e `target` `r2` ou
+ * `cloudflare` (entry legada `drive`/sem target fica de fora). `inert` só com
+ * a flag ligada: desligada, tudo no KV é o esperado.
+ *
+ * Puro: não lê config, env nem rede.
+ */
+export function summarizePublicImagesR2Coverage(
+  images: Record<string, PublicImageTargetEntry>,
+  flagEnabled: boolean,
+): PublicImagesR2Coverage {
+  let r2 = 0;
+  const kvKeys: string[] = [];
+  for (const [key, entry] of Object.entries(images)) {
+    const id = entry?.file_id;
+    if (typeof id !== "string" || r2KeyForImageKey(id) === null || !isContentAddressedImageKey(id)) continue;
+    if (entry.target === "r2") r2++;
+    else if (entry.target === "cloudflare") kvKeys.push(key);
+  }
+  const eligible = r2 + kvKeys.length;
+  return { flagEnabled, eligible, r2, kv: kvKeys.length, kvKeys, inert: flagEnabled && eligible > 0 && r2 === 0 };
+}
+
+/** #12194: texto do aviso (e da `message` do run-log) para uma cobertura inerte. */
+export function publicImagesR2InertMessage(coverage: PublicImagesR2Coverage): string {
+  return (
+    `${PUBLIC_IMAGES_R2_INERT_LOG_PREFIX} public_images_r2.enabled = true, mas 0 de ${coverage.eligible} ` +
+    `imagens elegíveis da edição foram pro R2 (todas no KV: ${coverage.kvKeys.join(", ")}). ` +
+    `Conferir o env do R2 (npx tsx scripts/probe-public-images-r2.ts) e os avisos de upload desta rodada (#12194).`
+  );
 }

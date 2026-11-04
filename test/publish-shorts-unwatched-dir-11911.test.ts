@@ -37,6 +37,8 @@ import {
   ownersContextAfterPublish,
   parseShortsCliArgs,
   planShortsPublish,
+  prepareCorteRun,
+  type ShortsPlanInput,
 } from "../scripts/publish-shorts.ts";
 import { ALLOW_UNWATCHED_DIR_FLAG, CORTE_SPEC_FILE, checkCorteDir, corteBaseCommand, realpathLenient, shellQuote } from "../scripts/lib/diaria/short-corte.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
@@ -406,3 +408,38 @@ describe("#11911 donos recalculados depois da publicação (ownersContextAfterPu
     assert.equal(o.task, "Diaria-Shorts-Cortes");
   });
 });
+
+
+describe("#11944 resíduos do guard de pasta", () => {
+  it("a comparação real ignora caixa só no Windows", () => {
+    const real = (p: string) => p;
+    assert.equal(nonCanonicalEditionDir("/DATA/Edicao", "/data/edicao", real, "win32"), undefined);
+    assert.equal(nonCanonicalEditionDir("/DATA/Edicao", "/data/edicao", real, "linux"), "/DATA/Edicao");
+  });
+
+  it("grava o aviso também num corte existente sem alterar o plano ou perder a autorização", () => {
+    const dir = tmp("warning-11944-");
+    const input = { slug: SLUG, dir, positionalDate: "261102", values: { at: "08:00", title: "Título", hook: "Gancho", video: join(dir, "v.mp4") }, log: () => {} };
+    prepareCorteRun(input);
+    const path = join(dir, CORTE_SPEC_FILE);
+    const old = JSON.parse(readFileSync(path, "utf8"));
+    const authorization = { publish_confirmed_at: "2026-11-02T00:00:00Z", publish_confirmed_destinations: ["instagram"], publish_confirmed_content: { video_sha256: "a".repeat(64), cover_sha256: null } };
+    writeFileSync(path, JSON.stringify({ ...old, ...authorization }));
+    const warning = "nenhum timer vigia esta pasta";
+    prepareCorteRun({ ...input, values: {}, unwatchedDirWarning: warning });
+    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { ...old, ...authorization, unwatched_dir_warning: warning });
+    prepareCorteRun({ ...input, values: {} });
+    assert.equal(JSON.parse(readFileSync(path, "utf8")).unwatched_dir_warning, warning);
+  });
+});
+
+// Exercitado pelo typecheck de test/**: combinações inválidas nunca chegam ao plano.
+function invalidInputsForTypecheck(common: Omit<ShortsPlanInput, "corte" | "corteOutside" | "editionDirOverride" | "unwatchedEditionWarning">) {
+  // @ts-expect-error pasta externa de edição exige aviso
+  const noWarning: ShortsPlanInput = { ...common, editionDirOverride: "/fora" };
+  // @ts-expect-error pasta externa de corte exige corte
+  const noCorte: ShortsPlanInput = { ...common, corteOutside: { dir: "/fora", warning: "aviso" } };
+  // @ts-expect-error corte não aceita override de edição
+  const mixed: ShortsPlanInput = { ...common, corte: base.corte, editionDirOverride: "/fora", unwatchedEditionWarning: "aviso" };
+  return [noWarning, noCorte, mixed];
+}

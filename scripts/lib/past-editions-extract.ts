@@ -16,6 +16,7 @@ import { canonicalize } from "./url-utils.ts";
 import { isValidEditionDir } from "./edition-utils.ts"; // #1680: validador consolidado
 import { enumerateEditionDirs } from "./find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { decodeHtmlEntities } from "./clean-summary.ts"; // #9646: entidade HTML não vira token
+import { computeDestaqueUpgradeEligible } from "./destaque-upgrade.ts"; // #12193
 
 export { isValidEditionDir };
 
@@ -151,6 +152,65 @@ export function extractPastUrlsWithOriginWithinDays(
     }
   }
   return origins;
+}
+
+/**
+ * #12193: URL canônica → TODAS as datas (YYYY-MM-DD) em que ela saiu dentro
+ * da janela em dias. Diferente de `extractPastUrlsWithOriginWithinDays`, que
+ * guarda só a mais recente: a promoção a destaque precisa saber se a URL foi
+ * destaque em QUALQUER das edições em que apareceu.
+ */
+export function extractPastUrlDatesWithinDays(
+  md: string,
+  days: number = DEDUP_URL_WINDOW_DAYS,
+  referenceAammdd?: string,
+): Map<string, string[]> {
+  const dates = new Map<string, string[]>();
+  for (const { date, section } of pastSectionsWithinDays(md, days, referenceAammdd)) {
+    for (const u of urlsOfSection(section)) {
+      const list = dates.get(u) ?? [];
+      if (!list.includes(date)) list.push(date);
+      dates.set(u, list);
+    }
+  }
+  return dates;
+}
+
+/**
+ * #12193: URLs publicadas na janela de dedup que podem ser PROMOVIDAS a
+ * destaque (regra do editor de 04/11/2026): saíram só em seção não-destaque
+ * (RADAR, USE MELHOR, LANÇAMENTOS...) em todas as edições da janela.
+ *
+ * Conservadora por construção: a URL só entra quando, para CADA edição em
+ * que apareceu, existe a pasta local da edição e dela se leem os destaques
+ * (`readEditionDestaqueUrls`, não vazio). Sem pasta local (sessão cloud,
+ * clone fresco) ou sem destaques legíveis, não há como provar que ela não foi
+ * destaque — fica bloqueada como antes. `past-editions.md` não distingue
+ * seção, por isso a prova vem das pastas.
+ */
+export function extractDestaqueUpgradeEligibleUrls(
+  md: string,
+  editionsDir: string,
+  days: number = DEDUP_URL_WINDOW_DAYS,
+  referenceAammdd?: string,
+): Set<string> {
+  const urlDates = extractPastUrlDatesWithinDays(md, days, referenceAammdd);
+  if (urlDates.size === 0 || !existsSync(editionsDir)) return new Set();
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  const cache = new Map<string, Set<string> | undefined>();
+  const destaquesFor = (isoDate: string): Set<string> | undefined => {
+    const aammdd = isoDate.slice(2).replace(/-/g, "");
+    if (cache.has(aammdd)) return cache.get(aammdd);
+    const dir = editionDirsByAammdd.get(aammdd);
+    let set: Set<string> | undefined;
+    if (dir) {
+      const urls = readEditionDestaqueUrls(dir);
+      if (urls.length > 0) set = new Set(urls.map((u) => canonicalize(u)));
+    }
+    cache.set(aammdd, set);
+    return set;
+  };
+  return computeDestaqueUpgradeEligible(urlDates, destaquesFor);
 }
 
 /**
@@ -902,38 +962,46 @@ export function extractPastDestaqueUrls(
   for (const aammdd of recent) {
     const editionDir = editionDirsByAammdd.get(aammdd);
     if (!editionDir) continue;
-    // #1452 hierarchy: MD final > HTML final > approved.json (legacy fallback).
-    // Razão: 02-reviewed.md reflete edições pós-Stage-1 (title-picker, dedup
-    // cleanup, Drive sync) que approved.json não captura — caso 260520 onde
-    // approved.json tinha D1=Karpathy mas o publicado tinha D1=Gemini 3.5.
-    const reviewedPath = resolve(editionDir, "02-reviewed.md");
-    const htmlPath = resolve(editionDir, "_internal", "newsletter-final.html");
-    const approvedCandidates = [
-      resolve(editionDir, "_internal", "01-approved.json"),
-      resolve(editionDir, "01-approved.json"),
-    ];
-
-    let sourceUrls: string[] = [];
-    if (existsSync(reviewedPath)) {
-      sourceUrls = readReviewedDestaqueUrls(reviewedPath);
-    }
-    if (sourceUrls.length === 0 && existsSync(htmlPath)) {
-      sourceUrls = readNewsletterHtmlDestaqueUrls(htmlPath);
-    }
-    if (sourceUrls.length === 0) {
-      for (const path of approvedCandidates) {
-        if (!existsSync(path)) continue;
-        sourceUrls = readApprovedDestaqueUrls(path);
-        if (sourceUrls.length > 0) break;
-      }
-    }
-
-    for (const u of sourceUrls) {
+    for (const u of readEditionDestaqueUrls(editionDir)) {
       // Canonicalize pra match com canonicalize(art.url) no dedup
       urls.add(canonicalize(u));
     }
   }
   return urls;
+}
+
+/**
+ * URLs dos destaques (D1–D3) de UMA edição local. Extraído de
+ * `extractPastDestaqueUrls` no #12193 pra ser reusado por
+ * `extractDestaqueUpgradeEligibleUrls`. `[]` quando nada é legível.
+ */
+export function readEditionDestaqueUrls(editionDir: string): string[] {
+  // #1452 hierarchy: MD final > HTML final > approved.json (legacy fallback).
+  // Razão: 02-reviewed.md reflete edições pós-Stage-1 (title-picker, dedup
+  // cleanup, Drive sync) que approved.json não captura — caso 260520 onde
+  // approved.json tinha D1=Karpathy mas o publicado tinha D1=Gemini 3.5.
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  const htmlPath = resolve(editionDir, "_internal", "newsletter-final.html");
+  const approvedCandidates = [
+    resolve(editionDir, "_internal", "01-approved.json"),
+    resolve(editionDir, "01-approved.json"),
+  ];
+
+  let sourceUrls: string[] = [];
+  if (existsSync(reviewedPath)) {
+    sourceUrls = readReviewedDestaqueUrls(reviewedPath);
+  }
+  if (sourceUrls.length === 0 && existsSync(htmlPath)) {
+    sourceUrls = readNewsletterHtmlDestaqueUrls(htmlPath);
+  }
+  if (sourceUrls.length === 0) {
+    for (const path of approvedCandidates) {
+      if (!existsSync(path)) continue;
+      sourceUrls = readApprovedDestaqueUrls(path);
+      if (sourceUrls.length > 0) break;
+    }
+  }
+  return sourceUrls;
 }
 
 export function extractPastEditionArticleTitles(

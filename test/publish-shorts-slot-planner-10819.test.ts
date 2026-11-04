@@ -43,7 +43,7 @@ const config = {
   },
 };
 
-function plan(aammdd: string, date: string, grid: ScheduledSlot[], extra: Partial<Parameters<typeof planShortsPublish>[0]> = {}) {
+function plan(aammdd: string, date: string, grid: ScheduledSlot[], extra: Partial<Extract<Parameters<typeof planShortsPublish>[0], { corte?: undefined; editionDirOverride?: undefined }>> = {}) {
   return planShortsPublish({
     aammdd,
     reviewedMd: reviewed,
