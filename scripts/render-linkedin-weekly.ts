@@ -37,6 +37,12 @@
  * teste, edição muito antiga), a cópia é pulada com warning — nunca aborta
  * o render do artigo por causa da capa.
  *
+ * **#12081 — vídeo da semana.** Antes do render, a CLI mede na YouTube Data
+ * API o horizontal do D1 mais visto entre as edições da semana e grava em
+ * `ln-selection.json` (`video`); o artigo ganha uma linha com o link antes do
+ * fecho. Só mede quando o campo ainda não existe (re-render reusa; o editor
+ * pode editar ou apagar). Sem credencial/erro: `video: null`, sem a linha.
+ *
  * Escreve:
  *   data/weekly/{cycle}/ln-{cycle}.html   — fragmento HTML colável (sem
  *                                            <html>/<body> — é o payload
@@ -64,6 +70,8 @@ import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { isValidWeeklyCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { renderLinkedinWeeklyHtml, type WeeklyLinkedinRenderInput } from "./lib/weekly-linkedin-render.ts";
+import { resolveTopEditionVideo, type TopEditionVideo } from "./lib/top-edition-video.ts"; // #12081
+import { loadProjectEnv } from "./lib/env-loader.ts"; // #12081: credenciais do YouTube
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -126,9 +134,48 @@ function resolveTextArg(argv: string[], key: string, fallback?: string): string 
 
 interface SelectionJson {
   cycle: string;
+  contentWindow?: string[];
   headlines: Array<{ title: string; body: string; why: string; editionDate: string }>;
   useMelhor: { title: string; url: string; body: string } | null;
   weeklyEditions: Array<{ editionDate: string; url: string; destaques: string[] }>;
+  /** #12081: vídeo mais assistido da semana; `null` = medido e sem vídeo. */
+  video?: WeeklyVideoField | null;
+}
+
+/** #12081: vídeo mais assistido da semana, gravado em `ln-selection.json`. */
+export interface WeeklyVideoField {
+  title: string;
+  url: string;
+  editionDate: string;
+  views?: number;
+}
+
+/**
+ * #12081: grava em `ln-selection.json` o horizontal do D1 mais visto da
+ * semana (`video`), medido na YouTube Data API. Roda só quando o campo ainda
+ * não existe: a re-renderização reusa o valor (e o editor pode editá-lo ou
+ * apagá-lo à mão). Fail-soft: sem credencial ou com erro grava `null` e o
+ * artigo sai sem a linha do vídeo. `topVideo` injetável para teste.
+ */
+export async function ensureWeeklyVideo(
+  rootDir: string,
+  cycle: string,
+  topVideo: (days: readonly string[]) => Promise<TopEditionVideo | null> = (days) =>
+    resolveTopEditionVideo({ aammdds: days, dirFor: (d) => resolveEditionDir(join(rootDir, "data/editions"), d), env: process.env }),
+): Promise<WeeklyVideoField | null> {
+  const selectionPath = join(rootDir, weeklyLinkedinRelDir(cycle), "_internal", "ln-selection.json");
+  if (!existsSync(selectionPath)) return null;
+  const selection = JSON.parse(readFileSync(selectionPath, "utf8")) as SelectionJson & Record<string, unknown>;
+  if (selection.video !== undefined) return selection.video ?? null;
+  const days = Array.isArray(selection.contentWindow) ? selection.contentWindow : selection.weeklyEditions.map((e) => e.editionDate);
+  const top = await topVideo(days);
+  const d1ByDate = new Map(selection.weeklyEditions.map((e) => [e.editionDate, e.destaques[0] ?? ""]));
+  const title = top ? (top.title ?? "").trim() || (d1ByDate.get(top.aammdd) ?? "").trim() : "";
+  const video: WeeklyVideoField | null =
+    top && title ? { title, url: top.videoUrl, editionDate: top.aammdd, views: top.views } : null;
+  writeFileSync(selectionPath, JSON.stringify({ ...selection, video }, null, 2), "utf8");
+  if (video) console.log(`Vídeo da semana: ${video.title} (${video.views ?? "?"} views, edição ${video.editionDate})`);
+  return video;
 }
 
 /**
@@ -172,6 +219,7 @@ export function main(rootDirOverride?: string) {
     weeklyEditions: selection.weeklyEditions,
     opening,
     closing,
+    video: selection.video ?? null, // #12081
   };
 
   const result = renderLinkedinWeeklyHtml(input);
@@ -230,5 +278,14 @@ export function main(rootDirOverride?: string) {
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  // #12081: mede o vídeo da semana (async) antes do render (sync).
+  const cycleArg = getArg(process.argv.slice(2), "cycle");
+  let prefetch: Promise<WeeklyVideoField | null> = Promise.resolve(null);
+  if (isValidWeeklyCycle(cycleArg)) {
+    loadProjectEnv(ROOT);
+    prefetch = ensureWeeklyVideo(ROOT, cycleArg);
+  }
+  prefetch
+    .catch((e) => console.warn(`[render-linkedin-weekly] vídeo da semana não medido (${(e as Error).message}) — sem a linha do vídeo`))
+    .then(() => main());
 }

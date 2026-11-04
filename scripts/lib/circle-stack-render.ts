@@ -9,7 +9,8 @@
  * Estrutura (#11186): título = título do D1 · abertura (resumo da semana com
  * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · Destaques da semana (título com link da fonte, corpo e
  * "Por que isso importa:" iguais aos da edição diária) · Lançamentos · Use melhor · Radar ·
- * Outros destaques da semana (só o que não apareceu acima) · última linha ("Assine a diar.ia.br. Chega de segunda a
+ * Outros destaques da semana (só o que não apareceu acima) · vídeo mais assistido
+ * da semana, se medido (#12081) · última linha ("Assine a diar.ia.br. Chega de segunda a
  * sexta...", link e fecho na mesma linha).
  *
  * Sem capa por destaque: o contrato do webhook da Stack não aceita imagem no
@@ -37,7 +38,10 @@ export const CIRCLE_STACK_UTM_SOURCE = "stack";
 export const CIRCLE_STACK_UTM_MEDIUM = "circle";
 export const CIRCLE_STACK_SUBSCRIBE_BASE_URL = "https://diar.ia.br";
 
-export type CircleStackUtmContent = "edicao" | "cta-fim";
+export type CircleStackUtmContent = "edicao" | "cta-fim" | "video";
+
+/** #12081: começo da linha do vídeo mais visto da semana (link no título do vídeo). */
+export const CIRCLE_STACK_VIDEO_LEAD = "Vídeo mais assistido da semana no canal da diar.ia.br:";
 
 /**
  * Abertura de reserva: só entra quando nenhum destaque rende uma frase de
@@ -102,6 +106,19 @@ export interface CircleStackSelection {
    * perde para `--opening-file`. Ausente/vazia = resumo automático.
    */
   opening?: string;
+  /**
+   * #12081: o horizontal do D1 mais visto entre as edições da semana, medido
+   * pela YouTube Data API ao montar a seleção (`top-edition-video.ts`).
+   * Ausente = sem linha do vídeo (sem vídeo na semana, ou views não medidas).
+   */
+  video?: CircleStackVideo;
+}
+
+export interface CircleStackVideo {
+  title: string;
+  url: string;
+  editionDate: string;
+  views?: number;
 }
 
 export interface CircleStackRenderOptions {
@@ -287,6 +304,11 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
   // Última linha do post: link de assinatura + ÚLTIMO parágrafo do fecho (pedido do editor, 23/10/2026).
   // Parágrafos anteriores do fecho (só com --closing-file de várias linhas) vêm antes, para o CTA
   // continuar sendo a última linha. `paragraphs()` nunca devolve vazio aqui (o default cobre fecho vazio).
+  // #12081: o vídeo mais assistido da semana, numa linha, antes do CTA final.
+  if (sel.video && sel.video.url.trim() && sel.video.title.trim()) {
+    blocks.push(`${CIRCLE_STACK_VIDEO_LEAD} ${link(buildCircleStackUrl(sel.video.url, sel.cycle, "video"), sel.video.title)}`);
+  }
+
   const subscribeHref = opts.subscribeUrl?.trim() || buildCircleStackUrl(CIRCLE_STACK_SUBSCRIBE_BASE_URL, sel.cycle, "cta-fim");
   const closingParas = paragraphs(opts.closing?.trim() || DEFAULT_CIRCLE_STACK_CLOSING);
   const closingLast = closingParas.pop() as string;
