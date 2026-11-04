@@ -99,12 +99,16 @@ test("buildVideoDoMesHtml: título linkado com UTM, frase, inscrição e sem set
   assert.throws(() => buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: " ", frase: "x" }), /título/);
 });
 
-test("buildVideoDoMesHtml: imagem do destaque linkada para o vídeo, antes do título", () => {
+test("buildVideoDoMesHtml: título no h2 dos destaques sem link, imagem do destaque linkada para o vídeo", () => {
   const img = "https://eia.diar.ia.br/img/img-261029-04-d1-2x1-play-a5826e6f.jpg";
   const html = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "Vídeo A", frase: "Frase.", imageUrl: img });
   const iImg = html.indexOf(`<img src="${img}"`);
   assert.ok(iImg > 0, "img com a URL do destaque");
-  assert.ok(iImg < html.indexOf("Vídeo A</a></p>"), "imagem vem antes do título");
+  const iTitle = html.indexOf("Vídeo A</h2>");
+  assert.ok(iTitle > 0 && iTitle < iImg, "título (h2 como D1/D2/D3) vem antes da imagem, como nos destaques");
+  assert.ok(html.includes('<h2 style="margin:0 0 20px 0;font-size:26px;'), "mesmo h2 do renderDestaque");
+  assert.ok(!/<a [^>]*>Vídeo A</.test(html), "título sem link");
+  assert.ok(/<a href="https:\/\/www\.youtube\.com\/watch\?v=abcDEF12345[^"]*"[^>]*>Assista ao vídeo<\/a>/.test(html), "link do vídeo no texto");
   assert.ok(html.slice(0, iImg).endsWith('<a href="https://www.youtube.com/watch?v=abcDEF12345&amp;utm_source=clarice&amp;utm_medium=email&amp;utm_campaign=video-do-mes-2610-11" style="text-decoration:none;">'));
   assert.ok(!buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "Vídeo A", frase: "Frase." }).includes("<img"));
   assert.throws(() => buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "A", frase: "x", imageUrl: "data/x.jpg" }), /https/);

@@ -142,7 +142,9 @@ function hrefAttr(url: string): string {
 /**
  * `imageUrl` é a imagem do DESTAQUE da edição que o vídeo comenta (pedido do
  * editor, 04/11/2026: não a capa do YouTube), linkada para o vídeo, no mesmo
- * estilo da imagem dos destaques da mensal.
+ * estilo da imagem dos destaques da mensal. O título sai como o h2 dos
+ * destaques (mesma ordem: kicker, título, imagem) e sem link (pedido do
+ * editor): o link do vídeo fica na imagem e no "Assista ao vídeo".
  */
 export function buildVideoDoMesHtml(input: {
   cycle: string;
@@ -163,11 +165,12 @@ export function buildVideoDoMesHtml(input: {
   return [
     VIDEO_DO_MES_START,
     renderKicker(VIDEO_DO_MES_KICKER),
+    // Mesmo h2 de `renderDestaque` (monthly-render.ts), sem link.
+    `<h2 style="margin:0 0 20px 0;font-size:26px;font-family:${FONTS.serif};line-height:1.2;color:${COLORS.ink};">${escHtml(title)}</h2>`,
     ...(imageUrl
-      ? [`<a href="${videoHref}" style="text-decoration:none;"><img src="${hrefAttr(imageUrl)}" alt="${escHtml(title)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 10px 0;border:0;" /></a>`]
+      ? [`<a href="${videoHref}" style="text-decoration:none;"><img src="${hrefAttr(imageUrl)}" alt="${escHtml(title)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 20px 0;border:0;" /></a>`]
       : []),
-    `<p style="margin:0 0 8px 0;font-family:${FONTS.serif};font-size:20px;line-height:1.3;color:${COLORS.ink};"><a href="${videoHref}" style="${link}">${escHtml(title)}</a></p>`,
-    `<p style="margin:0 0 16px 0;font-family:${FONTS.sans};">${escHtml(frase)} <a href="${hrefAttr(DIARIA_YOUTUBE_SUBSCRIBE_URL)}" style="${link}">Inscreva-se no canal</a>.</p>`,
+    `<p style="margin:0 0 16px 0;font-family:${FONTS.sans};">${escHtml(frase)} <a href="${videoHref}" style="${link}">Assista ao vídeo</a> e <a href="${hrefAttr(DIARIA_YOUTUBE_SUBSCRIBE_URL)}" style="${link}">inscreva-se no canal</a>.</p>`,
     `<div style="line-height:28px;font-size:0;">&nbsp;</div>`,
     VIDEO_DO_MES_END,
   ].join("\n");
