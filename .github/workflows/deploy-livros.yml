@@ -76,6 +76,13 @@ jobs:
           # só traz o HEAD.
           fetch-depth: 2
 
+      # #12118: workflow_dispatch de branch atrás do master publicaria código
+      # defasado em produção. Ver scripts/check-deploy-ref-contains-master.sh.
+      - name: Guard - branch contém o master? (#12118)
+        env:
+          DEPLOY_REF: ${{ github.ref_name }}
+        run: bash scripts/check-deploy-ref-contains-master.sh "$DEPLOY_REF"
+
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
