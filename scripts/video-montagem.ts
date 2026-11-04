@@ -57,9 +57,11 @@
  *                           que grava `fact-check.json`; o `roteiro` põe os achados graves no Doc do
  *                           Gate 2, com o trecho do bruto e a proposta de corte
  *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|text|off] [--no-speech-detect] [--no-audio-clean]
- *       (#12102) o áudio dos clipes do XML (e da prévia) vem de `{AAMMDD}_audio_tratado.wav`, o áudio
- *       do bruto com afftdn + agate (aproximação do Enhance do Adobe Podcast), ao lado do bruto;
- *       ffmpeg falho = áudio cru com [aviso]; --no-audio-clean tira.
+ *       (#12102) o áudio dos clipes do XML (e da prévia) vem de `{AAMMDD}_audio_tratado-{chave}.wav`
+ *       (`cleanAudioFileName`; a chave é o hash dos args do ffmpeg), o áudio do bruto com afftdn +
+ *       agate (aproximação do Enhance do Adobe Podcast), ao lado do bruto; ffmpeg falho = áudio
+ *       cru com [aviso]; --no-audio-clean tira. No modo API o build baixa o bruto de novo se ele
+ *       saiu do cache, antes do render da faixa (#12209).
  *       (#12101) vinheta do logo (publishing.video.vinheta_logo.path) na faixa do topo, no fim do
  *       título; respiro de 0,7 s depois do título no horizontal.
  *       (#12089) o corte de pausas vem do detector de fala (`SPEECH_DETECT`, bruto a 48 kHz em
@@ -78,8 +80,9 @@
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
  *       Vertical montada acima de 3:00 (Shorts) sai como [aviso] com quanto passa (#11377); o
  *       corte só na vertical é um item com "skip"/"targets" no blocks.json.
- *       Ganho de áudio (#11755): Audio Levels em cada clipe de áudio, do `loudness.json`, para
- *       -14 LUFS com teto -1 dBTP (`audioGainFor`); --no-audio-gain tira. Título nas verticais
+ *       Ganho de áudio (#11755): Audio Levels em cada clipe de áudio, para -14 LUFS com teto
+ *       -1 dBTP (`audioGainFor`), medido na faixa tratada quando ela entra no XML (#12209,
+ *       `audio-tratado.loudness.json`), senão no `loudness.json` do bruto; --no-audio-gain tira. Título nas verticais
  *       (#11756): faixa V2 no bloco `titulo` (sem ele, no 1º bloco) com o `screenTitle` do
  *       blocks.json ou o título do D1 (`02-reviewed.md`); --title-mode png (padrão desde o #12091:
  *       o PNG com fundo a 70% como clipe na V2, pendente de conferência no 1º import com o PNG
@@ -352,6 +355,7 @@ import {
   listChildren,
   parseDriveSize,
   pickDriveBruto,
+  readSidecar,
   snapshotDir,
   toPosix,
   uploadToFolder,
@@ -606,6 +610,71 @@ export function renderCleanAudio(
     }
   }
   return { path: out, xmlPath, filter, reused: false };
+}
+
+type Loudness = ReturnType<typeof parseLoudnormJson>;
+
+/**
+ * #12209: o loudness da faixa tratada, a que os clipes de áudio do XML tocam
+ * (o redutor de ruído e o gate mudam o nível, então o do bruto não serve).
+ * Cache em `audio-tratado.loudness.json` no state dir pela identidade do WAV
+ * (nome, tamanho, mtime): faixa reaproveitada não é medida de novo. Erro do
+ * ffmpeg propaga; quem chama decide o fallback (`gainLoudnessSource`).
+ */
+export function measureTreatedLoudness(
+  input: { path: string; stateDir: string },
+  deps: { measure?: (path: string) => string } = {},
+): Loudness {
+  const st = statSync(input.path);
+  const id = { file: basename(input.path), size: st.size, mtimeMs: Math.round(st.mtimeMs) };
+  const cachePath = join(input.stateDir, "audio-tratado.loudness.json");
+  if (existsSync(cachePath)) {
+    try {
+      const c = JSON.parse(readFileSync(cachePath, "utf8")) as { id?: unknown; loudness?: Loudness };
+      if (JSON.stringify(c.id) === JSON.stringify(id) && c.loudness) return c.loudness;
+    } catch {
+      // cache ilegível: mede de novo
+    }
+  }
+  const measure =
+    deps.measure ??
+    ((p: string) => run("ffmpeg", ["-hide_banner", "-nostats", "-i", p, "-map", "0:a:0", "-af", `${LOUDNORM_TARGET}:print_format=json`, "-f", "null", "-"]).stderr);
+  const loudness = parseLoudnormJson(measure(input.path));
+  if (loudness) {
+    mkdirSync(input.stateDir, { recursive: true });
+    writeFileAtomic(cachePath, JSON.stringify({ id, loudness }, null, 2) + "\n");
+  }
+  return loudness;
+}
+
+/**
+ * #12209: de onde sai o loudness do ganho do XML. Com a faixa tratada no XML,
+ * dela; se a medição dela falhou, do bruto, com `[aviso]` (o ganho calculado
+ * sobre o bruto vai para a faixa tratada). Sem faixa tratada, do bruto.
+ */
+export function gainLoudnessSource(input: {
+  treated: { loudness: Loudness; error?: string } | null;
+  bruto: Loudness;
+}): { loudness: Loudness; measuredOn: "bruto" | "faixa tratada"; warning?: string } {
+  if (!input.treated) return { loudness: input.bruto, measuredOn: "bruto" };
+  if (input.treated.loudness && Number.isFinite(input.treated.loudness.inputI)) return { loudness: input.treated.loudness, measuredOn: "faixa tratada" };
+  const why = input.treated.error ?? "o loudnorm não imprimiu a medida";
+  return {
+    loudness: input.bruto,
+    measuredOn: "bruto",
+    warning: `loudness da faixa tratada não medido (${why}): o ganho do XML sai do loudness do bruto e vai para a faixa tratada (redução de ruído e gate mudam o nível); conferir o nível no 1º import (#12209)`,
+  };
+}
+
+/**
+ * #12209: o `build` com a faixa tratada (padrão, #12102) lê o bruto, que o
+ * `transcribe` no modo API (o 300) não garante no cache: com a transcrição
+ * pronta ele não baixa nada, e o cache pode ter sido limpo. Sem o bruto, o
+ * ffmpeg falha e o XML cai para o áudio cru. No modo API o build garante o
+ * bruto antes (`ensureBrutoLocal`); no local (G:) o bruto é o do Drive montado.
+ */
+export function buildNeedsLocalBruto(o: { apiMode: boolean; audioClean: boolean }): boolean {
+  return o.apiMode && o.audioClean;
 }
 
 /**
@@ -1837,10 +1906,10 @@ function readD1Title(edition: string): string | null {
 }
 
 /** Relato do ganho de áudio do XML (#11755). */
-export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: number): string {
-  if (!g) return "[aviso] sem ganho de áudio no XML: loudness do bruto não medido (ou sem true peak para um ganho positivo); nível à mão no Premiere";
+export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: number, measuredOn: "bruto" | "faixa tratada" = "bruto"): string {
+  if (!g) return `[aviso] sem ganho de áudio no XML: loudness ${measuredOn === "bruto" ? "do bruto" : "da faixa tratada"} não medido (ou sem true peak para um ganho positivo); nível à mão no Premiere`;
   const why = g.limitedBy === "target" ? `alvo ${AUDIO_GAIN_TARGET_LUFS} LUFS` : g.limitedBy === "true-peak" ? `teto de ${AUDIO_GAIN_TP_CEILING_DBTP} dBTP` : "máximo do Audio Levels (+12 dB)";
-  const from = inputI !== undefined ? ` (bruto ${inputI.toFixed(2)} LUFS, TP ${inputTp !== undefined && Number.isFinite(inputTp) ? inputTp.toFixed(2) : "?"} dBTP)` : "";
+  const from = inputI !== undefined ? ` (${measuredOn} ${inputI.toFixed(2)} LUFS, TP ${inputTp !== undefined && Number.isFinite(inputTp) ? inputTp.toFixed(2) : "?"} dBTP)` : "";
   return `[premissa] ganho de áudio no XML: ${g.db > 0 ? "+" : ""}${g.db.toFixed(2)} dB em cada clipe (Audio Levels, limitado pelo ${why})${from}; conferir no 1º import se o Premiere aplicou (#11755); --no-audio-gain tira`;
 }
 
@@ -1933,13 +2002,23 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
   // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
   const versionHashes = versionPickedSequences(ctx, picked, hash, { speechDetect: speech.cut !== null, audioRefine, audioGain, titleMode, vinheta, audioClean: treated?.filter ?? null });
-  // #11755: ganho do loudness.json (o mesmo que o transcribe mediu).
+  // #11755: ganho do loudness; #12209: medido na faixa tratada quando é ela que o XML toca, senão o loudness.json do bruto.
   let gain: AudioGain | null = null;
   if (audioGain) {
     const loudPath = f(ctx, "loudness.json");
-    const loud = existsSync(loudPath) ? readJson<ReturnType<typeof parseLoudnormJson>>(loudPath, "loudness.json") : null;
-    gain = audioGainFor(loud);
-    console.error(audioGainLine(gain, loud?.inputI, loud?.inputTp));
+    const bruto = existsSync(loudPath) ? readJson<Loudness>(loudPath, "loudness.json") : null;
+    let treatedLoud: { loudness: Loudness; error?: string } | null = null;
+    if (treated) {
+      try {
+        treatedLoud = { loudness: measureTreatedLoudness({ path: treated.path, stateDir: ctx.stateDir }) };
+      } catch (e) {
+        treatedLoud = { loudness: null, error: (e as Error).message };
+      }
+    }
+    const src = gainLoudnessSource({ treated: treatedLoud, bruto });
+    if (src.warning) console.error(`[aviso] ${src.warning}`);
+    gain = audioGainFor(src.loudness);
+    console.error(audioGainLine(gain, src.loudness?.inputI, src.loudness?.inputTp, src.measuredOn));
   }
   // #11756: título na V2 das verticais.
   mkdirSync(ctx.outDir, { recursive: true });
@@ -2052,6 +2131,10 @@ function seqWords(ctx: Ctx, plan: SequencePlan, source: SourceInfo, fromRaw: boo
  * #12078: a cópia que o `srt --from-final` gravou (registro com `fromExport`)
  * está no tempo do export, o que vai ao ar; um `srt` da montagem (sem origem)
  * não a troca pela do tempo da sequência montada, salvo `--force`.
+ * #12209: salvo quando o horizontal foi reconstruído depois do export
+ * (`sequenceBuiltAtMs` > `recordedExportAtMs`): o export daquela legenda saiu
+ * de um XML anterior, e a cópia é trocada pela da montagem nova
+ * ("replace-stale-export", que grava). O certo é rodar `--from-final` no novo export.
  */
 export function youtubeSrtCopyDecision(input: {
   existing: string | null;
@@ -2059,35 +2142,88 @@ export function youtubeSrtCopyDecision(input: {
   force: boolean;
   recordedFromExport?: boolean;
   fromExport?: boolean;
-}): "write" | "keep-edited" | "keep-from-export" {
+  /** #12209: instante do export que gerou a cópia (mtime do arquivo, ou o `modifiedTime` do Drive). */
+  recordedExportAtMs?: number | null;
+  /** #12209: `builtAt` do horizontal no plan.json atual. */
+  sequenceBuiltAtMs?: number;
+}): "write" | "keep-edited" | "keep-from-export" | "replace-stale-export" {
   if (input.existing === null || input.force) return "write";
   const sha = createHash("sha256").update(input.existing).digest("hex");
   if (sha !== input.recordedSha256) return "keep-edited";
-  return input.recordedFromExport && !input.fromExport ? "keep-from-export" : "write";
+  if (!input.recordedFromExport || input.fromExport) return "write";
+  const exportAt = input.recordedExportAtMs;
+  if (input.sequenceBuiltAtMs !== undefined && typeof exportAt === "number" && Number.isFinite(exportAt) && input.sequenceBuiltAtMs > exportAt) return "replace-stale-export";
+  return "keep-from-export";
+}
+
+/** Identidade do export que gerou a legenda (#12209), gravada em `youtube-srt.json`. */
+export interface ExportOrigin {
+  name: string;
+  size?: number;
+  /** mtime local; no modo API é o do download. */
+  mtimeMs?: number;
+  /** `modifiedTime` do Drive (sidecar do cache, modo API): o instante real do export. */
+  driveModifiedTime?: string | null;
+}
+
+interface YoutubeSrtRecord {
+  sha256?: string;
+  writtenAt?: string;
+  fromExport?: string;
+  fromExportFile?: { size?: number; mtimeMs?: number; driveModifiedTime?: string | null };
+}
+
+/**
+ * #12209: quando o export da cópia foi feito. Prefere o `modifiedTime` do Drive
+ * (o mtime local no modo API é o do download), depois o mtime; registro
+ * anterior a este campo cai no `writtenAt` (o export é mais velho que o
+ * `--from-final` que o leu, então "build depois do writtenAt" já é defasado).
+ */
+export function recordedExportAt(record: YoutubeSrtRecord | null): number | null {
+  if (!record?.fromExport) return null;
+  const drive = record.fromExportFile?.driveModifiedTime ? Date.parse(record.fromExportFile.driveModifiedTime) : NaN;
+  if (Number.isFinite(drive)) return drive;
+  const m = record.fromExportFile?.mtimeMs;
+  if (typeof m === "number" && Number.isFinite(m)) return m;
+  const w = record.writtenAt ? Date.parse(record.writtenAt) : NaN;
+  return Number.isFinite(w) ? w : null;
 }
 
 /**
  * #12078: aplica a decisão acima nos caminhos dados (a cópia na pasta da edição
- * e o registro `youtube-srt.json`); grava só no "write". `origin` = nome do
- * export, quando a legenda veio do `--from-final`.
+ * e o registro `youtube-srt.json`); grava no "write" e no "replace-stale-export".
+ * `origin` = o export, quando a legenda veio do `--from-final` (string = só o nome).
  */
-export function applyYoutubeSrtCopy(input: { path: string; recordPath: string; srt: string; force: boolean; origin?: string; now?: Date }): ReturnType<typeof youtubeSrtCopyDecision> {
-  const record = existsSync(input.recordPath) ? readJson<{ sha256?: string; fromExport?: string }>(input.recordPath, "youtube-srt.json") : null;
+export function applyYoutubeSrtCopy(input: {
+  path: string;
+  recordPath: string;
+  srt: string;
+  force: boolean;
+  origin?: string | ExportOrigin;
+  sequenceBuiltAtMs?: number;
+  now?: Date;
+}): ReturnType<typeof youtubeSrtCopyDecision> {
+  const record = existsSync(input.recordPath) ? readJson<YoutubeSrtRecord>(input.recordPath, "youtube-srt.json") : null;
+  const origin: ExportOrigin | undefined = typeof input.origin === "string" ? { name: input.origin } : input.origin;
   const decision = youtubeSrtCopyDecision({
     existing: existsSync(input.path) ? readFileSync(input.path, "utf8") : null,
     recordedSha256: record?.sha256 ?? null,
     force: input.force,
     recordedFromExport: Boolean(record?.fromExport),
-    fromExport: Boolean(input.origin),
+    fromExport: Boolean(origin),
+    recordedExportAtMs: recordedExportAt(record),
+    sequenceBuiltAtMs: input.sequenceBuiltAtMs,
   });
-  if (decision !== "write") return decision;
+  if (decision !== "write" && decision !== "replace-stale-export") return decision;
   mkdirSync(dirname(input.path), { recursive: true });
   writeFileAtomic(input.path, input.srt);
+  const file = origin ? { size: origin.size, mtimeMs: origin.mtimeMs, driveModifiedTime: origin.driveModifiedTime } : null;
   writeJson(input.recordPath, {
     path: input.path,
     sha256: createHash("sha256").update(input.srt).digest("hex"),
     writtenAt: (input.now ?? new Date()).toISOString(),
-    ...(input.origin ? { fromExport: input.origin } : {}),
+    ...(origin ? { fromExport: origin.name } : {}),
+    ...(file && Object.values(file).some((v) => v !== undefined && v !== null) ? { fromExportFile: file } : {}),
   });
   return decision;
 }
@@ -2271,9 +2407,9 @@ function transcribeExport(ctx: Ctx, path: string, key: string): Word[] {
 }
 
 /** Grava a cópia do horizontal na pasta da edição (ver `applyYoutubeSrtCopy`); devolve a decisão. */
-function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: string): ReturnType<typeof youtubeSrtCopyDecision> {
+function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: ExportOrigin, sequenceBuiltAtMs?: number): ReturnType<typeof youtubeSrtCopyDecision> {
   const path = join(editionDirFor(ctx.edition), youtubeCaptionFileName(ctx.edition));
-  const decision = applyYoutubeSrtCopy({ path, recordPath: f(ctx, "youtube-srt.json"), srt, force: ctx.force, origin });
+  const decision = applyYoutubeSrtCopy({ path, recordPath: f(ctx, "youtube-srt.json"), srt, force: ctx.force, origin, sequenceBuiltAtMs });
   if (decision === "keep-edited") {
     // No --from-final o chamador sai com [erro]; no srt da montagem é só aviso (#11957).
     if (!origin) console.error(`[aviso] ${path} foi editado depois do último srt: mantido (o novo está no out dir; --force sobrescreve, #11957)`);
@@ -2283,7 +2419,13 @@ function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: string): ReturnType
     console.error(`[aviso] ${path} foi gravado pelo srt --from-final (tempo do export): mantido, a legenda da montagem não o substitui (o novo está no out dir; --force sobrescreve, #12078)`);
     return decision;
   }
-  if (origin) console.error(`[premissa] legenda do horizontal no tempo do export ${origin} (${path}, a que o publish-youtube.ts --upload/--captions-only envia, #12078)`);
+  if (decision === "replace-stale-export") {
+    console.error(
+      `[aviso] ${path} veio do srt --from-final de um export anterior ao último build do horizontal: trocado pela legenda da montagem nova (o export antigo não casa com o XML novo). ` +
+        `Depois de reexportar, rode srt --from-final no export novo antes do --upload (#12209)`,
+    );
+  }
+  if (origin) console.error(`[premissa] legenda do horizontal no tempo do export ${origin.name} (${path}, a que o publish-youtube.ts --upload/--captions-only envia, #12078)`);
   else console.error(`[premissa] legenda do horizontal no tempo da sequência montada (${path}, a que o publish-youtube.ts --upload envia); se a edição fina no Premiere mudou os tempos, conferir contra o export antes de subir, ou gerar do export com srt --from-final (#11957, #12078)`);
   console.log(path);
   return decision;
@@ -2295,8 +2437,9 @@ function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: string): ReturnType
  * insere vinheta). O plan.json defasado só avisa: o export saiu do XML daquele
  * build, então o roteiro gravado nele é o que casa com o export.
  */
-function loadFromFinalPlan(ctx: Ctx, seq: string | undefined): SequencePlan {
-  const pf = readJson<PlanFile>(f(ctx, "plan.json"), "plan.json (rode build --seq youtube)");
+function loadFromFinalPlan(ctx: Ctx, seq: string | undefined): { plan: SequencePlan; builtAtMs: number } {
+  const planPath = f(ctx, "plan.json");
+  const pf = readJson<PlanFile>(planPath, "plan.json (rode build --seq youtube)");
   if (!Array.isArray(pf.plans)) throw new Error(`plan.json malformado (sem a lista plans): rode build --seq youtube (${f(ctx, "plan.json")})`);
   const plan = fromFinalPlan(pf.plans, seq);
   if (typeof plan.script !== "string") throw new Error(`plan.json malformado (o horizontal sem script): rode build --seq youtube (${f(ctx, "plan.json")})`);
@@ -2305,12 +2448,27 @@ function loadFromFinalPlan(ctx: Ctx, seq: string | undefined): SequencePlan {
   } catch (e) {
     console.error(`[aviso] não deu para conferir o plan.json contra as entradas (${(e as Error).message}): usando o roteiro gravado nele`);
   }
-  return plan;
+  return { plan, builtAtMs: sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(planPath)) };
 }
 
-function cmdSrtFromFinal(ctx: Ctx, file: string, plan: SequencePlan, text: ExportSrtText = "roteiro"): number {
+/** #12209: identidade do export do `--from-final` (tamanho, mtime e, no modo API, o `modifiedTime` do Drive do sidecar do cache). */
+export function exportOriginOf(path: string): ExportOrigin {
+  const st = statSync(path);
+  return { name: basename(path), size: st.size, mtimeMs: Math.round(st.mtimeMs), driveModifiedTime: readSidecar(path)?.modifiedTime ?? null };
+}
+
+function cmdSrtFromFinal(ctx: Ctx, file: string, loaded: { plan: SequencePlan; builtAtMs: number }, text: ExportSrtText = "roteiro"): number {
+  const { plan, builtAtMs } = loaded;
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`export não encontrado: ${path}`);
+  const origin = exportOriginOf(path);
+  const exportAt = recordedExportAt({ fromExport: origin.name, fromExportFile: origin });
+  if (exportAt !== null && exportAt < builtAtMs) {
+    console.error(
+      `[aviso] o export ${origin.name} (${new Date(exportAt).toISOString()}) é anterior ao último build do horizontal (${new Date(builtAtMs).toISOString()}): ` +
+        `se ele saiu de um XML anterior, o roteiro do plan.json não casa com ele; reexporte do XML novo (#12209)`,
+    );
+  }
   const durationS = Number(JSON.parse(run("ffprobe", ["-v", "error", "-show_format", "-of", "json", path]).stdout).format?.duration);
   if (!Number.isFinite(durationS) || durationS <= 0) throw new Error(`duração ilegível no ffprobe (${path})`);
   const vocab = loadVocab();
@@ -2333,7 +2491,7 @@ function cmdSrtFromFinal(ctx: Ctx, file: string, plan: SequencePlan, text: Expor
   const out = join(ctx.outDir, srtFromExportFileName(plan.spec.name));
   writeFileAtomic(out, srt);
   console.log(out);
-  const decision = writeYoutubeSrtCopy(ctx, srt, basename(path));
+  const decision = writeYoutubeSrtCopy(ctx, srt, origin);
   if (decision === "keep-edited") {
     // Sair 0 aqui deixaria o backfill seguir para o --captions-only com a cópia antiga (tempo da montagem).
     const copy = join(editionDirFor(ctx.edition), youtubeCaptionFileName(ctx.edition));
@@ -2371,7 +2529,7 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
     const path = join(ctx.outDir, srtFileName(plan.spec.name));
     writeFileAtomic(path, srt);
     console.log(path);
-    if (isYoutubeSpec(plan.spec)) writeYoutubeSrtCopy(ctx, srt);
+    if (isYoutubeSpec(plan.spec)) writeYoutubeSrtCopy(ctx, srt, undefined, sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(f(ctx, "plan.json"))));
   }
   writeJson(notesPath, notes);
   console.error(`[video-montagem] ouvido × roteiro de cada legenda em ${notesPath}: itens a conferir no relatório final (#12093)`);
@@ -2914,6 +3072,8 @@ async function runCommand(
         console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");
         return 2;
       }
+      // #12209: a faixa tratada lê o bruto; no modo API ele pode ter saído do cache (o transcribe "pronto" não baixa).
+      if (buildNeedsLocalBruto({ apiMode: d !== null, audioClean: !flags.has("no-audio-clean") })) await needLocalBruto();
       return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"));
     case "srt": {
       if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "G:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
