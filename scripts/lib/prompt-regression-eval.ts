@@ -164,8 +164,9 @@ function gradeTitleLength(agent: PromptEvalAgent, rawText: string): GraderVerdic
 /**
  * `checkCarouselTextOverflow` (#6078) — lê `{editionDir}/03-social.md` do
  * DISCO (não recebe texto por parâmetro). Só faz sentido pra
- * `social-writer` (é quem escreve o corpo `## d{N}` que vira slide de
- * carrossel). O CHAMADOR é responsável por já ter escrito
+ * `social-writer` (é quem escreve o texto que vira slide de carrossel:
+ * `## d{N}-cards` desde o #12094, com fallback `## d{N}` lido por
+ * `extractCarouselCardsBlock`). O CHAMADOR é responsável por já ter escrito
  * `03-social.md` (envelopado em `# Social\n...`, ver
  * `wrapSocialWriterOutputForGrading`) em `editionDir` antes de chamar este
  * grader.
