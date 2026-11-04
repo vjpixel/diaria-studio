@@ -455,8 +455,9 @@ export function validateInjection(
  * #9365: quando a URL já está no pool (a pesquisa trouxe o mesmo link), as
  * `newsletter_mentions` do injetado são unidas no artigo do pool em vez de
  * descartadas — senão o bônus de menção em newsletter some justamente nos
- * itens que a pesquisa também achou. Não muta os arrays de entrada (o artigo
- * anotado é cópia).
+ * itens que a pesquisa também achou. #12213: o mesmo vale para o
+ * `editor_destaque_request` (copiado se o item do pool ainda não tem um).
+ * Não muta os arrays de entrada (o artigo anotado é cópia).
  */
 export function mergeInjectedIntoPool<P extends { url: string; [k: string]: unknown }>(
   pool: P[],
@@ -476,6 +477,14 @@ export function mergeInjectedIntoPool<P extends { url: string; [k: string]: unkn
     }
     const mentions = unionNewsletterMentions(poolOut[idx].newsletter_mentions, a.newsletter_mentions);
     if (mentions.length > 0) poolOut[idx] = { ...poolOut[idx], newsletter_mentions: mentions };
+    // #12213: o pedido de destaque do editor ("esse deve ser o d1") só existe
+    // no artigo injetado. Sem copiá-lo, URL que a pesquisa também achou perde
+    // o pedido e o aviso `editor-destaque-request` do gate 4 nunca dispara.
+    // Pedido já presente no item do pool vence (não sobrescreve).
+    const request = a.editor_destaque_request;
+    if (request && !poolOut[idx].editor_destaque_request) {
+      poolOut[idx] = { ...poolOut[idx], editor_destaque_request: request };
+    }
   }
   return { merged: [...poolOut, ...newInjected], newInjected };
 }
