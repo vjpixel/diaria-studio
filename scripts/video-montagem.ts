@@ -66,9 +66,9 @@
  *       Ganho de áudio (#11755): Audio Levels em cada clipe de áudio, do `loudness.json`, para
  *       -14 LUFS com teto -1 dBTP (`audioGainFor`); --no-audio-gain tira. Título nas verticais
  *       (#11756): faixa V2 no bloco `titulo` (sem ele, no 1º bloco) com o `screenTitle` do
- *       blocks.json ou o título do D1 (`02-reviewed.md`); --title-mode text (default, gerador
- *       de texto do FCP7, e o PNG transparente sai junto como reserva), png (o PNG como clipe na
- *       V2) ou off. Os dois aguardam a conferência no 1º import do Premiere.
+ *       blocks.json ou o título do D1 (`02-reviewed.md`); --title-mode png (padrão desde o #12091,
+ *       validado no import da 261104: o PNG com fundo a 70% como clipe na V2), text (gerador de
+ *       texto do FCP7 sobre fundo Color+Crop, só por flag, ainda não validado) ou off.
  *   srt AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--from-raw] [--force]
  *       legendas de todas as sequências (#11957: o horizontal também; --seq escolhe uma).
  *       Retranscreve o áudio montado (cache por trechos + identidade do áudio);
@@ -1370,13 +1370,21 @@ export function adjustmentLine(a: CutAdjustment): string {
   return `   ajuste ${a.block} ${edge}: ${a.from.toFixed(2)} → ${a.to.toFixed(2)} s (${a.reason})`;
 }
 
-/** `--title-mode` do build (#11756): gerador de texto (default), PNG na V2, ou sem título. */
+/** `--title-mode` do build (#11756): PNG na V2 (padrão desde o #12091), gerador de texto (só por flag), ou sem título. */
 export type TitleMode = "text" | "png" | "off";
 
 export function parseTitleModeArg(v: string | undefined): TitleMode {
-  if (v === undefined) return "text";
+  if (v === undefined) return "png";
   if (v === "text" || v === "png" || v === "off") return v;
   throw new Error(`--title-mode precisa ser text, png ou off (veio "${v}")`);
+}
+
+/**
+ * O título que o `build` passa ao XML para um modo (#12091): `png` = o PNG
+ * como clipe (padrão), `text` = o gerador "Text" (só por flag).
+ */
+export function screenTitleXmlFor(mode: Exclude<TitleMode, "off">, text: string, pngXmlPath: string): ScreenTitleXml {
+  return mode === "png" ? { text, mode: "png", pngPath: pngXmlPath } : { text, mode: "text" };
 }
 
 /**
@@ -1419,7 +1427,7 @@ export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: nu
   return `[premissa] ganho de áudio no XML: ${g.db > 0 ? "+" : ""}${g.db.toFixed(2)} dB em cada clipe (Audio Levels, limitado pelo ${why})${from}; conferir no 1º import se o Premiere aplicou (#11755); --no-audio-gain tira`;
 }
 
-async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "text", seq?: string): Promise<number> {
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string): Promise<number> {
   const { file, source, plans: ps0, hash, resolved } = plans(ctx);
   const refined = refineCuts(ctx, ps0, source, audioRefine);
   const ps = refined.plans;
@@ -1469,11 +1477,12 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     if (t.text) {
       const png = join(ctx.outDir, titlePngFileName(ctx.edition));
       await sharp(Buffer.from(screenTitleSvg(t.text, titled.spec.width, titled.spec.height))).png().toFile(png);
-      screenTitle = titleMode === "png" ? { text: t.text, mode: "png", pngPath: titlePngXmlPath(mediaPath, ctx.edition) } : { text: t.text, mode: "text" };
+      screenTitle = screenTitleXmlFor(titleMode === "text" ? "text" : "png", t.text, titlePngXmlPath(mediaPath, ctx.edition));
       console.error(
-        `[premissa] título na vertical (${t.how === "blocks" ? "screenTitle do blocks.json" : "título do D1; screenTitle no blocks.json sobrepõe"}): "${t.text}", ` +
-          (titleMode === "png" ? `PNG ${png} na V2` : `gerador de texto do FCP7 na V3 sobre fundo preto 70% na V2 (reserva: ${png}; --title-mode png se o Premiere recusar o gerador)`) +
-          "; conferir no 1º import (#11756)",
+        `${titleMode === "png" ? "[video-montagem]" : "[premissa]"} título na vertical (${t.how === "blocks" ? "screenTitle do blocks.json" : "título do D1; screenTitle no blocks.json sobrepõe"}): "${t.text}", ` +
+          (titleMode === "png"
+            ? `PNG ${png} na V2 (padrão, validado no import da 261104, #12091)`
+            : `gerador de texto do FCP7 na V3 sobre fundo Color+Crop 70% na V2 (--title-mode text, NÃO validado: na 261104 saiu com &#10; na tela e o fundo como bloco preto; PNG de reserva: ${png}); conferir no import (#12091)`),
       );
     } else if (t.how === "missing") console.error("[aviso] vertical sem título: sem screenTitle no blocks.json e sem D1 em 02-reviewed.md (#11756)");
   }
@@ -1494,7 +1503,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       }
       const png = join(ctx.outDir, titlePngFileName(ctx.edition, corte));
       await sharp(Buffer.from(screenTitleSvg(t.text, p.spec.width, p.spec.height))).png().toFile(png);
-      screenTitleByCorte[corte] = titleMode === "png" ? { text: t.text, mode: "png", pngPath: titlePngXmlPath(mediaPath, ctx.edition, corte) } : { text: t.text, mode: "text" };
+      screenTitleByCorte[corte] = screenTitleXmlFor(titleMode === "text" ? "text" : "png", t.text, titlePngXmlPath(mediaPath, ctx.edition, corte));
       console.error(`[premissa] título do corte "${corte}" (screenTitle da sequência): "${t.text}" (#11900)`);
     }
   }

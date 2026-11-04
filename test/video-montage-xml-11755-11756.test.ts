@@ -129,8 +129,9 @@ describe("#11756: título em texto na abertura da vertical", () => {
     assert.ok(!bad.ok && bad.errors.some((e) => e.includes("screenTitle")));
   });
 
-  it("--title-mode: text por padrão, png/off aceitos, outro valor é erro", () => {
-    assert.equal(parseTitleModeArg(undefined), "text");
+  it("--title-mode: png por padrão (#12091), text/off só por flag, outro valor é erro", () => {
+    assert.equal(parseTitleModeArg(undefined), "png");
+    assert.equal(parseTitleModeArg("text"), "text");
     assert.equal(parseTitleModeArg("png"), "png");
     assert.equal(parseTitleModeArg("off"), "off");
     assert.throws(() => parseTitleModeArg(""), /title-mode/);
@@ -158,7 +159,7 @@ describe("#11756: título em texto na abertura da vertical", () => {
     const g = gens[0];
     assert.match(g, /<start>0<\/start><end>105<\/end><in>0<\/in><out>105<\/out>/);
     assert.match(g, /<effectid>Text<\/effectid>[\s\S]*<effecttype>generator<\/effecttype>/);
-    assert.match(g, /<parameterid>str<\/parameterid><name>Text<\/name><value>Pais acusam ChatGPT de&#10;matar sua filha<\/value>/);
+    assert.match(g, /<parameterid>str<\/parameterid><name>Text<\/name><value>Pais acusam ChatGPT de\rmatar sua filha<\/value>/);
     assert.match(g, /<parameterid>fontname<\/parameterid><name>Font<\/name><value>Georgia<\/value>/);
     assert.match(g, /<parameterid>fontstyle<\/parameterid>[\s\S]*?<value>2<\/value>/, "negrito");
     // V2 = fundo (#11941), V3 = texto, depois da faixa dos clipes.

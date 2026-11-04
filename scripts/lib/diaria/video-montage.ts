@@ -1996,8 +1996,11 @@ export interface FramingResult {
   crop: { x: number; y: number; w: number; h: number };
   /**
    * Center do Basic Motion do xmeml: deslocamento do centro do clipe em
-   * relação ao centro da sequência, em fração da largura/altura da sequência
-   * (positivo = direita/baixo). Premissa a conferir no 1º import (#11208).
+   * relação ao centro da sequência (px da sequência), dividido pela
+   * largura/altura do BRUTO (positivo = direita/baixo). O Premiere lê o
+   * Center como fração da mídia original, sem escala: validado no import da
+   * 261104 (#12091), quando `0.1225` num bruto 3840 virou 470,4 px de
+   * Position. Até o #12091 o divisor era a sequência e o rosto saía à direita.
    */
   center: { horiz: number; vert: number };
   /** Escala efetiva (%): a pedida, ou maior quando o bruto é pequeno demais para ela (ex.: 1080p). */
@@ -2099,7 +2102,7 @@ export function framingFor(input: {
   const dx = (input.srcW / 2 - (x + w / 2)) * s;
   const dy = (input.srcH / 2 - (y + h / 2)) * s;
   const r4 = (v: number) => Math.round(v * 10000) / 10000 || 0;
-  const base: FramingResult = { crop: { x, y, w, h }, center: { horiz: r4(dx / input.seqW), vert: r4(dy / input.seqH) }, scalePct: Math.round(s * 10000) / 100 };
+  const base: FramingResult = { crop: { x, y, w, h }, center: { horiz: r4(dx / input.srcW), vert: r4(dy / input.srcH) }, scalePct: Math.round(s * 10000) / 100 };
   if (!withMug) return base;
   const mugShift = r4((x - Math.round(faceCropX)) / input.srcW);
   const pct = (v: number) => `${(Math.abs(v) * 100).toFixed(1).replace(".", ",")}%`;
@@ -2287,12 +2290,15 @@ export const SCREEN_TITLE_STYLE = {
   /** Opacidade do fundo preto, em % (pedido do editor, #11941). */
   backgroundOpacityPct: 70,
   /**
-   * `[premissa]` #11941: separador de linha DENTRO do texto do gerador. O
-   * `&#13;` (CR, o que o FCP7 exporta) abriu uma caixa por linha no Premiere
-   * (261103); o `&#10;` (LF) é a quebra de linha que não é fim de parágrafo, e
-   * o texto inteiro vai num `str` só, num gerador só. Conferir no 1º import.
+   * `[premissa]` separador de linha DENTRO do texto do gerador (só no
+   * `--title-mode text`, #12091). O `&#13;` abriu uma caixa por linha no
+   * Premiere (261103, #11941) e o `&#10;` apareceu literal na tela, numa
+   * linha só (261104, #12091): o Premiere não decodifica referência de
+   * caractere no `str`. Agora vai o CR literal, sem entidade (um parser XML
+   * conforme o normaliza para LF). Conferir num import real antes de tirar o
+   * gerador de trás da flag.
    */
-  xmlLineBreak: "&#10;",
+  xmlLineBreak: "\r",
 } as const;
 
 /** Geometria do título numa sequência (#11941): tamanho da letra, linhas e a caixa do fundo, em px da sequência. */
@@ -2355,10 +2361,13 @@ export function firstTitledVertical(plans: SequencePlan[]): SequencePlan | null 
 }
 
 /**
- * Título em texto nas verticais (#11756; V2 fundo + V3 texto desde #11941). `text` = gerador de
- * texto do FCP7 (`generatoritem` "Text"); `png` = o PNG transparente do
- * tamanho da sequência (`pngPath`, já no caminho que o Premiere vai abrir)
- * como clipe, fallback se o Premiere recusar o gerador.
+ * Título nas verticais (#11756). `png` (padrão desde o #12091, validado no
+ * import da 261104) = o PNG transparente do tamanho da sequência (`pngPath`,
+ * já no caminho que o Premiere vai abrir) como clipe na V2, com o fundo a 70%
+ * desenhado só na caixa; `text` (só com `--title-mode text`, não validado) =
+ * gerador de texto do FCP7 (`generatoritem` "Text") na V3 sobre o fundo
+ * Color+Crop na V2 (#11941), que no import da 261104 saiu com `&#10;` na tela
+ * e o fundo como bloco preto.
  */
 export type ScreenTitleXml = { text: string; mode: "text" } | { text: string; mode: "png"; pngPath: string };
 
@@ -2449,8 +2458,8 @@ export function screenTitleSvg(text: string, width: number, height: number): str
  *
  * `audioGain` (#11755): o Audio Levels em cada clipe de áudio. `screenTitle`
  * (#11756): o título nas sequências verticais, no trecho de `screenTitleSpan`
- * (modo text: V2 = fundo preto a 70%, V3 = texto, #11941; modo png: o PNG com
- * o fundo na V2). Os dois são premissas a conferir no 1º import.
+ * (modo png, o padrão: o PNG com o fundo na V2, validado no import da 261104,
+ * #12091; modo text, só por flag: V2 = fundo preto a 70%, V3 = texto, #11941).
  */
 export function buildXmeml(
   plans: SequencePlan[],

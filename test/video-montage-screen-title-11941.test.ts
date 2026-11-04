@@ -7,6 +7,8 @@
  *   3. não tinha fundo (pedido: preto a 70%).
  * O XML gerado precisa sair com uma caixa só, tamanho convertido pela premissa
  * declarada (`xmlSizeRefWidth`) e o fundo presente; o PNG de reserva também.
+ * Desde o #12091 o gerador só sai com `--title-mode text` (o padrão é o PNG);
+ * estes casos passam `mode: "text"` explícito.
  */
 
 import { describe, it } from "node:test";
@@ -55,10 +57,13 @@ describe("#11941 título da vertical: caixa única, tamanho e fundo", () => {
   const text = gens.find((g) => g.includes("<effectid>Text</effectid>")) ?? "";
   const bg = gens.find((g) => g.includes("<effectid>Color</effectid>")) ?? "";
 
-  it("uma caixa só: um gerador de texto, o título inteiro num str, sem CR", () => {
+  it("uma caixa só: um gerador de texto, o título inteiro num str, sem entidade de quebra", () => {
     assert.equal(gens.filter((g) => g.includes("<effectid>Text</effectid>")).length, 1);
     const str = paramValue(text, "str") ?? "";
-    assert.doesNotMatch(str, /&#13;|\r/, "CR abria uma caixa por linha no Premiere (261103)");
+    assert.doesNotMatch(str, /&#13;/, "a entidade CR abria uma caixa por linha no Premiere (261103)");
+    // #12091: o Premiere mostrou o `&#10;` literal na tela (261104); a quebra vai como CR literal.
+    assert.doesNotMatch(str, /&#10;/);
+    assert.equal(SCREEN_TITLE_STYLE.xmlLineBreak, "\r");
     const lines = str.split(SCREEN_TITLE_STYLE.xmlLineBreak);
     assert.ok(lines.length >= 2, "título longo ainda quebra, dentro da mesma caixa");
     assert.equal(lines.join(" "), TITLE, "nenhuma palavra perdida");
