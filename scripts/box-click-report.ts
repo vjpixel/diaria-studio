@@ -79,8 +79,10 @@ import {
   readSeasonalFlag,
   resolveSnippetAudience, // #9104
   extractSnippetEventKeys, // #9104
+  isRuntimeExcluded, // #12202
   type SnippetAudienceSource,
 } from "./lib/shared/snippet-header.ts";
+import { findRawHtmlTag } from "./lib/shared/non-box-snippets.ts"; // #12202
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
 import { resolveEnrichmentState } from "./lib/shared/enrichment-state.ts";
 import {
@@ -177,6 +179,11 @@ export interface SnippetInfo {
    * que a caixa pode sair), ou `null`. Julgado contra a data da edição por
    * `evaluateSnippetExpiry` em `resolveBoxesForEdition`. Ausente = sem validade. */
   expires?: string | null;
+  /** #12202: `runtime: false` no header (documentação/referência). Ausente = `false`. */
+  runtimeExcluded?: boolean;
+  /** #12202: corpo com tag HTML crua (`findRawHtmlTag`) — o render de box
+   * escaparia e o leitor veria as tags como texto. Ausente = `false`. */
+  rawHtmlBody?: boolean;
 }
 
 export function parseSnippetContent(file: string, content: string): SnippetInfo {
@@ -189,7 +196,9 @@ export function parseSnippetContent(file: string, content: string): SnippetInfo 
   const { audience, source: audienceSource } = resolveSnippetAudience(content, rawUrls);
   const eventKeys = extractSnippetEventKeys(content, rawUrls);
   const expires = parseBoxHeaderField(content, "expires");
-  return { file, nome, urls, fullUrls, seasonal, audience, audienceSource, eventKeys, expires };
+  const runtimeExcluded = isRuntimeExcluded(content);
+  const rawHtmlBody = findRawHtmlTag(body) !== null;
+  return { file, nome, urls, fullUrls, seasonal, audience, audienceSource, eventKeys, expires, runtimeExcluded, rawHtmlBody };
 }
 
 /** Carrega + parseia todos os snippets de `data/snippets/*.md` (#5227,
