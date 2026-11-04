@@ -94,8 +94,11 @@ export function isAllowedClientSocialUtmSource(rawSource: unknown): boolean {
  * e-mails pra quem comprou ingresso de evento
  * (`EVENTO_EMAIL_UTM_SOURCE` em `utm-registry.ts`; literal aqui como os
  * demais, `test/subscribe-apex-evento-email-10315.test.ts` trava a igualdade).
+ *
+ * #12031: `dossiemaster` — box de cadastro do Dossiê Master (repo privado
+ * `vjpixel/dossiemaster`, rota `diar.ia.br/dossiemaster*`), `utm_medium` `topo`/`rodape`.
  */
-export const CLIENT_UTM_INTERNAL_ORGANIC_SOURCES = ["retrospectiva-mensal", "retrospectiva-anual", "evento-email"] as const;
+export const CLIENT_UTM_INTERNAL_ORGANIC_SOURCES = ["retrospectiva-mensal", "retrospectiva-anual", "evento-email", "dossiemaster"] as const;
 
 /** Pure (#9502): mesma regra de fronteira de traço das outras listas. */
 export function isAllowedClientInternalUtmSource(rawSource: unknown): boolean {
