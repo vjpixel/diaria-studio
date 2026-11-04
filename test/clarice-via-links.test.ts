@@ -47,6 +47,16 @@ describe("clariceLinkMissingVia (#1910)", () => {
       "https://clarice.ai/precos",
     ]);
   });
+  it("delimita URLs entre crases sem perder a validação de via (#12064)", () => {
+    assert.deepEqual(
+      findClariceLinksMissingVia("use `https://clarice.ai/precos-planos?via=diaria` aqui"),
+      [],
+    );
+    assert.deepEqual(
+      findClariceLinksMissingVia("use `https://clarice.ai/precos-planos` aqui"),
+      ["https://clarice.ai/precos-planos"],
+    );
+  });
   it("exenta cortex (API), mcp (API, #5114), mailto e não-clarice", () => {
     assert.equal(clariceLinkMissingVia("https://cortex.clarice.ai/api-correction"), false);
     assert.equal(clariceLinkMissingVia("https://mcp.clarice.ai/mcp"), false);

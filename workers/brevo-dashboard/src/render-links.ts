@@ -400,8 +400,8 @@ export interface AggregatedLinkRow {
 
 /**
  * #2263: extrai o ORIGIN (`scheme://host`, i.e. domínio+subdomínio) de uma URL,
- * descartando path/query/UTM. Ex: `https://clarice.ai/?via=diaria&utm_...` →
- * `https://clarice.ai`; `eia.diar.ia.br/vote?email={{ contact.EMAIL }}` (#3904
+ * descartando path/query/UTM. Ex: `https://example.com/?via=diaria&utm_...` →
+ * `https://example.com`; `eia.diar.ia.br/vote?email={{ contact.EMAIL }}` (#3904
  * — domínio de marca; era poll.diaria.workers.dev) → `https://eia.diar.ia.br`.
  * Fallback (URL não-parseável) → a string original, pra não perder o link nem
  * quebrar o render.

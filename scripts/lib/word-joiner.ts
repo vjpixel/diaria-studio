@@ -32,7 +32,7 @@ export const GUARDED_DOMAINS = ["ai"] as const;
  * - Lookbehind negativo `(?<!\/|\w)` evita tocar URLs cruas (http://..., https://...)
  *   e domínios já dentro de uma sequência de palavras/hifens.
  *
- * O lookbehind `(?<!\/)` protege contra `https://clarice.ai` e `/clarice.ai`
+ * O lookbehind `(?<!\/)` protege contra `https://example.com` e `/clarice.ai`
  * (URLs com scheme ou path — o "/" antes do domínio está na classe negada).
  *
  * Nota: `sub.clarice.ai` em texto puro NÃO é protegido — o "." antes de "clarice"
