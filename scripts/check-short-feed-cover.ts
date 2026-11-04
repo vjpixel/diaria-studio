@@ -34,9 +34,16 @@ export async function fetchFeedImage(videoId: string, fetchImpl: typeof fetch = 
   const url = youtubeShortFeedThumbUrl(videoId);
   // UA de navegador: sem ele a CDN às vezes responde com outra coisa.
   const res = await fetchImpl(url, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) throw new Error(`GET ${url}: HTTP ${res.status} (Short inexistente, privado ou ainda processando)`);
+  // Saída sem ler o corpo cancela o stream (#9991): senão o socket segura o processo.
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`GET ${url}: HTTP ${res.status} (Short inexistente, privado ou ainda processando)`);
+  }
   const type = res.headers.get("content-type") ?? "";
-  if (type && !type.startsWith("image/")) throw new Error(`GET ${url}: content-type ${type}, esperado imagem`);
+  if (type && !type.startsWith("image/")) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`GET ${url}: content-type ${type}, esperado imagem`);
+  }
   return Buffer.from(await res.arrayBuffer());
 }
 

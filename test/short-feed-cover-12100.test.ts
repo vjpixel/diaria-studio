@@ -155,6 +155,19 @@ describe("#12100 conferência do oar2 contra a capa (dHash)", () => {
     await assert.rejects(fetchFeedImage("5jX3X0sgMtg", html), /esperado imagem/);
   });
 
+  it("fetchFeedImage: HTTP de erro e resposta não-imagem cancelam o corpo (#9991)", async () => {
+    for (const [init, re] of [
+      [{ status: 404 }, /HTTP 404/],
+      [{ status: 200, headers: { "content-type": "text/html" } }, /esperado imagem/],
+    ] as const) {
+      let cancelled = false;
+      const body = new ReadableStream({ cancel() { cancelled = true; } });
+      const f = (async () => new Response(body, init)) as unknown as typeof fetch;
+      await assert.rejects(fetchFeedImage("5jX3X0sgMtg", f), re);
+      assert.equal(cancelled, true, `corpo não cancelado em ${re}`);
+    }
+  });
+
   it("id do vídeo: 11 caracteres do alfabeto do YouTube", () => {
     assert.match("-ZMq-9gWoSc", YOUTUBE_VIDEO_ID_RE);
     assert.doesNotMatch("5jX3X0sgMt", YOUTUBE_VIDEO_ID_RE);
