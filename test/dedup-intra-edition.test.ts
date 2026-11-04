@@ -2548,3 +2548,92 @@ describe("dedupIntraEdition — editor_submitted nunca é perdido em silêncio (
     assert.deepEqual(matchedAgainst, ["https://b.com/1", "https://c.com/2"], "matched_against distinto preservado por par");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #12128: CASO REAL 261104 — D2 "Introducing Claude Opus 5.5" sumiu do RADAR
+// no passe item-vs-item, consolidado em "Introducing the Grid Protectors
+// Program" (OpenAI) só pelo verbo "introducing" em comum. Sem a cópia no
+// bucket, `apply-gate-edits --auto` pulou o D2 e promoveu outro destaque.
+// ---------------------------------------------------------------------------
+
+describe("dedupIntraEdition — destaque nunca sai no item-vs-item (#12128)", () => {
+  const opus = {
+    url: "https://www.anthropic.com/claude-opus-5-5",
+    title: "Introducing Claude Opus 5.5",
+  };
+  const grid = {
+    url: "https://openai.com/index/grid-protectors-program",
+    title: "Introducing the Grid Protectors Program",
+    summary:
+      "OpenAI’s Grid Protectors Program will work with utilities to help future compute campuses support grid reliability.",
+  };
+  const longcat = { url: "https://longcat.ai/blog/longcat-2-5", title: "Introducing LongCat-2.5" };
+
+  it("CASO REAL 261104: o D2 continua no RADAR e os 3 'Introducing ...' não se consolidam", () => {
+    const input = {
+      highlights: [
+        { rank: 1, url: "https://g1.globo.com/stf-multa-advogado", title: "STF multa advogado por esconder comando para driblar IA" },
+        { rank: 2, ...opus },
+        { rank: 3, url: "https://openai.com/index/lifeval", title: "LifeVal" },
+      ],
+      radar: [grid, opus, longcat],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    const radarUrls = (kept.radar ?? []).map((a) => a.url);
+    assert.ok(radarUrls.includes(opus.url), "cópia do D2 precisa ficar no bucket (o gate resolve o destaque pela URL)");
+    assert.ok(radarUrls.includes(grid.url), "página de outra empresa não é a mesma história");
+    assert.ok(radarUrls.includes(longcat.url), "'Introducing LongCat-2.5' não é duplicata do Grid Protectors");
+    assert.equal(removed.filter((r) => r.match_type === "intra_bucket").length, 0);
+  });
+
+  it("destaque protegido vence o par: sai o outro item, mesmo com summary e fonte oficial", () => {
+    const highlight = {
+      url: "https://cnnbrasil.com.br/claude-caiu",
+      title: "Claude caiu? Chatbot apresenta instabilidade nesta quarta-feira (5)",
+    };
+    const other = {
+      url: "https://www.anthropic.com/news/claude-caiu",
+      title: "Claude caiu? Usuários relatam problemas com a IA da Anthropic nesta quarta (5)",
+      summary: "resumo não-vazio que, sem a proteção, faria este item vencer o desempate",
+    };
+    const result = dedupSecondaryIntraBucket([other, highlight], {
+      strict: true,
+      protectedUrls: [highlight.url],
+    });
+
+    assert.deepEqual(result.kept.map((a) => a.url), [highlight.url]);
+    assert.deepEqual(result.removed, [
+      { url: other.url, title: other.title, consolidated_into: highlight.url },
+    ]);
+  });
+
+  it("dois destaques que casam entre si ficam os dois", () => {
+    const a = { url: "https://canaltech.com.br/a", title: "Claude caiu? Usuários relatam problemas com a IA da Anthropic nesta quarta (5)" };
+    const b = { url: "https://exame.com/d", title: "O Claude caiu? Anthropic confirma falha nesta quarta-feira, 5" };
+    const result = dedupSecondaryIntraBucket([a, b], { strict: true, protectedUrls: [a.url, b.url] });
+    assert.equal(result.kept.length, 2);
+    assert.equal(result.removed.length, 0);
+
+    const unprotected = dedupSecondaryIntraBucket([a, b], { strict: true });
+    assert.equal(unprotected.removed.length, 1, "sanidade: sem proteção o par consolida");
+  });
+
+  it("verbo de anúncio sozinho não faz match no modo strict, mas história real ainda casa", () => {
+    const noVerb = dedupSecondaryIntraBucket([opus, grid], { strict: true });
+    assert.equal(noVerb.removed.length, 0, "Jaccard só pelo 'introducing' (0.17) não pode consolidar");
+
+    const sameStory = dedupSecondaryIntraBucket(
+      [
+        { url: "https://a.com/1", title: "Introducing Claude Opus 5.5" },
+        { url: "https://b.com/2", title: "Anthropic launches Claude Opus 5.5 model" },
+      ],
+      { strict: true },
+    );
+    assert.equal(sameStory.removed.length, 1, "mesmo produto no título continua casando sem o verbo");
+  });
+});

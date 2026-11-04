@@ -63,6 +63,8 @@ import { toClusterSource, type ClusterSource, type ClusterArticle } from "./lib/
 import { sameEvent, SAME_EDITION } from "./lib/event-dedup.ts";
 // #9360 padrão 2: agrupa coberturas da mesma história entre LANÇAMENTOS/RADAR.
 import { groupSameStory } from "./lib/story-grouping.ts";
+// #12128: mesma canonicalização que `groupSameStory` usa para `protectedUrls`.
+import { canonicalize } from "./lib/url-utils.ts";
 import { isOfficialLancamentoUrl } from "./lib/launch-heuristics.ts";
 // #11496: par produto+versão ("genie 4", "ios 27.2") — o mesmo sinal do MESMO
 // FATO entre edições, aplicado aqui dentro da edição.
@@ -188,6 +190,25 @@ function stripAdjacentProductBigrams(
     }
   }
   return result;
+}
+
+/**
+ * #12128: verbos de anúncio que abrem manchete de página oficial
+ * ("Introducing Claude Opus 5.5", "Introducing the Grid Protectors Program",
+ * "Introducing LongCat-2.5"). Títulos curtos assim têm 2-4 tokens, e o verbo
+ * sozinho já dava Jaccard 0.17-0.20, acima do limiar estrito de 0.15: na 261104
+ * três páginas oficiais de empresas diferentes consolidaram umas nas outras.
+ * O verbo não diz nada sobre QUAL história é. Aplicado só no Jaccard do modo
+ * `strict` (RADAR item-vs-item), mesmo escopo de `stripAdjacentProductBigrams`.
+ */
+export const STRICT_JACCARD_LAUNCH_VERB_STOPWORDS: ReadonlySet<string> = new Set([
+  "introducing",
+  "announcing",
+  "presenting",
+]);
+
+function stripLaunchVerbs(tokens: Set<string>): Set<string> {
+  return new Set([...tokens].filter((t) => !STRICT_JACCARD_LAUNCH_VERB_STOPWORDS.has(t)));
 }
 
 /**
@@ -1232,7 +1253,7 @@ export interface SecondaryIntraBucketResult {
  * PRODUTO compartilhada (`extractProductEntitiesIntra` — inclui nome de
  * modelo, exclui empresa/genéricos). Em caso de match, mantém o item com
  * `summary` não-vazio; se ambos (ou nenhum) têm summary, prefere o que NÃO é
- * model-card/hub page (`isModelCardOrHubPage`). **#10162: antes de tudo isso, URL oficial (`isOfficialLancamentoUrl`) vence cobertura quando só um dos dois é oficial.** Empate residual: mantém o
+ * model-card/hub page (`isModelCardOrHubPage`). **#12128: antes de qualquer desempate, URL em `options.protectedUrls` (cópia de destaque) sempre fica.** **#10162: antes de tudo isso, URL oficial (`isOfficialLancamentoUrl`) vence cobertura quando só um dos dois é oficial.** Empate residual: mantém o
  * primeiro da lista (ordem estável).
  *
  * **`options.strict` (#4675 review, fix de regressão do #4667):** o
@@ -1261,11 +1282,20 @@ export interface SecondaryIntraBucketResult {
  */
 export function dedupSecondaryIntraBucket(
   articles: Article[],
-  options: { jaccardThreshold?: number; strict?: boolean } = {},
+  options: {
+    jaccardThreshold?: number;
+    strict?: boolean;
+    /** #12128: URLs que NUNCA saem do bucket — as cópias dos destaques de
+     *  todos os ranks. Num par com um item protegido, sai o outro; dois
+     *  protegidos ficam os dois. Comparação por `canonicalize`. */
+    protectedUrls?: Iterable<string>;
+  } = {},
 ): SecondaryIntraBucketResult {
   const jThreshold =
     options.jaccardThreshold ??
     (options.strict ? SECONDARY_INTRA_BUCKET_STRICT_JACCARD_THRESHOLD : INTRA_JACCARD_THRESHOLD);
+  const protectedSet = new Set([...(options.protectedUrls ?? [])].map((u) => canonicalize(u)));
+  const isProtected = (url: string): boolean => protectedSet.has(canonicalize(url));
   const removedUrls = new Set<string>();
   const removed: SecondaryIntraBucketResult["removed"] = [];
   const editorSubmittedSpared: SecondaryIntraBucketResult["editorSubmittedSpared"] = [];
@@ -1286,10 +1316,11 @@ export function dedupSecondaryIntraBucket(
       // (`PRODUCT_BIGRAM_STOPWORDS_INTRA`) do Jaccard ANTES de comparar — ver
       // docstring da constante. Fora do strict, comportamento inalterado
       // (LANÇAMENTOS já tolera produto-sozinho via `sharedProduct` abaixo).
+      // #12128: e tira os verbos de anúncio (`STRICT_JACCARD_LAUNCH_VERB_STOPWORDS`).
       const jaccard = options.strict
         ? jaccardSimilarity(
-            stripAdjacentProductBigrams(aStrippedTitle, aTokens),
-            stripAdjacentProductBigrams(bStrippedTitle, bTokens),
+            stripLaunchVerbs(stripAdjacentProductBigrams(aStrippedTitle, aTokens)),
+            stripLaunchVerbs(stripAdjacentProductBigrams(bStrippedTitle, bTokens)),
           )
         : jaccardSimilarity(aTokens, bTokens);
 
@@ -1341,8 +1372,19 @@ export function dedupSecondaryIntraBucket(
       const aIsOfficial = isOfficialLancamentoUrl(a.url);
       const bIsOfficial = isOfficialLancamentoUrl(b.url);
 
+      // #12128: cópia de destaque (qualquer rank) nunca sai do bucket — o gate
+      // resolve D1..D6 pela URL no bucket (#4943). Na 261104 o D2 "Introducing
+      // Claude Opus 5.5" saiu do RADAR consolidado num item qualquer e o
+      // `apply-gate-edits --auto` promoveu outro destaque no lugar. Mesma
+      // proteção que `groupSameStory` já aplica (review da PR #9430).
+      const aIsProtected = isProtected(a.url);
+      const bIsProtected = isProtected(b.url);
+      if (aIsProtected && bIsProtected) continue;
+
       let keepA: boolean;
-      if (aIsOfficial !== bIsOfficial) {
+      if (aIsProtected !== bIsProtected) {
+        keepA = aIsProtected;
+      } else if (aIsOfficial !== bIsOfficial) {
         keepA = aIsOfficial;
       } else if (aHasSummary !== bHasSummary) {
         keepA = aHasSummary;
@@ -1476,13 +1518,15 @@ export function dedupIntraEdition(
   // `cluster_sources[]` da primária. Roda ANTES do item-vs-item por bucket
   // abaixo para que a escolha da primária siga o critério do editor e não o
   // desempate por summary/model-card. Ver lib/story-grouping.ts.
+  //
+  // Cópias de destaque (TODOS os ranks, não só o top-N) nunca saem do pool:
+  // o gate resolve D1..D6 pela URL no bucket (#4943) e rank 4-6 não pode ser
+  // podado antes do gate (#2397) — review da PR #9430. Vale para o
+  // story-group e, desde o #12128, também para o item-vs-item abaixo.
+  const protectedUrls = allHighlights
+    .map((h) => highlightUrl(h))
+    .filter((u): u is string => typeof u === "string");
   {
-    // Cópias de destaque (TODOS os ranks, não só o top-N) nunca saem do pool:
-    // o gate resolve D1..D6 pela URL no bucket (#4943) e rank 4-6 não pode ser
-    // podado antes do gate (#2397) — review da PR #9430.
-    const protectedUrls = allHighlights
-      .map((h) => highlightUrl(h))
-      .filter((u): u is string => typeof u === "string");
     const grouped = groupSameStory(keptBuckets, { isModelCard: isModelCardOrHubPage, protectedUrls });
     for (const [bucket, arts] of Object.entries(grouped.buckets)) {
       keptBuckets[bucket] = arts as Article[];
@@ -1533,6 +1577,7 @@ export function dedupIntraEdition(
     } = dedupSecondaryIntraBucket(bucketAfterHighlightPass, {
       ...options,
       strict: bucket !== "lancamento",
+      protectedUrls,
     });
     if (bucketRemoved.length > 0) {
       keptBuckets[bucket] = bucketKept;
