@@ -14,7 +14,7 @@ import {
   type YouTubeVideoItem,
 } from "../scripts/lib/mensal/clarice-video-do-mes.ts";
 import { fetchMonthVideos } from "../scripts/clarice-video-do-mes.ts";
-import { renderEncerramento, renderKicker } from "../scripts/lib/mensal/monthly-render.ts";
+import { renderEncerramento, renderIntro, renderKicker } from "../scripts/lib/mensal/monthly-render.ts";
 import type { YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 
 const vid = (over: Partial<YouTubeVideoItem> & { id: string; views: number; at: string; dur?: string; title?: string }): YouTubeVideoItem => ({
@@ -84,10 +84,10 @@ test("videoDoMesUrl: UTM do corpo da issue", () => {
   assert.throws(() => videoDoMesUrl("a b", "2610-11"), /videoId inválido/);
 });
 
-test("buildVideoDoMesHtml: título linkado com UTM, frase, inscrição e sem seta", () => {
+test("buildVideoDoMesHtml: link do vídeo com UTM, frase, inscrição e sem seta", () => {
   const html = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "IA & <eleições>", frase: defaultVideoDoMesFrase("2610-11") });
   assert.ok(html.startsWith(VIDEO_DO_MES_START) && html.endsWith(VIDEO_DO_MES_END));
-  assert.ok(html.includes(renderKicker("O vídeo do mês")));
+  assert.ok(html.includes(renderKicker("Vídeo do mês")));
   assert.ok(html.includes("utm_campaign=video-do-mes-2610-11"));
   // href com &amp;, como o resto do render (#12053)
   assert.ok(html.includes("watch?v=abcDEF12345&amp;utm_source=clarice&amp;utm_medium=email&amp;utm_campaign=video-do-mes-2610-11"));
@@ -99,15 +99,36 @@ test("buildVideoDoMesHtml: título linkado com UTM, frase, inscrição e sem set
   assert.throws(() => buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: " ", frase: "x" }), /título/);
 });
 
-test("injectVideoDoMes: entra antes do 'Para encerrar' real do render e é idempotente", () => {
-  const encerramento = renderEncerramento("Quer sugerir um tema? Responda a este e-mail.\n\nSiga a **diar.ia.br**: [YouTube](https://www.youtube.com/@diariabr?sub_confirmation=1)");
-  const page = `<html><body><p>É IA?</p></table><div style="line-height:28px;font-size:0;">&nbsp;</div>${encerramento}</body></html>`;
+test("buildVideoDoMesHtml: título no h2 dos destaques sem link, imagem do destaque linkada para o vídeo", () => {
+  const img = "https://eia.diar.ia.br/img/img-261029-04-d1-2x1-play-a5826e6f.jpg";
+  const html = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "Vídeo A", frase: "Frase.", imageUrl: img });
+  const iImg = html.indexOf(`<img src="${img}"`);
+  assert.ok(iImg > 0, "img com a URL do destaque");
+  const iTitle = html.indexOf("Vídeo A</h2>");
+  assert.ok(iTitle > 0 && iTitle < iImg, "título (h2 como D1/D2/D3) vem antes da imagem, como nos destaques");
+  assert.ok(html.includes('<h2 style="margin:0 0 20px 0;font-size:26px;'), "mesmo h2 do renderDestaque");
+  assert.ok(!/<a [^>]*>Vídeo A</.test(html), "título sem link");
+  assert.ok(/<a href="https:\/\/www\.youtube\.com\/watch\?v=abcDEF12345[^"]*"[^>]*>Assista ao vídeo<\/a>/.test(html), "link do vídeo no texto");
+  assert.ok(html.slice(0, iImg).endsWith('<a href="https://www.youtube.com/watch?v=abcDEF12345&amp;utm_source=clarice&amp;utm_medium=email&amp;utm_campaign=video-do-mes-2610-11" style="text-decoration:none;">'));
+  assert.ok(!buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "Vídeo A", frase: "Frase." }).includes("<img"));
+  assert.throws(() => buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "A", frase: "x", imageUrl: "data/x.jpg" }), /https/);
+});
+
+const realPage = () => {
+  const encerramento = renderEncerramento("Quer sugerir um tema? Responda a este e-mail.");
+  const spacer = `<div style="line-height:28px;font-size:0;">&nbsp;</div>`;
+  return `<html><body><p>Apresentação</p>${spacer}${renderIntro("Outubro foi um mês de contas a acertar.")}${spacer}${renderKicker("BRASIL")}<p>D1</p>${spacer}<p>É IA?</p>${spacer}${encerramento}</body></html>`;
+};
+
+test("injectVideoDoMes: entra logo depois do 'Resumo do mês' real do render, antes da 1ª seção, e é idempotente", () => {
+  const page = realPage();
   const block = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "Vídeo A", frase: "Frase." });
   const first = injectVideoDoMes(page, block);
   assert.equal(first.replaced, false);
   const iBlock = first.html.indexOf(VIDEO_DO_MES_START);
-  const iEncerrar = first.html.indexOf("Para encerrar");
-  assert.ok(iBlock > first.html.indexOf("É IA?") && iBlock < iEncerrar);
+  assert.ok(iBlock > first.html.indexOf("contas a acertar"), "depois do texto do resumo");
+  assert.ok(iBlock < first.html.indexOf("&nbsp;BRASIL</td>"), "antes da 1ª seção");
+  assert.equal(first.html.lastIndexOf("<table", first.html.indexOf("&nbsp;BRASIL</td>")), iBlock + block.length + 1, "o kicker seguinte fica inteiro");
   assert.equal(first.html.indexOf(VIDEO_DO_MES_START, iBlock + 1), -1);
 
   const again = injectVideoDoMes(first.html, block);
@@ -120,8 +141,35 @@ test("injectVideoDoMes: entra antes do 'Para encerrar' real do render e é idemp
   assert.equal(swapped.split(VIDEO_DO_MES_START).length, 2);
 });
 
-test("injectVideoDoMes: sem o kicker, ou marcador quebrado, para em vez de chutar", () => {
-  assert.throws(() => injectVideoDoMes("<p>sem encerramento</p>", "x"), /Para encerrar/);
+test("injectVideoDoMes: bloco que estava antes do 'Para encerrar' (1ª versão) é MOVIDO para depois do resumo", () => {
+  const page = realPage();
+  const old = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "Vídeo A", frase: "Frase." });
+  const iEnc = page.lastIndexOf("<table", page.indexOf("&nbsp;Para encerrar</td>"));
+  const legacy = page.slice(0, iEnc) + old + "\n" + page.slice(iEnc);
+  const moved = injectVideoDoMes(legacy, old);
+  assert.equal(moved.replaced, true);
+  assert.equal(moved.html, injectVideoDoMes(page, old).html, "igual a injetar do zero na página limpa");
+});
+
+test("injectVideoDoMes: 'O fio condutor' (mesma bolinha teal) não conta como seção; bloco com imagem entra antes do kicker seguinte", () => {
+  const fio = '<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0 0;"><tr><td><p><span style="color:#00A0A0;">&#9679;</span>&nbsp;O fio condutor</p></td></tr></table>';
+  const page = `${renderIntro("Resumo.")}<h2>Destaque sem tema</h2>${fio}${renderKicker("BRASIL")}<p>D1</p>`;
+  const block = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "Vídeo A", frase: "Frase.", imageUrl: "https://eia.diar.ia.br/img/x.jpg" });
+  const out = injectVideoDoMes(page, block).html;
+  assert.ok(out.indexOf(VIDEO_DO_MES_START) > out.indexOf("O fio condutor"), "não entra no meio do destaque");
+  assert.ok(out.indexOf(VIDEO_DO_MES_END) < out.indexOf("&nbsp;BRASIL</td>"));
+  assert.ok(out.includes('width="100%" border="0"'), "img com width para o Outlook");
+});
+
+test("buildVideoDoMesHtml: domínio no título do YouTube não vira autolink", () => {
+  const html = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "diar.ia.br comentada", frase: "Frase." });
+  const h2 = html.match(/<h2[^>]*>(.*?)<\/h2>/)![1];
+  assert.ok(!h2.includes("diar.ia.br"), "domínio quebrado para o Gmail não autolinkar");
+});
+
+test("injectVideoDoMes: sem o kicker do resumo, ou marcador quebrado, para em vez de chutar", () => {
+  assert.throws(() => injectVideoDoMes("<p>sem resumo</p>", "x"), /Resumo do mês/);
+  assert.throws(() => injectVideoDoMes(renderIntro("só o resumo"), "x"), /nenhuma seção depois/);
   assert.throws(() => injectVideoDoMes(`${VIDEO_DO_MES_START}<p>`, "x"), /sem o de fim/);
 });
 
