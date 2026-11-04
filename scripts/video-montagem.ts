@@ -280,6 +280,7 @@ import {
   speechCutWarnings,
   SPEECH_DETECT,
   SPEECH_DETECT_PLAN,
+  protectTranscribedWords,
   frameEnergies,
   speechIslands,
   speechJoinWarnings,
@@ -553,8 +554,18 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
   const fmt = effectiveFormat(file);
   if (!file.sequences && fmt.inferred) console.error("[premissa] blocks.json sem título nem resumo: formato entrevista, sequências abertura → comentário → CTA → fecho (#11507); `format`/`sequences` sobrepõem");
   const specs = file.sequences ?? defaultSequences("V1", fmt.format);
+  // Review da PR #12142: palavra transcrita dita baixo demais para virar ilha não pode cair numa pausa cortada.
+  let speechSil = speech?.silences ?? [];
+  if (speech) {
+    const words = Object.values(blocks).flatMap((items) => (items ?? []).flatMap((it) => it.words));
+    const guard = protectTranscribedWords(speech.silences, words);
+    speechSil = guard.silences;
+    if (guard.protectedWords.length) {
+      console.error(`[aviso] detector de fala (#12089): ${guard.protectedWords.length} palavra(s) do transcript abaixo do limiar ficaram no corte em vez de sair na pausa: ${guard.protectedWords.map((w) => `"${w.text}" em ${w.start.toFixed(2)} s`).join(", ")}; conferir no áudio (se for ruído, --no-speech-detect ou intervalo no blocks.json)`);
+    }
+  }
   const ps = specs.map((s) =>
-    speech ? buildSequencePlan(s, blocks, speech.silences, source, { holdBlocks: file.holdBlocks, ...SPEECH_DETECT_PLAN }) : buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks }),
+    speech ? buildSequencePlan(s, blocks, speechSil, source, { holdBlocks: file.holdBlocks, ...SPEECH_DETECT_PLAN }) : buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks }),
   );
   return { file, source, resolved: blocks, plans: ps, hash: planHash(ctx, text) };
 }

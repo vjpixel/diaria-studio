@@ -34,6 +34,7 @@ import {
   normalizeToken,
   tokenize,
   tokensMatch,
+  trimWordsToSilences,
   type CutAdjustment,
   type RawClip,
   type TokenMatcher,
@@ -698,6 +699,51 @@ export function speechPauseSilences(islands: Interval[], durationS: number, opts
   for (let i = 1; i < islands.length; i++) push(islands[i - 1].end + after, islands[i].start - before);
   push(islands[islands.length - 1].end + after, durationS);
   return out;
+}
+
+/**
+ * Palavra do transcript dita baixo demais para virar ilha (#12089, review da
+ * PR #12142): um "e" sussurrado abaixo dos dois limiares fica inteira dentro
+ * da pausa do detector, o corte a tira e o build barrava com "palavra fora dos
+ * clipes", coisa que o `silences.json` não fazia. Aqui a pausa que cobre o
+ * meio de uma palavra transcrita (já aparada pelas pausas, como a checagem do
+ * `buildSequencePlan` faz) perde o trecho da palavra com as mesmas folgas da
+ * fala; a palavra protegida volta para o relato do build como `[aviso]`.
+ */
+export function protectTranscribedWords(
+  pauses: Interval[],
+  words: Array<Interval & { text?: string }>,
+  opts: Partial<Pick<typeof SPEECH_DETECT, "padBeforeS" | "padAfterS">> = {},
+): { silences: Interval[]; protectedWords: Array<{ text: string; start: number; end: number }> } {
+  const before = opts.padBeforeS ?? SPEECH_DETECT.padBeforeS;
+  const after = opts.padAfterS ?? SPEECH_DETECT.padAfterS;
+  const sorted = [...pauses].sort((a, b) => a.start - b.start);
+  const protectedWords: Array<{ text: string; start: number; end: number }> = [];
+  const holes: Interval[] = [];
+  for (const raw of words) {
+    const [w] = trimWordsToSilences([{ text: raw.text ?? "", start: raw.start, end: raw.end } as Word], sorted);
+    const mid = (w.start + w.end) / 2;
+    if (!sorted.some((p) => mid > p.start + 1e-6 && mid < p.end - 1e-6)) continue;
+    protectedWords.push({ text: (raw.text ?? "").trim(), start: raw.start, end: raw.end });
+    holes.push({ start: raw.start - before, end: raw.end + after });
+  }
+  if (holes.length === 0) return { silences: sorted, protectedWords };
+  const out: Interval[] = [];
+  for (const p of sorted) {
+    let pieces: Interval[] = [{ ...p }];
+    for (const h of holes) {
+      if (h.end <= p.start || h.start >= p.end) continue;
+      pieces = pieces.flatMap((q) => {
+        if (h.end <= q.start || h.start >= q.end) return [q];
+        const res: Interval[] = [];
+        if (h.start - q.start > 1e-6) res.push({ start: q.start, end: round3(h.start) });
+        if (q.end - h.end > 1e-6) res.push({ start: round3(h.end), end: q.end });
+        return res;
+      });
+    }
+    out.push(...pieces);
+  }
+  return { silences: out, protectedWords };
 }
 
 /**

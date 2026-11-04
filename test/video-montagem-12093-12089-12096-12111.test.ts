@@ -42,6 +42,7 @@ import {
   SPEECH_DETECT,
   SPEECH_DETECT_PLAN,
   frameEnergies,
+  protectTranscribedWords,
   speechIslands,
   speechJoinWarnings,
   speechPauseSilences,
@@ -235,6 +236,32 @@ describe("#12089: corte de pausas pelo detector de fala", () => {
     assert.ok(e.fullDb[i(0.85)] < -33, "o agudo fica abaixo do limiar no sinal cheio");
     assert.ok(e.diffDb[i(0.85)] > -46, "e acima na 1ª diferença");
     assert.deepEqual(speechIslands(e).map((r) => [r.start, r.end]), [[0.2, 0.4], [0.8, 0.9]]);
+  });
+
+  it("palavra sussurrada abaixo dos limiares não cai na pausa cortada (regressão da review da PR #12142)", () => {
+    // "Fala" e "depois" viram ilha; o "e" de 2,8–3,0 s, dito baixo, não.
+    const islands = [{ start: 1, end: 2 }, { start: 4, end: 5 }];
+    const pauses = speechPauseSilences(islands, 6);
+    const words: Word[] = [{ start: 1, end: 2, text: "Fala" }, { start: 2.8, end: 3.0, text: "e" }, { start: 4, end: 5, text: "depois." }];
+    const spec: SequenceSpec = { target: "youtube", name: "Diaria comentada_Youtube_V1", width: 1920, height: 1080, order: ["comentario"], scales: [60, 85] };
+    const resolved = { comentario: [item(1.0, 5.0, "Fala e depois.", words)] };
+    // Sem a proteção, o build barrava: o "e" fica inteiro dentro da pausa [2,12; 3,85].
+    const bare = buildSequencePlan(spec, resolved, pauses, SOURCE, SPEECH_DETECT_PLAN);
+    assert.ok(bare.dropped.some((d) => /palavra\(s\) fora dos clipes: "e"/.test(d)), bare.dropped.join("\n"));
+    const guard = protectTranscribedWords(pauses, words);
+    assert.deepEqual(guard.protectedWords.map((w) => w.text), ["e"]);
+    assert.deepEqual(guard.silences.map((s) => [s.start, s.end]), [[0, 0.85], [2.12, 2.65], [3.12, 3.85], [5.12, 6]]);
+    const plan = buildSequencePlan(spec, resolved, guard.silences, SOURCE, SPEECH_DETECT_PLAN);
+    assert.deepEqual(plan.dropped, []);
+    assert.ok(plan.clips.some((c) => c.srcIn <= 2.8 && c.srcOut >= 3.0), "o 'e' está num clipe");
+  });
+
+  it("protectTranscribedWords: palavra que já é fala (ou só encosta na pausa) não muda nada", () => {
+    const pauses = speechPauseSilences([{ start: 1, end: 2 }], 3);
+    const words: Word[] = [{ start: 1, end: 2, text: "Fala" }, { start: 1.9, end: 2.3, text: "esticada" }];
+    const guard = protectTranscribedWords(pauses, words);
+    assert.deepEqual(guard.protectedWords, []);
+    assert.deepEqual(guard.silences, pauses);
   });
 
   it("avisos: emenda com pausa > 0,45 s, clipe < 0,3 s, entrada dentro da fala", () => {

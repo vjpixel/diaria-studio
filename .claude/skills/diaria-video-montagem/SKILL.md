@@ -109,7 +109,7 @@ Resolve as tomadas (erro lista todos os itens com problema de uma vez: frase sem
 | Versão | Sequência | Ordem |
 |---|---|---|
 | Horizontal YouTube 1920x1080 | `Diaria comentada_Youtube_V{n}` | gancho → título → abertura → resumo → comentário → CTA YouTube → fecho |
-| Vertical 1080x1920 | `Diaria comentada_Vertical_V1` | título → resumo curto → comentário → CTA vertical → fecho |
+| Vertical 1080x1920 | `Diaria comentada_Vertical_V{n}` | título → resumo curto → comentário → CTA vertical → fecho |
 
 **Duração-alvo da vertical (#11757, decisão do editor 02/11/2026):** as verticais publicadas têm 75–84 s, e o editor cortava frases inteiras no Premiere para chegar nisso. Acima de **85 s** (`verticalTargetS` no `blocks.json` sobrepõe por edição), o roteiro abre a seção da vertical com `[aviso]` (quanto passa) e a **sugestão de frases do comentário a cortar**, com a duração de cada uma e o motivo: primeiro as que repetem o resumo ou fecham com conselho genérico (a da 261030, "Não utilize IA para nada que vá influenciar…"), depois as do fim do comentário; a 1ª frase do comentário fica. O `build` repete o aviso numa linha. A decisão é do editor no Gate 2; o corte aceito entra como `"skip": ["outras-redes"]` no item do comentário.
 
