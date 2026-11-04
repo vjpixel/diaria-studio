@@ -2636,6 +2636,40 @@ export function checkBoxSelectionConfigDrift(
 export const BOX_EXPIRY_INVARIANT_WARN_DAYS = 3;
 
 /**
+ * #12107: o que o stitch fez com o slot `slot` cuja caixa configurada
+ * (`expiredFile`) venceu, lido de `_internal/box-selection.json`:
+ * - `filled`: o slot recebeu outro arquivo (seleção automática);
+ * - `empty`: o registro do slot não tem arquivo;
+ * - `null`: sem registro legível, ou o registro ainda aponta pra própria
+ *   caixa vencida (seleção anterior à checagem de validade) — o chamador
+ *   cai na frase genérica, sem afirmar nada.
+ */
+export function readExpiredSlotOutcome(
+  editionDir: string,
+  slot: 1 | 2,
+  expiredFile: string,
+): { kind: "filled"; file: string } | { kind: "empty" } | null {
+  const path = resolve(editionDir, "_internal", "box-selection.json");
+  if (!existsSync(path)) return null;
+  let data: unknown;
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(data)) return null;
+  const entry = data.find(
+    (r): r is { file?: unknown } => !!r && typeof r === "object" && (r as { slot?: unknown }).slot === slot,
+  );
+  if (!entry) return null;
+  if (typeof entry.file === "string" && entry.file) {
+    return entry.file === expiredFile ? null : { kind: "filled", file: entry.file };
+  }
+  if (entry.file === null) return { kind: "empty" };
+  return null;
+}
+
+/**
  * #10174: caixa de divulgação configurada num slot (`boxes_divulgacao.slot0/1/2`
  * do `platform.config.json`) com `expires:` VENCIDO, perto de vencer
  * (≤ `BOX_EXPIRY_INVARIANT_WARN_DAYS` dias) ou malformado, julgado contra a
@@ -2657,6 +2691,11 @@ export const BOX_EXPIRY_INVARIANT_WARN_DAYS = 3;
  * PRESENTE (aplicada pós-stitch por `apply-box-slot.ts --allow-expired`, ou
  * colada à mão) gera o aviso de que ela VAI chegar ao leitor — e substitui o
  * aviso do config pro mesmo slot, que diria (falsamente) que o stitch a pulou.
+ *
+ * #12107: o efeito descrito no aviso do config (slot 1/2) sai do
+ * `box-selection.json` da edição (`readExpiredSlotOutcome`) — "recebeu X pela
+ * seleção automática" ou "saiu vazio" — e só cai na frase genérica quando a
+ * seleção não existe ou não é legível.
  */
 export function checkBoxDivulgacaoExpiry(
   editionDir: string,
@@ -2727,9 +2766,20 @@ export function checkBoxDivulgacaoExpiry(
     const where = `boxes_divulgacao.slot${n}${isPinned ? " (pinado)" : ""}`;
     let message: string | null = null;
     if (exp.status === "expired") {
-      const effect = isPinned
-        ? "nesta edição o slot vai pra seleção automática (sem candidato, sai vazio)"
-        : "a caixa é pulada nesta edição (o slot sai vazio ou recebe a seleção automática)";
+      // #12107: o efeito vem do que o stitch de fato decidiu
+      // (`_internal/box-selection.json`), nunca de suposição. Antes a frase do
+      // slot pinado afirmava "sem candidato, sai vazio" incondicionalmente —
+      // na 261104 o slot 1 tinha recebido `youtube-comentario-destaque.md` pela
+      // seleção automática e o aviso fez parecer que o espaço estava perdido.
+      const outcome = n === 0 ? null : readExpiredSlotOutcome(editionDir, n, file);
+      const effect =
+        outcome?.kind === "filled"
+          ? `nesta edição o slot ${n} recebeu \`${outcome.file}\` pela seleção automática`
+          : outcome?.kind === "empty"
+            ? `nesta edição o slot ${n} saiu vazio (sem candidato automático)`
+            : isPinned
+              ? "nesta edição o slot vai pra seleção automática (sem candidato, sai vazio)"
+              : "a caixa é pulada nesta edição (o slot sai vazio ou recebe a seleção automática)";
       message =
         `Caixa \`${file}\` (${where}) expirada: expires: ${exp.expires}, edição ${editionIso}. ` +
         `O stitch não publica caixa vencida — ${effect}. Fix: trocar o slot em platform.config.json ` +
