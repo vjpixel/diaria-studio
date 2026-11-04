@@ -502,6 +502,33 @@ export function loadVinheta(deps: { readConfig?: () => unknown; exists?: (p: str
   }
 }
 
+/** Resolve no Drive para medir/renderizar no cache, preservando o caminho do Neo no XML. */
+export async function loadVinhetaForDrive(
+  drive: DriveSession | null,
+  deps: Parameters<typeof loadVinheta>[0] = {},
+): Promise<(VinhetaAsset & { localPath?: string }) | null> {
+  if (!drive) return loadVinheta(deps);
+  const warn = deps.warn ?? ((m: string) => console.error(`[aviso] ${m}`));
+  try {
+    const config = deps.readConfig ? deps.readConfig() : JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+    const cfg = vinhetaConfigFrom(config);
+    if (!cfg) return loadVinheta({ ...deps, readConfig: () => config });
+    const root = drive.rootFolderId?.();
+    if (!root) throw new Error("pasta raiz YouTube indisponível");
+    const folders = await listChildren(drive.deps, root, { name: "_marca", foldersOnly: true });
+    if (folders.length !== 1) throw new Error(`${folders.length} pastas _marca/ no Drive; esperada exatamente uma`);
+    const name = cfg.path.replace(/\\/g, "/").split("/").pop()!;
+    const found = await findByName(drive.deps, folders[0].id, name);
+    if (!found.file || found.duplicates) throw new Error(`vinheta ${name} ausente ou duplicada em _marca/`);
+    const cached = await ensureCachedFile(drive.deps, found.file, join(drive.cacheDir, "_marca"), log);
+    const asset = loadVinheta({ ...deps, readConfig: () => config, exists: () => true, probe: () => deps.probe ? deps.probe(cached.localPath) : run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", cached.localPath]).stdout });
+    return asset ? { ...asset, localPath: cached.localPath } : null;
+  } catch (e) {
+    warn(`vinheta do logo no Drive: ${(e as Error).message}: XML/prévia sem a vinheta (#12232)`);
+    return null;
+  }
+}
+
 /**
  * Chave curta da faixa tratada (#12102): hash dos args do ffmpeg (filtro +
  * formato de saída, sem os caminhos). Vai no nome do arquivo: mudar o
@@ -1915,7 +1942,7 @@ export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: nu
   return `[premissa] ganho de áudio no XML: ${g.db > 0 ? "+" : ""}${g.db.toFixed(2)} dB em cada clipe (Audio Levels, limitado pelo ${why})${from}; conferir no 1º import se o Premiere aplicou (#11755); --no-audio-gain tira`;
 }
 
-async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true): Promise<number> {
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null): Promise<number> {
   // #12089: o corte de pausas pelo detector de fala (energia + banda alta), não pelo silencedetect.
   let speech: { cut: SpeechCut | null; reason?: string } = { cut: null, reason: "--no-speech-detect" };
   if (speechDetect) {
@@ -1935,7 +1962,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #11935: --seq grava só o XML daquela sequência e só ela barra o build; #11969: e só ela muda no plan.json.
   const picked = pickPlans(ps, seq, false);
   // #12101: a vinheta do logo depois do título; sem o MOV nesta máquina, o build segue sem ela.
-  const vinheta = loadVinheta();
+  const resolvedVinheta = await loadVinhetaForDrive(drive);
+  const vinheta = resolvedVinheta ? (({ localPath, ...asset }) => asset)(resolvedVinheta) : null;
   if (vinheta) {
     console.error(
       `[premissa] vinheta do logo ${vinheta.path} (${vinheta.durationS.toFixed(2)} s, ${vinheta.width}x${vinheta.height}${vinheta.fps ? `, ${vinheta.fps} fps` : ""}${vinheta.hasAudio ? ", com som numa faixa de áudio própria" : ", sem som"}) ` +
@@ -2541,7 +2569,7 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
 /** Notas do alinhamento de cada legenda (#12093), por sequência: o relatório final lista para o editor conferir. */
 export const SRT_NOTES_FILE = "srt-notas.json";
 
-function cmdPreview(ctx: Ctx, target: string | undefined): number {
+async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSession | null = null): Promise<number> {
   const pf = loadPlan(ctx);
   // #12096: `--seq youtube` também (o horizontal, 960x540); sem --seq, a vertical da edição.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
@@ -2582,6 +2610,10 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
   const out = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   // #12101: a mesma vinheta do XML desta sequência por cima, no mesmo instante e no mesmo tamanho relativo.
   let vinheta = assets.vinheta ?? null;
+  if (vinheta && drive) {
+    const local = await loadVinhetaForDrive(drive, { readConfig: () => ({ publishing: { video: { vinheta_logo: { path: vinheta!.path } } } }) });
+    vinheta = local ? { ...vinheta, path: local.localPath ?? local.path } : null;
+  }
   if (vinheta && !existsSync(vinheta.path)) {
     console.error(`[aviso] vinheta do logo do XML não encontrada nesta máquina (${vinheta.path}): prévia sem ela (#12101)`);
     vinheta = null;
@@ -2772,14 +2804,16 @@ export interface DriveSession {
   deps: MontageDriveDeps;
   edition: string;
   cacheDir: string;
-  /** A pasta `{AAMMDD}/` no Drive (resolvida na 1ª chamada; o config só é lido aí). */
+  /** Raiz YouTube, também usada pela pasta compartilhada _marca/. */
+  rootFolderId?: () => string;
+  /** A pasta `{AAMMDD}/` no Drive (resolvida na 1ª chamada). */
   folder(): Promise<DriveEntry>;
 }
 
 /** `rootFolderId` é lido só quando algum passo vai mesmo à rede (frame com o bruto em cache não lê o config). */
 export function makeDriveSession(edition: string, cacheDir: string, deps: MontageDriveDeps, rootFolderId: () => string): DriveSession {
   let memo: Promise<DriveEntry> | null = null;
-  return { deps, edition, cacheDir, folder: () => (memo ??= Promise.resolve().then(() => findEditionFolder(deps, rootFolderId(), edition))) };
+  return { deps, edition, cacheDir, rootFolderId, folder: () => (memo ??= Promise.resolve().then(() => findEditionFolder(deps, rootFolderId(), edition))) };
 }
 
 function configRootFolderId(flag: string | undefined): () => string {
@@ -3076,7 +3110,7 @@ async function runCommand(
       }
       // #12209: a faixa tratada lê o bruto; no modo API ele pode ter saído do cache (o transcribe "pronto" não baixa).
       if (buildNeedsLocalBruto({ apiMode: d !== null, audioClean: !flags.has("no-audio-clean") })) await needLocalBruto();
-      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"));
+      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d);
     case "srt": {
       if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "G:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
       let final = values["from-final"];
@@ -3093,7 +3127,7 @@ async function runCommand(
     }
     case "preview":
       await needLocalBruto();
-      return cmdPreview(ctx, seq);
+      return cmdPreview(ctx, seq, d);
     case "review":
       return cmdReview(ctx, seq);
     case "review-final": {
