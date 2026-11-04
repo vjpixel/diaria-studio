@@ -27,9 +27,19 @@
 // depois dele o `Write` passa e o evento vai para `data/run-log.jsonl` como
 // `warn` — o guard nunca trava a edição num laço.
 //
+// Prova positiva (#11634): o 1º `Write` liberado de cada `agent_id` também vai
+// ao `data/run-log.jsonl` (`info`, "Write liberado: contexto obrigatório lido").
+// Sem isso, um Stage 2 sem nenhuma entrada do hook não distinguia "todos leram
+// o contexto" de "o payload do subagente não traz `agent_id`/`agent_type`"
+// (o hook pula em silêncio). Agora: alguma entrada `Write liberado`/`Write
+// negado` = campos presentes; Stage 2 inteiro sem nenhuma = campos ausentes.
+//
+// Limpeza (#11634): o 1º registro de um `agent_id` novo apaga os registros com
+// mais de `REGISTRY_MAX_AGE_MS` do diretório (antes nunca eram limpos).
+//
 // `.mjs` self-contained: só importa `./lib/` deste diretório.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -51,6 +61,9 @@ export const REQUIRED_READS = Object.freeze({
 });
 
 export const MAX_DENIES = 3;
+
+/** Idade a partir da qual um registro de `agent_id` é apagado (#11634). */
+export const REGISTRY_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
 const DEFAULT_ROOT = fileURLToPath(new URL("../..", import.meta.url)).replaceAll("\\", "/");
 
@@ -104,17 +117,49 @@ function registryFile(dir, agentId) {
   return join(dir, `${safeAgentId(agentId)}.log`);
 }
 
-/** Lê o registro do agent: `{ reads: string[], denies: number }`. Ausente → vazio. */
+/**
+ * Lê o registro do agent: `{ reads, denies, allowLogged }`. Ausente → vazio.
+ * `allowLogged` = o 1º Write liberado já foi ao run-log (linha `A`).
+ */
 export function readRegistry(dir, agentId) {
   const file = registryFile(dir, agentId);
-  if (!existsSync(file)) return { reads: [], denies: 0 };
+  if (!existsSync(file)) return { reads: [], denies: 0, allowLogged: false };
   const reads = [];
   let denies = 0;
+  let allowLogged = false;
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (line.startsWith("R\t")) reads.push(line.slice(2));
     else if (line === "D") denies++;
+    else if (line === "A") allowLogged = true;
   }
-  return { reads, denies };
+  return { reads, denies, allowLogged };
+}
+
+/**
+ * Apaga os registros (`*.log`) com `mtime` mais velho que `maxAgeMs` (#11634).
+ * Devolve quantos apagou; erro de I/O em um arquivo não interrompe os demais.
+ */
+export function pruneRegistry(dir, nowMs = Date.now(), maxAgeMs = REGISTRY_MAX_AGE_MS) {
+  let removed = 0;
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".log")) continue;
+    const file = join(dir, name);
+    try {
+      if (nowMs - statSync(file).mtimeMs > maxAgeMs) {
+        unlinkSync(file);
+        removed++;
+      }
+    } catch {
+      // Outro processo apagou ou o arquivo está preso: segue.
+    }
+  }
+  return removed;
 }
 
 function appendRegistry(dir, agentId, line) {
@@ -135,7 +180,7 @@ export function denyReason(missing, root = DEFAULT_ROOT) {
  * Processa um payload de hook. Devolve `{ action: "record" | "deny" | "allow" | "skip", ... }`.
  * Efeitos (append no registro, run-log) só acontecem aqui; nunca lança.
  */
-export function handlePayload(payload, { dir = defaultRegistryDir(), root = DEFAULT_ROOT, exists = existsSync, log = appendHookRunLog } = {}) {
+export function handlePayload(payload, { dir = defaultRegistryDir(), root = DEFAULT_ROOT, exists = existsSync, log = appendHookRunLog, nowMs = Date.now() } = {}) {
   try {
     const agentType = readField(payload, "agent_type", "agentType", "subagent_type");
     const agentId = readField(payload, "agent_id", "agentId");
@@ -146,14 +191,24 @@ export function handlePayload(payload, { dir = defaultRegistryDir(), root = DEFA
 
     if (tool === "Read" && event !== "PreToolUse") {
       if (typeof filePath !== "string" || filePath === "") return { action: "skip" };
+      if (!existsSync(registryFile(dir, agentId))) pruneRegistry(dir, nowMs);
       appendRegistry(dir, agentId, "R\t" + normalizePath(filePath));
       return { action: "record" };
     }
 
     if (tool === "Write" && event !== "PostToolUse") {
-      const { reads, denies } = readRegistry(dir, agentId);
+      const { reads, denies, allowLogged } = readRegistry(dir, agentId);
       const missing = missingRequiredReads(agentType, reads, { root, exists });
-      if (missing.length === 0) return { action: "allow" };
+      if (missing.length === 0) {
+        if (!allowLogged) {
+          appendRegistry(dir, agentId, "A");
+          log(root, "require-writer-context-reads", "info", "Write liberado: contexto obrigatório lido", {
+            agent_type: agentType,
+            denies_before: denies,
+          });
+        }
+        return { action: "allow" };
+      }
       if (denies >= MAX_DENIES) {
         log(root, "require-writer-context-reads", "warn", "teto de negações atingido; Write liberado sem a leitura", {
           agent_type: agentType,

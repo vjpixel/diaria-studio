@@ -112,6 +112,35 @@ describe("Kit→Brevo: teto de reposições do backlog atingido (#10701 item 2)"
     assert.equal(r.dryRun, true);
     assert.equal(r.backlogReplacementCapHit, true);
   });
+
+  // Resíduo do #10701: o aviso só ia pro stderr, e a condição de "registrar os
+  // pulados" não tinha registro durável onde ser conferida.
+  it("--push com teto atingido registra no run-log uma vez, com os números da rodada", async () => {
+    const { d } = deps({ blacklisted: new Set(["b0@x.com", "b1@x.com", "b2@x.com"]), maxBacklogReplacements: 1 });
+    const recorded: unknown[] = [];
+    d.recordBacklogReplacementCapHit = (details) => recorded.push(details);
+    await runKitSemAberturaSync(cfg(2), { push: true }, d);
+    assert.deepEqual(recorded, [{ maxReplacements: 1, replacements: 1, deferred: 2, skippedBlacklisted: 3 }]);
+  });
+
+  it("dry-run e teto não atingido não registram; falha do registro não derruba a rodada", async () => {
+    const recorded: unknown[] = [];
+    const dry = deps({ blacklisted: new Set(["b0@x.com", "b1@x.com", "b2@x.com"]), maxBacklogReplacements: 1 });
+    dry.d.recordBacklogReplacementCapHit = (x) => recorded.push(x);
+    await runKitSemAberturaSync(cfg(2), { push: false }, dry.d);
+    const ok = deps({ blacklisted: new Set(["b0@x.com"]), maxBacklogReplacements: 1 });
+    ok.d.recordBacklogReplacementCapHit = (x) => recorded.push(x);
+    await runKitSemAberturaSync(cfg(2), { push: true }, ok.d);
+    assert.deepEqual(recorded, []);
+
+    const boom = deps({ blacklisted: new Set(["b0@x.com", "b1@x.com", "b2@x.com"]), maxBacklogReplacements: 1 });
+    boom.d.recordBacklogReplacementCapHit = () => {
+      throw new Error("disco cheio");
+    };
+    const r = await runKitSemAberturaSync(cfg(2), { push: true }, boom.d);
+    assert.equal(r.code, 0);
+    assert.ok(boom.lines.some((l) => l.includes("teto de reposições não registrado no run-log (disco cheio)")));
+  });
 });
 
 describe("Kit→Brevo: cadastro novo pulado cede a vaga (#10701 item 3)", () => {
