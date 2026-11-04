@@ -7,7 +7,8 @@
  * (`diaria-shorts`, público em `https://media.diar.ia.br`, #10772) já existe.
  *
  * O que esta fatia faz, atrás da flag `platform.config.json →
- * public_images_r2.enabled` (default `false`, comportamento de antes):
+ * public_images_r2.enabled` (ligada desde 04/11/2026; `false`, ou bloco
+ * ausente/malformado, volta ao comportamento de antes, tudo no KV):
  *   - `scripts/upload-images-public.ts` sobe as imagens content-addressed
  *     (`img-{AAMMDD}-{base}-{md5short}.{ext}`) para o R2 em
  *     `img/{AAMMDD}/{base}-{md5short}.{ext}` (`r2KeyForImageKey`), com
@@ -33,13 +34,17 @@
  *      ativo em `workers/poll/wrangler.toml` e `workers/site/wrangler.toml`
  *      (o deploy dos dois é automático no push).
  *   2. FEITO em 04/11/2026 (probe --write, /diaria-develop 261104b; os dois
- *      Workers responderam 200, image/jpeg, immutable). Conferir: subir um objeto de teste em `img/{AAMMDD}/x-{8hex}.jpg` e
+ *      Workers responderam 200, image/jpeg, immutable). Como conferir de novo:
+ *      subir um objeto de teste em `img/{AAMMDD}/x-{8hex}.jpg` e
  *      pedir `https://eia.diar.ia.br/img/img-{AAMMDD}-x-{8hex}.jpg` e
  *      `https://diar.ia.br/img/…` (200, `Content-Type` certo, `immutable`).
  *      Comando: `npx tsx scripts/probe-public-images-r2.ts --write` (escreve
  *      um JPEG de teste no bucket pelo mesmo uploader da edição e confere os
  *      dois GETs; sai 0 só se tudo passar).
- *   3. Env do R2 com escrita no bucket (as mesmas do vertical: `R2_ACCOUNT_ID`,
+ *   3. FEITO no Neo em 04/11/2026 (probe sem rede: env_ready; o --write do
+ *      passo 2 rodou lá). No 300 o .env tem as vars SHORTS_* do vertical
+ *      (docs/scheduled-tasks-registry.md), que loadR2UploadConfig aceita.
+ *      Env do R2 com escrita no bucket (as mesmas do vertical: `R2_ACCOUNT_ID`,
  *      `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`/`SHORTS_R2_BUCKET`,
  *      `R2_PUBLIC_BASE`/`SHORTS_R2_PUBLIC_BASE`) na máquina que roda a edição.
  *      Conferência sem rede: `npx tsx scripts/probe-public-images-r2.ts`.
