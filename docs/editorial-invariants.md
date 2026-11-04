@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 129 invariants.
+**Total**: 130 invariants.
 
 ## Static (estrutura do repo)
 
@@ -120,6 +120,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `story-twice-in-edition` | Mesma história duas vezes na edição final (destaque × destaque, pool × destaque) ou repetindo item publicado nas últimas 3 edições por produto+versão (heurístico, warning-only) | #11496 |
 | `study-source-recurrence` | Item que é cobertura secundária de estudo/relatório já publicado nos últimos 30 dias (mesmo publicador + documento + número-chave; heurístico, warning-only) | #11763 |
 | `theme-cross-source-repeat` | Candidato a destaque com aviso cross-source do passe de tema do Stage 1 (repete tema de destaque recente) que segue no 02-reviewed.md final (warning-only) | #11496 |
+| `title-ia-as-agent` | título de destaque não põe 'IA' como sujeito quando o corpo descreve ator humano (#12106, warning-only) | #12106 |
 | `title-mentions-ia` | título de destaque sem menção a 'IA'/'AI'/'inteligência artificial' quando evitável (#4825, warning-only) | #4825 |
 | `title-publisher-suffix` | título sem sufixo residual de veículo (' \| Veículo' / ' - Veículo', #2664) | #2664 |
 | `title-trailing-period` | título de destaque/item sem ponto final único (#2672) | #2672 |
