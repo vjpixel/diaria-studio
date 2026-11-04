@@ -9,7 +9,7 @@
  *
  * Uso:
  *   npx tsx scripts/link-video-d1.ts AAMMDD [--video-url URL] [--save]
- *     [--assume-public] [--edition-dir DIR] [--now ISO]
+ *     [--assume-public] [--no-podcast] [--edition-dir DIR] [--now ISO]
  *
  * O que faz:
  *   - valida e normaliza a URL (`https://youtu.be/{id}`). Sem `--video-url`,
@@ -35,7 +35,12 @@
  *     agendados/publicados (`_internal/06-social-published.json`): editar o
  *     post agendado ou comentar/responder depois do disparo.
  *
- * Nunca publica, edita nem comenta nada: a execução do plano (editar o
+ *   - com `--save`, apaga o marcador `_internal/05-youtube-pending-approval.json`
+ *     (#12122: o vídeo está no canal) e põe o vídeo na playlist do podcast
+ *     (#12085, `lib/diaria/youtube-podcast-pasted.ts`; idempotente e
+ *     fail-soft, `--no-podcast` pula). É a única chamada à API daqui.
+ *
+ * Fora o podcast, nunca publica, edita nem comenta nada: a execução do plano (editar o
  * payload na fila do Worker / Buffer, comentar como organização no LinkedIn,
  * comentar no Facebook, responder no Threads e no X) segue pendente no #10772.
  */
@@ -60,6 +65,11 @@ import {
   videoLinkRemedy,
 } from "./lib/diaria/youtube-video-link-gate.ts";
 import { YOUTUBE_API_PROJECT_AUDITED } from "./lib/diaria/youtube-video.ts";
+import { YOUTUBE_PUBLISHED_FILE, defaultYouTubeUploadDeps } from "./lib/diaria/youtube-upload.ts";
+import { addPastedVideoToPodcast, type PastedPodcastInput, type PastedPodcastOutcome } from "./lib/diaria/youtube-podcast-pasted.ts";
+import { YOUTUBE_PENDING_APPROVAL_FILE, clearPendingApproval } from "./lib/diaria/youtube-pending-approval.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+import { isNodeTestContext } from "./lib/test-context-guard.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -80,12 +90,57 @@ function readPublishedEntries(dir: string): { entries: D1PostEntryLike[]; source
   return { entries: [], source: null };
 }
 
+/** Podcast do registro do upload (só para não repetir a chamada); ilegível = `null`. */
+function recordPodcast(dir: string): PastedPodcastInput["recordPodcast"] {
+  try {
+    const raw = JSON.parse(readFileSync(join(dir, YOUTUBE_PUBLISHED_FILE), "utf8")) as { podcast?: PastedPodcastInput["recordPodcast"] };
+    return raw.podcast ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #12085: o fallback do Studio também põe o horizontal no podcast. Pulado com
+ * `--no-podcast` e sob o test runner (`NODE_TEST_CONTEXT`): os testes rodam o
+ * `--save` de verdade, e no checkout do 300 o `.env` tem a credencial real.
+ */
+async function podcastForPastedLink(
+  aammdd: string,
+  dir: string,
+  videoUrl: string,
+  noPodcast: boolean,
+): Promise<PastedPodcastOutcome | { kind: "skipped"; reason: string }> {
+  if (noPodcast) {
+    console.error("[info] --no-podcast: vídeo não adicionado ao podcast (#12085)");
+    return { kind: "skipped", reason: "--no-podcast" };
+  }
+  if (isNodeTestContext()) return { kind: "skipped", reason: "test runner (NODE_TEST_CONTEXT)" };
+  let config: unknown = null;
+  let configError: string | undefined;
+  try {
+    config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  } catch (e) {
+    configError = (e as Error).message;
+  }
+  loadProjectEnv(ROOT);
+  return addPastedVideoToPodcast(defaultYouTubeUploadDeps, {
+    aammdd,
+    videoUrl,
+    config,
+    ...(configError ? { configError } : {}),
+    env: process.env,
+    recordPodcast: recordPodcast(dir),
+    log: (l) => console.error(l),
+  });
+}
+
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
   const aammdd = positional[0];
   if (!aammdd || !/^\d{6}$/.test(aammdd)) {
     console.error(
-      "uso: link-video-d1.ts AAMMDD [--video-url URL] [--save] [--assume-public] [--edition-dir DIR] [--now ISO]",
+      "uso: link-video-d1.ts AAMMDD [--video-url URL] [--save] [--assume-public] [--no-podcast] [--edition-dir DIR] [--now ISO]",
     );
     return 2;
   }
@@ -134,10 +189,14 @@ async function main(): Promise<number> {
   }
 
   const urlFile = join(dir, D1_VIDEO_URL_FILE);
+  let podcast: PastedPodcastOutcome | { kind: "skipped"; reason: string } | null = null;
   if (flags.has("save")) {
     mkdirSync(dirname(urlFile), { recursive: true });
     writeFileSync(urlFile, `${videoUrl}\n`, "utf8");
     console.error(`[ok] ${urlFile} gravado — o Stage 5 põe o link no D1 de X, Threads e Facebook`);
+    // #12122: o vídeo está no canal; a espera do "pode publicar" acabou.
+    if (clearPendingApproval(dir, (l) => console.error(l))) console.error(`[ok] ${YOUTUBE_PENDING_APPROVAL_FILE} apagado (#12122)`);
+    podcast = await podcastForPastedLink(aammdd, dir, videoUrl, flags.has("no-podcast"));
   }
 
   const { entries, source } = readPublishedEntries(dir);
@@ -151,6 +210,7 @@ async function main(): Promise<number> {
         video_link_gate: gate,
         video_url_file: flags.has("save") ? urlFile : existsSync(urlFile) ? urlFile : null,
         social_published: source,
+        ...(podcast ? { podcast } : {}),
         steps,
       },
       null,

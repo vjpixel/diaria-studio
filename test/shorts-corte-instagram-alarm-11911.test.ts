@@ -61,7 +61,18 @@ const CFG_TIMER = { publishing: { shorts: { ...SHORTS, corte_via_timer: true } }
 // O corte de 02/11/2026: 08:00 BRT = 11:00Z.
 const AT = Date.parse("2026-11-02T11:00:00.000Z");
 const H = 3_600_000;
-const SPEC: CorteSpec = { slug: "tratar-ia-como-humano", date: "261102", hhmm: "08:00", title: "Você ainda trata a IA como máquina?", hook: "Essa é a maior dificuldade que vejo nas pessoas.", video: "corte.mp4" };
+// #11918: a vigia só alarma destino com o "pode publicar" gravado (o corte de 02/11 autorizou os 4 sem agendamento da API).
+const SPEC: CorteSpec = {
+  slug: "tratar-ia-como-humano",
+  date: "261102",
+  hhmm: "08:00",
+  title: "Você ainda trata a IA como máquina?",
+  hook: "Essa é a maior dificuldade que vejo nas pessoas.",
+  video: "corte.mp4",
+  publish_confirmed_at: "2026-11-02T00:20:00.000Z",
+  publish_confirmed_destinations: ["youtube_shorts", "facebook:diaria", "instagram", "threads_profile", "linkedin_profile"],
+  publish_confirmed_content: { video_sha256: "a".repeat(64), cover_sha256: null },
+};
 
 /** O registro do corte de 02/11 como ficou: tudo menos o Instagram. */
 const REGISTRY_WITHOUT_IG = JSON.stringify({
@@ -190,6 +201,15 @@ describe("#11911 porta 2: findCortesWithoutOwner (puro)", () => {
 
   it("destino desligado no config: nada", () => {
     assert.equal(find({ config: { publishing: { shorts: { ...SHORTS, instagram: false } } } }).length, 0);
+  });
+
+  it("#11918: corte só com dry-run (sem 'pode publicar') não alarma; destino fora do --only também não", () => {
+    const { publish_confirmed_at: _a, publish_confirmed_destinations: _d, ...dryRunOnly } = SPEC;
+    const withSpec = (spec: CorteSpec) =>
+      findCortesWithoutOwner({ config: CFG, destination: "instagram", cortes: [{ ...corteInput([REGISTRY_WITHOUT_IG]), spec }], now: new Date(AT + 4 * H) });
+    assert.deepEqual(withSpec(dryRunOnly), [], "só dry-run: o corte não devia sair, então não é atraso");
+    assert.deepEqual(withSpec({ ...SPEC, publish_confirmed_destinations: ["youtube_shorts", "threads_profile"] }), [], "instagram fora do --only");
+    assert.equal(withSpec(SPEC).length, 1, "controle: com o instagram autorizado o achado volta");
   });
 
   it("registro ilegível lança (nunca vira 'faltando' nem 'registrado')", () => {

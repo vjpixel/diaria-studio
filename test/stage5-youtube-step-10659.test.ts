@@ -162,8 +162,9 @@ describe("stage5-youtube.ts (miolo puro)", () => {
   });
 
   it("upload: lê url/state do JSON; saída vazia não lança", () => {
-    assert.deepEqual(parseUploadStdout(JSON.stringify({ url: "https://youtu.be/x", state: "scheduled" })), { url: "https://youtu.be/x", state: "scheduled" });
-    assert.deepEqual(parseUploadStdout(""), { url: null, state: null });
+    // #12120: o podcast do --upload também vem (null = sem o campo).
+    assert.deepEqual(parseUploadStdout(JSON.stringify({ url: "https://youtu.be/x", state: "scheduled" })), { url: "https://youtu.be/x", state: "scheduled", podcastOk: null, podcastError: null });
+    assert.deepEqual(parseUploadStdout(""), { url: null, state: null, podcastOk: null, podcastError: null });
   });
 
   it("o playbook do Stage 5 chama o comando único", () => {
