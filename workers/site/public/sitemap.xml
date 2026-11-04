@@ -1254,4 +1254,19 @@
       <news:title>Só o Claude Opus 5.5 supera a IA aberta da Mistral no teste às cegas</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/golpe-da-selfie-criminosos-usam-ia-para-copiar-seu-rosto</loc>
+    <lastmod>2026-11-04</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-11-04T00:00:00.000Z</news:publication_date>
+      <news:title>Golpe da selfie: criminosos usam IA para copiar seu rosto</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/archive/11</loc>
+  </url>
 </urlset>
