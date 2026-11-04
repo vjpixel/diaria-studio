@@ -982,7 +982,11 @@ issue alguma mas ainda pode casar um padrão frouxo). Forçar bloqueio sobre
 uma heurística de baixa precisão trocaria "issue presa sem marcador" pelo
 problema pior de "rodada presa por causa de uma frase comum". Os achados
 entram como linha informativa no relatório da rodada — nunca travam nada,
-nunca voltam a Fase 1. Racional completo: `scripts/lib/dependency-prose-lint.ts`.
+nunca voltam a Fase 1. Falso positivo revisado: gravar
+`<!-- dependency-prose-ok -->` no corpo (#12084) para não repetir a triagem
+nas próximas rodadas. Ao introduzir nova prosa de dependência, remover o
+marcador e revisar novamente. O marcador só dispensa este lint; não altera
+dependências estruturadas nem a classificação de execução. Racional completo: `scripts/lib/dependency-prose-lint.ts`.
 
 **Onde plugar:** passo 0.95 da Fase 2 do overnight (logo após o item 25);
 mesma posição, sem numeração formal, no develop (`.claude/skills/diaria-develop/SKILL.md`,
