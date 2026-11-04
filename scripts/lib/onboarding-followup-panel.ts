@@ -13,8 +13,11 @@
  * rascunho anterior fica em pendentes). Entrega/abertura real no ESP é outra métrica
  * (fora do escopo inicial da issue).
  *
- * E-mail sempre MASCARADO (`a***@dominio`), nunca cru. Entrada/lote de
- * piloto (`pilot:*`, `onboarding-pilot-*`) nunca entra na contagem.
+ * Tabela por pessoa mostra o e-mail COMPLETO (decisão do editor, 03/11/2026,
+ * #10606: o painel serve pra agir sobre a pessoa, e o e-mail mascarado não
+ * dizia quem era). E-mail citado dentro de texto de ERRO (lote, rodada) segue
+ * mascarado por `maskInText`. Entrada/lote de piloto (`pilot:*`,
+ * `onboarding-pilot-*`) nunca entra na contagem.
  */
 
 import type { OnboardingEntry, OnboardingStore } from "./onboarding-store.ts";
@@ -75,7 +78,8 @@ export interface EmailStepCount {
 export interface PersonRow {
   /** Chave estável da linha (id Kit, ou `subscription_id` legado). */
   key: string;
-  emailMasked: string;
+  /** E-mail completo, sem máscara (decisão do editor, 03/11/2026, #10606). */
+  email: string;
   cadastroAt: string | null;
   apoioRecebidos: number;
   formRecebidos: number;
@@ -249,7 +253,7 @@ export function buildFollowupPanel(
     const cadastro = e.created_at != null ? new Date(e.created_at * 1000).toISOString() : e.detected_at ?? null;
     rows.set(key, {
       key,
-      emailMasked: maskEmail(e.email),
+      email: e.email,
       cadastroAt: cadastro,
       apoioRecebidos: email3Received(e, lotsById) ? 1 : 0,
       formRecebidos: 0,
@@ -260,7 +264,7 @@ export function buildFollowupPanel(
   for (const [key, p] of Object.entries(people)) {
     const row = rows.get(key) ?? {
       key,
-      emailMasked: maskEmail(p.email),
+      email: p.email,
       cadastroAt: p.cadastro_at ?? null,
       apoioRecebidos: 0,
       formRecebidos: 0,

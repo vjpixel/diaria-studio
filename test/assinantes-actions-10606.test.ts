@@ -492,4 +492,15 @@ describe("assinantes.html enxuto (#10606)", () => {
     assert.ok(found.length > 20);
     for (const id of found) assert.ok(html.includes(`id="${id}"`), `assinantes.js procura #${id}, ausente do HTML`);
   });
+
+  it("ajustes do editor 03/11: Cadastros por origem sem coluna Dia (agrupado por origem) e tabela por pessoa com e-mail completo", () => {
+    const start = html.indexOf('id="cohort-origem-table"');
+    const thead = html.slice(start, html.indexOf("</thead>", start));
+    assert.ok(!/<th>Dia/.test(thead), "coluna Dia voltou à tabela Cadastros por origem");
+    assert.ok(/<th>Origem<\/th>/.test(thead));
+    assert.ok(js.includes("data.rowsByOrigin"), "tabela por origem deveria renderizar rowsByOrigin (somado no período)");
+    assert.ok(!js.includes("escapeHtml(r.day)"), "linha por dia voltou à tabela por origem");
+    assert.ok(js.includes('id="cohort-origem-from"') || html.includes('id="cohort-origem-from"'), "filtro de data continua");
+    assert.ok(js.includes("escapeHtml(r.email)") && !js.includes("emailMasked"), "tabela por pessoa deveria mostrar o e-mail completo");
+  });
 });

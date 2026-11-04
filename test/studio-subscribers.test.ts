@@ -312,6 +312,7 @@ describe("buildAcquisitionCohortData", () => {
       const data = buildAcquisitionCohortData(root);
       assert.equal(data.db.available, false);
       assert.deepEqual(data.rows, []);
+      assert.deepEqual(data.rowsByOrigin, []);
       assert.equal(data.subscribersWithoutEnteredAt, 0);
       assert.ok(data.confirmationNote.length > 0);
     } finally {
@@ -454,6 +455,9 @@ describe("buildAcquisitionCohortData", () => {
       const data = buildAcquisitionCohortData(root, { from: "2026-09-02", to: "2026-09-09" });
       const totalCadastros = data.rows.reduce((sum, r) => sum + r.total, 0);
       assert.equal(totalCadastros, 1); // só o dia 05
+      // #10606: a tabela por origem (sem Dia) soma só o período filtrado.
+      assert.deepEqual(data.rowsByOrigin.map((r) => [r.utmSource, r.total]), [["x", 1]]);
+      assert.ok(data.rowsByOrigin.every((r) => !("day" in r)));
       assert.equal(data.from, "2026-09-02");
       assert.equal(data.to, "2026-09-09");
     } finally {
@@ -479,6 +483,9 @@ describe("buildAcquisitionCohortData", () => {
       const data = buildAcquisitionCohortData(root, { from: "2026-09-02", to: "2026-09-09" });
       const totalCadastros = data.rows.reduce((sum, r) => sum + r.total, 0);
       assert.equal(totalCadastros, 2);
+      // #10606: os dois dias somam numa linha só por origem.
+      assert.equal(data.rowsByOrigin.length, 1);
+      assert.equal(data.rowsByOrigin[0].total, 2);
       assert.ok(data.rows.some((r) => r.day === "2026-09-02"));
       assert.ok(data.rows.some((r) => r.day === "2026-09-09"));
     } finally {
