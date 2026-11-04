@@ -4,16 +4,20 @@
  * Transforma D1/D2/D3 do feed diário do Instagram de post estático (1 card
  * 4:5) em carrossel de 5 slides, benchmark "1 slide = 1 batida" (#6005,
  * padrões 1/7/9/11/12 de `context/instagram-benchmarks-5815.md`). Decisão do
- * editor (sessão 260824, issue #6005): **5 slides fixos**, texto = o MESMO
- * `## d{N}` já escrito pelo `social-writer` (nunca um texto novo), 1 parágrafo
- * por card.
+ * editor (sessão 260824, issue #6005): **5 slides fixos**, 1 bloco de texto
+ * por card. Desde o #12094 o texto dos cards é a seção `## d{N}-cards` que o
+ * `social-writer` escreve à parte (3 blocos), separada da legenda `## d{N}`
+ * (texto corrido do post); edição anterior ao #12094, sem `-cards`, cai na
+ * legenda `## d{N}` como antes (`extractCarouselCardsBlock`,
+ * `scripts/lib/extract-section.ts`).
  *
  * Composição fixa dos 5 slides:
  *   1. Capa — `04-{destaque}-4x5.jpg`, já gerado por `gen-social-card-4x5.ts`
  *      (foto + título overlay). Este módulo NÃO regenera esse arquivo — só
  *      referencia a URL já publicada pra ele (ver `resolveCarouselImageUrls`).
- *   2-4. 3 cards de parágrafo — texto puro (sem foto), 1 parágrafo do corpo
- *      de `## d{destaque}` por card (`splitIntoParagraphCards`), quebrado em
+ *   2-4. 3 cards de parágrafo — texto puro (sem foto), 1 bloco de
+ *      `## d{destaque}-cards` (fallback `## d{destaque}`) por card
+ *      (`splitIntoParagraphCards`), quebrado em
  *      até 2 blocos visuais DENTRO do mesmo card quando houver ponto de corte
  *      viável (`splitParagraphIntoTwoBlocks`, #6136 item 2).
  *   5. CTA — texto puro, mesmo copy de `INSTAGRAM_CTA_LINE`
@@ -316,7 +320,8 @@ export function splitParagraphIntoTwoBlocks(text: string): string {
 
 /**
  * Pure: monta o `FlatCardText` de cada um dos 4 slides sem foto (3
- * parágrafos + CTA), a partir do texto genérico JÁ EXTRAÍDO de `## d{N}`
+ * parágrafos + CTA), a partir do texto JÁ EXTRAÍDO por
+ * `extractCarouselCardsBlock` (`## d{N}-cards`, fallback `## d{N}`, #12094)
  * (com ou sem bloco de hashtags — `splitBodyAndTags` remove antes de
  * dividir). `paragraphCount` no kicker ("02 / 03") dá orientação de posição
  * no carrossel — o mesmo padrão "1 batida por slide" dos benchmarks.
@@ -378,7 +383,8 @@ export function buildDailyCarouselCtaText(ctaOverride?: CarouselCtaOverride | nu
 /**
  * (#6064 item 1) Carimbo de "com QUAL texto estes slides foram rasterizados".
  *
- * Os cards são imagem: o texto do `## d{N}` vira pixel no Stage 3 e não
+ * Os cards são imagem: o texto do `## d{N}-cards` (fallback `## d{N}`,
+ * #12094) vira pixel no Stage 3 e não
  * acompanha mais nenhuma edição posterior do `03-social.md` — e o editor edita
  * exatamente esse arquivo no painel Revisão do Stage 4, DEPOIS do Stage 3.
  * Sem carimbo, a legenda sai com o texto novo e a arte com o velho, em
@@ -511,16 +517,19 @@ export function writeCarouselSourceHashes(
  * (#11211) Quebra/espaçamento do texto do POST independente da divisão dos
  * CARDS do carrossel.
  *
- * O texto dos cards sai do mesmo `## d{N}` da legenda, dividido em 3 pelas
- * linhas em branco (`splitIntoParagraphCards`). Até aqui isso amarrava a
+ * Até o #12094 o texto dos cards saía do mesmo `## d{N}` da legenda, dividido
+ * em 3 pelas linhas em branco (`splitIntoParagraphCards`), e isso amarrava a
  * paragrafação do post à do carrossel: o editor reparagrafar a legenda no
  * gate 4 (caso da edição 261027 — d2 em 4 parágrafos, d3 em 5, mesmas
  * palavras) fazia o gerador juntar os parágrafos extras no 3º card, que
- * estourava, e mudava o carimbo, que acusava a arte de velha.
+ * estourava, e mudava o carimbo, que acusava a arte de velha. Desde o #12094
+ * os cards saem de `## d{N}-cards` e a legenda não os afeta mais; o mecanismo
+ * abaixo segue valendo para o texto dos cards (seção `-cards`, ou a legenda
+ * `## d{N}` na edição sem ela, via `extractCarouselCardsBlock`).
  *
  * Mecanismo: quando os slides são gerados, a divisão em cards usada no render
  * é gravada aqui (`_internal/.carousel-card-paragraphs.json`). Depois, se o
- * texto do `## d{N}` tem EXATAMENTE as mesmas palavras de uma divisão gravada
+ * texto dos cards tem EXATAMENTE as mesmas palavras de uma divisão gravada
  * (diferença só de espaço em branco/quebra de linha/parágrafo), os cards usam
  * a divisão gravada — a arte, o carimbo e a checagem de overflow ficam
  * idênticos aos do render, e a legenda segue com a quebra que o editor quis.

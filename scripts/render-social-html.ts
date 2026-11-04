@@ -542,8 +542,10 @@ export function groupByDestaque(
 
 function renderGroupedBlock(block: GroupedBlock, color: string): string {
   // #10441 (revisa #6871): o preview mostra o texto EXATAMENTE como sai
-  // publicado — sem negrito. O `**` do `## dN` existe só pros cards do
-  // carrossel (#6086 item c); nenhuma plataforma renderiza negrito no texto do
+  // publicado — sem negrito. O `**` existe só pros cards do carrossel (#6086
+  // item c), que desde o #12094 leem `## dN-cards` (fallback `## dN` em edição
+  // sem a seção, `extractCarouselCardsBlock`); um `**` que sobre na legenda
+  // `## dN` sai limpo aqui; nenhuma plataforma renderiza negrito no texto do
   // post, e o <strong> que o #6871 punha aqui fazia o editor achar que o post
   // ia ao ar em negrito (pedido do editor no gate 4 da 261019). Mesmo ponto
   // único dos publicadores: `toSocialPostText` (`lib/social-post-text.ts`).

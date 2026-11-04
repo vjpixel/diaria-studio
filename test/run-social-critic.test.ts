@@ -404,3 +404,30 @@ describe("run-social-critic CLI --input-json (#4505 item 3)", () => {
     }
   });
 });
+
+describe("social-critic lê a seção dos cards do carrossel (#12183 item 3, #12094)", () => {
+  const agentPath = join(import.meta.dirname, "..", ".claude", "agents", "social-critic.md");
+
+  it("o prompt do agent lista `## d{N}-cards` entre as seções a ler", () => {
+    const prompt = readFileSync(agentPath, "utf8");
+    // A leitura vale para as duas seções do destaque: a legenda e o texto dos cards.
+    for (const id of ["d1", "d2", "d3"]) {
+      assert.ok(prompt.includes(`\`## ${id}\``), `prompt deveria citar ## ${id}`);
+      assert.ok(prompt.includes(`\`## ${id}-cards\``), `prompt deveria citar ## ${id}-cards`);
+    }
+  });
+
+  it("finding na seção `d1-cards` passa pelo normalize e aparece no gate com a seção", () => {
+    const result = normalizeSocialCriticResult(
+      {
+        findings: [
+          { section: "d1-cards", trecho: "O trade-off é real.", motivo: "fechamento genérico" },
+        ],
+      },
+      "261104",
+    );
+    assert.equal(result.sounds_ai, true);
+    assert.equal(result.findings[0].section, "d1-cards");
+    assert.match(formatGateSummary(result), /\[d1-cards\] "O trade-off é real\."/);
+  });
+});
