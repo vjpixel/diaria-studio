@@ -18,6 +18,7 @@ import {
   DIARIA_THREADS_URL,
   DIARIA_YOUTUBE_SLUG,
   DIARIA_YOUTUBE_URL,
+  DIARIA_YOUTUBE_SUBSCRIBE_URL,
   DIARIA_CURSOS_URL,
   DIARIA_LIVROS_URL,
   DIARIA_X_SLUG,
@@ -245,6 +246,21 @@ Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor desta newsl
 [Siga no X](https://x.com/diariabr)
 `;
     assert.deepEqual(findMismatchedUrls(md, approved), []);
+  });
+
+  // #12086: o canal do YouTube (convite "Siga a diar.ia.br" e CTA de inscrição
+  // com `?sub_confirmation=1`) saía como divergente em toda edição desde 261030.
+  // Vídeo específico continua sendo conteúdo.
+  it("ignora o canal do YouTube da própria diária, com e sem ?sub_confirmation (#12086)", () => {
+    assert.ok(FOOTER_DOMAINS.includes(DIARIA_YOUTUBE_SLUG));
+    const approved = { radar: [{ title: "N", url: "https://example.com/n" }] };
+    const md = `
+[**N**](https://example.com/n)
+[Inscreva-se no podcast](${DIARIA_YOUTUBE_SUBSCRIBE_URL})
+Siga a **diar.ia.br**: [YouTube](${DIARIA_YOUTUBE_URL}) [X](https://x.com/diariabr)
+[Vídeo](https://www.youtube.com/watch?v=abc123)
+`;
+    assert.deepEqual(findMismatchedUrls(md, approved), ["https://www.youtube.com/watch?v=abc123"]);
   });
 
   it("DIARIA_CURSOS_URL/DIARIA_LIVROS_URL apontam pro domínio de marca (#3698)", () => {

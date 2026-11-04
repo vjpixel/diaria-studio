@@ -11,6 +11,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import sharp from "sharp";
 import {
   YOUTUBE_THUMB_H,
@@ -228,7 +229,10 @@ describe("#11228 codex-image.js com imagem de referência (outpaint)", () => {
     const args: string[] = buildCodexArgs(DEFAULTS, ["data/x/04-d1-2x1.jpg"]);
     const i = args.indexOf("-i");
     assert.ok(i > 0);
-    assert.match(args[i + 1], /^\/.*data\/x\/04-d1-2x1\.jpg$/);
+    // #12087: comparar com path.resolve, não com regex de caminho Unix — no
+    // Windows o absoluto sai `C:\...\data\x\04-d1-2x1.jpg` e a regex falhava.
+    assert.ok(path.isAbsolute(args[i + 1]), `caminho absoluto: ${args[i + 1]}`);
+    assert.equal(args[i + 1], path.resolve("data", "x", "04-d1-2x1.jpg"));
     assert.equal(args.at(-1), "-");
     assert.ok(!buildCodexArgs(DEFAULTS).includes("-i"), "sem referência, sem -i");
   });

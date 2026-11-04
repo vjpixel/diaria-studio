@@ -90,13 +90,16 @@ export const SOCIAL_INVITE_LEGACY =
   `${SOCIAL_INVITE_LEGACY_PREFIX} **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}), [X](${DIARIA_X_URL}) ou [YouTube](${DIARIA_YOUTUBE_URL}).`;
 
 /** `SOCIAL_INVITE` com ícones na ordem anterior (LinkedIn, Instagram, Threads,
- * Facebook, X, YouTube; #11483 até a reordenação de 261101). Edições costuradas
+ * Facebook, X, YouTube; #11483 até a reordenação, que entrou na edição 261103
+ * pelo #11799, commit 751807bf2 — #12086). Edições costuradas
  * nesse intervalo carregam este texto; o drift não deve acusá-las. */
 export const SOCIAL_INVITE_ICONS_ORDER_LEGACY =
   `${SOCIAL_INVITE_PREFIX} [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL}) [YouTube](${DIARIA_YOUTUBE_URL})`;
 
 /** `SOCIAL_INVITE` na ordem atual, mas com o link do canal sem
- * `?sub_confirmation=1` (reordenação de 261101 até o #12069). Edições
+ * `?sub_confirmation=1` (da edição 261103, quando a reordenação entrou pelo
+ * #11799, até o #12069; o pedido do editor é de 01/11, mas a 1ª edição
+ * costurada com a nova ordem é a 261103 — #12086). Edições
  * costuradas nesse intervalo carregam este texto; o drift não deve acusá-las. */
 export const SOCIAL_INVITE_PLAIN_YOUTUBE_LEGACY =
   `${SOCIAL_INVITE_PREFIX} [YouTube](${DIARIA_YOUTUBE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL})`;

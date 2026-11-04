@@ -17,6 +17,9 @@
  *   cai em 403 de escopo → `scopeMissing: true`.
  * - Fail-soft: nada aqui lança; falha vira campo no resultado e `[aviso]` no
  *   log, nunca derruba a publicação do vídeo.
+ * - Órfãos (#12113): depois do insert, varre a playlist (`part=contentDetails,
+ *   status`, 1 unidade por página de 50) e avisa os itens de vídeo apagado,
+ *   que o podcast segue servindo como episódio quebrado. Só avisa; não apaga.
  */
 
 import {
@@ -94,7 +97,32 @@ export interface PodcastPlaylistResult {
   /** Status HTTP da chamada que falhou (`null` = rede, corpo inesperado ou ok). */
   httpStatus: number | null;
   at: string | null;
+  /**
+   * #12113: varredura de itens órfãos (vídeo apagado/indisponível) na playlist,
+   * feita depois do insert com o mesmo token. Ausente = não rodou (ex.: token
+   * recusado). Só avisa: nada é apagado por aqui.
+   */
+  orphanScan?: PodcastOrphanScan;
 }
+
+/** Item da playlist cujo vídeo não existe mais (ou ficou indisponível). */
+export interface PodcastOrphanItem {
+  playlistItemId: string;
+  videoId: string | null;
+}
+
+export interface PodcastOrphanScan {
+  ok: boolean;
+  orphans: PodcastOrphanItem[];
+  /** Itens lidos (para conferir contra o `itemCount` do Studio). */
+  scanned: number;
+  /** Varredura parou no teto de páginas: a contagem pode estar incompleta. */
+  truncated: boolean;
+  error: string | null;
+}
+
+/** Teto de páginas da varredura (50 itens/página, 1 unidade de quota cada). */
+export const ORPHAN_SCAN_MAX_PAGES = 20;
 
 const SCOPE_RE = /insufficientPermissions|insufficient authentication scopes|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i;
 
@@ -185,7 +213,93 @@ export async function addVideoToPodcastPlaylist(
   }
 }
 
-/** Renova o token e chama `addVideoToPodcastPlaylist`. Nunca lança. */
+/** URL de uma página da varredura de órfãos (`contentDetails` + `status`). */
+export function buildPlaylistItemsScanUrl(playlistId: string, pageToken?: string): string {
+  return (
+    `${YOUTUBE_API_BASE}/playlistItems?part=contentDetails,status&maxResults=50` +
+    `&playlistId=${encodeURIComponent(playlistId)}` +
+    (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "")
+  );
+}
+
+/**
+ * #12113: item órfão = vídeo apagado ou indisponível. Apagar o vídeo não remove
+ * o `playlistItem`: ele fica como "Deleted video", com `privacyStatus`
+ * `privacyStatusUnspecified` e sem `contentDetails.videoPublishedAt`.
+ * Privacidade conhecida (`public`/`unlisted`/`private`) nunca é órfã: o vídeo
+ * do dia sobe `private` agendado e ainda não tem `videoPublishedAt`. Só sem
+ * `status` o critério cai na ausência de `videoPublishedAt`; item sem
+ * `contentDetails` (corpo parcial) não é julgado.
+ */
+export function isOrphanPlaylistItem(item: unknown): boolean {
+  const it = item as { contentDetails?: { videoPublishedAt?: unknown } | null; status?: { privacyStatus?: unknown } | null } | null;
+  if (!it || typeof it !== "object") return false;
+  const privacy = it.status?.privacyStatus;
+  if (privacy === "privacyStatusUnspecified") return true;
+  if (privacy === "public" || privacy === "unlisted" || privacy === "private") return false;
+  const cd = it.contentDetails;
+  if (!cd || typeof cd !== "object") return false;
+  return typeof cd.videoPublishedAt !== "string" || cd.videoPublishedAt === "";
+}
+
+/** Lê a playlist inteira (até o teto de páginas) e lista os órfãos. Nunca lança. */
+export async function scanPodcastPlaylistOrphans(
+  deps: YouTubeUploadDeps,
+  token: string,
+  playlistId: string,
+): Promise<PodcastOrphanScan> {
+  const orphans: PodcastOrphanItem[] = [];
+  let scanned = 0;
+  let pageToken: string | undefined;
+  try {
+    for (let page = 0; page < ORPHAN_SCAN_MAX_PAGES; page++) {
+      const res = await deps.fetch(buildPlaylistItemsScanUrl(playlistId, pageToken), { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw await failure(res, "playlistItems.list (varredura de órfãos)");
+      const body = (await jsonOrNull(res)) as { items?: unknown[]; nextPageToken?: unknown } | null;
+      if (!body || !Array.isArray(body.items)) throw new PlaylistStepError("playlistItems.list (varredura de órfãos) devolveu corpo inesperado", false);
+      for (const item of body.items) {
+        scanned++;
+        if (!isOrphanPlaylistItem(item)) continue;
+        const it = item as { id?: unknown; contentDetails?: { videoId?: unknown } | null };
+        if (typeof it.id !== "string" || it.id === "") continue;
+        const vid = it.contentDetails?.videoId;
+        orphans.push({ playlistItemId: it.id, videoId: typeof vid === "string" && vid !== "" ? vid : null });
+      }
+      if (typeof body.nextPageToken !== "string" || body.nextPageToken === "") {
+        return { ok: true, orphans, scanned, truncated: false, error: null };
+      }
+      pageToken = body.nextPageToken;
+    }
+    return { ok: true, orphans, scanned, truncated: true, error: null };
+  } catch (e) {
+    return { ok: false, orphans, scanned, truncated: false, error: (e as Error).message };
+  }
+}
+
+/**
+ * Linha de log da varredura de órfãos; `null` quando não há nada a dizer
+ * (varredura limpa e completa).
+ */
+export function describePodcastOrphans(scan: PodcastOrphanScan | undefined, playlistId: string): string | null {
+  if (!scan) return null;
+  if (!scan.ok) return `[info] varredura de itens órfãos do podcast (${playlistId}) não concluída: ${scan.error} (#12113)`;
+  const trunc = scan.truncated ? ` (varredura parou em ${scan.scanned} itens; pode haver mais)` : "";
+  if (scan.orphans.length === 0) {
+    return scan.truncated ? `[info] nenhum item órfão no podcast (${playlistId})${trunc} (#12113)` : null;
+  }
+  const ids = scan.orphans.map((o) => o.videoId ?? o.playlistItemId).join(", ");
+  return (
+    `[aviso] a playlist do podcast (${playlistId}) tem ${scan.orphans.length} item(ns) órfão(s) de vídeo apagado ou indisponível` +
+    `${trunc}: ${ids}. Quem assina o podcast vê esses episódios quebrados. Remova-os da playlist no YouTube Studio ` +
+    "(nada foi apagado por este script). Se o podcast estiver conectado a um feed RSS (Detalhes do podcast → Configurações de RSS), " +
+    "o YouTube pode reenviar os vídeos do feed: confira essa conexão antes (#12113)."
+  );
+}
+
+/**
+ * Renova o token, chama `addVideoToPodcastPlaylist` e varre a playlist atrás de
+ * itens órfãos (#12113). Nunca lança.
+ */
 export async function ensureVideoInPodcastPlaylist(
   deps: YouTubeUploadDeps,
   input: { creds: YouTubeCredentials; playlistId: string; videoId: string },
@@ -196,7 +310,10 @@ export async function ensureVideoInPodcastPlaylist(
   } catch (e) {
     return { ...baseResult(input.playlistId, input.videoId), error: (e as Error).message, at: deps.now().toISOString() };
   }
-  return addVideoToPodcastPlaylist(deps, token, input.playlistId, input.videoId);
+  const result = await addVideoToPodcastPlaylist(deps, token, input.playlistId, input.videoId);
+  // 404 = playlist inexistente: varrer não diria nada novo.
+  if (result.httpStatus === 404) return result;
+  return { ...result, orphanScan: await scanPodcastPlaylistOrphans(deps, token, input.playlistId) };
 }
 
 /**
