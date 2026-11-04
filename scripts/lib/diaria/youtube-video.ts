@@ -288,11 +288,25 @@ export function youtubeD1Themes(d1: Pick<YouTubeD1Input, "title" | "body" | "cat
   return out;
 }
 
-/** 1ª frase do texto (até `.`, `!` ou `?` seguido de espaço/fim); o texto inteiro se não houver. */
+/**
+ * Separa a 1ª frase do texto (até `.`, `!` ou `?` seguido de espaço/fim, sem atravessar
+ * parágrafo) do resto. Sem ponto no 1º parágrafo, a "frase" é o parágrafo inteiro.
+ *
+ * O corte é feito no texto ORIGINAL, pela posição final do match (#12161): antes a
+ * frase era achada na versão com espaços colapsados e o comprimento dela cortava o
+ * original, o que perdia ou repetia caracteres quando havia espaço duplo, quebra de
+ * linha ou espaço no início. Só a frase devolvida é normalizada.
+ */
+export function splitFirstSentence(text: string): { sentence: string; rest: string } {
+  const m = text.match(/^\s*(?:(?!\n[ \t]*\n)[\s\S])+?[.!?](?=\s|$)/);
+  const paragraphEnd = text.search(/\n[ \t]*\n/);
+  const end = m ? m[0].length : paragraphEnd >= 0 ? paragraphEnd : text.length;
+  return { sentence: text.slice(0, end).replace(/\s+/g, " ").trim(), rest: text.slice(end).trim() };
+}
+
+/** 1ª frase do texto (ver `splitFirstSentence`). */
 function firstSentenceOf(text: string): string {
-  const plain = text.replace(/\s+/g, " ").trim();
-  const m = plain.match(/^.+?[.!?](?=\s|$)/);
-  return (m ? m[0] : plain).trim();
+  return splitFirstSentence(text).sentence;
 }
 
 /** Teto da 1ª linha da descrição (a frase antes do "mais"). */
@@ -325,11 +339,11 @@ export function buildYouTubeDescription(input: YouTubeMetadataInput): string {
   const tail = [`Receba a diar.ia.br de graça todo dia de manhã: ${youtubeSubscribeCtaUrl(aammdd)}`, "", buildYouTubeHashtags(d1).join(" ")].join("\n");
   const summary = sanitizeForYouTube(stripInlineMarkdown(d1.body));
   const actor = detectYouTubeD1Actor(d1);
-  const sentence = firstSentenceOf(summary);
+  const { sentence, rest: afterSentence } = splitFirstSentence(summary);
   // A 1ª frase é a linha antes do "mais": frase sem ponto (o resumo inteiro) é cortada.
   let lead = cutToBytes(sentence, YOUTUBE_DESCRIPTION_LEAD_MAX_BYTES);
   if (lead && actor && !youtubeActorMentioned(actor.key, lead)) lead = `${actor.label}: ${lead}`;
-  const rest = lead.endsWith("…") ? "" : summary.slice(sentence.length).trim();
+  const rest = lead.endsWith("…") ? "" : afterSentence;
   const head = lead ? `${lead}\n${editionLine}` : editionLine;
   // Orçamento: cabeçalho e cauda inteiros; o resto do resumo é o que encolhe.
   const fixed = utf8Bytes(head) + utf8Bytes(tail) + 4;
