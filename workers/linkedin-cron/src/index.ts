@@ -84,8 +84,8 @@
  * Vars (via [vars] no wrangler.toml, não-secretas):
  *   INSTAGRAM_API_VERSION          → (#3817) default "v25.0" se ausente (aplicado em dispatch.ts)
  *   THREADS_API_VERSION            → (#3944 Parte B) default "v1.0" se ausente (aplicado em dispatch.ts)
- *   LINKEDIN_API_VERSION           → (#8052) header LinkedIn-Version (YYYYMM), default "202401" se
- *                                    ausente (aplicado em dispatch.ts)
+ *   LINKEDIN_API_VERSION           → (#8052) header LinkedIn-Version (YYYYMM). Opcional: ausente =
+ *                                    default dinâmico de 2 meses atrás (#12171, dispatch.ts)
  */
 
 export interface Env {
@@ -130,7 +130,7 @@ export interface Env {
   // continua indo pelo webhook Make (MAKE_WEBHOOK_URL), intocado.
   LINKEDIN_ACCESS_TOKEN?: string;
   LINKEDIN_AUTHOR_URN?: string;
-  LINKEDIN_API_VERSION?: string; // default "202401" aplicado em dispatch.ts
+  LINKEDIN_API_VERSION?: string; // opcional; default dinâmico em dispatch.ts (#12171)
   // #9569 — webhook opcional (Slack/Discord/etc., aceita JSON com `text`) pro
   // alarme de DLQ e (#9618) pro refresh do token Threads falhando com o token
   // já perto de vencer. Ausente = só console.error.

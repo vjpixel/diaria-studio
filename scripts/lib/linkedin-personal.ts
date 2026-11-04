@@ -6,7 +6,7 @@
  * LinkedIn SEPARADO, com os produtos "Share on LinkedIn" (`w_member_social`)
  * e "Sign In with LinkedIn using OpenID Connect" (`openid profile`, pra
  * descobrir a URN da pessoa e checar se o token segue vivo) — sem tocar no
- * app da página (77tIvy0623oq84, em análise da Community Management API, que
+ * app da página (77tlvy0623oq84, em análise da Community Management API, que
  * a LinkedIn exige como produto único do app).
  *
  * Três peças usam este módulo:
@@ -44,7 +44,8 @@ export const LINKEDIN_PERSONAL_ENV = {
 
 /** Porta/rota do redirect local. A URL EXATA precisa estar cadastrada no app. */
 export const LINKEDIN_PERSONAL_REDIRECT_PORT = 8766;
-export const LINKEDIN_PERSONAL_REDIRECT_URI = `http://localhost:${LINKEDIN_PERSONAL_REDIRECT_PORT}/linkedin/callback`;
+export const LINKEDIN_PERSONAL_REDIRECT_PATH = "/linkedin/callback";
+export const LINKEDIN_PERSONAL_REDIRECT_URI = `http://localhost:${LINKEDIN_PERSONAL_REDIRECT_PORT}${LINKEDIN_PERSONAL_REDIRECT_PATH}`;
 
 /** `w_member_social` publica; `openid profile` servem pra ler o `sub` (URN da pessoa) e checar o token. */
 export const LINKEDIN_PERSONAL_SCOPES = ["openid", "profile", "w_member_social"] as const;
@@ -141,8 +142,10 @@ export function tokenFingerprint(env: Record<string, string | undefined>): strin
 /**
  * `LinkedIn-Version` (YYYYMM). A LinkedIn mantém cada versão ~1 ano e lança
  * uma por mês; dois meses atrás sempre existe e nunca está perto do fim —
- * evita pinar uma versão que expira em silêncio (o Worker da página usa
- * "202401" fixo como default). Sobrescrevível por env.
+ * evita pinar uma versão que expira em silêncio. Sobrescrevível por env.
+ * O Worker `linkedin-cron` tem cópia da mesma regra
+ * (`workers/linkedin-cron/src/linkedin-api-version.ts`, #12171), com
+ * paridade travada por `test/linkedin-api-version-parity-12171.test.ts`.
  */
 export function defaultLinkedInApiVersion(now: Date): string {
   const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 2, 1));

@@ -3,7 +3,7 @@
  *
  * OAuth one-shot (authorization code + redirect local) do app LinkedIn
  * PESSOAL — o app separado com "Share on LinkedIn" + "Sign In with LinkedIn
- * using OpenID Connect", nunca o app da página (77tIvy0623oq84). Rodar na
+ * using OpenID Connect", nunca o app da página (77tlvy0623oq84). Rodar na
  * máquina do editor (abre o navegador logado na conta pessoal).
  *
  * Lê do ambiente (Doppler → `.env`):
@@ -24,8 +24,6 @@
  * Passo a passo completo: docs/linkedin-personal-setup.md
  */
 
-import { createServer } from "node:http";
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
@@ -35,10 +33,11 @@ import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { defaultDopplerSet, persistSecrets } from "./lib/secret-persist.ts";
+import { waitForCode } from "./lib/oauth-local-redirect.ts";
 import {
   LINKEDIN_PERSONAL_ENV,
+  LINKEDIN_PERSONAL_REDIRECT_PATH,
   LINKEDIN_PERSONAL_REDIRECT_PORT,
-  LINKEDIN_PERSONAL_REDIRECT_URI,
   buildAuthorizeUrl,
   computeExpiresAt,
   exchangeCodeForToken,
@@ -47,66 +46,6 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONSENT_TIMEOUT_MS = 5 * 60 * 1000;
-
-function openBrowser(url: string): void {
-  // Sem cmd.exe: o `&` da query string cortaria a URL (mesmo racional de
-  // google-ads-associate-token.ts).
-  if (process.platform === "win32") {
-    spawn("rundll32", ["url.dll,FileProtocolHandler", url], { shell: false, stdio: "ignore", detached: true }).unref();
-  } else {
-    spawn(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore", detached: true }).unref();
-  }
-}
-
-function waitForCode(authUrl: string, state: string): Promise<string> {
-  return new Promise((resolveCode, reject) => {
-    let timer: NodeJS.Timeout;
-    const server = createServer((req, res) => {
-      const url = new URL(req.url ?? "/", LINKEDIN_PERSONAL_REDIRECT_URI);
-      if (url.pathname !== "/linkedin/callback") {
-        res.writeHead(204);
-        res.end();
-        return;
-      }
-      const code = url.searchParams.get("code");
-      const error = url.searchParams.get("error");
-      if (!code && !error) {
-        res.writeHead(204);
-        res.end();
-        return;
-      }
-      res.writeHead(200, { "Content-Type": "text/html;charset=utf-8" });
-      res.end(
-        `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:3rem">` +
-          (code ? "<h1>Pronto</h1><p>Pode fechar esta aba e voltar ao terminal.</p>" : "<h1>Falhou</h1><p>Veja o terminal.</p>") +
-          `</body>`,
-      );
-      const finish = (fn: () => void) => {
-        clearTimeout(timer);
-        server.close();
-        fn();
-      };
-      if (error) return finish(() => reject(new Error(`consentimento negado: ${error} ${url.searchParams.get("error_description") ?? ""}`)));
-      if (url.searchParams.get("state") !== state) {
-        return finish(() => reject(new Error("state divergente — callback descartado por segurança")));
-      }
-      finish(() => resolveCode(code as string));
-    });
-    server.on("error", (err: NodeJS.ErrnoException) => {
-      clearTimeout(timer);
-      reject(err.code === "EADDRINUSE" ? new Error(`porta ${LINKEDIN_PERSONAL_REDIRECT_PORT} ocupada — feche a execução anterior`) : err);
-    });
-    server.listen(LINKEDIN_PERSONAL_REDIRECT_PORT, "127.0.0.1", () => {
-      console.log("Abra esta URL no navegador logado na sua conta PESSOAL do LinkedIn (deve abrir sozinha):\n");
-      console.log(authUrl + "\n");
-      openBrowser(authUrl);
-      timer = setTimeout(() => {
-        server.close();
-        reject(new Error("timeout esperando o consentimento no navegador"));
-      }, CONSENT_TIMEOUT_MS);
-    });
-  });
-}
 
 async function main(): Promise<number> {
   loadProjectEnv(ROOT);
@@ -120,7 +59,14 @@ async function main(): Promise<number> {
     return 1;
   }
   const state = randomBytes(16).toString("hex");
-  const code = await waitForCode(buildAuthorizeUrl(clientId, state), state);
+  const code = await waitForCode({
+    authUrl: buildAuthorizeUrl(clientId, state),
+    state,
+    port: LINKEDIN_PERSONAL_REDIRECT_PORT,
+    path: LINKEDIN_PERSONAL_REDIRECT_PATH,
+    prompt: "Abra esta URL no navegador logado na sua conta PESSOAL do LinkedIn (deve abrir sozinha):",
+    timeoutMs: CONSENT_TIMEOUT_MS,
+  });
   const token = await exchangeCodeForToken(fetch, { code, clientId, clientSecret });
   const personUrn = await fetchPersonUrn(fetch, token.accessToken);
   const expiresAt = computeExpiresAt(new Date(), token.expiresInSec).toISOString();
