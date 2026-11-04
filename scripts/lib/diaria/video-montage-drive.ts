@@ -341,7 +341,7 @@ function writeSidecar(localPath: string, sidecar: CacheSidecar): void {
   writeFileSync(sidecarPath(localPath), JSON.stringify(sidecar, null, 2) + "\n");
 }
 
-function readSidecar(localPath: string): CacheSidecar | null {
+export function readSidecar(localPath: string): CacheSidecar | null {
   const p = sidecarPath(localPath);
   if (!existsSync(p)) return null;
   try {
