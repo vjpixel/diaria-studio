@@ -61,6 +61,16 @@ export interface HourlyConfirmationReport {
   membros: number;
   /** Já `active` na 1ª observação, ou 1ª observação tardia demais. */
   fora_de_escopo: number;
+  /**
+   * #8548 (reavaliação de 04/11/2026): parte de `fora_de_escopo` já `active`
+   * numa 1ª observação feita até `MAX_FIRST_SEEN_LAG_HOURS` depois do
+   * `created_at` — confirmou antes de a 1ª observação existir OU entrou por
+   * single opt-in (indistinguível aqui). Fica fora das taxas (ambíguo), mas
+   * é contado à parte: sem ele, "1h: 0,0%" esconde que esses assinantes
+   * estavam ativos em menos de `MAX_FIRST_SEEN_LAG_HOURS`. Na 1ª semana da
+   * task horária foram 9 de 24 cadastros, contra 0 dos 12 membros.
+   */
+  ativos_na_1a_observacao: number;
   janelas: HourlyWindowStats[];
   /** Horas (limite superior) até a 1ª observação `active`, só confirmados. */
   horas_ate_confirmar: { confirmados: number; p50: number | null; p90: number | null };
@@ -228,11 +238,14 @@ export function buildHourlyConfirmationReport(
   }
 
   let foraDeEscopo = 0;
+  let ativosNa1aObs = 0;
   const members: HourlyMemberOutcome[] = [];
   for (const [id, t] of tracks) {
     const first = t.series[0];
-    if (first.state !== "inactive" || first.at - t.created > MAX_FIRST_SEEN_LAG_HOURS * HOUR_MS) {
+    const vistoCedo = first.at - t.created <= MAX_FIRST_SEEN_LAG_HOURS * HOUR_MS;
+    if (first.state !== "inactive" || !vistoCedo) {
       foraDeEscopo++;
+      if (first.state === "active" && vistoCedo) ativosNa1aObs++;
       continue;
     }
     const firstActive = t.series.find((s) => s.state === "active");
@@ -255,12 +268,19 @@ export function buildHourlyConfirmationReport(
   if (foraDeEscopo > 0) {
     avisos.push(`${foraDeEscopo} assinante(s) já active na 1ª observação ou vistos tarde demais (>${MAX_FIRST_SEEN_LAG_HOURS}h após created_at) — fora das taxas`);
   }
+  if (ativosNa1aObs > 0) {
+    avisos.push(
+      `${ativosNa1aObs} desses já estavam active numa 1ª observação feita até ${MAX_FIRST_SEEN_LAG_HOURS}h após o cadastro ` +
+        `(confirmação rápida ou single opt-in, indistinguíveis aqui) — a taxa de 1h não os conta`,
+    );
+  }
   avisos.push("taxas horárias são PISO: só contam quem já estava active na última observação <= W h (subestima até ~1 intervalo); horas até confirmar é limite superior (até a 1ª observação active)");
   const total = aggregateHourly(members);
   return {
     observacoes: obs.length,
     membros: total.membros,
     fora_de_escopo: foraDeEscopo,
+    ativos_na_1a_observacao: ativosNa1aObs,
     janelas: total.janelas,
     horas_ate_confirmar: total.horas_ate_confirmar,
     por_canal_pago: groupHourly(members, (m) => m.canalPago),
@@ -283,7 +303,10 @@ function renderHourlyGroupLine(label: string, g: HourlyGroupStats): string {
 }
 
 export function renderHourlyConfirmationText(r: HourlyConfirmationReport): string {
-  const lines = [`Confirmação em horas (observação horária) — observações: ${r.observacoes}, membros: ${r.membros}`];
+  const lines = [
+    `Confirmação em horas (observação horária) — observações: ${r.observacoes}, membros: ${r.membros}, ` +
+      `já active na 1ª observação (≤${MAX_FIRST_SEEN_LAG_HOURS}h, fora das taxas): ${r.ativos_na_1a_observacao}`,
+  ];
   for (const w of r.janelas) {
     lines.push(`  ${String(w.horas).padStart(2)}h: ${fmtHourlyRate(w)}`);
   }
