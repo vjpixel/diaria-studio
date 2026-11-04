@@ -133,7 +133,8 @@ export function isEditedFolderName(name: string): boolean {
 }
 
 /**
- * Destino pelo nome: `_Youtube_`, `_Vertical_V{n}`/`_Vertical_FINAL`, `_Instagram_`, `_Outras redes_` (separador
+ * Destino pelo nome: `_Youtube_`, `_Vertical_V{n}`/`_Vertical_FINAL` (com texto
+ * livre no meio, `_Vertical_Edição 09_V1`, #12133), `_Instagram_`, `_Outras redes_` (separador
  * `_`, `-`, espaço ou `.`; sem diferenciar maiúsculas). Mais de um destino no
  * mesmo nome, ou nenhum, é `null`. Nome de corte (`…_V1-soberana`, ver
  * `corteSuffixOf`) também é `null`: é uma 2ª vertical que sai pelo modo corte,
@@ -145,7 +146,10 @@ export function videoTargetOf(name: string): VideoTarget | null {
   const found: VideoTarget[] = [];
   if (/ you ?tube /.test(n)) found.push("youtube");
   if (/ instagram /.test(n)) found.push("instagram");
-  if (/ outras redes | vertical (?:v\d+|final) /.test(n)) found.push("outras-redes");
+  // #12133: o editor põe texto livre entre o destino e a versão
+  // (`_Vertical_Edição 09_V1`); vale `_Vertical_` seguido, em algum ponto, de
+  // `V{n}`. `FINAL` continua colado ao destino (`_Vertical_pre-final` não é a vertical).
+  if (/ outras redes | vertical (?:final|(?:\S+ )*?v\d+) /.test(n)) found.push("outras-redes");
   return found.length === 1 ? found[0] : null;
 }
 
@@ -223,6 +227,8 @@ export interface DriveVideoFile {
    * mesmo `final-folder`, mas só aqui vale a versão mais alta (#11556).
    */
   editedFolder?: boolean;
+  /** Nome da subpasta onde o arquivo foi listado (`Final`, `Editado`...), para as mensagens (#12133). */
+  folderName?: string;
   /** `appProperties` do Drive; `diaria_promoted_from` marca a cópia que o fetch pôs em `Final/` (#11556). */
   appProperties?: Record<string, string>;
 }
@@ -243,6 +249,18 @@ export function videoVersionOf(name: string): number | null {
   const stem = name.normalize("NFC").replace(/\.[a-z0-9]{2,4}$/i, "");
   const found = [...stem.matchAll(/(?:^|[\s_.\-()])v(\d{1,3})(?=$|[\s_.\-()])/gi)].map((m) => Number(m[1]));
   return found.length === 1 ? found[0] : null;
+}
+
+/**
+ * O texto livre entre `_Vertical_` e o `V{n}`, normalizado (`folderKey`, sem
+ * acento): `_Vertical_Edição 09_V1` → `edicao 09`; `_Vertical_V1` → `""`;
+ * `null` fora do padrão `_Vertical_…_V{n}` (#12133). Texto antes do destino
+ * (`edição 6_Instagram_V1`, #11556) não conta.
+ */
+export function verticalInfixOf(name: string): string | null {
+  const n = ` ${folderKey(name.replace(/\.[a-z0-9]{2,4}$/i, ""))} `;
+  const m = / vertical ((?:\S+ )*?)v\d+ /.exec(n);
+  return m ? m[1].trim() : null;
 }
 
 function modifiedMs(file: DriveVideoFile): number | null {
@@ -415,7 +433,14 @@ function pickFromFinalFolder(allFiles: DriveVideoFile[], orientation: VideoOrien
     // final. Em Final/ o editor pôs as duas de propósito: segue ambíguo.
     // #11577: a cópia que o fetch promoveu para Final/ conta como Editados/ —
     // uma exportação mais nova lá (V6 depois do V5 promovido) vence a cópia.
-    const highest = byTarget.every((f) => f.editedFolder || isPromotedCopy(f)) ? pickHighestVersion(byTarget) : null;
+    // #12133: com texto livre entre `_Vertical_` e o `V{n}`, um corte sem a
+    // lista do blocks.json (`_Vertical_IA Soberana_Edição 08_V2`) casa o mesmo
+    // destino que a vertical da edição (`_Vertical_Edição 08_V1`). Versão só
+    // se compara com o mesmo texto entre `_Vertical_` e o `V{n}`; texto
+    // diferente, o editor escolhe.
+    const infixes = new Set(byTarget.map((f) => verticalInfixOf(f.name)).filter((s) => s !== null));
+    const sameSeries = orientation !== "vertical" || infixes.size <= 1;
+    const highest = sameSeries && byTarget.every((f) => f.editedFolder || isPromotedCopy(f)) ? pickHighestVersion(byTarget) : null;
     if (highest) return { kind: "found", orientation, file: highest.file, premise: highest.premise };
     return { kind: "ambiguous", orientation, candidates: byTarget };
   }
@@ -455,12 +480,15 @@ export function selectDriveVideo(allFiles: DriveVideoFile[], opts: SelectDriveVi
   if (finalFolderPool.length > 0) {
     const fromFinal = pickFromFinalFolder(finalFolderPool, opts.orientation, target);
     if (fromFinal) return fromFinal;
+    // #12133: nomear a pasta real (na 261104 era `Editado/`, e a mensagem dizia "Final/").
+    const folderNames = [...new Set(finalFolderPool.map((f) => f.folderName ?? (f.editedFolder ? "Editado" : "Final")))];
+    const where = folderNames.length === 1 ? `a pasta ${folderNames[0]}/` : `as pastas ${folderNames.map((n) => `${n}/`).join(", ")}`;
     return {
       kind: "none",
       orientation: opts.orientation,
       reason:
-        `a pasta Final/ da edição tem ${finalFolderPool.length} .mp4, mas nenhum do destino ${target} ` +
-        `(sufixo no nome, ex.: "Diaria comentada_${target === "youtube" ? "Youtube" : target === "instagram" ? "Instagram" : "Outras redes"}_V3.mp4") nem sem sufixo na proporção ${opts.orientation}`,
+        `${where} da edição tem ${finalFolderPool.length} .mp4, mas nenhum do destino ${target} ` +
+        `(sufixo no nome, ex.: "Diaria comentada_${target === "youtube" ? "Youtube" : target === "instagram" ? "Instagram" : "Vertical"}_V3.mp4") nem sem sufixo na proporção ${opts.orientation}`,
     };
   }
 
