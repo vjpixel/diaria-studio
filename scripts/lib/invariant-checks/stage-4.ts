@@ -103,6 +103,7 @@ import {
 } from "../lint-checks/title-normalization.ts";
 import { checkNoTrailingEllipsis } from "../lint-checks/no-trailing-ellipsis.ts";
 import { checkTitleMentionsIA } from "../lint-checks/ia-in-title.ts"; // #4825
+import { checkTitleIaAsAgent } from "../lint-checks/title-ia-as-agent.ts"; // #12106
 import { isTruncatedSummary } from "../truncated-summary.ts";
 import { sectionHeaderRegex } from "../section-naming.ts";
 import {
@@ -1682,6 +1683,30 @@ function checkTitleMentionsIaInvariant(editionDir: string): InvariantViolation[]
       `A newsletter é sobre IA — o termo raramente carrega informação nova no título; prefira nomear o agente ` +
       `concreto (empresa, modelo, produto). Exceção legítima? Ver context/editorial-rules.md seção 5.`,
     source_issue: "#4825",
+    severity: "warning",
+    file: path,
+    line: e.line,
+  }));
+}
+
+/**
+ * #12106: título de DESTAQUE põe "IA" como sujeito que age ("IA usa seu
+ * rosto") quando o corpo descreve um ator humano (criminosos, golpistas...).
+ * WARN-ONLY: heurística léxica, ver `lint-checks/title-ia-as-agent.ts`.
+ */
+function checkTitleIaAsAgentInvariant(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  const result = checkTitleIaAsAgent(md);
+  if (result.ok) return [];
+  return result.errors.map((e) => ({
+    rule: "title-ia-as-agent",
+    message:
+      `DESTAQUE ${e.destaque} (${e.category}) linha ${e.line}: título põe "IA" como sujeito ("IA ${e.verb}…"), ` +
+      `mas o corpo cita "${e.humanActor}": "${e.title}". Quem age é o humano; a IA é o instrumento ` +
+      `(ex.: "criminosos usam IA para copiar seu rosto"). Ver context/editorial-rules.md seção 3.`,
+    source_issue: "#12106",
     severity: "warning",
     file: path,
     line: e.line,
@@ -4131,6 +4156,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkTitleMentionsIaInvariant,
   },
   {
+    id: "title-ia-as-agent",
+    description: "título de destaque não põe 'IA' como sujeito quando o corpo descreve ator humano (#12106, warning-only)",
+    source_issue: "#12106",
+    stage: 4,
+    run: checkTitleIaAsAgentInvariant,
+  },
+  {
     id: "capture-failed-submission-count",
     description: "captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878)",
     source_issue: "#2878",
@@ -4387,6 +4419,7 @@ export {
   checkTitleTrailingPeriodInvariant,
   checkNoTrailingEllipsisInvariant,
   checkTitleMentionsIaInvariant,
+  checkTitleIaAsAgentInvariant,
   checkCaptureFailedSubmissionCount,
   checkNoDuplicateUrlsAgainstPastEditions,
   checkCropReviewWarnings,
