@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkUseMelhorTempoItemSemMedicao } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { measureTempoForMove, recordTempoMeasurement, moveItemInReviewedMd, movePoolItem } from "../scripts/move-pool-item.ts";
-import { refreshUseMelhorTempo } from "../scripts/lib/use-melhor-tempo-refresh.ts";
+import { refreshUseMelhorTempo, writeMeasuredTempos } from "../scripts/lib/use-melhor-tempo-refresh.ts";
 import { saveCachedBody } from "../scripts/lib/url-body-cache.ts";
 
 const MD = [
@@ -142,5 +142,40 @@ describe("#10765 B: refresh no gate para URL USE MELHOR sem artifact/alterada", 
     ]);
     const r = await refreshUseMelhorTempo(d, async () => null);
     assert.deepEqual(r.refreshed.map((x) => x.url), ["https://a.com/medido"]);
+  });
+});
+
+describe("#12108 refresh --write", () => {
+  it("preserva formatos inline e não altera títulos nem outras seções", () => {
+    for (const tempo of ["( ~3 min)", "— ~3 min", "– 3 min", "~3 min"]) {
+      const md = `**🛠️ USE MELHOR**\n\n**[Guia (3 min)](https://a.com/guia)**  \nAntes ${tempo} depois.\n\n---\n**📰 RADAR**\n**[Guia](https://a.com/guia)**\ndesc (3 min)`;
+      const updated = writeMeasuredTempos(md, new Map([["https://a.com/guia", 10]]));
+      assert.equal(updated, md.replace(tempo + " depois", tempo.replace("3", "10") + " depois"));
+    }
+  });
+  it("corrige medição fresca divergente, insere tempo ausente e não grava heurística", async () => {
+    const d = ed([{ url: "https://a.com/medido", source: "wordcount", estimate: "(10 min)", md_tempo: 5 }]);
+    const path = join(d, "02-reviewed.md");
+    const before = MD.replace("desc (5 min)\n\n---", "desc\n\n---").replace(/\n/g, "\r\n");
+    writeFileSync(path, before);
+    saveCachedBody(join(d, "_internal", "_forensic", "link-verify-bodies"), "https://a.com/manual", BODY);
+    await refreshUseMelhorTempo(d, async () => null, { write: true });
+    const after = readFileSync(path, "utf8");
+    assert.equal(after, before.replace("desc (5 min)", "desc (10 min)").replace("desc\r\n\r\n---", "desc (10 min)\r\n\r\n---"));
+    const warnings = checkUseMelhorTempoItemSemMedicao(d);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0].message, /ESTIMADO POR TÍTULO/);
+    await refreshUseMelhorTempo(d, async () => null, { write: true });
+    assert.equal(readFileSync(path, "utf8"), after);
+  });
+
+  it("não sobrescreve edição concorrente durante o fetch", async () => {
+    const d = ed(null);
+    const path = join(d, "02-reviewed.md");
+    await assert.rejects(refreshUseMelhorTempo(d, async () => {
+      writeFileSync(path, MD + "\nedição concorrente");
+      return BODY;
+    }, { write: true }), /mudou durante a medição/);
+    assert.equal(readFileSync(path, "utf8"), MD + "\nedição concorrente");
   });
 });

@@ -5,11 +5,8 @@
  * Cobre o que o stitch não alcança: item inserido/movido à mão em 02-reviewed.md
  * (sem entrada no artifact) ou cujo "(N min)" o editor mudou depois da medição.
  *
- * Nunca reescreve 02-reviewed.md: o "(N min)" do texto é escolha editorial e
- * permanece. O refresh só registra a MEDIÇÃO em
- * `_internal/use-melhor-tempo-source.json` (`estimate`/`source` = medido,
- * `md_tempo` = o que o texto dizia na hora) — o check
- * `use-melhor-tempo-item-sem-medicao` (puro, síncrono) compara os dois.
+ * Por padrão só registra a medição. Com write, sincroniza o tempo no Markdown
+ * apenas quando há fonte medida (nunca title-heuristic), preservando a prosa.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -95,6 +92,52 @@ export function isEntryFresh(entry: TempoArtifactEntry | undefined, mdTempo: num
   return estimateMinutes(entry.estimate) === mdTempo;
 }
 
+/** Altera só o tempo da descrição dos itens medidos, mantendo quebras e seções. */
+export function writeMeasuredTempos(md: string, measured: Map<string, number>): string {
+  const lines = md.split(/(?<=\n)/);
+  let inSection = false;
+  let url: string | null = null;
+  let body: number[] = [];
+  const flush = () => {
+    const minutes = url ? measured.get(url) : undefined;
+    if (minutes !== undefined && body.length > 0) {
+      const index = body.find((i) => TEMPO_IN_TEXT_RE.test(lines[i]));
+      if (index !== undefined) {
+        lines[index] = lines[index].replace(
+          /(\(\s*~?\s*)\d+(\s*min\b)|([–—]\s*~?\s*)\d+(\s*min\b)|(~\s*)\d+(\s*min\b)/,
+          (_match, a, b, c, d, e, f) => `${a ?? c ?? e}${minutes}${b ?? d ?? f}`,
+        );
+      } else {
+        const last = body[body.length - 1];
+        lines[last] = lines[last].replace(/([ \t]*)(\r?\n)?$/, ` (${minutes} min)$1$2`);
+      }
+    }
+    body = [];
+    url = null;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (/^\*\*.*USE\s+MELHOR.*\*\*$/u.test(t)) {
+      flush();
+      inSection = true;
+      continue;
+    }
+    if (!inSection) continue;
+    if (t === "---" || /^\*\*[^[\]]+\*\*$/u.test(t)) {
+      flush();
+      inSection = false;
+      continue;
+    }
+    const item = t.match(/^\*\*\[([^\]]+)\]\((\S+?)\)\*\*/);
+    if (item) {
+      flush();
+      url = item[2];
+    } else if (url && t) body.push(i);
+  }
+  flush();
+  return lines.join("");
+}
+
 export interface RefreshResult {
   refreshed: { url: string; source: string; estimate: string; md_tempo: number | null }[];
   skipped: string[];
@@ -107,11 +150,13 @@ export interface RefreshResult {
 export async function refreshUseMelhorTempo(
   editionDir: string,
   fetchBody: (bodiesDir: string, url: string) => Promise<string | null>,
+  options: { write?: boolean } = {},
 ): Promise<RefreshResult> {
   const reviewed = resolve(editionDir, "02-reviewed.md");
   const result: RefreshResult = { refreshed: [], skipped: [] };
   if (!existsSync(reviewed)) return result;
-  const items = parseUseMelhorItems(readFileSync(reviewed, "utf8"));
+  const originalMd = readFileSync(reviewed, "utf8");
+  const items = parseUseMelhorItems(originalMd);
   if (items.length === 0) return result;
   const entries = readTempoArtifact(editionDir);
   const bodiesDir = resolve(editionDir, "_internal", "_forensic", "link-verify-bodies");
@@ -130,6 +175,29 @@ export async function refreshUseMelhorTempo(
     else entries.push(entry);
     result.refreshed.push({ url: it.url, source, estimate, md_tempo: it.mdTempo });
     dirty = true;
+  }
+  if (options.write) {
+    const measured = new Map<string, number>();
+    for (const item of items) {
+      const entry = entries.find((e) => e.url === item.url);
+      const minutes = estimateMinutes(entry?.estimate);
+      if (entry?.source && entry.source !== "title-heuristic" && minutes !== null) {
+        measured.set(item.url, minutes);
+      }
+    }
+    const updatedMd = writeMeasuredTempos(originalMd, measured);
+    // O fetch é assíncrono: nunca sobrescrever uma edição feita durante a medição.
+    if (readFileSync(reviewed, "utf8") !== originalMd) {
+      throw new Error("02-reviewed.md mudou durante a medição; rode o refresh novamente.");
+    }
+    if (updatedMd !== originalMd) writeFileSync(reviewed, updatedMd, "utf8");
+    for (const item of parseUseMelhorItems(updatedMd)) {
+      const entry = entries.find((e) => e.url === item.url);
+      if (entry && measured.has(item.url) && entry.md_tempo !== item.mdTempo) {
+        entry.md_tempo = item.mdTempo;
+        dirty = true;
+      }
+    }
   }
   if (dirty) writeTempoArtifact(editionDir, entries);
   return result;
