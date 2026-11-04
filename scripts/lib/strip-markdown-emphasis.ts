@@ -30,7 +30,8 @@
  * Uma versão anterior desta PR tentou adicionar uma regra `no_markdown_
  * emphasis` GATE-BLOCKING no Stage 4 flagando qualquer `**` em
  * `03-social.md`. Errado: `.claude/agents/social-writer.md` (decisão #6086
- * item c) exige EXATAMENTE UM trecho em `**...**` por parágrafo de `## d{N}`
+ * item c) exige EXATAMENTE UM trecho em `**...**` por parágrafo de `## d{N}-cards`
+ * (a seção dos cards desde o #12094; antes, do próprio `## d{N}`)
  * — é assim que o carrossel sabe qual frase é o resumo do slide. Um lint que
  * flagasse `**` no arquivo-fonte reprovaria toda edição real, sempre — o
  * negrito no arquivo-fonte não é o bug, é o contrato. O bug era só os

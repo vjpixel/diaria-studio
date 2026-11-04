@@ -91,3 +91,46 @@ export function extractDestaqueBlock(sectionBody: string, destaque: string): str
   if (!m) return null;
   return m[1].replace(/<!--[\s\S]*?-->/g, "");
 }
+
+/**
+ * (#12094) Sufixo da seção com o texto dos CARDS do carrossel diário.
+ *
+ * Decisão do editor (briefing overnight 261104c, opção (a)): o `social-writer`
+ * escreve, por destaque, `## d{N}` (legenda corrida do post, sem contagem fixa
+ * de parágrafos) E `## d{N}-cards` (os 3 blocos do carrossel). A legenda deixa
+ * de ser ditada pelo formato do card; os publishers seguem lendo `## d{N}`.
+ *
+ * `extractDestaqueBlock(section, "d1")` nunca casa `## d1-cards` (exige `\n`
+ * logo depois do id) e termina no `\n## ` seguinte, então a legenda não
+ * absorve o bloco dos cards.
+ */
+export const CAROUSEL_CARDS_SUFFIX = "-cards";
+
+/** `d1` → `d1-cards` (#12094). */
+export function carouselCardsSectionId(destaque: string): string {
+  return `${destaque}${CAROUSEL_CARDS_SUFFIX}`;
+}
+
+/**
+ * (#12094) Texto que vira card no carrossel diário de `destaque`: a seção
+ * `## d{N}-cards` quando existe com corpo; senão (edição anterior ao #12094,
+ * ou seção vazia) a legenda `## d{N}`, que é como o carrossel funcionava
+ * desde o #6005 Parte B. `source` diz qual das duas foi usada, pra mensagem
+ * de erro nomear a seção que o editor precisa reescrever. `null` quando
+ * nenhuma das duas existe.
+ *
+ * Fonte única pra `gen-carousel-cards.ts` e os invariantes
+ * `carousel-text-overflow`/`carousel-cards-stale`: os três precisam medir e
+ * carimbar EXATAMENTE o mesmo texto, senão o gate acusa arte velha à toa.
+ */
+export function extractCarouselCardsBlock(
+  sectionBody: string,
+  destaque: string,
+): { text: string; source: "cards" | "caption"; sectionId: string } | null {
+  const cardsId = carouselCardsSectionId(destaque);
+  const cards = extractDestaqueBlock(sectionBody, cardsId);
+  if (cards !== null && cards.trim()) return { text: cards, source: "cards", sectionId: cardsId };
+  const caption = extractDestaqueBlock(sectionBody, destaque);
+  if (caption === null) return null;
+  return { text: caption, source: "caption", sectionId: destaque };
+}
