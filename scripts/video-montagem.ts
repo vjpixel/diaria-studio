@@ -216,6 +216,13 @@ import {
   silenceNoiseDb,
   transcriptWords,
   validateVocabRules,
+  parseVinhetaProbe,
+  previewVinhetaFilter,
+  vinhetaBreathFor,
+  vinhetaConfigFrom,
+  vinhetaScalePct,
+  vinhetaSpan,
+  type VinhetaAsset,
   type AudioGain,
   type BlocksFile,
   type CutAdjustment,
@@ -424,6 +431,38 @@ function configMirroredDefault(): boolean | null {
 }
 
 /**
+ * A vinheta do logo (#12101): `publishing.video.vinheta_logo.path` do config,
+ * medida pelo ffprobe. Nunca barra o build nem a prévia: config sem caminho,
+ * arquivo ausente nesta máquina ou probe falho = sem vinheta, com `[aviso]`.
+ */
+export function loadVinheta(deps: { readConfig?: () => unknown; exists?: (p: string) => boolean; probe?: (p: string) => string; warn?: (m: string) => void } = {}): VinhetaAsset | null {
+  const warn = deps.warn ?? ((m: string) => console.error(`[aviso] ${m}`));
+  let config: unknown;
+  try {
+    config = deps.readConfig ? deps.readConfig() : JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  } catch (e) {
+    warn(`platform.config.json ilegível (${(e as Error).message}): sem vinheta do logo (#12101)`);
+    return null;
+  }
+  const cfg = vinhetaConfigFrom(config);
+  if (!cfg) {
+    warn("sem publishing.video.vinheta_logo.path no platform.config.json: XML sem a vinheta do logo, inserir à mão no Premiere (#12101)");
+    return null;
+  }
+  if (!(deps.exists ?? existsSync)(cfg.path)) {
+    warn(`vinheta do logo não encontrada em ${cfg.path}: XML sem a vinheta, inserir à mão no Premiere; exporte o MOV (ProRes 4444 com alpha) para esse caminho (#12101)`);
+    return null;
+  }
+  try {
+    const probe = deps.probe ?? ((p: string) => run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", p]).stdout);
+    return parseVinhetaProbe(probe(cfg.path), cfg.path);
+  } catch (e) {
+    warn(`vinheta do logo ilegível (${cfg.path}: ${(e as Error).message}): XML sem a vinheta (#12101)`);
+    return null;
+  }
+}
+
+/**
  * Frame do bruto nas duas orientações, lado a lado (#11959): esquerda = o
  * bruto como gravado, direita = espelhado. A leitura da caneca e do pôster
  * decide o `mirrored` sem depender do palpite do `source.json` (na 261103 a
@@ -511,6 +550,8 @@ export interface XmlBuildOptions {
   audioRefine: boolean;
   audioGain: boolean;
   titleMode: TitleMode;
+  /** #12101: a vinheta que entrou no XML (caminho + duração); ausente/null = sem vinheta (o hash fica o de antes). */
+  vinheta?: Pick<VinhetaAsset, "path" | "durationS"> | null;
 }
 
 /**
@@ -528,7 +569,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
   return createHash("sha256")
     .update(inputsHash)
     .update("\0opts\0")
-    .update(JSON.stringify({ speechDetect: opts.speechDetect, audioRefine: opts.audioRefine, audioGain: opts.audioGain, titleMode: opts.titleMode }))
+    .update(JSON.stringify({ speechDetect: opts.speechDetect, audioRefine: opts.audioRefine, audioGain: opts.audioGain, titleMode: opts.titleMode, ...(opts.vinheta ? { vinheta: { path: opts.vinheta.path, durationS: opts.vinheta.durationS } } : {}) }))
     .update("\0plan\0")
     .update(JSON.stringify({ spec, clips: plan.clips, durationFrames: plan.durationFrames }))
     .digest("hex")
@@ -603,7 +644,10 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
     }
   }
   const ps = specs.map((s) =>
-    speech ? buildSequencePlan(s, blocks, speechSil, source, { holdBlocks: file.holdBlocks, ...SPEECH_DETECT_PLAN }) : buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks }),
+    // #12101: o respiro da vinheta depois do título, só no horizontal.
+    speech
+      ? buildSequencePlan(s, blocks, speechSil, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s), ...SPEECH_DETECT_PLAN })
+      : buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s) }),
   );
   return { file, source, resolved: blocks, plans: ps, hash: planHash(ctx, text) };
 }
@@ -1643,7 +1687,15 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   const picked = pickPlans(ps, seq, false);
   // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
   // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
-  const versionHashes = versionPickedSequences(ctx, picked, hash, { speechDetect: speech.cut !== null, audioRefine, audioGain, titleMode });
+  // #12101: a vinheta do logo depois do título; sem o MOV nesta máquina, o build segue sem ela.
+  const vinheta = loadVinheta();
+  if (vinheta) {
+    console.error(
+      `[premissa] vinheta do logo ${vinheta.path} (${vinheta.durationS.toFixed(2)} s, ${vinheta.width}x${vinheta.height}${vinheta.hasAudio ? ", com som numa faixa de áudio própria" : ", sem som"}) ` +
+        "na faixa de vídeo do topo, no fim do título (sem título: aos 2 s), cabendo no quadro; conferir alpha e tamanho no 1º import (#12101)",
+    );
+  }
+  const versionHashes = versionPickedSequences(ctx, picked, hash, { speechDetect: speech.cut !== null, audioRefine, audioGain, titleMode, vinheta });
   // #11939: a caneca é esforço, nunca barra o build; o relato diz onde ela não sai inteira.
   for (const w of mugFramingWarnings(picked, source, framing)) console.error(`[aviso] ${w}`);
   // #12093: o rosto centrado nos dois zooms; escala pequena demais bate na borda do bruto.
@@ -1653,6 +1705,11 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}`);
     const g = ganchoWarning(p);
     if (g) console.error(`[aviso] ${g}`);
+    for (const w of p.warnings ?? []) console.error(`[aviso] ${w}`);
+    if (vinheta) {
+      const vs = vinhetaSpan(p, source.fps, vinheta);
+      console.error(vs ? `   vinheta do logo em ${(vs.start / source.fps).toFixed(2)}–${(vs.end / source.fps).toFixed(2)} s (${vs.afterTitle ? "fim do título" : "sem título: aos 2 s"})` : "   [aviso] sequência curta demais para a vinheta do logo (#12101)");
+    }
     if (speech.cut) for (const w of speechJoinWarnings(p.clips, speech.cut.islands, source.fps)) console.error(`[aviso] ${p.spec.name}: ${w}`);
     if (p.missingBlocks.length) console.error(`   faltam no blocks.json: ${p.missingBlocks.join(", ")}`);
     for (const x of p.dropped) console.error(`   ${x}`);
@@ -1731,7 +1788,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     const xmlPath = join(ctx.outDir, xmlFileName(p.spec.name));
     const version = sequenceNameVersion(p.spec.name);
     const sequenceIds = version !== null ? { [sequenceKey(p.spec)]: versionedSequenceId(sequenceKey(p.spec), version, versionHashes.get(p) ?? hash) } : undefined;
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -1877,15 +1934,22 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
   });
   writeFileSync(join(dir, "list.txt"), list.join("\n") + "\n");
   run("ffmpeg", ["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", "list.txt", "-c", "copy", "joined.mp4"], { cwd: dir });
-  const vf: string[] = [];
+  let subtitles: string | undefined;
   if (existsSync(srt)) {
     copyFileSync(srt, join(dir, "leg.srt"));
-    vf.push("-vf", `subtitles=leg.srt:force_style='${isVerticalSpec(plan.spec) ? PREVIEW_SUBTITLE_STYLE : PREVIEW_SUBTITLE_STYLE_HORIZONTAL}'`);
+    subtitles = `subtitles=leg.srt:force_style='${isVerticalSpec(plan.spec) ? PREVIEW_SUBTITLE_STYLE : PREVIEW_SUBTITLE_STYLE_HORIZONTAL}'`;
   } else console.error(`[aviso] sem ${srt}: a prévia sai sem legenda (rode srt antes)`);
   mkdirSync(ctx.outDir, { recursive: true });
   const out = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
+  // #12101: a mesma vinheta do XML por cima, no mesmo instante e no mesmo tamanho relativo.
+  const vinheta = loadVinheta();
+  const vs = vinheta ? vinhetaSpan(plan, fps, vinheta) : null;
+  const filters = vinheta && vs
+    ? ["-i", vinheta.path, "-filter_complex", previewVinhetaFilter({ startS: vs.start / fps, scale: (vinhetaScalePct(vinheta, plan.spec) / 100) * (size.width / plan.spec.width), hasAudio: vinheta.hasAudio, subtitles, loudnorm: LOUDNORM_TARGET }), "-map", "[vout]", "-map", "[aout]"]
+    : [...(subtitles ? ["-vf", subtitles] : []), "-af", LOUDNORM_TARGET];
+  if (vinheta && vs) console.error(`[video-montagem] prévia com a vinheta do logo em ${(vs.start / fps).toFixed(2)} s (#12101)`);
   run("ffmpeg", [
-    "-y", "-v", "error", "-i", "joined.mp4", ...vf, "-af", LOUDNORM_TARGET,
+    "-y", "-v", "error", "-i", "joined.mp4", ...filters,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "previa.mp4",
   ], { cwd: dir });
   copyFileSync(join(dir, "previa.mp4"), out);

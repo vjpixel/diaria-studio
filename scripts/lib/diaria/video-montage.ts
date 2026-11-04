@@ -1939,6 +1939,8 @@ export interface SequencePlan {
   dropped: string[];
   /** Emendas de clipes contíguos e, depois do refino por áudio, os ajustes de corte (#11500, #11503). */
   cutAdjustments?: CutAdjustment[];
+  /** Avisos do plano que não barram o build (respiro da vinheta menor que o pedido, #12101). */
+  warnings?: string[];
 }
 
 /**
@@ -1982,9 +1984,10 @@ export function buildSequencePlan(
   resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
   silences: Interval[],
   source: Pick<SourceInfo, "fps" | "durationS">,
-  opts: { holdBlocks?: BlockKey[] } & SpeechOptions = {},
+  opts: { holdBlocks?: BlockKey[]; breathAfter?: Partial<Record<BlockKey, number>> } & SpeechOptions = {},
 ): SequencePlan {
   const hold = new Set<BlockKey>(opts.holdBlocks ?? ["fecho"]);
+  const warnings: string[] = [];
   const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
   const fps = source.fps;
   const raws: RawClip[] = [];
@@ -2013,6 +2016,17 @@ export function buildSequencePlan(
         const floor = it.lastWordEnd ?? lastPart.start;
         lastPart.end = round3(Math.max(floor, Math.min(it.holdLimit, source.durationS, target)));
       }
+      // #12101: respiro sem fala depois do bloco (a vinheta do logo passa por cima), tirado do próprio bruto.
+      const breath = opts.breathAfter?.[key];
+      if (breath && !holding && n === mine.length - 1 && parts.length) {
+        const lastPart = parts[parts.length - 1];
+        const from = it.lastWordEnd ?? lastPart.end;
+        const end = Math.max(lastPart.end, Math.min(it.holdLimit, source.durationS, from + breath));
+        lastPart.end = round3(end);
+        if (end - from < breath - 0.05) {
+          warnings.push(`${spec.name}: respiro depois de ${key} de ${Math.max(0, end - from).toFixed(2)} s, abaixo dos ${breath} s pedidos (a fala seguinte vem logo no bruto); a vinheta passa por cima da fala (#12101)`);
+        }
+      }
       // Pedaço curto na ponta do item, sem silêncio ali, fica: emenda no item vizinho (#11753). O do fecho é medido depois do respiro.
       const edge = parts.map((p, k) => !(holding && k === parts.length - 1) && touchesEdge(p, it.interval.start, it.interval.end));
       const kept = parts.map((p, k) => ({ ...p, keepScale: keep.has(k), edge: edge[k] })).filter((p) => p.end - p.start >= minClip - 1e-9 || p.edge);
@@ -2032,7 +2046,7 @@ export function buildSequencePlan(
     const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end) && !wordCoveredBySilence(w, kept, silences));
     if (lost.length) dropped.push(`${label}: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
   }
-  return { spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges };
+  return { spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges, ...(warnings.length ? { warnings } : {}) };
 }
 
 /**
@@ -2473,7 +2487,7 @@ export const SCREEN_TITLE_MAX_S = 7.5;
  * fundido de blocos diferentes (`parts`) que começa no bloco fecha o trecho no
  * fim do pedaço dele.
  */
-export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number): { start: number; end: number; block: BlockKey } | null {
+export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number, capS: number = SCREEN_TITLE_MAX_S): { start: number; end: number; block: BlockKey } | null {
   if (plan.clips.length === 0) return null;
   const clips = [...plan.clips].sort((a, b) => a.seqStart - b.seqStart);
   const block: BlockKey = clips.some((c) => c.block === "titulo") ? "titulo" : clips[0].block;
@@ -2490,8 +2504,111 @@ export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number)
     }
     end = Math.max(end, c.seqEnd);
   }
-  if (fps) end = Math.min(end, start + Math.round(SCREEN_TITLE_MAX_S * fps));
+  if (fps && Number.isFinite(capS)) end = Math.min(end, start + Math.round(capS * fps));
   return { start, end, block };
+}
+
+// ── Vinheta do logo (#12101) ──────────────────────────────────────────────
+
+/**
+ * Respiro sem fala depois do `titulo` no horizontal (#12101): o editor abria
+ * ~0,7 s à mão para a vinheta passar (261028: 0,69 s; 261103: 0,74 s). As
+ * verticais ficam como estão (respiro medido de 0,24–0,31 s).
+ */
+export const VINHETA_BREATH_S = 0.7;
+/** Começo da vinheta na sequência sem bloco `titulo` (261029, vertical "soberana": 2–3 s). */
+export const VINHETA_NO_TITLE_START_S = 2;
+
+/** O respiro de cada sequência: só o horizontal (`youtube`) com `titulo` na ordem. */
+export function vinhetaBreathFor(spec: Pick<SequenceSpec, "target" | "order">): Partial<Record<BlockKey, number>> | undefined {
+  return spec.target === "youtube" && spec.order.includes("titulo") ? { titulo: VINHETA_BREATH_S } : undefined;
+}
+
+/** `publishing.video.vinheta_logo` do config: o caminho do MOV (ProRes 4444 com alpha). `null` = ausente, vazio ou não string. */
+export function vinhetaConfigFrom(config: unknown): { path: string } | null {
+  const v = (config as { publishing?: { video?: { vinheta_logo?: { path?: unknown } } } })?.publishing?.video?.vinheta_logo?.path;
+  return typeof v === "string" && v.trim() ? { path: v.trim() } : null;
+}
+
+/** O MOV da vinheta como o ffprobe mediu; `path` é o que vai no `pathurl` (o mesmo caminho lido, como o do config). */
+export interface VinhetaAsset {
+  path: string;
+  durationS: number;
+  width: number;
+  height: number;
+  hasAudio: boolean;
+}
+
+/** Lê o JSON do `ffprobe -show_streams -show_format` do MOV. Sem stream de vídeo ou duração = erro. */
+export function parseVinhetaProbe(json: string, path: string): VinhetaAsset {
+  const j = JSON.parse(json) as { streams?: Array<{ codec_type?: string; width?: number; height?: number; duration?: string }>; format?: { duration?: string } };
+  const video = j.streams?.find((s) => s.codec_type === "video");
+  if (!video || !isNum(video.width) || !isNum(video.height)) throw new Error(`vinheta sem stream de vídeo (${path})`);
+  const durationS = Number(j.format?.duration ?? video.duration);
+  if (!(durationS > 0)) throw new Error(`vinheta sem duração (${path})`);
+  return { path, durationS, width: video.width, height: video.height, hasAudio: Boolean(j.streams?.some((s) => s.codec_type === "audio")) };
+}
+
+/**
+ * Trecho da vinheta na sequência, em frames (#12101): começa no fim do bloco
+ * `titulo` (sem o teto do título na tela) ou, sem ele, em
+ * `VINHETA_NO_TITLE_START_S`; dura o MOV inteiro, cortado no fim da sequência.
+ * Sequência curta demais = null.
+ */
+export function vinhetaSpan(plan: Pick<SequencePlan, "clips" | "durationFrames">, fps: number, asset: Pick<VinhetaAsset, "durationS">): { start: number; end: number; afterTitle: boolean } | null {
+  const titleEnd = blockRunEndFrame(plan.clips, "titulo", fps);
+  const start = titleEnd ?? Math.round(VINHETA_NO_TITLE_START_S * fps);
+  const end = Math.min(plan.durationFrames, start + Math.round(asset.durationS * fps));
+  return end > start ? { start, end, afterTitle: titleEnd !== null } : null;
+}
+
+/**
+ * Fim (frame da sequência) do 1º trecho contíguo do bloco `key`, inclusive
+ * dentro de clipe fundido de blocos diferentes (`parts`: o gancho emendado no
+ * título, por exemplo). Bloco ausente = null.
+ */
+export function blockRunEndFrame(clips: ReadonlyArray<Pick<PlannedClip, "block" | "frameIn" | "frameOut" | "seqStart" | "seqEnd" | "parts">>, key: BlockKey, fps: number): number | null {
+  let end: number | null = null;
+  for (const c of [...clips].sort((a, b) => a.seqStart - b.seqStart)) {
+    const pieces = c.parts?.length
+      ? c.parts.map((p, i, all) => {
+          const lo = i === 0 ? c.frameIn : Math.max(c.frameIn, Math.round(p.srcIn * fps));
+          const hi = i === all.length - 1 ? c.frameOut : Math.min(c.frameOut, Math.round(all[i + 1].srcIn * fps));
+          return { block: p.block, start: c.seqStart + (lo - c.frameIn), end: c.seqStart + (hi - c.frameIn) };
+        })
+      : [{ block: c.block, start: c.seqStart, end: c.seqEnd }];
+    for (const p of pieces) {
+      if (p.block === key) end = Math.max(end ?? p.start, p.end);
+      else if (end !== null) return end;
+    }
+  }
+  return end;
+}
+
+/**
+ * Escala (%) da vinheta no Basic Motion: cabe inteira no quadro e nunca
+ * amplia (premissa, conferir no 1º import: o MOV no tamanho do horizontal sai
+ * a 56,25% na vertical, centrado).
+ */
+export function vinhetaScalePct(asset: Pick<VinhetaAsset, "width" | "height">, spec: Pick<SequenceSpec, "width" | "height">): number {
+  return Math.round(Math.min(1, spec.width / asset.width, spec.height / asset.height) * 10000) / 100;
+}
+
+/**
+ * Filtros do ffmpeg da prévia com a vinheta por cima (#12101): entrada 0 = a
+ * prévia montada, entrada 1 = o MOV. `subtitles` (opcional) entra depois da
+ * vinheta, `loudnorm` no fim do áudio; o som do MOV (se houver) é misturado a
+ * partir do mesmo instante.
+ */
+export function previewVinhetaFilter(input: { startS: number; scale: number; hasAudio: boolean; subtitles?: string; loudnorm: string }): string {
+  const t = Math.max(0, input.startS).toFixed(3);
+  const ms = Math.round(Math.max(0, input.startS) * 1000);
+  const parts = [
+    `[1:v]format=yuva420p,scale=iw*${input.scale}:-2,setpts=PTS-STARTPTS+${t}/TB[vin]`,
+    `[0:v][vin]overlay=(W-w)/2:(H-h)/2:eof_action=pass${input.subtitles ? `,${input.subtitles}` : ""}[vout]`,
+    input.hasAudio ? `[1:a]adelay=${ms}|${ms},aresample=48000[va];[0:a][va]amix=inputs=2:duration=first:normalize=0,${input.loudnorm}[aout]` : `[0:a]${input.loudnorm}[aout]`,
+  ];
+  return parts.join(";");
 }
 
 /** A 1ª vertical que leva título: o tamanho do PNG do fallback e quem define o `<file>` dele no XML. */
@@ -2654,6 +2771,8 @@ export function buildXmeml(
     screenTitleByCorte?: Readonly<Record<string, ScreenTitleXml | null>>;
     /** #12111: `<sequence id>` de cada sequência (chave = `sequenceKey`); ausente = `seq-{n}-{chave}`. */
     sequenceIds?: Readonly<Record<string, string>>;
+    /** #12101: a vinheta do logo na faixa de vídeo do topo (e o som dela numa faixa de áudio própria); ausente = sem vinheta. */
+    vinheta?: VinhetaAsset | null;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
@@ -2709,6 +2828,37 @@ export function buildXmeml(
       `${rate}<start>${span.start}</start><end>${span.end}</end><in>0</in><out>${len}</out>\n${fileRef}</clipitem></track>`
     );
   };
+  // #12101: a vinheta (MOV com alpha) acima do bruto e do título; um `<file>` só, definido no 1º uso.
+  let vinhetaDefined = false;
+  const vinhetaTracks = (plan: SequencePlan, si: number): { video: string; audio: string } => {
+    const vin = opts.vinheta;
+    if (!vin) return { video: "", audio: "" };
+    const span = vinhetaSpan(plan, fps, vin);
+    if (!span) return { video: "", audio: "" };
+    const len = Math.round(vin.durationS * fps);
+    const vid = `vinheta-v${si + 1}`;
+    const aid = `vinheta-a${si + 1}`;
+    const fileRef = vinhetaDefined
+      ? '<file id="file-vinheta"/>'
+      : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(pathUrl(vin.path))}</pathurl>\n${rate}<duration>${len}</duration>\n` +
+        `<media><video><samplecharacteristics><width>${vin.width}</width><height>${vin.height}</height></samplecharacteristics></video>` +
+        (vin.hasAudio ? `\n<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio>` : "") +
+        `</media></file>`;
+    vinhetaDefined = true;
+    const head =
+      `<name>vinheta-logo</name><enabled>TRUE</enabled><duration>${len}</duration>\n` +
+      `${rate}<start>${span.start}</start><end>${span.end}</end><in>0</in><out>${span.end - span.start}</out>\n`;
+    const links = vin.hasAudio
+      ? `<link><linkclipref>${vid}</linkclipref><mediatype>video</mediatype></link><link><linkclipref>${aid}</linkclipref><mediatype>audio</mediatype><trackindex>2</trackindex><clipindex>1</clipindex></link>`
+      : "";
+    const scale = vinhetaScalePct(vin, plan.spec);
+    return {
+      video: `\n<track><clipitem id="${vid}">${head}${fileRef}${motionFilter(scale, { horiz: 0, vert: 0 })}\n${links}</clipitem></track>`,
+      audio: vin.hasAudio
+        ? `<track><clipitem id="${aid}">${head}<file id="file-vinheta"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${links}</clipitem></track>`
+        : "",
+    };
+  };
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE xmeml>", '<xmeml version="4">'];
   plans.forEach((plan, si) => {
     const { spec } = plan;
@@ -2729,12 +2879,13 @@ export function buildXmeml(
       );
     });
     const titleTrack = screenTitleTrack(plan, si);
+    const vin = vinhetaTracks(plan, si);
     out.push(
       `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
         `${rate}\n` +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
-        `<track>${v.join("\n")}</track>${titleTrack}</video>\n` +
-        `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track></audio></media></sequence>`,
+        `<track>${v.join("\n")}</track>${titleTrack}${vin.video}</video>\n` +
+        `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track>${vin.audio}</audio></media></sequence>`,
     );
   });
   out.push("</xmeml>");
