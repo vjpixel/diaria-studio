@@ -35,34 +35,43 @@ describe("writer.md invariants (#1208)", () => {
   const content = readFileSync(WRITER_MD, "utf8");
 
   it("contém instrução explícita de char count por destaque", () => {
-    // #11321: janela por posição — D1 1100-1200, D2/D3 900-1000
-    assert.match(content, /D1 1100-1200, D2\/D3 900-1000/);
-    assert.match(content, /\| D1 \| 1100 \| 1200 \|/);
-    assert.ok(!/D1\/D2\/D3 todos entre 900-1000/.test(content), "a janela única do #6061 não deve mais existir no prompt");
+    // janela única desde #6061 (de novo desde #12218): todos os destaques 900-1000
+    assert.match(content, /D1\/D2\/D3 todos entre 900-1000/);
+    assert.ok(!/1000-1200/.test(content), "janela assimétrica antiga do D1 não deve mais existir no prompt");
   });
 
-  it("writer-destaque.md: janela do D1 1100-1200 e D2/D3 900-1000 (#11321)", () => {
+  it("janela única nos 3 destaques: lint e prompts sem janela maior pro D1 (regressão #12218)", () => {
+    // A #11321 deu ao D1 1100-1200; a #12218 desfez a pedido do editor.
+    assert.deepEqual([DESTAQUE_MIN_CHARS[1], DESTAQUE_MIN_CHARS[2], DESTAQUE_MIN_CHARS[3]], [900, 900, 900]);
+    assert.deepEqual([DESTAQUE_MAX_CHARS[1], DESTAQUE_MAX_CHARS[2], DESTAQUE_MAX_CHARS[3]], [1000, 1000, 1000]);
     const wd = readFileSync(WRITER_DESTAQUE_MD, "utf8");
-    assert.match(wd, /\*\*D1\*\* entre \*\*1100-1200 chars\*\*/);
-    assert.match(wd, /\*\*D2 e D3\*\* entre \*\*900-1000 chars\*\*/);
-    assert.match(wd, /D1 → 1100-1200; D2\/D3 → 900-1000/);
-    assert.ok(!/D1\/D2\/D3 → todos 900-1000/.test(wd), "validação pré-write não pode manter a janela única");
+    assert.match(wd, /\*\*D1, D2 e D3\*\* entre \*\*900-1000 chars\*\*/);
+    assert.match(wd, /D1\/D2\/D3 → todos 900-1000/);
+    const rules = readFileSync(resolve(ROOT, "context/editorial-rules.md"), "utf8");
+    const stage2 = readFileSync(resolve(ROOT, ".claude/agents/orchestrator-stage-2.md"), "utf8");
+    for (const [name, text] of [
+      ["writer.md", content],
+      ["writer-destaque.md", wd],
+      ["editorial-rules.md", rules],
+      ["orchestrator-stage-2.md", stage2],
+    ] as const) {
+      assert.ok(!/D1 1100[-–]1200|D1 ~?1100|D1 ?≥ ?1100|janela por posição/.test(text), `${name} ainda carrega a janela maior do D1`);
+    }
   });
 
   it("writer-destaque.md: alvo recomendado de corpo + why cabe na janela do lint (#11520)", () => {
-    // O alvo "mire corpo entre ~X-Y no D1 / ~X-Y no D2/D3, com why ~A-B"
-    // somado nas pontas tem que cair dentro de DESTAQUE_MIN/MAX_CHARS —
-    // antes do #11520, 840 + 220 = 1060 ficava abaixo do piso de 1100.
+    // O alvo "mire corpo entre ~X-Y, com why ~A-B" somado nas pontas tem que
+    // cair dentro de DESTAQUE_MIN/MAX_CHARS em qualquer posição.
     const wd = readFileSync(WRITER_DESTAQUE_MD, "utf8");
     const m = wd.match(
-      /mire corpo entre \*\*~(\d+)-(\d+) chars no D1\*\* e \*\*~(\d+)-(\d+) chars no D2\/D3\*\*, com "Por que isso importa" perto do meio da janela \(~(\d+)-(\d+) chars\)/,
+      /mire corpo entre \*\*~(\d+)-(\d+) chars\*\*, com "Por que isso importa" perto do meio da janela \(~(\d+)-(\d+) chars\)/,
     );
     assert.ok(m, "alvo recomendado de corpo/why não encontrado no writer-destaque.md");
-    const [d1Lo, d1Hi, d23Lo, d23Hi, whyLo, whyHi] = m.slice(1).map(Number);
-    assert.ok(d1Lo + whyLo >= DESTAQUE_MIN_CHARS[1], `D1: ${d1Lo}+${whyLo} < ${DESTAQUE_MIN_CHARS[1]}`);
-    assert.ok(d1Hi + whyHi <= DESTAQUE_MAX_CHARS[1], `D1: ${d1Hi}+${whyHi} > ${DESTAQUE_MAX_CHARS[1]}`);
-    assert.ok(d23Lo + whyLo >= DESTAQUE_MIN_CHARS[2], `D2/D3: ${d23Lo}+${whyLo} < ${DESTAQUE_MIN_CHARS[2]}`);
-    assert.ok(d23Hi + whyHi <= DESTAQUE_MAX_CHARS[2], `D2/D3: ${d23Hi}+${whyHi} > ${DESTAQUE_MAX_CHARS[2]}`);
+    const [lo, hi, whyLo, whyHi] = m.slice(1).map(Number);
+    for (const pos of [1, 2, 3] as const) {
+      assert.ok(lo + whyLo >= DESTAQUE_MIN_CHARS[pos], `D${pos}: ${lo}+${whyLo} < ${DESTAQUE_MIN_CHARS[pos]}`);
+      assert.ok(hi + whyHi <= DESTAQUE_MAX_CHARS[pos], `D${pos}: ${hi}+${whyHi} > ${DESTAQUE_MAX_CHARS[pos]}`);
+    }
   });
 
   it("contém anti-pattern reference pra D2/D3 anêmicos (#1208)", () => {
