@@ -64,6 +64,7 @@ import { rederiveStage2FileRequests } from "./derive-editor-requests.ts";
 // aqui) ao helper genérico de lib/cli-args.ts — migrado.
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX } from "./lib/edition-url.ts";
+import { PUBLIC_IMAGES_R2_INERT_LOG_PREFIX } from "./lib/public-images-r2.ts"; // #12194
 import { readHandoff, type HandoffEntry, type HandoffRead } from "./lib/session-handoff.ts";
 import {
   WRITER_INPUTS_CUTOVER_EDITION,
@@ -106,6 +107,7 @@ export interface Signal {
     | "runtime_fix_lite"
     | "clarice_skip"
     | "placeholder_guard_warning"
+    | "public_images_r2_inert"
     | "test_email_unconfirmed"
     | "recurring_editor_request"
     | "session1_handoff"
@@ -1738,6 +1740,57 @@ export function signalsFromPlaceholderGuardWarnings(
 }
 
 // ===========================================================================
+// Signal 5c (#12194): R2 de imagens públicas inerte — flag
+// `public_images_r2.enabled` ligada e nenhuma imagem elegível da edição no R2.
+// ===========================================================================
+
+/**
+ * Lê os `warn` com prefixo `public_images_r2_inert:` que
+ * `upload-images-public.ts` grava quando a flag R2 está ligada e a edição caiu
+ * toda no KV. O fallback é seguro (nenhuma imagem em 404), então a severidade
+ * é `medium`; o ponto do signal é a migração não ficar inerte sem ninguém ver.
+ * Incondicional (mesmo racional do 5b): o Stage 6 roda este script sem
+ * `--include-test-warnings`. Vários uploads na mesma edição (modos social e
+ * newsletter) viram um signal só.
+ */
+export function signalsFromPublicImagesR2Inert(lines: string[], edition: string | null): Signal[] {
+  let count = 0;
+  const firstAt: string[] = [];
+  let sample = "";
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let parsed: LogEntry;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (edition && parsed.edition && parsed.edition !== edition) continue;
+    if (edition && !parsed.edition) continue;
+    if (parsed.level !== "warn") continue;
+    const message = parsed.message ?? "";
+    if (!message.startsWith(PUBLIC_IMAGES_R2_INERT_LOG_PREFIX)) continue;
+    count++;
+    if (!sample) sample = message;
+    if (typeof parsed.timestamp === "string" && firstAt.length < 5) firstAt.push(parsed.timestamp);
+  }
+  if (count === 0) return [];
+  return [
+    {
+      kind: "public_images_r2_inert",
+      severity: "medium",
+      title: "Imagens públicas: flag public_images_r2 ligada, mas a edição foi toda pro KV (#12194)",
+      details: { count, sample, first_occurrences: firstAt },
+      suggested_action:
+        "Rodar `npx tsx scripts/probe-public-images-r2.ts` na máquina da edição (env R2_*/SHORTS_R2_* presente?) " +
+        "e ler os avisos de upload desta edição (`/diaria-log {edição} warn`): PUT ou HEAD do Worker falhando " +
+        "mandam cada imagem pro KV. Se a migração foi desligada de propósito, pôr `public_images_r2.enabled = false`.",
+      related_issue: "#12194",
+    },
+  ];
+}
+
+// ===========================================================================
 // Signal 5 (opt-in via --include-test-warnings, #519): generic error/warn
 // events na edição agrupados por agent + mensagem normalizada.
 //
@@ -1785,6 +1838,8 @@ const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   // #1210 reopen — runtime_fix_lite events, already captured by
   // signalsFromRuntimeFixLite above (Signal 6b).
   new RegExp(`^${RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX}`, "i"),
+  // #12194 — R2 de imagens inerte, já capturado por signalsFromPublicImagesR2Inert.
+  new RegExp(`^${PUBLIC_IMAGES_R2_INERT_LOG_PREFIX}`, "i"),
 ];
 
 // Nota (#565): warns informativos eram detectados via regex `/\(informativo\)/i`
@@ -2055,6 +2110,8 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
       // humana recomendada" do guard não-fatal tenha um caminho automático até
       // o auto-reporter, já que Stage 6 roda este script sem a flag.
       signals.push(...signalsFromPlaceholderGuardWarnings(lines, edition));
+      // Signal 5c (#12194): R2 de imagens inerte — incondicional, mesmo racional do 5b.
+      signals.push(...signalsFromPublicImagesR2Inert(lines, edition));
       // Signal 6b (#1210 reopen): runtime_fix_lite — mesmo racional do 5b
       // acima, incondicional por design (o caminho leve só cumpre a promessa
       // de "sempre vira signal" se não depender de --include-test-warnings).
@@ -2190,6 +2247,7 @@ function main(): void {
           // do CLI omitia a contagem, parecendo (a quem lê só o stdout) que o
           // signal não estava sendo coletado.
           placeholder_guard_warning: draft.signals.filter((s) => s.kind === "placeholder_guard_warning").length,
+          public_images_r2_inert: draft.signals.filter((s) => s.kind === "public_images_r2_inert").length,
           test_warning: draft.signals.filter((s) => s.kind === "test_warning").length,
           runtime_fix: draft.signals.filter((s) => s.kind === "runtime_fix").length,
           runtime_fix_lite: draft.signals.filter((s) => s.kind === "runtime_fix_lite").length,
