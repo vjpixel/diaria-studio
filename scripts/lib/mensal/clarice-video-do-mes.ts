@@ -1,5 +1,5 @@
 /**
- * clarice-video-do-mes.ts (#12092) — miolo puro do bloco "O vídeo do mês" na
+ * clarice-video-do-mes.ts (#12092) — miolo puro do bloco "Vídeo do mês" na
  * Clarice News.
  *
  * Pedido do editor (03/11/2026): a Clarice News do ciclo `2610-11` (envio de
@@ -15,6 +15,7 @@
  */
 import { COLORS, FONTS } from "../shared/design-tokens.ts";
 import { escHtml } from "../html-escape.ts";
+import { breakBrandDomainAutolink } from "../shared/brand-wordmark.ts";
 import { DIARIA_YOUTUBE_SUBSCRIBE_URL } from "../canonical-urls.ts";
 import { renderKicker } from "./monthly-render.ts";
 
@@ -129,8 +130,9 @@ export function videoDoMesUrl(videoId: string, cycle: string): string {
 }
 
 export function defaultVideoDoMesFrase(cycle: string): string {
-  // Sem "diar.ia.br" em texto puro: o Gmail autolinka o domínio (o render usa
-  // `applyBrandWordmark`/`breakBrandDomainAutolink` para isso; aqui não precisa).
+  // Sem "diar.ia.br" em texto puro: o Gmail autolinka o domínio. O título vem
+  // do YouTube e pode trazê-lo ("diar.ia.br comentada"): passa por
+  // `breakBrandDomainAutolink` no build.
   return `O episódio mais assistido de ${contentMonthOfCycle(cycle).label} no nosso canal do YouTube.`;
 }
 
@@ -166,9 +168,9 @@ export function buildVideoDoMesHtml(input: {
     VIDEO_DO_MES_START,
     renderKicker(VIDEO_DO_MES_KICKER),
     // Mesmo h2 de `renderDestaque` (monthly-render.ts), sem link.
-    `<h2 style="margin:0 0 20px 0;font-size:26px;font-family:${FONTS.serif};line-height:1.2;color:${COLORS.ink};">${escHtml(title)}</h2>`,
+    `<h2 style="margin:0 0 20px 0;font-size:26px;font-family:${FONTS.serif};line-height:1.2;color:${COLORS.ink};">${breakBrandDomainAutolink(escHtml(title))}</h2>`,
     ...(imageUrl
-      ? [`<a href="${videoHref}" style="text-decoration:none;"><img src="${hrefAttr(imageUrl)}" alt="${escHtml(title)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 20px 0;border:0;" /></a>`]
+      ? [`<a href="${videoHref}" style="text-decoration:none;"><img src="${hrefAttr(imageUrl)}" width="100%" border="0" alt="${escHtml(title)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 20px 0;border:0;" /></a>`]
       : []),
     `<p style="margin:0 0 16px 0;font-family:${FONTS.sans};">${escHtml(frase)} <a href="${videoHref}" style="${link}">Assista ao vídeo</a> e <a href="${hrefAttr(DIARIA_YOUTUBE_SUBSCRIBE_URL)}" style="${link}">inscreva-se no canal</a>.</p>`,
     `<div style="line-height:28px;font-size:0;">&nbsp;</div>`,
@@ -177,8 +179,12 @@ export function buildVideoDoMesHtml(input: {
 }
 
 const RESUMO_KICKER_TEXT = "&nbsp;Resumo do mês</td>";
-/** Início do texto de qualquer kicker do render (`renderKicker`): a bolinha teal. */
-const KICKER_DOT = `<span style="color:${COLORS.brand};">&#9679;</span>&nbsp;`;
+/**
+ * Começo de QUALQUER kicker do render, tirado do próprio `renderKicker` (tudo
+ * antes do rótulo): casa a tabela do kicker inteira, não só a bolinha teal, que
+ * também abre o rótulo "O fio condutor" dentro de um destaque.
+ */
+const KICKER_PREFIX = renderKicker("\u0000").split("\u0000")[0];
 
 /**
  * Insere (ou move/troca) o bloco logo depois da seção "Resumo do mês", antes do
@@ -202,9 +208,7 @@ export function injectVideoDoMes(html: string, block: string): { html: string; r
   }
   const resumo = base.indexOf(RESUMO_KICKER_TEXT);
   if (resumo < 0) throw new Error('kicker "Resumo do mês" não encontrado no HTML: não sei onde pôr o bloco');
-  const nextKicker = base.indexOf(KICKER_DOT, resumo + RESUMO_KICKER_TEXT.length);
-  if (nextKicker < 0) throw new Error('nenhuma seção depois do "Resumo do mês": não sei onde pôr o bloco');
-  const tableStart = base.lastIndexOf("<table", nextKicker);
-  if (tableStart <= resumo) throw new Error('tabela do kicker seguinte ao "Resumo do mês" não encontrada');
+  const tableStart = base.indexOf(KICKER_PREFIX, resumo + RESUMO_KICKER_TEXT.length);
+  if (tableStart < 0) throw new Error('nenhuma seção depois do "Resumo do mês": não sei onde pôr o bloco');
   return { html: base.slice(0, tableStart) + block + "\n" + base.slice(tableStart), replaced };
 }

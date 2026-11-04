@@ -84,7 +84,7 @@ test("videoDoMesUrl: UTM do corpo da issue", () => {
   assert.throws(() => videoDoMesUrl("a b", "2610-11"), /videoId inválido/);
 });
 
-test("buildVideoDoMesHtml: título linkado com UTM, frase, inscrição e sem seta", () => {
+test("buildVideoDoMesHtml: link do vídeo com UTM, frase, inscrição e sem seta", () => {
   const html = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "IA & <eleições>", frase: defaultVideoDoMesFrase("2610-11") });
   assert.ok(html.startsWith(VIDEO_DO_MES_START) && html.endsWith(VIDEO_DO_MES_END));
   assert.ok(html.includes(renderKicker("Vídeo do mês")));
@@ -149,6 +149,22 @@ test("injectVideoDoMes: bloco que estava antes do 'Para encerrar' (1ª versão) 
   const moved = injectVideoDoMes(legacy, old);
   assert.equal(moved.replaced, true);
   assert.equal(moved.html, injectVideoDoMes(page, old).html, "igual a injetar do zero na página limpa");
+});
+
+test("injectVideoDoMes: 'O fio condutor' (mesma bolinha teal) não conta como seção; bloco com imagem entra antes do kicker seguinte", () => {
+  const fio = '<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0 0;"><tr><td><p><span style="color:#00A0A0;">&#9679;</span>&nbsp;O fio condutor</p></td></tr></table>';
+  const page = `${renderIntro("Resumo.")}<h2>Destaque sem tema</h2>${fio}${renderKicker("BRASIL")}<p>D1</p>`;
+  const block = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "Vídeo A", frase: "Frase.", imageUrl: "https://eia.diar.ia.br/img/x.jpg" });
+  const out = injectVideoDoMes(page, block).html;
+  assert.ok(out.indexOf(VIDEO_DO_MES_START) > out.indexOf("O fio condutor"), "não entra no meio do destaque");
+  assert.ok(out.indexOf(VIDEO_DO_MES_END) < out.indexOf("&nbsp;BRASIL</td>"));
+  assert.ok(out.includes('width="100%" border="0"'), "img com width para o Outlook");
+});
+
+test("buildVideoDoMesHtml: domínio no título do YouTube não vira autolink", () => {
+  const html = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "diar.ia.br comentada", frase: "Frase." });
+  const h2 = html.match(/<h2[^>]*>(.*?)<\/h2>/)![1];
+  assert.ok(!h2.includes("diar.ia.br"), "domínio quebrado para o Gmail não autolinkar");
 });
 
 test("injectVideoDoMes: sem o kicker do resumo, ou marcador quebrado, para em vez de chutar", () => {

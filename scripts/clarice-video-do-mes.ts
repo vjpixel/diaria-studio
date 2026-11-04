@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * clarice-video-do-mes.ts (#12092) — bloco "O vídeo do mês" na Clarice News.
+ * clarice-video-do-mes.ts (#12092) — bloco "Vídeo do mês" na Clarice News.
  *
  * Dois passos, nenhum toca a Brevo:
  *
