@@ -16,6 +16,7 @@
 import { extractYouTubeVideoId } from "./d1-video-link.ts";
 import {
   PODCAST_PLAYLIST_NOT_CONFIGURED,
+  describePodcastOrphans,
   describePodcastOutcome,
   ensureVideoInPodcastPlaylist,
   podcastConfigWarning,
@@ -101,5 +102,9 @@ export async function addPastedVideoToPodcast(deps: YouTubeUploadDeps, input: Pa
     videoId,
   });
   input.log(describePastedPodcastOutcome(result, input.aammdd, input.videoUrl));
+  // #12121: a varredura de órfãos roda dentro do `ensureVideoInPodcastPlaylist`
+  // também neste caminho; sem esta linha o resultado se perdia em silêncio.
+  const orphanLine = describePodcastOrphans(result.orphanScan, cfg.id);
+  if (orphanLine) input.log(orphanLine);
   return { kind: "attempted", result };
 }
