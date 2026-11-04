@@ -40,6 +40,17 @@ Uma sessão só aceita a designação **vinda do editor**, nunca do relato de ou
 - O guard mecânico do #5716 (`.claude/hooks/block-gh-pr-merge-subagent.mjs`) **não conhece** a designação: bloqueia por identidade de coordenadora de **rodada** (`overnight`/`develop`), não por acordo. Enquanto isso não for implementado, o protocolo é disciplina de sessão, não gate.
 - Uma rodada `/diaria-overnight`/`/diaria-develop` ativa continua sendo a coordenadora **das PRs dela**, com o guard a favor. Na prática, se uma rodada dessas está viva na mesma máquina, ela é a candidata natural a coordenadora única — foi o que o editor fez em 09/09/2026 ao passar a coordenação para a sessão que rodava o `develop`, porque a sessão interativa comum precisava de `grant-merge` a cada PR.
 
+## PR de repo fora de `issue_repos` (#11501, #12114)
+
+Repos auxiliares que não estão em `platform.config.json → issue_repos` (hoje `vjpixel/dossiemaster`, `vjpixel/fluxo-criativo`) não têm merge lock próprio no guard do #5716. Por desenho (#10618 D): um `-R` com typo, fork ou nome antigo de repo renomeado, que o GitHub redireciona, pode cair no diaria-studio, então o guard trata o merge como do studio. Na prática:
+
+- **Lock:** o que vale é o do **diaria-studio** — `npx tsx scripts/lib/session-registry.ts merge-lock-acquire --pr N`, **sem** `--repo` — e o merge roda sozinho, na forma estrita (`gh pr merge N -R owner/repo --squash`). Soltar com `merge-lock-release --pr N`, também sem `--repo`.
+- **Identidade:** nesse modo o guard **não aceita** concessão (`grant-merge`) nem auto-autorização (`self-authorize-merge`), porque as duas são por repo. Com rodada `overnight`/`develop` ativa, só a coordenadora registrada dessa rodada mergeia a PR.
+
+**Via documentada (decisão de 04/11/2026, #12114):** com uma rodada `overnight`/`develop` no ar, a sessão que tem a PR de repo auxiliar pronta **sinaliza à coordenadora** ("PR `owner/repo#N` pronta", mesmo formato do passo 1 do protocolo acima), e a coordenadora mergeia com o lock do studio. Sem rodada dessas ativa, a sessão interativa mergeia direto, pelo #5251, com o lock do studio. O caso de 04/11/2026 (`vjpixel/dossiemaster#1`) seguiu esse caminho: o merge saiu pela coordenadora develop do Neo.
+
+**Quando incluir o repo em `issue_repos`:** só quando ele deve ganhar lock próprio **e** entrar na varredura das rodadas (overnight, develop e contínuo passam a pegar as issues dele). Essa segunda consequência muda o escopo das rodadas e é decisão do editor; fricção ocasional de merge não basta para isso.
+
 ## Motivação (medida na noite de 08→09/09/2026)
 
 Com 5 sessões interativas mergeando por conta própria no mesmo checkout: 4 PRs e 2 issues **duplicadas** para o mesmo fix de 3 linhas (`EXPECTED_HOSTS`, #7721/#7724/#7725/#7727/#7728/#7729); uma PR do contínuo verde e revisada **órfã por 26h** (#7614) com o merger parado (#7647) — a mesma correção foi achada e mergeada duas vezes por outras sessões; e **master vermelho por ~1h** (bd9fd7b1) sem ninguém perceber, reprovando o `test` de 13 PRs. Um único par de olhos na fila fecha essas três classes.

@@ -1233,6 +1233,9 @@ export function renderNicknameFormHtml(
   brand: Brand,
   showOptIn: boolean = false,
   surface: "vote" | "leaderboard" = "vote",
+  /** #12040: posição no teste de ordem (só muda o hidden `pos`; a ordem em si
+   * é decidida por `votePageHtml`). */
+  signupPlacement: VoteSignupPlacement = "abaixo",
 ): string {
   const leaderboardPeriodWord = BRAND_INFO[brand].leaderboardPeriod === "year" ? "anual" : "mensal";
   const optinHtml = showOptIn
@@ -1245,7 +1248,7 @@ export function renderNicknameFormHtml(
   <form action="/set-name" method="GET" class="nick-form">
     <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
     <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
-    ${brandHiddenInput(brand)}
+    ${brandHiddenInput(brand)}${signupPlacementHiddenInput(signupPlacement)}
     <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
     <button type="submit" class="nick-save">${saveLabel}</button>${optinHtml}
   </form>
@@ -1285,7 +1288,12 @@ export interface SubscribeBoxState {
  * sendo a tela de resultado do voto (index.ts:912), onde a caixa nasceu e
  * "ver o leaderboard" é de fato um destino novo.
  */
-export function renderSubscribeBoxHtml(box: SubscribeBoxState, brand: Brand): string {
+export function renderSubscribeBoxHtml(
+  box: SubscribeBoxState,
+  brand: Brand,
+  /** #12040: posição no teste de ordem (só muda o hidden `pos`). */
+  signupPlacement: VoteSignupPlacement = "abaixo",
+): string {
   const lbHref = leaderboardHref(brand);
   const secondaryHref = `${lbHref}${lbHref.includes("?") ? "&" : "?"}email=${encodeURIComponent(box.email)}&sig=${encodeURIComponent(box.sig)}`;
   return `<div class="nick-box nick-sub-box">
@@ -1297,7 +1305,7 @@ export function renderSubscribeBoxHtml(box: SubscribeBoxState, brand: Brand): st
     <input type="hidden" name="sig" value="${htmlEscape(box.sig)}">
     <input type="hidden" name="name" value="${htmlEscape(box.nickname)}">
     <input type="hidden" name="optin" value="on">
-    ${brandHiddenInput(brand)}
+    ${brandHiddenInput(brand)}${signupPlacementHiddenInput(signupPlacement)}
     <div class="nick-actions">
       <button type="submit" class="nick-save nick-save-primary">Assinar e ver o ranking</button>
       <a class="nick-secondary" href="${htmlEscape(secondaryHref)}">Ver o ranking</a>
@@ -1331,6 +1339,60 @@ export function resolveVoteIdentityBoxKind(
   if (!score?.nickname) return "nickname";
   if (brand === "clarice" && !score.optin) return "subscribe";
   return "none";
+}
+
+/**
+ * #12040 item 2: teste da ORDEM do pedido de cadastro na tela de resultado do
+ * voto (brand clarice). Antes deste teste a caixa de cadastro vinha sempre
+ * DEPOIS do resultado (mensagem → par de imagens → descrição/crédito → caixa);
+ * no celular as duas imagens empilhadas em largura total empurram a caixa pra
+ * baixo da dobra. Metade dos leitores (split determinístico por e-mail, o
+ * mesmo leitor vê sempre a mesma ordem) passa a ver a caixa logo depois da
+ * mensagem, ANTES das imagens.
+ *
+ * - `"abaixo"`: controle, ordem de sempre.
+ * - `"topo"`: variante, caixa entre a mensagem e as imagens.
+ *
+ * Medição: o formulário da variante leva `pos=topo` e o `/set-name` grava o
+ * cadastro com `referringSite` próprio (`VOTE_CLARICE_SET_NAME_TOPO_REFERRING_SITE`,
+ * subscribe.ts); o controle mantém `vote-clarice-set-name`. Como o split é
+ * 50/50 por hash, as exposições dos dois braços são equivalentes por
+ * construção e a comparação é entre os cadastros de cada `referring_site`.
+ *
+ * Encerrar o teste: `VOTE_SIGNUP_ORDER_TEST_ENABLED = false` (todo mundo volta
+ * ao controle) ou trocar o default pela ordem vencedora.
+ */
+export type VoteSignupPlacement = "abaixo" | "topo";
+
+export const VOTE_SIGNUP_ORDER_TEST_ENABLED = true;
+
+/** Valor do hidden `pos` que o formulário da variante carrega. */
+export const VOTE_SIGNUP_PLACEMENT_PARAM = "pos";
+
+/**
+ * Pure (#12040): em qual posição renderizar a caixa de cadastro pra este
+ * leitor. Só brand clarice e só quando a caixa de fato pede cadastro
+ * (`offersSignup` — Caixa B, ou Caixa A com o checkbox de opt-in); fora disso
+ * é sempre `"abaixo"` (diaria/web e o form de retry do `/set-name` não mudam).
+ * Bucket = FNV-1a (`hashEmailForMatch`) do e-mail com prefixo próprio, pra o
+ * split não coincidir com nenhum outro uso do mesmo hash.
+ */
+export function resolveVoteSignupPlacement(
+  email: string,
+  brand: Brand,
+  offersSignup: boolean,
+  enabled: boolean = VOTE_SIGNUP_ORDER_TEST_ENABLED,
+): VoteSignupPlacement {
+  if (!enabled || brand !== "clarice" || !offersSignup) return "abaixo";
+  const bucket = parseInt(hashEmailForMatch(`signup-order-12040:${email}`), 16) % 2;
+  return bucket === 1 ? "topo" : "abaixo";
+}
+
+/** Hidden input do formulário da variante (`""` no controle). */
+export function signupPlacementHiddenInput(placement: VoteSignupPlacement): string {
+  return placement === "topo"
+    ? `<input type="hidden" name="${VOTE_SIGNUP_PLACEMENT_PARAM}" value="topo">`
+    : "";
 }
 
 /**

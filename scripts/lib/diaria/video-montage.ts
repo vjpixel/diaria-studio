@@ -1772,7 +1772,29 @@ export function resolveBlocks(
       });
     });
   }
+  const cta = youtubeCtaSubscribeWarning((blocks.cta_yt ?? []).map((it) => it.heard ?? it.text));
+  if (cta) warnings.push(cta);
   return { blocks, errors, warnings };
+}
+
+/** CTA do fim do horizontal desde o #12079 (decisão do editor, 03/11/2026). */
+export const YOUTUBE_CTA_SUBSCRIBE_TEXT = "Se você ainda não é inscrito, se inscreve: sai um vídeo por dia útil.";
+
+/**
+ * Puro (#12079): o CTA do fim do horizontal pede inscrição, não like. O CTA é
+ * o que o editor fala na gravação, então o roteiro (Gate 2) só avisa quando o
+ * `cta_yt` não pede inscrição, para o editor regravar ou decidir manter.
+ * `null` = sem `cta_yt` (entrevista, edição antiga) ou CTA que já pede inscrição.
+ */
+export function youtubeCtaSubscribeWarning(ctaTexts: readonly string[]): string | null {
+  const text = ctaTexts.join(" ").trim();
+  if (!text) return null;
+  if (/\binscre(?:v|ver)|\binscri[çc]/i.test(text)) return null;
+  const like = /\blike\b|\bcurt(?:e|ir|iu)\b/i.test(text);
+  return (
+    `cta_yt: o CTA do horizontal ${like ? "pede like" : "não pede inscrição"} ("${text}"); desde o #12079 ele pede inscrição ` +
+    `("${YOUTUBE_CTA_SUBSCRIBE_TEXT}"). Regravar o CTA ou seguir com este por decisão do editor no Gate 2`
+  );
 }
 
 export interface PlannedClip {

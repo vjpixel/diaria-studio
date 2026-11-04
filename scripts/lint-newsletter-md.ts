@@ -844,6 +844,7 @@ import { runCli as run_titlePublisherSuffix } from "./lib/lint-checks/cli/title-
 import { runCli as run_titleTrailingPeriod } from "./lib/lint-checks/cli/title-trailing-period.ts";
 import { runCli as run_titleMentionsIa } from "./lib/lint-checks/cli/title-mentions-ia.ts";
 import { runCli as run_titleClickbaitVulgar } from "./lib/lint-checks/cli/title-clickbait-vulgar.ts";
+import { runCli as run_titleIaAsAgent } from "./lib/lint-checks/cli/title-ia-as-agent.ts"; // #12106
 import { runCli as run_noTrailingEllipsis } from "./lib/lint-checks/cli/no-trailing-ellipsis.ts";
 import { runCli as run_radarSummaryMatchesTitle } from "./lib/lint-checks/cli/radar-summary-matches-title.ts"; // #8594
 import { runCli as run_midSentenceEllipsis } from "./lib/lint-checks/cli/mid-sentence-ellipsis.ts";
@@ -892,6 +893,7 @@ const CHECK_HANDLERS: Record<string, (args: Record<string, string>, root: string
   "title-trailing-period": run_titleTrailingPeriod,
   "title-mentions-ia": run_titleMentionsIa,
   "title-clickbait-vulgar": run_titleClickbaitVulgar,
+  "title-ia-as-agent": run_titleIaAsAgent, // #12106
   "no-trailing-ellipsis": run_noTrailingEllipsis,
   "radar-summary-matches-title": run_radarSummaryMatchesTitle, // #8594
   "mid-sentence-ellipsis": run_midSentenceEllipsis,

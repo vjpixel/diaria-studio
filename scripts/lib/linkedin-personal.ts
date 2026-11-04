@@ -165,13 +165,19 @@ export async function checkTokenRemote(fetchFn: FetchFn, accessToken: string): P
 
 // ── OAuth ────────────────────────────────────────────────────────────────
 
-export function buildAuthorizeUrl(clientId: string, state: string): string {
+/**
+ * Redirect/escopos sobrescrevíveis pro app da PÁGINA (#8055,
+ * `scripts/linkedin-page-oauth.ts`); sem `opts`, é o app pessoal de sempre.
+ */
+export type OAuthAppOpts = { redirectUri?: string; scopes?: readonly string[] };
+
+export function buildAuthorizeUrl(clientId: string, state: string, opts: OAuthAppOpts = {}): string {
   const params = new URLSearchParams({
     response_type: "code",
     client_id: clientId,
-    redirect_uri: LINKEDIN_PERSONAL_REDIRECT_URI,
+    redirect_uri: opts.redirectUri ?? LINKEDIN_PERSONAL_REDIRECT_URI,
     state,
-    scope: LINKEDIN_PERSONAL_SCOPES.join(" "),
+    scope: (opts.scopes ?? LINKEDIN_PERSONAL_SCOPES).join(" "),
   });
   return `${LINKEDIN_AUTHORIZE_URL}?${params}`;
 }
@@ -180,8 +186,9 @@ export type TokenExchange = { accessToken: string; expiresInSec: number; scope: 
 
 export async function exchangeCodeForToken(
   fetchFn: FetchFn,
-  args: { code: string; clientId: string; clientSecret: string },
+  args: { code: string; clientId: string; clientSecret: string; redirectUri?: string; requiredScope?: string },
 ): Promise<TokenExchange> {
+  const requiredScope = args.requiredScope ?? "w_member_social";
   const res = await fetchFn(
     LINKEDIN_TOKEN_URL,
     withTimeout({
@@ -190,7 +197,7 @@ export async function exchangeCodeForToken(
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code: args.code,
-        redirect_uri: LINKEDIN_PERSONAL_REDIRECT_URI,
+        redirect_uri: args.redirectUri ?? LINKEDIN_PERSONAL_REDIRECT_URI,
         client_id: args.clientId,
         client_secret: args.clientSecret,
       }).toString(),
@@ -208,9 +215,11 @@ export async function exchangeCodeForToken(
     throw new Error(`troca de código falhou (HTTP ${res.status}): ${data.error_description ?? "sem descrição"}`);
   }
   const scope = data.scope ?? "";
-  if (!scope.split(/[\s,]+/).includes("w_member_social")) {
+  if (!scope.split(/[\s,]+/).includes(requiredScope)) {
     throw new Error(
-      `token emitido SEM w_member_social (scope="${scope}") — confira se o app tem o produto "Share on LinkedIn" aprovado`,
+      requiredScope === "w_member_social"
+        ? `token emitido SEM w_member_social (scope="${scope}") — confira se o app tem o produto "Share on LinkedIn" aprovado`
+        : `token emitido SEM ${requiredScope} (scope="${scope}") — confira os produtos aprovados do app`,
     );
   }
   return { accessToken: data.access_token, expiresInSec: data.expires_in ?? LINKEDIN_TOKEN_TTL_DAYS * 86400, scope };

@@ -167,7 +167,7 @@ npx tsx scripts/render-halt-banner.ts \
    npx tsx scripts/close-poll.ts --edition {AAMMDD}
    ```
 
-5. **Pre-dispatch invariants (#1007 Fase 1).** ANTES, medir o tempo dos USE MELHOR inseridos/alterados à mão no gate (#10765; não reescreve o md, fail-soft exit 0): `npx tsx scripts/refresh-use-melhor-tempo.ts --edition-dir {EDITION_DIR}/` — `use-melhor-tempo-item-sem-medicao` avisa a divergência. Depois: Validar que `06-public-images.json` está populado e env vars críticas estão setadas:
+5. **Pre-dispatch invariants (#1007 Fase 1).** ANTES, medir o tempo dos USE MELHOR inseridos/alterados à mão no gate (#12108; grava o tempo medido no md, preserva o texto sem fonte medida, fail-soft exit 0): `npx tsx scripts/refresh-use-melhor-tempo.ts --edition-dir {EDITION_DIR}/ --write` — `use-melhor-tempo-item-sem-medicao` avisa a divergência. Depois: Validar que `06-public-images.json` está populado e env vars críticas estão setadas:
    ```bash
    npx tsx scripts/check-invariants.ts --stage 4 --edition-dir {EDITION_DIR}/
    ```
@@ -735,7 +735,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
    Bucket populado → `--check` auto-resolve sozinho no Stage 5 (sem `--resolve` manual). Editor desiste do pedido → resolver pra não gerar warning falso: `npx tsx scripts/check-pending-research.ts --resolve --edition-dir {EDITION_DIR}/ --reason "{motivo}"`. Nunca bloqueia o gate — só garante aviso explícito no Stage 5 se a lacuna persistir (invariant `pending-research-unresolved`, warning).
 
 1. **Arquivos já estão localmente atualizados** — sem round-trip externo a aguardar antes de editar (Studio, se usado pelo editor pra revisão fora do terminal, grava direto no arquivo local).
-2. **Aplicar edição cirúrgica** em `02-reviewed.md` seguindo #495: substituições linha-a-linha mínimas via `Edit` com `old_string` mínimo. Nunca substituir blocos grandes.
+2. **Aplicar edição cirúrgica** em `02-reviewed.md` seguindo #495: substituições linha-a-linha mínimas via `Edit` com `old_string` mínimo. Nunca substituir blocos grandes. **Se o ajuste mover/adicionar item em USE MELHOR ou alterar seu tempo**, rodar `npx tsx scripts/refresh-use-melhor-tempo.ts --edition-dir {EDITION_DIR}/ --write` antes do lint e do re-render (#12108): grava somente tempos medidos; sem fonte medida, mantém o texto e o warning.
 
    **Verificar vazamento de tag XML imediatamente após a edição (#4077, #4636)** — **GATE-BLOCKING**. Esta chamada isolada continua rodando aqui, sem mudança — ela é o que garante a checagem ANTES do passo 3 seguinte, uma garantia que a rodada assíncrona de `stage4-post-edit-checks.ts` (#8123 Fatia 3, ver nota acima de "Fluxo:") não dá sozinha. O mesmo check também sai coberto por aquela rodada (redundante de propósito — cobre o caso em que o passo 3/4/6 grava uma tag nova depois deste ponto):
    ```bash

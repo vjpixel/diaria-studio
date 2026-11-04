@@ -12,7 +12,7 @@
  * e o registro que ele grava SEMPRE (inclusive "consent desligado" e "sem
  * vídeo no Drive") é o que a invariante `youtube-step-ran` do Stage 5 confere.
  *
- * Uso: npx tsx scripts/stage5-youtube.ts AAMMDD --edition-dir DIR [--upload-from-final]
+ * Uso: npx tsx scripts/stage5-youtube.ts AAMMDD --edition-dir DIR [--upload-from-final] [--ignore-pending-approval]
  *
  * #11297: desde o #11222 o horizontal pronto mora em `{AAMMDD}/Final/` e o
  * editor o sobe pelo YouTube Studio. Sem o link colado, o fetch acharia o
@@ -20,6 +20,13 @@
  * escolhido em `Final/` só sobe com `--upload-from-final` (sinal explícito);
  * sem ele, o passo consulta o fetch em `--dry-run` (nada baixado) e registra
  * `awaiting-link`. Edições sem `Final/` seguem com o upload automático.
+ *
+ * #12122: com `_internal/05-youtube-pending-approval.json` (gravado pelo
+ * `publish-youtube.ts --dry-run` do `/diaria-publica-video`, à espera do "pode
+ * publicar"), o passo não busca nem sobe nada e registra `awaiting-approval`:
+ * na 261104 o Stage 5 em paralelo subiu o horizontal antes da confirmação, com
+ * a capa intermediária. `--ignore-pending-approval` sobrepõe (vídeo pela skill
+ * abandonado, decisão do editor).
  *
  * Nunca para a Etapa 5: exit 0 em todo desfecho (o motivo vai no JSON do
  * stdout e no registro); exit 2 só para uso inválido.
@@ -38,6 +45,7 @@ import { logEvent } from "./lib/run-log.ts";
 import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
 import { publishConfirmArgs } from "./lib/diaria/publish-confirm.ts";
+import { describePendingApproval, readPendingApproval } from "./lib/diaria/youtube-pending-approval.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const YOUTUBE_STEP_FILE = "_internal/05-youtube-step.json";
@@ -49,6 +57,7 @@ export type YouTubeStepOutcome =
   | "no-video"
   | "needs-editor"
   | "awaiting-link"
+  | "awaiting-approval"
   | "fetch-error"
   | "uploaded"
   | "upload-error";
@@ -66,6 +75,12 @@ export interface YouTubeStepRecord {
   state?: string | null;
   /** `_internal/05-video-url.txt` existe depois do passo (link no D1). */
   d1_link: boolean;
+  /**
+   * #12120: passo do podcast do `--upload` (`podcast` do JSON). `null` = o
+   * upload não trouxe o campo (não tentado ou não gravado); ausente = sem upload.
+   */
+  podcast_ok?: boolean | null;
+  podcast_error?: string | null;
   detail?: string;
 }
 
@@ -156,14 +171,31 @@ export function classifyFetch(exitCode: number | null, stdout: string): { action
   return { action, upload: false, outcome: "fetch-error", detail: String(out?.error ?? `exit ${exitCode}`) };
 }
 
-/** Puro: lê `url`/`state` do JSON do `publish-youtube.ts --upload` (pode vir vazio em falha). */
-export function parseUploadStdout(stdout: string): { url: string | null; state: string | null } {
+/** Puro: lê `url`/`state`/`podcast` do JSON do `publish-youtube.ts --upload` (pode vir vazio em falha). */
+export function parseUploadStdout(stdout: string): { url: string | null; state: string | null; podcastOk: boolean | null; podcastError: string | null } {
   try {
     const j = JSON.parse(stdout);
-    return { url: typeof j?.url === "string" ? j.url : null, state: typeof j?.state === "string" ? j.state : null };
+    const pod = j?.podcast && typeof j.podcast === "object" ? j.podcast : null;
+    return {
+      url: typeof j?.url === "string" ? j.url : null,
+      state: typeof j?.state === "string" ? j.state : null,
+      podcastOk: pod && typeof pod.ok === "boolean" ? pod.ok : null,
+      podcastError: pod && typeof pod.error === "string" ? pod.error : null,
+    };
   } catch {
-    return { url: null, state: null };
+    return { url: null, state: null, podcastOk: null, podcastError: null };
   }
+}
+
+/**
+ * Puro (#12120): o passo do podcast é fail-soft dentro do `--upload` e só
+ * aparece como `[aviso]` no stderr. Aqui ele vira nível `warn` no run-log do
+ * passo, para ser conferido sem ler o log do upload.
+ */
+export function youtubeStepLevel(rec: Pick<YouTubeStepRecord, "outcome" | "podcast_ok">): "info" | "warn" {
+  if (rec.outcome === "fetch-error" || rec.outcome === "upload-error") return "warn";
+  if (rec.outcome === "uploaded" && rec.podcast_ok === false) return "warn";
+  return "info";
 }
 
 function runTsx(args: string[]): { status: number | null; stdout: string } {
@@ -193,6 +225,10 @@ async function main(): Promise<number> {
   let record: Omit<YouTubeStepRecord, "d1_link">;
   const pasted = pastedVideoUrl(dir);
   const allowFinalUpload = flags.has("upload-from-final");
+  const pending = readPendingApproval(dir, aammdd);
+  if (pending.kind !== "none" && flags.has("ignore-pending-approval")) {
+    console.error(`[premissa] --ignore-pending-approval: ${describePendingApproval(pending, aammdd)} — seguindo por decisão do editor`);
+  }
   const fetchArgs = ["scripts/fetch-drive-video.ts", "--edition", aammdd, "--orientation", "horizontal", "--edition-dir", dir];
   const upload = (fetchAction: string, fetchExit: number | null): Omit<YouTubeStepRecord, "d1_link"> => {
     // #11741: o upload exige confirmação explícita; aqui ela é o consent da Etapa 5
@@ -207,6 +243,8 @@ async function main(): Promise<number> {
       upload_exit: up.status,
       video_url: parsed.url,
       state: parsed.state,
+      podcast_ok: parsed.podcastOk,
+      ...(parsed.podcastError ? { podcast_error: parsed.podcastError } : {}),
     };
   };
   const fetchAndUpload = (): Omit<YouTubeStepRecord, "d1_link"> => {
@@ -231,6 +269,9 @@ async function main(): Promise<number> {
       outcome: "needs-editor",
       detail: `${pasted.invalid} — o arquivo existe, então nada foi buscado nem enviado (#11297); corrigir com link-video-d1.ts ${aammdd} --save`,
     };
+  } else if (pending.kind !== "none" && !flags.has("ignore-pending-approval")) {
+    // #12122: a skill de vídeo está com o plano à espera do "pode publicar".
+    record = { ...base, outcome: "awaiting-approval", detail: describePendingApproval(pending, aammdd) };
   } else if (allowFinalUpload) {
     // Sinal explícito do editor: baixa e sobe, inclusive de Final/.
     record = fetchAndUpload();
@@ -258,8 +299,10 @@ async function main(): Promise<number> {
       edition: aammdd,
       stage: 5,
       agent: "orchestrator",
-      level: full.outcome === "fetch-error" || full.outcome === "upload-error" ? "warn" : "info",
-      message: `youtube: ${full.outcome}, fetch ${full.fetch_action ?? "-"}, upload exit ${full.upload_exit ?? "-"}, video-url ${full.d1_link ? "gravado" : "ausente"}`,
+      level: youtubeStepLevel(full),
+      message:
+        `youtube: ${full.outcome}, fetch ${full.fetch_action ?? "-"}, upload exit ${full.upload_exit ?? "-"}, video-url ${full.d1_link ? "gravado" : "ausente"}` +
+        (full.podcast_ok === undefined ? "" : `, podcast ${full.podcast_ok === null ? "sem resultado" : full.podcast_ok ? "ok" : "FALHOU"}`),
       details: full,
     },
     ROOT,

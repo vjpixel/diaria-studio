@@ -27,6 +27,7 @@ import { loadPublishDateOverrides } from "./beehiiv-publish-date.ts";
 import type { UnifiedCachedPost } from "./shared/edition-cache-reader.ts";
 import { editionCtaBlock } from "./edition-page-cta.ts";
 import { injectDestaqueAnchors } from "./site-destaque-anchors.ts"; // #11003
+import { applyWebVideo, buildVideoObjectJsonLd, type WebVideoInput } from "./site-page-video.ts"; // #12080
 import { stripArchiveHero } from "./strip-duplicate-hero.ts";
 import { GEO_AUTHOR, type GeoAuthor } from "./shared/geo-faq.ts";
 import { renderSeoMeta } from "./shared/seo-meta.ts";
@@ -549,6 +550,12 @@ export function buildArchiveNeighborNavHtml(prev?: ArchiveNeighbor, next?: Archi
 export interface BuildArchivePageHtmlOptions {
   /** #8353 item 1 — omitido (default) preserva o comportamento de antes: sem nav. */
   neighbors?: { prev?: ArchiveNeighbor; next?: ArchiveNeighbor };
+  /**
+   * #12080: vídeo do D1 lido do disco da edição (`_internal/05-video-url.txt`
+   * + registro do upload). Omitido, o player sai do próprio link da imagem do
+   * D1 quando ele já aponta pro vídeo; link pro canal fica sem player.
+   */
+  video?: WebVideoInput;
 }
 
 /**
@@ -652,6 +659,20 @@ export function buildArchivePageHtml(post: ArchivePost, opts: BuildArchivePageHt
   // o alvo é o <h2> da manchete; página sem manchete reconhecível fica igual.
   html = injectDestaqueAnchors(html);
 
+  // #12080 — vídeo do D1: player no lugar da imagem com link (só na web; o
+  // e-mail segue com imagem), UTM própria da web nos links do YouTube e
+  // `VideoObject` no <head> quando há player.
+  const webVideo = applyWebVideo(html, opts.video ?? {}, rawTitle);
+  html = webVideo.html;
+  const videoJsonLd = webVideo.videoId
+    ? buildVideoObjectJsonLd({
+        videoId: webVideo.videoId,
+        name: (opts.video?.name ?? "").trim() || rawTitle,
+        description: (opts.video?.description ?? "").trim() || rawDescription,
+        uploadDate: opts.video?.uploadDate ?? articlePublishedTime,
+      })
+    : undefined;
+
   // #8353 item 1 — nav prev/next logo após o <h1> (visível ou sr-only, ver
   // normalizeHeadingHierarchy acima). Omitido (post sem nenhum vizinho
   // resolvido pelo caller) preserva o HTML de antes byte a byte.
@@ -704,7 +725,8 @@ export function buildArchivePageHtml(post: ArchivePost, opts: BuildArchivePageHt
     // edição não tem D2/D3 (deriveDek devolve undefined) — o HOME trata a
     // ausência sem quebrar (ver extractPageDek/buildHomeFeed).
     (dek ? `<meta name="dek" content="${escHtml(dek)}">` : "") +
-    (newsArticleJsonLd ?? "");
+    (newsArticleJsonLd ?? "") +
+    (videoJsonLd ?? "");
 
   if (/<head[^>]*>/i.test(html)) {
     html = html.replace(/<head[^>]*>/i, (full) => `${full}${headInject}`);

@@ -48,6 +48,7 @@
  * Puro: sem I/O. Quem lê arquivo é `publish-edition-site-page.ts`.
  */
 import type { ArchivePost } from "./site-archive-pages.ts";
+import type { WebVideoInput } from "./site-page-video.ts"; // #12080
 
 export interface EditionPageInputs {
   /** Conteúdo de `_internal/newsletter-final.html`. */
@@ -68,6 +69,13 @@ export interface EditionPageInputs {
    * anterior (capa derivada do corpo pelo backfill).
    */
   coverImageUrl?: string | null;
+  /**
+   * #12080: vídeo do D1 lido do disco (`_internal/05-video-url.txt` + registro
+   * do upload). Vira o player e o `VideoObject` da página; vence o link da
+   * imagem do D1 no HTML do e-mail, que pode ter sido renderizado antes de o
+   * vídeo ter URL (aponta pro canal). Ausente = sem vídeo no disco.
+   */
+  video?: WebVideoInput | null;
 }
 
 export type BuildEditionPostResult =

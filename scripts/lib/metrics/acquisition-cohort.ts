@@ -209,3 +209,45 @@ export function buildAcquisitionCohortTable(
   rows.subscribersWithInvalidEnteredAt = subscribersWithInvalidEnteredAt;
   return rows;
 }
+
+/** Linha da coorte somada no período, sem o dia (`/assinantes`, "Cadastros
+ *  por origem" — decisão do editor, 03/11/2026, #10606). */
+export type CohortOriginRow = Omit<CohortRow, "day">;
+
+/**
+ * Soma as linhas dia × classe × `utm_source` numa linha por classe ×
+ * `utm_source`, para a tabela agrupar por origem sem a coluna Dia. O filtro
+ * de data é aplicado ANTES (o chamador passa só as linhas do período).
+ *
+ * `confirmedKit`/`unconfirmedKit` seguem a regra de `null` de
+ * `buildAcquisitionCohortTable`: `null` só quando NENHUMA linha somada tem
+ * sinal Kit; linha `null` entra como 0 quando outra do grupo tem sinal (os
+ * membros dela não têm `subscription` Kit, então não contam em nenhuma das
+ * duas). Ordem: mais cadastros primeiro; empate por origem e classe. @pure
+ */
+export function aggregateCohortRowsByOrigin(rows: readonly CohortRow[]): CohortOriginRow[] {
+  const groups = new Map<string, CohortOriginRow>();
+  for (const r of rows) {
+    const key = `${r.acquisitionClass}|${r.utmSource ?? " "}`;
+    const g = groups.get(key);
+    if (!g) {
+      groups.set(key, {
+        utmSource: r.utmSource,
+        acquisitionClass: r.acquisitionClass,
+        total: r.total,
+        confirmedKit: r.confirmedKit,
+        unconfirmedKit: r.unconfirmedKit,
+      });
+      continue;
+    }
+    g.total += r.total;
+    if (r.confirmedKit != null) g.confirmedKit = (g.confirmedKit ?? 0) + r.confirmedKit;
+    if (r.unconfirmedKit != null) g.unconfirmedKit = (g.unconfirmedKit ?? 0) + r.unconfirmedKit;
+  }
+  return [...groups.values()].sort(
+    (a, b) =>
+      b.total - a.total ||
+      (a.utmSource ?? "").localeCompare(b.utmSource ?? "") ||
+      a.acquisitionClass.localeCompare(b.acquisitionClass),
+  );
+}

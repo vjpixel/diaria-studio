@@ -298,6 +298,13 @@ export function extractPageDek(html: string): string {
  * por causa de uma capa ausente.
  */
 export function extractHeroImage(html: string): string | null {
+  // #12080: na página web o hero do D1 com vídeo vira o player
+  // (`hero-video-embed`, sem `<img>`); o 1º `<img class="hero">` que sobra é
+  // o do D2. A capa do D1 é o `og:image` (#10924).
+  if (/\bclass=["']hero-video-embed["']/i.test(html)) {
+    const og = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i)?.[1];
+    if (og) return sameOriginImageUrl(og);
+  }
   const imgTags = html.match(/<img\b[^>]*>/gi) ?? [];
   for (const tag of imgTags) {
     if (!/\bclass=["']hero["']/i.test(tag)) continue;

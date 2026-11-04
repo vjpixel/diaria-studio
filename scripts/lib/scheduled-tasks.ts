@@ -291,7 +291,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Video-D1-Link-Watch",
     description:
-      "relê o estado do vídeo horizontal no YouTube até 10:00 BRT e, público, grava o link do D1 e aplica o plano nos posts do D1 (#10941)",
+      "relê o estado do vídeo horizontal no YouTube até 10:00 BRT e, público, grava o link do D1, aplica o plano nos posts do D1 (#10941) e republica a página do site que saiu sem o vídeo (#12080)",
     steps: [{ key: "watch", script: "scripts/video-d1-link-watch.ts" }],
     logPath: "video-d1-link-watch/.watch.log",
     // Diária 06:05 BRT, um único disparo que relê a cada 5 min até 10:00
@@ -307,6 +307,12 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // na edição de hoje e, no Facebook diar.ia.br, edita/comenta o post do D1
     // pela Graph API — por isso o `guard` abaixo: sem a junction `data/`
     // montada não há edição para ler.
+    //
+    // #12080: com o vídeo público e a página `diar.ia.br/p/{slug}` já
+    // publicada SEM ele (`video_url` do `_internal/site-page-published.json`
+    // diferente), roda `publish-edition-site-page.ts --slug-from-d1
+    // --no-wait-merge` (o mesmo do §5b-site): abre o PR da página com o player.
+    // Fail-soft — falha da republicação vira `warn` no run-log, não muda o exit.
     //
     // ARMA-ELEGÍVEL desde 23/10/2026 (/diaria-develop 261023b, #10941):
     // dry-run de 261023 conferido com o editor presente — vídeo relido
@@ -325,6 +331,29 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do upload.",
     },
     issue: "#10941",
+  },
+  {
+    name: "Diaria-YouTube-Analytics-Snapshot",
+    description:
+      "snapshot diario do YouTube Analytics do @diariabr (inscritos ganhos por video, fonte de trafego, retencao, total de inscritos) em data/youtube-analytics/ (#12075)",
+    steps: [{ key: "snapshot", script: "scripts/youtube-analytics-snapshot.ts" }],
+    logPath: "youtube-analytics/.snapshot.log",
+    // Diaria 11:35 BRT, slot livre (ver grep de `hour: 11, minute:`). Sem
+    // pressa: o YouTube consolida o dado do dia com 2-3 dias de atraso, e o
+    // script re-busca os ultimos 7 dias a cada execucao (o leitor deduplica,
+    // a captura mais recente vence). So LE o YouTube e escreve so em data/.
+    // Token sem `yt-analytics.readonly` (gerado antes do #12075) NAO falha a
+    // task: grava so o total de inscritos e avisa no log ate o editor re-rodar
+    // `scripts/youtube-oauth-setup.ts`. Host unico (o 300), como as demais
+    // que appendam em data/: duas maquinas so duplicariam linhas (o leitor
+    // deduplica), sem perda.
+    schedule: { kind: "daily", hour: 11, minute: 35 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem gravar a serie do YouTube Analytics.",
+    },
+    issue: "#12075",
   },
   {
     name: "Diaria-Short-Related-Missed-Alarm",

@@ -19,6 +19,7 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 | Facebook Page token | `data/.fb-credentials.json` (`page_access_token`) | 60 dias se short-lived; nunca se long-lived com renew | `publish-facebook.ts` retorna 190 (`OAuthException`) |
 | `INSTAGRAM_ACCESS_TOKEN` | Doppler + `.env` (Neo e 300) + secret do Worker `diaria-linkedin-cron` | Sem expiração (token de usuário do sistema) | Itens `channel="instagram"` vão pra DLQ no Worker; `publish-instagram.ts` retorna 190 (`OAuthException`) |
 | `CLOUDFLARE_API_TOKEN` | env var (`.env`) | Sem expiração nativa (até revogação) | `cloudflare-image.js` retorna 401 / `Authentication error` |
+| `CLOUDFLARE_WORKERS_TOKEN` | Doppler + `.env` + **secret do GitHub** (deploy dos Workers no CI) | Sem expiração nativa (até revogação) | `wrangler deploy` no CI falha com `Authentication error [code: 10000]` |
 | Beehiiv MCP OAuth | `claude.ai/settings/connectors` | Desconhecido (gerenciado pela claude.ai) | Subagentes que usam Beehiiv MCP retornam erro de auth |
 | Gmail MCP OAuth | `claude.ai/settings/connectors` | Desconhecido (gerenciado pela claude.ai) | `review-test-email` (Etapas 5/6) falha com erro de auth do Gmail MCP |
 
@@ -147,6 +148,22 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 - **Downtime esperado:** ~30 segundos.
 - **Cadência sugerida:** a cada 6 meses ou após qualquer suspeita. Free tier não tem limite que mude com idade do token.
 
+### `CLOUDFLARE_WORKERS_TOKEN` (deploy dos Workers no CI) (#12119)
+
+- **Qual token é:** o token da Cloudflare chamado **"Edit Cloudflare Workers"**, ID começando com `2f71911b` (o valor nunca vai para o repo). Tem, entre outras, a permissão **Workers R2 Storage Write**, que o deploy de Worker com binding R2 exige (#11412).
+- **Onde mora:** em **dois** lugares, que precisam ter o **mesmo valor**:
+  1. Doppler/`.env` (`CLOUDFLARE_WORKERS_TOKEN`), lido por dezenas de scripts locais (escrita em KV, `worker-drift-check.ts`, `eia-compose.ts`, `publish-daily-brevo.ts` etc.; `grep -rl CLOUDFLARE_WORKERS_TOKEN scripts/` lista todos).
+  2. Secret de repo do GitHub `CLOUDFLARE_WORKERS_TOKEN`, que os workflows de deploy (`.github/workflows/deploy-worker.yml` e os `deploy-*.yml` standalone) passam ao `wrangler` como `CLOUDFLARE_API_TOKEN`.
+- **Por que isto está escrito:** a #11412 ficou bloqueada de 28/10 a 04/11/2026 com `Authentication error [code: 10000]` no R2, diagnosticada como "o token não tem permissão R2". O token do `.env`/Doppler já tinha a permissão; o secret do GitHub, gravado em 01/07, guardava **outro** token. Em 04/11 o secret foi trocado pelo valor do `.env`. Antes de concluir "falta permissão", conferir se os dois lugares têm o mesmo token.
+- **Como conferir qual token está em uso** (devolve o ID, nunca o valor):
+  ```bash
+  curl -s -H "Authorization: Bearer $CLOUDFLARE_WORKERS_TOKEN" \
+    "https://api.cloudflare.com/client/v4/user/tokens/verify"
+  ```
+  esperado: `"success": true` e `result.id` começando com `2f71911b`. O secret do GitHub não pode ser lido de volta: para conferir o do CI, rodar o mesmo `curl` num step temporário de workflow (imprime só o `result.id`) ou regravar o secret com o valor do `.env` (`gh secret set CLOUDFLARE_WORKERS_TOKEN`).
+- **Onde atualizar ao rotacionar:** Doppler (e `npm run sync-env` em cada máquina) **e** `gh secret set CLOUDFLARE_WORKERS_TOKEN` no repo. Atualizar só um dos dois é a divergência do incidente acima.
+- **Não confundir com `CLOUDFLARE_API_TOKEN`** (seção acima): aquele é o token de Workers AI da geração de imagens, outro token.
+
 ### Beehiiv MCP OAuth
 
 - **Para que serve:** survey audience refresh (`/diaria-atualiza-audiencia`). Nota: dedup de edições passadas (Stage 0) hoje usa `scripts/refresh-dedup.ts` via Beehiiv REST API (`BEEHIIV_API_KEY`), não o MCP — a credencial MCP só é necessária pra audience refresh.
@@ -263,4 +280,5 @@ Se algum destes for commitado por acidente: `git rm --cached <arquivo>`, sanitiz
 ```
 - 2026-04-XX — FB Page token (long-lived) — gerado via Graph API Explorer
 - 2026-04-XX — Google OAuth — re-consent após install em nova máquina
+- 2026-11-04 — CLOUDFLARE_WORKERS_TOKEN (secret do GitHub) — trocado pelo valor do .env/Doppler ("Edit Cloudflare Workers", 2f71911b…), #12119
 ```

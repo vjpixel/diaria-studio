@@ -134,7 +134,9 @@ import {
   type CircleStackEdition,
   type CircleStackItem,
   type CircleStackSelection,
+  type CircleStackVideo,
 } from "./lib/circle-stack-render.ts";
+import { resolveTopEditionVideo, type TopEditionVideo } from "./lib/top-edition-video.ts"; // #12081
 import {
   stackTitleTranslationCandidates,
   translateCircleStackTitles,
@@ -453,6 +455,13 @@ export function parseStoredCircleStackSelection(
   if (!Array.isArray(sel.contentWindow)) return fail("campo contentWindow ausente");
   if (!Array.isArray(sel.weeklyEditions)) return fail("campo weeklyEditions ausente");
   if (sel.opening !== undefined && typeof sel.opening !== "string") return fail("campo opening não é texto");
+  // #12081: vídeo mais assistido da semana (opcional, editável à mão).
+  if (sel.video !== undefined) {
+    const v = sel.video as Record<string, unknown> | null;
+    if (!v || typeof v !== "object" || typeof v.title !== "string" || typeof v.url !== "string" || typeof v.editionDate !== "string") {
+      return fail("campo video precisa de title, url e editionDate (texto) — ou apague o campo");
+    }
+  }
   for (const section of ITEM_SECTIONS) {
     const items = sel[section];
     if (!Array.isArray(items)) return fail(`seção ${section} ausente (esperada uma lista)`);
@@ -822,6 +831,19 @@ export interface RunCircleStackDeps {
   send?: (webhookUrl: string, key: string, payload: StackPostPayload) => Promise<void>;
   /** `gh` injetável (fechamento de avisos); default `defaultAlarmGhRun`. */
   ghRun?: GhRunFn;
+  /**
+   * #12081: vídeo mais visto entre as edições da semana; default
+   * `resolveTopEditionVideo` (YouTube Data API, fail-soft → `null`).
+   */
+  topVideo?: (contentWindow: readonly string[], dataRoot: string) => Promise<TopEditionVideo | null>;
+}
+
+/** #12081: campo `video` da seleção a partir do mais visto da semana. */
+export function circleStackVideoField(top: TopEditionVideo | null, fallbackTitleByDate: ReadonlyMap<string, string>): CircleStackVideo | null {
+  if (!top) return null;
+  const title = (top.title ?? "").trim() || (fallbackTitleByDate.get(top.aammdd) ?? "").trim();
+  if (!title) return null;
+  return { title, url: top.videoUrl, editionDate: top.aammdd, views: top.views };
 }
 
 /** CLI inteira com dependências injetáveis (#11005: teste de integração do caminho de `main()`). */
@@ -899,6 +921,23 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
     }
   } else {
     let built = buildCircleStackSelection(dataRoot, publishMonday, cfg.interests);
+    // #12081: vídeo mais assistido da semana, medido agora (o editor revisa na prévia).
+    const topVideoFn =
+      deps.topVideo ??
+      ((days: readonly string[], root: string) =>
+        resolveTopEditionVideo({
+          aammdds: days,
+          dirFor: (d) => resolveEditionDir(join(root, "data", "editions"), d),
+          env: deps.env,
+        }));
+    const videoField = circleStackVideoField(
+      await topVideoFn(built.contentWindow, dataRoot),
+      new Map(built.weeklyEditions.map((e) => [e.editionDate, e.destaques[0] ?? ""])),
+    );
+    if (videoField) {
+      built = { ...built, video: videoField };
+      console.log(`Vídeo da semana: ${videoField.title} (${videoField.views ?? "?"} views, edição ${videoField.editionDate})`);
+    }
     // Títulos sem sinal de português montados agora ainda não passaram pela revisão
     // do editor — traduzidos ou não (tradução falha, --no-translate).
     pendingReviewThisRun = stackTitleTranslationCandidates(built).length;

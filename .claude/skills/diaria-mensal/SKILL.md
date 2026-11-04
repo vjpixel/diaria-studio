@@ -201,6 +201,14 @@ Disparar `writer-monthly` via `Agent`:
 
 O agente escreve `draft.md` + gera `_internal/02-d1-prompt.md` (prompt Van Gogh impasto do D1 para Etapa 3).
 
+### 2a-3. Vídeo do mês (#12081)
+
+```bash
+npx tsx scripts/monthly-video-do-mes.ts --cycle $CYCLE
+```
+
+Mede na YouTube Data API as views dos horizontais do D1 das edições do mês e põe "O vídeo mais assistido do mês no canal da diar.ia.br foi [título](link)." como 1º parágrafo do `**PARA ENCERRAR**` do `draft.md` (registro em `_internal/video-do-mes.json`). Idempotente: re-rodar troca a linha se o mais visto mudou. Fail-soft (exit 0): sem credencial do YouTube ou sem vídeo no mês, o draft fica sem a linha. O editor pode editar ou apagar a linha no gate da Etapa 4.
+
 ### 2b. Lint de chars
 
 ```bash
