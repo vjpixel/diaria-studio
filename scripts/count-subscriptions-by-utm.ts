@@ -121,13 +121,6 @@ export function normalizeUtmValue(raw: unknown): string {
 }
 
 /**
- * Nome histórico de `normalizeUtmValue` (#2457), mantido para os callers que
- * normalizam `utm_source`. Para medium/campaign, usar `normalizeUtmValue`
- * (#12116): a regra é a mesma para qualquer parâmetro UTM.
- */
-export const normalizeUtmSource = normalizeUtmValue;
-
-/**
  * Agrega um array de subscription objects por utm_source normalizado.
  *
  * @pure testável sem I/O
@@ -138,7 +131,7 @@ export const normalizeUtmSource = normalizeUtmValue;
 export function aggregateByUtmSource(subs: Array<Record<string, unknown>>): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const sub of subs) {
-    const key = normalizeUtmSource(sub["utm_source"]);
+    const key = normalizeUtmValue(sub["utm_source"]);
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return counts;
@@ -170,7 +163,7 @@ export function aggregateByUtmSourceMedium(
 ): Record<string, Record<string, number>> {
   const out: Record<string, Record<string, number>> = {};
   for (const sub of subs) {
-    const source = normalizeUtmSource(sub["utm_source"]);
+    const source = normalizeUtmValue(sub["utm_source"]);
     const medium = normalizeUtmValue(sub["utm_medium"]);
     const bucket = (out[source] ??= {});
     bucket[medium] = (bucket[medium] ?? 0) + 1;
@@ -426,7 +419,7 @@ if (isMainModule(import.meta.url)) {
 
       const counts = filterSource
         ? Object.fromEntries(
-            Object.entries(result.counts).filter(([k]) => k === normalizeUtmSource(filterSource)),
+            Object.entries(result.counts).filter(([k]) => k === normalizeUtmValue(filterSource)),
           )
         : result.counts;
 

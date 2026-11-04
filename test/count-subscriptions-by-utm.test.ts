@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
-  normalizeUtmSource,
+  normalizeUtmValue,
   aggregateByUtmSource,
   formatCountsTable,
   fetchAndAggregate,
@@ -24,37 +24,37 @@ import {
 } from "../scripts/count-subscriptions-by-utm.ts";
 
 // ---------------------------------------------------------------------------
-// normalizeUtmSource
+// normalizeUtmValue
 // ---------------------------------------------------------------------------
 
-describe("normalizeUtmSource (#2457)", () => {
+describe("normalizeUtmValue (#2457)", () => {
   it("retorna __none__ para null", () => {
-    assert.equal(normalizeUtmSource(null), "__none__");
+    assert.equal(normalizeUtmValue(null), "__none__");
   });
 
   it("retorna __none__ para undefined", () => {
-    assert.equal(normalizeUtmSource(undefined), "__none__");
+    assert.equal(normalizeUtmValue(undefined), "__none__");
   });
 
   it("retorna __none__ para string vazia", () => {
-    assert.equal(normalizeUtmSource(""), "__none__");
+    assert.equal(normalizeUtmValue(""), "__none__");
   });
 
   it("retorna __none__ para string só-espaço", () => {
-    assert.equal(normalizeUtmSource("   "), "__none__");
+    assert.equal(normalizeUtmValue("   "), "__none__");
   });
 
   it("lowercaseia mensal-brevo", () => {
-    assert.equal(normalizeUtmSource("Mensal-Brevo"), "mensal-brevo");
+    assert.equal(normalizeUtmValue("Mensal-Brevo"), "mensal-brevo");
   });
 
   it("trimeia espaços extras", () => {
-    assert.equal(normalizeUtmSource("  mensal-brevo  "), "mensal-brevo");
+    assert.equal(normalizeUtmValue("  mensal-brevo  "), "mensal-brevo");
   });
 
   it("preserva o valor exato lowercase", () => {
-    assert.equal(normalizeUtmSource("twitter"), "twitter");
-    assert.equal(normalizeUtmSource("organic"), "organic");
+    assert.equal(normalizeUtmValue("twitter"), "twitter");
+    assert.equal(normalizeUtmValue("organic"), "organic");
   });
 });
 

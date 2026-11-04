@@ -2,15 +2,15 @@
  * test/studio-utms-medium-breakdown-12116.test.ts (#12116) — cobertura da
  * regra do corte por utm_medium da página /utms (`mediumBreakdownText`,
  * `scripts/studio-ui/public/utms-sort.js`), que até o #12116 vivia sem teste
- * dentro de `utms.js` (que toca `document`). Também trava o alias
- * `normalizeUtmValue` = `normalizeUtmSource`.
+ * dentro de `utms.js` (que toca `document`). Também cobre
+ * `normalizeUtmValue` aplicado a utm_medium.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mediumBreakdownText } from "../scripts/studio-ui/public/utms-sort.js";
-import { normalizeUtmSource, normalizeUtmValue } from "../scripts/count-subscriptions-by-utm.ts";
+import { normalizeUtmValue } from "../scripts/count-subscriptions-by-utm.ts";
 
-const tpl = (subscribersByMedium: unknown) => ({ medium: "{medium}", subscribersByMedium });
+const tpl = (subscribersByMedium: Record<string, number> | null) => ({ medium: "{medium}", subscribersByMedium });
 
 describe("mediumBreakdownText (#12116)", () => {
   it("lista os mediums em ordem decrescente e 'sem medium' no fim", () => {
@@ -49,8 +49,7 @@ describe("mediumBreakdownText (#12116)", () => {
 });
 
 describe("normalizeUtmValue (#12116)", () => {
-  it("é o mesmo normalizador de normalizeUtmSource", () => {
-    assert.equal(normalizeUtmSource, normalizeUtmValue);
+  it("normaliza utm_medium como utm_source (trim + lowercase, __none__ pra vazio)", () => {
     assert.equal(normalizeUtmValue("  TOPO "), "topo");
     assert.equal(normalizeUtmValue(""), "__none__");
     assert.equal(normalizeUtmValue(null), "__none__");
