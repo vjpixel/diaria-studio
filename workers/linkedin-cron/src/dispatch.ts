@@ -1,6 +1,7 @@
 import type { Env, QueueEntry, WebhookTarget, QueueAction, ReelsContainerRef } from "./index";
 import { FETCH_TIMEOUT_MS, CAROUSEL_MAX_ITEMS } from "./index";
 import { isUnsupportedCommentTarget } from "./guards";
+import { defaultLinkedInApiVersion } from "./linkedin-api-version";
 
 // ── Dispatch compartilhado entre fire.ts (cron) e durable-object.ts (alarm) ──
 //
@@ -144,18 +145,20 @@ export function resolveThreadsCreds(env: Env): ThreadsCreds | undefined {
 
 /**
  * Resolve o `Env` do Worker pras credenciais da API direta do LinkedIn
- * (#8052), com default de apiVersion. Retorna `undefined` se qualquer
+ * (#8052), com default de apiVersion (dinâmico, #12171). Retorna `undefined` se qualquer
  * credencial obrigatória estiver ausente — mesmo padrão de
  * resolveInstagramCreds/resolveThreadsCreds acima. Ausência não afeta o
  * caminho single-image (webhook Make, `fireLinkedIn`) — só desabilita o
  * carrossel, que cai em `dlq` com motivo claro (ver `fireQueueEntry`).
  */
-export function resolveLinkedInCreds(env: Env): LinkedInCreds | undefined {
+export function resolveLinkedInCreds(env: Env, now: Date = new Date()): LinkedInCreds | undefined {
   if (!env.LINKEDIN_ACCESS_TOKEN || !env.LINKEDIN_AUTHOR_URN) return undefined;
   return {
     accessToken: env.LINKEDIN_ACCESS_TOKEN,
     authorUrn: env.LINKEDIN_AUTHOR_URN,
-    apiVersion: env.LINKEDIN_API_VERSION || "202401",
+    // #12171: default dinâmico (2 meses atrás), nunca uma versão pinada que
+    // sai da janela de suporte. LINKEDIN_API_VERSION só sobrescreve.
+    apiVersion: env.LINKEDIN_API_VERSION?.trim() || defaultLinkedInApiVersion(now),
   };
 }
 

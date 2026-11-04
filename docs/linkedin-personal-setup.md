@@ -14,7 +14,7 @@ horário da página. Sem o setup (ou com o token vencido), nada quebra: o Stage
 6 volta a mostrar o lembrete manual.
 
 Decisão do editor (07/10/2026): **app LinkedIn separado**. O app da página
-(`77tIvy0623oq84`, app 264772062) tem a Community Management API, que a
+(`77tlvy0623oq84`, app 264772062) tem a Community Management API, que a
 LinkedIn exige como produto único do app. Não adicionar nada nele. Estado
 conferido no Developer Portal em 03/11/2026 (#8055): a API foi aprovada e
 aparece em **Added products**, no **Development Tier**; o upgrade para o
