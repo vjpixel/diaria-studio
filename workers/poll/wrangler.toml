@@ -18,9 +18,9 @@ id = "72784da4ae39444481eb422ebac357c6"
 # #11412 (fatia 1): binding do bucket R2 de mídia (`diaria-shorts`, público em
 # https://media.diar.ia.br) — fallback de `/img/{key}` para as imagens novas
 # da edição, que sobem em `img/{AAMMDD}/…` quando a flag
-# `platform.config.json → public_images_r2.enabled` liga. ATIVO desde 04/11/2026 (/diaria-develop 261103d):
-# o deploy (.github/workflows/deploy-poll.yml) foi conferido com o binding antes do
-# merge. O código trata o binding ausente (`env.MEDIA` opcional), mas um
+# `platform.config.json → public_images_r2.enabled` liga. Binding ATIVO desde 04/11/2026 (/diaria-develop 261103d); a flag segue
+# desligada até a fatia seguinte. O deploy (.github/workflows/deploy-poll.yml) foi
+# conferido com o binding antes do merge (run 41766583019). O código trata o binding ausente (`env.MEDIA` opcional), mas um
 # binding que o deploy não resolva faz o deploy falhar, e o jogo É IA? fica
 # preso na versão anterior. Mexer aqui junto com o worker irmão
 # (workers/site/wrangler.toml). Passo a passo: scripts/lib/public-images-r2.ts.
