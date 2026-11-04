@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { prepareSocialSignup, signupTestUrl, signupTestWindow } from "../scripts/lib/social-signup-preparation.ts";
-import { injectChannelLine } from "../scripts/lib/social-cta-lines.ts";
+import { CHANNEL_ENGAGEMENT_LINES, injectChannelLine } from "../scripts/lib/social-cta-lines.ts";
 import { UTM_EMITTERS, findUtmEmitterCollisions } from "../scripts/lib/shared/utm-registry.ts";
 
 const body = "Primeiro parágrafo.\n\nSegundo parágrafo.\n\nTerceiro parágrafo.\n\n#IA #Brasil";
@@ -34,6 +34,24 @@ test("D1 recebe assinatura nas duas redes; D2/D3 e os três parágrafos ficam in
   assert.equal(plan.preparationOnly, true);
 });
 
+test("D1 preserva a linha de engajamento de LinkedIn/Facebook como D2/D3", () => {
+  for (const channel of ["linkedin", "facebook"] as const) {
+    const original = CHANNEL_ENGAGEMENT_LINES[channel];
+    try {
+      CHANNEL_ENGAGEMENT_LINES[channel] = "Compartilhe esta notícia.";
+      const plan = prepareSocialSignup(md, "2026-11-04", "2026-11-04");
+      for (const post of plan.posts) {
+        const text = post.texts[channel];
+        assert.equal(text.split("Compartilhe esta notícia.").length - 1, 1);
+        assert.ok(text.indexOf("Compartilhe esta notícia.") < text.indexOf("#IA #Brasil"));
+      }
+      assert.ok(plan.posts[0].texts[channel].endsWith(`${signupTestUrl(channel)}.`));
+    } finally {
+      CHANNEL_ENGAGEMENT_LINES[channel] = original;
+    }
+  }
+});
+
 test("quatro semanas exatas, fim exclusivo, datas inválidas e posts incompletos recusados", () => {
   assert.deepEqual(signupTestWindow("2026-12-20"), { start: "2026-12-20", endExclusive: "2027-01-17", weeks: 4 });
   prepareSocialSignup(md.replaceAll("\n", "\r\n"), "2026-12-01", "2026-11-04");
@@ -60,7 +78,7 @@ test("URLs por rede têm emissor registrado e não colidem com o CTA histórico 
 test("CLI gera só stdout e mantém a edição sem alterações", () => {
   const dir = mkdtempSync(join(tmpdir(), "signup-12038-"));
   try {
-    const editionDir = join(dir, "data/editions/261104");
+    const editionDir = join(dir, "data/editions/2611/261104");
     mkdirSync(editionDir, { recursive: true });
     const file = join(editionDir, "03-social.md");
     writeFileSync(file, md);

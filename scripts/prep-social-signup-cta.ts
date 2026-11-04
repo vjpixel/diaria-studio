@@ -4,6 +4,7 @@
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { editionDir } from "./lib/edition-paths.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { civilDate, prepareSocialSignup } from "./lib/social-signup-preparation.ts";
 
@@ -19,7 +20,7 @@ if (isMainModule(import.meta.url)) {
     const { values } = parseArgs(process.argv.slice(2));
     if (!values.edition || !values.start) throw new Error("Informe --edition AAMMDD e --start AAAA-MM-DD (início real do teste).");
     const date = editionCivilDate(values.edition);
-    const path = resolve("data", "editions", values.edition, "03-social.md");
+    const path = resolve(editionDir(values.edition), "03-social.md");
     const prepared = prepareSocialSignup(readFileSync(path, "utf8"), date, values.start);
     process.stdout.write(JSON.stringify(prepared, null, 2) + "\n");
   } catch (error) {

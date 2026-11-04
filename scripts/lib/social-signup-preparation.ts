@@ -1,6 +1,6 @@
 /** #12038: artefato de revisão local; nenhum publicador consome este arquivo. */
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./extract-section.ts";
-import { FACEBOOK_CTA_LINE, buildFacebookCtaUrl, injectChannelLine, splitBodyAndTags, type SocialChannel } from "./social-cta-lines.ts";
+import { CHANNEL_ENGAGEMENT_LINES, FACEBOOK_CTA_LINE, buildFacebookCtaUrl, injectChannelLine, splitBodyAndTags, type SocialChannel } from "./social-cta-lines.ts";
 import { toSocialPostText } from "./social-post-text.ts";
 import { SOCIAL_SIGNUP_TEST_UTM } from "./shared/utm-registry.ts";
 
@@ -49,7 +49,7 @@ export function prepareSocialSignup(socialMd: string, editionDate: string, start
     const texts = Object.fromEntries((["linkedin", "facebook", "instagram"] as const).map((channel) => {
       // D1 termina com a assinatura, após as tags; D2/D3 seguem a preparação atual.
       const text = id === "d1" && channel !== "instagram"
-        ? [body, tags, signupTestLine(channel)].filter(Boolean).join("\n\n")
+        ? [body, CHANNEL_ENGAGEMENT_LINES[channel], tags, signupTestLine(channel)].filter(Boolean).join("\n\n")
         : injectChannelLine(raw, channel);
       return [channel, toSocialPostText(text)];
     }));
