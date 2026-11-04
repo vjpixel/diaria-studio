@@ -246,6 +246,7 @@ import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/face
 import {
   buildReelsCaption,
   buildYouTubeShortMetadata,
+  resolveShortHorizontalTitle,
   DIARIA_YOUTUBE_CHANNEL_URL,
   firstSentence,
   facebookDestinationId,
@@ -317,7 +318,9 @@ import {
   updateScheduledVideo,
   uploadYouTubeVideo,
   type YouTubeUploadDeps,
+  YOUTUBE_PUBLISHED_FILE,
 } from "./lib/diaria/youtube-upload.ts";
+import { isNoVideoEdition } from "./lib/diaria/d1-no-video.ts";
 import { resolveYouTubeState } from "./lib/publish-state.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS, downloadDriveFileById } from "./lib/drive-download.ts";
@@ -754,6 +757,12 @@ export interface ShortsPlanInput {
    * (com aviso no null, se o vídeo existe).
    */
   videoDurationSeconds?: number | null;
+  /**
+   * #12191: o horizontal da edição, para a descrição do Short citá-lo por
+   * título (`readHorizontalVideoForShort`). Ausente = sem registro e sem
+   * marcador de "sem vídeo": cita o título derivado do D1. Ignorado no corte.
+   */
+  horizontalVideo?: { recordTitle: string | null; noVideo: boolean };
   editionUrl?: string;
   /** De onde veio o `editionUrl` (só pra premissa). */
   editionUrlSource?: string;
@@ -898,6 +907,26 @@ export function corteTimerStaleWarning(delegated: readonly string[], hb: CorteTi
   );
 }
 
+/**
+ * #12191: o horizontal da edição para a citação na descrição do Short. Lê o
+ * título do registro do upload (`_internal/05-youtube-published.json`) e o
+ * marcador de edição sem vídeo. Fail-soft: registro ausente ou ilegível vira
+ * `recordTitle: null` (a citação cai no título derivado do D1).
+ */
+export function readHorizontalVideoForShort(editionDir: string): { recordTitle: string | null; noVideo: boolean } {
+  const noVideo = isNoVideoEdition(editionDir);
+  const recordPath = join(editionDir, YOUTUBE_PUBLISHED_FILE);
+  if (!existsSync(recordPath)) return { recordTitle: null, noVideo };
+  try {
+    const raw = JSON.parse(readFileSync(recordPath, "utf8")) as { title?: unknown } | null;
+    const title = raw && typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : null;
+    return { recordTitle: title, noVideo };
+  } catch {
+    console.error(`[aviso] ${recordPath} ilegível — o Short cita o título do horizontal derivado do D1 (#12191)`);
+    return { recordTitle: null, noVideo };
+  }
+}
+
 /** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */
 export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const premises: string[] = [];
@@ -922,7 +951,22 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     premises.push(`link da edição: ${editionUrl} (derivado do título do D1 — mesma regra do Stage 5, #7420)`);
   }
   const d1In = { title: d1.title, body: d1.body };
-  const youtube = buildYouTubeShortMetadata({ d1: d1In });
+  // #12191: o Short cita o horizontal do dia por título (só texto, #10831/#11617). O corte não tem horizontal.
+  const horizontalTitle = corte
+    ? null
+    : resolveShortHorizontalTitle({
+        d1Title: d1.title,
+        recordTitle: input.horizontalVideo?.recordTitle ?? null,
+        noVideo: input.horizontalVideo?.noVideo ?? false,
+      });
+  if (!corte) {
+    premises.push(
+      horizontalTitle
+        ? `descrição do Short cita o horizontal: “${horizontalTitle}” (${input.horizontalVideo?.recordTitle?.trim() ? "registro do upload" : "derivado do D1, sem registro do upload"})`
+        : "descrição do Short sem citação do horizontal (edição marcada sem vídeo)",
+    );
+  }
+  const youtube = buildYouTubeShortMetadata({ d1: d1In, horizontalTitle });
 
   // #10831: o vertical tem horário próprio (nunca as 06:00 do horizontal).
   const time = corte ? corteShortTime(corte.hhmm) : resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd);
@@ -4251,7 +4295,10 @@ async function runUpdateScheduled(input: {
   let known: Set<string>;
   try {
     known = knownDestinationIds(loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))));
-    items = planScheduledUpdates({ entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, only: input.only, known });
+    // #12191: a troca da descrição do Short mantém a citação do horizontal (o corte não tem horizontal).
+    const horizontal = corte ? null : readHorizontalVideoForShort(dir);
+    const horizontalTitle = horizontal ? resolveShortHorizontalTitle({ d1Title: d1.title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }) : null;
+    items = planScheduledUpdates({ entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known });
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
     return 2;
@@ -4599,7 +4646,7 @@ async function main(): Promise<number> {
       coverBufferOffsetMs: bufferOffsetMs,
       reviewedMd: corte ? "" : readFileSync(reviewedPath, "utf8"),
       // #11964: o filho do timer (--require-corte-authorization) é o único que publica os destinos do timer na janela.
-      ...(corte ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook, timerRun: requireCorteAuth } } : {}),
+      ...(corte ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook, timerRun: requireCorteAuth } } : { horizontalVideo: readHorizontalVideoForShort(dir) }),
       // #11911: pasta fora de data/editions/{AAMM}/{AAMMDD} — os timers do 300 não a enxergam.
       ...(editionDirOverride !== undefined ? { editionDirOverride } : {}),
       ...(unwatchedEditionWarning !== undefined ? { unwatchedEditionWarning } : {}),

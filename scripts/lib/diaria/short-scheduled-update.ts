@@ -44,6 +44,8 @@ export function planScheduledUpdates(input: {
   d1: ShortD1Input;
   now: Date;
   coverPresent: boolean;
+  /** #12191: título do horizontal citado na descrição do Short (`resolveShortHorizontalTitle`); ausente/null = sem citação. */
+  horizontalTitle?: string | null;
   only?: readonly string[] | null;
   /**
    * Ids de destino que o config conhece (`knownDestinationIds`). Com ele, um
@@ -74,7 +76,7 @@ export function planScheduledUpdates(input: {
     }
     const scheduledAt = e.scheduled_at!;
     if (e.destination === "youtube_shorts") {
-      const meta = buildYouTubeShortMetadata({ d1: input.d1 });
+      const meta = buildYouTubeShortMetadata({ d1: input.d1, horizontalTitle: input.horizontalTitle });
       out.push({ destination: e.destination, action: "update_youtube", videoId: e.id, title: meta.title, description: meta.description, scheduledAt, cover: input.coverPresent });
     } else if (e.destination.startsWith("facebook:")) {
       out.push({
