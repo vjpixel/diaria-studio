@@ -27,6 +27,7 @@
  */
 import { createHash } from "node:crypto";
 import type { CircleStackPublishedLike } from "./publish-state.ts";
+import { parseAAMMDD } from "./weekly-linkedin-cycle.ts";
 
 export const CIRCLE_STACK_APPROVAL_FILE = "circle-stack-approval.json";
 export const CIRCLE_STACK_RADAR_URL = "https://plataforma.stack.com.br/c/radar-de-noticias-stack";
@@ -140,6 +141,21 @@ export function isCircleStackScheduledRunPast(now: Date, publishMonday: string):
   const { aammdd: today, hour } = circleStackWallClock(now);
   if (today !== publishMonday) return today > publishMonday;
   return hour >= CIRCLE_STACK_PUBLISH_HOUR;
+}
+
+/**
+ * Pure (#12110): o dia de `now` em BRT como `Date` à meia-noite LOCAL. Os
+ * helpers de segunda de `weekly-linkedin-cycle.ts` (`nextMondayAAMMDD`,
+ * `currentOrPreviousMondayAAMMDD`) leem o dia pelo relógio local; passar este
+ * `Date` a eles faz a conta de "qual segunda" sair no fuso do timer. Sem isso,
+ * no `300` (Etc/UTC) a segunda 21:00-23:59 BRT já era terça, e o catch-up do
+ * timer virava "fora da segunda de publicação".
+ */
+export function circleStackBrtDay(now: Date): Date {
+  const { aammdd } = circleStackWallClock(now);
+  const day = parseAAMMDD(aammdd);
+  if (!day) throw new Error(`circleStackBrtDay: data BRT inválida ${aammdd}`);
+  return day;
 }
 
 export type CircleStackScheduledOutcome =
