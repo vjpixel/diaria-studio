@@ -142,9 +142,12 @@ import {
   type KitEngagementCache,
 } from "./lib/kit-engagement-cache.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export { DEFAULT_KIT_SEM_ABERTURA_LOG_PATH };
+/** #10701 — `message` da entrada do run-log quando o teto de reposições é atingido. */
+export const KIT_SEM_ABERTURA_CAP_HIT_RUN_LOG_MESSAGE = "kit_sem_abertura_backlog_replacement_cap_hit";
 const DEFAULT_QUEUE_CAP = 300;
 
 export interface KitSemAberturaPlatformConfig {
@@ -206,6 +209,14 @@ export interface KitSemAberturaDeps {
    * em que o teto é atingido sem montar mil contatos.
    */
   maxBacklogReplacements?: number;
+  /**
+   * #10701 — registro DURÁVEL do teto atingido (`data/run-log.jsonl`, warn
+   * `kit_sem_abertura_backlog_replacement_cap_hit`). O aviso antes ia só pro
+   * stderr, e a condição de "registrar os pulados" (2ª opção da #10664) não
+   * tinha onde ser conferida depois. Ausente ⇒ só o aviso no log. Chamado só
+   * com `--push` (dry-run não é rodada real). Erro é fail-soft.
+   */
+  recordBacklogReplacementCapHit?: (details: { maxReplacements: number; replacements: number; deferred: number; skippedBlacklisted: number }) => void;
 }
 
 export interface KitSemAberturaRunResult {
@@ -656,6 +667,13 @@ export async function runKitSemAberturaSync(
       `AVISO: teto de ${maxReplacements} reposições do backlog atingido nesta rodada — ` +
         "vagas ficaram sem preencher; se repetir, a cabeça do backlog está dominada por pulados (#10664).",
     );
+    if (push && deps.recordBacklogReplacementCapHit) {
+      try {
+        deps.recordBacklogReplacementCapHit({ maxReplacements, replacements, deferred, skippedBlacklisted });
+      } catch (e) {
+        log(`aviso: teto de reposições não registrado no run-log (${(e as Error).message}).`);
+      }
+    }
   }
   const counts = {
     selected: selection.selected.length,
@@ -963,6 +981,12 @@ async function main(): Promise<void> {
     tagKit: (tagId, id) => tagAndConfirm(tagId, id, kitPacer),
     untagKit: (tagId, id) => untagAndConfirm(tagId, id, kitPacer),
     appendLog: (line) => appendFileWithRetry(DEFAULT_KIT_SEM_ABERTURA_LOG_PATH, line),
+    recordBacklogReplacementCapHit: (details) => {
+      logEvent(
+        { edition: null, stage: null, agent: "sync-kit-sem-abertura-to-brevo", level: "warn", message: KIT_SEM_ABERTURA_CAP_HIT_RUN_LOG_MESSAGE, details },
+        ROOT,
+      );
+    },
   });
   log(result.summary);
   console.log(JSON.stringify(result));
