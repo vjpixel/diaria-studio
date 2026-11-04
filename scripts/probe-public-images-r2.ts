@@ -1,6 +1,8 @@
 /**
  * probe-public-images-r2.ts (#11412, passos 2 e 3 da ativação)
  *
+ * @one-off-validity: expira=2027-02-04 pergunta="o caminho R2 das imagens públicas (env, upload e GET nos dois Workers) está pronto para ligar public_images_r2.enabled? (#11412)"
+ *
  * Confere, antes de ligar `platform.config.json → public_images_r2.enabled`,
  * que o caminho R2 das imagens públicas funciona de ponta a ponta. A ordem de
  * ativação vive no docstring de `scripts/lib/public-images-r2.ts`; este script
