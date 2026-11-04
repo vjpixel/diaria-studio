@@ -8,11 +8,22 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Word } from "../scripts/lib/diaria/video-montage.ts";
-import { exportTranscriptCacheKey, fromFinalPlan, main, srtFromExport, srtFromExportFileName } from "../scripts/video-montagem.ts";
+import {
+  WHISPER_MODEL,
+  applyYoutubeSrtCopy,
+  exportTranscriptAction,
+  exportTranscriptCacheKey,
+  fromFinalPlan,
+  main,
+  srtFromExport,
+  srtFromExportFileName,
+  youtubeSrtCopyDecision,
+} from "../scripts/video-montagem.ts";
 
 const say = (text: string, t0: number, dur = 0.3): Word[] =>
   text.split(" ").map((w, i) => ({ start: +(t0 + i * dur).toFixed(3), end: +(t0 + (i + 1) * dur).toFixed(3), text: w }));
@@ -68,6 +79,61 @@ describe("#12078: cache da transcrição do export por identidade do arquivo", (
     assert.notEqual(a, exportTranscriptCacheKey({ path: "G:/261103/Final/x.mp4", size: 11, mtimeMs: 1 }));
     assert.notEqual(a, exportTranscriptCacheKey({ path: "G:/261103/Final/x.mp4", size: 10, mtimeMs: 2 }));
   });
+
+  it("modelo ou prompt do Whisper diferente invalida a chave", () => {
+    const file = { path: "x.mp4", size: 10, mtimeMs: 1 };
+    const a = exportTranscriptCacheKey(file, { model: WHISPER_MODEL, prompt: "Mistral, Opus" });
+    assert.notEqual(a, exportTranscriptCacheKey(file, { model: WHISPER_MODEL, prompt: "Mistral, Opus, Gemini" }));
+    assert.notEqual(a, exportTranscriptCacheKey(file, { model: "large-v3", prompt: "Mistral, Opus" }));
+  });
+
+  it("exportTranscriptAction: reaproveita só com transcript e chave iguais; --retranscribe sempre refaz", () => {
+    const base = { transcriptExists: true, storedKey: "K\n", currentKey: "K", retranscribe: false };
+    assert.equal(exportTranscriptAction(base), "reuse");
+    assert.equal(exportTranscriptAction({ ...base, retranscribe: true }), "transcribe");
+    assert.equal(exportTranscriptAction({ ...base, storedKey: "OUTRA" }), "transcribe");
+    assert.equal(exportTranscriptAction({ ...base, storedKey: null }), "transcribe", "chave apagada (falha no meio) = refaz");
+    assert.equal(exportTranscriptAction({ ...base, transcriptExists: false }), "transcribe");
+  });
+});
+
+describe("#12078: cópia diaria-comentada-{AAMMDD}.srt (applyYoutubeSrtCopy)", () => {
+  const withPaths = (fn: (p: { path: string; recordPath: string }) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), "vm-12078-copy-"));
+    try {
+      fn({ path: join(dir, "edicao", "diaria-comentada-261103.srt"), recordPath: join(dir, "state", "youtube-srt.json") });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("regressão: srt da montagem depois do --from-final NÃO troca a cópia do export; --force troca", () =>
+    withPaths((p) => {
+      assert.equal(applyYoutubeSrtCopy({ ...p, srt: "EXPORT", force: false, origin: "Diaria comentada_Youtube_261103.mp4" }), "write");
+      assert.equal(JSON.parse(readFileSync(p.recordPath, "utf8")).fromExport, "Diaria comentada_Youtube_261103.mp4");
+      assert.equal(applyYoutubeSrtCopy({ ...p, srt: "MONTAGEM", force: false }), "keep-from-export");
+      assert.equal(readFileSync(p.path, "utf8"), "EXPORT");
+      assert.equal(applyYoutubeSrtCopy({ ...p, srt: "MONTAGEM", force: true }), "write");
+      assert.equal(readFileSync(p.path, "utf8"), "MONTAGEM");
+      assert.equal(JSON.parse(readFileSync(p.recordPath, "utf8")).fromExport, undefined, "o registro deixa de marcar export");
+    }));
+
+  it("--from-final sobre --from-final regrava; cópia editada à mão fica (o chamador sai com erro)", () =>
+    withPaths((p) => {
+      applyYoutubeSrtCopy({ ...p, srt: "EXPORT 1", force: false, origin: "a.mp4" });
+      assert.equal(applyYoutubeSrtCopy({ ...p, srt: "EXPORT 2", force: false, origin: "a.mp4" }), "write");
+      writeFileSync(p.path, "EDITADA À MÃO");
+      assert.equal(applyYoutubeSrtCopy({ ...p, srt: "EXPORT 3", force: false, origin: "a.mp4" }), "keep-edited");
+      assert.equal(readFileSync(p.path, "utf8"), "EDITADA À MÃO");
+    }));
+
+  it("youtubeSrtCopyDecision: keep-from-export só sem origem e com o registro do export", () => {
+    const existing = "x";
+    const recordedSha256 = createHash("sha256").update(existing).digest("hex");
+    assert.equal(youtubeSrtCopyDecision({ existing, recordedSha256, force: false, recordedFromExport: true }), "keep-from-export");
+    assert.equal(youtubeSrtCopyDecision({ existing, recordedSha256, force: false, recordedFromExport: true, fromExport: true }), "write");
+    assert.equal(youtubeSrtCopyDecision({ existing, recordedSha256, force: false }), "write", "sem registro do export: como antes (#11957)");
+  });
 });
 
 describe("#12078: CLI srt --from-final", () => {
@@ -102,6 +168,22 @@ describe("#12078: CLI srt --from-final", () => {
 
   it("export inexistente: erro com o caminho", () =>
     withDir(async (dir) => {
+      writeFileSync(join(dir, "plan.json"), JSON.stringify({ hash: "x", plans: [{ spec: youtube, script: "oi" }], source: { fps: 30 } }));
       await assert.rejects(main([...base(dir), "--from-final", join(dir, "nao-existe.mp4")]), /export não encontrado/);
+    }));
+
+  it("plan.json malformado (sem a lista plans): erro claro", () =>
+    withDir(async (dir) => {
+      const exp = join(dir, "x.mp4");
+      writeFileSync(exp, "");
+      writeFileSync(join(dir, "plan.json"), JSON.stringify({ hash: "x" }));
+      await assert.rejects(main([...base(dir), "--from-final", exp]), /plan\.json malformado/);
+    }));
+
+  it("--seq e o plano são validados antes de procurar o export (export ausente + plano sem horizontal = erro do plano)", () =>
+    withDir(async (dir) => {
+      writeFileSync(join(dir, "plan.json"), JSON.stringify({ hash: "x", plans: [{ spec: vertical, script: "oi" }], source: { fps: 30 } }));
+      await assert.rejects(main([...base(dir), "--from-final", "Diaria comentada_Youtube_261103.mp4"]), /plan\.json sem a sequência youtube/);
+      await assert.rejects(main([...base(dir), "--seq", "outras-redes", "--from-final", "x.mp4"]), /só gera a legenda do horizontal/);
     }));
 });
