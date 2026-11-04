@@ -3,8 +3,6 @@
  *
  * Cobre `checkDestaqueMaxChars` e `--check destaque-max-chars` CLI.
  * Caso real 260508: D2=1409 — passou despercebido porque max era só warning.
- *
- * #11321: janela por posição — D1 1100–1200, D2/D3 900–1000.
  */
 
 import { describe, it } from "node:test";
@@ -64,7 +62,7 @@ describe("checkDestaqueMaxChars (#964) — helper puro", () => {
     assert.ok(r.errors[0].chars > 1000);
   });
 
-  it("ok=false quando D1 acima de 1200 (#11321)", () => {
+  it("ok=false quando D1 acima de 1000 (janela única #6061)", () => {
     const md = [
       makeDestaqueMd(1, "PRODUTO", 1500),
       "---",
@@ -75,10 +73,31 @@ describe("checkDestaqueMaxChars (#964) — helper puro", () => {
     const r = checkDestaqueMaxChars(md);
     assert.equal(r.ok, false);
     assert.equal(r.errors[0].destaque, 1);
-    assert.equal(r.errors[0].max, 1200);
+    assert.equal(r.errors[0].max, 1000);
   });
 
-  it("D1 com ~1160 chars passa (janela 1100–1200); o mesmo corpo em D2/D3 estoura 1000 (#11321)", () => {
+  it("D1 com ~1150 chars é reprovado; D1 com ~950 passa (regressão #12218, desfaz a #11321)", () => {
+    const over = checkDestaqueMaxChars(makeDestaqueMd(1, "PRODUTO", 1130));
+    assert.ok(over.highlights[0].chars > 1000 && over.highlights[0].chars <= 1200, String(over.highlights[0].chars));
+    assert.equal(over.ok, false);
+    assert.equal(over.errors[0].destaque, 1);
+    assert.equal(over.errors[0].max, 1000);
+    const ok = checkDestaqueMaxChars(makeDestaqueMd(1, "PRODUTO", 930));
+    assert.ok(ok.highlights[0].chars >= 900 && ok.highlights[0].chars <= 1000, String(ok.highlights[0].chars));
+    assert.equal(ok.ok, true);
+  });
+
+  it("D1: 1000 chars passa, 1001 falha (boundary, janela única #12218)", () => {
+    const base = checkDestaqueMaxChars(makeDestaqueMd(1, "PRODUTO", 1000)).highlights[0].chars;
+    const atMax = checkDestaqueMaxChars(makeDestaqueMd(1, "PRODUTO", 1000 + (1000 - base)));
+    assert.equal(atMax.highlights[0].chars, 1000);
+    assert.equal(atMax.ok, true);
+    const above = checkDestaqueMaxChars(makeDestaqueMd(1, "PRODUTO", 1000 + (1001 - base)));
+    assert.equal(above.highlights[0].chars, 1001);
+    assert.equal(above.ok, false);
+  });
+
+  it("teto é o mesmo nas 3 posições: o mesmo corpo estoura em D1, D2 e D3 (#12218)", () => {
     const md = [
       makeDestaqueMd(1, "PRODUTO", 1130),
       "---",
@@ -87,22 +106,8 @@ describe("checkDestaqueMaxChars (#964) — helper puro", () => {
       makeDestaqueMd(3, "MERCADO", 1130),
     ].join("\n");
     const r = checkDestaqueMaxChars(md);
-    assert.equal(r.ok, false);
-    assert.deepEqual(r.errors.map((e) => e.destaque).sort(), [2, 3]);
-    assert.ok(r.errors.every((e) => e.max === 1000));
-    const d1 = r.highlights.find((h) => h.destaque === 1);
-    assert.equal(d1?.max, 1200);
-    assert.ok((d1?.chars ?? 0) > 1000 && (d1?.chars ?? 0) <= 1200, String(d1?.chars));
-  });
-
-  it("D1: 1200 chars passa, 1201 falha (boundary, #11321)", () => {
-    const base = checkDestaqueMaxChars(makeDestaqueMd(1, "PRODUTO", 1000)).highlights[0].chars;
-    const atMax = checkDestaqueMaxChars(makeDestaqueMd(1, "PRODUTO", 1000 + (1200 - base)));
-    assert.equal(atMax.highlights[0].chars, 1200);
-    assert.equal(atMax.ok, true);
-    const above = checkDestaqueMaxChars(makeDestaqueMd(1, "PRODUTO", 1000 + (1201 - base)));
-    assert.equal(above.highlights[0].chars, 1201);
-    assert.equal(above.ok, false);
+    assert.deepEqual(r.errors.map((e) => e.destaque).sort(), [1, 2, 3]);
+    assert.ok(r.highlights.every((h) => h.max === 1000));
   });
 
   it("D2 com exatos 1000 chars: passa (boundary)", () => {
@@ -124,8 +129,8 @@ describe("checkDestaqueMaxChars (#964) — helper puro", () => {
 });
 
 describe("DESTAQUE_MAX_CHARS constants", () => {
-  it("D1=1200, D2=D3=1000 — janela por posição (#11321, pedido do editor 27/10/2026)", () => {
-    assert.equal(DESTAQUE_MAX_CHARS[1], 1200);
+  it("D1=D2=D3=1000 — janela única (#6061, pedido do editor 24/08/2026)", () => {
+    assert.equal(DESTAQUE_MAX_CHARS[1], 1000);
     assert.equal(DESTAQUE_MAX_CHARS[2], 1000);
     assert.equal(DESTAQUE_MAX_CHARS[3], 1000);
   });
