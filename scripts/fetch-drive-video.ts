@@ -610,7 +610,7 @@ export async function runFetchDriveVideo(
           out.push(
             ...children
               .filter((f) => f.mimeType !== FOLDER_MIME)
-              .map((f) => ({ ...f, scope: "final-folder" as const, ...(edited ? { editedFolder: true } : {}) })),
+              .map((f) => ({ ...f, scope: "final-folder" as const, folderName: folder.name, ...(edited ? { editedFolder: true } : {}) })),
           );
         }
         return out;
