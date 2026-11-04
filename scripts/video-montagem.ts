@@ -90,6 +90,15 @@
  *       O do horizontal sai também como `diaria-comentada-{AAMMDD}.srt` na pasta
  *       da edição (data/editions), o que o `publish-youtube.ts --upload` envia;
  *       cópia editada à mão depois do último srt fica, salvo --force.
+ *   srt AAMMDD --seq youtube --from-final PATH [--force]
+ *       (#12078) a legenda do horizontal no tempo do EXPORT final do Premiere (respiros, vinheta):
+ *       transcreve o export (o mesmo cache do review-final, por identidade do arquivo; --force
+ *       refaz) e alinha a ele o roteiro do horizontal do plan.json (`forceAlignToScript`, sem os
+ *       cortes da montagem; plan.json defasado só avisa, o export saiu do XML daquele build).
+ *       Grava `{sequência} - legendas do export.srt` no out dir e a cópia
+ *       `diaria-comentada-{AAMMDD}.srt` na pasta da edição pela mesma regra (editada à mão fica,
+ *       salvo --force). No modo API, PATH que não existe no disco é o nome em Final/ no Drive.
+ *       Backfill de legenda: este comando + `publish-youtube.ts AAMMDD --captions-only`.
  *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}]   (default a vertical da edição; sempre refaz)
  *   review AAMMDD [--seq youtube|instagram|outras-redes|{corte}]    (default a vertical da edição; sempre refaz)
  *       `--seq youtube` (#12096): a prévia do horizontal, 960x540, com o recorte de cada clipe
@@ -1803,7 +1812,71 @@ export function srtPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte"
   return pickPlans(all, seq, false);
 }
 
-function writeYoutubeSrtCopy(ctx: Ctx, srt: string): void {
+/**
+ * #12078: o plano do horizontal para o `srt --from-final`. Só o horizontal
+ * (a legenda que o YouTube recebe); `--seq` ausente ou `youtube`.
+ */
+export function fromFinalPlan<P extends { spec: Pick<SequenceSpec, "target" | "corte" | "width" | "height"> }>(all: P[], seq: string | undefined): P {
+  if (seq !== undefined && seq !== "youtube") throw new Error(`--from-final só gera a legenda do horizontal (--seq youtube), veio --seq ${seq}`);
+  const hit = all.filter((p) => isYoutubeSpec(p.spec));
+  if (hit.length === 0) throw new Error("plan.json sem a sequência youtube (o horizontal): rode build --seq youtube antes do srt --from-final");
+  return hit[0];
+}
+
+/**
+ * Chave do cache da transcrição de um export (#12078, também no `review-final`):
+ * o mesmo arquivo (caminho, tamanho, mtime) reaproveita a transcrição; um
+ * export novo no mesmo nome a invalida.
+ */
+export function exportTranscriptCacheKey(file: { path: string; size: number; mtimeMs: number }): string {
+  return JSON.stringify({ export: { path: toPosix(file.path), size: file.size, mtimeMs: file.mtimeMs } });
+}
+
+/**
+ * #12078: a legenda do horizontal no tempo do EXPORT final. O texto é o do
+ * roteiro (#11960), alinhado à fala transcrita do export; sem os cortes da
+ * montagem (os tempos do export não são os da sequência), o fim é a duração do export.
+ */
+export function srtFromExport(input: {
+  heard: Word[];
+  plan: Pick<SequencePlan, "script" | "spec">;
+  rules: VocabRule[];
+  aliases: VocabAlias[];
+  durationS: number;
+  warn?: (msg: string) => void;
+}): { srt: string; notes: string[] } {
+  const heard = applyVocabularyToWords(input.heard, input.rules, input.plan.spec, input.warn);
+  const aligned = forceAlignToScript(heard, input.plan.script, { aliases: input.aliases, cuts: [], endS: input.durationS });
+  return { srt: cuesToSrt(segmentCues(aligned.words)), notes: forcedAlignmentNotes(`${input.plan.spec.name} (export)`, aligned) };
+}
+
+/** Nome do SRT do horizontal tirado do export (#12078), no out dir; não substitui o da montagem (a prévia usa aquele). */
+export function srtFromExportFileName(seqName: string): string {
+  return `${seqName} - legendas do export.srt`;
+}
+
+/**
+ * Transcrição de um export do Premiere (#11557 `review-final`, #12078 `srt --from-final`),
+ * em cache no state dir por identidade do arquivo (`exportTranscriptCacheKey`); `--force` refaz.
+ */
+function transcribeExport(ctx: Ctx, path: string, key: string): Word[] {
+  const trPath = f(ctx, `review-final-${key}.transcript.json`);
+  const keyPath = f(ctx, `review-final-${key}.cache-key.json`);
+  const st = statSync(path);
+  const cacheKey = exportTranscriptCacheKey({ path, size: st.size, mtimeMs: st.mtimeMs });
+  const fresh = existsSync(trPath) && existsSync(keyPath) && readFileSync(keyPath, "utf8").trim() === cacheKey;
+  if (!fresh || ctx.force) {
+    mkdirSync(ctx.workDir, { recursive: true });
+    mkdirSync(ctx.stateDir, { recursive: true });
+    const wav = join(ctx.workDir, `review-final-${key}.wav`);
+    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", wav]);
+    transcribeWithPython(ctx, wav, trPath, { vad: false });
+    writeFileAtomic(keyPath, cacheKey + "\n");
+  } else console.error(`[video-montagem] transcrição do export em cache (${trPath}); --force refaz`);
+  return nonEmptyWords(trPath, "transcrição do export");
+}
+
+function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: string): void {
   const dir = editionDirFor(ctx.edition);
   const path = join(dir, youtubeCaptionFileName(ctx.edition));
   const recordPath = f(ctx, "youtube-srt.json");
@@ -1815,9 +1888,50 @@ function writeYoutubeSrtCopy(ctx: Ctx, srt: string): void {
   }
   mkdirSync(dir, { recursive: true });
   writeFileAtomic(path, srt);
-  writeJson(recordPath, { path, sha256: createHash("sha256").update(srt).digest("hex"), writtenAt: new Date().toISOString() });
-  console.error(`[premissa] legenda do horizontal no tempo da sequência montada (${path}, a que o publish-youtube.ts --upload envia); se a edição fina no Premiere mudou os tempos, conferir contra o export antes de subir (#11957)`);
+  writeJson(recordPath, { path, sha256: createHash("sha256").update(srt).digest("hex"), writtenAt: new Date().toISOString(), ...(origin ? { fromExport: origin } : {}) });
+  if (origin) console.error(`[premissa] legenda do horizontal no tempo do export ${origin} (${path}, a que o publish-youtube.ts --upload/--captions-only envia, #12078)`);
+  else console.error(`[premissa] legenda do horizontal no tempo da sequência montada (${path}, a que o publish-youtube.ts --upload envia); se a edição fina no Premiere mudou os tempos, conferir contra o export antes de subir, ou gerar do export com srt --from-final (#11957, #12078)`);
   console.log(path);
+}
+
+/**
+ * `srt --from-final PATH` (#12078): a legenda do horizontal tirada do export
+ * final do Premiere, não do áudio montado pelo XML (o editor abre respiros,
+ * insere vinheta). O plan.json defasado só avisa: o export saiu do XML daquele
+ * build, então o roteiro gravado nele é o que casa com o export.
+ */
+function cmdSrtFromFinal(ctx: Ctx, file: string, seq: string | undefined): number {
+  const path = resolve(file);
+  if (!existsSync(path)) throw new Error(`export não encontrado: ${path}`);
+  const pf = readJson<PlanFile>(f(ctx, "plan.json"), "plan.json (rode build --seq youtube)");
+  try {
+    if (pf.hash !== planHash(ctx, loadBlocks(ctx).text)) console.error("[aviso] plan.json defasado (entradas mudaram depois do build): usando o roteiro do horizontal gravado nele, o do XML de onde o export saiu (#12078)");
+  } catch (e) {
+    console.error(`[aviso] não deu para conferir o plan.json contra as entradas (${(e as Error).message}): usando o roteiro gravado nele`);
+  }
+  const plan = fromFinalPlan(pf.plans, seq);
+  const durationS = Number(JSON.parse(run("ffprobe", ["-v", "error", "-show_format", "-of", "json", path]).stdout).format?.duration);
+  if (!Number.isFinite(durationS) || durationS <= 0) throw new Error(`duração ilegível no ffprobe (${path})`);
+  const vocab = loadVocab();
+  let blockRules: VocabRule[] = [];
+  try {
+    blockRules = loadBlocks(ctx).file.vocabulary ?? [];
+  } catch (e) {
+    console.error(`[aviso] blocks.json ilegível (${(e as Error).message}): só o vocabulário do projeto na legenda`);
+  }
+  const heard = transcribeExport(ctx, path, sequenceKey(plan.spec));
+  const { srt, notes: seqNotes } = srtFromExport({ heard, plan, rules: [...vocab.rules, ...blockRules], aliases: vocab.aliases, durationS, warn: (w) => console.error(`[aviso] ${w}`) });
+  for (const n of seqNotes) console.error(n);
+  mkdirSync(ctx.outDir, { recursive: true });
+  const out = join(ctx.outDir, srtFromExportFileName(plan.spec.name));
+  writeFileAtomic(out, srt);
+  console.log(out);
+  writeYoutubeSrtCopy(ctx, srt, basename(path));
+  const notesPath = f(ctx, SRT_NOTES_FILE);
+  const notes: Record<string, string[]> = existsSync(notesPath) ? readJson<Record<string, string[]>>(notesPath, SRT_NOTES_FILE) : {};
+  notes[sequenceKey(plan.spec)] = seqNotes;
+  writeJson(notesPath, notes);
+  return 0;
 }
 
 function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number {
@@ -2024,12 +2138,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   findings.push(...dedupeAudioFindings(clicks, detectFragments(sil)));
 
   if (withText && plan) {
-    mkdirSync(ctx.workDir, { recursive: true });
-    const wav = join(ctx.workDir, `review-final-${key}.wav`);
-    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", wav]);
-    const trPath = f(ctx, `review-final-${key}.transcript.json`);
-    transcribeWithPython(ctx, wav, trPath, { vad: false });
-    findings.push(...checkText({ words: nonEmptyWords(trPath, "transcrição do export"), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
+    findings.push(...checkText({ words: transcribeExport(ctx, path, key), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
   }
 
   const table = finalReviewTable(findings);
@@ -2364,8 +2473,15 @@ async function runCommand(
         return 2;
       }
       return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq, !flags.has("no-speech-detect"));
-    case "srt":
-      return cmdSrt(ctx, seq, flags.has("from-raw"));
+    case "srt": {
+      if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "G:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
+      let final = values["from-final"];
+      if (final === undefined) return cmdSrt(ctx, seq, flags.has("from-raw"));
+      if (flags.has("from-raw")) throw new Error("--from-final e --from-raw não se combinam: a legenda do export vem da fala do export");
+      // Como no review-final (#11639): no modo API, o export é procurado pelo nome em Final/ da edição no Drive.
+      if (d && !existsSync(final)) final = await fetchNamed(d, final, "final");
+      return cmdSrtFromFinal(ctx, final, seq);
+    }
     case "preview":
       await needLocalBruto();
       return cmdPreview(ctx, seq);
