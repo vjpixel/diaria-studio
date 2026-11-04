@@ -304,6 +304,11 @@ export const JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE = "jogar-identify-magic-li
  * explícito na chamada. */
 export const VOTE_CLARICE_SET_NAME_REFERRING_SITE = "vote-clarice-set-name";
 
+/** #12040 item 2: braço "topo" do teste de ordem da caixa de cadastro na tela
+ * de resultado do voto (caixa antes das imagens). O controle segue com
+ * `VOTE_CLARICE_SET_NAME_REFERRING_SITE`; mesmo triplo UTM nos dois braços. */
+export const VOTE_CLARICE_SET_NAME_TOPO_REFERRING_SITE = "vote-clarice-set-name-topo";
+
 /** #6427: triplo UTM cru mandado pelo cliente — só consultado quando
  * `source === "apex"` (ver `resolveSubscribeUtm`). Campos individuais, não a
  * struct `SubscribeUtm` inteira, porque o cliente nunca manda
