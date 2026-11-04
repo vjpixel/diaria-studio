@@ -1424,7 +1424,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
           if (it.take !== undefined && !(Number.isInteger(it.take) && (it.take as number) >= 1)) errors.push(`${label}: take precisa ser inteiro ≥ 1`);
         }
         errors.push(...validateItemScope(it, label, cortes));
-        if (it.framing !== undefined && !isFramePoint(it.framing)) errors.push(`${label}: framing precisa de faceX e eyeY entre 0 e 1 (fração do quadro)`);
+        if (it.framing !== undefined && !isFramePoint(it.framing)) errors.push(`${label}: framing do item precisa só de faceX e eyeY, entre 0 e 1 (fração do quadro; a caneca é a do framing do arquivo)`);
       });
     }
   }
@@ -1508,10 +1508,18 @@ export function effectiveSource(measured: SourceInfo, file?: Pick<BlocksFile, "m
 export const FRAMING_261027: Framing = { faceX: 1850 / 3840, eyeY: 1160 / 2160 };
 
 function isFramePoint(v: unknown): v is FramePoint {
-  if (typeof v !== "object" || v === null) return false;
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
   const o = v as Record<string, unknown>;
-  return typeof o.faceX === "number" && typeof o.eyeY === "number" && o.faceX > 0 && o.faceX < 1 && o.eyeY > 0 && o.eyeY < 1;
+  // Mesma faixa do framing do arquivo (0 a 1, fechada); só faceX/eyeY: a caneca é a do arquivo (#12233).
+  if (Object.keys(o).some((k) => k !== "faceX" && k !== "eyeY")) return false;
+  return isNum(o.faceX) && isNum(o.eyeY) && o.faceX >= 0 && o.faceX <= 1 && o.eyeY >= 0 && o.eyeY <= 1;
 }
+
+function sameFramePoint(a?: FramePoint, b?: FramePoint): boolean {
+  return a === b || (!!a && !!b && a.faceX === b.faceX && a.eyeY === b.eyeY);
+}
+
+const fmtFramePoint = (f?: FramePoint) => (f ? `${f.faceX}/${f.eyeY}` : "o do arquivo");
 
 /** O enquadramento de um clipe (#12233): o do item, quando há, sobre o do arquivo (a caneca segue a do arquivo). */
 export function clipFraming(base: Framing, c: Pick<PlannedClip, "framing">): Framing {
@@ -1931,6 +1939,10 @@ export function assembleClips(
       }
       prev.srcOut = Math.max(prev.srcOut, r.srcOut);
       if (r.script) prev.script = prev.script ? `${prev.script} ${r.script}` : r.script;
+      // Clipe fundido tem um enquadramento só: o do 1º trecho. Framing diferente no 2º fica registrado (#12233).
+      if (!sameFramePoint(prev.framing, r.framing)) {
+        merges.push({ block: r.block, edge: "emenda", from: prev.srcOut, to: r.srcIn, reason: `framing do item seguinte descartado na fusão (contíguo no bruto: vale o do 1º trecho, ${fmtFramePoint(prev.framing)}; descartado ${fmtFramePoint(r.framing)})` });
+      }
       continue;
     }
     merged.push({ ...r });
@@ -2086,7 +2098,7 @@ export function buildSequencePlan(
         return;
       }
       wordChecks.push({ label: `${key}[${idx}]`, words: trimWordsToSilences(it.words, silences) });
-      for (const p of kept) raws.push({ block: key, srcIn: p.start, srcOut: p.end, script: it.text, ...(p.keepScale ? { keepScale: true as const } : {}), ...(it.framing ? { framing: it.framing } : {}) });
+      for (const p of kept) raws.push({ block: key, srcIn: p.start, srcOut: p.end, script: it.text, ...(p.keepScale ? { keepScale: true as const } : {}), ...(it.framing ? { framing: { ...it.framing } } : {}) });
     });
   }
   // Contíguos no bruto viram um clipe só antes de alternar a escala (#11503).
@@ -2246,17 +2258,32 @@ export function framingFor(input: {
  * (#11939), para o relato do `build`, da prévia e da `review`. Sem
  * `framing.mug`, uma linha só dizendo que a caneca não foi conferida.
  */
+/**
+ * Os pares (escala, enquadramento) distintos de uma sequência (#12233): o
+ * framing do arquivo e o de cada item com `framing` próprio, para os avisos de
+ * rosto e caneca checarem o recorte que de fato vai ao XML.
+ */
+function framingVariants(clips: ReadonlyArray<{ scale: number; framing?: FramePoint }>, framing: Framing): Array<{ scalePct: number; fr: Framing; label: string }> {
+  const seen = new Map<string, { scalePct: number; fr: Framing; label: string }>();
+  for (const c of clips) {
+    const fr = clipFraming(framing, c);
+    const key = `${c.scale}|${fr.faceX}|${fr.eyeY}`;
+    if (!seen.has(key)) seen.set(key, { scalePct: c.scale, fr, label: c.framing ? `, item com rosto em ${c.framing.faceX}/${c.framing.eyeY}` : "" });
+  }
+  return [...seen.values()].sort((a, b) => a.scalePct - b.scalePct || (a.label ? 1 : 0) - (b.label ? 1 : 0));
+}
+
 export function mugFramingWarnings(
-  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number }; clips: ReadonlyArray<{ scale: number }> }>,
+  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number }; clips: ReadonlyArray<{ scale: number; framing?: FramePoint }> }>,
   source: { width: number; height: number },
   framing: Framing,
 ): string[] {
   if (!framing.mug) return ["framing sem mug: a caneca não entrou no cálculo do recorte (ler a caixa dela no frame e gravar framing.mug)"];
   const out: string[] = [];
   for (const p of plans) {
-    for (const scalePct of [...new Set(p.clips.map((c) => c.scale))].sort((a, b) => a - b)) {
-      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing, eyeFraction: p.spec.eyeFraction });
-      if (fr.warning) out.push(`${p.spec.name} (${scalePct}%): ${fr.warning}`);
+    for (const { scalePct, fr: f, label } of framingVariants(p.clips, framing)) {
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing: f, eyeFraction: p.spec.eyeFraction });
+      if (fr.warning) out.push(`${p.spec.name} (${scalePct}%${label}): ${fr.warning}`);
     }
   }
   return out;
@@ -2289,23 +2316,23 @@ export function minCenteredScalePct(srcW: number, seqW: number, faceX: number): 
  * até `MUG_MAX_FACE_SHIFT`) não conta: só o que sobra depois dele.
  */
 export function faceCenterWarnings(
-  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number }; clips: ReadonlyArray<{ scale: number }> }>,
+  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number }; clips: ReadonlyArray<{ scale: number; framing?: FramePoint }> }>,
   source: { width: number; height: number },
   framing: Framing,
 ): string[] {
   const out: string[] = [];
   if (!(source.width > 0) || !(source.height > 0)) return out;
   for (const p of plans) {
-    for (const scalePct of [...new Set(p.clips.map((c) => c.scale))].sort((a, b) => a - b)) {
-      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing, eyeFraction: p.spec.eyeFraction });
+    for (const { scalePct, fr: f, label } of framingVariants(p.clips, framing)) {
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing: f, eyeFraction: p.spec.eyeFraction });
       // O recorte sem o deslocamento da caneca: o que sobra fora do centro é o clamp.
       const faceCropX = fr.crop.x - (fr.mugShift ?? 0) * source.width;
-      const off = (framing.faceX * source.width - faceCropX) / fr.crop.w - 0.5;
+      const off = (f.faceX * source.width - faceCropX) / fr.crop.w - 0.5;
       if (Math.abs(off) <= FACE_CENTER_TOL + 1e-9) continue;
-      const min = minCenteredScalePct(source.width, p.spec.width, framing.faceX);
+      const min = minCenteredScalePct(source.width, p.spec.width, f.faceX);
       const pctTxt = `${(Math.abs(off) * 100).toFixed(1).replace(".", ",")}%`;
       out.push(
-        `${p.spec.name} (${scalePct}%): rosto a ${pctTxt} do centro horizontal (o recorte bate na borda do bruto)` +
+        `${p.spec.name} (${scalePct}%${label}): rosto a ${pctTxt} do centro horizontal (o recorte bate na borda do bruto)` +
           (Number.isFinite(min) ? `; a menor escala que centra é ${min}% (scales do blocks.json)` : "") +
           " (#12093)",
       );

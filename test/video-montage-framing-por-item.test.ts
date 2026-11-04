@@ -6,9 +6,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  assembleClips,
   buildSequencePlan,
   buildXmeml,
   clipFraming,
+  faceCenterWarnings,
   framingFor,
   parseBlocksFile,
   previewCropFor,
@@ -83,6 +85,36 @@ describe("framing por item do blocks.json", () => {
     (file.blocks.comentario![0] as { framing: unknown }).framing = { faceX: 1.2, eyeY: 0.4 };
     const r = parseBlocksFile(file);
     assert.equal(r.ok, false);
-    assert.match(!r.ok ? r.errors.join("\n") : "", /comentario\[0\]: framing precisa de faceX e eyeY/);
+    assert.match(!r.ok ? r.errors.join("\n") : "", /comentario\[0\]: framing do item precisa só de faceX e eyeY, entre 0 e 1/);
+  });
+
+  it("validação: mug no item é erro; 0 e 1 valem como no framing do arquivo", () => {
+    const { file } = fixture();
+    (file.blocks.comentario![0] as { framing: unknown }).framing = { faceX: 0.5, eyeY: 0.4, mug: { left: 0.1, right: 0.2, top: 0.1, bottom: 0.2 } };
+    assert.equal(parseBlocksFile(file).ok, false);
+    (file.blocks.comentario![0] as { framing: unknown }).framing = { faceX: 1, eyeY: 0 };
+    assert.equal(parseBlocksFile(file).ok, true);
+  });
+
+  it("fusão de trechos contíguos com framing diferente fica registrada (vale o do 1º)", () => {
+    const { merges, clips } = assembleClips(SPEC_V, [
+      { block: "comentario", srcIn: 5, srcOut: 6, framing: { faceX: 0.5, eyeY: 0.4 } },
+      { block: "comentario", srcIn: 6, srcOut: 7, framing: { faceX: 0.53, eyeY: 0.44 } },
+    ], 30);
+    assert.equal(clips.length, 1);
+    assert.deepEqual(clips[0].framing, { faceX: 0.5, eyeY: 0.4 });
+    assert.ok(merges.some((m) => /framing do item seguinte descartado/.test(m.reason)));
+    const same = assembleClips(SPEC_V, [
+      { block: "comentario", srcIn: 5, srcOut: 6 },
+      { block: "comentario", srcIn: 6, srcOut: 7 },
+    ], 30);
+    assert.ok(!same.merges.some((m) => /framing/.test(m.reason)));
+  });
+
+  it("aviso de rosto fora do centro considera o framing do clipe", () => {
+    const plan = { spec: { name: "V", width: 1080, height: 1920 }, clips: [{ scale: 115 }, { scale: 115, framing: { faceX: 0.95, eyeY: 0.42 } }] };
+    const w = faceCenterWarnings([plan], { width: 3840, height: 2160 }, BASE);
+    assert.equal(w.length, 1);
+    assert.match(w[0], /item com rosto em 0\.95/);
   });
 });
