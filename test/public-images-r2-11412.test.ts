@@ -257,10 +257,10 @@ describe("#11412 serveKvImage — fallback KV → R2", () => {
   });
 });
 
-describe("#11412 flag public_images_r2 (default OFF)", () => {
-  it("platform.config.json versionado mantém a flag desligada", () => {
+describe("#11412 flag public_images_r2 (ligada em 04/11/2026)", () => {
+  it("platform.config.json versionado tem a flag ligada (ativação, passo 4)", () => {
     const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
-    assert.deepEqual(readPublicImagesR2Settings(cfg), { enabled: false });
+    assert.deepEqual(readPublicImagesR2Settings(cfg), { enabled: true });
   });
   it("bloco ausente ou malformado → desligado", () => {
     assert.equal(readPublicImagesR2Settings({}).enabled, false);

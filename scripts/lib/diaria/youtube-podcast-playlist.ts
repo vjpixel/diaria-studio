@@ -287,12 +287,15 @@ export function describePodcastOrphans(scan: PodcastOrphanScan | undefined, play
   if (scan.orphans.length === 0) {
     return scan.truncated ? `[info] nenhum item órfão no podcast (${playlistId})${trunc} (#12113)` : null;
   }
-  const ids = scan.orphans.map((o) => o.videoId ?? o.playlistItemId).join(", ");
+  // #12121: o `playlistItems.delete` recebe o ID do ITEM da playlist, não o do
+  // vídeo; o videoId vai entre parênteses só para identificar o episódio.
+  const ids = scan.orphans.map((o) => (o.videoId ? `${o.playlistItemId} (vídeo ${o.videoId})` : o.playlistItemId)).join(", ");
   return (
     `[aviso] a playlist do podcast (${playlistId}) tem ${scan.orphans.length} item(ns) órfão(s) de vídeo apagado ou indisponível` +
-    `${trunc}: ${ids}. Quem assina o podcast vê esses episódios quebrados. Remova-os da playlist no YouTube Studio ` +
+    `${trunc}: ${ids}. Quem assina o podcast vê esses episódios quebrados. Ação: \`playlistItems.delete\` com cada ID de item ` +
+    "acima (`DELETE /youtube/v3/playlistItems?id={ID}`, 50 unidades de cota cada, escopo youtube.force-ssl), ou remover da playlist no YouTube Studio " +
     "(nada foi apagado por este script). Se o podcast estiver conectado a um feed RSS (Detalhes do podcast → Configurações de RSS), " +
-    "o YouTube pode reenviar os vídeos do feed: confira essa conexão antes (#12113)."
+    "o YouTube pode reenviar os vídeos do feed: confira essa conexão antes (#12113, #12121)."
   );
 }
 

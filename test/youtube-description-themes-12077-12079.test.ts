@@ -125,10 +125,14 @@ describe("#12077 playlists temáticas", () => {
     ]);
   });
 
-  it("o config real traz os 5 temas (sem ID ainda = null)", () => {
+  it("o config real traz os 5 temas, cada um com ID de playlist e nenhum aviso", () => {
     const real = JSON.parse(readFileSync(join(import.meta.dirname, "..", "platform.config.json"), "utf8"));
     assert.deepEqual(Object.keys(real.publishing.youtube.theme_playlists).sort(), ["anthropic", "brasil", "google", "openai", "seguranca"]);
-    assert.equal(readThemePlaylistsConfig(real).warnings.length, 0);
+    const cfg = readThemePlaylistsConfig(real);
+    assert.equal(cfg.warnings.length, 0);
+    for (const theme of ["anthropic", "brasil", "google", "openai", "seguranca"] as const) {
+      assert.match(cfg.ids[theme] ?? "", /^PL[\w-]{11,}$/, `theme_playlists.${theme}`);
+    }
   });
 
   function deps() {

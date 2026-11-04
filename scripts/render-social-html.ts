@@ -453,6 +453,15 @@ export interface DestaqueGroup {
   /** #10451: negrito dos cards fixado ANTES de o override de teste mexer nos
    *  blocos — os cards leem o `03-social.md`, nunca a legenda de teste. */
   cardBold?: string[];
+  /** #12094: texto dos cards do carrossel (`## d{N}-cards`), separado da
+   *  legenda. Ausente em edição anterior ao #12094 (os cards usam a legenda). */
+  cardsPost?: Post;
+}
+
+/** #12094: `d1-cards` → `d1`; `null` para qualquer outra chave. */
+export function cardsKeyDestaque(key: string): string | null {
+  const m = key.match(/^(d\d+)-cards$/);
+  return m ? m[1] : null;
 }
 
 /**
@@ -480,10 +489,17 @@ export function groupByDestaque(
   const groups = new Map<string, DestaqueGroup>();
   for (const platform of platforms) {
     const channels = channelsForSection(platform.name);
-    for (const post of platform.posts) {
-      const key = post.destaque.toLowerCase().replace(/\s+/g, "");
+    for (let post of platform.posts) {
+      let key = post.destaque.toLowerCase().replace(/\s+/g, "");
       // #7678: "eia" não é mais um destaque gerado em 03-social.md.
       if (key === "eia") continue;
+      // #12094: `## d{N}-cards` é o texto dos cards do carrossel, não um post —
+      // entra no grupo do próprio destaque, mostrado à parte da legenda.
+      const cardsOf = cardsKeyDestaque(key);
+      if (cardsOf) {
+        key = cardsOf;
+        post = { ...post, destaque: cardsOf.toUpperCase() };
+      }
       if (!groups.has(key)) {
         const isUseMelhor = key === USE_MELHOR_POST_ID; // #9568
         const label = isPostPixel(post.destaque)
@@ -503,6 +519,10 @@ export function groupByDestaque(
               : undefined,
           blocks: [],
         });
+      }
+      if (cardsOf) {
+        groups.get(key)!.cardsPost = post;
+        continue;
       }
       if (key === USE_MELHOR_POST_ID) {
         groups.get(key)!.blocks.push(...useMelhorBlocksForSection(platform.name, post, useMelhorCaptionTitle, opts)); // #10087
@@ -607,9 +627,12 @@ function renderCarouselGallery(group: DestaqueGroup): string {
  *  negrito nos cards (e só neles). Únicos, na ordem. */
 export function cardBoldSpans(group: DestaqueGroup): string[] {
   const spans: string[] = [];
-  for (const b of group.blocks) {
-    if (!/instagram/i.test(b.channels)) continue;
-    for (const m of b.post.main.matchAll(/\*\*(\S(?:[\s\S]*?\S)??)\*\*/g)) {
+  // #12094: com `## d{N}-cards`, o negrito que vai aos cards é o dessa seção.
+  const sources = group.cardsPost
+    ? [group.cardsPost.main]
+    : group.blocks.filter((b) => /instagram/i.test(b.channels)).map((b) => b.post.main);
+  for (const main of sources) {
+    for (const m of main.matchAll(/\*\*(\S(?:[\s\S]*?\S)??)\*\*/g)) {
       const t = m[1].replace(/\s+/g, " ").trim();
       if (t && !spans.includes(t)) spans.push(t);
     }
@@ -632,6 +655,25 @@ function renderCardBoldNote(group: DestaqueGroup): string {
     .join(" · ")}</div>`;
 }
 
+/** #12094: o texto dos cards (`## d{N}-cards`), com o negrito que o card
+ *  renderiza. Nunca sai na legenda — só nos slides do carrossel. */
+function renderCardsText(group: DestaqueGroup): string {
+  if (!group.cardsPost) return "";
+  const paras = group.cardsPost.main
+    .split(/\n\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => `<p>${escHtml(p).replace(/\*\*(\S(?:[\s\S]*?\S)??)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>")}</p>`)
+    .join("\n");
+  return `
+      <div class="channel-block cards-text">
+        <div class="channel-label">Texto dos cards do carrossel (só nas imagens, não na legenda)</div>
+        <div class="post-body">
+          ${paras}
+        </div>
+      </div>`;
+}
+
 export function renderDestaqueGroup(group: DestaqueGroup, color: string): string {
   // #7678: o ramo `extraImages` (par A/B do "É IA?") saiu junto com a seção
   // `## eia` — nada mais popula esse campo a partir de 03-social.md, então
@@ -648,6 +690,7 @@ export function renderDestaqueGroup(group: DestaqueGroup, color: string): string
     ${imgHtml}
     ${renderCardBoldNote(group)}
     ${group.blocks.map(b => renderGroupedBlock(b, color)).join("\n")}
+    ${renderCardsText(group)}
   </div>`;
 }
 

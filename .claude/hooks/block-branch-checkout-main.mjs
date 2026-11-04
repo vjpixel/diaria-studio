@@ -102,9 +102,9 @@
 // bloquear; nenhuma saída para permitir (equivalente a "defer").
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 
 /** Duplicado de `MAX_SESSION_AGE_MS` em `block-gh-pr-merge-subagent.mjs`/
@@ -131,7 +131,11 @@ export const BLOCK_REASON =
   "coordenadora roda no checkout principal, mas troca de branch nele é reservada à própria coordenadora, " +
   "nunca a um subagente. Se você é o subagente implementador: seu trabalho deve rodar dentro do PRÓPRIO " +
   "worktree (isolation: \"worktree\"), não no checkout principal — confira se o dispatch te deu um path sob " +
-  ".claude/worktrees/ e rode o git checkout -b ali. Se você é a coordenadora e está vendo este bloqueio por " +
+  ".claude/worktrees/ e rode o git checkout -b ali. O alvo é lido do próprio comando (#12165): cwd da " +
+  "sessão, `cd <dir>` anterior e `git -C <dir>`; alvo com variável definida fora do comando ou " +
+  "substituição (`cd $W` sem `W=/caminho` antes no mesmo comando, `git -C \"$(...)\"`) não é resolvido e " +
+  "conta como checkout principal — use o caminho literal do worktree. " +
+  "Se você é a coordenadora e está vendo este bloqueio por " +
   "engano (ex: seu próprio registro expirou por staleness), rode `npx tsx scripts/lib/session-registry.ts " +
   "register --kind {overnight|develop|continuo}` (o SEU kind) para renovar o registro que já era seu, e " +
   "tente de novo.";
@@ -143,8 +147,6 @@ export const BLOCK_REASON =
  * self-contained.
  */
 export { stripQuotedSpans };
-
-const SEPARATOR_RE = /(?:&&|;|\|\||\||\n)/;
 
 /**
  * `true` se `command` contém `git checkout -b <nome>` OU `git switch
@@ -160,17 +162,339 @@ const SEPARATOR_RE = /(?:&&|;|\|\||\||\n)/;
  */
 export function isBranchCreateCheckoutCommand(command) {
   if (typeof command !== "string") return false;
-  const stripped = stripQuotedSpans(command);
-  for (const rawSegment of stripped.split(SEPARATOR_RE)) {
-    const tokens = rawSegment.trim().split(/\s+/).filter(Boolean);
-    if (tokens.length < 3) continue;
-    if (tokens[0] !== "git") continue;
-    const sub = tokens[1];
-    const rest = tokens.slice(2);
-    if (sub === "checkout" && rest.includes("-b")) return true;
-    if (sub === "switch" && (rest.includes("-c") || rest.includes("--create"))) return true;
+  // #12165: reconhece também opções globais antes do subcomando (`git -C
+  // <dir> switch -c X`, `git -c k=v checkout -b X`) e `VAR=x git ...` — o
+  // tokenizer de `resolveBranchCreateTargets` mantém o conteúdo entre aspas
+  // num token só, então um `git checkout -b` citado num `--body` segue fora.
+  return resolveBranchCreateTargets(command, null).length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Alvo do comando (#12165): o diretório em que o `git` de fato roda.
+//
+// Até o #12165 a raiz era resolvida só a partir de `payload.cwd` (o cwd da
+// SESSÃO). Dois defeitos, achados ao vivo em 04/11/2026 (#12092):
+//   1. falso positivo — `cd <worktree linkado> && git switch -c X` rodado de
+//      uma sessão no checkout principal era bloqueado, embora o alvo fosse
+//      o worktree;
+//   2. furo — `git -C <checkout principal> switch -c X` rodado de um worktree
+//      linkado passava (o `-C` nem era reconhecido: `tokens[1]` era `-C`, não
+//      `switch`), trocando a branch do checkout PRINCIPAL sem bloqueio.
+//
+// Agora o alvo é derivado do próprio comando: parte de `payload.cwd`, aplica
+// cada `cd`/`pushd` anterior ao `git` (na ordem; `( ... )` isola o `cd` como
+// o shell faz) e depois cada `-C <path>` do `git` (cumulativos, como no git).
+// `$HOME`, `~` e variáveis atribuídas com valor literal ANTES no mesmo
+// comando (`W=/abs/wt; cd $W && ...`, a forma do caso real) são expandidos.
+// Quando o alvo não dá para resolver (`cd $W` com `W` de fora do comando,
+// `cd -`, `popd`, `git -C "$(...)"`, `--git-dir`/`--work-tree`), o segmento é
+// tratado como checkout
+// PRINCIPAL — fail-closed (#12165): um alvo desconhecido nunca libera sozinho.
+// Isso só morde quando há coordenadora ativa e a chamada não é dela, então
+// o comando comum de subagente (`git checkout -b X` com cwd no próprio
+// worktree, ou `cd /abs/worktree && ...`) continua passando.
+// ---------------------------------------------------------------------------
+
+/** Marcador de alvo não resolvido (fail-closed). */
+export const UNRESOLVED = null;
+
+/**
+ * Tokeniza `command` em segmentos de comando preservando o VALOR entre aspas,
+ * dividindo nos separadores de shell FORA de aspas (`&&`, `||`, `|`, `;`,
+ * `&`, newline) e emitindo `(`/`)` como segmentos próprios (subshell, para
+ * isolar `cd`). Cada token é `{ value, dynamic }`: `dynamic` = contém
+ * expansão que o hook não avalia (`$VAR`, `$(...)`, crase, glob) fora de
+ * aspas simples. `~`/`$HOME` no início viram o home do usuário.
+ *
+ * Self-contained de propósito (mesma razão do topo do arquivo).
+ */
+export function tokenizeShellSegments(command, home = safeHomedir()) {
+  const segments = [];
+  if (typeof command !== "string") return segments;
+  let tokens = [];
+  let value = "";
+  let dynamic = false;
+  let inToken = false;
+  let rawStart = true; // token começa sem aspas (para expandir `~`)
+  const pushToken = () => {
+    if (!inToken) return;
+    let v = value;
+    if (rawStart && (v === "~" || v.startsWith("~/"))) {
+      if (home) v = home + v.slice(1);
+      else dynamic = true;
+    }
+    tokens.push({ value: v, dynamic });
+    value = "";
+    dynamic = false;
+    inToken = false;
+    rawStart = true;
+  };
+  const pushSegment = () => {
+    pushToken();
+    if (tokens.length > 0) segments.push(tokens);
+    tokens = [];
+  };
+  const n = command.length;
+  let i = 0;
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "\\" && i + 1 < n) {
+      if (command[i + 1] !== "\n") {
+        if (!inToken) rawStart = false;
+        inToken = true;
+        value += command[i + 1];
+      }
+      i += 2;
+      continue;
+    }
+    if (ch === " " || ch === "\t") {
+      pushToken();
+      i++;
+      continue;
+    }
+    if (ch === "\n" || ch === ";" || ch === "&" || ch === "|") {
+      pushSegment();
+      // `&&`, `||`, `;;` contam como um separador só.
+      if ((ch === "&" || ch === "|" || ch === ";") && command[i + 1] === ch) i++;
+      i++;
+      continue;
+    }
+    if (ch === "(" || ch === ")") {
+      // `$(` é substituição de comando: o token corrente vira dinâmico, e o
+      // conteúdo interno é tratado como subshell (o `cd` lá dentro não vaza).
+      if (ch === "(" && inToken && value.endsWith("$")) dynamic = true;
+      pushSegment();
+      segments.push([{ value: ch, dynamic: false, paren: true }]);
+      i++;
+      continue;
+    }
+    if (ch === "'") {
+      if (!inToken) rawStart = false;
+      inToken = true;
+      let j = i + 1;
+      while (j < n && command[j] !== "'") value += command[j++];
+      i = j + 1;
+      continue;
+    }
+    if (ch === '"') {
+      if (!inToken) rawStart = false;
+      inToken = true;
+      let j = i + 1;
+      while (j < n && command[j] !== '"') {
+        if (command[j] === "\\" && j + 1 < n) {
+          value += command[j + 1];
+          j += 2;
+          continue;
+        }
+        if (command[j] === "$" || command[j] === "`") dynamic = true;
+        value += command[j++];
+      }
+      i = j + 1;
+      continue;
+    }
+    if (ch === "$" || ch === "`" || ch === "*" || ch === "?" || ch === "[") dynamic = true;
+    inToken = true;
+    value += ch;
+    i++;
   }
-  return false;
+  pushSegment();
+  return segments;
+}
+
+/**
+ * Expande `$NOME`/`${NOME}` de um token dinâmico com as variáveis CONHECIDAS
+ * (`vars`: `HOME` + atribuições literais anteriores no MESMO comando, ex.
+ * `W=/abs/wt; cd $W && git switch -c X` — a forma do caso real da #12165).
+ * Devolve o token resolvido (`dynamic: false`) ou o próprio token quando
+ * sobra qualquer expansão desconhecida (`$OUTRA`, `$(...)`, crase, glob).
+ */
+function expandKnownVars(token, vars) {
+  if (!token || !token.dynamic) return token;
+  let unknown = false;
+  const value = token.value.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (m, a, b) => {
+    const name = a ?? b;
+    if (vars.has(name)) return vars.get(name);
+    unknown = true;
+    return m;
+  });
+  if (unknown || /[$`*?[]/.test(value)) return token;
+  return { value, dynamic: false };
+}
+
+/** `true` quando o segmento é SÓ atribuições (`W=/x`, `export W=/x`). */
+function recordAssignments(seg, vars) {
+  const start = seg[0]?.value === "export" ? 1 : 0;
+  if (seg.length <= start) return false;
+  for (let k = start; k < seg.length; k++) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(seg[k].value)) return false;
+  }
+  for (let k = start; k < seg.length; k++) {
+    const eq = seg[k].value.indexOf("=");
+    const name = seg[k].value.slice(0, eq);
+    const resolved = expandKnownVars({ value: seg[k].value.slice(eq + 1), dynamic: seg[k].dynamic }, vars);
+    if (resolved.dynamic) vars.delete(name);
+    else vars.set(name, resolved.value);
+  }
+  return true;
+}
+
+function safeHomedir() {
+  try {
+    return homedir() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve `arg` contra `cwd`; `UNRESOLVED` se qualquer um dos dois for. */
+function resolveDir(cwd, rawToken, vars) {
+  const token = expandKnownVars(rawToken, vars);
+  if (!token || token.dynamic) return UNRESOLVED;
+  const v = token.value;
+  if (v === "" || v === "-") return UNRESOLVED;
+  if (isAbsolute(v)) return resolvePath(v);
+  if (cwd === UNRESOLVED) return UNRESOLVED;
+  return resolvePath(cwd, v);
+}
+
+/** Pula atribuições `VAR=valor` no início do segmento (`FOO=1 git ...`). */
+function skipAssignments(seg) {
+  let k = 0;
+  while (k < seg.length && !seg[k].dynamic && /^[A-Za-z_][A-Za-z0-9_]*=/.test(seg[k].value)) k++;
+  return k;
+}
+
+/** Opções globais do git que consomem o token seguinte como valor. */
+const GIT_GLOBAL_OPTS_WITH_VALUE = new Set(["-c", "--namespace", "--config-env", "--exec-path", "--super-prefix"]);
+/** Opções globais que trocam o alvo de um jeito que este hook não modela. */
+const GIT_TARGET_OVERRIDE_OPTS = ["--git-dir", "--work-tree"];
+
+/**
+ * Para cada `git checkout -b`/`git switch -c|--create` REAL em `command`,
+ * devolve o diretório-alvo em que ele roda (`string`) ou `UNRESOLVED`
+ * (`null`) quando não dá para resolver — ver o bloco de comentário acima.
+ * `baseCwd` é o cwd da sessão (`payload.cwd`); se ausente, o alvo de um
+ * comando sem `cd`/`-C` absoluto fica `UNRESOLVED`.
+ *
+ * Lista vazia = o comando não cria branch (nada a decidir).
+ */
+export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir()) {
+  const targets = [];
+  let cwd = typeof baseCwd === "string" && baseCwd.trim() !== "" ? resolvePath(baseCwd) : UNRESOLVED;
+  const stack = [];
+  let vars = new Map(home ? [["HOME", home]] : []);
+  for (const seg of tokenizeShellSegments(command, home)) {
+    if (seg.length === 1 && seg[0].paren) {
+      // Subshell: `cd` e atribuições lá dentro não vazam para fora.
+      if (seg[0].value === "(") stack.push({ cwd, vars: new Map(vars) });
+      else if (stack.length > 0) ({ cwd, vars } = stack.pop());
+      continue;
+    }
+    if (recordAssignments(seg, vars)) continue;
+    const k = skipAssignments(seg);
+    const head = seg[k];
+    if (!head) continue;
+    if (head.value === "cd" || head.value === "pushd") {
+      const args = seg.slice(k + 1).filter((t) => t.dynamic || (t.value !== "--" && !/^-[LPe@]+$/.test(t.value)));
+      cwd = args.length === 0 ? (head.value === "cd" && home ? home : UNRESOLVED) : resolveDir(cwd, args[0], vars);
+      continue;
+    }
+    if (head.value === "popd") {
+      cwd = UNRESOLVED;
+      continue;
+    }
+    if (head.value !== "git") continue;
+    // Opções globais entre `git` e o subcomando.
+    let target = cwd;
+    let j = k + 1;
+    while (j < seg.length) {
+      const t = seg[j];
+      const v = t.value;
+      if (v === "-C") {
+        target = resolveDir(target, seg[j + 1], vars);
+        j += 2;
+        continue;
+      }
+      if (GIT_TARGET_OVERRIDE_OPTS.some((o) => v === o || v.startsWith(o + "="))) {
+        target = UNRESOLVED;
+        j += v.includes("=") ? 1 : 2;
+        continue;
+      }
+      if (GIT_GLOBAL_OPTS_WITH_VALUE.has(v)) {
+        j += 2;
+        continue;
+      }
+      if (t.dynamic) {
+        // `git $OPTS switch -c X`: a expansão pode conter `-C <dir>`.
+        target = UNRESOLVED;
+        j += 1;
+        continue;
+      }
+      if (v.startsWith("-")) {
+        j += 1;
+        continue;
+      }
+      break;
+    }
+    const sub = seg[j]?.value;
+    const rest = seg.slice(j + 1).map((t) => t.value);
+    const creates =
+      (sub === "checkout" && rest.includes("-b")) ||
+      (sub === "switch" && (rest.includes("-c") || rest.includes("--create")));
+    if (creates) targets.push(target);
+  }
+  return targets;
+}
+
+/**
+ * Raiz do checkout PRINCIPAL a partir da raiz de um worktree linkado (lê o
+ * `gitdir:` do arquivo `.git`, `.../<principal>/.git/worktrees/<nome>`).
+ * Para o checkout principal devolve a própria raiz. `null` se não der.
+ * Usado só para achar `data/sessions/` quando o alvo é `UNRESOLVED` e a
+ * sessão está num worktree.
+ */
+export function mainCheckoutRootOf(root) {
+  try {
+    if (typeof root !== "string" || root === "") return null;
+    const gitPath = join(root, ".git");
+    if (!existsSync(gitPath)) return null;
+    if (statIsDirectory(gitPath)) return root;
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(gitPath, "utf8"));
+    if (!m) return null;
+    const gitdir = isAbsolute(m[1]) ? m[1] : resolvePath(root, m[1]);
+    const wt = /^(.*)[\\/]\.git[\\/]worktrees[\\/][^\\/]+[\\/]?$/.exec(gitdir);
+    return wt ? wt[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Para cada alvo devolvido por `resolveBranchCreateTargets`, a raiz do
+ * checkout PRINCIPAL que ele atinge (onde ler `data/sessions/`), ou nada
+ * quando o alvo é um worktree linkado. `UNRESOLVED` → principal de
+ * `fallbackRoot` (fail-closed). Alvo resolvido fora de qualquer repo →
+ * `fallbackRoot` também (o git falharia de qualquer jeito; errar para
+ * "principal" mantém o guard armado).
+ *
+ * Devolve a lista (sem repetição) de raízes principais atingidas.
+ */
+export function mainRootsHitByTargets(targets, fallbackRoot) {
+  const roots = new Set();
+  for (const target of targets) {
+    if (target === UNRESOLVED) {
+      roots.add(mainCheckoutRootOf(fallbackRoot) ?? fallbackRoot);
+      continue;
+    }
+    const root = findGitRootNoSpawn(target, 32);
+    if (root === null) {
+      roots.add(mainCheckoutRootOf(fallbackRoot) ?? fallbackRoot);
+      continue;
+    }
+    if (isLinkedWorktree(root)) continue; // worktree linkado: nunca bloqueia
+    roots.add(root);
+  }
+  return [...roots];
 }
 
 /**
@@ -326,18 +650,28 @@ if (
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
       const command = payload.tool_input?.command;
-      if (!isBranchCreateCheckoutCommand(command)) return;
 
       // #8937: `payload.cwd` (o cwd REAL da chamada), não `import.meta.url`
       // — ver comentário no topo do arquivo. Fail-soft: sem `payload.cwd`
       // utilizável, ou se a subida não achar `.git`, cai no `hookDir` antigo
       // (comportamento pré-#8937, nunca pior que o que já rodava).
       const hookDir = dirname(fileURLToPath(import.meta.url));
-      const cwdRoot = findGitRootNoSpawn(payload.cwd) ?? join(hookDir, "..", "..");
-      if (isLinkedWorktree(cwdRoot)) return; // worktree de subagente: nunca bloqueia
+      const hookRoot = join(hookDir, "..", "..");
+      const baseCwd = typeof payload.cwd === "string" && payload.cwd.trim() !== "" ? payload.cwd : hookRoot;
+      const fallbackRoot = findGitRootNoSpawn(baseCwd) ?? hookRoot;
 
-      const coordinators = readActiveCoordinatorSessionIds(cwdRoot);
-      if (shouldBlockBranchCheckout(coordinators, payload.session_id)) {
+      // #12165: o alvo sai do PRÓPRIO comando (`cd`/`-C`), não só do cwd da
+      // sessão. Worktree linkado como alvo → libera; checkout principal ou
+      // alvo não resolvido → segue para a checagem de coordenadora.
+      const targets = resolveBranchCreateTargets(command, baseCwd);
+      if (targets.length === 0) return;
+      const mainRoots = mainRootsHitByTargets(targets, fallbackRoot);
+      if (mainRoots.length === 0) return; // todos os alvos são worktrees linkados
+
+      const blocked = mainRoots.some((root) =>
+        shouldBlockBranchCheckout(readActiveCoordinatorSessionIds(root), payload.session_id),
+      );
+      if (blocked) {
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
