@@ -497,6 +497,37 @@ export function planHashOf(blocksText: string, sourceJson: Buffer | string, sile
   return h.digest("hex").slice(0, 16);
 }
 
+/** As opções efetivas do `build` que mudam o XML sem mudar as entradas do `planHashOf` (#12160). */
+export interface XmlBuildOptions {
+  /** O detector de fala cortou as pausas (false = `--no-speech-detect`, ou o detector falhou). */
+  speechDetect: boolean;
+  audioRefine: boolean;
+  audioGain: boolean;
+  titleMode: TitleMode;
+}
+
+/**
+ * Fingerprint da VERSÃO do XML de uma sequência (#12160): o `planHashOf` (as
+ * entradas) + as opções efetivas do build + o plano final da sequência (clipes,
+ * escalas, durações, já depois do detector de fala e do refino pelo áudio).
+ * Antes a versão usava só o `planHashOf`: `build --no-speech-detect` depois de
+ * um `build` mudava os cortes com o mesmo hash, e `pickXmlVersion` reaproveitava
+ * o `_V{n}` (mesmo nome e `<sequence id>`), o que faz o Premiere reabrir a
+ * sequência antiga (#12111). O nome da sequência fica fora: é o que a versão
+ * decide. O check de staleness do plan.json segue no `planHashOf`.
+ */
+export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "spec" | "clips" | "durationFrames">, opts: XmlBuildOptions): string {
+  const { name: _name, ...spec } = plan.spec;
+  return createHash("sha256")
+    .update(inputsHash)
+    .update("\0opts\0")
+    .update(JSON.stringify({ speechDetect: opts.speechDetect, audioRefine: opts.audioRefine, audioGain: opts.audioGain, titleMode: opts.titleMode }))
+    .update("\0plan\0")
+    .update(JSON.stringify({ spec, clips: plan.clips, durationFrames: plan.durationFrames }))
+    .digest("hex")
+    .slice(0, 16);
+}
+
 function planHash(ctx: Ctx, blocksText: string): string {
   const sil = f(ctx, "silences.json");
   const tr = f(ctx, "transcript.json");
@@ -1447,11 +1478,15 @@ const rawOf = (c: PlannedClip): RawClip => ({
  * `_V{n}`, com `n` de `pickXmlVersion` sobre os XML dessa sequência já no out
  * dir (no modo API, o cache local: versão que só existe no Drive não é vista).
  * Muda o `spec.name` dos planos (o plan.json, o srt e a prévia seguem o nome
- * novo).
+ * novo). Devolve o fingerprint de versão de cada sequência (`xmlVersionHashOf`,
+ * #12160), que vai também no `<sequence id>`.
  */
-function versionPickedSequences(ctx: Ctx, picked: SequencePlan[], hash: string): void {
+function versionPickedSequences(ctx: Ctx, picked: SequencePlan[], hash: string, opts: XmlBuildOptions): Map<SequencePlan, string> {
   const files = existsSync(ctx.outDir) ? readdirSync(ctx.outDir).filter((n) => n.endsWith(".xml")) : [];
+  const hashes = new Map<SequencePlan, string>();
   for (const p of picked) {
+    const versionHash = xmlVersionHashOf(hash, p, opts);
+    hashes.set(p, versionHash);
     const nameVersion = sequenceNameVersion(p.spec.name);
     if (nameVersion === null) {
       console.error(`[aviso] ${p.spec.name}: nome sem _V{n}, o XML sai sem versão e sobrescreve o anterior (#12111)`);
@@ -1464,9 +1499,10 @@ function versionPickedSequences(ctx: Ctx, picked: SequencePlan[], hash: string):
       try { id = parseSequenceIdVersion(readFileSync(join(ctx.outDir, n), "utf8")); } catch { /* ilegível: conta como outro plano */ }
       return [{ version: v, hash: id?.hash ?? null }];
     });
-    const version = pickXmlVersion(existing, hash, nameVersion);
+    const version = pickXmlVersion(existing, versionHash, nameVersion);
     p.spec = { ...p.spec, name: versionedSequenceName(p.spec.name, version) };
   }
+  return hashes;
 }
 
 /** Uma linha do relato por ajuste de corte (#11500). */
@@ -1552,7 +1588,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #11935: --seq grava só o XML daquela sequência e só ela barra o build; #11969: e só ela muda no plan.json.
   const picked = pickPlans(ps, seq, false);
   // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
-  versionPickedSequences(ctx, picked, hash);
+  // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
+  const versionHashes = versionPickedSequences(ctx, picked, hash, { speechDetect: speech.cut !== null, audioRefine, audioGain, titleMode });
   // #11939: a caneca é esforço, nunca barra o build; o relato diz onde ela não sai inteira.
   for (const w of mugFramingWarnings(picked, source, framing)) console.error(`[aviso] ${w}`);
   // #12093: o rosto centrado nos dois zooms; escala pequena demais bate na borda do bruto.
@@ -1639,7 +1676,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   for (const p of picked) {
     const xmlPath = join(ctx.outDir, xmlFileName(p.spec.name));
     const version = sequenceNameVersion(p.spec.name);
-    const sequenceIds = version !== null ? { [sequenceKey(p.spec)]: versionedSequenceId(sequenceKey(p.spec), version, hash) } : undefined;
+    const sequenceIds = version !== null ? { [sequenceKey(p.spec)]: versionedSequenceId(sequenceKey(p.spec), version, versionHashes.get(p) ?? hash) } : undefined;
     writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);

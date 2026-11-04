@@ -14,6 +14,7 @@ import { buildD1VideoLink, D1_PLAY_HERO_FILE, editionFromDir } from "./diaria/d1
 import { isNoVideoEdition } from "./diaria/d1-no-video.ts"; // #11125
 import { readD1VideoUrl } from "./diaria/d1-video-link-file.ts"; // #10784 (fonte da URL: #10772)
 import { readEditionVideoMeta } from "./edition-video-meta.ts"; // #12073
+import { readVideoBox0Shown } from "./diaria/video-box0-record.ts"; // #12159
 import {
   VIDEO_BOX0_CATEGORIA,
   buildVideoBox0Href,
@@ -188,6 +189,8 @@ export interface NewsletterContent {
   boxDivulgacao0Bold?: boolean;
   /** #3981: mesmo contrato de `boxDivulgacao1Categoria`, pro slot 0. */
   boxDivulgacao0Categoria?: string | null;
+  /** #12159: o slot 0 desta renderização é o box do vídeo (#12073). */
+  videoBox0?: boolean;
   /** #10638: `true` quando o MD traz `<!-- box0-sem-rotulo -->` na intro — o
    * box0 sai sem o kicker ("Divulgação"/categoria) acima dele. Default `false`. */
   boxDivulgacao0SemRotulo?: boolean;
@@ -2493,9 +2496,12 @@ export function resolveVideoBox0(editionDir: string, slot0Busy: boolean): string
   const shownBefore = countVideoBox0Shown(
     prior.map((d) => {
       const dir = siblingEditionDir(editionDir, d);
+      const exists = dir !== null && existsSync(dir);
       return {
         weekday: editionWeekday(d),
-        state: dir && existsSync(dir) ? videoBox0DayState(dir) : { hasVideo: false, slot0Busy: false },
+        state: exists ? videoBox0DayState(dir) : { hasVideo: false, slot0Busy: false },
+        // #12159: o que o e-mail daquela edição levou (Stage 5) vence o recálculo do disco.
+        recorded: exists ? readVideoBox0Shown(dir) : undefined,
       };
     }),
   );
@@ -2724,6 +2730,7 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
     boxDivulgacao0Image,
     boxDivulgacao0Bold,
     boxDivulgacao0Categoria,
+    videoBox0: videoBox0 !== null,
     boxDivulgacao0SemRotulo,
     boxDivulgacao1,
     boxDivulgacao1Image,

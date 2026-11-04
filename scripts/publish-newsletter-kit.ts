@@ -192,6 +192,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule, parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { extractContent, type NewsletterContent } from "./lib/newsletter-parse.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
+import { writeVideoBox0Record } from "./lib/diaria/video-box0-record.ts"; // #12159
 import { renderHTMLWithWarnings, type RenderWarningEvent } from "./lib/newsletter-render-html.ts";
 import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } from "./substitute-image-urls.ts";
 import {
@@ -1192,6 +1193,16 @@ export async function main(rootDirOverride?: string): Promise<void> {
     source_hashed_at: sourceHashedAt,
   };
   writePublishedState(editionDir, state);
+
+  // #12159: o que ESTE payload levou no slot 0 (box do vídeo ou não) é o que a
+  // cota da semana conta nas edições seguintes, não o disco de amanhã (o link do
+  // vídeo pode chegar depois do envio). Depois do estado do draft, fail-soft:
+  // sem o registro a cota volta ao recálculo antigo.
+  try {
+    writeVideoBox0Record(editionDir, content.videoBox0 === true);
+  } catch (e) {
+    log(`warn: falha ao gravar _internal/video-box0.json (${e instanceof Error ? e.message : String(e)}) — a cota do box do vídeo desta semana recalcula do disco (#12159).`);
+  }
 
   // #7420 (achado ao vivo, edição 260904 — apex diar.ia.br é NOSSO desde o
   // cutover #467/26-08-2026, não mais "domínio da Beehiiv"): `05-edition-url.txt`

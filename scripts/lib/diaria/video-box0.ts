@@ -108,13 +108,17 @@ export function decideVideoBox0(weekday: number, state: VideoBox0DayState, shown
 }
 
 /**
- * Quantos boxes as edições anteriores da semana levaram, recalculando a mesma
- * regra dia a dia (em ordem). Sem registro gravado: o estado de cada edição
- * (vídeo, slot 0) é relido do disco.
+ * Quantos boxes as edições anteriores da semana levaram, dia a dia (em ordem).
+ * `recorded` (#12159) é o que o e-mail daquela edição de fato levou, gravado no
+ * Stage 5 (`_internal/video-box0.json`): quando existe, vale ele. Sem registro,
+ * a mesma regra é recalculada sobre o estado relido do disco (vídeo, slot 0),
+ * que erra quando o link do vídeo chegou depois do envio.
  */
-export function countVideoBox0Shown(prior: ReadonlyArray<{ weekday: number; state: VideoBox0DayState }>): number {
+export function countVideoBox0Shown(prior: ReadonlyArray<{ weekday: number; state: VideoBox0DayState; recorded?: boolean }>): number {
   let shown = 0;
-  for (const p of prior) if (decideVideoBox0(p.weekday, p.state, shown)) shown++;
+  for (const p of prior) {
+    if (p.recorded !== undefined ? p.recorded : decideVideoBox0(p.weekday, p.state, shown)) shown++;
+  }
   return shown;
 }
 
