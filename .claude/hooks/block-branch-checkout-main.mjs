@@ -216,6 +216,9 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
   let dynamic = false;
   let inToken = false;
   let rawStart = true; // token começa sem aspas (para expandir `~`)
+  // Um item por `(` aberto: `null` = subshell comum; objeto = `$(` (estado do
+  // token/segmento de fora, retomado no `)` correspondente — #12214).
+  const parenStack = [];
   const pushToken = () => {
     if (!inToken) return;
     let v = value;
@@ -259,12 +262,41 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
       i++;
       continue;
     }
-    if (ch === "(" || ch === ")") {
-      // `$(` é substituição de comando: o token corrente vira dinâmico, e o
-      // conteúdo interno é tratado como subshell (o `cd` lá dentro não vaza).
-      if (ch === "(" && inToken && value.endsWith("$")) dynamic = true;
+    if (ch === "(") {
+      if (inToken && value.endsWith("$")) {
+        // `$(` é substituição de comando (#12214): o conteúdo interno é
+        // emitido como subshell (o `cd` lá dentro não vaza, e um `git switch
+        // -c` lá dentro segue detectado), mas o token corrente e o SEGMENTO
+        // corrente continuam depois do `)` correspondente — `git -C
+        // $(git rev-parse --show-toplevel) switch -c X` fica um segmento só,
+        // com o valor do `-C` dinâmico (alvo não resolvido = fail-closed).
+        // Antes, o `(` encerrava o segmento e o resto (`switch -c X`) virava
+        // um segmento que não começava com `git`, liberando o comando.
+        parenStack.push({ tokens, value, rawStart, start: i });
+        tokens = [];
+        value = "";
+        dynamic = false;
+        inToken = false;
+        rawStart = true;
+      } else {
+        parenStack.push(null);
+        pushSegment();
+      }
+      segments.push([{ value: "(", dynamic: false, paren: true }]);
+      i++;
+      continue;
+    }
+    if (ch === ")") {
+      const frame = parenStack.length > 0 ? parenStack.pop() : null;
       pushSegment();
-      segments.push([{ value: ch, dynamic: false, paren: true }]);
+      segments.push([{ value: ")", dynamic: false, paren: true }]);
+      if (frame) {
+        tokens = frame.tokens;
+        value = frame.value + command.slice(frame.start, i + 1);
+        dynamic = true;
+        inToken = true;
+        rawStart = frame.rawStart;
+      }
       i++;
       continue;
     }

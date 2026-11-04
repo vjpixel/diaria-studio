@@ -457,6 +457,33 @@ describe("resolveBranchCreateTargets (#12165) — alvo derivado do comando", () 
     assert.deepEqual(resolveBranchCreateTargets(`W=${fx.wt} git -C $W switch -c x`, fx.main, HOME), [null]);
   });
 
+  it("#12214: `git -C $(...) switch -c` SEM aspas → não resolvido (null), não lista vazia", () => {
+    assert.deepEqual(
+      resolveBranchCreateTargets("git -C $(git rev-parse --show-toplevel) switch -c x", fx.wt, HOME),
+      [null],
+    );
+    // aninhada, com `;`/`&&` dentro, e aritmética `$((...))`
+    assert.deepEqual(resolveBranchCreateTargets("git -C $(cd $(pwd) && pwd; echo) checkout -b x", fx.wt, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets("git -C /x$((1+2)) switch -c x", fx.wt, HOME), [null]);
+    // `git switch -c` DENTRO da substituição segue detectado, com o cwd de fora
+    assert.deepEqual(resolveBranchCreateTargets("echo $(git switch -c x)", fx.main, HOME), [fx.main]);
+    // `cd` dentro da substituição não vaza
+    assert.deepEqual(resolveBranchCreateTargets(`X=$(cd ${fx.wt}) && git checkout -b x`, fx.main, HOME), [fx.main]);
+    // subshell comum segue igual
+    assert.deepEqual(resolveBranchCreateTargets(`(cd ${fx.wt} && git checkout -b x)`, fx.main, HOME), [fx.wt]);
+  });
+
+  it("#12214: tokenizeShellSegments mantém `$(...)` sem aspas no token corrente (dinâmico)", () => {
+    const segs = tokenizeShellSegments("git -C $(git rev-parse --show-toplevel) switch -c x", HOME);
+    const outer = segs.find((s: Array<{ value: string }>) => s[0]?.value === "git" && s.some((t) => t.value === "switch"));
+    assert.ok(outer, JSON.stringify(segs));
+    assert.deepEqual(
+      outer.map((t: { value: string }) => t.value),
+      ["git", "-C", "$(git rev-parse --show-toplevel)", "switch", "-c", "x"],
+    );
+    assert.equal(outer[2].dynamic, true);
+  });
+
   it("variável em aspas simples é literal (não dinâmica)", () => {
     assert.deepEqual(resolveBranchCreateTargets("cd '/tmp/$x' && git switch -c y", fx.main, HOME), ["/tmp/$x"]);
   });
@@ -542,6 +569,13 @@ describe("hook end-to-end (#12165) — os dois casos da issue", () => {
 
   it("alvo não resolvido (`cd $W`) com coordenadora alheia ativa → BLOQUEIA (fail-closed)", () => {
     assert.equal(denied(hook(fx.wt, "cd $W && git switch -c x")), true);
+  });
+
+  it("regressão #12214: `git -C $(git rev-parse --show-toplevel) switch -c` sem aspas, de um worktree → BLOQUEIA (fail-closed)", () => {
+    assert.equal(denied(hook(fx.wt, "git -C $(git rev-parse --show-toplevel) switch -c x")), true);
+    // as formas com aspas e com crase já bloqueavam e seguem bloqueando
+    assert.equal(denied(hook(fx.wt, 'git -C "$(pwd)" switch -c x')), true);
+    assert.equal(denied(hook(fx.wt, "git -C `pwd` switch -c x")), true);
   });
 
   it("a própria coordenadora no principal → LIBERA", () => {

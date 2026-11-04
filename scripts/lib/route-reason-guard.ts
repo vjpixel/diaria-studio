@@ -113,10 +113,19 @@ const CLAUSE_SPLIT_RE = /[.;()[\]\n—–]+/;
 const DATE_CONNECTIVE_RE =
   /(?<![\p{L}\p{N}])(?:at[ée]|antes\s+d[eo]|depois\s+d[eo]|ap[oó]s)\s+(?:o\s+)?(?:dia\s+)?\d{1,4}[-/]\d{1,2}(?:[-/]\d{1,4})?/giu;
 
+/** Parênteses/colchetes que só contêm referências `#N` ("(#12129)",
+ * "(#1, #2)", "[#9001]"). #12215: com o split em `(`/`)`, o `#N` dessa forma
+ * caía numa oração própria, sem o verbo, e "aguardando o merge da PR
+ * (#12129)" passava. O grupo é desembrulhado ANTES do split, então o `#N`
+ * volta para a oração em que está escrito. Parêntese com mais texto
+ * ("(teste A/B do assunto no ar)", "(ver #6198)") segue sendo oração à parte. */
+const REF_ONLY_GROUP_RE = /[([]\s*(#\d+(?:\s*(?:,|\/|\be\b)\s*#\d+)*)\s*[)\]]/giu;
+
 /** `#N` na mesma oração que um verbo de condição ("aguardando #N", "depois
  * que #N fechar"). "PR #N mergeada" sozinho, sem verbo, é contexto. */
 function citesRefAsCondition(reason: string): boolean {
   return reason
+    .replace(REF_ONLY_GROUP_RE, " $1 ")
     .split(CLAUSE_SPLIT_RE)
     .map((clause) => clause.replace(DATE_CONNECTIVE_RE, " "))
     .some((clause) => /#\d+/.test(clause) && DEPENDENCY_VERB_RE.test(clause));
