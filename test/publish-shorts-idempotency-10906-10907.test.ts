@@ -38,7 +38,7 @@ function page(slug: string): ResolvedFacebookPage {
   return { slug, enabled: true, pageId: `id-${slug}`, token: "tok", missing: [], utmContent: `page-${slug}` };
 }
 
-const base: Omit<ShortsPlanInput, "now"> = {
+const base: Omit<Extract<ShortsPlanInput, { corte?: undefined; editionDirOverride?: undefined }>, "now"> = {
   aammdd: "261022",
   reviewedMd: REVIEWED,
   config: { publishing: { shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_backend: "worker-r2", instagram_collaborators: ["vjpixel"] } } },

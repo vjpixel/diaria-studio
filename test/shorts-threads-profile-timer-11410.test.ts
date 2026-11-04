@@ -100,7 +100,7 @@ describe("#11410 config publishing.shorts.threads_profile_via_timer", () => {
 });
 
 describe("#11410 plano: o timer é o dono do threads_profile", () => {
-  const base: Omit<ShortsPlanInput, "now"> = {
+  const base: Omit<Extract<ShortsPlanInput, { corte?: undefined; editionDirOverride?: undefined }>, "now"> = {
     aammdd: AAMMDD,
     reviewedMd: REVIEWED,
     config: CFG,

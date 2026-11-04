@@ -104,7 +104,7 @@ describe("#11265 config publishing.shorts.instagram_backend", () => {
 
 describe("#11265 plano: o timer é o dono do Instagram", () => {
   const pages: ResolvedFacebookPage[] = [];
-  const base: Omit<ShortsPlanInput, "now"> = {
+  const base: Omit<Extract<ShortsPlanInput, { corte?: undefined; editionDirOverride?: undefined }>, "now"> = {
     aammdd: AAMMDD,
     reviewedMd: REVIEWED,
     config: CFG,

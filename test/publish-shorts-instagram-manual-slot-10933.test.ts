@@ -33,7 +33,7 @@ const SCHEDULE = { rotation_times: ["12:00", "19:00"], rotation_start: "2026-10-
 const config = { publishing: { shorts: { ...shorts, schedule: SCHEDULE } } };
 
 /** Fora da janela do teste de horário (#10831): a grade decide por destino. */
-function planOutside(grid: ScheduledSlot[], extra: Partial<Parameters<typeof planShortsPublish>[0]> = {}) {
+function planOutside(grid: ScheduledSlot[], extra: Partial<Extract<Parameters<typeof planShortsPublish>[0], { corte?: undefined; editionDirOverride?: undefined }>> = {}) {
   return planShortsPublish({
     aammdd: "261110",
     reviewedMd: reviewed,

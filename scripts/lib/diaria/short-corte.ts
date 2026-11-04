@@ -33,6 +33,8 @@ import type { ShortTime } from "./short-video.ts";
 
 /** Especificação do corte, gravada em `data/cortes/{slug}/corte.json`. */
 export interface CorteSpec {
+  /** #11944: aviso durável do escape --allow-unwatched-dir; nenhum timer vigia esta pasta. */
+  unwatched_dir_warning?: string;
   slug: string;
   /** Dia da publicação, AAMMDD. */
   date: string;

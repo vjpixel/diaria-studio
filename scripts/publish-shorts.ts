@@ -690,7 +690,7 @@ export function assignShortsDestinationOwners(
   return owners;
 }
 
-export interface ShortsPlanInput {
+interface ShortsPlanCommonInput {
   coverPath?: string | null;
   coverUploadReady?: boolean;
   /** #11547: `thumbnailOffset` (ms) do X/Buffer, derivado do timecode do Still; null = a Buffer escolhe. */
@@ -765,41 +765,6 @@ export interface ShortsPlanInput {
    */
   grid?: ScheduledSlot[];
   /**
-   * #11795: corte avulso (`--corte SLUG`). Título e gancho explícitos no lugar
-   * do D1 (`reviewedMd` é ignorado), horário explícito fora do teste do
-   * #10831, sem delegar aos timers do 300 (eles não enxergam a pasta do corte)
-   * e re-execuções pelo comando do corte.
-   */
-  corte?: {
-    slug: string;
-    hhmm: string;
-    title: string;
-    hook: string;
-    /**
-     * #11964: esta rodada é o filho do timer do corte (`--require-corte-authorization`).
-     * Só ele publica os destinos do timer na janela do horário; a rodada manual os delega.
-     */
-    timerRun?: boolean;
-  };
-  /**
-   * #11911: `--edition-dir` fora de `data/editions/{AAMM}/{AAMMDD}` (fora do corte).
-   * Os timers do 300 só procuram a pasta canônica da edição: delegar a eles um
-   * destino desta pasta deixa o destino sem dono, e o timer pula em silêncio
-   * ("dia sem edição"). Presente = nada é delegado aos timers, e os comandos
-   * de re-execução levam o `--edition-dir` E o `--allow-unwatched-dir` (sem
-   * ele a re-execução seria recusada).
-   */
-  editionDirOverride?: string;
-  /**
-   * #11911: corte rodado fora de `data/cortes/{slug}/` com `--allow-unwatched-dir`.
-   * O timer do corte e o vigia de cortes sem dono não enxergam a pasta: nada é
-   * dono do timer, o aviso entra em `warnings` e os comandos de re-execução
-   * levam a mesma pasta.
-   */
-  corteOutside?: { dir: string; warning: string };
-  /** #11911: modo edição com `--edition-dir` fora da pasta canônica aceito por `--allow-unwatched-dir`: entra em `warnings`. */
-  unwatchedEditionWarning?: string;
-  /**
    * #11986: heartbeat do timer do corte (`readCorteTimerHeartbeat`). Presente e
    * velho com destinos entregues ao timer = aviso em `warnings` (o timer pode
    * estar parado e nada publicar esses destinos). Ausente (testes, filho do
@@ -807,6 +772,25 @@ export interface ShortsPlanInput {
    */
   corteTimerHeartbeat?: CorteTimerHeartbeat;
 }
+
+/** #11944: corte discrimina a origem; pasta e aviso da edição são inseparáveis. */
+export type ShortsPlanInput = ShortsPlanCommonInput & (
+  | {
+      /** Corte avulso: título, gancho e horário próprios, fora da edição. */
+      corte: {
+        slug: string; hhmm: string; title: string; hook: string;
+        /** #11964: só o filho autorizado do timer publica na janela dele. */
+        timerRun?: boolean;
+      };
+      corteOutside?: { dir: string; warning: string };
+      editionDirOverride?: never;
+      unwatchedEditionWarning?: never;
+    }
+  | ({ corte?: undefined; corteOutside?: never } & (
+      | { editionDirOverride?: undefined; unwatchedEditionWarning?: never }
+      | { editionDirOverride: string; unwatchedEditionWarning: string }
+    ))
+);
 
 /**
  * Puro (#11911): `--edition-dir` aponta para fora da pasta canônica da edição?
@@ -3941,6 +3925,7 @@ export function prepareCorteRun(input: {
   now?: () => Date;
   onRevoked?: (r: CorteRevocation) => void;
   readOnly?: boolean;
+  unwatchedDirWarning?: string;
 }): CorteSpec {
   const specPath = join(input.dir, CORTE_SPEC_FILE);
   const existing = existsSync(specPath) ? parseCorteSpec(readFileSync(specPath, "utf8"), specPath) : null;
@@ -3982,10 +3967,12 @@ export function prepareCorteRun(input: {
     const kind: CorteRevocationKind = merged.changed.includes("video") ? "content" : "plan";
     spec = revokeCorteAuthorization(spec, nowIso, `o plano do corte mudou (${merged.changed.join(", ")})`, kind, input);
   }
-  if (merged.changed.length) {
+  const warningChanged = input.unwatchedDirWarning !== undefined && spec.unwatched_dir_warning !== input.unwatchedDirWarning;
+  if (input.unwatchedDirWarning !== undefined) spec.unwatched_dir_warning = input.unwatchedDirWarning;
+  if (merged.changed.length || warningChanged) {
     mkdirSync(input.dir, { recursive: true });
     writeFileAtomic(specPath, JSON.stringify(spec, null, 2) + "\n");
-    input.log(`[ok] corte "${input.slug}": ${existing ? `atualizado (${merged.changed.join(", ")})` : "registrado"} em ${specPath}`);
+    input.log(`[ok] corte "${input.slug}": ${existing ? `atualizado (${[...merged.changed, ...(warningChanged ? ["unwatched_dir_warning"] : [])].join(", ")})` : "registrado"} em ${specPath}`);
   }
   if (coverSrc !== null) {
     mkdirSync(input.dir, { recursive: true });
@@ -4364,7 +4351,7 @@ async function main(): Promise<number> {
       console.error(`[aviso] ${dirCheck.warning}`);
     }
     try {
-      corte = prepareCorteRun({ slug: corteSlug, dir: corteDir, values, positionalDate: aammdd, log: (l) => console.error(l), onRevoked: (r) => corteRevocations.push(r), readOnly: requireCorteAuth });
+      corte = prepareCorteRun({ slug: corteSlug, dir: corteDir, values, positionalDate: aammdd, log: (l) => console.error(l), onRevoked: (r) => corteRevocations.push(r), unwatchedDirWarning: corteOutside?.warning, readOnly: requireCorteAuth });
     } catch (e) {
       console.error(`publish-shorts: ${(e as Error).message}`);
       return 2;
@@ -4599,11 +4586,11 @@ async function main(): Promise<number> {
       coverBufferOffsetMs: bufferOffsetMs,
       reviewedMd: corte ? "" : readFileSync(reviewedPath, "utf8"),
       // #11964: o filho do timer (--require-corte-authorization) é o único que publica os destinos do timer na janela.
-      ...(corte ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook, timerRun: requireCorteAuth } } : {}),
-      // #11911: pasta fora de data/editions/{AAMM}/{AAMMDD} — os timers do 300 não a enxergam.
-      ...(editionDirOverride !== undefined ? { editionDirOverride } : {}),
-      ...(unwatchedEditionWarning !== undefined ? { unwatchedEditionWarning } : {}),
-      ...(corteOutside ? { corteOutside } : {}),
+      ...(corte
+        ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook, timerRun: requireCorteAuth }, ...(corteOutside ? { corteOutside } : {}) }
+        : editionDirOverride !== undefined
+          ? { editionDirOverride, unwatchedEditionWarning: unwatchedEditionWarning! }
+          : {}),
       // #11986: a rodada manual confere se o timer do corte, a quem entrega destinos, está vivo.
       ...(corte && !requireCorteAuth ? { corteTimerHeartbeat: readCorteTimerHeartbeat(join(ROOT, CORTES_REL_DIR)) } : {}),
       now: new Date(),
