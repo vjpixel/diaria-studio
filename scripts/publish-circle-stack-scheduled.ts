@@ -40,7 +40,6 @@ import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
   currentOrPreviousMondayAAMMDD,
-  formatAAMMDD,
   nextMondayAAMMDD,
   resolveWeeklyLinkedinCycle,
   weeklyLinkedinRelDir,
@@ -56,6 +55,8 @@ import {
   classifyCircleStackRun,
   CIRCLE_STACK_APPROVAL_FILE,
   CIRCLE_STACK_PUBLISH_HOUR,
+  circleStackBrtDay,
+  circleStackWallClock,
   isCircleStackPublishWindow,
   isCircleStackScheduledRunPast,
   type CircleStackScheduledOutcome,
@@ -111,7 +112,8 @@ export function resolveCyclePaths(dataRoot: string, publishMonday: string): Cycl
 export function approveCircleStackCycle(paths: CyclePaths, now: Date): { approvalPath: string; sha256: string } {
   // #11868: a task só envia o ciclo da própria segunda; aprovar uma segunda já
   // passada grava uma aprovação que nada consome e o editor acha que o post sai.
-  const earliest = nextMondayAAMMDD(now);
+  // #12110: "hoje" em BRT (fuso do timer), não no relógio do processo.
+  const earliest = nextMondayAAMMDD(circleStackBrtDay(now));
   if (paths.publishMonday < earliest) {
     throw new Error(
       `Segunda ${paths.publishMonday} (ciclo ${paths.cycle}) já passou — a task de segunda 06:00 só envia o ciclo da própria segunda, ` +
@@ -170,7 +172,10 @@ export async function runScheduledCircleStackPublish(
     deps.sendEmail ?? ((m: PushMessage) => sendPushNotification(m, { platformConfigPath: join(deps.rootDir, "platform.config.json") }));
 
   let outcome: CircleStackScheduledOutcome;
-  const today = formatAAMMDD(runStartedAt);
+  // #12110: a janela é a segunda em BRT (o timer usa America/Sao_Paulo), não no
+  // fuso do processo — no `300` (Etc/UTC) um catch-up às 22:00 BRT de segunda já
+  // seria terça.
+  const today = circleStackWallClock(runStartedAt).aammdd;
   if (!isCircleStackPublishWindow(today, paths.publishMonday)) {
     outcome = {
       kind: "nao-enviado",
@@ -213,7 +218,8 @@ export async function runScheduledCircleStack(argv: string[], deps: ScheduledCir
   const dataRoot = resolve(getStringArg(argv, "data-root") ?? deps.rootDir);
   const explicit = getStringArg(argv, "publish-monday", { example: "261109" });
   const approveMode = hasFlag(argv, "approve") || hasFlag(argv, "revoke");
-  const publishMonday = explicit ?? (approveMode ? nextMondayAAMMDD(now()) : currentOrPreviousMondayAAMMDD(now()));
+  const brtToday = circleStackBrtDay(now());
+  const publishMonday = explicit ?? (approveMode ? nextMondayAAMMDD(brtToday) : currentOrPreviousMondayAAMMDD(brtToday));
   if (!explicit) console.log(`--publish-monday não informado — assumindo ${publishMonday}.`);
   const paths = resolveCyclePaths(dataRoot, publishMonday);
 

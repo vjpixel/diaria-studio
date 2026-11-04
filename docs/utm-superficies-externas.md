@@ -41,6 +41,7 @@ utm_source={plataforma nua}   utm_medium=bio   utm_campaign=perfil-{source}[-{va
 | X | Edit profile → Website | `perfil-twitter` | 260803 |
 | Apoia.se | Editar campanha → Identificação → Redes sociais → 1º campo | só `utm_source=apoiase` | 260803 (editor) |
 | YouTube | Studio → Personalização → Perfil → Links | `perfil-youtube` | 260803 |
+| YouTube — podcast "diar.ia.br comentada" | Studio → Conteúdo → Podcasts → descrição (ou `playlists.update` pela API) | `perfil-youtube-podcast` | 261103 |
 | GitHub `diaria-studio` | `gh repo edit --homepage` | `perfil-github-studio` | 260803 |
 | GitHub `diaria-design` | `gh repo edit --homepage` | `perfil-github-design` | 260803 |
 | LinkedIn | Editar página → Botão + Site | `company_page_cta` (exceção) | 260731 |

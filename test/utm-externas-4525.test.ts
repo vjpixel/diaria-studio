@@ -157,6 +157,15 @@ describe("#4525 — inventário das superfícies externas", () => {
     assert.equal(new Set(gh.map((s) => s.campaign)).size, 2);
   });
 
+  it("descrição do podcast do YouTube é superfície registrada, separada do link do canal (#12088)", () => {
+    const podcast = EXTERNAL_UTM_SURFACES.find((s) => s.id === "perfil-youtube-podcast");
+    assert.ok(podcast, "perfil-youtube-podcast ausente do inventário");
+    assert.equal(podcast.campaign, buildExternalSurfaceCampaign("youtube", "podcast"));
+    assert.equal(podcast.appliedAt, "2026-11-03");
+    const yt = EXTERNAL_UTM_SURFACES.filter((s) => s.source === "youtube");
+    assert.deepEqual(yt.map((s) => s.campaign).sort(), ["perfil-youtube", "perfil-youtube-podcast"]);
+  });
+
   it("nenhum utm_campaign externo colide com padrão de emissor de código", () => {
     // `perfil-facebook` não pode casar `post-cta` nem vice-versa: as duas
     // conversões vivem no mesmo utm_source e só o campaign as separa.
