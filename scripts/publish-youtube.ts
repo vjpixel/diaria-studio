@@ -149,6 +149,7 @@ import {
 } from "./lib/diaria/youtube-captions.ts";
 import {
   PODCAST_PLAYLIST_NOT_CONFIGURED,
+  describePodcastOrphans,
   describePodcastOutcome,
   ensureVideoInPodcastPlaylist,
   podcastConfigWarning,
@@ -641,6 +642,23 @@ export async function addToPodcastAfterUpload(
     videoId: rec.videoId,
   });
   input.log(describePodcastOutcome(podcast, rec.aammdd));
+  const orphanLine = describePodcastOrphans(podcast.orphanScan, playlistId);
+  if (orphanLine) input.log(orphanLine);
+  const orphans = podcast.orphanScan?.orphans ?? [];
+  if (orphans.length > 0 && input.logRunEvent) {
+    try {
+      input.logRunEvent({
+        edition: rec.aammdd,
+        stage: null,
+        agent: "publish-youtube",
+        level: "warn",
+        message: `podcast: ${orphans.length} item(ns) órfão(s) na playlist (#12113)`,
+        details: { playlistId, orphans },
+      });
+    } catch {
+      // fail-soft: o run-log nunca derruba o vídeo.
+    }
+  }
   if (!podcast.ok && input.logRunEvent) {
     try {
       input.logRunEvent({
