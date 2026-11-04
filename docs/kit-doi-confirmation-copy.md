@@ -78,8 +78,8 @@ com 5 minutos das notícias essenciais sobre IA e os tutoriais que importam.
 > acima, nada é enviado."* — foi **removido**. Não recolocar ao reeditar o
 > form.
 
-> **Pendente no painel (#12081, decisão do editor de 03/11/2026):** o canal
-> do YouTube entra no e-mail de confirmação. Premissa de texto (uma linha, no
+> **Aplicado no painel em 04/11/2026 (#12081, decisão do editor de 03/11/2026):** o canal
+> do YouTube entra no e-mail de confirmação. Texto (uma linha, no
 > tom da casa, sem seta), como último parágrafo, depois do botão:
 >
 > ```
@@ -88,7 +88,8 @@ com 5 minutos das notícias essenciais sobre IA e os tutoriais que importam.
 > ```
 >
 > A copy vive só no painel do Kit (form `9897918`, Settings → Confirmation
-> email → Edit Email Contents), sem API para editar: colar é ação do editor.
+> email → Edit Email Contents), sem API para editar; colado pelo Claude in
+> Chrome no /diaria-develop 261104b e conferido após recarregar.
 > Atenção ao trade-off do parágrafo abaixo: este link passa a concorrer com o
 > botão. Ele fica DEPOIS do botão e é texto, não segundo botão, para pesar o
 > mínimo; se a taxa de confirmação cair depois da mudança, é o primeiro
