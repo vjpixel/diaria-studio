@@ -20,7 +20,7 @@ import { renderKicker } from "./monthly-render.ts";
 
 export const VIDEO_DO_MES_START = "<!-- video-do-mes:start (#12092) -->";
 export const VIDEO_DO_MES_END = "<!-- video-do-mes:end -->";
-export const VIDEO_DO_MES_KICKER = "O vídeo do mês";
+export const VIDEO_DO_MES_KICKER = "Vídeo do mês";
 
 /** Shorts vão até 3 min; acima disso é horizontal. */
 export const SHORT_MAX_SECONDS = 180;

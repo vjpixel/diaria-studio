@@ -87,7 +87,7 @@ test("videoDoMesUrl: UTM do corpo da issue", () => {
 test("buildVideoDoMesHtml: título linkado com UTM, frase, inscrição e sem seta", () => {
   const html = buildVideoDoMesHtml({ cycle: "2610-11", videoId: "abcDEF12345", title: "IA & <eleições>", frase: defaultVideoDoMesFrase("2610-11") });
   assert.ok(html.startsWith(VIDEO_DO_MES_START) && html.endsWith(VIDEO_DO_MES_END));
-  assert.ok(html.includes(renderKicker("O vídeo do mês")));
+  assert.ok(html.includes(renderKicker("Vídeo do mês")));
   assert.ok(html.includes("utm_campaign=video-do-mes-2610-11"));
   // href com &amp;, como o resto do render (#12053)
   assert.ok(html.includes("watch?v=abcDEF12345&amp;utm_source=clarice&amp;utm_medium=email&amp;utm_campaign=video-do-mes-2610-11"));
