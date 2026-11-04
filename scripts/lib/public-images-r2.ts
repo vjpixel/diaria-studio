@@ -32,7 +32,8 @@
  *   1. FEITO em 04/11/2026 (PR #12112): bloco `[[r2_buckets]] binding = "MEDIA"`
  *      ativo em `workers/poll/wrangler.toml` e `workers/site/wrangler.toml`
  *      (o deploy dos dois é automático no push).
- *   2. Conferir: subir um objeto de teste em `img/{AAMMDD}/x-{8hex}.jpg` e
+ *   2. FEITO em 04/11/2026 (probe --write, /diaria-develop 261104b; os dois
+ *      Workers responderam 200, image/jpeg, immutable). Conferir: subir um objeto de teste em `img/{AAMMDD}/x-{8hex}.jpg` e
  *      pedir `https://eia.diar.ia.br/img/img-{AAMMDD}-x-{8hex}.jpg` e
  *      `https://diar.ia.br/img/…` (200, `Content-Type` certo, `immutable`).
  *      Comando: `npx tsx scripts/probe-public-images-r2.ts --write` (escreve
@@ -42,7 +43,7 @@
  *      `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`/`SHORTS_R2_BUCKET`,
  *      `R2_PUBLIC_BASE`/`SHORTS_R2_PUBLIC_BASE`) na máquina que roda a edição.
  *      Conferência sem rede: `npx tsx scripts/probe-public-images-r2.ts`.
- *   4. `public_images_r2.enabled = true`.
+ *   4. FEITO em 04/11/2026: `public_images_r2.enabled = true`.
  *
  * Fail-soft: flag ligada sem as env vars → aviso e KV, como antes. Falha no
  * PUT de uma imagem → aviso e essa imagem vai pro KV. A edição nunca fica sem
