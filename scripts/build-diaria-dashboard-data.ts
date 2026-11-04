@@ -423,6 +423,8 @@ interface PlanJson {
 export function bucketOvernightIssue(
   issue: { status?: string; timeline?: Record<string, string | undefined> },
 ): "merged" | "draft" | "pulada" | "in_progress" {
+  // #12170: exclusão pré-despacho é terminal mesmo sem timeline.
+  if (issue.status === "fora-da-rodada-por-track") return "pulada";
   const tl = issue.timeline;
   // Finding #7: issues without timeline key had no bucket but were counted in total.
   // Treat missing/empty timeline as in_progress (dispatch not yet recorded) —
