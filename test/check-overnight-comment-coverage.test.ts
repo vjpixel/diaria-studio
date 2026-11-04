@@ -157,6 +157,15 @@ describe("deriveCandidateIssues", () => {
     assert.deepEqual(deriveCandidateIssues(issues, new Map()), []);
   });
 
+  // #12105 — issue fechada por outra sessão no meio da rodada: comentar numa
+  // issue já fechada seria ruído; a evidência fica no plan.json.
+  it("issue pulada com motivo fechada-durante-a-sessao NUNCA é candidata (#12105)", () => {
+    const issues: PlanIssueLike[] = [
+      { number: 12038, status: "pulada", motivo: "fechada-durante-a-sessao" },
+    ];
+    assert.deepEqual(deriveCandidateIssues(issues, new Map()), []);
+  });
+
   // #7069 — o guard que impede a isenção de virar afrouxamento geral: motivo
   // NORMAL continua sendo cobrado. A isenção é nominal (3 motivos listados),
   // nunca "pulada não precisa de comentário".

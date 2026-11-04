@@ -51,6 +51,17 @@
  * quanto um motivo fora do vocabulário — ver `reason: "missing-evidencia"`
  * em `InvalidMotivoEntry`.
  *
+ * `fechada-durante-a-sessao` (#12105, 04/11/2026) — 5º valor. A issue estava
+ * ABERTA quando a sessão começou e foi fechada por OUTRA sessão (tipicamente
+ * a rodada do `300`) enquanto esta ainda rodava — caso real do develop
+ * 261103d (#12038, #12084, #11733). `ja-resolvida-antes-da-sessao` afirmaria
+ * o contrário (que o trabalho já estava feito ANTES do início). Mesma trava
+ * de evidência: exige `fechada_evidencia` (string não-vazia) com o rastro do
+ * `gh issue view N --json state,closedAt,closedBy` (estado CLOSED, quando, e
+ * por quem/qual PR, se der). Terminal no Goal como qualquer `pulada`; NÃO
+ * entra em `WORK_FINISHED_SKIP_MOTIVES` (`develop-label-gate.ts`) porque o
+ * trabalho não foi desta sessão.
+ *
  * Puro (`findInvalidPuladaMotivos`/`checkDevelopPlanMotivosFromIssues`) + I/O
  * fino (`checkDevelopPlanMotivos`, lê o plan.json do disco). CLI em
  * `scripts/validate-develop-plan-motivo.ts`.
@@ -90,15 +101,22 @@ export const DEVELOP_PULADA_MOTIVOS = [
   "decisao-adiada",
   "claimed-por-outra-sessao",
   "ja-resolvida-antes-da-sessao",
+  "fechada-durante-a-sessao",
   "deixado-para-o-300",
   "deixado-para-o-helios",
 ] as const;
 
-/** Campo obrigatório (string não-vazia) quando `motivo ===
- * "ja-resolvida-antes-da-sessao"` — ver docstring do módulo. */
-const JA_RESOLVIDA_MOTIVO = "ja-resolvida-antes-da-sessao" satisfies DevelopPuladaMotivo;
-
 type DevelopPuladaMotivo = (typeof DEVELOP_PULADA_MOTIVOS)[number];
+
+/**
+ * Motivos que exigem um campo de evidência (string não-vazia) na entrada do
+ * plan.json — ver docstring do módulo (#5723, #12105). O CLI usa o mapa para
+ * nomear o campo que falta.
+ */
+export const DEVELOP_MOTIVO_EVIDENCE_FIELD: Readonly<Partial<Record<DevelopPuladaMotivo, string>>> = {
+  "ja-resolvida-antes-da-sessao": "ja_resolvida_evidencia",
+  "fechada-durante-a-sessao": "fechada_evidencia",
+};
 
 const VALID_SET: ReadonlySet<string> = new Set(DEVELOP_PULADA_MOTIVOS);
 
@@ -118,6 +136,9 @@ export interface DevelopPlanIssueLike {
   /** Obrigatório (string não-vazia) quando `motivo ===
    * "ja-resolvida-antes-da-sessao"` — ver docstring do módulo. */
   ja_resolvida_evidencia?: unknown;
+  /** Obrigatório (string não-vazia) quando `motivo ===
+   * "fechada-durante-a-sessao"` (#12105). */
+  fechada_evidencia?: unknown;
   [key: string]: unknown;
 }
 
@@ -132,7 +153,8 @@ export interface InvalidMotivoEntry {
   motivo: string | null;
   /** Presente só quando o motivo em si é válido mas falta a evidência
    * obrigatória (`ja-resolvida-antes-da-sessao` sem
-   * `ja_resolvida_evidencia`) — distingue esse caso de "motivo fora do
+   * `ja_resolvida_evidencia`, `fechada-durante-a-sessao` sem
+   * `fechada_evidencia`) — distingue esse caso de "motivo fora do
    * vocabulário" pra CLI reportar a mensagem certa. Ausente (não
    * `undefined` explícito) nos demais casos, preservando o shape antigo. */
   reason?: "missing-evidencia";
@@ -155,8 +177,8 @@ export function planEntryLabel(entry: unknown): string {
   return key ? issueKeyLabel(key) : "#?";
 }
 
-function hasJaResolvidaEvidencia(issue: DevelopPlanIssueLike): boolean {
-  const evidencia = issue.ja_resolvida_evidencia;
+function hasEvidencia(issue: DevelopPlanIssueLike, field: string): boolean {
+  const evidencia = issue[field];
   return typeof evidencia === "string" && evidencia.trim().length > 0;
 }
 
@@ -164,8 +186,8 @@ function hasJaResolvidaEvidencia(issue: DevelopPlanIssueLike): boolean {
  * Pure: varre as issues já normalizadas (sempre array — via
  * `normalizeIssues`, agnóstico do plan.json ter gravado array ou dict),
  * devolve as `status: "pulada"` cujo `motivo` não bate com
- * `DEVELOP_PULADA_MOTIVOS`, OU cujo motivo é `ja-resolvida-antes-da-sessao`
- * sem `ja_resolvida_evidencia` preenchida. Nunca lança.
+ * `DEVELOP_PULADA_MOTIVOS`, OU cujo motivo exige evidência
+ * (`DEVELOP_MOTIVO_EVIDENCE_FIELD`) sem o campo preenchido. Nunca lança.
  */
 export function findInvalidPuladaMotivos(
   issues: DevelopPlanIssueLike[],
@@ -180,7 +202,8 @@ export function findInvalidPuladaMotivos(
       out.push({ number, ...ref, motivo });
       continue;
     }
-    if (motivo === JA_RESOLVIDA_MOTIVO && !hasJaResolvidaEvidencia(issue)) {
+    const evidenceField = DEVELOP_MOTIVO_EVIDENCE_FIELD[motivo];
+    if (evidenceField && !hasEvidencia(issue, evidenceField)) {
       out.push({ number, ...ref, motivo, reason: "missing-evidencia" });
     }
   }

@@ -13,7 +13,7 @@
 // de propósito pra ser testável sem harness de DOM (mesmo padrão de
 // `revisao-guards.js`).
 
-import { computeConversion, fmtPercent, sortRows } from "./utms-sort.js";
+import { computeConversion, fmtPercent, mediumBreakdownText, sortRows } from "./utms-sort.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -143,17 +143,12 @@ function renderDrift() {
 }
 
 /** #12066: corte por utm_medium sob o total (só quando há mais de um medium). */
+// A regra (quando mostrar, ordem, "sem medium") vive em `mediumBreakdownText`
+// (utms-sort.js, testada, #12116); aqui só o escape e o embrulho.
 function mediumBreakdown(row) {
-  const m = row.subscribersByMedium;
-  // Só emissor com medium template ("{medium}") pede o corte; medium concreto
-  // compartilha o source com outras linhas e repetiria o detalhe (#12066).
-  if (!m || !String(row.medium).includes("{")) return "";
-  const named = Object.entries(m).filter(([k]) => k !== "__none__").sort((a, b) => b[1] - a[1]);
-  if (named.length < 2) return "";
-  const none = m["__none__"] ?? 0;
-  const parts = named.map(([k, n]) => `${escapeHtml(k)} ${fmtNum(n)}`);
-  if (none > 0) parts.push(`sem medium ${fmtNum(none)}`);
-  return `<div class="mono" style="font-size:11px;opacity:.7">${parts.join(" · ")}</div>`;
+  const text = mediumBreakdownText(row);
+  if (!text) return "";
+  return `<div class="mono" style="font-size:11px;opacity:.7">${escapeHtml(text)}</div>`;
 }
 
 function renderEmitters() {
