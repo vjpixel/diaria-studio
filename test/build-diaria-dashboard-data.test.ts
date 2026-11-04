@@ -2366,3 +2366,10 @@ describe("regressao #2634: extractPublishedUseMelhorUrls — bold-only item nao 
     assert.ok(![...urls!].some((u) => u.includes("openai.com")), "URL de LANCAMENTOS nao deve vazar apos ---");
   });
 });
+
+test("#12170: exclusão por track não aparece em andamento no dashboard", async () => {
+  const { bucketOvernightIssue } = await import("../scripts/build-diaria-dashboard-data.ts");
+  for (const timeline of [undefined, {}, { classified: "2026-11-04T12:00:00Z" }]) {
+    assert.equal(bucketOvernightIssue({ status: "fora-da-rodada-por-track", timeline }), "pulada");
+  }
+});

@@ -937,3 +937,20 @@ describe("bloqueio externo obsoleto (#11301)", () => {
       .map(r => [r.key, r.track_atual]), [["vjpixel/diaria-design#21", "overnight"]]);
   });
 });
+
+describe("#12170: revalidação de exclusões por track", () => {
+  it("reabre bloqueios removidos no studio e em repo externo, preservando bloqueios atuais e fechados", () => {
+    const issues = [1, 2, 3, 4].map(number => ({ number, status: "fora-da-rodada-por-track",
+      in_round: false, motivo: "bloqueio-externo", exec_track_painel: "bloqueada" }));
+    const open: ConvergenceScanIssue[] = [
+      { number: 1, labels: [] }, { number: 2, labels: ["windows"] },
+      { number: 3, labels: ["external-blocker"] },
+    ];
+    assert.deepEqual(findRetrackedUnworkedIssues({ issues }, open).map(r => [r.number, r.track_atual]),
+      [[1, "overnight"], [2, "develop"]]);
+    const foreign = issues.map(({ number, ...entry }) => ({ ...entry, ref: `vjpixel/diaria-design#${number}` }));
+    assert.deepEqual(findRetrackedUnworkedIssues({ issues: foreign }, open), []);
+    assert.deepEqual(findRetrackedUnworkedForeignIssues({ issues: foreign }, "vjpixel/diaria-design", open)
+      .map(r => [r.key, r.track_atual]), [["vjpixel/diaria-design#1", "overnight"], ["vjpixel/diaria-design#2", "develop"]]);
+  });
+});

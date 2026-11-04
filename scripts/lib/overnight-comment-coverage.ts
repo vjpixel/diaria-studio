@@ -79,6 +79,14 @@
  * falso-positivo sistemático.
  */
 
+import type { ExecTrack } from "./issue-exec-track.ts";
+
+// Record exaustivo: um novo ExecTrack exige decisão explícita neste gate.
+const OUTSIDE_ROUND_TRACKS = {
+  overnight: false, agendada: true, develop: true, bloqueada: true,
+  "fora-de-rodada": true, epica: true,
+} satisfies Record<ExecTrack, boolean>;
+
 export type CoverageCandidateReason = "pulada-sem-comentario" | "refs-not-closes-sem-comentario";
 
 /** Shape mínimo de uma entrada de `plan.json.issues` relevante aqui — já
@@ -97,8 +105,8 @@ export interface PlanIssueLike {
  * in_round:false sozinho nunca isenta uma decisão real da rodada. */
 export function isOutsideRoundByTrack(issue: PlanIssueLike): boolean {
   return issue.in_round === false &&
-    ["agendada", "develop", "bloqueada", "fora-de-rodada", "epica"].includes(
-      typeof issue.exec_track_painel === "string" ? issue.exec_track_painel : "",
+    Object.entries(OUTSIDE_ROUND_TRACKS).some(([track, excluded]) =>
+      excluded && track === issue.exec_track_painel,
     ) &&
     (issue.status === "fora-da-rodada-por-track" || issue.status === "pulada");
 }
