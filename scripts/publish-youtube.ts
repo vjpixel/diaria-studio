@@ -147,6 +147,15 @@ import {
   youtubeCaptionFileName,
   type CaptionUploadResult,
 } from "./lib/diaria/youtube-captions.ts";
+import {
+  PODCAST_PLAYLIST_NOT_CONFIGURED,
+  describePodcastOutcome,
+  ensureVideoInPodcastPlaylist,
+  podcastConfigWarning,
+  readPodcastPlaylistConfig,
+  type PodcastPlaylistResult,
+} from "./lib/diaria/youtube-podcast-playlist.ts";
+import { logEvent, type RunLogEvent } from "./lib/run-log.ts";
 import { d1SocialSlotAt, videoLinkEligibility } from "./lib/diaria/youtube-video-link-gate.ts";
 import { coverPrerequisites } from "./lib/diaria/video-env-check.ts";
 
@@ -330,6 +339,13 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
    * depois `--captions-only`).
    */
   captions?: CaptionUploadResult;
+  /**
+   * Playlist do podcast (#12068), gravado só quando o passo chegou à API (ok ou
+   * falha com o motivo). Ausente = não tentado (sem ID configurado, config
+   * inválido, sem credencial, desfecho do vídeo com erro) ou resultado não
+   * gravado (registro ausente/ilegível no disco).
+   */
+  podcast?: PodcastPlaylistResult;
 }
 
 /**
@@ -377,6 +393,18 @@ export interface RunUploadInput {
    * link no D1. `null`/ausente: só vídeo `published` vira link.
    */
   d1SlotAt?: Date | null;
+  /**
+   * #12068: `publishing.youtube.podcast_playlist_id`. `null`/ausente = o vídeo
+   * não vai para o podcast (1 linha `[info]`). Só o horizontal passa por aqui.
+   */
+  podcastPlaylistId?: string | null;
+  /**
+   * #12068: `[aviso]` de config presente mas inválido/ilegível. Com ele e sem
+   * ID, sai esta linha no lugar do `[info]` de "não configurado".
+   */
+  podcastConfigWarning?: string | null;
+  /** #12068: evento no run-log quando o podcast falha (warn). Ausente = só o log de linha. */
+  logRunEvent?: (e: RunLogEvent) => void;
 }
 
 export interface RunUploadOutcome {
@@ -565,8 +593,103 @@ function unconfirmedPeriodMatch(e: ExistingEditionVideoError, input: RunUploadIn
 /**
  * `--upload`: envia o plano de verdade e grava o registro. Separado do `main`
  * pra o teste injetar `deps.fetch` e o ambiente sem tocar a rede nem o `.env`.
+ * Depois de um desfecho com vídeo (enviado agora, já no canal ou já
+ * registrado), põe o vídeo na playlist do podcast (#12068, fail-soft).
  */
 export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUploadInput): Promise<RunUploadOutcome> {
+  const outcome = await runYouTubeUploadCore(deps, input);
+  return addToPodcastAfterUpload(deps, input, outcome);
+}
+
+/**
+ * #12068: passo do podcast. Só roda com vídeo confirmado (`record` + exit 0);
+ * nunca muda o exit code. Registro que já traz `podcast.ok` para a mesma
+ * playlist não gasta quota de novo.
+ */
+export async function addToPodcastAfterUpload(
+  deps: YouTubeUploadDeps,
+  input: Pick<RunUploadInput, "editionDir" | "env" | "log" | "podcastPlaylistId" | "podcastConfigWarning" | "logRunEvent"> &
+    Partial<Pick<RunUploadInput, "force">>,
+  outcome: RunUploadOutcome,
+): Promise<RunUploadOutcome> {
+  const rec = outcome.record;
+  if (!rec) return outcome;
+  if (outcome.exitCode !== 0) {
+    input.log("[info] podcast não tentado: vídeo sem confirmação (#12068)");
+    return outcome;
+  }
+  if (input.force) warnStalePodcastItem(rec, input.log);
+  const playlistId = (input.podcastPlaylistId ?? "").trim();
+  if (!playlistId) {
+    input.log(input.podcastConfigWarning ?? PODCAST_PLAYLIST_NOT_CONFIGURED);
+    return outcome;
+  }
+  if (rec.podcast?.ok === true && rec.podcast.playlistId === playlistId && rec.podcast.videoId === rec.videoId) return outcome;
+  const missing = missingYouTubeCredentials(input.env);
+  if (missing.length > 0) {
+    input.log(`[aviso] vídeo NÃO adicionado ao podcast: faltam ${missing.join(", ")} no ambiente. O vídeo segue publicado.`);
+    return outcome;
+  }
+  const podcast = await ensureVideoInPodcastPlaylist(deps, {
+    creds: {
+      clientId: (input.env.GOOGLE_CLIENT_ID ?? "").trim(),
+      clientSecret: (input.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
+      refreshToken: (input.env.YOUTUBE_REFRESH_TOKEN ?? "").trim(),
+      channelId: (input.env.YOUTUBE_CHANNEL_ID ?? "").trim(),
+    },
+    playlistId,
+    videoId: rec.videoId,
+  });
+  input.log(describePodcastOutcome(podcast, rec.aammdd));
+  if (!podcast.ok && input.logRunEvent) {
+    try {
+      input.logRunEvent({
+        edition: rec.aammdd,
+        stage: null,
+        agent: "publish-youtube",
+        level: "warn",
+        message: "podcast: vídeo não adicionado à playlist (#12068)",
+        details: { playlistId, videoId: rec.videoId, error: podcast.error, scopeMissing: podcast.scopeMissing, httpStatus: podcast.httpStatus },
+      });
+    } catch {
+      // fail-soft: o run-log nunca derruba o vídeo.
+    }
+  }
+  const record: YouTubePublishedRecord = { ...rec, podcast };
+  const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
+  // Só regrava um registro que já está no disco: se o core não o gravou (ex.:
+  // already-on-channel com falha de escrita), criar o arquivo aqui faria a
+  // próxima rodada cair em "done" e nunca gravar o link do D1 (05-video-url.txt).
+  if (!existsSync(recordPath)) {
+    input.log(`[aviso] resultado do podcast não gravado: ${recordPath} não existe (o registro do vídeo não foi gravado nesta rodada)`);
+    return { ...outcome, record };
+  }
+  try {
+    mkdirSync(dirname(recordPath), { recursive: true });
+    writeFileAtomic(recordPath, JSON.stringify(record, null, 2) + "\n");
+  } catch (e) {
+    input.log(`[aviso] resultado do podcast não gravado em ${recordPath}: ${(e as Error).message}`);
+  }
+  return { ...outcome, record };
+}
+
+/**
+ * #12068: `--force` sobe OUTRO vídeo; o anterior continua na playlist do
+ * podcast. Avisa o item a remover no Studio (nada é apagado por aqui).
+ */
+function warnStalePodcastItem(rec: YouTubePublishedRecord, log: (line: string) => void): void {
+  const prev = [...(rec.previous_uploads ?? [])].reverse().find((p) => "podcast" in p && p.podcast);
+  const pod = prev && "podcast" in prev ? prev.podcast : undefined;
+  if (!prev || !pod?.ok || !pod.playlistItemId) return;
+  if ("videoId" in prev && prev.videoId === rec.videoId) return;
+  const url = "url" in prev && typeof prev.url === "string" ? prev.url : (pod.videoId ?? "vídeo anterior");
+  log(
+    `[aviso] --force: o upload anterior (${url}) segue na playlist do podcast ${pod.playlistId} como item ${pod.playlistItemId} — ` +
+      "remova-o do podcast no YouTube Studio (nada foi apagado por este script).",
+  );
+}
+
+async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInput): Promise<RunUploadOutcome> {
   const { plan, log } = input;
   const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
 
@@ -850,6 +973,23 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
   return { exitCode, record, skipped: false };
 }
 
+/**
+ * #12068: `publishing.youtube.podcast_playlist_id`. Ausente/`null` = sem ID e
+ * sem aviso (o passo loga o `[info]`); presente mas inválido, ou config
+ * ilegível = sem ID e com o `[aviso]` de "pulado por causa do config". Nunca lança.
+ */
+function loadPodcastPlaylistIdFromConfig(): { id: string | null; warning: string | null } {
+  let cfg: unknown;
+  try {
+    cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  } catch (e) {
+    return { id: null, warning: podcastConfigWarning(`platform.config.json ilegível (${(e as Error).message})`) };
+  }
+  const r = readPodcastPlaylistConfig(cfg);
+  if (r.kind === "ok") return { id: r.id, warning: null };
+  return { id: null, warning: r.kind === "invalid" ? podcastConfigWarning(r.reason) : null };
+}
+
 /** Horário do post do D1 pelo `platform.config.json`; `null` se não der (nunca lança). */
 function loadD1SlotAt(aammdd: string): Date | null {
   try {
@@ -974,6 +1114,7 @@ async function main(): Promise<number> {
   }
 
   loadProjectEnv(ROOT);
+  const podcastCfg = loadPodcastPlaylistIdFromConfig();
   const outcome = await runYouTubeUpload(defaultYouTubeUploadDeps, {
     plan,
     editionDir: dir,
@@ -983,6 +1124,11 @@ async function main(): Promise<number> {
     readFile: (p) => readFileSync(p),
     log: (line) => console.error(line),
     d1SlotAt: loadD1SlotAt(aammdd),
+    podcastPlaylistId: podcastCfg.id,
+    podcastConfigWarning: podcastCfg.warning,
+    logRunEvent: (e) => {
+      logEvent(e);
+    },
   });
   if (outcome.record) console.log(JSON.stringify({ dry_run: false, skipped: outcome.skipped, ...outcome.record }, null, 2));
   cleanupPublishedVideo({ dir, edition: aammdd, kind: "horizontal", keepVideo: flags.has("keep-video"), log: console.error });

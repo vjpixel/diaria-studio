@@ -73,9 +73,14 @@ const RETRYABLE_UPLOAD_STATUS = new Set([500, 502, 503, 504]);
 
 /** Etapas que lançam `YouTubeUploadError` (antes do vídeo estar confirmado). */
 export type YouTubeUploadStep = "token" | "channel" | "insert" | "upload";
-/** Etapas de chamada à API, inclusive as pós-upload que não lançam. */
-/** `update` (#11955): o `videos.update` do `--update-scheduled`, que pede `youtube.force-ssl` (o `youtube.upload` não cobre). */
-export type YouTubeApiStep = YouTubeUploadStep | "thumbnail" | "reread" | "update";
+/**
+ * Etapas de chamada à API, inclusive as pós-upload que não lançam.
+ * - `update` (#11955): o `videos.update` do `--update-scheduled`, que pede
+ *   `youtube.force-ssl` (o `youtube.upload` não cobre).
+ * - `playlist` (#12068): `playlistItems.list`/`insert` do podcast; só o
+ *   INSERT exige `youtube.force-ssl` (o `list` passa com `youtube.readonly`).
+ */
+export type YouTubeApiStep = YouTubeUploadStep | "thumbnail" | "reread" | "update" | "playlist";
 
 export class YouTubeUploadError extends Error {
   constructor(
@@ -191,6 +196,7 @@ export function explainYouTubeUploadError(status: number, body: string, step?: Y
 export function youtubeScopeInsufficientMessage(step?: YouTubeApiStep): string {
   const redo = "refaça o consentimento com `npx tsx scripts/youtube-oauth-setup.ts` deixando todos os escopos marcados (e `npm run sync-env` no 300)";
   if (step === "update") return `token sem o escopo youtube.force-ssl, que o videos.update (troca de título/descrição do vídeo agendado) exige; o youtube.upload só cobre o upload e a capa — ${redo}`;
+  if (step === "playlist") return `token sem o escopo youtube.force-ssl, que o playlistItems.insert (vídeo na playlist do podcast) exige; o youtube.upload não cobre — ${redo}`;
   if (step === "reread" || step === "channel") return `token sem o escopo youtube.readonly (leitura do vídeo/canal) — ${redo}`;
   return `token sem o escopo youtube.upload — ${redo}`;
 }
