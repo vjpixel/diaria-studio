@@ -44,6 +44,7 @@ import {
   findImageContentMismatches,
   checkNarrativeNotGenericPlaceholder,
   checkCropReviewWarnings,
+  isSilencedCropWarn,
   checkNoDuplicateUrlsAgainstPastEditions,
   findDuplicateUrlsAgainstPastEditions,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
@@ -2533,6 +2534,47 @@ describe("Stage 4 invariants", () => {
       assert.equal(v.length, 1);
       assert.ok(!v[0].message.includes("undefined"));
       rmSync(fixture, { recursive: true, force: true });
+    });
+
+    // #12226: o 1:1 não chega ao leitor (newsletter usa 2:1, social usa 4:5 +
+    // carrossel) — aviso de crop sobre ele era ruído no gate (D1 da 261105,
+    // "o crop 1:1 corta a mão do robô").
+    it("#12226: warn de crop no ratio 1x1 não vira violation; o do 4x5 continua", () => {
+      writeFileSync(
+        join(fixture, "_internal", "04-crop-review.json"),
+        JSON.stringify({
+          results: [
+            { destaque: "d1", ratio: "1x1", status: "warn", motivo: "o crop 1:1 corta a mão do robô" },
+            { destaque: "d1", ratio: "1x1", status: "warn", categoria: "crop", motivo: "crop explícito 1:1" },
+            { destaque: "d2", ratio: "4x5", status: "warn", motivo: "título cobre o rosto no card" },
+          ],
+        }),
+      );
+      const v = checkCropReviewWarnings(fixture);
+      assert.equal(v.length, 1, JSON.stringify(v));
+      assert.match(v[0].message, /D2: título cobre o rosto/);
+      assert.doesNotMatch(v.map((x) => x.message).join("\n"), /mão do robô|crop explícito 1:1/);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("#12226: warn de crop 1x1 desatualizado também não vira nota de 're-rodar o revisor'", () => {
+      writeFileSync(join(fixture, "04-d1-1x1.jpg"), "imagem-atual");
+      writeFileSync(
+        join(fixture, "_internal", "04-crop-review.json"),
+        JSON.stringify({
+          results: [{ destaque: "d1", ratio: "1x1", status: "warn", motivo: "mão cortada", image_md5: "0".repeat(32) }],
+        }),
+      );
+      assert.deepEqual(checkCropReviewWarnings(fixture), []);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("#12226: isSilencedCropWarn só silencia crop do 1x1 (estilo e 4x5 seguem)", () => {
+      assert.equal(isSilencedCropWarn({ ratio: "1x1" }), true);
+      assert.equal(isSilencedCropWarn({ ratio: "1x1", categoria: "crop" }), true);
+      assert.equal(isSilencedCropWarn({ ratio: "1x1", categoria: "estilo" }), false);
+      assert.equal(isSilencedCropWarn({ ratio: "4x5" }), false);
+      assert.equal(isSilencedCropWarn({}), false, "entrada sem ratio (legado) continua avisando");
     });
 
     it("e2e: check-invariants --stage 4 nunca sai exit 1 só por causa de image-crop-warn", () => {

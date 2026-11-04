@@ -45,7 +45,8 @@ const RAW_261016 = {
     { destaque: "d1", ratio: "1x1", status: "ok" },
     { destaque: "d2", ratio: "1x1", status: "warn", categoria: "estilo", motivo: "redemoinho concêntrico azul/amarelo na tela do celular" },
     { destaque: "d2", ratio: "4x5", status: "warn", categoria: "estilo", motivo: "redemoinho concêntrico azul/amarelo na tela do celular" },
-    { destaque: "d3", ratio: "1x1", status: "warn", motivo: "sujeito cortado à direita" },
+    // #12226: aviso de crop só no 4x5 (o 1x1 não chega ao leitor e não avisa).
+    { destaque: "d3", ratio: "4x5", status: "warn", motivo: "sujeito cortado à direita" },
   ],
 };
 
@@ -67,7 +68,7 @@ describe("Noite Estrelada no veredito do revisor (#10312)", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "starry-10312-"));
     mkdirSync(join(dir, "_internal"));
-    for (const f of ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d2-4x5.jpg", "04-d3-1x1.jpg"]) {
+    for (const f of ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d2-4x5.jpg", "04-d3-4x5.jpg"]) {
       writeFileSync(join(dir, f), `img-${f}-v1`);
     }
   });

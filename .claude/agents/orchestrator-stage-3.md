@@ -109,7 +109,7 @@ Se `dispatchedAt` vier `null` (arquivo ausente — edição pré-#5414, ou dispa
   ```bash
   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/ --input-json {EDITION_DIR}/_internal/04-crop-review.json
   ```
-  Sempre exit 0 (warning-only). Reaparece no gate da Etapa 4 via `check-invariants.ts --stage 4` (`image-crop-warn`) — nunca gate-blocking.
+  Sempre exit 0 (warning-only). Reaparece no gate da Etapa 4 via `check-invariants.ts --stage 4` (`image-crop-warn`) — nunca gate-blocking. Aviso de crop no `1x1` não vai ao gate (#12226: o 1:1 não chega ao leitor); só o do `4x5` e os de estilo.
 - **Noite Estrelada na imagem gerada = regenerar sozinho (#10312).** Logo após o persist acima, SEMPRE:
   ```bash
   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/ --estilo-regen-plan [--estilo-regen-ran d1:2x1,d1:4x5]
