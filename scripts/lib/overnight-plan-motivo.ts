@@ -67,6 +67,12 @@ export const OVERNIGHT_PULADA_MOTIVOS = [
   "mesmo-tema-sessao-ativa",
   "session-finding-deferida",
   "stale-aguarda-reexecucao",
+  // #12105 — issue aberta no início da rodada e fechada por OUTRA sessão
+  // (sessão interativa, develop, contínuo) antes do dispatch. Mesmo valor do
+  // vocabulário do develop (`develop-plan-motivo.ts`, onde exige
+  // `fechada_evidencia`); aqui sem campo obrigatório, como os demais motivos
+  // do overnight. Isento do comentário de cobertura (#5777).
+  "fechada-durante-a-sessao",
 ] as const;
 
 export type OvernightPuladaMotivo = (typeof OVERNIGHT_PULADA_MOTIVOS)[number];

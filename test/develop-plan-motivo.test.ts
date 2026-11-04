@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   DEVELOP_PULADA_MOTIVOS,
+  DEVELOP_MOTIVO_EVIDENCE_FIELD,
   findInvalidPuladaMotivos,
   findDeixadoPara300Buraco,
   checkDevelopPlanMotivosFromIssues,
@@ -51,16 +52,44 @@ describe("findInvalidPuladaMotivos — filtro puro", () => {
     assert.deepEqual(findInvalidPuladaMotivos(issues), []);
   });
 
-  it("cada valor do vocabulário fechado passa (ja-resolvida-antes-da-sessao com evidência)", () => {
-    const issues: DevelopPlanIssueLike[] = DEVELOP_PULADA_MOTIVOS.map((motivo, i) => ({
-      number: 100 + i,
-      status: "pulada",
-      motivo,
-      ...(motivo === "ja-resolvida-antes-da-sessao"
-        ? { ja_resolvida_evidencia: "GAQL campaign.status=PAUSED, confirmado 260819" }
-        : {}),
-    }));
+  it("cada valor do vocabulário fechado passa (motivos com evidência obrigatória preenchidos)", () => {
+    const issues: DevelopPlanIssueLike[] = DEVELOP_PULADA_MOTIVOS.map((motivo, i) => {
+      const field = DEVELOP_MOTIVO_EVIDENCE_FIELD[motivo];
+      return {
+        number: 100 + i,
+        status: "pulada",
+        motivo,
+        ...(field ? { [field]: "evidência verificada ao vivo, 260819" } : {}),
+      };
+    });
     assert.deepEqual(findInvalidPuladaMotivos(issues), []);
+  });
+
+  it("#12105: fechada-durante-a-sessao está no vocabulário e exige fechada_evidencia", () => {
+    assert.ok((DEVELOP_PULADA_MOTIVOS as readonly string[]).includes("fechada-durante-a-sessao"));
+    assert.equal(DEVELOP_MOTIVO_EVIDENCE_FIELD["fechada-durante-a-sessao"], "fechada_evidencia");
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 12038, status: "pulada", motivo: "fechada-durante-a-sessao" },
+      { number: 12084, status: "pulada", motivo: "fechada-durante-a-sessao", fechada_evidencia: "  " },
+      {
+        number: 11733,
+        status: "pulada",
+        motivo: "fechada-durante-a-sessao",
+        fechada_evidencia: "gh issue view 11733: CLOSED 2026-11-03T22:10Z por PR #12090 (rodada do 300)",
+      },
+      // a evidência do outro motivo não serve para este
+      {
+        number: 12000,
+        status: "pulada",
+        motivo: "fechada-durante-a-sessao",
+        ja_resolvida_evidencia: "commit abc",
+      },
+    ];
+    assert.deepEqual(findInvalidPuladaMotivos(issues), [
+      { number: 12038, motivo: "fechada-durante-a-sessao", reason: "missing-evidencia" },
+      { number: 12084, motivo: "fechada-durante-a-sessao", reason: "missing-evidencia" },
+      { number: 12000, motivo: "fechada-durante-a-sessao", reason: "missing-evidencia" },
+    ]);
   });
 
   it("ja-resolvida-antes-da-sessao sem ja_resolvida_evidencia é reportado com reason missing-evidencia", () => {
@@ -219,6 +248,31 @@ describe("CLI (scripts/validate-develop-plan-motivo.ts)", () => {
     assert.equal(r.status, 1);
     assert.match(r.stderr, /#5501/);
     assert.match(r.stderr, /ja_resolvida_evidencia/);
+  });
+
+  it("#12105: fechada-durante-a-sessao sem evidência → exit 1, mensagem cita fechada_evidencia", () => {
+    const planPath = writePlanFixture({
+      issues: [{ number: 12038, status: "pulada", motivo: "fechada-durante-a-sessao" }],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /#12038/);
+    assert.match(r.stderr, /fechada_evidencia/);
+  });
+
+  it("#12105: fechada-durante-a-sessao com evidência → exit 0", () => {
+    const planPath = writePlanFixture({
+      issues: [
+        {
+          number: 12038,
+          status: "pulada",
+          motivo: "fechada-durante-a-sessao",
+          fechada_evidencia: "gh issue view 12038: CLOSED por PR #12100",
+        },
+      ],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 0);
   });
 
   it("plan.json ausente → erro acionável (path citado) e exit 2, nunca stack trace cru", () => {
