@@ -44,6 +44,10 @@ import { resolveEditorEmail, countSubmissionSources } from "./lib/inbox-stats.ts
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { readCaptureFailedSentinel } from "./lib/newsletter-capture-failure.ts";
 import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
+import { detectDestaqueRequest } from "./lib/destaque-upgrade.ts"; // #12193
+
+/** #12193: e-mail com mais links que isto não é pedido de destaque de UM link. */
+export const MAX_URLS_FOR_DESTAQUE_REQUEST = 3;
 
 // ---------------------------------------------------------------------------
 // Tracker decoders (#719)
@@ -106,6 +110,12 @@ export interface SyntheticInboxArticle {
   submitted_via?: string;
   tracker_decoded?: boolean; // #719: set when URL was decoded from a tracker
   /**
+   * #12193: o e-mail do editor pede este link como destaque (`"d1"`..`"d3"`
+   * ou `"destaque"`, ver `detectDestaqueRequest`). O gate 4 avisa quando o
+   * pedido não foi atendido (invariante `editor-destaque-request`).
+   */
+  editor_destaque_request?: string;
+  /**
    * #7662: true quando o sender do e-mail está em
    * `platform.config.json → newsletter_auto_capture.always_consider_senders`.
    * Isenta o artigo das heurísticas de higiene (URL tracking/afiliado/
@@ -128,6 +138,8 @@ export interface InboxBlock {
   from: string;
   subject: string;
   urls: string[];
+  /** #12193: prévia do corpo (linha `- **raw:** > ...` do inbox-drain). */
+  raw?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +159,7 @@ export function parseInboxMd(text: string): InboxBlock[] {
 
     let from = "";
     let subject = "";
+    let raw = "";
     const urls: string[] = [];
 
     for (const line of lines) {
@@ -160,6 +173,11 @@ export function parseInboxMd(text: string): InboxBlock[] {
         subject = subjectMatch[1].trim();
         continue;
       }
+      const rawMatch = line.match(/^-\s*\*\*raw:\*\*\s*>?\s*(.*)$/);
+      if (rawMatch) {
+        raw = rawMatch[1].trim();
+        continue;
+      }
     }
 
     // Extrair URLs de qualquer linha do bloco (incluindo bullets e raw preview)
@@ -171,7 +189,7 @@ export function parseInboxMd(text: string): InboxBlock[] {
     }
 
     if (iso && (from || urls.length > 0)) {
-      blocks.push({ iso, from, subject, urls });
+      blocks.push(raw ? { iso, from, subject, urls, raw } : { iso, from, subject, urls });
     }
   }
 
@@ -246,6 +264,12 @@ export function extractEditorUrls(blocks: InboxBlock[]): SyntheticInboxArticle[]
 
   for (const block of blocks) {
     const isForward = /^\s*(fwd|fw|res|enc):/i.test(block.subject);
+    // #12193: pedido de destaque só vale para envio direto com poucos links —
+    // forward de newsletter com "destaques" no assunto não é pedido do editor.
+    const destaqueRequest =
+      !isForward && new Set(block.urls).size <= MAX_URLS_FOR_DESTAQUE_REQUEST
+        ? detectDestaqueRequest(`${block.subject}\n${block.raw ?? ""}`)
+        : null;
     for (const rawUrl of block.urls) {
       // #719: attempt tracker decode BEFORE filtering — decoded URL is the real content.
       const { url, decoded: trackerDecoded } = decodeTrackerUrl(rawUrl);
@@ -273,6 +297,9 @@ export function extractEditorUrls(blocks: InboxBlock[]): SyntheticInboxArticle[]
       };
       if (trackerDecoded) {
         article.tracker_decoded = true;
+      }
+      if (destaqueRequest) {
+        article.editor_destaque_request = destaqueRequest;
       }
       articles.push(article);
     }

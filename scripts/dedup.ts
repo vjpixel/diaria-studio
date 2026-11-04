@@ -66,7 +66,9 @@ import {
   extractPastTitlesWithEdition,
   extractPastEditionArticleTitlesWithEdition,
   extractPastEditionArticleTitleByUrl,
+  extractDestaqueUpgradeEligibleUrls,
 } from "./lib/past-editions-extract.ts";
+import { DESTAQUE_ONLY_FIELD } from "./lib/destaque-upgrade.ts"; // #12193
 // #2833: extraido pra scripts/lib/inbox-title-resolve.ts (movimentacao pura)
 // -- re-exportado abaixo pra manter compat com importadores existentes.
 import {
@@ -206,6 +208,11 @@ export function dedup(
   pastArticleTitleByUrl: Map<string, string> = new Map(),
   // #11511: títulos publicados no markdown, janela curta, mesmo sem pastas locais.
   pastItemTitles: string[] = [],
+  // #12193: URLs da janela que saíram SÓ em seção não-destaque (prova pelas
+  // pastas locais, `extractDestaqueUpgradeEligibleUrls`). Ficam no pool
+  // marcadas com `dedup_destaque_only`: só podem voltar como destaque. Vazio
+  // (default, callers legados) = bloqueio total de sempre.
+  destaqueUpgradeEligibleUrls: Set<string> = new Set(),
 ): {
   kept: Article[];
   removed: RemovedEntry[];
@@ -267,16 +274,39 @@ export function dedup(
       afterPass1.push(art);
       continue;
     }
-    // #1512: removed #1068 secondary→destaque promotion at dedup time.
-    // URL that appeared in ANY past edition is blocked — same URL in a
-    // published newsletter should never re-appear regardless of section.
+    // #12193 (regra do editor de 04/11/2026, reverte o #1512 só para
+    // destaque): URL que saiu apenas em seção não-destaque pode voltar como
+    // DESTAQUE. Fica no pool marcada; finalize-stage1 (phase 2) e
+    // apply-gate-edits a tiram de qualquer seção normal. Destaque passado
+    // (pastDestaqueUrlsSet) nunca é elegível, mesmo se o Set de elegíveis
+    // vier inconsistente.
+    if (
+      wasInPast &&
+      destaqueUpgradeEligibleUrls.has(canon) &&
+      !(pastDestaqueUrlsSet?.has(canon) ?? false)
+    ) {
+      afterPass1.push({
+        ...art,
+        [DESTAQUE_ONLY_FIELD]:
+          "url já publicada em seção não-destaque na janela de dedup — só pode voltar como destaque (#12193)",
+      });
+      promotedFromSecondary++;
+      continue;
+    }
+    // #1512: URL that appeared in a past edition is blocked — same URL in a
+    // published newsletter never re-appears in a normal section; the only
+    // exception is the destaque upgrade above (#12193).
     pushRemoved(
       removed,
       art,
       wasPastDestaque ? "url-match com destaque de edição anterior (02-reviewed.md, #9100)" : "url-match com edição anterior",
     );
   }
-  // #1512: promotedFromSecondary counter removed — promotion no longer applies.
+  if (promotedFromSecondary > 0) {
+    console.error(
+      `dedup Pass-1 (#12193): ${promotedFromSecondary} URL(s) já publicada(s) em seção não-destaque mantida(s) só como candidata(s) a destaque`,
+    );
+  }
 
   // ---- Pass 1r: itens cortados pelo editor no Stage 4 (#9360) ------------
   // Item cortado nunca é publicado, então o Pass 1 não o conhece e ele volta
@@ -315,6 +345,22 @@ export function dedup(
     }
   }
 
+  // #12193: o item promovível a destaque (Pass 1) casaria com o PRÓPRIO
+  // título publicado na edição anterior nos passes por título (1b/1c/1f) e
+  // sairia de novo. Esses títulos de si mesmo (pelo título real da URL no
+  // pool recente e pelo título atual) não contam para ele; os demais títulos
+  // passados, e os passes de tema/entidade contra destaques (1d/1e), seguem
+  // valendo — mesma história que já foi destaque continua barrada.
+  const normTitle = (t: string): string => t.trim().toLowerCase();
+  const selfPastTitles = (art: Article): Set<string> => {
+    const out = new Set<string>();
+    if (typeof art[DESTAQUE_ONLY_FIELD] !== "string") return out;
+    const byUrl = pastArticleTitleByUrl.get(canonicalize(art.url));
+    if (byUrl) out.add(normTitle(byUrl));
+    if (art.title) out.add(normTitle(art.title));
+    return out;
+  };
+
   // ---- Pass 1b: title similarity vs past edition headlines (#231 defense-in-depth) ---
   // Threshold mais permissivo (0.70 vs 0.85 dentro da lista) — títulos de newsletter
   // diferem em idioma/ângulo mas evento idêntico deve ter sim > 0.70.
@@ -329,8 +375,10 @@ export function dedup(
         afterPass1b.push(art);
         continue;
       }
+      const selfTitles = selfPastTitles(art); // #12193
       let isDupVsPast = false;
       for (const pastTitle of pastTitles) {
+        if (selfTitles.has(normTitle(pastTitle))) continue;
         const sim = titleSimilarity(cmpTitle, pastTitle);
         if (sim >= titleVsPastThreshold) {
           pushRemoved(
@@ -384,7 +432,9 @@ export function dedup(
       }
       let isDupVsPastSubject = false;
       let bestMatch: { title: string; sim: number; entitiesShared: string[]; effectiveThreshold: number } | null = null;
+      const selfTitles = selfPastTitles(art); // #12193
       for (const pt of pastTokens) {
+        if (selfTitles.has(normTitle(pt.title))) continue;
         const sim = jaccardSimilarity(candidateTokens, pt.tokens);
         // #1331: lower threshold (default 0.55) quando candidato e past
         // compartilham entidades nomeadas. Sem entity overlap, mantém 0.6.
@@ -547,10 +597,12 @@ export function dedup(
     const pastEventEntries = pastEventTitles.map((t) => ({ title: t, distanceDays: pastEventDistanceDays.get(t) }));
     for (const art of afterPass1e) {
       let weakProductNote: string | null = null;
+      const selfTitles = selfPastTitles(art); // #12193
       const products = art.title ? extractVersionedProducts(art.title) : new Set<string>();
       if (products.size > 0) {
         let strong: { title: string; detail: string } | null = null;
         for (const past of versionedPast) {
+          if (selfTitles.has(normTitle(past.title))) continue;
           if (![...products].some((p) => past.products.has(p))) continue;
           const m = matchProductVersionStory(art.title!, past.title);
           if (!m) continue; // variantes nomeadas diferentes ("Flash" × "Pro")
@@ -567,7 +619,10 @@ export function dedup(
           continue;
         }
       }
-      const hit = art.title ? findSameEvent(art.title, pastEventEntries) : null;
+      const eventEntries = selfTitles.size > 0
+        ? pastEventEntries.filter((e) => !selfTitles.has(normTitle(e.title)))
+        : pastEventEntries;
+      const hit = art.title ? findSameEvent(art.title, eventEntries) : null;
       if (!hit) {
         afterPass1f.push(weakProductNote ? { ...art, event_dedup_flagged: weakProductNote } : art);
         continue;
@@ -948,6 +1003,20 @@ async function main() {
     );
   }
 
+  // #12193: URLs da janela publicadas só em seção não-destaque (prova pelas
+  // pastas locais de cada edição) — podem voltar como destaque.
+  const destaqueUpgradeEligible = extractDestaqueUpgradeEligibleUrls(
+    pastMd,
+    editionsDir,
+    urlWindowDays,
+    currentAammdd,
+  );
+  if (destaqueUpgradeEligible.size > 0) {
+    console.error(
+      `dedup: ${destaqueUpgradeEligible.size} URL(s) da janela publicada(s) só fora dos destaques — promovíveis a destaque (#12193)`,
+    );
+  }
+
   // #1475: extrair entidades dos "Temas cobertos:" das edições recentes.
   const pastThemes = extractPastThemeEntities(pastMd, window);
   if (pastThemes.size > 0) {
@@ -1023,6 +1092,7 @@ async function main() {
     pastThemeFacts,
     pastArticleTitleByUrl,
     extractPastItemTitles(pastMd, window, currentAammdd),
+    destaqueUpgradeEligible,
   );
 
   console.error(

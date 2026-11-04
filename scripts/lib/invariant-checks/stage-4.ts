@@ -115,6 +115,12 @@ import {
   extractPromptUrl,
 } from "../../match-prompts-to-destaques.ts";
 import { urlsMatch, canonicalize } from "../url-utils.ts";
+import {
+  DESTAQUE_REQUEST_FIELD,
+  findEditorDestaqueRequestIssues,
+  type DestaqueRequest,
+  type FunnelItemLite,
+} from "../destaque-upgrade.ts"; // #12193
 import { readDestaqueCount } from "./stage-3.ts";
 import { extractUrlsWithLines } from "../../validate-domains.ts"; // #8993
 import { evaluateStaleness, findSocialContentMismatches } from "../../check-staleness.ts"; // #9820
@@ -124,7 +130,8 @@ import {
   readPastEditionsMd,
   extractPastUrlsWithOriginWithinDays,
   DEDUP_URL_WINDOW_DAYS,
-} from "../past-editions-extract.ts"; // #8993, #9955
+  extractDestaqueUpgradeEligibleUrls,
+} from "../past-editions-extract.ts"; // #8993, #9955, #12193
 import {
   extractCurrentDeclarationFromMd,
   extractRevealFromFrontmatter,
@@ -2306,6 +2313,9 @@ export interface DuplicateUrlMatch {
 export function findDuplicateUrlsAgainstPastEditions(
   reviewedMd: string,
   pastOrigins: Map<string, string>,
+  // #12193: URLs canônicas promovidas a destaque nesta edição (destaque
+  // aprovado E publicada antes só fora dos destaques) — repetição permitida.
+  exemptCanonical: Set<string> = new Set(),
 ): DuplicateUrlMatch[] {
   if (pastOrigins.size === 0) return [];
   const matches: DuplicateUrlMatch[] = [];
@@ -2321,7 +2331,7 @@ export function findDuplicateUrlsAgainstPastEditions(
 
     const canonical = canonicalize(url);
     const originDate = pastOrigins.get(canonical);
-    if (!originDate || seenCanonical.has(canonical)) continue;
+    if (!originDate || seenCanonical.has(canonical) || exemptCanonical.has(canonical)) continue;
     seenCanonical.add(canonical);
     matches.push({ url, line, originDate });
   }
@@ -2373,7 +2383,23 @@ function checkNoDuplicateUrlsAgainstPastEditions(editionDir: string): InvariantV
   // ancora na seção mais recente de past-editions.md).
   const edition = /^\d{6}$/.test(basename(editionDir)) ? basename(editionDir) : undefined;
   const pastOrigins = extractPastUrlsWithOriginWithinDays(pastMd, DEDUP_URL_WINDOW_DAYS, edition);
-  const matches = findDuplicateUrlsAgainstPastEditions(md, pastOrigins);
+  // #12193: destaque aprovado cuja URL saiu antes só em seção não-destaque é
+  // o "upgrade" que a regra permite — não é repetição a acusar.
+  const exempt = new Set<string>();
+  const approvedHighlights = readApprovedHighlightUrls(editionDir);
+  if (approvedHighlights.length > 0) {
+    const eligible = extractDestaqueUpgradeEligibleUrls(
+      pastMd,
+      resolve(ROOT, "data", "editions"),
+      DEDUP_URL_WINDOW_DAYS,
+      edition,
+    );
+    for (const u of approvedHighlights) {
+      const c = canonicalize(u);
+      if (eligible.has(c)) exempt.add(c);
+    }
+  }
+  const matches = findDuplicateUrlsAgainstPastEditions(md, pastOrigins, exempt);
 
   return matches.map(({ url, line, originDate }) => ({
     rule: "no-duplicate-urls-vs-past-editions",
@@ -2387,6 +2413,78 @@ function checkNoDuplicateUrlsAgainstPastEditions(editionDir: string): InvariantV
     severity: "warning" as const,
     file: reviewedPath,
     line,
+  }));
+}
+
+/** #12193: URLs dos destaques aprovados (`_internal/01-approved.json`), na ordem. */
+function readApprovedHighlightUrls(editionDir: string): string[] {
+  const p = resolve(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(p)) return [];
+  try {
+    const j = JSON.parse(readFileSync(p, "utf8")) as { highlights?: Array<{ url?: unknown; article?: { url?: unknown } }> };
+    return (j.highlights ?? [])
+      .map((h) => (typeof h?.url === "string" ? h.url : typeof h?.article?.url === "string" ? h.article.url : ""))
+      .filter((u) => u);
+  } catch {
+    return [];
+  }
+}
+
+function readJsonSafe(path: string): unknown {
+  if (!existsSync(path)) return undefined;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * #12193: link que o editor pediu como destaque no inbox ("esse deve ser o
+ * d1") e que ficou de fora — barrado por qualquer regra do Stage 1, deixado
+ * no pool, ou destaque em outra posição. Antes o motivo só ia para o log
+ * (caso 261105: o TechCrunch pedido como D1 caiu no dedup por ter saído no
+ * RADAR de 261104, e ninguém avisou o editor).
+ *
+ * Pedidos: `_internal/tmp-articles-raw.json`, artigos com
+ * `editor_destaque_request` (gravado por `inject-inbox-urls.ts`). Motivo:
+ * `_internal/stage1-funnel.json`. Warning-only: o editor decide no gate.
+ */
+function checkEditorDestaqueRequests(editionDir: string): InvariantViolation[] {
+  const internal = resolve(editionDir, "_internal");
+  const rawJson = readJsonSafe(resolve(internal, "tmp-articles-raw.json"));
+  const rawList: unknown[] = Array.isArray(rawJson)
+    ? rawJson
+    : Array.isArray((rawJson as { articles?: unknown } | undefined)?.articles)
+      ? (rawJson as { articles: unknown[] }).articles
+      : [];
+  const requests: DestaqueRequest[] = [];
+  for (const a of rawList) {
+    const art = a as { url?: unknown; title?: unknown; [k: string]: unknown } | null;
+    const req = art?.[DESTAQUE_REQUEST_FIELD];
+    if (!art || typeof art.url !== "string" || typeof req !== "string" || !req) continue;
+    requests.push({ url: art.url, request: req, title: typeof art.title === "string" ? art.title : undefined });
+  }
+  if (requests.length === 0) return [];
+
+  const approvedPath = resolve(internal, "01-approved.json");
+  const approved = readJsonSafe(approvedPath) as Record<string, Array<{ url: string }> | undefined> | undefined;
+  if (!approved) return []; // gate 1 ainda não aprovado — nada a comparar
+  const funnel = readJsonSafe(resolve(internal, "stage1-funnel.json")) as { items?: FunnelItemLite[] } | undefined;
+  const issues = findEditorDestaqueRequestIssues(
+    requests,
+    readApprovedHighlightUrls(editionDir),
+    Array.isArray(funnel?.items) ? funnel.items : [],
+    { lancamento: approved.lancamento, radar: approved.radar, use_melhor: approved.use_melhor, video: approved.video },
+  );
+  return issues.map((i) => ({
+    rule: "editor-destaque-request",
+    message:
+      `Link que você pediu como ${i.request === "destaque" ? "destaque" : i.request.toUpperCase()} não saiu como pedido: ${i.url} — ${i.reason}. ` +
+      `Decida no gate: trocar o destaque ou seguir assim.`,
+    source_issue: "#12193",
+    severity: "warning" as const,
+    file: approvedPath,
   }));
 }
 
@@ -4272,6 +4370,14 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkNoDuplicateUrlsAgainstPastEditions,
   },
   {
+    id: "editor-destaque-request",
+    description:
+      "link enviado pelo editor com pedido explícito de destaque (inbox) que ficou fora dos destaques ou em outra posição, com o motivo (#12193, warning-only)",
+    source_issue: "#12193",
+    stage: 4,
+    run: checkEditorDestaqueRequests,
+  },
+  {
     id: "image-crop-warn",
     description: "revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only)",
     source_issue: "#3951",
@@ -4476,6 +4582,7 @@ export {
   checkTitleIaAsAgentInvariant,
   checkCaptureFailedSubmissionCount,
   checkNoDuplicateUrlsAgainstPastEditions,
+  checkEditorDestaqueRequests,
   checkCropReviewWarnings,
   checkStarryNightDetected,
   checkBoxDivulgacaoAltMissing,
