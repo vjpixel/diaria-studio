@@ -54,7 +54,7 @@ import {
   type ScheduledSlot,
   type SlotRule,
 } from "../social-slot-planner.ts";
-import { YOUTUBE_TITLE_MAX_CHARS, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
+import { YOUTUBE_TITLE_MAX_CHARS, buildYouTubeTitle, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
 import type { ShortCoverRecord } from "./short-cover.ts";
 
 /** Canal do YouTube que os Shorts/Reels divulgam. */
@@ -132,7 +132,8 @@ export function firstSentence(body: string, maxChars = 220): string {
 /**
  * Metadados do Short. Sem comentário fixado (#10831): link em comentário de
  * Short não é clicável desde 2023 — o funil clicável é o vídeo relacionado.
- * Sem link nem domínio na descrição (#11617): gancho + hashtags.
+ * Sem link nem domínio na descrição (#11617): gancho + citação do horizontal
+ * por título (#12191) + hashtags.
  */
 export interface YouTubeShortMetadata {
   title: string;
@@ -149,10 +150,45 @@ export function buildYouTubeShortTitle(d1Title: string): string {
   return `${head}${suffix}`;
 }
 
-export function buildYouTubeShortMetadata(input: { d1: ShortD1Input }): YouTubeShortMetadata {
+/**
+ * #12191 (#12077 item 4): prefixo da linha que cita o horizontal do dia na
+ * descrição do Short. Só texto: link em descrição de Short não é clicável
+ * (#10831) e nenhum texto do vertical leva link (#11617). O caminho clicável
+ * segue sendo o vídeo relacionado (#10811).
+ */
+export const SHORT_HORIZONTAL_CITATION_PREFIX = "Vídeo completo no canal:";
+
+/** Pure (#12191): a linha da citação, ou `""` com título vazio. */
+export function buildShortHorizontalCitation(horizontalTitle: string | null | undefined): string {
+  const title = sanitizeForYouTube(stripInlineMarkdown(horizontalTitle ?? "").replace(/\s+/g, " ").trim());
+  return title ? `${SHORT_HORIZONTAL_CITATION_PREFIX} “${title}”` : "";
+}
+
+/**
+ * Pure (#12191): título do horizontal que o Short cita. O registro do upload
+ * (`_internal/05-youtube-published.json`, que guarda o título real, inclusive
+ * o de `--title`, #11739) vence; sem ele (o vertical pode subir antes do
+ * horizontal), o título que o `publish-youtube.ts` deriva do D1
+ * (`buildYouTubeTitle`). Edição marcada sem vídeo (`no-video.json`, #11125)
+ * não tem horizontal: `null`, sem citação.
+ */
+export function resolveShortHorizontalTitle(input: {
+  d1Title: string;
+  recordTitle?: string | null;
+  noVideo?: boolean;
+}): string | null {
+  if (input.noVideo) return null;
+  const fromRecord = input.recordTitle?.trim();
+  if (fromRecord) return fromRecord;
+  const derived = buildYouTubeTitle(input.d1Title);
+  return derived || null;
+}
+
+export function buildYouTubeShortMetadata(input: { d1: ShortD1Input; horizontalTitle?: string | null }): YouTubeShortMetadata {
   if (!input.d1.title.trim()) throw new Error("D1 sem título");
   const hook = sanitizeForYouTube(firstSentence(input.d1.body));
-  const description = [hook, ["#Shorts", ...SHORTS_HASHTAGS].join(" ")].filter(Boolean).join("\n\n");
+  const citation = buildShortHorizontalCitation(input.horizontalTitle);
+  const description = [hook, citation, ["#Shorts", ...SHORTS_HASHTAGS].join(" ")].filter(Boolean).join("\n\n");
   return { title: buildYouTubeShortTitle(input.d1.title), description };
 }
 
