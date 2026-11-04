@@ -107,11 +107,18 @@ const DEPENDENCY_VERB_RE =
 /** Uma oração = trecho entre pontuação forte (". ; ( ) [ ] — –" ou quebra de linha). */
 const CLAUSE_SPLIT_RE = /[.;()[\]\n—–]+/;
 
+/** Conectivo ancorado numa DATA ("até 2026-12-01", "antes de 01/12") é a
+ * própria condição de calendário, não espera por outra issue: sai da oração
+ * antes da busca por verbo de condição. */
+const DATE_CONNECTIVE_RE =
+  /(?<![\p{L}\p{N}])(?:at[ée]|antes\s+d[eo]|depois\s+d[eo]|ap[oó]s)\s+(?:o\s+)?(?:dia\s+)?\d{1,4}[-/]\d{1,2}(?:[-/]\d{1,4})?/giu;
+
 /** `#N` na mesma oração que um verbo de condição ("aguardando #N", "depois
  * que #N fechar"). "PR #N mergeada" sozinho, sem verbo, é contexto. */
 function citesRefAsCondition(reason: string): boolean {
   return reason
     .split(CLAUSE_SPLIT_RE)
+    .map((clause) => clause.replace(DATE_CONNECTIVE_RE, " "))
     .some((clause) => /#\d+/.test(clause) && DEPENDENCY_VERB_RE.test(clause));
 }
 

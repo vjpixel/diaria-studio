@@ -127,6 +127,13 @@ describe("detectNonDateReason — #N só é dependência com verbo de condição
     );
   });
 
+  it("'até DATA' na oração do PR de contexto é a data, não espera por #N", () => {
+    assert.equal(detectNonDateReason("PR #12129 mergeada, reavaliar até 2026-12-01"), null);
+    assert.equal(detectNonDateReason("PR #12129 mergeada, olhar de novo depois de 01/12"), null);
+    // Verbo de espera real na mesma oração continua recusando.
+    assert.equal(detectNonDateReason("aguardando #12130 até 2026-12-01")?.category, "dependencia");
+  });
+
   it("'adicionar' não é lido como 'adiar'", () => {
     assert.equal(detectNonDateReason("PR #12129 vai adicionar a métrica; reavaliar em 2026-12-01"), null);
   });
