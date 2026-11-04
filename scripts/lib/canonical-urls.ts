@@ -372,6 +372,13 @@ export const FOOTER_DOMAINS = [
   // `x.com/diariabr` passava por `isContentLink` (refresh-past-editions.ts)
   // como se fosse artigo de conteúdo em quase toda a janela de 14 edições.
   DIARIA_X_SLUG,
+  // #12086: canal próprio no YouTube, no convite "Siga a diar.ia.br" do rodapé
+  // e no CTA de inscrição (`DIARIA_YOUTUBE_SUBSCRIBE_URL`, com
+  // `?sub_confirmation=1` — o match é por substring, cobre as duas formas).
+  // Medido em 261030/261103/261104: `findMismatchedUrls` devolvia o link do
+  // canal como divergente em todas. Vídeo específico (`youtube.com/watch?v=`)
+  // não casa com o slug do canal e segue tratado como conteúdo.
+  DIARIA_YOUTUBE_SLUG,
   "wikipedia.org", // todas as variantes (pt/en/es/...)
   "wikimedia.org", // commons + upload
   "creativecommons.org",
