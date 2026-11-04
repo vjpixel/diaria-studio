@@ -70,7 +70,10 @@
  * abordagem. **É também a razão direta pela qual `scripts/backlog-reconcile.ts`
  * precisou de `force: true` incondicional** (não foi escolha de desenho
  * daquele módulo — o texto que ele gera sempre cita `#6198` por
- * atribuição própria, batendo o falso positivo (1) acima toda vez).
+ * atribuição própria, batendo o falso positivo (1) acima toda vez). Desde o
+ * #12167 um `#N` só conta com verbo de condição na mesma oração, e a
+ * atribuição "(#6198)" sozinha já não dispara; o `force` de lá ficou como
+ * estava.
  *
  * @see scripts/route-issue.ts (routeIssue — chama isto pra `--track agendada`)
  * @see scripts/lib/issue-depends-on.ts (mecanismo certo pra dependência)
@@ -85,9 +88,39 @@ export interface NonDateReasonFinding {
 }
 
 /** Cita outra issue como condição ("segurar até #N fechar", "mesma cautela
- * que já adia #A/#B") — qualquer referência `#N` no motivo já é sinal
- * suficiente: uma data real não precisa citar o número de outra issue. */
-const DEPENDENCY_RE = /#\d+|segurar\s+at[ée]|mesma\s+cautela/i;
+ * que já adia #A/#B"). Os dois bordões casam sozinhos; uma referência `#N`
+ * só conta quando divide a oração com um verbo/conectivo de condição
+ * (`DEPENDENCY_VERB_RE`, ver `citesRefAsCondition`).
+ *
+ * #12167: antes, qualquer `#N` recusava. Uma razão como "PR #12129 mergeada
+ * (teste A/B); reavaliar em 2026-12-01" cita o PR como CONTEXTO do que já foi
+ * feito, e a única condição é a data — foi recusada 2 de 2 vezes, e o
+ * contorno (apagar a referência) tirava da razão justamente o que explica a
+ * decisão. */
+const DEPENDENCY_PHRASE_RE = /segurar\s+at[ée]|mesma\s+cautela/i;
+
+/** Vocabulário de espera/condição. Fronteira unicode (o `\b` do JS não vê
+ * "é"/"ó" como letra). `adi[ao]` pega adia/adiado/adiar sem pegar "adicionar". */
+const DEPENDENCY_VERB_RE =
+  /(?<![\p{L}\p{N}])(?:depend\p{L}*|aguard\p{L}*|esper\p{L}*|bloque\p{L}*|adi[ao]\p{L}*|segur\p{L}*|condicion\p{L}*|pr[ée]-?requisito\p{L}*|at[ée]|depois|ap[oó]s|antes|quando|enquanto)(?![\p{L}\p{N}])/iu;
+
+/** Uma oração = trecho entre pontuação forte (". ; ( ) [ ] — –" ou quebra de linha). */
+const CLAUSE_SPLIT_RE = /[.;()[\]\n—–]+/;
+
+/** Conectivo ancorado numa DATA ("até 2026-12-01", "antes de 01/12") é a
+ * própria condição de calendário, não espera por outra issue: sai da oração
+ * antes da busca por verbo de condição. */
+const DATE_CONNECTIVE_RE =
+  /(?<![\p{L}\p{N}])(?:at[ée]|antes\s+d[eo]|depois\s+d[eo]|ap[oó]s)\s+(?:o\s+)?(?:dia\s+)?\d{1,4}[-/]\d{1,2}(?:[-/]\d{1,4})?/giu;
+
+/** `#N` na mesma oração que um verbo de condição ("aguardando #N", "depois
+ * que #N fechar"). "PR #N mergeada" sozinho, sem verbo, é contexto. */
+function citesRefAsCondition(reason: string): boolean {
+  return reason
+    .split(CLAUSE_SPLIT_RE)
+    .map((clause) => clause.replace(DATE_CONNECTIVE_RE, " "))
+    .some((clause) => /#\d+/.test(clause) && DEPENDENCY_VERB_RE.test(clause));
+}
 
 /** Gatilho condicional sem data ("só morde quando X voltar", "reavaliar só
  * se a assinatura recorrer") — a condição de retomada é um EVENTO, não uma
@@ -110,13 +143,13 @@ const SCOPE_RE = /fatia\s+pr[oó]pria|escopo\s+residual|grande[s]?\s+demais|unid
 /**
  * Detecta se `reason` (já sabido não-vazio pelo caller) descreve uma das 3
  * famílias de não-data. Ordem de checagem importa quando o texto casa mais
- * de um padrão (ex: "mesma cautela que #6621" casa DEPENDENCY_RE via `#\d+`
- * E CONDITIONAL_RE via "cautela") — dependência é sempre o veredito mais
+ * de um padrão (ex: "mesma cautela que #6621" casa DEPENDENCY_PHRASE_RE pelo
+ * bordão E CONDITIONAL_RE via "cautela") — dependência é sempre o veredito mais
  * específico e o mecanismo mais acionável (`depends-on:` desarma sozinho),
  * então checa primeiro. `null` = nenhum padrão bateu, reason aceito.
  */
 export function detectNonDateReason(reason: string): NonDateReasonFinding | null {
-  if (DEPENDENCY_RE.test(reason)) {
+  if (DEPENDENCY_PHRASE_RE.test(reason) || citesRefAsCondition(reason)) {
     return {
       category: "dependencia",
       message:

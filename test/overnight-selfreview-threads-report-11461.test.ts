@@ -87,6 +87,29 @@ describe("classifyFindingSeverity (#11461)", () => {
     ];
     for (const v of variants) assert.equal(classifyFindingSeverity(v), "low", v);
   });
+  // #12168: na PR #12150 o finding "Confiança média, P3" citava "**P1**" no
+  // texto (a prioridade da issue que o código abre) e ficou retido como P1.
+  it("#12168: P0..P3 no corpo do finding não é a severidade (comentário real da PR #12150)", () => {
+    const real =
+      "Confiança média, P3: `raiseKitFrioAlarm` abre a issue como família `estado`/**P1**, a prioridade herdada do fluxo frio. " +
+      "Para um alarme de observabilidade que nasceu de um follow-up P3, P1 pode ser alto demais. Se o alarme disparar e a " +
+      "triagem achar exagerado, vale um parâmetro `priority` no helper (hoje ele é fixo).\n\n" +
+      AUTO_REVIEW_MARKER;
+    assert.equal(classifyFindingSeverity(real), "low");
+    assert.equal(classifyFindingSeverity("Confiança baixa, P2: o teste cobre o caminho P0 do alarme"), "low");
+    assert.equal(classifyFindingSeverity("Confiança média, P3 (sobre o `Closes #9265` no corpo): P1 citado depois"), "low");
+    assert.equal(classifyFindingSeverity("Confiança média, P3 — a issue aberta é P0"), "low");
+  });
+  it("#12168: 'confiança alta' no corpo, depois do prefixo, não vira high", () => {
+    assert.equal(classifyFindingSeverity("Confiança média, P3: o revisor anterior tinha confiança alta, mas o caso é raro"), "low");
+  });
+  it("#12168: a tag que vale é a do prefixo — P1 no prefixo continua high", () => {
+    assert.equal(classifyFindingSeverity("Confiança média, P1: a issue aberta é P3, mas o bug é real"), "high");
+  });
+  it("#12168: 1ª linha sem tag fica untagged, mesmo com P0..P3 nas linhas seguintes (fail-closed)", () => {
+    assert.equal(classifyFindingSeverity("Achado do self-review\n\nConfiança média, P3: nit"), "untagged");
+    assert.equal(classifyFindingSeverity("nit sem tag\nabre issue P1"), "untagged");
+  });
   it("#11575: 'alta' solto no texto, longe da tag, não vira high", () => {
     assert.equal(classifyFindingSeverity("Confiança média, P3: a latência fica alta no pior caso"), "low");
   });
