@@ -396,6 +396,20 @@ describe("fetchAndAggregateKit — leitura condicional via Kit (#6051, campos co
       assert.equal(r.campaignCounts["__none__"], 1);
     } finally { m.restore(); }
   });
+
+  it("#12066: mediumCounts lê fields.utm_medium (primário) e cai em attribution.utm_medium", async () => {
+    const m = mockKitFetch([
+      { id: 1, email_address: "a@b.com", state: "active", created_at: "x",
+        fields: { utm_source: "dossiemaster", utm_medium: "topo" },
+        attribution: { utm_source: null, utm_medium: "rodape", utm_campaign: null, referrer: null, source_type: null, source_name: null, source_mechanism: null } },
+      { id: 2, email_address: "c@d.com", state: "active", created_at: "x",
+        attribution: { utm_source: "dossiemaster", utm_medium: "rodape", utm_campaign: null, referrer: null, source_type: null, source_name: null, source_mechanism: null } },
+    ]);
+    try {
+      const r = await fetchAndAggregateKit({ apiKey: "kit_test_key" });
+      assert.deepEqual(r.mediumCounts, { dossiemaster: { topo: 1, rodape: 1 } });
+    } finally { m.restore(); }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -438,4 +452,5 @@ describe("fetchByBackend (#7395 — CLI parava de checar subscriber_backend)", (
     assert.equal(beehiivCalled, true);
     assert.equal(kitCalled, false);
   });
+
 });
