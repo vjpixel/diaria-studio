@@ -57,6 +57,9 @@ on:
         type: string
         default: ""
     secrets:
+      # #12119: qual token da Cloudflare é este (nome, ID, permissões) e como
+      # conferir que o secret do GitHub bate com o do Doppler/.env:
+      # docs/secret-rotation.md, seção CLOUDFLARE_WORKERS_TOKEN.
       CLOUDFLARE_WORKERS_TOKEN:
         required: true
       CLOUDFLARE_ACCOUNT_ID:
@@ -77,6 +80,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+
+      # #12118: workflow_dispatch de uma branch publica o código DA BRANCH no
+      # Worker de produção. Branch atrás do master desfaria em produção as
+      # correções que o master já tem. Ref efetivo = `inputs.ref` quando o
+      # caller passa (regen-home.yml: `master`), senão o ref do caller.
+      # Ref master passa direto; o resto exige origin/master ancestral do HEAD.
+      - name: Guard - branch contém o master? (#12118)
+        env:
+          DEPLOY_REF: ${{ inputs.ref || github.ref_name }}
+        run: bash scripts/check-deploy-ref-contains-master.sh "$DEPLOY_REF"
 
       - uses: actions/setup-node@v4
         with:
