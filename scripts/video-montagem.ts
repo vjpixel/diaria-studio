@@ -43,8 +43,13 @@
  *   frame AAMMDD --at S    frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade) e, ao lado,
  *                           `frame-{S}-orientacoes.jpg` com o bruto e o espelhado lado a lado + a premissa do
  *                           espelhamento (#11959: metadado da câmera, publishing.video.mirrored_default ou default)
- *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
- *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz)
+ *   roteiro AAMMDD [--no-short-word-check]
+ *                           resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
+ *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz).
+ *                           #12093: retranscreve a janela de cada item (sem VAD, cache em
+ *                           `roteiro-retranscribe.json`) e lista na seção "Palavras curtas" onde
+ *                           artigo/preposição do roteiro difere do ouvido, para o editor decidir;
+ *                           --no-short-word-check (ou sem `audio.wav`) pula, com aviso no Doc
  *   fact-check-input AAMMDD (#11956)
  *                           os itens da fala que vão ao ar (união das versões, com a fala ouvida
  *                           quando difere), o hash deles e o caminho das fontes do D1 do Stage 4, em
@@ -286,6 +291,7 @@ import {
   speechJoinWarnings,
   speechPauseSilences,
   trimEdgeExtras,
+  windowKey,
   type EdgeWindow,
 } from "./lib/diaria/video-cut-refine.ts";
 import { classifyVoices, segmentF0s, speechSeconds, type VoiceMark } from "./lib/diaria/video-voice.ts";
@@ -320,7 +326,8 @@ import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { stripInlineMarkdown } from "./lib/diaria/youtube-video.ts";
 import { youtubeCaptionFileName } from "./lib/diaria/youtube-captions.ts";
-import { factCheckItems, factCheckItemsSha256, factCheckSection, parseVideoFactCheck } from "./lib/diaria/video-fact-check.ts";
+import { factCheckItems, factCheckItemsSha256, factCheckSection, parseVideoFactCheck, type FactCheckItem } from "./lib/diaria/video-fact-check.ts";
+import { SHORT_WORD_WINDOW_PAD_S, shortWordDivergences, shortWordSection, type ShortWordItemCheck } from "./lib/diaria/video-short-words.ts";
 import sharp from "sharp";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -1219,7 +1226,7 @@ function cmdFrame(ctx: Ctx, at: string | undefined): number {
   return 0;
 }
 
-function cmdRoteiro(ctx: Ctx): number {
+function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   const { file, source, plans: ps, resolved } = plans(ctx);
   // As linhas "alternativa" da decupagem viram as opções B, C… do roteiro (#11361).
   const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
@@ -1246,10 +1253,46 @@ function cmdRoteiro(ctx: Ctx): number {
   } else if (!fc) console.error(`[aviso] sem ${fcPath}: rode o fact-check da fala (Passo 3a, fact-check-input + agent fact-checker mode video) antes do Gate 2 (#11956)`);
   else if (section.stale) console.error("[aviso] o roteiro mudou depois do fact-check: frases novas não foram checadas; rode o Passo 3a de novo (#11956)");
   if (section.graves) console.error(`[aviso] fact-check: ${section.graves} achado(s) grave(s) em aberto na fala (seção "Fact-check da fala" do roteiro, #11956)`);
-  const md = `${base.trimEnd()}\n\n${section.lines.join("\n")}`;
+  const short = shortWordChecks(ctx, factCheckItems(ps, resolved), shortWordCheck);
+  if (short.skipped) console.error(`[aviso] palavras curtas do roteiro não conferidas (${short.skipped}): conferir no áudio os artigos e preposições antes do Gate 2 (#12093)`);
+  else {
+    const n = short.checks!.reduce((k, c) => k + c.divergences.length, 0);
+    if (n) console.error(`[aviso] ${n} palavra(s) curta(s) do roteiro diferente(s) da retranscrição da janela: seção "Palavras curtas" do roteiro, para o editor decidir no Gate 2 (#12093)`);
+  }
+  const md = `${base.trimEnd()}\n\n${section.lines.join("\n")}\n\n${shortWordSection(short.checks, short.skipped).join("\n")}\n`;
   writeFileAtomic(f(ctx, "roteiro.md"), md);
   process.stdout.write(md);
   return 0;
+}
+
+/** Cache da retranscrição das janelas dos itens do roteiro (#12093). */
+export const SHORT_WORD_CACHE_FILE = "roteiro-retranscribe.json";
+
+/**
+ * Palavras curtas do roteiro × retranscrição da janela de cada item (#12093),
+ * numa chamada só do Python. Sem `audio.wav`, com `--no-short-word-check` ou
+ * com a retranscrição falhando, devolve o motivo em `skipped` (o roteiro sai
+ * assim mesmo, com o aviso no Doc).
+ */
+function shortWordChecks(ctx: Ctx, items: FactCheckItem[], enabled: boolean): { checks: ShortWordItemCheck[] | null; skipped?: string } {
+  if (!enabled) return { checks: null, skipped: "--no-short-word-check" };
+  const audio = join(ctx.workDir, "audio.wav");
+  if (!existsSync(audio)) return { checks: null, skipped: `áudio do bruto ausente (${audio})` };
+  const windows = items.map((it) => {
+    const start = Math.max(0, it.start - SHORT_WORD_WINDOW_PAD_S);
+    const end = it.end + SHORT_WORD_WINDOW_PAD_S;
+    return { key: windowKey(start, end), start, end };
+  });
+  let heard: Map<string, Word[]>;
+  try {
+    heard = windowTranscripts(ctx, audio, windows, SHORT_WORD_CACHE_FILE, "palavras curtas do roteiro: retranscrevendo {n} item(ns) (sem VAD, #12093)…");
+  } catch (e) {
+    return { checks: null, skipped: `retranscrição falhou: ${(e as Error).message}` };
+  }
+  const aliases = loadVocab().aliases;
+  return {
+    checks: items.map((it, i) => ({ id: it.id, text: it.text, start: it.start, end: it.end, divergences: shortWordDivergences(heard.get(windows[i].key) ?? [], it.text, aliases) })),
+  };
 }
 
 /** Saída do agent `fact-checker` em `mode: "video"` (#11956), no state dir. */
@@ -1367,28 +1410,39 @@ function silenceThresholdDb(ctx: Ctx): number {
  * (tamanho + mtime): build repetido no loop da autorrevisão não retranscreve.
  */
 function edgeTranscripts(ctx: Ctx, audio: string, windows: EdgeWindow[]): Map<string, Word[]> {
-  const cachePath = f(ctx, "edge-retranscribe.json");
+  return windowTranscripts(ctx, audio, windows, "edge-retranscribe.json", "refino dos cortes: retranscrevendo {n} borda(s) de clipe (sem VAD)…");
+}
+
+/**
+ * Retranscrição de janelas do bruto numa chamada só do Python, sem VAD e sem
+ * `condition_on_previous_text`, com cache por janela em `cacheName` (válido
+ * para o MESMO `audio.wav`). Base das bordas do build (#11500) e das palavras
+ * curtas do roteiro (#12093). `{n}` na mensagem = janelas a retranscrever.
+ */
+function windowTranscripts(ctx: Ctx, audio: string, windows: EdgeWindow[], cacheName: string, message: string): Map<string, Word[]> {
+  const cachePath = f(ctx, cacheName);
   const st = statSync(audio);
   const id = { size: st.size, mtimeMs: st.mtimeMs };
   type Cache = { audio: typeof id; windows: Record<string, Word[]> };
   let cache: Cache = { audio: id, windows: {} };
   if (existsSync(cachePath) && !ctx.force) {
-    const c = readJson<Cache>(cachePath, "edge-retranscribe.json");
+    const c = readJson<Cache>(cachePath, cacheName);
     if (c.audio?.size === id.size && c.audio?.mtimeMs === id.mtimeMs) cache = c;
   }
   const missing = windows.filter((w) => !(w.key in cache.windows));
   if (missing.length) {
     mkdirSync(ctx.workDir, { recursive: true });
-    const winFile = join(ctx.workDir, "edge-windows.json");
-    const out = join(ctx.workDir, "edge-retranscribe.raw.json");
+    const stem = cacheName.replace(/\.json$/, "");
+    const winFile = join(ctx.workDir, `${stem}.windows.json`);
+    const out = join(ctx.workDir, `${stem}.raw.json`);
     writeFileSync(winFile, JSON.stringify(missing));
-    console.error(`[video-montagem] refino dos cortes: retranscrevendo ${missing.length} borda(s) de clipe (sem VAD)…`);
+    console.error(`[video-montagem] ${message.replace("{n}", String(missing.length))}`);
     const vocab = loadVocab();
     run(ctx.python, ["-P", PY_HELPER, audio, out, "--windows", winFile, "--no-condition", "--initial-prompt", vocab.whisper_prompt ?? ""], {
       env: { ...process.env, HF_HUB_OFFLINE: "1" },
       inheritStderr: true,
     });
-    const raw = readJson<{ windows: Array<{ key: string; segments: Segment[] }> }>(out, "retranscrição das bordas");
+    const raw = readJson<{ windows: Array<{ key: string; segments: Segment[] }> }>(out, `retranscrição das janelas (${cacheName})`);
     for (const w of raw.windows) cache.windows[w.key] = transcriptWords({ segments: w.segments });
     writeJson(cachePath, cache);
   }
@@ -2301,7 +2355,7 @@ async function runCommand(
     case "retranscribe":
       return cmdRetranscribe(ctx, values["from"], values["to"], flags.has("sub"));
     case "roteiro":
-      return cmdRoteiro(ctx);
+      return cmdRoteiro(ctx, !flags.has("no-short-word-check"));
     case "fact-check-input":
       return cmdFactCheckInput(ctx);
     case "build":
