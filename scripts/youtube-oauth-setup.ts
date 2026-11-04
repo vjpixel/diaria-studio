@@ -4,7 +4,9 @@
  * OAuth one-shot (authorization code + redirect de loopback) da conta dona
  * do canal @diariabr, com escopos `youtube.upload` + `youtube.readonly` +
  * `youtube.force-ssl` (este desde #11384, para o `captions.insert` da legenda
- * SRT: token gerado antes não envia legenda — rodar o setup de novo uma vez).
+ * SRT: token gerado antes não envia legenda — rodar o setup de novo uma vez)
+ * + `yt-analytics.readonly` (desde #12075, para `youtube-analytics-snapshot.ts`;
+ * opcional, e pede a YouTube Analytics API ativada no projeto GCP).
  * Rodar na máquina do editor (abre o navegador logado na conta Google).
  *
  * Lê do ambiente (Doppler → `.env`): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
@@ -169,7 +171,7 @@ async function main(): Promise<number> {
   const optionalMissing = missingOptionalScopes(tokens.scope);
   if (optionalMissing.length > 0) {
     console.error(
-      `⚠ O consentimento não concedeu ${optionalMissing.join(", ")}: o vídeo sobe, mas a legenda SRT não (#11384) e o --update-scheduled não troca título/descrição do vídeo agendado (videos.update, #11955). ` +
+      `⚠ O consentimento não concedeu ${optionalMissing.join(", ")}: o vídeo sobe, mas sem youtube.force-ssl a legenda SRT não (#11384) e o --update-scheduled não troca título/descrição do vídeo agendado (videos.update, #11955); sem yt-analytics.readonly o snapshot do YouTube Analytics grava só o total de inscritos (#12075). ` +
         "Rode o setup de novo deixando todos os escopos marcados.",
     );
   }

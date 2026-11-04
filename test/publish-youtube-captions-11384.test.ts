@@ -174,7 +174,10 @@ describe("request do captions.insert (#11384)", () => {
     assert.ok((YOUTUBE_OAUTH_SCOPES as readonly string[]).includes("https://www.googleapis.com/auth/youtube.force-ssl"));
     const old = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly";
     assert.deepEqual(missingGrantedScopes(old), [], "token antigo ainda serve para o vídeo");
-    assert.deepEqual(missingOptionalScopes(old), ["https://www.googleapis.com/auth/youtube.force-ssl"]);
+    assert.deepEqual(missingOptionalScopes(old), [
+      "https://www.googleapis.com/auth/youtube.force-ssl",
+      "https://www.googleapis.com/auth/yt-analytics.readonly",
+    ]);
     assert.deepEqual(missingOptionalScopes(YOUTUBE_OAUTH_SCOPES.join(" ")), []);
   });
 });

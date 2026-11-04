@@ -327,6 +327,29 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#10941",
   },
   {
+    name: "Diaria-YouTube-Analytics-Snapshot",
+    description:
+      "snapshot diario do YouTube Analytics do @diariabr (inscritos ganhos por video, fonte de trafego, retencao, total de inscritos) em data/youtube-analytics/ (#12075)",
+    steps: [{ key: "snapshot", script: "scripts/youtube-analytics-snapshot.ts" }],
+    logPath: "youtube-analytics/.snapshot.log",
+    // Diaria 11:35 BRT, slot livre (ver grep de `hour: 11, minute:`). Sem
+    // pressa: o YouTube consolida o dado do dia com 2-3 dias de atraso, e o
+    // script re-busca os ultimos 7 dias a cada execucao (o leitor deduplica,
+    // a captura mais recente vence). So LE o YouTube e escreve so em data/.
+    // Token sem `yt-analytics.readonly` (gerado antes do #12075) NAO falha a
+    // task: grava so o total de inscritos e avisa no log ate o editor re-rodar
+    // `scripts/youtube-oauth-setup.ts`. Host unico (o 300), como as demais
+    // que appendam em data/: duas maquinas so duplicariam linhas (o leitor
+    // deduplica), sem perda.
+    schedule: { kind: "daily", hour: 11, minute: 35 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem gravar a serie do YouTube Analytics.",
+    },
+    issue: "#12075",
+  },
+  {
     name: "Diaria-Short-Related-Missed-Alarm",
     description:
       "alarma quando a task do vídeo relacionado do Short (#10811, no Neo) não deixou registro na edição do dia depois do prazo (#11353)",
