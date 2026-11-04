@@ -124,8 +124,8 @@
     "enabled": true
   },
   "public_images_r2": {
-    "_comment": "#11412 fatia 1: imagens novas da edição no R2 (img/{AAMMDD}/…) em vez do KV POLL, mesma URL /img/. Ligar só depois do binding MEDIA nos Workers poll e site (ordem em scripts/lib/public-images-r2.ts).",
-    "enabled": false
+    "_comment": "#11412 fatia 1: imagens novas da edição no R2 (img/{AAMMDD}/…) em vez do KV POLL, mesma URL /img/. Ligado em 04/11/2026 (/diaria-develop 261104b) depois do binding MEDIA (#12112) e do probe --write passar nos dois Workers (ordem em scripts/lib/public-images-r2.ts). Sem env do R2 na máquina da edição, cai no KV com aviso.",
+    "enabled": true
   },
   "raffle": {
     "meet_url": "https://meet.google.com/wqg-sgoj-dso",
