@@ -134,6 +134,25 @@ describe("detectNonDateReason — #N só é dependência com verbo de condição
     assert.equal(detectNonDateReason("aguardando #12130 até 2026-12-01")?.category, "dependencia");
   });
 
+  it("#12215: #N entre parênteses na oração do verbo de condição continua recusado", () => {
+    assert.equal(
+      detectNonDateReason("aguardando o merge da PR (#12129); reavaliar em 2026-12-01")?.category,
+      "dependencia",
+    );
+    assert.equal(
+      detectNonDateReason("depende do fix de deploy (#9001) — reavaliar em 2026-12-01")?.category,
+      "dependencia",
+    );
+    assert.equal(detectNonDateReason("esperando o deploy [#9001, #9002]")?.category, "dependencia");
+    assert.equal(detectNonDateReason("aguardando os dois fixes (#9001 e #9002)")?.category, "dependencia");
+    // casos já suportados seguem iguais
+    assert.equal(detectNonDateReason("PR #12129 mergeada; reavaliar em 2026-12-01"), null);
+    assert.equal(detectNonDateReason("aguardando #12000")?.category, "dependencia");
+    // atribuição só-#N SEM verbo na oração segue sendo contexto
+    assert.equal(detectNonDateReason("reconciliação diária (#6198): marcador ainda futuro"), null);
+    assert.equal(detectNonDateReason("PR mergeada (#12129); reavaliar em 2026-12-01"), null);
+  });
+
   it("'adicionar' não é lido como 'adiar'", () => {
     assert.equal(detectNonDateReason("PR #12129 vai adicionar a métrica; reavaliar em 2026-12-01"), null);
   });
