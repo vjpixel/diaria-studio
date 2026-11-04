@@ -36,6 +36,12 @@
  *   identidade (`youtube-thumb-portrait.ts`). O layout `top` (#11220) segue
  *   disponível com `layout: "top"` / `--layout top`.
  *
+ *   Desde a edição 261104 (#12123): layout `right`, o espelho do `bottom` —
+ *   retrato colado à DIREITA, gancho embaixo à esquerda (linhas alinhadas à
+ *   esquerda), vinheta com o centro em `cx=0.38`, a cena do D1 à esquerda.
+ *   `bgCrop` recorta uma região do fundo antes do encaixe 16:9 (amplia a
+ *   cena sem novo outpaint).
+ *
  *   Short (capa vertical): um frame do próprio vídeo vertical dentro da janela
  *   do lettering do título (~3,5 s iniciais) — `ffmpeg -ss {t}`; aqui só os
  *   argumentos e a checagem da janela.
@@ -47,6 +53,7 @@
 
 import sharp from "sharp";
 import { COLORS, FONTS } from "../shared/design-tokens.ts";
+import type { PortraitSide } from "./youtube-thumb-portrait.ts";
 
 export const YOUTUBE_THUMB_W = 1280;
 export const YOUTUBE_THUMB_H = 720;
@@ -89,10 +96,12 @@ export const GRADIENT_MAX_OPACITY = 0.6;
 /**
  * Layout da capa horizontal (#11942). `bottom` = padrão da 261021 (close-up à
  * esquerda, gancho embaixo à direita, vinheta); `top` = padrão de 261027
- * (#11220: retrato de corpo na base, gancho no topo).
+ * (#11220: retrato de corpo na base, gancho no topo); `right` = espelho do
+ * `bottom` (#12123: retrato à direita, gancho embaixo à esquerda, capa da
+ * 261104).
  */
-export type ThumbLayout = "bottom" | "top";
-export const THUMB_LAYOUTS: readonly ThumbLayout[] = ["bottom", "top"];
+export type ThumbLayout = "bottom" | "top" | "right";
+export const THUMB_LAYOUTS: readonly ThumbLayout[] = ["bottom", "top", "right"];
 export const DEFAULT_THUMB_LAYOUT: ThumbLayout = "bottom";
 
 /** Valida o `--layout`; ausente → default. Lança com as opções fora delas. */
@@ -100,7 +109,43 @@ export function parseThumbLayout(raw: string | undefined): ThumbLayout {
   if (raw === undefined) return DEFAULT_THUMB_LAYOUT;
   const v = raw.trim().toLowerCase();
   if ((THUMB_LAYOUTS as readonly string[]).includes(v)) return v as ThumbLayout;
-  throw new Error(`--layout ${JSON.stringify(raw)} inválido: use ${THUMB_LAYOUTS.join(" ou ")} (default ${DEFAULT_THUMB_LAYOUT}, #11942)`);
+  throw new Error(
+    `--layout ${JSON.stringify(raw)} inválido: use ${THUMB_LAYOUTS.slice(0, -1).join(", ")} ou ${THUMB_LAYOUTS[THUMB_LAYOUTS.length - 1]} (default ${DEFAULT_THUMB_LAYOUT}, #11942)`,
+  );
+}
+
+/** Lado em que o retrato entra na capa (#12123): `right` só no layout `right`. */
+export function portraitSideForLayout(layout: ThumbLayout): PortraitSide {
+  return layout === "right" ? "right" : "left";
+}
+
+/** Recorte do fundo em pixels da imagem de origem (#12123, `--bg-crop x,y,w,h`). */
+export interface BgCrop {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Valida `--bg-crop x,y,w,h` (inteiros ≥ 0, largura e altura > 0). Os limites da imagem são checados na composição. */
+export function parseBgCrop(raw: string): BgCrop {
+  const parts = raw.split(",").map((s) => s.trim());
+  const nums = parts.map(Number);
+  if (parts.length !== 4 || nums.some((n, i) => parts[i] === "" || !Number.isInteger(n) || n < 0)) {
+    throw new Error(`--bg-crop ${JSON.stringify(raw)} inválido: use x,y,largura,altura em pixels inteiros da imagem de fundo (ex.: 200,80,1400,788)`);
+  }
+  const [left, top, width, height] = nums;
+  if (width === 0 || height === 0) throw new Error(`--bg-crop ${JSON.stringify(raw)}: largura e altura precisam ser maiores que zero`);
+  return { left, top, width, height };
+}
+
+/** Pure: o recorte cabe na imagem? Lança com as dimensões se não couber. */
+export function assertBgCropInside(crop: BgCrop, width: number, height: number): void {
+  if (crop.left + crop.width > width || crop.top + crop.height > height) {
+    throw new Error(
+      `--bg-crop ${crop.left},${crop.top},${crop.width},${crop.height} passa da imagem de fundo (${width}x${height}): x+largura ≤ ${width} e y+altura ≤ ${height}`,
+    );
+  }
 }
 
 /** Layout `bottom` (#11942): close-up até 55% da largura, altura inteira. */
@@ -120,6 +165,11 @@ const BOTTOM_HOOK_MAX_WIDTH = 720;
 export const BOTTOM_HOOK_PORTRAIT_OVERLAP = 160;
 /** Vinheta (#11942): bordas escurecidas, centro da cena à direita intacto. */
 export const VIGNETTE_MAX_OPACITY = 0.7;
+/** Centro horizontal da vinheta: cena à direita no `bottom` (#11942), espelhada no `right` (#12123). */
+export const VIGNETTE_CX_BOTTOM = 0.62;
+export const VIGNETTE_CX_RIGHT = 0.38;
+/** Margem esquerda do gancho no layout `right` (#12123), espelho da direita. */
+const HOOK_LEFT_MARGIN = 40;
 
 export interface HookParts {
   /** Texto em cor papel (sem o `?` final). Com quebra, as linhas unidas por espaço. */
@@ -255,10 +305,10 @@ export function buildGradientSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H, posit
  * (centrado um pouco à direita, onde fica a cena do D1) e escura nas bordas,
  * como na capa de 261021. Fica atrás do retrato.
  */
-export function buildVignetteSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H): string {
+export function buildVignetteSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H, cx = VIGNETTE_CX_BOTTOM): string {
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
-    `<defs><radialGradient id="v" cx="0.62" cy="0.42" r="0.75">` +
+    `<defs><radialGradient id="v" cx="${cx}" cy="0.42" r="0.75">` +
     `<stop offset="0.45" stop-color="#000" stop-opacity="0"/>` +
     `<stop offset="1" stop-color="#000" stop-opacity="${VIGNETTE_MAX_OPACITY}"/>` +
     `</radialGradient></defs>` +
@@ -274,7 +324,7 @@ export function buildVignetteSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H): stri
  * largura máxima vale mesmo quando a fonte efetiva tem métrica diferente da
  * estimada em `hookFontSize` (fallback sem Georgia sai bem mais largo).
  */
-export function buildHookSvg(hook: string): string {
+export function buildHookSvg(hook: string, align: "end" | "start" = "end"): string {
   const parts = splitHook(hook);
   const size = hookFontSize(parts);
   const textAttrs = `font-family="${escapeXml(FONTS.serif)}" font-weight="700" font-size="${size}" fill="${COLORS.onInk}"`;
@@ -294,16 +344,17 @@ export function buildHookSvg(hook: string): string {
   // #11740: uma <text> por linha, todas ancoradas no MESMO x à direita
   // (`text-anchor="end"`), então as linhas saem alinhadas à direita entre si; o
   // `trim` da composição recorta a caixa do bloco e o encaixe no canto segue
-  // pela caixa real, como na linha única.
+  // pela caixa real, como na linha única. No layout `right` (#12123) o gancho
+  // fica à esquerda e as linhas se alinham à esquerda (`align: "start"`).
   const chars = Math.max(...hookDrawnLines(parts).map((l) => Array.from(l).length));
   const lineHeight = Math.round(size * HOOK_LINE_HEIGHT_EM);
   const w = Math.ceil(chars * size * 0.9) + 2 * size;
   const h = Math.ceil(size * 1.6) + lineHeight * (parts.lines.length - 1);
-  const xEnd = w - size;
+  const x = align === "end" ? w - size : size;
   const rows = parts.lines.map((line, i) => {
     const isLast = i === parts.lines!.length - 1;
     const y = Math.round(size * 1.2) + i * lineHeight;
-    return `<text x="${xEnd}" y="${y}" text-anchor="end" ${textAttrs}>${escapeXml(line)}${isLast ? mark : ""}</text>`;
+    return `<text x="${x}" y="${y}" text-anchor="${align}" ${textAttrs}>${escapeXml(line)}${isLast ? mark : ""}</text>`;
   });
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">${rows.join("")}</svg>`;
 }
@@ -312,8 +363,12 @@ export function buildHookSvg(hook: string): string {
  * Rasteriza o gancho, recorta a caixa real e encolhe se passar de `maxWidth`
  * (encolher a camada rasterizada equivale a reduzir a fonte).
  */
-async function renderHookLayer(hook: string, maxWidth = HOOK_MAX_WIDTH): Promise<{ png: Buffer; width: number; height: number }> {
-  let png = await sharp(Buffer.from(buildHookSvg(hook))).png().trim().toBuffer();
+async function renderHookLayer(
+  hook: string,
+  maxWidth = HOOK_MAX_WIDTH,
+  align: "end" | "start" = "end",
+): Promise<{ png: Buffer; width: number; height: number }> {
+  let png = await sharp(Buffer.from(buildHookSvg(hook, align))).png().trim().toBuffer();
   let meta = await sharp(png).metadata();
   if ((meta.width ?? 0) > maxWidth) {
     png = await sharp(png).resize({ width: maxWidth }).png().toBuffer();
@@ -371,6 +426,46 @@ export function hookWidthBesideBottom(portraitRight: number, thumbW = YOUTUBE_TH
   return Math.min(BOTTOM_HOOK_MAX_WIDTH, thumbW - HOOK_RIGHT_MARGIN - startX);
 }
 
+/**
+ * Menor x (coordenada do RETRATO, 0 = borda esquerda dele) com pixel visível
+ * entre as linhas `y0..y1` da capa, ou -1 se não há nada visível ali (#12123,
+ * layout `right`: o gancho fica à esquerda do retrato). Mesmo contrato de
+ * `portraitRightEdgeInRows`.
+ */
+export function portraitLeftEdgeInRows(
+  rgba: { data: Uint8Array; width: number; height: number; channels: number },
+  top: number,
+  y0: number,
+  y1: number,
+  alphaThreshold = 16,
+): number {
+  let minX = rgba.width;
+  const from = Math.max(0, y0 - top);
+  const to = Math.min(rgba.height - 1, y1 - top);
+  for (let y = from; y <= to; y++) {
+    for (let x = 0; x < minX; x++) {
+      if (rgba.data[(y * rgba.width + x) * rgba.channels + rgba.channels - 1] > alphaThreshold) {
+        minX = x;
+        break;
+      }
+    }
+  }
+  return minX === rgba.width ? -1 : minX;
+}
+
+/**
+ * Largura disponível para o gancho EMBAIXO à ESQUERDA (#12123, layout
+ * `right`): espelho de `hookWidthBesideBottom`. `portraitLeft` é a coordenada
+ * da CAPA do pixel visível mais à esquerda do retrato nas linhas do gancho
+ * (-1 = nada ali); o gancho pode passar por cima dele até
+ * `BOTTOM_HOOK_PORTRAIT_OVERLAP` px.
+ */
+export function hookWidthBesideBottomLeft(portraitLeft: number, thumbW = YOUTUBE_THUMB_W): number {
+  if (portraitLeft < 0) return BOTTOM_HOOK_MAX_WIDTH;
+  const endX = Math.min(thumbW, portraitLeft + BOTTOM_HOOK_PORTRAIT_OVERLAP);
+  return Math.min(BOTTOM_HOOK_MAX_WIDTH, endX - HOOK_LEFT_MARGIN);
+}
+
 /** Realce do retrato aprovado pelo editor em 261027 (#11228). */
 export const PORTRAIT_CONTRAST = { a: 1.25, b: -32 } as const;
 export const PORTRAIT_SATURATION = 1.08;
@@ -410,6 +505,11 @@ export interface ComposeThumbInput {
   enhancePortrait?: boolean;
   /** Layout (#11942). Default: `bottom`, o padrão da 261021. */
   layout?: ThumbLayout;
+  /**
+   * Região do fundo (pixels da imagem de origem, depois da rotação EXIF) que
+   * vira a cena (#12123): amplia a cena do D1 sem novo outpaint.
+   */
+  bgCrop?: BgCrop;
 }
 
 export interface ComposeThumbResult {
@@ -436,9 +536,20 @@ export async function composeYouTubeThumb(input: ComposeThumbInput): Promise<Com
 
   const bgMeta = await sharp(input.background).metadata();
   if (!bgMeta.width || !bgMeta.height) throw new Error("fundo ilegível (sem dimensões)");
-  if (!isSixteenByNine(bgMeta.width, bgMeta.height)) {
+  // #12123: o recorte vale sobre a imagem já orientada (EXIF), a que o editor vê.
+  let bgSource = input.background;
+  let [bgW, bgH] = [bgMeta.width, bgMeta.height];
+  if (input.bgCrop) {
+    const oriented = await sharp(input.background).rotate().toBuffer({ resolveWithObject: true });
+    assertBgCropInside(input.bgCrop, oriented.info.width, oriented.info.height);
+    bgSource = await sharp(oriented.data).extract(input.bgCrop).toBuffer();
+    [bgW, bgH] = [input.bgCrop.width, input.bgCrop.height];
+  }
+  if (!isSixteenByNine(bgW, bgH)) {
     warnings.push(
-      `fundo ${bgMeta.width}x${bgMeta.height} não é 16:9 — recortado no centro; o processo aprovado usa o outpaint 16:9 da 04-d1-2x1.jpg com o objeto do D1 menor e inteiro à direita`,
+      input.bgCrop
+        ? `recorte do fundo ${bgW}x${bgH} não é 16:9 — recortado de novo no centro; use largura/altura ≈ 16:9 no --bg-crop`
+        : `fundo ${bgW}x${bgH} não é 16:9 — recortado no centro; o processo aprovado usa o outpaint 16:9 da 04-d1-2x1.jpg com o objeto do D1 menor e inteiro à direita`,
     );
   }
 
@@ -448,17 +559,20 @@ export async function composeYouTubeThumb(input: ComposeThumbInput): Promise<Com
   }
 
   // Fundo: cover, sem desfoque (regra do editor: "nunca desfoque").
-  const background = await sharp(input.background)
+  const background = await sharp(bgSource)
     .rotate()
     .resize(W, H, { fit: "cover", position: "centre" })
     .toBuffer();
 
   const layout = input.layout ?? DEFAULT_THUMB_LAYOUT;
-  const bottom = layout === "bottom";
+  // #12123: `right` é o `bottom` espelhado — mesmo close-up, gancho embaixo, vinheta.
+  const mirrored = layout === "right";
+  const bottom = layout === "bottom" || mirrored;
 
-  // Retrato: apara a transparência em volta e cola à esquerda, na base. No
-  // layout `top` cabe em 50% x 94%; no `bottom` (#11942) é o close-up grande,
-  // até 55% da largura e a altura inteira.
+  // Retrato: apara a transparência em volta e cola à esquerda (à direita no
+  // `right`, #12123), na base. No layout `top` cabe em 50% x 94%; no `bottom`
+  // e no `right` (#11942) é o close-up grande, até 55% da largura e a altura
+  // inteira.
   const source = input.enhancePortrait ? await enhancePortrait(input.portrait) : input.portrait;
   const trimmed = await sharp(source).rotate().trim().png().toBuffer();
   const [maxWRatio, maxHRatio] = bottom
@@ -468,9 +582,14 @@ export async function composeYouTubeThumb(input: ComposeThumbInput): Promise<Com
     .resize(Math.round(W * maxWRatio), Math.round(H * maxHRatio), { fit: "inside" })
     .png()
     .toBuffer();
-  const ph = (await sharp(portrait).metadata()).height ?? 0;
+  const portraitMeta = await sharp(portrait).metadata();
+  const ph = portraitMeta.height ?? 0;
+  const pw = portraitMeta.width ?? 0;
+  // #12123: no `right` o retrato cola na borda direita e o gancho vai à esquerda.
+  const portraitLeft = mirrored ? W - pw : 0;
+  const hookAlign = mirrored ? "start" : "end";
   const maxHookWidth = bottom ? BOTTOM_HOOK_MAX_WIDTH : HOOK_MAX_WIDTH;
-  let hookLayer = await renderHookLayer(input.hook, maxHookWidth);
+  let hookLayer = await renderHookLayer(input.hook, maxHookWidth, hookAlign);
   const hookTop = (height: number) => (bottom ? H - HOOK_BOTTOM_MARGIN - height : HOOK_TOP_MARGIN);
 
   // #11228: no topo, o gancho não pode invadir a cabeça do retrato; #11942:
@@ -478,29 +597,33 @@ export async function composeYouTubeThumb(input: ComposeThumbInput): Promise<Com
   // Mede a parte opaca do retrato nas linhas do gancho e encolhe o gancho
   // (equivale a reduzir a fonte) até caber.
   const portraitRaw = await sharp(portrait).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const rightEdge = portraitRightEdgeInRows(
-    { data: portraitRaw.data, width: portraitRaw.info.width, height: portraitRaw.info.height, channels: portraitRaw.info.channels },
-    H - ph,
-    hookTop(hookLayer.height),
-    hookTop(hookLayer.height) + hookLayer.height,
-  );
-  const available = bottom ? hookWidthBesideBottom(rightEdge, W) : hookWidthBeside(rightEdge, W);
+  const rawImg = { data: portraitRaw.data, width: portraitRaw.info.width, height: portraitRaw.info.height, channels: portraitRaw.info.channels };
+  const y0 = hookTop(hookLayer.height);
+  const y1 = y0 + hookLayer.height;
+  let available: number;
+  if (mirrored) {
+    const leftEdge = portraitLeftEdgeInRows(rawImg, H - ph, y0, y1);
+    available = hookWidthBesideBottomLeft(leftEdge < 0 ? -1 : portraitLeft + leftEdge, W);
+  } else {
+    const rightEdge = portraitRightEdgeInRows(rawImg, H - ph, y0, y1);
+    available = bottom ? hookWidthBesideBottom(rightEdge, W) : hookWidthBeside(rightEdge, W);
+  }
   if (hookLayer.width > available) {
     if (available < HOOK_MIN_WIDTH) {
       warnings.push(
         bottom
-          ? `gancho cobriria demais o retrato (só ${available}px livres à direita dele) — reduzido ao mínimo de ${HOOK_MIN_WIDTH}px e pode sobrepor; encurte o gancho ou use um close-up mais estreito`
+          ? `gancho cobriria demais o retrato (só ${available}px livres ${mirrored ? "à esquerda" : "à direita"} dele) — reduzido ao mínimo de ${HOOK_MIN_WIDTH}px e pode sobrepor; encurte o gancho ou use um close-up mais estreito`
           : `gancho encostaria no retrato (só ${available}px livres ao lado da cabeça) — reduzido ao mínimo de ${HOOK_MIN_WIDTH}px e pode sobrepor; encurte o gancho ou use um retrato mais baixo`,
       );
     }
-    hookLayer = await renderHookLayer(input.hook, Math.max(HOOK_MIN_WIDTH, available));
+    hookLayer = await renderHookLayer(input.hook, Math.max(HOOK_MIN_WIDTH, available), hookAlign);
   }
 
   // Embaixo, o gancho vai POR CIMA do retrato (cobre o ombro, como na 261021);
-  // a vinheta e o gradiente ficam atrás do retrato nos dois layouts.
+  // a vinheta e o gradiente ficam atrás do retrato em todos os layouts.
   const shading = bottom
     ? [
-        { input: Buffer.from(buildVignetteSvg(W, H)), left: 0, top: 0 },
+        { input: Buffer.from(buildVignetteSvg(W, H, mirrored ? VIGNETTE_CX_RIGHT : VIGNETTE_CX_BOTTOM)), left: 0, top: 0 },
         { input: Buffer.from(buildGradientSvg(W, H, "bottom")), left: 0, top: 0 },
       ]
     : [{ input: Buffer.from(buildGradientSvg(W, H, "top")), left: 0, top: 0 }];
@@ -509,10 +632,10 @@ export async function composeYouTubeThumb(input: ComposeThumbInput): Promise<Com
     sharp(background)
       .composite([
         ...shading,
-        { input: portrait, left: 0, top: H - ph },
+        { input: portrait, left: portraitLeft, top: H - ph },
         {
           input: hookLayer.png,
-          left: W - HOOK_RIGHT_MARGIN - hookLayer.width,
+          left: mirrored ? HOOK_LEFT_MARGIN : W - HOOK_RIGHT_MARGIN - hookLayer.width,
           top: hookTop(hookLayer.height),
         },
       ])

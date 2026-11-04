@@ -72,12 +72,19 @@ describe("#11960: alinhamento forçado do roteiro aos tempos da fala", () => {
     assert.ok(!texts(a.words).includes("aí"));
   });
 
-  it("ouvida fora do roteiro em plena fala, longe de corte, fica e é listada para conferir", () => {
+  it("#12093: ouvida fora do roteiro em plena fala, longe de corte, SAI (o roteiro aprovado é a fonte final) e é listada", () => {
     const heard = say("a Mistral também lançou", 10);
     const a = forceAlignToScript(heard, "a Mistral lançou", { cuts: [2], endS: 30 });
-    assert.equal(texts(a.words), "a Mistral também lançou");
-    assert.deepEqual(a.kept.map((w) => w.text), ["também"]);
-    assert.ok(forcedAlignmentNotes("V", a).some((n) => n.includes("também") && n.startsWith("[aviso]")));
+    assert.equal(texts(a.words), "a Mistral lançou");
+    assert.deepEqual(a.dropped.map((d) => [d.word.text, d.reason]), [["também", "fora do roteiro"]]);
+    assert.ok(forcedAlignmentNotes("V", a).some((n) => n.includes("também") && n.includes("fora do roteiro") && n.startsWith("[aviso]")));
+  });
+
+  it("#12093 (261104): o editor tirou o artigo do roteiro, a legenda não o devolve", () => {
+    const heard = say("numa chamada onde foi utilizado o deepfake.", 40);
+    const a = forceAlignToScript(heard, "numa chamada onde foi utilizado deepfake.", { endS: 60 });
+    assert.equal(texts(a.words), "numa chamada onde foi utilizado deepfake.");
+    assert.deepEqual(a.dropped.map((d) => d.word.text), ["o"]);
   });
 
   it("ouvida isolada por silêncio sai como 'em silêncio'", () => {

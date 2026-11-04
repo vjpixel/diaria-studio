@@ -194,7 +194,8 @@ describe("plano da decupagem: validação (#11361)", () => {
     assert.match(list, /^5\. .*\(tomada 2 de 2: usar \(2ª tomada, a última completa\)\)$/m);
     const tpl = decupagemPlanTemplate("261028", SEGMENTS) as { blocks: Array<{ key: string; rows: unknown[] }>; _segmentos: string[] };
     assert.equal(tpl._segmentos.length, SEGMENTS.length);
-    assert.equal(tpl.blocks.length, 8);
+    // 9 desde o #12093 (o gancho), sem os legados cta_ig/cta_out.
+    assert.equal(tpl.blocks.length, 9);
     // O molde preenchido com uma linha passa na validação (as notas `_` são ignoradas).
     tpl.blocks[0].rows.push({ segments: [5], suggestion: "usar" });
     assert.equal(parseDecupagemPlan(tpl, SEGMENTS.length).ok, true);

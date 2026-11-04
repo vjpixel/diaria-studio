@@ -1,13 +1,15 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   REQUIRED_READS,
   MAX_DENIES,
+  REGISTRY_MAX_AGE_MS,
   handlePayload,
+  pruneRegistry,
   missingRequiredReads,
   readCovers,
   readRegistry,
@@ -126,6 +128,56 @@ describe("require-writer-context-reads (#11533)", () => {
       );
     assert.ok(has("PreToolUse", "Write"));
     assert.ok(has("PostToolUse", "Read"));
+  });
+
+  it("#11634: 1º Write liberado de cada agent vai ao run-log uma vez só (prova de que agent_id chega)", () => {
+    const logs: Array<{ level: string; message: string; details?: Record<string, unknown> }> = [];
+    const o = { ...opts(), log: (_r: string, _a: string, level: string, message: string, details?: Record<string, unknown>) => logs.push({ level, message, details }) };
+    handlePayload(read("social-curto", "c9", "/repo/context/editorial-rules.md"), o);
+    assert.equal(handlePayload(write("social-curto", "c9"), o).action, "allow");
+    assert.equal(handlePayload(write("social-curto", "c9"), o).action, "allow");
+    const liberados = logs.filter((l) => l.message.startsWith("Write liberado"));
+    assert.equal(liberados.length, 1);
+    assert.equal(liberados[0].level, "info");
+    assert.equal(liberados[0].details?.agent_type, "social-curto");
+    assert.equal(readRegistry(dir, "c9").allowLogged, true);
+  });
+
+  it("#11634: depois de uma negação, o Write liberado registra quantas negações houve", () => {
+    const logs: Array<{ message: string; details?: Record<string, unknown> }> = [];
+    const o = { ...opts(), log: (_r: string, _a: string, _l: string, message: string, details?: Record<string, unknown>) => logs.push({ message, details }) };
+    assert.equal(handlePayload(write("social-curto", "c10"), o).action, "deny");
+    handlePayload(read("social-curto", "c10", "/repo/context/editorial-rules.md"), o);
+    assert.equal(handlePayload(write("social-curto", "c10"), o).action, "allow");
+    assert.deepEqual(logs.map((l) => l.message.split(":")[0]), ["Write negado", "Write liberado"]);
+    assert.equal(logs[1].details?.denies_before, 1);
+  });
+
+  it("#11634: sem agent_id o hook não loga nada (é a ausência que denuncia o bug)", () => {
+    const logs: string[] = [];
+    const o = { ...opts(), log: (_r: string, _a: string, _l: string, m: string) => logs.push(m) };
+    handlePayload(read("social-curto", undefined as unknown as string, "/repo/context/editorial-rules.md"), o);
+    handlePayload(write("social-curto", undefined), o);
+    assert.deepEqual(logs, []);
+  });
+
+  it("#11634: o 1º Read de um agent novo apaga registros com mais de REGISTRY_MAX_AGE_MS", () => {
+    handlePayload(read("social-curto", "velho", "/repo/context/editorial-rules.md"), opts());
+    handlePayload(read("social-curto", "recente", "/repo/context/editorial-rules.md"), opts());
+    const velho = join(dir, "velho.log");
+    const old = (Date.now() - REGISTRY_MAX_AGE_MS - 60_000) / 1000;
+    utimesSync(velho, old, old);
+    writeFileSync(join(dir, "nao-e-registro.txt"), "x");
+    utimesSync(join(dir, "nao-e-registro.txt"), old, old);
+    handlePayload(read("social-curto", "novo", "/repo/context/editorial-rules.md"), opts());
+    assert.equal(existsSync(velho), false);
+    assert.equal(existsSync(join(dir, "recente.log")), true);
+    assert.equal(existsSync(join(dir, "novo.log")), true);
+    assert.equal(existsSync(join(dir, "nao-e-registro.txt")), true);
+  });
+
+  it("#11634: pruneRegistry em diretório ausente devolve 0 sem lançar", () => {
+    assert.equal(pruneRegistry(join(dir, "nao-existe")), 0);
   });
 
   it("CLI: payload sem agent sai sem output (fail-open)", () => {

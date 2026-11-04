@@ -344,9 +344,11 @@ import {
   planCoverDestination,
   withCoverRecord,
   withMissingCoverRecord,
+  youtubeShortsCoverRecord,
+  youtubeShortsVerticalCoverWarning,
   SHORT_COVER_MISSING_ERROR,
   type ShortCoverRecord,
-} from "./lib/diaria/short-cover.ts"; // #11547
+} from "./lib/diaria/short-cover.ts"; // #11547, #12100
 import {
   THREADS_PROFILE_DESTINATION,
   ThreadsTimerGateError,
@@ -3338,13 +3340,11 @@ export async function publishYouTubeShort(input: {
   if (result.rereadError) warnings.push(`releitura do estado falhou: ${result.rereadError}`);
   const failed = failedUploadStatus(result.rereadStatus);
   // #11547: `thumbnails.set` vale para Short (medido em 28/10/2026); falha só vira registro.
-  const thumb = result.thumbnail;
-  const cover: ShortCoverRecord | undefined = thumb?.attempted
-    ? thumb.ok
-      ? { method: "thumbnails_set", ok: true }
-      : { method: "thumbnails_set", ok: false, error: thumb.error ?? "sem detalhe" }
-    : undefined;
+  // #12100: o sucesso troca só a miniatura 16:9; a capa do feed de Shorts vira aviso de passo manual.
+  const cover = youtubeShortsCoverRecord(result.thumbnail);
   if (cover && !cover.ok) warnings.push(`capa não aplicada (${cover.error}) — troque no YouTube Studio (Miniatura → Enviar arquivo)`);
+  const verticalWarning = youtubeShortsVerticalCoverWarning(result.videoId, cover);
+  if (verticalWarning) warnings.push(verticalWarning);
   const base = { destination: "youtube_shorts", id: result.videoId, url: youtubeShortUrl(result.videoId), at: result.uploadedAt, ...(cover ? { cover } : {}) };
   if (failed) {
     warnings.push(`o YouTube marcou uploadStatus=${failed} — o Short não vai ao ar; confira no Studio (registro mantido para não re-enviar)`);
@@ -3756,11 +3756,13 @@ export async function executeScheduledUpdates(
       let coverRecord: ShortCoverRecord | null = null;
       if (item.action === "update_youtube") {
         const r = await deps.youtube(item.videoId, { title: item.title, description: item.description, thumbnail: item.cover ? cover : null });
-        if (r.thumbnail.attempted) coverRecord = r.thumbnail.ok ? { method: "thumbnails_set", ok: true } : { method: "thumbnails_set", ok: false, error: r.thumbnail.error ?? "sem detalhe" };
+        coverRecord = youtubeShortsCoverRecord(r.thumbnail); // #12100: `vertical_feed: "manual"` no sucesso
       } else {
         coverRecord = (await deps.facebook(item.slug, item.videoId, item.description, item.cover ? cover : null)).cover;
       }
       const warnings = coverRecord && !coverRecord.ok ? [`capa não trocada (${coverRecord.error}) — o texto foi trocado`] : [];
+      const verticalWarning = item.action === "update_youtube" ? youtubeShortsVerticalCoverWarning(item.videoId, coverRecord) : null;
+      if (verticalWarning) warnings.push(verticalWarning);
       try {
         deps.persist({ ...withCoverRecord(entry, coverRecord), updated_at: deps.now().toISOString() });
       } catch (e) {

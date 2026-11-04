@@ -76,6 +76,7 @@ import {
   untagAndConfirm,
   type KitSemAberturaPlatformConfig,
 } from "./sync-kit-sem-abertura-to-brevo.ts";
+import { raiseKitFrioAlarm } from "./sync-kit-frio.ts"; // #11450
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_ENVIO_BREVO_ORPHANS_LOG_PATH = resolve(ROOT, "data/brevo-diaria/envio-brevo-orphans-log.jsonl");
@@ -122,6 +123,35 @@ export interface EnvioBrevoOrphanDeps {
   /** Remove a tag e RELÊ (lança se a releitura ainda mostrar). */
   untagKit: (tagId: number, subscriberId: number) => Promise<void>;
   appendLog: (line: string) => void;
+  /**
+   * #11450 — abre/reusa a issue de alarme quando a rodada passa dos tetos
+   * (`envioBrevoOrphanAlarmReasons`). Só com `--push`. Ausente ⇒ só o `warn`
+   * no stderr. Lança se o `gh` falhar (o sweep segue, com aviso).
+   */
+  raiseAlarm?: (title: string, body: string) => void;
+}
+
+/** #11450 — órfãos ACHADOS numa rodada a partir dos quais abre alarme. */
+export const ENVIO_BREVO_ORPHAN_ALARM_COUNT = 10;
+/** #11450 — órfãos que FALHARAM no reparo numa rodada a partir dos quais abre alarme. */
+export const ENVIO_BREVO_ORPHAN_FAILED_ALARM_COUNT = 3;
+
+/**
+ * Pura (#11450) — motivos de alarme da rodada; vazio = abaixo dos dois tetos.
+ * Cada rodada com `--push` repara os órfãos que acha, então um número alto
+ * por rodada quer dizer que algo segue criando órfãos (o estoque cresce), e
+ * falhas de reparo quer dizer que eles persistem. Mesmo padrão do
+ * `summarizeAwaitingFrioBacklog` (#11294).
+ */
+export function envioBrevoOrphanAlarmReasons(r: { orphans: number; failed: number }): string[] {
+  const reasons: string[] = [];
+  if (r.orphans >= ENVIO_BREVO_ORPHAN_ALARM_COUNT) {
+    reasons.push(`${r.orphans} órfão(s) da tag ${KIT_ENVIO_BREVO_TAG_NAME} nesta rodada (teto ${ENVIO_BREVO_ORPHAN_ALARM_COUNT})`);
+  }
+  if (r.failed >= ENVIO_BREVO_ORPHAN_FAILED_ALARM_COUNT) {
+    reasons.push(`${r.failed} órfão(s) sem reparo por falha nesta rodada (teto ${ENVIO_BREVO_ORPHAN_FAILED_ALARM_COUNT})`);
+  }
+  return reasons;
 }
 
 export interface EnvioBrevoOrphanRunResult {
@@ -133,6 +163,8 @@ export interface EnvioBrevoOrphanRunResult {
   returnedToKit: number;
   reconciledInStore: number;
   failed: number;
+  /** #11450 — presente só quando a rodada passou de algum teto de alarme. */
+  alarmReasons?: string[];
   summary: string;
 }
 
@@ -241,6 +273,24 @@ export async function runEnvioBrevoOrphanSweep(
     appendLogSafe({ ts: nowIso, event: "orphan_returned_to_kit", email: normalizeEmail(o.email), kit_subscriber_id: o.id, reason: why });
   }
 
+  const alarmReasons = envioBrevoOrphanAlarmReasons({ orphans: orphans.length, failed });
+  if (alarmReasons.length > 0) {
+    log(`warn: ${alarmReasons.join("; ")} (#11450).`);
+    if (push && deps.raiseAlarm) {
+      try {
+        deps.raiseAlarm(
+          "Órfãos da tag envio-brevo acima do teto (#11450)",
+          `A varredura do Passo 3e (\`sync-kit-envio-brevo-orphans.ts\`, #11431) achou:\n\n` +
+            alarmReasons.map((r) => `- ${r}`).join("\n") +
+            `\n\nÓrfão = ativo no Kit com a tag \`${KIT_ENVIO_BREVO_TAG_NAME}\` e sem entrada no store da Brevo diária: fica sem edição nenhuma até o reparo. ` +
+            "Muitos por rodada indicam que algo segue criando órfãos (gravação do store falhando depois da tag); falhas repetidas indicam reparo travado (leitura da Brevo ou remoção da tag no Kit).",
+        );
+      } catch (e) {
+        log(`aviso: issue de alarme dos órfãos não aberta (${(e as Error).message}).`);
+      }
+    }
+  }
+
   return {
     code: failed > 0 ? 1 : 0,
     dryRun: !push,
@@ -248,6 +298,7 @@ export async function runEnvioBrevoOrphanSweep(
     returnedToKit,
     reconciledInStore,
     failed,
+    ...(alarmReasons.length > 0 ? { alarmReasons } : {}),
     summary:
       `${push ? "" : "[dry-run] "}${orphans.length} órfão(s) da tag ${KIT_ENVIO_BREVO_TAG_NAME}: ${returnedToKit} de volta à diária do Kit, ` +
       `${reconciledInStore} gravado(s) no store (seguem na Brevo), ${failed} falha(s).`,
@@ -311,6 +362,7 @@ async function main(): Promise<void> {
     },
     untagKit: (tagId, id) => untagAndConfirm(tagId, id, pace),
     appendLog: (line) => appendFileWithRetry(DEFAULT_ENVIO_BREVO_ORPHANS_LOG_PATH, line),
+    raiseAlarm: (title, body) => raiseKitFrioAlarm({ check: "kit-envio-brevo-orfaos", fingerprintSuffix: "estoque", title, body }),
   });
   log(result.summary);
   console.log(JSON.stringify(result));

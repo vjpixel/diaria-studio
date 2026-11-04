@@ -8,7 +8,9 @@ export function missingRequiredReads(
   readPaths: string[],
   opts?: { root?: string; exists?: (p: string) => boolean },
 ): string[];
-export function readRegistry(dir: string, agentId: string): { reads: string[]; denies: number };
+export const REGISTRY_MAX_AGE_MS: number;
+export function readRegistry(dir: string, agentId: string): { reads: string[]; denies: number; allowLogged: boolean };
+export function pruneRegistry(dir: string, nowMs?: number, maxAgeMs?: number): number;
 export function denyReason(missing: string[], root?: string): string;
 export type HandleResult =
   | { action: "skip" | "record" }
@@ -20,6 +22,7 @@ export function handlePayload(
     dir?: string;
     root?: string;
     exists?: (p: string) => boolean;
+    nowMs?: number;
     log?: (
       root: string,
       agent: string,

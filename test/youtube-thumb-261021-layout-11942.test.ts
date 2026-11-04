@@ -90,7 +90,7 @@ describe("#11942 layout", () => {
     assert.equal(parseThumbLayout(undefined), "bottom");
     assert.equal(parseThumbLayout("top"), "top");
     assert.equal(parseThumbLayout(" Bottom "), "bottom");
-    assert.throws(() => parseThumbLayout("meio"), /bottom ou top/);
+    assert.throws(() => parseThumbLayout("meio"), /bottom, top ou right/); // #12123: + right
   });
 
   it("gradiente de baixo cobre os 45% inferiores, escuro na base; o de cima não mudou", () => {
@@ -318,7 +318,7 @@ describe("#11942 CLI: opções de retrato", () => {
   it("--layout inválido ou sem valor falha antes de compor", () => {
     const bad = run(["--hook", "IA ladra?", "--portrait", "x.png", "--layout", "meio", "--edition-dir", tmpdir()]);
     assert.notEqual(bad.status, 0);
-    assert.match(bad.stderr, /bottom ou top/);
+    assert.match(bad.stderr, /bottom, top ou right/);
     const bare = run(["--hook", "IA ladra?", "--portrait", "x.png", "--edition-dir", tmpdir(), "--layout"]);
     assert.notEqual(bare.status, 0);
     assert.match(bare.stderr, /--layout exige/);

@@ -12,7 +12,8 @@
  * que `publish-youtube.ts` já envia via `thumbnails.set`:
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --hook "IA ladra?" --portrait retrato.png
  *     [--background fundo-16x9.png]   (default: {edição}/04-d1-2x1.jpg, com aviso de recorte)
- *     [--layout bottom|top]           (default bottom = padrão da 261021, #11942)
+ *     [--layout bottom|top|right]     (default bottom = padrão da 261021, #11942; right = espelho, #12123)
+ *     [--bg-crop x,y,w,h]             (recorte do fundo em pixels antes do 16:9: amplia a cena, #12123)
  *     [--enhance-portrait]            (contraste +25%, nitidez, saturação leve, alfa preservado, #11228)
  *     [--out PATH] [--edition-dir DIR]
  *   Layout `bottom` (#11942, default): close-up grande à esquerda, gancho no
@@ -22,6 +23,9 @@
  *   para não invadir a cabeça do retrato (#11228). Gancho em 2 linhas
  *   alinhadas à direita (#11740): quebra explícita com `|` (ou `\n`), até 4
  *   palavras por linha — `--hook "Confiou no chatbot|e morreu"`.
+ *   Layout `right` (#12123, capa da 261104): o `bottom` espelhado — retrato
+ *   colado à direita, gancho embaixo à esquerda (linhas alinhadas à esquerda),
+ *   vinheta com centro em cx=0.38, cena do D1 à esquerda.
  *
  * Opções de retrato a partir do BRUTO 4K no Drive (#11228), sem baixar o vídeo:
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--count 5 | --times 12,30.5,48]
@@ -44,9 +48,12 @@
  *
  * Retrato em close-up pelo Codex (#11942), com o frame escolhido só como
  * referência de identidade e a expressão variando:
- *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG]
+ *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG] [--layout bottom|top|right]
  *     → `_internal/youtube-thumb-portraits/prompt-{N}.json` + os comandos
- *       `node scripts/codex-image.js` de cada opção (o script não chama o Codex)
+ *       `node scripts/codex-image.js` de cada opção (o script não chama o Codex).
+ *       O prompt pede ombros e braços inteiros com margem dos dois lados e o
+ *       olhar voltado para a cena, no lado oposto ao do retrato (o `--layout`
+ *       da capa decide: `right` = retrato à direita, olhando para a esquerda, #12123)
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --portrait-sheet
  *     → a folha numerada `opcoes.jpg` com as opções geradas (mostrar ao editor)
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --pick-portrait N
@@ -74,8 +81,10 @@ import { YOUTUBE_THUMB_FILE } from "./lib/diaria/youtube-video.ts";
 import {
   YOUTUBE_SHORT_COVER_FILE,
   composeYouTubeThumb,
+  parseBgCrop,
   parseThumbLayout,
   planShortCoverFrame,
+  portraitSideForLayout,
 } from "./lib/diaria/youtube-thumb.ts";
 import {
   THUMB_PORTRAITS_DIR,
@@ -107,10 +116,10 @@ import {
 } from "./lib/diaria/youtube-thumb-frames.ts";
 
 const USAGE =
-  "uso: gen-youtube-thumb.ts AAMMDD --hook \"IA ladra?\" (2 linhas: \"Confiou no chatbot|e morreu\") --portrait PNG [--background IMG] [--layout bottom|top] [--enhance-portrait] [--out PATH] [--edition-dir DIR]\n" +
+  "uso: gen-youtube-thumb.ts AAMMDD --hook \"IA ladra?\" (2 linhas: \"Confiou no chatbot|e morreu\") --portrait PNG [--background IMG] [--layout bottom|top|right] [--bg-crop x,y,w,h] [--enhance-portrait] [--out PATH] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--from-final] [--count N | --times T1,T2,...] [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-frame N [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
-  "     gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG] [--edition-dir DIR]\n" +
+  "     gen-youtube-thumb.ts AAMMDD --portrait-prompts [--expressions desconfiado,surpreso,preocupado] [--ref IMG] [--layout bottom|top|right] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --portrait-sheet [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-portrait N [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --short-cover --at SEGUNDOS [--video MP4] [--out PATH] [--edition-dir DIR]";
@@ -214,8 +223,11 @@ const STALE_PORTRAIT_FILE = new RegExp(
   `^(retrato-\\d+\\.jpg|prompt-\\d+\\.json|${THUMB_PORTRAITS_SHEET.replace(".", "\\.")}|${THUMB_PORTRAIT_PICKED.replace(".", "\\.")})$`,
 );
 
-function portraitPrompts(dir: string, values: Record<string, string>): number {
+function portraitPrompts(dir: string, flags: Set<string>, values: Record<string, string>): number {
   const expressions = parseExpressions(values["expressions"]);
+  // #12123: o olhar vai para a cena, no lado oposto ao do retrato — o `--layout` da capa decide.
+  if (flags.has("layout")) throw new Error("--layout exige o valor: bottom (default), top ou right");
+  const side = portraitSideForLayout(parseThumbLayout(values["layout"]));
   const ref = resolve(values["ref"] ?? join(dir, THUMB_FRAMES_DIR, THUMB_FRAME_PICKED));
   if (!existsSync(ref)) {
     console.error(`gen-youtube-thumb: frame de referência ${ref} não existe — rode antes --frames-from-drive e --pick-frame N (ou passe --ref IMG)`);
@@ -233,13 +245,15 @@ function portraitPrompts(dir: string, values: Record<string, string>): number {
     const n = i + 1;
     const prompt = join(outDir, portraitPromptFileName(n));
     const out = join(outDir, portraitOptionFileName(n));
-    writeFileAtomic(prompt, JSON.stringify(buildPortraitPrompt(expression, ref), null, 2) + "\n");
+    writeFileAtomic(prompt, JSON.stringify(buildPortraitPrompt(expression, ref, side), null, 2) + "\n");
     return { n, expression, prompt, out, command: `node scripts/codex-image.js ${prompt} ${out}` };
   });
-  const meta: PortraitsMeta = { reference: ref, expressions };
+  const meta: PortraitsMeta = { reference: ref, expressions, side };
   writeFileAtomic(join(outDir, THUMB_PORTRAITS_META), JSON.stringify(meta, null, 2) + "\n");
-  console.error(`[ok] ${options.length} prompts de retrato (${expressions.join(", ")}) — gere cada um com o comando do JSON e depois rode --portrait-sheet`);
-  console.log(JSON.stringify({ reference: ref, options }, null, 2));
+  console.error(
+    `[ok] ${options.length} prompts de retrato (${expressions.join(", ")}; retrato à ${side === "left" ? "esquerda" : "direita"}, olhando para a cena) — gere cada um com o comando do JSON e depois rode --portrait-sheet`,
+  );
+  console.log(JSON.stringify({ reference: ref, side, options }, null, 2));
   return 0;
 }
 
@@ -343,7 +357,7 @@ async function main(): Promise<number> {
   for (const k of ["portrait-prompts", "portrait-sheet"]) {
     if (values[k] !== undefined) throw new Error(`--${k} não leva valor (recebeu ${JSON.stringify(values[k])}): ponha a flag depois do AAMMDD`);
   }
-  if (flags.has("portrait-prompts")) return portraitPrompts(dir, values);
+  if (flags.has("portrait-prompts")) return portraitPrompts(dir, flags, values);
   if (flags.has("portrait-sheet")) return portraitSheet(dir);
   if (values["pick-portrait"] !== undefined || flags.has("pick-portrait")) return pickPortrait(dir, values["pick-portrait"]);
 
@@ -379,8 +393,11 @@ async function main(): Promise<number> {
     return 2;
   }
   // #11942: valida o layout antes de qualquer trabalho (default `bottom`, o padrão da 261021).
-  if (flags.has("layout")) throw new Error("--layout exige o valor: bottom (default) ou top");
+  if (flags.has("layout")) throw new Error("--layout exige o valor: bottom (default), top ou right");
   const layout = parseThumbLayout(values["layout"]);
+  // #12123: recorte do fundo (amplia a cena sem novo outpaint); limites checados na composição.
+  if (flags.has("bg-crop")) throw new Error("--bg-crop exige o valor: x,y,largura,altura (ex.: 200,80,1400,788)");
+  const bgCrop = values["bg-crop"] !== undefined ? parseBgCrop(values["bg-crop"]) : undefined;
   const backgroundPath = resolve(values["background"] ?? join(dir, "04-d1-2x1.jpg"));
   // #11162: sem checagem do venv do rembg aqui. Este script só consome o
   // --portrait JÁ recortado; quem exige o ambiente é o passo de recorte
@@ -401,6 +418,7 @@ async function main(): Promise<number> {
     hook,
     enhancePortrait: flags.has("enhance-portrait"),
     layout,
+    ...(bgCrop ? { bgCrop } : {}),
   });
   for (const w of warnings) console.error(`[aviso] ${w}`);
   const out = resolve(values["out"] ?? join(dir, YOUTUBE_THUMB_FILE));
