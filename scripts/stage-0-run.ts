@@ -562,6 +562,11 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
       const nac = cfg.newsletter_auto_capture;
       autoCaptureEnabled = nac?.enabled === true;
       senders = Array.isArray(nac?.senders) ? nac.senders : [];
+      const registryPath = resolve(deps.rootDir, "seed/newsletter-senders.json");
+      if (deps.existsSync(registryPath)) {
+        const registry = JSON.parse(deps.readFile(registryPath)) as {senders?: Record<string, {status: string}>};
+        if (registry.senders) senders = [...new Set([...senders, ...Object.keys(registry.senders).filter((s) => registry.senders![s].status === "aprovado")])];
+      }
       sinceHours = typeof nac?.since_hours === "number" ? nac.since_hours : 48;
       sinceHoursBySender = nac?.since_hours_by_sender && typeof nac.since_hours_by_sender === "object" ? nac.since_hours_by_sender : {};
     } catch {
@@ -620,9 +625,13 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
         ]);
         groupResults.push({ group, code: fetchResult.result.code, json: fetchResult.json as { threads_found?: number; threads_written?: number; hit_max_threads?: boolean } | undefined });
       }
+      // Discover newsletters with List-ID/List-Unsubscribe in the inbox, including new senders.
+      const discovery = softStep(deps, report, "discover-newsletters (0b-bis)", "scripts/fetch-newsletter-threads.ts", [
+        "--discover", "--since-hours", String(effectiveSinceHours), "--out", threadsOut,
+      ]);
       const okGroups = groupResults.filter((g) => g.code === 0);
       const failedGroups = groupResults.filter((g) => g.code !== 0);
-      const fetchOk = okGroups.length > 0;
+      const fetchOk = okGroups.length > 0 || discovery.result.code === 0;
       for (const failed of failedGroups) {
         logEvent(
           deps,
@@ -668,6 +677,9 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
           // re-run da mesma edição re-extrair em vez de achar tudo "consumido".
           "--edition",
           opts.edition,
+        ]);
+        softStep(deps, report, "audit-newsletter-intake (0b-bis)", "scripts/audit-newsletter-intake.ts", [
+          "--edition", opts.edition, "--edition-dir", editionDir,
         ]);
         // #9368 guard: threads capturadas > 0 e artigos gravados = 0 → error
         // (nunca warning silencioso). Caso 260921: 11 threads, 0 artigos.

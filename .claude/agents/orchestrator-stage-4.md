@@ -79,7 +79,7 @@ npx tsx scripts/render-halt-banner.ts \
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'etapa 4 revisao started'
   ```
 ### 4b. Pré-render técnico
-
+**Antes dos invariantes**, executar integralmente `context/newsletter-intake-gate.md` (#12188): auditoria, scores completos e decisão em lote de remetentes; repetir após ajustes para atualizar destinos.
 **Pré-render completo sempre roda** (independente de `auto_approve`) — garante que `newsletter-final.html` e previews estejam prontos pra revisão e pra publicação. Com `--no-gates` o gate é pulado, mas o pré-render nunca é.
 
 0. **capture-livros-promo — ANTES do upload (#2071).** Re-captura o screenshot da página de livros se o conteúdo mudou (md5 diferente):

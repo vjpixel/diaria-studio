@@ -1510,6 +1510,10 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
   const mdPath = `${editionDir}/01-categorized.md`;
   step(deps, report, "render-categorized-md (1v)", "scripts/render-categorized-md.ts", ["--in", categorizedPath, "--out", mdPath, "--edition", opts.edition, "--source-health", "data/source-health.json"]);
 
+  softStep(deps, report, "audit-newsletter-intake (#12188)", "scripts/audit-newsletter-intake.ts", [
+    "--edition", opts.edition, "--edition-dir", editionDir,
+  ]);
+
   // --- §1v-scoring-features: feature store de scoring (#7975, Camada 1 da
   // #7972) ---
   //

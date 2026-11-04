@@ -51,6 +51,7 @@ import {
   senderEmail,
 } from "./inject-inbox-urls.ts";
 import type { SyntheticInboxArticle } from "./inject-inbox-urls.ts";
+import { classifySender, loadSenderRegistry } from "./lib/newsletter-senders.ts";
 import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
 // #2834: stripHtml consolidado em lib/strip-html.ts (era byte-idêntico ao
 // de auto-forward-newsletters.ts). Reexportado aqui pra não quebrar imports
@@ -672,27 +673,9 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1);
   }
 
-  // Empty array = no-op (preserve existing output if any)
-  if (threads.length === 0) {
-    const result: CaptureResult = {
-      processed: 0,
-      skipped_already: 0,
-      articles_produced: 0,
-      urls_extracted: 0,
-      urls_filtered: 0,
-      always_consider_exemptions: [],
-      config_warnings: configWarnings,
-    };
-    const absOut = resolve(ROOT, outPath);
-    if (!existsSync(absOut)) {
-      mkdirSync(dirname(absOut), { recursive: true });
-      const tmpOut = absOut + ".tmp";
-      writeFileSync(tmpOut, JSON.stringify([], null, 2) + "\n", "utf8");
-      renameSync(tmpOut, absOut);
-    }
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
+  // Unknown and rejected senders remain in the intake, never enter the IA pool.
+  const registry = loadSenderRegistry(resolve(ROOT, "seed/newsletter-senders.json"));
+  threads = threads.filter((t) => classifySender(t.sender, registry).classificacao === "IA");
 
   // Load cursor
   const cursor = loadCursor(cursorPath);
@@ -709,7 +692,8 @@ export function main(argv: string[] = process.argv): void {
       existing = JSON.parse(readFileSync(absOut, "utf8"));
     } catch { /* corrupt file — overwrite */ }
   }
-  const merged = mergeCapturedArticles(existing, articles);
+  const approvedExisting = existing.filter((a) => !a.newsletter_mentions?.length || a.newsletter_mentions.some((sender) => classifySender(sender, registry).classificacao === "IA"));
+  const merged = mergeCapturedArticles(approvedExisting, articles);
   const tmpOut = absOut + ".tmp";
   writeFileSync(tmpOut, JSON.stringify(merged, null, 2) + "\n", "utf8");
   renameSync(tmpOut, absOut);

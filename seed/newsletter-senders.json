@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "senders": {
+    "email@newsletter.7min.ai": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "superhuman@mail.joinsuperhuman.ai": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "marktechpost-newsletter@mail.beehiiv.com": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "lenny@substack.com": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "dan@tldrnewsletter.com": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "cyberman@mail.beehiiv.com": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "news@daily.therundown.ai": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "newsletter@thedeepview.co": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "aibreakfast@mail.beehiiv.com": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "theaipulse@mail.beehiiv.com": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "agentpulse@mail.beehiiv.com": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "aidrop@mail.beehiiv.com": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "evolvingai@mail.beehiiv.com": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "news@alphasignal.ai": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    },
+    "datapoints@deeplearning.ai": {
+      "status": "aprovado",
+      "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
+      "decided_at": "2026-11-04"
+    }
+  }
+}

@@ -1767,6 +1767,37 @@ function checkNoTrailingEllipsisInvariant(editionDir: string): InvariantViolatio
  * Caso real: 260703, 2º dia seguido com `invalid_client` — coverage line
  * saiu "0 submissões" quando a captura simplesmente falhou.
  */
+/** #12188: independent backstop when the gate skipped the deterministic audit. */
+export function checkNewsletterIntake(editionDir: string): InvariantViolation[] {
+  const internal = resolve(editionDir, "_internal");
+  const captured = resolve(internal, "captured-newsletters.json");
+  if (!existsSync(captured)) return [];
+  const reportPath = resolve(internal, "newsletter-link-scores.json");
+  const violation = (message: string, severity: "warning" | "error"): InvariantViolation => ({
+    rule: "newsletter-intake", source_issue: "#12188", message, severity, file: reportPath,
+  });
+  try {
+    const threads = JSON.parse(readFileSync(captured, "utf8"));
+    if (!Array.isArray(threads)) return [violation("Captura de newsletters ilegível", "error")];
+    if (!threads.length) return [];
+    if (!existsSync(reportPath)) return [violation("Intake ausente: rodar audit-newsletter-intake.ts antes do gate", "error")];
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
+      links: Array<{score: number | null; title?: string}>; rows: Array<{thread_id: string}>; warnings: string[]; pending_senders: string[];
+    };
+    if (!Array.isArray(report.links) || !Array.isArray(report.rows) || !Array.isArray(report.warnings) || !Array.isArray(report.pending_senders)) throw new Error("shape inválido");
+    const out: InvariantViolation[] = report.warnings.map((w) => violation(w, "warning"));
+    const ids = new Set(report.rows.map((r) => r.thread_id));
+    if (threads.length !== ids.size || threads.some((t) => !ids.has(t.thread_id))) out.push(violation("Total capturado != total registrado no intake", "warning"));
+    if (report.links.some((l) => typeof l.score !== "number" || !Number.isFinite(l.score))) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
+    if (report.links.some((l) => !l.title?.trim() || l.title.startsWith("(newsletter:"))) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
+    if (report.pending_senders.length) out.push(violation(`Remetentes pendentes de decisão em lote: ${report.pending_senders.join(", ")}`, "warning"));
+    const sources = [captured, resolve(editionDir, "02-reviewed.md"), resolve(internal, "01-approved.json"),
+      resolve(internal, "tmp-allscored.json"), resolve(internal, "tmp-scored.json"), resolve(internal, "newsletter-extra-scores.json"), resolve(ROOT, "seed/newsletter-senders.json")];
+    if (sources.some((p) => existsSync(p) && statSync(p).mtimeMs > statSync(reportPath).mtimeMs)) out.push(violation("Intake desatualizado: re-rodar audit-newsletter-intake.ts para atualizar scores e destinos", "error"));
+    return out;
+  } catch { return [violation("Relatório de intake ilegível: re-rodar audit-newsletter-intake.ts", "error")]; }
+}
+
 function checkCaptureFailedSubmissionCount(editionDir: string): InvariantViolation[] {
   const marker = readMarker(editionDir, "inject-inbox-urls");
   // #2878 self-review LOW: accept both the nested `details` shape (how
@@ -4356,6 +4387,10 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#12106",
     stage: 4,
     run: checkTitleIaAsAgentInvariant,
+  },
+  {
+    id: "newsletter-intake", description: "intake completo e scores de todos os links IA (#12188)",
+    source_issue: "#12188", stage: 4, run: checkNewsletterIntake,
   },
   {
     id: "capture-failed-submission-count",

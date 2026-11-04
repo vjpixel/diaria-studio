@@ -914,6 +914,8 @@ describe("runStage0 --phase continue — caminho feliz", () => {
 
     assert.equal(result.code, 0);
     assert.ok(calls.some((c) => c.script.includes("fetch-newsletter-threads")));
+    assert.ok(calls.some((c) => c.script.includes("fetch-newsletter-threads") && c.args.includes("--discover")), "#12188 descobre remetentes novos");
+    assert.ok(calls.some((c) => c.script.includes("audit-newsletter-intake")), "#12188 audita após captura");
     // Guard #1756: threads_found>0 + arquivo ausente -> warn loud via log-event.
     assert.ok(logEventCalls.some((args) => args.includes("warn") && args.some((a) => a.includes("threads_found"))));
   });
@@ -950,7 +952,7 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     );
 
     assert.equal(result.code, 0);
-    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads") && !c.args.includes("--discover"));
     assert.equal(fetchCalls.length, 2, "1 chamada pros senders default + 1 isolada pro sender com override");
 
     const defaultCall = fetchCalls.find((c) => c.args.includes("48"));
@@ -993,7 +995,7 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     );
 
     assert.equal(result.code, 0);
-    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads") && !c.args.includes("--discover"));
     const hoursOf = (c: { args: string[] }) => c.args[c.args.indexOf("--since-hours") + 1];
     const sendersOf = (c: { args: string[] }) => c.args[c.args.indexOf("--senders") + 1];
     const defaultCall = fetchCalls.find((c) => sendersOf(c).includes("dan@tldrnewsletter.com"));
@@ -1027,7 +1029,7 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     );
 
     assert.equal(result.code, 0);
-    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads") && !c.args.includes("--discover"));
     assert.equal(fetchCalls.length, 1);
     assert.equal(fetchCalls[0].args[fetchCalls[0].args.indexOf("--since-hours") + 1], "48");
   });
@@ -1069,7 +1071,7 @@ describe("runStage0 --phase continue — caminho feliz", () => {
       "warning explícito, não silêncio — allowlist/override sem efeito precisa aparecer no log",
     );
     // Sem override efetivo (sender ausente de senders[]), só a chamada default deve rodar.
-    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads") && !c.args.includes("--discover"));
     assert.equal(fetchCalls.length, 1);
   });
 
@@ -1113,7 +1115,7 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     );
 
     assert.equal(result.code, 0, "falha PARCIAL de 1 grupo nunca aborta o Stage 0 (fail-soft)");
-    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads") && !c.args.includes("--discover"));
     assert.equal(fetchCalls.length, 2, "os 2 grupos rodam, mesmo um deles falhando");
 
     // O grupo que falhou é logado INDIVIDUALMENTE — nunca em silêncio.
