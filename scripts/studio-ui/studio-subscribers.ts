@@ -69,7 +69,9 @@ import {
   type UnmatchedReport,
 } from "../lib/diaria-subscribers-identity-resolve.ts";
 import {
+  aggregateCohortRowsByOrigin,
   buildAcquisitionCohortTable,
+  type CohortOriginRow,
   type CohortSubscriberInput,
   type CohortRow,
   type KitSubscriptionStatus,
@@ -346,6 +348,10 @@ export interface AcquisitionCohortData {
   from: string | null;
   to: string | null;
   rows: CohortRow[];
+  /** `rows` somadas por classe × `utm_source` no período filtrado, sem o
+   *  dia — é o que a tabela "Cadastros por origem" do `/assinantes` mostra
+   *  (decisão do editor, 03/11/2026, #10606). `rows` segue no payload. */
+  rowsByOrigin: CohortOriginRow[];
   /** Subscribers resolvidos que têm 0 `subscription` com `entered_at`
    *  gravado — não entram em `rows` (não há dia de cadastro pra agrupar).
    *  Reportado explicitamente em vez de descartado em silêncio (mesma
@@ -388,6 +394,7 @@ export function buildAcquisitionCohortData(
       from,
       to,
       rows: [],
+      rowsByOrigin: [],
       subscribersWithoutEnteredAt: 0,
       subscribersWithInvalidEnteredAt: 0,
       note: CROSS_PLATFORM_FLOOR_NOTE,
@@ -452,6 +459,7 @@ export function buildAcquisitionCohortData(
       from,
       to,
       rows,
+      rowsByOrigin: aggregateCohortRowsByOrigin(rows),
       subscribersWithoutEnteredAt,
       subscribersWithInvalidEnteredAt,
       note: CROSS_PLATFORM_FLOOR_NOTE,

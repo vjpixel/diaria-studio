@@ -316,7 +316,7 @@ function renderCohortOrigem(rows) {
     .map((r) => {
       const confirmed = r.confirmedKit == null ? "—" : String(r.confirmedKit);
       const unconfirmed = r.unconfirmedKit == null ? "—" : String(r.unconfirmedKit);
-      return `<tr><td class="mono">${escapeHtml(r.day)}</td><td>${escapeHtml(r.utmSource ?? "(nenhum)")}</td><td>${escapeHtml(r.acquisitionClass)}</td><td class="mono">${r.total}</td><td class="mono">${confirmed}</td><td class="mono">${unconfirmed}</td></tr>`;
+      return `<tr><td>${escapeHtml(r.utmSource ?? "(nenhum)")}</td><td>${escapeHtml(r.acquisitionClass)}</td><td class="mono">${r.total}</td><td class="mono">${confirmed}</td><td class="mono">${unconfirmed}</td></tr>`;
     })
     .join("");
 }
@@ -354,7 +354,11 @@ async function refreshCohortOrigem() {
       el.cohortOrigemGap.hidden = true;
     }
 
-    renderCohortOrigem(data.rows);
+    // #10606 (editor, 03/11): uma linha por origem no período, sem a coluna Dia.
+    // Sem o campo, o servidor é anterior a esta página: falha visível, nunca
+    // tabela vazia que leria como "nenhum cadastro".
+    if (!Array.isArray(data.rowsByOrigin)) throw new Error("resposta sem rowsByOrigin (servidor do Studio desatualizado, reinicie)");
+    renderCohortOrigem(data.rowsByOrigin);
   } catch (e) {
     el.cohortOrigemTbody.innerHTML = "";
     el.cohortOrigemGap.hidden = false;
@@ -465,8 +469,8 @@ function renderOnboardingKitLots(kitLots) {
   }
 }
 
-// #10606 — contagem por e-mail e tabela por pessoa (e-mail já vem MASCARADO
-// do servidor), ambas em Detalhes. A falha em destaque vai pro bloco de ação.
+// #10606 — contagem por e-mail e tabela por pessoa (e-mail completo, decisão
+// do editor 03/11/2026), ambas em Detalhes. A falha em destaque vai pro bloco de ação.
 const FOLLOWUP_MOTIVO_LABELS = {
   aguardando_confirmacao: "aguardando confirmação",
   na_fila: "na fila",
@@ -507,7 +511,7 @@ function renderOnboardingPeople() {
   el.onboardingPeopleTbody.innerHTML = shown
     .map(
       (r) =>
-        `<tr><td>${escapeHtml(r.emailMasked)}</td><td>${fmtTime(r.cadastroAt)}</td><td class="mono">${r.apoioRecebidos}</td><td class="mono">${r.formRecebidos}</td><td>${r.preencheu ? "sim" : "não"}</td><td>${yesNo(r.apoia)}</td></tr>`,
+        `<tr><td>${escapeHtml(r.email)}</td><td>${fmtTime(r.cadastroAt)}</td><td class="mono">${r.apoioRecebidos}</td><td class="mono">${r.formRecebidos}</td><td>${r.preencheu ? "sim" : "não"}</td><td>${yesNo(r.apoia)}</td></tr>`,
     )
     .join("");
 }

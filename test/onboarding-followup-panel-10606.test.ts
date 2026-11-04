@@ -93,16 +93,17 @@ describe("#10606 contagem por e-mail e por pessoa", () => {
     assert.equal(view.blocked.form?.motivo, "texto_pendente");
   });
 
-  it("por pessoa: e-mail mascarado, e-mail 3 conta como pedido de apoio, formulário e 'apoia'", () => {
+  it("por pessoa: e-mail completo (decisão do editor 03/11), e-mail 3 conta como pedido de apoio, formulário e 'apoia'", () => {
     const c = view.people.find((r) => r.key === "3")!;
-    assert.equal(c.emailMasked, "c***@x.com");
+    assert.equal(c.email, "c@x.com", "e-mail completo, sem máscara");
     assert.equal(c.apoioRecebidos, 2, "e-mail 3 + D+30");
     assert.equal(c.formRecebidos, 1);
     assert.equal(c.apoia, false);
     assert.equal(view.people.find((r) => r.key === "9")!.apoia, true);
     assert.equal(view.people.find((r) => r.key === "2")!.apoia, true, "índice de apoiadores do Studio");
     assert.ok(!view.people.some((r) => r.key.startsWith("pilot:")));
-    assert.ok(view.people.every((r) => !/^[^*]+@/.test(r.emailMasked)), "nenhum e-mail cru");
+    assert.ok(view.people.every((r) => !r.email.includes("***")), "nenhum e-mail mascarado na tabela por pessoa");
+    assert.ok(!view.people.some((r) => "emailMasked" in r), "campo antigo emailMasked não volta");
     // Ordem padrão: quem não apoia e recebeu mais pedidos de apoio primeiro.
     assert.equal(view.people[0].key, "3");
   });
