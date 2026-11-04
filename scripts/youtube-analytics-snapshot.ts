@@ -232,17 +232,32 @@ export async function runSnapshot(deps: SnapshotDeps, input: SnapshotInput): Pro
     const ids = videoRows.map((r) => r.video).filter((v): v is string => typeof v === "string" && !!v);
     const meta = await fetchVideoMeta(deps, token, ids);
     result.videos = toVideoSnapshotLines({ rows: videoRows, capturedAt, date, ...cumulative, index: input.index, meta });
+    // Retenção: uma consulta por vídeo, a parte mais frágil do snapshot. Falha
+    // real numa delas (ex.: 400 num vídeo sem curva) vira aviso e o laço segue —
+    // não pode derrubar o total do canal nem as séries já buscadas (review do
+    // PR #12137). Escopo ausente/API desligada continua subindo pro catch de
+    // baixo: aí nenhuma consulta funcionaria.
+    let retentionFailures = 0;
     for (const videoId of ids.slice(0, YOUTUBE_ANALYTICS_RETENTION_MAX_VIDEOS)) {
-      const rows = await queryAnalytics(deps.fetch, token, {
-        ...cumulative,
-        metrics: ["audienceWatchRatio"],
-        dimensions: ["elapsedVideoTimeRatio"],
-        filters: `video==${videoId}`,
-        sort: "elapsedVideoTimeRatio",
-      });
+      let rows: Awaited<ReturnType<typeof queryAnalytics>>;
+      try {
+        rows = await queryAnalytics(deps.fetch, token, {
+          ...cumulative,
+          metrics: ["audienceWatchRatio"],
+          dimensions: ["elapsedVideoTimeRatio"],
+          filters: `video==${videoId}`,
+          sort: "elapsedVideoTimeRatio",
+        });
+      } catch (e) {
+        if (e instanceof YouTubeAnalyticsError && e.kind !== "error") throw e;
+        retentionFailures++;
+        deps.warn(`[aviso] retenção de ${videoId} indisponível: ${(e as Error).message}`);
+        continue;
+      }
       const points = toRetentionPoints(rows);
       if (points.length) result.retention.push({ capturedAt, date, videoId, points });
     }
+    if (retentionFailures) deps.warn(`[aviso] ${retentionFailures} curva(s) de retenção falharam; o resto do snapshot foi gravado`);
   } catch (e) {
     if (!(e instanceof YouTubeAnalyticsError) || e.kind === "error") throw e;
     // Escopo ausente / API desligada: ação do editor, não falha da task.

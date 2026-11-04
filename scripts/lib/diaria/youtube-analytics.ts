@@ -421,7 +421,11 @@ export function latestVideoSnapshot(lines: VideoSnapshotLine[]): VideoSnapshotLi
 
 const fmtInt = (n: number): string => Math.round(n).toLocaleString("pt-BR");
 const fmtPct = (n: number): string => `${n.toFixed(1).replace(".", ",")}%`;
-const fmtSec = (n: number): string => `${Math.floor(n / 60)}:${String(Math.round(n % 60)).padStart(2, "0")}`;
+/** Segundos em "m:ss". Arredonda o total ANTES de dividir: 59,6 s é "1:00", nunca "0:60". */
+export const fmtSec = (n: number): string => {
+  const total = Math.round(n);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+};
 
 function videoTable(rows: VideoSnapshotLine[]): string[] {
   const out = ["| Edição | Vídeo | Views | Min. assistidos | Duração média | % médio | Inscritos + | Inscritos − | Líquido |", "|---|---|---:|---:|---:|---:|---:|---:|---:|"];

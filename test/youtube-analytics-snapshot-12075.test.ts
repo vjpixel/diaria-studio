@@ -18,6 +18,7 @@ import {
   brtIsoDate,
   buildAnalyticsQueryUrl,
   classifyAnalyticsFailure,
+  fmtSec,
   latestByKey,
   parseChannelStatistics,
   parseIsoDuration,
@@ -47,7 +48,7 @@ function json(body: unknown, status = 200): Response {
 }
 
 /** Fetch mockado: responde por URL; `analyticsStatus` força falha na Analytics API. */
-function mockFetch(opts: { analyticsStatus?: number; analyticsBody?: string } = {}) {
+function mockFetch(opts: { analyticsStatus?: number; analyticsBody?: string; retentionFail?: Record<string, { status: number; body: string }> } = {}) {
   const calls: string[] = [];
   const fetch = async (url: string): Promise<Response> => {
     calls.push(url);
@@ -79,6 +80,8 @@ function mockFetch(opts: { analyticsStatus?: number; analyticsBody?: string } = 
       }
       if (dims === "elapsedVideoTimeRatio") {
         const vid = (p.get("filters") ?? "").replace("video==", "");
+        const fail = opts.retentionFail?.[vid];
+        if (fail) return new Response(fail.body, { status: fail.status });
         return json(table(["elapsedVideoTimeRatio", "audienceWatchRatio"], vid === X ? undefined : [[0.5, 0.4], [0.01, 1.0]]));
       }
     }
@@ -162,6 +165,14 @@ describe("#12075 miolo puro", () => {
     assert.deepEqual(lines.map((l) => [l.videoId, l.kind, l.edition]), [[H, "horizontal", "261103"], [X, "short", null], ["ZZZZZZZZZZ1", "desconhecido", null]]);
   });
 
+  it("fmtSec arredonda o total antes de dividir: nunca \"0:60\" (review #12137)", () => {
+    assert.equal(fmtSec(59.6), "1:00");
+    assert.equal(fmtSec(119.5), "2:00");
+    assert.equal(fmtSec(48), "0:48");
+    assert.equal(fmtSec(240.4), "4:00");
+    assert.equal(fmtSec(0), "0:00");
+  });
+
   it("latestByKey: a captura mais recente vence", () => {
     const out = latestByKey([{ capturedAt: "1", day: "d", v: 1 }, { capturedAt: "2", day: "d", v: 2 }, { capturedAt: "1", day: "e", v: 3 }], (l) => l.day);
     assert.deepEqual(out.map((l) => l.v).sort(), [2, 3]);
@@ -227,6 +238,29 @@ describe("#12075 runSnapshot (fetch mockado)", () => {
     const { fetch } = mockFetch({ analyticsStatus: 500, analyticsBody: "boom" });
     await assert.rejects(runSnapshot(deps(fetch), { credentials: CREDS, dataRoot, index: new Map() }), /respondeu 500/);
     assert.equal(existsSync(join(dataRoot, "youtube-analytics")), false);
+  });
+
+  it("falha real na retenção de UM vídeo vira aviso; total do canal e demais séries são gravados (review #12137)", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "yta-"));
+    const { fetch } = mockFetch({ retentionFail: { [S]: { status: 400, body: "no curve" } } });
+    const d = deps(fetch);
+    const r = await runSnapshot(d, { credentials: CREDS, dataRoot, index: new Map() });
+    assert.equal(r.channel.analytics, "ok");
+    assert.equal(readLines(dataRoot, "channel.jsonl").length, 1);
+    assert.equal(readLines(dataRoot, "channel-daily.jsonl").length, 2);
+    assert.equal(readLines(dataRoot, "videos.jsonl").length, 3);
+    const ret = readLines(dataRoot, "retention.jsonl") as Array<{ videoId: string }>;
+    assert.deepEqual(ret.map((l) => l.videoId), [H], "a curva que falhou fica de fora, as outras seguem");
+    assert.ok(d.warnings.some((w) => w.includes(S) && /respondeu 400/.test(w)));
+  });
+
+  it("escopo ausente detectado só na retenção ainda cai no fail-soft do canal inteiro", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "yta-"));
+    const { fetch } = mockFetch({ retentionFail: { [S]: { status: 403, body: "Request had insufficient authentication scopes." } } });
+    const r = await runSnapshot(deps(fetch), { credentials: CREDS, dataRoot, index: new Map() });
+    assert.equal(r.channel.analytics, "missing-scope");
+    assert.equal(readLines(dataRoot, "channel.jsonl").length, 1);
+    assert.equal(readLines(dataRoot, "retention.jsonl").length, 0);
   });
 
   it("--dry-run busca e não grava", async () => {
