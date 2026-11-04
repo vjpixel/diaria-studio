@@ -579,3 +579,173 @@ export function combinedCutEnvelope(low: Envelope, high: Envelope, lowThresholdD
   const highThresholdDb = highBandThresholdDb(high).thresholdDb;
   return { hopS: low.hopS, db: Float64Array.from(low.db, (db, i) => Math.max(db, dbAt(high, i * low.hopS) - highThresholdDb + lowThresholdDb)) };
 }
+
+// ── Detector de fala do corte de pausas (#12089) ──────────────────────────
+
+/**
+ * Critério do corte de pausas validado pelo editor na 261104 (#12089), no
+ * lugar do `silencedetect` a -35 dB, que num bruto quente (-10 LUFS, piso de
+ * ruído a -38/-40 dB, respiração a -26/-33 dB) vê respiração e ruído de sala
+ * como som: as entradas ficavam no ar antes da fala e as pausas de 0,24–0,9 s
+ * dentro dos clipes iam inteiras para o XML.
+ *  - áudio a 48 kHz, quadros de 5 ms;
+ *  - fala = energia do sinal cheio acima de `fullDb` OU energia da 1ª
+ *    diferença (passa-alta, pega a sibilante: o "s" final de "aplicativos"
+ *    fica a -35/-38 dB no sinal cheio, -43/-46 dB na banda alta) acima de
+ *    `diffDb`;
+ *  - ilhas de fala com pausa menor que `minGapS` entre elas se juntam; ilha
+ *    que sobra com menos de `minIslandS` é estalo, não fala (o de 10 ms entre
+ *    "Segundo," e "nunca" virou um clipe de 0,13 s na 261104);
+ *  - pausa de `minGapS` ou mais sai, deixando `padBeforeS` antes da fala
+ *    seguinte e `padAfterS` depois da anterior (correção do editor no import
+ *    do V2: com 50/70 ms "está cortando em cima da fala"; a emenda é seca e o
+ *    in/out cai no quadro de 33 ms).
+ * `longJoinPauseS` e `shortClipS` são os limiares dos avisos do `build`.
+ */
+export const SPEECH_DETECT = {
+  sampleRate: 48000,
+  hopS: 0.005,
+  fullDb: -33,
+  diffDb: -46,
+  minIslandS: 0.06,
+  minGapS: 0.32,
+  padBeforeS: 0.15,
+  padAfterS: 0.12,
+  longJoinPauseS: 0.45,
+  shortClipS: 0.3,
+} as const;
+
+/** Energia por quadro (não sobrepostos, `hopS`): o quadro `i` cobre `[i·hopS, (i+1)·hopS)`. */
+export interface FrameEnergy {
+  hopS: number;
+  fullDb: Float64Array;
+  /** Da 1ª diferença do sinal (`x[n] − x[n−1]`), um passa-alta simples. */
+  diffDb: Float64Array;
+}
+
+/** As duas energias por quadro numa passada, sem cópia do sinal (o bruto de 20 min a 48 kHz tem 57 M amostras). */
+export function frameEnergies(samples: Int16Array, sampleRate: number, hopS: number = SPEECH_DETECT.hopS): FrameEnergy {
+  const per = Math.max(1, Math.round(hopS * sampleRate));
+  const n = Math.ceil(samples.length / per);
+  const fullDb = new Float64Array(n);
+  const diffDb = new Float64Array(n);
+  const full = 32768 * 32768;
+  const toDb = (ms: number) => (ms > 0 ? Math.max(ENVELOPE_DEFAULTS.floorDb, 10 * Math.log10(ms / full)) : ENVELOPE_DEFAULTS.floorDb);
+  for (let i = 0; i < n; i++) {
+    const a = i * per;
+    const b = Math.min(samples.length, a + per);
+    let s = 0;
+    let d = 0;
+    for (let k = a; k < b; k++) {
+      const x = samples[k];
+      s += x * x;
+      const dx = k > 0 ? x - samples[k - 1] : 0;
+      d += dx * dx;
+    }
+    const len = b - a;
+    fullDb[i] = toDb(s / len);
+    diffDb[i] = toDb(d / len);
+  }
+  return { hopS: per / sampleRate, fullDb, diffDb };
+}
+
+/**
+ * As ilhas de fala do bruto (#12089): quadros com fala (`fullDb` OU
+ * `diffDb`), ilhas a menos de `minGapS` unidas, e só depois as que sobram com
+ * menos de `minIslandS` descartadas (vogal curta colada na fala, "A empresa",
+ * fica junto da palavra seguinte; o estalo isolado sai).
+ */
+export function speechIslands(e: FrameEnergy, opts: Partial<Pick<typeof SPEECH_DETECT, "fullDb" | "diffDb" | "minGapS" | "minIslandS">> = {}): Interval[] {
+  const fullDb = opts.fullDb ?? SPEECH_DETECT.fullDb;
+  const diffDb = opts.diffDb ?? SPEECH_DETECT.diffDb;
+  const minGap = opts.minGapS ?? SPEECH_DETECT.minGapS;
+  const minIsland = opts.minIslandS ?? SPEECH_DETECT.minIslandS;
+  const raw: Interval[] = [];
+  let open = -1;
+  const n = e.fullDb.length;
+  for (let i = 0; i <= n; i++) {
+    const on = i < n && (e.fullDb[i] > fullDb || e.diffDb[i] > diffDb);
+    if (on && open < 0) open = i;
+    else if (!on && open >= 0) {
+      raw.push({ start: open * e.hopS, end: i * e.hopS });
+      open = -1;
+    }
+  }
+  const merged: Interval[] = [];
+  for (const r of raw) {
+    const last = merged[merged.length - 1];
+    if (last && r.start - last.end < minGap - 1e-9) last.end = r.end;
+    else merged.push({ ...r });
+  }
+  return merged.filter((r) => r.end - r.start >= minIsland - 1e-9).map((r) => ({ start: round3(r.start), end: round3(r.end) }));
+}
+
+/**
+ * As pausas a cortar (#12089), no formato do `silences.json`, já descontadas
+ * as folgas: de `padAfterS` depois de uma ilha até `padBeforeS` antes da
+ * seguinte, e as pontas do bruto. `speechParts` as recebe sem respiro próprio
+ * (`SPEECH_DETECT_PLAN`). Sem ilha nenhuma, o bruto inteiro é pausa.
+ */
+export function speechPauseSilences(islands: Interval[], durationS: number, opts: Partial<Pick<typeof SPEECH_DETECT, "padBeforeS" | "padAfterS">> = {}): Interval[] {
+  const before = opts.padBeforeS ?? SPEECH_DETECT.padBeforeS;
+  const after = opts.padAfterS ?? SPEECH_DETECT.padAfterS;
+  if (islands.length === 0) return durationS > 0 ? [{ start: 0, end: round3(durationS) }] : [];
+  const out: Interval[] = [];
+  const push = (a: number, b: number) => {
+    if (b - a > 1e-6) out.push({ start: round3(a), end: round3(b) });
+  };
+  push(0, islands[0].start - before);
+  for (let i = 1; i < islands.length; i++) push(islands[i - 1].end + after, islands[i].start - before);
+  push(islands[islands.length - 1].end + after, durationS);
+  return out;
+}
+
+/**
+ * Opções do corte com o detector de fala (`buildSequencePlan`, #12089): as
+ * pausas já vêm com a folga descontada, então sem `padS`, sem pausa mínima e
+ * sem desfazer o corte de pedaço curto (o detector já decidiu o que é fala; o
+ * pedaço curto sai no aviso de `shortClipWarnings`, não some).
+ */
+export const SPEECH_DETECT_PLAN = { padS: 0, minGapS: 0, fragmentS: 0, minClipS: 0.1 } as const;
+
+const ilhaAt = (islands: Interval[], t: number) => islands.find((s) => s.start < t - 1e-6 && s.end > t + 1e-6);
+
+/**
+ * Avisos do `build` com o detector de fala (#12089), por sequência, com o
+ * tempo NA SEQUÊNCIA:
+ *  - emenda com pausa acima de `longJoinPauseS` (cauda do clipe anterior +
+ *    entrada do seguinte, medidas até a fala detectada);
+ *  - clipe abaixo de `shortClipS` (pulo de imagem visível);
+ *  - entrada ou saída de clipe em plena fala (dentro de uma ilha): a entrada
+ *    depois do ataque come o começo da palavra ("A empresa", "Porque" na 261104).
+ */
+export function speechJoinWarnings(
+  clips: Array<{ block: string; frameIn: number; frameOut: number; seqStart: number }>,
+  islands: Interval[],
+  fps: number,
+  opts: Partial<Pick<typeof SPEECH_DETECT, "longJoinPauseS" | "shortClipS">> = {},
+): string[] {
+  const longPause = opts.longJoinPauseS ?? SPEECH_DETECT.longJoinPauseS;
+  const shortClip = opts.shortClipS ?? SPEECH_DETECT.shortClipS;
+  const out: string[] = [];
+  const at = (frames: number) => `${(frames / fps).toFixed(2)} s`;
+  const speechIn = (a: number, b: number) => islands.filter((s) => s.end > a && s.start < b);
+  clips.forEach((c, i) => {
+    const a = c.frameIn / fps;
+    const b = c.frameOut / fps;
+    if (b - a < shortClip - 1e-9) out.push(`${c.block}: clipe de ${(b - a).toFixed(2)} s em ${at(c.seqStart)} da sequência (abaixo de ${shortClip} s: pulo de imagem; conferir se é fala ou estalo)`);
+    if (ilhaAt(islands, a)) out.push(`${c.block}: entrada em ${a.toFixed(2)} s do bruto (${at(c.seqStart)} da sequência) cai dentro da fala: pode comer o começo da palavra`);
+    if (ilhaAt(islands, b)) out.push(`${c.block}: saída em ${b.toFixed(2)} s do bruto cai dentro da fala: pode comer o fim da palavra`);
+    const next = clips[i + 1];
+    if (!next) return;
+    const mine = speechIn(a, b);
+    const theirs = speechIn(next.frameIn / fps, next.frameOut / fps);
+    if (!mine.length || !theirs.length) return;
+    const tail = Math.max(0, b - Math.min(b, mine[mine.length - 1].end));
+    const head = Math.max(0, Math.max(next.frameIn / fps, theirs[0].start) - next.frameIn / fps);
+    if (tail + head > longPause + 1e-9) {
+      out.push(`${next.block}: emenda em ${at(next.seqStart)} da sequência com ${(tail + head).toFixed(2)} s de pausa (cauda ${tail.toFixed(2)} + entrada ${head.toFixed(2)}, acima de ${longPause} s)`);
+    }
+  });
+  return out;
+}

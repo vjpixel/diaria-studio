@@ -51,7 +51,12 @@
  *                           `fact-check-input.json`: entrada do agent `fact-checker` em `mode: "video"`,
  *                           que grava `fact-check.json`; o `roteiro` põe os achados graves no Doc do
  *                           Gate 2, com o trecho do bruto e a proposta de corte
- *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|text|off]
+ *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|text|off] [--no-speech-detect]
+ *       (#12089) o corte de pausas vem do detector de fala (`SPEECH_DETECT`, bruto a 48 kHz em
+ *       quadros de 5 ms: sinal cheio acima de -33 dBFS ou 1ª diferença acima de -46 dBFS; pausa
+ *       de 0,32 s ou mais sai com 150 ms antes da fala e 120 ms depois; ilha abaixo de 60 ms é
+ *       estalo), não do silencedetect; avisa emenda com pausa acima de 0,45 s, clipe abaixo de
+ *       0,3 s e borda dentro da fala. --no-speech-detect (ou o bruto ausente) volta ao silences.json.
  *       (#11935) grava um XML por sequência ({nome da sequência}.xml); `--seq` grava só uma, e só ela muda no plan.json (#11969)
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Clipes contíguos no bruto viram um só e o zoom alterna só nos cortes (#11503). Os cortes
@@ -80,8 +85,11 @@
  *       O do horizontal sai também como `diaria-comentada-{AAMMDD}.srt` na pasta
  *       da edição (data/editions), o que o `publish-youtube.ts --upload` envia;
  *       cópia editada à mão depois do último srt fica, salvo --force.
- *   preview AAMMDD [--seq instagram|outras-redes|{corte}]   (default a vertical da edição; sempre refaz)
- *   review AAMMDD [--seq instagram|outras-redes|{corte}]    (default a vertical da edição; sempre refaz)
+ *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}]   (default a vertical da edição; sempre refaz)
+ *   review AAMMDD [--seq youtube|instagram|outras-redes|{corte}]    (default a vertical da edição; sempre refaz)
+ *       `--seq youtube` (#12096): a prévia do horizontal, 960x540, com o recorte de cada clipe
+ *       pelo mesmo `framingFor` do XML (`previewCropFor`), a legenda do horizontal queimada e o
+ *       áudio normalizado, em `{AAMMDD} - previa youtube.mp4`; o review cobre ela também.
  *       `--seq` (#11900): o slug do corte escolhe aquela vertical extra (várias por
  *       plano); o destino escolhe a sequência sem corte dele, ou o único corte dele.
  *       Arquivos de trabalho por sequência: seq-{corte|destino}.wav, previa-…, review-….
@@ -146,6 +154,7 @@ import {
   AUDIO_GAIN_TP_CEILING_DBTP,
   LOUDNORM_TARGET,
   PREVIEW_SUBTITLE_STYLE,
+  PREVIEW_SUBTITLE_STYLE_HORIZONTAL,
   SILENCE_DETECT,
   SPEECH_DEFAULTS,
   applyVocabularyToWords,
@@ -164,10 +173,16 @@ import {
   effectiveFraming,
   effectiveSource,
   firstTitledVertical,
+  faceCenterWarnings,
   forceAlignToScript,
   forcedAlignmentNotes,
+  ganchoWarning,
+  parseSequenceIdVersion,
+  pickXmlVersion,
+  sequenceNameVersion,
+  versionedSequenceId,
+  versionedSequenceName,
   frameCropOverlays,
-  framingFor,
   loudnessWarning,
   mugFramingWarnings,
   makeMatcher,
@@ -186,6 +201,8 @@ import {
   parseSilenceDetect,
   pickRawSource,
   previewClipArgs,
+  previewCropFor,
+  previewSize,
   resolveBlocks,
   reviewPreview,
   screenTitleSvg,
@@ -222,6 +239,7 @@ import {
   decupagemPlanTemplate,
   mdCell,
   parseDecupagemPlan,
+  proposeGancho,
   roteiroMarkdown,
   segmentListing,
   SHORTS_MAX_S,
@@ -260,6 +278,12 @@ import {
   parseWavPcm16,
   snapClipEdges,
   speechCutWarnings,
+  SPEECH_DETECT,
+  SPEECH_DETECT_PLAN,
+  frameEnergies,
+  speechIslands,
+  speechJoinWarnings,
+  speechPauseSilences,
   trimEdgeExtras,
   type EdgeWindow,
 } from "./lib/diaria/video-cut-refine.ts";
@@ -501,7 +525,15 @@ function silences(ctx: Ctx): Interval[] {
   return readJson<Interval[]>(f(ctx, "silences.json"), "silences.json (rode transcribe)");
 }
 
-function plans(ctx: Ctx) {
+/**
+ * As pausas do corte (#12089): com o detector de fala do `build`, as dele (já
+ * com a folga descontada, `SPEECH_DETECT_PLAN`); sem ele, o `silences.json` do
+ * `transcribe` com o respiro de `SPEECH_DEFAULTS`. Resolver as falas usa
+ * sempre o `silences.json` (é o que o transcript e o roteiro viram).
+ */
+type SpeechCut = { silences: Interval[]; islands: Interval[] };
+
+function plans(ctx: Ctx, speech?: SpeechCut | null) {
   const { file, text } = loadBlocks(ctx);
   const source = sourceFor(ctx, file);
   const vocab = loadVocab();
@@ -521,7 +553,9 @@ function plans(ctx: Ctx) {
   const fmt = effectiveFormat(file);
   if (!file.sequences && fmt.inferred) console.error("[premissa] blocks.json sem título nem resumo: formato entrevista, sequências abertura → comentário → CTA → fecho (#11507); `format`/`sequences` sobrepõem");
   const specs = file.sequences ?? defaultSequences("V1", fmt.format);
-  const ps = specs.map((s) => buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks }));
+  const ps = specs.map((s) =>
+    speech ? buildSequencePlan(s, blocks, speech.silences, source, { holdBlocks: file.holdBlocks, ...SPEECH_DETECT_PLAN }) : buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks }),
+  );
   return { file, source, resolved: blocks, plans: ps, hash: planHash(ctx, text) };
 }
 
@@ -1018,7 +1052,10 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   const crit = checkDecupagemCriteria(plan, segments);
   for (const w of crit.warnings) console.error(`[aviso] ${w}`);
   if (crit.errors.length) throw new Error(`decupagem-plan.json não decide por critério:\n  - ${crit.errors.join("\n  - ")}`);
-  const doc = buildDecupagemDoc(plan, segments, loadVocab().rules);
+  // #12093: o gancho (1ª frase do resumo) abre o horizontal; o Doc e o molde já o trazem separado.
+  const proposed = proposeGancho(buildDecupagemDoc(plan, segments, loadVocab().rules), segments);
+  if (proposed.note) console.error(`[premissa] ${proposed.note}`);
+  const doc = proposed.doc;
   const source = measuredSource(ctx);
   // Sem título nem resumo "usar", é entrevista (#11507): sequências sem esses blocos.
   const blocks = blocksFromDecupagem(doc);
@@ -1227,6 +1264,31 @@ export interface CutRefineInfo {
   /** Bordas retranscritas (janelas únicas, as verticais dividem as mesmas). */
   edgeWindows?: number;
   edgesRetranscribed?: boolean;
+  /** Detector de fala do corte de pausas (#12089): aplicado, ou o motivo de ter ficado o silencedetect. */
+  speechDetect?: { applied: true; islands: number } | { applied: false; reason: string };
+}
+
+/**
+ * O detector de fala do corte de pausas (#12089): o bruto a 48 kHz, mono,
+ * banda cheia (cache `audio-48k.wav`, chave = o bruto), quadros de 5 ms
+ * (`SPEECH_DETECT`). Bruto ausente nesta máquina = null com o motivo: o build
+ * segue com o `silences.json`, com [aviso].
+ */
+function speechDetection(ctx: Ctx, source: SourceInfo): { cut: SpeechCut | null; reason?: string } {
+  if (!existsSync(source.path)) return { cut: null, reason: `bruto ausente nesta máquina (${source.path})` };
+  const audio = join(ctx.workDir, "audio-48k.wav");
+  const meta = join(ctx.workDir, "audio-48k.meta.json");
+  const st = statSync(source.path);
+  const key = JSON.stringify({ path: source.path, size: st.size, mtimeMs: st.mtimeMs, sampleRate: SPEECH_DETECT.sampleRate });
+  if (ctx.force || !existsSync(audio) || !existsSync(meta) || readFileSync(meta, "utf8").trim() !== key) {
+    mkdirSync(ctx.workDir, { recursive: true });
+    rmSync(meta, { force: true });
+    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", source.path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", String(SPEECH_DETECT.sampleRate), "-c:a", "pcm_s16le", audio]);
+    writeFileAtomic(meta, key + "\n");
+  }
+  const { samples, sampleRate } = parseWavPcm16(readFileSync(audio));
+  const islands = speechIslands(frameEnergies(samples, sampleRate));
+  return { cut: { islands, silences: speechPauseSilences(islands, source.durationS) } };
 }
 
 /** Cache separado do Whisper: nunca reamostrar o WAV de 16 kHz para medir agudos. */
@@ -1298,7 +1360,7 @@ function edgeTranscripts(ctx: Ctx, audio: string, windows: EdgeWindow[]): Map<st
  * Sem `audio.wav` nesta máquina, ou com `--no-audio-refine`, sai como está e
  * avisa; falha da retranscrição deixa só a passada A, também com aviso.
  */
-function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: boolean): { plans: SequencePlan[]; info: CutRefineInfo; warnings: string[] } {
+function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: boolean, speechCut = false): { plans: SequencePlan[]; info: CutRefineInfo; warnings: string[] } {
   if (!enabled) return { plans: ps, info: { applied: false, reason: "--no-audio-refine" }, warnings: ["refino dos cortes por áudio desligado (--no-audio-refine): os cortes seguem os tempos do Whisper"] };
   const audio = join(ctx.workDir, "audio.wav");
   if (!existsSync(audio)) {
@@ -1317,7 +1379,8 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
   if (highEnv) env = combinedCutEnvelope(env, highEnv, thresholdDb);
   const highBandWarnings: Record<string, string[]> = {};
   // Passada A em todas as sequências.
-  const stageA = ps.map((p) => snapClipEdges(p.clips.map(rawOf), env, words, { thresholdDb, durationS: source.durationS }));
+  // #12089: com o detector de fala, a borda já está a 150/120 ms da fala; o vale só a afina, sem voltar ao ar de antes.
+  const stageA = ps.map((p) => snapClipEdges(p.clips.map(rawOf), env, words, { thresholdDb, durationS: source.durationS, ...(speechCut ? { windowS: SPEECH_CUT_SNAP_WINDOW_S } : {}) }));
   const windows = new Map<string, EdgeWindow>();
   for (const a of stageA) for (const c of a.clips) for (const w of edgeWindowsFor(c, source.durationS)) windows.set(w.key, w);
   let heard: Map<string, Word[]> | null = null;
@@ -1355,6 +1418,9 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
   return { plans: out, info: { applied: true, thresholdDb, edgeWindows: windows.size, edgesRetranscribed: heard !== null, highBandWarnings }, warnings };
 }
 
+/** Janela do vale de energia quando o corte vem do detector de fala (#12089): afina, não reabre a pausa. */
+export const SPEECH_CUT_SNAP_WINDOW_S = 0.05;
+
 const rawOf = (c: PlannedClip): RawClip => ({
   block: c.block,
   srcIn: c.srcIn,
@@ -1364,6 +1430,33 @@ const rawOf = (c: PlannedClip): RawClip => ({
   // O corte de pausa curta segue sem troca de zoom depois do refino (#11753).
   ...(c.keepScale ? { keepScale: true as const } : {}),
 });
+
+/**
+ * Versão do XML de cada sequência deste build (#12111): o nome passa a
+ * `_V{n}`, com `n` de `pickXmlVersion` sobre os XML dessa sequência já no out
+ * dir (no modo API, o cache local: versão que só existe no Drive não é vista).
+ * Muda o `spec.name` dos planos (o plan.json, o srt e a prévia seguem o nome
+ * novo).
+ */
+function versionPickedSequences(ctx: Ctx, picked: SequencePlan[], hash: string): void {
+  const files = existsSync(ctx.outDir) ? readdirSync(ctx.outDir).filter((n) => n.endsWith(".xml")) : [];
+  for (const p of picked) {
+    const nameVersion = sequenceNameVersion(p.spec.name);
+    if (nameVersion === null) {
+      console.error(`[aviso] ${p.spec.name}: nome sem _V{n}, o XML sai sem versão e sobrescreve o anterior (#12111)`);
+      continue;
+    }
+    const existing = files.flatMap((n) => {
+      const v = sequenceNameVersion(n.slice(0, -4));
+      if (v === null || xmlFileName(versionedSequenceName(p.spec.name, v)) !== n) return [];
+      let id: ReturnType<typeof parseSequenceIdVersion> = null;
+      try { id = parseSequenceIdVersion(readFileSync(join(ctx.outDir, n), "utf8")); } catch { /* ilegível: conta como outro plano */ }
+      return [{ version: v, hash: id?.hash ?? null }];
+    });
+    const version = pickXmlVersion(existing, hash, nameVersion);
+    p.spec = { ...p.spec, name: versionedSequenceName(p.spec.name, version) };
+  }
+}
 
 /** Uma linha do relato por ajuste de corte (#11500). */
 export function adjustmentLine(a: CutAdjustment): string {
@@ -1428,9 +1521,18 @@ export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: nu
   return `[premissa] ganho de áudio no XML: ${g.db > 0 ? "+" : ""}${g.db.toFixed(2)} dB em cada clipe (Audio Levels, limitado pelo ${why})${from}; conferir no 1º import se o Premiere aplicou (#11755); --no-audio-gain tira`;
 }
 
-async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string): Promise<number> {
-  const { file, source, plans: ps0, hash, resolved } = plans(ctx);
-  const refined = refineCuts(ctx, ps0, source, audioRefine);
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true): Promise<number> {
+  // #12089: o corte de pausas pelo detector de fala (energia + banda alta), não pelo silencedetect.
+  let speech: { cut: SpeechCut | null; reason?: string } = { cut: null, reason: "--no-speech-detect" };
+  if (speechDetect) {
+    try { speech = speechDetection(ctx, sourceFor(ctx, loadBlocks(ctx).file)); }
+    catch (e) { speech = { cut: null, reason: `detector de fala falhou: ${(e as Error).message}` }; }
+  }
+  if (speech.cut) console.error(`[premissa] corte de pausas pelo detector de fala (#12089): ${speech.cut.islands.length} ilhas de fala, pausa de ${SPEECH_DETECT.minGapS} s ou mais sai com ${SPEECH_DETECT.padBeforeS * 1000} ms antes da fala e ${SPEECH_DETECT.padAfterS * 1000} ms depois; --no-speech-detect volta ao silences.json`);
+  else console.error(`[aviso] corte de pausas pelo silences.json (${speech.reason}): respiração e ruído de sala contam como fala num bruto quente (#12089)`);
+  const { file, source, plans: ps0, hash, resolved } = plans(ctx, speech.cut);
+  const refined = refineCuts(ctx, ps0, source, audioRefine, speech.cut !== null);
+  refined.info.speechDetect = speech.cut ? { applied: true, islands: speech.cut.islands.length } : { applied: false, reason: speech.reason ?? "desligado" };
   const ps = refined.plans;
   for (const w of refined.warnings) console.error(`[aviso] ${w}`);
   const { framing, assumed } = effectiveFraming(file);
@@ -1438,11 +1540,18 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   let problems = 0;
   // #11935: --seq grava só o XML daquela sequência e só ela barra o build; #11969: e só ela muda no plan.json.
   const picked = pickPlans(ps, seq, false);
+  // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
+  versionPickedSequences(ctx, picked, hash);
   // #11939: a caneca é esforço, nunca barra o build; o relato diz onde ela não sai inteira.
   for (const w of mugFramingWarnings(picked, source, framing)) console.error(`[aviso] ${w}`);
+  // #12093: o rosto centrado nos dois zooms; escala pequena demais bate na borda do bruto.
+  for (const w of faceCenterWarnings(picked, source, framing)) console.error(`[aviso] ${w}`);
   for (const p of picked) {
     const d = p.durationFrames / source.fps;
     console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}`);
+    const g = ganchoWarning(p);
+    if (g) console.error(`[aviso] ${g}`);
+    if (speech.cut) for (const w of speechJoinWarnings(p.clips, speech.cut.islands, source.fps)) console.error(`[aviso] ${p.spec.name}: ${w}`);
     if (p.missingBlocks.length) console.error(`   faltam no blocks.json: ${p.missingBlocks.join(", ")}`);
     for (const x of p.dropped) console.error(`   ${x}`);
     for (const a of p.cutAdjustments ?? []) console.error(adjustmentLine(a));
@@ -1518,8 +1627,11 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   const xmlPaths: string[] = [];
   for (const p of picked) {
     const xmlPath = join(ctx.outDir, xmlFileName(p.spec.name));
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte }));
+    const version = sequenceNameVersion(p.spec.name);
+    const sequenceIds = version !== null ? { [sequenceKey(p.spec)]: versionedSequenceId(sequenceKey(p.spec), version, hash) } : undefined;
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds }));
     xmlPaths.push(xmlPath);
+    console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
   // #11969: com --seq, só as sequências reconstruídas (e conferidas acima) mudam no plan.json.
   const planPath = f(ctx, "plan.json");
@@ -1613,23 +1725,34 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
   const rules = [...vocab.rules, ...(file.vocabulary ?? [])];
   mkdirSync(ctx.outDir, { recursive: true });
   const fps = pf.source.fps;
+  // #12093: o que o alinhamento decidiu (ouvido × roteiro) vira item do relatório final, não só stderr.
+  const notesPath = f(ctx, SRT_NOTES_FILE);
+  const notes: Record<string, string[]> = existsSync(notesPath) ? readJson<Record<string, string[]>>(notesPath, SRT_NOTES_FILE) : {};
   for (const plan of srtPlans(pf.plans, target)) {
     const heard = applyVocabularyToWords(seqWords(ctx, plan, pf.source, fromRaw), rules, plan.spec, (w) => console.error(`[aviso] ${w}`));
     // #11960: o texto do roteiro no tempo da fala, não o texto ouvido.
     const aligned = forceAlignToScript(heard, plan.script, { aliases: vocab.aliases, cuts: cutPoints(plan, fps), endS: plan.durationFrames / fps });
-    for (const n of forcedAlignmentNotes(plan.spec.name, aligned)) console.error(n);
+    const seqNotes = forcedAlignmentNotes(plan.spec.name, aligned);
+    for (const n of seqNotes) console.error(n);
+    notes[sequenceKey(plan.spec)] = seqNotes;
     const srt = cuesToSrt(segmentCues(aligned.words));
     const path = join(ctx.outDir, srtFileName(plan.spec.name));
     writeFileAtomic(path, srt);
     console.log(path);
     if (isYoutubeSpec(plan.spec)) writeYoutubeSrtCopy(ctx, srt);
   }
+  writeJson(notesPath, notes);
+  console.error(`[video-montagem] ouvido × roteiro de cada legenda em ${notesPath}: itens a conferir no relatório final (#12093)`);
   return 0;
 }
 
+/** Notas do alinhamento de cada legenda (#12093), por sequência: o relatório final lista para o editor conferir. */
+export const SRT_NOTES_FILE = "srt-notas.json";
+
 function cmdPreview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
-  const [plan] = pickPlans(pf.plans, target ?? "outras-redes", true, true);
+  // #12096: `--seq youtube` também (o horizontal, 960x540); sem --seq, a vertical da edição.
+  const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
   if (pf.framingAssumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (o mesmo do build)");
   for (const w of mugFramingWarnings([plan], pf.source, pf.framing)) console.error(`[aviso] ${w}`);
   const fps = pf.source.fps;
@@ -1640,11 +1763,13 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
   const dir = join(ctx.workDir, `previa-${sequenceKey(plan.spec)}`);
   mkdirSync(dir, { recursive: true });
   const list: string[] = [];
+  const size = previewSize(plan.spec);
   plan.clips.forEach((c, i) => {
-    const { crop } = framingFor({ srcW: pf.source.width, srcH: pf.source.height, seqW: plan.spec.width, seqH: plan.spec.height, scalePct: c.scale, framing: pf.framing });
+    // #12096: o recorte do XML (framingFor com a escala e o eyeFraction da sequência).
+    const crop = previewCropFor(pf.source, plan.spec, pf.framing, c.scale);
     const name = `c${String(i).padStart(2, "0")}.mp4`;
     // Corte pelos FRAMES do plano, os mesmos do XML.
-    run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name) }));
+    run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size }));
     list.push(`file '${name}'`);
     console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block})`);
   });
@@ -1653,7 +1778,7 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
   const vf: string[] = [];
   if (existsSync(srt)) {
     copyFileSync(srt, join(dir, "leg.srt"));
-    vf.push("-vf", `subtitles=leg.srt:force_style='${PREVIEW_SUBTITLE_STYLE}'`);
+    vf.push("-vf", `subtitles=leg.srt:force_style='${isVerticalSpec(plan.spec) ? PREVIEW_SUBTITLE_STYLE : PREVIEW_SUBTITLE_STYLE_HORIZONTAL}'`);
   } else console.error(`[aviso] sem ${srt}: a prévia sai sem legenda (rode srt antes)`);
   mkdirSync(ctx.outDir, { recursive: true });
   const out = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
@@ -1665,14 +1790,15 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
   // 14 quadros (7x2) espalhados pela prévia inteira, qualquer que seja a duração.
   const dur = Math.max(1, plan.durationFrames / fps);
   const sheet = f(ctx, `previa-${sequenceKey(plan.spec)}.jpg`);
-  run("ffmpeg", ["-y", "-v", "error", "-i", join(dir, "previa.mp4"), "-vf", `fps=${(14 / dur).toFixed(4)},scale=270:-1,tile=7x2`, "-frames:v", "1", sheet]);
+  run("ffmpeg", ["-y", "-v", "error", "-i", join(dir, "previa.mp4"), "-vf", `fps=${(14 / dur).toFixed(4)},scale=${isVerticalSpec(plan.spec) ? 270 : 480}:-1,tile=7x2`, "-frames:v", "1", sheet]);
   console.log(JSON.stringify({ preview: out, sheet }, null, 2));
   return 0;
 }
 
 function cmdReview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
-  const [plan] = pickPlans(pf.plans, target ?? "outras-redes", true, true);
+  // #12096: o horizontal também (`--seq youtube`), com a mesma recusa de prévia mais velha que o build.
+  const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
   const preview = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   if (!existsSync(preview)) throw new Error(`prévia ausente: ${preview} (rode preview)`);
   if (mtime(preview) < sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(f(ctx, "plan.json")))) throw new Error(`${preview} é mais velha que o build de ${plan.spec.name} no plan.json: rode preview de novo`);
@@ -2135,7 +2261,7 @@ async function runCommand(
         console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");
         return 2;
       }
-      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq);
+      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq, !flags.has("no-speech-detect"));
     case "srt":
       return cmdSrt(ctx, seq, flags.has("from-raw"));
     case "preview":

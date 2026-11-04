@@ -1096,8 +1096,16 @@ export function clockTime(s: number): string {
 // ── Blocos e sequências ───────────────────────────────────────────────────
 
 /** Blocos conhecidos do roteiro (#11208). Nenhuma versão leva "Por que isso importa?" (editor, 26/10/2026). */
-export const BLOCK_KEYS = ["titulo", "abertura", "resumo", "resumo_curto", "comentario", "cta_yt", "cta_vertical", "cta_ig", "cta_out", "fecho"] as const;
+export const BLOCK_KEYS = ["gancho", "titulo", "abertura", "resumo", "resumo_curto", "comentario", "cta_yt", "cta_vertical", "cta_ig", "cta_out", "fecho"] as const;
 export type BlockKey = (typeof BLOCK_KEYS)[number];
+
+/**
+ * Blocos que a sequência pode não ter sem virar "falta no blocks.json"
+ * (#12093). O `gancho` (a 1ª frase do resumo, que abre o horizontal antes do
+ * "Olá, eu sou o Pixel") é proposto pela decupagem; um `blocks.json` anterior a
+ * ele segue montando, com `[aviso]` no build.
+ */
+export const OPTIONAL_BLOCKS: readonly BlockKey[] = ["gancho"];
 
 export function isBlockKey(k: string): k is BlockKey {
   return (BLOCK_KEYS as readonly string[]).includes(k);
@@ -1188,6 +1196,12 @@ export interface SequenceSpec {
   order: BlockKey[];
   /** Escala (%) alternada nos cortes (clipes contíguos fundidos antes, #11503): [base, punch-in]. */
   scales: [number, number];
+  /**
+   * Altura da linha dos olhos no quadro, em fração (#12093). Ausente =
+   * `EYE_LINE_FRACTION` (0,4). O horizontal usa 1/3 (261104: olhos na mesma
+   * altura nos dois zooms, menos teto acima da cabeça).
+   */
+  eyeFraction?: number;
   /**
    * Vertical extra, fora do fluxo da edição (261103: a 2ª vertical, sobre IA
    * soberana); o editor publica com `publish-shorts.ts --corte {slug} --video …`.
@@ -1442,6 +1456,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         if (!Number.isInteger(s.width) || !Number.isInteger(s.height) || (s.width as number) <= 0 || (s.height as number) <= 0) errors.push(`${label}: width/height inteiros positivos`);
         if (!Array.isArray(s.order) || s.order.length === 0 || s.order.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push(`${label}: order precisa listar blocos conhecidos`);
         if (!Array.isArray(s.scales) || s.scales.length !== 2 || s.scales.some((x) => !isNum(x) || x <= 0)) errors.push(`${label}: scales precisa de exatamente 2 números positivos`);
+        if (s.eyeFraction !== undefined && !(isNum(s.eyeFraction) && s.eyeFraction > 0 && s.eyeFraction < 1)) errors.push(`${label}: eyeFraction precisa ser uma fração entre 0 e 1 (altura dos olhos no quadro)`);
       });
     }
   }
@@ -1488,7 +1503,7 @@ export type VideoFormat = "monologo" | "entrevista";
 export const VIDEO_FORMATS: readonly VideoFormat[] = ["monologo", "entrevista"];
 
 /** Blocos que só o monólogo grava: sem nenhum deles (e com comentário), o formato é entrevista. */
-export const MONOLOGUE_ONLY_BLOCKS: readonly BlockKey[] = ["titulo", "resumo", "resumo_curto"];
+export const MONOLOGUE_ONLY_BLOCKS: readonly BlockKey[] = ["gancho", "titulo", "resumo", "resumo_curto"];
 
 /**
  * O formato da edição: o `format` do `blocks.json` vence; sem ele, `entrevista`
@@ -1503,18 +1518,28 @@ export function effectiveFormat(file: { format?: VideoFormat; blocks: Partial<Re
 }
 
 /**
+ * Escalas do horizontal (#12093, 261104): 60% o aberto, 85% o fechado. Os 50%
+ * de antes cobriam o quadro exato de 1920x1080 num 4K, sem folga para centrar
+ * o rosto (o Center ficava 0 e o rosto onde estava no bruto); 60% centra até
+ * `faceX` 0,34–0,66 (`minCenteredScalePct`).
+ */
+export const YOUTUBE_SCALES: readonly [number, number] = [60, 85];
+/** Olhos a 1/3 da altura no horizontal (#12093): a mesma altura nos dois zooms, menos teto acima da cabeça. */
+export const YOUTUBE_EYE_FRACTION = 1 / 3;
+
+/**
  * As 2 versões (#11491). Nomes no padrão dos finais da pasta `Final/`
  * (`Diaria comentada_Youtube_V3.mp4`, #11222): o Premiere sugere o nome da
- * sequência no export, e `videoTargetOf` lê o destino dele. Escalas: 50/62 no
- * horizontal (50% de um 4K enche 1920x1080); 115/130 nas verticais (a da
- * prévia aprovada da 261027; o XML dela saiu com 89/105, "enquadramento
- * pequeno" na autorrevisão).
+ * sequência no export, e `videoTargetOf` lê o destino dele. Escalas:
+ * `YOUTUBE_SCALES` (60/85, olhos a 1/3, #12093) no horizontal;
+ * 115/130 nas verticais (a da prévia aprovada da 261027; o XML dela saiu com
+ * 89/105, "enquadramento pequeno" na autorrevisão), nos dois formatos.
  */
 export function defaultSequences(version = "V1", format: VideoFormat = "monologo"): SequenceSpec[] {
   if (format === "entrevista") {
     // #11507 (261029): sem título nem resumo gravados, a ordem que o editor montou à mão.
     return [
-      { target: "youtube", name: `Diaria comentada_Youtube_${version}`, width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [50, 62] },
+      { target: "youtube", name: `Diaria comentada_Youtube_${version}`, width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]], eyeFraction: YOUTUBE_EYE_FRACTION },
       { target: "outras-redes", name: `Diaria comentada_Vertical_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_vertical", "fecho"], scales: [115, 130] },
     ];
   }
@@ -1524,8 +1549,10 @@ export function defaultSequences(version = "V1", format: VideoFormat = "monologo
       name: `Diaria comentada_Youtube_${version}`,
       width: 1920,
       height: 1080,
-      order: ["titulo", "abertura", "resumo", "comentario", "cta_yt", "fecho"],
-      scales: [50, 62],
+      // #12093: o gancho (1ª frase do resumo) abre o horizontal, antes do "Olá, eu sou o Pixel".
+      order: ["gancho", "titulo", "abertura", "resumo", "comentario", "cta_yt", "fecho"],
+      scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]],
+      eyeFraction: YOUTUBE_EYE_FRACTION,
     },
     {
       target: "outras-redes",
@@ -1946,7 +1973,7 @@ export function buildSequencePlan(
   for (const key of spec.order) {
     const items = resolved[key];
     if (!items || items.length === 0) {
-      missingBlocks.push(key);
+      if (!OPTIONAL_BLOCKS.includes(key)) missingBlocks.push(key);
       continue;
     }
     const holding = hold.has(key);
@@ -1984,6 +2011,16 @@ export function buildSequencePlan(
     if (lost.length) dropped.push(`${label}: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
   }
   return { spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges };
+}
+
+/**
+ * `[aviso]` do build quando a ordem da sequência pede o `gancho` e nenhum
+ * clipe é dele (#12093): blocks.json anterior ao gancho, ou decupagem que não
+ * achou a 1ª frase do resumo. Não barra o build (o bloco é opcional).
+ */
+export function ganchoWarning(plan: Pick<SequencePlan, "spec" | "clips">): string | null {
+  if (!plan.spec.order.includes("gancho") || plan.clips.some((c) => c.block === "gancho" || c.parts?.some((p) => p.block === "gancho"))) return null;
+  return `${plan.spec.name}: sem gancho, o vídeo abre no bloco seguinte da ordem (${plan.spec.order.filter((k) => k !== "gancho").join(" → ")}); para abrir com a 1ª frase do resumo, ponha-a em blocks.gancho e tire-a do resumo (#12093)`;
 }
 
 // ── Enquadramento ─────────────────────────────────────────────────────────
@@ -2119,7 +2156,7 @@ export function framingFor(input: {
  * `framing.mug`, uma linha só dizendo que a caneca não foi conferida.
  */
 export function mugFramingWarnings(
-  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number }; clips: ReadonlyArray<{ scale: number }> }>,
+  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number }; clips: ReadonlyArray<{ scale: number }> }>,
   source: { width: number; height: number },
   framing: Framing,
 ): string[] {
@@ -2127,16 +2164,68 @@ export function mugFramingWarnings(
   const out: string[] = [];
   for (const p of plans) {
     for (const scalePct of [...new Set(p.clips.map((c) => c.scale))].sort((a, b) => a - b)) {
-      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing });
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing, eyeFraction: p.spec.eyeFraction });
       if (fr.warning) out.push(`${p.spec.name} (${scalePct}%): ${fr.warning}`);
     }
   }
   return out;
 }
 
-/** Escalas que o `frame` desenha (#11939): as do horizontal e as das verticais. */
-export const FRAME_PREVIEW_CROPS: ReadonlyArray<{ seqW: number; seqH: number; scales: readonly number[]; color: string }> = [
-  { seqW: 1920, seqH: 1080, scales: [50, 62], color: "yellow" },
+/**
+ * Quanto o rosto pode ficar fora do centro horizontal do recorte, em fração
+ * da largura do recorte (#12093): acima disso o `build` avisa. Sem caneca, só
+ * o clamp na borda do bruto descentraliza (escala pequena demais para a folga).
+ */
+export const FACE_CENTER_TOL = 0.01;
+
+/**
+ * A menor escala (%, inteira, arredondada para cima) em que o recorte de
+ * `seqW` de largura centra o rosto em `faceX` sem bater na borda do bruto
+ * (#12093): `s ≥ seqW / (srcW · (1 − 2·|0,5 − faceX|))`. `faceX` 0,47 num
+ * 3840 para 1920 dá 54%.
+ */
+export function minCenteredScalePct(srcW: number, seqW: number, faceX: number): number {
+  const room = 1 - 2 * Math.abs(0.5 - faceX);
+  if (!(room > 0)) return Number.POSITIVE_INFINITY;
+  return Math.ceil(((seqW / (srcW * room)) * 100) - 1e-9);
+}
+
+/**
+ * Um `[aviso]` por sequência e escala em que o rosto sai a mais de
+ * `FACE_CENTER_TOL` do centro horizontal do recorte por causa do clamp na
+ * borda do bruto (#12093: "um dos zooms está centralizado, o outro não"), com
+ * a menor escala que centra. Deslocamento deliberado pela caneca (`framing.mug`,
+ * até `MUG_MAX_FACE_SHIFT`) não conta: só o que sobra depois dele.
+ */
+export function faceCenterWarnings(
+  plans: ReadonlyArray<{ spec: { name: string; width: number; height: number; eyeFraction?: number }; clips: ReadonlyArray<{ scale: number }> }>,
+  source: { width: number; height: number },
+  framing: Framing,
+): string[] {
+  const out: string[] = [];
+  if (!(source.width > 0) || !(source.height > 0)) return out;
+  for (const p of plans) {
+    for (const scalePct of [...new Set(p.clips.map((c) => c.scale))].sort((a, b) => a - b)) {
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: p.spec.width, seqH: p.spec.height, scalePct, framing, eyeFraction: p.spec.eyeFraction });
+      // O recorte sem o deslocamento da caneca: o que sobra fora do centro é o clamp.
+      const faceCropX = fr.crop.x - (fr.mugShift ?? 0) * source.width;
+      const off = (framing.faceX * source.width - faceCropX) / fr.crop.w - 0.5;
+      if (Math.abs(off) <= FACE_CENTER_TOL + 1e-9) continue;
+      const min = minCenteredScalePct(source.width, p.spec.width, framing.faceX);
+      const pctTxt = `${(Math.abs(off) * 100).toFixed(1).replace(".", ",")}%`;
+      out.push(
+        `${p.spec.name} (${scalePct}%): rosto a ${pctTxt} do centro horizontal (o recorte bate na borda do bruto)` +
+          (Number.isFinite(min) ? `; a menor escala que centra é ${min}% (scales do blocks.json)` : "") +
+          " (#12093)",
+      );
+    }
+  }
+  return out;
+}
+
+/** Escalas que o `frame` desenha (#11939): as do horizontal (com os olhos a 1/3, #12093) e as das verticais. */
+export const FRAME_PREVIEW_CROPS: ReadonlyArray<{ seqW: number; seqH: number; scales: readonly number[]; color: string; eyeFraction?: number }> = [
+  { seqW: 1920, seqH: 1080, scales: YOUTUBE_SCALES, color: "yellow", eyeFraction: YOUTUBE_EYE_FRACTION },
   { seqW: 1080, seqH: 1920, scales: [115, 130], color: "cyan" },
 ];
 
@@ -2149,9 +2238,9 @@ export const FRAME_PREVIEW_CROPS: ReadonlyArray<{ seqW: number; seqH: number; sc
 export function frameCropOverlays(source: { width: number; height: number }, framing: Framing): { filters: string[]; warnings: string[] } {
   const filters: string[] = [];
   const warnings: string[] = [];
-  for (const { seqW, seqH, scales, color } of FRAME_PREVIEW_CROPS) {
+  for (const { seqW, seqH, scales, color, eyeFraction } of FRAME_PREVIEW_CROPS) {
     for (const scalePct of scales) {
-      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW, seqH, scalePct, framing });
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW, seqH, scalePct, framing, eyeFraction });
       const { x, y, w, h } = fr.crop;
       filters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${color}@0.8:t=4`);
       if (fr.warning) warnings.push(`${seqW}x${seqH} ${scalePct}%: ${fr.warning}`);
@@ -2448,6 +2537,47 @@ export function screenTitleSvg(text: string, width: number, height: number): str
   );
 }
 
+// ── Versão do XML (#12111) ────────────────────────────────────────────────
+
+/** O `_V{n}` do nome da sequência (antes do `-{corte}` de uma vertical extra). */
+const SEQ_VERSION_RE = /_V(\d+)(?=(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?$)/;
+
+/** A versão no nome (`Diaria comentada_Youtube_V3` → 3); sem `_V{n}`, null. */
+export function sequenceNameVersion(name: string): number | null {
+  const m = SEQ_VERSION_RE.exec(name);
+  return m ? Number(m[1]) : null;
+}
+
+/** O nome com outra versão (`_V1` → `_V3`, `_V1-soberana` → `_V3-soberana`); nome sem `_V{n}` volta igual. */
+export function versionedSequenceName(name: string, version: number): string {
+  return name.replace(SEQ_VERSION_RE, `_V${version}`);
+}
+
+/** `<sequence id>` versionado (#12111): o destino ou corte, a versão e o hash do plano, para cada import virar uma sequência nova. */
+export function versionedSequenceId(key: SequenceKey, version: number, planHash: string): string {
+  return `seq-${key}-v${version}-${planHash.slice(0, 8)}`;
+}
+
+/** Lê do XML já gravado a versão e o hash do `<sequence id>` versionado (null em XML anterior ao #12111). */
+export function parseSequenceIdVersion(xml: string): { version: number; hash: string } | null {
+  const m = /<sequence id="seq-[a-z0-9-]+?-v(\d+)-([0-9a-f]{8})"/.exec(xml);
+  return m ? { version: Number(m[1]), hash: m[2] } : null;
+}
+
+/**
+ * A versão do XML deste build (#12111). Na 261104 o editor importou o V2 no
+ * projeto em que já estava o V1, com o mesmo `<sequence id>` e o mesmo nome, e
+ * "está abrindo igual a antes". Regra: a versão mais alta já na pasta, se o
+ * XML dela é do MESMO plano (hash igual: o build repetido no loop da
+ * autorrevisão não abre versão nova), senão a seguinte. Pasta sem XML
+ * versionado: a do nome (V1).
+ */
+export function pickXmlVersion(existing: ReadonlyArray<{ version: number; hash: string | null }>, planHash: string, nameVersion = 1): number {
+  if (existing.length === 0) return nameVersion;
+  const top = existing.reduce((a, b) => (b.version > a.version ? b : a));
+  return top.hash !== null && top.hash === planHash.slice(0, 8) ? top.version : top.version + 1;
+}
+
 /**
  * XML FCP7 (xmeml v4) com uma sequência por plano, importável no Premiere
  * (estrutura da 261027, que importou). Um `<file>` só (o bruto), definido no
@@ -2473,6 +2603,8 @@ export function buildXmeml(
     screenTitle?: ScreenTitleXml | null;
     /** #11900: título próprio de cada corte (chave = `spec.corte`); `null` = corte sem título. Ausente = o `screenTitle` geral. */
     screenTitleByCorte?: Readonly<Record<string, ScreenTitleXml | null>>;
+    /** #12111: `<sequence id>` de cada sequência (chave = `sequenceKey`); ausente = `seq-{n}-{chave}`. */
+    sequenceIds?: Readonly<Record<string, string>>;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
@@ -2535,7 +2667,7 @@ export function buildXmeml(
     const a: string[] = [];
     plan.clips.forEach((c, i) => {
       cid++;
-      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: spec.width, seqH: spec.height, scalePct: c.scale, framing });
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: spec.width, seqH: spec.height, scalePct: c.scale, framing, eyeFraction: spec.eyeFraction });
       const links =
         `<link><linkclipref>v${cid}</linkclipref><mediatype>video</mediatype></link>` +
         `<link><linkclipref>a${cid}</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>${i + 1}</clipindex></link>`;
@@ -2549,7 +2681,7 @@ export function buildXmeml(
     });
     const titleTrack = screenTitleTrack(plan, si);
     out.push(
-      `<sequence id="seq-${si + 1}-${escapeXml(sequenceKey(spec))}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
+      `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
         `${rate}\n` +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
         `<track>${v.join("\n")}</track>${titleTrack}</video>\n` +
@@ -2705,16 +2837,20 @@ export function alignPunctuationToScript(words: Word[], script: string, aliases:
   return out;
 }
 
-/** Por que uma palavra ouvida sem par no roteiro saiu da legenda (#11960). */
-export type DroppedHeardReason = "depois do fim" | "antes do roteiro" | "perto de corte" | "em silêncio";
+/**
+ * Por que uma palavra ouvida sem par no roteiro saiu da legenda (#11960).
+ * `fora do roteiro`: em plena fala, longe de corte (#12093). Até o #12093 ela
+ * ficava na legenda; na 261104 isso desfez a edição do editor ("utilizado
+ * deepfake" voltou a "utilizado o deepfake"): o roteiro aprovado no Gate 2 é a
+ * fonte final do texto, então palavra que ele não tem não entra.
+ */
+export type DroppedHeardReason = "depois do fim" | "antes do roteiro" | "perto de corte" | "em silêncio" | "fora do roteiro";
 
 export interface ForcedAlignment {
   /** As palavras da legenda: o texto do roteiro, com o tempo da fala ouvida. */
   words: Word[];
-  /** Ouvidas sem par no roteiro que saíram (alucinação, cauda de tomada, fala depois do fim). */
+  /** Ouvidas sem par no roteiro, todas fora da legenda (alucinação, cauda de tomada, fala depois do fim, palavra que o editor tirou do roteiro). */
   dropped: Array<{ word: Word; reason: DroppedHeardReason }>;
-  /** Ouvidas sem par no roteiro que ficaram (em plena fala, longe de corte): conferir. */
-  kept: Word[];
   /** Palavras do roteiro sem par na fala ouvida, com o tempo interpolado entre as vizinhas. */
   interpolated: string[];
   /** Trechos em que o roteiro e a fala ouvida divergem palavra a palavra ("um" × "o"): fica o roteiro, no tempo do ouvido. */
@@ -2746,9 +2882,10 @@ function spreadTokens(tokens: string[], a: number, b: number): Word[] {
  * Entre dois pares casados:
  * - roteiro e ouvido sem par dos dois lados: o texto do roteiro, no tempo do trecho ouvido;
  * - só roteiro: tempo interpolado entre as vizinhas;
- * - só ouvido: sai se está antes da 1ª ou depois da última palavra casada,
- *   depois do fim da sequência, a até `cutTolS` de um corte, ou isolado por
- *   `silenceGapS` dos dois lados; em plena fala fica, em `kept`, para conferir.
+ * - só ouvido: sai sempre (#12093: o roteiro aprovado é a fonte final), com o
+ *   motivo: antes da 1ª ou depois da última palavra casada, depois do fim da
+ *   sequência, a até `cutTolS` de um corte, isolado por `silenceGapS` dos dois
+ *   lados, ou em plena fala (`fora do roteiro`).
  * Sem roteiro (texto vazio), devolve o ouvido como veio.
  */
 export function forceAlignToScript(
@@ -2757,7 +2894,7 @@ export function forceAlignToScript(
   opts: { aliases?: VocabAlias[]; cuts?: number[]; endS?: number; cutTolS?: number; silenceGapS?: number; guessWordS?: number } = {},
 ): ForcedAlignment {
   const raw = script.split(/\s+/).filter((t) => normalizeToken(t));
-  const result: ForcedAlignment = { words: [], dropped: [], kept: [], interpolated: [], substituted: [] };
+  const result: ForcedAlignment = { words: [], dropped: [], interpolated: [], substituted: [] };
   const cutTol = opts.cutTolS ?? FORCED_ALIGN_DEFAULTS.cutTolS;
   const silenceGap = opts.silenceGapS ?? FORCED_ALIGN_DEFAULTS.silenceGapS;
   const guess = opts.guessWordS ?? FORCED_ALIGN_DEFAULTS.guessWordS;
@@ -2796,12 +2933,8 @@ export function forceAlignToScript(
         const before = k > 0 ? gapH[k - 1] : prev;
         const after = k + 1 < gapH.length ? gapH[k + 1] : next;
         const isolated = (!before || w.start - before.end >= silenceGap) && (!after || after.start - w.end >= silenceGap);
-        const reason: DroppedHeardReason | null = tail && pairs.length ? "depois do fim" : head || !pairs.length ? "antes do roteiro" : nearCut(w) ? "perto de corte" : isolated ? "em silêncio" : null;
-        if (reason) result.dropped.push({ word: w, reason });
-        else {
-          out.push(w);
-          result.kept.push(w);
-        }
+        const reason: DroppedHeardReason = tail && pairs.length ? "depois do fim" : head || !pairs.length ? "antes do roteiro" : nearCut(w) ? "perto de corte" : isolated ? "em silêncio" : "fora do roteiro";
+        result.dropped.push({ word: w, reason });
       });
     }
     if (i < all.length) out.push({ ...all[i], text: raw[j] });
@@ -2816,7 +2949,6 @@ export function forcedAlignmentNotes(seqName: string, a: ForcedAlignment): strin
   const fmt = (w: Word) => `"${w.text}" (${w.start.toFixed(2)} s)`;
   const notes: string[] = [];
   if (a.dropped.length) notes.push(`[aviso] ${seqName}: ${a.dropped.length} palavra(s) ouvida(s) fora do roteiro descartada(s) da legenda: ${a.dropped.map((d) => `${fmt(d.word)} ${d.reason}`).join("; ")}`);
-  if (a.kept.length) notes.push(`[aviso] ${seqName}: ${a.kept.length} palavra(s) ouvida(s) fora do roteiro em plena fala ficaram na legenda (conferir): ${a.kept.map(fmt).join("; ")}`);
   if (a.interpolated.length) notes.push(`[premissa] ${seqName}: palavra(s) do roteiro sem par na fala ouvida entraram com tempo interpolado: ${a.interpolated.join(" ")}`);
   for (const s of a.substituted) notes.push(`[premissa] ${seqName}: ouvido "${s.heard}", legenda com o roteiro "${s.script}"`);
   return notes;
@@ -3216,6 +3348,35 @@ export function previewClipArgs(input: {
     input.out,
   ];
 }
+
+/**
+ * Tamanho da prévia (#12096): a vertical sai em 720x1280, o horizontal em
+ * 960x540 (metade do 1920x1080). Outra proporção mantém a da sequência, com
+ * lados pares para o libx264.
+ */
+export function previewSize(spec: Pick<SequenceSpec, "width" | "height">): { width: number; height: number } {
+  const evenUp = (x: number) => Math.max(2, Math.round(x / 2) * 2);
+  if (isVerticalSpec(spec)) return { width: 720, height: evenUp((720 * spec.height) / spec.width) };
+  return { width: 960, height: evenUp((960 * spec.height) / spec.width) };
+}
+
+/**
+ * O recorte de um clipe na prévia (#12096): o MESMO `framingFor` do XML, com a
+ * escala do clipe e o `eyeFraction` da sequência. Na 261104 a prévia do
+ * horizontal, montada à mão com o recorte centrado, divergiu do Premiere.
+ */
+export function previewCropFor(
+  source: Pick<SourceInfo, "width" | "height">,
+  spec: Pick<SequenceSpec, "width" | "height" | "eyeFraction">,
+  framing: Framing,
+  scalePct: number,
+): FramingResult["crop"] {
+  return framingFor({ srcW: source.width, srcH: source.height, seqW: spec.width, seqH: spec.height, scalePct, framing, eyeFraction: spec.eyeFraction }).crop;
+}
+
+/** Estilo da legenda queimada no horizontal (#12096): a mesma letra, mais perto da base que na vertical. */
+export const PREVIEW_SUBTITLE_STYLE_HORIZONTAL =
+  "FontName=Arial,FontSize=14,PrimaryColour=&H00FFFFFF,BackColour=&H40201A10,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=18";
 
 /** Estilo da legenda queimada na prévia (o da 261027). */
 export const PREVIEW_SUBTITLE_STYLE =

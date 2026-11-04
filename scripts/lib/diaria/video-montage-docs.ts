@@ -22,6 +22,7 @@
 
 import {
   BLOCK_KEYS,
+  OPTIONAL_BLOCKS,
   alignTokens,
   clipSecondsOfBlock,
   clockTime,
@@ -54,6 +55,7 @@ import { voiceHint, type VoiceMark } from "./video-voice.ts";
 
 /** Nome de cada bloco nos Docs. */
 export const BLOCK_LABELS: Readonly<Record<BlockKey, string>> = {
+  gancho: "Gancho",
   titulo: "Título",
   abertura: "Abertura",
   resumo: "Resumo",
@@ -420,6 +422,58 @@ export function buildDecupagemDoc(plan: DecupagemPlan, segments: Segment[], rule
   return { blocks: out };
 }
 
+/** Fim de frase: ponto, exclamação, interrogação ou reticências, com aspas de fecho opcionais. */
+const SENTENCE_END = /[.!?…]["'»”)]*$/;
+
+/**
+ * Propõe o bloco `gancho` (#12093): a 1ª frase do resumo abre o horizontal,
+ * antes do "Olá, eu sou o Pixel". Na 261104 o editor reordenou à mão e o
+ * `srt`, alinhado ao roteiro na ordem velha, espremeu a legenda do gancho em
+ * 60 ms. Sem linha `gancho` "usar" no plano, a 1ª linha "usar" do resumo (a
+ * mais cedo no bruto) se divide no fim da 1ª frase, pelo tempo das palavras
+ * do Whisper (o corte cai no meio da pausa entre a frase e a seguinte): o
+ * gancho fica com a 1ª frase, o resumo com o resto. Resumo de uma frase só vira
+ * gancho inteiro. Já existe gancho, ou não há resumo, ou a frase não se acha
+ * nas palavras: o doc volta igual, com o motivo em `note`.
+ */
+export function proposeGancho(doc: DecupagemDoc, segments: Segment[]): { doc: DecupagemDoc; note: string | null } {
+  const usar = (r: DecupagemTableRow) => !r.bastidor && r.suggestion === "usar";
+  if (doc.blocks.some((b) => b.key === "gancho" && b.rows.some(usar))) return { doc, note: null };
+  const resumo = doc.blocks.find((b) => b.key === "resumo");
+  const first = resumo?.rows.filter(usar).sort((a, b) => a.start - b.start)[0];
+  if (!resumo || !first) return { doc, note: "sem linha \"usar\" no resumo: horizontal sem gancho" };
+  const words = first.segments
+    .flatMap((s) => segments[s - 1]?.words ?? [])
+    .filter((w) => w.text.trim() && (w.start + w.end) / 2 >= first.start - 1e-6 && (w.start + w.end) / 2 <= first.end + 1e-6)
+    .sort((a, b) => a.start - b.start);
+  const m = /^(.*?[.!?…]["'»”)]*)(\s+)(\S[\s\S]*)$/.exec(first.fala.trim());
+  const ganchoRow = (end: number, fala: string): DecupagemTableRow => ({
+    ...first,
+    end,
+    fala,
+    sugestao: "usar (1ª frase do resumo: abre o horizontal, antes da abertura; #12093)",
+  });
+  let gancho: DecupagemTableRow;
+  let rest: DecupagemTableRow | null;
+  if (!m) {
+    gancho = ganchoRow(first.end, first.fala);
+    rest = null;
+  } else {
+    const k = words.findIndex((w, i) => i < words.length - 1 && SENTENCE_END.test(w.text.trim()));
+    if (k < 0) return { doc, note: `a 1ª frase do resumo ("${m[1]}") não se acha nas palavras do Whisper: gancho não proposto, separar à mão no blocks.json` };
+    const cut = Math.round(((words[k].end + words[k + 1].start) / 2) * 1000) / 1000;
+    gancho = ganchoRow(cut, m[1]);
+    rest = { ...first, start: cut, fala: m[3] };
+  }
+  const blocks = doc.blocks.map((b) =>
+    b.key !== "resumo" ? b : { key: b.key, rows: b.rows.flatMap((r) => (r !== first ? [r] : rest ? [rest] : [])) },
+  );
+  return {
+    doc: { blocks: [{ key: "gancho", rows: [gancho] }, ...blocks.filter((b) => b.key !== "gancho")] },
+    note: `gancho proposto (#12093): "${gancho.fala}" (${clockTime(gancho.start)}–${clockTime(gancho.end)}), a 1ª frase do resumo; abre o horizontal antes da abertura`,
+  };
+}
+
 /**
  * O Doc da decupagem ("Transcrição vídeo {AAMMDD} (decupagem)"): uma tabela
  * por bloco, Decisão em branco, e no fim a "Montagem sugerida" de cada versão
@@ -671,7 +725,9 @@ export function roteiroMarkdown(
   } = {},
 ): string {
   const lines = [`# Roteiro final ${edition} (${plans.length} versões)`, ""];
-  const diff = versionsDiffParagraph(plans.map((p) => p.spec));
+  // #12093: bloco opcional (o gancho) sem clipe nesta versão não entra no parágrafo.
+  const hasClip = (p: SequencePlan, k: BlockKey) => p.clips.some((c) => c.block === k || c.parts?.some((x) => x.block === k));
+  const diff = versionsDiffParagraph(plans.map((p) => ({ ...p.spec, order: p.spec.order.filter((k) => !OPTIONAL_BLOCKS.includes(k) || hasClip(p, k)) })));
   if (diff) lines.push(diff, "");
   lines.push("Nenhuma versão leva \"Por que isso importa?\" (decisão do editor, 26/10/2026).", "");
   for (const p of plans) {
