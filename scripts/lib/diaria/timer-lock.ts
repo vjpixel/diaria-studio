@@ -12,15 +12,17 @@
  * e um terceiro processo podia pegá-lo enquanto o filho do timer publicava. A
  * tomada de lock velho também confere que o arquivo é o mesmo que o `stat` viu
  * (inode, mtime e tamanho) antes de apagar. `heartbeatMs` renova o lock durante
- * uma rodada longa (a manual, sem teto): reescreve o conteúdo no mesmo arquivo,
- * o que atualiza a mtime, e ele não fica velho enquanto o processo vive.
+ * uma rodada longa (a manual, sem teto): troca o arquivo por um novo com o mesmo
+ * token (temporário + rename, #12157, para nenhum leitor ver o lock vazio), o que
+ * atualiza a mtime, e ele não fica velho enquanto o processo vive. O inode muda a
+ * cada renovação, e a tomada de lock velho lê isso como "renovado no meio".
  *
  * Limite que fica: entre o "conteúdo ainda é meu" e o `rm` há uma janela de
  * microssegundos; só importa se o lock estiver velho (90 min sem renovação)
  * justo nesse instante. Entre máquinas vale o que o OneDrive sincronizou.
  */
 
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { SHORTS_TIMER_LOCK_STALE_MS } from "./vertical-download-guard.ts";
@@ -53,6 +55,23 @@ export function timerLockToken(raw: string): string | null {
 
 function lockBody(content: TimerLockContent): string {
   return JSON.stringify(content) + "\n";
+}
+
+/**
+ * #12157: grava o corpo num temporário ao lado e renomeia por cima do lock. O
+ * `writeFileSync` direto trunca o arquivo antes de escrever, e quem lia o lock
+ * nessa janela (outro processo, ou o teste) via o arquivo vazio. O rename troca o
+ * arquivo inteiro de uma vez: o leitor vê o corpo antigo ou o novo, nunca vazio.
+ */
+export function writeTimerLockAtomic(path: string, body: string): void {
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, body);
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 /** Lock O_EXCL; devolve o release, ou null se outra execução está no meio (lock com até `SHORTS_TIMER_LOCK_STALE_MS`). */
@@ -110,8 +129,8 @@ function releaseFor(path: string, content: TimerLockContent, opts: TimerLockOpti
   if (opts.heartbeatMs && opts.heartbeatMs > 0) {
     beat = setInterval(() => {
       try {
-        // Reescreve no mesmo arquivo (mesmo inode): a mtime anda e o lock não fica velho.
-        if (mine()) writeFileSync(path, lockBody({ ...content, beat_at: new Date().toISOString() }));
+        // Troca o arquivo por um novo (temporário + rename, #12157): a mtime anda e o lock não fica velho.
+        if (mine()) writeTimerLockAtomic(path, lockBody({ ...content, beat_at: new Date().toISOString() }));
       } catch (e) {
         console.error(`[timer-lock] renovação de ${path} falhou: ${(e as Error).message}`);
       }
