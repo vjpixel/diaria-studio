@@ -19,6 +19,7 @@ import { detectBoxSelectionConfigDrift, formatBoxSelectionDrift } from "../box-s
 import { aammddToIsoDate, readSnippetExpiry } from "../shared/snippet-header.ts"; // #10174
 import { readSnippetFileRaw } from "../shared/snippet-loader.ts"; // #10174
 import { detectSocialInviteDrift } from "../shared/encerramento-snippet.ts"; // #10835
+import { findRawHtmlTag } from "../shared/non-box-snippets.ts"; // #12202
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
@@ -2721,6 +2722,48 @@ function checkBoxDivulgacaoRuntimeExcluded(
 }
 
 /**
+ * #12202: box de divulgação (slot 0-3) no `02-reviewed.md` com tag HTML crua
+ * (`<p>`, `<a ` etc.). O render trata o corpo do box como markdown e escapa o
+ * HTML, então o leitor vê as tags como texto. Incidente da 261105:
+ * `onboarding-2.md` (e-mail de boas-vindas em HTML) foi escolhido pela seleção
+ * por cliques pro slot 1. A seleção agora recusa esses arquivos
+ * (`isNonBoxSnippet`); este check é a defesa no conteúdo, pra qualquer via
+ * (pin, colagem à mão, snippet novo com HTML). Error, gate-blocking.
+ */
+export function checkBoxDivulgacaoRawHtml(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  const slots: Array<{ n: 0 | 1 | 2 | 3; extract: (text: string) => string | null }> = [
+    { n: 0, extract: extractBoxDivulgacao0 },
+    { n: 1, extract: extractBoxDivulgacao1 },
+    { n: 2, extract: extractBoxDivulgacao2 },
+    { n: 3, extract: extractBoxDivulgacao3 },
+  ];
+  const violations: InvariantViolation[] = [];
+  for (const { n, extract } of slots) {
+    const boxText = extract(md);
+    if (!boxText) continue;
+    const tag = findRawHtmlTag(boxText);
+    if (!tag) continue;
+    violations.push({
+      rule: "box-divulgacao-raw-html",
+      message:
+        `Box de divulgação do slot ${n} tem HTML cru (\`${tag}\`) — o render escapa e o leitor ` +
+        `vê as tags como texto. Fix: ` +
+        (n === 1 || n === 2
+          ? `trocar a caixa (\`npx tsx scripts/apply-box-slot.ts --edition ${basename(editionDir)} --slot ${n} --file X.md\`) ou `
+          : "") +
+        `reescrever o box em markdown no 02-reviewed.md.`,
+      source_issue: "#12202",
+      severity: "error",
+      file: path,
+    });
+  }
+  return violations;
+}
+
+/**
  * #9253: `boxes_divulgacao.slotN` trocado no config DEPOIS do stitch não tem
  * efeito — `_internal/box-selection.json` congelou o snippet antigo e o
  * render lê título/alt/categoria dele. Warning (não bloqueia: a troca pode
@@ -4503,6 +4546,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#4504",
     stage: 4,
     run: checkBoxDivulgacaoRuntimeExcluded,
+  },
+  {
+    id: "box-divulgacao-raw-html",
+    description: "box de divulgação (slot 0-3) do 02-reviewed.md com tag HTML crua (<p>, <a …) — o render escapa e o leitor vê as tags como texto (#12202)",
+    source_issue: "#12202",
+    stage: 4,
+    run: checkBoxDivulgacaoRawHtml,
   },
   {
     id: "render-warnings-consumed",

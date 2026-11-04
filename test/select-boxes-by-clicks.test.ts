@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1121,6 +1121,83 @@ describe("#10832 hub-divulgacao-rotativo.md nunca sai como box", () => {
           snippetsDir,
         });
         assert.equal(effective.slot0, null, `slot0 (enabled=${enabled})`);
+        assert.equal(effective.slot1, null, `slot1 (enabled=${enabled})`);
+      } finally {
+        cleanup();
+      }
+    }
+  });
+});
+
+// ── #12202: snippets que não são box (onboarding, intro Brevo, HTML cru) ───
+
+describe("#12202 snippet que não é box de divulgação fica fora do pool", () => {
+  const FIXTURE_DIR = join(import.meta.dirname, "fixtures", "box-raw-html-12202");
+  // Snippet REAL (data/snippets/onboarding-2.md, copiado em 261104): e-mail de
+  // boas-vindas em HTML cru, escolhido pro slot 1 da 261105.
+  const onboarding2 = readFileSync(join(FIXTURE_DIR, "onboarding-2.md"), "utf8");
+  const md = (boxTitle: string, url: string) =>
+    `**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody\n\n---\n\n**${boxTitle}**\n\n[Link](${url})\n\n---\n\n**DESTAQUE 2 | 🚀**\n\n[T](https://d2.com)\n\nbody`;
+
+  it("onboarding-2.md real é recusado por nome E por conteúdo (HTML cru)", () => {
+    const real = parseSnippetContent("onboarding-2.md", onboarding2);
+    assert.equal(real.rawHtmlBody, true);
+    assert.equal(isSnippetEligibleForDiaria(real), false);
+    // Mesmo renomeado (fora do padrão de nome), o HTML cru no corpo basta.
+    const renamed = parseSnippetContent("boas-vindas.md", onboarding2);
+    assert.equal(isSnippetEligibleForDiaria(renamed), false);
+  });
+
+  it("intros da Brevo e runtime:false ficam fora; box markdown comum segue elegível", () => {
+    for (const f of ["brevo-diaria-pending-intro.md", "brevo-diaria-semanal-intro.md", "brevo-diaria-kit-sem-abertura-intro.md"]) {
+      assert.equal(isSnippetEligibleForDiaria(parseSnippetContent(f, "<!--\nnome: Intro\n-->\n**Oi**\n\n[x](https://diar.ia.br)")), false, f);
+    }
+    const runtimeOff = parseSnippetContent("intro-campeoes-sorteio.md", "<!--\nnome: Campeões\nruntime: false\n-->\n**X** [y](https://diar.ia.br/jogar)");
+    assert.equal(isSnippetEligibleForDiaria(runtimeOff), false);
+    const livros = parseSnippetContent("livros-divulgacao.md", "<!--\nnome: Livros\n-->\n**Curadoria** [Confira](https://livros.diar.ia.br) <https://livros.diar.ia.br>");
+    assert.equal(livros.rawHtmlBody, false);
+    assert.equal(isSnippetEligibleForDiaria(livros), true);
+  });
+
+  it("cenário da 261105: onboarding-2 com a URL do box mais clicado não é escolhido nem rouba o histórico", () => {
+    const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+    try {
+      const yt = "https://www.youtube.com/@diariabr?sub_confirmation=1";
+      writeFileSync(join(snippetsDir, "onboarding-2.md"), onboarding2);
+      writeSnippet(snippetsDir, "livros.md", "Livros", "https://livros.diar.ia.br");
+      writeEdition(editionsDir, "261020", md("YouTube", yt));
+      writePost(postsDir, "p1020", "2026-10-20", yt, 50);
+      writeEdition(editionsDir, "261019", md("Livros", "https://livros.diar.ia.br"));
+      writePost(postsDir, "p1019", "2026-10-19", "https://livros.diar.ia.br", 3);
+      writeEdition(editionsDir, "261021", "**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody");
+      const { effective, selection } = resolveBoxesForEdition({
+        aammdd: "261022",
+        boxesCfg: { slot0: null, slot1: "x.md", slot2: "y.md", slot3: null },
+        autoCfg: { enabled: true, pinnedSlots: new Set(), recentWindow: 3, priorWindow: 3, lastN: 20 },
+        editionsDir,
+        postsDir,
+        snippetsDir,
+      });
+      assert.ok(selection.every((s) => s.file !== "onboarding-2.md"), JSON.stringify(selection));
+      assert.equal(effective.slot1, "livros.md");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("onboarding-2 pinado/configurado num slot sai vazio (auto ligada ou desligada)", () => {
+    for (const enabled of [true, false]) {
+      const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+      try {
+        writeFileSync(join(snippetsDir, "onboarding-2.md"), onboarding2);
+        const { effective } = resolveBoxesForEdition({
+          aammdd: "261022",
+          boxesCfg: { slot0: null, slot1: "onboarding-2.md", slot2: null, slot3: null },
+          autoCfg: { enabled, pinnedSlots: new Set([1]), recentWindow: 3, priorWindow: 3, lastN: 20 },
+          editionsDir,
+          postsDir,
+          snippetsDir,
+        });
         assert.equal(effective.slot1, null, `slot1 (enabled=${enabled})`);
       } finally {
         cleanup();

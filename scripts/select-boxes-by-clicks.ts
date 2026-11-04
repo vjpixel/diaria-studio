@@ -96,6 +96,7 @@ import {
 } from "./box-click-report.ts";
 import { DEFAULT_KIT_BROADCASTS_DIR } from "./lib/shared/edition-cache-reader.ts";
 import { DEFAULT_SNIPPET_AUDIENCE, aammddToIsoDate, evaluateSnippetExpiry } from "./lib/shared/snippet-header.ts";
+import { NON_BOX_SNIPPET_FILES, isNonBoxSnippet } from "./lib/shared/non-box-snippets.ts"; // #10832, #12202
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EDITIONS_DIR = resolve(ROOT, "data/editions");
@@ -126,7 +127,7 @@ function avg(nums: number[]): number {
  * literal antiga) = diária, mesmo default de `resolveSnippetAudience`.
  */
 export function isSnippetEligibleForDiaria(snippet: SnippetInfo): boolean {
-  if (NON_BOX_SNIPPET_FILES.has(snippet.file)) return false;
+  if (isNonBoxSnippet(snippet.file, snippet)) return false;
   return (snippet.audience ?? DEFAULT_SNIPPET_AUDIENCE) === DEFAULT_SNIPPET_AUDIENCE;
 }
 
@@ -137,8 +138,13 @@ export function isSnippetEligibleForDiaria(snippet: SnippetInfo): boolean {
  * (revisão da 261022: "não deveria ser um box"); o arquivo pode continuar em
  * disco (gerado à mão pelo CLI `build-hub-divulgacao-box.ts`, ou sobra de
  * edição antiga) e sem este filtro voltaria a competir no ranking.
+ *
+ * #12202: a lista exata é só um dos sinais — `isNonBoxSnippet`
+ * (`lib/shared/non-box-snippets.ts`) também recusa por padrão de nome
+ * (`onboarding-N.md`, `brevo-*-intro.md`), corpo com HTML cru e
+ * `runtime: false`. Re-exportada daqui por compatibilidade.
  */
-export const NON_BOX_SNIPPET_FILES: ReadonlySet<string> = new Set(["hub-divulgacao-rotativo.md"]);
+export { NON_BOX_SNIPPET_FILES };
 
 // ── Histórico por edição (pure, dado I/O injetado) ─────────────────────────
 
@@ -634,11 +640,12 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   }
 
   // #10832: arquivo que nunca é box (ex.: hub rotativo) sai de qualquer slot
-  // configurado, inclusive com a auto-seleção desligada.
+  // configurado, inclusive com a auto-seleção desligada. #12202: mesmo
+  // critério do ranking (nome, HTML cru no corpo, `runtime: false`).
   for (const key of ["slot0", "slot1", "slot2"] as const) {
     const f = effective[key];
-    if (f && NON_BOX_SNIPPET_FILES.has(f)) {
-      process.stderr.write(`[select-boxes-by-clicks] warn — ${key}: \`${f}\` não sai como box (#10832); slot fica vazio\n`);
+    if (f && isNonBoxSnippet(f, snippetByFile.get(f))) {
+      process.stderr.write(`[select-boxes-by-clicks] warn — ${key}: \`${f}\` não sai como box (#10832, #12202); slot fica vazio\n`);
       effective[key] = null;
     }
   }

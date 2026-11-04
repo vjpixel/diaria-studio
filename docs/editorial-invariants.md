@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 131 invariants.
+**Total**: 132 invariants.
 
 ## Static (estrutura do repo)
 
@@ -79,6 +79,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `approved-item-removed` | item removido de 01-approved.json no Stage 4 (comparado ao snapshot pós-Stage 1) em vez de só desreferenciado — corrompe o sinal de analyze-bucket-overrides.ts (#8121, warning-only) | #8121 |
 | `box-divulgacao-alt-missing` | slot de box de divulgação com imagem mas sem alt: descritivo no snippet (#4086, warning-only) | #4086 |
 | `box-divulgacao-expiry` | caixa de boxes_divulgacao (slot 0/1/2) com expires: vencido, perto de vencer (≤3 dias) ou malformado, pela data da edição; e caixa vencida PRESENTE no box do slot 1/2 do 02-reviewed.md (#10174, #10214, warning-only) | #10174 |
+| `box-divulgacao-raw-html` | box de divulgação (slot 0-3) do 02-reviewed.md com tag HTML crua (<p>, <a …) — o render escapa e o leitor vê as tags como texto (#12202) | #12202 |
 | `box-divulgacao-runtime-excluded` | slot de boxes_divulgacao aponta pra snippet runtime:false — injetaria conteúdo de doc/referência verbatim (#4504) | #4504 |
 | `box-selection-config-drift` | boxes_divulgacao.slotN trocado no config depois do stitch, sem efeito no render (#9253, warning-only) | #9253 |
 | `capture-failed-submission-count` | captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878) | #2878 |
