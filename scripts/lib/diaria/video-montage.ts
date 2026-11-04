@@ -2369,6 +2369,52 @@ function audioLevelsFilter(linear: number): string {
   );
 }
 
+// ── Faixa de áudio tratada (#12102) ───────────────────────────────────────
+
+/**
+ * Aproximação, no ffmpeg, do Enhance do Adobe Podcast que o editor aplicava
+ * no Premiere (Background 0%, Speech 40%; decisão de 04/11/2026: usar
+ * sempre). `afftdn` tira o ruído de sala (piso estimado `floorBelowThresholdDb`
+ * abaixo do limiar de silêncio do bruto) e `agate` baixa as pausas
+ * (`rangeDb`) abaixo do mesmo limiar de silêncio que o `transcribe` mediu
+ * (`silences.meta.json`, relativo ao loudness). Valores de partida, para o
+ * editor ajustar depois do 1º import; o Enhance por cima no Premiere continua
+ * possível.
+ */
+export const AUDIO_CLEAN = { nrDb: 12, floorBelowThresholdDb: 6, rangeDb: -40, ratio: 8, attackMs: 10, releaseMs: 150, sampleRate: 48000 } as const;
+
+export interface AudioCleanParams {
+  /** Piso de ruído para o `afftdn` (dB, -80 a -20). */
+  noiseFloorDb: number;
+  /** Limiar do `agate` (dBFS): o de silêncio do bruto. */
+  gateThresholdDb: number;
+}
+
+/** Parâmetros a partir do limiar de silêncio do bruto (`silences.meta.json` `noiseDb`, ou o default do `silencedetect`). */
+export function audioCleanParams(silenceThresholdDb: number): AudioCleanParams {
+  const floor = Math.round(Math.min(-20, Math.max(-80, silenceThresholdDb - AUDIO_CLEAN.floorBelowThresholdDb)));
+  return { noiseFloorDb: floor, gateThresholdDb: silenceThresholdDb };
+}
+
+const dbToLinear = (db: number) => Math.round(10 ** (db / 20) * 1e6) / 1e6;
+
+/** O `-af` da faixa tratada: redução de ruído e depois o gate nas pausas. */
+export function audioCleanFilter(p: AudioCleanParams): string {
+  return (
+    `afftdn=nr=${AUDIO_CLEAN.nrDb}:nf=${p.noiseFloorDb}:tn=1,` +
+    `agate=threshold=${dbToLinear(p.gateThresholdDb)}:range=${dbToLinear(AUDIO_CLEAN.rangeDb)}:ratio=${AUDIO_CLEAN.ratio}:attack=${AUDIO_CLEAN.attackMs}:release=${AUDIO_CLEAN.releaseMs}`
+  );
+}
+
+/**
+ * Comando do ffmpeg da faixa tratada: o áudio INTEIRO do bruto (a mesma linha
+ * do tempo, então o in/out dos clipes do XML vale igual), WAV PCM 16 bits mono
+ * a 48 kHz (sem o atraso de encoder de um AAC, metade do tamanho do estéreo).
+ */
+export function audioCleanArgs(input: { src: string; out: string; filter: string }): string[] {
+  return ["-y", "-v", "error", "-i", input.src, "-map", "0:a:0", "-vn", "-af", input.filter, "-ac", "1", "-ar", String(AUDIO_CLEAN.sampleRate), "-c:a", "pcm_s16le", input.out];
+}
+
 // ── Título na vertical (#11756) ───────────────────────────────────────────
 
 /** Sequência vertical (mais alta que larga): onde vai o título em texto. */
@@ -2773,6 +2819,12 @@ export function buildXmeml(
     sequenceIds?: Readonly<Record<string, string>>;
     /** #12101: a vinheta do logo na faixa de vídeo do topo (e o som dela numa faixa de áudio própria); ausente = sem vinheta. */
     vinheta?: VinhetaAsset | null;
+    /**
+     * #12102: a faixa de áudio tratada (WAV mono, mesma linha do tempo do
+     * bruto, caminho que o Premiere abre): os clipitem de áudio apontam para
+     * ela em vez do bruto; o vídeo continua sendo o bruto. Ausente = áudio cru.
+     */
+    audioPath?: string | null;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
@@ -2793,6 +2845,18 @@ export function buildXmeml(
     );
   };
   const gain = opts.audioGain ? audioLevelsFilter(opts.audioGain.linear) : "";
+  // #12102: o `<file>` do áudio dos clipes: o bruto (file-1) ou a faixa tratada, definida no 1º clipe de áudio.
+  let audioDefined = false;
+  const audioFileEl = () => {
+    if (!opts.audioPath) return '<file id="file-1"/>';
+    if (audioDefined) return '<file id="file-audio"/>';
+    audioDefined = true;
+    return (
+      `<file id="file-audio"><name>${escapeXml(baseName(opts.audioPath))}</name><pathurl>${escapeXml(pathUrl(opts.audioPath))}</pathurl>\n` +
+      `${rate}<duration>${total}</duration>\n` +
+      `<media><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>1</channelcount></audio></media></file>`
+    );
+  };
   const usable = (t: ScreenTitleXml | null | undefined): ScreenTitleXml | null => (t && t.text.trim() ? t : null);
   const byCorte = opts.screenTitleByCorte ?? {};
   const titleOf = (spec: SequenceSpec): ScreenTitleXml | null =>
@@ -2875,7 +2939,7 @@ export function buildXmeml(
         `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${c.frameIn}</in><out>${c.frameOut}</out>\n`;
       v.push(`<clipitem id="v${cid}">${head}${fileEl()}${motionFilter(fr.scalePct, fr.center)}\n${links}</clipitem>`);
       a.push(
-        `<clipitem id="a${cid}">${head}<file id="file-1"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${links}</clipitem>`,
+        `<clipitem id="a${cid}">${head}${audioFileEl()}<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${links}</clipitem>`,
       );
     });
     const titleTrack = screenTitleTrack(plan, si);
@@ -3533,6 +3597,8 @@ export function previewClipArgs(input: {
   out: string;
   width?: number;
   height?: number;
+  /** #12102: o áudio do clipe vem da faixa tratada (mesma linha do tempo do bruto), não do bruto. */
+  audioSrc?: string;
 }): string[] {
   const d = input.end - input.start;
   if (!(d > 0)) throw new Error(`clipe vazio (${input.start}-${input.end})`);
@@ -3542,6 +3608,7 @@ export function previewClipArgs(input: {
   return [
     "-y", "-v", "error",
     "-ss", input.start.toFixed(3), "-to", input.end.toFixed(3), "-i", input.src,
+    ...(input.audioSrc ? ["-ss", input.start.toFixed(3), "-to", input.end.toFixed(3), "-i", input.audioSrc, "-map", "0:v:0", "-map", "1:a:0"] : []),
     "-vf", vf, "-af", af,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
     "-c:a", "aac", "-ar", "48000", "-ac", "2",

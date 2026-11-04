@@ -56,7 +56,12 @@
  *                           `fact-check-input.json`: entrada do agent `fact-checker` em `mode: "video"`,
  *                           que grava `fact-check.json`; o `roteiro` põe os achados graves no Doc do
  *                           Gate 2, com o trecho do bruto e a proposta de corte
- *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|text|off] [--no-speech-detect]
+ *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|text|off] [--no-speech-detect] [--no-audio-clean]
+ *       (#12102) o áudio dos clipes do XML (e da prévia) vem de `{AAMMDD}_audio_tratado.wav`, o áudio
+ *       do bruto com afftdn + agate (aproximação do Enhance do Adobe Podcast), ao lado do bruto;
+ *       ffmpeg falho = áudio cru com [aviso]; --no-audio-clean tira.
+ *       (#12101) vinheta do logo (publishing.video.vinheta_logo.path) na faixa do topo, no fim do
+ *       título; respiro de 0,7 s depois do título no horizontal.
  *       (#12089) o corte de pausas vem do detector de fala (`SPEECH_DETECT`, bruto a 48 kHz em
  *       quadros de 5 ms: sinal cheio acima de -33 dBFS ou 1ª diferença acima de -46 dBFS; pausa
  *       de 0,32 s ou mais sai com 150 ms antes da fala e 120 ms depois; ilha abaixo de 60 ms é
@@ -216,6 +221,9 @@ import {
   silenceNoiseDb,
   transcriptWords,
   validateVocabRules,
+  audioCleanArgs,
+  audioCleanFilter,
+  audioCleanParams,
   parseVinhetaProbe,
   previewVinhetaFilter,
   vinhetaBreathFor,
@@ -462,6 +470,60 @@ export function loadVinheta(deps: { readConfig?: () => unknown; exists?: (p: str
   }
 }
 
+/** Nome da faixa de áudio tratada na pasta da edição (#12102). */
+export function cleanAudioFileName(edition: string): string {
+  return `${edition}_audio_tratado.wav`;
+}
+
+/** O caminho da faixa tratada no XML: ao lado do bruto, como o PNG do título (#12102). */
+export function cleanAudioXmlPath(mediaPath: string, edition: string): string {
+  const p = mediaPath.replace(/\\/g, "/");
+  return `${p.slice(0, p.lastIndexOf("/") + 1)}${cleanAudioFileName(edition)}`;
+}
+
+/**
+ * Renderiza a faixa de áudio tratada (#12102) em `outDir`, reaproveitando a
+ * do build anterior quando o bruto (caminho, tamanho, mtime) e o filtro são os
+ * mesmos (`audio-tratado.meta.json` no state dir). Fail-soft: ffmpeg ausente
+ * ou falho = `null` com `[aviso]`, e o XML segue com o áudio cru.
+ */
+export function renderCleanAudio(
+  input: { src: string; outDir: string; stateDir: string; edition: string; mediaPath: string; thresholdDb: number },
+  deps: { ffmpeg?: (args: string[]) => void; warn?: (m: string) => void; info?: (m: string) => void } = {},
+): { path: string; xmlPath: string; filter: string } | null {
+  const warn = deps.warn ?? ((m: string) => console.error(`[aviso] ${m}`));
+  const info = deps.info ?? ((m: string) => console.error(m));
+  const filter = audioCleanFilter(audioCleanParams(input.thresholdDb));
+  const out = join(input.outDir, cleanAudioFileName(input.edition));
+  const xmlPath = cleanAudioXmlPath(input.mediaPath, input.edition);
+  const metaPath = join(input.stateDir, "audio-tratado.meta.json");
+  let id: { src: string; size: number; mtimeMs: number; filter: string } | null = null;
+  try {
+    const st = statSync(input.src);
+    id = { src: input.src, size: st.size, mtimeMs: Math.round(st.mtimeMs), filter };
+  } catch { /* bruto ausente: o ffmpeg abaixo falha e cai no aviso */ }
+  try {
+    if (id && existsSync(out) && existsSync(metaPath) && JSON.stringify(JSON.parse(readFileSync(metaPath, "utf8"))) === JSON.stringify(id)) {
+      info(`[video-montagem] faixa de áudio tratada reaproveitada: ${out} (#12102)`);
+      return { path: out, xmlPath, filter };
+    }
+  } catch { /* meta ilegível: renderiza de novo */ }
+  try {
+    mkdirSync(input.outDir, { recursive: true });
+    const tmp = `${out}.tmp.wav`;
+    (deps.ffmpeg ?? ((args: string[]) => run("ffmpeg", args)))(audioCleanArgs({ src: input.src, out: tmp, filter }));
+    renameSync(tmp, out);
+    if (id) {
+      mkdirSync(input.stateDir, { recursive: true });
+      writeFileSync(metaPath, JSON.stringify(id, null, 2) + "\n");
+    }
+    return { path: out, xmlPath, filter };
+  } catch (e) {
+    warn(`faixa de áudio tratada não renderizada (${(e as Error).message}): o XML e a prévia seguem com o áudio cru do bruto; aplicar o Enhance no Premiere (#12102)`);
+    return null;
+  }
+}
+
 /**
  * Frame do bruto nas duas orientações, lado a lado (#11959): esquerda = o
  * bruto como gravado, direita = espelhado. A leitura da caneca e do pôster
@@ -552,6 +614,8 @@ export interface XmlBuildOptions {
   titleMode: TitleMode;
   /** #12101: a vinheta que entrou no XML (caminho + duração); ausente/null = sem vinheta (o hash fica o de antes). */
   vinheta?: Pick<VinhetaAsset, "path" | "durationS"> | null;
+  /** #12102: o filtro da faixa de áudio tratada que o XML aponta; ausente/null = áudio cru (o hash fica o de antes). */
+  audioClean?: string | null;
 }
 
 /**
@@ -569,7 +633,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
   return createHash("sha256")
     .update(inputsHash)
     .update("\0opts\0")
-    .update(JSON.stringify({ speechDetect: opts.speechDetect, audioRefine: opts.audioRefine, audioGain: opts.audioGain, titleMode: opts.titleMode, ...(opts.vinheta ? { vinheta: { path: opts.vinheta.path, durationS: opts.vinheta.durationS } } : {}) }))
+    .update(JSON.stringify({ speechDetect: opts.speechDetect, audioRefine: opts.audioRefine, audioGain: opts.audioGain, titleMode: opts.titleMode, ...(opts.vinheta ? { vinheta: { path: opts.vinheta.path, durationS: opts.vinheta.durationS } } : {}), ...(opts.audioClean ? { audioClean: opts.audioClean } : {}) }))
     .update("\0plan\0")
     .update(JSON.stringify({ spec, clips: plan.clips, durationFrames: plan.durationFrames }))
     .digest("hex")
@@ -667,6 +731,8 @@ interface PlanFile {
    * gravou: é contra ele (e não o mtime do plan.json) que srt/prévia conferem.
    */
   builtAt?: Record<string, number>;
+  /** #12102: a faixa de áudio tratada do build (local, a que a prévia usa; e o caminho do XML). Ausente = áudio cru. */
+  treatedAudio?: { path: string; xmlPath: string; filter: string };
 }
 
 /**
@@ -1666,7 +1732,7 @@ export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: nu
   return `[premissa] ganho de áudio no XML: ${g.db > 0 ? "+" : ""}${g.db.toFixed(2)} dB em cada clipe (Audio Levels, limitado pelo ${why})${from}; conferir no 1º import se o Premiere aplicou (#11755); --no-audio-gain tira`;
 }
 
-async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true): Promise<number> {
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true): Promise<number> {
   // #12089: o corte de pausas pelo detector de fala (energia + banda alta), não pelo silencedetect.
   let speech: { cut: SpeechCut | null; reason?: string } = { cut: null, reason: "--no-speech-detect" };
   if (speechDetect) {
@@ -1687,6 +1753,22 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   const picked = pickPlans(ps, seq, false);
   // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
   // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
+  // #11641: no XML vai o caminho do bruto no Neo, não o do cache local do modo API.
+  const media = xmlMediaPath(source.path, { edition: ctx.edition, drive: readBrutoDrive(ctx), xmlMediaRoot: ctx.xmlMediaRoot, driveRoot: ctx.driveRoot, apiMode: ctx.mode === "api" });
+  const mediaPath = media.path;
+  if (media.how === "api-guess") console.error(`[premissa] bruto lido de ${source.path} (fora do cache do Drive): o XML aponta ${mediaPath} no Neo; outro caminho: --xml-media-root (#11641)`);
+  else if (mediaPath !== source.path) console.error(`[video-montagem] XML aponta o bruto em ${mediaPath} (lido de ${source.path}, #11641)`);
+  // #12102: faixa de áudio tratada (aproximação do Enhance do Adobe Podcast); falha = áudio cru, com aviso.
+  const treated = audioClean
+    ? renderCleanAudio({ src: source.path, outDir: ctx.outDir, stateDir: ctx.stateDir, edition: ctx.edition, mediaPath, thresholdDb: silenceThresholdDb(ctx) })
+    : null;
+  if (!audioClean) console.error("[aviso] --no-audio-clean: o áudio do XML e da prévia é o cru do bruto; aplicar o Enhance no Premiere (#12102)");
+  if (treated) {
+    console.error(
+      `[premissa] áudio do XML e da prévia na faixa tratada ${treated.xmlPath} (${treated.filter}): aproximação do Enhance do Adobe Podcast (Background 0%, Speech 40%), o vídeo segue no bruto; ` +
+        "o Enhance pode ir por cima no Premiere; conferir as pausas no 1º import (#12102)",
+    );
+  }
   // #12101: a vinheta do logo depois do título; sem o MOV nesta máquina, o build segue sem ela.
   const vinheta = loadVinheta();
   if (vinheta) {
@@ -1695,7 +1777,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         "na faixa de vídeo do topo, no fim do título (sem título: aos 2 s), cabendo no quadro; conferir alpha e tamanho no 1º import (#12101)",
     );
   }
-  const versionHashes = versionPickedSequences(ctx, picked, hash, { speechDetect: speech.cut !== null, audioRefine, audioGain, titleMode, vinheta });
+  const versionHashes = versionPickedSequences(ctx, picked, hash, { speechDetect: speech.cut !== null, audioRefine, audioGain, titleMode, vinheta, audioClean: treated?.filter ?? null });
   // #11939: a caneca é esforço, nunca barra o build; o relato diz onde ela não sai inteira.
   for (const w of mugFramingWarnings(picked, source, framing)) console.error(`[aviso] ${w}`);
   // #12093: o rosto centrado nos dois zooms; escala pequena demais bate na borda do bruto.
@@ -1724,11 +1806,6 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     console.error(`[erro] ${problems} problema(s) acima: corrigir o blocks.json (outra tomada, intervalo maior) ou rodar com --allow-missing`);
     return 1;
   }
-  // #11641: no XML vai o caminho do bruto no Neo, não o do cache local do modo API.
-  const media = xmlMediaPath(source.path, { edition: ctx.edition, drive: readBrutoDrive(ctx), xmlMediaRoot: ctx.xmlMediaRoot, driveRoot: ctx.driveRoot, apiMode: ctx.mode === "api" });
-  const mediaPath = media.path;
-  if (media.how === "api-guess") console.error(`[premissa] bruto lido de ${source.path} (fora do cache do Drive): o XML aponta ${mediaPath} no Neo; outro caminho: --xml-media-root (#11641)`);
-  else if (mediaPath !== source.path) console.error(`[video-montagem] XML aponta o bruto em ${mediaPath} (lido de ${source.path}, #11641)`);
   // #11755: ganho do loudness.json (o mesmo que o transcribe mediu).
   let gain: AudioGain | null = null;
   if (audioGain) {
@@ -1788,7 +1865,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     const xmlPath = join(ctx.outDir, xmlFileName(p.spec.name));
     const version = sequenceNameVersion(p.spec.name);
     const sequenceIds = version !== null ? { [sequenceKey(p.spec)]: versionedSequenceId(sequenceKey(p.spec), version, versionHashes.get(p) ?? hash) } : undefined;
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -1799,7 +1876,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): só a sequência do --seq entra no plano novo`); }
   }
   const merged = mergeBuildPlan({
-    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps, cutRefine: refined.info },
+    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps, cutRefine: refined.info, ...(treated ? { treatedAudio: treated } : {}) },
     pickedKeys: new Set(picked.map((p) => sequenceKey(p.spec))),
     prev: prevPlan,
     now: Date.now(),
@@ -1923,12 +2000,16 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
   mkdirSync(dir, { recursive: true });
   const list: string[] = [];
   const size = previewSize(plan.spec);
+  // #12102: a mesma faixa de áudio tratada do XML; ausente nesta máquina = áudio cru, com aviso.
+  const audioSrc = pf.treatedAudio && existsSync(pf.treatedAudio.path) ? pf.treatedAudio.path : undefined;
+  if (pf.treatedAudio && !audioSrc) console.error(`[aviso] faixa de áudio tratada ausente (${pf.treatedAudio.path}): prévia com o áudio cru do bruto; rode build nesta máquina (#12102)`);
+  else if (!pf.treatedAudio) console.error("[aviso] plan.json sem faixa de áudio tratada (build com --no-audio-clean, falha no render ou plano anterior ao #12102): prévia com o áudio cru");
   plan.clips.forEach((c, i) => {
     // #12096: o recorte do XML (framingFor com a escala e o eyeFraction da sequência).
     const crop = previewCropFor(pf.source, plan.spec, pf.framing, c.scale);
     const name = `c${String(i).padStart(2, "0")}.mp4`;
     // Corte pelos FRAMES do plano, os mesmos do XML.
-    run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size }));
+    run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}) }));
     list.push(`file '${name}'`);
     console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block})`);
   });
@@ -2427,7 +2508,7 @@ async function runCommand(
         console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");
         return 2;
       }
-      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq, !flags.has("no-speech-detect"));
+      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"));
     case "srt":
       return cmdSrt(ctx, seq, flags.has("from-raw"));
     case "preview":
