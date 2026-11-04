@@ -400,6 +400,9 @@ export interface UtmEmitterRow extends UtmEmitter {
   metadataEditedAt?: string;
   /** Assinantes com este `utm_source` (Beehiiv). `null` quando o fetch falhou. */
   subscribers: number | null;
+  /** #12066: assinantes deste `utm_source` cortados por `utm_medium`
+   *  (`{ topo: 3, rodape: 1 }`). `null` quando o fetch falhou. */
+  subscribersByMedium: Record<string, number> | null;
   /** Campanhas concretas que casaram o padrão, com contagem. */
   campaigns: Array<{ campaign: string; count: number }>;
   /** Cliques (Brevo) somados nas campanhas que casaram. `null` sem dados. */
@@ -531,6 +534,7 @@ export async function buildUtmsData(
   //    caminho Kit é hoje inatingível fora de teste explícito (opts.backend).
   let sourceCounts: Record<string, number> = {};
   let campaignCounts: Record<string, number> = {};
+  let mediumCounts: Record<string, Record<string, number>> = {};
   let totalSubscribers: number | null = null;
   let beehiivError: string | undefined;
   try {
@@ -554,12 +558,14 @@ export async function buildUtmsData(
       const result = await fetcher("", "");
       sourceCounts = result.counts ?? {};
       campaignCounts = result.campaignCounts ?? {};
+      mediumCounts = result.mediumCounts ?? {};
       totalSubscribers = result.total ?? null;
     } else if (resolved.config.backend === "kit") {
       const fetcher = opts.fetchSubscriptionsKit ?? fetchAndAggregateKit;
       const result = await fetcher(resolved.config.config);
       sourceCounts = result.counts ?? {};
       campaignCounts = result.campaignCounts ?? {};
+      mediumCounts = result.mediumCounts ?? {};
       totalSubscribers = result.total ?? null;
     } else {
       const fetcher = opts.fetchSubscriptions ?? fetchAndAggregate;
@@ -567,6 +573,7 @@ export async function buildUtmsData(
       const result = await fetcher(publicationId, apiKey);
       sourceCounts = result.counts ?? {};
       campaignCounts = result.campaignCounts ?? {};
+      mediumCounts = result.mediumCounts ?? {};
       totalSubscribers = result.total ?? null;
     }
   } catch (e) {
@@ -583,6 +590,7 @@ export async function buildUtmsData(
     return {
       ...e,
       subscribers: beehiivError ? null : (sourceCounts[e.source.toLowerCase()] ?? 0),
+      subscribersByMedium: beehiivError ? null : (mediumCounts[e.source.toLowerCase()] ?? {}),
       campaigns: matched,
       clicks: clicks.error ? null : clickSum,
     };
