@@ -794,12 +794,13 @@ export function reorderSocialMd(md: string, newOrder: number[]): string {
   let temp = result;
   // `[ \t]*(?=\r?$)`, não `\s*$` (#8757): `\s*` com a flag `m` consumia o `\n` seguinte e
   // apagava a linha em branco depois do header; o lookahead preserva CRLF.
-  temp = temp.replace(/^##\s+d(\d)[ \t]*(?=\r?$)/gim, (full, oldNStr) => {
+  // #12094: `## d{N}-cards` (texto dos cards do carrossel) acompanha o `## d{N}`.
+  temp = temp.replace(/^##\s+d(\d)(-cards)?[ \t]*(?=\r?$)/gim, (full, oldNStr, cards = "") => {
     const oldN = parseInt(oldNStr, 10);
     const newN = oldToNew.get(oldN);
-    return newN ? `## TEMP_D${newN}` : full;
+    return newN ? `## TEMP_D${newN}${cards}` : full;
   });
-  result = temp.replace(/^##\s+TEMP_D(\d)[ \t]*(?=\r?$)/gim, "## d$1");
+  result = temp.replace(/^##\s+TEMP_D(\d)(-cards)?[ \t]*(?=\r?$)/gim, "## d$1$2");
   // #9796: renomear não basta — sem mover, `--new-order 3,1,2` deixava os
   // blocos na ordem física d2, d3, d1 (em `# Social` E em `# Curto`). Os
   // parsers leem por rótulo, mas quem revisa o arquivo via D1 por último.
@@ -823,9 +824,10 @@ export function sortDestaqueSectionsPhysically(md: string): string {
   const lines = md.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   const isTop = (l: string) => /^#\s/.test(l);
   const isSub = (l: string) => /^##\s/.test(l);
+  // #12094: `## d{N}-cards` ordena junto com o `## d{N}`, logo depois dele.
   const dNum = (l: string): number | null => {
-    const m = l.match(/^##\s+d(\d+)[ \t]*\r?\n?$/i);
-    return m ? parseInt(m[1], 10) : null;
+    const m = l.match(/^##\s+d(\d+)(-cards)?[ \t]*\r?\n?$/i);
+    return m ? parseInt(m[1], 10) + (m[2] ? 0.5 : 0) : null;
   };
 
   const out: string[] = [];
