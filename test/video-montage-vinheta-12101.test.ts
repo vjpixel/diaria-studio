@@ -13,8 +13,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { speechJoinWarnings } from "../scripts/lib/diaria/video-cut-refine.ts";
 import {
+  VINHETA_AFTER_SPEECH_S,
   VINHETA_BREATH_S,
+  titleBreathS,
   blockRunEndFrame,
   buildSequencePlan,
   buildXmeml,
@@ -94,12 +97,53 @@ describe("#12101: respiro de 0,7 s depois do título no horizontal", () => {
     assert.ok(p.durationFrames > pv.durationFrames, "o horizontal ficou mais longo pelo respiro");
   });
 
+  it("encadeado (plano com respiro + vinhetaSpan): a vinheta entra 0,3 s depois da última palavra, DENTRO do respiro", () => {
+    const p = buildSequencePlan(SPEC_H, resolved(4.9), silences, src, { breathAfter: vinhetaBreathFor(SPEC_H) });
+    assert.equal(p.titleSpeechEndS, 2.9);
+    const titulo = p.clips.filter((c) => c.block === "titulo");
+    const last = titulo[titulo.length - 1];
+    const vs = vinhetaSpan(p, 30, VIN);
+    assert.ok(vs);
+    // A última palavra (2,9 s do bruto) cai em seqStart + (87 - frameIn); a vinheta, 9 quadros (0,3 s) depois.
+    const speechEndSeq = last.seqStart + (Math.round(2.9 * 30) - last.frameIn);
+    assert.equal(vs.start, speechEndSeq + Math.round(VINHETA_AFTER_SPEECH_S * 30));
+    assert.ok(vs.start < last.seqEnd, `a vinheta (${vs.start}) entra antes do fim do respiro (${last.seqEnd}), não depois`);
+    assert.equal(last.seqEnd - vs.start, Math.round((VINHETA_BREATH_S - VINHETA_AFTER_SPEECH_S) * 30), "sobram 0,4 s de respiro com a vinheta já no ar");
+    assert.equal(titleBreathS(p, 30), 0.7);
+  });
+
+  it("vertical (sem respiro): a fala seguinte vem antes de 0,3 s, a vinheta fica no fim do bloco titulo", () => {
+    const p = buildSequencePlan(SPEC_V, resolved(4.9), silences, src, { breathAfter: vinhetaBreathFor(SPEC_V) });
+    const titleEnd = blockRunEndFrame(p.clips, "titulo", 30);
+    assert.equal(vinhetaSpan(p, 30, VIN)?.start, titleEnd);
+  });
+
   it("fala seguinte logo depois no bruto: o respiro para antes dela e o build avisa", () => {
     const p = buildSequencePlan(SPEC_H, resolved(3.2), silences, src, { breathAfter: vinhetaBreathFor(SPEC_H) });
     const titulo = p.clips.filter((c) => c.block === "titulo");
     assert.equal(titulo[titulo.length - 1].srcOut, 3.2);
     assert.equal(p.warnings?.length, 1);
     assert.match(p.warnings![0], /respiro depois de titulo de 0\.30 s, abaixo dos 0\.7 s/);
+    assert.match(p.warnings![0], /a vinheta entra 0\.3 s depois da última palavra e pode cobrir o começo da fala seguinte/);
+    assert.doesNotMatch(p.warnings![0], /passa por cima da fala/);
+  });
+
+  it("titleBreathS: o respiro efetivo no plano final (o refino que encolhe a saída aparece aqui)", () => {
+    const p = { clips: [clip("titulo", 0, 90, 30)], titleSpeechEndS: 3.4 };
+    // clipe do bruto 1,0–4,0 s; fala até 3,4 s = 0,6 s de respiro.
+    assert.equal(titleBreathS(p, 30), 0.6);
+    assert.equal(titleBreathS({ clips: [clip("titulo", 0, 90, 30)] }, 30), null);
+    assert.equal(titleBreathS({ clips: [clip("titulo", 0, 30, 30)], titleSpeechEndS: 3.4 }, 30), null, "palavra fora dos clipes");
+  });
+
+  it("emenda longa depois do título não avisa quando é o respiro (longJoinOkAfter); sem a opção, avisa", () => {
+    const clips = [
+      { block: "titulo", frameIn: 30, frameOut: 108, seqStart: 0 },
+      { block: "abertura", frameIn: 147, frameOut: 210, seqStart: 78 },
+    ];
+    const islands = [{ start: 1, end: 2.9 }, { start: 5, end: 7 }];
+    assert.ok(speechJoinWarnings(clips, islands, 30).some((w) => /emenda/.test(w)));
+    assert.ok(!speechJoinWarnings(clips, islands, 30, { longJoinOkAfter: ["titulo"] }).some((w) => /emenda/.test(w)));
   });
 });
 
@@ -192,6 +236,21 @@ describe("#12101: a vinheta no XML", () => {
     assert.match(xml, /vinheta-v2/);
   });
 
+  it("fps, canais e taxa do MOV vêm do probe e vão no <file> (o clipitem fica na taxa da sequência)", () => {
+    const vin = parseVinhetaProbe(
+      JSON.stringify({ streams: [{ codec_type: "video", width: 1920, height: 1080, r_frame_rate: "25/1" }, { codec_type: "audio", channels: 1, sample_rate: "44100" }], format: { duration: "1.2" } }),
+      VIN.path,
+    );
+    assert.deepEqual({ fps: vin.fps, ch: vin.audioChannels, sr: vin.audioSampleRate }, { fps: 25, ch: 1, sr: 44100 });
+    const xml = buildXmeml([H], SOURCE, FRAMING, { vinheta: vin });
+    const file = xml.slice(xml.indexOf('<file id="file-vinheta">'), xml.indexOf("</file>", xml.indexOf('<file id="file-vinheta">')));
+    assert.match(file, /<rate><timebase>25<\/timebase><ntsc>FALSE<\/ntsc><\/rate><duration>30<\/duration>/);
+    assert.match(file, /<samplerate>44100<\/samplerate><\/samplecharacteristics><channelcount>1<\/channelcount>/);
+    assert.match(xml, /<clipitem id="vinheta-v1"><name>vinheta-logo<\/name><enabled>TRUE<\/enabled><duration>36<\/duration>\n<rate><timebase>30<\/timebase>/);
+    // r_frame_rate ilegível: sem fps, o XML declara o da sequência.
+    assert.equal(parseVinhetaProbe(JSON.stringify({ streams: [{ codec_type: "video", width: 2, height: 2, r_frame_rate: "0/0" }], format: { duration: "1" } }), "x").fps, undefined);
+  });
+
   it("sem vinheta (arquivo ausente): o XML é o de antes, sem nenhum clipe dela", () => {
     const xml = buildXmeml([V], SOURCE, FRAMING, {});
     assert.doesNotMatch(xml, /vinheta/);
@@ -267,5 +326,8 @@ describe("#12101: prévia e versão do XML", () => {
     const p = plan(SPEC_H, [clip("titulo", 0, 90, 300)]);
     assert.equal(xmlVersionHashOf("abc", p, base), xmlVersionHashOf("abc", p, { ...base, vinheta: null }));
     assert.notEqual(xmlVersionHashOf("abc", p, base), xmlVersionHashOf("abc", p, { ...base, vinheta: VIN }));
+    // O asset inteiro conta: o mesmo arquivo reexportado em outro tamanho ou sem som muda o XML.
+    assert.notEqual(xmlVersionHashOf("abc", p, { ...base, vinheta: VIN }), xmlVersionHashOf("abc", p, { ...base, vinheta: { ...VIN, width: 1080, height: 1920 } }));
+    assert.notEqual(xmlVersionHashOf("abc", p, { ...base, vinheta: VIN }), xmlVersionHashOf("abc", p, { ...base, vinheta: { ...VIN, hasAudio: false } }));
   });
 });

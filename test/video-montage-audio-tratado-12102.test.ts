@@ -9,7 +9,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -24,7 +24,16 @@ import {
   type SequenceSpec,
   type SourceInfo,
 } from "../scripts/lib/diaria/video-montage.ts";
-import { cleanAudioFileName, cleanAudioXmlPath, renderCleanAudio, xmlVersionHashOf, type XmlBuildOptions } from "../scripts/video-montagem.ts";
+import {
+  cleanAudioFileName,
+  cleanAudioKey,
+  cleanAudioXmlPath,
+  mergeBuildPlan,
+  queueUploadIfMissing,
+  renderCleanAudio,
+  xmlVersionHashOf,
+  type XmlBuildOptions,
+} from "../scripts/video-montagem.ts";
 
 const SOURCE: SourceInfo = { path: "G:/Meu Drive/YouTube/261103/bruto.mp4", fps: 30, durationS: 600, width: 3840, height: 2160, mirrored: false };
 const FRAMING = { faceX: 0.5, eyeY: 0.5 };
@@ -36,21 +45,25 @@ const PLAN: SequencePlan = { spec: SPEC, clips: [clip("titulo", 0, 90, 300), cli
 const TREATED = "G:/Meu Drive/YouTube/261103/261103_audio_tratado.wav";
 
 describe("#12102: comando do ffmpeg da faixa tratada", () => {
-  it("bruto quente da 261028 (limiar de silêncio -35 dB): piso -41 no afftdn, gate em -35 dBFS com 40 dB de atenuação", () => {
+  it("bruto quente da 261028 (limiar de silêncio -35 dBFS): piso do afftdn e gate 6 dB abaixo, em -41, com 40 dB de atenuação", () => {
     const p = audioCleanParams(-35);
-    assert.deepEqual(p, { noiseFloorDb: -41, gateThresholdDb: -35 });
-    assert.equal(audioCleanFilter(p), "afftdn=nr=12:nf=-41:tn=1,agate=threshold=0.017783:range=0.01:ratio=8:attack=10:release=150");
+    assert.deepEqual(p, { noiseFloorDb: -41, gateThresholdDb: -41 });
+    assert.equal(audioCleanFilter(p), "afftdn=nr=12:nf=-41:tn=1,agate=threshold=0.008913:range=0.01:ratio=8:attack=10:release=150");
   });
 
-  it("o piso do afftdn fica dentro da faixa aceita (-80 a -20)", () => {
-    assert.equal(audioCleanParams(-10).noiseFloorDb, -20);
-    assert.equal(audioCleanParams(-90).noiseFloorDb, -80);
+  it("o gate fica abaixo do limiar de silêncio (consoante suave perto dele não é cortada)", () => {
+    for (const t of [-45, -35, -30, -25]) assert.ok(audioCleanParams(t).gateThresholdDb <= t - 6, `limiar ${t}`);
+  });
+
+  it("piso do afftdn em -80 a -20 e gate em -70 a -20 (limiar fora da faixa é limitado)", () => {
+    assert.deepEqual(audioCleanParams(-10), { noiseFloorDb: -20, gateThresholdDb: -20 });
+    assert.deepEqual(audioCleanParams(-90), { noiseFloorDb: -80, gateThresholdDb: -70 });
     assert.equal(audioCleanParams(-45).noiseFloorDb, -51);
   });
 
-  it("args: o áudio inteiro do bruto, sem vídeo, WAV PCM 16 bits mono a 48 kHz", () => {
-    const args = audioCleanArgs({ src: "C:/x/bruto.mp4", out: "C:/out/a.wav", filter: "F" });
-    assert.deepEqual(args, ["-y", "-v", "error", "-i", "C:/x/bruto.mp4", "-map", "0:a:0", "-vn", "-af", "F", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", "C:/out/a.wav"]);
+  it("args: o áudio inteiro do bruto, sem vídeo, WAV PCM 16 bits mono a 48 kHz, formato explícito (grava num .part)", () => {
+    const args = audioCleanArgs({ src: "C:/x/bruto.mp4", out: "C:/out/a.wav.part", filter: "F" });
+    assert.deepEqual(args, ["-y", "-v", "error", "-i", "C:/x/bruto.mp4", "-map", "0:a:0", "-vn", "-af", "F", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", "-f", "wav", "C:/out/a.wav.part"]);
     assert.ok(!args.includes("-ss"), "sem recorte: a linha do tempo é a do bruto");
     assert.equal(AUDIO_CLEAN.sampleRate, 48000);
   });
@@ -77,9 +90,12 @@ describe("#12102: os clipitem de áudio do XML apontam para a faixa tratada", ()
     assert.equal(xml.slice(xml.indexOf("<audio><numOutputChannels>")).match(/<file id="file-1"\/>/g)?.length, 2);
   });
 
-  it("caminho no XML: ao lado do bruto no Neo, com o nome da edição", () => {
-    assert.equal(cleanAudioFileName("261103"), "261103_audio_tratado.wav");
-    assert.equal(cleanAudioXmlPath("G:\\Meu Drive\\YouTube\\261103\\bruto.mp4", "261103"), TREATED);
+  it("caminho no XML: ao lado do bruto no Neo, com o nome da edição e a chave do tratamento", () => {
+    assert.equal(cleanAudioFileName("261103", "ab12cd34"), "261103_audio_tratado-ab12cd34.wav");
+    assert.equal(cleanAudioXmlPath("G:\\Meu Drive\\YouTube\\261103\\bruto.mp4", "261103", "ab12cd34"), "G:/Meu Drive/YouTube/261103/261103_audio_tratado-ab12cd34.wav");
+    // A chave muda com o filtro (outro tratamento = outro arquivo, nunca o mesmo sobrescrito).
+    assert.notEqual(cleanAudioKey(audioCleanFilter(audioCleanParams(-35))), cleanAudioKey(audioCleanFilter(audioCleanParams(-40))));
+    assert.match(cleanAudioKey("F"), /^[0-9a-f]{8}$/);
   });
 
   it("versão do XML: sem faixa tratada o hash é o de antes; com ela, muda", () => {
@@ -106,40 +122,159 @@ describe("#12102: render fail-soft e reaproveitamento", () => {
     return { root, src, outDir: join(root, "out"), stateDir: join(root, "state") };
   };
 
-  it("ffmpeg falho: null e aviso (o build segue com o áudio cru)", () => {
+  const key = cleanAudioKey(audioCleanFilter(audioCleanParams(-35)));
+  const name = `261103_audio_tratado-${key}.wav`;
+  const input = (d: ReturnType<typeof dirs>) => ({ src: d.src, outDir: d.outDir, stateDir: d.stateDir, edition: "261103", mediaPath: SOURCE.path, thresholdDb: -35 });
+  const quiet = { info: () => {}, debug: () => {} };
+  /** ffmpeg de mentira: grava o arquivo de saída (o `.part`) e registra a chamada. */
+  const fakeFfmpeg = (calls: string[][]) => (args: string[]) => { calls.push(args); writeFileSync(args[args.length - 1], "wav"); };
+
+  it("ffmpeg falho: null e aviso (o build segue com o áudio cru), sem .part parcial no out dir", () => {
     const d = dirs();
     try {
       const warns: string[] = [];
-      const r = renderCleanAudio({ src: d.src, outDir: d.outDir, stateDir: d.stateDir, edition: "261103", mediaPath: SOURCE.path, thresholdDb: -35 }, {
-        ffmpeg: () => { throw new Error("ffmpeg: command not found"); },
+      const r = renderCleanAudio(input(d), {
+        ...quiet,
+        ffmpeg: (args) => { writeFileSync(args[args.length - 1], "metade"); throw new Error("ffmpeg: command not found"); },
         warn: (m) => warns.push(m),
       });
       assert.equal(r, null);
       assert.equal(warns.length, 1);
       assert.match(warns[0], /áudio cru do bruto/);
       assert.match(warns[0], /ffmpeg: command not found/);
+      assert.deepEqual(readdirSync(d.outDir), [], "o .part parcial foi apagado");
     } finally { rmSync(d.root, { recursive: true, force: true }); }
   });
 
-  it("sucesso: grava a faixa, devolve o caminho do XML; 2º build com o mesmo bruto e filtro reaproveita sem rodar o ffmpeg", () => {
+  it("rename recusado (WAV aberto no Premiere): tenta de novo e LANÇA pedindo para fechar o projeto, sem cair no áudio cru", () => {
+    const d = dirs();
+    try {
+      let tries = 0;
+      assert.throws(
+        () => renderCleanAudio(input(d), {
+          ...quiet,
+          ffmpeg: fakeFfmpeg([]),
+          rename: () => { tries++; throw Object.assign(new Error("busy"), { code: "EBUSY" }); },
+          warn: () => assert.fail("não é aviso: o build para"),
+          retryMs: 1,
+        }),
+        /EBUSY.*feche o projeto/,
+      );
+      assert.equal(tries, 3);
+      assert.deepEqual(readdirSync(d.outDir), [], "nem .part nem WAV pela metade");
+    } finally { rmSync(d.root, { recursive: true, force: true }); }
+  });
+
+  it("rename que falha uma vez e passa na 2ª: a faixa vale", () => {
+    const d = dirs();
+    try {
+      let tries = 0;
+      const r = renderCleanAudio(input(d), {
+        ...quiet,
+        ffmpeg: fakeFfmpeg([]),
+        rename: (a, b) => { if (++tries === 1) throw Object.assign(new Error("perm"), { code: "EPERM" }); renameSync(a, b); },
+        retryMs: 1,
+      });
+      assert.ok(r);
+      assert.ok(existsSync(join(d.outDir, name)));
+    } finally { rmSync(d.root, { recursive: true, force: true }); }
+  });
+
+  it("meta que não grava: aviso, e a faixa ainda vale no XML", () => {
+    const d = dirs();
+    try {
+      const warns: string[] = [];
+      const r = renderCleanAudio(input(d), { ...quiet, ffmpeg: fakeFfmpeg([]), writeMeta: () => { throw new Error("EACCES"); }, warn: (m) => warns.push(m) });
+      assert.ok(r);
+      assert.equal(r.reused, false);
+      assert.match(warns[0], /não será reaproveitada/);
+    } finally { rmSync(d.root, { recursive: true, force: true }); }
+  });
+
+  it("sucesso + reaproveitamento: mesmo bruto e args = sem ffmpeg; outro limiar = outro arquivo", () => {
     const d = dirs();
     try {
       const calls: string[][] = [];
-      const ffmpeg = (args: string[]) => { calls.push(args); writeFileSync(args[args.length - 1], "wav"); };
-      const input = { src: d.src, outDir: d.outDir, stateDir: d.stateDir, edition: "261103", mediaPath: SOURCE.path, thresholdDb: -35 };
-      const r = renderCleanAudio(input, { ffmpeg, warn: () => assert.fail("sem aviso"), info: () => {} });
+      const r = renderCleanAudio(input(d), { ...quiet, ffmpeg: fakeFfmpeg(calls), warn: () => assert.fail("sem aviso") });
       assert.ok(r);
-      assert.equal(r.xmlPath, TREATED);
-      assert.ok(existsSync(join(d.outDir, "261103_audio_tratado.wav")));
-      assert.equal(readFileSync(r.path, "utf8"), "wav");
+      assert.equal(r.reused, false);
+      assert.equal(r.xmlPath, `G:/Meu Drive/YouTube/261103/${name}`);
+      assert.equal(readFileSync(join(d.outDir, name), "utf8"), "wav");
       assert.equal(calls.length, 1);
       assert.ok(calls[0].includes(audioCleanFilter(audioCleanParams(-35))));
-      const again = renderCleanAudio(input, { ffmpeg, info: () => {} });
-      assert.deepEqual(again, r);
+      assert.ok(calls[0][calls[0].length - 1].endsWith(".part"));
+      const again = renderCleanAudio(input(d), { ...quiet, ffmpeg: fakeFfmpeg(calls) });
+      assert.deepEqual(again, { ...r, reused: true });
       assert.equal(calls.length, 1, "reaproveitou");
-      // Limiar diferente (silêncios redetectados) = filtro novo = renderiza de novo.
-      renderCleanAudio({ ...input, thresholdDb: -40 }, { ffmpeg, info: () => {} });
+      const other = renderCleanAudio({ ...input(d), thresholdDb: -40 }, { ...quiet, ffmpeg: fakeFfmpeg(calls) });
       assert.equal(calls.length, 2);
+      assert.notEqual(other?.path, r.path, "outro tratamento, outro arquivo");
     } finally { rmSync(d.root, { recursive: true, force: true }); }
+  });
+
+  it("bruto trocado (tamanho/mtime): renderiza de novo, sobrescrevendo com log", () => {
+    const d = dirs();
+    try {
+      const calls: string[][] = [];
+      renderCleanAudio(input(d), { ...quiet, ffmpeg: fakeFfmpeg(calls) });
+      writeFileSync(d.src, "outro bruto, maior");
+      const infos: string[] = [];
+      const r = renderCleanAudio(input(d), { debug: () => {}, info: (m) => infos.push(m), ffmpeg: fakeFfmpeg(calls) });
+      assert.equal(calls.length, 2);
+      assert.equal(r?.reused, false);
+      assert.ok(infos.some((m) => /sobrescrita/.test(m)), infos.join("\n"));
+    } finally { rmSync(d.root, { recursive: true, force: true }); }
+  });
+
+  it("meta ilegível: renderiza de novo (com log de debug), sem quebrar", () => {
+    const d = dirs();
+    try {
+      const calls: string[][] = [];
+      renderCleanAudio(input(d), { ...quiet, ffmpeg: fakeFfmpeg(calls) });
+      writeFileSync(join(d.stateDir, "audio-tratado.meta.json"), "{ quebrado");
+      const debugs: string[] = [];
+      const r = renderCleanAudio(input(d), { info: () => {}, debug: (m) => debugs.push(m), ffmpeg: fakeFfmpeg(calls) });
+      assert.ok(r);
+      assert.equal(calls.length, 2);
+      assert.ok(debugs.some((m) => /ilegível/.test(m)));
+    } finally { rmSync(d.root, { recursive: true, force: true }); }
+  });
+});
+
+describe("#12102: upload da faixa reaproveitada no modo API", () => {
+  it("entra nos pendentes só se o drive-uploads.json não registra o envio dela", () => {
+    const root = mkdtempSync(join(tmpdir(), "uploads-12102-"));
+    try {
+      const reg = join(root, "drive-uploads.json");
+      const wav = join(root, "261103_audio_tratado-ab12cd34.wav");
+      assert.equal(queueUploadIfMissing(reg, wav), true);
+      assert.deepEqual(JSON.parse(readFileSync(reg, "utf8")).pending, [wav]);
+      assert.equal(queueUploadIfMissing(reg, wav), false, "já pendente");
+      writeFileSync(reg, JSON.stringify({ files: { "261103_audio_tratado-ab12cd34.wav": { id: "x", link: null, at: "t", from: wav } }, pending: [] }));
+      assert.equal(queueUploadIfMissing(reg, wav), false, "já subiu");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("#12101/#12102: o que entrou no XML fica por sequência no plan.json", () => {
+  type P = Parameters<typeof mergeBuildPlan>[0]["next"]["plans"][number];
+  const plan = (target: string, tag: string, height = 1080, width = 1920): P =>
+    ({ spec: { name: `${target}-${tag}`, target, width, height }, clips: [], durationFrames: 0, missingBlocks: [], dropped: [], script: tag } as unknown as P);
+  const base = { edition: "261103", source: {} as never, framing: {} as never, framingAssumed: false };
+  const oldAudio = { path: "C:/out/old.wav", xmlPath: "G:/old.wav", filter: "old" };
+  const newAudio = { path: "C:/out/new.wav", xmlPath: "G:/new.wav", filter: "new" };
+
+  it("--seq: a reconstruída leva a faixa deste build; a mantida, a do build dela", () => {
+    const prev = { ...base, hash: "H", plans: [plan("youtube", "v1"), plan("outras-redes", "v1", 1920, 1080)], builtAt: { youtube: 1, "outras-redes": 1 }, xmlAssets: { youtube: { treatedAudio: oldAudio }, "outras-redes": { treatedAudio: oldAudio } } };
+    const next = { ...base, hash: "H", plans: [plan("youtube", "v2"), plan("outras-redes", "v2", 1920, 1080)], xmlAssets: { youtube: { treatedAudio: newAudio } } };
+    const r = mergeBuildPlan({ next, pickedKeys: new Set(["youtube"]), prev, now: 9 });
+    assert.deepEqual(r.plan.xmlAssets, { youtube: { treatedAudio: newAudio }, "outras-redes": { treatedAudio: oldAudio } });
+  });
+
+  it("entradas mudaram: a sequência que sai do plano leva junto o que entrou no XML dela", () => {
+    const prev = { ...base, hash: "OLD", plans: [plan("youtube", "v1"), plan("outras-redes", "v1", 1920, 1080)], xmlAssets: { "outras-redes": { treatedAudio: oldAudio } } };
+    const next = { ...base, hash: "H", plans: [plan("youtube", "v2"), plan("outras-redes", "v2", 1920, 1080)], xmlAssets: { youtube: { treatedAudio: newAudio } } };
+    const r = mergeBuildPlan({ next, pickedKeys: new Set(["youtube"]), prev, now: 9 });
+    assert.deepEqual(r.plan.xmlAssets, { youtube: { treatedAudio: newAudio } });
   });
 });

@@ -769,9 +769,13 @@ export function speechJoinWarnings(
   clips: Array<{ block: string; frameIn: number; frameOut: number; seqStart: number }>,
   islands: Interval[],
   fps: number,
-  opts: Partial<Pick<typeof SPEECH_DETECT, "longJoinPauseS" | "shortClipS">> = {},
+  opts: Partial<Pick<typeof SPEECH_DETECT, "longJoinPauseS" | "shortClipS">> & {
+    /** #12101: blocos cuja SAÍDA tem pausa longa de propósito (o respiro da vinheta depois do `titulo`): a emenda para o bloco seguinte não avisa. */
+    longJoinOkAfter?: readonly string[];
+  } = {},
 ): string[] {
   const longPause = opts.longJoinPauseS ?? SPEECH_DETECT.longJoinPauseS;
+  const okAfter = new Set(opts.longJoinOkAfter ?? []);
   const shortClip = opts.shortClipS ?? SPEECH_DETECT.shortClipS;
   const out: string[] = [];
   const at = (frames: number) => `${(frames / fps).toFixed(2)} s`;
@@ -784,6 +788,7 @@ export function speechJoinWarnings(
     if (ilhaAt(islands, b)) out.push(`${c.block}: saída em ${b.toFixed(2)} s do bruto cai dentro da fala: pode comer o fim da palavra`);
     const next = clips[i + 1];
     if (!next) return;
+    if (okAfter.has(c.block) && next.block !== c.block) return;
     const mine = speechIn(a, b);
     const theirs = speechIn(next.frameIn / fps, next.frameOut / fps);
     if (!mine.length || !theirs.length) return;

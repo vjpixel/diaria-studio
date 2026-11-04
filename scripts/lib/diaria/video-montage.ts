@@ -1941,6 +1941,12 @@ export interface SequencePlan {
   cutAdjustments?: CutAdjustment[];
   /** Avisos do plano que não barram o build (respiro da vinheta menor que o pedido, #12101). */
   warnings?: string[];
+  /**
+   * #12101: fim da última palavra do bloco `titulo` nesta versão, em segundos
+   * do bruto: a âncora da vinheta (`vinhetaSpan`) e do respiro conferido
+   * depois do refino (`titleBreathS`). Ausente = sem título com palavra.
+   */
+  titleSpeechEndS?: number;
 }
 
 /**
@@ -1988,6 +1994,7 @@ export function buildSequencePlan(
 ): SequencePlan {
   const hold = new Set<BlockKey>(opts.holdBlocks ?? ["fecho"]);
   const warnings: string[] = [];
+  let titleSpeechEndS: number | undefined;
   const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
   const fps = source.fps;
   const raws: RawClip[] = [];
@@ -2016,7 +2023,9 @@ export function buildSequencePlan(
         const floor = it.lastWordEnd ?? lastPart.start;
         lastPart.end = round3(Math.max(floor, Math.min(it.holdLimit, source.durationS, target)));
       }
-      // #12101: respiro sem fala depois do bloco (a vinheta do logo passa por cima), tirado do próprio bruto.
+      // #12101: a âncora da vinheta é o fim da última palavra do título que entra nesta versão.
+      if (key === "titulo" && n === mine.length - 1 && it.lastWordEnd !== null) titleSpeechEndS = it.lastWordEnd;
+      // #12101: respiro sem fala depois do bloco (a vinheta do logo entra dentro dele), tirado do próprio bruto.
       const breath = opts.breathAfter?.[key];
       if (breath && !holding && n === mine.length - 1 && parts.length) {
         const lastPart = parts[parts.length - 1];
@@ -2024,7 +2033,10 @@ export function buildSequencePlan(
         const end = Math.max(lastPart.end, Math.min(it.holdLimit, source.durationS, from + breath));
         lastPart.end = round3(end);
         if (end - from < breath - 0.05) {
-          warnings.push(`${spec.name}: respiro depois de ${key} de ${Math.max(0, end - from).toFixed(2)} s, abaixo dos ${breath} s pedidos (a fala seguinte vem logo no bruto); a vinheta passa por cima da fala (#12101)`);
+          warnings.push(
+            `${spec.name}: respiro depois de ${key} de ${Math.max(0, end - from).toFixed(2)} s, abaixo dos ${breath} s pedidos (a fala seguinte vem logo no bruto); ` +
+              `a vinheta entra ${VINHETA_AFTER_SPEECH_S} s depois da última palavra e pode cobrir o começo da fala seguinte (#12101)`,
+          );
         }
       }
       // Pedaço curto na ponta do item, sem silêncio ali, fica: emenda no item vizinho (#11753). O do fecho é medido depois do respiro.
@@ -2046,7 +2058,11 @@ export function buildSequencePlan(
     const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end) && !wordCoveredBySilence(w, kept, silences));
     if (lost.length) dropped.push(`${label}: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
   }
-  return { spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges, ...(warnings.length ? { warnings } : {}) };
+  return {
+    spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges,
+    ...(warnings.length ? { warnings } : {}),
+    ...(titleSpeechEndS !== undefined ? { titleSpeechEndS } : {}),
+  };
 }
 
 /**
@@ -2374,26 +2390,31 @@ function audioLevelsFilter(linear: number): string {
 /**
  * Aproximação, no ffmpeg, do Enhance do Adobe Podcast que o editor aplicava
  * no Premiere (Background 0%, Speech 40%; decisão de 04/11/2026: usar
- * sempre). `afftdn` tira o ruído de sala (piso estimado `floorBelowThresholdDb`
- * abaixo do limiar de silêncio do bruto) e `agate` baixa as pausas
- * (`rangeDb`) abaixo do mesmo limiar de silêncio que o `transcribe` mediu
- * (`silences.meta.json`, relativo ao loudness). Valores de partida, para o
+ * sempre). O ponto de partida é o limiar de silêncio do bruto, em dBFS
+ * absoluto (`silences.meta.json` `noiseDb`, relativo ao loudness do bruto
+ * na detecção; sem ele, `SILENCE_DETECT.noiseDb`). `afftdn` tira o ruído de
+ * sala com o piso estimado `belowThresholdDb` abaixo desse limiar, e `agate`
+ * baixa as pausas (`rangeDb`) abaixo do MESMO nível, 6 dB abaixo do limiar
+ * de silêncio: o limiar em si fica perto de consoante suave (s, f, fim de
+ * frase), e um gate nele come o começo/fim delas. Valores de partida, para o
  * editor ajustar depois do 1º import; o Enhance por cima no Premiere continua
  * possível.
  */
-export const AUDIO_CLEAN = { nrDb: 12, floorBelowThresholdDb: 6, rangeDb: -40, ratio: 8, attackMs: 10, releaseMs: 150, sampleRate: 48000 } as const;
+export const AUDIO_CLEAN = { nrDb: 12, belowThresholdDb: 6, rangeDb: -40, ratio: 8, attackMs: 10, releaseMs: 150, sampleRate: 48000 } as const;
 
 export interface AudioCleanParams {
   /** Piso de ruído para o `afftdn` (dB, -80 a -20). */
   noiseFloorDb: number;
-  /** Limiar do `agate` (dBFS): o de silêncio do bruto. */
+  /** Limiar do `agate` (dBFS, -70 a -20): 6 dB abaixo do de silêncio do bruto. */
   gateThresholdDb: number;
 }
 
-/** Parâmetros a partir do limiar de silêncio do bruto (`silences.meta.json` `noiseDb`, ou o default do `silencedetect`). */
+const clampDb = (x: number, lo: number, hi: number) => Math.round(Math.min(hi, Math.max(lo, x)));
+
+/** Parâmetros a partir do limiar de silêncio do bruto (dBFS; `silences.meta.json` `noiseDb`, ou `SILENCE_DETECT.noiseDb`). */
 export function audioCleanParams(silenceThresholdDb: number): AudioCleanParams {
-  const floor = Math.round(Math.min(-20, Math.max(-80, silenceThresholdDb - AUDIO_CLEAN.floorBelowThresholdDb)));
-  return { noiseFloorDb: floor, gateThresholdDb: silenceThresholdDb };
+  const below = silenceThresholdDb - AUDIO_CLEAN.belowThresholdDb;
+  return { noiseFloorDb: clampDb(below, -80, -20), gateThresholdDb: clampDb(below, -70, -20) };
 }
 
 const dbToLinear = (db: number) => Math.round(10 ** (db / 20) * 1e6) / 1e6;
@@ -2410,9 +2431,13 @@ export function audioCleanFilter(p: AudioCleanParams): string {
  * Comando do ffmpeg da faixa tratada: o áudio INTEIRO do bruto (a mesma linha
  * do tempo, então o in/out dos clipes do XML vale igual), WAV PCM 16 bits mono
  * a 48 kHz (sem o atraso de encoder de um AAC, metade do tamanho do estéreo).
+ * `-f wav` explícito: o render grava num `.part` e renomeia no fim.
+ * Premissa: o áudio do bruto começa em 0 (o mesmo zero do vídeo, como no
+ * `audio.wav` do `transcribe`); um bruto com o áudio deslocado no container
+ * sairia dessincronizado no XML.
  */
 export function audioCleanArgs(input: { src: string; out: string; filter: string }): string[] {
-  return ["-y", "-v", "error", "-i", input.src, "-map", "0:a:0", "-vn", "-af", input.filter, "-ac", "1", "-ar", String(AUDIO_CLEAN.sampleRate), "-c:a", "pcm_s16le", input.out];
+  return ["-y", "-v", "error", "-i", input.src, "-map", "0:a:0", "-vn", "-af", input.filter, "-ac", "1", "-ar", String(AUDIO_CLEAN.sampleRate), "-c:a", "pcm_s16le", "-f", "wav", input.out];
 }
 
 // ── Título na vertical (#11756) ───────────────────────────────────────────
@@ -2533,7 +2558,7 @@ export const SCREEN_TITLE_MAX_S = 7.5;
  * fundido de blocos diferentes (`parts`) que começa no bloco fecha o trecho no
  * fim do pedaço dele.
  */
-export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number, capS: number = SCREEN_TITLE_MAX_S): { start: number; end: number; block: BlockKey } | null {
+export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number): { start: number; end: number; block: BlockKey } | null {
   if (plan.clips.length === 0) return null;
   const clips = [...plan.clips].sort((a, b) => a.seqStart - b.seqStart);
   const block: BlockKey = clips.some((c) => c.block === "titulo") ? "titulo" : clips[0].block;
@@ -2550,7 +2575,7 @@ export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number,
     }
     end = Math.max(end, c.seqEnd);
   }
-  if (fps && Number.isFinite(capS)) end = Math.min(end, start + Math.round(capS * fps));
+  if (fps) end = Math.min(end, start + Math.round(SCREEN_TITLE_MAX_S * fps));
   return { start, end, block };
 }
 
@@ -2576,6 +2601,12 @@ export function vinhetaConfigFrom(config: unknown): { path: string } | null {
   return typeof v === "string" && v.trim() ? { path: v.trim() } : null;
 }
 
+/**
+ * A vinheta entra este tanto depois da última palavra do título, DENTRO do
+ * respiro (261028: título até 3,10 s, vinheta em 3,4 s, abertura em 3,79 s).
+ */
+export const VINHETA_AFTER_SPEECH_S = 0.3;
+
 /** O MOV da vinheta como o ffprobe mediu; `path` é o que vai no `pathurl` (o mesmo caminho lido, como o do config). */
 export interface VinhetaAsset {
   path: string;
@@ -2583,29 +2614,78 @@ export interface VinhetaAsset {
   width: number;
   height: number;
   hasAudio: boolean;
+  /** fps do MOV (`r_frame_rate`); ausente = não medido (o XML declara o da sequência). */
+  fps?: number;
+  /** Canais e taxa do som do MOV, quando há som e o probe os traz. */
+  audioChannels?: number;
+  audioSampleRate?: number;
 }
 
 /** Lê o JSON do `ffprobe -show_streams -show_format` do MOV. Sem stream de vídeo ou duração = erro. */
 export function parseVinhetaProbe(json: string, path: string): VinhetaAsset {
-  const j = JSON.parse(json) as { streams?: Array<{ codec_type?: string; width?: number; height?: number; duration?: string }>; format?: { duration?: string } };
+  const j = JSON.parse(json) as {
+    streams?: Array<{ codec_type?: string; width?: number; height?: number; duration?: string; r_frame_rate?: string; channels?: number; sample_rate?: string }>;
+    format?: { duration?: string };
+  };
   const video = j.streams?.find((s) => s.codec_type === "video");
   if (!video || !isNum(video.width) || !isNum(video.height)) throw new Error(`vinheta sem stream de vídeo (${path})`);
   const durationS = Number(j.format?.duration ?? video.duration);
   if (!(durationS > 0)) throw new Error(`vinheta sem duração (${path})`);
-  return { path, durationS, width: video.width, height: video.height, hasAudio: Boolean(j.streams?.some((s) => s.codec_type === "audio")) };
+  const audio = j.streams?.find((s) => s.codec_type === "audio");
+  let fps = NaN;
+  try { if (video.r_frame_rate) fps = parseFrameRate(video.r_frame_rate); }
+  catch { fps = NaN; /* r_frame_rate ilegível: o XML declara o fps da sequência */ }
+  const sr = Number(audio?.sample_rate);
+  return {
+    path, durationS, width: video.width, height: video.height, hasAudio: Boolean(audio),
+    ...(fps > 0 && Number.isFinite(fps) ? { fps } : {}),
+    ...(audio && isNum(audio.channels) && audio.channels > 0 ? { audioChannels: audio.channels } : {}),
+    ...(audio && sr > 0 ? { audioSampleRate: sr } : {}),
+  };
 }
 
 /**
- * Trecho da vinheta na sequência, em frames (#12101): começa no fim do bloco
- * `titulo` (sem o teto do título na tela) ou, sem ele, em
- * `VINHETA_NO_TITLE_START_S`; dura o MOV inteiro, cortado no fim da sequência.
+ * Trecho da vinheta na sequência, em frames (#12101): começa
+ * `VINHETA_AFTER_SPEECH_S` depois da última palavra do título
+ * (`plan.titleSpeechEndS`), dentro do respiro, quando esse instante do bruto
+ * está num clipe; senão no fim do bloco `titulo` (o respiro da vertical é
+ * curto: a fala seguinte começa antes); sem título, em
+ * `VINHETA_NO_TITLE_START_S`. Dura o MOV inteiro, cortado no fim da sequência.
  * Sequência curta demais = null.
  */
-export function vinhetaSpan(plan: Pick<SequencePlan, "clips" | "durationFrames">, fps: number, asset: Pick<VinhetaAsset, "durationS">): { start: number; end: number; afterTitle: boolean } | null {
+export function vinhetaSpan(
+  plan: Pick<SequencePlan, "clips" | "durationFrames" | "titleSpeechEndS">,
+  fps: number,
+  asset: Pick<VinhetaAsset, "durationS">,
+): { start: number; end: number; afterTitle: boolean } | null {
   const titleEnd = blockRunEndFrame(plan.clips, "titulo", fps);
-  const start = titleEnd ?? Math.round(VINHETA_NO_TITLE_START_S * fps);
+  let start = titleEnd ?? Math.round(VINHETA_NO_TITLE_START_S * fps);
+  if (titleEnd !== null && plan.titleSpeechEndS !== undefined) {
+    const at = seqFrameOfSource(plan.clips, plan.titleSpeechEndS + VINHETA_AFTER_SPEECH_S, fps);
+    if (at !== null && at <= titleEnd) start = at;
+  }
   const end = Math.min(plan.durationFrames, start + Math.round(asset.durationS * fps));
   return end > start ? { start, end, afterTitle: titleEnd !== null } : null;
+}
+
+/** Frame da sequência de um instante do bruto, se ele cai dentro de algum clipe (o 1º, na ordem da sequência); senão null. */
+export function seqFrameOfSource(clips: ReadonlyArray<Pick<PlannedClip, "frameIn" | "frameOut" | "seqStart">>, t: number, fps: number): number | null {
+  const f = Math.round(t * fps);
+  const c = [...clips].sort((a, b) => a.seqStart - b.seqStart).find((x) => f >= x.frameIn && f < x.frameOut);
+  return c ? c.seqStart + (f - c.frameIn) : null;
+}
+
+/**
+ * Respiro efetivo depois da última palavra do título (s): do fim da fala até a
+ * saída do clipe que a contém (#12101). Conferido depois do refino dos
+ * cortes, que pode encolhê-lo. null = sem título com palavra, ou a palavra
+ * fora dos clipes.
+ */
+export function titleBreathS(plan: Pick<SequencePlan, "clips" | "titleSpeechEndS">, fps: number): number | null {
+  if (plan.titleSpeechEndS === undefined) return null;
+  const t = plan.titleSpeechEndS;
+  const c = plan.clips.find((x) => x.frameIn / fps <= t + 1e-6 && x.frameOut / fps >= t - 1e-6);
+  return c ? round3(c.frameOut / fps - t) : null;
 }
 
 /**
@@ -2902,11 +2982,18 @@ export function buildXmeml(
     const len = Math.round(vin.durationS * fps);
     const vid = `vinheta-v${si + 1}`;
     const aid = `vinheta-a${si + 1}`;
+    // O `<file>` declara o fps e a duração do PRÓPRIO MOV (medidos no probe); o clipitem fica na taxa da sequência.
+    // Premissa (#12101), conferir no 1º import: o Premiere lê o rate do arquivo e converte; sem fps medido, vale o da sequência.
+    const fileTb = vin.fps ? Math.round(vin.fps) : fps;
+    const fileRate = vin.fps ? `<rate><timebase>${fileTb}</timebase><ntsc>${Math.abs(vin.fps - fileTb) > 0.01 ? "TRUE" : "FALSE"}</ntsc></rate>` : rate;
+    const fileLen = Math.round(vin.durationS * (vin.fps ?? fps));
     const fileRef = vinhetaDefined
       ? '<file id="file-vinheta"/>'
-      : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(pathUrl(vin.path))}</pathurl>\n${rate}<duration>${len}</duration>\n` +
+      : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(pathUrl(vin.path))}</pathurl>\n${fileRate}<duration>${fileLen}</duration>\n` +
         `<media><video><samplecharacteristics><width>${vin.width}</width><height>${vin.height}</height></samplecharacteristics></video>` +
-        (vin.hasAudio ? `\n<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio>` : "") +
+        (vin.hasAudio
+          ? `\n<audio><samplecharacteristics><depth>16</depth><samplerate>${vin.audioSampleRate ?? 48000}</samplerate></samplecharacteristics><channelcount>${vin.audioChannels ?? 2}</channelcount></audio>`
+          : "") +
         `</media></file>`;
     vinhetaDefined = true;
     const head =
