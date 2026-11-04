@@ -235,6 +235,7 @@ import {
   pickRawSource,
   previewClipArgs,
   previewCropFor,
+  clipFraming,
   previewSize,
   resolveBlocks,
   reviewPreview,
@@ -1816,6 +1817,7 @@ const rawOf = (c: PlannedClip): RawClip => ({
   ...(c.parts ? { parts: c.parts } : {}),
   // O corte de pausa curta segue sem troca de zoom depois do refino (#11753).
   ...(c.keepScale ? { keepScale: true as const } : {}),
+  ...(c.framing ? { framing: c.framing } : {}),
 });
 
 /**
@@ -2562,7 +2564,7 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
   else if (!treated) console.error("[aviso] o XML desta sequência saiu sem faixa de áudio tratada (--no-audio-clean, falha no render ou build anterior ao #12102): prévia com o áudio cru");
   plan.clips.forEach((c, i) => {
     // #12096: o recorte do XML (framingFor com a escala e o eyeFraction da sequência).
-    const crop = previewCropFor(pf.source, plan.spec, pf.framing, c.scale);
+    const crop = previewCropFor(pf.source, plan.spec, clipFraming(pf.framing, c), c.scale);
     const name = `c${String(i).padStart(2, "0")}.mp4`;
     // Corte pelos FRAMES do plano, os mesmos do XML.
     run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}) }));
