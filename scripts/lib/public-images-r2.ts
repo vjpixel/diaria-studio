@@ -29,8 +29,8 @@
  * (`diar.ia.br/img/…`), caindo no KV se alguma não vier 200; então ligar a
  * flag antes do binding, ou com o binding só num dos dois Workers, não deixa
  * imagem em 404, só mantém tudo no KV):
- *   1. Descomentar o bloco `[[r2_buckets]] binding = "MEDIA"` em
- *      `workers/poll/wrangler.toml` e `workers/site/wrangler.toml` e mergear
+ *   1. FEITO em 04/11/2026 (PR #12112): bloco `[[r2_buckets]] binding = "MEDIA"`
+ *      ativo em `workers/poll/wrangler.toml` e `workers/site/wrangler.toml`
  *      (o deploy dos dois é automático no push).
  *   2. Conferir: subir um objeto de teste em `img/{AAMMDD}/x-{8hex}.jpg` e
  *      pedir `https://eia.diar.ia.br/img/img-{AAMMDD}-x-{8hex}.jpg` e
