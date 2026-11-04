@@ -495,10 +495,10 @@ export function clariceLinkMissingVia(url: string): boolean {
 export function findClariceLinksMissingVia(text: string): string[] {
   const out: string[] = [];
   // URLs em qualquer forma (markdown `](url)`, `[ref][url]`, autolink ou plano).
-  // Char class exclui delimitadores de wrapping (`) ] } " ' < >`); o strip
+  // Char class exclui delimitadores de wrapping (crase, ) ] } " ' < >); o strip
   // remove pontuação de fim de frase. Sem isso, `...via=diaria]` ou `...;`
   // entrava no value e dava falso-positivo (#1911 review).
-  const re = /https?:\/\/[^\s)\]}"'<>]+/g;
+  const re = /https?:\/\/[^\s)\]}"'<>`]+/g;
   let m: RegExpExecArray | null;
   const seen = new Set<string>();
   while ((m = re.exec(text)) !== null) {
