@@ -60,7 +60,10 @@ new_sqlite_classes = ["LinkedInScheduler"]
 [vars]
 INSTAGRAM_API_VERSION = "v25.0"
 THREADS_API_VERSION = "v1.0"
-LINKEDIN_API_VERSION = "202401"
+# LINKEDIN_API_VERSION fica FORA de [vars] (#12171): o default é dinâmico
+# (2 meses atrás, ver src/linkedin-api-version.ts). Pinar aqui sobrescreve o
+# default e volta a expirar em silêncio; só pinar para contornar uma versão
+# específica, e com data para tirar.
 
 # Cron trigger — a cada 5 minutos (FALLBACK após #1168).
 # Histórico: PR #1167 mudou pra */3 como mitigação de lag observado no #1146
