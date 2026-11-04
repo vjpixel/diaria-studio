@@ -357,7 +357,8 @@ describe("plano das sequências e xmeml (#11208)", () => {
         const params = (v.filter as Array<Record<string, any>>).flatMap((fl) => fl.effect.parameter as Array<Record<string, any>>);
         const scale = params.find((p) => p.parameterid === "scale")?.value;
         const center = params.find((p) => p.parameterid === "center")?.value;
-        const fr = framingFor({ srcW: 3840, srcH: 2160, seqW: plan.spec.width, seqH: plan.spec.height, scalePct: c.scale, framing: FRAMING });
+        // #12093: com o eyeFraction da sequência (1/3 no horizontal), o mesmo que o XML usa.
+        const fr = framingFor({ srcW: 3840, srcH: 2160, seqW: plan.spec.width, seqH: plan.spec.height, scalePct: c.scale, framing: FRAMING, eyeFraction: plan.spec.eyeFraction });
         assert.equal(scale, fr.scalePct);
         assert.deepEqual([center.horiz, center.vert], [fr.center.horiz, fr.center.vert]);
       });
