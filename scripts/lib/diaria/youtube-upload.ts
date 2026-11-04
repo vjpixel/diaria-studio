@@ -73,9 +73,13 @@ const RETRYABLE_UPLOAD_STATUS = new Set([500, 502, 503, 504]);
 
 /** Etapas que lançam `YouTubeUploadError` (antes do vídeo estar confirmado). */
 export type YouTubeUploadStep = "token" | "channel" | "insert" | "upload";
-/** Etapas de chamada à API, inclusive as pós-upload que não lançam. */
-/** `update` (#11955): o `videos.update` do `--update-scheduled`, que pede `youtube.force-ssl` (o `youtube.upload` não cobre). */
-/** `playlist` (#12068): `playlistItems.list`/`insert` do podcast, também `youtube.force-ssl`. */
+/**
+ * Etapas de chamada à API, inclusive as pós-upload que não lançam.
+ * - `update` (#11955): o `videos.update` do `--update-scheduled`, que pede
+ *   `youtube.force-ssl` (o `youtube.upload` não cobre).
+ * - `playlist` (#12068): `playlistItems.list`/`insert` do podcast; só o
+ *   INSERT exige `youtube.force-ssl` (o `list` passa com `youtube.readonly`).
+ */
 export type YouTubeApiStep = YouTubeUploadStep | "thumbnail" | "reread" | "update" | "playlist";
 
 export class YouTubeUploadError extends Error {
