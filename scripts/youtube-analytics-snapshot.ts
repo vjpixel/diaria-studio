@@ -15,9 +15,11 @@
  *
  * Vídeo → edição: `_internal/05-youtube-published.json` (horizontal) e o
  * registro do vertical (`_internal/06-shorts-published*.json`, destino
- * `youtube_shorts`) de cada edição desde 21/10/2026. Vídeo fora desses
- * registros (corte extra, avulso) é classificado pela duração (≤ 3 min =
- * Short).
+ * `youtube_shorts`) de cada edição desde 21/10/2026, mais o mapa fixo
+ * `PRE_API_EDITION_VIDEOS` para 261021/261022, anteriores ao upload pela API
+ * (#12224). O `--report` relê esse índice, então linha gravada sem edição sai
+ * atribuída. Vídeo fora de tudo isso (corte extra, avulso) é classificado pela
+ * duração (≤ 3 min = Short).
  *
  * Credenciais: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
  * `YOUTUBE_REFRESH_TOKEN`, com o `.env` do repo vencendo o ambiente (#8237).
@@ -73,6 +75,7 @@ import {
   toRetentionPoints,
   toTrafficSourceLines,
   toVideoSnapshotLines,
+  withPreApiEditionVideos,
   type ChannelDailyLine,
   type ChannelSnapshotLine,
   type EditionVideoIndex,
@@ -286,12 +289,20 @@ export async function runSnapshot(deps: SnapshotDeps, input: SnapshotInput): Pro
   return result;
 }
 
+/** Índice das pastas de edição + mapa fixo dos vídeos anteriores ao upload pela API (#12224). */
+export function resolveEditionVideoIndex(dataRoot: string): { index: EditionVideoIndex; warnings: string[] } {
+  const { index, warnings } = buildEditionVideoIndex(join(dataRoot, "editions"), isoToAammdd(YOUTUBE_ANALYTICS_SERIES_START));
+  return { index: withPreApiEditionVideos(index), warnings };
+}
+
 export function buildReport(dataRoot: string): string {
   return renderAnalyticsReport({
     channel: readStore<ChannelSnapshotLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.channel),
     daily: readStore<ChannelDailyLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.channelDaily),
     traffic: readStore<TrafficSourceLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.trafficSources),
     videos: readStore<VideoSnapshotLine>(dataRoot, YOUTUBE_ANALYTICS_FILES.videos),
+    // Linhas gravadas antes do vídeo entrar no índice saem com a edição atual (#12224).
+    index: resolveEditionVideoIndex(dataRoot).index,
   });
 }
 
@@ -338,7 +349,7 @@ async function main(): Promise<number> {
     console.error(`credenciais do YouTube ausentes: ${creds.missing.join(", ")}`);
     return 1;
   }
-  const { index, warnings } = buildEditionVideoIndex(join(dataRoot, "editions"), isoToAammdd(YOUTUBE_ANALYTICS_SERIES_START));
+  const { index, warnings } = resolveEditionVideoIndex(dataRoot);
   for (const w of warnings) console.error(`[aviso] ${w}`);
   await runSnapshot(
     { fetch: defaultYouTubeUploadDeps.fetch, now: () => new Date(), log: (m) => console.log(m), warn: (m) => console.error(m) },

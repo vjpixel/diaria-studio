@@ -1794,8 +1794,9 @@ function checkCaptureFailedSubmissionCount(editionDir: string): InvariantViolati
 
 /**
  * #3951: revisor de crop de imagem (`image-crop-reviewer`, Stage 3) sinaliza
- * quando o corte 2:1→1:1 (o que vai pro social) perdeu o sentido da imagem
- * original. Warning-only — mesmo padrão do has-negative-impact-highlight
+ * quando o corte perdeu o sentido da imagem original. Desde o #12226 só o
+ * card 4:5 avisa (o 1:1 não chega ao leitor, ver `isSilencedCropWarn`).
+ * Warning-only — mesmo padrão do has-negative-impact-highlight
  * (#3916/#3918): nunca bloqueia o gate, só avisa. Se o arquivo não existe
  * (revisor não rodou nesta edição — ex: retomada de checkpoint pré-#3951),
  * não é violação — o revisor é assistido, não obrigatório.
@@ -1891,10 +1892,24 @@ function isCurrentStarryNight(editionDir: string, r: CropReviewFileEntry, falseP
   );
 }
 
+/**
+ * #12226: achado de CROP (categoria `crop`, default) sobre o ratio `1x1` não
+ * chega ao gate. O 1:1 (`04-d{N}-1x1.jpg`) não vai ao leitor: a newsletter usa
+ * o 2:1 e o social usa o card 4:5 e o carrossel (`06-public-images.json` não
+ * tem chave `d{N}_1x1` desde o #7399). Avisar que "o crop 1:1 corta a mão do
+ * robô" era ruído sobre uma imagem que ninguém vê. O 4:5 continua avisando, e
+ * o achado de ESTILO (Noite Estrelada, #8989) vale em qualquer ratio — no par
+ * 1x1 ele olha o 2:1, que é a imagem da newsletter.
+ */
+export function isSilencedCropWarn(entry: { ratio?: string; categoria?: string }): boolean {
+  return entry.ratio === "1x1" && (entry.categoria ?? "crop") === "crop";
+}
+
 function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
   const read = readCropReviewEntries(editionDir);
   if (!read) return [];
-  const { path, results } = read;
+  const { path } = read;
+  const results = read.results.filter((r) => r && !isSilencedCropWarn(r)); // #12226
   // #10312: Noite Estrelada ATUAL sai daqui e vira erro em
   // `image-starry-night-detected` (checkStarryNightDetected abaixo). A
   // entrada desatualizada continua aqui, como nota "re-rodar o revisor".
@@ -1925,7 +1940,7 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
     .map((r) => ({
       rule: "image-crop-warn",
       message:
-        `Destaque ${(r.destaque ?? "?").toUpperCase()}: ${r.motivo ?? "crop 1:1 pode ter perdido o sentido da imagem original"}` +
+        `Destaque ${(r.destaque ?? "?").toUpperCase()}: ${r.motivo ?? "crop pode ter perdido o sentido da imagem original"}` +
         (r.sugestao ? ` — sugestão: ${r.sugestao}` : ""),
       source_issue: "#3951",
       severity: "warning" as const,
@@ -4422,7 +4437,8 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "image-crop-warn",
-    description: "revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only)",
+    description:
+      "revisor de crop (Stage 3) sinaliza sujeito cortado/composição sem sentido no card 4:5 (#3951, warning-only; o 1:1 não chega ao leitor e não avisa, #12226)",
     source_issue: "#3951",
     stage: 4,
     run: checkCropReviewWarnings,

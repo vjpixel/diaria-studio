@@ -36,9 +36,11 @@ function persist(raw: unknown): void {
 
 const RAW = {
   results: [
-    { destaque: "d1", ratio: "1x1", status: "warn", motivo: "maestro cortado" },
-    { destaque: "d3", ratio: "1x1", status: "warn", motivo: "urna fora do quadro" },
-    { destaque: "d3", ratio: "4x5", status: "warn", categoria: "estilo", motivo: "céu Noite Estrelada" },
+    // #12226: aviso de crop só no 4x5 (o 1x1 não chega ao leitor e não avisa);
+    // o estilo vale em qualquer ratio, então fica no par 1x1.
+    { destaque: "d1", ratio: "4x5", status: "warn", motivo: "maestro cortado" },
+    { destaque: "d3", ratio: "4x5", status: "warn", motivo: "urna fora do quadro" },
+    { destaque: "d3", ratio: "1x1", status: "warn", categoria: "estilo", motivo: "céu Noite Estrelada" },
   ],
 };
 
@@ -46,7 +48,7 @@ describe("crop review desatualizado após regeração/troca de imagem (#9598)", 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "crop-stale-9598-"));
     mkdirSync(join(dir, "_internal"));
-    writeFileSync(join(dir, "04-d1-1x1.jpg"), "img-d1-1x1-v1");
+    writeFileSync(join(dir, "04-d1-4x5.jpg"), "img-d1-4x5-v1");
     writeFileSync(join(dir, "04-d3-1x1.jpg"), "img-d3-1x1-v1");
     writeFileSync(join(dir, "04-d3-4x5.jpg"), "img-d3-4x5-v1");
   });
@@ -66,7 +68,7 @@ describe("crop review desatualizado após regeração/troca de imagem (#9598)", 
     assert.ok(v.every((x) => x.source_issue === "#3951"));
     const e = checkStarryNightDetected(dir);
     assert.equal(e.length, 1);
-    assert.match(e[0].message, /D3 \(4x5\)[\s\S]*Noite Estrelada/);
+    assert.match(e[0].message, /D3 \(1x1\)[\s\S]*Noite Estrelada/);
   });
 
   it("D3 regerado → avisos do D3 antigo somem, viram nota de desatualizado; D1 segue", () => {
@@ -80,14 +82,14 @@ describe("crop review desatualizado após regeração/troca de imagem (#9598)", 
     const stale = v.filter((x) => x.source_issue === "#9598");
     assert.equal(stale.length, 2, msgs);
     assert.ok(stale.every((x) => x.rule === "image-crop-warn" && x.severity === "warning"));
-    assert.match(stale.map((x) => x.message).join("\n"), /D3 \(1x1\)[\s\S]*D3 \(4x5\)/);
+    assert.match(stale.map((x) => x.message).join("\n"), /D3 \(4x5\)[\s\S]*D3 \(1x1\)/);
   });
 
   it("imagem removida depois da revisão → entrada tratada como desatualizada", () => {
     persist(RAW);
-    rmSync(join(dir, "04-d1-1x1.jpg"));
+    rmSync(join(dir, "04-d1-4x5.jpg"));
     assert.equal(
-      isCropReviewEntryStale(dir, { destaque: "d1", ratio: "1x1", image_md5: "0".repeat(32) }),
+      isCropReviewEntryStale(dir, { destaque: "d1", ratio: "4x5", image_md5: "0".repeat(32) }),
       true,
     );
   });
@@ -95,10 +97,10 @@ describe("crop review desatualizado após regeração/troca de imagem (#9598)", 
   it("reorder D1↔D3 (imagens e entradas remapeadas juntas) NÃO invalida os avisos", () => {
     persist(RAW);
     // Simula o reorder-destaques: conteúdo das imagens troca de slot…
-    renameSync(join(dir, "04-d1-1x1.jpg"), join(dir, "tmp.jpg"));
-    renameSync(join(dir, "04-d3-1x1.jpg"), join(dir, "04-d1-1x1.jpg"));
-    renameSync(join(dir, "tmp.jpg"), join(dir, "04-d3-1x1.jpg"));
+    renameSync(join(dir, "04-d1-4x5.jpg"), join(dir, "tmp.jpg"));
     renameSync(join(dir, "04-d3-4x5.jpg"), join(dir, "04-d1-4x5.jpg"));
+    renameSync(join(dir, "tmp.jpg"), join(dir, "04-d3-4x5.jpg"));
+    renameSync(join(dir, "04-d3-1x1.jpg"), join(dir, "04-d1-1x1.jpg"));
     // …e as entradas do JSON são remapeadas pelo mesmo newOrder.
     const cur = JSON.parse(readFileSync(join(dir, "_internal", "04-crop-review.json"), "utf8"));
     const { data } = reorderCropReviewJson(cur, [3, 2, 1]);
@@ -110,8 +112,8 @@ describe("crop review desatualizado após regeração/troca de imagem (#9598)", 
   });
 
   it("entrada legada sem image_md5 segue o comportamento antigo (aviso exibido)", () => {
-    writeReview({ results: [{ destaque: "d1", ratio: "1x1", status: "warn", motivo: "legado" }] });
-    writeFileSync(join(dir, "04-d1-1x1.jpg"), "outra-imagem");
+    writeReview({ results: [{ destaque: "d1", ratio: "4x5", status: "warn", motivo: "legado" }] });
+    writeFileSync(join(dir, "04-d1-4x5.jpg"), "outra-imagem");
     const v = checkCropReviewWarnings(dir);
     assert.equal(v.length, 1);
     assert.match(v[0].message, /legado/);

@@ -76,6 +76,8 @@ import {
   type TrainPrInfo,
 } from "./merge-train.ts";
 import { evaluatePrChecksGate } from "./pr-checks-gate.ts";
+import { classifyFfRefusal, discardCollisionsIdenticalToUpstream } from "./git-sync.ts"; // #12223
+import type { GitSpawnFn } from "./spawn-types.ts";
 import { extractRemovalDeclaration } from "./pr-removal-declaration.ts"; // #10848
 import { extractPendingDataWrites, type PendingDataWrite } from "./pending-data-writes.ts"; // #12026
 import { evaluatePrRetido, type PrRetidoResult } from "./pr-retido-para-editor.ts";
@@ -629,7 +631,9 @@ export function confirmMerged(runner: TrainRunner, prNumber: number): boolean {
  *      atualiza `origin/master`, que é o que a coordenadora seguinte lê);
  *   2. só faz `git pull --ff-only origin master` se o checkout está em master;
  *   3. fora de master, devolve uma linha curta de aviso, sem tocar a branch
- *      alheia.
+ *      alheia;
+ *   4. pull recusado por cópia local idêntica ao que o merge trouxe (snapshot
+ *      de audiência, #12223): descarta essas cópias e repete o pull uma vez.
  *
  * Nunca bloqueia: o merge no GitHub já é fato consumado. Devolve `null`
  * quando tudo foi atualizado, ou o aviso (uma linha) a reportar.
@@ -647,8 +651,53 @@ export function syncLocalCheckoutAfterMerge(runner: TrainRunner, baseBranch: str
     return `checkout local em ${branch}, não em ${baseBranch}: atualização local pulada${fetch.ok ? ` (origin/${baseBranch} atualizado)` : fetchNote}`;
   }
   const pull = runner.exec("git", ["pull", "--ff-only", "origin", baseBranch]);
-  if (!pull.ok) return `git pull local falhou: ${firstLine(pull.stderr)}`;
-  return null;
+  if (pull.ok) return null;
+  const retried = retryPullAfterDiscardingIdenticalCopies(runner, baseBranch, pull.stderr);
+  if (retried.ok) return null;
+  return `git pull local falhou: ${firstLine(retried.stderr)}${retried.note}`;
+}
+
+/**
+ * #12223: o `git pull --ff-only` do checkout principal recusa quando há cópia
+ * local (modificada ou untracked) de um arquivo que o merge acabou de trazer,
+ * mesmo com o conteúdo IDÊNTICO. Caso real: o snapshot de audiência do Stage 0
+ * (passo 0i) fica no checkout, porque a edição do dia lê
+ * `context/audience-profile.md` nas Etapas 1-2, e vai ao master pela PR
+ * rolante `chore/audience-snapshot-*` (`commit-audience-snapshot.ts`).
+ * Mergeada a PR, `context/audience-profile.md` modificado e
+ * `docs/audience-history/*.md` untracked colidem com o master e o checkout
+ * fica atrás até a próxima edição.
+ *
+ * Mesma saída do `sync-code.ts` (#11562): descartar as cópias idênticas a
+ * origin/master (`discardCollisionsIdenticalToUpstream`, tudo-ou-nada, sem
+ * perda: o pull escreveria os mesmos bytes) e repetir o pull uma vez. Só para
+ * a base `master` (o helper compara com `origin/master`). Qualquer outra
+ * recusa, ou colisão com conteúdo diferente, devolve a recusa original.
+ */
+function retryPullAfterDiscardingIdenticalCopies(
+  runner: TrainRunner,
+  baseBranch: string,
+  pullStderr: string,
+): { ok: boolean; stderr: string; note: string } {
+  const original = { ok: false, stderr: pullStderr, note: "" };
+  if (baseBranch !== "master") return original;
+  const refusal = classifyFfRefusal(pullStderr);
+  if (refusal.kind !== "local_changes_collide" && refusal.kind !== "untracked_collide") return original;
+  const status = runner.exec("git", ["status", "--porcelain=v1", "--untracked-files=all"]);
+  if (!status.ok) return original;
+  const spawn: GitSpawnFn = (cmd, args) => {
+    const r = runner.exec(cmd, args);
+    return { status: r.ok ? 0 : 1, stdout: r.stdout, stderr: r.stderr };
+  };
+  const { discarded } = discardCollisionsIdenticalToUpstream(spawn, refusal, status.stdout);
+  if (discarded.length === 0) return original;
+  const retry = runner.exec("git", ["pull", "--ff-only", "origin", baseBranch]);
+  if (retry.ok) return { ok: true, stderr: "", note: "" };
+  return {
+    ok: false,
+    stderr: retry.stderr,
+    note: ` (depois de descartar ${discarded.length} cópia(s) idêntica(s) a origin/master, #12223)`,
+  };
 }
 
 /**
