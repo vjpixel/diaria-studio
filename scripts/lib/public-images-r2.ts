@@ -35,9 +35,13 @@
  *   2. Conferir: subir um objeto de teste em `img/{AAMMDD}/x-{8hex}.jpg` e
  *      pedir `https://eia.diar.ia.br/img/img-{AAMMDD}-x-{8hex}.jpg` e
  *      `https://diar.ia.br/img/…` (200, `Content-Type` certo, `immutable`).
+ *      Comando: `npx tsx scripts/probe-public-images-r2.ts --write` (escreve
+ *      um JPEG de teste no bucket pelo mesmo uploader da edição e confere os
+ *      dois GETs; sai 0 só se tudo passar).
  *   3. Env do R2 com escrita no bucket (as mesmas do vertical: `R2_ACCOUNT_ID`,
  *      `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`/`SHORTS_R2_BUCKET`,
- *      `R2_PUBLIC_BASE`/`SHORTS_R2_PUBLIC_BASE`).
+ *      `R2_PUBLIC_BASE`/`SHORTS_R2_PUBLIC_BASE`) na máquina que roda a edição.
+ *      Conferência sem rede: `npx tsx scripts/probe-public-images-r2.ts`.
  *   4. `public_images_r2.enabled = true`.
  *
  * Fail-soft: flag ligada sem as env vars → aviso e KV, como antes. Falha no
