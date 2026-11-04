@@ -13,6 +13,16 @@ import { readImageGeneratorSidecar } from "./shared/image-generator-sidecar.ts";
 import { buildD1VideoLink, D1_PLAY_HERO_FILE, editionFromDir } from "./diaria/d1-video-hero.ts"; // #10784
 import { isNoVideoEdition } from "./diaria/d1-no-video.ts"; // #11125
 import { readD1VideoUrl } from "./diaria/d1-video-link-file.ts"; // #10784 (fonte da URL: #10772)
+import { readEditionVideoMeta } from "./edition-video-meta.ts"; // #12073
+import {
+  VIDEO_BOX0_CATEGORIA,
+  buildVideoBox0Href,
+  buildVideoBox0Markdown,
+  countVideoBox0Shown,
+  decideVideoBox0,
+  editionWeekday,
+  weekEditionsBefore,
+} from "./diaria/video-box0.ts"; // #12073
 import { readSnippetFile } from "./shared/snippet-loader.ts"; // #8756 — casamento por conteúdo em box-selection.json
 import { parseBoxHeaderField, isRuntimeExcluded, readBoxTituloFlag } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet; isRuntimeExcluded #4504 — invariant de runtime:false no render path; readBoxTituloFlag #5882 — titulo:false declarado
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./inline-link.ts"; // #599, #1581
@@ -2432,6 +2442,67 @@ export function d1VideoHeroFields(editionDir: string): Pick<RenderDestaque, "vid
   };
 }
 
+/**
+ * #12073: diretório de outra edição a partir do diretório desta, no layout
+ * nested (`.../{AAMM}/{AAMMDD}`). `null` quando o pai não é `AAMM` (fixture
+ * de teste fora do layout): sem irmãs, a semana conta como vazia.
+ */
+function siblingEditionDir(editionDir: string, aammdd: string): string | null {
+  const parent = dirname(resolve(editionDir));
+  if (!/^\d{4}$/.test(parent.split(/[\\/]/).pop() ?? "")) return null;
+  return resolve(parent, "..", aammdd.slice(0, 4), aammdd);
+}
+
+/** Estado de uma edição para a cota do box do vídeo (#12073). Slot 0 ocupado =
+ * box0 escrito no `.md` ou callout de intro (sorteio/CTA), os avisos do topo. */
+function videoBox0DayState(editionDir: string): { hasVideo: boolean; slot0Busy: boolean } {
+  const hasVideo = readEditionVideoMeta(editionDir) !== null;
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  let slot0Busy = false;
+  if (existsSync(reviewedPath)) {
+    try {
+      const text = joinMultilineLinks(readFileSync(reviewedPath, "utf8"));
+      slot0Busy = extractBoxDivulgacao0(text) !== null || extractIntroCallout(text) !== null;
+    } catch {
+      slot0Busy = false;
+    }
+  }
+  return { hasVideo, slot0Busy };
+}
+
+/**
+ * #12073: box do vídeo no slot 0 — markdown do box, ou `null` quando a edição
+ * não leva o box hoje (sem vídeo, slot 0 ocupado, cota da semana usada). Regra
+ * e premissas em `lib/diaria/video-box0.ts`. Montado na hora do render, a
+ * partir do mesmo `_internal/05-video-url.txt` que o link da imagem do D1 lê:
+ * o vídeo é gravado depois do gate 4, e o Kit re-renderiza no Stage 5.
+ */
+export function resolveVideoBox0(editionDir: string, slot0Busy: boolean): string | null {
+  const aammdd = editionFromDir(editionDir);
+  if (!aammdd) return null;
+  const video = readEditionVideoMeta(editionDir);
+  if (!video) return null;
+  let weekday: number;
+  let prior: string[];
+  try {
+    weekday = editionWeekday(aammdd);
+    prior = weekEditionsBefore(aammdd);
+  } catch {
+    return null;
+  }
+  const shownBefore = countVideoBox0Shown(
+    prior.map((d) => {
+      const dir = siblingEditionDir(editionDir, d);
+      return {
+        weekday: editionWeekday(d),
+        state: dir && existsSync(dir) ? videoBox0DayState(dir) : { hasVideo: false, slot0Busy: false },
+      };
+    }),
+  );
+  if (!decideVideoBox0(weekday, { hasVideo: true, slot0Busy }, shownBefore)) return null;
+  return buildVideoBox0Markdown({ title: video.title, href: buildVideoBox0Href(video.videoUrl, aammdd) });
+}
+
 export function extractContent(editionDir: string, overrideReviewedText?: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
@@ -2540,12 +2611,19 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
     : rawCoverageLineTrailer;
   // #4274: box de divulgação slot 0 — região de introdução, entre a
   // linha/bloco de cobertura e `**DESTAQUE 1`.
-  const boxDivulgacao0 = extractBoxDivulgacao0(reviewedText);
-  const boxDivulgacao0Image = readBoxDivulgacao0Image(editionDir, boxDivulgacao0);
-  const boxDivulgacao0Bold = isBoxDivulgacao0Bold(reviewedText);
-  const boxDivulgacao0Categoria = boxDivulgacao0 ? readBoxDivulgacaoCategoriaForSlot(0) : null;
+  const writtenBox0 = extractBoxDivulgacao0(reviewedText);
+  // #12073: slot 0 livre → box do vídeo, quando a edição tem vídeo e a cota
+  // da semana permite. Outro aviso no topo (box0 escrito no `.md`, callout de
+  // sorteio/CTA) sempre vence: o vídeo cede a vez.
+  const videoBox0 = writtenBox0 ? null : resolveVideoBox0(editionDir, introCallout !== null);
+  const boxDivulgacao0 = writtenBox0 ?? videoBox0;
+  const boxDivulgacao0Image = videoBox0 ? null : readBoxDivulgacao0Image(editionDir, boxDivulgacao0);
+  const boxDivulgacao0Bold = videoBox0 ? false : isBoxDivulgacao0Bold(reviewedText);
+  const boxDivulgacao0Categoria = videoBox0
+    ? VIDEO_BOX0_CATEGORIA
+    : boxDivulgacao0 ? readBoxDivulgacaoCategoriaForSlot(0) : null;
   // #10638: marcador opcional que tira o kicker de cima do box0.
-  const boxDivulgacao0SemRotulo = boxDivulgacao0 ? isBoxDivulgacao0SemRotulo(reviewedText) : false;
+  const boxDivulgacao0SemRotulo = writtenBox0 ? isBoxDivulgacao0SemRotulo(reviewedText) : false;
   // #2978: box de divulgação slot 1 (gap D1/D2) e slot 2 (gap D2/D3) — cada
   // slot é fixo por posição, aceitando qualquer formato (bold-line 📚/📣/🎉
   // OU carrinho 🛒).
@@ -2583,13 +2661,13 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
     ? resolveBoxDivulgacaoCategoriaForSlot(3, editionDir, undefined, boxDivulgacao3)
     : null;
   const boxDivulgacaoImageExplicit = {
-    0: readBoxSlotImage(editionDir, 0) !== null,
+    0: !videoBox0 && readBoxSlotImage(editionDir, 0) !== null, // #12073: box do vídeo não tem imagem
     1: readBoxSlotImage(editionDir, 1) !== null,
     2: readBoxSlotImage(editionDir, 2) !== null,
     3: readBoxSlotImage(editionDir, 3) !== null,
   };
   const boxDivulgacaoImageAlt = {
-    0: readBoxDivulgacaoAltForSlot(0),
+    0: videoBox0 ? null : readBoxDivulgacaoAltForSlot(0),
     1: resolveBoxDivulgacaoAltForSlot(1, editionDir, undefined, boxDivulgacao1),
     2: resolveBoxDivulgacaoAltForSlot(2, editionDir, undefined, boxDivulgacao2),
     3: resolveBoxDivulgacaoAltForSlot(3, editionDir, undefined, boxDivulgacao3),
@@ -2600,13 +2678,13 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   // vira texto VISÍVEL de rótulo órfão — ver comentário de
   // boxDivulgacao1Categoria).
   const boxDivulgacaoNoTitulo = {
-    0: readBoxDivulgacaoNoTituloForSlot(0),
+    0: videoBox0 ? false : readBoxDivulgacaoNoTituloForSlot(0),
     1: resolveBoxDivulgacaoNoTituloForSlot(1, editionDir, undefined, boxDivulgacao1),
     2: resolveBoxDivulgacaoNoTituloForSlot(2, editionDir, undefined, boxDivulgacao2),
     3: resolveBoxDivulgacaoNoTituloForSlot(3, editionDir, undefined, boxDivulgacao3),
   };
   const boxDivulgacaoTitulo = {
-    0: readBoxDivulgacaoTituloForSlot(0),
+    0: videoBox0 ? false : readBoxDivulgacaoTituloForSlot(0),
     1: resolveBoxDivulgacaoTituloForSlot(1, editionDir, undefined, boxDivulgacao1),
     2: resolveBoxDivulgacaoTituloForSlot(2, editionDir, undefined, boxDivulgacao2),
     3: resolveBoxDivulgacaoTituloForSlot(3, editionDir, undefined, boxDivulgacao3),

@@ -302,6 +302,9 @@ import {
   type ArchivePost,
 } from "./lib/site-archive-pages.ts";
 import { buildEditionArchivePost, type EditionPageInputs } from "./lib/edition-site-page.ts";
+import { readEditionVideoMeta } from "./lib/edition-video-meta.ts"; // #12080
+import type { WebVideoInput } from "./lib/site-page-video.ts"; // #12080
+import { SITE_PAGE_VIDEO_URL_FIELD } from "./lib/site-page-video-republish.ts"; // #12080
 import { buildHomeFeed, buildIndexHtml, ARCHIVE_CARD_LIMIT } from "./lib/site-home-page.ts";
 // #10160: `--slug-from-d1` (§5b-site, antes de existir qualquer slug de post).
 import { parseDestaques } from "./extract-destaques.ts";
@@ -523,6 +526,7 @@ export function readEditionInputs(
       subtitle,
       publishedAtIso: deriveFallbackPublishedAtIso(editionDir),
       ...coverField(editionDir), // #10924
+      ...videoField(editionDir), // #12080
     };
   }
 
@@ -573,6 +577,7 @@ export function readEditionInputs(
     subtitle,
     publishedAtIso: published.published_at ?? published.scheduled_at ?? null,
     ...coverField(editionDir), // #10924
+    ...videoField(editionDir), // #12080
   };
 }
 
@@ -604,6 +609,16 @@ export function readD1CoverPublicUrl(editionDir: string): string | null {
 function coverField(editionDir: string): { coverImageUrl?: string } {
   const url = readD1CoverPublicUrl(editionDir);
   return url ? { coverImageUrl: url } : {};
+}
+
+/**
+ * #12080: vídeo do D1 no disco da edição — player + `VideoObject` da página.
+ * Sem vídeo (ou edição marcada sem vídeo) → campo ausente, página sem player
+ * do disco (o link da imagem do D1 no HTML ainda pode trazer o vídeo).
+ */
+function videoField(editionDir: string): { video?: WebVideoInput } {
+  const meta = readEditionVideoMeta(editionDir);
+  return meta ? { video: { videoUrl: meta.videoUrl, name: meta.title, uploadDate: meta.uploadDate } } : {};
 }
 
 /** Primeira linha não-vazia após o rótulo — mesmo formato do #916. */
@@ -2575,7 +2590,7 @@ export function publishEditionSitePage(
 
   let html: string;
   try {
-    html = buildArchivePageHtml(built.post);
+    html = buildArchivePageHtml(built.post, inputs.video ? { video: inputs.video } : {}); // #12080
   } catch (e) {
     if (e instanceof UnresolvedMergeTagError) {
       // #6202 guard: recusa fechada, ANTES de qualquer write/commit/push.
@@ -3312,6 +3327,15 @@ function safeReviewedDigest(editionDirAbs: string): string | undefined {
   }
 }
 
+function safeVideoUrl(editionDirAbs: string): string | undefined {
+  try {
+    return readEditionVideoMeta(editionDirAbs)?.videoUrl;
+  } catch (e) {
+    process.stderr.write(`[site-page] aviso: URL do vídeo não lida (${(e as Error).message})\n`);
+    return undefined;
+  }
+}
+
 function safeSourceDigest(editionDirAbs: string): string | undefined {
   try {
     return sitePageSourceDigest(editionDirAbs);
@@ -3409,6 +3433,10 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
     // `reviewedDigest` acima não distingue republicação sem re-render.
     [SITE_PAGE_HTML_RENDERED_FROM_FIELD]:
       "published" in result && result.published === true ? sitePageHtmlRenderedFrom(editionDirAbs) : undefined,
+    // #12080: vídeo do D1 que a página publicada embutiu (URL lida do disco).
+    // `video-d1-link-watch.ts` republica a página quando o vídeo chega depois.
+    [SITE_PAGE_VIDEO_URL_FIELD]:
+      "published" in result && result.published === true ? safeVideoUrl(editionDirAbs) ?? null : undefined,
     [SITE_PAGE_LAST_PUBLISHED_FIELD]: lastPublished ?? undefined,
     [SITE_PAGE_PUBLISHED_SLUGS_FIELD]: publishedSlugs.length > 0 ? publishedSlugs : undefined,
     checked_at: new Date().toISOString(),

@@ -22,8 +22,9 @@
  * ou erro fatal, pra unit sair `failed`.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { todayAammdd } from "./lib/continuo-plan-rotation.ts";
@@ -33,6 +34,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadResolvedFacebookPages, DEFAULT_FACEBOOK_PAGE_SLUG } from "./lib/facebook-pages.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { missingYouTubeCredentials } from "./lib/diaria/youtube-upload.ts";
+import { readEditionVideoMeta } from "./lib/edition-video-meta.ts"; // #12080
+import { siteVideoRepublishDecision } from "./lib/site-page-video-republish.ts"; // #12080
 import {
   VIDEO_D1_WATCH_DEADLINE_BRT,
   VIDEO_D1_WATCH_INTERVAL_MS,
@@ -59,6 +62,60 @@ function resolveFacebookTarget(env: Record<string, string | undefined>, log: (m:
     log(`facebook: config inválido (${(e as Error).message}) — fica manual`);
     return null;
   }
+}
+
+/** Comando que republica a página da edição (mesmo do §5b-site da Etapa 5). */
+export function sitePageRepublishArgs(editionDir: string): string[] {
+  return [
+    "scripts/publish-edition-site-page.ts",
+    "--edition-dir",
+    editionDir,
+    "--slug-from-d1",
+    "--sitemap",
+    "workers/site/public/sitemap.xml",
+    "--no-wait-merge",
+  ];
+}
+
+export interface SitePageRepublishOutcome {
+  ran: boolean;
+  ok: boolean;
+  reason: string;
+  exitCode?: number | null;
+}
+
+/**
+ * #12080: republica `diar.ia.br/p/{slug}` quando a página publicada não
+ * embute o vídeo que acabou de ganhar URL. `spawn` injetável para teste.
+ */
+export function republishSitePageIfVideoMissing(
+  editionDir: string,
+  log: (m: string) => void,
+  spawn: (args: string[]) => { status: number | null; error?: Error } = (args) =>
+    spawnSync(process.execPath, ["--import", "tsx", ...args], { cwd: ROOT, stdio: "inherit" }),
+): SitePageRepublishOutcome {
+  const statePath = join(editionDir, "_internal", "site-page-published.json");
+  let state: unknown = null;
+  if (existsSync(statePath)) {
+    try {
+      state = JSON.parse(readFileSync(statePath, "utf8"));
+    } catch (e) {
+      const reason = `state da página ilegível (${(e as Error).message})`;
+      log(`site: ${reason} — mantida`);
+      return { ran: false, ok: false, reason };
+    }
+  }
+  const videoUrl = readEditionVideoMeta(editionDir)?.videoUrl ?? null;
+  const decision = siteVideoRepublishDecision(state, videoUrl);
+  if (!decision.republish) {
+    log(`site: ${decision.reason} — mantida`);
+    return { ran: false, ok: true, reason: decision.reason };
+  }
+  log(`site: ${decision.reason} — republicando a página`);
+  const res = spawn(sitePageRepublishArgs(editionDir));
+  const ok = !res.error && res.status === 0;
+  if (!ok) log(`site: republicação falhou (${res.error?.message ?? `exit ${res.status}`})`);
+  return { ran: true, ok, reason: decision.reason, exitCode: res.status };
 }
 
 /** Pure: corpo do aviso ao editor quando o vídeo não ficou público no prazo. */
@@ -131,6 +188,25 @@ async function main(): Promise<void> {
     for (const p of outcome.pending) log(`PENDENTE ${p.destination} (${p.action}, ${p.status}): ${p.text ?? ""} — ${p.detail}`);
   }
   if (dryRun) return;
+
+  // #12080 (item 3): o vídeo ganhou URL depois de a página da edição sair →
+  // republica a página (player no lugar do link do canal). Fail-soft: falha
+  // aqui avisa e segue, nunca muda o desfecho da task.
+  if (outcome.status === "aplicado") {
+    const dir = values["edition-dir"] ? resolve(values["edition-dir"]) : resolve(ROOT, editionDirFor(aammdd));
+    const site = republishSitePageIfVideoMissing(dir, log);
+    logEvent(
+      {
+        edition: aammdd,
+        stage: null,
+        agent: "video-d1-link-watch",
+        level: site.ok ? "info" : "warn",
+        message: `video-d1-link-watch: página do site ${site.ran ? (site.ok ? "republicada" : "republicação falhou") : "mantida"}`,
+        details: site,
+      },
+      ROOT,
+    );
+  }
 
   const failed = outcome.status === "credenciais-ausentes" || outcome.status === "conflito";
   logEvent(

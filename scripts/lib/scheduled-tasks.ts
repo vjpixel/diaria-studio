@@ -291,7 +291,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Video-D1-Link-Watch",
     description:
-      "relê o estado do vídeo horizontal no YouTube até 10:00 BRT e, público, grava o link do D1 e aplica o plano nos posts do D1 (#10941)",
+      "relê o estado do vídeo horizontal no YouTube até 10:00 BRT e, público, grava o link do D1, aplica o plano nos posts do D1 (#10941) e republica a página do site que saiu sem o vídeo (#12080)",
     steps: [{ key: "watch", script: "scripts/video-d1-link-watch.ts" }],
     logPath: "video-d1-link-watch/.watch.log",
     // Diária 06:05 BRT, um único disparo que relê a cada 5 min até 10:00
@@ -307,6 +307,12 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // na edição de hoje e, no Facebook diar.ia.br, edita/comenta o post do D1
     // pela Graph API — por isso o `guard` abaixo: sem a junction `data/`
     // montada não há edição para ler.
+    //
+    // #12080: com o vídeo público e a página `diar.ia.br/p/{slug}` já
+    // publicada SEM ele (`video_url` do `_internal/site-page-published.json`
+    // diferente), roda `publish-edition-site-page.ts --slug-from-d1
+    // --no-wait-merge` (o mesmo do §5b-site): abre o PR da página com o player.
+    // Fail-soft — falha da republicação vira `warn` no run-log, não muda o exit.
     //
     // ARMA-ELEGÍVEL desde 23/10/2026 (/diaria-develop 261023b, #10941):
     // dry-run de 261023 conferido com o editor presente — vídeo relido

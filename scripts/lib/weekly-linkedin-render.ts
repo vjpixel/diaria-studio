@@ -48,7 +48,10 @@ export function linkedinWeeklyCampaign(cycle: string): string {
   return `ln-${cycle}`;
 }
 
-export type LinkedinWeeklyUtmContent = "mencao-abertura" | "cta-abertura" | "lista" | "cta-fim";
+export type LinkedinWeeklyUtmContent = "mencao-abertura" | "cta-abertura" | "lista" | "cta-fim" | "video";
+
+/** #12081: começo da linha do vídeo mais assistido da semana (link no título do vídeo). */
+export const LINKEDIN_WEEKLY_VIDEO_LEAD = "Vídeo mais assistido da semana no canal da diar.ia.br:";
 
 /** Pure: monta uma URL com o triplo UTM completo (+ `utm_content`) do contrato do #4456. */
 export function buildLinkedinWeeklyUrl(baseUrl: string, cycle: string, content: LinkedinWeeklyUtmContent): string {
@@ -168,6 +171,12 @@ export interface WeeklyLinkedinRenderInput {
   opening: string;
   /** Fecho antes do CTA final — prosa nova, já humanizada/corrigida. */
   closing: string;
+  /**
+   * #12081: o horizontal do D1 mais visto da semana (YouTube Data API, gravado
+   * em `ln-selection.json` pelo `render-linkedin-weekly.ts`). Ausente = sem a
+   * linha do vídeo.
+   */
+  video?: { title: string; url: string } | null;
 }
 
 function escapeHtml(s: string): string {
@@ -435,6 +444,14 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
       parts.push(`<ul>\n${titles.map((t) => `<li>${escapeHtml(t)}</li>`).join("\n")}\n</ul>`);
     }
     parts.push("<hr/>");
+  }
+
+  // #12081: o vídeo mais assistido da semana, numa linha, antes do fecho.
+  if (input.video && input.video.title.trim() && input.video.url.trim()) {
+    const videoUrl = buildLinkedinWeeklyUrl(input.video.url, input.cycle, "video");
+    parts.push(
+      `<p>${escapeHtml(LINKEDIN_WEEKLY_VIDEO_LEAD)} <a href="${escapeHtml(videoUrl)}">${escapeHtml(input.video.title.trim())}</a></p>`,
+    );
   }
 
   if (!input.closing.trim()) {
