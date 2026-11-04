@@ -31,6 +31,32 @@ describe("detectDependencyProseWithoutMarker", () => {
     assert.deepEqual(findings, []);
   });
 
+  it("regressão #12084: falso positivo revisado não reaparece em rodadas sucessivas", () => {
+    const issue = { number: 7972, body: "Pré-requisito de arquitetura.\n<!-- dependency-prose-ok -->" };
+    for (let round = 0; round < 3; round++) {
+      assert.deepEqual(detectDependencyProseWithoutMarker([issue]), []);
+    }
+    assert.equal(detectDependencyProseWithoutMarker([
+      { ...issue, body: issue.body.replace("<!-- dependency-prose-ok -->", "") },
+    ]).length, 1);
+  });
+
+  it("revisão é por issue e aceita espaços no comentário HTML", () => {
+    const findings = detectDependencyProseWithoutMarker([
+      { number: 1, body: "Só depois do teste.\n<!--\n dependency-prose-ok \n-->" },
+      { number: 2, body: "Depende do #10." },
+    ]);
+    assert.deepEqual(findings.map((f) => f.issueNumber), [2]);
+  });
+
+  it("menções e marcadores malformados não dispensam revisão", () => {
+    for (const marker of ["dependency-prose-ok", "Exemplo: `<!-- dependency-prose-ok -->`", "<!-- dependency-prose-ok: false -->", "<!-- dependency-prose-okay -->", "<!-- dependency-prose-ok"]) {
+      assert.equal(detectDependencyProseWithoutMarker([
+        { number: 1, body: `Depende do #10. ${marker}` },
+      ]).length, 1, marker);
+    }
+  });
+
   it("corpo sem nenhuma frase-gatilho → nenhum achado", () => {
     const findings = detectDependencyProseWithoutMarker([
       { number: 7201, body: "Corrige o bug do timeout no fetch de posts." },

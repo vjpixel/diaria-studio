@@ -27,7 +27,9 @@
  * mesma lacuna que este módulo existe pra reduzir. Não tenta decidir QUAL
  * issue é a dependência real (não extrai o número referenciado na prosa
  * pra sugerir automaticamente o marcador) — quem lê o achado decide se é
- * dependência genuína (adiciona `depends-on:`) ou falso positivo (ignora).
+ * dependência genuína (adiciona `depends-on:`) ou falso positivo (registra
+ * `<!-- dependency-prose-ok -->` no corpo, #12084). O marcador vale até ser
+ * removido; ao introduzir nova prosa de dependência, remover e revisar de novo.
  *
  * ─── Por que isto NUNCA bloqueia (ao contrário do gate de drift de label) ──
  *
@@ -135,7 +137,8 @@ function buildExcerpt(prose: string, match: RegExpExecArray): string {
  * marcador presente (mesmo declarando uma dependência diferente da citada
  * em prosa) nunca gera achado — checagem simples de "existe o marcador?",
  * não de "o marcador cobre a mesma dependência que a prosa cita" (mesma
- * simplicidade deliberada do escopo original da #7137 item 4).
+ * simplicidade deliberada do escopo original da #7137 item 4). O marcador
+ * `<!-- dependency-prose-ok -->` também dispensa o achado após revisão (#12084).
  */
 export function detectDependencyProseWithoutMarker(
   issues: ReadonlyArray<{ number: number; body: string | null }>,
@@ -144,6 +147,8 @@ export function detectDependencyProseWithoutMarker(
   for (const issue of issues) {
     const rawBody = issue.body ?? "";
     if (parseDependsOn(rawBody, issue.number).length > 0) continue; // já declarado
+    // Revisão durável: comentário HTML completo, sem aceitar prefixos ou valores.
+    if (/^\s*<!--\s*dependency-prose-ok\s*-->\s*$/m.test(rawBody)) continue;
     const stripped = stripHtmlComments(rawBody);
     for (const pattern of DEPENDENCY_PROSE_PATTERNS) {
       // Nova instância a cada issue — evita estado de `lastIndex` vazado

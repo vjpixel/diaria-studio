@@ -113,7 +113,7 @@ export function main(argv: string[], deps: ProseLintMainDeps = {}): number {
   for (const f of findings) log(fmtFinding(f));
   log("");
   log(
-    "Se for dependência genuína, adicionar `<!-- depends-on: #N -->` no corpo (scripts/reconcile-issue-dependencies.ts assume dali em diante). Se for falso positivo, ignorar.",
+    "Se for dependência genuína, adicionar `<!-- depends-on: #N -->` no corpo (scripts/reconcile-issue-dependencies.ts assume dali em diante). Se for falso positivo revisado, adicionar `<!-- dependency-prose-ok -->` no corpo. Remover esse marcador ao introduzir nova prosa de dependência para revisar novamente.",
   );
   return 0;
 }
