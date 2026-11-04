@@ -24,8 +24,8 @@
  * e valida cada argumento antes de montar a chamada.
  *
  * Uso:
- *   npx tsx scripts/gh-pr-review-api.ts comment       --pr N --path P --line L --body-file F [--commit SHA40] [--side RIGHT|LEFT] [--repo owner/name]
- *   npx tsx scripts/gh-pr-review-api.ts reply         --pr N --comment-id ID --body-file F [--repo owner/name]
+ *   npx tsx scripts/gh-pr-review-api.ts comment       --pr N --path P --line L (--body TEXTO | --body-file F | --body-file -) [--commit SHA40] [--side RIGHT|LEFT] [--repo owner/name]
+ *   npx tsx scripts/gh-pr-review-api.ts reply         --pr N --comment-id ID (--body TEXTO | --body-file F | --body-file -) [--repo owner/name]
  *   npx tsx scripts/gh-pr-review-api.ts list-comments --pr N [--repo owner/name]
  *   npx tsx scripts/gh-pr-review-api.ts head-sha      --pr N [--repo owner/name]
  *   npx tsx scripts/gh-pr-review-api.ts ref-sha       --branch master [--repo owner/name]
@@ -34,6 +34,16 @@
  * (`scripts/lib/auto-review-marker.ts`, #11269): é por ele que o passo de
  * resolução pós-fixer separa a thread da automação da thread do editor (o
  * login do autor é o mesmo).
+ *
+ * Corpo do comentário (#12169): `--body TEXTO` inline ou `--body-file -`
+ * (stdin, ex. heredoc `<<'EOF'`) dispensam o arquivo intermediário — o
+ * caminho preferido, porque o scratchpad e o `/tmp` são compartilhados entre
+ * sessões da mesma máquina, e um `f1.md` genérico reescrito por OUTRA sessão
+ * entre a escrita e o post publicou na PR #12135 comentário que era de outra
+ * PR. Com `--body-file` de arquivo, o nome precisa carregar um número de 4+
+ * dígitos (o da issue/PR, ex. `/tmp/sr-12169-$RANDOM.md`, item 9 das regras de
+ * dispatch): nome genérico (`f1.md`, `finding.md`) é recusado com exit 2 antes
+ * de chamar o `gh`. Exatamente um dos dois (`--body` ou `--body-file`).
  *
  * Sem `--commit`, o comentário inline vai no head atual da PR. `list-comments`
  * imprime um array JSON com `id`, `in_reply_to_id`, `path`, `line`,
@@ -47,7 +57,8 @@
  * Exit:
  *   0 — ok (stdout: URL do comentário, SHA, ou o array JSON)
  *   1 — o `gh` falhou ou devolveu algo fora do esperado
- *   2 — uso inválido (subcomando/flag desconhecida, argumento inválido, --body-file ilegível)
+ *   2 — uso inválido (subcomando/flag desconhecida, argumento inválido, --body-file ilegível ou de nome
+ *       genérico, --body e --body-file juntos)
  */
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -158,8 +169,9 @@ const CONFIG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export function usage(): string {
   return [
     "uso:",
-    "  npx tsx scripts/gh-pr-review-api.ts comment       --pr N --path P --line L --body-file F [--commit SHA40] [--side RIGHT|LEFT] [--repo owner/name]",
-    "  npx tsx scripts/gh-pr-review-api.ts reply         --pr N --comment-id ID --body-file F [--repo owner/name]",
+    "  npx tsx scripts/gh-pr-review-api.ts comment       --pr N --path P --line L (--body TEXTO | --body-file F | --body-file -) [--commit SHA40] [--side RIGHT|LEFT] [--repo owner/name]",
+    "  npx tsx scripts/gh-pr-review-api.ts reply         --pr N --comment-id ID (--body TEXTO | --body-file F | --body-file -) [--repo owner/name]",
+    "  (--body-file de arquivo: nome com o número da issue/PR, 4+ dígitos — ex. /tmp/sr-12169-$RANDOM.md, #12169)",
     "  npx tsx scripts/gh-pr-review-api.ts list-comments --pr N [--repo owner/name]",
     "  npx tsx scripts/gh-pr-review-api.ts head-sha      --pr N [--repo owner/name]",
     "  npx tsx scripts/gh-pr-review-api.ts ref-sha       --branch master [--repo owner/name]",
@@ -167,8 +179,8 @@ export function usage(): string {
 }
 
 const ALLOWED_KEYS: Record<string, readonly string[]> = {
-  comment: ["pr", "path", "line", "body-file", "commit", "side", "repo"],
-  reply: ["pr", "comment-id", "body-file", "repo"],
+  comment: ["pr", "path", "line", "body", "body-file", "commit", "side", "repo"],
+  reply: ["pr", "comment-id", "body", "body-file", "repo"],
   "list-comments": ["pr", "repo"],
   "head-sha": ["pr", "repo"],
   "ref-sha": ["branch", "repo"],
@@ -181,6 +193,20 @@ export interface CliResult {
 }
 
 export type ReadFileFn = (path: string) => string;
+export type ReadStdinFn = () => string;
+
+/**
+ * #12169 — o nome do arquivo de corpo precisa carregar um número de 4+ dígitos
+ * (o da issue/PR da unidade, mais o sufixo aleatório que o item 9 das regras
+ * de dispatch pede). É a checagem barata que separa `f1.md`/`finding.md`
+ * (genérico, colide entre sessões no scratchpad compartilhado) de
+ * `sr-12169-4821.md`. Só o nome-base conta: um diretório com dígitos não torna
+ * único um `f1.md` dentro dele.
+ */
+export function isUniqueBodyFileName(path: string): boolean {
+  const base = path.split(/[\\/]/).pop() ?? "";
+  return /\d{4,}/.test(base);
+}
 
 /** CLI testável: `argv` sem o `node script`, `ghRun`/`readFile` injetáveis. */
 export function runCli(
@@ -188,6 +214,7 @@ export function runCli(
   ghRun: GhRunFn,
   readFile: ReadFileFn = (p) => readFileSync(p, "utf8"),
   configRoot: string = CONFIG_ROOT,
+  readStdin: ReadStdinFn = () => readFileSync(0, "utf8"),
 ): CliResult {
   const fail = (msg: string, code: number): CliResult => ({ exitCode: code, stdout: "", stderr: `[gh-pr-review-api] ${msg}\n${usage()}` });
   const sub = argv[0] ?? "";
@@ -202,9 +229,35 @@ export function runCli(
   const repo = repoFlag.repo ?? DEFAULT_ISSUE_REPO;
   const pr = /^\d+$/.test(values.pr ?? "") ? Number(values.pr) : NaN;
   const readBody = (): { body: string } | { error: string } => {
-    if (!values["body-file"]) return { error: "--body-file é obrigatório" };
+    const r = readRawBody();
+    // O marcador da automação é acrescentado depois, e sozinho já deixaria o
+    // corpo não-vazio para `validateOp`: a checagem de vazio é aqui (#12169).
+    if ("body" in r && r.body.trim() === "") return { error: "corpo vazio" };
+    return r;
+  };
+  const readRawBody = (): { body: string } | { error: string } => {
+    const inline = values.body;
+    const file = values["body-file"];
+    if (inline !== undefined && file !== undefined) return { error: "use --body OU --body-file, nunca os dois" };
+    if (inline !== undefined) return { body: inline };
+    if (!file) return { error: "--body ou --body-file é obrigatório" };
+    if (file === "-") {
+      try {
+        return { body: readStdin() };
+      } catch (e) {
+        return { error: `não li o corpo do stdin: ${(e as Error).message}` };
+      }
+    }
+    if (!isUniqueBodyFileName(file)) {
+      return {
+        error:
+          `--body-file com nome genérico: ${file}. O scratchpad e o /tmp são compartilhados entre sessões e um ` +
+          "arquivo genérico pode ter sido reescrito por outra (#12169, PR #12135). Use --body/--body-file - " +
+          "(stdin) ou um nome com o número da issue/PR + sufixo aleatório (ex. /tmp/sr-12169-$RANDOM.md).",
+      };
+    }
     try {
-      return { body: readFile(values["body-file"]) };
+      return { body: readFile(file) };
     } catch (e) {
       return { error: `não li --body-file: ${(e as Error).message}` };
     }

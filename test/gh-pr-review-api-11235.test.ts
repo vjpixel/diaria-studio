@@ -137,7 +137,7 @@ describe("gh-pr-review-api: runOp", () => {
 describe("gh-pr-review-api: runCli", () => {
   it("comment sem --commit busca o head da PR e comenta nele", () => {
     const gh = fakeGh([ok(SHA), ok("https://github.com/x/pull/5#discussion_r1")]);
-    const r = runCli(["comment", "--pr", "5", "--path", "a.ts", "--line", "3", "--body-file", "/b.md"], gh.run, files({ "/b.md": "achado" }), ROOT);
+    const r = runCli(["comment", "--pr", "5", "--path", "a.ts", "--line", "3", "--body-file", "/b-11235.md"], gh.run, files({ "/b-11235.md": "achado" }), ROOT);
     assert.equal(r.exitCode, EXIT_OK, r.stderr);
     assert.equal(r.stdout, "https://github.com/x/pull/5#discussion_r1");
     assert.deepEqual(gh.calls[0].slice(0, 4), ["api", "-X", "GET", `repos/${repo}/pulls/5`]);
@@ -147,7 +147,7 @@ describe("gh-pr-review-api: runCli", () => {
 
   it("reply também carrega o marcador, uma vez só (#11269)", () => {
     const gh = fakeGh([ok("https://github.com/x/pull/5#discussion_r2")]);
-    const r = runCli(["reply", "--pr", "5", "--comment-id", "9", "--body-file", "/b.md"], gh.run, files({ "/b.md": `ok\n\n${AUTO_REVIEW_MARKER}\n` }), ROOT);
+    const r = runCli(["reply", "--pr", "5", "--comment-id", "9", "--body-file", "/b-11235.md"], gh.run, files({ "/b-11235.md": `ok\n\n${AUTO_REVIEW_MARKER}\n` }), ROOT);
     assert.equal(r.exitCode, EXIT_OK, r.stderr);
     const body = gh.calls[0].find((a) => a.startsWith("body="));
     assert.equal(body?.split(AUTO_REVIEW_MARKER).length, 2, body);
@@ -155,7 +155,7 @@ describe("gh-pr-review-api: runCli", () => {
 
   it("comment: head da PR indisponível é exit 1, sem postar", () => {
     const gh = fakeGh([{ status: 1, stdout: "", stderr: "404" }]);
-    const r = runCli(["comment", "--pr", "5", "--path", "a.ts", "--line", "3", "--body-file", "/b.md"], gh.run, files({ "/b.md": "x" }), ROOT);
+    const r = runCli(["comment", "--pr", "5", "--path", "a.ts", "--line", "3", "--body-file", "/b-11235.md"], gh.run, files({ "/b-11235.md": "x" }), ROOT);
     assert.equal(r.exitCode, EXIT_GH);
     assert.equal(gh.calls.length, 1);
   });
@@ -170,14 +170,14 @@ describe("gh-pr-review-api: runCli", () => {
   });
 
   it("erros de uso saem 2 sem chamar o gh", () => {
-    const body = files({ "/b.md": "x" });
+    const body = files({ "/b-11235.md": "x" });
     for (const argv of [
-      ["comment", "--pr", "5", "--path", "a.ts", "--line", "3", "--body-file", "/b.md", "--side", "UP"],
-      ["comment", "--pr", "5", "--path", "a.ts", "--line", "3", "--body-file", "/b.md", "--commit", "abc1234"],
+      ["comment", "--pr", "5", "--path", "a.ts", "--line", "3", "--body-file", "/b-11235.md", "--side", "UP"],
+      ["comment", "--pr", "5", "--path", "a.ts", "--line", "3", "--body-file", "/b-11235.md", "--commit", "abc1234"],
       ["comment", "--pr", "5", "--path", "a.ts", "--line", "3", "--body-file", "/nao-existe.md"],
       ["comment", "--pr", "5", "--path", "a.ts", "--line", "3"],
-      ["comment", "--pr", "5", "--path", "../x", "--line", "3", "--body-file", "/b.md", "--commit", SHA],
-      ["reply", "--pr", "5", "--comment-id", "abc", "--body-file", "/b.md"],
+      ["comment", "--pr", "5", "--path", "../x", "--line", "3", "--body-file", "/b-11235.md", "--commit", SHA],
+      ["reply", "--pr", "5", "--comment-id", "abc", "--body-file", "/b-11235.md"],
       ["head-sha", "--pr", "0"],
       ["head-sha", "--pr", "5", "--method", "DELETE"],
       ["head-sha", "--pr", "5", "--paginate"],

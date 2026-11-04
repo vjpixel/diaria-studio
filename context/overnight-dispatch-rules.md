@@ -160,7 +160,10 @@ Comentário inline sai por `npx tsx scripts/gh-pr-review-api.ts comment --pr N
 --path P --line L --body-file F` (resposta a um comentário, no fixer: `reply
 --pr N --comment-id ID --body-file F`), nunca `gh api` à mão: o modo agendado
 (`acceptEdits`) não libera `gh api` no allow list (#11235). Comentário geral
-na PR continua `gh pr comment`.
+na PR continua `gh pr comment`. O corpo vai de preferência sem arquivo
+intermediário, com `--body 'texto'` ou `--body-file -` lendo do stdin
+(heredoc `<<'EOF'`); com arquivo, o nome segue a regra de nome único do
+item 9 (#12169), e o helper recusa nome sem número de 4+ dígitos.
 
 Guard mecânico desde o #11300: `.claude/hooks/block-raw-pr-review-comment.mjs`
 nega, em toda sessão Bash (coordenador e subagentes, sem depender de
@@ -241,6 +244,19 @@ não cita alguma issue com `Closes`/`REFS`: reescrever o arquivo e corrigir via
 `--body-file`. O `--body-file` faz a mesma conferência antes de escrever e
 recusa o corpo que não cita as issues (`--allow-missing-issue-marker` só
 quando a omissão é intencional).
+
+**A mesma regra vale para QUALQUER arquivo temporário de texto que vai
+para PR ou issue (#12169)** — corpo de comentário inline do self-review, reply
+do fixer, `gh pr comment`/`gh issue comment`, mensagem de commit: nome com o
+número da issue (ou PR) + sufixo aleatório, ex.
+`/tmp/sr-12169-$RANDOM.md`, nunca `f1.md`, `finding.md`, `comment.md`. Na
+rodada 261104b implementadores de sessões diferentes escreveram `f1.md`/
+`f2.md` no mesmo scratchpad, e na PR #12135 dois comentários de OUTRA sessão
+(sobre a #12114) saíram na PR errada: o arquivo foi reescrito entre a escrita
+e o post, sem nenhum sinal de erro. Para comentário de review, o caminho
+preferido dispensa o arquivo: `gh-pr-review-api.ts comment|reply --body
+'texto'` ou `--body-file -` com heredoc. O helper recusa `--body-file` cujo
+nome não tenha um número de 4+ dígitos (exit 2, nada postado).
 
 **`--body-file` grava; `--verify-body` só confere (#11930).** Para EDITAR o
 corpo (acrescentar `removal-declaration:`, trocar um `Closes`), reescrever o
@@ -655,6 +671,13 @@ que o cliente do OneDrive transforma em `-safeBackup-NNNN`. O `--issues`
 grava a onda numa escrita, imprime uma linha por issue e sai `exit 1` se
 alguma não terminou reivindicada (as outras ficam reivindicadas; tratar a
 recusada como no `--issue`).
+
+**E solta num unclaim só (#12166):** para soltar as issues de uma onda (as
+mergeadas no trem, ou as que saíram da onda por uma recusa), `npx tsx
+scripts/lib/session-registry.ts unclaim-issue --kind {kind} --issues A,B,C`,
+standalone, uma escrita na âncora pelo mesmo motivo; uma linha por issue,
+`exit 1` se alguma não estava reivindicada por esta sessão (as outras saem
+liberadas mesmo assim). Nunca N `unclaim-issue --issue` seguidos.
 
 ## 19. Nunca montar corpo de issue/PR via `printf`/`echo -e` (#6004)
 
