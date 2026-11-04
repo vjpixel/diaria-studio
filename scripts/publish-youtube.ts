@@ -12,6 +12,9 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  *     [--keep-video] [--edition-dir DIR] [--video PATH] [--episode N]
  *     [--edition-url URL] [--publish-at ISO] [--title "TÍTULO"]
  *   npx tsx scripts/publish-youtube.ts AAMMDD --upload --confirm-publish AAMMDD [mesmas flags] [--force]
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --thumbnail-only [--thumbnail PATH]
+ *     Troca a capa do vídeo registrado, sem confirmação; default 04-youtube-thumb.jpg.
+ *     Grava thumbnail.replacedAt após sucesso, preservando os demais campos.
  *   npx tsx scripts/publish-youtube.ts AAMMDD --upload --accept-period-match VIDEO_ID
  *
  * `--upload` exige `--confirm-publish AAMMDD` (a mesma edição), dada só depois
@@ -131,6 +134,9 @@ import {
   type YouTubeScheduleDecision,
 } from "./lib/diaria/youtube-video.ts";
 import {
+  assertExpectedChannel,
+  refreshYouTubeAccessToken,
+  setThumbnail,
   ExistingEditionVideoError,
   YOUTUBE_PUBLISHED_FILE,
   YouTubeUploadError,
@@ -373,6 +379,7 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
   podcast?: PodcastPlaylistResult;
   /** Playlists temáticas (#12077), só as que chegaram à API. */
   theme_playlists?: ThemePlaylistResult[];
+  thumbnail: YouTubeUploadResult["thumbnail"] & { replacedAt?: string };
 }
 
 /**
@@ -978,6 +985,42 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
   return { exitCode: failed ? 1 : 0, record, skipped: false, videoUrlWritten };
 }
 
+/** Troca só a capa do vídeo registrado, sem enviar vídeo ou alterar metadados (#12134). */
+export async function runThumbnailOnly(deps: YouTubeUploadDeps, input: Omit<RunCaptionsOnlyInput, "captionsPath" | "force"> & { thumbnailPath: string }): Promise<RunUploadOutcome> {
+  const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
+  let record: YouTubePublishedRecord;
+  try {
+    const read = readPublishedRecord(recordPath, input.aammdd);
+    if (read.kind !== "done") throw new Error("--thumbnail-only precisa do vídeo registrado e sem estado incerto");
+    const missing = missingYouTubeCredentials(input.env);
+    if (missing.length) throw new Error(`faltam ${missing.join(", ")} no ambiente`);
+    const jpeg = input.readFile(input.thumbnailPath);
+    if (!jpeg.length) throw new Error(`capa vazia em ${input.thumbnailPath}`);
+    const creds = {
+      clientId: input.env.GOOGLE_CLIENT_ID!.trim(),
+      clientSecret: input.env.GOOGLE_CLIENT_SECRET!.trim(),
+      refreshToken: input.env.YOUTUBE_REFRESH_TOKEN!.trim(),
+      channelId: input.env.YOUTUBE_CHANNEL_ID!.trim(),
+    };
+    const token = await refreshYouTubeAccessToken(deps, creds);
+    await assertExpectedChannel(deps, token, creds.channelId);
+    await setThumbnail(deps, token, read.record.videoId, jpeg);
+    record = { ...read.record, thumbnail_path: input.thumbnailPath,
+      thumbnail: { ...read.record.thumbnail, attempted: true, ok: true, error: null, replacedAt: deps.now().toISOString() } };
+  } catch (e) {
+    input.log(`publish-youtube: troca da capa falhou — ${(e as Error).message}`);
+    return { exitCode: 1, record: null, skipped: false };
+  }
+  try {
+    writeFileAtomic(recordPath, JSON.stringify(record, null, 2) + "\n");
+  } catch (e) {
+    input.log(`[erro] capa TROCADA, mas registro não gravado em ${recordPath}: ${(e as Error).message}`);
+    return { exitCode: 1, record, skipped: false };
+  }
+  input.log(`[ok] capa trocada: ${record.videoId}`);
+  return { exitCode: 0, record, skipped: false };
+}
+
 export interface RunCaptionsOnlyInput {
   aammdd: string;
   editionDir: string;
@@ -1135,7 +1178,7 @@ function loadD1SlotAt(aammdd: string): Date | null {
 }
 
 const USAGE =
-  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--force]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO]";
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--force] | --thumbnail-only [--thumbnail PATH]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO]";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -1147,11 +1190,12 @@ async function main(): Promise<number> {
   const dryRun = flags.has("dry-run");
   const upload = flags.has("upload");
   const captionsOnly = flags.has("captions-only");
-  const modes = [dryRun, upload, captionsOnly].filter(Boolean).length;
+  const thumbnailOnly = flags.has("thumbnail-only");
+  const modes = [dryRun, upload, captionsOnly, thumbnailOnly].filter(Boolean).length;
   if (modes !== 1) {
     console.error(
       modes > 1
-        ? "publish-youtube: --dry-run, --upload e --captions-only são exclusivos."
+        ? "publish-youtube: --dry-run, --upload, --captions-only e --thumbnail-only são exclusivos."
         : "publish-youtube: escolha o modo — --dry-run (só o plano), --upload (envio real; sem a auditoria do YouTube API Services o vídeo sai private, #10659) ou --captions-only (só a legenda do vídeo registrado, #11384).",
     );
     console.error(USAGE);
@@ -1186,6 +1230,20 @@ async function main(): Promise<number> {
   }
 
   const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
+  if (flags.has("thumbnail") || values["thumbnail"] === "" || (values["thumbnail"] !== undefined && !thumbnailOnly)) {
+    console.error("publish-youtube: --thumbnail exige PATH e só vale com --thumbnail-only.");
+    return 2;
+  }
+  if (thumbnailOnly) {
+    loadProjectEnv(ROOT);
+    const outcome = await runThumbnailOnly(defaultYouTubeUploadDeps, {
+      aammdd, editionDir: dir,
+      thumbnailPath: resolve(values["thumbnail"] ?? join(dir, YOUTUBE_THUMB_FILE)),
+      env: process.env, readFile: (p) => readFileSync(p), log: console.error,
+    });
+    if (outcome.record) console.log(JSON.stringify({ thumbnail_only: true, videoId: outcome.record.videoId, thumbnail: outcome.record.thumbnail }, null, 2));
+    return outcome.exitCode;
+  }
   const captionsPath = resolve(values["captions"] ?? join(dir, youtubeCaptionFileName(aammdd)));
   if (captionsOnly) {
     if (flags.has("no-captions")) {
