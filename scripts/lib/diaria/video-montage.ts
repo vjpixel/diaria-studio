@@ -1939,6 +1939,14 @@ export interface SequencePlan {
   dropped: string[];
   /** Emendas de clipes contíguos e, depois do refino por áudio, os ajustes de corte (#11500, #11503). */
   cutAdjustments?: CutAdjustment[];
+  /** Avisos do plano que não barram o build (respiro da vinheta menor que o pedido, #12101). */
+  warnings?: string[];
+  /**
+   * #12101: fim da última palavra do bloco `titulo` nesta versão, em segundos
+   * do bruto: a âncora da vinheta (`vinhetaSpan`) e do respiro conferido
+   * depois do refino (`titleBreathS`). Ausente = sem título com palavra.
+   */
+  titleSpeechEndS?: number;
 }
 
 /**
@@ -1982,9 +1990,11 @@ export function buildSequencePlan(
   resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
   silences: Interval[],
   source: Pick<SourceInfo, "fps" | "durationS">,
-  opts: { holdBlocks?: BlockKey[] } & SpeechOptions = {},
+  opts: { holdBlocks?: BlockKey[]; breathAfter?: Partial<Record<BlockKey, number>> } & SpeechOptions = {},
 ): SequencePlan {
   const hold = new Set<BlockKey>(opts.holdBlocks ?? ["fecho"]);
+  const warnings: string[] = [];
+  let titleSpeechEndS: number | undefined;
   const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
   const fps = source.fps;
   const raws: RawClip[] = [];
@@ -2013,6 +2023,22 @@ export function buildSequencePlan(
         const floor = it.lastWordEnd ?? lastPart.start;
         lastPart.end = round3(Math.max(floor, Math.min(it.holdLimit, source.durationS, target)));
       }
+      // #12101: a âncora da vinheta é o fim da última palavra do título que entra nesta versão.
+      if (key === "titulo" && n === mine.length - 1 && it.lastWordEnd !== null) titleSpeechEndS = it.lastWordEnd;
+      // #12101: respiro sem fala depois do bloco (a vinheta do logo entra dentro dele), tirado do próprio bruto.
+      const breath = opts.breathAfter?.[key];
+      if (breath && !holding && n === mine.length - 1 && parts.length) {
+        const lastPart = parts[parts.length - 1];
+        const from = it.lastWordEnd ?? lastPart.end;
+        const end = Math.max(lastPart.end, Math.min(it.holdLimit, source.durationS, from + breath));
+        lastPart.end = round3(end);
+        if (end - from < breath - 0.05) {
+          warnings.push(
+            `${spec.name}: respiro depois de ${key} de ${Math.max(0, end - from).toFixed(2)} s, abaixo dos ${breath} s pedidos (a fala seguinte vem logo no bruto); ` +
+              `a vinheta entra ${VINHETA_AFTER_SPEECH_S} s depois da última palavra e pode cobrir o começo da fala seguinte (#12101)`,
+          );
+        }
+      }
       // Pedaço curto na ponta do item, sem silêncio ali, fica: emenda no item vizinho (#11753). O do fecho é medido depois do respiro.
       const edge = parts.map((p, k) => !(holding && k === parts.length - 1) && touchesEdge(p, it.interval.start, it.interval.end));
       const kept = parts.map((p, k) => ({ ...p, keepScale: keep.has(k), edge: edge[k] })).filter((p) => p.end - p.start >= minClip - 1e-9 || p.edge);
@@ -2032,7 +2058,11 @@ export function buildSequencePlan(
     const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end) && !wordCoveredBySilence(w, kept, silences));
     if (lost.length) dropped.push(`${label}: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
   }
-  return { spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges };
+  return {
+    spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges,
+    ...(warnings.length ? { warnings } : {}),
+    ...(titleSpeechEndS !== undefined ? { titleSpeechEndS } : {}),
+  };
 }
 
 /**
@@ -2355,6 +2385,61 @@ function audioLevelsFilter(linear: number): string {
   );
 }
 
+// ── Faixa de áudio tratada (#12102) ───────────────────────────────────────
+
+/**
+ * Aproximação, no ffmpeg, do Enhance do Adobe Podcast que o editor aplicava
+ * no Premiere (Background 0%, Speech 40%; decisão de 04/11/2026: usar
+ * sempre). O ponto de partida é o limiar de silêncio do bruto, em dBFS
+ * absoluto (`silences.meta.json` `noiseDb`, relativo ao loudness do bruto
+ * na detecção; sem ele, `SILENCE_DETECT.noiseDb`). `afftdn` tira o ruído de
+ * sala com o piso estimado `belowThresholdDb` abaixo desse limiar, e `agate`
+ * baixa as pausas (`rangeDb`) abaixo do MESMO nível, 6 dB abaixo do limiar
+ * de silêncio: o limiar em si fica perto de consoante suave (s, f, fim de
+ * frase), e um gate nele come o começo/fim delas. Valores de partida, para o
+ * editor ajustar depois do 1º import; o Enhance por cima no Premiere continua
+ * possível.
+ */
+export const AUDIO_CLEAN = { nrDb: 12, belowThresholdDb: 6, rangeDb: -40, ratio: 8, attackMs: 10, releaseMs: 150, sampleRate: 48000 } as const;
+
+export interface AudioCleanParams {
+  /** Piso de ruído para o `afftdn` (dB, -80 a -20). */
+  noiseFloorDb: number;
+  /** Limiar do `agate` (dBFS, -70 a -20): 6 dB abaixo do de silêncio do bruto. */
+  gateThresholdDb: number;
+}
+
+const clampDb = (x: number, lo: number, hi: number) => Math.round(Math.min(hi, Math.max(lo, x)));
+
+/** Parâmetros a partir do limiar de silêncio do bruto (dBFS; `silences.meta.json` `noiseDb`, ou `SILENCE_DETECT.noiseDb`). */
+export function audioCleanParams(silenceThresholdDb: number): AudioCleanParams {
+  const below = silenceThresholdDb - AUDIO_CLEAN.belowThresholdDb;
+  return { noiseFloorDb: clampDb(below, -80, -20), gateThresholdDb: clampDb(below, -70, -20) };
+}
+
+const dbToLinear = (db: number) => Math.round(10 ** (db / 20) * 1e6) / 1e6;
+
+/** O `-af` da faixa tratada: redução de ruído e depois o gate nas pausas. */
+export function audioCleanFilter(p: AudioCleanParams): string {
+  return (
+    `afftdn=nr=${AUDIO_CLEAN.nrDb}:nf=${p.noiseFloorDb}:tn=1,` +
+    `agate=threshold=${dbToLinear(p.gateThresholdDb)}:range=${dbToLinear(AUDIO_CLEAN.rangeDb)}:ratio=${AUDIO_CLEAN.ratio}:attack=${AUDIO_CLEAN.attackMs}:release=${AUDIO_CLEAN.releaseMs}`
+  );
+}
+
+/**
+ * Comando do ffmpeg da faixa tratada: o áudio INTEIRO do bruto (a mesma linha
+ * do tempo, então o in/out dos clipes do XML vale igual), WAV PCM 16 bits mono
+ * a 48 kHz (sem o atraso de encoder de um AAC, metade do tamanho do estéreo).
+ * `-f wav` explícito: o render grava num `.part` e renomeia no fim.
+ * Premissa: o áudio do bruto começa em 0 (o mesmo zero do vídeo, como no
+ * `audio.wav` do `transcribe`); um bruto com o áudio deslocado no container
+ * sairia dessincronizado no XML.
+ */
+export function audioCleanArgs(input: { src: string; out: string; filter: string }): string[] {
+  return ["-y", "-v", "error", "-i", input.src, "-map", "0:a:0", "-vn", "-af", input.filter, "-ac", "1", "-ar", String(AUDIO_CLEAN.sampleRate), "-c:a", "pcm_s16le", "-f", "wav", input.out];
+}
+
 // ── Título na vertical (#11756) ───────────────────────────────────────────
 
 /** Sequência vertical (mais alta que larga): onde vai o título em texto. */
@@ -2492,6 +2577,164 @@ export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number)
   }
   if (fps) end = Math.min(end, start + Math.round(SCREEN_TITLE_MAX_S * fps));
   return { start, end, block };
+}
+
+// ── Vinheta do logo (#12101) ──────────────────────────────────────────────
+
+/**
+ * Respiro sem fala depois do `titulo` no horizontal (#12101): o editor abria
+ * ~0,7 s à mão para a vinheta passar (261028: 0,69 s; 261103: 0,74 s). As
+ * verticais ficam como estão (respiro medido de 0,24–0,31 s).
+ */
+export const VINHETA_BREATH_S = 0.7;
+/** Começo da vinheta na sequência sem bloco `titulo` (261029, vertical "soberana": 2–3 s). */
+export const VINHETA_NO_TITLE_START_S = 2;
+
+/** O respiro de cada sequência: só o horizontal (`youtube`) com `titulo` na ordem. */
+export function vinhetaBreathFor(spec: Pick<SequenceSpec, "target" | "order">): Partial<Record<BlockKey, number>> | undefined {
+  return spec.target === "youtube" && spec.order.includes("titulo") ? { titulo: VINHETA_BREATH_S } : undefined;
+}
+
+/** `publishing.video.vinheta_logo` do config: o caminho do MOV (ProRes 4444 com alpha). `null` = ausente, vazio ou não string. */
+export function vinhetaConfigFrom(config: unknown): { path: string } | null {
+  const v = (config as { publishing?: { video?: { vinheta_logo?: { path?: unknown } } } })?.publishing?.video?.vinheta_logo?.path;
+  return typeof v === "string" && v.trim() ? { path: v.trim() } : null;
+}
+
+/**
+ * A vinheta entra este tanto depois da última palavra do título, DENTRO do
+ * respiro (261028: título até 3,10 s, vinheta em 3,4 s, abertura em 3,79 s).
+ */
+export const VINHETA_AFTER_SPEECH_S = 0.3;
+
+/** O MOV da vinheta como o ffprobe mediu; `path` é o que vai no `pathurl` (o mesmo caminho lido, como o do config). */
+export interface VinhetaAsset {
+  path: string;
+  durationS: number;
+  width: number;
+  height: number;
+  hasAudio: boolean;
+  /** fps do MOV (`r_frame_rate`); ausente = não medido (o XML declara o da sequência). */
+  fps?: number;
+  /** Canais e taxa do som do MOV, quando há som e o probe os traz. */
+  audioChannels?: number;
+  audioSampleRate?: number;
+}
+
+/** Lê o JSON do `ffprobe -show_streams -show_format` do MOV. Sem stream de vídeo ou duração = erro. */
+export function parseVinhetaProbe(json: string, path: string): VinhetaAsset {
+  const j = JSON.parse(json) as {
+    streams?: Array<{ codec_type?: string; width?: number; height?: number; duration?: string; r_frame_rate?: string; channels?: number; sample_rate?: string }>;
+    format?: { duration?: string };
+  };
+  const video = j.streams?.find((s) => s.codec_type === "video");
+  if (!video || !isNum(video.width) || !isNum(video.height)) throw new Error(`vinheta sem stream de vídeo (${path})`);
+  const durationS = Number(j.format?.duration ?? video.duration);
+  if (!(durationS > 0)) throw new Error(`vinheta sem duração (${path})`);
+  const audio = j.streams?.find((s) => s.codec_type === "audio");
+  let fps = NaN;
+  try { if (video.r_frame_rate) fps = parseFrameRate(video.r_frame_rate); }
+  catch { fps = NaN; /* r_frame_rate ilegível: o XML declara o fps da sequência */ }
+  const sr = Number(audio?.sample_rate);
+  return {
+    path, durationS, width: video.width, height: video.height, hasAudio: Boolean(audio),
+    ...(fps > 0 && Number.isFinite(fps) ? { fps } : {}),
+    ...(audio && isNum(audio.channels) && audio.channels > 0 ? { audioChannels: audio.channels } : {}),
+    ...(audio && sr > 0 ? { audioSampleRate: sr } : {}),
+  };
+}
+
+/**
+ * Trecho da vinheta na sequência, em frames (#12101): começa
+ * `VINHETA_AFTER_SPEECH_S` depois da última palavra do título
+ * (`plan.titleSpeechEndS`), dentro do respiro, quando esse instante do bruto
+ * está num clipe; senão no fim do bloco `titulo` (o respiro da vertical é
+ * curto: a fala seguinte começa antes); sem título, em
+ * `VINHETA_NO_TITLE_START_S`. Dura o MOV inteiro, cortado no fim da sequência.
+ * Sequência curta demais = null.
+ */
+export function vinhetaSpan(
+  plan: Pick<SequencePlan, "clips" | "durationFrames" | "titleSpeechEndS">,
+  fps: number,
+  asset: Pick<VinhetaAsset, "durationS">,
+): { start: number; end: number; afterTitle: boolean } | null {
+  const titleEnd = blockRunEndFrame(plan.clips, "titulo", fps);
+  let start = titleEnd ?? Math.round(VINHETA_NO_TITLE_START_S * fps);
+  if (titleEnd !== null && plan.titleSpeechEndS !== undefined) {
+    const at = seqFrameOfSource(plan.clips, plan.titleSpeechEndS + VINHETA_AFTER_SPEECH_S, fps);
+    if (at !== null && at <= titleEnd) start = at;
+  }
+  const end = Math.min(plan.durationFrames, start + Math.round(asset.durationS * fps));
+  return end > start ? { start, end, afterTitle: titleEnd !== null } : null;
+}
+
+/** Frame da sequência de um instante do bruto, se ele cai dentro de algum clipe (o 1º, na ordem da sequência); senão null. */
+export function seqFrameOfSource(clips: ReadonlyArray<Pick<PlannedClip, "frameIn" | "frameOut" | "seqStart">>, t: number, fps: number): number | null {
+  const f = Math.round(t * fps);
+  const c = [...clips].sort((a, b) => a.seqStart - b.seqStart).find((x) => f >= x.frameIn && f < x.frameOut);
+  return c ? c.seqStart + (f - c.frameIn) : null;
+}
+
+/**
+ * Respiro efetivo depois da última palavra do título (s): do fim da fala até a
+ * saída do clipe que a contém (#12101). Conferido depois do refino dos
+ * cortes, que pode encolhê-lo. null = sem título com palavra, ou a palavra
+ * fora dos clipes.
+ */
+export function titleBreathS(plan: Pick<SequencePlan, "clips" | "titleSpeechEndS">, fps: number): number | null {
+  if (plan.titleSpeechEndS === undefined) return null;
+  const t = plan.titleSpeechEndS;
+  const c = plan.clips.find((x) => x.frameIn / fps <= t + 1e-6 && x.frameOut / fps >= t - 1e-6);
+  return c ? round3(c.frameOut / fps - t) : null;
+}
+
+/**
+ * Fim (frame da sequência) do 1º trecho contíguo do bloco `key`, inclusive
+ * dentro de clipe fundido de blocos diferentes (`parts`: o gancho emendado no
+ * título, por exemplo). Bloco ausente = null.
+ */
+export function blockRunEndFrame(clips: ReadonlyArray<Pick<PlannedClip, "block" | "frameIn" | "frameOut" | "seqStart" | "seqEnd" | "parts">>, key: BlockKey, fps: number): number | null {
+  let end: number | null = null;
+  for (const c of [...clips].sort((a, b) => a.seqStart - b.seqStart)) {
+    const pieces = c.parts?.length
+      ? c.parts.map((p, i, all) => {
+          const lo = i === 0 ? c.frameIn : Math.max(c.frameIn, Math.round(p.srcIn * fps));
+          const hi = i === all.length - 1 ? c.frameOut : Math.min(c.frameOut, Math.round(all[i + 1].srcIn * fps));
+          return { block: p.block, start: c.seqStart + (lo - c.frameIn), end: c.seqStart + (hi - c.frameIn) };
+        })
+      : [{ block: c.block, start: c.seqStart, end: c.seqEnd }];
+    for (const p of pieces) {
+      if (p.block === key) end = Math.max(end ?? p.start, p.end);
+      else if (end !== null) return end;
+    }
+  }
+  return end;
+}
+
+/**
+ * Escala (%) da vinheta no Basic Motion: cabe inteira no quadro e nunca
+ * amplia (premissa, conferir no 1º import: o MOV no tamanho do horizontal sai
+ * a 56,25% na vertical, centrado).
+ */
+export function vinhetaScalePct(asset: Pick<VinhetaAsset, "width" | "height">, spec: Pick<SequenceSpec, "width" | "height">): number {
+  return Math.round(Math.min(1, spec.width / asset.width, spec.height / asset.height) * 10000) / 100;
+}
+
+/**
+ * Filtros do ffmpeg da prévia com a vinheta por cima (#12101): entrada 0 = a
+ * prévia montada, entrada 1 = o MOV. `subtitles` (opcional) entra depois da
+ * vinheta, `loudnorm` no fim do áudio; o som do MOV (se houver) é misturado a
+ * partir do mesmo instante.
+ */
+export function previewVinhetaFilter(input: { startS: number; scale: number; hasAudio: boolean; subtitles?: string; loudnorm: string }): string {
+  const t = Math.max(0, input.startS).toFixed(3);
+  const ms = Math.round(Math.max(0, input.startS) * 1000);
+  const parts = [
+    `[1:v]format=yuva420p,scale=iw*${input.scale}:-2,setpts=PTS-STARTPTS+${t}/TB[vin]`,
+    `[0:v][vin]overlay=(W-w)/2:(H-h)/2:eof_action=pass${input.subtitles ? `,${input.subtitles}` : ""}[vout]`,
+    input.hasAudio ? `[1:a]adelay=${ms}|${ms},aresample=48000[va];[0:a][va]amix=inputs=2:duration=first:normalize=0,${input.loudnorm}[aout]` : `[0:a]${input.loudnorm}[aout]`,
+  ];
+  return parts.join(";");
 }
 
 /** A 1ª vertical que leva título: o tamanho do PNG do fallback e quem define o `<file>` dele no XML. */
@@ -2654,6 +2897,14 @@ export function buildXmeml(
     screenTitleByCorte?: Readonly<Record<string, ScreenTitleXml | null>>;
     /** #12111: `<sequence id>` de cada sequência (chave = `sequenceKey`); ausente = `seq-{n}-{chave}`. */
     sequenceIds?: Readonly<Record<string, string>>;
+    /** #12101: a vinheta do logo na faixa de vídeo do topo (e o som dela numa faixa de áudio própria); ausente = sem vinheta. */
+    vinheta?: VinhetaAsset | null;
+    /**
+     * #12102: a faixa de áudio tratada (WAV mono, mesma linha do tempo do
+     * bruto, caminho que o Premiere abre): os clipitem de áudio apontam para
+     * ela em vez do bruto; o vídeo continua sendo o bruto. Ausente = áudio cru.
+     */
+    audioPath?: string | null;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
@@ -2674,6 +2925,18 @@ export function buildXmeml(
     );
   };
   const gain = opts.audioGain ? audioLevelsFilter(opts.audioGain.linear) : "";
+  // #12102: o `<file>` do áudio dos clipes: o bruto (file-1) ou a faixa tratada, definida no 1º clipe de áudio.
+  let audioDefined = false;
+  const audioFileEl = () => {
+    if (!opts.audioPath) return '<file id="file-1"/>';
+    if (audioDefined) return '<file id="file-audio"/>';
+    audioDefined = true;
+    return (
+      `<file id="file-audio"><name>${escapeXml(baseName(opts.audioPath))}</name><pathurl>${escapeXml(pathUrl(opts.audioPath))}</pathurl>\n` +
+      `${rate}<duration>${total}</duration>\n` +
+      `<media><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>1</channelcount></audio></media></file>`
+    );
+  };
   const usable = (t: ScreenTitleXml | null | undefined): ScreenTitleXml | null => (t && t.text.trim() ? t : null);
   const byCorte = opts.screenTitleByCorte ?? {};
   const titleOf = (spec: SequenceSpec): ScreenTitleXml | null =>
@@ -2709,6 +2972,44 @@ export function buildXmeml(
       `${rate}<start>${span.start}</start><end>${span.end}</end><in>0</in><out>${len}</out>\n${fileRef}</clipitem></track>`
     );
   };
+  // #12101: a vinheta (MOV com alpha) acima do bruto e do título; um `<file>` só, definido no 1º uso.
+  let vinhetaDefined = false;
+  const vinhetaTracks = (plan: SequencePlan, si: number): { video: string; audio: string } => {
+    const vin = opts.vinheta;
+    if (!vin) return { video: "", audio: "" };
+    const span = vinhetaSpan(plan, fps, vin);
+    if (!span) return { video: "", audio: "" };
+    const len = Math.round(vin.durationS * fps);
+    const vid = `vinheta-v${si + 1}`;
+    const aid = `vinheta-a${si + 1}`;
+    // O `<file>` declara o fps e a duração do PRÓPRIO MOV (medidos no probe); o clipitem fica na taxa da sequência.
+    // Premissa (#12101), conferir no 1º import: o Premiere lê o rate do arquivo e converte; sem fps medido, vale o da sequência.
+    const fileTb = vin.fps ? Math.round(vin.fps) : fps;
+    const fileRate = vin.fps ? `<rate><timebase>${fileTb}</timebase><ntsc>${Math.abs(vin.fps - fileTb) > 0.01 ? "TRUE" : "FALSE"}</ntsc></rate>` : rate;
+    const fileLen = Math.round(vin.durationS * (vin.fps ?? fps));
+    const fileRef = vinhetaDefined
+      ? '<file id="file-vinheta"/>'
+      : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(pathUrl(vin.path))}</pathurl>\n${fileRate}<duration>${fileLen}</duration>\n` +
+        `<media><video><samplecharacteristics><width>${vin.width}</width><height>${vin.height}</height></samplecharacteristics></video>` +
+        (vin.hasAudio
+          ? `\n<audio><samplecharacteristics><depth>16</depth><samplerate>${vin.audioSampleRate ?? 48000}</samplerate></samplecharacteristics><channelcount>${vin.audioChannels ?? 2}</channelcount></audio>`
+          : "") +
+        `</media></file>`;
+    vinhetaDefined = true;
+    const head =
+      `<name>vinheta-logo</name><enabled>TRUE</enabled><duration>${len}</duration>\n` +
+      `${rate}<start>${span.start}</start><end>${span.end}</end><in>0</in><out>${span.end - span.start}</out>\n`;
+    const links = vin.hasAudio
+      ? `<link><linkclipref>${vid}</linkclipref><mediatype>video</mediatype></link><link><linkclipref>${aid}</linkclipref><mediatype>audio</mediatype><trackindex>2</trackindex><clipindex>1</clipindex></link>`
+      : "";
+    const scale = vinhetaScalePct(vin, plan.spec);
+    return {
+      video: `\n<track><clipitem id="${vid}">${head}${fileRef}${motionFilter(scale, { horiz: 0, vert: 0 })}\n${links}</clipitem></track>`,
+      audio: vin.hasAudio
+        ? `<track><clipitem id="${aid}">${head}<file id="file-vinheta"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${links}</clipitem></track>`
+        : "",
+    };
+  };
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE xmeml>", '<xmeml version="4">'];
   plans.forEach((plan, si) => {
     const { spec } = plan;
@@ -2725,16 +3026,17 @@ export function buildXmeml(
         `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${c.frameIn}</in><out>${c.frameOut}</out>\n`;
       v.push(`<clipitem id="v${cid}">${head}${fileEl()}${motionFilter(fr.scalePct, fr.center)}\n${links}</clipitem>`);
       a.push(
-        `<clipitem id="a${cid}">${head}<file id="file-1"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${links}</clipitem>`,
+        `<clipitem id="a${cid}">${head}${audioFileEl()}<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${links}</clipitem>`,
       );
     });
     const titleTrack = screenTitleTrack(plan, si);
+    const vin = vinhetaTracks(plan, si);
     out.push(
       `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
         `${rate}\n` +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
-        `<track>${v.join("\n")}</track>${titleTrack}</video>\n` +
-        `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track></audio></media></sequence>`,
+        `<track>${v.join("\n")}</track>${titleTrack}${vin.video}</video>\n` +
+        `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track>${vin.audio}</audio></media></sequence>`,
     );
   });
   out.push("</xmeml>");
@@ -3382,6 +3684,8 @@ export function previewClipArgs(input: {
   out: string;
   width?: number;
   height?: number;
+  /** #12102: o áudio do clipe vem da faixa tratada (mesma linha do tempo do bruto), não do bruto. */
+  audioSrc?: string;
 }): string[] {
   const d = input.end - input.start;
   if (!(d > 0)) throw new Error(`clipe vazio (${input.start}-${input.end})`);
@@ -3391,6 +3695,7 @@ export function previewClipArgs(input: {
   return [
     "-y", "-v", "error",
     "-ss", input.start.toFixed(3), "-to", input.end.toFixed(3), "-i", input.src,
+    ...(input.audioSrc ? ["-ss", input.start.toFixed(3), "-to", input.end.toFixed(3), "-i", input.audioSrc, "-map", "0:v:0", "-map", "1:a:0"] : []),
     "-vf", vf, "-af", af,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
     "-c:a", "aac", "-ar", "48000", "-ac", "2",
