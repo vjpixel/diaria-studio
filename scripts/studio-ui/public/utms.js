@@ -142,6 +142,20 @@ function renderDrift() {
   }
 }
 
+/** #12066: corte por utm_medium sob o total (só quando há mais de um medium). */
+function mediumBreakdown(row) {
+  const m = row.subscribersByMedium;
+  // Só emissor com medium template ("{medium}") pede o corte; medium concreto
+  // compartilha o source com outras linhas e repetiria o detalhe (#12066).
+  if (!m || !String(row.medium).includes("{")) return "";
+  const named = Object.entries(m).filter(([k]) => k !== "__none__").sort((a, b) => b[1] - a[1]);
+  if (named.length < 2) return "";
+  const none = m["__none__"] ?? 0;
+  const parts = named.map(([k, n]) => `${escapeHtml(k)} ${fmtNum(n)}`);
+  if (none > 0) parts.push(`sem medium ${fmtNum(none)}`);
+  return `<div class="mono" style="font-size:11px;opacity:.7">${parts.join(" · ")}</div>`;
+}
+
 function renderEmitters() {
   const all = data.emitters ?? [];
   const filtered = all.filter((e) => !filters.status || e.status === filters.status);
@@ -160,7 +174,7 @@ function renderEmitters() {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${fmtNum(row.clicks)}</td>
-      <td>${fmtNum(row.subscribers)}</td>
+      <td>${fmtNum(row.subscribers)}${mediumBreakdown(row)}</td>
       <td>${fmtPercent(computeConversion(row))}</td>
       <td>${escapeHtml(row.label)}</td>
       <td class="mono"><code>${escapeHtml(row.source)}</code> / <code>${escapeHtml(row.medium)}</code></td>

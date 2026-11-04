@@ -89,6 +89,12 @@ export interface UtmCountResult {
    * sufixo de posição do #4040 vive no campaign, não no source.
    */
   campaignCounts: Record<string, number>;
+  /**
+   * #12066: contagem por `utm_source` e, dentro dele, por `utm_medium`
+   * normalizado (`{ dossiemaster: { topo: 3, rodape: 1 } }`). Aditivo e
+   * opcional — fetchers antigos/mocks que não preenchem seguem válidos.
+   */
+  mediumCounts?: Record<string, Record<string, number>>;
   total: number;
   fetched_at: string;
 }
@@ -136,6 +142,25 @@ export function aggregateByUtmCampaign(subs: Array<Record<string, unknown>>): Re
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return counts;
+}
+
+/**
+ * Agrega por `utm_source` e, dentro dele, por `utm_medium` (#12066). Mesma
+ * normalização de `normalizeUtmSource` nos dois níveis (`__none__` pra ausente).
+ *
+ * @pure testável sem I/O
+ */
+export function aggregateByUtmSourceMedium(
+  subs: Array<Record<string, unknown>>,
+): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {};
+  for (const sub of subs) {
+    const source = normalizeUtmSource(sub["utm_source"]);
+    const medium = normalizeUtmSource(sub["utm_medium"]);
+    const bucket = (out[source] ??= {});
+    bucket[medium] = (bucket[medium] ?? 0) + 1;
+  }
+  return out;
 }
 
 /**
@@ -277,6 +302,7 @@ export async function fetchAndAggregate(
   return {
     counts: aggregateByUtmSource(allSubs),
     campaignCounts: aggregateByUtmCampaign(allSubs), // #4041
+    mediumCounts: aggregateByUtmSourceMedium(allSubs), // #12066
     total: allSubs.length,
     fetched_at: new Date().toISOString(),
   };
@@ -319,12 +345,14 @@ export async function fetchAndAggregateKit(config?: KitConfig): Promise<UtmCount
     const fields = s.fields ?? {};
     return {
       utm_source: fields.utm_source ?? s.attribution?.utm_source ?? null,
+      utm_medium: fields.utm_medium ?? s.attribution?.utm_medium ?? null,
       utm_campaign: fields.utm_campaign ?? s.attribution?.utm_campaign ?? null,
     };
   });
   return {
     counts: aggregateByUtmSource(flattened),
     campaignCounts: aggregateByUtmCampaign(flattened),
+    mediumCounts: aggregateByUtmSourceMedium(flattened), // #12066
     total: flattened.length,
     fetched_at: new Date().toISOString(),
   };

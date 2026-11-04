@@ -1121,7 +1121,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Box 'Site feito com IA... se cadastre em diar.ia.br' das páginas de diar.ia.br/dossiemaster, " +
       "servidas pelo repo privado vjpixel/dossiemaster (site/build_prod.mjs; deploy manual do Worker). " +
       "Dois mediums comparam a posição do box: `rodape` (original) e `topo` (#12031). Sem render neste repo, " +
-      "por isso o `originFile` é o próprio registry. O `/utms` ainda não corta assinantes por `utm_medium`: a comparação topo x rodapé exige esse corte (issue de acompanhamento).",
+      "por isso o `originFile` é o próprio registry. O `/utms` corta assinantes por `utm_medium` sob o total (#12066), o que permite comparar topo x rodapé.",
     status: "ativo",
   },
   {
