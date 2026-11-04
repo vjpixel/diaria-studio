@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Tue, 03 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Wed, 04 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Golpe da selfie: criminosos usam IA para copiar seu rosto</title>
+      <link>https://diar.ia.br/p/golpe-da-selfie-criminosos-usam-ia-para-copiar-seu-rosto</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/golpe-da-selfie-criminosos-usam-ia-para-copiar-seu-rosto</guid>
+      <pubDate>Wed, 04 Nov 2026 09:00:00 GMT</pubDate>
+      <description>OpenAI testa se o ChatGPT resolve sua vida real | STF multa advogado por ordem escondida ao GPT</description>
+    </item>
     <item>
       <title>Só o Claude Opus 5.5 supera a IA aberta da Mistral no teste às cegas</title>
       <link>https://diar.ia.br/p/so-o-claude-opus-5-5-supera-a-ia-aberta-da-mistral-no-teste</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui</guid>
       <pubDate>Mon, 24 Aug 2026 09:00:00 GMT</pubDate>
       <description>O estudo que fura o hype do uso no trabalho | Google lança simulado do Enem no Gemini</description>
-    </item>
-    <item>
-      <title>Marca d&apos;água do Claude cai em horas</title>
-      <link>https://diar.ia.br/p/marca-d-agua-do-claude-cai-em-horas</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/marca-d-agua-do-claude-cai-em-horas</guid>
-      <pubDate>Fri, 21 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Sua empresa é dado de treino alheio | ATS: o filtro que decide seu currículo</description>
     </item>
   </channel>
 </rss>
