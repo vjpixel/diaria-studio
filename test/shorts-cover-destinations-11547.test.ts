@@ -68,7 +68,8 @@ describe("#11547 plano da capa por destino", () => {
   it("cada destino com o método certo", () => {
     assert.equal(planCoverDestination({ destination: "facebook:diaria" }, ctx), "thumbnail_upload");
     assert.equal(planCoverDestination({ destination: "linkedin_profile" }, ctx), "thumbnail_upload");
-    assert.equal(planCoverDestination({ destination: "youtube_shorts", mode: "api" }, ctx), "thumbnails_set");
+    // #12100: o plano diz que só a miniatura 16:9 muda; o feed de Shorts é manual.
+    assert.match(planCoverDestination({ destination: "youtube_shorts", mode: "api" }, ctx), /^thumbnails_set \(só a miniatura 16:9; .*manual/);
     assert.match(planCoverDestination({ destination: "youtube_shorts", mode: "guided" }, ctx), /^guided/);
     assert.equal(planCoverDestination({ destination: "instagram" }, ctx), "cover_url");
     assert.equal(planCoverDestination({ destination: "x" }, ctx), "thumbnail_offset 0 ms");
@@ -332,7 +333,7 @@ describe("#11547 YouTube Shorts: thumbnails.set com o Still", () => {
     const { d, calls } = ytDeps(200);
     const out = await run(d);
     assert.ok(calls.some((u) => u.includes("thumbnails/set?videoId=s1")));
-    assert.deepEqual(out.entry.cover, { method: "thumbnails_set", ok: true });
+    assert.deepEqual(out.entry.cover, { method: "thumbnails_set", ok: true, vertical_feed: "manual" }); // #12100
     assert.equal(out.entry.status, "scheduled");
   });
 

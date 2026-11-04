@@ -10,7 +10,12 @@
  *   - `linkedin_profile`: `uploadThumbnail: true` no `initializeUpload` e PUT do
  *     JPEG na `thumbnailUploadUrl`;
  *   - `youtube_shorts`: `thumbnails.set` depois do `videos.insert` (medido pelo
- *     editor em 28/10/2026: HTTP 200 num Short, comentário da #11547);
+ *     editor em 28/10/2026: HTTP 200 num Short, comentário da #11547). Só
+ *     troca a miniatura 16:9 (busca, player, relacionados): a imagem do feed
+ *     de Shorts (`i.ytimg.com/vi/{id}/oar2.jpg`) é escolhida à parte e segue o
+ *     frame automático (#12100, medido em 04/11/2026 nos 9 Shorts públicos). A
+ *     YouTube Data API não tem chamada para ela: o registro grava
+ *     `vertical_feed: "manual"` e o passo vai à mão no app do YouTube;
  *   - `x` (Buffer): não aceita imagem, só `thumbnailOffset` (ms) no asset de
  *     vídeo. Derivado do timecode que o Premiere põe no nome do Still
  *     (`…V1.00_00_03_08.Still001.jpg` = 3 s + 8 frames);
@@ -47,6 +52,12 @@ export interface ShortCoverRecord {
   /** Só no `thumbnail_offset`. */
   offset_ms?: number;
   error?: string;
+  /**
+   * #12100: só no `thumbnails_set` com `ok: true`. O `ok` diz que a miniatura
+   * 16:9 foi trocada; a capa do feed de Shorts (`oar2.jpg`) não muda pela API
+   * e fica para o app do YouTube (`manual`).
+   */
+  vertical_feed?: "manual";
 }
 
 export interface ShortCoverSource {
@@ -136,8 +147,46 @@ export function planCoverDestination(
   if (d === "instagram") return ctx.coverUploadReady ? "cover_url" : "unavailable: R2 credentials missing; automatic frame";
   if (d.startsWith("facebook:")) return "thumbnail_upload";
   if (d === "linkedin_profile") return "thumbnail_upload";
-  if (d === "youtube_shorts") return item.mode === "guided" ? "guided (Studio: Miniatura → Enviar arquivo)" : "thumbnails_set";
+  if (d === "youtube_shorts") return item.mode === "guided" ? "guided (Studio: Miniatura → Enviar arquivo)" : YOUTUBE_SHORTS_COVER_PLAN;
   return "unsupported";
+}
+
+/**
+ * #12100: o que o plano promete para o Short pela API. O `thumbnails.set` só
+ * troca a miniatura 16:9; a do feed de Shorts fica para o app do YouTube.
+ */
+export const YOUTUBE_SHORTS_COVER_PLAN =
+  "thumbnails_set (só a miniatura 16:9; a capa do feed de Shorts é manual no app do YouTube, #12100)";
+
+/** #12100: imagem que o feed de Shorts mostra (proporção original do vertical). */
+export function youtubeShortFeedThumbUrl(videoId: string): string {
+  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/oar2.jpg`;
+}
+
+/**
+ * Pure (#12100): registro da capa do Short a partir do resultado do
+ * `thumbnails.set`. Sucesso grava `vertical_feed: "manual"`, porque o `ok`
+ * vale só para a miniatura 16:9. Tentativa não feita → null.
+ */
+export function youtubeShortsCoverRecord(
+  thumb: { attempted: boolean; ok: boolean; error?: string | null } | null | undefined,
+): ShortCoverRecord | null {
+  if (!thumb?.attempted) return null;
+  return thumb.ok
+    ? { method: "thumbnails_set", ok: true, vertical_feed: "manual" }
+    : { method: "thumbnails_set", ok: false, error: thumb.error ?? "sem detalhe" };
+}
+
+/**
+ * Pure (#12100): aviso do passo manual da capa do feed de Shorts, para o
+ * registro com `vertical_feed: "manual"`. Qualquer outro registro → null.
+ */
+export function youtubeShortsVerticalCoverWarning(videoId: string, cover: ShortCoverRecord | null | undefined): string | null {
+  if (!cover || cover.method !== "thumbnails_set" || !cover.ok || cover.vertical_feed !== "manual") return null;
+  return (
+    `capa 16:9 aplicada; a do feed de Shorts não muda pela API (#12100): no app do YouTube, Editar → Miniatura → enviar ${SHORT_COVER_FILE}, ` +
+    `e conferir com npx tsx scripts/check-short-feed-cover.ts --id ${videoId} --cover {capa} (${youtubeShortFeedThumbUrl(videoId)})`
+  );
 }
 
 /**
