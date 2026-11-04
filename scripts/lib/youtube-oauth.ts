@@ -30,6 +30,11 @@ export const YOUTUBE_OAUTH_SCOPES = [
   // anteriores não o têm: o publish-youtube.ts segue sem legenda e sem podcast
   // (`[aviso]`) e manda rodar o setup.
   "https://www.googleapis.com/auth/youtube.force-ssl",
+  // reports.query da YouTube Analytics API — snapshot diário de inscritos
+  // ganhos por vídeo, fonte de tráfego e retenção (#12075). Opcional: sem ele
+  // o `youtube-analytics-snapshot.ts` grava só o total de inscritos do canal.
+  // Pede também a YouTube Analytics API ativada no projeto GCP.
+  "https://www.googleapis.com/auth/yt-analytics.readonly",
 ] as const;
 
 /** Sem estes o token não serve para o upload (o setup recusa gravar). */
@@ -123,8 +128,9 @@ export function missingGrantedScopes(grantedScope: string | undefined): string[]
 /**
  * Escopos pedidos sem os quais o token ainda serve para o vídeo (#11384:
  * `youtube.force-ssl`, de que dependem a legenda, o `--update-scheduled` e o
- * podcast, #12068). Desmarcado no consentimento, o setup grava o token e
- * avisa; o `publish-youtube.ts` sobe o vídeo sem legenda e sem podcast.
+ * podcast, #12068; `yt-analytics.readonly`, do snapshot do Analytics, #12075).
+ * Desmarcado no consentimento, o setup grava o token e avisa; o
+ * `publish-youtube.ts` sobe o vídeo sem legenda e sem podcast.
  */
 export function missingOptionalScopes(grantedScope: string | undefined): string[] {
   const granted = new Set(String(grantedScope ?? "").split(/\s+/).filter(Boolean));
