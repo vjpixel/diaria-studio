@@ -95,7 +95,7 @@
  *       O do horizontal sai também como `diaria-comentada-{AAMMDD}.srt` na pasta
  *       da edição (data/editions), o que o `publish-youtube.ts --upload` envia;
  *       cópia editada à mão depois do último srt fica, salvo --force.
- *   srt AAMMDD --seq youtube --from-final PATH [--force] [--retranscribe]
+ *   srt AAMMDD --seq youtube --from-final PATH [--heard-text] [--force] [--retranscribe]
  *       (#12078) a legenda do horizontal no tempo do EXPORT final do Premiere (respiros, vinheta):
  *       transcreve o export (o mesmo cache do review-final, por identidade do arquivo + modelo e
  *       prompt do Whisper; --retranscribe refaz) e alinha a ele o roteiro do horizontal do
@@ -108,6 +108,10 @@
  *       Final/ no Drive (baixado só depois de validar --seq e o plano). Bruto só de áudio fica
  *       fora: sem build não há plano do horizontal (o `srt` para antes, exit 3).
  *       Backfill de legenda: este comando + `publish-youtube.ts AAMMDD --captions-only`.
+ *       (#12198) Legenda imprópria = exit 1 com [erro], NADA gravado: alguma legenda de até 0,3 s
+ *       ou palavras do roteiro interpoladas + ouvidas descartadas acima de 10% do roteiro (export
+ *       reeditado depois do build). `--heard-text` faz a legenda pela fala do export (grafia e
+ *       pontuação do roteiro onde casa); aí só a legenda vazia recusa.
  *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}]   (default a vertical da edição; sempre refaz)
  *   review AAMMDD [--seq youtube|instagram|outras-redes|{corte}]    (default a vertical da edição; sempre refaz)
  *       `--seq youtube` (#12096): a prévia do horizontal, 960x540, com o recorte de cada clipe
@@ -181,6 +185,7 @@ import {
   PREVIEW_SUBTITLE_STYLE_HORIZONTAL,
   SILENCE_DETECT,
   SPEECH_DEFAULTS,
+  alignPunctuationToScript,
   applyVocabularyToWords,
   sequenceKey,
   assembleClips,
@@ -189,6 +194,7 @@ import {
   buildXmeml,
   clockTime,
   collapsedTakeSuspects,
+  cueTimings,
   cuesToSrt,
   cutPoints,
   defaultSequences,
@@ -230,8 +236,10 @@ import {
   resolveBlocks,
   reviewPreview,
   screenTitleSvg,
+  normalizeToken,
   segmentCues,
   sequenceSourceRanges,
+  srtTimestamp,
   silenceNoiseDb,
   transcriptWords,
   validateVocabRules,
@@ -250,6 +258,7 @@ import {
   type AudioGain,
   type BlocksFile,
   type CutAdjustment,
+  type ForcedAlignment,
   type Framing,
   type Interval,
   type PlannedClip,
@@ -2126,9 +2135,63 @@ export function exportTranscriptAction(input: { transcriptExists: boolean; store
 }
 
 /**
+ * #12198: limites que recusam a legenda do export. Na 261030 o export foi
+ * reeditado depois do build (plan.json defasado): o roteiro gravado não casava
+ * com a fala, o alinhamento descartou 12 palavras ouvidas e espremeu o trecho
+ * do roteiro que não foi falado em 4 legendas de 0 a 0,22 s, e o comando saiu 0.
+ * - `minCueS`: legenda com duração até este valor não se lê (o roteiro forçado num trecho sem fala);
+ * - `minHeardCueS`: no `--heard-text` (tempos da fala real) só a legenda vazia (duração ~0) recusa;
+ * - `maxDivergence`: fração (palavras do roteiro interpoladas + ouvidas descartadas) / palavras do roteiro.
+ */
+export const EXPORT_SRT_LIMITS = { minCueS: 0.3, minHeardCueS: 0.05, maxDivergence: 0.1 } as const;
+
+/** O texto da legenda do export: o roteiro alinhado à fala (padrão, #11960) ou a fala ouvida (`--heard-text`, #12198). */
+export type ExportSrtText = "roteiro" | "ouvido";
+
+/**
+ * #12198: por que a legenda do export é imprópria para publicação (lista vazia =
+ * ok). Cada item nomeia o trecho: a legenda curta com tempo e texto, ou as
+ * palavras interpoladas/descartadas. Puro.
+ */
+export function exportSrtProblems(input: {
+  cues: Array<{ start: number; end: number; text: string }>;
+  text: ExportSrtText;
+  /** Só no modo roteiro: o resultado do alinhamento e o nº de palavras do roteiro. */
+  aligned?: Pick<ForcedAlignment, "dropped" | "interpolated">;
+  scriptWords?: number;
+  limits?: Partial<typeof EXPORT_SRT_LIMITS>;
+}): string[] {
+  const lim = { ...EXPORT_SRT_LIMITS, ...input.limits };
+  const minCue = input.text === "roteiro" ? lim.minCueS : lim.minHeardCueS;
+  const problems: string[] = [];
+  // Folga de 1 ms: os tempos do SRT são em ms e 1,3 - 1 não dá 0,3 exato em ponto flutuante.
+  const short = input.cues.filter((c) => c.end - c.start <= minCue + 1e-3);
+  if (short.length) {
+    problems.push(
+      `${short.length} legenda(s) com duração de até ${minCue} s (ilegível): ` +
+        short.map((c) => `${srtTimestamp(c.start)} --> ${srtTimestamp(c.end)} (${Math.max(0, c.end - c.start).toFixed(2)} s) "${c.text}"`).join("; "),
+    );
+  }
+  if (input.text === "roteiro" && input.aligned && input.scriptWords) {
+    const { dropped, interpolated } = input.aligned;
+    const frac = (dropped.length + interpolated.length) / input.scriptWords;
+    if (frac > lim.maxDivergence) {
+      const parts: string[] = [];
+      if (interpolated.length) parts.push(`${interpolated.length} palavra(s) do roteiro sem fala no export (tempo interpolado): "${interpolated.join(" ")}"`);
+      if (dropped.length) parts.push(`${dropped.length} palavra(s) ouvida(s) fora do roteiro descartada(s) a partir de ${srtTimestamp(Math.min(...dropped.map((d) => d.word.start)))}: "${dropped.map((d) => d.word.text).join(" ")}"`);
+      problems.push(`o export diverge do roteiro do plan.json em ${(frac * 100).toFixed(0)}% das palavras (limite ${(lim.maxDivergence * 100).toFixed(0)}%): ${parts.join("; ")}`);
+    }
+  }
+  return problems;
+}
+
+/**
  * #12078: a legenda do horizontal no tempo do EXPORT final. O texto é o do
  * roteiro (#11960), alinhado à fala transcrita do export; sem os cortes da
  * montagem (os tempos do export não são os da sequência), o fim é a duração do export.
+ * #12198: `text: "ouvido"` faz a legenda da fala do export (grafia e pontuação
+ * do roteiro onde casa, `alignPunctuationToScript`), para export reeditado
+ * depois do build; `problems` não vazio = legenda imprópria, o chamador não grava.
  */
 export function srtFromExport(input: {
   heard: Word[];
@@ -2136,11 +2199,41 @@ export function srtFromExport(input: {
   rules: VocabRule[];
   aliases: VocabAlias[];
   durationS: number;
+  text?: ExportSrtText;
   warn?: (msg: string) => void;
-}): { srt: string; notes: string[] } {
+}): { srt: string; notes: string[]; problems: string[] } {
   const heard = applyVocabularyToWords(input.heard, input.rules, input.plan.spec, input.warn);
+  const label = `${input.plan.spec.name} (export)`;
+  if (input.text === "ouvido") {
+    const inVideo = heard.filter((w) => w.start < input.durationS);
+    const words = alignPunctuationToScript(inVideo, input.plan.script, input.aliases);
+    const cues = segmentCues(words);
+    const notes = [`[premissa] ${label}: legenda com o texto ouvido no export (--heard-text), não o roteiro do plan.json; conferir grafia e números antes de subir (#12198)`];
+    const dropped = heard.length - inVideo.length;
+    if (dropped) notes.push(`[aviso] ${label}: ${dropped} palavra(s) ouvida(s) depois do fim do export descartada(s)`);
+    return { srt: cuesToSrt(cues), notes, problems: exportSrtProblems({ cues: cueTimings(cues), text: "ouvido" }) };
+  }
   const aligned = forceAlignToScript(heard, input.plan.script, { aliases: input.aliases, cuts: [], endS: input.durationS });
-  return { srt: cuesToSrt(segmentCues(aligned.words)), notes: forcedAlignmentNotes(`${input.plan.spec.name} (export)`, aligned) };
+  const cues = segmentCues(aligned.words);
+  // A mesma contagem do alinhamento (token sem letra/número não conta).
+  const scriptWords = input.plan.script.split(/\s+/).filter((t) => normalizeToken(t)).length;
+  return {
+    srt: cuesToSrt(cues),
+    notes: forcedAlignmentNotes(label, aligned),
+    // Fala que começa depois do fim do export não está no vídeo: não é divergência do roteiro.
+    problems: exportSrtProblems({ cues: cueTimings(cues), text: "roteiro", aligned: { ...aligned, dropped: aligned.dropped.filter((d) => d.word.start < input.durationS) }, scriptWords }),
+  };
+}
+
+/** #12198: o que fazer quando a legenda do export é recusada (a linha final do [erro]). */
+export function exportSrtRefusalHint(edition: string, exportPath: string, text: ExportSrtText): string {
+  const cmd = `npx tsx scripts/video-montagem.ts srt ${edition} --seq youtube --from-final "${exportPath}"`;
+  if (text === "ouvido") return `[erro] SRT NÃO gravado (#12198). A fala transcrita do export tem legenda vazia: conferir o export e a transcrição (--retranscribe refaz) ou subir a legenda pelo Studio.`;
+  return (
+    `[erro] SRT NÃO gravado (#12198): o export foi reeditado depois do build (o roteiro do plan.json não casa com a fala). ` +
+    `Saídas: (1) a legenda pela fala do export: ${cmd} --heard-text (conferir grafia e números antes de subir); ` +
+    `(2) atualizar o roteiro do horizontal ao que foi ao ar e refazer o build --seq youtube antes deste srt. Não rodar o --captions-only antes disso.`
+  );
 }
 
 /** Nome do SRT do horizontal tirado do export (#12078), no out dir; não substitui o da montagem (a prévia usa aquele). */
@@ -2215,7 +2308,7 @@ function loadFromFinalPlan(ctx: Ctx, seq: string | undefined): SequencePlan {
   return plan;
 }
 
-function cmdSrtFromFinal(ctx: Ctx, file: string, plan: SequencePlan): number {
+function cmdSrtFromFinal(ctx: Ctx, file: string, plan: SequencePlan, text: ExportSrtText = "roteiro"): number {
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`export não encontrado: ${path}`);
   const durationS = Number(JSON.parse(run("ffprobe", ["-v", "error", "-show_format", "-of", "json", path]).stdout).format?.duration);
@@ -2228,8 +2321,14 @@ function cmdSrtFromFinal(ctx: Ctx, file: string, plan: SequencePlan): number {
     console.error(`[aviso] blocks.json ilegível (${(e as Error).message}): só o vocabulário do projeto na legenda`);
   }
   const heard = transcribeExport(ctx, path, sequenceKey(plan.spec));
-  const { srt, notes: seqNotes } = srtFromExport({ heard, plan, rules: [...vocab.rules, ...blockRules], aliases: vocab.aliases, durationS, warn: (w) => console.error(`[aviso] ${w}`) });
+  const { srt, notes: seqNotes, problems } = srtFromExport({ heard, plan, rules: [...vocab.rules, ...blockRules], aliases: vocab.aliases, durationS, text, warn: (w) => console.error(`[aviso] ${w}`) });
   for (const n of seqNotes) console.error(n);
+  if (problems.length) {
+    // #12198: nada gravado (nem o out dir nem a cópia da pasta da edição): o --captions-only seguinte publicaria isto.
+    for (const p of problems) console.error(`[erro] legenda do export ${basename(path)}: ${p}`);
+    console.error(exportSrtRefusalHint(ctx.edition, path, text));
+    return 1;
+  }
   mkdirSync(ctx.outDir, { recursive: true });
   const out = join(ctx.outDir, srtFromExportFileName(plan.spec.name));
   writeFileAtomic(out, srt);
@@ -2819,13 +2918,16 @@ async function runCommand(
     case "srt": {
       if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "G:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
       let final = values["from-final"];
-      if (final === undefined) return cmdSrt(ctx, seq, flags.has("from-raw"));
+      if (final === undefined) {
+        if (flags.has("heard-text")) throw new Error("--heard-text só vale com --from-final (a legenda pela fala do export, #12198)");
+        return cmdSrt(ctx, seq, flags.has("from-raw"));
+      }
       if (flags.has("from-raw")) throw new Error("--from-final e --from-raw não se combinam: a legenda do export vem da fala do export");
       // --seq e o plano antes do download: um plano sem o horizontal não baixa o export à toa.
       const plan = loadFromFinalPlan(ctx, seq);
       // Como no review-final (#11639): no modo API, o export é procurado pelo nome em Final/ da edição no Drive.
       if (d && !existsSync(final)) final = await fetchNamed(d, final, "final");
-      return cmdSrtFromFinal(ctx, final, plan);
+      return cmdSrtFromFinal(ctx, final, plan, flags.has("heard-text") ? "ouvido" : "roteiro");
     }
     case "preview":
       await needLocalBruto();
