@@ -431,3 +431,33 @@ describe("checkLabelCoverage (#5844) — o cenário que motivou a issue", () => 
     );
   });
 });
+
+// #12170 — exclusões prévias não geram comentários/labels de manutenção.
+describe("exclusão por track", () => {
+  it("40 entradas fora da rodada + 1 pulada real só acusam a real e continuam conhecidas", async () => {
+    const { collectKnownIssueNumbers } = await import("../scripts/lib/state-changed-tracker.ts");
+    for (const status of ["fora-da-rodada-por-track", "pulada"]) {
+      const excluded = Array.from({ length: 40 }, (_, i) => ({
+        number: i + 1, status, in_round: false,
+        exec_track_painel: ["agendada", "develop", "bloqueada", "fora-de-rodada", "epica"][i % 5],
+        motivo: "bloqueio-externo",
+      }));
+      const issues = [...excluded, { number: 41, status: "pulada", in_round: true,
+        exec_track_painel: "bloqueada", motivo: "bloqueio-externo" }];
+      const candidates = deriveCandidateIssues(issues, new Map());
+      assert.deepEqual(checkCoverage(candidates, new Map([[41, []]])).missing.map(i => i.number), [41]);
+      const labels = deriveLabelCandidates(issues);
+      assert.deepEqual(checkLabelCoverage(labels, new Map()).missing.map(i => i.number), [41]);
+      assert.equal(collectKnownIssueNumbers({ issues }).size, 41);
+    }
+  });
+
+  it("in_round:false sem track excluído válido não isenta pulada", () => {
+    for (const exec_track_painel of [undefined, "overnight", "inventado"]) {
+      const issues = [{ number: 1, status: "pulada", in_round: false,
+        exec_track_painel, motivo: "bloqueio-externo" }];
+      assert.equal(deriveCandidateIssues(issues, new Map()).length, 1);
+      assert.equal(deriveLabelCandidates(issues).length, 1);
+    }
+  });
+});

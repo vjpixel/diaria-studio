@@ -92,6 +92,17 @@ export interface PlanIssueLike {
   [key: string]: unknown;
 }
 
+/** #12170: exclusão pré-despacho por track, sem veredito novo da sessão.
+ * Aceita também planos legados que gravaram essas entradas como `pulada`.
+ * in_round:false sozinho nunca isenta uma decisão real da rodada. */
+export function isOutsideRoundByTrack(issue: PlanIssueLike): boolean {
+  return issue.in_round === false &&
+    ["agendada", "develop", "bloqueada", "fora-de-rodada", "epica"].includes(
+      typeof issue.exec_track_painel === "string" ? issue.exec_track_painel : "",
+    ) &&
+    (issue.status === "fora-da-rodada-por-track" || issue.status === "pulada");
+}
+
 export interface CandidateIssue {
   number: number;
   reason: CoverageCandidateReason;
@@ -127,6 +138,7 @@ export function deriveCandidateIssues(
   const out: CandidateIssue[] = [];
   for (const issue of issues) {
     if (typeof issue.number !== "number" || !Number.isFinite(issue.number)) continue;
+    if (isOutsideRoundByTrack(issue)) continue;
     if (issue.status === "pulada") {
       // #5909 + #7065 — motivos de Coordenação de sessão são isentos de
       // propósito: a skill `.claude/skills/diaria-develop/SKILL.md` diz
@@ -320,6 +332,7 @@ export function deriveLabelCandidates(issues: PlanIssueLike[]): LabelCandidateIs
   const out: LabelCandidateIssue[] = [];
   for (const issue of issues) {
     if (typeof issue.number !== "number" || !Number.isFinite(issue.number)) continue;
+    if (isOutsideRoundByTrack(issue)) continue;
     if (issue.status !== "pulada") continue;
     const motivo = typeof issue.motivo === "string" ? issue.motivo : null;
     const requiredLabel = requiredLabelForMotivo(motivo);
