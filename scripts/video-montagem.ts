@@ -90,6 +90,19 @@
  *       O do horizontal sai também como `diaria-comentada-{AAMMDD}.srt` na pasta
  *       da edição (data/editions), o que o `publish-youtube.ts --upload` envia;
  *       cópia editada à mão depois do último srt fica, salvo --force.
+ *   srt AAMMDD --seq youtube --from-final PATH [--force] [--retranscribe]
+ *       (#12078) a legenda do horizontal no tempo do EXPORT final do Premiere (respiros, vinheta):
+ *       transcreve o export (o mesmo cache do review-final, por identidade do arquivo + modelo e
+ *       prompt do Whisper; --retranscribe refaz) e alinha a ele o roteiro do horizontal do
+ *       plan.json (`forceAlignToScript`, sem os cortes da montagem; plan.json defasado só avisa,
+ *       o export saiu do XML daquele build). Grava `{sequência} - legendas do export.srt` no out
+ *       dir e a cópia `diaria-comentada-{AAMMDD}.srt` na pasta da edição pela mesma regra; cópia
+ *       editada à mão = exit 1 com [erro] (saída: --force, ou --captions-only --captions com o
+ *       arquivo do out dir). Uma cópia gravada pelo --from-final não é trocada por um `srt` da
+ *       montagem depois, salvo --force. No modo API, PATH que não existe no disco é o nome em
+ *       Final/ no Drive (baixado só depois de validar --seq e o plano). Bruto só de áudio fica
+ *       fora: sem build não há plano do horizontal (o `srt` para antes, exit 3).
+ *       Backfill de legenda: este comando + `publish-youtube.ts AAMMDD --captions-only`.
  *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}]   (default a vertical da edição; sempre refaz)
  *   review AAMMDD [--seq youtube|instagram|outras-redes|{corte}]    (default a vertical da edição; sempre refaz)
  *       `--seq youtube` (#12096): a prévia do horizontal, 960x540, com o recorte de cada clipe
@@ -98,11 +111,12 @@
  *       `--seq` (#11900): o slug do corte escolhe aquela vertical extra (várias por
  *       plano); o destino escolhe a sequência sem corte dele, ou o único corte dele.
  *       Arquivos de trabalho por sequência: seq-{corte|destino}.wav, previa-…, review-….
- *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes|{corte}] [--no-text]
+ *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes|{corte}] [--no-text] [--retranscribe]
  *       revisão do EXPORT do Premiere (#11557): formato contra o destino (proporção,
  *       faixa preta, fps, teto do vertical), loudness/true peak, estalos e fragmentos
  *       nas emendas e, com `plan.json` válido, o texto contra o roteiro da versão
- *       (transcreve o export; `--no-text` pula). Destino pelo nome do arquivo
+ *       (transcreve o export, em cache por arquivo + Whisper desde o #12078, o mesmo do
+ *       `srt --from-final`; `--retranscribe` refaz; `--no-text` pula). Destino pelo nome do arquivo
  *       (`_Youtube_`/`_Instagram_`/`_Outras redes_`) ou `--seq`. Saída: tabela
  *       (#, tempo no export, tempo no bruto, o que está, correção) no stdout e em
  *       `review-final-{destino ou corte}.md`/`.json` no state dir. Só lê o export.
@@ -346,6 +360,8 @@ interface Ctx {
   outDir: string;
   python: string;
   force: boolean;
+  /** #12078: `--retranscribe` descarta a transcrição em cache do export (`review-final`, `srt --from-final`). */
+  retranscribe?: boolean;
   /** #11639: como a pasta da edição é alcançada (Drive for desktop ou API); ver `driveModeFor`. */
   mode: "local" | "api";
   /** #11641: raiz do bruto no XML (`--xml-media-root`); ver `xmlMediaPath`. */
@@ -1788,11 +1804,47 @@ function seqWords(ctx: Ctx, plan: SequencePlan, source: SourceInfo, fromRaw: boo
  * #11957) é a que o `publish-youtube.ts --upload` envia, e a `/diaria-publica-video`
  * corrige à mão ali mesmo. Rodar `srt` de novo só a sobrescreve se ela é a que o
  * `srt` gravou da última vez (o hash em `youtube-srt.json`), ou com `--force`.
+ * #12078: a cópia que o `srt --from-final` gravou (registro com `fromExport`)
+ * está no tempo do export, o que vai ao ar; um `srt` da montagem (sem origem)
+ * não a troca pela do tempo da sequência montada, salvo `--force`.
  */
-export function youtubeSrtCopyDecision(input: { existing: string | null; recordedSha256: string | null; force: boolean }): "write" | "keep-edited" {
+export function youtubeSrtCopyDecision(input: {
+  existing: string | null;
+  recordedSha256: string | null;
+  force: boolean;
+  recordedFromExport?: boolean;
+  fromExport?: boolean;
+}): "write" | "keep-edited" | "keep-from-export" {
   if (input.existing === null || input.force) return "write";
   const sha = createHash("sha256").update(input.existing).digest("hex");
-  return sha === input.recordedSha256 ? "write" : "keep-edited";
+  if (sha !== input.recordedSha256) return "keep-edited";
+  return input.recordedFromExport && !input.fromExport ? "keep-from-export" : "write";
+}
+
+/**
+ * #12078: aplica a decisão acima nos caminhos dados (a cópia na pasta da edição
+ * e o registro `youtube-srt.json`); grava só no "write". `origin` = nome do
+ * export, quando a legenda veio do `--from-final`.
+ */
+export function applyYoutubeSrtCopy(input: { path: string; recordPath: string; srt: string; force: boolean; origin?: string; now?: Date }): ReturnType<typeof youtubeSrtCopyDecision> {
+  const record = existsSync(input.recordPath) ? readJson<{ sha256?: string; fromExport?: string }>(input.recordPath, "youtube-srt.json") : null;
+  const decision = youtubeSrtCopyDecision({
+    existing: existsSync(input.path) ? readFileSync(input.path, "utf8") : null,
+    recordedSha256: record?.sha256 ?? null,
+    force: input.force,
+    recordedFromExport: Boolean(record?.fromExport),
+    fromExport: Boolean(input.origin),
+  });
+  if (decision !== "write") return decision;
+  mkdirSync(dirname(input.path), { recursive: true });
+  writeFileAtomic(input.path, input.srt);
+  writeJson(input.recordPath, {
+    path: input.path,
+    sha256: createHash("sha256").update(input.srt).digest("hex"),
+    writtenAt: (input.now ?? new Date()).toISOString(),
+    ...(input.origin ? { fromExport: input.origin } : {}),
+  });
+  return decision;
 }
 
 /** O horizontal: a única sequência cujo SRT vai para o upload do YouTube (#11957). */
@@ -1803,21 +1855,164 @@ export function srtPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte"
   return pickPlans(all, seq, false);
 }
 
-function writeYoutubeSrtCopy(ctx: Ctx, srt: string): void {
-  const dir = editionDirFor(ctx.edition);
-  const path = join(dir, youtubeCaptionFileName(ctx.edition));
-  const recordPath = f(ctx, "youtube-srt.json");
-  const record = existsSync(recordPath) ? readJson<{ sha256?: string }>(recordPath, "youtube-srt.json") : null;
-  const decision = youtubeSrtCopyDecision({ existing: existsSync(path) ? readFileSync(path, "utf8") : null, recordedSha256: record?.sha256 ?? null, force: ctx.force });
+/**
+ * #12078: o plano do horizontal para o `srt --from-final`. Só o horizontal
+ * (a legenda que o YouTube recebe); `--seq` ausente ou `youtube`.
+ */
+export function fromFinalPlan<P extends { spec: Pick<SequenceSpec, "target" | "corte" | "width" | "height"> }>(all: P[], seq: string | undefined): P {
+  if (seq !== undefined && seq !== "youtube") throw new Error(`--from-final só gera a legenda do horizontal (--seq youtube), veio --seq ${seq}`);
+  const hit = all.filter((p) => isYoutubeSpec(p.spec));
+  if (hit.length === 0) throw new Error("plan.json sem a sequência youtube (o horizontal): rode build --seq youtube antes do srt --from-final");
+  return hit[0];
+}
+
+/**
+ * Chave do cache da transcrição de um export (#12078, também no `review-final`):
+ * o mesmo arquivo (caminho, tamanho, mtime) reaproveita a transcrição; um
+ * export novo no mesmo nome a invalida.
+ */
+export function exportTranscriptCacheKey(file: { path: string; size: number; mtimeMs: number }, whisper: { model: string; prompt: string } = { model: WHISPER_MODEL, prompt: "" }): string {
+  // O modelo e o prompt do Whisper também entram: vocabulário novo ou outro modelo invalidam o cache.
+  const prompt = createHash("sha256").update(whisper.prompt).digest("hex").slice(0, 16);
+  return JSON.stringify({ export: { path: toPosix(file.path), size: file.size, mtimeMs: file.mtimeMs }, whisper: { model: whisper.model, prompt } });
+}
+
+/** O modelo que o `transcribe_words.py` usa por default (o `--model` não é passado daqui). */
+export const WHISPER_MODEL = "large-v3-turbo";
+
+/**
+ * #12078: reaproveitar ou refazer a transcrição em cache de um export. Só
+ * reaproveita com o transcript E a chave gravada iguais à atual; `--retranscribe` sempre refaz.
+ */
+export function exportTranscriptAction(input: { transcriptExists: boolean; storedKey: string | null; currentKey: string; retranscribe: boolean }): "reuse" | "transcribe" {
+  if (input.retranscribe || !input.transcriptExists || input.storedKey === null) return "transcribe";
+  return input.storedKey.trim() === input.currentKey ? "reuse" : "transcribe";
+}
+
+/**
+ * #12078: a legenda do horizontal no tempo do EXPORT final. O texto é o do
+ * roteiro (#11960), alinhado à fala transcrita do export; sem os cortes da
+ * montagem (os tempos do export não são os da sequência), o fim é a duração do export.
+ */
+export function srtFromExport(input: {
+  heard: Word[];
+  plan: Pick<SequencePlan, "script" | "spec">;
+  rules: VocabRule[];
+  aliases: VocabAlias[];
+  durationS: number;
+  warn?: (msg: string) => void;
+}): { srt: string; notes: string[] } {
+  const heard = applyVocabularyToWords(input.heard, input.rules, input.plan.spec, input.warn);
+  const aligned = forceAlignToScript(heard, input.plan.script, { aliases: input.aliases, cuts: [], endS: input.durationS });
+  return { srt: cuesToSrt(segmentCues(aligned.words)), notes: forcedAlignmentNotes(`${input.plan.spec.name} (export)`, aligned) };
+}
+
+/** Nome do SRT do horizontal tirado do export (#12078), no out dir; não substitui o da montagem (a prévia usa aquele). */
+export function srtFromExportFileName(seqName: string): string {
+  return `${seqName} - legendas do export.srt`;
+}
+
+/**
+ * Transcrição de um export do Premiere (#11557 `review-final`, #12078 `srt --from-final`),
+ * em cache no state dir por identidade do arquivo e do Whisper (`exportTranscriptCacheKey`);
+ * `--retranscribe` refaz (o `--force` só sobrescreve a cópia do SRT).
+ */
+function transcribeExport(ctx: Ctx, path: string, key: string): Word[] {
+  const trPath = f(ctx, `review-final-${key}.transcript.json`);
+  const keyPath = f(ctx, `review-final-${key}.cache-key.json`);
+  const st = statSync(path);
+  const cacheKey = exportTranscriptCacheKey({ path, size: st.size, mtimeMs: st.mtimeMs }, { model: WHISPER_MODEL, prompt: loadVocab().whisper_prompt ?? "" });
+  const action = exportTranscriptAction({
+    transcriptExists: existsSync(trPath),
+    storedKey: existsSync(keyPath) ? readFileSync(keyPath, "utf8") : null,
+    currentKey: cacheKey,
+    retranscribe: ctx.retranscribe === true,
+  });
+  if (action === "transcribe") {
+    mkdirSync(ctx.workDir, { recursive: true });
+    mkdirSync(ctx.stateDir, { recursive: true });
+    // A chave sai ANTES: uma falha no meio nunca deixa a chave do export novo sobre o transcript de outro.
+    rmSync(keyPath, { force: true });
+    const wav = join(ctx.workDir, `review-final-${key}.wav`);
+    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", wav]);
+    transcribeWithPython(ctx, wav, trPath, { vad: false });
+    writeFileAtomic(keyPath, cacheKey + "\n");
+  } else console.error(`[video-montagem] transcrição do export em cache (${trPath}); --retranscribe refaz`);
+  return nonEmptyWords(trPath, "transcrição do export");
+}
+
+/** Grava a cópia do horizontal na pasta da edição (ver `applyYoutubeSrtCopy`); devolve a decisão. */
+function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: string): ReturnType<typeof youtubeSrtCopyDecision> {
+  const path = join(editionDirFor(ctx.edition), youtubeCaptionFileName(ctx.edition));
+  const decision = applyYoutubeSrtCopy({ path, recordPath: f(ctx, "youtube-srt.json"), srt, force: ctx.force, origin });
   if (decision === "keep-edited") {
-    console.error(`[aviso] ${path} foi editado depois do último srt: mantido (o novo está no out dir; --force sobrescreve, #11957)`);
-    return;
+    // No --from-final o chamador sai com [erro]; no srt da montagem é só aviso (#11957).
+    if (!origin) console.error(`[aviso] ${path} foi editado depois do último srt: mantido (o novo está no out dir; --force sobrescreve, #11957)`);
+    return decision;
   }
-  mkdirSync(dir, { recursive: true });
-  writeFileAtomic(path, srt);
-  writeJson(recordPath, { path, sha256: createHash("sha256").update(srt).digest("hex"), writtenAt: new Date().toISOString() });
-  console.error(`[premissa] legenda do horizontal no tempo da sequência montada (${path}, a que o publish-youtube.ts --upload envia); se a edição fina no Premiere mudou os tempos, conferir contra o export antes de subir (#11957)`);
+  if (decision === "keep-from-export") {
+    console.error(`[aviso] ${path} foi gravado pelo srt --from-final (tempo do export): mantido, a legenda da montagem não o substitui (o novo está no out dir; --force sobrescreve, #12078)`);
+    return decision;
+  }
+  if (origin) console.error(`[premissa] legenda do horizontal no tempo do export ${origin} (${path}, a que o publish-youtube.ts --upload/--captions-only envia, #12078)`);
+  else console.error(`[premissa] legenda do horizontal no tempo da sequência montada (${path}, a que o publish-youtube.ts --upload envia); se a edição fina no Premiere mudou os tempos, conferir contra o export antes de subir, ou gerar do export com srt --from-final (#11957, #12078)`);
   console.log(path);
+  return decision;
+}
+
+/**
+ * `srt --from-final PATH` (#12078): a legenda do horizontal tirada do export
+ * final do Premiere, não do áudio montado pelo XML (o editor abre respiros,
+ * insere vinheta). O plan.json defasado só avisa: o export saiu do XML daquele
+ * build, então o roteiro gravado nele é o que casa com o export.
+ */
+function loadFromFinalPlan(ctx: Ctx, seq: string | undefined): SequencePlan {
+  const pf = readJson<PlanFile>(f(ctx, "plan.json"), "plan.json (rode build --seq youtube)");
+  if (!Array.isArray(pf.plans)) throw new Error(`plan.json malformado (sem a lista plans): rode build --seq youtube (${f(ctx, "plan.json")})`);
+  const plan = fromFinalPlan(pf.plans, seq);
+  if (typeof plan.script !== "string") throw new Error(`plan.json malformado (o horizontal sem script): rode build --seq youtube (${f(ctx, "plan.json")})`);
+  try {
+    if (pf.hash !== planHash(ctx, loadBlocks(ctx).text)) console.error("[aviso] plan.json defasado (entradas mudaram depois do build): usando o roteiro do horizontal gravado nele, o do XML de onde o export saiu (#12078)");
+  } catch (e) {
+    console.error(`[aviso] não deu para conferir o plan.json contra as entradas (${(e as Error).message}): usando o roteiro gravado nele`);
+  }
+  return plan;
+}
+
+function cmdSrtFromFinal(ctx: Ctx, file: string, plan: SequencePlan): number {
+  const path = resolve(file);
+  if (!existsSync(path)) throw new Error(`export não encontrado: ${path}`);
+  const durationS = Number(JSON.parse(run("ffprobe", ["-v", "error", "-show_format", "-of", "json", path]).stdout).format?.duration);
+  if (!Number.isFinite(durationS) || durationS <= 0) throw new Error(`duração ilegível no ffprobe (${path})`);
+  const vocab = loadVocab();
+  let blockRules: VocabRule[] = [];
+  try {
+    blockRules = loadBlocks(ctx).file.vocabulary ?? [];
+  } catch (e) {
+    console.error(`[aviso] blocks.json ilegível (${(e as Error).message}): só o vocabulário do projeto na legenda`);
+  }
+  const heard = transcribeExport(ctx, path, sequenceKey(plan.spec));
+  const { srt, notes: seqNotes } = srtFromExport({ heard, plan, rules: [...vocab.rules, ...blockRules], aliases: vocab.aliases, durationS, warn: (w) => console.error(`[aviso] ${w}`) });
+  for (const n of seqNotes) console.error(n);
+  mkdirSync(ctx.outDir, { recursive: true });
+  const out = join(ctx.outDir, srtFromExportFileName(plan.spec.name));
+  writeFileAtomic(out, srt);
+  console.log(out);
+  const decision = writeYoutubeSrtCopy(ctx, srt, basename(path));
+  if (decision === "keep-edited") {
+    // Sair 0 aqui deixaria o backfill seguir para o --captions-only com a cópia antiga (tempo da montagem).
+    const copy = join(editionDirFor(ctx.edition), youtubeCaptionFileName(ctx.edition));
+    console.error(
+      `[erro] ${copy} foi editado à mão depois do último srt e NÃO foi substituído: a legenda do export está em ${out}. ` +
+        `Rode de novo com --force para gravá-la na pasta da edição, ou envie-a direto: npx tsx scripts/publish-youtube.ts ${ctx.edition} --captions-only --captions "${out}" (#12078)`,
+    );
+    return 1;
+  }
+  const notesPath = f(ctx, SRT_NOTES_FILE);
+  const notes: Record<string, string[]> = existsSync(notesPath) ? readJson<Record<string, string[]>>(notesPath, SRT_NOTES_FILE) : {};
+  notes[sequenceKey(plan.spec)] = seqNotes;
+  writeJson(notesPath, notes);
+  return 0;
 }
 
 function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number {
@@ -2024,12 +2219,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   findings.push(...dedupeAudioFindings(clicks, detectFragments(sil)));
 
   if (withText && plan) {
-    mkdirSync(ctx.workDir, { recursive: true });
-    const wav = join(ctx.workDir, `review-final-${key}.wav`);
-    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", wav]);
-    const trPath = f(ctx, `review-final-${key}.transcript.json`);
-    transcribeWithPython(ctx, wav, trPath, { vad: false });
-    findings.push(...checkText({ words: nonEmptyWords(trPath, "transcrição do export"), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
+    findings.push(...checkText({ words: transcribeExport(ctx, path, key), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
   }
 
   const table = finalReviewTable(findings);
@@ -2290,6 +2480,7 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     outDir: resolve(values["out-dir"] ?? (mode === "api" ? join(cacheDir, "out") : driveDir)),
     python: py.python,
     force: flags.has("force"),
+    retranscribe: flags.has("retranscribe"),
     mode,
     xmlMediaRoot: values["xml-media-root"],
     // A raiz explícita é a do Neo só no modo local; no modo API ela não existe aqui (#11653).
@@ -2364,8 +2555,17 @@ async function runCommand(
         return 2;
       }
       return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq, !flags.has("no-speech-detect"));
-    case "srt":
-      return cmdSrt(ctx, seq, flags.has("from-raw"));
+    case "srt": {
+      if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "G:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
+      let final = values["from-final"];
+      if (final === undefined) return cmdSrt(ctx, seq, flags.has("from-raw"));
+      if (flags.has("from-raw")) throw new Error("--from-final e --from-raw não se combinam: a legenda do export vem da fala do export");
+      // --seq e o plano antes do download: um plano sem o horizontal não baixa o export à toa.
+      const plan = loadFromFinalPlan(ctx, seq);
+      // Como no review-final (#11639): no modo API, o export é procurado pelo nome em Final/ da edição no Drive.
+      if (d && !existsSync(final)) final = await fetchNamed(d, final, "final");
+      return cmdSrtFromFinal(ctx, final, plan);
+    }
     case "preview":
       await needLocalBruto();
       return cmdPreview(ctx, seq);
