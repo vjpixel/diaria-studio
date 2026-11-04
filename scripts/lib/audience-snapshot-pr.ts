@@ -18,9 +18,14 @@
  *
  * O script NUNCA mergeia (mesma decisão do #6598 para a PR da página do
  * site): merge segue o fluxo normal (CI verde → coordenador/sessão). Depois
- * do merge, o `sync-code.ts` do início da próxima edição descarta as cópias
- * locais idênticas a origin/master (#11562, `discardCollisionsIdenticalToUpstream`)
- * e o checkout volta a ficar limpo sozinho.
+ * do merge, as cópias locais idênticas a origin/master são descartadas por
+ * quem atualiza o checkout: o pull pós-merge do trem
+ * (`syncLocalCheckoutAfterMerge`, #12223) e o `sync-code.ts` do início da
+ * próxima edição (#11562, `discardCollisionsIdenticalToUpstream`).
+ *
+ * As cópias ficam no checkout até o merge de propósito (#12223): a edição do
+ * dia lê `context/audience-profile.md` nas Etapas 1-2, logo depois do 0i, e
+ * limpar o checkout ao abrir a PR a faria rodar com o profile do master.
  *
  * Este módulo é a parte pura (seleção de caminhos, escolha da PR, textos).
  */
