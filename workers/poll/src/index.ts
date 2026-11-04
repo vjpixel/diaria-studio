@@ -38,6 +38,9 @@ import {
   renderNicknameFormHtml, // #4232: extraído pra reuso no leaderboard
   renderNicknameFormStyles, // #4232: CSS do .nick-box, idem
   renderSubscribeBoxHtml, // #4418 §2b: Caixa B (assinatura pra quem já tem apelido)
+  resolveVoteSignupPlacement, // #12040: teste de ordem do pedido de cadastro
+  VOTE_SIGNUP_PLACEMENT_PARAM, // #12040: hidden `pos` lido no /set-name
+  type VoteSignupPlacement, // #12040
   type SubscribeBoxState, // #4418 §2b — a decisão A/B/nenhuma (resolveVoteIdentityBoxKind) mora em vote.ts, não aqui
   renderArchiveButtonStyles, // #4420: CSS do botão do link de arquivo
   buildBrandSiteUrl, // #3978: href com UTM do rodapé de /vote
@@ -564,7 +567,7 @@ import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleJog
 // de resultado do voto (`/set-name?...&optin=on`) é submetida, mesmo padrão
 // de UTM próprio (`VOTE_CLARICE_INLINE_UTM`, ./utm-registry) que o CTA
 // inline antigo usava via `resolveSubscribeUtm("vote-clarice")`.
-import { handleJogarSubscribe, subscribeViaConfiguredBackend, VOTE_CLARICE_SET_NAME_REFERRING_SITE } from "./subscribe"; // #6291: função única, ramifica por SUBSCRIBE_BACKEND internamente
+import { handleJogarSubscribe, subscribeViaConfiguredBackend, VOTE_CLARICE_SET_NAME_REFERRING_SITE, VOTE_CLARICE_SET_NAME_TOPO_REFERRING_SITE } from "./subscribe"; // #6291: função única, ramifica por SUBSCRIBE_BACKEND internamente
 import { VOTE_CLARICE_INLINE_UTM } from "./utm-registry";
 // #5167 item 7: destino do double opt-in (opt_in_redirect_url, ver docstring
 // de confirmado.ts). #7737: a página real mudou pro apex (Worker `site`) —
@@ -1182,11 +1185,22 @@ export function votePageHtml(
   // sobre a Caixa A (nicknameForm) quando ambas seriam tecnicamente
   // aplicáveis (não deveria acontecer — mutuamente exclusivas por
   // construção — mas subscribeBox vence em caso de erro de chamador).
+  // #12040 item 2: teste de ordem do pedido de cadastro (brand clarice) —
+  // metade dos leitores vê a caixa logo depois da mensagem, antes das imagens.
+  // Só quando a caixa pede cadastro (Caixa B, ou Caixa A com o checkbox de
+  // opt-in); o form de retry do /set-name (offerNicknameSubscribe=false) e as
+  // outras marcas ficam sempre "abaixo". Racional em resolveVoteSignupPlacement.
+  const signupIdentity = subscribeBox ?? (nicknameForm && offerNicknameSubscribe ? nicknameForm : null);
+  const signupPlacement: VoteSignupPlacement = signupIdentity
+    ? resolveVoteSignupPlacement(signupIdentity.email, brand, true)
+    : "abaixo";
   const identityBoxHtml = subscribeBox
-    ? renderSubscribeBoxHtml(subscribeBox, brand)
+    ? renderSubscribeBoxHtml(subscribeBox, brand, signupPlacement)
     : nicknameForm
-    ? renderNicknameFormHtml(nicknameForm, brand, offerNicknameSubscribe)
+    ? renderNicknameFormHtml(nicknameForm, brand, offerNicknameSubscribe, "vote", signupPlacement)
     : "";
+  const identityBoxTopHtml = signupPlacement === "topo" ? identityBoxHtml : "";
+  const identityBoxBottomHtml = signupPlacement === "topo" ? "" : identityBoxHtml;
 
   // #1351: HTML pra mostrar imagens A e B com labels + highlight da clicada
   const imagesHtml = renderResultImagesHtml(resultImages);
@@ -1337,9 +1351,10 @@ ${renderBrandShellStyles()}
 <p class="kicker">É IA?</p>
 <hr class="rule">
 <p class="msg">${htmlEscape(message)}</p>
+${identityBoxTopHtml}
 ${imagesHtml}
 ${eiaMetaHtml}
-${identityBoxHtml}
+${identityBoxBottomHtml}
 ${shareCardHtml}
 ${archiveButtonHtml}
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a></p>
@@ -1539,7 +1554,11 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
       // #4530 Parte B: `referringSite` PRÓPRIO — este é a caixa clarice do
       // `/set-name` (tela de resultado do voto), distinto de qualquer outro
       // call site que compartilhe o mesmo `VOTE_CLARICE_INLINE_UTM`.
-      const utm = { ...VOTE_CLARICE_INLINE_UTM, referringSite: VOTE_CLARICE_SET_NAME_REFERRING_SITE, origemPaga: "" };
+      // #12040: o braço "topo" do teste de ordem grava referringSite próprio.
+      // Só o valor exato "topo" conta; qualquer outra coisa é controle.
+      const placement: VoteSignupPlacement = url.searchParams.get(VOTE_SIGNUP_PLACEMENT_PARAM) === "topo" ? "topo" : "abaixo";
+      const referringSite = placement === "topo" ? VOTE_CLARICE_SET_NAME_TOPO_REFERRING_SITE : VOTE_CLARICE_SET_NAME_REFERRING_SITE;
+      const utm = { ...VOTE_CLARICE_INLINE_UTM, referringSite, origemPaga: "" };
       // #6291: seleção de backend via a ÚNICA função exportada — ver
       // docstring de `subscribeViaConfiguredBackend` em subscribe.ts.
       const result = await subscribeViaConfiguredBackend(env, { name: cleanName, email }, fetch, utm);
