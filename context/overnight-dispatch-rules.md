@@ -154,7 +154,10 @@ para resolver as P2/P3 sem confiança alta antes do trem; finding sem tag fica
 retido e segura o merge. Desde o #11575, P2/P3 só sai resolvida com a
 confiança `média`/`baixa` declarada (confiança ausente ou ilegível = retida), e
 `alta`/`high` conta em qualquer redação colada a "confiança"/"confidence" ou à
-tag P0-P3 (`**Confiança:** alta`, `Alta confiança`, `[P2 | alta]`).
+tag P0-P3 (`**Confiança:** alta`, `Alta confiança`, `[P2 | alta]`). Desde o
+#12168 a tag só vale na 1ª linha, até o 1º `:`/`—` depois dela: P0-P3 citado
+no resto do corpo (a prioridade de uma issue que o código abre, por exemplo)
+não é a severidade do finding, e 1ª linha sem tag fica retida.
 
 Comentário inline sai por `npx tsx scripts/gh-pr-review-api.ts comment --pr N
 --path P --line L --body-file F` (resposta a um comentário, no fixer: `reply

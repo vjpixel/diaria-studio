@@ -88,6 +88,50 @@ describe("detectNonDateReason — ordem de checagem quando mais de 1 padrão bat
   });
 });
 
+// #12167 — `#N` citado como CONTEXTO (PR que já mergeou) não é dependência;
+// só conta com verbo de condição na mesma oração.
+describe("detectNonDateReason — #N só é dependência com verbo de condição (#12167)", () => {
+  it("razão real da rodada 261104b: 'PR #N mergeada; reavaliar em DATA' passa", () => {
+    assert.equal(detectNonDateReason("PR #12129 mergeada; reavaliar em 2026-12-01"), null);
+    assert.equal(
+      detectNonDateReason("PR #12129 mergeada (teste A/B do assunto no ar). Reavaliar o resultado em 2026-12-01"),
+      null,
+    );
+    assert.equal(detectNonDateReason("reconciliação diária (#6198): marcador ainda futuro"), null);
+  });
+
+  const conditionCases = [
+    "aguardando #12000",
+    "aguardando o PR #12000 mergear",
+    "depende de #7113",
+    "depois que #6798 fechar",
+    "só após o #6798",
+    "bloqueada por #7113; reavaliar em 2026-12-01",
+    "espera #7113 ser resolvida",
+    "esperando #7113",
+    "condicionado ao #7113",
+  ];
+  for (const reason of conditionCases) {
+    it(`"${reason}" continua recusada como dependencia`, () => {
+      assert.equal(detectNonDateReason(reason)?.category, "dependencia");
+    });
+  }
+
+  it("contexto e condição em orações separadas: só a oração com verbo conta", () => {
+    // PR citado como contexto numa oração, e a condição real (data) em outra.
+    assert.equal(detectNonDateReason("PR #12129 mergeada — aguardar 2 semanas de dados, reavaliar em 2026-12-01"), null);
+    // Oração com #N e verbo de espera: recusa, mesmo com o PR de contexto na outra.
+    assert.equal(
+      detectNonDateReason("PR #12129 mergeada; aguardando #12130 antes de reavaliar")?.category,
+      "dependencia",
+    );
+  });
+
+  it("'adicionar' não é lido como 'adiar'", () => {
+    assert.equal(detectNonDateReason("PR #12129 vai adicionar a métrica; reavaliar em 2026-12-01"), null);
+  });
+});
+
 // ─── Limitações conhecidas — documentadas, NÃO consertadas (#7316 review) ──
 //
 // Achado do review do #7316 (comment-analyzer/code-reviewer): o detector é

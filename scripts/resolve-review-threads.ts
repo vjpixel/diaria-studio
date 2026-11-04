@@ -139,15 +139,40 @@ function confidenceNear(text: string, value: string): boolean {
   return patterns.some((p) => new RegExp(p, "iu").test(text));
 }
 
+/** Fim do prefixo estruturado: o 1º ":", travessão/hífen isolado ou ponto final depois da tag. */
+const HEADER_END = /:|\s[—–-]\s|\.(?:\s|$)/u;
+
+/**
+ * #12168 — o prefixo estruturado do finding ("Confiança X, P#:"), de onde sai a
+ * severidade. É a 1ª linha não vazia, cortada no 1º ":"/"—"/". " DEPOIS da 1ª
+ * tag P0-P3. `null` quando a 1ª linha não traz tag nenhuma (fail-closed:
+ * `untagged`). Antes, qualquer P0..P3 no corpo contava, e um finding
+ * "Confiança média, P3: ... abre a issue como família estado/P1 ..." (PR
+ * #12150) ficava retido como P1: o P1 do texto era a prioridade da issue que o
+ * código abre, não a severidade do finding.
+ */
+export function findingSeverityHeader(text: string): { tag: string; header: string } | null {
+  const firstLine = text.split(/\r?\n/).find((l) => l.trim().length > 0) ?? "";
+  const m = new RegExp(SEV_TAG, "u").exec(firstLine);
+  if (!m) return null;
+  const afterTag = m.index + m[0].length;
+  const end = HEADER_END.exec(firstLine.slice(afterTag));
+  const header = end ? firstLine.slice(0, afterTag + end.index) : firstLine;
+  return { tag: m[0].toUpperCase(), header };
+}
+
 export function classifyFindingSeverity(body: string | undefined): FindingSeverity {
   if (typeof body !== "string") return "untagged";
   // Markdown fora: `**Confiança:** alta`, ``Confiança `alta` `` e `_alta_` viram texto plano.
   const text = body.replace(/[*`_~]/g, "");
-  if (new RegExp(`${NB}P[01]${NA}`, "u").test(text)) return "high";
-  if (confidenceNear(text, HIGH_VALUE)) return "high";
-  if (!new RegExp(`${NB}P[23]${NA}`, "u").test(text)) return "untagged";
+  // #12168: severidade e confiança só do prefixo estruturado; P0..P3 no resto
+  // do corpo é texto do finding, nunca a severidade dele.
+  const parsed = findingSeverityHeader(text);
+  if (!parsed) return "untagged";
+  if (parsed.tag === "P0" || parsed.tag === "P1") return "high";
+  if (confidenceNear(parsed.header, HIGH_VALUE)) return "high";
   // P2/P3: só é `low` com a confiança não-alta declarada; sem ela, retido.
-  return confidenceNear(text, LOWER_VALUE) ? "low" : "untagged";
+  return confidenceNear(parsed.header, LOWER_VALUE) ? "low" : "untagged";
 }
 
 export type ThreadsParse =
