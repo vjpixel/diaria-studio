@@ -153,11 +153,16 @@ export function deriveCandidateIssues(
       // não sinal — mesmo raciocínio que já isentou `claimed-por-outra-sessao`.
       // Motivo normal (`bloqueio-externo`, `ambigua`, `requer-sessao-local`…)
       // segue exigindo comentário: a isenção é nominal, nunca por categoria.
+      // #12105 — `fechada-durante-a-sessao`: outra sessão fechou a issue no
+      // meio da rodada; quem fechou já deixou o rastro (PR/comentário), e a
+      // evidência desta sessão fica no plan.json (`fechada_evidencia`).
+      // Comentar numa issue já fechada só pra dizer isso é ruído.
       if (
         motivo === "deixado-para-o-300" ||
         motivo === "deixado-para-o-helios" ||
         motivo === "claimed-por-outra-sessao" ||
-        motivo === "sem-resposta"
+        motivo === "sem-resposta" ||
+        motivo === "fechada-durante-a-sessao"
       )
         continue;
       out.push({ number: issue.number, reason: "pulada-sem-comentario" });

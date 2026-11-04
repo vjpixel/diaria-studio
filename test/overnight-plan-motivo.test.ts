@@ -25,6 +25,10 @@ describe("OVERNIGHT_PULADA_MOTIVOS", () => {
     assert.ok(isOvernightPuladaMotivo("stale-aguarda-reexecucao"));
   });
 
+  it("#12105: inclui fechada-durante-a-sessao (mesmo valor do develop)", () => {
+    assert.ok(isOvernightPuladaMotivo("fechada-durante-a-sessao"));
+  });
+
   it("inclui os motivos legados documentados em prosa no SKILL.md", () => {
     for (const legacy of [
       "sem-resposta",

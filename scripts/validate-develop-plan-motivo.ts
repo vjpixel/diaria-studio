@@ -30,6 +30,7 @@ import {
   findDeixadoPara300BuracoLabels,
   planEntryLabel,
   DEVELOP_PULADA_MOTIVOS,
+  DEVELOP_MOTIVO_EVIDENCE_FIELD,
   type DevelopPlanIssueLike,
 } from "./lib/develop-plan-motivo.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
@@ -75,8 +76,11 @@ if (isMainModule(import.meta.url)) {
     for (const entry of result.entries) {
       const label = planEntryLabel(entry);
       if (entry.reason === "missing-evidencia") {
+        const field =
+          DEVELOP_MOTIVO_EVIDENCE_FIELD[entry.motivo as keyof typeof DEVELOP_MOTIVO_EVIDENCE_FIELD] ??
+          "ja_resolvida_evidencia";
         console.error(
-          `  ${label} — motivo "${entry.motivo}" sem campo ja_resolvida_evidencia (evidência obrigatória, ver docstring de develop-plan-motivo.ts)`,
+          `  ${label} — motivo "${entry.motivo}" sem campo ${field} (evidência obrigatória, ver docstring de develop-plan-motivo.ts)`,
         );
       } else {
         console.error(`  ${label} — motivo: ${entry.motivo ?? "(ausente)"}`);

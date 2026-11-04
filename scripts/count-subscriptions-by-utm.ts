@@ -38,7 +38,15 @@
  * ## Saída
  *
  * Sem --json: tabela no stderr + total por utm_source.
- * Com --json: { counts: Record<string, number>, total: number, fetched_at: string }
+ * Com --json: {
+ *   counts: Record<string, number>,                        // por utm_source
+ *   campaignCounts: Record<string, number>,                // por utm_campaign (#4041)
+ *   mediumCounts: Record<string, Record<string, number>>,  // utm_source → utm_medium (#12066)
+ *   total: number,
+ *   fetched_at: string,
+ * }
+ * Chave `__none__` = valor ausente/vazio, nos três mapas. `--json` ignora
+ * `--source`: o resultado sai inteiro (o filtro só vale para a tabela).
  *
  * Env:
  *   BEEHIIV_API_KEY           obrigatório
@@ -100,17 +108,24 @@ export interface UtmCountResult {
 }
 
 /**
- * Normaliza o valor de utm_source:
+ * Normaliza o valor de um parâmetro UTM (source, medium ou campaign):
  * - null / undefined / "" → "__none__" (sem UTM)
  * - qualquer outro valor → lowercase trimmed
  *
  * @pure testável sem I/O
  */
-export function normalizeUtmSource(raw: unknown): string {
+export function normalizeUtmValue(raw: unknown): string {
   if (raw == null) return "__none__";
   const s = String(raw).trim().toLowerCase();
   return s === "" ? "__none__" : s;
 }
+
+/**
+ * Nome histórico de `normalizeUtmValue` (#2457), mantido para os callers que
+ * normalizam `utm_source`. Para medium/campaign, usar `normalizeUtmValue`
+ * (#12116): a regra é a mesma para qualquer parâmetro UTM.
+ */
+export const normalizeUtmSource = normalizeUtmValue;
 
 /**
  * Agrega um array de subscription objects por utm_source normalizado.
@@ -131,14 +146,14 @@ export function aggregateByUtmSource(subs: Array<Record<string, unknown>>): Reco
 
 /**
  * Agrega por `utm_campaign` normalizado (#4041). Mesma normalização de
- * `normalizeUtmSource` — `__none__` pra ausente/vazio.
+ * `normalizeUtmValue` — `__none__` pra ausente/vazio.
  *
  * @pure testável sem I/O
  */
 export function aggregateByUtmCampaign(subs: Array<Record<string, unknown>>): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const sub of subs) {
-    const key = normalizeUtmSource(sub["utm_campaign"]);
+    const key = normalizeUtmValue(sub["utm_campaign"]);
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return counts;
@@ -146,7 +161,7 @@ export function aggregateByUtmCampaign(subs: Array<Record<string, unknown>>): Re
 
 /**
  * Agrega por `utm_source` e, dentro dele, por `utm_medium` (#12066). Mesma
- * normalização de `normalizeUtmSource` nos dois níveis (`__none__` pra ausente).
+ * normalização de `normalizeUtmValue` nos dois níveis (`__none__` pra ausente).
  *
  * @pure testável sem I/O
  */
@@ -156,7 +171,7 @@ export function aggregateByUtmSourceMedium(
   const out: Record<string, Record<string, number>> = {};
   for (const sub of subs) {
     const source = normalizeUtmSource(sub["utm_source"]);
-    const medium = normalizeUtmSource(sub["utm_medium"]);
+    const medium = normalizeUtmValue(sub["utm_medium"]);
     const bucket = (out[source] ??= {});
     bucket[medium] = (bucket[medium] ?? 0) + 1;
   }

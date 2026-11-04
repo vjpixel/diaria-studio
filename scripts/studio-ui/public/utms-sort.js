@@ -53,3 +53,27 @@ export function sortRows(rows, column, direction) {
   unknown.sort((a, b) => a.index - b.index);
   return [...known, ...unknown].map((x) => x.row);
 }
+
+/**
+ * Corte por `utm_medium` sob o total de assinantes (#12066), em texto puro
+ * (`utms.js` escapa e embrulha no `<div>`). Extraído de `utms.js` no #12116
+ * para ser testável. Devolve `""` (nada a mostrar) quando:
+ *   - `subscribersByMedium` é `null`/ausente (fetch falhou ou fetcher antigo);
+ *   - o `medium` do emissor é concreto (sem `{`): medium concreto compartilha
+ *     o source com outras linhas e repetiria o detalhe em cada uma;
+ *   - há menos de 2 mediums nomeados (`__none__` não conta).
+ * Os nomeados saem em ordem decrescente de contagem; `__none__` vira
+ * "sem medium N" no fim, só quando > 0. @pure
+ */
+export function mediumBreakdownText(row) {
+  const m = row.subscribersByMedium;
+  if (!m || !String(row.medium).includes("{")) return "";
+  const named = Object.entries(m)
+    .filter(([k]) => k !== "__none__")
+    .sort((a, b) => b[1] - a[1]);
+  if (named.length < 2) return "";
+  const none = m["__none__"] ?? 0;
+  const parts = named.map(([k, n]) => `${k} ${n}`);
+  if (none > 0) parts.push(`sem medium ${none}`);
+  return parts.join(" · ");
+}
