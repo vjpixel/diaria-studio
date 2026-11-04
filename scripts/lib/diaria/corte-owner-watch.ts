@@ -18,8 +18,10 @@
  * Com `corte_via_timer: true` o dono é o `Diaria-Shorts-Cortes`, que já alarma
  * `late` sozinho: aqui não alarma (seriam dois avisos do mesmo atraso). Esse
  * timer só publica (e só alarma `late`) o corte com o "pode publicar" do
- * editor gravado no `corte.json` (#11912); esta vigia ainda não olha o
- * marcador e alarma também o corte que só passou pelo dry-run.
+ * editor gravado no `corte.json` (#11912), e desde o #11918 esta vigia usa o
+ * mesmo critério: só alarma o destino autorizado (`publish_confirmed_at` +
+ * `publish_confirmed_destinations`). Corte que só passou pelo dry-run, ou
+ * destino fora do `--only`, não deveria sair e não vira alarme.
  *
  * #11986: com `corte_via_timer: true`, se o próprio `Diaria-Shorts-Cortes`
  * não roda (desarmado, quebrando antes de chegar ao corte), ninguém alarma o
@@ -74,9 +76,10 @@ export interface CorteWatchFinding {
 }
 
 /**
- * Puro: os cortes com `destination` sem registro e sem dono, passadas 3 h do
- * horário (até 48 h). Registro ilegível lança: nunca vira "faltando" (o
- * comando do alarme duplicaria o post) nem "registrado".
+ * Puro: os cortes com `destination` autorizado ("pode publicar", #11918), sem
+ * registro e sem dono, passadas 3 h do horário (até 48 h). Registro ilegível
+ * lança: nunca vira "faltando" (o comando do alarme duplicaria o post) nem
+ * "registrado".
  */
 export function findCortesWithoutOwner(input: { config: unknown; destination: string; cortes: readonly CorteWatchInput[]; now: Date }): CorteWatchFinding[] {
   const cfg = loadShortsConfig(input.config);
@@ -84,6 +87,8 @@ export function findCortesWithoutOwner(input: { config: unknown; destination: st
   if (!corteUnscheduledDestinations(input.config).includes(input.destination)) return [];
   const out: CorteWatchFinding[] = [];
   for (const c of input.cortes) {
+    // #11918: mesmo critério do timer — sem o "pode publicar" do destino, ele não devia sair.
+    if (!(corteAuthorizedDestinations(c.spec) ?? []).includes(input.destination)) continue;
     const deltaMs = input.now.getTime() - Date.parse(resolveEditionScheduledAt(c.spec.date, c.spec.hhmm));
     if (!(deltaMs > MAX_FIRE_LATENESS_MS) || deltaMs > CORTE_WATCH_HORIZON_MS) continue;
     const done = c.registryRaws.some(({ path, raw }) => parseShortsPublishedFile(raw, c.spec.date, path).entries.some((e) => e.destination === input.destination));

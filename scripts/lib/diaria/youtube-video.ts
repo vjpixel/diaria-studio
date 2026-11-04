@@ -10,8 +10,11 @@
  * 21/10/2026, 1º vídeo https://youtu.be/QRbXMprk9o0):
  *   - título = título do D1, sem sufixo (decisão do editor, 22/10/2026: o
  *     `| diar.ia.br comentada #{N}` do 1º vídeo saiu);
- *   - descrição = resumo do D1 + link da edição com UTM + CTA de
- *     assinatura `https://diar.ia.br/?utm_source=youtube&utm_medium=video&utm_campaign={AAMMDD}`;
+ *   - descrição = 1ª frase do resumo do D1 + link da edição com UTM nas 2
+ *     primeiras linhas (o que aparece antes do "mais", #12077), resto do
+ *     resumo, CTA de assinatura
+ *     `https://diar.ia.br/?utm_source=youtube&utm_medium=video&utm_campaign={AAMMDD}`
+ *     e até 3 hashtags do ator do D1 (#12077);
  *   - 6 tags; idioma pt-BR; "não é conteúdo para crianças";
  *   - agendado pras 06:00 BRT do dia da edição (`publishAt`); se esse horário
  *     já passou ou falta menos de 15 min (#10875), publica na hora (premissa
@@ -179,29 +182,160 @@ function utf8Bytes(s: string): number {
   return Buffer.byteLength(s, "utf8");
 }
 
+/**
+ * Ator principal do D1 (#12077): a empresa/produto que a notícia cita primeiro,
+ * no título e depois no corpo. Vira o termo da 1ª linha da descrição, as
+ * hashtags e a playlist temática. Ordem da tabela = desempate quando dois
+ * casam na mesma posição.
+ */
+export interface YouTubeD1Actor {
+  key: string;
+  /** Termo para a 1ª linha da descrição (o nome que a busca usa). */
+  label: string;
+  /** Hashtags do ator, da mais buscada para a menos. */
+  hashtags: string[];
+  /** Playlist temática (`publishing.youtube.theme_playlists`), quando há uma para o ator. */
+  theme?: string;
+}
+
+const YOUTUBE_ACTORS: ReadonlyArray<YouTubeD1Actor & { re: RegExp; labelFor?: (m: string) => string }> = [
+  { key: "openai", label: "OpenAI", hashtags: ["#ChatGPT", "#OpenAI"], theme: "openai", re: /\b(?:OpenAI|ChatGPT|GPT-?\d[\w.]*|Sora|Sam Altman)\b/i, labelFor: (m) => (/chatgpt/i.test(m) ? "ChatGPT" : "OpenAI") },
+  { key: "anthropic", label: "Anthropic", hashtags: ["#Claude", "#Anthropic"], theme: "anthropic", re: /\b(?:Anthropic|Claude)\b/i, labelFor: (m) => (/claude/i.test(m) ? "Claude" : "Anthropic") },
+  { key: "google", label: "Google", hashtags: ["#Gemini", "#Google"], theme: "google", re: /\b(?:Google|Gemini|DeepMind|YouTube|Android)\b/i, labelFor: (m) => (/gemini/i.test(m) ? "Gemini" : /deepmind/i.test(m) ? "DeepMind" : "Google") },
+  { key: "meta", label: "Meta", hashtags: ["#Meta"], re: /\b(?:Meta|Llama|Instagram|WhatsApp|Facebook|Zuckerberg)\b/ },
+  { key: "microsoft", label: "Microsoft", hashtags: ["#Copilot", "#Microsoft"], re: /\b(?:Microsoft|Copilot)\b/i, labelFor: (m) => (/copilot/i.test(m) ? "Copilot" : "Microsoft") },
+  { key: "xai", label: "Grok", hashtags: ["#Grok"], re: /\b(?:xAI|Grok)\b/ },
+  { key: "deepseek", label: "DeepSeek", hashtags: ["#DeepSeek"], re: /\bDeepSeek\b/i },
+  { key: "mistral", label: "Mistral", hashtags: ["#Mistral"], re: /\bMistral\b/ },
+  { key: "nvidia", label: "Nvidia", hashtags: ["#Nvidia"], re: /\bNvidia\b/i },
+  { key: "apple", label: "Apple", hashtags: ["#Apple"], re: /\b(?:Apple|iPhone|Siri)\b/ },
+];
+
+function plainD1(d1: Pick<YouTubeD1Input, "title" | "body">): { title: string; body: string } {
+  return { title: stripInlineMarkdown(d1.title), body: stripInlineMarkdown(d1.body) };
+}
+
+/** Puro (#12077): ator principal do D1, ou `null`. O título pesa antes do corpo. */
+export function detectYouTubeD1Actor(d1: Pick<YouTubeD1Input, "title" | "body">): YouTubeD1Actor | null {
+  const { title, body } = plainD1(d1);
+  for (const text of [title, body]) {
+    let best: { idx: number; order: number; actor: YouTubeD1Actor } | null = null;
+    YOUTUBE_ACTORS.forEach((a, order) => {
+      const m = a.re.exec(text);
+      if (!m) return;
+      if (!best || m.index < best.idx || (m.index === best.idx && order < best.order)) {
+        const { re: _re, labelFor, ...actor } = a;
+        best = { idx: m.index, order, actor: { ...actor, label: labelFor ? labelFor(m[0]) : a.label } };
+      }
+    });
+    if (best) return (best as { actor: YouTubeD1Actor }).actor;
+  }
+  return null;
+}
+
+/** O texto cita o ator por qualquer um dos nomes dele (ex.: "OpenAI" conta para o ChatGPT). */
+export function youtubeActorMentioned(key: string, text: string): boolean {
+  const a = YOUTUBE_ACTORS.find((x) => x.key === key);
+  return a ? a.re.test(stripInlineMarkdown(text)) : false;
+}
+
+/** Máximo de hashtags que o YouTube mostra acima do título (#12077). */
+export const YOUTUBE_MAX_HASHTAGS = 3;
+
+/** Hashtag a partir de um rótulo livre (sem espaço, sem pontuação; acentos ficam). */
+function toHashtag(label: string): string | null {
+  const words = label.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  if (!words.length) return null;
+  return `#${words.map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join("")}`;
+}
+
+/**
+ * Puro (#12077): até 3 hashtags, `#IA` primeiro, depois as do ator do D1; sem
+ * ator, `#InteligênciaArtificial` e a categoria. Sem repetição (caixa ignorada).
+ */
+export function buildYouTubeHashtags(d1: Pick<YouTubeD1Input, "title" | "body" | "category">): string[] {
+  const actor = detectYouTubeD1Actor(d1);
+  const cat = toHashtag(normalizeCategoryTag(d1.category));
+  const pool = ["#IA", ...(actor ? actor.hashtags : ["#InteligênciaArtificial"]), ...(cat ? [cat] : [])];
+  const out: string[] = [];
+  for (const h of pool) {
+    if (out.length >= YOUTUBE_MAX_HASHTAGS) break;
+    if (!out.some((o) => o.toLowerCase() === h.toLowerCase())) out.push(h);
+  }
+  return out;
+}
+
+/** Playlists temáticas que o mapeamento conhece (#12077): ator ou tema. */
+export const YOUTUBE_THEMES = ["openai", "google", "anthropic", "brasil", "seguranca"] as const;
+export type YouTubeTheme = (typeof YOUTUBE_THEMES)[number];
+
+const BRASIL_RE = /\b(?:Brasil|brasileir[oa]s?|SUS|Anatel|ANPD|STF|Pix)\b/;
+const SEGURANCA_RE = /\b(?:golpes?|fraudes?|deepfakes?|vazamentos?|ataques?|hackers?|ciberseguran[çc]a|malware|phishing|vulnerabilidades?|riscos?)\b/i;
+
+/**
+ * Puro (#12077): temas do D1 para as playlists, na ordem ator → Brasil →
+ * segurança. O ator só entra quando tem playlist (OpenAI, Google, Anthropic).
+ */
+export function youtubeD1Themes(d1: Pick<YouTubeD1Input, "title" | "body" | "category">): YouTubeTheme[] {
+  const { title, body } = plainD1(d1);
+  const cat = normalizeCategoryTag(d1.category);
+  const text = `${title}\n${body}`;
+  const out: YouTubeTheme[] = [];
+  const actor = detectYouTubeD1Actor(d1);
+  if (actor?.theme && (YOUTUBE_THEMES as readonly string[]).includes(actor.theme)) out.push(actor.theme as YouTubeTheme);
+  if (BRASIL_RE.test(text) || /brasil/.test(cat)) out.push("brasil");
+  if (/seguran[çc]a|risco/.test(cat) || SEGURANCA_RE.test(title) || SEGURANCA_RE.test(firstSentenceOf(body))) out.push("seguranca");
+  return out;
+}
+
+/** 1ª frase do texto (até `.`, `!` ou `?` seguido de espaço/fim); o texto inteiro se não houver. */
+function firstSentenceOf(text: string): string {
+  const plain = text.replace(/\s+/g, " ").trim();
+  const m = plain.match(/^.+?[.!?](?=\s|$)/);
+  return (m ? m[0] : plain).trim();
+}
+
+/** Teto da 1ª linha da descrição (a frase antes do "mais"). */
+export const YOUTUBE_DESCRIPTION_LEAD_MAX_BYTES = 600;
+
+function cutToBytes(text: string, budget: number): string {
+  if (utf8Bytes(text) <= budget) return text;
+  // Corte linear: soma os bytes por code point até o orçamento (menos o "…").
+  const limit = budget - utf8Bytes("…");
+  let used = 0;
+  let cut = "";
+  for (const ch of text) {
+    const b = utf8Bytes(ch);
+    if (used + b > limit) break;
+    used += b;
+    cut += ch;
+  }
+  return `${cut.trimEnd()}…`;
+}
+
+/**
+ * Descrição (#12077): as 2 primeiras linhas são o que aparece antes do "mais"
+ * — a 1ª frase do resumo (com o termo do ator na frente quando ela não o cita)
+ * e o link da edição. Depois o resto do resumo, o CTA de assinatura e as
+ * hashtags (até 3; o YouTube mostra acima do título).
+ */
 export function buildYouTubeDescription(input: YouTubeMetadataInput): string {
   const { aammdd, d1, editionUrl } = input;
-  const tail = [
-    `Leia a edição completa: ${withYouTubeUtm(editionUrl, aammdd)}`,
-    "",
-    `Receba a diar.ia.br de graça todo dia de manhã: ${youtubeSubscribeCtaUrl(aammdd)}`,
-  ].join("\n");
-  let summary = sanitizeForYouTube(stripInlineMarkdown(d1.body));
-  const budget = YOUTUBE_DESCRIPTION_MAX_BYTES - utf8Bytes(tail) - 2;
-  if (utf8Bytes(summary) > budget) {
-    // Corte linear: soma os bytes por code point até o orçamento (menos o "…").
-    const limit = budget - utf8Bytes("…");
-    let used = 0;
-    let cut = "";
-    for (const ch of summary) {
-      const b = utf8Bytes(ch);
-      if (used + b > limit) break;
-      used += b;
-      cut += ch;
-    }
-    summary = `${cut.trimEnd()}…`;
-  }
-  return summary ? `${summary}\n\n${sanitizeForYouTube(tail)}` : sanitizeForYouTube(tail);
+  const editionLine = `Leia a edição completa: ${withYouTubeUtm(editionUrl, aammdd)}`;
+  const tail = [`Receba a diar.ia.br de graça todo dia de manhã: ${youtubeSubscribeCtaUrl(aammdd)}`, "", buildYouTubeHashtags(d1).join(" ")].join("\n");
+  const summary = sanitizeForYouTube(stripInlineMarkdown(d1.body));
+  const actor = detectYouTubeD1Actor(d1);
+  const sentence = firstSentenceOf(summary);
+  // A 1ª frase é a linha antes do "mais": frase sem ponto (o resumo inteiro) é cortada.
+  let lead = cutToBytes(sentence, YOUTUBE_DESCRIPTION_LEAD_MAX_BYTES);
+  if (lead && actor && !youtubeActorMentioned(actor.key, lead)) lead = `${actor.label}: ${lead}`;
+  const rest = lead.endsWith("…") ? "" : summary.slice(sentence.length).trim();
+  const head = lead ? `${lead}\n${editionLine}` : editionLine;
+  // Orçamento: cabeçalho e cauda inteiros; o resto do resumo é o que encolhe.
+  const fixed = utf8Bytes(head) + utf8Bytes(tail) + 4;
+  const restCut = rest ? cutToBytes(rest, Math.max(0, YOUTUBE_DESCRIPTION_MAX_BYTES - fixed)) : "";
+  const parts = [head, ...(restCut && restCut !== "…" ? [restCut] : []), tail];
+  return sanitizeForYouTube(parts.join("\n\n"));
 }
 
 export function buildYouTubeMetadata(input: YouTubeMetadataInput): YouTubeMetadata {

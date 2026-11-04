@@ -25,7 +25,11 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  * o agendamento (06:00 BRT do dia da edição, ou na hora se já passou ou
  * faltam menos de 15 min, #10875) e
  * imprime o request de `videos.insert` + o passo de `thumbnails.set` como
- * JSON — SEM chamar a API e sem escrever nada. Sem `04-youtube-thumb.jpg`, o
+ * JSON — SEM chamar a API. A única escrita é o marcador
+ * `_internal/05-youtube-pending-approval.json` (#12122): o plano está com o
+ * editor à espera do "pode publicar", e o `stage5-youtube.ts` não sobe o vídeo
+ * enquanto ele existir (o `--upload` e o `link-video-d1.ts --save` o apagam).
+ * Vídeo já registrado ou link já colado não grava. Sem `04-youtube-thumb.jpg`, o
  * JSON traz `cover_prerequisites` (ffmpeg, codex, Georgia, rembg desta
  * máquina, a sonda de `check-video-env.ts`, #11532): o que falta para gerar a
  * capa aqui, antes do Passo A2.
@@ -119,7 +123,9 @@ import {
   resolveYouTubeSchedule,
   YOUTUBE_API_PROJECT_AUDITED,
   youtubeVideoFileName,
+  youtubeD1Themes,
   type YouTubeInsertRequest,
+  type YouTubeTheme,
   type YouTubeEffectiveVisibility,
   type YouTubeMetadata,
   type YouTubeScheduleDecision,
@@ -158,6 +164,15 @@ import {
 import { logEvent, type RunLogEvent } from "./lib/run-log.ts";
 import { d1SocialSlotAt, videoLinkEligibility } from "./lib/diaria/youtube-video-link-gate.ts";
 import { coverPrerequisites } from "./lib/diaria/video-env-check.ts";
+import { clearPendingApproval, writePendingApproval } from "./lib/diaria/youtube-pending-approval.ts";
+import {
+  addVideoToThemePlaylists,
+  describeThemePlaylists,
+  planThemePlaylists,
+  readThemePlaylistsConfig,
+  type ThemePlaylistResult,
+  type ThemePlaylistsConfig,
+} from "./lib/diaria/youtube-theme-playlists.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -204,6 +219,8 @@ export interface YouTubePublishPlan {
   thumbnail: { path: string; exists: boolean; endpoint: string } | null;
   /** `captions.insert` depois do vídeo (#11384); `null` sem o `.srt`. */
   captions: { path: string; exists: true; endpoint: string; language: string } | null;
+  /** Temas do D1 para as playlists temáticas (#12077); os IDs vêm do config no upload. */
+  themes: YouTubeTheme[];
   premises: string[];
   warnings: string[];
 }
@@ -250,6 +267,12 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
   }
   const schedule = resolveYouTubeSchedule(input.aammdd, input.now, input.publishAt ?? null);
   premises.push(schedule.premise);
+  const themes = youtubeD1Themes({ title: d1.title, body: d1.body, category: d1.category });
+  premises.push(
+    themes.length
+      ? `playlists temáticas do D1: ${themes.join(", ")} (#12077; só entram as com ID em publishing.youtube.theme_playlists)`
+      : "D1 sem tema de playlist (#12077)",
+  );
   const effective = resolveEffectiveVisibility(schedule, input.projectAudited ?? YOUTUBE_API_PROJECT_AUDITED);
   if (effective.auditBlocked) {
     const pedido = schedule.mode === "immediate" ? "publicação na hora (public)" : `agendamento (publishAt ${schedule.publishAt})`;
@@ -296,6 +319,7 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
     captions: input.captions?.exists
       ? { path: input.captions.path, exists: true, endpoint: YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT, language: YOUTUBE_CAPTION_LANGUAGE }
       : null,
+    themes,
     premises,
     warnings,
   };
@@ -346,6 +370,8 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
    * gravado (registro ausente/ilegível no disco).
    */
   podcast?: PodcastPlaylistResult;
+  /** Playlists temáticas (#12077), só as que chegaram à API. */
+  theme_playlists?: ThemePlaylistResult[];
 }
 
 /**
@@ -405,6 +431,8 @@ export interface RunUploadInput {
   podcastConfigWarning?: string | null;
   /** #12068: evento no run-log quando o podcast falha (warn). Ausente = só o log de linha. */
   logRunEvent?: (e: RunLogEvent) => void;
+  /** #12077: `publishing.youtube.theme_playlists` lido. Ausente = passo pulado em silêncio (testes antigos). */
+  themePlaylists?: ThemePlaylistsConfig;
 }
 
 export interface RunUploadOutcome {
@@ -598,7 +626,56 @@ function unconfirmedPeriodMatch(e: ExistingEditionVideoError, input: RunUploadIn
  */
 export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUploadInput): Promise<RunUploadOutcome> {
   const outcome = await runYouTubeUploadCore(deps, input);
-  return addToPodcastAfterUpload(deps, input, outcome);
+  const withPodcast = await addToPodcastAfterUpload(deps, input, outcome);
+  return addToThemePlaylistsAfterUpload(deps, input, withPodcast);
+}
+
+/**
+ * #12077 item 3: playlists temáticas do D1, depois do podcast. Mesmas regras
+ * do podcast: só com vídeo confirmado, nunca muda o exit code, tema já `ok`
+ * para o mesmo vídeo no registro não gasta quota de novo, e o resultado só é
+ * regravado num registro que já está no disco.
+ */
+export async function addToThemePlaylistsAfterUpload(
+  deps: YouTubeUploadDeps,
+  input: Pick<RunUploadInput, "plan" | "editionDir" | "env" | "log" | "themePlaylists">,
+  outcome: RunUploadOutcome,
+): Promise<RunUploadOutcome> {
+  const rec = outcome.record;
+  if (!rec || outcome.exitCode !== 0 || !input.themePlaylists) return outcome;
+  for (const w of input.themePlaylists.warnings) input.log(w);
+  const steps = planThemePlaylists(input.plan.themes ?? [], input.themePlaylists);
+  const done = new Set((rec.theme_playlists ?? []).filter((r) => r.ok && r.videoId === rec.videoId).map((r) => `${r.theme}:${r.playlistId}`));
+  const todo = steps.filter((s) => s.playlistId !== null && !done.has(`${s.theme}:${s.playlistId}`));
+  if (todo.length && missingYouTubeCredentials(input.env).length > 0) {
+    input.log(`[aviso] playlists temáticas não tentadas: faltam ${missingYouTubeCredentials(input.env).join(", ")} no ambiente (#12077)`);
+    return outcome;
+  }
+  const results = todo.length
+    ? await addVideoToThemePlaylists(deps, {
+        creds: {
+          clientId: (input.env.GOOGLE_CLIENT_ID ?? "").trim(),
+          clientSecret: (input.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
+          refreshToken: (input.env.YOUTUBE_REFRESH_TOKEN ?? "").trim(),
+          channelId: (input.env.YOUTUBE_CHANNEL_ID ?? "").trim(),
+        },
+        steps: todo,
+        videoId: rec.videoId,
+      })
+    : [];
+  const shown = [...(rec.theme_playlists ?? []).filter((r) => done.has(`${r.theme}:${r.playlistId}`)), ...results];
+  for (const line of describeThemePlaylists(steps, shown)) input.log(line);
+  if (!results.length) return outcome;
+  const kept = (rec.theme_playlists ?? []).filter((r) => !results.some((n) => n.theme === r.theme));
+  const record: YouTubePublishedRecord = { ...rec, theme_playlists: [...kept, ...results] };
+  const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
+  if (!existsSync(recordPath)) return { ...outcome, record };
+  try {
+    writeFileAtomic(recordPath, JSON.stringify(record, null, 2) + "\n");
+  } catch (e) {
+    input.log(`[aviso] resultado das playlists temáticas não gravado em ${recordPath}: ${(e as Error).message}`);
+  }
+  return { ...outcome, record };
 }
 
 /**
@@ -990,6 +1067,42 @@ function loadPodcastPlaylistIdFromConfig(): { id: string | null; warning: string
   return { id: null, warning: r.kind === "invalid" ? podcastConfigWarning(r.reason) : null };
 }
 
+/**
+ * #12122: depois do `--dry-run`, grava o marcador de "à espera do pode publicar"
+ * que segura o upload automático do `stage5-youtube.ts`. Não grava quando o
+ * vídeo desta edição já existe no canal (registro `done`) ou o link já foi
+ * colado (`05-video-url.txt`): aí não há confirmação pendente. Registro
+ * ilegível ou em estado incerto grava (o erro seguro é segurar o Stage 5).
+ * Nunca lança: o dry-run não falha por causa do marcador.
+ */
+export function markPendingApprovalAfterDryRun(dir: string, aammdd: string, now: Date, log: (line: string) => void): boolean {
+  try {
+    if (existsSync(join(dir, D1_VIDEO_URL_FILE))) return false;
+    let done = false;
+    try {
+      done = readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd).kind === "done";
+    } catch {
+      done = false;
+    }
+    if (done) return false;
+    const path = writePendingApproval(dir, aammdd, now);
+    log(`[premissa] ${path} gravado: o stage5-youtube.ts não sobe o horizontal até o --upload confirmado (ou o link colado) apagá-lo (#12122)`);
+    return true;
+  } catch (e) {
+    log(`[aviso] marcador de confirmação pendente não gravado (${(e as Error).message}) — com a Etapa 5 rodando em paralelo, o stage5-youtube.ts pode subir o vídeo antes do "pode publicar" (#12122)`);
+    return false;
+  }
+}
+
+/** #12077: `publishing.youtube.theme_playlists` do `platform.config.json`. Nunca lança. */
+function loadThemePlaylistsFromConfig(): ThemePlaylistsConfig {
+  try {
+    return readThemePlaylistsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
+  } catch (e) {
+    return { ids: {}, warnings: [`[aviso] playlists temáticas puladas: platform.config.json ilegível (${(e as Error).message}) (#12077)`] };
+  }
+}
+
 /** Horário do post do D1 pelo `platform.config.json`; `null` se não der (nunca lança). */
 function loadD1SlotAt(aammdd: string): Date | null {
   try {
@@ -1109,7 +1222,12 @@ async function main(): Promise<number> {
       console.error(`[premissa] ${coverPrereqs.summary}`);
       for (const i of coverPrereqs.items.filter((x) => !x.ok)) console.error(`[aviso] capa: falta ${i.id} (${i.detail ?? "?"}) — bloqueia ${i.blocks}. Resolver: ${i.fix}`);
     }
-    console.log(JSON.stringify({ dry_run: true, ...plan, ...(coverPrereqs ? { cover_prerequisites: coverPrereqs } : {}) }, null, 2));
+    // #12077: o plano mostra em que playlists temáticas o vídeo entraria (sem ID = não entra).
+    const themeCfg = loadThemePlaylistsFromConfig();
+    for (const w of themeCfg.warnings) console.error(w);
+    const themePlaylists = planThemePlaylists(plan.themes, themeCfg);
+    console.log(JSON.stringify({ dry_run: true, ...plan, theme_playlists: themePlaylists, ...(coverPrereqs ? { cover_prerequisites: coverPrereqs } : {}) }, null, 2));
+    markPendingApprovalAfterDryRun(dir, aammdd, new Date(), (line) => console.error(line));
     return 0;
   }
 
@@ -1126,11 +1244,14 @@ async function main(): Promise<number> {
     d1SlotAt: loadD1SlotAt(aammdd),
     podcastPlaylistId: podcastCfg.id,
     podcastConfigWarning: podcastCfg.warning,
+    themePlaylists: loadThemePlaylistsFromConfig(),
     logRunEvent: (e) => {
       logEvent(e);
     },
   });
   if (outcome.record) console.log(JSON.stringify({ dry_run: false, skipped: outcome.skipped, ...outcome.record }, null, 2));
+  // #12122: com o vídeo no canal (registro gravado), a espera do "pode publicar" acabou.
+  if (outcome.record && existsSync(join(dir, YOUTUBE_PUBLISHED_FILE))) clearPendingApproval(dir, (line) => console.error(line));
   cleanupPublishedVideo({ dir, edition: aammdd, kind: "horizontal", keepVideo: flags.has("keep-video"), log: console.error });
   return outcome.exitCode;
 }
