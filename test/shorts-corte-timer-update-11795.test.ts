@@ -282,7 +282,8 @@ describe("#11795 --update-scheduled", () => {
     assert.equal(persisted.length, 1);
     assert.equal(persisted[0].destination, "youtube_shorts");
     assert.equal(persisted[0].updated_at, NOW.toISOString());
-    assert.deepEqual(persisted[0].cover, { method: "thumbnails_set", ok: true });
+    assert.deepEqual(persisted[0].cover, { method: "thumbnails_set", ok: true, vertical_feed: "manual" }); // #12100
+    assert.match((r["youtube_shorts"].warnings ?? []).join("\n"), /feed de Shorts não muda pela API/);
   });
 });
 

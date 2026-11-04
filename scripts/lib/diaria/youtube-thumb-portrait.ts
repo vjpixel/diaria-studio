@@ -44,17 +44,34 @@ export function portraitOptionFileName(n: number): string {
 
 /**
  * Expressões disponíveis. A da 261021 é `desconfiado`. A descrição vai em
- * inglês porque o prompt do Codex é em inglês.
+ * inglês porque o prompt do Codex é em inglês. Desde o #12123 a descrição não
+ * diz para onde o editor olha: a direção do olhar sai do lado em que o
+ * retrato entra na capa (`gazeSentence`), sempre para a cena do D1.
  */
 export const PORTRAIT_EXPRESSIONS = {
-  desconfiado:
-    "suspicious and skeptical: eyes glancing sideways toward the right of the frame, brows slightly lowered, mouth closed, lips pressed",
-  surpreso: "surprised: eyebrows raised, eyes wide open looking straight at the camera, mouth slightly open",
-  preocupado: "worried: brows drawn together, eyes looking at the camera, mouth closed and tense",
-  serio: "serious and focused: looking straight at the camera, neutral mouth closed",
-  ironico: "ironic: a slight half smile on one side, one eyebrow raised, looking at the camera",
-  intrigado: "intrigued: head tilted slightly, one eyebrow raised, eyes narrowed, looking at the camera",
+  desconfiado: "suspicious and skeptical: a sideways glance, brows slightly lowered, mouth closed, lips pressed",
+  surpreso: "surprised: eyebrows raised, eyes wide open, mouth slightly open",
+  preocupado: "worried: brows drawn together, mouth closed and tense",
+  serio: "serious and focused: neutral mouth closed",
+  ironico: "ironic: a slight half smile on one side, one eyebrow raised",
+  intrigado: "intrigued: head tilted slightly, one eyebrow raised, eyes narrowed",
 } as const;
+
+/** Lado da capa em que o retrato entra (#12123): `left` nos layouts `bottom`/`top`, `right` no `right`. */
+export type PortraitSide = "left" | "right";
+export const PORTRAIT_SIDES: readonly PortraitSide[] = ["left", "right"];
+
+/**
+ * Frase do olhar (#12123): o retrato olha para a cena, que fica no lado
+ * oposto ao dele. Retrato à esquerda → olha para a direita do quadro.
+ */
+export function gazeSentence(side: PortraitSide): string {
+  const scene = side === "left" ? "right" : "left";
+  return (
+    `Gaze: the portrait goes on the ${side} side of the thumbnail and the scene is on the ${scene} side, ` +
+    `so head, shoulders and eyes turn toward the ${scene} of the frame, looking at the scene, not at the camera.`
+  );
+}
 
 export type PortraitExpression = keyof typeof PORTRAIT_EXPRESSIONS;
 
@@ -100,18 +117,22 @@ export interface PortraitPrompt {
  * ser caminho absoluto (o Codex roda com outro cwd; `buildCodexArgs` resolve,
  * mas o JSON gravado fica legível de qualquer lugar).
  */
-export function buildPortraitPrompt(expression: PortraitExpression, referenceFrame: string): PortraitPrompt {
+export function buildPortraitPrompt(expression: PortraitExpression, referenceFrame: string, side: PortraitSide = "left"): PortraitPrompt {
   const face = PORTRAIT_EXPRESSIONS[expression];
   return {
     positive:
       "Photorealistic close-up portrait photo of the same man shown in the reference image, for a YouTube thumbnail. " +
-      "Framing: head and top of the shoulders filling most of the frame, face large and sharp, body turned slightly to the right of the frame, a little space above the hair. " +
+      // #12123: o recorte do rembg cortava o ombro na borda; ombros e braços inteiros, com margem dos dois lados.
+      "Framing: head, both shoulders and the upper arms entirely inside the frame, with empty background margin on both the left and the right side " +
+      "(no shoulder or arm cut by the image edge), face large and sharp, a little space above the hair. " +
+      `${gazeSentence(side)} ` +
       `Facial expression: ${face}. ` +
       "Same identity, hair, beard and clothing as the reference. " +
       "Plain dark, softly lit studio background with nothing in it (it will be cut out). " +
       "Soft dramatic key light from the left, high detail skin texture, shallow depth of field, natural colors.",
     negative:
-      "painting, illustration, drawing, cartoon, 3D render, text, letters, logo, watermark, hands, fingers, microphone, mug, objects, other people, busy background, frame, border",
+      "painting, illustration, drawing, cartoon, 3D render, text, letters, logo, watermark, hands, fingers, microphone, mug, objects, other people, busy background, frame, border, " +
+      "cropped shoulder, arm cut off by the image edge, looking at the camera",
     final_width: PORTRAIT_FINAL_W,
     final_height: PORTRAIT_FINAL_H,
     reference_images: [referenceFrame],
@@ -124,4 +145,6 @@ export interface PortraitsMeta {
   reference: string;
   /** Expressão de cada opção, na ordem: `expressions[0]` = opção 1. */
   expressions: PortraitExpression[];
+  /** Lado da capa em que o retrato entra (#12123); ausente em rodadas anteriores = `left`. */
+  side?: PortraitSide;
 }
