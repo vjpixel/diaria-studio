@@ -59,7 +59,6 @@ export const PORTRAIT_EXPRESSIONS = {
 
 /** Lado da capa em que o retrato entra (#12123): `left` nos layouts `bottom`/`top`, `right` no `right`. */
 export type PortraitSide = "left" | "right";
-export const PORTRAIT_SIDES: readonly PortraitSide[] = ["left", "right"];
 
 /**
  * Frase do olhar (#12123): o retrato olha para a cena, que fica no lado
