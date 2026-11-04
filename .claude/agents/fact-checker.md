@@ -49,7 +49,7 @@ No modo mensal, não há `approved_json` autoritativo — ver "Modo mensal" (se�
 Para cada destaque (D1, D2, D3):
 
 a. Identificar o trecho do destaque em `newsletter_path` (entre `DESTAQUE N` e o próximo destaque ou EOF) — funciona igual nos dois modos, o label `DESTAQUE N | TEMA` é o mesmo formato na diária e no mensal.
-b. `mode: "daily"`: identificar os posts de social em `03-social.md` (seções `## d1`, `## d2`, `## d3` sob `# LinkedIn` e `# Facebook`). `mode: "monthly"`: pular este passo (sem social).
+b. `mode: "daily"`: identificar os posts de social em `03-social.md` (seções `## d1`, `## d2`, `## d3` sob `# Social`, ou sob `# LinkedIn` e `# Facebook` em edição antiga). **Cada destaque tem DOIS textos desde o #12094: `## d{N}` (legenda do post) e `## d{N}-cards` (texto dos cards do carrossel, rasterizado nos slides).** Verificar os dois — o card é lido pelo leitor tanto quanto a legenda. Claim que aparece nos dois conta uma vez, com `sources: ["social"]` (ou `["newsletter", "social"]`); claim só dos cards entra normalmente, com `sources: ["social"]` e o trecho verbatim do card. Edição sem `## d{N}-cards` (anterior ao #12094) tem só a legenda. `mode: "monthly"`: pular este passo (sem social).
 c. Extrair TODOS os claims factuais verificáveis dos tipos acima
 
 **Regras de extração:**

@@ -25,7 +25,7 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
-import { extractSection, extractDestaqueBlock } from "../extract-section.ts"; // #6064
+import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
 import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
 import {
   CAROUSEL_SLIDE_SLOTS,
@@ -2966,7 +2966,8 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
   for (const d of slots) {
     if (!slidesOnDiskDe(d)) continue; // destaque sem carrossel — publica single-image, nada a cruzar
 
-    const dText = extractDestaqueBlock(section, d);
+    // #12094: mesmo texto que o gen rasteriza — `## d{N}-cards`, com fallback pra legenda.
+    const dText = extractCarouselCardsBlock(section, d)?.text;
     if (!dText) continue; // sem bloco não há o que comparar (o gen já pulou este destaque)
 
     const atual = hashCarouselSlideTexts(resolveCarouselCardText(dText.trim(), storedParagraphs), ctaOverride);
@@ -3086,8 +3087,11 @@ function checkCarouselTextOverflow(
   // reparagrafada, a divisão gravada no render, não a quebra nova do post.
   const storedParagraphs = readCarouselCardParagraphs(editionDir);
   for (const d of slots) {
-    const dText = extractDestaqueBlock(section, d);
-    if (!dText) continue;
+    // #12094: mede o texto DOS CARDS (`## d{N}-cards`); edição anterior cai na legenda `## d{N}`.
+    const cardsSrc = extractCarouselCardsBlock(section, d);
+    if (!cardsSrc) continue;
+    const dText = cardsSrc.text;
+    const sectionId = cardsSrc.sectionId;
 
     const overflowing = findOverflowingCarouselSlides(resolveCarouselCardText(dText.trim(), storedParagraphs), ctaOverride);
     if (overflowing.length === 0) continue;
@@ -3100,7 +3104,7 @@ function checkCarouselTextOverflow(
       violations.push({
         rule: "carousel-text-overflow",
         message:
-          `'## ${d}' de 03-social.md tem ${overflowing.length} parágrafo(s) que não caberiam no card do carrossel ` +
+          `'## ${sectionId}' de 03-social.md tem ${overflowing.length} parágrafo(s) que não caberiam no card do carrossel ` +
           `(${detalhe}), mas a arte foi MANTIDA pelo editor em _internal/${CAROUSEL_KEEP_ART_FILENAME}: "${motivo}". ` +
           `O carrossel publica com a arte existente; o texto só vai na legenda.`,
         source_issue: "#11210",
@@ -3115,7 +3119,7 @@ function checkCarouselTextOverflow(
     violations.push({
       rule: "carousel-text-overflow",
       message:
-        `'## ${d}' de 03-social.md tem ${overflowing.length} parágrafo(s) que não cabem no card do ` +
+        `'## ${sectionId}' de 03-social.md tem ${overflowing.length} parágrafo(s) que não cabem no card do ` +
         `carrossel em ${DAILY_CAROUSEL_BODY_SIZE}px: ${detalhe}. O tamanho da fonte é fixo de propósito ` +
         `(#6078) — o conserto é REESCREVER o parágrafo pra ~${DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET} ` +
         `caracteres ou menos, aqui no painel Revisão, e depois rodar ` +

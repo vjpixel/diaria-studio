@@ -521,7 +521,7 @@ export function buildSwapDestaqueSteps(
     `writer-destaque DESTAQUE ${position} (novo item: "${promotedTitle}", source_text_path = path da entrada de sources com destaque === ${position} no stdout do refresh)`,
     `Depois de integrar o texto do writer-destaque: trocar no TÍTULO/SUBTÍTULO o título provisório "${toProvisionalTitulo(promotedTitle)}" pelo título final do D${position} — npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir ${dir} (até lá o invariante titulo-subtitulo-not-provisional do Stage 4 barra o gate, #9601)`,
     ...poolStep,
-    `social-writer + social-curto em escopo reduzido (d${position}), splice em 03-social.md`,
+    `social-writer + social-curto em escopo reduzido (d${position}), splice em 03-social.md (## d${position} e ## d${position}-cards em # Social, #12094)`,
     `Só DEPOIS do splice: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9169)`,
     `Escrever _internal/02-d${position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${dir}/_internal/02-d${position}-prompt.md --out-dir ${dir}/ --destaque d${position}`,
     `gen-carousel-cards.ts + upload-images-public.ts (após gerar imagem nova)`,
@@ -1091,7 +1091,7 @@ export function buildRestoreSteps(editionDir: string, position: 1 | 2 | 3, hasDr
       : `Backup sem _internal/02-d${position}-draft.md: re-rodar o writer-destaque DESTAQUE ${position}`,
     `Trocar o título provisório pelo final no TÍTULO/SUBTÍTULO: npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir ${dir}`,
     `Re-upload das imagens restauradas: npx tsx scripts/upload-images-public.ts --mode newsletter e --mode social (o cache reaproveita as chaves devolvidas quando o md5 bate)`,
-    `Splice do ## d${position} em 03-social.md (se o social já foi reescrito pro item que saiu) e npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir}`,
+    `Splice do ## d${position} e do ## d${position}-cards em 03-social.md (se o social já foi reescrito pro item que saiu) e npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir}`,
     `npx tsx scripts/check-invariants.ts --edition-dir ${dir} --stage 4`,
   ];
 }

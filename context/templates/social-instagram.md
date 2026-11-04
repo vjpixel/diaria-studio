@@ -5,6 +5,7 @@
 - Abrir com **hook direto**: dado concreto ou fato surpreendente — sem pergunta retórica.
 - Tom mais coloquial que o Facebook: frases curtas, ritmo de feed, zero jargão corporativo.
 - 2–3 parágrafos curtos (Instagram trunca a caption após ~3 linhas antes do "mais" — o hook precisa segurar sozinho).
+- Esta é a LEGENDA (`## d{N}`). O texto dos cards do carrossel é outra seção, `## d{N}-cards` (#12094, regras no §3a.1 do agent `social-writer`): a legenda não precisa ter a forma dos cards.
 - **Call-to-action final SEM menção a e-mail/newsletter por e-mail** (#2486 — `no-email-cta-instagram`). O Instagram não linka URL clicável no corpo do post; o CTA nativo é "link na bio" + follow:
   `"Edição completa no link da bio. Segue @diar.ia.br pra não perder a próxima."`
 - Até 5 hashtags (Instagram tolera mais que Facebook, mas evitar spam — nada de bloco de 20 hashtags).

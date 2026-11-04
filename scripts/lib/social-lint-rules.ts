@@ -773,7 +773,9 @@ const CHANNEL_SPECIFIC_LANGUAGE_RE =
  */
 function extractGenericDestaqueBodies(section: string): Array<{ destaque: string; text: string }> {
   // #9568: `## um` (4º post) é texto genérico channel-neutral como os `## d{N}`.
-  const chunks = ("\n" + section.replace(/\r\n/g, "\n")).split(/\n## (d\d+|um)\n/);
+  // #12094: `## d{N}-cards` (texto dos cards do carrossel) também chega ao leitor
+  // — rasterizado no slide — e segue a mesma regra channel-neutral.
+  const chunks = ("\n" + section.replace(/\r\n/g, "\n")).split(/\n## (d\d+(?:-cards)?|um)[ \t]*\n/);
   const out: Array<{ destaque: string; text: string }> = [];
   for (let i = 1; i < chunks.length; i += 2) {
     const destaque = chunks[i];
@@ -1508,7 +1510,8 @@ export function lintTrailingQuestion(md: string): TrailingQuestionResult {
   const socialSection = extractSection(md, "Social");
   if (socialSection) {
     // #9568: inclui `## um` (4º post USE MELHOR).
-    const chunks = ("\n" + socialSection).split(/\n## (d\d+|um)\n/);
+    // #12094: e `## d{N}-cards` — o último card também não fecha com pergunta.
+    const chunks = ("\n" + socialSection).split(/\n## (d\d+(?:-cards)?|um)[ \t]*\n/);
     for (let i = 1; i < chunks.length; i += 2) {
       const destaque = chunks[i];
       let body = chunks[i + 1] ?? "";
@@ -1714,7 +1717,11 @@ export function extractSocialSections(md: string): Record<string, string> {
 
   // Blocos `## d{N}` (main text apenas — até o 1º `### comment_`).
   // #9568: `## um` (4º post USE MELHOR) entra como `main_um`.
-  const destaqueRe = /\n## (d\d+|um)[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/gi;
+  // #12094: `## d{N}-cards` vira `main_d{N}-cards`, seção própria. Sem o
+  // `(?:-cards)?` + lookahead, `[^\n]*` aceitava `## d1-cards` como um 2º
+  // `d1` e o corpo dos cards SOBRESCREVIA `main_d1` (a legenda sumia do hash
+  // por seção do humanizador).
+  const destaqueRe = /\n## (d\d+(?:-cards)?|um)(?![\w-])[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/gi;
   let dm: RegExpExecArray | null;
   while ((dm = destaqueRe.exec(normalized)) !== null) {
     const destaque = dm[1];
