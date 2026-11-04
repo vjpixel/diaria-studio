@@ -505,6 +505,13 @@ export const FACEBOOK_CTA_UTM = {
   campaign: "post-cta",
 } as const;
 
+/** #12038: preparação do teste D1 de quatro semanas. Campanha separada
+ * do post-cta histórico do Facebook para não contaminar a medição. */
+export const SOCIAL_SIGNUP_TEST_UTM = {
+  medium: "organic_social",
+  campaign: "post-cta-12038",
+} as const;
+
 /** `utm_campaign` compartilhado por X e Threads no CTA de `{edition_url}` da
  * seção `# Curto` (#4295) — mesmo texto/link, só `utm_source` difere por canal. */
 const EDICAO_DIARIA_UTM_CAMPAIGN = "edicao-diaria";
@@ -970,6 +977,16 @@ export interface UtmEmitter {
  * entre este arquivo e os valores realmente exportados pelos emissores.
  */
 export const UTM_EMITTERS: readonly UtmEmitter[] = [
+  ...(["linkedin", "facebook", "instagram"] as const).map((source) => ({
+    id: `${source}-signup-test-12038`,
+    label: `${source} — teste de assinatura D1`,
+    source,
+    medium: SOCIAL_SIGNUP_TEST_UTM.medium,
+    campaignPattern: SOCIAL_SIGNUP_TEST_UTM.campaign,
+    originFile: "scripts/lib/social-signup-preparation.ts",
+    description: "Preparação local do teste de quatro semanas (#12038); Instagram: comentário e bio. Não publica.",
+    status: "ativo" as const,
+  })),
   {
     id: "site-apoiar-redirect",
     label: "Menu/rodapé 'Apoiar' do site → Apoia.se (redirect /apoiar/ir)",
