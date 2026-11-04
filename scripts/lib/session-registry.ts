@@ -101,6 +101,11 @@
  *     alguma não terminou reivindicada. Preferir isto a N `claim-issue`
  *     seguidos: a rajada de renames na âncora sincronizada pelo OneDrive é o
  *     que gera as cópias de conflito, ver `claimIssuesCheckAndSet`.)
+ *   npx tsx scripts/lib/session-registry.ts unclaim-issue --kind ... --issues A,B,C
+ *     (#12166: o inverso em lote — solta as issues de uma onda numa escrita
+ *     só da âncora, uma linha por issue, `exit 1` se alguma não saiu
+ *     liberada (`no-op-not-claimed` de uma não impede as outras). Ver
+ *     `unclaimIssues`.)
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire --pr N
@@ -3960,24 +3965,98 @@ export function unclaimIssue(
   tag: string = machineTag(),
   now: string = new Date().toISOString(),
 ): UnclaimIssueResult {
-  const target = resolveClaimTarget(issueNumber);
+  // #12166: o caminho individual é o lote de 1 — mesma escrita, mesmos
+  // desfechos. Uma implementação só evita as duas divergirem (a lição do
+  // #6481/#6567, que precisou corrigir o read-path e o write-path em separado).
+  const { ok, reason } = unclaimIssues(repoRoot, kind, sessionId, [issueNumber], tag, now).entries[0];
+  return { ok, reason };
+}
+
+/** #12166 — desfecho de UMA issue dentro de um unclaim em lote. */
+export interface BatchUnclaimIssueEntry extends UnclaimIssueResult {
+  issue: ClaimIssueTarget;
+  /** `#N` ou `owner/repo#N` — o mesmo rótulo das mensagens do CLI. */
+  label: string;
+}
+
+/** #12166 — resultado de `unclaimIssues`. */
+export interface BatchUnclaimIssuesResult {
+  /** `true` só quando TODAS as issues do lote saíram liberadas por esta chamada. */
+  ok: boolean;
+  /** Uma entrada por issue distinta, na ordem pedida. */
+  entries: BatchUnclaimIssueEntry[];
+  /** Quantas escritas no arquivo-âncora o lote fez: 0 (nada a soltar) ou 1. */
+  writes: 0 | 1;
+}
+
+/**
+ * Unclaim de VÁRIAS issues numa escrita só do arquivo-âncora (#12166) —
+ * simétrico a `claimIssuesCheckAndSet` (#12010) e pelo mesmo motivo: soltar
+ * as issues de uma onda com N `unclaim-issue` seguidos é uma rajada de N
+ * renames na âncora sincronizada pelo OneDrive, o padrão que vira cópia de
+ * conflito `-safeBackup-NNNN` (rodada 261104b: 19 issues mergeadas, 19
+ * chamadas standalone, e a rodada preferiu deixar as claims caírem no `end`).
+ *
+ * Semântica por issue idêntica à de `unclaimIssue` (ver a docstring dele):
+ * `no-op-not-claimed` por issue não impede as outras do lote; sessão
+ * ausente/ilegível vale para o lote inteiro. Issues repetidas contam uma vez.
+ * Cada `-safeBackup-*` do grupo que ainda carrega alguma das issues é
+ * reescrito uma vez, cirurgicamente (#6567).
+ */
+export function unclaimIssues(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  issues: readonly ClaimIssueTarget[],
+  tag: string = machineTag(),
+  now: string = new Date().toISOString(),
+): BatchUnclaimIssuesResult {
+  const distinct: { issue: ClaimIssueTarget; label: string; target: ResolvedClaimTarget }[] = [];
+  const seen = new Set<string>();
+  for (const issue of issues) {
+    const label = claimTargetLabel(issue);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    distinct.push({ issue, label, target: resolveClaimTarget(issue) });
+  }
+  if (distinct.length === 0) throw new Error("unclaimIssues: lista de issues vazia (#12166)");
+
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   const rawCurrent = readJsonSafe<SessionRecord>(path);
   if (!rawCurrent) {
+    let reason: UnclaimIssueReason = "no-op-session-missing";
     if (existsSync(path)) {
       warnUnclaimUnreadable(sessionId, path);
-      return { ok: false, reason: "no-op-unreadable" };
+      reason = "no-op-unreadable";
     }
-    return { ok: false, reason: "no-op-session-missing" };
+    return { ok: false, writes: 0, entries: distinct.map(({ issue, label }) => ({ issue, label, ok: false, reason })) };
   }
 
   // #6481: mescla com eventuais `-safeBackup-*` do MESMO arquivo real antes de
-  // checar `claimed_issues` — ver docstring acima. `readMergedRecordForRealFile`
-  // nunca devolve `null` aqui porque `rawCurrent` já provou que o arquivo real
-  // é legível (ela sempre inclui pelo menos o próprio arquivo real no merge).
+  // checar `claimed_issues` — ver docstring de `unclaimIssue`.
+  // `readMergedRecordForRealFile` nunca devolve `null` aqui porque `rawCurrent`
+  // já provou que o arquivo real é legível (ela sempre inclui pelo menos o
+  // próprio arquivo real no merge).
   const current = readMergedRecordForRealFile(repoRoot, path) ?? rawCurrent;
 
-  if (!recordHoldsClaim(current, target)) return { ok: false, reason: "no-op-not-claimed" };
+  const entries: BatchUnclaimIssueEntry[] = [];
+  const toRemove: ResolvedClaimTarget[] = [];
+  for (const { issue, label, target } of distinct) {
+    if (!recordHoldsClaim(current, target)) {
+      entries.push({ issue, label, ok: false, reason: "no-op-not-claimed" });
+      continue;
+    }
+    entries.push({ issue, label, ok: true, reason: "unclaimed" });
+    toRemove.push(target);
+  }
+  if (toRemove.length === 0) return { ok: false, writes: 0, entries };
+  const removeAll = (record: SessionRecord): SessionRecord => {
+    let out = record;
+    for (const target of toRemove) out = withClaimRemoved(out, target);
+    return out;
+  };
+  const holdsAny = (record: SessionRecord | null): boolean =>
+    !!record && toRemove.some((t) => recordHoldsClaim(record, t));
 
   // #6453 — `withClaimRemoved` limpa a entrada correspondente de
   // `claimed_issues_at` (ou `claimed_foreign_issues_at`, #10618) junto com a
@@ -4004,9 +4083,9 @@ export function unclaimIssue(
       // "Re-derivar do estado fresco" continua valendo — o que muda é QUAL
       // leitura é a fresca: a do GRUPO, não a de um arquivo do grupo.
       const base = readMergedRecordForRealFile(repoRoot, path) ?? fresh;
-      return { ...withClaimRemoved(base, target), lastHeartbeat: now };
+      return { ...removeAll(base), lastHeartbeat: now };
     },
-    (onDisk) => onDisk?.lastHeartbeat === now && !recordHoldsClaim(onDisk, target),
+    (onDisk) => onDisk?.lastHeartbeat === now && !holdsAny(onDisk),
   );
 
   // #6567: propaga a remoção a cada `-safeBackup-*` do grupo que ainda carrega
@@ -4015,7 +4094,7 @@ export function unclaimIssue(
   for (const backupPath of sessionGroupBackupPaths(repoRoot, path)) {
     const backupRecord = readJsonSafe<SessionRecord>(backupPath);
     if (!backupRecord) continue; // backup ilegível/parcialmente sincronizado — GC recolhe depois
-    if (!recordHoldsClaim(backupRecord, target)) continue;
+    if (!holdsAny(backupRecord)) continue;
     // #6952 (4º review): esta PR promoveu este laço de `writeJsonSafe` (que
     // praticamente nunca lança) pra `writeJsonSafeWithCas` (que PODE exaurir).
     // Sem o try/catch, um backup que exaure interrompe o laço e os SEGUINTES
@@ -4028,9 +4107,9 @@ export function unclaimIssue(
         backupPath,
         (current) => {
           if (!current) throw new Error("unclaimIssue: backup sumiu entre a leitura e a escrita");
-          return withClaimRemoved(current, target);
+          return removeAll(current);
         },
-        (onDisk) => !recordHoldsClaim(onDisk, target),
+        (onDisk) => !holdsAny(onDisk),
       );
     } catch {
       // Um backup que falhou não impede limpar os outros. A remoção do
@@ -4040,7 +4119,7 @@ export function unclaimIssue(
     }
   }
 
-  return { ok: true, reason: "unclaimed" };
+  return { ok: entries.every((e) => e.ok), writes: 1, entries };
 }
 
 /**
@@ -7417,6 +7496,38 @@ function main(): void {
       case "unclaim-issue": {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
+        if (values.issues !== undefined || flags.has("issues")) {
+          // #12166: a onda inteira numa escrita só da âncora — ver `unclaimIssues`.
+          const issues = requireClaimIssueList(values, flags, loadIssueRepos(repoRoot));
+          const batch = unclaimIssues(repoRoot, kind, sessionId, issues);
+          for (const entry of batch.entries) {
+            switch (entry.reason) {
+              case "unclaimed":
+                process.stdout.write(`session-registry: unclaim-issue ${entry.label} ok (liberada)\n`);
+                break;
+              case "no-op-not-claimed":
+                process.stdout.write(
+                  `session-registry: unclaim-issue ${entry.label} no-op (não estava reivindicada por esta sessão)\n`,
+                );
+                break;
+              case "no-op-session-missing":
+                process.stdout.write(`session-registry: unclaim-issue ${entry.label} no-op (sessão inexistente)\n`);
+                break;
+              case "no-op-unreadable":
+                process.stdout.write(
+                  `session-registry: unclaim-issue ${entry.label} no-op — registro EXISTE mas está ILEGÍVEL agora ` +
+                    "(aviso já emitido em stderr); a claim pode estar ATIVA\n",
+                );
+                break;
+            }
+          }
+          process.stdout.write(
+            `session-registry: unclaim-issue --issues ${batch.entries.filter((e) => e.ok).length}/${batch.entries.length} ok, ` +
+              `${batch.writes} escrita(s) na âncora [repoRoot=${repoRoot}]\n`,
+          );
+          if (!batch.ok) process.exitCode = 1;
+          break;
+        }
         const issue = requireClaimIssue(values, flags, loadIssueRepos(repoRoot)); // #10618
         const issueLabel = claimTargetLabel(issue);
         const result = unclaimIssue(repoRoot, kind, sessionId, issue);
