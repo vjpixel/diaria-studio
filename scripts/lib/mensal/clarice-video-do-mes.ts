@@ -139,40 +139,69 @@ function hrefAttr(url: string): string {
   return escHtml(url);
 }
 
-export function buildVideoDoMesHtml(input: { cycle: string; videoId: string; title: string; frase: string }): string {
+/**
+ * `imageUrl` é a imagem do DESTAQUE da edição que o vídeo comenta (pedido do
+ * editor, 04/11/2026: não a capa do YouTube), linkada para o vídeo, no mesmo
+ * estilo da imagem dos destaques da mensal.
+ */
+export function buildVideoDoMesHtml(input: {
+  cycle: string;
+  videoId: string;
+  title: string;
+  frase: string;
+  imageUrl?: string;
+}): string {
   const title = input.title.trim();
   const frase = input.frase.trim();
   if (!title) throw new Error("título do vídeo vazio");
   if (!frase) throw new Error("frase vazia");
   if (/[→←]/.test(title + frase)) throw new Error("seta no texto do bloco (#9721)");
+  const imageUrl = input.imageUrl?.trim();
+  if (imageUrl && !/^https:\/\//.test(imageUrl)) throw new Error(`imagem precisa de URL https pública: "${imageUrl}"`);
   const link = `color:${COLORS.ink};text-decoration:underline;text-decoration-color:${COLORS.brand};`;
+  const videoHref = hrefAttr(videoDoMesUrl(input.videoId, input.cycle));
   return [
     VIDEO_DO_MES_START,
     renderKicker(VIDEO_DO_MES_KICKER),
-    `<p style="margin:0 0 8px 0;font-family:${FONTS.serif};font-size:20px;line-height:1.3;color:${COLORS.ink};"><a href="${hrefAttr(videoDoMesUrl(input.videoId, input.cycle))}" style="${link}">${escHtml(title)}</a></p>`,
+    ...(imageUrl
+      ? [`<a href="${videoHref}" style="text-decoration:none;"><img src="${hrefAttr(imageUrl)}" alt="${escHtml(title)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 10px 0;border:0;" /></a>`]
+      : []),
+    `<p style="margin:0 0 8px 0;font-family:${FONTS.serif};font-size:20px;line-height:1.3;color:${COLORS.ink};"><a href="${videoHref}" style="${link}">${escHtml(title)}</a></p>`,
     `<p style="margin:0 0 16px 0;font-family:${FONTS.sans};">${escHtml(frase)} <a href="${hrefAttr(DIARIA_YOUTUBE_SUBSCRIBE_URL)}" style="${link}">Inscreva-se no canal</a>.</p>`,
     `<div style="line-height:28px;font-size:0;">&nbsp;</div>`,
     VIDEO_DO_MES_END,
   ].join("\n");
 }
 
-const ENCERRAR_KICKER_TEXT = "&nbsp;Para encerrar</td>";
+const RESUMO_KICKER_TEXT = "&nbsp;Resumo do mês</td>";
+/** Início do texto de qualquer kicker do render (`renderKicker`): a bolinha teal. */
+const KICKER_DOT = `<span style="color:${COLORS.brand};">&#9679;</span>&nbsp;`;
 
 /**
- * Insere (ou troca) o bloco logo antes do kicker "Para encerrar". Idempotente:
- * um bloco anterior entre os marcadores é substituído, nunca duplicado. Sem o
- * kicker no HTML, lança: injetar num lugar arbitrário seria pior que parar.
+ * Insere (ou move/troca) o bloco logo depois da seção "Resumo do mês", antes do
+ * kicker seguinte (pedido do editor, 04/11/2026; antes ia antes do "Para
+ * encerrar"). Idempotente: um bloco anterior entre os marcadores é removido de
+ * onde estiver e reinserido no lugar certo, nunca duplicado. Sem o kicker do
+ * resumo ou sem seção depois dele, lança: injetar num lugar arbitrário seria
+ * pior que parar.
  */
 export function injectVideoDoMes(html: string, block: string): { html: string; replaced: boolean } {
+  let base = html;
+  let replaced = false;
   const start = html.indexOf(VIDEO_DO_MES_START);
   if (start >= 0) {
     const end = html.indexOf(VIDEO_DO_MES_END, start);
     if (end < 0) throw new Error("marcador de início do vídeo do mês sem o de fim: HTML corrompido, conferir à mão");
-    return { html: html.slice(0, start) + block + html.slice(end + VIDEO_DO_MES_END.length), replaced: true };
+    let after = end + VIDEO_DO_MES_END.length;
+    if (html[after] === "\n") after += 1;
+    base = html.slice(0, start) + html.slice(after);
+    replaced = true;
   }
-  const kicker = html.indexOf(ENCERRAR_KICKER_TEXT);
-  if (kicker < 0) throw new Error('kicker "Para encerrar" não encontrado no HTML: não sei onde pôr o bloco');
-  const tableStart = html.lastIndexOf("<table", kicker);
-  if (tableStart < 0) throw new Error('tabela do kicker "Para encerrar" não encontrada');
-  return { html: html.slice(0, tableStart) + block + "\n" + html.slice(tableStart), replaced: false };
+  const resumo = base.indexOf(RESUMO_KICKER_TEXT);
+  if (resumo < 0) throw new Error('kicker "Resumo do mês" não encontrado no HTML: não sei onde pôr o bloco');
+  const nextKicker = base.indexOf(KICKER_DOT, resumo + RESUMO_KICKER_TEXT.length);
+  if (nextKicker < 0) throw new Error('nenhuma seção depois do "Resumo do mês": não sei onde pôr o bloco');
+  const tableStart = base.lastIndexOf("<table", nextKicker);
+  if (tableStart <= resumo) throw new Error('tabela do kicker seguinte ao "Resumo do mês" não encontrada');
+  return { html: base.slice(0, tableStart) + block + "\n" + base.slice(tableStart), replaced };
 }

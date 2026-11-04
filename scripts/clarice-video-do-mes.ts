@@ -10,11 +10,13 @@
  *        npx tsx scripts/clarice-video-do-mes.ts --cycle 2610-11 --pick
  *
  *   2. Injetar o bloco no HTML renderizado do ciclo
- *      (`data/monthly/{ciclo}/_internal/cloudflare-preview.html`), antes do
- *      "Para encerrar". Sem `--write` só mostra o bloco; com `--write` grava
+ *      (`data/monthly/{ciclo}/_internal/cloudflare-preview.html`), logo depois
+ *      do "Resumo do mês". `--image-url` é a imagem pública do destaque da
+ *      edição que o vídeo comenta (a que saiu no e-mail, não a capa do
+ *      YouTube). Sem `--write` só mostra o bloco; com `--write` grava
  *      (backup em `cloudflare-preview.pre-video-do-mes.html`, 1x). Idempotente.
  *        npx tsx scripts/clarice-video-do-mes.ts --cycle 2610-11 --inject \
- *          --video-id ID --title "..." [--frase "..."] [--html PATH] [--write]
+ *          --video-id ID --title "..." [--image-url URL] [--frase "..."] [--html PATH] [--write]
  *      Sem `--video-id`, escolhe pelo passo 1 antes de injetar.
  *
  * Depois da injeção, as campanhas já agendadas recebem o HTML novo por
@@ -137,7 +139,7 @@ async function main(): Promise<number> {
   }
 
   if (!args.flags.has("inject")) {
-    console.error("uso: --cycle {ciclo} (--pick | --inject [--video-id ID --title T] [--frase F] [--html PATH] [--write])");
+    console.error("uso: --cycle {ciclo} (--pick | --inject [--video-id ID --title T] [--image-url URL] [--frase F] [--html PATH] [--write])");
     return 2;
   }
 
@@ -151,7 +153,9 @@ async function main(): Promise<number> {
   }
   if (!title) throw new Error("--title obrigatório com --video-id");
   const frase = args.values.frase ?? defaultVideoDoMesFrase(cycle);
-  const block = buildVideoDoMesHtml({ cycle, videoId, title, frase });
+  const imageUrl = args.values["image-url"];
+  if (!imageUrl) console.error("[aviso] sem --image-url: o bloco sai só com texto (a imagem é a do destaque da edição que o vídeo comenta)");
+  const block = buildVideoDoMesHtml({ cycle, videoId, title, frase, imageUrl });
 
   const htmlPath = args.values.html
     ? resolve(args.values.html)
