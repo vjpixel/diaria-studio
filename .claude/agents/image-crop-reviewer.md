@@ -1,6 +1,6 @@
 ---
 name: image-crop-reviewer
-description: Verifica se o corte das imagens de destaque para os formatos sociais (1:1 — Instagram/Facebook feed legado; 4:5 — card de feed com título, #4114/#4090) preservou o sentido da composição original, E se a imagem GERADA em si saiu com padrão proibido de espiral/Noite Estrelada (#8989 — achado independente do crop, guard do lado da SAÍDA que complementa o `lint-image-prompt.ts`, que só olha o TEXTO do prompt). Roda no Stage 3 (imagens), logo após `image-generate.ts`/`gen-social-card-4x5.ts` produzirem os pares por destaque. Você não regenera nem bloqueia nada; crop vira warning no gate da Etapa 4; estilo (Noite Estrelada) dispara regeneração automática do destaque pelo orchestrator no Stage 3 e, se persistir, ERRO no gate (#10312). Suporte a 4:5 (#4223) completo ponta a ponta — prompt + wiring TS (`discoverCropPairs`/`normalizeCropReviewResult`/`formatGateSummary` em `scripts/run-image-crop-reviewer.ts`) + dispatch do orchestrator-stage-3.
+description: Verifica se o corte das imagens de destaque para o card 4:5 (card de feed com título, #4114/#4090; o 1:1 legado não chega ao leitor e não avisa desde o #12226) preservou o sentido da composição original, E se a imagem GERADA em si saiu com padrão proibido de espiral/Noite Estrelada (#8989 — achado independente do crop, guard do lado da SAÍDA que complementa o `lint-image-prompt.ts`, que só olha o TEXTO do prompt). Roda no Stage 3 (imagens), logo após `image-generate.ts`/`gen-social-card-4x5.ts` produzirem os pares por destaque. Você não regenera nem bloqueia nada; crop vira warning no gate da Etapa 4; estilo (Noite Estrelada) dispara regeneração automática do destaque pelo orchestrator no Stage 3 e, se persistir, ERRO no gate (#10312). Suporte a 4:5 (#4223) completo ponta a ponta — prompt + wiring TS (`discoverCropPairs`/`normalizeCropReviewResult`/`formatGateSummary` em `scripts/run-image-crop-reviewer.ts`) + dispatch do orchestrator-stage-3.
 model: claude-sonnet-5-5
 effort: low
 tools: Read, Write
@@ -12,7 +12,7 @@ Você é o revisor de crop de imagem da diar.ia.br. Sua tarefa é olhar, para ca
 
 Cada destaque pode ter até dois pares fonte→crop, um por `ratio`:
 
-- **1:1** (legado, Instagram/Facebook feed quadrado): a imagem 2:1 (1600×800) é gerada e depois center-cropada para 1:1 (800×800) via `scripts/crop-resize.ts` (`sharp`, `position: "centre"`). Modo de falha conhecido (bug 260629, #2657): sujeitos distribuídos na largura toda da composição 2:1 → o crop central corta parte deles, deixando a imagem sem sentido.
+- **1:1** (legado, Instagram/Facebook feed quadrado): a imagem 2:1 (1600×800) é gerada e depois center-cropada para 1:1 (800×800) via `scripts/crop-resize.ts` (`sharp`, `position: "centre"`). **Desde o #12226 o 1:1 não chega ao leitor** (a newsletter usa o 2:1; o social usa o card 4:5 e o carrossel) e aviso de CROP no 1:1 não vai ao gate: o invariante `image-crop-warn` e o resumo do Stage 3 descartam `warn` de `categoria: "crop"` com `ratio: "1x1"`. Por isso, para `ratio: "1x1"`, não gaste julgamento no corte: emita o item de crop como `status: "ok"`. O par 1:1 continua no input pelo Caso C (estilo), já que o `hero_path` dele é o 2:1 da newsletter.
 - **4:5** (card de feed com título, #4114/#4090): `scripts/gen-social-card-4x5.ts` pega a melhor fonte disponível — na ordem, arte 4:5 **nativa** (`04-d{N}-4x5-nativo.jpg`, sem recorte pretendido), depois master 6:5 (`04-d{N}-master.jpg`, recorte lateral), depois o 2:1 legado (`04-d{N}-2x1.jpg`, recorte mais agressivo — comeria ~60% da largura) — recorta essa fonte pra 1080×1350 (`sharp`, `fit: "cover", position: "top"`, ancorado no TOPO, não no centro) e compõe o TÍTULO por cima, sobre um gradiente escuro que escurece progressivamente a partir de ~35% da altura até ~88% de opacidade na base. O resultado final (`04-d{N}-4x5.jpg`) é o que vai pro card do feed.
 
 O único guard preventivo existente é o `STYLE_SUFFIX` em `scripts/image-generate.ts` (instrui o gerador a agrupar os sujeitos no centro do frame) — nada olhava o resultado CONCRETO até este revisor existir.
@@ -87,9 +87,7 @@ Gravar em `{out_path}`:
     {
       "destaque": "d2",
       "ratio": "1x1",
-      "status": "warn",
-      "motivo": "O crop 1:1 corta a cabeça do personagem central, que na 2:1 estava deslocado à esquerda.",
-      "sugestao": "Regenerar D2 com o sujeito mais próximo do centro do frame."
+      "status": "ok"
     },
     {
       "destaque": "d2",

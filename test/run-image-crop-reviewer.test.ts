@@ -428,7 +428,7 @@ describe("formatGateSummary (#3951)", () => {
       ...EMPTY_RESULT,
       results: [
         { destaque: "d1", ratio: "1x1", status: "ok" },
-        { destaque: "d2", ratio: "1x1", status: "warn", motivo: "sujeito cortado nas bordas", sugestao: "regenerar D2" },
+        { destaque: "d2", ratio: "4x5", status: "warn", motivo: "sujeito cortado nas bordas", sugestao: "regenerar D2" },
       ],
       summary: { total: 2, ok: 1, warn: 1 },
     };
@@ -467,7 +467,7 @@ describe("formatGateSummary (#3951)", () => {
     const result: CropReviewResult = {
       ...EMPTY_RESULT,
       results: [
-        { destaque: "d1", ratio: "1x1", status: "warn", motivo: "sujeito cortado nas bordas" },
+        { destaque: "d1", ratio: "4x5", status: "warn", motivo: "sujeito cortado nas bordas" },
       ],
       summary: { total: 1, ok: 0, warn: 1 },
     };
@@ -475,14 +475,14 @@ describe("formatGateSummary (#3951)", () => {
     assert.ok(s.includes("⚠️"));
     assert.ok(!s.includes("🌀"));
     // #9041: exatamente 1 espaço entre ícone e destaque (igual ao 🌀 de estilo).
-    assert.ok(s.includes("  ⚠️ D1 (1x1)"), "ícone de crop seguido de 1 espaço só");
+    assert.ok(s.includes("  ⚠️ D1 (4x5)"), "ícone de crop seguido de 1 espaço só");
     assert.ok(!s.includes("⚠️  D1"), "sem espaço duplo após o ícone de crop");
   });
 
   it("nunca inclui linguagem de bloqueio (warning-only, #3951)", () => {
     const result: CropReviewResult = {
       ...EMPTY_RESULT,
-      results: [{ destaque: "d1", ratio: "1x1", status: "warn", motivo: "x" }],
+      results: [{ destaque: "d1", ratio: "4x5", status: "warn", motivo: "x" }],
       summary: { total: 1, ok: 0, warn: 1 },
     };
     const s = formatGateSummary(result);
@@ -494,7 +494,7 @@ describe("formatGateSummary (#3951)", () => {
   // ratio na seção do gate (#4223)
   // ---------------------------------------------------------------------
 
-  it("mostra o ratio em cada linha de warn, distinguindo 1:1 de 4:5 do mesmo destaque — #4223", () => {
+  it("mostra o ratio na linha de warn; crop 1:1 do mesmo destaque não aparece — #4223, #12226", () => {
     const result: CropReviewResult = {
       ...EMPTY_RESULT,
       results: [
@@ -504,10 +504,39 @@ describe("formatGateSummary (#3951)", () => {
       summary: { total: 2, ok: 0, warn: 2 },
     };
     const s = formatGateSummary(result);
-    assert.ok(s.includes("D2 (1x1)"), `esperava linha D2 (1x1) na saída: ${s}`);
+    assert.ok(!s.includes("D2 (1x1)"), `crop 1:1 não chega ao leitor e não deve aparecer: ${s}`);
+    assert.ok(!s.includes("sujeito cortado nas bordas"));
     assert.ok(s.includes("D2 (4x5)"), `esperava linha D2 (4x5) na saída: ${s}`);
-    assert.ok(s.includes("sujeito cortado nas bordas"));
     assert.ok(s.includes("título cobre o rosto no card"));
+    assert.ok(s.includes("1 de 2"), `contagem deve considerar só o aviso mostrado: ${s}`);
+  });
+
+  it("#12226: só aviso de crop 1:1 → nenhuma linha ⚠️, mensagem positiva", () => {
+    const result: CropReviewResult = {
+      ...EMPTY_RESULT,
+      results: [
+        { destaque: "d1", ratio: "1x1", status: "warn", motivo: "o crop 1:1 corta a mão do robô" },
+        { destaque: "d1", ratio: "4x5", status: "ok" },
+      ],
+      summary: { total: 2, ok: 1, warn: 1 },
+    };
+    const s = formatGateSummary(result);
+    assert.ok(!s.includes("⚠️"), `não deveria avisar sobre o 1:1: ${s}`);
+    assert.ok(!s.includes("mão do robô"));
+    assert.ok(s.includes("✅"));
+  });
+
+  it("#12226: achado de ESTILO no par 1x1 continua aparecendo (vale para a imagem gerada)", () => {
+    const result: CropReviewResult = {
+      ...EMPTY_RESULT,
+      results: [
+        { destaque: "d1", ratio: "1x1", status: "ok" },
+        { destaque: "d1", ratio: "1x1", status: "warn", categoria: "estilo", motivo: "espiral no céu" },
+      ],
+      summary: { total: 2, ok: 1, warn: 1 },
+    };
+    const s = formatGateSummary(result);
+    assert.ok(s.includes("🌀 D1 (1x1)"), `estilo no 1x1 deve continuar visível: ${s}`);
   });
 
   it("contagem ok/total do resumo conta pares (destaque,ratio), não só destaques — #4223", () => {

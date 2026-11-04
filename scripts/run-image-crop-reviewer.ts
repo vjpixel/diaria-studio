@@ -66,6 +66,7 @@ import { md5OfFile } from "./lib/shared/file-md5.ts"; // #9598
 import {
   isCropReviewEntryStale, // #10312
   isCropReviewImageVariant, // #10325
+  isSilencedCropWarn, // #12226
   CROP_REVIEW_IMAGE_VARIANTS, // #10333: ordem nativo → master → 2x1, fonte única
   type CropReviewImageVariant,
 } from "./lib/invariant-checks/stage-4.ts";
@@ -721,17 +722,27 @@ export function formatGateSummary(result: CropReviewResult): string {
     return lines.join("\n");
   }
 
+  // #12226: aviso de crop no 1:1 não é mostrado — a imagem não chega ao leitor
+  // (mesmo filtro do invariante `image-crop-warn` no gate 4).
+  const shownWarns = results.filter((r) => r.status === "warn" && !isSilencedCropWarn(r));
+
   if (summary.warn === 0) {
     lines.push(`  ✅ ${summary.ok}/${summary.total} destaque(s) — crop preserva o sentido da imagem.`);
     lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     return lines.join("\n");
   }
 
+  if (shownWarns.length === 0) {
+    lines.push("  ✅ Nenhum aviso sobre imagem que chega ao leitor (aviso de crop 1:1 omitido, #12226).");
+    lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    return lines.join("\n");
+  }
+
   lines.push(
-    `  ${summary.warn} de ${summary.total} destaque(s) com aviso — revisar antes de publicar:`,
+    `  ${shownWarns.length} de ${summary.total} destaque(s) com aviso — revisar antes de publicar:`,
   );
   lines.push("");
-  for (const r of results.filter((r) => r.status === "warn")) {
+  for (const r of shownWarns) {
     // #8989: "estilo" é um achado de PADRÃO VISUAL PROIBIDO (espiral/Noite
     // Estrelada na imagem gerada), distinto de "crop" (sujeito perdido no
     // recorte). Ícone e rótulo diferentes pra o editor não confundir os dois.
