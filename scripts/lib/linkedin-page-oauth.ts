@@ -57,35 +57,37 @@ export async function fetchAdministeredOrgUrns(fetchFn: FetchFn, accessToken: st
     headers: restHeaders(accessToken, apiVersion),
     signal: AbortSignal.timeout(30_000),
   });
+  if (!res.ok) {
+    throw new Error(`organizationAcls falhou (HTTP ${res.status}) — o token tem rw_organization_admin?`);
+  }
   const text = await res.text();
-  let data: { elements?: Array<{ organization?: string; organizationTarget?: string }> };
+  let data: { elements?: Array<{ organization?: string }> };
   try {
     data = JSON.parse(text);
   } catch {
     throw new Error(`organizationAcls: resposta não-JSON (HTTP ${res.status})`);
   }
-  if (!res.ok) {
-    throw new Error(`organizationAcls falhou (HTTP ${res.status}) — o token tem rw_organization_admin?`);
-  }
-  const urns = (data.elements ?? [])
-    .map((e) => e.organization ?? e.organizationTarget ?? "")
-    .filter(isOrganizationUrn);
+  const urns = (data.elements ?? []).map((e) => e.organization ?? "").filter(isOrganizationUrn);
   return [...new Set(urns)];
 }
 
 /**
- * Escolhe a URN da página: `--org` explícito vence (e precisa estar entre as
- * administradas, quando a lista veio); sem ele, só decide sozinho se o
- * usuário administra exatamente uma página.
+ * Escolhe a URN da página. `administered = null` = a consulta de
+ * organizationAcls falhou: só segue com `--org` explícito (o token já foi
+ * emitido, e perder o consentimento por causa da descoberta seria pior).
+ * Com a lista em mãos, `--org` precisa estar nela; sem `--org`, só decide
+ * sozinho se o usuário administra exatamente uma página.
  */
-export function pickOrgUrn(administered: string[], explicit: string | undefined): { ok: true; urn: string } | { ok: false; reason: string } {
+export function pickOrgUrn(administered: string[] | null, explicit: string | undefined): { ok: true; urn: string } | { ok: false; reason: string } {
   if (explicit) {
     if (!isOrganizationUrn(explicit)) return { ok: false, reason: `--org inválido: "${explicit}" (esperado urn:li:organization:{id})` };
-    if (administered.length > 0 && !administered.includes(explicit)) {
+    if (administered === null) return { ok: true, urn: explicit };
+    if (!administered.includes(explicit)) {
       return { ok: false, reason: `${explicit} não está entre as páginas que esta conta administra: ${administered.join(", ")}` };
     }
     return { ok: true, urn: explicit };
   }
+  if (administered === null) return { ok: false, reason: "a consulta de organizationAcls falhou e não há --org — rode de novo com --org urn:li:organization:{id}" };
   if (administered.length === 1) return { ok: true, urn: administered[0] };
   if (administered.length === 0) {
     return { ok: false, reason: "a conta que autorizou não administra nenhuma página (entre como admin da diar.ia.br)" };

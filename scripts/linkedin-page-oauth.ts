@@ -30,7 +30,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
@@ -44,6 +44,7 @@ import {
   LINKEDIN_PAGE_REDIRECT_URI,
   LINKEDIN_PAGE_SCOPES,
   fetchAdministeredOrgUrns,
+  isOrganizationUrn,
   pickOrgUrn,
 } from "./lib/linkedin-page-oauth.ts";
 
@@ -71,10 +72,11 @@ function waitForCode(authUrl: string, state: string): Promise<string> {
         res.end();
         return;
       }
+      const stateOk = url.searchParams.get("state") === state;
       res.writeHead(200, { "Content-Type": "text/html;charset=utf-8" });
       res.end(
         `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:3rem">` +
-          (code ? "<h1>Pronto</h1><p>Pode fechar esta aba e voltar ao terminal.</p>" : "<h1>Falhou</h1><p>Veja o terminal.</p>") +
+          (code && stateOk ? "<h1>Pronto</h1><p>Pode fechar esta aba e voltar ao terminal.</p>" : "<h1>Falhou</h1><p>Veja o terminal.</p>") +
           `</body>`,
       );
       const finish = (fn: () => void) => {
@@ -83,9 +85,7 @@ function waitForCode(authUrl: string, state: string): Promise<string> {
         fn();
       };
       if (error) return finish(() => reject(new Error(`consentimento negado: ${error} ${url.searchParams.get("error_description") ?? ""}`)));
-      if (url.searchParams.get("state") !== state) {
-        return finish(() => reject(new Error("state divergente — callback descartado por segurança")));
-      }
+      if (!stateOk) return finish(() => reject(new Error("state divergente — callback descartado por segurança")));
       finish(() => resolveCode(code as string));
     });
     server.on("error", (err: NodeJS.ErrnoException) => {
@@ -115,6 +115,13 @@ async function main(): Promise<number> {
     );
     return 1;
   }
+  // --org validado ANTES do consentimento: errar aqui não custa uma ida ao navegador.
+  const argv = process.argv.slice(2);
+  const orgArg = getArg(argv, "org");
+  if (hasFlag(argv, "org") && !isOrganizationUrn(orgArg)) {
+    console.error(`✖ --org precisa de um valor urn:li:organization:{id} (veio "${orgArg}").`);
+    return 1;
+  }
   const opts = { redirectUri: LINKEDIN_PAGE_REDIRECT_URI, scopes: LINKEDIN_PAGE_SCOPES };
   const state = randomBytes(16).toString("hex");
   const code = await waitForCode(buildAuthorizeUrl(clientId, state, opts), state);
@@ -127,8 +134,13 @@ async function main(): Promise<number> {
   });
 
   const apiVersion = (process.env.LINKEDIN_API_VERSION ?? "").trim() || defaultLinkedInApiVersion(new Date());
-  const administered = await fetchAdministeredOrgUrns(fetch, token.accessToken, apiVersion);
-  const picked = pickOrgUrn(administered, getArg(process.argv.slice(2), "org") || undefined);
+  let administered: string[] | null = null;
+  try {
+    administered = await fetchAdministeredOrgUrns(fetch, token.accessToken, apiVersion);
+  } catch (e) {
+    console.error(`⚠ ${(e as Error).message}`);
+  }
+  const picked = pickOrgUrn(administered, orgArg || undefined);
   if (!picked.ok) {
     console.error(`✖ ${picked.reason}. Nada foi gravado.`);
     return 1;

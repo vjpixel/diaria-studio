@@ -67,9 +67,10 @@ describe("OAuth da página (#8055)", () => {
 
   it("organizationAcls: extrai e deduplica as URNs administradas, com headers REST", async () => {
     const f = fakeFetch([
-      () => json({ elements: [{ organization: ORG }, { organization: ORG }, { organization: "lixo" }, { organizationTarget: "urn:li:organization:2" }] }),
+      () => json({ elements: [{ organization: ORG }, { organization: ORG }, { organization: "lixo" }, { organization: "urn:li:organization:2" }] }),
     ]);
     assert.deepEqual(await fetchAdministeredOrgUrns(f.fetchFn, "T", "202609"), [ORG, "urn:li:organization:2"]);
+    assert.deepEqual(await fetchAdministeredOrgUrns(fakeFetch([() => json({})]).fetchFn, "T", "202609"), []);
     assert.equal(f.calls[0].url, LINKEDIN_ORG_ACLS_URL);
     const h = f.calls[0].init?.headers as Record<string, string>;
     assert.equal(h["LinkedIn-Version"], "202609");
@@ -78,8 +79,11 @@ describe("OAuth da página (#8055)", () => {
 
   it("organizationAcls: HTTP de erro e corpo não-JSON lançam", async () => {
     await assert.rejects(fetchAdministeredOrgUrns(fakeFetch([() => json({}, 403)]).fetchFn, "T", "202609"), /HTTP 403/);
-    const html = fakeFetch([() => new Response("<html>", { status: 502 })]);
-    await assert.rejects(fetchAdministeredOrgUrns(html.fetchFn, "T", "202609"), /não-JSON/);
+    // 403 com corpo HTML ainda aponta o escopo, não "não-JSON"; e nunca ecoa o token.
+    const html403 = fakeFetch([() => new Response("<html>", { status: 403 })]);
+    await assert.rejects(fetchAdministeredOrgUrns(html403.fetchFn, "SEGREDO", "202609"), (e: Error) => /rw_organization_admin/.test(e.message) && !e.message.includes("SEGREDO"));
+    const html200 = fakeFetch([() => new Response("<html>", { status: 200 })]);
+    await assert.rejects(fetchAdministeredOrgUrns(html200.fetchFn, "T", "202609"), /não-JSON/);
   });
 
   it("pickOrgUrn: única página decide sozinha; 0 ou várias exigem ação; --org é validado", () => {
@@ -91,5 +95,13 @@ describe("OAuth da página (#8055)", () => {
     assert.deepEqual(pickOrgUrn([ORG, "urn:li:organization:2"], "urn:li:organization:2"), { ok: true, urn: "urn:li:organization:2" });
     assert.equal(pickOrgUrn([ORG], "urn:li:organization:9").ok, false);
     assert.equal(pickOrgUrn([ORG], "123").ok, false);
+    // conta sem página: --org não é aceito às cegas
+    assert.equal(pickOrgUrn([], ORG).ok, false);
+  });
+
+  it("pickOrgUrn: ACL indisponível (null) só segue com --org válido", () => {
+    assert.deepEqual(pickOrgUrn(null, ORG), { ok: true, urn: ORG });
+    assert.equal(pickOrgUrn(null, undefined).ok, false);
+    assert.equal(pickOrgUrn(null, "123").ok, false);
   });
 });
