@@ -446,6 +446,17 @@ describe("resolveBranchCreateTargets (#12165) — alvo derivado do comando", () 
     assert.deepEqual(resolveBranchCreateTargets("git $OPTS switch -c x", fx.wt, HOME), [null]);
   });
 
+  it("variável atribuída com valor literal antes no MESMO comando é expandida (forma do caso real, `W=...; cd $W`)", () => {
+    assert.deepEqual(resolveBranchCreateTargets(`W=${fx.wt}; cd $W && git switch -q -c x`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`export W=${fx.wt} && cd "\${W}" && git switch -c x`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`W=${fx.wt}\ngit -C "$W/scripts" switch -c x`, fx.main, HOME), [join(fx.wt, "scripts")]);
+    // valor dinâmico na atribuição, ou atribuição só dentro de subshell → segue não resolvido
+    assert.deepEqual(resolveBranchCreateTargets("W=$(pwd); cd $W && git switch -c x", fx.main, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets(`(W=${fx.wt}); cd $W && git switch -c x`, fx.main, HOME), [null]);
+    // `W=x git ...` é env do comando, não variável do shell para `$W` na mesma linha
+    assert.deepEqual(resolveBranchCreateTargets(`W=${fx.wt} git -C $W switch -c x`, fx.main, HOME), [null]);
+  });
+
   it("variável em aspas simples é literal (não dinâmica)", () => {
     assert.deepEqual(resolveBranchCreateTargets("cd '/tmp/$x' && git switch -c y", fx.main, HOME), ["/tmp/$x"]);
   });
@@ -504,6 +515,11 @@ describe("hook end-to-end (#12165) — os dois casos da issue", () => {
 
   it("regressão (falso positivo): sessão no principal, `cd <worktree linkado> && git switch -c` → LIBERA", () => {
     const out = hook(fx.main, `cd ${fx.outsideWt} && git switch -q -c fix/12092-x`);
+    assert.equal(denied(out), false, out);
+  });
+
+  it("regressão (falso positivo, forma literal da issue): `W=<worktree>; cd $W && git switch -q -c` → LIBERA", () => {
+    const out = hook(fx.main, `W=${fx.outsideWt}\ncd $W && git switch -q -c fix/12092-x`);
     assert.equal(denied(out), false, out);
   });
 

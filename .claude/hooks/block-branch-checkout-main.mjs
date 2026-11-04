@@ -132,8 +132,9 @@ export const BLOCK_REASON =
   "nunca a um subagente. Se você é o subagente implementador: seu trabalho deve rodar dentro do PRÓPRIO " +
   "worktree (isolation: \"worktree\"), não no checkout principal — confira se o dispatch te deu um path sob " +
   ".claude/worktrees/ e rode o git checkout -b ali. O alvo é lido do próprio comando (#12165): cwd da " +
-  "sessão, `cd <dir>` anterior e `git -C <dir>`; alvo com variável/substituição (`cd $W`, `git -C " +
-  "\"$(...)\"`) não é resolvido e conta como checkout principal — use o caminho literal do worktree. " +
+  "sessão, `cd <dir>` anterior e `git -C <dir>`; alvo com variável definida fora do comando ou " +
+  "substituição (`cd $W` sem `W=/caminho` antes no mesmo comando, `git -C \"$(...)\"`) não é resolvido e " +
+  "conta como checkout principal — use o caminho literal do worktree. " +
   "Se você é a coordenadora e está vendo este bloqueio por " +
   "engano (ex: seu próprio registro expirou por staleness), rode `npx tsx scripts/lib/session-registry.ts " +
   "register --kind {overnight|develop|continuo}` (o SEU kind) para renovar o registro que já era seu, e " +
@@ -183,8 +184,11 @@ export function isBranchCreateCheckoutCommand(command) {
 // Agora o alvo é derivado do próprio comando: parte de `payload.cwd`, aplica
 // cada `cd`/`pushd` anterior ao `git` (na ordem; `( ... )` isola o `cd` como
 // o shell faz) e depois cada `-C <path>` do `git` (cumulativos, como no git).
-// Quando o alvo não dá para resolver (`cd $W`, `cd -`, `popd`, `git -C
-// "$(...)"`, `--git-dir`/`--work-tree`), o segmento é tratado como checkout
+// `$HOME`, `~` e variáveis atribuídas com valor literal ANTES no mesmo
+// comando (`W=/abs/wt; cd $W && ...`, a forma do caso real) são expandidos.
+// Quando o alvo não dá para resolver (`cd $W` com `W` de fora do comando,
+// `cd -`, `popd`, `git -C "$(...)"`, `--git-dir`/`--work-tree`), o segmento é
+// tratado como checkout
 // PRINCIPAL — fail-closed (#12165): um alvo desconhecido nunca libera sozinho.
 // Isso só morde quando há coordenadora ativa e a chamada não é dela, então
 // o comando comum de subagente (`git checkout -b X` com cwd no próprio
@@ -294,18 +298,44 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
     i++;
   }
   pushSegment();
-  // `$HOME`/`${HOME}` no início do token: expansão conhecida, não dinâmica.
-  for (const seg of segments) {
-    for (const t of seg) {
-      if (!t.dynamic || !home) continue;
-      const m = /^\$(?:HOME|\{HOME\})(\/.*)?$/.exec(t.value);
-      if (m && !/[$`*?[]/.test(m[1] ?? "")) {
-        t.value = home + (m[1] ?? "");
-        t.dynamic = false;
-      }
-    }
-  }
   return segments;
+}
+
+/**
+ * Expande `$NOME`/`${NOME}` de um token dinâmico com as variáveis CONHECIDAS
+ * (`vars`: `HOME` + atribuições literais anteriores no MESMO comando, ex.
+ * `W=/abs/wt; cd $W && git switch -c X` — a forma do caso real da #12165).
+ * Devolve o token resolvido (`dynamic: false`) ou o próprio token quando
+ * sobra qualquer expansão desconhecida (`$OUTRA`, `$(...)`, crase, glob).
+ */
+function expandKnownVars(token, vars) {
+  if (!token || !token.dynamic) return token;
+  let unknown = false;
+  const value = token.value.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (m, a, b) => {
+    const name = a ?? b;
+    if (vars.has(name)) return vars.get(name);
+    unknown = true;
+    return m;
+  });
+  if (unknown || /[$`*?[]/.test(value)) return token;
+  return { value, dynamic: false };
+}
+
+/** `true` quando o segmento é SÓ atribuições (`W=/x`, `export W=/x`). */
+function recordAssignments(seg, vars) {
+  const start = seg[0]?.value === "export" ? 1 : 0;
+  if (seg.length <= start) return false;
+  for (let k = start; k < seg.length; k++) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(seg[k].value)) return false;
+  }
+  for (let k = start; k < seg.length; k++) {
+    const eq = seg[k].value.indexOf("=");
+    const name = seg[k].value.slice(0, eq);
+    const resolved = expandKnownVars({ value: seg[k].value.slice(eq + 1), dynamic: seg[k].dynamic }, vars);
+    if (resolved.dynamic) vars.delete(name);
+    else vars.set(name, resolved.value);
+  }
+  return true;
 }
 
 function safeHomedir() {
@@ -317,7 +347,8 @@ function safeHomedir() {
 }
 
 /** Resolve `arg` contra `cwd`; `UNRESOLVED` se qualquer um dos dois for. */
-function resolveDir(cwd, token) {
+function resolveDir(cwd, rawToken, vars) {
+  const token = expandKnownVars(rawToken, vars);
   if (!token || token.dynamic) return UNRESOLVED;
   const v = token.value;
   if (v === "" || v === "-") return UNRESOLVED;
@@ -351,18 +382,21 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
   const targets = [];
   let cwd = typeof baseCwd === "string" && baseCwd.trim() !== "" ? resolvePath(baseCwd) : UNRESOLVED;
   const stack = [];
+  let vars = new Map(home ? [["HOME", home]] : []);
   for (const seg of tokenizeShellSegments(command, home)) {
     if (seg.length === 1 && seg[0].paren) {
-      if (seg[0].value === "(") stack.push(cwd);
-      else if (stack.length > 0) cwd = stack.pop();
+      // Subshell: `cd` e atribuições lá dentro não vazam para fora.
+      if (seg[0].value === "(") stack.push({ cwd, vars: new Map(vars) });
+      else if (stack.length > 0) ({ cwd, vars } = stack.pop());
       continue;
     }
+    if (recordAssignments(seg, vars)) continue;
     const k = skipAssignments(seg);
     const head = seg[k];
     if (!head) continue;
     if (head.value === "cd" || head.value === "pushd") {
       const args = seg.slice(k + 1).filter((t) => t.dynamic || (t.value !== "--" && !/^-[LPe@]+$/.test(t.value)));
-      cwd = args.length === 0 ? (head.value === "cd" && home ? home : UNRESOLVED) : resolveDir(cwd, args[0]);
+      cwd = args.length === 0 ? (head.value === "cd" && home ? home : UNRESOLVED) : resolveDir(cwd, args[0], vars);
       continue;
     }
     if (head.value === "popd") {
@@ -377,7 +411,7 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
       const t = seg[j];
       const v = t.value;
       if (v === "-C") {
-        target = resolveDir(target, seg[j + 1]);
+        target = resolveDir(target, seg[j + 1], vars);
         j += 2;
         continue;
       }
