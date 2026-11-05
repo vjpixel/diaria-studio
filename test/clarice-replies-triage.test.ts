@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openClariceDb, recomputeDerived, markSuppressedNow } from "../scripts/lib/clarice-db.ts";
@@ -10,9 +10,19 @@ import {
   buildTriagePlan,
   computeBatchId,
   gmailMessageToReply,
+  validatePlanIntegrity,
   type ReplyMessage,
 } from "../scripts/lib/clarice-replies-classify.ts";
-import { applyTriagePlan, main, planPath } from "../scripts/clarice-replies-triage.ts";
+import {
+  applyTriagePlan,
+  blacklisterFromIo,
+  main,
+  pendingBrevoCount,
+  planPath,
+  renderPlanSummary,
+  resolveCanonicalTargets,
+  savePlan,
+} from "../scripts/clarice-replies-triage.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures — respostas típicas à Clarice News (#12227)
@@ -352,4 +362,199 @@ test("#12261 re-review: assinante citando o rodapé ou abrindo com 'Em primeiro 
 test("#12261 re-review: 'Em … escreveu:' escrito pelo assinante (sem endereço) não esvazia a resposta", () => {
   assert.equal(classifyReply(msg("Em 05/11 a Clarice escreveu: 'pode se descadastrar', mas não funciona. Me tirem da lista." + QUOTE)).kind, "saida");
   assert.equal(classifyReply(msg("Em 2 de cada 3 edições eu leio tudo. Quero!\nMinha esposa escreveu: amei" + QUOTE)).kind, "quero");
+});
+
+// ---------------------------------------------------------------------------
+// #12283 — "aguardo retorno em breve" não é auto-reply; remoção sem objeto pessoal não é saída
+// ---------------------------------------------------------------------------
+
+test("#12283 regressão: 'Quero sim! Aguardo retorno em breve.' é quero, não ruído", () => {
+  const c = classifyReply({ message_id: "x1", thread_id: "t", from: "a@b.com", subject: "Re: Clarice News", date: "", body: "Quero sim! Aguardo retorno em breve." });
+  assert.equal(c.kind, "quero", c.reason);
+  for (const body of ["Quero! Aguardo seu retorno no dia 12.", "Quero, fico esperando retorno a partir de agora.", "Quero! Aguardo o retorno em 2 dias."]) {
+    assert.equal(classifyReply(msg(body + QUOTE)).kind, "quero", body);
+  }
+  // ausência de verdade, com data, segue ruído
+  for (const body of ["Retorno no dia 20/11.", "Estarei viajando, retorno em 10/11.", "Retorno a partir de 15 de novembro."]) {
+    assert.equal(classifyReply(msg(body + QUOTE)).kind, "ruido", body);
+  }
+});
+
+test("#12283 regressão: 'remover a marca dágua dos e-mails' não é saída (vai pra ambíguo)", () => {
+  const c = classifyReply({ message_id: "x2", thread_id: "t", from: "a@b.com", subject: "Re: Clarice News", date: "", body: "Como faço pra remover a marca dágua dos e-mails que escrevo?" });
+  assert.notEqual(c.kind, "saida", c.reason);
+  assert.equal(c.kind, "ambiguo", c.reason);
+  for (const body of [
+    "Dá pra apagar o cadastro de clientes que importei?",
+    "Como excluir os contatos duplicados?",
+    "Como remover a marca dágua desses e-mails?",
+  ]) {
+    assert.notEqual(classifyReply(msg(body + QUOTE)).kind, "saida", body);
+  }
+});
+
+test("#12283 remoção COM objeto pessoal ou da lista segue saída", () => {
+  for (const body of [
+    "Por favor, removam meu e-mail da base.",
+    "Me tirem desses e-mails.",
+    "Remova-me dos envios, por favor.",
+    "Pode me remover dos e-mails?",
+    "Excluam meu cadastro.",
+    "pode me tirar da lista",
+    "Tire meu contato da newsletter.",
+  ]) {
+    assert.equal(classifyReply(msg(body + QUOTE)).kind, "saida", body);
+  }
+});
+
+test("#12283 --skip exclui itens do --apply sem mudar o id do lote; e-mail fora do lote recusa", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "clarice-replies-skip-"));
+  const dbPath = join(dir, "users.db");
+  const seed = openClariceDb(dbPath);
+  for (const e of ["c@x.com", "d@x.com"]) {
+    seed.prepare("INSERT INTO clarice_users (email, tier, cohort, mv_bucket) VALUES (?, 1, 'assinantes-ativos', 'verified')").run(e);
+  }
+  recomputeDerived(seed);
+  seed.close();
+  const reader = {
+    async list() {
+      return [msg("pode me tirar da lista", { from: "c@x.com" }), msg("não quero mais receber", { from: "d@x.com" }), msg("quero", { from: "a@x.com" })];
+    },
+  };
+  const base = ["--plan-dir", dir, "--db", dbPath];
+  const origErr = console.error;
+  const origLog = console.log;
+  let out = "";
+  console.error = () => {};
+  console.log = (s: string) => void (out += s);
+  try {
+    assert.equal(await main(base, { reader }), 0);
+    const { batch_id } = JSON.parse(out) as { batch_id: string };
+    const calls: string[] = [];
+    const blacklist = async (e: string) => void calls.push(e);
+
+    assert.equal(await main([...base, "--apply", "--confirm", batch_id, "--skip", "zz@x.com"], { blacklist }), 1, "skip fora do lote recusa");
+    assert.deepEqual(calls, [], "nada aplicado na recusa");
+
+    out = "";
+    assert.equal(await main([...base, "--apply", "--confirm", batch_id, "--skip", "D@x.com,a@x.com"], { blacklist }), 0);
+    assert.deepEqual(calls, ["c@x.com"]);
+    const db = openClariceDb(dbPath);
+    assert.equal(eligibility(db, "d@x.com").send_eligible, 1, "pulado segue elegível");
+    assert.equal(eligibility(db, "c@x.com").send_eligible, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM priority_optin").get() as { n: number }).n, 0, "optin pulado");
+    db.close();
+    const saved = JSON.parse(readFileSync(planPath(dir, batch_id), "utf8"));
+    assert.equal(saved.batch_id, batch_id);
+    assert.deepEqual(saved.applied.saida_store_done, ["c@x.com"]);
+    assert.deepEqual(saved.applied.optin_done, []);
+  } finally {
+    console.error = origErr;
+    console.log = origLog;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #12265 — 404 da Brevo, e-mail canônico na listagem, plano revalidado
+// ---------------------------------------------------------------------------
+
+test("#12265 regressão: contato fora da Brevo (404) não vira falha eterna; reaplicar não retenta", async () => {
+  const db = seededDb();
+  const plan = buildTriagePlan([msg("pode me tirar da lista", { from: "c@x.com" }), msg("descadastrar", { from: "d@x.com" })]);
+  const calls: string[] = [];
+  const blacklist = blacklisterFromIo({
+    async put(path) {
+      calls.push(`PUT ${path}`);
+      if (path.includes("c%40x.com")) throw new Error("Brevo API PUT falhou (404): contact not found");
+    },
+    async get(path) {
+      calls.push(`GET ${path}`);
+      return { status: path.includes("c%40x.com") ? 404 : 200 };
+    },
+  });
+  await applyTriagePlan(plan, { db, blacklist });
+  assert.deepEqual(plan.applied.failures, []);
+  assert.deepEqual(plan.applied.saida_brevo_not_found, ["c@x.com"]);
+  assert.deepEqual(plan.applied.saida_brevo_done, ["d@x.com"]);
+  assert.equal(eligibility(db, "c@x.com").send_eligible, 0, "store suprime mesmo fora da Brevo");
+  assert.equal(pendingBrevoCount(plan), 0);
+  calls.length = 0;
+  await applyTriagePlan(plan, { db, blacklist });
+  assert.deepEqual(calls, [], "nada retentado");
+  db.close();
+});
+
+test("#12265 blacklisterFromIo: erro com contato existente (ou GET quebrado) relança o erro do PUT", async () => {
+  const putErr = new Error("Brevo API PUT falhou (500)");
+  const exists = blacklisterFromIo({ put: async () => { throw putErr; }, get: async () => ({ status: 200 }) });
+  await assert.rejects(exists("a@x.com"), (e) => e === putErr);
+  const getBroken = blacklisterFromIo({ put: async () => { throw putErr; }, get: async () => { throw new Error("401"); } });
+  await assert.rejects(getBroken("a@x.com"), (e) => e === putErr);
+  const ok = blacklisterFromIo({ put: async () => ({}), get: async () => { throw new Error("não deveria chamar"); } });
+  assert.equal(await ok("a@x.com"), undefined);
+});
+
+test("#12265 plano antigo sem saida_brevo_not_found ainda aplica", async () => {
+  const db = seededDb();
+  const plan = buildTriagePlan([msg("descadastrar", { from: "c@x.com" })]);
+  delete (plan.applied as { saida_brevo_not_found?: string[] }).saida_brevo_not_found;
+  assert.equal(pendingBrevoCount(plan), 1);
+  await applyTriagePlan(plan, { db, blacklist: async () => {} });
+  assert.deepEqual(plan.applied.saida_brevo_done, ["c@x.com"]);
+  db.close();
+});
+
+test("#12265 listagem mostra o e-mail canônico do store que o --apply vai usar", () => {
+  const db = seededDb();
+  const plan = buildTriagePlan([msg("descadastrar", { from: "filosofodaniel@gmail.com" }), msg("descadastrar", { from: "c@x.com" })]);
+  const canonical = resolveCanonicalTargets(db, plan);
+  db.close();
+  assert.equal(canonical.get("filosofodaniel@gmail.com")?.email, "filosofo.daniel@gmail.com");
+  assert.equal(canonical.has("c@x.com"), false, "match exato não polui a listagem");
+  const text = renderPlanSummary(plan, canonical);
+  assert.match(text, /filosofodaniel@gmail\.com → filosofo\.daniel@gmail\.com/);
+});
+
+test("#12265 regressão: --apply recusa plano cujas ações não batem com os itens (ou id adulterado)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "clarice-replies-integrity-"));
+  const dbPath = join(dir, "users.db");
+  openClariceDb(dbPath).close();
+  const plan = buildTriagePlan([msg("quero", { from: "a@x.com" })]);
+  assert.deepEqual(validatePlanIntegrity(plan), []);
+  const tampered = { ...plan, actions: { ...plan.actions, saida: ["vitima@x.com"] } };
+  assert.equal(validatePlanIntegrity(tampered).length, 1);
+  writeFileSync(planPath(dir, plan.batch_id), JSON.stringify(tampered));
+  const calls: string[] = [];
+  const origErr = console.error;
+  const origLog = console.log;
+  console.error = () => {};
+  console.log = () => {};
+  try {
+    assert.equal(
+      await main(["--plan-dir", dir, "--db", dbPath, "--apply", "--confirm", plan.batch_id], { blacklist: async (e) => void calls.push(e) }),
+      1,
+    );
+  } finally {
+    console.error = origErr;
+    console.log = origLog;
+  }
+  assert.deepEqual(calls, []);
+  // item trocado por fora (id não bate mais)
+  const swapped = { ...plan, items: plan.items.map((i) => ({ ...i, email: "outro@x.com" })) };
+  assert.ok(validatePlanIntegrity(swapped).some((p) => p.includes("id recalculado")));
+});
+
+test("#12265 savePlan recusa sobrescrever plano de mesmo id com ações diferentes; mesmo conteúdo preserva o estado", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clarice-replies-save-"));
+  const plan = buildTriagePlan([msg("descadastrar", { from: "c@x.com" })]);
+  savePlan(dir, plan);
+  const prev = JSON.parse(readFileSync(planPath(dir, plan.batch_id), "utf8"));
+  prev.applied.saida_store_done = ["c@x.com"];
+  writeFileSync(planPath(dir, plan.batch_id), JSON.stringify(prev));
+  savePlan(dir, { ...plan, created_at: "2099-01-01T00:00:00.000Z" });
+  const kept = JSON.parse(readFileSync(planPath(dir, plan.batch_id), "utf8"));
+  assert.deepEqual(kept.applied.saida_store_done, ["c@x.com"], "estado de aplicação preservado");
+  assert.throws(() => savePlan(dir, { ...plan, actions: { ...plan.actions, saida: ["outro@x.com"] } }), /ações diferentes/);
+  const after = JSON.parse(readFileSync(planPath(dir, plan.batch_id), "utf8"));
+  assert.deepEqual(after.actions.saida, ["c@x.com"], "arquivo intacto");
 });
