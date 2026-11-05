@@ -35,6 +35,10 @@
  *                                     (default: habilitado em granularity=default)
  *     [--paragraph-timeout-ms N]     # (#5082) timeout por request no fallback/granularity=paragraph
  *                                     (default: PARAGRAPH_FALLBACK_TIMEOUT_MS = 20000)
+ *     [--deadline-ms N]              # (#12257) teto de tempo TOTAL da chamada, somando
+ *                                     chunks, retries, backoff e fallback por-parágrafo
+ *                                     (default: CLARICE_TOTAL_DEADLINE_MS = 480000, 8 min).
+ *                                     Estourou → exit 6 `clarice_unavailable`.
  *
  * Observabilidade (#2798, campo chunksInFlight adicionado em #4952): com
  * --retry, cada tentativa (sucesso, retry por timeout/5xx, ou falha fatal por
@@ -75,6 +79,11 @@
  *       não refletiu esta execução (ex: no-op silencioso do fallback REST
  *       em background já observado ao vivo, #5755). Nunca confiar no
  *       conteúdo nesse caso — ver `checkCorrectedOutFreshness` abaixo.
+ *   6 — `clarice_unavailable` (#12257): o teto de tempo total (`--deadline-ms`)
+ *       estourou antes de a Clarice responder. Nada é gravado em --out nem em
+ *       --corrected-out. O Stage 2 não para: grava `02-reviewed.md` sem a
+ *       Clarice via `scripts/clarice-pending.ts skip` e deixa a revisão como
+ *       passo retomável (`clarice-pending.ts resume`).
  */
 
 import "dotenv/config";
@@ -723,6 +732,57 @@ export async function withClariceRetryChunked(
 }
 
 // ---------------------------------------------------------------------------
+// Teto de tempo total da chamada (#12257)
+// ---------------------------------------------------------------------------
+
+/**
+ * Teto default de tempo TOTAL de uma chamada do CLI (#12257): 8 min.
+ *
+ * Os tetos que já existiam são por tentativa (60s), por chunk (~3min15s com
+ * `--retry`) e por parágrafo (20s), mas nada limitava a SOMA. Com a API fora
+ * do ar, uma newsletter de ~13 mil caracteres (3 chunks) passava por 3
+ * tentativas por chunk e depois pelo fallback por-parágrafo, um parágrafo de
+ * cada vez, e passava de 10 min (edição 261105). O harness do Claude Code
+ * encerra o comando Bash em 10 min (teto do `timeout` da tool) e o Stage 2
+ * terminava sem `02-reviewed.md`. 8 min deixa margem para o Stage 2 ainda
+ * gravar a saída sem a Clarice dentro do mesmo comando de 10 min.
+ */
+export const CLARICE_TOTAL_DEADLINE_MS = 480_000;
+
+/** Exit code do CLI quando o teto total estoura (#12257). */
+export const CLARICE_UNAVAILABLE_EXIT_CODE = 6;
+
+/** Erro de teto total estourado — o CLI o converte em exit 6 `clarice_unavailable`. */
+export class ClariceDeadlineError extends Error {
+  readonly deadlineMs: number;
+  constructor(deadlineMs: number) {
+    super(
+      `clarice_unavailable: a API da Clarice não respondeu dentro do teto total de ${deadlineMs / 1000}s ` +
+        `(chunks + retries + fallback por-parágrafo, #12257)`,
+    );
+    this.name = "ClariceDeadlineError";
+    this.deadlineMs = deadlineMs;
+  }
+}
+
+/**
+ * Corre `work` contra um teto de tempo total. Estourou → rejeita com
+ * `ClariceDeadlineError` sem esperar `work` terminar (as requisições em voo
+ * ficam para trás; o CLI sai logo em seguida com `process.exit`, que as
+ * encerra). Em sucesso ou erro de `work` antes do teto, o timer é limpo — sem
+ * isso o processo ficaria vivo até o teto mesmo depois de terminar.
+ */
+export function withTotalDeadline<T>(work: Promise<T>, deadlineMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new ClariceDeadlineError(deadlineMs)), deadlineMs);
+  });
+  return Promise.race([work, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Guard de staleness do --corrected-out (#5755)
 // ---------------------------------------------------------------------------
 
@@ -818,6 +878,8 @@ export interface CliArgs {
   noParagraphFallback: boolean;
   /** #5082 — timeout por request no fallback/modo por-parágrafo (default: PARAGRAPH_FALLBACK_TIMEOUT_MS). */
   paragraphTimeoutMs?: number;
+  /** #12257 — teto de tempo total da chamada (default: CLARICE_TOTAL_DEADLINE_MS). */
+  deadlineMs?: number;
 }
 
 export function parseCliArgs(argv: string[]): CliArgs | null {
@@ -879,6 +941,15 @@ export function parseCliArgs(argv: string[]): CliArgs | null {
       out.paragraphTimeoutMs = n;
       i++;
     }
+    else if (flag === "--deadline-ms" && value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) {
+        console.error(`--deadline-ms deve ser um número positivo (recebido: ${value})`);
+        process.exit(1);
+      }
+      out.deadlineMs = n;
+      i++;
+    }
   }
   if (!out.inPath || !out.outPath) return null;
   return out as CliArgs;
@@ -892,7 +963,7 @@ export async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
   if (!args) {
     console.error(
-      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N] [--edition AAMMDD] [--stage N] [--agent nome] [--granularity default|paragraph] [--no-paragraph-fallback] [--paragraph-timeout-ms N]",
+      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N] [--edition AAMMDD] [--stage N] [--agent nome] [--granularity default|paragraph] [--no-paragraph-fallback] [--paragraph-timeout-ms N] [--deadline-ms N]",
     );
     process.exit(1);
   }
@@ -939,20 +1010,26 @@ export async function main(): Promise<void> {
     });
   };
 
-  try {
+  const runCorrection = async (): Promise<{
+    rawSuggestions: ClariceSuggestions;
+    correctedText: string;
+    logExtra: Record<string, unknown>;
+  }> => {
     if (args.granularity === "paragraph") {
       const result = await correctTextViaParagraphs(
         { apiKey, text, timeoutMs: args.paragraphTimeoutMs ?? args.timeoutMs, onAttempt },
         args.paragraphTimeoutMs ?? args.timeoutMs ?? PARAGRAPH_FALLBACK_TIMEOUT_MS,
       );
-      rawSuggestions = result.rawSuggestions;
-      correctedText = result.correctedText;
-      logExtra = {
-        granularity: "paragraph",
-        paragraphs_total: result.stats.paragraphsTotal,
-        paragraphs_substantive: result.stats.paragraphsSubstantive,
-        paragraphs_succeeded: result.stats.paragraphsSucceeded,
-        paragraphs_failed: result.stats.paragraphsFailed,
+      return {
+        rawSuggestions: result.rawSuggestions,
+        correctedText: result.correctedText,
+        logExtra: {
+          granularity: "paragraph",
+          paragraphs_total: result.stats.paragraphsTotal,
+          paragraphs_substantive: result.stats.paragraphsSubstantive,
+          paragraphs_succeeded: result.stats.paragraphsSucceeded,
+          paragraphs_failed: result.stats.paragraphsFailed,
+        },
       };
     } else if (args.retry) {
       const policy: RetryPolicy = {
@@ -968,25 +1045,51 @@ export async function main(): Promise<void> {
         undefined,
         { enabled: !args.noParagraphFallback, timeoutMs: args.paragraphTimeoutMs },
       );
-      rawSuggestions = result.rawSuggestions;
-      correctedText = result.correctedText;
-      logExtra = {
-        attempts_used: result.totalAttempts,
-        chunks: result.chunkCount,
-        chunks_used_paragraph_fallback: result.usedParagraphFallbackChunks,
+      return {
+        rawSuggestions: result.rawSuggestions,
+        correctedText: result.correctedText,
+        logExtra: {
+          attempts_used: result.totalAttempts,
+          chunks: result.chunkCount,
+          chunks_used_paragraph_fallback: result.usedParagraphFallbackChunks,
+        },
       };
-    } else {
-      const result = await correctTextChunked(
-        { apiKey, text, timeoutMs: args.timeoutMs, onAttempt },
-        undefined,
-        undefined,
-        { enabled: !args.noParagraphFallback, timeoutMs: args.paragraphTimeoutMs },
-      );
-      rawSuggestions = result.rawSuggestions;
-      correctedText = result.correctedText;
-      logExtra = { chunks: result.chunkCount };
     }
+    const result = await correctTextChunked(
+      { apiKey, text, timeoutMs: args.timeoutMs, onAttempt },
+      undefined,
+      undefined,
+      { enabled: !args.noParagraphFallback, timeoutMs: args.paragraphTimeoutMs },
+    );
+    return {
+      rawSuggestions: result.rawSuggestions,
+      correctedText: result.correctedText,
+      logExtra: { chunks: result.chunkCount },
+    };
+  };
+
+  const deadlineMs = args.deadlineMs ?? CLARICE_TOTAL_DEADLINE_MS;
+  try {
+    const outcome = await withTotalDeadline(runCorrection(), deadlineMs);
+    rawSuggestions = outcome.rawSuggestions;
+    correctedText = outcome.correctedText;
+    logExtra = outcome.logExtra;
   } catch (e) {
+    if (e instanceof ClariceDeadlineError) {
+      // #12257 — API sem resposta pelo teto inteiro. Evento próprio (não
+      // `clarice_rest_attempt`) pra o Stage 2 e o auto-reporter distinguirem
+      // "API indisponível" de "erro HTTP".
+      logEvent({
+        edition: args.edition ?? null,
+        stage: args.stage ?? 2,
+        agent: args.agent ?? "clarice-correct-rest",
+        level: "error",
+        message: "clarice_unavailable",
+        details: { deadlineMs, elapsedMs: Date.now() - callStartMs, inPath: args.inPath },
+      });
+      console.error(`${e.message}. Nada foi gravado em --out/--corrected-out.`);
+      process.exit(CLARICE_UNAVAILABLE_EXIT_CODE);
+    }
     console.error(`erro chamando Clarice REST: ${(e as Error).message}`);
     process.exit(3);
   }
