@@ -37,6 +37,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 import { groupPlanEntriesByRepo, labelInRepo } from "./lib/plan-issue-ref.ts";
@@ -110,6 +111,7 @@ function main(): void {
 
   // plan.json não envolve rede — ausente/ilegível é sessão malformada, erro
   // duro (mesma escolha de `check-surfaced-live.ts`, #5919).
+  recoverPlanFromSafeBackupWithWarning(planPath);
   if (!existsSync(planPath)) {
     process.stderr.write(`${LOG_PREFIX} plan.json não encontrado: ${planPath}\n`);
     process.exitCode = 2;
