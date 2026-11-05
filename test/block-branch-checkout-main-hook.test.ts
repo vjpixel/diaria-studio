@@ -647,3 +647,54 @@ describe("hook end-to-end (#12165) — os dois casos da issue", () => {
     assert.equal(denied(hook(fx.wt, "git switch outra-branch")), false);
   });
 });
+
+
+describe("gh pr checkout (#12308)", () => {
+  const fx = makeFixture();
+  writeCoordinator(fx.main, "coord-12308");
+  after(() => rmSync(fx.base, { recursive: true, force: true }));
+  const variants = [
+    "gh pr checkout 12345",
+    "gh -R owner/repo pr checkout 12345",
+    "gh --repo=owner/repo pr checkout 12345 --force",
+    "gh pr -R owner/repo checkout --branch fix/example 12345",
+    "gh pr checkout -R owner/repo --force --branch=fix/example 12345",
+    "GH_DEBUG=1 gh -Rowner/repo pr checkout https://github.com/owner/repo/pull/12345",
+  ];
+  for (const command of variants) {
+    it(`resolve cwd/cd e protege apenas o principal: ${command}`, () => {
+      assert.deepEqual(resolveBranchCreateTargets(command, fx.main), [fx.main]);
+      assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.wt} && ${command}`, fx.main), [fx.wt]);
+      assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.main} && ${command}`, fx.wt), [fx.main]);
+      const hook = (cwd: string, cmd: string, session = "outra-sessao") =>
+        runHook({ tool_name: "Bash", session_id: session, cwd, tool_input: { command: cmd } });
+      assert.match(hook(fx.main, command), /"permissionDecision":"deny"/);
+      assert.match(hook(fx.wt, `cd ${fx.main} && ${command}`), /"permissionDecision":"deny"/);
+      assert.equal(hook(fx.wt, command), "");
+      assert.equal(hook(fx.main, `cd ${fx.wt} && ${command}`), "");
+      assert.equal(hook(fx.main, command, "coord-12308"), "");
+    });
+  }
+
+  it("não confunde outros comandos, valores de flags ou texto citado com checkout", () => {
+    for (const command of [
+      'gh pr create --body "gh pr checkout 12345"',
+      "gh pr view 12345", "gh pr checks 12345", "gh repo clone owner/repo",
+      "gh -R pr checkout 12345", "gh pr --repo checkout view 12345",
+      'echo "gh pr checkout 12345"', "gh pr checkout-other 12345",
+    ]) {
+      assert.deepEqual(resolveBranchCreateTargets(command, fx.main), [], command);
+      assert.equal(runHook({ tool_name: "Bash", session_id: "outra-sessao", cwd: fx.main, tool_input: { command } }), "", command);
+    }
+  });
+
+  it("alvo dinâmico segue não resolvido e ausência de coordenadora segue livre", () => {
+    assert.deepEqual(resolveBranchCreateTargets("cd $W && gh pr checkout 12345", fx.wt), [null]);
+    const free = makeFixture();
+    try {
+      assert.equal(runHook({ tool_name: "Bash", session_id: "outra-sessao", cwd: free.main, tool_input: { command: variants[0] } }), "");
+    } finally {
+      rmSync(free.base, { recursive: true, force: true });
+    }
+  });
+});

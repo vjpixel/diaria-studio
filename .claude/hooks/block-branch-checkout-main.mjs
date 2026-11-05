@@ -5,7 +5,7 @@
 // (#6509). Desde a #12165 também recusa, nas mesmas condições, trocar o
 // checkout principal para uma branch existente que não seja master
 // (`changesBranch`) — inclusive o par `git branch X && git checkout X` citado
-// abaixo como contorno.
+// abaixo como contorno. Desde a #12308 inclui `gh pr checkout` (alvo cwd/cd).
 //
 // Incidente de origem: achado ao vivo na rodada `/diaria-overnight 260828b`
 // (corpo completo em #6481, item 3) — o checkout PRINCIPAL compartilhado foi
@@ -148,7 +148,7 @@ export const BLOCK_REASON =
   "conta como checkout principal — use o caminho literal do worktree. " +
   "Trocar o checkout principal para uma branch existente (`git -C <principal> switch X`, `cd <principal> && " +
   "git checkout X`) também é bloqueado, exceto para master pelo nome (`git checkout master`, não `-`/`@{-1}`; " +
-  "#12165). Restaurar arquivo: `git checkout -- <path>` ou `git restore <path>`. " +
+  "#12165). `gh pr checkout` também troca a branch local e é bloqueado (#12308). Restaurar arquivo: `git checkout -- <path>` ou `git restore <path>`. " +
   "Se você é a coordenadora e está vendo este bloqueio por " +
   "engano (ex: seu próprio registro expirou por staleness), rode `npx tsx scripts/lib/session-registry.ts " +
   "register --kind {overnight|develop|continuo}` (o SEU kind) para renovar o registro que já era seu, e " +
@@ -448,6 +448,26 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
     }
     if (head.value === "popd") {
       cwd = UNRESOLVED;
+      continue;
+    }
+    // #12308: gh troca a branch local mesmo com -R apontando para outro repo.
+    // As opções globais podem aparecer antes de `pr` ou entre `pr` e `checkout`.
+    if (head.value === "gh") {
+      let j = k + 1;
+      const skipRepoFlags = () => {
+        while (j < seg.length) {
+          const v = seg[j].value;
+          if (v === "-R" || v === "--repo") j += 2;
+          else if (v.startsWith("--repo=") || (v.startsWith("-R") && v.length > 2)) j++;
+          else break;
+        }
+      };
+      skipRepoFlags();
+      if (seg[j]?.value === "pr") {
+        j++;
+        skipRepoFlags();
+        if (seg[j]?.value === "checkout") targets.push(cwd);
+      }
       continue;
     }
     if (head.value !== "git") continue;
