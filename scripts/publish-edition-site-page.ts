@@ -266,6 +266,7 @@
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --skip-publish
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --sitemap workers/site/public/sitemap.xml
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --sitemap ... --no-wait-merge   (Stage 5, #10160)
+ *   ... --no-wait-merge --no-merge-waiter   (#12284: sem waiter destacado; o chamador roda `--merge-pr N` em foreground)
  *
  * #6454 (achado 04/09/2026: a flag existia desde a 1ª versão, mas só
  * STAGEAVA o arquivo pro commit — nada escrevia conteúdo nele, então o
@@ -1375,7 +1376,23 @@ export function makeSessionRegistryMergeLock(rootDir: string, prNumber: number):
  */
 export type MergeWaiterSpawner = (args: { rootDir: string; prNumber: number; editionDir?: string }) => {
   pid?: number;
+  /** #12284: `true` = nenhum waiter disparado; o CHAMADOR espera o merge
+   * (`--merge-pr` em foreground). Ver `deferredMergeWaiterSpawner`. */
+  deferred?: boolean;
 };
+
+/** #12284: flag que troca o waiter destacado por `deferredMergeWaiterSpawner`. */
+export const NO_MERGE_WAITER_FLAG = "no-merge-waiter";
+
+/**
+ * #12284: não dispara waiter nenhum — o chamador roda `--merge-pr N` em
+ * foreground depois que este processo termina. Para quem roda dentro de um
+ * unit systemd `Type=oneshot` (`Diaria-Video-D1-Link-Watch`): com o
+ * `KillMode=control-group` padrão, o systemd mata o cgroup inteiro quando o
+ * processo principal sai, e `detached`/`setsid` não tira o filho do cgroup —
+ * o waiter destacado morreria junto com a task e o PR ficaria aberto.
+ */
+export const deferredMergeWaiterSpawner: MergeWaiterSpawner = () => ({ deferred: true });
 
 /**
  * Spawner real: o PRÓPRIO script em modo `--merge-pr`, com o mesmo node e os
@@ -2537,11 +2554,12 @@ export function productionDeps(
         // PR parado até alguém mergear à mão. Fail-soft: spawn falho só vira
         // texto no motivo (o PR fica aberto, mesmo fallback de antes).
         try {
-          const { pid } = spawnWaiter({ rootDir, prNumber, editionDir });
-          mergeReason =
-            `${attempt.reason}; merge delegado ao waiter em background (pid ${pid ?? "?"}, até ` +
-            `${Math.round(SITE_PAGE_CI_BACKGROUND_WAIT_MS / 60_000)}min) — ele grava o desfecho em ` +
-            `_internal/site-page-published.json (#9593)`;
+          const { pid, deferred } = spawnWaiter({ rootDir, prNumber, editionDir });
+          mergeReason = deferred
+            ? `${attempt.reason}; merge fica com o chamador (--merge-pr ${prNumber} em foreground, #12284)`
+            : `${attempt.reason}; merge delegado ao waiter em background (pid ${pid ?? "?"}, até ` +
+              `${Math.round(SITE_PAGE_CI_BACKGROUND_WAIT_MS / 60_000)}min) — ele grava o desfecho em ` +
+              `_internal/site-page-published.json (#9593)`;
         } catch (e) {
           mergeReason = `${attempt.reason}; waiter em background NÃO disparou (${(e as Error).message}) (#9593)`;
         }
@@ -3511,7 +3529,7 @@ export async function main(): Promise<void> {
   }
   if (!editionDir) {
     console.error(
-      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>] [--allow-stale-code] [--no-fresh-code-fallback] [--no-wait-merge] [--slug-from-d1]\n" +
+      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>] [--allow-stale-code] [--no-fresh-code-fallback] [--no-wait-merge] [--no-merge-waiter] [--slug-from-d1]\n" +
         "     npx tsx scripts/publish-edition-site-page.ts --merge-pr <N> [--edition-dir <dir>]   (waiter do #9593)",
     );
     process.exitCode = 1;
@@ -3589,7 +3607,8 @@ export async function main(): Promise<void> {
         undefined,
         undefined,
         worktreeDir ?? explicitWorktreeDir,
-        undefined,
+        // #12284: `--no-merge-waiter` = o chamador espera o merge (`--merge-pr`).
+        hasFlag(argv, NO_MERGE_WAITER_FLAG) ? deferredMergeWaiterSpawner : undefined,
         // #10160: Stage 5 abre o PR e segue — nada espera o merge aqui.
         hasFlag(argv, "no-wait-merge") ? 0 : SITE_PAGE_CI_SYNC_WAIT_MS,
       ),
