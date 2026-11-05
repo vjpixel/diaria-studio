@@ -58,7 +58,7 @@ renderizado).
 
 | Slot | Onde fica | Mecanismo | Config |
 |---|---|---|---|
-| **Topo** (intro callout) | Antes do DESTAQUE 1 | `extractIntroCallout`/`renderIntroCallout` — bloco `**...**` inteiro na região de intro | Auto-gerado (campeões/sorteio) ou colado manualmente pelo editor |
+| **Topo** (intro callout) | Antes do DESTAQUE 1 | `extractIntroCallout`/`renderIntroCallout` — bloco `**...**` inteiro na região de intro, OU marcador explícito `<!-- callout -->` numa linha própria acima do texto (#12240: sem emoji, 1ª frase em negrito e vários parágrafos na mesma caixa; o bloco vai até o próximo `---`) | Auto-gerado (campeões/sorteio) ou colado manualmente pelo editor |
 | **Slot 1** (D1/D2) | Lacuna entre DESTAQUE 1 e DESTAQUE 2 | `boxes_divulgacao.slot1` em `platform.config.json` | Auto-injetado por `stitchNewsletter` se o snippet configurado carregar (ver tabela abaixo) |
 | **Slot 2** (D2/D3) | Lacuna entre DESTAQUE 2 e DESTAQUE 3 (só existe em edição de 3 destaques) | `boxes_divulgacao.slot2` em `platform.config.json` | Idem slot 1 |
 | ~~**Slot 3** (pós-último-destaque, #3476)~~ **ELIMINADO (#6748, 29/08/2026)** | ~~Região entre o ÚLTIMO destaque (D3 em edições de 3, D2 em edições de 2) e USE MELHOR — existia em QUALQUER contagem de destaques, diferente do slot 2~~ | `boxes_divulgacao.slot3` continua no schema (back-compat/reversibilidade — decisão do PR #6748), mas `stitch-newsletter.ts` nunca mais lê esse valor e `select-boxes-by-clicks.ts` nunca mais o ranqueia/pina. `extractBoxDivulgacao3`/`locateBoxAfterLastDestaque` seguem existindo só para ler edições ARQUIVADAS de antes do #6748. | Ignorado — qualquer valor gravado ali não tem efeito. |

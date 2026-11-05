@@ -851,6 +851,21 @@ function boldWrapSegments(introRegion: string): { text: string; offset: number }
 const BOLD_WRAP_RE = /^\*\*\s*([\s\S]+)\*\*\s*$/m;
 
 /**
+ * #12240: marcador explícito de callout de intro. Escrito pelo editor numa
+ * linha própria, logo acima do texto do callout; nunca vai pro HTML. O bloco
+ * vai do marcador até o próximo `---` isolado (ou o fim da região de intro).
+ *
+ * Existe porque os dois sinais antigos não bastam: o bloco bold-wrap
+ * (`**...**`) obriga o texto inteiro em negrito, então a 1ª frase sozinha em
+ * negrito ("**Temos ganhadores!** ...") não é reconhecida como callout; e o
+ * emoji 🎉 só vale para o box de campeões/sorteio com mais de um parágrafo
+ * (`hasCeremonyMarker`). Com o marcador, o texto fica livre: sem emoji, com
+ * negrito parcial e com mais de um parágrafo na mesma caixa.
+ */
+export const INTRO_CALLOUT_MARKER = "<!-- callout -->";
+const INTRO_CALLOUT_MARKER_RE = /<!--\s*callout\s*-->[ \t]*\r?\n?/;
+
+/**
  * #3741: encontra o bloco bold-wrap da região de intro, com posição absoluta
  * do fim do match (`matchEnd`, usado por `extractCoverageLineTrailer` pra
  * fatiar o trailer). Primeiro tenta por SEGMENTO (`boldWrapSegments`,
@@ -883,6 +898,17 @@ function findIntroCalloutMatch(
   // (callout + box0). A máscara preserva o comprimento, então as posições
   // devolvidas continuam absolutas em `rawIntroRegion`.
   const introRegion = maskBox0Block(rawIntroRegion);
+  // #12240: marcador explícito tem prioridade sobre a detecção por bold-wrap.
+  // Marcador sem texto depois dele (bloco vazio) é ignorado e cai no fluxo
+  // antigo, para nunca engolir a região em silêncio.
+  const marker = introRegion.match(INTRO_CALLOUT_MARKER_RE);
+  if (marker && marker.index !== undefined) {
+    const contentStart = marker.index + marker[0].length;
+    const boundary = /^---[ \t]*\r?$/m.exec(introRegion.slice(contentStart));
+    const matchEnd = boundary ? contentStart + boundary.index : introRegion.length;
+    const groupText = introRegion.slice(contentStart, matchEnd).trim();
+    if (groupText) return { groupText, matchStart: marker.index, matchEnd };
+  }
   for (const seg of boldWrapSegments(introRegion)) {
     const m = seg.text.match(BOLD_WRAP_RE);
     if (m && m.index !== undefined) {
