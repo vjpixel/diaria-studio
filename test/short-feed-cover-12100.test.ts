@@ -175,14 +175,19 @@ describe("#12100 conferência do oar2 contra a capa (dHash)", () => {
   });
 });
 
-describe("#12100 skill: passo manual da capa do feed de Shorts", () => {
-  it("o Passo A2 manda aplicar no app e conferir com check-short-feed-cover.ts", () => {
+describe("#12254 skill: capa vertical do Short pelo Studio web", () => {
+  it("documenta o sardefault e o passo do agente, sem devolver a tarefa ao editor", () => {
     const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
     const a2 = skill.slice(skill.indexOf("### Passo A2"), skill.indexOf("### Passo A3"));
-    assert.match(a2, /Capa do feed de Shorts é passo manual \(#12100\)/);
-    assert.match(a2, /oar2\.jpg/);
-    assert.match(a2, /scripts\/check-short-feed-cover\.ts --id/);
-    assert.match(a2, /vertical_feed: "manual"/);
+    const b3a = skill.slice(skill.indexOf("### Passo B3a"), skill.indexOf("### Passo B3b"));
+    assert.match(a2, /sardefault\.jpg/);
+    assert.match(a2, /Passo B3a/);
+    assert.match(skill, /vertical_feed: "studio_web"/);
+    assert.doesNotMatch(a2, /Capa do feed de Shorts é passo manual/);
+    assert.match(b3a, /file_upload/);
+    assert.match(b3a, /Salvar/);
+    assert.match(b3a, /studio_web/);
+    assert.match(b3a, /mandar o editor usar o app/);
   });
 });
 
