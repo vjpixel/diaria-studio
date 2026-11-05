@@ -54,16 +54,6 @@ export function invalidatePublicImagesForPositions(
   return invalidatePublicImageKeys(data, [...new Set(positions.flatMap(publicImageKeysForPosition))]);
 }
 
-/**
- * #11672: chave de `06-public-images.json` do 1:1 de uma posição (`d{N}`,
- * legada desde #7399 — o upload não a grava mais, mas caches antigos a têm).
- * Trocar só o 1:1 invalida só ela: o hero 2:1, o card 4:5 e o carrossel não
- * mudaram.
- */
-export function squarePublicImageKey(pos: number): string {
-  return `d${pos}`;
-}
-
 /** Remove de `data.images` as chaves pedidas. Pure, mesmo contrato de `invalidatePublicImagesForPositions`. */
 export function invalidatePublicImageKeys(data: unknown, keys: readonly string[]): PublicImagesInvalidation {
   const rawImages = data && typeof data === "object" ? (data as { images?: unknown }).images : undefined;
@@ -99,11 +89,6 @@ export function planPublicImagesInvalidation(
   positions: readonly number[],
 ): PublicImagesFilePlan {
   return planPublicImagesInvalidationWith(editionDir, (data) => invalidatePublicImagesForPositions(data, positions));
-}
-
-/** #11672: mesmo plano de `planPublicImagesInvalidation`, para chaves avulsas. */
-export function planPublicImageKeysInvalidation(editionDir: string, keys: readonly string[]): PublicImagesFilePlan {
-  return planPublicImagesInvalidationWith(editionDir, (data) => invalidatePublicImageKeys(data, keys));
 }
 
 function planPublicImagesInvalidationWith(
