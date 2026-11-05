@@ -8,6 +8,16 @@ effort: medium
 
 # /diaria-develop
 
+**Preflight obrigatório de ambiente (#12307), antes de qualquer outro passo:**
+rodar `npx tsx scripts/lib/exec-mode.ts --require-shared-issue-registry`.
+Exit diferente de zero ou falha ao executar: exibir o motivo e encerrar a skill,
+sem scan, registro, claim, roteamento, implementação ou dispatch (inclusive
+`--dry-run`/`--no-implement`). Não criar `data/` nem usar REST manual para
+contornar: o registro efêmero não é visto pela continuo no `300`, e os scripts
+de triagem ainda dependem de GraphQL, bloqueado no cloud. Retomar numa sessão
+local com `data/` sincronizado ou deixar a fila para o `300`. Este preflight
+vem antes de qualquer criação de `data/` pela própria skill.
+
 Sessão de desenvolvimento **supervisionada/interativa**. Historicamente focada só nas issues **COM BLOQUEIO** — exatamente as que o `/diaria-overnight` pula — mas desde #4319 o escopo **default** é o backlog aberto inteiro, trabalhado em 4 ondas priorizadas (ver "Goal de esgotamento" abaixo). O que não muda: como o editor está presente, ele desbloqueia ao vivo (cola um token, confirma que criou uma conta de terceiro, decide um trade-off de produto/editorial, ou autoriza uma mudança de alto blast-radius); a skill **valida o desbloqueio deterministicamente (#573)** e leva a issue até o merge **reusando a maquinaria de implementação do overnight**, com uma diferença central: **paraleliza tudo que for seguro** (inverte o #636 — ver seção de Paralelização).
 
 **Por padrão (#4319, `goal_policy=exhaust_all`), a sessão trabalha até nenhuma issue estar aberta** — todo o backlog, não só o bloqueado, em 4 ondas priorizadas: bugs (bloqueados ou não) → bloqueadas restantes → elegíveis P0/P1 → o resto. `goal_policy=blocked_only` volta ao alvo estreito de #2636/#4297 (só o backlog bloqueado). Não é uma garantia incondicional: o Fallback de ausência (editor sai no meio), uma **interrupção do editor no gate do grupo 3** (default auto-entra desde #5321 — deixou de ser obrigatório, mas o editor ainda pode intervir ali) e o guard de colisão editorial continuam podendo encerrar a sessão com o alvo não esgotado — nesse caso o Goal fica registrado como não atingido, não bloqueia o encerramento. **Os caps mecânicos de re-varredura e de profundidade de finding foram eliminados no develop (#4319)** — quem segura a sessão agora é só o editor, pelos gates que ainda bloqueiam quando disparam (Gate 1 residual cat. C/E-com-custo, Gate B — #5695 tirou cat. A/B do Gate 1 e o Gate de Onda inteiro desta lista de bloqueio garantido) ou saindo; ver "Goal de esgotamento" pra definição exata do que conta como alvo, como terminal, e por que os caps saíram. `goal_policy = table_only` no briefing (ou `--no-implement`, que força o mesmo comportamento) volta ao comportamento pré-#4297 (fecha quando a tabela da Fase 0 acaba, sem re-varredura).

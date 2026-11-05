@@ -7,6 +7,16 @@ effort: medium
 
 # /diaria-desbloqueia
 
+**Preflight obrigatório de ambiente (#12307), antes de qualquer outro passo:**
+rodar `npx tsx scripts/lib/exec-mode.ts --require-shared-issue-registry`.
+Exit diferente de zero ou falha ao executar: exibir o motivo e encerrar a skill,
+sem scan, registro, claim, roteamento, implementação ou dispatch (inclusive
+`--dry-run`/`--no-implement`). Não criar `data/` nem usar REST manual para
+contornar: o registro efêmero não é visto pela continuo no `300`, e os scripts
+de triagem ainda dependem de GraphQL, bloqueado no cloud. Retomar numa sessão
+local com `data/` sincronizado ou deixar a fila para o `300`. Este preflight
+vem antes de qualquer criação de `data/` pela própria skill.
+
 Issue de origem: #6628. Pedido direto do editor: uma skill que **só**
 pergunta o que falta pra uma issue rodar no `/diaria-overnight` ou no
 `/diaria-develop` — sem abrir a sessão inteira de implementação pra isso —
