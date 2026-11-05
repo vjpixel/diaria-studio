@@ -62,6 +62,12 @@
  *      batida (`null`, aceita) mesmo quando não é uma data de verdade —
  *      FALSO NEGATIVO, o guard não pega toda vaguidão, só os 3 padrões de
  *      texto medidos na auditoria original.
+ *   3. (#12244) Referência ENTRE PARÊNTESES (`(#N)`, `(PR #N)`) só conta
+ *      com verbo de espera propriamente dito (`WAIT_VERB_RE`), nunca com
+ *      conectivo temporal sozinho. "reabrir depois do merge (#12129)" passa
+ *      (`null`) — FALSO NEGATIVO aceito: tem a mesma forma de "o CTR caiu
+ *      depois do teste (PR #12129)", que é contexto, e nenhum regex separa
+ *      as duas. `#N` solto ("depois que #N fechar") segue contando.
  *
  * Os dois são consequência direta de detectar por REGEX sobre vocabulário
  * observado, não por entendimento semântico — trade-off deliberado (ver

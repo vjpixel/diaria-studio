@@ -1341,3 +1341,38 @@ export function makeBrevoUpsert(db: DatabaseSync): (cols: BrevoColumns) => void 
     );
   };
 }
+
+// ---------------------------------------------------------------------------
+// Supressão imediata (#12227) — saída pedida por resposta à newsletter
+//
+// O caminho normal da supressão é Brevo → `clarice-sync-brevo.ts` →
+// `makeBrevoUpsert`. Entre a blacklist na Brevo e o próximo sync, o store
+// segue com `send_eligible=1` pra quem pediu pra sair. A triagem de respostas
+// (`clarice-replies-triage.ts`) chama isto NA HORA da aplicação, antes até da
+// chamada à Brevo: a supressão local é o lado conservador (impede envio pelo
+// nosso pipeline mesmo se a Brevo falhar).
+//
+// Só LIGA flags (`MAX(..., 1)`), mesma garantia do upsert do sync: um sync
+// posterior em que a Brevo ainda não reflita a blacklist nunca des-suprime
+// (o upsert faz MAX-merge). Idempotente. Não recomputa os derivados — o
+// chamador roda `recomputeDerived` uma vez no fim do lote.
+// Devolve false (sem gravar) pra conta de teste do editor (#2895).
+// ---------------------------------------------------------------------------
+
+export function markSuppressedNow(
+  db: DatabaseSync,
+  email: string,
+  nowIso: string = new Date().toISOString(),
+): boolean {
+  const e = email.trim().toLowerCase();
+  if (!e || isTestAccount(e)) return false;
+  db.prepare("INSERT OR IGNORE INTO clarice_users (email) VALUES (?)").run(e);
+  db.prepare(
+    `UPDATE clarice_users SET
+       unsubscribed      = MAX(unsubscribed, 1),
+       email_blacklisted = MAX(email_blacklisted, 1),
+       updated_at        = ?
+     WHERE email = ?`,
+  ).run(nowIso, e);
+  return true;
+}
