@@ -14,6 +14,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   findUnroutedSkipKeys,
@@ -27,6 +28,7 @@ import { issueKeyLabel, issueNumberInRepo, repoOfIssueKey, type IssueKey } from 
 
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
+  if (values.plan) recoverPlanFromSafeBackupWithWarning(values.plan);
   if (!values.plan || !existsSync(values.plan)) {
     console.error("[check-skipped-develop-track] uso: --plan {path existente}");
     process.exit(2);
