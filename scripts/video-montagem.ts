@@ -2325,7 +2325,7 @@ export function exportSrtProblems(input: {
   /** Só no modo roteiro: o resultado do alinhamento e o nº de palavras do roteiro. */
   aligned?: Pick<ForcedAlignment, "dropped" | "interpolated">;
   scriptWords?: number;
-  limits?: Partial<typeof EXPORT_SRT_LIMITS>;
+  limits?: Partial<Record<keyof typeof EXPORT_SRT_LIMITS, number>>;
 }): string[] {
   const lim = { ...EXPORT_SRT_LIMITS, ...input.limits };
   const minCue = input.text === "roteiro" ? lim.minCueS : lim.minHeardCueS;
@@ -2567,6 +2567,9 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
   return 0;
 }
 
+/** #12237: legenda da montagem com até isto de duração é espremida (o export usa 0,3 s, `EXPORT_SRT_LIMITS`). */
+export const MONTAGE_SRT_MIN_CUE_S = 0.15;
+
 /**
  * #12237: o `srt` da montagem usa o mesmo alinhamento do `--from-final` e
  * podia sair com legenda espremida (≤0,3 s) ou roteiro divergente da fala sem
@@ -2583,7 +2586,9 @@ export function montageSrtWarnings(
   cues: Array<{ start: number; end: number; text: string }>,
 ): string[] {
   const scriptWords = script.split(/\s+/).filter((t) => normalizeToken(t)).length;
-  return exportSrtProblems({ cues, text: "roteiro", aligned, scriptWords }).map(
+  // A montagem tira as pausas: uma frase de uma palavra ("Exato.") dá legenda
+  // de ~0,3 s legítima. Aqui só avisa a legenda espremida de fato (≤0,15 s).
+  return exportSrtProblems({ cues, text: "roteiro", aligned, scriptWords, limits: { minCueS: MONTAGE_SRT_MIN_CUE_S } }).map(
     (p) => `[aviso] ${seqName}: legenda possivelmente imprópria (#12237) — ${p}; conferir na prévia antes de subir`,
   );
 }

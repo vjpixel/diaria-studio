@@ -74,7 +74,8 @@
  * #12167 um `#N` só conta com verbo de condição na mesma oração, e a
  * atribuição "(#6198)" sem verbo de condição na oração já não dispara (nem
  * com o verbo tendo uma data/duração como objeto, "adiado até DATA (#6198)",
- * #12220); o `force` de lá ficou como estava.
+ * #12220 — exceto "segurar até", que `DEPENDENCY_PHRASE_RE` recusa sempre);
+ * o `force` de lá ficou como estava.
  *
  * @see scripts/route-issue.ts (routeIssue — chama isto pra `--track agendada`)
  * @see scripts/lib/issue-depends-on.ts (mecanismo certo pra dependência)
@@ -108,35 +109,52 @@ const DEPENDENCY_VERB_RE =
 /** Uma oração = trecho entre pontuação forte (". ; ( ) [ ] — –" ou quebra de linha). */
 const CLAUSE_SPLIT_RE = /[.;()[\]\n—–]+/;
 
+/** Verbo de espera propriamente dito — sem os conectivos temporais
+ * (até/depois/antes/após/quando/enquanto) de `DEPENDENCY_VERB_RE`. É o que
+ * faz uma referência ENTRE PARÊNTESES contar como condição (#12236): "o CTR
+ * caiu depois do teste (PR #12129)" usa "depois" como palavra comum e cita o
+ * PR como contexto. */
+const WAIT_VERB_RE =
+  /(?<![\p{L}\p{N}])(?:depend\p{L}*|aguard\p{L}*|esper\p{L}*|bloque\p{L}*|adi[ao]\p{L}*|segur\p{L}*|condicion\p{L}*|pr[ée]-?requisito\p{L}*)(?![\p{L}\p{N}])/iu;
+
 /** Condição de CALENDÁRIO: conectivo ancorado numa data ("até 2026-12-01",
- * "antes de 01/12", "para 2026-12-01") ou espera por uma duração ("esperando 2
- * semanas", "aguardar mais 10 dias") — opcionalmente com o verbo de espera
- * colado na frente ("adiado até DATA", "Adiado para DATA"). O verbo tem o
- * tempo como objeto, não uma issue: o trecho inteiro sai do texto ANTES do
- * desembrulho dos parênteses (#12220 — sem isso, "adiado até 2026-12-01
- * (#6198)" virava "adiado #6198" e era recusado como dependência). */
-const TIME_ANCHOR_RE =
-  /(?<![\p{L}\p{N}#])(?:(?:adi[ao]\p{L}*|esper\p{L}*|aguard\p{L}*|segur\p{L}*)\s+)?(?:(?:at[ée]|para|por|antes\s+d[eo]|depois\s+d[eo]|ap[oó]s)\s+(?:o\s+)?(?:dia\s+)?\d{1,4}[-/]\d{1,2}(?:[-/]\d{1,4})?|(?:(?:por|mais)\s+)*\d+\s+(?:dias?|semanas?|m[eê]s(?:es)?|horas?)(?![\p{L}\p{N}]))/giu;
+ * "antes de 01/12", "para 2026-12-01") ou uma duração ("2 semanas", "mais 10
+ * dias"). Sai da oração antes da busca por verbo de condição. */
+const TIME_ANCHOR_SRC =
+  String.raw`(?:(?:at[ée]|para|por|antes\s+d[eo]|depois\s+d[eo]|ap[oó]s)\s+(?:o\s+)?(?:dia\s+)?\d{1,4}[-/]\d{1,2}(?:[-/]\d{1,4})?|(?:(?:por|mais)\s+)*\d+\s+(?:dias?|semanas?|m[eê]s(?:es)?|horas?)(?![\p{L}\p{N}]))`;
+const TIME_ANCHOR_RE = new RegExp(String.raw`(?<![\p{L}\p{N}#§])${TIME_ANCHOR_SRC}`, "giu");
+/** O mesmo, com o verbo de espera colado na frente ("adiado até DATA",
+ * "Adiado para DATA", "esperando 2 semanas"): o verbo tem o TEMPO como objeto.
+ * #12220: só é absorvido junto quando a oração não cita `#N` solto — em
+ * "esperar 2 semanas pelo #12130" o verbo espera também a issue e fica. */
+const VERB_TIME_ANCHOR_RE = new RegExp(
+  String.raw`(?<![\p{L}\p{N}#§])(?:adi[ao]\p{L}*|esper\p{L}*|aguard\p{L}*|segur\p{L}*)\s+${TIME_ANCHOR_SRC}`,
+  "giu",
+);
 
 /** Parênteses/colchetes curtos com referência `#N` ("(#12129)", "(#1, #2)",
  * "[#9001]", "(PR #12129)", "(ver #9001)" — até 2 palavras antes da lista de
  * refs). #12215/#12236: com o split em `(`/`)`, o `#N` dessa forma caía numa
  * oração própria, sem o verbo, e "aguardando o merge (PR #12129)" passava. O
- * grupo é desembrulhado ANTES do split, então o `#N` volta para a oração em
- * que está escrito — e só conta se essa oração tiver verbo de condição.
- * Parêntese com mais texto ("(teste A/B do assunto no ar)") segue sendo
- * oração à parte. */
+ * grupo é desembrulhado ANTES do split, com as refs marcadas como `§N`
+ * (atribuição): volta para a oração em que está escrito, mas só conta com um
+ * verbo de espera propriamente dito (`WAIT_VERB_RE`). Parêntese com mais
+ * texto ("(teste A/B do assunto no ar)") segue sendo oração à parte. */
 const REF_GROUP_RE =
-  /[([]\s*((?:[\p{L}.:]+\s+){0,2}#\d+(?:\s*(?:,|\/|(?<![\p{L}\p{N}])e(?![\p{L}\p{N}]))\s*#\d+)*)\s*[)\]]/giu;
+  /[([]\s*(?:[\p{L}.:]+\s+){0,2}(#\d+(?:\s*(?:,|\/|(?<![\p{L}\p{N}])e(?![\p{L}\p{N}]))\s*#\d+)*)\s*[)\]]/giu;
 
 /** `#N` na mesma oração que um verbo de condição ("aguardando #N", "depois
  * que #N fechar"). "PR #N mergeada" sozinho, sem verbo, é contexto. */
 function citesRefAsCondition(reason: string): boolean {
   return reason
-    .replace(TIME_ANCHOR_RE, " ")
-    .replace(REF_GROUP_RE, " $1 ")
+    .replace(REF_GROUP_RE, (_m, refs: string) => ` ${refs.replace(/#/g, "§")} `)
     .split(CLAUSE_SPLIT_RE)
-    .some((clause) => /#\d+/.test(clause) && DEPENDENCY_VERB_RE.test(clause));
+    .some((raw) => {
+      const bareRef = /#\d+/.test(raw);
+      const clause = (bareRef ? raw : raw.replace(VERB_TIME_ANCHOR_RE, " ")).replace(TIME_ANCHOR_RE, " ");
+      if (/#\d+/.test(clause) && DEPENDENCY_VERB_RE.test(clause)) return true;
+      return /§\d+/.test(clause) && WAIT_VERB_RE.test(clause);
+    });
 }
 
 /** Gatilho condicional sem data ("só morde quando X voltar", "reavaliar só

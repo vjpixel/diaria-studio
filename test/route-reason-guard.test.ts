@@ -179,6 +179,27 @@ describe("detectNonDateReason — #N só é dependência com verbo de condição
     // sem verbo de condição na oração, segue contexto
     assert.equal(detectNonDateReason("PR mergeada (PR #12129); reavaliar em 2026-12-01"), null);
     assert.equal(detectNonDateReason("reconciliação diária (ver #6198): marcador ainda futuro"), null);
+    assert.equal(detectNonDateReason("aguardando a resposta (cf. #9001)")?.category, "dependencia");
+  });
+
+  // Achados do review da PR #12242.
+  it("verbo de espera + duração/data seguido de #N solto continua dependência", () => {
+    for (const reason of [
+      "esperar 2 semanas pelo #12130",
+      "aguardando mais 2 dias o merge do #12130",
+      "aguardando por 3 dias a resposta da #12130",
+      "adiado por 2 semanas pela #12130",
+      "segurar 2 semanas por causa da #12130",
+      "aguardando para 2026-12-01 a #12130",
+    ]) {
+      assert.equal(detectNonDateReason(reason)?.category, "dependencia", reason);
+    }
+  });
+
+  it("parêntese de contexto perto de 'depois'/'antes' comum não vira dependência", () => {
+    assert.equal(detectNonDateReason("o CTR caiu depois do teste (PR #12129); reavaliar em 2026-12-01"), null);
+    assert.equal(detectNonDateReason("medição de antes (PR #12129) mostrou queda; reavaliar em 2026-12-01"), null);
+    assert.equal(detectNonDateReason("o CTR caiu depois do teste (#12129); reavaliar em 2026-12-01"), null);
   });
 
   it("'adicionar' não é lido como 'adiar'", () => {
