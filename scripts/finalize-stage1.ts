@@ -34,6 +34,7 @@ import { sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1670
 import { rootDomain, promoteHowTosFromRadar } from "./lib/use-melhor-curation.ts"; // #2336: domain-cap; #2448: radar→use_melhor
 import { coverageBonus } from "./lib/coverage-bonus.ts"; // #3920
+import { assessSourceReadability } from "./lib/diaria/source-readability.ts"; // #12258
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -573,6 +574,15 @@ export function finalizeStage1(
         .find((b) => /^newsletter:\+\d+$/.test(b));
       if (newsletterEntry && typeof score === "number") {
         (enrichedArticle as { score_bonus_newsletter?: number }).score_bonus_newsletter = Number(newsletterEntry.split("+")[1]);
+      }
+      // #12258: marca o item cuja fonte não foi lida (403/vídeo/resumo curto)
+      // — o gate do Stage 4 lista esses itens e o swap avisa ao promover um.
+      // O desconto de score já veio do all_scored (merge-scored-chunks); aqui
+      // só a marcação, que vale também no fallback single-call do scorer.
+      const readability = assessSourceReadability(enrichedArticle);
+      if (!readability.readable) {
+        (enrichedArticle as { source_readable?: boolean }).source_readable = false;
+        (enrichedArticle as { source_unreadable_reason?: string }).source_unreadable_reason = readability.reason;
       }
       // #4842: score_base já foi propagado por joinScore a partir de
       // all_scored (decomposição completa: score_base do scorer-chunk +

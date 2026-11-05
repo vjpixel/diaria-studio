@@ -100,6 +100,7 @@ import {
   type PendingTitulo,
 } from "./lib/titulo-provisional.ts"; // #9755
 import { useMelhorPostReselectStep } from "./lib/use-melhor-post.ts"; // #9755
+import { promotedSourceUnreadWarning } from "./lib/diaria/source-readability.ts"; // #12258
 
 /** Pure: newOrder que insere o slot vazio (3) na `position` (1..3). */
 export function insertionOrder(position: number): number[] {
@@ -328,6 +329,9 @@ export function promoteToDestaque(
     if (promotedTitle === null) {
       const art = (data.highlights![position - 1] as { article?: { title?: unknown } }).article;
       promotedTitle = typeof art?.title === "string" && art.title.trim() ? art.title.trim() : url;
+      // #12258: avisa quando a fonte do item promovido não foi lida.
+      const unread = promotedSourceUnreadWarning(data.highlights![position - 1], promotedTitle);
+      if (unread) warnings.push(unread);
     }
     updated.push({ path: p, data });
   }

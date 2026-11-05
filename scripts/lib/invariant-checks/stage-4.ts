@@ -74,6 +74,8 @@ import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../
 import { lintIntroCount, countSelectedItems } from "../newsletter-count.ts";
 import { MAX_EDITION_CONTENT_ITEMS } from "../apply-stage2-caps.ts"; // #9785
 import { checkTituloSubtituloNotProvisional } from "../titulo-provisional.ts"; // #9601 review PR #9666
+import { checkReviewedNoPendingPlaceholder, checkReviewedOnedriveConflictCopy } from "../diaria/reviewed-integrity.ts"; // #12259
+import { checkSourceNotRead } from "../diaria/source-readability.ts"; // #12258
 import {
   extractEiaMirrorBlock,
   parseEiaMirrorBlock,
@@ -4277,6 +4279,29 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#9601",
     stage: 4,
     run: checkTituloSubtituloNotProvisional,
+  },
+  {
+    id: "reviewed-no-pending-placeholder",
+    description:
+      "02-reviewed.md sem placeholder de destaque não integrado ([RASCUNHO PENDENTE …]/[TEXTO PENDENTE …] do swap/promote) (#12259)",
+    source_issue: "#12259",
+    stage: 4,
+    run: checkReviewedNoPendingPlaceholder,
+  },
+  {
+    id: "reviewed-onedrive-conflict-copy",
+    description:
+      "avisa quando o OneDrive deixou cópia de conflito (*-safeBackup-*.md) de 02-reviewed.md/03-social.md — o principal pode ter perdido uma edição (#12259)",
+    source_issue: "#12259",
+    stage: 4,
+    run: checkReviewedOnedriveConflictCopy,
+  },
+  {
+    id: "source-not-read",
+    description: "lista no gate os itens da edição cuja fonte não foi lida (403, vídeo, resumo curto) (#12258)",
+    source_issue: "#12258",
+    stage: 4,
+    run: checkSourceNotRead,
   },
   {
     id: "use-melhor-sentinel",
