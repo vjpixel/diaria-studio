@@ -62,8 +62,13 @@ export interface Transcript {
   sub?: { window: Interval };
 }
 
-/** Palavras confiáveis do transcript, em ordem; descarta alucinações do Whisper (#12271). */
+/** Todas as palavras do transcript, em ordem, para montagem e legendas. */
 export function transcriptWords(t: Transcript): Word[] {
+  return t.segments.flatMap((s) => s.words ?? []).filter((w) => w.text.trim() !== "");
+}
+
+/** Filtro de confiabilidade exclusivo da revisão (#12271). */
+export function reviewTranscriptWords(t: Transcript): Word[] {
   return t.segments.filter((s) => (s.no_speech_prob ?? 0) < 0.6 &&
     !/^(transcricaoelegendaspedronegri|legendaspelacomunidadeamaraorg)$/.test(normalizeToken(s.text)))
     .flatMap((s) => s.words ?? []).filter(isReliableReviewWord);
