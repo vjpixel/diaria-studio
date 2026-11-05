@@ -332,7 +332,7 @@
       "youtube_linkedin_timer_note": "#11070: youtube_shorts_api sobe o Short pela YouTube Data API (videos.insert private + publishAt no horario do vertical; o agendado vira publico sem a auditoria, medido em 23/10/2026); sem YOUTUBE_* no ambiente volta ao passo guiado no Studio. #10982: linkedin_profile_via_timer = o video do perfil pessoal do LinkedIn sai pelo timer do 300 (Diaria-Shorts-LinkedIn-Profile, scripts/shorts-linkedin-profile-timer.ts), e o /diaria-shorts o pula (skip_delegated) para nao duplicar o post entre maquinas.",
       "linkedin_x_note": "#10772 (tabela confirmada no briefing 261022b): vertical NATIVO no perfil pessoal do LinkedIn (Videos API, token LINKEDIN_PERSONAL_* do 4o post) + repost pela pagina diar.ia.br (passo guiado, horario da grade da pagina, longe dos 4 posts da rotacao #10305) + X @diariabr via Buffer (skill, video por URL publica do R2 — habilitado em 27/10/2026, bucket diaria-shorts em https://media.diar.ia.br, lifecycle de 7 dias em shorts/; numa maquina sem os secrets R2_*/SHORTS_R2_* X e Threads ficam pendentes e publicam numa maquina com os secrets, ou a mao registrando com --mark, #11478/#11498). O horizontal fica so no YouTube. threads_profile (#11122): vertical no Threads PESSOAL (THREADS_PERSONAL_*, video por URL publica do R2) — integrado e fail-soft (pulado com aviso) sem token ou sem R2; o token da conta pessoal e o R2 existem desde 27/10/2026 (#10772); falta validar a 1a publicacao real; o repost pela diar.ia.br segue manual (a Threads API nao documenta repost).",
       "schedule": {
-        "rotation_times": ["06:30", "08:00", "12:00"],
+        "rotation_times": ["12:00"],
         "rotation_start": "2026-10-26",
         "rotation_end": "2026-11-13",
         "default_time": "12:00",
