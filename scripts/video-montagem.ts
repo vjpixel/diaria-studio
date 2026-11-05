@@ -809,6 +809,25 @@ export interface XmlBuildOptions {
   vinheta?: VinhetaAsset | null;
   /** #12102: o filtro da faixa de áudio tratada que o XML aponta; ausente/null = áudio cru (o hash fica o de antes). */
   audioClean?: string | null;
+  /** #12163: o caminho do bruto que o XML aponta (`xmlMediaPath`/`--xml-media-root`); ausente = fora do hash. */
+  mediaPath?: string;
+  /** #12163: o ganho calculado do loudness, em dB (não só o liga/desliga `audioGain`); ausente/null = fora do hash. */
+  gainDb?: number | null;
+  /** #12163: o título da vertical (do blocks.json ou do D1) e o de cada corte, como o `buildXmeml` recebe. Só entra no hash o título que a sequência de fato leva. */
+  screenTitle?: ScreenTitleXml | null;
+  screenTitleByCorte?: Readonly<Record<string, ScreenTitleXml | null>>;
+}
+
+/** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
+export function effectiveScreenTitleOf(
+  spec: SequenceSpec,
+  screenTitle: ScreenTitleXml | null | undefined,
+  byCorte: Readonly<Record<string, ScreenTitleXml | null>> | undefined,
+): ScreenTitleXml | null {
+  if (!isVerticalSpec(spec)) return null;
+  const map = byCorte ?? {};
+  const t = spec.corte !== undefined && Object.prototype.hasOwnProperty.call(map, spec.corte) ? map[spec.corte] : screenTitle;
+  return t && t.text.trim() ? t : null;
 }
 
 /**
@@ -823,10 +842,25 @@ export interface XmlBuildOptions {
  */
 export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "spec" | "clips" | "durationFrames">, opts: XmlBuildOptions): string {
   const { name: _name, ...spec } = plan.spec;
+  // #12163: título, caminho do bruto e ganho calculado também mudam o XML. Cada um só entra
+  // quando presente, para o hash de quem não os passa ficar o de antes.
+  const title = effectiveScreenTitleOf(plan.spec, opts.screenTitle, opts.screenTitleByCorte);
   return createHash("sha256")
     .update(inputsHash)
     .update("\0opts\0")
-    .update(JSON.stringify({ speechDetect: opts.speechDetect, audioRefine: opts.audioRefine, audioGain: opts.audioGain, titleMode: opts.titleMode, ...(opts.vinheta ? { vinheta: opts.vinheta } : {}), ...(opts.audioClean ? { audioClean: opts.audioClean } : {}) }))
+    .update(
+      JSON.stringify({
+        speechDetect: opts.speechDetect,
+        audioRefine: opts.audioRefine,
+        audioGain: opts.audioGain,
+        titleMode: opts.titleMode,
+        ...(opts.vinheta ? { vinheta: opts.vinheta } : {}),
+        ...(opts.audioClean ? { audioClean: opts.audioClean } : {}),
+        ...(opts.mediaPath !== undefined ? { mediaPath: opts.mediaPath } : {}),
+        ...(typeof opts.gainDb === "number" ? { gainDb: opts.gainDb } : {}),
+        ...(title ? { screenTitle: title } : {}),
+      }),
+    )
     .update("\0plan\0")
     .update(JSON.stringify({ spec, clips: plan.clips, durationFrames: plan.durationFrames }))
     .digest("hex")
@@ -2029,9 +2063,6 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   if (treatedRun?.reused && ctx.mode === "api" && queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), treatedRun.path)) {
     console.error(`[video-montagem] faixa tratada reaproveitada ainda não está no Drive: entra no upload deste build (#12102)`);
   }
-  // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
-  // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
-  const versionHashes = versionPickedSequences(ctx, picked, hash, { speechDetect: speech.cut !== null, audioRefine, audioGain, titleMode, vinheta, audioClean: treated?.filter ?? null });
   // #11755: ganho do loudness; #12209: medido na faixa tratada quando é ela que o XML toca, senão o loudness.json do bruto.
   let gain: AudioGain | null = null;
   if (audioGain) {
@@ -2095,6 +2126,21 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       );
     }
   }
+  // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
+  // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
+  // #12163: e com o título, o caminho do bruto e o ganho calculado — por isso só aqui, depois de resolvê-los.
+  const versionHashes = versionPickedSequences(ctx, picked, hash, {
+    speechDetect: speech.cut !== null,
+    audioRefine,
+    audioGain,
+    titleMode,
+    vinheta,
+    audioClean: treated?.filter ?? null,
+    mediaPath,
+    gainDb: gain?.db ?? null,
+    screenTitle,
+    screenTitleByCorte,
+  });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
   for (const p of picked) {
