@@ -49,9 +49,54 @@ describe("isBranchCreateCheckoutCommand (#6509)", () => {
     assert.equal(isBranchCreateCheckoutCommand("git status\ngit checkout -b foo"), true);
   });
 
-  it("NÃO detecta 'git checkout <branch-existente>' sem -b (fora de escopo, #6509)", () => {
+  it("NÃO detecta voltar pra master nem restauração de arquivo", () => {
     assert.equal(isBranchCreateCheckoutCommand("git checkout master"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git switch main"), false);
     assert.equal(isBranchCreateCheckoutCommand("git checkout origin/master -- file.ts"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout HEAD scripts/foo.ts"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout scripts/foo.ts"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout ."), false);
+  });
+
+  it("#12165: detecta troca para branch existente que não seja master", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout overnight/fix-1-x"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git switch outra-branch"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git switch -"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -B x"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git switch -C x"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout --orphan x"), true);
+  });
+
+  it("regressão (review da PR #12247): redirecionamento ou `--` no fim não escondem a troca", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout feat 2>&1"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git switch feat >/dev/null"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout feat > /dev/null 2>&1"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout feat &>/dev/null"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout feat --"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout master 2>&1"), false);
+  });
+
+  it("#12165 review: formas coladas das flags de criação e branch com sufixo de versão", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -bfoo"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git switch -cfoo"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git switch --create=foo"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout --orphan=x"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout release/v1.2"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout overnight/fix-1-sonnet-5.5"), true);
+  });
+
+  it("#12165 review: restauração de arquivo sem extensão ou em modo de arquivo segue livre", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout scripts/"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout --ours Makefile"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout --theirs data/x"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -p HEAD"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout HEAD -- f"), false);
+  });
+
+  it("#12165 re-review: `checkout -m <branch>` é troca (leva as mudanças locais); com path, não", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -m feat"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout --merge feat"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -m f.ts"), false);
   });
 
   it("NÃO detecta 'git checkout -- <file>' (checkout de arquivo, não de branch)", () => {
@@ -59,7 +104,8 @@ describe("isBranchCreateCheckoutCommand (#6509)", () => {
   });
 
   it("NÃO detecta -b como substring de outra flag (ex: --builder)", () => {
-    assert.equal(isBranchCreateCheckoutCommand("git checkout --builder foo"), false);
+    // #12165: o alvo é master, então só a leitura errada de --builder como -b acusaria
+    assert.equal(isBranchCreateCheckoutCommand("git checkout --builder master"), false);
   });
 
   it("NÃO detecta 'git checkout -b' citado dentro de um argumento (--body/--title)", () => {
@@ -580,5 +626,24 @@ describe("hook end-to-end (#12165) — os dois casos da issue", () => {
 
   it("a própria coordenadora no principal → LIBERA", () => {
     assert.equal(denied(hook(fx.main, "git checkout -b x", "coord-1")), false);
+  });
+
+  it("regressão #12165 (residual): de um worktree, `git -C <principal> switch <branch existente>` → BLOQUEIA", () => {
+    assert.equal(denied(hook(fx.wt, `git -C ${fx.main} switch outra-branch`)), true);
+    assert.equal(denied(hook(fx.wt, `cd ${fx.main} && git checkout overnight/fix-1-x`)), true);
+  });
+
+  it("#12165: no próprio principal, `git checkout <branch existente>` → BLOQUEIA", () => {
+    assert.equal(denied(hook(fx.main, "git checkout outra-branch")), true);
+  });
+
+  it("#12165: voltar o principal para master segue livre, de onde vier", () => {
+    assert.equal(denied(hook(fx.wt, `git -C ${fx.main} switch master`)), false);
+    assert.equal(denied(hook(fx.main, "git checkout master")), false);
+    assert.equal(denied(hook(fx.wt, `cd ${fx.main} && git checkout main`)), false);
+  });
+
+  it("#12165: trocar de branch dentro do próprio worktree linkado segue livre", () => {
+    assert.equal(denied(hook(fx.wt, "git switch outra-branch")), false);
   });
 });
