@@ -425,7 +425,7 @@ export async function main(
     // --skip a@x,b@y: tira da aplicação itens que o editor viu classificados errado (#12283). O plano
     // fica como está (o id não muda); quem foi pulado não é marcado como feito.
     const skip = new Set(
-      (getArg(argv, "skip") ?? "")
+      getArg(argv, "skip") // "" quando ausente (#11472), nunca undefined
         .split(",")
         .map((s) => s.trim().toLowerCase())
         .filter(Boolean),
