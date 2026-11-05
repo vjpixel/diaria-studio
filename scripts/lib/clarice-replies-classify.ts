@@ -127,8 +127,10 @@ const SYSTEM_SENDER_RE =
 const AUTO_SUBJECT_RE =
   /^\s*(resposta autom[aá]tica|automatic reply|auto(matic)?[- ]?reply|out of (the )?office|aus[eê]ncia|fora do escrit[oó]rio|f[eé]rias|autoreply|respuesta autom[aá]tica|undeliverable|delivery status notification|n[aã]o entregue)/i;
 
+// `retorno` só conta com data/dia (ausência): "aguardo retorno em breve" é o assinante esperando
+// resposta, e como `isAutoReply` roda antes de tudo, um "quero" legítimo virava ruído (#12283).
 const AUTO_BODY_RE =
-  /\b(estou (de|em) ferias|estarei (de|em) ferias|estou fora do escritorio|estarei fora|estou ausente|estarei ausente|retorno (no dia|em|a partir)|resposta automatica|mensagem automatica|i am (currently )?out of (the )?office|i will be out of)\b/;
+  /\b(estou (de|em) ferias|estarei (de|em) ferias|estou fora do escritorio|estarei fora|estou ausente|estarei ausente|(?<!(aguardo|aguardando|espero|esperando|aguardamos)( o| (o )?(seu|teu|vosso))? )retorno (no dia \d+|em \d+|a partir d[aeo]s?)|resposta automatica|mensagem automatica|i am (currently )?out of (the )?office|i will be out of)\b/;
 
 /** Pedido de exclusão de DADOS (LGPD) — também conta como saída. */
 const DATA_DELETION_RES: RegExp[] = [
@@ -145,13 +147,36 @@ const SAIDA_RES: RegExp[] = [
   /\bunsubscribe\b/,
   /\b(sair|ser removid[oa]|ser retirad[oa]|ser excluid[oa]) d[ae] (sua |vossa )?(lista|newsletter|mailing|base)\b/,
   /\bquero sair\b/,
-  /\b(me )?(tire|tira|tirar|tirem|retire|retirar|retirem|remova|removam|remove|remover|exclua|excluam|excluir|apague|apaguem|apagar|delete|deletar)\b[^.!?\n]{0,40}\b(lista|newsletter|mailing|e-?mails?|cadastro|base|contatos?|envios?)\b/,
+  // Verbo de remoção + objeto que só existe na newsletter: saída sem precisar de pronome.
+  /\b(me )?(tire|tira|tirar|tirem|retire|retirar|retirem|remova|removam|remove|remover|exclua|excluam|excluir|apague|apaguem|apagar|delete|deletar)\b[^.!?\n]{0,40}\b(lista|newsletter|mailing)\b/,
   // "não preciso receber com prioridade" recusa o CTA do "quero", não pede saída (review da PR #12261).
   /\bnao (quero|desejo|gostaria de|preciso) (mais )?receber\b(?![^.!?\n]{0,30}\bprioridade\b)/,
   /\b(parar|pare|parem|deixar) de (me )?(receber|enviar|mandar)\b/,
   /\bnao (me )?(envie|enviem|mande|mandem) mais\b/,
   /\bcancel\w* (a |minha )?(inscricao|newsletter)\b/,
 ];
+
+/**
+ * Verbo de remoção + objeto que também é assunto do PRODUTO (e-mails, cadastro, base, contatos,
+ * envios). A Clarice é ferramenta de escrita: "como remover a marca d'água dos e-mails que escrevo?"
+ * é suporte, não saída (#12283). Só vira saída com marca pessoal no trecho ("me tirem", "remova-me",
+ * "meu e-mail"); sem ela, a resposta fica `ambiguo`, nunca na blacklist.
+ */
+const REMOVAL_PRODUCT_OBJECT_RE =
+  /\b(me )?(tire|tira|tirar|tirem|retire|retirar|retirem|remova|removam|remove|remover|exclua|excluam|excluir|apague|apaguem|apagar|delete|deletar)\b([^.!?\n]{0,40})\b(e-?mails?|cadastro|base|contatos?|envios?)\b/g;
+// Só pronome/possessivo da 1ª pessoa: demonstrativo ("desses e-mails") também aparece em pergunta de
+// produto ("como remover a marca d'água desses e-mails?"), então não basta sozinho.
+const REMOVAL_PERSONAL_RE = /(^|[\s-])(me|meu|minha|meus|minhas)\b/;
+
+/** `saida` = remoção com marca pessoal; `fraca` = remoção sem marca pessoal; `null` = nenhuma. */
+export function removalOfProductObject(norm: string): "saida" | "fraca" | null {
+  let found: "fraca" | null = null;
+  for (const m of norm.matchAll(REMOVAL_PRODUCT_OBJECT_RE)) {
+    if (m[1] || REMOVAL_PERSONAL_RE.test(m[3])) return "saida";
+    found = "fraca";
+  }
+  return found;
+}
 
 const SUPORTE_RES: RegExp[] = [
   /\bcancel\w* (a |o |minha |meu )?(compra|assinatura|plano|pagamento|cobranca|renovacao|conta)\b/,
@@ -209,9 +234,14 @@ export function classifyReply(msg: ReplyMessage): ReplyClassification {
   }
 
   const dataDeletion = anyMatch(DATA_DELETION_RES, norm);
-  const saida = dataDeletion || anyMatch(SAIDA_RES, norm);
+  const removal = removalOfProductObject(norm);
+  const saida = dataDeletion || anyMatch(SAIDA_RES, norm) || removal === "saida";
   const suporte = anyMatch(SUPORTE_RES, norm);
   const quero = (QUERO_RE.test(norm) && !QUERO_NEGADO_RE.test(norm)) || SIM_SOZINHO_RE.test(norm);
+
+  // Remoção sem objeto pessoal ("remover a marca d'água dos e-mails"): pode ser pergunta de produto.
+  // Nunca vai pra blacklist por palpite (#12283).
+  if (!saida && removal === "fraca") return out("ambiguo", "verbo de remoção sem objeto pessoal (e-mails/cadastro/base) — pode ser suporte");
 
   if (saida && suporte) return out("ambiguo", "saída e suporte na mesma resposta", dataDeletion);
   if (saida && quero) return out("ambiguo", "saída e \"quero\" na mesma resposta", dataDeletion);
@@ -262,6 +292,12 @@ export interface TriageApplyState {
   optin_done: string[];
   saida_store_done: string[];
   saida_brevo_done: string[];
+  /**
+   * Saída suprimida no store, mas o contato não existe na Brevo (404: alias, endereço encaminhado).
+   * Não é falha e não é retentado; o editor procura à mão o endereço que recebe a newsletter (#12265).
+   * Opcional: planos gravados antes do #12265 não têm o campo.
+   */
+  saida_brevo_not_found?: string[];
   failures: Array<{ email: string; step: "brevo" | "store" | "optin"; error: string }>;
   last_applied_at: string | null;
 }
@@ -278,7 +314,14 @@ export interface TriagePlan {
 }
 
 export function emptyApplyState(): TriageApplyState {
-  return { optin_done: [], saida_store_done: [], saida_brevo_done: [], failures: [], last_applied_at: null };
+  return {
+    optin_done: [],
+    saida_store_done: [],
+    saida_brevo_done: [],
+    saida_brevo_not_found: [],
+    failures: [],
+    last_applied_at: null,
+  };
 }
 
 function snippetOf(s: string, max = 160): string {
@@ -330,10 +373,24 @@ export function buildTriagePlan(
   const counts: Record<ReplyKind, number> = { quero: 0, saida: 0, suporte: 0, ruido: 0, ambiguo: 0 };
   for (const i of items) counts[i.kind]++;
 
+  return {
+    schema: 1,
+    batch_id: computeBatchId(items),
+    created_at: opts.now ?? new Date().toISOString(),
+    query: opts.query ?? null,
+    counts,
+    items,
+    actions: buildTriageActions(items),
+    applied: emptyApplyState(),
+  };
+}
+
+/** Ações do lote, derivadas só dos itens (o `--apply` refaz e compara com o plano gravado, #12265). */
+export function buildTriageActions(items: TriageItem[]): TriageActions {
   const queroSet = new Set(items.filter((i) => i.kind === "quero").map((i) => i.email));
   const saidaSet = new Set(items.filter((i) => i.kind === "saida").map((i) => i.email));
   const conflitos = [...queroSet].filter((e) => saidaSet.has(e)).sort();
-  const actions: TriageActions = {
+  return {
     optin: [...queroSet].filter((e) => !saidaSet.has(e)).sort(),
     saida: [...saidaSet].sort(),
     data_deletion: [...new Set(items.filter((i) => i.kind === "saida" && i.data_deletion).map((i) => i.email))].sort(),
@@ -345,17 +402,36 @@ export function buildTriagePlan(
       .map((i) => ({ email: i.email, reason: i.reason, thread_id: i.thread_id, snippet: i.snippet })),
     conflitos,
   };
+}
 
-  return {
-    schema: 1,
-    batch_id: computeBatchId(items),
-    created_at: opts.now ?? new Date().toISOString(),
-    query: opts.query ?? null,
-    counts,
-    items,
-    actions,
-    applied: emptyApplyState(),
-  };
+/**
+ * Diferenças nas ações QUE MUDAM O ESTADO de alguém (optin, saída, exclusão de dados, conflitos)
+ * entre duas versões de ações. Suporte/pendentes ficam de fora: são só listagem (#12265).
+ * `[]` = equivalentes.
+ */
+export function diffEffectiveActions(a: TriageActions, b: TriageActions): string[] {
+  const out: string[] = [];
+  for (const key of ["optin", "saida", "data_deletion", "conflitos"] as const) {
+    const x = [...(a[key] ?? [])].sort();
+    const y = [...(b[key] ?? [])].sort();
+    if (JSON.stringify(x) !== JSON.stringify(y)) out.push(`${key}: [${x.join(", ")}] ≠ [${y.join(", ")}]`);
+  }
+  return out;
+}
+
+/**
+ * Confere o plano gravado contra os próprios itens (#12265): o id do lote recalculado e as ações
+ * refeitas a partir de `items` têm de bater com o que está no arquivo. Devolve os problemas
+ * (`[]` = íntegro).
+ */
+export function validatePlanIntegrity(plan: TriagePlan): string[] {
+  const problems: string[] = [];
+  const id = computeBatchId(plan.items);
+  if (id !== plan.batch_id) problems.push(`id recalculado dos itens (${id}) ≠ id gravado (${plan.batch_id})`);
+  for (const d of diffEffectiveActions(buildTriageActions(plan.items), plan.actions)) {
+    problems.push(`ações gravadas divergem dos itens — ${d}`);
+  }
+  return problems;
 }
 
 // ---------------------------------------------------------------------------
