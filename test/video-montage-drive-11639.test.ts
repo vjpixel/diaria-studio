@@ -10,7 +10,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import {
@@ -45,6 +45,8 @@ import {
   driveModeFor,
   ensureBrutoLocal,
   fetchBruto,
+  main,
+  assertSingleRawVideo,
   localBrutoMissing,
   makeDriveSession,
   transcribePrecheck,
@@ -462,6 +464,39 @@ describe("#11639/#11640 wiring do modo API (Drive falso)", () => {
   const ED = "261030";
   const folderList = () => json({ files: [{ ...entry(ED, undefined, FOLDER_MIME), id: "pasta-ed" }] });
 
+  it("#12268 recusa as duas partes antes de baixar, mesmo com --force", async () => {
+    const state = mkdtempSync(join(tmpdir(), "vm-multi-state-"));
+    const cache = mkdtempSync(join(tmpdir(), "vm-multi-cache-"));
+    writeFileSync(join(state, "source.json"), "estado anterior");
+    const { deps, calls } = fakeDeps([folderList, () => json({ files: [
+      entry("20261104_124252.mp4", 2 * GB), entry("20261104_130206.mp4", 6 * GB),
+    ] })]);
+    await assert.rejects(fetchBruto({ stateDir: state, edition: ED, force: true },
+      makeDriveSession(ED, cache, deps, () => "root")), /2 vídeos candidatos.*20261104_124252.*20261104_130206.*--source/);
+    assert.equal(calls.length, 2, "só listagem, sem download");
+    assert.equal(readFileSync(join(state, "source.json"), "utf8"), "estado anterior");
+    assert.equal(existsSync(join(state, BRUTO_DRIVE_FILE)), false);
+    assert.deepEqual(readdirSync(cache), []);
+  });
+
+  it("#12268 modo local recusa antes do ffprobe e preserva derivados", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vm-multi-local-"));
+    const state = join(root, "state");
+    mkdirSync(join(root, ED));
+    mkdirSync(state);
+    for (const name of ["20261104_124252.mp4", "20261104_130206.mp4"]) writeFileSync(join(root, ED, name), "video");
+    writeFileSync(join(state, "transcript.json"), "transcrição anterior");
+    await assert.rejects(main(["transcribe", ED, "--drive-root", root, "--state-dir", state,
+      "--work-dir", join(root, "work"), "--force"]), /2 vídeos candidatos.*--source/);
+    assert.equal(readFileSync(join(state, "transcript.json"), "utf8"), "transcrição anterior");
+    assert.equal(existsSync(join(state, "source.json")), false);
+  });
+
+  it("#12268 um vídeo e o modo áudio mantêm o comportamento", () => {
+    assert.doesNotThrow(() => assertSingleRawVideo({ candidates: [{ name: "unido.mp4" }] }));
+    assert.doesNotThrow(() => assertSingleRawVideo({ candidates: [{ name: "a.wav" }, { name: "b.wav" }], audioOnly: true }));
+  });
+
   it("fetchBruto baixa o maior .mp4 solto e grava bruto.drive.json com a procedência", async () => {
     const state = mkdtempSync(join(tmpdir(), "vm-state-"));
     const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
@@ -603,8 +638,8 @@ describe("#11639/#11640 wiring do modo API (Drive falso)", () => {
     const work = mkdtempSync(join(tmpdir(), "vm-work-"));
     const brutoA = join(cache, "bruto", "A.mp4").replace(/\\/g, "/");
     writeFileSync(join(state, "source.json"), JSON.stringify({ path: brutoA, fps: 30, durationS: 10, width: 1920, height: 1080, mirrored: false }));
-    // O editor pôs B, maior, na pasta: o fake só responde à listagem; um download quebraria com "chamada inesperada".
-    const { deps, calls } = fakeDeps([folderList, () => json({ files: [{ ...entry("B.mp4", 7 * GB), id: "B" }, { ...entry("A.mp4", 6 * GB), id: "A" }] })]);
+    // O editor substituiu A por B na pasta: o fake só responde à listagem; um download quebraria com "chamada inesperada".
+    const { deps, calls } = fakeDeps([folderList, () => json({ files: [{ ...entry("B.mp4", 7 * GB), id: "B" }] })]);
     const d = makeDriveSession(ED, cache, deps, () => "root");
     await assert.rejects(fetchBruto({ stateDir: state, edition: ED, workDir: work, force: false }, d), /source\.json aponta para outro bruto.*A\.mp4.*--force/);
     assert.equal(calls.length, 2, "só a pasta e a listagem; nenhum download");
