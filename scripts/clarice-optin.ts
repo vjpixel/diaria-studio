@@ -98,6 +98,38 @@ export function resolveOptinEmail(
   };
 }
 
+/**
+ * Grava `priority_optin` para cada email (resolvido pelo `resolveOptinEmail`).
+ * Idempotente (`ON CONFLICT DO NOTHING`). NÃO recomputa os derivados — o
+ * chamador roda `recomputeDerived` uma vez no fim. Reusado pelo `add` desta
+ * CLI e pela triagem de respostas (`clarice-replies-triage.ts`, #12227).
+ */
+export function addPriorityOptins(
+  db: DatabaseSync,
+  emails: string[],
+  addedAt: string,
+  log: (msg: string) => void = () => {},
+): { added: number; resolved: string[] } {
+  const stmt = db.prepare(
+    `INSERT INTO priority_optin (email, added_at) VALUES (?, ?)
+     ON CONFLICT(email) DO NOTHING`,
+  );
+  let added = 0;
+  const resolvedEmails: string[] = [];
+  for (const inputEmail of emails.map(normalizeEmail).filter(Boolean)) {
+    // #2861/#2863: resolve pro email canônico do store (normalização Gmail)
+    // ANTES de gravar — nunca deixa uma variante sem-pontos ficar órfã na
+    // tabela priority_optin enquanto o store guarda a forma com pontos.
+    const resolved = resolveOptinEmail(db, inputEmail);
+    if (resolved.notice) log(resolved.notice);
+    if (resolved.warning) log(resolved.warning);
+    const r = stmt.run(resolved.email, addedAt);
+    if (r.changes > 0) added++;
+    resolvedEmails.push(resolved.email);
+  }
+  return { added, resolved: resolvedEmails };
+}
+
 export function main(argv: string[] = process.argv.slice(2)): void {
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
   const [cmd, ...args] = parseArgs(argv).positional;
@@ -137,22 +169,9 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   }
 
   if (cmd === "add") {
-    const addedAt = new Date().toISOString();
-    const stmt = db.prepare(
-      `INSERT INTO priority_optin (email, added_at) VALUES (?, ?)
-       ON CONFLICT(email) DO NOTHING`,
+    const { added } = addPriorityOptins(db, emails, new Date().toISOString(), (m) =>
+      console.error(m),
     );
-    let added = 0;
-    for (const inputEmail of emails) {
-      // #2861/#2863: resolve pro email canônico do store (normalização Gmail)
-      // ANTES de gravar — nunca deixa uma variante sem-pontos ficar órfã na
-      // tabela priority_optin enquanto o store guarda a forma com pontos.
-      const resolved = resolveOptinEmail(db, inputEmail);
-      if (resolved.notice) console.error(resolved.notice);
-      if (resolved.warning) console.error(resolved.warning);
-      const r = stmt.run(resolved.email, addedAt);
-      if (r.changes > 0) added++;
-    }
     const recomputed = recomputeDerived(db);
     console.error(
       `✅ +${added} priority_optin (${emails.length - added} já existiam) · ` +
