@@ -329,3 +329,22 @@ test("#12261 review: conta de teste do editor nunca vai pra blacklist da Brevo",
   assert.deepEqual(plan.applied.failures, []);
   db.close();
 });
+
+test("#12261 re-review: assinante citando o rodapé ou abrindo com 'Em primeiro lugar' não perde o pedido", () => {
+  const expect: Array<[string, string]> = [
+    ["Vocês dizem 'caso não queira receber a newsletter, pode se descadastrar', mas o link não funciona. Me tirem da lista.", "saida"],
+    ["Por favor, me descadastrem. Caso não queira receber mais nada, a quem devo pedir?", "saida"],
+    ["Você está recebendo este e-mail de novo, mas pedi para sair. Me descadastrem.", "saida"],
+    ["Quero! Caso não queira receber, aviso.", "quero"],
+    ["Em primeiro lugar, quero sair da lista.\nObrigado.\nMeu chefe escreveu: tira isso", "saida"],
+  ];
+  for (const [body, kind] of expect) {
+    const c = classifyReply(msg(body + QUOTE));
+    assert.equal(c.kind, kind, `${JSON.stringify(body)}: ${c.reason}`);
+  }
+  // abrir a resposta com a frase exata do rodapé: corte apaga tudo → pendente, nunca ruído
+  const c = classifyReply(msg("Caso não queira receber a newsletter, me avisem como sair.\n" + QUOTE));
+  assert.equal(c.kind, "ambiguo", c.reason);
+  // resposta só com citação segue ruído
+  assert.equal(classifyReply(msg(QUOTE)).kind, "ruido");
+});

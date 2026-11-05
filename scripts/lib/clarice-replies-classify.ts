@@ -70,18 +70,26 @@ export function normalizeText(s: string): string {
  * Message-----", bloco "De:/From:" do Outlook, linha de sublinhados) e
  * descarta linhas `>` e "Enviado do meu iPhone"/"Sent from my ...".
  */
+/** Rodapé fixo da newsletter (ver `stripQuoted`). */
+const FOOTER_CUT_RES: RegExp[] = [
+  /^[ \t]*caso n[aã]o queira receber (a|esta|essa) newsletter\b/im,
+  /^[ \t]*voc[eê] est[aá] recebendo (esse|este) e-?mail porque\b/im,
+];
+
 export function stripQuoted(body: string): string {
   let text = body.replace(/\r\n?/g, "\n");
   const cutPatterns: RegExp[] = [
     // Gmail pt-BR/en: pode quebrar em 2 linhas antes do "escreveu:".
-    /^[ \t]*(em|on)[ \t][^\n]*(\n[^\n]*){0,3}?\b(escreveu|wrote)[ \t]*:/im,
+    // Gmail/Yahoo pt-BR/en: a atribuição pode quebrar em até 3 linhas. A linha do "Em/On" precisa ter
+    // um dígito (data/hora), senão "Em primeiro lugar…\n…\nMeu chefe escreveu:" cortava o texto do assinante (re-review #12261).
+    /^[ \t]*(em|on)[ \t][^\n]*\d[^\n]*(\n[^\n]*){0,3}?\b(escreveu|wrote)[ \t]*:/im,
     /^[ \t]*-{2,}[ \t]*(original message|mensagem original)[ \t]*-{2,}/im,
     /^[ \t]*_{10,}[ \t]*$/m,
     // Outlook (inclusive Mac): `De:` seguido de até 4 linhas `Campo:` (Responder a, Para, Assunto) antes de Enviado/Data (review da PR #12261).
     /^[ \t]*(de|from)[ \t]*:[^\n]*\n(?:[ \t]*[^\n:]{1,30}:[^\n]*\n){0,4}?[ \t]*(enviad[ao]|sent|data|date)[ \t]*:/im,
-    // Rodapé fixo da própria newsletter, se a citação vazou sem marcador: nunca é texto do assinante.
-    /^[^\n]*\bcaso n[aã]o queira receber\b/im,
-    /^[^\n]*\bvoc[eê] est[aá] recebendo (esse|este) e-?mail\b/im,
+    // Rodapé fixo da própria newsletter, se a citação vazou sem marcador. Ancorado no INÍCIO da linha e
+    // na frase do rodapé: o assinante citando essa frase no meio do próprio texto não é cortado (re-review #12261).
+    ...FOOTER_CUT_RES,
     /^-- ?$/m, // delimitador de assinatura
   ];
   for (const re of cutPatterns) {
@@ -179,7 +187,14 @@ export function classifyReply(msg: ReplyMessage): ReplyClassification {
   if (SYSTEM_SENDER_RE.test(msg.from.trim())) return out("ruido", `remetente de sistema/próprio (${msg.from})`);
   const auto = isAutoReply(msg, norm);
   if (auto) return out("ruido", auto);
-  if (norm.replace(/\W/g, "") === "") return out("ruido", "resposta vazia (só citação)");
+  if (norm.replace(/\W/g, "") === "") {
+    // O corte pelo rodapé apagou a 1ª linha do próprio assinante (ele abriu a resposta com a frase do
+    // rodapé): pode ter levado o pedido junto. Fica pendente, nunca some como ruído (re-review #12261).
+    // Resposta só com citação (1ª linha = atribuição ou `>`) segue ruído.
+    const firstLine = msg.body.replace(/\r\n?/g, "\n").split("\n").find((l) => l.trim() !== "") ?? "";
+    if (FOOTER_CUT_RES.some((re) => re.test(firstLine))) return out("ambiguo", "o corte do rodapé removeu todo o texto — revisar o corpo");
+    return out("ruido", "resposta vazia (só citação)");
+  }
 
   const dataDeletion = anyMatch(DATA_DELETION_RES, norm);
   const saida = dataDeletion || anyMatch(SAIDA_RES, norm);

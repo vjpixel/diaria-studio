@@ -84,6 +84,7 @@ import {
   type TriagePlan,
 } from "./lib/clarice-replies-classify.ts";
 import { addPriorityOptins, resolveOptinEmail } from "./clarice-optin.ts";
+import { isTestAccount } from "./lib/cohorts.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 export const DEFAULT_PLAN_DIR = resolve(ROOT, "data", "clarice-replies");
@@ -280,7 +281,8 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
 }
 
 export function pendingBrevoCount(plan: TriagePlan): number {
-  return plan.actions.saida.filter((e) => !plan.applied.saida_brevo_done.includes(e)).length;
+  // Conta de teste nunca vai pra Brevo (#12261): não exige a chave só por ela.
+  return plan.actions.saida.filter((e) => !plan.applied.saida_brevo_done.includes(e) && !isTestAccount(e)).length;
 }
 
 async function makeBrevoBlacklister(apiKey: string): Promise<(email: string) => Promise<void>> {
