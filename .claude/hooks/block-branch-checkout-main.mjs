@@ -73,6 +73,14 @@
 // importadas) de `session-registry.ts`/`session-beacon.mjs` —
 // versões mínimas, só o necessário para este guard.
 //
+// #12165 (decisão do editor, 05/11/2026) REVOGA o 1º item abaixo: trocar o
+// checkout principal para uma branch existente que não seja master
+// (`git -C <principal> switch X`, `cd <principal> && git checkout X`, ou o
+// mesmo comando com cwd no principal) agora conta como `checkout -b` —
+// `changesBranch`. Voltar para master/main segue livre; restauração de
+// arquivo (`checkout -- f`, `checkout <ref> <paths>`) fica de fora. O texto
+// abaixo fica como registro do porquê de ter ficado fora até ali.
+//
 // Escopo explicitamente FORA (#6509, reconfirmado no #8937):
 //   - `git checkout <branch-existente>` sem `-b` — cenário distinto, blast
 //     radius maior (bloquear TODO checkout no diretório principal, inclusive
@@ -135,6 +143,8 @@ export const BLOCK_REASON =
   "sessão, `cd <dir>` anterior e `git -C <dir>`; alvo com variável definida fora do comando ou " +
   "substituição (`cd $W` sem `W=/caminho` antes no mesmo comando, `git -C \"$(...)\"`) não é resolvido e " +
   "conta como checkout principal — use o caminho literal do worktree. " +
+  "Trocar o checkout principal para uma branch existente (`git -C <principal> switch X`, `cd <principal> && " +
+  "git checkout X`) também é bloqueado, exceto para master (#12165). " +
   "Se você é a coordenadora e está vendo este bloqueio por " +
   "engano (ex: seu próprio registro expirou por staleness), rode `npx tsx scripts/lib/session-registry.ts " +
   "register --kind {overnight|develop|continuo}` (o SEU kind) para renovar o registro que já era seu, e " +
@@ -470,12 +480,46 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
     }
     const sub = seg[j]?.value;
     const rest = seg.slice(j + 1).map((t) => t.value);
-    const creates =
-      (sub === "checkout" && rest.includes("-b")) ||
-      (sub === "switch" && (rest.includes("-c") || rest.includes("--create")));
-    if (creates) targets.push(target);
+    if (changesBranch(sub, rest)) targets.push(target);
   }
   return targets;
+}
+
+/** Branches para as quais trocar o checkout principal é sempre livre (#12165,
+ * decisão do editor 05/11/2026): voltar para master é o caso que o guard
+ * precisa permitir. */
+export const FREE_SWITCH_TARGETS = new Set(["master", "main", "origin/master", "origin/main"]);
+
+/** Flags de criação de branch (`-b`/`-B`/`--orphan` no checkout, `-c`/`-C`/
+ * `--create`/`--force-create`/`--orphan` no switch). */
+const CHECKOUT_CREATE_FLAGS = new Set(["-b", "-B", "--orphan"]);
+const SWITCH_CREATE_FLAGS = new Set(["-c", "-C", "--create", "--force-create", "--orphan"]);
+
+/** Argumento posicional de `git checkout` com cara de caminho de arquivo, não
+ * de branch: `.`, `./x`, `../x` ou extensão (`scripts/foo.ts`). Branch como
+ * `overnight/fix-1-x` não tem extensão. */
+function looksLikePath(arg) {
+  return arg === "." || arg.startsWith("./") || arg.startsWith("../") || /\.[A-Za-z0-9]{1,6}$/.test(arg);
+}
+
+/**
+ * `true` quando `git {sub} {rest}` cria branch OU troca a branch do checkout
+ * para uma que não seja master (#12165, decisão do editor 05/11/2026: no
+ * checkout principal, switch/checkout só passa se o alvo for master).
+ * Restauração de arquivo (`checkout -- f`, `checkout <ref> <paths>`,
+ * `checkout ./f`) não troca branch e fica de fora.
+ */
+export function changesBranch(sub, rest) {
+  if (sub !== "checkout" && sub !== "switch") return false;
+  const createFlags = sub === "checkout" ? CHECKOUT_CREATE_FLAGS : SWITCH_CREATE_FLAGS;
+  if (rest.some((t) => createFlags.has(t))) return true;
+  if (sub === "checkout" && rest.includes("--")) return false;
+  const positional = rest.filter((t) => !t.startsWith("-") || t === "-");
+  if (positional.length !== 1) return false; // nenhum alvo, ou `<ref> <paths>`
+  const name = positional[0];
+  if (FREE_SWITCH_TARGETS.has(name)) return false;
+  if (sub === "checkout" && looksLikePath(name)) return false;
+  return true;
 }
 
 /**
