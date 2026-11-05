@@ -910,8 +910,8 @@ function startsAlike(a: string[], b: string[], n: number): boolean {
 /**
  * Agrupa segmentos consecutivos que começam igual (as primeiras `prefixTokens`
  * palavras) como tomadas da mesma frase. Sugestão: a última tomada "completa"
- * do grupo — termina em pontuação final e tem pelo menos 80% das palavras da
- * maior tomada; sem nenhuma assim, a mais longa.
+ * do grupo — termina em pontuação final. Uma regravação pode encurtar a frase
+ * de propósito (#12272); sem nenhuma assim, a mais longa.
  */
 export function groupTakes(segments: Segment[], opts: { prefixTokens?: number; skip?: ReadonlySet<number> } = {}): TakeGroup[] {
   const n = opts.prefixTokens ?? 3;
@@ -926,8 +926,7 @@ export function groupTakes(segments: Segment[], opts: { prefixTokens?: number; s
     else groups.push([i]);
   }
   return groups.map((g) => {
-    const longest = Math.max(...g.map((i) => toks[i].length));
-    const full = g.filter((i) => /[.!?…]["”']?$/.test(segments[i].text.trim()) && toks[i].length >= 0.8 * longest);
+    const full = g.filter((i) => isComplete(segments[i]));
     const suggested = full.length ? full[full.length - 1] : g.reduce((a, b) => (toks[b].length >= toks[a].length ? b : a));
     return { segments: g, suggested };
   });
@@ -1068,9 +1067,8 @@ export function decideTakes(segments: Segment[]): TakeDecisions {
       }
       continue;
     }
-    const toks = g.segments.map((s) => tokenize(segments[s].text).length);
-    const longest = Math.max(...toks);
-    const full = new Set(g.segments.filter((s, k) => isComplete(segments[s]) && toks[k] >= 0.8 * longest));
+    // Completude não é tamanho relativo: a regravação pode ser mais curta (#12272).
+    const full = new Set(g.segments.filter((s) => isComplete(segments[s])));
     const pick = g.segments.filter((s) => full.has(s) && !rejected.has(s)).at(-1);
     if (pick === undefined) {
       for (const s of g.segments) set(s, "cortar", rejected.has(s) ? `a direção pediu outra: "${rejected.get(s)!.text}"` : "tomada incompleta", "sem-criterio");

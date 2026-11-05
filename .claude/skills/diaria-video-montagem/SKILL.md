@@ -67,7 +67,7 @@ O Doc segue o formato da 261027 (#11361): **uma tabela por bloco do roteiro** (`
 **Decidir por critério, não repassar a dúvida (#11364).** A decupagem decide cada frase: **uma tomada "usar" por frase, as outras "cortar" com o motivo.** A 261028 saiu com ~13 "alternativa" e o XML com todas as opções em sequência (6:55 no YouTube) porque o que tinha critério na própria gravação foi tratado como dúvida. O critério, nesta ordem:
 
 1. **A tomada aprovada pela direção.** Os comentários da direção estão no transcript ("Beleza, é este take", "Muito bom", "a anterior tava melhor", "foi o primeiro do começo") e a listagem já os lê: o comentário vale para a tomada logo antes dele, o último vence. Contrariar a direção pede motivo no `reason`.
-2. **A tomada que emenda com a frase seguinte do roteiro** (a fala continua sem corte para a próxima frase).
+2. **A tomada que emenda com a frase seguinte do roteiro** (a fala continua sem corte para a próxima frase). Avaliar esta emenda antes do critério 3, conferindo o roteiro e a continuidade da fala. Uma regravação que termina com pontuação final pode estar completa mesmo muito mais curta que as anteriores; não comparar o tamanho com a maior tomada para chamá-la de incompleta (#12272).
 3. **A última tomada completa**, fora as que a direção recusou ("de novo", "errei").
 
 `alternativa` só quando **nenhum** critério decide, e então com a justificativa no `reason` (qual critério empatou e por quê). Pedido como "nos takes em que tiver dúvida, deixe todos em sequência" vale só para essa dúvida real, nunca é licença para classificar mais coisa como dúvida. **Antes de declarar dúvida, retranscrever o trecho:**
