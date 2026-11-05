@@ -79,10 +79,10 @@ const FOOTER_CUT_RES: RegExp[] = [
 export function stripQuoted(body: string): string {
   let text = body.replace(/\r\n?/g, "\n");
   const cutPatterns: RegExp[] = [
-    // Gmail pt-BR/en: pode quebrar em 2 linhas antes do "escreveu:".
     // Gmail/Yahoo pt-BR/en: a atribuição pode quebrar em até 3 linhas. A linha do "Em/On" precisa ter
     // um dígito (data/hora), senão "Em primeiro lugar…\n…\nMeu chefe escreveu:" cortava o texto do assinante (re-review #12261).
-    /^[ \t]*(em|on)[ \t][^\n]*\d[^\n]*(\n[^\n]*){0,3}?\b(escreveu|wrote)[ \t]*:/im,
+    // As linhas de continuação não podem ser vazias: a atribuição é um bloco contíguo (re-review #12261).
+    /^[ \t]*(em|on)[ \t][^\n]*\d[^\n]*(\n(?=[ \t]*\S)[^\n]*){0,3}?\b(escreveu|wrote)[ \t]*:/im,
     /^[ \t]*-{2,}[ \t]*(original message|mensagem original)[ \t]*-{2,}/im,
     /^[ \t]*_{10,}[ \t]*$/m,
     // Outlook (inclusive Mac): `De:` seguido de até 4 linhas `Campo:` (Responder a, Para, Assunto) antes de Enviado/Data (review da PR #12261).
@@ -93,7 +93,19 @@ export function stripQuoted(body: string): string {
     /^-- ?$/m, // delimitador de assinatura
   ];
   for (const re of cutPatterns) {
-    const m = re.exec(text);
+    let m: RegExpExecArray | null;
+    if (re === cutPatterns[0]) {
+      // Atribuição de verdade traz o endereço do remetente (`<ti@clarice.ai>`); sem `@`, "Em 05/11 a
+      // Clarice escreveu: …" é texto do próprio assinante: pula essa e procura a próxima (re-review #12261).
+      const g = new RegExp(re.source, "gim");
+      m = null;
+      for (let c = g.exec(text); c; c = g.exec(text)) {
+        if (c[0].includes("@")) { m = c; break; }
+        g.lastIndex = c.index + 1;
+      }
+    } else {
+      m = re.exec(text);
+    }
     if (m) text = text.slice(0, m.index);
   }
   return text

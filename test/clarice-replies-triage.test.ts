@@ -348,3 +348,8 @@ test("#12261 re-review: assinante citando o rodapé ou abrindo com 'Em primeiro 
   // resposta só com citação segue ruído
   assert.equal(classifyReply(msg(QUOTE)).kind, "ruido");
 });
+
+test("#12261 re-review: 'Em … escreveu:' escrito pelo assinante (sem endereço) não esvazia a resposta", () => {
+  assert.equal(classifyReply(msg("Em 05/11 a Clarice escreveu: 'pode se descadastrar', mas não funciona. Me tirem da lista." + QUOTE)).kind, "saida");
+  assert.equal(classifyReply(msg("Em 2 de cada 3 edições eu leio tudo. Quero!\nMinha esposa escreveu: amei" + QUOTE)).kind, "quero");
+});
