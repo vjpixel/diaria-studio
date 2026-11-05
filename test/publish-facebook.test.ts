@@ -162,18 +162,8 @@ describe("published=false sempre enviado no formData fix #505 (#527)", () => {
   });
 });
 
-describe("image naming 04-dN-1x1.jpg fix #502 (#527)", () => {
-  for (const d of ["d1", "d2", "d3"]) {
-    it(d + ": nome e 04-" + d + "-1x1.jpg", () => {
-      const f = "04-" + d + "-1x1.jpg";
-      assert.match(f, /^04-d[123]-1x1\.jpg$/);
-      assert.ok(!f.includes("2x1"));
-    });
-  }
-  it("pattern gera 3 nomes esperados", () => {
-    assert.deepEqual(["d1","d2","d3"].map((d) => "04-" + d + "-1x1.jpg"), ["04-d1-1x1.jpg","04-d2-1x1.jpg","04-d3-1x1.jpg"]);
-  });
-});
+// #12226: o naming 04-dN-1x1.jpg (#502/#527) saiu — o post de feed usa só o
+// card 4:5, sem fallback pro 1:1 (test/select-social-card-image.test.ts).
 
 describe("resume-aware skip posts ja publicados (#527)", () => {
   it("pula post com status draft", () => { const p=[{platform:"facebook",destaque:"d1",status:"draft"}]; const e=p.find((x)=>x.platform==="facebook"&&x.destaque==="d1"&&(x.status==="draft"||x.status==="scheduled")); assert.ok(e!==undefined); assert.equal(e.status,"draft"); });

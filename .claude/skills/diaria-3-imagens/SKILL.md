@@ -109,7 +109,7 @@ npx tsx scripts/stage-3-run.ts --edition $1 [--only d{N}] [--force]
 ```
 > **#9088 — gerador `codex`:** cada imagem leva ~1-2 min e o runner gera 2 por destaque em sequência — pode passar do teto de 10 min do Bash. Rodar em **background** (`run_in_background`) e aguardar; é idempotente (reexecutar sem `--force` só completa o que falta).
 
-Cobre lint pre-flight → `image-generate.ts` (2x1/1x1 + 4x5 nativo) por destaque → `gen-social-card-4x5.ts` (card 4:5 com título) → `gen-carousel-cards.ts` (#6005 Parte B — 3 slides de parágrafo + CTA do carrossel do Instagram) → leaderboard top1 (fail-soft) → box de campeões → pre-gate invariants (`check-invariants.ts --stage 3`) → descoberta dos pares do crop-reviewer.
+Cobre lint pre-flight → `image-generate.ts` (2x1 + 4x5 nativo) por destaque → `gen-social-card-4x5.ts` (card 4:5 com título) → `gen-carousel-cards.ts` (#6005 Parte B — 3 slides de parágrafo + CTA do carrossel do Instagram) → leaderboard top1 (fail-soft) → box de campeões → pre-gate invariants (`check-invariants.ts --stage 3`) → descoberta dos pares do crop-reviewer.
 
 Interpretar o JSON de saída:
 - `code: 0` → miolo concluído. Usar `destaques[]` (por destaque: `lintOk`/`imageGenerated`/`nativeArt4x5Generated`), `cardsGenerated`, `carouselCardsGenerated`, `championsInjected`, `invariantsPassed`/`invariantsViolations` e `cropReviewPairs` no resumo do gate abaixo.
@@ -137,7 +137,7 @@ Exit 0 → seguir para o gate abaixo. Exit 1 → bloquear o gate, mostrar as vio
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition $1 --step 3 \
-  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,04-d1-4x5.jpg,04-d2-4x5.jpg,04-d3-4x5.jpg"
+  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-4x5.jpg,04-d2-4x5.jpg,04-d3-4x5.jpg"
 ```
 
 **Caso contrário:**
@@ -150,9 +150,9 @@ Etapa 3 — Imagens prontas.
   📁 {EDIR}/01-eia-B.jpg
 
 Imagens de destaque:
-  📁 {EDIR}/04-d1-2x1.jpg  (+ 04-d1-1x1.jpg, 04-d1-4x5.jpg)
-  📁 {EDIR}/04-d2-1x1.jpg  (+ 04-d2-4x5.jpg)
-  📁 {EDIR}/04-d3-1x1.jpg  (+ 04-d3-4x5.jpg)
+  📁 {EDIR}/04-d1-2x1.jpg  (+ 04-d1-4x5.jpg)
+  📁 {EDIR}/04-d2-2x1.jpg  (+ 04-d2-4x5.jpg)
+  📁 {EDIR}/04-d3-2x1.jpg  (+ 04-d3-4x5.jpg)
 
 Aprovar (sim) / regenerar imagem individual (ex: "d2") / pedir retry completo?
 ```
@@ -166,7 +166,7 @@ Caso contrário, aguardar resposta. "sim" → finalizar (escrever o sentinel aba
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition $1 --step 3 \
-  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,04-d1-4x5.jpg,04-d2-4x5.jpg,04-d3-4x5.jpg"
+  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-4x5.jpg,04-d2-4x5.jpg,04-d3-4x5.jpg"
 ```
 
 ## Outputs
@@ -175,7 +175,7 @@ npx tsx scripts/pipeline-sentinel.ts write \
 - `{EDIR}/01-eia-A.jpg` — slot A (real ou IA, depende do sorteio)
 - `{EDIR}/01-eia-B.jpg` — slot B (oposto de A)
 - `{EDIR}/_internal/01-eia-meta.json` — metadata com `ai_side`
-- `{EDIR}/04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`
+- `{EDIR}/04-d1-2x1.jpg`, `04-d2-2x1.jpg`, `04-d3-2x1.jpg` — hero 2:1 da newsletter (o 1:1 `04-d{N}-1x1.jpg` deixou de ser gerado no #12226)
 - `{EDIR}/04-d1-4x5-nativo.jpg`, `04-d2-4x5-nativo.jpg`, `04-d3-4x5-nativo.jpg` — arte 4:5 nativa, insumo do card
 - `{EDIR}/04-d1-4x5.jpg`, `04-d2-4x5.jpg`, `04-d3-4x5.jpg` — card final com título embutido (#4114), o que `selectSocialCardImageFile` escolhe pro feed Facebook/Instagram
 - `{EDIR}/04-d{N}-carousel-{p1,p2,p3,cta}-4x5.jpg` — slides sem foto do carrossel do Instagram (#6005 Parte B), 1 por destaque presente, gerados por `gen-carousel-cards.ts` dentro do runner do passo 2b

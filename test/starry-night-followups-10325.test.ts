@@ -161,21 +161,21 @@ describe("#10327: tentativas de regeneração presas à imagem, não à posiçã
 
   // #10332: a regeneração reescreve o destaque inteiro; o revisor pode acusar
   // um ratio diferente do que estava no `pending`.
-  const estilo = (ratio: "1x1" | "4x5") =>
+  const estilo = (ratio: "2x1" | "4x5") =>
     normalizeCropReviewResult(
       { results: [{ destaque: "d1", ratio, status: "warn", categoria: "estilo", motivo: "espiral" }] },
       "261016",
     );
 
-  it("#10332: pending {4x5} → regenera → revisor acusa {1x1} → esgotado (teto não some)", () => {
-    const md5: Record<string, string> = { "1x1": "1x1-v1", "4x5": "4x5-v1" };
+  it("#10332: pending {4x5} → regenera → revisor acusa {2x1} → esgotado (teto não some)", () => {
+    const md5: Record<string, string> = { "2x1": "2x1-v1", "4x5": "4x5-v1" };
     const cur = (_d: string, r: string) => md5[r] ?? null;
     const p1 = planEstiloRegeneration(estilo("4x5"), {}, () => false, cur);
     assert.deepEqual(p1.regenerate, ["d1"]);
-    // image-generate --force regera 2x1+1x1, depois --ratio 4x5 --force
-    md5["1x1"] = "1x1-v2";
+    // image-generate --force regera 2x1, depois --ratio 4x5 --force
+    md5["2x1"] = "2x1-v2";
     md5["4x5"] = "4x5-v2";
-    const p2 = planEstiloRegeneration(estilo("1x1"), p1.state, () => false, cur);
+    const p2 = planEstiloRegeneration(estilo("2x1"), p1.state, () => false, cur);
     assert.deepEqual(p2.regenerate, [], "a imagem acusada é a própria regenerada");
     assert.deepEqual(p2.exhausted, ["d1"]);
     assert.equal(p2.attempts.d1, 1);
@@ -185,11 +185,11 @@ describe("#10327: tentativas de regeneração presas à imagem, não à posiçã
   });
 
   it("#10332: idem para failed — gerador falhou e o revisor alterna o ratio → esgotado", () => {
-    const md5: Record<string, string> = { "1x1": "1x1-v1", "4x5": "4x5-v1" };
+    const md5: Record<string, string> = { "2x1": "2x1-v1", "4x5": "4x5-v1" };
     const cur = (_d: string, r: string) => md5[r] ?? null;
     // 2 falhas toleradas (failed <= MAX_ESTILO_REGEN_FAILED_RUNS), na 3ª esgota
     let state = planEstiloRegeneration(estilo("4x5"), {}, () => false, cur).state;
-    const ratios: Array<"1x1" | "4x5"> = ["1x1", "4x5", "1x1"];
+    const ratios: Array<"2x1" | "4x5"> = ["2x1", "4x5", "2x1"];
     let last;
     for (const r of ratios) {
       last = planEstiloRegeneration(estilo(r), state, () => false, cur);
@@ -201,16 +201,16 @@ describe("#10327: tentativas de regeneração presas à imagem, não à posiçã
   });
 
   it("#10332: troca real da imagem (swap) depois do ratio alternado ainda zera a contagem", () => {
-    const md5: Record<string, string> = { "1x1": "1x1-v1", "4x5": "4x5-v1" };
+    const md5: Record<string, string> = { "2x1": "2x1-v1", "4x5": "4x5-v1" };
     const cur = (_d: string, r: string) => md5[r] ?? null;
     const p1 = planEstiloRegeneration(estilo("4x5"), {}, () => false, cur);
-    md5["1x1"] = "1x1-v2";
+    md5["2x1"] = "2x1-v2";
     md5["4x5"] = "4x5-v2";
-    const p2 = planEstiloRegeneration(estilo("1x1"), p1.state, () => false, cur);
+    const p2 = planEstiloRegeneration(estilo("2x1"), p1.state, () => false, cur);
     assert.deepEqual(p2.exhausted, ["d1"]);
-    md5["1x1"] = "swap-1x1";
+    md5["2x1"] = "swap-2x1";
     md5["4x5"] = "swap-4x5";
-    const p3 = planEstiloRegeneration(estilo("1x1"), p2.state, () => false, cur);
+    const p3 = planEstiloRegeneration(estilo("2x1"), p2.state, () => false, cur);
     assert.deepEqual(p3.regenerate, ["d1"]);
   });
 

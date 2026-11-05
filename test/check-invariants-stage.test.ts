@@ -1529,7 +1529,7 @@ describe("Stage 3 invariants", () => {
 
   it("all-images-exist falha quando todas ausentes", () => {
     const v = checkAllImagesExist(fixture);
-    assert.equal(v.length, 8); // 8 imagens obrigatórias (#2133/#2141: d2/d3 2x1 adicionadas)
+    assert.equal(v.length, 5); // 5 imagens obrigatórias: eia A/B + d1/d2/d3 2x1 (#2133/#2141; sem 1x1 desde o #12226)
     for (const violation of v) {
       assert.equal(violation.severity, "error");
     }
@@ -2575,6 +2575,12 @@ describe("Stage 4 invariants", () => {
       assert.equal(isSilencedCropWarn({ ratio: "1x1", categoria: "estilo" }), false);
       assert.equal(isSilencedCropWarn({ ratio: "4x5" }), false);
       assert.equal(isSilencedCropWarn({}), false, "entrada sem ratio (legado) continua avisando");
+    });
+
+    it("#12226: par 2x1 (hero da newsletter, sem crop) silencia o crop mas mantém o estilo", () => {
+      assert.equal(isSilencedCropWarn({ ratio: "2x1" }), true);
+      assert.equal(isSilencedCropWarn({ ratio: "2x1", categoria: "crop" }), true);
+      assert.equal(isSilencedCropWarn({ ratio: "2x1", categoria: "estilo" }), false);
     });
 
     it("e2e: check-invariants --stage 4 nunca sai exit 1 só por causa de image-crop-warn", () => {

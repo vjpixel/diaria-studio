@@ -28,18 +28,15 @@ function makeJpg(path: string): void {
 }
 
 describe("findMissingStage3Outputs (#1132 P1.2)", () => {
-  it("retorna vazio quando todos os outputs presentes (naming A/B novo)", () => {
+  it("retorna vazio quando todos os outputs presentes (naming A/B novo) — sem nenhum -1x1.jpg (#12226)", () => {
     const dir = makeDir();
     try {
       mkdirSync(join(dir, "_internal"), { recursive: true });
       makeJpg(join(dir, "01-eia-A.jpg"));
       makeJpg(join(dir, "01-eia-B.jpg"));
       makeJpg(join(dir, "04-d1-2x1.jpg"));
-      makeJpg(join(dir, "04-d1-1x1.jpg"));
       makeJpg(join(dir, "04-d2-2x1.jpg")); // #2133/#2141/#2366: hero D2
-      makeJpg(join(dir, "04-d2-1x1.jpg"));
       makeJpg(join(dir, "04-d3-2x1.jpg")); // #2133/#2141: hero D3
-      makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"), "{}");
       touch(join(dir, "01-eia.md"), "# eia");
 
@@ -57,11 +54,8 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       makeJpg(join(dir, "01-eia-real.jpg"));
       makeJpg(join(dir, "01-eia-ia.jpg"));
       makeJpg(join(dir, "04-d1-2x1.jpg"));
-      makeJpg(join(dir, "04-d1-1x1.jpg"));
       makeJpg(join(dir, "04-d2-2x1.jpg")); // #2366
-      makeJpg(join(dir, "04-d2-1x1.jpg"));
       makeJpg(join(dir, "04-d3-2x1.jpg")); // #2366
-      makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"), "{}");
       touch(join(dir, "01-eia.md"));
 
@@ -78,11 +72,8 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       mkdirSync(join(dir, "_internal"), { recursive: true });
       // Sem nenhuma imagem È IA?
       makeJpg(join(dir, "04-d1-2x1.jpg"));
-      makeJpg(join(dir, "04-d1-1x1.jpg"));
       makeJpg(join(dir, "04-d2-2x1.jpg")); // #2366
-      makeJpg(join(dir, "04-d2-1x1.jpg"));
       makeJpg(join(dir, "04-d3-2x1.jpg")); // #2366
-      makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"));
       touch(join(dir, "01-eia.md"));
 
@@ -101,17 +92,14 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       mkdirSync(join(dir, "_internal"), { recursive: true });
       makeJpg(join(dir, "01-eia-A.jpg"));
       makeJpg(join(dir, "01-eia-B.jpg"));
-      makeJpg(join(dir, "04-d1-2x1.jpg"));
-      // Falta 04-d1-1x1.jpg
+      // Falta 04-d1-2x1.jpg
       makeJpg(join(dir, "04-d2-2x1.jpg")); // #2366
-      makeJpg(join(dir, "04-d2-1x1.jpg"));
       makeJpg(join(dir, "04-d3-2x1.jpg")); // #2366
-      makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"));
       touch(join(dir, "01-eia.md"));
 
       const missing = findMissingStage3Outputs(dir);
-      const d1miss = missing.find((m) => m.file === "04-d1-1x1.jpg");
+      const d1miss = missing.find((m) => m.file === "04-d1-2x1.jpg");
       assert.ok(d1miss);
       assert.equal(d1miss.category, "destaque-image");
     } finally {
@@ -126,11 +114,8 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       makeJpg(join(dir, "01-eia-A.jpg"));
       makeJpg(join(dir, "01-eia-B.jpg"));
       writeFileSync(join(dir, "04-d1-2x1.jpg"), ""); // vazia!
-      makeJpg(join(dir, "04-d1-1x1.jpg"));
       makeJpg(join(dir, "04-d2-2x1.jpg")); // #2366
-      makeJpg(join(dir, "04-d2-1x1.jpg"));
       makeJpg(join(dir, "04-d3-2x1.jpg")); // #2366
-      makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"));
       touch(join(dir, "01-eia.md"));
 
@@ -149,11 +134,8 @@ describe("findMissingStage3Outputs (#1132 P1.2)", () => {
       makeJpg(join(dir, "01-eia-A.jpg"));
       makeJpg(join(dir, "01-eia-B.jpg"));
       makeJpg(join(dir, "04-d1-2x1.jpg"));
-      makeJpg(join(dir, "04-d1-1x1.jpg"));
       makeJpg(join(dir, "04-d2-2x1.jpg")); // #2366
-      makeJpg(join(dir, "04-d2-1x1.jpg"));
       makeJpg(join(dir, "04-d3-2x1.jpg")); // #2366
-      makeJpg(join(dir, "04-d3-1x1.jpg"));
       // Sem _internal/01-eia-meta.json, sem 01-eia.md
 
       const missing = findMissingStage3Outputs(dir);
@@ -181,11 +163,8 @@ describe("findMissingStage3Outputs — 04-d2-2x1.jpg regressão (#2366)", () => 
       makeJpg(join(dir, "01-eia-A.jpg"));
       makeJpg(join(dir, "01-eia-B.jpg"));
       makeJpg(join(dir, "04-d1-2x1.jpg"));
-      makeJpg(join(dir, "04-d1-1x1.jpg"));
       // 04-d2-2x1.jpg AUSENTE — deve ser detectada como missing
-      makeJpg(join(dir, "04-d2-1x1.jpg"));
       makeJpg(join(dir, "04-d3-2x1.jpg"));
-      makeJpg(join(dir, "04-d3-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"), "{}");
       touch(join(dir, "01-eia.md"), "# eia");
 
@@ -210,9 +189,7 @@ describe("findMissingStage3Outputs — 04-d2-2x1.jpg regressão (#2366)", () => 
       makeJpg(join(dir, "01-eia-A.jpg"));
       makeJpg(join(dir, "01-eia-B.jpg"));
       makeJpg(join(dir, "04-d1-2x1.jpg"));
-      makeJpg(join(dir, "04-d1-1x1.jpg"));
       // 04-d2-2x1.jpg AUSENTE — deve ser detectada como missing em 2-destaque
-      makeJpg(join(dir, "04-d2-1x1.jpg"));
       touch(join(dir, "_internal/01-eia-meta.json"), "{}");
       touch(join(dir, "01-eia.md"), "# eia");
 
@@ -248,9 +225,7 @@ describe("findMissingStage3Outputs 2-destaque (#2352)", () => {
       writeFileSync(join(dir, "01-eia-A.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "01-eia-B.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "04-d1-2x1.jpg"), "JPEG-FAKE");
-      writeFileSync(join(dir, "04-d1-1x1.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "04-d2-2x1.jpg"), "JPEG-FAKE"); // #2133/#2141/#2366: hero D2 requerido
-      writeFileSync(join(dir, "04-d2-1x1.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "_internal/01-eia-meta.json"), "{}");
       writeFileSync(join(dir, "01-eia.md"), "# eia");
 
@@ -276,15 +251,14 @@ describe("findMissingStage3Outputs 2-destaque (#2352)", () => {
       writeFileSync(join(dir, "01-eia-A.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "01-eia-B.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "04-d1-2x1.jpg"), "JPEG-FAKE");
-      writeFileSync(join(dir, "04-d1-1x1.jpg"), "JPEG-FAKE");
-      // 04-d2-1x1.jpg ausente
+      // 04-d2-2x1.jpg ausente
       writeFileSync(join(dir, "_internal/01-eia-meta.json"), "{}");
       writeFileSync(join(dir, "01-eia.md"), "# eia");
 
       const missing = findMissingStage3Outputs(dir);
       assert.ok(
-        missing.some((m) => m.file === "04-d2-1x1.jpg"),
-        `Deve reportar 04-d2-1x1.jpg ausente. Achei: ${JSON.stringify(missing)}`,
+        missing.some((m) => m.file === "04-d2-2x1.jpg"),
+        `Deve reportar 04-d2-2x1.jpg ausente. Achei: ${JSON.stringify(missing)}`,
       );
       assert.ok(
         !missing.some((m) => m.file.includes("d3")),
@@ -303,17 +277,15 @@ describe("findMissingStage3Outputs 2-destaque (#2352)", () => {
       writeFileSync(join(dir, "01-eia-A.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "01-eia-B.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "04-d1-2x1.jpg"), "JPEG-FAKE");
-      writeFileSync(join(dir, "04-d1-1x1.jpg"), "JPEG-FAKE");
       writeFileSync(join(dir, "04-d2-2x1.jpg"), "JPEG-FAKE"); // #2366
-      writeFileSync(join(dir, "04-d2-1x1.jpg"), "JPEG-FAKE");
-      // 04-d3-2x1.jpg e 04-d3-1x1.jpg ausentes
+      // 04-d3-2x1.jpg ausente
       writeFileSync(join(dir, "_internal/01-eia-meta.json"), "{}");
       writeFileSync(join(dir, "01-eia.md"), "# eia");
 
       const missing = findMissingStage3Outputs(dir);
       assert.ok(
-        missing.some((m) => m.file === "04-d3-1x1.jpg"),
-        `3D edition (default) deve reportar 04-d3-1x1.jpg ausente. Achei: ${JSON.stringify(missing)}`,
+        missing.some((m) => m.file === "04-d3-2x1.jpg"),
+        `3D edition (default) deve reportar 04-d3-2x1.jpg ausente. Achei: ${JSON.stringify(missing)}`,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -16,9 +16,9 @@
  *   {
  *     "out_path": "data/editions/260424/06-public-images.json",
  *     "images": {
- *       "d1": { "file_id": "img-260424-04-d1-1x1-HASH.jpg", "url": "https://eia.diar.ia.br/img/..." },
- *       "d2": { ... },
- *       "d3": { ... }
+ *       "d1_4x5": { "file_id": "img-260424-04-d1-4x5-HASH.jpg", "url": "https://eia.diar.ia.br/img/..." },
+ *       "d2_4x5": { ... },
+ *       "d3_4x5": { ... }
  *     }
  *   }
  *
@@ -129,7 +129,7 @@ export interface PublicImagesOutput {
   r2_coverage: PublicImagesR2Coverage;
   /**
    * #10834: conferência do carrossel do 4º post antes do upload (modo
-   * social/all). Ausente no modo newsletter e com `destaques` explícitos.
+   * social/all). Ausente no modo newsletter.
    */
   use_melhor_carousel?: UseMelhorCarouselRefresh;
 }
@@ -145,21 +145,8 @@ export function mimeTypeFor(filename: string): string {
 }
 
 /**
- * Escolhe o arquivo fonte pra cada destaque (modo social — LinkedIn/IG).
- * D1 usa variante 1x1 (social square); D2/D3 usam 1x1 (proporção forçada em #372).
- *
- * #7399: usada só pelo path de compat `opts.destaques` (override explícito,
- * sem consumidor em produção — `main()` nunca passa `destaques`). O caminho
- * default (`imageSpecsFor`) não sobe mais a chave base 1:1 — ver comentário
- * em `imageSpecsFor`.
- */
-export function sourceImageFor(destaque: "d1" | "d2" | "d3"): string {
-  return destaque === "d1" ? "04-d1-1x1.jpg" : `04-${destaque}-1x1.jpg`;
-}
-
-/**
  * Mapeamento de imagens por modo:
- * - social: D1 1x1 (square), D2, D3 — pra LinkedIn/Instagram.
+ * - social: cards 4:5 + heros 2:1 + carrossel — pra LinkedIn/Instagram.
  * - newsletter: cover 2x1 (= D1 inline), D2, D3, É IA? real + IA —
  *   pra Custom HTML block do Beehiiv (#74).
  * - all: union dos dois.
@@ -235,9 +222,8 @@ export function imageSpecsFor(
   const social: ImageSpec[] = [
     // #7399: chave BASE (1:1) removida do upload — sem consumidor real (o
     // fallback do 4:5 nunca disparava porque gen-social-card-4x5.ts é
-    // bloqueante, #4090). Arquivo local `04-d{N}-1x1.jpg` continua gerado
-    // (Studio UI ainda lê do disco, ver studio-images.ts) — só o UPLOAD pro
-    // Cloudflare KV foi removido. Publishers agora caem no hero 2:1
+    // bloqueante, #4090). Desde o #12226 o arquivo local `04-d{N}-1x1.jpg`
+    // também deixou de ser gerado. Publishers agora caem no hero 2:1
     // (`cover`/`d{N}_2x1`, sempre presente) quando o 4:5 falta.
     //
     // Card 4:5 (1080x1350, título embutido) gerado por gen-social-card-4x5.ts.
@@ -416,8 +402,6 @@ export function kvKeyForSpec(
 
 export interface UploadOptions {
   editionDir: string;
-  /** Lista explícita de chaves a upload. Sobrescreve `mode` se ambos passados. */
-  destaques?: Array<"d1" | "d2" | "d3">;
   /** Modo de seleção de imagens (social | newsletter | all). Default: social. */
   mode?: UploadMode;
   skipExisting?: boolean;
@@ -529,47 +513,42 @@ export async function uploadPublicImages(
   let useMelhorSlots: string[] = [];
   let useMelhorCarousel: UseMelhorCarouselRefresh | undefined;
   const warnings: string[] = [];
-  if (opts.destaques) {
-    // Retrocompat: destaques explícitos
-    specs = opts.destaques.map((d) => ({ key: d, filename: sourceImageFor(d) }));
-  } else {
-    // #9568: slots do 4º post só quando o carimbo do Stage 3 bate com o texto
-    // atual (import dinâmico — o estático fecharia ciclo de módulos, ver
-    // `useMelhorSlideSpecs`). Modo newsletter não sobe slides sociais.
-    if (mode !== "newsletter") {
-      // #10834: `## um` editado depois do Stage 3 deixava o carimbo defasado e
-      // os publicadores pulavam o 4º post. Regera o carrossel ANTES de decidir
-      // os slots — fail-soft (a função nunca lança; o seam idem por contrato).
-      const refresh =
-        opts.refreshUseMelhorCarousel ??
-        (async (dir: string) => (await import("./gen-carousel-cards.ts")).refreshStaleUseMelhorCarousel(dir));
-      try {
-        useMelhorCarousel = await refresh(editionDir);
-      } catch (e) {
-        useMelhorCarousel = { status: "failed", reason: (e as Error).message };
-      }
-      if (useMelhorCarousel.status === "regenerated") {
-        console.error(
-          `upload-images-public: carrossel do 4º post estava defasado ('## um' mudou depois do Stage 3) — regerado (#10834).`,
-        );
-      } else if (useMelhorCarousel.status === "failed" && useMelhorCarousel.cause === "font_missing") {
-        // #10879: Georgia ausente (servidor 300). O aviso genérico abaixo mandava
-        // "corrigir o motivo" sem dizer qual — e o motivo não tem conserto nesta máquina.
-        const msg = useMelhorFontMissingWarning(editionDir);
-        console.error(`upload-images-public: ${msg}`);
-        warnings.push(msg);
-      } else if (useMelhorCarousel.status === "skipped" || useMelhorCarousel.status === "failed") {
-        warnings.push(
-          `carrossel do 4º post DEFASADO e não regerado (${useMelhorCarousel.status}: ${useMelhorCarousel.reason ?? "sem motivo"}) — ` +
-            `os slides não sobem e o 4º post é pulado no LinkedIn/Instagram/Facebook (#10834). ` +
-            `Conserto: corrigir o motivo e rodar "npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" + este upload de novo.`,
-        );
-      }
-      const { freshUseMelhorCarouselSlots } = await import("./lib/use-melhor-dispatch.ts");
-      useMelhorSlots = freshUseMelhorCarouselSlots(editionDir);
+  // #9568: slots do 4º post só quando o carimbo do Stage 3 bate com o texto
+  // atual (import dinâmico — o estático fecharia ciclo de módulos, ver
+  // `useMelhorSlideSpecs`). Modo newsletter não sobe slides sociais.
+  if (mode !== "newsletter") {
+    // #10834: `## um` editado depois do Stage 3 deixava o carimbo defasado e
+    // os publicadores pulavam o 4º post. Regera o carrossel ANTES de decidir
+    // os slots — fail-soft (a função nunca lança; o seam idem por contrato).
+    const refresh =
+      opts.refreshUseMelhorCarousel ??
+      (async (dir: string) => (await import("./gen-carousel-cards.ts")).refreshStaleUseMelhorCarousel(dir));
+    try {
+      useMelhorCarousel = await refresh(editionDir);
+    } catch (e) {
+      useMelhorCarousel = { status: "failed", reason: (e as Error).message };
     }
-    specs = imageSpecsFor(mode, editionDir, { useMelhorSlots });
+    if (useMelhorCarousel.status === "regenerated") {
+      console.error(
+        `upload-images-public: carrossel do 4º post estava defasado ('## um' mudou depois do Stage 3) — regerado (#10834).`,
+      );
+    } else if (useMelhorCarousel.status === "failed" && useMelhorCarousel.cause === "font_missing") {
+      // #10879: Georgia ausente (servidor 300). O aviso genérico abaixo mandava
+      // "corrigir o motivo" sem dizer qual — e o motivo não tem conserto nesta máquina.
+      const msg = useMelhorFontMissingWarning(editionDir);
+      console.error(`upload-images-public: ${msg}`);
+      warnings.push(msg);
+    } else if (useMelhorCarousel.status === "skipped" || useMelhorCarousel.status === "failed") {
+      warnings.push(
+        `carrossel do 4º post DEFASADO e não regerado (${useMelhorCarousel.status}: ${useMelhorCarousel.reason ?? "sem motivo"}) — ` +
+          `os slides não sobem e o 4º post é pulado no LinkedIn/Instagram/Facebook (#10834). ` +
+          `Conserto: corrigir o motivo e rodar "npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" + este upload de novo.`,
+      );
+    }
+    const { freshUseMelhorCarouselSlots } = await import("./lib/use-melhor-dispatch.ts");
+    useMelhorSlots = freshUseMelhorCarouselSlots(editionDir);
   }
+  specs = imageSpecsFor(mode, editionDir, { useMelhorSlots });
 
   // #11125: edição marcada como sem vídeo (`_internal/no-video.json`) — a
   // cópia com o convite não é gerada nem sobe, e a que sobrou de uma rodada

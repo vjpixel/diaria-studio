@@ -30,7 +30,7 @@ import { promoteToDestaque } from "../scripts/promote-to-destaque.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 
-const estilo = (ratio: "1x1" | "4x5", destaque = "d1") =>
+const estilo = (ratio: "2x1" | "4x5", destaque = "d1") =>
   normalizeCropReviewResult(
     { results: [{ destaque, ratio, status: "warn", categoria: "estilo", motivo: "espiral" }] },
     "261018",
@@ -56,14 +56,14 @@ const curTrocada = (_d: string, r: string) => TROCADA[r] ?? null;
 
 describe("#10335 cenário 1: troca completa da imagem com pending vivo", () => {
   it("sem limpar o estado, a troca vai a exhausted (o defeito que o fix contorna)", () => {
-    const p = planEstiloRegeneration(estilo("1x1"), pendingState(), () => false, curTrocada);
+    const p = planEstiloRegeneration(estilo("2x1"), pendingState(), () => false, curTrocada);
     assert.deepEqual(p.exhausted, ["d1"], "md5 sozinho não distingue troca de regeneração");
   });
 
   it("estado limpo na troca → a imagem nova ganha a regeneração a que tem direito", () => {
     const cleared = clearEstiloRegenDestaques(pendingState(), ["d1"]);
     assert.equal(cleared.changed, true);
-    const p = planEstiloRegeneration(estilo("1x1"), cleared.data as EstiloRegenState, () => false, curTrocada);
+    const p = planEstiloRegeneration(estilo("2x1"), cleared.data as EstiloRegenState, () => false, curTrocada);
     assert.deepEqual(p.regenerate, ["d1"]);
     assert.deepEqual(p.exhausted, []);
     assert.equal(p.attempts.d1, undefined, "nenhuma tentativa gasta com a imagem trocada");
@@ -225,7 +225,7 @@ describe("#10404: promote não herda estado residual de d3 na posição inserida
     const stale = planEstiloRegeneration(estilo("4x5", "d3"), {}, () => false, (_d, r) => md5[r] ?? null).state;
     assert.ok(stale.pending?.d3, "fixture: D3 antigo com pending vivo");
     const { st } = promoteWithStaleD3(1, stale as Record<string, unknown>);
-    const p = planEstiloRegeneration(estilo("1x1", "d1"), st as EstiloRegenState, () => false, curTrocada);
+    const p = planEstiloRegeneration(estilo("2x1", "d1"), st as EstiloRegenState, () => false, curTrocada);
     assert.deepEqual(p.exhausted, []);
     assert.deepEqual(p.regenerate, ["d1"]);
   });
@@ -264,14 +264,14 @@ describe("#10335: swap-destaque.ts e --estilo-regen-reset zeram a posição (CLI
     return dir;
   }
 
-  /** Coloca a imagem trocada (3 ratios novos) e o revisor acusando o 1x1. */
+  /** Coloca a imagem trocada (3 ratios novos) e o revisor acusando o 2x1 (era o 1x1, #12226). */
   function trocaEAcusa1x1(dir: string) {
     for (const [r, c] of [["2x1", "troca-2x1"], ["1x1", "troca-1x1"], ["4x5", "troca-card"], ["4x5-nativo", "troca-nativo"]]) {
       writeFileSync(join(dir, `04-d1-${r}.jpg`), c);
     }
     writeFileSync(
       join(dir, "_internal", "04-crop-review.json"),
-      JSON.stringify({ results: [{ destaque: "d1", ratio: "1x1", status: "warn", categoria: "estilo", motivo: "espiral" }] }),
+      JSON.stringify({ results: [{ destaque: "d1", ratio: "2x1", status: "warn", categoria: "estilo", motivo: "espiral" }] }), // #12226: era 1x1
     );
   }
 

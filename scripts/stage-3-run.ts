@@ -24,7 +24,7 @@
  *
  * Este script cobre só o MIOLO DETERMINÍSTICO de §3b — a parte que a
  * própria issue já apontava como "geração já é script, sem Agent no meio":
- * lint pre-flight, `image-generate.ts` (2x1/1x1 + 4x5 nativo) por destaque,
+ * lint pre-flight, `image-generate.ts` (2x1 + 4x5 nativo; sem 1x1 desde o #12226) por destaque,
  * composição do card 4:5, fetch do leaderboard, injeção do callout do sorteio (#9236),
  * e as invariantes pré-gate. **Ele roda independente de §3a/§3a-bis** — a
  * geração de imagens de destaque não depende do É IA? ter terminado, só do
@@ -36,7 +36,7 @@
  *   Checagem de saúde do ComfyUI, quando `platform.config.json.image_generator
  *     === "comfyui"` (HALT se indisponível — mesma severidade do playbook).
  *   Por destaque presente (d1, d2, e d3 só se destaque_count === 3):
- *     lint-image-prompt.ts → image-generate.ts (2x1/1x1) → image-generate.ts
+ *     lint-image-prompt.ts → image-generate.ts (2x1) → image-generate.ts
  *     --ratio 4x5 (nativo). Falha de lint pausa SÓ aquele destaque (report,
  *     não hard-abort); falha de `image-generate.ts` (qualquer ratio) é
  *     BLOQUEANTE — para o Stage 3 inteiro, igual ao playbook (#4090).
@@ -436,7 +436,7 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       };
     }
 
-    // --- por destaque: lint → image-generate 2x1/1x1 → image-generate 4x5 nativo ---
+    // --- por destaque: lint → image-generate 2x1 → image-generate 4x5 nativo ---
     const destaques: DestaqueOutcome[] = [];
     for (const d of destaquesToRun) {
       const promptRel = `${editionDir}/_internal/02-${d}-prompt.md`;
@@ -469,7 +469,7 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       }
 
       destaques.push({ destaque: d, lintOk: true, imageGenerated: true, nativeArt4x5Generated: true });
-      report.note(`✅ ${d}: lint ok, imagens 2x1/1x1/4x5-nativo geradas.`);
+      report.note(`✅ ${d}: lint ok, imagens 2x1/4x5-nativo geradas.`);
     }
 
     // --- card 4:5 do feed (compõe TODOS os destaques prontos de uma vez, #4114) ---

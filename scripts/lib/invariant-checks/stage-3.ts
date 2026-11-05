@@ -1,12 +1,15 @@
 /**
  * Invariants de Stage 3 — Imagens (#1007 Fase 1, #2133/#2141).
  *
- * Verifica que as 8 imagens existem (eia A/B, d1/d2/d3 2x1, d1/d2/d3 1x1) e
+ * Verifica que as 5 imagens existem (eia A/B, d1/d2/d3 2x1) e
  * que prompts não violam regras editoriais (sem pixels explícitos, sem
  * Noite Estrelada).
  *
  * #2133/#2141: D2 e D3 agora também geram 2x1 como hero inline no email.
  * #2352: imagens e prompts do D3 são condicionais ao destaque_count (2 → d3 não requerido).
+ * #12226: o 1:1 (`04-d{N}-1x1.jpg`) deixou de ser gerado e de ser exigido — a
+ * newsletter usa o 2:1 e o social usa o card 4:5 (+ carrossel). Edição antiga
+ * com o 1x1 em disco continua passando (o arquivo só não é mais obrigatório).
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -18,14 +21,11 @@ const REQUIRED_IMAGES_BASE = [
   "01-eia-A.jpg",
   "01-eia-B.jpg",
   "04-d1-2x1.jpg",
-  "04-d1-1x1.jpg",
   "04-d2-2x1.jpg", // #2133/#2141: hero inline D2
-  "04-d2-1x1.jpg",
 ];
 
 const REQUIRED_IMAGES_D3 = [
   "04-d3-2x1.jpg", // #2133/#2141: hero inline D3
-  "04-d3-1x1.jpg",
 ];
 
 /** Legacy flat export: full 3-destaque list — kept for backward-compat with tests. */
@@ -283,7 +283,7 @@ function checkCard4x5Exists(
 export const STAGE_3_RULES: InvariantRule[] = [
   {
     id: "all-images-exist",
-    description: "imagens obrigatórias (eia A/B + d1/d2 2x1/1x1; d3 2x1/1x1 condicional a destaque_count=3) (#2133/#2141/#2352)",
+    description: "imagens obrigatórias (eia A/B + d1/d2 2x1; d3 2x1 condicional a destaque_count=3; 1x1 não é mais exigido, #12226) (#2133/#2141/#2352)",
     source_issue: "#stage-3",
     stage: 3,
     run: checkAllImagesExist,

@@ -135,6 +135,13 @@
  *     "MARKETING_IMAGE": ["caminho/d1-191x1.jpg", ...],
  *     "PORTRAIT_MARKETING_IMAGE": ["caminho/d1-4x5.jpg", ...]
  *   }
+ *
+ * SQUARE_MARKETING_IMAGE (1:1): desde o #12226 o pipeline diário NÃO gera
+ * mais o `04-d{N}-1x1.jpg` (a newsletter usa o 2:1 e o social o card 4:5).
+ * O quadrado do Google Ads é recortado à mão a partir do 2:1 (ou da arte 4:5
+ * nativa) e o caminho entra no manifesto — por exemplo
+ * `npx tsx scripts/crop-resize.ts 04-d1-2x1.jpg d1-1x1.jpg --width 1200 --height 1200`.
+ * O suporte ao campo SQUARE continua igual.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";

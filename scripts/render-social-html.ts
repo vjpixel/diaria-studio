@@ -205,8 +205,9 @@ function getImageUrl(destaque: string, imageUrls: ImageMap, postPixelImageNum = 
   // esse 3º fallback é inerte no caminho de publicação real; ele segue vivo
   // porque o preview LOCAL do Studio (`buildLocalSocialImageMap` em
   // studio-review.ts) monta seu próprio ImageMap a partir dos arquivos que a
-  // Etapa 3 sempre gera em disco (`04-d{N}-1x1.jpg`/`-2x1.jpg`) usando só essa
-  // chave base — sem este fallback o preview local perde a imagem de D1/D2/D3.
+  // Etapa 3 gera em disco (`04-d{N}-2x1.jpg`; `-1x1.jpg` só em edições
+  // anteriores ao #12226) usando só essa chave base — sem este fallback o
+  // preview local perde a imagem de D1/D2/D3.
   // #1635: resolução delegada ao helper puro — prefere cloudflare_url, senão a
   // url real (Drive serve inline), nunca chuta uma key Cloudflare sem md5.
   const card = imageUrls[`d${dNum}_4x5`];

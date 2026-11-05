@@ -25,7 +25,8 @@
  *   --config <path>  config alternativo (teste); default platform.config.json do repo.
  *
  * `--image`: `04-um-carousel-cover-4x5.jpg` (fonte `um`, só com carimbo do
- * carrossel em dia) ou `04-d1-1x1.jpg` (legado). Arquivo inexistente na edição
+ * carrossel em dia) ou `04-d1-2x1.jpg` (legado; era o 1:1, que deixou de ser
+ * gerado no #12226 — o 2:1 existe em toda edição). Arquivo inexistente na edição
  * → `(nao encontrado)` + exit 1.
  *
  * `--json`: `scheduled_at` vem da entry `linkedin`/`um` de
@@ -119,7 +120,7 @@ export function extractPersonalPostText(
 
 /** #9568: imagem sugerida pro lembrete do post pessoal, conforme a fonte do texto. */
 export function personalPostImageFile(source: "um" | "post_pixel"): string {
-  return source === "um" ? useMelhorSlideFilename("cover") : "04-d1-1x1.jpg";
+  return source === "um" ? useMelhorSlideFilename("cover") : "04-d1-2x1.jpg"; // #12226: era o 1x1
 }
 
 export type PersonalPostResolution =

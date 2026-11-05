@@ -97,15 +97,15 @@ describe("buildImagesGallery (#6447 Fatia 4, achado 9)", () => {
     const d1 = gallery.destaques.find((d) => d.n === 1);
     const twoByOne = d1?.images.find((img) => img.type === "2x1");
     assert.equal(twoByOne?.exists, true);
-    const oneByOne = d1?.images.find((img) => img.type === "1x1");
-    assert.equal(oneByOne?.exists, false);
+    // #12226: o 1:1 saiu da galeria (deixou de ser gerado).
+    assert.equal(d1?.images.find((img) => img.type === "1x1"), undefined);
     const eiaA = gallery.eia.images.find((img) => img.type === "eia-a");
     assert.equal(eiaA?.exists, true);
   });
 });
 
 describe("buildRegenerateSteps (#6447 Fatia 4 — espelha stage-3-run.ts)", () => {
-  it("d1: 5 passos (lint pre-flight, 2x1/1x1, 4x5 nativo, compose, carrossel)", () => {
+  it("d1: 5 passos (lint pre-flight, 2x1, 4x5 nativo, compose, carrossel)", () => {
     const steps = buildRegenerateSteps("d1", "/tmp/edicao", "260828");
     assert.equal(steps.length, 5);
     // #6447 review (comment-analyzer, P1): lint-image-prompt.ts SEMPRE roda

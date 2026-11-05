@@ -1,57 +1,64 @@
 /**
- * test/image-generate-integrity.test.ts (#4989)
+ * test/image-generate-integrity.test.ts (#4989, #12226)
  *
  * Regressão do bug real de 260811: promoção manual de D3 → D1 (mv de
  * `04-d3-*.jpg` para `04-d1-*.jpg` fora do pipeline) seguida de uma
  * re-invocação de `image-generate.ts --destaque d1` apagava silenciosamente
- * o `04-d1-2x1.jpg` recém-promovido quando só um dos dois arquivos do par
- * wide (2x1/1x1) estava presente — o check antigo (`existsSync(2x1) &&
- * existsSync(1x1)`) tratava "só um presente" igual a "nenhum presente" e
- * caía pro fluxo de geração nova, cujo `renameSync` final sobrescreve o
- * destino em silêncio.
+ * o `04-d1-2x1.jpg` recém-promovido — o check antigo exigia o PAR 2x1+1x1 e
+ * caía pro fluxo de geração nova, que sobrescreve o destino em silêncio.
+ *
+ * #12226: o 1x1 deixou de ser gerado. A idempotência olha só o 2x1, e o
+ * script não grava mais `04-d{N}-1x1.jpg` no fluxo wide (default da diária).
  *
  * `resolveWideImageIntegrity` foi extraído de `main()` (mesmo padrão de
- * `resolveRatio`, #4093) justamente pra poder testar a decisão sem gerar
- * imagem real nem tocar disco — o guard desta rodada proíbe qualquer
- * chamada real ao gerador de imagem (Gemini/ComfyUI) em teste.
+ * `resolveRatio`, #4093) pra testar a decisão sem gerar imagem real nem
+ * tocar disco — teste nunca chama o gerador de imagem (Gemini/Codex).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { resolveWideImageIntegrity } from "../scripts/image-generate.ts";
 
-describe("resolveWideImageIntegrity — decisão de idempotência do par wide 2x1/1x1 (#4989)", () => {
-  it("ambos presentes, sem --force → skip (idempotência preservada, comportamento pré-#4989)", () => {
-    const action = resolveWideImageIntegrity(true, true, false);
-    assert.deepEqual(action, { kind: "skip" });
+describe("resolveWideImageIntegrity — idempotência do 2x1 wide (#4989, #12226)", () => {
+  it("2x1 presente, sem --force → skip (nunca sobrescreve um 2x1 promovido)", () => {
+    assert.deepEqual(resolveWideImageIntegrity(true, false), { kind: "skip" });
   });
 
-  it("CASO REAL #4989 — só o 2x1 presente (promoção manual moveu só um dos dois arquivos) → derive-1x1-from-2x1, NUNCA regenerate", () => {
-    const action = resolveWideImageIntegrity(true, false, false);
-    assert.deepEqual(
-      action,
-      { kind: "derive-1x1-from-2x1" },
-      "com o 2x1 já presente, o script deve derivar o 1x1 via crop — nunca cair pra geração nova, que sobrescreveria o 2x1 promovido",
-    );
+  it("CASO REAL #4989 — 2x1 promovido sem 1x1 ao lado → skip, NUNCA regenerate (nada a derivar desde o #12226)", () => {
+    // Antes do #12226 este estado virava `derive-1x1-from-2x1`. Sem o 1x1 no
+    // pipeline, o 2x1 sozinho já é o estado completo.
+    assert.deepEqual(resolveWideImageIntegrity(true, false), { kind: "skip" });
   });
 
-  it("só o 1x1 presente (2x1 ausente) → regenerate (não dá pra derivar 2x1 a partir de um crop 1x1)", () => {
-    const action = resolveWideImageIntegrity(false, true, false);
-    assert.deepEqual(action, { kind: "regenerate" });
+  it("2x1 ausente → regenerate (primeira geração; nada é sobrescrito)", () => {
+    assert.deepEqual(resolveWideImageIntegrity(false, false), { kind: "regenerate" });
   });
 
-  it("nenhum presente → regenerate (fluxo normal, primeira geração)", () => {
-    const action = resolveWideImageIntegrity(false, false, false);
-    assert.deepEqual(action, { kind: "regenerate" });
+  it("--force sempre força regenerate, mesmo com o 2x1 presente", () => {
+    assert.deepEqual(resolveWideImageIntegrity(true, true), { kind: "regenerate" });
+  });
+});
+
+describe("image-generate.ts não grava mais o 1x1 no fluxo wide (#12226)", () => {
+  const src = readFileSync(resolve(import.meta.dirname, "..", "scripts", "image-generate.ts"), "utf8");
+  // Só olha o código, não a prosa dos comentários.
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("//"))
+    .join("\n");
+
+  it("sem crop 1:1 derivado (cropToSquare / widePath1x1 / 800x800)", () => {
+    assert.doesNotMatch(code, /cropToSquare/);
+    assert.doesNotMatch(code, /widePath1x1/);
+    assert.doesNotMatch(code, /"--width",\s*"800",\s*"--height",\s*"800"/);
   });
 
-  it("--force sempre força regenerate, mesmo com ambos presentes", () => {
-    const action = resolveWideImageIntegrity(true, true, true);
-    assert.deepEqual(action, { kind: "regenerate" });
-  });
-
-  it("--force força regenerate no caso 'só 2x1 presente' também (comportamento explícito do editor tem precedência)", () => {
-    const action = resolveWideImageIntegrity(true, false, true);
-    assert.deepEqual(action, { kind: "regenerate" });
+  it("o único caminho -1x1.jpg restante é o override manual --ratio 1x1 (branch não-wide)", () => {
+    const hits = code.match(/-1x1\.jpg/g) ?? [];
+    assert.equal(hits.length, 1, "só o outJpgPath do branch não-wide pode citar -1x1.jpg");
+    assert.match(code, /: `\$\{normalizedOutDir\}04-\$\{destaque\}-1x1\.jpg`;/);
   });
 });

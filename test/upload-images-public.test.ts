@@ -6,7 +6,6 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   mimeTypeFor,
-  sourceImageFor,
   imageSpecsFor,
   md5OfFile,
   shouldReuseCachedUpload,
@@ -322,20 +321,6 @@ describe("mimeTypeFor", () => {
   it("desconhecido → octet-stream", () => {
     assert.equal(mimeTypeFor("foo.tif"), "application/octet-stream");
     assert.equal(mimeTypeFor("foo"), "application/octet-stream");
-  });
-});
-
-describe("sourceImageFor", () => {
-  it("d1 usa variante 1x1 (square) pra social", () => {
-    assert.equal(sourceImageFor("d1"), "04-d1-1x1.jpg");
-  });
-
-  it("d2 usa variante 1x1 (#372)", () => {
-    assert.equal(sourceImageFor("d2"), "04-d2-1x1.jpg");
-  });
-
-  it("d3 usa variante 1x1 (#372)", () => {
-    assert.equal(sourceImageFor("d3"), "04-d3-1x1.jpg");
   });
 });
 

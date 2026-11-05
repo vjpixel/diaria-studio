@@ -112,14 +112,16 @@ describe("diaria-3-imagens/SKILL.md escreve o sentinel do Stage 3 (#5793)", () =
     // arquivos que não existem).
     assert.doesNotMatch(skill, /--outputs\s+"[^"]*04-d2-2x1\.jpg/);
     assert.doesNotMatch(skill, /--outputs\s+"[^"]*04-d3-2x1\.jpg/);
+    // #12226: o 1:1 deixou de ser gerado — o sentinel não pode exigi-lo.
+    assert.doesNotMatch(skill, /--outputs\s+"[^"]*-1x1\.jpg/);
     for (const file of [
       "01-eia.md",
       "01-eia-A.jpg",
       "01-eia-B.jpg",
       "04-d1-2x1.jpg",
-      "04-d1-1x1.jpg",
-      "04-d2-1x1.jpg",
-      "04-d3-1x1.jpg",
+      "04-d1-4x5.jpg",
+      "04-d2-4x5.jpg",
+      "04-d3-4x5.jpg",
     ]) {
       assert.match(outputsSection, new RegExp(file.replace(/\./g, "\\.")), `Outputs deve listar ${file}`);
       assert.match(

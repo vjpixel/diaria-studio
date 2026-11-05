@@ -29,7 +29,7 @@ import { isCropReviewEntryStale, checkStarryNightDetected, checkCropReviewWarnin
 
 const ROOT = join(import.meta.dirname, "..");
 
-const estilo = (ratio: "1x1" | "4x5") =>
+const estilo = (ratio: "2x1" | "4x5") =>
   normalizeCropReviewResult(
     { results: [{ destaque: "d1", ratio, status: "warn", categoria: "estilo", motivo: "espiral" }] },
     "261017",
@@ -40,9 +40,9 @@ describe("#10335: troca de imagem com pending vivo não herda a contagem", () =>
     const md5: Record<string, string> = { "2x1": "2x1-v1", "1x1": "1x1-v1", "4x5": "nativo-v1" };
     const cur = (_d: string, r: string) => md5[r] ?? null;
     // Stage 3 acusa o 1x1; o gerador falha duas vezes (2:1 intacto)
-    const p1 = planEstiloRegeneration(estilo("1x1"), {}, () => false, cur);
+    const p1 = planEstiloRegeneration(estilo("2x1"), {}, () => false, cur);
     assert.deepEqual(p1.regenerate, ["d1"]);
-    const p2 = planEstiloRegeneration(estilo("1x1"), p1.state, () => false, cur);
+    const p2 = planEstiloRegeneration(estilo("2x1"), p1.state, () => false, cur);
     assert.deepEqual(p2.regenerate, ["d1"], "1ª falha do gerador ganha nova chance");
     assert.equal(p2.state.failed?.d1, 1);
     // pending sobrevive; o editor troca só a arte 4:5 nativa (2:1 e 1:1 iguais)
@@ -60,7 +60,7 @@ describe("#10335: troca de imagem com pending vivo não herda a contagem", () =>
     const md5: Record<string, string> = { "2x1": "2x1-v1", "1x1": "1x1-v1", "4x5": "nativo-v1" };
     const p = planEstiloRegeneration(estilo("4x5"), {}, () => false, (_d, r) => md5[r] ?? null);
     assert.deepEqual(p.state.pending?.d1, { "4x5": "nativo-v1" });
-    assert.deepEqual(p.state.pendingAll?.d1, { "1x1": "1x1-v1", "4x5": "nativo-v1" });
+    assert.deepEqual(p.state.pendingAll?.d1, { "2x1": "2x1-v1", "4x5": "nativo-v1" }); // #12226: 2x1 substitui o 1x1
   });
 
   it("#10332 preservado: regeneração reescreve tudo → revisor alterna o ratio → esgotado", () => {
@@ -70,7 +70,7 @@ describe("#10335: troca de imagem com pending vivo não herda a contagem", () =>
     md5["2x1"] = "2x1-v2";
     md5["1x1"] = "1x1-v2";
     md5["4x5"] = "nativo-v2";
-    const p2 = planEstiloRegeneration(estilo("1x1"), p1.state, () => false, cur);
+    const p2 = planEstiloRegeneration(estilo("2x1"), p1.state, () => false, cur);
     assert.deepEqual(p2.regenerate, []);
     assert.deepEqual(p2.exhausted, ["d1"]);
     assert.equal(p2.attempts.d1, 1);
@@ -81,7 +81,7 @@ describe("#10335: troca de imagem com pending vivo não herda a contagem", () =>
     const cur = (_d: string, r: string) => md5[r] ?? null;
     let state = planEstiloRegeneration(estilo("4x5"), {}, () => false, cur).state;
     let last;
-    for (const r of ["1x1", "4x5", "1x1"] as const) {
+    for (const r of ["2x1", "4x5", "2x1"] as const) {
       last = planEstiloRegeneration(estilo(r), state, () => false, cur);
       state = last.state;
     }

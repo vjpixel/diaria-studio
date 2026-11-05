@@ -7,8 +7,8 @@
  *   caía em "sumido" e o `--check-blocking` saía 0.
  * - #11685 item 3: bloco DESTAQUE sem URL (placeholder do swap-destaques)
  *   deslocava os índices do `findDestaqueUrlDrift`.
- * - #11685 item 4: depois do reorder, o registro do 1:1 derivado ficava na
- *   chave antiga e o revisor de crop voltava a comparar com o 2:1.
+ * - (#11685 item 4, registro do 1:1 derivado no reorder, saiu no #12226 junto
+ *   com o 1:1 e o `square-source-marker.ts`.)
  * - #11703: Studio com leitura do MD falha zerava os claims bloqueantes.
  *
  * Nunca toca rede nem `data/` real.
@@ -27,8 +27,6 @@ import {
 } from "../scripts/lib/fact-check-staleness.ts";
 import { findDestaqueUrlDrift } from "../scripts/run-fact-checker.ts";
 import { extractDestaqueUrls, extractDestaqueUrlsByNumber } from "../scripts/match-prompts-to-destaques.ts";
-import { resolveSquareSource, writeSquareSourceEntry } from "../scripts/lib/square-source-marker.ts";
-import { md5OfFile } from "../scripts/lib/shared/file-md5.ts";
 import { buildGateSummary } from "../scripts/studio-ui/studio-gate.ts";
 
 const SENTENCE = "A rodada captou R$ 500 milhões e inclui 2 fundos novos.";
@@ -190,45 +188,6 @@ describe("#11685 item 3 — findDestaqueUrlDrift por número do bloco", () => {
     assert.deepEqual(findDestaqueUrlDrift(md, approved), [
       { destaque: 3, reviewed_url: "https://example.com/d3", approved_url: "https://example.com/d3-antigo" },
     ]);
-  });
-});
-
-describe("#11685 item 4 — registro do 1:1 derivado acompanha o reorder", () => {
-  it("D1↔D3 renomeado: o 1:1 do D3 em 04-d1-1x1.jpg resolve para 04-d1-4x5-nativo.jpg", () => {
-    const dir = mkdtempSync(join(tmpdir(), "square-11685-"));
-    try {
-      writeFileSync(join(dir, "04-d3-4x5-nativo.jpg"), "nativo-d3");
-      writeFileSync(join(dir, "04-d3-1x1.jpg"), "quadrado-derivado-d3");
-      writeFileSync(join(dir, "04-d1-1x1.jpg"), "quadrado-hero-d1");
-      writeSquareSourceEntry(dir, "d3", { source: "04-d3-4x5-nativo.jpg", image_md5: md5OfFile(join(dir, "04-d3-1x1.jpg")) });
-      assert.equal(resolveSquareSource(dir, "d3"), join(dir, "04-d3-4x5-nativo.jpg"));
-      assert.equal(resolveSquareSource(dir, "d1"), null);
-
-      // reorder-destaques D1↔D3: renomeia os arquivos, não toca o registro.
-      renameSync(join(dir, "04-d1-1x1.jpg"), join(dir, "tmp-1x1.jpg"));
-      renameSync(join(dir, "04-d3-1x1.jpg"), join(dir, "04-d1-1x1.jpg"));
-      renameSync(join(dir, "tmp-1x1.jpg"), join(dir, "04-d3-1x1.jpg"));
-      renameSync(join(dir, "04-d3-4x5-nativo.jpg"), join(dir, "04-d1-4x5-nativo.jpg"));
-
-      assert.equal(resolveSquareSource(dir, "d1"), join(dir, "04-d1-4x5-nativo.jpg"));
-      assert.equal(resolveSquareSource(dir, "d3"), null, "o 1:1 que foi para o D3 veio do 2:1");
-      assert.equal(readFileSync(join(dir, "04-d1-1x1.jpg"), "utf8"), "quadrado-derivado-d3");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("1:1 regerado (md5 novo) continua sem registro", () => {
-    const dir = mkdtempSync(join(tmpdir(), "square-11685-"));
-    try {
-      writeFileSync(join(dir, "04-d2-4x5-nativo.jpg"), "nativo");
-      writeFileSync(join(dir, "04-d2-1x1.jpg"), "derivado");
-      writeSquareSourceEntry(dir, "d2", { source: "04-d2-4x5-nativo.jpg", image_md5: md5OfFile(join(dir, "04-d2-1x1.jpg")) });
-      writeFileSync(join(dir, "04-d2-1x1.jpg"), "regerado-do-hero");
-      assert.equal(resolveSquareSource(dir, "d2"), null);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });
 

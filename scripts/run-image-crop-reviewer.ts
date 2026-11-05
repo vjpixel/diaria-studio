@@ -46,10 +46,10 @@
  *   #    destaque (todos os ratios acusados, ou só `dN:4x5`), fora do veredito:
  *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --mark-false-positive d1[,d2:4x5]
  *
- *   # 5. (#11672) Re-revisão parcial — só os pares de dN (ou dN:1x1); o persist
+ *   # 5. (#11672) Re-revisão parcial — só os pares de dN (ou dN:4x5); o persist
  *   #    troca só as entradas desses alvos e mantém o resto do veredito:
- *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --only d3:1x1
- *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --only d3:1x1 --input-json <path>
+ *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --only d3:4x5
+ *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --only d3:4x5 --input-json <path>
  *
  * Output: data/editions/AAMMDD/_internal/04-crop-review.json
  *   + stdout: parâmetros de dispatch (modo descoberta) ou seção formatada (modo --input-json)
@@ -80,7 +80,6 @@ import {
   clearEstiloRegenDestaques,
   updateEstiloRegenStateFile,
 } from "./lib/estilo-regen-state.ts";
-import { resolveSquareSource } from "./lib/square-source-marker.ts"; // #11672
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -88,7 +87,12 @@ import { resolveSquareSource } from "./lib/square-source-marker.ts"; // #11672
 
 export type DestaqueId = "d1" | "d2" | "d3";
 export type CropReviewStatus = "ok" | "warn";
-export type CropReviewRatio = "1x1" | "4x5";
+/**
+ * `"2x1"` (#12226): a imagem da newsletter, sem crop (achado de estilo).
+ * `"4x5"`: card de feed. `"1x1"`: só leitura de veredito LEGADO (edições
+ * anteriores ao #12226) — a descoberta não emite mais.
+ */
+export type CropReviewRatio = "2x1" | "4x5" | "1x1";
 
 /** Par de imagens descoberto no disco para um destaque, para um ratio específico. */
 export interface CropPair {
@@ -97,7 +101,7 @@ export interface CropPair {
   ratio: CropReviewRatio;
   /**
    * Fonte usada para o crop/card final.
-   * `ratio: "1x1"` → hero 2:1 original, `null` quando o destaque só tem 1:1 nativo (sem crop).
+   * `ratio: "2x1"` → sempre `null` (o 2:1 é a arte original, sem crop — #12226).
    * `ratio: "4x5"` → fonte que `gen-social-card-4x5.ts` de fato usou (nativa 4:5, master 6:5,
    * ou 2:1, nessa ordem de preferência), `null` apenas se nenhuma das 3 existir.
    */
@@ -165,11 +169,9 @@ const DESTAQUE_IDS: DestaqueId[] = ["d1", "d2", "d3"];
  * Descobre os pares hero/crop presentes no disco para uma edição, um item por
  * (destaque, ratio) — até 2 por destaque quando ambos os formatos existem (#4223):
  *
- * - `ratio: "1x1"` (legado): crop = `04-{d}-1x1.jpg` (o que de fato vai pro
- *   social — sem ele não há nada pra revisar). Hero = `04-{d}-2x1.jpg`,
- *   opcional: ausente = destaque nativo 1:1 (gerado com `--ratio 1x1`, sem
- *   crop real) — nesse caso a checagem do subagente vira "está enquadrado e
- *   coerente?" em vez de comparação 2:1↔1:1 (ver `.claude/agents/image-crop-reviewer.md`).
+ * - `ratio: "2x1"` (#12226, substitui o par 1:1 que deixou de ser gerado):
+ *   crop = `04-{d}-2x1.jpg` (a imagem da newsletter), hero = `null` — não há
+ *   corte a julgar; o par existe pro achado de estilo (Noite Estrelada).
  * - `ratio: "4x5"` (card de feed com título, #4114/#4090): crop = `04-{d}-4x5.jpg`
  *   (card final, já com título e gradiente compostos — o que de fato vai pro
  *   feed). Só emitido se este arquivo existir. Hero = a fonte que
@@ -185,18 +187,13 @@ const DESTAQUE_IDS: DestaqueId[] = ["d1", "d2", "d3"];
 export function discoverCropPairs(editionDir: string): CropPair[] {
   const pairs: CropPair[] = [];
   for (const destaque of DESTAQUE_IDS) {
-    const cropPath1x1 = join(editionDir, `04-${destaque}-1x1.jpg`);
-    if (existsSync(cropPath1x1)) {
-      // #11672: 1:1 derivado do 4:5 nativo (`derive-square-from-native.ts`)
-      // tem como fonte o nativo, não o 2:1 — o registro só vale enquanto o
-      // md5 do 1:1 for o que a derivação gravou.
-      const heroPath = resolveSquareSource(editionDir, destaque) ?? join(editionDir, `04-${destaque}-2x1.jpg`);
-      pairs.push({
-        destaque,
-        ratio: "1x1",
-        hero_path: existsSync(heroPath) ? heroPath : null,
-        crop_path: cropPath1x1,
-      });
+    // #12226: o par do 2:1 (a imagem da newsletter) substitui o antigo par
+    // 1:1, que deixou de ser gerado. Não há crop a julgar (o 2:1 é a arte
+    // original, `hero_path: null`) — o par existe pro achado de ESTILO
+    // (Noite Estrelada, #8989) sobre a imagem que o leitor vê.
+    const path2x1 = join(editionDir, `04-${destaque}-2x1.jpg`);
+    if (existsSync(path2x1)) {
+      pairs.push({ destaque, ratio: "2x1", hero_path: null, crop_path: path2x1 });
     }
 
     const cropPath4x5 = join(editionDir, `04-${destaque}-4x5.jpg`);
@@ -235,7 +232,8 @@ export function normalizeCropReviewResult(raw: unknown, edition: string): CropRe
         !!r &&
         typeof r === "object" &&
         DESTAQUE_IDS.includes((r as Record<string, unknown>).destaque as DestaqueId) &&
-        ((r as Record<string, unknown>).ratio === "1x1" || (r as Record<string, unknown>).ratio === "4x5") &&
+        // "1x1" segue aceito só pra veredito legado (#12226).
+        ["2x1", "4x5", "1x1"].includes((r as Record<string, unknown>).ratio as string) &&
         ((r as Record<string, unknown>).status === "ok" || (r as Record<string, unknown>).status === "warn"),
     )
     .map((r) => ({
@@ -296,8 +294,8 @@ export function stampCropReviewImageHashes(result: CropReviewResult, editionDir:
  * recomposto sem arte nova — o erro `image-starry-night-detected` sumia e a
  * mesma Noite Estrelada ia pra capa do carrossel. Mesma ordem de fonte que o
  * `gen-social-card-4x5.ts` usa (`discoverCropPairs`): nativa → master → 2:1.
- * `null` = carimbar `04-{d}-{ratio}.jpg` (achado de crop, e o 1:1, cujo crop
- * é derivado determinístico do 2:1).
+ * `null` = carimbar `04-{d}-{ratio}.jpg` (achado de crop, e o 2:1, que é a
+ * própria arte).
  */
 export function cropReviewStampVariant(
   editionDir: string,
@@ -332,7 +330,7 @@ export const MAX_ESTILO_AUTO_REGEN = 1;
 export const MAX_ESTILO_REGEN_FAILED_RUNS = 1;
 
 /** Ratios revisados por destaque — os que `images` guarda após uma proposta (#10332). */
-const ESTILO_REGEN_RATIOS: readonly CropReviewRatio[] = ["1x1", "4x5"];
+const ESTILO_REGEN_RATIOS: readonly CropReviewRatio[] = ["2x1", "4x5"]; // #12226: era 1x1
 
 /**
  * #10342: chave da base 2:1 para `CurrentImageMd5` — não é um ratio revisado,
@@ -378,15 +376,14 @@ export interface EstiloRegenState {
 
 /**
  * #10375: o que o orchestrator CONFIRMOU ter rodado com exit 0, por destaque.
- * `2x1` = 1º comando de `estiloRegenCommands` (reescreve o 2:1 e deriva o
- * 1:1); `4x5` = o 2º (`--ratio 4x5`, cria a arte `4x5-nativo`). O md5 só não
+ * `2x1` = 1º comando de `estiloRegenCommands` (reescreve o 2:1); `4x5` = o 2º (`--ratio 4x5`, cria a arte `4x5-nativo`). O md5 só não
  * distingue "o gerador criou o 4x5-nativo" de "o editor trocou a arte" — este
  * registro por comando distingue.
  */
 export type EstiloRegenRan = Partial<Record<DestaqueId, ReadonlySet<string> | readonly string[]>>;
 
 /** Ratios revisados cujo md5 novo o comando `ran` explica. */
-const RAN_COVERS: Record<string, readonly string[]> = { "2x1": ["1x1"], "4x5": ["4x5"] };
+const RAN_COVERS: Record<string, readonly string[]> = { "2x1": ["2x1"], "4x5": ["4x5"] }; // #12226: era 2x1 → 1x1
 
 /** `"d1:2x1,d1:4x5"` → `EstiloRegenRan` (`--estilo-regen-ran`, #10375). Lança em entrada inválida. */
 export function parseEstiloRegenRan(raw: string): EstiloRegenRan {
@@ -604,8 +601,8 @@ export interface FalsePositiveTarget {
 export function parseFalsePositiveTargets(raw: string): FalsePositiveTarget[] {
   const out: FalsePositiveTarget[] = [];
   for (const tok of raw.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean)) {
-    const m = /^(d[123])(?::(1x1|4x5))?$/.exec(tok);
-    if (!m) throw new Error(`--mark-false-positive: alvo inválido "${tok}" (esperado d1, d2:4x5, ...)`);
+    const m = /^(d[123])(?::(2x1|4x5))?$/.exec(tok);
+    if (!m) throw new Error(`--mark-false-positive: alvo inválido "${tok}" (esperado d1, d2:4x5, d1:2x1, ...)`);
     out.push({ destaque: m[1] as DestaqueId, ratio: (m[2] as CropReviewRatio | undefined) ?? null });
   }
   if (out.length === 0) throw new Error("--mark-false-positive: nenhum alvo");
@@ -640,12 +637,12 @@ export function selectFalsePositiveMarks(
 /** Alvo de `--only` — mesmo formato do `--mark-false-positive`. */
 export type CropReviewTarget = FalsePositiveTarget;
 
-/** `"d3:1x1,d1"` → alvos do `--only` (#11672). Lança em entrada inválida. */
+/** `"d3:4x5,d1"` → alvos do `--only` (#11672). Lança em entrada inválida. */
 export function parseOnlyTargets(raw: string): CropReviewTarget[] {
   const out: CropReviewTarget[] = [];
   for (const tok of raw.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean)) {
-    const m = /^(d[123])(?::(1x1|4x5))?$/.exec(tok);
-    if (!m) throw new Error(`--only: alvo inválido "${tok}" (esperado d1, d3:1x1, ...)`);
+    const m = /^(d[123])(?::(2x1|4x5))?$/.exec(tok);
+    if (!m) throw new Error(`--only: alvo inválido "${tok}" (esperado d1, d3:4x5, d2:2x1, ...)`);
     out.push({ destaque: m[1] as DestaqueId, ratio: (m[2] as CropReviewRatio | undefined) ?? null });
   }
   if (out.length === 0) throw new Error("--only: nenhum alvo");
@@ -689,8 +686,8 @@ export function mergeCropReviewResults(
 }
 
 /**
- * Comandos que regeneram um destaque inteiro, NESTA ordem: 2:1 (+ 1:1
- * derivado; o `--force` do 2:1 apaga o 4:5 nativo antigo, #6010), arte 4:5
+ * Comandos que regeneram um destaque inteiro, NESTA ordem: 2:1 (o `--force`
+ * do 2:1 apaga o 4:5 nativo antigo, #6010), arte 4:5
  * nativa, e o card 4:5 com título (que também é a capa do carrossel). `--force`
  * aqui é a exceção documentada ao #1325 — regeneração pedida pelo revisor,
  * não reentrada.
@@ -722,7 +719,7 @@ export function formatGateSummary(result: CropReviewResult): string {
     return lines.join("\n");
   }
 
-  // #12226: aviso de crop no 1:1 não é mostrado — a imagem não chega ao leitor
+  // #12226: aviso de crop no 2:1 (sem crop) e no 1:1 legado não é mostrado
   // (mesmo filtro do invariante `image-crop-warn` no gate 4).
   const shownWarns = results.filter((r) => r.status === "warn" && !isSilencedCropWarn(r));
 
@@ -733,7 +730,7 @@ export function formatGateSummary(result: CropReviewResult): string {
   }
 
   if (shownWarns.length === 0) {
-    lines.push("  ✅ Nenhum aviso sobre imagem que chega ao leitor (aviso de crop 1:1 omitido, #12226).");
+    lines.push("  ✅ Nenhum aviso sobre imagem que chega ao leitor (aviso de crop sem corte real omitido, #12226).");
     lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     return lines.join("\n");
   }
@@ -940,7 +937,7 @@ async function main(): Promise<void> {
       onlyTargets
         ? `[run-image-crop-reviewer] Nenhum par de imagem para --only ${args.only} em ${editionDir}.`
         : `[run-image-crop-reviewer] Nenhum par de imagem encontrado em ${editionDir} ` +
-            `(esperava ao menos 04-d1-1x1.jpg). Rodar image-generate.ts antes.`,
+            `(esperava ao menos 04-d1-2x1.jpg). Rodar image-generate.ts antes.`,
     );
     process.exit(1);
   }
