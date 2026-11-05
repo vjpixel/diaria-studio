@@ -58,7 +58,14 @@
  *
  * Flags: --days N (30), --max N (500), --to ENDEREÇO, --subject TEXTO,
  * --query Q (substitui a query inteira), --input P, --plan-dir P
- * (data/clarice-replies), --db P (store da Clarice), --apply, --confirm ID.
+ * (data/clarice-replies), --db P (store da Clarice), --apply, --confirm ID,
+ * --skip E1,E2 (com --apply: exclui esses e-mails desta aplicação, #12283).
+ *
+ * Salvaguardas do --apply (#12265): o plano gravado é conferido contra os
+ * próprios itens (id recalculado + ações refeitas; divergência recusa); um
+ * contato que não existe na Brevo (404) é suprimido no store e listado à
+ * parte para revisão manual, sem virar falha eterna; a listagem já mostra o
+ * e-mail canônico do store que o --apply vai usar.
  *
  * Requer BREVO_CLARICE_API_KEY só no `--apply` com saída pendente na Brevo.
  * Stdout: JSON resumo. Stderr: lote legível.
@@ -78,7 +85,9 @@ import {
 } from "./lib/clarice-db.ts";
 import {
   buildTriagePlan,
+  diffEffectiveActions,
   gmailMessageToReply,
+  validatePlanIntegrity,
   type GmailMessageLike,
   type ReplyMessage,
   type TriagePlan,
@@ -164,24 +173,61 @@ export function loadPlan(path: string): TriagePlan {
   return plan;
 }
 
-/** Grava o plano; se já existe plano do MESMO lote, preserva o estado de aplicação. */
+/**
+ * Grava o plano; se já existe plano do MESMO lote, preserva o estado de aplicação. Recusa (lança)
+ * sobrescrever um plano de mesmo id cujas ações efetivas (optin/saída/exclusão/conflitos) sejam
+ * outras: o `--confirm` do editor valeu para o plano gravado, não para um conteúdo novo (#12265).
+ */
 export function savePlan(planDir: string, plan: TriagePlan): string {
   mkdirSync(planDir, { recursive: true });
   const path = planPath(planDir, plan.batch_id);
   let toWrite = plan;
   if (existsSync(path)) {
+    let prev: TriagePlan | null = null;
     try {
-      const prev = loadPlan(path);
-      toWrite = { ...plan, created_at: prev.created_at, applied: prev.applied };
+      prev = loadPlan(path);
     } catch {
       // plano anterior ilegível: sobrescreve com o novo (estado de aplicação perdido é seguro — tudo é idempotente)
+    }
+    if (prev) {
+      const diff = diffEffectiveActions(plan.actions, prev.actions);
+      if (diff.length > 0) {
+        throw new Error(
+          `${path} já existe com o mesmo id e ações diferentes (${diff.join("; ")}). ` +
+            `Nada gravado: confira o arquivo antes de apagá-lo ou mover.`,
+        );
+      }
+      toWrite = { ...plan, created_at: prev.created_at, applied: prev.applied };
     }
   }
   writeFileAtomic(path, JSON.stringify(toWrite, null, 2) + "\n");
   return path;
 }
 
-export function renderPlanSummary(plan: TriagePlan): string {
+/** Endereço resolvido no store, por e-mail do plano (só os que mudam ou têm aviso). */
+export type CanonicalMap = Map<string, { email: string; warning?: string }>;
+
+/**
+ * Resolve, já na listagem, o e-mail que o `--apply` vai de fato usar (forma canônica do Gmail no
+ * store, #2861) — o editor confirma o alvo exato que vai pra Brevo (#12265).
+ */
+export function resolveCanonicalTargets(db: DatabaseSync, plan: TriagePlan): CanonicalMap {
+  const out: CanonicalMap = new Map();
+  for (const email of new Set([...plan.actions.optin, ...plan.actions.saida])) {
+    const r = resolveOptinEmail(db, email);
+    if (r.email !== email || r.warning) out.set(email, { email: r.email, ...(r.warning ? { warning: r.warning } : {}) });
+  }
+  return out;
+}
+
+function withCanonical(email: string, canonical?: CanonicalMap): string {
+  const c = canonical?.get(email);
+  if (!c) return email;
+  if (c.email !== email) return `${email} → ${c.email} (no store)`;
+  return `${email} (⚠️  ${c.warning ?? "sem resolução no store"})`;
+}
+
+export function renderPlanSummary(plan: TriagePlan, canonical?: CanonicalMap): string {
   const a = plan.actions;
   const c = plan.counts;
   const lines: string[] = [];
@@ -194,8 +240,9 @@ export function renderPlanSummary(plan: TriagePlan): string {
   }
   lines.push("");
   lines.push("Plano:");
-  lines.push(`  priority_optin (+40): ${a.optin.length ? a.optin.join(", ") : "(nenhum)"}`);
-  lines.push(`  saída (blacklist Brevo + store): ${a.saida.length ? a.saida.join(", ") : "(nenhuma)"}`);
+  const list = (emails: string[]) => emails.map((e) => withCanonical(e, canonical)).join(", ");
+  lines.push(`  priority_optin (+40): ${a.optin.length ? list(a.optin) : "(nenhum)"}`);
+  lines.push(`  saída (blacklist Brevo + store): ${a.saida.length ? list(a.saida) : "(nenhuma)"}`);
   if (a.data_deletion.length) lines.push(`  ⚠️  exclusão de DADOS pedida (tratar à mão): ${a.data_deletion.join(", ")}`);
   if (a.conflitos.length) lines.push(`  ⚠️  quero E saída do mesmo e-mail (saída prevalece): ${a.conflitos.join(", ")}`);
   if (a.suporte.length) {
@@ -215,8 +262,13 @@ export function renderPlanSummary(plan: TriagePlan): string {
 
 export interface ApplyDeps {
   db: DatabaseSync;
-  /** Coloca o contato na blacklist da Brevo da Clarice. Lança em erro. */
-  blacklist: (email: string) => Promise<void>;
+  /**
+   * Coloca o contato na blacklist da Brevo da Clarice. Lança em erro; devolve `"not_found"` quando o
+   * contato não existe na Brevo (#12265).
+   */
+  blacklist: (email: string) => Promise<void | "not_found">;
+  /** E-mails do plano que o editor excluiu desta aplicação (`--skip`, #12283). Nada é feito com eles. */
+  skip?: ReadonlySet<string>;
   now?: string;
   log?: (msg: string) => void;
 }
@@ -230,8 +282,12 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
   const log = deps.log ?? (() => {});
   const applied = plan.applied;
   applied.failures = [];
+  applied.saida_brevo_not_found ??= [];
+  const notFound = applied.saida_brevo_not_found;
+  const skip = deps.skip ?? new Set<string>();
+  for (const e of skip) log(`⏭️  ${e}: excluído desta aplicação (--skip)`);
 
-  const optinTodo = plan.actions.optin.filter((e) => !applied.optin_done.includes(e));
+  const optinTodo = plan.actions.optin.filter((e) => !applied.optin_done.includes(e) && !skip.has(e));
   for (const email of optinTodo) {
     try {
       addPriorityOptins(deps.db, [email], now, log);
@@ -244,7 +300,8 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
   // email informado → email canônico do store (normalização Gmail, #2861).
   const canonical = new Map<string, string>();
   const skipped = new Set<string>();
-  for (const email of plan.actions.saida) {
+  const saidaTodo = plan.actions.saida.filter((e) => !skip.has(e));
+  for (const email of saidaTodo) {
     const r = resolveOptinEmail(deps.db, email);
     if (r.notice) log(r.notice);
     canonical.set(email, r.email);
@@ -261,13 +318,17 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
       applied.failures.push({ email, step: "store", error: (err as Error).message });
     }
   }
-  if (optinTodo.length > 0 || plan.actions.saida.length > 0) recomputeDerived(deps.db);
+  if (optinTodo.length > 0 || saidaTodo.length > 0) recomputeDerived(deps.db);
 
-  for (const email of plan.actions.saida) {
-    if (applied.saida_brevo_done.includes(email) || skipped.has(email)) continue;
+  for (const email of saidaTodo) {
+    if (applied.saida_brevo_done.includes(email) || notFound.includes(email) || skipped.has(email)) continue;
     const target = canonical.get(email) ?? email;
     try {
-      await deps.blacklist(target);
+      if ((await deps.blacklist(target)) === "not_found") {
+        notFound.push(email);
+        log(`🔎 Brevo: ${target} não existe na Brevo — suprimido no store; revise à mão o endereço que recebe a newsletter`);
+        continue;
+      }
       applied.saida_brevo_done.push(email);
       log(`🚫 Brevo: ${target} na blacklist`);
     } catch (err) {
@@ -280,16 +341,50 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
   return plan;
 }
 
-export function pendingBrevoCount(plan: TriagePlan): number {
+export function pendingBrevoCount(plan: TriagePlan, skip: ReadonlySet<string> = new Set()): number {
   // Conta de teste nunca vai pra Brevo (#12261): não exige a chave só por ela.
-  return plan.actions.saida.filter((e) => !plan.applied.saida_brevo_done.includes(e) && !isTestAccount(e)).length;
+  const notFound = plan.applied.saida_brevo_not_found ?? [];
+  return plan.actions.saida.filter(
+    (e) => !plan.applied.saida_brevo_done.includes(e) && !notFound.includes(e) && !isTestAccount(e) && !skip.has(e),
+  ).length;
 }
 
-async function makeBrevoBlacklister(apiKey: string): Promise<(email: string) => Promise<void>> {
-  const { brevoPut } = await import("./lib/brevo-client.ts");
+export interface BrevoBlacklistIo {
+  put: (path: string, body: unknown) => Promise<unknown>;
+  /** GET que devolve o status (404 não lança), como `brevoGet`. */
+  get: (path: string) => Promise<{ status: number }>;
+}
+
+/**
+ * Blacklist via `PUT /contacts/{email}`. Se o PUT falha, um GET do mesmo contato separa "não existe
+ * na Brevo" (404 → `"not_found"`, fora de `failures`) de erro de verdade (relança o erro do PUT) —
+ * sem isso o 404 de um alias falhava para sempre a cada reexecução (#12265). O GET só roda depois de
+ * uma falha, então o caminho feliz segue com 1 chamada.
+ */
+export function blacklisterFromIo(io: BrevoBlacklistIo): (email: string) => Promise<void | "not_found"> {
   return async (email) => {
-    await brevoPut(apiKey, `/contacts/${encodeURIComponent(email)}`, { emailBlacklisted: true });
+    const path = `/contacts/${encodeURIComponent(email)}`;
+    try {
+      await io.put(path, { emailBlacklisted: true });
+    } catch (err) {
+      let status: number | null = null;
+      try {
+        status = (await io.get(path)).status;
+      } catch {
+        // GET também falhou: o erro que vale é o do PUT.
+      }
+      if (status === 404) return "not_found";
+      throw err;
+    }
   };
+}
+
+async function makeBrevoBlacklister(apiKey: string): Promise<(email: string) => Promise<void | "not_found">> {
+  const { brevoPut, brevoGet } = await import("./lib/brevo-client.ts");
+  return blacklisterFromIo({
+    put: (path, body) => brevoPut(apiKey, path, body),
+    get: (path) => brevoGet(apiKey, path),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +393,7 @@ async function makeBrevoBlacklister(apiKey: string): Promise<(email: string) => 
 
 export async function main(
   argv: string[] = process.argv.slice(2),
-  overrides: { reader?: ReplyReader; blacklist?: (email: string) => Promise<void> } = {},
+  overrides: { reader?: ReplyReader; blacklist?: (email: string) => Promise<void | "not_found"> } = {},
 ): Promise<number> {
   const planDir = getArg(argv, "plan-dir") || DEFAULT_PLAN_DIR;
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
@@ -319,8 +414,30 @@ export async function main(
       console.error(`❌ plano ${path} tem id ${plan.batch_id}, não ${batchId}. Nada aplicado.`);
       return 1;
     }
+    // O arquivo é o que o editor viu na listagem; se foi editado/corrompido depois, o id ou as ações
+    // não batem mais com os itens, e aplicar seria executar algo que ninguém confirmou (#12265).
+    const integrity = validatePlanIntegrity(plan);
+    if (integrity.length > 0) {
+      console.error(`❌ plano ${path} não confere com os próprios itens — liste o lote de novo. Nada aplicado.`);
+      for (const p of integrity) console.error(`  - ${p}`);
+      return 1;
+    }
+    // --skip a@x,b@y: tira da aplicação itens que o editor viu classificados errado (#12283). O plano
+    // fica como está (o id não muda); quem foi pulado não é marcado como feito.
+    const skip = new Set(
+      getArg(argv, "skip") // "" quando ausente (#11472), nunca undefined
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const known = new Set([...plan.actions.optin, ...plan.actions.saida]);
+    const unknown = [...skip].filter((e) => !known.has(e));
+    if (unknown.length > 0) {
+      console.error(`❌ --skip cita e-mail(s) sem ação neste lote: ${unknown.join(", ")}. Nada aplicado.`);
+      return 1;
+    }
     let blacklist = overrides.blacklist;
-    if (!blacklist && pendingBrevoCount(plan) > 0) {
+    if (!blacklist && pendingBrevoCount(plan, skip) > 0) {
       loadProjectEnv();
       const apiKey = process.env.BREVO_CLARICE_API_KEY;
       if (!apiKey) {
@@ -334,6 +451,7 @@ export async function main(
       await applyTriagePlan(plan, {
         db,
         blacklist: blacklist ?? (async () => {}),
+        skip,
         log: (m) => console.error(m),
       });
     } finally {
@@ -347,19 +465,29 @@ export async function main(
       optin_done: a.optin_done.length,
       saida_store_done: a.saida_store_done.length,
       saida_brevo_done: a.saida_brevo_done.length,
+      saida_brevo_not_found: a.saida_brevo_not_found ?? [],
+      skipped: [...skip].sort(),
       failures: a.failures,
       data_deletion_manual: plan.actions.data_deletion,
       suporte_encaminhar: plan.actions.suporte.length,
       pendentes: plan.actions.pendentes.length,
     };
     console.log(JSON.stringify(summary, null, 2));
+    if ((a.saida_brevo_not_found ?? []).length > 0) {
+      console.error(
+        `\n🔎 fora da Brevo (suprimidos no store, revisar à mão o endereço que recebe a newsletter): ` +
+          `${(a.saida_brevo_not_found ?? []).join(", ")}`,
+      );
+    }
     if (a.failures.length > 0) {
       console.error(`\n❌ ${a.failures.length} falha(s):`);
       for (const f of a.failures) console.error(`  - ${f.email} [${f.step}]: ${f.error}`);
       console.error(`Reexecute \`--apply --confirm ${plan.batch_id}\` para retentar só esses.`);
       return 1;
     }
-    console.error(`\n✅ Lote ${plan.batch_id} aplicado.`);
+    console.error(
+      `\n✅ Lote ${plan.batch_id} aplicado${skip.size ? ` (exceto ${[...skip].sort().join(", ")}, pulados com --skip)` : ""}.`,
+    );
     return 0;
   }
 
@@ -379,9 +507,20 @@ export async function main(
   }
   const plan = buildTriagePlan(messages, { query: inputPath ? null : query });
   const path = savePlan(planDir, plan);
-  console.error(renderPlanSummary(plan));
+  // Store presente: mostra já o endereço canônico que o --apply vai usar (#12265). Sem store, a
+  // listagem segue sem o mapeamento; só abre o store se o arquivo já existe (não cria um vazio).
+  let canonical: CanonicalMap | undefined;
+  if ((plan.actions.optin.length > 0 || plan.actions.saida.length > 0) && existsSync(dbPath)) {
+    const db = openClariceDb(dbPath);
+    try {
+      canonical = resolveCanonicalTargets(db, plan);
+    } finally {
+      db.close();
+    }
+  }
+  console.error(renderPlanSummary(plan, canonical));
   console.error(`\nPlano gravado em ${path}. Nada foi aplicado.`);
-  console.error(`Para aplicar: npx tsx scripts/clarice-replies-triage.ts --apply --confirm ${plan.batch_id}`);
+  console.error(`Para aplicar: npx tsx scripts/clarice-replies-triage.ts --apply --confirm ${plan.batch_id} [--skip e-mail1,e-mail2]`);
   console.log(JSON.stringify({ batch_id: plan.batch_id, plan_path: path, counts: plan.counts }, null, 2));
   return 0;
 }

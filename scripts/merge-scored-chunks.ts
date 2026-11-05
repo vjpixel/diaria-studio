@@ -61,6 +61,7 @@ import {
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { coverageBonus } from "./lib/coverage-bonus.ts"; // #3920
 import { articleNewsletterMentions, newsletterMentionBonus } from "./lib/newsletter-mention-bonus.ts"; // #9365
+import { SOURCE_UNREADABLE_BONUS_ENTRY, sourceUnreadablePenalty } from "./lib/diaria/source-readability.ts"; // #12258
 import { isGuaranteedFrontierLaunch, pickFrontierLaunchFinalists } from "./lib/frontier-signals.ts"; // #9359
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -280,7 +281,10 @@ export function mergeChunks(
     if (newsletterBonus > 0) {
       (article as { score_bonus_newsletter?: number }).score_bonus_newsletter = newsletterBonus;
     }
-    const score = baseScore + bonus + newsletterBonus;
+    // #12258: fonte não lida (403/vídeo/resumo de uma frase) leva desconto,
+    // pra não competir com item verificado. Mesmo ponto dos bônus acima.
+    const unreadPenalty = sourceUnreadablePenalty(article);
+    const score = baseScore + bonus + newsletterBonus - unreadPenalty;
     // #4842: score_base generalizado — SEMPRE presente (não só quando há bônus
     // de cobertura), reconstituído a partir do que o scorer-chunk decompôs
     // (fallback pro score do chunk quando o chunk não decompôs). bonuses_applied
@@ -292,6 +296,7 @@ export function mergeChunks(
       ...chunkBonuses,
       ...(bonus > 0 ? [`coverage:+${bonus}`] : []),
       ...(newsletterBonus > 0 ? [`newsletter:+${newsletterBonus}`] : []),
+      ...(unreadPenalty > 0 ? [SOURCE_UNREADABLE_BONUS_ENTRY] : []),
     ];
     (article as { score_base?: number }).score_base = chunkScoreBase;
     if (bonusesApplied.length > 0) {
