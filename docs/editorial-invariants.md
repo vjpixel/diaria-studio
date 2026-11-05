@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 132 invariants.
+**Total**: 135 invariants.
 
 ## Static (estrutura do repo)
 
@@ -113,10 +113,13 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `public-images-md5-matches-local` | hero 2:1 do e-mail (cover/d1_play/d2_2x1/d3_2x1) em 06-public-images.json tem o md5 do arquivo local — troca de destaque não deixa imagem antiga no e-mail (#11252) | #11252 |
 | `public-images-populated` | 06-public-images.json com URLs d1/d2/d3 (#999) | #999 |
 | `render-warnings-consumed` | eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1 / whatsapp_share_d1_mismatch / convite_amigo_snippet_missing) surfaced no gate (#4673, warning-only) | #4673 |
+| `reviewed-no-pending-placeholder` | 02-reviewed.md sem placeholder de destaque não integrado ([RASCUNHO PENDENTE …]/[TEXTO PENDENTE …] do swap/promote) (#12259) | #12259 |
+| `reviewed-onedrive-conflict-copy` | avisa quando o OneDrive deixou cópia de conflito (*-safeBackup-*.md) de 02-reviewed.md/03-social.md — o principal pode ter perdido uma edição (#12259) | #12259 |
 | `social-hash-fresh` | social.md hash bate com approved.json highlights (#1413) | #1413 |
 | `social-humanizer-seal-fresh` | selo do humanizador bate com o 03-social.md atual — social reescrito no Stage 4 foi re-humanizado (#9820) | #9820 |
 | `social-invite-drift` | convite social do PARA ENCERRAR diverge do SOCIAL_INVITE atual — não reconhecido (sai sem a borda de box) ou com texto desatualizado (#10835, warning-only) | #10835 |
 | `social-not-behind-reviewed` | 03-social.md não ficou atrás de 02-reviewed.md — destaque reescrito no gate sem cascata do social (#9820) | #9820 |
+| `source-not-read` | lista no gate os itens da edição cuja fonte não foi lida (403, vídeo, resumo curto) (#12258) | #12258 |
 | `sponsored-source-marker` | página-fonte de item com marcador de publieditorial (/publicidade/, conteúdo de marca, patrocinado, Pré-MBA) — warning-only, decisão fica no gate (#10169) | #10169 |
 | `story-continuation` | Destaque que continua história publicada nos últimos 30 dias (produto+versão no lead ou URL que continua a anterior; informativo, warning-only) | #11897 |
 | `story-twice-in-edition` | Mesma história duas vezes na edição final (destaque × destaque, pool × destaque) ou repetindo item publicado nas últimas 3 edições por produto+versão (heurístico, warning-only) | #11496 |

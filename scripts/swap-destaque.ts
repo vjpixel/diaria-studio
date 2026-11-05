@@ -116,6 +116,7 @@ import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
 import { useMelhorPostReselectStep } from "./lib/use-melhor-post.ts"; // #9755
 import { lintNewsletter, type ApprovedJson } from "./lib/lint-checks/url-bucket.ts"; // #9961
 import { urlsMatch } from "./lib/url-utils.ts"; // #11497
+import { promotedSourceUnreadWarning } from "./lib/diaria/source-readability.ts"; // #12258
 import {
   backupDemotedDestaque,
   findSwapBackupForUrl,
@@ -1322,6 +1323,14 @@ function main(): void {
     ],
   };
 
+  // #12258: item promovido cuja fonte não foi lida (403/vídeo/resumo curto) —
+  // avisa já no swap, antes do writer-destaque escrever só com título e resumo.
+  const unreadWarning = promotedSourceUnreadWarning(promotedItem, promotedTitle);
+  if (unreadWarning) {
+    console.error(`AVISO: ${unreadWarning}`);
+    (result.warnings ??= []).push(unreadWarning);
+  }
+
   const keepArtSwapOperation = `swap trocou a história de d${demotePosition} (remover essa chave)`;
 
   if (dryRun) {
@@ -1352,7 +1361,7 @@ function main(): void {
         ? `_internal/carousel-keep-art.json: ${keepArtPlan.warning}`
         : `_internal/carousel-keep-art.json: sem exceção de d${demotePosition}, nada a remover (#11213)`;
     const planWarnings = [estiloPlan.warning, keepArtPlan.warning].filter((w): w is string => !!w);
-    if (planWarnings.length > 0) result.warnings = planWarnings;
+    if (planWarnings.length > 0) result.warnings = [...(result.warnings ?? []), ...planWarnings];
     console.log(
       JSON.stringify(
         {
