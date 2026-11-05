@@ -817,6 +817,9 @@ export function reconcileCoverageCount(line: string, count: number): string {
  *
  * Diferente da coverage line: renderizado como callout com borda, não some no
  * meio do parágrafo cinza (feedback 260601 — sorteio não era encontrado no topo).
+ * #12240: alternativamente, `<!-- callout -->` no início de uma linha abre
+ * uma caixa até o próximo `---` ou destaque, sem bold-wrap obrigatório.
+ * O marcador é preservado para o render, assim como o negrito parcial.
  */
 // #3726: separador `---` isolado em linha própria — mesmo boundary usado por
 // `GAP_SEPARATOR_RE` (ver embaixo). Delimita segmentos dentro da região de
@@ -883,6 +886,19 @@ function findIntroCalloutMatch(
   // (callout + box0). A máscara preserva o comprimento, então as posições
   // devolvidas continuam absolutas em `rawIntroRegion`.
   const introRegion = maskBox0Block(rawIntroRegion);
+  // #12240: marcador invisível abre um callout até o próximo `---` ou
+  // destaque (já excluído pelo chamador). Mantém o markdown interno intacto;
+  // o render consome o marcador, sem exigir um bold-wrap externo.
+  for (const seg of boldWrapSegments(introRegion)) {
+    const explicit = /^[ \t]*<!-- callout -->[ \t]*/m.exec(seg.text);
+    if (explicit && seg.text.slice(explicit.index + explicit[0].length).trim()) {
+      return {
+        groupText: seg.text.slice(explicit.index).trim(),
+        matchStart: seg.offset + explicit.index,
+        matchEnd: seg.offset + seg.text.length,
+      };
+    }
+  }
   for (const seg of boldWrapSegments(introRegion)) {
     const m = seg.text.match(BOLD_WRAP_RE);
     if (m && m.index !== undefined) {
