@@ -93,6 +93,12 @@ describe("isBranchCreateCheckoutCommand (#6509)", () => {
     assert.equal(isBranchCreateCheckoutCommand("git checkout HEAD -- f"), false);
   });
 
+  it("#12165 re-review: `checkout -m <branch>` é troca (leva as mudanças locais); com path, não", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -m feat"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout --merge feat"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -m f.ts"), false);
+  });
+
   it("NÃO detecta 'git checkout -- <file>' (checkout de arquivo, não de branch)", () => {
     assert.equal(isBranchCreateCheckoutCommand("git checkout -- src/foo.ts"), false);
   });

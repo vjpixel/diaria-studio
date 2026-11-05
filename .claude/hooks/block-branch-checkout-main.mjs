@@ -503,9 +503,11 @@ function isCreateFlag(sub, t) {
   return /^-[cC]/.test(t) || /^--(?:create|force-create|orphan)(?:=|$)/.test(t);
 }
 
-/** Opções de `checkout` que operam em arquivo, não em branch: com elas o
- * posicional é path (`--ours f`, `-p HEAD`). */
-const CHECKOUT_PATH_MODE_FLAGS = new Set(["--ours", "--theirs", "-p", "--patch", "-m", "--merge"]);
+/** Opções de `checkout` que só operam em arquivo, nunca trocam de branch: com
+ * elas o posicional é path (`--ours f`, `-p HEAD`). `-m`/`--merge` ficam de
+ * fora de propósito: com branch (`checkout -m feat`) são troca levando as
+ * mudanças locais, e o `looksLikePath` decide o caso com path. */
+const CHECKOUT_PATH_MODE_FLAGS = new Set(["--ours", "--theirs", "-p", "--patch"]);
 
 /** Argumento posicional de `git checkout` com cara de caminho de arquivo, não
  * de branch: `.`, `./x`, `../x`, `dir/` ou extensão que começa por letra
