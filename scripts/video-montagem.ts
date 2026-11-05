@@ -69,6 +69,10 @@
  *       de 0,32 s ou mais sai com 150 ms antes da fala e 120 ms depois; ilha abaixo de 60 ms é
  *       estalo), não do silencedetect; avisa emenda com pausa acima de 0,45 s, clipe abaixo de
  *       0,3 s e borda dentro da fala. --no-speech-detect (ou o bruto ausente) volta ao silences.json.
+ *       (#12263) o começo de cada ilha recua até 120 ms no ataque acima do piso de ruído do bruto
+ *       + 12 dB (consoante suave abaixo dos limiares fixos); entrada com som nos 40 ms antes do
+ *       corte (piso + 45% da faixa) vira [aviso]; a passada B do refino só tira som na entrada
+ *       separado da 1ª palavra por silêncio.
  *       (#11935) grava um XML por sequência ({nome da sequência}.xml); `--seq` grava só uma, e só ela muda no plan.json (#11969)
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Clipes contíguos no bruto viram um só e o zoom alterna só nos cortes (#11503). Os cortes
@@ -249,6 +253,7 @@ import {
   validateVocabRules,
   audioCleanArgs,
   audioCleanFilter,
+  AUDIO_CLEAN,
   audioCleanParams,
   parseVinhetaProbe,
   previewVinhetaFilter,
@@ -336,7 +341,10 @@ import {
   speechPauseSilences,
   trimEdgeExtras,
   windowKey,
+  extendIslandAttacks,
+  entryCutSoundWarnings,
   type EdgeWindow,
+  type FrameEnergy,
 } from "./lib/diaria/video-cut-refine.ts";
 import { classifyVoices, segmentF0s, speechSeconds, type VoiceMark } from "./lib/diaria/video-voice.ts";
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
@@ -902,7 +910,8 @@ function silences(ctx: Ctx): Interval[] {
  * `transcribe` com o respiro de `SPEECH_DEFAULTS`. Resolver as falas usa
  * sempre o `silences.json` (é o que o transcript e o roteiro viram).
  */
-type SpeechCut = { silences: Interval[]; islands: Interval[] };
+/** #12263: `energy` = os quadros do detector, para a checagem de entrada que corta som. */
+type SpeechCut = { silences: Interval[]; islands: Interval[]; energy?: FrameEnergy };
 
 function plans(ctx: Ctx, speech?: SpeechCut | null) {
   const { file, text } = loadBlocks(ctx);
@@ -964,6 +973,19 @@ interface PlanFile {
    * vinheta. A prévia lê daqui, para mostrar o que o XML daquela sequência tem.
    */
   xmlAssets?: Record<string, SequenceXmlAssets>;
+  /**
+   * #12285: o `<sequence id>` versionado do XML de cada sequência (`sequenceKey`)
+   * e desde quando ele vale (`since`, ms). Rebuild com o mesmo hash de versão
+   * mantém o `_V{n}` e o id, e o `since` fica o do build que abriu a versão:
+   * é contra ele (e o id) que a legenda do export confere se o XML mudou, nunca
+   * contra o `builtAt`, que avança em todo build.
+   */
+  xmlVersions?: Record<string, SequenceXmlVersion>;
+}
+
+export interface SequenceXmlVersion {
+  id: string;
+  since: number;
 }
 
 export interface SequenceXmlAssets {
@@ -981,12 +1003,15 @@ export interface SequenceXmlAssets {
  * prévia recusam até um build delas) em vez de entrar sem conferência.
  */
 export function mergeBuildPlan(input: {
-  next: Omit<PlanFile, "builtAt">;
+  next: Omit<PlanFile, "builtAt" | "xmlVersions">;
   pickedKeys: ReadonlySet<string>;
   prev: PlanFile | null;
   now: number;
+  /** #12285: o `<sequence id>` gravado neste build, por sequência reconstruída. */
+  xmlIds?: Readonly<Record<string, string>>;
 }): { plan: PlanFile; kept: string[]; dropped: string[] } {
   const { next, pickedKeys, prev, now } = input;
+  const xmlVersions: Record<string, SequenceXmlVersion> = {};
   const keyOf = (p: SequencePlan) => sequenceKey(p.spec);
   const sameInputs = prev !== null && prev.hash === next.hash;
   const prevByKey = new Map((sameInputs ? prev.plans : []).map((p) => [keyOf(p), p]));
@@ -1006,6 +1031,12 @@ export function mergeBuildPlan(input: {
       if (w) highBandWarnings[k] = w;
       const a = next.xmlAssets?.[k];
       if (a) xmlAssets[k] = a;
+      // #12285: mesmo id = o mesmo XML do build anterior; o `since` não avança (independe do hash das entradas: o id já o carrega).
+      const id = input.xmlIds?.[k];
+      if (id) {
+        const old = prev?.xmlVersions?.[k];
+        xmlVersions[k] = { id, since: old && old.id === id && Number.isFinite(old.since) ? old.since : now };
+      }
       continue;
     }
     const old = prevByKey.get(k);
@@ -1020,10 +1051,33 @@ export function mergeBuildPlan(input: {
     if (w) highBandWarnings[k] = w;
     const a = prev?.xmlAssets?.[k];
     if (a) xmlAssets[k] = a;
+    const v = prev?.xmlVersions?.[k];
+    if (v) xmlVersions[k] = v;
   }
   const cutRefine = next.cutRefine ? { ...next.cutRefine, ...(next.cutRefine.highBandWarnings ? { highBandWarnings } : {}) } : undefined;
   const { xmlAssets: _nextAssets, ...rest } = next;
-  return { plan: { ...rest, plans, ...(cutRefine ? { cutRefine } : {}), builtAt, ...(Object.keys(xmlAssets).length ? { xmlAssets } : {}) }, kept, dropped };
+  return {
+    plan: {
+      ...rest,
+      plans,
+      ...(cutRefine ? { cutRefine } : {}),
+      builtAt,
+      ...(Object.keys(xmlAssets).length ? { xmlAssets } : {}),
+      ...(Object.keys(xmlVersions).length ? { xmlVersions } : {}),
+    },
+    kept,
+    dropped,
+  };
+}
+
+/**
+ * #12285: a versão do XML da sequência no plano (id + desde quando), ou null
+ * em plano anterior a ela. Com o `since` ausente, o `sequenceBuiltAt` faz as
+ * vezes (o comportamento do #12209).
+ */
+export function sequenceXmlVersion(pf: Pick<PlanFile, "xmlVersions">, key: string): SequenceXmlVersion | null {
+  const v = pf.xmlVersions?.[key];
+  return v && typeof v.id === "string" && v.id && typeof v.since === "number" && Number.isFinite(v.since) ? v : null;
 }
 
 /** Instante do build da sequência no plano (#11969); plano antigo sem `builtAt` = o mtime do plan.json. */
@@ -1725,8 +1779,10 @@ function speechDetection(ctx: Ctx, source: SourceInfo): { cut: SpeechCut | null;
     writeFileAtomic(meta, key + "\n");
   }
   const { samples, sampleRate } = parseWavPcm16(readFileSync(audio));
-  const islands = speechIslands(frameEnergies(samples, sampleRate));
-  return { cut: { islands, silences: speechPauseSilences(islands, source.durationS) } };
+  const energy = frameEnergies(samples, sampleRate);
+  // #12263: o começo de cada ilha recua até o ataque medido contra o piso do bruto, não só o limiar fixo.
+  const islands = extendIslandAttacks(energy, speechIslands(energy));
+  return { cut: { islands, silences: speechPauseSilences(islands, source.durationS), energy } };
 }
 
 /** Cache separado do Whisper: nunca reamostrar o WAV de 16 kHz para medir agudos. */
@@ -1983,7 +2039,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     try { speech = speechDetection(ctx, sourceFor(ctx, loadBlocks(ctx).file)); }
     catch (e) { speech = { cut: null, reason: `detector de fala falhou: ${(e as Error).message}` }; }
   }
-  if (speech.cut) console.error(`[premissa] corte de pausas pelo detector de fala (#12089): ${speech.cut.islands.length} ilhas de fala, pausa de ${SPEECH_DETECT.minGapS} s ou mais sai com ${SPEECH_DETECT.padBeforeS * 1000} ms antes da fala e ${SPEECH_DETECT.padAfterS * 1000} ms depois; --no-speech-detect volta ao silences.json`);
+  if (speech.cut) console.error(`[premissa] corte de pausas pelo detector de fala (#12089): ${speech.cut.islands.length} ilhas de fala, pausa de ${SPEECH_DETECT.minGapS} s ou mais sai com ${SPEECH_DETECT.padBeforeS * 1000} ms antes da fala e ${SPEECH_DETECT.padAfterS * 1000} ms depois; o começo da fala recua até ${SPEECH_DETECT.attackMaxS * 1000} ms no ataque acima do piso do bruto + ${SPEECH_DETECT.attackAboveFloorDb} dB (#12263); --no-speech-detect volta ao silences.json`);
   else console.error(`[aviso] corte de pausas pelo silences.json (${speech.reason}): respiração e ruído de sala contam como fala num bruto quente (#12089)`);
   const { file, source, plans: ps0, hash, resolved } = plans(ctx, speech.cut);
   const refined = refineCuts(ctx, ps0, source, audioRefine, speech.cut !== null);
@@ -2029,6 +2085,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     }
     // #12101: a pausa longa depois do título no horizontal é o respiro da vinheta, de propósito.
     if (speech.cut) for (const w of speechJoinWarnings(p.clips, speech.cut.islands, source.fps, { longJoinOkAfter: breath ? ["titulo"] : [] })) console.error(`[aviso] ${p.spec.name}: ${w}`);
+    // #12263: entrada com som nos 40 ms antes do corte (piso + 45% da faixa), o critério da conferência à mão da 261105.
+    if (speech.cut?.energy) for (const w of entryCutSoundWarnings(p.clips, speech.cut.energy, source.fps)) console.error(`[aviso] ${p.spec.name}: ${w}`);
     if (p.missingBlocks.length) console.error(`   faltam no blocks.json: ${p.missingBlocks.join(", ")}`);
     for (const x of p.dropped) console.error(`   ${x}`);
     for (const a of p.cutAdjustments ?? []) console.error(adjustmentLine(a));
@@ -2056,7 +2114,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   if (treated) {
     console.error(
       `[premissa] áudio do XML e da prévia na faixa tratada ${treated.xmlPath} (${treated.filter}): aproximação do Enhance do Adobe Podcast (Background 0%, Speech 40%), o vídeo segue no bruto; ` +
-        "o Enhance pode ir por cima no Premiere; conferir as pausas no 1º import (#12102)",
+        `o Enhance pode ir por cima no Premiere; redução de ruído de ${AUDIO_CLEAN.nrDb} dB igual em todo o áudio e gate suave (pausas no máximo ${-AUDIO_CLEAN.rangeDb} dB abaixo, ${AUDIO_CLEAN.attackMs}/${AUDIO_CLEAN.releaseMs} ms), sem zerar o ambiente; conferir uma pausa típica no 1º import e registrar ajuste em AUDIO_CLEAN (#12102, #12262)`,
     );
   }
   // #12102: reaproveitada, a faixa não muda no out dir e o snapshot não a sobe; entra nos pendentes se nunca subiu.
@@ -2143,10 +2201,12 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
+  const xmlIds: Record<string, string> = {};
   for (const p of picked) {
     const xmlPath = join(ctx.outDir, xmlFileName(p.spec.name));
     const version = sequenceNameVersion(p.spec.name);
     const sequenceIds = version !== null ? { [sequenceKey(p.spec)]: versionedSequenceId(sequenceKey(p.spec), version, versionHashes.get(p) ?? hash) } : undefined;
+    if (sequenceIds) xmlIds[sequenceKey(p.spec)] = sequenceIds[sequenceKey(p.spec)];
     writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
@@ -2154,14 +2214,16 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #11969: com --seq, só as sequências reconstruídas (e conferidas acima) mudam no plan.json.
   const planPath = f(ctx, "plan.json");
   let prevPlan: PlanFile | null = null;
-  if (seq && existsSync(planPath)) {
-    try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): só a sequência do --seq entra no plano novo`); }
+  // #12285: sem --seq o plano anterior também é lido, só para a versão do XML de cada sequência (o `since` de um rebuild com o mesmo id).
+  if (existsSync(planPath)) {
+    try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): ${seq ? "só a sequência do --seq entra no plano novo" : "a versão de cada XML conta como nova"}`); }
   }
   const merged = mergeBuildPlan({
     next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}) }])) },
     pickedKeys: new Set(picked.map((p) => sequenceKey(p.spec))),
     prev: prevPlan,
     now: Date.now(),
+    xmlIds,
   });
   if (merged.dropped.length) console.error(`[aviso] --seq ${seq}: ${merged.dropped.join(", ")} fora do plan.json (entradas mudaram desde o build delas, e o XML delas é o antigo); rode build sem --seq, ou com --seq de cada uma, antes de srt/preview delas (#11969)`);
   if (merged.kept.length) console.error(`[video-montagem] --seq ${seq}: ${merged.kept.join(", ")} mantida(s) no plan.json como o build anterior gravou (#11969)`);
@@ -2211,6 +2273,12 @@ function seqWords(ctx: Ctx, plan: SequencePlan, source: SourceInfo, fromRaw: boo
  * (`sequenceBuiltAtMs` > `recordedExportAtMs`): o export daquela legenda saiu
  * de um XML anterior, e a cópia é trocada pela da montagem nova
  * ("replace-stale-export", que grava). O certo é rodar `--from-final` no novo export.
+ * #12285: "reconstruído" = o XML mudou, não "o build rodou". Com o `<sequence id>`
+ * gravado nos dois lados (o do `--from-final` em `youtube-srt.json` e o atual
+ * do plan.json), a decisão é pelo id: mesmo id = mesmo XML, a legenda do
+ * export fica. Sem um dos dois (registro ou plano anteriores ao #12285), o
+ * instante, que deve ser o `since` da versão (`sequenceXmlVersion`), não o
+ * `builtAt`, que avança até em rebuild sem mudança.
  */
 export function youtubeSrtCopyDecision(input: {
   existing: string | null;
@@ -2220,13 +2288,18 @@ export function youtubeSrtCopyDecision(input: {
   fromExport?: boolean;
   /** #12209: instante do export que gerou a cópia (mtime do arquivo, ou o `modifiedTime` do Drive). */
   recordedExportAtMs?: number | null;
-  /** #12209: `builtAt` do horizontal no plan.json atual. */
+  /** #12209/#12285: desde quando vale o XML atual do horizontal (o `since` da versão; sem ele, o `builtAt`). */
   sequenceBuiltAtMs?: number;
+  /** #12285: `<sequence id>` do horizontal quando o `--from-final` gravou a cópia. */
+  recordedSequenceId?: string | null;
+  /** #12285: `<sequence id>` do horizontal no plan.json atual. */
+  sequenceId?: string | null;
 }): "write" | "keep-edited" | "keep-from-export" | "replace-stale-export" {
   if (input.existing === null || input.force) return "write";
   const sha = createHash("sha256").update(input.existing).digest("hex");
   if (sha !== input.recordedSha256) return "keep-edited";
   if (!input.recordedFromExport || input.fromExport) return "write";
+  if (input.recordedSequenceId && input.sequenceId) return input.recordedSequenceId === input.sequenceId ? "keep-from-export" : "replace-stale-export";
   const exportAt = input.recordedExportAtMs;
   if (input.sequenceBuiltAtMs !== undefined && typeof exportAt === "number" && Number.isFinite(exportAt) && input.sequenceBuiltAtMs > exportAt) return "replace-stale-export";
   return "keep-from-export";
@@ -2247,6 +2320,8 @@ interface YoutubeSrtRecord {
   writtenAt?: string;
   fromExport?: string;
   fromExportFile?: { size?: number; mtimeMs?: number; driveModifiedTime?: string | null };
+  /** #12285: `<sequence id>` do horizontal no plan.json quando o `--from-final` gravou a cópia. */
+  fromExportSequenceId?: string;
 }
 
 /**
@@ -2277,6 +2352,8 @@ export function applyYoutubeSrtCopy(input: {
   force: boolean;
   origin?: string | ExportOrigin;
   sequenceBuiltAtMs?: number;
+  /** #12285: `<sequence id>` atual do horizontal (gravado no registro quando a cópia vem do export). */
+  sequenceId?: string | null;
   now?: Date;
 }): ReturnType<typeof youtubeSrtCopyDecision> {
   const record = existsSync(input.recordPath) ? readJson<YoutubeSrtRecord>(input.recordPath, "youtube-srt.json") : null;
@@ -2289,6 +2366,8 @@ export function applyYoutubeSrtCopy(input: {
     fromExport: Boolean(origin),
     recordedExportAtMs: recordedExportAt(record),
     sequenceBuiltAtMs: input.sequenceBuiltAtMs,
+    recordedSequenceId: record?.fromExportSequenceId ?? null,
+    sequenceId: input.sequenceId ?? null,
   });
   if (decision !== "write" && decision !== "replace-stale-export") return decision;
   mkdirSync(dirname(input.path), { recursive: true });
@@ -2300,6 +2379,7 @@ export function applyYoutubeSrtCopy(input: {
     writtenAt: (input.now ?? new Date()).toISOString(),
     ...(origin ? { fromExport: origin.name } : {}),
     ...(file && Object.values(file).some((v) => v !== undefined && v !== null) ? { fromExportFile: file } : {}),
+    ...(origin && input.sequenceId ? { fromExportSequenceId: input.sequenceId } : {}),
   });
   return decision;
 }
@@ -2483,9 +2563,9 @@ function transcribeExport(ctx: Ctx, path: string, key: string): Word[] {
 }
 
 /** Grava a cópia do horizontal na pasta da edição (ver `applyYoutubeSrtCopy`); devolve a decisão. */
-function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: ExportOrigin, sequenceBuiltAtMs?: number): ReturnType<typeof youtubeSrtCopyDecision> {
+function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: ExportOrigin, sequenceBuiltAtMs?: number, sequenceId?: string | null): ReturnType<typeof youtubeSrtCopyDecision> {
   const path = join(editionDirFor(ctx.edition), youtubeCaptionFileName(ctx.edition));
-  const decision = applyYoutubeSrtCopy({ path, recordPath: f(ctx, "youtube-srt.json"), srt, force: ctx.force, origin, sequenceBuiltAtMs });
+  const decision = applyYoutubeSrtCopy({ path, recordPath: f(ctx, "youtube-srt.json"), srt, force: ctx.force, origin, sequenceBuiltAtMs, sequenceId });
   if (decision === "keep-edited") {
     // No --from-final o chamador sai com [erro]; no srt da montagem é só aviso (#11957).
     if (!origin) console.error(`[aviso] ${path} foi editado depois do último srt: mantido (o novo está no out dir; --force sobrescreve, #11957)`);
@@ -2513,7 +2593,7 @@ function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: ExportOrigin, seque
  * insere vinheta). O plan.json defasado só avisa: o export saiu do XML daquele
  * build, então o roteiro gravado nele é o que casa com o export.
  */
-function loadFromFinalPlan(ctx: Ctx, seq: string | undefined): { plan: SequencePlan; builtAtMs: number } {
+function loadFromFinalPlan(ctx: Ctx, seq: string | undefined): { plan: SequencePlan; builtAtMs: number; sequenceId: string | null } {
   const planPath = f(ctx, "plan.json");
   const pf = readJson<PlanFile>(planPath, "plan.json (rode build --seq youtube)");
   if (!Array.isArray(pf.plans)) throw new Error(`plan.json malformado (sem a lista plans): rode build --seq youtube (${f(ctx, "plan.json")})`);
@@ -2524,7 +2604,16 @@ function loadFromFinalPlan(ctx: Ctx, seq: string | undefined): { plan: SequenceP
   } catch (e) {
     console.error(`[aviso] não deu para conferir o plan.json contra as entradas (${(e as Error).message}): usando o roteiro gravado nele`);
   }
-  return { plan, builtAtMs: sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(planPath)) };
+  return { plan, ...xmlVersionAt(pf, sequenceKey(plan.spec), mtime(planPath)) };
+}
+
+/**
+ * #12285: desde quando vale o XML da sequência e o id dele: o `since` da
+ * versão, e sem ela (plano anterior ao #12285) o `builtAt` do #12209.
+ */
+export function xmlVersionAt(pf: Pick<PlanFile, "builtAt" | "xmlVersions">, key: string, planMtimeMs: number): { builtAtMs: number; sequenceId: string | null } {
+  const v = sequenceXmlVersion(pf, key);
+  return v ? { builtAtMs: v.since, sequenceId: v.id } : { builtAtMs: sequenceBuiltAt(pf, key, planMtimeMs), sequenceId: null };
 }
 
 /** #12209: identidade do export do `--from-final` (tamanho, mtime e, no modo API, o `modifiedTime` do Drive do sidecar do cache). */
@@ -2533,15 +2622,15 @@ export function exportOriginOf(path: string): ExportOrigin {
   return { name: basename(path), size: st.size, mtimeMs: Math.round(st.mtimeMs), driveModifiedTime: readSidecar(path)?.modifiedTime ?? null };
 }
 
-function cmdSrtFromFinal(ctx: Ctx, file: string, loaded: { plan: SequencePlan; builtAtMs: number }, text: ExportSrtText = "roteiro"): number {
-  const { plan, builtAtMs } = loaded;
+function cmdSrtFromFinal(ctx: Ctx, file: string, loaded: { plan: SequencePlan; builtAtMs: number; sequenceId: string | null }, text: ExportSrtText = "roteiro"): number {
+  const { plan, builtAtMs, sequenceId } = loaded;
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`export não encontrado: ${path}`);
   const origin = exportOriginOf(path);
   const exportAt = recordedExportAt({ fromExport: origin.name, fromExportFile: origin });
   if (exportAt !== null && exportAt < builtAtMs) {
     console.error(
-      `[aviso] o export ${origin.name} (${new Date(exportAt).toISOString()}) é anterior ao último build do horizontal (${new Date(builtAtMs).toISOString()}): ` +
+      `[aviso] o export ${origin.name} (${new Date(exportAt).toISOString()}) é anterior ao XML vigente do horizontal (${sequenceId ? `${sequenceId}, desde ` : ""}${new Date(builtAtMs).toISOString()}): ` +
         `se ele saiu de um XML anterior, o roteiro do plan.json não casa com ele; reexporte do XML novo (#12209)`,
     );
   }
@@ -2567,7 +2656,7 @@ function cmdSrtFromFinal(ctx: Ctx, file: string, loaded: { plan: SequencePlan; b
   const out = join(ctx.outDir, srtFromExportFileName(plan.spec.name));
   writeFileAtomic(out, srt);
   console.log(out);
-  const decision = writeYoutubeSrtCopy(ctx, srt, origin);
+  const decision = writeYoutubeSrtCopy(ctx, srt, origin, undefined, sequenceId);
   if (decision === "keep-edited") {
     // Sair 0 aqui deixaria o backfill seguir para o --captions-only com a cópia antiga (tempo da montagem).
     const copy = join(editionDirFor(ctx.edition), youtubeCaptionFileName(ctx.edition));
@@ -2606,7 +2695,11 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
     const path = join(ctx.outDir, srtFileName(plan.spec.name));
     writeFileAtomic(path, srt);
     console.log(path);
-    if (isYoutubeSpec(plan.spec)) writeYoutubeSrtCopy(ctx, srt, undefined, sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(f(ctx, "plan.json"))));
+    if (isYoutubeSpec(plan.spec)) {
+      // #12285: a versão do XML (id + since), não o builtAt de todo build, decide se o export da legenda ficou velho.
+      const v = xmlVersionAt(pf, sequenceKey(plan.spec), mtime(f(ctx, "plan.json")));
+      writeYoutubeSrtCopy(ctx, srt, undefined, v.builtAtMs, v.sequenceId);
+    }
   }
   writeJson(notesPath, notes);
   console.error(`[video-montagem] ouvido × roteiro de cada legenda em ${notesPath}: itens a conferir no relatório final (#12093)`);
