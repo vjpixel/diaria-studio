@@ -161,6 +161,33 @@ describe("decisão por critério: usar na tomada decidida, cortar nas outras (#1
     assert.match(at(7)!.reason, /a direção aprovou a 1ª tomada/);
   });
 
+  it("regressão #12272: regravação curta com pontuação final é completa", () => {
+    const segs = [
+      seg("Mas esses casos são de livros, especificamente casos de livros.", 0),
+      seg("Mas esses casos são de livros.", 5),
+      seg("São diferentes dos casos de música.", 7.1),
+    ];
+    assert.equal(groupTakes(segs)[0].suggested, 1);
+    const d = decideTakes(segs).bySegment;
+    assert.equal(d.get(1)?.suggestion, "usar");
+    assert.equal(d.get(0)?.suggestion, "cortar");
+    assert.doesNotMatch(segmentListing(segs), /tomada incompleta/);
+  });
+
+  it("regressão #12272: encurtar não dispensa pontuação final nem vence a direção", () => {
+    const long = seg("Mas esses casos são de livros, especificamente casos de livros.", 0);
+    const short = seg("Mas esses casos são de livros.", 5);
+    const partial = seg("Mas esses casos são", 8);
+    assert.equal(groupTakes([long, partial])[0].suggested, 0);
+    assert.equal(decideTakes([long, partial]).bySegment.get(1)?.reason, "tomada incompleta");
+    const d = decideTakes([long, short, seg("A anterior tava melhor.", 9)]).bySegment;
+    assert.equal(d.get(0)?.suggestion, "usar");
+    assert.equal(d.get(0)?.criterion, "direcao");
+    const rejected = decideTakes([long, short, seg("Errei.", 9)]).bySegment;
+    assert.equal(rejected.get(0)?.suggestion, "usar");
+    assert.equal(rejected.get(1)?.suggestion, "cortar");
+  });
+
   it("critério 3: a última completa, fora a recusada pela direção", () => {
     assert.equal(at(9)?.suggestion, "cortar");
     assert.match(at(9)!.reason, /a direção pediu outra/);
