@@ -145,15 +145,19 @@ const VERB_TIME_ANCHOR_RE = new RegExp(
  * grupo é desembrulhado ANTES do split, com as refs marcadas como `§N`
  * (atribuição): volta para a oração em que está escrito, mas só conta com um
  * verbo de espera propriamente dito (`WAIT_VERB_RE`). Parêntese com mais
- * texto ("(teste A/B do assunto no ar)") segue sendo oração à parte. */
+ * texto ("(teste A/B do assunto no ar)") segue sendo oração à parte.
+ * #12282: as palavras antes das refs voltam JUNTO — o verbo de espera pode
+ * estar dentro do parêntese ("(aguardando #12130)", "(depende de #12130)"), e
+ * devolver só as refs o apagava, deixando a razão passar como data. O "." do
+ * prefixo ("cf.") sai na volta: é separador de oração. */
 const REF_GROUP_RE =
-  /[([]\s*(?:[\p{L}.:]+\s+){0,2}(#\d+(?:\s*(?:,|\/|(?<![\p{L}\p{N}])e(?![\p{L}\p{N}]))\s*#\d+)*)\s*[)\]]/giu;
+  /[([]\s*((?:[\p{L}.:]+\s+){0,2})(#\d+(?:\s*(?:,|\/|(?<![\p{L}\p{N}])e(?![\p{L}\p{N}]))\s*#\d+)*)\s*[)\]]/giu;
 
 /** `#N` na mesma oração que um verbo de condição ("aguardando #N", "depois
  * que #N fechar"). "PR #N mergeada" sozinho, sem verbo, é contexto. */
 function citesRefAsCondition(reason: string): boolean {
   return reason
-    .replace(REF_GROUP_RE, (_m, refs: string) => ` ${refs.replace(/#/g, "§")} `)
+    .replace(REF_GROUP_RE, (_m, prefix: string, refs: string) => ` ${prefix.replace(/\./g, "")}${refs.replace(/#/g, "§")} `)
     .split(CLAUSE_SPLIT_RE)
     .some((raw) => {
       const bareRef = /#\d+/.test(raw);
