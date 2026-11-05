@@ -280,3 +280,52 @@ test("#12227 CLI: listar grava o plano sem aplicar; --apply sem --confirm ou com
     console.log = origLog;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Achados do review da PR #12261
+// ---------------------------------------------------------------------------
+
+test("#12261 review: recusar a prioridade não é pedido de saída", () => {
+  for (const body of ["Não preciso receber com prioridade, mas adoro a newsletter!", "não quero receber com prioridade"]) {
+    const c = classifyReply(msg(body + QUOTE));
+    assert.notEqual(c.kind, "saida", `${body}: ${c.reason}`);
+  }
+  // "não quero mais receber" segue saída
+  assert.equal(classifyReply(msg("Não quero mais receber esses e-mails." + QUOTE)).kind, "saida");
+});
+
+test("#12261 review: mencionar a LGPD sem pedido não é exclusão de dados", () => {
+  const c = classifyReply(msg("A Clarice está adequada à LGPD? Achei interessante." + QUOTE));
+  assert.notEqual(c.kind, "saida", c.reason);
+  assert.equal(c.data_deletion, false);
+  // pedido explícito segue exclusão
+  const p = classifyReply(msg("Com base na LGPD, solicito a exclusão dos meus dados." + QUOTE));
+  assert.equal(p.kind, "saida");
+  assert.equal(p.data_deletion, true);
+});
+
+test("#12261 review: citação do Outlook para Mac (com 'Responder a:') e atribuição em 3+ linhas não vazam o rodapé", () => {
+  const footer = "\nNotícias do mês sobre IA\nCaso não queira receber a newsletter, pode se descadastrar aqui.\n";
+  const outlookMac = "Obrigado!\n\nDe: Clarice.ai <ti@clarice.ai>\nResponder a: pixel@diar.ia.br\nData: quarta-feira, 4 de novembro de 2026 10:02\nPara: Fulano <f@x.com>\nAssunto: Notícias do mês sobre IA" + footer;
+  assert.notEqual(classifyReply(msg(outlookMac)).kind, "saida");
+  const gmail3 = "Obrigado!\n\nEm qua., 4 de nov. de 2026\nàs 10:02, Clarice.ai\n<ti@clarice.ai> escreveu:" + footer;
+  assert.notEqual(classifyReply(msg(gmail3)).kind, "saida");
+  // rodapé vazado sem nenhum marcador de citação também corta
+  assert.notEqual(classifyReply(msg("Obrigado!" + footer)).kind, "saida");
+});
+
+test("#12261 review: o id do lote muda quando o remetente muda (modo --input)", () => {
+  const a = computeBatchId([{ message_id: "m1", kind: "saida", email: "a@x.com" }]);
+  const b = computeBatchId([{ message_id: "m1", kind: "saida", email: "b@x.com" }]);
+  assert.notEqual(a, b);
+});
+
+test("#12261 review: conta de teste do editor nunca vai pra blacklist da Brevo", async () => {
+  const db = seededDb();
+  const plan = buildTriagePlan([msg("descadastrar", { from: "vjpixel+test1@gmail.com" })]);
+  const calls: string[] = [];
+  await applyTriagePlan(plan, { db, blacklist: async (e) => void calls.push(e) });
+  assert.deepEqual(calls, [], "Brevo não chamada para a conta de teste");
+  assert.deepEqual(plan.applied.failures, []);
+  db.close();
+});

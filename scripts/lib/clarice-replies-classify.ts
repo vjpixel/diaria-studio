@@ -74,10 +74,14 @@ export function stripQuoted(body: string): string {
   let text = body.replace(/\r\n?/g, "\n");
   const cutPatterns: RegExp[] = [
     // Gmail pt-BR/en: pode quebrar em 2 linhas antes do "escreveu:".
-    /^[ \t]*(em|on)[ \t][^\n]*(\n[^\n]*)?\b(escreveu|wrote)[ \t]*:/im,
+    /^[ \t]*(em|on)[ \t][^\n]*(\n[^\n]*){0,3}?\b(escreveu|wrote)[ \t]*:/im,
     /^[ \t]*-{2,}[ \t]*(original message|mensagem original)[ \t]*-{2,}/im,
     /^[ \t]*_{10,}[ \t]*$/m,
-    /^[ \t]*(de|from)[ \t]*:[^\n]*\n[ \t]*(enviad[ao]|sent|data|date)[ \t]*:/im,
+    // Outlook (inclusive Mac): `De:` seguido de até 4 linhas `Campo:` (Responder a, Para, Assunto) antes de Enviado/Data (review da PR #12261).
+    /^[ \t]*(de|from)[ \t]*:[^\n]*\n(?:[ \t]*[^\n:]{1,30}:[^\n]*\n){0,4}?[ \t]*(enviad[ao]|sent|data|date)[ \t]*:/im,
+    // Rodapé fixo da própria newsletter, se a citação vazou sem marcador: nunca é texto do assinante.
+    /^[^\n]*\bcaso n[aã]o queira receber\b/im,
+    /^[^\n]*\bvoc[eê] est[aá] recebendo (esse|este) e-?mail\b/im,
     /^-- ?$/m, // delimitador de assinatura
   ];
   for (const re of cutPatterns) {
@@ -108,7 +112,9 @@ const AUTO_BODY_RE =
 
 /** Pedido de exclusão de DADOS (LGPD) — também conta como saída. */
 const DATA_DELETION_RES: RegExp[] = [
-  /\blgpd\b/,
+  // "lgpd" sozinho é menção, não pedido ("a Clarice está adequada à LGPD?", review da PR #12261): exige verbo de pedido/exclusão perto.
+  /\b(exclu|apag|delet|remov|elimin|solicit|pe[cç]o|requeir|requer|exij|exerc)\w*\b[^.!?\n]{0,40}\blgpd\b/,
+  /\blgpd\b[^.!?\n]{0,40}\b(exclu|apag|delet|remov|elimin)\w*/,
   /\b(exclu|apag|delet|remov|elimin)\w*\b[^.!?\n]{0,30}\b(meus|todos os meus|os meus) dados\b/,
   /\bexclusao (dos |de )?(meus )?dados\b/,
   /\bdireito ao esquecimento\b/,
@@ -120,7 +126,8 @@ const SAIDA_RES: RegExp[] = [
   /\b(sair|ser removid[oa]|ser retirad[oa]|ser excluid[oa]) d[ae] (sua |vossa )?(lista|newsletter|mailing|base)\b/,
   /\bquero sair\b/,
   /\b(me )?(tire|tira|tirar|tirem|retire|retirar|retirem|remova|removam|remove|remover|exclua|excluam|excluir|apague|apaguem|apagar|delete|deletar)\b[^.!?\n]{0,40}\b(lista|newsletter|mailing|e-?mails?|cadastro|base|contatos?|envios?)\b/,
-  /\bnao (quero|desejo|gostaria de|preciso) (mais )?receber\b/,
+  // "não preciso receber com prioridade" recusa o CTA do "quero", não pede saída (review da PR #12261).
+  /\bnao (quero|desejo|gostaria de|preciso) (mais )?receber\b(?![^.!?\n]{0,30}\bprioridade\b)/,
   /\b(parar|pare|parem|deixar) de (me )?(receber|enviar|mandar)\b/,
   /\bnao (me )?(envie|enviem|mande|mandem) mais\b/,
   /\bcancel\w* (a |minha )?(inscricao|newsletter)\b/,
@@ -258,9 +265,11 @@ function snippetOf(s: string, max = 160): string {
  * de aplicação são preservados); qualquer resposta nova muda o id, e o
  * `--confirm` antigo deixa de valer.
  */
-export function computeBatchId(items: Array<Pick<TriageItem, "message_id" | "kind">>): string {
+export function computeBatchId(items: Array<Pick<TriageItem, "message_id" | "kind"> & { email?: string }>): string {
+  // O e-mail entra na chave (review da PR #12261): com `--input`, dois exports com os mesmos ids e
+  // classes mas remetentes diferentes davam o mesmo lote, e o `--apply` aplicaria a ação de outra pessoa.
   const key = items
-    .map((i) => `${i.message_id}:${i.kind}`)
+    .map((i) => `${i.message_id}:${i.kind}:${(i.email ?? "").toLowerCase()}`)
     .sort()
     .join("\n");
   return createHash("sha256").update(key).digest("hex").slice(0, 12);

@@ -242,13 +242,19 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
 
   // email informado → email canônico do store (normalização Gmail, #2861).
   const canonical = new Map<string, string>();
+  const skipped = new Set<string>();
   for (const email of plan.actions.saida) {
     const r = resolveOptinEmail(deps.db, email);
     if (r.notice) log(r.notice);
     canonical.set(email, r.email);
     if (applied.saida_store_done.includes(email)) continue;
     try {
-      markSuppressedNow(deps.db, r.email, now);
+      // Conta de teste do editor (ou e-mail vazio): o store a ignora, e ela nunca vai pra blacklist da Brevo (review da PR #12261).
+      if (!markSuppressedNow(deps.db, r.email, now)) {
+        skipped.add(email);
+        log(`⏭️  ${r.email}: conta de teste — ignorada (store e Brevo)`);
+        continue;
+      }
       applied.saida_store_done.push(email);
     } catch (err) {
       applied.failures.push({ email, step: "store", error: (err as Error).message });
@@ -257,7 +263,7 @@ export async function applyTriagePlan(plan: TriagePlan, deps: ApplyDeps): Promis
   if (optinTodo.length > 0 || plan.actions.saida.length > 0) recomputeDerived(deps.db);
 
   for (const email of plan.actions.saida) {
-    if (applied.saida_brevo_done.includes(email)) continue;
+    if (applied.saida_brevo_done.includes(email) || skipped.has(email)) continue;
     const target = canonical.get(email) ?? email;
     try {
       await deps.blacklist(target);
