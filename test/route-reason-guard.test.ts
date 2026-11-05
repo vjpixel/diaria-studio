@@ -182,6 +182,20 @@ describe("detectNonDateReason — #N só é dependência com verbo de condição
     assert.equal(detectNonDateReason("aguardando a resposta (cf. #9001)")?.category, "dependencia");
   });
 
+  it("#12282: verbo de espera DENTRO do parêntese não some no desembrulho", () => {
+    for (const reason of [
+      "Reavaliar em 2026-12-01 (aguardando #12130)",
+      "Reavaliar em 2026-12-01 (depende de #12130)",
+      "Reavaliar em 2026-12-01, aguardando #12130",
+      "Reavaliar em 2026-12-01 [aguardando #12130, #12131]",
+    ]) {
+      assert.equal(detectNonDateReason(reason)?.category, "dependencia", reason);
+    }
+    // prefixo sem verbo de espera dentro do parêntese segue contexto
+    assert.equal(detectNonDateReason("Reavaliar em 2026-12-01 (ver #12130)"), null);
+    assert.equal(detectNonDateReason("Reavaliar em 2026-12-01 (PR #12129)"), null);
+  });
+
   // Achados do review da PR #12242.
   it("verbo de espera + duração/data seguido de #N solto continua dependência", () => {
     for (const reason of [
