@@ -1257,6 +1257,15 @@ export function transcribePrecheck(
   return done ? { action: "ready" } : { action: "fetch" };
 }
 
+/** #12268: tamanho não distingue tomadas alternativas de partes da mesma gravação. */
+export function assertSingleRawVideo(raw: { candidates: readonly { name: string }[]; audioOnly?: true }): void {
+  if (!raw.audioOnly && raw.candidates.length > 1) {
+    throw new Error(`${raw.candidates.length} vídeos candidatos a bruto: ${raw.candidates.map((c) => c.name).join(", ")}. ` +
+      "A gravação pode estar dividida em partes; transcrição interrompida para não perder o começo. " +
+      "Una as partes na ordem correta e passe --source PATH para o bruto unido; se forem tomadas alternativas, selecione a desejada com --source PATH. --force não resolve esta ambiguidade.");
+  }
+}
+
 function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: number | undefined, fromAudio?: { audio: string; transcript?: string }): number {
   mkdirSync(ctx.workDir, { recursive: true });
   mkdirSync(ctx.stateDir, { recursive: true });
@@ -1274,6 +1283,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
       .map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
     const raw = pickRawSource(files);
     if (!raw) throw new Error(`nenhum bruto (.mp4/.mov, ou áudio .m4a/.mp3/.wav) solto em ${ctx.driveDir}; passe --source`);
+    assertSingleRawVideo(raw);
     if (raw.audioOnly) console.error(`[premissa] nenhum vídeo solto em ${ctx.driveDir}; usando o áudio ${raw.pick.name} (modo áudio, #11552)`);
     if (raw.candidates.length > 1) {
       console.error(`[aviso] ${raw.candidates.length} ${raw.audioOnly ? "áudios" : "vídeos"} candidatos a bruto; usando o maior (${raw.pick.name}). Outro: --source. Candidatos: ${raw.candidates.map((c) => `${c.name} (${(c.size / 1e9).toFixed(2)} GB)`).join(", ")}`);
@@ -2913,6 +2923,7 @@ export async function fetchBruto(
   const folder = await d.folder();
   const raw = pickDriveBruto(await listChildren(d.deps, folder.id));
   if (!raw) throw new Error(`nenhum bruto (.mp4/.mov, ou áudio .m4a/.mp3/.wav) solto na pasta ${d.edition}/ do Drive (${folder.id}); passe --source`);
+  assertSingleRawVideo(raw);
   if (raw.audioOnly) log(`[premissa] nenhum vídeo solto em ${d.edition}/ no Drive; usando o áudio ${raw.pick.name} (modo áudio, #11552)`);
   if (raw.candidates.length > 1) {
     log(`[aviso] ${raw.candidates.length} candidatos a bruto no Drive; usando o maior (${raw.pick.name}, id ${raw.pick.id}). Outro: --source. Candidatos: ${raw.candidates.map((c) => `${c.name} (${((parseDriveSize(c.size) ?? 0) / 1e9).toFixed(2)} GB)`).join(", ")}`);

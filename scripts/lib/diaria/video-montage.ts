@@ -3623,8 +3623,8 @@ export function loudnessWarning(m: LoudnessMeasure | null): string | null {
 /**
  * O bruto na pasta da edição: o maior vídeo solto nela (fora de `Final/`), que
  * não seja um final (`final` no nome) nem uma prévia nossa. `candidates` traz
- * todos os que serviriam: com mais de um, o CLI avisa listando-os (o editor
- * pode ter gravado em 2 arquivos; `--source` escolhe outro). Sem nenhum vídeo,
+ * todos os que serviriam: com mais de um vídeo, o CLI para listando-os (#12268;
+ * podem ser partes da gravação; `--source` seleciona explicitamente). Sem nenhum vídeo,
  * o maior áudio solto (`audioOnly: true`, #11552).
  */
 export function pickRawSource<T extends { name: string; size: number }>(files: T[]): { pick: T; candidates: T[]; audioOnly?: true } | null {
