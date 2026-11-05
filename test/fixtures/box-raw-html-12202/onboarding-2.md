@@ -3,7 +3,7 @@ assunto: "Tem um erro de propósito em toda edição"
 preview_text: "Mais engajamento: ache o erro, É IA? e o leaderboard de quem acerta mais."
 
 Exportado da automação Beehiiv 'Onboarding — Boas-vindas'
-(aut_48bcae89-e812-4711-a6ea-1f0729e7e6d8, #5808) via get_automation_email_content
+(aut_00000000-0000-0000-0000-000000000000, #5808) via get_automation_email_content
 (workspace staging, format editor_html) em 2026-08-23, #5908. O bloco original
 vinha envolto numa section com borda decorativa (data attributes Beehiiv sem
 efeito fora da plataforma) — mantido só o conteúdo textual, que é o que o
