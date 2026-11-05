@@ -99,6 +99,12 @@
  *                            listas/totalSubscribers contra o capturado antes
  *                            do suspend.
  *
+ * Troca persistente de um box por campanha (#12249):
+ *   --campaign-id N --swap-box <posição|título> --with <snippet.md> [--apply]
+ * Posição 1-based entre TODOS os boxes; título exato deve ser único.
+ * Snapshot por ID em segments/campaign-box-swaps/; dry-run não grava.
+ * Detalhes: docs/clarice-campaign-box-swap.md.
+ *
  * Uso:
  *   npx tsx scripts/clarice-reapply-scheduled-html.ts --cycle 2606-07                          # dry-run (default)
  *   npx tsx scripts/clarice-reapply-scheduled-html.ts --cycle 2606-07 --apply                   # descoberta por nome, escreve
@@ -122,6 +128,8 @@ import { assertNoAbTestForSingleHtmlPath } from "./lib/clarice-ab-test.ts";
 import { isMainModule, getArg } from "./lib/cli-args.ts";
 import { renderHaltBanner } from "./lib/gate-banner.ts";
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
+
+import { prepareBoxSwap, applyBoxSwap, applyStoredBoxSwap, saveBoxSwap } from "./lib/clarice-campaign-box-swap.ts";
 
 loadProjectEnv();
 
@@ -1037,6 +1045,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
+  const swapSelector = getArg(argv, "swap-box");
+  const snippetPath = getArg(argv, "with");
+  if (swapSelector || snippetPath || argv.includes("--swap-box") || argv.includes("--with")) {
+    if (!swapSelector || !snippetPath || campaignIdArg === undefined || rescheduleOnly) {
+      throw new Error("--swap-box <posição|título> exige --with <snippet.md> e --campaign-id N; incompatível com --reschedule-suspended.");
+    }
+  }
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   if (!apiKey) {
     console.error("BREVO_CLARICE_API_KEY não definida.");
@@ -1076,6 +1091,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
     const single = await fetchCampaignById(apiKey, campaignIdArg);
     const mismatchWarning = campaignCycleMismatchWarning(single, cycle);
+    if (mismatchWarning && swapSelector) throw new Error(mismatchWarning);
     if (mismatchWarning) console.error(mismatchWarning);
     if (isSchedulableStatus(single.status)) {
       toUpdate = [single];
@@ -1099,11 +1115,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // #10189: cada campanha recebe o HTML com a regra do "quero" do envio dela.
   const history = readGroupCampaignsHistory(cycle);
   const htmlByCampaign = new Map<number, string>();
+  const newSwap = swapSelector ? prepareBoxSwap(html, swapSelector, snippetPath) : undefined;
   // #10272 fila + #10347 já enviadas na Brevo.
   const queuedKeys = collectCycleOutKeys(toUpdate, allListed, cycle);
   for (const c of toUpdate) {
     const r = queroHtmlForCampaign(html, typeof c.name === "string" ? c.name : "", cycle, history, queuedKeys);
-    htmlByCampaign.set(c.id, r.html);
+    const campaignHtml = newSwap ? applyBoxSwap(r.html, newSwap) : applyStoredBoxSwap(r.html, clariceSegmentsDir(cycle), c.id);
+    assertNoAmazonAffiliateTagIssues(campaignHtml, "clarice");
+    htmlByCampaign.set(c.id, campaignHtml);
+    if (newSwap) console.error(`  #${c.id} troca box ${newSwap.position} (${newSwap.title}) por ${newSwap.snippet}; snapshot persistido apenas com --apply`);
     console.error(`  #${c.id} ${r.line}`);
   }
 
@@ -1117,6 +1137,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
 
+  // Persist intent before the first remote write, including failures after suspend.
+  if (newSwap) saveBoxSwap(clariceSegmentsDir(cycle), campaignIdArg!, newSwap);
   const { failedIds, aborted, notProcessed } = await runApplyBatch(apiKey, cycle, toUpdate, (c) => htmlByCampaign.get(c.id) ?? html);
 
   if (aborted) {
