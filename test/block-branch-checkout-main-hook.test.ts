@@ -67,6 +67,32 @@ describe("isBranchCreateCheckoutCommand (#6509)", () => {
     assert.equal(isBranchCreateCheckoutCommand("git checkout --orphan x"), true);
   });
 
+  it("regressão (review da PR #12247): redirecionamento ou `--` no fim não escondem a troca", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout feat 2>&1"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git switch feat >/dev/null"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout feat > /dev/null 2>&1"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout feat &>/dev/null"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout feat --"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout master 2>&1"), false);
+  });
+
+  it("#12165 review: formas coladas das flags de criação e branch com sufixo de versão", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -bfoo"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git switch -cfoo"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git switch --create=foo"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout --orphan=x"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout release/v1.2"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout overnight/fix-1-sonnet-5.5"), true);
+  });
+
+  it("#12165 review: restauração de arquivo sem extensão ou em modo de arquivo segue livre", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout scripts/"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout --ours Makefile"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout --theirs data/x"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -p HEAD"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout HEAD -- f"), false);
+  });
+
   it("NÃO detecta 'git checkout -- <file>' (checkout de arquivo, não de branch)", () => {
     assert.equal(isBranchCreateCheckoutCommand("git checkout -- src/foo.ts"), false);
   });

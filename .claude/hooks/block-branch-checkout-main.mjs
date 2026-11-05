@@ -2,7 +2,10 @@
 // branch) quando a chamada roda no checkout PRINCIPAL compartilhado (não um
 // worktree de subagente) E existe uma rodada coordenadora
 // overnight/develop/continuo ATIVA cujo `session_id` não é o desta chamada
-// (#6509).
+// (#6509). Desde a #12165 também recusa, nas mesmas condições, trocar o
+// checkout principal para uma branch existente que não seja master
+// (`changesBranch`) — inclusive o par `git branch X && git checkout X` citado
+// abaixo como contorno.
 //
 // Incidente de origem: achado ao vivo na rodada `/diaria-overnight 260828b`
 // (corpo completo em #6481, item 3) — o checkout PRINCIPAL compartilhado foi
@@ -144,7 +147,8 @@ export const BLOCK_REASON =
   "substituição (`cd $W` sem `W=/caminho` antes no mesmo comando, `git -C \"$(...)\"`) não é resolvido e " +
   "conta como checkout principal — use o caminho literal do worktree. " +
   "Trocar o checkout principal para uma branch existente (`git -C <principal> switch X`, `cd <principal> && " +
-  "git checkout X`) também é bloqueado, exceto para master (#12165). " +
+  "git checkout X`) também é bloqueado, exceto para master pelo nome (`git checkout master`, não `-`/`@{-1}`; " +
+  "#12165). Restaurar arquivo: `git checkout -- <path>` ou `git restore <path>`. " +
   "Se você é a coordenadora e está vendo este bloqueio por " +
   "engano (ex: seu próprio registro expirou por staleness), rode `npx tsx scripts/lib/session-registry.ts " +
   "register --kind {overnight|develop|continuo}` (o SEU kind) para renovar o registro que já era seu, e " +
@@ -160,7 +164,8 @@ export { stripQuotedSpans };
 
 /**
  * `true` se `command` contém `git checkout -b <nome>` OU `git switch
- * -c|--create <nome>` como um comando REAL (segmento entre separadores de
+ * -c|--create <nome>` — ou, desde a #12165, um `switch`/`checkout` para
+ * branch que não seja master (`changesBranch`) — como um comando REAL (segmento entre separadores de
  * comando `&&`/`;`/`|`/`\n`), depois de remover o conteúdo de qualquer aspas
  * (mesma proteção de `isGhPrMergeCommand` contra citação dentro de um
  * `--body`/string — #5787 Defeito 3/#5805).
@@ -490,16 +495,40 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
  * precisa permitir. */
 export const FREE_SWITCH_TARGETS = new Set(["master", "main", "origin/master", "origin/main"]);
 
-/** Flags de criação de branch (`-b`/`-B`/`--orphan` no checkout, `-c`/`-C`/
- * `--create`/`--force-create`/`--orphan` no switch). */
-const CHECKOUT_CREATE_FLAGS = new Set(["-b", "-B", "--orphan"]);
-const SWITCH_CREATE_FLAGS = new Set(["-c", "-C", "--create", "--force-create", "--orphan"]);
+/** Flag de criação de branch (`-b`/`-B`/`--orphan` no checkout, `-c`/`-C`/
+ * `--create`/`--force-create`/`--orphan` no switch), inclusive colada
+ * (`-bfoo`, `--create=foo`, `--orphan=x`). */
+function isCreateFlag(sub, t) {
+  if (sub === "checkout") return /^-[bB]/.test(t) || t === "--orphan" || t.startsWith("--orphan=");
+  return /^-[cC]/.test(t) || /^--(?:create|force-create|orphan)(?:=|$)/.test(t);
+}
+
+/** Opções de `checkout` que operam em arquivo, não em branch: com elas o
+ * posicional é path (`--ours f`, `-p HEAD`). */
+const CHECKOUT_PATH_MODE_FLAGS = new Set(["--ours", "--theirs", "-p", "--patch", "-m", "--merge"]);
 
 /** Argumento posicional de `git checkout` com cara de caminho de arquivo, não
- * de branch: `.`, `./x`, `../x` ou extensão (`scripts/foo.ts`). Branch como
- * `overnight/fix-1-x` não tem extensão. */
+ * de branch: `.`, `./x`, `../x`, `dir/` ou extensão que começa por letra
+ * (`scripts/foo.ts`). `release/v1.2` e `fix-1-sonnet-5.5` seguem branch. */
 function looksLikePath(arg) {
-  return arg === "." || arg.startsWith("./") || arg.startsWith("../") || /\.[A-Za-z0-9]{1,6}$/.test(arg);
+  return arg === "." || arg.startsWith("./") || arg.startsWith("../") || arg.endsWith("/") || /\.[A-Za-z][A-Za-z0-9]{0,5}$/.test(arg);
+}
+
+/** Tira os redirecionamentos do shell (`2>&1`, `>/dev/null`, `> f`, `<f`) dos
+ * argumentos — senão `git checkout feat 2>&1` contava 2 posicionais e
+ * passava como restauração de arquivo (review da PR #12247). */
+function stripRedirections(rest) {
+  const out = [];
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (/^\d*(?:>>?|<)$/.test(t) || /^&>>?$/.test(t)) {
+      i += 1; // operador solto: o próximo token é o alvo do redirecionamento
+      continue;
+    }
+    if (/^\d*(?:>>?|<)/.test(t) || /^&>/.test(t)) continue;
+    out.push(t);
+  }
+  return out;
 }
 
 /**
@@ -507,14 +536,23 @@ function looksLikePath(arg) {
  * para uma que não seja master (#12165, decisão do editor 05/11/2026: no
  * checkout principal, switch/checkout só passa se o alvo for master).
  * Restauração de arquivo (`checkout -- f`, `checkout <ref> <paths>`,
- * `checkout ./f`) não troca branch e fica de fora.
+ * `checkout ./f`, `checkout --ours f`) não troca branch e fica de fora;
+ * `checkout X --`, sem nada depois do `--`, é troca de branch.
  */
-export function changesBranch(sub, rest) {
+export function changesBranch(sub, rawRest) {
   if (sub !== "checkout" && sub !== "switch") return false;
-  const createFlags = sub === "checkout" ? CHECKOUT_CREATE_FLAGS : SWITCH_CREATE_FLAGS;
-  if (rest.some((t) => createFlags.has(t))) return true;
-  if (sub === "checkout" && rest.includes("--")) return false;
-  const positional = rest.filter((t) => !t.startsWith("-") || t === "-");
+  const rest = stripRedirections(rawRest);
+  if (rest.some((t) => isCreateFlag(sub, t))) return true;
+  let args = rest;
+  if (sub === "checkout") {
+    const dd = rest.indexOf("--");
+    if (dd !== -1) {
+      if (dd < rest.length - 1) return false; // `checkout [ref] -- <paths>`
+      args = rest.slice(0, dd);
+    }
+    if (args.some((t) => CHECKOUT_PATH_MODE_FLAGS.has(t))) return false;
+  }
+  const positional = args.filter((t) => !t.startsWith("-") || t === "-");
   if (positional.length !== 1) return false; // nenhum alvo, ou `<ref> <paths>`
   const name = positional[0];
   if (FREE_SWITCH_TARGETS.has(name)) return false;
