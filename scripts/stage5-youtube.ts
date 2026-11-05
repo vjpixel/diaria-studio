@@ -193,7 +193,9 @@ export function parseUploadStdout(stdout: string): { url: string | null; state: 
  * passo, para ser conferido sem ler o log do upload.
  */
 export function youtubeStepLevel(rec: Pick<YouTubeStepRecord, "outcome" | "podcast_ok">): "info" | "warn" {
-  if (rec.outcome === "fetch-error" || rec.outcome === "upload-error") return "warn";
+  // #12287: o hold do "pode publicar" é `warn`, não desfecho normal — um
+  // marcador esquecido faz o D1 sair sem o vídeo.
+  if (rec.outcome === "fetch-error" || rec.outcome === "upload-error" || rec.outcome === "awaiting-approval") return "warn";
   if (rec.outcome === "uploaded" && rec.podcast_ok === false) return "warn";
   return "info";
 }
@@ -271,7 +273,9 @@ async function main(): Promise<number> {
     };
   } else if (pending.kind !== "none" && !flags.has("ignore-pending-approval")) {
     // #12122: a skill de vídeo está com o plano à espera do "pode publicar".
-    record = { ...base, outcome: "awaiting-approval", detail: describePendingApproval(pending, aammdd) };
+    record = { ...base, outcome: "awaiting-approval", detail: describePendingApproval(pending, aammdd, new Date()) };
+    // #12287: banner no stderr com o comando de liberar, além do run-log.
+    console.error(`[aviso] YouTube segurado: ${record.detail}`);
   } else if (allowFinalUpload) {
     // Sinal explícito do editor: baixa e sobe, inclusive de Final/.
     record = fetchAndUpload();
