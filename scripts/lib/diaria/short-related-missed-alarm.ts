@@ -129,7 +129,7 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
 
   const rec = input.record;
   if (rec.kind === "absent") {
-    return out("missing-record", "sem _internal/06-short-related.json depois do prazo: a task do vínculo não rodou ou morreu antes de registrar");
+    return out("missing-record", "sem _internal/06-short-related.json no 300 depois do prazo: execução da task e vínculo não confirmados; possível atraso de replicação do OneDrive");
   }
   if (rec.kind === "unreadable") return out("record-unreadable", `registro do vínculo ilegível (${rec.error})`);
   if (rec.value.status === "linked") return out("linked", `já vinculado (${rec.value.shortId} → ${rec.value.horizontalId})`);
@@ -140,7 +140,7 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
 /** Pure: assunto e corpo do alarme (issue + e-mail). */
 export function buildShortRelatedMissedAlarm(ev: ShortRelatedMissedEvaluation, studioUrl: string): { subject: string; body: string } {
   return {
-    subject: `[diar.ia.br] Short ${ev.aammdd} sem vídeo relacionado: a task do Neo não registrou o vínculo`,
+    subject: `[diar.ia.br] Short ${ev.aammdd}: vínculo do vídeo relacionado não confirmado no 300`,
     body: [
       "Achado automático do alarme `Diaria-Short-Related-Missed-Alarm` (#11353), rodando no `300`.",
       "",
@@ -150,9 +150,10 @@ export function buildShortRelatedMissedAlarm(ev: ShortRelatedMissedEvaluation, s
       `Horário do Short: ${ev.shortAt ?? "não derivado"}; prazo da task: ${ev.deadline ?? "não derivado"}`,
       "",
       "A task LOCAL `diaria-short-video-relacionado` (#10811) roda no Neo pelo app Claude desktop.",
-      "Se o Neo estava desligado ou o app fechado, ela não rodou e não avisou ninguém.",
+      "A ausência de confirmação no 300 não comprova falha da task no Neo nem ausência do vínculo no YouTube.",
+      "O check consulta somente registros locais replicados; não consulta o vínculo no Studio/YouTube.",
       "",
-      `Para vincular à mão: ${studioUrl} → o Short → Elementos do vídeo → Vídeo relacionado → Adicionar → Escolha um vídeo específico → o horizontal → Salvar.`,
+      `Para conferir o vínculo e, somente se estiver ausente, vincular à mão: ${studioUrl} → o Short → Elementos do vídeo → Vídeo relacionado → Adicionar → Escolha um vídeo específico → o horizontal → Salvar.`,
       "",
       "Ressalva: este check lê `data/` replicado pelo OneDrive no `300`. Se o Neo gravou o registro e ele ainda",
       "não replicou, o alarme é falso — conferir o Short no Studio resolve as duas hipóteses.",
