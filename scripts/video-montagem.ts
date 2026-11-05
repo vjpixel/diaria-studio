@@ -2954,7 +2954,7 @@ function readBrutoDrive(ctx: Pick<Ctx, "stateDir" | "edition">): BrutoDriveInfo 
  * novo. Bruto trocado no Drive desde o transcribe é erro (a transcrição e os
  * cortes seriam de outro vídeo).
  */
-export async function ensureBrutoLocal(ctx: Pick<Ctx, "stateDir" | "edition">, d: DriveSession): Promise<void> {
+export async function ensureBrutoLocal(ctx: Pick<Ctx, "stateDir" | "edition">, d: DriveSession, opts: { audioCleanBuild?: boolean } = {}): Promise<void> {
   const path = f(ctx, "source.json");
   if (!existsSync(path)) return; // o comando dá o erro de sempre ("rode transcribe")
   const source = readJson<SourceInfo>(path, "source.json");
@@ -2970,13 +2970,19 @@ export async function ensureBrutoLocal(ctx: Pick<Ctx, "stateDir" | "edition">, d
   const meta = await fetchFileMeta(d.deps, info.id);
   const metaSize = parseDriveSize(meta.size);
   if ((info.size !== null && metaSize !== null && metaSize !== info.size) || (info.modifiedTime && meta.modifiedTime && meta.modifiedTime !== info.modifiedTime)) {
-    throw new Error(`o bruto ${info.name} mudou no Drive desde o transcribe (tamanho/modifiedTime): rode transcribe --force`);
+    throw new Error(`o bruto ${info.name} mudou no Drive desde o transcribe (tamanho/modifiedTime): rode transcribe --force e revise a transcrição e os cortes antes de refazer o build.` +
+      (opts.audioCleanBuild ? ` Build interrompido para não tratar áudio de outro bruto. Para gerar sem faixa tratada, use build ${ctx.edition} --no-audio-clean (áudio cru; confira a correspondência do bruto com a transcrição e os cortes no Premiere).` : ""));
   }
   // O cache gravado é de outra máquina (o state dir sincroniza): baixar lá não serve aqui.
   if (!toPosix(info.localPath).startsWith(toPosix(d.cacheDir) + "/")) {
     throw new Error(`bruto registrado no cache ${info.localPath}, fora do cache desta máquina (${d.cacheDir}): rode transcribe --force aqui para baixar e transcrever de novo`);
   }
-  log(`[drive] bruto ausente do cache (${source.path}); baixando de novo do Drive`);
+  const size = metaSize ?? info.size;
+  const estimate = size === null
+    ? "tamanho e tempo de download desconhecidos (Drive sem tamanho)"
+    : `${(size / 1e9).toFixed(2)} GB (${size} bytes); tempo estimado de download: ~${Math.max(1, Math.ceil(size / 2_000_000 / 60))} min a 2 MB/s (depende da conexão)`;
+  log(`[drive] bruto ausente do cache (${source.path}); baixando o arquivo inteiro do Drive: ${estimate}`);
+  if (opts.audioCleanBuild) log(`[aviso] o build precisa do bruto inteiro para tratar o áudio; para evitar o download, interrompa e use build ${ctx.edition} --no-audio-clean (XML e prévia com áudio cru; aplicar Enhance no Premiere)`);
   // Pelo nome registrado: um rename no Drive não pode mudar o caminho que o source.json aponta.
   await ensureCachedFile(d.deps, { ...meta, name: info.name }, dirname(info.localPath), log);
 }
@@ -3148,7 +3154,7 @@ async function runCommand(
   d: DriveSession | null,
 ): Promise<number> {
   const needLocalBruto = async () => {
-    if (d) return ensureBrutoLocal(ctx, d);
+    if (d) return ensureBrutoLocal(ctx, d, { audioCleanBuild: cmd === "build" });
     const missing = localBrutoMissing(ctx);
     if (missing) throw new Error(missing);
   };

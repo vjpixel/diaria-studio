@@ -504,6 +504,54 @@ describe("#11639/#11640 wiring do modo API (Drive falso)", () => {
     await assert.rejects(ensureBrutoLocal({ stateDir: state2, edition: ED }, makeDriveSession(ED, cache, changed.deps, () => "root")), /mudou no Drive/);
   });
 
+  it("#12239 build bloqueia bruto alterado sem baixar e oferece saída explícita com áudio cru", async () => {
+    for (const delta of [{ size: "4", modifiedTime: "t1" }, { size: "3", modifiedTime: "t2" }]) {
+      const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+      const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
+      const localPath = join(cache, "bruto", "b.mp4");
+      writeFileSync(join(state, "source.json"), JSON.stringify({ path: localPath }));
+      const provenance = JSON.stringify({ edition: ED, id: "B", name: "b.mp4", size: 3, modifiedTime: "t1", localPath });
+      writeFileSync(join(state, BRUTO_DRIVE_FILE), provenance);
+      const changed = fakeDeps([() => json({ id: "B", name: "b.mp4", ...delta })]);
+      await assert.rejects(ensureBrutoLocal({ stateDir: state, edition: ED }, makeDriveSession(ED, cache, changed.deps, () => "root"), { audioCleanBuild: true }), (error: Error) => {
+        assert.match(error.message, /mudou no Drive/);
+        assert.match(error.message, /Build interrompido/);
+        assert.match(error.message, /transcribe --force.*revise a transcrição e os cortes/);
+        assert.match(error.message, /--no-audio-clean.*áudio cru.*confira a correspondência/);
+        return true;
+      });
+      assert.equal(changed.calls.length, 1, "só consulta metadados, não baixa mídia");
+      assert.equal(existsSync(localPath), false);
+      assert.equal(readFileSync(join(state, BRUTO_DRIVE_FILE), "utf8"), provenance);
+    }
+  });
+
+  it("#12239 avisa tamanho e estimativa antes de baixar o bruto inteiro para build", async (t) => {
+    for (const size of ["6870000000", undefined]) {
+      const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+      const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
+      const localPath = join(cache, "bruto", "b.mp4");
+      writeFileSync(join(state, "source.json"), JSON.stringify({ path: localPath }));
+      writeFileSync(join(state, BRUTO_DRIVE_FILE), JSON.stringify({ edition: ED, id: "B", name: "b.mp4", size: size ? Number(size) : null, modifiedTime: "t1", localPath }));
+      const lines: string[] = [];
+      const logger = t.mock.method(console, "error", (line: string) => { lines.push(line); });
+      const drive = fakeDeps([
+        () => json({ id: "B", name: "b.mp4", mimeType: "video/mp4", size, modifiedTime: "t1" }),
+        () => {
+          assert.match(lines.join("\n"), /baixando o arquivo inteiro/);
+          if (size) assert.match(lines.join("\n"), /6\.87 GB \(6870000000 bytes\); tempo estimado de download: ~58 min a 2 MB\/s/);
+          else assert.match(lines.join("\n"), /tamanho e tempo de download desconhecidos/);
+          assert.match(lines.join("\n"), /--no-audio-clean.*áudio cru/);
+          throw new Error("download simulado interrompido");
+        },
+      ]);
+      try {
+        await assert.rejects(ensureBrutoLocal({ stateDir: state, edition: ED }, makeDriveSession(ED, cache, drive.deps, () => "root"), { audioCleanBuild: true }), /download simulado interrompido/);
+        assert.equal(drive.calls.length, 2);
+      } finally { logger.mock.restore(); }
+    }
+  });
+
   it("no Neo (modo local) com source.json do cache do 300: mensagem clara, não o erro do ffmpeg", () => {
     const state = mkdtempSync(join(tmpdir(), "vm-state-"));
     const lp = "/home/outra-maquina/.cache/diaria-video-montagem/261030/bruto/20261029_093444.mp4";
