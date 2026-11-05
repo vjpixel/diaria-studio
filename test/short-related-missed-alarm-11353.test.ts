@@ -167,6 +167,19 @@ describe("#11353 evaluateShortRelatedMissed", () => {
 });
 
 describe("#11353 buildShortRelatedMissedAlarm", () => {
+  it("#12315 ausência no 300 preserva a incerteza de replicação no diagnóstico e no assunto", () => {
+    const ev = evaluateShortRelatedMissed(input());
+    const { subject, body } = buildShortRelatedMissedAlarm(ev, studioShortsListUrl());
+    assert.equal(ev.verdict, "missing-record");
+    assert.ok(isAlarmingShortRelatedVerdict(ev.verdict));
+    assert.match(ev.reason, /não confirmados; possível atraso de replicação do OneDrive/);
+    assert.match(subject, /vínculo do vídeo relacionado não confirmado no 300/);
+    assert.doesNotMatch(subject, /sem vídeo relacionado|não registrou/);
+    assert.match(body, /não comprova falha da task no Neo nem ausência do vínculo no YouTube/);
+    assert.match(body, /não consulta o vínculo no Studio\/YouTube/);
+    assert.match(body, /somente se estiver ausente/);
+  });
+
   it("assunto cita a edição; corpo traz o passo manual e a ressalva do OneDrive", () => {
     const ev = evaluateShortRelatedMissed(input());
     const { subject, body } = buildShortRelatedMissedAlarm(ev, studioShortsListUrl());
