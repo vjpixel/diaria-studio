@@ -2697,7 +2697,12 @@ export function capDivulgacaoBoxes(
  * como está; antes virava `A Meta: Llama`, trocando o sentido.
  */
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
-  return stripUnambiguousCtaArrows(normalizeNumericArrows(renderHTMLUnsanitized(content, opts)));
+  // #12240: o marcador `<!-- callout -->` só vale no começo de um bloco da
+  // intro. Fora de lugar (2º marcador, lacuna entre destaques, corpo de um
+  // destaque) o renderer o escapa e o leitor veria o texto literal no e-mail;
+  // aqui ele é varrido do HTML final, e o lint de callouts empilhados acusa.
+  return stripUnambiguousCtaArrows(normalizeNumericArrows(renderHTMLUnsanitized(content, opts)))
+    .replace(/&lt;!--\s*callout\s*--&gt;/g, "");
 }
 
 function renderHTMLUnsanitized(content: NewsletterContent, opts: RenderOpts): string {

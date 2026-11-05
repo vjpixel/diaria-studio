@@ -11,13 +11,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  extractCoverageLine,
   extractCoverageLineTrailer,
   extractIntroCallout,
   INTRO_CALLOUT_MARKER,
 } from "../scripts/lib/newsletter-parse.ts";
+import { lintStackedIntroCallouts } from "../scripts/lib/lint-checks/callout-placement.ts";
 import { renderHTML, type NewsletterContent } from "../scripts/lib/newsletter-render-html.ts";
 
-const COVERAGE = "Nesta edição, a IA analisou 353 conteúdos e selecionei os 10 mais relevantes.";
+const COVERAGE =
+  "Olá! Eu sou o Pixel, editor desta newsletter.\n\nNesta edição, a IA analisou 353 conteúdos e selecionei os 10 mais relevantes.\n\nSe este trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).";
 const AVISO =
   "**Temos ganhadores!** Fulano ganhou o sorteio dos apoiadores e Beltrano levou o sorteio do erro intencional.";
 
@@ -128,5 +131,49 @@ describe("#12240 — callout de intro com marcador explícito", () => {
     const box = html.slice(start, end);
     assert.match(box, /Temos ganhadores!/);
     assert.match(box, /Para concorrer no próximo, responda dizendo qual é o erro\./);
+  });
+
+  it("layout real da 261105: marcador logo depois do bloco de boas-vindas; a cobertura não engole o aviso", () => {
+    const md = buildMd(`${INTRO_CALLOUT_MARKER}\n${AVISO}`);
+    const coverage = extractCoverageLine(md);
+    assert.ok(coverage, "a cobertura é reconhecida");
+    assert.ok(!coverage!.includes("Temos ganhadores"), "o aviso não vaza para a cobertura");
+    assert.ok(!coverage!.includes("<!--"), "o marcador não vaza para a cobertura");
+    assert.equal(extractIntroCallout(md), AVISO);
+  });
+
+  it("marcador só vale no começo de uma linha (no meio de um parágrafo é texto comum)", () => {
+    const md = buildMd(`Veja ${INTRO_CALLOUT_MARKER} aqui.`);
+    assert.equal(extractIntroCallout(md), null);
+  });
+
+  it("marcador solto (2º marcador, fora da intro) não vira texto visível no HTML final", () => {
+    const html = render(AVISO, `${COVERAGE}\n\n<!-- callout -->`);
+    assert.ok(!/callout\s*--&gt;/.test(html), "marcador escapado não aparece no e-mail");
+    assert.ok(!html.includes("<!-- callout"), "marcador cru não aparece no e-mail");
+  });
+
+  it("a caixa do callout de 2 parágrafos é uma só", () => {
+    const html = render(`${AVISO}\n\nSegundo parágrafo do aviso.`);
+    assert.equal(html.split("intro callout (sorteio/CTA)").length - 1, 1);
+  });
+});
+
+describe("#12240 — lint de callouts empilhados vê o marcador", () => {
+  const intro = (block: string) => `${COVERAGE}\n\n${block}\n\n---\n\n**DESTAQUE 1 | X**\n`;
+
+  it("marcador sozinho (1 parágrafo ou vários) conta como 1 callout", () => {
+    assert.equal(lintStackedIntroCallouts(intro(`${INTRO_CALLOUT_MARKER}\n${AVISO}`)).ok, true);
+    const multi = `${INTRO_CALLOUT_MARKER}\n${AVISO}\n\n**Segundo parágrafo em negrito.**`;
+    const r = lintStackedIntroCallouts(intro(multi));
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 1);
+  });
+
+  it("marcador + bold-wrap na mesma intro (blocos separados por ---) são 2 callouts empilhados", () => {
+    const md = `${COVERAGE}\n\n**Agradecimento inteiro em negrito.**\n\n---\n\n${INTRO_CALLOUT_MARKER}\n${AVISO}\n\n---\n\n**DESTAQUE 1 | X**\n`;
+    const r = lintStackedIntroCallouts(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.count, 2);
   });
 });

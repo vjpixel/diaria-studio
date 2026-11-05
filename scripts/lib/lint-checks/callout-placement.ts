@@ -223,6 +223,10 @@ export interface StackedIntroCalloutResult {
 
 const DESTAQUE_MARKER_RE = /^\*\*DESTAQUE/;
 const PARA_STARTS_BOLD_RE = /^\*\*\S/;
+// #12240: `<!-- callout -->` (marcador explícito do callout de intro) também
+// abre um bloco de callout: ele + um bold-wrap na mesma intro são 2 callouts
+// empilhados, e só um deles (o do marcador) vira caixa.
+const PARA_STARTS_CALLOUT_MARKER_RE = /^<!--\s*callout\s*-->/;
 const PARA_ENDS_BOLD_RE = /\*\*\s*$/;
 // #9231: e-mail mascarado (`perli…@***`, 3º colocado dos campeões do É IA?)
 // termina em `***` — sem neutralizar, `PARA_ENDS_BOLD_RE` lê o fim do
@@ -245,11 +249,18 @@ export function lintStackedIntroCallouts(md: string): StackedIntroCalloutResult 
   // #3232: estado do parágrafo em progresso + se estamos "dentro" de um
   // bloco bold ainda não fechado (ver comentário acima).
   let inOpenBlock = false;
+  // #12240: dentro do bloco do marcador explícito (até o próximo `---`) os
+  // parágrafos seguintes são o corpo do MESMO callout, nunca novas aberturas.
+  let inMarkerBlock = false;
   let paraLines: string[] = [];
   let paraStartLine = -1;
 
   const flushParagraph = () => {
     if (paraLines.length === 0) return;
+    if (inMarkerBlock) {
+      paraLines = [];
+      return;
+    }
     const startsWithBold = PARA_STARTS_BOLD_RE.test(paraLines[0]);
     const endsWithBold = paragraphEndsWithBold(paraLines[paraLines.length - 1]);
     if (inOpenBlock) {
@@ -257,6 +268,11 @@ export function lintStackedIntroCallouts(md: string): StackedIntroCalloutResult 
       // abertura — só observamos se ele FECHA o bloco (ex: "**Sorteio**",
       // auto-contido, abre e fecha na mesma linha/parágrafo).
       if (endsWithBold) inOpenBlock = false;
+    } else if (PARA_STARTS_CALLOUT_MARKER_RE.test(paraLines[0])) {
+      // #12240: o bloco do marcador vai até o próximo `---`; não abre bloco
+      // "pendente" de negrito (os `**` internos são ênfase, não moldura).
+      matchLines.push(paraStartLine);
+      inMarkerBlock = true;
     } else if (startsWithBold) {
       matchLines.push(paraStartLine);
       // Se o próprio parágrafo já fecha (`**...**` completo), não abre um
@@ -286,6 +302,7 @@ export function lintStackedIntroCallouts(md: string): StackedIntroCalloutResult 
       // `lintCalloutPlacement` acima).
       flushParagraph();
       inOpenBlock = false;
+      inMarkerBlock = false;
       continue;
     }
     if (paraLines.length === 0) paraStartLine = i + 1;
