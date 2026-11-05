@@ -332,7 +332,7 @@ describe("call-site do Stage 3 (#4114 — o achado do code-review)", () => {
       const src = readFileSyncUtf8(join(ROOT, "scripts", f));
       assert.match(
         src,
-        /import\s*\{\s*selectSocialCardImageFile\s*\}\s*from\s*"\.\/lib\/select-social-card-image\.ts"/,
+        /import\s*\{[^}]*\bselectSocialCardImageFile\b[^}]*\}\s*from\s*"\.\/lib\/select-social-card-image\.ts"/,
         `${f} deveria importar selectSocialCardImageFile`,
       );
       assert.match(

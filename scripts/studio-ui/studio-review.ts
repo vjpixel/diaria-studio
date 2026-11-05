@@ -900,9 +900,8 @@ export function buildReviewPreviewHtml(
  * é cedo demais pra um preview local no Studio — em vez disso, aponta direto
  * pro arquivo já gerado em disco pela Etapa 3, servido pela MESMA rota local
  * de imagem que o preview de e-mail já usa (`GET /api/editions/:aammdd/image/:filename`,
- * `resolveReviewImagePath`). Preferência: `04-d{N}-1x1.jpg` quando existe
- * (só em edições ANTIGAS — o 1:1 deixou de ser gerado no #12226), senão
- * `04-d{N}-2x1.jpg`, o caso de toda edição nova. Destaque sem nenhum arquivo correspondente
+ * `resolveReviewImagePath`). Preferência: `04-d{N}-2x1.jpg`; o `04-d{N}-1x1.jpg`
+ * só como fallback de edição ANTIGA sem 2:1 (o 1:1 deixou de ser gerado no #12226). Destaque sem nenhum arquivo correspondente
  * simplesmente fica sem entry no mapa (`buildSocialHtml` já trata ausência
  * de imagem sem quebrar — mesmo fail-open do preview de e-mail).
  */
@@ -913,7 +912,9 @@ function buildLocalSocialImageMap(editionDir: string, aammdd: string): ImageMap 
     const key = `d${n}`;
     const squareRe = new RegExp(`^04-d${n}-1x1\\.(jpe?g|png)$`, "i");
     const wideRe = new RegExp(`^04-d${n}-2x1\\.(jpe?g|png)$`, "i");
-    const filename = filenames.find((f) => squareRe.test(f)) ?? filenames.find((f) => wideRe.test(f));
+    // #12226: o 2:1 vem primeiro. O 1:1 deixou de ser gerado, e numa edição antiga ele não é regerado
+    // junto com o 2:1 — preferi-lo mostraria a arte velha depois de um swap/regeneração.
+    const filename = filenames.find((f) => wideRe.test(f)) ?? filenames.find((f) => squareRe.test(f));
     if (filename) {
       map[key] = { url: `/api/editions/${aammdd}/image/${filename}`, filename };
     }
