@@ -2105,8 +2105,11 @@ export function buildSequencePlan(
   const { clips, durationFrames, merges } = assembleClips(spec, raws, fps);
   // Na emenda, o núcleo pode estar no clipe do item vizinho; validar a sequência mantida.
   const kept = clips.map((c) => ({ start: c.frameIn / fps, end: c.frameOut / fps }));
+  // #12270: assembleClips arredonda as bordas ao quadro mais próximo. O núcleo
+  // aparado pela pausa pode ser menor que meio quadro e cair logo fora dele.
+  const frameTolS = 0.5 / fps + 1e-9;
   for (const { label, words } of wordChecks) {
-    const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end) && !wordCoveredBySilence(w, kept, silences));
+    const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start - frameTolS && (w.start + w.end) / 2 <= p.end + frameTolS) && !wordCoveredBySilence(w, kept, silences));
     if (lost.length) dropped.push(`${label}: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
   }
   return {
