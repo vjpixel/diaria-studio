@@ -239,6 +239,7 @@ import {
   previewSize,
   resolveBlocks,
   reviewPreview,
+  audioEndFromSilences,
   screenTitleSvg,
   normalizeToken,
   segmentCues,
@@ -2742,8 +2743,12 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   const durationS = Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", preview]).stdout.trim());
   if (!Number.isFinite(durationS) || durationS <= 0) throw new Error(`duração da prévia ilegível no ffprobe (${preview})`);
   const words = nonEmptyWords(trPath, "transcrição da prévia");
+  const audioEndS = audioEndFromSilences(parseSilenceDetect(
+    run("ffmpeg", ["-hide_banner", "-nostats", "-i", preview, "-vn", "-af", "silencedetect=noise=-40dB:d=0.02", "-f", "null", "-"]).stderr,
+    durationS,
+  ), durationS);
   // Cada achado leva também o tempo no BRUTO (#11500): é lá que o corte se corrige.
-  const findings = reviewPreview({ words, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS, aliases: loadVocab().aliases }).map((x) => ({
+  const findings = reviewPreview({ words, audioEndS, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS, aliases: loadVocab().aliases }).map((x) => ({
     ...x,
     srcAt: exportTimeToRaw(x.at, plan, pf.source.fps),
   }));
@@ -2854,7 +2859,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   findings.push(...dedupeAudioFindings(clicks, detectFragments(sil)));
 
   if (withText && plan) {
-    findings.push(...checkText({ words: transcribeExport(ctx, path, key), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
+    findings.push(...checkText({ audioEndS: audioEndFromSilences(sil, probe.durationS), words: transcribeExport(ctx, path, key), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
   }
 
   const table = finalReviewTable(findings);

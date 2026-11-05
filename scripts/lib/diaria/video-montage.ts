@@ -50,6 +50,7 @@ export interface Segment {
   start: number;
   end: number;
   text: string;
+  no_speech_prob?: number;
   words?: Word[];
 }
 
@@ -61,9 +62,23 @@ export interface Transcript {
   sub?: { window: Interval };
 }
 
-/** Todas as palavras do transcript, em ordem. */
+/** Palavras confiáveis do transcript, em ordem; descarta alucinações do Whisper (#12271). */
 export function transcriptWords(t: Transcript): Word[] {
-  return t.segments.flatMap((s) => s.words ?? []).filter((w) => w.text.trim() !== "");
+  return t.segments.filter((s) => (s.no_speech_prob ?? 0) < 0.6 &&
+    !/^(transcricaoelegendaspedronegri|legendaspelacomunidadeamaraorg)$/.test(normalizeToken(s.text)))
+    .flatMap((s) => s.words ?? []).filter(isReliableReviewWord);
+}
+
+/** Whisper inventa palavras instantâneas no silêncio (#12271). */
+function isReliableReviewWord(w: Word): boolean {
+  return w.text.trim() !== "" && Number.isFinite(w.start) && Number.isFinite(w.end) &&
+    Math.round((w.end - w.start) * 1000000) > 20000;
+}
+
+/** Fim do som medido pelo silencedetect; silêncio digital inteiro termina em zero. */
+export function audioEndFromSilences(silences: Interval[], durationS: number): number {
+  const tail = silences.find((s) => s.end >= durationS - 0.001);
+  return tail ? Math.max(0, Math.min(durationS, tail.start)) : durationS;
 }
 
 const round3 = (x: number) => Math.round(x * 1000) / 1000;
@@ -3497,21 +3512,22 @@ export const MIN_TAIL_S = 0.3;
  *     corte, com ≤3 letras ou menos de 0,35 s de duração;
  *   - `fala-extra`: o resto.
  * Trecho do roteiro sem par na prévia = `fala-faltando` (marcado no fim da
- * última palavra casada antes dele). Menos de `minTailS` entre a última
- * palavra e o fim da prévia = `final-seco`.
+ * última palavra casada antes dele). Menos de `minTailS` entre o fim do
+ * som medido e o fim da prévia = `final-seco` (fallback para palavra em callers legados).
  */
 export function reviewPreview(input: {
   words: Word[];
   script: string;
   cuts: number[];
   durationS: number;
+  audioEndS?: number;
   minTailS?: number;
   cutToleranceS?: number;
   aliases?: VocabAlias[];
 }): ReviewFinding[] {
   const tol = input.cutToleranceS ?? 0.4;
   // "GPT 6 .1" ouvido = "GPT-6.1" do roteiro, não fala-extra + fala-faltando (#11360).
-  input = { ...input, words: mergeSplitNumberTokens(input.words, input.script.split(/\s+/)) };
+  input = { ...input, words: mergeSplitNumberTokens(input.words.filter(isReliableReviewWord), input.script.split(/\s+/)) };
   const W = input.words.map((w) => normalizeToken(w.text));
   const S = tokenize(input.script);
   const pairs = alignTokens(W, S, makeMatcher(input.aliases));
@@ -3563,11 +3579,12 @@ export function reviewPreview(input: {
 
   const lastWord = input.words[input.words.length - 1];
   const minTail = input.minTailS ?? MIN_TAIL_S;
-  if (lastWord && input.durationS - lastWord.end < minTail) {
+  const audioEnd = Math.max(0, Math.min(input.durationS, input.audioEndS ?? lastWord?.end ?? 0));
+  if ((lastWord || input.audioEndS !== undefined) && input.durationS - audioEnd < minTail - 1e-6) {
     findings.push({
       kind: "final-seco",
-      at: lastWord.end,
-      detail: `${(input.durationS - lastWord.end).toFixed(2)} s depois da última palavra (mínimo ${minTail} s)`,
+      at: audioEnd,
+      detail: `${(input.durationS - audioEnd).toFixed(2)} s depois do fim do áudio (mínimo ${minTail} s)`,
     });
   }
   return findings.sort((x, y) => x.at - y.at);
