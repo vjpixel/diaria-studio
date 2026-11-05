@@ -195,7 +195,9 @@ export const HOOK_MAX_WORDS_PER_LINE = 4;
 const HOOK_LINE_BREAK_RE = /\r?\n|\\n|\|/;
 
 function hookWords(s: string): string[] {
-  return s.replace(/[?!.…]+$/u, "").split(" ").filter(Boolean);
+  // Moeda e número formam um token na contagem (#12278), sem alterar a copy.
+  return s.replace(/(^|\s)((?:[A-Z]{1,3}\$|\p{Sc}))\s+(?=\d)/gu, "$1$2")
+    .replace(/[?!.…]+$/u, "").split(" ").filter(Boolean);
 }
 
 /**

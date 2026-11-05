@@ -192,6 +192,18 @@ describe("publish-youtube --title (#11739)", () => {
 });
 
 describe("gancho em duas linhas (#11740)", () => {
+  it("moeda e número contam como uma palavra sem mudar a copy (#12278)", () => {
+    for (const hook of ["R$ 1 milhão por dia", "US$ 1,5 milhão por dia", "€ 1.000 por pessoa hoje", "R$\u00a01 milhão por dia"]) {
+      assert.deepEqual(splitHook(hook), { body: hook.replace(/\s+/g, " "), mark: "" });
+    }
+    assert.deepEqual(splitHook("R$ 1 milhão por dia?"), { body: "R$ 1 milhão por dia", mark: "?" });
+    assert.deepEqual(splitHook("R$ 1 milhão por dia|e contando?").lines, ["R$ 1 milhão por dia", "e contando"]);
+    assert.throws(() => splitHook("R$ 1 milhão por dia hoje"), /tem 5 palavra/);
+    assert.throws(() => splitHook("R$ 1 milhão por dia hoje|e contando"), /linha 1/);
+    assert.throws(() => splitHook("R$ 1"), /tem 1 palavra/);
+    assert.throws(() => splitHook("R$ muito dinheiro por dia"), /tem 5 palavra/);
+  });
+
   it("o caso da 261030: 5 palavras em 2 linhas com `|`", () => {
     assert.deepEqual(splitHook("Confiou no chatbot|e morreu"), {
       body: "Confiou no chatbot e morreu",
