@@ -864,8 +864,6 @@ const BOLD_WRAP_RE = /^\*\*\s*([\s\S]+)\*\*\s*$/m;
  */
 export const INTRO_CALLOUT_MARKER = "<!-- callout -->";
 const INTRO_CALLOUT_MARKER_RE = /^[ \t]*<!--\s*callout\s*-->[ \t]*\r?$\n?/m;
-/** #12240: ocorrência do marcador em qualquer lugar (inclusive fora da intro ou no meio de uma linha), usada só para varrê-lo do HTML final. */
-export const INTRO_CALLOUT_MARKER_ANYWHERE_RE = /<!--\s*callout\s*-->/g;
 
 /**
  * #3741: encontra o bloco bold-wrap da região de intro, com posição absoluta

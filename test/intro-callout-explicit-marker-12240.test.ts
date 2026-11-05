@@ -17,7 +17,8 @@ import {
   INTRO_CALLOUT_MARKER,
 } from "../scripts/lib/newsletter-parse.ts";
 import { lintStackedIntroCallouts } from "../scripts/lib/lint-checks/callout-placement.ts";
-import { renderHTML, type NewsletterContent } from "../scripts/lib/newsletter-render-html.ts";
+import { renderHTML } from "../scripts/lib/newsletter-render-html.ts";
+import type { NewsletterContent } from "../scripts/lib/newsletter-parse.ts";
 
 const COVERAGE =
   "Olá! Eu sou o Pixel, editor desta newsletter.\n\nNesta edição, a IA analisou 353 conteúdos e selecionei os 10 mais relevantes.\n\nSe este trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).";
