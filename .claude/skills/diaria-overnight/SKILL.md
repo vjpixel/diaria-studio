@@ -8,6 +8,16 @@ effort: medium
 
 # /diaria-overnight
 
+**Preflight obrigatório de ambiente (#12307), antes de qualquer outro passo:**
+rodar `npx tsx scripts/lib/exec-mode.ts --require-shared-issue-registry`.
+Exit diferente de zero ou falha ao executar: exibir o motivo e encerrar a skill,
+sem scan, registro, claim, roteamento, implementação ou dispatch (inclusive
+`--dry-run`/`--no-implement`). Não criar `data/` nem usar REST manual para
+contornar: o registro efêmero não é visto pela continuo no `300`, e os scripts
+de triagem ainda dependem de GraphQL, bloqueado no cloud. Retomar numa sessão
+local com `data/` sincronizado ou deixar a fila para o `300`. Este preflight
+vem antes de qualquer criação de `data/` pela própria skill.
+
 O editor invoca esta skill ao encerrar o expediente. Você assume o turno: varre a fila de issues do GitHub, tira todas as dúvidas com o editor **antes** dele sair (briefing único), e depois trabalha a fila de forma 100% autônoma **até esgotá-la** (#2039 — sem deadline de tempo). Ao final, roda um code-review consolidado do diff da noite e compila o relatório (registro na superfície de Relatórios do Studio, #3714, + resumo no terminal).
 
 Escopo = **resolver issues de código/config/docs do repo**. Fora de escopo: executar a pipeline editorial (pesquisa, escrita, publicação de edição) — mudanças em código de publishers/Workers SÃO elegíveis, mas *disparar* publicação não.

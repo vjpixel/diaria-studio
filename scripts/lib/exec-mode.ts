@@ -183,7 +183,32 @@ export function detectTaskScheduler(opts: TaskSchedulerOptions = {}): TaskSchedu
   return "none";
 }
 
+/** #12307: um data/ criado no container não torna claims visíveis ao 300.
+ * O sinal explícito do harness remoto vence a detecção por diretório. */
+export function requireSharedIssueRegistry(
+  opts: ExecModeOptions = {},
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (env.CLAUDE_CODE_REMOTE === "true" || detectExecMode(opts) === "cloud") {
+    throw new Error(
+      "Execução bloqueada no cloud (#12307): data/sessions/ não é compartilhado com o 300; " +
+      "claims locais não evitam trabalho duplicado com a continuo. " +
+      "Rode a skill numa sessão local com data/ sincronizado ou deixe a fila para o 300. " +
+      "Não criar data/ para liberar o guard nem substituir a triagem manualmente por REST: " +
+      "REST não resolve a exclusão mútua e o GraphQL é indisponível nesse ambiente.",
+    );
+  }
+}
+
 // CLI guard: só executa como main module, importável sem efeito colateral.
 if (isMainModule(import.meta.url)) {
-  console.log(detectExecMode());
+  try {
+    if (process.argv.includes("--require-shared-issue-registry")) {
+      requireSharedIssueRegistry();
+    }
+    console.log(detectExecMode());
+  } catch (error) {
+    console.error((error as Error).message);
+    process.exitCode = 1;
+  }
 }
