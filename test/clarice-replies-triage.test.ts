@@ -371,7 +371,7 @@ test("#12261 re-review: 'Em … escreveu:' escrito pelo assinante (sem endereço
 test("#12283 regressão: 'Quero sim! Aguardo retorno em breve.' é quero, não ruído", () => {
   const c = classifyReply({ message_id: "x1", thread_id: "t", from: "a@b.com", subject: "Re: Clarice News", date: "", body: "Quero sim! Aguardo retorno em breve." });
   assert.equal(c.kind, "quero", c.reason);
-  for (const body of ["Quero! Aguardo seu retorno no dia 12.", "Quero, fico esperando retorno a partir de agora."]) {
+  for (const body of ["Quero! Aguardo seu retorno no dia 12.", "Quero, fico esperando retorno a partir de agora.", "Quero! Aguardo o retorno em 2 dias."]) {
     assert.equal(classifyReply(msg(body + QUOTE)).kind, "quero", body);
   }
   // ausência de verdade, com data, segue ruído
@@ -384,7 +384,11 @@ test("#12283 regressão: 'remover a marca dágua dos e-mails' não é saída (va
   const c = classifyReply({ message_id: "x2", thread_id: "t", from: "a@b.com", subject: "Re: Clarice News", date: "", body: "Como faço pra remover a marca dágua dos e-mails que escrevo?" });
   assert.notEqual(c.kind, "saida", c.reason);
   assert.equal(c.kind, "ambiguo", c.reason);
-  for (const body of ["Dá pra apagar o cadastro de clientes que importei?", "Como excluir os contatos duplicados?"]) {
+  for (const body of [
+    "Dá pra apagar o cadastro de clientes que importei?",
+    "Como excluir os contatos duplicados?",
+    "Como remover a marca dágua desses e-mails?",
+  ]) {
     assert.notEqual(classifyReply(msg(body + QUOTE)).kind, "saida", body);
   }
 });

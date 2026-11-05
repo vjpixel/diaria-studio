@@ -130,7 +130,7 @@ const AUTO_SUBJECT_RE =
 // `retorno` só conta com data/dia (ausência): "aguardo retorno em breve" é o assinante esperando
 // resposta, e como `isAutoReply` roda antes de tudo, um "quero" legítimo virava ruído (#12283).
 const AUTO_BODY_RE =
-  /\b(estou (de|em) ferias|estarei (de|em) ferias|estou fora do escritorio|estarei fora|estou ausente|estarei ausente|(?<!(aguardo|aguardando|espero|esperando|aguardamos)( (o )?(seu|teu|vosso))? )retorno (no dia \d+|em \d+|a partir d[aeo]s?)|resposta automatica|mensagem automatica|i am (currently )?out of (the )?office|i will be out of)\b/;
+  /\b(estou (de|em) ferias|estarei (de|em) ferias|estou fora do escritorio|estarei fora|estou ausente|estarei ausente|(?<!(aguardo|aguardando|espero|esperando|aguardamos)( o| (o )?(seu|teu|vosso))? )retorno (no dia \d+|em \d+|a partir d[aeo]s?)|resposta automatica|mensagem automatica|i am (currently )?out of (the )?office|i will be out of)\b/;
 
 /** Pedido de exclusão de DADOS (LGPD) — também conta como saída. */
 const DATA_DELETION_RES: RegExp[] = [
@@ -160,11 +160,13 @@ const SAIDA_RES: RegExp[] = [
  * Verbo de remoção + objeto que também é assunto do PRODUTO (e-mails, cadastro, base, contatos,
  * envios). A Clarice é ferramenta de escrita: "como remover a marca d'água dos e-mails que escrevo?"
  * é suporte, não saída (#12283). Só vira saída com marca pessoal no trecho ("me tirem", "remova-me",
- * "meu e-mail", "desses e-mails"); sem ela, a resposta fica `ambiguo`, nunca na blacklist.
+ * "meu e-mail"); sem ela, a resposta fica `ambiguo`, nunca na blacklist.
  */
 const REMOVAL_PRODUCT_OBJECT_RE =
   /\b(me )?(tire|tira|tirar|tirem|retire|retirar|retirem|remova|removam|remove|remover|exclua|excluam|excluir|apague|apaguem|apagar|delete|deletar)\b([^.!?\n]{0,40})\b(e-?mails?|cadastro|base|contatos?|envios?)\b/g;
-const REMOVAL_PERSONAL_RE = /(^|[\s-])(me|meu|minha|meus|minhas|desses|destes|dessa|desta|nesses|nestes)\b/;
+// Só pronome/possessivo da 1ª pessoa: demonstrativo ("desses e-mails") também aparece em pergunta de
+// produto ("como remover a marca d'água desses e-mails?"), então não basta sozinho.
+const REMOVAL_PERSONAL_RE = /(^|[\s-])(me|meu|minha|meus|minhas)\b/;
 
 /** `saida` = remoção com marca pessoal; `fraca` = remoção sem marca pessoal; `null` = nenhuma. */
 export function removalOfProductObject(norm: string): "saida" | "fraca" | null {
