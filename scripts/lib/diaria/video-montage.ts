@@ -2466,8 +2466,20 @@ function audioLevelsFilter(linear: number): string {
  * frase), e um gate nele come o começo/fim delas. Valores de partida, para o
  * editor ajustar depois do 1º import; o Enhance por cima no Premiere continua
  * possível.
+ *
+ * #12262 (relato do editor na 261105, gravação ao ar livre): com `nr` 12 o
+ * ruído de fundo seguia sob a fala, e o gate de -40 dB com 10/150 ms zerava
+ * as pausas, um liga-desliga do ambiente audível a cada pausa. Agora a
+ * redução é mais forte e a MESMA em todo o áudio (`nrDb` 24, `tn=1`
+ * acompanhando o ruído), e o gate só abaixa o fundo: no máximo `rangeDb`
+ * (-10 dB, o teto de queda do piso nas pausas em relação ao da fala), razão
+ * baixa e `attackMs`/`releaseMs` longos, para o ambiente seguir presente e
+ * homogêneo.
  */
-export const AUDIO_CLEAN = { nrDb: 12, belowThresholdDb: 6, rangeDb: -40, ratio: 8, attackMs: 10, releaseMs: 150, sampleRate: 48000 } as const;
+export const AUDIO_CLEAN = { nrDb: 24, belowThresholdDb: 6, rangeDb: -10, ratio: 2, attackMs: 50, releaseMs: 400, sampleRate: 48000 } as const;
+
+/** #12262: o gate nunca baixa as pausas mais que isto (dB) em relação à fala. */
+export const AUDIO_CLEAN_MAX_PAUSE_DROP_DB = 10;
 
 export interface AudioCleanParams {
   /** Piso de ruído para o `afftdn` (dB, -80 a -20). */

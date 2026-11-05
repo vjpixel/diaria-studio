@@ -45,10 +45,10 @@ const PLAN: SequencePlan = { spec: SPEC, clips: [clip("titulo", 0, 90, 300), cli
 const TREATED = "G:/Meu Drive/YouTube/261103/261103_audio_tratado.wav";
 
 describe("#12102: comando do ffmpeg da faixa tratada", () => {
-  it("bruto quente da 261028 (limiar de silêncio -35 dBFS): piso do afftdn e gate 6 dB abaixo, em -41, com 40 dB de atenuação", () => {
+  it("bruto quente da 261028 (limiar de silêncio -35 dBFS): piso do afftdn e gate 6 dB abaixo, em -41; gate suave desde o #12262", () => {
     const p = audioCleanParams(-35);
     assert.deepEqual(p, { noiseFloorDb: -41, gateThresholdDb: -41 });
-    assert.equal(audioCleanFilter(p), "afftdn=nr=12:nf=-41:tn=1,agate=threshold=0.008913:range=0.01:ratio=8:attack=10:release=150");
+    assert.equal(audioCleanFilter(p), "afftdn=nr=24:nf=-41:tn=1,agate=threshold=0.008913:range=0.316228:ratio=2:attack=50:release=400");
   });
 
   it("o gate fica abaixo do limiar de silêncio (consoante suave perto dele não é cortada)", () => {

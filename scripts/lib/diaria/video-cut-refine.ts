@@ -23,7 +23,9 @@
  *      clipe e com energia de fala, é som fora do roteiro (hesitação, cauda da
  *      palavra anterior, sílaba de tomada descartada) e sai do clipe. Palavra a
  *      mais que é a palavra do roteiro logo antes/depois (o transcript longo
- *      engoliu uma palavra dita) fica.
+ *      engoliu uma palavra dita) fica. Na entrada, só sai som separado da
+ *      1ª palavra casada por silêncio (#12263): sem vale entre eles, é o
+ *      ataque da própria palavra que a janela curta ouviu solto.
  * Depois das duas, `assembleClips` refaz a emenda dos contíguos (sem
  * sobreposição) e a alternância do zoom, e `speechCutWarnings` aponta corte
  * que ainda cai em plena fala (limiar + 15 dB).
@@ -340,7 +342,14 @@ export function edgeExtras(input: {
     const lo = Math.max(srcIn, Math.min(lastExtra.end, hi));
     const target = Math.max(lo, hi - air);
     const v = snapToValley(input.env, target, lo, hi, input.thresholdDb);
-    const to = round3(v.how === "vale" || v.how === "ja-no-silencio" ? v.t : target);
+    // #12263: na entrada, só sai som separado da 1ª palavra casada por silêncio.
+    // Sem vale entre eles, o "som a mais" é o ataque da própria palavra que a
+    // janela curta ouviu solto ("O" de "O juiz", "vi-" de "violação", o "E" de
+    // "e que quem" na 261105): cortar ali come o começo da fala.
+    if (v.how !== "vale" && v.how !== "ja-no-silencio") {
+      return { note: `som a mais na entrada ("${extras.map((w) => w.text.trim()).join(" ")}") colado na 1ª palavra, sem silêncio entre eles: pode ser o começo da fala, fica (#12263)` };
+    }
+    const to = round3(v.t);
     if (!(to > srcIn) || srcOut - to < CUT_REFINE.minClipS) return { note: `som a mais na entrada ("${extras.map((w) => w.text.trim()).join(" ")}") sem espaço para cortar` };
     return { to, extra: extras.map((w) => w.text.trim()).join(" ") };
   }
@@ -614,7 +623,104 @@ export const SPEECH_DETECT = {
   padAfterS: 0.12,
   longJoinPauseS: 0.45,
   shortClipS: 0.3,
+  /**
+   * #12263: o ataque da palavra (consoante surda, "A"/"E" sussurrado) fica
+   * abaixo dos limiares fixos quando o bruto é baixo ou a consoante é suave, e
+   * a ilha começava depois do começo real. A ilha volta para trás enquanto o
+   * quadro está `attackAboveFloorDb` acima do piso de ruído do PRÓPRIO bruto
+   * (percentil `floorPercentile`, no sinal cheio ou na 1ª diferença), até
+   * `attackMaxS`, sem encostar na ilha anterior.
+   */
+  attackAboveFloorDb: 12,
+  attackMaxS: 0.12,
+  floorPercentile: 0.1,
+  /** #12263: entrada com energia acima de piso + esta fração da faixa (piso → `topPercentile`) nos `entryLookS` antes do corte = "entrada corta som". */
+  entrySoundFraction: 0.45,
+  entryLookS: 0.04,
+  topPercentile: 0.95,
 } as const;
+
+/** Percentil `p` (0–1) dos quadros com som (o silêncio digital fica fora); null sem quadro útil. */
+function percentileDb(db: Float64Array, p: number): number | null {
+  const vals = Array.from(db).filter((d) => Number.isFinite(d) && d > ENVELOPE_DEFAULTS.floorDb).sort((a, b) => a - b);
+  if (!vals.length) return null;
+  return vals[Math.min(vals.length - 1, Math.max(0, Math.floor(p * vals.length)))];
+}
+
+/** Piso de ruído do bruto (#12263): percentil baixo do sinal cheio e da 1ª diferença. */
+export function speechNoiseFloors(e: FrameEnergy, p: number = SPEECH_DETECT.floorPercentile): { fullDb: number; diffDb: number } | null {
+  const full = percentileDb(e.fullDb, p);
+  const diff = percentileDb(e.diffDb, p);
+  return full === null || diff === null ? null : { fullDb: full, diffDb: diff };
+}
+
+/**
+ * #12263: recua o começo de cada ilha até o ataque real da fala, medido contra
+ * o piso de ruído do bruto (`speechNoiseFloors` + `attackAboveFloorDb`), e não
+ * contra o limiar fixo. Para no 1º quadro abaixo disso, em `attackMaxS` ou no
+ * fim da ilha anterior. Com o piso alto (piso + 12 dB acima do limiar fixo),
+ * nada muda: o quadro antes da ilha já estava abaixo do limiar fixo.
+ */
+export function extendIslandAttacks(
+  e: FrameEnergy,
+  islands: Interval[],
+  opts: Partial<Pick<typeof SPEECH_DETECT, "attackAboveFloorDb" | "attackMaxS" | "floorPercentile">> = {},
+): Interval[] {
+  const floors = speechNoiseFloors(e, opts.floorPercentile);
+  if (!floors || !islands.length) return islands;
+  const above = opts.attackAboveFloorDb ?? SPEECH_DETECT.attackAboveFloorDb;
+  const maxBack = Math.round((opts.attackMaxS ?? SPEECH_DETECT.attackMaxS) / e.hopS);
+  const fullLim = floors.fullDb + above;
+  const diffLim = floors.diffDb + above;
+  const n = e.fullDb.length;
+  return islands.map((s, i) => {
+    const startIdx = Math.round(s.start / e.hopS);
+    const prevEnd = i > 0 ? Math.round(islands[i - 1].end / e.hopS) : 0;
+    const limit = Math.max(prevEnd, startIdx - maxBack, 0);
+    let j = Math.min(startIdx, n);
+    while (j - 1 >= limit && (e.fullDb[j - 1] > fullLim || e.diffDb[j - 1] > diffLim)) j--;
+    return j < startIdx ? { start: round3(j * e.hopS), end: s.end } : s;
+  });
+}
+
+/**
+ * #12263: checagem do `build` em cada entrada de clipe, o critério estrito
+ * usado à mão na 261105: energia do sinal cheio nos `entryLookS` antes do corte
+ * acima do piso + `entrySoundFraction` da faixa (piso → percentil
+ * `topPercentile`, a fala) = o corte começa depois do som, comendo o começo da
+ * palavra. Clipe contíguo ao anterior no bruto (emenda de pausa curta) não
+ * conta: o som antes do corte está no clipe anterior. Tempo no bruto e na
+ * sequência.
+ */
+export function entryCutSoundWarnings(
+  clips: Array<{ block: string; frameIn: number; frameOut: number; seqStart: number }>,
+  e: FrameEnergy,
+  fps: number,
+  opts: Partial<Pick<typeof SPEECH_DETECT, "entrySoundFraction" | "entryLookS" | "floorPercentile" | "topPercentile">> = {},
+): string[] {
+  const floor = percentileDb(e.fullDb, opts.floorPercentile ?? SPEECH_DETECT.floorPercentile);
+  const top = percentileDb(e.fullDb, opts.topPercentile ?? SPEECH_DETECT.topPercentile);
+  if (floor === null || top === null || !(top > floor)) return [];
+  const lim = floor + (opts.entrySoundFraction ?? SPEECH_DETECT.entrySoundFraction) * (top - floor);
+  const look = opts.entryLookS ?? SPEECH_DETECT.entryLookS;
+  const out: string[] = [];
+  clips.forEach((c, i) => {
+    const prev = clips[i - 1];
+    if (prev && Math.abs(prev.frameOut - c.frameIn) <= 1) return;
+    const a = c.frameIn / fps;
+    const i0 = Math.max(0, Math.floor((a - look) / e.hopS + 1e-9));
+    const i1 = Math.min(e.fullDb.length, Math.floor(a / e.hopS + 1e-9));
+    let m = -Infinity;
+    for (let k = i0; k < i1; k++) m = Math.max(m, e.fullDb[k]);
+    if (m > lim) {
+      out.push(
+        `${c.block}: entrada em ${a.toFixed(2)} s do bruto (${(c.seqStart / fps).toFixed(2)} s da sequência) corta som: ${Math.round(m)} dB nos ${Math.round(look * 1000)} ms antes do corte ` +
+          `(piso ${Math.round(floor)} dB, limite ${Math.round(lim)} dB); pode comer o começo da palavra, conferir no Premiere (#12263)`,
+      );
+    }
+  });
+  return out;
+}
 
 /** Energia por quadro (não sobrepostos, `hopS`): o quadro `i` cobre `[i·hopS, (i+1)·hopS)`. */
 export interface FrameEnergy {
