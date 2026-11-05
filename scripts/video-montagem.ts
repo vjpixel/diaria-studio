@@ -239,6 +239,7 @@ import {
   previewSize,
   resolveBlocks,
   reviewPreview,
+  audioEndFromSilences,
   screenTitleSvg,
   normalizeToken,
   segmentCues,
@@ -246,6 +247,7 @@ import {
   srtTimestamp,
   silenceNoiseDb,
   transcriptWords,
+  reviewTranscriptWords,
   validateVocabRules,
   audioCleanArgs,
   audioCleanFilter,
@@ -2468,7 +2470,7 @@ export function srtFromExportFileName(seqName: string): string {
  * em cache no state dir por identidade do arquivo e do Whisper (`exportTranscriptCacheKey`);
  * `--retranscribe` refaz (o `--force` só sobrescreve a cópia do SRT).
  */
-function transcribeExport(ctx: Ctx, path: string, key: string): Word[] {
+function transcribeExport(ctx: Ctx, path: string, key: string, forReview = false): Word[] {
   const trPath = f(ctx, `review-final-${key}.transcript.json`);
   const keyPath = f(ctx, `review-final-${key}.cache-key.json`);
   const st = statSync(path);
@@ -2489,7 +2491,8 @@ function transcribeExport(ctx: Ctx, path: string, key: string): Word[] {
     transcribeWithPython(ctx, wav, trPath, { vad: false });
     writeFileAtomic(keyPath, cacheKey + "\n");
   } else console.error(`[video-montagem] transcrição do export em cache (${trPath}); --retranscribe refaz`);
-  return nonEmptyWords(trPath, "transcrição do export");
+  return forReview ? reviewTranscriptWords(readJson<Transcript>(trPath, "transcrição do export"))
+    : nonEmptyWords(trPath, "transcrição do export");
 }
 
 /** Grava a cópia do horizontal na pasta da edição (ver `applyYoutubeSrtCopy`); devolve a decisão. */
@@ -2727,6 +2730,8 @@ async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSess
   return 0;
 }
 
+const REVIEW_SILENCE_FILTER = "silencedetect=noise=-40dB:d=0.08";
+
 function cmdReview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
   // #12096: o horizontal também (`--seq youtube`), com a mesma recusa de prévia mais velha que o build.
@@ -2741,9 +2746,13 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   transcribeWithPython(ctx, wav, trPath, { vad: false });
   const durationS = Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", preview]).stdout.trim());
   if (!Number.isFinite(durationS) || durationS <= 0) throw new Error(`duração da prévia ilegível no ffprobe (${preview})`);
-  const words = nonEmptyWords(trPath, "transcrição da prévia");
+  const words = reviewTranscriptWords(readJson<Transcript>(trPath, "transcrição da prévia"));
+  const audioEndS = audioEndFromSilences(parseSilenceDetect(
+    run("ffmpeg", ["-hide_banner", "-nostats", "-i", preview, "-vn", "-af", REVIEW_SILENCE_FILTER, "-f", "null", "-"]).stderr,
+    durationS,
+  ), durationS);
   // Cada achado leva também o tempo no BRUTO (#11500): é lá que o corte se corrige.
-  const findings = reviewPreview({ words, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS, aliases: loadVocab().aliases }).map((x) => ({
+  const findings = reviewPreview({ words, audioEndS, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS, aliases: loadVocab().aliases }).map((x) => ({
     ...x,
     srcAt: exportTimeToRaw(x.at, plan, pf.source.fps),
   }));
@@ -2848,13 +2857,13 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   const clicks = detectClicks(peaks);
 
   const sil = parseSilenceDetect(
-    run("ffmpeg", ["-hide_banner", "-nostats", "-i", path, "-vn", "-af", "silencedetect=noise=-40dB:d=0.08", "-f", "null", "-"]).stderr,
+    run("ffmpeg", ["-hide_banner", "-nostats", "-i", path, "-vn", "-af", REVIEW_SILENCE_FILTER, "-f", "null", "-"]).stderr,
     probe.durationS,
   );
   findings.push(...dedupeAudioFindings(clicks, detectFragments(sil)));
 
   if (withText && plan) {
-    findings.push(...checkText({ words: transcribeExport(ctx, path, key), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
+    findings.push(...checkText({ audioEndS: audioEndFromSilences(sil, probe.durationS), words: transcribeExport(ctx, path, key, true), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
   }
 
   const table = finalReviewTable(findings);

@@ -75,6 +75,7 @@ def main() -> int:
                     "start": round(s.start + offset, 3),
                     "end": round(s.end + offset, 3),
                     "text": s.text.strip(),
+                    "no_speech_prob": s.no_speech_prob,
                     "words": [
                         {"start": round(w.start + offset, 3), "end": round(w.end + offset, 3), "text": w.word.strip()}
                         for w in (s.words or [])

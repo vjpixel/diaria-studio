@@ -296,10 +296,12 @@ export function checkText(input: {
   plan: SequencePlan;
   fps: number;
   durationS: number;
+  audioEndS?: number;
   aliases?: VocabAlias[];
 }): FinalReviewFinding[] {
   const findings = reviewPreview({
     words: input.words,
+    audioEndS: input.audioEndS,
     script: input.plan.script,
     cuts: cutPoints(input.plan, input.fps),
     durationS: input.durationS,
