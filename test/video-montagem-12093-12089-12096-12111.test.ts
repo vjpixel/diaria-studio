@@ -256,6 +256,22 @@ describe("#12089: corte de pausas pelo detector de fala", () => {
     assert.ok(plan.clips.some((c) => c.srcIn <= 2.8 && c.srcOut >= 3.0), "o 'e' está num clipe");
   });
 
+  it("#12270: palavra esticada sobre pausa do detector tolera só o arredondamento de meio quadro", () => {
+    const spec: SequenceSpec = { target: "youtube", name: "regressao", width: 1920, height: 1080, order: ["comentario"], scales: [60, 85] };
+    const words: Word[] = [{ start: 1138.21, end: 1138.83, text: "no" }];
+    const pauses = [{ start: 1138.214, end: 1139 }];
+    const guard = protectTranscribedWords(pauses, words);
+    assert.deepEqual(guard.protectedWords, [], "o começo audível já está fora da pausa");
+    const source = { ...SOURCE, durationS: 1200 };
+    const resolved = { comentario: [item(1137, 1140, "no", words)] };
+    const plan = buildSequencePlan(spec, resolved, guard.silences, source, SPEECH_DETECT_PLAN);
+    assert.ok(plan.clips.some((c) => c.srcOut === 1138.214 && c.frameOut / source.fps === 1138.2));
+    assert.deepEqual(plan.dropped, []);
+    // Uma palavra realmente fora dos clipes continua barrada, mesmo perto da borda.
+    const missing = { comentario: [item(1137, 1140, "fora", [{ start: 1138.24, end: 1138.3, text: "fora" }])] };
+    assert.match(buildSequencePlan(spec, missing, pauses, source, SPEECH_DETECT_PLAN).dropped.join("\n"), /palavra\(s\) fora dos clipes/);
+  });
+
   it("protectTranscribedWords: palavra que já é fala (ou só encosta na pausa) não muda nada", () => {
     const pauses = speechPauseSilences([{ start: 1, end: 2 }], 3);
     const words: Word[] = [{ start: 1, end: 2, text: "Fala" }, { start: 1.9, end: 2.3, text: "esticada" }];
