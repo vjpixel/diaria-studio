@@ -237,4 +237,16 @@ describe("detectNonDateReason — limitações conhecidas (falso positivo/negati
     // Uma razão vaga que não usa esse vocabulário nunca é pega.
     assert.equal(detectNonDateReason("ainda não sei bem quando isso vai fazer sentido"), null);
   });
+
+  it("FALSO NEGATIVO (#12244): '(#N)' depois de conectivo temporal sem verbo de espera passa", () => {
+    // Trade-off travado de propósito: "depois do merge (#N)" e "depois do
+    // teste (PR #N)" têm a mesma forma; o 2º é contexto (achado 2 do review
+    // da PR #12242). Inverter isto exige decisão, não ajuste de regex.
+    assert.equal(detectNonDateReason("reabrir depois do merge (#12129); reavaliar em 2026-12-01"), null);
+    assert.equal(detectNonDateReason("o CTR caiu depois do teste (PR #12129); reavaliar em 2026-12-01"), null);
+    // `#N` solto com o mesmo conectivo segue sendo dependência.
+    assert.equal(detectNonDateReason("reabrir depois que #12129 mergear")?.category, "dependencia");
+    // E o mesmo parêntese com verbo de espera também.
+    assert.equal(detectNonDateReason("aguardando o merge (#12129); reavaliar em 2026-12-01")?.category, "dependencia");
+  });
 });

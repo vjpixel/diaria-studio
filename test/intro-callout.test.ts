@@ -9,6 +9,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { extractCoverageLine, extractCoverageLineTrailer } from "../scripts/lib/newsletter-parse.ts";
 import {
   extractIntroCallout,
   renderIntroCallout,
@@ -35,6 +36,37 @@ Para esta edição, eu (o editor) enviei 12 submissões e a Diar.ia encontrou ou
 **[Título do destaque](https://exemplo.com)**
 
 Corpo.`;
+
+describe("#12240 — callout explícito sem emoji", () => {
+  const block = "<!-- callout -->\n**Temos ganhadores!** Confira o resultado.\n\nO prêmio vai para [Ana](https://example.com/ana).";
+
+  it("extrai todos os parágrafos até o separador, preservando o negrito parcial", () => {
+    const md = `Olá! Eu sou o Pixel.\n\n${block}\n\n---\n\nSeguimos com as notícias.\n\n**DESTAQUE 1**`;
+    assert.equal(extractIntroCallout(md), block);
+    assert.equal(extractCoverageLine(md), "Olá! Eu sou o Pixel.");
+    assert.equal(extractCoverageLineTrailer(md), "Seguimos com as notícias.");
+  });
+
+  for (const suffix of ["", "\n\nO segundo parágrafo continua na caixa."]) {
+    it(`renderiza uma única caixa com negrito parcial (${suffix ? "multi" : "um"} parágrafo)`, () => {
+      const html = renderIntroCallout(`<!-- callout --> **Temos ganhadores!** Confira o resultado.${suffix}`, "body");
+      assert.equal((html.match(/background:#EBE5D0/g) ?? []).length, 1);
+      assert.match(html, /<strong[^>]*>Temos ganhadores!<\/strong> Confira o resultado\./);
+      assert.doesNotMatch(html, /&lt;!-- callout|<!-- callout -->|🎉|\*\*/);
+      if (suffix) assert.match(html, /O segundo parágrafo continua na caixa\./);
+    });
+  }
+
+  it("parse e render mantêm o link e ambos os parágrafos dentro da mesma caixa", () => {
+    const parsed = extractIntroCallout(`${block}\n\n**DESTAQUE 1**`);
+    assert.equal(parsed, block);
+    const html = renderIntroCallout(parsed!, "body");
+    assert.match(html, /<strong[^>]*>Temos ganhadores!<\/strong> Confira/);
+    assert.match(html, /href="https:\/\/example.com\/ana"/);
+    assert.equal((html.match(/<table /g) ?? []).length, 1);
+    assert.ok(html.indexOf("O prêmio vai para") < html.indexOf("</table>"));
+  });
+});
 
 describe("extractIntroCallout (#1648)", () => {
   it("extrai o parágrafo 🎉 da intro, preservando markdown de link", () => {

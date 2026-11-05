@@ -990,6 +990,10 @@ export function renderIntroCallout(
   // `texto → [link](u)` é CTA e vira `texto: [link](u)`. Fora destes blocos o
   // `renderHTML` não aplica o lead-in (ver docstring dele).
   text = stripCtaArrows(normalizeNumericArrows(text));
+  // #12240: `<!-- callout -->` abre uma caixa com parágrafos de corpo e
+  // negrito apenas onde o editor marcou `**...**`. O marcador não é copy.
+  const explicitCallout = /^\s*<!-- callout -->\s*/.test(text);
+  if (explicitCallout) text = text.replace(/^\s*<!-- callout -->\s*/, "");
   // #1938: split em parágrafos (`\n\n`). Callout de 1 parágrafo (intro/sorteio)
   // mantém o comportamento antigo (negrito, emoji preservado). Bloco
   // multi-parágrafo (ex: divulgação CLARICE reaproveitada da mensal) segue o DS:
@@ -1042,7 +1046,7 @@ export function renderIntroCallout(
   // como kicker externo (`categoria` do snippet). `plainFirstParagraph` só
   // deveria REBAIXAR o estilo do título sintetizado, nunca causar sua
   // OMISSÃO — o bug era o branch abaixo nunca ter essa saída.
-  if (paras.length > 1 && !sponsored && !forceCtaPill && !ceremony && (!sectionTitle || plainFirstParagraph)) {
+  if (explicitCallout || (paras.length > 1 && !sponsored && !forceCtaPill && !ceremony && (!sectionTitle || plainFirstParagraph))) {
     inner = paras
       .map((p, i) => renderBoxParagraph(p, i === 0 ? "0" : "12px 0 0"))
       .join("\n      ");

@@ -25,6 +25,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   checkExecTrackCoverage,
@@ -39,6 +40,7 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
 
+  recoverPlanFromSafeBackupWithWarning(planPath);
   if (!existsSync(planPath)) {
     console.error(`[check-develop-exec-track-coverage] plan.json não encontrado: ${planPath}`);
     process.exit(2);
