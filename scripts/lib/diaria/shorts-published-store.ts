@@ -267,7 +267,12 @@ function readOne(path: string, aammdd: string): ShortsPublishedFile {
  * conflito). Qualquer arquivo ilegível lança, como o registro único lançava.
  */
 export function readShortsRegistry(editionDir: string, aammdd: string): ShortsPublishedFile {
-  return mergeShortsRegistries(aammdd, listShortsRegistryFiles(editionDir).map((p) => readOne(p, aammdd)));
+  const removed = readShortReplacementHistory(editionDir, aammdd);
+  const files = listShortsRegistryFiles(editionDir).map(p => {
+    const file = readOne(p, aammdd);
+    return { ...file, entries: file.entries.filter(e => !removed.entries.some(old => old.destination === e.destination && old.id === e.id)) };
+  });
+  return mergeShortsRegistries(aammdd, files);
 }
 
 /** Conteúdo bruto de cada arquivo do registro (pro `decideTimerRun`). */
@@ -307,4 +312,22 @@ export function persistShortEntry(
     lockTimeoutMs,
   );
   return readShortsRegistry(editionDir, aammdd);
+}
+
+/** Durable tombstones + backup: stale OneDrive ledgers cannot resurrect deleted IDs. */
+const REPLACEMENT_HISTORY = "_internal/shorts-replacement-history.json";
+export function readShortReplacementHistory(dir: string, aammdd: string): ShortsPublishedFile {
+  const path = join(dir, REPLACEMENT_HISTORY);
+  return existsSync(path) ? readOne(path, aammdd) : { aammdd, entries: [] };
+}
+
+/** Call ONLY after the platform acknowledged deletion. Preserves every other destination. */
+export function recordShortReplacementDeletion(dir: string, aammdd: string, entry: ShortPublishedEntry): void {
+  const path = join(dir, REPLACEMENT_HISTORY);
+  mkdirSync(dirname(path), { recursive: true });
+  withFileLock(`${path}.lock`, () => {
+    const history = readShortReplacementHistory(dir, aammdd);
+    if (!history.entries.some(e => e.destination === entry.destination && e.id === entry.id)) history.entries.push(entry);
+    writeFileAtomic(path, JSON.stringify(history, null, 2) + "\n");
+  }, 30_000);
 }
