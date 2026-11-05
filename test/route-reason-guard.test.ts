@@ -153,6 +153,34 @@ describe("detectNonDateReason — #N só é dependência com verbo de condição
     assert.equal(detectNonDateReason("PR mergeada (#12129); reavaliar em 2026-12-01"), null);
   });
 
+  it("#12220: verbo de espera com data/duração como objeto + atribuição (#N) passa", () => {
+    assert.equal(detectNonDateReason("adiado até 2026-12-01 (#6198)"), null);
+    assert.equal(detectNonDateReason("Adiado para 2026-12-01 (#12129)"), null);
+    assert.equal(
+      detectNonDateReason("esperando 2 semanas de dados do teste A/B (#12129); reavaliar em 2026-12-01"),
+      null,
+    );
+    // a espera por #N na mesma oração segue recusada, mesmo com data junto
+    assert.equal(detectNonDateReason("aguardando #12130 até 2026-12-01")?.category, "dependencia");
+    assert.equal(detectNonDateReason("adiado até #12130 fechar")?.category, "dependencia");
+    // "#12 dias" não é duração
+    assert.equal(detectNonDateReason("aguardando #12 dias")?.category, "dependencia");
+  });
+
+  it("#12236: parêntese curto com texto junto do #N volta para a oração do verbo", () => {
+    assert.equal(
+      detectNonDateReason("aguardando o merge (PR #12129); reavaliar em 2026-12-01")?.category,
+      "dependencia",
+    );
+    assert.equal(
+      detectNonDateReason("esperando a decisão do editor (ver #9001); reavaliar em 2026-12-01")?.category,
+      "dependencia",
+    );
+    // sem verbo de condição na oração, segue contexto
+    assert.equal(detectNonDateReason("PR mergeada (PR #12129); reavaliar em 2026-12-01"), null);
+    assert.equal(detectNonDateReason("reconciliação diária (ver #6198): marcador ainda futuro"), null);
+  });
+
   it("'adicionar' não é lido como 'adiar'", () => {
     assert.equal(detectNonDateReason("PR #12129 vai adicionar a métrica; reavaliar em 2026-12-01"), null);
   });

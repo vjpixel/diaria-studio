@@ -2552,10 +2552,11 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
     const heard = applyVocabularyToWords(seqWords(ctx, plan, pf.source, fromRaw), rules, plan.spec, (w) => console.error(`[aviso] ${w}`));
     // #11960: o texto do roteiro no tempo da fala, não o texto ouvido.
     const aligned = forceAlignToScript(heard, plan.script, { aliases: vocab.aliases, cuts: cutPoints(plan, fps), endS: plan.durationFrames / fps });
-    const seqNotes = forcedAlignmentNotes(plan.spec.name, aligned);
+    const cues = segmentCues(aligned.words);
+    const seqNotes = [...forcedAlignmentNotes(plan.spec.name, aligned), ...montageSrtWarnings(plan.spec.name, plan.script, aligned, cueTimings(cues))];
     for (const n of seqNotes) console.error(n);
     notes[sequenceKey(plan.spec)] = seqNotes;
-    const srt = cuesToSrt(segmentCues(aligned.words));
+    const srt = cuesToSrt(cues);
     const path = join(ctx.outDir, srtFileName(plan.spec.name));
     writeFileAtomic(path, srt);
     console.log(path);
@@ -2564,6 +2565,27 @@ function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number 
   writeJson(notesPath, notes);
   console.error(`[video-montagem] ouvido × roteiro de cada legenda em ${notesPath}: itens a conferir no relatório final (#12093)`);
   return 0;
+}
+
+/**
+ * #12237: o `srt` da montagem usa o mesmo alinhamento do `--from-final` e
+ * podia sair com legenda espremida (≤0,3 s) ou roteiro divergente da fala sem
+ * nenhum sinal. Aqui os mesmos limites do export (`exportSrtProblems`) viram
+ * `[aviso]` nomeando o trecho, no stderr e no `srt-notas.json` (relatório
+ * final). Só avisa, não recusa: o plan.json da montagem sai da mesma
+ * transcrição, então divergência aqui é exceção a conferir, não export
+ * reeditado — e a legenda ainda passa pela prévia e pelo review. Puro.
+ */
+export function montageSrtWarnings(
+  seqName: string,
+  script: string,
+  aligned: Pick<ForcedAlignment, "dropped" | "interpolated">,
+  cues: Array<{ start: number; end: number; text: string }>,
+): string[] {
+  const scriptWords = script.split(/\s+/).filter((t) => normalizeToken(t)).length;
+  return exportSrtProblems({ cues, text: "roteiro", aligned, scriptWords }).map(
+    (p) => `[aviso] ${seqName}: legenda possivelmente imprópria (#12237) — ${p}; conferir na prévia antes de subir`,
+  );
 }
 
 /** Notas do alinhamento de cada legenda (#12093), por sequência: o relatório final lista para o editor conferir. */
