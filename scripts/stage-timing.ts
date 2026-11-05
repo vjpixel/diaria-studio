@@ -47,7 +47,7 @@ interface StageTiming {
 //   01-eia*, 01-categorized — gerados em Stage 1
 //   02-reviewed             — Stage 2 (newsletter)
 //   03-social               — Stage 2 (social, em paralelo com newsletter)
-//   04-d{N}-{2x1,1x1}.jpg  — Stage 3 (imagens de destaque)
+//   04-d{N}-{2x1,4x5}.jpg  — Stage 3 (imagens de destaque; 1x1 só em edições antigas, #12226)
 //   05-published.json       — Stage 4 (newsletter publish)
 //   06-social-published.json — Stage 4 (social publish)
 //

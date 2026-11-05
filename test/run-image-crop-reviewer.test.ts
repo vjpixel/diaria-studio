@@ -53,30 +53,29 @@ function makeTmpEdition(): string {
 // ---------------------------------------------------------------------------
 
 describe("discoverCropPairs (#3951)", () => {
-  it("descobre par completo (hero 2:1 + crop 1:1) quando ambos existem", () => {
+  it("#12226: o 2:1 vira um par próprio (ratio 2x1, sem hero — não há crop), pro achado de estilo", () => {
     const dir = makeTmpEdition();
     try {
       writeFileSync(join(dir, "04-d1-2x1.jpg"), "fake-jpg-bytes");
-      writeFileSync(join(dir, "04-d1-1x1.jpg"), "fake-jpg-bytes");
       const pairs = discoverCropPairs(dir);
       assert.equal(pairs.length, 1);
       assert.equal(pairs[0].destaque, "d1");
-      assert.equal(pairs[0].ratio, "1x1");
-      assert.ok(pairs[0].hero_path?.endsWith("04-d1-2x1.jpg"));
-      assert.ok(pairs[0].crop_path.endsWith("04-d1-1x1.jpg"));
+      assert.equal(pairs[0].ratio, "2x1");
+      assert.equal(pairs[0].hero_path, null);
+      assert.ok(pairs[0].crop_path.endsWith("04-d1-2x1.jpg"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("hero_path é null quando só o 1:1 nativo existe (sem crop real)", () => {
+  it("#12226: 1x1 legado no disco não gera par (o ratio 1x1 saiu da descoberta)", () => {
     const dir = makeTmpEdition();
     try {
       writeFileSync(join(dir, "04-d2-1x1.jpg"), "fake-jpg-bytes");
+      assert.deepEqual(discoverCropPairs(dir), []);
+      writeFileSync(join(dir, "04-d2-2x1.jpg"), "fake-jpg-bytes");
       const pairs = discoverCropPairs(dir);
-      assert.equal(pairs.length, 1);
-      assert.equal(pairs[0].destaque, "d2");
-      assert.equal(pairs[0].hero_path, null);
+      assert.deepEqual(pairs.map((p) => p.ratio), ["2x1"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -126,37 +125,35 @@ describe("discoverCropPairs (#3951)", () => {
   // 4:5 (#4223) — wiring que faltava: descoberta do par nativo/master/2:1 → card
   // -------------------------------------------------------------------------
 
-  it("destaque com só 1:1 (sem card 4:5 gerado) continua funcionando como antes — #4223", () => {
+  it("destaque sem card 4:5 gerado emite só o par 2:1 — #4223/#12226", () => {
     const dir = makeTmpEdition();
     try {
       writeFileSync(join(dir, "04-d1-2x1.jpg"), "x");
-      writeFileSync(join(dir, "04-d1-1x1.jpg"), "x");
       // sem 04-d1-4x5.jpg
       const pairs = discoverCropPairs(dir);
-      assert.equal(pairs.length, 1, "só deve emitir o par 1:1 quando não há card 4:5");
-      assert.equal(pairs[0].ratio, "1x1");
+      assert.equal(pairs.length, 1, "só deve emitir o par 2:1 quando não há card 4:5");
+      assert.equal(pairs[0].ratio, "2x1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("destaque com 1:1 E 4:5 gera 2 pares (um por ratio), fallback de hero 4:5 = nativo — #4223", () => {
+  it("destaque com 2:1 E 4:5 gera 2 pares (um por ratio), fallback de hero 4:5 = nativo — #4223/#12226", () => {
     const dir = makeTmpEdition();
     try {
       writeFileSync(join(dir, "04-d1-2x1.jpg"), "x");
-      writeFileSync(join(dir, "04-d1-1x1.jpg"), "x");
       writeFileSync(join(dir, "04-d1-4x5-nativo.jpg"), "x");
       writeFileSync(join(dir, "04-d1-master.jpg"), "x");
       writeFileSync(join(dir, "04-d1-4x5.jpg"), "x"); // card final
 
       const pairs = discoverCropPairs(dir);
-      assert.equal(pairs.length, 2, "deve emitir 1 par 1:1 + 1 par 4:5 pro mesmo destaque");
+      assert.equal(pairs.length, 2, "deve emitir 1 par 2:1 + 1 par 4:5 pro mesmo destaque");
 
-      const pair1x1 = pairs.find((p) => p.ratio === "1x1");
+      const pair2x1 = pairs.find((p) => p.ratio === "2x1");
       const pair4x5 = pairs.find((p) => p.ratio === "4x5");
-      assert.ok(pair1x1, "par 1:1 deve existir");
+      assert.ok(pair2x1, "par 2:1 deve existir");
       assert.ok(pair4x5, "par 4:5 deve existir");
-      assert.equal(pair1x1?.destaque, "d1");
+      assert.equal(pair2x1?.destaque, "d1");
       assert.equal(pair4x5?.destaque, "d1");
       assert.ok(pair4x5?.crop_path.endsWith("04-d1-4x5.jpg"));
       // fallback de hero: nativo existe → deve preferir nativo sobre master/2:1
@@ -227,12 +224,11 @@ describe("discoverCropPairs (#3951)", () => {
       writeFileSync(join(dir, "04-d1-4x5-nativo.jpg"), "x");
       writeFileSync(join(dir, "04-d1-master.jpg"), "x");
       writeFileSync(join(dir, "04-d1-2x1.jpg"), "x");
-      writeFileSync(join(dir, "04-d1-1x1.jpg"), "x");
       // sem 04-d1-4x5.jpg (card final) — nada pra revisar em 4:5
 
       const pairs = discoverCropPairs(dir);
-      assert.equal(pairs.length, 1, "só o par 1:1 deve existir, sem o card 4:5 não há nada a revisar");
-      assert.equal(pairs[0].ratio, "1x1");
+      assert.equal(pairs.length, 1, "só o par 2:1 deve existir, sem o card 4:5 não há nada a revisar");
+      assert.equal(pairs[0].ratio, "2x1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -333,18 +329,18 @@ describe("normalizeCropReviewResult (#3951)", () => {
     assert.equal(r4x5?.motivo, "título cobre o rosto");
   });
 
-  it("rejeita entry com ratio inválido (fora de 1x1/4x5) — #4223", () => {
+  it("rejeita entry com ratio inválido (fora de 2x1/4x5/1x1-legado) — #4223/#12226", () => {
     const raw = {
       results: [
-        { destaque: "d1", ratio: "1x1", status: "ok" },
-        { destaque: "d2", ratio: "2x1", status: "ok" }, // ratio inválido
+        { destaque: "d1", ratio: "1x1", status: "ok" }, // legado, ainda aceito
+        { destaque: "d2", ratio: "2x1", status: "ok" }, // #12226: par do hero
+        { destaque: "d3", ratio: "16x9", status: "ok" }, // ratio inválido
         { destaque: "d3", status: "ok" }, // ratio ausente
       ],
     };
     const result = normalizeCropReviewResult(raw, "260722");
-    assert.equal(result.results.length, 1, "entries com ratio inválido/ausente devem ser filtradas");
-    assert.equal(result.results[0].destaque, "d1");
-    assert.equal(result.results[0].ratio, "1x1");
+    assert.equal(result.results.length, 2, "entries com ratio inválido/ausente devem ser filtradas");
+    assert.deepEqual(result.results.map((r) => r.ratio), ["1x1", "2x1"]);
   });
 
   // ---------------------------------------------------------------------

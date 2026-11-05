@@ -263,7 +263,9 @@ quando o tema é sobre a diar.ia.br, como no `o-jev`), gravada em
      --out-dir data/artigo-especial/{ano}-{slug}/ --destaque d1 --ratio 2x1
    mkdir -p workers/artigos/public/{ano}/{slug}
    cp data/artigo-especial/{ano}-{slug}/04-d1-2x1.jpg workers/artigos/public/{ano}/{slug}/capa.jpg
-   cp data/artigo-especial/{ano}-{slug}/04-d1-1x1.jpg workers/artigos/public/{ano}/{slug}/capa-quadrada.jpg
+   # #12226: o image-generate não grava mais o 1:1 — a capa quadrada sai do 2:1
+   npx tsx scripts/crop-resize.ts data/artigo-especial/{ano}-{slug}/04-d1-2x1.jpg \
+     workers/artigos/public/{ano}/{slug}/capa-quadrada.jpg --width 800 --height 800
    ```
 
    Mostrar a capa ao editor junto com o resultado do passo 2 (não é um gate
@@ -757,7 +759,7 @@ data/artigo-especial/{ano}-{slug}/
   briefing.md                 tese, estrutura, fontes (Etapa B)
   draft.md                    rascunho aprovado, já humanizado (Etapa C)
   capa-prompt.md              prompt da capa 2:1 (Etapa C/D)
-  04-d1-2x1.jpg, 04-d1-1x1.jpg  capa gerada, copiada pro Worker (Etapa D)
+  04-d1-2x1.jpg               capa gerada, copiada pro Worker (Etapa D; a quadrada é recortada dela)
   apoiase.md                  chamada publica (Passo 1)
   linkedin-pagina.md          post pagina diar.ia.br (Passo 1)
   linkedin-perfil.md          post perfil pessoal (Passo 1)

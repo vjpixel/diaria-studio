@@ -42,7 +42,7 @@ describe("staleDerivedImagePaths — paths dos formatos derivados por destaque (
 
 describe("computeStaleDerivedImages — CASO REAL #6010: só invalida derivados quando o 2x1 é DE FATO regenerado", () => {
   it("action.kind === 'regenerate' (troca de destaque / --force) → retorna os 2 paths derivados a purgar", () => {
-    const action = resolveWideImageIntegrity(false, false, false); // 2x1 ausente → regenerate
+    const action = resolveWideImageIntegrity(false, false); // 2x1 ausente → regenerate
     const stale = computeStaleDerivedImages(action, "data/editions/260824/", "d1");
     assert.deepEqual(stale, [
       "data/editions/260824/04-d1-4x5-nativo.jpg",
@@ -50,27 +50,16 @@ describe("computeStaleDerivedImages — CASO REAL #6010: só invalida derivados 
     ]);
   });
 
-  it("--force sempre regenerate → também purga derivados, mesmo com 2x1/1x1 já presentes", () => {
-    const action = resolveWideImageIntegrity(true, true, true);
+  it("--force sempre regenerate → também purga derivados, mesmo com o 2x1 já presente", () => {
+    const action = resolveWideImageIntegrity(true, true);
     const stale = computeStaleDerivedImages(action, "data/editions/260824/", "d1");
     assert.equal(stale.length, 2);
   });
 
-  it("action.kind === 'skip' (ambos presentes, sem --force) → NÃO purga — 2x1 não mudou, nativo/master continuam válidos", () => {
-    const action = resolveWideImageIntegrity(true, true, false);
+  it("action.kind === 'skip' (2x1 presente, sem --force) → NÃO purga — 2x1 não mudou, nativo/master continuam válidos", () => {
+    const action = resolveWideImageIntegrity(true, false);
     assert.deepEqual(action, { kind: "skip" });
     const stale = computeStaleDerivedImages(action, "data/editions/260824/", "d1");
     assert.deepEqual(stale, []);
-  });
-
-  it("action.kind === 'derive-1x1-from-2x1' (só 2x1 presente) → NÃO purga — 2x1 existente não é regenerado, só o 1x1 é derivado dele", () => {
-    const action = resolveWideImageIntegrity(true, false, false);
-    assert.deepEqual(action, { kind: "derive-1x1-from-2x1" });
-    const stale = computeStaleDerivedImages(action, "data/editions/260824/", "d1");
-    assert.deepEqual(
-      stale,
-      [],
-      "derivar o 1x1 a partir de um 2x1 já presente nunca muda o conteúdo do 2x1 — nativo/master seguem válidos",
-    );
   });
 });

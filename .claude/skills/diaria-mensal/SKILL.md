@@ -316,7 +316,7 @@ for D in d1 d2 d3; do
 done
 ```
 Se um `02-d{N}-prompt.md` não existir, pular esse destaque (aviso, não bloquear).
-Saída: `04-d1-2x1.jpg`, `04-d2-2x1.jpg`, `04-d3-2x1.jpg` (+ crops 1x1).
+Saída: `04-d1-2x1.jpg`, `04-d2-2x1.jpg`, `04-d3-2x1.jpg` (sem crop 1x1 desde o #12226).
 
 **É IA? mensal (#1912, rastreabilidade + no-silent-fallback #2869, resolvido
 cedo na Etapa 2a — #2904):** a edição-desafio já foi selecionada no passo 2a
@@ -447,7 +447,7 @@ node -e "const p='data/monthly/$CYCLE/_internal/preview-server-url.json';const j
 
 ### Checkpoint Etapa 3 (#5321 — deixou de ser gate interativo)
 
-Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg`.
+Drive sync push: `04-d1-2x1.jpg,01-eia-A.jpg,01-eia-B.jpg` (o `04-d1-1x1.jpg` saiu no #12226 — deixou de ser gerado).
 
 **Aviso de fallback (#2869):** ler `$SEL_JSON` (`_internal/02-eia-selection.json`).
 Se `selection == "criterion"`, o texto do banner traz uma linha de confirmação
@@ -815,7 +815,7 @@ Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 - `_internal/clarice-laboratorio.{json,txt}` + `_internal/clarice-tutorial.json` — Doc "Laboratório Clarice" lido pelo conector e o tutorial escolhido do ciclo (Etapa 2a-2, #11836)
 - `draft.md` — texto final (Etapa 2)
 - `_internal/02-d1-prompt.md` — prompt imagem D1 (Etapa 2)
-- `04-d1-2x1.jpg` + `04-d1-1x1.jpg` — imagem D1 (Etapa 3)
+- `04-d1-2x1.jpg` — imagem D1 (Etapa 3; sem 1x1 desde o #12226)
 - `01-eia.md` + `01-eia-A.jpg` + `01-eia-B.jpg` — É IA? novo (Etapa 3)
 - `_internal/cloudflare-preview.html` — pré-render completo com URLs reais (Etapa 4)
 - `_internal/public-images.json` — manifest url pública → filename local, input do embed base64 (Etapa 3/4, #3392)

@@ -229,7 +229,6 @@ describe("#9795 — chaves de slides antigos saem de 06-public-images.json", () 
     const dir = edition(CURRENT);
     const res = await uploadPublicImages({
       editionDir: dir,
-      destaques: [],
       uploaders: { uploadToCloudflare: async (_p: string, key: string) => `https://w/${key}` },
     });
     assert.equal("um_carousel_p4" in res.images, false);

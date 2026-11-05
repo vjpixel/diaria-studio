@@ -132,7 +132,7 @@ describe("#11125 — marcador de edição sem vídeo", () => {
       );
       writeFileSync(join(dir, D1_PLAY_HERO_FILE), "x");
       markNoVideo(dir);
-      await uploadPublicImages({ editionDir: dir, mode: "social", destaques: [], uploaders: stubUpload });
+      await uploadPublicImages({ editionDir: dir, mode: "social", uploaders: stubUpload });
       assert.ok(existsSync(join(dir, D1_PLAY_HERO_FILE)), "modo social não apaga a cópia");
       const cache = JSON.parse(readFileSync(join(dir, "06-public-images.json"), "utf8"));
       assert.ok(cache.images.d1_play, "modo social preserva a chave do outro modo (#1865)");

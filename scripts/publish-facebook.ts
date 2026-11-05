@@ -51,7 +51,7 @@ import {
   type ResolvedFacebookPage,
 } from "./lib/facebook-pages.ts"; // #10458 — publicar em mais de uma página
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
-import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
+import { selectSocialCardImageFile, missingSocialCardReason } from "./lib/select-social-card-image.ts"; // #4090 item 5, #12226
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #4309 — extração do `## dN` + guard de scaffolding
 import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — Facebook não renderiza markdown; #10441 ponto único do texto de post
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
@@ -747,16 +747,15 @@ async function rescheduleFacebookPosts(opts: {
       continue;
     }
 
-    // #4090 self-review: antes desta troca, o fluxo de reschedule sempre
-    // usava 1x1, mesmo quando a edição tinha o card 4:5 gerado — a checagem
-    // `has4x5` só existia no dispatch inicial abaixo. Seletor compartilhado
-    // fecha essa divergência (mesmo critério nos 3 call sites).
+    // #4090 self-review: seletor compartilhado (mesmo critério nos 3 call
+    // sites). #12226: só o card 4:5, sem fallback pro 1:1 — ausente falha alto.
     const imageFile = selectSocialCardImageFile(opts.editionDir, d);
     const imagePath = resolve(opts.editionDir, imageFile);
     if (!existsSync(imagePath)) {
-      console.error(`ERROR: Image ${imageFile} not found`);
+      const reason = missingSocialCardReason(d);
+      console.error(`ERROR: ${reason}`);
       failed += 1;
-      results.push({ ...existing, status: "failed", reason: `${imageFile} not found` });
+      results.push({ ...existing, status: "failed", reason });
       continue;
     }
 
@@ -1065,13 +1064,14 @@ async function main(): Promise<number | void> {
       const carouselImageUrls =
         isUm && umPost?.ok ? umPost.carouselUrls : resolveCarouselImageUrls(publicImages.images, d);
 
-      // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — mesmo
-      // critério do Instagram. Fallback: 1x1 (#502, sempre presente).
+      // Card 4:5 (1080x1350, título embutido) — mesmo critério do Instagram.
+      // #12226: sem fallback pro 1:1 (deixou de ser gerado); ausente falha alto.
       // #9568: 4º post usa a capa tipográfica local.
       const imageFile = isUm && umPost?.ok ? umPost.imageFile : selectSocialCardImageFile(editionDir, d);
       const imagePath = resolve(editionDir, imageFile);
       if (!carouselImageUrls && !existsSync(imagePath)) {
-        console.error(`ERROR: Image ${imageFile} not found`);
+        const reason = isUm && umPost?.ok ? `${imageFile} not found` : missingSocialCardReason(d);
+        console.error(`ERROR: ${reason}`);
         const entry: PostEntry = {
           platform: "facebook",
           page: page.slug, // #10458
@@ -1079,7 +1079,7 @@ async function main(): Promise<number | void> {
           url: null,
           status: "failed",
           scheduled_at: null,
-          reason: `${imageFile} not found`,
+          reason,
         };
         tagAndAppend(entry);
         results.push(entry);

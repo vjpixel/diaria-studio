@@ -62,7 +62,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
-import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
+import { selectSocialCardImageFile, missingSocialCardReason } from "./lib/select-social-card-image.ts"; // #4090 item 5, #12226
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6005 Parte B
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
 import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — Instagram não renderiza markdown; #10441 ponto único do texto de post
@@ -892,20 +892,22 @@ async function main(): Promise<number | void> {
       continue;
     }
 
-    // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — é o
-    // formato que mais ocupa tela no feed do Instagram. Fallback: 1:1 de
-    // sempre. Seletor compartilhado com o Facebook (#4090 item 5).
+    // Card 4:5 (1080x1350, título embutido) — é o formato que mais ocupa
+    // tela no feed do Instagram. Seletor compartilhado com o Facebook (#4090
+    // item 5). #12226: sem fallback pro 1:1 (deixou de ser gerado) — ausente
+    // falha alto com o motivo de `missingSocialCardReason`.
     const imageFile = umReady ? umReady.imageFile : selectSocialCardImageFile(editionDir, d);
     const imagePath = resolve(editionDir, imageFile);
     if (!existsSync(imagePath)) {
-      console.error(`ERROR: Imagem ${imageFile} não encontrada em ${editionDir}`);
+      const reason = umReady ? `${imageFile} not found` : missingSocialCardReason(d);
+      console.error(`ERROR: Imagem ${imageFile} não encontrada em ${editionDir} — ${reason}`);
       const entry: PostEntry = {
         platform: "instagram",
         destaque: d,
         url: null,
         status: "failed",
         scheduled_at: null,
-        reason: `${imageFile} not found`,
+        reason,
       };
       tagAndAppend(entry);
       results.push(entry);

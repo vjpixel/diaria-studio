@@ -32,10 +32,10 @@ export const GATE_FACING_FILES = [
   "01-eia-B.jpg",
   "02-reviewed.md",
   "03-social.md",
+  // #12226: os 1:1 (`04-d{N}-1x1.jpg`) saíram — deixaram de ser gerados.
   "04-d1-2x1.jpg",
-  "04-d1-1x1.jpg",
-  "04-d2-1x1.jpg",
-  "04-d3-1x1.jpg",
+  "04-d2-2x1.jpg",
+  "04-d3-2x1.jpg",
   "stage-status.md",
 ] as const;
 

@@ -27,7 +27,8 @@ const STAGE_LABELS = {
 // relevantes pra cada gate humano — só pra agrupar a exibição; a lista
 // canônica e os metadados (exists/size/modified) continuam vindo 100% da
 // API, nunca listados/lidos daqui.
-const GATE_4_FILES = ["02-reviewed.md", "03-social.md", "04-d1-2x1.jpg", "04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"];
+// #12226: 1:1 deixou de ser gerado — o gate lista os heros 2:1.
+const GATE_4_FILES = ["02-reviewed.md", "03-social.md", "04-d1-2x1.jpg", "04-d2-2x1.jpg", "04-d3-2x1.jpg"];
 
 const MAX_LOG_BUFFER = 500;
 

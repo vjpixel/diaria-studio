@@ -171,11 +171,11 @@ describe("evaluateStaleness — orchestration (#120)", () => {
       "03-social.md": Date.parse("2026-04-24T19:00:00Z"), // stale vs reviewed
       "04-d1-2x1.jpg": Date.parse("2026-04-24T19:00:00Z"),
       "_internal/02-d1-prompt.md": Date.parse("2026-04-24T22:00:00Z"), // d1 stale vs prompt
-      "04-d2-1x1.jpg": Date.parse("2026-04-24T19:00:00Z"),
+      "04-d2-2x1.jpg": Date.parse("2026-04-24T19:00:00Z"),
       "_internal/02-d2-prompt.md": Date.parse("2026-04-24T22:00:00Z"), // d2 stale vs prompt
     });
     const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
-    assert.equal(stale.length, 3); // 03-social + 04-d1-2x1 + 04-d2-1x1
+    assert.equal(stale.length, 3); // 03-social + 04-d1-2x1 + 04-d2-2x1 (#12226: sem 1x1)
   });
 
   it("formato ISO timestamp no output", () => {
@@ -740,15 +740,14 @@ Fim do texto.`;
 });
 
 describe("STAGE_CHECKS config — fixture do desenho (#120)", () => {
-  it("Stage 6 cobre 03-social.md + 6 imagens (incl. heroes 2x1 de d2/d3 — #2400)", () => {
+  it("Stage 6 cobre 03-social.md + 3 heroes 2x1 (d2/d3 — #2400; sem 1x1 — #12226)", () => {
     const downstreams = STAGE_CHECKS["6"].map((c) => c.downstream);
     assert.ok(downstreams.includes("03-social.md"));
     assert.ok(downstreams.includes("04-d1-2x1.jpg"));
-    assert.ok(downstreams.includes("04-d1-1x1.jpg"));
     assert.ok(downstreams.includes("04-d2-2x1.jpg"), "#2400: hero 2x1 D2 deve estar em Stage 6");
-    assert.ok(downstreams.includes("04-d2-1x1.jpg"));
     assert.ok(downstreams.includes("04-d3-2x1.jpg"), "#2400: hero 2x1 D3 deve estar em Stage 6");
-    assert.ok(downstreams.includes("04-d3-1x1.jpg"));
+    // #12226: o 1:1 deixou de ser gerado e sai dos checks de staleness.
+    assert.ok(!downstreams.some((d) => d.endsWith("-1x1.jpg")));
   });
 
   it("#1710: 03-social → 02-reviewed; imagens → seu prompt (não reviewed)", () => {
@@ -757,11 +756,8 @@ describe("STAGE_CHECKS config — fixture do desenho (#120)", () => {
     );
     assert.deepEqual(byDown["03-social.md"], ["02-reviewed.md"]);
     assert.deepEqual(byDown["04-d1-2x1.jpg"], ["_internal/02-d1-prompt.md"]);
-    assert.deepEqual(byDown["04-d1-1x1.jpg"], ["_internal/02-d1-prompt.md"]);
     assert.deepEqual(byDown["04-d2-2x1.jpg"], ["_internal/02-d2-prompt.md"], "#2400: hero D2 → d2-prompt");
-    assert.deepEqual(byDown["04-d2-1x1.jpg"], ["_internal/02-d2-prompt.md"]);
     assert.deepEqual(byDown["04-d3-2x1.jpg"], ["_internal/02-d3-prompt.md"], "#2400: hero D3 → d3-prompt");
-    assert.deepEqual(byDown["04-d3-1x1.jpg"], ["_internal/02-d3-prompt.md"]);
   });
 
   it("#1413: Stage 4 cobre imagens + 03-social.md (incl. heroes 2x1 D2/D3 — #2400)", () => {
@@ -769,8 +765,8 @@ describe("STAGE_CHECKS config — fixture do desenho (#120)", () => {
     assert.ok(downstreams.includes("03-social.md"), "social staleness deve estar coberto em S4");
     assert.ok(downstreams.includes("04-d1-2x1.jpg"));
     assert.ok(downstreams.includes("04-d2-2x1.jpg"), "#2400: hero 2x1 D2 deve estar em Stage 4");
-    assert.ok(downstreams.includes("04-d2-1x1.jpg"));
     assert.ok(downstreams.includes("04-d3-2x1.jpg"), "#2400: hero 2x1 D3 deve estar em Stage 4");
+    assert.ok(!downstreams.some((d) => d.endsWith("-1x1.jpg")), "#12226: 1x1 fora dos checks");
   });
 
   it("Stage 3 checa só 03-social.md", () => {

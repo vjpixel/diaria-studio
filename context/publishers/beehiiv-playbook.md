@@ -78,7 +78,7 @@ Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixabl
 
 ## Pré-requisitos
 
-- Etapa 3 completa (`01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg` existem; `04-d3-1x1.jpg` e `04-d3-2x1.jpg` são obrigatórios somente para edições com 3 destaques — ausência é correta em edições 2-destaque (#2352); edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg` em vez dos A/B — readers detectam automaticamente).
+- Etapa 3 completa (`01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg`, `04-d1-2x1.jpg`, `04-d2-2x1.jpg` existem (o 1:1 deixou de ser gerado no #12226; edições antigas ainda o têm); `04-d3-2x1.jpg` é obrigatório somente para edições com 3 destaques — ausência é correta em edições 2-destaque (#2352); edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg` em vez dos A/B — readers detectam automaticamente).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
 **Auditoria screenshot→asserção determinística (#5417, 260816).** Os únicos 2
@@ -247,7 +247,7 @@ npx tsx scripts/upload-images-public.ts --edition-dir {edition_dir} --mode newsl
 
 Faz upload de 5 imagens pro Worker KV (default `--target cloudflare` quando `--mode newsletter`):
 - `04-d1-2x1.jpg` (cover, também usada inline no D1)
-- `04-d2-1x1.jpg` (inline D2); `04-d3-1x1.jpg` (inline D3, somente em edições 3-destaque — #2352)
+- `04-d2-2x1.jpg` (inline D2); `04-d3-2x1.jpg` (inline D3, somente em edições 3-destaque — #2352). O 1:1 deixou de ser gerado no #12226.
 - `01-eia-A.jpg`, `01-eia-B.jpg` (É IA? — random A/B; mapping em `01-eia.md` frontmatter; edições antigas usam `01-eia-real.jpg`/`01-eia-ia.jpg`, detectadas em runtime)
 
 KV keys: `img-{AAMMDD}-{filename}` (ex: `img-260512-04-d1-2x1.jpg`). URLs servidas por `https://eia.diar.ia.br/img/{key}` (#3904 — domínio de marca; `poll.diaria.workers.dev` segue ativo só por compat de links já enviados) com `Content-Type: image/jpeg` + `Cache-Control: public, max-age=31536000, immutable`.

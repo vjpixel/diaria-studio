@@ -535,7 +535,7 @@ describe("LinkedIn pessoal recebe o ## um, não o ## post_pixel (#9568)", () => 
     assert.equal(legado?.source, "post_pixel");
     assert.equal(extractPersonalPostText(socialMd({ um: false })), null);
     assert.equal(personalPostImageFile("um"), "04-um-carousel-cover-4x5.jpg");
-    assert.equal(personalPostImageFile("post_pixel"), "04-d1-1x1.jpg");
+    assert.equal(personalPostImageFile("post_pixel"), "04-d1-2x1.jpg"); // #12226: era o 1x1, que deixou de ser gerado
   });
 
   it("resolvePersonalPost: ## um só com plano ready; capa só com carimbo em dia", () => {

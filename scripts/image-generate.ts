@@ -10,16 +10,21 @@
  *     --out-dir data/editions/260418/ \
  *     --destaque d1
  *
- * Saída (default): D1 → 04-d1-2x1.jpg (1600×800) + 04-d1-1x1.jpg (800×800 center crop)
- *        D2/D3 → 04-d{N}-1x1.jpg (1024×1024 native Gemini)
- *        Imprime o caminho do JPG principal em stdout.
+ * Saída (default): d1/d2/d3 → 04-d{N}-2x1.jpg (1600×800). Imprime o caminho
+ *        do JPG em stdout.
  *
- * `--ratio 2x1|1x1` (#1916): força o formato pra qualquer destaque. A mensal usa
- * `--ratio 2x1` em d1/d2/d3 (todos 2x1). Sem a flag, mantém o default da diária
- * (d1 → 2x1, d2/d3 → 1x1).
+ * #12226 (decisão do editor, 05/11/2026): o crop 1:1 derivado do 2:1
+ * (`04-d{N}-1x1.jpg`, 800×800) deixou de ser gerado. A newsletter usa o 2:1 e
+ * o social usa o card 4:5 + carrossel; nenhuma chave `d{N}_1x1` sobe pro
+ * `06-public-images.json`. O Google Ads (SQUARE_MARKETING_IMAGE) recebe o
+ * 1:1 recortado à mão. Edições antigas com o 1x1 em disco não são tocadas.
  *
- * #5136: todo JPEG publicado (2x1, crop 1:1 derivado, e o square nativo do
- * branch não-wide) passa por `scripts/compress-jpeg.ts` — JPEG progressivo +
+ * `--ratio 2x1|1x1|4x5|master` (#1916): força o formato pra qualquer destaque. A
+ * mensal usa `--ratio 2x1` em d1/d2/d3 (todos 2x1). `--ratio 1x1` segue como
+ * override MANUAL (square nativo 1024×1024), fora do pipeline diário.
+ *
+ * #5136: todo JPEG publicado (2x1, e o nativo do branch não-wide) passa por
+ * `scripts/compress-jpeg.ts` — JPEG progressivo +
  * mozjpeg @ qualidade 82 — antes de virar o arquivo final. Antes o output cru
  * do gerador (Gemini/ComfyUI) era publicado sem re-encode (renameSync puro),
  * ~1 MB por edição / 45% do peso de fio da página eia/poll.
@@ -122,67 +127,46 @@ export function resolveRatio(rawRatio: string | undefined, destaque: string): Ra
 
 export type WideImageIntegrityAction =
   | { kind: "skip" }
-  | { kind: "derive-1x1-from-2x1" }
   | { kind: "regenerate" };
 
 /**
- * resolveWideImageIntegrity (#4989)
+ * resolveWideImageIntegrity (#4989, simplificado no #12226)
  *
  * Extraído de `main()` (mesmo padrão de `resolveRatio`, #4093) pra ser
  * testável sem tocar disco nem chamar o gerador de imagem real.
  *
  * Caso real (#4989, edição 260811): o editor promove D3 → D1 movendo
- * `04-d3-*.jpg` → `04-d1-*.jpg` no filesystem, FORA do pipeline (não via
- * `swap-destaque.ts`, que já teria apagado as imagens antigas de propósito
- * pra forçar Stage 3 a rodar de novo). Se esse `mv` manual mover só um dos
- * dois arquivos do par wide (ex: `-2x1.jpg` mas não `-1x1.jpg`, ou
- * vice-versa — um `mv 04-d3-*.jpg 04-d1-*.jpg` com glob parcial, erro de
- * digitação, ou apenas o editor não sabendo que o par É atômico), o check
- * de idempotência ANTERIOR (`existsSync(2x1) && existsSync(1x1)`) tratava
- * "só um dos dois presente" exatamente igual a "nenhum presente": caía pro
- * fluxo de geração NOVA via IA (Gemini/ComfyUI), que ao final faz
- * `renameSync(outJpgPath, wideJpgPath)` — e `renameSync` SOBRESCREVE o
- * destino em silêncio se ele já existir. Resultado: o `04-d1-2x1.jpg`
- * recém-promovido pelo editor era APAGADO por uma imagem nova gerada do
- * zero, sem NENHUM erro ou aviso nos logs — exatamente o sintoma relatado
- * ("os arquivos desaparecem... sem erro nos logs").
+ * `04-d3-*.jpg` → `04-d1-*.jpg` no filesystem, FORA do pipeline. O check de
+ * idempotência antigo exigia o PAR 2x1+1x1; com só o 2x1 presente ele caía na
+ * geração nova, cujo `compressJpeg(out, 2x1)` sobrescrevia em silêncio o 2x1
+ * recém-promovido. O fix do #4989 derivava o 1x1 do 2x1 nesse estado.
  *
- * Fix: distinguir os 3 estados possíveis do par.
- *   - Ambos presentes → `skip` (idempotência, comportamento pré-#4989 preservado).
- *   - Só o 2x1 presente → `derive-1x1-from-2x1`: o 1x1 é sempre um crop
- *     determinístico do 2x1 (ver o resto de `main()`), então ele pode ser
- *     RE-DERIVADO sem chamar o gerador de imagem — zero custo, zero risco
- *     de sobrescrever o 2x1 promovido (nunca é tocado nesse caminho).
- *   - Só o 1x1 presente, ou nenhum presente → `regenerate`: não existe forma
- *     de derivar um 2x1 a partir de um 1x1 (perderia informação), então a
- *     geração nova é genuinamente necessária. Nesse caminho `wideJpgPath`
- *     (o 2x1) está confirmadamente AUSENTE, então o `renameSync` posterior
- *     não sobrescreve nada — o overwrite silencioso só acontecia na lacuna
- *     do estado "só o 2x1 existe", agora coberta pelo branch anterior.
- *   - `--force` sempre força `regenerate` (comportamento explícito do editor,
- *     inalterado).
+ * Desde o #12226 o 1x1 não é mais gerado: a idempotência olha só o 2x1.
+ *   - 2x1 presente → `skip` (nunca sobrescreve um 2x1 promovido/presente; um
+ *     1x1 órfão no disco, de edição antiga, é ignorado).
+ *   - 2x1 ausente → `regenerate`: o `compressJpeg` posterior grava um arquivo
+ *     novo, sem sobrescrever nada.
+ *   - `--force` sempre força `regenerate` (comportamento explícito do editor).
  */
 export function resolveWideImageIntegrity(
   wide2x1Exists: boolean,
-  wide1x1Exists: boolean,
   force: boolean,
 ): WideImageIntegrityAction {
   if (force) return { kind: "regenerate" };
-  if (wide2x1Exists && wide1x1Exists) return { kind: "skip" };
-  if (wide2x1Exists && !wide1x1Exists) return { kind: "derive-1x1-from-2x1" };
+  if (wide2x1Exists) return { kind: "skip" };
   return { kind: "regenerate" };
 }
 
 /**
  * Paths dos formatos DERIVADOS (4:5 nativo composto à parte, e o master 6:5)
- * que ficam potencialmente STALE sempre que o par wide 2x1/1x1 é de fato
+ * que ficam potencialmente STALE sempre que o 2x1 wide é de fato
  * REEGERADO (#6010 — achado ao vivo edição 260824).
  *
  * Causa raiz do #6010: `gen-social-card-4x5.ts`'s `generateCard()` prioriza
  * `04-{d}-4x5-nativo.jpg` sobre `04-{d}-2x1.jpg` na cadeia de fallback (ver
  * docstring de `generateCard`). Quando um destaque é TROCADO no meio do
  * Stage 4 (artigo A → artigo B, mesma posição D{N}), a cascata de título
- * regenera corretamente o par 2x1/1x1 — mas nunca tocava o nativo/master
+ * regenera corretamente o 2x1 — mas nunca tocava o nativo/master
  * antigos, que sobreviviam no disco apontando pra arte do artigo ANTIGO.
  * Como o nativo tem prioridade 1 na cadeia, o card social 4:5 continuava
  * mostrando a arte errada indefinidamente, mesmo após múltiplas
@@ -191,7 +175,7 @@ export function resolveWideImageIntegrity(
  * Fix (opção 2 da issue — mais simples e à prova de esquecimento, não
  * depende de mais um invariant WARNING que pode ser ignorado): sempre que o
  * 2x1 é efetivamente regenerado (action.kind === "regenerate" — nunca em
- * "skip"/"derive-1x1-from-2x1", onde o 2x1 existente NÃO muda), apagar
+ * "skip", onde o 2x1 existente NÃO muda), apagar
  * nativo/master existentes. `gen-social-card-4x5.ts` cai pro fallback 2:1
  * (correto, ainda que subótimo) até alguém rodar
  * `image-generate.ts --ratio 4x5 --force` de novo pra recompor a arte
@@ -209,7 +193,7 @@ export function staleDerivedImagePaths(outDir: string, destaque: string): string
  * Decide QUAIS paths derivados purgar dado o resultado de
  * `resolveWideImageIntegrity` — pura, sem tocar disco (mesmo padrão de
  * `resolveWideImageIntegrity`/`resolveRatio`, testável sem I/O). Só
- * "regenerate" invalida os derivados: em "skip" e "derive-1x1-from-2x1" o
+ * "regenerate" invalida os derivados: em "skip" o
  * conteúdo do 2x1 permanece o mesmo de antes (não regenerado), então
  * nativo/master baseados nele continuam válidos.
  */
@@ -255,7 +239,7 @@ function main() {
 
   if (!editorialPath || !outDir || !destaque) {
     console.error(
-      "Uso: image-generate.ts --editorial <prompt.md> --out-dir <dir/> --destaque <d1|d2|d3> [--ratio 2x1|1x1] [--force]"
+      "Uso: image-generate.ts --editorial <prompt.md> --out-dir <dir/> --destaque <d1|d2|d3> [--ratio 2x1|1x1|4x5|master] [--force]"
     );
     process.exit(1);
   }
@@ -282,8 +266,8 @@ function main() {
   const positivePrompt = buildPositivePrompt(editorialText);
 
   // Montar SD prompt JSON.
-  // Wide (2x1): 1600×800, depois crop 1:1 (800×800).
-  // Square (1x1): 1024×1024 (forçado explícito pra garantir proporção 1:1).
+  // Wide (2x1): 1600×800 (sem crop 1:1 derivado desde o #12226).
+  // Square (--ratio 1x1, override manual): 1024×1024.
   const sdPromptRaw: Record<string, unknown> = {
     positive: positivePrompt,
     negative: NEGATIVE_PROMPT,
@@ -301,7 +285,7 @@ function main() {
     : portrait45
     ? `${normalizedOutDir}04-${destaque}-4x5-nativo.jpg`
     : wide
-      ? `${normalizedOutDir}04-${destaque}.jpg`  // Wide usa nomes próprios (2x1, 1x1) gerados abaixo
+      ? `${normalizedOutDir}04-${destaque}.jpg`  // Wide grava o -2x1 abaixo (temporário cru do gerador)
       : `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const filenamePrefix = `diaria_${destaque}_`;
 
@@ -312,8 +296,6 @@ function main() {
   // disco no momento da checagem — sem isso, um overwrite silencioso (como o
   // bug real do #4989) não deixa nenhum rastro.
   const widePath2x1 = `${normalizedOutDir}04-${destaque}-2x1.jpg`;
-  const widePath1x1 = `${normalizedOutDir}04-${destaque}-1x1.jpg`;
-  const cropScript = resolve(ROOT, "scripts", "crop-resize.ts");
   const compressScript = resolve(ROOT, "scripts", "compress-jpeg.ts");
 
   // #5136: perfil de compressão das imagens PUBLICADAS (destaques d1/d2/d3) —
@@ -324,21 +306,9 @@ function main() {
   // mozjpeg/progressive) porque não passam essas flags.
   const compressArgs = ["--quality", "82", "--mozjpeg", "--progressive"];
 
-  function cropToSquare(sourcePath: string, destPath: string): void {
-    execFileSync(
-      process.execPath,
-      [
-        "--import", "tsx", cropScript, sourcePath, destPath,
-        "--width", "800", "--height", "800",
-        ...compressArgs,
-      ],
-      { stdio: "inherit", cwd: ROOT },
-    );
-  }
-
   // #5136: reencoda um JPEG já nas dimensões finais (sem redimensionar) —
-  // usado tanto pro 2x1 wide (em vez do renameSync cru) quanto pro square
-  // nativo do branch não-wide. sourcePath/destPath podem ser o mesmo path
+  // usado tanto pro 2x1 wide (em vez do renameSync cru) quanto pro nativo
+  // do branch não-wide. sourcePath/destPath podem ser o mesmo path
   // (reencode in-place); compress-jpeg.ts lê o arquivo inteiro antes de
   // escrever de volta, então overwrite in-place é seguro.
   function compressJpeg(sourcePath: string, destPath: string): void {
@@ -351,39 +321,15 @@ function main() {
 
   if (wide) {
     const wide2x1Exists = existsSync(widePath2x1);
-    const wide1x1Exists = existsSync(widePath1x1);
     console.error(
       `image-generate: verificando integridade — ${widePath2x1}: ${wide2x1Exists ? "encontrado" : "ausente"}`,
     );
-    console.error(
-      `image-generate: verificando integridade — ${widePath1x1}: ${wide1x1Exists ? "encontrado" : "ausente"}`,
-    );
 
-    const action = resolveWideImageIntegrity(wide2x1Exists, wide1x1Exists, force);
+    const action = resolveWideImageIntegrity(wide2x1Exists, force);
 
     if (action.kind === "skip") {
       console.error(`Imagem ${widePath2x1} já existe — use --force pra regenerar.`);
       process.stdout.write(widePath2x1 + "\n");
-      process.stdout.write(widePath1x1 + "\n");
-      process.exit(0);
-    }
-
-    if (action.kind === "derive-1x1-from-2x1") {
-      console.error(
-        `image-generate: ${widePath2x1} já existe mas ${widePath1x1} está ausente — ` +
-          `derivando via crop a partir do 2x1 existente, SEM chamar o gerador de imagem ` +
-          `(#4989 — nunca sobrescrever um arquivo já promovido/presente).`,
-      );
-      try {
-        cropToSquare(widePath2x1, widePath1x1);
-      } catch (e: unknown) {
-        const code = (e as { status?: number }).status ?? 1;
-        console.error(`crop-resize falhou com código ${code}`);
-        process.exit(code);
-      }
-      console.error(`${destaque} square derivado: ${widePath1x1} (800×800)`);
-      process.stdout.write(widePath2x1 + "\n");
-      process.stdout.write(widePath1x1 + "\n");
       process.exit(0);
     }
     // action.kind === "regenerate": widePath2x1 está confirmadamente ausente
@@ -471,7 +417,7 @@ function main() {
     }
   }
 
-  // Wide: salvar 1600×800 como 04-d{N}-2x1.jpg, crop centro 800×800 como 04-d{N}-1x1.jpg
+  // Wide: salvar 1600×800 como 04-d{N}-2x1.jpg (sem crop 1:1 desde o #12226)
   if (wide) {
     // #9095: o hero 2x1 é a imagem que carrega legenda na newsletter — grava
     // o backend efetivo pra legenda não nomear o gerador configurado quando
@@ -482,7 +428,6 @@ function main() {
       fallback: effectiveGenerator !== generator,
     });
     const wideJpgPath = widePath2x1;
-    const squareJpgPath = widePath1x1;
 
     // #4989: essa rename SÓ é alcançada quando resolveWideImageIntegrity()
     // decidiu "regenerate" — ou seja, widePath2x1 estava confirmadamente
@@ -508,19 +453,7 @@ function main() {
     unlinkSync(outJpgPath);
     console.error(`${destaque} wide: ${wideJpgPath} (1600×800, comprimido #5136)`);
 
-    // Crop centro para 1:1 (800×800) — já sai comprimida no perfil #5136
-    // (cropToSquare passa --quality/--mozjpeg/--progressive, ver acima).
-    try {
-      cropToSquare(wideJpgPath, squareJpgPath);
-      console.error(`${destaque} square: ${squareJpgPath} (800×800)`);
-    } catch (e: unknown) {
-      const code = (e as { status?: number }).status ?? 1;
-      console.error(`crop-resize falhou com código ${code}`);
-      process.exit(code);
-    }
-
     process.stdout.write(wideJpgPath + "\n");
-    process.stdout.write(squareJpgPath + "\n");
   } else {
     // #5136: branch não-wide (--ratio 1x1/4x5/master, uso manual/mensal) —
     // mesmo perfil de compressão in-place, pra nenhuma imagem publicada

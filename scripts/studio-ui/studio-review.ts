@@ -894,18 +894,14 @@ export function buildReviewPreviewHtml(
  * `d1`/`d2`/`d3` que `buildSocialHtml` (render-social-html.ts) espera em vez
  * de um placeholder `{{IMG:filename}}`.
  *
- * A pipeline REAL (`upload-images-public.ts`, rodado só na Etapa 4/5) sobe a
- * variante `04-d{N}-1x1.jpg` (quadrada, 800×800/1024×1024 — o mesmo crop que
- * LinkedIn/Facebook/Instagram usam de verdade) pra Drive/Cloudflare e grava
- * a URL pública em `06-public-images.json`, que é o que `render-social-html.ts
- * --images` consome no fluxo real. Esse upload é cedo demais pra um preview
- * local no Studio (a edição pode nem estar pronta pra publicar ainda) — em
- * vez disso, aponta direto pro arquivo `04-d{N}-1x1.jpg` já gerado em disco
- * pela Etapa 3, servido pela MESMA rota local de imagem que o preview de
- * e-mail já usa (`GET /api/editions/:aammdd/image/:filename`,
- * `resolveReviewImagePath`). Sem 1x1 em disco (edição antiga ou Etapa 3
- * ainda não rodou), cai pra `04-d{N}-2x1.jpg` como fallback — melhor mostrar
- * a imagem larga do que nenhuma. Destaque sem nenhum arquivo correspondente
+ * A pipeline REAL (`upload-images-public.ts`, rodado só na Etapa 4/5) sobe as
+ * imagens pra Cloudflare e grava a URL pública em `06-public-images.json`, que
+ * é o que `render-social-html.ts --images` consome no fluxo real. Esse upload
+ * é cedo demais pra um preview local no Studio — em vez disso, aponta direto
+ * pro arquivo já gerado em disco pela Etapa 3, servido pela MESMA rota local
+ * de imagem que o preview de e-mail já usa (`GET /api/editions/:aammdd/image/:filename`,
+ * `resolveReviewImagePath`). Preferência: `04-d{N}-2x1.jpg`; o `04-d{N}-1x1.jpg`
+ * só como fallback de edição ANTIGA sem 2:1 (o 1:1 deixou de ser gerado no #12226). Destaque sem nenhum arquivo correspondente
  * simplesmente fica sem entry no mapa (`buildSocialHtml` já trata ausência
  * de imagem sem quebrar — mesmo fail-open do preview de e-mail).
  */
@@ -916,7 +912,9 @@ function buildLocalSocialImageMap(editionDir: string, aammdd: string): ImageMap 
     const key = `d${n}`;
     const squareRe = new RegExp(`^04-d${n}-1x1\\.(jpe?g|png)$`, "i");
     const wideRe = new RegExp(`^04-d${n}-2x1\\.(jpe?g|png)$`, "i");
-    const filename = filenames.find((f) => squareRe.test(f)) ?? filenames.find((f) => wideRe.test(f));
+    // #12226: o 2:1 vem primeiro. O 1:1 deixou de ser gerado, e numa edição antiga ele não é regerado
+    // junto com o 2:1 — preferi-lo mostraria a arte velha depois de um swap/regeneração.
+    const filename = filenames.find((f) => wideRe.test(f)) ?? filenames.find((f) => squareRe.test(f));
     if (filename) {
       map[key] = { url: `/api/editions/${aammdd}/image/${filename}`, filename };
     }

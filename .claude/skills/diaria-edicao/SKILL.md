@@ -238,7 +238,7 @@ Todos em `data/editions/{AAMMDD}/` (ex: `260418/`):
 - `01-categorized.md`, `01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg` (edições antigas pré-#192: `01-eia-real.jpg`/`01-eia-ia.jpg`)
 - `02-reviewed.md`
 - `03-social.md`
-- `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`
+- `04-d1-2x1.jpg`, `04-d2-2x1.jpg`, `04-d3-2x1.jpg` + cards `04-d{N}-4x5.jpg` (o 1:1 deixou de ser gerado no #12226)
 - `05-published.json`
 - `06-social-published.json`
 - `_internal/` — JSON intermediários, drafts, diffs, prompts

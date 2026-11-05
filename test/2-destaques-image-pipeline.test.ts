@@ -75,10 +75,8 @@ function writeBaseImages(dir: string): void {
     "01-eia-A.jpg",
     "01-eia-B.jpg",
     "04-d1-2x1.jpg",
-    "04-d1-1x1.jpg",
     "04-d2-2x1.jpg",
-    "04-d2-1x1.jpg",
-  ]) {
+  ]) { // #12226: sem 1x1
     writeFileSync(join(dir, name), fakeBytes);
   }
 }
@@ -86,7 +84,7 @@ function writeBaseImages(dir: string): void {
 /** Escreve adicionalmente as imagens D3 */
 function writeD3Images(dir: string): void {
   const fakeBytes = Buffer.alloc(2048, 0xff);
-  for (const name of ["04-d3-2x1.jpg", "04-d3-1x1.jpg"]) {
+  for (const name of ["04-d3-2x1.jpg"]) { // #12226: sem 1x1
     writeFileSync(join(dir, name), fakeBytes);
   }
 }
@@ -130,17 +128,18 @@ describe("readDestaqueCount (#2352)", () => {
 // ---------------------------------------------------------------------------
 
 describe("REQUIRED_IMAGES exports backward-compat (#2352)", () => {
-  it("REQUIRED_IMAGES (full 3D) ainda tem 8 entries", () => {
-    assert.equal(REQUIRED_IMAGES.length, 8);
+  it("REQUIRED_IMAGES (full 3D) tem 5 entries — sem 1x1 desde o #12226", () => {
+    assert.equal(REQUIRED_IMAGES.length, 5);
+    assert.ok(!REQUIRED_IMAGES.some((n) => n.endsWith("-1x1.jpg")), "1x1 não é mais exigido (#12226)");
   });
 
-  it("REQUIRED_IMAGES_BASE (sem D3) tem 6 entries", () => {
-    assert.equal(REQUIRED_IMAGES_BASE.length, 6);
+  it("REQUIRED_IMAGES_BASE (sem D3) tem 4 entries", () => {
+    assert.equal(REQUIRED_IMAGES_BASE.length, 4);
     assert.ok(!REQUIRED_IMAGES_BASE.some((n) => n.includes("d3")), "BASE não deve ter d3");
   });
 
-  it("REQUIRED_IMAGES_D3 tem 2 entries", () => {
-    assert.equal(REQUIRED_IMAGES_D3.length, 2);
+  it("REQUIRED_IMAGES_D3 tem 1 entry", () => {
+    assert.equal(REQUIRED_IMAGES_D3.length, 1);
     assert.ok(REQUIRED_IMAGES_D3.every((n) => n.includes("d3")), "D3 list deve ter só d3");
   });
 });
@@ -170,19 +169,19 @@ describe("Stage-3 checkAllImagesExist 2-destaque (#2352)", () => {
     try {
       // Só d1 — sem d2, sem d3
       const fakeBytes = Buffer.alloc(2048, 0xff);
-      for (const name of ["01-eia-A.jpg", "01-eia-B.jpg", "04-d1-2x1.jpg", "04-d1-1x1.jpg"]) {
+      for (const name of ["01-eia-A.jpg", "01-eia-B.jpg", "04-d1-2x1.jpg"]) {
         writeFileSync(join(dir, name), fakeBytes);
       }
       const v = checkAllImagesExist(dir);
-      // d2_2x1 e d2_1x1 ausentes → 2 violations; d3 NÃO conta
+      // d2_2x1 ausente → violação; d3 NÃO conta; 1x1 não é exigido (#12226)
       const rules = v.map((x) => x.message);
       assert.ok(
         rules.some((m) => m.includes("04-d2-2x1.jpg")),
         `Esperava violação pra 04-d2-2x1.jpg. Violations: ${JSON.stringify(rules)}`,
       );
       assert.ok(
-        rules.some((m) => m.includes("04-d2-1x1.jpg")),
-        `Esperava violação pra 04-d2-1x1.jpg`,
+        !rules.some((m) => m.includes("-1x1.jpg")),
+        `1x1 não deve gerar violação (#12226). Violations: ${JSON.stringify(rules)}`,
       );
       assert.ok(
         !rules.some((m) => m.includes("04-d3")),
@@ -204,15 +203,15 @@ describe("Stage-3 checkAllImagesExist 2-destaque (#2352)", () => {
         `Edição 3D deve falhar quando d3-2x1 ausente. Violations: ${JSON.stringify(msgs)}`,
       );
       assert.ok(
-        msgs.some((m) => m.includes("04-d3-1x1.jpg")),
-        `Edição 3D deve falhar quando d3-1x1 ausente`,
+        !msgs.some((m) => m.includes("-1x1.jpg")),
+        `1x1 não deve gerar violação (#12226)`,
       );
     } finally {
       cleanup();
     }
   });
 
-  it("REGRESSÃO 3-destaque: PASSA com todos os 8 arquivos presentes", () => {
+  it("REGRESSÃO 3-destaque: PASSA com todos os 5 arquivos presentes (sem 1x1, #12226)", () => {
     const { dir, cleanup } = makeEdition(3);
     try {
       writeBaseImages(dir);

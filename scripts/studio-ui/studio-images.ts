@@ -16,7 +16,7 @@
  *      detecta violação da regra editorial — "Noite Estrelada", resolução em
  *      pixels — ANTES de gastar API call; exit 1 = violação encontrada,
  *      vira `job.error` sem chamar `image-generate.ts`)
- *   2. `image-generate.ts --destaque d{N} --force` (par 2x1/1x1 — chamada
+ *   2. `image-generate.ts --destaque d{N} --force` (2x1; sem 1x1 desde o #12226 — chamada
  *      Gemini/ComfyUI PAGA, ver `platform.config.json` → `image_generator`)
  *   3. `image-generate.ts --destaque d{N} --ratio 4x5 --force` (4x5 nativo —
  *      2ª chamada paga)
@@ -125,7 +125,7 @@ export type ImagesGallery =
 function destaqueImageSpecs(d: string): { type: string; label: string; filename: string }[] {
   const specs = [
     { type: "2x1", label: "Hero 2:1 (e-mail)", filename: `04-${d}-2x1.jpg` },
-    { type: "1x1", label: "Quadrado 1:1", filename: `04-${d}-1x1.jpg` },
+    // #12226: o "Quadrado 1:1" saiu da galeria — o 1:1 deixou de ser gerado.
     { type: "4x5", label: "Card feed 4:5 (capa do carrossel)", filename: `04-${d}-4x5.jpg` },
   ];
   for (const slot of CAROUSEL_SLIDE_SLOTS) {
@@ -266,7 +266,7 @@ export function buildRegenerateSteps(
     // gastar a 1ª chamada Gemini/ComfyUI. Exit 1 (violação) vira job.error
     // sem chamar image-generate.ts; exit 0 segue pro passo pago.
     { label: "lint-image-prompt", script: "scripts/lint-image-prompt.ts", args: [editorialPath] },
-    { label: `image-generate (${target}, 2x1/1x1)`, script: "scripts/image-generate.ts", args: [...genArgs, "--force"] },
+    { label: `image-generate (${target}, 2x1)`, script: "scripts/image-generate.ts", args: [...genArgs, "--force"] },
     { label: `image-generate (${target}, 4x5 nativo)`, script: "scripts/image-generate.ts", args: [...genArgs, "--ratio", "4x5", "--force"] },
     { label: "gen-social-card-4x5", script: "scripts/gen-social-card-4x5.ts", args: ["--edition-dir", `${editionDir}/`, "--destaque", target] },
     { label: "gen-carousel-cards", script: "scripts/gen-carousel-cards.ts", args: ["--edition-dir", `${editionDir}/`, "--force"] },

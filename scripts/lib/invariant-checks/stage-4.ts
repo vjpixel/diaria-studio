@@ -1893,16 +1893,15 @@ function isCurrentStarryNight(editionDir: string, r: CropReviewFileEntry, falseP
 }
 
 /**
- * #12226: achado de CROP (categoria `crop`, default) sobre o ratio `1x1` não
- * chega ao gate. O 1:1 (`04-d{N}-1x1.jpg`) não vai ao leitor: a newsletter usa
- * o 2:1 e o social usa o card 4:5 e o carrossel (`06-public-images.json` não
- * tem chave `d{N}_1x1` desde o #7399). Avisar que "o crop 1:1 corta a mão do
- * robô" era ruído sobre uma imagem que ninguém vê. O 4:5 continua avisando, e
- * o achado de ESTILO (Noite Estrelada, #8989) vale em qualquer ratio — no par
- * 1x1 ele olha o 2:1, que é a imagem da newsletter.
+ * #12226: achado de CROP (categoria `crop`, default) sobre o ratio `1x1`
+ * (veredito legado) ou `2x1` não chega ao gate. O 1:1 não vai ao leitor (e
+ * deixou de ser gerado); o par `2x1` é a arte original da newsletter, sem
+ * corte a julgar. O 4:5 continua avisando, e o achado de ESTILO (Noite
+ * Estrelada, #8989) vale em qualquer ratio — o par `2x1` existe justamente pra
+ * ele olhar a imagem da newsletter.
  */
 export function isSilencedCropWarn(entry: { ratio?: string; categoria?: string }): boolean {
-  return entry.ratio === "1x1" && (entry.categoria ?? "crop") === "crop";
+  return (entry.ratio === "1x1" || entry.ratio === "2x1") && (entry.categoria ?? "crop") === "crop";
 }
 
 function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
@@ -2993,8 +2992,9 @@ export function checkBoxDivulgacaoExpiry(
  * (`04-d{N}-4x5.jpg` no disco — mandatório desde a decisão 260728, ver
  * `checkCard4x5Exists` em stage-3.ts) mas o upload (`06-public-images.json`)
  * não tem a entry `d{N}_4x5`, avisar no gate — silêncio aqui publica o post
- * no formato ERRADO (1:1 sem título) sem ninguém perceber, porque os
- * publishers fazem fallback silencioso (`selectSocialCardImageFile`).
+ * no formato ERRADO (hero 2:1 sem título) sem ninguém perceber, porque o
+ * Instagram cai na URL pública do hero quando falta `d{N}_4x5` (o arquivo
+ * LOCAL do 4:5 não tem mais fallback pro 1:1 desde o #12226).
  *
  * Severity "warning", não "error": a issue original pede "avisar no gate",
  * não bloquear — `upload-images-public.ts` trata a entry `d{N}_4x5` como
