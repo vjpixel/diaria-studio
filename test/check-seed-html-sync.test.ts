@@ -290,6 +290,65 @@ describe("#7864: confirmHomeDrift/filterConfirmedDrift — falso-positivo do par
     assert.equal(confirmHomeDrift(REF, spawnFn, BASE), true);
   });
 
+  describe("#12319: PR da página da edição avaliado depois da meia-noite BRT", () => {
+    // Cenário real do PR #12317: a página da edição 261106 foi publicada às
+    // 23:59 BRT de 05/11 (sitemap + p/{slug}, home sem a edição, que ainda
+    // era futura) e o CI rodou às 00:00 BRT de 06/11, quando ela já era hoje.
+    const SITEMAP_BASE = [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<urlset>",
+      "<url><loc>https://diar.ia.br/p/edicao-ontem/</loc><lastmod>2026-11-05</lastmod></url>",
+      "</urlset>",
+    ].join("");
+    const PAGE = fakePageHtml("Edição de ontem", "ontem");
+    const NIGHT_BEFORE = new Date("2026-11-06T02:59:00Z"); // 23:59 BRT de 05/11
+    const AFTER_MIDNIGHT = new Date("2026-11-06T03:00:30Z"); // 00:00 BRT de 06/11
+
+    function homeFor(sitemap: string, pages: Record<string, string>, todayBrt: string): string {
+      const feed = buildHomeFeed(sitemap, (slug) => pages[slug] ?? null, 7, { todayBrt });
+      return buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1) });
+    }
+
+    function trees(added: { slug: string; lastmod: string }) {
+      const baseHome = homeFor(SITEMAP_BASE, { "edicao-ontem": PAGE }, "2026-11-05");
+      const base = {
+        "workers/site/public/sitemap.xml": SITEMAP_BASE,
+        "workers/site/public/p/edicao-ontem/index.html": PAGE,
+        "workers/site/public/index.html": baseHome,
+      };
+      const head = {
+        ...base,
+        "workers/site/public/sitemap.xml": SITEMAP_BASE.replace(
+          "</urlset>",
+          `<url><loc>https://diar.ia.br/p/${added.slug}/</loc><lastmod>${added.lastmod}</lastmod></url></urlset>`,
+        ),
+        [`workers/site/public/p/${added.slug}/index.html`]: fakePageHtml("Edição nova", "nova"),
+        // PR só de página + sitemap: index.html igual ao da base.
+      };
+      return mockGitShowRefs({ [REF]: head, [BASE]: base });
+    }
+
+    it("edição de hoje entrando no sitemap sem regenerar a home NÃO é drift (CI depois da meia-noite)", () => {
+      const spawnFn = trees({ slug: "edicao-hoje", lastmod: "2026-11-06" });
+      assert.equal(confirmHomeDrift(REF, spawnFn, BASE, AFTER_MIDNIGHT), false);
+    });
+
+    it("mesma PR avaliada na noite anterior também passa (edição ainda futura)", () => {
+      const spawnFn = trees({ slug: "edicao-hoje", lastmod: "2026-11-06" });
+      assert.equal(confirmHomeDrift(REF, spawnFn, BASE, NIGHT_BEFORE), false);
+    });
+
+    it("edição ANTIGA acrescentada sem regenerar a home continua reprovando", () => {
+      const spawnFn = trees({ slug: "edicao-antiga", lastmod: "2026-11-01" });
+      assert.equal(confirmHomeDrift(REF, spawnFn, BASE, AFTER_MIDNIGHT), true);
+    });
+
+    it("edição com data de ontem acrescentada sem regenerar a home continua reprovando", () => {
+      const spawnFn = trees({ slug: "edicao-ontem-2", lastmod: "2026-11-05" });
+      assert.equal(confirmHomeDrift(REF, spawnFn, BASE, AFTER_MIDNIGHT), true);
+    });
+  });
+
   it("#10509: re-render da base que lança cai no fail-safe (drift)", () => {
     const head = { ...baseFiles(), "workers/site/public/index.html": STALE };
     const spawnFn = mockGitShowRefs({ [REF]: head, [BASE]: {} });

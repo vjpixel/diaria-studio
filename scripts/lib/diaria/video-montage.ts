@@ -51,6 +51,8 @@ export interface Segment {
   end: number;
   text: string;
   no_speech_prob?: number;
+  /** Log-probabilidade média do segmento; transcript anterior ao #12321 não traz. */
+  avg_logprob?: number;
   words?: Word[];
 }
 
@@ -69,15 +71,24 @@ export function transcriptWords(t: Transcript): Word[] {
 
 /** Filtro de confiabilidade exclusivo da revisão (#12271). */
 export function reviewTranscriptWords(t: Transcript): Word[] {
-  return t.segments.filter((s) => (s.no_speech_prob ?? 0) < 0.6 &&
+  return t.segments.filter((s) => !isProbableSilence(s) &&
     !/^(transcricaoelegendaspedronegri|legendaspelacomunidadeamaraorg)$/.test(normalizeToken(s.text)))
     .flatMap((s) => s.words ?? []).filter(isReliableReviewWord);
 }
 
-/** Whisper inventa palavras instantâneas no silêncio (#12271). */
+/**
+ * Silêncio só com as duas condições juntas, como o próprio Whisper decide (#12321):
+ * `no_speech_prob` alto sozinho acontece em fala nítida. Sem `avg_logprob`
+ * (transcript anterior ao #12321) o segmento fica, pois falso `fala-faltando` custa mais.
+ */
+function isProbableSilence(s: Segment): boolean {
+  return (s.no_speech_prob ?? 0) >= 0.6 && s.avg_logprob !== undefined && s.avg_logprob < -1;
+}
+
+/** Whisper inventa palavras instantâneas no silêncio (#12271); 1 quadro de 20 ms é fala (#12321). */
 function isReliableReviewWord(w: Word): boolean {
   return w.text.trim() !== "" && Number.isFinite(w.start) && Number.isFinite(w.end) &&
-    Math.round((w.end - w.start) * 1000000) > 20000;
+    Math.round((w.end - w.start) * 1000000) >= 20000;
 }
 
 /** Fim do som medido pelo silencedetect; silêncio digital inteiro termina em zero. */
