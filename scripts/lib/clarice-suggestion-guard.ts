@@ -265,7 +265,7 @@ export function classifyClariceNoise(from: string, to: string, text?: string): C
 
 export interface FilteredClariceSuggestions<T> {
   kept: T[];
-  dropped: Array<{ suggestion: T; reason: ClariceNoiseReason | "invalid_shape" }>;
+  dropped: Array<{ suggestion: T; reason: ClariceNoiseReason | "invalid_shape" | "fact_check_protected" }>;
 }
 
 /**
@@ -273,8 +273,13 @@ export interface FilteredClariceSuggestions<T> {
  * que o LLM aplica "todas as sugestões" à mão (post semanal, artigo especial,
  * stack, voto-tema, apoiadores) não passam por `clarice-apply.ts`; o CLI
  * `scripts/clarice-filter.ts` usa isto pra que eles recusem o mesmo ruído.
+ * `protection` no Stage 4 retém mudanças factuais para revisão humana:
+ * qualquer sugestão sobre trecho corrigido, e remoções de verbos condicionais.
  */
-export function filterClariceSuggestions<T>(suggestions: T[]): FilteredClariceSuggestions<T> {
+export function filterClariceSuggestions<T>(
+  suggestions: T[],
+  protection?: { correctedTexts: string[]; protectConditional: boolean },
+): FilteredClariceSuggestions<T> {
   const kept: T[] = [];
   const dropped: FilteredClariceSuggestions<T>["dropped"] = [];
   for (const s of suggestions) {
@@ -283,7 +288,17 @@ export function filterClariceSuggestions<T>(suggestions: T[]): FilteredClariceSu
       dropped.push({ suggestion: s, reason: "invalid_shape" });
       continue;
     }
-    const reason = classifyClariceNoise(o.from, o.to);
+    // Stage 4: não deixar a revisão linguística desfazer a revisão factual.
+    // from pode ser só uma palavra ("seria") dentro do trecho corrigido.
+    const conditional = /\b(?:seria|seriam|teria|teriam|poderia|poderiam|deveria|deveriam|estaria|estariam)\b/gi;
+    const removedConditional = (o.from.match(conditional) ?? []).some(
+      (word) => !(o.to as string).toLowerCase().includes(word.toLowerCase()),
+    );
+    const protectedChange = protection && o.from !== o.to && o.from.trim() !== "" && (
+      protection.correctedTexts.some((text) => text.includes(o.from as string) || (o.from as string).includes(text)) ||
+      (protection.protectConditional && removedConditional)
+    );
+    const reason = protectedChange ? "fact_check_protected" : classifyClariceNoise(o.from, o.to);
     if (reason) dropped.push({ suggestion: s, reason });
     else kept.push(s);
   }
