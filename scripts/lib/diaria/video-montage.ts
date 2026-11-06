@@ -2934,6 +2934,12 @@ export function parseSequenceIdVersion(xml: string): { version: number; hash: st
   return m ? { version: Number(m[1]), hash: m[2] } : null;
 }
 
+/** #12285: o `<sequence id>` versionado inteiro do XML já gravado (null em XML anterior ao #12111). */
+export function parseVersionedSequenceId(xml: string): string | null {
+  const m = /<sequence id="(seq-[a-z0-9-]+?-v\d+-[0-9a-f]{8})"/.exec(xml);
+  return m ? m[1] : null;
+}
+
 /**
  * A versão do XML deste build (#12111). Na 261104 o editor importou o V2 no
  * projeto em que já estava o V1, com o mesmo `<sequence id>` e o mesmo nome, e

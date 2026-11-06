@@ -640,9 +640,22 @@ export const SPEECH_DETECT = {
   topPercentile: 0.95,
 } as const;
 
+/**
+ * Quadros com som de cada envelope, já ordenados. O build pede vários
+ * percentis do mesmo envelope (piso e topo, em `extendIslandAttacks` e em
+ * `entryCutSoundWarnings`), e cada ordenação de um bruto de 20 min passa de
+ * 200 mil quadros: ordena uma vez por array e reusa (mesmo padrão de
+ * `thresholdCache`). Chave é o array, que não é mutado depois de medido.
+ */
+const sortedDbCache = new WeakMap<Float64Array, number[]>();
+
 /** Percentil `p` (0–1) dos quadros com som (o silêncio digital fica fora); null sem quadro útil. */
 function percentileDb(db: Float64Array, p: number): number | null {
-  const vals = Array.from(db).filter((d) => Number.isFinite(d) && d > ENVELOPE_DEFAULTS.floorDb).sort((a, b) => a - b);
+  let vals = sortedDbCache.get(db);
+  if (!vals) {
+    vals = Array.from(db).filter((d) => Number.isFinite(d) && d > ENVELOPE_DEFAULTS.floorDb).sort((a, b) => a - b);
+    sortedDbCache.set(db, vals);
+  }
   if (!vals.length) return null;
   return vals[Math.min(vals.length - 1, Math.max(0, Math.floor(p * vals.length)))];
 }

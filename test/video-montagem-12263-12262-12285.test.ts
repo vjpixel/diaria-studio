@@ -27,7 +27,7 @@ import {
   type Envelope,
   type FrameEnergy,
 } from "../scripts/lib/diaria/video-cut-refine.ts";
-import { AUDIO_CLEAN, AUDIO_CLEAN_MAX_PAUSE_DROP_DB, audioCleanFilter, audioCleanParams, makeMatcher, type Word } from "../scripts/lib/diaria/video-montage.ts";
+import { AUDIO_CLEAN, AUDIO_CLEAN_MAX_PAUSE_DROP_DB, audioCleanFilter, audioCleanParams, makeMatcher, parseVersionedSequenceId, type Word } from "../scripts/lib/diaria/video-montage.ts";
 import { applyYoutubeSrtCopy, mergeBuildPlan, sequenceXmlVersion, xmlVersionAt, youtubeSrtCopyDecision } from "../scripts/video-montagem.ts";
 
 const w = (start: number, end: number, text: string): Word => ({ start, end, text });
@@ -122,6 +122,16 @@ describe("#12263 (2): o detector de fala recua até o ataque medido contra o pis
     assert.deepEqual(extendIslandAttacks(e, fixed), fixed);
     assert.equal(Math.round(speechNoiseFloors(e)!.fullDb), -40);
   });
+
+  it("percentis em cache por array: chamadas repetidas batem, e outro envelope não herda o piso do anterior", () => {
+    const a = frames(4, [[1.0, 2, -20]], -60);
+    const first = speechNoiseFloors(a);
+    assert.deepEqual(speechNoiseFloors(a), first);
+    assert.equal(Math.round(first!.fullDb), -60);
+    const b = frames(4, [[1.0, 2, -20]], -40);
+    assert.equal(Math.round(speechNoiseFloors(b)!.fullDb), -40);
+    assert.equal(Math.round(speechNoiseFloors(a, SPEECH_DETECT.topPercentile)!.fullDb), -20);
+  });
 });
 
 describe("#12263 (3): checagem do build, entrada que corta som", () => {
@@ -187,6 +197,27 @@ describe("#12285: a legenda do export só sai quando o XML do horizontal muda", 
     const prev = mergeBuildPlan({ next: { ...base, hash: "H", plans: [plan("youtube", "V2"), plan("outras-redes", "V8", 1920, 1080)] }, pickedKeys: new Set(["youtube", "outras-redes"]), prev: null, now: 100, xmlIds: { youtube: ID_V2, "outras-redes": "x" } }).plan;
     const r = mergeBuildPlan({ next: { ...base, hash: "H", plans: [plan("youtube", "V2"), plan("outras-redes", "V9", 1920, 1080)] }, pickedKeys: new Set(["outras-redes"]), prev, now: 500, xmlIds: { "outras-redes": "y" } });
     assert.deepEqual(r.plan.xmlVersions?.youtube, { id: ID_V2, since: 100 });
+  });
+
+  it("transição: plano anterior ao #12285 e XML do disco com o mesmo id → since herda o builtAt, não nasce now", () => {
+    const legacy = { ...base, hash: "H", plans: [plan("youtube", "V2")], builtAt: { youtube: 300 } } as Parameters<typeof mergeBuildPlan>[0]["prev"];
+    const same = mergeBuildPlan({ next: { ...base, hash: "H", plans: [plan("youtube", "V2")] }, pickedKeys: new Set(["youtube"]), prev: legacy, now: 900, xmlIds: { youtube: ID_V2 }, prevXmlIds: { youtube: ID_V2 } });
+    assert.deepEqual(same.plan.xmlVersions?.youtube, { id: ID_V2, since: 300 });
+    // registro --from-final anterior ao PR (sem id), export às 500, depois do XML de 300: a legenda do export fica
+    assert.equal(
+      youtubeSrtCopyDecision({ existing: "X", recordedSha256: createHash("sha256").update("X").digest("hex"), force: false, recordedFromExport: true, recordedExportAtMs: 500, sequenceBuiltAtMs: same.plan.xmlVersions!.youtube.since, sequenceId: ID_V2 }),
+      "keep-from-export",
+    );
+    // XML do disco com outro id (ou ausente): a versão conta como nova
+    const changed = mergeBuildPlan({ next: { ...base, hash: "H", plans: [plan("youtube", "V2")] }, pickedKeys: new Set(["youtube"]), prev: legacy, now: 900, xmlIds: { youtube: ID_V2 }, prevXmlIds: { youtube: ID_V3 } });
+    assert.deepEqual(changed.plan.xmlVersions?.youtube, { id: ID_V2, since: 900 });
+    const noDisk = mergeBuildPlan({ next: { ...base, hash: "H", plans: [plan("youtube", "V2")] }, pickedKeys: new Set(["youtube"]), prev: legacy, now: 900, xmlIds: { youtube: ID_V2 } });
+    assert.deepEqual(noDisk.plan.xmlVersions?.youtube, { id: ID_V2, since: 900 });
+  });
+
+  it("parseVersionedSequenceId lê o id inteiro do XML gravado (null antes do #12111)", () => {
+    assert.equal(parseVersionedSequenceId(`<xmeml><sequence id="${ID_V2}"><name>x</name>`), ID_V2);
+    assert.equal(parseVersionedSequenceId(`<sequence id="seq-1-youtube"><name>x</name>`), null);
   });
 
   it("plano anterior ao #12285 (sem xmlVersions): cai no builtAt do #12209", () => {

@@ -215,6 +215,7 @@ import {
   forcedAlignmentNotes,
   ganchoWarning,
   parseSequenceIdVersion,
+  parseVersionedSequenceId,
   pickXmlVersion,
   sequenceNameVersion,
   versionedSequenceId,
@@ -1009,6 +1010,13 @@ export function mergeBuildPlan(input: {
   now: number;
   /** #12285: o `<sequence id>` gravado neste build, por sequência reconstruída. */
   xmlIds?: Readonly<Record<string, string>>;
+  /**
+   * #12285: o `<sequence id>` do XML que estava no disco ANTES deste build o
+   * sobrescrever, por sequência. Só serve à transição de um plano anterior ao
+   * #12285 (sem `xmlVersions`): mesmo id = o XML não mudou, e o `since` herda o
+   * `builtAt` do build anterior em vez de nascer `now`.
+   */
+  prevXmlIds?: Readonly<Record<string, string>>;
 }): { plan: PlanFile; kept: string[]; dropped: string[] } {
   const { next, pickedKeys, prev, now } = input;
   const xmlVersions: Record<string, SequenceXmlVersion> = {};
@@ -1035,7 +1043,15 @@ export function mergeBuildPlan(input: {
       const id = input.xmlIds?.[k];
       if (id) {
         const old = prev?.xmlVersions?.[k];
-        xmlVersions[k] = { id, since: old && old.id === id && Number.isFinite(old.since) ? old.since : now };
+        const legacyBuiltAt = prev?.builtAt?.[k];
+        const since =
+          old && old.id === id && Number.isFinite(old.since)
+            ? old.since
+            : // plano anterior ao #12285: sem versão gravada, o XML do disco diz se o id é o mesmo
+              !old && input.prevXmlIds?.[k] === id && typeof legacyBuiltAt === "number" && Number.isFinite(legacyBuiltAt) && legacyBuiltAt > 0
+              ? legacyBuiltAt
+              : now;
+        xmlVersions[k] = { id, since };
       }
       continue;
     }
@@ -2202,11 +2218,21 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
   const xmlIds: Record<string, string> = {};
+  const prevXmlIds: Record<string, string> = {};
   for (const p of picked) {
     const xmlPath = join(ctx.outDir, xmlFileName(p.spec.name));
     const version = sequenceNameVersion(p.spec.name);
     const sequenceIds = version !== null ? { [sequenceKey(p.spec)]: versionedSequenceId(sequenceKey(p.spec), version, versionHashes.get(p) ?? hash) } : undefined;
     if (sequenceIds) xmlIds[sequenceKey(p.spec)] = sequenceIds[sequenceKey(p.spec)];
+    // #12285: o id do XML que este build vai sobrescrever (transição de plano sem xmlVersions)
+    if (existsSync(xmlPath)) {
+      try {
+        const prevId = parseVersionedSequenceId(readFileSync(xmlPath, "utf8"));
+        if (prevId) prevXmlIds[sequenceKey(p.spec)] = prevId;
+      } catch (e) {
+        console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
+      }
+    }
     writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
@@ -2224,6 +2250,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     prev: prevPlan,
     now: Date.now(),
     xmlIds,
+    prevXmlIds,
   });
   if (merged.dropped.length) console.error(`[aviso] --seq ${seq}: ${merged.dropped.join(", ")} fora do plan.json (entradas mudaram desde o build delas, e o XML delas é o antigo); rode build sem --seq, ou com --seq de cada uma, antes de srt/preview delas (#11969)`);
   if (merged.kept.length) console.error(`[video-montagem] --seq ${seq}: ${merged.kept.join(", ")} mantida(s) no plan.json como o build anterior gravou (#11969)`);
