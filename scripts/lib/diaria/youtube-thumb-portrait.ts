@@ -55,7 +55,19 @@ export const PORTRAIT_EXPRESSIONS = {
   serio: "serious and focused: neutral mouth closed",
   ironico: "ironic: a slight half smile on one side, one eyebrow raised",
   intrigado: "intrigued: head tilted slightly, one eyebrow raised, eyes narrowed",
+  feliz: "happy: a warm natural smile, cheeks lifted, eyes softly crinkled",
+  animado: "excited and enthusiastic: a broad smile, eyebrows raised, eyes sparkling and alert",
+  satisfeito: "satisfied and pleased: a relaxed closed-mouth smile, cheeks slightly lifted",
 } as const;
+
+/** Lê a expressão do prompt atual, inclusive quando o editor alterou o positive à mão. */
+export function portraitExpressionLabel(prompt: { positive?: unknown }): string {
+  if (typeof prompt.positive !== "string") throw new Error("prompt de retrato sem positive textual");
+  const face = /Facial expression:\s*([^.!?]+)/i.exec(prompt.positive)?.[1]?.trim();
+  if (!face) throw new Error("prompt de retrato sem Facial expression: no positive");
+  const known = Object.entries(PORTRAIT_EXPRESSIONS).find(([, description]) => description === face);
+  return known?.[0] ?? face;
+}
 
 /** Lado da capa em que o retrato entra (#12123): `left` nos layouts `bottom`/`top`, `right` no `right`. */
 export type PortraitSide = "left" | "right";

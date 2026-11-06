@@ -95,6 +95,7 @@ import {
   parseExpressions,
   portraitOptionFileName,
   portraitPromptFileName,
+  portraitExpressionLabel,
   type PortraitsMeta,
 } from "./lib/diaria/youtube-thumb-portrait.ts";
 import sharp from "sharp";
@@ -272,8 +273,12 @@ async function portraitSheet(dir: string): Promise<number> {
     return 1;
   }
   const sheet = join(outDir, THUMB_PORTRAITS_SHEET);
+  const labels = meta.expressions.map((_, i) => {
+    const promptPath = join(outDir, portraitPromptFileName(i + 1));
+    return portraitExpressionLabel(JSON.parse(readFileSync(promptPath, "utf8")));
+  });
   writeFileAtomic(sheet, await buildFrameSheet(paths.map((p) => readFileSync(p))));
-  console.error(`[ok] folha com ${paths.length} retratos (${meta.expressions.map((e, i) => `${i + 1}=${e}`).join(", ")}) — mostre ${sheet} ao editor e rode --pick-portrait N`);
+  console.error(`[ok] folha com ${paths.length} retratos (${labels.map((e, i) => `${i + 1}=${e}`).join(", ")}) — mostre ${sheet} ao editor e rode --pick-portrait N`);
   console.log(sheet);
   return 0;
 }
