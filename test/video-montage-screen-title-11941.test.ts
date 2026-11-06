@@ -146,14 +146,14 @@ describe("#11941 título da vertical: caixa única, tamanho e fundo", () => {
     // Força cada limite sem alterar as métricas de texto em produção.
     const original = SCREEN_TITLE_STYLE.cornerRadiusPx;
     try {
-      SCREEN_TITLE_STYLE.cornerRadiusPx = 1000;
+      Object.defineProperty(SCREEN_TITLE_STYLE, "cornerRadiusPx", { value: 1000 });
       for (const title of [TITLE, "IA"]) {
         const { box } = screenTitleLayout(title, 540, 960);
         const radius = Math.min(box.w, box.h) / 2;
         assert.match(screenTitleSvg(title, 540, 960), new RegExp(`rx="${radius}" ry="${radius}"`));
       }
     } finally {
-      SCREEN_TITLE_STYLE.cornerRadiusPx = original;
+      Object.defineProperty(SCREEN_TITLE_STYLE, "cornerRadiusPx", { value: original });
     }
   });
 
