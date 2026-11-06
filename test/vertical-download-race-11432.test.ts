@@ -20,7 +20,10 @@ import { linkedinVerticalDownloadBusy, TIMER_LOCK_FILE as LINKEDIN_LOCK, TIMER_L
 import { THREADS_TIMER_LOCK_FILE, verticalDownloadInProgress } from "../scripts/shorts-threads-profile-timer.ts";
 import { SHORTS_LINKEDIN_TIMER_LOCK_FILE, SHORTS_THREADS_TIMER_LOCK_FILE, SHORTS_TIMER_LOCK_STALE_MS } from "../scripts/lib/diaria/vertical-download-guard.ts";
 
-const FAST = { downloadMs: 5_000, idleMs: 80 };
+// #12342: estes casos verificam posse/integridade do .part, não o watchdog.
+// I/O local pode levar >80ms no runner com a suíte inteira concorrente.
+// O timeout curto fica nos casos STALLED de drive-download-11082.test.ts.
+const FAST = { downloadMs: 15_000, idleMs: 5_000 };
 
 function tmp(): string {
   return mkdtempSync(join(tmpdir(), "vertical-race-11432-"));
@@ -81,6 +84,23 @@ describe("#11432 lado LinkedIn recua com o download do Threads em curso", () => 
 });
 
 describe("#11432 .part exclusivo (O_EXCL) no drive-download", () => {
+  it("#12342: download íntegro tolera I/O acima dos antigos 80ms do CI", async () => {
+    const dir = tmp();
+    try {
+      const dest = join(dir, "v.mp4");
+      const delayed: DriveDownloadDeps = {
+        async driveFetch() {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          return new Response(new Uint8Array([9, 8, 7, 6]), { headers: { "content-type": "video/mp4" } });
+        },
+      };
+      assert.equal(await downloadDriveFile(delayed, { id: "x", name: "v.mp4", size: "4" }, dest, FAST), 4);
+      assert.deepEqual([...readFileSync(dest)], [9, 8, 7, 6]);
+      assert.equal(existsSync(`${dest}.part`), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("2º download com .part fresco de outro processo: recusa e NÃO trunca nem apaga o .part dele", async () => {
     const dir = tmp();
     try {
