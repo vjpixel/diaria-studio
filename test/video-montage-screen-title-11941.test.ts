@@ -131,10 +131,30 @@ describe("#11941 título da vertical: caixa única, tamanho e fundo", () => {
   it("PNG de reserva: fundo preto a 70% atrás do texto, no tamanho novo", () => {
     const svg = screenTitleSvg(TITLE, 1080, 1920);
     const { box, fontPx } = screenTitleLayout(TITLE, 1080, 1920);
-    assert.match(svg, new RegExp(`<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" fill="#000000" fill-opacity="0.7"/>`));
+    assert.match(svg, new RegExp(`<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="24" ry="24" fill="#000000" fill-opacity="0.7"/>`));
     assert.ok(svg.indexOf("<rect") < svg.indexOf("<text"), "o fundo é desenhado antes (atrás) do texto");
     assert.match(svg, new RegExp(`font-size="${Math.round(fontPx)}"`));
     assert.doesNotMatch(svg, /font-size="80"/);
+  });
+
+  it("#12267: raio do PNG escala para 12 px em 540x960", () => {
+    assert.equal(SCREEN_TITLE_STYLE.cornerRadiusPx, 24);
+    assert.match(screenTitleSvg(TITLE, 540, 960), /rx="12" ry="12"/);
+  });
+
+  it("#12267: raio limitado à metade da altura e da largura da caixa", () => {
+    // Força cada limite sem alterar as métricas de texto em produção.
+    const original = SCREEN_TITLE_STYLE.cornerRadiusPx;
+    try {
+      SCREEN_TITLE_STYLE.cornerRadiusPx = 1000;
+      for (const title of [TITLE, "IA"]) {
+        const { box } = screenTitleLayout(title, 540, 960);
+        const radius = Math.min(box.w, box.h) / 2;
+        assert.match(screenTitleSvg(title, 540, 960), new RegExp(`rx="${radius}" ry="${radius}"`));
+      }
+    } finally {
+      SCREEN_TITLE_STYLE.cornerRadiusPx = original;
+    }
   });
 
   it("modo png não ganha matte extra: o fundo já vem no PNG", () => {
