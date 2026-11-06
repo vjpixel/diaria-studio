@@ -2,11 +2,11 @@ import { it } from "node:test";
 import assert from "node:assert/strict";
 import { audioEndFromSilences, parseSilenceDetect, reviewPreview, reviewTranscriptWords, transcriptWords, mapWordsToSequence, segmentCues, cuesToSrt } from "../scripts/lib/diaria/video-montage.ts";
 
-it("#12271 filtra duração até 20 ms, silêncio provável e créditos alucinados", () => {
+it("#12271 filtra duração abaixo de 20 ms, silêncio provável e créditos alucinados", () => {
   const real = { start: 0, end: 0.4, text: "Olá" };
   const words = reviewTranscriptWords({ segments: [
-    { start: 0, end: 1, text: "Olá", words: [real, { start: 0.5, end: 0.52, text: "aí" }, { start: 1, end: 1, text: "Siga" }] },
-    { start: 1, end: 2, text: "E aí E aí", no_speech_prob: 0.9, words: [{ start: 1, end: 2, text: "E aí E aí" }] },
+    { start: 0, end: 1, text: "Olá", words: [real, { start: 0.5, end: 0.519, text: "aí" }, { start: 1, end: 1, text: "Siga" }] },
+    { start: 1, end: 2, text: "E aí E aí", no_speech_prob: 0.9, avg_logprob: -1.4, words: [{ start: 1, end: 2, text: "E aí E aí" }] },
     { start: 2, end: 3, text: "Transcrição e Legendas Pedro Negri", words: [{ start: 2, end: 3, text: "Transcrição" }] },
   ] });
   assert.deepEqual(words, [real]);
@@ -49,5 +49,21 @@ it("#12271 preserva fala curta e no_speech alto na montagem e no SRT", () => {
   assert.deepEqual(mapped, legitimate);
   const srt = cuesToSrt(segmentCues(mapped));
   assert.match(srt, /Olá e a todos/);
-  assert.deepEqual(reviewTranscriptWords(transcript), [legitimate[0]]);
+  assert.deepEqual(reviewTranscriptWords(transcript), [legitimate[0], legitimate[3]]);
+});
+
+it("#12321 mantém no review fala real com no_speech_prob alto e avg_logprob bom", () => {
+  const spoken = [
+    { start: 0, end: 0.3, text: "e" },
+    { start: 0.3, end: 0.32, text: "a" },
+    { start: 0.32, end: 0.7, text: "todos" },
+    { start: 0.7, end: 0.9, text: "os" },
+    { start: 0.9, end: 1.4, text: "leitores." },
+  ];
+  const words = reviewTranscriptWords({ segments: [
+    { start: 0, end: 1.4, text: "e a todos os leitores.", no_speech_prob: 0.7, avg_logprob: -0.2, words: spoken },
+    { start: 2, end: 3, text: "E aí", no_speech_prob: 0.7, avg_logprob: -1.2, words: [{ start: 2, end: 3, text: "E aí" }] },
+  ] });
+  assert.deepEqual(words, spoken);
+  assert.deepEqual(reviewPreview({ words, script: "e a todos os leitores.", cuts: [], durationS: 2, audioEndS: 1.4 }), []);
 });
