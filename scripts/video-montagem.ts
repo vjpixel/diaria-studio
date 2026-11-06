@@ -2045,6 +2045,20 @@ export function titlePngXmlPath(mediaPath: string, edition: string, corte?: stri
   return `${p.slice(0, p.lastIndexOf("/") + 1)}${titlePngFileName(edition, corte)}`;
 }
 
+/** #12255: identidade pelo SVG preserva o PNG que cada XML antigo referencia. */
+export async function renderVersionedTitlePng(input: {
+  outDir: string; mediaPath: string; edition: string; corte?: string;
+  text: string; width: number; height: number;
+}): Promise<{ png: string; xmlPath: string }> {
+  const svg = screenTitleSvg(input.text, input.width, input.height);
+  const hash = createHash("sha256").update(svg).digest("hex").slice(0, 16);
+  const name = titlePngFileName(input.edition, input.corte).replace(/\.png$/, `-${hash}.png`);
+  const png = join(input.outDir, name);
+  await sharp(Buffer.from(svg)).png().toFile(png);
+  const xmlPath = titlePngXmlPath(input.mediaPath, input.edition, input.corte).replace(/[^/]+$/, name);
+  return { png, xmlPath };
+}
+
 /** Título do D1 em `02-reviewed.md` da edição; ausente ou sem D1 = null. */
 function readD1Title(edition: string): string | null {
   const path = join(editionDirFor(edition), "02-reviewed.md");
@@ -2174,9 +2188,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   if (titled) {
     const t = resolveScreenTitle({ blocksTitle: file.screenTitle, d1Title: readD1Title(ctx.edition) });
     if (t.text) {
-      const png = join(ctx.outDir, titlePngFileName(ctx.edition));
-      await sharp(Buffer.from(screenTitleSvg(t.text, titled.spec.width, titled.spec.height))).png().toFile(png);
-      screenTitle = screenTitleXmlFor(titleMode === "text" ? "text" : "png", t.text, titlePngXmlPath(mediaPath, ctx.edition));
+      const { png, xmlPath } = await renderVersionedTitlePng({ outDir: ctx.outDir, mediaPath, edition: ctx.edition, text: t.text, width: titled.spec.width, height: titled.spec.height });
+      screenTitle = screenTitleXmlFor(titleMode === "text" ? "text" : "png", t.text, xmlPath);
       console.error(
         `[premissa] título na vertical (${t.how === "blocks" ? "screenTitle do blocks.json" : "título do D1; screenTitle no blocks.json sobrepõe"}): "${t.text}", ` +
           (titleMode === "png"
@@ -2200,9 +2213,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         screenTitleByCorte[corte] = null;
         continue;
       }
-      const png = join(ctx.outDir, titlePngFileName(ctx.edition, corte));
-      await sharp(Buffer.from(screenTitleSvg(t.text, p.spec.width, p.spec.height))).png().toFile(png);
-      screenTitleByCorte[corte] = screenTitleXmlFor(titleMode === "text" ? "text" : "png", t.text, titlePngXmlPath(mediaPath, ctx.edition, corte));
+      const { png, xmlPath } = await renderVersionedTitlePng({ outDir: ctx.outDir, mediaPath, edition: ctx.edition, corte, text: t.text, width: p.spec.width, height: p.spec.height });
+      screenTitleByCorte[corte] = screenTitleXmlFor(titleMode === "text" ? "text" : "png", t.text, xmlPath);
       console.error(
         `[premissa] título do corte "${corte}" (screenTitle da sequência): "${t.text}", ` +
           (titleMode === "text"

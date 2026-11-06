@@ -1076,5 +1076,17 @@
       "https://www.straiker.ai/blog/inside-carliy0s-how-cybercartel-used-multiple-ai-models-to-attack-latin-american-banks"
     ],
     "editionTitle": "Hackers usam Claude e Grok contra bancos"
+  },
+  {
+    "date": "2026-11-03",
+    "editionSlug": "so-o-claude-opus-5-5-supera-a-ia-aberta-da-mistral-no-teste-as-cegas",
+    "url": "https://diar.ia.br/p/so-o-claude-opus-5-5-supera-a-ia-aberta-da-mistral-no-teste-as-cegas",
+    "matchedHeadlines": [
+      "Só o Claude Opus 5.5 supera a IA aberta da Mistral no teste às cegas"
+    ],
+    "primarySourceUrls": [
+      "https://mistral.ai/news/mistral-large-4-oss/"
+    ],
+    "editionTitle": "Só o Claude Opus 5.5 supera a IA aberta da Mistral no teste às cegas"
   }
 ]

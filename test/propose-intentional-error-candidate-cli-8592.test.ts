@@ -15,6 +15,34 @@ import { tmpdir } from "node:os";
 import { main } from "../scripts/propose-intentional-error-candidate.ts";
 
 describe("#8592: CLI propose-intentional-error-candidate", () => {
+  it("#12330: consulta detecta entidade recente mesmo com outra grafia errada", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ie-12330-"));
+    const jsonl = join(dir, "history.jsonl");
+    const originalLog = console.log;
+    const logged: string[] = [];
+    console.log = (message: string) => logged.push(message);
+    try {
+      writeFileSync(jsonl, JSON.stringify({
+        edition: "261104", error_type: "ortografico", is_feature: false,
+        wrong_value: "Gemine", correct_value: "Gemini",
+      }) + "\n");
+      const args = ["--edition", "261106", "--jsonl", jsonl, "--check-wrong", "Gemeni"];
+      assert.equal(main(args), 0);
+      assert.deepEqual(JSON.parse(logged.pop()!).repeats, []);
+      assert.equal(main([...args, "--check-correct", "Gemini"]), 0);
+      assert.deepEqual(JSON.parse(logged.pop()!).repeats, [{
+        field: "correct_value", value: "Gemini", edition: "261104", past_value: "Gemini",
+      }]);
+      assert.equal(main([...args, "--check-correct", "Claude"]), 0);
+      assert.deepEqual(JSON.parse(logged.pop()!).repeats, []);
+      assert.equal(main([...args, "--check-correct", "Gemini", "--window-days", "1"]), 0);
+      assert.deepEqual(JSON.parse(logged.pop()!).repeats, []);
+    } finally {
+      console.log = originalLog;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("sem --md nem --edition-dir → exit 2 (uso inválido)", () => {
     const originalError = console.error;
     const logged: string[] = [];
