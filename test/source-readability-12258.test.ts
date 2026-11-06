@@ -46,9 +46,27 @@ describe("assessSourceReadability (#12258)", () => {
     const r = assessSourceReadability({ verify_verdict: "anti_bot", verify_note: "GET 403 (trusted publisher)", summary: LONG });
     assert.equal(r.readable, false);
     assert.equal(r.reason, "verify anti_bot (GET 403 (trusted publisher))");
-    for (const v of ["paywall", "blocked", "uncertain", "video", "error", "needs_reverify"]) {
+    for (const v of ["paywall", "blocked", "uncertain", "error", "needs_reverify"]) {
       assert.equal(assessSourceReadability({ verify_verdict: v, summary: LONG }).readable, false, v);
     }
+  });
+
+  // #12320: verify dá `video` a toda URL de vídeo e o conta como OK; o veredito
+  // sozinho não diz que a fonte não foi lida. Decide o resumo.
+  it("vídeo com descrição longa → lida, sem desconto (#12320)", () => {
+    const yt = { url: "https://www.youtube.com/watch?v=abc", verify_verdict: "video", summary: LONG };
+    assert.deepEqual(assessSourceReadability(yt), { readable: true });
+    assert.equal(sourceUnreadablePenalty(yt), 0);
+  });
+
+  it("vídeo sem texto continua não lido, pela regra do resumo (#12320)", () => {
+    const semResumo = assessSourceReadability({ verify_verdict: "video", summary: "" });
+    assert.deepEqual(semResumo, { readable: false, reason: "sem resumo da fonte" });
+    const umaLinha = assessSourceReadability({ verify_verdict: "video", summary: "Veja o vídeo." });
+    assert.equal(umaLinha.readable, false);
+    assert.match(umaLinha.reason!, /resumo de 13 caracteres/);
+    assert.equal(assessSourceReadability({ verify_verdict: "video" }).readable, false);
+    assert.equal(sourceUnreadablePenalty({ verify_verdict: "video", summary: "Veja o vídeo." }), SOURCE_UNREADABLE_PENALTY);
   });
 
   it("verify accessible + resumo longo → lida", () => {
@@ -135,11 +153,12 @@ describe("source-not-read no Stage 4 (#12258)", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const approved = {
-    highlights: [{ rank: 1, article: { url: "https://g1.globo.com/video/x", title: "Vídeo do g1", verify_verdict: "video", summary: LONG } }],
+    highlights: [{ rank: 1, article: { url: "https://g1.globo.com/video/x", title: "Vídeo do g1", verify_verdict: "video", summary: "Assista ao vídeo." } }],
     radar: [AXIOS, { url: "https://cut.com/y", title: "Cortado", verify_verdict: "anti_bot", summary: LONG }],
+    video: [{ url: "https://www.youtube.com/watch?v=ok", title: "Vídeo com descrição", verify_verdict: "video", summary: LONG }],
     lancamento: [{ url: "https://ok.com/z", title: "Ok", verify_verdict: "accessible", summary: LONG }],
   };
-  const md = `**DESTAQUE 1 | X**\n\n[Vídeo](https://g1.globo.com/video/x)\n\n**RADAR**\n\n[A](${AXIOS.url})\n\n[Ok](https://ok.com/z)\n`;
+  const md = `**DESTAQUE 1 | X**\n\n[Vídeo](https://g1.globo.com/video/x)\n\n**RADAR**\n\n[A](${AXIOS.url})\n\n[Ok](https://ok.com/z)\n\n**VÍDEOS**\n\n[V](https://www.youtube.com/watch?v=ok)\n`;
 
   it("findUnreadItemsInEdition: só o que está no texto, destaque sinalizado", () => {
     const items = findUnreadItemsInEdition(approved, md);
@@ -161,6 +180,7 @@ describe("source-not-read no Stage 4 (#12258)", () => {
     assert.match(v[0].message, /\[DESTAQUE\] "Vídeo do g1"/);
     assert.match(v[0].message, /Weird alien minds/);
     assert.doesNotMatch(v[0].message, /Cortado/);
+    assert.doesNotMatch(v[0].message, /Vídeo com descrição/, "vídeo com descrição longa não é fonte não lida (#12320)");
     assert.deepEqual(checkSourceNotRead(dir), v);
   });
 

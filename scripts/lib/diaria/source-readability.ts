@@ -29,16 +29,21 @@ import type { InvariantViolation } from "../invariant-checks/types.ts";
 
 /**
  * Vereditos de `verify-accessibility.ts` em que o texto da página não chegou
- * ao pipeline: 403/429 (`anti_bot`, `uncertain`), paywall, bloqueio, vídeo,
- * erro e re-verificação pendente. `accessible` e `aggregator` não entram
- * (agregador já é barrado por outra regra).
+ * ao pipeline: 403/429 (`anti_bot`, `uncertain`), paywall, bloqueio, erro e
+ * re-verificação pendente. `accessible` e `aggregator` não entram (agregador
+ * já é barrado por outra regra).
+ *
+ * `video` também não entra (#12320): `verify-accessibility.ts` dá esse
+ * veredito a TODA URL de vídeo (YouTube etc.) e o conta como OK, então tê-lo
+ * aqui descontava 10 pontos e acusava no gate todo item da seção VÍDEOS, mesmo
+ * com descrição longa. Vídeo cai na regra do resumo abaixo, que pega o vídeo
+ * sem texto (o caso do g1 do #12258: página de título + uma linha).
  */
 export const UNREAD_VERIFY_VERDICTS: ReadonlySet<string> = new Set([
   "paywall",
   "anti_bot",
   "blocked",
   "uncertain",
-  "video",
   "error",
   "needs_reverify",
 ]);
@@ -189,7 +194,7 @@ export function checkSourceNotRead(editionDir: string): InvariantViolation[] {
       rule: "source-not-read",
       message:
         `fonte não lida: ${items.length} item(ns) da edição chegaram ao texto só com título e resumo, sem ninguém ler a página ` +
-        `(403, vídeo ou resumo curto): ${items.map(fmt).join("; ")}.` +
+        `(403, vídeo sem texto ou resumo curto):${items.map(fmt).join("; ")}.` +
         (highlights > 0 ? ` ${highlights} é(são) destaque: o fact-check desses tende a sair NOT_FOUND_IN_SOURCE.` : "") +
         ` Abrir a fonte antes de aprovar ou trocar o item (#12258).`,
       source_issue: "#12258",
