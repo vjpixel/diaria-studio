@@ -184,7 +184,9 @@ export interface BuildHomeFeedOptions {
    * Dia civil BRT (`YYYY-MM-DD`) usado como corte de "já publicada".
    * Só testes passam — produção deixa `buildHomeFeed` ler o relógio, pra
    * que o comportamento no ar dependa da hora real e não de um argumento
-   * que algum caller possa esquecer de atualizar.
+   * que algum caller possa esquecer de atualizar. Única exceção fora de
+   * teste: `check-seed-html-sync.ts` (#12319), que compara base e head com
+   * o relógio de ONTEM e nunca gera a home publicada.
    */
   todayBrt?: string;
   /**
@@ -592,7 +594,8 @@ export function buildHomeFeed(
   opts: BuildHomeFeedOptions = {},
 ): HomeFeedEntry[] {
   // #7686: "hoje" em BRT. Injetável só pra teste — produção sempre usa o
-  // relógio real; nenhum caller de produção passa `todayBrt`.
+  // relógio real; nenhum gerador de produção passa `todayBrt` (só o
+  // check de CI do #12319, ver `BuildHomeFeedOptions`).
   const todayBrt = opts.todayBrt ?? brtDateString();
   const entries = [...parseSitemap(sitemapXml)]
     .map((entry) => ({ entry, date: resolveEditorialDate(entry, readPageHtml) }))

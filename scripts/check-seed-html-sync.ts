@@ -35,7 +35,7 @@
 import { spawnSync } from "node:child_process";
 import type { PrCheckSpawnFn } from "./lib/spawn-types.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { buildHomeFeed, buildIndexHtml } from "./lib/site-home-page.ts";
+import { brtDateString, buildHomeFeed, buildIndexHtml } from "./lib/site-home-page.ts";
 
 /** Alias local — mesmo padrão de scripts/check-pr-bugfix.ts (#2699). */
 export type SpawnFn = PrCheckSpawnFn;
@@ -155,10 +155,13 @@ function readFileAtRef(ref: string, path: string, spawnFn: SpawnFn): string | nu
  * `pull_request` traz o merge ref, não o head puro) — mesma técnica que
  * `getChangedFiles` já usa pra diffar sem depender do working directory.
  *
+ * `todayBrt` (opcional, #12319) fixa o dia BRT do corte de "já publicada";
+ * ausente, vale o relógio real.
+ *
  * Lança se o sitemap não existir em `ref` — nesse caso não há como avaliar
  * "bateria ou não", e o chamador trata isso como drift real (fail-safe).
  */
-export function renderHomePageAtRef(ref: string, spawnFn: SpawnFn): string {
+export function renderHomePageAtRef(ref: string, spawnFn: SpawnFn, todayBrt?: string): string {
   const sitemapXml = readFileAtRef(ref, "workers/site/public/sitemap.xml", spawnFn);
   if (sitemapXml === null) {
     throw new Error(`renderHomePageAtRef: workers/site/public/sitemap.xml não encontrado em ${ref}`);
@@ -167,7 +170,8 @@ export function renderHomePageAtRef(ref: string, spawnFn: SpawnFn): string {
     readFileAtRef(ref, `workers/site/public/p/${slug}/index.html`, spawnFn);
   // +1 pra separar a feature (feed[0]) e ainda sobrar HOME_ARCHIVE_LIMIT
   // entradas de arquivo — mesma soma de gen-home-page.ts.
-  const feed = buildHomeFeed(sitemapXml, readPageHtml, HOME_ARCHIVE_LIMIT + 1);
+  // `todayBrt` ausente = relógio real (o mesmo de gen-home-page.ts).
+  const feed = buildHomeFeed(sitemapXml, readPageHtml, HOME_ARCHIVE_LIMIT + 1, todayBrt ? { todayBrt } : {});
   const feature = feed[0] ?? null;
   const archive = feed.slice(1);
   return buildIndexHtml({ feature, archive });
@@ -189,12 +193,18 @@ export function renderHomePageAtRef(ref: string, spawnFn: SpawnFn): string {
  * silêncio), OU quando o próprio re-render lança (sitemap ausente/corrompido
  * — fail-safe: sem conseguir confirmar "não é drift", reprova como hoje).
  */
-export function confirmHomeDrift(headSha: string, spawnFn: SpawnFn, baseSha?: string): boolean {
+export function confirmHomeDrift(
+  headSha: string,
+  spawnFn: SpawnFn,
+  baseSha?: string,
+  now: Date = new Date(),
+): boolean {
+  const todayBrt = brtDateString(now);
   const committed = readFileAtRef(headSha, "workers/site/public/index.html", spawnFn);
   if (committed === null) return true;
   let rendered: string;
   try {
-    rendered = renderHomePageAtRef(headSha, spawnFn);
+    rendered = renderHomePageAtRef(headSha, spawnFn, todayBrt);
   } catch (e) {
     console.error(
       `[#7864] falha ao re-renderizar a home pra confirmar drift — tratando como drift real: ${(e as Error).message}`,
@@ -214,10 +224,31 @@ export function confirmHomeDrift(headSha: string, spawnFn: SpawnFn, baseSha?: st
   // Re-render da base que lança cai no comportamento anterior (drift).
   if (baseSha) {
     try {
-      if (renderHomePageAtRef(baseSha, spawnFn) === rendered) {
+      if (renderHomePageAtRef(baseSha, spawnFn, todayBrt) === rendered) {
         console.log(
           `[#10509] home re-renderizada difere da committed, mas é idêntica ao re-render da base — ` +
             `a mudança deste PR no sitemap não afeta a home (defasagem pré-existente, é do regen-home.yml). Pass.`,
+        );
+        return false;
+      }
+      // #12319: o PR da página da edição é aberto na NOITE ANTERIOR (Stage 6),
+      // com a edição ainda futura — a home committed sai sem ela, de
+      // propósito (#7686). Mas o CI (ou um re-run, ou o merge da base pela
+      // atualização da branch) pode rodar depois da meia-noite BRT, quando a
+      // data editorial da edição já é HOJE: aí o re-render do head passa a
+      // incluí-la, a base não, e o check reprovava todo dia (PR #12317, CI às
+      // 00:00 BRT). Quem põe a edição do dia na home é o regen-home.yml das
+      // 06:00, não o PR da página. Então a pergunta vira: com o relógio de
+      // ONTEM (edição de hoje ainda fora da home, como estava quando a página
+      // foi publicada), o PR muda o que a home mostra? Se não, é a edição do
+      // dia entrando, não esquecimento de build. Edição antiga (data < ontem)
+      // acrescentada sem regenerar a home continua mudando o re-render e
+      // reprovando.
+      const yesterdayBrt = brtDateString(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+      if (renderHomePageAtRef(baseSha, spawnFn, yesterdayBrt) === renderHomePageAtRef(headSha, spawnFn, yesterdayBrt)) {
+        console.log(
+          `[#12319] o re-render do head difere do da base só pela edição de hoje (${todayBrt}), que já é elegível — ` +
+            `com o relógio de ontem (${yesterdayBrt}) os dois batem. A edição do dia entra na home pelo regen-home.yml. Pass.`,
         );
         return false;
       }
