@@ -20,6 +20,11 @@ describe("#8592: orchestrator-stage-4.md chama o gerador determinístico antes d
   const playbook = ".claude/agents/orchestrator-stage-4.md";
   const text = readFileSync(playbook, "utf-8");
 
+  it("#12330: fallback manual consulta grafia e entidade antes de propor", () => {
+    const fallback = text.slice(text.indexOf("`candidate: null`"));
+    assert.match(fallback, /--check-wrong "<grafia>" --check-correct "<entidade correta>"/);
+  });
+
   it("contém a invocação do CLI propose-intentional-error-candidate.ts", () => {
     const callIdx = text.indexOf(
       "npx tsx scripts/propose-intentional-error-candidate.ts --edition-dir {EDITION_DIR}/",

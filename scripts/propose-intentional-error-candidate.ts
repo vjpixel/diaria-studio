@@ -22,7 +22,8 @@
  * (default: basename de `--edition-dir`).
  *
  * (#10244) `--list-recent` lista os erros da janela (`{ recent: [...] }`) e
- * `--check-wrong "<grafia>"` devolve `{ repeats: [...] }` — pro Stage 4 consultar
+ * `--check-wrong "<grafia>" --check-correct "<entidade>"` devolve `{ repeats: [...] }` — pro Stage 4 consultar
+ * grafia e entidade (#12330). Sem `--check-correct`, compara só a grafia.
  * ANTES de propor na mão quando `candidate: null`. Não exigem `02-reviewed.md`.
  * (#10269) Esses dois modos leem o JSONL em modo ESTRITO: arquivo existente mas
  * ilegível (ou sem nenhuma linha parseável) sai com exit 1 em vez de responder
@@ -83,7 +84,7 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     const history = readHistoryStrict(jsonl);
     if (history === null) return 1;
     const out = checkWrong
-      ? { repeats: findRecentRepeats({ wrong_value: checkWrong }, history, ed, opts) }
+      ? { repeats: findRecentRepeats({ wrong_value: checkWrong, correct_value: values["check-correct"] }, history, ed, opts) }
       : { recent: listRecentErrors(history, ed, opts) };
     console.log(JSON.stringify(out, null, 2));
     return 0;
