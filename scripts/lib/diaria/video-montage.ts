@@ -2596,6 +2596,8 @@ export const SCREEN_TITLE_STYLE = {
   padYPx: 28,
   /** Opacidade do fundo preto, em % (pedido do editor, #11941). */
   backgroundOpacityPct: 70,
+  /** Raio do fundo no PNG, em px de 1080 (#12267; premissa visual: 24 px). */
+  cornerRadiusPx: 24,
   /**
    * `[premissa]` separador de linha DENTRO do texto do gerador (só no
    * `--title-mode text`, #12091). O `&#13;` abriu uma caixa por linha no
@@ -2930,11 +2932,12 @@ function textGenerator(id: string, layout: ScreenTitleLayout, len: number, start
 export function screenTitleSvg(text: string, width: number, height: number): string {
   const st = SCREEN_TITLE_STYLE;
   const { lines, fontPx, lineH, centerY, box } = screenTitleLayout(text, width, height);
+  const radius = Math.min(st.cornerRadiusPx * width / st.refWidth, box.w / 2, box.h / 2);
   const firstBaseline = centerY - ((lines.length - 1) * lineH) / 2 + fontPx * 0.35;
   const tspans = lines.map((l, i) => `<text x="${width / 2}" y="${Math.round(firstBaseline + i * lineH)}">${escapeXml(l)}</text>`).join("\n  ");
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
-    `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" fill="#000000" fill-opacity="${st.backgroundOpacityPct / 100}"/>\n` +
+    `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="${radius}" ry="${radius}" fill="#000000" fill-opacity="${st.backgroundOpacityPct / 100}"/>\n` +
     `<g font-family="${st.font}, 'DejaVu Serif', serif" font-size="${Math.round(fontPx)}" font-weight="700" fill="#FFFFFF" text-anchor="middle">\n  ${tspans}\n</g>\n</svg>\n`
   );
 }
