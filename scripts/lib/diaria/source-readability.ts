@@ -194,7 +194,7 @@ export function checkSourceNotRead(editionDir: string): InvariantViolation[] {
       rule: "source-not-read",
       message:
         `fonte não lida: ${items.length} item(ns) da edição chegaram ao texto só com título e resumo, sem ninguém ler a página ` +
-        `(403, vídeo sem texto ou resumo curto):${items.map(fmt).join("; ")}.` +
+        `(403, vídeo sem texto ou resumo curto): ${items.map(fmt).join("; ")}.` +
         (highlights > 0 ? ` ${highlights} é(são) destaque: o fact-check desses tende a sair NOT_FOUND_IN_SOURCE.` : "") +
         ` Abrir a fonte antes de aprovar ou trocar o item (#12258).`,
       source_issue: "#12258",

@@ -177,6 +177,7 @@ describe("source-not-read no Stage 4 (#12258)", () => {
     assert.equal(v.length, 1);
     assert.equal(v[0].severity, "warning");
     assert.match(v[0].message, /fonte não lida: 2 item/);
+    assert.match(v[0].message, /\(403, vídeo sem texto ou resumo curto\): \[DESTAQUE\]/);
     assert.match(v[0].message, /\[DESTAQUE\] "Vídeo do g1"/);
     assert.match(v[0].message, /Weird alien minds/);
     assert.doesNotMatch(v[0].message, /Cortado/);
