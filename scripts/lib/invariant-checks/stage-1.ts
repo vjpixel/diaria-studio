@@ -20,6 +20,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { findPoolStoryTwice, type StoryItem } from "../story-twice-in-edition.ts";
 import { canonicalize } from "../url-utils.ts"; // #10988
 import { collectUnresolvedTitleUrls, isPlaceholderHighlightItemWithReserve } from "../placeholder-title-guard.ts"; // #4102, #10908, #10929
 // #6440: backstop — mesma verificação POSITIVA de produto (#1968) usada no
@@ -636,7 +637,33 @@ function checkLancamentoHasProductSignal(editionDir: string): InvariantViolation
   ];
 }
 
+/** #12327: compare pool items even when there are no matching highlights. */
+export function checkPoolStoryTwice(editionDir: string): InvariantViolation[] {
+  const file = resolve(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(file)) return [];
+  let data: ApprovedJson;
+  try { data = JSON.parse(readFileSync(file, "utf8")); }
+  catch { return []; } // approved-parseable reports malformed input.
+  const pool: StoryItem[] = [];
+  const highlights = new Set((data.highlights ?? []).map(h => canonicalize(h.url ?? h.article?.url ?? "")));
+  for (const bucket of ["radar", "lancamento"] as const) {
+    for (const item of data[bucket] ?? []) {
+      if (!item.url || !item.title || highlights.has(canonicalize(item.url))) continue;
+      pool.push({ label: bucket, url: item.url, title: item.title });
+    }
+  }
+  return findPoolStoryTwice(pool).map(w => ({
+    rule: "pool-story-twice-in-edition", source_issue: "#12327", severity: "warning", file,
+    message: `Mesma história no pool: [${w.item_label}] “${w.item_title}” (${w.item_url}) repete [${w.matched_label}] “${w.matched_title}” (${w.matched_url}); sinal: ${w.signal}. Revisar no gate.`,
+  }));
+}
+
 export const STAGE_1_RULES: InvariantRule[] = [
+  {
+    id: "pool-story-twice-in-edition", source_issue: "#12327", stage: 1,
+    description: "Mesma história entre itens RADAR/LANÇAMENTOS (warning-only)",
+    run: checkPoolStoryTwice,
+  },
   {
     id: "approved-has-3-highlights",
     description: "01-approved.json tem 2 ou 3 highlights (#2343)",

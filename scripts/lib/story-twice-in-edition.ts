@@ -21,7 +21,7 @@
  * desdobramento ou corte.
  */
 
-import { isIntraEditionDuplicate } from "../dedup-intra-edition.ts";
+import { extractCompanyMentionsIntra, isIntraEditionDuplicate } from "../dedup-intra-edition.ts";
 import { findSameFactMatches, extractVersionedProducts, extractProductVariants } from "./same-fact-check.ts";
 import { canonicalize } from "./url-utils.ts";
 
@@ -63,7 +63,7 @@ export const STORY_TWICE_EXCLUDED_SECTION_RE = /USE MELHOR|V[IÍ]DEO|PESQUISA/i;
 
 /**
  * Compara (1) cada destaque com os destaques anteriores, (2) cada item do
- * pool com os destaques e (3) cada item da edição com os DESTAQUES publicados
+ * pool com os destaques e entre si (#12327) e (3) cada item da edição com os DESTAQUES publicados
  * nas edições passadas (só produto+versão no título — alta precisão; item de
  * seção passado fica de fora porque "Gemini 3.8" em dois LANÇAMENTOS seguidos
  * é, no acervo, quase sempre outro anúncio da mesma família). No máximo 1
@@ -99,6 +99,47 @@ function sharedVersionedProduct(
     if (shared.length > 0) return { match_type: `produto: ${shared.join(", ")}`, matched_highlight: h.title };
   }
   return null;
+}
+
+/** #12327: bilingual topic anchors supplement lexical matching. A company
+ * alone (or AI alone) never identifies a story. Require two shared topics;
+ * title-only evidence avoids incidental mentions in long summaries. */
+const POOL_TOPICS = [
+  /\b(?:schools?|classrooms?|escolas?|salas? de aula)\b/,
+  /\b(?:forcing|forced|forces|obriga(?:r|m|ndo)?|obrigatori[oa]s?|compulsory|mandatory)\b/,
+  /\b(?:search|buscador(?:es)?|busca)\b/,
+  /\b(?:ai overviews?|resumos? (?:de|por) ia)\b/,
+];
+
+function sharedPoolTopics(a: StoryItem, b: StoryItem): boolean {
+  const normalize = (text: string) => text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const left = normalize(a.title);
+  const right = normalize(b.title);
+  const companies = extractCompanyMentionsIntra(a.title);
+  if (![...extractCompanyMentionsIntra(b.title)].some(c => companies.has(c))) return false;
+  const shared = POOL_TOPICS.map(topic => topic.test(left) && topic.test(right));
+  // Generic action + search is not enough: retain a specific subject anchor.
+  return (shared[0] || shared[3]) && shared.filter(Boolean).length >= 2;
+}
+
+/** Warning-only pool × pool check, shared by Stage 1 and final Stage 4. */
+export function findPoolStoryTwice(pool: StoryItem[]): StoryTwiceWarning[] {
+  const eligible = pool.filter(it => !STORY_TWICE_EXCLUDED_SECTION_RE.test(it.label));
+  const warnings: StoryTwiceWarning[] = [];
+  eligible.forEach((item, i) => {
+    for (const other of eligible.slice(0, i)) {
+      if (canonicalize(item.url) === canonicalize(other.url)) continue;
+      const match = isIntraEditionDuplicate({ ...item }, [{ ...other }]);
+      if (!match && !sharedPoolTopics(item, other)) continue;
+      warnings.push({
+        scope: "edition", item_label: item.label, item_title: item.title, item_url: item.url,
+        matched_label: other.label, matched_title: other.title, matched_url: other.url,
+        signal: match?.match_type ?? "entity_topic",
+      });
+      break;
+    }
+  });
+  return warnings;
 }
 
 export function findStoryTwice(
@@ -140,6 +181,12 @@ export function findStoryTwice(
     // pela checagem de URL duplicada.
     if (hlUrls.has(canonicalize(item.url))) continue;
     intra(item, highlights);
+  }
+
+  for (const warning of findPoolStoryTwice(pool.filter(it => !hlUrls.has(canonicalize(it.url))))) {
+    if (warned.has(canonicalize(warning.item_url))) continue;
+    warnings.push(warning);
+    warned.add(canonicalize(warning.item_url));
   }
 
   if (past.length > 0) {
