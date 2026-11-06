@@ -1,8 +1,8 @@
 # Bug Heatmap — diar.ia.br
 
-**Gerado em**: 2026-10-30T16:31:16.989Z
-**Total de bugs analisados**: 1000 (18 open)
-**Regressions detectadas**: 4
+**Gerado em**: 2026-11-06T17:08:27.749Z
+**Total de bugs analisados**: 1000 (19 open)
+**Regressions detectadas**: 5
 
 ## ASCII Heatmap
 
@@ -17,7 +17,7 @@ stage-4            | ·····························�
 stage-5            | ······························ 0 (open 0)
 stage-publish      | ······························ 0 (open 0)
 stage-research     | ······························ 0 (open 0)
-(unlabeled)        | ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 996 (open 18)
+(unlabeled)        | ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 996 (open 19)
 ```
 
 ## Tabela detalhada
@@ -32,7 +32,7 @@ stage-research     | ·····························�
 | stage-5 | 0 | 0 | 0 | — | 0 | — |
 | stage-publish | 0 | 0 | 0 | — | 0 | — |
 | stage-research | 0 | 0 | 0 | — | 0 | — |
-| (unlabeled) | 996 | 18 | 978 | 10.0h | 4 | #11692, #11691, #11690, #11689, #11688 |
+| (unlabeled) | 996 | 19 | 977 | 9.9h | 5 | #12342, #12340, #12331, #12329, #12328 |
 
 ## Como interpretar
 
