@@ -1239,5 +1239,17 @@
       "https://openai.com/index/introducing-gpt-6-1-terra/"
     ],
     "editionTitle": "OpenAI lança GPT-6.1 Terra pela metade do preço"
+  },
+  {
+    "date": "2026-10-30",
+    "editionSlug": "pais-acusam-chatgpt-de-matar-sua-filha",
+    "url": "https://diar.ia.br/p/pais-acusam-chatgpt-de-matar-sua-filha",
+    "matchedHeadlines": [
+      "Pais acusam ChatGPT de matar sua filha"
+    ],
+    "primarySourceUrls": [
+      "https://thenextweb.com/news/parents-sue-openai-chatgpt-seizure-medication"
+    ],
+    "editionTitle": "Pais acusam ChatGPT de matar sua filha"
   }
 ]
