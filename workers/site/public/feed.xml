@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Thu, 05 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Fri, 06 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Google paga até 12 salários para quem sair</title>
+      <link>https://diar.ia.br/p/google-paga-ate-12-salarios-para-quem-sair</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/google-paga-ate-12-salarios-para-quem-sair</guid>
+      <pubDate>Fri, 06 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Lovable &quot;sonha&quot; e reescreve a memória do seu app | Sua produtividade com IA chega ao caixa da empresa?</description>
+    </item>
     <item>
       <title>Justiça proíbe Meta de treinar IA com reportagens</title>
       <link>https://diar.ia.br/p/justica-proibe-meta-de-treinar-ia-com-reportagens</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia</guid>
       <pubDate>Wed, 26 Aug 2026 09:00:00 GMT</pubDate>
       <description>Infraestrutura trava 1 em cada 3 startups de IA | Google mira escritórios de advocacia com Gemini</description>
-    </item>
-    <item>
-      <title>Brasil investe R$ 2,3 bi em infraestrutura de IA</title>
-      <link>https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia</guid>
-      <pubDate>Tue, 25 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Grátis, poderoso e sem dono: o mistério Ox Alpha | SoftBank capta US$ 6,3 bi para apostar na OpenAI</description>
     </item>
   </channel>
 </rss>
