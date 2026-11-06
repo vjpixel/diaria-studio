@@ -11,6 +11,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { describeProvenance, readRunRecord } from "../humanizer-run-record.ts";
 import { assertHumanized } from "../assert-humanized.ts";
 import { checkSentinel as checkSocialHumanizerSentinel } from "../../check-humanizer-social.ts"; // #6305
 import {
@@ -418,6 +419,27 @@ function checkSocialHumanizerSentinelWritten(editionDir: string): InvariantViola
   ];
 }
 
+/** #12331: o primeiro --write sela o hash mesmo sem --record-run.
+ * Exigir o registro no gate do Stage 2 impede que esse selo sozinho seja
+ * confundido com prova dos dois passos. Não inferir execução dos snapshots.
+ */
+function checkSocialHumanizerProvenance(editionDir: string): InvariantViolation[] {
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) return [];
+  return describeProvenance(readFileSync(socialPath, "utf8"), readRunRecord(editionDir))
+    .filter((row) => !row.humanizador || !row.clarice)
+    .map((row) => ({
+      rule: "social-humanizer-provenance-recorded",
+      message: `${row.section}: humanizador ${row.humanizador ? "sim" : "NÃO"} · Clarice ${row.clarice ? "sim" : "NÃO"}. ` +
+        "Registre os passos executados com check-humanizer-social.ts --record-run --step humanizador|clarice " +
+        "usando os snapshots pré/pós do arquivo inteiro (Stage 2 §2c); o selo --write sozinho não prova execução.",
+      source_issue: "#12331",
+      // #9619: o post opcional UM não bloqueia os destaques.
+      severity: row.section === "main_um" ? "warning" as const : "error" as const,
+      file: "03-social.md",
+    }));
+}
+
 /**
  * #6337: registra em `STAGE_2_RULES` os checks de
  * `scripts/check-stage2-invariants.ts` (#1072/#1073) que até aqui só rodavam
@@ -631,6 +653,13 @@ export const STAGE_2_RULES: InvariantRule[] = [
     source_issue: "#6305",
     stage: 2,
     run: checkSocialHumanizerSentinelWritten,
+  },
+  {
+    id: "social-humanizer-provenance-recorded",
+    description: "Humanizador e Clarice registrados por conteúdo antes de concluir Stage 2 (#12331)",
+    source_issue: "#12331",
+    stage: 2,
+    run: checkSocialHumanizerProvenance,
   },
   {
     id: "newsletter-humanizador-diff-ran",
