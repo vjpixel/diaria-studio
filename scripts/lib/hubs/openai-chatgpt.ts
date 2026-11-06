@@ -174,7 +174,7 @@ const PUBLISHED_DATE = "2026-08-09";
 // a OpenAI é o ALVO e a resposta passou a listar os episódios que conta;
 // (4) removidos os "mais recente do período" que a cobertura nova desmentiu.
 // O gatilho de "3ª manchete de Brasil" (nota de 02/09) continua sem disparar.
-const UPDATED_DATE = "2026-11-01";
+const UPDATED_DATE = "2026-11-06";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`, agora em
