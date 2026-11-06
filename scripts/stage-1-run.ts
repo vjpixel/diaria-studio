@@ -1668,6 +1668,9 @@ async function runPostGate(deps: Stage1RunDeps, opts: Stage1RunOptions, report: 
   // sobe pro relatório porque quem resolve é o Stage 2 §2a, não este passo.
   const invariantsJson = parseStepJson<{ violations?: Array<{ rule?: string; message?: string }> }>(invariants.stdout);
   for (const v of invariantsJson?.violations ?? []) {
+    if (v.rule === "pool-story-twice-in-edition") {
+      report.note(`⚠️  ${v.message ?? "mesma história no pool"} (#12327)`);
+    }
     if (v.rule === "lancamento-has-product-signal") {
       report.note(`ℹ️  ${v.message ?? "lançamento sem sinal de produto"} (#11748)`);
     }

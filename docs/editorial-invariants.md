@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 136 invariants.
+**Total**: 137 invariants.
 
 ## Static (estrutura do repo)
 
@@ -40,6 +40,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `no-missing-summary-highlights` | highlights[] nunca contém item com article.summary ausente/vazio (#5081) | #5081 |
 | `no-placeholder-title-highlights` | highlights[] nunca contém item com título placeholder não-enriquecido (#4102) | #4102 |
 | `no-use-melhor-highlights` | highlights[] nunca contém item do bucket USE MELHOR/tutorial (#3436) | #3436 |
+| `pool-story-twice-in-edition` | Mesma história entre itens RADAR/LANÇAMENTOS (warning-only) | #12327 |
 | `top3-merit-warning` | item fora do top-3 com score ≥ maior do trio (warning-only) | #10792 |
 | `url-matches-article-url` | url === article.url em todo item de highlights[] e runners_up[] (#4837, #4865) | #4837 |
 
