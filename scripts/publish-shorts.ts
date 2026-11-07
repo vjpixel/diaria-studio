@@ -4369,11 +4369,41 @@ async function runUpdateScheduled(input: {
 export async function deleteFacebookScheduledVideo(deps: GraphDeps, page: ResolvedFacebookPage, apiVersion: string, videoId: string): Promise<void> {
   const cur = await graphGet(deps, videoId, { fields: 'published,scheduled_publish_time', access_token: page.token }, apiVersion);
   if (cur?.published !== false || !(Number(cur.scheduled_publish_time) * 1000 > deps.now().getTime() + 600_000)) throw new Error('vídeo não está agendado com mais de 10 min; nada apagado');
-  const res = await deps.fetch(`${GRAPH}/${apiVersion}/${encodeURIComponent(videoId)}`, {
-    method: 'DELETE', body: new URLSearchParams({ access_token: page.token }), signal: AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS),
+  const res = await deps.fetch(`${GRAPH}/${apiVersion}/${encodeURIComponent(videoId)}?${new URLSearchParams({ access_token: page.token })}`, {
+    method: 'DELETE', signal: AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS),
   });
   const json = await readJson(res);
   if (!res.ok || json?.success !== true) throw new Error(`DELETE sem confirmação (HTTP ${res.status}); confira a plataforma antes de tentar novamente`);
+}
+
+/** A successful child must stay successful even when its diagnostic output is not JSON. */
+export function runShortReplacementUpload(args: string[], run: (args: string[]) => { error?: Error; status: number | null; stdout: string } =
+  args => spawnSync(process.execPath, ['--import', 'tsx', ...args], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }),
+): { publication?: unknown; publication_unparsed?: boolean } {
+  const recovery = ['npx', 'tsx', ...args].map(shellQuote).join(' ');
+  let result: ReturnType<typeof run>;
+  try {
+    result = run(args);
+    if (result.error || result.status !== 0) throw result.error ?? new Error(`exit ${result.status}`);
+  } catch {
+    throw new Error(`post antigo apagado e arquivado; novo upload falhou. Confira registro e plataforma antes de repetir: ${recovery}`);
+  }
+  try {
+    return { publication: JSON.parse(result.stdout) };
+  } catch {
+    return { publication_unparsed: true };
+  }
+}
+
+export function readShortVideoSourceName(sourcePath: string, videoHash: string, log: (message: string) => void = console.error): string | undefined {
+  if (!existsSync(sourcePath)) return undefined;
+  try {
+    const source = JSON.parse(readFileSync(sourcePath, 'utf8'));
+    return source.sha256 === videoHash && typeof source.name === 'string' ? source.name : undefined;
+  } catch {
+    log(`[aviso] metadado de origem ignorado: ${sourcePath} não pôde ser lido; comparação por hash preservada`);
+    return undefined;
+  }
 }
 
 async function runReplaceScheduled(input: {
@@ -4409,7 +4439,7 @@ async function runReplaceScheduledUnlocked(input: {
   // Read config/credentials before any destructive call. Each platform rereads its post immediately before deletion.
   const config = JSON.parse(readFileSync(join(ROOT, 'platform.config.json'), 'utf8'));
   const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
-  const results: Array<{ destination: string; ok: boolean; pending_buffer?: boolean; error?: string; publication?: unknown }> = [];
+  const results: Array<{ destination: string; ok: boolean; pending_buffer?: boolean; error?: string; publication?: unknown; publication_unparsed?: boolean }> = [];
   for (const item of items) {
     if (item.action === 'skip') continue;
     const e = item.entry;
@@ -4439,9 +4469,7 @@ async function runReplaceScheduledUnlocked(input: {
         '--edition-dir', dir, '--publish', '--confirm-publish', aammdd, '--keep-video', '--require-scheduled', '--scheduled-at', e.scheduled_at!];
       if (e.destination === 'youtube_shorts') args.push('--force-youtube');
       if (values['allow-unwatched-dir'] !== undefined || nonCanonicalEditionDir(dir, canonicalShortsEditionDir(aammdd))) args.push('--allow-unwatched-dir');
-      const run = spawnSync(process.execPath, ['--import', 'tsx', ...args], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-      if (run.error || run.status !== 0) throw new Error('post antigo apagado e arquivado; novo upload falhou. Reexecute --only deste destino --publish --confirm-publish com o mesmo --video');
-      results.push({ destination: e.destination, ok: true, publication: JSON.parse(run.stdout) });
+      results.push({ destination: e.destination, ok: true, ...runShortReplacementUpload(args) });
     } catch (err) {
       results.push({ destination: e.destination, ok: false, error: (err as Error).message });
     }
@@ -4695,12 +4723,7 @@ async function main(): Promise<number> {
   if (file) {
     videoHash = createHash('sha256').update(file).digest('hex');
     const sourcePath = join(dir, '_internal/shorts-video-source.json');
-    if (existsSync(sourcePath)) {
-      try {
-        const source = JSON.parse(readFileSync(sourcePath, 'utf8'));
-        if (source.sha256 === videoHash && typeof source.name === 'string') videoSourceName = source.name;
-      } catch { /* optional source metadata; hash comparison still works */ }
-    }
+    videoSourceName = readShortVideoSourceName(sourcePath, videoHash);
   }
   const duration = file ? mp4DurationSeconds(file) : null;
   const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));

@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { planScheduledReplacements, shortVideoChangeWarnings, newerShortVersionWarnings } from '../scripts/lib/diaria/short-scheduled-replace.ts';
-import { deleteFacebookScheduledVideo, parseShortsCliArgs, type GraphDeps } from '../scripts/publish-shorts.ts';
+import { deleteFacebookScheduledVideo, runShortReplacementUpload, readShortVideoSourceName, parseShortsCliArgs, type GraphDeps } from '../scripts/publish-shorts.ts';
 import { deleteScheduledYouTubeVideo } from '../scripts/lib/diaria/youtube-upload.ts';
 import { persistShortEntry, readShortsRegistry, recordShortReplacementDeletion, readShortReplacementHistory } from '../scripts/lib/diaria/shorts-published-store.ts';
 import type { ShortPublishedEntry } from '../scripts/lib/diaria/short-video.ts';
@@ -17,6 +17,41 @@ const page = { slug: 'diaria', pageId: 'page', token: 'fake' } as ResolvedFacebo
 const graph = (fetch: GraphDeps['fetch']): GraphDeps => ({ fetch, now: () => now, sleep: async () => {}, log: () => {} });
 
 describe('#12279 replacement planning and registry', () => {
+  it('keeps a successful upload successful with empty or noisy stdout, without retrying', () => {
+    for (const stdout of ['', 'uploaded\n{"id":"new"}']) {
+      let calls = 0;
+      assert.deepEqual(runShortReplacementUpload([], () => { calls++; return { status: 0, stdout }; }), { publication_unparsed: true });
+      assert.equal(calls, 1);
+    }
+    assert.deepEqual(runShortReplacementUpload([], () => ({ status: 0, stdout: '{"id":"new"}' })), { publication: { id: 'new' } });
+  });
+  it('preserves the exact scheduled upload arguments in recovery after child failure', () => {
+    const args = ['scripts/publish-shorts.ts', '261105', '--only', 'youtube_shorts', '--video', '/tmp/editor video.mp4', '--edition-dir', '/tmp/edition', '--publish', '--confirm-publish', '261105', '--keep-video', '--require-scheduled', '--scheduled-at', '2026-11-05T12:00:00Z', '--force-youtube', '--allow-unwatched-dir'];
+    for (const failure of [{ status: 1, stdout: '' }, { status: null, stdout: '', error: new Error('spawn failed') }]) {
+      assert.throws(() => runShortReplacementUpload(args, () => failure), err => {
+        assert.ok(err instanceof Error);
+        for (const arg of args) assert.ok(err.message.includes(arg), arg);
+        assert.ok(err.message.includes("'/tmp/editor video.mp4'"));
+        return true;
+      });
+    }
+  });
+  it('warns for corrupt optional source metadata while keeping hash comparison available', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shorts-source-'));
+    const path = join(dir, 'shorts-video-source.json');
+    const logs: string[] = [];
+    try {
+      assert.equal(readShortVideoSourceName(path, 'hash', line => logs.push(line)), undefined);
+      assert.equal(logs.length, 0);
+      writeFileSync(path, '{');
+      assert.equal(readShortVideoSourceName(path, 'hash', line => logs.push(line)), undefined);
+      assert.equal(logs.length, 1);
+      assert.ok(logs[0].includes('[aviso]') && logs[0].includes(path));
+      writeFileSync(path, JSON.stringify({ sha256: 'hash', name: 'V2.mp4' }));
+      assert.equal(readShortVideoSourceName(path, 'hash'), 'V2.mp4');
+      assert.equal(readShortVideoSourceName(path, 'other'), undefined);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('parses the flag with either placement of the edition', () => {
     for (const args of [['261105', '--replace-scheduled'], ['--replace-scheduled', '261105']]) {
       const parsed = parseShortsCliArgs(args);
@@ -102,11 +137,22 @@ describe('#12279 remote deletion guards (mock network only)', () => {
   }
   it('Facebook requires a positive deletion acknowledgement', async () => {
     const calls: string[] = [];
-    await deleteFacebookScheduledVideo(graph(async (_url, init) => {
+    await deleteFacebookScheduledVideo(graph(async (url, init) => {
       calls.push(init?.method ?? 'GET');
+      if (init?.method === 'DELETE') {
+        assert.equal(new URL(String(url)).searchParams.get('access_token'), 'fake+&=? token');
+        assert.equal(init.body, undefined);
+      }
       return Response.json(init?.method === 'DELETE' ? { success: true } : { published: false, scheduled_publish_time: Date.parse('2026-11-05T12:00:00Z') / 1000 });
-    }), page, 'v24.0', 'old');
+    }), { ...page, token: 'fake+&=? token' }, 'v24.0', 'old');
     assert.deepEqual(calls, ['GET', 'DELETE']);
+  });
+  it('Facebook rejects a missing or negative deletion acknowledgement', async () => {
+    for (const ack of [{}, { success: false }]) {
+      await assert.rejects(deleteFacebookScheduledVideo(graph(async (_url, init) =>
+        Response.json(init?.method === 'DELETE' ? ack : { published: false, scheduled_publish_time: Date.parse('2026-11-05T12:00:00Z') / 1000 })
+      ), page, 'v24.0', 'old'), /DELETE sem confirmação/);
+    }
   });
   for (const status of [{ privacyStatus: 'public', publishAt: '2026-11-05T12:00:00Z' }, { privacyStatus: 'private' }, { privacyStatus: 'private', publishAt: 'bad' }, { privacyStatus: 'private', publishAt: '2026-11-05T02:00:00Z' }]) {
     it(`YouTube refuses unsafe status ${JSON.stringify(status)}`, async () => {
