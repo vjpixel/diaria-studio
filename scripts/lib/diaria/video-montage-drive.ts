@@ -269,9 +269,39 @@ export function driveModeFor(o: { driveRootExists: boolean; fromDrive: boolean; 
   return "api";
 }
 
-/** Cache em DISCO do modo API (o `/tmp` do 300 é tmpfs): `--cache-dir`, `DIARIA_VIDEO_CACHE_DIR` ou `~/.cache/diaria-video-montagem`. */
-export function driveCacheDir(edition: string, flag: string | undefined, env: string | undefined, home: string): string {
-  return resolve(join(flag ?? env ?? join(home, ".cache", "diaria-video-montagem"), edition));
+/** `DIARIA_VIDEO_CACHE_DIR` aponta para um diretório que não existe (HD desmontado, #12365). */
+export class VideoCacheRootMissingError extends Error {}
+
+/**
+ * Raiz do cache em DISCO do modo API (o `/tmp` do 300 é tmpfs): `--cache-dir`,
+ * `DIARIA_VIDEO_CACHE_DIR` ou `~/.cache/diaria-video-montagem`. Também a raiz
+ * que `prune-video-montage-cache.ts` varre (#12365).
+ *
+ * A variável aponta para outro disco (o HD do 300, #12352). Se o diretório
+ * dela não existe, o disco provavelmente está desmontado: o `mkdir -p` do
+ * download criaria o cache no disco raiz, embaixo do ponto de montagem vazio,
+ * e encheria o raiz em silêncio. Por isso falha alto aqui. `--cache-dir`
+ * explícito e o default em `~/.cache` seguem criando o diretório sozinhos.
+ */
+export function videoCacheRoot(flag: string | undefined, env: string | undefined, home: string, exists: (p: string) => boolean = existsSync): string {
+  if (flag) return resolve(flag);
+  const fromEnv = env?.trim();
+  if (fromEnv) {
+    if (!exists(fromEnv)) {
+      throw new VideoCacheRootMissingError(
+        `DIARIA_VIDEO_CACHE_DIR aponta para ${fromEnv}, que não existe — HD desmontado? ` +
+          `Monte o disco (ou crie o diretório, se é a 1ª vez) antes de rodar; sem a variável o cache volta para ~/.cache/diaria-video-montagem. ` +
+          `Nada foi criado, para não gravar o cache no disco raiz embaixo do ponto de montagem vazio (#12365).`,
+      );
+    }
+    return resolve(fromEnv);
+  }
+  return resolve(join(home, ".cache", "diaria-video-montagem"));
+}
+
+/** Cache da edição: `{videoCacheRoot}/{AAMMDD}` (`bruto/`, `work/`, `out/`, `final/`). Lança se `DIARIA_VIDEO_CACHE_DIR` não existe. */
+export function driveCacheDir(edition: string, flag: string | undefined, env: string | undefined, home: string, exists: (p: string) => boolean = existsSync): string {
+  return resolve(join(videoCacheRoot(flag, env, home, exists), edition));
 }
 
 /** Work dir (áudio 16 kHz, clipes da prévia): no modo API também em disco, no cache; no Neo o `tmp` de sempre. */

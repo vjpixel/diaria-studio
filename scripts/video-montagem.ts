@@ -156,7 +156,9 @@
  * explícito), ou com --from-drive, a pasta da edição é lida pela API (OAuth do projeto;
  * pasta YouTube em publishing.youtube.drive_folder_id, --folder-id sobrepõe). --no-drive-api
  * desliga. O bruto vai para um cache em disco (--cache-dir, DIARIA_VIDEO_CACHE_DIR ou
- * ~/.cache/diaria-video-montagem/{AAMMDD}: bruto/, out/, work/, final/), registrado em
+ * ~/.cache/diaria-video-montagem/{AAMMDD}: bruto/, out/, work/, final/; DIARIA_VIDEO_CACHE_DIR
+ * apontando para um diretório que não existe, como um HD desmontado, para com erro em vez
+ * de criar o cache no disco raiz, #12365; retenção em prune-video-montage-cache.ts), registrado em
  * bruto.drive.json; build/srt/preview sobem o que gravaram no out dir para a pasta da edição
  * (nunca Final/), em drive-uploads.json; upload que falha depois do comando dar certo sai com
  * exit 4 e fica pendente para a próxima execução. O XML aponta o bruto no Neo
@@ -3254,7 +3256,8 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     noDriveApi: flags.has("no-drive-api"),
     explicitRoot: explicitRoot !== undefined,
   });
-  const cacheDir = driveCacheDir(edition, values["cache-dir"], process.env.DIARIA_VIDEO_CACHE_DIR, homedir());
+  // #12365: só o modo API usa o cache; no Neo uma DIARIA_VIDEO_CACHE_DIR ausente não deve parar nada.
+  const cacheDir = driveCacheDir(edition, values["cache-dir"], process.env.DIARIA_VIDEO_CACHE_DIR, homedir(), mode === "api" ? existsSync : () => true);
   const py = resolveVideoPython({ flag: values["python"], env: process.env.DIARIA_VIDEO_PYTHON, platform: process.platform, home: homedir(), exists: existsSync });
   const ctx: Ctx = {
     edition,

@@ -3486,6 +3486,29 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#8828",
   },
   {
+    // #12365 — o cache do /diaria-video-montagem no modo API (6 a 17 GB por
+    // edição) não tinha retenção e chegou a 33 GB no raiz do 300, com 13 GB
+    // livres. Apaga {AAMMDD}/ com vídeo publicado passados 3 dias da edição
+    // (ou sem publicação passados 14); política em
+    // lib/diaria/video-montage-cache-retention.ts. 03:50 BRT: madrugada,
+    // longe da montagem (fim de tarde/noite, depois do gate 4) e logo depois
+    // do Diaria-Tmp-Cleanup (03:20), mesma família de GC de disco; slot livre
+    // (só weeklies de domingo 03:00/03:30 e sábado 03:40 nessa hora).
+    //
+    // Sem `guard` de data/editions de propósito: sem o junction a publicação
+    // fica "desconhecida" e o script não apaga nada fora da janela (decisão
+    // da política, não do runner). DIARIA_VIDEO_CACHE_DIR apontando para um
+    // HD desmontado sai exit 1 (unit `failed`, o alarme de units pega).
+    // Sem `enabled: false`: o Diaria-Remediate-Never-Armed-Tasks arma no 300.
+    name: "Diaria-Video-Montage-Cache-Prune",
+    description:
+      "retencao diaria do cache do /diaria-video-montagem (modo API): apaga {AAMMDD}/ com video publicado ha mais de 3 dias, ou sem publicacao ha mais de 14 (#12365)",
+    steps: [{ key: "prune", script: "scripts/prune-video-montage-cache.ts", args: ["--apply"] }],
+    logPath: "video-montage-cache-prune/.prune.log",
+    schedule: { kind: "daily", hour: 3, minute: 50 },
+    issue: "#12365",
+  },
+  {
     // #8828 — rede de seguranca do EDQUOT de 25/09/2026: Diaria-Tmp-Cleanup
     // (acima) so limpa a fatia de /tmp que e deste projeto; o resto do
     // consumo real (cache SSR do wrangler/esbuild, clones de isolamento de

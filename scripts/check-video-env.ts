@@ -63,6 +63,8 @@ import {
   listChildren,
   parseDriveSize,
   pickDriveBruto,
+  videoCacheRoot,
+  VideoCacheRootMissingError,
   youtubeFolderIdFrom,
   type MontageDriveDeps,
 } from "./lib/diaria/video-montage-drive.ts";
@@ -216,6 +218,21 @@ async function probeDrive(edition: string | undefined, driveRootFlag?: string): 
   }
 }
 
+/**
+ * Raiz do cache da montagem para o check de disco (#12365). Com
+ * `DIARIA_VIDEO_CACHE_DIR` apontando para um diretório inexistente (HD
+ * desmontado), o `freeBytes` subiria até o pai existente e mediria o disco
+ * RAIZ, dizendo "ok" para o disco errado: aqui vira item reprovado.
+ */
+export function montageCacheRoot(env: string | undefined, home: string, exists: (p: string) => boolean = existsSync): { root: string } | { probe: MontageProbe } {
+  try {
+    return { root: videoCacheRoot(undefined, env, home, exists) };
+  } catch (e) {
+    if (!(e instanceof VideoCacheRootMissingError)) throw e;
+    return { probe: { ok: false, detail: e.message, fix: "montar o HD do cache (#12352) ou tirar DIARIA_VIDEO_CACHE_DIR do ambiente" } };
+  }
+}
+
 export async function runMontageEnvCheck(edition?: string, pythonFlag?: string, driveRootFlag?: string): Promise<MontageEnvReport> {
   const py = resolveVideoPython({ flag: pythonFlag, env: process.env.DIARIA_VIDEO_PYTHON, platform: process.platform, home: homedir(), exists: existsSync });
   const python = probeWhisperDecode(py.python);
@@ -225,9 +242,11 @@ export async function runMontageEnvCheck(edition?: string, pythonFlag?: string, 
     : { ok: false, detail: "sem Python com faster-whisper" };
   const drive = await probeDrive(edition, driveRootFlag);
   let disk: MontageProbe;
-  if (drive.mode === "local") disk = { ok: true, detail: "não se aplica no modo local (o Drive for desktop guarda o bruto; o cache não é usado)" };
+  const root = drive.mode === "api" ? montageCacheRoot(process.env.DIARIA_VIDEO_CACHE_DIR, homedir()) : null;
+  if (root === null) disk = { ok: true, detail: "não se aplica no modo local (o Drive for desktop guarda o bruto; o cache não é usado)" };
+  else if ("probe" in root) disk = root.probe;
   else {
-    const cacheRoot = process.env.DIARIA_VIDEO_CACHE_DIR ?? resolve(homedir(), ".cache", "diaria-video-montagem");
+    const cacheRoot = root.root;
     const free = freeBytes(cacheRoot);
     let need = requiredFreeBytes(drive.bruto?.bytes ?? null);
     // Bruto já baixado (Passo 0 refeito na retomada): os bytes dele já saíram do espaço livre.

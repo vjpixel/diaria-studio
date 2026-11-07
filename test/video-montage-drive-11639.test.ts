@@ -411,8 +411,9 @@ describe("#11639 modo de acesso ao Drive", () => {
 
   it("cache em disco: --cache-dir > DIARIA_VIDEO_CACHE_DIR > ~/.cache, por edição", () => {
     assert.equal(driveCacheDir("261030", undefined, undefined, "/home/u"), resolve("/home/u/.cache/diaria-video-montagem/261030"));
-    assert.equal(driveCacheDir("261030", undefined, "/mnt/big", "/home/u"), resolve("/mnt/big/261030"));
-    assert.equal(driveCacheDir("261030", "/x", "/mnt/big", "/home/u"), resolve("/x/261030"));
+    const mounted = (p: string) => p === "/mnt/big";
+    assert.equal(driveCacheDir("261030", undefined, "/mnt/big", "/home/u", mounted), resolve("/mnt/big/261030"));
+    assert.equal(driveCacheDir("261030", "/x", "/mnt/big", "/home/u", mounted), resolve("/x/261030"));
   });
 });
 
