@@ -1,6 +1,8 @@
 # Trocar a mídia de um vertical agendado (#12279)
 
-`--update-scheduled` troca apenas texto e capa. Para V1 por V2 da edição:
+`--replace-scheduled` é uma funcionalidade nova; não remove os fluxos existentes
+de publicação nem `--update-scheduled`, que continua trocando apenas texto e capa.
+Para V1 por V2 da edição:
 
 ```sh
 npx tsx scripts/publish-shorts.ts AAMMDD --replace-scheduled --video PATH
