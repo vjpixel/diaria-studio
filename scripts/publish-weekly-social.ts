@@ -94,6 +94,15 @@
  * explícita do editor foi aceitar essa divergência em vez de criar
  * `formatLinkedInWeekly` só pra omitir a URL.
  *
+ * **LinkedIn como DOCUMENTO PDF (#8055):** no LinkedIn o carrossel sai como
+ * documento (visualizador paginado no feed), não como post de imagens
+ * múltiplas — premissa do editor, item 3 da issue. O PDF encaderna os MESMOS
+ * slides (`buildWeeklyCarouselPdf`), sobe pro KV em `/img/{key}`
+ * (`prepareWeeklyLinkedInDocument`) e vai pro Worker como `document_url`, com
+ * o carrossel em `image_urls` de fallback. Falha do PDF ou recusa 4xx do
+ * Worker cai no carrossel de imagens (`enqueueWeeklyLinkedIn`), com warning e
+ * `document_fallback_reason` no store. Instagram/Facebook/Threads não mudam.
+ *
  * `--force-font-size N` (override manual, ad-hoc — #7571): substitui
  * `WEEKLY_CAROUSEL_NEWS_CARD_SIZE` (#8480, 260919 — piso fixo de 62px pra
  * TODOS os cards internos, sucede `computeCarouselTitleFontSize`, que
@@ -207,6 +216,11 @@ import {
 } from "./lib/weekly-summaries.ts";
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
 import { postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
+import { createHash } from "node:crypto";
+import { buildWeeklyCarouselPdf } from "./gen-weekly-carousel-pdf.ts";
+import { cloudflareKvKey } from "./upload-images-public.ts";
+import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
 import { DEFAULT_WEEKLY_CAROUSEL_TIME, readSocialRotation, weekendRotationSlot } from "./lib/social-schedule-rotation.ts";
 import { validateScheduledTime, publishFacebookCarouselByUrl } from "./publish-facebook.ts";
@@ -602,9 +616,56 @@ function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
 export async function enqueueWeeklyLinkedIn(
   workerUrl: string,
   workerToken: string,
-  opts: { text: string; carouselImageUrls: string[]; scheduledAt: string; destaque: string },
-): Promise<{ key: string; degraded?: "cover_only" }> {
-  const { text, carouselImageUrls, scheduledAt, destaque } = opts;
+  opts: {
+    text: string;
+    carouselImageUrls: string[];
+    scheduledAt: string;
+    destaque: string;
+    /** #8055 — gera + hospeda o PDF do carrossel e devolve a URL pública e o
+     *  título. Ausente = só carrossel (comportamento anterior). */
+    prepareDocument?: () => Promise<WeeklyLinkedInDocument>;
+  },
+): Promise<WeeklyLinkedInEnqueueResult> {
+  const { text, carouselImageUrls, scheduledAt, destaque, prepareDocument } = opts;
+
+  // #8055 — o documento PDF SUBSTITUI o carrossel de imagens no LinkedIn
+  // (premissa do editor). Falha na geração/upload do PDF, ou rejeição
+  // DEFINITIVA do Worker (HTTP 4xx: nada foi gravado), cai no carrossel de
+  // sempre com warning — nunca perde o post. Falha AMBÍGUA do enqueue (rede,
+  // 5xx depois dos retries do cliente) propaga: a entry pode ter sido gravada,
+  // e enfileirar o carrossel por cima publicaria duas vezes.
+  let documentFallbackReason: string | undefined;
+  if (prepareDocument) {
+    let doc: WeeklyLinkedInDocument | null = null;
+    try {
+      doc = await prepareDocument();
+    } catch (e) {
+      documentFallbackReason = `pdf_failed:${(e as Error).message}`;
+    }
+    if (doc) {
+      try {
+        const response = await postToWorkerQueue(workerUrl, workerToken, {
+          text,
+          image_url: null,
+          // Fallback do próprio Worker: se o documento falhar no disparo antes
+          // de o post existir, ele publica este carrossel (fireLinkedInDocument).
+          image_urls: carouselImageUrls.length > 0 ? carouselImageUrls : undefined,
+          document_url: doc.url,
+          document_title: doc.title,
+          scheduled_at: scheduledAt,
+          destaque,
+          channel: "linkedin",
+        });
+        return { key: response.key, format: "document", document_url: doc.url };
+      } catch (e) {
+        if (!(e instanceof WorkerQueueError && e.status >= 400 && e.status < 500)) throw e;
+        documentFallbackReason = `document_rejected:${e.code ?? e.status}`;
+      }
+    }
+    console.log(`WARN linkedin/${destaque} — documento PDF indisponível (${documentFallbackReason}); fallback: carrossel de imagens.`);
+  }
+
+  const fallbackTag = documentFallbackReason ? { document_fallback_reason: documentFallbackReason } : {};
   try {
     const response = await postToWorkerQueue(workerUrl, workerToken, {
       text,
@@ -614,7 +675,7 @@ export async function enqueueWeeklyLinkedIn(
       destaque,
       channel: "linkedin",
     });
-    return { key: response.key };
+    return { key: response.key, format: "carousel", ...fallbackTag };
   } catch (e) {
     if (!(e instanceof WorkerQueueError && e.code === "linkedin_creds_missing" && carouselImageUrls.length > 0)) {
       throw e;
@@ -628,8 +689,65 @@ export async function enqueueWeeklyLinkedIn(
     destaque,
     channel: "linkedin",
   });
-  return { key: response.key, degraded: "cover_only" };
+  return { key: response.key, degraded: "cover_only", format: "cover_only", ...fallbackTag };
 }
+
+/** #8055 — PDF do carrossel já hospedado, pronto pro Worker baixar. */
+export interface WeeklyLinkedInDocument {
+  url: string;
+  title: string;
+}
+
+export interface WeeklyLinkedInEnqueueResult {
+  key: string;
+  /** #10103 — capa única via Make em vez do carrossel. */
+  degraded?: "cover_only";
+  /** #8055 — formato que de fato foi enfileirado. */
+  format: "document" | "carousel" | "cover_only";
+  document_url?: string;
+  /** #8055 — por que o documento não foi usado, quando foi tentado. */
+  document_fallback_reason?: string;
+}
+
+/** #8055 — uploader do PDF (seam de teste); default `uploadImageToWorkerKV`. */
+export type WeeklyPdfUploader = (filePath: string, kvKey: string) => Promise<string>;
+
+/**
+ * #8055 — gera o PDF do carrossel semanal a partir das URLs JÁ publicadas
+ * (`buildWeeklyCarouselPdf`, mesma ordem do carrossel), grava em
+ * `_internal/06-carousel.pdf` e sobe pro KV `POLL`, servido em `/img/{key}`.
+ * A chave segue a allowlist `^img-[^:]+$` e leva o md5 dos bytes
+ * (content-addressed: `Cache-Control: immutable`, e um PDF regenerado nunca
+ * reaproveita a URL do anterior). O Worker do LinkedIn baixa essa URL no disparo.
+ */
+export async function prepareWeeklyLinkedInDocument(opts: {
+  dataRoot: string;
+  carouselKey: string;
+  carouselImageUrls: string[];
+  title: string;
+  buildPdf?: (urls: readonly string[]) => Promise<Uint8Array>;
+  upload?: WeeklyPdfUploader;
+}): Promise<WeeklyLinkedInDocument> {
+  const { dataRoot, carouselKey, carouselImageUrls, title } = opts;
+  const pdf = await (opts.buildPdf ?? ((urls) => buildWeeklyCarouselPdf(urls)))(carouselImageUrls);
+  const pdfPath = resolve(dataRoot, "weekly", carouselKey, "_internal", "06-carousel.pdf");
+  mkdirSync(dirname(pdfPath), { recursive: true });
+  writeFileSync(pdfPath, pdf);
+  const md5 = createHash("md5").update(pdf).digest("hex");
+  const kvKey = cloudflareKvKey(carouselKey, `weekly-${carouselKey}-carousel.pdf`, md5);
+  const upload = opts.upload ?? defaultWeeklyPdfUploader;
+  const url = await upload(pdfPath, kvKey);
+  if (!/^https:\/\//.test(url)) throw new Error(`URL do PDF não é https: ${url}`);
+  return { url, title };
+}
+
+const defaultWeeklyPdfUploader: WeeklyPdfUploader = async (filePath, kvKey) => {
+  const platformCfg = readPlatformConfig();
+  const kvNamespaceId = platformCfg?.poll?.kv_namespace_id;
+  const workerUrl = platformCfg?.poll?.worker_url ?? DIARIA_EIA_URL;
+  if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id não configurado (PDF do LinkedIn)");
+  return uploadImageToWorkerKV(filePath, kvKey, { kvNamespaceId, workerUrl });
+};
 
 /**
  * `dataRoot` é injetável (default `{ROOT}/data`, #4101 finding 7) — permite
@@ -646,6 +764,9 @@ export async function main(
     sectionCardGenerator?: SectionCardGenerator;
     flatCardGenerator?: FlatCardGenerator;
     newsCardGenerator?: NewsCardGenerator;
+    /** #8055 — seams do PDF do LinkedIn (teste); default: download real + upload pro KV. */
+    weeklyPdfBuilder?: (urls: readonly string[]) => Promise<Uint8Array>;
+    weeklyPdfUploader?: WeeklyPdfUploader;
     /** Relógio injetável (#10389) — checagem de slot vencido e `validateScheduledTime`. */
     now?: Date;
     /** #10458 — config com `publishing.social.facebook.pages` (teste); default: `platform.config.json`. */
@@ -890,6 +1011,8 @@ async function runOneMode(
     sectionCardGenerator?: SectionCardGenerator;
     flatCardGenerator?: FlatCardGenerator;
     newsCardGenerator?: NewsCardGenerator;
+    weeklyPdfBuilder?: (urls: readonly string[]) => Promise<Uint8Array>;
+    weeklyPdfUploader?: WeeklyPdfUploader;
     now?: Date;
     facebookPagesConfig?: unknown;
   },
@@ -1881,15 +2004,26 @@ async function runOneMode(
       console.error(`ERRO linkedin/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
       tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
     } else {
-      let response: { key: string; degraded?: "cover_only" } | null = null;
+      let response: WeeklyLinkedInEnqueueResult | null = null;
       try {
-        // Carrossel, com fallback de capa única quando o Worker não tem a
-        // credencial da API direta (helper `enqueueWeeklyLinkedIn`, #10103).
+        // #8055: documento PDF (substitui o carrossel no LinkedIn); fallback
+        // pro carrossel e, sem credencial da API direta, pra capa única
+        // (helper `enqueueWeeklyLinkedIn`, #10103).
+        const range = weekRangeLabel(contentWindow);
         response = await enqueueWeeklyLinkedIn(workerUrl, workerToken, {
           text: fbCaption,
           carouselImageUrls,
           scheduledAt,
           destaque: destaqueKey,
+          prepareDocument: () =>
+            prepareWeeklyLinkedInDocument({
+              dataRoot,
+              carouselKey,
+              carouselImageUrls,
+              title: range ? `${flatTexts.cover.title} (${range})` : flatTexts.cover.title,
+              buildPdf: opts.weeklyPdfBuilder,
+              upload: opts.weeklyPdfUploader,
+            }),
         });
       } catch (e: any) {
         // #8303 — o Worker (workers/linkedin-cron/src/index.ts::handleEnqueue)
@@ -1929,7 +2063,9 @@ async function runOneMode(
         }
       }
       if (response) {
-        console.log(`OK linkedin/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
+        console.log(
+          `OK linkedin/${destaqueKey} — ${response.format} scheduled at ${scheduledAt} (worker_queue_key=${response.key})`,
+        );
         try {
           tagAndAppend({
             platform: "linkedin",
@@ -1942,6 +2078,10 @@ async function runOneMode(
             // carrossel) pra auditoria e pro reenvio do carrossel quando a
             // API direta for aprovada (#8055). Ausente = carrossel normal.
             ...(response.degraded ? { degraded: response.degraded } : {}),
+            // #8055 — formato enfileirado + motivo do fallback, quando o PDF não foi usado.
+            format: response.format,
+            ...(response.document_url ? { document_url: response.document_url } : {}),
+            ...(response.document_fallback_reason ? { document_fallback_reason: response.document_fallback_reason } : {}),
           });
         } catch (e: any) {
           console.error(

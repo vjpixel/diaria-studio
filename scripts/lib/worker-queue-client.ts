@@ -62,6 +62,12 @@ export interface WorkerQueuePayload {
   // só o 4º post (USE MELHOR) manda, com o permalink da edição. Fail-soft no
   // Worker: falha do comentário nunca derruba a publicação.
   first_comment?: string;
+  // #8055 — documento PDF do LinkedIn (só `channel: "linkedin"`): URL https
+  // pública que o Worker baixa no disparo e sobe pela Documents API, com o
+  // título exigido pela Posts API. `image_urls` junto vira o fallback do
+  // Worker (carrossel de imagens) se o documento falhar antes de o post existir.
+  document_url?: string;
+  document_title?: string;
   // #10906 — chave idempotente: o Worker deriva a key da fila dela, então o
   // MESMO POST repetido (retry do `postToWorkerQueue` depois de uma resposta
   // perdida) cai na mesma entry em vez de criar uma 2ª. Formato aceito:

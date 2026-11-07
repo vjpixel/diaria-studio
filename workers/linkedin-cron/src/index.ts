@@ -77,7 +77,8 @@
  *   THREADS_USER_ID                → (#3944 Parte B) Threads user ID da conta @diar.ia.br
  *   LINKEDIN_ACCESS_TOKEN          → (#8052) token com escopo w_organization_social (ou w_member_social)
  *                                    pra API DIRETA do LinkedIn (Images API + Posts API) — usado SÓ
- *                                    pelo caminho carrossel (image_urls > 1). O post single-image
+ *                                    pelo caminho carrossel (image_urls > 1) e pelo documento PDF
+ *                                    (document_url, #8055, Documents API). O post single-image
  *                                    continua indo pelo webhook Make (MAKE_WEBHOOK_URL acima).
  *   LINKEDIN_AUTHOR_URN            → (#8052) URN da página/perfil que publica o carrossel
  *                                    (urn:li:organization:{id} ou urn:li:person:{id})
@@ -213,6 +214,16 @@ export interface QueueEntry {
    */
   first_comment?: string;
   /**
+   * #8055 — documento PDF do LinkedIn (Documents API, visualizador paginado no
+   * feed). Só `channel: "linkedin"`. URL https pública que o Worker baixa no
+   * disparo e sobe pro LinkedIn (`fireLinkedInDocument`). `image_urls`, se
+   * vier junto, é o FALLBACK: falha definitiva antes de o post existir cai no
+   * carrossel de imagens (`fireLinkedInCarousel`), nunca perde o post.
+   */
+  document_url?: string;
+  /** #8055 — título do documento (`content.media.title`, exigido pela Posts API). */
+  document_title?: string;
+  /**
    * #10906 — chave idempotente do enqueue, quando o caller manda. Define o
    * segmento final da key (`idempotentQueueUuid`): o mesmo POST repetido cai
    * na MESMA key e no MESMO Durable Object, nunca numa 2ª entry. Ausente =
@@ -258,6 +269,12 @@ export const MAX_URL_LENGTH = 2_000; // #882 — limite de comprimento de image_
 // já implica length >= 2.
 export const CAROUSEL_MIN_ITEMS = 2;
 export const CAROUSEL_MAX_ITEMS = 10;
+/** #8055 — teto do título do documento do LinkedIn (`content.media.title`).
+ *  Folga sobre qualquer título real ("Os principais destaques de IA da
+ *  semana (2–6 nov)" tem ~50); barra só payload errado. */
+export const MAX_DOCUMENT_TITLE_LENGTH = 400;
+/** #8055 — teto da Documents API do LinkedIn (100 MB por documento). */
+export const LINKEDIN_DOCUMENT_MAX_BYTES = 100 * 1024 * 1024;
 export const DLQ_TTL_SECONDS = 30 * 24 * 3600; // #894 P1-B — DLQ entries expiram em 30 dias
 // (#2219 bug 2 fix) TTL do claim: se `claiming=true` por mais de 5min, o claim
 // é considerado expirado (crash mid-flight sem release). CF DO tem timeout de
@@ -483,6 +500,8 @@ const IDEMPOTENT_CONTENT_FIELDS = [
   "collaborators",
   "ig_account",
   "first_comment",
+  "document_url",
+  "document_title",
 ] as const satisfies readonly (keyof QueueEntry)[];
 
 /**
@@ -663,6 +682,49 @@ export function validateFirstComment(body: Partial<QueueEntry>): string | null {
   return null;
 }
 
+/**
+ * #8055 — valida `document_url`/`document_title` (documento PDF do LinkedIn).
+ * Os dois andam juntos; só `channel: "linkedin"` (ou ausente), nunca com
+ * comment/pixel nem Reels; URL https com o mesmo teto de `image_url`. Exige a
+ * credencial da API direta — mesmo `code` do carrossel (#8303), pra o caller
+ * cair no fallback sem parsear prosa. Devolve o corpo do 400 ou `null`.
+ */
+export function validateDocumentFields(
+  body: Partial<QueueEntry>,
+  env: Env,
+): { error: string; code?: string } | null {
+  if (body.document_url === undefined && body.document_title === undefined) return null;
+  if (typeof body.document_url !== "string" || !body.document_url) {
+    return { error: "document_url is required (string) when document_title is set" };
+  }
+  if (body.document_url.length > MAX_URL_LENGTH) {
+    return { error: `document_url exceeds ${MAX_URL_LENGTH} chars` };
+  }
+  if (!/^https:\/\//.test(body.document_url)) {
+    return { error: "document_url must be a public https URL (the Worker downloads it at fire time)" };
+  }
+  if (typeof body.document_title !== "string" || !body.document_title.trim()) {
+    return { error: "document_title is required (non-empty string) with document_url" };
+  }
+  if (body.document_title.length > MAX_DOCUMENT_TITLE_LENGTH) {
+    return { error: `document_title exceeds ${MAX_DOCUMENT_TITLE_LENGTH} chars` };
+  }
+  if (body.channel !== undefined && body.channel !== "linkedin") {
+    return { error: "document_url only applies to channel='linkedin'" };
+  }
+  if (body.action === "comment" || body.webhook_target === "pixel" || body.media_type !== undefined) {
+    return { error: "document_url is a page post: not compatible with action='comment', webhook_target='pixel' or media_type" };
+  }
+  if (!resolveLinkedInCreds(env)) {
+    return {
+      error:
+        "channel='linkedin' com documento (document_url) requer LINKEDIN_ACCESS_TOKEN e LINKEDIN_AUTHOR_URN configurados no Worker (API direta, #8055) — não configurados",
+      code: "linkedin_creds_missing",
+    };
+  }
+  return null;
+}
+
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) {
     return json({ error: "unauthorized" }, 401);
@@ -777,6 +839,9 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // #11724 — comentário pós-publicação: validado no enqueue pelo mesmo motivo.
   const firstCommentError = validateFirstComment(body);
   if (firstCommentError) return json({ error: firstCommentError }, 400);
+  // #8055 — documento PDF do LinkedIn: validado no enqueue pelo mesmo motivo.
+  const documentError = validateDocumentFields(body, env);
+  if (documentError) return json(documentError, 400);
 
   // #10906 — chave idempotente (opcional). Validada antes de qualquer escrita.
   if (body.idempotency_key !== undefined) {
@@ -896,6 +961,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.ig_account !== undefined && { ig_account: body.ig_account }),
     // #11724 — omitido se undefined: sem comentário pós-publicação
     ...(body.first_comment !== undefined && { first_comment: body.first_comment }),
+    // #8055 — omitidos se undefined: sem documento, segue imagem/carrossel de sempre
+    ...(body.document_url !== undefined && { document_url: body.document_url, document_title: body.document_title }),
     ...(body.idempotency_key !== undefined && { idempotency_key: body.idempotency_key }),
   };
   // #11133 — a reserva cobre cancel → KV put → arm; finally libera o

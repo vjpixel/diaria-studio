@@ -19,20 +19,13 @@
  * Corolário: este script só funciona DEPOIS que a semana foi publicada.
  * Sem cache, falha alto dizendo qual arquivo falta — nunca inventa slide.
  *
- * ## Estado (#8055) — RE-DERIVAR, nunca confiar neste parágrafo
+ * ## Consumidor (#8055)
  *
- * A PUBLICAÇÃO do PDF no LinkedIn depende da Documents API, sob o produto
- * Community Management API. Na última medição (18/09/2026) o produto estava
- * "Review in progress" no app `264772062` e o Worker não tinha
- * `LINKEDIN_ACCESS_TOKEN` provisionado — então este script é a metade que
- * NÃO depende disso: gera e valida o artefato, e quando a aprovação sair
- * resta só a chamada de upload.
- *
- * Essas DUAS condições vivem fora do repositório (fila de review da
- * LinkedIn; segredos do Worker no Cloudflare), e nenhum teste aqui as
- * verifica — pela disciplina do #1172, quem for retomar isto re-deriva ao
- * vivo (`wrangler secret list` no `diaria-linkedin-cron`; aba Products do
- * app no Developer Portal) em vez de tomar esta data como estado atual.
+ * `publish-weekly-social.ts` usa `buildWeeklyCarouselPdf` na hora de
+ * publicar (`prepareWeeklyLinkedInDocument`): o LinkedIn semanal sai como
+ * documento PDF pelo Worker `diaria-linkedin-cron` (`fireLinkedInDocument`,
+ * Documents API). Este CLI segue útil pra regenerar/inspecionar o PDF de uma
+ * semana já publicada.
  *
  * ## Uso
  *
