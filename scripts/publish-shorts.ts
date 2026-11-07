@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import { planScheduledReplacements, shortVideoChangeWarnings } from "./lib/diaria/short-scheduled-replace.ts";
+import { recordShortReplacementDeletion } from "./lib/diaria/shorts-published-store.ts";
+import { clearShortSendingAll, openSendingMarks, readShortsSending } from "./lib/diaria/shorts-sending-marker.ts";
+import { deleteScheduledYouTubeVideo } from "./lib/diaria/youtube-upload.ts";
 import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } from "./lib/diaria/published-video-cleanup.ts";
 /**
  * scripts/publish-shorts.ts (#10769)
@@ -48,6 +52,11 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *                                                           # #11795: troca texto e capa de post JÁ AGENDADO (YouTube
  *                                                           # videos.update + thumbnails.set; Facebook POST /{video-id}
  *                                                           # + /thumbnails); X/TikTok voltam como edit_post da Buffer.
+ *
+ *   npx tsx scripts/publish-shorts.ts AAMMDD --replace-scheduled --video PATH
+ *     [--only youtube_shorts,facebook:diaria,x,tiktok] [--publish --confirm-publish AAMMDD]
+ *     # #12279: apaga apenas posts ainda agendados e republica a mídia; Buffer via skill.
+ *     # Procedimento, confirmação Buffer e recuperação: docs/shorts-replace-scheduled.md.
  *
  * Destinos (config `publishing.shorts`, default = decisão do editor):
  *   - `facebook:{slug}` (API) — cada slug de `publishing.shorts.facebook_pages`,
@@ -1894,8 +1903,10 @@ export async function publishFacebookReel(
   caption: string,
   plannedScheduledAt: string | null,
   cover: Buffer | null = null,
+  requireScheduled = false,
 ): Promise<PublishOutcome> {
   const scheduledAt = stillSchedulable(plannedScheduledAt, deps.now());
+  if (requireScheduled && !scheduledAt) throw new Error('horário da substituição próximo/passado; nada enviado');
   if (plannedScheduledAt && !scheduledAt) deps.log(`[premissa] ${facebookDestinationId(page.slug)}: menos de 10 min pro horário — publicando na hora`);
   const route = facebookUploadRoute(mp4DurationSeconds(file));
   let videoId: string;
@@ -3705,6 +3716,8 @@ export interface BufferPrepResult {
  */
 export interface BufferPostInput {
   text: string;
+  /** #12279: pass this back via --video-sha256 when marking the Buffer post. */
+  videoSha256?: string;
   dueAt: string | null;
   videoUrl: string;
   thumbnailOffset?: number;
@@ -3846,6 +3859,7 @@ const USAGE =
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID | tiktok=buffer:ID [--scheduled-at ISO] [--thumbnail-offset MS]\n" +
+  "     publish-shorts.ts AAMMDD --replace-scheduled [--video PATH] [--only ...] [--publish --confirm-publish AAMMDD]\n" +
   "     publish-shorts.ts (AAMMDD | --corte SLUG) --update-scheduled [--only ...] [--publish --confirm-publish AAMMDD]\n" +
   "                                                                                 # troca texto e capa dos posts JÁ AGENDADOS (YouTube, Facebook; Buffer via skill), #11795\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API: conta da diar.ia.br, #11794)\n" +
@@ -3858,7 +3872,7 @@ const USAGE =
   "                                                                                 # --allow-unwatched-dir roda mesmo assim, sem alarme de destino faltante (#11911)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
-export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video", "update-scheduled", "require-corte-authorization", ALLOW_UNWATCHED_DIR_FLAG] as const;
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video", "update-scheduled", "replace-scheduled", "require-scheduled", "require-corte-authorization", ALLOW_UNWATCHED_DIR_FLAG] as const;
 
 /**
  * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
@@ -4351,6 +4365,119 @@ async function runUpdateScheduled(input: {
   return results.some((r) => !r.ok) ? 1 : 0;
 }
 
+/** #12279: strict remote reread, then delete. Unknown/missing state never permits deletion. */
+export async function deleteFacebookScheduledVideo(deps: GraphDeps, page: ResolvedFacebookPage, apiVersion: string, videoId: string): Promise<void> {
+  const cur = await graphGet(deps, videoId, { fields: 'published,scheduled_publish_time', access_token: page.token }, apiVersion);
+  if (cur?.published !== false || !(Number(cur.scheduled_publish_time) * 1000 > deps.now().getTime() + 600_000)) throw new Error('vídeo não está agendado com mais de 10 min; nada apagado');
+  const res = await deps.fetch(`${GRAPH}/${apiVersion}/${encodeURIComponent(videoId)}?${new URLSearchParams({ access_token: page.token })}`, {
+    method: 'DELETE', signal: AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS),
+  });
+  const json = await readJson(res);
+  if (!res.ok || json?.success !== true) throw new Error(`DELETE sem confirmação (HTTP ${res.status}); confira a plataforma antes de tentar novamente`);
+}
+
+/** A successful child must stay successful even when its diagnostic output is not JSON. */
+export function runShortReplacementUpload(args: string[], run: (args: string[]) => { error?: Error; status: number | null; stdout: string } =
+  args => spawnSync(process.execPath, ['--import', 'tsx', ...args], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }),
+): { publication?: unknown; publication_unparsed?: boolean } {
+  const recovery = ['npx', 'tsx', ...args].map(shellQuote).join(' ');
+  let result: ReturnType<typeof run>;
+  try {
+    result = run(args);
+    if (result.error || result.status !== 0) throw result.error ?? new Error(`exit ${result.status}`);
+  } catch {
+    throw new Error(`post antigo apagado e arquivado; novo upload falhou. Confira registro e plataforma antes de repetir: ${recovery}`);
+  }
+  try {
+    return { publication: JSON.parse(result.stdout) };
+  } catch {
+    return { publication_unparsed: true };
+  }
+}
+
+export function readShortVideoSourceName(sourcePath: string, videoHash: string, log: (message: string) => void = console.error): string | undefined {
+  if (!existsSync(sourcePath)) return undefined;
+  try {
+    const source = JSON.parse(readFileSync(sourcePath, 'utf8'));
+    return source.sha256 === videoHash && typeof source.name === 'string' ? source.name : undefined;
+  } catch {
+    log(`[aviso] metadado de origem ignorado: ${sourcePath} não pôde ser lido; comparação por hash preservada`);
+    return undefined;
+  }
+}
+
+async function runReplaceScheduled(input: {
+  dir: string; aammdd: string; values: Record<string, string>; publish: boolean;
+  only: string[] | null; published: ShortsPublishedFile;
+}): Promise<number> {
+  const release = input.publish ? acquireTimerLock(join(input.dir, '_internal/shorts-replace.lock'), Date.now(), { heartbeatMs: TIMER_LOCK_HEARTBEAT_MS }) : () => {};
+  if (!release) throw new Error('substituição já em curso');
+  try { return await runReplaceScheduledUnlocked(input); } finally { release(); }
+}
+
+async function runReplaceScheduledUnlocked(input: {
+  dir: string; aammdd: string; values: Record<string, string>; publish: boolean;
+  only: string[] | null; published: ShortsPublishedFile;
+}): Promise<number> {
+  const { dir, aammdd, values } = input;
+  // Re-read after acquiring the lock; the caller's snapshot may already be stale.
+  input.published = readShortsRegistry(dir, aammdd);
+  const video = resolve(values.video ?? join(dir, shortVideoFileName(aammdd)));
+  if (!existsSync(video) || !statSync(video).isFile() || statSync(video).size === 0) throw new Error('vídeo de substituição ausente/vazio; use --video PATH');
+  const bytes = readFileSync(video);
+  if (!mp4DurationSeconds(bytes)) throw new Error('vídeo de substituição sem duração MP4 válida');
+  const items = planScheduledReplacements(input.published.entries, new Date(), input.only, createHash("sha256").update(bytes).digest("hex"));
+  const pendingMarks = openSendingMarks(readShortsSending(dir, aammdd), input.published.entries);
+  if (pendingMarks.some(m => items.some(i => i.action !== 'skip' && i.entry.destination === m.destination))) throw new Error('envio em curso/sem desfecho; confira a conta antes de substituir');
+  const bufferDeleted = new Set((values['buffer-deleted'] ?? '').split(',').filter(Boolean));
+  if ([...bufferDeleted].some(v => !items.some(i => i.action === 'buffer' && `${i.entry.destination}=${i.entry.id}` === v))) throw new Error('--buffer-deleted deve corresponder exatamente a destino=buffer:ID do plano');
+  if (!input.publish) {
+    console.log(JSON.stringify({ dry_run: true, replace_scheduled: true, aammdd, video, items,
+      buffer_instructions: 'Para cada action=buffer: get_post, conferir queued e dueAt futuro, delete_post; só depois repetir --publish --confirm-publish com --buffer-deleted destino=buffer:ID. Nunca limpar registro antes da confirmação do delete_post.' }, null, 2));
+    return 0;
+  }
+  // Read config/credentials before any destructive call. Each platform rereads its post immediately before deletion.
+  const config = JSON.parse(readFileSync(join(ROOT, 'platform.config.json'), 'utf8'));
+  const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
+  const results: Array<{ destination: string; ok: boolean; pending_buffer?: boolean; error?: string; publication?: unknown; publication_unparsed?: boolean }> = [];
+  for (const item of items) {
+    if (item.action === 'skip') continue;
+    const e = item.entry;
+    if (item.action === 'buffer' && !bufferDeleted.has(`${e.destination}=${e.id}`)) {
+      results.push({ destination: e.destination, ok: false, pending_buffer: true });
+      continue;
+    }
+    try {
+      const fresh = readShortsRegistry(dir, aammdd).entries.find(x => x.destination === e.destination);
+      if (!fresh || fresh.id !== e.id || fresh.at !== e.at) throw new Error('registro mudou durante a troca; nada apagado');
+      if (e.destination === 'youtube_shorts') {
+        const missing = missingYouTubeCredentials(process.env);
+        if (missing.length) throw new Error(`faltam ${missing.join(', ')}`);
+        await deleteScheduledYouTubeVideo(defaultYouTubeUploadDeps, {
+          clientId: process.env.GOOGLE_CLIENT_ID!.trim(), clientSecret: process.env.GOOGLE_CLIENT_SECRET!.trim(),
+          refreshToken: process.env.YOUTUBE_REFRESH_TOKEN!.trim(), channelId: process.env.YOUTUBE_CHANNEL_ID!.trim(),
+        }, e.id);
+      } else if (e.destination.startsWith('facebook:')) {
+        const page = pages.find(p => p.slug === e.destination.slice('facebook:'.length));
+        if (!page || page.missing.length) throw new Error('página sem credencial');
+        await deleteFacebookScheduledVideo(defaultGraphDeps, page, apiVersion, e.id);
+      }
+      recordShortReplacementDeletion(dir, aammdd, e);
+      clearShortSendingAll(dir, aammdd, e.destination);
+      // Only this destination is eligible for the new upload. Existing entries remain protected.
+      const args = [fileURLToPath(import.meta.url), aammdd, '--only', e.destination, '--video', video,
+        '--edition-dir', dir, '--publish', '--confirm-publish', aammdd, '--keep-video', '--require-scheduled', '--scheduled-at', e.scheduled_at!];
+      if (e.destination === 'youtube_shorts') args.push('--force-youtube');
+      if (values['allow-unwatched-dir'] !== undefined || nonCanonicalEditionDir(dir, canonicalShortsEditionDir(aammdd))) args.push('--allow-unwatched-dir');
+      results.push({ destination: e.destination, ok: true, ...runShortReplacementUpload(args) });
+    } catch (err) {
+      results.push({ destination: e.destination, ok: false, error: (err as Error).message });
+    }
+  }
+  console.log(JSON.stringify({ replace_scheduled: true, aammdd, results }, null, 2));
+  return results.some(r => !r.ok) ? 1 : 0;
+}
+
 async function main(): Promise<number> {
   const parsed = parseShortsCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
@@ -4360,6 +4487,10 @@ async function main(): Promise<number> {
   }
   const { flags, values } = parsed;
   let aammdd = parsed.aammdd;
+  if (flags.has("replace-scheduled") && (values.corte || values.mark || values['from-drive'] || ['now', 'update-scheduled', 'confirm-instagram', 'linkedin-timer', 'instagram-timer', 'threads-timer'].some(f => flags.has(f)))) {
+    console.error('publish-shorts: --replace-scheduled é da edição e não combina com corte, mark, download, publicação imediata ou timers');
+    return 2;
+  }
   // #11795: corte avulso — pasta, registro, data, título e gancho próprios, fora de data/editions/.
   const corteSlug = values["corte"];
   let corte: CorteSpec | null = null;
@@ -4455,6 +4586,8 @@ async function main(): Promise<number> {
   const writer = shortsRegistryWriterFor(linkedinTimer, instagramTimer, threadsTimer);
   const publishedPath = shortsRegistryPath(dir, writer);
   let published = readShortsRegistry(dir, aammdd);
+  let videoSourceName: string | undefined;
+  let videoHash: string | undefined;
   // #11795: o vídeo do corte é do editor (ou da pasta de cortes) — a limpeza do vertical da edição nunca o apaga.
   const cleanup = () => {
     if (corte) return;
@@ -4491,6 +4624,13 @@ async function main(): Promise<number> {
       console.error(built.error);
       return 2;
     }
+    if (values['video-sha256']) {
+      if (!/^[a-f0-9]{64}$/.test(values['video-sha256'])) {
+        console.error('publish-shorts: --video-sha256 inválido');
+        return 2;
+      }
+      built.entry.video_sha256 = values['video-sha256'];
+    }
     // #11547: a confirmação (`x=URL`) mantém o registro da capa do agendamento.
     published = persist(carryOverCover(built.entry, published.entries.find((e) => e.destination === mark.destination)));
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
@@ -4508,6 +4648,19 @@ async function main(): Promise<number> {
   if (scopeErr) {
     console.error(`publish-shorts: ${scopeErr}`);
     return 2;
+  }
+
+  if (flags.has("replace-scheduled")) {
+    return runReplaceScheduled({ dir, aammdd, values, publish: flags.has("publish"), only: onlyList, published });
+  }
+
+  if (flags.has("publish") && !flags.has("require-scheduled") && existsSync(join(dir, '_internal/shorts-replace.lock'))) {
+    const release = acquireTimerLock(join(dir, '_internal/shorts-replace.lock'));
+    if (!release) {
+      console.error('publish-shorts: substituição em curso; aguarde o desfecho antes de publicar outros destinos');
+      return 2;
+    }
+    release(); // stale lock from an interrupted replacement was reclaimed
   }
 
   if (flags.has("update-scheduled")) {
@@ -4546,13 +4699,16 @@ async function main(): Promise<number> {
     // #11082: mesmo download protegido do fetch-drive-video.ts (.part, teto de 20 min,
     // 60 s sem bytes aborta, tamanho conferido contra o metadado, só .mp4).
     try {
-      const { bytes } = await downloadDriveFileById(
+      const { bytes, name } = await downloadDriveFileById(
         { driveFetch: (url, init) => gFetchRetry(url, init ?? {}) },
         id,
         videoPath,
         DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS,
         (line) => console.error(line),
       );
+      videoSourceName = name;
+      mkdirSync(join(dir, '_internal'), { recursive: true });
+      writeFileAtomic(join(dir, '_internal/shorts-video-source.json'), JSON.stringify({ name, sha256: createHash('sha256').update(readFileSync(videoPath)).digest('hex') }) + '\n');
       console.error(`[ok] vídeo curto baixado do Drive (${(bytes / 1e6).toFixed(1)} MB) → ${videoPath}`);
     } catch (e) {
       console.error(`publish-shorts: ${(e as Error).message}`);
@@ -4564,6 +4720,11 @@ async function main(): Promise<number> {
   const videoExists = existsSync(videoPath);
   // #10893: a duração decide já no plano (dry-run incluso) se o Instagram vai pela API ou vira passo guiado.
   const file = videoExists ? readFileSync(videoPath) : null;
+  if (file) {
+    videoHash = createHash('sha256').update(file).digest('hex');
+    const sourcePath = join(dir, '_internal/shorts-video-source.json');
+    videoSourceName = readShortVideoSourceName(sourcePath, videoHash);
+  }
   const duration = file ? mp4DurationSeconds(file) : null;
   const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
   const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
@@ -4673,6 +4834,21 @@ async function main(): Promise<number> {
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
     return 2;
+  }
+  if (file) {
+    plan.warnings.push(...shortVideoChangeWarnings(published.entries, videoHash!));
+  }
+  if (flags.has('require-scheduled')) {
+    const scheduledAt = values['scheduled-at'];
+    if (!scheduledAt || !(Date.parse(scheduledAt) > Date.now() + 600_000) || !onlyList || onlyList.length !== 1) {
+      console.error('publish-shorts: substituição exige um único destino e horário futuro com mais de 10 min');
+      return 2;
+    }
+    plan.items = plan.items.map(item => 'scheduledAt' in item ? { ...item, scheduledAt } : item);
+    if (!plan.items.some(item => item.action === 'publish' || item.action === 'buffer')) {
+      console.error('publish-shorts: novo envio indisponível neste destino; registro antigo já arquivado, confira os avisos');
+      return 2;
+    }
   }
   for (const p of plan.premises) console.error(`[premissa] ${p}`);
   for (const w of plan.warnings) console.error(`[aviso] ${w}`);
@@ -4816,6 +4992,7 @@ async function main(): Promise<number> {
     if (item.action === "buffer") {
       // #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com --mark.
       const r = await prepareBufferItem(item, uploadVideo, bufferOffsetMs);
+      if (r.buffer) r.buffer.videoSha256 = videoHash;
       results.push(r);
       console.error(r.ok ? `[ok] ${item.destination}: vídeo no R2 (${r.buffer!.videoUrl}) — falta o create_post na Buffer (skill)` : `[erro] ${item.destination}: ${r.error}`);
       continue;
@@ -4841,7 +5018,9 @@ async function main(): Promise<number> {
       }
     };
     let outcome: PublishOutcome;
+    let fingerprintKnown = item.destination !== "youtube_shorts";
     try {
+      if (flags.has('require-scheduled') && 'scheduledAt' in item && !(Date.parse(item.scheduledAt ?? '') > Date.now() + 600_000)) throw new Error('horário da substituição próximo/passado; nada enviado');
       if (item.action === "enqueue") {
         outcome = await enqueueInstagramReel(
           {
@@ -4878,7 +5057,8 @@ async function main(): Promise<number> {
           matchTitleOnly: corte !== null,
           // Grava send_unknown antes do PUT: um processo morto no upload não duplica o Short.
           onBeforeBytes: (marker) => {
-            published = persist(marker);
+            fingerprintKnown = true;
+            published = persist({ ...marker, video_sha256: videoHash, ...(videoSourceName ? { video_source_name: videoSourceName } : {}) });
           },
         });
       } else if (item.destination === THREADS_PROFILE_DESTINATION) {
@@ -5042,7 +5222,7 @@ async function main(): Promise<number> {
         }
       } else {
         const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
-        outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt, shortCover.bytes);
+        outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt, shortCover.bytes, flags.has("require-scheduled"));
       }
     } catch (e) {
       // Recusa da plataforma/gate: o destino não saiu por esta rodada (envio
@@ -5068,7 +5248,7 @@ async function main(): Promise<number> {
       continue;
     }
     const { unconfirmed } = outcome;
-    const entry = withMissingCoverRecord(outcome.entry, shortCover.path !== null); // #11660
+    const entry = { ...withMissingCoverRecord(outcome.entry, shortCover.path !== null), ...(fingerprintKnown ? { video_sha256: videoHash, ...(videoSourceName ? { video_source_name: videoSourceName } : {}) } : {}) }; // #11660
     // #573: o status do registro é o que o script fez; o estado normalizado é o que se relata.
     const state = resolveShortEntryState(entry, new Date());
     try {

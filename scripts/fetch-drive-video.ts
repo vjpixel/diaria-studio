@@ -1,3 +1,5 @@
+import { newerShortVersionWarnings } from "./lib/diaria/short-scheduled-replace.ts";
+import { readShortsRegistry } from "./lib/diaria/shorts-published-store.ts";
 import { shortsVideoTerminal } from "./lib/diaria/published-video-cleanup.ts";
 import { loadShortsConfig } from "./lib/diaria/short-video.ts";
 /**
@@ -531,7 +533,9 @@ export async function runFetchDriveVideo(
   );
   const base: OutputBase = { edition: aammdd, orientation, folder_id: input.folderId, local_path: localPath };
 
-  if (orientation === "vertical" && !input.force && !instagramCut && shortsVideoTerminal(input.editionDir, aammdd,
+  const registeredShorts = orientation === 'vertical' && !instagramCut ? readShortsRegistry(input.editionDir, aammdd).entries : [];
+  const inspectNewVersion = input.dryRun && registeredShorts.some(e => e.video_source_name);
+  if (orientation === "vertical" && !input.force && !inspectNewVersion && !instagramCut && shortsVideoTerminal(input.editionDir, aammdd,
     loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))))) {
     log("[ok] destinos do vertical já concluídos — nada a baixar");
     return { exitCode: 0, output: { ...base, action: "already-published", record_path: join(input.editionDir, "_internal", "06-shorts-published.json"), video_url: null } };
@@ -738,6 +742,9 @@ export async function runFetchDriveVideo(
       rmSync(source, { force: true });
       rmSync(converted, { force: true });
     }
+  }
+  if (sel.kind === 'found' && orientation === 'vertical' && !instagramCut) {
+    for (const warning of newerShortVersionWarnings(registeredShorts, sel.file.name)) log(`[aviso] ${warning}`);
   }
   if (localReady) return existsOutcome();
 

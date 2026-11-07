@@ -557,6 +557,9 @@ export function knownDestinationIds(cfg: ShortsConfig): Set<string> {
 
 /** Entrada de `_internal/06-shorts-published.json`. */
 export interface ShortPublishedEntry {
+  /** #12279: bytes usados no upload; permite detectar re-export no mesmo caminho. */
+  video_sha256?: string;
+  video_source_name?: string;
   destination: string;
   /**
    * `send_unknown` (#10772): o envio pode ter sido aceito (timeout/5xx na

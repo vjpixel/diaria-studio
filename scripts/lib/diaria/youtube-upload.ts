@@ -857,3 +857,18 @@ export function describeYouTubeState(state: PublishState, opts: { auditBlocked?:
       return "estado não confirmado na releitura — confira no YouTube Studio antes de afirmar qualquer coisa";
   }
 }
+
+/** #12279: deletes only a private video still scheduled in the expected channel. */
+export async function deleteScheduledYouTubeVideo(deps: YouTubeUploadDeps, creds: YouTubeCredentials, videoId: string): Promise<void> {
+  const token = await refreshYouTubeAccessToken(deps, creds);
+  await assertExpectedChannel(deps, token, creds.channelId);
+  const res = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=snippet,status&id=${encodeURIComponent(videoId)}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`videos.list HTTP ${res.status}`);
+  const json = await res.json() as { items?: Array<{ id: string; snippet?: { channelId?: string }; status?: { privacyStatus?: string; publishAt?: string } }> };
+  const item = json.items?.find(i => i.id === videoId);
+  if (item?.snippet?.channelId !== creds.channelId || item.status?.privacyStatus !== 'private' || !(Date.parse(item.status.publishAt ?? '') > deps.now().getTime() + 600_000)) {
+    throw new Error('vídeo não está agendado no canal esperado com mais de 10 min; nada apagado');
+  }
+  const deleted = await deps.fetch(`${YOUTUBE_API_BASE}/videos?id=${encodeURIComponent(videoId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+  if (deleted.status !== 204) throw new Error(`videos.delete sem confirmação (HTTP ${deleted.status}); confira a plataforma antes de tentar novamente`);
+}
