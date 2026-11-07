@@ -49,6 +49,65 @@ describe("#12331: provenance social no fim do Stage 2", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  // #12361: as duas saídas legítimas do --write também valem na invariante do Stage 2.
+  function provenFixture() {
+    const dir = fixture();
+    const h = planRunRecord(emptyRunRecord(), "humanizador", pre, humanized);
+    const c = planRunRecord(h.record, "clarice", humanized, final);
+    writeRunRecord(dir, c.record);
+    writeSentinel(dir);
+    assert.deepEqual(rule.run(dir), []);
+    return dir;
+  }
+
+  it("#12361: editor edita main_d2 no gate + --write --unproven-ok → sem violação", () => {
+    const dir = provenFixture();
+    try {
+      writeFileSync(join(dir, "03-social.md"), final.replace("Segundo texto corrigido.", "Segundo texto do editor."));
+      assert.equal(rule.run(dir).length, 1, "edição do editor sem selo segue sem prova");
+      assert.throws(() => writeSentinel(dir, "editor editou no gate"), /UnprovenSectionsError|sem prova/);
+      writeSentinel(dir, "editor editou no gate", { unprovenOk: "editor" });
+      assert.deepEqual(rule.run(dir), []);
+      // Um --write seguinte sem mudança não apaga o aceite.
+      writeSentinel(dir);
+      assert.deepEqual(rule.run(dir), []);
+      // Nova redação na mesma seção depois do aceite volta a exigir prova.
+      writeFileSync(join(dir, "03-social.md"), final.replace("Segundo texto corrigido.", "Outra redação."));
+      assert.equal(rule.run(dir).length, 1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("#12361: mudança só de formatação sobre texto provado → sem violação, sem --unproven-ok", () => {
+    const dir = provenFixture();
+    try {
+      writeFileSync(join(dir, "03-social.md"), final.replace("Segundo texto corrigido.", "Segundo texto{quebra}corrigido. #IA"));
+      writeSentinel(dir, "ajuste de quebra/hashtag");
+      assert.deepEqual(rule.run(dir), []);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("#12361: formatação sobre texto que nunca teve prova continua bloqueando", () => {
+    const dir = fixture();
+    try {
+      writeFileSync(join(dir, "03-social.md"), final.replace("Segundo texto corrigido.", "Segundo texto  corrigido. #IA"));
+      writeSentinel(dir, "só formatação");
+      const violations = rule.run(dir);
+      assert.equal(violations.length, 4);
+      assert.match(violations[1].message, /main_d2/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("#12361: aceite do selo não vale com selo defasado (hash não bate)", () => {
+    const dir = provenFixture();
+    try {
+      writeFileSync(join(dir, "03-social.md"), final.replace("Segundo texto corrigido.", "Segundo texto do editor."));
+      writeSentinel(dir, "editor", { unprovenOk: "editor" });
+      writeFileSync(join(dir, "03-social.md"), final.replace("Segundo texto corrigido.", "Segundo texto do editor.").replace("Terceiro texto.", "Terceiro novo."));
+      const violations = rule.run(dir);
+      assert.deepEqual(violations.map((v) => v.message.slice(0, 7)), ["main_d2", "main_d3"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("Clarice sem sugestões aceita registro explícito com note", () => {
     const dir = fixture(humanized);
     try {

@@ -85,9 +85,11 @@ import {
   classifySealChanges,
   computeSectionFormatHashes,
   describeProvenance,
+  planAcceptedSectionHashes,
   planRunRecord,
   readRunRecord,
   writeRunRecord,
+  type AcceptedSectionReason,
   type RunStep,
   type SectionProvenance,
 } from "./lib/humanizer-run-record.ts"; // #11534: prova de humanizador + Clarice
@@ -120,6 +122,12 @@ export interface HumanizerSocialSentinel {
   /** #11534: seções aceitas sem prova via `--unproven-ok` / `unprovenOk`. */
   unproven_sections?: string[];
   unproven_ok?: string;
+  /**
+   * #12361: sha256 de seção (conteúdo) aceita sem prova no registro — `unproven_ok`
+   * (via `--unproven-ok`) ou `formatting` (só formatação sobre texto provado).
+   * Persiste entre `--write`s enquanto o texto existir; o Stage 2 aceita essas seções.
+   */
+  accepted_section_hashes?: Record<string, AcceptedSectionReason>;
 }
 
 /** #11534: `--write --bypass-reason` com seção reescrita sem prova de humanizador + Clarice. */
@@ -182,8 +190,8 @@ export function writeSentinel(editionDir: string, bypassReason?: string, opts: W
   // para evitar uso de --write como atalho que bypassa a humanização.
   let provenance: SectionProvenance[] | undefined;
   let unproven: string[] = [];
+  let existing: HumanizerSocialSentinel | null = null;
   if (existsSync(sentinelPath)) {
-    let existing: HumanizerSocialSentinel | null = null;
     try {
       existing = JSON.parse(readFileSync(sentinelPath, "utf8")) as HumanizerSocialSentinel;
     } catch {
@@ -213,6 +221,15 @@ export function writeSentinel(editionDir: string, bypassReason?: string, opts: W
   }
 
   const socialMd = readFileSync(socialPath, "utf8");
+  // #12361: aceites sem prova (--unproven-ok, só formatação) por hash de conteúdo,
+  // lidos pela invariante `social-humanizer-provenance-recorded` do Stage 2.
+  const accepted = planAcceptedSectionHashes(
+    existing?.social_sha256 ? existing : null,
+    socialMd,
+    readRunRecord(editionDir),
+    unproven,
+    opts.unprovenOk,
+  );
   const sentinel: HumanizerSocialSentinel = {
     social_sha256: computeSocialHash(socialPath),
     written_at: new Date().toISOString(),
@@ -221,6 +238,7 @@ export function writeSentinel(editionDir: string, bypassReason?: string, opts: W
     ...(bypassReason ? { bypass_reason: bypassReason } : {}),
     ...(provenance ? { section_provenance: provenance } : {}),
     ...(unproven.length > 0 ? { unproven_sections: unproven, unproven_ok: opts.unprovenOk } : {}),
+    ...(Object.keys(accepted).length > 0 ? { accepted_section_hashes: accepted } : {}),
   };
   writeFileSync(sentinelPath, JSON.stringify(sentinel, null, 2) + "\n", "utf8");
   return sentinelPath;
