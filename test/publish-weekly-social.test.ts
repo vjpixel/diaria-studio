@@ -51,6 +51,7 @@ import {
   DEFAULT_WEEKLY_TIME,
   WEEKLY_MIN_ITEMS,
   enqueueWeeklyLinkedIn,
+  prepareWeeklyLinkedInDocument,
   main,
 } from "../scripts/publish-weekly-social.ts";
 import { WorkerQueueError } from "../scripts/lib/worker-queue-client.ts";
@@ -2523,6 +2524,225 @@ describe("main(): dispatch mockado", () => {
         (e: any) => e instanceof WorkerQueueError && e.code === "invalid_payload",
       );
       assert.equal(calls.length, 1, "só o carrossel — o fallback é exclusivo de linkedin_creds_missing");
+    });
+
+    // ── #8055: documento PDF substitui o carrossel no LinkedIn ──
+
+    const DOC = { url: "https://eia.test/img/img-unknown-weekly-271225-clicked-carousel-abcd1234.pdf", title: "Título (20–24 dez)" };
+    const CAROUSEL = ["https://cdn.test/cover-4x5.jpg", "https://cdn.test/n1.jpg", "https://cdn.test/cta-4x5.jpg"];
+    function queueOk(body: any) {
+      return {
+        statusCode: 200,
+        data: JSON.stringify({ queued: true, key: `queue:${body.channel}:${body.document_url ? "doc" : "car"}`, scheduled_at: body.scheduled_at, destaque: body.destaque }),
+      };
+    }
+
+    it("#8055: enqueueWeeklyLinkedIn com PDF pronto — 1 POST com document_url/document_title e o carrossel como fallback do Worker", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(body);
+          return queueOk(body);
+        });
+
+      const res = await enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+        text: "legenda",
+        carouselImageUrls: CAROUSEL,
+        scheduledAt: "2027-12-26T11:00:00-03:00",
+        destaque: "weekly-clicked",
+        prepareDocument: async () => DOC,
+      });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].channel, "linkedin");
+      assert.equal(calls[0].document_url, DOC.url);
+      assert.equal(calls[0].document_title, DOC.title);
+      assert.deepEqual(calls[0].image_urls, CAROUSEL, "carrossel vai junto como fallback do disparo");
+      assert.deepEqual(res, { key: "queue:linkedin:doc", format: "document", document_url: DOC.url });
+    });
+
+    it("#8055: geração/upload do PDF falha — cai no carrossel de imagens com o motivo registrado (nunca perde o post)", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(body);
+          return queueOk(body);
+        });
+
+      const res = await enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+        text: "legenda",
+        carouselImageUrls: CAROUSEL,
+        scheduledAt: "2027-12-26T11:00:00-03:00",
+        destaque: "weekly-clicked",
+        prepareDocument: async () => {
+          throw new Error("KV upload 500");
+        },
+      });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].document_url, undefined);
+      assert.deepEqual(calls[0].image_urls, CAROUSEL);
+      assert.equal(res.format, "carousel");
+      assert.match(res.document_fallback_reason ?? "", /^pdf_failed:KV upload 500/);
+    });
+
+    it("#8055: Worker recusa o documento (4xx) — 2º POST com o carrossel", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(body);
+          if (body.document_url) return { statusCode: 400, data: JSON.stringify({ error: "document_title exceeds 400 chars" }) };
+          return queueOk(body);
+        })
+        .times(2);
+
+      const res = await enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+        text: "legenda",
+        carouselImageUrls: CAROUSEL,
+        scheduledAt: "2027-12-26T11:00:00-03:00",
+        destaque: "weekly-clicked",
+        prepareDocument: async () => DOC,
+      });
+      assert.equal(calls.length, 2);
+      assert.ok(calls[0].document_url);
+      assert.equal(calls[1].document_url, undefined);
+      assert.equal(res.format, "carousel");
+      assert.equal(res.document_fallback_reason, "document_rejected:400");
+    });
+
+    it("#8055: documento e carrossel recusados por falta de credencial — termina na capa única (cover_only)", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(body);
+          if (body.document_url || body.image_urls) {
+            return { statusCode: 400, data: JSON.stringify({ error: "sem credencial", code: "linkedin_creds_missing" }) };
+          }
+          return queueOk(body);
+        })
+        .times(3);
+
+      const res = await enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+        text: "legenda",
+        carouselImageUrls: CAROUSEL,
+        scheduledAt: "2027-12-26T11:00:00-03:00",
+        destaque: "weekly-clicked",
+        prepareDocument: async () => DOC,
+      });
+      assert.equal(calls.length, 3, "documento + carrossel + capa única");
+      assert.equal(calls[2].image_url, CAROUSEL[0]);
+      assert.equal(res.degraded, "cover_only");
+      assert.equal(res.document_fallback_reason, "document_rejected:linkedin_creds_missing");
+    });
+
+    it("#8055: enqueue do documento AMBÍGUO (5xx depois dos retries) propaga — nunca enfileira o carrossel por cima", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          calls.push(JSON.parse(opts.body as string));
+          return { statusCode: 503, data: "upstream" };
+        })
+        .times(2);
+
+      await assert.rejects(
+        enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+          text: "legenda",
+          carouselImageUrls: CAROUSEL,
+          scheduledAt: "2027-12-26T11:00:00-03:00",
+          destaque: "weekly-clicked",
+          prepareDocument: async () => DOC,
+        }),
+        (e: any) => e instanceof WorkerQueueError && e.status === 503,
+      );
+      assert.ok(calls.length >= 1);
+      assert.ok(calls.every((c) => c.document_url), "nenhum POST de carrossel depois da falha ambígua");
+    });
+
+    it("#8055: prepareWeeklyLinkedInDocument — grava o PDF em _internal, chave na allowlist /img/ com md5, devolve URL https", async () => {
+      const pdf = new TextEncoder().encode("%PDF-1.4 fake");
+      const uploads: Array<{ filePath: string; kvKey: string }> = [];
+      const doc = await prepareWeeklyLinkedInDocument({
+        dataRoot,
+        carouselKey: "271225-clicked",
+        carouselImageUrls: CAROUSEL,
+        title: "Título",
+        buildPdf: async (urls) => {
+          assert.deepEqual(urls, CAROUSEL, "PDF encaderna exatamente as URLs do carrossel, na ordem");
+          return pdf;
+        },
+        upload: async (filePath, kvKey) => {
+          uploads.push({ filePath, kvKey });
+          return `https://eia.test/img/${kvKey}`;
+        },
+      });
+      const pdfPath = resolve(dataRoot, "weekly", "271225-clicked", "_internal", "06-carousel.pdf");
+      assert.deepEqual(new Uint8Array(readFileSync(pdfPath)), pdf);
+      assert.equal(uploads.length, 1);
+      const [uploaded] = uploads;
+      assert.equal(uploaded.filePath, pdfPath);
+      assert.match(uploaded.kvKey, /^img-[^:]+$/, "chave precisa casar com a allowlist do /img/ (#4112)");
+      assert.match(uploaded.kvKey, /-[0-9a-f]{8}\.pdf$/, "content-addressed (md5 curto)");
+      assert.deepEqual(doc, { url: `https://eia.test/img/${uploaded.kvKey}`, title: "Título" });
+    });
+
+    it("#8055: main() — LinkedIn semanal enfileira o DOCUMENTO (Instagram/Threads seguem com o carrossel) e o store registra format=document", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      const capturedByChannel: Record<string, any> = {};
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          capturedByChannel[body.channel] = body;
+          return queueOk(body);
+        })
+        .times(3);
+
+      let builtFrom: readonly string[] = [];
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        {
+          dataRoot,
+          flatCardGenerator: fakeFlatCardGenerator,
+          newsCardGenerator: fakeNewsCardGenerator,
+          weeklyPdfBuilder: async (urls) => {
+            builtFrom = urls;
+            return new TextEncoder().encode("%PDF-1.4 fake");
+          },
+          weeklyPdfUploader: async (_p, kvKey) => `https://eia.test/img/${kvKey}`,
+        },
+      );
+
+      const li = capturedByChannel.linkedin;
+      assert.ok(li, "LinkedIn bateu /queue");
+      assert.match(li.document_url, /^https:\/\/eia\.test\/img\/img-[^:]+\.pdf$/);
+      assert.match(li.document_title, /^As notícias de IA mais lidas da semana/);
+      assert.deepEqual(builtFrom, capturedByChannel.instagram.image_urls, "PDF = mesmos slides, mesma ordem do carrossel");
+      assert.deepEqual(li.image_urls, capturedByChannel.instagram.image_urls, "carrossel segue junto como fallback");
+      assert.equal(capturedByChannel.instagram.document_url, undefined, "Instagram intocado");
+      assert.equal(capturedByChannel.threads.document_url, undefined, "Threads intocado");
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const liEntry = out.posts.find((p: any) => p.platform === "linkedin");
+      assert.equal(liEntry.status, "scheduled");
+      assert.equal(liEntry.format, "document");
+      assert.equal(liEntry.document_url, li.document_url);
     });
 
     it("skip-existing: LinkedIn já 'scheduled' de uma tentativa anterior NÃO é re-tentado", async () => {

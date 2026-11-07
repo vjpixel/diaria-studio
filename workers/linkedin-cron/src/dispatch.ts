@@ -1,5 +1,5 @@
 import type { Env, QueueEntry, WebhookTarget, QueueAction, ReelsContainerRef } from "./index";
-import { FETCH_TIMEOUT_MS, CAROUSEL_MAX_ITEMS } from "./index";
+import { FETCH_TIMEOUT_MS, CAROUSEL_MAX_ITEMS, LINKEDIN_DOCUMENT_MAX_BYTES } from "./index";
 import { isUnsupportedCommentTarget } from "./guards";
 import { defaultLinkedInApiVersion } from "./linkedin-api-version";
 
@@ -392,6 +392,187 @@ async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds:
       reason: `LinkedIn carrossel: POST /rest/posts fetch ${timeout ? "timeout" : "failed"}: ${err.message} (images=${imageUrns.join(",")})`,
     };
   }
+}
+
+/**
+ * Erro de um passo do documento que NÃO criou post nenhum — é o que autoriza
+ * o fallback pro carrossel de imagens em `fireLinkedInDocument`.
+ */
+class DocumentStepError extends Error {}
+
+function fetchFailure(err: Error): string {
+  return err.name === "AbortError" || err.name === "TimeoutError" ? "timeout" : `failed: ${err.message}`;
+}
+
+/**
+ * Sobe o PDF pro LinkedIn (Documents API) e devolve o URN do documento.
+ * Ordem: baixa o PDF primeiro (sem efeito colateral no LinkedIn), confere
+ * tamanho e assinatura `%PDF-`, depois `initializeUpload` + PUT. Toda falha
+ * aqui lança `DocumentStepError` — nenhum post foi criado ainda.
+ */
+async function uploadLinkedInDocument(
+  documentUrl: string,
+  creds: LinkedInCreds,
+  restHeaders: Record<string, string>,
+): Promise<string> {
+  let pdfBytes: ArrayBuffer;
+  try {
+    const docRes = await fetch(documentUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (!docRes.ok) {
+      await docRes.body?.cancel().catch(() => {});
+      throw new DocumentStepError(`fetch do PDF (${documentUrl}) falhou: HTTP ${docRes.status}`);
+    }
+    const declared = Number(docRes.headers.get("content-length") ?? "0");
+    if (declared > LINKEDIN_DOCUMENT_MAX_BYTES) {
+      await docRes.body?.cancel().catch(() => {});
+      throw new DocumentStepError(`PDF com ${declared} bytes excede o teto de ${LINKEDIN_DOCUMENT_MAX_BYTES} da Documents API`);
+    }
+    pdfBytes = await docRes.arrayBuffer();
+  } catch (e) {
+    if (e instanceof DocumentStepError) throw e;
+    throw new DocumentStepError(`fetch do PDF (${documentUrl}) ${fetchFailure(e as Error)}`);
+  }
+  if (pdfBytes.byteLength === 0 || pdfBytes.byteLength > LINKEDIN_DOCUMENT_MAX_BYTES) {
+    throw new DocumentStepError(`PDF com ${pdfBytes.byteLength} bytes fora do intervalo aceito (1..${LINKEDIN_DOCUMENT_MAX_BYTES})`);
+  }
+  // Assinatura: uma página de erro HTML servida com 200 viraria um documento
+  // quebrado no feed. Conferir aqui custa 5 bytes.
+  const magic = new TextDecoder().decode(new Uint8Array(pdfBytes, 0, Math.min(5, pdfBytes.byteLength)));
+  if (magic !== "%PDF-") {
+    throw new DocumentStepError(`conteúdo de ${documentUrl} não é PDF (começa com ${JSON.stringify(magic)})`);
+  }
+
+  let uploadUrl: string;
+  let documentUrn: string;
+  try {
+    const initRes = await fetch("https://api.linkedin.com/rest/documents?action=initializeUpload", {
+      method: "POST",
+      headers: restHeaders,
+      body: JSON.stringify({ initializeUploadRequest: { owner: creds.authorUrn } }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await initRes.text();
+    let data: { value?: { uploadUrl?: string; document?: string }; message?: string };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new DocumentStepError(`initializeUpload resposta não-JSON: HTTP ${initRes.status}: ${text.slice(0, 200)}`);
+    }
+    if (!initRes.ok || !data.value?.uploadUrl || !data.value?.document) {
+      throw new DocumentStepError(`initializeUpload falhou: HTTP ${initRes.status}: ${data.message ?? text.slice(0, 200)}`);
+    }
+    uploadUrl = data.value.uploadUrl;
+    documentUrn = data.value.document;
+  } catch (e) {
+    if (e instanceof DocumentStepError) throw e;
+    throw new DocumentStepError(`initializeUpload fetch ${fetchFailure(e as Error)}`);
+  }
+
+  try {
+    const putRes = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+      body: pdfBytes,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!putRes.ok) {
+      const body = await putRes.text();
+      throw new DocumentStepError(`upload do PDF falhou: HTTP ${putRes.status}: ${body.slice(0, 200)} (document=${documentUrn})`);
+    }
+  } catch (e) {
+    if (e instanceof DocumentStepError) throw e;
+    throw new DocumentStepError(`upload do PDF fetch ${fetchFailure(e as Error)} (document=${documentUrn})`);
+  }
+  return documentUrn;
+}
+
+/**
+ * Dispara um post de DOCUMENTO (PDF) no LinkedIn via API direta (#8055) — o
+ * formato que o LinkedIn renderiza como visualizador paginado no feed.
+ * Análogo a `fireLinkedInCarousel`: mesmos headers REST, mesma versão, mesma
+ * política de outcome (`dlq`, nunca retriable — reprocessar do zero a cada
+ * retry recriaria uploads).
+ *
+ * Fluxo: (1) baixa o PDF de `documentUrl`; (2) `POST
+ * /rest/documents?action=initializeUpload` com `owner=authorUrn` → `{ value:
+ * { uploadUrl, document } }`; (3) PUT dos bytes no `uploadUrl`; (4) `POST
+ * /rest/posts` com `content.media = { title, id: documentUrn }`.
+ *
+ * Fallback (premissa do editor: nunca perder o post): se um passo ANTERIOR à
+ * criação do post falhar, ou se `POST /rest/posts` responder 4xx (rejeição
+ * definitiva, nada publicado), e a entry trouxer `fallbackImageUrls` com
+ * mais de 1 item, publica o carrossel de imagens de sempre. 5xx/timeout do
+ * `POST /rest/posts` NÃO cai no fallback — o post pode ter saído, e o
+ * carrossel em cima seria duplicado: vira `send_unknown` (#11106), que
+ * nenhum dos dois caminhos (cron e alarm) refaz.
+ */
+async function fireLinkedInDocument(
+  documentUrl: string,
+  title: string,
+  caption: string,
+  creds: LinkedInCreds,
+  fallbackImageUrls: string[],
+): Promise<FireOutcome> {
+  const restHeaders = {
+    Authorization: `Bearer ${creds.accessToken}`,
+    "Content-Type": "application/json",
+    "LinkedIn-Version": creds.apiVersion,
+    "X-Restli-Protocol-Version": "2.0.0",
+  };
+
+  const fallback = async (why: string): Promise<FireOutcome> => {
+    if (fallbackImageUrls.length <= 1) {
+      return { status: "dlq", reason: `LinkedIn documento: ${why} (sem carrossel de fallback)` };
+    }
+    console.warn(`[dispatch] LinkedIn documento: ${why} — fallback: carrossel de ${fallbackImageUrls.length} imagens`);
+    const outcome = await fireLinkedInCarousel(fallbackImageUrls, caption, creds);
+    if (outcome.status === "fired") return outcome;
+    return { status: "dlq", reason: `LinkedIn documento: ${why}; fallback carrossel também falhou: ${outcome.reason}` };
+  };
+
+  let documentUrn: string;
+  try {
+    documentUrn = await uploadLinkedInDocument(documentUrl, creds, restHeaders);
+  } catch (e) {
+    return fallback((e as Error).message);
+  }
+
+  let postRes: Response;
+  try {
+    postRes = await fetch("https://api.linkedin.com/rest/posts", {
+      method: "POST",
+      headers: restHeaders,
+      body: JSON.stringify({
+        author: creds.authorUrn,
+        commentary: caption,
+        visibility: "PUBLIC",
+        distribution: {
+          feedDistribution: "MAIN_FEED",
+          targetEntities: [],
+          thirdPartyDistributionChannels: [],
+        },
+        content: {
+          media: { title, id: documentUrn },
+        },
+        lifecycleState: "PUBLISHED",
+        isReshareDisabledByAuthor: false,
+      }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (e) {
+    return {
+      status: "send_unknown",
+      reason: `${SEND_UNKNOWN_PREFIX} LinkedIn documento: POST /rest/posts fetch ${fetchFailure(e as Error)} (document=${documentUrn}) — o post pode ter saído; confira a página antes de republicar`,
+    };
+  }
+  if (postRes.ok) return { status: "fired" };
+  const body = await postRes.text();
+  const why = `POST /rest/posts falhou: HTTP ${postRes.status}: ${body.slice(0, 200)} (document=${documentUrn})`;
+  if (postRes.status >= 400 && postRes.status < 500) return fallback(why);
+  return {
+    status: "send_unknown",
+    reason: `${SEND_UNKNOWN_PREFIX} LinkedIn documento: ${why} — o post pode ter saído; confira a página antes de republicar`,
+  };
 }
 
 /**
@@ -1903,6 +2084,20 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
   // `fireThreads` (Instagram/Threads: > 1 imagem = carrossel, Graph/Threads
   // API direta, sem Make).
   const linkedInImages = resolveImageUrls(entry);
+
+  // #8055 — documento PDF (carrossel semanal). Vem antes do carrossel de
+  // imagens: `image_urls`, quando presente junto, é o fallback dele.
+  if (entry.document_url) {
+    if (!config.linkedin) {
+      return {
+        status: "dlq",
+        reason:
+          "channel=linkedin com documento (document_url) mas credenciais da API direta do LinkedIn (LINKEDIN_ACCESS_TOKEN/LINKEDIN_AUTHOR_URN) não configuradas — ver #8055",
+      };
+    }
+    return fireLinkedInDocument(entry.document_url, entry.document_title ?? "", entry.text, config.linkedin, linkedInImages);
+  }
+
   if (linkedInImages.length > 1) {
     if (!config.linkedin) {
       return {
