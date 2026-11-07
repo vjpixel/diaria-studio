@@ -242,3 +242,19 @@ describe("session closure evidence", () => {
     });
   });
 });
+
+describe("#12307 session-close-check lista PRs pela REST, não pelo gh pr list (GraphQL)", () => {
+  it("chama `gh api repos/{owner}/{repo}/pulls` com head={owner}:branch e nunca `gh pr list`", () => {
+    const calls: string[][] = [];
+    checkSessionClose("/repo", session, [], (cmd, args) => {
+      if (cmd === "gh") calls.push(args);
+      return clean(cmd, args);
+    });
+    assert.ok(calls.length > 0, "consultou o GitHub");
+    for (const args of calls) {
+      assert.equal(args[0], "api", JSON.stringify(args));
+      assert.ok(!(args[0] === "pr" && args[1] === "list"));
+      assert.match(args[1], /^repos\/\{owner\}\/\{repo\}\/pulls\?state=open&per_page=100&head=\{owner\}:/);
+    }
+  });
+});
