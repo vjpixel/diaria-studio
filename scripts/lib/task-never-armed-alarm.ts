@@ -53,11 +53,17 @@ import { unitBaseName } from "./systemd-units.ts";
  * também não cabe em `ScheduledTaskSchedule.interval` (só múltiplos de hora
  * inteira). Mesma classe de exclusão de `diaria-overnight-watchdog` — ver
  * cabeçalho de `scheduled-tasks.ts`.
+ *
+ * `diaria-gdrive-bisync` (#12356): shell puro que chama o `rclone bisync`
+ * (`scripts/systemd/gdrive-bisync.sh`), sem `.ts` pra o `task-runner.ts`
+ * executar, e cadência de 2 min (`OnUnitInactiveSec`) que
+ * `ScheduledTaskSchedule` não expressa.
  */
 export const KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES: readonly string[] = [
   "diaria-edicao-diaria",
   "diaria-overnight-watchdog",
   "diaria-node-modules-health-check",
+  "diaria-gdrive-bisync",
 ];
 
 /** Pure — extrai os nomes-base de unit (sem `.timer`) da saída de
