@@ -163,6 +163,11 @@
  * (--xml-media-root sobrepõe).
  *   upload AAMMDD --file PATH   sobe um arquivo para a pasta da edição (ex.: o decupagem.md)
  *
+ * Cache e HD (#12365): DIARIA_VIDEO_CACHE_DIR aponta para um SUBDIRETÓRIO dentro do ponto de
+ * montagem do HD, nunca o ponto em si. No modo API, a variável apontando para um diretório que
+ * não existe, ou que está no mesmo disco do home (HD desmontado), para com erro em vez de criar
+ * o cache no disco raiz. Retenção: scripts/prune-video-montage-cache.ts (task diária).
+ *
  * Bruto só de áudio (#11552): sem stream de vídeo (ou, sem vídeo solto na
  * pasta, um .m4a/.mp3/.wav), o `transcribe` grava `source.json` com
  * `audioOnly: true` e segue; decupagem, retranscribe e roteiro funcionam igual.
@@ -3254,7 +3259,9 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     noDriveApi: flags.has("no-drive-api"),
     explicitRoot: explicitRoot !== undefined,
   });
-  const cacheDir = driveCacheDir(edition, values["cache-dir"], process.env.DIARIA_VIDEO_CACHE_DIR, homedir());
+  // #12365: só o modo API usa o cache. No Neo, uma DIARIA_VIDEO_CACHE_DIR apontando para diretório
+  // inexistente (ou no disco do home) não para nada; no modo API, para aqui, antes de qualquer acesso ao Drive.
+  const cacheDir = driveCacheDir(edition, values["cache-dir"], process.env.DIARIA_VIDEO_CACHE_DIR, homedir(), mode === "api" ? undefined : () => "ok");
   const py = resolveVideoPython({ flag: values["python"], env: process.env.DIARIA_VIDEO_PYTHON, platform: process.platform, home: homedir(), exists: existsSync });
   const ctx: Ctx = {
     edition,
