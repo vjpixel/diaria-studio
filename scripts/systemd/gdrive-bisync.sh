@@ -8,8 +8,10 @@
 # Trava contra pasta vazia (o risco nº 1 da épica): se o HD estiver
 # desmontado, o diretório local some ou fica vazio, e um sync ingênuo lê
 # "tudo apagado" e propaga a deleção pra nuvem e pras outras máquinas.
-# Três camadas, cada uma suficiente sozinha:
-#   1. `mountpoint -q` no ponto de montagem (e RequiresMountsFor= na unit);
+# Três camadas no script, cada uma suficiente sozinha (o RequiresMountsFor=
+# da unit de USUÁRIO só ordena, não impede — o user manager não vê a mount
+# unit do fstab):
+#   1. `mountpoint -q` no ponto de montagem;
 #   2. arquivo-sentinela dos dois lados (`--check-access`), que o rclone
 #      exige antes de qualquer mudança;
 #   3. `--max-delete` baixo (percentual), que aborta deleção em massa.
@@ -25,7 +27,12 @@ MOUNT="${GDRIVE_MOUNT:-/mnt/hd-sata}"
 LOCAL="${GDRIVE_LOCAL:-$MOUNT/GoogleDrive}"
 REMOTE="${GDRIVE_REMOTE:-gdrive:}"
 SENTINEL="${GDRIVE_SENTINEL:-.diaria-bisync-sentinel}"
-FILTERS="${GDRIVE_FILTERS:-$(dirname "$0")/gdrive-bisync-filters.txt}"
+FILTERS_SRC="${GDRIVE_FILTERS:-$(dirname "$0")/gdrive-bisync-filters.txt}"
+# O bisync grava o MD5 dos filtros em `{arquivo}.md5` ao lado dele. Copiar
+# pra fora do checkout compartilhado evita o `.md5` untracked no repo e que
+# um checkout de outra branch troque os filtros embaixo do sync.
+STATE_DIR="${GDRIVE_STATE_DIR:-$HOME/.cache/diaria/gdrive-bisync}"
+FILTERS="$STATE_DIR/filters.txt"
 MAX_DELETE="${GDRIVE_MAX_DELETE:-5}"
 RCLONE_BIN="${RCLONE_BIN:-$HOME/.local/bin/rclone}"
 MOUNTPOINT_CMD="${GDRIVE_MOUNTPOINT_CMD:-mountpoint -q}"
@@ -38,10 +45,12 @@ if [ ! -f "$LOCAL/$SENTINEL" ]; then
   echo "gdrive-bisync: sentinela $LOCAL/$SENTINEL ausente — sync abortado (#12356)" >&2
   exit 75
 fi
-if [ ! -f "$FILTERS" ]; then
-  echo "gdrive-bisync: arquivo de filtros $FILTERS ausente" >&2
+if [ ! -f "$FILTERS_SRC" ]; then
+  echo "gdrive-bisync: arquivo de filtros $FILTERS_SRC ausente" >&2
   exit 75
 fi
+mkdir -p "$STATE_DIR"
+if ! cmp -s "$FILTERS_SRC" "$FILTERS"; then cp "$FILTERS_SRC" "$FILTERS"; fi
 
 exec "$RCLONE_BIN" bisync "$REMOTE" "$LOCAL" \
   --check-access --check-filename "$SENTINEL" \

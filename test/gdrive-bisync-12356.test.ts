@@ -10,14 +10,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const ROOT = join(import.meta.dirname, "..");
 const SCRIPT = join(ROOT, "scripts", "systemd", "gdrive-bisync.sh");
 
-function run(opts: { mounted: boolean; sentinel: boolean }) {
+function run(opts: { mounted: boolean; sentinel: boolean; filters?: boolean; args?: string[] }) {
   const sb = mkdtempSync(join(tmpdir(), "gdrive-bisync-"));
   const local = join(sb, "GoogleDrive");
   mkdirSync(local);
@@ -26,7 +26,7 @@ function run(opts: { mounted: boolean; sentinel: boolean }) {
   const fakeRclone = join(sb, "rclone");
   writeFileSync(fakeRclone, `#!/bin/sh\necho "$@" > "${log}"\n`);
   chmodSync(fakeRclone, 0o755);
-  const r = spawnSync("/bin/sh", [SCRIPT], {
+  const r = spawnSync("/bin/sh", [SCRIPT, ...(opts.args ?? [])], {
     encoding: "utf8",
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -35,9 +35,13 @@ function run(opts: { mounted: boolean; sentinel: boolean }) {
       GDRIVE_LOCAL: local,
       RCLONE_BIN: fakeRclone,
       GDRIVE_MOUNTPOINT_CMD: opts.mounted ? "true" : "false",
+      GDRIVE_STATE_DIR: join(sb, "state"),
+      ...(opts.filters === false ? { GDRIVE_FILTERS: join(sb, "nao-existe.txt") } : {}),
     },
   });
-  return { status: r.status, stderr: r.stderr, called: existsSync(log), args: existsSync(log) ? readFileSync(log, "utf8") : "" };
+  const out = { status: r.status, stderr: r.stderr, called: existsSync(log), args: existsSync(log) ? readFileSync(log, "utf8") : "", filtersCopied: existsSync(join(sb, "state", "filters.txt")) };
+  rmSync(sb, { recursive: true, force: true });
+  return out;
 }
 
 describe("gdrive-bisync.sh — trava contra pasta vazia (#12356)", { skip: process.platform === "win32" ? "script POSIX-only" : false }, () => {
@@ -55,18 +59,29 @@ describe("gdrive-bisync.sh — trava contra pasta vazia (#12356)", { skip: proce
     assert.match(r.stderr, /sentinela/);
   });
 
-  it("montado + sentinela → bisync com --check-access, --max-delete e filtros", () => {
+  it("arquivo de filtros ausente → exit 75 e o rclone nunca é chamado", () => {
+    const r = run({ mounted: true, sentinel: true, filters: false });
+    assert.equal(r.status, 75);
+    assert.equal(r.called, false);
+  });
+
+  it("montado + sentinela → bisync com --check-access, --max-delete e filtros fora do checkout", () => {
     const r = run({ mounted: true, sentinel: true });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.args, /^bisync gdrive: /);
     assert.match(r.args, /--check-access --check-filename \.diaria-bisync-sentinel/);
     assert.match(r.args, /--max-delete 5/);
-    assert.match(r.args, /--filters-file \S+gdrive-bisync-filters\.txt/);
+    assert.match(r.args, /--drive-skip-gdocs/);
+    assert.match(r.args, /--resilient --recover/);
+    // o .md5 do bisync nasce ao lado dos filtros: eles precisam estar no state dir, nunca no repo
+    assert.match(r.args, /--filters-file \S+\/state\/filters\.txt/);
+    assert.ok(r.filtersCopied);
   });
 
-  it("a unit exige o HD montado (RequiresMountsFor)", () => {
-    const unit = readFileSync(join(ROOT, "scripts", "systemd", "diaria-gdrive-bisync.service"), "utf8");
-    assert.match(unit, /^RequiresMountsFor=\/mnt\/hd-sata$/m);
+  it("argumentos extras (--resync/--force) chegam ao rclone", () => {
+    const r = run({ mounted: true, sentinel: true, args: ["--resync"] });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.args, /--resync\s*$/);
   });
 
   it("filtros excluem WAL/SHM de SQLite (#12357)", () => {

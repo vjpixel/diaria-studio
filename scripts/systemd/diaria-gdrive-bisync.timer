@@ -5,6 +5,7 @@ Description=diar.ia.br: timer do bisync do Google Drive (2 min apos o fim do ant
 OnBootSec=3min
 OnUnitInactiveSec=2min
 Persistent=false
+AccuracySec=10s
 
 [Install]
 WantedBy=timers.target

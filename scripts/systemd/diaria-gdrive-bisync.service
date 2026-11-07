@@ -1,9 +1,10 @@
 [Unit]
 Description=diar.ia.br: rclone bisync do Google Drive inteiro em /mnt/hd-sata/GoogleDrive (#12356)
-# Nunca roda com o HD desmontado: senao a pasta vazia vira "tudo apagado"
-# na nuvem. O script repete a checagem (mountpoint + sentinela + --max-delete).
+# Nunca pode rodar com o HD desmontado (senao a pasta vazia vira "tudo
+# apagado" na nuvem). Quem garante e o SCRIPT (mountpoint + sentinela +
+# --max-delete): numa unit de usuario o RequiresMountsFor abaixo so ordena,
+# o user manager nao enxerga a mount unit do fstab.
 RequiresMountsFor=/mnt/hd-sata
-After=network-online.target
 
 [Service]
 Type=oneshot
