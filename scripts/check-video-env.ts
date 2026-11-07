@@ -65,6 +65,7 @@ import {
   pickDriveBruto,
   videoCacheRoot,
   VideoCacheRootMissingError,
+  type CacheRootCheck,
   youtubeFolderIdFrom,
   type MontageDriveDeps,
 } from "./lib/diaria/video-montage-drive.ts";
@@ -221,12 +222,13 @@ async function probeDrive(edition: string | undefined, driveRootFlag?: string): 
 /**
  * Raiz do cache da montagem para o check de disco (#12365). Com
  * `DIARIA_VIDEO_CACHE_DIR` apontando para um diretório inexistente (HD
- * desmontado), o `freeBytes` subiria até o pai existente e mediria o disco
- * RAIZ, dizendo "ok" para o disco errado: aqui vira item reprovado.
+ * desmontado) ou para um diretório no mesmo disco do home, o `freeBytes`
+ * mediria o disco RAIZ e diria "ok" para o disco errado: aqui vira item
+ * reprovado.
  */
-export function montageCacheRoot(env: string | undefined, home: string, exists: (p: string) => boolean = existsSync): { root: string } | { probe: MontageProbe } {
+export function montageCacheRoot(env: string | undefined, home: string, check?: (p: string) => CacheRootCheck): { root: string } | { probe: MontageProbe } {
   try {
-    return { root: videoCacheRoot(undefined, env, home, exists) };
+    return { root: videoCacheRoot(undefined, env, home, check) };
   } catch (e) {
     if (!(e instanceof VideoCacheRootMissingError)) throw e;
     return { probe: { ok: false, detail: e.message, fix: "montar o HD do cache (#12352) ou tirar DIARIA_VIDEO_CACHE_DIR do ambiente" } };
