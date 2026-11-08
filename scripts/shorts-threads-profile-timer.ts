@@ -168,7 +168,7 @@ export function decideThreadsTimerRun(input: {
     const entry = parseShortsPublishedFile(raw, input.aammdd, path).entries.find((e) => e.destination === DESTINATION);
     if (entry) return { kind: "skip", reason: `threads_profile já registrado (${entry.status}${entry.url ? `, ${entry.url}` : ""} em ${basename(path)})` };
   }
-  const { hhmm } = resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd);
+  const { hhmm } = resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd, "threads_profile");
   const at = resolveEditionScheduledAt(input.aammdd, hhmm);
   const deltaMs = input.now.getTime() - Date.parse(at);
   if (deltaMs < 0) return { kind: "wait", reason: `antes do horário do vertical (${hhmm} BRT)`, at, hhmm };

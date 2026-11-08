@@ -71,7 +71,7 @@ function readRecord(dir: string, aammdd: string): FileRead<ShortRelatedRecord> {
 function loadShortAt(aammdd: string): Date | null {
   try {
     const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
-    return brtInstant(aammdd, resolveShortTime(loadShortScheduleConfig(cfg), aammdd).hhmm);
+    return brtInstant(aammdd, resolveShortTime(loadShortScheduleConfig(cfg), aammdd, "youtube_shorts").hhmm);
   } catch (e) {
     console.error(`${LOG_PREFIX} [aviso] horário do Short não derivado (${(e as Error).message}) — prazo = agora`);
     return null;

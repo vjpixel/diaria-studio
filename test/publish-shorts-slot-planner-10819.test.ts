@@ -3,9 +3,9 @@
  *
  * #10819: o `publish-shorts.ts` passa a olhar a grade já agendada do dia.
  * Durante o teste de horário do vertical (#10831) o horário do teste tem
- * precedência e a grade só avisa; fora dele, o `social-slot-planner` escolhe
- * o horário de cada destino de API. Antes deste fix todos os destinos saíam
- * no mesmo horário, cegos à grade. Nenhum teste toca rede.
+ * precedência e a grade só avisa; fora dele, desde o #12250, o horário fixo
+ * (12:00) também tem precedência e a grade só avisa (antes o
+ * `social-slot-planner` movia cada destino). Nenhum teste toca rede.
  */
 
 import { describe, it } from "node:test";
@@ -92,38 +92,41 @@ describe("#10819 durante o teste do #10831: horário do teste tem precedência",
   });
 });
 
-describe("#10819 fora do teste: o planner decide por destino", () => {
+describe("#10819 + #12250 fora do teste: horário fixo, a grade só avisa", () => {
   // 261116 (segunda) fica depois de SCHEDULE.rotation_end (2026-11-13): default_time 12:00.
-  it("página da diar.ia.br espalha entre os próprios posts; VJ pixel e Instagram alinham a post de outra conta", () => {
+  // Antes do #12250 o planner movia cada destino pra longe dos posts da grade
+  // (facebook:diaria 13:00, VJ pixel 11:00, Instagram 13:00); a decisão do
+  // editor (05/11/2026) fixou 12:00 e trocou o deslocamento por aviso.
+  it("todos os destinos de API ficam às 12:00; nenhum é movido pela grade", () => {
     const p = plan("261116", "2026-11-16", daily("2026-11-16"));
     assert.equal(p.shortTime.source, "default");
+    assert.ok(p.slots.length > 0);
+    for (const s of p.slots) {
+      assert.equal(s.rule, "fixed-time", s.destination);
+      assert.equal(s.hhmm, "12:00", s.destination);
+    }
     const by = Object.fromEntries(p.slots.map((s) => [s.destination, s]));
-    // facebook:diaria tem 07/11/15/19: 09, 13 e 17 empatam em 120 min; 13:00 é o mais perto do 12:00 preferido.
-    assert.equal(by["facebook:diaria"].rule, "spread-same-account");
-    assert.equal(by["facebook:diaria"].hhmm, "13:00");
-    // VJ pixel sem post: alinha ao horário de outra conta mais perto de 12:00 (11:00 e 13:00 empatam → o mais cedo).
-    assert.equal(by["facebook:vjpixel"].rule, "align-other-account");
-    assert.equal(by["facebook:vjpixel"].hhmm, "11:00");
-    // Instagram autor = conta do editor (instagram:vjpixel), com a diar.ia.br em
-    // collab: conta como post da diar.ia.br (decisão do editor 261023), então
-    // espalha entre os posts dela (07/11/15/19) em vez de alinhar às 11:00 dela.
     assert.equal(by["instagram"].account, "instagram:vjpixel");
     assert.deepEqual(by["instagram"].alsoAccounts, ["instagram:diaria"]);
-    assert.equal(by["instagram"].rule, "spread-same-account");
-    assert.equal(by["instagram"].hhmm, "13:00");
 
     const fb = p.items.find((i) => i.destination === "facebook:diaria") as { scheduledAt: string | null };
-    assert.equal(fb.scheduledAt, at("2026-11-16", "13:00"));
+    assert.equal(fb.scheduledAt, at("2026-11-16", "12:00"));
     const ig = p.items.find((i) => i.destination === "instagram") as { action: string; detail: string };
     assert.equal(ig.action, "pending_schedule");
-    assert.match(ig.detail, /13:00 BRT/);
+    assert.match(ig.detail, /12:00 BRT/);
   });
 
-  it("nunca empilha o Reels num post da mesma conta (o bug antigo: todos no horário fixo)", () => {
+  it("post da mesma conta às 12:00: mantém 12:00 e avisa (não move em silêncio)", () => {
     const grid: ScheduledSlot[] = [{ account: "facebook:diaria", at: at("2026-11-16", "12:00") }];
     const p = plan("261116", "2026-11-16", grid);
     const fb = p.slots.find((s) => s.destination === "facebook:diaria")!;
-    assert.notEqual(fb.at, at("2026-11-16", "12:00"));
+    assert.equal(fb.at, at("2026-11-16", "12:00"));
+    const warn = p.warnings.filter((w) => w.startsWith("facebook:diaria:"));
+    assert.equal(warn.length, 1);
+    assert.match(warn[0], /horário fixo \(12:00 BRT\)/);
+    assert.match(warn[0], /mantido porque o horário do vertical é fixo \(#12250\)/);
+    // A página VJ pixel não tem post: sem aviso.
+    assert.ok(!p.warnings.some((w) => w.startsWith("facebook:vjpixel:")));
   });
 
   it("destino já registrado e página sem credencial não disputam a grade", () => {
@@ -159,7 +162,7 @@ describe("#10819 planShortSlots puro", () => {
     });
     assert.deepEqual(slots.map((s) => s.destination), ["facebook:diaria"]);
     assert.equal(slots[0].hhmm, "12:00");
-    assert.equal(slots[0].rule, "empty-grid");
+    assert.equal(slots[0].rule, "fixed-time"); // #12250: antes "empty-grid" (planner)
   });
 });
 

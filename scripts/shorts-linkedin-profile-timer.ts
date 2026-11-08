@@ -325,7 +325,7 @@ export function linkedinAlarmSuppressed(stateRaw: string | null, key: LinkedinTi
 
 /** Puro: horário do vertical da edição (`resolveShortTime`), como instante ISO e `HH:MM` BRT. */
 export function linkedinVerticalTime(config: unknown, aammdd: string): { at: string; hhmm: string } {
-  const { hhmm } = resolveShortTime(loadShortScheduleConfig(config), aammdd);
+  const { hhmm } = resolveShortTime(loadShortScheduleConfig(config), aammdd, "linkedin_profile");
   return { at: resolveEditionScheduledAt(aammdd, hhmm), hhmm };
 }
 

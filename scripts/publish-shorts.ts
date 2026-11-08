@@ -138,9 +138,12 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * linkedin_profile=URL`) — qualquer outro destino nessa rodada cairia no
  * registro do timer e voltaria a ter dois escritores em máquinas diferentes.
  *
- * Horário (#10831): o do vertical, `resolveShortTime` — teste de 15 dias úteis
- * alternando 06:30/08:00/12:00 BRT a partir de 261026 (`publishing.shorts.schedule`),
- * nunca as 06:00 do horizontal. Com pelo menos 10 min de folga o Facebook
+ * Horário (#10831, #12250): o do vertical, `resolveShortTime(sched, aammdd, destino)`
+ * — fixo POR DESTINO (`publishing.shorts.schedule`): YouTube Shorts às 06:30
+ * (`by_destination`), os outros destinos às 12:00 (`default_time`); nunca as
+ * 06:00 do horizontal (o vídeo relacionado do Short precisa dele já público,
+ * #10811). O teste rotativo 06:30/08:00/12:00 (261026 a 261106) foi encerrado
+ * no #12250. Com pelo menos 10 min de folga o Facebook
  * agenda (a folga é reconferida antes de cada página); senão publica na hora.
  * O Instagram não agenda Reels pela API. Desde #11265 (decisão do editor,
  * 27/10/2026) quem publica é o timer do 300 (`publishing.shorts.instagram_backend`
@@ -163,10 +166,11 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * aviso (manuais).
  *
  * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
- * (`_internal/06-social-published.json` + `06-shorts-published.json`). Durante
- * o teste do #10831 o horário do teste vale pra todos os destinos e a grade só
- * avisa quando ele cola num post da mesma conta; fora do teste, cada destino
- * de API tem o próprio horário (`slots` no plano) pelo `social-slot-planner`.
+ * (`_internal/06-social-published.json` + `06-shorts-published.json`). O horário
+ * fixo de cada destino (#12250) nunca é movido: a grade só avisa quando ele
+ * cola num post da mesma conta (`slots` no plano, aviso em `warnings`). Antes
+ * do #12250, fora do teste do #10831, o `social-slot-planner` escolhia outro
+ * horário por destino.
  * O Instagram manual acima do teto (#10893) também reserva slot (#10933): é um
  * post da conta naquele horário, só que feito no app. O Reels do Instagram
  * conta também como post dos collabs (a @diar.ia.br, decisão do editor
@@ -524,6 +528,12 @@ export interface ShortsPlan {
   youtube: YouTubeShortMetadata;
   /** Horário do vertical (#10831): HH:MM BRT, ISO no dia da edição, de onde veio. Base dos destinos guiados. */
   shortTime: ShortTime & { at: string };
+  /**
+   * #12250: horário de cada destino do plano (id → HH:MM BRT, ISO e origem).
+   * Difere de `shortTime` só no destino com horário próprio em
+   * `by_destination` (hoje o `youtube_shorts`, 06:30).
+   */
+  destinationTimes: Record<string, ShortTime & { at: string }>;
   /** Horário de cada destino de API desta rodada contra a grade já agendada (#10819). */
   slots: ShortSlot[];
   items: ShortsPlanItem[];
@@ -953,8 +963,23 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const youtube = buildYouTubeShortMetadata({ d1: d1In, horizontalTitle });
 
   // #10831: o vertical tem horário próprio (nunca as 06:00 do horizontal).
-  const time = corte ? corteShortTime(corte.hhmm) : resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd);
+  // #12250: fixo POR DESTINO (YouTube Shorts 06:30, os outros 12:00). `time` é o
+  // dos destinos sem horário próprio (`default_time`); `timeFor` resolve cada um.
+  // O corte avulso usa o `--at` em todos os destinos.
+  const schedCfg = corte ? null : loadShortScheduleConfig(input.config);
+  const time = corte ? corteShortTime(corte.hhmm) : resolveShortTime(schedCfg!, input.aammdd);
   const shortTime = { ...time, at: resolveEditionScheduledAt(input.aammdd, time.hhmm) };
+  const destinationTimeCache = new Map<string, ShortTime & { at: string }>();
+  const timeFor = (destinationId: string): ShortTime & { at: string } => {
+    if (!schedCfg) return shortTime;
+    let t = destinationTimeCache.get(destinationId);
+    if (!t) {
+      const own = resolveShortTime(schedCfg, input.aammdd, destinationId);
+      t = own.hhmm === time.hhmm && own.source === time.source ? shortTime : { ...own, at: resolveEditionScheduledAt(input.aammdd, own.hhmm) };
+      destinationTimeCache.set(destinationId, t);
+    }
+    return t;
+  };
   premises.push(`horário do vertical: ${time.hhmm} BRT (${time.reason})`);
   if (input.forceNow) premises.push("--now: publica na hora");
   if (!input.video.exists) warnings.push(`vídeo curto ausente em ${input.video.path} — nada a publicar até ele existir`);
@@ -977,6 +1002,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   }
 
   const destinations = listShortDestinations(cfg).filter((d) => !only || only.has(d.id));
+  // #12250: destino com horário próprio (ex.: YouTube Shorts 06:30) vira premissa explícita.
+  for (const d of destinations) {
+    const t = timeFor(d.id);
+    if (t !== shortTime) premises.push(`horário de ${d.id}: ${t.hhmm} BRT (${t.reason})`);
+  }
   // #10893: Reels acima do teto medido da API do Instagram vira passo guiado
   // ANTES do upload, em vez de falhar no rupload depois de subir o arquivo.
   // #10916: o teto é POR CONTA (a autora do Reels), não global.
@@ -1053,13 +1083,17 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
   const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
   const fixedInstagram = instagramViaTimer ? slotDestinations.find((d) => d.kind === "instagram") : undefined;
-  const fixedInstagramSlot: ShortSlot | null = fixedInstagram ? instagramTimerSlot(fixedInstagram, cfg, time.hhmm, shortTime.at) : null;
+  const fixedInstagramSlot: ShortSlot | null = fixedInstagram ? instagramTimerSlot(fixedInstagram, cfg, timeFor(fixedInstagram.id).hhmm, timeFor(fixedInstagram.id).at) : null;
   const slots = [
     ...(fixedInstagramSlot ? [fixedInstagramSlot] : []),
     ...planShortSlots({
       aammdd: input.aammdd,
       time,
       timeAt: shortTime.at,
+      timeFor: (id) => {
+        const t = timeFor(id);
+        return { time: t, at: t.at };
+      },
       destinations: slotDestinations.filter((d) => d !== fixedInstagram),
       cfg,
       grid: [
@@ -1073,7 +1107,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const slotOf = new Map(slots.map((s) => [s.destination, s]));
   for (const s of slots) {
     if (s.rule === "timer-300" || s.rule === "explicit") premises.push(`${s.destination}: ${s.hhmm} BRT (${s.premise})`);
-    else if (s.rule !== "test-schedule") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
+    else if (s.rule !== "test-schedule" && s.rule !== "fixed-time") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
     if (s.warning) warnings.push(s.warning);
   }
   const scheduleFor = (s: ShortSlot) => (input.forceNow ? ({ mode: "immediate" } as const) : resolveReelsSchedule(s.at, input.now));
@@ -1165,13 +1199,15 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (dest.kind === "youtube_shorts") {
       // #11070: Data API com publishAt (o horizontal provou em 23/10 que o
       // agendado vira público sozinho, sem a auditoria). Sem credencial, guiado.
+      // #12250: horário próprio do Short (06:30), não o dos outros destinos.
+      const ytTime = timeFor(dest.id);
       if (cfg.youtubeShortsApi && input.youtubeApi?.ready === true) {
-        const sch = input.forceNow ? null : resolveYouTubeSchedule(input.aammdd, input.now, shortTime.at);
+        const sch = input.forceNow ? null : resolveYouTubeSchedule(input.aammdd, input.now, ytTime.at);
         const publishAt = sch?.mode === "scheduled" ? sch.publishAt : null;
         premises.push(
           publishAt
-            ? `youtube_shorts: Data API, agendado (private + publishAt ${publishAt}, ${time.hhmm} BRT do vertical) (#11070)`
-            : `youtube_shorts: Data API, público na hora (${input.forceNow ? "--now" : `${time.hhmm} BRT já passou ou falta menos de 15 min`}) (#11070)`,
+            ? `youtube_shorts: Data API, agendado (private + publishAt ${publishAt}, ${ytTime.hhmm} BRT do vertical) (#11070)`
+            : `youtube_shorts: Data API, público na hora (${input.forceNow ? "--now" : `${ytTime.hhmm} BRT já passou ou falta menos de 15 min`}) (#11070)`,
         );
         return { destination: dest.id, mode: "api", action: "publish", caption: youtube.description, scheduledAt: publishAt, title: youtube.title };
       }
@@ -1181,7 +1217,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
           ? input.youtubeApi.reason
           : "credencial YOUTUBE_* não conferida";
       if (cfg.youtubeShortsApi) warnings.push(`youtube_shorts: ${why} — vira passo guiado no YouTube Studio (#11070)`);
-      return { destination: dest.id, mode: "guided", action: "guided", detail: `YouTube Studio no Chrome (${why})` };
+      return { destination: dest.id, mode: "guided", action: "guided", detail: `YouTube Studio no Chrome (${why}), agendado para ${ytTime.hhmm} BRT`, at: ytTime.at };
     }
     if (dest.kind === "linkedin_profile") {
       if (profileDelegated) {
@@ -1376,7 +1412,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (!igFit.fits) {
       // #10933: o horário vem da grade (o mesmo slot que os outros destinos já enxergaram).
       const slot = slotOf.get(dest.id);
-      const hhmm = slot?.hhmm ?? time.hhmm;
+      const hhmm = slot?.hhmm ?? timeFor(dest.id).hhmm;
       // #10915: o --publish gera a versão comprimida pro file_upload do Chrome (campo `upload` do item).
       // #11794: a rota à mão tem a mesma autoria da API (@diar.ia.br autora, @vjpixel em collab).
       const detail =
@@ -1390,7 +1426,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       } catch (e) {
         warnings.push(`instagram: ${(e as Error).message}`);
       }
-      return { destination: dest.id, mode: "guided", action: "guided", ...(caption ? { caption } : {}), detail, at: slot?.at ?? shortTime.at };
+      return { destination: dest.id, mode: "guided", action: "guided", ...(caption ? { caption } : {}), detail, at: slot?.at ?? timeFor(dest.id).at };
     }
     // Só quando o caller MEDIU e não conseguiu ler (null); ausente = não medido (testes, chamadas antigas).
     if (input.videoDurationSeconds === null && igMax !== null && input.video.exists && input.instagramReady) {
@@ -1498,7 +1534,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       ...(!corte && input.editionDirOverride !== undefined ? { editionDirOverride: input.editionDirOverride } : {}),
     }),
   );
-  return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
+  const destinationTimes = Object.fromEntries(destinations.map((d) => [d.id, timeFor(d.id)]));
+  return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, destinationTimes, slots, items, owners, premises, warnings };
 }
 
 /**
@@ -5371,7 +5408,7 @@ function instagramConfirmContext(
   const markers = instagramEditionMarkers({ aammdd, d1Title: d1?.title ?? null, d1Body: d1?.body ?? null, editionUrl: resolveEditionUrlInput(dir, editionUrlFlag).url ?? null });
   let expectedAtIso: string | null = null;
   try {
-    expectedAtIso = resolveEditionScheduledAt(aammdd, resolveShortTime(loadShortScheduleConfig(config), aammdd).hhmm);
+    expectedAtIso = resolveEditionScheduledAt(aammdd, resolveShortTime(loadShortScheduleConfig(config), aammdd, "instagram").hhmm);
   } catch {
     expectedAtIso = null; // config de horário inválido: fica só o marcador (a recusa segue segura)
   }
