@@ -460,23 +460,32 @@ export async function refreshStaleUseMelhorCarousel(
 }
 
 /**
- * Texto que vai para os slides de parágrafo. Na capa de série (Etapa 6 da
- * anual), `_internal/social-cover.json` pode trazer `slide_prefix` — a frase
- * de abertura que marca o post como parte da série na LEGENDA, mas que no
- * slide repetiria o que a capa já diz (decisão do editor, 12/09/2026). Ela é
- * tirada só do slide; a legenda continua com ela. Sem o arquivo (diária),
- * devolve o texto intacto.
- */
-/**
  * (#12094) Texto dos slides quando ele vem de `## d{N}-cards`. A seção já é o
  * texto do card, então o `slide_prefix` da anual (que é tirado da LEGENDA) não
  * se aplica; o `slide_text` explícito de `social-cover.json` continua vencendo,
  * igual em `slideSourceText`.
+ *
+ * Anual hoje (#12183 item 4, conferido em 07/11/2026): `buildDaySocialMd`
+ * (`lib/anual/annual-social-plan.ts`) não escreve `## d{N}-cards`, então os
+ * cards da anual caem na legenda `## d{N}` e passam por `slideSourceText`, que
+ * aplica o `slide_prefix`. Este caminho, que ignora o prefixo, só vale para
+ * a diária (onde não há `social-cover.json` com prefixo). Se a anual passar
+ * a escrever `-cards`, o texto dos cards já deve sair sem a abertura da série
+ * (travado por `test/carousel-followups-12183.test.ts`).
  */
 export function cardsSectionText(editionDir: string, destaque: string, text: string): string {
   return readCoverOverride(editionDir, destaque)?.slideText ?? text;
 }
 
+/**
+ * Texto que vai para os slides de parágrafo quando ele vem da legenda
+ * `## d{N}` (edição sem `-cards`, inclusive a anual). Na capa de série
+ * (Etapa 6 da anual), `_internal/social-cover.json` pode trazer
+ * `slide_prefix`: a frase de abertura que marca o post como parte da série na
+ * LEGENDA, mas que no slide repetiria o que a capa já diz (decisão do editor,
+ * 12/09/2026). Ela é tirada só do slide; a legenda continua com ela. Sem o
+ * arquivo (diária), devolve o texto intacto.
+ */
 export function slideSourceText(editionDir: string, destaque: string, text: string | null): string | null {
   if (!text) return text;
   const cover = readCoverOverride(editionDir, destaque);
