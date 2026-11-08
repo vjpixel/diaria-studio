@@ -26,14 +26,21 @@ para `data/snippets/` por `onboarding-followup-run.ts --init-snippets`, todos
 travados pelo marcador `ONBOARDING-CORPO-PENDENTE` até o editor aprovar):
 
 1. `onboarding-formulario.md`: D+6 da escada (executor diário).
-2. `pesquisa-base.md`: e-mail ÚNICO para a base já cadastrada. Rascunho no
-   Kit montado por `scripts/onboarding-form-base-prep.ts --step draft
-   --apply`, depois de `--step sigs --apply` gravar o `form_sig` do público.
-   Nunca agendado pelo script: o editor agenda no Kit. Público: ativos, menos
-   quem recebeu o D+6 ou vai recebê-lo em até 7 dias, e quem já respondeu.
+2. `pesquisa-base.md`: e-mail ÚNICO para a base já cadastrada. Runbook:
+   `scripts/onboarding-form-base-prep.ts --step sigs --apply` repetido até
+   `restantes: 0` (exit 1 se alguma gravação falhar); `--step draft --apply`
+   (confere pelo GET singular quem a listagem mostra sem assinatura e recusa
+   se faltar alguém); o editor agenda no Kit (o script nunca agenda); depois
+   do envio, `--step confirm --apply` (ou o executor diário) grava o
+   `form_base` por pessoa. Broadcast perdido (apagado/abortado):
+   `--step reset --apply`. Público: ativos, menos quem recebeu o D+6 ou vai
+   recebê-lo em até 7 dias (padrão de `base_invite_window_days`), e quem já
+   respondeu; enquanto o e-mail não sai, eles não recebem o D+6. Rodar
+   `audience-run.ts` só depois de haver respostas.
 3. `formulario-lembrete.md`: para quem recebeu o 1 OU o 2 e não respondeu, 30
    dias depois do último e-mail do formulário, até 3 vezes por pessoa. O
-   store guarda qual convite a pessoa recebeu (`followup.people[id].form_invite`).
+   store guarda qual convite a pessoa recebeu (`followup.people[id].form_invite`;
+   registro antigo sem o campo: ler por `formInviteOf`, que deriva de `sends`).
 
 ## Publicação (feito em 22/10/2026)
 

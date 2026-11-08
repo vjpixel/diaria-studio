@@ -168,8 +168,9 @@ export interface FollowupPerson {
   form_answers?: Record<string, string>;
   /** #10605 (regra A do editor, 08/11/2026): qual convite do formulário a
    *  pessoa recebeu primeiro — `form` (D+6 da escada) ou `form_base` (e-mail
-   *  único da base). Gravado junto do envio confirmado; ausente = nenhum
-   *  convite registrado. O lembrete vale para os dois. */
+   *  único da base). Gravado junto do envio confirmado. Ausente não prova
+   *  "nenhum convite" (registro anterior ao campo): ler sempre por
+   *  `formInviteOf`, que deriva de `sends`. O lembrete vale para os dois. */
   form_invite?: FormInviteKind;
   /** #10763: etapas cuja leitura singular falhou na última tentativa (transitório,
    *  NUNCA pulo terminal). Só rebaixa a pessoa na ordem do teto; sai no 1º sucesso. */
@@ -232,6 +233,10 @@ export interface FollowupRunRecord {
    *  `--send` (releitura falhou, ou rascunho que não deu pra apagar). Opcional:
    *  registros anteriores não têm o campo. */
   lots_unresolved?: number;
+  /** #10605: a releitura do e-mail da base falhou (404, status `aborted` ou
+   *  desconhecido, filtro divergente/não ecoado) ou ele está `divergent`.
+   *  Conta como rodada falha. Opcional: registros anteriores não têm o campo. */
+  base_invite_failed?: number;
   /** Por etapa: contagem de enviados nesta rodada e de pulados/adiados por motivo. */
   counts: Partial<Record<FollowupStepKind, Record<string, number>>>;
   aborted?: boolean;
@@ -255,12 +260,43 @@ export interface FollowupBaseInvite {
   recipient_subscription_ids: string[];
   recipient_emails: string[];
   /** `pending` = reivindicado, sem broadcast; `draft` = rascunho no Kit;
-   *  `sent` = confirmado agendado/enviado e gravado por pessoa. */
-  status: "pending" | "draft" | "sent";
+   *  `scheduled` = o editor agendou no Kit (relido a cada rodada; desagendado
+   *  volta a `draft`), ainda sem registro por pessoa; `divergent` = a
+   *  audiência do rascunho não foi confirmada e a exclusão dele não foi
+   *  confirmada (gravado ANTES de tentar apagar): nada é marcado como enviado
+   *  até `--step reset`; `sent` = o Kit mostrou o broadcast saindo/saído
+   *  (`sending`/`completed`) e o envio foi gravado por pessoa. */
+  status: "pending" | "draft" | "scheduled" | "divergent" | "sent";
   created_at: string;
   send_at: string | null;
   confirmed_at: string | null;
   last_error: string | null;
+  /** Tentativa de montagem (1, 2, ...): a tag do lote leva o número quando
+   *  a tentativa anterior deixou na tag gente fora do público novo. Ausente = 1. */
+  attempt?: number;
+  /** ISO de quando `createBroadcast` foi chamado nesta tentativa. Com o
+   *  broadcast ainda nulo (timeout, queda no meio), o Kit PODE ter criado o
+   *  rascunho: a montagem seguinte recusa até `--step reset --force`. */
+  create_attempted_at?: string | null;
+}
+
+/** Status do e-mail da base em que pode existir broadcast no Kit para os
+ *  destinatários gravados (rascunho, agendado, ou exclusão não confirmada). */
+export function baseInviteMayExist(invite: Pick<FollowupBaseInvite, "status" | "broadcast_id" | "create_attempted_at"> | null | undefined): boolean {
+  if (!invite) return false;
+  if (invite.status === "draft" || invite.status === "scheduled" || invite.status === "divergent") return true;
+  return invite.status === "pending" && (invite.broadcast_id != null || invite.create_attempted_at != null);
+}
+
+/**
+ * @pure — #10605 (item 8 do review): enquanto o e-mail da base pode sair
+ * (`baseInviteMayExist`), os destinatários dele não recebem o D+6 — senão
+ * quem o editor agendasse tarde receberia os dois convites. Quem responde o
+ * formulário entre o rascunho e o envio continua no público congelado da tag
+ * do lote (aceito: tirar da tag exigiria uma escrita por pessoa no Kit).
+ */
+export function baseInviteRecipientIds(invite: FollowupBaseInvite | null | undefined): Set<string> {
+  return baseInviteMayExist(invite) ? new Set(invite!.recipient_subscription_ids) : new Set();
 }
 
 export interface FollowupBlock {
@@ -635,6 +671,12 @@ export function planFollowup(opts: {
    * apoio nem formulário pelo Kit: contados como `envio_brevo`, fora de `due`.
    */
   excludedEmails?: ReadonlySet<string>;
+  /**
+   * #10605: ids (string) dos destinatários do e-mail da base enquanto ele
+   * pode sair (`baseInviteRecipientIds`). Não recebem o D+6 (`form`):
+   * contados como `email_da_base_pendente`, fora de `due`.
+   */
+  baseInviteRecipientIds?: ReadonlySet<string>;
 }): FollowupPlan {
   const { nowSec, cfg, people } = opts;
   const isEnvioBrevo = (email: string) => opts.excludedEmails?.has(normalizeEmail(email)) ?? false;
@@ -667,6 +709,10 @@ export function planFollowup(opts: {
     }
     if (isEnvioBrevo(c.email)) {
       bump(counts, r.due, "envio_brevo");
+      continue;
+    }
+    if (r.due === "form" && opts.baseInviteRecipientIds?.has(String(c.kit_subscriber_id))) {
+      bump(counts, "form", "email_da_base_pendente");
       continue;
     }
     if (opts.formBlocked) {
@@ -1339,6 +1385,11 @@ export interface BaseInviteAudience {
  * recebe este e-mail e depois aparece na escada não recebe o D+6: com um
  * envio de formulário registrado, `formStepDue` só oferece o lembrete.
  * A ordem dos destinatários segue a do `subscribers`, sem repetição de id.
+ * As contagens de `excluded` são mutuamente exclusivas: cada pessoa conta
+ * em UM motivo, o primeiro desta precedência — `envio_brevo`, `respondeu`,
+ * `ja_recebeu_formulario`, `ja_recebeu_base`, `saiu_do_formulario`,
+ * `formulario_em_breve`. A janela é de 7 dias por padrão
+ * (`base_invite_window_days`).
  */
 export function selectBaseInviteAudience(opts: {
   subscribers: readonly BaseInviteSubscriber[];
@@ -1396,8 +1447,8 @@ export function selectBaseInviteAudience(opts: {
     let motivo: BaseInviteExclusion | null = null;
     if (brevo.has(email)) motivo = "envio_brevo";
     else if (person?.form_filled_at || emails.some((e) => e !== "" && responded.has(e))) motivo = "respondeu";
-    else if (person?.sends.some((s) => s.step === "form") || formLotIds.has(String(sub.kit_subscriber_id))) motivo = "ja_recebeu_formulario";
-    else if (person?.sends.some((s) => s.step === "form_base")) motivo = "ja_recebeu_base";
+    else if ((person?.sends ?? []).some((s) => s.step === "form") || formLotIds.has(String(sub.kit_subscriber_id))) motivo = "ja_recebeu_formulario";
+    else if ((person?.sends ?? []).some((s) => s.step === "form_base")) motivo = "ja_recebeu_base";
     else if (leftKitInFormSequence(person)) motivo = "saiu_do_formulario";
     else if (reguaSoon(entryById.get(sub.kit_subscriber_id) ?? entryByEmail.get(email))) motivo = "formulario_em_breve";
     if (motivo) {
@@ -1439,13 +1490,16 @@ export function baseInviteContentGate(
 
 export type BaseInviteConfirmDecision =
   | { action: "sent"; sendAt: string }
+  | { action: "scheduled"; sendAt: string }
   | { action: "still_draft" }
   | { action: "unknown"; reason: string };
 
 /**
- * @pure — lê a releitura do broadcast do e-mail da base: agendado com
- * `send_at` válido, ou já saindo/saído, é envio (o editor agendou no Kit);
- * `draft` segue rascunho; o resto não prova nada (nunca grava envio).
+ * @pure — lê a releitura do broadcast do e-mail da base: só `sending`/
+ * `completed` é envio (grava por pessoa); `scheduled` com `send_at` válido é
+ * um estado próprio, relido a cada rodada (o editor pode desagendar);
+ * `draft` segue rascunho; o resto (`aborted`, status desconhecido, agendado
+ * sem `send_at`) não prova nada e conta como falha da releitura.
  */
 export function decideBaseInviteConfirm(
   reread: { status?: string | null; send_at?: string | null },
@@ -1453,7 +1507,7 @@ export function decideBaseInviteConfirm(
 ): BaseInviteConfirmDecision {
   const status = reread.status ?? null;
   const sendAt = typeof reread.send_at === "string" && ISO_RE.test(reread.send_at) ? reread.send_at : null;
-  if (status === "scheduled") return sendAt ? { action: "sent", sendAt } : { action: "unknown", reason: "scheduled sem send_at válido" };
+  if (status === "scheduled") return sendAt ? { action: "scheduled", sendAt } : { action: "unknown", reason: "scheduled sem send_at válido" };
   if (status === "sending" || status === "completed") return { action: "sent", sendAt: sendAt ?? nowIso };
   if (status === "draft") return { action: "still_draft" };
   return { action: "unknown", reason: `status "${status ?? "?"}"` };
@@ -1557,6 +1611,7 @@ export function idsInUnresolvedFollowupLots(lots: Readonly<Record<string, Follow
 export function isFailedFollowupRun(run: FollowupRunRecord): boolean {
   if (run.aborted === true) return true;
   if (run.lots_failed > 0 || run.over_cap > 0 || run.lookups_failed > 0 || (run.lots_unresolved ?? 0) > 0) return true;
+  if ((run.base_invite_failed ?? 0) > 0) return true;
   // #10652: excedente do teto que não cabe na janela vira `vencida` em silêncio.
   if ((run.cap_window_overflow ?? 0) > 0) return true;
   // #10657: os três motivos da assinatura só aparecem com textos aprovados E
@@ -1588,9 +1643,9 @@ export const FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE = 3;
  * `FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE`; o resto é `0`.
  */
 export function resolveFollowupExitCode(
-  run: Pick<FollowupRunRecord, "lots_failed" | "over_cap" | "lots_unresolved" | "cap_window_overflow">,
+  run: Pick<FollowupRunRecord, "lots_failed" | "over_cap" | "lots_unresolved" | "cap_window_overflow" | "base_invite_failed">,
 ): 0 | 1 | typeof FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE {
-  if (run.lots_failed > 0 || run.over_cap > 0 || (run.lots_unresolved ?? 0) > 0) return 1;
+  if (run.lots_failed > 0 || run.over_cap > 0 || (run.lots_unresolved ?? 0) > 0 || (run.base_invite_failed ?? 0) > 0) return 1;
   if ((run.cap_window_overflow ?? 0) > 0) return FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE;
   return 0;
 }

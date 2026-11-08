@@ -25,6 +25,8 @@ import {
   resolveFollowupConfig,
   evaluateFollowupHealth,
   recordFollowupRun,
+  isFailedFollowupRun,
+  resolveFollowupExitCode,
   parseFollowupSnippet,
   snippetTemplate,
   formCandidatesFromEntries,
@@ -341,6 +343,33 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
     const block = { people: {}, lots: {} };
     recordFollowupRun(block, run);
     assert.equal((block as { consecutive_failed_runs?: number }).consecutive_failed_runs, 0);
+  });
+
+  it("#10605 releitura do e-mail da base lançando (404) ou 'aborted' conta como falha da rodada (alarme + exit 1), sem gravar envio", async () => {
+    for (const reread of [
+      async () => {
+        throw new Error("Kit 404 Not Found");
+      },
+      async () => ({ status: "aborted", send_at: null }),
+    ]) {
+      const storePath = tempStore();
+      const s = readStore(storePath).store;
+      s.followup!.base_invite = {
+        lot_id: "form_base-2026-01-01-01", tag_name: "t", tag_id: 5, broadcast_id: 42, recipient_subscription_ids: ["1"], recipient_emails: ["a@x.com"],
+        status: "draft", created_at: "2026-01-01T00:00:00Z", send_at: null, confirmed_at: null, last_error: null,
+      };
+      writeStore(s, storePath);
+      const deps = fakeDeps({ getBroadcast: reread });
+      const { run, lots } = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
+      assert.equal(run.base_invite_failed, 1);
+      assert.ok(isFailedFollowupRun(run));
+      assert.equal(resolveFollowupExitCode(run), 1);
+      assert.ok(lots.some((l) => (l as { base_invite?: boolean; failed?: boolean }).base_invite && (l as { failed?: boolean }).failed));
+      const after = readStore(storePath).store.followup!;
+      assert.equal(after.base_invite?.status, "draft", "nada muda de estado sem prova do Kit");
+      assert.ok(after.base_invite?.last_error, "o motivo fica no store");
+      assert.equal(after.people["1"], undefined, "nenhum envio gravado");
+    }
   });
 
   it("#10623/#10631 teto aplicado ANTES das leituras singulares: só quem cabe no lote é consultado no Kit", async () => {

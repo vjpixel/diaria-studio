@@ -42,7 +42,14 @@ import {
 } from "../scripts/lib/onboarding-followup.ts";
 import { PENDING_BODY_MARKER } from "../scripts/lib/onboarding-state.ts";
 import { FOLLOWUP_DRAFTS_DIR, initFollowupSnippets, loadFollowupSnippets } from "../scripts/onboarding-followup-run.ts";
-import { main as updateAudienceMain, renderProductInterestSection, formRespondentsNote } from "../scripts/update-audience.ts";
+import {
+  main as updateAudienceMain,
+  renderProductInterestSection,
+  formRespondentsNote,
+  carryOverDeclaredSections,
+  PREVIOUS_DECLARED_SUFFIX,
+} from "../scripts/update-audience.ts";
+import { buildAudienceSummary } from "../scripts/build-diaria-dashboard-data.ts";
 import {
   loadOnboardingFormSurveyResponses,
   fetchOnboardingFormResponsesReal,
@@ -298,7 +305,8 @@ describe("#10605 rascunhos dos e-mails (semente do --init-snippets)", () => {
 
   it("D+6 diz o ganho para o leitor (decisão 8)", () => {
     const snip = parseFollowupSnippet(readFileSync(join(FOLLOWUP_DRAFTS_DIR, "onboarding-formulario.md"), "utf8"))!;
-    assert.match(snip.body, /passo a mandar mais do que você marc/);
+    assert.match(snip.body, /passo a mandar mais do que você marcar\./);
+    assert.ok(!/você marcou/.test(snip.body), "futuro: a pessoa ainda vai marcar");
   });
 
   it("lembrete serve aos dois convites: fala em 'um formulário', sem citar qual (regra A)", () => {
@@ -314,6 +322,8 @@ describe("#10605 rascunhos dos e-mails (semente do --init-snippets)", () => {
     assert.match(snip.body, /Se você respondeu a anterior, peço que responda de novo/);
     assert.match(snip.body, /Se não respondeu/);
     assert.match(snip.body, /escolha das notícias/);
+    assert.match(snip.body, /Agora fiz outra, e é ela que vai orientar/);
+    assert.ok(!/mais curta/.test(snip.body), "sem comparar o tamanho com a anterior");
   });
 
   it("--init-snippets semeia do rascunho, troca o modelo vazio antigo e nunca sobrescreve texto editado", () => {
@@ -423,6 +433,89 @@ describe("#10605 respostas do formulário no perfil de audiência", () => {
     assert.match(doc, /## 4\. Interesse em produtos \(formulário do onboarding\)/);
     assert.match(doc, new RegExp(`- \\*\\*${LEVELS()[0].replace(/[()]/g, "\\$&")}\\*\\* — weight 0\\.5 \\(1 respostas\\)`), "nível conta só o formulário");
     assert.ok(!doc.includes("mais saúde"));
+  });
+
+  it("resposta só com perguntas desconhecidas (ou em branco) não conta como respondente", () => {
+    const conv = onboardingFormToSurveyResponses([R({ campo_antigo: "x" }), R({ area: "  " }, "c@x.com"), ...sample]);
+    assert.equal(conv.responses.length, 2);
+    assert.equal(conv.emptyResponses, 2);
+    assert.deepEqual(conv.responses.map((r) => r.id), ["onboarding-form:1", "onboarding-form:2"]);
+  });
+
+  // CTR mínimo: sem resposta do formulário o perfil sai só do CTR (e das seções herdadas).
+  const ctrCsv = () => {
+    const date = new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10);
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    const rows = Array.from({ length: 5 }, (_, i) => [date, `Post ${i}`, "Seção", `Título ${i}`, `https://example.com/t-${i}`, "example.com", "200", "8", "8", "0", "Treinamento", "BR"].join(","));
+    return [header, ...rows].join("\n");
+  };
+  const runMain = (dir: string, survey: unknown[]) => {
+    writeFileSync(join(dir, "audience-raw.json"), JSON.stringify(survey), "utf8");
+    writeFileSync(join(dir, "ctr.csv"), ctrCsv(), "utf8");
+    const outPath = join(dir, "audience-profile.md");
+    const result = updateAudienceMain({
+      outPath,
+      historyDir: join(dir, "audience-history"),
+      ctrCsvPath: join(dir, "ctr.csv"),
+      surveyJsonPath: join(dir, "audience-raw.json"),
+      pubJsonPath: join(dir, "publication.json"),
+      h4HistoryPath: join(dir, "h4.jsonl"),
+      editionsDir: join(dir, "editions-nao-existe"),
+      subscriberBackend: "beehiiv",
+      spawnFn: (() => ({})) as unknown as typeof import("node:child_process").spawnSync,
+      warnFn: () => {},
+    });
+    assert.equal(result.ok, true, result.reason);
+    return readFileSync(outPath, "utf8");
+  };
+
+  it("sem resposta do formulário: mantém as seções 2 e 3 do perfil anterior, marcadas, sem acumular o sufixo; com resposta, só o formulário", () => {
+    const dir = mkdtempSync(join(tmpdir(), "update-audience-carry-10605-"));
+    const previous = [
+      "# Perfil",
+      "",
+      "## 1. Engajamento real (CTR por categoria)",
+      "",
+      "## 2. Preferências declaradas (survey)",
+      "",
+      "### Conteúdo preferido",
+      "",
+      "- **Tutoriais práticos** — weight 0.6 (30 respostas)",
+      "",
+      "## 3. Quem são (demographics)",
+      "",
+      "### Setores",
+      "",
+      "- **Tecnologia** — weight 0.4 (20 respostas)",
+      "",
+      "---",
+      "",
+      "_rodapé_",
+    ].join("\n");
+    writeFileSync(join(dir, "audience-profile.md"), previous, "utf8");
+    const beehiivOnly = [{ id: "r1", status: "active", answers: [{ question_id: "q1", question_prompt: BEEHIIV_SURVEY_PROMPTS[0], answer: "x" }] }];
+    const doc1 = runMain(dir, beehiivOnly);
+    assert.ok(doc1.includes(`## 2. Preferências declaradas (survey)${PREVIOUS_DECLARED_SUFFIX}`));
+    assert.ok(doc1.includes(`## 3. Quem são (demographics)${PREVIOUS_DECLARED_SUFFIX}`));
+    assert.ok(doc1.includes("- **Tecnologia** — weight 0.4 (20 respostas)"));
+    assert.ok(!doc1.includes("_rodapé_"), "o rodapé antigo não é copiado");
+    const doc2 = runMain(dir, beehiivOnly);
+    assert.equal(doc2.split(PREVIOUS_DECLARED_SUFFIX).length - 1, 2, "sufixo não acumula");
+    assert.equal(buildAudienceSummary(join(dir, "audience-profile.md"))?.content_preferences.length, 1, "o painel lê as seções herdadas");
+    const doc3 = runMain(dir, onboardingFormToSurveyResponses(sample).responses);
+    assert.ok(!doc3.includes(PREVIOUS_DECLARED_SUFFIX) && !doc3.includes("Tecnologia"), "com resposta do formulário, as anteriores saem");
+    assert.match(doc3, /## 2\. Preferências declaradas \(formulário\)/);
+    assert.deepEqual(carryOverDeclaredSections(null), []);
+    assert.deepEqual(carryOverDeclaredSections("# sem seção 2"), []);
+  });
+
+  it("painel: buildAudienceSummary lê '### Seções preferidas' do perfil gerado pelo formulário", () => {
+    const dir = mkdtempSync(join(tmpdir(), "update-audience-panel-10605-"));
+    runMain(dir, onboardingFormToSurveyResponses(sample).responses);
+    const summary = buildAudienceSummary(join(dir, "audience-profile.md"));
+    assert.ok(summary, "perfil parseado");
+    assert.deepEqual(summary!.content_preferences.map((c) => c.label).sort(), ["Pesquisas sobre IA", "Tutoriais práticos"]);
+    assert.equal(summary!.knowledge_levels.length, 2);
   });
 });
 

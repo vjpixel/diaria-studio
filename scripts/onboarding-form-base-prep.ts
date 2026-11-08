@@ -4,45 +4,66 @@
  *
  * Prepara o e-mail ÚNICO da pesquisa nova para a base já cadastrada
  * (`data/snippets/pesquisa-base.md`, semente em
- * `context/templates/onboarding-followup/pesquisa-base.md`). Três passos,
- * todos DRY-RUN por padrão; só `--apply` escreve:
+ * `context/templates/onboarding-followup/pesquisa-base.md`). Quatro passos,
+ * todos DRY-RUN por padrão; só `--apply` escreve. Store ausente, corrompido
+ * ou sem nenhuma entrada/pessoa: todos recusam (o script nunca cria store).
  *
  *  1. `--step sigs [--apply] [--max N]` — grava o custom field `form_sig`
  *     (assinatura do link, #10657) de quem vai receber o e-mail. Idempotente:
  *     quem já tem a assinatura certa (pela listagem do Kit) não gera escrita.
- *     Teto de `--max` escritas por rodada (padrão 500): rodar de novo até
- *     `pendentes: 0`. A listagem do Kit serve `fields` defasado por um tempo
+ *     Teto de `--max` escritas por rodada (padrão 500): REPETIR até
+ *     `restantes: 0`. A listagem do Kit serve `fields` defasado por um tempo
  *     depois de um PATCH (#6425): uma rodada logo depois da anterior pode
- *     regravar o mesmo valor, o que é inofensivo.
+ *     regravar o mesmo valor, o que é inofensivo. Falha de gravação ou campo
+ *     ausente no Kit: exit 1, com o detalhe por motivo no JSON.
  *  2. `--step draft [--apply]` — monta o broadcast como RASCUNHO no Kit: tag
  *     própria do lote, tagueia os destinatários, confere a audiência da tag,
  *     cria o broadcast com `send_at: null` e relê o filtro. NUNCA agenda nem
  *     envia: agendar é do editor, na UI do Kit, depois de aprovar texto e
  *     hora. Recusa enquanto o texto tiver `ONBOARDING-CORPO-PENDENTE`, sem o
- *     formulário configurado ou sem o segredo do link. Quem ainda não tem a
- *     assinatura certa fica fora (`sem_assinatura`: rodar o passo 1).
- *  3. `--step confirm [--apply]` — relê o broadcast; se o editor já agendou
- *     ou enviou, grava o envio `form_base` de cada destinatário no store
- *     (`followup.people[id].sends` + `form_invite`), o que libera o lembrete
- *     30 dias depois. O executor diário (`onboarding-followup-run.ts --send`)
- *     faz a mesma confirmação sozinho a cada rodada.
+ *     formulário configurado ou sem o segredo do link. Com `--apply`, quem a
+ *     listagem mostra sem a assinatura certa é conferido pelo GET singular;
+ *     se faltar a de alguém, recusa (exit 1) com os ids: voltar ao passo 1.
+ *     Filtro do rascunho não confirmado na releitura: grava `divergent`,
+ *     apaga o rascunho e volta a `pending` (exit 1); se a exclusão falhar,
+ *     fica `divergent` até `--step reset`.
+ *  3. `--step confirm [--apply]` — sem `--apply` só mostra o que está no
+ *     store. Com `--apply`, relê o broadcast: agendado vira `scheduled` (sem
+ *     registro por pessoa, relido de novo depois); saindo/saído
+ *     (`sending`/`completed`) com o filtro igual ao da tag grava o envio
+ *     `form_base` de cada destinatário (`followup.people[id].sends` +
+ *     `form_invite`), o que libera o lembrete 30 dias depois. Quem grava isso
+ *     é este passo OU o executor diário (`onboarding-followup-run.ts --send`),
+ *     o que rodar primeiro depois do envio (o executor só relê quando os
+ *     textos de apoio ou do formulário estão liberados). Releitura falhando,
+ *     `aborted`, filtro divergente/não ecoado ou `divergent`: exit 1.
+ *  4. `--step reset [--apply] [--force]` — volta o convite a `pending` para
+ *     montar de novo, só com o broadcast apagado (404) ou `aborted` no Kit.
+ *     `--force` cobre releitura falhando ou nenhum broadcast gravado depois
+ *     de um `createBroadcast` sem resposta, e só DEPOIS de conferir no
+ *     painel do Kit que não há broadcast com a tag do lote. Nunca reseta
+ *     `sent` nem broadcast `draft`/`scheduled`/`sending`/`completed`.
  *
  * Público (regra B, `selectBaseInviteAudience`): assinantes ativos do Kit,
- * menos quem já recebeu o convite D+6, quem vai recebê-lo em até
- * `base_invite_window_days` (7), quem já respondeu o formulário novo, quem já
- * recebeu este e-mail, quem tem `envio-brevo` e quem saiu do Kit numa etapa
- * do formulário.
+ * menos quem já recebeu o convite D+6, quem vai recebê-lo em até 7 dias
+ * (padrão de `base_invite_window_days`), quem já respondeu o formulário
+ * novo, quem já recebeu este e-mail, quem tem `envio-brevo` e quem saiu do
+ * Kit numa etapa do formulário. Enquanto o convite pode sair
+ * (`draft`/`scheduled`/`divergent`), o executor diário não manda o D+6 para
+ * os destinatários dele. Quem responde o formulário entre o rascunho e o
+ * envio continua no público congelado da tag (aceito).
  *
  * Uso:
  *   npx tsx scripts/onboarding-form-base-prep.ts --step sigs              # dry-run
- *   npx tsx scripts/onboarding-form-base-prep.ts --step sigs --apply --max 500
+ *   npx tsx scripts/onboarding-form-base-prep.ts --step sigs --apply --max 500   # repetir até restantes: 0
  *   npx tsx scripts/onboarding-form-base-prep.ts --step draft             # dry-run
  *   npx tsx scripts/onboarding-form-base-prep.ts --step draft --apply
  *   npx tsx scripts/onboarding-form-base-prep.ts --step confirm --apply
+ *   npx tsx scripts/onboarding-form-base-prep.ts --step reset --apply [--force]
  * Flags auxiliares: --store <path>, --snippets-dir <path>, --config <path>, --env-root <path>.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -60,6 +81,7 @@ import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
 import { checkLinkSecret, FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
 import {
   baseInviteContentGate,
+  baseInviteMayExist,
   buildFollowupLotId,
   normalizeEmail,
   renderFollowupBody,
@@ -93,8 +115,13 @@ const LOG = "[onboarding-form-base]";
 
 /** Padrão de `--max` do passo das assinaturas. */
 export const BASE_SIGS_DEFAULT_MAX = 500;
-/** Espaçamento entre as escritas de tag no Kit (mesmo das leituras singulares, #10616). */
-export const BASE_TAG_SPACING_MS = 350;
+/** Espaçamento entre as escritas de tag no Kit: ~110 escritas/min, abaixo do
+ *  limite de 120 req/min da API v4 com folga para as outras leituras. */
+export const BASE_TAG_SPACING_MS = 550;
+/** Espaçamento das leituras singulares (mesmo do #10616). */
+export const BASE_LOOKUP_SPACING_MS = 350;
+/** Quantos ids listar na recusa por assinatura faltando. */
+export const BASE_MISSING_SIG_LIST_MAX = 50;
 
 export interface ActiveSubscriberRow {
   kit_subscriber_id: number;
@@ -115,6 +142,8 @@ export interface BasePrepDeps {
   kit?: PilotKitDeps;
   sleep?(ms: number): Promise<void>;
   isTransientLookupError?(err: unknown): boolean;
+  /** O erro da releitura é 404 (broadcast apagado no Kit). Usado só pelo `--step reset`. */
+  isNotFoundError?(err: unknown): boolean;
 }
 
 export interface BasePrepOpts {
@@ -130,10 +159,24 @@ export interface BasePrepOpts {
   tagCheckDelayMs?: number;
 }
 
+/**
+ * Store ausente, corrompido ou sem nenhuma entrada/pessoa: recusa. O
+ * `readStore` devolve um store VAZIO para arquivo ausente (1ª execução dos
+ * executores da escada); aqui isso significaria montar o público sem as
+ * exclusões da escada (D+6 já recebido, cadastro recente) e, com `--apply`,
+ * criar um store novo do zero. Junction `data/` fora do ar ou `--store`
+ * errado caem nisto, nunca num e-mail para a base inteira.
+ */
 function readStoreOrThrow(storePath: string): OnboardingStore {
+  if (!existsSync(storePath)) {
+    throw new CliExitWithMessage(`store em "${storePath}" não existe — recusando (sem ele o público perde as exclusões da escada; este script nunca cria store).`);
+  }
   const { store, corrupted } = readStore(storePath);
-  if (corrupted) throw new Error(`${LOG} store em "${storePath}" está CORROMPIDO — recusando.`);
+  if (corrupted) throw new CliExitWithMessage(`store em "${storePath}" está CORROMPIDO — recusando.`);
   store.followup ??= { people: {}, lots: {} };
+  if (Object.keys(store.entries).length === 0 && Object.keys(store.followup.people).length === 0) {
+    throw new CliExitWithMessage(`store em "${storePath}" sem nenhuma entrada da escada nem pessoa do followup — recusando (store errado ou recém-criado).`);
+  }
   return store;
 }
 
@@ -217,8 +260,22 @@ export interface BaseSigsResult {
   pendentes: number;
   gravados: number;
   falhas: number;
+  /** Falhas por motivo (`assinatura_falhou`, `assinatura_divergente_pos_escrita`, `campo_assinatura_ausente`). */
+  falhas_por_motivo: Record<string, number>;
+  /** Até 10 erros distintos (id + motivo + mensagem, sem e-mail). */
+  erros: string[];
   campo_ausente: string | null;
   restantes: number;
+}
+
+/** Exit do passo: `sigs` com falha ou campo ausente e `confirm` com falha saem 1. */
+export function basePrepExitCode(step: "sigs" | "draft" | "confirm" | "reset", out: unknown): 0 | 1 {
+  if (step === "sigs") {
+    const r = out as Pick<BaseSigsResult, "falhas" | "campo_ausente">;
+    return r.falhas > 0 || r.campo_ausente != null ? 1 : 0;
+  }
+  if (step === "confirm") return (out as { result?: { failed?: boolean } }).result?.failed === true ? 1 : 0;
+  return 0;
 }
 
 /**
@@ -248,6 +305,8 @@ export async function runBaseSigs(opts: BasePrepOpts, deps: BasePrepDeps): Promi
     pendentes: pending.length,
     gravados: 0,
     falhas: 0,
+    falhas_por_motivo: {},
+    erros: [],
     campo_ausente: null,
     restantes: pending.length,
   };
@@ -258,6 +317,12 @@ export async function runBaseSigs(opts: BasePrepOpts, deps: BasePrepDeps): Promi
   const prov = await provisionFormSigs(due, checks, secret, deps);
   out.gravados = prov.ok.length;
   out.falhas = prov.failed.length;
+  const erros = new Set<string>();
+  for (const f of prov.failed) {
+    out.falhas_por_motivo[f.motivo] = (out.falhas_por_motivo[f.motivo] ?? 0) + 1;
+    if (erros.size < 10) erros.add(`${f.due.kit_subscriber_id}: ${f.motivo}: ${redactEmails(f.error)}`);
+  }
+  out.erros = [...erros];
   out.campo_ausente = prov.fieldMissing;
   out.restantes = pending.length - prov.ok.length;
   return out;
@@ -278,25 +343,83 @@ export interface BaseDraftResult {
   lot_id: string | null;
   broadcast_id: number | null;
   status: FollowupBaseInvite["status"] | null;
+  /** Com `--apply`: quantos sem assinatura pela LISTAGEM o GET singular mostrou já assinados. */
+  confirmados_por_get?: number;
   aviso?: string;
+}
+
+/**
+ * #10605 (item 5 do review): a listagem do Kit serve `fields` defasado depois
+ * de um PATCH (#6425). Antes de montar o rascunho, quem a listagem mostra sem
+ * a assinatura certa é conferido pelo GET singular (autoritativo). Devolve os
+ * que o GET mostrou assinados e os que continuam sem (leitura falha conta
+ * como sem: na dúvida, ninguém recebe link que o Worker recusaria).
+ */
+export async function recheckPendingSigs(
+  pending: readonly ActiveSubscriberRow[],
+  secret: string,
+  deps: Pick<BasePrepDeps, "getSubscriber" | "sleep">,
+): Promise<{ signed: ActiveSubscriberRow[]; missing: { kit_subscriber_id: number; motivo: string }[] }> {
+  const sleep = deps.sleep ?? (() => Promise.resolve());
+  const signed: ActiveSubscriberRow[] = [];
+  const missing: { kit_subscriber_id: number; motivo: string }[] = [];
+  let first = true;
+  for (const r of pending) {
+    if (!first) await sleep(BASE_LOOKUP_SPACING_MS);
+    first = false;
+    try {
+      const live = await deps.getSubscriber(r.kit_subscriber_id);
+      // O link usa o e-mail que a merge tag põe (o atual do Kit); a assinatura cobre esse.
+      const email = live.email || r.email;
+      if (normalizeEmail(email) !== normalizeEmail(r.email)) {
+        // E-mail mudou depois da listagem: a tag do lote é conferida pelo e-mail listado.
+        missing.push({ kit_subscriber_id: r.kit_subscriber_id, motivo: "email_mudou" });
+      } else if (live.formSig != null && live.formSig === (await signFormEmail(email, secret))) {
+        signed.push({ ...r, formSig: live.formSig });
+      } else {
+        missing.push({ kit_subscriber_id: r.kit_subscriber_id, motivo: live.formSig ? "assinatura_diferente" : "sem_assinatura" });
+      }
+    } catch (e) {
+      missing.push({ kit_subscriber_id: r.kit_subscriber_id, motivo: `leitura_falhou: ${redactEmails((e as Error).message)}` });
+    }
+  }
+  return { signed, missing };
 }
 
 /**
  * Monta o broadcast do e-mail da base como RASCUNHO (`send_at: null`). Nunca
  * agenda, nunca envia (não há `updateBroadcast` neste caminho). Um convite já
- * em `draft`/`sent` no store recusa: um e-mail único não ganha segundo rascunho.
+ * em `draft`/`scheduled`/`divergent`/`sent` no store recusa: um e-mail único
+ * não ganha segundo rascunho. Audiência do rascunho não confirmada pela
+ * releitura (divergente, não ecoada, releitura falhou): grava `divergent`,
+ * apaga o rascunho, volta a `pending` e sai com erro — se a exclusão falhar,
+ * fica `divergent` (nada marca `sent` até `--step reset`).
+ *
+ * Quem responder o formulário entre o rascunho e o envio continua no público
+ * congelado da tag (aceito: tirar da tag custaria uma escrita por pessoa).
  */
 export async function runBaseDraft(opts: BasePrepOpts, deps: BasePrepDeps): Promise<BaseDraftResult> {
   const secret = gateOrThrow(opts);
   const snip = loadFollowupSnippets(opts.snippetsDir).form_base!;
   const existing = readStoreOrThrow(opts.storePath).followup!.base_invite ?? null;
-  if (existing && existing.status !== "pending") {
-    throw new CliExitWithMessage(
-      `já existe o e-mail da base no store (lote ${existing.lot_id}, status ${existing.status}, broadcast ${existing.broadcast_id ?? "-"}) — e-mail único, nada a montar.`,
-    );
-  }
+  const refuseExisting = (cur: FollowupBaseInvite) => {
+    if (cur.status !== "pending") {
+      return `já existe o e-mail da base no store (lote ${cur.lot_id}, status ${cur.status}, broadcast ${cur.broadcast_id ?? "-"}) — e-mail único, nada a montar.`;
+    }
+    if (baseInviteMayExist(cur)) {
+      return (
+        `a tentativa anterior (lote ${cur.lot_id}) chamou createBroadcast sem confirmar o broadcast — o Kit pode ter criado um rascunho com a tag ${cur.tag_name}. ` +
+        "Conferir no painel do Kit, apagar o rascunho se existir e rodar --step reset --apply --force."
+      );
+    }
+    return null;
+  };
+  const refusal = existing ? refuseExisting(existing) : null;
+  if (refusal) throw new CliExitWithMessage(refusal);
   const aud = await buildBaseAudience(opts, deps);
-  const { ok, pending } = await splitBySig(aud.recipients, secret);
+  const split = await splitBySig(aud.recipients, secret);
+  const ok = [...split.ok];
+  let pending = split.pending;
   const out: BaseDraftResult = {
     mode: opts.apply ? "apply" : "dry-run",
     active: aud.active,
@@ -309,8 +432,25 @@ export async function runBaseDraft(opts: BasePrepOpts, deps: BasePrepDeps): Prom
     broadcast_id: null,
     status: existing?.status ?? null,
   };
-  if (pending.length > 0) out.aviso = `${pending.length} pessoa(s) sem form_sig certo ficam fora — rode --step sigs --apply antes.`;
-  if (!opts.apply) return out;
+  if (!opts.apply) {
+    if (pending.length > 0) out.aviso = `${pending.length} pessoa(s) sem form_sig certo pela listagem — o --apply confere cada uma pelo GET singular e recusa se faltar alguma (rode --step sigs --apply até restantes: 0).`;
+    return out;
+  }
+  if (pending.length > 0) {
+    const re = await recheckPendingSigs(pending, secret, deps);
+    ok.push(...re.signed);
+    out.confirmados_por_get = re.signed.length;
+    pending = pending.filter((p) => !re.signed.includes(p));
+    if (re.missing.length > 0) {
+      const ids = re.missing.slice(0, BASE_MISSING_SIG_LIST_MAX).map((m) => `${m.kit_subscriber_id} (${m.motivo})`);
+      throw new CliExitWithMessage(
+        `${re.missing.length} pessoa(s) do público sem a assinatura certa pelo GET singular — nada montado. Rode --step sigs --apply até restantes: 0. ` +
+          `Ids: ${ids.join(", ")}${re.missing.length > ids.length ? ` e mais ${re.missing.length - ids.length}` : ""}.`,
+      );
+    }
+    out.recipients = ok.length;
+    out.excluded.sem_assinatura = 0;
+  }
   if (ok.length === 0) throw new CliExitWithMessage("nenhum destinatário com a assinatura certa — nada a montar.");
   if (!deps.kit) throw new CliExitWithMessage("transporte Kit não configurado — recusando montar o rascunho.");
 
@@ -319,23 +459,41 @@ export async function runBaseDraft(opts: BasePrepOpts, deps: BasePrepDeps): Prom
 
   const nowMs = opts.nowMs ?? Date.now();
   const nowIso = new Date(nowMs).toISOString();
+  const okIds = ok.map((r) => String(r.kit_subscriber_id));
   // Reivindica (ou reaproveita o `pending` de uma tentativa que caiu no meio).
   const invite = withStore<FollowupBaseInvite>(opts.storePath, (block) => {
     const cur = block.base_invite;
-    if (cur && cur.status !== "pending") throw new CliExitWithMessage(`e-mail da base já ${cur.status} (lote ${cur.lot_id}) — recusando.`);
+    const again = cur ? refuseExisting(cur) : null;
+    if (again) throw new CliExitWithMessage(again);
     const lotId = cur?.lot_id ?? buildFollowupLotId("form_base", unixSecondsToBrtDate(Math.floor(nowMs / 1000)), 1);
+    let attempt = cur?.attempt ?? 1;
+    let tagName = cur?.tag_name ?? `onboarding-${lotId}`;
+    let tagId = cur?.tag_id ?? null;
+    // A tag da tentativa anterior só serve se todo mundo tagueado nela ainda
+    // está no público (senão `assertPilotTagAudience` acusa membro fora do
+    // lote): tag nova, com o número da tentativa.
+    if (cur && cur.tag_id != null) {
+      const now = new Set(okIds);
+      if (cur.recipient_subscription_ids.some((id) => !now.has(id))) {
+        attempt += 1;
+        tagName = `onboarding-${lotId}-t${attempt}`;
+        tagId = null;
+      }
+    }
     const next: FollowupBaseInvite = {
       lot_id: lotId,
-      tag_name: cur?.tag_name ?? `onboarding-${lotId}`,
-      tag_id: cur?.tag_id ?? null,
+      tag_name: tagName,
+      tag_id: tagId,
       broadcast_id: null,
-      recipient_subscription_ids: ok.map((r) => String(r.kit_subscriber_id)),
+      recipient_subscription_ids: okIds,
       recipient_emails: ok.map((r) => r.email),
       status: "pending",
       created_at: cur?.created_at ?? nowIso,
       send_at: null,
       confirmed_at: null,
       last_error: null,
+      attempt,
+      create_attempted_at: null,
     };
     block.base_invite = next;
     return { result: next, write: true };
@@ -348,19 +506,47 @@ export async function runBaseDraft(opts: BasePrepOpts, deps: BasePrepDeps): Prom
 
   const kit = deps.kit;
   const sleep = deps.sleep ?? (() => Promise.resolve());
+  /** Audiência do rascunho não confirmada: `divergent` ANTES de apagar; o erro do delete é anexado. */
+  const abandonDraft = async (broadcastId: number, reason: string): Promise<never> => {
+    invite.status = "divergent";
+    invite.last_error = reason;
+    persist();
+    try {
+      await kit.deleteBroadcast(broadcastId);
+    } catch (e) {
+      invite.last_error = `${reason} | E a exclusão do broadcast ${broadcastId} falhou (${redactEmails((e as Error).message)}) — APAGUE NO PAINEL DO KIT AGORA e rode --step reset --apply.`;
+      persist();
+      throw new CliExitWithMessage(invite.last_error);
+    }
+    invite.broadcast_id = null;
+    invite.status = "pending";
+    invite.create_attempted_at = null;
+    invite.last_error = `${reason} | broadcast ${broadcastId} apagado; nada agendado.`;
+    persist();
+    throw new CliExitWithMessage(invite.last_error);
+  };
   try {
+    let reused = invite.tag_id != null;
     if (invite.tag_id == null) {
-      invite.tag_id = (await kit.findTagIdByName(invite.tag_name)) ?? (await kit.createTag(invite.tag_name)).id;
+      const found = await kit.findTagIdByName(invite.tag_name);
+      reused = found != null;
+      invite.tag_id = found ?? (await kit.createTag(invite.tag_name)).id;
       persist();
     }
     const tagId = invite.tag_id;
+    // Retomada: não reescreve quem a tag já tem (a listagem pode atrasar; regravar é inofensivo).
+    const already = reused ? new Set((await kit.listTagMemberEmails(tagId)).map(normalizeEmail)) : new Set<string>();
     let first = true;
-    for (const id of invite.recipient_subscription_ids) {
+    for (let i = 0; i < invite.recipient_subscription_ids.length; i++) {
+      if (already.has(normalizeEmail(invite.recipient_emails[i] ?? ""))) continue;
       if (!first) await sleep(BASE_TAG_SPACING_MS);
       first = false;
-      await kit.tagSubscriber(tagId, Number(id));
+      await kit.tagSubscriber(tagId, Number(invite.recipient_subscription_ids[i]));
     }
     await assertPilotTagAudience(kit, invite, invite.recipient_emails, opts.tagCheckAttempts, opts.tagCheckDelayMs);
+    // Marca ANTES de criar: um timeout aqui pode ter criado o rascunho no Kit.
+    invite.create_attempted_at = new Date(opts.nowMs ?? Date.now()).toISOString();
+    persist();
     const created = await kit.createBroadcast(
       buildOnboardingBroadcastInput({
         kind: "form_base",
@@ -373,21 +559,13 @@ export async function runBaseDraft(opts: BasePrepOpts, deps: BasePrepDeps): Prom
     );
     invite.broadcast_id = created.id;
     invite.status = "draft";
+    invite.create_attempted_at = null;
     persist();
     const { verification, reread } = await rereadPilotFilter(kit, created.id, tagId);
-    if (verification.status === "divergent") {
-      // Rascunho com audiência errada: apaga (nunca saiu, nada agendado).
-      await kit.deleteBroadcast(created.id);
-      invite.broadcast_id = null;
-      invite.status = "pending";
-      invite.last_error = `filtro do rascunho divergente, broadcast ${created.id} apagado: ${verification.reason}`;
-      persist();
-      throw new CliExitWithMessage(invite.last_error);
-    }
     if (verification.status !== "verified") {
-      invite.last_error = `audiência do rascunho ${created.id} não confirmada pela releitura (${verification.status}): conferir a tag ${invite.tag_name} no painel do Kit antes de agendar.`;
-      out.aviso = invite.last_error;
-    } else if (reread?.status != null && reread.status !== "draft") {
+      await abandonDraft(created.id, `audiência do rascunho ${created.id} não confirmada pela releitura (${verification.status}): ${verification.reason}`);
+    }
+    if (reread?.status != null && reread.status !== "draft") {
       invite.last_error = `o broadcast ${created.id} voltou "${reread.status}", não "draft" — conferir no painel do Kit AGORA.`;
       out.aviso = invite.last_error;
     }
@@ -408,13 +586,94 @@ export async function runBaseDraft(opts: BasePrepOpts, deps: BasePrepDeps): Prom
 // Passo 3 — confirmação
 // ---------------------------------------------------------------------------
 
+/** Sem `--apply` só mostra o que está no store (nenhuma leitura do Kit). */
 export async function runBaseConfirm(opts: BasePrepOpts, deps: BasePrepDeps): Promise<unknown> {
   const store = readStoreOrThrow(opts.storePath);
   const invite = store.followup!.base_invite ?? null;
   if (!invite) return { mode: opts.apply ? "apply" : "dry-run", base_invite: null };
-  if (!opts.apply) return { mode: "dry-run", base_invite: { lot_id: invite.lot_id, status: invite.status, broadcast_id: invite.broadcast_id, recipients: invite.recipient_subscription_ids.length } };
+  if (!opts.apply) {
+    return {
+      mode: "dry-run",
+      base_invite: { lot_id: invite.lot_id, status: invite.status, broadcast_id: invite.broadcast_id, recipients: invite.recipient_subscription_ids.length, last_error: invite.last_error },
+    };
+  }
   const out = await confirmBaseInviteIfSent(opts.storePath, store.followup!, deps, opts.nowMs ?? Date.now());
-  return { mode: "apply", result: out ?? { status: invite.status } };
+  return { mode: "apply", result: out ?? { status: invite.status, failed: false } };
+}
+
+// ---------------------------------------------------------------------------
+// Passo 4 — reset (sair de draft/scheduled/divergent sem envio)
+// ---------------------------------------------------------------------------
+
+export interface BaseResetResult {
+  mode: "dry-run" | "apply";
+  lot_id: string;
+  before: FollowupBaseInvite["status"];
+  after: FollowupBaseInvite["status"];
+  motivo: string;
+  forced: boolean;
+}
+
+/**
+ * Volta o e-mail da base a `pending` (sem broadcast) para que `--step draft`
+ * possa montar de novo. Só quando o Kit prova que o broadcast não sai: 404
+ * (apagado) ou `aborted`. `--force` cobre o que o Kit não consegue provar
+ * (releitura falhando, ou nenhum broadcast gravado depois de um
+ * `createBroadcast` sem resposta) e só deve ser usado DEPOIS de conferir no
+ * painel do Kit que não há broadcast com a tag do lote. Nunca reseta, nem
+ * com `--force`: convite `sent`, ou broadcast que o Kit mostra `draft`
+ * (apagar no painel antes: um rascunho órfão é utilizável), `scheduled`,
+ * `sending` ou `completed`. Mantém tag e destinatários (a próxima montagem
+ * reaproveita a tag só se todo mundo nela ainda está no público).
+ */
+export async function runBaseReset(opts: BasePrepOpts & { force?: boolean }, deps: BasePrepDeps): Promise<BaseResetResult> {
+  const invite = readStoreOrThrow(opts.storePath).followup!.base_invite ?? null;
+  if (!invite) throw new CliExitWithMessage("nenhum e-mail da base no store — nada a resetar.");
+  if (invite.status === "sent") throw new CliExitWithMessage(`e-mail da base já enviado (lote ${invite.lot_id}) — reset recusado.`);
+  if (!baseInviteMayExist(invite)) throw new CliExitWithMessage(`e-mail da base já em "${invite.status}" sem broadcast — nada a resetar.`);
+  const force = opts.force === true;
+  let motivo: string;
+  if (invite.broadcast_id == null) {
+    if (!force) {
+      throw new CliExitWithMessage(
+        `lote ${invite.lot_id} sem broadcast gravado depois de chamar createBroadcast — o Kit não prova que nada foi criado. Conferir no painel (tag ${invite.tag_name}) e usar --force.`,
+      );
+    }
+    motivo = "sem broadcast gravado; --force depois de conferir o painel";
+  } else {
+    const id = invite.broadcast_id;
+    if (!deps.getBroadcast) throw new CliExitWithMessage("releitura do Kit não configurada — reset recusado.");
+    let status: string | null = null;
+    let readError: string | null = null;
+    try {
+      status = (await deps.getBroadcast(id)).status ?? null;
+    } catch (e) {
+      if (deps.isNotFoundError?.(e)) status = "__404__";
+      else readError = redactEmails((e as Error).message);
+    }
+    if (status === "__404__") motivo = `broadcast ${id} não existe mais no Kit (404)`;
+    else if (status === "aborted") motivo = `broadcast ${id} "aborted" no Kit`;
+    else if (status === "draft" || status === "scheduled" || status === "sending" || status === "completed") {
+      throw new CliExitWithMessage(
+        `broadcast ${id} está "${status}" no Kit — reset recusado (nem com --force): ${status === "draft" ? "apagar o rascunho no painel antes" : "o e-mail pode sair ou já saiu"}.`,
+      );
+    } else if (force) motivo = `broadcast ${id}: ${readError ? `releitura falhou (${readError})` : `status "${status ?? "?"}"`}; --force depois de conferir o painel`;
+    else {
+      throw new CliExitWithMessage(
+        `broadcast ${id}: ${readError ? `releitura falhou (${readError})` : `status "${status ?? "?"}"`} — o Kit não prova que ele não sai. Conferir no painel e usar --force.`,
+      );
+    }
+  }
+  const out: BaseResetResult = { mode: opts.apply ? "apply" : "dry-run", lot_id: invite.lot_id, before: invite.status, after: "pending", motivo, forced: force };
+  if (!opts.apply) return out;
+  const nowIso = new Date(opts.nowMs ?? Date.now()).toISOString();
+  withStore(opts.storePath, (block) => {
+    const cur = block.base_invite;
+    if (!cur || cur.lot_id !== invite.lot_id || cur.status !== invite.status) throw new CliExitWithMessage("o e-mail da base mudou no store durante o reset — rode de novo.");
+    block.base_invite = { ...cur, status: "pending", broadcast_id: null, send_at: null, create_attempted_at: null, last_error: `reset em ${nowIso}: ${motivo}` };
+    return { result: undefined, write: true };
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -463,8 +722,9 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): BasePrepDeps {
 }
 
 interface CliArgs {
-  step: "sigs" | "draft" | "confirm" | null;
+  step: "sigs" | "draft" | "confirm" | "reset" | null;
   apply: boolean;
+  force: boolean;
   max?: number;
   storePath?: string;
   snippetsDir?: string;
@@ -473,14 +733,15 @@ interface CliArgs {
 }
 
 export function parseBasePrepArgs(argv: string[]): CliArgs {
-  const a: CliArgs = { step: null, apply: false };
+  const a: CliArgs = { step: null, apply: false, force: false };
   for (let i = 0; i < argv.length; i++) {
     const f = argv[i];
     if (f === "--step") {
       const v = argv[++i];
-      if (v !== "sigs" && v !== "draft" && v !== "confirm") throw new CliExitWithMessage(`--step inválido: ${v ?? "(vazio)"} (sigs | draft | confirm)`);
+      if (v !== "sigs" && v !== "draft" && v !== "confirm" && v !== "reset") throw new CliExitWithMessage(`--step inválido: ${v ?? "(vazio)"} (sigs | draft | confirm | reset)`);
       a.step = v;
     } else if (f === "--apply") a.apply = true;
+    else if (f === "--force") a.force = true;
     else if (f === "--max") {
       const n = Number(argv[++i]);
       if (!Number.isInteger(n) || n <= 0) throw new CliExitWithMessage("--max precisa ser inteiro positivo");
@@ -491,7 +752,8 @@ export function parseBasePrepArgs(argv: string[]): CliArgs {
     else if (f === "--env-root") a.envRoot = argv[++i];
     else throw new CliExitWithMessage(`flag desconhecida: ${f}`);
   }
-  if (a.step == null) throw new CliExitWithMessage("--step é obrigatório (sigs | draft | confirm)");
+  if (a.step == null) throw new CliExitWithMessage("--step é obrigatório (sigs | draft | confirm | reset)");
+  if (a.force && a.step !== "reset") throw new CliExitWithMessage("--force só vale com --step reset");
   return a;
 }
 
@@ -525,9 +787,11 @@ async function main(): Promise<void> {
     const { buildPilotKitDeps } = await import("./onboarding-kit-transport-run.ts");
     deps.kit = buildPilotKitDeps(kitCfg);
   }
-  if (args.step === "confirm") {
+  if (args.step === "confirm" || args.step === "reset") {
     const { getBroadcast } = await import("./lib/kit-client.ts");
+    const { isKitNotFoundError } = await import("./onboarding-kit-transport-run.ts");
     deps.getBroadcast = (id) => getBroadcast(id, kitCfg);
+    deps.isNotFoundError = isKitNotFoundError;
   }
   const opts: BasePrepOpts = {
     storePath: args.storePath ?? resolve(ROOT, rawCfg.onboarding?.store_path ?? DEFAULT_STORE_PATH),
@@ -538,9 +802,21 @@ async function main(): Promise<void> {
     maxWrites: args.max,
   };
   try {
+    const step = args.step!;
     const out =
-      args.step === "sigs" ? await runBaseSigs(opts, deps) : args.step === "draft" ? await runBaseDraft(opts, deps) : await runBaseConfirm(opts, deps);
-    console.log(JSON.stringify({ step: args.step, ...(out as object) }, null, 2));
+      step === "sigs"
+        ? await runBaseSigs(opts, deps)
+        : step === "draft"
+          ? await runBaseDraft(opts, deps)
+          : step === "confirm"
+            ? await runBaseConfirm(opts, deps)
+            : await runBaseReset({ ...opts, force: args.force }, deps);
+    console.log(JSON.stringify({ step, ...(out as object) }, null, 2));
+    // `sigs` com falha/campo ausente e `confirm` com falha: exit 1 (o JSON já saiu com o detalhe).
+    if (basePrepExitCode(step, out) !== 0) {
+      process.stderr.write(`${LOG} --step ${step} terminou com falha (ver JSON acima).\n`);
+      throw new CliExit(1);
+    }
   } catch (e) {
     if (e instanceof CliExitWithMessage) {
       process.stderr.write(`${LOG} ${e.message}\n`);

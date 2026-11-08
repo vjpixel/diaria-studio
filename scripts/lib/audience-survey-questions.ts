@@ -56,6 +56,8 @@ export interface FormToSurveyResult {
   responses: SurveyResponseRecord[];
   /** Respostas a ids que não estão mais em `questions` (pergunta removida ou renomeada) — descartadas. */
   unknownAnswers: number;
+  /** Respostas sem nenhuma resposta aproveitável (só perguntas desconhecidas ou vazias) — não contam como respondente. */
+  emptyResponses: number;
 }
 
 /**
@@ -65,7 +67,9 @@ export interface FormToSurveyResult {
  * não carrega o e-mail: o perfil só precisa de contagens. Sem `status`: o
  * Worker não tem esse conceito, e `update-audience.ts` trata ausente como
  * ativo. Resposta a pergunta que não existe mais em `questions` é descartada
- * e contada em `unknownAnswers`, para o caller avisar.
+ * e contada em `unknownAnswers`, para o caller avisar. Uma resposta que fica
+ * sem nenhuma resposta aproveitável (todas a perguntas desconhecidas, ou em
+ * branco) não vira respondente: sai da lista e conta em `emptyResponses`.
  */
 export function onboardingFormToSurveyResponses(
   responses: readonly FormResponse[],
@@ -73,7 +77,9 @@ export function onboardingFormToSurveyResponses(
 ): FormToSurveyResult {
   const known = new Map(questions.map((q) => [q.id, q]));
   let unknownAnswers = 0;
-  const out = responses.map((r, i) => {
+  let emptyResponses = 0;
+  const out: SurveyResponseRecord[] = [];
+  for (const r of responses) {
     const answers: SurveyAnswerRecord[] = [];
     for (const [id, value] of Object.entries(r.answers)) {
       const q = known.get(id);
@@ -85,7 +91,11 @@ export function onboardingFormToSurveyResponses(
       const parts = q.kind === "checkbox" ? splitMultiAnswer(value) : [value.trim()];
       for (const answer of parts) answers.push({ question_id: `form:${q.id}`, question_prompt: q.label, answer });
     }
-    return { id: `${ONBOARDING_FORM_RESPONSE_ID_PREFIX}${i + 1}`, answers };
-  });
-  return { responses: out, unknownAnswers };
+    if (answers.length === 0) {
+      emptyResponses++;
+      continue;
+    }
+    out.push({ id: `${ONBOARDING_FORM_RESPONSE_ID_PREFIX}${out.length + 1}`, answers });
+  }
+  return { responses: out, unknownAnswers, emptyResponses };
 }

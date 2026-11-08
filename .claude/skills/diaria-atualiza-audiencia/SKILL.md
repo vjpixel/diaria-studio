@@ -22,7 +22,9 @@ O script (`scripts/audience-run.ts`, #5192, reescrito no #10605):
 - Grava `data/audience-raw.json` e roda `update-audience.ts` (spawn), que arquiva o profile atual em `docs/audience-history/{YYYY-MM-DD}.md` e gera o novo `context/audience-profile.md`: CTR (seção 1), seções preferidas e nível (seção 2), área de atuação (seção 3) e interesse em produtos (seção 4).
 - Imprime o topo do arquivo gerado (stdout) para confirmação.
 
-Fail-closed: formulário não configurado, leitura falhando (token ausente, HTTP de erro, timeout, payload malformado) ou zero respostas abortam com exit 1 e não tocam em `data/audience-raw.json`. Um `audience-raw.json` antigo com a survey da Beehiiv não volta ao perfil: `update-audience.ts` (que também roda no Stage 0 de toda edição) ignora qualquer resposta que não venha do formulário e avisa quantas descartou.
+**Só rodar depois de haver respostas do formulário novo** (o 1º lote do D+6 ou o e-mail da base saiu e alguém respondeu): antes disso o script aborta por zero respostas. Resposta que só tem perguntas que não existem mais (ou só campos em branco) não conta como respondente.
+
+Fail-closed: formulário não configurado, leitura falhando (token ausente, HTTP de erro, timeout, payload malformado) ou zero respostas abortam com exit 1 e não tocam em `data/audience-raw.json`. Um `audience-raw.json` antigo com a survey da Beehiiv não volta ao perfil: `update-audience.ts` (que também roda no Stage 0 de toda edição) ignora qualquer resposta que não venha do formulário e avisa quantas descartou. Enquanto o formulário não tem respostas, `update-audience.ts` mantém as seções 2 e 3 do último `context/audience-profile.md`, com o título marcado "anterior, até haver respostas do formulário novo"; com ≥1 resposta, o perfil usa só o formulário.
 
 As flags antigas (`--resolve-only`, `--surveys-json`, `--responses`) abortam com exit 1 e a explicação. `scripts/fetch-tally-audience.ts` ainda busca e conta as respostas do Tally (`--dry-run`), mas não regenera mais o perfil.
 

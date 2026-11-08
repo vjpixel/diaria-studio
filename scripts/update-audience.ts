@@ -98,6 +98,36 @@ export function formRespondentsNote(responses: readonly BeehiivResponse[]): stri
   return n > 0 ? ` (${n} do formulário do onboarding)` : "";
 }
 
+/** Sufixo dos títulos das seções 2 e 3 herdadas do perfil anterior (#10605). */
+export const PREVIOUS_DECLARED_SUFFIX = " — anterior, até haver respostas do formulário novo";
+
+/**
+ * @pure — #10605 (item 10 do review): enquanto o formulário do onboarding não
+ * tem respostas, as seções 2 e 3 do último `context/audience-profile.md`
+ * seguem no perfil, com o título marcado como anteriores, em vez de sumirem
+ * (o Stage 0 regenera o perfil a cada edição). Devolve as linhas desde o
+ * `## 2.` até antes do próximo `## ` que não seja o `## 3.`, ou do rodapé
+ * `---`; `[]` quando o perfil anterior não tem a seção 2. Idempotente: o
+ * sufixo não se acumula a cada regeneração.
+ */
+export function carryOverDeclaredSections(previousMd: string | null | undefined): string[] {
+  if (!previousMd) return [];
+  const lines = previousMd.split(/\r?\n/);
+  const start = lines.findIndex((l) => /^## 2\.\s/.test(l));
+  if (start < 0) return [];
+  const out: string[] = [];
+  for (let i = start; i < lines.length; i++) {
+    const l = lines[i];
+    if (i > start && l.startsWith("## ") && !/^## 3\.\s/.test(l)) break;
+    if (l.trim() === "---") break;
+    if (/^## [23]\.\s/.test(l)) {
+      out.push(`${l.split(PREVIOUS_DECLARED_SUFFIX).join("").trimEnd()}${PREVIOUS_DECLARED_SUFFIX}`);
+    } else out.push(l);
+  }
+  while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
+  return out;
+}
+
 /**
  * #10605: seção 4 do perfil, sondagem de produto (só existe no formulário do
  * onboarding). Vazia quando ninguém respondeu essas perguntas, para o perfil
@@ -960,7 +990,7 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
 
     lines.push(
       "",
-      "## 2. Preferências declaradas (survey)",
+      "## 2. Preferências declaradas (formulário)",
       "",
       `Fonte secundária: ${surveyResponses.length} respondentes do formulário do onboarding. Usar para calibrar tom e vocabulário, não para priorizar temas.`,
       "",
@@ -981,6 +1011,17 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
       ...areas.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
     );
     lines.push(...renderProductInterestSection(surveyResponses));
+  } else {
+    // #10605: sem resposta do formulário ainda, mantém as seções 2 e 3 do
+    // perfil anterior (marcadas) em vez de apagá-las a cada regeneração.
+    let previous: string | null = null;
+    try {
+      previous = existsSync(outPath) ? readFileSync(outPath, "utf8") : null;
+    } catch (error) {
+      logFileReadWarning("perfil anterior", outPath, error, spawnFn, warnFn);
+    }
+    const carried = carryOverDeclaredSections(previous);
+    if (carried.length > 0) lines.push("", ...carried);
   }
 
   lines.push(

@@ -59,15 +59,16 @@ import { withFileLock } from "./lib/file-lock.ts";
 import { resolveNewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 import { unixSecondsToBrtDate } from "./lib/beehiiv-publish-date.ts";
 import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from "./lib/onboarding-store.ts";
-import { decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type RefreshKitCandidatesOpts } from "./lib/onboarding-kit-transport.ts";
+import { buildOnboardingLotFilter, decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type RefreshKitCandidatesOpts } from "./lib/onboarding-kit-transport.ts";
 import { isKitTransientError } from "./onboarding-welcome-run.ts";
-import { redactEmails } from "./lib/onboarding-kit-pilot.ts";
+import { redactEmails, verifyPilotBroadcastFilter } from "./lib/onboarding-kit-pilot.ts";
 import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
 import { FORM_PAGE_MARKER, FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
 import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
   ALL_FOLLOWUP_STEPS,
   applyBaseInviteToPeople,
+  baseInviteRecipientIds,
   decideBaseInviteConfirm,
   type BaseInviteConfirmDecision,
   apoioContentGate,
@@ -107,6 +108,7 @@ import {
   snippetFileFor,
   snippetTemplate,
   type ApoioCandidate,
+  type FollowupBaseInvite,
   type FollowupBlock,
   type FollowupBlockReason,
   type FollowupConfig,
@@ -302,7 +304,7 @@ export interface FollowupRoundDeps {
    * Ausentes = o lote segue não resolvido: destinatários fora de `due` e a
    * rodada conta como falha (`lots_unresolved`).
    */
-  getBroadcast?(id: number): Promise<{ status?: string | null; send_at?: string | null }>;
+  getBroadcast?(id: number): Promise<{ status?: string | null; send_at?: string | null; subscriber_filter?: unknown }>;
   deleteBroadcast?(id: number): Promise<void>;
   /**
    * #10633 (follow-up do #10628): id da conta Kit da credencial em uso
@@ -587,43 +589,110 @@ export async function reconcileFollowupLots(
   return { results, unresolved };
 }
 
+export interface BaseInviteConfirmOutcome {
+  lot_id: string;
+  /** `unscheduled` = estava `scheduled` e o Kit mostra rascunho de novo;
+   *  `filter_unverified` = filtro relido divergente/não ecoado;
+   *  `refused` = convite em `divergent`. */
+  decision: BaseInviteConfirmDecision["action"] | "unscheduled" | "filter_unverified" | "refused";
+  marked: number;
+  /** Conta como falha da rodada (`base_invite_failed`) / exit 1 do `--step confirm`. */
+  failed: boolean;
+  error?: string;
+}
+
 /**
  * #10605: relê o broadcast do e-mail da base (`followup.base_invite`, status
- * `draft`) e, se o editor já agendou/enviou no Kit, grava o envio `form_base`
- * de cada destinatário e marca o convite `sent` — sob lock, sobre o store do
- * disco, e espelhado em `block` (o plano que vem depois enxerga). `null` =
- * nada a fazer (sem convite em rascunho ou sem `getBroadcast`). Usado pelo
- * executor diário e por `onboarding-form-base-prep.ts --step confirm`.
+ * `draft` ou `scheduled`) e decide, sob lock e sobre o store do disco
+ * (espelhado em `block`, que o plano que vem depois enxerga):
+ *  - `draft` no Kit: segue rascunho (um `scheduled` desagendado volta a `draft`);
+ *  - `scheduled` com `send_at`: vira `scheduled`, SEM registro por pessoa
+ *    (relido de novo na rodada seguinte);
+ *  - `sending`/`completed`: grava o envio `form_base` de cada destinatário e
+ *    marca `sent` (é o que libera o lembrete 30 dias depois);
+ *  - agendado/enviado só conta com o `subscriber_filter` relido igual ao
+ *    filtro da tag do lote (`buildOnboardingLotFilter`); divergente ou não
+ *    ecoado nunca marca `sent` e é falha;
+ *  - releitura que lança (404, rede), `aborted` ou status desconhecido: falha
+ *    (o alarme toca), nada gravado;
+ *  - convite em `divergent`: recusa sempre (falha), até `--step reset`.
+ * `null` = nada a fazer (sem convite em rascunho/agendado, ou sem
+ * `getBroadcast`). Usado pelo executor diário e por
+ * `onboarding-form-base-prep.ts --step confirm --apply`.
  */
 export async function confirmBaseInviteIfSent(
   storePath: string,
   block: FollowupBlock,
   deps: Pick<FollowupRoundDeps, "getBroadcast">,
   nowMs: number,
-): Promise<{ lot_id: string; decision: BaseInviteConfirmDecision["action"]; marked: number; error?: string } | null> {
+): Promise<BaseInviteConfirmOutcome | null> {
   const invite = block.base_invite;
-  if (!invite || invite.status !== "draft" || invite.broadcast_id == null || !deps.getBroadcast) return null;
+  if (!invite) return null;
   const nowIso = new Date(nowMs).toISOString();
-  let decision: BaseInviteConfirmDecision;
-  try {
-    decision = decideBaseInviteConfirm(await deps.getBroadcast(invite.broadcast_id), nowIso);
-  } catch (e) {
-    return { lot_id: invite.lot_id, decision: "unknown", marked: 0, error: redactEmails((e as Error).message) };
+  if (invite.status === "divergent") {
+    return {
+      lot_id: invite.lot_id,
+      decision: "refused",
+      marked: 0,
+      failed: true,
+      error: `e-mail da base em "divergent" (${invite.last_error ?? "sem detalhe"}) — nada é marcado como enviado; apagar o broadcast ${invite.broadcast_id ?? "-"} no painel do Kit e rodar onboarding-form-base-prep.ts --step reset`,
+    };
   }
-  if (decision.action !== "sent") {
-    return { lot_id: invite.lot_id, decision: decision.action, marked: 0, ...(decision.action === "unknown" ? { error: decision.reason } : {}) };
+  if ((invite.status !== "draft" && invite.status !== "scheduled") || invite.broadcast_id == null || !deps.getBroadcast) return null;
+  const broadcastId = invite.broadcast_id;
+  // Grava no disco (se o convite ainda é o mesmo e está em draft/scheduled) e espelha em `block`.
+  const update = (patch: Partial<FollowupBaseInvite>, apply?: (people: FollowupBlock["people"], cur: FollowupBaseInvite) => number): number => {
+    const marked = withStore(storePath, "confirmar o e-mail da base", (_store, disk) => {
+      const cur = disk.base_invite;
+      if (!cur || cur.lot_id !== invite.lot_id || (cur.status !== "draft" && cur.status !== "scheduled")) return { result: 0, write: false };
+      const n = apply ? apply(disk.people, cur) : 0;
+      disk.base_invite = { ...cur, ...patch };
+      return { result: n, write: true };
+    });
+    if (apply) apply(block.people, invite);
+    block.base_invite = { ...invite, ...patch };
+    return marked;
+  };
+  const fail = (decision: BaseInviteConfirmOutcome["decision"], error: string): BaseInviteConfirmOutcome => {
+    update({ last_error: error });
+    return { lot_id: invite.lot_id, decision, marked: 0, failed: true, error };
+  };
+
+  let reread: { status?: string | null; send_at?: string | null; subscriber_filter?: unknown };
+  try {
+    reread = await deps.getBroadcast(broadcastId);
+  } catch (e) {
+    return fail("unknown", `releitura do broadcast ${broadcastId} do e-mail da base falhou: ${redactEmails((e as Error).message)}`);
+  }
+  const decision = decideBaseInviteConfirm(reread, nowIso);
+  if (decision.action === "unknown") return fail("unknown", `broadcast ${broadcastId} do e-mail da base: ${decision.reason}`);
+  if (decision.action === "still_draft") {
+    if (invite.status === "scheduled") {
+      update({ status: "draft", send_at: null, last_error: null });
+      return { lot_id: invite.lot_id, decision: "unscheduled", marked: 0, failed: false };
+    }
+    return { lot_id: invite.lot_id, decision: "still_draft", marked: 0, failed: false };
+  }
+  // Agendado ou saindo: a audiência tem de ser a tag do lote.
+  const v =
+    invite.tag_id == null
+      ? { status: "divergent" as const, reason: "convite sem tag_id gravado" }
+      : verifyPilotBroadcastFilter(reread.subscriber_filter, buildOnboardingLotFilter(invite.tag_id));
+  if (v.status !== "verified") {
+    return fail(
+      "filter_unverified",
+      `broadcast ${broadcastId} do e-mail da base ${decision.action === "sent" ? "saindo/saído" : "agendado"} com audiência NÃO confirmada (${v.status}): ${"reason" in v ? v.reason : ""} Conferir no painel do Kit AGORA; nada marcado como enviado.`,
+    );
   }
   const sendAt = decision.sendAt;
-  const marked = withStore(storePath, "confirmar o e-mail da base", (_store, disk) => {
-    const cur = disk.base_invite;
-    if (!cur || cur.lot_id !== invite.lot_id || cur.status !== "draft") return { result: 0, write: false };
-    const n = applyBaseInviteToPeople(disk.people, cur, sendAt, nowIso);
-    disk.base_invite = { ...cur, status: "sent", send_at: sendAt, confirmed_at: nowIso, last_error: null };
-    return { result: n, write: true };
-  });
-  applyBaseInviteToPeople(block.people, invite, sendAt, nowIso);
-  block.base_invite = { ...invite, status: "sent", send_at: sendAt, confirmed_at: nowIso, last_error: null };
-  return { lot_id: invite.lot_id, decision: "sent", marked };
+  if (decision.action === "scheduled") {
+    update({ status: "scheduled", send_at: sendAt, last_error: null });
+    return { lot_id: invite.lot_id, decision: "scheduled", marked: 0, failed: false };
+  }
+  const marked = update({ status: "sent", send_at: sendAt, confirmed_at: nowIso, last_error: null }, (people, cur) =>
+    applyBaseInviteToPeople(people, cur, sendAt, nowIso),
+  );
+  return { lot_id: invite.lot_id, decision: "sent", marked, failed: false };
 }
 
 export interface FollowupRoundOpts {
@@ -785,12 +854,19 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   for (const r of rec.results) lotsOut.push({ reconcile: true, ...r });
 
   // #10605: o e-mail da base é rascunho até o editor agendar no Kit. Quando a
-  // releitura mostra agendado/enviado, grava `form_base` por pessoa ANTES de
-  // planejar (é o que libera o lembrete 30 dias depois). Leitura falhando só
-  // adia: nada é gravado sem a prova do Kit.
+  // releitura mostra saindo/saído, grava `form_base` por pessoa ANTES de
+  // planejar (é o que libera o lembrete 30 dias depois). Releitura falhando,
+  // `aborted`/desconhecido, filtro não confirmado ou convite `divergent`:
+  // nada é gravado e a rodada conta como falha (alarme).
   if (send) {
     const out = await confirmBaseInviteIfSent(storePath, block, deps, nowMs);
-    if (out) lotsOut.push({ base_invite: true, ...out });
+    if (out) {
+      lotsOut.push({ base_invite: true, ...out });
+      if (out.failed) {
+        run.base_invite_failed = 1;
+        process.stderr.write(`${LOG} e-mail da base: ${out.error ?? out.decision}\n`);
+      }
+    }
   }
 
   // Formulário: quem preencheu sai dos lembretes ANTES de planejar.
@@ -848,6 +924,8 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     apoioBlocked: apoioBlocked?.motivo ?? null,
     formBlocked: formBlocked?.motivo ?? null,
     excludedEmails: envioBrevoEmails,
+    // #10605: destinatários do e-mail da base ainda não saído não recebem o D+6.
+    baseInviteRecipientIds: baseInviteRecipientIds(block.base_invite),
   });
   run.counts = plan.counts;
   const bump = (kind: FollowupStepKind, motivo: string, n = 1) => {

@@ -127,7 +127,7 @@ describe("main() — forma do documento gerado (#8151)", () => {
       // Headers obrigatórios
       assert.match(doc, /^# Perfil de Audiência — diar\.ia\.br/m);
       assert.match(doc, /## 1\. Engajamento real \(CTR por categoria\)/);
-      assert.match(doc, /## 2\. Preferências declaradas \(survey\)/);
+      assert.match(doc, /## 2\. Preferências declaradas \(formulário\)/);
       assert.match(doc, /## 3\. Quem são \(demographics\)/);
 
       // Nunca placeholder cru / valor interpolado quebrado
