@@ -615,7 +615,10 @@ export interface BaseInviteConfirmOutcome {
  *    ecoado nunca marca `sent` e é falha;
  *  - releitura que lança (404, rede), `aborted` ou status desconhecido: falha
  *    (o alarme toca), nada gravado;
- *  - convite em `divergent`: recusa sempre (falha), até `--step reset`.
+ *  - convite em `divergent`, ou `pending` com `createBroadcast` sem resposta:
+ *    recusa sempre (falha), até `--step reset` (`--mark-sent-unverified`
+ *    quando o Kit mostra que saiu);
+ *  - `sent`/`sent_unverified`: terminal, nada a fazer.
  * `null` = nada a fazer (sem convite em rascunho/agendado, ou sem
  * `getBroadcast`). Usado pelo executor diário e por
  * `onboarding-form-base-prep.ts --step confirm --apply`.
@@ -636,6 +639,17 @@ export async function confirmBaseInviteIfSent(
       marked: 0,
       failed: true,
       error: `e-mail da base em "divergent" (${invite.last_error ?? "sem detalhe"}) — nada é marcado como enviado; apagar o broadcast ${invite.broadcast_id ?? "-"} no painel do Kit e rodar onboarding-form-base-prep.ts --step reset`,
+    };
+  }
+  if (invite.status === "pending" && invite.broadcast_id == null && invite.create_attempted_at != null) {
+    // createBroadcast sem resposta: o Kit pode ter criado o rascunho, e o D+6
+    // dos destinatários segue suspenso — sem isto, ficaria assim calado.
+    return {
+      lot_id: invite.lot_id,
+      decision: "refused",
+      marked: 0,
+      failed: true,
+      error: `e-mail da base: createBroadcast chamado em ${invite.create_attempted_at} sem broadcast gravado — conferir o painel do Kit (tag ${invite.tag_name}) e rodar \`--step reset --apply --force\``,
     };
   }
   if ((invite.status !== "draft" && invite.status !== "scheduled") || invite.broadcast_id == null || !deps.getBroadcast) return null;

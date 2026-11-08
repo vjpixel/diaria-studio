@@ -42,7 +42,16 @@
  *     `--force` cobre releitura falhando ou nenhum broadcast gravado depois
  *     de um `createBroadcast` sem resposta, e só DEPOIS de conferir no
  *     painel do Kit que não há broadcast com a tag do lote. Nunca reseta
- *     `sent` nem broadcast `draft`/`scheduled`/`sending`/`completed`.
+ *     `sent` nem broadcast `draft`/`scheduled`/`sending`/`completed`, e o
+ *     `--force` recusa convite em `scheduled` no store (pode estar agendado
+ *     de verdade). `--mark-sent-unverified --force`: quando o Kit mostra o
+ *     broadcast `sending`/`completed` mas a audiência nunca foi confirmada
+ *     (convite em `divergent`, ou `draft`/`scheduled` com filtro não
+ *     confirmado, em alarme toda rodada), marca o status terminal
+ *     `sent_unverified`: registra o que houve, para o alarme, libera o D+6
+ *     dos destinatários gravados e NÃO grava `form_base` por pessoa (o
+ *     público real é desconhecido), então o lembrete não se aplica a esse
+ *     convite.
  *
  * Público (regra B, `selectBaseInviteAudience`): assinantes ativos do Kit,
  * menos quem já recebeu o convite D+6, quem vai recebê-lo em até 7 dias
@@ -60,6 +69,7 @@
  *   npx tsx scripts/onboarding-form-base-prep.ts --step draft --apply
  *   npx tsx scripts/onboarding-form-base-prep.ts --step confirm --apply
  *   npx tsx scripts/onboarding-form-base-prep.ts --step reset --apply [--force]
+ *   npx tsx scripts/onboarding-form-base-prep.ts --step reset --apply --force --mark-sent-unverified
  * Flags auxiliares: --store <path>, --snippets-dir <path>, --config <path>, --env-root <path>.
  */
 
@@ -626,14 +636,28 @@ export interface BaseResetResult {
  * `sending` ou `completed`. Mantém tag e destinatários (a próxima montagem
  * reaproveita a tag só se todo mundo nela ainda está no público).
  */
-export async function runBaseReset(opts: BasePrepOpts & { force?: boolean }, deps: BasePrepDeps): Promise<BaseResetResult> {
+export async function runBaseReset(opts: BasePrepOpts & { force?: boolean; markSentUnverified?: boolean }, deps: BasePrepDeps): Promise<BaseResetResult> {
   const invite = readStoreOrThrow(opts.storePath).followup!.base_invite ?? null;
   if (!invite) throw new CliExitWithMessage("nenhum e-mail da base no store — nada a resetar.");
-  if (invite.status === "sent") throw new CliExitWithMessage(`e-mail da base já enviado (lote ${invite.lot_id}) — reset recusado.`);
+  if (invite.status === "sent" || invite.status === "sent_unverified") {
+    throw new CliExitWithMessage(`e-mail da base já enviado (lote ${invite.lot_id}, ${invite.status}) — reset recusado.`);
+  }
   if (!baseInviteMayExist(invite)) throw new CliExitWithMessage(`e-mail da base já em "${invite.status}" sem broadcast — nada a resetar.`);
   const force = opts.force === true;
+  const markSent = opts.markSentUnverified === true;
+  if (markSent && !force) throw new CliExitWithMessage("--mark-sent-unverified exige --force (é a declaração de que o envio saiu com audiência não confirmada).");
+  // #12461 re-review: no store em `scheduled`, o broadcast pode estar agendado de
+  // verdade — o --force (que cobre releitura falhando) não pode desfazer isso.
+  if (force && !markSent && invite.status === "scheduled") {
+    throw new CliExitWithMessage(
+      `e-mail da base em "scheduled" no store (broadcast ${invite.broadcast_id ?? "-"}) — --force recusado: desagendar/apagar no painel do Kit e rodar --step confirm --apply (ou reset sem --force, que prova pelo 404/aborted).`,
+    );
+  }
   let motivo: string;
+  let after: FollowupBaseInvite["status"] = "pending";
+  let sentAt: string | null = null;
   if (invite.broadcast_id == null) {
+    if (markSent) throw new CliExitWithMessage(`lote ${invite.lot_id} sem broadcast gravado — nada para marcar como enviado.`);
     if (!force) {
       throw new CliExitWithMessage(
         `lote ${invite.lot_id} sem broadcast gravado depois de chamar createBroadcast — o Kit não prova que nada foi criado. Conferir no painel (tag ${invite.tag_name}) e usar --force.`,
@@ -644,18 +668,37 @@ export async function runBaseReset(opts: BasePrepOpts & { force?: boolean }, dep
     const id = invite.broadcast_id;
     if (!deps.getBroadcast) throw new CliExitWithMessage("releitura do Kit não configurada — reset recusado.");
     let status: string | null = null;
+    let sendAt: string | null = null;
     let readError: string | null = null;
     try {
-      status = (await deps.getBroadcast(id)).status ?? null;
+      const b = await deps.getBroadcast(id);
+      status = b.status ?? null;
+      sendAt = typeof b.send_at === "string" ? b.send_at : null;
     } catch (e) {
       if (deps.isNotFoundError?.(e)) status = "__404__";
       else readError = redactEmails((e as Error).message);
     }
-    if (status === "__404__") motivo = `broadcast ${id} não existe mais no Kit (404)`;
+    if (markSent) {
+      // Saída do loop de alarme: o Kit ENVIOU, mas a audiência nunca foi confirmada.
+      if (status !== "sending" && status !== "completed") {
+        throw new CliExitWithMessage(
+          `--mark-sent-unverified só vale com o broadcast ${id} "sending"/"completed" no Kit; a releitura mostra ${readError ? `erro (${readError})` : `"${status === "__404__" ? "404" : (status ?? "?")}"`}.`,
+        );
+      }
+      after = "sent_unverified";
+      sentAt = sendAt ?? new Date(opts.nowMs ?? Date.now()).toISOString();
+      motivo = `broadcast ${id} "${status}" no Kit com audiência não confirmada (store em "${invite.status}": ${invite.last_error ?? "sem detalhe"}); marcado sent_unverified por --force — nenhum form_base gravado por pessoa (público real desconhecido)`;
+    } else if (status === "__404__") motivo = `broadcast ${id} não existe mais no Kit (404)`;
     else if (status === "aborted") motivo = `broadcast ${id} "aborted" no Kit`;
     else if (status === "draft" || status === "scheduled" || status === "sending" || status === "completed") {
       throw new CliExitWithMessage(
-        `broadcast ${id} está "${status}" no Kit — reset recusado (nem com --force): ${status === "draft" ? "apagar o rascunho no painel antes" : "o e-mail pode sair ou já saiu"}.`,
+        `broadcast ${id} está "${status}" no Kit — reset recusado (nem com --force): ${
+          status === "draft"
+            ? "apagar o rascunho no painel antes"
+            : status === "scheduled"
+              ? "o e-mail pode sair"
+              : "o e-mail já saiu; se a audiência não foi confirmada, use --mark-sent-unverified --force"
+        }.`,
       );
     } else if (force) motivo = `broadcast ${id}: ${readError ? `releitura falhou (${readError})` : `status "${status ?? "?"}"`}; --force depois de conferir o painel`;
     else {
@@ -664,13 +707,16 @@ export async function runBaseReset(opts: BasePrepOpts & { force?: boolean }, dep
       );
     }
   }
-  const out: BaseResetResult = { mode: opts.apply ? "apply" : "dry-run", lot_id: invite.lot_id, before: invite.status, after: "pending", motivo, forced: force };
+  const out: BaseResetResult = { mode: opts.apply ? "apply" : "dry-run", lot_id: invite.lot_id, before: invite.status, after, motivo, forced: force };
   if (!opts.apply) return out;
   const nowIso = new Date(opts.nowMs ?? Date.now()).toISOString();
   withStore(opts.storePath, (block) => {
     const cur = block.base_invite;
     if (!cur || cur.lot_id !== invite.lot_id || cur.status !== invite.status) throw new CliExitWithMessage("o e-mail da base mudou no store durante o reset — rode de novo.");
-    block.base_invite = { ...cur, status: "pending", broadcast_id: null, send_at: null, create_attempted_at: null, last_error: `reset em ${nowIso}: ${motivo}` };
+    block.base_invite =
+      after === "sent_unverified"
+        ? { ...cur, status: "sent_unverified", send_at: sentAt, confirmed_at: nowIso, create_attempted_at: null, last_error: `${nowIso}: ${motivo}` }
+        : { ...cur, status: "pending", broadcast_id: null, send_at: null, create_attempted_at: null, last_error: `reset em ${nowIso}: ${motivo}` };
     return { result: undefined, write: true };
   });
   return out;
@@ -725,6 +771,7 @@ interface CliArgs {
   step: "sigs" | "draft" | "confirm" | "reset" | null;
   apply: boolean;
   force: boolean;
+  markSentUnverified: boolean;
   max?: number;
   storePath?: string;
   snippetsDir?: string;
@@ -733,7 +780,7 @@ interface CliArgs {
 }
 
 export function parseBasePrepArgs(argv: string[]): CliArgs {
-  const a: CliArgs = { step: null, apply: false, force: false };
+  const a: CliArgs = { step: null, apply: false, force: false, markSentUnverified: false };
   for (let i = 0; i < argv.length; i++) {
     const f = argv[i];
     if (f === "--step") {
@@ -742,6 +789,7 @@ export function parseBasePrepArgs(argv: string[]): CliArgs {
       a.step = v;
     } else if (f === "--apply") a.apply = true;
     else if (f === "--force") a.force = true;
+    else if (f === "--mark-sent-unverified") a.markSentUnverified = true;
     else if (f === "--max") {
       const n = Number(argv[++i]);
       if (!Number.isInteger(n) || n <= 0) throw new CliExitWithMessage("--max precisa ser inteiro positivo");
@@ -754,6 +802,7 @@ export function parseBasePrepArgs(argv: string[]): CliArgs {
   }
   if (a.step == null) throw new CliExitWithMessage("--step é obrigatório (sigs | draft | confirm | reset)");
   if (a.force && a.step !== "reset") throw new CliExitWithMessage("--force só vale com --step reset");
+  if (a.markSentUnverified && (a.step !== "reset" || !a.force)) throw new CliExitWithMessage("--mark-sent-unverified só vale com --step reset --force");
   return a;
 }
 
@@ -810,7 +859,7 @@ async function main(): Promise<void> {
           ? await runBaseDraft(opts, deps)
           : step === "confirm"
             ? await runBaseConfirm(opts, deps)
-            : await runBaseReset({ ...opts, force: args.force }, deps);
+            : await runBaseReset({ ...opts, force: args.force, markSentUnverified: args.markSentUnverified }, deps);
     console.log(JSON.stringify({ step, ...(out as object) }, null, 2));
     // `sigs` com falha/campo ausente e `confirm` com falha: exit 1 (o JSON já saiu com o detalhe).
     if (basePrepExitCode(step, out) !== 0) {

@@ -265,8 +265,13 @@ export interface FollowupBaseInvite {
    *  audiência do rascunho não foi confirmada e a exclusão dele não foi
    *  confirmada (gravado ANTES de tentar apagar): nada é marcado como enviado
    *  até `--step reset`; `sent` = o Kit mostrou o broadcast saindo/saído
-   *  (`sending`/`completed`) e o envio foi gravado por pessoa. */
-  status: "pending" | "draft" | "scheduled" | "divergent" | "sent";
+   *  (`sending`/`completed`) e o envio foi gravado por pessoa;
+   *  `sent_unverified` = terminal, só por `--step reset --mark-sent-unverified
+   *  --force` quando o Kit mostra o broadcast saindo/saído mas a audiência
+   *  nunca foi confirmada: para o alarme e libera o D+6 dos destinatários
+   *  gravados, SEM registro `form_base` por pessoa (o público real é
+   *  desconhecido) — o lembrete não se aplica a esse convite. */
+  status: "pending" | "draft" | "scheduled" | "divergent" | "sent" | "sent_unverified";
   created_at: string;
   send_at: string | null;
   confirmed_at: string | null;

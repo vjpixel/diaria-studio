@@ -33,7 +33,9 @@ travados pelo marcador `ONBOARDING-CORPO-PENDENTE` até o editor aprovar):
    se faltar alguém); o editor agenda no Kit (o script nunca agenda); depois
    do envio, `--step confirm --apply` (ou o executor diário) grava o
    `form_base` por pessoa. Broadcast perdido (apagado/abortado):
-   `--step reset --apply`. Público: ativos, menos quem recebeu o D+6 ou vai
+   `--step reset --apply`. Saiu com audiência não confirmada (alarme toda
+   rodada): `--step reset --apply --force --mark-sent-unverified`, que fecha
+   o convite sem gravar `form_base` por pessoa (sem lembrete para ele). Público: ativos, menos quem recebeu o D+6 ou vai
    recebê-lo em até 7 dias (padrão de `base_invite_window_days`), e quem já
    respondeu; enquanto o e-mail não sai, eles não recebem o D+6. Rodar
    `audience-run.ts` só depois de haver respostas.

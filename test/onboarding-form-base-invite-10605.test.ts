@@ -639,3 +639,71 @@ describe("executor: D+6 suspenso enquanto o e-mail da base pode sair", () => {
     assert.equal(baseInviteRecipientIds({ ...invite, status: "sent" }).size, 0, "enviado: o registro por pessoa assume");
   });
 });
+
+describe("re-review #12461: saídas sem loop nem silêncio", () => {
+  const drafted = async () => {
+    const { opts, storePath } = setup(true);
+    await runBaseDraft({ ...opts, apply: true }, fakeDeps(await rowsWithSigs(2, [1, 2])).deps);
+    return { opts, storePath };
+  };
+  const withStatus = (storePath: string, patch: Partial<FollowupBaseInvite>) => {
+    const s = readStore(storePath).store;
+    s.followup!.base_invite = { ...s.followup!.base_invite!, ...patch };
+    writeStore(s, storePath);
+  };
+  const kitSays = (status: string): BasePrepDeps => ({ ...fakeDeps([]).deps, getBroadcast: async () => ({ status, send_at: iso(T0) }) });
+
+  it("pending com createBroadcast sem resposta: confirm recusa como falha (alarme + exit 1) com a instrução do reset", async () => {
+    const { opts, storePath } = await drafted();
+    withStatus(storePath, { status: "pending", broadcast_id: null, create_attempted_at: iso(T0) });
+    const out = await confirmBaseInviteIfSent(storePath, readStore(storePath).store.followup!, { getBroadcast: async () => ({ status: "draft" }) }, T0 * 1000);
+    assert.deepEqual([out?.decision, out?.failed], ["refused", true]);
+    assert.match(out!.error!, /conferir o painel do Kit.*--step reset --apply --force/);
+    const viaStep = await runBaseConfirm({ ...opts, apply: true }, fakeDeps([]).deps);
+    assert.equal(basePrepExitCode("confirm", viaStep), 1);
+    withStatus(storePath, { create_attempted_at: null });
+    assert.equal(await confirmBaseInviteIfSent(storePath, readStore(storePath).store.followup!, { getBroadcast: async () => ({ status: "draft" }) }, T0 * 1000), null, "pending sem tentativa: nada a fazer");
+  });
+
+  it("--mark-sent-unverified --force: só com o Kit mostrando sending/completed; terminal, sem form_base por pessoa, para o alarme e libera o D+6", async () => {
+    for (const before of ["divergent", "scheduled", "draft"] as const) {
+      const { opts, storePath } = await drafted();
+      withStatus(storePath, { status: before });
+      await assert.rejects(runBaseReset({ ...opts, apply: true, markSentUnverified: true }, kitSays("completed")), /exige --force/);
+      await assert.rejects(runBaseReset({ ...opts, apply: true, force: true, markSentUnverified: true }, kitSays("draft")), /só vale com o broadcast/);
+      assert.equal(readStore(storePath).store.followup!.base_invite!.status, before);
+      const r = await runBaseReset({ ...opts, apply: true, force: true, markSentUnverified: true }, kitSays("sending"));
+      assert.equal(r.after, "sent_unverified");
+      const b = readStore(storePath).store.followup!;
+      assert.equal(b.base_invite!.status, "sent_unverified");
+      assert.match(b.base_invite!.last_error!, /audiência não confirmada/);
+      assert.deepEqual(b.people, {}, "nenhum form_base gravado: o público real é desconhecido");
+      assert.equal(await confirmBaseInviteIfSent(storePath, b, { getBroadcast: async () => ({ status: "completed" }) }, T0 * 1000), null, "terminal: o alarme para");
+      assert.equal(baseInviteRecipientIds(b.base_invite).size, 0, "D+6 liberado");
+      await assert.rejects(runBaseDraft({ ...opts, apply: true }, fakeDeps(await rowsWithSigs(2, [1, 2])).deps), /e-mail único/);
+      await assert.rejects(runBaseReset({ ...opts, apply: true, force: true }, kitSays("aborted")), /já enviado/);
+    }
+  });
+
+  it("--force recusa com o store em 'scheduled' (pode estar agendado de verdade); 404 sem --force ainda reseta", async () => {
+    const { opts, storePath } = await drafted();
+    withStatus(storePath, { status: "scheduled", send_at: iso(T0 + DAY) });
+    const boom: BasePrepDeps = {
+      ...fakeDeps([]).deps,
+      getBroadcast: async () => {
+        throw new Error("rede");
+      },
+    };
+    await assert.rejects(runBaseReset({ ...opts, apply: true, force: true }, boom), /"scheduled" no store.*--force recusado/);
+    assert.equal(readStore(storePath).store.followup!.base_invite!.status, "scheduled");
+    const gone: BasePrepDeps = {
+      ...fakeDeps([]).deps,
+      getBroadcast: async () => {
+        throw Object.assign(new Error("404"), { notFound: true });
+      },
+      isNotFoundError: (e) => (e as { notFound?: boolean }).notFound === true,
+    };
+    await runBaseReset({ ...opts, apply: true }, gone);
+    assert.equal(readStore(storePath).store.followup!.base_invite!.status, "pending");
+  });
+});
