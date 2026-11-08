@@ -4,6 +4,15 @@
  * Recuperação de `plan.json` de rodada (overnight/develop/continuo) quando o
  * OneDrive o substitui por uma cópia de conflito `plan-{máquina}-safeBackup-{NNNN}.json`.
  *
+ * **Também a cópia do rclone bisync (#12380).** Depois do cutover de `data/`
+ * para o Google Drive (#12359) a cópia de conflito vira `plan.json.conflictN`
+ * (sufixo depois da extensão, ver `sync-conflict-copy.ts`). Com o
+ * `--conflict-resolve newer` atual o vencedor mantém o nome `plan.json` e só
+ * o perdedor ganha o sufixo (caso `backup-alongside` abaixo); sem a flag, as
+ * duas versões ganham sufixo e o `plan.json` some (caso `restored`). Os dois
+ * formatos entram no mesmo contrato; `seq` é o `NNNN` do OneDrive ou o `N`
+ * do rclone.
+ *
  * ## O incidente (rodada 261019d)
  *
  * No meio da Fase 1, `data/overnight/261019d/plan.json` sumiu e no lugar
@@ -39,13 +48,27 @@
 import { existsSync, readdirSync, readFileSync, statSync, utimesSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { RCLONE_CONFLICT_SUFFIX_RE, rcloneConflictOriginalName } from "./sync-conflict-copy.ts";
 
 /** `plan-300-safeBackup-0001.json` → captura o número da cópia. Aceita
  * qualquer nome de máquina (inclusive com hífen) entre `plan-` e `-safeBackup-`. */
 const PLAN_SAFE_BACKUP_RE = /^plan-.+-safeBackup-(\d+)\.json$/;
 
+/** Número da cópia de conflito de `plan.json` (`NNNN` do OneDrive ou `N` do
+ * rclone, #12380); `null` se `name` não é cópia de conflito do plano. */
+function planConflictSeq(name: string): number | null {
+  const onedrive = PLAN_SAFE_BACKUP_RE.exec(name);
+  if (onedrive) return Number(onedrive[1]);
+  if (rcloneConflictOriginalName(name) === "plan.json") {
+    return Number(RCLONE_CONFLICT_SUFFIX_RE.exec(name)![1]);
+  }
+  return null;
+}
+
+/** Cópia de conflito de `plan.json`: `plan-{máquina}-safeBackup-NNNN.json`
+ * (OneDrive) ou `plan.json.conflictN` (rclone bisync, #12380). */
 export function isPlanSafeBackupName(name: string): boolean {
-  return PLAN_SAFE_BACKUP_RE.test(name);
+  return planConflictSeq(name) !== null;
 }
 
 export interface PlanSafeBackupFile {
@@ -55,7 +78,8 @@ export interface PlanSafeBackupFile {
   mtimeMs: number;
 }
 
-/** Lista os `plan-*-safeBackup-*.json` de `dir`, mais recente primeiro. */
+/** Lista as cópias de conflito do plano em `dir` (`plan-*-safeBackup-*.json`
+ * e `plan.json.conflictN`, #12380), mais recente primeiro. */
 export function findPlanSafeBackups(dir: string): PlanSafeBackupFile[] {
   let names: string[];
   try {
@@ -65,8 +89,8 @@ export function findPlanSafeBackups(dir: string): PlanSafeBackupFile[] {
   }
   const out: PlanSafeBackupFile[] = [];
   for (const name of names) {
-    const m = PLAN_SAFE_BACKUP_RE.exec(name);
-    if (!m) continue;
+    const seq = planConflictSeq(name);
+    if (seq === null) continue;
     const path = join(dir, name);
     let mtimeMs = 0;
     try {
@@ -74,7 +98,7 @@ export function findPlanSafeBackups(dir: string): PlanSafeBackupFile[] {
     } catch {
       continue;
     }
-    out.push({ path, name, seq: Number(m[1]), mtimeMs });
+    out.push({ path, name, seq, mtimeMs });
   }
   return out.sort((a, b) => b.mtimeMs - a.mtimeMs || b.seq - a.seq);
 }
@@ -97,7 +121,7 @@ function isValidPlanJson(path: string): string | null {
 }
 
 /**
- * Detecta cópias de conflito do OneDrive ao lado de `planPath` e, se o plano
+ * Detecta cópias de conflito (OneDrive ou rclone, #12380) ao lado de `planPath` e, se o plano
  * vivo sumiu, restaura a mais recente. Ver contrato no docblock do módulo.
  * Só age quando o basename é `plan.json`.
  */
@@ -166,7 +190,7 @@ export function describePlanSafeBackupRecovery(planPath: string, r: PlanSafeBack
       return null;
     case "restored":
       return (
-        `[plan-safe-backup] ${planPath} tinha sumido (conflito OneDrive) — restaurado de ${r.from}. ` +
+        `[plan-safe-backup] ${planPath} tinha sumido (conflito de sync) — restaurado de ${r.from}. ` +
         `Backup mantido; confira se as últimas escritas da rodada (dispatch, ondas) estão no plano (#10579).`
       );
     case "unrecoverable":
@@ -176,7 +200,7 @@ export function describePlanSafeBackupRecovery(planPath: string, r: PlanSafeBack
       );
     case "backup-alongside":
       return (
-        `[plan-safe-backup] cópia(s) de conflito OneDrive ao lado de ${planPath}: ${r.backups.join(", ")} — ` +
+        `[plan-safe-backup] cópia(s) de conflito de sync ao lado de ${planPath}: ${r.backups.join(", ")} — ` +
         `o plano vivo foi mantido; compare e mescle à mão se o backup tiver estado mais novo (#10579).`
       );
   }
@@ -203,7 +227,8 @@ export type PlanJsonRead =
 /**
  * Leitor único de `plan.json` de rodada (#11721, recorrência da #10579 na
  * rodada 261030c). Antes de ler, tenta recuperar a cópia de conflito do
- * OneDrive (`plan-*-safeBackup-*.json`) e emite o aviso pelo `warn` (default
+ * OneDrive (`plan-*-safeBackup-*.json`) ou do rclone (`plan.json.conflictN`,
+ * #12380) e emite o aviso pelo `warn` (default
  * stderr). Depois:
  *
  * - plano presente e objeto JSON → `ok`;
