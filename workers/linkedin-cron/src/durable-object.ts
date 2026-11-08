@@ -1,6 +1,7 @@
 import type { QueueEntry, ReelsContainerRef } from "./index";
 import { CLAIM_TTL_MS, sameQueueContent } from "./index";
 import { fireQueueEntry, pickReelsContainer, type InstagramCreds, type ThreadsCreds, type LinkedInCreds } from "./dispatch";
+import { alertLinkedInDocumentFallback } from "./maintenance";
 
 // ── LinkedInScheduler — Durable Object (#1168) ────────────────────────────
 
@@ -116,9 +117,14 @@ function terminalConflictBody(state: FiredOrAmbiguous, base: Record<string, unkn
 
 export class LinkedInScheduler {
   private state: DurableObjectState;
+  /** #12372 item 2 — só `ALERT_WEBHOOK_URL`, pro alerta de fallback do
+   *  documento. O runtime passa o env do Worker como 2º argumento; os testes
+   *  que constroem o DO só com `state` seguem válidos (alerta vai pro log). */
+  private env: { ALERT_WEBHOOK_URL?: string };
 
-  constructor(state: DurableObjectState) {
+  constructor(state: DurableObjectState, env?: { ALERT_WEBHOOK_URL?: string }) {
     this.state = state;
+    this.env = env ?? {};
   }
 
   /**
@@ -553,6 +559,10 @@ export class LinkedInScheduler {
       console.log(
         `[DO alarm] fired ok key=${key} channel=${channel} destaque=${entry.destaque} fired_persisted=${firedPersisted}`,
       );
+      // #12372 item 2 — o documento falhou e o carrossel saiu no lugar: alerta.
+      if (outcome.documentFallback) {
+        await alertLinkedInDocumentFallback(this.env, key, entry, outcome.documentFallback);
+      }
       // KV entry permanece até o cron path a encontrar e deletar (com idempotência:
       // cron verifica DO /status, vê fired:true, deleta KV sem re-disparar webhook).
       // Trade-off: item pode aparecer em /list por até 5min após fire. Aceitável.

@@ -273,8 +273,11 @@ export const CAROUSEL_MAX_ITEMS = 10;
  *  Folga sobre qualquer título real ("Os principais destaques de IA da
  *  semana (2–6 nov)" tem ~50); barra só payload errado. */
 export const MAX_DOCUMENT_TITLE_LENGTH = 400;
-/** #8055 — teto da Documents API do LinkedIn (100 MB por documento). */
-export const LINKEDIN_DOCUMENT_MAX_BYTES = 100 * 1024 * 1024;
+/** #8055 — teto do PDF do documento do LinkedIn. A Documents API aceita até
+ *  100 MB, mas o Worker carrega o PDF inteiro em memória (`arrayBuffer`) e o
+ *  isolate tem ~128 MB (#12372 item 4): 20 MB deixa folga ampla. Os PDFs reais
+ *  do carrossel semanal têm 1 a 2 MB. */
+export const LINKEDIN_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;
 export const DLQ_TTL_SECONDS = 30 * 24 * 3600; // #894 P1-B — DLQ entries expiram em 30 dias
 // (#2219 bug 2 fix) TTL do claim: se `claiming=true` por mais de 5min, o claim
 // é considerado expirado (crash mid-flight sem release). CF DO tem timeout de
