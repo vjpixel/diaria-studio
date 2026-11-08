@@ -40,6 +40,14 @@ marcador concorrente posterior, reler e reavaliar; não usar `--override-newer`
 para destravar automaticamente. Isso também vale para reclassificações
 posteriores na mesma sessão e chamadas sem identidade no registry.
 
+**Decisão do editor vigente (#12389/#12413).** Com `decisao-editor` na
+thread, `route-issue.ts --track develop` e `--track fora-de-rodada` são
+recusados se a `--reason` não cita a decisão. Releia-a: se ela resolve o que
+a razão pede, roteie para `overnight`; se ainda falta algo depois dela, diga
+na razão ("decisão do editor de DD/MM já registrada; ainda exige ...").
+Roteamento que contraria a decisão leva `--override-decision "motivo"`,
+nunca uma razão reescrita só para passar no regex.
+
 
 ## Como difere de /diaria-overnight
 
