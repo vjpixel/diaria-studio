@@ -24,6 +24,7 @@ export const SURVEY_MATCHERS = {
   contentTypes: /se[çc][õo]es|tipos? de conte[úu]do/i,
   areas: /principal [áa]rea de atua[çc][ãa]o/i,
   aiLevel: /n[íi]vel de conhecimento em ia/i,
+  englishReading: /texto est[áa] em ingl[êe]s/i,
   productFormats: /al[ée]m da newsletter/i,
   courseTopics: /tema voc[êe] (?:faria um curso|gostaria de aprender)/i,
   coursePrice: /quanto voc[êe] investiria/i,
