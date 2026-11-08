@@ -6,7 +6,7 @@
  *      quando o deslocamento pretendido era 132 px (rosto à direita);
  *   2. o gerador "Text" mostrou `&#10;` literal na tela e o fundo Color+Crop
  *      virou um bloco preto. O build passa a usar o PNG por padrão; o gerador
- *      só sai com `--title-mode text`, com a quebra como CR literal.
+ *      ficou atrás de `--title-mode text` e saiu de vez no #12104.
  */
 
 import { describe, it } from "node:test";
@@ -61,7 +61,7 @@ describe("#12091 Center do Basic Motion em fração do bruto", () => {
   });
 });
 
-describe("#12091 título da vertical: PNG por padrão, gerador só por flag", () => {
+describe("#12091 título da vertical: PNG por padrão (o gerador saiu no #12104)", () => {
   const SOURCE: SourceInfo = { path: "G:/Meu Drive/YouTube/261104/bruto.mp4", fps: 30, durationS: 600, width: 3840, height: 2160, mirrored: false };
   const SPEC_V: SequenceSpec = { target: "outras-redes", name: "Diaria comentada_Vertical_V1", width: 1080, height: 1920, order: ["titulo", "comentario"], scales: [115, 130] };
   const clip = (block: PlannedClip["block"], seqStart: number, len: number, frameIn: number): PlannedClip => ({
@@ -74,7 +74,7 @@ describe("#12091 título da vertical: PNG por padrão, gerador só por flag", ()
   it("build padrão: o título sai como clipe do PNG, sem gerador de texto nem o Color+Crop do fundo", () => {
     const mode = parseTitleModeArg(undefined);
     assert.equal(mode, "png");
-    const xml = buildXmeml([plan], SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: screenTitleXmlFor(mode, TITLE, pngPath) });
+    const xml = buildXmeml([plan], SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: screenTitleXmlFor(TITLE, pngPath) });
     assert.doesNotMatch(xml, /generatoritem/);
     assert.doesNotMatch(xml, /<effectid>Color<\/effectid>|<effectid>crop<\/effectid>|<effectid>Text<\/effectid>/);
     assert.doesNotMatch(xml, /&#10;/);
@@ -83,14 +83,7 @@ describe("#12091 título da vertical: PNG por padrão, gerador só por flag", ()
     assert.match(titleClip, /<start>0<\/start><end>105<\/end>/);
   });
 
-  it("com --title-mode text: o gerador sai, com a quebra de linha como CR literal e nunca `&#10;`", () => {
-    const mode = parseTitleModeArg("text");
-    const xml = buildXmeml([plan], SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: screenTitleXmlFor(mode === "text" ? "text" : "png", TITLE, pngPath) });
-    const gen = xml.match(/<generatoritem id="titulo-1">[\s\S]*?<\/generatoritem>/)?.[0] ?? "";
-    assert.ok(gen, "gerador de texto presente com a flag");
-    const str = /<parameterid>str<\/parameterid><name>Text<\/name><value>([\s\S]*?)<\/value>/.exec(gen)?.[1] ?? "";
-    assert.doesNotMatch(str, /&#10;|&#13;/);
-    assert.ok(str.includes("\r"), "linhas separadas por CR literal");
-    assert.equal(str.split("\r").join(" "), TITLE);
+  it("#12104: --title-mode text foi removido e é erro explícito, nunca cai em silêncio no PNG", () => {
+    assert.throws(() => parseTitleModeArg("text"), /--title-mode text foi removido \(#12104\)/);
   });
 });

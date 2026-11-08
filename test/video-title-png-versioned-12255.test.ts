@@ -15,7 +15,7 @@ for (const corte of [undefined, "c2"]) {
       const plan = buildSequencePlan(spec, { titulo: [{ interval: { start: 1, end: 5 }, text: "Título", words: [], lastWordEnd: null, holdLimit: 5, how: "explicit" }] }, [], source);
       const build = async (text: string, version: number) => {
         const asset = await renderVersionedTitlePng({ outDir, mediaPath: source.path, edition: "261106", corte, text, width: spec.width, height: spec.height });
-        const title = screenTitleXmlFor("png", text, asset.xmlPath);
+        const title = screenTitleXmlFor(text, asset.xmlPath);
         const xml = buildXmeml([{ ...plan, spec: { ...spec, name: `Vertical_V${version}` } }], source, { faceX: 0.5, eyeY: 0.5 }, corte ? { screenTitleByCorte: { [corte]: title } } : { screenTitle: title });
         const path = join(outDir, `V${version}.xml`);
         writeFileSync(path, xml);

@@ -698,3 +698,292 @@ describe("gh pr checkout (#12308)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #12286: dois falsos positivos do #12165, reproduzidos no review diário:
+//   1. corpo de heredoc lido como comando (`--body-file - <<'EOF'` com uma
+//      linha `git checkout feat-x` no corpo era bloqueado — colide com o
+//      #12169, que recomenda heredoc para postar em PR);
+//   2. `git checkout Makefile`/`git checkout scripts` (path sem extensão ou
+//      pasta) tratado como troca de branch.
+// ---------------------------------------------------------------------------
+
+describe("#12286 — corpo de heredoc não é comando", () => {
+  const ISSUE_CMD = "npx tsx scripts/gh-pr-review-api.ts reply 1 --body-file - <<'EOF'\nPassos:\ngit checkout feat-x\nEOF";
+
+  it("caso literal da issue: linha `git checkout` no corpo não é troca de branch", () => {
+    assert.equal(isBranchCreateCheckoutCommand(ISSUE_CMD), false);
+  });
+
+  it("variantes de abertura: <<EOF, <<\"EOF\", <<-EOF (terminador com tab), espaço antes do delimitador", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF\ngit checkout -b feat-x\nEOF"), false);
+    assert.equal(isBranchCreateCheckoutCommand('cat <<"EOF"\ngit switch -c feat-x\nEOF'), false);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<-EOF\n\tgit checkout feat-x\n\tEOF"), false);
+    assert.equal(isBranchCreateCheckoutCommand("cat << 'END'\ngit checkout feat-x\nEND"), false);
+  });
+
+  it("comando DEPOIS do terminador segue detectado", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF\ngit checkout a\nEOF\ngit checkout -b feat-y"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<A <<B\ngit checkout x\nA\ngit checkout y\nB\ngit switch -c z"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<A <<B\ngit checkout x\nA\ngit checkout y\nB\necho ok"), false);
+  });
+
+  it("comando na MESMA linha da abertura segue detectado", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -b feat <<EOF\nx\nEOF"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF && git switch -c feat\nx\nEOF"), true);
+  });
+
+  it("heredoc que alimenta um shell (`bash <<EOF`, `| sh`, `sudo bash`) tem o corpo tokenizado", () => {
+    assert.equal(isBranchCreateCheckoutCommand("bash <<'EOF'\ngit checkout -b feat-x\nEOF"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF | sh\ngit switch -c feat-x\nEOF"), true);
+    assert.equal(isBranchCreateCheckoutCommand("sudo /bin/bash <<EOF\ngit checkout feat-x\nEOF"), true);
+  });
+
+  it("here-string (`<<<`), shift aritmético e `<<` entre aspas não abrem heredoc", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<< feat\ngit checkout feat-x"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<<EOF\ngit checkout feat-x\nEOF"), true);
+    assert.equal(isBranchCreateCheckoutCommand("echo $((1<<2))\ngit checkout feat-x"), true);
+    assert.equal(isBranchCreateCheckoutCommand('gh pr comment 1 --body "use <<EOF"\ngit checkout -b feat-x'), true);
+  });
+
+  it("heredoc sem terminador consome até o fim (o corpo inteiro é texto)", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF\ngit checkout feat-x"), false);
+  });
+});
+
+describe("#12286 — `git checkout <path existente>` é restauração", () => {
+  const fx = makeFixture();
+  writeFileSync(join(fx.main, "Makefile"), "all:\n", "utf8");
+  writeCoordinator(fx.main, "coord-12286");
+  after(() => rmSync(fx.base, { recursive: true, force: true }));
+  const denied = (out: string) => out.includes('"permissionDecision":"deny"');
+  const hook = (cwd: string, command: string) =>
+    runHook({ tool_name: "Bash", session_id: "outra-sessao", cwd, tool_input: { command } });
+
+  it("casos da issue, relativos ao alvo: Makefile e scripts existem → nada a decidir; `-- scripts` idem", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout Makefile", fx.main), []);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout scripts", fx.main), []);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout -- scripts", fx.main), []);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout Makefile", fx.main), false);
+  });
+
+  it("o disco é consultado no ALVO do comando (cd/-C), não no cwd da sessão", () => {
+    // Makefile só existe no principal: de um worktree sem ele, é branch.
+    assert.deepEqual(resolveBranchCreateTargets("git checkout Makefile", fx.wt), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`git -C ${fx.main} checkout Makefile`, fx.wt), []);
+    assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.main} && git checkout Makefile`, fx.wt), []);
+  });
+
+  it("alvo não resolvido não consulta o disco (fail-closed)", () => {
+    assert.deepEqual(resolveBranchCreateTargets("cd $W && git checkout scripts", fx.main), [null]);
+  });
+
+  it("preservado: branch inexistente no disco, `switch`, `-b` e `-` seguem troca", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout feat-x", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git switch scripts", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout -b scripts", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout -", fx.main), [fx.main]);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout Makefile"), true, "sem cwd não há como conferir o disco");
+  });
+
+  it("hook end-to-end com coordenadora alheia ativa no principal", () => {
+    assert.equal(denied(hook(fx.main, "git checkout Makefile")), false);
+    assert.equal(denied(hook(fx.main, "git checkout scripts")), false);
+    assert.equal(denied(hook(fx.main, "npx tsx scripts/gh-pr-review-api.ts reply 1 --body-file - <<'EOF'\nPassos:\ngit checkout feat-x\nEOF")), false);
+    assert.equal(denied(hook(fx.main, "git checkout feat-x")), true);
+    assert.equal(denied(hook(fx.main, "git checkout -b feat-x")), true);
+    assert.equal(denied(hook(fx.main, "bash <<'EOF'\ngit checkout feat-x\nEOF")), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #12286, review da PR #12433: o guard é fail-closed para troca de branch.
+//   1. delimitador de heredoc que não é identificador (`END-OF-X`, `EOF.x`,
+//      `END-MSG`) e `<<` dentro de comentário não podem esconder um
+//      `git checkout -b` depois do terminador;
+//   2. o corpo só deixa de ser lido como comando quando quem o lê é um
+//      consumidor de texto conhecido — `timeout 30 bash`, `sudo -u x bash`,
+//      `env -i bash`, `source /dev/stdin` e `. /dev/stdin` executam o corpo;
+//   3. `git checkout docs` com a pasta `docs` E a branch local `docs` troca de
+//      branch (o git prefere o ref).
+// ---------------------------------------------------------------------------
+
+describe("#12286 review — delimitador de heredoc é a palavra inteira", () => {
+  it("delimitador com hífen/ponto: o terminador fecha o corpo e o `checkout -b` depois é detectado", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<END-OF-X\nbody\nEND-OF-X\ngit checkout -b feat"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF.x\nbody\nEOF.x\ngit checkout -b feat"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git commit -F - <<END-MSG\nmsg\nEND-MSG\ngit checkout -b feat"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<'END-OF-X'\nbody\nEND-OF-X\ngit switch -c feat"), true);
+    assert.equal(isBranchCreateCheckoutCommand('cat <<"END.MSG"\nbody\nEND.MSG\ngit checkout -b feat'), true);
+  });
+
+  it("o mesmo delimitador ainda pula o corpo de texto (sem o `checkout` depois)", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<END-OF-X\ngit checkout -b x\nEND-OF-X\necho ok"), false);
+    assert.equal(isBranchCreateCheckoutCommand("git commit -F - <<END-MSG\ngit checkout -b x\nEND-MSG"), false);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<E'O'F\ngit checkout -b x\nEOF"), false);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<\\EOF\ngit checkout -b x\nEOF"), false);
+  });
+
+  it("`<<` dentro de comentário não abre heredoc", () => {
+    assert.equal(isBranchCreateCheckoutCommand("echo hi # ver <<EOF\ngit checkout -b feat"), true);
+    assert.equal(isBranchCreateCheckoutCommand("# <<EOF\ngit switch -c feat\nEOF"), true);
+    // `#` no meio de palavra não é comentário: o heredoc abre normalmente.
+    assert.equal(isBranchCreateCheckoutCommand("gh pr comment a#b --body-file - <<EOF\ngit checkout -b x\nEOF"), false);
+  });
+
+  it("delimitador irreconhecível (vazio, ausente) não abre heredoc", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<''\ngit checkout -b feat\n"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<\ngit checkout -b feat"), true);
+  });
+});
+
+describe("#12286 review — só consumidor de texto conhecido pula o corpo", () => {
+  it("leitores que executam o corpo: o `checkout -b` lá dentro é detectado", () => {
+    for (const opener of [
+      "timeout 30 bash <<'EOF'",
+      "sudo -u x bash <<EOF",
+      "env -i bash <<EOF",
+      "source /dev/stdin <<EOF",
+      ". /dev/stdin <<EOF",
+      "xargs -0 sh <<EOF",
+      "python3 <<EOF",
+      "cat <<EOF | timeout 5 sh",
+      "cat <<EOF | (bash)",
+      "tee >(bash) <<EOF",
+      "cat <<EOF |",
+      "$SHELL <<EOF",
+    ]) {
+      assert.equal(isBranchCreateCheckoutCommand(`${opener}\ngit checkout -b feat\nEOF`), true, opener);
+    }
+  });
+
+  it("consumidores de texto: o corpo é texto", () => {
+    for (const opener of [
+      "cat <<EOF",
+      "tee <<EOF",
+      "cat -n <<EOF",
+      "/usr/bin/cat <<EOF",
+      "gh pr comment 1 --body-file - <<'EOF'",
+      "npx tsx scripts/gh-pr-review-api.ts reply --pr 1 --body-file - <<'EOF'",
+      "node scripts/x.mjs <<EOF",
+      "git commit -F - <<'EOF'",
+      "git -c x=y commit --file=- <<EOF",
+      "FOO=1 cat <<EOF",
+      "cat <<EOF | tee",
+      "cd /tmp && cat <<EOF",
+    ]) {
+      assert.equal(isBranchCreateCheckoutCommand(`${opener}\ngit checkout -b feat\nEOF`), false, opener);
+    }
+  });
+
+  it("`npx` sem `tsx` e `git` fora de `commit -F` não são consumidores", () => {
+    assert.equal(isBranchCreateCheckoutCommand("npx bash <<EOF\ngit checkout -b feat\nEOF"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git commit <<EOF\ngit checkout -b feat\nEOF"), true);
+  });
+});
+
+describe("#12286 re-review — heredoc cuja saída pode virar comando", () => {
+  it("heredoc dentro de `$(...)`/`<(...)`: o corpo é tokenizado", () => {
+    for (const cmd of [
+      "$(cat <<'EOF'\ngit checkout feat-x\nEOF\n)",
+      "eval $(cat <<'EOF'\ngit checkout feat-x\nEOF\n)",
+      "bash <(cat <<'EOF'\ngit checkout feat-x\nEOF\n)",
+      "source <(cat <<'EOF'\ngit checkout feat-x\nEOF\n)",
+      "x=$(cat <<'EOF'\ngit checkout feat-x\nEOF\n)\n$x",
+    ]) {
+      assert.equal(isBranchCreateCheckoutCommand(cmd), true, cmd);
+    }
+  });
+
+  it("`cat`/`tee` gravando arquivo: o corpo é tokenizado (o script pode rodar depois)", () => {
+    for (const cmd of [
+      "cat <<'EOF' > /tmp/f.sh\ngit checkout feat-x\nEOF\nsh /tmp/f.sh",
+      "cat >> /tmp/f.sh <<'EOF'\ngit checkout feat-x\nEOF",
+      "cat <<'EOF' >/tmp/f.sh\ngit checkout feat-x\nEOF",
+      "tee /tmp/f.sh <<'EOF'\ngit checkout feat-x\nEOF\n. /tmp/f.sh",
+      "cat <<EOF | tee /tmp/f.sh\ngit checkout feat-x\nEOF",
+      "cat /tmp/a <<EOF\ngit checkout feat-x\nEOF",
+    ]) {
+      assert.equal(isBranchCreateCheckoutCommand(cmd), true, cmd);
+    }
+  });
+});
+
+describe("#12286 re-review — outros refs e refs que o comando cria", () => {
+  const fx = makeFixture();
+  for (const d of ["origin", "stash", "ups", "dados", "feat"]) mkdirSync(join(fx.main, d), { recursive: true });
+  mkdirSync(join(fx.main, ".git", "refs", "remotes", "origin"), { recursive: true });
+  writeFileSync(join(fx.main, ".git", "refs", "remotes", "origin", "HEAD"), "ref: refs/remotes/origin/master\n", "utf8");
+  writeFileSync(join(fx.main, ".git", "refs", "stash"), "0".repeat(40) + "\n", "utf8");
+  writeFileSync(join(fx.main, ".git", "packed-refs"), `${"1".repeat(40)} refs/remotes/ups/master\n`, "utf8");
+  const rt = makeFixture();
+  mkdirSync(join(rt.main, ".git", "reftable"), { recursive: true });
+  after(() => {
+    rmSync(fx.base, { recursive: true, force: true });
+    rmSync(rt.base, { recursive: true, force: true });
+  });
+
+  it("`refs/remotes/<name>` (loose ou packed) e `refs/<name>` (stash) vencem o path", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout origin", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout ups", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout stash", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout dados", fx.main), []);
+  });
+
+  it("repo em reftable: não dá para ler os refs → troca", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout scripts", rt.main), [rt.main]);
+  });
+
+  it("comando que cria/move refs antes do checkout não consulta o disco", () => {
+    for (const pre of ["git branch feat", "git fetch origin feat:feat", "git update-ref refs/heads/feat HEAD", "git -C . worktree add ../w", "git tag feat"]) {
+      assert.deepEqual(resolveBranchCreateTargets(`${pre} && git checkout feat`, fx.main), [fx.main], pre);
+    }
+    assert.deepEqual(resolveBranchCreateTargets("git status && git checkout feat", fx.main), []);
+  });
+});
+
+describe("#12286 review — path existente que também é branch local é troca", () => {
+  const fx = makeFixture();
+  mkdirSync(join(fx.main, "docs"), { recursive: true });
+  mkdirSync(join(fx.main, ".git", "refs", "heads"), { recursive: true });
+  writeFileSync(join(fx.main, ".git", "refs", "heads", "docs"), "0".repeat(40) + "\n", "utf8");
+  mkdirSync(join(fx.main, "notes"), { recursive: true });
+  mkdirSync(join(fx.main, "v1"), { recursive: true });
+  writeFileSync(
+    join(fx.main, ".git", "packed-refs"),
+    `# pack-refs with: peeled fully-peeled sorted\n${"1".repeat(40)} refs/heads/notes\n${"2".repeat(40)} refs/tags/v1\n`,
+    "utf8",
+  );
+  // Worktree linkado com `commondir` (formato real do git).
+  writeFileSync(join(fx.main, ".git", "worktrees", "agent-x", "commondir"), "../..\n", "utf8");
+  mkdirSync(join(fx.wt, "docs"), { recursive: true });
+  writeCoordinator(fx.main, "coord-12286-ref");
+  after(() => rmSync(fx.base, { recursive: true, force: true }));
+  const denied = (out: string) => out.includes('"permissionDecision":"deny"');
+
+  it("loose ref (`refs/heads/docs`) e packed-refs (branch `notes`, tag `v1`) vencem o path", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout docs", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout notes", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout v1", fx.main), [fx.main]);
+    // Path sem ref homônimo segue restauração.
+    assert.deepEqual(resolveBranchCreateTargets("git checkout scripts", fx.main), []);
+  });
+
+  it("de um worktree linkado, os refs são lidos no diretório comum (commondir)", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout docs", fx.wt), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout scripts", fx.wt), []);
+  });
+
+  it("alvo fora de qualquer repo: não dá para afirmar que não é ref → troca", () => {
+    const outside = join(fx.base, "no-repo");
+    mkdirSync(join(outside, "docs"), { recursive: true });
+    assert.deepEqual(resolveBranchCreateTargets("git checkout docs", outside), [outside]);
+  });
+
+  it("hook end-to-end com coordenadora alheia ativa no principal", () => {
+    const hook = (command: string) =>
+      runHook({ tool_name: "Bash", session_id: "outra-sessao", cwd: fx.main, tool_input: { command } });
+    assert.equal(denied(hook("git checkout docs")), true);
+    assert.equal(denied(hook("git checkout scripts")), false);
+  });
+});
