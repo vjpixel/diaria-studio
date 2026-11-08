@@ -15,7 +15,8 @@
  *     Shorts (`i.ytimg.com/vi/{id}/sardefault.jpg`, #12251) é escolhida à
  *     parte e, sem miniatura vertical própria, cai no frame automático (#12100). A
  *     YouTube Data API não tem chamada para ela: o registro grava
- *     `vertical_feed: "manual"` e o passo vai à mão no app do YouTube;
+ *     `vertical_feed: "manual"` e o agente aplica a capa vertical no Studio web
+ *     (Passo B3a de `/diaria-publica-video`, #12254);
  *   - `x` (Buffer): não aceita imagem, só `thumbnailOffset` (ms) no asset de
  *     vídeo. Derivado do timecode que o Premiere põe no nome do Still
  *     (`…V1.00_00_03_08.Still001.jpg` = 3 s + 8 frames);
@@ -55,7 +56,7 @@ export interface ShortCoverRecord {
   /**
    * #12100: só no `thumbnails_set` com `ok: true`. O `ok` diz que a miniatura
    * 16:9 foi trocada; a capa do feed de Shorts (`sardefault.jpg`, #12251) não muda pela API
-   * e fica para o app do YouTube (`manual`).
+   * e fica para o Studio web (`manual`, Passo B3a, #12254).
    */
   vertical_feed?: "manual";
 }
@@ -153,10 +154,21 @@ export function planCoverDestination(
 
 /**
  * #12100: o que o plano promete para o Short pela API. O `thumbnails.set` só
- * troca a miniatura 16:9; a do feed de Shorts fica para o app do YouTube.
+ * troca a miniatura 16:9; a do feed de Shorts fica para o Studio web (#12254).
  */
 export const YOUTUBE_SHORTS_COVER_PLAN =
-  "thumbnails_set (só a miniatura 16:9; a capa do feed de Shorts é manual no app do YouTube, #12100)";
+  "thumbnails_set (só a miniatura 16:9; a capa do feed de Shorts é manual no Studio web, Passo B3a, #12100/#12254)";
+
+/**
+ * #12251/#12254: como aplicar a capa vertical do Short, citado nos avisos do
+ * verificador (`check-short-feed-cover.ts`) e do registro `vertical_feed:
+ * "manual"`. O passo é do agente no Studio web (Passo B3a de
+ * `/diaria-publica-video`), nunca uma tarefa do editor no app do celular: os
+ * avisos diziam "no app do YouTube, Editar → Miniatura" depois que o #12254
+ * mudou o passo no SKILL.md.
+ */
+export const SHORT_VERTICAL_COVER_HOWTO =
+  "no Studio web (studio.youtube.com), Detalhes → Miniatura → enviar o JPG 1080x1920, salvar e conferir após reload (Passo B3a de /diaria-publica-video, #12254)";
 
 /**
  * #12100/#12251: imagem que a aba Shorts do canal mostra. Medido pelo editor na
@@ -191,7 +203,7 @@ export function youtubeShortsCoverRecord(
 export function youtubeShortsVerticalCoverWarning(videoId: string, cover: ShortCoverRecord | null | undefined): string | null {
   if (!cover || cover.method !== "thumbnails_set" || !cover.ok || cover.vertical_feed !== "manual") return null;
   return (
-    `capa 16:9 aplicada; a do feed de Shorts não muda pela API (#12100): no app do YouTube, Editar → Miniatura → enviar ${SHORT_COVER_FILE}, ` +
+    `capa 16:9 aplicada; a do feed de Shorts não muda pela API (#12100): aplicar ${SHORT_COVER_FILE} ${SHORT_VERTICAL_COVER_HOWTO}, ` +
     `e conferir com npx tsx scripts/check-short-feed-cover.ts --id ${videoId} --cover {capa} (${youtubeShortFeedThumbUrl(videoId)})`
   );
 }

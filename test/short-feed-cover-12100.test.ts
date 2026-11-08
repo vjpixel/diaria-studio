@@ -68,7 +68,7 @@ describe("#12100 registro e plano da capa do Short", () => {
     const w = youtubeShortsVerticalCoverWarning("5jX3X0sgMtg", { method: "thumbnails_set", ok: true, vertical_feed: "manual" });
     assert.ok(w);
     assert.match(w!, /capa 16:9 aplicada/);
-    assert.match(w!, /Editar → Miniatura/);
+    assert.match(w!, /Studio web.*Passo B3a/);
     assert.ok(w!.includes("https://i.ytimg.com/vi/5jX3X0sgMtg/sardefault.jpg"));
     assert.match(w!, /check-short-feed-cover\.ts --id 5jX3X0sgMtg/);
     assert.equal(youtubeShortsVerticalCoverWarning("x", { method: "thumbnails_set", ok: false, error: "e" }), null);
@@ -218,7 +218,8 @@ describe("#12100 CLI check-short-feed-cover (offline, --feed-image)", () => {
       const r1 = run(["--feed-image", other, "--cover", c]);
       assert.equal(r1.status, 1, r1.stderr);
       assert.equal(JSON.parse(r1.stdout).verdict, "frame-automatico");
-      assert.match(r1.stderr, /Editar → Miniatura/);
+      assert.match(r1.stderr, /Studio web.*Passo B3a/);
+      assert.doesNotMatch(r1.stderr, /app do YouTube/);
 
       assert.equal(run(["--cover", c]).status, 2);
       assert.equal(run(["--id", "curto", "--cover", c]).status, 2);

@@ -11,11 +11,11 @@
 
   "orchestrator-stage-3.md": { "hash": "546c2fb1639b762a", "lines": 147 },
 
-  "orchestrator-stage-4.md": { "hash": "0b089f75eb00c6c4", "lines": 998 },
+  "orchestrator-stage-4.md": { "hash": "9bc9b2ef6d0ecba9", "lines": 998 },
 
   "orchestrator-stage-5.md": { "hash": "d31be9265a2428cf", "lines": 492 },
 
-  "orchestrator-stage-6.md": { "hash": "3c4353b4e888104f", "lines": 586 },
+  "orchestrator-stage-6.md": { "hash": "c257ab9e57a62eea", "lines": 586 },
 
   "_regenerar": "NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts"
 }

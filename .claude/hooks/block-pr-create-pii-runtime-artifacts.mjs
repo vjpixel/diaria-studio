@@ -360,7 +360,9 @@ export function buildBaseEmailsByFile(nameStatusEntries, touchedPaths, base, cwd
  * onde o endereço mora não tem esse efeito colateral.
  *
  * Cada entrada: `file` (path relativo exato) + `jsonPath` (chaves até um
- * array de strings). Acrescentar aqui exige a mesma prova: o array inteiro
+ * array de strings) + `shape` opcional: `"array"` (default) isenta os itens
+ * do array; `"object-keys"` (#12188) isenta só as CHAVES de um objeto, nunca
+ * os valores. Acrescentar aqui exige a mesma prova: a estrutura inteira
  * guarda endereços PÚBLICOS por definição de produto.
  *
  * **Custo aceito:** o guard deixa de inspecionar o que entra nesse array —
@@ -368,6 +370,11 @@ export function buildBaseEmailsByFile(nameStatusEntries, touchedPaths, base, cwd
  */
 export const STRUCTURAL_EMAIL_EXEMPTIONS = [
   { file: "platform.config.json", jsonPath: ["newsletter_auto_capture", "senders"] },
+  // #12188 (decisão do editor, 07/11/2026): registro versionado de remetentes
+  // de newsletter (aprovado/rejeitado). `senders` é um OBJETO cujas CHAVES são
+  // os endereços públicos dos remetentes; os VALORES (status/reason/decided_at)
+  // não são isentos — e-mail dentro de `reason` continua barrado.
+  { file: "seed/newsletter-senders.json", jsonPath: ["senders"], shape: "object-keys" },
 ];
 
 /**
@@ -383,8 +390,9 @@ export const STRUCTURAL_EMAIL_EXEMPTIONS = [
  * em outra chave poderia ser a linha da outra chave — e "qualquer outro
  * e-mail no arquivo continua barrado" (decisão do editor). Na dúvida, barra.
  */
-export function extractStructurallyExemptEmails(content, jsonPath) {
+export function extractStructurallyExemptEmails(content, jsonPath, shape = "array") {
   if (typeof content !== "string" || !Array.isArray(jsonPath) || jsonPath.length === 0) return null;
+  if (shape !== "array" && shape !== "object-keys") return null;
   let root;
   try {
     root = JSON.parse(content);
@@ -396,16 +404,27 @@ export function extractStructurallyExemptEmails(content, jsonPath) {
     if (target === null || typeof target !== "object" || Array.isArray(target)) return null;
     target = target[key];
   }
-  if (!Array.isArray(target)) return null;
+  const isObjectKeys = shape === "object-keys";
+  if (isObjectKeys) {
+    if (target === null || typeof target !== "object" || Array.isArray(target)) return null;
+  } else if (!Array.isArray(target)) return null;
+
+  // Strings isentas: os itens do array, ou (#12188) as CHAVES do objeto.
+  const exemptStrings = isObjectKeys ? Object.keys(target) : target.filter((item) => typeof item === "string");
 
   const inside = new Set();
-  for (const item of target) {
-    if (typeof item === "string") for (const e of extractEmailsSet(item)) inside.add(e);
+  for (const item of exemptStrings) {
+    for (const e of extractEmailsSet(item)) inside.add(e);
   }
 
   const elsewhere = new Set();
   const walk = (node) => {
-    if (node === target) return; // o próprio array isento não conta como "outro lugar"
+    if (node === target) {
+      // Array isento: nada dele conta como "outro lugar". Objeto isento
+      // (#12188): só as CHAVES são isentas; os valores são "outro lugar".
+      if (isObjectKeys) for (const v of Object.values(node)) walk(v);
+      return;
+    }
     if (typeof node === "string") {
       for (const e of extractEmailsSet(node)) elsewhere.add(e);
     } else if (Array.isArray(node)) {
@@ -432,7 +451,7 @@ export function extractStructurallyExemptEmails(content, jsonPath) {
     return counts;
   };
   const rawCounts = countAll(content);
-  const insideCounts = countAll(target.filter((item) => typeof item === "string").join("\n"));
+  const insideCounts = countAll(exemptStrings.join("\n"));
 
   const out = new Set();
   for (const e of inside) {
@@ -452,11 +471,11 @@ export function extractStructurallyExemptEmails(content, jsonPath) {
  */
 export function addStructuralExemptions(baseEmailsByFile, touchedPaths, ref, cwd, gitRunner) {
   const touched = new Set(touchedPaths);
-  for (const { file, jsonPath } of STRUCTURAL_EMAIL_EXEMPTIONS) {
+  for (const { file, jsonPath, shape } of STRUCTURAL_EMAIL_EXEMPTIONS) {
     if (!touched.has(file)) continue;
     const content = gitRunner(["show", `${ref}:${file}`], cwd);
     if (content === null) continue;
-    const exempt = extractStructurallyExemptEmails(content, jsonPath);
+    const exempt = extractStructurallyExemptEmails(content, jsonPath, shape);
     if (!exempt || exempt.size === 0) continue;
     const merged = new Set(baseEmailsByFile.get(file) ?? []);
     for (const e of exempt) merged.add(e);

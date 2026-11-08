@@ -24,7 +24,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
-import { youtubeShortFeedThumbUrl } from "./lib/diaria/short-cover.ts";
+import { SHORT_VERTICAL_COVER_HOWTO, youtubeShortFeedThumbUrl } from "./lib/diaria/short-cover.ts";
 import { assessFeedCover } from "./lib/diaria/short-feed-cover-check.ts";
 
 const USAGE =
@@ -86,7 +86,7 @@ async function main(): Promise<number> {
     console.log(JSON.stringify({ verdict: "sem-capa-vertical", feed_url: feedUrl, http_status: 404 }, null, 2));
     console.error(
       `[aviso] ${feedUrl} deu 404: o Short não tem miniatura vertical própria e a aba Shorts mostra o frame automático ` +
-        "(ou o vídeo não existe/é privado): no app do YouTube, Editar → Miniatura → enviar a capa",
+        `(ou o vídeo não existe/é privado): aplicar a capa ${SHORT_VERTICAL_COVER_HOWTO}`,
     );
     return 1;
   }
@@ -94,7 +94,7 @@ async function main(): Promise<number> {
   console.log(JSON.stringify({ ...r, ...(id ? { feed_url: youtubeShortFeedThumbUrl(id) } : { feed_image: resolve(feedPath!) }) }, null, 2));
   if (r.verdict === "capa") return 0;
   console.error(
-    `[aviso] o feed de Shorts mostra outro frame (distância ${r.distance.toFixed(3)} > ${r.threshold}): no app do YouTube, Editar → Miniatura → enviar a capa`,
+    `[aviso] o feed de Shorts mostra outro frame (distância ${r.distance.toFixed(3)} > ${r.threshold}): aplicar a capa ${SHORT_VERTICAL_COVER_HOWTO}`,
   );
   return 1;
 }
