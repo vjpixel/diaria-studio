@@ -47,12 +47,20 @@
  *
  *   --provenance  (#11534) Imprime, por seção do `03-social.md` atual, se o texto
  *             passou pelo humanizador e pela Clarice (bloco do resumo do gate).
+ *             Marca as seções aceitas pelo selo (`accepted_section_hashes`, #12377).
+ *
+ * Seções (#12383): `main_d{N}`, `main_d{N}-cards`, `main_um`, `comment_pixel_d{N}`,
+ * `post_pixel`. Selo sem `cards_sections_tracked` (anterior à #12383) deixa os
+ * cards fora da comparação com o texto atual.
  *
  * Flags:
  *   --unproven-ok <motivo>   (#11534, só com --write) aceita seção com mudança de
  *             redação SEM prova de humanizador + Clarice. Só quando o EDITOR pediu
  *             para manter um texto dele sem humanizar; fica gravado no selo
- *             (`unproven_sections`) e aparece no `--provenance`.
+ *             (`unproven_sections` + `accepted_section_hashes`) e aparece no `--provenance`.
+ *             #12398: com o selo já batendo com o `03-social.md` (ou sem selo
+ *             anterior), aceita as seções hoje sem prova no `.humanizer-run.json` —
+ *             antes saía exit 0 sem aceitar nada.
  *
  *   --bypass-reason <motivo>   (opcional, só válido com --write)
  *             Registra o motivo no sentinel quando --write é chamado com hash
@@ -79,7 +87,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { lintAntithesisReveal, lintTrailingEditorialHook, type AntithesisRevealMatch, type TrailingEditorialHookMatch } from "./lint-social-md.ts";
-import { computeSectionHashes } from "./lib/social-lint-rules.ts"; // #3446: hash por-seção p/ re-humanização scoped
+import { computeSectionHashes, isCardsSection } from "./lib/social-lint-rules.ts"; // #3446: hash por-seção p/ re-humanização scoped
 import { hashSocialContent } from "./lib/humanizer-social-seal.ts"; // #9679: fonte única do sha256
 import {
   classifySealChanges,
@@ -87,7 +95,9 @@ import {
   describeProvenance,
   planAcceptedSectionHashes,
   planRunRecord,
+  planUnprovenOkWithoutChanges,
   readRunRecord,
+  sealTracksCards,
   writeRunRecord,
   type AcceptedSectionReason,
   type RunStep,
@@ -128,6 +138,11 @@ export interface HumanizerSocialSentinel {
    * Persiste entre `--write`s enquanto o texto existir; o Stage 2 aceita essas seções.
    */
   accepted_section_hashes?: Record<string, AcceptedSectionReason>;
+  /**
+   * #12383: `true` quando `section_hashes` já inclui `main_d{N}-cards`. Selo sem o
+   * campo é anterior à #12383 e os cards ficam fora da comparação selo × texto.
+   */
+  cards_sections_tracked?: boolean;
 }
 
 /** #11534: `--write --bypass-reason` com seção reescrita sem prova de humanizador + Clarice. */
@@ -178,6 +193,21 @@ export function computeSocialHash(socialPath: string): string {
  * @returns path do sentinel gravado
  */
 export function writeSentinel(editionDir: string, bypassReason?: string, opts: WriteSentinelOptions = {}): string {
+  return writeSentinelDetailed(editionDir, bypassReason, opts).path;
+}
+
+export interface WriteSentinelResult {
+  path: string;
+  /** Seções aceitas sem prova neste `--write` (`--unproven-ok`). */
+  unproven: string[];
+}
+
+/** `writeSentinel` com o detalhe do que foi aceito sem prova (#12398). */
+export function writeSentinelDetailed(
+  editionDir: string,
+  bypassReason?: string,
+  opts: WriteSentinelOptions = {},
+): WriteSentinelResult {
   const socialPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialPath)) {
     throw new Error(`check-humanizer-social: 03-social.md não existe em ${editionDir}`);
@@ -221,27 +251,36 @@ export function writeSentinel(editionDir: string, bypassReason?: string, opts: W
   }
 
   const socialMd = readFileSync(socialPath, "utf8");
+  const record = readRunRecord(editionDir);
+  const priorSeal = existing?.social_sha256 ? existing : null;
   // #12361: aceites sem prova (--unproven-ok, só formatação) por hash de conteúdo,
   // lidos pela invariante `social-humanizer-provenance-recorded` do Stage 2.
-  const accepted = planAcceptedSectionHashes(
-    existing?.social_sha256 ? existing : null,
-    socialMd,
-    readRunRecord(editionDir),
-    unproven,
-    opts.unprovenOk,
-  );
+  const accepted = planAcceptedSectionHashes(priorSeal, socialMd, record, unproven, opts.unprovenOk);
+  // #12398: com o selo já batendo com o texto (ou sem selo anterior), nada conta
+  // como "mudou" e o aceite acima não pega nenhuma seção — o `--unproven-ok` que a
+  // invariante do Stage 2 sugere saía exit 0 sem efeito. Aqui ele aceita as seções
+  // que estão hoje sem prova dos dois passos no registro.
+  if (opts.unprovenOk && provenance === undefined) {
+    for (const s of planUnprovenOkWithoutChanges(socialMd, record, accepted)) {
+      accepted[s.hash] = "unproven_ok";
+      unproven.push(s.section);
+    }
+  }
   const sentinel: HumanizerSocialSentinel = {
     social_sha256: computeSocialHash(socialPath),
     written_at: new Date().toISOString(),
     section_hashes: computeSectionHashes(socialMd), // #3446
     section_format_hashes: computeSectionFormatHashes(socialMd), // #11534
+    // #12383: selo novo compara os cards; selo que já existia sem eles continua sem
+    // (edição em curso na transição não passa a exigir prova dos cards).
+    ...(priorSeal === null || sealTracksCards(priorSeal) ? { cards_sections_tracked: true } : {}),
     ...(bypassReason ? { bypass_reason: bypassReason } : {}),
     ...(provenance ? { section_provenance: provenance } : {}),
     ...(unproven.length > 0 ? { unproven_sections: unproven, unproven_ok: opts.unprovenOk } : {}),
     ...(Object.keys(accepted).length > 0 ? { accepted_section_hashes: accepted } : {}),
   };
   writeFileSync(sentinelPath, JSON.stringify(sentinel, null, 2) + "\n", "utf8");
-  return sentinelPath;
+  return { path: sentinelPath, unproven };
 }
 
 export type CheckResult =
@@ -335,8 +374,11 @@ export function computeChangedSections(editionDir: string): ChangedSectionsResul
 
   const current = computeSectionHashes(readFileSync(socialPath, "utf8"));
   const allNames = new Set([...Object.keys(stored.section_hashes), ...Object.keys(current)]);
+  const tracksCards = sealTracksCards(stored);
   const changed: string[] = [];
   for (const name of allNames) {
+    // #12383: selo anterior aos cards não tem o hash deles — não é mudança.
+    if (!tracksCards && isCardsSection(name)) continue;
     if (stored.section_hashes[name] !== current[name]) changed.push(name);
   }
   return { legacy: false, changed };
@@ -438,6 +480,43 @@ function logTicLintEvent(editionDir: string, result: TicLintResult): void {
   }
 }
 
+export interface SealAcceptance {
+  /** Seção do texto atual → por que o selo a aceitou sem prova dos dois passos. */
+  bySection: Record<string, AcceptedSectionReason>;
+  /** Seções aceitas via `--unproven-ok` (subconjunto de `bySection`). */
+  unprovenSections: string[];
+}
+
+/**
+ * #12377 item 2: o que o `--provenance` marca como aceito. Lê
+ * `accepted_section_hashes` (#12361, endereçado por conteúdo) com o mesmo
+ * critério da invariante `social-humanizer-provenance-recorded`: só vale com o
+ * selo batendo com o `03-social.md` atual. Selo anterior ao #12361 (sem
+ * `accepted_section_hashes`) cai no `unproven_sections` por nome, como antes.
+ */
+export function describeSealAcceptance(seal: HumanizerSocialSentinel | null, socialMd: string): SealAcceptance {
+  const bySection: Record<string, AcceptedSectionReason> = {};
+  if (seal) {
+    const acc = seal.accepted_section_hashes;
+    if (acc && typeof acc === "object") {
+      if (seal.social_sha256 === hashSocialContent(socialMd)) {
+        for (const [section, hash] of Object.entries(computeSectionHashes(socialMd))) {
+          const reason = acc[hash];
+          if (reason === "formatting" || reason === "unproven_ok") bySection[section] = reason;
+        }
+      }
+    } else {
+      for (const s of seal.unproven_sections ?? []) bySection[s] = "unproven_ok";
+    }
+  }
+  return {
+    bySection,
+    unprovenSections: Object.entries(bySection)
+      .filter(([, r]) => r === "unproven_ok")
+      .map(([s]) => s),
+  };
+}
+
 function main(): void {
   const { values, flags } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
@@ -516,34 +595,53 @@ function main(): void {
       console.error(`[check-humanizer-social] ERRO: 03-social.md não existe em ${editionDir}`);
       process.exit(1);
     }
-    const rows = describeProvenance(readFileSync(socialPath, "utf8"), readRunRecord(editionDir));
-    let unprovenSections: string[] = [];
+    const socialMd = readFileSync(socialPath, "utf8");
+    const rows = describeProvenance(socialMd, readRunRecord(editionDir));
+    let seal: HumanizerSocialSentinel | null = null;
     const sentinelPath = join(editionDir, "_internal", SENTINEL_FILENAME);
     if (existsSync(sentinelPath)) {
       try {
-        const s = JSON.parse(readFileSync(sentinelPath, "utf8")) as HumanizerSocialSentinel;
-        unprovenSections = s.unproven_sections ?? [];
+        seal = JSON.parse(readFileSync(sentinelPath, "utf8")) as HumanizerSocialSentinel;
       } catch (e) {
         console.error(`[check-humanizer-social] WARN: selo ilegível (${(e as Error).message}) — unproven_sections não listadas`);
       }
     }
+    const acceptance = describeSealAcceptance(seal, socialMd);
+    const unprovenSections = acceptance.unprovenSections;
     for (const r of rows) {
-      const extra = unprovenSections.includes(r.section) ? " · aceita sem prova (--unproven-ok)" : "";
+      const reason = acceptance.bySection[r.section];
+      const extra =
+        reason === "unproven_ok"
+          ? " · aceita sem prova (--unproven-ok)"
+          : reason === "formatting"
+            ? " · aceita (só formatação sobre texto provado)"
+            : "";
       const kept = r.kept ? " (texto mantido)" : ""; // #11604
       const claricePlain = r.clarice_unchanged ? " (sem sugestões, --note)" : ""; // #11674
       console.error(
         `  ${r.section}: humanizador ${r.humanizador ? "sim" : "NÃO"}${kept} · Clarice ${r.clarice ? "sim" : "NÃO"}${claricePlain}${extra}`,
       );
     }
-    console.log(JSON.stringify({ ok: true, sections: rows, unproven_sections: unprovenSections }));
+    console.log(JSON.stringify({
+      ok: true,
+      sections: rows,
+      unproven_sections: unprovenSections,
+      accepted_sections: acceptance.bySection,
+    }));
     process.exit(0);
   }
 
   if (flags.has("write")) {
     try {
-      const path = writeSentinel(editionDir, bypassReason, { unprovenOk });
+      const { path, unproven } = writeSentinelDetailed(editionDir, bypassReason, { unprovenOk });
       const out: Record<string, unknown> = { ok: true, sentinel_path: path };
       if (bypassReason) out["bypass_reason"] = bypassReason;
+      if (unproven.length > 0) {
+        out["unproven_sections"] = unproven;
+        console.error(`[check-humanizer-social] aceitas sem prova (--unproven-ok): ${unproven.join(", ")}`);
+      } else if (unprovenOk) {
+        console.error("[check-humanizer-social] --unproven-ok: nenhuma seção sem prova a aceitar.");
+      }
       console.log(JSON.stringify(out));
       process.exit(0);
     } catch (e) {

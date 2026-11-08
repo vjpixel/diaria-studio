@@ -1,12 +1,14 @@
 /**
  * test/short-feed-cover-12100.test.ts (#12100)
  *
- * O `thumbnails.set` troca só a miniatura 16:9 do Short; o feed de Shorts
- * mostra `oar2.jpg`, que segue o frame automático. Antes do fix o registro
- * dizia `cover: { method: "thumbnails_set", ok: true }` e ninguém sabia que a
- * capa do feed faltava. Agora o registro grava `vertical_feed: "manual"`, o
- * plano e o resultado avisam do passo no app do YouTube, e
- * `check-short-feed-cover.ts` confere o `oar2` contra a capa local.
+ * O `thumbnails.set` troca só a miniatura 16:9 do Short; a aba Shorts mostra
+ * `sardefault.jpg` quando o Short tem miniatura vertical própria e o frame
+ * automático (`oar2.jpg`/`oar1.jpg`) quando não tem (#12251; 404 no
+ * `sardefault` = sem miniatura vertical). Antes do fix o registro dizia
+ * `cover: { method: "thumbnails_set", ok: true }` e ninguém sabia que a capa
+ * do feed faltava. Agora o registro grava `vertical_feed: "manual"`, o plano e
+ * o resultado avisam do passo no Studio web (#12254), e
+ * `check-short-feed-cover.ts` confere o `sardefault` contra a capa local.
  * Sem rede: o fetch da CDN é falso e as imagens são sintéticas.
  */
 
@@ -123,7 +125,7 @@ describe("#12100 publishYouTubeShort avisa do passo manual", () => {
   });
 });
 
-describe("#12100 conferência do oar2 contra a capa (dHash)", () => {
+describe("#12100 conferência do sardefault contra a capa (dHash)", () => {
   it("dHash tem DHASH_SIZE² bits; distância 0 com a mesma imagem; tamanhos diferentes lançam", async () => {
     const h = await dHash(await capa());
     assert.equal(h.length, DHASH_SIZE * DHASH_SIZE);
@@ -183,6 +185,9 @@ describe("#12254 skill: capa vertical do Short pelo Studio web", () => {
     const a2 = skill.slice(skill.indexOf("### Passo A2"), skill.indexOf("### Passo A3"));
     const b3a = skill.slice(skill.indexOf("### Passo B3a"), skill.indexOf("### Passo B3b"));
     assert.match(a2, /sardefault\.jpg/);
+    // #12377 item 3: o verificador já lê o sardefault; o A2 não pode mais dizer que ele consulta o oar2.
+    assert.doesNotMatch(a2, /ainda consulta `oar2\.jpg`/);
+    assert.match(a2, /404 no `sardefault\.jpg`/);
     assert.match(a2, /Passo B3a/);
     assert.match(skill, /vertical_feed: "studio_web"/);
     assert.doesNotMatch(a2, /Capa do feed de Shorts é passo manual/);

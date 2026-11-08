@@ -98,6 +98,7 @@ import {
   type ScopedCoverageResult,
   checkScopedHumanizerCoverage,
   isFailSoftSocialSection,
+  isCardsSection,
   lintUseMelhorFailSoft,
 } from "./lib/social-lint-rules.ts"; // #2833: extraído — movimentação pura
 import {
@@ -562,7 +563,8 @@ function main(): void {
           console.error(`  ${s}: presente antes do humanizador, ausente depois`);
         }
       }
-      const blockingUntouched = result.untouched.filter((s) => !isFailSoftSocialSection(s));
+      // #12383: cards idênticos também não bloqueiam (ver checkHumanizerSectionCoverage).
+      const blockingUntouched = result.untouched.filter((s) => !isFailSoftSocialSection(s) && !isCardsSection(s));
       if (blockingUntouched.length > 0) {
         console.error(
           `\n❌ ${blockingUntouched.length} seção(ões) não coberta(s) pelo humanizador (#2148):`,

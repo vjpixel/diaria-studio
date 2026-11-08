@@ -125,6 +125,17 @@
  * permite sobreposição deliberada e registra o motivo no comentário.
  * `--force` não dispensa esta proteção.
  *
+ * ## Decisão do editor vigente (#12389)
+ *
+ * Com um `decisao-editor` (#5373) na thread, `--track develop` e `--track
+ * fora-de-rodada` exigem que `--reason` cite a decisão ("decisão do editor
+ * de 04/11 já registrada; ainda exige ...") — senão a recusa sai antes de
+ * qualquer escrita, citando a resposta registrada. `--override-decision
+ * "motivo"` sobrepõe e grava o motivo e a decisão no comentário. `--force`
+ * e `--override-newer` não dispensam. Caso de origem: a #12104 voltou a
+ * develop pedindo a decisão que o editor já tinha tomado
+ * (`scripts/lib/route-reason-guard.ts`, `detectIgnoredDecision`).
+ *
  * ## `--for-create` (#6205 — declarar o track NA CRIAÇÃO da issue)
  *
  * Modo alternativo, sem nenhuma chamada `gh`: a issue ainda não existe, não
@@ -179,10 +190,10 @@ import {
   syncWaitUntilMarkerOnIssue,
   upsertWaitUntilMarker,
 } from "./lib/wait-until-sync.ts";
-import { formatExecutionBlockMarker, type SessionKind } from "./lib/issue-decisions.ts";
+import { formatExecutionBlockMarker, latestDecisionFor, type SessionKind } from "./lib/issue-decisions.ts";
 import { isTrustedCommentAuthor } from "./lib/trusted-comment-author.ts";
 import { parseDependsOn } from "./lib/issue-depends-on.ts";
-import { detectNonDateReason, type NonDateReasonFinding } from "./lib/route-reason-guard.ts";
+import { detectIgnoredDecision, detectNonDateReason, type NonDateReasonFinding } from "./lib/route-reason-guard.ts";
 
 export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
@@ -228,6 +239,10 @@ export interface RouteIssueOptions {
   triagedAt?: string;
   /** Sobreposição deliberada, com motivo próprio registrado na thread. */
   overrideNewer?: string;
+  /** #12389 — rotear para `develop`/`fora-de-rodada` apesar de um
+   * `decisao-editor` vigente que a razão não cita. Motivo obrigatório,
+   * registrado no comentário junto com a decisão sobreposta. */
+  overrideDecision?: string;
   cwd: string;
   ghRun?: GhRunFn;
   /** Injetável pra teste; default `new Date()`. Usado só na validação final
@@ -366,6 +381,9 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   if (options.overrideNewer !== undefined && !options.overrideNewer.trim()) {
     return failResult("--override-newer exige motivo não-vazio.");
   }
+  if (options.overrideDecision !== undefined && !options.overrideDecision.trim()) {
+    return failResult("--override-decision exige motivo não-vazio.");
+  }
 
   // Validation antés da I/O: --motivo explícito, e --until só com agendada.
   if (options.motivo && !(options.motivo in MOTIVO_LABEL)) {
@@ -448,6 +466,18 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     if (markerTrack !== track && (baseline === undefined || !Number.isFinite(stamp) || stamp > baseline)) {
       return failResult(`roteamento mais novo na issue ${issueLabel} (${markerTrack ?? "decisao-editor sem track"}, ${latest.createdAt ?? "data desconhecida"}); ` +
         "releia a thread e informe --triaged-at ISO, ou --override-newer com motivo. Nenhuma escrita realizada (#11301).");
+    }
+  }
+
+  // #12389 — decisão do editor vigente: `develop`/`fora-de-rodada` só com a
+  // razão citando a decisão, ou sobreposição explícita. Lê só comentários de
+  // autor confiável (mesma fonte do guard de staleness acima): decisão
+  // "registrada" por conta externa não segura nada.
+  const decision = latestDecisionFor(fetchedBefore.data.routingComments.map((c) => c.body));
+  if (!options.overrideDecision) {
+    const ignored = detectIgnoredDecision({ track, reason: reasonTrimmed, decision });
+    if (ignored) {
+      return failResult(`--track ${track} recusado na issue ${issueLabel}: ${ignored} Nenhuma escrita realizada.`);
     }
   }
 
@@ -619,7 +649,12 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
         })
       : undefined;
   const commentBody = buildCommentBody(track, reason, autoDeferUntilYmd, executionBlockMarker) +
-    (options.overrideNewer ? `\n\nSobreposição de roteamento mais novo: ${options.overrideNewer.trim()}` : "");
+    (options.overrideNewer ? `\n\nSobreposição de roteamento mais novo: ${options.overrideNewer.trim()}` : "") +
+    (options.overrideDecision
+      ? `\n\nSobreposição da decisão do editor` +
+        (decision ? ` de ${decision.decided_at.slice(0, 10)} ("${decision.resposta}")` : "") +
+        `: ${options.overrideDecision.trim()}`
+      : "");
   let commentAction: CommentAction;
   const alreadyPosted = fetchedBefore.data.comments.some((c) => c.trim() === commentBody.trim());
   if (alreadyPosted) {
@@ -814,6 +849,7 @@ interface ParsedArgs {
   forCreate: boolean;
   triagedAt?: string;
   overrideNewer?: string;
+  overrideDecision?: string;
   /** `--issue` cru — `N` ou `owner/repo#N` (#10618). */
   issue?: string;
   track?: string;
@@ -843,11 +879,12 @@ function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
     else if (a === "--body") out.body = argv[++i];
     else if (a === "--depends-on") out.dependsOn = argv[++i];
     else if (a === "--sessao") out.sessao = argv[++i];
-    else if (a === "--triaged-at" || a === "--override-newer") {
+    else if (a === "--triaged-at" || a === "--override-newer" || a === "--override-decision") {
       const value = argv[++i];
       if (!value || value.startsWith("--")) return { error: `${a} exige valor` };
       if (a === "--triaged-at") out.triagedAt = value;
-      else out.overrideNewer = value;
+      else if (a === "--override-newer") out.overrideNewer = value;
+      else out.overrideDecision = value;
     }
     else if (a === "--force") out.force = true;
     else return { error: `argumento desconhecido: ${a}` };
@@ -905,6 +942,7 @@ export function parseArgs(argv: string[]): RouteIssueOptions | { error: string }
     force: raw.force,
     triagedAt: raw.triagedAt,
     overrideNewer: raw.overrideNewer,
+    overrideDecision: raw.overrideDecision,
     cwd: process.cwd(),
   };
 }

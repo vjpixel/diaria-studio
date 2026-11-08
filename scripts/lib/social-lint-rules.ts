@@ -1751,12 +1751,7 @@ export function extractSocialSections(md: string): Record<string, string> {
  * `postMd`: conteúdo APÓS o humanizador.
  */
 export function checkHumanizerSectionCoverage(preMd: string, postMd: string): SectionCoverageResult {
-  const SECTIONS_TO_CHECK = [
-    "main_d1", "main_d2", "main_d3",
-    "main_um", // #9568 — 4º post (USE MELHOR)
-    "comment_pixel_d1", "comment_pixel_d2", "comment_pixel_d3",
-    "post_pixel",
-  ];
+  const SECTIONS_TO_CHECK = SCOPED_SECTION_NAMES;
 
   const preSections = extractSocialSections(preMd);
   const postSections = extractSocialSections(postMd);
@@ -1790,7 +1785,10 @@ export function checkHumanizerSectionCoverage(preMd: string, postMd: string): Se
   // (fail-soft — senão o loop retry→abort do humanizador para o Stage 2 por
   // causa do 4º post). Seção DELETADA continua bloqueando: é corrupção
   // estrutural do arquivo, não qualidade do post opcional.
-  const blockingUntouched = untouched.filter((s) => !isFailSoftSocialSection(s));
+  // #12383: `main_d{N}-cards` idêntico também só é reportado. Os cards repetem a
+  // história da legenda em 3 parágrafos curtos; o humanizador manter o texto
+  // deles é resultado legítimo, e bloquear aqui reabriria o loop retry→abort.
+  const blockingUntouched = untouched.filter((s) => !isFailSoftSocialSection(s) && !isCardsSection(s));
   return { ok: blockingUntouched.length === 0 && deleted.length === 0, sections, untouched, deleted };
 }
 
@@ -1798,13 +1796,28 @@ export function checkHumanizerSectionCoverage(preMd: string, postMd: string): Se
 // #3446: hashing por-seção + verificação de re-humanização SCOPED
 // ---------------------------------------------------------------------------
 
-/** Nomes de seção verificados pela re-humanização scoped — mesmo conjunto de checkHumanizerSectionCoverage. */
+/**
+ * Nomes de seção verificados pela re-humanização scoped — mesmo conjunto de
+ * checkHumanizerSectionCoverage, dos hashes por seção do selo e da prova do
+ * `.humanizer-run.json`.
+ *
+ * #12383: `main_d{N}-cards` (texto dos 3 slides do carrossel, #12094) entra no
+ * conjunto. Selo gravado antes disso não tem hash dos cards: ele não carrega
+ * `cards_sections_tracked` (ver `check-humanizer-social.ts`), e quem compara
+ * selo × texto atual deixa os cards fora da conta nesse caso (`isCardsSection`).
+ */
 const SCOPED_SECTION_NAMES = [
   "main_d1", "main_d2", "main_d3",
+  "main_d1-cards", "main_d2-cards", "main_d3-cards", // #12383
   "main_um", // #9568 — 4º post (USE MELHOR)
   "comment_pixel_d1", "comment_pixel_d2", "comment_pixel_d3",
   "post_pixel",
 ] as const;
+
+/** #12383: `true` para `main_d{N}-cards`, a seção do texto dos cards do carrossel. */
+export function isCardsSection(name: string): boolean {
+  return /^main_d\d+-cards$/.test(name);
+}
 
 /**
  * Computa sha256 de cada seção nomeada de `03-social.md` (main_dN, comment_pixel_dN,
@@ -1851,10 +1864,9 @@ export interface ScopedCoverageResult {
  * não está em `SCOPED_SECTION_NAMES`, e o laço só olhava esse conjunto: o alvo
  * `main_d1-cards` era ignorado em silêncio (nem tocado, nem não-tocado) e o
  * script saía OK mesmo com o humanizador pulando os cards. Agora todo alvo
- * pedido entra na conferência. A mudança de cards FORA do alvo segue sem
- * acusação (`unexpectedChanges` só cobre `SCOPED_SECTION_NAMES`): incluir os
- * cards nesse conjunto mexe nos hashes do selo e na prova do Stage 2, e ficou
- * para a #12383.
+ * pedido entra na conferência. Desde a #12383 os cards estão em
+ * `SCOPED_SECTION_NAMES`, então mudança de cards FORA do alvo também cai em
+ * `unexpectedChanges`.
  */
 export function checkScopedHumanizerCoverage(
   preMd: string,
