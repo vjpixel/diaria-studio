@@ -25,7 +25,9 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 `--triaged-at "{triaged_at}"`. Depois de postar `decisao-editor`, reler tudo
 e capturar o ISO no início dessa nova leitura, após a postagem; marcador
 mais novo → reler, nunca `--override-newer` automático. Detalhe:
-`references/route-issue-triaged-at-11301.md`.
+`references/route-issue-triaged-at-11301.md`. Com `decisao-editor` na
+thread, `--track develop`/`fora-de-rodada` exige `--reason` citando a decisão
+ou `--override-decision "motivo"` (#12389).
 
 ## Segurança e escopo
 

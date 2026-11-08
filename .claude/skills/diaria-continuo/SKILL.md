@@ -63,6 +63,14 @@ marcador concorrente posterior, reler e reavaliar; não usar `--override-newer`
 para destravar automaticamente. Isso também vale para reclassificações
 posteriores na mesma sessão e chamadas sem identidade no registry.
 
+**Decisão do editor vigente (#12389/#12413).** Com `decisao-editor` na
+thread, `route-issue.ts --track develop` e `--track fora-de-rodada` são
+recusados se a `--reason` não cita a decisão. Releia-a: se ela resolve o que
+a razão pede, roteie para `overnight`; se ainda falta algo depois dela, diga
+na razão ("decisão do editor de DD/MM já registrada; ainda exige ...").
+Roteamento que contraria a decisão leva `--override-decision "motivo"`,
+nunca uma razão reescrita só para passar no regex.
+
 
 ## Como usar
 
@@ -458,7 +466,8 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   negada por guard (ou o motivo for `requer-sessao-local`/`guard-de-execucao`),
   além do comentário, rotear a issue pra Develop:
   `npx tsx scripts/route-issue.ts --triaged-at "{triaged_at}" --issue N --track develop --reason "guard-de-execucao: {arquivo}"`
-  (com dedup). Sem a label `develop-track`, a Triagem continua mostrando
+  (com dedup; com `decisao-editor` na thread, a razão cita a decisão, #12413).
+  Sem a label `develop-track`, a Triagem continua mostrando
   Overnight e o próximo ciclo a pega de novo. Gate:
   `npx tsx scripts/check-skipped-develop-track.ts --plan {plan.json}`.
 - **Não reivindica issue nova enquanto houver rodada overnight ativa**
