@@ -43,7 +43,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { resolveEditorEmail, readInboxLinkCountFromMarker, readSubmissionCountFromMarker, getTotalEditorSubmissions, countEditorSubmissions } from "./lib/inbox-stats.ts";
+import { resolveEditorEmail, readInboxLinkCountFromMarker, readSubmissionCountFromMarker, getTotalEditorSubmissions, countEditorSubmissions, countableCapturedNewsletters, loadApprovedSenderPredicate } from "./lib/inbox-stats.ts";
 import { countSelectedItems as sharedCountSelectedItems } from "./lib/newsletter-count.ts";
 import { pluralPtBr, coverageSelPhrase } from "./lib/coverage-words.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
@@ -169,7 +169,8 @@ export function readCapturedNewsletterCount(editionDir: string): number {
   if (!existsSync(capPath)) return 0;
   try {
     const data = JSON.parse(readFileSync(capPath, "utf8"));
-    return Array.isArray(data) ? data.length : 0;
+    // #12188: só newsletter de IA (remetente aprovado) com corpo lido.
+    return Array.isArray(data) ? countableCapturedNewsletters(data, loadApprovedSenderPredicate() ?? undefined).length : 0;
   } catch {
     return 0;
   }

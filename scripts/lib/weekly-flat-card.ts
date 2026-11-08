@@ -33,6 +33,7 @@ import sharp from "sharp";
 import { COLORS, FONTS } from "./shared/design-tokens.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
+import { archiveUploadedFileToR2 } from "./public-images-archive.ts";
 import { DIARIA_EIA_URL } from "./canonical-urls.ts";
 import { esc, wrapTitle } from "../gen-social-card-4x5.ts";
 import { cloudflareKvKey } from "../upload-images-public.ts";
@@ -619,6 +620,7 @@ export const defaultFlatCardGenerator: FlatCardGenerator = async ({ text, outPat
     throw new Error("platform.config.json → poll.kv_namespace_id não configurado (card sem foto capa/CTA)");
   }
   const url = await uploadImageToWorkerKV(outPath, kvKey, { kvNamespaceId, workerUrl });
+  await archiveUploadedFileToR2(outPath, kvKey); // #11412 fatia 3: cópia durável no R2, nunca lança
   return { url };
 };
 

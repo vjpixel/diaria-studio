@@ -24,18 +24,28 @@ export interface CaptureYield {
   empty: boolean;
 }
 
-function countArray(raw: string | null): number | null {
+function countArray(raw: string | null, counts?: (entry: { sender?: string }) => boolean): number | null {
   if (raw === null) return null;
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.length : null;
+    if (!Array.isArray(parsed)) return null;
+    return counts ? parsed.filter((e) => e && typeof e === "object" && counts(e)).length : parsed.length;
   } catch {
     return null;
   }
 }
 
-export function evaluateCaptureYield(threadsRaw: string | null, articlesRaw: string | null): CaptureYield {
-  const threads = countArray(threadsRaw);
+/**
+ * `countsThread` (#12188): só conta as threads que podiam gerar artigo — as de
+ * remetente aprovado. Thread de sender só do config (não aprovado) é filtrada
+ * pela captura por decisão, e contá-la daria falso "0 artigos".
+ */
+export function evaluateCaptureYield(
+  threadsRaw: string | null,
+  articlesRaw: string | null,
+  countsThread?: (thread: { sender?: string }) => boolean,
+): CaptureYield {
+  const threads = countArray(threadsRaw, countsThread);
   const articles = countArray(articlesRaw);
   // Artigos ausentes/ilegíveis com threads > 0 também é "zero gravado".
   const empty = (threads ?? 0) > 0 && (articles ?? 0) === 0;

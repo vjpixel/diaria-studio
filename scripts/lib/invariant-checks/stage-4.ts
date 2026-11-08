@@ -25,6 +25,7 @@ import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 import { readMarker } from "../pipeline-state.ts";
+import { computeIntakeFingerprint } from "../newsletter-intake-fingerprint.ts"; // #12188
 import { CLARICE_PENDING_REL, readClaricePending, resumeCommandFor } from "../clarice-pending.ts"; // #12257
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
@@ -1753,6 +1754,69 @@ function checkNoTrailingEllipsisInvariant(editionDir: string): InvariantViolatio
     file: path,
     line: e.line,
   }));
+}
+
+/**
+ * #12188: independent backstop when the gate skipped the deterministic audit.
+ *
+ * Princípio: a auditoria nunca bloqueia a publicação por algo que o pipeline
+ * não controla. `error` só para o que o pipeline deixou de fazer (relatório
+ * ausente/desatualizado com threads a auditar, link no pool sem score/título
+ * sem tentativa registrada). Falha de fetch/enrich registrada (paywall, 403,
+ * challenge) e link removido antes do pool (dedup/data — score ali é só
+ * auditoria) viram `warning`. Os warnings do relatório (pendentes, descoberta
+ * falhou, capture_failed) saem sempre, independente da contagem de threads.
+ */
+export function checkNewsletterIntake(editionDir: string): InvariantViolation[] {
+  const internal = resolve(editionDir, "_internal");
+  const captured = resolve(internal, "captured-newsletters.json");
+  const reportPath = resolve(internal, "newsletter-link-scores.json");
+  const violation = (message: string, severity: "warning" | "error"): InvariantViolation => ({
+    rule: "newsletter-intake", source_issue: "#12188", message, severity, file: reportPath,
+  });
+  const traces = [captured, reportPath, resolve(internal, ".capture-newsletter-failed.json"), resolve(internal, "captured-newsletters.json.fetch.jsonl")];
+  // Captura nunca rodou nesta edição (auto-capture desligado, edição antiga): nada a auditar.
+  if (!traces.some((p) => existsSync(p))) return [];
+  let threadCount = 0;
+  if (existsSync(captured)) {
+    try {
+      const threads = JSON.parse(readFileSync(captured, "utf8"));
+      if (!Array.isArray(threads)) return [violation("Captura de newsletters ilegível", "error")];
+      threadCount = threads.length;
+    } catch (error) {
+      return [violation(`Captura de newsletters ilegível (${error instanceof Error ? error.message : String(error)})`, "error")];
+    }
+  }
+  if (!existsSync(reportPath)) {
+    return [violation("Intake ausente: rodar audit-newsletter-intake.ts antes do gate", threadCount > 0 ? "error" : "warning")];
+  }
+  try {
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
+      links: Array<{url?: string; score: number | null; title?: string; fetch_error?: string; in_pool?: boolean | null}>;
+      rows: Array<{thread_id: string}>; warnings: string[]; pending_senders: string[];
+      input_fingerprint?: string; registry_path?: string; fingerprint_keys?: string[];
+    };
+    if (!Array.isArray(report.links) || !Array.isArray(report.rows) || !Array.isArray(report.warnings) || !Array.isArray(report.pending_senders)) throw new Error("shape inválido");
+    const out: InvariantViolation[] = report.warnings.map((w) => violation(w, "warning"));
+    const missingScore = (l: (typeof report.links)[number]) => typeof l.score !== "number" || !Number.isFinite(l.score);
+    const missingTitle = (l: (typeof report.links)[number]) => !l.title?.trim() || l.title.startsWith("(newsletter:");
+    const attempted = (l: (typeof report.links)[number]) => typeof l.fetch_error === "string" && l.fetch_error.length > 0;
+    const outOfPool = (l: (typeof report.links)[number]) => l.in_pool === false;
+    const blocking = (l: (typeof report.links)[number]) => !attempted(l) && !outOfPool(l);
+    if (report.links.some((l) => missingScore(l) && blocking(l))) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
+    if (report.links.some((l) => missingTitle(l) && blocking(l))) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
+    if (report.pending_senders.length) out.push(violation(`Remetentes pendentes de decisão em lote: ${report.pending_senders.join(", ")}`, "warning"));
+    // #12188 item 7: content hash of the audit inputs, never mtime — a save
+    // that keeps the links (Studio, refresh-use-melhor-tempo, sync-code) is not stale.
+    // Registro relativo resolve contra o seed LOCAL (path absoluto de outra máquina não existe aqui).
+    const registryPath = resolve(ROOT, typeof report.registry_path === "string" ? report.registry_path : "seed/newsletter-senders.json");
+    const keys = Array.isArray(report.fingerprint_keys) ? report.fingerprint_keys
+      : report.links.flatMap((l) => typeof l.url === "string" ? [canonicalize(l.url).toLowerCase()] : []);
+    if (report.input_fingerprint !== computeIntakeFingerprint(editionDir, registryPath, keys)) out.push(violation("Intake desatualizado: re-rodar audit-newsletter-intake.ts para atualizar scores e destinos", "error"));
+    return out;
+  } catch (error) {
+    return [violation(`Relatório de intake ilegível (${error instanceof Error ? error.message : String(error)}): re-rodar audit-newsletter-intake.ts`, "error")];
+  }
 }
 
 /**
@@ -4424,6 +4488,10 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#12106",
     stage: 4,
     run: checkTitleIaAsAgentInvariant,
+  },
+  {
+    id: "newsletter-intake", description: "intake completo e scores de todos os links IA (#12188)",
+    source_issue: "#12188", stage: 4, run: checkNewsletterIntake,
   },
   {
     id: "capture-failed-submission-count",

@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 139 invariants.
+**Total**: 140 invariants.
 
 ## Static (estrutura do repo)
 
@@ -111,6 +111,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
 | `newsletter-html-not-behind-reviewed` | newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245; error desde #10258 — bloqueia o sentinel do Stage 4; reviewed só tocado, com sha256 igual ao carimbo do render, não acusa) | #10245 |
 | `newsletter-html-size` | _internal/newsletter-final.html acima de 45000 bytes — sinal de crescimento perto do limite de clipping do Gmail (#5232, warning-only) | #5232 |
+| `newsletter-intake` | intake completo e scores de todos os links IA (#12188) | #12188 |
 | `no-duplicate-urls-vs-past-editions` | URL editorial de 02-reviewed.md repetida contra os últimos ~30 dias de edições (past-editions.md, #9955) — dedup do Stage 1 não vê itens inseridos/promovidos no gate (#8993, warning-only) | #8993 |
 | `no-trailing-ellipsis` | descrição de item secundário não termina em reticências herdadas da fonte (#2881) | #2881 |
 | `public-images-md5-matches-local` | hero 2:1 do e-mail (cover/d1_play/d2_2x1/d3_2x1) em 06-public-images.json tem o md5 do arquivo local — troca de destaque não deixa imagem antiga no e-mail (#11252) | #11252 |
