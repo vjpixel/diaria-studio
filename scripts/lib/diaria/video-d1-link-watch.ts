@@ -21,9 +21,11 @@ import { facebookCheckpointDiagnostic } from "../facebook-checkpoint.ts";
  *      aplica o que tem executor: Facebook diar.ia.br pela Graph API
  *      (`edit_scheduled` → edita a mensagem do post agendado;
  *      `comment_after` → comenta no post publicado). LinkedIn (1º comentário
- *      como organização), X (Buffer) e Threads (fila do Worker) ainda não têm
- *      executor por script: viram `manual`, com o texto pronto no log e no
- *      estado;
+ *      como organização, #10983): vai pra fila do Worker `diaria-linkedin-cron`
+ *      (`linkedinQueue`), que comenta como página pela API direta; sem Worker
+ *      ou sem os segredos da página nele (#8816), vira `manual`. X (Buffer) e
+ *      Threads (fila do Worker) ainda não têm executor por script: viram
+ *      `manual`, com o texto pronto no log e no estado;
  *   5. grava o resultado por destino em `_internal/05-video-link-apply.json`.
  *      Rodar de novo nunca repete um destino já `applied` (não comenta 2×).
  *
@@ -46,6 +48,7 @@ import {
   type D1VideoLinkStep,
 } from "./d1-video-link.ts";
 import { readYouTubeRecordSummary, type YouTubeRecordSummary } from "./youtube-video-link-gate.ts";
+import { buildD1VideoCommentPayload, enqueuePageAction, type EnqueueFn } from "./linkedin-page-actions.ts";
 import {
   fetchVideoStatus,
   refreshYouTubeAccessToken,
@@ -87,6 +90,12 @@ export interface VideoD1WatchInput {
   missingYoutubeCreds?: string[];
   /** Página diar.ia.br; `null` = sem credencial (Facebook vira `manual`). */
   facebook: FacebookTarget | null;
+  /**
+   * #10983: fila do Worker `diaria-linkedin-cron` para o 1º comentário do D1
+   * da página (comentário como página, API direta). `null`/ausente = sem Worker
+   * nesta máquina (o LinkedIn vira `manual`, como antes).
+   */
+  linkedinQueue?: EnqueueFn | null;
   /** Só lê: não grava arquivo nem chama a Graph API. */
   dryRun?: boolean;
 }
@@ -292,8 +301,40 @@ async function applyFacebook(
   return { status: "applied", text, detail: `comentário ${commentId} no post ${postId}` };
 }
 
+/**
+ * #10983: põe o 1º comentário do D1 da página na fila do Worker. `applied` =
+ * na fila (ou a mesma chave já disparou); o Worker é quem comenta no horário.
+ * Worker sem os segredos da página (#8816) volta a `manual`, com o motivo.
+ */
+async function applyLinkedInComment(
+  enqueue: EnqueueFn,
+  aammdd: string,
+  videoUrl: string,
+  step: D1VideoLinkStep,
+  at: string,
+  now: Date,
+): Promise<DestinationResult> {
+  const text = step.text ?? step.link_line;
+  const base = { destination: "linkedin" as const, action: step.action, text, at };
+  let payload;
+  try {
+    payload = buildD1VideoCommentPayload({ aammdd, videoUrl, text, d1ScheduledAt: step.scheduled_at as string, now });
+  } catch (e) {
+    return { ...base, status: "manual", detail: `${(e as Error).message} — comentário manual` };
+  }
+  const r = await enqueuePageAction(enqueue, payload);
+  if (r.status === "queued") {
+    return { ...base, status: "applied", detail: `comentário como página na fila do Worker para ${r.scheduled_at} (key ${r.key}${r.duplicate ? ", já estava na fila" : ""})` };
+  }
+  if (r.status === "already_fired") return { ...base, status: "applied", detail: r.detail };
+  if (r.status === "failed") {
+    return { ...base, status: "failed", detail: `${r.detail}${r.ambiguous ? " — confira a fila do Worker (GET /list) antes de comentar à mão" : ""}` };
+  }
+  return { ...base, status: "manual", detail: r.detail };
+}
+
 const MANUAL_DETAIL: Record<Exclude<D1VideoLinkDestination, "facebook">, string> = {
-  linkedin: "sem executor: 1º comentário como organização no LinkedIn segue manual",
+  linkedin: "sem executor: 1º comentário como organização no LinkedIn segue manual (sem fila do Worker nesta rodada)",
   twitter: "sem executor: post do X é agendado na Buffer (só pelo MCP) — editar/responder à mão",
   threads: "sem executor: editar a fila do Worker / responder no Threads segue manual",
 };
@@ -422,6 +463,8 @@ export async function runVideoD1LinkWatch(deps: VideoD1WatchDeps, input: VideoD1
           r = { destination: "facebook", action: step.action, status: "failed", text: step.text ?? step.link_line, detail: (e as Error).message, at };
         }
       }
+    } else if (step.destination === "linkedin" && step.action === "comment_after" && step.scheduled_at && !dryRun && input.linkedinQueue) {
+      r = await applyLinkedInComment(input.linkedinQueue, input.aammdd, videoUrl, step, at, now);
     } else {
       r = {
         destination: step.destination,

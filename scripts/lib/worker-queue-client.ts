@@ -73,6 +73,17 @@ export interface WorkerQueuePayload {
   // perdida) cai na mesma entry em vez de criar uma 2ª. Formato aceito:
   // `[A-Za-z0-9._:-]{1,128}` (IDEMPOTENCY_KEY_RE no Worker).
   idempotency_key?: string;
+  // #11121/#10983 — repost e comentário como PÁGINA (só `channel: "linkedin"`,
+  // API direta do LinkedIn no Worker). `repost` exige `target_post_urn`;
+  // `comment` com `webhook_target: "diaria"` exige `target_post_urn` ou
+  // `parent_scheduled_at`. Sem os segredos da página no Worker, o enqueue
+  // recusa com `WorkerQueueError.code === "linkedin_creds_missing"`. Monte com
+  // `scripts/lib/diaria/linkedin-page-actions.ts`.
+  action?: "post" | "comment" | "repost";
+  webhook_target?: "diaria" | "pixel";
+  parent_destaque?: string;
+  target_post_urn?: string;
+  parent_scheduled_at?: string;
 }
 
 /**

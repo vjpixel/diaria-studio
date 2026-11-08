@@ -36,6 +36,8 @@ import { logEvent } from "./lib/run-log.ts";
 import { missingYouTubeCredentials } from "./lib/diaria/youtube-upload.ts";
 import { readEditionVideoMeta } from "./lib/edition-video-meta.ts"; // #12080
 import { siteVideoRepublishDecision } from "./lib/site-page-video-republish.ts"; // #12080
+import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #10983
+import type { EnqueueFn } from "./lib/diaria/linkedin-page-actions.ts"; // #10983
 import {
   VIDEO_D1_WATCH_DEADLINE_BRT,
   VIDEO_D1_WATCH_INTERVAL_MS,
@@ -62,6 +64,30 @@ function resolveFacebookTarget(env: Record<string, string | undefined>, log: (m:
     log(`facebook: config inválido (${(e as Error).message}) — fica manual`);
     return null;
   }
+}
+
+/**
+ * #10983: fila do Worker `diaria-linkedin-cron` para o 1º comentário do D1 da
+ * página. Sem URL/token, o LinkedIn fica manual (como antes). Os segredos da
+ * página no Worker (#8816) são conferidos pelo próprio enqueue.
+ */
+function resolveLinkedInQueue(env: Record<string, string | undefined>, log: (m: string) => void): EnqueueFn | null {
+  let configUrl: string | undefined;
+  try {
+    const config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
+      publishing?: { social?: { linkedin?: { cloudflare_worker_url?: string } } };
+    };
+    configUrl = config.publishing?.social?.linkedin?.cloudflare_worker_url;
+  } catch {
+    configUrl = undefined;
+  }
+  const url = env.DIARIA_LINKEDIN_CRON_URL ?? configUrl ?? "";
+  const token = env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  if (!url || !token) {
+    log("linkedin: sem DIARIA_LINKEDIN_CRON_URL/TOKEN — comentário do D1 fica manual");
+    return null;
+  }
+  return (p) => postToWorkerQueue(url, token, p, 2, "video-d1-link-watch");
 }
 
 /** Comando que republica a página da edição (mesmo do §5b-site da Etapa 5). */
@@ -238,6 +264,7 @@ async function main(): Promise<void> {
             },
       missingYoutubeCreds: missing,
       facebook: resolveFacebookTarget(env, log),
+      linkedinQueue: resolveLinkedInQueue(env, log),
       dryRun,
     },
   );

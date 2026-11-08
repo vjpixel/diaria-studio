@@ -9,7 +9,7 @@
  *
  * Uso:
  *   npx tsx scripts/link-video-d1.ts AAMMDD [--video-url URL] [--save]
- *     [--assume-public] [--no-podcast] [--edition-dir DIR] [--now ISO]
+ *     [--assume-public] [--no-podcast] [--no-linkedin-comment] [--edition-dir DIR] [--now ISO]
  *
  * O que faz:
  *   - valida e normaliza a URL (`https://youtu.be/{id}`). Sem `--video-url`,
@@ -40,9 +40,16 @@
  *     (#12085, `lib/diaria/youtube-podcast-pasted.ts`; idempotente e
  *     fail-soft, `--no-podcast` pula). É a única chamada à API daqui.
  *
- * Fora o podcast, nunca publica, edita nem comenta nada: a execução do plano (editar o
- * payload na fila do Worker / Buffer, comentar como organização no LinkedIn,
- * comentar no Facebook, responder no Threads e no X) segue pendente no #10772.
+ *   - com `--save`, põe o 1º comentário do D1 da página do LinkedIn (link do
+ *     vídeo) na fila do Worker `diaria-linkedin-cron`, como página, pela API
+ *     direta (#10983, `lib/diaria/linkedin-page-actions.ts`): D1 + 5 min, ou
+ *     daqui a 1 min se o D1 já saiu. Sem os segredos da página no Worker
+ *     (#8816) ou sem Worker nesta máquina, o comentário segue manual com aviso.
+ *     Idempotente (chave por edição e vídeo); `--no-linkedin-comment` pula.
+ *
+ * Fora o podcast e o comentário do LinkedIn, nunca publica, edita nem comenta
+ * nada: o resto do plano (editar o payload na fila do Worker / Buffer, comentar
+ * no Facebook, responder no Threads e no X) segue pendente no #10772.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -56,7 +63,10 @@ import {
   normalizeYouTubeVideoUrl,
   planD1VideoLink,
   type D1PostEntryLike,
+  type D1VideoLinkStep,
 } from "./lib/diaria/d1-video-link.ts";
+import { buildD1VideoCommentPayload, enqueuePageAction, type PageActionResult } from "./lib/diaria/linkedin-page-actions.ts";
+import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import {
   d1SocialSlotAt,
   gateVideoLink,
@@ -135,12 +145,45 @@ async function podcastForPastedLink(
   });
 }
 
+/**
+ * #10983: com `--save`, o 1º comentário do D1 da página do LinkedIn vai pra
+ * fila do Worker (comentário como página, API direta). Sem os segredos da
+ * página no Worker (#8816) ou sem Worker nesta máquina, o passo segue manual
+ * com aviso. Pulado com `--no-linkedin-comment` e sob o test runner (o `.env`
+ * do 300 tem o token real do Worker).
+ */
+async function linkedInCommentForSave(
+  aammdd: string,
+  videoUrl: string,
+  step: D1VideoLinkStep | undefined,
+  skip: boolean,
+  now: Date,
+): Promise<PageActionResult | { status: "skipped"; detail: string }> {
+  if (skip) return { status: "skipped", detail: "--no-linkedin-comment" };
+  if (!step || step.action !== "comment_after" || !step.text) {
+    return { status: "skipped", detail: step ? `LinkedIn: ${step.action} (${step.reason})` : "sem passo do LinkedIn" };
+  }
+  if (!step.scheduled_at) return { status: "skipped", detail: "post do D1 do LinkedIn sem scheduled_at no registro — comentário manual" };
+  if (isNodeTestContext()) return { status: "skipped", detail: "test runner (NODE_TEST_CONTEXT)" };
+  loadProjectEnv(ROOT);
+  const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")) as {
+    publishing?: { social?: { linkedin?: { cloudflare_worker_url?: string } } };
+  };
+  const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? cfg.publishing?.social?.linkedin?.cloudflare_worker_url ?? "";
+  const token = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const payload = buildD1VideoCommentPayload({ aammdd, videoUrl, text: step.text, d1ScheduledAt: step.scheduled_at, now });
+  return enqueuePageAction(
+    workerUrl && token ? (p) => postToWorkerQueue(workerUrl, token, p, 2, "link-video-d1") : null,
+    payload,
+  );
+}
+
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
   const aammdd = positional[0];
   if (!aammdd || !/^\d{6}$/.test(aammdd)) {
     console.error(
-      "uso: link-video-d1.ts AAMMDD [--video-url URL] [--save] [--assume-public] [--no-podcast] [--edition-dir DIR] [--now ISO]",
+      "uso: link-video-d1.ts AAMMDD [--video-url URL] [--save] [--assume-public] [--no-podcast] [--no-linkedin-comment] [--edition-dir DIR] [--now ISO]",
     );
     return 2;
   }
@@ -201,6 +244,24 @@ async function main(): Promise<number> {
 
   const { entries, source } = readPublishedEntries(dir);
   const steps = planD1VideoLink({ videoUrl, entries, now });
+  let linkedinComment: Awaited<ReturnType<typeof linkedInCommentForSave>> | null = null;
+  if (flags.has("save")) {
+    linkedinComment = await linkedInCommentForSave(
+      aammdd,
+      videoUrl,
+      steps.find((s) => s.destination === "linkedin"),
+      flags.has("no-linkedin-comment"),
+      now,
+    );
+    if (linkedinComment.status === "queued") {
+      console.error(`[ok] LinkedIn: 1º comentário do D1 na fila do Worker para ${linkedinComment.scheduled_at} (key ${linkedinComment.key}${linkedinComment.duplicate ? ", já estava na fila" : ""})`);
+    } else if (linkedinComment.status === "already_fired") {
+      console.error(`[ok] LinkedIn: ${linkedinComment.detail}`);
+    } else if (linkedinComment.status !== "skipped" || !/test runner|--no-linkedin/.test(linkedinComment.detail)) {
+      const extra = linkedinComment.status === "failed" && linkedinComment.ambiguous ? " — confira a fila do Worker (GET /list) antes de comentar à mão" : "";
+      console.error(`[aviso] LinkedIn: comentário do D1 segue manual — ${linkedinComment.detail}${extra} (#10983)`);
+    }
+  }
   console.log(
     JSON.stringify(
       {
@@ -211,6 +272,7 @@ async function main(): Promise<number> {
         video_url_file: flags.has("save") ? urlFile : existsSync(urlFile) ? urlFile : null,
         social_published: source,
         ...(podcast ? { podcast } : {}),
+        ...(linkedinComment ? { linkedin_comment: linkedinComment } : {}),
         steps,
       },
       null,

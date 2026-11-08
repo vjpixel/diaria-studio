@@ -26,3 +26,23 @@ import type { WebhookTarget, QueueAction } from "./index";
 export function isUnsupportedCommentTarget(action: QueueAction, webhookTarget: WebhookTarget): boolean {
   return action === "comment" && webhookTarget !== "pixel";
 }
+
+/**
+ * #11121/#10983 — a entry sai pela API DIRETA do LinkedIn como a página?
+ * `repost` sempre; `comment` quando não é do webhook "pixel" e traz alvo
+ * (`target_post_urn` ou `parent_scheduled_at`). `comment` sem alvo segue no
+ * guard acima (caminho antigo, DLQ). Pura, sem I/O.
+ */
+export function isPageApiAction(entry: {
+  action?: QueueAction;
+  webhook_target?: WebhookTarget;
+  target_post_urn?: string;
+  parent_scheduled_at?: string;
+}): boolean {
+  if (entry.action === "repost") return true;
+  return (
+    entry.action === "comment" &&
+    (entry.webhook_target ?? "diaria") !== "pixel" &&
+    (Boolean(entry.target_post_urn) || Boolean(entry.parent_scheduled_at))
+  );
+}

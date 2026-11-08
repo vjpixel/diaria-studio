@@ -13,7 +13,8 @@ Disparo único às 06:05 BRT; o script relê o estado a cada 5 min até 10:00 BR
 3. Com o vídeo `published`, grava `_internal/05-video-url.txt` **sem `--assume-public`**. A releitura é a prova de que o leitor abre o link.
 4. Monta o plano de `planD1VideoLink` (o mesmo de `link-video-d1.ts`) e aplica:
    - **Facebook diar.ia.br**, pela Graph API com o token da página: post do D1 ainda agendado com folga → edita a mensagem (lê a atual, insere a linha do vídeo antes do 1º link, relê para confirmar); post já publicado → comenta a linha do vídeo.
-   - **LinkedIn, X e Threads**: sem executor por script (o 1º comentário como organização no LinkedIn, a Buffer do X e a fila do Worker do Threads não têm caminho de script hoje). Ficam `manual`, com o texto pronto no log da task e no arquivo de estado.
+   - **LinkedIn** (#10983): o 1º comentário do D1 vai pra fila do Worker `diaria-linkedin-cron`, que comenta como a página pela API direta (D1 + 5 min, achando o post pela hora). Precisa de `DIARIA_LINKEDIN_CRON_URL`/`TOKEN` na máquina e de `LINKEDIN_ACCESS_TOKEN`/`LINKEDIN_AUTHOR_URN` no Worker (#8816); sem eles, fica `manual` com o motivo.
+   - **X e Threads**: sem executor por script (a Buffer do X e a fila do Worker do Threads não têm caminho de script hoje). Ficam `manual`, com o texto pronto no log da task e no arquivo de estado.
 5. Grava o resultado por destino em `_internal/05-video-link-apply.json`. Rodar de novo não repete destino já `applied`, então não comenta duas vezes.
 
 Vídeo que não ficou público até 10:00 → aviso ao editor por `notifyEditor` (`acao`, uma issue por dia) e exit 0. Credenciais do YouTube ausentes, ou `05-video-url.txt` / estado de outro vídeo → exit 1, a unit sai `failed` e nada é alterado.

@@ -81,7 +81,11 @@
  *                                    (document_url, #8055, Documents API). O post single-image
  *                                    continua indo pelo webhook Make (MAKE_WEBHOOK_URL acima).
  *   LINKEDIN_AUTHOR_URN            → (#8052) URN da página/perfil que publica o carrossel
- *                                    (urn:li:organization:{id} ou urn:li:person:{id})
+ *                                    (urn:li:organization:{id} ou urn:li:person:{id}).
+ *                                    Os dois também habilitam o repost da página (#11121) e o
+ *                                    comentário como página (#10983); sem eles o enqueue
+ *                                    recusa com `code: "linkedin_creds_missing"` e o caller
+ *                                    segue no caminho guiado/manual de sempre.
  * Vars (via [vars] no wrangler.toml, não-secretas):
  *   INSTAGRAM_API_VERSION          → (#3817) default "v25.0" se ausente (aplicado em dispatch.ts)
  *   THREADS_API_VERSION            → (#3944 Parte B) default "v1.0" se ausente (aplicado em dispatch.ts)
@@ -149,7 +153,16 @@ export type WebhookTarget = "diaria" | "pixel";
 // publicado nas redes, só na newsletter. Recusar no enqueue é o guard pra não voltar.
 // #10823: `shorts` — Reels do vídeo curto da edição (/diaria-shorts).
 export const QUEUE_DESTAQUE_RE = /^(d[123]|um|shorts|weekly(-[a-z]+)?|especial(-[a-z]+)?)$/;
-export type QueueAction = "post" | "comment";
+/**
+ * #11121/#10983 — `repost` (a página reposta um post existente, `target_post_urn`)
+ * e `comment` com `webhook_target` "diaria" + alvo (`target_post_urn` ou
+ * `parent_scheduled_at`) saem pela API DIRETA do LinkedIn como a página
+ * (`LINKEDIN_ACCESS_TOKEN`/`LINKEDIN_AUTHOR_URN`). `comment` sem alvo segue o
+ * caminho antigo (só o webhook "pixel" aceita).
+ */
+export type QueueAction = "post" | "comment" | "repost";
+/** #11121/#10983 — URN de post que a API aceita como alvo de comentário/repost. */
+export const LINKEDIN_POST_URN_RE = /^urn:li:(share|ugcPost):\d{1,30}$/;
 // #3817/#3944 Parte B — canal de disparo. Ausente/undefined = "linkedin" SEMPRE
 // (backward-compat obrigatória: entries já em produção no KV nunca tiveram este campo).
 export type QueueChannel = "linkedin" | "instagram" | "threads";
@@ -185,6 +198,19 @@ export interface QueueEntry {
   webhook_target?: WebhookTarget;
   action?: QueueAction;
   parent_destaque?: string; // qual destaque o comment pertence (auditoria)
+  /**
+   * #11121/#10983 — post alvo (`urn:li:share:N` ou `urn:li:ugcPost:N`): o que a
+   * página reposta (`action: "repost"`, obrigatório) ou comenta
+   * (`action: "comment"`, alternativa a `parent_scheduled_at`).
+   */
+  target_post_urn?: string;
+  /**
+   * #10983 — horário (ISO) em que o post da PÁGINA a comentar foi agendado. O
+   * post do D1 sai pelo webhook Make, que não devolve a URN; no disparo o
+   * Worker lista os posts da página e comenta no mais próximo desse horário
+   * (`findPagePostNear`, dispatch.ts). Só com `action: "comment"`.
+   */
+  parent_scheduled_at?: string;
   // #3817 — canal de disparo. Ver QueueChannel acima — default "linkedin".
   channel?: QueueChannel;
   // #4153 — lista de imagens pro carrossel do Instagram (5 cards do post
@@ -496,6 +522,8 @@ const IDEMPOTENT_CONTENT_FIELDS = [
   "webhook_target",
   "action",
   "parent_destaque",
+  "target_post_urn",
+  "parent_scheduled_at",
   "channel",
   "media_type",
   "video_url",
@@ -728,6 +756,54 @@ export function validateDocumentFields(
   return null;
 }
 
+/**
+ * #11121/#10983 — valida o repost da página (`action: "repost"`) e o
+ * comentário como página (`action: "comment"` com `target_post_urn` ou
+ * `parent_scheduled_at`). Os dois saem pela API direta do LinkedIn e exigem a
+ * credencial dela — mesmo `code` do carrossel (#8303), pra o caller voltar ao
+ * caminho guiado/manual sem parsear prosa. `comment` SEM alvo não passa por
+ * aqui (caminho antigo do Make, inalterado). Devolve o corpo do 400 ou `null`.
+ */
+export function validatePageApiFields(
+  body: Partial<QueueEntry>,
+  env: Env,
+): { error: string; code?: string } | null {
+  const hasTarget = body.target_post_urn !== undefined;
+  const hasParentAt = body.parent_scheduled_at !== undefined;
+  const isRepost = body.action === "repost";
+  const isPageComment = body.action === "comment" && body.webhook_target !== "pixel" && (hasTarget || hasParentAt);
+  if (!isRepost && !isPageComment) {
+    if (hasTarget || hasParentAt) {
+      return { error: "target_post_urn/parent_scheduled_at only apply to action='repost' or to action='comment' on the page" };
+    }
+    return null;
+  }
+  if (body.channel !== undefined && body.channel !== "linkedin") {
+    return { error: `action='${body.action}' on the page only applies to channel='linkedin'` };
+  }
+  if (body.image_url || body.image_urls !== undefined || body.document_url !== undefined || body.media_type !== undefined) {
+    return { error: `action='${body.action}' does not take image_url/image_urls/document_url/media_type` };
+  }
+  if (hasTarget && (typeof body.target_post_urn !== "string" || !LINKEDIN_POST_URN_RE.test(body.target_post_urn))) {
+    return { error: "target_post_urn must be urn:li:share:{id} or urn:li:ugcPost:{id}" };
+  }
+  if (isRepost) {
+    if (!hasTarget) return { error: "action='repost' requires target_post_urn" };
+    if (hasParentAt) return { error: "parent_scheduled_at only applies to action='comment'" };
+  }
+  if (hasParentAt && (typeof body.parent_scheduled_at !== "string" || Number.isNaN(Date.parse(body.parent_scheduled_at)))) {
+    return { error: "parent_scheduled_at must be a valid ISO 8601 date" };
+  }
+  if (!resolveLinkedInCreds(env)) {
+    return {
+      error:
+        `action='${body.action}' como página requer LINKEDIN_ACCESS_TOKEN e LINKEDIN_AUTHOR_URN configurados no Worker (API direta, #11121/#10983; provisionamento no #8816) — não configurados`,
+      code: "linkedin_creds_missing",
+    };
+  }
+  return null;
+}
+
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) {
     return json({ error: "unauthorized" }, 401);
@@ -742,7 +818,9 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
 
   const required = ["text", "scheduled_at", "destaque"] as const;
   for (const field of required) {
-    if (!body[field] || typeof body[field] !== "string") {
+    // #11121: o repost da página vai sem comentário próprio (texto vazio).
+    const emptyRepostText = field === "text" && body.action === "repost" && body.text === "";
+    if (!emptyRepostText && (!body[field] || typeof body[field] !== "string")) {
       return json({ error: `missing or invalid field: ${field}` }, 400);
     }
   }
@@ -769,14 +847,17 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   if (body.webhook_target !== undefined && body.webhook_target !== "diaria" && body.webhook_target !== "pixel") {
     return json({ error: "webhook_target must be 'diaria' or 'pixel'" }, 400);
   }
-  if (body.action !== undefined && body.action !== "post" && body.action !== "comment") {
-    return json({ error: "action must be 'post' or 'comment'" }, 400);
+  if (body.action !== undefined && body.action !== "post" && body.action !== "comment" && body.action !== "repost") {
+    return json({ error: "action must be 'post', 'comment' or 'repost'" }, 400);
   }
   // Pixel scenario só faz comment — rejeitar combinação inválida no enqueue
   // pra falhar early em vez de DLQ no fire.
-  if (body.webhook_target === "pixel" && body.action === "post") {
+  if (body.webhook_target === "pixel" && (body.action === "post" || body.action === "repost")) {
     return json({ error: "webhook_target='pixel' supports only action='comment'" }, 400);
   }
+  // #11121/#10983 — repost e comentário como página (API direta).
+  const pageApiError = validatePageApiFields(body, env);
+  if (pageApiError) return json(pageApiError, 400);
   if (body.parent_destaque !== undefined) {
     if (typeof body.parent_destaque !== "string") {
       return json({ error: "parent_destaque must be a string" }, 400);
@@ -952,6 +1033,9 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.webhook_target !== undefined && { webhook_target: body.webhook_target as WebhookTarget }),
     ...(body.action !== undefined && { action: body.action as QueueAction }),
     ...(body.parent_destaque !== undefined && { parent_destaque: body.parent_destaque as string }),
+    // #11121/#10983 — omitidos se undefined: alvo do repost/comentário como página
+    ...(body.target_post_urn !== undefined && { target_post_urn: body.target_post_urn }),
+    ...(body.parent_scheduled_at !== undefined && { parent_scheduled_at: body.parent_scheduled_at }),
     // #3817 — omitido se undefined: entries sem channel resolvem "linkedin" (default)
     ...(body.channel !== undefined && { channel: body.channel as QueueEntry["channel"] }),
     // #4153 — omitido se undefined: entries sem image_urls usam image_url (single-image)
