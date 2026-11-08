@@ -199,6 +199,15 @@ async function sha256HexOfBytes(buf: ArrayBuffer): Promise<string> {
 }
 
 /**
+ * #11412 (fatia 4): header que diz de onde veio o corpo de `/img/{key}`
+ * (`kv` ou `r2`). A poda do KV só dá a remoção por conferida quando os
+ * Workers servem a key com `r2`: logo depois do DELETE o KV ainda pode
+ * devolver o valor do cache de borda, e 200 com os mesmos bytes, sozinho,
+ * não prova que o fallback funciona.
+ */
+export const IMAGE_SOURCE_HEADER = "X-Image-Source";
+
+/**
  * Serve `/img/{key}` a partir do KV. `key` já veio de `imageKeyFromPath`
  * (ou equivalente); a validação da allowlist acontece AQUI, não no caller,
  * pra que nenhum Worker novo possa esquecê-la.
@@ -266,7 +275,7 @@ export async function serveKvImage(
   if (ifNoneMatch === etag) {
     return new Response(null, {
       status: 304,
-      headers: { ...corsHeaders, "Cache-Control": cacheControl, ETag: etag },
+      headers: { ...corsHeaders, "Cache-Control": cacheControl, ETag: etag, [IMAGE_SOURCE_HEADER]: "kv" },
     });
   }
 
@@ -277,6 +286,7 @@ export async function serveKvImage(
       "Content-Type": "image/jpeg",
       "Cache-Control": cacheControl,
       ETag: etag,
+      [IMAGE_SOURCE_HEADER]: "kv",
     },
   });
 }
@@ -314,7 +324,7 @@ async function serveR2Image(
     if (body) await body.cancel().catch(() => {});
     return new Response(null, {
       status: 304,
-      headers: { ...corsHeaders, "Cache-Control": cacheControl, ETag: obj.httpEtag },
+      headers: { ...corsHeaders, "Cache-Control": cacheControl, ETag: obj.httpEtag, [IMAGE_SOURCE_HEADER]: "r2" },
     });
   }
   return new Response(body, {
@@ -323,6 +333,7 @@ async function serveR2Image(
       "Content-Type": obj.httpMetadata?.contentType || "image/jpeg",
       "Cache-Control": cacheControl,
       ETag: obj.httpEtag,
+      [IMAGE_SOURCE_HEADER]: "r2",
     },
   });
 }

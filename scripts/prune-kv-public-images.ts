@@ -7,20 +7,25 @@
  * `poll` e `site`. Lógica e salvaguardas em
  * `scripts/lib/public-images-archive.ts` (`pruneKvImages`):
  *
- *   - só keys `img-*` da allowlist do #4112 (as do jogo nem são listadas);
- *   - só com cópia no R2 que bate com os bytes do KV AGORA (tamanho + MD5);
+ *   - só keys `img-*` da allowlist do #4112 (as do jogo são descartadas
+ *     antes de qualquer leitura de valor);
+ *   - só com cópia no R2 que bate com os bytes do KV AGORA (tamanho + MD5),
+ *     relidos de novo logo antes do DELETE;
  *   - só com data de referência derivável e mais velha que `--min-age-days`;
  *   - imagens do É IA? ficam, a menos de `--include-eia`;
- *   - antes de remover, os Workers têm que servir o objeto-canário do R2
- *     (gravado por `archive-kv-public-images.ts --apply`);
- *   - depois de cada remoção, `/img/{key}` é pedido aos Workers; se não vier
- *     200 com os mesmos bytes, a key volta ao KV e a rodada para.
+ *   - antes de remover, os Workers têm que servir do R2 (`X-Image-Source: r2`)
+ *     os dois objetos-canário (gravados por `archive-kv-public-images.ts --apply`);
+ *   - depois de cada remoção, `/img/{key}` é pedido aos Workers; no fim da
+ *     rodada, passados ≥ 70 s (cache de borda do KV), é pedido de novo e tem
+ *     que vir do R2. Qualquer falha devolve a key ao KV, relê para conferir e
+ *     para a rodada.
  *
- *   npx tsx scripts/prune-kv-public-images.ts                     # dry-run (padrão), só leitura
+ *   npx tsx scripts/prune-kv-public-images.ts                     # dry-run (padrão): leitura do KV + HEAD no R2 + GET dos canários
  *   npx tsx scripts/prune-kv-public-images.ts --apply [--limit 50] [--min-age-days 90] [--include-eia]
  *
- * `--out arquivo.json` grava o relatório completo. Sai 1 se o canário falhar,
- * se a rodada for interrompida ou se alguma key der erro.
+ * `--limit N` confere no máximo N keys por rodada (`deleted ≤ N`). `--out
+ * arquivo.json` grava o relatório completo. Sai 1 se o canário falhar, se a
+ * rodada for interrompida ou se alguma key der erro.
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
