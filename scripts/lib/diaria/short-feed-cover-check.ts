@@ -33,6 +33,27 @@ export const DHASH_SIZE = 16;
  * miolo do `maxresdefault.jpg` (onde o `thumbnails.set` a pôs), dá 0,07 a
  * 0,09; contra o frame automático do `oar2`, 0,36 a 0,47; capa de uma edição
  * contra a de outra, 0,50. O limiar fica entre os dois grupos.
+ *
+ * Remedido em 08/11/2026 (#12377 item 4) contra o `sardefault.jpg` REAL
+ * (1080x1920, o que a aba Shorts carrega desde o #12251) de 10 Shorts: os 6
+ * que mostram a capa na aba (WEAmxrYpr1E, 4Sdq1thhSAA, 27q1xuvBUc4,
+ * UYllsanoQqw, X4j2u-WxFvk, K3GqRK5gFds), o uIwtuFBqGkg e 5jX3X0sgMtg,
+ * BQkZjUGWTDQ e 5CZ0zFFJ4RM.
+ * - `sardefault` x capa local aplicada, nos 7 com a imagem em `data/editions`
+ *   (4Sdq1thhSAA, K3GqRK5gFds, X4j2u-WxFvk pela `-D`, 5jX3X0sgMtg,
+ *   BQkZjUGWTDQ, 5CZ0zFFJ4RM, e uIwtuFBqGkg contra `04-short-capa-still.jpg`):
+ *   0,000 a 0,020. O YouTube não recorta nem reescala a miniatura vertical de
+ *   forma que o dHash perceba. 27q1xuvBUc4, UYllsanoQqw e WEAmxrYpr1E não têm
+ *   a capa local; entram só nas linhas de baixo.
+ * - `sardefault` x `04-youtube-short-capa.jpg` quando a capa aplicada foi
+ *   outra variante do MESMO desenho (X4j2u-WxFvk/261023: o editor subiu a
+ *   `-D`, que dá 0,008; o arquivo canônico dá 0,176). É a margem mais
+ *   apertada do lado "capa".
+ * - `sardefault` x frame automático do mesmo Short (`oar2`): 0,266 a 0,484.
+ * - `sardefault` x capa de outra edição: 0,371 a 0,566.
+ * O limiar 0,2 continua entre 0,176 e 0,266, sem mudança. Travado em
+ * `test/short-feed-cover-threshold-12377.test.ts`; quem mudar o limiar
+ * remede e atualiza as duas pontas lá.
  */
 export const FEED_COVER_MATCH_MAX_DISTANCE = 0.2;
 
