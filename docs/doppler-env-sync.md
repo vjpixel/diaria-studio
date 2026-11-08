@@ -61,8 +61,9 @@ apagada pelo 1º `sync-env` bem-sucedido:**
    `scripts/sync-env.ts`: chaves que por natureza só existem no `.env` de
    cada máquina e nunca vão pro vault (`GOOGLE_APPLICATION_CREDENTIALS`,
    caminho de arquivo gravado por `materialize-google-ads-credentials.ts`;
-   `DOPPLER_MCP_TOKEN`, token do MCP do Doppler). Elas não disparam o guard
-   e a linha local delas é mantida no `.env` novo, inclusive com `--force`.
+   `DOPPLER_MCP_TOKEN`, token do MCP do Doppler; `DIARIA_VIDEO_CACHE_DIR`,
+   diretório do cache do `video-montagem` no HD da máquina, #12430). Elas
+   não disparam o guard e a linha local delas é mantida no `.env` novo, inclusive com `--force`.
    Se o vault passar a trazer a chave, vale o valor do vault. Antes disso,
    o `sync-env` abortava sempre no `neo`, e a máquina do editor só recebia
    chave nova do vault à mão.
