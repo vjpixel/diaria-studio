@@ -1754,21 +1754,6 @@ function checkNoTrailingEllipsisInvariant(editionDir: string): InvariantViolatio
   }));
 }
 
-/**
- * #2878: quando `scripts/fetch-newsletter-threads.ts` (Stage 0 passo 0b-bis)
- * falha por auth/rede, `inject-inbox-urls.ts` grava `capture_failed: true`
- * (+ `capture_error`) em `.marker-inject-inbox-urls.json` em vez de deixar
- * `captured_newsletter_count: 0` indistinguível de "editor genuinamente não
- * enviou newsletter nenhuma". `sync-coverage-line.ts` (Stage 2) já troca a
- * linha "Para esta edição..." por um aviso quando vê esse sinal — este check
- * é a segunda barreira, gate-blocking, pra garantir que a edição não segue
- * pro publish com a contagem de submissões subrepresentada e sem que o
- * editor tenha visto o aviso (ex: editor editou 02-reviewed.md no Drive e
- * apagou a linha de aviso sem perceber o que ela significava).
- *
- * Caso real: 260703, 2º dia seguido com `invalid_client` — coverage line
- * saiu "0 submissões" quando a captura simplesmente falhou.
- */
 /** #12188: independent backstop when the gate skipped the deterministic audit. */
 export function checkNewsletterIntake(editionDir: string): InvariantViolation[] {
   const internal = resolve(editionDir, "_internal");
@@ -1800,6 +1785,21 @@ export function checkNewsletterIntake(editionDir: string): InvariantViolation[] 
   } catch { return [violation("Relatório de intake ilegível: re-rodar audit-newsletter-intake.ts", "error")]; }
 }
 
+/**
+ * #2878: quando `scripts/fetch-newsletter-threads.ts` (Stage 0 passo 0b-bis)
+ * falha por auth/rede, `inject-inbox-urls.ts` grava `capture_failed: true`
+ * (+ `capture_error`) em `.marker-inject-inbox-urls.json` em vez de deixar
+ * `captured_newsletter_count: 0` indistinguível de "editor genuinamente não
+ * enviou newsletter nenhuma". `sync-coverage-line.ts` (Stage 2) já troca a
+ * linha "Para esta edição..." por um aviso quando vê esse sinal — este check
+ * é a segunda barreira, gate-blocking, pra garantir que a edição não segue
+ * pro publish com a contagem de submissões subrepresentada e sem que o
+ * editor tenha visto o aviso (ex: editor editou 02-reviewed.md no Drive e
+ * apagou a linha de aviso sem perceber o que ela significava).
+ *
+ * Caso real: 260703, 2º dia seguido com `invalid_client` — coverage line
+ * saiu "0 submissões" quando a captura simplesmente falhou.
+ */
 function checkCaptureFailedSubmissionCount(editionDir: string): InvariantViolation[] {
   const marker = readMarker(editionDir, "inject-inbox-urls");
   // #2878 self-review LOW: accept both the nested `details` shape (how
