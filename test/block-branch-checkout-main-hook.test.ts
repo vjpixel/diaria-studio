@@ -698,3 +698,100 @@ describe("gh pr checkout (#12308)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #12286: dois falsos positivos do #12165, reproduzidos no review diário:
+//   1. corpo de heredoc lido como comando (`--body-file - <<'EOF'` com uma
+//      linha `git checkout feat-x` no corpo era bloqueado — colide com o
+//      #12169, que recomenda heredoc para postar em PR);
+//   2. `git checkout Makefile`/`git checkout scripts` (path sem extensão ou
+//      pasta) tratado como troca de branch.
+// ---------------------------------------------------------------------------
+
+describe("#12286 — corpo de heredoc não é comando", () => {
+  const ISSUE_CMD = "npx tsx scripts/gh-pr-review-api.ts reply 1 --body-file - <<'EOF'\nPassos:\ngit checkout feat-x\nEOF";
+
+  it("caso literal da issue: linha `git checkout` no corpo não é troca de branch", () => {
+    assert.equal(isBranchCreateCheckoutCommand(ISSUE_CMD), false);
+  });
+
+  it("variantes de abertura: <<EOF, <<\"EOF\", <<-EOF (terminador com tab), espaço antes do delimitador", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF\ngit checkout -b feat-x\nEOF"), false);
+    assert.equal(isBranchCreateCheckoutCommand('cat <<"EOF"\ngit switch -c feat-x\nEOF'), false);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<-EOF\n\tgit checkout feat-x\n\tEOF"), false);
+    assert.equal(isBranchCreateCheckoutCommand("cat << 'END'\ngit checkout feat-x\nEND"), false);
+  });
+
+  it("comando DEPOIS do terminador segue detectado", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF\ngit checkout a\nEOF\ngit checkout -b feat-y"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<A <<B\ngit checkout x\nA\ngit checkout y\nB\ngit switch -c z"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<A <<B\ngit checkout x\nA\ngit checkout y\nB\necho ok"), false);
+  });
+
+  it("comando na MESMA linha da abertura segue detectado", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -b feat <<EOF\nx\nEOF"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF && git switch -c feat\nx\nEOF"), true);
+  });
+
+  it("heredoc que alimenta um shell (`bash <<EOF`, `| sh`, `sudo bash`) tem o corpo tokenizado", () => {
+    assert.equal(isBranchCreateCheckoutCommand("bash <<'EOF'\ngit checkout -b feat-x\nEOF"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF | sh\ngit switch -c feat-x\nEOF"), true);
+    assert.equal(isBranchCreateCheckoutCommand("sudo /bin/bash <<EOF\ngit checkout feat-x\nEOF"), true);
+  });
+
+  it("here-string (`<<<`), shift aritmético e `<<` entre aspas não abrem heredoc", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<< feat\ngit checkout feat-x"), true);
+    assert.equal(isBranchCreateCheckoutCommand("cat <<<EOF\ngit checkout feat-x\nEOF"), true);
+    assert.equal(isBranchCreateCheckoutCommand("echo $((1<<2))\ngit checkout feat-x"), true);
+    assert.equal(isBranchCreateCheckoutCommand('gh pr comment 1 --body "use <<EOF"\ngit checkout -b feat-x'), true);
+  });
+
+  it("heredoc sem terminador consome até o fim (o corpo inteiro é texto)", () => {
+    assert.equal(isBranchCreateCheckoutCommand("cat <<EOF\ngit checkout feat-x"), false);
+  });
+});
+
+describe("#12286 — `git checkout <path existente>` é restauração", () => {
+  const fx = makeFixture();
+  writeFileSync(join(fx.main, "Makefile"), "all:\n", "utf8");
+  writeCoordinator(fx.main, "coord-12286");
+  after(() => rmSync(fx.base, { recursive: true, force: true }));
+  const denied = (out: string) => out.includes('"permissionDecision":"deny"');
+  const hook = (cwd: string, command: string) =>
+    runHook({ tool_name: "Bash", session_id: "outra-sessao", cwd, tool_input: { command } });
+
+  it("casos da issue, relativos ao alvo: Makefile e scripts existem → nada a decidir; `-- scripts` idem", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout Makefile", fx.main), []);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout scripts", fx.main), []);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout -- scripts", fx.main), []);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout Makefile", fx.main), false);
+  });
+
+  it("o disco é consultado no ALVO do comando (cd/-C), não no cwd da sessão", () => {
+    // Makefile só existe no principal: de um worktree sem ele, é branch.
+    assert.deepEqual(resolveBranchCreateTargets("git checkout Makefile", fx.wt), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`git -C ${fx.main} checkout Makefile`, fx.wt), []);
+    assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.main} && git checkout Makefile`, fx.wt), []);
+  });
+
+  it("alvo não resolvido não consulta o disco (fail-closed)", () => {
+    assert.deepEqual(resolveBranchCreateTargets("cd $W && git checkout scripts", fx.main), [null]);
+  });
+
+  it("preservado: branch inexistente no disco, `switch`, `-b` e `-` seguem troca", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout feat-x", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git switch scripts", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout -b scripts", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout -", fx.main), [fx.main]);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout Makefile"), true, "sem cwd não há como conferir o disco");
+  });
+
+  it("hook end-to-end com coordenadora alheia ativa no principal", () => {
+    assert.equal(denied(hook(fx.main, "git checkout Makefile")), false);
+    assert.equal(denied(hook(fx.main, "git checkout scripts")), false);
+    assert.equal(denied(hook(fx.main, "npx tsx scripts/gh-pr-review-api.ts reply 1 --body-file - <<'EOF'\nPassos:\ngit checkout feat-x\nEOF")), false);
+    assert.equal(denied(hook(fx.main, "git checkout feat-x")), true);
+    assert.equal(denied(hook(fx.main, "git checkout -b feat-x")), true);
+    assert.equal(denied(hook(fx.main, "bash <<'EOF'\ngit checkout feat-x\nEOF")), true);
+  });
+});

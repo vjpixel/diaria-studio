@@ -81,7 +81,10 @@
 // (`git -C <principal> switch X`, `cd <principal> && git checkout X`, ou o
 // mesmo comando com cwd no principal) agora conta como `checkout -b` —
 // `changesBranch`. Voltar para master/main segue livre; restauração de
-// arquivo (`checkout -- f`, `checkout <ref> <paths>`) fica de fora. O texto
+// arquivo (`checkout -- f`, `checkout <ref> <paths>`) fica de fora — e, desde
+// a #12286, também `checkout X` quando X existe no disco relativo ao alvo
+// (`Makefile`, `scripts`). Também desde a #12286 o corpo de heredoc não é
+// lido como comando, salvo quando alimenta um shell (`bash <<EOF`). O texto
 // abaixo fica como registro do porquê de ter ficado fora até ali.
 //
 // Escopo explicitamente FORA (#6509, reconfirmado no #8937):
@@ -175,13 +178,15 @@ export { stripQuotedSpans };
  * exato depois de `git checkout`/`git switch`, nunca como substring de outra
  * flag (`--builder` não casa).
  */
-export function isBranchCreateCheckoutCommand(command) {
+export function isBranchCreateCheckoutCommand(command, baseCwd = null) {
   if (typeof command !== "string") return false;
   // #12165: reconhece também opções globais antes do subcomando (`git -C
   // <dir> switch -c X`, `git -c k=v checkout -b X`) e `VAR=x git ...` — o
   // tokenizer de `resolveBranchCreateTargets` mantém o conteúdo entre aspas
   // num token só, então um `git checkout -b` citado num `--body` segue fora.
-  return resolveBranchCreateTargets(command, null).length > 0;
+  // #12286: sem `baseCwd`, `git checkout Makefile` não tem como ser conferido
+  // no disco e segue contando como troca; com ele, path existente é restauração.
+  return resolveBranchCreateTargets(command, baseCwd).length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,9 +258,46 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
     tokens = [];
   };
   const n = command.length;
+  // #12286: heredocs abertos na linha corrente (`<<EOF`, `<<'EOF'`, `<<-EOF`),
+  // em ordem. O corpo começa na linha seguinte e NÃO vira segmento — senão uma
+  // linha do corpo de `gh-pr-review-api.ts reply --body-file - <<'EOF'` que
+  // começasse com `git checkout x` era lida como comando. Exceção: quando a
+  // linha alimenta um interpretador de shell (`bash <<EOF`, `cat <<EOF | sh`),
+  // o corpo É comando e segue tokenizado.
+  let pendingHeredocs = [];
+  let lineSegStart = 0; // índice em `segments` do 1º segmento da linha corrente
   let i = 0;
   while (i < n) {
     const ch = command[i];
+    if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<" && command[i - 1] !== "<") {
+      const m = HEREDOC_OPEN_RE.exec(command.slice(i));
+      if (m && !insideArithmetic(command, i)) {
+        pushToken();
+        pendingHeredocs.push({ delim: m[3], dash: m[1] === "-" });
+        i += m[0].length;
+        continue;
+      }
+    }
+    if (ch === "\n" && pendingHeredocs.length > 0) {
+      pushSegment();
+      const keepBody = segments.slice(lineSegStart).some(segmentRunsShell);
+      let j = i + 1;
+      for (const h of pendingHeredocs) {
+        // Cada heredoc consome as linhas até o seu terminador, na ordem.
+        while (j < n) {
+          const end = command.indexOf("\n", j);
+          const line = command.slice(j, end === -1 ? n : end);
+          j = end === -1 ? n : end + 1;
+          if ((h.dash ? line.replace(/^\t+/, "") : line).replace(/[ \t]+$/, "") === h.delim) break;
+        }
+      }
+      pendingHeredocs = [];
+      lineSegStart = segments.length;
+      // Corpo de interpretador: segue tokenizando a partir da linha seguinte.
+      // Senão, retoma no terminador (ou no fim), já fora do corpo.
+      i = keepBody ? i + 1 : j;
+      continue;
+    }
     if (ch === "\\" && i + 1 < n) {
       if (command[i + 1] !== "\n") {
         if (!inToken) rawStart = false;
@@ -272,6 +314,7 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
     }
     if (ch === "\n" || ch === ";" || ch === "&" || ch === "|") {
       pushSegment();
+      if (ch === "\n") lineSegStart = segments.length;
       // `&&`, `||`, `;;` contam como um separador só.
       if ((ch === "&" || ch === "|" || ch === ";") && command[i + 1] === ch) i++;
       i++;
@@ -346,6 +389,41 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
   }
   pushSegment();
   return segments;
+}
+
+/** Abertura de heredoc (#12286): `<<`, `-` opcional, delimitador opcionalmente
+ * entre aspas. Mesmo formato de `stripHeredocSpans` nos hooks irmãos. */
+const HEREDOC_OPEN_RE = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
+
+/** Interpretadores cujo stdin é comando: o corpo de `bash <<EOF` roda. */
+const SHELL_INTERPRETERS = new Set(["bash", "sh", "zsh", "dash", "ksh", "ash"]);
+/** Prefixos que só repassam para o comando seguinte (`sudo bash <<EOF`). */
+const PASSTHROUGH_PREFIXES = new Set(["sudo", "env", "exec", "command", "nohup", "time"]);
+
+/** `true` quando o segmento executa um interpretador de shell (#12286). */
+function segmentRunsShell(seg) {
+  let k = 0;
+  while (k < seg.length) {
+    const v = seg[k].value;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(v) || PASSTHROUGH_PREFIXES.has(v)) {
+      k++;
+      continue;
+    }
+    break;
+  }
+  const head = seg[k];
+  if (!head || head.paren) return false;
+  return SHELL_INTERPRETERS.has(head.value.replace(/^.*[\\/]/, ""));
+}
+
+/** true quando `index` cai dentro de `((...))`/`$((...))` aberto na mesma
+ * linha — ali `<<` é shift aritmético, não heredoc (#9214). Cópia de
+ * `block-npm-install-node-modules-symlink.mjs` (self-contained). */
+function insideArithmetic(command, index) {
+  const lineStart = command.lastIndexOf("\n", index - 1) + 1;
+  const before = command.slice(lineStart, index);
+  const open = before.lastIndexOf("((");
+  return open !== -1 && before.indexOf("))", open) === -1;
 }
 
 /**
@@ -505,7 +583,7 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
     }
     const sub = seg[j]?.value;
     const rest = seg.slice(j + 1).map((t) => t.value);
-    if (changesBranch(sub, rest)) targets.push(target);
+    if (changesBranch(sub, rest, target)) targets.push(target);
   }
   return targets;
 }
@@ -560,8 +638,14 @@ function stripRedirections(rest) {
  * Restauração de arquivo (`checkout -- f`, `checkout <ref> <paths>`,
  * `checkout ./f`, `checkout --ours f`) não troca branch e fica de fora;
  * `checkout X --`, sem nada depois do `--`, é troca de branch.
+ *
+ * #12286: `targetDir` (diretório em que o git roda, quando resolvido) desfaz a
+ * ambiguidade de `git checkout X` com X sem cara de path: se `targetDir/X`
+ * existe (`Makefile`, `scripts`), é restauração de arquivo/pasta. Alvo não
+ * resolvido (`null`) não consulta o disco e segue contando como troca
+ * (fail-closed). `git switch` nunca restaura arquivo, então não consulta.
  */
-export function changesBranch(sub, rawRest) {
+export function changesBranch(sub, rawRest, targetDir = null) {
   if (sub !== "checkout" && sub !== "switch") return false;
   const rest = stripRedirections(rawRest);
   if (rest.some((t) => isCreateFlag(sub, t))) return true;
@@ -579,7 +663,19 @@ export function changesBranch(sub, rawRest) {
   const name = positional[0];
   if (FREE_SWITCH_TARGETS.has(name)) return false;
   if (sub === "checkout" && looksLikePath(name)) return false;
+  if (sub === "checkout" && isExistingPath(targetDir, name)) return false;
   return true;
+}
+
+/** `true` quando `name` é um arquivo/pasta existente relativo a `dir`
+ * (#12286). `-` e `@{-N}` são sintaxe de branch anterior, nunca path. */
+function isExistingPath(dir, name) {
+  if (typeof dir !== "string" || dir === "" || name === "-" || name.startsWith("@{")) return false;
+  try {
+    return existsSync(resolvePath(dir, name));
+  } catch {
+    return false;
+  }
 }
 
 /**
