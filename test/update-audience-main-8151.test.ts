@@ -61,23 +61,23 @@ function buildCtrCsv(): string {
   ].join("\n");
 }
 
+// #10605 decisão 10: o perfil sai só do formulário do onboarding — o
+// fixture usa o formato que `audience-run.ts` grava (id `onboarding-form:N`).
 const SURVEY_FIXTURE = [
   {
-    id: "r1",
-    status: "active",
+    id: "onboarding-form:1",
     answers: [
-      { question_id: "q1", question_prompt: "Quais seções/tipos de conteúdo você mais gosta?", answer: "Tutoriais práticos" },
-      { question_id: "q2", question_prompt: "Qual seu nível de conhecimento em IA?", answer: "Uso casual" },
-      { question_id: "q3", question_prompt: "Qual o setor de atuação da organização em que você trabalha?", answer: "Tecnologia" },
+      { question_id: "form:conteudo", question_prompt: "Quais seções da newsletter você mais gosta de ler?", answer: "Tutoriais práticos" },
+      { question_id: "form:nivel_ia", question_prompt: "Qual seu nível de conhecimento em IA?", answer: "Uso casual" },
+      { question_id: "form:area", question_prompt: "Qual sua principal área de atuação?", answer: "Tecnologia" },
     ],
   },
   {
-    id: "r2",
-    status: "active",
+    id: "onboarding-form:2",
     answers: [
-      { question_id: "q1", question_prompt: "Quais seções/tipos de conteúdo você mais gosta?", answer: "Curadoria de novas ferramentas" },
-      { question_id: "q2", question_prompt: "Qual seu nível de conhecimento em IA?", answer: "Entusiasta" },
-      { question_id: "q3", question_prompt: "Qual o setor de atuação da organização em que você trabalha?", answer: "Educação" },
+      { question_id: "form:conteudo", question_prompt: "Quais seções da newsletter você mais gosta de ler?", answer: "Curadoria de novas ferramentas" },
+      { question_id: "form:nivel_ia", question_prompt: "Qual seu nível de conhecimento em IA?", answer: "Entusiasta" },
+      { question_id: "form:area", question_prompt: "Qual sua principal área de atuação?", answer: "Educação" },
     ],
   },
 ];
@@ -127,7 +127,7 @@ describe("main() — forma do documento gerado (#8151)", () => {
       // Headers obrigatórios
       assert.match(doc, /^# Perfil de Audiência — diar\.ia\.br/m);
       assert.match(doc, /## 1\. Engajamento real \(CTR por categoria\)/);
-      assert.match(doc, /## 2\. Preferências declaradas \(survey\)/);
+      assert.match(doc, /## 2\. Preferências declaradas \(formulário\)/);
       assert.match(doc, /## 3\. Quem são \(demographics\)/);
 
       // Nunca placeholder cru / valor interpolado quebrado

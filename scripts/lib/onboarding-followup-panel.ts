@@ -56,7 +56,8 @@ export const STEP_LABELS: Record<OnboardingEmailStep, string> = {
   apoio180: "Apoio D+180",
   apoio360: "Apoio D+360",
   form: "Formulário (D+6)",
-  form_lembrete: "Lembrete do formulário (a cada 30 dias)",
+  form_base: "Pesquisa nova (e-mail único para a base)",
+  form_lembrete: "Lembrete do formulário (30 dias, até 3)",
 };
 
 export interface EmailStepCount {
