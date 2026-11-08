@@ -1141,6 +1141,81 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.ok(calls.some((c) => c.script.includes("capture-newsletter-urls")));
   });
 
+  // #12452: cada fetch-newsletter-threads.ts grava o sentinel #2878 ao falhar
+  // e o APAGA ao ter sucesso, todos no mesmo `_internal/`. O fake abaixo
+  // reproduz esse efeito colateral num FS em memória, pra o teste medir o
+  // estado FINAL do sentinel depois de todos os grupos.
+  function sentinelScenario(groupOutcome: (args: string[]) => "ok" | "fail", initialSentinel = false) {
+    const sentinelPath = resolve("/fake-root", "data/editions/2604/260423", "_internal", ".capture-newsletter-failed.json");
+    const files = new Map<string, string>();
+    if (initialSentinel) files.set(sentinelPath, JSON.stringify({ failed: true, error: "run anterior", at: "2026-04-22T08:00:00Z" }));
+    const { exec } = makeFakeExec(
+      happyExecHandlers({
+        "fetch-newsletter-threads.ts": (args) => {
+          if (groupOutcome(args) === "ok") {
+            files.delete(sentinelPath); // clearCaptureFailedSentinel
+            return ok(JSON.stringify({ threads_found: 2, threads_written: 2, skipped_no_body: 0 }));
+          }
+          files.set(sentinelPath, JSON.stringify({ failed: true, error: "invalid_client", at: "2026-04-23T08:00:00Z" })); // writeCaptureFailedSentinel
+          return fail(1, "[fetch-newsletter-threads] Fatal: invalid_client");
+        },
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({
+      exec,
+      execAsync,
+      existsSync: () => true,
+      writeFile: (p, c) => {
+        files.set(p, c);
+      },
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({
+            newsletter_auto_capture: {
+              enabled: true,
+              senders: ["b@example.com", "email@newsletter.7min.ai"],
+              since_hours: 48,
+              since_hours_by_sender: { "email@newsletter.7min.ai": 168 },
+            },
+          });
+        }
+        return files.get(p) ?? "[]";
+      },
+    });
+    return { deps, files, sentinelPath };
+  }
+
+  const continueArgs = ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"];
+
+  it("#12452 — grupo 1 falha e grupo 2 dá certo: o sentinel de falha continua presente no fim", async () => {
+    // Grupo default (48h) roda primeiro e falha; o do override (168h) roda
+    // depois, dá certo e apaga o sentinel — o Stage 0 tem que regravá-lo.
+    const { deps, files, sentinelPath } = sentinelScenario((args) => (args.includes("48") ? "fail" : "ok"));
+    const result = await runStage0(continueArgs, deps);
+    assert.equal(result.code, 0, "falha parcial segue fail-soft");
+    const raw = files.get(sentinelPath);
+    assert.ok(raw, "sentinel ausente: o grupo bem-sucedido apagou a marca da falha do grupo anterior");
+    const sentinel = JSON.parse(raw!) as { failed: boolean; error: string; at: string };
+    assert.equal(sentinel.failed, true);
+    assert.match(sentinel.error, /b@example\.com/, "o erro nomeia o grupo que falhou");
+    assert.match(sentinel.error, /invalid_client/);
+    assert.equal(sentinel.at, "2026-04-23T08:00:00.000Z");
+  });
+
+  it("#12452 — grupo 1 dá certo e grupo 2 falha: o sentinel fica presente", async () => {
+    const { deps, files, sentinelPath } = sentinelScenario((args) => (args.includes("48") ? "ok" : "fail"));
+    await runStage0(continueArgs, deps);
+    assert.ok(files.get(sentinelPath));
+    assert.match(files.get(sentinelPath)!, /email@newsletter\.7min\.ai/);
+  });
+
+  it("#12452 — todos os grupos dão certo: o sentinel stale de uma run anterior sai removido", async () => {
+    const { deps, files, sentinelPath } = sentinelScenario(() => "ok", true);
+    await runStage0(continueArgs, deps);
+    assert.equal(files.has(sentinelPath), false, "com todos os grupos OK o Stage 0 não pode regravar o sentinel");
+  });
+
   it("#12188 item 4 — todos os grupos de remetente falham e a descoberta funciona: captura NÃO é dada como ok", async () => {
     const { exec, calls } = makeFakeExec(
       happyExecHandlers({

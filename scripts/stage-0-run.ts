@@ -144,6 +144,7 @@ import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { type FacebookCredentialsFile, loadFacebookPagesConfig, resolveFacebookPages } from "./lib/facebook-pages.ts";
 import { CAPTURE_EMPTY_MESSAGE, evaluateCaptureYield } from "./lib/newsletter-capture-yield.ts";
+import { type CaptureFailureSentinel, captureFailedSentinelPath } from "./lib/newsletter-capture-failure.ts";
 import { approvedSenders, classifySender, resolveSenderRegistry, type SenderRegistry } from "./lib/newsletter-senders.ts";
 import { EXIT_HISTORY_MANIFEST_REL_PATH, exitHistoryDrainStatus } from "./lib/beehiiv-exit-history.ts";
 
@@ -457,6 +458,34 @@ function softStep(
 }
 
 /**
+ * #12452: regrava o sentinel #2878 (`_internal/.capture-newsletter-failed.json`)
+ * quando ao menos um grupo de busca do 0b-bis falhou. Um grupo posterior
+ * bem-sucedido pode ter apagado o sentinel que o grupo falho gravou; aqui ele
+ * volta, com o erro de cada grupo falho. Best-effort, como o write original:
+ * falha ao gravar só vira nota, nunca aborta o Stage 0.
+ */
+export function writePartialCaptureFailedSentinel(
+  deps: Stage0RunDeps,
+  internalDir: string,
+  failedGroups: Array<{ group: { senders: string[]; hours: number }; stderr: string; code: number }>,
+): void {
+  const parts = failedGroups.map((g) => {
+    const lastLine = g.stderr.trim().split("\n").filter(Boolean).pop() ?? `exit ${g.code}`;
+    return `grupo [${g.group.senders.join(", ")}] (${g.group.hours}h): ${lastLine}`;
+  });
+  const sentinel: CaptureFailureSentinel = {
+    failed: true,
+    error: parts.join("; ").slice(0, 300),
+    at: deps.now().toISOString(),
+  };
+  try {
+    deps.writeFile(captureFailedSentinelPath(internalDir), JSON.stringify(sentinel, null, 2) + "\n");
+  } catch (err) {
+    console.error(`⚠️  0b-bis: não consegui regravar o sentinel de falha (#12452): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
  * Gate do verify-facebook-posts (0k, #10505): roda se ALGUMA página de
  * `publishing.social.facebook.pages` (habilitada ou não — o verify age sobre
  * posts que já existem, igual a `resolveFacebookPageForEntry`) tem credencial
@@ -628,7 +657,7 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
       // nunca em silêncio, mesmo quando outro grupo teve sucesso — pra não
       // enfraquecer o guard #1756 (que compara summary.threads_found contra
       // o conteúdo real do arquivo).
-      const groupResults: Array<{ group: { senders: string[]; hours: number }; code: number; json: { threads_found?: number; threads_written?: number } | undefined }> = [];
+      const groupResults: Array<{ group: { senders: string[]; hours: number }; code: number; stderr: string; json: { threads_found?: number; threads_written?: number; hit_max_threads?: boolean } | undefined }> = [];
       for (const group of fetchGroups) {
         const fetchResult = softStep(deps, report, `fetch-newsletter-threads (0b-bis, ${group.hours}h)`, "scripts/fetch-newsletter-threads.ts", [
           "--senders",
@@ -638,7 +667,7 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
           "--out",
           threadsOut,
         ]);
-        groupResults.push({ group, code: fetchResult.result.code, json: fetchResult.json as { threads_found?: number; threads_written?: number } | undefined });
+        groupResults.push({ group, code: fetchResult.result.code, stderr: fetchResult.result.stderr, json: fetchResult.json as { threads_found?: number; threads_written?: number } | undefined });
       }
       // #12188: descobre newsletters (List-ID/List-Unsubscribe) de remetentes
       // novos no inbox. Arquivo PRÓPRIO, lido só pela auditoria — nunca o
@@ -670,6 +699,16 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
           `0b-bis: fetch-newsletter-threads falhou pro grupo [${failed.group.senders.join(", ")}] (${failed.group.hours}h) — falha parcial, outros grupos podem ter sucedido`,
           { informational: true },
         );
+      }
+      // #12452: todos os grupos gravam no MESMO `_internal/`, e cada
+      // fetch-newsletter-threads.ts bem-sucedido apaga o sentinel #2878 — um
+      // grupo OK depois de um que falhou apagava a marca da falha, e o guard
+      // `capture-failed-submission-count` + `inject-inbox-urls` deixavam de
+      // acusar a captura parcial. O sentinel só pode ficar limpo quando TODOS
+      // os grupos deram certo (os próprios processos filhos já limpam nesse
+      // caso); com qualquer falha, o Stage 0 o regrava depois do loop.
+      if (failedGroups.length > 0) {
+        writePartialCaptureFailedSentinel(deps, resolve(deps.rootDir, editionDir, "_internal"), failedGroups);
       }
       if (fetchOk) {
         const summary = {
