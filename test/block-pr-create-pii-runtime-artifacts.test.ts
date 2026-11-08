@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import {
   isGhPrCreateCommand,
   containsShellWrappedGhPrCreate,
@@ -17,6 +18,7 @@ import {
   buildBaseEmailsByFile,
   extractStructurallyExemptEmails,
   addStructuralExemptions,
+  STRUCTURAL_EMAIL_EXEMPTIONS,
   resolveRepoRootCandidates,
   resolveGitRoot,
   cdTargetFromCommand,
@@ -936,5 +938,93 @@ describe("#9414 — isenção por caminho JSON `newsletter_auto_capture.senders`
     const kinds = findDangerousDiffContent(nameStatus, added, baseEmails).map((f: { kind: string }) => f.kind);
     assert.ok(kinds.includes("runtime-artifact"));
     assert.ok(kinds.includes("pii-email"));
+  });
+});
+
+describe("#12188 — isenção das CHAVES de `senders` em seed/newsletter-senders.json", () => {
+  const SEED = "seed/newsletter-senders.json";
+  // Conteúdo SINTÉTICO do registro no HEAD da branch: dois remetentes listados
+  // e um e-mail que NÃO é remetente, colado dentro de um `reason`.
+  const headSeed = JSON.stringify(
+    {
+      version: 1,
+      senders: {
+        "listado@newsletter-publica.example": { status: "aprovado", reason: "ok", decided_at: "2026-11-04" },
+        "rejeitado@newsletter-publica.example": { status: "rejeitado", reason: "não-IA", decided_at: "2026-11-04" },
+        "outro@newsletter-publica.example": {
+          status: "aprovado",
+          reason: "veio de pessoa.real@exemplo-teste.invalid",
+          decided_at: "2026-11-04",
+        },
+      },
+    },
+    null,
+    2,
+  );
+  const fakeGit = (args: string[]) => (args[1] === `HEAD:${SEED}` ? headSeed : null);
+
+  // Arquivo NOVO na branch (status A): sem base, a isenção estrutural é a única.
+  function run(addedLines: string[], git: (args: string[]) => string | null = fakeGit) {
+    const nameStatus = [{ status: "A", path: SEED }];
+    const added = new Map([[SEED, addedLines]]);
+    const baseEmails = new Map();
+    addStructuralExemptions(baseEmails, added.keys(), "HEAD", "/repo", git as never);
+    return findDangerousDiffContent(nameStatus, added, baseEmails);
+  }
+
+  it("a entrada está registrada com shape object-keys", () => {
+    const entry = STRUCTURAL_EMAIL_EXEMPTIONS.find((e: { file: string }) => e.file === SEED);
+    assert.deepEqual(entry, { file: SEED, jsonPath: ["senders"], shape: "object-keys" });
+  });
+
+  it("(1) remetente listado (aprovado ou rejeitado) passa", () => {
+    assert.deepEqual(
+      run(['    "listado@newsletter-publica.example": {', '    "rejeitado@newsletter-publica.example": {']),
+      [],
+    );
+  });
+
+  it("(2) remetente FORA da lista continua barrado", () => {
+    const findings = run(['    "fora.da.lista@newsletter-publica.example": {']);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].kind, "pii-email");
+  });
+
+  it("(3) e-mail dentro de um VALOR (reason) continua barrado", () => {
+    const findings = run(['      "reason": "veio de pessoa.real@exemplo-teste.invalid",']);
+    assert.equal(findings.length, 1);
+  });
+
+  it("(4) chave que também aparece num valor não é isenta (na dúvida, barra)", () => {
+    const set = extractStructurallyExemptEmails(
+      JSON.stringify({ senders: { "dup@exemplo-teste.invalid": { reason: "dup@exemplo-teste.invalid" } } }),
+      ["senders"],
+      "object-keys",
+    );
+    assert.equal(set?.has("dup@exemplo-teste.invalid"), false);
+  });
+
+  it("(5) shape object-keys sobre um array, ou shape desconhecido -> null (fail-closed)", () => {
+    assert.equal(extractStructurallyExemptEmails('{"senders": ["a@b.example"]}', ["senders"], "object-keys"), null);
+    assert.equal(extractStructurallyExemptEmails('{"senders": {"a@b.example": {}}}', ["senders"], "chaves"), null);
+  });
+
+  it("(6) git show falhando não isenta -> remetente listado segue barrado", () => {
+    assert.equal(run(['    "listado@newsletter-publica.example": {'], () => null).length, 1);
+  });
+
+  it("(7) o mesmo objeto em outro arquivo não isenta", () => {
+    const other = "seed/outro.json";
+    const added = new Map([[other, ['    "listado@newsletter-publica.example": {']]]);
+    const baseEmails = new Map();
+    addStructuralExemptions(baseEmails, added.keys(), "HEAD", "/repo", (() => headSeed) as never);
+    assert.equal(findDangerousDiffContent([{ status: "A", path: other }], added, baseEmails).length, 1);
+  });
+
+  // Pulado enquanto o seed não existe no checkout: a isenção entra em master
+  // numa PR própria, antes da PR que cria o seed (#12188).
+  it("(8) o seed REAL do repo é isento por inteiro (nenhuma linha do arquivo acusa)", { skip: !existsSync(SEED) }, () => {
+    const real = readFileSync(SEED, "utf8");
+    assert.deepEqual(run(real.split("\n"), () => real), []);
   });
 });
