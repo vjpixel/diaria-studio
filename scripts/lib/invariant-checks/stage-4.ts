@@ -4215,7 +4215,7 @@ function checkClaricePending(editionDir: string): InvariantViolation[] {
   if (!existsSync(path)) return [];
   const marker = readClaricePending(editionDir);
   const reason = marker?.reason ?? "motivo ilegível no marcador";
-  const resume = marker?.resume_command ?? resumeCommandFor(editionDir);
+  const resume = resumeCommandFor(editionDir, marker?.edition);
   return [
     {
       rule: "clarice-pending",

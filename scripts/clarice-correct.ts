@@ -747,8 +747,12 @@ export async function withClariceRetryChunked(
  * tentativas por chunk e depois pelo fallback por-parágrafo, um parágrafo de
  * cada vez, e passava de 10 min (edição 261105). O harness do Claude Code
  * encerra o comando Bash em 10 min (teto do `timeout` da tool) e o Stage 2
- * terminava sem `02-reviewed.md`. 8 min deixa margem para o Stage 2 ainda
- * gravar a saída sem a Clarice dentro do mesmo comando de 10 min.
+ * terminava sem `02-reviewed.md`. 8 min deixa ~2 min de margem para o
+ * processo sair com exit 6 (e o log do `clarice_unavailable`) antes de o
+ * harness matar o comando; o `clarice-pending.ts skip` roda num comando
+ * seguinte. Só vale se o Bash for chamado com `timeout: 600000`: o default
+ * da tool é 2 min, e aí o comando é cortado antes do teto (os playbooks pedem
+ * o timeout explícito).
  */
 export const CLARICE_TOTAL_DEADLINE_MS = 480_000;
 
@@ -1060,6 +1064,10 @@ export async function main(): Promise<void> {
           attempts_used: result.totalAttempts,
           chunks: result.chunkCount,
           chunks_used_paragraph_fallback: result.usedParagraphFallbackChunks,
+          // #12257: parágrafos que o fallback não corrigiu (saem sem a Clarice).
+          // O `resume` de clarice-pending.ts lê isto pra não dar correção
+          // parcial por completa.
+          paragraphs_failed: result.paragraphFallbackStats.reduce((n, s) => n + s.paragraphsFailed, 0),
         },
       };
     }

@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 138 invariants.
+**Total**: 139 invariants.
 
 ## Static (estrutura do repo)
 
@@ -148,6 +148,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
+| `clarice-pending-at-publish` | newsletter publicada sem a revisão da Clarice: _internal/02-clarice-pending.json ainda existe no Stage 5 (#12257, warning-only, qualquer fase) | #12257 |
 | `close-poll-marker-exists` | _internal/.close-poll-done.json escrito (#1367) | #1367 |
 | `consent-binding` | canais com consent=auto devem ter dispatch real (#1575) | #1575 |
 | `edition-url-file-exists` | _internal/05-edition-url.txt existe e contém URL válida antes do dispatch social (#2454) | #2454 |
