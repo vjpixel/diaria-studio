@@ -134,6 +134,27 @@ export function appendSocialPosts(publishedPath: string, posts: PostEntry[]): vo
 }
 
 /**
+ * Reescreve a lista de posts sob o mesmo lock do append (#12375): `transform`
+ * recebe os posts atuais e devolve a lista nova (remover/marcar entradas, o
+ * que o upsert de `appendSocialPosts` não faz). Arquivo ausente = lista vazia.
+ */
+export function rewriteSocialPosts(publishedPath: string, transform: (posts: PostEntry[]) => PostEntry[]): void {
+  const lockPath = publishedPath + ".lock";
+  acquireLock(lockPath);
+  try {
+    const current: SocialPublished = existsSync(publishedPath)
+      ? JSON.parse(readFileSync(publishedPath, "utf8"))
+      : { posts: [] };
+    const next: SocialPublished = { ...current, posts: transform(current.posts ?? []) };
+    const tmpPath = publishedPath + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify(next, null, 2) + "\n", "utf8");
+    renameSync(tmpPath, publishedPath);
+  } finally {
+    releaseLock(lockPath);
+  }
+}
+
+/**
  * Reads the current state of 06-social-published.json under lock.
  * Use this instead of a plain readFileSync when you also intend to write.
  */

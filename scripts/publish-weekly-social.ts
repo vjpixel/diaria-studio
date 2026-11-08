@@ -64,7 +64,16 @@
  *     [--no-skip-existing] [--force-incomplete-week]
  *     [--force-incomplete-click-data] [--manifest-only]
  *     [--force-urls url1,url2,...] [--force-font-size N]
- *     [--show-ranking] [--check-slot]
+ *     [--show-ranking] [--check-slot] [--reschedule]
+ *
+ * `--reschedule` (#12375, exige `--schedule` e um modo só): muda o horário de
+ * um carrossel JÁ agendado. Cancela as entradas `scheduled` do modo (fila do
+ * Worker pra Instagram/Threads/LinkedIn, post agendado do Facebook na Graph
+ * API), tira do `06-weekly-published.json` as entradas do modo e do
+ * `data/social-schedule-rotation.jsonl` a linha de fim de semana do dia, e
+ * reagenda pelo fluxo normal. Aborta sem cancelar nada se o horário antigo já
+ * passou (ou falta menos de 5 min), e para no 1º DELETE que devolver 404
+ * (post já disparou) sem reagendar. Miolo em `scripts/lib/weekly-social-reschedule.ts`.
  *
  * `--show-ranking` (#10388, só `clicked`): imprime o ranking elegível
  * completo por taxa + os excluídos. Os grupos de empate (vencedor e quem
@@ -214,8 +223,18 @@ import {
   weeklySummariesPath,
   weeklySummaryPassWarnings,
 } from "./lib/weekly-summaries.ts";
-import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
-import { postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
+import { appendSocialPosts, readSocialPublished, rewriteSocialPosts, PostEntry } from "./lib/social-published-store.ts";
+import { deleteFromWorkerQueue, postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
+import {
+  deleteFacebookScheduledPost,
+  dropModeEntries,
+  dropWeekendRotationLines,
+  executeWeeklyReschedule,
+  markCancelledEntries,
+  planWeeklyReschedule,
+  targetLabel,
+  type RescheduleTarget,
+} from "./lib/weekly-social-reschedule.ts";
 import { createHash } from "node:crypto";
 import { buildWeeklyCarouselPdf } from "./gen-weekly-carousel-pdf.ts";
 import { cloudflareKvKey } from "./upload-images-public.ts";
@@ -816,6 +835,27 @@ export async function main(
   // (override manual de agendamento) não compõe com --mode both — cada modo
   // usa seu próprio offset padrão (DEFAULT_MODE_DAY_OFFSET); quem precisar
   // sobrescrever roda os modos separadamente.
+  // #12375: --reschedule cancela o agendamento existente DE UM modo e reagenda.
+  // Só faz sentido agendando, num modo só, com o skip-existing ligado (é ele
+  // que acha as entradas a cancelar).
+  if (flags.has("reschedule")) {
+    const clash = [
+      modeArg === "both" ? "--mode both" : null,
+      !flags.has("schedule") ? "ausência de --schedule" : null,
+      flags.has("no-skip-existing") ? "--no-skip-existing" : null,
+      flags.has("images-only") ? "--images-only" : null,
+      flags.has("manifest-only") ? "--manifest-only" : null,
+      flags.has("summary-manifest") ? "--summary-manifest" : null,
+    ].filter((x): x is string => x !== null);
+    if (clash.length > 0) {
+      console.error(
+        `ERRO: --reschedule não combina com ${clash.join(", ")}. Uso: --mode clicked|highlights --schedule --reschedule [--time HH:MM].`,
+      );
+      process.exit(1);
+      return;
+    }
+  }
+
   if (modeArg === "both") {
     if (values["day-offset"] != null) {
       console.error(
@@ -1530,6 +1570,28 @@ async function runOneMode(
       skipLinkedIn = true;
     }
   }
+  // #12375: --reschedule — o PLANO (puro, sem rede) sai aqui, antes da
+  // resolução de imagem, pra abortar cedo quando não é seguro cancelar (post
+  // já disparou, entrada sem id de cancelamento). Os DELETEs só acontecem
+  // logo antes do dispatch (abaixo), depois de toda checagem que pode falhar:
+  // até lá os canais já agendados seguem com skip=true, então uma falha no
+  // caminho não grava `failed` por cima da entrada agendada (o upsert de
+  // `appendSocialPosts` apagaria a chave dela).
+  const reschedule = doSchedule && flags.has("reschedule");
+  let rescheduleTargets: RescheduleTarget[] = [];
+  if (reschedule) {
+    const plan = planWeeklyReschedule(readSocialPublished(publishedPath).posts, destaqueKey, now);
+    if (!plan.ok) {
+      console.error(`ERRO ${destaqueKey}: --reschedule abortado antes de cancelar qualquer coisa — ${plan.reason}`);
+      return false;
+    }
+    rescheduleTargets = plan.targets;
+    console.log(
+      rescheduleTargets.length > 0
+        ? `[publish-weekly-social] --reschedule ${destaqueKey}: vai cancelar ${rescheduleTargets.map((t) => `${targetLabel(t)} (${t.scheduledAt})`).join(", ")} e reagendar para ${scheduledAt}.`
+        : `[publish-weekly-social] --reschedule ${destaqueKey}: nada agendado neste modo — segue como agendamento normal para ${scheduledAt}.`,
+    );
+  }
   const skipFacebook = fbPendingPages.length === 0;
   // #10458: entrada de falha do Facebook = uma por página pendente.
   const failFacebook = (fields: { scheduled_at: string | null; reason: string }): void => {
@@ -1537,10 +1599,11 @@ async function runOneMode(
       tagAndAppend({ platform: "facebook", page: pg.slug, destaque: destaqueKey, url: null, status: "failed", ...fields });
     }
   };
-  if (skipExisting && !imagesOnly && skipInstagram && skipFacebook && skipThreads && skipLinkedIn) return true;
+  if (skipExisting && !imagesOnly && !reschedule && skipInstagram && skipFacebook && skipThreads && skipLinkedIn) return true;
   // #11062: trava dos resumos DEPOIS do skip-existing — re-run sem nada
   // pendente (ou só o Threads, cuja legenda não usa resumo) não é barrado.
-  const captionChannelsPending = !skipInstagram || !skipFacebook || !skipLinkedIn;
+  // #12375: no --reschedule todo canal volta a ser despachado.
+  const captionChannelsPending = reschedule || !skipInstagram || !skipFacebook || !skipLinkedIn;
   if (doSchedule && !allowWhyFallback && summaryProblems.length > 0 && captionChannelsPending) {
     console.error(`ERRO ${mode}: agendamento abortado — resumo ausente ou inválido em ${summaryProblems.length} item(ns) (ver acima).`);
     return false;
@@ -1808,6 +1871,27 @@ async function runOneMode(
       ),
     );
     return true;
+  }
+
+  // ── #12375: --reschedule — cancela, limpa o registro e a rotação, e só então
+  // deixa o dispatch abaixo reagendar todos os canais. ──
+  if (reschedule) {
+    const ok = await cancelForReschedule({
+      targets: rescheduleTargets,
+      destaqueKey,
+      publishedPath,
+      rotationLogPath: resolve(ROOT, process.env.DIARIA_SOCIAL_ROTATION_LOG ?? resolve(dataRoot, "social-schedule-rotation.jsonl")),
+      publishIsoDate: publishIsoDateOf(saturday, dayOffset),
+      platformConfig,
+      facebookPagesConfig: opts.facebookPagesConfig,
+    });
+    if (!ok) return false;
+    skipInstagram = false;
+    skipThreads = false;
+    skipLinkedIn = false;
+    fbPendingPages = enabledFacebookPages(
+      resolveFacebookPages(loadFacebookPagesConfig(opts.facebookPagesConfig ?? platformConfig), process.env),
+    );
   }
 
   // ── Instagram (#4146/#4483/#5330) ──
@@ -2095,6 +2179,100 @@ async function runOneMode(
   }
 
   console.log(`\n[publish-weekly-social] out_path: ${publishedPath}`);
+  return true;
+}
+
+/** Pure (#12375): data de publicação do modo (AAAA-MM-DD) = `saturday` + `dayOffset`. */
+export function publishIsoDateOf(saturday: string, dayOffset: number): string {
+  const { year, month, day } = parseEditionDate(saturday);
+  return new Date(Date.UTC(year, month - 1, day + dayOffset)).toISOString().slice(0, 10);
+}
+
+/**
+ * #12375: passo de cancelamento do `--reschedule`. Confere as credenciais de
+ * TODOS os alvos antes do 1º DELETE, cancela em sequência
+ * (`executeWeeklyReschedule`) e, só com tudo cancelado, tira do registro as
+ * entradas do modo e do JSONL de rotação a linha do dia. `false` = abortou
+ * (mensagem já impressa) e o dispatch não pode seguir.
+ */
+async function cancelForReschedule(args: {
+  targets: RescheduleTarget[];
+  destaqueKey: string;
+  publishedPath: string;
+  rotationLogPath: string;
+  publishIsoDate: string;
+  platformConfig: any;
+  facebookPagesConfig?: unknown;
+}): Promise<boolean> {
+  const { targets, destaqueKey, publishedPath } = args;
+  const workerUrl =
+    process.env.DIARIA_LINKEDIN_CRON_URL ??
+    args.platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
+    args.platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
+    "";
+  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const pages = resolveFacebookPages(loadFacebookPagesConfig(args.facebookPagesConfig ?? args.platformConfig), process.env);
+  const missing: string[] = [];
+  if (targets.some((t) => t.kind === "worker_queue") && (!workerUrl || !workerToken)) {
+    missing.push("Worker (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN)");
+  }
+  for (const t of targets) {
+    if (t.kind !== "facebook") continue;
+    const pg = pages.find((p) => p.slug === t.page);
+    if (!pg || pg.missing.length > 0 || !pg.token) missing.push(`token da página ${t.page} do Facebook`);
+  }
+  if (missing.length > 0) {
+    console.error(`ERRO ${destaqueKey}: --reschedule abortado antes de cancelar qualquer coisa — falta ${missing.join(", ")}.`);
+    return false;
+  }
+
+  const fbApiVersion = process.env.FACEBOOK_API_VERSION || "v25.0";
+  const exec = await executeWeeklyReschedule(targets, {
+    deleteQueueKey: async (key) => {
+      const r = await deleteFromWorkerQueue(workerUrl, workerToken, key, "publish-weekly-social");
+      return { alreadyGone: r.alreadyGone };
+    },
+    deleteFacebookPost: async (page, fbPostId) => {
+      const pg = pages.find((p) => p.slug === page)!;
+      return deleteFacebookScheduledPost(fbPostId, pg.token, fbApiVersion);
+    },
+  });
+  for (const t of exec.cancelled) console.log(`CANCELADO ${targetLabel(t)}/${destaqueKey} (era ${t.scheduledAt})`);
+  if (!exec.ok) {
+    console.error(`ERRO ${destaqueKey}: --reschedule abortado — ${exec.reason}`);
+    console.error(
+      `  Nada foi reagendado. A entrada de ${targetLabel(exec.failedTarget)} e as não tentadas seguem no registro como estavam` +
+        (exec.cancelled.length > 0
+          ? `; as já canceladas (${exec.cancelled.map(targetLabel).join(", ")}) ficaram com status "deleted". ` +
+            `Confira os perfis antes de agendar de novo.`
+          : "."),
+    );
+    if (exec.cancelled.length > 0) {
+      rewriteSocialPosts(publishedPath, (posts) => markCancelledEntries(posts, destaqueKey, exec.cancelled));
+    }
+    return false;
+  }
+
+  rewriteSocialPosts(publishedPath, (posts) => dropModeEntries(posts, destaqueKey));
+  // Registro auxiliar da medição (#10305): falha aqui não pode impedir o
+  // reagendamento — os posts já foram cancelados.
+  try {
+    if (existsSync(args.rotationLogPath)) {
+      const { content, removed } = dropWeekendRotationLines(readFileSync(args.rotationLogPath, "utf8"), args.publishIsoDate);
+      if (removed > 0) {
+        writeFileSync(args.rotationLogPath, content, "utf8");
+        console.log(
+          `[publish-weekly-social] --reschedule: ${removed} linha(s) de rotação de ${args.publishIsoDate} removida(s) de ${args.rotationLogPath} ` +
+            `— grave de novo com social-schedule-rotation.ts --record (--time se o horário novo fugir do plano).`,
+        );
+      }
+    }
+  } catch (e) {
+    console.error(
+      `AVISO: --reschedule não conseguiu limpar a linha de rotação de ${args.publishIsoDate} em ${args.rotationLogPath} ` +
+        `(${(e as Error).message}) — apague à mão; o reagendamento segue.`,
+    );
+  }
   return true;
 }
 
