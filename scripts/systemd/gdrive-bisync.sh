@@ -29,8 +29,8 @@
 # mudança.
 #
 # Exit 7 por 401/authError (token OAuth vencendo no meio de uma listagem
-# longa) ganha um resync automático com as mesmas travas (#12412) — ver o
-# bloco antes da chamada do rclone.
+# longa) ganha um resync automático (#12412), que pode ressuscitar arquivo
+# apagado durante a rodada (#12444) — ver o bloco antes da chamada do rclone.
 #
 # Testável sem tocar produção: GDRIVE_* e RCLONE_BIN sobrescrevíveis por env.
 
@@ -143,10 +143,16 @@ fi
 # resync automático, até GDRIVE_AUTH_RETRY_MAX vezes (default 1), depois de
 # GDRIVE_AUTH_RETRY_DELAY segundos (default 60). Qualquer outro exit, ou exit 7
 # sem erro de autenticação (too many deletes, filtro mudado, sentinela), segue
-# como antes: sai com o exit do rclone, sem retry. O resync automático usa as
-# MESMAS travas (`--check-access`, `--max-delete`) e o filtro INSTALADO (nunca
-# adota o do checkout, #12396), com `--resync-mode newer` para não sobrescrever
-# um arquivo local mais novo com a versão do Drive. `--dry-run` nunca retenta.
+# como antes: sai com o exit do rclone, sem retry. O resync automático mantém
+# o `--check-access` e usa o filtro INSTALADO (nunca adota o do checkout,
+# #12396), com `--resync-mode newer` para não sobrescrever um arquivo local
+# mais novo com a versão do Drive. O `--max-delete` segue na linha de comando,
+# mas não protege nada aqui: resync não apaga, só une os dois lados (#12444).
+# O risco do resync é o inverso: ele descarta as listagens anteriores, e um
+# arquivo apagado de um lado durante a rodada longa volta copiado do outro,
+# com exit 0 (o `--resync-mode newer` só decide arquivo presente nos dois
+# lados). Por isso cada resync automático termina com um aviso no stderr.
+# `--dry-run` nunca retenta.
 AUTH_RETRY_MAX="${GDRIVE_AUTH_RETRY_MAX:-1}"
 AUTH_RETRY_DELAY="${GDRIVE_AUTH_RETRY_DELAY:-60}"
 # Valor não numérico no env cai no default: um `[ -ge ]` com lixo daria erro
@@ -199,5 +205,6 @@ while [ "$RC" -eq 7 ] && [ "$DRY_RUN" -eq 0 ] && auth_error_in_log; do
     run_bisync "$@" --resync --resync-mode newer
   fi
   echo "gdrive-bisync: resync automatico $attempt/$AUTH_RETRY_MAX terminou com exit $RC (#12412)" >&2
+  echo "gdrive-bisync: aviso — o resync automatico une os dois lados e nao apaga nada: arquivo apagado em um lado durante a rodada pode ter voltado do outro (#12444)" >&2
 done
 finish "$RC"
