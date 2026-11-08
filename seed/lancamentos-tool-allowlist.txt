@@ -43,3 +43,5 @@ huggingface.co/blog/nunchaku-diffusers
 blogs.nvidia.com/blog/local-ai-dgx-spark-64gb-sync
 z.ai/blog/glm-legal
 replit.com/blog/
+
+openai.com/index/introducing-gpt-6-cyber
