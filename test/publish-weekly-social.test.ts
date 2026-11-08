@@ -2085,7 +2085,9 @@ describe("main(): dispatch mockado", () => {
         () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
         1,
       );
-      assert.equal(readFileSync(publishedPath, "utf8"), before, "registro intocado");
+      // #12417: a intenção "cancelling" é gravada antes do DELETE e revertida
+      // no abort — o arquivo é regravado (formatação muda), o conteúdo não.
+      assert.deepEqual(JSON.parse(readFileSync(publishedPath, "utf8")), JSON.parse(before), "registro intocado");
     });
 
     it("404 no 2º DELETE → o já cancelado vira 'deleted', o que deu 404 fica 'scheduled', nada é reagendado", async () => {
@@ -2190,7 +2192,105 @@ describe("main(): dispatch mockado", () => {
         1,
       );
       assert.deepEqual(deletes, [], "nenhum DELETE com menos de 5 min até o disparo");
-      assert.equal(readFileSync(publishedPath, "utf8"), before);
+      // #12417: conteúdo igual (intenção "cancelling" revertida); a formatação muda.
+      assert.deepEqual(JSON.parse(readFileSync(publishedPath, "utf8")), JSON.parse(before));
+    });
+
+    it("#12417: registro não regrava depois dos DELETEs → exit 1, nenhum POST, alvos em 'cancelling' e alarme acao com as chaves", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const calls: string[] = [];
+      const pool = mockAgent.get("https://worker.test");
+      pool.intercept({ path: "/queue/queue:instagram:old", method: "DELETE" }).reply(() => {
+        calls.push("DELETE ig");
+        return { statusCode: 200, data: JSON.stringify({ deleted: true }) };
+      });
+      pool.intercept({ path: "/queue/queue:threads:old", method: "DELETE" }).reply(() => {
+        calls.push("DELETE th");
+        // Simula a falha da regravação (lock/disco) logo depois do último
+        // DELETE: o `.tmp` do rename vira diretório e o writeFileSync lança.
+        mkdirSync(publishedPath + ".tmp", { recursive: true });
+        return { statusCode: 200, data: JSON.stringify({ deleted: true }) };
+      });
+      // Nenhum intercept de POST: disableNetConnect() faria um POST lançar.
+      const alerts: any[] = [];
+      await expectMockedExit(
+        () =>
+          main(args(saturdayStr), {
+            dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+            notify: (async (finding: any) => {
+              alerts.push(finding);
+              return { severity: finding.severity } as any;
+            }) as any,
+          }),
+        1,
+      );
+      rmSync(publishedPath + ".tmp", { recursive: true, force: true });
+      assert.deepEqual(calls, ["DELETE ig", "DELETE th"]);
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const clicked = out.posts.filter((p: any) => p.destaque === "weekly-clicked");
+      assert.deepEqual(clicked.map((p: any) => p.status), ["cancelling", "cancelling"], "nunca 'scheduled' com chave já cancelada");
+      assert.equal(out.posts.find((p: any) => p.destaque === "weekly-highlights").status, "scheduled");
+      assert.equal(alerts.length, 1);
+      assert.equal(alerts[0].severity, "acao");
+      assert.match(alerts[0].body, /worker_queue_key=queue:instagram:old/);
+      assert.match(alerts[0].body, /worker_queue_key=queue:threads:old/);
+    });
+
+    it("#12417: skip-existing não pula 'cancelling' — rodada normal (sem --reschedule) retoma: 404 do já apagado conta, o outro é cancelado, e reagenda", async () => {
+      const saturdayStr = setupWeek();
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const publishedPath = resolve(publishedDir, "06-weekly-published.json");
+      // Estado de uma rodada que caiu entre o DELETE do instagram e a limpeza.
+      writeFileSync(
+        publishedPath,
+        JSON.stringify({
+          posts: [
+            { platform: "instagram", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, worker_queue_key: "queue:instagram:old" },
+            { platform: "threads", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, worker_queue_key: "queue:threads:old" },
+          ],
+        }),
+      );
+      const calls: string[] = [];
+      const pool = mockAgent.get("https://worker.test");
+      pool.intercept({ path: "/queue/queue:instagram:old", method: "DELETE" }).reply(() => {
+        calls.push("DELETE ig");
+        return { statusCode: 404, data: JSON.stringify({ error: "not_found" }) };
+      });
+      pool.intercept({ path: "/queue/queue:threads:old", method: "DELETE" }).reply(() => {
+        calls.push("DELETE th");
+        return { statusCode: 200, data: JSON.stringify({ deleted: true }) };
+      });
+      pool
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(`POST ${body.channel}`);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        })
+        .persist();
+
+      await main(
+        [
+          "--saturday", saturdayStr, "--mode", "clicked", "--editions-root", editionsRoot,
+          "--schedule", "--time", "19:00", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data",
+        ],
+        {
+          dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+          weeklyPdfBuilder: async () => new Uint8Array([37, 80, 68, 70]),
+          weeklyPdfUploader: async (_p, kvKey) => `https://eia.test/img/${kvKey}`,
+        },
+      );
+
+      assert.deepEqual(calls.slice(0, 2), ["DELETE ig", "DELETE th"], "retoma o cancelamento antes de qualquer POST");
+      assert.ok(calls.includes("POST instagram") && calls.includes("POST threads"), `reagenda (nunca pula): ${calls.join(" | ")}`);
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const ig = out.posts.filter((p: any) => p.platform === "instagram" && p.destaque === "weekly-clicked");
+      assert.equal(ig.length, 1);
+      assert.equal(ig[0].status, "scheduled");
+      assert.equal(ig[0].worker_queue_key, "queue:instagram:new");
+      assert.ok(!out.posts.some((p: any) => p.status === "cancelling"));
     });
 
     it("#12397 item 4: overflow de título durante o --reschedule sai com exit 1 (antes 0, sem ter reagendado nada)", async () => {
