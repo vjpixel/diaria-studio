@@ -40,6 +40,11 @@
  * escopo deste alarme), mas restringe o espaço de hipóteses: a
  * regeneração em si não pode ter "rodado e produzido o mesmo conteúdo" —
  * ela precisa ter simplesmente NÃO rodado até o fim.
+ *
+ * Isso vale dentro de UM checkout. Entre checkouts (#12311) há uma 2ª causa:
+ * os snapshots de master vêm de máquinas diferentes, e a que não recebeu a
+ * regeneração da outra arquiva o profile antigo. `isExplainedByCheckoutDivergence`
+ * descarta esse caso quando a regeneração intermediária está comprovada.
  */
 
 import type { AlarmFinding } from "./alarm-issues.ts";
@@ -110,6 +115,12 @@ export function toAlarmFinding(entry: AudienceStalenessLogEntry): AlarmFinding {
       fromSnapshot ? "Fonte: comparação de snapshots (sem disparo do guard no run-log)." : `Timestamp do disparo: ${entry.timestamp}.`,
       "",
       "**Por que isso importa:** `context/audience-profile.md` embute `**updated_at:**` com a data do dia — dois snapshots idênticos só são possíveis se o `today` embutido nos dois for o MESMO, ou seja, a regeneração do dia intermediário nunca chegou a completar o `writeFileSync` final (crashou antes de escrever, ou o Stage 0 nem chegou a invocar `update-audience.ts` naquele dia). O CTR/scorer daquele período rodou com o profile de audiência DESATUALIZADO, sem nenhum sinal visível na hora.",
+      ...(fromSnapshot
+        ? [
+            "",
+            "Hipótese alternativa (#12311): os dois snapshots podem vir de checkouts diferentes (Neo e 300), um deles sem a regeneração que o outro fez e não commitou. O alarme descarta o par quando um `_internal/audience-profile-snapshot.md` de edição prova regeneração entre as duas datas; este par chegou aqui porque essa prova não foi encontrada em `data/editions/`.",
+          ]
+        : []),
       "",
       `Investigar \`data/overnight-schedule.log\`/o Stage 0 do dia anterior a \`${todayFile}\` pra confirmar se o run de fato não completou (e por quê). Ver #8148 pro histórico agregado (5 ocorrências em 4 semanas) e o critério de saída.`,
     ].join("\n"),
@@ -202,6 +213,57 @@ export function findDuplicateSnapshotEntries(
     });
   }
   return out;
+}
+
+// ─── Par idêntico explicado por divergência entre checkouts (#12311) ───────
+//
+// `docs/audience-history/` em master junta snapshots arquivados por checkouts
+// DIFERENTES (o do Neo, o do 300, worktrees), e `context/audience-profile.md`
+// é regerado em cada um. Caso medido no #12311: o Stage 0 de 22/10 (Neo)
+// regenerou o profile (`updated_at: 2026-10-22`, confirmado no
+// `_internal/audience-profile-snapshot.md` da edição 261023), mas a versão
+// nunca foi commitada; o Stage 0 de 24/10 rodou em outro checkout, que ainda
+// tinha o profile de master (`updated_at: 2026-10-21`), e arquivou esse
+// conteúdo. Os dois snapshots saíram idênticos sem que nenhuma regeneração
+// tivesse falhado. A prova de que a regeneração intermediária completou vive
+// em `data/editions/*/*/_internal/audience-profile-snapshot.md` (#4842), que
+// o `snapshot-audience-profile.ts` copia logo depois do `update-audience.ts`
+// e que o OneDrive sincroniza entre as máquinas.
+
+/**
+ * Pure: `true` quando alguma regeneração registrada nas edições
+ * (`regeneratedDates`, as datas `updated_at` lidas dos
+ * `audience-profile-snapshot.md`) caiu em `[prev, cur)` do par: o run de
+ * `prev` ou um run entre os dois escreveu o profile, então o par idêntico vem
+ * de checkouts divergentes, não de regeneração que falhou. Só vale para
+ * entradas derivadas de snapshot (`source: "snapshot"`); o disparo do guard no
+ * run-log compara arquivos do MESMO checkout e nunca é descartado aqui.
+ */
+export function isExplainedByCheckoutDivergence(
+  entry: AudienceStalenessLogEntry,
+  regeneratedDates: ReadonlySet<string>,
+): boolean {
+  if (entry.details?.source !== "snapshot") return false;
+  const prev = entry.details.latest_file?.slice(0, 10);
+  const cur = entry.details.today_file?.slice(0, 10);
+  if (!prev || !cur) return false;
+  for (const d of regeneratedDates) {
+    if (d >= prev && d < cur) return true;
+  }
+  return false;
+}
+
+/** Pure: separa as entradas em `kept` (viram finding) e `explained` (par idêntico com regeneração intermediária comprovada, ver `isExplainedByCheckoutDivergence`). */
+export function partitionByCheckoutDivergence(
+  entries: AudienceStalenessLogEntry[],
+  regeneratedDates: ReadonlySet<string>,
+): { kept: AudienceStalenessLogEntry[]; explained: AudienceStalenessLogEntry[] } {
+  const kept: AudienceStalenessLogEntry[] = [];
+  const explained: AudienceStalenessLogEntry[] = [];
+  for (const e of entries) {
+    (isExplainedByCheckoutDivergence(e, regeneratedDates) ? explained : kept).push(e);
+  }
+  return { kept, explained };
 }
 
 /** Pure: arquivos de run-log a ler em `data/` — o canônico + as cópias de conflito do OneDrive (`run-log-{Máquina}[-N].jsonl`, `run-log-predator-safeBackup-NNNN.jsonl`), onde um evento perdido no canônico pode ter sobrevivido (#9232). */
