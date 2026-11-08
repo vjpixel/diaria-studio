@@ -270,9 +270,9 @@ describe("#6202 publishEditionSitePage — fail-soft em todo caminho ruim", () =
     assert.equal(publishChamado, false, "não adianta publicar o que não foi escrito");
   });
 
-  it("REGRESSÃO: commit/push falha ⇒ code 3, mas a página FICA escrita", () => {
-    // O trabalho não se perde: a próxima rodada/push manual leva a página
-    // junto. Por isso a mensagem diz isso explicitamente.
+  it("REGRESSÃO: commit/push falha ⇒ code 3, e a mensagem manda re-rodar", () => {
+    // #11673: no caminho de produção a página vive no worktree temporário,
+    // que sai junto com a falha; re-rodar o script regera a página.
     const { deps, escritas } = makeDeps({
       publish: () => {
         throw new Error("git: non-fast-forward");
@@ -280,8 +280,8 @@ describe("#6202 publishEditionSitePage — fail-soft em todo caminho ruim", () =
     });
     const r = publishEditionSitePage("/x", deps);
     assert.equal(r.code, 3);
-    if (r.code === 3) assert.match(r.reason, /ficou escrita localmente/);
-    assert.equal(escritas.length, 1, "a escrita local sobrevive à falha de publicação");
+    if (r.code === 3) assert.match(r.reason, /re-rodar o script regera a página/);
+    assert.equal(escritas.length, 1, "a página foi escrita antes da falha de publicação");
   });
 
   it("nenhum caminho lança — a Etapa 6 nunca cai por causa deste passo", () => {
