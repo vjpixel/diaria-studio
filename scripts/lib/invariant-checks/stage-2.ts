@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { describeProvenance, readRunRecord } from "../humanizer-run-record.ts";
+import { hashSocialContent, HUMANIZER_SOCIAL_SENTINEL } from "../humanizer-social-seal.ts"; // #12361
+import { computeSectionHashes } from "../social-lint-rules.ts"; // #12361
 import { assertHumanized } from "../assert-humanized.ts";
 import { checkSentinel as checkSocialHumanizerSentinel } from "../../check-humanizer-social.ts"; // #6305
 import {
@@ -419,6 +421,32 @@ function checkSocialHumanizerSentinelWritten(editionDir: string): InvariantViola
   ];
 }
 
+/**
+ * #12361: hashes aceitos sem prova (`accepted_section_hashes`) do selo social,
+ * só quando o selo bate com o `03-social.md` atual — selo velho não aceita nada
+ * (a regra `social-humanizer-sentinel-written` já acusa o hash divergente).
+ */
+function readFreshSealAcceptedHashes(editionDir: string, socialMd: string): Set<string> {
+  const sealPath = resolve(editionDir, "_internal", HUMANIZER_SOCIAL_SENTINEL);
+  if (!existsSync(sealPath)) return new Set();
+  try {
+    const seal = JSON.parse(readFileSync(sealPath, "utf8")) as {
+      social_sha256?: unknown;
+      accepted_section_hashes?: unknown;
+    };
+    if (seal.social_sha256 !== hashSocialContent(socialMd)) return new Set();
+    const acc = seal.accepted_section_hashes;
+    if (!acc || typeof acc !== "object") return new Set();
+    return new Set(
+      Object.entries(acc as Record<string, unknown>)
+        .filter(([, reason]) => reason === "formatting" || reason === "unproven_ok")
+        .map(([hash]) => hash),
+    );
+  } catch {
+    return new Set(); // selo ilegível: nenhum aceite (fail-closed; a regra do selo acusa)
+  }
+}
+
 /** #12331: o primeiro --write sela o hash mesmo sem --record-run.
  * Exigir o registro no gate do Stage 2 impede que esse selo sozinho seja
  * confundido com prova dos dois passos. Não inferir execução dos snapshots.
@@ -426,13 +454,21 @@ function checkSocialHumanizerSentinelWritten(editionDir: string): InvariantViola
 function checkSocialHumanizerProvenance(editionDir: string): InvariantViolation[] {
   const socialPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialPath)) return [];
-  return describeProvenance(readFileSync(socialPath, "utf8"), readRunRecord(editionDir))
+  const socialMd = readFileSync(socialPath, "utf8");
+  const accepted = readFreshSealAcceptedHashes(editionDir, socialMd);
+  const hashes = computeSectionHashes(socialMd);
+  return describeProvenance(socialMd, readRunRecord(editionDir))
     .filter((row) => !row.humanizador || !row.clarice)
+    // #12361: seção aceita pelo selo atual (--unproven-ok do editor no gate §2d,
+    // ou mudança só de formatação sobre texto provado) não é falta de prova.
+    .filter((row) => !accepted.has(hashes[row.section]))
     .map((row) => ({
       rule: "social-humanizer-provenance-recorded",
       message: `${row.section}: humanizador ${row.humanizador ? "sim" : "NÃO"} · Clarice ${row.clarice ? "sim" : "NÃO"}. ` +
         "Registre os passos executados com check-humanizer-social.ts --record-run --step humanizador|clarice " +
-        "usando os snapshots pré/pós do arquivo inteiro (Stage 2 §2c); o selo --write sozinho não prova execução.",
+        "usando os snapshots pré/pós do arquivo inteiro (Stage 2 §2c); o selo --write sozinho não prova execução. " +
+        "Se o editor editou esta seção no gate e quer manter o texto dele, rode " +
+        '`check-humanizer-social.ts --write --bypass-reason "<motivo>" --unproven-ok "<motivo>"` (#12361).',
       source_issue: "#12331",
       // #9619: o post opcional UM não bloqueia os destaques.
       severity: row.section === "main_um" ? "warning" as const : "error" as const,

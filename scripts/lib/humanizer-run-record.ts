@@ -298,6 +298,68 @@ export function classifySealChanges(
   return { legacy, changed, unproven };
 }
 
+/** #12361: por que uma seção sem prova no registro foi aceita pelo selo. */
+export type AcceptedSectionReason = "formatting" | "unproven_ok";
+
+/**
+ * #12361: hashes de seção (conteúdo, mesmo vocabulário de `computeSectionHashes`)
+ * que o `--write` aceitou sem prova dos dois passos no registro:
+ *
+ *   - `unproven_ok`: seção listada em `unproven` e aceita com `--unproven-ok`
+ *     (ex.: o editor editou o social no gate do Stage 2 e pediu para manter o texto);
+ *   - `formatting`: mudança só de `{quebra}`/hashtags/espaços sobre um texto
+ *     que já estava provado (registro) ou aceito (selo anterior). Formatação
+ *     sobre texto que nunca teve prova NÃO vira aceite, senão o selo inicial
+ *     sem `--record-run` (#12331) passaria com um espaço a mais.
+ *
+ * Entradas do selo anterior cujo texto ainda existe no social atual são
+ * mantidas; um `--write` sem mudança não apaga o aceite. Endereçado por conteúdo:
+ * reorder D1↔D3 não perde o aceite.
+ */
+export function planAcceptedSectionHashes(
+  stored: {
+    section_hashes?: Record<string, string>;
+    section_format_hashes?: Record<string, string>;
+    accepted_section_hashes?: Record<string, string>;
+  } | null,
+  currentMd: string,
+  record: HumanizerRunRecord,
+  unproven: string[] = [],
+  unprovenOk?: string,
+): Record<string, AcceptedSectionReason> {
+  const current = computeSectionHashes(currentMd);
+  const currentHashes = new Set(Object.values(current));
+  const out: Record<string, AcceptedSectionReason> = {};
+  const prevAccepted = stored?.accepted_section_hashes ?? {};
+  for (const [hash, reason] of Object.entries(prevAccepted)) {
+    if (currentHashes.has(hash) && (reason === "formatting" || reason === "unproven_ok")) out[hash] = reason;
+  }
+  if (!stored) return out;
+
+  const isCovered = (hash: string) => {
+    const p = sectionProof(hash, record);
+    return (p.humanizador && p.clarice) || hash in prevAccepted;
+  };
+  const currentFormat = computeSectionFormatHashes(currentMd);
+  const storedHashes = stored.section_hashes ?? {};
+  const storedFormat = stored.section_format_hashes ?? {};
+  const cls = classifySealChanges(stored, currentMd, record);
+  for (const c of cls.changed) {
+    const hash = current[c.section];
+    if (hash === undefined || (c.humanizador && c.clarice)) continue;
+    if (c.change === "formatting") {
+      const fmt = currentFormat[c.section];
+      const predecessorCovered = Object.entries(storedFormat).some(
+        ([name, f]) => f === fmt && storedHashes[name] !== undefined && isCovered(storedHashes[name]),
+      );
+      if (predecessorCovered) out[hash] = "formatting";
+    } else if (unprovenOk && unproven.includes(c.section)) {
+      out[hash] = "unproven_ok";
+    }
+  }
+  return out;
+}
+
 /**
  * Proveniência de TODAS as seções do texto atual — o bloco do resumo do gate (#11534 item 4).
  * `kept: true` (#11604) quando o humanizador devolveu esse texto idêntico.
