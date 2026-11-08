@@ -44,7 +44,7 @@ interface StoredThreadsToken {
  * é o canal). Retorna false se o webhook existe e falhou — o caller não marca
  * como avisado e tenta de novo depois.
  */
-async function sendAlert(env: Env, text: string, extra: Record<string, unknown> = {}): Promise<boolean> {
+async function sendAlert(env: Pick<Env, "ALERT_WEBHOOK_URL">, text: string, extra: Record<string, unknown> = {}): Promise<boolean> {
   console.error(text);
   if (!env.ALERT_WEBHOOK_URL) return true;
   try {
@@ -56,6 +56,34 @@ async function sendAlert(env: Env, text: string, extra: Record<string, unknown> 
     });
     return res.ok;
   } catch {
+    return false;
+  }
+}
+
+/**
+ * #12372 item 2 — alerta de fallback do documento do LinkedIn: o post de
+ * DOCUMENTO (PDF, #8055) falhou no disparo e o carrossel de imagens saiu no
+ * lugar. O post não se perde, por isso nada vai pra DLQ — e sem este alerta
+ * um motivo recorrente (bug de payload, escopo da API) faria todo carrossel
+ * semanal sair como imagens sem ninguém saber. Mesmo canal do alarme de DLQ
+ * (`ALERT_WEBHOOK_URL`; sem a var, só o log). Um alerta por disparo: o
+ * fallback acontece no máximo 1x por post semanal, não precisa de dedup.
+ * Nunca lança — o post já saiu, o alerta não pode desfazer o `fired`.
+ */
+export async function alertLinkedInDocumentFallback(
+  env: Pick<Env, "ALERT_WEBHOOK_URL">,
+  key: string,
+  entry: Pick<QueueEntry, "destaque" | "document_url">,
+  reason: string,
+): Promise<boolean> {
+  try {
+    const text =
+      `[document-fallback] diar.ia.br: post de documento do LinkedIn falhou e saiu como carrossel de imagens ` +
+      `(key=${key}, destaque=${entry.destaque}). Motivo: ${reason.slice(0, 300)}. ` +
+      `Se o motivo se repetir, o documento não está funcionando: confira o log do Worker.`;
+    return await sendAlert(env, text, { kind: "linkedin-document-fallback", key, destaque: entry.destaque, document_url: entry.document_url });
+  } catch (e) {
+    console.error(`[document-fallback] alerta falhou: ${(e as Error).message}`);
     return false;
   }
 }
