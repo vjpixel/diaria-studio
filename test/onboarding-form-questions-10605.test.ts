@@ -45,6 +45,7 @@ import { FOLLOWUP_DRAFTS_DIR, initFollowupSnippets, loadFollowupSnippets } from 
 import {
   main as updateAudienceMain,
   renderProductInterestSection,
+  renderEnglishReadingBlock,
   formRespondentsNote,
   carryOverDeclaredSections,
   PREVIOUS_DECLARED_SUFFIX,
@@ -61,6 +62,7 @@ const EXPECTED_MATCHER: Record<string, SurveyMatcherKey> = {
   nivel_ia: "aiLevel",
   area: "areas",
   conteudo: "contentTypes",
+  leitura_ingles: "englishReading",
   produto_formato: "productFormats",
   produto_tema: "courseTopics",
   produto_preco: "coursePrice",
@@ -155,6 +157,24 @@ describe("#10605 perguntas do formulário", () => {
     assert.deepEqual(q.options.map((o) => o.split(" (")[0]), ["Destaques", "Lançamentos", "Use Melhor", "Radar", "É IA?"]);
   });
 
+  it("leitura de links em inglês: opcional, uma resposta, logo depois das seções e antes do formato", () => {
+    const q = choice("leitura_ingles");
+    assert.equal(q.kind, "select");
+    assert.equal(q.label, "Quando você abre um link da diar.ia.br e o texto está em inglês, o que costuma fazer?");
+    assert.deepEqual(q.options, [
+      "Leio normalmente",
+      "Leio com o tradutor do navegador ou do celular",
+      "Continuo só se o assunto me interessar muito",
+      "Fecho e sigo para o próximo",
+    ]);
+    assert.notEqual(q.required, true);
+    assert.equal(q.hiddenWhen, undefined);
+    const ids = FORM_QUESTIONS.map((x) => x.id);
+    assert.equal(ids.indexOf("leitura_ingles"), ids.indexOf("conteudo") + 1);
+    assert.equal(ids.indexOf("produto_formato"), ids.indexOf("leitura_ingles") + 1);
+    assert.equal(FORM_QUESTIONS.length, 8);
+  });
+
   it("v2: B2C — formato com a única porta B2B, tema amplo, preço só por faixas (decisões 2, 4)", () => {
     const formato = choice("produto_formato");
     assert.ok(formato.options.includes("Treinamento para a equipe da empresa onde trabalho"));
@@ -233,6 +253,14 @@ describe("#10605 parseFormSubmission com caixas de seleção", () => {
     if (r.ok) assert.deepEqual(Object.keys(r.submission.answers).sort(), ["area", "nivel_ia"]);
   });
 
+  it("leitura_ingles: ausente passa, opção válida grava, opção inválida recusa", () => {
+    const sem = parseFormSubmission(base);
+    assert.ok(sem.ok && !("leitura_ingles" in sem.submission.answers));
+    const ok = parseFormSubmission({ ...base, leitura_ingles: "Fecho e sigo para o próximo" });
+    assert.ok(ok.ok && ok.submission.answers.leitura_ingles === "Fecho e sigo para o próximo");
+    assert.equal(parseFormSubmission({ ...base, leitura_ingles: "Nunca abro" }).ok, false);
+  });
+
   it("collectFormFields preserva campos repetidos do POST", () => {
     const f = collectFormFields([["email", "a@x.com"], ["conteudo", "A"], ["conteudo", "B"], ["arquivo", {}]]);
     assert.deepEqual(f, { email: "a@x.com", conteudo: ["A", "B"] });
@@ -258,6 +286,16 @@ describe("#10605 HTML do formulário", () => {
       else if (q.kind === "select") assert.ok(html.includes(`<select id="${q.id}" name="${q.id}"`), q.id);
       else assert.ok(html.includes(`id="${q.id}" name="${q.id}" maxlength="${FORM_ANSWER_MAX_LEN}"`), q.id);
     }
+  });
+
+  it("mostra a pergunta de leitura em inglês, com as 4 opções, entre seções e formato", () => {
+    const q = choice("leitura_ingles");
+    assert.ok(html.includes(q.label));
+    q.options.forEach((o, i) => assert.ok(html.includes(`id="leitura_ingles-${i}" name="leitura_ingles" value="${o}"`), o));
+    const at = (id: string) => html.indexOf(`name="${id}"`);
+    assert.ok(at("conteudo") < at("leitura_ingles") && at("leitura_ingles") < at("produto_formato"));
+    const i = at("leitura_ingles");
+    assert.ok(!html.slice(html.lastIndexOf("<fieldset", i), i).includes("data-hide-q"), "nunca escondida");
   });
 
   it("tema e preço com data-hide e o script que esconde/desabilita", () => {
@@ -369,6 +407,7 @@ describe("#10605 respostas do formulário no perfil de audiência", () => {
       nivel_ia: LEVELS()[0],
       area: "RH",
       conteudo: ["Tutoriais práticos", "Pesquisas sobre IA"].join(FORM_MULTI_SEPARATOR),
+      leitura_ingles: "Leio com o tradutor do navegador ou do celular",
       produto_formato: "Aula ou workshop ao vivo",
       produto_preco: "Até R$ 100",
       sugestao: "mais saúde",
@@ -433,6 +472,21 @@ describe("#10605 respostas do formulário no perfil de audiência", () => {
     assert.match(doc, /## 4\. Interesse em produtos \(formulário do onboarding\)/);
     assert.match(doc, new RegExp(`- \\*\\*${LEVELS()[0].replace(/[()]/g, "\\$&")}\\*\\* — weight 0\\.5 \\(1 respostas\\)`), "nível conta só o formulário");
     assert.ok(!doc.includes("mais saúde"));
+    const s2 = doc.slice(doc.indexOf("## 2. "), doc.indexOf("## 3. "));
+    assert.match(s2, /### Leitura de links em inglês\n\n- \*\*Leio com o tradutor do navegador ou do celular\*\* — weight 1 \(1 respostas\)/);
+  });
+
+  it("leitura em inglês: distribuição por opção; sem resposta, sem título", () => {
+    const conv = onboardingFormToSurveyResponses([
+      ...sample,
+      R({ area: "RH", leitura_ingles: "Fecho e sigo para o próximo" }, "c@x.com"),
+      R({ area: "RH", leitura_ingles: "Fecho e sigo para o próximo" }, "d@x.com"),
+    ]).responses;
+    const lines = renderEnglishReadingBlock(conv).join("\n");
+    assert.ok(lines.includes("### Leitura de links em inglês"));
+    assert.ok(lines.includes("- **Fecho e sigo para o próximo** — weight 0.667 (2 respostas)"));
+    assert.ok(lines.includes("- **Leio com o tradutor do navegador ou do celular** — weight 0.333 (1 respostas)"));
+    assert.deepEqual(renderEnglishReadingBlock(onboardingFormToSurveyResponses([sample[1]]).responses), []);
   });
 
   it("resposta só com perguntas desconhecidas (ou em branco) não conta como respondente", () => {

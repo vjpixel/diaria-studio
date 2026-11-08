@@ -129,6 +129,24 @@ export function carryOverDeclaredSections(previousMd: string | null | undefined)
 }
 
 /**
+ * #10605 (decisão do editor de 08/11/2026): o que o leitor faz quando o link
+ * abre em inglês, dentro da seção 2. Vazio quando ninguém respondeu (respostas
+ * anteriores à pergunta), para o perfil não ganhar um título sem dado.
+ */
+export function renderEnglishReadingBlock(responses: BeehiivResponse[]): string[] {
+  const entries = countAnswers(responses, SURVEY_MATCHERS.englishReading);
+  if (entries.length === 0) return [];
+  return [
+    "",
+    "### Leitura de links em inglês",
+    "",
+    ...entries.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
+    "",
+    "> **Como usar:** indica quanto do público lê fonte em inglês; considerar ao escolher entre fontes equivalentes em português e em inglês.",
+  ];
+}
+
+/**
  * #10605: seção 4 do perfil, sondagem de produto (só existe no formulário do
  * onboarding). Vazia quando ninguém respondeu essas perguntas, para o perfil
  * de quem só tem a survey antiga não ganhar uma seção sem dado. Texto livre
@@ -1003,6 +1021,7 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
       ...aiLevel.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
       "",
       "> **Como usar:** calibrar o jargão pelo nível declarado; termo técnico sempre com explicação.",
+      ...renderEnglishReadingBlock(surveyResponses),
       "",
       "## 3. Quem são (demographics)",
       "",

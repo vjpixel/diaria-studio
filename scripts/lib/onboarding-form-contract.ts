@@ -33,7 +33,9 @@
  * equipe da empresa onde trabalho"); tema e preço somem quando a pessoa marca
  * "Nada disso" no que ela faria além da newsletter (`hiddenWhen`); sem
  * pergunta de ferramentas nem de porte de empresa; só nível e área são
- * obrigatórias. O envio segue travado pelo marcador de texto pendente
+ * obrigatórias. Depois das seções, uma pergunta opcional sobre o que a pessoa
+ * faz quando o link abre em inglês (`leitura_ingles`, decisão do editor de
+ * 08/11/2026). O envio segue travado pelo marcador de texto pendente
  * (`formContentGate`) até o editor aprovar o texto final.
  *
  * Desde a decisão 10 do editor (08/11/2026) o perfil de audiência sai SÓ
@@ -138,6 +140,17 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
       "Use Melhor (dicas e tutoriais práticos)",
       "Radar (outras notícias, em poucas linhas)",
       "É IA? (o jogo de adivinhar se a imagem é de IA)",
+    ],
+  },
+  {
+    id: "leitura_ingles",
+    label: "Quando você abre um link da diar.ia.br e o texto está em inglês, o que costuma fazer?",
+    kind: "select",
+    options: [
+      "Leio normalmente",
+      "Leio com o tradutor do navegador ou do celular",
+      "Continuo só se o assunto me interessar muito",
+      "Fecho e sigo para o próximo",
     ],
   },
   {
