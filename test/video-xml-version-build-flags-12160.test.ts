@@ -36,7 +36,7 @@ describe("#12160 versão do XML segue as flags e o plano do build", () => {
 
   it("só a flag muda (mesmo plano): versão nova", () => {
     const h = xmlVersionHashOf(INPUTS, planA, BASE);
-    for (const opts of [{ ...BASE, speechDetect: false }, { ...BASE, audioRefine: false }, { ...BASE, audioGain: false }, { ...BASE, titleMode: "text" as const }]) {
+    for (const opts of [{ ...BASE, speechDetect: false }, { ...BASE, audioRefine: false }, { ...BASE, audioGain: false }, { ...BASE, titleMode: "off" as const }]) {
       assert.notEqual(xmlVersionHashOf(INPUTS, planA, opts), h, JSON.stringify(opts));
     }
   });

@@ -13,9 +13,9 @@
  * Grava só as sugestões legítimas em --out (mesmo formato) e imprime no stdout
  * o resumo `{kept, dropped, dropped_details}`. Exit 1 args inválidos, 2 I/O.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
 import { isMainModule } from "./lib/cli-args.ts";
+import { readFactCheckProtection } from "./lib/fact-check-protection.ts";
 import { filterClariceSuggestions } from "./lib/clarice-suggestion-guard.ts";
 
 function arg(argv: string[], name: string): string | undefined {
@@ -41,19 +41,10 @@ function main(): void {
     process.exit(2);
   }
   const editionDir = arg(argv, "edition-dir");
-  const correctedTexts: string[] = [];
+  let correctedTexts: string[] = [];
   if (editionDir) {
-    const path = join(editionDir, "_internal", "fact-check-autofix.json");
     try {
-      if (existsSync(path)) {
-        const log = JSON.parse(readFileSync(path, "utf8"));
-        if (!Array.isArray(log.entries)) throw new Error("entries deve ser array");
-        if (!log.dry_run) for (const entry of log.entries) {
-          if (entry.status === "applied" && typeof entry.suggested_fix === "string" && entry.suggested_fix.trim()) {
-            correctedTexts.push(entry.suggested_fix);
-          }
-        }
-      }
+      correctedTexts = readFactCheckProtection(editionDir).correctedTexts;
     } catch (e) {
       console.error(`[clarice-filter] erro lendo proteção factual: ${(e as Error).message}`);
       process.exit(2);

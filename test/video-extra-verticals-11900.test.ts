@@ -71,19 +71,27 @@ describe("#11900: título na tela do corte é o dele, não o da notícia", () =>
   });
   const CLIPS = [clip("titulo", 0, 60, 300), clip("comentario", 60, 300, 900)];
   const plan = (spec: SequenceSpec): SequencePlan => ({ spec, clips: CLIPS, durationFrames: 360, script: "", missingBlocks: [], dropped: [] });
-  const titleTexts = (xml: string) => [...xml.matchAll(/<sequence id="seq-\d+-([^"]+)">[\s\S]*?<\/sequence>/g)].map((m) => ({ seq: m[1], title: /<parameterid>str<\/parameterid><name>Text<\/name><value>([^<]*)<\/value>/.exec(m[0])?.[1] ?? null }));
+  // #12104: o título só sai em PNG; cada sequência é identificada pelo PNG que o seu clipe de título aponta.
+  const titlePngs = (xml: string) => {
+    const ids = new Map([...xml.matchAll(/<file id="(file-titulo[^"]*)"><name>([^<]+)<\/name>/g)].map((m) => [m[1], m[2]]));
+    return [...xml.matchAll(/<sequence id="seq-\d+-([^"]+)">[\s\S]*?<\/sequence>/g)].map((m) => {
+      const c = /<clipitem id="titulo-\d+">[\s\S]*?<file id="(file-titulo[^"]*)"/.exec(m[0]);
+      return { seq: m[1], title: c ? (ids.get(c[1]) ?? null) : null };
+    });
+  };
+  const png = (text: string, name: string) => ({ text, mode: "png" as const, pngPath: `G:/Meu Drive/YouTube/261103/${name}` });
 
-  it("modo text: cada vertical com o seu título; sem o mapa, o corte herda o geral (comportamento antigo)", () => {
-    const geral = { text: "Pais acusam ChatGPT", mode: "text" as const };
-    const xml = buildXmeml([plan(OUT), plan(SOBERANA)], SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: geral, screenTitleByCorte: { soberana: { text: "IA soberana", mode: "text" } } });
-    assert.deepEqual(titleTexts(xml), [{ seq: "outras-redes", title: "Pais acusam ChatGPT" }, { seq: "soberana", title: "IA soberana" }]);
+  it("cada vertical com o seu título; sem o mapa, o corte herda o geral (comportamento antigo)", () => {
+    const geral = png("Pais acusam ChatGPT", "geral.png");
+    const xml = buildXmeml([plan(OUT), plan(SOBERANA)], SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: geral, screenTitleByCorte: { soberana: png("IA soberana", "soberana.png") } });
+    assert.deepEqual(titlePngs(xml), [{ seq: "outras-redes", title: "geral.png" }, { seq: "soberana", title: "soberana.png" }]);
     const legado = buildXmeml([plan(OUT), plan(SOBERANA)], SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: geral });
-    assert.deepEqual(titleTexts(legado).map((t) => t.title), ["Pais acusam ChatGPT", "Pais acusam ChatGPT"]);
+    assert.deepEqual(titlePngs(legado).map((t) => t.title), ["geral.png", "geral.png"]);
   });
 
   it("corte com título null fica sem faixa de título", () => {
-    const xml = buildXmeml([plan(OUT), plan(SOBERANA)], SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: { text: "Geral", mode: "text" }, screenTitleByCorte: { soberana: null } });
-    assert.deepEqual(titleTexts(xml).map((t) => t.title), ["Geral", null]);
+    const xml = buildXmeml([plan(OUT), plan(SOBERANA)], SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: png("Geral", "geral.png"), screenTitleByCorte: { soberana: null } });
+    assert.deepEqual(titlePngs(xml).map((t) => t.title), ["geral.png", null]);
   });
 
   it("modo png: um <file> por PNG (o geral e o do corte), cada um definido uma vez", () => {

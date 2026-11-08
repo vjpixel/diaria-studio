@@ -551,8 +551,25 @@ describe("chaves machine-local (#10803)", () => {
     }
   }
 
-  it("a allowlist é exatamente as 2 chaves da issue", () => {
-    assert.deepEqual([...MACHINE_LOCAL_ENV_KEYS].sort(), ["DOPPLER_MCP_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS"]);
+  it("a allowlist é exatamente as chaves das issues (#10803, #12430)", () => {
+    assert.deepEqual([...MACHINE_LOCAL_ENV_KEYS].sort(), [
+      "DIARIA_VIDEO_CACHE_DIR",
+      "DOPPLER_MCP_TOKEN",
+      "GOOGLE_APPLICATION_CREDENTIALS",
+    ]);
+  });
+
+  it("DIARIA_VIDEO_CACHE_DIR só no .env local não aborta o sync e sobrevive no .env novo (#12430)", () => {
+    withDir((envPath) => {
+      // Cenário do 300 em 08/11/2026: o .env tem o caminho do cache do
+      // video-montagem, o vault não tem, e o sync abortava com LocalOnlyEnvKeysError.
+      writeFileSync(envPath, "YOUTUBE_REFRESH_TOKEN=velho\nDIARIA_VIDEO_CACHE_DIR=/mnt/hd/diaria-video-cache\n");
+      syncEnv(envPath, () => "YOUTUBE_REFRESH_TOKEN=novo\n");
+      assert.equal(
+        readFileSync(envPath, "utf8"),
+        "YOUTUBE_REFRESH_TOKEN=novo\nDIARIA_VIDEO_CACHE_DIR=/mnt/hd/diaria-video-cache\n",
+      );
+    });
   });
 
   it("não aborta por chave machine-local e mantém a linha local no .env novo", () => {

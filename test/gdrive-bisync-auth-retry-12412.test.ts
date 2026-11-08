@@ -8,8 +8,9 @@
  *
  * O wrapper `scripts/systemd/gdrive-bisync.sh` agora retenta com resync
  * automático SÓ nesse caso (exit 7 + 401/authError no log), com teto de
- * tentativas e as mesmas travas (`--check-access`, `--max-delete`, filtro
- * instalado). Roda o script real com um `rclone` falso que devolve uma
+ * tentativas, `--check-access` e o filtro instalado (o `--max-delete` segue
+ * na linha de comando, mas não protege num resync, #12444). Roda o script
+ * real com um `rclone` falso que devolve uma
  * sequência de exits programada; nunca toca o remote real.
  *
  * Também trava o filtro global de `node_modules/` (frente 2 da issue).
@@ -181,6 +182,56 @@ describe("gdrive-bisync.sh — resync automático em 401/authError (#12412)", { 
     assert.equal(r.calls.length, 2);
     assert.equal(r.installed, "- velho\n");
     assert.match(r.calls[1], /--filters-file \S+\/state\/filters\.txt/);
+  });
+
+  // #12444: resync não apaga, só une os dois lados — arquivo apagado durante a
+  // rodada pode voltar. Cada resync automático termina com esse aviso.
+  const RESURRECT_WARNING = /aviso — o resync automatico une os dois lados e nao apaga nada: arquivo apagado em um lado durante a rodada pode ter voltado do outro \(#12444\)/g;
+
+  it("cada resync automático termina com o aviso de arquivo ressuscitado (#12444)", () => {
+    const one = run({ seq: ["7:auth", "0"] });
+    assert.equal(one.status, 0, one.stderr);
+    assert.equal(one.stderr.match(RESURRECT_WARNING)?.length, 1);
+    assert.ok(
+      one.stderr.indexOf("terminou com exit 0") < one.stderr.search(RESURRECT_WARNING),
+      "o aviso vem depois do resultado do resync",
+    );
+
+    const two = run({ seq: ["7:auth", "7:auth", "0"], env: { GDRIVE_AUTH_RETRY_MAX: "2" } });
+    assert.equal(two.status, 0, two.stderr);
+    assert.equal(two.stderr.match(RESURRECT_WARNING)?.length, 2);
+
+    const failed = run({ seq: ["7:auth", "1"] });
+    assert.equal(failed.status, 1);
+    assert.equal(failed.stderr.match(RESURRECT_WARNING)?.length, 1, "resync que falhou também pode ter copiado antes de falhar");
+  });
+
+  it("sem resync automático, nenhum aviso de arquivo ressuscitado (#12444)", () => {
+    for (const r of [run({ seq: ["0"] }), run({ seq: ["7", "0"] }), run({ seq: ["7:auth", "0"], args: ["--dry-run"] })]) {
+      assert.doesNotMatch(r.stderr, RESURRECT_WARNING);
+    }
+  });
+});
+
+describe("documentação do resync automático (#12444)", () => {
+  const script = readFileSync(SCRIPT, "utf8");
+  const registry = readFileSync(join(ROOT, "docs", "scheduled-tasks-registry.md"), "utf8");
+  const block = registry.split("\n").find((l) => l.startsWith("**`diaria-gdrive-bisync`")) ?? "";
+
+  it("o script não chama mais o --max-delete de trava do resync", () => {
+    assert.doesNotMatch(script, /MESMAS travas/);
+    assert.doesNotMatch(script, /mesmas travas/);
+    assert.match(script, /resync não apaga/);
+  });
+
+  it("o registry diz que a exclusão de node_modules depende de um --resync manual com o timer parado", () => {
+    assert.ok(block, "bloco diaria-gdrive-bisync no registry");
+    assert.match(block, /node_modules[^*]*\*\*Essa exclusão só vale depois de `sh scripts\/systemd\/gdrive-bisync\.sh --resync` rodado uma vez no `300`, com o timer parado/);
+  });
+
+  it("o registry registra o trade-off do resync automático e não lista --max-delete como trava dele", () => {
+    assert.match(block, /Trade-off do resync automático \(#12444\)/);
+    assert.doesNotMatch(block, /mesmas travas \(`--check-access`, `--max-delete`/);
   });
 });
 

@@ -54,6 +54,7 @@ import { fileURLToPath } from "node:url";
 import { generateCard, WEEKLY_OVERLAY_WRAP } from "../gen-social-card-4x5.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
+import { archiveUploadedFileToR2 } from "./public-images-archive.ts";
 import { cloudflareKvKey } from "../upload-images-public.ts";
 import { DIARIA_EIA_URL } from "./canonical-urls.ts";
 import type { InstagramRankedCandidate } from "./weekly-instagram-select.ts";
@@ -200,6 +201,7 @@ export const defaultSectionCardGenerator: SectionCardGenerator = async ({ item, 
 
   const kvKey = cloudflareKvKey(editionDir, `${destaqueId}-4x5.jpg`);
   const url = await uploadImageToWorkerKV(cardPath, kvKey, { kvNamespaceId, workerUrl });
+  await archiveUploadedFileToR2(cardPath, kvKey); // #11412 fatia 3: cópia durável no R2, nunca lança
   return { url };
 };
 
