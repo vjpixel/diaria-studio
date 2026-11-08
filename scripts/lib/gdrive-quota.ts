@@ -111,10 +111,6 @@ export function evaluateGdriveQuota(
   return { ...base, verdict, totalBytes: total, consumedBytes: consumed, freeBytes: free, usedPct };
 }
 
-export function isAlarmingGdriveQuotaVerdict(v: GdriveQuotaVerdict): boolean {
-  return v === "quota-full" || v === "quota-near";
-}
-
 /** Texto do alarme com a causa (mesmo pedido do editor na #10957: dizer o
  * que está ocupando, não só o percentual). */
 export function buildGdriveQuotaCauseText(ev: GdriveQuotaEvaluation): string {
