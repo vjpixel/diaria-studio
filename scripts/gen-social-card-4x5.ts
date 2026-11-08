@@ -368,6 +368,7 @@ async function main(): Promise<void> {
     destaques.map((d) => d.title ?? ""),
   );
   const generated: string[] = [];
+  const generatedKeys: string[] = [];
   for (let i = 0; i < destaques.length; i++) {
     const key = `d${i + 1}`;
     if (only && only !== key) continue;
@@ -380,12 +381,38 @@ async function main(): Promise<void> {
       editionDir, key, d.title ?? "", d.category ?? "", "4x5",
       { fontSizeOverride: sharedFontSize },
     );
-    if (out) generated.push(out);
-    else console.error(`[gen-social-card-4x5] pulado ${key}: 04-${key}-2x1.jpg ausente`);
+    if (out) {
+      generated.push(out);
+      generatedKeys.push(key);
+    } else console.error(`[gen-social-card-4x5] pulado ${key}: 04-${key}-2x1.jpg ausente`);
   }
-  console.log(JSON.stringify({ generated, count: generated.length }, null, 2));
+  // #12109: card recomposto (troca de título no gate) deixa a revisão de crop
+  // do 4:5 para trás. Import tardio: quem importa este módulo pelas funções
+  // de overlay (carrossel semanal, cards sob demanda) não carrega o revisor.
+  const { buildCardCropReviewRerun } = await import("./run-image-crop-reviewer.ts");
+  const cropReviewRerun = buildCardCropReviewRerun(resolve(editionDir), editionDir, generatedKeys);
+  if (cropReviewRerun) {
+    console.error(
+      `[gen-social-card-4x5] revisão de crop desatualizada para ${cropReviewRerun.targets.join(", ")} — ` +
+        `re-rodar o image-crop-reviewer só nesses alvos: ${cropReviewRerun.discover_command} (#12109)`,
+    );
+  }
+  console.log(
+    JSON.stringify(
+      { generated, count: generated.length, ...(cropReviewRerun ? { crop_review_rerun: cropReviewRerun } : {}) },
+      null,
+      2,
+    ),
+  );
 }
 
 if (isMainModule(import.meta.url)) {
-  await main();
+  // Sem top-level await (#12109): o import tardio do revisor em main() fecha um
+  // ciclo de volta a este módulo (invariant-checks → carrossel → overlay), e
+  // com `await main()` no topo o módulo nunca termina de avaliar — o node sai
+  // com 13 ("unsettled top-level await").
+  main().catch((e) => {
+    console.error("[gen-social-card-4x5] ERRO:", e);
+    process.exit(1);
+  });
 }
