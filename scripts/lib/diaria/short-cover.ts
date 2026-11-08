@@ -11,9 +11,9 @@
  *     JPEG na `thumbnailUploadUrl`;
  *   - `youtube_shorts`: `thumbnails.set` depois do `videos.insert` (medido pelo
  *     editor em 28/10/2026: HTTP 200 num Short, comentário da #11547). Só
- *     troca a miniatura 16:9 (busca, player, relacionados): a imagem do feed
- *     de Shorts (`i.ytimg.com/vi/{id}/oar2.jpg`) é escolhida à parte e segue o
- *     frame automático (#12100, medido em 04/11/2026 nos 9 Shorts públicos). A
+ *     troca a miniatura 16:9 (busca, player, relacionados): a imagem da aba
+ *     Shorts (`i.ytimg.com/vi/{id}/sardefault.jpg`, #12251) é escolhida à
+ *     parte e, sem miniatura vertical própria, cai no frame automático (#12100). A
  *     YouTube Data API não tem chamada para ela: o registro grava
  *     `vertical_feed: "manual"` e o passo vai à mão no app do YouTube;
  *   - `x` (Buffer): não aceita imagem, só `thumbnailOffset` (ms) no asset de
@@ -54,7 +54,7 @@ export interface ShortCoverRecord {
   error?: string;
   /**
    * #12100: só no `thumbnails_set` com `ok: true`. O `ok` diz que a miniatura
-   * 16:9 foi trocada; a capa do feed de Shorts (`oar2.jpg`) não muda pela API
+   * 16:9 foi trocada; a capa do feed de Shorts (`sardefault.jpg`, #12251) não muda pela API
    * e fica para o app do YouTube (`manual`).
    */
   vertical_feed?: "manual";
@@ -158,9 +158,16 @@ export function planCoverDestination(
 export const YOUTUBE_SHORTS_COVER_PLAN =
   "thumbnails_set (só a miniatura 16:9; a capa do feed de Shorts é manual no app do YouTube, #12100)";
 
-/** #12100: imagem que o feed de Shorts mostra (proporção original do vertical). */
+/**
+ * #12100/#12251: imagem que a aba Shorts do canal mostra. Medido pelo editor na
+ * rede da página do canal (04/11/2026, #12251): a aba carrega `sardefault.jpg`
+ * quando o Short tem miniatura vertical própria e cai no frame automático
+ * (`oar2.jpg`/`oar1.jpg`) quando não tem — 404 no `sardefault` = sem capa
+ * vertical. O `oar2.jpg`, que o #12100 media, é sempre o frame automático,
+ * inclusive nos Shorts que mostram a capa na aba.
+ */
 export function youtubeShortFeedThumbUrl(videoId: string): string {
-  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/oar2.jpg`;
+  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/sardefault.jpg`;
 }
 
 /**

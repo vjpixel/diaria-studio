@@ -312,6 +312,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // publicada SEM ele (`video_url` do `_internal/site-page-published.json`
     // diferente), roda `publish-edition-site-page.ts --slug-from-d1
     // --no-wait-merge` (o mesmo do §5b-site): abre o PR da página com o player.
+    // #12284: com `--no-merge-waiter` — o waiter destacado morreria com o
+    // cgroup deste unit oneshot; a task espera o merge em foreground
+    // (`--merge-pr`, até 35 min; o unit oneshot não tem timeout de start).
     // Fail-soft — falha da republicação vira `warn` no run-log, não muda o exit.
     //
     // ARMA-ELEGÍVEL desde 23/10/2026 (/diaria-develop 261023b, #10941):
