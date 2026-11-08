@@ -46,8 +46,10 @@ import {
   makeR2ArchiveStore,
   makeServedFetch,
   pruneKvImages,
+  type PruneDeleteRecord,
   type PruneReport,
 } from "./lib/public-images-archive.ts";
+import { logEvent, type RunLogEvent } from "./lib/run-log.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -91,6 +93,26 @@ export function pruneExitCode(report: PruneReport): number {
   return (report.totals.error ?? 0) > 0 ? 1 : 0;
 }
 
+/** Uma linha `warn` no `data/run-log.jsonl` por remoção, gravada antes do DELETE (#12450). */
+export function logPruneDelete(record: PruneDeleteRecord, root: string, log: (e: RunLogEvent, root: string) => unknown = logEvent): void {
+  log(
+    {
+      edition: null,
+      stage: null,
+      agent: "prune-kv-public-images",
+      level: "warn",
+      message: `KV: removendo ${record.key} (cópia em ${record.r2Key} no R2, ${record.bytes} bytes)`,
+      details: record,
+    },
+    root,
+  );
+}
+
+/** Grava o relatório no `--out` (parcial antes da espera final, completo no fim). */
+export function writePruneReport(out: string | undefined, report: PruneReport): void {
+  if (out) writeFileSync(out, JSON.stringify(report, null, 2) + "\n", "utf8");
+}
+
 async function main(): Promise<number> {
   const args = parsePruneArgs(process.argv.slice(2));
   const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
@@ -112,9 +134,11 @@ async function main(): Promise<number> {
       minAgeDays: args.minAgeDays,
       limit: args.limit,
       includeEia: args.includeEia,
+      onDelete: (record) => logPruneDelete(record, ROOT),
+      onProgress: (partial) => writePruneReport(args.out, partial),
     },
   );
-  if (args.out) writeFileSync(args.out, JSON.stringify(report, null, 2) + "\n", "utf8");
+  writePruneReport(args.out, report);
   const notable = report.entries.filter((e) => e.outcome !== "kept-too-recent");
   console.log(
     JSON.stringify(

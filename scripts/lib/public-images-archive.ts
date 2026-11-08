@@ -424,6 +424,18 @@ export interface PruneOptions {
   settleMs?: number;
   /** Injetável no teste. */
   sleep?: (ms: number) => Promise<void>;
+  /** Chamado imediatamente antes de cada DELETE (o CLI grava no `data/run-log.jsonl`). */
+  onDelete?: (record: PruneDeleteRecord) => void;
+  /** Relatório parcial, logo antes da espera final (o CLI grava o `--out`). */
+  onProgress?: (report: PruneReport) => void;
+}
+
+export interface PruneDeleteRecord {
+  key: string;
+  r2Key: string;
+  bytes: number;
+  /** ISO 8601. */
+  at: string;
 }
 
 const imgUrl = (origin: string, key: string, bust?: string) =>
@@ -467,8 +479,8 @@ async function restoreToKv(kv: KvPruner, key: string, bytes: Uint8Array): Promis
  *   1. os dois canários, em cada Worker, têm que vir 200 com os bytes certos
  *      e `X-Image-Source: r2` (falhou → nada é removido);
  *   2. o KV é relido logo antes do DELETE e tem que trazer os mesmos bytes;
- *   3. DELETE com erro: o KV é relido; se a key sumiu, segue a conferência
- *      normal, senão a key é regravada; nos dois casos a rodada para;
+ *   3. cada remoção é registrada (`onDelete`) antes do DELETE; DELETE com
+ *      erro regrava sempre os mesmos bytes (com releitura) e a rodada para;
  *   4. logo depois da remoção, `/img/{key}` em cada Worker tem que vir 200
  *      com os mesmos bytes, e a key fica `deleted-unverified`;
  *   5. no fim, depois de `settleMs` (o cache de borda do KV ainda pode servir
@@ -490,6 +502,13 @@ export async function pruneKvImages(kv: KvPruner, r2: R2ArchiveStore, served: Se
   const finish = () => {
     report.totals = tally(report.entries);
     return report;
+  };
+  const notifyDelete = (record: PruneDeleteRecord) => {
+    try {
+      opts.onDelete?.(record);
+    } catch {
+      // o registro nunca derruba a rodada
+    }
   };
 
   if (opts.workerOrigins.length === 0) throw new Error("pruneKvImages: workerOrigins vazio — sem Worker para conferir, nada é podado");
@@ -594,46 +613,36 @@ export async function pruneKvImages(kv: KvPruner, r2: R2ArchiveStore, served: Se
       continue;
     }
 
-    let deleteError: string | undefined;
+    // Registro da remoção ANTES do DELETE: um Ctrl-C/timeout no meio (ou na
+    // espera final) não deixa key removida sem rastro.
+    notifyDelete({ key, r2Key, bytes: bytes.length, at: new Date().toISOString() });
     try {
       await kv.delete(key);
     } catch (err) {
-      deleteError = errMsg(err);
-      // Falha ambígua (timeout/5xx com a remoção aplicada): relê o KV.
-      let still: Uint8Array | null | undefined;
-      try {
-        still = await kv.get(key);
-      } catch {
-        still = undefined;
-      }
-      if (still !== null) {
-        // A key segue no KV: nada a desfazer. Sem releitura (`undefined`), não
-        // dá para saber se saiu: regrava os mesmos bytes, por garantia.
-        const restoreError = still === undefined ? await restoreToKv(kv, key, bytes) : null;
-        const tail = still !== undefined ? "; a key segue no KV" : restoreError ? `; releitura falhou e RESTAURAR FALHOU: ${restoreError}; a cópia está em ${r2Key} no R2` : "; releitura falhou, key regravada no KV";
-        push({ key, r2Key, outcome: "error", bytes: bytes.length, detail: `DELETE falhou: ${deleteError}${tail}` });
-        abort(`DELETE de ${key} falhou (${deleteError}); rodada interrompida${restoreError ? ` — a restauração no KV falhou, a cópia está em ${r2Key} no R2; conferir à mão` : ""}`);
-        continue;
-      }
+      // Falha ambígua (timeout/5xx, com a remoção aplicada ou não): a
+      // releitura pode vir stale, então regrava sempre os mesmos bytes
+      // (idempotente), confere por releitura e para.
+      const deleteError = errMsg(err);
+      const restoreError = await restoreToKv(kv, key, bytes);
+      const tail = restoreError ? `; RESTAURAR FALHOU: ${restoreError}; a cópia está em ${r2Key} no R2` : "; key regravada no KV";
+      push({ key, r2Key, outcome: "error", bytes: bytes.length, detail: `DELETE falhou: ${deleteError}${tail}` });
+      abort(`DELETE de ${key} falhou (${deleteError}); rodada interrompida${restoreError ? ` — a restauração no KV falhou, a cópia está em ${r2Key} no R2; conferir à mão` : ""}`);
+      continue;
     }
 
-    const entry: PruneEntry = {
-      key,
-      r2Key,
-      outcome: "deleted-unverified",
-      bytes: bytes.length,
-      detail: deleteError ? `DELETE devolveu erro (${deleteError}), mas a key saiu do KV` : undefined,
-    };
+    const entry: PruneEntry = { key, r2Key, outcome: "deleted-unverified", bytes: bytes.length };
     push(entry);
     const why = await checkAll(key, bytes, "0", false);
     if (why) await undo(entry, bytes, why);
     else pending.push({ entry, bytes });
-    if (deleteError) abort(`DELETE de ${key} devolveu erro (${deleteError}) com a remoção aplicada; rodada interrompida`);
   }
 
   // Re-conferência final: depois do cache de borda do KV vencer, cada key
-  // removida tem que vir do R2, nos dois Workers.
+  // removida tem que vir do R2, nos dois Workers. O relatório parcial sai
+  // antes da espera (as `deleted-unverified` ficam registradas).
   if (pending.length > 0) {
+    report.totals = tally(report.entries);
+    opts.onProgress?.(report);
     await sleep(settleMs);
     for (const { entry, bytes } of pending) {
       const why = await checkAll(entry.key, bytes, "final", true);

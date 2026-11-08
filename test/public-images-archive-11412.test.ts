@@ -10,7 +10,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -45,7 +45,7 @@ import {
 import { getBinaryFromWorkerKV, putBinaryToWorkerKV } from "../scripts/lib/cloudflare-kv-upload.ts";
 import type { RunLogEvent } from "../scripts/lib/run-log.ts";
 import { archiveExitCode, parseArchiveArgs } from "../scripts/archive-kv-public-images.ts";
-import { parsePruneArgs, pruneExitCode, pruneWorkerOrigins } from "../scripts/prune-kv-public-images.ts";
+import { logPruneDelete, parsePruneArgs, pruneExitCode, pruneWorkerOrigins, writePruneReport } from "../scripts/prune-kv-public-images.ts";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const md5 = (b: Uint8Array) => createHash("md5").update(b).digest("hex");
@@ -581,7 +581,7 @@ describe("#11412 pruneKvImages", () => {
     assert.equal(new TextDecoder().decode(kv.data.get(DAILY_OLD)!), "daily-v2");
   });
 
-  it("DELETE com erro mas remoção aplicada: confere, confirma e para a rodada", async () => {
+  it("DELETE com erro e remoção aplicada: regrava sempre os bytes (com releitura) e para", async () => {
     const { kv, r2 } = await archived();
     kv.delete = async (k) => {
       kv.ops.push(`delete:${k}`);
@@ -590,46 +590,87 @@ describe("#11412 pruneKvImages", () => {
     };
     const report = await pruneKvImages(kv, r2, workerFetch(kv, r2), applyOpts());
     const e = report.entries.find((x) => x.key === DAILY_OLD)!;
-    assert.equal(e.outcome, "deleted", "a key sumiu e o R2 serve: conta como removida");
-    assert.match(e.detail!, /DELETE devolveu erro \(timeout\)/);
-    assert.match(report.aborted!, /DELETE de .* devolveu erro/);
+    assert.equal(e.outcome, "error");
+    assert.match(e.detail!, /DELETE falhou: timeout; key regravada no KV/);
+    assert.equal(new TextDecoder().decode(kv.data.get(DAILY_OLD)!), "daily", "bytes de volta ao KV");
+    assert.match(report.aborted!, /DELETE de .* falhou \(timeout\)/);
     assert.equal(kv.ops.filter((o) => o.startsWith("delete:")).length, 1, "rodada parou depois dessa key");
     assert.equal(pruneExitCode(report), 1);
   });
 
-  it("DELETE com erro e key ainda no KV: error, sem regravar, rodada para", async () => {
+  it("DELETE com erro e releitura stale (diz que a key segue lá): regrava mesmo assim", async () => {
     const { kv, r2 } = await archived();
-    kv.delete = async () => {
+    const stale = new Map(kv.data);
+    const get = kv.get;
+    let deleted = false;
+    // Depois do DELETE, a leitura devolve o valor antigo (stale) até um PUT real.
+    kv.get = async (k) => (deleted && !kv.ops.includes(`put:${k}`) ? (stale.get(k) ?? null) : get(k));
+    kv.delete = async (k) => {
+      deleted = true;
+      kv.data.delete(k);
       throw new Error("KV DELETE 500");
     };
     const report = await pruneKvImages(kv, r2, workerFetch(kv, r2), applyOpts());
-    const e = report.entries.find((x) => x.key === DAILY_OLD)!;
-    assert.equal(e.outcome, "error");
-    assert.match(e.detail!, /a key segue no KV/);
-    assert.ok(!kv.ops.some((o) => o.startsWith("put:")));
+    assert.ok(kv.ops.includes(`put:${DAILY_OLD}`), "regravou apesar da releitura dizer que a key está lá");
+    assert.equal(new TextDecoder().decode(kv.data.get(DAILY_OLD)!), "daily");
     assert.ok(report.aborted);
     assert.ok(kv.data.has(WEEKLY_CARD) && kv.data.has(RETRO));
   });
 
-  it("DELETE com erro e releitura falhando: regrava os bytes, por garantia", async () => {
+  it("DELETE com erro e regravação falhando: RESTAURAR FALHOU com a key do R2", async () => {
     const { kv, r2 } = await archived();
-    let deleted = false;
-    const get = kv.get;
-    kv.get = async (k) => {
-      if (deleted && k === DAILY_OLD && !kv.ops.includes(`put:${DAILY_OLD}`)) throw new Error("KV GET 500");
-      return get(k);
-    };
     kv.delete = async (k) => {
-      deleted = true;
       kv.data.delete(k);
       throw new Error("timeout");
     };
+    kv.put = async () => {
+      throw new Error("KV PUT 500");
+    };
     const report = await pruneKvImages(kv, r2, workerFetch(kv, r2), applyOpts());
     const e = report.entries.find((x) => x.key === DAILY_OLD)!;
-    assert.equal(e.outcome, "error");
-    assert.match(e.detail!, /key regravada no KV/);
-    assert.equal(new TextDecoder().decode(kv.data.get(DAILY_OLD)!), "daily");
-    assert.ok(report.aborted);
+    assert.match(e.detail!, /RESTAURAR FALHOU: KV PUT 500; a cópia está em img\/260512\/04-d1-2x1-aaaaaaaa\.jpg/);
+    assert.match(report.aborted!, /restauração no KV falhou/);
+  });
+
+  it("cada remoção é registrada antes do DELETE, e o relatório parcial sai antes da espera", async () => {
+    const { kv, r2 } = await archived();
+    const events: string[] = [];
+    const del = kv.delete;
+    kv.delete = async (k) => {
+      events.push(`delete:${k}`);
+      return del(k);
+    };
+    const report = await pruneKvImages(
+      kv,
+      r2,
+      workerFetch(kv, r2),
+      applyOpts({
+        onDelete: (r) => events.push(`log:${r.key}:${r.r2Key}:${r.bytes}:${Number.isNaN(Date.parse(r.at)) ? "bad" : "at"}`),
+        onProgress: (p) => events.push(`progress:${p.totals["deleted-unverified"]}`),
+        sleep: async () => void events.push("sleep"),
+      }),
+    );
+    assert.deepEqual(events.slice(0, 2), [`log:${DAILY_OLD}:img/260512/04-d1-2x1-aaaaaaaa.jpg:5:at`, `delete:${DAILY_OLD}`]);
+    assert.equal(events.filter((e) => e.startsWith("log:")).length, 3);
+    assert.deepEqual(events.slice(-2), ["progress:3", "sleep"], "relatório parcial gravado antes da espera de 70 s");
+    assert.equal(report.totals.deleted, 3);
+  });
+
+  it("CLI: logPruneDelete grava no run-log e writePruneReport no --out", () => {
+    const calls: Array<{ e: RunLogEvent; root: string }> = [];
+    logPruneDelete({ key: DAILY_OLD, r2Key: "img/260512/x", bytes: 5, at: "2026-11-08T12:00:00.000Z" }, "/raiz", (e, root) => calls.push({ e, root }));
+    assert.equal(calls[0].root, "/raiz");
+    assert.equal(calls[0].e.agent, "prune-kv-public-images");
+    assert.deepEqual(calls[0].e.details, { key: DAILY_OLD, r2Key: "img/260512/x", bytes: 5, at: "2026-11-08T12:00:00.000Z" });
+    const dir = mkdtempSync(join(tmpdir(), "prune-out-12450-"));
+    try {
+      const out = join(dir, "r.json");
+      writePruneReport(out, { mode: "apply", listed: 1, totals: { "deleted-unverified": 1 }, canary: [], bytesFreed: 0, entries: [] });
+      assert.equal(JSON.parse(readFileSync(out, "utf8")).totals["deleted-unverified"], 1);
+      writePruneReport(undefined, { mode: "apply", listed: 0, totals: {}, canary: [], bytesFreed: 0, entries: [] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("dry-run com cache de borda nunca chama delete nem espera", async () => {
