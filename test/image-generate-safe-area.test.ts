@@ -22,8 +22,21 @@ describe("image-generate STYLE_SUFFIX — safe-area central (#2657)", () => {
     assert.match(
       STYLE_SUFFIX,
       /central half|subjects.*grouped|grouped.*central/i,
-      "STYLE_SUFFIX deve instruir Gemini a agrupar sujeitos na metade central para safe-area do crop 1:1",
+      "STYLE_SUFFIX deve instruir Gemini a agrupar sujeitos na metade central para safe-area do crop 4:5",
     );
+  });
+
+  // #12309: o crop 1:1 deixou de ser gerado no #12226. A frase da metade
+  // central passou a justificar-se pelo card 4:5, e nenhum trecho do sufixo
+  // pode voltar a pedir composição para um quadrado que não existe mais.
+  it("#12309: safe-area central cita o card 4:5 e não o crop quadrado 1:1", () => {
+    assert.match(
+      STYLE_SUFFIX,
+      /central half of the horizontal frame[^.]*portrait 4:5 feed card/i,
+      "a frase da metade central deve citar o card 4:5",
+    );
+    assert.doesNotMatch(STYLE_SUFFIX, /1:1/, "STYLE_SUFFIX não deve mencionar 1:1");
+    assert.doesNotMatch(STYLE_SUFFIX, /\bsquare\b/i, "STYLE_SUFFIX não deve mencionar square");
   });
 
   it("menciona proibição de elementos nas bordas laterais", () => {
@@ -81,7 +94,7 @@ describe("image-generate STYLE_SUFFIX — safe-area central (#2657)", () => {
   // A arte 2:1 do e-mail também vira card de feed (4:5) e story (9:16). Antes,
   // a safe-area só falava do crop 1:1 — os formatos retrato cortavam figura
   // (edição 260727: D2 e D3 decapitados, 2 regenerações manuais no gate).
-  it("instrui composição para os crops RETRATO (4:5 e 9:16), não só 1:1", () => {
+  it("instrui composição para os crops RETRATO (4:5 e 9:16)", () => {
     assert.match(
       STYLE_SUFFIX,
       /4:5|9:16|portrait/i,
