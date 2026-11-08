@@ -51,7 +51,8 @@ import {
   senderEmail,
 } from "./inject-inbox-urls.ts";
 import type { SyntheticInboxArticle } from "./inject-inbox-urls.ts";
-import { classifySender, loadSenderRegistry, senderKey } from "./lib/newsletter-senders.ts";
+import { classifySender, configSendersOf, resolveSenderRegistry, senderKey } from "./lib/newsletter-senders.ts";
+import { logEvent } from "./lib/run-log.ts";
 import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
 // #2834: stripHtml consolidado em lib/strip-html.ts (era byte-idêntico ao
 // de auto-forward-newsletters.ts). Reexportado aqui pra não quebrar imports
@@ -610,13 +611,11 @@ export function loadAlwaysConsiderConfig(configPath: string): { alwaysConsiderSe
 }
 
 /** #12188: `newsletter_auto_capture.senders` normalizados; config ilegível = vazio (o aviso já sai acima). */
-function loadConfigSenders(configPath: string): Set<string> {
+function loadConfigSenders(configPath: string): string[] {
   try {
-    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as { newsletter_auto_capture?: { senders?: unknown } };
-    const senders = cfg.newsletter_auto_capture?.senders;
-    return new Set(Array.isArray(senders) ? senders.filter((s): s is string => typeof s === "string").map(senderKey) : []);
+    return configSendersOf(JSON.parse(readFileSync(configPath, "utf8")));
   } catch {
-    return new Set();
+    return [];
   }
 }
 
@@ -660,7 +659,11 @@ export function verifyPersistedOutput(absOut: string, expectedCount: number): { 
   }
 }
 
-export function main(argv: string[] = process.argv): void {
+/**
+ * `opts.registryPath`/`opts.logRoot` (#12188): injetáveis para teste — default
+ * `seed/newsletter-senders.json` e `data/run-log.jsonl` do repo.
+ */
+export function main(argv: string[] = process.argv, opts: { registryPath?: string; logRoot?: string } = {}): void {
   const { threadsPath, outPath, cursorPath, edition } = parseArgs(argv);
   const { alwaysConsiderSenders, configWarnings } = loadAlwaysConsiderConfig(resolve(ROOT, "platform.config.json"));
   for (const w of configWarnings) console.error(`[capture-newsletter-urls] WARN ${w}`);
@@ -685,16 +688,29 @@ export function main(argv: string[] = process.argv): void {
   }
 
   // Unknown and rejected senders remain in the intake, never enter the IA pool.
-  const registry = loadSenderRegistry(resolve(ROOT, "seed/newsletter-senders.json"));
+  // #12188: registro ausente/inválido → fallback para os senders do config
+  // (mesma política do Stage 0), com error no run-log — nunca derruba a captura.
+  const configSenders = loadConfigSenders(resolve(ROOT, "platform.config.json"));
+  const registryPath = opts.registryPath ?? resolve(ROOT, "seed/newsletter-senders.json");
+  const { registry, error: registryError } = resolveSenderRegistry(() => readFileSync(registryPath, "utf8"), configSenders);
+  if (registryError) {
+    const w = `seed/newsletter-senders.json ${registryError} — captura segue com os senders do platform.config.json (#12188).`;
+    configWarnings.push(w);
+    console.error(`[capture-newsletter-urls] ERRO ${w}`);
+    logEvent({ edition: edition ?? null, stage: 0, agent: "capture-newsletter-urls", level: "error", message: w, details: { registry: registryPath } }, opts.logRoot ?? ROOT);
+  }
   const dropped = threads.filter((t) => classifySender(t.sender, registry).classificacao !== "IA");
   threads = threads.filter((t) => classifySender(t.sender, registry).classificacao === "IA");
   // #12188: a sender still listed in platform.config.json but not approved in
   // the registry is fetched and then filtered here — never in silence.
-  const configSenders = loadConfigSenders(resolve(ROOT, "platform.config.json"));
-  for (const sender of new Set(dropped.map((t) => senderKey(t.sender)).filter((s) => configSenders.has(s)))) {
+  const configSet = new Set(configSenders);
+  for (const sender of new Set(dropped.map((t) => senderKey(t.sender)).filter((s) => configSet.has(s)))) {
     const w = `newsletter_auto_capture.senders inclui "${sender}", que não está aprovado em seed/newsletter-senders.json — threads dele ficam fora do pool até decisão no gate 4 (#12188).`;
     configWarnings.push(w);
     console.error(`[capture-newsletter-urls] WARN ${w}`);
+  }
+  if (dropped.length) {
+    configWarnings.push(`${dropped.length} thread(s) de remetente não aprovado (pendente/rejeitado) ficaram fora do pool (#12188).`);
   }
 
   // Load cursor
@@ -716,6 +732,9 @@ export function main(argv: string[] = process.argv): void {
   // without "@" (legacy/name-only) cannot be classified and is preserved.
   const approvedExisting = existing.filter((a) => !a.newsletter_mentions?.length || a.newsletter_mentions.some((sender) =>
     !senderKey(sender).includes("@") || classifySender(sender, registry).classificacao === "IA"));
+  if (approvedExisting.length < existing.length) {
+    configWarnings.push(`${existing.length - approvedExisting.length} artigo(s) já gravado(s) de remetente não aprovado saíram do pool (#12188).`);
+  }
   const merged = mergeCapturedArticles(approvedExisting, articles);
   const tmpOut = absOut + ".tmp";
   writeFileSync(tmpOut, JSON.stringify(merged, null, 2) + "\n", "utf8");

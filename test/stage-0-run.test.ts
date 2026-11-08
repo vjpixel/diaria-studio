@@ -1246,6 +1246,69 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.ok(fetchCalls[0].args.includes("72"), "since_hours do config aplicado mesmo com o registro inválido");
   });
 
+  it("#12188 re-review item 2 — seed/newsletter-senders.json AUSENTE também vira error, com fallback para os senders do config", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "fetch-newsletter-threads.ts": () => ok(JSON.stringify({ threads_found: 0, threads_written: 0, skipped_no_body: 0 })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const logEventCalls: string[][] = [];
+    const deps = baseDeps({
+      exec: (script, args) => {
+        if (script.includes("log-event")) logEventCalls.push(args);
+        return exec(script, args);
+      },
+      execAsync,
+      existsSync: () => false,
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({ newsletter_auto_capture: { enabled: true, senders: ["a@example.com"], since_hours: 48 } });
+        }
+        throw new Error(`unmocked readFile: ${p}`);
+      },
+    });
+    await runStage0(["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"], deps);
+    assert.ok(
+      logEventCalls.some((a) => a.includes("error") && a.some((x) => x.includes("newsletter-senders.json arquivo ausente"))),
+      `esperava error do registro ausente, recebeu: ${JSON.stringify(logEventCalls)}`,
+    );
+    const fetchCall = calls.find((c) => c.script.includes("fetch-newsletter-threads") && !c.args.includes("--discover"));
+    assert.equal(fetchCall?.args[fetchCall.args.indexOf("--senders") + 1], "a@example.com", "captura segue com os senders do config");
+  });
+
+  it("#12188 re-review P3 — falha da descoberta não é informational e carrega exit/stderr", async () => {
+    const { exec } = makeFakeExec(
+      happyExecHandlers({
+        "fetch-newsletter-threads.ts": (args) =>
+          args.includes("--discover") ? fail(3, "quota exceeded") : ok(JSON.stringify({ threads_found: 0, threads_written: 0, skipped_no_body: 0 })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const logEventCalls: string[][] = [];
+    const deps = baseDeps({
+      exec: (script, args) => {
+        if (script.includes("log-event")) logEventCalls.push(args);
+        return exec(script, args);
+      },
+      execAsync,
+      existsSync: () => false,
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({ newsletter_auto_capture: { enabled: true, senders: ["a@example.com"], since_hours: 48 } });
+        }
+        throw new Error(`unmocked readFile: ${p}`);
+      },
+    });
+    await runStage0(["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"], deps);
+    const warn = logEventCalls.find((a) => a.some((x) => x.includes("descoberta de newsletters falhou")));
+    assert.ok(warn);
+    assert.ok(!warn!.includes("--informational"));
+    const details = JSON.parse(warn![warn!.indexOf("--details") + 1]) as { exit: number; stderr: string };
+    assert.equal(details.exit, 3);
+    assert.match(details.stderr, /quota exceeded/);
+  });
+
   it("#7871 — config_warnings/always_consider_exemptions de capture-newsletter-urls.ts propagam pro log estruturado (não ficam presos em stderr)", async () => {
     const { exec, calls } = makeFakeExec(
       happyExecHandlers({

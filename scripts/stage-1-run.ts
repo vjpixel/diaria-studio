@@ -1062,8 +1062,12 @@ async function runPostResearchPreScore(deps: Stage1RunDeps, opts: Stage1RunOptio
     if (deps.existsSync(registryAbs)) {
       try {
         const registry = parseSenderRegistry(deps.readFile(registryAbs));
-        countsThread = (t) => classifySender(t.sender ?? "", registry).classificacao === "IA";
-      } catch { /* o Stage 0 já registrou o erro do registro */ }
+        countsThread = (t) => !t.sender || classifySender(t.sender, registry).classificacao === "IA";
+      } catch (err) {
+        // Stage 1 standalone (sem o Stage 0 desta sessão) não pode deixar o
+        // registro inválido passar em silêncio (#12188).
+        logEvent(deps, opts.edition, "warn", `1h: seed/newsletter-senders.json inválido (${err instanceof Error ? err.message : String(err)}) — guard #9368 conta todas as threads (#12188)`);
+      }
     }
     const yieldCheck = evaluateCaptureYield(readIfExists("captured-newsletters.json"), readIfExists("captured-newsletter-articles.json"), countsThread);
     if (yieldCheck.empty) {

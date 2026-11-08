@@ -7,7 +7,8 @@
  *   address the discovery kept out of the offer (item 6, privacy).
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, resolve, basename } from "node:path";
+import { dirname, isAbsolute, relative, resolve, basename } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { processThreads, type CapturedThread } from "./capture-newsletter-urls.ts";
 import type { DiscoveredThread, FetchManifestEvent } from "./fetch-newsletter-threads.ts";
@@ -22,8 +23,24 @@ import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 export interface IntakeThread extends CapturedThread { capture_error?: string }
 type Item = Record<string, unknown>;
 export interface LinkAudit {
-  url: string; title: string; score: number | null; score_status: "pontuado" | "pendente";
+  url: string; title: string; score: number | null;
+  /** `falha-fetch` (#12188): sem score/título porque a leitura da URL falhou (motivo em `fetch_error`). */
+  score_status: "pontuado" | "pendente" | "falha-fetch";
   thread_id: string; newsletter: string; destino: string;
+  /** false = removido antes do pool (dedup/data); null = pool desconhecido (ex.: Stage 0). */
+  in_pool: boolean | null;
+  fetch_error?: string;
+}
+/**
+ * #12188: o que falta num link pode bloquear o gate? Só quando NINGUÉM tentou:
+ * falha de fetch/enrich registrada (paywall, 403, challenge) ou link removido
+ * antes do pool (dedup/data — score aí é só auditoria) viram warning.
+ */
+export function linkMissing(l: Pick<LinkAudit, "score" | "title">): boolean {
+  return typeof l.score !== "number" || !Number.isFinite(l.score) || !l.title?.trim() || l.title.startsWith("(newsletter:");
+}
+export function linkMissingBlocks(l: Pick<LinkAudit, "score" | "title" | "fetch_error" | "in_pool">): boolean {
+  return linkMissing(l) && !l.fetch_error && l.in_pool !== false;
 }
 export interface IntakeOptions {
   /** Threads da descoberta (`discovered-newsletters.json`) — só auditoria. */
@@ -31,6 +48,8 @@ export interface IntakeOptions {
   bulkDomains?: string[];
   /** Threads que falharam na captura por remetente e não chegaram ao arquivo. */
   failedThreads?: Array<{ thread_id: string; error?: string }>;
+  /** #12188: urlKey → motivo da falha de fetch/enrich registrada. */
+  fetchFailures?: Map<string, string>;
 }
 export function urlKey(url: string): string { return canonicalize(url).toLowerCase(); }
 /** Accept pool, chunk, fallback and approved shapes without selecting only finalists. */
@@ -88,6 +107,8 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
   visit(final);
   const links: LinkAudit[] = [];
   const poolKnown = pool !== undefined;
+  /** #12188 item 3: só as URLs auditadas entram na impressão digital do 02-reviewed.md. */
+  const fingerprintKeys = new Set<string>();
   const rows = threads.map((thread) => {
     const classification = classifySender(thread.sender, registry);
     const extraction = processThreads([thread], {processed_thread_ids: []}, {alwaysConsiderSenders});
@@ -95,14 +116,21 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
     if (classification.classificacao === "IA") for (const article of articles) {
       const key = urlKey(article.url);
       const match = scored.get(key);
-      const destination = destinations.get(key) ?? (typeof match?.url === "string" ? destinations.get(urlKey(match.url)) : undefined);
-      links.push({url: article.url, title: titles.get(key) ?? (typeof match?.title === "string" ? match.title : article.title),
+      const matchKey = typeof match?.url === "string" ? urlKey(match.url) : undefined;
+      fingerprintKeys.add(key); if (matchKey) fingerprintKeys.add(matchKey);
+      const destination = destinations.get(key) ?? (matchKey ? destinations.get(matchKey) : undefined);
+      const fetchError = opts.fetchFailures?.get(key) ?? (matchKey ? opts.fetchFailures?.get(matchKey) : undefined);
+      const link: LinkAudit = {url: article.url, title: titles.get(key) ?? (typeof match?.title === "string" ? match.title : article.title),
         score: typeof match?.score === "number" ? match.score : null, score_status: match ? "pontuado" : "pendente",
-        thread_id: thread.thread_id, newsletter: thread.sender, destino: destination ?? "fora da edição"});
+        thread_id: thread.thread_id, newsletter: thread.sender, destino: destination ?? "fora da edição",
+        in_pool: poolKnown ? poolKeys.has(key) || (matchKey !== undefined && poolKeys.has(matchKey)) : null};
+      if (fetchError && linkMissing(link)) { link.fetch_error = fetchError; if (link.score === null) link.score_status = "falha-fetch"; }
+      links.push(link);
     }
     const threadLinks = links.filter((l) => l.thread_id === thread.thread_id);
     const pending = threadLinks.filter((l) => l.score === null).length;
     const untitled = threadLinks.filter((l) => !l.title.trim() || l.title.startsWith("(newsletter:")).length;
+    const fetchFailed = threadLinks.filter((l) => l.fetch_error).length;
     const inPool = articles.filter((a) => poolKeys.has(urlKey(a.url))).length;
     const ia = classification.classificacao === "IA";
     // #12188 item 3: approved newsletter with 0 links is a failure, never "lida".
@@ -110,8 +138,10 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
       thread.capture_error ? ["falhou", thread.capture_error]
       : !ia ? ["ignorada", classification.classificacao_motivo]
       : articles.length === 0 ? ["falhou", `Newsletter aprovada sem nenhum link capturado (${extraction.result.urls_extracted} extraídos, ${extraction.result.urls_filtered} filtrados)`]
-      : pending || untitled ? ["falhou", `${pending} links aguardam pontuação; ${untitled} aguardam título`]
+      : pending || untitled ? ["falhou", `${pending} links aguardam pontuação; ${untitled} aguardam título${fetchFailed ? `; ${fetchFailed} com falha de fetch/enrich registrada` : ""}`]
       : poolKnown && inPool < articles.length ? ["parcial", `${articles.length - inPool} de ${articles.length} links capturados não chegaram ao pool (dedup/filtro)`]
+      // #12188: sem tmp-articles-raw.json (ex.: auditoria do Stage 0) não dá para afirmar "lida".
+      : !poolKnown ? ["pool desconhecido", "Links extraídos e pontuados; pool ainda não montado"]
       : ["lida", "Links extraídos e pontuados; sem resumo"];
     return {thread_id: thread.thread_id, remetente: thread.sender, assunto: thread.subject, data: thread.date,
       ...classification, links_extraidos: extraction.result.urls_extracted,
@@ -147,7 +177,7 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
     pendingSenders.add(senderKey(thread.sender));
     discovery.oferecidos.push({thread_id: thread.thread_id, remetente: thread.sender, assunto: thread.subject, data: thread.date, servico: service});
   }
-  return {rows, links, pending_senders: [...pendingSenders].sort(), discovery};
+  return {rows, links, pending_senders: [...pendingSenders].sort(), discovery, fingerprint_keys: [...fingerprintKeys].sort()};
 }
 function json(path: string): unknown { return JSON.parse(readFileSync(path, "utf8")); }
 function optional(path: string): unknown { return existsSync(path) ? json(path) : undefined; }
@@ -204,6 +234,63 @@ export function latestManifestEvents(manifestPath: string): FetchManifestEvent[]
   const events = readFileSync(manifestPath, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as FetchManifestEvent);
   return [...new Map(events.map((e) => [e.scope ?? e.query ?? "", e])).values()];
 }
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * #12188 P3: registro dentro do repo vai RELATIVO (`seed/newsletter-senders.json`),
+ * para o invariante recomputar contra o seed local em qualquer máquina — o path
+ * absoluto gravado numa máquina não existe na outra (data/ sincroniza por OneDrive).
+ */
+export function portableRegistryPath(path: string, root = REPO_ROOT): string {
+  const rel = relative(root, path);
+  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel.replace(/\\/g, "/") : path;
+}
+export type DiscoveryFileStatus = "ok" | "ausente" | "ilegível";
+export function readDiscovered(path: string): {threads: DiscoveredThread[]; status: DiscoveryFileStatus} {
+  if (!existsSync(path)) return {threads: [], status: "ausente"};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return Array.isArray(parsed) ? {threads: parsed as DiscoveredThread[], status: "ok"} : {threads: [], status: "ilegível"};
+  } catch { return {threads: [], status: "ilegível"}; }
+}
+/**
+ * #12188 itens 6-8: descoberta que não varreu tudo nunca vira "0 encontradas".
+ * `events` = último evento por escopo do manifesto da descoberta.
+ */
+export function discoveryWarnings(events: FetchManifestEvent[], fileStatus: DiscoveryFileStatus): string[] {
+  const out: string[] = [];
+  if (!events.length) out.push("Descoberta indisponível: manifesto ausente (discovered-newsletters.json.fetch.jsonl)");
+  for (const event of events) {
+    if (event.failed) out.push(`Descoberta de remetentes novos falhou: ${event.error}`);
+    if (event.capped) out.push("Descoberta atingiu o teto de threads com mais resultados na busca — remetentes novos podem ter ficado de fora");
+  }
+  const unread = events.flatMap((e) => (e.outcomes ?? []).filter((o) => o.outcome === "falhou")).length;
+  if (unread) out.push(`${unread} thread(s) da descoberta não foram lidas (falha ao ler metadados)`);
+  if (fileStatus === "ilegível") out.push("Descoberta indisponível: arquivo ilegível (discovered-newsletters.json)");
+  else if (fileStatus === "ausente" && events.some((e) => !e.failed)) out.push("Descoberta indisponível: arquivo ausente (discovered-newsletters.json)");
+  return out;
+}
+/** Motivos de enrich que contam como "tentou ler a URL e falhou". */
+const ENRICH_FAILURE_REASONS = new Set(["fetch_failed", "no_metadata_found"]);
+/**
+ * #12188 item 1: falhas de leitura registradas. Duas fontes, ambas em `_internal/`:
+ * - `newsletter-unscored.enrich.json` — stdout do `enrich-inbox-articles.ts`
+ *   (`outcomes[]` com `enriched: false` e `reason`);
+ * - `newsletter-fetch-failures.json` — `[{url, reason}]` gravado no gate quando
+ *   o scorer não conseguiu ler a URL (paywall, 403, challenge).
+ */
+export function readFetchFailures(internal: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const enrich = cache(resolve(internal, "newsletter-unscored.enrich.json")) as {outcomes?: Array<{url?: unknown; enriched?: unknown; reason?: unknown}>} | undefined;
+  for (const o of Array.isArray(enrich?.outcomes) ? enrich.outcomes : []) {
+    if (typeof o?.url === "string" && o.enriched === false && typeof o.reason === "string" && ENRICH_FAILURE_REASONS.has(o.reason)) out.set(urlKey(o.url), `enrich: ${o.reason}`);
+  }
+  const manual = cache(resolve(internal, "newsletter-fetch-failures.json"));
+  for (const f of Array.isArray(manual) ? manual : []) {
+    const entry = f as {url?: unknown; reason?: unknown};
+    if (typeof entry?.url === "string" && typeof entry.reason === "string" && entry.reason.trim()) out.set(urlKey(entry.url), entry.reason.trim());
+  }
+  return out;
+}
 export function main(argv = process.argv.slice(2)): void {
   const {values, flags} = parseArgs(argv);
   const dataDir = resolve(values["data-dir"] ?? "data");
@@ -233,11 +320,10 @@ export function main(argv = process.argv.slice(2)): void {
   const editionDir = editionDirOf(values.edition);
   const internal = resolve(editionDir, "_internal");
   mkdirSync(internal, {recursive: true});
-  const fingerprint = computeIntakeFingerprint(editionDir, registryPath);
   const capturedPath = resolve(internal, "captured-newsletters.json");
   const threads = (optional(capturedPath) ?? []) as IntakeThread[];
   if (!Array.isArray(threads)) throw new Error("captured-newsletters deve ser array");
-  const discovered = (cache(resolve(internal, "discovered-newsletters.json")) ?? []) as DiscoveredThread[];
+  const discoveredRead = readDiscovered(resolve(internal, "discovered-newsletters.json"));
   const scores = ["tmp-allscored.json", "tmp-scored.json", "newsletter-extra-scores.json", "01-approved.json"].map((f) => optional(resolve(internal, f)));
   const pool = optional(resolve(internal, "tmp-articles-raw.json"));
   const metadata = ["tmp-dates-reviewed.json", "captured-newsletter-articles.json"].map((f) => optional(resolve(internal, f)));
@@ -248,8 +334,12 @@ export function main(argv = process.argv.slice(2)): void {
   const bulkDomains = Array.isArray(config?.newsletter_auto_capture?.bulk_service_domains) ? config.newsletter_auto_capture.bulk_service_domains : DEFAULT_BULK_SERVICE_DOMAINS;
   const captureEvents = latestManifestEvents(resolve(internal, "captured-newsletters.json.fetch.jsonl"));
   const failedThreads = captureEvents.flatMap((e) => (e.outcomes ?? []).filter((o) => o.outcome === "falhou").map((o) => ({thread_id: o.thread_id, error: o.error})));
+  const fetchFailures = readFetchFailures(internal);
   const result = buildIntake(threads, loadSenderRegistry(registryPath), scores, pool, final, config?.newsletter_auto_capture?.always_consider_senders, metadata,
-    {discovered: Array.isArray(discovered) ? discovered : [], bulkDomains, failedThreads});
+    {discovered: discoveredRead.threads, bulkDomains, failedThreads, fetchFailures});
+  // #12188 item 3: depois do buildIntake — a impressão digital do 02-reviewed.md
+  // só cobre as URLs auditadas (trocar link de Radar não-newsletter não conta).
+  const fingerprint = computeIntakeFingerprint(editionDir, registryPath, result.fingerprint_keys);
   const ledger = resolve(dataDir, `newsletter-intake/${values.edition}.jsonl`);
   appendSnapshots(ledger, values.edition, result.rows);
   const warnings: string[] = [];
@@ -260,28 +350,35 @@ export function main(argv = process.argv.slice(2)): void {
     const recorded = new Set(result.rows.map((r) => r.thread_id));
     if (ids.size !== recorded.size || [...ids].some((id) => !recorded.has(id))) warnings.push(`total no inbox na janela (${ids.size}) != total registrado (${recorded.size})`);
   } else warnings.push("Total no inbox na janela indisponível: manifesto da captura ausente");
-  for (const event of latestManifestEvents(resolve(internal, "discovered-newsletters.json.fetch.jsonl"))) {
-    if (event.failed) warnings.push(`Descoberta de remetentes novos falhou: ${event.error}`);
-  }
+  warnings.push(...discoveryWarnings(latestManifestEvents(resolve(internal, "discovered-newsletters.json.fetch.jsonl")), discoveredRead.status));
   if (result.discovery.aprovados_fora_da_captura) warnings.push(`${result.discovery.aprovados_fora_da_captura} thread(s) de remetente aprovado achada(s) só pela descoberta — re-rodar a captura por remetente`);
   if (existsSync(resolve(internal, ".capture-newsletter-failed.json"))) warnings.push("capture_failed: captura Gmail falhou");
   if (result.rows.some((r) => r.estado === "falhou")) warnings.push("Há newsletters com estado falhou; conferir motivos no intake");
   if (result.rows.some((r) => r.estado === "parcial")) warnings.push("Há newsletters com links que não chegaram ao pool; conferir motivos no intake");
-  const missing = [...new Map(result.links.filter((l) => l.score === null || !l.title.trim() || l.title.startsWith("(newsletter:")).map((l) => [urlKey(l.url), l])).values()];
+  const fetchFailedLinks = result.links.filter((l) => l.fetch_error && linkMissing(l));
+  if (fetchFailedLinks.length) warnings.push(`${fetchFailedLinks.length} link(s) sem score/título por falha de fetch/enrich registrada (paywall, 403, challenge) — auditoria, não bloqueia`);
+  const outOfPool = result.links.filter((l) => !l.fetch_error && l.in_pool === false && linkMissing(l));
+  if (outOfPool.length) warnings.push(`${outOfPool.length} link(s) removido(s) antes do pool (dedup/data) sem score/título — score opcional, só auditoria`);
+  const missing = [...new Map(result.links.filter(linkMissing).map((l) => [urlKey(l.url), l])).values()];
+  const blocking = result.links.filter(linkMissingBlocks);
   // Same input contract as scorer-chunk. Supplemental scores never change selection.
   const metadataItems = [...metadata, pool].flatMap(collectItems);
   const supplemental = missing.map((link) => ({...metadataItems.find((i) => typeof i.url === "string" && urlKey(i.url) === urlKey(link.url)), ...link, flag: "newsletter_extracted"}));
   writeFileSync(resolve(internal, "newsletter-unscored.json"), JSON.stringify({articles: supplemental, categorized: {radar: supplemental, lancamento: [], use_melhor: [], video: []}}, null, 2) + "\n");
-  writeFileSync(resolve(internal, "newsletter-link-scores.json"), JSON.stringify({...result, warnings, input_fingerprint: fingerprint, registry_path: registryPath}, null, 2) + "\n");
+  writeFileSync(resolve(internal, "newsletter-link-scores.json"), JSON.stringify({...result, warnings, input_fingerprint: fingerprint, registry_path: portableRegistryPath(registryPath)}, null, 2) + "\n");
   const cell = (value: unknown) => String(value).replace(/[\r\n|]/g, " ");
+  const scoreCell = (l: LinkAudit) => l.score ?? (l.fetch_error ? `FALHA FETCH (${cell(l.fetch_error)})` : "PENDENTE");
   const report = ["## Intake de newsletters de IA", ...warnings.map((w) => `⚠️ ${w}`),
     `Remetentes novos pendentes (decidir em um lote): ${result.pending_senders.join(", ") || "nenhum"}`,
     `Descoberta: ${result.discovery.threads} thread(s) fora da captura; ${result.discovery.oferecidos.length} de serviço de envio conhecido (oferecidas acima), ${result.discovery.fora_de_servico_conhecido} sem serviço conhecido (só contagem), ${result.discovery.rejeitados} de remetente rejeitado`,
     "", "| Score | Título | Newsletter | Destino | URL |", "| --- | --- | --- | --- | --- |",
-    ...result.links.map((l) => `| ${l.score ?? "PENDENTE"} | ${cell(l.title)} | ${cell(l.newsletter)} | ${cell(l.destino)} | ${cell(l.url)} |`)];
+    ...result.links.map((l) => `| ${scoreCell(l)} | ${cell(l.title)} | ${cell(l.newsletter)} | ${cell(l.destino)} | ${cell(l.url)} |`)];
   writeFileSync(resolve(internal, "newsletter-intake-gate.md"), report.join("\n") + "\n");
-  console.log(JSON.stringify({threads: result.rows.length, links: result.links.length, missing_scores: result.links.filter((l) => l.score === null).length, missing_titles: result.links.filter((l) => !l.title.trim() || l.title.startsWith("(newsletter:")).length, pending_senders: result.pending_senders, discovery: {...result.discovery, oferecidos: result.discovery.oferecidos.length}, warnings}));
-  if (flags.has("require-scores") && missing.length) process.exitCode = 1;
+  console.log(JSON.stringify({threads: result.rows.length, links: result.links.length, missing_scores: result.links.filter((l) => l.score === null).length, missing_titles: result.links.filter((l) => !l.title.trim() || l.title.startsWith("(newsletter:")).length,
+    blocking_missing: blocking.length, fetch_failed: fetchFailedLinks.length, out_of_pool_missing: outOfPool.length,
+    pending_senders: result.pending_senders, discovery: {...result.discovery, oferecidos: result.discovery.oferecidos.length}, warnings}));
+  // #12188: só "ninguém tentou" reprova — falha de fetch registrada e link fora do pool não.
+  if (flags.has("require-scores") && blocking.length) process.exitCode = 1;
 }
 if (isMainModule(import.meta.url)) {
   try { main(); } catch (error) { console.error(String(error)); process.exitCode = 1; }

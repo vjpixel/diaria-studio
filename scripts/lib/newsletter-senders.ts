@@ -48,8 +48,51 @@ export function loadSenderRegistry(path: string): SenderRegistry {
   return parseSenderRegistry(readFileSync(path, "utf8"));
 }
 
+/**
+ * #12188: registro de fallback quando `seed/newsletter-senders.json` está
+ * ausente ou inválido — os senders do `platform.config.json` contam como
+ * aprovados (a captura segue como antes do registro, nunca cai a zero).
+ */
+export function fallbackSenderRegistry(configSenders: string[]): SenderRegistry {
+  const senders: Record<string, SenderDecision> = {};
+  for (const s of configSenders) {
+    const key = senderKey(s);
+    if (key.includes("@")) senders[key] = { status: "aprovado", reason: "fallback: senders do platform.config.json (registro ausente/inválido)", decided_at: "1970-01-01T00:00:00Z" };
+  }
+  return { version: 1, senders };
+}
+
+/**
+ * Mesma política em Stage 0 e na captura (#12188): registro ausente ou
+ * inválido → fallback para os senders do config + `error` com o motivo.
+ * `readFile` lança se o arquivo não existe (ENOENT vira `missing: true`).
+ */
+export function resolveSenderRegistry(
+  readFile: () => string,
+  configSenders: string[],
+): { registry: SenderRegistry; error?: string; missing?: boolean } {
+  let text: string;
+  try {
+    text = readFile();
+  } catch (err) {
+    const missing = (err as NodeJS.ErrnoException)?.code === "ENOENT";
+    return { registry: fallbackSenderRegistry(configSenders), missing, error: missing ? "arquivo ausente" : `ilegível (${err instanceof Error ? err.message : String(err)})` };
+  }
+  try {
+    return { registry: parseSenderRegistry(text) };
+  } catch (err) {
+    return { registry: fallbackSenderRegistry(configSenders), error: `inválido (${err instanceof Error ? err.message : String(err)})` };
+  }
+}
+
 export function approvedSenders(registry: SenderRegistry): string[] {
   return Object.keys(registry.senders).filter((s) => registry.senders[s].status === "aprovado");
+}
+
+/** `newsletter_auto_capture.senders` normalizados de um config já parseado. */
+export function configSendersOf(config: unknown): string[] {
+  const senders = (config as { newsletter_auto_capture?: { senders?: unknown } } | null)?.newsletter_auto_capture?.senders;
+  return Array.isArray(senders) ? senders.filter((s): s is string => typeof s === "string").map(senderKey) : [];
 }
 
 export function classifySender(sender: string, registry: SenderRegistry) {

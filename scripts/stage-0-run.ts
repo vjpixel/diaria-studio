@@ -144,7 +144,7 @@ import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { type FacebookCredentialsFile, loadFacebookPagesConfig, resolveFacebookPages } from "./lib/facebook-pages.ts";
 import { CAPTURE_EMPTY_MESSAGE, evaluateCaptureYield } from "./lib/newsletter-capture-yield.ts";
-import { approvedSenders, classifySender, parseSenderRegistry, type SenderRegistry } from "./lib/newsletter-senders.ts";
+import { approvedSenders, classifySender, resolveSenderRegistry, type SenderRegistry } from "./lib/newsletter-senders.ts";
 import { EXIT_HISTORY_MANIFEST_REL_PATH, exitHistoryDrainStatus } from "./lib/beehiiv-exit-history.ts";
 
 // Mesma disciplina do #4983 (clarice-novos-run.ts) — carregar .env ANTES de
@@ -571,16 +571,21 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
     // #12188: remetentes aprovados no registro versionado entram na captura.
     // try próprio: registro inválido não pode meia-aplicar nem esconder o
     // config — a captura segue só com os senders do config, com erro no log.
-    let registry: SenderRegistry | null = null;
+    // Ausente também avisa (mesma política do capture-newsletter-urls.ts):
+    // fallback = senders do config contam como aprovados.
     const registryPath = resolve(deps.rootDir, "seed/newsletter-senders.json");
-    if (deps.existsSync(registryPath)) {
-      try {
-        registry = parseSenderRegistry(deps.readFile(registryPath));
-        senders = [...new Set([...senders, ...approvedSenders(registry)])];
-      } catch (err) {
-        report.note("❌ 0b-bis: seed/newsletter-senders.json inválido — captura segue só com os senders do platform.config.json.");
-        logEvent(deps, opts.edition, "error", `0b-bis: seed/newsletter-senders.json inválido (${err instanceof Error ? err.message : String(err)}) — remetentes aprovados fora da captura (#12188)`);
+    const resolvedRegistry = resolveSenderRegistry(() => {
+      if (!deps.existsSync(registryPath)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return deps.readFile(registryPath);
+    }, senders);
+    const registry: SenderRegistry = resolvedRegistry.registry;
+    if (resolvedRegistry.error) {
+      if (autoCaptureEnabled) {
+        report.note(`❌ 0b-bis: seed/newsletter-senders.json ${resolvedRegistry.error} — captura segue só com os senders do platform.config.json.`);
+        logEvent(deps, opts.edition, "error", `0b-bis: seed/newsletter-senders.json ${resolvedRegistry.error} — remetentes aprovados fora da captura; fallback para os senders do config (#12188)`);
       }
+    } else {
+      senders = [...new Set([...senders, ...approvedSenders(registry)])];
     }
 
     if (autoCaptureEnabled && senders.length > 0) {
@@ -645,7 +650,11 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
       const discoveryJson = discovery.json as { threads_found?: number; threads_written?: number; capped?: boolean } | undefined;
       const discoverySummary = { ok: discovery.result.code === 0, threads_found: discoveryJson?.threads_found ?? 0, threads_written: discoveryJson?.threads_written ?? 0 };
       if (!discoverySummary.ok) {
-        logEvent(deps, opts.edition, "warn", "0b-bis: descoberta de newsletters falhou — remetentes novos não serão oferecidos no gate 4 (#12188)", { informational: true });
+        // #12188: não-informational e com exit/stderr — falha da descoberta
+        // esconde remetente novo do gate, precisa aparecer na triagem do log.
+        logEvent(deps, opts.edition, "warn", "0b-bis: descoberta de newsletters falhou — remetentes novos não serão oferecidos no gate 4 (#12188)", {
+          details: { exit: discovery.result.code, stderr: discovery.result.stderr.trim().slice(-500) },
+        });
       } else if (discoveryJson?.capped) {
         logEvent(deps, opts.edition, "warn", "0b-bis: descoberta de newsletters atingiu o teto de threads — remetentes novos podem ter ficado de fora (#12188)", { details: discoverySummary });
       }
@@ -704,7 +713,8 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
           const yieldCheck = evaluateCaptureYield(
             captured || null,
             deps.existsSync(articlesAbs) ? deps.readFile(articlesAbs) : null,
-            registry ? (t) => classifySender(t.sender ?? "", registry).classificacao === "IA" : undefined,
+            // Entrada sem sender (legada) não é classificável e conta, como na linha de cobertura.
+            (t) => !t.sender || classifySender(t.sender, registry).classificacao === "IA",
           );
           if (yieldCheck.empty) {
             report.note(`❌ 0b-bis: ${yieldCheck.threads} ${CAPTURE_EMPTY_MESSAGE}`);

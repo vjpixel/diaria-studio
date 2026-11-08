@@ -10,6 +10,11 @@ import { evaluateCaptureYield } from "../scripts/lib/newsletter-capture-yield.ts
 import { fetchThread, searchThreadIds, mergeCaptured, main as fetchMain } from "../scripts/fetch-newsletter-threads.ts";
 import { main as captureMain } from "../scripts/capture-newsletter-urls.ts";
 import { checkNewsletterIntake } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { discoveryWarnings, portableRegistryPath, readFetchFailures, linkMissingBlocks } from "../scripts/audit-newsletter-intake.ts";
+import { resolveSenderRegistry, fallbackSenderRegistry } from "../scripts/lib/newsletter-senders.ts";
+import { countSubmissionSources, countableCapturedNewsletters, readSubmissionCountFromMarker } from "../scripts/lib/inbox-stats.ts";
+import { searchThreadIdsPaged } from "../scripts/fetch-newsletter-threads.ts";
+import { computeIntakeFingerprint } from "../scripts/lib/newsletter-intake-fingerprint.ts";
 
 const registry: SenderRegistry = {version: 1, senders: {
   "ai@example.com": {status: "aprovado", reason: "Editor aprovou", decided_at: "2026-11-04"},
@@ -130,7 +135,11 @@ describe("intake CLI and gate #12188", () => {
     assert.equal(run().status,0);
     const report = JSON.parse(readFileSync(resolve(internal,"newsletter-link-scores.json"),"utf8"));
     assert.deepEqual(report.links.map((l: {score: number}) => l.score),[95,80]);
-    assert.equal(report.rows[0].estado,"lida");
+    // Sem tmp-articles-raw.json o pool é desconhecido: nunca "lida" (P3 do re-review).
+    assert.equal(report.rows[0].estado,"pool desconhecido");
+    writeFileSync(resolve(internal,"tmp-articles-raw.json"),JSON.stringify(urls.map((url) => ({url}))));
+    assert.equal(run().status,0);
+    assert.equal(JSON.parse(readFileSync(resolve(internal,"newsletter-link-scores.json"),"utf8")).rows[0].estado,"lida");
   }));
   it("capture never injects a new sender and drops rejected existing origins on resume", () => temp((dir) => {
     const input = resolve(dir,"threads.json"); const out = resolve(dir,"articles.json");
@@ -340,4 +349,227 @@ describe("capture-newsletter-urls #12188 resume", () => {
     captureMain(["node", "capture-newsletter-urls.ts", "--threads", input, "--out", out, "--cursor", resolve(dir, "cursor.json"), "--edition", "261105"]);
     assert.deepEqual(JSON.parse(readFileSync(out, "utf8")).map((a: {url: string}) => a.url), [urls[0]]);
   }));
+});
+
+describe("#12188 re-review fixes", () => {
+  const runAudit = (editionDir: string, dir: string, registryPath: string, extra: string[] = []) =>
+    spawnSync(process.execPath, ["--import", "tsx", "scripts/audit-newsletter-intake.ts", "--edition", "261105", "--edition-dir", editionDir, "--data-dir", dir, "--registry", registryPath, ...extra], {encoding: "utf8"});
+  const report = (internal: string) => JSON.parse(readFileSync(resolve(internal, "newsletter-link-scores.json"), "utf8"));
+
+  it("item 1: fetch/enrich failure registered → warning, never error; only 'nobody tried' blocks", () => temp((dir) => {
+    const editionDir = resolve(dir, "edition"); const internal = resolve(editionDir, "_internal"); mkdirSync(internal, {recursive: true});
+    const registryPath = resolve(dir, "senders.json"); writeFileSync(registryPath, JSON.stringify(registry));
+    writeFileSync(resolve(internal, "captured-newsletters.json"), JSON.stringify([thread()]));
+    writeFileSync(resolve(internal, "tmp-articles-raw.json"), JSON.stringify(urls.map((url) => ({url}))));
+    writeFileSync(resolve(internal, "tmp-allscored.json"), JSON.stringify({all_scored: [{url: urls[0], score: 80, title: "One"}]}));
+    const blocked = runAudit(editionDir, dir, registryPath, ["--require-scores"]);
+    assert.equal(blocked.status, 1, "link no pool sem score e sem tentativa bloqueia");
+    assert.ok(checkNewsletterIntake(editionDir).some((v) => v.severity === "error" && v.message.includes("sem score")));
+    // Paywall registrado no gate (scorer não leu a URL).
+    writeFileSync(resolve(internal, "newsletter-fetch-failures.json"), JSON.stringify([{url: urls[1], reason: "paywall"}]));
+    const ok = runAudit(editionDir, dir, registryPath, ["--require-scores"]);
+    assert.equal(ok.status, 0, ok.stderr);
+    const r = report(internal);
+    const link = r.links.find((l: {url: string}) => l.url === urls[1]);
+    assert.equal(link.fetch_error, "paywall");
+    assert.equal(link.score_status, "falha-fetch");
+    const v = checkNewsletterIntake(editionDir);
+    assert.ok(!v.some((x) => x.severity === "error"), JSON.stringify(v));
+    assert.ok(v.some((x) => x.severity === "warning" && x.message.includes("falha de fetch")));
+    assert.ok(readFileSync(resolve(internal, "newsletter-intake-gate.md"), "utf8").includes("FALHA FETCH (paywall)"));
+  }));
+
+  it("item 1: enrich stdout outcomes (fetch_failed) count as a registered failure", () => temp((dir) => {
+    const internal = resolve(dir, "_internal"); mkdirSync(internal);
+    writeFileSync(resolve(internal, "newsletter-unscored.enrich.json"), JSON.stringify({outcomes: [
+      {url: urls[0], enriched: false, reason: "fetch_failed"}, {url: urls[1], enriched: true}, {url: "https://x.example/a", enriched: false, reason: "cache_miss_skipped_non_inbox"},
+    ]}));
+    const failures = readFetchFailures(internal);
+    assert.equal(failures.size, 1);
+    assert.match([...failures.values()][0], /fetch_failed/);
+  }));
+
+  it("item 1: links removed before the pool (dedup/date) do not need a score — warning only", () => temp((dir) => {
+    const editionDir = resolve(dir, "edition"); const internal = resolve(editionDir, "_internal"); mkdirSync(internal, {recursive: true});
+    const registryPath = resolve(dir, "senders.json"); writeFileSync(registryPath, JSON.stringify(registry));
+    writeFileSync(resolve(internal, "captured-newsletters.json"), JSON.stringify([thread()]));
+    writeFileSync(resolve(internal, "tmp-articles-raw.json"), JSON.stringify([{url: urls[0]}]));
+    writeFileSync(resolve(internal, "tmp-allscored.json"), JSON.stringify({all_scored: [{url: urls[0], score: 80, title: "One"}]}));
+    const run = runAudit(editionDir, dir, registryPath, ["--require-scores"]);
+    assert.equal(run.status, 0, run.stderr);
+    const link = report(internal).links.find((l: {url: string}) => l.url === urls[1]);
+    assert.equal(link.in_pool, false);
+    assert.equal(linkMissingBlocks(link), false);
+    const v = checkNewsletterIntake(editionDir);
+    assert.ok(!v.some((x) => x.severity === "error"), JSON.stringify(v));
+    assert.ok(v.some((x) => x.message.includes("removido(s) antes do pool")));
+  }));
+
+  it("item 2: registry absent/invalid falls back to config senders with an explicit error", () => temp((dir) => {
+    const missing = resolveSenderRegistry(() => readFileSync(resolve(dir, "nope.json"), "utf8"), ["A <A@X.COM>"]);
+    assert.equal(missing.missing, true);
+    assert.match(missing.error ?? "", /ausente/);
+    assert.equal(classifySender("a@x.com", missing.registry).classificacao, "IA");
+    const invalid = resolveSenderRegistry(() => "{bad", ["a@x.com"]);
+    assert.match(invalid.error ?? "", /inválido/);
+    assert.equal(classifySender("a@x.com", invalid.registry).classificacao, "IA");
+    assert.deepEqual(Object.keys(fallbackSenderRegistry(["sem-arroba"]).senders), []);
+  }));
+
+  it("item 2: capture-newsletter-urls with an invalid registry keeps config senders and logs error (never crashes)", () => temp((dir) => {
+    const config = JSON.parse(readFileSync("platform.config.json", "utf8")) as {newsletter_auto_capture?: {senders?: string[]}};
+    const sender = config.newsletter_auto_capture?.senders?.[0];
+    assert.ok(sender, "config precisa de ao menos 1 sender para este teste");
+    const input = resolve(dir, "threads.json"); const out = resolve(dir, "articles.json");
+    const badRegistry = resolve(dir, "bad.json"); writeFileSync(badRegistry, "{ not json");
+    writeFileSync(input, JSON.stringify([thread("c", sender)]));
+    captureMain(["node", "capture-newsletter-urls.ts", "--threads", input, "--out", out, "--cursor", resolve(dir, "cursor.json")], {registryPath: badRegistry, logRoot: dir});
+    assert.ok(JSON.parse(readFileSync(out, "utf8")).length > 0, "fallback: sender do config segue no pool");
+    const log = readFileSync(resolve(dir, "data/run-log.jsonl"), "utf8");
+    assert.match(log, /"level":"error".*newsletter-senders\.json inválido/);
+  }));
+
+  it("P3: capture config_warnings count dropped threads and removed existing articles", () => temp((dir) => {
+    const input = resolve(dir, "threads.json"); const out = resolve(dir, "articles.json");
+    writeFileSync(input, JSON.stringify([thread("x", "pendente@example.com")]));
+    writeFileSync(out, JSON.stringify([{url: urls[0], newsletter_mentions: ["pendente@example.com"]}]));
+    const lines: string[] = []; const orig = console.log; console.log = (m: string) => { lines.push(m); };
+    try {
+      captureMain(["node", "capture-newsletter-urls.ts", "--threads", input, "--out", out, "--cursor", resolve(dir, "cursor.json")], {logRoot: dir});
+    } finally { console.log = orig; }
+    const summary = JSON.parse(lines.join("\n"));
+    assert.ok(summary.config_warnings.some((w: string) => /1 thread\(s\) de remetente não aprovado/.test(w)));
+    assert.ok(summary.config_warnings.some((w: string) => /1 artigo\(s\) já gravado\(s\)/.test(w)));
+  }));
+
+  it("item 3: swapping a non-newsletter Radar link does not make the intake stale", () => temp((dir) => {
+    const {editionDir, audit} = setupEdition(dir);
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), reviewedMd("https://example.org/radar-a"));
+    assert.equal(audit().status, 0);
+    const stale = () => checkNewsletterIntake(editionDir).some((v) => v.message.includes("desatualizado"));
+    assert.equal(stale(), false);
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), reviewedMd("https://example.org/radar-b"));
+    assert.equal(stale(), false, "link do Radar fora das newsletters auditadas não entra no fingerprint");
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), reviewedMd(urls[1]));
+    assert.equal(stale(), true, "incluir link de newsletter auditada muda o fingerprint");
+  }));
+
+  it("item 3: fingerprint only hashes reviewed entries among the audited keys", () => temp((dir) => {
+    mkdirSync(resolve(dir, "_internal"));
+    writeFileSync(resolve(dir, "02-reviewed.md"), reviewedMd("https://example.org/a"));
+    const a = computeIntakeFingerprint(dir, resolve(dir, "r.json"), []);
+    writeFileSync(resolve(dir, "02-reviewed.md"), reviewedMd("https://example.org/b"));
+    assert.equal(computeIntakeFingerprint(dir, resolve(dir, "r.json"), []), a);
+  }));
+
+  it("items 4+5: coverage counts only approved senders whose body was read", () => {
+    const captured = [
+      {sender: "AI <ai@example.com>", thread_id: "1"},
+      {sender: "ai2@example.com", thread_id: "2", capture_error: "Sem corpo legível"},
+      {sender: "config-only@example.com", thread_id: "3"},
+      {thread_id: "legacy"},
+    ];
+    assert.equal(countSubmissionSources([], captured).newsletterSenders, 3, "capture_error nunca conta");
+    const approved = (s: string) => classifySender(s, registry).classificacao === "IA";
+    const countable = countableCapturedNewsletters(captured, approved);
+    assert.deepEqual(countable.map((c) => c.thread_id), ["1", "legacy"]);
+    assert.equal(countSubmissionSources([], countable).newsletterSenders, 2);
+  });
+
+  it("items 4+5 (marker fallback): coverage reads the registry and skips unapproved / unread threads", () => temp((dir) => {
+    const registryPath = resolve(dir, "senders.json"); writeFileSync(registryPath, JSON.stringify(registry));
+    writeFileSync(resolve(dir, ".marker-inject-inbox-urls.json"), JSON.stringify({details: {editor_blocks: 0, newsletter_source: "captured-articles"}}));
+    writeFileSync(resolve(dir, "captured-newsletters.json"), JSON.stringify([
+      {thread_id: "1", sender: "ai@example.com"}, {thread_id: "2", sender: "config-only@example.com"},
+      {thread_id: "3", sender: "other@example.com"}, {thread_id: "4", sender: "AI <ai@example.com>", capture_error: "Sem corpo legível"},
+    ]));
+    process.env.DIARIA_NEWSLETTER_SENDERS_PATH = registryPath;
+    try { assert.equal(readSubmissionCountFromMarker(dir), 1); } finally { delete process.env.DIARIA_NEWSLETTER_SENDERS_PATH; }
+  }));
+
+  it("item 6: discovery cap flags only when there is a next page", async () => {
+    const page = (n: number, next?: string) => ({threads: Array.from({length: n}, (_, i) => ({id: `t${i}`})), ...(next ? {nextPageToken: next} : {})});
+    const exact = async <T>(): Promise<T> => page(5) as T;
+    assert.equal((await searchThreadIdsPaged("q", 100, exact, 5)).truncated, false);
+    const more = async <T>(): Promise<T> => page(5, "p2") as T;
+    assert.equal((await searchThreadIdsPaged("q", 100, more, 5)).truncated, true);
+  });
+
+  it("item 6 (CLI): discovery hitting the cap with a next page writes capped:true in the manifest and the audit warns", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "intake-12188-"));
+    try {
+      let listed = 0;
+      const request = async <T>(path: string): Promise<T> => {
+        if (path.startsWith("threads?")) { listed++; return {threads: Array.from({length: 100}, (_, i) => ({id: `p${listed}-${i}`})), nextPageToken: `n${listed}`} as T; }
+        return {id: path.slice(8).split("?")[0], messages: [{id: "m", internalDate: "1", payload: {mimeType: "text/plain", headers: [{name: "From", value: "x@y.com"}]}}]} as T;
+      };
+      const out = resolve(dir, "discovered-newsletters.json");
+      await fetchMain(["node", "f", "--discover", "--since-hours", "48", "--out", out], request);
+      const events = latestManifestEvents(out + ".fetch.jsonl");
+      assert.equal(events[0].capped, true);
+      assert.ok(discoveryWarnings(events, "ok").some((w) => w.includes("teto")));
+    } finally { rmSync(dir, {recursive: true, force: true}); }
+  });
+
+  it("items 7+8: unread discovery threads and unavailable discovery are warnings, never '0 encontradas'", () => {
+    const ok = {at: "x", scope: "d", thread_ids: ["a", "b", "c"], outcomes: [{thread_id: "a", outcome: "descoberta"}, {thread_id: "b", outcome: "falhou"}, {thread_id: "c", outcome: "falhou"}]};
+    assert.ok(discoveryWarnings([ok], "ok").some((w) => w === "2 thread(s) da descoberta não foram lidas (falha ao ler metadados)"));
+    assert.ok(discoveryWarnings([], "ausente").some((w) => w.startsWith("Descoberta indisponível: manifesto ausente")));
+    assert.ok(discoveryWarnings([ok], "ilegível").some((w) => w.startsWith("Descoberta indisponível: arquivo ilegível")));
+    assert.ok(discoveryWarnings([ok], "ausente").some((w) => w.startsWith("Descoberta indisponível: arquivo ausente")));
+    assert.deepEqual(discoveryWarnings([{...ok, outcomes: []}], "ok"), []);
+  });
+
+  it("item 8 (CLI): unreadable discovered-newsletters.json becomes a warning in the report", () => temp((dir) => {
+    const {internal, audit} = setupEdition(dir);
+    writeFileSync(resolve(internal, "discovered-newsletters.json.fetch.jsonl"), JSON.stringify({scope: "d", thread_ids: []}) + "\n");
+    writeFileSync(resolve(internal, "discovered-newsletters.json"), "{bad");
+    assert.equal(audit().status, 0);
+    assert.ok(report(internal).warnings.some((w: string) => w.includes("arquivo ilegível")));
+  }));
+
+  it("item 9: invariant evaluates the report even with zero captured threads or no captured file", () => temp((dir) => {
+    const internal = resolve(dir, "_internal"); mkdirSync(internal);
+    assert.deepEqual(checkNewsletterIntake(dir), [], "captura nunca rodou: nada a auditar");
+    writeFileSync(resolve(internal, ".capture-newsletter-failed.json"), JSON.stringify({failed: true}));
+    assert.ok(checkNewsletterIntake(dir).some((v) => v.message.includes("Intake ausente") && v.severity === "warning"), "sem threads: ausente é warning");
+    writeFileSync(resolve(internal, "captured-newsletters.json"), "[]");
+    writeFileSync(resolve(internal, "newsletter-link-scores.json"), JSON.stringify({links: [], rows: [], pending_senders: ["n@x.com"], warnings: ["capture_failed: captura Gmail falhou", "Descoberta de remetentes novos falhou: boom"]}));
+    const v = checkNewsletterIntake(dir);
+    assert.ok(v.some((x) => x.message.includes("capture_failed")));
+    assert.ok(v.some((x) => x.message.includes("Descoberta de remetentes novos falhou")));
+    assert.ok(v.some((x) => x.message.includes("pendentes")));
+    assert.ok(v.some((x) => x.message.includes("desatualizado")), "relatório sem fingerprint é desatualizado mesmo sem threads");
+  }));
+
+  it("P3: no 'Total capturado != registrado' comparison (it could never fire)", () => temp((dir) => {
+    const {editionDir, audit} = setupEdition(dir);
+    assert.equal(audit().status, 0);
+    assert.ok(!checkNewsletterIntake(editionDir).some((v) => v.message.includes("Total capturado")));
+  }));
+
+  it("item 10: --no-sentinel never clears nor writes the Stage 0 capture sentinel", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "intake-12188-"));
+    try {
+      const out = resolve(dir, "captured-newsletters.json");
+      const sentinel = resolve(dir, ".capture-newsletter-failed.json");
+      writeFileSync(sentinel, JSON.stringify({failed: true, error: "stage 0", at: "x"}));
+      const empty = async <T>(): Promise<T> => ({threads: []}) as T;
+      await fetchMain(["node", "f", "--senders", "ai@example.com", "--out", out, "--no-sentinel"], empty);
+      assert.equal(JSON.parse(readFileSync(sentinel, "utf8")).error, "stage 0", "sucesso suplementar não apaga o sentinel");
+      rmSync(sentinel);
+      const boom = async <T>(): Promise<T> => { throw new Error("rede"); };
+      await assert.rejects(fetchMain(["node", "f", "--senders", "ai@example.com", "--out", out, "--no-sentinel"], boom));
+      assert.equal(existsSync(sentinel), false, "falha suplementar não grava o sentinel");
+      await fetchMain(["node", "f", "--senders", "ai@example.com", "--out", out], empty);
+      assert.equal(existsSync(sentinel), false);
+      await assert.rejects(fetchMain(["node", "f", "--senders", "ai@example.com", "--out", out], boom));
+      assert.ok(existsSync(sentinel), "sem a flag o comportamento do Stage 0 é o de sempre");
+    } finally { rmSync(dir, {recursive: true, force: true}); }
+  });
+
+  it("P3: registry path inside the repo is stored relative; outside stays absolute", () => {
+    assert.equal(portableRegistryPath(resolve("seed/newsletter-senders.json")), "seed/newsletter-senders.json");
+    assert.equal(portableRegistryPath("/tmp/x/senders.json"), "/tmp/x/senders.json");
+  });
 });

@@ -7,8 +7,10 @@
  * `newsletter-html-not-behind-reviewed`, #10245): salvar o `02-reviewed.md`
  * no Studio, `refresh-use-melhor-tempo` ou o `sync-code` tocam arquivos sem
  * mudar o que a auditoria lê. Do `02-reviewed.md` entra só a lista
- * (URL, destino) dos links — editar texto não deixa o intake desatualizado;
- * mover/trocar link deixa.
+ * (URL, destino) dos links AUDITADOS (`auditedKeys`, as URLs de newsletter
+ * de IA do relatório, #12188 item 3) — editar texto ou trocar um link do
+ * Radar que não veio de newsletter não deixa o intake desatualizado;
+ * mover/incluir/remover link auditado deixa.
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -31,6 +33,8 @@ export const INTAKE_INPUT_FILES = [
   "tmp-articles-raw.json",
   "tmp-dates-reviewed.json",
   "captured-newsletter-articles.json",
+  "newsletter-unscored.enrich.json",
+  "newsletter-fetch-failures.json",
 ] as const;
 
 export interface ReviewedEntry { url: string; title: string; destination: string }
@@ -50,8 +54,12 @@ function sha(text: string | Buffer): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-/** Pura sobre o filesystem: mesma entrada → mesmo hash. */
-export function computeIntakeFingerprint(editionDir: string, registryPath: string): string {
+/**
+ * Pura sobre o filesystem: mesma entrada → mesmo hash. `auditedKeys` são
+ * URLs já canonicalizadas (`canonicalize(url).toLowerCase()`).
+ */
+export function computeIntakeFingerprint(editionDir: string, registryPath: string, auditedKeys: Iterable<string>): string {
+  const audited = new Set(auditedKeys);
   const internal = resolve(editionDir, "_internal");
   const parts: string[] = [];
   for (const f of INTAKE_INPUT_FILES) {
@@ -62,7 +70,9 @@ export function computeIntakeFingerprint(editionDir: string, registryPath: strin
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   if (existsSync(reviewedPath)) {
     const entries = reviewedEntries(readFileSync(reviewedPath, "utf8"))
-      .map((e) => `${canonicalize(e.url).toLowerCase()}\t${e.destination}`)
+      .map((e) => ({ key: canonicalize(e.url).toLowerCase(), destination: e.destination }))
+      .filter((e) => audited.has(e.key))
+      .map((e) => `${e.key}\t${e.destination}`)
       .sort();
     parts.push(`reviewed:${sha(entries.join("\n"))}`);
   } else {

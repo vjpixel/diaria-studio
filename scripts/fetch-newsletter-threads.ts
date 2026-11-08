@@ -40,6 +40,10 @@
  *                  nunca grava nem limpa o sentinel `.capture-newsletter-failed.json`.
  *                  Teto de segurança DISCOVERY_MAX_THREADS, com aviso.
  *   --skip-ids-from  (com --discover) JSON CapturedThread[] cujos thread_id são pulados.
+ *   --no-sentinel  (#12188) Nunca grava nem apaga `.capture-newsletter-failed.json`.
+ *                  Para buscas suplementares (ex.: re-fetch no gate 4 de remetentes
+ *                  recém-aprovados): o sentinel é do Stage 0 e só a captura dele
+ *                  decide se a captura falhou.
  *   --dry-run      Print thread count and first thread summary, no file write.
  *
  * Output file: CapturedThread[] (same shape as capture-newsletter-urls.ts expects)
@@ -75,7 +79,8 @@ export const MAX_THREADS_PER_SEARCH = 100;
 /**
  * #12188: teto de segurança da descoberta (`in:inbox`). A busca por remetente
  * pagina até o fim; a descoberta varre o inbox inteiro da janela e por isso tem
- * teto — atingi-lo vira `capped: true` no summary + WARN, nunca corte mudo.
+ * teto — passá-lo (havia próxima página) vira `capped: true` no summary e no
+ * evento do manifesto + WARN, nunca corte mudo; a auditoria lê o manifesto.
  */
 export const DISCOVERY_MAX_THREADS = 500;
 
@@ -136,27 +141,40 @@ interface GmailThreadListResponse {
 
 /**
  * Search Gmail threads matching a query, exhausting pages of `maxResults` IDs.
- * `maxTotal` (#12188, descoberta) corta em N IDs — o chamador detecta o teto
- * por `ids.length >= maxTotal` e avisa.
+ * `maxTotal` (#12188, descoberta) corta em N IDs; `truncated` só é true quando
+ * havia MAIS resultados (página seguinte ou página que passou do teto) —
+ * exatamente N resultados sem próxima página não é corte.
  */
-export async function searchThreadIds(
+export async function searchThreadIdsPaged(
   query: string,
   maxResults = 20,
   request: typeof gmailRequest = gmailRequest,
   maxTotal = Number.POSITIVE_INFINITY,
-): Promise<string[]> {
+): Promise<{ ids: string[]; truncated: boolean }> {
   const params = new URLSearchParams({ q: query, maxResults: String(maxResults) });
   const ids = new Set<string>();
   const pages = new Set<string>();
   while (true) {
     const data = await request<GmailThreadListResponse>(`threads?${params}`);
     for (const thread of data.threads ?? []) ids.add(thread.id);
-    if (ids.size >= maxTotal) return [...ids].slice(0, maxTotal);
-    if (!data.nextPageToken) return [...ids];
+    if (ids.size >= maxTotal) {
+      return { ids: [...ids].slice(0, maxTotal), truncated: ids.size > maxTotal || Boolean(data.nextPageToken) };
+    }
+    if (!data.nextPageToken) return { ids: [...ids], truncated: false };
     if (pages.has(data.nextPageToken)) throw new Error("Gmail repetiu pageToken");
     pages.add(data.nextPageToken);
     params.set("pageToken", data.nextPageToken);
   }
+}
+
+/** Compat: só os IDs (ver `searchThreadIdsPaged`). */
+export async function searchThreadIds(
+  query: string,
+  maxResults = 20,
+  request: typeof gmailRequest = gmailRequest,
+  maxTotal = Number.POSITIVE_INFINITY,
+): Promise<string[]> {
+  return (await searchThreadIdsPaged(query, maxResults, request, maxTotal)).ids;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +412,7 @@ interface CliArgs {
   dryRun: boolean;
   discover: boolean;
   skipIdsFrom: string;
+  noSentinel: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -405,6 +424,7 @@ function parseArgs(argv: string[]): CliArgs {
     dryRun: false,
     discover: false,
     skipIdsFrom: "",
+    noSentinel: false,
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -433,6 +453,9 @@ function parseArgs(argv: string[]): CliArgs {
       case "--dry-run":
         args.dryRun = true;
         break;
+      case "--no-sentinel":
+        args.noSentinel = true;
+        break;
     }
   }
 
@@ -448,6 +471,8 @@ export interface FetchManifestEvent {
   error?: string;
   thread_ids: string[];
   outcomes?: Array<{ thread_id: string; outcome: string; error?: string }>;
+  /** #12188 (só --discover): a busca bateu DISCOVERY_MAX_THREADS com mais resultados. */
+  capped?: boolean;
 }
 
 function appendManifest(absOut: string, event: Omit<FetchManifestEvent, "at">): void {
@@ -485,8 +510,7 @@ async function runDiscovery(args: CliArgs, request: typeof gmailRequest): Promis
     const skip = new Set(
       args.skipIdsFrom ? readJsonArray<{ thread_id?: string }>(resolve(process.cwd(), args.skipIdsFrom)).map((t) => t.thread_id) : [],
     );
-    const found = await searchThreadIds(query, MAX_THREADS_PER_SEARCH, request, DISCOVERY_MAX_THREADS);
-    const capped = found.length >= DISCOVERY_MAX_THREADS;
+    const { ids: found, truncated: capped } = await searchThreadIdsPaged(query, MAX_THREADS_PER_SEARCH, request, DISCOVERY_MAX_THREADS);
     if (capped) {
       console.error(`[fetch-newsletter-threads] WARN descoberta atingiu o teto de ${DISCOVERY_MAX_THREADS} threads — remetentes novos podem ter ficado de fora (#12188).`);
     }
@@ -506,7 +530,7 @@ async function runDiscovery(args: CliArgs, request: typeof gmailRequest): Promis
     }
     const summary: FetchSummary = { threads_found: found.length, threads_written: discovered.length, skipped_no_body: 0, ...(capped ? { capped: true } : {}) };
     if (!args.dryRun && absOut) {
-      appendManifest(absOut, { scope, query, thread_ids: outcomes.map((o) => o.thread_id), outcomes });
+      appendManifest(absOut, { scope, query, thread_ids: outcomes.map((o) => o.thread_id), outcomes, ...(capped ? { capped: true } : {}) });
       const merged = new Map(readJsonArray<DiscoveredThread>(absOut).map((t) => [t.thread_id, t]));
       for (const t of discovered) merged.set(t.thread_id, t);
       writeJsonAtomic(absOut, [...merged.values()]);
@@ -562,7 +586,7 @@ export async function main(argv: string[] = process.argv, request: typeof gmailR
       }
       // #2878: search succeeded (0 real). Clear any stale failure sentinel from a
       // prior failed run so a recovered re-run stops signalling capture_failed.
-      if (!args.dryRun && args.outPath) clearCaptureFailedSentinel(args.outPath);
+      if (!args.dryRun && args.outPath && !args.noSentinel) clearCaptureFailedSentinel(args.outPath);
       console.log(JSON.stringify(summary, null, 2));
       return;
     }
@@ -623,7 +647,7 @@ export async function main(argv: string[] = process.argv, request: typeof gmailR
 
     // #2878: capture succeeded — clear any stale failure sentinel from a prior
     // failed run (recovery scenario), else downstream keeps signalling failure.
-    clearCaptureFailedSentinel(args.outPath);
+    if (!args.noSentinel) clearCaptureFailedSentinel(args.outPath);
     console.log(JSON.stringify(summary, null, 2));
   } catch (err) {
     // #2878: fatal (OAuth/network) — write the failure sentinel BEFORE
@@ -631,7 +655,7 @@ export async function main(argv: string[] = process.argv, request: typeof gmailR
     // but downstream steps can now see WHY threads_found is unknown/0.
     if (args.outPath && !args.dryRun) {
       appendManifest(resolve(process.cwd(), args.outPath), { scope, query, failed: true, error: String(err).slice(0, 200), thread_ids: [] });
-      writeCaptureFailedSentinel(args.outPath, err);
+      if (!args.noSentinel) writeCaptureFailedSentinel(args.outPath, err);
     }
     throw err;
   }

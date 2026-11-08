@@ -62,6 +62,8 @@ Com `--no-gates` (ou `auto_approve = true`): pular o gate, ir direto ao sentinel
 ### Etapa 4d. Escrever sentinel de conclusão
 
 ```bash
+# #12188: re-audita o intake de newsletters antes do sentinel (edição de link no gate muda o fingerprint)
+npx tsx scripts/audit-newsletter-intake.ts --edition {AAMMDD} --edition-dir {EDITION_DIR}
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition {AAMMDD} --step 4 \
   --outputs "02-reviewed.md,03-social.md"
