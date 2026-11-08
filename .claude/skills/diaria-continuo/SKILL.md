@@ -466,7 +466,8 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   negada por guard (ou o motivo for `requer-sessao-local`/`guard-de-execucao`),
   além do comentário, rotear a issue pra Develop:
   `npx tsx scripts/route-issue.ts --triaged-at "{triaged_at}" --issue N --track develop --reason "guard-de-execucao: {arquivo}"`
-  (com dedup). Sem a label `develop-track`, a Triagem continua mostrando
+  (com dedup; com `decisao-editor` na thread, a razão cita a decisão, #12413).
+  Sem a label `develop-track`, a Triagem continua mostrando
   Overnight e o próximo ciclo a pega de novo. Gate:
   `npx tsx scripts/check-skipped-develop-track.ts --plan {plan.json}`.
 - **Não reivindica issue nova enquanto houver rodada overnight ativa**
