@@ -83,6 +83,10 @@
  * #12220 — exceto "segurar até", que `DEPENDENCY_PHRASE_RE` recusa sempre);
  * o `force` de lá ficou como estava.
  *
+ * Desde o #12389 o módulo também guarda a outra ponta do roteamento: razão de
+ * `--track develop`/`fora-de-rodada` que ignora um `decisao-editor` vigente
+ * (`detectIgnoredDecision`, seção no fim do arquivo).
+ *
  * @see scripts/route-issue.ts (routeIssue — chama isto pra `--track agendada`)
  * @see scripts/lib/issue-depends-on.ts (mecanismo certo pra dependência)
  * @see scripts/lib/route-marker-staleness.ts (Parte B — varredura periódica irmã)
@@ -219,4 +223,68 @@ export function detectNonDateReason(reason: string): NonDateReasonFinding | null
     };
   }
   return null;
+}
+
+// ─── Decisão do editor vigente (#12389) ────────────────────────────────────
+//
+// A #12104 tinha `decisao-editor` de 04/11 ("remover o modo --title-mode
+// text, sem import no Premiere") e mesmo assim voltou a `develop` duas vezes
+// (04/11 06:23Z e 08/11 02:08Z) com razões que pediam justamente o que a
+// decisão já respondia ("as duas opções exigem import real no Premiere",
+// "... ou decisão de remover o modo"). O roteador da outra sessão decidiu
+// pelo corpo da issue ("Escolher um dos caminhos") sem ler o comentário de
+// decisão — o mecanismo do #5373 existe para que isso nunca aconteça.
+//
+// Regra: com um `decisao-editor` na thread, rotear para um track que espera
+// o editor (`develop`, `fora-de-rodada`) exige que a razão CITE a decisão
+// ("decisão do editor de 04/11 já registrada; ainda exige Chrome logado") ou
+// uma sobreposição explícita (`--override-decision "motivo"`). `bloqueada`
+// fica fora: bloqueio de execução depois da decisão é o estado legítimo do
+// #5373 item 5 (a decisão existe, a execução é que esbarra em algo). A
+// #12078, devolvida a develop na mesma janela por guard de publicação, não
+// tinha decisão — não é afetada.
+//
+// Mesma limitação de regex da seção acima: a razão que cita a decisão com
+// outro vocabulário é recusada (use `--override-decision`), e a que só
+// menciona "decisão do editor de DD/MM" sem ter lido passa. O guard pega o
+// caso medido — razão que ignora a decisão por completo —, não toda leitura
+// errada.
+
+/** Tracks que significam "precisa do editor" — onde ignorar uma decisão
+ * vigente reabre a pergunta já respondida. */
+export const DECISION_GUARDED_TRACKS: readonly string[] = ["develop", "fora-de-rodada"];
+
+/** A razão reconhece a decisão já registrada: o marcador pelo nome,
+ * "decisão (do editor) de DD/MM | já registrada | tomada | vigente",
+ * "já decidido", "o editor decidiu/escolheu". "decisão de remover o modo"
+ * (o caso da #12104) NÃO conta: é a decisão pedida de novo, não a citada. */
+const DECISION_ACK_RE =
+  /decisao-editor|decis[ãa]o\s+(?:do\s+editor\s+)?(?:de\s+\d{1,2}\/\d{1,2}|de\s+\d{4}-\d{2}-\d{2}|j[áa]\s+(?:registrad|tomad|exist)|registrad|tomad|vigente|existente)|j[áa]\s+decidid|editor\s+(?:j[áa]\s+)?(?:decidiu|escolheu|aprovou)/iu;
+
+export function reasonAcknowledgesDecision(reason: string): boolean {
+  return DECISION_ACK_RE.test(reason);
+}
+
+export interface DecisionGuardInput {
+  track: string;
+  reason: string;
+  /** A decisão mais recente da thread (`latestDecisionFor`), ou `null`. */
+  decision: { decided_at: string; resposta: string } | null;
+}
+
+/**
+ * `null` = pode rotear. String = motivo da recusa: há decisão do editor na
+ * thread, o track pedido espera o editor e a razão não cita a decisão.
+ */
+export function detectIgnoredDecision(input: DecisionGuardInput): string | null {
+  const { track, reason, decision } = input;
+  if (!decision || !DECISION_GUARDED_TRACKS.includes(track)) return null;
+  if (reasonAcknowledgesDecision(reason)) return null;
+  return (
+    `a issue tem decisão do editor registrada em ${decision.decided_at.slice(0, 10)} ` +
+    `(resposta: "${decision.resposta}") e --track ${track} devolve a issue ao editor sem citá-la. ` +
+    `Releia a decisão: se ela resolve o que a razão pede, roteie para overnight; se ainda falta algo ` +
+    `depois dela, diga isso na razão ("decisão do editor de DD/MM já registrada; ainda exige ...") ` +
+    `ou use --override-decision "motivo" (#12389, #5373).`
+  );
 }
