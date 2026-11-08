@@ -25,6 +25,7 @@ import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 import { readMarker } from "../pipeline-state.ts";
+import { computeIntakeFingerprint } from "../newsletter-intake-fingerprint.ts"; // #12188
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
 import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
@@ -1770,19 +1771,24 @@ export function checkNewsletterIntake(editionDir: string): InvariantViolation[] 
     if (!existsSync(reportPath)) return [violation("Intake ausente: rodar audit-newsletter-intake.ts antes do gate", "error")];
     const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
       links: Array<{score: number | null; title?: string}>; rows: Array<{thread_id: string}>; warnings: string[]; pending_senders: string[];
+      input_fingerprint?: string; registry_path?: string;
     };
     if (!Array.isArray(report.links) || !Array.isArray(report.rows) || !Array.isArray(report.warnings) || !Array.isArray(report.pending_senders)) throw new Error("shape inválido");
     const out: InvariantViolation[] = report.warnings.map((w) => violation(w, "warning"));
     const ids = new Set(report.rows.map((r) => r.thread_id));
-    if (threads.length !== ids.size || threads.some((t) => !ids.has(t.thread_id))) out.push(violation("Total capturado != total registrado no intake", "warning"));
+    // Rows may also carry capture failures that never reached the captured file.
+    if (threads.some((t) => !ids.has(t.thread_id))) out.push(violation("Total capturado != total registrado no intake", "warning"));
     if (report.links.some((l) => typeof l.score !== "number" || !Number.isFinite(l.score))) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
     if (report.links.some((l) => !l.title?.trim() || l.title.startsWith("(newsletter:"))) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
     if (report.pending_senders.length) out.push(violation(`Remetentes pendentes de decisão em lote: ${report.pending_senders.join(", ")}`, "warning"));
-    const sources = [captured, resolve(editionDir, "02-reviewed.md"), resolve(internal, "01-approved.json"),
-      resolve(internal, "tmp-allscored.json"), resolve(internal, "tmp-scored.json"), resolve(internal, "newsletter-extra-scores.json"), resolve(ROOT, "seed/newsletter-senders.json")];
-    if (sources.some((p) => existsSync(p) && statSync(p).mtimeMs > statSync(reportPath).mtimeMs)) out.push(violation("Intake desatualizado: re-rodar audit-newsletter-intake.ts para atualizar scores e destinos", "error"));
+    // #12188 item 7: content hash of the audit inputs, never mtime — a save
+    // that keeps the links (Studio, refresh-use-melhor-tempo, sync-code) is not stale.
+    const registryPath = typeof report.registry_path === "string" ? report.registry_path : resolve(ROOT, "seed/newsletter-senders.json");
+    if (report.input_fingerprint !== computeIntakeFingerprint(editionDir, registryPath)) out.push(violation("Intake desatualizado: re-rodar audit-newsletter-intake.ts para atualizar scores e destinos", "error"));
     return out;
-  } catch { return [violation("Relatório de intake ilegível: re-rodar audit-newsletter-intake.ts", "error")]; }
+  } catch (error) {
+    return [violation(`Relatório de intake ilegível (${error instanceof Error ? error.message : String(error)}): re-rodar audit-newsletter-intake.ts`, "error")];
+  }
 }
 
 /**

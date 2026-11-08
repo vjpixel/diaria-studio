@@ -1,12 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { buildIntake, appendSnapshots, applyDecisions } from "../scripts/audit-newsletter-intake.ts";
-import { classifySender, loadSenderRegistry, type SenderRegistry } from "../scripts/lib/newsletter-senders.ts";
-import { fetchThread, searchThreadIds, mergeCaptured } from "../scripts/fetch-newsletter-threads.ts";
+import { buildIntake, appendSnapshots, applyDecisions, latestManifestEvents } from "../scripts/audit-newsletter-intake.ts";
+import { classifySender, detectBulkService, loadSenderRegistry, type SenderRegistry } from "../scripts/lib/newsletter-senders.ts";
+import { evaluateCaptureYield } from "../scripts/lib/newsletter-capture-yield.ts";
+import { fetchThread, searchThreadIds, mergeCaptured, main as fetchMain } from "../scripts/fetch-newsletter-threads.ts";
 import { main as captureMain } from "../scripts/capture-newsletter-urls.ts";
 import { checkNewsletterIntake } from "../scripts/lib/invariant-checks/stage-4.ts";
 
@@ -35,7 +36,9 @@ describe("newsletter intake #12188", () => {
     assert.equal(result.links[0].destino, "fora da edição");
     assert.equal(result.links[3].destino, "destaque");
     assert.equal(result.rows[0].links_no_pool, 1);
-    assert.equal(result.rows[0].estado, "lida");
+    // #12188 item 3: links_no_pool < links_capturados is a distinct state, not "lida".
+    assert.equal(result.rows[0].estado, "parcial");
+    assert.match(result.rows[0].estado_motivo, /1 de 2 links/);
   });
   it("missing scores are explicit failures, never fabricated zero; zero is a real score", () => {
     const result = buildIntake([thread()], registry, [{scored: [{url: urls[0], score: 0}]}], [], {});
@@ -144,7 +147,197 @@ describe("intake CLI and gate #12188", () => {
     writeFileSync(report,JSON.stringify({links:[{score:null}],rows:[{thread_id:"a"}],pending_senders:[],warnings:["Newsletter falhou"]}));
     assert.ok(checkNewsletterIntake(dir).some((v) => v.message.includes("sem score")));
     assert.ok(checkNewsletterIntake(dir).some((v) => v.severity === "warning"));
-    utimesSync(report,new Date(0),new Date(0));
+    // Report without the input fingerprint (pre-#12188 item 7) is stale.
     assert.ok(checkNewsletterIntake(dir).some((v) => v.message.includes("desatualizado")));
+    writeFileSync(report, "{bad");
+    assert.ok(checkNewsletterIntake(dir).some((v) => /ilegível \(.+\)/.test(v.message)), "catch inclui a causa");
+  }));
+});
+
+const reviewedMd = (radarUrl: string, extra = "") => `**DESTAQUE 1 | 💼 TRABALHO**\n\n**[One title](${urls[0]})**\n\nCorpo do destaque.${extra}\n\nPor que isso importa:\n\nX.\n\n---\n\n**📡 RADAR**\n\n**[Radar item](${radarUrl})**\nDescrição.\n`;
+function setupEdition(dir: string) {
+  const editionDir = resolve(dir, "edition"); const internal = resolve(editionDir, "_internal"); mkdirSync(internal, {recursive: true});
+  const registryPath = resolve(dir, "senders.json"); writeFileSync(registryPath, JSON.stringify(registry));
+  writeFileSync(resolve(internal, "captured-newsletters.json"), JSON.stringify([thread()]));
+  writeFileSync(resolve(internal, "tmp-allscored.json"), JSON.stringify(scored));
+  const audit = () => spawnSync(process.execPath, ["--import", "tsx", "scripts/audit-newsletter-intake.ts", "--edition", "261105", "--edition-dir", editionDir, "--data-dir", dir, "--registry", registryPath], {encoding: "utf8"});
+  return {editionDir, internal, registryPath, audit};
+}
+
+describe("#12188 fleet-review fixes", () => {
+  it("item 7: editing 02-reviewed.md text (and touching files) does not make the intake stale; changing a link does", () => temp((dir) => {
+    const {editionDir, internal, audit} = setupEdition(dir);
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), reviewedMd(urls[1]));
+    assert.equal(audit().status, 0);
+    const stale = () => checkNewsletterIntake(editionDir).some((v) => v.message.includes("desatualizado"));
+    assert.equal(stale(), false);
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), reviewedMd(urls[1], " Frase nova do editor."));
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(resolve(editionDir, "02-reviewed.md"), future, future);
+    utimesSync(resolve(internal, "captured-newsletters.json"), future, future);
+    assert.equal(stale(), false, "save sem mudar links não é intake desatualizado");
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), reviewedMd("https://example.org/outro-link"));
+    assert.equal(stale(), true, "trocar link é intake desatualizado");
+  }));
+
+  it("item 8: destaque wins over a section listing the same URL (reviewed) and over buckets of 01-approved", () => {
+    const md = reviewedMd(urls[0]);
+    const final = [
+      {url: urls[0], destination: "destaque"}, {url: urls[0], destination: "RADAR"},
+    ];
+    assert.equal(buildIntake([thread()], registry, [scored], undefined, final).links.find((l) => l.url === urls[0])?.destino, "destaque");
+    assert.ok(md.includes("DESTAQUE 1 |"));
+    const approved = {highlights: [{article: {url: urls[0]}, score: 80}], radar: [{url: urls[0]}], runners_up: [{url: urls[1]}]};
+    const result = buildIntake([thread()], registry, [scored], undefined, approved);
+    assert.equal(result.links.find((l) => l.url === urls[0])?.destino, "destaque");
+    assert.equal(result.links.find((l) => l.url === urls[1])?.destino, "fora da edição", "runners_up não está na edição");
+  });
+
+  it("item 8 (CLI): DESTAQUE heading in 02-reviewed.md with the same URL repeated in RADAR keeps destino destaque", () => temp((dir) => {
+    const {editionDir, internal, audit} = setupEdition(dir);
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), reviewedMd(urls[0]));
+    assert.equal(audit().status, 0);
+    const report = JSON.parse(readFileSync(resolve(internal, "newsletter-link-scores.json"), "utf8"));
+    assert.equal(report.links.find((l: {url: string}) => l.url === urls[0]).destino, "destaque");
+  }));
+
+  it("item 3: approved newsletter with 0 captured links is falhou with an explicit reason", () => {
+    const empty = {...thread(), body: "Sem links hoje."};
+    const result = buildIntake([empty], registry, [scored], undefined, {});
+    assert.equal(result.rows[0].estado, "falhou");
+    assert.match(result.rows[0].estado_motivo, /sem nenhum link capturado/);
+  });
+
+  it("items 1+6: discovery is audit-only, offers only bulk-service senders and counts the rest without address", () => {
+    const discovered = [
+      {thread_id: "d1", sender: "Letter <hello@newletter.ai>", subject: "Issue 1", date: "", list_unsubscribe: "<https://newletter.beehiiv.com/unsub>"},
+      {thread_id: "d2", sender: "Pessoa <pessoa@gmail.com>", subject: "Re: lista", date: "", list_id: "<grupo.googlegroups.com>"},
+      {thread_id: "d3", sender: "other@example.com", subject: "x", date: "", list_id: "<x.mcsv.net>"},
+      {thread_id: "a", sender: "AI <ai@example.com>", subject: "dup", date: "", list_id: "<x.mcsv.net>"},
+    ];
+    const result = buildIntake([thread()], registry, [scored], undefined, {}, [], [], {discovered});
+    assert.deepEqual(result.pending_senders, ["hello@newletter.ai"]);
+    assert.equal(result.discovery.fora_de_servico_conhecido, 1);
+    assert.equal(result.discovery.rejeitados, 1);
+    assert.equal(result.discovery.threads, 3, "thread já capturada não conta na descoberta");
+    assert.equal(result.rows.length, 1, "descoberta nunca vira linha do intake");
+    assert.ok(!JSON.stringify(result).includes("pessoa@gmail.com"), "endereço fora de serviço conhecido nunca sai no relatório");
+  });
+
+  it("item 6: rejection of a sender the gate did not offer never goes to the seed; null decision is a clear error", () => temp((dir) => {
+    const path = resolve(dir, "senders.json"); writeFileSync(path, JSON.stringify(registry));
+    const decision = {status: "rejeitado" as const, reason: "Gate 261105", decided_at: "2026-11-04"};
+    const out = applyDecisions(path, {"pessoa@gmail.com": decision, "hello@newletter.ai": decision}, new Set(["hello@newletter.ai"]));
+    assert.deepEqual(out, {applied: 1, skipped_rejections: 1});
+    const saved = readFileSync(path, "utf8");
+    assert.ok(!saved.includes("pessoa@gmail.com"));
+    assert.ok(saved.includes("hello@newletter.ai"));
+    assert.throws(() => applyDecisions(path, {"x@example.com": null as never}), /sem objeto de decisão/);
+    assert.equal(readFileSync(path, "utf8"), saved);
+    assert.equal(existsSync(path + ".tmp"), false);
+  }));
+
+  it("item 9: only the latest manifest event per scope counts", () => temp((dir) => {
+    const path = resolve(dir, "m.jsonl");
+    writeFileSync(path, [
+      {scope: "A", thread_ids: ["old"]}, {scope: "B", thread_ids: ["b"]}, {scope: "A", thread_ids: ["new"]},
+    ].map((e) => JSON.stringify(e)).join("\n") + "\n");
+    assert.deepEqual(latestManifestEvents(path).flatMap((e) => e.thread_ids).sort(), ["b", "new"]);
+  }));
+
+  it("detects bulk services by header host, never by substring of a person domain", () => {
+    assert.equal(detectBulkService(["<abc.list-id.mcsv.net>"]), "mcsv.net");
+    assert.equal(detectBulkService(["Fulano <fulano@notsubstack.com>"]), null);
+    assert.equal(detectBulkService(["x@y.com"], ["y.com"]), "y.com");
+  });
+
+  it("#9368 guard counts only threads of approved senders", () => {
+    const threads = JSON.stringify([{sender: "ai@example.com"}, {sender: "config-only@example.com"}]);
+    const approved = (t: {sender?: string}) => classifySender(t.sender ?? "", registry).classificacao === "IA";
+    assert.equal(evaluateCaptureYield(JSON.stringify([{sender: "config-only@example.com"}]), "[]", approved).empty, false);
+    assert.equal(evaluateCaptureYield(threads, "[]", approved).threads, 1);
+    assert.equal(evaluateCaptureYield(threads, "[]").threads, 2);
+  });
+});
+
+describe("fetch-newsletter-threads #12188 discovery and failures", () => {
+  const b64 = (s: string) => Buffer.from(s).toString("base64url");
+  function gmail(threads: Record<string, unknown>, failing = new Set<string>()) {
+    const paths: string[] = [];
+    const request = async <T>(path: string): Promise<T> => {
+      paths.push(path);
+      if (path.startsWith("threads?")) return {threads: Object.keys(threads).map((id) => ({id}))} as T;
+      const id = path.slice("threads/".length).split("?")[0];
+      if (failing.has(id)) throw new Error(`boom ${id}`);
+      return {...(threads[id] as object), id} as T;
+    };
+    return {request, paths};
+  }
+  const message = (headers: Array<{name: string; value: string}>, html = "") => ({id: "x", messages: [{id: "m", internalDate: "1793786400000",
+    payload: {mimeType: "text/html", headers, body: html ? {data: b64(html)} : {}}}]});
+
+  it("items 1+2: discovery writes its own file, uses format=metadata, skips captured IDs and never touches capture file or sentinel", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "intake-12188-"));
+    try {
+      const internal = resolve(dir, "_internal"); mkdirSync(internal);
+      const capturedPath = resolve(internal, "captured-newsletters.json");
+      const sentinel = resolve(internal, ".capture-newsletter-failed.json");
+      writeFileSync(capturedPath, JSON.stringify([thread("a")]));
+      writeFileSync(sentinel, JSON.stringify({failed: true, error: "grupo falhou", at: "x"}));
+      const {request, paths} = gmail({
+        a: message([{name: "From", value: "ai@example.com"}, {name: "List-ID", value: "<a.mcsv.net>"}]),
+        n: message([{name: "From", value: "hello@newletter.ai"}, {name: "List-Unsubscribe", value: "<https://x.beehiiv.com/u>"}]),
+        p: message([{name: "From", value: "amigo@example.com"}, {name: "Subject", value: "oi"}]),
+      });
+      const out = resolve(internal, "discovered-newsletters.json");
+      await fetchMain(["node", "f", "--discover", "--since-hours", "48", "--out", out, "--skip-ids-from", capturedPath], request);
+      const discovered = JSON.parse(readFileSync(out, "utf8"));
+      assert.deepEqual(discovered.map((t: {thread_id: string}) => t.thread_id), ["n"]);
+      assert.equal(discovered[0].list_unsubscribe, "<https://x.beehiiv.com/u>");
+      assert.ok(paths.filter((p) => p.startsWith("threads/")).every((p) => p.includes("format=metadata")), "descoberta nunca pede format=full");
+      assert.ok(!paths.some((p) => p.startsWith("threads/a")), "thread já capturada é pulada");
+      assert.deepEqual(JSON.parse(readFileSync(capturedPath, "utf8")).map((t: {thread_id: string}) => t.thread_id), ["a"], "captured-newsletters.json intocado");
+      assert.ok(existsSync(sentinel), "sucesso da descoberta não apaga o sentinel de um grupo que falhou");
+      assert.ok(existsSync(out + ".fetch.jsonl"));
+    } finally { rmSync(dir, {recursive: true, force: true}); }
+  });
+
+  it("sender-group failures stay in the manifest, never as sender:'' placeholders in captured-newsletters.json; the intake keeps them as falhou", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "intake-12188-"));
+    try {
+      const internal = resolve(dir, "_internal"); mkdirSync(internal);
+      const out = resolve(internal, "captured-newsletters.json");
+      const {request} = gmail({
+        ok: message([{name: "From", value: "ai@example.com"}], `<p>Leia <a href="${urls[0]}">aqui</a></p>`),
+        bad: {},
+      }, new Set(["bad"]));
+      await fetchMain(["node", "f", "--senders", "ai@example.com", "--since-hours", "48", "--out", out], request);
+      const captured = JSON.parse(readFileSync(out, "utf8"));
+      assert.deepEqual(captured.map((t: {thread_id: string}) => t.thread_id), ["ok"]);
+      assert.ok(captured.every((t: {sender: string}) => t.sender));
+      const events = latestManifestEvents(out + ".fetch.jsonl");
+      const failed = events.flatMap((e) => (e.outcomes ?? []).filter((o) => o.outcome === "falhou"));
+      assert.deepEqual(failed.map((o) => o.thread_id), ["bad"]);
+      const result = buildIntake(captured, registry, [scored], undefined, {}, [], [], {failedThreads: failed});
+      assert.equal(result.rows.find((r) => r.thread_id === "bad")?.estado, "falhou");
+      assert.deepEqual(result.pending_senders, [], "falha sem remetente nunca vira remetente pendente");
+    } finally { rmSync(dir, {recursive: true, force: true}); }
+  });
+
+  it("an image-only HTML with link hrefs is readable, not 'Sem corpo legível'", async () => {
+    const {request} = gmail({i: message([{name: "From", value: "ai@example.com"}], `<a href="${urls[0]}"><img src="https://cdn.example/x.png"></a>`)});
+    const t = await fetchThread("i", 8000, request);
+    assert.equal(t?.capture_error, undefined);
+    assert.deepEqual(t?.urls_extraidas, [urls[0]]);
+  });
+});
+
+describe("capture-newsletter-urls #12188 resume", () => {
+  it("preserves an article whose mention has no '@' (unclassifiable legacy origin)", () => temp((dir) => {
+    const input = resolve(dir, "threads.json"); const out = resolve(dir, "articles.json");
+    writeFileSync(input, JSON.stringify([]));
+    writeFileSync(out, JSON.stringify([{url: urls[0], newsletter_mentions: ["AI Roundup"]}, {url: urls[1], newsletter_mentions: ["new@example.com"]}]));
+    captureMain(["node", "capture-newsletter-urls.ts", "--threads", input, "--out", out, "--cursor", resolve(dir, "cursor.json"), "--edition", "261105"]);
+    assert.deepEqual(JSON.parse(readFileSync(out, "utf8")).map((a: {url: string}) => a.url), [urls[0]]);
   }));
 });

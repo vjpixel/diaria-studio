@@ -177,6 +177,7 @@ import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { CAPTURE_EMPTY_MESSAGE, evaluateCaptureYield } from "./lib/newsletter-capture-yield.ts";
+import { classifySender, parseSenderRegistry } from "./lib/newsletter-senders.ts"; // #12188
 import { getHowToDiscoveryQueries } from "./lib/use-melhor-curation.ts";
 import { getNegativeImpactDiscoveryQueries } from "./lib/negative-impact-curation.ts";
 import { loadSearchDemandIdeas, pickSearchDemandDiscoveryQueries } from "./lib/search-demand-curation.ts"; // #8370 Peça 1
@@ -1055,7 +1056,16 @@ async function runPostResearchPreScore(deps: Stage1RunDeps, opts: Stage1RunOptio
       const abs = resolve(deps.rootDir, internalPath(editionDir, file));
       return deps.existsSync(abs) ? deps.readFile(abs) : null;
     };
-    const yieldCheck = evaluateCaptureYield(readIfExists("captured-newsletters.json"), readIfExists("captured-newsletter-articles.json"));
+    // #12188: só threads de remetente aprovado contam (registro inválido/ausente → todas).
+    let countsThread: ((t: { sender?: string }) => boolean) | undefined;
+    const registryAbs = resolve(deps.rootDir, "seed/newsletter-senders.json");
+    if (deps.existsSync(registryAbs)) {
+      try {
+        const registry = parseSenderRegistry(deps.readFile(registryAbs));
+        countsThread = (t) => classifySender(t.sender ?? "", registry).classificacao === "IA";
+      } catch { /* o Stage 0 já registrou o erro do registro */ }
+    }
+    const yieldCheck = evaluateCaptureYield(readIfExists("captured-newsletters.json"), readIfExists("captured-newsletter-articles.json"), countsThread);
     if (yieldCheck.empty) {
       report.note(`❌ 1h: ${yieldCheck.threads} ${CAPTURE_EMPTY_MESSAGE}`);
       logEvent(deps, opts.edition, "error", `1h: ${CAPTURE_EMPTY_MESSAGE}`, {

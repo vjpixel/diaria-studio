@@ -51,7 +51,7 @@ import {
   senderEmail,
 } from "./inject-inbox-urls.ts";
 import type { SyntheticInboxArticle } from "./inject-inbox-urls.ts";
-import { classifySender, loadSenderRegistry } from "./lib/newsletter-senders.ts";
+import { classifySender, loadSenderRegistry, senderKey } from "./lib/newsletter-senders.ts";
 import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
 // #2834: stripHtml consolidado em lib/strip-html.ts (era byte-idêntico ao
 // de auto-forward-newsletters.ts). Reexportado aqui pra não quebrar imports
@@ -609,6 +609,17 @@ export function loadAlwaysConsiderConfig(configPath: string): { alwaysConsiderSe
   return { alwaysConsiderSenders, configWarnings };
 }
 
+/** #12188: `newsletter_auto_capture.senders` normalizados; config ilegível = vazio (o aviso já sai acima). */
+function loadConfigSenders(configPath: string): Set<string> {
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as { newsletter_auto_capture?: { senders?: unknown } };
+    const senders = cfg.newsletter_auto_capture?.senders;
+    return new Set(Array.isArray(senders) ? senders.filter((s): s is string => typeof s === "string").map(senderKey) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 /**
  * Merge da saída existente (re-run / crash-resume) com os artigos recém-
  * extraídos: URL nova é acrescentada; URL já presente fica como estava, mas
@@ -675,7 +686,16 @@ export function main(argv: string[] = process.argv): void {
 
   // Unknown and rejected senders remain in the intake, never enter the IA pool.
   const registry = loadSenderRegistry(resolve(ROOT, "seed/newsletter-senders.json"));
+  const dropped = threads.filter((t) => classifySender(t.sender, registry).classificacao !== "IA");
   threads = threads.filter((t) => classifySender(t.sender, registry).classificacao === "IA");
+  // #12188: a sender still listed in platform.config.json but not approved in
+  // the registry is fetched and then filtered here — never in silence.
+  const configSenders = loadConfigSenders(resolve(ROOT, "platform.config.json"));
+  for (const sender of new Set(dropped.map((t) => senderKey(t.sender)).filter((s) => configSenders.has(s)))) {
+    const w = `newsletter_auto_capture.senders inclui "${sender}", que não está aprovado em seed/newsletter-senders.json — threads dele ficam fora do pool até decisão no gate 4 (#12188).`;
+    configWarnings.push(w);
+    console.error(`[capture-newsletter-urls] WARN ${w}`);
+  }
 
   // Load cursor
   const cursor = loadCursor(cursorPath);
@@ -692,7 +712,10 @@ export function main(argv: string[] = process.argv): void {
       existing = JSON.parse(readFileSync(absOut, "utf8"));
     } catch { /* corrupt file — overwrite */ }
   }
-  const approvedExisting = existing.filter((a) => !a.newsletter_mentions?.length || a.newsletter_mentions.some((sender) => classifySender(sender, registry).classificacao === "IA"));
+  // Drops prior articles whose every origin is a non-approved sender. A mention
+  // without "@" (legacy/name-only) cannot be classified and is preserved.
+  const approvedExisting = existing.filter((a) => !a.newsletter_mentions?.length || a.newsletter_mentions.some((sender) =>
+    !senderKey(sender).includes("@") || classifySender(sender, registry).classificacao === "IA"));
   const merged = mergeCapturedArticles(approvedExisting, articles);
   const tmpOut = absOut + ".tmp";
   writeFileSync(tmpOut, JSON.stringify(merged, null, 2) + "\n", "utf8");

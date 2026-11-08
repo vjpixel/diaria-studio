@@ -144,6 +144,7 @@ import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { type FacebookCredentialsFile, loadFacebookPagesConfig, resolveFacebookPages } from "./lib/facebook-pages.ts";
 import { CAPTURE_EMPTY_MESSAGE, evaluateCaptureYield } from "./lib/newsletter-capture-yield.ts";
+import { approvedSenders, classifySender, parseSenderRegistry, type SenderRegistry } from "./lib/newsletter-senders.ts";
 import { EXIT_HISTORY_MANIFEST_REL_PATH, exitHistoryDrainStatus } from "./lib/beehiiv-exit-history.ts";
 
 // Mesma disciplina do #4983 (clarice-novos-run.ts) — carregar .env ANTES de
@@ -562,15 +563,24 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
       const nac = cfg.newsletter_auto_capture;
       autoCaptureEnabled = nac?.enabled === true;
       senders = Array.isArray(nac?.senders) ? nac.senders : [];
-      const registryPath = resolve(deps.rootDir, "seed/newsletter-senders.json");
-      if (deps.existsSync(registryPath)) {
-        const registry = JSON.parse(deps.readFile(registryPath)) as {senders?: Record<string, {status: string}>};
-        if (registry.senders) senders = [...new Set([...senders, ...Object.keys(registry.senders).filter((s) => registry.senders![s].status === "aprovado")])];
-      }
       sinceHours = typeof nac?.since_hours === "number" ? nac.since_hours : 48;
       sinceHoursBySender = nac?.since_hours_by_sender && typeof nac.since_hours_by_sender === "object" ? nac.since_hours_by_sender : {};
     } catch {
       report.note("⚠️  0b-bis: platform.config.json ilegível — pulando auto-capture de newsletters.");
+    }
+    // #12188: remetentes aprovados no registro versionado entram na captura.
+    // try próprio: registro inválido não pode meia-aplicar nem esconder o
+    // config — a captura segue só com os senders do config, com erro no log.
+    let registry: SenderRegistry | null = null;
+    const registryPath = resolve(deps.rootDir, "seed/newsletter-senders.json");
+    if (deps.existsSync(registryPath)) {
+      try {
+        registry = parseSenderRegistry(deps.readFile(registryPath));
+        senders = [...new Set([...senders, ...approvedSenders(registry)])];
+      } catch (err) {
+        report.note("❌ 0b-bis: seed/newsletter-senders.json inválido — captura segue só com os senders do platform.config.json.");
+        logEvent(deps, opts.edition, "error", `0b-bis: seed/newsletter-senders.json inválido (${err instanceof Error ? err.message : String(err)}) — remetentes aprovados fora da captura (#12188)`);
+      }
     }
 
     if (autoCaptureEnabled && senders.length > 0) {
@@ -613,7 +623,7 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
       // nunca em silêncio, mesmo quando outro grupo teve sucesso — pra não
       // enfraquecer o guard #1756 (que compara summary.threads_found contra
       // o conteúdo real do arquivo).
-      const groupResults: Array<{ group: { senders: string[]; hours: number }; code: number; json: { threads_found?: number; threads_written?: number; hit_max_threads?: boolean } | undefined }> = [];
+      const groupResults: Array<{ group: { senders: string[]; hours: number }; code: number; json: { threads_found?: number; threads_written?: number } | undefined }> = [];
       for (const group of fetchGroups) {
         const fetchResult = softStep(deps, report, `fetch-newsletter-threads (0b-bis, ${group.hours}h)`, "scripts/fetch-newsletter-threads.ts", [
           "--senders",
@@ -623,15 +633,26 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
           "--out",
           threadsOut,
         ]);
-        groupResults.push({ group, code: fetchResult.result.code, json: fetchResult.json as { threads_found?: number; threads_written?: number; hit_max_threads?: boolean } | undefined });
+        groupResults.push({ group, code: fetchResult.result.code, json: fetchResult.json as { threads_found?: number; threads_written?: number } | undefined });
       }
-      // Discover newsletters with List-ID/List-Unsubscribe in the inbox, including new senders.
+      // #12188: descobre newsletters (List-ID/List-Unsubscribe) de remetentes
+      // novos no inbox. Arquivo PRÓPRIO, lido só pela auditoria — nunca o
+      // captured-newsletters.json, que alimenta a linha de cobertura e o pool.
+      const discoveredOut = `${editionDir}/_internal/discovered-newsletters.json`;
       const discovery = softStep(deps, report, "discover-newsletters (0b-bis)", "scripts/fetch-newsletter-threads.ts", [
-        "--discover", "--since-hours", String(effectiveSinceHours), "--out", threadsOut,
+        "--discover", "--since-hours", String(effectiveSinceHours), "--out", discoveredOut, "--skip-ids-from", threadsOut,
       ]);
+      const discoveryJson = discovery.json as { threads_found?: number; threads_written?: number; capped?: boolean } | undefined;
+      const discoverySummary = { ok: discovery.result.code === 0, threads_found: discoveryJson?.threads_found ?? 0, threads_written: discoveryJson?.threads_written ?? 0 };
+      if (!discoverySummary.ok) {
+        logEvent(deps, opts.edition, "warn", "0b-bis: descoberta de newsletters falhou — remetentes novos não serão oferecidos no gate 4 (#12188)", { informational: true });
+      } else if (discoveryJson?.capped) {
+        logEvent(deps, opts.edition, "warn", "0b-bis: descoberta de newsletters atingiu o teto de threads — remetentes novos podem ter ficado de fora (#12188)", { details: discoverySummary });
+      }
       const okGroups = groupResults.filter((g) => g.code === 0);
       const failedGroups = groupResults.filter((g) => g.code !== 0);
-      const fetchOk = okGroups.length > 0 || discovery.result.code === 0;
+      // #12188 item 4: só os grupos de remetente decidem se a captura funcionou.
+      const fetchOk = okGroups.length > 0;
       for (const failed of failedGroups) {
         logEvent(
           deps,
@@ -647,15 +668,8 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
           threads_written: okGroups.reduce((sum, g) => sum + (g.json?.threads_written ?? 0), 0),
         };
         logEvent(deps, opts.edition, "info", "0b-bis: newsletters capturadas", {
-          details: { ...summary, groups_ok: okGroups.length, groups_failed: failedGroups.length },
+          details: { ...summary, groups_ok: okGroups.length, groups_failed: failedGroups.length, discovery: discoverySummary },
         });
-        // #9365: busca que bate o teto de threads pode ter cortado newsletters.
-        const cappedGroups = okGroups.filter((g) => g.json?.hit_max_threads === true);
-        if (cappedGroups.length > 0) {
-          logEvent(deps, opts.edition, "warn", "0b-bis: fetch-newsletter-threads atingiu o teto de threads — newsletters podem ter ficado de fora", {
-            details: { groups: cappedGroups.map((g) => g.group.senders) },
-          });
-        }
         // #1756 — guard: threads_found>0 mas o arquivo ficou ausente/vazio.
         const capturedPath = resolve(deps.rootDir, threadsOut);
         const captured = deps.existsSync(capturedPath) ? deps.readFile(capturedPath).trim() : "";
@@ -685,9 +699,12 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
         // (nunca warning silencioso). Caso 260921: 11 threads, 0 artigos.
         {
           const articlesAbs = resolve(deps.rootDir, capturedArticlesOut);
+          // #12188: só conta threads de remetente aprovado — as de sender só
+          // do config ficam fora do pool por decisão, não por falha.
           const yieldCheck = evaluateCaptureYield(
             captured || null,
             deps.existsSync(articlesAbs) ? deps.readFile(articlesAbs) : null,
+            registry ? (t) => classifySender(t.sender ?? "", registry).classificacao === "IA" : undefined,
           );
           if (yieldCheck.empty) {
             report.note(`❌ 0b-bis: ${yieldCheck.threads} ${CAPTURE_EMPTY_MESSAGE}`);
@@ -715,7 +732,7 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
           });
         }
       } else {
-        logEvent(deps, opts.edition, "info", "0b-bis skipped: fetch-newsletter-threads falhou", { informational: true });
+        logEvent(deps, opts.edition, "info", "0b-bis skipped: fetch-newsletter-threads falhou", { informational: true, details: { groups_failed: failedGroups.length, discovery: discoverySummary } });
       }
     } else {
       report.note("↷ 0b-bis: newsletter_auto_capture desabilitado ou sem senders — skip silencioso.");
