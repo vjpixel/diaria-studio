@@ -2748,7 +2748,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       { key: "run", script: "scripts/onboarding-welcome-run.ts", args: ["--send"] },
       { key: "kit", script: "scripts/onboarding-kit-transport-run.ts", args: ["--send", "--skip-if-disabled"] },
       // #10604/#10605: sequências de apoio (D+30/90/180/360) e formulário (D+6 +
-      // lembrete a cada 30 dias). Depois do passo kit (mesmo store, mesmo lock).
+      // lembrete 30 dias depois do último e-mail, até 3; também para quem
+      // recebeu o e-mail único da base). Depois do passo kit (mesmo store, mesmo lock).
       // Travado pelos textos pendentes, sai 0 sem chamar o Kit e só registra o
       // bloqueio (`followup.last_run`, lido pelo alarme e pelo painel).
       { key: "followup", script: "scripts/onboarding-followup-run.ts", args: ["--send", "--skip-if-disabled"] },

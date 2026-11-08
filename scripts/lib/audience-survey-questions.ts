@@ -7,16 +7,14 @@
  * conversão das respostas do formulário do onboarding
  * (`scripts/lib/onboarding-form-contract.ts`) para esse formato.
  *
- * A survey antiga da Beehiiv e o formulário do onboarding entram no MESMO
- * perfil. Os rótulos das 3 perguntas de perfil do formulário são diferentes
- * dos da survey, mas os dois casam com os mesmos matchers abaixo e usam
- * opções compatíveis, então as contagens somam nas mesmas linhas. As
- * perguntas de produto só existem no formulário e têm seção própria no
- * perfil.
+ * Desde a decisão 10 do editor (08/11/2026) o perfil sai SÓ do formulário
+ * do onboarding: as respostas da survey antiga da Beehiiv (e do Tally) foram
+ * descartadas, e `update-audience.ts` ignora qualquer resposta que não venha
+ * do formulário (`isOnboardingFormResponse`). Por isso o matcher `sectors`
+ * (pergunta que só a survey da Beehiiv tinha) saiu.
  *
  * Puro (sem I/O). `test/onboarding-form-questions-10605.test.ts` trava que
- * toda pergunta do formulário cai em exatamente um matcher e que nenhum
- * prompt da survey antiga cai num matcher de produto.
+ * toda pergunta do formulário cai em exatamente um matcher.
  */
 
 import { FORM_QUESTIONS, splitMultiAnswer, type FormQuestion, type FormResponse } from "./onboarding-form-contract.ts";
@@ -24,11 +22,10 @@ import { FORM_QUESTIONS, splitMultiAnswer, type FormQuestion, type FormResponse 
 /** Pergunta da survey/formulário → seção do perfil (casamento por texto). */
 export const SURVEY_MATCHERS = {
   contentTypes: /se[çc][õo]es|tipos? de conte[úu]do/i,
-  sectors: /setor de atua[çc][ãa]o da organiza/i,
   areas: /principal [áa]rea de atua[çc][ãa]o/i,
   aiLevel: /n[íi]vel de conhecimento em ia/i,
   productFormats: /al[ée]m da newsletter/i,
-  courseTopics: /tema voc[êe] faria um curso/i,
+  courseTopics: /tema voc[êe] (?:faria um curso|gostaria de aprender)/i,
   coursePrice: /quanto voc[êe] investiria/i,
   openSuggestion: /quer contar mais alguma coisa/i,
 } as const;
@@ -41,7 +38,7 @@ export interface SurveyAnswerRecord {
   answer: string;
 }
 
-/** Uma resposta em `data/audience-raw.json` — survey Beehiiv, Tally ou formulário do onboarding. */
+/** Uma resposta em `data/audience-raw.json` — desde a decisão 10 do editor, só do formulário do onboarding. */
 export interface SurveyResponseRecord {
   id: string;
   status?: string;

@@ -126,7 +126,7 @@ describe("#10604 filtro 'não apoia' e só ativo, perto do envio", () => {
 });
 
 describe("#10605 cadência do formulário", () => {
-  it("D+6 da confirmação; quem preencheu nunca recebe; lembrete a cada 30 dias do envio anterior, sem teto", () => {
+  it("D+6 da confirmação; quem preencheu nunca recebe; lembrete 30 dias depois do envio anterior, até 3 (#10605 v2)", () => {
     assert.deepEqual(formStepDue(T0, T0 + 5 * DAY, undefined, cfg), { due: null, motivo: "nao_venceu" });
     assert.deepEqual(formStepDue(T0, T0 + 6 * DAY, undefined, cfg), { due: "form" });
     assert.deepEqual(formStepDue(null, T0 + 6 * DAY, undefined, cfg), { due: null, motivo: "sem_ancora" });
@@ -135,12 +135,15 @@ describe("#10605 cadência do formulário", () => {
 
     const p = person();
     let at = T0 + 6 * DAY;
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 3; i++) {
       p.sends.push({ step: i === 0 ? "form" : "form_lembrete", at: new Date(at * 1000).toISOString(), lot_id: `l${i}` });
       assert.deepEqual(formStepDue(T0, at + 29 * DAY, p, cfg), { due: null, motivo: "nao_venceu" });
-      assert.deepEqual(formStepDue(T0, at + 30 * DAY, p, cfg), { due: "form_lembrete" }, `lembrete ${i + 1} segue devido (sem teto)`);
+      assert.deepEqual(formStepDue(T0, at + 30 * DAY, p, cfg), { due: "form_lembrete" }, `lembrete ${i + 1} devido`);
       at += 30 * DAY;
     }
+    // Depois do 3º lembrete, para mesmo sem resposta (decisão do editor de 08/11/2026).
+    p.sends.push({ step: "form_lembrete", at: new Date(at * 1000).toISOString(), lot_id: "l3" });
+    assert.deepEqual(formStepDue(T0, at + 300 * DAY, p, cfg), { due: null, motivo: "teto_lembretes" });
   });
 
   it("resposta do formulário para os lembretes na hora", () => {
@@ -223,16 +226,17 @@ describe("#10604/#10605 envio travado até os textos serem aprovados", () => {
     assert.ok(!out.includes("url_encode"));
   });
 
-  it("--init-snippets cria os 6 textos com o marcador e nunca sobrescreve", () => {
+  it("--init-snippets cria os 7 textos com o marcador e nunca sobrescreve", () => {
     const dir = mkdtempSync(join(tmpdir(), "followup-snip-"));
     writeFileSync(join(dir, "apoio-30.md"), "editado pelo editor");
     const { written, skipped } = initFollowupSnippets(dir);
-    assert.equal(written.length, 5);
+    assert.equal(written.length, 6);
     assert.deepEqual(skipped, [{ path: join(dir, "apoio-30.md"), reason: "texto_existente" }]);
     assert.equal(readFileSync(join(dir, "apoio-30.md"), "utf8"), "editado pelo editor");
     const snips = loadFollowupSnippets(dir);
     assert.equal(snips.apoio90?.hasPendingMarker, true);
     assert.equal(snips.form?.hasPendingMarker, true);
+    assert.equal(snips.form_base?.hasPendingMarker, true, "e-mail da base também nasce travado");
   });
 });
 

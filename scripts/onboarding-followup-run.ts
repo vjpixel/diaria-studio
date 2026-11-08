@@ -4,8 +4,10 @@
  *
  * Executor diário das sequências DEPOIS da escada de boas-vindas:
  *  - pedido de apoio em D+30/90/180/360 do cadastro, só pra quem não apoia;
- *  - formulário de perfil/interesses em D+6 + lembrete a cada 30 dias até
- *    preencher (sem teto, decisão do editor de 20/10/2026).
+ *  - formulário de perfil/interesses em D+6 + lembrete 30 dias depois do
+ *    último e-mail do formulário, até 3 lembretes por pessoa (decisão do
+ *    editor de 08/11/2026). O lembrete vale também para quem recebeu o
+ *    e-mail único da base (`onboarding-form-base-prep.ts`, `form_base`).
  *
  * Regras (janela "nunca atrasada", idempotência, espaçamento, só ativo/não
  * apoia, teto de lote, gates de texto) vivem PURAS em
@@ -65,6 +67,9 @@ import { FORM_PAGE_MARKER, FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, 
 import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
   ALL_FOLLOWUP_STEPS,
+  applyBaseInviteToPeople,
+  decideBaseInviteConfirm,
+  type BaseInviteConfirmDecision,
   apoioContentGate,
   applyFollowupLotToPeople,
   applyFormResponses,
@@ -73,6 +78,7 @@ import {
   isConcreteKitState,
   findLatestFollowupLot,
   formCandidatesFromEntries,
+  formBaseCandidatesFromPeople,
   formContentGate,
   buildFormLink,
   FORM_LINK_PROBE_EMAIL,
@@ -110,6 +116,7 @@ import {
   type FollowupRunRecord,
   type FollowupSnippets,
   type FollowupStepKind,
+  type FormCandidate,
   type FormResponseRecord,
   type LiveSubscriberCheck,
   type LookupFailure,
@@ -580,6 +587,45 @@ export async function reconcileFollowupLots(
   return { results, unresolved };
 }
 
+/**
+ * #10605: relê o broadcast do e-mail da base (`followup.base_invite`, status
+ * `draft`) e, se o editor já agendou/enviou no Kit, grava o envio `form_base`
+ * de cada destinatário e marca o convite `sent` — sob lock, sobre o store do
+ * disco, e espelhado em `block` (o plano que vem depois enxerga). `null` =
+ * nada a fazer (sem convite em rascunho ou sem `getBroadcast`). Usado pelo
+ * executor diário e por `onboarding-form-base-prep.ts --step confirm`.
+ */
+export async function confirmBaseInviteIfSent(
+  storePath: string,
+  block: FollowupBlock,
+  deps: Pick<FollowupRoundDeps, "getBroadcast">,
+  nowMs: number,
+): Promise<{ lot_id: string; decision: BaseInviteConfirmDecision["action"]; marked: number; error?: string } | null> {
+  const invite = block.base_invite;
+  if (!invite || invite.status !== "draft" || invite.broadcast_id == null || !deps.getBroadcast) return null;
+  const nowIso = new Date(nowMs).toISOString();
+  let decision: BaseInviteConfirmDecision;
+  try {
+    decision = decideBaseInviteConfirm(await deps.getBroadcast(invite.broadcast_id), nowIso);
+  } catch (e) {
+    return { lot_id: invite.lot_id, decision: "unknown", marked: 0, error: redactEmails((e as Error).message) };
+  }
+  if (decision.action !== "sent") {
+    return { lot_id: invite.lot_id, decision: decision.action, marked: 0, ...(decision.action === "unknown" ? { error: decision.reason } : {}) };
+  }
+  const sendAt = decision.sendAt;
+  const marked = withStore(storePath, "confirmar o e-mail da base", (_store, disk) => {
+    const cur = disk.base_invite;
+    if (!cur || cur.lot_id !== invite.lot_id || cur.status !== "draft") return { result: 0, write: false };
+    const n = applyBaseInviteToPeople(disk.people, cur, sendAt, nowIso);
+    disk.base_invite = { ...cur, status: "sent", send_at: sendAt, confirmed_at: nowIso, last_error: null };
+    return { result: n, write: true };
+  });
+  applyBaseInviteToPeople(block.people, invite, sendAt, nowIso);
+  block.base_invite = { ...invite, status: "sent", send_at: sendAt, confirmed_at: nowIso, last_error: null };
+  return { lot_id: invite.lot_id, decision: "sent", marked };
+}
+
 export interface FollowupRoundOpts {
   storePath: string;
   send: boolean;
@@ -738,6 +784,15 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   run.lots_unresolved = rec.unresolved;
   for (const r of rec.results) lotsOut.push({ reconcile: true, ...r });
 
+  // #10605: o e-mail da base é rascunho até o editor agendar no Kit. Quando a
+  // releitura mostra agendado/enviado, grava `form_base` por pessoa ANTES de
+  // planejar (é o que libera o lembrete 30 dias depois). Leitura falhando só
+  // adia: nada é gravado sem a prova do Kit.
+  if (send) {
+    const out = await confirmBaseInviteIfSent(storePath, block, deps, nowMs);
+    if (out) lotsOut.push({ base_invite: true, ...out });
+  }
+
   // Formulário: quem preencheu sai dos lembretes ANTES de planejar.
   if (!formBlocked) {
     try {
@@ -777,7 +832,12 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
       run.apoio_blocked = apoioBlocked;
     }
   }
-  const { candidates: formCandidates } = formBlocked ? { candidates: [] } : formCandidatesFromEntries(Object.values(store.entries));
+  // #10605 regra A: candidatos da escada + quem recebeu o e-mail da base (só lembrete).
+  const formCandidates: FormCandidate[] = [];
+  if (!formBlocked) {
+    formCandidates.push(...formCandidatesFromEntries(Object.values(store.entries)).candidates);
+    formCandidates.push(...formBaseCandidatesFromPeople(block.people, new Set(formCandidates.map((c) => c.kit_subscriber_id))));
+  }
 
   const plan = planFollowup({
     apoioCandidates,

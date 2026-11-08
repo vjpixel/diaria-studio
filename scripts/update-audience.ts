@@ -4,9 +4,13 @@
  *   1. **CTR comportamental** (primário) — `data/link-ctr-table.csv`
  *      Gerado por `build-link-ctr.ts`. Mostra o que a audiência realmente clica.
  *
- *   2. **Survey declarativo** (secundário) — `data/audience-raw.json`
- *      Gerado via Beehiiv MCP (/diaria-atualiza-audiencia). Mostra quem são
- *      e o que dizem preferir.
+ *   2. **Formulário do onboarding** (secundário) — `data/audience-raw.json`
+ *      Gerado por `scripts/audience-run.ts` (/diaria-atualiza-audiencia) a
+ *      partir das respostas do formulário (`workers/onboarding-form`). Mostra
+ *      quem são e o que dizem preferir. Desde a decisão 10 do editor
+ *      (08/11/2026, #10605) a survey antiga da Beehiiv (e o Tally) foi
+ *      descartada: resposta que não vem do formulário é ignorada aqui, mesmo
+ *      que ainda esteja num `audience-raw.json` antigo.
  *
  * Subscriber count respeita `publishing.newsletter.subscriber_backend`
  * (#8145): backend "kit" lê `getKitActiveSummary` do store unificado local
@@ -114,8 +118,8 @@ export function renderProductInterestSection(responses: BeehiivResponse[]): stri
     "",
     `Fonte: formulário do onboarding (#10605). Sondagem para decidir que cursos ou outros produtos oferecer; não usar para pontuar notícias.`,
     ...block("Formatos de interesse", formats),
-    ...block("Temas de curso", topics),
-    ...block("Quanto investiria num curso", price),
+    ...block("Temas para aprender", topics),
+    ...block("Quanto investiria para aprender", price),
     ...(openCount > 0 ? ["", `Respostas abertas: ${openCount} (o texto livre não entra no perfil; ler em \`data/audience-raw.json\`).`] : []),
   ];
 }
@@ -759,7 +763,13 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
   if (surveyPath && existsSync(surveyPath)) {
     try {
       const all: BeehiivResponse[] = JSON.parse(readFileSync(surveyPath, "utf8"));
-      surveyResponses = all.filter((r) => !r.status || r.status === "active");
+      const active = all.filter((r) => !r.status || r.status === "active");
+      // #10605 decisão 10: só o formulário do onboarding entra no perfil.
+      surveyResponses = active.filter(isOnboardingFormResponse);
+      const discarded = active.length - surveyResponses.length;
+      if (discarded > 0) {
+        warnFn(`[update-audience] ${discarded} resposta(s) de survey antiga (Beehiiv/Tally) ignorada(s): o perfil sai só do formulário do onboarding (#10605).`);
+      }
     } catch (error) {
       logFileReadWarning("survey JSON", surveyPath, error, spawnFn, warnFn);
     }
@@ -945,7 +955,6 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
 
   if (surveyResponses.length > 0) {
     const contentTypes = countAnswers(surveyResponses, SURVEY_MATCHERS.contentTypes);
-    const sectors = countAnswers(surveyResponses, SURVEY_MATCHERS.sectors);
     const areas = countAnswers(surveyResponses, SURVEY_MATCHERS.areas);
     const aiLevel = countAnswers(surveyResponses, SURVEY_MATCHERS.aiLevel);
 
@@ -953,9 +962,9 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
       "",
       "## 2. Preferências declaradas (survey)",
       "",
-      `Fonte secundária: ${surveyResponses.length} respondentes. Usar para calibrar tom e vocabulário, não para priorizar temas.`,
+      `Fonte secundária: ${surveyResponses.length} respondentes do formulário do onboarding. Usar para calibrar tom e vocabulário, não para priorizar temas.`,
       "",
-      "### Conteúdo preferido",
+      "### Seções preferidas",
       "",
       ...contentTypes.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
       "",
@@ -963,13 +972,9 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
       "",
       ...aiLevel.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
       "",
-      "> **Como usar:** maioria é uso casual/consciente. Evitar jargão técnico sem explicação.",
+      "> **Como usar:** calibrar o jargão pelo nível declarado; termo técnico sempre com explicação.",
       "",
       "## 3. Quem são (demographics)",
-      "",
-      "### Setores",
-      "",
-      ...sectors.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
       "",
       "### Áreas de atuação",
       "",
@@ -982,7 +987,7 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
     "",
     "---",
     "",
-    "_Regerado por `scripts/update-audience.ts` a partir de CTR (`data/link-ctr-table.csv`) e survey (`data/audience-raw.json`)._",
+    "_Regerado por `scripts/update-audience.ts` a partir de CTR (`data/link-ctr-table.csv`) e do formulário do onboarding (`data/audience-raw.json`)._",
   );
 
   // Archive existing — feito aqui (logo antes do write final), não no topo do

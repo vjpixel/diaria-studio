@@ -2,42 +2,53 @@
 
 No ar em https://formulario.diar.ia.br (22/10/2026: KV, secrets, rota, `form_sig` no Kit,
 `ONBOARDING_FORM_TOKEN`/`ONBOARDING_FORM_LINK_SECRET` no Doppler). O envio segue
-travado só pela aprovação dos textos (item 1 abaixo).
+travado só pela aprovação dos textos e das perguntas pelo editor.
 
 Formulário de perfil/interesses do onboarding (decisão do editor, 20/10/2026:
 form próprio num Worker nosso). O executor `scripts/onboarding-followup-run.ts`
 lê as respostas daqui (`GET /api/respostas`) e marca "preencheu" no store
 (`data/onboarding/store.json` → `followup.people[id].form_filled_at`), o que
-para os lembretes na hora. `scripts/audience-run.ts` lê o mesmo endpoint e soma
-as respostas ao perfil de audiência (`context/audience-profile.md`).
+para os lembretes. `scripts/audience-run.ts` lê o mesmo endpoint e gera o
+perfil de audiência (`context/audience-profile.md`) SÓ com estas respostas
+(decisão 10 do editor, 08/11/2026: a survey da Beehiiv foi descartada).
 
-Contrato e perguntas: `scripts/lib/onboarding-form-contract.ts`
-(`FORM_QUESTIONS`, rascunho aguardando aprovação do editor). HTML:
-`src/render.ts` (mobile primeiro, sem dependência de runtime de Worker).
+Contrato e perguntas (v2, decisões do editor de 08/11/2026):
+`scripts/lib/onboarding-form-contract.ts` (`FORM_QUESTIONS`). Tema e preço
+(`hiddenWhen`) somem quando a pessoa marca "Nada disso" no que faria além da
+newsletter: o HTML esconde e desabilita os campos (`HIDE_SCRIPT` em
+`src/render.ts`) e o servidor descarta o que vier deles. HTML: `src/render.ts`
+(mobile primeiro, sem dependência de runtime de Worker).
 
-## Falta para publicar
+## Quem recebe o link
 
-1. Editor aprovar as perguntas (`FORM_QUESTIONS`) e os 2 textos de e-mail
-   (rascunhos em `context/templates/onboarding-followup/`, copiados para
-   `data/snippets/` por `onboarding-followup-run.ts --init-snippets`).
-2. KV `ONBOARDING_FORM` + secrets `RESPONSES_TOKEN` e
-   `ONBOARDING_FORM_LINK_SECRET` (ver `wrangler.toml`). O secret do link vem
-   ANTES do deploy que traz a assinatura: sem ele `/` e `/enviar` respondem
-   503 (`/api/respostas` segue funcionando).
-3. Rota pública (o workflow de deploy já existe: `.github/workflows/deploy-onboarding-form.yml`).
-4. `onboarding.followup.form_url` / `form_responses_url` no `platform.config.json`
-   e `ONBOARDING_FORM_TOKEN` no `.env` do servidor.
+Três e-mails, textos em `context/templates/onboarding-followup/` (copiados
+para `data/snippets/` por `onboarding-followup-run.ts --init-snippets`, todos
+travados pelo marcador `ONBOARDING-CORPO-PENDENTE` até o editor aprovar):
 
-5. Link assinado por pessoa (#10657): o mesmo `ONBOARDING_FORM_LINK_SECRET`
-   no `.env`/Doppler do executor, e o custom field `form_sig` criado no Kit
-   (o executor grava nele a assinatura de cada pessoa antes do lote, e o
-   link usa `{{ subscriber.form_sig }}`).
+1. `onboarding-formulario.md`: D+6 da escada (executor diário).
+2. `pesquisa-base.md`: e-mail ÚNICO para a base já cadastrada. Rascunho no
+   Kit montado por `scripts/onboarding-form-base-prep.ts --step draft
+   --apply`, depois de `--step sigs --apply` gravar o `form_sig` do público.
+   Nunca agendado pelo script: o editor agenda no Kit. Público: ativos, menos
+   quem recebeu o D+6 ou vai recebê-lo em até 7 dias, e quem já respondeu.
+3. `formulario-lembrete.md`: para quem recebeu o 1 OU o 2 e não respondeu, 30
+   dias depois do último e-mail do formulário, até 3 vezes por pessoa. O
+   store guarda qual convite a pessoa recebeu (`followup.people[id].form_invite`).
 
-Enquanto isso, o envio dos e-mails do formulário fica travado
+## Publicação (feito em 22/10/2026)
+
+KV `ONBOARDING_FORM`, secrets `RESPONSES_TOKEN` e `ONBOARDING_FORM_LINK_SECRET`,
+rota pública, `onboarding.followup.form_url`/`form_responses_url` no config,
+`ONBOARDING_FORM_TOKEN`/`ONBOARDING_FORM_LINK_SECRET` no `.env` do executor e
+o custom field `form_sig` no Kit. Falta só a aprovação dos textos e das
+perguntas pelo editor.
+
+O envio dos e-mails do formulário fica travado enquanto isso
 (`formContentGate` → `form_nao_configurado` / `texto_pendente` /
 `assinatura_nao_configurada`; `campo_assinatura_ausente` se o Kit não guardar
 o `form_sig`; `link_rejeitado_pelo_worker` se a sonda de ponta a ponta do
-executor não receber 200).
+executor não receber 200). O e-mail da base tem o gate próprio
+(`baseInviteContentGate`), com as mesmas condições.
 
 ## Link assinado (#10657)
 
