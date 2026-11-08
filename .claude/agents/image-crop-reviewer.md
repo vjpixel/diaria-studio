@@ -23,7 +23,7 @@ O único guard preventivo existente é o `STYLE_SUFFIX` em `scripts/image-genera
 - `pairs`: array de `{ destaque: "d1"|"d2"|"d3", ratio: "2x1"|"4x5", hero_path: string|null, crop_path: string }` — um item por (destaque, ratio) presente na edição. Cada destaque pode contribuir até 2 itens (um por ratio) quando ambos os formatos existem.
   - `ratio: "2x1"` — `crop_path` é o `04-d{N}-2x1.jpg` e `hero_path` é sempre `null` (sem crop; cai no Caso B só pro registro do item `ok` de crop, e no Caso C pro estilo).
   - `ratio: "4x5"` — `hero_path` é a fonte que `gen-social-card-4x5.ts` de fato usou (nativa 4:5, master 6:5, ou 2:1 — ver acima); `crop_path` é `04-d{N}-4x5.jpg` (card final, JÁ com o título sobreposto). `hero_path` só é `null` se nenhuma das 3 fontes existir (não deveria acontecer — a geração do card já é bloqueante no Stage 3, #4090).
-- `out_path`: caminho onde gravar o JSON de output (`_internal/04-crop-review.json`).
+- `out_path`: caminho onde gravar o JSON de output — grave exatamente no que receber. Na revisão completa é `_internal/04-crop-review.json`; na re-revisão parcial (`--only`, #12109) é `_internal/04-crop-review.only.json`, e o persist faz o merge com o veredito principal.
 
 ## Processo
 

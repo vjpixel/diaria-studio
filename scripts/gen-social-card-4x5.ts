@@ -394,7 +394,10 @@ async function main(): Promise<void> {
   if (cropReviewRerun) {
     console.error(
       `[gen-social-card-4x5] revisão de crop desatualizada para ${cropReviewRerun.targets.join(", ")} — ` +
-        `re-rodar o image-crop-reviewer só nesses alvos: ${cropReviewRerun.discover_command} (#12109)`,
+        (cropReviewRerun.full_review_required
+          ? `veredito persistido ilegível: re-rodar o image-crop-reviewer COMPLETO (todos os pares): `
+          : `re-rodar o image-crop-reviewer só nesses alvos: `) +
+        `${cropReviewRerun.discover_command} (#12109)`,
     );
   }
   console.log(

@@ -53,6 +53,8 @@
  *   #    (#12109) A descoberta `--only` devolve `out_path` = `_internal/04-crop-review.only.json`
  *   #    (nunca o veredito principal, base do merge) e o `persist_command` pronto;
  *   #    persist `--only` com `--input-json` igual ao veredito principal sai 1.
+ *   #    A descoberta `--only` apaga o parcial antigo e o persist apaga o parcial
+ *   #    depois de gravar: persist sem parcial novo sai 1 sem carimbar nada.
  *   #    `gen-social-card-4x5.ts` imprime `crop_review_rerun` quando o card
  *   #    recomposto deixou a revisão do 4:5 para trás.
  *
@@ -64,7 +66,7 @@
  *   1 — erro de args, ou (modo descoberta) nenhum par de imagem encontrado
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { md5OfFile } from "./lib/shared/file-md5.ts"; // #9598
@@ -713,8 +715,9 @@ export function formatOnlyTargets(targets: CropReviewTarget[]): string {
  *
  * - sem veredito persistido → nenhum (o revisor não rodou nesta edição; o
  *   Stage 3 cuida da 1ª revisão);
- * - veredito ilegível → todos os destaques pedidos (o persist `--only` recusa
- *   veredito ilegível e manda rodar a revisão completa);
+ * - veredito ilegível → todos os destaques pedidos com card no disco, e
+ *   `verdictUnreadable: true` (o persist `--only` recusa veredito ilegível:
+ *   quem consome tem de rodar a revisão completa, nunca a parcial);
  * - card no disco sem entrada `crop` do 4:5, ou com entrada `crop` sem carimbo
  *   (pré-#9598, sem como saber de qual card era) ou desatualizada (md5 do card
  *   mudou) → alvo.
@@ -722,50 +725,85 @@ export function formatOnlyTargets(targets: CropReviewTarget[]): string {
  * As entradas de estilo do 4:5 ficam de fora da decisão: são carimbadas na
  * arte de fundo (#10325) e não mudam com o título.
  */
+export function cardCropReviewRerunPlan(
+  editionDir: string,
+  destaques: readonly string[],
+  verdictPath: string = join(editionDir, "_internal", "04-crop-review.json"),
+): { targets: CropReviewTarget[]; verdictUnreadable: boolean } {
+  const ids = destaques
+    .filter((d): d is DestaqueId => (DESTAQUE_IDS as readonly string[]).includes(d))
+    .filter((d) => existsSync(join(editionDir, `04-${d}-4x5.jpg`)));
+  const toTargets = (list: readonly DestaqueId[]): CropReviewTarget[] =>
+    list.map((destaque) => ({ destaque, ratio: "4x5" as const }));
+  if (!existsSync(verdictPath)) return { targets: [], verdictUnreadable: false };
+  let persisted: CropReviewResult;
+  try {
+    persisted = normalizeCropReviewResult(JSON.parse(readFileSync(verdictPath, "utf8")) as unknown, "");
+  } catch {
+    return { targets: toTargets(ids), verdictUnreadable: true };
+  }
+  const stale = ids.filter((d) => {
+    const entries = persisted.results.filter(
+      (r) => r.destaque === d && r.ratio === "4x5" && (r.categoria ?? "crop") === "crop",
+    );
+    if (entries.length === 0) return true;
+    return entries.some((r) => typeof r.image_md5 !== "string" || isCropReviewEntryStale(editionDir, r));
+  });
+  return { targets: toTargets(stale), verdictUnreadable: false };
+}
+
+/** Só os alvos de {@link cardCropReviewRerunPlan}. */
 export function cardCropReviewRerunTargets(
   editionDir: string,
   destaques: readonly string[],
   verdictPath: string = join(editionDir, "_internal", "04-crop-review.json"),
 ): CropReviewTarget[] {
-  const ids = destaques.filter((d): d is DestaqueId => (DESTAQUE_IDS as readonly string[]).includes(d));
-  if (!existsSync(verdictPath)) return [];
-  let persisted: CropReviewResult;
-  try {
-    persisted = normalizeCropReviewResult(JSON.parse(readFileSync(verdictPath, "utf8")) as unknown, "");
-  } catch {
-    return ids.map((destaque) => ({ destaque, ratio: "4x5" as const }));
-  }
-  return ids
-    .filter((d) => existsSync(join(editionDir, `04-${d}-4x5.jpg`)))
-    .filter((d) => {
-      const entries = persisted.results.filter(
-        (r) => r.destaque === d && r.ratio === "4x5" && (r.categoria ?? "crop") === "crop",
-      );
-      if (entries.length === 0) return true;
-      return entries.some((r) => typeof r.image_md5 !== "string" || isCropReviewEntryStale(editionDir, r));
-    })
-    .map((destaque) => ({ destaque, ratio: "4x5" as const }));
+  return cardCropReviewRerunPlan(editionDir, destaques, verdictPath).targets;
+}
+
+/** Bloco `crop_review_rerun` que `gen-social-card-4x5.ts` imprime (#12109). */
+export interface CardCropReviewRerun {
+  targets: string[];
+  /**
+   * `true` quando o veredito persistido está ilegível: o persist `--only`
+   * sairia 1, então os comandos são os da revisão COMPLETA (todos os pares,
+   * subagente gravando no veredito principal), não os da parcial.
+   */
+  full_review_required: boolean;
+  discover_command: string;
+  persist_command: string;
 }
 
 /**
  * Bloco que `gen-social-card-4x5.ts` imprime quando o card recomposto deixou
  * a revisão de crop para trás (#12109): os alvos e os dois comandos da
- * re-revisão parcial. `null` quando nada precisa ser revisto.
+ * re-revisão (parcial, ou completa com `full_review_required` quando o
+ * veredito está ilegível). `null` quando nada precisa ser revisto.
  */
 export function buildCardCropReviewRerun(
   editionDir: string,
   editionArg: string,
   destaques: readonly string[],
-): { targets: string[]; discover_command: string; persist_command: string } | null {
-  const targets = cardCropReviewRerunTargets(editionDir, destaques);
+): CardCropReviewRerun | null {
+  const { targets, verdictUnreadable } = cardCropReviewRerunPlan(editionDir, destaques);
   if (targets.length === 0) return null;
   const dir = editionArg.replace(/[/\\]+$/, "");
+  const base = `npx tsx scripts/run-image-crop-reviewer.ts --edition-dir ${dir}/`;
+  const verdict = `${dir}/_internal/04-crop-review.json`;
+  if (verdictUnreadable) {
+    return {
+      targets: targets.map((t) => `${t.destaque}:${t.ratio}`),
+      full_review_required: true,
+      discover_command: base,
+      persist_command: `${base} --input-json ${verdict}`,
+    };
+  }
   const only = formatOnlyTargets(targets);
-  const tmp = partialCropReviewOutPath(`${dir}/_internal/04-crop-review.json`);
   return {
     targets: targets.map((t) => `${t.destaque}:${t.ratio}`),
-    discover_command: `npx tsx scripts/run-image-crop-reviewer.ts --edition-dir ${dir}/ --only ${only}`,
-    persist_command: `npx tsx scripts/run-image-crop-reviewer.ts --edition-dir ${dir}/ --only ${only} --input-json ${tmp}`,
+    full_review_required: false,
+    discover_command: `${base} --only ${only}`,
+    persist_command: `${base} --only ${only} --input-json ${partialCropReviewOutPath(verdict)}`,
   };
 }
 
@@ -1014,6 +1052,10 @@ async function main(): Promise<void> {
     }
 
     writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
+    // #12109: o parcial já foi consumido. Se ficasse no disco, um persist
+    // seguinte sem subagente novo (o da 2ª cascata falhou) leria a revisão
+    // velha e a carimbaria com o md5 do card atual.
+    if (onlyTargets && inputPath === partialCropReviewOutPath(outPath)) rmSync(inputPath, { force: true });
     console.log(formatGateSummary(result));
 
     // Exit 0 sempre neste modo — warning-only (#3951, mesmo racional do
@@ -1027,6 +1069,11 @@ async function main(): Promise<void> {
   // pro orchestrator montar a chamada Agent("image-crop-reviewer", {...}).
   const allPairs = discoverCropPairs(editionDir);
   const pairs = onlyTargets ? filterPairsByTargets(allPairs, onlyTargets) : allPairs;
+  // #12109: parcial de uma rodada anterior sai antes do dispatch (inclusive
+  // quando a descoberta sai 1 logo abaixo). Assim o persist só encontra o
+  // arquivo se o subagente DESTA rodada o gravou; sem ele, sai 1
+  // (`--input-json não encontrado`) e nada é carimbado.
+  if (onlyTargets) rmSync(partialCropReviewOutPath(outPath), { force: true });
 
   if (pairs.length === 0) {
     console.error(
