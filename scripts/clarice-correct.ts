@@ -35,6 +35,9 @@
  *                                     (default: habilitado em granularity=default)
  *     [--paragraph-timeout-ms N]     # (#5082) timeout por request no fallback/granularity=paragraph
  *                                     (default: PARAGRAPH_FALLBACK_TIMEOUT_MS = 20000)
+ *     [--chunks-out <json>]          # (#12257) sugestões POR CHUNK (offset, tamanho,
+ *                                     sugestões), só nos modos chunked; o `resume` de
+ *                                     clarice-pending.ts reaplica um subconjunto chunk a chunk
  *     [--deadline-ms N]              # (#12257) teto de tempo TOTAL da chamada, somando
  *                                     chunks, retries, backoff e fallback por-parágrafo
  *                                     (default: CLARICE_TOTAL_DEADLINE_MS = 480000, 8 min).
@@ -157,6 +160,19 @@ export interface ChunkedResult {
   correctedText: string;
   rawSuggestions: ClariceSuggestions;
   chunkCount: number;
+  /**
+   * #12257: sugestões por chunk, na ordem de `splitIntoChunks` (`--chunks-out`).
+   * O `resume` de `clarice-pending.ts` reaplica um subconjunto filtrado chunk a
+   * chunk, como o Stage 2, em vez de sobre o texto inteiro.
+   */
+  chunkSuggestions?: ChunkSuggestionsEntry[];
+}
+
+/** Sugestões de um chunk e onde ele fica no texto enviado (#12257). */
+export interface ChunkSuggestionsEntry {
+  startOffset: number;
+  length: number;
+  suggestions: ClariceSuggestions;
 }
 
 /**
@@ -525,6 +541,7 @@ async function runChunked<Extra>(
   rawSuggestions: ClariceSuggestions;
   chunkCount: number;
   extras: Extra[];
+  chunkSuggestions?: ChunkSuggestionsEntry[];
 }> {
   const chunks = splitIntoChunks(text, chunkThreshold);
 
@@ -537,6 +554,11 @@ async function runChunked<Extra>(
     rawSuggestions: perChunkResults.flatMap((r) => r.rawSuggestions),
     chunkCount: chunks.length,
     extras: perChunkResults.map((r) => r.extra),
+    chunkSuggestions: perChunkResults.map((r, i) => ({
+      startOffset: chunks[i].startOffset,
+      length: chunks[i].text.length,
+      suggestions: r.rawSuggestions,
+    })),
   };
 }
 
@@ -610,6 +632,7 @@ export async function correctTextChunked(
     correctedText: result.correctedText,
     rawSuggestions: result.rawSuggestions,
     chunkCount: result.chunkCount,
+    chunkSuggestions: result.chunkSuggestions,
   };
 }
 
@@ -728,6 +751,7 @@ export async function withClariceRetryChunked(
     correctedText: result.correctedText,
     rawSuggestions: result.rawSuggestions,
     chunkCount: result.chunkCount,
+    chunkSuggestions: result.chunkSuggestions,
     totalAttempts,
     usedParagraphFallbackChunks,
     paragraphFallbackStats,
@@ -865,6 +889,8 @@ export interface CliArgs {
   outPath: string;
   /** Caminho opcional para gravar o texto corrigido (pós-apply chunk-local). */
   correctedOutPath?: string;
+  /** #12257 — grava as sugestões POR CHUNK (`ChunkSuggestionsEntry[]`); só modos chunked. */
+  chunksOutPath?: string;
   retry: boolean;
   timeoutMs?: number;
   maxAttempts?: number;
@@ -900,6 +926,7 @@ export function parseCliArgs(argv: string[]): CliArgs | null {
     if (flag === "--in" && value) { out.inPath = value; i++; }
     else if (flag === "--out" && value) { out.outPath = value; i++; }
     else if (flag === "--corrected-out" && value) { out.correctedOutPath = value; i++; }
+    else if (flag === "--chunks-out" && value) { out.chunksOutPath = value; i++; }
     else if (flag === "--retry") { out.retry = true; }
     else if (flag === "--timeout-ms" && value) {
       const n = Number(value);
@@ -970,7 +997,7 @@ export async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
   if (!args) {
     console.error(
-      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N] [--edition AAMMDD] [--stage N] [--agent nome] [--granularity default|paragraph] [--no-paragraph-fallback] [--paragraph-timeout-ms N] [--deadline-ms N]",
+      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N] [--edition AAMMDD] [--stage N] [--agent nome] [--granularity default|paragraph] [--no-paragraph-fallback] [--paragraph-timeout-ms N] [--deadline-ms N] [--chunks-out <json>]",
     );
     process.exit(1);
   }
@@ -991,6 +1018,7 @@ export async function main(): Promise<void> {
   let rawSuggestions: ClariceSuggestions;
   let correctedText: string;
   let logExtra: Record<string, unknown> = {};
+  let chunkSuggestions: ChunkSuggestionsEntry[] | undefined;
 
   // #2798 — loga cada tentativa (sucesso/retry/fatal) em data/run-log.jsonl,
   // pra permitir diagnosticar padrões sem depender só do resultado final
@@ -1026,6 +1054,7 @@ export async function main(): Promise<void> {
     rawSuggestions: ClariceSuggestions;
     correctedText: string;
     logExtra: Record<string, unknown>;
+    chunkSuggestions?: ChunkSuggestionsEntry[];
   }> => {
     if (args.granularity === "paragraph") {
       const result = await correctTextViaParagraphs(
@@ -1060,6 +1089,7 @@ export async function main(): Promise<void> {
       return {
         rawSuggestions: result.rawSuggestions,
         correctedText: result.correctedText,
+        chunkSuggestions: result.chunkSuggestions,
         logExtra: {
           attempts_used: result.totalAttempts,
           chunks: result.chunkCount,
@@ -1080,6 +1110,7 @@ export async function main(): Promise<void> {
     return {
       rawSuggestions: result.rawSuggestions,
       correctedText: result.correctedText,
+      chunkSuggestions: result.chunkSuggestions,
       logExtra: { chunks: result.chunkCount },
     };
   };
@@ -1090,6 +1121,7 @@ export async function main(): Promise<void> {
     rawSuggestions = outcome.rawSuggestions;
     correctedText = outcome.correctedText;
     logExtra = outcome.logExtra;
+    chunkSuggestions = outcome.chunkSuggestions;
   } catch (e) {
     if (e instanceof ClariceDeadlineError) {
       deadlineHit = true;
@@ -1116,6 +1148,15 @@ export async function main(): Promise<void> {
   } catch (e) {
     console.error(`erro escrevendo --out: ${(e as Error).message}`);
     process.exit(4);
+  }
+
+  if (args.chunksOutPath && chunkSuggestions) {
+    try {
+      writeFileSync(args.chunksOutPath, JSON.stringify(chunkSuggestions, null, 2), "utf8");
+    } catch (e) {
+      console.error(`erro escrevendo --chunks-out: ${(e as Error).message}`);
+      process.exit(4);
+    }
   }
 
   if (args.correctedOutPath) {

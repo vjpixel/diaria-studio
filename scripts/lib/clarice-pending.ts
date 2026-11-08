@@ -16,7 +16,7 @@
  *   (aceito por `checkClariceRan`). Marcador primeiro porque um crash no meio
  *   deixaria texto sem Clarice e sem aviso. O `[]` sozinho não distingue
  *   "rodou sem sugestões" de "não rodou": quem precisa da distinção lê o
- *   marcador (é o que os invariantes dos Stages 4 e 5 fazem).
+ *   marcador (os invariantes dos Stages 4 e 5 e `collect-edition-signals.ts`).
  * - `clearClaricePending` apaga o marcador quando a Clarice roda com sucesso
  *   num rerun do Stage 2.
  * - `resumeClarice` roda a Clarice sobre o `02-reviewed.md` atual (que pode já
@@ -27,33 +27,41 @@
  * enquanto o marcador existe, a Clarice nunca rodou sobre aquele texto.
  *
  * Diferenças do resume em relação ao fluxo normal do Stage 2, tratadas aqui
- * (reviews das PRs #12291 e #12440). Na dúvida, o marcador fica (fail-closed):
+ * (reviews das PRs #12291 e #12440). Na dúvida, o marcador fica (fail-closed);
+ * o `reason` original nunca é sobrescrito, o desfecho de cada tentativa vai
+ * em `last_outcome`:
  * - Correção parcial não conta: o resume chama a Clarice sem o fallback por
- *   parágrafo e, se o resumo do filho ainda acusar fallback ou parágrafo
- *   falho (ou não vier legível), nada é aplicado e o marcador fica com
- *   `reason: "partial"`.
+ *   parágrafo e exige o resumo do filho com `suggestions_count` numérico e
+ *   `chunks_used_paragraph_fallback`/`paragraphs_failed` presentes e zerados.
+ *   Faltou algum, ou os arquivos de saída não se leem: nada é aplicado
+ *   (`partial`).
  * - O `02-reviewed.md` já passou pelo `render-erro-intencional` e pode ter o
  *   erro intencional plantado. A Clarice tende a corrigi-lo, o que mata o
  *   concurso. Se o `wrong_value` declarado em `_internal/intentional-error.json`
  *   some do texto corrigido, o resume NÃO aplica (`intentional-error-corrected`),
- *   a menos que o chamador aceite explicitamente.
- * - O reveal da edição anterior (`Na última edição, …`) cita de propósito o
- *   valor errado antigo. No fluxo normal ele entra depois da Clarice; aqui as
- *   linhas são restauradas verbatim no texto corrigido (`restoreRevealLines`),
- *   e o resume recusa (`reveal-changed`) se não conseguir casá-las.
+ *   a menos que o chamador aceite explicitamente. Arquivo existente mas
+ *   ilegível = `protection-unreadable`, sem chamar a Clarice.
+ * - O reveal da edição anterior cita de propósito o valor errado antigo. No
+ *   fluxo normal ele entra depois da Clarice; aqui o parágrafo é achado com a
+ *   mesma detecção do render (`extractTemplateBlock` + `pickErroIntencionalReveal`,
+ *   que aceita "Na edição anterior…", "Há duas edições…") e restaurado verbatim
+ *   (`restoreReveal`). Sem casar, nada aplicado (`reveal-changed`).
  * - Se o fact-check do Stage 4 já rodou (`_internal/fact-check-autofix.json`),
  *   aplica-se a mesma proteção do #11798 (`filterClariceSuggestions` com os
- *   trechos corrigidos + verbos condicionais): havendo sugestão retida, o
- *   texto final sai das sugestões mantidas aplicadas uma a uma
- *   (`applyClariceSuggestions`), não do corrigido da Clarice.
+ *   trechos corrigidos + verbos condicionais). Havendo sugestão retida, o texto
+ *   é remontado chunk a chunk (`applyChunkSuggestions` sobre os mesmos chunks
+ *   que a Clarice recebeu, lidos do `--chunks-out`), como no Stage 2; qualquer
+ *   sugestão mantida que não ache âncora única no chunk vira `partial`. Os pares
+ *   retidos voltam em `protectedSuggestions` para o gate.
  * - O editor pode salvar o `02-reviewed.md` pelo Studio enquanto a Clarice
  *   roda. O resume confere o hash antes de copiar e não sobrescreve
  *   (`reviewed-changed`).
- * - As sugestões vão para um arquivo temporário e só são promovidas a
+ * - As sugestões vão para arquivos temporários e só são promovidas a
  *   `_internal/02-clarice-suggestions.json` junto com o texto corrigido.
- * - Tentativa que falha marca `last_attempt_at` no marcador; outra tentativa
- *   dentro de `RESUME_COOLDOWN_MS` é pulada (`recently-attempted`) para não
- *   gastar mais 8 min a cada volta ao gate.
+ * - Tentativa que falhou por API (exit 3 ou 6) marca `last_attempt_at`; outra
+ *   tentativa dentro de `RESUME_COOLDOWN_MS` é pulada (`recently-attempted`,
+ *   com o mesmo exit) para não gastar mais 8 min a cada volta ao gate. Outros
+ *   desfechos (sem chave, I/O, parcial) não seguram a próxima tentativa.
  * - Os guards pós-Clarice do Stage 2 (travessão, É IA?, estabilidade de URL,
  *   cupons, diff) precisam rodar de novo contra o texto pré-resume, guardado em
  *   `_internal/02-pre-clarice-resume.md`. A lista sai de `postResumeSteps`.
@@ -63,26 +71,32 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { applyClariceSuggestions, type ClariceSuggestion } from "../clarice-apply.ts";
+import type { ClariceSuggestion } from "./schemas/clarice-suggestions.ts";
+import { applyChunkSuggestions } from "./clarice-chunk.ts";
 import { filterClariceSuggestions } from "./clarice-suggestion-guard.ts";
 import { readFactCheckProtection } from "./fact-check-protection.ts";
 import { isIntentionalErrorPlaceholder } from "./intentional-errors.ts";
+import { extractTemplateBlock, pickErroIntencionalReveal } from "./newsletter-parse.ts";
 
 export const CLARICE_PENDING_REL = join("_internal", "02-clarice-pending.json");
 export const PRE_CLARICE_REL = join("_internal", "02-pre-clarice.md");
 export const PRE_RESUME_REL = join("_internal", "02-pre-clarice-resume.md");
 export const CLARICE_SUGGESTIONS_REL = join("_internal", "02-clarice-suggestions.json");
 export const RESUME_SUGGESTIONS_TMP_REL = join("_internal", "02-clarice-suggestions.resume.tmp.json");
+export const RESUME_CHUNKS_TMP_REL = join("_internal", "02-clarice-chunks.resume.tmp.json");
 export const CLARICE_CORRECTED_REL = join("_internal", "02-clarice-corrected.md");
 export const INTENTIONAL_ERROR_REL = join("_internal", "intentional-error.json");
 export const NORMALIZED_REL = join("_internal", "02-normalized.md");
 export const REVIEWED_REL = "02-reviewed.md";
 
-/** Janela em que uma tentativa de resume que falhou não é repetida sem `retryNow`. */
+/** Janela em que uma tentativa de resume que falhou por API não é repetida sem `retryNow`. */
 export const RESUME_COOLDOWN_MS = 20 * 60_000;
 
+/** Exits do clarice-correct.ts que significam "API fora/lenta" — só eles seguram a próxima tentativa. */
+const COOLDOWN_EXITS = new Set([3, 6]);
+
 export interface ClaricePendingMarker {
-  /** Motivo do skip (ex.: `clarice_unavailable`, `rest_exit3_editor_approved`, `partial`). */
+  /** Motivo ORIGINAL do skip (ex.: `clarice_unavailable`, `mcp_down_rest_exit3_editor_approved`). Nunca sobrescrito. */
   reason: string;
   /** ISO 8601 do momento do skip. */
   skipped_at: string;
@@ -92,8 +106,8 @@ export interface ClaricePendingMarker {
   edition?: string | null;
   /** ISO 8601 da última tentativa de resume que não aplicou nada. */
   last_attempt_at?: string;
-  /** Desfecho dessa tentativa (`failed:6`, `partial`, ...). */
-  last_attempt_outcome?: string;
+  /** Desfecho dessa tentativa (`failed:6`, `partial`, `crashed`, ...). */
+  last_outcome?: string;
 }
 
 export function claricePendingPath(editionDir: string): string {
@@ -199,40 +213,56 @@ export function skipClarice(
   return marker;
 }
 
-/**
- * Roda `clarice-correct.ts` com os argumentos dados. Devolve o exit code e o
- * stdout do filho (o JSON de resumo da última linha). Um número puro equivale
- * a `{ exitCode, stdout: "" }`.
- */
-export type ClariceRunner = (args: string[]) => number | { exitCode: number; stdout: string };
+/** Resultado de rodar o `clarice-correct.ts`. `crashed` = o processo nem terminou normalmente (signal/erro de spawn). */
+export interface ClariceRunResult {
+  exitCode: number;
+  stdout: string;
+  crashed?: string;
+}
+
+/** Roda `clarice-correct.ts` com os argumentos dados. Um número puro equivale a `{ exitCode, stdout: "" }`. */
+export type ClariceRunner = (args: string[]) => number | ClariceRunResult;
+
+export interface ProtectedSuggestion {
+  from: string;
+  to: string;
+}
 
 export type ResumeOutcome =
   | { status: "nothing-pending" }
-  | { status: "resumed"; preResume: string; protectedDropped: number; applyMode: "corrected" | "filtered-suggestions" }
+  | {
+      status: "resumed";
+      preResume: string;
+      applyMode: "corrected" | "filtered-chunks";
+      protectedSuggestions: ProtectedSuggestion[];
+    }
   | { status: "failed"; exitCode: number }
-  | { status: "partial"; summary: Record<string, unknown> | null }
+  | { status: "crashed"; message: string }
+  | { status: "partial"; detail: string }
   | { status: "reviewed-missing" }
   | { status: "protection-unreadable"; message: string }
-  | { status: "recently-attempted"; lastAttemptAt: string; lastAttemptOutcome: string | null }
+  | { status: "recently-attempted"; lastAttemptAt: string; lastOutcome: string; exitCode: number }
   | { status: "reviewed-changed" }
   | { status: "reveal-changed" }
   | { status: "intentional-error-corrected"; wrongValue: string };
 
 /**
- * `wrong_value` declarado (não placeholder) em `_internal/intentional-error.json`,
- * ou `null`. `warn` recebe o motivo quando o arquivo existe mas não dá para
- * usar (ilegível), para o resume não seguir calado sem a proteção.
+ * `wrong_value` declarado (não placeholder) em `_internal/intentional-error.json`.
+ * `{ ok: true, value: null }` quando o arquivo não existe ou não declara erro;
+ * `{ ok: false }` quando existe mas não se lê (o resume trata como proteção
+ * ilegível, fail-closed).
  */
-export function readDeclaredWrongValue(editionDir: string, warn?: (msg: string) => void): string | null {
+export function readDeclaredWrongValue(
+  editionDir: string,
+): { ok: true; value: string | null } | { ok: false; message: string } {
   const p = join(editionDir, INTENTIONAL_ERROR_REL);
-  if (!existsSync(p)) return null;
+  if (!existsSync(p)) return { ok: true, value: null };
   try {
     const j = JSON.parse(readFileSync(p, "utf8")) as { wrong_value?: unknown };
-    const w = typeof j.wrong_value === "string" ? j.wrong_value.trim() : "";
-    return w && !isIntentionalErrorPlaceholder(w) ? w : null;
+    const w = typeof j?.wrong_value === "string" ? j.wrong_value.trim() : "";
+    return { ok: true, value: w && !isIntentionalErrorPlaceholder(w) ? w : null };
   } catch (e) {
-    warn?.(`${INTENTIONAL_ERROR_REL} ilegível (${(e as Error).message}): o erro intencional não foi conferido`);
-    return null;
+    return { ok: false, message: `${INTENTIONAL_ERROR_REL} ilegível: ${(e as Error).message}` };
   }
 }
 
@@ -242,15 +272,33 @@ function countOccurrences(haystack: string, needle: string): number {
   return n;
 }
 
+const ERRO_INTENCIONAL_MARKER = "ERRO INTENCIONAL";
+const ERRO_INTENCIONAL_HEADER_RE = /^(?:\*\*)?ERRO INTENCIONAL(?:\*\*)?\s*$/m;
 const REVEAL_LINE = /^\s*Na\s+[úu]ltima\s+edi[çc][ãa]o\b/i;
 
+/** Parágrafo do reveal da edição anterior, pela mesma detecção do render. `null` sem bloco ou sem reveal. */
+function findReveal(text: string): string | null {
+  const block = extractTemplateBlock(text, ERRO_INTENCIONAL_MARKER);
+  return block ? pickErroIntencionalReveal(block) : null;
+}
+
 /**
- * Restaura verbatim, no texto corrigido, as linhas do reveal da edição
- * anterior (`Na última edição, …`) do texto pré-resume, casando por ordem.
- * `null` quando o número dessas linhas mudou (a Clarice mexeu no começo da
- * frase ou juntou parágrafos): aí não há como restaurar com segurança.
+ * Restaura verbatim, no texto corrigido, o reveal da edição anterior do texto
+ * pré-resume. Com bloco ERRO INTENCIONAL, usa a detecção do render (aceita
+ * ganchos além de "Na última edição"); sem bloco, cai nas linhas que começam
+ * com "Na última edição", casadas por ordem. `null` quando não dá para casar
+ * com segurança (reveal sumiu, bloco sumiu, número de linhas mudou).
  */
-export function restoreRevealLines(pre: string, corrected: string): string | null {
+export function restoreReveal(pre: string, corrected: string): string | null {
+  const preReveal = findReveal(pre);
+  if (preReveal) {
+    const header = ERRO_INTENCIONAL_HEADER_RE.exec(corrected);
+    const postReveal = findReveal(corrected);
+    if (!header || !postReveal) return null;
+    const at = corrected.indexOf(postReveal, header.index);
+    if (at < 0) return null;
+    return corrected.slice(0, at) + preReveal + corrected.slice(at + postReveal.length);
+  }
   const preReveals = pre.split("\n").filter((l) => REVEAL_LINE.test(l));
   if (preReveals.length === 0) return corrected;
   const lines = corrected.split("\n");
@@ -264,8 +312,7 @@ export function restoreRevealLines(pre: string, corrected: string): string | nul
 
 /** JSON de resumo do `clarice-correct.ts` (última linha do stdout que é um objeto). */
 function parseRunnerSummary(stdout: string): Record<string, unknown> | null {
-  const lines = stdout.trim().split("\n").reverse();
-  for (const l of lines) {
+  for (const l of stdout.trim().split("\n").reverse()) {
     try {
       const v: unknown = JSON.parse(l);
       if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
@@ -276,22 +323,79 @@ function parseRunnerSummary(stdout: string): Record<string, unknown> | null {
   return null;
 }
 
-function isCompleteSummary(s: Record<string, unknown> | null): boolean {
-  if (!s) return false;
-  const fallback = s.chunks_used_paragraph_fallback;
-  const failed = s.paragraphs_failed;
-  return (fallback === undefined || fallback === 0) && (failed === undefined || failed === 0);
+/** Resumo completo = campos presentes e zerados; campo ausente conta como incompleto. */
+export function isCompleteSummary(s: Record<string, unknown> | null): boolean {
+  return (
+    !!s &&
+    typeof s.suggestions_count === "number" &&
+    s.chunks_used_paragraph_fallback === 0 &&
+    s.paragraphs_failed === 0
+  );
+}
+
+interface ChunkEntry {
+  startOffset: number;
+  length: number;
+  suggestions: ClariceSuggestion[];
+}
+
+/** Lê o `--chunks-out` e confere que os chunks cobrem `text` inteiro, em ordem. `null` se não bater. */
+function readChunks(path: string, text: string): ChunkEntry[] | null {
+  try {
+    const v: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(v)) return null;
+    let pos = 0;
+    for (const c of v as ChunkEntry[]) {
+      if (c?.startOffset !== pos || typeof c.length !== "number" || !Array.isArray(c.suggestions)) return null;
+      pos += c.length;
+    }
+    return pos === text.length ? (v as ChunkEntry[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remonta o texto chunk a chunk só com as sugestões que a proteção mantém.
+ * Devolve o texto, os pares retidos e se alguma sugestão mantida ficou sem
+ * âncora única no chunk (aí o chamador trata como parcial).
+ */
+function rebuildFilteredByChunk(
+  text: string,
+  chunks: ChunkEntry[],
+  protection: { correctedTexts: string[] },
+): { text: string; retained: ProtectedSuggestion[]; unanchored: number } {
+  const retained: ProtectedSuggestion[] = [];
+  let unanchored = 0;
+  let out = "";
+  for (const c of chunks) {
+    const chunk = { text: text.slice(c.startOffset, c.startOffset + c.length), startOffset: c.startOffset };
+    const { kept, dropped } = filterClariceSuggestions(c.suggestions, {
+      correctedTexts: protection.correctedTexts,
+      protectConditional: true,
+    });
+    for (const d of dropped) {
+      if (d.reason === "fact_check_protected") {
+        const s = d.suggestion as ClariceSuggestion;
+        retained.push({ from: s.from, to: s.to });
+      }
+    }
+    const applied = applyChunkSuggestions(chunk, kept, () => {});
+    unanchored += applied.skipped.filter((s) => /não encontrado|âncora ambígua/.test(s.reason)).length;
+    out += applied.text;
+  }
+  return { text: out, retained, unanchored };
 }
 
 /**
  * Retoma a revisão: Clarice sobre o `02-reviewed.md` atual. Antes de chamar,
  * guarda o texto em `_internal/02-pre-clarice-resume.md` (base dos guards
  * pós-resume). Só grava `02-reviewed.md`, promove as sugestões e apaga o
- * marcador quando: o runner sai 0 com resumo completo (sem fallback por
- * parágrafo), o `02-reviewed.md` não mudou durante a chamada, o reveal da
- * edição anterior foi restaurado e o erro intencional declarado continua no
- * texto (ou `acceptIntentionalErrorChange`). Em qualquer outro caso nada muda
- * no `02-reviewed.md` e o marcador fica.
+ * marcador quando: o runner sai 0 com resumo completo, o `02-reviewed.md` não
+ * mudou durante a chamada, o reveal da edição anterior foi restaurado, as
+ * sugestões mantidas pela proteção acharam âncora e o erro intencional
+ * declarado continua no texto (ou `acceptIntentionalErrorChange`). Em qualquer
+ * outro caso nada muda no `02-reviewed.md` e o marcador fica.
  */
 export function resumeClarice(
   editionDir: string,
@@ -309,13 +413,16 @@ export function resumeClarice(
   const warn = opts.warn ?? (() => {});
   const marker = readClaricePending(editionDir);
 
-  if (!opts.retryNow && marker?.last_attempt_at) {
+  if (!opts.retryNow && marker?.last_attempt_at && marker.last_outcome) {
+    const m = /^failed:(\d+)$/.exec(marker.last_outcome);
+    const lastExit = m ? Number(m[1]) : NaN;
     const last = Date.parse(marker.last_attempt_at);
-    if (Number.isFinite(last) && now().getTime() - last < RESUME_COOLDOWN_MS) {
+    if (COOLDOWN_EXITS.has(lastExit) && Number.isFinite(last) && now().getTime() - last < RESUME_COOLDOWN_MS) {
       return {
         status: "recently-attempted",
         lastAttemptAt: marker.last_attempt_at,
-        lastAttemptOutcome: marker.last_attempt_outcome ?? null,
+        lastOutcome: marker.last_outcome,
+        exitCode: lastExit,
       };
     }
   }
@@ -329,8 +436,10 @@ export function resumeClarice(
   } catch (e) {
     return { status: "protection-unreadable", message: (e as Error).message };
   }
+  const declared = readDeclaredWrongValue(editionDir);
+  if (!declared.ok) return { status: "protection-unreadable", message: declared.message };
 
-  const recordAttempt = (outcome: string, reason?: string): void => {
+  const recordAttempt = (outcome: string): void => {
     const base: ClaricePendingMarker = marker ?? {
       reason: "motivo ilegível no marcador",
       skipped_at: now().toISOString(),
@@ -338,11 +447,14 @@ export function resumeClarice(
     };
     writeMarker(editionDir, {
       ...base,
-      ...(reason ? { reason } : {}),
       edition: base.edition ?? opts.edition ?? null,
       last_attempt_at: now().toISOString(),
-      last_attempt_outcome: outcome,
+      last_outcome: outcome,
     });
+  };
+  const partial = (detail: string): ResumeOutcome => {
+    recordAttempt("partial");
+    return { status: "partial", detail };
   };
 
   const preResume = join(editionDir, PRE_RESUME_REL);
@@ -350,51 +462,70 @@ export function resumeClarice(
   const hashBefore = sha256(reviewed);
   const corrected = join(editionDir, CLARICE_CORRECTED_REL);
   const tmpSuggestions = join(editionDir, RESUME_SUGGESTIONS_TMP_REL);
+  const tmpChunks = join(editionDir, RESUME_CHUNKS_TMP_REL);
   rmSync(tmpSuggestions, { force: true });
+  rmSync(tmpChunks, { force: true });
   const args = [
     "--in", preResume,
     "--out", tmpSuggestions,
     "--corrected-out", corrected,
+    "--chunks-out", tmpChunks,
     "--retry",
     // Sem o fallback por parágrafo: ele sai 0 com parágrafos sem correção.
     "--no-paragraph-fallback",
     ...(opts.edition ? ["--edition", opts.edition] : []),
   ];
   const raw = runner(args);
-  const { exitCode, stdout } = typeof raw === "number" ? { exitCode: raw, stdout: "" } : raw;
-  if (exitCode !== 0) {
-    recordAttempt(`failed:${exitCode}`);
-    return { status: "failed", exitCode };
+  const run: ClariceRunResult = typeof raw === "number" ? { exitCode: raw, stdout: "" } : raw;
+  if (run.crashed) {
+    recordAttempt("crashed");
+    return { status: "crashed", message: run.crashed };
   }
-  const summary = parseRunnerSummary(stdout);
-  if (!isCompleteSummary(summary) || !existsSync(tmpSuggestions) || !existsSync(corrected)) {
-    recordAttempt("partial", "partial");
-    return { status: "partial", summary };
+  if (run.exitCode !== 0) {
+    recordAttempt(`failed:${run.exitCode}`);
+    return { status: "failed", exitCode: run.exitCode };
   }
+  if (!isCompleteSummary(parseRunnerSummary(run.stdout))) {
+    return partial("resumo do clarice-correct ausente, ilegível ou com fallback/parágrafo falho");
+  }
+  let suggestions: ClariceSuggestion[];
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(tmpSuggestions, "utf8"));
+    if (!Array.isArray(parsed)) throw new Error("sugestões não são array");
+    suggestions = parsed as ClariceSuggestion[];
+  } catch (e) {
+    return partial(`sugestões do resume ilegíveis (${(e as Error).message})`);
+  }
+  if (!existsSync(corrected)) return partial("texto corrigido ausente");
   if (!existsSync(reviewed) || sha256(reviewed) !== hashBefore) return { status: "reviewed-changed" };
 
   const preText = readFileSync(preResume, "utf8");
   let finalText = readFileSync(corrected, "utf8");
-  let protectedDropped = 0;
-  let applyMode: "corrected" | "filtered-suggestions" = "corrected";
+  let applyMode: "corrected" | "filtered-chunks" = "corrected";
+  let protectedSuggestions: ProtectedSuggestion[] = [];
   if (protection.present) {
-    const suggestions = JSON.parse(readFileSync(tmpSuggestions, "utf8")) as ClariceSuggestion[];
-    const { kept, dropped } = filterClariceSuggestions(suggestions, {
+    const anyRetained = filterClariceSuggestions(suggestions, {
       correctedTexts: protection.correctedTexts,
       protectConditional: true,
-    });
-    protectedDropped = dropped.filter((d) => d.reason === "fact_check_protected").length;
-    if (protectedDropped > 0) {
-      finalText = applyClariceSuggestions(preText, kept).patched;
-      applyMode = "filtered-suggestions";
+    }).dropped.some((d) => d.reason === "fact_check_protected");
+    if (anyRetained) {
+      const chunks = readChunks(tmpChunks, preText);
+      if (!chunks) return partial("sugestões por chunk ausentes ou sem cobrir o texto");
+      const rebuilt = rebuildFilteredByChunk(preText, chunks, protection);
+      if (rebuilt.unanchored > 0) {
+        return partial(`${rebuilt.unanchored} sugestão(ões) mantida(s) sem âncora única no chunk`);
+      }
+      finalText = rebuilt.text;
+      protectedSuggestions = rebuilt.retained;
+      applyMode = "filtered-chunks";
     }
   }
 
-  const restored = restoreRevealLines(preText, finalText);
+  const restored = restoreReveal(preText, finalText);
   if (restored === null) return { status: "reveal-changed" };
   finalText = restored;
 
-  const wrongValue = readDeclaredWrongValue(editionDir, warn);
+  const wrongValue = declared.value;
   if (wrongValue) {
     const before = countOccurrences(preText, wrongValue);
     if (before === 0) {
@@ -406,8 +537,9 @@ export function resumeClarice(
 
   writeFileSync(reviewed, finalText, "utf8");
   renameSync(tmpSuggestions, join(editionDir, CLARICE_SUGGESTIONS_REL));
+  rmSync(tmpChunks, { force: true });
   rmSync(claricePendingPath(editionDir), { force: true });
-  return { status: "resumed", preResume: PRE_RESUME_REL, protectedDropped, applyMode };
+  return { status: "resumed", preResume: PRE_RESUME_REL, applyMode, protectedSuggestions };
 }
 
 /**
@@ -416,9 +548,9 @@ export function resumeClarice(
  * base. Mesma ordem do Stage 2 para travessão, É IA?, URL e cupons; o diff,
  * que no Stage 2 vem antes do strip, aqui vai por último para mostrar o texto
  * final. Os dois primeiros consertam sozinhos; os dois `verify-*` só reportam
- * (exit 1 = levar ao gate, nunca auto-restaurar); o diff leva o
- * `02-normalized.md` como 4º argumento quando existe (sinaliza reversão do
- * humanizador, #3929).
+ * (exit 1 = achado para o gate, nunca auto-restaurar; exit ≥ 2 = o check não
+ * rodou); o diff leva o `02-normalized.md` como 4º argumento quando existe
+ * (sinaliza reversão do humanizador, #3929).
  */
 export function postResumeSteps(editionDir: string): Array<{ name: string; args: string[]; reportOnly: boolean }> {
   const pre = join(editionDir, PRE_RESUME_REL);
@@ -441,4 +573,29 @@ export function postResumeSteps(editionDir: string): Array<{ name: string; args:
       reportOnly: false,
     },
   ];
+}
+
+/** Desfecho de um passo pós-Clarice: `crashed` = signal/erro de spawn, nunca vira "achado". */
+export interface PostStepRun {
+  name: string;
+  reportOnly: boolean;
+  exit: number;
+  crashed?: string;
+}
+
+/**
+ * Classifica os passos pós-Clarice: falha dura (passo que conserta sozinho com
+ * exit ≠ 0, qualquer `verify-*` com exit ≥ 2 ou crash) versus achado para o
+ * gate (`verify-*` com exit 1).
+ */
+export function classifyPostSteps(steps: PostStepRun[]): { hardFailures: PostStepRun[]; attention: PostStepRun[] } {
+  const hardFailures: PostStepRun[] = [];
+  const attention: PostStepRun[] = [];
+  for (const s of steps) {
+    if (s.crashed) hardFailures.push(s);
+    else if (s.exit === 0) continue;
+    else if (s.reportOnly && s.exit === 1) attention.push(s);
+    else hardFailures.push(s);
+  }
+  return { hardFailures, attention };
 }

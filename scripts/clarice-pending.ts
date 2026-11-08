@@ -24,9 +24,10 @@
  *   0 — sucesso (skip gravado; clear feito; resume concluído ou nada pendente; status lido)
  *   1 — args inválidos
  *   2-6 — resume: exit do clarice-correct.ts, repassado (2 sem CLARICE_API_KEY,
- *         3 HTTP/timeout, 4 I/O, 5 staleness, 6 clarice_unavailable). Também 6
- *         quando a última tentativa falhou há menos de 20 min (`recently-attempted`;
- *         `--retry-now` tenta mesmo assim). O marcador continua.
+ *         3 HTTP/timeout, 4 I/O, 5 staleness, 6 clarice_unavailable). Também 3/6
+ *         quando a última tentativa falhou por API (3 ou 6) há menos de 20 min
+ *         (`recently-attempted`, mesmo exit da tentativa; `--retry-now` tenta
+ *         mesmo assim). O marcador continua.
  *   3 — skip recusado (sem snapshot pré-Clarice, ou 02-reviewed.md editado depois dele)
  *   7 — resume não aplicado: 02-reviewed.md mudou durante a chamada da Clarice
  *   8 — resume não aplicado: a Clarice corrigiu o erro intencional declarado, ou
@@ -35,8 +36,13 @@
  *       (strip-emdashes-reviewed, sync-eia-block, clarice-diff) falhou
  *  10 — resume não aplicado: correção parcial (fallback por parágrafo ou resumo
  *       ilegível do filho); o marcador fica com `reason: "partial"`
- *  11 — resume não aplicado: 02-reviewed.md ausente ou
- *       `_internal/fact-check-autofix.json` ilegível
+ *  11 — resume não aplicado: 02-reviewed.md ausente, ou
+ *       `_internal/fact-check-autofix.json`/`_internal/intentional-error.json` ilegível
+ *  12 — resume não aplicado: o clarice-correct.ts (ou um passo pós-Clarice)
+ *       morreu por signal/erro de spawn, sem exit code
+ *  13 — resume aplicado; `verify-clarice-url-stability`/`verify-clarice-coupons`
+ *       acharam algo (exit 1): campo `attention` no JSON, levar ao gate
+ *       (não auto-restaurar). Exit ≥ 2 desses checks é falha dura (9).
  *
  * Depois de um resume aplicado, roda os passos pós-Clarice do Stage 2
  * (`postResumeSteps`): travessão, É IA?, estabilidade de URL, cupons e diff.
@@ -53,6 +59,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { logEvent } from "./lib/run-log.ts";
 import {
   CLARICE_CORRECTED_REL,
+  classifyPostSteps,
   clearClaricePending,
   isClaricePending,
   postResumeSteps,
@@ -60,7 +67,9 @@ import {
   resumeClarice,
   resumeCommandFor,
   skipClarice,
+  type ClariceRunResult,
   type ClariceRunner,
+  type PostStepRun,
   type ResumeOutcome,
 } from "./lib/clarice-pending.ts";
 
@@ -69,13 +78,15 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const RESUME_POST_STEP_FAILED_EXIT = 9;
 export const RESUME_PARTIAL_EXIT = 10;
 export const RESUME_PRECONDITION_EXIT = 11;
+export const RESUME_CRASHED_EXIT = 12;
+export const RESUME_ATTENTION_EXIT = 13;
 
 /**
  * Roda um script tsx do repo. O stdout do filho é capturado (o `resume` lê o
  * JSON de resumo do clarice-correct.ts) e repassado ao stderr, para o stdout
  * deste CLI ficar só com o JSON final.
  */
-function runTsx(args: string[]): { exitCode: number; stdout: string } {
+export function runTsx(args: string[]): ClariceRunResult {
   const r = spawnSync(process.execPath, ["--import", "tsx", ...args], {
     cwd: ROOT,
     stdio: ["inherit", "pipe", 2],
@@ -84,7 +95,23 @@ function runTsx(args: string[]): { exitCode: number; stdout: string } {
   });
   const stdout = r.stdout ?? "";
   if (stdout) process.stderr.write(stdout);
-  return { exitCode: r.status ?? 1, stdout };
+  return spawnResultToRun(r);
+}
+
+/**
+ * `status` nulo (morto por signal) ou `error` do spawn não são exit code: viram
+ * `crashed`, para nunca passarem por "achado" (exit 1) nem por sucesso.
+ */
+export function spawnResultToRun(r: {
+  status: number | null;
+  signal?: NodeJS.Signals | null;
+  error?: Error;
+  stdout?: string | null;
+}): ClariceRunResult {
+  const stdout = r.stdout ?? "";
+  if (r.error) return { exitCode: -1, stdout, crashed: `erro de spawn: ${r.error.message}` };
+  if (r.status === null) return { exitCode: -1, stdout, crashed: `morto por signal ${r.signal ?? "?"}` };
+  return { exitCode: r.status, stdout };
 }
 
 const spawnClariceCorrect: ClariceRunner = (args) => runTsx(["scripts/clarice-correct.ts", ...args]);
@@ -104,7 +131,9 @@ export function resumeExitCode(outcome: ResumeOutcome): number {
     case "failed":
       return outcome.exitCode;
     case "recently-attempted":
-      return 6;
+      return outcome.exitCode;
+    case "crashed":
+      return RESUME_CRASHED_EXIT;
     case "reviewed-changed":
       return 7;
     case "intentional-error-corrected":
@@ -124,7 +153,7 @@ function resumeMessage(outcome: ResumeOutcome): string {
       return "Clarice falhou de novo; 02-reviewed.md intacto, revisão continua pendente.";
     case "recently-attempted":
       return (
-        `última tentativa às ${outcome.lastAttemptAt} (${outcome.lastAttemptOutcome ?? "?"}), há menos de 20 min; ` +
+        `última tentativa às ${outcome.lastAttemptAt} (${outcome.lastOutcome}), há menos de 20 min; ` +
         "não tentei de novo. Revisão continua pendente (--retry-now tenta mesmo assim)."
       );
     case "reviewed-changed":
@@ -138,7 +167,9 @@ function resumeMessage(outcome: ResumeOutcome): string {
     case "reveal-changed":
       return `a Clarice mexeu no reveal da edição anterior ("Na última edição, …") e não deu para restaurá-lo. Nada aplicado; o corrigido está em ${CLARICE_CORRECTED_REL}.`;
     case "partial":
-      return "a Clarice não corrigiu o texto inteiro (fallback por parágrafo ou resumo ilegível). Nada aplicado; marcador com reason partial.";
+      return `correção parcial ou não verificável (${outcome.detail}). Nada aplicado; marcador mantido (last_outcome partial).`;
+    case "crashed":
+      return `clarice-correct.ts não terminou (${outcome.message}). Nada aplicado.`;
     case "reviewed-missing":
       return "02-reviewed.md ausente. Nada aplicado.";
     case "protection-unreadable":
@@ -146,6 +177,27 @@ function resumeMessage(outcome: ResumeOutcome): string {
     default:
       return "";
   }
+}
+
+/** Linhas do stderr depois de um resume aplicado: o que o gate precisa mostrar ao editor. */
+export function resumedStderrLines(
+  protectedSuggestions: Array<{ from: string; to: string }>,
+  attention: PostStepRun[],
+  hardFailures: PostStepRun[],
+): string[] {
+  return [
+    "[clarice-pending] Clarice aplicada ao 02-reviewed.md e marcador removido. " +
+      "Re-renderizar a prévia do gate, como depois de qualquer edição do 02-reviewed.md.",
+    ...protectedSuggestions.map(
+      (p) =>
+        `[clarice-pending] ⚠️ sugestão retida pela proteção do fact-check (não aplicada): ` +
+        `${JSON.stringify(p.from)} → ${JSON.stringify(p.to)}. Levar ao gate.`,
+    ),
+    ...attention.map((s) => `[clarice-pending] ⚠️ ${s.name} achou algo (exit 1): levar ao gate (não auto-restaurar).`),
+    ...hardFailures.map(
+      (s) => `[clarice-pending] ⚠️ ${s.name} não rodou direito (${s.crashed ?? `exit ${s.exit}`}): rodar à mão antes do gate.`,
+    ),
+  ];
 }
 
 function main(): void {
@@ -245,34 +297,33 @@ function main(): void {
   }
 
   // resumed: passos pós-Clarice do Stage 2 contra o texto pré-resume.
-  const steps = postResumeSteps(editionDir).map((s) => ({
-    name: s.name,
-    reportOnly: s.reportOnly,
-    exit: runTsx(s.args).exitCode,
-  }));
-  const attention = steps.filter((s) => s.exit !== 0);
-  const hardFailure = attention.some((s) => !s.reportOnly);
-  const code = hardFailure ? RESUME_POST_STEP_FAILED_EXIT : 0;
+  const steps: PostStepRun[] = postResumeSteps(editionDir).map((s) => {
+    const r = runTsx(s.args);
+    return { name: s.name, reportOnly: s.reportOnly, exit: r.exitCode, ...(r.crashed ? { crashed: r.crashed } : {}) };
+  });
+  const { hardFailures, attention } = classifyPostSteps(steps);
+  const code = hardFailures.length
+    ? RESUME_POST_STEP_FAILED_EXIT
+    : attention.length
+      ? RESUME_ATTENTION_EXIT
+      : 0;
+  const result = {
+    ...outcome,
+    post_steps: steps,
+    attention: attention.map((s) => s.name),
+    hard_failures: hardFailures.map((s) => s.name),
+    exit: code,
+  };
   logEvent({
     edition: edition ?? null,
     stage: 4,
     agent: "clarice-pending",
-    level: attention.length ? "warn" : "info",
+    level: code === 0 && outcome.protectedSuggestions.length === 0 ? "info" : "warn",
     message: "clarice_resume",
-    details: { ...outcome, post_steps: steps, exit: code },
+    details: result,
   });
-  console.log(JSON.stringify({ ...outcome, post_steps: steps, exit: code }));
-  console.error(
-    "[clarice-pending] Clarice aplicada ao 02-reviewed.md e marcador removido. " +
-      "Re-renderizar a prévia do gate, como depois de qualquer edição do 02-reviewed.md.",
-  );
-  for (const s of attention) {
-    console.error(
-      s.reportOnly
-        ? `[clarice-pending] ⚠️ ${s.name} saiu ${s.exit}: levar ao gate (não auto-restaurar).`
-        : `[clarice-pending] ⚠️ ${s.name} falhou (exit ${s.exit}): rodar à mão antes do gate.`,
-    );
-  }
+  console.log(JSON.stringify(result));
+  for (const line of resumedStderrLines(outcome.protectedSuggestions, attention, hardFailures)) console.error(line);
   if (code !== 0) process.exit(code);
 }
 

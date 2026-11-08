@@ -42,12 +42,15 @@ import {
   claricePendingPath,
   clearClaricePending,
   postResumeSteps,
-  restoreRevealLines,
+  restoreReveal,
+  isCompleteSummary,
+  classifyPostSteps,
   PRE_RESUME_REL,
   RESUME_COOLDOWN_MS,
   RESUME_SUGGESTIONS_TMP_REL,
 } from "../scripts/lib/clarice-pending.ts";
-import { resumeExitCode, RESUME_POST_STEP_FAILED_EXIT } from "../scripts/clarice-pending.ts";
+import { resumeExitCode, resumedStderrLines, spawnResultToRun, RESUME_POST_STEP_FAILED_EXIT } from "../scripts/clarice-pending.ts";
+import { signalsFromClaricePendingAtPublish, signalsFromClariceSkips } from "../scripts/collect-edition-signals.ts";
 import { checkClaricePending, STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { checkClaricePendingAtPublish, STAGE_5_RULES } from "../scripts/lib/invariant-checks/stage-5.ts";
 import { checkClariceRan } from "../scripts/check-stage2-invariants.ts";
@@ -173,11 +176,25 @@ function touchAfterSnapshot(dir: string, path: string): void {
 function clariceWrites(
   corrected: string,
   sideEffect?: () => void,
-  opts: { suggestions?: unknown[]; summary?: Record<string, unknown> } = {},
+  opts: {
+    suggestions?: unknown[];
+    summary?: Record<string, unknown>;
+    /** Sugestões por chunk; default = 1 chunk com o texto inteiro e `suggestions`. */
+    chunks?: Array<{ length: number; suggestions: unknown[] }>;
+  } = {},
 ) {
   return (args: string[]): { exitCode: number; stdout: string } => {
     writeFileSync(args[args.indexOf("--corrected-out") + 1], corrected);
-    writeFileSync(args[args.indexOf("--out") + 1], JSON.stringify(opts.suggestions ?? []));
+    const suggestions = opts.suggestions ?? (opts.chunks ?? []).flatMap((c) => c.suggestions);
+    writeFileSync(args[args.indexOf("--out") + 1], JSON.stringify(suggestions));
+    const input = readFileSync(args[args.indexOf("--in") + 1], "utf8");
+    let offset = 0;
+    const chunks = (opts.chunks ?? [{ length: input.length, suggestions }]).map((c) => {
+      const e = { startOffset: offset, length: c.length, suggestions: c.suggestions };
+      offset += c.length;
+      return e;
+    });
+    writeFileSync(args[args.indexOf("--chunks-out") + 1], JSON.stringify(chunks));
     sideEffect?.();
     const summary = opts.summary ?? { suggestions_count: 0, chunks: 1, chunks_used_paragraph_fallback: 0, paragraphs_failed: 0 };
     return { exitCode: 0, stdout: `log qualquer\n${JSON.stringify(summary)}\n` };
@@ -286,7 +303,7 @@ describe("#12257 — Stage 2 segue sem a Clarice (skip retomável)", () => {
       const failed = resumeClarice(dir, (args) => { seenArgs = args; return 6; }, { edition: "261105" });
       assert.deepEqual(failed, { status: "failed", exitCode: 6 });
       assert.equal(existsSync(claricePendingPath(dir)), true);
-      assert.equal(readClaricePending(dir)?.last_attempt_outcome, "failed:6");
+      assert.equal(readClaricePending(dir)?.last_outcome, "failed:6");
       assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), "texto humanizado com edição do gate\n");
       const inPath = seenArgs[seenArgs.indexOf("--in") + 1];
       assert.equal(inPath, join(dir, PRE_RESUME_REL), "Clarice roda sobre a cópia pré-resume do reviewed atual");
@@ -431,7 +448,8 @@ describe("#12257 — review da PR #12440 (fail-closed do resume e do skip)", () 
         const out = resumeClarice(dir, clariceWrites("corrigido pela metade\n", undefined, { summary }));
         assert.equal(out.status, "partial");
         assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), "texto humanizado\n");
-        assert.equal(readClaricePending(dir)?.reason, "partial");
+        assert.equal(readClaricePending(dir)?.reason, "clarice_unavailable", "motivo original preservado");
+        assert.equal(readClaricePending(dir)?.last_outcome, "partial");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -473,8 +491,8 @@ describe("#12257 — review da PR #12440 (fail-closed do resume e do skip)", () 
         clariceWrites("A empresa faturou 40 bilhões em 2026. O texto tem um erro de concordância.\n", undefined, { suggestions }),
       );
       assert.equal(out.status, "resumed");
-      assert.equal(out.status === "resumed" && out.applyMode, "filtered-suggestions");
-      assert.equal(out.status === "resumed" && out.protectedDropped, 1);
+      assert.equal(out.status === "resumed" && out.applyMode, "filtered-chunks");
+      assert.deepEqual(out.status === "resumed" && out.protectedSuggestions, [{ from: "40 milhões", to: "40 bilhões" }]);
       assert.equal(
         readFileSync(join(dir, "02-reviewed.md"), "utf8"),
         "A empresa faturou 40 milhões em 2026. O texto tem um erro de concordância.\n",
@@ -522,8 +540,8 @@ describe("#12257 — review da PR #12440 (fail-closed do resume e do skip)", () 
     }
   });
 
-  it("restoreRevealLines sem reveal devolve o texto corrigido intacto", () => {
-    assert.equal(restoreRevealLines("a\nb\n", "a\nc\n"), "a\nc\n");
+  it("restoreReveal sem reveal devolve o texto corrigido intacto", () => {
+    assert.equal(restoreReveal("a\nb\n", "a\nc\n"), "a\nc\n");
   });
 
   it("resume: 02-reviewed.md ausente vira resultado tipado, sem exceção", () => {
@@ -549,7 +567,7 @@ describe("#12257 — review da PR #12440 (fail-closed do resume e do skip)", () 
       const out = resumeClarice(dir, () => { called = true; return 0; }, { now: () => soon });
       assert.equal(out.status, "recently-attempted");
       assert.equal(called, false);
-      assert.equal(resumeExitCode(out), 6);
+      assert.equal(resumeExitCode(out), 6, "mesmo exit da tentativa que falhou");
       const later = new Date(t0.getTime() + RESUME_COOLDOWN_MS + 1000);
       assert.equal(resumeClarice(dir, () => 6, { now: () => later }).status, "failed", "passado o cooldown, tenta de novo");
     } finally {
@@ -557,19 +575,21 @@ describe("#12257 — review da PR #12440 (fail-closed do resume e do skip)", () 
     }
   });
 
-  it("resume avisa quando intentional-error.json é ilegível ou o wrong_value não está no texto", () => {
+  it("resume: intentional-error.json ilegível bloqueia (exit 11); wrong_value fora do texto só avisa", () => {
     const dir = makeEditionDir();
     try {
       skipClarice(dir, "clarice_unavailable");
       const ie = join(dir, "_internal", "intentional-error.json");
       writeFileSync(ie, "{quebrado");
-      const warnings: string[] = [];
-      assert.equal(resumeClarice(dir, clariceWrites("ok\n"), { warn: (m) => warnings.push(m) }).status, "resumed");
-      assert.match(warnings.join("\n"), /ilegível/);
+      let called = false;
+      const blocked = resumeClarice(dir, () => { called = true; return 0; });
+      assert.equal(blocked.status, "protection-unreadable");
+      assert.equal(resumeExitCode(blocked), 11);
+      assert.equal(called, false, "não chama a Clarice sem a proteção do erro intencional");
+      assert.equal(isClaricePending(dir), true);
 
-      skipClarice(dir, "clarice_unavailable", { force: true });
       writeFileSync(ie, JSON.stringify({ wrong_value: "Anthropik" }));
-      warnings.length = 0;
+      const warnings: string[] = [];
       assert.equal(resumeClarice(dir, clariceWrites("ok\n"), { warn: (m) => warnings.push(m) }).status, "resumed");
       assert.match(warnings.join("\n"), /não aparece/);
     } finally {
@@ -595,7 +615,12 @@ describe("#12257 — review da PR #12440 (fail-closed do resume e do skip)", () 
     assert.equal(resumeExitCode({ status: "reviewed-changed" }), 7);
     assert.equal(resumeExitCode({ status: "reveal-changed" }), 8);
     assert.equal(resumeExitCode({ status: "intentional-error-corrected", wrongValue: "x" }), 8);
-    assert.equal(resumeExitCode({ status: "partial", summary: null }), 10);
+    assert.equal(resumeExitCode({ status: "partial", detail: "x" }), 10);
+    assert.equal(resumeExitCode({ status: "crashed", message: "x" }), 12);
+    assert.equal(
+      resumeExitCode({ status: "recently-attempted", lastAttemptAt: "x", lastOutcome: "failed:3", exitCode: 3 }),
+      3,
+    );
     assert.equal(resumeExitCode({ status: "reviewed-missing" }), 11);
     assert.equal(resumeExitCode({ status: "protection-unreadable", message: "x" }), 11);
     assert.equal(RESUME_POST_STEP_FAILED_EXIT, 9);
@@ -613,6 +638,183 @@ describe("#12257 — review da PR #12440 (fail-closed do resume e do skip)", () 
       const rule = STAGE_5_RULES.find((r) => r.id === "clarice-pending-at-publish");
       assert.ok(rule);
       assert.notEqual(rule.postDispatchOnly, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resume filtrado remonta chunk a chunk: âncora única no chunk, repetida no texto inteiro, é aplicada", () => {
+    const dir = makeEditionDir();
+    try {
+      skipClarice(dir, "clarice_unavailable");
+      const a = "A empresa faturou 40 milhões em 2026. Erro de concordancia.\n\n";
+      const b = "Outro erro de concordancia.\n";
+      writeFileSync(join(dir, "02-reviewed.md"), a + b);
+      writeFileSync(
+        join(dir, "_internal", "fact-check-autofix.json"),
+        JSON.stringify({ entries: [{ status: "applied", suggested_fix: "A empresa faturou 40 milhões em 2026." }] }),
+      );
+      const fix = { from: "concordancia", to: "concordância" };
+      const out = resumeClarice(
+        dir,
+        clariceWrites("(corrigido da Clarice, não usado)\n", undefined, {
+          chunks: [
+            { length: a.length, suggestions: [{ from: "40 milhões", to: "40 bilhões" }, fix] },
+            { length: b.length, suggestions: [fix] },
+          ],
+        }),
+      );
+      assert.equal(out.status, "resumed");
+      assert.equal(
+        readFileSync(join(dir, "02-reviewed.md"), "utf8"),
+        "A empresa faturou 40 milhões em 2026. Erro de concordância.\n\nOutro erro de concordância.\n",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resume filtrado: sugestão mantida sem âncora no chunk, ou chunks ausentes, vira parcial (marcador fica)", () => {
+    const dir = makeEditionDir();
+    try {
+      skipClarice(dir, "clarice_unavailable");
+      const text = "A empresa faturou 40 milhões em 2026. Fim.\n";
+      writeFileSync(join(dir, "02-reviewed.md"), text);
+      writeFileSync(
+        join(dir, "_internal", "fact-check-autofix.json"),
+        JSON.stringify({ entries: [{ status: "applied", suggested_fix: "A empresa faturou 40 milhões em 2026." }] }),
+      );
+      const sugg = [{ from: "40 milhões", to: "40 bilhões" }, { from: "inexistente", to: "x" }];
+      const out = resumeClarice(dir, clariceWrites("x\n", undefined, { chunks: [{ length: text.length, suggestions: sugg }] }));
+      assert.equal(out.status, "partial");
+      assert.equal(resumeExitCode(out), 10);
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), text);
+      assert.equal(isClaricePending(dir), true);
+
+      const noChunks = resumeClarice(dir, (args) => {
+        writeFileSync(args[args.indexOf("--corrected-out") + 1], "x\n");
+        writeFileSync(args[args.indexOf("--out") + 1], JSON.stringify(sugg.slice(0, 1)));
+        return { exitCode: 0, stdout: JSON.stringify({ suggestions_count: 1, chunks_used_paragraph_fallback: 0, paragraphs_failed: 0 }) };
+      });
+      assert.equal(noChunks.status, "partial");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resume: sugestões temporárias ilegíveis viram parcial, sem exceção", () => {
+    const dir = makeEditionDir();
+    try {
+      skipClarice(dir, "clarice_unavailable");
+      const out = resumeClarice(dir, (args) => {
+        writeFileSync(args[args.indexOf("--corrected-out") + 1], "x\n");
+        writeFileSync(args[args.indexOf("--out") + 1], "{nao json");
+        return { exitCode: 0, stdout: JSON.stringify({ suggestions_count: 0, chunks_used_paragraph_fallback: 0, paragraphs_failed: 0 }) };
+      });
+      assert.equal(out.status, "partial");
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), "texto humanizado\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("restoreReveal reconhece o gancho do render além de 'Na última edição' (bloco ERRO INTENCIONAL)", () => {
+    const pre =
+      "Texto com concordancia.\n\n---\n\n**ERRO INTENCIONAL**\n\n" +
+      "Na edição anterior, escrevi Anthropik onde o certo era Anthropic.\n\nNessa edição, escondemos outro erro.\n";
+    const corrected =
+      "Texto com concordância.\n\n---\n\n**ERRO INTENCIONAL**\n\n" +
+      "Na edição anterior, escrevi Anthropic onde o certo era Anthropic.\n\nNessa edição, escondemos outro erro.\n";
+    assert.equal(
+      restoreReveal(pre, corrected),
+      "Texto com concordância.\n\n---\n\n**ERRO INTENCIONAL**\n\n" +
+        "Na edição anterior, escrevi Anthropik onde o certo era Anthropic.\n\nNessa edição, escondemos outro erro.\n",
+    );
+    assert.equal(restoreReveal(pre, "Texto com concordância.\n"), null, "bloco sumiu: não restaura às cegas");
+  });
+
+  it("cooldown só para falha de API (3/6); sem chave (2) tenta de novo na próxima chamada", () => {
+    const dir = makeEditionDir();
+    try {
+      skipClarice(dir, "clarice_unavailable");
+      const t0 = new Date("2026-11-08T10:00:00Z");
+      const soon = () => new Date(t0.getTime() + 60_000);
+      assert.equal(resumeClarice(dir, () => 2, { now: () => t0 }).status, "failed");
+      let called = false;
+      const out = resumeClarice(dir, () => { called = true; return 2; }, { now: soon });
+      assert.deepEqual(out, { status: "failed", exitCode: 2 });
+      assert.equal(called, true);
+      assert.equal(readClaricePending(dir)?.reason, "clarice_unavailable");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stderr do resume aplicado lista cada par from→to retido pela proteção", () => {
+    const lines = resumedStderrLines([{ from: "40 milhões", to: "40 bilhões" }], [], []);
+    assert.ok(lines.some((l) => l.includes('"40 milhões" → "40 bilhões"') && l.includes("retida")));
+  });
+
+  it("isCompleteSummary exige os três campos presentes; ausente = incompleto", () => {
+    assert.equal(isCompleteSummary({ suggestions_count: 3, chunks_used_paragraph_fallback: 0, paragraphs_failed: 0 }), true);
+    assert.equal(isCompleteSummary({ suggestions_count: 3, chunks_used_paragraph_fallback: 0 }), false);
+    assert.equal(isCompleteSummary({ chunks_used_paragraph_fallback: 0, paragraphs_failed: 0 }), false);
+    assert.equal(isCompleteSummary({ suggestions_count: 3, paragraphs_failed: 0 }), false);
+    assert.equal(isCompleteSummary(null), false);
+  });
+
+  it("runner morto por signal/erro de spawn: crashed (exit 12), nada aplicado, marcador fica", () => {
+    assert.deepEqual(spawnResultToRun({ status: null, signal: "SIGKILL", stdout: "" }), {
+      exitCode: -1, stdout: "", crashed: "morto por signal SIGKILL",
+    });
+    assert.match(spawnResultToRun({ status: null, error: new Error("ENOENT"), stdout: "" }).crashed ?? "", /ENOENT/);
+    assert.deepEqual(spawnResultToRun({ status: 1, stdout: "x" }), { exitCode: 1, stdout: "x" });
+    const dir = makeEditionDir();
+    try {
+      skipClarice(dir, "clarice_unavailable");
+      const out = resumeClarice(dir, () => ({ exitCode: -1, stdout: "", crashed: "morto por signal SIGTERM" }));
+      assert.equal(out.status, "crashed");
+      assert.equal(resumeExitCode(out), 12);
+      assert.equal(readClaricePending(dir)?.last_outcome, "crashed");
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), "texto humanizado\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("classifyPostSteps: verify com exit 1 = achado; exit ≥ 2 ou crash = falha dura", () => {
+    const { hardFailures, attention } = classifyPostSteps([
+      { name: "strip-emdashes-reviewed", reportOnly: false, exit: 0 },
+      { name: "verify-clarice-url-stability", reportOnly: true, exit: 1 },
+      { name: "verify-clarice-coupons", reportOnly: true, exit: 2 },
+      { name: "sync-eia-block", reportOnly: false, exit: 3 },
+      { name: "clarice-diff", reportOnly: false, exit: -1, crashed: "morto por signal SIGKILL" },
+    ]);
+    assert.deepEqual(attention.map((s) => s.name), ["verify-clarice-url-stability"]);
+    assert.deepEqual(hardFailures.map((s) => s.name), ["verify-clarice-coupons", "sync-eia-block", "clarice-diff"]);
+    assert.deepEqual(
+      classifyPostSteps([{ name: "verify-clarice-coupons", reportOnly: true, exit: 1, crashed: "x" }]).hardFailures.length,
+      1,
+      "crash nunca vira achado",
+    );
+  });
+
+  it("collect-edition-signals: marcador na publicação gera sinal; clarice_resume é contado", () => {
+    const dir = makeEditionDir();
+    try {
+      assert.deepEqual(signalsFromClaricePendingAtPublish(dir), []);
+      skipClarice(dir, "clarice_unavailable");
+      const [sig] = signalsFromClaricePendingAtPublish(dir);
+      assert.equal(sig.kind, "clarice_pending_at_publish");
+      assert.equal(sig.severity, "high");
+      const lines = [
+        JSON.stringify({ edition: "261105", level: "warn", message: "clarice_skip", details: { reason: "clarice_unavailable" } }),
+        JSON.stringify({ edition: "261105", level: "warn", message: "clarice_resume", details: { status: "failed" } }),
+        JSON.stringify({ edition: "261105", level: "info", message: "clarice_resume", details: { status: "resumed" } }),
+      ];
+      const [skip] = signalsFromClariceSkips(lines, "261105");
+      assert.equal(skip.details.resume_attempts, 2);
+      assert.deepEqual(skip.details.resume_statuses, ["failed", "resumed"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -692,5 +894,13 @@ describe("#12257 — guard de prosa dos playbooks", () => {
   it("SKILL diaria-2-escrita e Stage 5 citam timeout e o invariante de publicação", () => {
     assert.match(read(".claude/skills/diaria-2-escrita/SKILL.md"), /timeout: 600000/);
     assert.match(read(".claude/agents/orchestrator-stage-5.md"), /clarice-pending-at-publish/);
+  });
+
+  it("Stage 6 mostra o marcador no gate (o banner do Stage 5 promete isso); Stage 4 documenta exits 12/13 e o 'esperar a API'", () => {
+    assert.match(read(".claude/agents/orchestrator-stage-6.md"), /Clarice não rodou \(#12257\)[^\n]*02-clarice-pending\.json/);
+    const s4 = read(".claude/agents/orchestrator-stage-4.md");
+    const para = s4.slice(s4.indexOf("clarice-pending.ts resume"), s4.indexOf("### 4b."));
+    assert.ok(para.includes("**12**") && para.includes("**13**"));
+    assert.match(s4, /"Esperar a API" = voltar ao §4a[^\n]*--retry-now[^\n]*§4b em diante/);
   });
 });
