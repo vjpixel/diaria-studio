@@ -1323,7 +1323,8 @@ export function runMainWithCheckers(
       console.log(
         `[cleanup-merged-worktrees] ${dirtySkipped.length} worktree(s) elegível(is) PRESERVADO(s) por ter trabalho ` +
           `não-commitado (#7304) — commite ou descarte à mão antes de limpar: ` +
-          `${dirtySkipped.map((e) => worktreeNameFromPath(e.path)).join(", ")}.`,
+          `${dirtySkipped.map((e) => worktreeNameFromPath(e.path)).join(", ")}. ` +
+          `Triagem (idade, PR, resgate em patch): npx tsx scripts/triage-preserved-worktrees.ts (#12374).`,
       );
     }
 
