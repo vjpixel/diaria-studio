@@ -25,8 +25,18 @@ import {
   readEffectiveSessionRecord,
   planSafeBackupCleanup,
   reconcileClaims,
+  registerSession,
+  claimIssue,
+  unclaimIssue,
+  endSession,
+  listActiveSessions,
+  planSessionGc,
+  garbageCollectSessions,
+  findLiveMergeGrant,
   type SessionRecord,
 } from "../scripts/lib/session-registry.ts";
+import { findLiveMergeGrantFile, RCLONE_SESSION_CONFLICT_RE } from "../.claude/hooks/consume-merge-grant-on-merge.mjs";
+import { existsSync, readdirSync } from "node:fs";
 import {
   isBackupSiblingFilename,
   backupSiblingCanonicalName,
@@ -153,5 +163,191 @@ describe("gc-data-dir trata .conflictN como cópia-irmã (#12357)", () => {
     assert.equal(isBackupSiblingProtected("clarice-users.db.conflict1"), true);
     assert.equal(isBackupSiblingProtected("editions/2611/261108/02-reviewed.md.conflict1"), true);
     assert.equal(isBackupSiblingProtected("drive-cache.json.conflict1"), false);
+  });
+});
+
+// ─── Review da #12357: cópias `.conflictN` em todos os caminhos ─────────────
+
+const T0 = "2026-11-08T10:00:00.000Z";
+const T1 = "2026-11-08T10:01:00.000Z";
+const T2 = "2026-11-08T10:02:00.000Z";
+const T3 = "2026-11-08T10:03:00.000Z";
+
+/** Sessão real com claims [1, 2], depois `unclaim 2`; a `.conflict1` é a
+ * versão ANTERIOR ao unclaim, criada depois dele (o perdedor do rclone é
+ * sempre o mtime mais antigo). */
+function releaseThenConflict(): { root: string; real: string } {
+  const root = freshRoot();
+  registerSession(root, "develop", "s1", { tag: "Neo", startedAt: T0 });
+  assert.equal(claimIssue(root, "develop", "s1", 1, "Neo", T1), true);
+  assert.equal(claimIssue(root, "develop", "s1", 2, "Neo", T2), true);
+  const real = join(sessionsDir(root), "develop-Neo-s1.json");
+  const beforeUnclaim = readFileSync(real, "utf8");
+  assert.equal(unclaimIssue(root, "develop", "s1", 2, "Neo", T3).reason, "unclaimed");
+  writeFileSync(`${real}.conflict1`, beforeUnclaim, "utf8");
+  return { root, real };
+}
+
+describe("liberação seguida de conflito .conflictN (review #12357)", () => {
+  it("o real fica [1]; a cópia antiga carrega [1, 2] com claim anterior ao heartbeat do real", () => {
+    const { real } = releaseThenConflict();
+    const r = JSON.parse(readFileSync(real, "utf8")) as SessionRecord;
+    assert.deepEqual(r.claimed_issues, [1]);
+    const c = JSON.parse(readFileSync(`${real}.conflict1`, "utf8")) as SessionRecord;
+    assert.deepEqual(c.claimed_issues, [1, 2]);
+  });
+
+  it("reconcileClaims NÃO ressuscita a claim solta (regra #6698, igual à -safeBackup-)", () => {
+    const { root, real } = releaseThenConflict();
+    const entry = reconcileClaims(root).find((x) => x.realPath === real);
+    assert.ok(entry);
+    assert.deepEqual(entry.addedIssues, []);
+    assert.deepEqual((JSON.parse(readFileSync(real, "utf8")) as SessionRecord).claimed_issues, [1]);
+  });
+
+  it("planSafeBackupCleanup recolhe a cópia (removable), encerrando o falso-positivo", () => {
+    const { root } = releaseThenConflict();
+    const plan = planSafeBackupCleanup(root);
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0]!.action, "removable");
+  });
+
+  it("read-path: a união fail-safe (#6130) mostra a claim enquanto a cópia existir — contrato documentado em sync-conflict-copy.ts", () => {
+    const { root, real } = releaseThenConflict();
+    assert.deepEqual([...(readEffectiveSessionRecord(root, real)?.claimed_issues ?? [])].sort(), [1, 2]);
+    // Mesma forma em disco com a cópia do OneDrive dá a mesma leitura: a
+    // .conflictN não ganhou regra própria nem mais fraca.
+    const root2 = freshRoot();
+    const real2 = writeRaw(root2, "develop-Neo-s1.json", JSON.parse(readFileSync(real, "utf8")));
+    writeFileSync(join(sessionsDir(root2), "develop-Neo-s1-Neo-safeBackup-0001.json"), readFileSync(`${real}.conflict1`));
+    assert.deepEqual(
+      [...(readEffectiveSessionRecord(root2, real2)?.claimed_issues ?? [])].sort(),
+      [...(readEffectiveSessionRecord(root, real)?.claimed_issues ?? [])].sort(),
+    );
+  });
+
+  it("unclaim com a .conflictN JÁ no disco limpa a cópia também (#6567 alcança .conflictN)", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "s1", { tag: "Neo", startedAt: T0 });
+    claimIssue(root, "develop", "s1", 1, "Neo", T1);
+    claimIssue(root, "develop", "s1", 2, "Neo", T2);
+    const real = join(sessionsDir(root), "develop-Neo-s1.json");
+    writeFileSync(`${real}.conflict1`, readFileSync(real));
+    unclaimIssue(root, "develop", "s1", 2, "Neo", T3);
+    assert.deepEqual((JSON.parse(readFileSync(`${real}.conflict1`, "utf8")) as SessionRecord).claimed_issues, [1]);
+    assert.deepEqual(readEffectiveSessionRecord(root, real)?.claimed_issues, [1]);
+  });
+});
+
+describe("cópia .conflictN com claim viva que o real não tem (review #12357)", () => {
+  it("planSafeBackupCleanup NÃO a remove (pending-reconciliation)", () => {
+    const root = freshRoot();
+    writeRaw(root, "develop-Neo-s1.json", { ...BASE, lastHeartbeat: T1, claimed_issues: [1] });
+    writeRaw(root, "develop-Neo-s1.json.conflict1", {
+      ...BASE,
+      lastHeartbeat: T2,
+      claimed_issues: [1, 5],
+      claimed_issues_at: { "5": T2 },
+    });
+    const plan = planSafeBackupCleanup(root);
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0]!.action, "pending-reconciliation");
+  });
+});
+
+describe("real removido por endSession, só a .conflictN sobrou (review #12357)", () => {
+  it("endSession carimba endedAt na .conflictN e ela não vira sessão ativa", () => {
+    const root = freshRoot();
+    const now = Date.now();
+    const iso = new Date(now).toISOString();
+    registerSession(root, "develop", "s1", { tag: "Neo", startedAt: iso });
+    claimIssue(root, "develop", "s1", 4, "Neo", iso);
+    const real = join(sessionsDir(root), "develop-Neo-s1.json");
+    writeFileSync(`${real}.conflict1`, readFileSync(real));
+    assert.equal(endSession(root, "develop", "s1", "Neo"), true);
+    assert.equal(existsSync(real), false);
+    const copy = JSON.parse(readFileSync(`${real}.conflict1`, "utf8")) as SessionRecord;
+    assert.ok(copy.endedAt, "endSession propagou endedAt à cópia .conflictN");
+    assert.equal(listActiveSessions(root, now).some((x) => x.sessionId === "s1"), false);
+  });
+
+  it("órfã .conflictN de heartbeat velho não é sessão ativa", () => {
+    const root = freshRoot();
+    writeRaw(root, "develop-Neo-s1.json.conflict1", { ...BASE, claimed_issues: [4] });
+    assert.equal(listActiveSessions(root, Date.parse("2026-11-08T12:00:00Z")).some((x) => x.sessionId === "s1"), false);
+  });
+});
+
+describe("GC de órfã .conflictN (review #12357)", () => {
+  it("planSessionGc/garbageCollectSessions recolhem a órfã velha e mantêm a recente", () => {
+    const root = freshRoot();
+    const now = Date.parse("2026-12-08T12:00:00Z");
+    const old = writeRaw(root, "develop-Neo-s1.json.conflict1", { ...BASE });
+    const recent = writeRaw(root, "develop-Neo-s2.json.conflict1", {
+      ...BASE,
+      sessionId: "s2",
+      lastHeartbeat: new Date(now - 60_000).toISOString(),
+    });
+    const plan = planSessionGc(root, { now, localMachineTag: "Neo", isPidAlive: () => false });
+    const byFile = (p: string) => plan.find((e) => e.files.includes(p));
+    assert.equal(byFile(old)?.action, "removed");
+    assert.match(byFile(old)!.identity, /^orphan-backup:develop-Neo-s1\.json\.conflict1$/);
+    assert.equal(byFile(recent)?.action, "kept");
+    garbageCollectSessions(root, { now, localMachineTag: "Neo", isPidAlive: () => false });
+    assert.equal(existsSync(old), false);
+    assert.equal(existsSync(recent), true);
+  });
+});
+
+describe("merge_grant em cópia .conflictN (review #12357)", () => {
+  function coordWithGrantOnlyInCopy(): { root: string; now: number } {
+    const root = freshRoot();
+    const now = Date.now();
+    const iso = new Date(now).toISOString();
+    const rec: SessionRecord = { kind: "develop", machineTag: "Neo", sessionId: "coord", startedAt: iso, lastHeartbeat: iso };
+    writeRaw(root, "develop-Neo-coord.json", rec);
+    writeRaw(root, "develop-Neo-coord.json.conflict1", {
+      ...rec,
+      merge_grant: { grantedBy: "coord", grantedTo: "interativa", grantedAt: iso, pr: 12379 },
+    });
+    return { root, now };
+  }
+
+  it("findLiveMergeGrant acha o grant mas diz que ele veio de cópia (mergeGrantLivesInRealFile ignora .conflictN)", () => {
+    const { root, now } = coordWithGrantOnlyInCopy();
+    const found = findLiveMergeGrant(root, "interativa", now);
+    assert.ok(found);
+    assert.equal(found.source, "backup");
+  });
+
+  it("hook: findLiveMergeGrantFile vê a cópia .json.conflictN só com includeBackups (#6952)", () => {
+    const { root, now } = coordWithGrantOnlyInCopy();
+    assert.equal(findLiveMergeGrantFile(root, "interativa", now), null);
+    const found = findLiveMergeGrantFile(root, "interativa", now, true);
+    assert.ok(found);
+    assert.match(found.path, /develop-Neo-coord\.json\.conflict1$/);
+  });
+
+  it("regex do hook espelha rcloneConflictOriginalName pra arquivo de sessão", () => {
+    for (const n of ["develop-Neo-s1.json.conflict1", "a.json.conflict12"]) {
+      assert.equal(RCLONE_SESSION_CONFLICT_RE.test(n), true, n);
+      assert.ok(rcloneConflictOriginalName(n)?.endsWith(".json"), n);
+    }
+    for (const n of [".json.conflict1", "a.txt.conflict1", "a.json.conflict", "a.json", "a-safeBackup-0001.json"]) {
+      assert.equal(RCLONE_SESSION_CONFLICT_RE.test(n), false, n);
+    }
+  });
+});
+
+describe("findExistingSessionFileAnyKind nunca escolhe a .conflictN (review #12357)", () => {
+  it("re-registro com só a cópia .conflictN no disco não a adota como arquivo da sessão", () => {
+    const root = freshRoot();
+    // Cópia de OUTRO kind da mesma sessão: se fosse escolhida como arquivo
+    // existente, o registro "promoveria" a partir dela e removeria a cópia.
+    const copy = writeRaw(root, "interactive-Neo-s9.json.conflict1", { ...BASE, kind: "interactive", sessionId: "s9" });
+    registerSession(root, "develop", "s9", { tag: "Neo" });
+    const names = readdirSync(sessionsDir(root)).sort();
+    assert.ok(names.includes("develop-Neo-s9.json"), names.join(","));
+    assert.equal(existsSync(copy), true, "a cópia de conflito não foi tratada como o arquivo real da sessão");
   });
 });

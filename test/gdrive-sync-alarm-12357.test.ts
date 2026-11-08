@@ -18,17 +18,31 @@ import {
   evaluateGdriveSync,
   isAlarmingGdriveSyncVerdict,
   describeGdriveSyncVerdict,
+  bisyncStampReadFromText,
+  STAMP_FUTURE_TOLERANCE_MS,
+  DEFAULT_GDRIVE_SYNC_TOLERANCES,
   type BisyncStamp,
 } from "../scripts/lib/gdrive-sync-alarm.ts";
 import {
   parseRcloneAboutJson,
   evaluateGdriveQuota,
   readRcloneAbout,
+  readRcloneAboutDetailed,
   resolveRcloneBin,
   buildGdriveQuotaCauseText,
 } from "../scripts/lib/gdrive-quota.ts";
-import { toSyncAlarmFinding, toQuotaAlarmFinding, absenceUnmeasured, readBisyncStamp } from "../scripts/gdrive-sync-alarm.ts";
-import { alarmIssueStateKey } from "../scripts/lib/alarm-issues.ts";
+import {
+  toSyncAlarmFinding,
+  toQuotaAlarmFinding,
+  absenceUnmeasured,
+  readBisyncStamp,
+  quotaFindingVerdict,
+  gdriveAlarmDelivered,
+  gdriveAlarmIssuesStatePath,
+  backendImpactLine,
+  buildGdriveAlarmEmail,
+} from "../scripts/gdrive-sync-alarm.ts";
+import { alarmIssueStateKey, type AlarmFindingOutcome } from "../scripts/lib/alarm-issues.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const SCRIPT = join(ROOT, "scripts", "systemd", "gdrive-bisync.sh");
@@ -84,11 +98,20 @@ describe("gdrive-bisync.sh — carimbos pro alarme (#12357)", { skip: process.pl
     assert.equal(r.lastSuccess, null);
   });
 
-  it("--dry-run não conta como sucesso", () => {
+  it("--dry-run não carimba nada, nem last-run (review da #12357)", () => {
     const r = runBisync({ mounted: true, args: ["--dry-run"] });
     assert.equal(r.status, 0);
-    assert.equal(r.lastRun?.exit, 0);
+    assert.equal(r.lastRun, null);
     assert.equal(r.lastSuccess, null);
+  });
+
+  it("--dry-run que trava (75) ou falha também não carimba", () => {
+    const blocked = runBisync({ mounted: false, args: ["--dry-run"] });
+    assert.equal(blocked.status, 75);
+    assert.equal(blocked.lastRun, null);
+    const failed = runBisync({ mounted: true, rcloneExit: 3, args: ["-n"] });
+    assert.equal(failed.status, 3);
+    assert.equal(failed.lastRun, null);
   });
 
   it("passa --ignore-case (paridade com o skip_file do OneDrive)", () => {
@@ -143,12 +166,17 @@ describe("evaluateGdriveSync (#12357)", () => {
     assert.equal(parseBisyncStamp([]), null);
   });
 
-  it("readBisyncStamp: arquivo corrompido → null (nunca vira sucesso)", () => {
+  it("readBisyncStamp: só ENOENT é ausente; corrompido é unreadable (nunca vira sucesso nem silêncio)", () => {
     const sb = mkdtempSync(join(tmpdir(), "gdrive-readstamp-"));
     try {
       writeFileSync(join(sb, "last-success.json"), "{nao-json");
-      assert.equal(readBisyncStamp(join(sb, "last-success.json")), null);
-      assert.equal(readBisyncStamp(join(sb, "nao-existe.json")), null);
+      assert.equal(readBisyncStamp(join(sb, "last-success.json")).kind, "unreadable");
+      writeFileSync(join(sb, "last-run.json"), JSON.stringify({ at: "ontem", exit: 0 }));
+      assert.equal(readBisyncStamp(join(sb, "last-run.json")).kind, "unreadable");
+      assert.deepEqual(readBisyncStamp(join(sb, "nao-existe.json")), { kind: "absent" });
+      // Diretório no lugar do arquivo (EISDIR): existe e não abre.
+      mkdirSync(join(sb, "dir.json"));
+      assert.equal(readBisyncStamp(join(sb, "dir.json")).kind, "unreadable");
     } finally {
       rmSync(sb, { recursive: true, force: true });
     }
@@ -249,6 +277,235 @@ describe("CLI --dry-run (#12357)", { skip: process.platform === "win32" ? "rclon
       assert.match(r.stdout, /verdict=alarm-bisync-blocked/);
       assert.match(r.stdout, /cota: verdict=ok/);
       assert.match(r.stdout, /--dry-run: 1 ação/);
+    } finally {
+      rmSync(sb, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── Review da #12357 (fleet de 5 agentes) ─────────────────────────────────
+
+describe("limiares do alarme: fronteira estrita (review #12357)", () => {
+  const T = DEFAULT_GDRIVE_SYNC_TOLERANCES;
+  it("trava: exatamente 60 min não alarma, +1 ms alarma", () => {
+    assert.equal(evaluateGdriveSync(stamp(MIN, 75), stamp(T.blockedMs, 0), NOW).verdict, "ok");
+    assert.equal(evaluateGdriveSync(stamp(MIN, 75), stamp(T.blockedMs + 1, 0), NOW).verdict, "alarm-bisync-blocked");
+  });
+  it("falha: exatamente 30 min não alarma, +1 ms alarma", () => {
+    assert.equal(evaluateGdriveSync(stamp(MIN, 1), stamp(T.failedMs, 0), NOW).verdict, "ok");
+    assert.equal(evaluateGdriveSync(stamp(MIN, 1), stamp(T.failedMs + 1, 0), NOW).verdict, "alarm-bisync-failed");
+  });
+  it("stale: exatamente 6h não alarma, +1 ms alarma", () => {
+    assert.equal(evaluateGdriveSync(stamp(T.staleMs, 0), stamp(T.staleMs, 0), NOW).verdict, "ok");
+    assert.equal(evaluateGdriveSync(stamp(T.staleMs + 1, 0), stamp(T.staleMs + 1, 0), NOW).verdict, "alarm-sync-stale");
+  });
+  it("tolerâncias custom valem nos três limiares", () => {
+    const tol = { blockedMs: 5 * MIN, failedMs: 2 * MIN, staleMs: H };
+    assert.equal(evaluateGdriveSync(stamp(MIN, 75), stamp(5 * MIN, 0), NOW, tol).verdict, "ok");
+    assert.equal(evaluateGdriveSync(stamp(MIN, 75), stamp(5 * MIN + 1, 0), NOW, tol).verdict, "alarm-bisync-blocked");
+    assert.equal(evaluateGdriveSync(stamp(MIN, 9), stamp(2 * MIN + 1, 0), NOW, tol).verdict, "alarm-bisync-failed");
+    assert.equal(evaluateGdriveSync(stamp(MIN, 0), stamp(H + 1, 0), NOW, tol).verdict, "alarm-sync-stale");
+  });
+});
+
+describe("precedência e contratos do veredito (review #12357)", () => {
+  it("exit 75 + sucesso há 7h → blocked (a trava é mais específica que o stale)", () => {
+    assert.equal(evaluateGdriveSync(stamp(MIN, 75), stamp(7 * H, 0), NOW).verdict, "alarm-bisync-blocked");
+  });
+  it("exit != 0 + sucesso há 7h → failed, não stale", () => {
+    assert.equal(evaluateGdriveSync(stamp(MIN, 2), stamp(7 * H, 0), NOW).verdict, "alarm-bisync-failed");
+  });
+  it("last-run exit 0 sem nenhum sucesso carimbado → stale (idade infinita)", () => {
+    const ev = evaluateGdriveSync(stamp(MIN, 0), null, NOW);
+    assert.equal(ev.verdict, "alarm-sync-stale");
+    assert.equal(ev.successAgeMs, null);
+  });
+  it("só last-success (last-run sumiu) NÃO é not-installed: o sucesso decide", () => {
+    assert.equal(evaluateGdriveSync(null, stamp(10 * MIN, 0), NOW).verdict, "ok");
+    assert.equal(evaluateGdriveSync(null, stamp(7 * H, 0), NOW).verdict, "alarm-sync-stale");
+    assert.equal(evaluateGdriveSync({ kind: "absent" }, stamp(7 * H, 0), NOW).verdict, "alarm-sync-stale");
+  });
+  it("nenhum carimbo (null ou absent) → not-installed", () => {
+    assert.equal(evaluateGdriveSync({ kind: "absent" }, { kind: "absent" }, NOW).verdict, "not-installed");
+  });
+});
+
+describe("carimbo ilegível/inválido alarma (review #12357)", () => {
+  it("last-run ilegível com last-success ausente → alarm-stamp-unreadable, nunca not-installed", () => {
+    const ev = evaluateGdriveSync(bisyncStampReadFromText("{corrompido"), null, NOW);
+    assert.equal(ev.verdict, "alarm-stamp-unreadable");
+    assert.equal(isAlarmingGdriveSyncVerdict(ev.verdict), true);
+    assert.match(ev.invalidStamps[0]!, /last-run\.json: JSON inválido/);
+    assert.match(describeGdriveSyncVerdict(ev), /existem mas não servem/);
+  });
+  it("EACCES/EISDIR (unreadable vindo do disco) também alarma", () => {
+    const ev = evaluateGdriveSync({ kind: "unreadable", reason: "não abre (EACCES)" }, stamp(MIN, 0), NOW);
+    assert.equal(ev.verdict, "alarm-stamp-unreadable");
+    assert.match(ev.invalidStamps.join(), /EACCES/);
+  });
+  it("carimbo ilegível precede trava/falha", () => {
+    assert.equal(evaluateGdriveSync(stamp(MIN, 75), bisyncStampReadFromText("[]"), NOW).verdict, "alarm-stamp-unreadable");
+  });
+  it("last-success com exit != 0 é inválido", () => {
+    const ev = evaluateGdriveSync(stamp(MIN, 0), stamp(MIN, 1), NOW);
+    assert.equal(ev.verdict, "alarm-stamp-unreadable");
+    assert.match(ev.invalidStamps[0]!, /last-success\.json: carimbo de sucesso com exit 1/);
+  });
+  it("at no futuro: dentro da folga conta como idade 0; além da folga é inválido", () => {
+    const within = evaluateGdriveSync(stamp(-STAMP_FUTURE_TOLERANCE_MS, 0), stamp(-STAMP_FUTURE_TOLERANCE_MS, 0), NOW);
+    assert.equal(within.verdict, "ok");
+    assert.equal(within.successAgeMs, 0);
+    const beyond = evaluateGdriveSync(stamp(MIN, 0), stamp(-(STAMP_FUTURE_TOLERANCE_MS + 1), 0), NOW);
+    assert.equal(beyond.verdict, "alarm-stamp-unreadable");
+    assert.match(beyond.invalidStamps[0]!, /no futuro/);
+    // Um last-run no futuro distante também: nunca segura o stale por idade negativa.
+    assert.equal(evaluateGdriveSync(stamp(-24 * H, 0), stamp(7 * H, 0), NOW).verdict, "alarm-stamp-unreadable");
+  });
+  it("carimbo ilegível congela os outros achados de sync (não fecham sem medida)", () => {
+    const frozen = absenceUnmeasured("alarm-stamp-unreadable", "ok");
+    for (const f of ["alarm-bisync-blocked", "alarm-bisync-failed", "alarm-sync-stale"]) {
+      assert.equal(frozen(alarmIssueStateKey("gdrive-sync", f)), true, f);
+    }
+    // O próprio achado de carimbo não fica congelado: fecha quando o carimbo sarar.
+    assert.equal(frozen(alarmIssueStateKey("gdrive-sync", "alarm-stamp-unreadable")), false);
+    assert.equal(frozen(alarmIssueStateKey("gdrive-quota", "quota-near")), false);
+  });
+});
+
+describe("absenceUnmeasured: congelamentos independentes (review #12357)", () => {
+  it("cota sem medida NÃO congela as chaves de sync", () => {
+    const f = absenceUnmeasured("ok", "unmeasured");
+    assert.equal(f(alarmIssueStateKey("gdrive-sync", "alarm-bisync-blocked")), false);
+    assert.equal(f(alarmIssueStateKey("gdrive-quota", "quota-full")), true);
+    // Máquina COM bisync: o quota-unmeasured é emitido, então não congela.
+    assert.equal(f(alarmIssueStateKey("gdrive-quota", "quota-unmeasured")), false);
+  });
+  it("not-installed NÃO congela as chaves de cota medida", () => {
+    const f = absenceUnmeasured("not-installed", "ok");
+    assert.equal(f(alarmIssueStateKey("gdrive-quota", "quota-near")), false);
+    assert.equal(f(alarmIssueStateKey("gdrive-sync", "alarm-stamp-unreadable")), true);
+  });
+  it("nunca congela chave do alarme do OneDrive (outro check)", () => {
+    const f = absenceUnmeasured("not-installed", "unmeasured");
+    assert.equal(f(alarmIssueStateKey("onedrive-sync", "alarm-service-dead")), false);
+    assert.equal(f(alarmIssueStateKey("onedrive-quota", "quota-near")), false);
+  });
+});
+
+describe("cota: limites e medida ausente (review #12357)", () => {
+  it("`{}` e saída sem campo numérico → unmeasured", () => {
+    assert.equal(parseRcloneAboutJson("{}"), null);
+    assert.equal(evaluateGdriveQuota(parseRcloneAboutJson("{}")).verdict, "unmeasured");
+    assert.equal(evaluateGdriveQuota({ total: null, used: null, trashed: null, other: null, free: null }).verdict, "unmeasured");
+  });
+  it("sem total: free > 0 → ok; só used/other → unmeasured", () => {
+    assert.equal(evaluateGdriveQuota({ total: null, used: 5, trashed: null, other: 1, free: 10 }).verdict, "ok");
+    assert.equal(evaluateGdriveQuota({ total: null, used: 5, trashed: null, other: 1, free: null }).verdict, "unmeasured");
+  });
+  it("limite de aviso inclusivo: 89,99% ok, 90% near; 100% full", () => {
+    const at = (consumed: number) => evaluateGdriveQuota({ total: 10_000, used: null, trashed: null, other: null, free: 10_000 - consumed }, 90).verdict;
+    assert.equal(at(8_999), "ok");
+    assert.equal(at(9_000), "quota-near");
+    assert.equal(at(9_999), "quota-near");
+    assert.equal(at(10_000), "quota-full");
+  });
+  it("readRcloneAboutDetailed: erro com mensagem + stderr, logado, nunca descartado", () => {
+    const lines: string[] = [];
+    const boom = () => {
+      throw Object.assign(new Error("Command failed: rclone about gdrive: --json"), {
+        stderr: "CRITICAL: Failed to create file system: didn't find section in config file",
+      });
+    };
+    const r = readRcloneAboutDetailed("rclone", "gdrive:", boom, (l) => lines.push(l));
+    assert.equal(r.about, null);
+    assert.match(r.error!, /Command failed/);
+    assert.match(r.error!, /stderr: CRITICAL: Failed to create file system/);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0]!, /didn't find section/);
+  });
+  it("readRcloneAboutDetailed: saída não-JSON também vira erro legível", () => {
+    const lines: string[] = [];
+    const r = readRcloneAboutDetailed("rclone", "gdrive:", () => "not json", (l) => lines.push(l));
+    assert.equal(r.about, null);
+    assert.match(r.error!, /não é o JSON esperado: not json/);
+    assert.equal(lines.length, 1);
+    assert.equal(readRcloneAboutDetailed("rclone", "gdrive:", () => ABOUT_SAMPLE, () => {}).error, null);
+  });
+  it("quota-unmeasured só vira achado (P3) numa máquina que roda o bisync", () => {
+    const unmeasured = evaluateGdriveQuota(null);
+    assert.equal(quotaFindingVerdict(unmeasured, "not-installed"), null);
+    assert.equal(quotaFindingVerdict(unmeasured, "ok"), "quota-unmeasured");
+    assert.equal(quotaFindingVerdict(unmeasured, "alarm-bisync-failed"), "quota-unmeasured");
+    assert.equal(quotaFindingVerdict(evaluateGdriveQuota(parseRcloneAboutJson(ABOUT_SAMPLE)), "ok"), null);
+    const f = toQuotaAlarmFinding(unmeasured, "token expirado");
+    assert.equal(f.fingerprint, "quota-unmeasured");
+    assert.equal(f.priority, "P3");
+    assert.ok(!f.labels?.includes("alarm-acao"));
+    assert.match(f.body, /token expirado/);
+  });
+  it("e-mail de cota sem medida traz o motivo, não um percentual vazio", () => {
+    const outcome = { check: "gdrive-quota", fingerprint: "quota-unmeasured", action: "created", issueNumber: 9, url: "u" } as unknown as AlarmFindingOutcome;
+    const mail = buildGdriveAlarmEmail([outcome], evaluateGdriveSync(stamp(MIN, 0), stamp(MIN, 0), NOW), evaluateGdriveQuota(null), "rede fora");
+    assert.match(mail.subject, /cota quota-unmeasured/);
+    assert.match(mail.body, /rede fora/);
+  });
+});
+
+describe("prioridade por backend e link quebrado pro Drive (review #12357)", () => {
+  const ev = evaluateGdriveSync(stamp(MIN, 75), stamp(2 * H, 0), NOW);
+  it("gdrive-unreachable é P1 e o texto diz que o data/ está fora do ar", () => {
+    const f = toSyncAlarmFinding(ev, "gdrive-unreachable");
+    assert.equal(f.priority, "P1");
+    assert.match(f.body, /aponta para o Google Drive, mas o alvo NÃO resolve/);
+    assert.doesNotMatch(f.body, /ainda não está no Google Drive/);
+  });
+  it("absent/unsynced/onedrive seguem P2", () => {
+    for (const b of ["absent", "unsynced", "onedrive"] as const) {
+      assert.equal(toSyncAlarmFinding(ev, b).priority, "P2", b);
+      assert.match(backendImpactLine(b), /ainda não está no Google Drive/);
+    }
+  });
+  it("texto da trava: sentinela LOCAL; a do Drive cai no --check-access (falha)", () => {
+    assert.match(describeGdriveSyncVerdict(ev), /sentinela LOCAL/);
+    assert.match(describeGdriveSyncVerdict(evaluateGdriveSync(stamp(MIN, 2), stamp(2 * H, 0), NOW)), /sentinela ausente do lado do Drive/);
+  });
+});
+
+describe("entrega e estado do alarme (review #12357)", () => {
+  const o = (action: string) => ({ check: "gdrive-sync", fingerprint: "x", action, error: "boom" }) as unknown as AlarmFindingOutcome;
+  it("exit 1 só quando havia achado e nenhum canal entregou", () => {
+    assert.equal(gdriveAlarmDelivered([], { emailSent: false }), true);
+    assert.equal(gdriveAlarmDelivered([o("failed")], { emailSent: false }), false);
+    assert.equal(gdriveAlarmDelivered([o("failed"), o("failed")], { emailSent: true }), true);
+    assert.equal(gdriveAlarmDelivered([o("failed"), o("reused")], { emailSent: false }), true);
+  });
+  it("estado das issues fica sempre no state dir, nunca em data/", () => {
+    assert.equal(gdriveAlarmIssuesStatePath("/home/x/.cache/diaria/gdrive-bisync"), join("/home/x/.cache/diaria/gdrive-bisync", ".gdrive-sync-alarm-issues.json"));
+    const src = readFileSync(join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "utf8");
+    assert.doesNotMatch(src, /DATA_DIR/);
+  });
+});
+
+describe("CLI --dry-run com carimbo corrompido (review #12357)", { skip: process.platform === "win32" ? "rclone falso é shell" : false }, () => {
+  it("last-run.json corrompido alarma (antes: not-installed silencioso) e não escreve estado em data/", () => {
+    const sb = mkdtempSync(join(tmpdir(), "gdrive-cli-unreadable-12357-"));
+    try {
+      const state = join(sb, "state");
+      mkdirSync(state);
+      writeFileSync(join(state, "last-run.json"), "{corrompido");
+      const fake = join(sb, "rclone");
+      writeFileSync(fake, `#!/bin/sh\necho "CRITICAL: didn't find section" >&2\nexit 1\n`);
+      chmodSync(fake, 0o755);
+      const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", state], {
+        encoding: "utf8",
+        cwd: ROOT,
+        env: { ...process.env, RCLONE_BIN: fake },
+      });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /verdict=alarm-stamp-unreadable/);
+      assert.match(r.stdout, /cota: verdict=unmeasured .*erro=.*didn't find section/);
+      // sync ilegível + cota sem medida numa máquina com carimbo = 2 achados
+      assert.match(r.stdout, /--dry-run: 2 ação/);
     } finally {
       rmSync(sb, { recursive: true, force: true });
     }

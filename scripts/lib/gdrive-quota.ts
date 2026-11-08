@@ -80,10 +80,16 @@ export interface GdriveQuotaEvaluation {
 }
 
 /**
- * Pura. `quota-full`: `free` zerado ou consumo ≥ total. `quota-near`:
- * consumo ≥ `warnPct`% do total. Sem `total` (conta ilimitada, backend que
- * não informa) → `ok` se não houver `free` zerado, porque não há cota a
- * estourar; sem `about` → `unmeasured`.
+ * Pura. Regras, na ordem:
+ *   - sem `about` → `unmeasured`;
+ *   - `quota-full`: `free` <= 0, ou consumo >= 100% do total;
+ *   - `quota-near`: consumo >= `warnPct`% do total (limite inclusivo: 90,0%
+ *     com `warnPct` 90 já é `quota-near`);
+ *   - sem percentual calculável (falta `total`, ou o consumo) E sem `free`
+ *     → `unmeasured` (não há número nenhum que diga que a cota está ok);
+ *   - sem `total` mas com `free` > 0 (conta ilimitada, backend que não
+ *     informa total) → `ok`: não há cota a estourar.
+ * Consumo = `total - free` quando os dois existem; senão `used + other`.
  */
 export function evaluateGdriveQuota(
   about: GdriveAbout | null,
@@ -146,21 +152,61 @@ export function resolveRcloneBin(env: NodeJS.ProcessEnv = process.env): string {
 
 export type ExecFileFn = (cmd: string, args: string[], opts: Record<string, unknown>) => unknown;
 
-/** I/O — `rclone about {remote} --json`, só leitura. `null` em qualquer
- * falha (binário ausente, remote inexistente, rede, timeout, JSON ruim). */
-export function readRcloneAbout(
+/** Resultado de `readRcloneAboutDetailed`: a medida, ou o motivo da falha
+ * (`error` legível, com o stderr do rclone quando houver). */
+export interface RcloneAboutRead {
+  about: GdriveAbout | null;
+  error: string | null;
+}
+
+/** Motivo legível de uma falha do `execFileSync`: mensagem + stderr (cortado). */
+export function describeExecError(e: unknown): string {
+  const err = e as { message?: string; stderr?: unknown; code?: unknown };
+  const msg = (err?.message ?? String(e)).split("\n")[0]!.trim();
+  const stderr = err?.stderr === undefined || err.stderr === null ? "" : String(err.stderr).trim();
+  const tail = stderr.length > 0 ? ` — stderr: ${stderr.length > 300 ? `${stderr.slice(0, 300)}…` : stderr}` : "";
+  return `${msg}${tail}`;
+}
+
+/** I/O — `rclone about {remote} --json`, só leitura. Nunca lança: falha
+ * (binário ausente, remote inexistente, rede, timeout, JSON ruim) volta como
+ * `about: null` + `error` com a mensagem e o stderr, e é logada em stderr
+ * (review da #12357: o `catch {}` anterior descartava o motivo). */
+export function readRcloneAboutDetailed(
   rcloneBin: string = resolveRcloneBin(),
   remote: string = DEFAULT_GDRIVE_REMOTE,
   execFn: ExecFileFn = execFileSync as unknown as ExecFileFn,
-): GdriveAbout | null {
+  log: (line: string) => void = (line) => console.error(line),
+): RcloneAboutRead {
+  let out: unknown;
   try {
-    const out = execFn(rcloneBin, ["about", remote, "--json"], {
+    out = execFn(rcloneBin, ["about", remote, "--json"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
     });
-    return parseRcloneAboutJson(String(out ?? ""));
-  } catch {
-    return null;
+  } catch (e) {
+    const error = `\`${rcloneBin} about ${remote} --json\` falhou: ${describeExecError(e)}`;
+    log(`[gdrive-quota] ${error}`);
+    return { about: null, error };
   }
+  const about = parseRcloneAboutJson(String(out ?? ""));
+  if (about === null) {
+    const text = String(out ?? "").trim();
+    const error = `saída do \`rclone about\` não é o JSON esperado: ${text.length > 200 ? `${text.slice(0, 200)}…` : text || "(vazia)"}`;
+    log(`[gdrive-quota] ${error}`);
+    return { about: null, error };
+  }
+  return { about, error: null };
+}
+
+/** I/O — atalho de `readRcloneAboutDetailed` que devolve só a medida
+ * (`null` em qualquer falha; o motivo vai pro log). */
+export function readRcloneAbout(
+  rcloneBin: string = resolveRcloneBin(),
+  remote: string = DEFAULT_GDRIVE_REMOTE,
+  execFn: ExecFileFn = execFileSync as unknown as ExecFileFn,
+  log?: (line: string) => void,
+): GdriveAbout | null {
+  return readRcloneAboutDetailed(rcloneBin, remote, execFn, log).about;
 }

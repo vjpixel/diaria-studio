@@ -26,6 +26,27 @@
  * então toda listagem por extensão (a do `session-registry`, por exemplo)
  * simplesmente não via a cópia: nem a unia ao registro real (perdendo a claim
  * que só sobreviveu nela), nem a recolhia no GC.
+ *
+ * **Liberação seguida de conflito (review da #12357).** Com
+ * `--conflict-resolve newer` o perdedor é SEMPRE a versão de mtime mais
+ * antigo. Se uma sessão solta uma claim (`unclaimIssue`, real fica `[1]`) e
+ * depois o bisync acha conflito com uma versão anterior do mesmo arquivo
+ * (`[1, 2]`), a `.conflict1` nasce carregando a claim já solta — e nasce
+ * DEPOIS do unclaim, então o write-path do #6567 (que limpa as cópias que
+ * existem no momento do unclaim) não a alcança. O que acontece com ela é o
+ * mesmo que com a `-safeBackup-` do OneDrive, sem regra nova:
+ *   - read-path (`readEffectiveSessionRecord`, `listActiveSessions`): a união
+ *     fail-safe do #6130 a mostra reivindicada enquanto a cópia existir — o
+ *     erro tolerado é o falso-positivo (issue parece presa), nunca o
+ *     falso-negativo (duas sessões na mesma issue);
+ *   - `reconcileClaims`: NÃO a devolve ao real — o `claimed_issues_at` da
+ *     cópia é anterior ao heartbeat do real, a evidência de soltura
+ *     deliberada do #6698;
+ *   - `planSafeBackupCleanup`: pela mesma decisão, a cópia é `removable`, e
+ *     o cleanup encerra o falso-positivo.
+ * Sem `claimed_issues_at` (claim anterior ao #6436) não há evidência, e a
+ * claim volta pelo `reconcileClaims` — mesmo trade-off documentado no #6698.
+ * Travado por `test/sync-conflict-copy-12357.test.ts`.
  */
 
 /** `.conflictN` no FIM do nome (rclone bisync, `--conflict-loser num`). */

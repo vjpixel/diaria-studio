@@ -23,8 +23,10 @@
 # Carimbos pro alarme (#12357, `scripts/gdrive-sync-alarm.ts`): toda rodada
 # grava `$STATE_DIR/last-run.json` (`{"at": ISO, "exit": N}`), e a rodada que
 # sai 0 grava também `$STATE_DIR/last-success.json`. Rodada com `--dry-run`
-# não carimba sucesso (nada foi sincronizado). O exit code do rclone é o do
-# script, sem mudança.
+# não carimba NADA, nem `last-run.json`: um teste manual não é a rodada do
+# timer, e um dry-run que saísse 75 ou de erro deixaria o alarme achando que
+# o sync está travado/falhando. O exit code do rclone é o do script, sem
+# mudança.
 #
 # Testável sem tocar produção: GDRIVE_* e RCLONE_BIN sobrescrevíveis por env.
 
@@ -61,10 +63,13 @@ stamp() {
   fi
 }
 
-# Encerra carimbando a rodada (e o sucesso, se for o caso).
+# Encerra carimbando a rodada (e o sucesso, se for o caso). `--dry-run`
+# nunca carimba.
 finish() {
-  stamp last-run.json "$1"
-  if [ "$1" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then stamp last-success.json 0; fi
+  if [ "$DRY_RUN" -eq 0 ]; then
+    stamp last-run.json "$1"
+    if [ "$1" -eq 0 ]; then stamp last-success.json 0; fi
+  fi
   exit "$1"
 }
 

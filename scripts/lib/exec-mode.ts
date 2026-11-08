@@ -44,8 +44,8 @@
  * @see CLAUDE.md § Label `local` — critério e comportamento das skills
  */
 
-import { realpathSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { execFileSync } from "node:child_process";
 import { isMainModule } from "./cli-args.ts";
 
@@ -104,18 +104,32 @@ export function detectExecMode(opts: ExecModeOptions = {}): ExecMode {
  *   `~/Library/CloudStorage/GoogleDrive-{email}/...`), ou a unidade `G:` do
  *   Drive for desktop no Windows (`G:\Meu Drive\...`; também `My Drive`/
  *   `Mi unidad` em qualquer letra de unidade).
+ * - `gdrive-unreachable`: `data/` é um symlink/junction cujo ALVO LITERAL é
+ *   do Google Drive, mas o alvo não resolve (o HD `/mnt/hd-sata` desmontado
+ *   depois do cutover, a pasta apagada). Achado do review da #12357: sem
+ *   isto o link quebrado virava `absent`, e o alarme do Drive saía P2 dizendo
+ *   "data/ ainda não está no Google Drive" justo no pior caso — o `data/`
+ *   desta máquina fora do ar. Quem prioriza trata como `gdrive`
+ *   (`isDataOnGdrive`).
  * - `unsynced`: `data/` existe mas o alvo não é de nenhum dos dois (clone
  *   com `data/` criado à mão, container de cloud).
- * - `absent`: `data/` não existe ou não resolve.
+ * - `absent`: `data/` não existe, ou não resolve e não é um link pro Drive
+ *   (link quebrado pra OneDrive ou outro lugar segue `absent`).
  */
-export type DataSyncBackend = "onedrive" | "gdrive" | "unsynced" | "absent";
+export type DataSyncBackend = "onedrive" | "gdrive" | "gdrive-unreachable" | "unsynced" | "absent";
+
+/** `true` quando o `data/` desta máquina mora no Google Drive, alcançável ou
+ * não (`gdrive-unreachable` é o caso mais grave, não o menos). */
+export function isDataOnGdrive(backend: DataSyncBackend): boolean {
+  return backend === "gdrive" || backend === "gdrive-unreachable";
+}
 
 const ONEDRIVE_SEGMENT_RE = /^OneDrive(?:$| - |-)/i;
 const GDRIVE_SEGMENT_RE = /^(?:GoogleDrive(?:$|-)|Google Drive$)/i;
 const GDRIVE_MY_DRIVE_SEGMENT_RE = /^(?:My Drive|Meu Drive|Mi unidad)$/i;
 
 /** Pura — classifica o caminho REAL (já resolvido) do `data/`. */
-export function classifyDataSyncBackend(realPath: string): Exclude<DataSyncBackend, "absent"> {
+export function classifyDataSyncBackend(realPath: string): Exclude<DataSyncBackend, "absent" | "gdrive-unreachable"> {
   const norm = realPath.replace(/\\/g, "/");
   const segments = norm.split("/").filter((s) => s.length > 0);
   if (segments.some((s) => ONEDRIVE_SEGMENT_RE.test(s))) return "onedrive";
@@ -127,19 +141,44 @@ export function classifyDataSyncBackend(realPath: string): Exclude<DataSyncBacke
 export interface DataSyncBackendOptions {
   /** Substituto de `fs.realpathSync` para testes. */
   realpathFn?: (path: string) => string;
+  /** Substituto de "é symlink? então qual o alvo literal?" para testes:
+   * devolve o alvo do link (`fs.readlinkSync`) ou `null` se `data/` não é
+   * link (ou nem existe). */
+  readLinkTargetFn?: (path: string) => string | null;
   projectRoot?: string;
 }
 
-/** Resolve o `data/` do projeto e classifica o backend. Nunca lança. */
-export function detectDataSyncBackend(opts: DataSyncBackendOptions = {}): DataSyncBackend {
-  const { realpathFn = realpathSync, projectRoot = process.cwd() } = opts;
-  let real: string;
+function defaultReadLinkTarget(path: string): string | null {
   try {
-    real = realpathFn(join(projectRoot, "data"));
+    if (!lstatSync(path).isSymbolicLink()) return null;
+    return readlinkSync(path);
   } catch {
-    return "absent";
+    return null;
   }
-  return classifyDataSyncBackend(real);
+}
+
+/** Resolve o `data/` do projeto e classifica o backend. Nunca lança.
+ *
+ * Quando o caminho real não resolve, cai no alvo LITERAL do link (sem
+ * seguir): se ele aponta pro Google Drive, é `gdrive-unreachable` — o
+ * `data/` mora no Drive e está fora do ar —, nunca `absent`. */
+export function detectDataSyncBackend(opts: DataSyncBackendOptions = {}): DataSyncBackend {
+  const { realpathFn = realpathSync, readLinkTargetFn = defaultReadLinkTarget, projectRoot = process.cwd() } = opts;
+  const dataPath = join(projectRoot, "data");
+  try {
+    return classifyDataSyncBackend(realpathFn(dataPath));
+  } catch {
+    let target: string | null;
+    try {
+      target = readLinkTargetFn(dataPath);
+    } catch {
+      target = null;
+    }
+    if (target === null || target.length === 0) return "absent";
+    // Alvo relativo é relativo ao diretório do link, não ao cwd.
+    const literal = isAbsolute(target) || /^[A-Za-z]:[\\/]/.test(target) ? target : resolvePath(projectRoot, target);
+    return classifyDataSyncBackend(literal) === "gdrive" ? "gdrive-unreachable" : "absent";
+  }
 }
 
 // ---------------------------------------------------------------------------

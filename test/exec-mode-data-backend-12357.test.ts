@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { classifyDataSyncBackend, detectDataSyncBackend, detectExecMode } from "../scripts/lib/exec-mode.ts";
+import { classifyDataSyncBackend, detectDataSyncBackend, detectExecMode, isDataOnGdrive } from "../scripts/lib/exec-mode.ts";
 
 describe("classifyDataSyncBackend (#12357)", () => {
   it("OneDrive em Linux, Windows e macOS", () => {
@@ -72,6 +72,87 @@ describe("detectExecMode com data/ apontando pro Drive (#12357)", { skip: proces
       symlinkSync(target, join(repo, "data"));
       assert.equal(detectExecMode({ projectRoot: repo }), "local");
       assert.equal(detectDataSyncBackend({ projectRoot: repo }), "gdrive");
+    } finally {
+      rmSync(sb, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("negativos e ambiguidade do classificador (review #12357)", () => {
+  it("segmento parecido com Google Drive não conta", () => {
+    for (const p of [
+      "/home/vj/Google Drive Backup/x",
+      "/home/vj/GoogleDriveX/x",
+      "/home/vj/MyGoogleDrive/x",
+      "/home/vj/My Drive Backup/x",
+    ]) {
+      assert.equal(classifyDataSyncBackend(p), "unsynced", p);
+    }
+  });
+  it("OneDrive e GoogleDrive no mesmo caminho: OneDrive vence (checado primeiro, comportamento fixado)", () => {
+    assert.equal(classifyDataSyncBackend("/mnt/hd-sata/GoogleDrive/OneDrive/diaria-studio-data"), "onedrive");
+    assert.equal(classifyDataSyncBackend("/home/vj/OneDrive/GoogleDrive/diaria-studio-data"), "onedrive");
+  });
+});
+
+describe("symlink de data/ quebrado (review #12357)", () => {
+  const broken = () => {
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+  };
+  it("alvo literal no Drive → gdrive-unreachable (P1 no alarme), nunca absent", () => {
+    const b = detectDataSyncBackend({
+      projectRoot: "/repo",
+      realpathFn: broken,
+      readLinkTargetFn: () => "/mnt/hd-sata/GoogleDrive/Documentos/diaria-studio-data",
+    });
+    assert.equal(b, "gdrive-unreachable");
+    assert.equal(isDataOnGdrive(b), true);
+    assert.equal(isDataOnGdrive("gdrive"), true);
+    assert.equal(isDataOnGdrive("onedrive"), false);
+    assert.equal(isDataOnGdrive("absent"), false);
+  });
+  it("junction do Windows pro G: quebrada também", () => {
+    assert.equal(
+      detectDataSyncBackend({ projectRoot: "C:\\repo", realpathFn: broken, readLinkTargetFn: () => "G:\\Meu Drive\\diaria-studio-data" }),
+      "gdrive-unreachable",
+    );
+  });
+  it("link quebrado pra OneDrive ou outro lugar, ou data/ que não é link → absent", () => {
+    assert.equal(detectDataSyncBackend({ projectRoot: "/repo", realpathFn: broken, readLinkTargetFn: () => "/home/vj/OneDrive/x" }), "absent");
+    assert.equal(detectDataSyncBackend({ projectRoot: "/repo", realpathFn: broken, readLinkTargetFn: () => "/tmp/x" }), "absent");
+    assert.equal(detectDataSyncBackend({ projectRoot: "/repo", realpathFn: broken, readLinkTargetFn: () => null }), "absent");
+    assert.equal(
+      detectDataSyncBackend({
+        projectRoot: "/repo",
+        realpathFn: broken,
+        readLinkTargetFn: () => {
+          throw new Error("EPERM");
+        },
+      }),
+      "absent",
+    );
+  });
+  it("alvo relativo é resolvido a partir do repo", () => {
+    assert.equal(
+      detectDataSyncBackend({ projectRoot: "/home/vj/repo", realpathFn: broken, readLinkTargetFn: () => "../GoogleDrive/diaria-studio-data" }),
+      "gdrive-unreachable",
+    );
+  });
+});
+
+describe("symlink real quebrado no disco (review #12357)", { skip: process.platform === "win32" ? "symlink exige privilégio no Windows" : false }, () => {
+  it("HD desmontado: data/ → GoogleDrive inexistente = gdrive-unreachable, e detectExecMode cai pra cloud", () => {
+    const sb = mkdtempSync(join(tmpdir(), "exec-mode-broken-12357-"));
+    try {
+      const repo = join(sb, "repo");
+      mkdirSync(repo);
+      symlinkSync(join(sb, "hd-sata", "GoogleDrive", "Documentos", "diaria-studio-data"), join(repo, "data"));
+      assert.equal(detectDataSyncBackend({ projectRoot: repo }), "gdrive-unreachable");
+      assert.notEqual(detectExecMode({ projectRoot: repo }), "local");
+      // Sem data/ nenhum: absent.
+      const bare = join(sb, "bare");
+      mkdirSync(bare);
+      assert.equal(detectDataSyncBackend({ projectRoot: bare }), "absent");
     } finally {
       rmSync(sb, { recursive: true, force: true });
     }
