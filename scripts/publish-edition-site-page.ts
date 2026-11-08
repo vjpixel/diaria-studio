@@ -1881,6 +1881,34 @@ export function waitAndMergeSitePagePr(
 }
 
 /**
+ * #8636/#8684: `git fetch origin master` (best-effort) + `git worktree add
+ * --detach {worktreeDir} origin/master`. `fetchStale: true` quando o fetch
+ * falhou e o worktree nasceu do ref local. Lança se o `worktree add` falhar.
+ * #11673: chamado por `productionDeps` ANTES do `writePage`, pra a geração da
+ * página, do sitemap e da home acontecer dentro do worktree e o checkout
+ * compartilhado nunca ser escrito; `commitAndPushSitePage` só o chama quando
+ * recebe um worktree ainda não criado.
+ */
+export function prepareSitePublishWorktree(
+  rootDir: string,
+  worktreeDir: string,
+  git: GitRunner = defaultGitRunner,
+): { fetchStale: boolean } {
+  let fetchStale = false;
+  try {
+    git(["fetch", "origin", "master"], rootDir);
+  } catch (e) {
+    fetchStale = true;
+    process.stderr.write(
+      `[site-page] aviso: 'git fetch origin master' falhou (${(e as Error).message}) — seguindo com o ` +
+        `ref local de origin/master, que pode estar desatualizado (#8684).\n`,
+    );
+  }
+  git(["worktree", "add", "--detach", worktreeDir, "origin/master"], rootDir);
+  return { fetchStale };
+}
+
+/**
  * `git checkout -B` numa branch dedicada + (`git commit` condicional) +
  * `git push` + `gh pr create` (reusando PR aberto existente, se houver) — e
  * de volta pro branch original.
@@ -1952,34 +1980,6 @@ export function waitAndMergeSitePagePr(
  * única parte mesmo assim compartilhada. O caminho legado (sem
  * `worktreeDir`) é preservado byte a byte.
  */
-/**
- * #8636/#8684: `git fetch origin master` (best-effort) + `git worktree add
- * --detach {worktreeDir} origin/master`. `fetchStale: true` quando o fetch
- * falhou e o worktree nasceu do ref local. Lança se o `worktree add` falhar.
- * #11673: chamado por `productionDeps` ANTES do `writePage`, pra a geração da
- * página, do sitemap e da home acontecer dentro do worktree e o checkout
- * compartilhado nunca ser escrito; `commitAndPushSitePage` só o chama quando
- * recebe um worktree ainda não criado.
- */
-export function prepareSitePublishWorktree(
-  rootDir: string,
-  worktreeDir: string,
-  git: GitRunner = defaultGitRunner,
-): { fetchStale: boolean } {
-  let fetchStale = false;
-  try {
-    git(["fetch", "origin", "master"], rootDir);
-  } catch (e) {
-    fetchStale = true;
-    process.stderr.write(
-      `[site-page] aviso: 'git fetch origin master' falhou (${(e as Error).message}) — seguindo com o ` +
-        `ref local de origin/master, que pode estar desatualizado (#8684).\n`,
-    );
-  }
-  git(["worktree", "add", "--detach", worktreeDir, "origin/master"], rootDir);
-  return { fetchStale };
-}
-
 export function commitAndPushSitePage(
   rootDir: string,
   slug: string,
@@ -2819,10 +2819,11 @@ export function publishEditionSitePage(
   try {
     publishResult = deps.publish(built.post.slug, sitemapRelPath, editionDir, removedPaths, redirect);
   } catch (e) {
-    // A página JÁ está escrita (e pode já estar commitada, se só o push
-    // falhou) — a próxima rodada/push manual a leva junto. Por isso a
-    // falha de publicação não invalida o trabalho, só adia.
-    const reason = `commit/push falhou (a página ficou escrita localmente): ${(e as Error).message}`;
+    // #11673: a página foi gerada no worktree temporário, que sai junto com
+    // a falha (no caminho legado/`--skip-publish` ela fica em `rootDir`). A
+    // geração é determinística a partir dos insumos da edição: re-rodar o
+    // script regera tudo, então a falha só adia a publicação.
+    const reason = `commit/push falhou — re-rodar o script regera a página (#11673): ${(e as Error).message}`;
     deps.log(reason);
     return { code: 3, reason };
   }
