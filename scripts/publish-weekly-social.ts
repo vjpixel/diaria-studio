@@ -1564,23 +1564,17 @@ async function runOneMode(
   // aplica: mesmo já agendado, o editor ainda pode querer ver o carrossel.
   if (skipExisting && !imagesOnly) {
     const published = readSocialPublished(publishedPath);
-    const existingIg = published.posts.find(
-      (p) => p.platform === "instagram" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
-    );
+    // #12419: `cancelling` conta como existente. Até o bloco de cancelamento
+    // (abaixo) zerar os skips, o canal fica pulado: uma falha no caminho
+    // (horário inválido, título que estoura o card, imagem) não grava `failed`
+    // por cima da entrada, o que apagaria a chave e o `fb_post_id` dela pelo
+    // upsert e tiraria da próxima rodada a retomada do cancelamento.
+    const isExisting = (p: PostEntry): boolean => p.status === "draft" || p.status === "scheduled" || p.status === "cancelling";
+    const existingIg = published.posts.find((p) => p.platform === "instagram" && p.destaque === destaqueKey && isExisting(p));
     const existingFbFor = (slug: string) =>
-      published.posts.find(
-        (p) =>
-          p.platform === "facebook" &&
-          p.destaque === destaqueKey &&
-          resolvePostPage(p) === slug &&
-          (p.status === "draft" || p.status === "scheduled"),
-      );
-    const existingThreads = published.posts.find(
-      (p) => p.platform === "threads" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
-    );
-    const existingLinkedIn = published.posts.find(
-      (p) => p.platform === "linkedin" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
-    );
+      published.posts.find((p) => p.platform === "facebook" && p.destaque === destaqueKey && resolvePostPage(p) === slug && isExisting(p));
+    const existingThreads = published.posts.find((p) => p.platform === "threads" && p.destaque === destaqueKey && isExisting(p));
+    const existingLinkedIn = published.posts.find((p) => p.platform === "linkedin" && p.destaque === destaqueKey && isExisting(p));
     if (existingIg) {
       console.log(`SKIP instagram/${destaqueKey} — already ${existingIg.status}`);
       skipInstagram = true;
@@ -1607,10 +1601,11 @@ async function runOneMode(
   // caminho não grava `failed` por cima da entrada agendada (o upsert de
   // `appendSocialPosts` apagaria a chave dela).
   // #12417: entrada `cancelling` = um --reschedule anterior gravou a intenção
-  // e parou no meio (lock ocupado, kill, OOM). O skip-existing acima não a
-  // pula (não é draft/scheduled), mas redespachar direto duplicaria o post se
-  // o DELETE dela não chegou a acontecer: a rodada agendada retoma o
-  // cancelamento (404 conta como cancelado) e só então reagenda.
+  // e parou no meio (lock ocupado, kill, OOM). Redespachar direto duplicaria
+  // o post se o DELETE dela não chegou a acontecer: a rodada agendada retoma
+  // o cancelamento (404 conta como cancelado) e só então reagenda. O
+  // skip-existing acima a pula (#12419) até o bloco de cancelamento zerar os
+  // skips depois dos DELETEs.
   // `--no-skip-existing` é a escolha explícita de redespachar tudo sem ler o
   // registro (mesma fronteira do skip-existing acima) e não entra aqui.
   const resumeCancelling =

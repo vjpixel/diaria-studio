@@ -37,7 +37,9 @@
  * processo cair depois de um DELETE, o registro fica em `cancelling` — nunca
  * `scheduled` com id já cancelado, que a rodada seguinte pularia em silêncio.
  * `cancelling` vira alvo `resumed` no plano seguinte (404 conta como
- * cancelado), e o skip-existing do caller não o pula.
+ * cancelado). O skip-existing do caller pula `cancelling` até os DELETEs
+ * (#12419), para uma falha antes do cancelamento não gravar `failed` por cima
+ * da entrada; o alvo cujo DELETE lançou também fica `cancelling` (#12419).
  *
  * Idempotente: sem entrada `scheduled` do modo (e sem `published`/
  * `send_unknown`), o plano é vazio e o fluxo vira um agendamento normal; rodar `--reschedule` duas vezes cancela o
@@ -200,9 +202,18 @@ export interface RescheduleDeps {
   minLeadMs?: number;
 }
 
+/**
+ * Por que o DELETE do `failedTarget` não contou (#12419):
+ *   - `lead`: margem reavaliada antes do DELETE — o DELETE não foi tentado;
+ *   - `gone`: 404 em alvo novo — o post já disparou ou já tinha sido removido;
+ *   - `threw`: o DELETE lançou (timeout, corte de rede, 5xx) — o servidor pode
+ *     ter apagado e a resposta se perdido: estado desconhecido.
+ */
+export type RescheduleFailureKind = "lead" | "gone" | "threw";
+
 export type RescheduleExecution =
   | { ok: true; cancelled: RescheduleTarget[] }
-  | { ok: false; cancelled: RescheduleTarget[]; failedTarget: RescheduleTarget; reason: string };
+  | { ok: false; cancelled: RescheduleTarget[]; failedTarget: RescheduleTarget; failure: RescheduleFailureKind; reason: string };
 
 /**
  * DELETEs em sequência, na ordem do plano. Para no primeiro 404
@@ -215,13 +226,13 @@ export async function executeWeeklyReschedule(targets: readonly RescheduleTarget
   for (const t of targets) {
     const lead = rescheduleLeadProblem(targetLabel(t), t.scheduledAt, clock(), deps.minLeadMs ?? DEFAULT_RESCHEDULE_MIN_LEAD_MS);
     if (lead) {
-      return { ok: false, cancelled, failedTarget: t, reason: `margem reavaliada antes do DELETE: ${lead}` };
+      return { ok: false, cancelled, failedTarget: t, failure: "lead", reason: `margem reavaliada antes do DELETE: ${lead}` };
     }
     let outcome: CancelOutcome;
     try {
       outcome = t.kind === "facebook" ? await deps.deleteFacebookPost(t.page, t.fbPostId) : await deps.deleteQueueKey(t.key);
     } catch (e) {
-      return { ok: false, cancelled, failedTarget: t, reason: `DELETE de ${targetLabel(t)} falhou: ${(e as Error).message}` };
+      return { ok: false, cancelled, failedTarget: t, failure: "threw", reason: `DELETE de ${targetLabel(t)} falhou: ${(e as Error).message}` };
     }
     if (outcome.alreadyGone && t.resumed) {
       // #12417: a rodada interrompida já tinha cancelado este — a margem foi
@@ -234,6 +245,7 @@ export async function executeWeeklyReschedule(targets: readonly RescheduleTarget
         ok: false,
         cancelled,
         failedTarget: t,
+        failure: "gone",
         reason: `DELETE de ${targetLabel(t)} devolveu 404 — o post já disparou ou já tinha sido removido.`,
       };
     }
@@ -317,15 +329,20 @@ export function markCancellingEntries(posts: readonly PostEntry[], destaqueKey: 
  * voltam a `scheduled` (o DELETE deles não aconteceu — inclusive o que deu
  * 404, como antes do #12417). Alvo `resumed` não cancelado fica `cancelling`:
  * uma rodada anterior pode tê-lo cancelado, o estado segue desconhecido.
+ * `unknownState` (#12419) = alvo cujo DELETE lançou (timeout, corte de rede
+ * depois de o servidor aceitar): também fica `cancelling`, porque voltar a
+ * `scheduled` com a chave de um post talvez já apagado faria a próxima rodada
+ * normal pular o canal sem alarme. A retomada aceita 404 como cancelado.
  */
 export function settleAbortedReschedule(
   posts: readonly PostEntry[],
   destaqueKey: string,
   targets: readonly RescheduleTarget[],
   cancelled: readonly RescheduleTarget[],
+  unknownState: readonly RescheduleTarget[] = [],
 ): PostEntry[] {
   const marked = markCancelledEntries(posts, destaqueKey, cancelled);
-  const notCancelled = targets.filter((t) => !t.resumed && !cancelled.includes(t));
+  const notCancelled = targets.filter((t) => !t.resumed && !cancelled.includes(t) && !unknownState.includes(t));
   return marked.map((p) =>
     p.status === "cancelling" && notCancelled.some((t) => sameTarget(p, t, destaqueKey)) ? { ...p, status: "scheduled" as const } : p,
   );
@@ -392,7 +409,8 @@ export async function cancelAndRecordReschedule(
 
   const transform = exec.ok
     ? (posts: PostEntry[]) => dropRescheduledEntries(posts, destaqueKey, exec.cancelled, redispatchFacebookPages)
-    : (posts: PostEntry[]) => settleAbortedReschedule(posts, destaqueKey, targets, exec.cancelled);
+    : (posts: PostEntry[]) =>
+        settleAbortedReschedule(posts, destaqueKey, targets, exec.cancelled, exec.failure === "threw" ? [exec.failedTarget] : []);
   if (!exec.ok) deps.error(`ERRO ${destaqueKey}: --reschedule abortado — ${exec.reason}`);
   try {
     deps.rewrite(transform);
@@ -401,8 +419,13 @@ export async function cancelAndRecordReschedule(
     return false;
   }
   if (!exec.ok) {
+    const failedNote =
+      exec.failure === "threw"
+        ? `A entrada de ${targetLabel(exec.failedTarget)} ficou "cancelling" (o DELETE lançou; o post pode ter sido apagado): ` +
+          `a próxima rodada com --schedule retoma o cancelamento. As não tentadas seguem no registro como estavam`
+        : `A entrada de ${targetLabel(exec.failedTarget)} e as não tentadas seguem no registro como estavam`;
     deps.error(
-      `  Nada foi reagendado. A entrada de ${targetLabel(exec.failedTarget)} e as não tentadas seguem no registro como estavam` +
+      `  Nada foi reagendado. ${failedNote}` +
         (exec.cancelled.length > 0
           ? `; as já canceladas (${exec.cancelled.map(targetLabel).join(", ")}) ficaram com status "deleted". ` +
             `Confira os perfis antes de agendar de novo.`

@@ -2237,7 +2237,66 @@ describe("main(): dispatch mockado", () => {
       assert.match(alerts[0].body, /worker_queue_key=queue:threads:old/);
     });
 
-    it("#12417: skip-existing não pula 'cancelling' — rodada normal (sem --reschedule) retoma: 404 do já apagado conta, o outro é cancelado, e reagenda", async () => {
+    it("#12419: registro 'cancelling' + título que estoura o card → exit 1, chaves mantidas, nenhum 'failed' por cima (a 3ª rodada ainda retoma)", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [
+        {
+          n: 1,
+          title: "Superconstitucionalissimamente inconstitucionalizavelmente: palavra que nenhuma quebra de linha consegue dividir, como pode surgir num item de RADAR ou USE MELHOR",
+          url: "https://exemplo.com/d1",
+        },
+      ]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const publishedPath = resolve(publishedDir, "06-weekly-published.json");
+      // Estado de um --reschedule morto antes/durante os DELETEs.
+      const cancelling = [
+        { platform: "instagram", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, worker_queue_key: "queue:instagram:old" },
+        { platform: "threads", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, worker_queue_key: "queue:threads:old" },
+        { platform: "linkedin", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, worker_queue_key: "queue:linkedin:old" },
+        { platform: "facebook", page: "diaria", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, fb_post_id: "fb_old" },
+      ];
+      writeFileSync(publishedPath, JSON.stringify({ posts: cancelling }));
+      // Nenhum intercept: o overflow aborta antes de qualquer DELETE/POST
+      // (disableNetConnect() faria qualquer chamada lançar).
+      await expectMockedExit(
+        () =>
+          main(
+            [
+              "--saturday", saturdayStr, "--mode", "clicked", "--editions-root", editionsRoot,
+              "--schedule", "--time", "19:00", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data",
+            ],
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} },
+          ),
+        1,
+      );
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      assert.deepEqual(out.posts, cancelling, "entradas 'cancelling' intactas, com as chaves");
+      assert.ok(!out.posts.some((p: any) => p.status === "failed"), "nenhum 'failed' gravado por cima");
+    });
+
+    it("#12419: --reschedule com DELETE que lança → o já cancelado vira 'deleted', o que lançou fica 'cancelling' com a chave, nada é reagendado", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const pool = mockAgent.get("https://worker.test");
+      pool.intercept({ path: "/queue/queue:instagram:old", method: "DELETE" }).reply(200, { deleted: true });
+      pool.intercept({ path: "/queue/queue:threads:old", method: "DELETE" }).replyWithError(new Error("socket hang up"));
+      // Nenhum intercept de POST: disableNetConnect() faria um POST lançar.
+      await expectMockedExit(
+        () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
+        1,
+      );
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      assert.equal(out.posts.length, 3, "nenhuma entrada removida");
+      assert.equal(out.posts.find((p: any) => p.platform === "instagram" && p.destaque === "weekly-clicked").status, "deleted");
+      const th = out.posts.find((p: any) => p.platform === "threads");
+      assert.equal(th.status, "cancelling", "estado desconhecido: nunca 'scheduled' com chave talvez já apagada");
+      assert.equal(th.worker_queue_key, "queue:threads:old");
+      assert.equal(out.posts.find((p: any) => p.destaque === "weekly-highlights").status, "scheduled");
+    });
+
+    it("#12417/#12419: rodada normal (sem --reschedule) com 'cancelling' retoma: 404 do já apagado conta, o outro é cancelado, e reagenda", async () => {
       const saturdayStr = setupWeek();
       const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
       mkdirSync(publishedDir, { recursive: true });
