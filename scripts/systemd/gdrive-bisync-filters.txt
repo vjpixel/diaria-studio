@@ -19,6 +19,12 @@
 - desktop.ini
 - .DS_Store
 - Thumbs.db
+# node_modules/ em qualquer profundidade (#12412): arvores de projetos antigos
+# com milhares de diretorios alongavam a listagem do Drive para alem de 1h, e
+# o access token OAuth vencia no meio dela (401 -> bisync abortado). So
+# node_modules: .git/objects fica no sync (decisao do editor, 08/11/2026).
+# O "/**" deixa o rclone pular o diretorio sem lista-lo.
+- node_modules/**
 #
 # Arquivos de data/ que ficam locais por maquina (mesma lista do skip_file do
 # OneDrive), so dentro da pasta diaria-studio-data: um "- *.mp4" global tiraria
