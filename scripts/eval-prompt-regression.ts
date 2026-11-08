@@ -64,6 +64,7 @@ import {
   runAgentRepetitions,
   checkRepetitionConsistency,
   compareBaselineVsCandidate,
+  carouselCardsSourceCaveat,
   verdictsFromOutcomes,
   type PromptEvalAgent,
   type GraderDelta,
@@ -104,6 +105,8 @@ export interface PromptRegressionEvalReport {
   repetitions: number;
   dry_run: boolean;
   editions: EditionEvalResult[];
+  /** Ressalvas de leitura do relatório (#12183 item 6) — ex.: baseline e candidato medem textos diferentes. */
+  caveats?: string[];
 }
 
 /**
@@ -348,12 +351,14 @@ export function runPromptRegressionEval(params: {
     return { edition, baseline, candidate, deltas, arms };
   });
 
+  const cardsCaveat = carouselCardsSourceCaveat(params.agent, baselineBody, candidateBody);
   return {
     agent: params.agent,
     baseline_ref: params.baselineRef,
     repetitions: params.repetitions,
     dry_run: params.dryRun,
     editions,
+    caveats: cardsCaveat ? [cardsCaveat] : [],
   };
 }
 
@@ -363,6 +368,7 @@ function formatReport(report: PromptRegressionEvalReport): string {
   if (report.dry_run) {
     lines.push(`  dry-run: nenhum "claude" real foi chamado — ${report.editions.length} edição(ões) x 2 lados (baseline/candidato) x ${report.repetitions} repetição(ões) planejadas.`);
   }
+  for (const c of report.caveats ?? []) lines.push(`  ${c}`);
   for (const e of report.editions) {
     lines.push(`  edição ${e.edition}:`);
     for (const d of e.deltas) {
