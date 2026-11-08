@@ -83,8 +83,11 @@
 // `changesBranch`. Voltar para master/main segue livre; restauração de
 // arquivo (`checkout -- f`, `checkout <ref> <paths>`) fica de fora — e, desde
 // a #12286, também `checkout X` quando X existe no disco relativo ao alvo
-// (`Makefile`, `scripts`). Também desde a #12286 o corpo de heredoc não é
-// lido como comando, salvo quando alimenta um shell (`bash <<EOF`). O texto
+// (`Makefile`, `scripts`) e não é branch local nem tag. Também desde a #12286
+// o corpo de heredoc não é lido como comando quando quem o lê é um
+// consumidor de texto conhecido (`cat`, `gh`, `npx tsx`, `git commit -F`);
+// qualquer outro leitor (`bash`, `timeout 30 bash`, `| sh`) mantém o corpo
+// tokenizado (fail-closed). O texto
 // abaixo fica como registro do porquê de ter ficado fora até ali.
 //
 // Escopo explicitamente FORA (#6509, reconfirmado no #8937):
@@ -252,35 +255,58 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
     inToken = false;
     rawStart = true;
   };
+  // Índices (em `segments`) dos segmentos que recebem stdin de um `|` (#12286).
+  const pipedSegs = new Set();
+  let pipeNext = false;
   const pushSegment = () => {
     pushToken();
-    if (tokens.length > 0) segments.push(tokens);
+    if (tokens.length > 0) {
+      if (pipeNext) pipedSegs.add(segments.length);
+      segments.push(tokens);
+    }
+    pipeNext = false;
     tokens = [];
   };
   const n = command.length;
-  // #12286: heredocs abertos na linha corrente (`<<EOF`, `<<'EOF'`, `<<-EOF`),
-  // em ordem. O corpo começa na linha seguinte e NÃO vira segmento — senão uma
-  // linha do corpo de `gh-pr-review-api.ts reply --body-file - <<'EOF'` que
-  // começasse com `git checkout x` era lida como comando. Exceção: quando a
-  // linha alimenta um interpretador de shell (`bash <<EOF`, `cat <<EOF | sh`),
-  // o corpo É comando e segue tokenizado.
+  // #12286: heredocs abertos na linha corrente (`<<EOF`, `<<'EOF'`, `<<-EOF`,
+  // `<<END-OF-X`), em ordem. O corpo começa na linha seguinte e só deixa de
+  // virar segmento quando quem lê o stdin é um consumidor de TEXTO conhecido
+  // (`heredocBodyIsText`) — senão uma linha do corpo de `gh-pr-review-api.ts
+  // reply --body-file - <<'EOF'` que começasse com `git checkout x` era lida
+  // como comando. Fail-closed: qualquer outro leitor (`bash`, `timeout 30
+  // bash`, `source /dev/stdin`, `| sh`) mantém o corpo tokenizado, e um
+  // delimitador que o hook não reconhece não abre heredoc nenhum.
   let pendingHeredocs = [];
   let lineSegStart = 0; // índice em `segments` do 1º segmento da linha corrente
+  let inComment = false; // `#` no início de palavra, até o fim da linha
   let i = 0;
   while (i < n) {
     const ch = command[i];
-    if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<" && command[i - 1] !== "<") {
-      const m = HEREDOC_OPEN_RE.exec(command.slice(i));
-      if (m && !insideArithmetic(command, i)) {
+    if (ch === "#" && !inToken) inComment = true;
+    if (
+      ch === "<" &&
+      command[i + 1] === "<" &&
+      command[i + 2] !== "<" &&
+      command[i - 1] !== "<" &&
+      !inComment &&
+      !insideArithmetic(command, i)
+    ) {
+      const open = parseHeredocOpen(command, i);
+      if (open) {
         pushToken();
-        pendingHeredocs.push({ delim: m[3], dash: m[1] === "-" });
-        i += m[0].length;
+        // Segmento a que o heredoc pertence: o corrente, ainda não empurrado.
+        pendingHeredocs.push({ delim: open.delim, dash: open.dash, seg: segments.length });
+        i = open.end;
         continue;
       }
     }
     if (ch === "\n" && pendingHeredocs.length > 0) {
+      // `cat <<EOF |` + newline: o pipeline continua DEPOIS do corpo.
+      const lineEndsInPipe = pipeNext && tokens.length === 0 && !inToken;
       pushSegment();
-      const keepBody = segments.slice(lineSegStart).some(segmentRunsShell);
+      inComment = false;
+      const keepBody =
+        lineEndsInPipe || !pendingHeredocs.every((h) => heredocBodyIsText(segments, pipedSegs, h.seg));
       let j = i + 1;
       for (const h of pendingHeredocs) {
         // Cada heredoc consome as linhas até o seu terminador, na ordem.
@@ -293,8 +319,8 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
       }
       pendingHeredocs = [];
       lineSegStart = segments.length;
-      // Corpo de interpretador: segue tokenizando a partir da linha seguinte.
-      // Senão, retoma no terminador (ou no fim), já fora do corpo.
+      // Corpo que pode ser comando: segue tokenizando a partir da linha
+      // seguinte. Corpo de texto: retoma no terminador (ou no fim).
       i = keepBody ? i + 1 : j;
       continue;
     }
@@ -314,7 +340,17 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
     }
     if (ch === "\n" || ch === ";" || ch === "&" || ch === "|") {
       pushSegment();
-      if (ch === "\n") lineSegStart = segments.length;
+      if (ch === "\n") {
+        lineSegStart = segments.length;
+        inComment = false;
+      }
+      // `|` (e `|&`) sozinho é pipe: o próximo segmento lê o stdout deste.
+      if (ch === "|" && command[i + 1] !== "|") {
+        pipeNext = true;
+        if (command[i + 1] === "&") i++;
+        i++;
+        continue;
+      }
       // `&&`, `||`, `;;` contam como um separador só.
       if ((ch === "&" || ch === "|" || ch === ";") && command[i + 1] === ch) i++;
       i++;
@@ -391,29 +427,95 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
   return segments;
 }
 
-/** Abertura de heredoc (#12286): `<<`, `-` opcional, delimitador opcionalmente
- * entre aspas. Mesmo formato de `stripHeredocSpans` nos hooks irmãos. */
-const HEREDOC_OPEN_RE = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
+/** Caracteres que encerram a palavra do delimitador fora de aspas. */
+const HEREDOC_WORD_END = new Set([" ", "\t", "\n", ";", "&", "|", "<", ">", "(", ")"]);
 
-/** Interpretadores cujo stdin é comando: o corpo de `bash <<EOF` roda. */
-const SHELL_INTERPRETERS = new Set(["bash", "sh", "zsh", "dash", "ksh", "ash"]);
-/** Prefixos que só repassam para o comando seguinte (`sudo bash <<EOF`). */
-const PASSTHROUGH_PREFIXES = new Set(["sudo", "env", "exec", "command", "nohup", "time"]);
-
-/** `true` quando o segmento executa um interpretador de shell (#12286). */
-function segmentRunsShell(seg) {
-  let k = 0;
-  while (k < seg.length) {
-    const v = seg[k].value;
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(v) || PASSTHROUGH_PREFIXES.has(v)) {
-      k++;
+/**
+ * Lê a abertura de heredoc que começa em `command[i]` (`<<`): `-` opcional,
+ * brancos e a PALAVRA inteira do delimitador, como o bash (#12286): `END-OF-X`,
+ * `EOF.x`, `'EOF'`, `"END-MSG"`, `E'O'F` e `\EOF` viram o delimitador sem as
+ * aspas. Devolve `{ delim, dash, end }` (`end` = índice depois da palavra) ou
+ * `null` quando não há palavra reconhecível (`<<` no fim, aspa sem fechar,
+ * delimitador vazio) — aí o `<<` não abre heredoc e o resto segue lido como
+ * comando (fail-closed).
+ */
+function parseHeredocOpen(command, i) {
+  const n = command.length;
+  let j = i + 2;
+  const dash = command[j] === "-";
+  if (dash) j++;
+  while (command[j] === " " || command[j] === "\t") j++;
+  let delim = "";
+  while (j < n && !HEREDOC_WORD_END.has(command[j])) {
+    const c = command[j];
+    if (c === "'") {
+      const close = command.indexOf("'", j + 1);
+      if (close === -1) return null;
+      delim += command.slice(j + 1, close);
+      j = close + 1;
       continue;
     }
-    break;
+    if (c === '"') {
+      let k = j + 1;
+      while (k < n && command[k] !== '"') {
+        if (command[k] === "\\" && k + 1 < n && '"\\$`'.includes(command[k + 1])) k++;
+        delim += command[k++];
+      }
+      if (k >= n) return null;
+      j = k + 1;
+      continue;
+    }
+    if (c === "\\") {
+      if (j + 1 >= n || command[j + 1] === "\n") return null;
+      delim += command[j + 1];
+      j += 2;
+      continue;
+    }
+    delim += c;
+    j++;
   }
+  if (delim === "") return null;
+  return { delim, dash, end: j };
+}
+
+/**
+ * `true` só quando o corpo do heredoc aberto no segmento `segIdx` é TEXTO com
+ * certeza (#12286, fail-closed): o comando que o lê é um consumidor de texto
+ * conhecido (`isHeredocTextConsumer`), e todo segmento que recebe esse stdout
+ * por pipe na mesma linha também é. Subshell/substituição de processo depois
+ * do heredoc (`| (bash)`, `tee >(sh)`) ou segmento inexistente → `false`, e o
+ * corpo segue tokenizado como comando.
+ */
+function heredocBodyIsText(segments, pipedSegs, segIdx) {
+  if (!isHeredocTextConsumer(segments[segIdx])) return false;
+  for (let k = segIdx + 1; k < segments.length; k++) {
+    const seg = segments[k];
+    if (seg.length === 1 && seg[0].paren) return false;
+    if (pipedSegs.has(k) && !isHeredocTextConsumer(seg)) return false;
+  }
+  return true;
+}
+
+/** Comandos que só leem o stdin como texto/dado, nunca como comando de shell. */
+const HEREDOC_TEXT_CONSUMERS = new Set(["cat", "tee", "gh", "node"]);
+
+/** `true` quando o segmento começa (fora atribuições `VAR=x`) por um
+ * consumidor de texto: `cat`, `tee`, `gh`, `node`, `npx tsx` ou `git commit
+ * -F|--file`. Prefixo (`timeout`, `sudo`, `env`), interpretador (`bash`,
+ * `source`, `.`), token dinâmico ou qualquer outro comando → `false`. */
+function isHeredocTextConsumer(seg) {
+  if (!Array.isArray(seg) || seg.length === 0 || seg[0].paren) return false;
+  const k = skipAssignments(seg);
   const head = seg[k];
-  if (!head || head.paren) return false;
-  return SHELL_INTERPRETERS.has(head.value.replace(/^.*[\\/]/, ""));
+  if (!head || head.dynamic) return false;
+  const name = head.value.replace(/^.*[\\/]/, "");
+  if (HEREDOC_TEXT_CONSUMERS.has(name)) return true;
+  if (name === "npx") return seg[k + 1]?.value === "tsx" && !seg[k + 1].dynamic;
+  if (name !== "git") return false;
+  let j = k + 1;
+  while (j < seg.length && seg[j].value.startsWith("-")) j += seg[j].value === "-C" || seg[j].value === "-c" ? 2 : 1;
+  if (seg[j]?.value !== "commit") return false;
+  return seg.slice(j + 1).some((t) => /^-F/.test(t.value) || t.value === "--file" || t.value.startsWith("--file="));
 }
 
 /** true quando `index` cai dentro de `((...))`/`$((...))` aberto na mesma
@@ -641,7 +743,8 @@ function stripRedirections(rest) {
  *
  * #12286: `targetDir` (diretório em que o git roda, quando resolvido) desfaz a
  * ambiguidade de `git checkout X` com X sem cara de path: se `targetDir/X`
- * existe (`Makefile`, `scripts`), é restauração de arquivo/pasta. Alvo não
+ * existe (`Makefile`, `scripts`) e X não é branch local nem tag no repo do
+ * alvo (`isKnownNotRef`), é restauração de arquivo/pasta. Alvo não
  * resolvido (`null`) não consulta o disco e segue contando como troca
  * (fail-closed). `git switch` nunca restaura arquivo, então não consulta.
  */
@@ -663,7 +766,7 @@ export function changesBranch(sub, rawRest, targetDir = null) {
   const name = positional[0];
   if (FREE_SWITCH_TARGETS.has(name)) return false;
   if (sub === "checkout" && looksLikePath(name)) return false;
-  if (sub === "checkout" && isExistingPath(targetDir, name)) return false;
+  if (sub === "checkout" && isExistingPath(targetDir, name) && isKnownNotRef(targetDir, name)) return false;
   return true;
 }
 
@@ -676,6 +779,57 @@ function isExistingPath(dir, name) {
   } catch {
     return false;
   }
+}
+
+/**
+ * `true` só quando dá para afirmar, sem spawnar git, que `name` NÃO é branch
+ * local nem tag no repo de `dir` (#12286, review da PR #12433): com a branch
+ * `docs` e a pasta `docs`, `git checkout docs` troca de branch — o git
+ * prefere o ref. Lê `refs/heads/<name>`, `refs/tags/<name>` e `packed-refs`
+ * no diretório COMUM do repo (worktree linkado: `gitdir:` do arquivo `.git`
+ * e o `commondir` dele). Repo ou gitdir que não dá para ler → `false`
+ * (fail-closed: na dúvida, conta como troca de branch).
+ */
+function isKnownNotRef(dir, name) {
+  try {
+    if (name.split("/").some((p) => p === "" || p === "." || p === "..")) return false;
+    const commonDir = gitCommonDirOf(dir);
+    if (commonDir === null) return false;
+    for (const ns of ["heads", "tags"]) {
+      if (existsSync(join(commonDir, "refs", ns, ...name.split("/")))) return false;
+    }
+    const packed = join(commonDir, "packed-refs");
+    if (existsSync(packed)) {
+      const wanted = new Set([`refs/heads/${name}`, `refs/tags/${name}`]);
+      for (const line of readFileSync(packed, "utf8").split(/\r?\n/)) {
+        const ref = line.split(" ")[1];
+        if (ref !== undefined && wanted.has(ref.trim())) return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Diretório git COMUM (onde ficam `refs/` e `packed-refs`) do repo que
+ * contém `dir`, sem spawnar git; `null` se não der para resolver. */
+function gitCommonDirOf(dir) {
+  const root = findGitRootNoSpawn(dir, 32);
+  if (root === null) return null;
+  const gitPath = join(root, ".git");
+  if (statIsDirectory(gitPath)) return gitPath;
+  const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(gitPath, "utf8"));
+  if (!m) return null;
+  const gitdir = isAbsolute(m[1]) ? m[1] : resolvePath(root, m[1]);
+  const commondirFile = join(gitdir, "commondir");
+  if (existsSync(commondirFile)) {
+    const rel = readFileSync(commondirFile, "utf8").trim();
+    return rel === "" ? null : isAbsolute(rel) ? rel : resolvePath(gitdir, rel);
+  }
+  // Sem `commondir`: `.../<principal>/.git/worktrees/<nome>` → `.../.git`.
+  const wt = /^(.*[\\/]\.git)[\\/]worktrees[\\/][^\\/]+[\\/]?$/.exec(gitdir);
+  return wt ? wt[1] : gitdir;
 }
 
 /**
