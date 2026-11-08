@@ -628,6 +628,8 @@ describe("#11093 cobertura por remetente", () => {
     const captured = Array.from({ length: 45 }, (_, i) => ({
       thread_id: `thread-${i}`, sender: `Nome ${i} <NEWS${i % 14}@example.com>`,
     }));
+    // #12188: remetentes fictícios — sem registro, a contagem não filtra por aprovação.
+    process.env.DIARIA_NEWSLETTER_SENDERS_PATH = join(dir, "sem-registro.json");
     try {
       writeFileSync(join(dir, "captured-newsletters.json"), JSON.stringify(captured));
       writeFileSync(join(dir, ".marker-inject-inbox-urls.json"), JSON.stringify({ details: {
@@ -642,7 +644,7 @@ describe("#11093 cobertura por remetente", () => {
       const line = formatCoverageLine({ editorSubmissions: x, diariaDiscovered: y!, selected: 12 });
       assert.match(line, /analisou 449 conteúdos \(14 enviados por mim e 435 encontrados automaticamente\)/);
       assert.equal(checkCoverageLine(line).ok, true);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+    } finally { delete process.env.DIARIA_NEWSLETTER_SENDERS_PATH; rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("une forwards preservados à captura, normaliza nomes/case e mantém subdomínios separados", () => {

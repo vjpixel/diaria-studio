@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 import { stripUrlTrailingPunct, URL_REGEX_RAW, canonicalize } from "./lib/url-utils.ts";
 import { canonicalizeGmail } from "./lib/canonicalize-gmail.ts";
 import { writeMarker } from "./lib/pipeline-state.ts";
-import { resolveEditorEmail, countSubmissionSources } from "./lib/inbox-stats.ts";
+import { resolveEditorEmail, countSubmissionSources, countableCapturedNewsletters, loadApprovedSenderPredicate } from "./lib/inbox-stats.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { readCaptureFailedSentinel } from "./lib/newsletter-capture-failure.ts";
 import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
@@ -542,7 +542,11 @@ async function main(): Promise<void> {
       if (existsSync(capNewslettersPath)) {
         try {
           const capNewsletters = JSON.parse(readFileSync(capNewslettersPath, "utf8"));
-          capturedNewsletters = Array.isArray(capNewsletters) ? capNewsletters : [];
+          // #12188: linha de cobertura só conta newsletter de IA (remetente
+          // aprovado no seed) cujo corpo foi lido.
+          capturedNewsletters = Array.isArray(capNewsletters)
+            ? countableCapturedNewsletters(capNewsletters, loadApprovedSenderPredicate() ?? undefined)
+            : [];
           capturedNewsletterCount = capturedNewsletters.length;
         } catch { /* non-critical */ }
       }

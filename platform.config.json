@@ -165,7 +165,14 @@
       "email@newsletter.7min.ai": 168
     },
     "always_consider_senders": ["email@newsletter.7min.ai"],
-    "min_primary_urls": 5
+    "min_primary_urls": 5,
+    "bulk_service_domains": [
+      "beehiiv.com", "substack.com", "substackcdn.com", "convertkit.com", "convertkit-mail.com", "convertkit-mail2.com", "ck.page", "kit.com", "kit-mail3.com",
+      "mailchimp.com", "mcsv.net", "mcdlv.net", "list-manage.com", "rsgsv.net", "mailchimpapp.net", "buttondown.email", "buttondown.com",
+      "ghost.io", "mailerlite.com", "mlsend.com", "createsend.com", "cmail19.com", "cmail20.com", "klaviyomail.com",
+      "constantcontact.com", "hubspotemail.net", "sendibt3.com", "sendibm1.com", "brevo.com", "mailjet.com", "aweber.com",
+      "getresponse.com", "medium.com", "sendgrid.net", "mailgun.org"
+    ]
   },
   "boxes_divulgacao": {
     "slot0": "",

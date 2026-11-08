@@ -15,7 +15,9 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { canonicalizeGmail, extractEmail } from "./canonicalize-gmail.ts";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { classifySender, parseSenderRegistry } from "./newsletter-senders.ts"; // #12188
 import { CLARICE_SEED_EMAIL } from "./clarice-seed.ts";
 import { pluralPtBr, coverageSelPhrase } from "./coverage-words.ts";
 
@@ -115,15 +117,46 @@ export function computeDiariaDiscovered(opts: {
   return null;
 }
 
+export interface CapturedNewsletterEntry { sender?: string; thread_id?: string; capture_error?: string }
+
+/**
+ * #12188: a linha de cobertura publicada só conta newsletter de IA cujo corpo
+ * foi lido. Sai do conjunto: thread com `capture_error` (corpo não lido) e,
+ * com `isApprovedSender`, remetente que não está aprovado no
+ * `seed/newsletter-senders.json` (ex.: sender só do config, ainda pendente).
+ * Entrada legada sem `sender` não é classificável e continua contando.
+ */
+export function countableCapturedNewsletters<T extends CapturedNewsletterEntry>(
+  captured: T[],
+  isApprovedSender?: (sender: string) => boolean,
+): T[] {
+  return captured.filter((e) => !e.capture_error && (!isApprovedSender || !e.sender || isApprovedSender(e.sender)));
+}
+
+/**
+ * Predicado de aprovação a partir do registro versionado; ausente/inválido → null (sem filtro).
+ * `DIARIA_NEWSLETTER_SENDERS_PATH` sobrepõe o path (fixtures de teste com remetentes fictícios).
+ */
+export function loadApprovedSenderPredicate(
+  registryPath = process.env.DIARIA_NEWSLETTER_SENDERS_PATH
+    ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../seed/newsletter-senders.json"),
+): ((sender: string) => boolean) | null {
+  try {
+    const registry = parseSenderRegistry(readFileSync(registryPath, "utf8"));
+    return (sender) => classifySender(sender, registry).classificacao === "IA";
+  } catch { return null; }
+}
+
 /** #11093: newsletters contam por endereço; e-mails do editor por identidade. */
 export function countSubmissionSources(
   blocks: Array<{ from: string; iso: string; subject: string }>,
-  captured: Array<{ sender?: string; thread_id?: string }> = [],
+  captured: CapturedNewsletterEntry[] = [],
   editorEmail = DEFAULT_EDITOR_EMAIL,
 ): { editorEmails: number; newsletterSenders: number } {
   const senders = new Set<string>();
   const emails = new Set<string>();
-  for (const [i, entry] of captured.entries()) {
+  // #12188: thread com corpo não lido nunca conta como submissão.
+  for (const [i, entry] of captured.filter((e) => !e.capture_error).entries()) {
     senders.add(entry.sender ? extractEmail(entry.sender).toLowerCase() : `legacy:${entry.thread_id ?? i}`);
   }
   for (const block of blocks) {
@@ -152,10 +185,11 @@ export function countEditorSubmissions(inboxArchivePath: string, editorEmail?: s
   return counts.editorEmails + counts.newsletterSenders;
 }
 
-function readCapturedNewsletters(internalDir: string): Array<{ sender?: string; thread_id?: string }> | null {
+function readCapturedNewsletters(internalDir: string): CapturedNewsletterEntry[] | null {
   try {
     const data = JSON.parse(readFileSync(join(internalDir, "captured-newsletters.json"), "utf8"));
-    return Array.isArray(data) ? data : null;
+    // #12188: só newsletter de IA (remetente aprovado) com corpo lido.
+    return Array.isArray(data) ? countableCapturedNewsletters(data, loadApprovedSenderPredicate() ?? undefined) : null;
   } catch { return null; }
 }
 
