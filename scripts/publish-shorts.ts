@@ -82,8 +82,11 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     ou `--now`). Envio ambíguo grava `send_unknown` e nunca re-posta.
  *   - `linkedin_page_repost` (guiado, #10772) — repost do vídeo do perfil pela
  *     página, no horário que a grade da PÁGINA permite (`planLinkedInRepostSlot`:
- *     2 h dos posts da rotação #10305, picos, ≥30 min depois do perfil). Guiado
- *     porque não há token de organização local (a página publica pelo Worker).
+ *     2 h dos posts da rotação #10305, picos, ≥30 min depois do perfil). Desde
+ *     #11121 o `--publish` põe o repost na fila do Worker `diaria-linkedin-cron`
+ *     (`action: "repost"`, API direta como página) quando a URN do vídeo do
+ *     perfil está no registro; o Worker sem o token da página (#8816) recusa
+ *     com `linkedin_creds_missing` e o passo segue guiado no Chrome, com aviso.
  *   - `x` (guiado, #10772) — X @diariabr pela Buffer (MCP, só a skill alcança).
  *     O plano traz texto (≤280 ponderado) e `dueAt`; com R2 configurado o
  *     `--publish` sobe o vertical e devolve `results[].buffer.videoUrl` (e
@@ -338,6 +341,7 @@ import {
 } from "./lib/social-slot-planner.ts";
 import { loadR2UploadConfig, r2ObjectHasBody, r2PublicUrl, reuseOrUploadToR2 } from "./lib/r2-object-upload.ts";
 import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
+import { buildPageRepostPayload, enqueuePageAction, linkedInPostUrnFrom, type EnqueueFn, type PageActionResult } from "./lib/diaria/linkedin-page-actions.ts"; // #11121
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
 import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "./lib/linkedin-video.ts";
@@ -1273,7 +1277,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         at: repostSlot!.at,
         detail:
           `repost pela página diar.ia.br às ${repostSlot!.hhmm} BRT: no Chrome, como a página, "Repostar" o vídeo do perfil${where}. ` +
-          `Sem token de organização local, por isso guiado; registre com --mark linkedin_page_repost=URL`,
+          `O --publish tenta antes a fila do Worker (repost como página, #11121); este passo só vale se ela recusar ` +
+          `(Worker sem o token da página, #8816) — registre com --mark linkedin_page_repost=URL`,
       };
     }
     if (dest.kind === "x") {
@@ -3866,6 +3871,67 @@ export function blockRepostOnProfileFailure(
   );
 }
 
+/**
+ * #11121: o repost da página sai pela fila do Worker `diaria-linkedin-cron`
+ * (API direta como página, `action: "repost"`) no horário do passo guiado
+ * (`at`, a grade da página). Só com a URN do vídeo do perfil conhecida (o
+ * registro do `linkedin_profile`). Enfileirado: registra `scheduled` com a key
+ * da fila e o item vira `skip_done`. Sem os segredos da página no Worker
+ * (#8816), sem Worker nesta máquina ou com falha: o passo guiado de sempre
+ * fica, com aviso. Idempotente pela `idempotency_key` da edição.
+ */
+export async function enqueuePageRepostViaWorker(
+  enqueue: EnqueueFn | null,
+  input: {
+    aammdd: string;
+    items: ShortsPlanItem[];
+    profileEntry: { id?: unknown; url?: unknown } | null | undefined;
+    now: Date;
+    corteSlug?: string;
+  },
+): Promise<{ items: ShortsPlanItem[]; entry?: ShortPublishedEntry; result?: PageActionResult; warning?: string }> {
+  const idx = input.items.findIndex((i) => i.destination === "linkedin_page_repost" && i.action === "guided");
+  if (idx === -1) return { items: input.items };
+  const item = input.items[idx] as Extract<ShortsPlanItem, { action: "guided" }>;
+  const keepGuided = (why: string, result?: PageActionResult) => {
+    const items = [...input.items];
+    items[idx] = { ...item, detail: `${item.detail} (fila do Worker: ${why})` };
+    return { items, ...(result ? { result } : {}), warning: `linkedin_page_repost: segue guiado — ${why} (#11121)` };
+  };
+  const urn = linkedInPostUrnFrom(input.profileEntry);
+  if (!urn) return keepGuided("URN do vídeo do perfil desconhecida no registro do linkedin_profile");
+  let payload: WorkerQueuePayload;
+  try {
+    payload = buildPageRepostPayload({
+      aammdd: input.aammdd,
+      targetPostUrn: urn,
+      scheduledAt: item.at ?? input.now.toISOString(),
+      now: input.now,
+      ...(input.corteSlug ? { variant: input.corteSlug } : {}),
+    });
+  } catch (e) {
+    return keepGuided((e as Error).message);
+  }
+  const result = await enqueuePageAction(enqueue, payload);
+  const at = input.now.toISOString();
+  const done = (entry: ShortPublishedEntry) => {
+    const items = [...input.items];
+    items[idx] = { destination: item.destination, mode: "api", action: "skip_done" };
+    return { items, entry, result };
+  };
+  if (result.status === "queued") {
+    return done({ destination: "linkedin_page_repost", status: "scheduled", id: result.key, scheduled_at: result.scheduled_at, at });
+  }
+  if (result.status === "already_fired") {
+    return done({ destination: "linkedin_page_repost", status: "published", id: `worker-queue:${payload.idempotency_key}`, scheduled_at: null, at });
+  }
+  const why =
+    result.status === "failed" && result.ambiguous
+      ? `${result.detail} — confira a fila do Worker (GET /list) antes de repostar à mão`
+      : result.detail;
+  return keepGuided(why, result);
+}
+
 /** Link da edição: --edition-url > `_internal/05-edition-url.txt` > (derivado, no plano). */
 export function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: string; source?: string } {
   if (flag) return { url: flag, source: "--edition-url" };
@@ -5130,6 +5196,34 @@ async function main(): Promise<number> {
   if (finalItems !== plan.items) {
     console.error("[aviso] linkedin_page_repost: o vídeo do perfil falhou ou ficou em send_unknown nesta rodada — repost não oferecido");
     plan = { ...plan, items: finalItems };
+  }
+  // #11121: repost da página pela fila do Worker (como página, API direta).
+  // Sem os segredos da página no Worker (#8816), o passo guiado fica.
+  if (plan.items.some((i) => i.destination === "linkedin_page_repost" && i.action === "guided")) {
+    const profileThisRun = results.find((r) => r.destination === "linkedin_profile" && r.ok && r.entry)?.entry as ShortPublishedEntry | undefined;
+    const repost = await enqueuePageRepostViaWorker(
+      workerUrl && workerToken ? (p) => postToWorkerQueue(workerUrl, workerToken, p, 2, "publish-shorts") : null,
+      {
+        aammdd,
+        items: plan.items,
+        profileEntry: profileThisRun ?? published.entries.find((e) => e.destination === "linkedin_profile"),
+        now: new Date(),
+        ...(corte ? { corteSlug: corte.slug } : {}),
+      },
+    );
+    if (repost.warning) console.error(`[aviso] ${repost.warning}`);
+    if (repost.entry) {
+      try {
+        published = persist(repost.entry);
+        results.push({ destination: "linkedin_page_repost", ok: true, entry: repost.entry });
+        console.error(`[ok] linkedin_page_repost: ${repost.entry.status} pela fila do Worker (${repost.entry.id}${repost.entry.scheduled_at ? `, ${repost.entry.scheduled_at}` : ""})`);
+      } catch (e) {
+        const msg = `repost NA FILA do Worker (${repost.entry.id}) mas o registro não foi gravado: ${(e as Error).message}. Registre com --mark linkedin_page_repost=${repost.entry.id}; não reposte à mão.`;
+        results.push({ destination: "linkedin_page_repost", ok: false, entry: repost.entry, error: msg });
+        console.error(`[erro] linkedin_page_repost: ${msg}`);
+      }
+    }
+    plan = { ...plan, items: repost.items };
   }
   // #10915: Instagram acima do teto vira passo guiado no Chrome. A compressão
   // só alimenta esse passo, então roda DEPOIS das APIs: um encode lento ou

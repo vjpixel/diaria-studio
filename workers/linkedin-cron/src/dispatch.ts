@@ -1,6 +1,6 @@
 import type { Env, QueueEntry, WebhookTarget, QueueAction, ReelsContainerRef } from "./index";
 import { FETCH_TIMEOUT_MS, CAROUSEL_MAX_ITEMS, LINKEDIN_DOCUMENT_MAX_BYTES } from "./index";
-import { isUnsupportedCommentTarget } from "./guards";
+import { isUnsupportedCommentTarget, isPageApiAction } from "./guards";
 import { defaultLinkedInApiVersion } from "./linkedin-api-version";
 
 // ── Dispatch compartilhado entre fire.ts (cron) e durable-object.ts (alarm) ──
@@ -627,6 +627,215 @@ async function fireLinkedInDocument(
     status: "send_unknown",
     reason: `${SEND_UNKNOWN_PREFIX} LinkedIn documento: ${why} — o post pode ter saído; confira a página antes de republicar`,
   };
+}
+
+// ── Repost e comentário como página (#11121, #10983) ─────────────────────
+
+function linkedInRestHeaders(creds: LinkedInCreds): Record<string, string> {
+  return {
+    Authorization: `Bearer ${creds.accessToken}`,
+    "Content-Type": "application/json",
+    "LinkedIn-Version": creds.apiVersion,
+    "X-Restli-Protocol-Version": "2.0.0",
+  };
+}
+
+/**
+ * Classifica a resposta de um POST que CRIA algo no LinkedIn (post de repost,
+ * comentário): 2xx = `fired`; 4xx = rejeição definitiva, nada criado = `dlq`;
+ * 5xx = ambíguo (pode ter criado) = `send_unknown`, que nenhum caminho refaz
+ * (#11106, mesmo critério de `fireLinkedInCarousel`, #12372).
+ */
+async function classifyLinkedInCreate(res: Response, label: string): Promise<FireOutcome> {
+  if (res.ok) return { status: "fired" };
+  const body = await res.text();
+  const why = `${label}: HTTP ${res.status}: ${body.slice(0, 200)}`;
+  if (res.status >= 400 && res.status < 500) return { status: "dlq", reason: why };
+  return {
+    status: "send_unknown",
+    reason: `${SEND_UNKNOWN_PREFIX} ${why} — pode ter saído; confira a página antes de refazer`,
+  };
+}
+
+/**
+ * #11121 — a página reposta um post existente (o vídeo vertical do perfil do
+ * editor). Posts API: `POST /rest/posts` com `author` = página e
+ * `reshareContext.parent` = URN do post original; `commentary` é o texto da
+ * entry (vazio = repost sem comentário, o que o editor fazia à mão).
+ */
+async function fireLinkedInRepost(targetUrn: string, commentary: string, creds: LinkedInCreds): Promise<FireOutcome> {
+  try {
+    const res = await fetch("https://api.linkedin.com/rest/posts", {
+      method: "POST",
+      headers: linkedInRestHeaders(creds),
+      body: JSON.stringify({
+        author: creds.authorUrn,
+        commentary,
+        visibility: "PUBLIC",
+        distribution: {
+          feedDistribution: "MAIN_FEED",
+          targetEntities: [],
+          thirdPartyDistributionChannels: [],
+        },
+        lifecycleState: "PUBLISHED",
+        isReshareDisabledByAuthor: false,
+        reshareContext: { parent: targetUrn },
+      }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    return classifyLinkedInCreate(res, `LinkedIn repost de ${targetUrn}: POST /rest/posts`);
+  } catch (e) {
+    return {
+      status: "send_unknown",
+      reason: `${SEND_UNKNOWN_PREFIX} LinkedIn repost de ${targetUrn}: POST /rest/posts fetch ${fetchFailure(e as Error)} — o repost pode ter saído; confira a página antes de refazer`,
+    };
+  }
+}
+
+/**
+ * #10983 — janela, em torno de `parent_scheduled_at`, em que o post da página é
+ * procurado. 60 min depois (não 3 h, review do PR #12407): os posts da rotação
+ * da página ficam a ~2 h uns dos outros, e uma janela larga deixava o
+ * comentário cair em OUTRO post quando o do D1 falhou ou não existe.
+ */
+export const PAGE_POST_LOOKUP_BEFORE_MS = 10 * 60 * 1000;
+export const PAGE_POST_LOOKUP_AFTER_MS = 60 * 60 * 1000;
+/** #10983 — quantos posts recentes da página a busca lê (finder `author`). */
+export const PAGE_POST_LOOKUP_COUNT = 20;
+/** #10983 — teto do `parent_text_hint` (validado no enqueue). */
+export const PAGE_POST_TEXT_HINT_MAX = 300;
+
+export type PagePostLookup =
+  | { kind: "found"; urn: string }
+  /** Nenhum post na janela: o webhook Make pode ainda não ter publicado — retentável. */
+  | { kind: "not_found"; reason: string }
+  /** Resposta que não adianta repetir (401/403/400): credencial ou escopo. */
+  | { kind: "rejected"; reason: string }
+  | { kind: "error"; reason: string };
+
+/**
+ * Normaliza texto pra comparar o trecho do D1 com o `commentary` do post: a
+ * Posts API devolve o texto em "little text format" (parênteses, `#`, `*` etc.
+ * escapados com `\`) e o publisher tira o markdown — então só letras e
+ * dígitos (Unicode, minúsculos, NFC) e espaço simples sobrevivem. Pura.
+ */
+export function normalizePostTextForMatch(text: string): string {
+  return text
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+/** Complemento da mensagem de `not_found` quando a busca exigiu o texto do D1. */
+function pagePostPickReason(textHint?: string | null): string {
+  return textHint && normalizePostTextForMatch(textHint) ? " com o texto do D1" : "";
+}
+
+/**
+ * Escolhe, entre os posts devolvidos pelo finder `author`, o post ORIGINAL
+ * (sem `reshareContext`) publicado mais perto de `parentAtMs`, dentro da
+ * janela [parent − 10 min, parent + 60 min]. Com `textHint` (abertura do D1),
+ * o post também precisa conter esse trecho no `commentary` — sem post que
+ * case, `null` (o caller não comenta: retenta e depois DLQ, nunca comenta no
+ * post errado). Pura (exportada pro teste).
+ */
+export function pickPagePostNear(elements: unknown, parentAtMs: number, textHint?: string | null): string | null {
+  if (!Array.isArray(elements)) return null;
+  const hint = textHint ? normalizePostTextForMatch(textHint) : "";
+  let best: { urn: string; dist: number } | null = null;
+  for (const raw of elements as Array<Record<string, unknown>>) {
+    if (!raw || typeof raw !== "object") continue;
+    const urn = typeof raw.id === "string" ? raw.id : null;
+    if (!urn || !/^urn:li:(share|ugcPost):\d+$/.test(urn)) continue;
+    if (raw.reshareContext) continue; // repost da página não é o post do D1
+    if (raw.lifecycleState !== undefined && raw.lifecycleState !== "PUBLISHED") continue;
+    const at = typeof raw.publishedAt === "number" ? raw.publishedAt : typeof raw.createdAt === "number" ? raw.createdAt : NaN;
+    if (!Number.isFinite(at)) continue;
+    if (at < parentAtMs - PAGE_POST_LOOKUP_BEFORE_MS || at > parentAtMs + PAGE_POST_LOOKUP_AFTER_MS) continue;
+    if (hint) {
+      const commentary = typeof raw.commentary === "string" ? normalizePostTextForMatch(raw.commentary) : "";
+      if (!commentary.includes(hint)) continue; // outro post da página na mesma janela
+    }
+    const dist = Math.abs(at - parentAtMs);
+    if (!best || dist < best.dist) best = { urn, dist };
+  }
+  return best?.urn ?? null;
+}
+
+/**
+ * #10983 — acha a URN do post da página agendado em `parentScheduledAt`. O
+ * post do D1 sai pelo webhook Make, que não devolve a URN; a Posts API lista
+ * os posts recentes do autor (`GET /rest/posts?q=author`, finder, exige
+ * `r_organization_social`, pedido junto com o `w_organization_social` no #8055).
+ */
+export async function findPagePostNear(
+  parentScheduledAt: string,
+  creds: LinkedInCreds,
+  textHint?: string | null,
+): Promise<PagePostLookup> {
+  const parentAtMs = Date.parse(parentScheduledAt);
+  if (!Number.isFinite(parentAtMs)) return { kind: "rejected", reason: `parent_scheduled_at inválido: ${parentScheduledAt}` };
+  const url =
+    `https://api.linkedin.com/rest/posts?author=${encodeURIComponent(creds.authorUrn)}` +
+    `&q=author&count=${PAGE_POST_LOOKUP_COUNT}&sortBy=CREATED`;
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { ...linkedInRestHeaders(creds), "X-RestLi-Method": "FINDER" },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      const reason = `GET /rest/posts?q=author: HTTP ${res.status}: ${text.slice(0, 200)}`;
+      return res.status >= 400 && res.status < 500 && res.status !== 429 ? { kind: "rejected", reason } : { kind: "error", reason };
+    }
+    let data: { elements?: unknown };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { kind: "error", reason: `GET /rest/posts?q=author: resposta não-JSON: ${text.slice(0, 200)}` };
+    }
+    const urn = pickPagePostNear(data.elements, parentAtMs, textHint);
+    if (urn) return { kind: "found", urn };
+    return {
+      kind: "not_found",
+      reason: `nenhum post da página${pagePostPickReason(textHint)} entre ${new Date(parentAtMs - PAGE_POST_LOOKUP_BEFORE_MS).toISOString()} e ${new Date(parentAtMs + PAGE_POST_LOOKUP_AFTER_MS).toISOString()} nos ${PAGE_POST_LOOKUP_COUNT} mais recentes`,
+    };
+  } catch (e) {
+    return { kind: "error", reason: `GET /rest/posts?q=author fetch ${fetchFailure(e as Error)}` };
+  }
+}
+
+/**
+ * #10983 — comentário da PÁGINA num post da página (o link do vídeo no 1º
+ * comentário do D1). Alvo: `target_post_urn` explícito ou, sem ele, o post
+ * achado por `findPagePostNear(parent_scheduled_at, parent_text_hint)`. Post ainda não achado =
+ * `failed` (retentável: o cron re-tenta até `MAX_RETRIES`, depois DLQ).
+ * Comentário: `POST /rest/socialActions/{urn}/comments` com `actor` = página.
+ */
+async function fireLinkedInPageComment(entry: QueueEntry, creds: LinkedInCreds): Promise<FireOutcome> {
+  let target = entry.target_post_urn ?? null;
+  if (!target) {
+    const lookup = await findPagePostNear(entry.parent_scheduled_at ?? "", creds, entry.parent_text_hint);
+    if (lookup.kind === "rejected") return { status: "dlq", reason: `LinkedIn comentário da página: ${lookup.reason}` };
+    if (lookup.kind !== "found") return { status: "failed", reason: `LinkedIn comentário da página: ${lookup.reason}` };
+    target = lookup.urn;
+  }
+  try {
+    const res = await fetch(`https://api.linkedin.com/rest/socialActions/${encodeURIComponent(target)}/comments`, {
+      method: "POST",
+      headers: linkedInRestHeaders(creds),
+      body: JSON.stringify({ actor: creds.authorUrn, object: target, message: { text: entry.text } }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    return classifyLinkedInCreate(res, `LinkedIn comentário da página em ${target}: POST /rest/socialActions/comments`);
+  } catch (e) {
+    return {
+      status: "send_unknown",
+      reason: `${SEND_UNKNOWN_PREFIX} LinkedIn comentário da página em ${target}: fetch ${fetchFailure(e as Error)} — o comentário pode ter saído; confira o post antes de refazer`,
+    };
+  }
 }
 
 /**
@@ -2130,6 +2339,21 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
   }
 
   // channel === "linkedin" (ou ausente — default de backward-compat)
+
+  // #11121/#10983 — repost e comentário como página: API direta, nunca Make.
+  if (isPageApiAction(entry)) {
+    if (!config.linkedin) {
+      return {
+        status: "dlq",
+        reason: `channel=linkedin action=${entry.action} como página mas credenciais da API direta do LinkedIn (LINKEDIN_ACCESS_TOKEN/LINKEDIN_AUTHOR_URN) não configuradas — ver #8816`,
+      };
+    }
+    if (entry.action === "repost") {
+      if (!entry.target_post_urn) return { status: "dlq", reason: "action=repost sem target_post_urn" };
+      return fireLinkedInRepost(entry.target_post_urn, entry.text, config.linkedin);
+    }
+    return fireLinkedInPageComment(entry, config.linkedin);
+  }
 
   // #8052 (reverte o guard fail-fast do #8050): `image_urls` com mais de 1
   // item agora publica via API DIRETA do LinkedIn (`fireLinkedInCarousel`),
