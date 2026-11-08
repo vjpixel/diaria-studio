@@ -1,6 +1,6 @@
 ---
 name: diaria-retro-semanal
-description: DOIS carrosséis semanais (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330; expandido pra Facebook E Threads pelo #5348; LinkedIn wired pelo #8052) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Publica em Instagram, Facebook, Threads E LinkedIn automaticamente, mesmo agendamento, sem flag/canal separado (#5348/#8052) — ver seção "#5348 — expansão pra Facebook e Threads" abaixo pro detalhe de cada canal (Threads exige polling obrigatório de status; LinkedIn reusa o MESMO texto do Facebook, sem formatter próprio, ver #8052). Nunca vira edição no Beehiiv, nunca dispara e-mail (o recap semanal NEWSLETTER-NATIVO do LinkedIn é `/diaria-linkedin-semanal`, #4456, produto/cadência diferentes — este carrossel é um post social adicional). `--mode both` (#5349) roda os 2 modos numa única invocação — e é o default quando `--mode` é omitido (#5903, uso semanal normal; `clicked` isolado é só back-compat do script chamado direto). Uso — `/diaria-retro-semanal [AAMMDD-do-sabado] [--mode clicked|highlights|both] [--schedule] [--no-gates]`.
+description: DOIS carrosséis semanais (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330; expandido pra Facebook E Threads pelo #5348; LinkedIn wired pelo #8052) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Publica em Instagram, Facebook, Threads E LinkedIn automaticamente, mesmo agendamento, sem flag/canal separado (#5348/#8052) — ver seção "#5348 — expansão pra Facebook e Threads" abaixo pro detalhe de cada canal (Threads exige polling obrigatório de status; LinkedIn reusa o MESMO texto do Facebook, sem formatter próprio, ver #8052, e desde a #12371 sai como documento PDF, com queda pro carrossel de imagens e depois pra capa única). Nunca vira edição no Beehiiv, nunca dispara e-mail (o recap semanal NEWSLETTER-NATIVO do LinkedIn é `/diaria-linkedin-semanal`, #4456, produto/cadência diferentes — este carrossel é um post social adicional). `--mode both` (#5349) roda os 2 modos numa única invocação — e é o default quando `--mode` é omitido (#5903, uso semanal normal; `clicked` isolado é só back-compat do script chamado direto). Uso — `/diaria-retro-semanal [AAMMDD-do-sabado] [--mode clicked|highlights|both] [--schedule] [--no-gates]`.
 disable-model-invocation: true
 ---
 
@@ -121,6 +121,8 @@ atual:
   destravado com API direta (#8083) e finalmente WIRED em `publish-weekly-
   social.ts` pelo #8052, reusando o MESMO texto do Facebook (nenhum
   `formatLinkedInWeekly` foi criado — decisão do editor, briefing 260913b).
+  Desde a #12371 (07/11/2026) o LinkedIn não recebe mais o carrossel de
+  imagens como formato principal: os mesmos slides saem num documento PDF.
   Ver seção "#5348: expansão pra Facebook e Threads" abaixo pro detalhe
   completo (X nunca foi mencionado de novo).
 - **Seleção: por taxa de clique verificado, de qualquer posição elegível
@@ -260,8 +262,18 @@ atual:
   `status:"dlq"` (via `fireQueueEntry`) sem afetar Instagram/Facebook/
   LinkedIn. Credenciais da API direta do LinkedIn (`LINKEDIN_ACCESS_TOKEN`/
   `LINKEDIN_AUTHOR_URN`, #8052/#8083) também vivem no ambiente do Worker —
-  ausentes lá, o dispatch do LinkedIn marca `status:"dlq"` sem afetar os
-  demais canais.
+  ausentes lá, o Worker recusa documento e carrossel no enqueue e o post
+  sai como capa única (#10103), sem afetar os demais canais.
+- Documento PDF do LinkedIn (#12371): o script gera o PDF na hora de
+  agendar, a partir dos slides já publicados, grava em
+  `data/weekly/{AAMMDD-do-sabado}-{mode}/_internal/06-carousel.pdf` e sobe
+  pro KV do Worker do É IA? (`platform.config.json` →
+  `poll.kv_namespace_id`, servido em `/img/{chave}`). O pedido ao Worker
+  leva `document_url` (a URL pública do PDF, https) e `document_title`
+  (título da capa + período da semana), e também `image_urls` com o
+  carrossel, que é o plano B. O Worker só aceita documento com a credencial
+  da API direta do LinkedIn configurada (sem ela, recusa com
+  `linkedin_creds_missing`).
 - Credenciais Facebook (#5348, mesmas do publisher diário `publish-facebook.ts`):
   `FACEBOOK_PAGE_ID` + `FACEBOOK_PAGE_ACCESS_TOKEN` (opcional `FACEBOOK_API_VERSION`,
   default `v25.0`). Ausentes → o dispatch do Facebook marca `status:"failed"`
@@ -589,6 +601,9 @@ imagem (falha de leitura, recomposição OU geração sob demanda), o post
 inteiro falha (nunca publica carrossel parcial) — capa/CTA falhando também
 aborta o post inteiro pela mesma razão.
 
+No LinkedIn os mesmos 7 slides saem encadernados num documento PDF
+(#12371), não como carrossel de imagens; ver a subseção do #8052 abaixo.
+
 **O MESMO `--schedule` acima já dispara Facebook E Threads (#5348) — não é
 preciso passo/flag adicional.** Ver seção dedicada logo abaixo.
 
@@ -659,10 +674,46 @@ canal:
 
 Decisão do editor (briefing 260913b): destravar o LinkedIn no post
 semanal reusando o MESMO caminho de dispatch de Instagram/Threads — Worker
-queue (`channel: "linkedin"`), que já publica via API DIRETA do LinkedIn
-(Images API + Posts API) quando `image_urls.length > 1`
-(`fireLinkedInCarousel`, `workers/linkedin-cron/src/dispatch.ts`, #8083 —
-reverte o guard fail-fast que #8050 tinha introduzido). **Caption: NENHUM
+queue (`channel: "linkedin"`), que publica via API DIRETA do LinkedIn.
+
+**Formato desde a #12371 (07/11/2026): documento PDF.** No feed do
+LinkedIn o post aparece como um documento que o leitor folheia página a
+página, com os mesmos slides do carrossel. O Worker
+(`fireLinkedInDocument`, `workers/linkedin-cron/src/dispatch.ts`) baixa o
+PDF de `document_url`, pede o upload à Documents API
+(`initializeUpload`), envia o arquivo e cria o post (`POST /rest/posts`).
+Se o documento não der certo, o post cai para o formato seguinte, nesta
+ordem:
+
+1. **Documento PDF** — o formato normal.
+2. **Carrossel de imagens** (`fireLinkedInCarousel`, Images API + Posts
+   API, #8083) — quando o PDF não pôde ser gerado ou hospedado, quando o
+   Worker recusa o pedido com documento (4xx no enqueue), ou quando, já no
+   disparo, algum passo falha antes de o post existir ou o
+   `POST /rest/posts` volta 4xx. O motivo fica em
+   `document_fallback_reason` no `06-weekly-published.json` (falhas do
+   lado do script) ou no log do Worker, com o alerta `[document-fallback]`
+   (falhas no disparo, #12372).
+3. **Capa única** (#10103) — quando o Worker não tem a credencial da API
+   direta e recusa também o carrossel (`linkedin_creds_missing`). Fica
+   registrada como `degraded: "cover_only"`.
+
+O campo `format` (`document`/`carousel`/`cover_only`) no
+`06-weekly-published.json` diz qual formato foi enfileirado. Resposta
+ambígua no `POST /rest/posts` do documento (5xx ou timeout) vira
+`send_unknown` e nada é publicado por cima, porque o post pode já ter
+saído: nesse caso o editor confere o perfil.
+
+**O primeiro disparo real confirma o Development Tier.** Em 07/11/2026 o
+upload do PDF e o `initializeUpload` da Documents API foram validados ao
+vivo no tier de desenvolvimento da Community Management API; o
+`POST /rest/posts` com documento ainda não. Se o tier recusar a criação
+do post com 4xx, o Worker publica o carrossel de imagens no próprio
+disparo e o alerta `[document-fallback]` traz o motivo. Depois do primeiro sábado (ou domingo)
+com retro, conferir o post no LinkedIn antes de dar o formato como
+confirmado.
+
+**Caption: NENHUM
 `formatLinkedInWeekly` foi criado** — `publish-weekly-social.ts` passa
 literalmente `fbCaption` (a mesma variável já computada pro Facebook) pro
 LinkedIn. Isso significa aceitar uma divergência conhecida: o publisher
@@ -673,8 +724,10 @@ algoritmo do LinkedIn), mas `fbCaption` inclui um link clicável direto no
 corpo — decisão explícita do editor de aceitar essa divergência em vez de
 inventar um formato próprio só pra omitir a URL. Credenciais
 (`LINKEDIN_ACCESS_TOKEN`/`LINKEDIN_AUTHOR_URN`) vivem no ambiente do Worker
-(mesmo padrão do Threads) — ausentes lá, `fireQueueEntry` marca
-`status:"dlq"` sem afetar os outros 3 canais, e sem reconciliação de volta
+(mesmo padrão do Threads) — ausentes lá, o Worker recusa documento e
+carrossel já no enqueue e o post sai como capa única (item 3 acima); falha
+que só aparece no disparo vira `status:"dlq"` sem afetar os outros 3
+canais, e sem reconciliação de volta
 pra `06-weekly-published.json` (mesma limitação documentada acima pro
 Threads).
 
