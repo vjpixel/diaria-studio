@@ -10,7 +10,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
-import { youtubeShortFeedThumbUrl } from "../scripts/lib/diaria/short-cover.ts";
+import { readFileSync } from "node:fs";
+import {
+  SHORT_VERTICAL_COVER_HOWTO,
+  YOUTUBE_SHORTS_COVER_PLAN,
+  youtubeShortFeedThumbUrl,
+  youtubeShortsVerticalCoverWarning,
+} from "../scripts/lib/diaria/short-cover.ts";
 import { assessFeedCover } from "../scripts/lib/diaria/short-feed-cover-check.ts";
 import { fetchFeedImage } from "../scripts/check-short-feed-cover.ts";
 
@@ -56,5 +62,23 @@ describe("#12251 — o verificador olha a imagem que a aba Shorts usa", () => {
       .jpeg()
       .toBuffer();
     assert.equal((await assessFeedCover(frame, await capa())).verdict, "frame-automatico");
+  });
+});
+
+describe("#12251 — os avisos do verificador apontam o Studio web (Passo B3a, #12254)", () => {
+  // Os avisos diziam "no app do YouTube, Editar → Miniatura" depois que o
+  // #12254 passou a capa vertical para o agente no Studio web.
+  it("o passo citado é o Studio web, nunca o app do YouTube", () => {
+    assert.match(SHORT_VERTICAL_COVER_HOWTO, /Studio web/);
+    assert.match(SHORT_VERTICAL_COVER_HOWTO, /Passo B3a/);
+    const w = youtubeShortsVerticalCoverWarning("5jX3X0sgMtg", { method: "thumbnails_set", ok: true, vertical_feed: "manual" });
+    assert.ok(w?.includes(SHORT_VERTICAL_COVER_HOWTO));
+    for (const text of [SHORT_VERTICAL_COVER_HOWTO, YOUTUBE_SHORTS_COVER_PLAN, w!]) assert.doesNotMatch(text, /app do YouTube/);
+  });
+
+  it("os dois avisos do CLI (404 e frame) usam o mesmo passo", () => {
+    const src = readFileSync(new URL("../scripts/check-short-feed-cover.ts", import.meta.url), "utf8");
+    assert.doesNotMatch(src, /app do YouTube/);
+    assert.equal(src.match(/\$\{SHORT_VERTICAL_COVER_HOWTO\}/g)?.length, 2);
   });
 });
