@@ -35,6 +35,7 @@ import {
   findLiveMergeGrant,
   type SessionRecord,
 } from "../scripts/lib/session-registry.ts";
+// @ts-expect-error -- hook .mjs sem tipos (mesmo padrão de consume-merge-grant-only-after-real-merge-8793.test.ts)
 import { findLiveMergeGrantFile, RCLONE_SESSION_CONFLICT_RE } from "../.claude/hooks/consume-merge-grant-on-merge.mjs";
 import { existsSync, readdirSync } from "node:fs";
 import {
