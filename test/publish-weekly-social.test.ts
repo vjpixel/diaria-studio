@@ -1987,6 +1987,145 @@ describe("main(): dispatch mockado", () => {
     });
   });
 
+  describe("#12375: --reschedule — cancela o agendamento do modo, limpa registro + rotação e reagenda", () => {
+    const OLD_AT = "2027-12-26T08:00:00-03:00";
+    function seedScheduled(saturdayStr: string, extra: unknown[] = []): string {
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const path = resolve(publishedDir, "06-weekly-published.json");
+      writeFileSync(
+        path,
+        JSON.stringify({
+          posts: [
+            { platform: "instagram", destaque: "weekly-clicked", url: null, status: "scheduled", scheduled_at: OLD_AT, worker_queue_key: "queue:instagram:old" },
+            { platform: "threads", destaque: "weekly-clicked", url: null, status: "scheduled", scheduled_at: OLD_AT, worker_queue_key: "queue:threads:old" },
+            // outro modo: nunca tocado pelo --reschedule do clicked
+            { platform: "instagram", destaque: "weekly-highlights", url: null, status: "scheduled", scheduled_at: "2027-12-25T11:00:00-03:00", worker_queue_key: "queue:instagram:hl" },
+            ...extra,
+          ],
+        }),
+      );
+      return path;
+    }
+    function setupWeek(): string {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      return saturdayStr;
+    }
+    const args = (saturdayStr: string) => [
+      "--saturday", saturdayStr, "--mode", "clicked", "--editions-root", editionsRoot,
+      "--schedule", "--reschedule", "--time", "19:00", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data",
+    ];
+
+    it("cenário da issue: DELETE da fila de cada canal ANTES de qualquer POST, registro do modo trocado pelas chaves novas, rotação do dia removida", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const rotationPath = resolve(dataRoot, "social-schedule-rotation.jsonl");
+      writeFileSync(
+        rotationPath,
+        [
+          JSON.stringify({ date: "2027-12-25", kind: "weekend", day: "sabado", time: "11:00", source: "rotation" }),
+          JSON.stringify({ date: "2027-12-26", kind: "weekend", day: "domingo", time: "08:00", source: "rotation" }),
+        ].join("\n") + "\n",
+      );
+
+      const calls: string[] = [];
+      const pool = mockAgent.get("https://worker.test");
+      for (const key of ["queue:instagram:old", "queue:threads:old"]) {
+        pool.intercept({ path: `/queue/${key}`, method: "DELETE" }).reply(() => {
+          calls.push(`DELETE ${key}`);
+          return { statusCode: 200, data: JSON.stringify({ deleted: true }) };
+        });
+      }
+      pool
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(`POST ${body.channel}`);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        })
+        .persist();
+
+      await main(args(saturdayStr), {
+        dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+        weeklyPdfBuilder: async () => new Uint8Array([37, 80, 68, 70]),
+        weeklyPdfUploader: async (_p, kvKey) => `https://eia.test/img/${kvKey}`,
+      });
+
+      const firstPost = calls.findIndex((c) => c.startsWith("POST"));
+      assert.deepEqual(calls.slice(0, 2), ["DELETE queue:instagram:old", "DELETE queue:threads:old"], "os 2 DELETEs vêm primeiro, na ordem do registro");
+      assert.ok(firstPost >= 2, `nenhum POST antes dos DELETEs: ${calls.join(" | ")}`);
+
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const ig = out.posts.find((p: any) => p.platform === "instagram" && p.destaque === "weekly-clicked");
+      assert.equal(ig.status, "scheduled");
+      assert.equal(ig.worker_queue_key, "queue:instagram:new");
+      assert.equal(ig.scheduled_at, "2027-12-26T19:00:00-03:00");
+      assert.equal(out.posts.filter((p: any) => p.destaque === "weekly-clicked" && p.platform === "instagram").length, 1);
+      const hl = out.posts.find((p: any) => p.destaque === "weekly-highlights");
+      assert.equal(hl.worker_queue_key, "queue:instagram:hl", "o outro modo fica intacto");
+
+      const rotation = readFileSync(rotationPath, "utf8");
+      assert.doesNotMatch(rotation, /2027-12-26/, "linha de domingo (data de publicação do clicked) removida");
+      assert.match(rotation, /2027-12-25/, "linha de sábado preservada");
+    });
+
+    it("DELETE devolve 404 (post já disparou) → aborta sem POST e sem apagar nada do registro", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const before = readFileSync(publishedPath, "utf8");
+      const pool = mockAgent.get("https://worker.test");
+      pool.intercept({ path: "/queue/queue:instagram:old", method: "DELETE" }).reply(404, { error: "not_found" });
+      // Nenhum intercept de POST nem do DELETE do threads: disableNetConnect()
+      // faria qualquer chamada além desta lançar.
+
+      await expectMockedExit(
+        () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
+        1,
+      );
+      assert.equal(readFileSync(publishedPath, "utf8"), before, "registro intocado");
+    });
+
+    it("404 no 2º DELETE → o já cancelado vira 'deleted', o que deu 404 fica 'scheduled', nada é reagendado", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const pool = mockAgent.get("https://worker.test");
+      pool.intercept({ path: "/queue/queue:instagram:old", method: "DELETE" }).reply(200, { deleted: true });
+      pool.intercept({ path: "/queue/queue:threads:old", method: "DELETE" }).reply(404, { error: "not_found" });
+
+      await expectMockedExit(
+        () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
+        1,
+      );
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      assert.equal(out.posts.length, 3, "nenhuma entrada removida");
+      assert.equal(out.posts.find((p: any) => p.platform === "instagram" && p.destaque === "weekly-clicked").status, "deleted");
+      assert.equal(out.posts.find((p: any) => p.platform === "threads").status, "scheduled");
+    });
+
+    it("horário antigo já passou → aborta antes de qualquer DELETE", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const before = readFileSync(publishedPath, "utf8");
+      await expectMockedExit(
+        () =>
+          main(args(saturdayStr), {
+            dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+            now: new Date("2027-12-26T12:00:00Z"), // 09:00 BRT, depois das 08:00 do post antigo
+          }),
+        1,
+      );
+      assert.equal(readFileSync(publishedPath, "utf8"), before);
+    });
+
+    it("--reschedule sem --schedule, ou com --mode both → recusa antes de ler qualquer coisa", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      await expectMockedExit(() => main(["--saturday", saturdayStr, "--mode", "clicked", "--reschedule"], { dataRoot }), 1);
+      await expectMockedExit(() => main(["--saturday", saturdayStr, "--mode", "both", "--schedule", "--reschedule"], { dataRoot }), 1);
+    });
+  });
+
   describe("#8480 (260919): capa sempre 84px (CTA = layout do diário), cards internos sempre 62px — overflow ABORTA em vez de encolher", () => {
     it("capa: card sem foto sempre renderiza fixo em 84px (CTA no layout do diário), mesmo com título curto que ANTES encolheria/cresceria via fill", async () => {
       const saturday = new Date(2027, 11, 25);
