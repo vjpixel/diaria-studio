@@ -81,6 +81,7 @@ describe("executeWeeklyReschedule", () => {
     const r = await executeWeeklyReschedule(targets, {
       deleteQueueKey: async (k) => (calls.push(k), { alreadyGone: false }),
       deleteFacebookPost: async (pg, id) => (calls.push(`${pg}:${id}`), { alreadyGone: false }),
+      now: () => NOW, // #12397: relógio fixo, senão o teste vence quando o relógio real passar de AT
     });
     assert.ok(r.ok);
     assert.deepEqual(calls, ["q:ig", "q:th", "diaria:fb_1"]);
@@ -91,6 +92,7 @@ describe("executeWeeklyReschedule", () => {
     const r = await executeWeeklyReschedule(targets, {
       deleteQueueKey: async (k) => (calls.push(k), { alreadyGone: k === "q:th" }),
       deleteFacebookPost: async () => assert.fail("Facebook não pode ser tentado depois do 404"),
+      now: () => NOW,
     });
     assert.equal(r.ok, false);
     if (!r.ok) {
@@ -107,6 +109,7 @@ describe("executeWeeklyReschedule", () => {
         throw new Error("HTTP 500");
       },
       deleteFacebookPost: async () => assert.fail("não deveria chegar aqui"),
+      now: () => NOW,
     });
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.cancelled.length, 0);
