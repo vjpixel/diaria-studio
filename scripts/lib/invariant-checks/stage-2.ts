@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { describeProvenance, readRunRecord } from "../humanizer-run-record.ts";
 import { hashSocialContent, HUMANIZER_SOCIAL_SENTINEL } from "../humanizer-social-seal.ts"; // #12361
-import { computeSectionHashes } from "../social-lint-rules.ts"; // #12361
+import { computeSectionHashes, isCardsSection } from "../social-lint-rules.ts"; // #12361, #12383
 import { assertHumanized } from "../assert-humanized.ts";
 import { checkSentinel as checkSocialHumanizerSentinel } from "../../check-humanizer-social.ts"; // #6305
 import {
@@ -426,24 +426,45 @@ function checkSocialHumanizerSentinelWritten(editionDir: string): InvariantViola
  * só quando o selo bate com o `03-social.md` atual — selo velho não aceita nada
  * (a regra `social-humanizer-sentinel-written` já acusa o hash divergente).
  */
-function readFreshSealAcceptedHashes(editionDir: string, socialMd: string): Set<string> {
+interface SealView {
+  /** Hashes aceitos sem prova, só quando o selo bate com o texto atual. */
+  accepted: Set<string>;
+  /** O selo bate com o `03-social.md` atual. */
+  fresh: boolean;
+  /**
+   * #12383: o selo foi gravado com `main_d{N}-cards` nos hashes. `false` = selo
+   * anterior à #12383 (edição em curso na transição): o registro dela não tem
+   * prova dos cards, e a falta vira aviso em vez de erro. Sem selo = `true`
+   * (edição nova; a regra `social-humanizer-sentinel-written` já acusa a ausência).
+   */
+  tracksCards: boolean;
+}
+
+function readSealView(editionDir: string, socialMd: string): SealView {
   const sealPath = resolve(editionDir, "_internal", HUMANIZER_SOCIAL_SENTINEL);
-  if (!existsSync(sealPath)) return new Set();
+  if (!existsSync(sealPath)) return { accepted: new Set(), fresh: false, tracksCards: true };
   try {
     const seal = JSON.parse(readFileSync(sealPath, "utf8")) as {
       social_sha256?: unknown;
       accepted_section_hashes?: unknown;
+      cards_sections_tracked?: unknown;
     };
-    if (seal.social_sha256 !== hashSocialContent(socialMd)) return new Set();
+    const tracksCards = seal.cards_sections_tracked === true;
+    if (seal.social_sha256 !== hashSocialContent(socialMd)) return { accepted: new Set(), fresh: false, tracksCards };
     const acc = seal.accepted_section_hashes;
-    if (!acc || typeof acc !== "object") return new Set();
-    return new Set(
-      Object.entries(acc as Record<string, unknown>)
-        .filter(([, reason]) => reason === "formatting" || reason === "unproven_ok")
-        .map(([hash]) => hash),
-    );
+    if (!acc || typeof acc !== "object") return { accepted: new Set(), fresh: true, tracksCards };
+    return {
+      accepted: new Set(
+        Object.entries(acc as Record<string, unknown>)
+          .filter(([, reason]) => reason === "formatting" || reason === "unproven_ok")
+          .map(([hash]) => hash),
+      ),
+      fresh: true,
+      tracksCards,
+    };
   } catch {
-    return new Set(); // selo ilegível: nenhum aceite (fail-closed; a regra do selo acusa)
+    // selo ilegível: nenhum aceite (fail-closed; a regra do selo acusa)
+    return { accepted: new Set(), fresh: false, tracksCards: true };
   }
 }
 
@@ -455,25 +476,37 @@ function checkSocialHumanizerProvenance(editionDir: string): InvariantViolation[
   const socialPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialPath)) return [];
   const socialMd = readFileSync(socialPath, "utf8");
-  const accepted = readFreshSealAcceptedHashes(editionDir, socialMd);
+  const seal = readSealView(editionDir, socialMd);
   const hashes = computeSectionHashes(socialMd);
+  // #12398: com o selo batendo com o texto, o --write não precisa de
+  // --bypass-reason, e o --unproven-ok sozinho já aceita as seções sem prova
+  // (antes a dica saía exit 0 sem efeito). Com o selo divergente, os dois.
+  const keepCmd = seal.fresh
+    ? `\`check-humanizer-social.ts --write --unproven-ok "<motivo>" --edition-dir ${editionDir}/\``
+    : `\`check-humanizer-social.ts --write --bypass-reason "<motivo>" --unproven-ok "<motivo>" --edition-dir ${editionDir}/\``;
   return describeProvenance(socialMd, readRunRecord(editionDir))
     .filter((row) => !row.humanizador || !row.clarice)
     // #12361: seção aceita pelo selo atual (--unproven-ok do editor no gate §2d,
     // ou mudança só de formatação sobre texto provado) não é falta de prova.
-    .filter((row) => !accepted.has(hashes[row.section]))
-    .map((row) => ({
-      rule: "social-humanizer-provenance-recorded",
-      message: `${row.section}: humanizador ${row.humanizador ? "sim" : "NÃO"} · Clarice ${row.clarice ? "sim" : "NÃO"}. ` +
-        "Registre os passos executados com check-humanizer-social.ts --record-run --step humanizador|clarice " +
-        "usando os snapshots pré/pós do arquivo inteiro (Stage 2 §2c); o selo --write sozinho não prova execução. " +
-        "Se o editor editou esta seção no gate e quer manter o texto dele, rode " +
-        '`check-humanizer-social.ts --write --bypass-reason "<motivo>" --unproven-ok "<motivo>"` (#12361).',
-      source_issue: "#12331",
-      // #9619: o post opcional UM não bloqueia os destaques.
-      severity: row.section === "main_um" ? "warning" as const : "error" as const,
-      file: "03-social.md",
-    }));
+    .filter((row) => !seal.accepted.has(hashes[row.section]))
+    .map((row) => {
+      // #12383: cards de edição selada antes de a prova cobri-los não bloqueiam.
+      const legacyCards = isCardsSection(row.section) && !seal.tracksCards;
+      return {
+        rule: "social-humanizer-provenance-recorded",
+        message: `${row.section}: humanizador ${row.humanizador ? "sim" : "NÃO"} · Clarice ${row.clarice ? "sim" : "NÃO"}. ` +
+          "Registre os passos executados com check-humanizer-social.ts --record-run --step humanizador|clarice " +
+          "usando os snapshots pré/pós do arquivo inteiro (Stage 2 §2c); o selo --write sozinho não prova execução. " +
+          `Se o editor editou esta seção no gate e quer manter o texto dele, rode ${keepCmd} (#12361, #12398).` +
+          (legacyCards
+            ? " Aviso, não erro: o selo desta edição é anterior à prova dos cards (#12383)."
+            : ""),
+        source_issue: "#12331",
+        // #9619: o post opcional UM não bloqueia os destaques.
+        severity: row.section === "main_um" || legacyCards ? "warning" as const : "error" as const,
+        file: "03-social.md",
+      };
+    });
 }
 
 /**
