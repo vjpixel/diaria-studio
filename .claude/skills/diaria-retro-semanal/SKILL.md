@@ -121,7 +121,7 @@ atual:
   destravado com API direta (#8083) e finalmente WIRED em `publish-weekly-
   social.ts` pelo #8052, reusando o MESMO texto do Facebook (nenhum
   `formatLinkedInWeekly` foi criado — decisão do editor, briefing 260913b).
-  Desde a #12371 (07/11/2026) o LinkedIn não recebe mais o carrossel de
+  Desde a #12371 (07/11/2026, épica #8055) o LinkedIn não recebe mais o carrossel de
   imagens como formato principal: os mesmos slides saem num documento PDF.
   Ver seção "#5348: expansão pra Facebook e Threads" abaixo pro detalhe
   completo (X nunca foi mencionado de novo).
@@ -264,7 +264,7 @@ atual:
   `LINKEDIN_AUTHOR_URN`, #8052/#8083) também vivem no ambiente do Worker —
   ausentes lá, o Worker recusa documento e carrossel no enqueue e o post
   sai como capa única (#10103), sem afetar os demais canais.
-- Documento PDF do LinkedIn (#12371): o script gera o PDF na hora de
+- Documento PDF do LinkedIn (#12371, épica #8055): o script gera o PDF na hora de
   agendar, a partir dos slides já publicados, grava em
   `data/weekly/{AAMMDD-do-sabado}-{mode}/_internal/06-carousel.pdf` e sobe
   pro KV do Worker do É IA? (`platform.config.json` →
@@ -691,8 +691,10 @@ ordem:
    Worker recusa o pedido com documento (4xx no enqueue), ou quando, já no
    disparo, algum passo falha antes de o post existir ou o
    `POST /rest/posts` volta 4xx. O motivo fica em
-   `document_fallback_reason` no `06-weekly-published.json` (falhas do
-   lado do script) ou no log do Worker, com o alerta `[document-fallback]`
+   `document_fallback_reason` no `06-weekly-published.json` e no alarme
+   `acao` `linkedin-document-fallback`, que abre (ou reusa, pelo código do
+   motivo) uma issue para o editor (falhas do lado do script, #12394), ou
+   no log do Worker, com o alerta `[document-fallback]`
    (falhas no disparo, #12372).
 3. **Capa única** (#10103) — quando o Worker não tem a credencial da API
    direta e recusa também o carrossel (`linkedin_creds_missing`). Fica
@@ -704,10 +706,12 @@ ambígua no `POST /rest/posts` do documento (5xx ou timeout) vira
 `send_unknown` e nada é publicado por cima, porque o post pode já ter
 saído: nesse caso o editor confere o perfil.
 
-**O primeiro disparo real confirma o Development Tier.** Em 07/11/2026 o
-upload do PDF e o `initializeUpload` da Documents API foram validados ao
-vivo no tier de desenvolvimento da Community Management API; o
-`POST /rest/posts` com documento ainda não. Se o tier recusar a criação
+**O primeiro disparo real confirma o Development Tier.** Segundo a
+#12376, o upload do PDF e o `initializeUpload` da Documents API foram
+validados em 07/11/2026; o `POST /rest/posts` com documento no
+Development Tier da Community Management API ainda não foi confirmado ao
+vivo (o corpo da PR #12371, escrito antes, diz que nada foi conferido ao
+vivo). O primeiro disparo real confirma. Se o tier recusar a criação
 do post com 4xx, o Worker publica o carrossel de imagens no próprio
 disparo e o alerta `[document-fallback]` traz o motivo. Depois do primeiro sábado (ou domingo)
 com retro, conferir o post no LinkedIn antes de dar o formato como
