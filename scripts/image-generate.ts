@@ -50,6 +50,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // (que ele interpreta como descrição geral, às vezes induzindo o oposto).
 // #2657: instrução de safe-area central — todos os sujeitos principais agrupados
 // na metade central do frame, visíveis após o crop 1:1 (800×800 do centro de 1600×800).
+// #12309: o crop 1:1 saiu do pipeline no #12226; a frase passou a citar o card
+// 4:5, que é o recorte que existe hoje (a metade central cabe nos 67% do 4:5).
 // #3633: instrução de safe-area VERTICAL — análoga à horizontal do #2657, mas pro
 // eixo vertical. Bug 260717: figura robótica angulosa gerada 3× seguidas com a
 // CABEÇA cortada no topo do frame 1600×800 (2:1) — e por consequência no crop
@@ -66,7 +68,7 @@ export const STYLE_SUFFIX =
   // #4201: nomear a obra ou o motivo, mesmo negando, ancora o modelo nele):
   // telas, céus e superfícies lisas viram campos calmos de cor, pincelada reta.
   "Screens, displays, skies, walls and other flat or smooth surfaces are painted as calm, even fields of color built from straight, parallel brushstrokes that follow the shape of the surface. " +
-  "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible when the image is cropped to a square (1:1); do not place key subjects near the left or right edges. " +
+  "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible when the image is cropped to the portrait 4:5 feed card; do not place key subjects near the left or right edges. " +
   "When the scene includes a standing or upright figure (human, robot, or humanoid character), frame it as a wide shot: the entire figure, including the head and feet, must fit comfortably within the frame with generous empty margin above the head; never crop or cut off the top of the head. " +
   "Compose for later reframing: this single artwork is cropped into a wide format (2:1, which keeps the full width and trims top and bottom) and into portrait formats (4:5 and 9:16, which keep the full height and trim left and right). Every essential element must therefore sit inside the central 67% of the width and the central 59% of the height — the rectangle common to both crops — and never touch any edge. " +
   "Reserve the bottom fifth of the frame as a calm, low-detail area (ground, shadow, plain surface or penumbra) with no faces, hands or key objects, because a headline will later be placed over it; keep that band darker and simpler than the rest of the scene. " +
