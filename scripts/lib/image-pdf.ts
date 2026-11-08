@@ -168,7 +168,8 @@ function latin1(s: string): Uint8Array {
  * Monta o PDF: 1 página por imagem, cada imagem preenchendo a página
  * inteira. Os bytes do JPEG entram sem recompressão (`DCTDecode`), então o
  * PDF tem praticamente o tamanho da soma dos JPEGs — o que importa pro
- * teto de 100MB da Documents API do LinkedIn.
+ * teto de bytes do documento (20MB do Worker do LinkedIn, #12394; quem
+ * confere é `LINKEDIN_DOC_MAX_BYTES` em `gen-weekly-carousel-pdf.ts`).
  *
  * Numeração dos objetos: `1` catálogo, `2` árvore de páginas, e depois 3
  * objetos por página (Page, XObject da imagem, stream de conteúdo).

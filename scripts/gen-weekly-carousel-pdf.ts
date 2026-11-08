@@ -40,9 +40,13 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { buildImagePdf, type ImagePdfPage } from "./lib/image-pdf.ts";
 
-/** Teto da Documents API do LinkedIn — 100MB por documento. Conferido
- *  aqui pra a falha aparecer na geração, não no upload. */
-const LINKEDIN_DOC_MAX_BYTES = 100 * 1024 * 1024;
+/** Teto de bytes do documento — o do Worker que baixa o PDF no disparo
+ *  (`LINKEDIN_DOCUMENT_MAX_BYTES` em `workers/linkedin-cron/src/index.ts`,
+ *  20MB desde o #12372), não os 100MB da Documents API do LinkedIn (#12394).
+ *  Conferido aqui pra a falha aparecer na geração, no enqueue (o script cai
+ *  no carrossel com `pdf_failed:*` e alarme ao editor), e não no disparo.
+ *  Paridade com o Worker travada em `test/gen-weekly-carousel-pdf.test.ts`. */
+export const LINKEDIN_DOC_MAX_BYTES = 20 * 1024 * 1024;
 /** Idem, 300 páginas. Um carrossel semanal tem 6-7, então isto é só uma
  *  rede de segurança contra chamada com a chave errada. */
 const LINKEDIN_DOC_MAX_PAGES = 300;
@@ -187,7 +191,7 @@ export async function buildWeeklyCarouselPdf(
     if (bytesSoFar > LINKEDIN_DOC_MAX_BYTES) {
       throw new Error(
         `gen-weekly-carousel-pdf: os slides já somam ${(bytesSoFar / 1024 / 1024).toFixed(1)}MB, acima do teto de ` +
-          `${LINKEDIN_DOC_MAX_BYTES / 1024 / 1024}MB da Documents API — abortado sem baixar o resto.`,
+          `${LINKEDIN_DOC_MAX_BYTES / 1024 / 1024}MB do Worker do LinkedIn — abortado sem baixar o resto.`,
       );
     }
     pages.push({ jpeg });
@@ -195,7 +199,8 @@ export async function buildWeeklyCarouselPdf(
   const pdf = buildImagePdf(pages);
   if (pdf.length > LINKEDIN_DOC_MAX_BYTES) {
     throw new Error(
-      `gen-weekly-carousel-pdf: PDF com ${(pdf.length / 1024 / 1024).toFixed(1)}MB excede o teto de 100MB da Documents API.`,
+      `gen-weekly-carousel-pdf: PDF com ${(pdf.length / 1024 / 1024).toFixed(1)}MB excede o teto de ` +
+        `${LINKEDIN_DOC_MAX_BYTES / 1024 / 1024}MB do Worker do LinkedIn.`,
     );
   }
   return pdf;

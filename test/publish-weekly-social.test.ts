@@ -52,6 +52,7 @@ import {
   WEEKLY_MIN_ITEMS,
   enqueueWeeklyLinkedIn,
   prepareWeeklyLinkedInDocument,
+  linkedInDocumentFallbackFingerprint,
   main,
 } from "../scripts/publish-weekly-social.ts";
 import { WorkerQueueError } from "../scripts/lib/worker-queue-client.ts";
@@ -2119,6 +2120,98 @@ describe("main(): dispatch mockado", () => {
       assert.equal(readFileSync(publishedPath, "utf8"), before);
     });
 
+    it("#12397: entrada do modo já published (reconciliada) → aborta sem DELETE nem POST, registro intocado", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr, [
+        { platform: "linkedin", destaque: "weekly-clicked", url: "https://lnkd.in/x", status: "published", scheduled_at: OLD_AT, worker_queue_key: "queue:linkedin:old", published_at: "2027-12-26T11:00:03Z" },
+      ]);
+      const before = readFileSync(publishedPath, "utf8");
+      // Nenhum intercept: qualquer DELETE/POST lançaria (disableNetConnect).
+      await expectMockedExit(
+        () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
+        1,
+      );
+      assert.equal(readFileSync(publishedPath, "utf8"), before);
+    });
+
+    it("#12397: entradas do X (scheduled e failed) sobrevivem ao reagendamento; failed do LinkedIn é substituída pela nova", async () => {
+      const saturdayStr = setupWeek();
+      const xScheduled = { platform: "twitter", destaque: "weekly-clicked", url: null, status: "scheduled", scheduled_at: OLD_AT, buffer_post_id: "bf_1" };
+      const publishedPath = seedScheduled(saturdayStr, [
+        xScheduled,
+        { platform: "linkedin", destaque: "weekly-clicked", url: null, status: "failed", scheduled_at: null, reason: "HTTP 500" },
+      ]);
+      const pool = mockAgent.get("https://worker.test");
+      for (const key of ["queue:instagram:old", "queue:threads:old"]) {
+        pool.intercept({ path: `/queue/${key}`, method: "DELETE" }).reply(200, { deleted: true });
+      }
+      pool
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        })
+        .persist();
+
+      await main(args(saturdayStr), {
+        dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+        weeklyPdfBuilder: async () => new Uint8Array([37, 80, 68, 70]),
+        weeklyPdfUploader: async (_p, kvKey) => `https://eia.test/img/${kvKey}`,
+      });
+
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const x = out.posts.filter((p: any) => p.platform === "twitter");
+      assert.deepEqual(x, [xScheduled], "a entrada do X fica exatamente como estava");
+      const li = out.posts.filter((p: any) => p.platform === "linkedin" && p.destaque === "weekly-clicked");
+      assert.equal(li.length, 1);
+      assert.equal(li[0].status, "scheduled");
+      assert.equal(li[0].worker_queue_key, "queue:linkedin:new");
+    });
+
+    it("#12397: margem vencida entre o plano e o DELETE (relógio do cancelamento) → nenhum DELETE, registro intocado", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const before = readFileSync(publishedPath, "utf8");
+      const deletes: string[] = [];
+      const pool = mockAgent.get("https://worker.test");
+      for (const key of ["queue:instagram:old", "queue:threads:old"]) {
+        pool.intercept({ path: `/queue/${key}`, method: "DELETE" }).reply(() => {
+          deletes.push(key);
+          return { statusCode: 200, data: JSON.stringify({ deleted: true }) };
+        });
+      }
+      await expectMockedExit(
+        () =>
+          main(args(saturdayStr), {
+            dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+            now: new Date("2027-12-26T09:00:00Z"), // 06:00 BRT: plano ok (post às 08:00)
+            clock: () => new Date("2027-12-26T10:57:00Z"), // 07:57 BRT na hora do DELETE
+          }),
+        1,
+      );
+      assert.deepEqual(deletes, [], "nenhum DELETE com menos de 5 min até o disparo");
+      assert.equal(readFileSync(publishedPath, "utf8"), before);
+    });
+
+    it("#12397 item 4: overflow de título durante o --reschedule sai com exit 1 (antes 0, sem ter reagendado nada)", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [
+        {
+          n: 1,
+          title: "Superconstitucionalissimamente inconstitucionalizavelmente: palavra que nenhuma quebra de linha consegue dividir, como pode surgir num item de RADAR ou USE MELHOR",
+          url: "https://exemplo.com/d1",
+        },
+      ]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      const publishedPath = seedScheduled(saturdayStr);
+      await expectMockedExit(
+        () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
+        1,
+      );
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      assert.equal(out.posts.find((p: any) => p.platform === "instagram" && p.destaque === "weekly-clicked").status, "scheduled", "agendamento antigo de pé");
+    });
+
     it("--reschedule sem --schedule, ou com --mode both → recusa antes de ler qualquer coisa", async () => {
       const saturdayStr = aammddOf(new Date(2027, 11, 25));
       await expectMockedExit(() => main(["--saturday", saturdayStr, "--mode", "clicked", "--reschedule"], { dataRoot }), 1);
@@ -2882,6 +2975,81 @@ describe("main(): dispatch mockado", () => {
       assert.equal(liEntry.status, "scheduled");
       assert.equal(liEntry.format, "document");
       assert.equal(liEntry.document_url, li.document_url);
+    });
+
+    it("#12394: fallback do documento no enqueue (pdf_failed) → alarme `acao` com fingerprint pelo código do motivo; post segue agendado", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => queueOk(JSON.parse(opts.body as string)))
+        .times(3);
+
+      const findings: any[] = [];
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        {
+          dataRoot,
+          flatCardGenerator: fakeFlatCardGenerator,
+          newsCardGenerator: fakeNewsCardGenerator,
+          weeklyPdfBuilder: async () => {
+            throw new Error("gen-weekly-carousel-pdf: PDF com 22.0MB excede o teto de 20MB do Worker do LinkedIn.");
+          },
+          notify: async (finding) => {
+            findings.push(finding);
+            return { severity: finding.severity, emailPolicy: "urgent_only", emailSent: false };
+          },
+        },
+      );
+
+      assert.equal(findings.length, 1, "um alarme por fallback");
+      assert.equal(findings[0].severity, "acao");
+      assert.equal(findings[0].check, "linkedin-document-fallback");
+      assert.equal(findings[0].fingerprint, "linkedin-document-fallback:pdf_failed", "fingerprint sem a mensagem livre");
+      assert.match(findings[0].body, /teto de 20MB/);
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const liEntry = out.posts.find((p: any) => p.platform === "linkedin");
+      assert.equal(liEntry.status, "scheduled");
+      assert.equal(liEntry.format, "carousel");
+    });
+
+    it("#12394: alarme que lança não derruba o post já agendado", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => queueOk(JSON.parse(opts.body as string)))
+        .times(3);
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        {
+          dataRoot,
+          flatCardGenerator: fakeFlatCardGenerator,
+          newsCardGenerator: fakeNewsCardGenerator,
+          weeklyPdfBuilder: async () => {
+            throw new Error("boom");
+          },
+          notify: async () => {
+            throw new Error("gh fora do ar");
+          },
+        },
+      );
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      assert.equal(out.posts.find((p: any) => p.platform === "linkedin").status, "scheduled");
+    });
+
+    it("#12394: linkedInDocumentFallbackFingerprint usa o código, nunca a mensagem", () => {
+      assert.equal(linkedInDocumentFallbackFingerprint("pdf_failed:KV upload 500 em 12:03"), "linkedin-document-fallback:pdf_failed");
+      assert.equal(linkedInDocumentFallbackFingerprint("document_rejected:400"), "linkedin-document-fallback:document_rejected:400");
+      assert.equal(
+        linkedInDocumentFallbackFingerprint("document_rejected:linkedin_creds_missing"),
+        "linkedin-document-fallback:document_rejected:linkedin_creds_missing",
+      );
+      assert.equal(linkedInDocumentFallbackFingerprint(""), "linkedin-document-fallback:unknown");
     });
 
     it("skip-existing: LinkedIn já 'scheduled' de uma tentativa anterior NÃO é re-tentado", async () => {
