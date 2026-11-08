@@ -74,6 +74,9 @@
  * reagenda pelo fluxo normal. Aborta sem cancelar nada se o horário antigo já
  * passou (ou falta menos de 5 min), e para no 1º DELETE que devolver 404
  * (post já disparou) sem reagendar. Miolo em `scripts/lib/weekly-social-reschedule.ts`.
+ * #12417: antes do 1º DELETE os alvos viram `cancelling` no registro; se a
+ * limpeza falhar (lock ocupado) ou o processo cair no meio, a próxima rodada
+ * com `--schedule` (com ou sem `--reschedule`) retoma o cancelamento e reagenda.
  *
  * `--show-ranking` (#10388, só `clicked`): imprime o ranking elegível
  * completo por taxa + os excluídos. Os grupos de empate (vencedor e quem
@@ -228,11 +231,9 @@ import { notifyEditor } from "./lib/editor-notify.ts";
 import { isNodeTestContext } from "./lib/test-context-guard.ts";
 import { deleteFromWorkerQueue, postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
 import {
+  cancelAndRecordReschedule,
   deleteFacebookScheduledPost,
-  dropRescheduledEntries,
   dropWeekendRotationLines,
-  executeWeeklyReschedule,
-  markCancelledEntries,
   planWeeklyReschedule,
   targetLabel,
   type RescheduleTarget,
@@ -1605,7 +1606,28 @@ async function runOneMode(
   // até lá os canais já agendados seguem com skip=true, então uma falha no
   // caminho não grava `failed` por cima da entrada agendada (o upsert de
   // `appendSocialPosts` apagaria a chave dela).
-  const reschedule = doSchedule && flags.has("reschedule");
+  // #12417: entrada `cancelling` = um --reschedule anterior gravou a intenção
+  // e parou no meio (lock ocupado, kill, OOM). O skip-existing acima não a
+  // pula (não é draft/scheduled), mas redespachar direto duplicaria o post se
+  // o DELETE dela não chegou a acontecer: a rodada agendada retoma o
+  // cancelamento (404 conta como cancelado) e só então reagenda.
+  // `--no-skip-existing` é a escolha explícita de redespachar tudo sem ler o
+  // registro (mesma fronteira do skip-existing acima) e não entra aqui.
+  const resumeCancelling =
+    doSchedule &&
+    skipExisting &&
+    !imagesOnly &&
+    !flags.has("reschedule") &&
+    !flags.has("manifest-only") &&
+    !flags.has("summary-manifest") &&
+    readSocialPublished(publishedPath).posts.some((p) => p.destaque === destaqueKey && p.status === "cancelling");
+  if (resumeCancelling) {
+    console.warn(
+      `AVISO ${destaqueKey}: o registro tem entrada(s) "cancelling" — um --reschedule anterior parou no meio (#12417). ` +
+        `Esta rodada retoma o cancelamento antes de reagendar.`,
+    );
+  }
+  const reschedule = doSchedule && (flags.has("reschedule") || resumeCancelling);
   let rescheduleTargets: RescheduleTarget[] = [];
   if (reschedule) {
     const plan = planWeeklyReschedule(readSocialPublished(publishedPath).posts, destaqueKey, now);
@@ -1929,6 +1951,9 @@ async function runOneMode(
       // #12397: a margem é reavaliada com este relógio logo antes de cada DELETE.
       clock: opts.clock ?? (frozenNow ? () => frozenNow : () => new Date()),
       redispatchFacebookPages: redispatchFbPages.map((pg) => pg.slug),
+      // #12417: mesma regra do alarme do LinkedIn (#8290) — sob o test runner
+      // sem `opts.notify`, nunca abre issue de verdade.
+      notify: opts.notify ?? (isNodeTestContext() ? null : notifyEditor),
     });
     if (!ok) return false;
     skipInstagram = false;
@@ -2278,6 +2303,8 @@ async function cancelForReschedule(args: {
   facebookPagesConfig?: unknown;
   clock: () => Date;
   redispatchFacebookPages: readonly string[];
+  /** #12417 — alarme `acao` se o registro não regravar depois dos DELETEs; `null` = sem alarme. */
+  notify: typeof notifyEditor | null;
 }): Promise<boolean> {
   const { targets, destaqueKey, publishedPath } = args;
   const workerUrl =
@@ -2302,7 +2329,12 @@ async function cancelForReschedule(args: {
   }
 
   const fbApiVersion = process.env.FACEBOOK_API_VERSION || "v25.0";
-  const exec = await executeWeeklyReschedule(targets, {
+  // #12417: intenção `cancelling` antes do 1º DELETE e regravações protegidas
+  // (lock ocupado depois dos DELETEs não perde mais o post em silêncio).
+  // #12397: na limpeza só sai o que o redespacho vai regravar —
+  // `published`/`send_unknown` (barrados no plano) e o X nunca são apagados.
+  const notify = args.notify;
+  const ok = await cancelAndRecordReschedule(targets, destaqueKey, args.redispatchFacebookPages, {
     deleteQueueKey: async (key) => {
       const r = await deleteFromWorkerQueue(workerUrl, workerToken, key, "publish-weekly-social");
       return { alreadyGone: r.alreadyGone };
@@ -2312,28 +2344,16 @@ async function cancelForReschedule(args: {
       return deleteFacebookScheduledPost(fbPostId, pg.token, fbApiVersion);
     },
     now: args.clock,
+    rewrite: (transform) => rewriteSocialPosts(publishedPath, transform),
+    notify: notify
+      ? async (alert) => {
+          await notify(alert, { cwd: ROOT });
+        }
+      : null,
+    log: (line) => console.log(line),
+    error: (line) => console.error(line),
   });
-  for (const t of exec.cancelled) console.log(`CANCELADO ${targetLabel(t)}/${destaqueKey} (era ${t.scheduledAt})`);
-  if (!exec.ok) {
-    console.error(`ERRO ${destaqueKey}: --reschedule abortado — ${exec.reason}`);
-    console.error(
-      `  Nada foi reagendado. A entrada de ${targetLabel(exec.failedTarget)} e as não tentadas seguem no registro como estavam` +
-        (exec.cancelled.length > 0
-          ? `; as já canceladas (${exec.cancelled.map(targetLabel).join(", ")}) ficaram com status "deleted". ` +
-            `Confira os perfis antes de agendar de novo.`
-          : "."),
-    );
-    if (exec.cancelled.length > 0) {
-      rewriteSocialPosts(publishedPath, (posts) => markCancelledEntries(posts, destaqueKey, exec.cancelled));
-    }
-    return false;
-  }
-
-  // #12397: só sai o que o redespacho vai regravar — `published`/`send_unknown`
-  // (barrados no plano) e o X nunca são apagados.
-  rewriteSocialPosts(publishedPath, (posts) =>
-    dropRescheduledEntries(posts, destaqueKey, exec.cancelled, args.redispatchFacebookPages),
-  );
+  if (!ok) return false;
   // Registro auxiliar da medição (#10305): falha aqui não pode impedir o
   // reagendamento — os posts já foram cancelados.
   try {

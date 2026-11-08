@@ -31,6 +31,14 @@
  *      (`markCancelledEntries`) — nada é removido, e o registro não afirma um
  *      agendamento que não existe mais.
  *
+ * #12417: antes do 1º DELETE os alvos viram `status: "cancelling"`
+ * (`markCancellingEntries`), e as regravações do passo 3 são protegidas
+ * (`cancelAndRecordReschedule`): se o lock do registro estiver ocupado ou o
+ * processo cair depois de um DELETE, o registro fica em `cancelling` — nunca
+ * `scheduled` com id já cancelado, que a rodada seguinte pularia em silêncio.
+ * `cancelling` vira alvo `resumed` no plano seguinte (404 conta como
+ * cancelado), e o skip-existing do caller não o pula.
+ *
  * Idempotente: sem entrada `scheduled` do modo (e sem `published`/
  * `send_unknown`), o plano é vazio e o fluxo vira um agendamento normal; rodar `--reschedule` duas vezes cancela o
  * agendamento da 1ª rodada (com as chaves novas) e reagenda de novo.
@@ -60,9 +68,22 @@ export const RESCHEDULE_BLOCKING_STATUSES = ["published", "send_unknown"] as con
 /** Margem mínima até o disparo para aceitar cancelar (default 5 min). */
 export const DEFAULT_RESCHEDULE_MIN_LEAD_MS = 5 * 60 * 1000;
 
+/**
+ * `resumed` (#12417): a entrada já estava `cancelling` no registro — uma
+ * rodada anterior gravou a intenção e caiu (lock, kill, OOM) no meio. O DELETE
+ * dela pode já ter acontecido, então 404 conta como cancelado (a margem até o
+ * disparo é reavaliada antes, então o 404 não é "já disparou").
+ */
 export type RescheduleTarget =
-  | { kind: "worker_queue"; platform: string; key: string; scheduledAt: string }
-  | { kind: "facebook"; platform: "facebook"; page: string; fbPostId: string; scheduledAt: string };
+  | { kind: "worker_queue"; platform: string; key: string; scheduledAt: string; resumed?: boolean }
+  | { kind: "facebook"; platform: "facebook"; page: string; fbPostId: string; scheduledAt: string; resumed?: boolean };
+
+/** #12417: status que vira alvo de cancelamento (o 2º = retomada de rodada interrompida). */
+export const RESCHEDULE_TARGET_STATUSES = ["scheduled", "cancelling"] as const;
+
+function isTargetStatus(status: string): boolean {
+  return (RESCHEDULE_TARGET_STATUSES as readonly string[]).includes(status);
+}
 
 /**
  * `outOfScope`: rótulos (`twitter (scheduled)`) das entradas do modo que o
@@ -139,18 +160,21 @@ export function planWeeklyReschedule(
           `Nada foi cancelado.`,
       };
     }
-    if (p.status !== "scheduled") continue;
+    if (!isTargetStatus(p.status)) continue;
+    // #12417: `cancelling` = rodada anterior interrompida entre a intenção e
+    // a limpeza do registro — retoma o cancelamento (404 vira cancelado).
+    const resumed = p.status === "cancelling";
     const scheduledAt = typeof p.scheduled_at === "string" ? p.scheduled_at : "";
     const lead = rescheduleLeadProblem(`${label}/${destaqueKey}`, scheduledAt, now, minLeadMs);
     if (lead) return { ok: false, reason: `${lead} Nada foi cancelado.` };
     if (p.platform === "facebook") {
       const fbPostId = typeof p.fb_post_id === "string" && p.fb_post_id ? p.fb_post_id : null;
-      if (!fbPostId) return { ok: false, reason: `${label}/${destaqueKey} está scheduled sem fb_post_id — cancele à mão.` };
-      facebook.push({ kind: "facebook", platform: "facebook", page: resolvePostPage(p), fbPostId, scheduledAt });
+      if (!fbPostId) return { ok: false, reason: `${label}/${destaqueKey} está ${p.status} sem fb_post_id — cancele à mão.` };
+      facebook.push({ kind: "facebook", platform: "facebook", page: resolvePostPage(p), fbPostId, scheduledAt, ...(resumed ? { resumed } : {}) });
     } else if ((WORKER_QUEUE_PLATFORMS as readonly string[]).includes(p.platform)) {
       const key = typeof p.worker_queue_key === "string" && p.worker_queue_key ? p.worker_queue_key : null;
-      if (!key) return { ok: false, reason: `${label}/${destaqueKey} está scheduled sem worker_queue_key — cancele à mão.` };
-      queue.push({ kind: "worker_queue", platform: p.platform, key, scheduledAt });
+      if (!key) return { ok: false, reason: `${label}/${destaqueKey} está ${p.status} sem worker_queue_key — cancele à mão.` };
+      queue.push({ kind: "worker_queue", platform: p.platform, key, scheduledAt, ...(resumed ? { resumed } : {}) });
     } else {
       return { ok: false, reason: `${label}/${destaqueKey}: plataforma sem caminho de cancelamento conhecido.` };
     }
@@ -198,6 +222,12 @@ export async function executeWeeklyReschedule(targets: readonly RescheduleTarget
       outcome = t.kind === "facebook" ? await deps.deleteFacebookPost(t.page, t.fbPostId) : await deps.deleteQueueKey(t.key);
     } catch (e) {
       return { ok: false, cancelled, failedTarget: t, reason: `DELETE de ${targetLabel(t)} falhou: ${(e as Error).message}` };
+    }
+    if (outcome.alreadyGone && t.resumed) {
+      // #12417: a rodada interrompida já tinha cancelado este — a margem foi
+      // conferida logo acima, então o 404 não é "o post disparou".
+      cancelled.push(t);
+      continue;
     }
     if (outcome.alreadyGone) {
       return {
@@ -251,7 +281,7 @@ export function dropRescheduledEntries(
 }
 
 function sameTarget(p: PostEntry, t: RescheduleTarget, destaqueKey: string): boolean {
-  if (p.destaque !== destaqueKey || p.status !== "scheduled") return false;
+  if (p.destaque !== destaqueKey || !isTargetStatus(p.status)) return false;
   if (t.kind === "facebook") return p.platform === "facebook" && resolvePostPage(p) === t.page && p.fb_post_id === t.fbPostId;
   return p.platform === t.platform && p.worker_queue_key === t.key;
 }
@@ -267,6 +297,153 @@ export function markCancelledEntries(
   reason = "reschedule_cancelled_then_aborted",
 ): PostEntry[] {
   return posts.map((p) => (cancelled.some((t) => sameTarget(p, t, destaqueKey)) ? { ...p, status: "deleted" as const, reason } : p));
+}
+
+/**
+ * Pure (#12417): grava a INTENÇÃO de cancelar antes do 1º DELETE — as
+ * entradas-alvo viram `status: "cancelling"` (chave, `fb_post_id` e
+ * `scheduled_at` preservados, que é o que a retomada precisa). Se o processo
+ * cair entre um DELETE e a limpeza, o registro não afirma mais um agendamento
+ * que pode não existir: a próxima rodada vê `cancelling`, não pula o canal e
+ * retoma o cancelamento (`planWeeklyReschedule` → `resumed`).
+ */
+export function markCancellingEntries(posts: readonly PostEntry[], destaqueKey: string, targets: readonly RescheduleTarget[]): PostEntry[] {
+  return posts.map((p) => (targets.some((t) => sameTarget(p, t, destaqueKey)) ? { ...p, status: "cancelling" as const } : p));
+}
+
+/**
+ * Pure (#12417): registro depois de um abort no meio. Canceladas viram
+ * `deleted`; alvos NÃO cancelados que esta rodada marcou como `cancelling`
+ * voltam a `scheduled` (o DELETE deles não aconteceu — inclusive o que deu
+ * 404, como antes do #12417). Alvo `resumed` não cancelado fica `cancelling`:
+ * uma rodada anterior pode tê-lo cancelado, o estado segue desconhecido.
+ */
+export function settleAbortedReschedule(
+  posts: readonly PostEntry[],
+  destaqueKey: string,
+  targets: readonly RescheduleTarget[],
+  cancelled: readonly RescheduleTarget[],
+): PostEntry[] {
+  const marked = markCancelledEntries(posts, destaqueKey, cancelled);
+  const notCancelled = targets.filter((t) => !t.resumed && !cancelled.includes(t));
+  return marked.map((p) =>
+    p.status === "cancelling" && notCancelled.some((t) => sameTarget(p, t, destaqueKey)) ? { ...p, status: "scheduled" as const } : p,
+  );
+}
+
+/** Linha legível de um alvo pra saída/alarme: canal + id de cancelamento. */
+export function targetCancelId(t: RescheduleTarget): string {
+  return t.kind === "facebook" ? `facebook:${t.page} fb_post_id=${t.fbPostId}` : `${t.platform} worker_queue_key=${t.key}`;
+}
+
+/** Alarme ao editor (#12417): mesmo formato de `notifyEditor`, injetável. */
+export interface RescheduleRecordAlert {
+  check: string;
+  fingerprint: string;
+  severity: "acao";
+  subject: string;
+  body: string;
+}
+
+export const RESCHEDULE_RECORD_CHECK = "weekly-social-reschedule-record";
+
+export interface RescheduleRecordDeps extends RescheduleDeps {
+  /** Regravação do registro sob lock (`rewriteSocialPosts`); pode lançar (lock ocupado, disco). */
+  rewrite: (transform: (posts: PostEntry[]) => PostEntry[]) => void;
+  /** Alarme `acao` ao editor; `null` = sem alarme (test runner). Falha do alarme nunca lança daqui. */
+  notify: ((alert: RescheduleRecordAlert) => Promise<void>) | null;
+  log: (line: string) => void;
+  error: (line: string) => void;
+}
+
+/**
+ * #12417: cancelamento do `--reschedule` com o registro sempre coerente.
+ *
+ *   1. Marca os alvos `cancelling` (falhou → nada foi cancelado, aborta).
+ *   2. DELETEs (`executeWeeklyReschedule`).
+ *   3. Regrava: abort → `settleAbortedReschedule`; sucesso →
+ *      `dropRescheduledEntries`. A mensagem de "deleted"/"limpo" só sai DEPOIS
+ *      da gravação. Se a gravação falhar (lock ocupado > 10 s, disco), imprime
+ *      em destaque o que foi cancelado, alarma o editor (`acao`) e devolve
+ *      `false`: o registro fica `cancelling`, e a próxima rodada retoma.
+ *
+ * `true` = tudo cancelado e o registro limpo; o caller reagenda.
+ */
+export async function cancelAndRecordReschedule(
+  targets: readonly RescheduleTarget[],
+  destaqueKey: string,
+  redispatchFacebookPages: readonly string[],
+  deps: RescheduleRecordDeps,
+): Promise<boolean> {
+  if (targets.length > 0) {
+    try {
+      deps.rewrite((posts) => markCancellingEntries(posts, destaqueKey, targets));
+    } catch (e) {
+      deps.error(
+        `ERRO ${destaqueKey}: --reschedule abortado antes de cancelar qualquer coisa — não deu pra gravar a intenção ` +
+          `("cancelling") no registro: ${(e as Error).message}. Nada foi cancelado; rode de novo.`,
+      );
+      return false;
+    }
+  }
+
+  const exec = await executeWeeklyReschedule(targets, deps);
+  for (const t of exec.cancelled) deps.log(`CANCELADO ${targetLabel(t)}/${destaqueKey} (era ${t.scheduledAt})`);
+
+  const transform = exec.ok
+    ? (posts: PostEntry[]) => dropRescheduledEntries(posts, destaqueKey, exec.cancelled, redispatchFacebookPages)
+    : (posts: PostEntry[]) => settleAbortedReschedule(posts, destaqueKey, targets, exec.cancelled);
+  if (!exec.ok) deps.error(`ERRO ${destaqueKey}: --reschedule abortado — ${exec.reason}`);
+  try {
+    deps.rewrite(transform);
+  } catch (e) {
+    await reportRecordWriteFailure(destaqueKey, exec.cancelled, (e as Error).message, deps);
+    return false;
+  }
+  if (!exec.ok) {
+    deps.error(
+      `  Nada foi reagendado. A entrada de ${targetLabel(exec.failedTarget)} e as não tentadas seguem no registro como estavam` +
+        (exec.cancelled.length > 0
+          ? `; as já canceladas (${exec.cancelled.map(targetLabel).join(", ")}) ficaram com status "deleted". ` +
+            `Confira os perfis antes de agendar de novo.`
+          : "."),
+    );
+    return false;
+  }
+  return true;
+}
+
+async function reportRecordWriteFailure(
+  destaqueKey: string,
+  cancelled: readonly RescheduleTarget[],
+  message: string,
+  deps: RescheduleRecordDeps,
+): Promise<void> {
+  const list = cancelled.length > 0 ? cancelled.map((t) => `  - ${targetCancelId(t)} (era ${t.scheduledAt})`).join("\n") : "  (nenhum)";
+  const banner =
+    `\n${"=".repeat(72)}\n` +
+    `ERRO ${destaqueKey}: --reschedule ${cancelled.length > 0 ? "CANCELOU posts mas " : ""}NÃO conseguiu regravar o registro (${message}).\n` +
+    `Nada foi reagendado. Cancelados nesta rodada:\n${list}\n` +
+    `O registro ficou com os alvos em "cancelling": a próxima rodada com --schedule (com ou sem --reschedule) ` +
+    `retoma o cancelamento e reagenda. Não apague as entradas à mão.\n` +
+    `${"=".repeat(72)}`;
+  deps.error(banner);
+  if (!deps.notify) return;
+  try {
+    await deps.notify({
+      check: RESCHEDULE_RECORD_CHECK,
+      fingerprint: `${RESCHEDULE_RECORD_CHECK}:${destaqueKey}`,
+      severity: "acao",
+      subject: `Carrossel semanal ${destaqueKey} cancelado e não reagendado (registro não gravou)`,
+      body:
+        `O --reschedule de ${destaqueKey} cancelou os agendamentos abaixo, mas a regravação de \`06-weekly-published.json\` ` +
+        `falhou (${message}). Nada foi reagendado.\n\n${list}\n\n` +
+        `Rode de novo \`publish-weekly-social.ts --mode … --schedule\` (com ou sem --reschedule): as entradas estão em ` +
+        `\`cancelling\` e a rodada retoma o cancelamento antes de reagendar (#12417).`,
+    });
+  } catch (e) {
+    deps.error(`AVISO ${destaqueKey}: alarme ao editor falhou (${(e as Error).message}) — a lista acima é o registro do que foi cancelado.`);
+  }
 }
 
 /**
