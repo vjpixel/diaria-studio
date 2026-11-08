@@ -51,6 +51,7 @@
  */
 
 import { STAGE_INPUT_FILES } from "./replay-stage-input.ts";
+import { RCLONE_CONFLICT_SUFFIX_RE } from "./sync-conflict-copy.ts";
 
 // ---------------------------------------------------------------------------
 // Guard — prefixos/padrões NUNCA elegíveis, goste o caller ou não
@@ -227,6 +228,10 @@ const BACKUP_SIBLING_PATTERNS: readonly RegExp[] = [
   MACHINE_SUFFIX_RE,
   /-fromWindows-\d{6}-\d{4}(?=\.[^./]+$)/i,
   /\.bak(-\d{6}[-\w]*)?$/i,
+  // #12357: cópia de conflito do rclone bisync (`--conflict-loser num`,
+  // Google Drive): `{nome-inteiro}.conflictN`, sufixo DEPOIS da extensão
+  // (`run-log.jsonl.conflict1`). Formato medido em `sync-conflict-copy.ts`.
+  RCLONE_CONFLICT_SUFFIX_RE,
 ];
 
 /** @pure — `true` se `name` (basename, sem diretório) é uma cópia-irmã de
@@ -249,6 +254,7 @@ export function backupSiblingCanonicalName(name: string): string | null {
   let cur = name;
   for (;;) {
     const next = cur
+      .replace(RCLONE_CONFLICT_SUFFIX_RE, "")
       .replace(/\.bak(-\d{6}[-\w]*)?$/i, "")
       .replace(/-safeBackup-\d+(?=\.[^./]+$|$)/i, "")
       .replace(/-fromWindows-\d{6}-\d{4}(?=\.[^./]+$)/i, "")

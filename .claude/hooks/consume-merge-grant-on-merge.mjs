@@ -366,6 +366,12 @@ export function decideConsumeAfterBash(
  * `block-gh-pr-merge-subagent.mjs`. Concessão sem `pr` (genérica) continua
  * casando com qualquer `targetPr`, inclusive `undefined`.
  */
+/** `{nome}.json.conflictN` — cópia de conflito do rclone bisync de um
+ * arquivo de sessão (#12357). Espelho de `RCLONE_CONFLICT_SUFFIX_RE` +
+ * `rcloneConflictOriginalName` (`scripts/lib/sync-conflict-copy.ts`),
+ * restrito a original `.json` com nome não vazio. */
+export const RCLONE_SESSION_CONFLICT_RE = /^.+\.json\.conflict\d+$/;
+
 export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now(), includeBackups = false, targetPr = undefined, repo = undefined) {
   if (typeof sessionId !== "string" || sessionId === "") return null;
   const dir = sessionsDir(repoRoot);
@@ -378,11 +384,17 @@ export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now(), in
   }
   const ledger = readMergeGrantConsumptions(repoRoot); // #11113
   for (const name of entries) {
-    if (!name.endsWith(".json") || name.startsWith(".")) continue;
+    if (name.startsWith(".")) continue;
+    // #12357: a cópia de conflito do rclone bisync (Google Drive) é
+    // `{sessão}.json.conflictN` — não termina em `.json`. Entra no mesmo
+    // caminho das `-safeBackup-` (só com `includeBackups`), espelhando
+    // `rcloneConflictOriginalName` de `scripts/lib/sync-conflict-copy.ts`.
+    const isRcloneConflictCopy = RCLONE_SESSION_CONFLICT_RE.test(name);
+    if (!name.endsWith(".json") && !isRcloneConflictCopy) continue;
     // #6952: as cópias de conflito do OneDrive entram só quando quem chama
     // pede — ver `consumeGrantUnderLock`. O default segue excluindo, pra não
     // mudar em silêncio o que o resto do arquivo considera "o registro".
-    if (!includeBackups && name.includes("-safeBackup-")) continue;
+    if (!includeBackups && (name.includes("-safeBackup-") || isRcloneConflictCopy)) continue;
     const path = join(dir, name);
     let record;
     try {

@@ -2219,6 +2219,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5548",
   },
   {
+    name: "Diaria-GDrive-Sync-Alarm",
+    description:
+      "alarme do rclone bisync do Google Drive (trava persistente, falha persistente, sem sucesso ha 6h) + cota da conta",
+    steps: [{ key: "alarm", script: "scripts/gdrive-sync-alarm.ts" }],
+    logPath: "gdrive-sync-alarm/.alarm.log",
+    // De hora em hora (#12357): o bisync roda a cada 2 min e a trava (exit
+    // 75) alarma depois de 1h, então checar a cada 4h como o do OneDrive
+    // atrasaria o aviso em até 3h. Sem guard de `data/`: os carimbos que o
+    // alarme lê ficam em ~/.cache/diaria/gdrive-bisync, fora do `data/`.
+    // Silencioso em máquina sem o bisync (sem `last-run.json` =
+    // `not-installed`), então o arme automático do
+    // `Diaria-Remediate-Never-Armed-Tasks` antes da instalação da #12356 é
+    // inofensivo: só a cota (`rclone about`, só leitura) é medida.
+    schedule: { kind: "interval", hours: 1 },
+    issue: "#12357",
+  },
+  {
     name: "Diaria-Systemd-Failed-Units-Alarm",
     description:
       "sweep generico de units systemd --user diaria-*.service em estado failed (cobre as ~34 tasks do registro de graca, #5563)",
