@@ -328,8 +328,48 @@ function rawSlug(url: string): string {
   }
 }
 
-export function isNonProductLancamento(url: string, title?: string): boolean {
+/**
+ * #12432: hífens tipográficos (U+2010–U+2015: hífen, hífen não separável,
+ * figure dash, en/em dash, horizontal bar) viram `-` antes de avaliar os sinais.
+ * Títulos oficiais usam U+2011 em nomes de modelo ("GPT‑6") e o `\b`/`-` dos
+ * regexes de versão não casam esse caractere.
+ */
+function normalizeDashes(s: string): string {
+  return s.replace(/[‐-―]/g, "-");
+}
+
+/**
+ * #12432: slug `introducing-{nome}` com nome de modelo versionado
+ * (`introducing-gpt-6-cyber`, `introducing-claude-opus-4-5`) em domínio
+ * OFICIAL (#160) é o padrão de post de lançamento de modelo da OpenAI/afins.
+ * Exige as duas coisas no mesmo segmento do slug: o verbo `introducing` no
+ * início E um sinal de versão depois dele — `introducing-openai-partner-network`
+ * não tem versão e continua caindo no hard-block de programa.
+ *
+ * Só o slug conta (o título é texto de marketing e é justamente o que gerou o
+ * falso positivo: "Advancing the frontier of ..." casava
+ * `POSITIONING_ESSAY_HINTS_RE`). Cobertura de imprensa/agregador/blog pessoal
+ * nunca entra: a checagem de domínio oficial roda aqui dentro, não só no
+ * chamador.
+ */
+const INTRODUCING_SLUG_SEGMENT_RE = /^introduc(?:e|es|ing|ed)-(.+)$/i;
+
+export function isOfficialModelIntroducingSlug(url: string): boolean {
+  if (!isOfficialLancamentoUrl(url)) return false;
+  const segs = normalizeDashes(rawSlug(url)).split("/").filter(Boolean);
+  return segs.some((seg) => {
+    const m = INTRODUCING_SLUG_SEGMENT_RE.exec(seg);
+    return !!m && VERSION_SIGNAL_RE.test(m[1]);
+  });
+}
+
+export function isNonProductLancamento(url: string, rawTitle?: string): boolean {
   const slug = normalizedSlug(url);
+  const title = rawTitle === undefined ? undefined : normalizeDashes(rawTitle);
+  // #12432: lançamento oficial de modelo nomeado no slug — as dicas só-de-título
+  // (ensaio/incidente/case study, `hasNonProductHints`) não anulam o slug. Os
+  // checks de SLUG (governança, pesquisa, programa) continuam valendo abaixo.
+  const titleHintsApply = !isOfficialModelIntroducingSlug(url);
   return (
     NON_PRODUCT_RE.test(slug) ||
     NON_PRODUCT_SLUG_RE.test(slug) ||
@@ -340,7 +380,7 @@ export function isNonProductLancamento(url: string, title?: string): boolean {
     (!!title && (NON_PRODUCT_RE.test(title) || PROGRAM_SIGNAL_RE.test(title))) ||
     // #4336: incidente de segurança / case study de cliente — hard-block mesmo
     // quando PRODUCT_SIGNAL_RE casou um substantivo genérico (agent/gemini/etc).
-    hasNonProductHints(title)
+    (titleHintsApply && hasNonProductHints(title))
   );
 }
 
@@ -434,10 +474,11 @@ function isAnnouncementPostWithAvailabilityTitle(raw: string, title: string): bo
 
 export function hasProductSignal(url: string, title?: string): boolean {
   const norm = normalizedSlug(url);
-  const raw = rawSlug(url);
-  const t = title ?? "";
+  const raw = normalizeDashes(rawSlug(url));
+  const t = normalizeDashes(title ?? "");
   return (
     PRODUCT_PATH_RE.test(raw) ||
+    isOfficialModelIntroducingSlug(url) ||
     isAnnouncementPostWithAvailabilityTitle(raw, t) ||
     // #2493: huggingface.co/blog/{org}/{slug} = org released model/tool on HF
     isHuggingFaceOrgBlogPost(url) ||
