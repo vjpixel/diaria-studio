@@ -70,14 +70,14 @@ async function withRun(input: Partial<FetchDriveVideoInput>, check: (r: { out: A
   }
 }
 
-test("parse: sem --download o CLI só planeja; --download baixa e promove; os dois juntos = erro", () => {
+test("parse: sem --download o CLI só planeja; --download baixa (sem promover, #12275); os dois juntos = erro", () => {
   const plain = parseFetchDriveVideoArgs(["--edition", "261029", "--orientation", "horizontal"], CFG);
   assert.equal(plain.ok && plain.dryRun, true, "o caso do incidente: verificação sem flag não baixa");
   assert.equal(plain.ok && plain.promote, false);
   assert.equal(plain.ok && plain.maxBytes, DEFAULT_MAX_DOWNLOAD_MB * 1e6);
   const dl = parseFetchDriveVideoArgs(["--edition", "261029", "--orientation", "horizontal", "--download", "--max-mb", "500"], CFG);
   assert.equal(dl.ok && dl.dryRun, false);
-  assert.equal(dl.ok && dl.promote, true);
+  assert.equal(dl.ok && dl.promote, false, "#12275: --download não promove sozinho");
   assert.equal(dl.ok && dl.maxBytes, 500e6);
   const promote = parseFetchDriveVideoArgs(["--edition", "261029", "--orientation", "vertical", "--promote"], CFG);
   assert.equal(promote.ok && promote.promote, true);
