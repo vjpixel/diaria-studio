@@ -828,7 +828,7 @@ describe("#12286 review — delimitador de heredoc é a palavra inteira", () => 
     assert.equal(isBranchCreateCheckoutCommand("echo hi # ver <<EOF\ngit checkout -b feat"), true);
     assert.equal(isBranchCreateCheckoutCommand("# <<EOF\ngit switch -c feat\nEOF"), true);
     // `#` no meio de palavra não é comentário: o heredoc abre normalmente.
-    assert.equal(isBranchCreateCheckoutCommand("cat a#b <<EOF\ngit checkout -b x\nEOF"), false);
+    assert.equal(isBranchCreateCheckoutCommand("gh pr comment a#b --body-file - <<EOF\ngit checkout -b x\nEOF"), false);
   });
 
   it("delimitador irreconhecível (vazio, ausente) não abre heredoc", () => {
@@ -860,8 +860,8 @@ describe("#12286 review — só consumidor de texto conhecido pula o corpo", () 
   it("consumidores de texto: o corpo é texto", () => {
     for (const opener of [
       "cat <<EOF",
-      "cat > /tmp/x-12286.md <<'EOF'",
-      "tee /tmp/x <<EOF",
+      "tee <<EOF",
+      "cat -n <<EOF",
       "/usr/bin/cat <<EOF",
       "gh pr comment 1 --body-file - <<'EOF'",
       "npx tsx scripts/gh-pr-review-api.ts reply --pr 1 --body-file - <<'EOF'",
@@ -869,9 +869,8 @@ describe("#12286 review — só consumidor de texto conhecido pula o corpo", () 
       "git commit -F - <<'EOF'",
       "git -c x=y commit --file=- <<EOF",
       "FOO=1 cat <<EOF",
-      "cat <<EOF | tee /tmp/y",
+      "cat <<EOF | tee",
       "cd /tmp && cat <<EOF",
-      "x=$(cat <<EOF",
     ]) {
       assert.equal(isBranchCreateCheckoutCommand(`${opener}\ngit checkout -b feat\nEOF`), false, opener);
     }
@@ -880,6 +879,66 @@ describe("#12286 review — só consumidor de texto conhecido pula o corpo", () 
   it("`npx` sem `tsx` e `git` fora de `commit -F` não são consumidores", () => {
     assert.equal(isBranchCreateCheckoutCommand("npx bash <<EOF\ngit checkout -b feat\nEOF"), true);
     assert.equal(isBranchCreateCheckoutCommand("git commit <<EOF\ngit checkout -b feat\nEOF"), true);
+  });
+});
+
+describe("#12286 re-review — heredoc cuja saída pode virar comando", () => {
+  it("heredoc dentro de `$(...)`/`<(...)`: o corpo é tokenizado", () => {
+    for (const cmd of [
+      "$(cat <<'EOF'\ngit checkout feat-x\nEOF\n)",
+      "eval $(cat <<'EOF'\ngit checkout feat-x\nEOF\n)",
+      "bash <(cat <<'EOF'\ngit checkout feat-x\nEOF\n)",
+      "source <(cat <<'EOF'\ngit checkout feat-x\nEOF\n)",
+      "x=$(cat <<'EOF'\ngit checkout feat-x\nEOF\n)\n$x",
+    ]) {
+      assert.equal(isBranchCreateCheckoutCommand(cmd), true, cmd);
+    }
+  });
+
+  it("`cat`/`tee` gravando arquivo: o corpo é tokenizado (o script pode rodar depois)", () => {
+    for (const cmd of [
+      "cat <<'EOF' > /tmp/f.sh\ngit checkout feat-x\nEOF\nsh /tmp/f.sh",
+      "cat >> /tmp/f.sh <<'EOF'\ngit checkout feat-x\nEOF",
+      "cat <<'EOF' >/tmp/f.sh\ngit checkout feat-x\nEOF",
+      "tee /tmp/f.sh <<'EOF'\ngit checkout feat-x\nEOF\n. /tmp/f.sh",
+      "cat <<EOF | tee /tmp/f.sh\ngit checkout feat-x\nEOF",
+      "cat /tmp/a <<EOF\ngit checkout feat-x\nEOF",
+    ]) {
+      assert.equal(isBranchCreateCheckoutCommand(cmd), true, cmd);
+    }
+  });
+});
+
+describe("#12286 re-review — outros refs e refs que o comando cria", () => {
+  const fx = makeFixture();
+  for (const d of ["origin", "stash", "ups", "dados", "feat"]) mkdirSync(join(fx.main, d), { recursive: true });
+  mkdirSync(join(fx.main, ".git", "refs", "remotes", "origin"), { recursive: true });
+  writeFileSync(join(fx.main, ".git", "refs", "remotes", "origin", "HEAD"), "ref: refs/remotes/origin/master\n", "utf8");
+  writeFileSync(join(fx.main, ".git", "refs", "stash"), "0".repeat(40) + "\n", "utf8");
+  writeFileSync(join(fx.main, ".git", "packed-refs"), `${"1".repeat(40)} refs/remotes/ups/master\n`, "utf8");
+  const rt = makeFixture();
+  mkdirSync(join(rt.main, ".git", "reftable"), { recursive: true });
+  after(() => {
+    rmSync(fx.base, { recursive: true, force: true });
+    rmSync(rt.base, { recursive: true, force: true });
+  });
+
+  it("`refs/remotes/<name>` (loose ou packed) e `refs/<name>` (stash) vencem o path", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout origin", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout ups", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout stash", fx.main), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets("git checkout dados", fx.main), []);
+  });
+
+  it("repo em reftable: não dá para ler os refs → troca", () => {
+    assert.deepEqual(resolveBranchCreateTargets("git checkout scripts", rt.main), [rt.main]);
+  });
+
+  it("comando que cria/move refs antes do checkout não consulta o disco", () => {
+    for (const pre of ["git branch feat", "git fetch origin feat:feat", "git update-ref refs/heads/feat HEAD", "git -C . worktree add ../w", "git tag feat"]) {
+      assert.deepEqual(resolveBranchCreateTargets(`${pre} && git checkout feat`, fx.main), [fx.main], pre);
+    }
+    assert.deepEqual(resolveBranchCreateTargets("git status && git checkout feat", fx.main), []);
   });
 });
 

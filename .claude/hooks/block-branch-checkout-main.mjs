@@ -295,7 +295,15 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
       if (open) {
         pushToken();
         // Segmento a que o heredoc pertence: o corrente, ainda não empurrado.
-        pendingHeredocs.push({ delim: open.delim, dash: open.dash, seg: segments.length });
+        // `inSubst`: aberto dentro de `$(...)`/`<(...)`/`( ... )` — a saída
+        // pode virar comando (`eval $(cat <<EOF`, `bash <(cat <<EOF`), então o
+        // corpo segue tokenizado (review da PR #12433).
+        pendingHeredocs.push({
+          delim: open.delim,
+          dash: open.dash,
+          seg: segments.length,
+          inSubst: parenStack.length > 0,
+        });
         i = open.end;
         continue;
       }
@@ -306,7 +314,8 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
       pushSegment();
       inComment = false;
       const keepBody =
-        lineEndsInPipe || !pendingHeredocs.every((h) => heredocBodyIsText(segments, pipedSegs, h.seg));
+        lineEndsInPipe ||
+        !pendingHeredocs.every((h) => !h.inSubst && heredocBodyIsText(segments, pipedSegs, h.seg));
       let j = i + 1;
       for (const h of pendingHeredocs) {
         // Cada heredoc consome as linhas até o seu terminador, na ordem.
@@ -497,18 +506,26 @@ function heredocBodyIsText(segments, pipedSegs, segIdx) {
 }
 
 /** Comandos que só leem o stdin como texto/dado, nunca como comando de shell. */
-const HEREDOC_TEXT_CONSUMERS = new Set(["cat", "tee", "gh", "node"]);
+const HEREDOC_TEXT_CONSUMERS = new Set(["gh", "node"]);
+/** `cat`/`tee` só contam como texto quando escrevem no stdout (review da PR
+ * #12433): com arquivo (`tee /tmp/f.sh`, `cat > /tmp/f.sh`) o corpo pode
+ * virar script executado depois (`sh /tmp/f.sh`). */
+const HEREDOC_STDOUT_ONLY_CONSUMERS = new Set(["cat", "tee"]);
 
 /** `true` quando o segmento começa (fora atribuições `VAR=x`) por um
- * consumidor de texto: `cat`, `tee`, `gh`, `node`, `npx tsx` ou `git commit
- * -F|--file`. Prefixo (`timeout`, `sudo`, `env`), interpretador (`bash`,
- * `source`, `.`), token dinâmico ou qualquer outro comando → `false`. */
+ * consumidor de texto: `cat`/`tee` sem arquivo nem redirecionamento de
+ * saída, `gh`, `node`, `npx tsx` ou `git commit -F|--file`. Prefixo
+ * (`timeout`, `sudo`, `env`), interpretador (`bash`, `source`, `.`), token
+ * dinâmico ou qualquer outro comando → `false`. */
 function isHeredocTextConsumer(seg) {
   if (!Array.isArray(seg) || seg.length === 0 || seg[0].paren) return false;
   const k = skipAssignments(seg);
   const head = seg[k];
   if (!head || head.dynamic) return false;
   const name = head.value.replace(/^.*[\\/]/, "");
+  if (HEREDOC_STDOUT_ONLY_CONSUMERS.has(name)) {
+    return seg.slice(k + 1).every((t) => !t.dynamic && t.value.startsWith("-") && !t.value.includes(">"));
+  }
   if (HEREDOC_TEXT_CONSUMERS.has(name)) return true;
   if (name === "npx") return seg[k + 1]?.value === "tsx" && !seg[k + 1].dynamic;
   if (name !== "git") return false;
@@ -610,7 +627,12 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
   let cwd = typeof baseCwd === "string" && baseCwd.trim() !== "" ? resolvePath(baseCwd) : UNRESOLVED;
   const stack = [];
   let vars = new Map(home ? [["HOME", home]] : []);
-  for (const seg of tokenizeShellSegments(command, home)) {
+  const segments = tokenizeShellSegments(command, home);
+  // Review da PR #12433: se o mesmo comando cria/atualiza refs (`git branch
+  // docs && git checkout docs`), o estado do disco lido agora não vale para
+  // o checkout — o disco não é consultado e `checkout X` conta como troca.
+  const refsMayChange = segments.some(segmentMutatesRefs);
+  for (const seg of segments) {
     if (seg.length === 1 && seg[0].paren) {
       // Subshell: `cd` e atribuições lá dentro não vazam para fora.
       if (seg[0].value === "(") stack.push({ cwd, vars: new Map(vars) });
@@ -685,9 +707,29 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
     }
     const sub = seg[j]?.value;
     const rest = seg.slice(j + 1).map((t) => t.value);
-    if (changesBranch(sub, rest, target)) targets.push(target);
+    if (changesBranch(sub, rest, refsMayChange ? null : target)) targets.push(target);
   }
   return targets;
+}
+
+/** Subcomandos do git que criam ou movem refs (review da PR #12433). */
+const REF_MUTATING_GIT_SUBS = new Set(["branch", "fetch", "update-ref", "pull", "tag"]);
+
+/** `true` quando o segmento roda `git branch|fetch|update-ref|pull|tag` ou
+ * `git worktree add` (opções globais entre `git` e o subcomando puladas). */
+function segmentMutatesRefs(seg) {
+  if (seg.length === 1 && seg[0].paren) return false;
+  const k = skipAssignments(seg);
+  if (seg[k]?.value !== "git") return false;
+  let j = k + 1;
+  while (j < seg.length && seg[j].value.startsWith("-")) {
+    const v = seg[j].value;
+    j += v === "-C" || GIT_GLOBAL_OPTS_WITH_VALUE.has(v) || GIT_TARGET_OVERRIDE_OPTS.includes(v) ? 2 : 1;
+  }
+  const sub = seg[j]?.value;
+  if (sub === undefined || seg[j].dynamic) return sub !== undefined;
+  if (REF_MUTATING_GIT_SUBS.has(sub)) return true;
+  return sub === "worktree" && seg[j + 1]?.value === "add";
 }
 
 /** Branches para as quais trocar o checkout principal é sempre livre (#12165,
@@ -785,25 +827,31 @@ function isExistingPath(dir, name) {
  * `true` só quando dá para afirmar, sem spawnar git, que `name` NÃO é branch
  * local nem tag no repo de `dir` (#12286, review da PR #12433): com a branch
  * `docs` e a pasta `docs`, `git checkout docs` troca de branch — o git
- * prefere o ref. Lê `refs/heads/<name>`, `refs/tags/<name>` e `packed-refs`
- * no diretório COMUM do repo (worktree linkado: `gitdir:` do arquivo `.git`
- * e o `commondir` dele). Repo ou gitdir que não dá para ler → `false`
- * (fail-closed: na dúvida, conta como troca de branch).
+ * prefere o ref. Lê `refs/<name>`, `refs/{heads,tags,remotes}/<name>` e
+ * `packed-refs` no diretório COMUM do repo (worktree linkado: `gitdir:` do
+ * arquivo `.git` e o `commondir` dele). Repo ou gitdir que não dá para ler,
+ * ou repo em reftable → `false` (fail-closed: na dúvida, conta como troca).
  */
 function isKnownNotRef(dir, name) {
   try {
     if (name.split("/").some((p) => p === "" || p === "." || p === "..")) return false;
     const commonDir = gitCommonDirOf(dir);
     if (commonDir === null) return false;
-    for (const ns of ["heads", "tags"]) {
-      if (existsSync(join(commonDir, "refs", ns, ...name.split("/")))) return false;
+    // reftable: refs num formato binário que este hook não lê → na dúvida, ref.
+    if (existsSync(join(commonDir, "reftable"))) return false;
+    const parts = name.split("/");
+    // `refs/<name>` (ex.: `stash`), `refs/{heads,tags}/<name>` e
+    // `refs/remotes/<name>` (remoto inteiro, `git checkout origin` → HEAD dele).
+    for (const ns of [[], ["heads"], ["tags"], ["remotes"]]) {
+      if (existsSync(join(commonDir, "refs", ...ns, ...parts))) return false;
     }
     const packed = join(commonDir, "packed-refs");
     if (existsSync(packed)) {
-      const wanted = new Set([`refs/heads/${name}`, `refs/tags/${name}`]);
+      const wanted = new Set([`refs/${name}`, `refs/heads/${name}`, `refs/tags/${name}`, `refs/remotes/${name}`]);
+      const remotePrefix = `refs/remotes/${name}/`;
       for (const line of readFileSync(packed, "utf8").split(/\r?\n/)) {
-        const ref = line.split(" ")[1];
-        if (ref !== undefined && wanted.has(ref.trim())) return false;
+        const ref = line.split(" ")[1]?.trim();
+        if (ref !== undefined && (wanted.has(ref) || ref.startsWith(remotePrefix))) return false;
       }
     }
     return true;
