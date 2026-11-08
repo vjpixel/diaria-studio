@@ -242,6 +242,7 @@ import { createHash } from "node:crypto";
 import { buildWeeklyCarouselPdf } from "./gen-weekly-carousel-pdf.ts";
 import { cloudflareKvKey } from "./upload-images-public.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { archiveUploadedFileToR2 } from "./lib/public-images-archive.ts";
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
 import { DEFAULT_WEEKLY_CAROUSEL_TIME, readSocialRotation, weekendRotationSlot } from "./lib/social-schedule-rotation.ts";
@@ -785,7 +786,9 @@ const defaultWeeklyPdfUploader: WeeklyPdfUploader = async (filePath, kvKey) => {
   const kvNamespaceId = platformCfg?.poll?.kv_namespace_id;
   const workerUrl = platformCfg?.poll?.worker_url ?? DIARIA_EIA_URL;
   if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id não configurado (PDF do LinkedIn)");
-  return uploadImageToWorkerKV(filePath, kvKey, { kvNamespaceId, workerUrl });
+  const url = await uploadImageToWorkerKV(filePath, kvKey, { kvNamespaceId, workerUrl });
+  await archiveUploadedFileToR2(filePath, kvKey); // #11412 fatia 3: cópia durável do PDF no R2, nunca lança
+  return url;
 };
 
 /**

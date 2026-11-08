@@ -77,6 +77,31 @@ export function r2KeyForImageKey(key: string): string | null {
 }
 
 /**
+ * #11412 (fatia 3): prefixo do arquivo durável no R2 das keys `/img/` que não
+ * têm a forma `img-{AAMMDD}-…`: os cards e o PDF do carrossel semanal
+ * (`img-unknown-weekly-{sábado}-{modo}-…`, `cloudflareKvKey` sem AAMMDD), as
+ * imagens da Retrospectiva (`img-{AAMM-MM}-…`) e as `img-monthly-*` antigas.
+ * Um segmento `kv` nunca colide com `img/{AAMMDD}/`, que é sempre 6 dígitos.
+ */
+export const R2_KV_ARCHIVE_PREFIX = "img/kv/";
+
+/**
+ * #11412 (fatias 3-4): chave R2 onde mora a cópia durável de uma key `/img/`.
+ * Key com forma `img-{AAMMDD}-…` vai para o MESMO lugar dos uploads novos
+ * (`r2KeyForImageKey`), para haver um só objeto por key; as demais keys
+ * públicas vão para `img/kv/{key}`, com a key inteira no nome.
+ *
+ * `null` para key fora da allowlist (#4112) e para key com barra (a key vem da
+ * URL, e não pode virar caminho arbitrário dentro do bucket). É esta função
+ * que `serveKvImage` usa no fallback: key arquivada e podada do KV continua
+ * servida em `/img/{key}`.
+ */
+export function r2ArchiveKeyForImageKey(key: string): string | null {
+  if (!isPublicImageKey(key) || /[/\\]/.test(key)) return null;
+  return r2KeyForImageKey(key) ?? `${R2_KV_ARCHIVE_PREFIX}${key}`;
+}
+
+/**
  * #5136: distingue keys de imagem com cache-bust por hash
  * (`img-{AAMMDD}-{base}-{md5short}.{ext}`, `md5short` = 8 hex chars
  * minúsculos — ver `cloudflareKvKey` em `scripts/upload-images-public.ts`)
@@ -184,8 +209,8 @@ async function sha256HexOfBytes(buf: ArrayBuffer): Promise<string> {
  * falso negativo.
  *
  * #11412: `r2` (opcional) é o binding do bucket de mídia. Key ausente no KV
- * cai no R2 (`r2KeyForImageKey`); sem o binding, o comportamento é o de antes
- * (404).
+ * cai no R2 (`r2ArchiveKeyForImageKey`: `img/{AAMMDD}/…` ou `img/kv/{key}`);
+ * sem o binding, o comportamento é o de antes (404).
  */
 export async function serveKvImage(
   key: string,
@@ -222,8 +247,10 @@ export async function serveKvImage(
   }
   if (!value) {
     // #11412: KV primeiro (todo e-mail já enviado aponta pra lá); só a key que
-    // o KV não tem vai ao R2, e só quando o Worker tem o binding.
-    const r2Key = r2 ? r2KeyForImageKey(key) : null;
+    // o KV não tem vai ao R2, e só quando o Worker tem o binding. Desde a
+    // fatia 3, também a key arquivada em `img/kv/` (semanal, Retrospectiva),
+    // para que a poda do KV (fatia 4) não derrube URL já enviada.
+    const r2Key = r2 ? r2ArchiveKeyForImageKey(key) : null;
     if (r2 && r2Key) return serveR2Image(key, r2Key, r2, ifNoneMatch, method === "HEAD");
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
