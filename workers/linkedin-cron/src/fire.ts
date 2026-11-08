@@ -8,6 +8,7 @@ import {
   resolveThreadsCreds,
   resolveLinkedInCreds,
 } from "./dispatch";
+import { alertLinkedInDocumentFallback } from "./maintenance";
 
 // ── Cron handler — fira items maduros ──────────────────────────────────────
 
@@ -239,6 +240,10 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       );
       fired++;
       succeeded = true;
+      // #12372 item 2 — o documento falhou e o carrossel saiu no lugar: alerta.
+      if (outcome.documentFallback) {
+        await alertLinkedInDocumentFallback(env, k.name, entry, outcome.documentFallback);
+      }
     } else {
       // outcome.status === "failed" — o claim só é liberado DEPOIS do write-back
       // do container (DO) e do re-put/DLQ da entry (KV) (#11045). Liberar antes

@@ -169,7 +169,9 @@ describe("#8055 fireLinkedInDocument — fallback pro carrossel de imagens", () 
       webhookUrl: "https://make.test/diaria",
       linkedin: CREDS,
     });
-    assert.deepEqual(outcome, { status: "fired" });
+    assert.equal(outcome.status, "fired");
+    // #12372 item 2 — o fallback avisa o caller, com o motivo.
+    assert.match((outcome as { documentFallback?: string }).documentFallback ?? "", /Not enough permissions/);
     const posts = postsCalls(calls);
     assert.equal(posts.length, 1, "um post só — o carrossel");
     assert.deepEqual(JSON.parse(posts[0].body).content, {
@@ -183,7 +185,9 @@ describe("#8055 fireLinkedInDocument — fallback pro carrossel de imagens", () 
       webhookUrl: "https://make.test/diaria",
       linkedin: CREDS,
     });
-    assert.deepEqual(outcome, { status: "fired" });
+    assert.equal(outcome.status, "fired");
+    // #12372 item 2 — o fallback avisa o caller, com o motivo.
+    assert.match((outcome as { documentFallback?: string }).documentFallback ?? "", /não é PDF/);
     assert.equal(calls.filter((c) => c.url.includes("/rest/documents")).length, 0);
     assert.ok(JSON.parse(postsCalls(calls)[0].body).content.multiImage);
   });
@@ -210,7 +214,9 @@ describe("#8055 fireLinkedInDocument — fallback pro carrossel de imagens", () 
       webhookUrl: "https://make.test/diaria",
       linkedin: CREDS,
     });
-    assert.deepEqual(outcome, { status: "fired" });
+    assert.equal(outcome.status, "fired");
+    // #12372 item 2 — o fallback avisa o caller, com o motivo.
+    assert.match((outcome as { documentFallback?: string }).documentFallback ?? "", /HTTP 422/);
     const posts = postsCalls(calls);
     assert.equal(posts.length, 2);
     assert.ok(JSON.parse(posts[0].body).content.media);

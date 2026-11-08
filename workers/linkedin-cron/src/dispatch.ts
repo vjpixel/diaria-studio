@@ -76,7 +76,10 @@ export interface FireConfig {
 }
 
 export type FireOutcome =
-  | { status: "fired" }
+  /** `documentFallback` (#12372 item 2): o post de DOCUMENTO falhou e o
+   *  carrossel de imagens de fallback foi publicado no lugar — o caller
+   *  (cron e alarm) manda o alerta, com o motivo. Ausente = disparo normal. */
+  | { status: "fired"; documentFallback?: string }
   /** Falha transitória — caller deve incrementar retry_count (ou, no caso do
    *  DO, apenas liberar o claim pro cron tentar de novo). */
   /** `reelsContainer` (#10922): container de Reels a retomar na próxima volta
@@ -240,10 +243,11 @@ function resolveImageUrls(entry: QueueEntry): string[] {
  *      "PUBLISHED"`), sem rascunho intermediário.
  *
  * Falha parcial: mesma política do carrossel Instagram (`fireInstagramCarousel`)
- * — qualquer passo que falhar aborta o post inteiro, outcome SEMPRE "dlq",
- * nunca "failed"/retriable. Publicar um carrossel incompleto (ou reprocessar
- * do zero a cada ciclo de retry, recriando uploads já feitos) é pior que não
- * publicar.
+ * — qualquer passo que falhar aborta o post inteiro, outcome "dlq", nunca
+ * "failed"/retriable. Publicar um carrossel incompleto (ou reprocessar do
+ * zero a cada ciclo de retry, recriando uploads já feitos) é pior que não
+ * publicar. Exceção (#12372): 5xx ou timeout/rede no `POST /rest/posts` é
+ * `send_unknown` — o post pode ter saído.
  *
  * Headers exigidos em toda chamada REST do LinkedIn: `Authorization: Bearer
  * {token}`, `LinkedIn-Version: {apiVersion}` (formato YYYYMM) e
@@ -380,16 +384,25 @@ async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds:
     });
     if (postRes.status === 201 || postRes.ok) return { status: "fired" };
     const body = await postRes.text();
+    const why = `POST /rest/posts falhou: HTTP ${postRes.status}: ${body.slice(0, 200)} (images=${imageUrns.join(",")})`;
+    // #12372 item 1 — 4xx é rejeição definitiva (nada publicado): dlq. 5xx é
+    // ambíguo (o LinkedIn pode ter criado o post antes de errar): send_unknown,
+    // que nenhum dos dois caminhos (cron e alarm) refaz — mesmo critério do
+    // `fireLinkedInDocument`. Com `dlq`, o alarm só liberava o claim e o cron
+    // refazia o disparo, podendo duplicar o post.
+    if (postRes.status >= 400 && postRes.status < 500) {
+      return { status: "dlq", reason: `LinkedIn carrossel: ${why}` };
+    }
     return {
-      status: "dlq",
-      reason: `LinkedIn carrossel: POST /rest/posts falhou: HTTP ${postRes.status}: ${body.slice(0, 200)} (images=${imageUrns.join(",")})`,
+      status: "send_unknown",
+      reason: `${SEND_UNKNOWN_PREFIX} LinkedIn carrossel: ${why} — o post pode ter saído; confira a página antes de republicar`,
     };
   } catch (e) {
-    const err = e as Error;
-    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    // #12372 item 1 — timeout/rede no POST que publica: o pedido pode ter
+    // chegado ao LinkedIn. Ambíguo → send_unknown, nunca refeito.
     return {
-      status: "dlq",
-      reason: `LinkedIn carrossel: POST /rest/posts fetch ${timeout ? "timeout" : "failed"}: ${err.message} (images=${imageUrns.join(",")})`,
+      status: "send_unknown",
+      reason: `${SEND_UNKNOWN_PREFIX} LinkedIn carrossel: POST /rest/posts fetch ${fetchFailure(e as Error)} (images=${imageUrns.join(",")}) — o post pode ter saído; confira a página antes de republicar`,
     };
   }
 }
@@ -402,6 +415,37 @@ class DocumentStepError extends Error {}
 
 function fetchFailure(err: Error): string {
   return err.name === "AbortError" || err.name === "TimeoutError" ? "timeout" : `failed: ${err.message}`;
+}
+
+/**
+ * #12372 item 4 — lê o corpo parando assim que passar de `maxBytes`. Sem
+ * `content-length` (ou com um header mentindo), `arrayBuffer()` carregaria o
+ * corpo inteiro antes de qualquer checagem de tamanho, e o isolate do Worker
+ * tem ~128 MB. Estourou o teto: cancela o stream e lança `DocumentStepError`
+ * (nenhum post foi criado, o fallback do carrossel vale).
+ */
+async function readBodyCapped(res: Response, maxBytes: number): Promise<ArrayBuffer> {
+  if (!res.body) return new ArrayBuffer(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new DocumentStepError(`PDF passou de ${maxBytes} bytes (teto do Worker) durante o download`);
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out.buffer;
 }
 
 /**
@@ -425,9 +469,9 @@ async function uploadLinkedInDocument(
     const declared = Number(docRes.headers.get("content-length") ?? "0");
     if (declared > LINKEDIN_DOCUMENT_MAX_BYTES) {
       await docRes.body?.cancel().catch(() => {});
-      throw new DocumentStepError(`PDF com ${declared} bytes excede o teto de ${LINKEDIN_DOCUMENT_MAX_BYTES} da Documents API`);
+      throw new DocumentStepError(`PDF com ${declared} bytes excede o teto de ${LINKEDIN_DOCUMENT_MAX_BYTES} do Worker`);
     }
-    pdfBytes = await docRes.arrayBuffer();
+    pdfBytes = await readBodyCapped(docRes, LINKEDIN_DOCUMENT_MAX_BYTES);
   } catch (e) {
     if (e instanceof DocumentStepError) throw e;
     throw new DocumentStepError(`fetch do PDF (${documentUrl}) ${fetchFailure(e as Error)}`);
@@ -526,7 +570,17 @@ async function fireLinkedInDocument(
     }
     console.warn(`[dispatch] LinkedIn documento: ${why} — fallback: carrossel de ${fallbackImageUrls.length} imagens`);
     const outcome = await fireLinkedInCarousel(fallbackImageUrls, caption, creds);
-    if (outcome.status === "fired") return outcome;
+    // #12372 item 2 — o fallback publicou, mas o documento não: o caller
+    // alarma (`documentFallback`), senão um motivo recorrente fica invisível.
+    if (outcome.status === "fired") return { status: "fired", documentFallback: `LinkedIn documento: ${why}` };
+    // #12372 item 1 — POST do carrossel ambíguo: preservar `send_unknown`
+    // (virar `dlq` aqui deixaria o alarm liberar o claim e o cron refazer).
+    if (outcome.status === "send_unknown") {
+      return {
+        status: "send_unknown",
+        reason: `${SEND_UNKNOWN_PREFIX} LinkedIn documento: ${why}; fallback carrossel: ${outcome.reason.replace(SEND_UNKNOWN_PREFIX, "").trim()}`,
+      };
+    }
     return { status: "dlq", reason: `LinkedIn documento: ${why}; fallback carrossel também falhou: ${outcome.reason}` };
   };
 
