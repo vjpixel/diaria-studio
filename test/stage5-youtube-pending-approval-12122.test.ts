@@ -228,6 +228,7 @@ describe("#12120 podcast no registro do passo do Stage 5", () => {
     assert.equal(youtubeStepLevel({ outcome: "uploaded", podcast_ok: true }), "info");
     assert.equal(youtubeStepLevel({ outcome: "uploaded", podcast_ok: null }), "info");
     assert.equal(youtubeStepLevel({ outcome: "upload-error" }), "warn");
-    assert.equal(youtubeStepLevel({ outcome: "awaiting-approval" }), "info");
+    // #12287: o hold do "pode publicar" deixou de ser `info`.
+    assert.equal(youtubeStepLevel({ outcome: "awaiting-approval" }), "warn");
   });
 });

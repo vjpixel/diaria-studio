@@ -2,16 +2,20 @@
  * short-feed-cover-check.ts (#12100) — a capa chegou ao feed de Shorts?
  *
  * O `thumbnails.set` troca a miniatura 16:9 do Short (`maxresdefault.jpg`), mas
- * o feed de Shorts e a aba Shorts do canal mostram outra imagem,
- * `i.ytimg.com/vi/{id}/oar2.jpg` (1080x1920, proporção original), escolhida à
- * parte: frame automático ou a miniatura posta à mão no app do YouTube. Medido
- * em 04/11/2026: nenhum dos 9 Shorts públicos mostrava a capa no `oar2`.
+ * a aba Shorts do canal mostra outra imagem, escolhida à parte. #12251
+ * (medido pelo editor na rede da página do canal, 04/11/2026): a aba carrega
+ * `i.ytimg.com/vi/{id}/sardefault.jpg` quando o Short tem miniatura vertical
+ * própria e cai no frame automático (`oar2.jpg`/`oar1.jpg`) quando não tem. O
+ * `oar2`, que o #12100 media, é frame automático sempre — por isso ele dava
+ * "frame" até nos 6 Shorts que mostravam a capa na aba. 404 no `sardefault` =
+ * sem capa vertical; 200 não basta (o uIwtuFBqGkg tinha `sardefault` com um
+ * frame), por isso a comparação de imagem continua.
  *
- * Este módulo compara o `oar2` com a capa local (`04-youtube-short-capa.jpg`)
+ * Este módulo compara o `sardefault` com a capa local (`04-youtube-short-capa.jpg`)
  * por hash perceptual de diferença (dHash 16x16, 256 bits). Puro sobre os
  * bytes das imagens; o fetch fica no CLI `scripts/check-short-feed-cover.ts`.
  *
- * Por que dHash e não comparação de pixels: o `oar2` é reencodado pelo YouTube
+ * Por que dHash e não comparação de pixels: a imagem do feed é reencodada pelo YouTube
  * (outra qualidade, às vezes outro tamanho), e a capa local pode ter outra
  * resolução. O hash de gradientes resiste a isso e ainda separa a capa (com o
  * lettering do título no topo) de um frame qualquer do mesmo vídeo.
@@ -54,7 +58,8 @@ export function hashDistance(a: Uint8Array, b: Uint8Array): number {
   return diff / a.length;
 }
 
-export type FeedCoverVerdict = "capa" | "frame-automatico";
+/** #12251: `sem-capa-vertical` = `sardefault.jpg` deu 404 (a aba mostra o frame automático). */
+export type FeedCoverVerdict = "capa" | "frame-automatico" | "sem-capa-vertical";
 
 export interface FeedCoverAssessment {
   verdict: FeedCoverVerdict;
@@ -63,7 +68,7 @@ export interface FeedCoverAssessment {
   threshold: number;
 }
 
-/** Compara a imagem do feed (`oar2.jpg`) com a capa local. */
+/** Compara a imagem do feed (`sardefault.jpg`, #12251) com a capa local. */
 export async function assessFeedCover(feedImage: Buffer, cover: Buffer, threshold = FEED_COVER_MATCH_MAX_DISTANCE): Promise<FeedCoverAssessment> {
   const distance = hashDistance(await dHash(feedImage), await dHash(cover));
   return { verdict: distance <= threshold ? "capa" : "frame-automatico", distance, threshold };
