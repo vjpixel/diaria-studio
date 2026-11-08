@@ -55,6 +55,8 @@ import {
   shortDestinationAccount,
   shortInstagramVideoFileName,
   shortVideoFileName,
+  loadShortScheduleConfig,
+  timerDueTimes,
   type ShortPublishedEntry,
 } from "../scripts/lib/diaria/short-video.ts";
 import {
@@ -635,7 +637,8 @@ describe("#11265 tasks do 300 cobrem os horários do vertical", () => {
     assert.deepEqual(hourly!.schedule, { kind: "interval", hours: 1 });
   });
   it("todo horário do teste fora da hora cheia cai na diária em até 2 min (o resto, na de hora em hora)", () => {
-    const times: string[] = (platformConfig as any).publishing.shorts.schedule.rotation_times;
+    // #12250: inclui default_time e o horário próprio do destino em by_destination.
+    const times = timerDueTimes(loadShortScheduleConfig(platformConfig), "instagram");
     const d = daily!.schedule as { kind: "daily"; hour: number; minute: number };
     for (const t of times) {
       const [h, m] = t.split(":").map(Number);

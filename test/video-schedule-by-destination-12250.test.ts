@@ -15,11 +15,16 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   DEFAULT_SHORT_SCHEDULE_RAW,
+  SCHEDULE_DESTINATION_IDS,
+  listShortDestinations,
   loadShortScheduleConfig,
+  loadShortsConfig,
   planShortSlots,
   resolveShortTime,
+  timerDueTimes,
   type ShortDestination,
 } from "../scripts/lib/diaria/short-video.ts";
+import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import { resolveYouTubeSchedule } from "../scripts/lib/diaria/youtube-video.ts";
 import { extraVerticalTime } from "../scripts/lib/diaria/extra-verticals.ts";
 import { planShortsPublish } from "../scripts/publish-shorts.ts";
@@ -89,6 +94,47 @@ describe("#12250 resolveShortTime por destino", () => {
     }
     assert.throws(() => loadShortScheduleConfig({ publishing: { shorts: { schedule: { ...FIXED, by_destination: { instagram: "12h" } } } } }), /by_destination\.instagram precisa ser HH:MM/);
     assert.throws(() => loadShortScheduleConfig({ publishing: { shorts: { schedule: { ...FIXED, by_destination: ["06:30"] } } } }), /by_destination precisa ser um objeto/);
+  });
+
+  it("loader recusa chave de destino desconhecida (typo `youtube_short`), em vez de cair em silêncio no default_time", () => {
+    const load = (by: Record<string, string>) => loadShortScheduleConfig({ publishing: { shorts: { schedule: { ...FIXED, by_destination: by } } } });
+    for (const bad of ["youtube_short", "Instagram", "linkedin", "facebook:", "facebook: diaria", "threads"]) {
+      assert.throws(() => load({ [bad]: "06:30" }), /destino desconhecido/, bad);
+    }
+    // Ids válidos (inclusive `facebook:{slug}`) passam.
+    const ok = load({ youtube_shorts: "06:30", "facebook:diaria": "12:30", instagram: "12:00", linkedin_profile: "12:00", linkedin_page_repost: "12:00", x: "12:00", tiktok: "12:00", threads_profile: "12:00", facebook_profile: "12:00" });
+    assert.equal(resolveShortTime(ok, "261109", "facebook:diaria").hhmm, "12:30");
+  });
+
+  it("SCHEDULE_DESTINATION_IDS cobre todo id fixo que listShortDestinations emite", () => {
+    // Todos os destinos ligados (só os campos que listShortDestinations lê).
+    const allOn = { facebookPages: ["diaria"], instagram: true, linkedinProfile: true, linkedinPageRepost: true, x: true, tiktok: true, threadsProfile: true, facebookProfile: true };
+    const all = listShortDestinations(allOn as unknown as ReturnType<typeof loadShortsConfig>);
+    assert.equal(all.length, 9);
+    for (const d of all) {
+      if (d.kind === "facebook_page") continue;
+      assert.ok(SCHEDULE_DESTINATION_IDS.has(d.id as never), d.id);
+    }
+  });
+});
+
+describe("#12250 guards de par timer×horário enxergam by_destination", () => {
+  it("timerDueTimes inclui rotation_times, default_time e o horário próprio do destino", () => {
+    const s = loadShortScheduleConfig({ publishing: { shorts: { schedule: { ...FIXED, by_destination: { youtube_shorts: "06:30", instagram: "07:15" } } } } });
+    assert.deepEqual(timerDueTimes(s, "instagram").sort(), ["06:30", "07:15", "08:00", "12:00"]);
+    assert.deepEqual(timerDueTimes(s, "threads_profile").sort(), ["06:30", "08:00", "12:00"]);
+  });
+
+  it("horário próprio fora da hora cheia sem diária logo depois é pego (Instagram 07:15 vs. diária 06:31)", () => {
+    const s = loadShortScheduleConfig({ publishing: { shorts: { schedule: { ...FIXED, by_destination: { youtube_shorts: "06:30", instagram: "07:15" } } } } });
+    const daily = SCHEDULED_TASKS.find((t) => t.name === "Diaria-Shorts-Instagram")!.schedule as { kind: "daily"; hour: number; minute: number };
+    const uncovered = timerDueTimes(s, "instagram").filter((t) => {
+      const [h, m] = t.split(":").map(Number);
+      if (m === 0) return false;
+      const delta = daily.hour * 60 + daily.minute - (h * 60 + m);
+      return !(delta >= 0 && delta <= 2);
+    });
+    assert.deepEqual(uncovered, ["07:15"]);
   });
 });
 

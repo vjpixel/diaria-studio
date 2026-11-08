@@ -1259,6 +1259,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // #12250: teste encerrado; o destino sai no default_time (12:00), coberto pela
     // execução de hora em hora. A diária das 06:3x virou no-op e fica pra não
     // mexer na unit armada no 300 (o horário vem de publishing.shorts.schedule).
+    // O guard do par lê `timerDueTimes` (inclui by_destination.linkedin_profile):
+    // horário próprio fora da hora cheia exige ajustar esta diária.
     schedule: { kind: "daily", hour: 6, minute: 31 },
     issue: "#10982",
   },

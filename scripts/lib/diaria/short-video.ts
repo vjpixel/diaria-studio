@@ -659,6 +659,29 @@ export interface ShortScheduleConfig {
 const HHMM_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 /**
+ * Ids fixos de destino aceitos como chave de `by_destination` (#12250). Espelha
+ * os ids de `ShortDestination` (exceto `facebook:{slug}`, validado por
+ * prefixo): o loader não tem a `ShortsConfig` em mãos, então valida contra o
+ * conjunto fixo. Chave fora dele (ex.: `youtube_short`) é erro, nunca fallback
+ * silencioso pro `default_time`.
+ */
+export const SCHEDULE_DESTINATION_IDS: ReadonlySet<Exclude<ShortDestination["id"], FacebookDestinationId>> = new Set([
+  "youtube_shorts",
+  "instagram",
+  "facebook_profile",
+  "linkedin_profile",
+  "linkedin_page_repost",
+  "x",
+  "tiktok",
+  "threads_profile",
+] as const);
+
+function isScheduleDestinationKey(key: string): boolean {
+  if ((SCHEDULE_DESTINATION_IDS as ReadonlySet<string>).has(key)) return true;
+  return /^facebook:[^\s:]+$/.test(key);
+}
+
+/**
  * Decisão do editor de 05/11/2026 (#12250): YouTube Shorts às 06:30, os
  * outros destinos às 12:00. A rotação de 22/10/2026 (#10831, #10939) fica com
  * a janela encerrada em 261106 (último dia útil antes do #12250).
@@ -699,6 +722,12 @@ export function loadShortScheduleConfig(config: unknown): ShortScheduleConfig {
       throw new Error("[shorts] publishing.shorts.schedule.by_destination precisa ser um objeto { destino: \"HH:MM\" } (#12250).");
     }
     for (const [dest, hhmm] of Object.entries(rawBy as Record<string, unknown>)) {
+      if (!isScheduleDestinationKey(dest)) {
+        throw new Error(
+          `[shorts] publishing.shorts.schedule.by_destination: destino desconhecido "${dest}" — ` +
+            `use um de ${[...SCHEDULE_DESTINATION_IDS].join(", ")} ou facebook:{slug} (#12250; chave errada cairia em silêncio no default_time).`,
+        );
+      }
       if (typeof hhmm !== "string" || !HHMM_RE.test(hhmm)) {
         throw new Error(`[shorts] publishing.shorts.schedule.by_destination.${dest} precisa ser HH:MM (#12250).`);
       }
@@ -752,6 +781,19 @@ export function resolveShortTime(sched: ShortScheduleConfig, aammdd: string, des
     return { hhmm: own, source: "destination", reason: `horário fixo de ${destination} (#12250)` };
   }
   return { hhmm: sched.defaultTime, source: "default", reason: "horário fixo do vertical (#12250)" };
+}
+
+/**
+ * Horários que o timer de um destino do 300 precisa cobrir (#12250): os do
+ * teste rotativo (re-derivação de dias passados), o `default_time` e o horário
+ * próprio do destino em `by_destination`, sem repetição. Os guards de par
+ * timer×horário (`test/shorts-*-timer-*.test.ts`) leem daqui: um horário
+ * próprio fora da hora cheia sem execução diária logo depois quebra o teste,
+ * em vez de sair até ~59 min atrasado pela execução de hora em hora.
+ */
+export function timerDueTimes(sched: ShortScheduleConfig, destination: string): string[] {
+  const own = sched.byDestination[destination];
+  return [...new Set([...sched.rotationTimes, sched.defaultTime, ...(own !== undefined ? [own] : [])])];
 }
 
 /** Todos os horários fixos do vertical fora do teste (`default_time` + `by_destination`), sem repetição (#12250). */
