@@ -56,10 +56,21 @@ export interface ShortCoverRecord {
   /**
    * #12100: só no `thumbnails_set` com `ok: true`. O `ok` diz que a miniatura
    * 16:9 foi trocada; a capa do feed de Shorts (`sardefault.jpg`, #12251) não muda pela API
-   * e fica para o Studio web (`manual`, Passo B3a, #12254).
+   * e fica para o Studio web (`manual`, Passo B3a, #12254). Depois que o agente
+   * aplica o JPG vertical pelo Studio web e confere a persistência, o Passo B3a
+   * de `/diaria-publica-video` troca o valor para `studio_web` (#12436).
    */
-  vertical_feed?: "manual";
+  vertical_feed?: ShortVerticalFeedCover;
 }
+
+/**
+ * #12436: estado da capa do feed de Shorts no registro. `manual` = pendente
+ * (o script grava após o `thumbnails.set`); `studio_web` = aplicada pelo Studio
+ * web e conferida (gravado pelo agente no Passo B3a). Só `manual` gera o aviso
+ * de `youtubeShortsVerticalCoverWarning`.
+ */
+export const SHORT_VERTICAL_FEED_COVER_VALUES = ["manual", "studio_web"] as const;
+export type ShortVerticalFeedCover = (typeof SHORT_VERTICAL_FEED_COVER_VALUES)[number];
 
 export interface ShortCoverSource {
   name: string;
