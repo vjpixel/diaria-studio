@@ -509,6 +509,11 @@ export function renderAgentEvalPrReport(input: AgentEvalPrReportInput): string {
     }
     lines.push(`baseline_ref=${report.baseline_ref} repetitions=${report.repetitions} dry_run=${report.dry_run}`);
     lines.push("");
+    // #12183 item 6: ressalva de leitura (ex.: baseline e candidato medem textos diferentes).
+    for (const c of report.caveats ?? []) {
+      lines.push(`> ${c}`);
+      lines.push("");
+    }
     for (const e of report.editions) {
       lines.push(`### edição ${e.edition}`);
       lines.push("");

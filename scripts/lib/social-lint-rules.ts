@@ -1843,7 +1843,18 @@ export interface ScopedCoverageResult {
  * reescreveu seções que deveriam ficar intactas, colateral fora do escopo).
  *
  * `targetSections` — nomes dentre `main_d1/d2/d3`, `comment_pixel_d1/d2/d3`,
- * `post_pixel` (mesmo vocabulário de checkHumanizerSectionCoverage).
+ * `post_pixel` (mesmo vocabulário de checkHumanizerSectionCoverage), ou
+ * qualquer outro nome que `extractSocialSections` devolva.
+ *
+ * #12183 item 5: o Stage 4 (§4d.1 passo e) pede a re-humanização scoped
+ * "restrita às seções `main_d{N}` e `main_d{N}-cards`", mas `main_d{N}-cards`
+ * não está em `SCOPED_SECTION_NAMES`, e o laço só olhava esse conjunto: o alvo
+ * `main_d1-cards` era ignorado em silêncio (nem tocado, nem não-tocado) e o
+ * script saía OK mesmo com o humanizador pulando os cards. Agora todo alvo
+ * pedido entra na conferência. A mudança de cards FORA do alvo segue sem
+ * acusação (`unexpectedChanges` só cobre `SCOPED_SECTION_NAMES`): incluir os
+ * cards nesse conjunto mexe nos hashes do selo e na prova do Stage 2, e ficou
+ * para a #12383.
  */
 export function checkScopedHumanizerCoverage(
   preMd: string,
@@ -1858,7 +1869,8 @@ export function checkScopedHumanizerCoverage(
   const untouchedTargets: string[] = [];
   const unexpectedChanges: string[] = [];
 
-  for (const name of SCOPED_SECTION_NAMES) {
+  const names = [...new Set<string>([...SCOPED_SECTION_NAMES, ...targetSections])];
+  for (const name of names) {
     const pre = preSections[name];
     const post = postSections[name];
     if (pre === undefined && post === undefined) continue; // seção não existe nesta edição
