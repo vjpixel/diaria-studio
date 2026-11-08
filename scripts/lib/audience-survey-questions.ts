@@ -11,17 +11,26 @@
  * do onboarding: as respostas da survey antiga da Beehiiv (e do Tally) foram
  * descartadas, e `update-audience.ts` ignora qualquer resposta que não venha
  * do formulário (`isOnboardingFormResponse`). Por isso o matcher `sectors`
- * (pergunta que só a survey da Beehiiv tinha) saiu.
+ * (pergunta que só a survey da Beehiiv tinha) saiu, e o `contentTypes` (seções
+ * da newsletter) deu lugar ao `recentUse` quando a pergunta `conteudo` foi
+ * trocada por `uso_recente` (decisão do editor de 08/11/2026).
  *
  * Puro (sem I/O). `test/onboarding-form-questions-10605.test.ts` trava que
  * toda pergunta do formulário cai em exatamente um matcher.
  */
 
-import { FORM_QUESTIONS, splitMultiAnswer, type FormQuestion, type FormResponse } from "./onboarding-form-contract.ts";
+import {
+  FORM_QUESTIONS,
+  isChoiceQuestion,
+  otherTextFieldId,
+  splitMultiAnswer,
+  type FormQuestion,
+  type FormResponse,
+} from "./onboarding-form-contract.ts";
 
 /** Pergunta da survey/formulário → seção do perfil (casamento por texto). */
 export const SURVEY_MATCHERS = {
-  contentTypes: /se[çc][õo]es|tipos? de conte[úu]do/i,
+  recentUse: /para que voc[êe] usou/i,
   areas: /principal [áa]rea de atua[çc][ãa]o/i,
   aiLevel: /n[íi]vel de conhecimento em ia/i,
   englishReading: /texto est[áa] em ingl[êe]s/i,
@@ -71,18 +80,23 @@ export interface FormToSurveyResult {
  * e contada em `unknownAnswers`, para o caller avisar. Uma resposta que fica
  * sem nenhuma resposta aproveitável (todas a perguntas desconhecidas, ou em
  * branco) não vira respondente: sai da lista e conta em `emptyResponses`.
+ * O texto livre do "Outro/Outra" (`{id}_outro`) é pulado em silêncio: não é
+ * pergunta desconhecida, mas também nunca vai para o perfil (que entra em
+ * prompts); lá só conta a opção marcada.
  */
 export function onboardingFormToSurveyResponses(
   responses: readonly FormResponse[],
   questions: readonly FormQuestion[] = FORM_QUESTIONS,
 ): FormToSurveyResult {
   const known = new Map(questions.map((q) => [q.id, q]));
+  const otherTextIds = new Set(questions.filter((q) => isChoiceQuestion(q) && q.otherOption).map(otherTextFieldId));
   let unknownAnswers = 0;
   let emptyResponses = 0;
   const out: SurveyResponseRecord[] = [];
   for (const r of responses) {
     const answers: SurveyAnswerRecord[] = [];
     for (const [id, value] of Object.entries(r.answers)) {
+      if (otherTextIds.has(id)) continue;
       const q = known.get(id);
       if (!q) {
         unknownAnswers++;

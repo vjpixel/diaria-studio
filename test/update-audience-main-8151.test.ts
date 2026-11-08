@@ -67,7 +67,7 @@ const SURVEY_FIXTURE = [
   {
     id: "onboarding-form:1",
     answers: [
-      { question_id: "form:conteudo", question_prompt: "Quais seções da newsletter você mais gosta de ler?", answer: "Tutoriais práticos" },
+      { question_id: "form:uso_recente", question_prompt: "Pense na última vez que algo que você leu na diar.ia.br foi útil. Para que você usou?", answer: "Testei ou passei a usar uma ferramenta" },
       { question_id: "form:nivel_ia", question_prompt: "Qual seu nível de conhecimento em IA?", answer: "Uso casual" },
       { question_id: "form:area", question_prompt: "Qual sua principal área de atuação?", answer: "Tecnologia" },
     ],
@@ -75,7 +75,7 @@ const SURVEY_FIXTURE = [
   {
     id: "onboarding-form:2",
     answers: [
-      { question_id: "form:conteudo", question_prompt: "Quais seções da newsletter você mais gosta de ler?", answer: "Curadoria de novas ferramentas" },
+      { question_id: "form:uso_recente", question_prompt: "Pense na última vez que algo que você leu na diar.ia.br foi útil. Para que você usou?", answer: "Mudei a forma de fazer uma tarefa" },
       { question_id: "form:nivel_ia", question_prompt: "Qual seu nível de conhecimento em IA?", answer: "Entusiasta" },
       { question_id: "form:area", question_prompt: "Qual sua principal área de atuação?", answer: "Educação" },
     ],
@@ -153,7 +153,7 @@ describe("main() — forma do documento gerado (#8151)", () => {
 
       // Survey
       assert.match(doc, /\*\*respondentes survey:\*\* 2/);
-      assert.match(doc, /Tutoriais práticos/);
+      assert.match(doc, /### Uso do que lê\n\n- \*\*Testei ou passei a usar uma ferramenta\*\* — weight 0\.5 \(1 respostas\)/);
       assert.match(doc, /Tecnologia/);
 
       // Rodapé

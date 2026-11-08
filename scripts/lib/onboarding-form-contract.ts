@@ -28,14 +28,21 @@
  * Duas frentes: (1) perfil e interesses, para as notícias refletirem o
  * público; (2) sondagem de produto (que cursos, aulas, guias ou mentorias
  * oferecer). Decisões do editor (/diaria-develop 261108): nível sem jargão;
- * conteúdo perguntado pelas SEÇÕES da newsletter; foco em B2C (preço só por
+ * foco em B2C (preço só por
  * faixas, sem "quem pagaria"; o único sinal B2B é a opção "Treinamento para a
  * equipe da empresa onde trabalho"); tema e preço somem quando a pessoa marca
  * "Nada disso" no que ela faria além da newsletter (`hiddenWhen`); sem
  * pergunta de ferramentas nem de porte de empresa; só nível e área são
- * obrigatórias. Depois das seções, uma pergunta opcional sobre o que a pessoa
- * faz quando o link abre em inglês (`leitura_ingles`, decisão do editor de
- * 08/11/2026). O envio segue travado pelo marcador de texto pendente
+ * obrigatórias. A 3ª pergunta, `uso_recente` (decisão do editor de
+ * 08/11/2026), substituiu a das seções da newsletter (`conteudo`): pergunta
+ * para que a pessoa usou a última coisa útil que leu. Resposta antiga com
+ * `conteudo` continua legível (`parseFormResponsesPayload` guarda qualquer
+ * chave) e é ignorada no perfil, contada como pergunta que não existe mais.
+ * Depois dela, uma pergunta opcional sobre o que a pessoa faz quando o link
+ * abre em inglês (`leitura_ingles`). Área, uso e tema têm a opção
+ * "Outro/Outra" com campo de texto curto (`otherOption`, texto em
+ * `{id}_outro`), que fica só no KV do Worker (lido por `/api/respostas`) e
+ * nunca entra no perfil. O envio segue travado pelo marcador de texto pendente
  * (`formContentGate`) até o editor aprovar o texto final.
  *
  * Desde a decisão 10 do editor (08/11/2026) o perfil de audiência sai SÓ
@@ -70,6 +77,14 @@ export interface ChoiceQuestion extends FormQuestionBase {
   /** Só `checkbox`: opção que não pode ser marcada junto com outras
    *  (ex.: "Nada disso"). Precisa estar em `options`. */
   exclusiveOption?: string;
+  /**
+   * Opção "Outro/Outra" com campo de texto curto acoplado (decisão do editor
+   * de 08/11/2026). Precisa estar em `options`. O texto vai em
+   * `answers[otherTextFieldId(q)]` (`{id}_outro`), só quando esta opção foi
+   * marcada, limpo por `cleanOtherText`. O texto NUNCA entra no perfil de
+   * audiência (o perfil vai para prompts): lá só conta a opção.
+   */
+  otherOption?: string;
 }
 
 /** Pergunta aberta, sempre texto livre truncado em `FORM_ANSWER_MAX_LEN`. */
@@ -128,19 +143,22 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
       "Estudante",
       "Outra",
     ],
+    otherOption: "Outra",
   },
   {
-    id: "conteudo",
-    label: "Quais seções da newsletter você mais gosta de ler?",
-    kind: "checkbox",
-    help: "Pode marcar mais de uma.",
+    id: "uso_recente",
+    label: "Pense na última vez que algo que você leu na diar.ia.br foi útil. Para que você usou?",
+    kind: "select",
     options: [
-      "Destaques (as notícias principais do dia, com contexto)",
-      "Lançamentos (ferramentas e modelos novos)",
-      "Use Melhor (dicas e tutoriais práticos)",
-      "Radar (outras notícias, em poucas linhas)",
-      "É IA? (o jogo de adivinhar se a imagem é de IA)",
+      "Testei ou passei a usar uma ferramenta",
+      "Mudei a forma de fazer uma tarefa",
+      "Levei o assunto para uma conversa ou reunião",
+      "Ajudou numa decisão na empresa ou na equipe",
+      "Outro",
+      "Só fiquei por dentro, sem usar para nada específico",
+      "Não lembro de nenhuma vez",
     ],
+    otherOption: "Outro",
   },
   {
     id: "leitura_ingles",
@@ -184,7 +202,9 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
       "Criar imagens, vídeos e áudio com IA",
       "Como levar IA para dentro de uma empresa",
       "Riscos, ética e regulação",
+      "Outro",
     ],
+    otherOption: "Outro",
   },
   {
     id: "produto_preco",
@@ -209,6 +229,36 @@ export function isQuestionHidden(q: FormQuestion, answers: Readonly<Record<strin
 }
 
 export const FORM_ANSWER_MAX_LEN = 2000;
+
+/** Limite do texto do campo "Outro/Outra" (curto; acima disso é truncado). */
+export const FORM_OTHER_TEXT_MAX_LEN = 120;
+
+/** Sufixo da chave do texto do "Outro/Outra": `answers["area_outro"]`. */
+export const FORM_OTHER_TEXT_SUFFIX = "_outro";
+
+/** Chave (e `name` do campo HTML) do texto do "Outro/Outra" da pergunta `q`. */
+export function otherTextFieldId(q: { id: string }): string {
+  return `${q.id}${FORM_OTHER_TEXT_SUFFIX}`;
+}
+
+/**
+ * @pure — limpa o texto do "Outro/Outra": tira marcação HTML (tags e `<`/`>`
+ * soltos), caracteres de controle e quebras de linha (vira uma linha só, com
+ * espaços colapsados), faz trim e TRUNCA em `FORM_OTHER_TEXT_MAX_LEN` (o
+ * campo já tem `maxlength`, então só um envio fora do navegador passa disso;
+ * truncar não perde a resposta inteira por um excesso). `""` = sem texto.
+ */
+export function cleanOtherText(raw: string): string {
+  return raw
+    .replace(/<\/?[a-zA-Z!][^<>]*>/g, " ")
+    .replace(/[<>]/g, "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, FORM_OTHER_TEXT_MAX_LEN)
+    .trim();
+}
 
 export interface FormSubmission {
   email: string;
@@ -254,6 +304,10 @@ export function normalizeFormEmail(raw: string): string {
  * cuja condição vale (resposta já validada da pergunta de controle) é tratada
  * como ausente: o valor que vier é descartado sem validar (o cliente esconde e
  * desabilita o campo, mas um navegador sem JavaScript ainda pode mandá-lo).
+ * Pergunta com `otherOption`: o texto de `{id}_outro` (opcional) só é gravado
+ * quando essa opção foi marcada, limpo e truncado por `cleanOtherText`; sem a
+ * opção marcada, o texto é descartado sem erro (sem JavaScript o campo
+ * aparece sempre, e a pessoa pode ter digitado e trocado de opção).
  */
 export function parseFormSubmission(
   fields: Readonly<Record<string, string | readonly string[] | undefined>>,
@@ -280,6 +334,7 @@ export function parseFormSubmission(
         return { ok: false, error: `"${q.exclusiveOption}" não combina com outras opções em: ${q.label}` };
       }
       answers[q.id] = chosen.join(FORM_MULTI_SEPARATOR);
+      addOtherText(q, chosen, fields, answers);
       continue;
     }
     const v = firstValue(raw).trim();
@@ -289,8 +344,21 @@ export function parseFormSubmission(
     }
     if (q.kind === "select" && !q.options.includes(v)) return { ok: false, error: `opção inválida em: ${q.label}` };
     answers[q.id] = v.slice(0, FORM_ANSWER_MAX_LEN);
+    if (q.kind === "select") addOtherText(q, [v], fields, answers);
   }
   return { ok: true, submission: { email, answers } };
+}
+
+/** Grava o texto do "Outro/Outra" só se a opção foi marcada e o texto não é vazio. */
+function addOtherText(
+  q: ChoiceQuestion,
+  chosen: readonly string[],
+  fields: Readonly<Record<string, string | readonly string[] | undefined>>,
+  answers: Record<string, string>,
+): void {
+  if (!q.otherOption || !chosen.includes(q.otherOption)) return;
+  const text = cleanOtherText(firstValue(fields[otherTextFieldId(q)]));
+  if (text !== "") answers[otherTextFieldId(q)] = text;
 }
 
 function allValues(v: string | readonly string[] | undefined): string[] {

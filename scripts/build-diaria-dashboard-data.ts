@@ -1085,7 +1085,9 @@ export function buildAudienceSummary(
     const lowerLine = line.toLowerCase();
     if (line.startsWith("###")) {
       // Detect subsection headings (case-insensitive, tolerant of accents stripped in fixtures)
-      // "### Conteúdo preferido" (survey antiga) e "### Seções preferidas" (formulário do onboarding, #10605).
+      // "### Conteúdo preferido" (survey antiga) e "### Seções preferidas" (formulário do onboarding v1,
+      // #10605) — legado: só aparecem em perfil herdado/antigo. "### Uso do que lê" (v2, pergunta
+      // `uso_recente`) NÃO é preferência de conteúdo: cai no reset abaixo, nunca em `content`.
       if ((lowerLine.includes("conte") || /se[çc][õo]es/.test(lowerLine)) && lowerLine.includes("preferid")) { currentSection = "content"; continue; }
       if (lowerLine.includes("nível") || lowerLine.includes("nivel") || lowerLine.includes("conhecimento")) { currentSection = "knowledge"; continue; }
       if (lowerLine.includes("setor")) { currentSection = "sectors"; continue; }

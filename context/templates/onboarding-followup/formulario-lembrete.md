@@ -14,8 +14,8 @@ da base e não respondeu, 30 dias depois do último e-mail do formulário, no
 máximo 3 vezes por pessoa. Por isso o texto fala em "um formulário que
 mandei", sem citar qual dos dois convites a pessoa recebeu.
 -->
-<p>Pixel de novo. Há um tempo mandei um formulário curto sobre você e sobre o que você gosta de ler na diar.ia.br, e ainda não vi sua resposta por aqui.</p>
-<p>São oito perguntas, quase todas de marcar. Com as respostas eu ajusto o que entra nas edições e passo a mandar mais do que você marcar.</p>
+<p>Pixel de novo. Há um tempo mandei um formulário curto sobre você e sobre como você usa a diar.ia.br, e ainda não vi sua resposta por aqui.</p>
+<p>São oito perguntas, quase todas de marcar. Com as respostas eu ajusto o que entra nas edições.</p>
 <p><a target="_blank" rel="noopener noreferrer nofollow" class="link" href="{{FORM_URL}}">Responder agora</a></p>
 <p>Depois que você responder, este lembrete para. Se preferir não responder, tudo bem: a newsletter continua igual.</p>
 <p>Pixel</p>

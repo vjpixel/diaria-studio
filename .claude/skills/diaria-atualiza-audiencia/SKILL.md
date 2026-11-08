@@ -19,7 +19,7 @@ npx tsx scripts/audience-run.ts --dry-run  # lê e conta, não grava nada
 O script (`scripts/audience-run.ts`, #5192, reescrito no #10605):
 - Lê `GET onboarding.followup.form_responses_url` com o token de `ONBOARDING_FORM_TOKEN` (`.env`/Doppler).
 - Converte as respostas para o formato de `data/audience-raw.json` (sem e-mail no id; texto livre só como contagem no perfil).
-- Grava `data/audience-raw.json` e roda `update-audience.ts` (spawn), que arquiva o profile atual em `docs/audience-history/{YYYY-MM-DD}.md` e gera o novo `context/audience-profile.md`: CTR (seção 1), seções preferidas e nível (seção 2), área de atuação (seção 3) e interesse em produtos (seção 4).
+- Grava `data/audience-raw.json` e roda `update-audience.ts` (spawn), que arquiva o profile atual em `docs/audience-history/{YYYY-MM-DD}.md` e gera o novo `context/audience-profile.md`: CTR (seção 1), uso do que lê, nível e leitura de links em inglês (seção 2), área de atuação (seção 3) e interesse em produtos (seção 4).
 - Imprime o topo do arquivo gerado (stdout) para confirmação.
 
 **Só rodar depois de haver respostas do formulário novo** (o 1º lote do D+6 ou o e-mail da base saiu e alguém respondeu): antes disso o script aborta por zero respostas. Resposta que só tem perguntas que não existem mais (ou só campos em branco) não conta como respondente.

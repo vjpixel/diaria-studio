@@ -129,6 +129,26 @@ export function carryOverDeclaredSections(previousMd: string | null | undefined)
 }
 
 /**
+ * #10605 (decisão do editor de 08/11/2026): para que o leitor usou a última
+ * coisa útil que leu (`uso_recente`, substituiu a pergunta das seções), no
+ * início da seção 2. Vazio quando ninguém respondeu. "Outro" entra só como
+ * contagem: o texto livre fica no Worker e nunca vem para o perfil.
+ * Termina com linha em branco porque o bloco seguinte começa no título.
+ */
+export function renderRecentUseBlock(responses: BeehiivResponse[]): string[] {
+  const entries = countAnswers(responses, SURVEY_MATCHERS.recentUse);
+  if (entries.length === 0) return [];
+  return [
+    "### Uso do que lê",
+    "",
+    ...entries.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
+    "",
+    "> **Como usar:** mostra o que o público faz com o que lê. É só informativo: não muda a pontuação das notícias enquanto o editor não decidir uma regra.",
+    "",
+  ];
+}
+
+/**
  * #10605 (decisão do editor de 08/11/2026): o que o leitor faz quando o link
  * abre em inglês, dentro da seção 2. Vazio quando ninguém respondeu (respostas
  * anteriores à pergunta), para o perfil não ganhar um título sem dado.
@@ -1002,7 +1022,6 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
   // ─── Section 2: Survey (secondary) ────────────────────────────────────────
 
   if (surveyResponses.length > 0) {
-    const contentTypes = countAnswers(surveyResponses, SURVEY_MATCHERS.contentTypes);
     const areas = countAnswers(surveyResponses, SURVEY_MATCHERS.areas);
     const aiLevel = countAnswers(surveyResponses, SURVEY_MATCHERS.aiLevel);
 
@@ -1012,10 +1031,7 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
       "",
       `Fonte secundária: ${surveyResponses.length} respondentes do formulário do onboarding. Usar para calibrar tom e vocabulário, não para priorizar temas.`,
       "",
-      "### Seções preferidas",
-      "",
-      ...contentTypes.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
-      "",
+      ...renderRecentUseBlock(surveyResponses),
       "### Nível de conhecimento em IA",
       "",
       ...aiLevel.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),

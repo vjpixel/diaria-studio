@@ -15,9 +15,25 @@
  * (`HIDE_SCRIPT`) esconde e DESABILITA os campos quando a opção está marcada:
  * campo desabilitado não vai no POST. Sem JavaScript as perguntas aparecem, e
  * o servidor descarta a resposta escondida do mesmo jeito (`parseFormSubmission`).
+ *
+ * Pergunta com `otherOption` ("Outro/Outra", decisão do editor de 08/11/2026)
+ * ganha um campo de texto curto (`{id}_outro`, `maxlength`
+ * `FORM_OTHER_TEXT_MAX_LEN`) logo abaixo da opção (rádio/caixa) ou do menu
+ * suspenso, dentro de `<span class="other" data-other-for data-other-opt>`.
+ * Progressive enhancement: sem JavaScript o campo aparece sempre (o servidor
+ * descarta o texto se a opção não foi marcada); com JavaScript, o mesmo
+ * script só mostra e habilita o campo quando a opção está marcada.
  */
 
-import { FORM_ANSWER_MAX_LEN, FORM_QUESTIONS, isChoiceQuestion, type FormQuestion } from "../../../scripts/lib/onboarding-form-contract.ts";
+import {
+  FORM_ANSWER_MAX_LEN,
+  FORM_OTHER_TEXT_MAX_LEN,
+  FORM_QUESTIONS,
+  isChoiceQuestion,
+  otherTextFieldId,
+  type ChoiceQuestion,
+  type FormQuestion,
+} from "../../../scripts/lib/onboarding-form-contract.ts";
 import { FORM_PAGE_MARKER } from "../../../scripts/lib/onboarding-form-link-sig.ts";
 
 /** Acima disso uma pergunta de escolha única vira menu suspenso. */
@@ -40,7 +56,10 @@ const STYLE = [
   ".help{color:var(--muted);font-size:.9rem;margin:0 0 8px}",
   ".opt{display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer}",
   ".opt input{width:20px;height:20px;margin:3px 0 0;flex:none;accent-color:var(--accent)}",
-  "input[type=email],select,textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--fg)}",
+  // `[hidden]` explícito: o `display:block` da classe venceria o atributo `hidden` do script.
+  ".other{display:block;margin:2px 0 8px 30px}.other[hidden]{display:none}",
+  "select+.other{margin:10px 0 0}",
+  "input[type=email],input[type=text],select,textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--fg)}",
   "textarea{min-height:110px}",
   "button{width:100%;font:inherit;font-weight:bold;padding:14px;border:0;border-radius:999px;background:var(--accent);color:#fff;cursor:pointer;margin-top:8px}",
 ].join("");
@@ -54,14 +73,34 @@ export function renderPage(body: string): string {
   );
 }
 
-/** Esconde/desabilita as perguntas com `hiddenWhen` conforme a resposta de controle. */
+/**
+ * Esconde/desabilita as perguntas com `hiddenWhen` conforme a resposta de
+ * controle e, DEPOIS (a ordem importa: reabrir uma pergunta reabilita todos os
+ * campos dela), mostra o campo do "Outro/Outra" só com a opção marcada (e
+ * habilitada) — o campo escondido fica desabilitado e não vai no POST.
+ */
 export const HIDE_SCRIPT =
   "(function(){var f=document.querySelector('form');if(!f)return;" +
   "function u(){var l=f.querySelectorAll('fieldset[data-hide-q]');for(var i=0;i<l.length;i++){var fs=l[i];" +
   "var c=f.querySelectorAll('input[name=\"'+fs.getAttribute('data-hide-q')+'\"]:checked'),on=false;" +
   "for(var j=0;j<c.length;j++)if(c[j].value===fs.getAttribute('data-hide-opt'))on=true;" +
-  "fs.hidden=on;var x=fs.querySelectorAll('input,select,textarea');for(var k=0;k<x.length;k++)x[k].disabled=on;}}" +
+  "fs.hidden=on;var x=fs.querySelectorAll('input,select,textarea');for(var k=0;k<x.length;k++)x[k].disabled=on;}" +
+  "var o=f.querySelectorAll('.other[data-other-for]');for(var m=0;m<o.length;m++){var w=o[m],v=w.getAttribute('data-other-opt')," +
+  "e=f.querySelectorAll('[name=\"'+w.getAttribute('data-other-for')+'\"]'),s=false;" +
+  "for(var n=0;n<e.length;n++){var y=e[n];if(!y.disabled&&(y.tagName==='SELECT'?y.value===v:y.checked&&y.value===v))s=true;}" +
+  "w.hidden=!s;var t=w.querySelectorAll('input');for(var p=0;p<t.length;p++)t[p].disabled=!s;}}" +
   "f.addEventListener('change',u);u();})();";
+
+/** Campo de texto curto do "Outro/Outra" (sempre visível sem JavaScript). */
+function otherTextField(q: ChoiceQuestion): string {
+  if (!q.otherOption) return "";
+  const tid = escapeHtml(otherTextFieldId(q));
+  return (
+    `<span class="other" data-other-for="${escapeHtml(q.id)}" data-other-opt="${escapeHtml(q.otherOption)}">` +
+    `<input type="text" id="${tid}" name="${tid}" maxlength="${FORM_OTHER_TEXT_MAX_LEN}" ` +
+    `placeholder="Qual? (opcional)" aria-label="${escapeHtml(q.otherOption)}: qual? (opcional)"></span>`
+  );
+}
 
 function fieldsetOpen(q: FormQuestion): string {
   if (!q.hiddenWhen) return "<fieldset>";
@@ -87,14 +126,15 @@ function renderQuestion(q: FormQuestion): string {
         const oid = `${id}-${i}`;
         // `required` em rádio vale para o grupo; em caixa exigiria todas, então não vai.
         const r = type === "radio" ? req : "";
-        return `<label class="opt" for="${oid}"><input type="${type}" id="${oid}" name="${id}" value="${escapeHtml(o)}"${r}><span>${escapeHtml(o)}</span></label>`;
+        const opt = `<label class="opt" for="${oid}"><input type="${type}" id="${oid}" name="${id}" value="${escapeHtml(o)}"${r}><span>${escapeHtml(o)}</span></label>`;
+        return o === q.otherOption ? opt + otherTextField(q) : opt;
       })
       .join("");
     return `${fs}<legend>${escapeHtml(q.label)}</legend>${help}${items}</fieldset>`;
   }
   const label = `<label class="q" for="${id}">${escapeHtml(q.label)}</label>`;
   const options = opts.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
-  return `${fs}${label}${help}<select id="${id}" name="${id}"${req}><option value="">Escolha uma opção</option>${options}</select></fieldset>`;
+  return `${fs}${label}${help}<select id="${id}" name="${id}"${req}><option value="">Escolha uma opção</option>${options}</select>${otherTextField(q)}</fieldset>`;
 }
 
 /** Página do formulário para o e-mail do link assinado (#10657): o e-mail e a
@@ -112,7 +152,7 @@ export function renderFormHtml(email: string, sig: string, questions: readonly F
       `<p class="intro">Respondendo como <strong>${escapeHtml(email)}</strong>.</p>` +
       questions.map(renderQuestion).join("") +
       `<button type="submit">Enviar respostas</button></form>` +
-      (questions.some((q) => q.hiddenWhen) ? `<script>${HIDE_SCRIPT}</script>` : ""),
+      (questions.some((q) => q.hiddenWhen || (isChoiceQuestion(q) && q.otherOption)) ? `<script>${HIDE_SCRIPT}</script>` : ""),
   );
 }
 
