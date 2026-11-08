@@ -25,6 +25,7 @@ import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 import { readMarker } from "../pipeline-state.ts";
+import { CLARICE_PENDING_REL, readClaricePending, resumeCommandFor } from "../clarice-pending.ts"; // #12257
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
 import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
@@ -4201,6 +4202,33 @@ export function checkSocialInviteDrift(editionDir: string): InvariantViolation[]
   return [{ rule: "social-invite-drift", message, source_issue: "#10835", severity: "warning", file: path }];
 }
 
+/**
+ * #12257: o Stage 2 seguiu sem a Clarice (`clarice-correct.ts` exit 6,
+ * `clarice_unavailable`) e gravou `02-reviewed.md` a partir do texto
+ * humanizado via `clarice-pending.ts skip`. O marcador só sai quando a
+ * revisão é retomada com sucesso (`clarice-pending.ts resume`). Warning, não
+ * error: publicar sem a Clarice é decisão do editor no gate, e a mensagem traz
+ * o comando de retomada.
+ */
+function checkClaricePending(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, CLARICE_PENDING_REL);
+  if (!existsSync(path)) return [];
+  const marker = readClaricePending(editionDir);
+  const reason = marker?.reason ?? "motivo ilegível no marcador";
+  const resume = resumeCommandFor(editionDir, marker?.edition);
+  return [
+    {
+      rule: "clarice-pending",
+      message:
+        `clarice não rodou (${reason}): 02-reviewed.md saiu do texto humanizado, sem a revisão da Clarice. ` +
+        `Retomar antes de aprovar: ${resume}`,
+      source_issue: "#12257",
+      severity: "warning",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "newsletter-html-not-behind-reviewed",
@@ -4644,6 +4672,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkApprovedItemRemoval,
   },
+  {
+    id: "clarice-pending",
+    description: "revisão da Clarice pendente: o Stage 2 gravou 02-reviewed.md sem a Clarice (API indisponível) e o marcador _internal/02-clarice-pending.json continua (#12257, warning-only)",
+    source_issue: "#12257",
+    stage: 4,
+    run: checkClaricePending,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -4693,4 +4728,5 @@ export {
   checkKitFixtureAudit,
   checkUseMelhorTempoTitleHeuristicShare,
   checkApprovedItemRemoval,
+  checkClaricePending,
 };

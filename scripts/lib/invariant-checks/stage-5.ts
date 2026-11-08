@@ -17,6 +17,7 @@ import { checkPublicImagesMd5MatchesLocal } from "../public-images-md5-check.ts"
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
 import { loadDoc } from "../../update-stage-status.ts";
 import { isKitReviewStatus, KIT_REVIEW_FILENAME } from "../kit-review-record.ts"; // #9594
+import { CLARICE_PENDING_REL, readClaricePending } from "../clarice-pending.ts"; // #12257
 import {
   loadFacebookPagesConfig,
   readFacebookCredentialsFile,
@@ -1048,7 +1049,41 @@ export function checkYouTubeStepRan(editionDir: string): InvariantViolation[] {
   ];
 }
 
+/**
+ * #12257: a newsletter vai ser publicada sem a revisão da Clarice — o Stage 2
+ * seguiu sem ela (`clarice-pending.ts skip`) e nenhum `resume` a aplicou até
+ * aqui. No fluxo interativo o editor já viu o aviso no gate 4; em
+ * `--no-gates`/headless o gate foi auto-aprovado e este é o último ponto em
+ * que a pendência aparece antes do envio. Warning em qualquer fase (não
+ * `postDispatchOnly`), nunca bloqueia: publicar sem a Clarice é decisão já
+ * tomada no gate (ou pelo modo sem gates). O playbook do Stage 5 manda logar
+ * e pôr a linha no resumo.
+ */
+function checkClaricePendingAtPublish(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, CLARICE_PENDING_REL);
+  if (!existsSync(path)) return [];
+  const reason = readClaricePending(editionDir)?.reason ?? "motivo ilegível no marcador";
+  return [
+    {
+      rule: "clarice-pending-at-publish",
+      message:
+        `newsletter sai SEM a revisão da Clarice (${reason}): o marcador ${CLARICE_PENDING_REL} continua. ` +
+        "Se o gate 4 foi auto-aprovado (--no-gates), ninguém decidiu isso ao vivo — avisar o editor no resumo.",
+      source_issue: "#12257",
+      severity: "warning",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_5_RULES: InvariantRule[] = [
+  {
+    id: "clarice-pending-at-publish",
+    description: "newsletter publicada sem a revisão da Clarice: _internal/02-clarice-pending.json ainda existe no Stage 5 (#12257, warning-only, qualquer fase)",
+    source_issue: "#12257",
+    stage: 5,
+    run: checkClaricePendingAtPublish,
+  },
   {
     id: "sync-code-ran",
     description: "Passo -3 (sync-code.ts --edition-dir) rodou e o código não ficou defasado (#8690)",
@@ -1256,4 +1291,5 @@ export {
   checkTwitterCredsSet,
   checkStageUsageCaptured,
   checkPendingResearchUnresolved,
+  checkClaricePendingAtPublish,
 };
