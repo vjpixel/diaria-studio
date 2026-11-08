@@ -37,9 +37,15 @@ LOCAL="${GDRIVE_LOCAL:-$MOUNT/GoogleDrive}"
 REMOTE="${GDRIVE_REMOTE:-gdrive:}"
 SENTINEL="${GDRIVE_SENTINEL:-.diaria-bisync-sentinel}"
 FILTERS_SRC="${GDRIVE_FILTERS:-$(dirname "$0")/gdrive-bisync-filters.txt}"
-# O bisync grava o MD5 dos filtros em `{arquivo}.md5` ao lado dele. Copiar
-# pra fora do checkout compartilhado evita o `.md5` untracked no repo e que
-# um checkout de outra branch troque os filtros embaixo do sync.
+# Filtro INSTALADO (#12396): o bisync roda sempre com a cópia em
+# `$STATE_DIR/filters.txt`, nunca com o arquivo do checkout. Ele grava o MD5
+# dos filtros em `{arquivo}.md5` ao lado dele e recusa toda rodada cujo filtro
+# mudou até alguém rodar `--resync`. Por isso a cópia só é (re)instalada numa
+# rodada `--resync` real (ou quando ainda não existe): uma troca de branch no
+# checkout compartilhado do `300`, um `--dry-run` manual ou o merge de uma PR
+# que mexa em `DATA_LOCAL_ONLY_PATTERNS` não trocam mais o filtro embaixo do
+# sync. Fora do `--resync`, filtro do checkout diferente do instalado vira só
+# aviso no log, e a rodada segue com o instalado.
 STATE_DIR="${GDRIVE_STATE_DIR:-$HOME/.cache/diaria/gdrive-bisync}"
 FILTERS="$STATE_DIR/filters.txt"
 MAX_DELETE="${GDRIVE_MAX_DELETE:-5}"
@@ -47,8 +53,12 @@ RCLONE_BIN="${RCLONE_BIN:-$HOME/.local/bin/rclone}"
 MOUNTPOINT_CMD="${GDRIVE_MOUNTPOINT_CMD:-mountpoint -q}"
 
 DRY_RUN=0
+RESYNC=0
 for a in "$@"; do
-  case "$a" in --dry-run|-n) DRY_RUN=1 ;; esac
+  case "$a" in
+    --dry-run|-n) DRY_RUN=1 ;;
+    --resync|-1|--resync-mode|--resync-mode=*) RESYNC=1 ;;
+  esac
 done
 
 # Grava um carimbo de forma atômica (tmp + mv). Falha de escrita só avisa:
@@ -85,8 +95,40 @@ if [ ! -f "$FILTERS_SRC" ]; then
   echo "gdrive-bisync: arquivo de filtros $FILTERS_SRC ausente" >&2
   finish 75
 fi
-mkdir -p "$STATE_DIR"
-if ! cmp -s "$FILTERS_SRC" "$FILTERS"; then cp "$FILTERS_SRC" "$FILTERS"; fi
+if ! mkdir -p "$STATE_DIR"; then
+  echo "gdrive-bisync: nao consegui criar $STATE_DIR — sync abortado (#12396)" >&2
+  finish 75
+fi
+
+# Copia o filtro do checkout pra $1, conferindo o retorno: um `cp` que falha
+# (disco cheio, permissão) nunca deixa a rodada seguir com outro filtro.
+install_filters() {
+  if ! cp "$FILTERS_SRC" "$1.tmp" || ! mv "$1.tmp" "$1"; then
+    echo "gdrive-bisync: falha ao instalar o filtro em $1 — sync abortado (#12396)" >&2
+    finish 75
+  fi
+}
+
+if [ ! -f "$FILTERS" ]; then
+  # 1ª rodada nesta máquina: não há filtro instalado a preservar. Sem
+  # `--resync` o bisync recusa mesmo assim (não há listagem nem `.md5`).
+  if [ "$DRY_RUN" -eq 1 ]; then
+    FILTERS="$STATE_DIR/filters.dry-run.txt"
+  fi
+  install_filters "$FILTERS"
+elif ! cmp -s "$FILTERS_SRC" "$FILTERS"; then
+  if [ "$RESYNC" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
+    echo "gdrive-bisync: --resync instala o filtro de $FILTERS_SRC (#12396)" >&2
+    install_filters "$FILTERS"
+  elif [ "$RESYNC" -eq 1 ]; then
+    # `--resync --dry-run`: pré-visualiza com o filtro novo numa cópia à
+    # parte, sem tocar o instalado (que o timer segue usando).
+    FILTERS="$STATE_DIR/filters.dry-run.txt"
+    install_filters "$FILTERS"
+  else
+    echo "gdrive-bisync: aviso — $FILTERS_SRC difere do filtro instalado ($FILTERS); seguindo com o instalado. Pra adotar o novo, rode uma vez com --resync, timer parado (#12396)" >&2
+  fi
+fi
 
 "$RCLONE_BIN" bisync "$REMOTE" "$LOCAL" \
   --check-access --check-filename "$SENTINEL" \

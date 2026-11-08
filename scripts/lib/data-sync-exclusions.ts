@@ -12,7 +12,10 @@
  *      `scripts/systemd/gdrive-bisync-filters.txt`, com cada padrão escopado
  *      à pasta `diaria-studio-data` dentro do Drive (`renderGdriveDataFilterBlock`).
  *      `test/data-sync-exclusions-12357.test.ts` trava a paridade entre o
- *      arquivo e esta lista.
+ *      arquivo e esta lista. Mudar esta lista NÃO muda o sync em curso: o
+ *      `gdrive-bisync.sh` só instala o filtro novo numa rodada `--resync`
+ *      (#12396); até lá o timer segue com o filtro instalado e só avisa a
+ *      divergência no journal.
  *
  * Por que escopar no Drive e não no OneDrive: no OneDrive o `sync_list` do
  * `300` só traz `diaria-studio-data`, então um padrão global de `skip_file`
