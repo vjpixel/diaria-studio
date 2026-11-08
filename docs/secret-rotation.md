@@ -114,13 +114,14 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 - **Qual token é o de produção:** token de **usuário do sistema** (`SYSTEM_USER`), usuário `vjpixel`, app **Vigil.ia.br**, **sem expiração**. Conferido na renovação da #11731 (02/11/2026).
 - **Onde NÃO gerar:** no Graph API Explorer. O Explorer devolve token de usuário comum, que expira em horas — o Instagram para de publicar no dia seguinte, sem aviso antes do disparo.
 - **Onde gerar:**
-  1. [Meta Business Settings](https://business.facebook.com/settings) → **Usuários** → **Usuários do sistema** → `vjpixel`.
+  1. [Meta Business Settings](https://business.facebook.com/settings): a página pede para escolher o portfólio (**Diar.ia**) e redireciona para `business.facebook.com/latest/settings/system_users` → **Usuários do sistema** → `vjpixel` (caminho conferido na renovação da #12348, 08/11/2026).
   2. **Gerar novo token** → app **Vigil.ia.br** → expiração **Nunca**.
-  3. Permissões: `instagram_basic`, `instagram_content_publish` e `instagram_manage_comments` (sem esta o 1º comentário do 4º post não sai e o post usa a linha da bio, #11731). Antes de gerar, colar o token atual no [Access Token Debugger](https://developers.facebook.com/tools/debug/accesstoken/) e marcar no novo pelo menos os mesmos escopos que ele lista (os `pages_*` que vierem junto são o caminho do token até a conta do Instagram, pela Página vinculada).
-  4. Conferir que o usuário do sistema tem a Página da diar.ia.br e a conta do Instagram atribuídas como ativos (mesma tela, **Atribuir ativos**); sem isso o token sai válido mas sem acesso à conta.
+  3. Permissões exigidas: `instagram_basic`, `instagram_content_publish`, `instagram_manage_comments` (sem esta o 1º comentário do 4º post não sai e o post usa a linha da bio, #11731), `instagram_manage_insights` e `read_insights` (sem estas duas a métrica `follower_count` do IG Insights responde `(#10) Application does not have permission for this action`, Fase 2 da #8260). Na tela de permissões, as `pages_*` e as de publicação já vêm marcadas; as duas de insights não: buscar cada uma pelo nome no seletor e marcar à mão. A Meta pede para **adicionar ao app** as permissões que o app ainda não tinha antes de liberar o **Gerar**. Antes de gerar, colar o token atual no [Access Token Debugger](https://developers.facebook.com/tools/debug/accesstoken/) e marcar no novo pelo menos os mesmos escopos que ele lista (os `pages_*` que vierem junto são o caminho do token até a conta do Instagram, pela Página vinculada).
+  4. **O token só aparece uma vez.** Copiar com o botão **Copiar** da própria tela, antes de fechar o diálogo, e colar direto no Doppler; fechou sem copiar, é gerar outro.
+  5. Conferir que o usuário do sistema tem a Página da diar.ia.br e a conta do Instagram atribuídas como ativos (mesma tela, **Atribuir ativos**); sem isso o token sai válido mas sem acesso à conta.
 - **Onde atualizar (os 3 destinos, sempre juntos):**
   1. **Doppler** — `INSTAGRAM_ACCESS_TOKEN` no vault, depois `npm run sync-env` em cada máquina (`docs/doppler-env-sync.md`).
-  2. **`.env` do Neo e do 300** — confirmar que o `sync-env` levou o valor novo às duas máquinas (o `.env` atrasa em relação ao vault quando o sync não roda).
+  2. **`.env` do Neo e do 300** — confirmar que o `sync-env` levou o valor novo às duas máquinas (o `.env` atrasa em relação ao vault quando o sync não roda). O `sync-env` aborta (`LocalOnlyEnvKeysError`, sem escrever nada) quando o `.env` da máquina tem chave que não está no vault e não está em `MACHINE_LOCAL_ENV_KEYS` (`scripts/sync-env.ts`; hoje `GOOGLE_APPLICATION_CREDENTIALS`, `DOPPLER_MCP_TOKEN` e `DIARIA_VIDEO_CACHE_DIR`, esta desde a #12430). O `.env` do 300 é o candidato mais provável a cair nisso. A mensagem lista as chaves; subir a chave pro vault ou, se ela é mesmo local daquela máquina, incluí-la em `MACHINE_LOCAL_ENV_KEYS`. `--force` sobrescreve e tira a chave do `.env` (fica só no `.env.bak`).
   3. **Secret do Worker** — `cd workers/linkedin-cron && npx wrangler secret put INSTAGRAM_ACCESS_TOKEN`. O Worker não lê o `.env`: esquecer este passo deixa o agendamento (o caminho padrão do Stage 5) com o token velho.
 - **Como testar (só leitura, não publica nada):**
   ```bash
@@ -128,6 +129,13 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
   npx tsx scripts/probe-instagram-comment-scope.ts --edition-dir data/editions/{AAMMDD}/ --source worker  # token do Worker
   ```
   esperado: `granted: true` nas duas origens em `_internal/instagram-comment-scope.json`. Para conferir tipo e expiração, colar o token no [Access Token Debugger](https://developers.facebook.com/tools/debug/accesstoken/): `Type: System User` e `Expires: Never`.
+
+  Pela API, sem colar o token em página nenhuma (o `debug_token` aceita o próprio token como `access_token`; ler o token do `.env`/Doppler numa variável de shell, nunca escrevê-lo em arquivo ou comando salvo):
+  ```bash
+  curl -s "https://graph.facebook.com/v25.0/debug_token?input_token=$INSTAGRAM_ACCESS_TOKEN&access_token=$INSTAGRAM_ACCESS_TOKEN"
+  curl -s -o /dev/null -w "%{http_code}\n" "https://graph.facebook.com/v25.0/$INSTAGRAM_BUSINESS_ACCOUNT_ID/insights?metric=follower_count&period=day&access_token=$INSTAGRAM_ACCESS_TOKEN"
+  ```
+  esperado: no `debug_token`, `is_valid: true`, `type: "SYSTEM_USER"`, `expires_at: 0` e os 5 escopos do passo 3 em `scopes`; no `follower_count`, `200`. Erro `#10` no segundo = faltou `instagram_manage_insights`/`read_insights`.
 - **Sinais de expiração/token errado:** DLQ do Worker com `OAuthException`/`code: 190` em itens `channel="instagram"`; `granted: false` no probe do Stage 4.
 - **Downtime esperado:** 5-10 minutos (gerar + Doppler + `wrangler secret put`).
 - **Cadência sugerida:** sem rotação ativa (token não expira); rotacionar se houver vazamento, se a app mudar ou se o usuário do sistema perder um ativo.
