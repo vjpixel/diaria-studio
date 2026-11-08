@@ -97,10 +97,15 @@ export interface SyncEnvOptions {
  *   gravado por `scripts/materialize-google-ads-credentials.ts`.
  * - `DOPPLER_MCP_TOKEN`: token do MCP do Doppler, lido por
  *   `scripts/mcp/mcp-wrapper-core.mjs`.
+ * - `DIARIA_VIDEO_CACHE_DIR`: diretório do cache em disco do
+ *   `video-montagem` (#12365), um subdiretório do HD montado na máquina;
+ *   lido por `scripts/video-montagem.ts`, `scripts/check-video-env.ts` e
+ *   `scripts/prune-video-montage-cache.ts` (#12430).
  */
 export const MACHINE_LOCAL_ENV_KEYS: readonly string[] = [
   "GOOGLE_APPLICATION_CREDENTIALS",
   "DOPPLER_MCP_TOKEN",
+  "DIARIA_VIDEO_CACHE_DIR",
 ];
 
 /**
