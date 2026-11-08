@@ -8,7 +8,11 @@
  * Sinal canônico: presença + resolução do junction `data/` como diretório
  * acessível. A junction aponta para
  * `~/OneDrive/Documentos/diaria-studio-data` e só existe localmente — num
- * clone fresco de cloud o path `data/` simplesmente não existe.
+ * clone fresco de cloud o path `data/` simplesmente não existe. Depois do
+ * cutover pro Google Drive (#12359) o alvo passa a ser a pasta do Drive
+ * (`/mnt/hd-sata/GoogleDrive/.../diaria-studio-data` no `300`); o sinal não
+ * olha o caminho, só se ele resolve, e vale igual pros dois backends. Qual
+ * backend é: `detectDataSyncBackend` abaixo (#12357).
  *
  * Por que este sinal?
  * - É o pré-requisito explícito de TODA skill (`data/` é criado 1x por máquina
@@ -40,7 +44,7 @@
  * @see CLAUDE.md § Label `local` — critério e comportamento das skills
  */
 
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { isMainModule } from "./cli-args.ts";
@@ -73,6 +77,69 @@ export function detectExecMode(opts: ExecModeOptions = {}): ExecMode {
     // ENOENT (clone fresco), EACCES, junction quebrada → cloud
     return "cloud";
   }
+}
+
+// ---------------------------------------------------------------------------
+// Backend de sync de `data/` (#12357)
+// ---------------------------------------------------------------------------
+
+/**
+ * Qual cliente de sync mantém o `data/` desta máquina. Eixo separado de
+ * `ExecMode`: `detectExecMode` só pergunta se `data/` resolve como diretório
+ * (e por isso já aceita qualquer alvo, OneDrive ou Google Drive, sem mudança);
+ * este responde ONDE o alvo mora, pelo caminho real do symlink/junction.
+ *
+ * Existe pela transição OneDrive → Google Drive (épica #12353, cutover
+ * simultâneo nas 3 máquinas na #12359): até lá as duas formas convivem, e o
+ * alarme de sync do Drive (`scripts/gdrive-sync-alarm.ts`) usa este eixo pra
+ * saber se o sync parado já derruba o `data/` (prioridade maior) ou só a
+ * cópia do Drive no HD.
+ *
+ * - `onedrive`: um segmento do caminho é `OneDrive` (`~/OneDrive/...`,
+ *   `C:\Users\x\OneDrive\...`), `OneDrive - {org}` ou `OneDrive-{conta}`
+ *   (`~/Library/CloudStorage/OneDrive-Personal`).
+ * - `gdrive`: `/mnt/hd-sata/GoogleDrive/...` (rclone bisync do `300`,
+ *   #12356) ou qualquer segmento `GoogleDrive`/`Google Drive`/
+ *   `GoogleDrive-{conta}` (`~/GoogleDrive`, macOS
+ *   `~/Library/CloudStorage/GoogleDrive-{email}/...`), ou a unidade `G:` do
+ *   Drive for desktop no Windows (`G:\Meu Drive\...`; também `My Drive`/
+ *   `Mi unidad` em qualquer letra de unidade).
+ * - `unsynced`: `data/` existe mas o alvo não é de nenhum dos dois (clone
+ *   com `data/` criado à mão, container de cloud).
+ * - `absent`: `data/` não existe ou não resolve.
+ */
+export type DataSyncBackend = "onedrive" | "gdrive" | "unsynced" | "absent";
+
+const ONEDRIVE_SEGMENT_RE = /^OneDrive(?:$| - |-)/i;
+const GDRIVE_SEGMENT_RE = /^(?:GoogleDrive(?:$|-)|Google Drive$)/i;
+const GDRIVE_MY_DRIVE_SEGMENT_RE = /^(?:My Drive|Meu Drive|Mi unidad)$/i;
+
+/** Pura — classifica o caminho REAL (já resolvido) do `data/`. */
+export function classifyDataSyncBackend(realPath: string): Exclude<DataSyncBackend, "absent"> {
+  const norm = realPath.replace(/\\/g, "/");
+  const segments = norm.split("/").filter((s) => s.length > 0);
+  if (segments.some((s) => ONEDRIVE_SEGMENT_RE.test(s))) return "onedrive";
+  if (/^G:(\/|$)/i.test(norm)) return "gdrive";
+  if (segments.some((s) => GDRIVE_SEGMENT_RE.test(s) || GDRIVE_MY_DRIVE_SEGMENT_RE.test(s))) return "gdrive";
+  return "unsynced";
+}
+
+export interface DataSyncBackendOptions {
+  /** Substituto de `fs.realpathSync` para testes. */
+  realpathFn?: (path: string) => string;
+  projectRoot?: string;
+}
+
+/** Resolve o `data/` do projeto e classifica o backend. Nunca lança. */
+export function detectDataSyncBackend(opts: DataSyncBackendOptions = {}): DataSyncBackend {
+  const { realpathFn = realpathSync, projectRoot = process.cwd() } = opts;
+  let real: string;
+  try {
+    real = realpathFn(join(projectRoot, "data"));
+  } catch {
+    return "absent";
+  }
+  return classifyDataSyncBackend(real);
 }
 
 // ---------------------------------------------------------------------------

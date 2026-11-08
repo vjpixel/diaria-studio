@@ -29,10 +29,10 @@ skip_file = "~*|.~*|*.tmp|*.swp|*.partial"
 Adicionar os padrões de arquivo transitório/append-only que causaram o loop de integrity failure:
 
 ```
-skip_file = "~*|.~*|*.tmp|*.swp|*.partial|*.db-shm|*.db-wal|*.sqlite3-shm|*.sqlite3-wal|run-log.jsonl|*.mp4"
+skip_file = "~*|.~*|*.tmp|*.swp|*.partial|*.db-shm|*.db-wal|*.sqlite3-shm|*.sqlite3-wal|run-log.jsonl|*.mp4|run-log*.jsonl|inbox*.md|drive-cache*.json|*safeBackup*"
 ```
 
-`*.mp4` entrou com o #10957 (item 6). A linha não precisa ser escrita à mão: `npx tsx scripts/onedrive-skip-file-config.ts --apply` faz isso sem duplicar o que já existe.
+`*.mp4` entrou com o #10957 (item 6). Os quatro últimos já estavam na config viva do `300` desde 17/08/2026 e entraram no código com o #12357, que pôs a lista numa fonte única (`scripts/lib/data-sync-exclusions.ts`) compartilhada com o filtro do `rclone bisync` do Google Drive. A linha não precisa ser escrita à mão: `npx tsx scripts/onedrive-skip-file-config.ts --apply` faz isso sem duplicar o que já existe.
 
 Padrão a padrão:
 

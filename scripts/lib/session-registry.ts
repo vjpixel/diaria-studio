@@ -201,6 +201,7 @@ import { createHash } from "node:crypto";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { tryStealOrphan, withFileLock } from "./file-lock.ts";
+import { conflictCopyBelongsToStem, isSyncConflictCopyName, rcloneConflictOriginalName } from "./sync-conflict-copy.ts";
 // #7836 — mesma constante que `.claude/hooks/inject-session-id.mjs` importa
 // pra montar `INJECTABLE_SUBCOMMANDS`. Usada aqui só em `requireSessionId`,
 // pra enriquecer a mensagem de erro com a fonte única sem duplicar a lista
@@ -1212,7 +1213,7 @@ function writeJsonSafeWithCas(
 function findExistingSessionFileAnyKind(repoRoot: string, sessionId: string): string | null {
   const suffix = `-${sessionId}.json`;
   const names = listSessionJsonFiles(repoRoot)
-    .filter((n) => n.endsWith(suffix) && !n.includes("-safeBackup-") && parseSessionFileName(n) !== null)
+    .filter((n) => n.endsWith(suffix) && !isSyncConflictCopyName(n) && parseSessionFileName(n) !== null)
     .sort();
   return names.length > 0 ? join(sessionsDir(repoRoot), names[0]!) : null;
 }
@@ -1282,13 +1283,13 @@ export function parseSessionFileName(
  */
 function groupBackupsByRealStem(names: readonly string[]): Map<string, string[]> {
   const realStems = names
-    .filter((n) => !n.includes("-safeBackup-"))
+    .filter((n) => !isSyncConflictCopyName(n))
     .map((n) => n.slice(0, -".json".length))
     .sort((a, b) => b.length - a.length);
   const backupsByRealStem = new Map<string, string[]>();
   for (const backup of names) {
-    if (!backup.includes("-safeBackup-")) continue;
-    const matchStem = realStems.find((stem) => backup.startsWith(`${stem}-`));
+    if (!isSyncConflictCopyName(backup)) continue;
+    const matchStem = realStems.find((stem) => conflictCopyBelongsToStem(backup, stem, ".json"));
     if (!matchStem) continue; // órfão
     const list = backupsByRealStem.get(matchStem) ?? [];
     list.push(backup);
@@ -1407,7 +1408,7 @@ function orphanBackupNames(names: readonly string[]): string[] {
   for (const list of groupBackupsByRealStem(names).values()) {
     for (const name of list) owned.add(name);
   }
-  return names.filter((n) => n.includes("-safeBackup-") && !owned.has(n));
+  return names.filter((n) => isSyncConflictCopyName(n) && !owned.has(n));
 }
 
 /**
@@ -2489,12 +2490,17 @@ export function evaluateEndGuard(
 /** Nomes de arquivo `.json` de sessão (real ou backup) em `data/sessions/` —
  * exclui dotfiles (`.merge-lock.json` etc). Fail-soft: diretório ausente ou
  * erro de leitura → array vazio, nunca lança. Ordem não é garantida
- * (`readdirSync` bruto). */
+ * (`readdirSync` bruto). Inclui a cópia de conflito do rclone bisync
+ * (`{nome}.json.conflictN`, #12357): ela não termina em `.json`, e sem isto
+ * o registro nem unia a claim que só sobreviveu nela nem a recolhia no GC.
+ * Quem separa real de cópia é `isSyncConflictCopyName`. */
 function listSessionJsonFiles(repoRoot: string): string[] {
   const dir = sessionsDir(repoRoot);
   if (!existsSync(dir)) return [];
   try {
-    return readdirSync(dir).filter((n) => n.endsWith(".json") && !n.startsWith("."));
+    return readdirSync(dir).filter(
+      (n) => !n.startsWith(".") && (n.endsWith(".json") || rcloneConflictOriginalName(n)?.endsWith(".json") === true),
+    );
   } catch (e) {
     // #6277 (achado do review): este catch era VAZIO. Uma falha de I/O no
     // diretório inteiro (EBUSY/EPERM/EACCES — os mesmos transitórios de
@@ -2810,13 +2816,13 @@ export function mergeSessionRecords(
  */
 function readMergedSessionGroups(repoRoot: string, now: number = Date.now()): SessionRecord[] {
   const names = listSessionJsonFiles(repoRoot);
-  const realNames = names.filter((n) => !n.includes("-safeBackup-"));
-  const backupNames = names.filter((n) => n.includes("-safeBackup-"));
+  const realNames = names.filter((n) => !isSyncConflictCopyName(n));
+  const backupNames = names.filter((n) => isSyncConflictCopyName(n));
 
   const realStems = realNames.map((n) => n.slice(0, -".json".length)).sort((a, b) => b.length - a.length);
   const backupsByRealStem = new Map<string, string[]>();
   for (const backup of backupNames) {
-    const matchStem = realStems.find((stem) => backup.startsWith(`${stem}-`));
+    const matchStem = realStems.find((stem) => conflictCopyBelongsToStem(backup, stem, ".json"));
     if (!matchStem) continue; // órfão — ver docstring acima
     const list = backupsByRealStem.get(matchStem) ?? [];
     list.push(backup);
@@ -5005,14 +5011,14 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
 
   const dir = sessionsDir(repoRoot);
   const names = listSessionJsonFiles(repoRoot);
-  const realNames = names.filter((n) => !n.includes("-safeBackup-"));
-  const backupNames = names.filter((n) => n.includes("-safeBackup-"));
+  const realNames = names.filter((n) => !isSyncConflictCopyName(n));
+  const backupNames = names.filter((n) => isSyncConflictCopyName(n));
   const realStems = realNames.map((n) => n.slice(0, -".json".length)).sort((a, b) => b.length - a.length);
 
   const backupsByRealStem = new Map<string, string[]>();
   const orphanBackups: string[] = [];
   for (const backup of backupNames) {
-    const matchStem = realStems.find((stem) => backup.startsWith(`${stem}-`));
+    const matchStem = realStems.find((stem) => conflictCopyBelongsToStem(backup, stem, ".json"));
     if (matchStem) {
       const list = backupsByRealStem.get(matchStem) ?? [];
       list.push(backup);
@@ -5091,7 +5097,7 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
     const isOrphanGroup = entry.identity.startsWith("orphan-backup:");
     let lifecycleRecord: SessionRecord | null = null;
     if (!isOrphanGroup) {
-      const realFile = entry.files.find((f) => !f.includes("-safeBackup-"));
+      const realFile = entry.files.find((f) => !isSyncConflictCopyName(f));
       lifecycleRecord = realFile ? readJsonSafe<SessionRecord>(realFile) : null;
     }
     // #6130 (achado HIGH do fleet review): antes disto, uma falha de rmSync
@@ -5324,7 +5330,7 @@ function decideForeignClaimReconciliation(
 export function planClaimReconciliation(repoRoot: string): ClaimReconciliationResult[] {
   const dir = sessionsDir(repoRoot);
   const names = listSessionJsonFiles(repoRoot);
-  const realNames = names.filter((n) => !n.includes("-safeBackup-")).sort();
+  const realNames = names.filter((n) => !isSyncConflictCopyName(n)).sort();
   const backupsByRealStem = groupBackupsByRealStem(names);
   const claimedBackupNames = new Set<string>();
   const results: ClaimReconciliationResult[] = [];
@@ -5382,7 +5388,7 @@ export function planClaimReconciliation(repoRoot: string): ClaimReconciliationRe
     });
   }
 
-  const orphanBackups = names.filter((n) => n.includes("-safeBackup-") && !claimedBackupNames.has(n)).sort();
+  const orphanBackups = names.filter((n) => isSyncConflictCopyName(n) && !claimedBackupNames.has(n)).sort();
   for (const orphan of orphanBackups) {
     results.push({
       identity: `orphan-backup:${orphan}`,
@@ -5711,7 +5717,7 @@ export function planSafeBackupCleanup(repoRoot: string, opts: { now?: number } =
   const now = opts.now ?? Date.now();
   const dir = sessionsDir(repoRoot);
   const names = listSessionJsonFiles(repoRoot);
-  const realNames = names.filter((n) => !n.includes("-safeBackup-")).sort();
+  const realNames = names.filter((n) => !isSyncConflictCopyName(n)).sort();
   const backupsByRealStem = groupBackupsByRealStem(names);
   const claimedBackupNames = new Set<string>();
   const results: SafeBackupCleanupResult[] = [];
@@ -5779,7 +5785,7 @@ export function planSafeBackupCleanup(repoRoot: string, opts: { now?: number } =
     });
   }
 
-  const orphanBackups = names.filter((n) => n.includes("-safeBackup-") && !claimedBackupNames.has(n)).sort();
+  const orphanBackups = names.filter((n) => isSyncConflictCopyName(n) && !claimedBackupNames.has(n)).sort();
   for (const orphan of orphanBackups) {
     results.push({
       identity: `orphan-backup:${orphan}`,
@@ -5939,7 +5945,7 @@ export function planSafeBackupCapPrune(
   const capPerGroup = opts.capPerGroup ?? SAFE_BACKUP_CAP_DEFAULT;
   const dir = sessionsDir(repoRoot);
   const names = listSessionJsonFiles(repoRoot);
-  const realNames = names.filter((n) => !n.includes("-safeBackup-")).sort();
+  const realNames = names.filter((n) => !isSyncConflictCopyName(n)).sort();
   const backupsByRealStem = groupBackupsByRealStem(names);
   const results: SafeBackupCapPruneResult[] = [];
 
@@ -6642,7 +6648,7 @@ function isSameMergeGrant(a: MergeGrant | undefined, b: MergeGrant): boolean {
 function mergeGrantLivesInRealFile(repoRoot: string, grant: MergeGrant): boolean {
   const dir = sessionsDir(repoRoot);
   for (const name of listSessionJsonFiles(repoRoot)) {
-    if (name.includes("-safeBackup-")) continue;
+    if (isSyncConflictCopyName(name)) continue;
     const record = readJsonSafe<SessionRecord>(join(dir, name));
     if (isSameMergeGrant(record?.merge_grant, grant)) return true;
   }

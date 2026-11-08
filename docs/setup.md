@@ -139,6 +139,13 @@ mesmo conteúdo operacional, com achados ao vivo (#7106, #4823 etc.) que o
    - Linux (rclone/onedriver): `ln -s <mount-point>/Documents/diaria-studio-data data`
 
    A pasta-alvo no OneDrive precisa existir antes (criar manualmente na 1ª máquina; nas demais, o OneDrive já sincronizou). Toda `data/` está em `.gitignore` blanket — nada lá dentro vai pro repo.
+
+   **Transição pro Google Drive (épica #12353).** O `data/` vai sair do OneDrive pro Google Drive num cutover **simultâneo nas três máquinas** (#12359): máquinas em backends diferentes quebram o merge lock e o `session-registry` em silêncio. Até lá, **não repontar `data/` numa máquina só**. No cutover o alvo passa a ser a pasta `diaria-studio-data` dentro do Drive (o lugar exato no Drive é definido na #12359):
+   - Linux (`300`): `ln -s /mnt/hd-sata/GoogleDrive/<pasta>/diaria-studio-data data` — cópia local do `rclone bisync` (#12356, `docs/scheduled-tasks-registry.md`, `diaria-gdrive-bisync`).
+   - Windows (Drive for desktop): `New-Item -ItemType Junction -Path "data" -Target "G:\Meu Drive\<pasta>\diaria-studio-data"` (`My Drive` no Windows em inglês; a letra `G:` é o default do app).
+   - macOS (Drive for desktop): `ln -s ~/Library/CloudStorage/GoogleDrive-<email>/"Meu Drive"/<pasta>/diaria-studio-data data`.
+
+   O código aceita os dois backends nesse período: `detectExecMode` só exige que `data/` resolva, `detectDataSyncBackend` (`scripts/lib/exec-mode.ts`) diz qual é, os arquivos locais por máquina saem de uma lista única (`scripts/lib/data-sync-exclusions.ts`, `skip_file` no OneDrive e filtro do bisync no Drive) e o `session-registry` reconhece as cópias de conflito dos dois clientes (`-safeBackup-NNNN` e `.conflictN`, #12357).
 3. `npm run sync-sources` para gerar `context/sources.md`.
 3a. **Instalar a skill `humanizador`** (repo separado, instalação global — não é vendorada aqui, ver #1676):
    ```bash
