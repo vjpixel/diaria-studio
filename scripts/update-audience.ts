@@ -142,7 +142,7 @@ export function renderEnglishReadingBlock(responses: BeehiivResponse[]): string[
     "",
     ...entries.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
     "",
-    "> **Como usar:** indica quanto do público lê fonte em inglês; considerar ao escolher entre fontes equivalentes em português e em inglês.",
+    "> **Como usar:** mostra o que o público faz quando a fonte está em inglês. É só informativo: não muda a escolha de fontes enquanto o editor não decidir uma regra.",
   ];
 }
 
