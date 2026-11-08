@@ -42,6 +42,37 @@ export const LOCK_STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_MIN_IDLE_MS = 3 * 24 * 60 * 60 * 1000;
 
 /**
+ * Teto do resgate dos arquivos untracked (o conteúdo é copiado antes da
+ * remoção, #12374 review). Acima de qualquer um dos dois o worktree fica
+ * `manter`, com o motivo no relatório: nunca remove sem copiar tudo.
+ * Configurável na CLI (`--rescue-max-files`, `--rescue-max-mb`).
+ */
+export interface RescueLimits {
+  maxFiles: number;
+  maxBytes: number;
+}
+
+export const DEFAULT_RESCUE_LIMITS: RescueLimits = { maxFiles: 2000, maxBytes: 100 * 1024 * 1024 };
+
+/** Arquivos untracked não ignorados (`git ls-files --others --exclude-standard`). */
+export interface UntrackedSize {
+  files: number;
+  bytes: number;
+}
+
+/** Motivo de bloqueio quando os untracked passam do teto; `null` quando cabem. */
+export function untrackedOverLimit(size: UntrackedSize, limits: RescueLimits): string | null {
+  if (size.files > limits.maxFiles) {
+    return `untracked acima do teto do resgate (${size.files} arquivos > ${limits.maxFiles})`;
+  }
+  if (size.bytes > limits.maxBytes) {
+    const mb = (n: number) => (n / (1024 * 1024)).toFixed(1);
+    return `untracked acima do teto do resgate (${mb(size.bytes)} MB > ${mb(limits.maxBytes)} MB)`;
+  }
+  return null;
+}
+
+/**
  * Resume as PRs de uma branch (`gh pr list --head B --state all`). `null`
  * (consulta falhou) = `unknown`. Qualquer PR aberta vence: a branch tem
  * trabalho vivo mesmo que outra PR dela já tenha mergeado (#8792).
@@ -120,6 +151,8 @@ export interface TriageFacts {
   dirty: DirtySummary | null;
   /** Commits do HEAD fora de qualquer ref remota; `null` quando não deu para contar. */
   unpushedCommits: number | null;
+  /** Tamanho dos untracked que o resgate copia; `null` quando não deu para medir. */
+  untrackedSize: UntrackedSize | null;
   pr: { state: PrState; prNumbers: number[] };
   inUse: boolean;
   registryReadable: boolean;
@@ -136,7 +169,12 @@ export interface TriageDecision {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export function classifyForDiscard(facts: TriageFacts, nowMs: number, minIdleMs: number = DEFAULT_MIN_IDLE_MS): TriageDecision {
+export function classifyForDiscard(
+  facts: TriageFacts,
+  nowMs: number,
+  minIdleMs: number = DEFAULT_MIN_IDLE_MS,
+  limits: RescueLimits = DEFAULT_RESCUE_LIMITS,
+): TriageDecision {
   const blockers: string[] = [];
   const idleMs = facts.lastActivityMs === null ? null : nowMs - facts.lastActivityMs;
   const idleDays = idleMs === null ? null : Math.floor(idleMs / DAY_MS);
@@ -175,6 +213,11 @@ export function classifyForDiscard(facts: TriageFacts, nowMs: number, minIdleMs:
 
   if (facts.dirty === null) blockers.push("git status falhou");
   if (facts.unpushedCommits === null) blockers.push("não deu para contar commits não enviados");
+  if (facts.untrackedSize === null) blockers.push("não deu para medir os untracked");
+  else {
+    const over = untrackedOverLimit(facts.untrackedSize, limits);
+    if (over !== null) blockers.push(over);
+  }
 
   const salvageable = (facts.dirty?.total ?? 0) > 0 || (facts.unpushedCommits ?? 0) > 0;
   return { verdict: blockers.length === 0 ? "descartavel" : "manter", blockers, salvageable, idleDays };
@@ -185,6 +228,20 @@ export function rescueSubdirFor(name: string, nowMs: number): string {
   const day = new Date(nowMs).toISOString().slice(0, 10);
   const safe = name.replace(/[^A-Za-z0-9._-]/g, "_") || "worktree";
   return `${day}/${safe}`;
+}
+
+/**
+ * Primeiro diretório livre para o resgate: `base`, depois `base-2`, `base-3`...
+ * Um 2º descarte no mesmo dia (depois de uma remoção que falhou) não fica
+ * preso no resgate anterior nem o sobrescreve.
+ */
+export function nextFreeRescueDir(base: string, exists: (p: string) => boolean, maxTries = 1000): string {
+  if (!exists(base)) return base;
+  for (let i = 2; i <= maxTries; i++) {
+    const candidate = `${base}-${i}`;
+    if (!exists(candidate)) return candidate;
+  }
+  throw new Error(`nenhum diretório de resgate livre após ${maxTries} tentativas: ${base}`);
 }
 
 function prLabel(pr: TriageFacts["pr"]): string {

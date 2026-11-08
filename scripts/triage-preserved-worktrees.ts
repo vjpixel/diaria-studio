@@ -12,13 +12,19 @@
  *
  * `--discard` = descarte com resgate, só dos `descartavel` (e, com `--only`,
  * só dos nomes listados). Para cada um, ANTES de remover, grava em
- * `{rescue-dir}/{AAAA-MM-DD}/{nome}/`:
+ * `{rescue-dir}/{AAAA-MM-DD}/{nome}/` (já existindo, `{nome}-2`, `-3`...):
  *   - `tracked.diff`            — `git diff --binary HEAD` (rastreados, staged + unstaged);
- *   - `untracked.txt`           — lista dos arquivos untracked (o conteúdo deles NÃO vai);
+ *   - `untracked.txt`           — lista dos arquivos untracked (não ignorados);
+ *   - `untracked/`              — CÓPIA do conteúdo desses untracked, caminho preservado
+ *                                 (symlink não é seguido: alvo em `untracked-symlinks.json`);
  *   - `unpushed-commits.patch`  — `git format-patch --stdout HEAD --not --remotes`;
  *   - `meta.json`               — os fatos da triagem, HEAD e data.
- * Confere que os arquivos foram gravados (tamanho no disco = bytes gerados) e
- * só então remove. Logo antes de remover, reconfere a PR aberta da branch.
+ * Confere que os arquivos foram gravados (tamanho no disco = bytes gerados;
+ * cópia dos untracked por tamanho + sha256) e só então remove. Untracked acima
+ * do teto (`--rescue-max-files`, default 2000; `--rescue-max-mb`, default 100)
+ * deixam o worktree `manter`, com o motivo no relatório. Logo antes de
+ * remover, reconfere a PR aberta da branch. Se a remoção falhar depois do
+ * unlock, o lock volta com a razão original.
  * Nunca remove worktree em uso por sessão viva, com lock ativo/recente ou com
  * PR aberta (a regra completa está na lib). `rescue-dir` default é
  * `{root}/data/worktree-rescue`; sem `data/` no checkout, o descarte recusa.
@@ -26,11 +32,13 @@
  * Uso:
  *   npx tsx scripts/triage-preserved-worktrees.ts [--root <repo>] [--json]
  *       [--all] [--min-idle-days N] [--session-id <id>]
+ *       [--rescue-max-files N] [--rescue-max-mb N]
  *       [--discard [--only nome1,nome2] [--rescue-dir <dir>]]
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { listActiveSessions, type SessionRecord } from "./lib/session-registry.ts";
@@ -47,15 +55,20 @@ import {
 import {
   classifyForDiscard,
   DEFAULT_MIN_IDLE_MS,
+  DEFAULT_RESCUE_LIMITS,
+  nextFreeRescueDir,
   parseLockPid,
   parseLockReasons,
   renderTriageReport,
   rescueSubdirFor,
   summarizePorcelainStatus,
   summarizePrState,
+  untrackedOverLimit,
   type PrSummary,
+  type RescueLimits,
   type TriageDecision,
   type TriageFacts,
+  type UntrackedSize,
 } from "./lib/worktree-triage.ts";
 
 const GIT_TIMEOUT_MS = 60_000;
@@ -119,6 +132,45 @@ function dirtySummary(path: string): TriageFacts["dirty"] {
   return r.ok ? summarizePorcelainStatus(r.stdout.toString("utf8")) : null;
 }
 
+export interface UntrackedEntry {
+  rel: string;
+  kind: "file" | "symlink";
+  size: number;
+}
+
+/**
+ * Untracked não ignorados (respeita `.gitignore`), com tipo e tamanho.
+ * `null` quando o git falha ou aparece algo que o resgate não sabe copiar
+ * (repo aninhado, socket): fail-safe, vira bloqueio.
+ */
+function listUntracked(path: string): UntrackedEntry[] | null {
+  if (!existsSync(path)) return [];
+  const r = git(["ls-files", "--others", "--exclude-standard", "-z"], path);
+  if (!r.ok) return null;
+  const out: UntrackedEntry[] = [];
+  for (const rel of r.stdout.toString("utf8").split("\0")) {
+    if (rel === "") continue;
+    try {
+      const st = lstatSync(join(path, rel));
+      if (st.isSymbolicLink()) out.push({ rel, kind: "symlink", size: 0 });
+      else if (st.isFile()) out.push({ rel, kind: "file", size: st.size });
+      else return null;
+    } catch {
+      return null;
+    }
+  }
+  return out;
+}
+
+function sizeOf(entries: UntrackedEntry[] | null): UntrackedSize | null {
+  if (entries === null) return null;
+  return { files: entries.length, bytes: entries.reduce((s, e) => s + e.size, 0) };
+}
+
+function sha256File(file: string): string {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
 function unpushedCount(path: string): number | null {
   if (!existsSync(path)) return null;
   const r = git(["rev-list", "--count", "HEAD", "--not", "--remotes"], path);
@@ -136,8 +188,9 @@ export interface TriageRow {
 export function collectTriage(
   repoRoot: string,
   deps: Pick<TriageDeps, "prsForBranch" | "listActiveSessions" | "isPidAlive" | "nowMs">,
-  opts: { includeClean: boolean; minIdleMs: number; ownSessionId?: string },
+  opts: { includeClean: boolean; minIdleMs: number; ownSessionId?: string; limits?: RescueLimits },
 ): TriageRow[] {
+  const limits = opts.limits ?? DEFAULT_RESCUE_LIMITS;
   const list = git(["worktree", "list", "--porcelain"], repoRoot);
   if (!list.ok) throw new Error(`git worktree list falhou: ${list.stderr.trim()}`);
   const porcelain = list.stdout.toString("utf8");
@@ -165,11 +218,12 @@ export function collectTriage(
       lastActivityMs: getWorktreeLastActivityMsSafe(e.path),
       dirty,
       unpushedCommits: unpushed,
+      untrackedSize: sizeOf(listUntracked(e.path)),
       pr: e.branch === null ? { state: "unknown", prNumbers: [] } : summarizePrState(deps.prsForBranch(e.branch)),
       inUse: !notInUse.has(e.path),
       registryReadable: probe.readable,
     };
-    rows.push({ facts, decision: classifyForDiscard(facts, deps.nowMs, opts.minIdleMs) });
+    rows.push({ facts, decision: classifyForDiscard(facts, deps.nowMs, opts.minIdleMs, limits) });
   }
   return rows;
 }
@@ -182,13 +236,47 @@ function writeChecked(file: string, content: Buffer | string): void {
 }
 
 /**
+ * Copia o conteúdo dos untracked para `destRoot`, mantendo o caminho relativo,
+ * e confere cada cópia (tamanho + sha256 contra a origem). Symlink não é
+ * seguido: o alvo vai no mapa devolvido. Lança na primeira divergência.
+ */
+export function copyUntrackedVerified(srcRoot: string, destRoot: string, entries: UntrackedEntry[]): Record<string, string> {
+  const symlinks: Record<string, string> = {};
+  const base = resolve(destRoot);
+  for (const e of entries) {
+    const src = join(srcRoot, e.rel);
+    if (e.kind === "symlink") {
+      symlinks[e.rel] = readlinkSync(src);
+      continue;
+    }
+    const dest = resolve(base, e.rel);
+    const rel = relative(base, dest);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`caminho untracked fora do resgate: ${e.rel}`);
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(src, dest);
+    const srcSize = statSync(src).size;
+    const destSize = statSync(dest).size;
+    if (srcSize !== destSize || sha256File(src) !== sha256File(dest)) {
+      throw new Error(`cópia do untracked ${e.rel} não confere com a origem`);
+    }
+  }
+  return symlinks;
+}
+
+/**
  * Grava o resgate de um worktree e devolve o diretório. Lança se qualquer
  * leitura do git falhar ou a gravação não conferir: sem resgate íntegro, o
  * chamador não remove.
  */
-export function saveRescueBundle(facts: TriageFacts, rescueRoot: string, nowMs: number): string {
-  const dir = join(rescueRoot, rescueSubdirFor(facts.name, nowMs));
-  if (existsSync(dir)) throw new Error(`diretório de resgate já existe: ${dir}`);
+export function saveRescueBundle(
+  facts: TriageFacts,
+  rescueRoot: string,
+  nowMs: number,
+  limits: RescueLimits = DEFAULT_RESCUE_LIMITS,
+): string {
+  // Reaproveita nunca: um resgate anterior (2º descarte no mesmo dia, depois de
+  // uma remoção que falhou) fica intacto e este vai para `{nome}-2`, `-3`...
+  const dir = nextFreeRescueDir(join(rescueRoot, rescueSubdirFor(facts.name, nowMs)), existsSync);
   mkdirSync(dir, { recursive: true });
 
   const head = git(["rev-parse", "HEAD"], facts.path);
@@ -198,12 +286,12 @@ export function saveRescueBundle(facts: TriageFacts, rescueRoot: string, nowMs: 
   if ((facts.dirty?.tracked ?? 0) > 0 && diff.stdout.length === 0) {
     throw new Error("há arquivo rastreado sujo e o git diff saiu vazio");
   }
-  const untracked = git(["ls-files", "--others", "--exclude-standard", "-z"], facts.path);
-  if (!untracked.ok) throw new Error(`git ls-files falhou: ${untracked.stderr.trim()}`);
-  const untrackedList = untracked.stdout
-    .toString("utf8")
-    .split("\0")
-    .filter((p) => p !== "");
+  // Remede na hora: o worktree pode ter mudado desde o relatório.
+  const untrackedEntries = listUntracked(facts.path);
+  if (untrackedEntries === null) throw new Error("não deu para listar/medir os untracked");
+  const over = untrackedOverLimit(sizeOf(untrackedEntries)!, limits);
+  if (over !== null) throw new Error(over);
+  const untrackedList = untrackedEntries.map((e) => e.rel);
   const commits = git(["format-patch", "--stdout", "HEAD", "--not", "--remotes"], facts.path);
   if (!commits.ok) throw new Error(`git format-patch falhou: ${commits.stderr.trim()}`);
   if ((facts.unpushedCommits ?? 0) > 0 && commits.stdout.length === 0) {
@@ -213,6 +301,10 @@ export function saveRescueBundle(facts: TriageFacts, rescueRoot: string, nowMs: 
   writeChecked(join(dir, "tracked.diff"), diff.stdout);
   writeChecked(join(dir, "untracked.txt"), untrackedList.join("\n") + (untrackedList.length > 0 ? "\n" : ""));
   writeChecked(join(dir, "unpushed-commits.patch"), commits.stdout);
+  const symlinks = copyUntrackedVerified(facts.path, join(dir, "untracked"), untrackedEntries);
+  if (Object.keys(symlinks).length > 0) {
+    writeChecked(join(dir, "untracked-symlinks.json"), JSON.stringify(symlinks, null, 2) + "\n");
+  }
   writeChecked(
     join(dir, "meta.json"),
     JSON.stringify(
@@ -230,10 +322,16 @@ export function runTriage(args: Record<string, string>, repoRoot: string, deps: 
   const minIdleMs = Number.isFinite(minIdleDays) && minIdleDays >= 0 ? minIdleDays * DAY_MS : DEFAULT_MIN_IDLE_MS;
   const ownSessionId = args["session-id"] ? String(args["session-id"]) : undefined;
   const only = args.only ? new Set(String(args.only).split(",").map((s) => s.trim()).filter(Boolean)) : null;
+  const maxFiles = args["rescue-max-files"] !== undefined ? Number(args["rescue-max-files"]) : NaN;
+  const maxMb = args["rescue-max-mb"] !== undefined ? Number(args["rescue-max-mb"]) : NaN;
+  const limits: RescueLimits = {
+    maxFiles: Number.isFinite(maxFiles) && maxFiles >= 0 ? Math.floor(maxFiles) : DEFAULT_RESCUE_LIMITS.maxFiles,
+    maxBytes: Number.isFinite(maxMb) && maxMb >= 0 ? Math.floor(maxMb * 1024 * 1024) : DEFAULT_RESCUE_LIMITS.maxBytes,
+  };
 
   let rows: TriageRow[];
   try {
-    rows = collectTriage(repoRoot, deps, { includeClean: args.all === "true", minIdleMs, ownSessionId });
+    rows = collectTriage(repoRoot, deps, { includeClean: args.all === "true", minIdleMs, ownSessionId, limits });
   } catch (e) {
     deps.log(`[triage-preserved-worktrees] ${(e as Error).message}`);
     return 2;
@@ -264,7 +362,7 @@ export function runTriage(args: Record<string, string>, repoRoot: string, deps: 
     }
     let dir: string;
     try {
-      dir = saveRescueBundle(facts, rescueRoot, deps.nowMs);
+      dir = saveRescueBundle(facts, rescueRoot, deps.nowMs, limits);
     } catch (e) {
       failed++;
       deps.log(`[triage-preserved-worktrees] resgate falhou, ${facts.name} mantido: ${(e as Error).message}`);
@@ -285,6 +383,17 @@ export function runTriage(args: Record<string, string>, repoRoot: string, deps: 
     } else {
       failed++;
       deps.log(`[triage-preserved-worktrees] remoção falhou, ${facts.name} mantido (resgate em ${dir}): ${result.error}`);
+      // Devolve o lock que tiramos, com a razão original: sem isso o worktree
+      // ficaria destravado e elegível ao próximo cleanup comum.
+      if (facts.locked && existsSync(facts.path)) {
+        const relock = git(
+          ["worktree", "lock", ...(facts.lockReason ? ["--reason", facts.lockReason] : []), facts.path],
+          repoRoot,
+        );
+        if (!relock.ok) {
+          deps.log(`[triage-preserved-worktrees] ATENÇÃO: não deu para restaurar o lock de ${facts.name}: ${relock.stderr.trim()}`);
+        }
+      }
     }
   }
   deps.log(`[triage-preserved-worktrees] descarte: ${removed} removido(s), ${failed} falha(s).`);
