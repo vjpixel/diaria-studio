@@ -119,7 +119,7 @@ function readD1Title(dir: string): string {
 function loadShortAt(aammdd: string): Date | null {
   try {
     const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
-    return brtInstant(aammdd, resolveShortTime(loadShortScheduleConfig(cfg), aammdd).hhmm);
+    return brtInstant(aammdd, resolveShortTime(loadShortScheduleConfig(cfg), aammdd, "youtube_shorts").hhmm);
   } catch (e) {
     console.error(`[aviso] horário do Short não derivado (${(e as Error).message})`);
     return null;

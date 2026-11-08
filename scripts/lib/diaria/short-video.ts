@@ -20,9 +20,12 @@
  *     desde 2023 link em descrição E em comentário de Short não é clicável; o
  *     único caminho clicável é o vídeo relacionado, vinculado depois que o
  *     horizontal publica (#10811);
- *   - horário próprio do vertical (#10831): o horizontal sai às 06:00 junto da
- *     newsletter; o vertical sai num teste de 15 dias úteis alternando 06:30, 08:00 e
- *     12:00 BRT (`resolveShortTime`, config `publishing.shorts.schedule`).
+ *   - horário próprio do vertical (#10831, #12250): o horizontal sai às 06:00
+ *     junto da newsletter; o vertical sai em horário FIXO POR DESTINO — o
+ *     YouTube Shorts às 06:30 e os outros destinos às 12:00 BRT
+ *     (`resolveShortTime(sched, aammdd, destino)`, config
+ *     `publishing.shorts.schedule.by_destination` + `default_time`). O teste
+ *     rotativo 06:30/08:00/12:00 (261026 a 261106) foi encerrado no #12250.
  *
  * Por que YouTube Shorts e o perfil pessoal são passos GUIADOS (Chrome, com o
  * editor escolhendo o arquivo) e não API:
@@ -48,12 +51,12 @@ import {
   brtDayWindow,
   instagramCollabAccounts,
   planSlot,
-  planSlots,
   slotAccounts,
   socialAccountKey,
   type ScheduledSlot,
   type SlotRule,
 } from "../social-slot-planner.ts";
+import { DEFAULT_EDITION_SCHEDULE_HHMM } from "../edition-scheduled-at.ts";
 import { YOUTUBE_TITLE_MAX_CHARS, buildYouTubeTitle, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
 import type { ShortCoverRecord } from "./short-cover.ts";
 
@@ -619,23 +622,29 @@ export function parseShortsPublishedFile(raw: string, aammdd: string, where = SH
 }
 
 /**
- * Horário do vertical (#10831). O horizontal sai às 06:00 BRT junto da
- * newsletter; o vertical sai em horário PRÓPRIO, num teste de 15 dias úteis que
- * alterna `rotation_times` dia a dia a partir de `rotation_start` (261022 saiu
- * às 12:00, à mão), comparando as visualizações nas primeiras 24 h. Fora da
- * janela `[rotation_start, rotation_end]` vale `default_time`.
+ * Horário do vertical (#10831, #12250). O horizontal sai às 06:00 BRT junto da
+ * newsletter; o vertical sai em horário PRÓPRIO, fixo POR DESTINO desde o
+ * #12250 (decisão do editor de 05/11/2026): o YouTube Shorts às 06:30
+ * (`by_destination.youtube_shorts`) e todos os outros destinos às 12:00
+ * (`default_time`). O mesmo config é lido pelo `publish-shorts.ts` E pelos
+ * timers do 300 (Instagram, LinkedIn e Threads pessoais), cada um passando o
+ * próprio destino a `resolveShortTime`: um horário calculado só na máquina
+ * que roda a skill não chegaria neles.
  *
- * Premissas registradas (não documentadas na decisão do editor):
- *   - o horário vale pro vertical em TODOS os destinos (Shorts, Reels das
- *     páginas, Instagram, perfil) — em 261022 "tudo foi ajustado à mão pra 12:00";
- *   - a alternância conta dias CORRIDOS, não edições publicadas: dia sem
- *     edição não desloca o horário dos seguintes (plano reconstruível);
- *   - fora da janela, `default_time` = 12:00 (o horário de 261022) até o
- *     editor decidir o vencedor do teste e mudar o config.
+ * Histórico: de 261026 a 261106 o vertical saiu num teste rotativo que
+ * alternava `rotation_times` (06:30/08:00/12:00) dia a dia a partir de
+ * `rotation_start`, em todos os destinos. O #12250 encerrou o teste
+ * (`rotation_end` = 2026-11-06); a janela continua no config só pra
+ * re-derivar o horário das edições daquele período (alarmes e conferências
+ * que olham um dia passado) e porque `rotation_times` é a lista de onde a
+ * vertical extra escolhe um horário livre (`extraVerticalTime`).
  *
- * A regra de grade da #10819 (alinhar com o que já está agendado em outras
- * contas / espaçar na mesma conta) entra por `planShortSlots`, abaixo: durante
- * o teste este horário tem precedência; fora dele, a grade decide.
+ * Por que o Short do YouTube nunca sai junto (ou antes) do horizontal das
+ * 06:00 (#10831/#10811, conferido no #12250): o "vídeo relacionado" do Short
+ * só aceita vídeo PÚBLICO, então o vínculo (task `diaria-short-video-relacionado`,
+ * 06:05 BRT no Neo) precisa do horizontal já no ar e de folga antes do Short.
+ * `loadShortScheduleConfig` recusa `by_destination.youtube_shorts` que não
+ * seja estritamente depois de `DEFAULT_EDITION_SCHEDULE_HHMM`.
  */
 export interface ShortScheduleConfig {
   rotationTimes: string[];
@@ -643,19 +652,49 @@ export interface ShortScheduleConfig {
   /** Inclusivo. `null` = sem fim. */
   rotationEnd: CivilDate | null;
   defaultTime: string;
+  /** #12250: horário fixo por destino (id do destino → HH:MM BRT); destino ausente usa `defaultTime`. */
+  byDestination: Readonly<Record<string, string>>;
 }
 
 const HHMM_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
-/** Decisão do editor de 22/10/2026 (#10831, #10939): 15 dias úteis alternando 06:30/08:00/12:00, de 261026 a 261113 (só há edição de segunda a sexta). */
+/**
+ * Ids fixos de destino aceitos como chave de `by_destination` (#12250). Espelha
+ * os ids de `ShortDestination` (exceto `facebook:{slug}`, validado por
+ * prefixo): o loader não tem a `ShortsConfig` em mãos, então valida contra o
+ * conjunto fixo. Chave fora dele (ex.: `youtube_short`) é erro, nunca fallback
+ * silencioso pro `default_time`.
+ */
+export const SCHEDULE_DESTINATION_IDS: ReadonlySet<Exclude<ShortDestination["id"], FacebookDestinationId>> = new Set([
+  "youtube_shorts",
+  "instagram",
+  "facebook_profile",
+  "linkedin_profile",
+  "linkedin_page_repost",
+  "x",
+  "tiktok",
+  "threads_profile",
+] as const);
+
+function isScheduleDestinationKey(key: string): boolean {
+  if ((SCHEDULE_DESTINATION_IDS as ReadonlySet<string>).has(key)) return true;
+  return /^facebook:[^\s:]+$/.test(key);
+}
+
+/**
+ * Decisão do editor de 05/11/2026 (#12250): YouTube Shorts às 06:30, os
+ * outros destinos às 12:00. A rotação de 22/10/2026 (#10831, #10939) fica com
+ * a janela encerrada em 261106 (último dia útil antes do #12250).
+ */
 export const DEFAULT_SHORT_SCHEDULE_RAW = Object.freeze({
   rotation_times: Object.freeze(["06:30", "08:00", "12:00"]),
   rotation_start: "2026-10-26",
-  rotation_end: "2026-11-13",
+  rotation_end: "2026-11-06",
   default_time: "12:00",
+  by_destination: Object.freeze({ youtube_shorts: "06:30" }),
 });
 
-/** Lê `publishing.shorts.schedule`; ausente → default (#10831). Malformado LANÇA (estragaria o teste em silêncio). */
+/** Lê `publishing.shorts.schedule`; ausente → default (#10831, #12250). Malformado LANÇA (estragaria o horário em silêncio). */
 export function loadShortScheduleConfig(config: unknown): ShortScheduleConfig {
   const raw = (config as any)?.publishing?.shorts?.schedule ?? DEFAULT_SHORT_SCHEDULE_RAW;
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -676,32 +715,90 @@ export function loadShortScheduleConfig(config: unknown): ShortScheduleConfig {
     end = parseIsoCivilDate(raw.rotation_end, "publishing.shorts.schedule.rotation_end");
     if (civilDayNumber(end) < civilDayNumber(start)) throw new Error("[shorts] publishing.shorts.schedule.rotation_end antes de rotation_start.");
   }
-  return { rotationTimes: [...times], rotationStart: start, rotationEnd: end, defaultTime: raw.default_time };
+  const byDestination: Record<string, string> = {};
+  const rawBy = raw.by_destination;
+  if (rawBy !== undefined && rawBy !== null) {
+    if (typeof rawBy !== "object" || Array.isArray(rawBy)) {
+      throw new Error("[shorts] publishing.shorts.schedule.by_destination precisa ser um objeto { destino: \"HH:MM\" } (#12250).");
+    }
+    for (const [dest, hhmm] of Object.entries(rawBy as Record<string, unknown>)) {
+      if (!isScheduleDestinationKey(dest)) {
+        throw new Error(
+          `[shorts] publishing.shorts.schedule.by_destination: destino desconhecido "${dest}" — ` +
+            `use um de ${[...SCHEDULE_DESTINATION_IDS].join(", ")} ou facebook:{slug} (#12250; chave errada cairia em silêncio no default_time).`,
+        );
+      }
+      if (typeof hhmm !== "string" || !HHMM_RE.test(hhmm)) {
+        throw new Error(`[shorts] publishing.shorts.schedule.by_destination.${dest} precisa ser HH:MM (#12250).`);
+      }
+      byDestination[dest] = hhmm;
+    }
+  }
+  const yt = byDestination.youtube_shorts;
+  if (yt !== undefined && yt <= DEFAULT_EDITION_SCHEDULE_HHMM) {
+    throw new Error(
+      `[shorts] publishing.shorts.schedule.by_destination.youtube_shorts (${yt}) precisa ser depois das ${DEFAULT_EDITION_SCHEDULE_HHMM} do horizontal: ` +
+        "o vídeo relacionado do Short só vincula com o horizontal já público (#10811, #12250).",
+    );
+  }
+  return { rotationTimes: [...times], rotationStart: start, rotationEnd: end, defaultTime: raw.default_time, byDestination };
 }
 
 export interface ShortTime {
   /** HH:MM em BRT, no dia da edição. */
   hhmm: string;
-  /** `explicit` (#11795): corte avulso com `--at`, fora do teste do #10831. */
-  source: "rotation" | "default" | "explicit";
+  /**
+   * `rotation`: dia dentro da janela do teste encerrado do #10831 (histórico);
+   * `destination`: horário fixo do destino (`by_destination`, #12250);
+   * `default`: horário fixo dos demais destinos (`default_time`, #12250);
+   * `explicit` (#11795): corte avulso com `--at`.
+   */
+  source: "rotation" | "default" | "destination" | "explicit";
   /** Explicação curta pra premissa do plano. */
   reason: string;
 }
 
-/** Pure: horário (BRT) do vertical da edição `AAMMDD` (#10831). */
-export function resolveShortTime(sched: ShortScheduleConfig, aammdd: string): ShortTime {
+/**
+ * Pure: horário (BRT) do vertical da edição `AAMMDD` no destino `destination`
+ * (#10831, #12250). Sem destino (ou destino sem entrada em `by_destination`)
+ * = `default_time`. Dentro da janela do teste encerrado vale a rotação, em
+ * todos os destinos, como valeu na época.
+ */
+export function resolveShortTime(sched: ShortScheduleConfig, aammdd: string, destination?: string): ShortTime {
   const m = /^(\d{2})(\d{2})(\d{2})$/.exec(aammdd);
   if (!m) throw new Error(`AAMMDD inválido: ${JSON.stringify(aammdd)}`);
   const date = parseIsoCivilDate(`20${m[1]}-${m[2]}-${m[3]}`, "data da edição");
   const day = civilDayNumber(date);
   const start = civilDayNumber(sched.rotationStart);
   const inWindow = day >= start && (sched.rotationEnd === null || day <= civilDayNumber(sched.rotationEnd));
-  if (!inWindow) {
-    return { hhmm: sched.defaultTime, source: "default", reason: `fora do teste de horário (${formatCivilDate(sched.rotationStart)} a ${sched.rotationEnd ? formatCivilDate(sched.rotationEnd) : "sem fim"}) — horário fixo` };
+  if (inWindow) {
+    const k = day - start;
+    const hhmm = sched.rotationTimes[k % sched.rotationTimes.length];
+    return { hhmm, source: "rotation", reason: `teste de horário do vertical, dia ${k + 1} (alterna ${sched.rotationTimes.join("/")})` };
   }
-  const k = day - start;
-  const hhmm = sched.rotationTimes[k % sched.rotationTimes.length];
-  return { hhmm, source: "rotation", reason: `teste de horário do vertical, dia ${k + 1} (alterna ${sched.rotationTimes.join("/")})` };
+  const own = destination !== undefined ? sched.byDestination[destination] : undefined;
+  if (own !== undefined) {
+    return { hhmm: own, source: "destination", reason: `horário fixo de ${destination} (#12250)` };
+  }
+  return { hhmm: sched.defaultTime, source: "default", reason: "horário fixo do vertical (#12250)" };
+}
+
+/**
+ * Horários que o timer de um destino do 300 precisa cobrir (#12250): os do
+ * teste rotativo (re-derivação de dias passados), o `default_time` e o horário
+ * próprio do destino em `by_destination`, sem repetição. Os guards de par
+ * timer×horário (`test/shorts-*-timer-*.test.ts`) leem daqui: um horário
+ * próprio fora da hora cheia sem execução diária logo depois quebra o teste,
+ * em vez de sair até ~59 min atrasado pela execução de hora em hora.
+ */
+export function timerDueTimes(sched: ShortScheduleConfig, destination: string): string[] {
+  const own = sched.byDestination[destination];
+  return [...new Set([...sched.rotationTimes, sched.defaultTime, ...(own !== undefined ? [own] : [])])];
+}
+
+/** Todos os horários fixos do vertical fora do teste (`default_time` + `by_destination`), sem repetição (#12250). */
+export function fixedShortTimes(sched: ShortScheduleConfig): string[] {
+  return [...new Set([sched.defaultTime, ...Object.values(sched.byDestination)])];
 }
 
 /** Horário escolhido pra um destino de API do vertical (#10819). */
@@ -715,10 +812,12 @@ export interface ShortSlot {
   at: string;
   /** HH:MM BRT. */
   hhmm: string;
-  /** `test-schedule` = horário do teste do #10831 mantido; o resto vem do planner. */
+  /** `test-schedule` = horário do teste (encerrado) do #10831 mantido, nas edições daquela janela. */
+  /** `fixed-time` (#12250): horário fixo do destino (`by_destination`/`default_time`) mantido; a grade só avisa. */
   /** `timer-300` (#11265): Instagram pelo timer do 300, sempre no horário do vertical, fora da grade. */
   /** `explicit` (#11795): horário do corte avulso (`--at`), mantido em todos os destinos como o do teste. */
-  rule: "test-schedule" | "timer-300" | "explicit" | SlotRule;
+  /** `SlotRule`: só o repost da página do LinkedIn (`planLinkedInRepostSlot`) ainda passa pelo planner. */
+  rule: "test-schedule" | "fixed-time" | "timer-300" | "explicit" | SlotRule;
   premise: string;
   warning?: string;
 }
@@ -802,32 +901,31 @@ export function planLinkedInRepostSlot(input: { aammdd: string; profileAt: strin
 const brtHHMM = (iso: string) => new Date(Date.parse(iso) - 3 * 3_600_000).toISOString().slice(11, 16);
 
 /**
- * Pure (#10819): horário de cada destino de API do vertical contra a grade já
- * agendada (`gridFromSocialPublished` + `gridFromShortsPublished`).
+ * Pure (#10819, #12250): horário de cada destino de API do vertical contra a
+ * grade já agendada (`gridFromSocialPublished` + `gridFromShortsPublished`).
  *
- * Premissas (registradas em `premise`; a precedência do teste veio do
- * coordenador da rodada, o resto não veio do editor):
- *   - DURANTE o teste de horário do #10831 (`time.source === "rotation"`) o
- *     horário do teste vale pra todos os destinos: mover um destino tiraria
- *     aquele dia da comparação entre horários. A grade só gera AVISO quando o
- *     horário do teste cai a menos de `DEFAULT_MIN_GAP_MINUTES` de um post da
- *     MESMA conta (colado/empilhado), pro editor decidir à mão;
- *   - FORA do teste (`default_time`), `planSlots` decide por destino com
- *     `preferredAt` = `default_time`, janela 06:00–22:00 BRT do dia da edição e
- *     sem `notBefore` (o plano não depende da hora em que roda; horário que já
- *     passou cai em "publica na hora" no `resolveReelsSchedule`, como antes).
- *     Cada destino planejado entra na grade antes do seguinte;
- *   - destinos guiados (YouTube Shorts, perfil pessoal) seguem `shortTime`: o
- *     skill lê um horário só pra eles;
- *   - o Instagram conta também como post dos collabs (`cfg.instagramCollaborators`,
- *     decisão do editor 261023): o aviso do teste e o espaçamento do planner
- *     olham os posts da autora E os dos collabs (hoje a @vjpixel, #11223).
+ * Desde o #12250 o horário do vertical é FIXO por destino (decisão do editor
+ * de 05/11/2026): cada destino sai no horário que `timeFor` devolve (o do
+ * destino em `by_destination`, senão `default_time`; no corte avulso, o
+ * `--at`; nas edições da janela do teste encerrado do #10831, o da rotação).
+ * A grade nunca move o vídeo: quando o horário cai a menos de
+ * `DEFAULT_MIN_GAP_MINUTES` de um post da MESMA conta (ou de um collab do
+ * Instagram, decisão do editor 261023), o slot é mantido e sai um AVISO pro
+ * editor mover à mão se quiser (premissa decidida no #12250, a mesma que o
+ * teste do #10831 e o corte explícito já seguiam). Antes do #12250, fora do
+ * teste, o `planSlots` escolhia outro horário por destino em silêncio.
+ *
+ * Destinos guiados (YouTube Shorts, perfil pessoal do Facebook) não entram:
+ * a skill lê o horário deles do item do plano.
  */
 export function planShortSlots(input: {
   aammdd: string;
+  /** Horário dos destinos sem `timeFor` (e base do aviso). */
   time: ShortTime;
   /** ISO do `time.hhmm` no dia da edição. */
   timeAt: string;
+  /** #12250: horário por destino; ausente = `time`/`timeAt` em todos. */
+  timeFor?: (destinationId: string) => { time: ShortTime; at: string };
   destinations: readonly ShortDestination[];
   cfg: Pick<ShortsConfig, "instagramAuthorPage"> & Partial<Pick<ShortsConfig, "instagramCollaborators">>;
   grid: readonly ScheduledSlot[];
@@ -837,65 +935,38 @@ export function planShortSlots(input: {
     .filter((x): x is { dest: ShortDestination; account: string; also: string[] } => x.account !== null);
   const withAlso = (also: string[]) => (also.length ? { alsoAccounts: also } : {});
 
-  if (input.time.source === "rotation" || input.time.source === "explicit") {
+  return api.map(({ dest, account, also }) => {
+    const { time, at } = input.timeFor ? input.timeFor(dest.id) : { time: input.time, at: input.timeAt };
+    const t = Date.parse(at);
+    const mine = new Set([account, ...also]);
+    const close = input.grid
+      .filter((s) => slotAccounts(s).some((a) => mine.has(a)) && Math.abs(Date.parse(s.at) - t) < DEFAULT_MIN_GAP_MINUTES * 60_000)
+      .map((s) => brtHHMM(s.at));
     // #11795: o horário explícito do corte avulso é mantido como o do teste (o
     // editor escolheu), mas nunca leva o rótulo nem a premissa do teste.
-    const explicit = input.time.source === "explicit";
-    const t = Date.parse(input.timeAt);
-    return api.map(({ dest, account, also }) => {
-      const mine = new Set([account, ...also]);
-      const close = input.grid
-        .filter((s) => slotAccounts(s).some((a) => mine.has(a)) && Math.abs(Date.parse(s.at) - t) < DEFAULT_MIN_GAP_MINUTES * 60_000)
-        .map((s) => brtHHMM(s.at));
-      const slot: ShortSlot = {
-        destination: dest.id,
-        account,
-        ...withAlso(also),
-        at: new Date(t).toISOString(),
-        hhmm: input.time.hhmm,
-        rule: explicit ? "explicit" : "test-schedule",
-        premise: explicit
-          ? "horário explícito do corte avulso (--at, #11795) tem precedência sobre a grade (#10819)"
-          : `teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)`,
-      };
-      if (close.length) {
-        slot.warning =
-          `${dest.id}: o horário ${explicit ? "do corte" : "do teste"} (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
-          `(${[...new Set(close)].join(", ")} BRT) — mantido ${explicit ? "porque o horário do corte é explícito" : "por causa do teste"}; mova à mão se não quiser colado`;
-      }
-      return slot;
-    });
-  }
-
-  const window = brtDayWindow(input.aammdd);
-  const decisions = planSlots(
-    input.grid,
-    api.map(({ account, also }) => ({ account, ...withAlso(also), window, preferredAt: input.timeAt })),
-  );
-  return api.map(({ dest, account, also }, i) => {
-    const d = decisions[i];
-    if (!d.at) {
-      return {
-        destination: dest.id,
-        account,
-        ...withAlso(also),
-        at: new Date(Date.parse(input.timeAt)).toISOString(),
-        hhmm: input.time.hhmm,
-        rule: d.rule,
-        premise: d.premise,
-        warning: `${dest.id}: a grade não achou horário (${d.premise}) — mantido ${input.time.hhmm} BRT`,
-      };
-    }
-    return {
+    const kind = time.source === "explicit" ? "explicit" : time.source === "rotation" ? "test-schedule" : "fixed-time";
+    const slot: ShortSlot = {
       destination: dest.id,
       account,
       ...withAlso(also),
-      at: d.at,
-      hhmm: brtHHMM(d.at),
-      rule: d.rule,
-      premise: d.premise,
-      ...(d.warning ? { warning: `${dest.id}: ${d.warning}` } : {}),
+      at: new Date(t).toISOString(),
+      hhmm: time.hhmm,
+      rule: kind,
+      premise:
+        kind === "explicit"
+          ? "horário explícito do corte avulso (--at, #11795) tem precedência sobre a grade (#10819)"
+          : kind === "test-schedule"
+            ? "teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)"
+            : `horário fixo do vertical em ${dest.id} (#12250) tem precedência sobre a grade (#10819)`,
     };
+    if (close.length) {
+      const what = kind === "explicit" ? "do corte" : kind === "test-schedule" ? "do teste" : "fixo";
+      const why = kind === "explicit" ? "porque o horário do corte é explícito" : kind === "test-schedule" ? "por causa do teste" : "porque o horário do vertical é fixo (#12250)";
+      slot.warning =
+        `${dest.id}: o horário ${what} (${time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
+        `(${[...new Set(close)].join(", ")} BRT) — mantido ${why}; mova à mão se não quiser colado`;
+    }
+    return slot;
   });
 }
 

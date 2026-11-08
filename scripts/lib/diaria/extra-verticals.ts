@@ -22,9 +22,9 @@
  *     `data/editions/`.
  *
  * Premissa do horário (registrada no plano): no dia da extra também sai a
- * vertical principal da edição DAQUELE dia, nas mesmas contas, no horário do
- * teste (#10831, `resolveShortTime`). A extra usa o horário seguinte da mesma
- * lista (`rotation_times`, em ciclo), nunca o mesmo da principal do dia.
+ * vertical principal da edição DAQUELE dia, nas mesmas contas, no horário fixo
+ * por destino (#12250, `resolveShortTime`). A extra usa o horário seguinte da
+ * lista `rotation_times` (em ciclo) que não seja nenhum horário da principal.
  *
  * Feriado não é conhecido aqui: "dia útil" = segunda a sexta.
  *
@@ -38,7 +38,7 @@
  * `--video`, mas com aviso explícito em `warnings` e a instrução de trocar.
  */
 
-import { resolveShortTime, type ShortScheduleConfig } from "./short-video.ts";
+import { fixedShortTimes, resolveShortTime, type ShortScheduleConfig } from "./short-video.ts";
 import { corteSuffixOf } from "./drive-video-source.ts";
 import { corteVideoPortabilityWarning, shellQuote } from "./short-corte.ts";
 import { itemInTarget, type BlockItem, type BlocksFile, type SequenceSpec } from "./video-montage.ts";
@@ -102,18 +102,28 @@ export function extraVerticalHook(file: Pick<BlocksFile, "blocks">, spec: Sequen
   return null;
 }
 
-/** Horário da extra no dia `date`: o seguinte ao da principal daquele dia em `rotation_times` (ciclo). */
+/**
+ * Horário da extra no dia `date`: o seguinte ao da principal daquele dia em
+ * `rotation_times` (ciclo). Desde o #12250 a principal sai em horário fixo
+ * POR DESTINO (YouTube Shorts 06:30, os outros 12:00): fora da janela do
+ * teste encerrado do #10831, a extra pula TODOS esses horários, senão
+ * colaria na principal em algum destino (ex.: dois Shorts às 06:30 no canal).
+ * `principal` = horário da principal nos destinos sem horário próprio.
+ */
 export function extraVerticalTime(sched: ShortScheduleConfig, date: string): { hhmm: string; principal: string; reason: string; collides: boolean } {
-  const principal = resolveShortTime(sched, date).hhmm;
+  const main = resolveShortTime(sched, date);
+  const principal = main.hhmm;
+  const taken = new Set(main.source === "rotation" ? [principal] : fixedShortTimes(sched));
+  const takenText = [...taken].join(", ");
   const times = sched.rotationTimes;
   const i = times.indexOf(principal);
   for (let step = 1; step <= times.length; step++) {
     const t = times[((i < 0 ? -1 : i) + step + times.length) % times.length];
-    if (t !== principal) {
-      return { hhmm: t, principal, collides: false, reason: `a vertical principal de ${date} sai às ${principal}; a extra usa o horário seguinte de rotation_times (${times.join("/")})` };
+    if (!taken.has(t)) {
+      return { hhmm: t, principal, collides: false, reason: `a vertical principal de ${date} sai às ${takenText}; a extra usa o horário seguinte livre de rotation_times (${times.join("/")})` };
     }
   }
-  return { hhmm: principal, principal, collides: true, reason: `rotation_times só tem ${principal}: a extra cai no mesmo horário da vertical principal de ${date}` };
+  return { hhmm: principal, principal, collides: true, reason: `rotation_times (${times.join("/")}) não tem horário fora de ${takenText}: a extra cai no mesmo horário da vertical principal de ${date}` };
 }
 
 /** Aspas simples de shell POSIX (#11944: mora em `short-corte.ts`, usada também pelos comandos do plano). */

@@ -33,7 +33,7 @@ import {
   type ThreadsTimerRunDeps,
 } from "../scripts/shorts-threads-profile-timer.ts";
 import { THREADS_TIMER_DETAIL, SHORTS_BOOLEAN_FLAGS, planShortsPublish, threadsEditionMarkers, type ShortsPlanInput } from "../scripts/publish-shorts.ts";
-import { loadShortsConfig, shortVideoFileName, type ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
+import { loadShortScheduleConfig, loadShortsConfig, shortVideoFileName, timerDueTimes, type ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import {
   SHORTS_THREADS_TIMER_LEDGER_FILE,
   listShortsRegistryFiles,
@@ -569,7 +569,8 @@ describe("#11410/#11635 tasks do 300: ligadas, cobrindo os horários do vertical
     assert.deepEqual(hourly!.schedule, { kind: "interval", hours: 1 });
   });
   it("todo horário do teste fora da hora cheia cai na diária em até 3 min (o resto, na de hora em hora)", () => {
-    const times: string[] = (platformConfig as any).publishing.shorts.schedule.rotation_times;
+    // #12250: inclui default_time e o horário próprio do destino em by_destination.
+    const times = timerDueTimes(loadShortScheduleConfig(platformConfig), "threads_profile");
     const d = daily!.schedule as { kind: "daily"; hour: number; minute: number };
     for (const t of times) {
       const [h, m] = t.split(":").map(Number);

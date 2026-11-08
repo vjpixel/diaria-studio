@@ -1256,6 +1256,11 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `test/shorts-linkedin-profile-timer-10982.test.ts` trava o par.
     // Sem `enabled: false`: o `Diaria-Remediate-Never-Armed-Tasks` (#8153)
     // arma no 300 depois do merge, que é o que tira o passo manual (#10982).
+    // #12250: teste encerrado; o destino sai no default_time (12:00), coberto pela
+    // execução de hora em hora. A diária das 06:3x virou no-op e fica pra não
+    // mexer na unit armada no 300 (o horário vem de publishing.shorts.schedule).
+    // O guard do par lê `timerDueTimes` (inclui by_destination.linkedin_profile):
+    // horário próprio fora da hora cheia exige ajustar esta diária.
     schedule: { kind: "daily", hour: 6, minute: 31 },
     issue: "#10982",
   },
@@ -1287,6 +1292,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `test/shorts-instagram-timer-11265.test.ts` trava o par. Sem
     // `enabled: false`: o `Diaria-Remediate-Never-Armed-Tasks` (#8153) arma
     // no 300 depois do merge, como o timer do LinkedIn (#10982).
+    // #12250: teste encerrado; o destino sai no default_time (12:00), coberto pela
+    // execução de hora em hora. A diária das 06:3x virou no-op e fica pra não
+    // mexer na unit armada no 300 (o horário vem de publishing.shorts.schedule).
     schedule: { kind: "daily", hour: 6, minute: 32 },
     guard: {
       requiredFile: "editions",
@@ -1332,6 +1340,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `arm-systemd-timers.ts --task` para cada uma (passo a passo em
     // docs/scheduled-tasks-registry.md). O script só age com
     // `publishing.shorts.threads_profile_via_timer: true`, ligado no mesmo PR.
+    // #12250: teste encerrado; o destino sai no default_time (12:00), coberto pela
+    // execução de hora em hora. A diária das 06:3x virou no-op e fica pra não
+    // mexer na unit armada no 300 (o horário vem de publishing.shorts.schedule).
     schedule: { kind: "daily", hour: 6, minute: 33 },
     guard: {
       requiredFile: "editions",
