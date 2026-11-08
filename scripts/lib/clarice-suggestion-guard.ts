@@ -268,13 +268,55 @@ export interface FilteredClariceSuggestions<T> {
   dropped: Array<{ suggestion: T; reason: ClariceNoiseReason | "invalid_shape" | "fact_check_protected" }>;
 }
 
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+const TOKEN = /[\p{L}\p{N}][\p{L}\p{N}%.,'’-]*/gu;
+
+/** Início de frase: nada antes, ou pontuação final de frase antes do espaço. */
+function atSentenceStart(text: string, pos: number): boolean {
+  const before = text.slice(0, pos).trimEnd();
+  return before === "" || /[.!?:;"“(\n]$/.test(before);
+}
+
+/**
+ * A sugestão mexe no fato que o fact-check corrigiu (#12362)? Antes (#12329)
+ * bastava `from` ser substring de qualquer `suggested_fix` aplicado, sem
+ * fronteira de palavra: `{from: "a", to: "à"}` ou `{from: "empresa", to:
+ * "empresas"}` caíam como `fact_check_protected` só porque "a" e "empresa"
+ * aparecem dentro de uma frase corrigida em outra peça. Agora `from` só é
+ * protegido quando:
+ *   - contém o trecho corrigido inteiro; ou
+ *   - aparece no trecho corrigido com fronteira de palavra E carrega um token
+ *     factual — número (`40%`, `2026`) ou nome próprio (maiúscula fora do
+ *     início de frase) — ou cobre pelo menos metade do trecho corrigido.
+ */
+function touchesCorrectedFact(from: string, corrected: string): boolean {
+  if (from.includes(corrected)) return true;
+  const needsLeft = WORD_CHAR.test(from[0] ?? "");
+  const needsRight = WORD_CHAR.test(from[from.length - 1] ?? "");
+  for (let pos = corrected.indexOf(from); pos !== -1; pos = corrected.indexOf(from, pos + 1)) {
+    const prev = corrected[pos - 1] ?? "";
+    const next = corrected[pos + from.length] ?? "";
+    if (needsLeft && WORD_CHAR.test(prev)) continue;
+    if (needsRight && WORD_CHAR.test(next)) continue;
+    if (from.trim().length * 2 >= corrected.trim().length) return true;
+    for (const m of from.matchAll(TOKEN)) {
+      const tok = m[0];
+      if (/\p{N}/u.test(tok)) return true;
+      const abs = pos + (m.index ?? 0);
+      if (/^\p{Lu}/u.test(tok) && /\p{L}{2,}/u.test(tok) && !atSentenceStart(corrected, abs)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Separa as sugestões legítimas do ruído (#11798, fluxos manuais). Os fluxos em
  * que o LLM aplica "todas as sugestões" à mão (post semanal, artigo especial,
  * stack, voto-tema, apoiadores) não passam por `clarice-apply.ts`; o CLI
  * `scripts/clarice-filter.ts` usa isto pra que eles recusem o mesmo ruído.
  * `protection` no Stage 4 retém mudanças factuais para revisão humana:
- * qualquer sugestão sobre trecho corrigido, e remoções de verbos condicionais.
+ * sugestão sobre o fato corrigido (número, nome próprio ou boa parte do trecho,
+ * `touchesCorrectedFact`, #12362) e remoções de verbos condicionais.
  */
 export function filterClariceSuggestions<T>(
   suggestions: T[],
@@ -295,7 +337,7 @@ export function filterClariceSuggestions<T>(
       (word) => !(o.to as string).toLowerCase().includes(word.toLowerCase()),
     );
     const protectedChange = protection && o.from !== o.to && o.from.trim() !== "" && (
-      protection.correctedTexts.some((text) => text.includes(o.from as string) || (o.from as string).includes(text)) ||
+      protection.correctedTexts.some((text) => touchesCorrectedFact(o.from as string, text)) ||
       (protection.protectConditional && removedConditional)
     );
     const reason = protectedChange ? "fact_check_protected" : classifyClariceNoise(o.from, o.to);
