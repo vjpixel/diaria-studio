@@ -13,7 +13,13 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { fireQueueEntry, pickPagePostNear, type LinkedInCreds } from "../src/dispatch.ts";
+import {
+  fireQueueEntry,
+  pickPagePostNear,
+  normalizePostTextForMatch,
+  PAGE_POST_LOOKUP_AFTER_MS,
+  type LinkedInCreds,
+} from "../src/dispatch.ts";
 import workerDefault, { type Env, type QueueEntry } from "../src/index.ts";
 
 const CREDS: LinkedInCreds = {
@@ -170,6 +176,68 @@ describe("#10983 comentário como página", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("regressão PR #12407: post da página 2 h depois do D1 (próximo da rotação) não é alvo — failed, sem comentar", async () => {
+    const calls = installFetch((url, method) => {
+      if (method === "GET") {
+        return jsonRes(200, {
+          elements: [{ id: "urn:li:share:950", publishedAt: D1_MS + 2 * 3600_000, lifecycleState: "PUBLISHED", commentary: "Outro post" }],
+        });
+      }
+      return new Response("", { status: 201 });
+    });
+    const out = await fireQueueEntry(entry({ action: "comment", destaque: "d1", text: "link", parent_scheduled_at: D1_AT }), config());
+    assert.equal(out.status, "failed");
+    assert.equal(calls.length, 1, "só a busca: nenhum POST de comentário");
+  });
+
+  it("regressão PR #12407: com parent_text_hint, só comenta no post cujo texto traz a abertura do D1", async () => {
+    const calls = installFetch((url, method) => {
+      if (method === "GET") {
+        return jsonRes(200, {
+          elements: [
+            // mais perto da hora, mas é outro post da página
+            { id: "urn:li:share:960", publishedAt: D1_MS + 60_000, lifecycleState: "PUBLISHED", commentary: "A OpenAI lançou outra coisa hoje." },
+            // o D1: little text format escapa parênteses; o markdown já saiu no publisher
+            { id: "urn:li:share:961", publishedAt: D1_MS + 20 * 60_000, lifecycleState: "PUBLISHED", commentary: "O Brasil \\(enfim\\) ganhou uma lei de IA.\n\nPor que isso importa: ..." },
+          ],
+        });
+      }
+      return new Response("", { status: 201 });
+    });
+    const out = await fireQueueEntry(
+      entry({ action: "comment", destaque: "d1", text: "link", parent_scheduled_at: D1_AT, parent_text_hint: "O Brasil (enfim) ganhou uma lei de IA." }),
+      config(),
+    );
+    assert.deepEqual(out, { status: "fired" });
+    assert.equal(calls[1].url, `https://api.linkedin.com/rest/socialActions/${encodeURIComponent("urn:li:share:961")}/comments`);
+  });
+
+  it("regressão PR #12407: parent_text_hint sem post correspondente na janela → failed (retenta, depois DLQ), nunca comenta", async () => {
+    const calls = installFetch((url, method) => {
+      if (method === "GET") {
+        return jsonRes(200, {
+          elements: [{ id: "urn:li:share:970", publishedAt: D1_MS + 60_000, lifecycleState: "PUBLISHED", commentary: "Post da rotação, não o D1" }],
+        });
+      }
+      return new Response("", { status: 201 });
+    });
+    const out = await fireQueueEntry(
+      entry({ action: "comment", destaque: "d1", text: "link", parent_scheduled_at: D1_AT, parent_text_hint: "O Brasil ganhou uma lei de IA" }),
+      config(),
+    );
+    assert.equal(out.status, "failed");
+    assert.match((out as { reason: string }).reason, /com o texto do D1/);
+    assert.equal(calls.length, 1);
+  });
+
+  it("pickPagePostNear: janela é de 60 min depois do D1; com hint, post sem commentary não casa", () => {
+    assert.equal(PAGE_POST_LOOKUP_AFTER_MS, 60 * 60 * 1000);
+    assert.equal(pickPagePostNear([{ id: "urn:li:share:1", createdAt: D1_MS + 61 * 60_000 }], D1_MS), null);
+    assert.equal(pickPagePostNear([{ id: "urn:li:share:1", createdAt: D1_MS + 59 * 60_000 }], D1_MS), "urn:li:share:1");
+    assert.equal(pickPagePostNear([{ id: "urn:li:share:1", createdAt: D1_MS }], D1_MS, "Abertura do D1 aqui"), null);
+    assert.equal(normalizePostTextForMatch("  O **Brasil** \\(enfim\\)!  "), "o brasil enfim");
+  });
+
   it("pickPagePostNear: só post original, publicado, dentro da janela; o mais próximo vence", () => {
     assert.equal(pickPagePostNear(undefined, D1_MS), null);
     assert.equal(
@@ -259,6 +327,14 @@ describe("#11121/#10983 enqueue", () => {
     assert.equal(saved.parent_scheduled_at, COMMENT.parent_scheduled_at);
   });
 
+  it("parent_text_hint é aceito com parent_scheduled_at e gravado na entry", async () => {
+    const { env, kv } = mkEnv(true);
+    const res = await enqueue(env, { ...COMMENT, parent_text_hint: "O Brasil ganhou uma lei de IA" });
+    assert.equal(res.status, 202);
+    const saved = JSON.parse([...kv.store.values()][0]) as QueueEntry;
+    assert.equal(saved.parent_text_hint, "O Brasil ganhou uma lei de IA");
+  });
+
   it("sem os segredos da página → 400 linkedin_creds_missing, nada gravado (guiado/manual preservado)", async () => {
     for (const body of [REPOST, COMMENT]) {
       const { env, kv } = mkEnv(false);
@@ -279,6 +355,9 @@ describe("#11121/#10983 enqueue", () => {
     ["alvo em post comum", { ...REPOST, action: "post", text: "oi" }],
     ["parent_scheduled_at inválido", { ...COMMENT, parent_scheduled_at: "ontem" }],
     ["repost com texto ausente", { ...REPOST, text: undefined }],
+    ["parent_text_hint sem parent_scheduled_at", { ...COMMENT, parent_scheduled_at: undefined, target_post_urn: "urn:li:share:1", parent_text_hint: "abertura do D1" }],
+    ["parent_text_hint longo demais", { ...COMMENT, parent_text_hint: "a".repeat(301) }],
+    ["parent_text_hint só pontuação", { ...COMMENT, parent_text_hint: "!!! ..." }],
   ];
   for (const [label, body] of invalid) {
     it(`recusa: ${label}`, async () => {

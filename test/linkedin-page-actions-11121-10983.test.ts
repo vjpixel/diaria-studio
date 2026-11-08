@@ -24,6 +24,7 @@ import {
   LINKEDIN_D1_COMMENT_DELAY_MS,
   buildD1VideoCommentPayload,
   buildPageRepostPayload,
+  d1LinkedInTextHint,
   d1VideoCommentIdempotencyKey,
   enqueuePageAction,
   linkedInPostUrnFrom,
@@ -68,6 +69,25 @@ describe("linkedin-page-actions — payloads", () => {
     assert.equal(p.idempotency_key, d1VideoCommentIdempotencyKey("261109", VIDEO_URL));
     assert.equal(p.idempotency_key, "d1-video-comment-261109-abcdefghijk");
     assert.equal(p.target_post_urn, undefined);
+  });
+
+  it("regressão PR #12407: comentário do D1 leva a abertura do D1 (parent_text_hint) quando ela existe", () => {
+    const base = { aammdd: "261109", videoUrl: VIDEO_URL, text: "t", d1ScheduledAt: "2026-11-09T17:00:00-03:00", now: NOW };
+    assert.equal(buildD1VideoCommentPayload({ ...base, d1TextHint: "O Brasil ganhou uma lei de IA" }).parent_text_hint, "O Brasil ganhou uma lei de IA");
+    assert.equal("parent_text_hint" in buildD1VideoCommentPayload(base), false);
+    assert.equal("parent_text_hint" in buildD1VideoCommentPayload({ ...base, d1TextHint: null }), false);
+  });
+
+  it("d1LinkedInTextHint: 1ª linha do ## d1 de # Social, sem markdown/URL, cortada em palavra; curto demais = null", () => {
+    const md = (d1: string) => `# Social\n\n## d1\n\n${d1}\n\n## d2\n\nOutro destaque qualquer com texto.\n`;
+    assert.equal(
+      d1LinkedInTextHint(md("O **Brasil** ganhou uma [lei de IA](https://x.test/a) hoje https://y.test\n\nPor que isso importa: ...")),
+      "O Brasil ganhou uma lei de IA hoje",
+    );
+    const long = d1LinkedInTextHint(md(`${"palavra ".repeat(40)}fim`));
+    assert.ok(long && long.length <= 120 && !long.endsWith(" "), String(long));
+    assert.equal(d1LinkedInTextHint(md("Curto.")), null);
+    assert.equal(d1LinkedInTextHint("# Outra\n\n## d1\n\nTexto longo o bastante para casar algo.\n"), null);
   });
 
   it("comentário do D1 que já saiu: agendado para daqui a 1 min, nunca no passado", () => {
@@ -207,12 +227,22 @@ describe("#10983 — video-d1-link-watch: comentário do D1 pela fila do Worker"
     assert.equal(calls.length, 1);
     assert.equal(calls[0].action, "comment");
     assert.equal(calls[0].parent_scheduled_at, "2026-10-23T20:00:00.000Z");
+    assert.equal(calls[0].parent_text_hint, undefined, "edição sem 03-social.md: só a janela de hora");
     assert.match(calls[0].text, /Assista no YouTube: https:\/\/youtu\.be\/abcdefghijk/);
     assert.equal(JSON.parse(readFileSync(join(dir, VIDEO_LINK_APPLY_FILE), "utf8")).destinations.linkedin.status, "applied");
 
     const again = await runVideoD1LinkWatch(deps(), input(dir, fn));
     assert.equal(again.status, "aplicado");
     assert.equal(calls.length, 1, "destino applied não é re-enfileirado");
+  });
+
+  it("regressão PR #12407: com 03-social.md, o enqueue leva a abertura do D1 para o Worker conferir o post", async () => {
+    const dir = edition();
+    writeFileSync(join(dir, "03-social.md"), "# Social\n\n## d1\n\nA Anthropic lançou um modelo novo nesta terça.\n\nPor que isso importa: ...\n", "utf8");
+    const { fn, calls } = recordingEnqueue();
+    const out = await runVideoD1LinkWatch(deps(), input(dir, fn));
+    assert.equal(out.status, "aplicado");
+    assert.equal(calls[0].parent_text_hint, "A Anthropic lançou um modelo novo nesta terça.");
   });
 
   it("Worker sem os segredos da página: LinkedIn segue manual com o motivo", async () => {

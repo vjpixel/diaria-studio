@@ -48,7 +48,7 @@ import {
   type D1VideoLinkStep,
 } from "./d1-video-link.ts";
 import { readYouTubeRecordSummary, type YouTubeRecordSummary } from "./youtube-video-link-gate.ts";
-import { buildD1VideoCommentPayload, enqueuePageAction, type EnqueueFn } from "./linkedin-page-actions.ts";
+import { buildD1VideoCommentPayload, enqueuePageAction, readD1LinkedInTextHint, type EnqueueFn } from "./linkedin-page-actions.ts";
 import {
   fetchVideoStatus,
   refreshYouTubeAccessToken,
@@ -313,12 +313,20 @@ async function applyLinkedInComment(
   step: D1VideoLinkStep,
   at: string,
   now: Date,
+  editionDir: string,
 ): Promise<DestinationResult> {
   const text = step.text ?? step.link_line;
   const base = { destination: "linkedin" as const, action: step.action, text, at };
   let payload;
   try {
-    payload = buildD1VideoCommentPayload({ aammdd, videoUrl, text, d1ScheduledAt: step.scheduled_at as string, now });
+    payload = buildD1VideoCommentPayload({
+      aammdd,
+      videoUrl,
+      text,
+      d1ScheduledAt: step.scheduled_at as string,
+      now,
+      d1TextHint: readD1LinkedInTextHint(editionDir),
+    });
   } catch (e) {
     return { ...base, status: "manual", detail: `${(e as Error).message} — comentário manual` };
   }
@@ -464,7 +472,7 @@ export async function runVideoD1LinkWatch(deps: VideoD1WatchDeps, input: VideoD1
         }
       }
     } else if (step.destination === "linkedin" && step.action === "comment_after" && step.scheduled_at && !dryRun && input.linkedinQueue) {
-      r = await applyLinkedInComment(input.linkedinQueue, input.aammdd, videoUrl, step, at, now);
+      r = await applyLinkedInComment(input.linkedinQueue, input.aammdd, videoUrl, step, at, now, editionDir);
     } else {
       r = {
         destination: step.destination,

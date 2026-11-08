@@ -211,6 +211,13 @@ export interface QueueEntry {
    * (`findPagePostNear`, dispatch.ts). Só com `action: "comment"`.
    */
   parent_scheduled_at?: string;
+  /**
+   * #10983 — trecho do texto do post da página a comentar (a abertura do D1),
+   * até `PAGE_POST_TEXT_HINT_MAX` chars. Com ele, o post achado pela hora
+   * também precisa conter esse trecho; sem nenhum que case, o comentário não
+   * sai (retenta e vai pra DLQ). Só junto de `parent_scheduled_at`.
+   */
+  parent_text_hint?: string;
   // #3817 — canal de disparo. Ver QueueChannel acima — default "linkedin".
   channel?: QueueChannel;
   // #4153 — lista de imagens pro carrossel do Instagram (5 cards do post
@@ -524,6 +531,7 @@ const IDEMPOTENT_CONTENT_FIELDS = [
   "parent_destaque",
   "target_post_urn",
   "parent_scheduled_at",
+  "parent_text_hint",
   "channel",
   "media_type",
   "video_url",
@@ -627,6 +635,8 @@ import {
   resolveThreadsCreds,
   resolveLinkedInCreds,
   probeInstagramCommentScope,
+  normalizePostTextForMatch,
+  PAGE_POST_TEXT_HINT_MAX,
 } from "./dispatch";
 
 /**
@@ -773,8 +783,8 @@ export function validatePageApiFields(
   const isRepost = body.action === "repost";
   const isPageComment = body.action === "comment" && body.webhook_target !== "pixel" && (hasTarget || hasParentAt);
   if (!isRepost && !isPageComment) {
-    if (hasTarget || hasParentAt) {
-      return { error: "target_post_urn/parent_scheduled_at only apply to action='repost' or to action='comment' on the page" };
+    if (hasTarget || hasParentAt || body.parent_text_hint !== undefined) {
+      return { error: "target_post_urn/parent_scheduled_at/parent_text_hint only apply to action='repost' or to action='comment' on the page" };
     }
     return null;
   }
@@ -793,6 +803,16 @@ export function validatePageApiFields(
   }
   if (hasParentAt && (typeof body.parent_scheduled_at !== "string" || Number.isNaN(Date.parse(body.parent_scheduled_at)))) {
     return { error: "parent_scheduled_at must be a valid ISO 8601 date" };
+  }
+  if (body.parent_text_hint !== undefined) {
+    if (!hasParentAt) return { error: "parent_text_hint only applies with parent_scheduled_at" };
+    if (
+      typeof body.parent_text_hint !== "string" ||
+      body.parent_text_hint.length > PAGE_POST_TEXT_HINT_MAX ||
+      !normalizePostTextForMatch(body.parent_text_hint)
+    ) {
+      return { error: `parent_text_hint must be a non-empty string up to ${PAGE_POST_TEXT_HINT_MAX} chars with letters or digits` };
+    }
   }
   if (!resolveLinkedInCreds(env)) {
     return {
@@ -1036,6 +1056,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     // #11121/#10983 — omitidos se undefined: alvo do repost/comentário como página
     ...(body.target_post_urn !== undefined && { target_post_urn: body.target_post_urn }),
     ...(body.parent_scheduled_at !== undefined && { parent_scheduled_at: body.parent_scheduled_at }),
+    ...(body.parent_text_hint !== undefined && { parent_text_hint: body.parent_text_hint }),
     // #3817 — omitido se undefined: entries sem channel resolvem "linkedin" (default)
     ...(body.channel !== undefined && { channel: body.channel as QueueEntry["channel"] }),
     // #4153 — omitido se undefined: entries sem image_urls usam image_url (single-image)

@@ -19,7 +19,10 @@
  * `already_fired` se ela já disparou), nunca num 2º repost/comentário.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { extractYouTubeVideoId } from "./d1-video-link.ts";
+import { extractDestaqueBlock, extractSection } from "../extract-section.ts";
 import { WorkerQueueError, type WorkerQueuePayload } from "../worker-queue-client.ts";
 
 /** Mesma regra do Worker (`LINKEDIN_POST_URN_RE`): só post aceita repost/comentário. */
@@ -94,6 +97,56 @@ export function buildPageRepostPayload(input: {
   };
 }
 
+/** #10983: teto do trecho do D1 enviado ao Worker (`PAGE_POST_TEXT_HINT_MAX` lá é 300). */
+export const D1_TEXT_HINT_MAX_CHARS = 120;
+/** Abaixo disso o trecho não discrimina post nenhum: sem hint, só a janela de hora. */
+const D1_TEXT_HINT_MIN_ALNUM = 20;
+
+/**
+ * #10983 (review do PR #12407): trecho de abertura do post do D1 da página
+ * (1ª linha não vazia do `## d1` de `# Social`, o texto que o publisher do
+ * LinkedIn manda), para o Worker confirmar que o post achado pela hora é
+ * mesmo o do D1 antes de comentar. Tira link markdown e URL; corta em até
+ * `D1_TEXT_HINT_MAX_CHARS` no limite de palavra. `null` quando não há texto
+ * que discrimine (o Worker fica só com a janela de hora). Pura.
+ */
+export function d1LinkedInTextHint(socialMd: string): string | null {
+  const section = extractSection(socialMd, "Social");
+  if (!section) return null;
+  const block = extractDestaqueBlock(section, "d1");
+  if (!block) return null;
+  const main = block.split(/\n### comment_(?:diaria|pixel)\b/)[0];
+  const line = main
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!line) return null;
+  let text = line
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[*_`#>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length > D1_TEXT_HINT_MAX_CHARS) {
+    const cut = text.slice(0, D1_TEXT_HINT_MAX_CHARS);
+    const sp = cut.lastIndexOf(" ");
+    text = (sp > D1_TEXT_HINT_MAX_CHARS / 2 ? cut.slice(0, sp) : cut).trim();
+  }
+  const alnum = text.replace(/[^\p{L}\p{N}]/gu, "").length;
+  return alnum >= D1_TEXT_HINT_MIN_ALNUM ? text : null;
+}
+
+/** Lê `03-social.md` da edição e devolve `d1LinkedInTextHint`; ausente/ilegível = `null`. */
+export function readD1LinkedInTextHint(editionDir: string): string | null {
+  const file = join(editionDir, "03-social.md");
+  if (!existsSync(file)) return null;
+  try {
+    return d1LinkedInTextHint(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 /** #10983: chave fixa por edição + vídeo — 1 comentário do link por D1. */
 export function d1VideoCommentIdempotencyKey(aammdd: string, videoUrl: string): string {
   return `d1-video-comment-${aammdd}-${extractYouTubeVideoId(videoUrl) ?? "sem-id"}`;
@@ -102,7 +155,8 @@ export function d1VideoCommentIdempotencyKey(aammdd: string, videoUrl: string): 
 /**
  * #10983: payload do 1º comentário do D1 da página. O post do D1 sai pelo
  * webhook Make (sem URN): o Worker acha o post pela hora (`parent_scheduled_at`)
- * no disparo. Horário: D1 + 5 min, ou daqui a 1 min se o D1 já saiu.
+ * no disparo e, com `d1TextHint`, exige também a abertura do D1 no texto do
+ * post (`parent_text_hint`). Horário: D1 + 5 min, ou daqui a 1 min se o D1 já saiu.
  */
 export function buildD1VideoCommentPayload(input: {
   aammdd: string;
@@ -110,6 +164,7 @@ export function buildD1VideoCommentPayload(input: {
   text: string;
   d1ScheduledAt: string;
   now: Date;
+  d1TextHint?: string | null;
 }): WorkerQueuePayload {
   const d1Ms = Date.parse(input.d1ScheduledAt);
   if (!Number.isFinite(d1Ms)) throw new Error(`horário do D1 inválido: ${JSON.stringify(input.d1ScheduledAt)}`);
@@ -123,6 +178,7 @@ export function buildD1VideoCommentPayload(input: {
     action: "comment",
     webhook_target: "diaria",
     parent_scheduled_at: new Date(d1Ms).toISOString(),
+    ...(input.d1TextHint ? { parent_text_hint: input.d1TextHint } : {}),
     idempotency_key: d1VideoCommentIdempotencyKey(input.aammdd, input.videoUrl),
   };
 }

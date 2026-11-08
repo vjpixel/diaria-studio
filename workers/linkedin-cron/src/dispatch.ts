@@ -692,11 +692,18 @@ async function fireLinkedInRepost(targetUrn: string, commentary: string, creds: 
   }
 }
 
-/** #10983 — janela, em torno de `parent_scheduled_at`, em que o post da página é procurado. */
+/**
+ * #10983 — janela, em torno de `parent_scheduled_at`, em que o post da página é
+ * procurado. 60 min depois (não 3 h, review do PR #12407): os posts da rotação
+ * da página ficam a ~2 h uns dos outros, e uma janela larga deixava o
+ * comentário cair em OUTRO post quando o do D1 falhou ou não existe.
+ */
 export const PAGE_POST_LOOKUP_BEFORE_MS = 10 * 60 * 1000;
-export const PAGE_POST_LOOKUP_AFTER_MS = 3 * 60 * 60 * 1000;
+export const PAGE_POST_LOOKUP_AFTER_MS = 60 * 60 * 1000;
 /** #10983 — quantos posts recentes da página a busca lê (finder `author`). */
 export const PAGE_POST_LOOKUP_COUNT = 20;
+/** #10983 — teto do `parent_text_hint` (validado no enqueue). */
+export const PAGE_POST_TEXT_HINT_MAX = 300;
 
 export type PagePostLookup =
   | { kind: "found"; urn: string }
@@ -707,12 +714,35 @@ export type PagePostLookup =
   | { kind: "error"; reason: string };
 
 /**
+ * Normaliza texto pra comparar o trecho do D1 com o `commentary` do post: a
+ * Posts API devolve o texto em "little text format" (parênteses, `#`, `*` etc.
+ * escapados com `\`) e o publisher tira o markdown — então só letras e
+ * dígitos (Unicode, minúsculos, NFC) e espaço simples sobrevivem. Pura.
+ */
+export function normalizePostTextForMatch(text: string): string {
+  return text
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+/** Complemento da mensagem de `not_found` quando a busca exigiu o texto do D1. */
+function pagePostPickReason(textHint?: string | null): string {
+  return textHint && normalizePostTextForMatch(textHint) ? " com o texto do D1" : "";
+}
+
+/**
  * Escolhe, entre os posts devolvidos pelo finder `author`, o post ORIGINAL
  * (sem `reshareContext`) publicado mais perto de `parentAtMs`, dentro da
- * janela [parent − 10 min, parent + 3 h]. Pura (exportada pro teste).
+ * janela [parent − 10 min, parent + 60 min]. Com `textHint` (abertura do D1),
+ * o post também precisa conter esse trecho no `commentary` — sem post que
+ * case, `null` (o caller não comenta: retenta e depois DLQ, nunca comenta no
+ * post errado). Pura (exportada pro teste).
  */
-export function pickPagePostNear(elements: unknown, parentAtMs: number): string | null {
+export function pickPagePostNear(elements: unknown, parentAtMs: number, textHint?: string | null): string | null {
   if (!Array.isArray(elements)) return null;
+  const hint = textHint ? normalizePostTextForMatch(textHint) : "";
   let best: { urn: string; dist: number } | null = null;
   for (const raw of elements as Array<Record<string, unknown>>) {
     if (!raw || typeof raw !== "object") continue;
@@ -723,6 +753,10 @@ export function pickPagePostNear(elements: unknown, parentAtMs: number): string 
     const at = typeof raw.publishedAt === "number" ? raw.publishedAt : typeof raw.createdAt === "number" ? raw.createdAt : NaN;
     if (!Number.isFinite(at)) continue;
     if (at < parentAtMs - PAGE_POST_LOOKUP_BEFORE_MS || at > parentAtMs + PAGE_POST_LOOKUP_AFTER_MS) continue;
+    if (hint) {
+      const commentary = typeof raw.commentary === "string" ? normalizePostTextForMatch(raw.commentary) : "";
+      if (!commentary.includes(hint)) continue; // outro post da página na mesma janela
+    }
     const dist = Math.abs(at - parentAtMs);
     if (!best || dist < best.dist) best = { urn, dist };
   }
@@ -735,7 +769,11 @@ export function pickPagePostNear(elements: unknown, parentAtMs: number): string 
  * os posts recentes do autor (`GET /rest/posts?q=author`, finder, exige
  * `r_organization_social`, pedido junto com o `w_organization_social` no #8055).
  */
-export async function findPagePostNear(parentScheduledAt: string, creds: LinkedInCreds): Promise<PagePostLookup> {
+export async function findPagePostNear(
+  parentScheduledAt: string,
+  creds: LinkedInCreds,
+  textHint?: string | null,
+): Promise<PagePostLookup> {
   const parentAtMs = Date.parse(parentScheduledAt);
   if (!Number.isFinite(parentAtMs)) return { kind: "rejected", reason: `parent_scheduled_at inválido: ${parentScheduledAt}` };
   const url =
@@ -758,11 +796,11 @@ export async function findPagePostNear(parentScheduledAt: string, creds: LinkedI
     } catch {
       return { kind: "error", reason: `GET /rest/posts?q=author: resposta não-JSON: ${text.slice(0, 200)}` };
     }
-    const urn = pickPagePostNear(data.elements, parentAtMs);
+    const urn = pickPagePostNear(data.elements, parentAtMs, textHint);
     if (urn) return { kind: "found", urn };
     return {
       kind: "not_found",
-      reason: `nenhum post da página entre ${new Date(parentAtMs - PAGE_POST_LOOKUP_BEFORE_MS).toISOString()} e ${new Date(parentAtMs + PAGE_POST_LOOKUP_AFTER_MS).toISOString()} nos ${PAGE_POST_LOOKUP_COUNT} mais recentes`,
+      reason: `nenhum post da página${pagePostPickReason(textHint)} entre ${new Date(parentAtMs - PAGE_POST_LOOKUP_BEFORE_MS).toISOString()} e ${new Date(parentAtMs + PAGE_POST_LOOKUP_AFTER_MS).toISOString()} nos ${PAGE_POST_LOOKUP_COUNT} mais recentes`,
     };
   } catch (e) {
     return { kind: "error", reason: `GET /rest/posts?q=author fetch ${fetchFailure(e as Error)}` };
@@ -772,14 +810,14 @@ export async function findPagePostNear(parentScheduledAt: string, creds: LinkedI
 /**
  * #10983 — comentário da PÁGINA num post da página (o link do vídeo no 1º
  * comentário do D1). Alvo: `target_post_urn` explícito ou, sem ele, o post
- * achado por `findPagePostNear(parent_scheduled_at)`. Post ainda não achado =
+ * achado por `findPagePostNear(parent_scheduled_at, parent_text_hint)`. Post ainda não achado =
  * `failed` (retentável: o cron re-tenta até `MAX_RETRIES`, depois DLQ).
  * Comentário: `POST /rest/socialActions/{urn}/comments` com `actor` = página.
  */
 async function fireLinkedInPageComment(entry: QueueEntry, creds: LinkedInCreds): Promise<FireOutcome> {
   let target = entry.target_post_urn ?? null;
   if (!target) {
-    const lookup = await findPagePostNear(entry.parent_scheduled_at ?? "", creds);
+    const lookup = await findPagePostNear(entry.parent_scheduled_at ?? "", creds, entry.parent_text_hint);
     if (lookup.kind === "rejected") return { status: "dlq", reason: `LinkedIn comentário da página: ${lookup.reason}` };
     if (lookup.kind !== "found") return { status: "failed", reason: `LinkedIn comentário da página: ${lookup.reason}` };
     target = lookup.urn;

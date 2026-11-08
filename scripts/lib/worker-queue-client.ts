@@ -84,6 +84,8 @@ export interface WorkerQueuePayload {
   parent_destaque?: string;
   target_post_urn?: string;
   parent_scheduled_at?: string;
+  // #10983 — abertura do D1: o Worker só comenta num post que contenha esse trecho.
+  parent_text_hint?: string;
 }
 
 /**

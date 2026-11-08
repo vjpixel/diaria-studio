@@ -65,7 +65,12 @@ import {
   type D1PostEntryLike,
   type D1VideoLinkStep,
 } from "./lib/diaria/d1-video-link.ts";
-import { buildD1VideoCommentPayload, enqueuePageAction, type PageActionResult } from "./lib/diaria/linkedin-page-actions.ts";
+import {
+  buildD1VideoCommentPayload,
+  enqueuePageAction,
+  readD1LinkedInTextHint,
+  type PageActionResult,
+} from "./lib/diaria/linkedin-page-actions.ts";
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import {
   d1SocialSlotAt,
@@ -158,6 +163,7 @@ async function linkedInCommentForSave(
   step: D1VideoLinkStep | undefined,
   skip: boolean,
   now: Date,
+  editionDir: string,
 ): Promise<PageActionResult | { status: "skipped"; detail: string }> {
   if (skip) return { status: "skipped", detail: "--no-linkedin-comment" };
   if (!step || step.action !== "comment_after" || !step.text) {
@@ -171,7 +177,14 @@ async function linkedInCommentForSave(
   };
   const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? cfg.publishing?.social?.linkedin?.cloudflare_worker_url ?? "";
   const token = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
-  const payload = buildD1VideoCommentPayload({ aammdd, videoUrl, text: step.text, d1ScheduledAt: step.scheduled_at, now });
+  const payload = buildD1VideoCommentPayload({
+    aammdd,
+    videoUrl,
+    text: step.text,
+    d1ScheduledAt: step.scheduled_at,
+    now,
+    d1TextHint: readD1LinkedInTextHint(editionDir),
+  });
   return enqueuePageAction(
     workerUrl && token ? (p) => postToWorkerQueue(workerUrl, token, p, 2, "link-video-d1") : null,
     payload,
@@ -252,6 +265,7 @@ async function main(): Promise<number> {
       steps.find((s) => s.destination === "linkedin"),
       flags.has("no-linkedin-comment"),
       now,
+      dir,
     );
     if (linkedinComment.status === "queued") {
       console.error(`[ok] LinkedIn: 1º comentário do D1 na fila do Worker para ${linkedinComment.scheduled_at} (key ${linkedinComment.key}${linkedinComment.duplicate ? ", já estava na fila" : ""})`);
