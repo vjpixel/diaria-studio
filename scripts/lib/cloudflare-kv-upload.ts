@@ -227,6 +227,64 @@ export async function getTextFromWorkerKV(
 }
 
 /**
+ * #11412 (fatias 3-4): leitura BINÁRIA de uma key (imagem/PDF de `/img/`),
+ * mesmas credenciais de `getTextFromWorkerKV`. `null` em 404; lança em
+ * qualquer outra falha (o arquivo/poda nunca lê "falhou" como "vazio").
+ */
+export async function getBinaryFromWorkerKV(
+  key: string,
+  cfg: CloudflareKVConfig,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Uint8Array | null> {
+  const accountId = cfg.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
+  const token = cfg.token ?? process.env.CLOUDFLARE_WORKERS_TOKEN;
+  if (!accountId || !token) {
+    throw new Error("getBinaryFromWorkerKV: CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_WORKERS_TOKEN não definidos.");
+  }
+  if (!cfg.kvNamespaceId) throw new Error("getBinaryFromWorkerKV: cfg.kvNamespaceId obrigatório");
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${cfg.kvNamespaceId}/values/${encodeURIComponent(key)}`;
+  const res = await fetchImpl(url, { method: "GET", headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(60_000) });
+  if (res.status === 404) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Cloudflare KV read de '${key}' falhou (${res.status}): ${body.slice(0, 300)}`);
+  }
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+/**
+ * #11412 (fatia 4): escrita BINÁRIA de uma key, fetch-based e injetável. A
+ * poda só usa para DESFAZER uma remoção cuja conferência no Worker falhou.
+ */
+export async function putBinaryToWorkerKV(
+  key: string,
+  body: Uint8Array,
+  cfg: CloudflareKVConfig,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const accountId = cfg.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
+  const token = cfg.token ?? process.env.CLOUDFLARE_WORKERS_TOKEN;
+  if (!accountId || !token) {
+    throw new Error("putBinaryToWorkerKV: CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_WORKERS_TOKEN não definidos.");
+  }
+  if (!cfg.kvNamespaceId) throw new Error("putBinaryToWorkerKV: cfg.kvNamespaceId obrigatório");
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${cfg.kvNamespaceId}/values/${encodeURIComponent(key)}`;
+  const res = await fetchImpl(url, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+    body: new Uint8Array(body),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Cloudflare KV write de '${key}' falhou (${res.status}): ${text.slice(0, 300)}`);
+  }
+}
+
+/**
  * #4165/#4173: contraparte de ESCRITA fetch-based (injetável), com suporte a
  * `expirationTtl` — que `uploadTextToWorkerKV` (acima, `https` nativo) NÃO
  * tem. Necessário porque `RemoteKvNamespace.put` (usado pelo Studio) recebe
