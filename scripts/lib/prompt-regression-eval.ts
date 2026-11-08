@@ -171,6 +171,35 @@ function gradeTitleLength(agent: PromptEvalAgent, rawText: string): GraderVerdic
  * `wrapSocialWriterOutputForGrading`) em `editionDir` antes de chamar este
  * grader.
  */
+/** O corpo do agent manda escrever a seção `## d{N}-cards` (#12094)? */
+export function agentBodyWritesCarouselCards(agentBody: string): boolean {
+  return /##\s*d(?:\{N\}|\d)-cards/.test(agentBody);
+}
+
+/**
+ * #12183 item 6: ressalva para quem lê o eval do `social-writer` quando só um
+ * dos lados escreve `## d{N}-cards`. O grader `carousel-text-overflow` lê o
+ * texto dos cards por `extractCarouselCardsBlock`: no lado sem `-cards` ele
+ * mede a LEGENDA `## d{N}`, no outro mede os cards. Os dois lados medem textos
+ * diferentes, então o delta desse grader (e qualquer diferença de tamanho da
+ * legenda, que no prompt novo é texto corrido e pode sair mais longa) não é
+ * regressão nem melhora do prompt. Devolve `null` quando a comparação é
+ * do mesmo texto (ou o agent não é o `social-writer`).
+ */
+export function carouselCardsSourceCaveat(agent: PromptEvalAgent, baselineBody: string, candidateBody: string): string | null {
+  if (agent !== "social-writer") return null;
+  const baselineCards = agentBodyWritesCarouselCards(baselineBody);
+  const candidateCards = agentBodyWritesCarouselCards(candidateBody);
+  if (baselineCards === candidateCards) return null;
+  const [withCards, withoutCards] = candidateCards ? ["candidato", "baseline"] : ["baseline", "candidato"];
+  return (
+    `ressalva (#12183): o ${withCards} escreve \`## d{N}-cards\` e o ${withoutCards} não. ` +
+    `carousel-text-overflow mede os cards de um lado e a legenda \`## d{N}\` do outro: o delta desse grader ` +
+    `compara textos diferentes e não indica regressão nem melhora. Legenda mais longa no lado com \`-cards\` ` +
+    `é esperada (texto corrido desde o #12094), não regressão.`
+  );
+}
+
 function gradeCarouselOverflow(agent: PromptEvalAgent, editionDir: string): GraderVerdict {
   if (agent !== "social-writer") {
     return notEvaluableVerdict("carousel-text-overflow", `agent "${agent}" não escreve o corpo do carrossel — grader aplicável só a social-writer.`);
