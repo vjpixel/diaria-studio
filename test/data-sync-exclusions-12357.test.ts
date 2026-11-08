@@ -82,6 +82,11 @@ describe("filtro real do rclone (#12357)", { skip: existsSync(RCLONE) ? false : 
         "Docs/diaria-studio-data/keep.json",
         "Docs/diaria-studio-data/editions/2611/261108/02-reviewed.md",
         "diaria-studio-data-x/a.mp4",
+        // #12412: node_modules em qualquer profundidade sai; .git fica
+        "Work/proj/node_modules/pkg/index.js",
+        "Work/proj/Node_Modules/pkg/a.js",
+        "Work/proj/.git/objects/ab/cdef",
+        "Work/proj/src/node_modules.txt",
       ];
       for (const f of files) {
         mkdirSync(join(sb, "t", dirname(f)), { recursive: true });
@@ -96,6 +101,8 @@ describe("filtro real do rclone (#12357)", { skip: existsSync(RCLONE) ? false : 
       assert.deepEqual(listed, [
         "Docs/diaria-studio-data/editions/2611/261108/02-reviewed.md",
         "Docs/diaria-studio-data/keep.json",
+        "Work/proj/.git/objects/ab/cdef",
+        "Work/proj/src/node_modules.txt",
         "YouTube/bruto.mp4",
         "diaria-studio-data-x/a.mp4",
       ]);
