@@ -5,6 +5,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { formAnnualContentGate, formResultsContentGate, parseFollowupSnippet } from "../scripts/lib/onboarding-followup.ts";
+import { resolveFormResults } from "../scripts/lib/onboarding-form-contract.ts";
 
 const DIR = join(import.meta.dirname, "..", "context", "templates", "onboarding-followup");
 const FILES = ["formulario-anual.md", "formulario-anual-lembrete.md", "formulario-resultados.md"];
@@ -28,6 +30,23 @@ for (const file of FILES) {
     assert.match(head, /ONBOARDING-CORPO-PENDENTE/);
   });
 }
+
+test("os três passam pelo parser real e destravam nos gates sem o marcador", () => {
+  const load = (file: string) => {
+    const raw = readFileSync(join(DIR, file), "utf8");
+    const snip = parseFollowupSnippet(raw.replace(/^.*ONBOARDING-CORPO-PENDENTE.*\n/m, ""));
+    assert.ok(snip, `${file}: parser devolveu null`);
+    assert.ok(snip.assunto, `${file}: sem assunto`);
+    assert.ok(snip.previewText, `${file}: sem preview_text`);
+    assert.doesNotMatch(snip.body, /\*\*|^#|^- /m);
+    return snip;
+  };
+  const anual = { form_anual: load("formulario-anual.md"), form_anual_lembrete: load("formulario-anual-lembrete.md") };
+  assert.deepEqual(formAnnualContentGate(anual), { blocked: false });
+  const results = resolveFormResults("https://example.com/resultados", "2026-11-09T12:00:00.000Z");
+  assert.ok(results, "resolveFormResults devolveu null para valores válidos");
+  assert.deepEqual(formResultsContentGate({ form_resultados: load("formulario-resultados.md") }, { results }), { blocked: false });
+});
 
 test("formulario-resultados.md: sem a frase que explicava o mecanismo do link", () => {
   const { body } = parts("formulario-resultados.md");
