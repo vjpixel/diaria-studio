@@ -14,13 +14,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   decideFolder,
+  duplicatePaths,
   editionsOfFolder,
   isBrutoFile,
   parseMd5sumLine,
   parseRcloneLsjson,
   verifyCopy,
 } from "../scripts/lib/diaria/video-bruto-archive.ts";
-import { defaultConfig, isPermissionError, reportFailed, runArchive } from "../scripts/archive-video-brutos.ts";
+import { bisyncIdle, defaultConfig, isPermissionError, reportFailed, runArchive } from "../scripts/archive-video-brutos.ts";
 
 const TODAY = new Date("2026-11-09T00:00:00Z");
 
@@ -111,7 +112,7 @@ describe("conferência (#12548)", () => {
     assert.equal(verifyCopy(remote, { size: 3, md5: "aa".repeat(16) }), "ok");
     assert.equal(verifyCopy(remote, { size: 2, md5: "aa".repeat(16) }), "tamanho-diverge");
     assert.equal(verifyCopy(remote, { size: 3, md5: "bb".repeat(16) }), "md5-diverge");
-    assert.equal(verifyCopy(remote, { size: 3, md5: null }), "md5-diverge");
+    assert.equal(verifyCopy(remote, { size: 3, md5: null }), "md5-local-indisponivel");
     assert.equal(verifyCopy({ ...remote, md5: null }, { size: 3, md5: "aa".repeat(16) }), "sem-md5-no-drive");
   });
 
@@ -123,7 +124,24 @@ describe("conferência (#12548)", () => {
 
 // ── executor contra um Drive falso ──────────────────────────────────────────
 
-function sandbox(opts: { lockedFiles?: string[]; badMd5?: string[] } = {}) {
+type DeleteMode = "ok" | "locked" | "ratelimit" | "apagou-mas-erro" | "erro";
+
+function sandbox(
+  opts: {
+    lockedFiles?: string[];
+    badMd5?: string[];
+    deleteMode?: DeleteMode;
+    failCopyto?: boolean;
+    /** Lista o 1º bruto da pasta duas vezes (nome repetido no Drive). */
+    dupFirst?: boolean;
+    timerActive?: boolean;
+    /** Quantas consultas `is-active` do serviço respondem "activating" antes de "inactive"; -1 = sempre. */
+    serviceBusyPolls?: number;
+    /** O que `is-active` do serviço imprime quando ocupado. */
+    busyState?: string;
+    failStart?: boolean;
+  } = {},
+) {
   const sb = mkdtempSync(join(tmpdir(), "bruto-archive-"));
   const mount = join(sb, "hd");
   const drive = join(sb, "drive");
@@ -148,6 +166,8 @@ function sandbox(opts: { lockedFiles?: string[]; badMd5?: string[] } = {}) {
   // salvo para os arquivos em `badMd5` (simula corrupção no Drive).
   const bad = JSON.stringify(opts.badMd5 ?? []);
   const locked = (opts.lockedFiles ?? []).join("|");
+  const deleteMode: DeleteMode = opts.deleteMode ?? (locked ? "locked" : "ok");
+  const dup = opts.dupFirst ? "1" : "";
   writeFileSync(
     join(bin, "rclone"),
     `#!/bin/sh
@@ -164,20 +184,47 @@ case "$cmd" in
       const walk=(d,rel)=>{ for(const e of fs.readdirSync(d,{withFileTypes:true})){ const r=rel?rel+"/"+e.name:e.name;
         if(e.isDirectory()) walk(path.join(d,e.name),r); else { const b=fs.readFileSync(path.join(d,e.name));
         out.push({Path:r,Size:b.length,IsDir:false,Hashes:{md5: bad.includes(r)?"0".repeat(32):c.createHash("md5").update(b).digest("hex")}}); } } };
-      walk(root,""); console.log(JSON.stringify(out));' "$(strip "$p")" '${bad}' ;;
-  copyto) cp "$(strip "$1")" "$2" ;;
+      walk(root,""); if(process.argv[3] && out.length) out.push({...out.find(o=>!o.Path.includes(".xml"))});
+      console.log(JSON.stringify(out));' "$(strip "$p")" '${bad}' '${dup}' ;;
+  copyto) ${opts.failCopyto ? 'echo "copy falhou" >&2; exit 1' : 'cp "$(strip "$1")" "$2"'} ;;
   deletefile)
     for a in "$@"; do p="$a"; done
     f="$(strip "$p")"
-    if [ -n "${locked}" ] && echo "$f" | grep -E -q "${locked}"; then
-      echo "googleapi: Error 403: insufficientFilePermissions" >&2; exit 1
-    fi
+    case "${deleteMode}" in
+      locked)
+        if echo "$f" | grep -E -q "${locked || "__nada__"}"; then
+          echo "googleapi: Error 403: The user does not have sufficient permissions for this file., insufficientFilePermissions" >&2; exit 1
+        fi ;;
+      ratelimit) echo "googleapi: Error 403: User Rate Limit Exceeded, userRateLimitExceeded" >&2; exit 1 ;;
+      apagou-mas-erro) rm "$f"; echo "Failed to delete: context deadline exceeded" >&2; exit 1 ;;
+      erro) echo "Failed to delete: context deadline exceeded" >&2; exit 1 ;;
+    esac
     rm "$f" ;;
   *) exit 2 ;;
 esac
 `,
   );
-  writeFileSync(join(bin, "systemctl"), `#!/bin/sh\necho "systemctl $*" >> "${calls}"\n[ "$2" = "is-active" ] && echo inactive\nexit 0\n`);
+  // systemctl falso: timer ativo por padrão; o serviço do bisync fica "ocupado" por N consultas.
+  const busyFile = join(sb, "busy-polls");
+  writeFileSync(busyFile, String(opts.serviceBusyPolls ?? 0));
+  writeFileSync(
+    join(bin, "systemctl"),
+    `#!/bin/sh
+echo "systemctl $*" >> "${calls}"
+if [ "$2" = "is-active" ]; then
+  case "$3" in
+    *.timer) ${opts.timerActive === false ? "echo inactive; exit 3" : "echo active; exit 0"} ;;
+    *.service)
+      n=$(cat "${busyFile}")
+      if [ "$n" = "-1" ]; then echo "${opts.busyState ?? "activating"}"; exit 0; fi
+      if [ "$n" -gt 0 ]; then echo $((n-1)) > "${busyFile}"; echo "${opts.busyState ?? "activating"}"; exit 0; fi
+      echo inactive; exit 3 ;;
+  esac
+fi
+${opts.failStart ? '[ "$2" = "start" ] && { echo "start falhou" >&2; exit 1; }' : ""}
+exit 0
+`,
+  );
   writeFileSync(join(bin, "md5sum"), `#!/bin/sh\nnode -e 'const c=require("crypto");console.log(c.createHash("md5").update(require("fs").readFileSync(process.argv[1])).digest("hex")+"  "+process.argv[1])' "$1"\n`);
   for (const b of ["rclone", "systemctl", "md5sum"]) chmodSync(join(bin, b), 0o755);
 
@@ -286,6 +333,173 @@ describe("runArchive contra Drive falso (#12548)", posixOnly, () => {
     assert.equal(reportFailed(r), true);
     assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
     assert.ok(!existsSync(s.calls), "nenhuma chamada a rclone/systemctl");
+  });
+
+  // ── regressões do review da PR #12567 ──
+
+  it("deletefile com erro mas o Drive apagou: relê, conta como arquivado e a cópia NÃO volta ao espelho", () => {
+    const s = sandbox({ deleteMode: "apagou-mas-erro" });
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].status, "arquivado");
+    assert.ok(existsSync(join(s.archive, "261105/20261104_124252.mp4")), "cópia conferida fica no arquivo");
+    assert.ok(!existsSync(join(s.local, "261105/20261104_124252.mp4")), "não volta ao espelho (o bisync a apagaria)");
+  });
+
+  it("deletefile com erro e o arquivo continua no Drive: devolve ao espelho e falha", () => {
+    const s = sandbox({ deleteMode: "erro" });
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].status, "falha-apagar");
+    assert.equal(reportFailed(r), true);
+    assert.ok(existsSync(join(s.local, "261105/20261104_124252.mp4")));
+    assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+  });
+
+  it("403 de rate limit é falha, não 'sem permissão'", () => {
+    const s = sandbox({ deleteMode: "ratelimit" });
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].status, "falha-apagar");
+    assert.equal(reportFailed(r), true);
+  });
+
+  it("nome repetido no Drive: não apaga nenhum dos dois", () => {
+    const s = sandbox({ dupFirst: true });
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.ok(r.files.every((f) => f.status === "nome-duplicado-no-drive"));
+    assert.equal(reportFailed(r), true);
+    assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+    assert.ok(!readFileSync(s.calls, "utf8").includes("deletefile"));
+  });
+
+  it("download que falha não deixa .partial nem apaga nada", () => {
+    const s = sandbox({ failCopyto: true });
+    s.put(s.drive, "261105/20261104_124252.mp4", "so-no-drive");
+    mkdirSync(join(s.local, "261105"), { recursive: true });
+    s.publish("261105");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].status, "falha-download");
+    assert.ok(!existsSync(join(s.archive, "261105/20261104_124252.mp4.partial")));
+    assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+  });
+
+  it("espera a rodada do bisync em curso e só então lista e apaga", () => {
+    const s = sandbox({ serviceBusyPolls: 2 });
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].status, "arquivado");
+    const calls = readFileSync(s.calls, "utf8").split("\n");
+    const lastPoll = calls.map((l, i) => (l.includes("is-active diaria-gdrive-bisync.service") ? i : -1)).filter((i) => i >= 0).pop()!;
+    const firstLsjson = calls.findIndex((l) => l.startsWith("rclone lsjson -R"));
+    assert.ok(lastPoll < firstLsjson, "a listagem do Drive vem depois da pausa");
+  });
+
+  for (const busyState of ["activating", ""]) {
+    it(`bisync que não termina ("${busyState || "vazio"}"): não apaga nada, religa o timer e falha`, () => {
+      const s = sandbox({ serviceBusyPolls: -1, busyState });
+      s.both("261105/20261104_124252.mp4", "bruto");
+      s.publish("261105");
+      const r = runArchive({ cfg: { ...s.cfg, waitMinutes: 0 }, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+      assert.equal(reportFailed(r), true);
+      const calls = readFileSync(s.calls, "utf8");
+      assert.ok(!calls.includes("deletefile") && !calls.includes("lsjson"));
+      assert.match(calls, /start diaria-gdrive-bisync.timer/);
+      assert.ok(existsSync(join(s.local, "261105/20261104_124252.mp4")));
+    });
+  }
+
+  it("timer já parado fica parado no fim", () => {
+    const s = sandbox({ timerActive: false });
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].status, "arquivado");
+    const calls = readFileSync(s.calls, "utf8");
+    assert.ok(!calls.includes("stop diaria-gdrive-bisync.timer") && !calls.includes("start diaria-gdrive-bisync.timer"));
+  });
+
+  it("falha ao religar o timer falha a rodada", () => {
+    const s = sandbox({ failStart: true });
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].status, "arquivado");
+    assert.equal(reportFailed(r), true);
+  });
+
+  it("retomada: cópia já no arquivo com o tamanho do Drive é conferida e o Drive é apagado", () => {
+    const s = sandbox();
+    s.put(s.drive, "261105/20261104_124252.mp4", "bruto");
+    s.put(s.archive, "261105/20261104_124252.mp4", "bruto");
+    mkdirSync(join(s.local, "261105"), { recursive: true });
+    s.publish("261105");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].source, "arquivo");
+    assert.equal(r.files[0].status, "arquivado");
+    assert.ok(!existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+  });
+
+  it("cópia truncada no arquivo não trava: usa o espelho e a sobrescreve", () => {
+    const s = sandbox();
+    s.both("261105/20261104_124252.mp4", "bruto-inteiro");
+    s.put(s.archive, "261105/20261104_124252.mp4", "bru");
+    s.publish("261105");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].source, "espelho");
+    assert.equal(r.files[0].status, "arquivado");
+    assert.equal(readFileSync(join(s.archive, "261105/20261104_124252.mp4"), "utf8"), "bruto-inteiro");
+  });
+
+  it("pasta AAMMDD-DD entra com as duas edições publicadas", () => {
+    const s = sandbox();
+    s.both("261103-04/20261102_094530.mp4", "bruto");
+    s.publish("261103");
+    s.publish("261104");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].status, "arquivado");
+    assert.ok(existsSync(join(s.archive, "261103-04/20261102_094530.mp4")));
+  });
+
+  it("sem data/editions: só a pasta além do teto sai", () => {
+    const s = sandbox();
+    s.both("261021/WIN_20261020_21_24_22_Pro.mp4", "velho");
+    s.both("261105/20261104_124252.mp4", "novo");
+    const r = runArchive({ cfg: { ...s.cfg, dataRoot: join(s.sb, "sem-data") }, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.deepEqual(r.files.map((f) => [f.folder, f.status]), [["261021", "arquivado"]]);
+    assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+  });
+});
+
+describe("regressões puras do review (#12567)", () => {
+  it("PXL_ com milissegundos é bruto", () => {
+    assert.equal(isBrutoFile("PXL_20261104_124252345.mp4"), true);
+  });
+  it("rate limit e cota nunca são 'sem permissão'", () => {
+    assert.equal(isPermissionError("googleapi: Error 403: User Rate Limit Exceeded, userRateLimitExceeded"), false);
+    assert.equal(isPermissionError("googleapi: Error 403: The user's Drive storage quota has been exceeded., storageQuotaExceeded"), false);
+    assert.equal(isPermissionError("googleapi: Error 403: forbidden"), false);
+  });
+  it("md5sum que falhou não é 'conteúdo diferente'", () => {
+    assert.equal(verifyCopy({ path: "a", size: 1, md5: "aa".repeat(16) }, { size: 1, md5: null }), "md5-local-indisponivel");
+  });
+  it("duplicatePaths acha o nome repetido", () => {
+    const f = (path: string) => ({ path, size: 1, md5: null });
+    assert.deepEqual([...duplicatePaths([f("a"), f("b"), f("a")])], ["a"]);
+  });
+  it("bisyncIdle só libera unit parada", () => {
+    assert.equal(bisyncIdle("inactive"), true);
+    assert.equal(bisyncIdle("failed"), true);
+    for (const s of ["", "active", "activating", "refreshing", "deactivating"]) assert.equal(bisyncIdle(s), false, s);
+  });
+  it("env numérica inválida falha cedo", () => {
+    assert.throws(() => defaultConfig({ VIDEO_ARCHIVE_WAIT_MINUTES: "abc" }));
   });
 });
 

@@ -7,30 +7,42 @@
  * tamanho e motivo, sem tocar nada. Política pura (quais pastas, quais
  * arquivos, a conferência) em `scripts/lib/diaria/video-bruto-archive.ts`.
  *
- * Para cada pasta de edição elegível da pasta de vídeo, e cada bruto que o
- * DRIVE lista nela (o Drive é a fonte; a listagem traz o MD5):
+ * Com `--apply`, primeiro pausa o bisync do Drive inteiro (#12356): para o
+ * `diaria-gdrive-bisync.timer` (só se estava ativo) e espera a rodada em curso
+ * terminar (`systemctl --user is-active` = `inactive`/`failed`; qualquer outro
+ * valor, inclusive vazio, conta como "ainda rodando"). Só depois lista o Drive,
+ * para que a listagem (tamanho + MD5) seja a do estado que vai ser apagado. Para
+ * cada bruto listado numa pasta de edição elegível:
  *   1. acha a cópia local: a do arquivo (`{archive}/{pasta}/{arquivo}`, rodada
- *      anterior interrompida), senão a do espelho do bisync
- *      (`/mnt/hd-sata/GoogleDrive/...`), senão baixa do Drive direto para o
- *      arquivo (`rclone copyto`);
- *   2. confere tamanho e MD5 da cópia local contra o Drive. Divergência ou
- *      Drive sem MD5 = não apaga, reporta, exit 1;
+ *      anterior interrompida) se tiver o tamanho do Drive, senão a do espelho
+ *      do bisync (`/mnt/hd-sata/GoogleDrive/...`) se tiver o tamanho do Drive,
+ *      senão baixa do Drive para um `.partial` ao lado do destino e renomeia
+ *      (uma cópia ruim no arquivo é sobrescrita, nunca trava o bruto);
+ *   2. confere tamanho e MD5 contra o Drive. Divergência, MD5 local que não
+ *      pôde ser calculado ou Drive sem MD5 = não apaga, exit 1;
  *   3. move a cópia do espelho para o arquivo (`rename`, mesmo disco);
  *   4. apaga do Drive de vez (`rclone deletefile --drive-use-trash=false`):
- *      arquivo na lixeira continua contando na cota por 30 dias. Se o Drive
- *      recusar (arquivo de outro dono, `canDelete=false`), a cópia volta para
- *      o espelho — senão o bisync veria "apagado no local" e tentaria apagar
- *      no Drive toda rodada — e o arquivo sai no relatório como não apagado
- *      (não é falha da rodada).
+ *      arquivo na lixeira continua contando na cota por 30 dias.
+ *      Se o `deletefile` falhar, o script RELÊ o arquivo no Drive antes de
+ *      decidir: sumiu (o Drive apagou e só a resposta se perdeu) = arquivado;
+ *      continua lá = a cópia volta ao espelho quando veio dele (senão o bisync
+ *      tentaria apagar no Drive a cada rodada), e o arquivo sai como "não
+ *      apagado" (permissão: arquivo de outro dono) ou como falha (exit 1);
+ *      não deu para reler = a cópia conferida fica no arquivo e é falha.
+ *      Devolver ao espelho sem reler podia perder o arquivo: o bisync veria
+ *      "apagado no Drive" e apagaria o espelho, sem lixeira em lado nenhum.
  *
- * Coordenação com o bisync do Drive inteiro (#12356): com `--apply`, para o
- * `diaria-gdrive-bisync.timer`, espera a rodada em curso terminar
- * (`systemctl --user is-active`, nunca `pgrep`) e religa o timer no fim, em
- * qualquer caso. Removido dos dois lados, o bisync não tem o que propagar.
+ * Nome repetido na mesma pasta do Drive (o Drive aceita) não é apagado:
+ * `deletefile` não diz qual dos dois apaga, e só um foi conferido.
  *
- * Relatório: stdout (texto ou `--json`) e `~/.cache/diaria/video-bruto-archive/last-report.json`,
- * com o espaço livre do Drive antes e depois (`rclone about`). Falha = exit 1,
- * a unit fica `failed` e o alarme de units falhas acusa.
+ * O timer volta no fim em qualquer caso, inclusive SIGTERM/SIGINT; morte por
+ * SIGKILL fica para o alarme de sync parado (#12357).
+ *
+ * Relatório: stdout (texto ou `--json`) e, com `--apply`,
+ * `~/.cache/diaria/video-bruto-archive/last-report.json`, com o espaço livre do
+ * Drive antes e depois (`null` quando a rodada não chegou a arquivar ou o
+ * `rclone about` falhou; o motivo vai em `warnings`). Falha = exit 1, a unit
+ * fica `failed` e o alarme de units falhas acusa.
  *
  * Task agendada: `Diaria-Video-Bruto-Archive` (sábado 03:00 BRT, `--apply`).
  *
@@ -43,8 +55,8 @@
  * Testável sem tocar produção: VIDEO_ARCHIVE_* e RCLONE_BIN/SYSTEMCTL_BIN/
  * MD5SUM_BIN/VIDEO_ARCHIVE_MOUNTPOINT_CMD sobrescrevíveis por env.
  */
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,12 +67,14 @@ import { editionDirUnder, editionVideoPublished, todayBrt } from "./prune-video-
 import {
   DEFAULT_ARCHIVE_UNPUBLISHED_MAX_DAYS,
   decideFolder,
+  duplicatePaths,
   editionsOfFolder,
   isBrutoFile,
   parseMd5sumLine,
   parseRcloneLsjson,
   verifyCopy,
   type FolderDecision,
+  type RemoteFile,
   type VerifyVerdict,
 } from "./lib/diaria/video-bruto-archive.ts";
 
@@ -72,6 +86,8 @@ export const VIDEO_FOLDER_REL = "Work/Mentoria Fluxo／VTSD/YouTube";
 export const DEFAULT_MOUNT = "/mnt/hd-sata";
 export const BISYNC_TIMER = "diaria-gdrive-bisync.timer";
 export const BISYNC_SERVICE = "diaria-gdrive-bisync.service";
+
+const HOUR_MS = 3_600_000;
 
 export interface ArchiveConfig {
   mount: string;
@@ -89,6 +105,13 @@ export interface ArchiveConfig {
   pauseBisync: boolean;
 }
 
+function positiveNumber(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`${name}=${raw} não é um número >= 0`);
+  return n;
+}
+
 export function defaultConfig(env: NodeJS.ProcessEnv = process.env): ArchiveConfig {
   const mount = env.VIDEO_ARCHIVE_MOUNT ?? DEFAULT_MOUNT;
   const remoteName = env.VIDEO_ARCHIVE_REMOTE ?? "gdrive:";
@@ -103,8 +126,8 @@ export function defaultConfig(env: NodeJS.ProcessEnv = process.env): ArchiveConf
     systemctl: env.SYSTEMCTL_BIN ?? "systemctl",
     md5sum: env.MD5SUM_BIN ?? "md5sum",
     mountpointCmd: (env.VIDEO_ARCHIVE_MOUNTPOINT_CMD ?? "mountpoint -q").split(" ").filter(Boolean),
-    waitMinutes: Number(env.VIDEO_ARCHIVE_WAIT_MINUTES ?? 90),
-    pollSeconds: Number(env.VIDEO_ARCHIVE_POLL_SECONDS ?? 15),
+    waitMinutes: positiveNumber(env.VIDEO_ARCHIVE_WAIT_MINUTES, 90, "VIDEO_ARCHIVE_WAIT_MINUTES"),
+    pollSeconds: positiveNumber(env.VIDEO_ARCHIVE_POLL_SECONDS, 15, "VIDEO_ARCHIVE_POLL_SECONDS"),
     pauseBisync: env.VIDEO_ARCHIVE_NO_BISYNC_PAUSE !== "1",
   };
 }
@@ -113,10 +136,23 @@ export type FileStatus =
   | "arquivado"
   | "sairia"
   | "nao-apagado-sem-permissao"
+  | "nome-duplicado-no-drive"
   | "falha-conferencia"
   | "falha-download"
   | "falha-mover"
   | "falha-apagar";
+
+/** Exaustivo de propósito: um status novo não compila sem dizer se é falha. */
+export const STATUS_IS_FAILURE: Record<FileStatus, boolean> = {
+  arquivado: false,
+  sairia: false,
+  "nao-apagado-sem-permissao": false,
+  "nome-duplicado-no-drive": true,
+  "falha-conferencia": true,
+  "falha-download": true,
+  "falha-mover": true,
+  "falha-apagar": true,
+};
 
 export interface FileResult {
   folder: string;
@@ -134,47 +170,63 @@ export interface ArchiveReport {
   folders: FolderDecision[];
   files: FileResult[];
   errors: string[];
+  warnings: string[];
   driveFreeBefore: number | null;
   driveFreeAfter: number | null;
   archivedBytes: number;
 }
 
-function run(bin: string, args: string[], opts: { timeoutMs?: number } = {}): { ok: boolean; stdout: string; stderr: string; code: number | null } {
+function run(bin: string, args: string[], opts: { timeoutMs?: number } = {}): { ok: boolean; stdout: string; stderr: string } {
   const r = spawnSync(bin, args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, timeout: opts.timeoutMs });
-  return { ok: r.status === 0, stdout: r.stdout ?? "", stderr: (r.stderr ?? "") + (r.error ? String(r.error.message) : ""), code: r.status };
+  return { ok: r.status === 0, stdout: r.stdout ?? "", stderr: (r.stderr ?? "") + (r.error ? String(r.error.message) : "") };
 }
 
-function driveFree(cfg: ArchiveConfig): number | null {
+function driveFree(cfg: ArchiveConfig, warnings: string[]): number | null {
   const r = run(cfg.rclone, ["about", cfg.remoteName, "--json"], { timeoutMs: 120_000 });
-  if (!r.ok) return null;
-  return parseRcloneAboutJson(r.stdout)?.free ?? null;
+  const free = r.ok ? (parseRcloneAboutJson(r.stdout)?.free ?? null) : null;
+  if (free === null) warnings.push(`rclone about falhou ou veio ilegível: ${r.stderr.trim().slice(-200) || r.stdout.trim().slice(0, 200)}`);
+  return free;
 }
 
-function md5Of(cfg: ArchiveConfig, path: string): string | null {
-  const r = run(cfg.md5sum, [path]);
-  return r.ok ? parseMd5sumLine(r.stdout) : null;
-}
-
-/** Erro do Drive que significa "esta conta não pode apagar" (arquivo de outro dono). */
+/**
+ * Erro do Drive que significa "esta conta não pode apagar" (arquivo de outro
+ * dono). Estreito de propósito: rate limit e cota também chegam como
+ * `Error 403` e são falha, nunca "sem permissão".
+ */
 export function isPermissionError(stderr: string): boolean {
-  return /insufficientFilePermissions|insufficient permissions|canDelete|forbidden|Error 403/i.test(stderr);
+  if (/rateLimit|userRateLimit|dailyLimit|quotaExceeded|storageQuota/i.test(stderr)) return false;
+  return /insufficientFilePermissions|insufficient permissions|does not have sufficient permissions|canDelete|cannotDeleteFile/i.test(stderr);
+}
+
+/** `is-active` que libera seguir: só os estados de unit parada. */
+export function bisyncIdle(state: string): boolean {
+  return state === "inactive" || state === "failed";
 }
 
 function sleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Para o timer do bisync e espera a rodada em curso terminar. Lança se não terminar no prazo. */
-export function pauseBisync(cfg: ArchiveConfig, log: (l: string) => void): void {
-  const stop = run(cfg.systemctl, ["--user", "stop", BISYNC_TIMER]);
-  if (!stop.ok) throw new Error(`não consegui parar ${BISYNC_TIMER}: ${stop.stderr.trim()}`);
-  log(`${LOG_PREFIX} ${BISYNC_TIMER} parado; esperando a rodada em curso do bisync terminar.`);
+/**
+ * Para o timer do bisync (se estava ativo) e espera a rodada em curso
+ * terminar. Devolve se o timer estava ativo (= deve ser religado). Lança se a
+ * rodada não terminar no prazo, já com `timerWasActive` preenchido em `state`.
+ */
+export function pauseBisync(cfg: ArchiveConfig, state: { timerWasActive: boolean }, log: (l: string) => void): void {
+  state.timerWasActive = run(cfg.systemctl, ["--user", "is-active", BISYNC_TIMER]).stdout.trim() === "active";
+  if (state.timerWasActive) {
+    const stop = run(cfg.systemctl, ["--user", "stop", BISYNC_TIMER]);
+    if (!stop.ok) throw new Error(`não consegui parar ${BISYNC_TIMER}: ${stop.stderr.trim()}`);
+    log(`${LOG_PREFIX} ${BISYNC_TIMER} parado; esperando a rodada em curso do bisync terminar.`);
+  } else {
+    log(`${LOG_PREFIX} ${BISYNC_TIMER} já estava parado; fica parado no fim.`);
+  }
   const deadline = Date.now() + cfg.waitMinutes * 60_000;
   for (;;) {
     const st = run(cfg.systemctl, ["--user", "is-active", BISYNC_SERVICE]).stdout.trim();
-    if (st !== "active" && st !== "activating" && st !== "deactivating" && st !== "reloading") return;
-    if (Date.now() > deadline) throw new Error(`${BISYNC_SERVICE} seguia ${st} depois de ${cfg.waitMinutes} min`);
-    sleep(cfg.pollSeconds * 1000);
+    if (bisyncIdle(st)) return;
+    if (Date.now() > deadline) throw new Error(`${BISYNC_SERVICE} seguia "${st}" depois de ${cfg.waitMinutes} min`);
+    sleep(Math.max(cfg.pollSeconds, 0.05) * 1000);
   }
 }
 
@@ -192,11 +244,17 @@ function listFolders(cfg: ArchiveConfig): string[] {
     .sort();
 }
 
-function publishedSignals(cfg: ArchiveConfig, name: string): Record<string, boolean | null> {
+function publishedSignals(cfg: ArchiveConfig, name: string, warnings: string[]): Record<string, boolean | null> {
   const out: Record<string, boolean | null> = {};
   const haveEditions = existsSync(join(cfg.dataRoot, "editions"));
   for (const e of editionsOfFolder(name) ?? []) {
-    out[e] = haveEditions ? editionVideoPublished(editionDirUnder(cfg.dataRoot, e), e).value : null;
+    if (!haveEditions) {
+      out[e] = null;
+      continue;
+    }
+    const sig = editionVideoPublished(editionDirUnder(cfg.dataRoot, e), e);
+    if (sig.warning) warnings.push(sig.warning);
+    out[e] = sig.value;
   }
   return out;
 }
@@ -210,16 +268,53 @@ function fileSize(p: string): number | null {
   }
 }
 
+function listRemote(cfg: ArchiveConfig, target: string): { files: RemoteFile[] } | { error: string } {
+  const r = run(cfg.rclone, ["lsjson", "-R", "--files-only", "--hash", "--hash-type", "md5", target], { timeoutMs: 600_000 });
+  if (!r.ok) return { error: `rclone lsjson falhou: ${r.stderr.trim().slice(-300)}` };
+  try {
+    return { files: parseRcloneLsjson(r.stdout) };
+  } catch (e) {
+    return { error: `listagem do Drive ilegível: ${(e as Error).message}` };
+  }
+}
+
+/** O arquivo ainda está no Drive? `null` = não deu para saber. */
+function stillOnDrive(cfg: ArchiveConfig, folder: string, path: string): boolean | null {
+  const parent = path.includes("/") ? `/${path.slice(0, path.lastIndexOf("/"))}` : "";
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const r = run(cfg.rclone, ["lsjson", "--files-only", `${cfg.remoteRoot}/${folder}${parent}`], { timeoutMs: 300_000 });
+  if (!r.ok) return null;
+  try {
+    return parseRcloneLsjson(r.stdout).some((f) => f.path === name);
+  } catch {
+    return null;
+  }
+}
+
+/** Timeout de cópia/MD5 proporcional ao tamanho (30 min + 10 min/GB): um rclone travado vira falha, não unit eterna. */
+function sizeTimeoutMs(size: number): number {
+  return Math.ceil(0.5 * HOUR_MS + (size / 1e9) * (HOUR_MS / 6)); // spawnSync exige inteiro
+}
+
 /** Processa um bruto (com `--apply`). Nunca lança: o erro vira status. */
-function archiveOne(cfg: ArchiveConfig, folder: string, remote: { path: string; size: number; md5: string | null }): FileResult {
+function archiveOne(cfg: ArchiveConfig, folder: string, remote: RemoteFile): FileResult {
   const base: FileResult = { folder, path: remote.path, sizeBytes: remote.size, status: "sairia" };
+  try {
+    return archiveOneUnsafe(cfg, folder, remote, base);
+  } catch (e) {
+    return { ...base, status: "falha-mover", detail: `erro inesperado: ${(e as Error).message}` };
+  }
+}
+
+function archiveOneUnsafe(cfg: ArchiveConfig, folder: string, remote: RemoteFile, base: FileResult): FileResult {
   const archivePath = join(cfg.archiveRoot, folder, ...remote.path.split("/"));
   const mirrorPath = join(cfg.localRoot, folder, ...remote.path.split("/"));
   const remotePath = `${cfg.remoteRoot}/${folder}/${remote.path}`;
+  const timeoutMs = sizeTimeoutMs(remote.size);
 
-  let source: FileResult["source"];
+  let source: NonNullable<FileResult["source"]>;
   let localPath: string;
-  if (fileSize(archivePath) !== null) {
+  if (fileSize(archivePath) === remote.size) {
     source = "arquivo";
     localPath = archivePath;
   } else if (fileSize(mirrorPath) === remote.size) {
@@ -228,13 +323,27 @@ function archiveOne(cfg: ArchiveConfig, folder: string, remote: { path: string; 
   } else {
     source = "download";
     localPath = archivePath;
-    mkdirSync(dirname(archivePath), { recursive: true });
-    const dl = run(cfg.rclone, ["copyto", remotePath, archivePath]);
-    if (!dl.ok) return { ...base, source, status: "falha-download", detail: dl.stderr.trim().slice(-500) };
+    const partial = `${archivePath}.partial`;
+    try {
+      mkdirSync(dirname(archivePath), { recursive: true });
+    } catch (e) {
+      return { ...base, source, status: "falha-download", detail: (e as Error).message };
+    }
+    const dl = run(cfg.rclone, ["copyto", remotePath, partial], { timeoutMs });
+    if (!dl.ok) {
+      rmSync(partial, { force: true });
+      return { ...base, source, status: "falha-download", detail: dl.stderr.trim().slice(-500) };
+    }
+    renameSync(partial, archivePath);
   }
 
-  const verify = verifyCopy(remote, { size: fileSize(localPath) ?? -1, md5: md5Of(cfg, localPath) });
-  if (verify !== "ok") return { ...base, source, verify, status: "falha-conferencia" };
+  const md5Run = run(cfg.md5sum, [localPath], { timeoutMs });
+  const localMd5 = md5Run.ok ? parseMd5sumLine(md5Run.stdout) : null;
+  const verify = verifyCopy(remote, { size: fileSize(localPath) ?? -1, md5: localMd5 });
+  if (verify !== "ok") {
+    const detail = verify === "md5-local-indisponivel" ? md5Run.stderr.trim().slice(-300) : undefined;
+    return { ...base, source, verify, status: "falha-conferencia", ...(detail ? { detail } : {}) };
+  }
 
   if (source === "espelho") {
     try {
@@ -245,23 +354,33 @@ function archiveOne(cfg: ArchiveConfig, folder: string, remote: { path: string; 
     }
   }
 
-  const del = run(cfg.rclone, ["deletefile", "--drive-use-trash=false", remotePath]);
+  const del = run(cfg.rclone, ["deletefile", "--drive-use-trash=false", remotePath], { timeoutMs: 600_000 });
   if (del.ok) return { ...base, source, verify, status: "arquivado" };
-  // O Drive recusou: devolve a cópia ao espelho (senão o bisync tentaria apagar no Drive a cada rodada).
+
+  // O `deletefile` falhou. Reler antes de qualquer coisa: o Drive pode ter apagado e só a resposta se perdeu.
+  const errText = del.stderr.trim().slice(-500);
+  const present = stillOnDrive(cfg, folder, remote.path);
+  if (present === false) {
+    return { ...base, source, verify, status: "arquivado", detail: `deletefile saiu com erro, mas o arquivo já não está no Drive: ${errText}` };
+  }
+  if (present === null) {
+    // Sem saber se o Drive ainda tem o arquivo, a cópia conferida fica no arquivo (nunca volta ao espelho).
+    return { ...base, source, verify, status: "falha-apagar", detail: `${errText} (não consegui reler o Drive; a cópia conferida ficou no arquivo)` };
+  }
+  // Continua no Drive: devolve a cópia ao espelho quando veio dele, senão o bisync tentaria apagar no Drive toda rodada.
+  let restoreFailed = false;
   let restoreNote = "";
   if (source === "espelho") {
     try {
       renameSync(archivePath, mirrorPath);
       restoreNote = " (cópia devolvida ao espelho)";
     } catch (e) {
+      restoreFailed = true;
       restoreNote = ` (NÃO consegui devolver a cópia ao espelho: ${(e as Error).message})`;
     }
   }
-  const detail = del.stderr.trim().slice(-500) + restoreNote;
-  if (isPermissionError(del.stderr) && !restoreNote.includes("NÃO")) {
-    return { ...base, source, verify, status: "nao-apagado-sem-permissao", detail };
-  }
-  return { ...base, source, verify, status: "falha-apagar", detail };
+  const status: FileStatus = isPermissionError(del.stderr) && !restoreFailed ? "nao-apagado-sem-permissao" : "falha-apagar";
+  return { ...base, source, verify, status, detail: errText + restoreNote };
 }
 
 export function runArchive(opts: {
@@ -271,6 +390,8 @@ export function runArchive(opts: {
   unpublishedMaxDays: number;
   only?: Set<string>;
   log?: (l: string) => void;
+  /** Quem chama registra aqui o religamento para os handlers de sinal (main). */
+  onPaused?: (resume: () => void) => void;
 }): ArchiveReport {
   const { cfg, apply } = opts;
   const log = opts.log ?? (() => {});
@@ -280,6 +401,7 @@ export function runArchive(opts: {
     folders: [],
     files: [],
     errors: [],
+    warnings: [],
     driveFreeBefore: null,
     driveFreeAfter: null,
     archivedBytes: 0,
@@ -297,48 +419,53 @@ export function runArchive(opts: {
 
   report.folders = listFolders(cfg)
     .filter((n) => !opts.only || opts.only.has(n))
-    .map((name) => decideFolder({ name, published: publishedSignals(cfg, name) }, opts.today, opts.unpublishedMaxDays));
+    .map((name) => decideFolder({ name, published: publishedSignals(cfg, name, report.warnings) }, opts.today, opts.unpublishedMaxDays));
   const eligible = report.folders.filter((f) => f.eligible).map((f) => f.name);
 
-  // Listagem do Drive (com MD5) de cada pasta elegível.
-  const listings = new Map<string, Array<{ path: string; size: number; md5: string | null }>>();
-  for (const name of eligible) {
-    const r = run(cfg.rclone, ["lsjson", "-R", "--files-only", "--hash", "--hash-type", "md5", `${cfg.remoteRoot}/${name}`], {
-      timeoutMs: 600_000,
-    });
-    if (!r.ok) {
-      report.errors.push(`${name}: rclone lsjson falhou: ${r.stderr.trim().slice(-300)}`);
-      continue;
-    }
-    try {
-      listings.set(name, parseRcloneLsjson(r.stdout).filter((f) => isBrutoFile(f.path)));
-    } catch (e) {
-      report.errors.push(`${name}: listagem do Drive ilegível: ${(e as Error).message}`);
-    }
-  }
-
-  const todo = [...listings.values()].reduce((n, l) => n + l.length, 0);
-  if (!apply || todo === 0) {
-    for (const [folder, files] of listings) {
-      for (const f of files) report.files.push({ folder, path: f.path, sizeBytes: f.size, status: "sairia" });
+  if (!apply) {
+    // Dry-run: lista sem pausar nada (só leitura).
+    for (const name of eligible) {
+      const l = listRemote(cfg, `${cfg.remoteRoot}/${name}`);
+      if ("error" in l) report.errors.push(`${name}: ${l.error}`);
+      else for (const f of l.files.filter((f) => isBrutoFile(f.path))) report.files.push({ folder: name, path: f.path, sizeBytes: f.size, status: "sairia" });
     }
     return report;
   }
+  if (eligible.length === 0) return report;
 
-  report.driveFreeBefore = driveFree(cfg);
-  if (cfg.pauseBisync) {
-    try {
-      pauseBisync(cfg, log);
-    } catch (e) {
-      report.errors.push((e as Error).message);
-      const err = resumeBisync(cfg, log);
-      if (err) report.errors.push(err);
-      return report;
-    }
-  }
+  const bisync = { timerWasActive: false };
+  let resumed = false;
+  const resume = () => {
+    if (resumed || !cfg.pauseBisync) return;
+    resumed = true;
+    if (!bisync.timerWasActive) return;
+    const err = resumeBisync(cfg, log);
+    if (err) report.errors.push(err);
+  };
   try {
-    for (const [folder, files] of listings) {
-      for (const f of files) {
+    if (cfg.pauseBisync) {
+      opts.onPaused?.(resume);
+      try {
+        pauseBisync(cfg, bisync, log);
+      } catch (e) {
+        report.errors.push((e as Error).message);
+        return report;
+      }
+    }
+    report.driveFreeBefore = driveFree(cfg, report.warnings);
+    // A listagem vem DEPOIS da pausa: tamanho e MD5 são os do estado que vai ser apagado.
+    for (const folder of eligible) {
+      const l = listRemote(cfg, `${cfg.remoteRoot}/${folder}`);
+      if ("error" in l) {
+        report.errors.push(`${folder}: ${l.error}`);
+        continue;
+      }
+      const dups = duplicatePaths(l.files);
+      for (const f of l.files.filter((f) => isBrutoFile(f.path))) {
+        if (dups.has(f.path)) {
+          report.files.push({ folder, path: f.path, sizeBytes: f.size, status: "nome-duplicado-no-drive", detail: "dois arquivos com o mesmo nome no Drive; apagar por nome não diz qual sai" });
+          continue;
+        }
         log(`${LOG_PREFIX} ${folder}/${f.path} (${formatBytes(f.size)})…`);
         const res = archiveOne(cfg, folder, f);
         report.files.push(res);
@@ -346,26 +473,21 @@ export function runArchive(opts: {
         log(`${LOG_PREFIX}   ${res.status}${res.detail ? `: ${res.detail}` : ""}`);
       }
     }
+    report.driveFreeAfter = driveFree(cfg, report.warnings);
   } finally {
-    if (cfg.pauseBisync) {
-      const err = resumeBisync(cfg, log);
-      if (err) report.errors.push(err);
-    }
+    resume();
   }
-  report.driveFreeAfter = driveFree(cfg);
   return report;
 }
 
-const FAILURE_STATUSES: FileStatus[] = ["falha-conferencia", "falha-download", "falha-mover", "falha-apagar"];
-
 export function reportFailed(report: ArchiveReport): boolean {
-  return report.errors.length > 0 || report.files.some((f) => FAILURE_STATUSES.includes(f.status));
+  return report.errors.length > 0 || report.files.some((f) => STATUS_IS_FAILURE[f.status]);
 }
 
 const FOLDER_REASON: Record<FolderDecision["reason"], string> = {
   publicado: "vídeo publicado",
   "teto-sem-publicacao": "sem registro de publicação, passou do teto",
-  "nome-fora-do-padrao": "nome fora de AAMMDD",
+  "nome-fora-do-padrao": "nome fora de AAMMDD ou data inválida",
   "aguardando-publicacao": "vídeo ainda não publicado",
   "publicacao-desconhecida": "publicação desconhecida (sem a pasta da edição em data/editions)",
 };
@@ -386,6 +508,7 @@ function printText(report: ArchiveReport): void {
     console.log(`${LOG_PREFIX} ${report.files.length} bruto(s), ${formatBytes(planned)} sairiam do Drive.`);
     console.log(`${LOG_PREFIX} dry-run (default): nada movido nem apagado. Rode com --apply.`);
   }
+  for (const w of report.warnings) console.error(`${LOG_PREFIX} aviso: ${w}`);
   for (const e of report.errors) console.error(`${LOG_PREFIX} erro: ${e}`);
 }
 
@@ -403,6 +526,16 @@ function main(): void {
     unpublishedMaxDays,
     only,
     log: (l) => console.error(l),
+    // SIGTERM/SIGINT não passam pelo `finally`: religa o timer antes de sair.
+    onPaused: (resume) => {
+      for (const sig of ["SIGTERM", "SIGINT"] as const) {
+        process.once(sig, () => {
+          console.error(`${LOG_PREFIX} ${sig} recebido; religando o timer do bisync e saindo.`);
+          resume();
+          process.exit(1);
+        });
+      }
+    },
   });
   if (apply) {
     try {
@@ -410,7 +543,9 @@ function main(): void {
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "last-report.json"), JSON.stringify(report, null, 2) + "\n");
     } catch (e) {
-      console.error(`${LOG_PREFIX} aviso: não consegui gravar o relatório: ${(e as Error).message}`);
+      // É o único registro durável do que saiu do Drive sem lixeira: sem ele, a rodada falha.
+      console.error(`${LOG_PREFIX} erro: não consegui gravar o relatório: ${(e as Error).message}`);
+      process.exitCode = 1;
     }
   }
   if (hasFlag(argv, "json")) console.log(JSON.stringify(report, null, 2));

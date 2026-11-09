@@ -20,8 +20,8 @@
  *     as primeiras edições com vídeo (261021, 261022) são anteriores ao
  *     `/diaria-publica-video` e nunca terão registro; sem o teto ficariam no
  *     Drive para sempre. Arquivar não é apagar: a cópia fica no HD.
- *   - publicação DESCONHECIDA (sem `data/editions` nesta máquina) só sai pelo
- *     teto de idade.
+ *   - publicação DESCONHECIDA (sem `data/editions` nesta máquina, ou sem a
+ *     pasta da edição nele) só sai pelo teto de idade.
  *
  * O que conta como bruto (premissa declarada, mais estreita que "todo .mp4 da
  * raiz" do texto da issue, para nunca tirar do Drive um export que alguém
@@ -34,12 +34,12 @@
 
 import { editionAgeDays } from "../edition-video-retention.ts";
 
-/** Duas semanas: depois disso o vídeo da edição não sai mais (mesmo teto do #12365). */
+/** Sem registro de publicação, a pasta entra na rodada depois de 14 dias (mesmo valor do teto do #12365). */
 export const DEFAULT_ARCHIVE_UNPUBLISHED_MAX_DAYS = 14;
 
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv)$/i;
-/** Nome que a câmera/celular dá: `20261104_124252.mp4`, `VID_20261104_124252.mp4`, `PXL_...`. */
-const CAMERA_NAME = /^(VID_|PXL_)?\d{8}_\d{6}(_\d+)?\./i;
+/** Nome que a câmera/celular dá: `20261104_124252.mp4`, `VID_20261104_124252.mp4`, `PXL_20261104_124252345.mp4` (Pixel cola os ms). */
+const CAMERA_NAME = /^(VID_|PXL_)?\d{8}_\d{6,9}(_\d+)?\./i;
 /** Webcam do Windows: `WIN_20261020_21_24_22_Pro.mp4`. */
 const WIN_CAMERA_NAME = /^WIN_\d{8}_\d{2}_\d{2}_\d{2}/i;
 
@@ -136,7 +136,7 @@ export function parseRcloneLsjson(text: string): RemoteFile[] {
   if (!Array.isArray(raw)) throw new Error("rclone lsjson não devolveu uma lista");
   const out: RemoteFile[] = [];
   for (const it of raw as Array<Record<string, unknown>>) {
-    if (it?.IsDir === true || typeof it?.Path !== "string" || typeof it?.Size !== "number") continue;
+    if (it?.IsDir === true || typeof it?.Path !== "string" || typeof it?.Size !== "number" || it.Size < 0) continue;
     const hashes = (it.Hashes ?? {}) as Record<string, unknown>;
     const md5 = typeof hashes.md5 === "string" && /^[0-9a-f]{32}$/i.test(hashes.md5) ? hashes.md5.toLowerCase() : null;
     out.push({ path: it.Path, size: it.Size, md5 });
@@ -144,12 +144,28 @@ export function parseRcloneLsjson(text: string): RemoteFile[] {
   return out;
 }
 
-export type VerifyVerdict = "ok" | "tamanho-diverge" | "md5-diverge" | "sem-md5-no-drive";
+export type VerifyVerdict = "ok" | "tamanho-diverge" | "md5-diverge" | "sem-md5-no-drive" | "md5-local-indisponivel";
 
-/** Pura — a cópia local confere com o Drive? Só `ok` libera apagar. */
+/**
+ * Pura — a cópia local confere com o Drive? Só `ok` libera apagar. `local.md5`
+ * `null` = o `md5sum` falhou (não é "conteúdo diferente").
+ */
 export function verifyCopy(remote: RemoteFile, local: { size: number; md5: string | null }): VerifyVerdict {
   if (remote.size !== local.size) return "tamanho-diverge";
   if (!remote.md5) return "sem-md5-no-drive";
-  if (!local.md5 || local.md5 !== remote.md5) return "md5-diverge";
+  if (!local.md5) return "md5-local-indisponivel";
+  if (local.md5 !== remote.md5) return "md5-diverge";
   return "ok";
+}
+
+/**
+ * Pura — caminhos que aparecem mais de uma vez na listagem. O Drive aceita dois
+ * arquivos com o mesmo nome na mesma pasta, e `rclone deletefile` por nome não
+ * diz qual apaga: esses nunca são apagados.
+ */
+export function duplicatePaths(files: readonly RemoteFile[]): Set<string> {
+  const seen = new Set<string>();
+  const dups = new Set<string>();
+  for (const f of files) (seen.has(f.path) ? dups : seen).add(f.path);
+  return dups;
 }
