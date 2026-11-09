@@ -279,6 +279,7 @@ import {
   resolveReelsSchedule,
   resolveShortTime,
   buildShortSocialText,
+  diariaFollowLine,
   buildTikTokPost,
   planLinkedInRepostSlot,
   shortVideoFileName,
@@ -351,6 +352,7 @@ import {
   bufferThumbnailOffsetMs,
   clampBufferThumbnailOffsetMs,
   carryOverCover,
+  keepStudioWebVerticalFeed,
   parseShortCoverSource,
   planCoverDestination,
   withCoverRecord,
@@ -1129,8 +1131,13 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     );
   }
 
+  // #12465: o perfil pessoal (LinkedIn, Threads) cita o perfil da diar.ia.br; o X sai pela @diariabr.
   const socialText = (platform: "linkedin" | "x" | "threads") =>
-    buildShortSocialText({ platform, d1: d1In });
+    buildShortSocialText({
+      platform,
+      d1: d1In,
+      follow: diariaFollowLine(platform === "linkedin" ? "linkedin_profile" : platform === "threads" ? "threads_profile" : "x", cfg.diariaProfiles),
+    });
 
   // #10772 F4: a Posts API do LinkedIn não agenda — o vídeo sai quando a rodada
   // roda. Sem teto, uma rodada horas depois (ou no dia seguinte) publicaria fora
@@ -1391,7 +1398,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         destination: dest.id,
         mode: "guided",
         action: "guided",
-        caption: buildReelsCaption({ platform: "facebook", d1: d1In }),
+        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles) }), // #12465
         detail: "perfil pessoal: a Graph API não publica em perfil de pessoa — Chrome, ou compartilhar o Reels da página",
       };
     }
@@ -1406,7 +1413,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         destination: dest.id,
         mode: "api",
         action: "publish",
-        caption: buildReelsCaption({ platform: "facebook", d1: d1In }),
+        // #12465: a página VJ Pixel (não a diar.ia.br) leva o perfil da diar.ia.br.
+        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles) }),
         scheduledAt: schedule.mode === "scheduled" ? schedule.at : null,
       };
     }
@@ -3826,7 +3834,10 @@ export async function executeScheduledUpdates(
       let coverRecord: ShortCoverRecord | null = null;
       if (item.action === "update_youtube") {
         const r = await deps.youtube(item.videoId, { title: item.title, description: item.description, thumbnail: item.cover ? cover : null });
-        coverRecord = youtubeShortsCoverRecord(r.thumbnail); // #12100: `vertical_feed: "manual"` no sucesso
+        // #12100: `vertical_feed: "manual"` no sucesso; #12459: o `studio_web` já
+        // aplicado no Studio web (Passo B3a) é preservado, o `thumbnails.set`
+        // não mexe na capa do feed de Shorts.
+        coverRecord = keepStudioWebVerticalFeed(youtubeShortsCoverRecord(r.thumbnail), entry.cover);
       } else {
         coverRecord = (await deps.facebook(item.slug, item.videoId, item.description, item.cover ? cover : null)).cover;
       }
@@ -4384,11 +4395,15 @@ async function runUpdateScheduled(input: {
   let items: ScheduledUpdateItem[];
   let known: Set<string>;
   try {
-    known = knownDestinationIds(loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))));
+    const shortsCfg = loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
+    known = knownDestinationIds(shortsCfg);
     // #12191: a troca da descrição do Short mantém a citação do horizontal (o corte não tem horizontal).
     const horizontal = corte ? null : readHorizontalVideoForShort(dir);
     const horizontalTitle = horizontal ? resolveShortHorizontalTitle({ d1Title: d1.title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }) : null;
-    items = planScheduledUpdates({ entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known });
+    items = planScheduledUpdates({
+      entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known,
+      ...(shortsCfg.diariaProfiles ? { diariaProfiles: shortsCfg.diariaProfiles } : {}),
+    });
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
     return 2;

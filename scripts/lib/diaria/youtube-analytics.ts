@@ -305,7 +305,9 @@ export type EditionVideoIndex = Map<string, { edition: string; kind: Exclude<Vid
  * 261022 não têm `05-youtube-published.json` nem o registro do Short, então o
  * índice das pastas não os encontra e o relatório mostrava edição `?`. O par
  * de cada edição sai do D1 (`02-reviewed.md`) casado com o título do vídeo; o
- * horizontal é o título sem `#Shorts`. `MMyBVHVQELI` tem ~2 min e cairia em
+ * horizontal é o título sem `#Shorts` (só nessas duas edições: desde #12463 o
+ * Short também sai sem a tag no título, então edição nova nunca se separa pelo
+ * título, só pelo registro da pasta). `MMyBVHVQELI` tem ~2 min e cairia em
  * Short pela duração: o mapa fixa `horizontal`. Lista fechada — edição nova
  * entra pelo registro da pasta, nunca aqui.
  */

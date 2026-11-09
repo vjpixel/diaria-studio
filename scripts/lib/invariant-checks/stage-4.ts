@@ -109,6 +109,7 @@ import {
 import { checkNoTrailingEllipsis } from "../lint-checks/no-trailing-ellipsis.ts";
 import { checkTitleMentionsIA } from "../lint-checks/ia-in-title.ts"; // #4825
 import { checkTitleIaAsAgent } from "../lint-checks/title-ia-as-agent.ts"; // #12106
+import { checkD1ShortsFrontLoad, formatShortsFrontLoadWarning } from "../lint-checks/title-shorts-front-load.ts"; // #12464
 import { isTruncatedSummary } from "../truncated-summary.ts";
 import { sectionHeaderRegex } from "../section-naming.ts";
 import {
@@ -1722,6 +1723,26 @@ function checkTitleIaAsAgentInvariant(editionDir: string): InvariantViolation[] 
     severity: "warning",
     file: path,
     line: e.line,
+  }));
+}
+
+/**
+ * #12464: o título do D1 é o título do Short, e o feed de Shorts no celular
+ * mostra só os primeiros ~40 caracteres. Acusa a fatia visível que não se lê
+ * sozinha (termina em palavra de ligação ou tem menos de 2 palavras).
+ * WARN-ONLY: a regra é front-load, não teto (o teto do D1 segue 70).
+ */
+export function checkTitleShortsFrontLoadInvariant(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const result = checkD1ShortsFrontLoad(readFileSync(path, "utf8"));
+  if (result.ok) return [];
+  return result.errors.map((w) => ({
+    rule: "title-shorts-front-load",
+    message: `${formatShortsFrontLoadWarning(w)}. Ver context/editorial-rules.md seção 3.`,
+    source_issue: "#12464",
+    severity: "warning",
+    file: path,
   }));
 }
 
@@ -4488,6 +4509,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#12106",
     stage: 4,
     run: checkTitleIaAsAgentInvariant,
+  },
+  {
+    id: "title-shorts-front-load",
+    description: "título do D1 se lê sozinho nos ~40 caracteres que o feed de Shorts mostra (#12464, warning-only)",
+    source_issue: "#12464",
+    stage: 4,
+    run: checkTitleShortsFrontLoadInvariant,
   },
   {
     id: "newsletter-intake", description: "intake completo e scores de todos os links IA (#12188)",

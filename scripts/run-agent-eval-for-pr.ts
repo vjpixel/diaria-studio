@@ -889,10 +889,11 @@ if (isMainModule(import.meta.url)) {
         return;
       }
       console.error(
-        `[#8144] claude CLI falhou (status ${err.status ?? "sinal"}):\n` +
+        // #12456: `err.message` já traz a causa (status, ou sinal/code do spawn
+        // com o tamanho do prompt) e o comando sem o prompt.
+        `[#8144] ${err.message}\n` +
           `  stderr: ${preview(err.stderr)}\n` +
-          `  stdout: ${preview(err.stdout)}\n` +
-          `  command: ${err.command}`,
+          `  stdout: ${preview(err.stdout)}`,
       );
       process.exit(1);
       return;

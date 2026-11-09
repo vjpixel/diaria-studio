@@ -27,6 +27,8 @@ import {
   buildShortSocialText,
   buildTikTokPost,
   buildYouTubeShortMetadata,
+  diariaFollowLine,
+  type DiariaProfiles,
   type ShortD1Input,
   type ShortPublishedEntry,
 } from "./short-video.ts";
@@ -53,6 +55,8 @@ export function planScheduledUpdates(input: {
    * de virar um plano vazio sem erro (review do PR #11894).
    */
   known?: ReadonlySet<string>;
+  /** #12465: perfis da diar.ia.br (`ShortsConfig.diariaProfiles`); ausente = os do código. */
+  diariaProfiles?: DiariaProfiles;
 }): ScheduledUpdateItem[] {
   const only = input.only && input.only.length ? new Set(input.only) : null;
   if (only && input.known) {
@@ -84,7 +88,8 @@ export function planScheduledUpdates(input: {
         action: "update_facebook",
         slug: e.destination.slice("facebook:".length),
         videoId: e.id,
-        description: buildReelsCaption({ platform: "facebook", d1: input.d1 }),
+        // #12465: mesma legenda do publish (a página VJ Pixel cita o perfil da diar.ia.br).
+        description: buildReelsCaption({ platform: "facebook", d1: input.d1, follow: diariaFollowLine(e.destination, input.diariaProfiles) }),
         scheduledAt,
         cover: input.coverPresent,
       });
