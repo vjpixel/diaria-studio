@@ -70,6 +70,7 @@ function person(over: Partial<FollowupPerson> = {}): FollowupPerson {
 /** Impressão digital (sha256, 16 hex) das perguntas de cada versão. */
 const FINGERPRINT_BY_VERSION: Record<number, string> = {
   2: "9e5db495e2032072",
+  3: "9ec3f169aa47babe", // v3 (#10605, aprovada pelo editor em 09/11/2026)
 };
 
 describe("#12490 versão das perguntas", () => {
@@ -79,7 +80,7 @@ describe("#12490 versão das perguntas", () => {
   });
 
   it("a impressão muda quando uma opção muda (o guard discrimina)", () => {
-    const changed = FORM_QUESTIONS.map((q) => (q.id === "nivel_ia" && "options" in q ? { ...q, options: [...q.options, "nova"] } : q));
+    const changed = FORM_QUESTIONS.map((q) => (q.id === "uso_ia" && "options" in q ? { ...q, options: [...q.options, "nova"] } : q));
     assert.notEqual(formQuestionsFingerprint(changed), formQuestionsFingerprint(FORM_QUESTIONS));
   });
 
@@ -290,6 +291,8 @@ describe("#12490 rodada do executor (sem rede)", () => {
   const snippets: FollowupSnippets = {
     form: okText(),
     form_lembrete: okText(),
+    form_lembrete2: okText(),
+    form_lembrete3: okText(),
     form_anual: okText("Em {{RESPONDEU_EM}}"),
     form_anual_lembrete: okText(),
   };

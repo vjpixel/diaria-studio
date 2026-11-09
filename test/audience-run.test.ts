@@ -42,7 +42,7 @@ function deps(root: string, over: Partial<AudienceRunDeps> = {}): AudienceRunDep
     },
     readFile: (p) => readFileSync(p, "utf8"),
     writeFile: (p, c) => writeFileSync(p, c, "utf8"),
-    fetchFormResponses: async () => [R({ nivel_ia: "x", area: "RH" }), R({ area: "Vendas" }, "b@x.com")],
+    fetchFormResponses: async () => [R({ uso_ia: "Uso pouco: só testei ou uso de vez em quando", area: "RH ou gestão de pessoas" }), R({ area: "Vendas ou atendimento" }, "b@x.com")],
     ...over,
   };
 }

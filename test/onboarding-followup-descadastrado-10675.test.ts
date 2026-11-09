@@ -45,6 +45,8 @@ const snippets: FollowupSnippets = {
   apoio360: null,
   form: parseFollowupSnippet(okSnippet()),
   form_lembrete: parseFollowupSnippet(okSnippet()),
+  form_lembrete2: parseFollowupSnippet(okSnippet()),
+  form_lembrete3: parseFollowupSnippet(okSnippet()),
 };
 
 function entry(id: number, anchorSec: number): OnboardingEntry {

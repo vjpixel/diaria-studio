@@ -113,7 +113,7 @@ describe("#12495 quem recebe o e-mail", () => {
     const people = { "1": person({ form_filled_at: "2027-03-02T00:00:00Z" }) };
     const base = { apoioCandidates: [], formCandidates: [], people, nowSec: Date.parse("2027-03-03T00:00:00Z") / 1000, apoioBlocked: null, formBlocked: null };
     const off = planFollowup({ ...base, cfg: cfgOff, resultsBlocked: null });
-    assert.deepEqual(off, { due: [], counts: {} });
+    assert.deepEqual(off, { due: [], counts: {}, askDeferred: [] });
     assert.deepEqual(planFollowup({ ...base, cfg: cfgOn, resultsBlocked: null }).due.map((d) => d.kind), ["form_resultados"]);
     assert.equal(planFollowup({ ...base, cfg: cfgOn, resultsBlocked: "texto_pendente" }).counts.form_resultados?.bloqueado_texto_pendente, 1);
   });

@@ -36,7 +36,14 @@ import {
   resolveFormResults,
   type FormResponse,
 } from "../../../scripts/lib/onboarding-form-contract.ts";
-import { checkFormEmailSig, checkLinkSecret, type FormSigRejection } from "../../../scripts/lib/onboarding-form-link-sig.ts";
+import {
+  checkFormEmailSig,
+  checkLinkSecret,
+  formDurationFromToken,
+  FORM_RENDERED_FIELD,
+  signFormRenderedAt,
+  type FormSigRejection,
+} from "../../../scripts/lib/onboarding-form-link-sig.ts";
 import { collectFormFields, renderErrorHtml, renderFormHtml, renderInvalidLinkHtml, renderThanksHtml } from "./render.ts";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts"; // #10809
 
@@ -111,7 +118,15 @@ export default {
       const sig = url.searchParams.get("sig") ?? "";
       const check = await checkFormEmailSig(email, sig, secret);
       if (!check.ok) return rejectLink("/", check.reason);
-      return html(renderFormHtml(email, sig));
+      // v3: hora em que a página foi gerada, assinada — o envio grava `duration_s`.
+      // Falha ao assinar a hora nunca derruba a página: sai sem o campo (o envio fica sem `duration_s`).
+      let rendered: string | null = null;
+      try {
+        rendered = await signFormRenderedAt(email, Date.now() / 1000, secret);
+      } catch (e) {
+        console.error(JSON.stringify({ event: "rendered_at_sign_failed", error: (e as Error).message }));
+      }
+      return html(renderFormHtml(email, sig, undefined, rendered));
     }
 
     if (request.method === "POST" && url.pathname === "/enviar") {
@@ -140,7 +155,11 @@ export default {
       if (!parsed.ok) return html(renderErrorHtml(parsed.error), 400);
       // #12490: versão das perguntas em cada resposta, e histórico sem
       // sobrescrever (`hist:`); `resp:` segue sendo a mais recente.
-      const record: FormResponse = { ...parsed.submission, submitted_at: new Date().toISOString(), form_version: FORM_VERSION };
+      const nowMs = Date.now();
+      const record: FormResponse = { ...parsed.submission, submitted_at: new Date(nowMs).toISOString(), form_version: FORM_VERSION };
+      // Tempo de preenchimento: só com a hora assinada para ESTE e-mail (senão fica sem o campo).
+      const duration = await formDurationFromToken(record.email, one(fields[FORM_RENDERED_FIELD]), secret, nowMs / 1000);
+      if (duration != null) record.duration_s = duration;
       try {
         const previous = await env.ONBOARDING_FORM.get(formResponseKey(record.email));
         // `resp:` por último: se uma gravação do histórico falhar, a pessoa vê o
@@ -166,7 +185,14 @@ export default {
         const list = await env.ONBOARDING_FORM.list({ prefix, cursor });
         for (const k of list.keys) {
           const raw = await env.ONBOARDING_FORM.get(k.name);
-          if (raw) responses.push(JSON.parse(raw) as FormResponse);
+          if (!raw) continue;
+          try {
+            responses.push(JSON.parse(raw) as FormResponse);
+          } catch {
+            // Registro ilegível não derruba a listagem. O log leva só o tipo da
+            // chave (ou a data, no `hist:`), nunca o e-mail que vem depois do prefixo.
+            console.error(JSON.stringify({ event: "resposta_ilegivel", key_suffix: k.name.startsWith(FORM_HISTORY_PREFIX) ? k.name.split(":").slice(2).join(":") : "resp" }));
+          }
         }
         cursor = list.list_complete ? undefined : list.cursor;
       } while (cursor);

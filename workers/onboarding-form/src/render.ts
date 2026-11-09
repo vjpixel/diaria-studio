@@ -4,24 +4,44 @@
  * Separado do `index.ts` para ser testável sem runtime de Worker
  * (`test/onboarding-form-questions-10605.test.ts`). Mobile primeiro: coluna
  * única de no máximo 560px com 16px de margem lateral, alvos de toque
- * grandes. Regra de layout por tipo: `checkbox` vira caixas sempre; `select`
- * com até `RADIO_MAX_OPTIONS` opções vira botões de rádio (tudo visível de
- * uma vez, um toque) e acima disso vira menu suspenso (uma lista de 16 rádios
- * empurraria o resto do formulário para fora da tela); `text`/`textarea`
- * são campos livres limitados a `FORM_ANSWER_MAX_LEN`.
+ * grandes. Toda pergunta de escolha vira botões de rádio (`select`) ou caixas
+ * (`checkbox`), nunca menu suspenso (v3, decisão do editor de 09/11/2026: a
+ * área tem 13 opções e aparece inteira). `text`/`textarea` são campos livres
+ * limitados a `FORM_ANSWER_MAX_LEN`.
  *
- * Pergunta com `hiddenWhen` (#10605 v2: tema e preço somem com "Nada disso")
- * leva `data-hide-q`/`data-hide-opt` no `<fieldset>` e um script inline curto
- * (`HIDE_SCRIPT`) esconde e DESABILITA os campos quando a opção está marcada:
- * campo desabilitado não vai no POST. Sem JavaScript as perguntas aparecem, e
- * o servidor descarta a resposta escondida do mesmo jeito (`parseFormSubmission`).
+ * Perguntas numeradas (sem `subOf`) levam o número no `<legend>`; as
+ * subperguntas não têm número: o relato de falha (texto) fica DENTRO do
+ * fieldset da pergunta-mãe, e as de escolha (escolha única, gasto mensal)
+ * vêm num fieldset próprio logo depois. Só as opcionais levam "opcional".
+ *
+ * Progressive enhancement: sem JavaScript tudo aparece e o servidor valida
+ * (`parseFormSubmission`). Com JavaScript, `FORM_SCRIPT`:
+ *  - esconde e DESABILITA as perguntas condicionais (`data-hide-q`/`data-hide-opt`
+ *    para `hiddenWhen`, `data-show-q` + `data-show-any`/`data-show-min` para
+ *    `shownWhen`): campo desabilitado não vai no POST;
+ *  - na escolha única (`data-pick-from`), só mostra as opções marcadas na
+ *    pergunta de origem;
+ *  - aplica a opção exclusiva (`data-exclusive`) e o limite de caixas
+ *    (`data-max`) em tempo real;
+ *  - mostra e habilita o campo do "Outro/Outra" (`{id}_outro`, `maxlength`
+ *    `FORM_OTHER_TEXT_MAX_LEN`) só com a opção marcada.
+ * A ordem importa: condicionais primeiro, "Outro" depois (reabrir uma
+ * pergunta reabilita os campos dela).
  */
 
-import { FORM_ANSWER_MAX_LEN, FORM_QUESTIONS, isChoiceQuestion, type FormQuestion, type FormResults } from "../../../scripts/lib/onboarding-form-contract.ts";
-import { FORM_PAGE_MARKER } from "../../../scripts/lib/onboarding-form-link-sig.ts";
-
-/** Acima disso uma pergunta de escolha única vira menu suspenso. */
-export const RADIO_MAX_OPTIONS = 8;
+import {
+  FORM_ANSWER_MAX_LEN,
+  FORM_MULTI_SEPARATOR,
+  FORM_OTHER_TEXT_MAX_LEN,
+  FORM_QUESTIONS,
+  isChoiceQuestion,
+  numberedQuestions,
+  otherTextFieldId,
+  type ChoiceQuestion,
+  type FormQuestion,
+  type FormResults,
+} from "../../../scripts/lib/onboarding-form-contract.ts";
+import { FORM_PAGE_MARKER, FORM_RENDERED_FIELD } from "../../../scripts/lib/onboarding-form-link-sig.ts";
 
 export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -35,12 +55,18 @@ const STYLE = [
   "main{max-width:560px;margin:0 auto;padding:24px 16px 48px}",
   "h1{font-size:1.6rem;line-height:1.25;margin:0 0 8px}",
   ".intro{color:var(--muted);margin:0 0 24px}",
-  "fieldset{border:0;border-top:1px solid var(--line);margin:0;padding:20px 0}",
+  "fieldset{border:0;border-top:1px solid var(--line);margin:0;padding:20px 0;min-width:0}",
+  "fieldset.sub{border-top:0;padding-top:4px}",
   "legend,.q{font-weight:bold;padding:0;margin-bottom:6px;display:block}",
+  ".n{color:var(--muted);font-weight:normal;margin-right:6px}",
+  ".req{color:var(--muted);font-weight:normal;font-size:.85rem;margin-left:6px}",
   ".help{color:var(--muted);font-size:.9rem;margin:0 0 8px}",
-  ".opt{display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer}",
+  ".opt{display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer}.opt[hidden]{display:none}",
   ".opt input{width:20px;height:20px;margin:3px 0 0;flex:none;accent-color:var(--accent)}",
-  "input[type=email],select,textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--fg)}",
+  ".q.sub{margin-top:12px}",
+  // `[hidden]` explícito: o `display:block` da classe venceria o atributo `hidden` do script.
+  ".other{display:block;margin:2px 0 8px 30px}.other[hidden]{display:none}",
+  "input[type=email],input[type=text],textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--fg)}",
   "textarea{min-height:110px}",
   "button{width:100%;font:inherit;font-weight:bold;padding:14px;border:0;border-radius:999px;background:var(--accent);color:#fff;cursor:pointer;margin-top:8px}",
 ].join("");
@@ -54,65 +80,136 @@ export function renderPage(body: string): string {
   );
 }
 
-/** Esconde/desabilita as perguntas com `hiddenWhen` conforme a resposta de controle. */
-export const HIDE_SCRIPT =
-  "(function(){var f=document.querySelector('form');if(!f)return;" +
-  "function u(){var l=f.querySelectorAll('fieldset[data-hide-q]');for(var i=0;i<l.length;i++){var fs=l[i];" +
-  "var c=f.querySelectorAll('input[name=\"'+fs.getAttribute('data-hide-q')+'\"]:checked'),on=false;" +
-  "for(var j=0;j<c.length;j++)if(c[j].value===fs.getAttribute('data-hide-opt'))on=true;" +
-  "fs.hidden=on;var x=fs.querySelectorAll('input,select,textarea');for(var k=0;k<x.length;k++)x[k].disabled=on;}}" +
-  "f.addEventListener('change',u);u();})();";
+/** Script do formulário (ES5, inline). Ver o cabeçalho do módulo. */
+export const FORM_SCRIPT =
+  "(function(){var f=document.querySelector('form');if(!f)return;var SEP=" + JSON.stringify(FORM_MULTI_SEPARATOR) + ";" +
+  "function vals(n){var r=[],c=f.querySelectorAll('[name=\"'+n+'\"]');for(var i=0;i<c.length;i++){var x=c[i];if(x.disabled)continue;if((x.type==='checkbox'||x.type==='radio')?x.checked:x.value!=='')r.push(x.value);}return r;}" +
+  "function dis(fs,on){var x=fs.querySelectorAll('input,textarea');for(var k=0;k<x.length;k++)x[k].disabled=on;}" +
+  "function u(){var l=f.querySelectorAll('fieldset');for(var i=0;i<l.length;i++){var fs=l[i],off=false;" +
+  "var hq=fs.getAttribute('data-hide-q');if(hq&&vals(hq).indexOf(fs.getAttribute('data-hide-opt'))>=0)off=true;" +
+  "var sq=fs.getAttribute('data-show-q');if(sq){var v=vals(sq),any=fs.getAttribute('data-show-any'),min=fs.getAttribute('data-show-min');" +
+  "if(any){var ok=false,a=any.split(SEP);for(var j=0;j<a.length;j++)if(v.indexOf(a[j])>=0)ok=true;if(!ok)off=true;}" +
+  "if(min&&v.length<Number(min))off=true;}" +
+  "fs.hidden=off;dis(fs,off);" +
+  "var pf=fs.getAttribute('data-pick-from');if(pf&&!off){var src=vals(pf),o=fs.querySelectorAll('.opt[data-pick]');" +
+  "for(var p=0;p<o.length;p++){var on=src.indexOf(o[p].getAttribute('data-pick'))>=0,inp=o[p].querySelector('input');o[p].hidden=!on;inp.disabled=!on;if(!on)inp.checked=false;}}}" +
+  "var w=f.querySelectorAll('.other[data-other-for]');for(var m=0;m<w.length;m++){var e=w[m],s=vals(e.getAttribute('data-other-for')).indexOf(e.getAttribute('data-other-opt'))>=0;" +
+  "e.hidden=!s;var t=e.querySelectorAll('input');for(var q=0;q<t.length;q++)t[q].disabled=!s;}}" +
+  "f.addEventListener('change',function(ev){var t=ev.target;if(t&&t.type==='checkbox'&&t.checked){var fs=t.closest('fieldset');" +
+  "var ex=fs&&fs.getAttribute('data-exclusive'),mx=fs&&fs.getAttribute('data-max'),g=f.querySelectorAll('input[type=checkbox][name=\"'+t.name+'\"]');" +
+  "if(ex){for(var i=0;i<g.length;i++){if(g[i]===t)continue;if(t.value===ex||g[i].value===ex)g[i].checked=false;}}" +
+  "if(mx){var n=0;for(var k=0;k<g.length;k++)if(g[k].checked)n++;if(n>Number(mx))t.checked=false;}}u();});u();})();";
 
-function fieldsetOpen(q: FormQuestion): string {
-  if (!q.hiddenWhen) return "<fieldset>";
-  return `<fieldset data-hide-q="${escapeHtml(q.hiddenWhen.questionId)}" data-hide-opt="${escapeHtml(q.hiddenWhen.option)}">`;
+/** Campo de texto curto do "Outro/Outra" (sempre visível sem JavaScript). */
+function otherTextField(q: ChoiceQuestion): string {
+  if (!q.otherOption) return "";
+  const tid = escapeHtml(otherTextFieldId(q));
+  return (
+    `<span class="other" data-other-for="${escapeHtml(q.id)}" data-other-opt="${escapeHtml(q.otherOption)}">` +
+    `<input type="text" id="${tid}" name="${tid}" maxlength="${FORM_OTHER_TEXT_MAX_LEN}" ` +
+    `placeholder="Qual? (opcional)" aria-label="${escapeHtml(q.otherOption)}: qual? (opcional)"></span>`
+  );
 }
 
-function renderQuestion(q: FormQuestion): string {
+function fieldsetOpen(q: FormQuestion): string {
+  const attrs: string[] = [];
+  if (q.subOf) attrs.push(`class="sub"`);
+  if (q.hiddenWhen) attrs.push(`data-hide-q="${escapeHtml(q.hiddenWhen.questionId)}" data-hide-opt="${escapeHtml(q.hiddenWhen.option)}"`);
+  if (q.shownWhen) {
+    attrs.push(`data-show-q="${escapeHtml(q.shownWhen.questionId)}"`);
+    if (q.shownWhen.anyOf) attrs.push(`data-show-any="${escapeHtml(q.shownWhen.anyOf.join(FORM_MULTI_SEPARATOR))}"`);
+    if (q.shownWhen.minChecked != null) attrs.push(`data-show-min="${q.shownWhen.minChecked}"`);
+  }
+  if (isChoiceQuestion(q)) {
+    if (q.optionsFrom) attrs.push(`data-pick-from="${escapeHtml(q.optionsFrom)}"`);
+    if (q.exclusiveOption) attrs.push(`data-exclusive="${escapeHtml(q.exclusiveOption)}"`);
+    if (q.maxChoices != null) attrs.push(`data-max="${q.maxChoices}"`);
+  }
+  return attrs.length === 0 ? "<fieldset>" : `<fieldset ${attrs.join(" ")}>`;
+}
+
+const OPTIONAL = `<span class="req">opcional</span>`;
+
+/** Pergunta condicional: sem `required` no HTML (sem JavaScript ela aparece
+ *  sempre e não pode travar o envio de quem não precisa respondê-la). */
+function isConditional(q: FormQuestion): boolean {
+  return q.hiddenWhen != null || q.shownWhen != null;
+}
+
+function renderOpenSub(q: FormQuestion): string {
+  const id = escapeHtml(q.id);
+  const ph = "placeholder" in q && q.placeholder ? ` placeholder="${escapeHtml(q.placeholder)}"` : "";
+  const label = `<label class="q sub" for="${id}">${escapeHtml(q.label)}${q.required ? "" : ` ${OPTIONAL}`}</label>`;
+  const tag = q.kind === "textarea" ? "textarea" : "input";
+  const field =
+    tag === "textarea"
+      ? `<textarea id="${id}" name="${id}" maxlength="${FORM_ANSWER_MAX_LEN}"${ph}></textarea>`
+      : `<input id="${id}" name="${id}" type="text" maxlength="${FORM_ANSWER_MAX_LEN}"${ph}>`;
+  return label + field;
+}
+
+function renderQuestion(q: FormQuestion, number: number | null, inner: readonly FormQuestion[]): string {
   const id = escapeHtml(q.id);
   const fs = fieldsetOpen(q);
   const help = q.help ? `<p class="help">${escapeHtml(q.help)}</p>` : "";
-  const req = q.required ? " required" : "";
+  const num = number != null ? `<span class="n">${number}</span>` : "";
+  const legend = `<legend>${num}${escapeHtml(q.label)}${q.required ? "" : ` ${OPTIONAL}`}</legend>`;
+  const innerHtml = inner.map(renderOpenSub).join("");
   if (!isChoiceQuestion(q)) {
-    const label = `<label class="q" for="${id}">${escapeHtml(q.label)}</label>`;
+    const req = q.required && !isConditional(q) ? " required" : "";
     const max = ` maxlength="${FORM_ANSWER_MAX_LEN}"`;
-    if (q.kind === "textarea") return `${fs}${label}${help}<textarea id="${id}" name="${id}"${max}${req}></textarea></fieldset>`;
-    return `${fs}${label}${help}<input id="${id}" name="${id}" type="text"${max}${req}></fieldset>`;
+    const field = q.kind === "textarea" ? `<textarea id="${id}" name="${id}"${max}${req}></textarea>` : `<input id="${id}" name="${id}" type="text"${max}${req}>`;
+    return `${fs}<label class="q" for="${id}">${num}${escapeHtml(q.label)}${q.required ? "" : ` ${OPTIONAL}`}</label>${help}${field}${innerHtml}</fieldset>`;
   }
-  const opts = q.options;
-  if (q.kind === "checkbox" || opts.length <= RADIO_MAX_OPTIONS) {
-    const type = q.kind === "checkbox" ? "checkbox" : "radio";
-    const items = opts
-      .map((o, i) => {
-        const oid = `${id}-${i}`;
-        // `required` em rádio vale para o grupo; em caixa exigiria todas, então não vai.
-        const r = type === "radio" ? req : "";
-        return `<label class="opt" for="${oid}"><input type="${type}" id="${oid}" name="${id}" value="${escapeHtml(o)}"${r}><span>${escapeHtml(o)}</span></label>`;
-      })
-      .join("");
-    return `${fs}<legend>${escapeHtml(q.label)}</legend>${help}${items}</fieldset>`;
-  }
-  const label = `<label class="q" for="${id}">${escapeHtml(q.label)}</label>`;
-  const options = opts.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
-  return `${fs}${label}${help}<select id="${id}" name="${id}"${req}><option value="">Escolha uma opção</option>${options}</select></fieldset>`;
+  const type = q.kind === "checkbox" ? "checkbox" : "radio";
+  // `required` em rádio vale para o grupo; em caixa exigiria todas, então não vai.
+  const req = type === "radio" && q.required && !isConditional(q) ? " required" : "";
+  const items = q.options
+    .map((o, i) => {
+      const oid = `${id}-${i}`;
+      const pick = q.optionsFrom ? ` data-pick="${escapeHtml(o)}"` : "";
+      const opt = `<label class="opt" for="${oid}"${pick}><input type="${type}" id="${oid}" name="${id}" value="${escapeHtml(o)}"${req}><span>${escapeHtml(o)}</span></label>`;
+      return o === q.otherOption ? opt + otherTextField(q) : opt;
+    })
+    .join("");
+  const before = q.helpAfter ? "" : help;
+  const after = q.helpAfter ? help : "";
+  return `${fs}${legend}${before}${items}${after}${innerHtml}</fieldset>`;
 }
 
 /** Página do formulário para o e-mail do link assinado (#10657): o e-mail e a
  *  assinatura vão em campos OCULTOS — a pessoa vê para quem está respondendo,
- *  mas não troca o e-mail (trocar invalidaria a assinatura e o Worker recusaria). */
-export function renderFormHtml(email: string, sig: string, questions: readonly FormQuestion[] = FORM_QUESTIONS): string {
+ *  mas não troca o e-mail (trocar invalidaria a assinatura e o Worker
+ *  recusaria). `renderedToken` (`signFormRenderedAt`) vai no campo
+ *  `FORM_RENDERED_FIELD`: com ele o envio grava o tempo de preenchimento. */
+export function renderFormHtml(
+  email: string,
+  sig: string,
+  questions: readonly FormQuestion[] = FORM_QUESTIONS,
+  renderedToken: string | null = null,
+): string {
+  const parts: string[] = [];
+  let n = 0;
+  for (const q of questions) {
+    // Texto livre de subpergunta vai dentro do fieldset da mãe.
+    if (q.subOf && !isChoiceQuestion(q) && questions.some((x) => x.id === q.subOf)) continue;
+    const inner = questions.filter((x) => x.subOf === q.id && !isChoiceQuestion(x));
+    parts.push(renderQuestion(q, q.subOf ? null : ++n, inner));
+  }
+  const needsScript = questions.some((q) => isConditional(q) || (isChoiceQuestion(q) && (q.otherOption || q.exclusiveOption || q.maxChoices != null || q.optionsFrom)));
   return renderPage(
-    `<h1>Conte pra gente sobre você</h1>` +
-      `<p class="intro">São até ${questions.length} perguntas rápidas, leva uns dois minutos. ` +
-      `As respostas ajudam a escolher o que entra na diar.ia.br e o que mais podemos oferecer além dela.</p>` +
+    `<h1>Pode me contar um pouco sobre você?</h1>` +
       `<form method="post" action="/enviar">` +
       `<input type="hidden" name="email" value="${escapeHtml(email)}">` +
       // FORM_PAGE_MARKER: a sonda do executor reconhece a página real por este campo.
       `${FORM_PAGE_MARKER} value="${escapeHtml(sig)}">` +
-      `<p class="intro">Respondendo como <strong>${escapeHtml(email)}</strong>.</p>` +
-      questions.map(renderQuestion).join("") +
+      (renderedToken ? `<input type="hidden" name="${FORM_RENDERED_FIELD}" value="${escapeHtml(renderedToken)}">` : "") +
+      `<p class="intro">Respondendo como <strong>${escapeHtml(email)}</strong>. ` +
+      `As respostas ficam comigo e servem só para planejar a newsletter e o que oferecer além dela. ` +
+      `São até ${numberedQuestions(questions).length} perguntas. Só as marcadas como opcionais podem ficar em branco.</p>` +
+      parts.join("") +
       `<button type="submit">Enviar respostas</button></form>` +
-      (questions.some((q) => q.hiddenWhen) ? `<script>${HIDE_SCRIPT}</script>` : ""),
+      (needsScript ? `<script>${FORM_SCRIPT}</script>` : ""),
   );
 }
 
