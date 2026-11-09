@@ -72,7 +72,7 @@ describe("#12559 regressão: bruto único", () => {
     const framing = { faceX: 0.48, eyeY: 0.54, mug: { left: 0.6, right: 0.7, top: 0.6, bottom: 0.8 } };
     const plans = defaultSequences("V1", "monologo").map((s) => buildSequencePlan(s, resolved, silences, source, {}));
     assert.deepEqual(JSON.parse(JSON.stringify(plans.map((p) => p.clips))), golden.plans);
-    assert.deepEqual(plans.map((p) => buildXmeml([p], source, framing, { audioGain: { db: 3, linear: 1.412538 } })), golden.xml);
+    assert.deepEqual(plans.map((p) => buildXmeml([p], source, framing, { audioGain: { db: 3, linear: 1.412538, limitedBy: "target" } })), golden.xml);
   });
 
   it("sourceFiles do bruto único é um arquivo só, sem files no source", () => {
