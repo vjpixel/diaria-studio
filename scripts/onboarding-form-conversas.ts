@@ -6,7 +6,8 @@
  * conversa de 20 minutos (`conversa`), para o editor escolher com quem falar
  * por perfil. Lê `GET /api/respostas` do Worker (token de
  * `onboarding.followup.form_responses_token_env`, do .env/Doppler) e usa a
- * resposta mais recente de cada e-mail.
+ * resposta mais recente de cada e-mail. #12504: quem marcou a conversa num
+ * rascunho e não enviou entra também, com "(não enviou)".
  *
  * Mostra e-mail, data, `uso_ia`, `situacao`, `area`, `motivacao`,
  * `dificuldades`, `maior_gasto` e o relato de falha (`relato_falha`). Os
@@ -31,14 +32,16 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { CliExit, runCli } from "./lib/cli-exit.ts";
-import { latestFormResponses, otherTextFieldId, splitMultiAnswer, type FormResponse } from "./lib/onboarding-form-contract.ts";
+import { latestFormResponses, otherTextFieldId, splitMultiAnswer, unsentFormDrafts, type FormDraft, type FormResponse } from "./lib/onboarding-form-contract.ts";
 import { resolveFollowupConfig, type FollowupConfigRaw } from "./lib/onboarding-followup.ts";
-import { fetchFormResponsesReal } from "./onboarding-followup-run.ts";
+import { fetchFormDraftsReal, fetchFormResponsesReal } from "./onboarding-followup-run.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface ConversaRow {
   email: string;
+  /** #12504: `false` = marcou a conversa no rascunho e não enviou o formulário. */
+  enviou: boolean;
   data: string;
   uso_ia: string;
   situacao: string;
@@ -81,15 +84,26 @@ function withOther(answers: Readonly<Record<string, string>>, id: string): strin
   return other ? `${v} (${other})` : v;
 }
 
-/** @pure — quem topou conversar (resposta mais recente por e-mail), filtrado, mais recente primeiro. */
-export function conversaRows(responses: readonly FormResponse[], filters: ConversaFilters = {}): ConversaRow[] {
+/**
+ * @pure — quem topou conversar (resposta mais recente por e-mail), filtrado,
+ * mais recente primeiro. #12504 (decisão do editor de 09/11/2026): quem
+ * marcou "Sim, topo" num rascunho e não enviou entra também, com
+ * `enviou: false` (a data é a da última gravação do rascunho). A resposta
+ * enviada vence o rascunho da mesma pessoa.
+ */
+export function conversaRows(responses: readonly FormResponse[], filters: ConversaFilters = {}, drafts: readonly FormDraft[] = []): ConversaRow[] {
   const rows: ConversaRow[] = [];
-  for (const r of latestFormResponses(responses)) {
+  const people = [
+    ...latestFormResponses(responses).map((r) => ({ email: r.email, at: r.submitted_at, answers: r.answers, enviou: true })),
+    ...unsentFormDrafts(drafts, responses).map((d) => ({ email: d.email, at: d.updated_at, answers: d.answers, enviou: false })),
+  ];
+  for (const r of people) {
     if (!r.answers.conversa || r.answers.conversa.trim() === "") continue;
     const a = r.answers;
     rows.push({
       email: r.email,
-      data: r.submitted_at.slice(0, 10),
+      enviou: r.enviou,
+      data: r.at.slice(0, 10),
       uso_ia: a.uso_ia ?? "",
       situacao: a.situacao ?? "",
       area: withOther(a, "area"),
@@ -118,7 +132,7 @@ export function renderConversaTable(rows: readonly ConversaRow[]): string {
   if (rows.length === 0) return "Ninguém marcou a conversa (com esses filtros).";
   const out = [`${rows.length} pessoa(s) toparam conversar:`, ""];
   for (const r of rows) {
-    out.push(`${r.data}  ${r.email}`);
+    out.push(`${r.data}  ${r.email}${r.enviou ? "" : "  (não enviou)"}`);
     out.push(`  uso de IA:    ${r.uso_ia}`);
     out.push(`  situação:     ${r.situacao}`);
     out.push(`  área:         ${r.area}`);
@@ -165,7 +179,16 @@ async function main(): Promise<void> {
   loadProjectEnv();
   const raw = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as { onboarding?: { followup?: FollowupConfigRaw } };
   const cfg = resolveFollowupConfig(raw.onboarding?.followup);
-  const rows = conversaRows(await fetchFormResponsesReal(cfg), args.filters);
+  const responses = await fetchFormResponsesReal(cfg);
+  // #12504: rascunhos com "Sim, topo" entram marcados "não enviou"; sem eles
+  // (leitura falhou) a lista sai só das respostas enviadas, com aviso.
+  let drafts: FormDraft[] = [];
+  try {
+    drafts = await fetchFormDraftsReal(cfg);
+  } catch (e) {
+    process.stderr.write(`[onboarding-form-conversas] ⚠ rascunhos não lidos (${(e as Error).message}): a lista sai só com quem enviou.\n`);
+  }
+  const rows = conversaRows(responses, args.filters, drafts);
   console.log(args.json ? JSON.stringify(rows, null, 2) : renderConversaTable(rows));
 }
 

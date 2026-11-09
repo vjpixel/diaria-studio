@@ -80,7 +80,8 @@ describe("#12490 versão das perguntas", () => {
   });
 
   it("a impressão muda quando uma opção muda (o guard discrimina)", () => {
-    const changed = FORM_QUESTIONS.map((q) => (q.id === "uso_ia" && "options" in q ? { ...q, options: [...q.options, "nova"] } : q));
+    // #12510: a union discriminada narra pelo `kind` (`"options" in q` não narra mais: a aberta tem `options?: never`).
+    const changed = FORM_QUESTIONS.map((q) => (q.id === "uso_ia" && q.kind === "select" ? { ...q, options: [...q.options, "nova"] } : q));
     assert.notEqual(formQuestionsFingerprint(changed), formQuestionsFingerprint(FORM_QUESTIONS));
   });
 

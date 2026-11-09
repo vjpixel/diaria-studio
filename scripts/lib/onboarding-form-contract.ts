@@ -35,7 +35,12 @@
  *    `?cursor=`); quem lê usa `fetchAllFormResponses`. Falha do KV = 503 com
  *    `{error: "kv_failure", reason}`.
  *    Quem consome ainda passa por `latestFormResponses` (defesa: a lista do
- *    histórico tem várias por pessoa).
+ *    histórico tem várias por pessoa). Com `?rascunhos=1` (#12504) lista os
+ *    rascunhos (`{drafts, next_cursor}`, `fetchAllFormDrafts`).
+ *  - `POST /rascunho` (#12504) — o navegador salva o que a pessoa marcou,
+ *    com a mesma assinatura do envio (`parseFormDraft`, `decideFormDraftWrite`).
+ *    O `GET /` seguinte devolve o formulário preenchido com o rascunho.
+ *    Ver a seção "Rascunho" abaixo.
  *
  * ## Perguntas (v3, aprovada pelo editor em 09/11/2026)
  *
@@ -90,22 +95,27 @@ interface FormQuestionBase {
   hiddenWhen?: { questionId: string; option: string };
   /**
    * Pergunta que só aparece quando a resposta de `questionId` (anterior)
-   * marca uma das opções de `anyOf`, ou tem pelo menos `minChecked` opções
-   * marcadas. Fora disso é tratada como ausente, igual a `hiddenWhen`.
+   * passa no gate. Fora disso é tratada como ausente, igual a `hiddenWhen`.
+   * Exatamente UM gate (#12510): `anyOf` ou `minChecked`, nunca os dois e
+   * nunca nenhum (o tipo recusa; `validateFormQuestions` confere também em
+   * runtime, para lista montada fora do TypeScript).
    */
-  shownWhen?: { questionId: string; anyOf?: readonly string[]; minChecked?: number };
+  shownWhen?: ShownWhen;
   /** Subpergunta sem número própria, renderizada logo depois da pergunta `subOf`. */
   subOf?: string;
 }
 
-/** Pergunta de escolha: `select` = uma opção (rádio); `checkbox` = várias
- *  (gravadas numa string só, separadas por `FORM_MULTI_SEPARATOR`). */
-export interface ChoiceQuestion extends FormQuestionBase {
-  kind: "select" | "checkbox";
+/**
+ * #12510: o gate de `shownWhen`, um de dois:
+ *  - `anyOf`: aparece quando a resposta de `questionId` marca uma das opções;
+ *  - `minChecked`: aparece quando `questionId` (caixas) tem pelo menos N marcadas.
+ */
+export type ShownWhen =
+  | { questionId: string; anyOf: readonly string[]; minChecked?: never }
+  | { questionId: string; minChecked: number; anyOf?: never };
+
+interface ChoiceQuestionBase extends FormQuestionBase {
   options: readonly string[];
-  /** Só `checkbox`: opção que não pode ser marcada junto com outras
-   *  (ex.: "Nada disso"). Precisa estar em `options`. */
-  exclusiveOption?: string;
   /**
    * Opção "Outro/Outra" com campo de texto curto acoplado (decisão do editor
    * de 08/11/2026). Precisa estar em `options`. O texto vai em
@@ -114,20 +124,49 @@ export interface ChoiceQuestion extends FormQuestionBase {
    * audiência (o perfil vai para prompts): lá só conta a opção.
    */
   otherOption?: string;
-  /** Só `checkbox`: no máximo N opções marcadas ("Marque até 3"). */
-  maxChoices?: number;
-  /** Só `select`: a resposta precisa estar entre as opções marcadas na
-   *  pergunta `optionsFrom` (a escolha de um formato só). */
-  optionsFrom?: string;
+  placeholder?: never;
 }
+
+/** Escolha única (rádio). */
+export interface SelectQuestion extends ChoiceQuestionBase {
+  kind: "select";
+  /** A resposta precisa estar entre as opções marcadas na pergunta
+   *  `optionsFrom` (a escolha de um formato só). */
+  optionsFrom?: string;
+  exclusiveOption?: never;
+  maxChoices?: never;
+}
+
+/** Várias opções (caixas), gravadas numa string só, separadas por `FORM_MULTI_SEPARATOR`. */
+export interface CheckboxQuestion extends ChoiceQuestionBase {
+  kind: "checkbox";
+  /** Opção que não pode ser marcada junto com outras (ex.: "Nada disso").
+   *  Precisa estar em `options`. */
+  exclusiveOption?: string;
+  /** No máximo N opções marcadas ("Marque até 3"). */
+  maxChoices?: number;
+  optionsFrom?: never;
+}
+
+/**
+ * Pergunta de escolha. #12510: union discriminada por `kind` — campo de um
+ * tipo no outro (`maxChoices` numa escolha única, `optionsFrom` numa caixa)
+ * não compila mais, em vez de ser ignorado em silêncio por `parseFormSubmission`.
+ */
+export type ChoiceQuestion = SelectQuestion | CheckboxQuestion;
 
 /** Pergunta aberta, sempre texto livre limpo e truncado em `FORM_ANSWER_MAX_LEN`. */
 export interface OpenQuestion extends FormQuestionBase {
   kind: "text" | "textarea";
   placeholder?: string;
+  options?: never;
+  otherOption?: never;
+  exclusiveOption?: never;
+  maxChoices?: never;
+  optionsFrom?: never;
 }
 
-export type FormQuestion = ChoiceQuestion | OpenQuestion;
+export type FormQuestion = SelectQuestion | CheckboxQuestion | OpenQuestion;
 
 export function isChoiceQuestion(q: FormQuestion): q is ChoiceQuestion {
   return q.kind === "select" || q.kind === "checkbox";
@@ -415,20 +454,26 @@ export function validateFormQuestions(qs: readonly FormQuestion[]): string[] {
     if (q.hiddenWhen && hw && !optsOf(hw).includes(q.hiddenWhen.option)) errs.push(`${q.id}: hiddenWhen.option fora das opções de ${hw.id}`);
     const sw = ref("shownWhen", q.shownWhen?.questionId);
     if (q.shownWhen && sw) {
-      for (const o of q.shownWhen.anyOf ?? []) if (!optsOf(sw).includes(o)) errs.push(`${q.id}: shownWhen.anyOf "${o}" fora das opções de ${sw.id}`);
-      if (q.shownWhen.minChecked != null && (sw.kind !== "checkbox" || q.shownWhen.minChecked < 1)) errs.push(`${q.id}: shownWhen.minChecked exige caixa e valor >= 1`);
-      if (q.shownWhen.anyOf == null && q.shownWhen.minChecked == null) errs.push(`${q.id}: shownWhen sem anyOf nem minChecked`);
+      const s = q.shownWhen as { anyOf?: readonly string[]; minChecked?: number };
+      for (const o of s.anyOf ?? []) if (!optsOf(sw).includes(o)) errs.push(`${q.id}: shownWhen.anyOf "${o}" fora das opções de ${sw.id}`);
+      if (s.minChecked != null && (sw.kind !== "checkbox" || s.minChecked < 1)) errs.push(`${q.id}: shownWhen.minChecked exige caixa e valor >= 1`);
+      if (s.anyOf == null && s.minChecked == null) errs.push(`${q.id}: shownWhen sem anyOf nem minChecked`);
+      // #12510: os dois juntos combinariam em E em silêncio; o tipo recusa, e aqui também.
+      if (s.anyOf != null && s.minChecked != null) errs.push(`${q.id}: shownWhen com anyOf e minChecked juntos (use um só)`);
     }
     ref("subOf", q.subOf);
     if (isChoiceQuestion(q)) {
-      if (q.options.length === 0) errs.push(`${q.id}: sem opções`);
-      if (q.otherOption != null && !q.options.includes(q.otherOption)) errs.push(`${q.id}: otherOption fora das opções`);
-      if (q.exclusiveOption != null && (q.kind !== "checkbox" || !q.options.includes(q.exclusiveOption))) errs.push(`${q.id}: exclusiveOption só em caixa e entre as opções`);
-      if (q.maxChoices != null && (q.kind !== "checkbox" || !Number.isInteger(q.maxChoices) || q.maxChoices < 1)) errs.push(`${q.id}: maxChoices só em caixa e >= 1`);
-      if (q.optionsFrom != null) {
-        if (q.kind !== "select") errs.push(`${q.id}: optionsFrom só em escolha única`);
-        const src = ref("optionsFrom", q.optionsFrom);
-        if (src) for (const o of q.options) if (!optsOf(src).includes(o)) errs.push(`${q.id}: opção "${o}" fora de ${src.id}`);
+      // #12510: o tipo já recusa campo de um kind no outro; a conferência em
+      // runtime fica para lista montada fora do TypeScript (JSON, cast).
+      const x = q as ChoiceQuestionBase & { kind: string; exclusiveOption?: string; maxChoices?: number; optionsFrom?: string };
+      if (x.options.length === 0) errs.push(`${q.id}: sem opções`);
+      if (x.otherOption != null && !x.options.includes(x.otherOption)) errs.push(`${q.id}: otherOption fora das opções`);
+      if (x.exclusiveOption != null && (x.kind !== "checkbox" || !x.options.includes(x.exclusiveOption))) errs.push(`${q.id}: exclusiveOption só em caixa e entre as opções`);
+      if (x.maxChoices != null && (x.kind !== "checkbox" || !Number.isInteger(x.maxChoices) || x.maxChoices < 1)) errs.push(`${q.id}: maxChoices só em caixa e >= 1`);
+      if (x.optionsFrom != null) {
+        if (x.kind !== "select") errs.push(`${q.id}: optionsFrom só em escolha única`);
+        const src = ref("optionsFrom", x.optionsFrom);
+        if (src) for (const o of x.options) if (!optsOf(src).includes(o)) errs.push(`${q.id}: opção "${o}" fora de ${src.id}`);
       }
       if ("placeholder" in q) errs.push(`${q.id}: placeholder só em pergunta aberta`);
     } else {
@@ -609,10 +654,13 @@ type Fields = Readonly<Record<string, string | readonly string[] | undefined>>;
 export function parseFormSubmission(
   fields: Fields,
   questions: readonly FormQuestion[] = FORM_QUESTIONS,
-): { ok: true; submission: FormSubmission } | { ok: false; error: string } {
+): { ok: true; submission: FormSubmission } | { ok: false; error: string; questionId?: string } {
   const email = normalizeFormEmail(firstValue(fields.email));
   if (!EMAIL_RE.test(email)) return { ok: false, error: "e-mail inválido" };
   const answers: Record<string, string> = {};
+  // #12522: o erro leva a pergunta, para o Worker devolver o formulário
+  // preenchido com a mensagem nela (em vez de uma página genérica).
+  const fail = (q: FormQuestion, error: string) => ({ ok: false as const, error, questionId: q.id });
   for (const q of questions) {
     if (isQuestionHidden(q, answers)) continue;
     const raw = fields[q.id];
@@ -621,17 +669,17 @@ export function parseFormSubmission(
       // da pergunta (não a do envio) e repetição some.
       const picked = allValues(raw).map((x) => x.trim()).filter((x) => x !== "");
       if (picked.length === 0) {
-        if (q.required) return { ok: false, error: `resposta obrigatória ausente: ${q.label}` };
+        if (q.required) return fail(q, `resposta obrigatória ausente: ${q.label}`);
         continue;
       }
       const opts = q.options;
-      if (picked.some((x) => !opts.includes(x))) return { ok: false, error: `opção inválida em: ${q.label}` };
+      if (picked.some((x) => !opts.includes(x))) return fail(q, `opção inválida em: ${q.label}`);
       const chosen = opts.filter((o) => picked.includes(o));
       if (q.exclusiveOption && chosen.includes(q.exclusiveOption) && chosen.length > 1) {
-        return { ok: false, error: `"${q.exclusiveOption}" não combina com outras opções em: ${q.label}` };
+        return fail(q, `"${q.exclusiveOption}" não combina com outras opções em: ${q.label}`);
       }
       if (q.maxChoices != null && chosen.length > q.maxChoices) {
-        return { ok: false, error: `marque no máximo ${q.maxChoices} opções em: ${q.label}` };
+        return fail(q, `marque no máximo ${q.maxChoices} opções em: ${q.label}`);
       }
       answers[q.id] = chosen.join(FORM_MULTI_SEPARATOR);
       addOtherText(q, chosen, fields, answers);
@@ -640,23 +688,286 @@ export function parseFormSubmission(
     if (q.kind === "select") {
       const v = firstValue(raw).trim();
       if (v === "") {
-        if (q.required) return { ok: false, error: `resposta obrigatória ausente: ${q.label}` };
+        if (q.required) return fail(q, `resposta obrigatória ausente: ${q.label}`);
         continue;
       }
-      const allowed = q.optionsFrom != null ? q.options.filter((o) => splitMultiAnswer(answers[q.optionsFrom!] ?? "").includes(o)) : q.options;
-      if (!allowed.includes(v)) return { ok: false, error: `opção inválida em: ${q.label}` };
+      const allowed = selectAllowedOptions(q, answers);
+      if (!allowed.includes(v)) {
+        // #12522: sem JavaScript a escolha única mostra todos os formatos; o
+        // erro diz qual é a regra, não só "opção inválida".
+        return fail(q, q.optionsFrom != null ? `escolha um dos formatos que você marcou na pergunta anterior em: ${q.label}` : `opção inválida em: ${q.label}`);
+      }
       answers[q.id] = v;
       addOtherText(q, [v], fields, answers);
       continue;
     }
     const text = cleanFreeText(firstValue(raw), FORM_ANSWER_MAX_LEN, q.kind === "textarea");
     if (text === "") {
-      if (q.required) return { ok: false, error: `resposta obrigatória ausente: ${q.label}` };
+      if (q.required) return fail(q, `resposta obrigatória ausente: ${q.label}`);
       continue;
     }
     answers[q.id] = text;
   }
   return { ok: true, submission: { email, answers } };
+}
+
+/** Opções aceitas numa escolha única dadas as respostas anteriores (`optionsFrom`). */
+function selectAllowedOptions(q: SelectQuestion, answers: Readonly<Record<string, string>>): readonly string[] {
+  return q.optionsFrom != null ? q.options.filter((o) => splitMultiAnswer(answers[q.optionsFrom!] ?? "").includes(o)) : q.options;
+}
+
+// ---------------------------------------------------------------------------
+// Rascunho (#12504)
+// ---------------------------------------------------------------------------
+
+/**
+ * #12504 (pedido do editor de 09/11/2026): o formulário guarda o que a pessoa
+ * marcou ou escreveu antes de enviar. O rascunho fica preso ao e-mail do link
+ * assinado (a mesma assinatura do envio), salvo pelo navegador a cada mudança
+ * (`POST /rascunho`, com debounce) e devolvido no `GET /` seguinte, em
+ * qualquer aparelho. Sem JavaScript nada é salvo (melhoria progressiva).
+ *
+ * Rascunho NÃO é resposta: não aplica a tag `formulario-respondeu`, não para
+ * os lembretes e não marca "preencheu". Decisão do editor (comentário de
+ * 09/11/2026 na #12504): ele entra no perfil de audiência por pergunta (cada
+ * pessoa uma vez, a resposta enviada vence o rascunho), na lista de conversas
+ * (Q12 "Sim, topo", marcado "não enviou"), na estatística de abandono por
+ * pergunta e escolhe a variante dos lembretes para quem começou e parou.
+ *
+ * KV: `draft:{e-mail}`, expira `FORM_DRAFT_TTL_S` depois da última mudança
+ * (`expirationTtl` renovado a cada gravação) e é apagado no envio.
+ */
+export interface FormDraft {
+  email: string;
+  /** Só o que passou pela mesma limpeza das respostas (`parseFormDraft`). */
+  answers: Record<string, string>;
+  /** ISO da última gravação. */
+  updated_at: string;
+  /** Id da última pergunta (na ordem do formulário) com alguma resposta — `null` = nenhuma. */
+  last_question: string | null;
+  form_version: number;
+}
+
+export const FORM_DRAFT_PREFIX = "draft:";
+
+/** 90 dias depois da última mudança (decisão da #12504). */
+export const FORM_DRAFT_TTL_S = 90 * 86_400;
+
+/** Corpo máximo do `POST /rascunho` (bytes). As respostas cabem com folga:
+ *  12 perguntas, textos de até `FORM_ANSWER_MAX_LEN`. */
+export const FORM_DRAFT_MAX_BYTES = 32 * 1024;
+
+/** Rate limit por e-mail: no máximo uma gravação a cada N segundos (o cliente
+ *  espera e tenta de novo). Também respeita o limite de 1 escrita/s por chave do KV. */
+export const FORM_DRAFT_MIN_INTERVAL_S = 1;
+
+/** Rascunho que chega até N segundos depois de um envio é ignorado: o
+ *  `sendBeacon` do `pagehide` pode chegar depois do POST do envio. */
+export const FORM_DRAFT_AFTER_SUBMIT_GRACE_S = 120;
+
+export function formDraftKey(email: string): string {
+  return `${FORM_DRAFT_PREFIX}${normalizeFormEmail(email)}`;
+}
+
+export type FormDraftWriteDecision = { action: "write" } | { action: "delete" } | { action: "skip"; reason: "rate_limited" | "after_submit" };
+
+/**
+ * @pure — #12504: o que o `POST /rascunho` faz com um rascunho já validado.
+ * `rate_limited` (429, o cliente tenta de novo): a gravação anterior foi há
+ * menos de `FORM_DRAFT_MIN_INTERVAL_S`. `after_submit` (ignorado): a pessoa
+ * enviou há menos de `FORM_DRAFT_AFTER_SUBMIT_GRACE_S` — é o beacon do
+ * `pagehide` chegando depois do envio, e gravar ressuscitaria o rascunho
+ * que o envio apagou. Rascunho sem nenhuma resposta: apaga o anterior (a
+ * pessoa desmarcou tudo). Valores ilegíveis no KV não bloqueiam.
+ */
+export function decideFormDraftWrite(
+  answersCount: number,
+  previousDraftRaw: string | null,
+  latestResponseRaw: string | null,
+  nowMs: number,
+): FormDraftWriteDecision {
+  const at = (raw: string | null, field: "updated_at" | "submitted_at"): number | null => {
+    if (raw == null) return null;
+    try {
+      const v = (JSON.parse(raw) as Record<string, unknown>)[field];
+      const ms = typeof v === "string" ? Date.parse(v) : NaN;
+      return Number.isFinite(ms) ? ms : null;
+    } catch {
+      return null;
+    }
+  };
+  const submitted = at(latestResponseRaw, "submitted_at");
+  if (submitted != null && nowMs - submitted >= 0 && nowMs - submitted < FORM_DRAFT_AFTER_SUBMIT_GRACE_S * 1000) {
+    return { action: "skip", reason: "after_submit" };
+  }
+  const prev = at(previousDraftRaw, "updated_at");
+  if (prev != null && nowMs - prev >= 0 && nowMs - prev < FORM_DRAFT_MIN_INTERVAL_S * 1000) return { action: "skip", reason: "rate_limited" };
+  return answersCount === 0 ? { action: "delete" } : { action: "write" };
+}
+
+/** @pure — #12504: o rascunho gravado no KV a partir de um corpo já validado. */
+export function buildFormDraftRecord(
+  parsed: { email: string; answers: Record<string, string>; last_question: string | null },
+  nowMs: number,
+): FormDraft {
+  return { email: parsed.email, answers: parsed.answers, updated_at: new Date(nowMs).toISOString(), last_question: parsed.last_question, form_version: FORM_VERSION };
+}
+
+/**
+ * @pure — #12504: o rascunho guardado, pronto para preencher o formulário.
+ * Só as respostas ainda válidas nas perguntas atuais (passa de novo por
+ * `parseFormDraft`: rascunho de uma versão anterior não preenche opção que
+ * saiu). `null` = sem rascunho legível ou de outro e-mail.
+ */
+export function draftPrefill(raw: string | null, email: string, questions: readonly FormQuestion[] = FORM_QUESTIONS): Record<string, string> | null {
+  if (raw == null) return null;
+  let d: Partial<FormDraft>;
+  try {
+    d = JSON.parse(raw) as Partial<FormDraft>;
+  } catch {
+    return null;
+  }
+  if (!d || normalizeFormEmail(d.email ?? "") !== normalizeFormEmail(email) || d.answers == null || typeof d.answers !== "object") return null;
+  const fields: Record<string, string | string[]> = { email };
+  for (const [k, v] of Object.entries(d.answers)) {
+    if (typeof v !== "string") continue;
+    const q = questions.find((x) => x.id === k);
+    fields[k] = q?.kind === "checkbox" ? splitMultiAnswer(v) : v;
+  }
+  const again = parseFormDraft(fields, questions);
+  return again && Object.keys(again.answers).length > 0 ? again.answers : null;
+}
+
+/**
+ * @pure — #12504: lê o rascunho do corpo do `POST /rascunho` (o mesmo
+ * formato do envio). Tolerante, ao contrário de `parseFormSubmission`: nada é
+ * obrigatório e o que não vale é DESCARTADO em vez de recusar o rascunho
+ * inteiro — opção desconhecida, escolha única fora das marcadas na pergunta
+ * de origem, a opção exclusiva junto com outras (fica só a última regra
+ * aplicada: as outras opções), caixas acima de `maxChoices` (ficam as
+ * primeiras na ordem da pergunta). Pergunta escondida é descartada como no
+ * envio. Texto livre e "Outro/Outra" passam pela mesma limpeza das respostas.
+ * Também serve para devolver o formulário preenchido depois de um erro de
+ * validação (#12522). `null` = e-mail inválido.
+ */
+export function parseFormDraft(
+  fields: Fields,
+  questions: readonly FormQuestion[] = FORM_QUESTIONS,
+): { email: string; answers: Record<string, string>; last_question: string | null } | null {
+  const email = normalizeFormEmail(firstValue(fields.email));
+  if (!EMAIL_RE.test(email)) return null;
+  const answers: Record<string, string> = {};
+  let last: string | null = null;
+  for (const q of questions) {
+    if (isQuestionHidden(q, answers)) continue;
+    const raw = fields[q.id];
+    if (q.kind === "checkbox") {
+      const picked = allValues(raw).map((x) => x.trim());
+      let chosen = q.options.filter((o) => picked.includes(o));
+      if (q.exclusiveOption && chosen.length > 1) chosen = chosen.filter((o) => o !== q.exclusiveOption);
+      if (q.maxChoices != null) chosen = chosen.slice(0, q.maxChoices);
+      if (chosen.length === 0) continue;
+      answers[q.id] = chosen.join(FORM_MULTI_SEPARATOR);
+      addOtherText(q, chosen, fields, answers);
+      last = q.id;
+      continue;
+    }
+    if (q.kind === "select") {
+      const v = firstValue(raw).trim();
+      if (v === "" || !selectAllowedOptions(q, answers).includes(v)) continue;
+      answers[q.id] = v;
+      addOtherText(q, [v], fields, answers);
+      last = q.id;
+      continue;
+    }
+    const text = cleanFreeText(firstValue(raw), FORM_ANSWER_MAX_LEN, q.kind === "textarea");
+    if (text === "") continue;
+    answers[q.id] = text;
+    last = q.id;
+  }
+  return { email, answers, last_question: last };
+}
+
+/** @pure — o número (1..12) da pergunta numerada de `id`, ou da pergunta-mãe se for subpergunta. */
+export function numberedQuestionIndex(id: string, questions: readonly FormQuestion[] = FORM_QUESTIONS): number | null {
+  const q = questions.find((x) => x.id === id);
+  if (!q) return null;
+  const target = q.subOf ?? q.id;
+  const i = numberedQuestions(questions).findIndex((x) => x.id === target);
+  return i < 0 ? null : i + 1;
+}
+
+/**
+ * @pure — #12504: valida o payload de `GET /api/respostas?rascunhos=1` (lado
+ * de quem lê). Mesma disciplina de `parseFormResponsesPayload`: forma
+ * inesperada LANÇA. `next_cursor` como na leitura das respostas.
+ */
+export function parseFormDraftsPage(data: unknown): { drafts: FormDraft[]; next_cursor: string | null } {
+  if (data == null || typeof data !== "object" || !Array.isArray((data as { drafts?: unknown }).drafts)) {
+    throw new Error("[onboarding-form] payload de rascunhos sem o array `drafts`");
+  }
+  const drafts: FormDraft[] = [];
+  for (const d of (data as { drafts: unknown[] }).drafts) {
+    if (d == null || typeof d !== "object") throw new Error("[onboarding-form] rascunho malformado no payload");
+    const r = d as Partial<FormDraft>;
+    const email = normalizeFormEmail(r.email ?? "");
+    if (!EMAIL_RE.test(email) || typeof r.updated_at !== "string" || !Number.isFinite(Date.parse(r.updated_at))) {
+      throw new Error("[onboarding-form] rascunho sem e-mail/updated_at válidos no payload");
+    }
+    const answers: Record<string, string> = {};
+    if (r.answers && typeof r.answers === "object") {
+      for (const [k, v] of Object.entries(r.answers)) if (typeof v === "string") answers[k] = v;
+    }
+    const version = typeof r.form_version === "number" && Number.isInteger(r.form_version) && r.form_version > 0 ? r.form_version : FORM_VERSION_LEGACY;
+    drafts.push({ email, answers, updated_at: r.updated_at, last_question: typeof r.last_question === "string" ? r.last_question : null, form_version: version });
+  }
+  const next = (data as { next_cursor?: unknown }).next_cursor;
+  if (next == null) return { drafts, next_cursor: null };
+  if (typeof next !== "string" || next === "") throw new Error("[onboarding-form] next_cursor inválido no payload de rascunhos");
+  return { drafts, next_cursor: next };
+}
+
+/**
+ * @pure — #12504: os rascunhos de quem NÃO enviou. Rascunho de quem tem
+ * resposta enviada some (a resposta enviada vence; o rascunho de quem já
+ * respondeu e recomeçou, no reenvio anual, também fica de fora: a resposta
+ * completa anterior conta mais que a metade nova). Rascunho sem nenhuma
+ * resposta também sai.
+ */
+export function unsentFormDrafts(drafts: readonly FormDraft[], responses: readonly Pick<FormResponse, "email">[]): FormDraft[] {
+  const sent = new Set(responses.map((r) => normalizeFormEmail(r.email)));
+  const latest = new Map<string, FormDraft>();
+  for (const d of drafts) {
+    const k = normalizeFormEmail(d.email);
+    if (sent.has(k) || Object.keys(d.answers).length === 0) continue;
+    const cur = latest.get(k);
+    if (!cur || Date.parse(d.updated_at) >= Date.parse(cur.updated_at)) latest.set(k, d);
+  }
+  return [...latest.values()];
+}
+
+/** Resumo do abandono por pergunta (#12504). */
+export interface FormDraftSummary {
+  /** Rascunhos de quem não enviou. */
+  rascunhos: number;
+  /** Por pergunta numerada em que a pessoa parou (`"7 dificuldades"`), em ordem. */
+  parou_na_pergunta: Record<string, number>;
+}
+
+/** @pure — #12504: em que pergunta (a última respondida) as pessoas param. */
+export function summarizeFormDrafts(drafts: readonly FormDraft[], questions: readonly FormQuestion[] = FORM_QUESTIONS): FormDraftSummary {
+  const byN = new Map<number, number>();
+  let unknown = 0;
+  for (const d of drafts) {
+    const n = d.last_question == null ? null : numberedQuestionIndex(d.last_question, questions);
+    if (n == null) unknown++;
+    else byN.set(n, (byN.get(n) ?? 0) + 1);
+  }
+  const numbered = numberedQuestions(questions);
+  const parou: Record<string, number> = {};
+  for (const n of [...byN.keys()].sort((a, b) => a - b)) parou[`${n} ${numbered[n - 1].id}`] = byN.get(n)!;
+  if (unknown > 0) parou["?"] = unknown;
+  return { rascunhos: drafts.length, parou_na_pergunta: parou };
 }
 
 /** Grava o texto do "Outro/Outra" só se a opção foi marcada e o texto não é vazio. */
@@ -760,24 +1071,35 @@ export async function readFormResponsesPage(
   cursor: string | undefined,
   pageSize: number = FORM_RESPONSES_PAGE_SIZE,
 ): Promise<FormResponsesPage> {
+  const page = await readKvJsonPage<FormResponse>(kv, prefix, cursor, pageSize);
+  return { responses: page.items, next_cursor: page.next_cursor, unreadable: page.unreadable };
+}
+
+/** #12504: a mesma leitura paginada para qualquer prefixo (respostas, rascunhos). */
+export async function readKvJsonPage<T>(
+  kv: FormResponsesKv,
+  prefix: string,
+  cursor: string | undefined,
+  pageSize: number = FORM_RESPONSES_PAGE_SIZE,
+): Promise<{ items: T[]; next_cursor: string | null; unreadable: number }> {
   const list = await kv.list({ prefix, cursor, limit: pageSize });
   const names = list.keys.slice(0, pageSize).map((k) => k.name);
   const raws: (string | null)[] = [];
   for (let i = 0; i < names.length; i += FORM_RESPONSES_GET_CONCURRENCY) {
     raws.push(...(await Promise.all(names.slice(i, i + FORM_RESPONSES_GET_CONCURRENCY).map((n) => kv.get(n)))));
   }
-  const responses: FormResponse[] = [];
+  const items: T[] = [];
   let unreadable = 0;
   for (const raw of raws) {
     if (raw == null) continue;
     try {
-      responses.push(JSON.parse(raw) as FormResponse);
+      items.push(JSON.parse(raw) as T);
     } catch {
       unreadable++;
     }
   }
   const next = !list.list_complete && typeof list.cursor === "string" && list.cursor !== "" ? list.cursor : null;
-  return { responses, next_cursor: next, unreadable };
+  return { items, next_cursor: next, unreadable };
 }
 
 /**
@@ -810,9 +1132,47 @@ export interface FetchAllFormResponsesIo {
  * devolve uma lista parcial, que viraria "essas pessoas não preencheram".
  */
 export async function fetchAllFormResponses(url: string, token: string, io: FetchAllFormResponsesIo = {}): Promise<FormResponse[]> {
+  return fetchAllPages(url, token, io, "respostas", (data) => {
+    const p = parseFormResponsesPage(data);
+    return { items: p.responses, next_cursor: p.next_cursor };
+  });
+}
+
+/** Parâmetro de `GET /api/respostas` que lista os rascunhos (#12504). */
+export const FORM_DRAFTS_QUERY_PARAM = "rascunhos";
+
+/** @pure — a URL de rascunhos a partir da URL de respostas configurada. */
+export function formDraftsUrl(responsesUrl: string): string {
+  const u = new URL(responsesUrl);
+  u.searchParams.delete("historico");
+  u.searchParams.set(FORM_DRAFTS_QUERY_PARAM, "1");
+  return u.toString();
+}
+
+/**
+ * #12504: lê TODOS os rascunhos (`GET /api/respostas?rascunhos=1`, mesmo
+ * token e mesma paginação das respostas). Mesma disciplina: qualquer falha
+ * LANÇA. Quem chama decide o que a falha significa: no executor, só a
+ * variante do lembrete deixa de sair (o texto padrão continua certo); no
+ * perfil e na lista de conversas, um aviso e o resultado sem rascunhos.
+ */
+export async function fetchAllFormDrafts(responsesUrl: string, token: string, io: FetchAllFormResponsesIo = {}): Promise<FormDraft[]> {
+  return fetchAllPages(formDraftsUrl(responsesUrl), token, io, "rascunhos", (data) => {
+    const p = parseFormDraftsPage(data);
+    return { items: p.drafts, next_cursor: p.next_cursor };
+  });
+}
+
+async function fetchAllPages<T>(
+  url: string,
+  token: string,
+  io: FetchAllFormResponsesIo,
+  what: string,
+  parsePage: (data: unknown) => { items: T[]; next_cursor: string | null },
+): Promise<T[]> {
   const fetchImpl = io.fetchImpl ?? fetch;
   const maxPages = io.maxPages ?? FORM_RESPONSES_MAX_PAGES;
-  const out: FormResponse[] = [];
+  const out: T[] = [];
   const seen = new Set<string>();
   let cursor: string | null = null;
   for (let page = 0; page < maxPages; page++) {
@@ -834,16 +1194,16 @@ export async function fetchAllFormResponses(url: string, token: string, io: Fetc
       } catch {
         // corpo sem JSON: fica só o status
       }
-      throw new Error(`GET respostas do formulário: HTTP ${res.status}${reason}`);
+      throw new Error(`GET ${what} do formulário: HTTP ${res.status}${reason}`);
     }
-    const parsed = parseFormResponsesPage(await res.json());
-    out.push(...parsed.responses);
+    const parsed = parsePage(await res.json());
+    out.push(...parsed.items);
     if (parsed.next_cursor == null) return out;
-    if (seen.has(parsed.next_cursor)) throw new Error("[onboarding-form] next_cursor repetido: paginação de respostas não avança");
+    if (seen.has(parsed.next_cursor)) throw new Error(`[onboarding-form] next_cursor repetido: paginação de ${what} não avança`);
     seen.add(parsed.next_cursor);
     cursor = parsed.next_cursor;
   }
-  throw new Error(`[onboarding-form] respostas passaram de ${maxPages} páginas sem terminar`);
+  throw new Error(`[onboarding-form] ${what} passaram de ${maxPages} páginas sem terminar`);
 }
 
 /**

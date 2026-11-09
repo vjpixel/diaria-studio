@@ -73,12 +73,28 @@ import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from 
 import { buildOnboardingLotFilter, decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type RefreshKitCandidatesOpts } from "./lib/onboarding-kit-transport.ts";
 import { isKitTransientError } from "./onboarding-welcome-run.ts";
 import { redactEmails, verifyPilotBroadcastFilter } from "./lib/onboarding-kit-pilot.ts";
-import { fetchAllFormResponses, summarizeFormResponses, type FormResponse } from "./lib/onboarding-form-contract.ts";
+import {
+  fetchAllFormDrafts,
+  fetchAllFormResponses,
+  normalizeFormEmail,
+  summarizeFormDrafts,
+  summarizeFormResponses,
+  unsentFormDrafts,
+  type FormDraft,
+  type FormResponse,
+} from "./lib/onboarding-form-contract.ts";
 import { FORM_PAGE_MARKER, FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
 import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
   ALL_FOLLOWUP_STEPS,
+  FORM_REMINDER_DRAFT_VARIANTS,
   FORM_RESPONDENT_TAG,
+  isFormReminder,
+  reminderDraftVariantGate,
+  splitReminderRecipientsByDraft,
+  type FollowupLotVariant,
+  type FormReminderKind,
+  type ReminderDraftSnippets,
   resolveRespondentIds,
   applyBaseInviteToPeople,
   baseInviteRecipientIds,
@@ -192,17 +208,19 @@ export function claimFollowupLot(
   dateIso: string,
   recipients: readonly FollowupDue[],
   nowMs: number = Date.now(),
+  variant?: FollowupLotVariant,
 ): ClaimFollowupLotResult {
   return withStore<ClaimFollowupLotResult>(storePath, "reivindicar lote", (_store, block) => {
-    const latest = findLatestFollowupLot(block.lots, kind, dateIso);
+    const latest = findLatestFollowupLot(block.lots, kind, dateIso, variant);
     const decision = decideLotReconciliation<FollowupLot>(latest?.lot ?? null, nowMs, LOT_STALE_AFTER_MS);
     if (decision.action === "blocked_concurrent") return { result: { action: "blocked_concurrent", lot: decision.lot }, write: false };
     if (decision.action === "reuse") return { result: { action: "reuse", lot: decision.lot }, write: false };
     const seq = latest == null ? 1 : latest.seq + 1;
-    const lotId = buildFollowupLotId(kind, dateIso, seq);
+    const lotId = buildFollowupLotId(kind, dateIso, seq, variant);
     const lot: FollowupLot = {
       lot_id: lotId,
       kind,
+      ...(variant ? { variant } : {}),
       tag_name: `onboarding-${lotId}`,
       tag_id: null,
       broadcast_id: null,
@@ -256,6 +274,16 @@ export function loadFollowupSnippets(dirAbs: string): FollowupSnippets {
   return out;
 }
 
+/** #12504: textos da variante "rascunho" dos lembretes (ausente = `null`). */
+export function loadReminderDraftSnippets(dirAbs: string): ReminderDraftSnippets {
+  const out: ReminderDraftSnippets = {};
+  for (const v of FORM_REMINDER_DRAFT_VARIANTS) {
+    const p = resolve(dirAbs, v.snippetFile);
+    out[v.kind] = existsSync(p) ? parseFollowupSnippet(readFileSync(p, "utf8")) : null;
+  }
+  return out;
+}
+
 /** Rascunhos versionados dos textos (#10605) — semente do `--init-snippets`. */
 export const FOLLOWUP_DRAFTS_DIR = resolve(ROOT, "context/templates/onboarding-followup");
 
@@ -277,23 +305,29 @@ export interface InitSnippetsResult {
 }
 
 export function initFollowupSnippets(dirAbs: string, draftsDirAbs: string = FOLLOWUP_DRAFTS_DIR): InitSnippetsResult {
-  const drafts = new Map<FollowupStepKind, string | null>();
-  for (const kind of ALL_FOLLOWUP_STEPS) {
-    const draftPath = resolve(draftsDirAbs, snippetFileFor(kind));
+  // #12504: as variantes "rascunho" dos lembretes entram junto, com o modelo
+  // vazio do lembrete correspondente (mesmo marcador) quando falta o rascunho.
+  const entries: { file: string; template: string }[] = [
+    ...ALL_FOLLOWUP_STEPS.map((kind) => ({ file: snippetFileFor(kind), template: snippetTemplate(kind) })),
+    ...FORM_REMINDER_DRAFT_VARIANTS.map((v) => ({ file: v.snippetFile, template: snippetTemplate(v.kind) })),
+  ];
+  const drafts = new Map<string, string | null>();
+  for (const { file } of entries) {
+    const draftPath = resolve(draftsDirAbs, file);
     const draft = existsSync(draftPath) ? readFileSync(draftPath, "utf8") : null;
     if (draft != null && !draft.includes(PENDING_BODY_MARKER)) {
       throw new Error(`[onboarding-followup] rascunho ${draftPath} sem ${PENDING_BODY_MARKER}: a semente nunca pode sair já aprovada`);
     }
-    drafts.set(kind, draft);
+    drafts.set(file, draft);
   }
   mkdirSync(dirAbs, { recursive: true });
   const out: InitSnippetsResult = { written: [], skipped: [] };
-  for (const kind of ALL_FOLLOWUP_STEPS) {
-    const p = resolve(dirAbs, snippetFileFor(kind));
-    const draft = drafts.get(kind) ?? null;
+  for (const { file, template } of entries) {
+    const p = resolve(dirAbs, file);
+    const draft = drafts.get(file) ?? null;
     if (existsSync(p)) {
       const current = readFileSync(p, "utf8");
-      if (draft != null && current === snippetTemplate(kind)) {
+      if (draft != null && current === template) {
         writeFileSync(p, draft);
         out.written.push(p);
       } else {
@@ -301,7 +335,7 @@ export function initFollowupSnippets(dirAbs: string, draftsDirAbs: string = FOLL
       }
       continue;
     }
-    writeFileSync(p, draft ?? snippetTemplate(kind), { flag: "wx" });
+    writeFileSync(p, draft ?? template, { flag: "wx" });
     out.written.push(p);
   }
   return out;
@@ -317,6 +351,12 @@ export interface FollowupRoundDeps {
   /** E-mails com a tag `envio-brevo` (#10437). Lança se a tag não existir ou a leitura falhar (a rodada trava). */
   listEnvioBrevoEmails(): Promise<string[]>;
   fetchFormResponses(): Promise<FormResponseRecord[]>;
+  /**
+   * #12504: rascunhos do formulário (`GET /api/respostas?rascunhos=1`), para
+   * a variante "rascunho" dos lembretes. Ausente ou lançando = sem variante
+   * nesta rodada (todos no texto padrão), nunca trava o lembrete.
+   */
+  fetchFormDrafts?(): Promise<FormDraft[]>;
   /** Cria/agenda o lote no Kit (muta `lot`; lança se não confirmar). */
   runLot(lot: FollowupLot, content: { subject: string; body: string; previewText?: string }): Promise<void>;
   /**
@@ -735,6 +775,8 @@ export interface FollowupRoundOpts {
   send: boolean;
   cfg: FollowupConfig;
   snippets: FollowupSnippets;
+  /** #12504: textos da variante "rascunho" dos lembretes. Ausente = sem variante. */
+  reminderDraftSnippets?: ReminderDraftSnippets;
   nowMs?: number;
   /** #10676: espaçamento/cooldown/passadas das leituras singulares (defaults
    *  de `refreshKitCandidates`: 350ms, 60s, 1 passada extra). A espera em si
@@ -937,6 +979,23 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
         run.form_blocked = formBlocked;
       }
       blockResults(b);
+    }
+  }
+
+  // #12504: variante "rascunho" dos lembretes — só os lembretes com o texto
+  // da variante aprovado, e só lendo os rascunhos com sucesso. Falha aqui não
+  // trava nada: quem tem rascunho recebe o texto padrão, que segue correto.
+  const liveVariants = new Set(
+    FORM_REMINDER_DRAFT_VARIANTS.filter((v) => !reminderDraftVariantGate(v.kind, opts.reminderDraftSnippets ?? {}).blocked).map((v) => v.kind),
+  );
+  let draftEmails: Set<string> | null = null;
+  if (!formBlocked && liveVariants.size > 0 && deps.fetchFormDrafts) {
+    try {
+      const drafts = await deps.fetchFormDrafts();
+      draftEmails = new Set(drafts.filter((d) => Object.keys(d.answers).length > 0).map((d) => normalizeFormEmail(d.email)));
+    } catch (e) {
+      run.form_drafts_unavailable = redactEmails((e as Error).message);
+      process.stderr.write(`${LOG} rascunhos do formulário ilegíveis — lembretes saem no texto padrão nesta rodada: ${run.form_drafts_unavailable}\n`);
     }
   }
 
@@ -1146,28 +1205,40 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
 
   const cadastroById = new Map(apoioCandidates.map((c) => [c.kit_subscriber_id, c.cadastro_at] as const));
   const dateIso = unixSecondsToBrtDate(nowSec);
+  // #12504: lembrete com a variante "rascunho" valendo sai em DOIS lotes
+  // (padrão e variante): o corpo do broadcast é um só por lote.
+  const lotGroups: { kind: FollowupStepKind; variant?: FollowupLotVariant; recipients: FollowupDue[] }[] = [];
   for (const kind of ALL_FOLLOWUP_STEPS) {
-    const recipients = toSend.filter((d) => d.kind === kind);
-    if (recipients.length === 0) continue;
+    const all = toSend.filter((d) => d.kind === kind);
+    if (all.length === 0) continue;
+    if (isFormReminder(kind) && liveVariants.has(kind)) {
+      const split = splitReminderRecipientsByDraft(all, draftEmails, block.people);
+      if (split.padrao.length > 0) lotGroups.push({ kind, recipients: split.padrao });
+      if (split.rascunho.length > 0) lotGroups.push({ kind, variant: "rascunho", recipients: split.rascunho });
+    } else lotGroups.push({ kind, recipients: all });
+  }
+  for (const { kind, variant, recipients } of lotGroups) {
+    const tagVariant = variant ? { variant } : {};
     // Redundante com o corte acima (a checagem só remove gente), mantido como
     // defesa em profundidade caso a ordem mude.
     if (recipients.length > cfg.maxRecipientsPerLot) {
       run.over_cap++;
       bump(kind, "acima_do_teto", recipients.length);
-      lotsOut.push({ kind, eligible: recipients.length, skipped: capOverflowMsg });
+      lotsOut.push({ kind, ...tagVariant, eligible: recipients.length, skipped: capOverflowMsg });
       continue;
     }
     if (!send) {
-      lotsOut.push({ kind, eligible: recipients.length, dry_run: true });
+      lotsOut.push({ kind, ...tagVariant, eligible: recipients.length, dry_run: true });
       continue;
     }
-    const claim = claimFollowupLot(storePath, kind, dateIso, recipients, nowMs);
+    const claim = claimFollowupLot(storePath, kind, dateIso, recipients, nowMs, variant);
     if (claim.action === "blocked_concurrent" || claim.action === "reuse") {
-      lotsOut.push({ kind, lot_id: claim.lot?.lot_id ?? null, skipped: claim.action });
+      lotsOut.push({ kind, ...tagVariant, lot_id: claim.lot?.lot_id ?? null, skipped: claim.action });
       continue;
     }
     const lot = claim.lot!;
-    const snip = snippets[kind]!;
+    // A variante só entra no grupo com o texto dela aprovado (`liveVariants`).
+    const snip = variant ? opts.reminderDraftSnippets![kind as FormReminderKind]! : snippets[kind]!;
     // #10633: grava a conta Kit dona ANTES de criar o broadcast (mesma regra
     // do `beforeCreate` da escada, #9487). Falha não trava o envio: o lote
     // nasce sem id e um 404 numa releitura futura só não cancela (lado seguro).
@@ -1194,13 +1265,14 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
       const marked = persistFollowupLot(storePath, lot, cadastroById, nowMs);
       run.lots_created++;
       bump(kind, "enviado", marked);
-      lotsOut.push({ kind, lot_id: lot.lot_id, created: true, broadcast_id: lot.broadcast_id, recipients: recipients.length, send_at: lot.send_at });
+      if (variant) bump(kind, `enviado_${variant}`, marked);
+      lotsOut.push({ kind, ...tagVariant, lot_id: lot.lot_id, created: true, broadcast_id: lot.broadcast_id, recipients: recipients.length, send_at: lot.send_at });
     } catch (e) {
       run.lots_failed++;
       lot.last_error = lot.last_error ?? redactEmails((e as Error).message);
       persistFollowupLot(storePath, lot, cadastroById, nowMs);
       bump(kind, "falhou", recipients.length);
-      lotsOut.push({ kind, lot_id: lot.lot_id, created: false, status: lot.status, error: lot.last_error });
+      lotsOut.push({ kind, ...tagVariant, lot_id: lot.lot_id, created: false, status: lot.status, error: lot.last_error });
     }
   }
   // #10774: quem entrou no store agora (1º envio) nasceu com o e-mail do
@@ -1270,17 +1342,33 @@ export async function fetchFormResponsesReal(cfg: FollowupConfig, fetchImpl: typ
   return fetchAllFormResponses(cfg.formResponsesUrl, token, { fetchImpl });
 }
 
-/** `--status` (#10605 v3): só leitura, sem Kit. Respostas por versão e o tempo de preenchimento. */
-export function formStatusReport(responses: readonly FormResponse[]): Record<string, unknown> {
+/** #12504: rascunhos com os mesmos endpoint e token das respostas. Lança em qualquer falha. */
+export async function fetchFormDraftsReal(cfg: FollowupConfig, fetchImpl: typeof fetch = fetch): Promise<FormDraft[]> {
+  const token = process.env[cfg.formResponsesTokenEnv];
+  if (!cfg.formResponsesUrl || !token) throw new Error(`endpoint de respostas ou ${cfg.formResponsesTokenEnv} ausente`);
+  return fetchAllFormDrafts(cfg.formResponsesUrl, token, { fetchImpl });
+}
+
+/**
+ * `--status` (#10605 v3): só leitura, sem Kit. Respostas por versão e o tempo
+ * de preenchimento. #12504: com os rascunhos (`drafts`), também o abandono —
+ * quantos começaram e não enviaram, e em que pergunta pararam (a última
+ * respondida). `drafts` como string = a leitura falhou (o motivo aparece no
+ * relatório, o resto sai normal).
+ */
+export function formStatusReport(responses: readonly FormResponse[], drafts?: readonly FormDraft[] | string): Record<string, unknown> {
   const sum = summarizeFormResponses(responses);
   const min = (sec: number | null) => (sec == null ? null : Math.round((sec / 60) * 10) / 10);
-  return {
+  const out: Record<string, unknown> = {
     mode: "status",
     respondentes: Object.values(sum.by_version).reduce((a, b) => a + b, 0),
     envios: sum.submissions,
     por_versao: sum.by_version,
     tempo_de_preenchimento: { respostas_com_tempo: sum.with_duration, mediana_s: sum.median_s, p75_s: sum.p75_s, mediana_min: min(sum.median_s), p75_min: min(sum.p75_s) },
   };
+  if (typeof drafts === "string") out.abandono = { erro: drafts };
+  else if (drafts) out.abandono = summarizeFormDrafts(unsentFormDrafts(drafts, responses));
+  return out;
 }
 
 export interface TagRespondentsDeps {
@@ -1445,6 +1533,7 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
     },
     // #12509: `fetchFormResponsesReal` segue as páginas (`next_cursor`) até a última.
     fetchFormResponses: () => fetchFormResponsesReal(cfg),
+    fetchFormDrafts: () => fetchFormDraftsReal(cfg),
     async runLot(lot, content) {
       // Import tardio: o executor da escada carrega o resto do transporte Kit.
       const { runProductionKitLot, buildPilotKitDeps, productionOrphanAlert } = await import("./onboarding-kit-transport-run.ts");
@@ -1492,7 +1581,14 @@ async function main(): Promise<void> {
     return;
   }
   if (args.status) {
-    console.log(JSON.stringify(formStatusReport(await fetchFormResponsesReal(cfg)), null, 2));
+    const responses = await fetchFormResponsesReal(cfg);
+    let drafts: FormDraft[] | string;
+    try {
+      drafts = await fetchFormDraftsReal(cfg);
+    } catch (e) {
+      drafts = `rascunhos ilegíveis: ${redactEmails((e as Error).message)}`;
+    }
+    console.log(JSON.stringify(formStatusReport(responses, drafts), null, 2));
     return;
   }
   if (args.tagRespondents) {
@@ -1530,6 +1626,7 @@ async function main(): Promise<void> {
   }
   const storePath = args.storePath ?? resolve(ROOT, rawCfg.onboarding?.store_path ?? DEFAULT_STORE_PATH);
   const snippets = loadFollowupSnippets(snippetsDirAbs);
+  const reminderDraftSnippets = loadReminderDraftSnippets(snippetsDirAbs);
 
   const record = (run: FollowupRunRecord) => {
     if (!args.send) return;
@@ -1575,7 +1672,7 @@ async function main(): Promise<void> {
 
   let out: { run: FollowupRunRecord; lots: unknown[] };
   try {
-    out = await runFollowupRound({ storePath, send: args.send, cfg, snippets, formLinkSecret }, deps);
+    out = await runFollowupRound({ storePath, send: args.send, cfg, snippets, reminderDraftSnippets, formLinkSecret }, deps);
   } catch (e) {
     const msg = redactEmails((e as Error).message);
     record({ at: new Date().toISOString(), apoio_blocked: null, form_blocked: null, lots_created: 0, lots_failed: 0, over_cap: 0, lookups_failed: 0, counts: {}, aborted: true, error: msg });

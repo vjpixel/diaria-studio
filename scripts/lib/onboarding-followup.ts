@@ -118,6 +118,22 @@ export const FORM_REMINDER_STEPS: readonly { kind: FormReminderKind; snippetFile
   { kind: "form_lembrete3", snippetFile: "formulario-lembrete-3.md" },
 ];
 
+/**
+ * #12504 (decisão do editor de 09/11/2026): variante de cada lembrete para
+ * quem começou o formulário e parou (tem rascunho, inclusive quem preencheu
+ * tudo e não clicou em Enviar). Só o 1º parágrafo depois de "Olá! Tudo bem?"
+ * muda; assunto e o resto ficam iguais. Fora de `FORM_STEPS` de propósito:
+ * texto da variante ausente ou pendente NUNCA trava o lembrete — quem tem
+ * rascunho recebe o texto padrão (`reminderDraftVariantGate`).
+ */
+export const FORM_REMINDER_DRAFT_VARIANTS: readonly { kind: FormReminderKind; snippetFile: string }[] = [
+  { kind: "form_lembrete", snippetFile: "formulario-lembrete-1-rascunho.md" },
+  { kind: "form_lembrete2", snippetFile: "formulario-lembrete-2-rascunho.md" },
+  { kind: "form_lembrete3", snippetFile: "formulario-lembrete-3-rascunho.md" },
+];
+
+export type ReminderDraftSnippets = Partial<Record<FormReminderKind, OnboardingSnippet | null>>;
+
 export const FORM_STEPS: readonly { kind: FormStepKind; snippetFile: string }[] = [
   { kind: "form", snippetFile: "onboarding-formulario.md" },
   ...FORM_REMINDER_STEPS,
@@ -277,8 +293,16 @@ export interface FollowupPerson {
   previous_emails?: string[];
 }
 
+/**
+ * #12504: variante do texto de um lote. `rascunho` = lembrete para quem
+ * começou o formulário e parou (tem rascunho no Worker). A etapa é a mesma
+ * (`kind`: conta como o mesmo lembrete, mesma dedup); só o corpo muda, então
+ * sai num lote próprio (o corpo do broadcast é um só pro lote).
+ */
+export type FollowupLotVariant = "rascunho";
+
 /** Lote Kit de uma etapa destas sequências — mesma forma do lote da escada. */
-export type FollowupLot = Omit<KitBroadcastLot, "kind"> & { kind: FollowupStepKind };
+export type FollowupLot = Omit<KitBroadcastLot, "kind"> & { kind: FollowupStepKind; variant?: FollowupLotVariant };
 
 export type FollowupBlockReason =
   | "snippet_ausente"
@@ -348,6 +372,11 @@ export interface FollowupRunRecord {
    *  é pendência do editor (agendar o rascunho), não quebra do executor.
    *  Opcional: registros anteriores não têm o campo. */
   base_invite_draft_stale?: number;
+  /** #12504: a leitura dos rascunhos falhou — a variante "rascunho" dos
+   *  lembretes não saiu nesta rodada (todos receberam o texto padrão, que
+   *  continua certo para quem tem rascunho). Só informativo: NÃO conta como
+   *  rodada falha. Opcional: registros anteriores não têm o campo. */
+  form_drafts_unavailable?: string;
   /** Por etapa: contagem de enviados nesta rodada e de pulados/adiados por motivo. */
   counts: Partial<Record<FollowupStepKind, Record<string, number>>>;
   aborted?: boolean;
@@ -658,6 +687,48 @@ export function formContentGate(
     };
   }
   return { blocked: false, linkSecret: secret.secret };
+}
+
+/**
+ * @pure — #12504: a variante "rascunho" do lembrete `kind` vale? Precisa do
+ * texto aprovado (sem `ONBOARDING-CORPO-PENDENTE`, com assunto e corpo) e do
+ * link do formulário no corpo. Travada, quem tem rascunho recebe o texto
+ * padrão: a variante nunca trava o lembrete.
+ */
+export function reminderDraftVariantGate(kind: FormReminderKind, snippets: ReminderDraftSnippets): ContentGate {
+  const file = `data/snippets/${FORM_REMINDER_DRAFT_VARIANTS.find((v) => v.kind === kind)!.snippetFile}`;
+  const snip = snippets[kind];
+  if (snip == null) return { blocked: true, motivo: "snippet_ausente", detalhe: `${file} não existe` };
+  if (snip.hasPendingMarker) return { blocked: true, motivo: "texto_pendente", detalhe: `${file} contém ${PENDING_BODY_MARKER} (texto aguardando aprovação do editor)` };
+  if (!snip.assunto) return { blocked: true, motivo: "snippet_invalido", detalhe: `${file} sem 'assunto:' no cabeçalho` };
+  if (!snip.body) return { blocked: true, motivo: "snippet_invalido", detalhe: `${file} sem corpo` };
+  if (!snip.body.includes(FORM_URL_PLACEHOLDER)) {
+    return { blocked: true, motivo: "snippet_invalido", detalhe: `${file} sem ${FORM_URL_PLACEHOLDER} no corpo (o e-mail sairia sem o link do formulário)` };
+  }
+  return { blocked: false };
+}
+
+/**
+ * @pure — #12504: divide os destinatários de um lembrete entre o texto padrão
+ * e a variante "rascunho" (quem tem rascunho no Worker). Casa pelo e-mail do
+ * devido e pelos e-mails anteriores da pessoa (#10774: o rascunho pode ter
+ * sido salvo com o link do e-mail antigo). Sem rascunhos conhecidos
+ * (`draftEmails` nulo: leitura falhou, ou variante travada), todo mundo fica
+ * no padrão.
+ */
+export function splitReminderRecipientsByDraft<T extends { kit_subscriber_id: number; email: string }>(
+  recipients: readonly T[],
+  draftEmails: ReadonlySet<string> | null,
+  people: Readonly<Record<string, FollowupPerson>>,
+): { padrao: T[]; rascunho: T[] } {
+  if (draftEmails == null || draftEmails.size === 0) return { padrao: [...recipients], rascunho: [] };
+  const padrao: T[] = [];
+  const rascunho: T[] = [];
+  for (const r of recipients) {
+    const emails = [r.email, ...(people[String(r.kit_subscriber_id)]?.previous_emails ?? [])].map(normalizeEmail);
+    (emails.some((e) => draftEmails.has(e)) ? rascunho : padrao).push(r);
+  }
+  return { padrao, rascunho };
 }
 
 /**
@@ -2143,20 +2214,22 @@ export function applyBaseInviteToPeople(
 // Lotes
 // ---------------------------------------------------------------------------
 
-export function buildFollowupLotId(kind: FollowupStepKind, dateIso: string, seq: number): string {
-  return `${kind}-${dateIso}-${String(seq).padStart(2, "0")}`;
+export function buildFollowupLotId(kind: FollowupStepKind, dateIso: string, seq: number, variant?: FollowupLotVariant): string {
+  return `${kind}${variant ? `-${variant}` : ""}-${dateIso}-${String(seq).padStart(2, "0")}`;
 }
 
-/** Lote mais novo (maior seq) de `kind`+`dateIso`. */
+/** Lote mais novo (maior seq) de `kind`+`dateIso` (+`variant`, #12504: a
+ *  variante tem a sequência dela; um lote nunca é reaproveitado pela outra). */
 export function findLatestFollowupLot(
   lots: Readonly<Record<string, FollowupLot>>,
   kind: FollowupStepKind,
   dateIso: string,
+  variant?: FollowupLotVariant,
 ): { lot: FollowupLot; seq: number } | null {
-  const prefix = `${kind}-${dateIso}-`;
+  const prefix = `${kind}${variant ? `-${variant}` : ""}-${dateIso}-`;
   let best: { lot: FollowupLot; seq: number } | null = null;
   for (const lot of Object.values(lots)) {
-    if (lot.kind !== kind || !lot.lot_id.startsWith(prefix)) continue;
+    if (lot.kind !== kind || (lot.variant ?? null) !== (variant ?? null) || !lot.lot_id.startsWith(prefix)) continue;
     const seq = Number.parseInt(lot.lot_id.slice(prefix.length), 10);
     if (Number.isFinite(seq) && (best == null || seq > best.seq)) best = { lot, seq };
   }
