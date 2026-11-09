@@ -5,6 +5,14 @@
 # /mnt/hd-sata/GoogleDrive no `300`, por `rclone bisync` (decisão do editor
 # em #12354). Roda a cada 2 min pela unit diaria-gdrive-bisync.timer.
 #
+# O mesmo script roda o bisync DEDICADO de data/ (#12478,
+# diaria-gdrive-data-bisync.{service,timer}, a cada 1 min): a unit troca
+# GDRIVE_REMOTE/GDRIVE_LOCAL/GDRIVE_FILTERS/GDRIVE_STATE_DIR por env para
+# gdrive:diaria-studio-data, a pasta local dela, gdrive-data-bisync-filters.txt
+# e ~/.cache/diaria/gdrive-data-bisync. A sentinela, nesse caso, mora dentro
+# de diaria-studio-data nos dois lados. O filtro do Drive inteiro exclui
+# /diaria-studio-data/**, então as duas rodadas nunca tocam os mesmos arquivos.
+#
 # Trava contra pasta vazia (o risco nº 1 da épica): se o HD estiver
 # desmontado, o diretório local some ou fica vazio, e um sync ingênuo lê
 # "tudo apagado" e propaga a deleção pra nuvem e pras outras máquinas.

@@ -1,0 +1,42 @@
+# Filtros do rclone bisync DEDICADO de data/ (#12478): a raiz deste sync e
+# a propria pasta gdrive:diaria-studio-data <-> /mnt/hd-sata/GoogleDrive/diaria-studio-data.
+# Mudar este arquivo exige rodar o bisync dele uma vez com --resync
+# (GDRIVE_* da unit diaria-gdrive-data-bisync.service; ver
+# docs/scheduled-tasks-registry.md). O script passa --ignore-case.
+#
+# Globais: as mesmas do filtro do Drive inteiro (gdrive-bisync-filters.txt;
+# test/data-sync-exclusions-12357.test.ts trava a paridade).
+- ~*
+- .~*
+- *.tmp
+- *.swp
+- *.partial
+- *.db-shm
+- *.db-wal
+- *.sqlite-shm
+- *.sqlite-wal
+- *.sqlite3-shm
+- *.sqlite3-wal
+- *safeBackup*
+- desktop.ini
+- .DS_Store
+- Thumbs.db
+- node_modules/**
+#
+# Arquivos de data/ que ficam locais por maquina (mesma lista do skip_file do
+# OneDrive). Sem "/" no padrao, o rclone casa em qualquer profundidade de
+# data/. Regerar com
+#   npx tsx scripts/lib/data-sync-exclusions.ts
+# e colar no lugar do bloco abaixo (test/data-sync-exclusions-12357.test.ts trava).
+# BEGIN data-local-only (#12357) - GERADO de scripts/lib/data-sync-exclusions.ts, nao editar a mao
+- *.db-shm
+- *.db-wal
+- *.sqlite3-shm
+- *.sqlite3-wal
+- run-log.jsonl
+- *.mp4
+- run-log*.jsonl
+- inbox*.md
+- drive-cache*.json
+- *safeBackup*
+# END data-local-only

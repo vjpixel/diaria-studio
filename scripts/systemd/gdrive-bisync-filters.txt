@@ -4,6 +4,8 @@
 # como o skip_file do OneDrive (#12357).
 #
 # Globais (Drive inteiro): lixo de editor, temporarios e WAL/SHM de SQLite (#12357).
+# O filtro do bisync de data/ (gdrive-data-bisync-filters.txt, #12478) repete
+# estas linhas (test/data-sync-exclusions-12357.test.ts trava).
 - ~*
 - .~*
 - *.tmp
@@ -26,30 +28,9 @@
 # O "/**" deixa o rclone pular o diretorio sem lista-lo.
 - node_modules/**
 #
-# Arquivos de data/ que ficam locais por maquina (mesma lista do skip_file do
-# OneDrive), so dentro da pasta diaria-studio-data: um "- *.mp4" global tiraria
-# do sync os videos-fonte que vivem no Drive. Regerar com
-#   npx tsx scripts/lib/data-sync-exclusions.ts
-# e colar no lugar do bloco abaixo (test/data-sync-exclusions-12357.test.ts trava).
-# BEGIN data-local-only (#12357) - GERADO de scripts/lib/data-sync-exclusions.ts, nao editar a mao
-- diaria-studio-data/*.db-shm
-- diaria-studio-data/**/*.db-shm
-- diaria-studio-data/*.db-wal
-- diaria-studio-data/**/*.db-wal
-- diaria-studio-data/*.sqlite3-shm
-- diaria-studio-data/**/*.sqlite3-shm
-- diaria-studio-data/*.sqlite3-wal
-- diaria-studio-data/**/*.sqlite3-wal
-- diaria-studio-data/run-log.jsonl
-- diaria-studio-data/**/run-log.jsonl
-- diaria-studio-data/*.mp4
-- diaria-studio-data/**/*.mp4
-- diaria-studio-data/run-log*.jsonl
-- diaria-studio-data/**/run-log*.jsonl
-- diaria-studio-data/inbox*.md
-- diaria-studio-data/**/inbox*.md
-- diaria-studio-data/drive-cache*.json
-- diaria-studio-data/**/drive-cache*.json
-- diaria-studio-data/*safeBackup*
-- diaria-studio-data/**/*safeBackup*
-# END data-local-only
+# data/ (gdrive:diaria-studio-data) fica FORA deste bisync (#12478): quem a
+# sincroniza e o diaria-gdrive-data-bisync, a cada minuto, com o filtro
+# gdrive-data-bisync-filters.txt (onde mora o bloco data-local-only da
+# #12357). As duas rodadas nunca tocam os mesmos arquivos. Ancorado na raiz:
+# e o complemento exato do remote da unit dedicada (o teste trava).
+- /diaria-studio-data/**

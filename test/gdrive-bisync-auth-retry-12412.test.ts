@@ -243,8 +243,11 @@ describe("filtro global de node_modules (#12412)", () => {
     assert.ok(rules.includes("- node_modules/**"));
   });
 
-  it("node_modules é global, antes do bloco gerado de data/", () => {
-    assert.ok(f.indexOf("- node_modules/**") < f.indexOf("# BEGIN data-local-only"));
+  it("node_modules é global, antes do bloco gerado de data/ (que mora no filtro do bisync de data/ desde a #12478)", () => {
+    assert.equal(f.indexOf("# BEGIN data-local-only"), -1, "o bloco de data/ saiu do filtro do Drive inteiro (#12478)");
+    const d = readFileSync(join(ROOT, "scripts", "systemd", "gdrive-data-bisync-filters.txt"), "utf8");
+    const nm = d.indexOf("- node_modules/**");
+    assert.ok(nm >= 0 && nm < d.indexOf("# BEGIN data-local-only"));
   });
 
   it("não exclui .git (decisão do editor: só node_modules)", () => {

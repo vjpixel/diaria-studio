@@ -1,0 +1,23 @@
+[Unit]
+Description=diar.ia.br: rclone bisync so de data/ (gdrive:diaria-studio-data) em /mnt/hd-sata/GoogleDrive/diaria-studio-data (#12478)
+# Mesmo script do bisync do Drive inteiro (diaria-gdrive-bisync), com remote,
+# pasta local, filtros e state dir proprios por env. O bisync grande exclui
+# /diaria-studio-data/** (gdrive-bisync-filters.txt): as duas rodadas nunca
+# tocam os mesmos arquivos. A trava contra pasta vazia e a do script
+# (mountpoint + sentinela .diaria-bisync-sentinel DENTRO de diaria-studio-data
+# nos dois lados + --max-delete); o RequiresMountsFor abaixo so ordena.
+RequiresMountsFor=/mnt/hd-sata
+
+[Service]
+Type=oneshot
+Environment=GDRIVE_REMOTE=gdrive:diaria-studio-data
+Environment=GDRIVE_LOCAL=/mnt/hd-sata/GoogleDrive/diaria-studio-data
+Environment=GDRIVE_FILTERS=/home/vjpixel/diaria-studio/scripts/systemd/gdrive-data-bisync-filters.txt
+# State dir proprio: filtro instalado + .md5, carimbos last-run/last-success
+# e o log do rclone ficam separados dos do bisync grande.
+Environment=GDRIVE_STATE_DIR=%h/.cache/diaria/gdrive-data-bisync
+ExecStart=/bin/sh /home/vjpixel/diaria-studio/scripts/systemd/gdrive-bisync.sh
+# data/ tem ~3,5 GB: a listagem leva segundos. O teto so cobre uma 1a
+# passada grande pos-resync; oneshot nao reentra.
+TimeoutStartSec=1h
+Nice=5
