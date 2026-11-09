@@ -845,6 +845,7 @@ import { runCli as run_titleTrailingPeriod } from "./lib/lint-checks/cli/title-t
 import { runCli as run_titleMentionsIa } from "./lib/lint-checks/cli/title-mentions-ia.ts";
 import { runCli as run_titleClickbaitVulgar } from "./lib/lint-checks/cli/title-clickbait-vulgar.ts";
 import { runCli as run_titleIaAsAgent } from "./lib/lint-checks/cli/title-ia-as-agent.ts"; // #12106
+import { runCli as run_titleShortsFrontLoad } from "./lib/lint-checks/cli/title-shorts-front-load.ts"; // #12464
 import { runCli as run_noTrailingEllipsis } from "./lib/lint-checks/cli/no-trailing-ellipsis.ts";
 import { runCli as run_radarSummaryMatchesTitle } from "./lib/lint-checks/cli/radar-summary-matches-title.ts"; // #8594
 import { runCli as run_midSentenceEllipsis } from "./lib/lint-checks/cli/mid-sentence-ellipsis.ts";
@@ -894,6 +895,7 @@ const CHECK_HANDLERS: Record<string, (args: Record<string, string>, root: string
   "title-mentions-ia": run_titleMentionsIa,
   "title-clickbait-vulgar": run_titleClickbaitVulgar,
   "title-ia-as-agent": run_titleIaAsAgent, // #12106
+  "title-shorts-front-load": run_titleShortsFrontLoad, // #12464 (warn-only)
   "no-trailing-ellipsis": run_noTrailingEllipsis,
   "radar-summary-matches-title": run_radarSummaryMatchesTitle, // #8594
   "mid-sentence-ellipsis": run_midSentenceEllipsis,
@@ -958,6 +960,7 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check title-length --md <md-path>   (= title-card-4x5 + title-email-subject, #11254)\n" +
         "  ou: lint-newsletter-md.ts --check title-card-4x5 --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check title-email-subject --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check title-shorts-front-load --md <md-path>   (warn-only, #12464)\n" +
         "  ou: lint-newsletter-md.ts --check why-matters-format --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check eai-section --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check eia-answer --md <md-path> [--edition-dir <dir>]\n" +
