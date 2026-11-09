@@ -3,7 +3,8 @@
  * inclusive com o aparelho no modo escuro. Antes, uma regra
  * `@media (prefers-color-scheme: dark)` trocava o fundo para preto e a letra
  * para branco. O teste trava as duas pontas: nenhuma regra de modo escuro e
- * `color-scheme: light` (meta + CSS), que mantém claros os campos nativos.
+ * `color-scheme: only light` (meta + CSS), que mantém claros os campos nativos
+ * e impede o escurecimento automático do Chrome Android e do Samsung Internet.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -27,9 +28,9 @@ describe("formulário sempre claro (#10605)", () => {
   for (const [name, html] of pages) {
     it(`${name}: sem regra de modo escuro e com color-scheme light`, () => {
       assert.doesNotMatch(html, /prefers-color-scheme/);
-      assert.match(html, /<meta name="color-scheme" content="light">/);
-      assert.match(html, /:root\{color-scheme:light\}/);
-      assert.match(html, /--bg:#fff/);
+      assert.match(html, /<meta name="color-scheme" content="only light">/);
+      assert.match(html, /color-scheme:\s*only\s+light/);
+      assert.match(html, /--bg:\s*#fff\b/);
     });
   }
 });

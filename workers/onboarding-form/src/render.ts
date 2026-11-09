@@ -60,9 +60,9 @@ export function escapeHtml(s: string): string {
 const STYLE = [
   ":root{--bg:#fff;--fg:#1a1a1a;--muted:#5c5c5c;--line:#d9d9d9;--accent:#00a0a0;--field:#fff}",
   // Sempre claro, inclusive com o aparelho no modo escuro (decisão do editor
-  // de 09/11/2026, #10605): o `color-scheme: light` também mantém claros os
-  // campos e botões nativos.
-  ":root{color-scheme:light}",
+  // de 09/11/2026, #10605): o `color-scheme: only light` mantém claros os
+  // campos nativos e impede o escurecimento automático do Chrome Android.
+  ":root{color-scheme:only light}",
   "*{box-sizing:border-box}",
   "body{margin:0;background:var(--bg);color:var(--fg);font-family:Georgia,serif;font-size:17px;line-height:1.5}",
   "main{max-width:560px;margin:0 auto;padding:24px 16px 48px}",
@@ -93,7 +93,7 @@ export function renderPage(body: string): string {
   return (
     `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<meta name="color-scheme" content="light">` +
+    `<meta name="color-scheme" content="only light">` +
     `<meta name="robots" content="noindex">` +
     `<title>diar.ia.br</title><style>${STYLE}</style></head><body><main>${body}</main></body></html>`
   );
