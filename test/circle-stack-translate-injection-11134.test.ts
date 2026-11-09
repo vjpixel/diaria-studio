@@ -104,15 +104,13 @@ describe("#11134 — callClaudeCli: --tools e --strict-mcp-config", () => {
     return captured;
   };
 
-  it('tools: [] vira --tools "" e strictMcpConfig vira --strict-mcp-config, antes do "--"', () => {
+  it('tools: [] vira --tools "" e strictMcpConfig vira --strict-mcp-config; o prompt fica fora do argv (#12456)', () => {
     const args = run({ tools: [], strictMcpConfig: true });
-    const sep = args.indexOf("--");
     const t = args.indexOf("--tools");
-    assert.ok(t >= 0 && t < sep);
+    assert.ok(t >= 0);
     assert.equal(args[t + 1], "");
-    const s = args.indexOf("--strict-mcp-config");
-    assert.ok(s >= 0 && s < sep);
-    assert.deepEqual(args.slice(-2), ["--", "prompt"]);
+    assert.ok(args.includes("--strict-mcp-config"));
+    assert.ok(!args.includes("prompt"), "o prompt vai pelo stdin");
   });
 
   it("lista de ferramentas vira um argumento separado por vírgula", () => {
