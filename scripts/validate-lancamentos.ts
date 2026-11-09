@@ -51,7 +51,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isOfficialLancamentoUrl } from "./categorize.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
@@ -67,14 +67,37 @@ import { dedupSecondaryIntraBucket } from "./dedup-intra-edition.ts";
  * comentário). Um item de LANÇAMENTOS cuja URL contém qualquer entrada é tratado
  * como ferramenta verificada mesmo sem sinal positivo de produto no slug/título
  * (slug atípico legítimo). Ausente / vazio → allowlist vazia (sem override).
+ *
+ * #12442: com `editionDir`, soma as entradas PENDENTES da edição
+ * (`{editionDir}/_internal/lancamentos-tool-allowlist-pending.txt`, mesmo
+ * formato), gravadas por `scripts/add-lancamentos-allowlist-entry.ts` junto
+ * com o PR que leva a linha ao master. Assim a edição corrente já vê o
+ * override sem que o `seed/` do checkout compartilhado seja modificado.
  */
-export function loadToolAllowlist(root: string): string[] {
-  const p = resolve(root, "seed", "lancamentos-tool-allowlist.txt");
+export const PENDING_ALLOWLIST_REL = ["_internal", "lancamentos-tool-allowlist-pending.txt"] as const;
+
+function readAllowlistFile(p: string): string[] {
   if (!existsSync(p)) return [];
   return readFileSync(p, "utf8")
     .split(/\r?\n/)
     .map((l) => l.replace(/#.*$/, "").trim())
     .filter((l) => l.length > 0);
+}
+
+export function loadToolAllowlist(root: string, editionDir?: string): string[] {
+  const base = readAllowlistFile(resolve(root, "seed", "lancamentos-tool-allowlist.txt"));
+  if (!editionDir) return base;
+  const pending = readAllowlistFile(resolve(editionDir, ...PENDING_ALLOWLIST_REL));
+  return [...base, ...pending.filter((e) => !base.includes(e))];
+}
+
+/**
+ * #12442: diretório da edição a partir do arquivo validado — `02-reviewed.md`
+ * mora na raiz da edição; `01-approved.json`, em `_internal/`.
+ */
+export function editionDirFromInputPath(inputPath: string): string {
+  const dir = dirname(inputPath);
+  return basename(dir) === "_internal" ? dirname(dir) : dir;
 }
 
 /**
@@ -880,7 +903,8 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
     console.error(`Falha ao parsear ${approvedPath}: ${(err as Error).message}`);
     process.exit(2);
   }
-  const allowlist = loadToolAllowlist(ROOT);
+  // #12442: entradas pendentes da edição (PR da allowlist ainda não mergeado).
+  const allowlist = loadToolAllowlist(ROOT, args["edition-dir"] ? resolve(ROOT, args["edition-dir"]) : editionDirFromInputPath(approvedPath));
   const confirmedExtracts = loadExtractConfirmedList(ROOT);
   const summary = validateLancamentosFromApproved(approved, allowlist, confirmedExtracts);
   console.log(JSON.stringify(summary, null, 2));
@@ -931,7 +955,7 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
       console.error(`  ${n.url}${titleHint}`);
     }
     console.error(
-      "Se algum destes for ferramenta legítima de slug atípico, adicione a URL a seed/lancamentos-tool-allowlist.txt e rode novamente. " +
+      "Se algum destes for ferramenta legítima de slug atípico, rode scripts/add-lancamentos-allowlist-entry.ts --entry <url> --edition-dir <edição> (abre PR com a linha da seed/lancamentos-tool-allowlist.txt, #12442) e rode novamente. " +
         "Se for extrato de newsletter cujo título e escopo você conferiu na página, adicione a URL a seed/lancamentos-extract-confirmed.txt (#11554).",
     );
     // #4386: item demovido colidiu com um item JÁ presente em radar[] — foram
@@ -982,7 +1006,8 @@ function main(): void {
     process.exit(2);
   }
   const text = readFileSync(path, "utf8");
-  const allowlist = loadToolAllowlist(ROOT);
+  // #12442: entradas pendentes da edição (PR da allowlist ainda não mergeado).
+  const allowlist = loadToolAllowlist(ROOT, flagArgs["edition-dir"] ? resolve(ROOT, flagArgs["edition-dir"]) : editionDirFromInputPath(path));
   const result = validateLancamentos(text, allowlist);
   console.log(JSON.stringify(result, null, 2));
   // #1799/#2277: warn de não-produto (governança/política/programa/parceria) —
