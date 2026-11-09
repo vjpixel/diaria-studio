@@ -58,7 +58,9 @@ for (const n of [1, 2, 3]) {
 }
 
 test("#12501: links e valores dos e-mails continuam no texto", () => {
-  assert.match(load(1).snip.body, /mailto:oi@diar\.ia\.br/);
+  // O endereço literal fica fora do git (guard de PII #6753); o template usa o
+  // placeholder, trocado à mão ao copiar para data/snippets/ (ver cabeçalho).
+  assert.match(load(1).snip.body, /mailto:\{\{EMAIL_CONTATO\}\}">\{\{EMAIL_CONTATO\}\}</);
   const b2 = load(2).snip.body;
   assert.match(b2, /youtube\.com\/@diariabr\?sub_confirmation=1/);
   assert.match(b2, /youtu\.be\/OCtGv0f_6sg/);
