@@ -38,6 +38,23 @@ export class StackEmailGuardError extends Error {
   }
 }
 
+/**
+ * Um broadcast PODE existir no Kit (criado sem confirmação, cancelamento sem
+ * confirmação, registro não gravado). Nunca se reexecuta às cegas: a mensagem
+ * diz o que conferir. `cancelled` = o cancelamento automático foi CONFERIDO
+ * (nada saiu, pode rodar de novo depois de corrigir a causa).
+ */
+export class StackEmailIncidentError extends Error {
+  constructor(
+    message: string,
+    readonly broadcastId?: number,
+    readonly cancelled = false,
+  ) {
+    super(message);
+    this.name = "StackEmailIncidentError";
+  }
+}
+
 export function readPlatformConfig(rootDir: string): PlatformConfigSlice {
   const path = resolve(rootDir, "platform.config.json");
   if (!existsSync(path)) throw new StackEmailGuardError(`${path} ausente.`);

@@ -231,18 +231,24 @@ sem a resposta. Com o "publicar":
 npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD} --publish
 ```
 
-Depois, o e-mail aos apoiadores Núcleo (#12538), mesmo se o Circle falhar
-(a confirmação do editor cobre os dois):
+Depois, o e-mail aos apoiadores Núcleo (#12538), mesmo se o envio ao Circle
+falhar por erro de entrega (a confirmação do editor cobre os dois). Ele
+reaplica as travas de conteúdo do Circle (`circle_stack.enabled`, link fora das
+regras, título não revisado): se o Circle recusou o conteúdo, o e-mail recusa
+igual, então corrigir a seleção e rodar os dois de novo.
 
 ```bash
 npx tsx scripts/publish-circle-stack-email-kit.ts --publish-monday {AAMMDD} --send
 ```
 
 Ele agenda o broadcast no Kit para daqui a 5 minutos (o "enviar agora" da
-API), recusa ciclo já enviado (`_internal/circle-stack-email-published.json`)
-e tag ausente ou vazia, e cancela sozinho o broadcast se a releitura não
-confirmar a audiência. Exit 2 é guard (sem envio); exit 1 é falha: levar o
-erro literal ao editor.
+API). Ciclo já enviado (`_internal/circle-stack-email-published.json` com
+`status: sent`) sai com exit 0 sem reenviar. Recusa tag ausente ou vazia e
+registro ambíguo (tentativa anterior sem confirmação), e cancela sozinho o
+broadcast, conferindo a exclusão, se a releitura não confirmar a audiência e o
+agendamento. Exit 2 é guard (nada criado nesta execução); exit 1 é incidente:
+levar o erro literal ao editor e não reexecutar antes de conferir o Kit (o
+`--force` cria um broadcast novo).
 
 O publicador recusa sozinho ciclo já publicado ou ambíguo (só `--force`,
 que esta skill nunca passa sem pedido explícito do editor), link não oficial

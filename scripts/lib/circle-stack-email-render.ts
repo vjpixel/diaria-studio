@@ -38,13 +38,43 @@ export function buildStackEmailSubject(title: string): string {
   return `Stack da semana: ${title.replace(/\s+/g, " ").trim()}`;
 }
 
+/**
+ * Escape de HTML + chaves. As chaves viram entidade porque o Kit interpreta o
+ * conteúdo como Liquid: um `{{ $json.x }}` citado num texto sobre n8n
+ * sumiria (ou quebraria o render) no e-mail. A entidade aparece igual ao leitor
+ * e não forma `{{`/`{%` no template.
+ */
 function escHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+    .replace(/'/g, "&#39;")
+    .replace(/\{/g, "&#123;")
+    .replace(/\}/g, "&#125;");
+}
+
+/**
+ * Pure: instante ISO em horário de Brasília, para mensagens ao editor
+ * ("16/11 06:05 BRT"). ISO cru em UTC fazia o prazo de cancelamento parecer 3h
+ * mais longo do que é.
+ *
+ * @pure
+ */
+export function formatStackEmailBrt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const parts = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("day")}/${get("month")} ${get("hour")}:${get("minute")} BRT`;
 }
 
 /**

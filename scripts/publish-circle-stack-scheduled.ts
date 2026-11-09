@@ -9,10 +9,11 @@
  * Modos:
  *   (padrão)    execução da task: confere janela + aprovação, roda
  *               `publish-circle-stack.ts --publish-monday {AAMMDD} --publish`
- *               (em processo, sem `--force`, uma vez só), depois o e-mail do
- *               post aos apoiadores Núcleo pelo Kit (#12538,
- *               `publish-circle-stack-email-kit.ts --send`, mesmo gate de
- *               aprovação, independente do resultado do Circle), e manda e-mail ao
+ *               (em processo, sem `--force`, uma vez só), depois — só dentro
+ *               da janela e com aprovação válida, qualquer que seja o
+ *               resultado do Circle — o e-mail do post aos apoiadores Núcleo
+ *               pelo Kit (#12538, `publish-circle-stack-email-kit.ts --send`,
+ *               que reaplica as travas de conteúdo do Circle), e manda e-mail ao
  *               editor com o resultado em TODOS os casos — Publicado, Ambíguo,
  *               Falhou ou Não enviado.
  *   --approve   grava a aprovação do ciclo (sha256 da seleção atual). Roda no
@@ -70,31 +71,102 @@ import {
   readCircleStackPublishedState,
   runCircleStack,
 } from "./publish-circle-stack.ts";
-import { runCircleStackEmail } from "./publish-circle-stack-email-kit.ts";
+import { runCircleStackEmail, type StackEmailResult } from "./publish-circle-stack-email-kit.ts";
+import { StackEmailGuardError, StackEmailIncidentError } from "./lib/circle-stack-email-channel.ts";
+import { formatStackEmailBrt } from "./lib/circle-stack-email-render.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** #12538: desfecho do e-mail aos apoiadores Núcleo na execução da task. */
+/**
+ * #12538: desfecho do e-mail aos apoiadores Núcleo na execução da task.
+ * Tipos distintos porque a instrução ao editor é oposta entre eles: `recusado`
+ * e `cancelado` = nada saiu, corrigir e rodar de novo; `incidente` = um
+ * broadcast pode estar agendado, conferir o Kit ANTES de qualquer reexecução.
+ * `nao-tentado` = o Circle não saiu (sem aprovação, fora da janela), então o
+ * e-mail também não.
+ */
 export type StackEmailOutcome =
   | { kind: "enviado"; broadcastId: number; sendAt: string }
-  | { kind: "falhou"; error: string };
+  | { kind: "ja-enviado"; broadcastId: number; sendAt: string }
+  | { kind: "recusado"; reason: string }
+  | { kind: "cancelado"; reason: string }
+  | { kind: "incidente"; reason: string }
+  | { kind: "nao-tentado" };
 
-/** Pure (#12538): acrescenta ao e-mail do editor o desfecho do canal e-mail. */
-export function appendStackEmailOutcome(body: string, stackEmail: StackEmailOutcome, publishMonday: string): string {
-  const lines =
-    stackEmail.kind === "enviado"
-      ? [
-          `E-mail aos apoiadores Núcleo (Kit): agendado para ${stackEmail.sendAt} (broadcast ${stackEmail.broadcastId}).`,
-          "Até esse horário dá para cancelar no painel do Kit (Broadcasts → Scheduled).",
-        ]
-      : [
-          "E-mail aos apoiadores Núcleo (Kit): FALHOU.",
-          stackEmail.error,
-          "",
-          "O que fazer: corrigir a causa e enviar à mão (sem --force, a menos que um broadcast já tenha saído):",
-          `  npx tsx scripts/publish-circle-stack-email-kit.ts --publish-monday ${publishMonday} --send`,
-        ];
-  return [body, "", "---", ...lines].join("\n");
+const STACK_EMAIL_FAILED: ReadonlySet<StackEmailOutcome["kind"]> = new Set(["recusado", "cancelado", "incidente"]);
+
+/** Pure: o desfecho do e-mail pede ação do editor (exit 1, assunto marcado). */
+export function stackEmailNeedsAction(o: StackEmailOutcome | null): boolean {
+  return o !== null && STACK_EMAIL_FAILED.has(o.kind);
+}
+
+/** Converte a execução do publicador do e-mail no desfecho tipado. Nunca lança. */
+export async function classifyStackEmailRun(run: () => Promise<StackEmailResult>): Promise<StackEmailOutcome> {
+  try {
+    const r = await run();
+    if (r.kind === "enviado" || r.kind === "ja-enviado") {
+      return { kind: r.kind, broadcastId: r.record.broadcastId, sendAt: r.record.sendAt };
+    }
+    return { kind: "incidente", reason: `resultado inesperado do publicador do e-mail: ${r.kind}` };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    if (err instanceof StackEmailGuardError) return { kind: "recusado", reason };
+    if (err instanceof StackEmailIncidentError && err.cancelled) return { kind: "cancelado", reason };
+    return { kind: "incidente", reason };
+  }
+}
+
+/** Pure (#12538): põe no e-mail do editor o desfecho do canal e-mail (no topo quando pede ação). */
+export function appendStackEmailOutcome(
+  message: { subject: string; body: string },
+  stackEmail: StackEmailOutcome,
+  publishMonday: string,
+): { subject: string; body: string } {
+  const send = `  npx tsx scripts/publish-circle-stack-email-kit.ts --publish-monday ${publishMonday} --send`;
+  let lines: string[];
+  switch (stackEmail.kind) {
+    case "enviado":
+      lines = [
+        `E-mail aos apoiadores Núcleo (Kit): agendado para ${formatStackEmailBrt(stackEmail.sendAt)} (broadcast ${stackEmail.broadcastId}).`,
+        "Até esse horário dá para cancelar no painel do Kit (Broadcasts → Scheduled).",
+      ];
+      break;
+    case "ja-enviado":
+      lines = [
+        `E-mail aos apoiadores Núcleo (Kit): já tinha saído antes (broadcast ${stackEmail.broadcastId}, ${formatStackEmailBrt(stackEmail.sendAt)}). Nada a fazer.`,
+      ];
+      break;
+    case "nao-tentado":
+      lines = [
+        "E-mail aos apoiadores Núcleo (Kit): também não saiu. Se a semana deve sair, depois de publicar no Circle:",
+        send,
+      ];
+      break;
+    case "recusado":
+    case "cancelado":
+      lines = [
+        `E-mail aos apoiadores Núcleo (Kit): NÃO SAIU${stackEmail.kind === "cancelado" ? " (cancelado antes do envio)" : ""}.`,
+        stackEmail.reason,
+        "",
+        "Nenhum e-mail chegou aos apoiadores. O que fazer: corrigir a causa e enviar à mão:",
+        send,
+      ];
+      break;
+    case "incidente":
+      lines = [
+        "E-mail aos apoiadores Núcleo (Kit): INCIDENTE, conferir o Kit agora.",
+        stackEmail.reason,
+        "",
+        "Não reexecute antes de conferir Broadcasts → Scheduled e Sent no Kit. Só use --force depois de confirmar",
+        "que nenhum broadcast deste ciclo saiu nem está agendado (o --force cria um broadcast novo).",
+      ];
+      break;
+  }
+  if (!stackEmailNeedsAction(stackEmail)) {
+    return { subject: message.subject, body: [message.body, "", "---", ...lines].join("\n") };
+  }
+  const tag = stackEmail.kind === "incidente" ? "e-mail Núcleo: INCIDENTE" : "e-mail Núcleo: não saiu";
+  return { subject: `${message.subject} · ${tag}`, body: [...lines, "", "---", "", message.body].join("\n") };
 }
 
 export interface ScheduledCircleStackDeps {
@@ -111,7 +183,7 @@ export interface ScheduledCircleStackDeps {
    * Circle e só com o ciclo aprovado. Ausente = canal desligado (é o `main()`
    * que liga, com `runCircleStackEmail`); lança em falha/guard.
    */
-  runStackEmail?: (publishMonday: string, dataRoot: string) => Promise<{ broadcastId: number; sendAt: string }>;
+  runStackEmail?: (paths: CyclePaths) => Promise<StackEmailOutcome>;
 }
 
 export interface CyclePaths {
@@ -242,14 +314,7 @@ export async function runScheduledCircleStackPublish(
       });
       // #12538: canal independente do Circle — a aprovação do ciclo é o que
       // autoriza os dois, então o e-mail sai mesmo se o Circle falhou.
-      if (deps.runStackEmail) {
-        try {
-          const r = await deps.runStackEmail(paths.publishMonday, paths.dataRoot);
-          stackEmail = { kind: "enviado", broadcastId: r.broadcastId, sendAt: r.sendAt };
-        } catch (err) {
-          stackEmail = { kind: "falhou", error: err instanceof Error ? err.message : String(err) };
-        }
-      }
+      if (deps.runStackEmail) stackEmail = await deps.runStackEmail(paths);
     }
   }
 
@@ -258,9 +323,10 @@ export async function runScheduledCircleStackPublish(
     publishMonday: paths.publishMonday,
     statePath: relative(deps.rootDir, paths.statePath) || paths.statePath,
   });
-  if (stackEmail) email.body = appendStackEmailOutcome(email.body, stackEmail, paths.publishMonday);
-  const sent = await sendEmail(email);
-  const exitCode = !sent.ok || stackEmail?.kind === "falhou" ? 1 : circleStackScheduledExitCode(outcome);
+  if (deps.runStackEmail && stackEmail === null) stackEmail = { kind: "nao-tentado" };
+  const finalEmail = stackEmail ? appendStackEmailOutcome(email, stackEmail, paths.publishMonday) : email;
+  const sent = await sendEmail(finalEmail);
+  const exitCode = !sent.ok || stackEmailNeedsAction(stackEmail) ? 1 : circleStackScheduledExitCode(outcome);
   return { outcome, stackEmail, emailOk: sent.ok, emailError: sent.ok ? undefined : sent.error, exitCode };
 }
 
@@ -299,18 +365,16 @@ async function main(): Promise<void> {
     rootDir: ROOT,
     platformConfig: JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")),
     env: process.env,
-    runStackEmail: async (publishMonday, dataRoot) => {
-      const res = await runCircleStackEmail({
-        rootDir: ROOT,
-        dataRoot,
-        publishMonday,
-        send: true,
-        force: false,
-        log: (m) => console.error(`[stack-email] ${m}`),
-      });
-      if (res.kind !== "enviado") throw new Error(`resultado inesperado do e-mail: ${res.kind}`);
-      return { broadcastId: res.detail.broadcastId, sendAt: res.detail.sendAt };
-    },
+    runStackEmail: (paths) =>
+      classifyStackEmailRun(() =>
+        runCircleStackEmail({
+          rootDir: ROOT,
+          dataRoot: paths.dataRoot,
+          publishMonday: paths.publishMonday,
+          mode: { kind: "send", force: false },
+          log: (m) => console.error(`[stack-email] ${m}`),
+        }),
+      ),
   });
   process.exit(code);
 }

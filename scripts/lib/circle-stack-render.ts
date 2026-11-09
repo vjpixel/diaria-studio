@@ -121,6 +121,13 @@ export interface CircleStackVideo {
   views?: number;
 }
 
+/** #12538: canal de distribuição do post além do Circle (ver `CircleStackRenderOptions.channel`). */
+export interface CircleStackChannel {
+  utmSource: string;
+  utmMedium: string;
+  omitSubscribeCta?: boolean;
+}
+
 export interface CircleStackRenderOptions {
   opening?: string;
   closing?: string;
@@ -128,11 +135,12 @@ export interface CircleStackRenderOptions {
   subscribeUrl?: string;
   /**
    * #12538: canal do mesmo post fora do Circle (e-mail Kit aos apoiadores
-   * Núcleo). Troca `utm_source`/`utm_medium` dos links para a diar.ia.br e,
-   * com `omitSubscribeCta`, tira a última linha "Assine a diar.ia.br" —
-   * quem recebe já é assinante e apoiador. Ausente = Circle, como sempre.
+   * Núcleo). Troca `utm_source`/`utm_medium` pelos do canal nos links que
+   * levam UTM (edição e vídeo; `utm_campaign`/`utm_content` ficam) e, com
+   * `omitSubscribeCta`, tira a última linha "Assine a diar.ia.br" — quem
+   * recebe já é assinante e apoiador. Ausente = Circle, como sempre.
    */
-  channel?: { utmSource: string; utmMedium: string; omitSubscribeCta?: boolean };
+  channel?: CircleStackChannel;
 }
 
 export interface CircleStackRendered {
@@ -150,7 +158,7 @@ export function buildCircleStackUrl(
   baseUrl: string,
   cycle: string,
   content: CircleStackUtmContent,
-  channel?: { utmSource: string; utmMedium: string },
+  channel?: Pick<CircleStackChannel, "utmSource" | "utmMedium">,
 ): string {
   const u = new URL(baseUrl);
   u.searchParams.set("utm_source", channel?.utmSource ?? CIRCLE_STACK_UTM_SOURCE);
