@@ -28,6 +28,19 @@ import { CI_FIX_ATTEMPTED_LABEL, type CiVerdict } from "./continuo-ci-fixer-elig
  * nunca tocada aqui. */
 export const EXECUTION_BLOCK_LABEL = "bloqueio-execucao";
 
+/**
+ * #12460: PR `continuo/*` em draft sem `EXECUTION_BLOCK_LABEL` precisa
+ * recebê-la. Draft do contínuo nunca é mergeado sozinho (o resolvedor pula,
+ * `gh pr merge` recusa draft): espera o editor, igual ao resgate (#7484).
+ * Sem a label, `watch-continuo-health.sh` (que só exclui draft COM a label,
+ * #8862) contava a PR como fila parada e abria P1 falso (#12370, PR #12351:
+ * draft "por bloqueio de execução" aberto pelo implementador sem a label).
+ * Pura: o I/O (aplicar via REST) fica em `continuo-resolve-stuck-prs.ts`.
+ */
+export function needsDraftBlockLabel(pr: Pick<StuckPrInput, "headRefName" | "isDraft" | "labels">): boolean {
+  return pr.headRefName.startsWith("continuo/") && pr.isDraft && !pr.labels.includes(EXECUTION_BLOCK_LABEL);
+}
+
 /** Teto de reviews `verdict=reject` antes de fechar a PR. 3 = a PR teve 2
  * chances de conserto depois do 1º reject; a #8703 mostrou que acima disso
  * cada review novo só acha um problema diferente, sem convergir. */

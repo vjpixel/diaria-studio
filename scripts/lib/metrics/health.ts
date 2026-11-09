@@ -246,6 +246,32 @@ export interface EvaluateQuedaOptions {
   /** Ver {@link JanelaExcluida}. Ausente/vazio = comportamento anterior
    *  (baseline = todos os dias anteriores ao atual). */
   baselineExcluida?: readonly JanelaExcluida[];
+  /** #12475: classifica cada dia (`AAAA-MM-DD`) num tipo, e a baseline passa
+   *  a usar só os dias do MESMO tipo do ponto atual. Ausente = comportamento
+   *  anterior (todos os dias anteriores). Para as métricas de aquisição o
+   *  chamador passa {@link tipoDiaEdicao}: a diária só sai de segunda a sexta,
+   *  então um sábado zerado contra uma média que mistura dias úteis vira
+   *  "queda" toda semana. Baseline de mesmo tipo com menos de
+   *  `MIN_DIAS_BASELINE` dias vira skip, nunca média de 1-2 pontos. */
+  baselineMesmoTipoDia?: (chave: string) => string;
+}
+
+/**
+ * Tipo do dia para a baseline de queda das métricas de aquisição (#12475):
+ * `"util"` (segunda a sexta, dia com edição) ou `"fim-de-semana"`. A data é a
+ * chave `AAAA-MM-DD` já resolvida em BRT, então o dia da semana sai do
+ * calendário (UTC sobre a data, sem fuso). Feriado em dia útil não é
+ * detectado aqui: conta como `"util"`.
+ *
+ * @pure
+ */
+export function tipoDiaEdicao(chave: string): "util" | "fim-de-semana" {
+  const [y, m, d] = chave.split("-").map(Number);
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  if (!Number.isFinite(dow)) {
+    throw new Error(`[metrics/health] tipoDiaEdicao: chave inválida "${chave}" (esperava AAAA-MM-DD)`);
+  }
+  return dow === 0 || dow === 6 ? "fim-de-semana" : "util";
 }
 
 /** Subconjunto de `AdsTestRunState` (`scripts/lib/ads-test-run-state.ts`)
@@ -373,8 +399,23 @@ export function evaluateQueda(
   const excluidas = opts.baselineExcluida ?? [];
   const janelaDe = (chave: string) => excluidas.find((j) => chave >= j.de && chave <= j.ate) ?? null;
   const anterioresPontos = pontos.slice(0, -1);
-  const anteriores = anterioresPontos.filter((p) => janelaDe(p.chave) === null).map((p) => p.resultado.valor);
-  const excluidosDaBaseline = anterioresPontos.length - anteriores.length;
+  const foraDeJanela = anterioresPontos.filter((p) => janelaDe(p.chave) === null);
+  const excluidosDaBaseline = anterioresPontos.length - foraDeJanela.length;
+  // #12475: baseline só com dias do mesmo tipo do atual (útil × fim de semana).
+  const tipoDe = opts.baselineMesmoTipoDia;
+  const tipoAtual = tipoDe ? tipoDe(atualPonto.chave) : null;
+  const mesmoTipo = tipoDe ? foraDeJanela.filter((p) => tipoDe(p.chave) === tipoAtual) : foraDeJanela;
+  const outroTipoNaBaseline = foraDeJanela.length - mesmoTipo.length;
+  const anteriores = mesmoTipo.map((p) => p.resultado.valor);
+  if (tipoDe && outroTipoNaBaseline > 0 && anteriores.length < thresholds.MIN_DIAS_BASELINE) {
+    return {
+      finding: null,
+      skipMotivo:
+        `"${def.id}": atual (${atualPonto.chave}) é dia "${tipoAtual}" e a baseline de mesmo tipo tem ` +
+        `${anteriores.length}/${thresholds.MIN_DIAS_BASELINE} dias (${outroTipoNaBaseline} dia(s) de outro tipo ` +
+        "fora da comparação, #12475) — sinal de queda não avaliado, gate mecânico, não recomendação",
+    };
+  }
   if (anteriores.length === 0) {
     return {
       finding: null,
@@ -401,6 +442,10 @@ export function evaluateQueda(
       ? ` [baseline sem ${excluidosDaBaseline} dia(s) de janela excluída: ` +
         `${excluidas.map((j) => `${j.de}..${j.ate} ${j.motivo}`).join("; ")}]`
       : "";
+  const notaTipo =
+    tipoDe && outroTipoNaBaseline > 0
+      ? ` [baseline só com dias "${tipoAtual}": ${outroTipoNaBaseline} dia(s) de outro tipo fora da comparação, #12475]`
+      : "";
 
   // Movimento na direção RUIM: positivo = ruim, independente de `direcao`.
   const deltaAbs = def.direcao === "maior-melhor" ? baseline - atual : atual - baseline;
@@ -418,7 +463,7 @@ export function evaluateQueda(
       motivo:
         `"${def.nome}" moveu na direção ruim ${(deltaPct * 100).toFixed(1)}% (delta absoluto ${deltaAbs.toFixed(2)} ` +
         `${def.unidade}, baseline=${baseline.toFixed(2)}, atual=${atual}) — acima dos pisos QUEDA_MIN_PCT=` +
-        `${thresholds.QUEDA_MIN_PCT} e QUEDA_MIN_ABS[${def.unidade}]=${pisoAbs}${notaExclusao}`,
+        `${thresholds.QUEDA_MIN_PCT} e QUEDA_MIN_ABS[${def.unidade}]=${pisoAbs}${notaExclusao}${notaTipo}`,
     },
     skipMotivo: null,
   };

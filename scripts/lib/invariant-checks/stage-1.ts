@@ -616,7 +616,7 @@ function checkLancamentoHasProductSignal(editionDir: string): InvariantViolation
   } catch {
     return []; // coberto por approved-parseable
   }
-  const allowlist = loadToolAllowlist(REPO_ROOT);
+  const allowlist = loadToolAllowlist(REPO_ROOT, editionDir); // #12442: + pendentes da edição
   const summary = validateLancamentosFromApproved(data, allowlist);
   if (summary.not_a_tool.length === 0) return [];
   const details = summary.not_a_tool
@@ -628,7 +628,8 @@ function checkLancamentoHasProductSignal(editionDir: string): InvariantViolation
       message:
         `${summary.not_a_tool.length} item(ns) em lancamento[] sem sinal POSITIVO de produto ` +
         `(#1968) — ${details}. Mova para radar/notícias, ou — se for ferramenta legítima de ` +
-        `slug atípico — adicione a URL a seed/lancamentos-tool-allowlist.txt. Sem ação, o ` +
+        `slug atípico — rode scripts/add-lancamentos-allowlist-entry.ts --entry <url> --edition-dir <edição> ` +
+        `(PR com a linha da seed/lancamentos-tool-allowlist.txt, #12442). Sem ação, o ` +
         `Stage 2 §2a move o item pra RADAR sozinho (#4339, #11748).`,
       source_issue: "#6440",
       severity: "warning", // #11748 — Stage 2 §2a auto-demove; error travava o sentinel do Stage 1

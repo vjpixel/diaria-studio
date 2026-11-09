@@ -13,7 +13,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { callClaudeCli, ClaudeCliError } from "../scripts/lib/claude-cli-subprocess.ts";
+import { callClaudeCli, ClaudeCliError, describeExitCause } from "../scripts/lib/claude-cli-subprocess.ts";
 import { CLAUDE_CLI_STRIPPED_ENV_VARS } from "../scripts/overnight/run-scheduled-edicao.ts";
 
 function fakeExecFn(capturedEnvs: NodeJS.ProcessEnv[]) {
@@ -97,12 +97,28 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
       "--output-format",
       "text",
       "--no-session-persistence",
-      "--",
-      "meu prompt de crítica",
     ]);
   });
 
-  it("prompt começando com '---' vai após '--' e nunca é lido como opção (#9577)", () => {
+  it("(#12456) o prompt vai pelo stdin (input), nunca no argv: prompt de 34 KB passa do teto de 32.767 chars do CreateProcess", () => {
+    const capturedCalls: [string, string[], { input?: unknown; stdio?: unknown }][] = [];
+    const execFn = ((bin: string, args: string[], opts: { input?: unknown; stdio?: unknown }) => {
+      capturedCalls.push([bin, args, opts]);
+      return "ok";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    const prompt = "P".repeat(34118);
+
+    callClaudeCli(prompt, { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", model: "claude-opus-5-5", effort: "low" });
+
+    const [bin, args, opts] = capturedCalls[0]!;
+    assert.equal(opts.input, prompt, "o prompt inteiro chega pelo stdin");
+    assert.ok(!args.includes(prompt), "o prompt não pode estar no argv");
+    const commandLine = [bin, ...args].join(" ");
+    assert.ok(commandLine.length < 1000, `a linha de comando fica curta (${commandLine.length} chars)`);
+    assert.ok(Array.isArray(opts.stdio) && opts.stdio[0] === "pipe", "o stdin é um pipe, não 'ignore'");
+  });
+
+  it("prompt começando com '---' nunca é lido como opção: vai pelo stdin (#9577, #12456)", () => {
     const capturedCalls: unknown[][] = [];
     const execFn = ((bin: string, args: string[], opts: unknown) => {
       capturedCalls.push([bin, args, opts]);
@@ -112,8 +128,59 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
 
     callClaudeCli(prompt, { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", model: "sonnet", effort: "low" });
 
-    const [, args] = capturedCalls[0] as [string, string[], unknown];
-    assert.deepEqual(args.slice(-2), ["--", prompt]);
+    const [, args, opts] = capturedCalls[0] as [string, string[], { input?: unknown }];
+    assert.ok(!args.includes(prompt));
+    assert.ok(!args.some((a) => a.startsWith("---")));
+    assert.equal(opts.input, prompt);
+  });
+
+  it("(#12456) filho morto sem status: a mensagem diz o sinal e o tamanho do prompt, não só 'status sinal'", () => {
+    const prompt = "Q".repeat(34118);
+    const execFn = (() => {
+      const err = new Error("Command failed");
+      (err as { status?: number | null }).status = null;
+      (err as { signal?: string | null }).signal = "SIGKILL";
+      (err as { stdout?: string }).stdout = "";
+      (err as { stderr?: string }).stderr = "";
+      throw err;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    try {
+      callClaudeCli(prompt, { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
+      assert.fail("devia lançar");
+    } catch (err) {
+      assert.ok(err instanceof ClaudeCliError);
+      assert.equal(err.signal, "SIGKILL");
+      assert.ok(err.message.includes("morto pelo sinal SIGKILL"), err.message);
+      assert.ok(err.message.includes("prompt de 34118 chars"), err.message);
+      assert.ok(!err.message.includes("status sinal"), err.message);
+      assert.ok(!err.message.includes(prompt));
+    }
+  });
+
+  it("(#12456) erro de spawn sem status nem sinal: a mensagem traz o code e o tamanho do prompt", () => {
+    const execFn = (() => {
+      const err = new Error("spawnSync claude.exe ENAMETOOLONG");
+      (err as { code?: string }).code = "ENAMETOOLONG";
+      throw err;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    try {
+      callClaudeCli("abc", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude" });
+      assert.fail("devia lançar");
+    } catch (err) {
+      assert.ok(err instanceof ClaudeCliError);
+      assert.equal(err.errorCode, "ENAMETOOLONG");
+      assert.equal(err.signal, null);
+      assert.ok(err.message.includes("code ENAMETOOLONG"), err.message);
+      assert.ok(err.message.includes("prompt de 3 chars"), err.message);
+    }
+  });
+
+  it("(#12456) com status, a mensagem segue 'status N' sem o tamanho do prompt", () => {
+    assert.equal(describeExitCause({ status: 2, signal: null, errorCode: null, promptChars: 10 }), "status 2");
+    assert.equal(
+      describeExitCause({ status: null, signal: null, errorCode: null, promptChars: 10 }),
+      "sem status, sinal nem code, prompt de 10 chars via stdin",
+    );
   });
 
   it("com opts.model, inclui --model <valor> antes do prompt (achado de review do #7981: docstring afirmava Sonnet sem garantia em runtime)", () => {
@@ -126,7 +193,7 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", model: "sonnet" });
 
     const [, args] = capturedCalls[0] as [string, string[], unknown];
-    assert.deepEqual(args.slice(-4), ["--model", "sonnet", "--", "prompt"]);
+    assert.deepEqual(args.slice(-2), ["--model", "sonnet"]);
   });
 
   it("com opts.model + opts.effort, inclui --model e --effort antes do prompt (#8941)", () => {
@@ -139,7 +206,7 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", model: "sonnet", effort: "low" });
 
     const [, args] = capturedCalls[0] as [string, string[], unknown];
-    assert.deepEqual(args.slice(-6), ["--model", "sonnet", "--effort", "low", "--", "prompt"]);
+    assert.deepEqual(args.slice(-4), ["--model", "sonnet", "--effort", "low"]);
   });
 
   it("sem opts.effort, --effort nunca aparece nos args", () => {

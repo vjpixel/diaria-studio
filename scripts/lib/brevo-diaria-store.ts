@@ -27,9 +27,10 @@
  * `writeStore`, injetáveis via `path` pra testes não tocarem `data/` real.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFileAtomic } from "./atomic-write.ts";
 import type { BrevoDiariaAction } from "./shared/brevo-diaria-score.ts";
 import { ORIGIN_PREFIX } from "./shared/brevo-diaria-origin.ts"; // #6699 — fonte única do prefixo `kit:`
 import { REATIVAR_CONFIRMOU_VIA_VALUE } from "./shared/reativar-confirmou-via.ts"; // #8438
@@ -293,10 +294,56 @@ export function readStore(path: string = DEFAULT_STORE_PATH): BrevoDiariaStore {
   return { contacts: Array.isArray(parsed.contacts) ? parsed.contacts : [] };
 }
 
-/** Escreve o store (cria o diretório pai se necessário). */
+/**
+ * Escreve o store (cria o diretório pai se necessário). Atômico (tmp + rename,
+ * #12474): o cliente do OneDrive nunca lê o arquivo a meio caminho de uma
+ * reescrita, que é o que gerava `Online file integrity failure` no 300.
+ */
 export function writeStore(store: BrevoDiariaStore, path: string = DEFAULT_STORE_PATH): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(store, null, 2) + "\n");
+  writeFileAtomic(path, JSON.stringify(store, null, 2) + "\n");
+}
+
+/**
+ * De quantos em quantos contatos alterados um script em lote grava o store
+ * (#12474). Gravar a cada contato fazia o `onedrive --monitor` do 300 subir o
+ * arquivo enquanto o script já o reescrevia: o hash online não batia, o
+ * cliente salvava o local como `contacts-300-safeBackup-N.json` e baixava por
+ * cima a versão intermediária, revertendo contatos em silêncio. Gravar menos
+ * fecha a janela; o resto vai num flush final.
+ */
+export const STORE_BATCH_FLUSH_EVERY = 50;
+
+/**
+ * Gravação em lote do store para scripts `--apply` que alteram um contato por
+ * vez (#12474). `mark(store)` registra o store novo e só grava a cada
+ * `every` alterações; `flush()` grava o pendente (no fim do lote, num
+ * `finally`). Interrupção dura (SIGKILL) perde no máximo `every - 1`
+ * alterações do store, cujos efeitos externos já aconteceram: os scripts que
+ * usam isto recalculam os alvos a partir do store e dos logs e reaplicam de
+ * forma idempotente na rodada seguinte.
+ */
+export function createBatchedStoreWriter(
+  write: (s: BrevoDiariaStore) => void,
+  every: number = STORE_BATCH_FLUSH_EVERY,
+): { mark: (s: BrevoDiariaStore) => void; flush: () => void; pending: () => number } {
+  if (!Number.isInteger(every) || every < 1) throw new Error(`createBatchedStoreWriter: every inválido (${every})`);
+  let latest: BrevoDiariaStore | null = null;
+  let dirty = 0;
+  const flush = (): void => {
+    if (dirty === 0 || latest === null) return;
+    write(latest);
+    dirty = 0;
+  };
+  return {
+    mark: (s) => {
+      latest = s;
+      dirty++;
+      if (dirty >= every) flush();
+    },
+    flush,
+    pending: () => dirty,
+  };
 }
 
 /** Pura — email normalizado (lowercase/trim), mesma convenção do resto do repo. */
