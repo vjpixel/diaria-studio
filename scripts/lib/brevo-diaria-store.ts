@@ -318,10 +318,12 @@ export const STORE_BATCH_FLUSH_EVERY = 50;
  * Gravação em lote do store para scripts `--apply` que alteram um contato por
  * vez (#12474). `mark(store)` registra o store novo e só grava a cada
  * `every` alterações; `flush()` grava o pendente (no fim do lote, num
- * `finally`). Interrupção dura (SIGKILL) perde no máximo `every - 1`
- * alterações do store, cujos efeitos externos já aconteceram: os scripts que
- * usam isto recalculam os alvos a partir do store e dos logs e reaplicam de
- * forma idempotente na rodada seguinte.
+ * `finally`). O `finally` NÃO roda quando o Node é encerrado por sinal: quem
+ * usa isto num `--apply` instala também `flushStoreOnSignal` (#12513), que
+ * grava o pendente em SIGINT/SIGTERM. Sobra o SIGKILL (e queda da máquina),
+ * que perde no máximo `every - 1` alterações do store cujos efeitos externos
+ * já aconteceram: os scripts que usam isto recalculam os alvos a partir do
+ * store e dos logs e reaplicam de forma idempotente na rodada seguinte.
  */
 export function createBatchedStoreWriter(
   write: (s: BrevoDiariaStore) => void,
@@ -343,6 +345,50 @@ export function createBatchedStoreWriter(
     },
     flush,
     pending: () => dirty,
+  };
+}
+
+/** Sinais que encerram o processo sem rodar `finally`, com o exit code de shell (128 + nº do sinal). */
+export const STORE_FLUSH_SIGNALS = { SIGINT: 130, SIGTERM: 143 } as const;
+
+/** Superfície mínima de `process` usada por `flushStoreOnSignal` (injetável em teste). */
+export interface SignalProcess {
+  on(signal: NodeJS.Signals, handler: () => void): unknown;
+  off(signal: NodeJS.Signals, handler: () => void): unknown;
+  exit(code: number): never | void;
+}
+
+/**
+ * Grava o pendente de um `createBatchedStoreWriter` quando o processo recebe
+ * SIGINT (Ctrl-C) ou SIGTERM (`systemctl stop`) e sai com 130/143 (#12513).
+ * Sem isto o Node encerra por sinal sem rodar o `finally { flush() }` e o
+ * store fica até `every - 1` contatos atrás do que já foi feito na Brevo/Kit.
+ *
+ * Devolve a função que remove os handlers: chamar no `finally`, depois do
+ * flush normal, para o handler não sobreviver ao lote (nem vazar entre testes
+ * que chamam o `run*` no mesmo processo). Falha do flush no handler vai para
+ * stderr e o processo sai com o código do sinal mesmo assim: o sinal pediu
+ * para encerrar, e o re-run idempotente corrige o store.
+ */
+export function flushStoreOnSignal(
+  writer: { flush: () => void },
+  proc: SignalProcess = process,
+  logErr: (msg: string) => void = (m) => console.error(m),
+): () => void {
+  const handlers = (Object.keys(STORE_FLUSH_SIGNALS) as Array<keyof typeof STORE_FLUSH_SIGNALS>).map((signal) => {
+    const handler = (): void => {
+      try {
+        writer.flush();
+      } catch (e) {
+        logErr(`${signal}: store pendente não gravado (${(e as Error).message}) — re-rodar o script corrige.`);
+      }
+      proc.exit(STORE_FLUSH_SIGNALS[signal]);
+    };
+    proc.on(signal, handler);
+    return { signal, handler };
+  });
+  return () => {
+    for (const { signal, handler } of handlers) proc.off(signal, handler);
   };
 }
 

@@ -81,6 +81,7 @@ import {
   applyConvertedToKit,
   applyKitSemAberturaFrioFromSuppressed,
   createBatchedStoreWriter,
+  flushStoreOnSignal,
   normalizeEmail,
   readStore,
   writeStore,
@@ -217,6 +218,8 @@ export async function runKitSemAberturaRestore(
   // #12474: gravar o store a cada contato fazia o OneDrive do 300 reverter o
   // arquivo (integrity failure → safeBackup). Grava em lote + flush no fim.
   const storeWriter = createBatchedStoreWriter(deps.writeStore);
+  // #12513: Ctrl-C/SIGTERM não roda o `finally`; o handler grava o pendente.
+  const removeSignalFlush = flushStoreOnSignal(storeWriter);
   try {
     for (const t of targets) {
       let kit: { state: string; tagNames: string[] };
@@ -266,6 +269,7 @@ export async function runKitSemAberturaRestore(
       }
     }
   } finally {
+    removeSignalFlush();
     storeWriter.flush();
   }
   if (panel.length > 0) {
