@@ -13,6 +13,8 @@
  *
  * Saída: 1 linha JSON em stdout `{ "checked": N, "actions": [{pr, kind, ok}] }`.
  * `checked: -1` = `gh pr list` falhou (fail-soft: nada feito). Logs em stderr.
+ * `kind: "label_draft_block"` (#12460) = draft `continuo/*` que ganhou a
+ * label `bloqueio-execucao` (`needsDraftBlockLabel`).
  *
  * Toda leitura que falha vira "desconhecido" (`null`), e a lógica pura trata
  * desconhecido como "não age" — nunca fecha PR por falha de rede.
@@ -31,11 +33,13 @@ import {
   decideStuckPrAction,
   EXECUTION_BLOCK_LABEL,
   extractLinkedIssues,
+  needsDraftBlockLabel,
   UPDATE_BRANCH_MARKER,
   type StuckPrAction,
   type StuckPrInput,
 } from "./lib/continuo-stuck-pr.ts";
 import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
+import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG = "[continuo-resolve-stuck-prs]";
@@ -190,9 +194,22 @@ function main(): void {
 
   const actions: { pr: number; kind: string; ok: boolean }[] = [];
   for (const raw of prs.filter((p) => p.headRefName.startsWith("continuo/"))) {
+    // #12460: draft do contínuo sem `bloqueio-execucao` ganha a label aqui,
+    // pra o alarme de fila de `watch-continuo-health.sh` não a contar.
+    const labelNames = raw.labels.map((l) => l.name);
+    if (needsDraftBlockLabel({ headRefName: raw.headRefName, isDraft: raw.isDraft, labels: labelNames })) {
+      console.error(`${LOG} PR #${raw.number}: draft sem ${EXECUTION_BLOCK_LABEL} — aplicando${dryRun ? " (dry-run)" : ""}`);
+      let ok = true;
+      if (!dryRun) {
+        const applied = addPrLabelsRest(raw.number, [EXECUTION_BLOCK_LABEL], ROOT);
+        ok = applied.ok;
+        if (!applied.ok) console.error(`${LOG} PR #${raw.number}: label não aplicada: ${applied.error}`);
+      }
+      actions.push({ pr: raw.number, kind: "label_draft_block", ok });
+    }
     // Draft/`bloqueio-execucao` são skip de qualquer jeito
     // (`decideStuckPrAction`) — sai antes do I/O caro de `gatherInput`.
-    if (raw.isDraft || raw.labels.some((l) => l.name === EXECUTION_BLOCK_LABEL)) continue;
+    if (raw.isDraft || labelNames.includes(EXECUTION_BLOCK_LABEL)) continue;
     // try/catch POR PR: uma exceção numa PR não pode engolir as ações já
     // feitas nas anteriores (PR já fechada precisa chegar ao resumo do tick).
     try {

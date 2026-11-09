@@ -33,6 +33,9 @@
  * (`resolve-review-threads.ts --low-severity-only`); as demais seguram a PR.
  * `--report <report.md>` (#11461): ao terminar, reconcilia o relatório da
  * rodada com o estado real das PRs (`reconcile-overnight-report.ts`), fail-soft.
+ * Caminho relativo resolve contra a raiz do checkout PRINCIPAL, não contra o
+ * cwd (#12458): rodar o trem de dentro de um worktree de agente grava a
+ * timeline no `plan.json` certo (`resolveReportPathAgainstMainCheckout`).
  *
  * Escrita pendente em `data/` (#12026): no fim, para cada PR mergeado (no
  * PR-trem ou solo) cuja seção `Escrita pendente em data/` (item 35 de
@@ -90,12 +93,52 @@ import { logEvent } from "./lib/run-log.ts";
 import { resolveReviewThreads, EXIT_OK as THREADS_EXIT_OK } from "./resolve-review-threads.ts";
 import { reconcileReport, realGhJson } from "./reconcile-overnight-report.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
-import { dirname, join, resolve as resolvePath } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { recordTrainMergedTimeline } from "./lib/overnight-unit-timeline.ts";
 
 const DEFAULT_MAX_BATCH_SIZE = 3; // "K não deve ser grande. Começar em 3." — issue #6300
 const VALID_KINDS = ["overnight", "develop", "continuo"] as const;
+
+/** `git rev-parse --path-format=absolute --git-common-dir` no `cwd`; `null` se falhar. */
+export function readGitCommonDir(cwd: string): string | null {
+  const r = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+    cwd,
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  const out = typeof r.stdout === "string" ? r.stdout.trim() : "";
+  return r.status === 0 && out ? out : null;
+}
+
+/**
+ * Caminho do `--report` resolvido contra a RAIZ DO CHECKOUT PRINCIPAL (#12458).
+ *
+ * O `report.md`/`plan.json` da rodada vivem em `data/` do checkout principal
+ * (worktree de agente não tem a junction `data/`). Com o cwd deixado num
+ * `.claude/worktrees/agent-*` pelo harness, `resolve(values.report)` apontava
+ * pro worktree: a timeline do trem não era gravada no `plan.json` e o
+ * reconcile era pulado só com aviso. Caminho relativo agora resolve contra o
+ * pai do `.git` comum (o mesmo de qualquer worktree do repo); absoluto fica
+ * como veio. `.git` comum ilegível ou fora do formato `<raiz>/.git` (repo
+ * bare, `GIT_DIR` custom) cai no cwd, com `warning` para o chamador imprimir.
+ */
+export function resolveReportPathAgainstMainCheckout(
+  raw: string,
+  cwd: string,
+  gitCommonDir: (cwd: string) => string | null = readGitCommonDir,
+): { path: string; warning: string | null } {
+  if (isAbsolute(raw)) return { path: resolvePath(raw), warning: null };
+  const common = gitCommonDir(cwd);
+  if (common && basename(common) === ".git") {
+    return { path: resolvePath(dirname(common), raw), warning: null };
+  }
+  return {
+    path: resolvePath(cwd, raw),
+    warning: `run-merge-train: raiz do checkout principal não resolvida (git-common-dir ${common ? `"${common}" fora do formato <raiz>/.git` : "ilegível"}) — --report resolvido contra o cwd (${cwd}); se o cwd for um worktree de agente, a timeline e o reconcile vão mirar o lugar errado`,
+  };
+}
 
 /**
  * Linha de reconcile do relatório no fim do trem (#11461, #11615).
@@ -285,7 +328,12 @@ async function main() {
     process.exit(2);
     return;
   }
-  const reportPath = typeof values.report === "string" ? resolvePath(values.report) : null;
+  let reportPath: string | null = null;
+  if (typeof values.report === "string") {
+    const r = resolveReportPathAgainstMainCheckout(values.report, cwd);
+    if (r.warning) console.warn(r.warning);
+    reportPath = r.path;
+  }
   const trainedPrs = [...prNumbers];
   const finish = (code: number): void => {
     if (reportPath) {
