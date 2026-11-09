@@ -289,6 +289,13 @@ export interface FollowupRunRecord {
    *  desconhecido, filtro divergente/não ecoado) ou ele está `divergent`.
    *  Conta como rodada falha. Opcional: registros anteriores não têm o campo. */
   base_invite_failed?: number;
+  /** #12517: destinatários com o D+6 suspenso pelo e-mail da base parado em
+   *  rascunho há `FOLLOWUP_BASE_INVITE_DRAFT_STALE_DAYS` dias ou mais
+   *  (`baseInviteDraftStale`). Conta como rodada falha (alarme de
+   *  continuidade) mas, como `cap_window_overflow`, sai com o exit 3, não 1:
+   *  é pendência do editor (agendar o rascunho), não quebra do executor.
+   *  Opcional: registros anteriores não têm o campo. */
+  base_invite_draft_stale?: number;
   /** Por etapa: contagem de enviados nesta rodada e de pulados/adiados por motivo. */
   counts: Partial<Record<FollowupStepKind, Record<string, number>>>;
   aborted?: boolean;
@@ -354,6 +361,43 @@ export function baseInviteMayExist(invite: Pick<FollowupBaseInvite, "status" | "
  */
 export function baseInviteRecipientIds(invite: FollowupBaseInvite | null | undefined): Set<string> {
   return baseInviteMayExist(invite) ? new Set(invite!.recipient_subscription_ids) : new Set();
+}
+
+/** #12517: dias de rascunho do e-mail da base, com D+6 suspenso, até o alarme.
+ *  Com a janela padrão de 10 dias (`grace_days`), sobra uma semana para o
+ *  editor agendar antes de o D+6 de alguém vencer. */
+export const FOLLOWUP_BASE_INVITE_DRAFT_STALE_DAYS = 3;
+
+export interface BaseInviteDraftStale {
+  lot_id: string;
+  broadcast_id: number | null;
+  /** Dias inteiros desde `created_at` do convite. */
+  days: number;
+  /** Destinatários com o D+6 devido e suspenso nesta rodada (`email_da_base_pendente`). */
+  suspended: number;
+}
+
+/**
+ * @pure — #12517: o e-mail da base parado em `draft` segura o D+6 dos
+ * destinatários (`baseInviteRecipientIds`) sem prazo. Quem confirmou a
+ * assinatura depois de o rascunho ser montado tem o D+6 devido e fica
+ * suspenso; se o editor nunca agendar, vence sem envio. Acusa quando o
+ * rascunho tem `maxDays` dias ou mais E há gente suspensa nesta rodada
+ * (`suspended`, o `email_da_base_pendente` do plano). `scheduled` não acusa:
+ * vai sair. `created_at` ilegível não acusa (sem idade não há prazo).
+ */
+export function baseInviteDraftStale(
+  invite: Pick<FollowupBaseInvite, "status" | "created_at" | "lot_id" | "broadcast_id"> | null | undefined,
+  suspended: number,
+  nowMs: number,
+  maxDays: number = FOLLOWUP_BASE_INVITE_DRAFT_STALE_DAYS,
+): BaseInviteDraftStale | null {
+  if (!invite || invite.status !== "draft" || suspended <= 0) return null;
+  const createdMs = Date.parse(invite.created_at);
+  if (!Number.isFinite(createdMs)) return null;
+  const days = Math.floor((nowMs - createdMs) / 86_400_000);
+  if (days < maxDays) return null;
+  return { lot_id: invite.lot_id, broadcast_id: invite.broadcast_id, days, suspended };
 }
 
 export interface FollowupBlock {
@@ -1940,6 +1984,8 @@ export function isFailedFollowupRun(run: FollowupRunRecord): boolean {
   if ((run.base_invite_failed ?? 0) > 0) return true;
   // #10652: excedente do teto que não cabe na janela vira `vencida` em silêncio.
   if ((run.cap_window_overflow ?? 0) > 0) return true;
+  // #12517: rascunho do e-mail da base parado segura o D+6 de quem já devia recebê-lo.
+  if ((run.base_invite_draft_stale ?? 0) > 0) return true;
   // #10657: os três motivos da assinatura só aparecem com textos aprovados E
   // form_url configurado (vêm depois no gate), ou seja, com o formulário já
   // pronto para sair — travar ali em silêncio toda rodada precisa do alarme,
@@ -1960,19 +2006,23 @@ export function isFailedFollowupRun(run: FollowupRunRecord): boolean {
  *  unit e o `/tarefas` não ficam vermelhos por dias enquanto o excedente
  *  durar (e uma falha real dos passos `run`/`kit` no período continua
  *  visível). O excedente segue contando no alarme de continuidade
- *  (`isFailedFollowupRun`) e no painel. */
+ *  (`isFailedFollowupRun`) e no painel. Desde o #12517 vale também para o
+ *  rascunho parado do e-mail da base (`base_invite_draft_stale`). */
 export const FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE = 3;
 
 /**
  * @pure — #10661: exit code da rodada. Falha de entrega (lote falho, acima do
- * teto, lote não resolvido) é `1` e vence o excedente; só o excedente é
+ * teto, lote não resolvido) é `1` e vence o excedente; só o excedente (ou o
+ * rascunho parado do e-mail da base, #12517) é
  * `FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE`; o resto é `0`.
  */
 export function resolveFollowupExitCode(
-  run: Pick<FollowupRunRecord, "lots_failed" | "over_cap" | "lots_unresolved" | "cap_window_overflow" | "base_invite_failed">,
+  run: Pick<FollowupRunRecord, "lots_failed" | "over_cap" | "lots_unresolved" | "cap_window_overflow" | "base_invite_failed" | "base_invite_draft_stale">,
 ): 0 | 1 | typeof FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE {
   if (run.lots_failed > 0 || run.over_cap > 0 || (run.lots_unresolved ?? 0) > 0 || (run.base_invite_failed ?? 0) > 0) return 1;
-  if ((run.cap_window_overflow ?? 0) > 0) return FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE;
+  // #12517: o rascunho parado do e-mail da base também é achado operacional
+  // (pendência do editor), não quebra do executor: mesmo exit.
+  if ((run.cap_window_overflow ?? 0) > 0 || (run.base_invite_draft_stale ?? 0) > 0) return FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE;
   return 0;
 }
 

@@ -69,6 +69,7 @@ import {
   ALL_FOLLOWUP_STEPS,
   applyBaseInviteToPeople,
   baseInviteRecipientIds,
+  baseInviteDraftStale,
   decideBaseInviteConfirm,
   type BaseInviteConfirmDecision,
   apoioContentGate,
@@ -975,7 +976,18 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     resultsBlocked: resultsOn ? (resultsBlocked?.motivo ?? null) : undefined,
   });
   run.counts = plan.counts;
-  const bump = (kind: FollowupStepKind, motivo: string, n = 1) => {
+  // #12517: o rascunho do e-mail da base parado segura o D+6 de quem já devia
+  // recebê-lo (quem confirmou depois de o rascunho ser montado) — sem isto,
+  // calado até vencer. Conta como falha (alarme), exit 3.
+  const staleDraft = baseInviteDraftStale(block.base_invite, plan.counts.form?.email_da_base_pendente ?? 0, nowMs);
+  run.base_invite_draft_stale = staleDraft?.suspended ?? 0;
+  if (staleDraft) {
+    lotsOut.push({ base_invite: true, decision: "draft_stale", ...staleDraft });
+    process.stderr.write(
+      `${LOG} e-mail da base em rascunho há ${staleDraft.days} dias (broadcast ${staleDraft.broadcast_id ?? "-"}, lote ${staleDraft.lot_id}): ${staleDraft.suspended} destinatário(s) com o D+6 suspenso — agendar no painel do Kit, ou apagar o rascunho lá e rodar onboarding-form-base-prep.ts --step reset --apply\n`,
+    );
+  }
+  const bump =(kind: FollowupStepKind, motivo: string, n = 1) => {
     const k = (run.counts[kind] ??= {});
     k[motivo] = (k[motivo] ?? 0) + n;
   };
