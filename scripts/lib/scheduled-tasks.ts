@@ -3542,6 +3542,31 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#12365",
   },
   {
+    // #12548 (resolve #12472) — a pasta de vídeo da diária no Drive cresce
+    // ~10 GB por edição, quase tudo bruto do celular, e a cota da conta
+    // Google (Gmail junto) acabava em ~2 semanas. Toda semana guarda os
+    // brutos das edições com vídeo publicado (ou com mais de 14 dias sem
+    // registro) em /mnt/hd-sata/arquivo-video, fora do espelho do bisync,
+    // confere tamanho + MD5 contra o Drive e só então apaga do Drive sem
+    // lixeira. Pausa o diaria-gdrive-bisync.timer durante a rodada (e espera
+    // a rodada em curso terminar, até 90 min) e religa no fim. Política em
+    // lib/diaria/video-bruto-archive.ts. Sábado 03:00 BRT: madrugada, fora da
+    // janela de edição e da montagem; slot livre (a outra semanal de sábado
+    // nessa faixa é 03:40). Sem `guard` de data/: sem o junction a
+    // publicação fica "desconhecida" e só o teto de idade libera a pasta.
+    // HD desmontado, MD5 divergente ou erro do rclone saem exit 1 (unit
+    // `failed`, o alarme de units pega). A rodada é longa (MD5 de dezenas de
+    // GB) e o oneshot gerado não tem TimeoutStartSec.
+    // Sem `enabled: false`: o Diaria-Remediate-Never-Armed-Tasks arma no 300.
+    name: "Diaria-Video-Bruto-Archive",
+    description:
+      "arquivamento semanal dos brutos do video: guarda no HD do 300 (/mnt/hd-sata/arquivo-video), confere MD5 e apaga do Drive sem lixeira (#12548)",
+    steps: [{ key: "archive", script: "scripts/archive-video-brutos.ts", args: ["--apply"] }],
+    logPath: "video-bruto-archive/.archive.log",
+    schedule: { kind: "weekly", dayOfWeek: "Saturday", hour: 3, minute: 0 },
+    issue: "#12548",
+  },
+  {
     // #8828 — rede de seguranca do EDQUOT de 25/09/2026: Diaria-Tmp-Cleanup
     // (acima) so limpa a fatia de /tmp que e deste projeto; o resto do
     // consumo real (cache SSR do wrangler/esbuild, clones de isolamento de
