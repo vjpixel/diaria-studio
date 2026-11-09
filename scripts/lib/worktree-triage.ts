@@ -21,7 +21,8 @@
  *     da issue). Pid vivo ou indeterminado = lock ativo, nunca sai;
  *   - branch nomeada com PR MERGEADA ou FECHADA e nenhuma PR aberta. "Sem PR"
  *     não é descartável (trabalho que nunca foi enviado), nem "indeterminado"
- *     (`gh` falhou);
+ *     (`gh` falhou). Detached HEAD (#12394) troca a PR pelo commit: sai só
+ *     com o HEAD alcançável por uma ref remota (0 commits não enviados);
  *   - última atividade conhecida e mais velha que o piso (`minIdleMs`).
  *
  * Fail-safe em toda leitura: dado ausente (`null`) sempre vira bloqueio,
@@ -191,7 +192,14 @@ export function classifyForDiscard(
   }
 
   if (facts.branch === null) {
-    blockers.push("detached HEAD, sem branch para conferir PR");
+    // Detached HEAD (#12394): sem branch não há PR para conferir, então o
+    // critério passa a ser o commit. HEAD alcançável por uma ref remota
+    // (0 commits fora do remoto) = nada commitado se perde; a sujeira vai
+    // para o resgate como em qualquer descarte. Commit local ou contagem
+    // indeterminada = fica.
+    if (facts.unpushedCommits !== 0) {
+      blockers.push("detached HEAD com commit fora do remoto (ou não contado)");
+    }
   } else {
     switch (facts.pr.state) {
       case "open":
