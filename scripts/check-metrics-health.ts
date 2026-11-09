@@ -402,6 +402,13 @@ const VALUE_FLAGS = [
   "min-dias-serie",
   "indeterminado-max-fracao",
 ] as const;
+/** Subconjunto numérico de `VALUE_FLAGS` (limiares; valor finito e ≥ 0). */
+const NUMERIC_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "queda-min-pct",
+  "frescor-max-dias",
+  "min-dias-serie",
+  "indeterminado-max-fracao",
+]);
 
 export const CHECK_METRICS_HEALTH_USAGE = `uso: npx tsx scripts/check-metrics-health.ts [--dry-run] [--to editor@exemplo]
   [--db path] [--root data/beehiiv-backup] [--metas data/metas.json]
@@ -425,7 +432,9 @@ export type MetricsHealthCliAction =
  * #12476 — decide, antes de qualquer I/O, se o argv autoriza rodar. Antes
  * disto `--help` (ou um typo como `--dryrun`) era ignorado em silêncio e o
  * script caía no modo REAL (e-mail + issues). Agora:
- *   - `--help`/`-h` → `help` (imprimir uso, sair 0);
+ *   - `--help`/`-h` → `help` (imprimir uso, sair 0), salvo se houver flag
+ *     desconhecida junto (essa vence: `error`);
+ *   - limiar numérico negativo ou não-numérico → `error`;
  *   - flag desconhecida, argumento posicional solto, flag booleana com valor
  *     (`--dry-run foo` faria `parseArgs` engolir `foo` como valor e
  *     `hasFlag("dry-run")` virar false = modo real) ou flag de valor sem valor
@@ -435,12 +444,28 @@ export type MetricsHealthCliAction =
  */
 export function resolveMetricsHealthCliAction(argv: readonly string[]): MetricsHealthCliAction {
   const list = [...argv];
-  if (list.includes("-h") || list.includes("--help")) return { kind: "help" };
 
-  const unknown = findUnknownFlags(list, [...BOOLEAN_FLAGS, ...VALUE_FLAGS]);
+  // Tokens consumidos como VALOR de uma flag de valor (`--flag valor`, mesma
+  // regra de `parseArgs`: o próximo token que não começa com `--`) não são
+  // flags. Sem isto, `--queda-min-pct -5` saía "flag desconhecida: -5" e
+  // `--to -h` virava help (#12502).
+  const valueFlagSet = new Set<string>(VALUE_FLAGS);
+  const flagTokens: string[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    flagTokens.push(a);
+    if (a.startsWith("--") && !a.includes("=") && valueFlagSet.has(a.slice(2))) {
+      const next = list[i + 1];
+      if (next !== undefined && !next.startsWith("--")) i++;
+    }
+  }
+
+  // Flag desconhecida vence o help: `--bogus --help` recusa o `--bogus`.
+  const unknown = findUnknownFlags(flagTokens, [...BOOLEAN_FLAGS, ...VALUE_FLAGS]);
   if (unknown.length > 0) {
     return { kind: "error", message: `flag(s) desconhecida(s): ${unknown.join(", ")}` };
   }
+  if (flagTokens.includes("-h") || flagTokens.includes("--help")) return { kind: "help" };
 
   const parsed = parseArgs(list);
   if (parsed.positional.length > 0) {
@@ -452,8 +477,19 @@ export function resolveMetricsHealthCliAction(argv: readonly string[]): MetricsH
     }
   }
   for (const flag of VALUE_FLAGS) {
-    if (parsed.flags.has(flag) || parsed.values[flag] === "") {
+    const value = parsed.values[flag];
+    if (parsed.flags.has(flag) || value === "") {
       return { kind: "error", message: `--${flag} exige um valor` };
+    }
+    if (value === undefined) continue;
+    if (NUMERIC_VALUE_FLAGS.has(flag)) {
+      // Nenhum limiar do alarme faz sentido negativo (#12502).
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < 0) {
+        return { kind: "error", message: `--${flag} deve ser um número não-negativo (recebido "${value}")` };
+      }
+    } else if (value.startsWith("-")) {
+      return { kind: "error", message: `--${flag} exige um valor (recebido "${value}", que parece uma flag)` };
     }
   }
   return { kind: "run" };

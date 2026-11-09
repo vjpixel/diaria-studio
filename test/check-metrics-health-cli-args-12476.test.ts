@@ -78,6 +78,29 @@ describe("resolveMetricsHealthCliAction (#12476)", () => {
     );
   });
 
+  it("flag desconhecida junto com --help -> error (o --bogus não some no help)", () => {
+    const r = resolveMetricsHealthCliAction(["--bogus", "--help"]);
+    assert.equal(r.kind, "error");
+    assert.match((r as { message: string }).message, /--bogus/);
+  });
+
+  it("limiar negativo -> error com mensagem de valor, nunca 'flag desconhecida' (#12502)", () => {
+    for (const argv of [["--queda-min-pct", "-5"], ["--queda-min-pct=-5"], ["--min-dias-serie", "-1"]]) {
+      const r = resolveMetricsHealthCliAction(argv);
+      assert.equal(r.kind, "error", argv.join(" "));
+      const msg = (r as { message: string }).message;
+      assert.doesNotMatch(msg, /desconhecida/);
+      assert.match(msg, /não-negativo/);
+    }
+    assert.equal(resolveMetricsHealthCliAction(["--frescor-max-dias", "abc"]).kind, "error");
+  });
+
+  it("valor de --to que parece flag (-h) -> error, não help", () => {
+    const r = resolveMetricsHealthCliAction(["--to", "-h"]);
+    assert.equal(r.kind, "error");
+    assert.match((r as { message: string }).message, /--to exige um valor/);
+  });
+
   it("uso cita --help e --dry-run", () => {
     assert.match(CHECK_METRICS_HEALTH_USAGE, /--help/);
     assert.match(CHECK_METRICS_HEALTH_USAGE, /--dry-run/);
