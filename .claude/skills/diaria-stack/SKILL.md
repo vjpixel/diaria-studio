@@ -140,7 +140,17 @@ rodar de novo. Nunca editar a seleção direto para contornar a validação.
 npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD}
 ```
 
-Re-renderiza com o texto novo (a seleção é reusada). A prévia vai SEMPRE para
+Re-renderiza com o texto novo (a seleção é reusada). Rodar também o dry-run do
+e-mail aos apoiadores Núcleo (#12538), que grava
+`_internal/circle-stack-email-preview.html` e não chama o Kit:
+
+```bash
+npx tsx scripts/publish-circle-stack-email-kit.ts --publish-monday {AAMMDD}
+```
+
+O e-mail é o mesmo post (sem a linha "Assine a diar.ia.br", com UTM
+`stack-email`), então não tem texto próprio a revisar: o resumo do Passo 5 só
+cita o assunto que o dry-run imprimiu. A prévia vai SEMPRE para
 um Artifact, com ou sem `--publish`; o chat leva só o link e um resumo de
 uma linha (título e estado do ciclo), nunca o post inteiro.
 
@@ -202,7 +212,9 @@ que o envio agendado já passou e que o ciclo só sai com `/diaria-stack
 depois da aprovação a invalida (a task não envia e manda "Não enviado"):
 aprovar de novo. Desfazer: `--revoke --publish-monday {AAMMDD}`.
 
-Na segunda às 06:00 a task envia e manda e-mail ao editor com o resultado:
+Na segunda às 06:00 a task envia ao Circle, depois envia o mesmo post por
+e-mail aos apoiadores Núcleo pelo Kit (#12538, tag `kit_stack.audience_tag`,
+só com o ciclo aprovado, mesmo se o Circle falhar) e manda e-mail ao editor com o resultado:
 Publicado, Ambíguo (conferir no Radar), Falhou (erro literal) ou Não enviado
 (sem aprovação, fora da segunda ou trava da seleção). Ela nunca repete o envio
 nem usa `--force`.
@@ -211,13 +223,26 @@ nem usa `--force`.
 
 Publicar é irreversível para terceiros (critério 1 de "Perguntar é exceção"),
 então a skill para UMA vez: `AskUserQuestion` com a prévia do Passo 5 à mão —
-"Publicar agora no Radar de Notícias Stack?" (opções: publicar / não
-publicar). `AskUserQuestion` falhando = halt banner (#3938), nunca publicar
+"Publicar agora no Radar de Notícias Stack e enviar o e-mail aos apoiadores
+Núcleo?" (opções: publicar / não publicar). `AskUserQuestion` falhando = halt banner (#3938), nunca publicar
 sem a resposta. Com o "publicar":
 
 ```bash
 npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD} --publish
 ```
+
+Depois, o e-mail aos apoiadores Núcleo (#12538), mesmo se o Circle falhar
+(a confirmação do editor cobre os dois):
+
+```bash
+npx tsx scripts/publish-circle-stack-email-kit.ts --publish-monday {AAMMDD} --send
+```
+
+Ele agenda o broadcast no Kit para daqui a 5 minutos (o "enviar agora" da
+API), recusa ciclo já enviado (`_internal/circle-stack-email-published.json`)
+e tag ausente ou vazia, e cancela sozinho o broadcast se a releitura não
+confirmar a audiência. Exit 2 é guard (sem envio); exit 1 é falha: levar o
+erro literal ao editor.
 
 O publicador recusa sozinho ciclo já publicado ou ambíguo (só `--force`,
 que esta skill nunca passa sem pedido explícito do editor), link não oficial

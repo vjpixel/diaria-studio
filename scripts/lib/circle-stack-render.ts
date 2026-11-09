@@ -126,6 +126,13 @@ export interface CircleStackRenderOptions {
   closing?: string;
   /** Link de assinatura alternativo (ex: link rastreado da própria Stack). Sem UTM adicionada se informado. */
   subscribeUrl?: string;
+  /**
+   * #12538: canal do mesmo post fora do Circle (e-mail Kit aos apoiadores
+   * Núcleo). Troca `utm_source`/`utm_medium` dos links para a diar.ia.br e,
+   * com `omitSubscribeCta`, tira a última linha "Assine a diar.ia.br" —
+   * quem recebe já é assinante e apoiador. Ausente = Circle, como sempre.
+   */
+  channel?: { utmSource: string; utmMedium: string; omitSubscribeCta?: boolean };
 }
 
 export interface CircleStackRendered {
@@ -138,11 +145,16 @@ export function circleStackCampaign(cycle: string): string {
   return `stack-${cycle}`;
 }
 
-/** Pure: adiciona o triplo UTM do canal + `utm_content`. */
-export function buildCircleStackUrl(baseUrl: string, cycle: string, content: CircleStackUtmContent): string {
+/** Pure: adiciona o triplo UTM do canal + `utm_content`. `channel` troca source/medium (#12538). */
+export function buildCircleStackUrl(
+  baseUrl: string,
+  cycle: string,
+  content: CircleStackUtmContent,
+  channel?: { utmSource: string; utmMedium: string },
+): string {
   const u = new URL(baseUrl);
-  u.searchParams.set("utm_source", CIRCLE_STACK_UTM_SOURCE);
-  u.searchParams.set("utm_medium", CIRCLE_STACK_UTM_MEDIUM);
+  u.searchParams.set("utm_source", channel?.utmSource ?? CIRCLE_STACK_UTM_SOURCE);
+  u.searchParams.set("utm_medium", channel?.utmMedium ?? CIRCLE_STACK_UTM_MEDIUM);
   u.searchParams.set("utm_campaign", circleStackCampaign(cycle));
   u.searchParams.set("utm_content", content);
   return u.toString();
@@ -295,7 +307,7 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     for (const { e, titles } of others) {
       // Sem negrito em volta: o conversor do webhook da Stack não reconhece link dentro de **…**
       // e publica o Markdown cru (achado ao vivo, post de 23/10/2026).
-      blocks.push(link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate)));
+      blocks.push(link(buildCircleStackUrl(e.url, sel.cycle, "edicao", opts.channel), ddmm(e.editionDate)));
       blocks.push(titles.map((t) => `- ${t}`).join("\n"));
     }
   }
@@ -306,13 +318,18 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
   // continuar sendo a última linha. `paragraphs()` nunca devolve vazio aqui (o default cobre fecho vazio).
   // #12081: o vídeo mais assistido da semana, numa linha, antes do CTA final.
   if (sel.video && sel.video.url.trim() && sel.video.title.trim()) {
-    blocks.push(`${CIRCLE_STACK_VIDEO_LEAD} ${link(buildCircleStackUrl(sel.video.url, sel.cycle, "video"), sel.video.title)}`);
+    blocks.push(
+      `${CIRCLE_STACK_VIDEO_LEAD} ${link(buildCircleStackUrl(sel.video.url, sel.cycle, "video", opts.channel), sel.video.title)}`,
+    );
   }
+
+  const title = circleStackTitle(sel.contentWindow, sel.destaques[0]?.title);
+  if (opts.channel?.omitSubscribeCta) return { title, markdown: blocks.join("\n\n") };
 
   const subscribeHref = opts.subscribeUrl?.trim() || buildCircleStackUrl(CIRCLE_STACK_SUBSCRIBE_BASE_URL, sel.cycle, "cta-fim");
   const closingParas = paragraphs(opts.closing?.trim() || DEFAULT_CIRCLE_STACK_CLOSING);
   const closingLast = closingParas.pop() as string;
   blocks.push(...closingParas, `${link(subscribeHref, CTA_FIM_LABEL)}. ${closingLast}`);
 
-  return { title: circleStackTitle(sel.contentWindow, sel.destaques[0]?.title), markdown: blocks.join("\n\n") };
+  return { title, markdown: blocks.join("\n\n") };
 }

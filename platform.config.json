@@ -112,6 +112,10 @@
     "audience_tag": "apoio-voto-tema",
     "audience_tag_note": "#8371 (18/09/2026) — audiência da votação do tema do próximo Artigo Especial: Mantenedor + Patrono (R$25+), o MESMO conjunto de kit_apoiadores.audience_tag (Retrospectiva do Mês). TAG SEPARADA de propósito (não reusa apoio-retrospectiva) — amarrar as duas faria uma mudança de tier na Retrospectiva mexer no eleitorado da votação em silêncio, e apoio-retrospectiva ainda carrega um rename manual pendente no painel do Kit. A tag ainda NÃO existe na conta — o 1º --push de scripts/sync-apoio-voto-tema-tag-kit.ts é quem a cria e popula; enquanto isso, voto-tema-open.ts recusa abrir uma votação (tag não resolvida ou vazia = falha segura, nunca fallback pra base inteira, #6126)."
   },
+  "kit_stack": {
+    "audience_tag": "apoio-stack",
+    "audience_tag_note": "#12538 (09/11/2026) — audiência do e-mail do post semanal da Stack (o mesmo post do Radar de Notícias Stack, enviado pelo Kit pela task Diaria-Circle-Stack-Weekly-Publish logo depois do Circle, só com o ciclo aprovado em /diaria-stack): só Núcleo (apoio_nivel `patrono`), pedido do editor. TAG SEPARADA das outras tags de apoio de propósito: conjunto diferente (só Núcleo) que muda por motivo diferente. TAG e não segmento pelo mesmo motivo de kit_apoiadores.audience_tag_note (membresia de segmento não é legível pela API). Projeção de apoio_nivel: rodar scripts/sync-apoio-nivel-kit.ts --push antes de scripts/sync-apoio-stack-tag-kit.ts --push. A tag ainda NÃO existe na conta — o 1º --push do sync é quem a cria e popula; enquanto isso, publish-circle-stack-email-kit.ts recusa criar o broadcast (tag não resolvida ou vazia = falha segura, nunca fallback pra base inteira, #6126)."
+  },
   "inbox": {
     "address": "diariaeditor@gmail.com",
     "gmailQuery": "in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}",
