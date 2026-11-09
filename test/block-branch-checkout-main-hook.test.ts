@@ -830,6 +830,38 @@ describe("#12286 review — delimitador de heredoc é a palavra inteira", () => 
     // `#` no meio de palavra não é comentário: o heredoc abre normalmente.
     assert.equal(isBranchCreateCheckoutCommand("gh pr comment a#b --body-file - <<EOF\ngit checkout -b x\nEOF"), false);
   });
+});
+
+// #12512: o conteúdo do comentário era tokenizado — um apóstrofo em `# it's ok`
+// abria aspa simples que só fechava no apóstrofo do comentário seguinte,
+// engolindo o `git checkout` das linhas do meio.
+describe("#12512 — aspas e `\\` dentro de comentário não escondem comando", () => {
+  it("o caso da issue: apóstrofo em dois comentários em volta do checkout", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout feature"), true);
+    assert.equal(isBranchCreateCheckoutCommand("# it's ok\ngit checkout feature\n# that's all"), true);
+    assert.equal(isBranchCreateCheckoutCommand("# it's ok\ngit checkout -b feat\n# that's all"), true);
+    assert.equal(isBranchCreateCheckoutCommand("# it's ok\ngit switch -c feat\n# that's all"), true);
+  });
+
+  it("aspa dupla e comentário no fim de linha também não abrem aspas", () => {
+    assert.equal(isBranchCreateCheckoutCommand('# diz "oi\ngit checkout -b feat\n# fim"'), true);
+    assert.equal(isBranchCreateCheckoutCommand("echo a # it's\ngit checkout -b feat\necho b # that's"), true);
+  });
+
+  it("`\\` no fim de comentário não continua a linha", () => {
+    assert.equal(isBranchCreateCheckoutCommand("# continua? \\\ngit checkout -b feat"), true);
+  });
+
+  it("comentário no fim do próprio comando não muda o veredito", () => {
+    assert.equal(isBranchCreateCheckoutCommand("git checkout -b feat # it's new"), true);
+    assert.equal(isBranchCreateCheckoutCommand("git checkout master # it's main"), false);
+    assert.equal(isBranchCreateCheckoutCommand("# só um comentário com git checkout -b x"), false);
+  });
+
+  it("`#` no meio de palavra e entre aspas segue sendo texto", () => {
+    assert.equal(isBranchCreateCheckoutCommand("echo a#b's\ngit checkout -b feat\n'"), false);
+    assert.equal(isBranchCreateCheckoutCommand("echo '# x'\ngit checkout -b feat"), true);
+  });
 
   it("delimitador irreconhecível (vazio, ausente) não abre heredoc", () => {
     assert.equal(isBranchCreateCheckoutCommand("cat <<''\ngit checkout -b feat\n"), true);
