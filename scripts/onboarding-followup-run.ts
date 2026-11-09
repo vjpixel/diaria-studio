@@ -1260,14 +1260,42 @@ export function parseArgs(argv: string[]): CliArgs {
   return a;
 }
 
+/** @pure — #12530: a URL do histórico (`?historico=1`) a partir da URL de respostas configurada. */
+export function formResponsesHistoryUrl(responsesUrl: string): string {
+  const u = new URL(responsesUrl);
+  u.searchParams.set("historico", "1");
+  return u.toString();
+}
+
+/** @pure — #12530: junta as listas sem repetir o mesmo envio (mesmo e-mail e `submitted_at`). */
+export function mergeFormResponseLists(...lists: readonly (readonly FormResponse[])[]): FormResponse[] {
+  const seen = new Set<string>();
+  const out: FormResponse[] = [];
+  for (const list of lists) {
+    for (const r of list) {
+      const k = `${normalizeEmail(r.email)}\n${r.submitted_at}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(r);
+    }
+  }
+  return out;
+}
+
 /**
  * `GET form_responses_url` com o token de `form_responses_token_env`. Lança em qualquer falha.
  * #12509: segue as páginas (`next_cursor`) até a última via `fetchAllFormResponses`.
+ * #12530: lê também o histórico (`?historico=1`, um registro por envio) para
+ * `applyFormResponses` achar a 1ª resposta de cada pessoa. A lista sem
+ * histórico continua sendo lida: resposta única de antes do histórico existir
+ * só está nela. Falha em qualquer das duas lança (nunca lista parcial).
  */
 export async function fetchFormResponsesReal(cfg: FollowupConfig, fetchImpl: typeof fetch = fetch): Promise<FormResponse[]> {
   const token = process.env[cfg.formResponsesTokenEnv];
   if (!cfg.formResponsesUrl || !token) throw new Error(`endpoint de respostas ou ${cfg.formResponsesTokenEnv} ausente`);
-  return fetchAllFormResponses(cfg.formResponsesUrl, token, { fetchImpl });
+  const latest = await fetchAllFormResponses(cfg.formResponsesUrl, token, { fetchImpl });
+  const history = await fetchAllFormResponses(formResponsesHistoryUrl(cfg.formResponsesUrl), token, { fetchImpl });
+  return mergeFormResponseLists(latest, history);
 }
 
 /** `--status` (#10605 v3): só leitura, sem Kit. Respostas por versão e o tempo de preenchimento. */

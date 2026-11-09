@@ -385,7 +385,8 @@ describe("#10605 v3: respostas (histórico) e tag de quem respondeu", () => {
     assert.deepEqual(applyFormResponses(people, [resp("a@x.com", "2026-11-12T00:00:00Z", { v: "3" })]), { marked: 1, unmatched: 0 });
     assert.deepEqual(people["1"].form_answers, { v: "3" });
     assert.equal(people["1"].form_filled_at, "2026-11-12T00:00:00Z");
-    assert.equal(people["1"].form_first_filled_at, "2026-11-11T00:00:00Z");
+    // #12530: a 1ª é o envio mais antigo do histórico (11-10), não a 1ª que o store marcou.
+    assert.equal(people["1"].form_first_filled_at, "2026-11-10T00:00:00Z");
   });
 
   it("resolveRespondentIds: id do store (também por e-mail antigo), um por id; fora do store à parte", () => {
