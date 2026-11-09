@@ -112,7 +112,9 @@ export type PanelAlertKind =
   /** Lote com broadcast não agendado e não apagado (`schedule_failed`). */
   | "lot_schedule_failed"
   /** Excedente do teto de lote que não cabe na janela (#10652). */
-  | "cap_window_overflow";
+  | "cap_window_overflow"
+  /** E-mail da base parado em rascunho segurando o D+6 (#12517). */
+  | "base_invite_draft_stale";
 
 export interface PanelAlert {
   kind: PanelAlertKind;
@@ -371,6 +373,15 @@ export function buildFollowupPanel(
       kind: "cap_window_overflow",
       etapa: "Sequências de apoio/formulário",
       mensagem: `excedente do teto de lote não cabe na janela — estimativa de vencimento sem envio: ${perda} (subir max_recipients_per_lot ou grace_days)`,
+    });
+  }
+  // #12517: rascunho do e-mail da base parado com D+6 suspenso — já na 1ª rodada.
+  if ((lastRun?.base_invite_draft_stale ?? 0) > 0) {
+    const inv = followup.base_invite;
+    alerts.push({
+      kind: "base_invite_draft_stale",
+      etapa: "E-mail da base (formulário)",
+      mensagem: `rascunho${inv?.broadcast_id != null ? ` (broadcast ${inv.broadcast_id})` : ""} parado desde ${inv?.created_at?.slice(0, 10) ?? "?"}: ${lastRun!.base_invite_draft_stale} destinatário(s) com o D+6 suspenso até ele sair`,
     });
   }
   for (const lot of [...kitLots, ...fLots]) {

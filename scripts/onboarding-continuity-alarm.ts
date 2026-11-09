@@ -170,7 +170,7 @@ export function toFollowupAlarmFinding(evaluation: FollowupHealthEvaluation): Al
       notRunning
         ? `Sinal: ${evaluation.reason === "rodada_ausente" ? "nenhuma rodada registrada" : `última rodada em ${evaluation.lastRunAt}`} ` +
           "com `onboarding.followup.enabled: true` (passo `followup` da task `Diaria-Onboarding-Welcome-Run`)."
-        : `Sinal: ${evaluation.consecutiveFailedRuns} rodadas \`--send\` seguidas com falha (lote falho, teto de lote, consulta ao Kit ou ao formulário).`,
+        : `Sinal: ${evaluation.consecutiveFailedRuns} rodadas \`--send\` seguidas com falha (lote falho, teto de lote, consulta ao Kit ou ao formulário, e-mail da base com falha ou parado em rascunho segurando o D+6).`,
       "",
       "Ver `followup.last_run` em `data/onboarding/store.json` e o painel `/assinantes` do Studio.",
       "",
