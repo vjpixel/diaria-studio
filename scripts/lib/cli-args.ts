@@ -107,6 +107,144 @@ export function findUnknownFlags(argv: string[], known: readonly string[]): stri
 }
 
 /**
+ * Contrato de linha de comando de um script com efeito real (alarme que manda
+ * e-mail ou abre/fecha issue), validado por `resolveCliAction` ANTES de
+ * qualquer I/O (#12503, generaliza o `resolveMetricsHealthCliAction` da #12476).
+ * Nomes SEM os hífens. `help`/`h` entram sozinhos — não listar.
+ */
+export interface CliSpec {
+  /** Caminho do script, só pro texto de uso (ex: `scripts/tmp-disk-alarm.ts`). */
+  script: string;
+  /** Flags sem valor (ex: `dry-run`, `json`). */
+  booleans?: readonly string[];
+  /** Flags que exigem valor (`--flag valor` ou `--flag=valor`). */
+  values?: readonly string[];
+  /** Subconjunto de `values` que precisa ser número finito e ≥ 0. */
+  numeric?: readonly string[];
+  /** Texto de uso próprio; sem ele, `formatCliUsage` monta um a partir das listas. */
+  usage?: string;
+}
+
+export type CliAction =
+  | { kind: "help" }
+  | { kind: "error"; message: string }
+  | { kind: "run" };
+
+/** Texto de uso do `--help` (e do erro de argv) de um `CliSpec`. */
+export function formatCliUsage(spec: CliSpec): string {
+  if (spec.usage) return spec.usage;
+  const parts = [
+    ...(spec.booleans ?? []).map((b) => `[--${b}]`),
+    ...(spec.values ?? []).map((v) => `[--${v} <valor>]`),
+    "[--help | -h]",
+  ];
+  const lines = [`uso: npx tsx ${spec.script} ${parts.join(" ")}`];
+  if ((spec.booleans ?? []).includes("dry-run")) {
+    lines.push("", "Sem --dry-run roda o modo REAL (e-mail e/ou issues do alarme).");
+  }
+  lines.push(
+    "Flag desconhecida, argumento solto ou flag sem o valor esperado sai 1 sem rodar nada (#12503).",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * #12503 — decide, antes de qualquer I/O, se o argv autoriza rodar. Sem isto,
+ * `--help` ou um typo (`--dryrun`) era ignorado em silêncio e o script caía no
+ * modo REAL (e-mail ao editor + issues do alarme). Regras (as da #12476):
+ *   - flag desconhecida → `error` (vence o help: `--bogus --help` recusa);
+ *   - `--help`/`-h` → `help` (imprimir uso, sair 0);
+ *   - argumento posicional solto → `error`;
+ *   - flag booleana com valor → `error` (`--dry-run foo` faria `parseArgs`
+ *     engolir `foo` como valor e `hasFlag("dry-run")` virar false = modo real);
+ *   - flag de valor sem valor, com valor vazio, ou com valor que parece flag
+ *     (`--to -h`) → `error`; em `numeric`, valor não-numérico ou negativo → `error`;
+ *   - resto → `run`.
+ * `argv` é `process.argv.slice(2)` — nunca o `process.argv` inteiro (o caminho
+ * do node e do script viram posicionais).
+ * @pure
+ */
+export function resolveCliAction(argv: readonly string[], spec: CliSpec): CliAction {
+  const list = [...argv];
+  const booleans = [...(spec.booleans ?? []), "help", "h"];
+  const values = spec.values ?? [];
+  const numeric = new Set(spec.numeric ?? []);
+
+  // Tokens consumidos como VALOR de uma flag de valor (`--flag valor`, mesma
+  // regra de `parseArgs`: o próximo token que não começa com `--`) não são
+  // flags. Sem isto, `--limiar -5` saía "flag desconhecida: -5" e `--to -h`
+  // virava help (#12502).
+  const valueSet = new Set<string>(values);
+  const flagTokens: string[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    flagTokens.push(a);
+    if (a.startsWith("--") && !a.includes("=") && valueSet.has(a.slice(2))) {
+      const next = list[i + 1];
+      if (next !== undefined && !next.startsWith("--")) i++;
+    }
+  }
+
+  const unknown = findUnknownFlags(flagTokens, [...booleans, ...values]);
+  if (unknown.length > 0) {
+    return { kind: "error", message: `flag(s) desconhecida(s): ${unknown.join(", ")}` };
+  }
+  if (flagTokens.includes("-h") || flagTokens.includes("--help")) return { kind: "help" };
+
+  const parsed = parseArgs(list);
+  if (parsed.positional.length > 0) {
+    return { kind: "error", message: `argumento(s) inesperado(s): ${parsed.positional.join(", ")}` };
+  }
+  for (const flag of booleans) {
+    if (flag in parsed.values) {
+      return { kind: "error", message: `--${flag} não aceita valor (recebido "${parsed.values[flag]}")` };
+    }
+  }
+  for (const flag of values) {
+    const value = parsed.values[flag];
+    if (parsed.flags.has(flag) || value === "") {
+      return { kind: "error", message: `--${flag} exige um valor` };
+    }
+    if (value === undefined) continue;
+    if (numeric.has(flag)) {
+      const n = Number(value);
+      if (value.trim() === "" || !Number.isFinite(n) || n < 0) {
+        return { kind: "error", message: `--${flag} deve ser um número não-negativo (recebido "${value}")` };
+      }
+    } else if (value.startsWith("-")) {
+      return { kind: "error", message: `--${flag} exige um valor (recebido "${value}", que parece uma flag)` };
+    }
+  }
+  return { kind: "run" };
+}
+
+/**
+ * Lado de efeito de `resolveCliAction`, pro topo do `main()` de um alarme:
+ * `help` imprime o uso e devolve 0; `error` imprime a mensagem + uso em stderr
+ * e devolve 1; `run` devolve `null` (seguir). Não chama `process.exit` — o
+ * caller decide (`return code` ou `process.exitCode = code; return`).
+ */
+export function applyCliAction(
+  argv: readonly string[],
+  spec: CliSpec,
+  io: { out: (s: string) => void; err: (s: string) => void } = {
+    out: (s) => console.log(s),
+    err: (s) => console.error(s),
+  },
+): 0 | 1 | null {
+  const action = resolveCliAction(argv, spec);
+  if (action.kind === "run") return null;
+  const usage = formatCliUsage(spec);
+  if (action.kind === "help") {
+    io.out(usage);
+    return 0;
+  }
+  io.err(`[${spec.script}] ${action.message}`);
+  io.err(usage);
+  return 1;
+}
+
+/**
  * Atalho tipado — retorna `--key` como inteiro, ou `undefined` quando a flag
  * está genuinamente AUSENTE. Diferente de `getArg` (que colapsa
  * ausente/inválido/zero no mesmo sentinela `""`, por design — ver docstring

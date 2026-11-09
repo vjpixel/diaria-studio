@@ -10,7 +10,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "dotenv";
 import { defaultDopplerRunner, type DopplerRunner } from "./sync-env.ts";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { LINKEDIN_PERSONAL_ENV } from "./lib/linkedin-personal.ts";
 import { applyAlarmReconciliation, loadAlarmIssuesState, planAlarmReconciliation, saveAlarmIssuesState, type AlarmFinding } from "./lib/alarm-issues.ts";
@@ -66,7 +66,15 @@ export function readDopplerExpiries(runner: DopplerRunner = defaultDopplerRunner
   }
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/doppler-token-expiry-alarm.ts",
+  booleans: ["dry-run"],
+};
+
 async function main(): Promise<number> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) return cliExit;
   const findings = evaluateDopplerExpiries(readDopplerExpiries(), new Date());
   console.log(`[doppler-token-expiry-alarm] ${findings.map((f) => `${f.priority}: ${f.title}`).join(" | ") || "nada a alarmar"}`);
   const state = loadAlarmIssuesState(STATE);

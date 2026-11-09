@@ -35,7 +35,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
 import { SNAPSHOT_FILENAME } from "./snapshot-audience-profile.ts";
 import {
@@ -140,7 +140,18 @@ function readEditionRegenerationDates(editionsDir: string): Set<string> {
   return dates;
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/audience-profile-staleness-alarm.ts",
+  booleans: ["dry-run"],
+};
+
 function main(): void {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   const dryRun = hasFlag(process.argv, "dry-run");
   const logPath = resolveRunLogPath(ROOT);
 

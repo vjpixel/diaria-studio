@@ -96,7 +96,7 @@ import {
   type StaleFirstSeenMap,
   type StalenessAlarmState,
 } from "./lib/hub-staleness-check.ts";
-import { isMainModule, hasFlag, getArg } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, isMainModule, hasFlag, getArg } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
@@ -201,7 +201,19 @@ function todayISO(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/hub-staleness-check.ts",
+  booleans: ["dry-run"],
+  values: ["to", "threshold-days"],
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");

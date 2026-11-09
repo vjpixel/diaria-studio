@@ -45,7 +45,7 @@ import { execFileSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getStringArg, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
 import {
@@ -159,7 +159,19 @@ export function readExeLink(pid: number, ops: SessionDiscoveryOps = defaultOps):
 
 // ─── main ───────────────────────────────────────────────────────────────────
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/claude-session-version-drift-alarm.ts",
+  booleans: ["dry-run"],
+  values: ["to", "threshold-hours"],
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");

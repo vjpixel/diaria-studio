@@ -27,7 +27,7 @@
  */
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import {
@@ -51,7 +51,15 @@ const LOG_PREFIX = "[linkedin-personal-token-alarm]";
  * pra issue de token revogado — ver `tokenAlarmFreezeOnUnknownRemote`. */
 export const CLOSE_AFTER_RUNS = 1;
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/linkedin-personal-token-alarm.ts",
+  booleans: ["dry-run"],
+};
+
 async function main(): Promise<number> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) return cliExit;
   loadProjectEnv(ROOT);
   const now = new Date();
   const token = (process.env[LINKEDIN_PERSONAL_ENV.accessToken] ?? "").trim();
