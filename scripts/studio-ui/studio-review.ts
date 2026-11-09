@@ -637,11 +637,11 @@ function readApprovedJson(editionDir: string): ApprovedJson | null {
   }
 }
 
-function lintCategorized(md: string, rootDir: string): LintReport {
+function lintCategorized(md: string, rootDir: string, editionDir: string): LintReport {
   const skipped: string[] = [];
   const checks: LintCheckResult[] = [
     runCheck("lancamentos-oficiais", "LANÇAMENTOS só com link oficial (#160)", true, () => {
-      const allowlist = loadToolAllowlist(rootDir);
+      const allowlist = loadToolAllowlist(rootDir, editionDir); // #12442: + pendentes da edição
       const r = validateLancamentos(md, allowlist);
       return { ok: r.status === "ok" && r.invalid_urls.length === 0 && r.not_a_tool.length === 0, ...r };
     }),
@@ -684,7 +684,7 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
     // no gate real (orchestrator-stage-4.md §4c.2).
     runCheck("domain-diversity", "Máx. 2 URLs do mesmo domínio registrável (#5735)", true, () => validateDomainDiversity(md)),
     runCheck("lancamentos-oficiais", "LANÇAMENTOS só com link oficial (#160)", true, () => {
-      const allowlist = loadToolAllowlist(rootDir);
+      const allowlist = loadToolAllowlist(rootDir, editionDir); // #12442: + pendentes da edição
       const r = validateLancamentos(md, allowlist);
       return { ok: r.status === "ok" && r.invalid_urls.length === 0 && r.not_a_tool.length === 0, ...r };
     }),
@@ -783,7 +783,7 @@ export function runReviewLints(
   slug: ReviewSlug,
   content: string,
 ): LintReport {
-  if (slug === "categorized") return lintCategorized(content, rootDir);
+  if (slug === "categorized") return lintCategorized(content, rootDir, editionDir);
   if (slug === "reviewed") return lintReviewed(content, rootDir, editionDir);
   if (slug === "html-final" || slug === "html-final-patronos") return lintHtmlFinal();
   return lintSocial(content);
