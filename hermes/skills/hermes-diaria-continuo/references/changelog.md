@@ -13,6 +13,13 @@ corrente no frontmatter (`version:`) e o comportamento ATUAL/operacional;
 este arquivo é o "porquê" de cada mudança — para quem investiga uma decisão
 passada, não para quem está rodando um tick.
 
+- 0.5.20 (08/11/2026): #12460 — o prompt do implementador manda abrir a PR
+  draft já com `--label bloqueio-execucao` (mesmo contrato do resgate,
+  #7484). A PR #12351 nasceu draft "por bloqueio de execução" sem a label e
+  o `watch-continuo-health.sh` (que só exclui draft COM a label, #8862) a
+  contou como fila parada, abrindo o P1 falso #12370. Rede mecânica: o
+  `continuo-resolve-stuck-prs.ts` (chamado pelo `continuo-pr-review.sh` a
+  cada tick) aplica a label em qualquer draft `continuo/*` que nasça sem ela.
 - 0.5.19 (26/10/2026): #10900 (decisão 261023b) — a PR do design aberta
   pelo tick passa a ser revisada e mergeada pelo `continuo-pr-review.sh`, com
   o mesmo gate do studio e o lock do design (`--repo vjpixel/diaria-design`).
