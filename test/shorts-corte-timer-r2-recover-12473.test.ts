@@ -14,10 +14,11 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCorteTimerFor, type CorteTimerAlarmKey } from "../scripts/shorts-corte-timer.ts";
+import { CORTE_TIMER_CHILD_TIMEOUT_MS, runCorteTimerFor, type CorteTimerAlarmKey } from "../scripts/shorts-corte-timer.ts";
+import { SHORTS_TIMER_LOCK_STALE_MS } from "../scripts/lib/diaria/vertical-download-guard.ts";
 import { CORTE_SPEC_FILE, corteR2Key, parseCorteSpec, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "../scripts/lib/diaria/corte-content.ts";
-import { recoverCorteFilesFromR2, type CorteR2RecoverDeps } from "../scripts/lib/diaria/corte-r2-recover.ts";
+import { CORTE_R2_RECOVER_TIMEOUT_MS, corteHasMissingApprovedFiles, recoverCorteFilesFromR2, type CorteR2RecoverDeps } from "../scripts/lib/diaria/corte-r2-recover.ts";
 import { SHORT_COVER_FILE } from "../scripts/lib/diaria/short-cover.ts";
 import { prepareCorteRun, recordCortePublishAuthorization } from "../scripts/publish-shorts.ts";
 
@@ -173,6 +174,40 @@ describe("#12473: o timer do corte recupera do R2 o vídeo que o OneDrive não t
     const out = await recoverCorteFilesFromR2(dir, readSpec(dir), deps);
     assert.deepEqual([out, urls], [[], []]);
     assert.equal(readFileSync(join(dir, BASE.video), "utf8"), "re-export");
+  });
+
+  it("#12483: teto da recuperação + teto do filho fica bem abaixo do lock velho de 90 min", () => {
+    assert.equal(CORTE_R2_RECOVER_TIMEOUT_MS, 5 * 60_000);
+    assert.ok(
+      CORTE_R2_RECOVER_TIMEOUT_MS + CORTE_TIMER_CHILD_TIMEOUT_MS <= SHORTS_TIMER_LOCK_STALE_MS - 10 * 60_000,
+      "pior caso (download + filho) precisa de folga de 10 min sobre o lock velho",
+    );
+  });
+
+  it("#12483: o teto é do TOTAL (vídeo + capa): esgotado no vídeo, a capa não é baixada", async () => {
+    const dir = corteSemVideo({ cover: true });
+    rmSync(join(dir, SHORT_COVER_FILE));
+    const { deps, urls } = fakeR2({ [corteR2Key(BASE.slug, "video")]: VIDEO, [corteR2Key(BASE.slug, "cover")]: COVER });
+    let clock = Date.parse(AT);
+    const innerFetch = deps.fetch;
+    deps.now = () => new Date(clock);
+    deps.fetch = async (url, init) => {
+      const res = await innerFetch(url, init);
+      clock += CORTE_R2_RECOVER_TIMEOUT_MS; // o download do vídeo consumiu o teto inteiro
+      return res;
+    };
+    const out = await recoverCorteFilesFromR2(dir, readSpec(dir), deps);
+    assert.equal(urls.length, 1, "só o vídeo foi pedido ao R2");
+    assert.deepEqual(out.map((o) => [o.file, o.kind]), [["video", "recovered"], ["cover", "failed"]]);
+    assert.match(out[1].kind === "failed" ? out[1].reason : "", /teto de 5 min da recuperação esgotado/);
+    assert.equal(existsSync(join(dir, SHORT_COVER_FILE)), false);
+  });
+
+  it("#12483: pré-teste por existência — vídeo ausente conta, vídeo presente (mesmo divergente) não", () => {
+    const dir = corteSemVideo();
+    assert.equal(corteHasMissingApprovedFiles(dir, readSpec(dir)), true);
+    writeFileSync(join(dir, BASE.video), "re-export");
+    assert.equal(corteHasMissingApprovedFiles(dir, readSpec(dir)), false);
   });
 
   it("sem deps.r2 (os testes antigos e quem não passa acesso): comportamento de antes, sem rede", async () => {

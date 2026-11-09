@@ -97,7 +97,7 @@ import { clearShortSendingAll, openSendingMarks, readShortsSending, type ShortSe
 import { SHORTS_TIMER_LOCK_STALE_MS } from "./lib/diaria/vertical-download-guard.ts";
 import { corteAuthorizedDestinations, corteContentCheck, corteRevokedDestinations, type CorteContentFingerprint } from "./lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "./lib/diaria/corte-content.ts";
-import { recoverCorteFilesFromR2, type CorteR2RecoverDeps } from "./lib/diaria/corte-r2-recover.ts";
+import { corteHasMissingApprovedFiles, recoverCorteFilesFromR2, type CorteR2RecoverDeps } from "./lib/diaria/corte-r2-recover.ts";
 import { loadR2UploadConfig } from "./lib/r2-object-upload.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { corteUnscheduledDestinations } from "./lib/diaria/corte-owner-watch.ts";
@@ -649,10 +649,7 @@ export interface CorteTimerRunDeps {
 async function recoverMissingFromR2(dir: string, spec: CorteSpec, deps: CorteTimerRunDeps): Promise<string[]> {
   const r2 = deps.r2;
   if (!r2) return [];
-  const approved = spec.publish_confirmed_content;
-  const fp = approved ? corteContentFingerprint(dir, spec) : null;
-  const missingApproved = !!approved && !!fp && ((approved.video_sha256 !== null && fp.video_sha256 === null) || (approved.cover_sha256 !== null && fp.cover_sha256 === null));
-  if (!missingApproved) return [];
+  if (!corteHasMissingApprovedFiles(dir, spec)) return [];
   if ("missing" in r2) {
     const note = `sem acesso ao R2 para recuperar (${r2.missing.join(", ")})`;
     console.error(`${LOG_PREFIX} ${spec.slug}: ${note}`);

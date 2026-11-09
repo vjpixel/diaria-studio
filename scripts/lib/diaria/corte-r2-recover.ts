@@ -26,7 +26,7 @@
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { writeFileAtomic } from "../atomic-write.ts";
-import { R2_PUT_TIMEOUT_MS, signedR2Request, type R2BucketAccess, type R2UploadDeps } from "../r2-object-upload.ts";
+import { signedR2Request, type R2BucketAccess, type R2UploadDeps } from "../r2-object-upload.ts";
 import { sha256Bytes } from "./corte-content.ts";
 import { corteR2Key, resolveCorteVideo, type CorteSpec } from "./short-corte.ts";
 import { SHORT_COVER_FILE } from "./short-cover.ts";
@@ -41,6 +41,16 @@ export interface CorteR2RecoverDeps extends R2UploadDeps {
   config: R2BucketAccess;
 }
 
+/**
+ * Teto TOTAL da recuperação (vídeo + capa somados), não por arquivo (#12483).
+ * A recuperação roda dentro do lock do timer, antes do filho
+ * (`CORTE_TIMER_CHILD_TIMEOUT_MS`, 75 min): com o teto de PUT do R2 (15 min)
+ * o pior caso chegava aos 90 min de lock velho (`SHORTS_TIMER_LOCK_STALE_MS`)
+ * e a execução seguinte podia tomar o lock com o filho ainda publicando. O mp4
+ * de ~93 MB baixa em segundos; 5 min deixam o pior caso em 80 min.
+ */
+export const CORTE_R2_RECOVER_TIMEOUT_MS = 5 * 60_000;
+
 /** O arquivo local está presente? Capa vazia conta como ausente (como em `corteContentFingerprint`). */
 function presentLocally(path: string, file: CorteRecoverFile): boolean {
   if (!existsSync(path)) return false;
@@ -53,6 +63,25 @@ function insideDir(dir: string, path: string): boolean {
   return !!rel && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
+function recoverTargets(dir: string, spec: CorteSpec): Array<{ file: CorteRecoverFile; path: string; sha: string | null }> {
+  const approved = spec.publish_confirmed_content;
+  if (!approved) return [];
+  return [
+    { file: "video", path: resolveCorteVideo(dir, spec.video), sha: approved.video_sha256 },
+    { file: "cover", path: join(dir, SHORT_COVER_FILE), sha: approved.cover_sha256 },
+  ];
+}
+
+/**
+ * Falta nesta máquina algum arquivo aprovado (sha256 no "pode publicar")?
+ * Só existência/tamanho, sem ler o conteúdo: o pré-teste do timer não precisa
+ * do sha256 do vídeo inteiro (#12483), a conferência de conteúdo logo depois
+ * já o calcula.
+ */
+export function corteHasMissingApprovedFiles(dir: string, spec: CorteSpec): boolean {
+  return recoverTargets(dir, spec).some((t) => !!t.sha && !presentLocally(t.path, t.file));
+}
+
 /**
  * Baixa do R2 o vídeo e/ou a capa APROVADOS do corte que faltam nesta
  * máquina. Só age em arquivo ausente com sha256 aprovado
@@ -61,23 +90,23 @@ function insideDir(dir: string, path: string): boolean {
  * um desfecho por arquivo tentado (lista vazia = nada a recuperar).
  */
 export async function recoverCorteFilesFromR2(dir: string, spec: CorteSpec, deps: CorteR2RecoverDeps): Promise<CorteR2RecoverOutcome[]> {
-  const approved = spec.publish_confirmed_content;
-  if (!approved) return [];
-  const targets: Array<{ file: CorteRecoverFile; path: string; sha: string | null }> = [
-    { file: "video", path: resolveCorteVideo(dir, spec.video), sha: approved.video_sha256 },
-    { file: "cover", path: join(dir, SHORT_COVER_FILE), sha: approved.cover_sha256 },
-  ];
   const out: CorteR2RecoverOutcome[] = [];
-  for (const t of targets) {
+  const deadline = deps.now().getTime() + CORTE_R2_RECOVER_TIMEOUT_MS;
+  for (const t of recoverTargets(dir, spec)) {
     if (!t.sha || presentLocally(t.path, t.file)) continue;
     const key = corteR2Key(spec.slug, t.file);
     if (!insideDir(dir, t.path)) {
       out.push({ file: t.file, kind: "failed", key, reason: `${t.path} fica fora da pasta do corte: o timer não grava ali` });
       continue;
     }
+    const remainingMs = deadline - deps.now().getTime();
+    if (remainingMs <= 0) {
+      out.push({ file: t.file, kind: "failed", key, reason: `teto de ${CORTE_R2_RECOVER_TIMEOUT_MS / 60_000} min da recuperação esgotado: nada baixado` });
+      continue;
+    }
     let res: Response;
     try {
-      res = await signedR2Request(deps, deps.config, "GET", key, { timeoutMs: R2_PUT_TIMEOUT_MS });
+      res = await signedR2Request(deps, deps.config, "GET", key, { timeoutMs: remainingMs });
     } catch (e) {
       out.push({ file: t.file, kind: "failed", key, reason: `leitura do R2 falhou: ${e instanceof Error ? e.message : String(e)}` });
       continue;
