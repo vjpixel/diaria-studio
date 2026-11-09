@@ -28,6 +28,8 @@ import {
   latestFormResponses,
   otherTextFieldId,
   splitMultiAnswer,
+  unsentFormDrafts,
+  type FormDraft,
   type FormQuestion,
   type FormResponse,
 } from "./onboarding-form-contract.ts";
@@ -67,6 +69,8 @@ export interface SurveyResponseRecord {
   id: string;
   status?: string;
   answers: SurveyAnswerRecord[];
+  /** #12504: rascunho de quem começou e não enviou (conta por pergunta, como as respostas). */
+  draft?: boolean;
 }
 
 /** Prefixo do `id` das respostas vindas do formulário do onboarding. */
@@ -110,6 +114,7 @@ export interface FormToSurveyResult {
 export function onboardingFormToSurveyResponses(
   responses: readonly FormResponse[],
   questions: readonly FormQuestion[] = FORM_QUESTIONS,
+  drafts: readonly FormDraft[] = [],
 ): FormToSurveyResult {
   const known = new Map(questions.map((q) => [q.id, q]));
   const otherTextIds = new Set(questions.filter((q) => isChoiceQuestion(q) && q.otherOption).map(otherTextFieldId));
@@ -119,7 +124,14 @@ export function onboardingFormToSurveyResponses(
   let emptyResponses = 0;
   const legacy = new Set(LEGACY_FORM_ANSWER_IDS);
   const out: SurveyResponseRecord[] = [];
-  for (const r of latestFormResponses(responses)) {
+  // #12504 (decisão do editor de 09/11/2026): o rascunho de quem não enviou
+  // entra também, por pergunta, com o último estado salvo; cada pessoa uma
+  // vez só (a resposta enviada vence o rascunho, `unsentFormDrafts`).
+  const people: { answers: Readonly<Record<string, string>>; draft: boolean }[] = [
+    ...latestFormResponses(responses).map((r) => ({ answers: r.answers, draft: false })),
+    ...unsentFormDrafts(drafts, responses).map((d) => ({ answers: d.answers, draft: true })),
+  ];
+  for (const r of people) {
     const answers: SurveyAnswerRecord[] = [];
     for (const [id, value] of Object.entries(r.answers)) {
       if (otherTextIds.has(id)) continue;
@@ -144,7 +156,7 @@ export function onboardingFormToSurveyResponses(
       emptyResponses++;
       continue;
     }
-    out.push({ id: `${ONBOARDING_FORM_RESPONSE_ID_PREFIX}${out.length + 1}`, answers });
+    out.push({ id: `${ONBOARDING_FORM_RESPONSE_ID_PREFIX}${out.length + 1}`, answers, ...(r.draft ? { draft: true } : {}) });
   }
   return { responses: out, unknownAnswers, legacyAnswers, legacyOptionAnswers, emptyResponses };
 }

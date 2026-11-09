@@ -25,18 +25,35 @@
  * obrigado mostra o link dos resultados.
  * #12509: `/api/respostas` é paginado (`?cursor=`, `next_cursor`), uma
  * página por invocação, para não passar do teto de operações de KV.
+ * #12504: rascunho de quem preencheu parte e não enviou — `POST /rascunho`
+ * (mesma assinatura do envio, tamanho máximo, rate limit por e-mail), o
+ * `GET /` devolve o formulário preenchido com ele, o envio o apaga e
+ * `/api/respostas?rascunhos=1` os lista para o executor e o perfil.
+ * #12522: envio recusado na validação volta ao formulário preenchido, com a
+ * mensagem na pergunta, em vez de uma página de erro genérica.
  */
 
 import {
+  FORM_DRAFT_MAX_BYTES,
+  FORM_DRAFT_PREFIX,
+  FORM_DRAFT_TTL_S,
+  FORM_DRAFTS_QUERY_PARAM,
   FORM_HISTORY_PREFIX,
   FORM_VERSION,
+  buildFormDraftRecord,
+  decideFormDraftWrite,
+  draftPrefill,
+  formDraftKey,
   formResponseKey,
   isAuthorizedResponsesRequest,
+  parseFormDraft,
   parseFormSubmission,
   planFormResponseWrites,
   prefillEmailFromQuery,
   readFormResponsesPage,
+  readKvJsonPage,
   resolveFormResults,
+  type FormDraft,
   type FormResponse,
   type FormResponsesPage,
   type FormResponsesPayload,
@@ -49,7 +66,7 @@ import {
   signFormRenderedAt,
   type FormSigRejection,
 } from "../../../scripts/lib/onboarding-form-link-sig.ts";
-import { collectFormFields, renderErrorHtml, renderFormHtml, renderInvalidLinkHtml, renderThanksHtml } from "./render.ts";
+import { collectFormFields, FORM_DRAFT_ROUTE, renderErrorHtml, renderFormHtml, renderInvalidLinkHtml, renderThanksHtml } from "./render.ts";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts"; // #10809
 
 /**
@@ -91,6 +108,52 @@ function notConfigured(what: string): Response {
   return new Response(JSON.stringify({ error: "not_configured" }), { status: 503 });
 }
 
+function json(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+/**
+ * #12504: `POST /rascunho`. Ordem igual à do envio: tamanho, corpo legível,
+ * assinatura do link para o e-mail enviado (antes de tocar no KV), limpeza
+ * (`parseFormDraft`), e só então as leituras (rascunho anterior, para o rate
+ * limit; resposta mais recente, para não ressuscitar o rascunho logo depois
+ * do envio) e a gravação com `expirationTtl`. Nunca devolve conteúdo do
+ * rascunho: a resposta é só o status.
+ */
+async function saveDraft(request: Request, kv: KVNamespace, secret: string): Promise<Response> {
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > FORM_DRAFT_MAX_BYTES) return json({ error: "too_large" }, 413);
+  let fields: Record<string, string | string[]>;
+  try {
+    const body = await request.arrayBuffer();
+    if (body.byteLength > FORM_DRAFT_MAX_BYTES) return json({ error: "too_large" }, 413);
+    const ctype = request.headers.get("content-type") ?? "";
+    fields = collectFormFields((await new Request("https://rascunho.invalid/", { method: "POST", body, headers: { "content-type": ctype } }).formData()).entries());
+  } catch {
+    return json({ error: "bad_request" }, 400);
+  }
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? "";
+  const check = await checkFormEmailSig(one(fields.email), one(fields.sig), secret);
+  if (!check.ok) {
+    console.warn(JSON.stringify({ event: "link_invalido", route: FORM_DRAFT_ROUTE, reason: check.reason }));
+    return json({ error: "forbidden" }, 403);
+  }
+  const parsed = parseFormDraft(fields);
+  if (!parsed) return json({ error: "bad_request" }, 400);
+  const nowMs = Date.now();
+  try {
+    const [prev, latest] = await Promise.all([kv.get(formDraftKey(parsed.email)), kv.get(formResponseKey(parsed.email))]);
+    const decision = decideFormDraftWrite(Object.keys(parsed.answers).length, prev, latest, nowMs);
+    if (decision.action === "skip") return json({ ok: false, reason: decision.reason }, decision.reason === "rate_limited" ? 429 : 202);
+    if (decision.action === "delete") await kv.delete(formDraftKey(parsed.email));
+    else await kv.put(formDraftKey(parsed.email), JSON.stringify(buildFormDraftRecord(parsed, nowMs)), { expirationTtl: FORM_DRAFT_TTL_S });
+  } catch (e) {
+    console.error(JSON.stringify({ event: "rascunho_gravar_falhou", error: (e as Error).message }));
+    return json({ error: "kv_failure" }, 503);
+  }
+  return json({ ok: true }, 200);
+}
+
 /** Log de recusa do link: só rota e motivo (nunca e-mail nem assinatura). */
 function rejectLink(route: "/" | "/enviar", reason: FormSigRejection): Response {
   console.warn(JSON.stringify({ event: "link_invalido", route, reason }));
@@ -113,7 +176,9 @@ export default {
       });
     }
     if (!env.ONBOARDING_FORM) return notConfigured("kv ONBOARDING_FORM");
-    const isFormRoute = (request.method === "GET" && url.pathname === "/") || (request.method === "POST" && url.pathname === "/enviar");
+    const isFormRoute =
+      (request.method === "GET" && url.pathname === "/") ||
+      (request.method === "POST" && (url.pathname === "/enviar" || url.pathname === FORM_DRAFT_ROUTE));
     const secretCheck = checkLinkSecret(env.ONBOARDING_FORM_LINK_SECRET);
     if (isFormRoute && !secretCheck.ok) return notConfigured("secret ONBOARDING_FORM_LINK_SECRET");
     const secret = secretCheck.ok ? secretCheck.secret : "";
@@ -131,7 +196,24 @@ export default {
       } catch (e) {
         console.error(JSON.stringify({ event: "rendered_at_sign_failed", error: (e as Error).message }));
       }
-      return html(renderFormHtml(email, sig, undefined, rendered));
+      // #12504: retoma o rascunho. Falha de leitura nunca derruba a página:
+      // sai o formulário vazio (a pessoa perde a retomada, não o formulário).
+      let prefill: Record<string, string> | null = null;
+      try {
+        // A `resp:` junto: rascunho mais antigo que o envio (delete falhou) não é retomado.
+        const [draftRaw, respRaw] = await Promise.all([
+          env.ONBOARDING_FORM.get(formDraftKey(email)),
+          env.ONBOARDING_FORM.get(formResponseKey(email)),
+        ]);
+        prefill = draftPrefill(draftRaw, email, undefined, respRaw);
+      } catch (e) {
+        console.error(JSON.stringify({ event: "rascunho_leitura_falhou", error: (e as Error).message }));
+      }
+      return html(renderFormHtml(email, sig, undefined, rendered, { prefill, resumed: prefill != null }));
+    }
+
+    if (request.method === "POST" && url.pathname === FORM_DRAFT_ROUTE) {
+      return saveDraft(request, env.ONBOARDING_FORM, secret);
     }
 
     if (request.method === "POST" && url.pathname === "/enviar") {
@@ -157,7 +239,18 @@ export default {
       const check = await checkFormEmailSig(one(fields.email), one(fields.sig), secret);
       if (!check.ok) return rejectLink("/enviar", check.reason);
       const parsed = parseFormSubmission(fields);
-      if (!parsed.ok) return html(renderErrorHtml(parsed.error), 400);
+      if (!parsed.ok) {
+        // #12522: volta ao formulário com o que a pessoa marcou (a mesma
+        // limpeza do rascunho) e a mensagem na pergunta. O e-mail e a
+        // assinatura já foram conferidos; a hora assinada da página segue a
+        // mesma, para o tempo de preenchimento contar desde o início.
+        const prefill = parseFormDraft(fields)?.answers ?? null;
+        const rendered = one(fields[FORM_RENDERED_FIELD]) || null;
+        return html(
+          renderFormHtml(one(fields.email), one(fields.sig), undefined, rendered, { prefill, error: { message: parsed.error, questionId: parsed.questionId } }),
+          400,
+        );
+      }
       // #12490: versão das perguntas em cada resposta, e histórico sem
       // sobrescrever (`hist:`); `resp:` segue sendo a mais recente.
       const nowMs = Date.now();
@@ -175,6 +268,15 @@ export default {
         console.error(`[onboarding-form] falha ao gravar resposta no KV: ${(e as Error).message}`);
         return html(renderErrorHtml("tivemos um problema para guardar suas respostas, tente de novo em alguns minutos"), 503);
       }
+      // #12504: o envio apaga o rascunho. Falha aqui não desfaz o envio (já
+      // gravado): o rascunho que sobrar não conta como resposta, sai dos
+      // consumidores porque a resposta enviada vence (`unsentFormDrafts`) e
+      // expira sozinho; no máximo preenche a página se a pessoa abrir o link de novo.
+      try {
+        await env.ONBOARDING_FORM.delete(formDraftKey(record.email));
+      } catch (e) {
+        console.error(JSON.stringify({ event: "rascunho_apagar_falhou", error: (e as Error).message }));
+      }
       return html(renderThanksHtml(resolveFormResults(env.RESULTS_URL, env.RESULTS_PUBLISHED_AT)));
     }
 
@@ -182,11 +284,23 @@ export default {
       if (!isAuthorizedResponsesRequest(request.headers.get("authorization"), env.RESPONSES_TOKEN)) {
         return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
       }
-      // #12490: `?historico=1` lista todas as respostas guardadas (uma por envio).
-      const prefix = url.searchParams.get("historico") === "1" ? FORM_HISTORY_PREFIX : "resp:";
       // #12509: UMA página por invocação (o Workers limita as operações de KV
       // por invocação); quem lê segue `next_cursor` (`fetchAllFormResponses`).
       const cursor = url.searchParams.get("cursor") || undefined;
+      // #12504: `?rascunhos=1` lista os rascunhos (`{drafts, next_cursor}`).
+      if (url.searchParams.get(FORM_DRAFTS_QUERY_PARAM) === "1") {
+        try {
+          const page = await readKvJsonPage<FormDraft>(env.ONBOARDING_FORM, FORM_DRAFT_PREFIX, cursor);
+          if (page.unreadable > 0) console.error(JSON.stringify({ event: "rascunho_ilegivel", count: page.unreadable }));
+          return new Response(JSON.stringify({ drafts: page.items, next_cursor: page.next_cursor }), { headers: { "content-type": "application/json" } });
+        } catch (e) {
+          const reason = (e as Error).message;
+          console.error(JSON.stringify({ event: "rascunhos_kv_falhou", reason }));
+          return new Response(JSON.stringify({ error: "kv_failure", reason }), { status: 503, headers: { "content-type": "application/json" } });
+        }
+      }
+      // #12490: `?historico=1` lista todas as respostas guardadas (uma por envio).
+      const prefix = url.searchParams.get("historico") === "1" ? FORM_HISTORY_PREFIX : "resp:";
       let page: FormResponsesPage;
       try {
         page = await readFormResponsesPage(env.ONBOARDING_FORM, prefix, cursor);

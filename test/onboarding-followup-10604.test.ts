@@ -235,8 +235,9 @@ describe("#10604/#10605 envio travado até os textos serem aprovados", () => {
     const dir = mkdtempSync(join(tmpdir(), "followup-snip-"));
     writeFileSync(join(dir, "apoio-30.md"), "editado pelo editor");
     const { written, skipped } = initFollowupSnippets(dir);
-    // 4 de apoio + D+6 + 3 lembretes + base (#10604/#10605 v3) + convite anual, lembrete anual (#12490) e resultados (#12495).
-    assert.equal(written.length, 11);
+    // 4 de apoio + D+6 + 3 lembretes + base (#10604/#10605 v3) + convite anual, lembrete anual (#12490) e resultados (#12495)
+    // + as 3 variantes "rascunho" dos lembretes (#12504).
+    assert.equal(written.length, 14);
     assert.deepEqual(skipped, [{ path: join(dir, "apoio-30.md"), reason: "texto_existente" }]);
     assert.equal(readFileSync(join(dir, "apoio-30.md"), "utf8"), "editado pelo editor");
     const snips = loadFollowupSnippets(dir);

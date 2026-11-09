@@ -366,7 +366,12 @@ describe("#10605 v3: HTML do formulário", () => {
     assert.ok(html.includes('<input type="hidden" name="sig" value="SIG">'));
     assert.ok(html.includes(`<input type="hidden" name="${FORM_RENDERED_FIELD}" value="123.TOKEN">`));
     assert.ok(html.includes("<h1>Pode me contar um pouco sobre você?</h1>"));
-    assert.ok(html.includes("As respostas ficam comigo e servem só para planejar a newsletter e o que oferecer além dela. São até 12 perguntas. Só as marcadas como opcionais podem ficar em branco."));
+    // #12504: o aviso do salvamento automático entra junto da linha de uso (só aparece com JavaScript).
+    assert.ok(
+      html.includes(
+        'As respostas ficam comigo e servem só para planejar a newsletter e o que oferecer além dela. <span class="js-only" hidden>O que você marcar já fica salvo, mesmo que você não termine. </span>São até 12 perguntas. Só as marcadas como opcionais podem ficar em branco.',
+      ),
+    );
     assert.ok(!/dois minutos|tr[êe]s minutos/.test(html), "sem promessa de tempo na página");
     assert.ok(!ARROWS.test(html) && !LEGACY_BRAND.test(html));
     assert.ok(!renderFormHtml("a@x.com", "S").includes(`name="${FORM_RENDERED_FIELD}"`), "sem token, sem campo");

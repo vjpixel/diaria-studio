@@ -92,10 +92,31 @@ function countAnswers(responses: BeehiivResponse[], questionMatcher: RegExp) {
     .sort((a, b) => b.weight - a.weight);
 }
 
-/** #10605: " (N do formulário do onboarding)" quando há respostas de lá. */
+/** #10605: " (N do formulário do onboarding)" quando há respostas de lá.
+ *  #12504: com rascunhos, diz quantos não enviaram (eles contam por pergunta). */
 export function formRespondentsNote(responses: readonly BeehiivResponse[]): string {
-  const n = responses.filter(isOnboardingFormResponse).length;
-  return n > 0 ? ` (${n} do formulário do onboarding)` : "";
+  const form = responses.filter(isOnboardingFormResponse);
+  const drafts = form.filter((r) => r.draft === true).length;
+  if (form.length === 0) return "";
+  return drafts > 0 ? ` (${form.length} do formulário do onboarding, ${drafts} sem enviar: contam nas perguntas que responderam)` : ` (${form.length} do formulário do onboarding)`;
+}
+
+/** #12504: quantas pessoas responderam a pergunta (cada uma uma vez), e quantas delas por rascunho. */
+export function questionRespondents(responses: readonly BeehiivResponse[], questionMatcher: RegExp): { total: number; drafts: number } {
+  let total = 0;
+  let drafts = 0;
+  for (const r of responses) {
+    if (!r.answers.some((a) => a.answer && questionMatcher.test(a.question_prompt))) continue;
+    total++;
+    if (r.draft === true) drafts++;
+  }
+  return { total, drafts };
+}
+
+/** #12504: a linha do N da pergunta (as primeiras perguntas têm N maior: quem para no meio só conta até ali). */
+export function questionNLine(n: { total: number; drafts: number }): string {
+  const who = n.total === 1 ? "1 pessoa" : `${n.total} pessoas`;
+  return n.drafts > 0 ? `N = ${who} (${n.drafts} sem enviar o formulário).` : `N = ${who}.`;
 }
 
 /** Sufixo dos títulos das seções 2 e 3 herdadas do perfil anterior (#10605). */
@@ -135,10 +156,16 @@ function countLines(entries: readonly CountEntry[]): string[] {
   return entries.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`);
 }
 
-/** Bloco `### título` com a distribuição; vazio quando ninguém respondeu. */
-function surveyBlock(title: string, entries: readonly CountEntry[], note?: string): string[] {
+/** Bloco `### título` com a distribuição; vazio quando ninguém respondeu.
+ *  #12504: com `n`, a linha do N da pergunta logo depois da distribuição. */
+function surveyBlock(title: string, entries: readonly CountEntry[], note?: string, n?: { total: number; drafts: number }): string[] {
   if (entries.length === 0) return [];
-  return ["", `### ${title}`, "", ...countLines(entries), ...(note ? ["", note] : [])];
+  return ["", `### ${title}`, "", ...countLines(entries), ...(n ? ["", questionNLine(n)] : []), ...(note ? ["", note] : [])];
+}
+
+/** `surveyBlock` de uma pergunta, com o N dela (#12504). */
+function questionBlock(title: string, responses: BeehiivResponse[], matcher: RegExp, note?: string): string[] {
+  return surveyBlock(title, countAnswers(responses, matcher), note, questionRespondents(responses, matcher));
 }
 
 /**
@@ -148,9 +175,10 @@ function surveyBlock(title: string, entries: readonly CountEntry[], note?: strin
  * nunca vem para o perfil.
  */
 export function renderRecentUseBlock(responses: BeehiivResponse[]): string[] {
-  return surveyBlock(
+  return questionBlock(
     "Uso do que lê",
-    countAnswers(responses, SURVEY_MATCHERS.recentUse),
+    responses,
+    SURVEY_MATCHERS.recentUse,
     "> **Como usar:** mostra o que o público faz com o que lê. É só informativo: não muda a pontuação das notícias enquanto o editor não decidir uma regra.",
   );
 }
@@ -165,15 +193,16 @@ export function renderRecentUseBlock(responses: BeehiivResponse[]): string[] {
 export function renderDeclaredUseBlocks(responses: BeehiivResponse[]): string[] {
   const relatos = countAnswers(responses, SURVEY_MATCHERS.failureStory).reduce((s, e) => s + e.count, 0);
   return [
-    ...surveyBlock(
+    ...questionBlock(
       "Nível de uso de IA",
-      countAnswers(responses, SURVEY_MATCHERS.aiUse),
+      responses,
+      SURVEY_MATCHERS.aiUse,
       "> **Como usar:** é o sinal de nível do público para a curadoria. Calibrar o jargão por ele; termo técnico sempre com explicação.",
     ),
     ...renderRecentUseBlock(responses),
-    ...surveyBlock("Ferramentas de IA usadas no último mês", countAnswers(responses, SURVEY_MATCHERS.tools)),
-    ...surveyBlock("O que quer conseguir com IA nos próximos meses", countAnswers(responses, SURVEY_MATCHERS.goals)),
-    ...surveyBlock("O que mais atrapalha o uso de IA", countAnswers(responses, SURVEY_MATCHERS.obstacles)),
+    ...questionBlock("Ferramentas de IA usadas no último mês", responses, SURVEY_MATCHERS.tools),
+    ...questionBlock("O que quer conseguir com IA nos próximos meses", responses, SURVEY_MATCHERS.goals),
+    ...questionBlock("O que mais atrapalha o uso de IA", responses, SURVEY_MATCHERS.obstacles),
     ...(relatos > 0 ? ["", `Relatos de quando a IA não deu certo: ${relatos} (o texto livre não entra no perfil).`] : []),
   ];
 }
@@ -181,11 +210,11 @@ export function renderDeclaredUseBlocks(responses: BeehiivResponse[]): string[] 
 /** #10605 v3: seção 3 do perfil (quem são, e quanto gastam). */
 export function renderWhoTheyAreBlocks(responses: BeehiivResponse[]): string[] {
   return [
-    ...surveyBlock("Situação profissional", countAnswers(responses, SURVEY_MATCHERS.situation)),
-    ...surveyBlock("Áreas de atuação", countAnswers(responses, SURVEY_MATCHERS.areas)),
-    ...surveyBlock("Quem paga as ferramentas de IA", countAnswers(responses, SURVEY_MATCHERS.whoPays)),
-    ...surveyBlock("Gasto mensal com IA, do próprio bolso", countAnswers(responses, SURVEY_MATCHERS.monthlySpend)),
-    ...surveyBlock("Maior gasto com curso ou material de estudo (dois anos)", countAnswers(responses, SURVEY_MATCHERS.biggestSpend)),
+    ...questionBlock("Situação profissional", responses, SURVEY_MATCHERS.situation),
+    ...questionBlock("Áreas de atuação", responses, SURVEY_MATCHERS.areas),
+    ...questionBlock("Quem paga as ferramentas de IA", responses, SURVEY_MATCHERS.whoPays),
+    ...questionBlock("Gasto mensal com IA, do próprio bolso", responses, SURVEY_MATCHERS.monthlySpend),
+    ...questionBlock("Maior gasto com curso ou material de estudo (dois anos)", responses, SURVEY_MATCHERS.biggestSpend),
   ];
 }
 
@@ -204,9 +233,9 @@ export function renderProductInterestSection(responses: BeehiivResponse[]): stri
     "## 4. Interesse em produtos (formulário do onboarding)",
     "",
     `Fonte: formulário do onboarding (#10605). Sondagem para decidir que cursos ou outros produtos oferecer; não usar para pontuar notícias.`,
-    ...surveyBlock("Formatos de interesse", formats),
-    ...surveyBlock("Formato escolhido se só um existisse", choice),
-    ...surveyBlock("Temas para aprender", topics),
+    ...surveyBlock("Formatos de interesse", formats, undefined, questionRespondents(responses, SURVEY_MATCHERS.productFormats)),
+    ...surveyBlock("Formato escolhido se só um existisse", choice, undefined, questionRespondents(responses, SURVEY_MATCHERS.productChoice)),
+    ...surveyBlock("Temas para aprender", topics, undefined, questionRespondents(responses, SURVEY_MATCHERS.courseTopics)),
   ];
 }
 

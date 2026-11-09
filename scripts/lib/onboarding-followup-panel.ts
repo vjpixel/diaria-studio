@@ -306,7 +306,8 @@ export function buildFollowupPanel(
       // `enviado`/`falhou` já contados pelos registros; `apoia`/`nao_ativo` vêm dos pulos gravados.
       // `excede_janela` (#10652) é projeção sobre quem já está em `adiado_teto` —
       // somar dobraria a contagem; aparece como alerta.
-      if (motivo === "enviado" || motivo === "falhou" || motivo === "apoia" || motivo === "nao_ativo" || motivo === "excede_janela") continue;
+      // `enviado_rascunho` (#12504) é subconjunto de `enviado` (a variante do lembrete): já contado.
+      if (motivo === "enviado" || motivo === "enviado_rascunho" || motivo === "falhou" || motivo === "apoia" || motivo === "nao_ativo" || motivo === "excede_janela") continue;
       bump(TERMINAL_RUN_MOTIVOS.has(motivo) ? c.pulados : c.pendentes, motivo, n);
     }
   }

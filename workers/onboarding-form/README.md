@@ -90,6 +90,30 @@ de obrigado mostra o link, e o executor manda `formulario-resultados.md`
 (`{{RESULTADOS_URL}}`) uma vez a quem respondeu pela 1ª vez depois do envio.
 Com os campos vazios nada muda.
 
+## Rascunho de quem não enviou (#12504)
+
+Com JavaScript, o navegador salva o que a pessoa marcou a cada mudança
+(`POST /rascunho`, com debounce, e `sendBeacon` ao sair da página), com a
+mesma assinatura do envio. KV `draft:{e-mail}`, `expirationTtl` de 90 dias
+renovado a cada gravação, apagado no envio; corpo de até 32 KiB, uma gravação
+por segundo por e-mail (429), e o beacon que chega até 2 minutos depois do
+envio é ignorado. Ao abrir o link de novo, o formulário vem preenchido com o
+aviso "Você já tinha começado. Suas respostas estão salvas."; no topo, só com
+JavaScript, "O que você marcar já fica salvo, mesmo que você não termine."
+Sem JavaScript nada é salvo.
+
+Rascunho não é resposta: não marca "preencheu", não aplica a tag
+`formulario-respondeu`, não para os lembretes. Decisão do editor (09/11/2026):
+ele entra no perfil de audiência por pergunta (cada pessoa uma vez, a resposta
+enviada vence, o perfil mostra o N de cada pergunta), na lista de conversas
+("Sim, topo" marcado "não enviou"), no abandono por pergunta do `--status` e
+escolhe a variante dos lembretes (`formulario-lembrete-{1,2,3}-rascunho.md`,
+lote próprio; com o texto dela pendente, todo mundo recebe o padrão).
+`GET /api/respostas?rascunhos=1` lista os rascunhos (mesmo token, paginado).
+
+Envio recusado na validação (#12522) volta ao formulário preenchido, com a
+mensagem na pergunta, em vez da página de erro genérica.
+
 ## Publicação (feito em 22/10/2026)
 
 KV `ONBOARDING_FORM`, secrets `RESPONSES_TOKEN` e `ONBOARDING_FORM_LINK_SECRET`,
