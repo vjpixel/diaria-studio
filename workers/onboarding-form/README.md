@@ -44,6 +44,36 @@ travados pelo marcador `ONBOARDING-CORPO-PENDENTE` até o editor aprovar):
    store guarda qual convite a pessoa recebeu (`followup.people[id].form_invite`;
    registro antigo sem o campo: ler por `formInviteOf`, que deriva de `sends`).
 
+## Reenvio anual, histórico e versão (#12490)
+
+Decisão do editor (09/11/2026): a cada 12 meses, quem já respondeu recebe o
+formulário de novo. O Worker grava cada resposta duas vezes: `resp:{e-mail}`
+(a mais recente, que o executor e o perfil de audiência leem, como antes) e
+`hist:{e-mail}:{submitted_at}` (uma por envio, nunca sobrescrita). A resposta
+de quem respondeu antes do histórico existir é copiada para `hist:` na 1ª
+resposta nova. `GET /api/respostas?historico=1` lista o histórico. Cada
+resposta leva `form_version` (`FORM_VERSION` do contrato, presa às perguntas
+por teste: mudou pergunta, sobe a versão); ausente = v2.
+
+No executor, `form_filled_at` passa a ser a resposta mais recente (a 1ª fica
+em `form_first_filled_at`). Etapas `form_anual` (365 dias depois da última
+resposta, `form_annual_days`) e `form_anual_lembrete` (até
+`form_annual_reminder_max`, padrão 1, 30 dias depois). Textos
+`formulario-anual.md` e `formulario-anual-lembrete.md`, com
+`{{RESPONDEU_EM}}` ("{mês} de {ano}"): o lote sai um mês de resposta por
+vez. O formulário abre vazio.
+
+## Resultados para quem responde depois (#12495)
+
+Os resultados saem como edição especial para quem respondeu, com uma versão
+web restrita (decisão do editor, 09/11/2026). Depois do envio dela, o editor
+preenche `RESULTS_URL` e `RESULTS_PUBLISHED_AT` no `[vars]` do
+`wrangler.toml` e os mesmos valores em `onboarding.followup.results_url` e
+`results_published_at` (teste trava os dois iguais). A partir daí a página
+de obrigado mostra o link, e o executor manda `formulario-resultados.md`
+(`{{RESULTADOS_URL}}`) uma vez a quem respondeu pela 1ª vez depois do envio.
+Com os campos vazios nada muda.
+
 ## Publicação (feito em 22/10/2026)
 
 KV `ONBOARDING_FORM`, secrets `RESPONSES_TOKEN` e `ONBOARDING_FORM_LINK_SECRET`,

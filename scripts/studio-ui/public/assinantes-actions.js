@@ -48,6 +48,10 @@ export const BLOCK_ACTIONS = Object.freeze({
     link: null,
   }),
   kit_indisponivel: Object.freeze({ acao: "Investigar o acesso ao Kit na última rodada", link: TAREFAS_LINK }),
+  resultados_nao_publicados: Object.freeze({
+    acao: "Depois do envio da edição especial, preencher onboarding.followup.results_url e results_published_at (e os mesmos valores no wrangler.toml do formulário, #12495)",
+    link: null,
+  }),
 });
 
 const SEQUENCIA_LABEL = { apoio: "Apoio D+30/90/180/360", form: "Formulário" };
