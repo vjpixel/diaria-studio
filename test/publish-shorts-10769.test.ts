@@ -89,11 +89,12 @@ describe("#10769 metadados e legendas", () => {
     assert.ok(cut.endsWith("…"));
   });
 
-  it("título do Short é `{D1} #Shorts` e respeita 100 caracteres", () => {
-    assert.equal(buildYouTubeShortTitle(D1.title), "Você já viu IA mentir. Já viu roubar? #Shorts");
+  it("título do Short é o D1, sem #Shorts (#12463), e respeita 100 caracteres", () => {
+    assert.equal(buildYouTubeShortTitle(D1.title), "Você já viu IA mentir. Já viu roubar?");
     const t = buildYouTubeShortTitle("x".repeat(200));
     assert.equal(Array.from(t).length, 100);
-    assert.ok(t.endsWith("… #Shorts"));
+    assert.ok(t.endsWith("…"));
+    assert.doesNotMatch(t, /#Shorts/);
   });
 
   it("Short: descrição curta com #Shorts, sem link e sem comentário fixado (#10831)", () => {
@@ -278,9 +279,16 @@ describe("#10769 plano do publish-shorts", () => {
     assert.doesNotMatch(by.facebook_profile.caption, /https?:\/\/|utm_/);
   });
 
+  it("#12465: no plano, o perfil pessoal cita o perfil da diar.ia.br; a página diar.ia.br não", () => {
+    const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z") });
+    const by = Object.fromEntries(plan.items.map((i) => [i.destination, i])) as any;
+    assert.match(by.facebook_profile.caption, /\n\nSiga a diar\.ia\.br: facebook\.com\/diar\.ia\.br\n\n#IA/);
+    assert.doesNotMatch(by["facebook:diaria"].caption, /Siga/);
+  });
+
   it("YouTube Shorts sai com os metadados guiados", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z") });
-    assert.equal(plan.youtube.title, "Você já viu IA mentir. Já viu roubar? #Shorts");
+    assert.equal(plan.youtube.title, "Você já viu IA mentir. Já viu roubar?"); // #12463
     assert.equal(plan.longVideo, "diaria-comentada-261022.mp4");
   });
 

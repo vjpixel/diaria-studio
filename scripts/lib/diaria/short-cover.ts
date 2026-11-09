@@ -220,6 +220,24 @@ export function youtubeShortsVerticalCoverWarning(videoId: string, cover: ShortC
 }
 
 /**
+ * Pure (#12459): a re-execução que troca a capa 16:9 de um Short já agendado
+ * (`--update-scheduled`, inclusive a do timer do corte) grava de novo
+ * `vertical_feed: "manual"`, o que reverteria a capa do feed já aplicada pelo
+ * agente no Studio web (`studio_web`, Passo B3a, #12436) e reabriria o aviso.
+ * O `thumbnails.set` não mexe na capa do feed de Shorts (#12100), então o
+ * `studio_web` do registro anterior vale: o campo é preservado (merge), não
+ * substituído. Qualquer outro caso devolve `next` como veio.
+ */
+export function keepStudioWebVerticalFeed(
+  next: ShortCoverRecord | null,
+  prior: ShortCoverRecord | null | undefined,
+): ShortCoverRecord | null {
+  if (!next || next.method !== "thumbnails_set" || !next.ok || next.vertical_feed !== "manual") return next;
+  if (prior?.method !== "thumbnails_set" || prior.vertical_feed !== "studio_web") return next;
+  return { ...next, vertical_feed: "studio_web" };
+}
+
+/**
  * Pure: o `--mark x=URL` (confirmação do tweet) substitui a entrada `buffer:` —
  * o registro da capa feito no agendamento não pode sumir junto.
  */

@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 140 invariants.
+**Total**: 141 invariants.
 
 ## Static (estrutura do repo)
 
@@ -132,6 +132,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `title-ia-as-agent` | título de destaque não põe 'IA' como sujeito quando o corpo descreve ator humano (#12106, warning-only) | #12106 |
 | `title-mentions-ia` | título de destaque sem menção a 'IA'/'AI'/'inteligência artificial' quando evitável (#4825, warning-only) | #4825 |
 | `title-publisher-suffix` | título sem sufixo residual de veículo (' \| Veículo' / ' - Veículo', #2664) | #2664 |
+| `title-shorts-front-load` | título do D1 se lê sozinho nos ~40 caracteres que o feed de Shorts mostra (#12464, warning-only) | #12464 |
 | `title-trailing-period` | título de destaque/item sem ponto final único (#2672) | #2672 |
 | `titulo-subtitulo-not-provisional` | TÍTULO/SUBTÍTULO não carrega o título provisório (da fonte) deixado pelo swap-destaque depois que o D{N} ganhou título final (#9601) | #9601 |
 | `top3-merit-warning` | item fora do top-3 com score ≥ maior do trio (warning-only) | #10792 |

@@ -79,7 +79,7 @@ const itemOf = (p: ReturnType<typeof planShortsPublish>, d: string) => p.items.f
 describe("#11795 planShortsPublish com corte avulso", () => {
   it("deriva título e gancho do corte, sem 02-reviewed.md nem D1", () => {
     const p = planShortsPublish({ ...base, now: BEFORE });
-    assert.equal(p.youtube.title, "Tratar IA como humano #Shorts");
+    assert.equal(p.youtube.title, "Tratar IA como humano"); // #12463: sem #Shorts no título
     assert.match(p.youtube.description, /^Por que dar nome ao chatbot muda o jeito que você usa\./);
     assert.equal(p.editionUrl, DIARIA_HOME_URL);
     assert.ok(p.premises.some((x) => x.includes('corte avulso "tratar-ia-como-humano"')), p.premises.join("\n"));

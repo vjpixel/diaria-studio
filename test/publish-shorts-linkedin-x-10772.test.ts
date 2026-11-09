@@ -147,6 +147,9 @@ describe("#10772 plano", () => {
     assert.equal(p.linkedin_profile.action, "publish");
     assert.equal(p.linkedin_profile.title, D1.title);
     assert.doesNotMatch(p.linkedin_profile.caption, /https?:\/\//, "#11617: sem link no texto do LinkedIn");
+    // #12465: menção à página da diar.ia.br no perfil pessoal; o X (@diariabr) não leva.
+    assert.match(p.linkedin_profile.caption, /Siga @\[diar\.ia\.br\]\(urn:li:organization:110742958\)/);
+    assert.doesNotMatch(p.x.caption, /Siga/);
     assert.equal(p.x.scheduledAt, null);
   });
 

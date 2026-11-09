@@ -19,6 +19,7 @@ deliberada de escopo descrita abaixo.
 | `titles-per-highlight.ts` | `titles-per-highlight` | #178/#245 |
 | `title-length.ts` | _(alvo de escrita de 52 chars — só medição, nenhum gate, #11254)_ | #701/#801 |
 | `title-limits.ts` | `title-card-4x5` + `title-email-subject` (`title-length` = os dois) | #11254 |
+| `title-shorts-front-load.ts` | `title-shorts-front-load` (warn-only: fatia de ~40 chars do D1 no feed de Shorts) | #12464 |
 | `highlight-parsing.ts` | _(helper compartilhado — regexes de header de destaque)_ | #1737 |
 | `eia-answer-check.ts` | `eia-answer` | #744/#927 |
 | `intentional-error.ts` | `intentional-error-flagged` | #754/#1378 |

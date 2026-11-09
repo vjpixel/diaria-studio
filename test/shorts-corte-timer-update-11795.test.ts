@@ -247,7 +247,7 @@ describe("#11795 --update-scheduled", () => {
     const items = planScheduledUpdates({ entries, d1: D1, now: NOW, coverPresent: true });
     const by = Object.fromEntries(items.map((i) => [i.destination, i]));
     assert.equal(by["youtube_shorts"].action, "update_youtube");
-    assert.equal((by["youtube_shorts"] as any).title, "Tratar IA como humano (novo) #Shorts");
+    assert.equal((by["youtube_shorts"] as any).title, "Tratar IA como humano (novo)");
     assert.match((by["youtube_shorts"] as any).description, /^Gancho novo\./);
     assert.equal(by["facebook:diaria"].action, "update_facebook");
     assert.equal((by["facebook:diaria"] as any).slug, "diaria");
@@ -273,7 +273,7 @@ describe("#11795 --update-scheduled", () => {
       persist: (e) => persisted.push(e),
       now: () => NOW,
     });
-    assert.deepEqual(yt, [{ id: "yt1", title: "Tratar IA como humano (novo) #Shorts", thumb: true }]);
+    assert.deepEqual(yt, [{ id: "yt1", title: "Tratar IA como humano (novo)", thumb: true }]);
     const r = Object.fromEntries(results.map((x) => [x.destination, x]));
     assert.equal(r["youtube_shorts"].ok, true);
     assert.equal(r["facebook:diaria"].ok, false);
