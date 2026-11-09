@@ -11,7 +11,7 @@
  * Markdown daquele render — um subconjunto pequeno e fixo: parágrafo, `##`,
  * `###`, lista com `- `, link `[rótulo](url)` e negrito `**…**` — em HTML de
  * e-mail. Escrever um 2º render em HTML duplicaria as regras do post (abertura,
- * "Outros destaques", vídeo da semana) e as duas versões divergiriam.
+ * vídeo da semana) e as duas versões divergiriam.
  *
  * Regras de e-mail, as mesmas de `artigo-especial-email-render.ts`: tudo
  * inline, tabela externa 100% + interna 600, `paperEmail` e não `paper`, sem
@@ -146,7 +146,7 @@ export function stackMarkdownToHtml(markdown: string): string {
  */
 export function renderStackEmail(sel: CircleStackSelection): RenderedStackEmail {
   const post = renderCircleStackPost(sel, {
-    channel: { utmSource: STACK_EMAIL_UTM_SOURCE, utmMedium: STACK_EMAIL_UTM_MEDIUM, omitSubscribeCta: true },
+    channel: { utmSource: STACK_EMAIL_UTM_SOURCE, utmMedium: STACK_EMAIL_UTM_MEDIUM, omitSubscribeCta: true, omitOtherHighlights: true },
   });
   const html = `<!doctype html>
 <html lang="pt-BR">
@@ -156,10 +156,9 @@ export function renderStackEmail(sel: CircleStackSelection): RenderedStackEmail 
     <tr><td align="center" style="padding:32px 12px;">
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;background:${PAPER};border-radius:12px;overflow:hidden;">
         <tr><td style="padding:36px 32px 32px;">
-          <p style="margin:0 0 12px;font-family:${SANS};font-size:12px;font-weight:bold;letter-spacing:.08em;text-transform:uppercase;color:${INK};"><span style="color:${TEAL};">&#9679;</span> Radar de Not&iacute;cias Stack</p>
           <h1 style="margin:0 0 20px;font-family:${SERIF};font-size:26px;line-height:1.25;color:${INK};">${escHtml(post.title)}</h1>
 ${stackMarkdownToHtml(post.markdown)}
-          <p style="margin:28px 0 0;font-family:${SANS};font-size:13px;line-height:1.6;color:${INK};opacity:.7;">Voc&ecirc; recebe este e-mail porque apoia a diar.ia.br no n&iacute;vel N&uacute;cleo. &Eacute; o post semanal que a diar.ia.br publica na comunidade Stack, para quem constr&oacute;i com IA. Obrigado por sustentar o projeto.</p>
+          <p style="margin:28px 0 0;font-family:${SANS};font-size:13px;line-height:1.6;color:${INK};opacity:.7;">Voc&ecirc; recebe este e-mail porque apoia a diar.ia.br no n&iacute;vel N&uacute;cleo. Obrigado por sustentar o projeto.</p>
         </td></tr>
       </table>
     </td></tr>

@@ -106,7 +106,7 @@ describe("render do e-mail (#12538)", () => {
     assert.equal(e.previewText, "Exclusivo para apoiadores");
     assert.ok(!e.html.includes("Assine a diar.ia.br"));
     const utm = hrefs(e.html).filter((h) => h.includes("utm_"));
-    assert.ok(utm.some((h) => h.includes("utm_content=edicao")), "link da edição");
+    // Sem "Outros destaques" (#12550) não há mais link da edição no e-mail; o do vídeo continua.
     assert.ok(utm.some((h) => h.includes("utm_content=video")), "link do vídeo");
     for (const h of utm) {
       const u = new URL(h);
@@ -114,8 +114,22 @@ describe("render do e-mail (#12538)", () => {
       assert.equal(u.searchParams.get("utm_medium"), "email", h);
     }
     assert.match(e.html, /Agora o agente roda em segundo plano\./);
-    assert.match(e.html, /Outro assunto da semana/);
     assert.match(e.html, /n&iacute;vel N&uacute;cleo/);
+  });
+
+  it("o e-mail não abre com o rótulo \"Radar de Notícias Stack\" nem explica o que é o post", () => {
+    const html = renderStackEmail(selection()).html;
+    assert.ok(!html.includes("Radar de Not"));
+    assert.ok(!html.includes("post semanal que a diar.ia.br publica"));
+  });
+
+  it("#12550: o e-mail não leva \"Outros destaques da semana\"; o Circle continua levando", () => {
+    const e = renderStackEmail(selection());
+    assert.ok(!e.html.includes("Outros destaques"));
+    assert.ok(!e.html.includes("Outro assunto da semana"));
+    const circle = renderCircleStackPost(selection()).markdown;
+    assert.ok(circle.includes("## Outros destaques da semana"));
+    assert.ok(circle.includes("- Outro assunto da semana"));
   });
 
   it("escapa HTML e neutraliza chaves Liquid do conteúdo", () => {

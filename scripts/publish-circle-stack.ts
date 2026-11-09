@@ -461,6 +461,7 @@ export function parseStoredCircleStackSelection(
     if (!v || typeof v !== "object" || typeof v.title !== "string" || typeof v.url !== "string" || typeof v.editionDate !== "string") {
       return fail("campo video precisa de title, url e editionDate (texto) — ou apague o campo");
     }
+    if (v.description !== undefined && typeof v.description !== "string") return fail("campo video.description não é texto");
   }
   for (const section of ITEM_SECTIONS) {
     const items = sel[section];
