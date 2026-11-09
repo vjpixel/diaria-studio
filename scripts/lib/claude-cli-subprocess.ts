@@ -64,6 +64,10 @@ export class ClaudeCliError extends Error {
   readonly subtype: string | null;
   /** `true` quando o subprocesso foi morto pelo `timeoutMs` (#11005). */
   readonly timedOut: boolean;
+  /** Sinal que matou o filho (`SIGKILL`, `SIGTERM`...), quando houve (#12456). */
+  readonly signal: string | null;
+  /** `code` do erro de spawn (`ENAMETOOLONG`, `E2BIG`, `ENOENT`...), quando houve (#12456). */
+  readonly errorCode: string | null;
 
   constructor(
     message: string,
@@ -76,6 +80,8 @@ export class ClaudeCliError extends Error {
       stopReason?: string | null;
       subtype?: string | null;
       timedOut?: boolean;
+      signal?: string | null;
+      errorCode?: string | null;
     },
   ) {
     super(message);
@@ -88,6 +94,8 @@ export class ClaudeCliError extends Error {
     this.stopReason = opts.stopReason ?? null;
     this.subtype = opts.subtype ?? null;
     this.timedOut = opts.timedOut ?? false;
+    this.signal = opts.signal ?? null;
+    this.errorCode = opts.errorCode ?? null;
     Object.setPrototypeOf(this, ClaudeCliError.prototype);
   }
 }
@@ -136,6 +144,23 @@ export function formatMaxTurnsExhaustedMessage(opts: { maxTurns: number; status:
  */
 export function preview(text: string, max = 1200): string {
   return text.length > max ? text.slice(0, max) + `\n… [${text.length - max} chars ocultos na mensagem — leia err.stderr para o inteiro]` : text;
+}
+
+/**
+ * Causa da saída sem sucesso, para a mensagem do `ClaudeCliError` (#12456).
+ * Antes, filho sem `status` virava só "status sinal", sem dizer qual sinal nem
+ * o tamanho do prompt, que foi tudo o que a rodada 261108 viu no Windows.
+ * Agora o sinal e o `code` do spawn aparecem quando existem, e o tamanho do
+ * prompt sempre que não há `status`.
+ */
+export function describeExitCause(opts: { status: number | null; signal: string | null; errorCode: string | null; promptChars: number }): string {
+  if (opts.status != null) return `status ${opts.status}`;
+  const parts: string[] = [];
+  if (opts.signal) parts.push(`morto pelo sinal ${opts.signal}`);
+  if (opts.errorCode) parts.push(`code ${opts.errorCode}`);
+  if (parts.length === 0) parts.push("sem status, sinal nem code");
+  parts.push(`prompt de ${opts.promptChars} chars via stdin`);
+  return parts.join(", ");
 }
 
 export interface ClaudeCliCallOptions {
@@ -200,16 +225,20 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
   if (opts.effort) args.push("--effort", opts.effort);
   if (opts.tools) args.push("--tools", opts.tools.join(","));
   if (opts.strictMcpConfig) args.push("--strict-mcp-config");
-  // #9577: `--` encerra as opções — prompt que começa com `---` (frontmatter de agente no replay do eval) não vira flag.
-  args.push("--", prompt);
+  // #12456: o prompt vai pelo stdin, nunca no argv. No Windows a linha de
+  // comando do CreateProcess tem teto de 32.767 caracteres, e o replay do eval
+  // (#8144) passa de 34 KB: o filho morria sem status, stdout ou stderr. Com o
+  // prompt fora do argv, o #9577 (prompt começando com `---` lido como flag)
+  // também deixa de existir, e o `--` que o protegia saiu junto.
 
   const bin = resolveClaudeBinFn();
-  const command = `${bin} ${args.map((a) => (a === prompt ? `<prompt ${prompt.length} chars>` : a)).join(" ")}`;
+  const command = `${bin} ${args.join(" ")} <prompt ${prompt.length} chars> (stdin)`;
   try {
     return execFn(bin, args, {
       cwd: opts.cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
+      input: prompt,
+      stdio: ["pipe", "pipe", "pipe"],
       env: filteredEnv,
       ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
     });
@@ -248,12 +277,16 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
     // na mensagem: o inteiro só vive em `err.stderr`/`err.stdout`, que o
     // chamador lê sob demanda.
     // #11005: `execFileSync` com `timeout` mata o processo e joga `code: "ETIMEDOUT"`.
-    const timedOut = (err as { code?: string }).code === "ETIMEDOUT";
+    const rawCode = (err as { code?: unknown }).code;
+    const errorCode = typeof rawCode === "string" ? rawCode : null;
+    const rawSignal = (err as { signal?: unknown }).signal;
+    const signal = typeof rawSignal === "string" ? rawSignal : null;
+    const timedOut = errorCode === "ETIMEDOUT";
     const message = timedOut
       ? `claude CLI excedeu o timeout de ${opts.timeoutMs}ms: ${command}`
       : maxTurnsExhausted
         ? `${formatMaxTurnsExhaustedMessage({ maxTurns, status, subtype, stopReason })} ${command}`
-        : `claude CLI falhou (status ${status ?? "sinal"}): ${command}`;
-    throw new ClaudeCliError(message, { status, stdout, stderr, command, maxTurnsExhausted, stopReason, subtype, timedOut });
+        : `claude CLI falhou (${describeExitCause({ status, signal, errorCode, promptChars: prompt.length })}): ${command}`;
+    throw new ClaudeCliError(message, { status, stdout, stderr, command, maxTurnsExhausted, stopReason, subtype, timedOut, signal, errorCode });
   }
 }
