@@ -34,7 +34,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
   ACERVO_STALENESS_MAX_BUSINESS_DAYS,
   editionIdToDate,
@@ -118,7 +118,15 @@ function loadState(path: string): AlarmIssuesState {
   }
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/acervo-staleness-alarm.ts",
+  booleans: ["dry-run"],
+};
+
 export async function main(argv = process.argv.slice(2)): Promise<number> {
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) return cliExit;
   const dryRun = hasFlag(argv, "dry-run");
   const snap: AcervoSnapshot = {
     produzida: latestProducedEdition(),

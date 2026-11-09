@@ -34,7 +34,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { resolveWeeklyPublishedPath } from "./lib/weekly-worker-dispatch.ts";
 import { fetchWorkerList, resolveLinkedinWorkerUrl, type FetchJsonFn } from "./verify-social-worker-dispatch.ts";
@@ -154,7 +154,19 @@ export async function lookupWorkerQueue(
   }
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/retro-semanal-staleness-alarm.ts",
+  booleans: ["dry-run"],
+  values: ["to", "saturday"],
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");
