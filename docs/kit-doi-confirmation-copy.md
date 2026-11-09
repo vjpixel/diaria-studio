@@ -95,6 +95,31 @@ com 5 minutos das notícias essenciais sobre IA e os tutoriais que importam.
 > mínimo; se a taxa de confirmação cair depois da mudança, é o primeiro
 > suspeito.
 
+> **Proposta de tom (#12501, aguardando decisão do editor):** os e-mails
+> pessoais passaram a abrir com "Olá! Tudo bem?" (#10605). Este e-mail é
+> transacional, e a saudação empurra o botão uma linha para baixo; por isso a
+> recomendação é **manter o texto atual** (opção A). Se o editor preferir o
+> tom novo também aqui, a opção B, pronta para colar no painel (form
+> `9897918`, Settings → Confirmation email → Edit Email Contents), é:
+>
+> ```
+> Olá! Tudo bem?
+>
+> Falta só um passo pra sua assinatura da diar.ia.br começar: confirmar que
+> este e-mail é seu.
+>
+> [Confirmar meu e-mail]
+>
+> Depois de confirmar, a primeira edição chega numa manhã de segunda a sexta,
+> com 5 minutos das notícias essenciais sobre IA e os tutoriais que importam.
+>
+> Enquanto isso, o principal destaque de cada dia ganha um comentário meu em
+> vídeo no [canal da diar.ia.br no YouTube](https://www.youtube.com/@diariabr?sub_confirmation=1).
+> ```
+>
+> Assunto e preview ficam iguais nas duas opções. A edição no painel é do
+> editor; esta nota só entrega o texto.
+
 O botão é o **único** elemento de ação — sem link concorrente. Densidade
 promocional above the fold é o gatilho de classificador identificado no
 CTA-01 (`docs/experiments/cta-ab-mensal-2606-07.md`), e importa mais aqui:
