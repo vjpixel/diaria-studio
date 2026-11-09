@@ -79,6 +79,7 @@
 import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
@@ -394,14 +395,16 @@ async function main(): Promise<number> {
     }
     const out = resolve(values["out"] ?? join(dir, YOUTUBE_SHORT_COVER_FILE));
     mkdirSync(dirname(out), { recursive: true });
-    // Com gancho, o frame cru vai para um arquivo ao lado e a capa é composta por cima.
-    const frameOut = shortHook === undefined ? out : join(dirname(out), "_short-cover-frame.jpg");
+    // Com gancho, o frame cru vai para o tmpdir do sistema (nunca para a pasta da
+    // edição, que o OneDrive sincroniza) e a capa é composta por cima.
+    const frameOut = shortHook === undefined ? out : join(tmpdir(), `diaria-short-cover-frame-${process.pid}-${Date.now()}.jpg`);
     const plan = planShortCoverFrame(video, at, frameOut, { withHook: shortHook !== undefined });
     for (const w of plan.warnings) console.error(`[aviso] ${w}`);
     if (shortHook !== undefined) await assertBrandSerifAvailable("gen-youtube-thumb");
     const r = spawnSync("ffmpeg", plan.args, { encoding: "utf8" });
     if (r.error || r.status !== 0 || !existsSync(frameOut)) {
       console.error(`gen-youtube-thumb: ffmpeg falhou: ${r.error?.message ?? r.stderr?.trim() ?? `exit ${r.status}`}`);
+      if (shortHook !== undefined) rmSync(frameOut, { force: true }); // frame parcial não fica no tmpdir
       return 1;
     }
     if (shortHook !== undefined) {

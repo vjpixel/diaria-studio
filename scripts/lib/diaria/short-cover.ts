@@ -226,13 +226,18 @@ export function youtubeShortsVerticalCoverWarning(videoId: string, cover: ShortC
  * agente no Studio web (`studio_web`, Passo B3a, #12436) e reabriria o aviso.
  * O `thumbnails.set` não mexe na capa do feed de Shorts (#12100), então o
  * `studio_web` do registro anterior vale: o campo é preservado (merge), não
- * substituído. Qualquer outro caso devolve `next` como veio.
+ * substituído. Vale também quando o `thumbnails.set` da re-execução FALHA
+ * (review do PR #12489): a falha é da miniatura 16:9, a capa do feed aplicada
+ * no Studio web continua lá, e o registro da falha guarda `studio_web` para o
+ * Passo B3a não perder essa informação (o aviso só acende com `ok` +
+ * `manual`). Qualquer outro caso devolve `next` como veio.
  */
 export function keepStudioWebVerticalFeed(
   next: ShortCoverRecord | null,
   prior: ShortCoverRecord | null | undefined,
 ): ShortCoverRecord | null {
-  if (!next || next.method !== "thumbnails_set" || !next.ok || next.vertical_feed !== "manual") return next;
+  if (!next || next.method !== "thumbnails_set") return next;
+  if (next.ok && next.vertical_feed !== "manual") return next;
   if (prior?.method !== "thumbnails_set" || prior.vertical_feed !== "studio_web") return next;
   return { ...next, vertical_feed: "studio_web" };
 }

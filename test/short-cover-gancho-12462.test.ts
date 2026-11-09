@@ -38,6 +38,12 @@ describe("normalizeShortCoverHook (#12462)", () => {
     assert.throws(() => normalizeShortCoverHook("um dois três quatro cinco seis"), /6 palavra\(s\); a regra é 2 a 5/);
     assert.throws(() => normalizeShortCoverHook("   "), /gancho vazio/);
   });
+
+  it("moeda e número contam como 1 palavra, igual ao horizontal (#12278), e a quebra não os separa", () => {
+    assert.equal(normalizeShortCoverHook("R$ 100 mil?"), "R$ 100 mil?");
+    assert.equal(normalizeShortCoverHook("Perdeu R$ 100 mil pra IA?"), "Perdeu R$ 100 mil|pra IA?");
+    assert.throws(() => normalizeShortCoverHook("R$?"), /1 palavra\(s\)/);
+  });
 });
 
 describe("planShortCoverFrame com gancho (#12462)", () => {

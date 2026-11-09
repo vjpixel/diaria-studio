@@ -325,7 +325,7 @@
       "tiktok": true,
       "tiktok_buffer_channel_id": "6ae86defe29c69a17136bace",
       "diaria_profiles": {
-        "linkedin": { "name": "diar.ia.br", "urn": "urn:li:organization:110742958", "url": "https://www.linkedin.com/company/diar.ia.br/" },
+        "linkedin": { "name": "diar.ia.br", "urn": "urn:li:organization:110742958", "url": "https://www.linkedin.com/company/diar.ia.br/", "mention_verified": false },
         "threads": { "handle": "diar.ia.br", "url": "https://www.threads.com/@diar.ia.br" },
         "facebook": { "url": "https://www.facebook.com/diar.ia.br" }
       },

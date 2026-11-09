@@ -47,9 +47,16 @@ describe("#12459 re-execução preserva vertical_feed studio_web", () => {
     }
   });
 
-  it("falha do thumbnails.set não herda o studio_web (o registro novo é o da falha)", () => {
+  it("falha do thumbnails.set grava a falha mas preserva o studio_web (review do PR #12489)", () => {
     const failed = youtubeShortsCoverRecord({ attempted: true, ok: false, error: "403" });
-    assert.deepEqual(keepStudioWebVerticalFeed(failed, { method: "thumbnails_set", ok: true, vertical_feed: "studio_web" }), failed);
+    assert.deepEqual(keepStudioWebVerticalFeed(failed, { method: "thumbnails_set", ok: true, vertical_feed: "studio_web" }), {
+      method: "thumbnails_set",
+      ok: false,
+      error: "403",
+      vertical_feed: "studio_web",
+    });
+    // Sem studio_web anterior, a falha segue como veio (sem vertical_feed).
+    assert.deepEqual(keepStudioWebVerticalFeed(failed, { method: "thumbnails_set", ok: true, vertical_feed: "manual" }), failed);
     assert.equal(keepStudioWebVerticalFeed(null, { method: "thumbnails_set", ok: true, vertical_feed: "studio_web" }), null);
   });
 });

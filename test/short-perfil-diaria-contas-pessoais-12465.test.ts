@@ -19,11 +19,21 @@ import { THREADS_TEXT_MAX_CHARS } from "../scripts/lib/threads-api.ts";
 import { toLittleText } from "../scripts/lib/linkedin-personal.ts";
 import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-update.ts";
 
+/** Perfis com a menção do LinkedIn liberada (nome da página conferido pelo editor). */
+const VERIFIED = { ...DEFAULT_DIARIA_PROFILES, linkedin: { ...DEFAULT_DIARIA_PROFILES.linkedin, mentionVerified: true } };
+
 const D1 = { title: "Você já viu IA mentir. Já viu roubar?", body: "Um modelo da OpenAI gastou o saldo de uma carteira de terceiros. Depois mais." };
 
 describe("#12465 diariaFollowLine por destino", () => {
-  it("LinkedIn pessoal: menção nativa à página (little text)", () => {
-    assert.equal(diariaFollowLine("linkedin_profile"), "Siga @[diar.ia.br](urn:li:organization:110742958)");
+  it("LinkedIn pessoal: menção nativa à página só com o nome conferido (mention_verified)", () => {
+    assert.equal(diariaFollowLine("linkedin_profile", VERIFIED), "Siga @[diar.ia.br](urn:li:organization:110742958)");
+  });
+
+  it("LinkedIn pessoal sem mention_verified (default): cai na URL, nunca na menção (review do PR #12489)", () => {
+    assert.equal(DEFAULT_DIARIA_PROFILES.linkedin.mentionVerified, false);
+    assert.equal(diariaFollowLine("linkedin_profile"), "Siga a diar.ia.br: linkedin.com/company/diar.ia.br");
+    const semUrn = { ...VERIFIED, linkedin: { ...VERIFIED.linkedin, urn: null } };
+    assert.equal(diariaFollowLine("linkedin_profile", semUrn), "Siga a diar.ia.br: linkedin.com/company/diar.ia.br");
   });
 
   it("Threads pessoal: @diar.ia.br", () => {
@@ -50,7 +60,7 @@ describe("#12465 diariaFollowLine por destino", () => {
 
 describe("#12465 texto de cada destino pessoal", () => {
   it("LinkedIn: a menção entra antes das hashtags e sobrevive ao little text", () => {
-    const text = buildShortSocialText({ platform: "linkedin", d1: D1, follow: diariaFollowLine("linkedin_profile") });
+    const text = buildShortSocialText({ platform: "linkedin", d1: D1, follow: diariaFollowLine("linkedin_profile", VERIFIED) });
     assert.match(text, /\n\nSiga @\[diar\.ia\.br\]\(urn:li:organization:110742958\)\n\n#IA/);
     const little = toLittleText(text);
     assert.ok(little.includes("@[diar.ia.br](urn:li:organization:110742958)"), little);
@@ -106,5 +116,7 @@ describe("#12465 config (fonte única dos perfis)", () => {
     assert.throws(() => loadDiariaProfiles({ threads: { handle: "@diar.ia.br" } }), /threads\.handle/);
     assert.throws(() => loadDiariaProfiles({ facebook: { url: "facebook.com/diar.ia.br" } }), /facebook\.url/);
     assert.throws(() => loadDiariaProfiles({ linkedin: { name: "diar](x)" } }), /linkedin\.name/);
+    assert.throws(() => loadDiariaProfiles({ linkedin: { mention_verified: "sim" } }), /linkedin\.mention_verified/);
+    assert.equal(loadDiariaProfiles({ linkedin: { mention_verified: true } }).linkedin.mentionVerified, true);
   });
 });

@@ -715,8 +715,24 @@ export const SHORT_COVER_PANEL_OPACITY = 0.88;
 /** Largura máxima do gancho na capa vertical (margem de 60 px de cada lado). */
 const SHORT_HOOK_MAX_WIDTH = SHORT_COVER_W - 120;
 
+/**
+ * Palavras do gancho vertical com a mesma contagem do `hookWords` do horizontal
+ * (#12278): moeda e número formam um token ("R$ 100 mil?" = 2). Cada token
+ * guarda a copy original (o espaço entre "R$" e "100" fica), para a quebra em
+ * 2 linhas nunca separar a moeda do número.
+ */
+function shortHookTokens(line: string): string[] {
+  const out: string[] = [];
+  for (const w of line.split(" ").filter(Boolean)) {
+    const prev = out[out.length - 1];
+    if (prev !== undefined && /^(?:[A-Z]{1,3}\$|\p{Sc})$/u.test(prev) && /^\d/.test(w)) out[out.length - 1] = `${prev} ${w}`;
+    else out.push(w);
+  }
+  return out;
+}
+
 function shortHookWords(line: string): string[] {
-  return line.replace(/[?!.…]+$/u, "").split(" ").filter(Boolean);
+  return shortHookTokens(line.replace(/[?!.…]+$/u, ""));
 }
 
 /**
@@ -738,7 +754,7 @@ export function normalizeShortCoverHook(hook: string): string {
   }
   let normalized = lines.join("|");
   if (lines.length === 1) {
-    const words = lines[0].split(" ");
+    const words = shortHookTokens(lines[0]);
     if (shortHookWords(lines[0]).length > 3) {
       const cut = Math.ceil(words.length / 2);
       normalized = `${words.slice(0, cut).join(" ")}|${words.slice(cut).join(" ")}`;

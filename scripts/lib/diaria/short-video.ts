@@ -217,15 +217,22 @@ export type ReelsPlatform = "facebook" | "instagram";
  * confirmada pela API (Facebook: a tag de página na descrição de vídeo da
  * Graph API não foi medida). Fonte única dos perfis: `publishing.shorts.
  * diaria_profiles` no `platform.config.json`.
+ *
+ * LinkedIn: a menção só vira link quando o texto entre colchetes é o nome
+ * EXATO da página, e o efeito de um nome divergente na Posts API (4xx, que
+ * derrubaria o vídeo do perfil pessoal, ou texto puro) não foi medido (review
+ * do PR #12489). Por isso a menção só sai com `urn` configurado E
+ * `mention_verified: true` (o editor conferiu o nome atual da página); fora
+ * disso a linha cai na URL do perfil, que publica em qualquer caso.
  */
 export interface DiariaProfiles {
-  linkedin: { name: string; urn: string | null; url: string };
+  linkedin: { name: string; urn: string | null; url: string; mentionVerified: boolean };
   threads: { handle: string | null; url: string };
   facebook: { url: string };
 }
 
 export const DEFAULT_DIARIA_PROFILES: Readonly<DiariaProfiles> = Object.freeze({
-  linkedin: { name: "diar.ia.br", urn: "urn:li:organization:110742958", url: "https://www.linkedin.com/company/diar.ia.br/" },
+  linkedin: { name: "diar.ia.br", urn: "urn:li:organization:110742958", url: "https://www.linkedin.com/company/diar.ia.br/", mentionVerified: false },
   threads: { handle: "diar.ia.br", url: "https://www.threads.com/@diar.ia.br" },
   facebook: { url: "https://www.facebook.com/diar.ia.br" },
 });
@@ -246,7 +253,7 @@ function shortProfileUrl(url: string): string {
 export function diariaFollowLine(destination: string, profiles: DiariaProfiles = DEFAULT_DIARIA_PROFILES): string | null {
   if (destination === "linkedin_profile") {
     const p = profiles.linkedin;
-    return p.urn ? `Siga @[${p.name}](${p.urn})` : `Siga a diar.ia.br: ${shortProfileUrl(p.url)}`;
+    return p.urn && p.mentionVerified === true ? `Siga @[${p.name}](${p.urn})` : `Siga a diar.ia.br: ${shortProfileUrl(p.url)}`;
   }
   if (destination === "threads_profile") {
     const p = profiles.threads;
@@ -276,10 +283,12 @@ export function loadDiariaProfiles(raw: unknown): DiariaProfiles {
   if (urn !== null && (typeof urn !== "string" || !/^urn:li:organization:\d+$/.test(urn))) throw bad("linkedin.urn precisa ser urn:li:organization:ID ou null");
   const name = li.name ?? d.linkedin.name;
   if (typeof name !== "string" || !name.trim() || /[[\]()]/.test(name)) throw bad("linkedin.name precisa ser o nome da página, sem colchetes nem parênteses");
+  const mentionVerified = li.mention_verified ?? d.linkedin.mentionVerified;
+  if (typeof mentionVerified !== "boolean") throw bad("linkedin.mention_verified precisa ser true ou false");
   const handle = th.handle === undefined ? d.threads.handle : th.handle;
   if (handle !== null && (typeof handle !== "string" || !/^[A-Za-z0-9._]{1,30}$/.test(handle))) throw bad("threads.handle precisa ser o username sem @ ou null");
   return {
-    linkedin: { name, urn, url: url(li.url ?? d.linkedin.url, "linkedin.url") },
+    linkedin: { name, urn, url: url(li.url ?? d.linkedin.url, "linkedin.url"), mentionVerified },
     threads: { handle, url: url(th.url ?? d.threads.url, "threads.url") },
     facebook: { url: url(fb.url ?? d.facebook.url, "facebook.url") },
   };
