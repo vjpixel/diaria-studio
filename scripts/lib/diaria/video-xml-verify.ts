@@ -35,6 +35,8 @@ export interface ParsedXmlAudio {
   /** Quadros por segundo efetivos (`timebase * 1000/1001` no NTSC). */
   rate: number;
   clips: XmlAudioClip[];
+  /** `<duration>` declarada de cada `<file>` definido no documento (id → quadros). */
+  fileDurations: Record<string, number>;
 }
 
 /** Lê o `<audio>` da (única) sequência do XML: timebase da sequência e os clipitem de áudio da faixa principal. */
@@ -61,7 +63,30 @@ export function parseXmlAudio(xml: string): ParsedXmlAudio {
     if (!file) throw new Error("clipitem de áudio sem <file>");
     clips.push({ start: num("start"), end: num("end"), in: num("in"), out: num("out"), fileId: file[1] });
   }
-  return { timebase, ntsc, rate: ntsc ? (timebase * 1000) / 1001 : timebase, clips };
+  const fileDurations: Record<string, number> = {};
+  for (const m of xml.matchAll(/<file id="([^"]+)"><name>[\s\S]*?<duration>(\d+)<\/duration>/g)) fileDurations[m[1]] ??= Number(m[2]);
+  return { timebase, ntsc, rate: ntsc ? (timebase * 1000) / 1001 : timebase, clips, fileDurations };
+}
+
+/**
+ * Conferência do XML contra o plano e as mídias (review da PR #12563): sem
+ * clipe de áudio nenhum é erro (nunca "passa vazio"); número de clipes e
+ * duração diferentes do plano; in/out fora da duração do `<file>` que o clipe
+ * aponta (o clipe do 2º arquivo gravado no 1º com tempo global, por exemplo,
+ * que o Premiere não toca).
+ */
+export function xmlPlanIssues(parsed: ParsedXmlAudio, plan: { clips: number; durationFrames: number }): string[] {
+  const out: string[] = [];
+  if (!parsed.clips.length) return ["nenhum clipitem de áudio na sequência (XML vazio ou ids fora do padrão a{n})"];
+  if (parsed.clips.length !== plan.clips) out.push(`${parsed.clips.length} clipes de áudio no XML, ${plan.clips} no plano`);
+  const end = parsed.clips[parsed.clips.length - 1].end;
+  if (Math.abs(end - plan.durationFrames) > 1) out.push(`sequência com ${end} quadros no XML, ${plan.durationFrames} no plano`);
+  parsed.clips.forEach((c, i) => {
+    const dur = parsed.fileDurations[c.fileId];
+    if (dur === undefined) out.push(`clipe ${i + 1}: ${c.fileId} sem definição (<duration>) no XML`);
+    else if (c.in < 0 || c.out > dur) out.push(`clipe ${i + 1}: in/out ${c.in}–${c.out} fora da mídia ${c.fileId} (${dur} quadros)`);
+  });
+  return out;
 }
 
 /** Clipe do XML levado à linha do tempo global do bruto (quadros). */
@@ -122,15 +147,30 @@ export const EDGE_WINDOW_S = 0.04;
  * de fora está dentro de outro clipe contíguo no bruto (fala que continua no
  * clipe seguinte/anterior da sequência).
  */
-export function edgeFindings(clips: readonly TimelineClip[], rate: number, levelDb: (a: number, b: number) => number, thresholdDb: number, windowS = EDGE_WINDOW_S): EdgeFinding[] {
-  const covered = (a: number, b: number) => clips.some((k) => k.gIn / rate <= a + 1e-6 && k.gOut / rate >= b - 1e-6);
+export function edgeFindings(
+  clips: readonly TimelineClip[],
+  rate: number,
+  levelDb: (a: number, b: number) => number,
+  thresholdDb: number,
+  windowS = EDGE_WINDOW_S,
+  /** Limites (s globais) dos arquivos do bruto em vários arquivos: a janela nunca lê o arquivo vizinho (borda na emenda não é corte). */
+  bounds?: ReadonlyArray<{ start: number; end: number }>,
+): EdgeFinding[] {
+  // Só o clipe VIZINHO na sequência cobre a borda (fala que segue no próximo clipe); outro clipe qualquer que
+  // contenha o trecho não impede o corte audível (review da PR #12563).
+  const coveredBy = (k: TimelineClip | undefined, a: number, b: number) => !!k && k.gIn / rate <= a + 1e-6 && k.gOut / rate >= b - 1e-6;
+  const spanOf = (t: number) => bounds?.find((s) => t >= s.start - 1e-6 && t < s.end) ?? { start: 0, end: Number.POSITIVE_INFINITY };
+  const FLOOR = -120;
   return clips.map((c, i) => {
     const a = c.gIn / rate;
     const b = c.gOut / rate;
-    const beforeDb = levelDb(Math.max(0, a - windowS), a);
-    const afterDb = levelDb(b, b + windowS);
-    const cutIn = beforeDb > thresholdDb && !covered(Math.max(0, a - windowS), a);
-    const cutOut = afterDb > thresholdDb && !covered(b, b + windowS);
+    const fs = spanOf((a + b) / 2);
+    const bLo = Math.max(0, fs.start, a - windowS);
+    const aHi = Math.min(fs.end, b + windowS);
+    const beforeDb = bLo < a - 1e-6 ? levelDb(bLo, a) : FLOOR;
+    const afterDb = aHi > b + 1e-6 ? levelDb(b, aHi) : FLOOR;
+    const cutIn = beforeDb > thresholdDb && !coveredBy(clips[i - 1], bLo, a);
+    const cutOut = afterDb > thresholdDb && !coveredBy(clips[i + 1], b, aHi);
     return { clip: i + 1, inS: a, outS: b, beforeDb, afterDb, cutIn, cutOut };
   });
 }

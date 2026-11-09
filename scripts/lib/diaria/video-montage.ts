@@ -38,7 +38,6 @@ import {
   probeExtras,
   fileBounds,
   fileIndexAtTime,
-  fileIndexById,
   fitScalePct,
   isFitMode,
   isMultiSource,
@@ -1912,6 +1911,9 @@ export function resolveBlocks(
   };
   // O respiro do fecho nunca passa do fim do arquivo da fala.
   const fileEndAt = (t: number) => opts.files?.find((x) => t >= x.start - 1e-6 && t < x.end)?.end ?? opts.durationS;
+  // O arquivo da fala: o do `source`, senão o da 1ª palavra (o começo do intervalo pode cair no arquivo anterior pelo pre-roll; review da PR #12563).
+  const itemFileEnd = (span: { end: number } | null, ws: Word[], fallbackT: number) =>
+    span ? span.end : fileEndAt(ws.length ? (ws[0].start + ws[0].end) / 2 : fallbackT);
   for (const [key, items] of Object.entries(file.blocks) as Array<[BlockKey, BlockItem[]]>) {
     const out: ResolvedItem[] = [];
     blocks[key] = out;
@@ -1938,7 +1940,7 @@ export function resolveBlocks(
           ...(heard !== undefined ? { heard } : {}),
           words: ws,
           lastWordEnd: ws.length ? ws[ws.length - 1].end : null,
-          holdLimit: round3(Math.min(opts.durationS, fileEndAt(it.start), holdIdx < 0 ? opts.durationS : limitAfter(holdIdx))),
+          holdLimit: round3(Math.min(opts.durationS, itemFileEnd(fs.span, ws, it.start), holdIdx < 0 ? opts.durationS : limitAfter(holdIdx))),
           ...(col.info ? { collapsed: col.info } : {}),
           ...scopeOf(it),
           how: "explicit",
@@ -1959,6 +1961,14 @@ export function resolveBlocks(
       if (!c0.ok) return void errors.push(`${label}: ${c0.reason}${fs.span ? ` (procurado só em ${fs.span.id})` : ""}`);
       const c = off ? { ...c0, take: { ...c0.take, firstWord: c0.take.firstWord + off, lastWord: c0.take.lastWord + off } } : c0;
       const takeWords = words.slice(c.take.firstWord, c.take.lastWord + 1);
+      // #12559 (review da PR #12563): tomada que começa num arquivo e termina no outro é a frase colada de duas
+      // gravações (fim de A + começo de B), nunca uma tomada de verdade: erro, pedindo `source`.
+      if (opts.files?.length && takeWords.length) {
+        const fileAt = (w: Word) => opts.files!.findIndex((x) => (w.start + w.end) / 2 >= x.start - 1e-6 && (w.start + w.end) / 2 < x.end);
+        const a = fileAt(takeWords[0]);
+        const b = fileAt(takeWords[takeWords.length - 1]);
+        if (a !== b) return void errors.push(`${label}: a tomada achada atravessa a emenda entre ${opts.files[a]?.id ?? "?"} e ${opts.files[b]?.id ?? "?"} (frase colada de dois arquivos); fixe o arquivo com source ou um intervalo`);
+      }
       // `take` explícito no blocks.json é decisão: a suspeita só é avisada, nunca troca a tomada.
       const col = collapse(label, c.interval, it.text, takeWords, it.take === undefined);
       const ws = col.picked ? col.picked.words : takeWords;
@@ -1969,7 +1979,7 @@ export function resolveBlocks(
         ...(heard !== undefined ? { heard } : {}),
         words: ws,
         lastWordEnd: ws[ws.length - 1].end,
-        holdLimit: round3(Math.min(opts.durationS, fileEndAt(c.interval.start), col.picked ? limitAfterTime(col.picked.interval.end) : limitAfter(c.take.lastWord + 1))),
+        holdLimit: round3(Math.min(opts.durationS, itemFileEnd(fs.span, ws, c.interval.start), col.picked ? limitAfterTime(col.picked.interval.end) : limitAfter(c.take.lastWord + 1))),
         ...(col.info ? { collapsed: col.info } : {}),
         ...scopeOf(it),
         how: "take",
@@ -2226,12 +2236,14 @@ export function buildSequencePlan(
     for (let k = bounds.length - 1; k >= 0; k--) if (t >= bounds[k].start - 1e-9) return k;
     return 0;
   };
+  // `source` da sequência que não casa com um arquivo é erro (vai para `dropped`, que barra o build): ignorar o
+  // filtro montaria o Short avulso com o horizontal misturado (review da PR #12563). -1 = nenhum item entra.
   let seqFile: number | null = null;
+  let seqSourceProblem: string | null = null;
   if (spec.source !== undefined) {
     seqFile = bounds ? bounds.findIndex((b) => b.id === spec.source) : -1;
     if (seqFile < 0) {
-      warnings.push(`${spec.name}: source "${spec.source}" não é arquivo do bruto${bounds ? ` (ids: ${bounds.map((b) => b.id).join(", ")})` : " (bruto único)"}; a sequência ignora o filtro`);
-      seqFile = null;
+      seqSourceProblem = `${spec.name}: source "${spec.source}" não é arquivo do bruto${bounds ? ` (ids: ${bounds.map((b) => b.id).join(", ")})` : " (bruto único: source de sequência só vale com vários arquivos)"}; sequência sem clipes`;
     }
   }
   let titleSpeechEndS: number | undefined;
@@ -2239,7 +2251,7 @@ export function buildSequencePlan(
   const fps = source.fps;
   const raws: RawClip[] = [];
   const missingBlocks: BlockKey[] = [];
-  const dropped: string[] = [];
+  const dropped: string[] = seqSourceProblem ? [seqSourceProblem] : [];
   const scriptParts: string[] = [];
   const wordChecks: Array<{ label: string; words: Word[] }> = [];
   for (const key of spec.order) {
@@ -2280,7 +2292,8 @@ export function buildSequencePlan(
         const lastPart = parts[parts.length - 1];
         const target = it.lastWordEnd !== null ? it.lastWordEnd + FECHO_HOLD_S : lastPart.end + FECHO_HOLD_S;
         const floor = it.lastWordEnd ?? lastPart.start;
-        lastPart.end = round3(Math.max(floor, Math.min(it.holdLimit, source.durationS, target)));
+        // #12559: o respiro do fecho nunca passa do fim do arquivo do item (nem pelo piso da última palavra).
+        lastPart.end = round3(Math.min(bounds ? bounds[file].end : Number.POSITIVE_INFINITY, Math.max(floor, Math.min(it.holdLimit, source.durationS, target))));
       }
       // #12101: a âncora da vinheta é o fim da última palavra do título que entra nesta versão.
       if (key === "titulo" && n === mine.length - 1 && it.lastWordEnd !== null) titleSpeechEndS = it.lastWordEnd;
@@ -2500,9 +2513,15 @@ export function clipGeometry(input: {
   clip: Pick<PlannedClip, "scale" | "framing" | "file" | "fit">;
 }): ClipGeometry {
   const files = sourceFiles(input.source);
-  const fileIndex = Math.min(files.length - 1, Math.max(0, input.clip.file ?? 0));
+  const fileIndex = input.clip.file ?? 0;
+  // Índice fora da lista = plan.json de outro source.json: erro, nunca o arquivo errado em silêncio (review da PR #12563).
+  if (!Number.isInteger(fileIndex) || fileIndex < 0 || fileIndex >= files.length) {
+    throw new Error(`clipe aponta o arquivo ${fileIndex}, mas o bruto tem ${files.length}: plan.json de outro source.json, rode build de novo (#12559)`);
+  }
   const file = files[fileIndex];
-  const { fit } = effectiveFit(file, input.spec, { fit: input.clip.fit });
+  const eff = effectiveFit(file, input.spec, { fit: input.clip.fit });
+  // Bruto único: o default é o recorte de sempre (`fill`), mesmo vertical em horizontal; só `fit` explícito muda (regressão #12559).
+  const fit: FitMode = isMultiSource(input.source) || eff.how !== "default" ? eff.fit : "fill";
   const mirrored = file.mirrored ?? input.source.mirrored;
   const seqW = input.spec.width;
   const seqH = input.spec.height;
@@ -3376,7 +3395,29 @@ export function buildXmeml(
     );
   });
   out.push("</xmeml>");
-  return out.join("\n") + "\n";
+  return hoistFileDefinitions(out.join("\n") + "\n");
+}
+
+/**
+ * Garante que a 1ª ocorrência de cada `<file id>` no documento é a definição
+ * completa (convenção do xmeml; review da PR #12563): a faixa do fundo do
+ * `blur-fill` vem antes da principal no documento, mas o `<file>` é definido
+ * no clipe principal. Troca a 1ª referência curta pela definição e a
+ * definição pela referência. Sem `blur-fill` nada muda (a definição já vem antes).
+ */
+export function hoistFileDefinitions(xml: string): string {
+  let doc = xml;
+  for (const m of [...xml.matchAll(/<file id="([^"]+)"><name>[\s\S]*?<\/file>/g)]) {
+    const id = m[1];
+    const def = m[0];
+    const ref = `<file id="${id}"/>`;
+    const refAt = doc.indexOf(ref);
+    const defAt = doc.indexOf(def);
+    if (refAt < 0 || refAt > defAt) continue;
+    doc = doc.slice(0, defAt) + ref + doc.slice(defAt + def.length);
+    doc = doc.slice(0, refAt) + def + doc.slice(refAt + ref.length);
+  }
+  return doc;
 }
 
 // ── Legendas ──────────────────────────────────────────────────────────────
@@ -3921,9 +3962,9 @@ export function parseFrameRate(r: string): number {
 }
 
 /**
- * Saída do `ffprobe -show_streams -show_format -of json` → o que a montagem
- * usa. Rotação de metadado (vídeo de celular gravado "em pé") não é tratada:
- * o bruto da diar.ia.br é horizontal sem rotação (261027).
+ * Espelhamento e câmera do bruto (#11959); `parseProbe` (abaixo) lê o
+ * `ffprobe` e, desde o #12559, aplica a rotação de 90/270 do metadado
+ * (celular gravando em pé): vale o tamanho exibido (`displaySize`).
  */
 export type CameraFacing = "front" | "back";
 export type MirroredFrom = "camera-metadata" | "config" | "default";

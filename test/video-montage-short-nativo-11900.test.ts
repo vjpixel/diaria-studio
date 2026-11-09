@@ -80,8 +80,9 @@ describe("#11900 Short avulso do bruto vertical nativo", () => {
     assert.ok(!/<file id="file-2"><name>/.test(xmlS));
   });
 
-  it("source da sequência que não é arquivo do bruto: aviso e sem filtro", () => {
+  it("source da sequência que não é arquivo do bruto: erro que barra o build, nunca o Short com o horizontal misturado", () => {
     const p = buildSequencePlan({ ...short, source: "NOPE" }, resolved, [], source, {});
-    assert.match((p.warnings ?? []).join(" "), /source "NOPE" não é arquivo do bruto/);
+    assert.equal(p.clips.length, 0);
+    assert.match(p.dropped.join(" "), /source "NOPE" não é arquivo do bruto/);
   });
 });

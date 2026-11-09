@@ -51,11 +51,32 @@ def detect(cv2, cascade, img):
     return cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=6, minSize=(max(24, w // 12), max(24, w // 12)))
 
 
+def load_cascade(cv2):
+    """O cascade de rosto; vazio (XML ausente) é erro explícito, não uma asserção opaca do OpenCV."""
+    path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+    cascade = cv2.CascadeClassifier(path)
+    if cascade.empty():
+        print(f"face_detect: cascade não carregou: {path}", file=sys.stderr)
+        sys.exit(1)
+    return cascade
+
+
+def read_image(cv2, path):
+    """imread que aceita caminho com acento no Windows (imdecode sobre os bytes); None se o arquivo não existe."""
+    import numpy as np
+
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+    except OSError:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
+
+
 def sheet(inp: str, out: str) -> int:
     cv2 = load_cv2()
     import numpy as np
 
-    cascade = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml"))
+    cascade = load_cascade(cv2)
     with open(inp, encoding="utf-8") as f:
         items = json.load(f)
     rows: dict = {}
@@ -64,7 +85,7 @@ def sheet(inp: str, out: str) -> int:
     # 1ª passada: detecta em todos; a mediana da linha (mesma fala) corrige falso positivo e rosto não achado.
     det = []
     for it in items:
-        img = cv2.imread(it["path"])
+        img = read_image(cv2, it["path"])
         if img is None:
             det.append(None)
             continue
@@ -123,7 +144,11 @@ def sheet(inp: str, out: str) -> int:
         lines.append(line)
         width = max(width, line.shape[1])
     lines = [cv2.copyMakeBorder(l, 0, 4, 0, width - l.shape[1], cv2.BORDER_CONSTANT, value=(40, 40, 40)) for l in lines]
-    cv2.imwrite(out, cv2.vconcat(lines))
+    ok, buf = cv2.imencode(".jpg", cv2.vconcat(lines))
+    if not ok:
+        print(f"face_detect: falha ao codificar a folha {out}", file=sys.stderr)
+        return 1
+    buf.tofile(out)
     return 0
 
 
@@ -134,12 +159,12 @@ def main() -> int:
         print(__doc__, file=sys.stderr)
         return 2
     cv2 = load_cv2()
-    cascade = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml"))
+    cascade = load_cascade(cv2)
     with open(sys.argv[1], encoding="utf-8") as f:
         items = json.load(f)
     out = []
     for it in items:
-        img = cv2.imread(it["path"])
+        img = read_image(cv2, it["path"])
         if img is None:
             out.append({"key": it["key"], "w": 0, "h": 0, "faces": []})
             continue

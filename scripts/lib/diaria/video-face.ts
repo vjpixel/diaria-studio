@@ -7,11 +7,11 @@
  * puras e testáveis sem OpenCV:
  *
  *   - `pickFace`: o maior rosto com centro nos 2/3 de cima do quadro (o botão
- *     do microfone no peito vira falso rosto);
+ *     do microfone no peito vira falso rosto); nenhum lá em cima = sem rosto;
  *   - `itemFramings`: 3 frames por item (25/50/75% da fala); a mediana dos
  *     achados dá `faceX` (centro do rosto) e `eyeY` (40% da altura do rosto a
- *     partir do topo), em fração do quadro já desespelhado. Item sem rosto em
- *     nenhum frame não ganha framing (o do arquivo continua valendo).
+ *     partir do topo), em fração do quadro já desespelhado. Item com rosto em
+ *     menos de 2 frames não ganha framing (o do arquivo continua valendo).
  *
  * Diferença do edicao-video: lá o `face --write` grava também `zoom` por item;
  * aqui as escalas são por sequência (`scales`, alternância nos cortes), então
@@ -34,13 +34,20 @@ export interface FrameDetection {
   faces: FaceBox[];
 }
 
-/** O rosto do frame: o maior com centro nos 2/3 de cima; sem nenhum lá em cima, o maior de todos. */
+/**
+ * O rosto do frame: o maior com centro nos 2/3 de cima. Sem nenhum lá em cima,
+ * null (review da PR #12563): o edicao-video caía no maior de todos, que é
+ * justamente o falso rosto do botão do microfone no peito quando o rosto real
+ * não foi achado. A folha de olhar (Python) segue com a regra antiga só para
+ * posicionar o close, nunca para gravar framing.
+ */
 export function pickFace(faces: readonly FaceBox[], frameH: number): FaceBox | null {
-  if (!faces.length) return null;
   const up = faces.filter((f) => f.y + f.h / 2 < frameH * 0.66);
-  const pool = up.length ? up : faces;
-  return pool.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
+  return up.length ? up.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a)) : null;
 }
+
+/** Frames com rosto exigidos para propor o framing do item: 1 de 3 pode ser um falso positivo isolado. */
+export const MIN_FACE_FRAMES = 2;
 
 /** Frações da fala em que o `face` mede o rosto. */
 export const FACE_SAMPLE_FRACTIONS = [0.25, 0.5, 0.75] as const;
@@ -77,7 +84,7 @@ export function itemFramings(dets: readonly FrameDetection[], keys: readonly str
       const f = pickFace(d.faces, d.h);
       return f ? [{ d, f }] : [];
     });
-    if (!hits.length) return { key, found: 0, total: mine.length, framing: null, faceH: null };
+    if (hits.length < Math.min(MIN_FACE_FRAMES, mine.length) || !hits.length) return { key, found: hits.length, total: mine.length, framing: null, faceH: null };
     const faceX = median(hits.map(({ d, f }) => (f.x + f.w / 2) / d.w));
     const eyeY = median(hits.map(({ d, f }) => (f.y + f.h * EYE_IN_FACE) / d.h));
     const faceH = median(hits.map(({ d, f }) => f.h / d.h));
@@ -86,12 +93,20 @@ export function itemFramings(dets: readonly FrameDetection[], keys: readonly str
 }
 
 /**
- * Aplica os framings medidos ao `blocks.json` cru (objeto parseado): só o
- * `framing` dos itens com rosto achado muda; item sem rosto fica como estava
- * (nunca apaga um framing medido à mão). Devolve quantos mudaram.
+ * Aplica os framings medidos ao `blocks.json` cru (objeto parseado). Muda só o
+ * `framing` de item com rosto achado E sem `framing` próprio: o framing já
+ * gravado no item (medido à mão pelo editor, ou um `face --write` anterior)
+ * fica, a não ser com `overwrite` (#495/#7401: não desfazer edição do editor
+ * por um cálculo). Item sem rosto nunca muda. Devolve os que mudaram e os que
+ * ficaram por já ter framing (com a medida nova, para o relato).
  */
-export function applyItemFramings(raw: { blocks: Record<string, Array<Record<string, unknown>>> }, results: readonly ItemFaceResult[]): number {
+export function applyItemFramings(
+  raw: { blocks: Record<string, Array<Record<string, unknown>>> },
+  results: readonly ItemFaceResult[],
+  opts: { overwrite?: boolean } = {},
+): { changed: number; kept: Array<{ key: string; measured: { faceX: number; eyeY: number } }> } {
   let changed = 0;
+  const kept: Array<{ key: string; measured: { faceX: number; eyeY: number } }> = [];
   for (const r of results) {
     if (!r.framing) continue;
     const [block, idx] = r.key.split("#");
@@ -99,10 +114,14 @@ export function applyItemFramings(raw: { blocks: Record<string, Array<Record<str
     if (!it) continue;
     const prev = it.framing as { faceX?: number; eyeY?: number } | undefined;
     if (prev && prev.faceX === r.framing.faceX && prev.eyeY === r.framing.eyeY) continue;
+    if (prev && !opts.overwrite) {
+      kept.push({ key: r.key, measured: r.framing });
+      continue;
+    }
     it.framing = { faceX: r.framing.faceX, eyeY: r.framing.eyeY };
     changed++;
   }
-  return changed;
+  return { changed, kept };
 }
 
 /** Instantes da folha de olhar (#12560): início, meio e fim de cada fala; na última, também logo depois (o respiro do fecho). */

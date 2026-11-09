@@ -90,12 +90,54 @@ export function fileBounds(src: MultiSourceLike): Span[] {
   return sourceFiles(src).map((f) => ({ start: f.offsetFrames / src.fps, end: (f.offsetFrames + f.frames) / src.fps }));
 }
 
-/** Índice do arquivo pelo `id` (ou pelo nome do arquivo, com ou sem extensão); -1 se não existe. */
-export function fileIndexById(src: MultiSourceLike, id: string): number {
-  const fs = sourceFiles(src);
-  const i = fs.findIndex((f) => f.id === id);
-  if (i >= 0) return i;
-  return fs.findIndex((f) => baseName(f.path) === id || stem(f.path) === id);
+/**
+ * Confere e normaliza o `files` de um `source.json` lido do disco (#12559,
+ * review da PR #12563): o arquivo pode ter sido editado à mão ou estar
+ * defasado, e todo o resto assume ids únicos, offsets contíguos em ordem e a
+ * soma batendo com a duração. `files` com um arquivo só vira bruto único
+ * (sem `files`), para "vários arquivos" ter uma definição só. Erro = lista não vazia.
+ */
+export function normalizeSourceFiles<T extends MultiSourceLike>(src: T): { source: T; errors: string[] } {
+  if (!src.files) return { source: src, errors: [] };
+  const errors: string[] = [];
+  if (!Array.isArray(src.files) || src.files.length === 0) return { source: src, errors: ["source.json: files precisa ser uma lista não vazia (ou ausente no bruto único)"] };
+  const ids = new Set<string>();
+  let expect = 0;
+  src.files.forEach((f, i) => {
+    if (typeof f.id !== "string" || !f.id) errors.push(`source.json: files[${i}] sem id`);
+    else if (ids.has(f.id)) errors.push(`source.json: id ${f.id} repetido em files`);
+    else ids.add(f.id);
+    if (!(Number.isInteger(f.frames) && f.frames > 0)) errors.push(`source.json: files[${i}] (${f.id}) com frames inválido (${f.frames})`);
+    if (f.offsetFrames !== expect) errors.push(`source.json: files[${i}] (${f.id}) começa no quadro ${f.offsetFrames}, esperado ${expect} (offsets contíguos, na ordem)`);
+    if (!(f.width > 0 && f.height > 0)) errors.push(`source.json: files[${i}] (${f.id}) sem largura/altura`);
+    expect = f.offsetFrames + (Number.isFinite(f.frames) ? f.frames : 0);
+  });
+  if (!errors.length && Math.abs(expect / src.fps - src.durationS) > 1 / src.fps + 1e-6) {
+    errors.push(`source.json: a soma dos arquivos (${(expect / src.fps).toFixed(3)} s) diverge de durationS (${src.durationS} s)`);
+  }
+  if (errors.length) return { source: src, errors: [...errors, "rode transcribe --force com a lista de arquivos"] };
+  if (src.files.length === 1) {
+    const { files: _one, ...rest } = src;
+    return { source: rest as T, errors: [] };
+  }
+  return { source: src, errors: [] };
+}
+
+/**
+ * Prende cada trecho ao arquivo dele (#12559, review da PR #12563): o refino
+ * das bordas mede no áudio concatenado e pode empurrar a borda para dentro do
+ * arquivo vizinho. Trecho que fica vazio sai. Bruto único: devolve igual.
+ */
+export function clampRawsToFiles<T extends { srcIn: number; srcOut: number; file?: number }>(raws: readonly T[], src: MultiSourceLike): T[] {
+  if (!isMultiSource(src)) return [...raws];
+  const b = fileBounds(src);
+  return raws.flatMap((r) => {
+    const fb = b[r.file ?? 0];
+    if (!fb) return [r];
+    const srcIn = Math.max(r.srcIn, fb.start);
+    const srcOut = Math.min(r.srcOut, fb.end);
+    return srcOut > srcIn ? [{ ...r, srcIn, srcOut }] : [];
+  });
 }
 
 /** O arquivo é vertical (mais alto que largo)? */
@@ -156,6 +198,12 @@ export function combineSourceFiles(
   });
   const sizes = new Set(files.map((f) => `${f.width}x${f.height}`));
   if (sizes.size > 1) warnings.push(`arquivos com tamanhos diferentes (${[...sizes].join(", ")}): cada clipe é enquadrado pelo tamanho do próprio arquivo; vertical em sequência horizontal usa o encaixe (fit/fill/blur-fill) do item ou da sequência`);
+  // Data de relógio zerado (1904/1970) ou repetida não ordena nada: avisa como a data ausente (review da PR #12563).
+  const bogus = files.filter((f) => f.creationTime && Date.parse(f.creationTime) < Date.UTC(2000, 0, 1));
+  if ((opts.order ?? "gravacao") === "gravacao" && bogus.length) warnings.push(`creation_time implausível (antes de 2000) em ${bogus.map((f) => baseName(f.path)).join(", ")}: a ordem de gravação é falsa; --ordem dada com a lista na ordem certa`);
+  const dated = files.filter((f) => f.creationTime);
+  const ties = dated.filter((f, i) => dated.findIndex((g) => g.creationTime === f.creationTime) !== i);
+  if ((opts.order ?? "gravacao") === "gravacao" && ties.length) warnings.push(`creation_time repetido em ${ties.map((f) => baseName(f.path)).join(", ")} (cópia ou reexport?): desempate pelo nome; confira a ordem`);
   const noDate = files.filter((f) => !f.creationTime);
   if ((opts.order ?? "gravacao") === "gravacao" && noDate.length) warnings.push(`sem creation_time em ${noDate.map((f) => baseName(f.path)).join(", ")}: ordenados pelo nome depois dos datados (confira a ordem de gravação; --source com a lista na ordem e --ordem dada sobrepõe)`);
   const first = files[0];

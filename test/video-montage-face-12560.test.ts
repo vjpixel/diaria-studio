@@ -14,10 +14,18 @@ describe("#12560 pickFace", () => {
     const chest = { x: 320, y: 900, w: 160, h: 160 };
     assert.deepEqual(pickFace([chest, face], 1280), face);
   });
-  it("sem nada nos 2/3 de cima, o maior de todos; sem rosto, null", () => {
+  it("só o falso rosto do peito (nada nos 2/3 de cima) = sem rosto, nunca o peito; sem rosto, null", () => {
     const low = { x: 0, y: 1000, w: 50, h: 50 };
-    assert.deepEqual(pickFace([low], 1280), low);
+    assert.equal(pickFace([low], 1280), null);
     assert.equal(pickFace([], 1280), null);
+  });
+  it("rosto em 1 frame de 3 não basta (falso positivo isolado não vira framing)", () => {
+    const one: FrameDetection[] = [
+      { key: "c#0", w: 720, h: 1280, faces: [{ x: 300, y: 300, w: 140, h: 160 }] },
+      { key: "c#0", w: 720, h: 1280, faces: [] },
+      { key: "c#0", w: 720, h: 1280, faces: [{ x: 300, y: 1000, w: 200, h: 200 }] },
+    ];
+    assert.deepEqual(itemFramings(one, ["c#0"])[0], { key: "c#0", found: 1, total: 3, framing: null, faceH: null });
   });
 });
 
@@ -40,10 +48,20 @@ describe("#12560 itemFramings", () => {
 });
 
 describe("#12560 face --write", () => {
+  it("framing medido à mão no item fica (só --overwrite troca), com a medida nova no relato", () => {
+    const raw = JSON.parse(readFileSync(new URL("./fixtures/video-montage-12559/blocks-face.json", import.meta.url), "utf8"));
+    const r = applyItemFramings(raw, [{ key: "comentario#1", found: 3, total: 3, framing: { faceX: 0.55, eyeY: 0.31 }, faceH: 0.12 }]);
+    assert.deepEqual(r, { changed: 0, kept: [{ key: "comentario#1", measured: { faceX: 0.55, eyeY: 0.31 } }] });
+    assert.deepEqual(raw.blocks.comentario[1].framing, { faceX: 0.4, eyeY: 0.5 });
+    const o = applyItemFramings(raw, [{ key: "comentario#1", found: 3, total: 3, framing: { faceX: 0.55, eyeY: 0.31 }, faceH: 0.12 }], { overwrite: true });
+    assert.equal(o.changed, 1);
+    assert.deepEqual(raw.blocks.comentario[1].framing, { faceX: 0.55, eyeY: 0.31 });
+  });
+
   it("grava só nos itens com rosto; item sem rosto mantém o framing medido à mão", () => {
     const raw = JSON.parse(readFileSync(new URL("./fixtures/video-montage-12559/blocks-face.json", import.meta.url), "utf8"));
     const before = JSON.parse(JSON.stringify(raw));
-    const n = applyItemFramings(raw, [
+    const { changed: n } = applyItemFramings(raw, [
       { key: "comentario#0", found: 3, total: 3, framing: { faceX: 0.51, eyeY: 0.33 }, faceH: 0.12 },
       { key: "comentario#1", found: 0, total: 3, framing: null, faceH: null },
       { key: "fecho#0", found: 2, total: 3, framing: { faceX: 0.49, eyeY: 0.34 }, faceH: 0.12 },
@@ -56,7 +74,7 @@ describe("#12560 face --write", () => {
     assert.deepEqual({ ...raw, blocks: undefined }, { ...before, blocks: undefined });
     assert.equal(raw.blocks.comentario[0].text, before.blocks.comentario[0].text);
     // rodar de novo com o mesmo resultado não muda nada
-    assert.equal(applyItemFramings(raw, [{ key: "comentario#0", found: 3, total: 3, framing: { faceX: 0.51, eyeY: 0.33 }, faceH: 0.12 }]), 0);
+    assert.equal(applyItemFramings(raw, [{ key: "comentario#0", found: 3, total: 3, framing: { faceX: 0.51, eyeY: 0.33 }, faceH: 0.12 }]).changed, 0);
   });
 });
 

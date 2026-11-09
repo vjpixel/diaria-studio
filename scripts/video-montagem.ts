@@ -315,6 +315,8 @@ import {
   fileBounds,
   isMultiSource,
   locateTime,
+  normalizeSourceFiles,
+  clampRawsToFiles,
   probeExtras,
   proposeRoles,
   sourceFiles,
@@ -322,7 +324,7 @@ import {
   type InventoryFile,
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
-import { assemblySegments, edgeFindings, edgeLine, longPauses, parseXmlAudio, sequenceCutsS, toTimeline, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
+import { assemblySegments, edgeFindings, edgeLine, longPauses, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
 import {
   alternativesFromDecupagem,
@@ -787,8 +789,23 @@ function cmdFrameOrientations(ctx: Ctx, at: string | undefined): number {
   return 0;
 }
 
-function measuredSource(ctx: Ctx): SourceInfo {
-  return readJson<SourceInfo>(f(ctx, "source.json"), "source.json (rode transcribe)");
+function measuredSource(ctx: Pick<Ctx, "stateDir">): SourceInfo {
+  return checkedSource(readJson<SourceInfo>(f(ctx, "source.json"), "source.json (rode transcribe)"));
+}
+
+/**
+ * #12559: os avisos de caneca/rosto medem no tamanho do 1º arquivo: no bruto em
+ * vários arquivos, só os clipes dele entram (os demais seriam avisos falsos).
+ */
+function firstFileClips(plan: SequencePlan, source: SourceInfo): SequencePlan {
+  return isMultiSource(source) ? { ...plan, clips: plan.clips.filter((c) => (c.file ?? 0) === 0) } : plan;
+}
+
+/** #12559: o `source.json` lido do disco, com os `files` conferidos (ids, offsets, duração); um arquivo só vira bruto único. */
+function checkedSource(raw: SourceInfo): SourceInfo {
+  const n = normalizeSourceFiles(raw);
+  if (n.errors.length) throw new Error(`source.json inválido:\n  - ${n.errors.join("\n  - ")}`);
+  return n.source;
 }
 
 /**
@@ -838,26 +855,44 @@ function ensureMultiAudio(ctx: Ctx, source: SourceInfo, redo: boolean): { path: 
   mkdirSync(dir, { recursive: true });
   const out = join(ctx.workDir, MULTI_AUDIO_FILE);
   const parts: string[] = [];
-  let rebuilt = redo || !existsSync(out);
+  // Reaproveitar só WAV inteiro (review da PR #12563): um WAV pela metade, de uma rodada interrompida,
+  // adiantaria o áudio de todos os arquivos seguintes. Duração medida contra a do arquivo; escrita em .tmp + rename.
+  const ok = (p: string, expectS: number) => existsSync(p) && audioDurationMatches(probeDurationS(p), expectS, source.fps);
+  let rebuilt = redo || !ok(out, source.durationS);
   for (const [i, file] of sourceFiles(source).entries()) {
     const part = join(dir, `${String(i + 1).padStart(2, "0")}-${file.id}.wav`);
     parts.push(part);
-    if (redo || !existsSync(part)) {
+    if (redo || !ok(part, file.frames / source.fps)) {
       console.error(`[video-montagem] áudio ${i + 1}/${sourceFiles(source).length}: ${file.id}…`);
-      run("ffmpeg", multiAudioPartArgs({ src: file.path, frames: file.frames, fps: source.fps, out: part }));
+      const tmp = `${part}.tmp`;
+      run("ffmpeg", [...multiAudioPartArgs({ src: file.path, frames: file.frames, fps: source.fps, out: tmp }).slice(0, -1), "-f", "wav", tmp]);
+      renameSync(tmp, part);
       rebuilt = true;
     }
   }
   if (rebuilt) {
     const list = join(dir, "list.txt");
     writeFileSync(list, concatListText(parts));
-    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", out]);
+    const tmp = `${out}.tmp`;
+    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-f", "wav", tmp]);
+    renameSync(tmp, out);
+    const d = probeDurationS(out);
+    if (!audioDurationMatches(d, source.durationS, source.fps)) throw new Error(`áudio concatenado com ${d} s, a linha do tempo tem ${source.durationS} s: os tempos não batem com o vídeo (#12559)`);
   }
   return { path: out, rebuilt };
 }
 
+function probeDurationS(path: string): number {
+  return Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]).stdout.trim());
+}
+
+/** O áudio tem a duração esperada, a menos de 1 quadro? (WAV pela metade não passa, #12559.) */
+export function audioDurationMatches(actualS: number, expectS: number, fps: number): boolean {
+  return Number.isFinite(actualS) && Math.abs(actualS - expectS) <= 1 / fps + 1e-6;
+}
+
 /** Passos que precisam de imagem: no modo áudio (#11552) param antes, dizendo o motivo. */
-export const VIDEO_ONLY_COMMANDS = ["frame", "build", "srt", "preview", "review"] as const;
+export const VIDEO_ONLY_COMMANDS = ["frame", "face", "gaze", "build", "verify-xml", "srt", "preview", "review"] as const;
 
 /**
  * Modo áudio (#11552): com `source.json` de bruto só de áudio, os passos que
@@ -1492,8 +1527,15 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   mkdirSync(ctx.stateDir, { recursive: true });
   // #12559: vários arquivos (`--source a,b` ou `--all`) viram uma linha do tempo.
   let multiPaths: string[] | null = null;
-  if (sourceArg?.includes(",")) multiPaths = resolveSourceList(sourceArg.split(",").filter((x) => x.trim()), ctx.driveDir);
-  else if (multi.all) {
+  const sourceJson = f(ctx, "source.json");
+  // Vírgula no nome de UM arquivo ("Gravação, parte 1.mp4"): o caminho inteiro existe = bruto único.
+  if (sourceArg?.includes(",") && !existsSync(resolve(sourceArg)) && !existsSync(join(ctx.driveDir, sourceArg))) multiPaths = resolveSourceList(sourceArg.split(",").filter((x) => x.trim()), ctx.driveDir);
+  else if (!sourceArg && !multi.all && !fromAudio && !ctx.force && existsSync(sourceJson)) {
+    // Rodar de novo sem --source numa edição já em vários arquivos: os mesmos arquivos do source.json (não recai na escolha do bruto único).
+    const cachedFiles = checkedSource(readJson<SourceInfo>(sourceJson, "source.json")).files;
+    if (cachedFiles?.length) multiPaths = cachedFiles.map((x) => x.path);
+  }
+  if (!multiPaths && multi.all) {
     if (sourceArg) throw new Error("--all e --source juntos: use um só");
     if (!existsSync(ctx.driveDir)) throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir}`);
     const files = readdirSync(ctx.driveDir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
@@ -1527,7 +1569,6 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     }
     src = join(ctx.driveDir, raw.pick.name);
   }
-  // #12559: a identidade do bruto em vários arquivos é a lista (na ordem da linha do tempo, conferida depois do probe).
   const srcPath = src.replace(/\\/g, "/");
   const sourcePath = f(ctx, "source.json");
   const trPath = f(ctx, "transcript.json");
@@ -1536,7 +1577,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   // #11603: o transcript.json de antes, para saber se ele mudou nesta rodada.
   const prevTranscript = existsSync(trPath) ? readFileSync(trPath) : null;
   let wroteSource = false;
-  let cached = existsSync(sourcePath) && !ctx.force ? readJson<SourceInfo>(sourcePath, "source.json") : null;
+  let cached = existsSync(sourcePath) && !ctx.force ? checkedSource(readJson<SourceInfo>(sourcePath, "source.json")) : null;
   if (audioPath && audioPath === srcPath) throw new Error("--from-audio aponta para o próprio bruto; o áudio separado é outro arquivo (o vídeo vai em --source ou solto na pasta)");
   // --from-audio troca o bruto do áudio para o vídeo sem --force: a transcrição do áudio já está guardada.
   if (cached && audioPath && cached.path === audioPath) cached = null;
@@ -1545,6 +1586,10 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     const wanted = multiPaths ? [...multiPaths].sort().join(" | ") : srcPath;
     const have = cached.files?.length ? cached.files.map((x) => x.path).sort().join(" | ") : cached.path;
     if (have !== wanted) throw new Error(sourceConflictMessage(sourceIdentity(cached), multiPaths ? multiPaths.join(" | ") : srcPath));
+    // `--ordem dada` com outra ordem que a do source.json gravado: reordenar exige refazer tudo (review da PR #12563).
+    if (multiPaths && multi.order === "dada" && cached.files && cached.files.map((x) => x.path).join(" | ") !== multiPaths.join(" | ")) {
+      throw new Error(`--ordem dada pede ${multiPaths.join(" | ")}, mas o source.json tem ${sourceIdentity(cached)}: reordenar refaz a transcrição e os tempos; rode com --force (#12559)`);
+    }
   }
   let source: SourceInfo;
   // source.json refeito = todos os derivados refeitos (áudio, loudness, silêncios, transcrição).
@@ -1921,7 +1966,9 @@ function cmdInventory(ctx: Ctx, dirArg: string | undefined, editionsArg: string 
     }
     return { name, path, width: s.width, height: s.height, durationS: s.durationS, fps: s.fps, ...(creationTime ? { creationTime } : {}), ...(heard ? { heard } : {}) };
   });
-  const editions = (editionsArg ?? `${ctx.edition},${nextWeekdayEdition(ctx.edition)}`).split(",").map((e) => e.trim()).filter((e) => /^\d{6}$/.test(e));
+  const editions = (editionsArg ?? `${ctx.edition},${nextWeekdayEdition(ctx.edition)}`).split(",").map((e) => e.trim()).filter(Boolean);
+  const badEd = editions.filter((e) => !/^\d{6}$/.test(e));
+  if (badEd.length) throw new Error(`--editions: ${badEd.join(", ")} não é AAMMDD`);
   const d1: Record<string, string> = {};
   for (const e of editions) {
     const t = readD1Text(e);
@@ -1977,9 +2024,9 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     if (!existsSync(xmlPath)) throw new Error(`verify-xml: ${xmlPath} ausente (rode build)`);
     const parsed = parseXmlAudio(readFileSync(xmlPath, "utf8"));
     const { clips, errors } = toTimeline(parsed, offsets);
-    const issues = [...errors, ...xmlStructureIssues(parsed.clips)];
+    const issues = [...errors, ...xmlStructureIssues(parsed.clips), ...xmlPlanIssues(parsed, { clips: plan.clips.length, durationFrames: plan.durationFrames })];
     if (parsed.timebase !== pf.source.fps || parsed.ntsc) issues.push(`timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""} diferente dos ${pf.source.fps} fps do bruto`);
-    const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thr);
+    const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thr, undefined, isMultiSource(pf.source) ? fileBounds(pf.source) : undefined);
     const cut = edges.filter((e) => e.cutIn || e.cutOut);
     const durS = (parsed.clips[parsed.clips.length - 1]?.end ?? 0) / parsed.rate;
     console.log(`== ${basename(xmlPath)}: timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""}, ${clips.length} clipes, ${durS.toFixed(2)} s (plano: ${(plan.durationFrames / pf.source.fps).toFixed(2)} s)`);
@@ -2017,7 +2064,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     console.error(`[erro] verify-xml: ${bad} problema(s) no XML (borda com SOM CORTADO, estrutura ou fala divergente): corrigir o blocks.json/build antes da prévia (#12561)`);
     return 1;
   }
-  console.error("[video-montagem] verify-xml: zero bordas cortadas e áudio do XML batendo com o roteiro (#12561)");
+  console.error(`[video-montagem] verify-xml: zero bordas cortadas${transcribe ? " e áudio do XML batendo com o roteiro" : "; fala NÃO conferida (--no-transcribe)"} (#12561)`);
   return 0;
 }
 
@@ -2026,18 +2073,23 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
 /** Um frame do bruto (tempo global) em PNG de 720 px de largura, desespelhado. */
 function grabFrame(source: SourceInfo, t: number, out: string): void {
   const at0 = frameAt(source, t);
+  rmSync(out, { force: true });
   run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", at0.localS.toFixed(3), "-i", at0.view.path, "-frames:v", "1", "-vf", `${at0.view.mirrored ? "hflip," : ""}scale=720:-2`, out]);
+  // ffmpeg com -ss além do fim sai 0 sem gravar: frame ausente é falha de extração, não "rosto não detectado" (review da PR #12563).
+  if (!existsSync(out)) throw new Error(`frame em ${t.toFixed(2)} s (${at0.view.id} em ${at0.localS.toFixed(2)} s) não foi extraído: tempo além do fim do arquivo?`);
 }
 
 const FACE_PY = join(ROOT, "scripts", "video", "face_detect.py");
 
 /**
- * `face AAMMDD [--write]` (#12560): mede o rosto em 3 frames de cada item do
- * blocks.json (25/50/75% do trecho resolvido) e propõe o `framing` do item.
- * Com `--write`, grava só nos itens com rosto achado (sem rosto = o framing
- * de antes fica). Roda de novo ao trocar uma tomada.
+ * `face AAMMDD [--write [--overwrite]]` (#12560): mede o rosto em 3 frames de
+ * cada item do blocks.json (25/50/75% do trecho resolvido) e propõe o
+ * `framing` do item. Com `--write`, grava só nos itens com rosto achado e sem
+ * `framing` próprio; o que já estava no item (medido à mão) fica, e sai no
+ * relato com a medida nova; `--overwrite` troca também esses. Rodar de novo
+ * ao trocar uma tomada (com `--overwrite`, se o `face` já gravou antes).
  */
-function cmdFace(ctx: Ctx, write: boolean): number {
+function cmdFace(ctx: Ctx, write: boolean, overwrite = false): number {
   const { source, resolved } = plans(ctx);
   const dir = join(ctx.workDir, "face-tmp");
   rmSync(dir, { recursive: true, force: true });
@@ -2070,9 +2122,13 @@ function cmdFace(ctx: Ctx, write: boolean): number {
   }
   const path = f(ctx, "blocks.json");
   const raw = JSON.parse(readFileSync(path, "utf8")) as { blocks: Record<string, Array<Record<string, unknown>>> };
-  const changed = applyItemFramings(raw, results);
+  const { changed, kept } = applyItemFramings(raw, results, { overwrite });
   if (changed) writeFileAtomic(path, JSON.stringify(raw, null, 2) + "\n");
-  console.error(`[video-montagem] face --write: framing de ${changed} item(ns) gravado em ${path} (a caneca segue a do framing do arquivo, #12560)`);
+  for (const k of kept) {
+    const [block, idx] = k.key.split("#");
+    console.error(`[premissa] ${block}[${idx}]: já tinha framing no blocks.json; mantido (medido agora: ${k.measured.faceX}/${k.measured.eyeY}; --overwrite troca)`);
+  }
+  console.error(`[video-montagem] face --write: framing de ${changed} item(ns) gravado em ${path}${kept.length ? `, ${kept.length} mantido(s)` : ""} (a caneca segue a do framing do arquivo, #12560)`);
   return 0;
 }
 
@@ -2391,6 +2447,8 @@ function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: b
       clips = protectedEdges.clips;
       adjustments.push(...protectedEdges.adjustments);
     }
+    // #12559: o refino mede no áudio global; a borda nunca passa para o arquivo vizinho.
+    clips = clampRawsToFiles(clips, source);
     const assembled = assembleClips(p.spec, clips, source.fps);
     adjustments.push(...assembled.merges);
     highBandWarnings[sequenceKey(p.spec)] = highEnv
@@ -2415,7 +2473,13 @@ const rawOf = (c: PlannedClip): RawClip => ({
   // O corte de pausa curta segue sem troca de zoom depois do refino (#11753).
   ...(c.keepScale ? { keepScale: true as const } : {}),
   ...(c.framing ? { framing: c.framing } : {}),
+  // #12559 (review da PR #12563): sem isto o refino (que roda por padrão) jogava todo clipe no 1º arquivo, sem o encaixe.
+  ...(c.file !== undefined ? { file: c.file } : {}),
+  ...(c.fit !== undefined ? { fit: c.fit } : {}),
 });
+
+/** Exportado para o teste (#12559): o refino preserva arquivo e encaixe do clipe. */
+export const rawClipOf = rawOf;
 
 /**
  * Versão do XML de cada sequência deste build (#12111): o nome passa a
@@ -2561,6 +2625,13 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   }
   // #12559: os avisos de caneca e rosto medem no tamanho do 1º arquivo; no bruto em vários arquivos, só os clipes dele.
   const warnPlans = source.files?.length ? picked.map((p) => ({ ...p, clips: p.clips.filter((c) => (c.file ?? 0) === 0) })) : picked;
+  if (source.files?.length) {
+    const unchecked = [...new Set(picked.flatMap((p) => p.clips.filter((c) => (c.file ?? 0) !== 0).map((c) => source.files![c.file ?? 0]?.id)))].filter(Boolean);
+    if (unchecked.length) console.error(`[aviso] caneca e rosto centrado conferidos só em ${source.files[0].id}; ${unchecked.join(", ")} sem conferência: ver a folha de frames da prévia ou o gaze (#12559)`);
+    if (picked.some((p) => p.clips.some((c) => clipGeometry({ source, spec: p.spec, framing, fileOverrides: file.files, clip: c }).fit === "blur-fill"))) {
+      console.error("[premissa] blur-fill no XML = faixa V1 com o Gaussian Blur do FCP7 sob o clipe: conferir no 1º import que o Premiere traduz o efeito (senão, aplicar o desfoque à mão) (#12559)");
+    }
+  }
   // #11939: a caneca é esforço, nunca barra o build; o relato diz onde ela não sai inteira.
   for (const w of mugFramingWarnings(warnPlans, source, framing)) console.error(`[aviso] ${w}`);
   // #12093: o rosto centrado nos dois zooms; escala pequena demais bate na borda do bruto.
@@ -3255,7 +3326,7 @@ async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSess
   // #12096: `--seq youtube` também (o horizontal, 960x540); sem --seq, a vertical da edição.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
   if (pf.framingAssumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (o mesmo do build)");
-  for (const w of mugFramingWarnings([plan], pf.source, pf.framing)) console.error(`[aviso] ${w}`);
+  for (const w of mugFramingWarnings([firstFileClips(plan, pf.source)], pf.source, pf.framing)) console.error(`[aviso] ${w}`);
   const fps = pf.source.fps;
   const srt = join(ctx.outDir, srtFileName(plan.spec.name));
   const planPath = f(ctx, "plan.json");
@@ -3291,8 +3362,10 @@ async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSess
     }
     // #12096: o recorte do XML (framingFor com a escala e o eyeFraction da sequência).
     const crop = previewCropFor(pf.source, plan.spec, clipFraming(pf.framing, c), c.scale);
+    // #12559: `fit` explícito no bruto único (o default segue fill): o mesmo encaixe do XML.
+    const fit = clipGeometry({ source: pf.source, spec: plan.spec, framing: pf.framing, clip: c }).fit;
     // Corte pelos FRAMES do plano, os mesmos do XML.
-    run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}) }));
+    run("ffmpeg", previewClipArgs({ src: pf.source.path, start: c.frameIn / fps, end: c.frameOut / fps, crop, mirrored: pf.source.mirrored, fps, out: join(dir, name), ...size, ...(audioSrc ? { audioSrc } : {}), ...(fit !== "fill" ? { fit } : {}) }));
     list.push(`file '${name}'`);
     console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block})`);
   });
@@ -3375,7 +3448,7 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
     ?? ["build sem verificação de banda alta: rode build com o bruto disponível (#11940)"];
   for (const warning of highBandWarnings) console.error(`[aviso] ${warning}`);
   // #11939: a caneca na folha de frames da prévia; o cálculo diz em que escala ela não sai inteira.
-  const mugWarnings = mugFramingWarnings([plan], pf.source, pf.framing);
+  const mugWarnings = mugFramingWarnings([firstFileClips(plan, pf.source)], pf.source, pf.framing);
   for (const warning of mugWarnings) console.error(`[aviso] ${warning}`);
   writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings, highBandWarnings, mugWarnings, pauses });
   console.log(JSON.stringify({ preview, durationS, findings, highBandWarnings, mugWarnings, pauses }, null, 2));
@@ -3592,7 +3665,7 @@ function readBrutoDrive(ctx: Pick<Ctx, "stateDir" | "edition">): BrutoDriveInfo 
 export async function ensureBrutoLocal(ctx: Pick<Ctx, "stateDir" | "edition">, d: DriveSession, opts: { audioCleanBuild?: boolean } = {}): Promise<void> {
   const path = f(ctx, "source.json");
   if (!existsSync(path)) return; // o comando dá o erro de sempre ("rode transcribe")
-  const source = readJson<SourceInfo>(path, "source.json");
+  const source = checkedSource(readJson<SourceInfo>(path, "source.json"));
   if (source.files?.length) {
     const missing = localBrutoMissing(ctx);
     if (missing) throw new Error(missing);
@@ -3635,7 +3708,7 @@ export async function ensureBrutoLocal(ctx: Pick<Ctx, "stateDir" | "edition">, d
 export function localBrutoMissing(ctx: Pick<Ctx, "stateDir" | "edition">): string | null {
   const path = f(ctx, "source.json");
   if (!existsSync(path)) return null;
-  const source = readJson<SourceInfo>(path, "source.json");
+  const source = checkedSource(readJson<SourceInfo>(path, "source.json"));
   // #12559: bruto em vários arquivos: todos precisam estar nesta máquina (o modo API baixa um bruto só).
   if (source.files?.length) {
     const gone = source.files.filter((x) => !existsSync(x.path)).map((x) => x.path);
@@ -3825,7 +3898,7 @@ async function runCommand(
       return cmdVerifyXml(ctx, seq, !flags.has("no-transcribe"));
     case "face":
       await needLocalBruto();
-      return cmdFace(ctx, flags.has("write"));
+      return cmdFace(ctx, flags.has("write"), flags.has("overwrite"));
     case "gaze":
       await needLocalBruto();
       return cmdGaze(ctx, seq);

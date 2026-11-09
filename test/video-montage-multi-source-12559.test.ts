@@ -39,6 +39,7 @@ import {
   fileIndexAtTime,
   fitAreaWarning,
   locateTime,
+  normalizeSourceFiles,
   probeExtras,
   proposeRoles,
   sortByRecording,
@@ -127,6 +128,31 @@ describe("#12559 combineSourceFiles", () => {
     assert.equal(loc.file.id, "C0003");
     assert.equal(loc.localS, 5);
     assert.deepEqual(fileBounds(c.source), [{ start: 0, end: 30 }, { start: 30, end: 40 }, { start: 40, end: 60 }]);
+  });
+});
+
+describe("#12559 source.json lido do disco (review da PR #12563)", () => {
+  it("normalizeSourceFiles aceita o que combineSourceFiles grava e recusa ids repetidos, offsets fora de ordem e soma divergente", () => {
+    const c = combineSourceFiles(nubank);
+    assert.ok(c.ok);
+    assert.deepEqual(normalizeSourceFiles(c.source).errors, []);
+    const files = c.source.files;
+    const dup = normalizeSourceFiles({ ...c.source, files: [files[0], { ...files[1], id: files[0].id }, files[2]] });
+    assert.match(dup.errors.join(" "), /repetido/);
+    const gap = normalizeSourceFiles({ ...c.source, files: [files[0], { ...files[1], offsetFrames: 950 }, files[2]] });
+    assert.match(gap.errors.join(" "), /esperado 900/);
+    const dur = normalizeSourceFiles({ ...c.source, durationS: 70 });
+    assert.match(dur.errors.join(" "), /diverge de durationS/);
+  });
+  it("files com um arquivo só vira bruto único (uma definição de vários arquivos)", () => {
+    const one = normalizeSourceFiles({ path: "a.mp4", fps: 30, durationS: 1, width: 2, height: 2, files: [{ id: "a", path: "a.mp4", offsetFrames: 0, frames: 30, width: 2, height: 2 }] });
+    assert.deepEqual(one.errors, []);
+    assert.equal(one.source.files, undefined);
+  });
+  it("clipGeometry recusa índice de arquivo fora do bruto (plan.json de outro source.json)", () => {
+    const c = combineSourceFiles(nubank);
+    assert.ok(c.ok);
+    assert.throws(() => clipGeometry({ source: { ...c.source, mirrored: false }, spec: { width: 1920, height: 1080 }, framing: { faceX: 0.5, eyeY: 0.5 }, clip: { scale: 100, file: 3 } }), /aponta o arquivo 3, mas o bruto tem 3/);
   });
 });
 
