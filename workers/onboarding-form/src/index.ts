@@ -200,7 +200,12 @@ export default {
       // sai o formulário vazio (a pessoa perde a retomada, não o formulário).
       let prefill: Record<string, string> | null = null;
       try {
-        prefill = draftPrefill(await env.ONBOARDING_FORM.get(formDraftKey(email)), email);
+        // A `resp:` junto: rascunho mais antigo que o envio (delete falhou) não é retomado.
+        const [draftRaw, respRaw] = await Promise.all([
+          env.ONBOARDING_FORM.get(formDraftKey(email)),
+          env.ONBOARDING_FORM.get(formResponseKey(email)),
+        ]);
+        prefill = draftPrefill(draftRaw, email, undefined, respRaw);
       } catch (e) {
         console.error(JSON.stringify({ event: "rascunho_leitura_falhou", error: (e as Error).message }));
       }

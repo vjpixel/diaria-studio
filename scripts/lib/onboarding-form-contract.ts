@@ -817,9 +817,17 @@ export function buildFormDraftRecord(
  * @pure — #12504: o rascunho guardado, pronto para preencher o formulário.
  * Só as respostas ainda válidas nas perguntas atuais (passa de novo por
  * `parseFormDraft`: rascunho de uma versão anterior não preenche opção que
- * saiu). `null` = sem rascunho legível ou de outro e-mail.
+ * saiu). `null` = sem rascunho legível ou de outro e-mail, ou rascunho
+ * mais antigo que a resposta enviada (`latestResponseRaw`, a `resp:`): o
+ * delete do rascunho no envio falhou e a pessoa já enviou, então não há o
+ * que retomar.
  */
-export function draftPrefill(raw: string | null, email: string, questions: readonly FormQuestion[] = FORM_QUESTIONS): Record<string, string> | null {
+export function draftPrefill(
+  raw: string | null,
+  email: string,
+  questions: readonly FormQuestion[] = FORM_QUESTIONS,
+  latestResponseRaw: string | null = null,
+): Record<string, string> | null {
   if (raw == null) return null;
   let d: Partial<FormDraft>;
   try {
@@ -828,6 +836,15 @@ export function draftPrefill(raw: string | null, email: string, questions: reado
     return null;
   }
   if (!d || normalizeFormEmail(d.email ?? "") !== normalizeFormEmail(email) || d.answers == null || typeof d.answers !== "object") return null;
+  if (latestResponseRaw != null) {
+    try {
+      const submitted = Date.parse(String((JSON.parse(latestResponseRaw) as Record<string, unknown>).submitted_at));
+      const updated = Date.parse(String(d.updated_at));
+      if (Number.isFinite(submitted) && Number.isFinite(updated) && submitted >= updated) return null;
+    } catch {
+      // resposta ilegível não impede a retomada
+    }
+  }
   const fields: Record<string, string | string[]> = { email };
   for (const [k, v] of Object.entries(d.answers)) {
     if (typeof v !== "string") continue;

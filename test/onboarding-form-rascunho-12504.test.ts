@@ -134,6 +134,14 @@ describe("#12504 parseFormDraft (limpeza tolerante)", () => {
     assert.equal(draftPrefill("{lixo", "a@x.com"), null);
     assert.equal(draftPrefill(null, "a@x.com"), null);
   });
+
+  it("draftPrefill não retoma rascunho mais antigo que a resposta enviada (delete do envio falhou)", () => {
+    const raw = JSON.stringify(draft("a@x.com", { situacao: "Estudante" }, "2026-11-09T10:00:00.000Z"));
+    const resp = (at: string) => JSON.stringify({ email: "a@x.com", submitted_at: at, answers: { situacao: "Estudante" } });
+    assert.equal(draftPrefill(raw, "a@x.com", undefined, resp("2026-11-09T10:05:00.000Z")), null, "enviou depois do rascunho: sem aviso de retomada");
+    assert.deepEqual(draftPrefill(raw, "a@x.com", undefined, resp("2026-11-08T10:00:00.000Z")), { situacao: "Estudante" }, "rascunho novo depois de um envio antigo: retoma");
+    assert.deepEqual(draftPrefill(raw, "a@x.com", undefined, "{lixo"), { situacao: "Estudante" }, "resposta ilegível não impede a retomada");
+  });
 });
 
 describe("#12504 decideFormDraftWrite", () => {
