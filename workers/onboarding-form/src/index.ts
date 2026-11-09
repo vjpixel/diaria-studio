@@ -105,7 +105,13 @@ export default {
       const check = await checkFormEmailSig(email, sig, secret);
       if (!check.ok) return rejectLink("/", check.reason);
       // v3: hora em que a página foi gerada, assinada — o envio grava `duration_s`.
-      const rendered = await signFormRenderedAt(email, Date.now() / 1000, secret);
+      // Falha ao assinar a hora nunca derruba a página: sai sem o campo (o envio fica sem `duration_s`).
+      let rendered: string | null = null;
+      try {
+        rendered = await signFormRenderedAt(email, Date.now() / 1000, secret);
+      } catch (e) {
+        console.error(JSON.stringify({ event: "rendered_at_sign_failed", error: (e as Error).message }));
+      }
       return html(renderFormHtml(email, sig, undefined, rendered));
     }
 
@@ -159,7 +165,14 @@ export default {
         const list = await env.ONBOARDING_FORM.list({ prefix: "resp:", cursor });
         for (const k of list.keys) {
           const raw = await env.ONBOARDING_FORM.get(k.name);
-          if (raw) responses.push(JSON.parse(raw) as FormResponse);
+          if (!raw) continue;
+          try {
+            responses.push(JSON.parse(raw) as FormResponse);
+          } catch {
+            // Registro ilegível não derruba a listagem. O log leva só o sufixo
+            // da chave (data e nonce), nunca o e-mail que vem depois de `resp:`.
+            console.error(JSON.stringify({ event: "resposta_ilegivel", key_suffix: k.name.split(":").slice(2).join(":") || "(legada)" }));
+          }
         }
         cursor = list.list_complete ? undefined : list.cursor;
       } while (cursor);

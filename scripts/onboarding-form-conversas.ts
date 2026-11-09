@@ -131,6 +131,13 @@ export function renderConversaTable(rows: readonly ConversaRow[]): string {
   return out.join("\n");
 }
 
+/** `AAAA-MM-DD` que existe no calendário (a comparação com a data da resposta é por texto). */
+function isIsoDate(v: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
+
 export function parseConversaArgs(argv: readonly string[]): { filters: ConversaFilters; json: boolean } {
   const filters: ConversaFilters = {};
   let json = false;
@@ -140,6 +147,7 @@ export function parseConversaArgs(argv: readonly string[]): { filters: ConversaF
     else if (f in FILTER_FLAGS) {
       const v = argv[++i];
       if (v == null) throw new Error(`${f} sem valor`);
+      if (f === "--desde" && !isIsoDate(v)) throw new Error(`--desde precisa de uma data AAAA-MM-DD válida (veio "${v}")`);
       filters[FILTER_FLAGS[f]] = v;
     } else throw new Error(`flag desconhecida: ${f}`);
   }

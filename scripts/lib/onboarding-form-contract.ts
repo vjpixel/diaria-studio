@@ -384,6 +384,57 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
   },
 ];
 
+/**
+ * @pure — confere a coerência interna da lista de perguntas; devolve os
+ * problemas (lista vazia = ok). Travado pelo teste do contrato:
+ *  - ids únicos; `otherOption`/`exclusiveOption` entre as opções;
+ *  - `hiddenWhen`/`shownWhen`/`optionsFrom`/`subOf` só apontam para pergunta
+ *    ANTERIOR (a validação no servidor avalia em ordem), e as opções citadas
+ *    existem nela; `optionsFrom` só com opções da pergunta de origem;
+ *  - `maxChoices >= 1`; campos de um tipo só no tipo dele (`exclusiveOption`
+ *    e `maxChoices` só em caixa, `optionsFrom` só em escolha única,
+ *    `placeholder` só em aberta).
+ */
+export function validateFormQuestions(qs: readonly FormQuestion[]): string[] {
+  const errs: string[] = [];
+  const before = new Map<string, FormQuestion>();
+  for (const q of qs) {
+    if (before.has(q.id)) errs.push(`${q.id}: id repetido`);
+    const ref = (field: string, id: string | undefined): FormQuestion | null => {
+      if (id == null) return null;
+      const t = before.get(id);
+      if (!t) errs.push(`${q.id}: ${field} aponta para "${id}", que não é uma pergunta anterior`);
+      return t ?? null;
+    };
+    const optsOf = (t: FormQuestion | null) => (t && isChoiceQuestion(t) ? t.options : []);
+    const hw = ref("hiddenWhen", q.hiddenWhen?.questionId);
+    if (q.hiddenWhen && hw && !optsOf(hw).includes(q.hiddenWhen.option)) errs.push(`${q.id}: hiddenWhen.option fora das opções de ${hw.id}`);
+    const sw = ref("shownWhen", q.shownWhen?.questionId);
+    if (q.shownWhen && sw) {
+      for (const o of q.shownWhen.anyOf ?? []) if (!optsOf(sw).includes(o)) errs.push(`${q.id}: shownWhen.anyOf "${o}" fora das opções de ${sw.id}`);
+      if (q.shownWhen.minChecked != null && (sw.kind !== "checkbox" || q.shownWhen.minChecked < 1)) errs.push(`${q.id}: shownWhen.minChecked exige caixa e valor >= 1`);
+      if (q.shownWhen.anyOf == null && q.shownWhen.minChecked == null) errs.push(`${q.id}: shownWhen sem anyOf nem minChecked`);
+    }
+    ref("subOf", q.subOf);
+    if (isChoiceQuestion(q)) {
+      if (q.options.length === 0) errs.push(`${q.id}: sem opções`);
+      if (q.otherOption != null && !q.options.includes(q.otherOption)) errs.push(`${q.id}: otherOption fora das opções`);
+      if (q.exclusiveOption != null && (q.kind !== "checkbox" || !q.options.includes(q.exclusiveOption))) errs.push(`${q.id}: exclusiveOption só em caixa e entre as opções`);
+      if (q.maxChoices != null && (q.kind !== "checkbox" || !Number.isInteger(q.maxChoices) || q.maxChoices < 1)) errs.push(`${q.id}: maxChoices só em caixa e >= 1`);
+      if (q.optionsFrom != null) {
+        if (q.kind !== "select") errs.push(`${q.id}: optionsFrom só em escolha única`);
+        const src = ref("optionsFrom", q.optionsFrom);
+        if (src) for (const o of q.options) if (!optsOf(src).includes(o)) errs.push(`${q.id}: opção "${o}" fora de ${src.id}`);
+      }
+      if ("placeholder" in q) errs.push(`${q.id}: placeholder só em pergunta aberta`);
+    } else {
+      for (const f of ["options", "exclusiveOption", "otherOption", "maxChoices", "optionsFrom"]) if (f in q) errs.push(`${q.id}: ${f} só em pergunta de escolha`);
+    }
+    before.set(q.id, q);
+  }
+  return errs;
+}
+
 /** Perguntas numeradas (sem `subOf`) — "São até 12 perguntas". */
 export function numberedQuestions(questions: readonly FormQuestion[] = FORM_QUESTIONS): FormQuestion[] {
   return questions.filter((q) => !q.subOf);

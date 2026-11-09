@@ -38,6 +38,6 @@ As flags antigas (`--resolve-only`, `--surveys-json`, `--responses`) abortam com
 
 ## Notas
 
-- Uma resposta por e-mail: o Worker guarda só a mais recente de cada pessoa.
-- Pergunta removida de `FORM_QUESTIONS` tem as respostas antigas descartadas (o script avisa quantas).
+- Desde a v3 (#12490) o Worker guarda TODO envio (uma chave por envio, `form_version`); o perfil usa só o mais recente de cada e-mail (`latestFormResponses`).
+- Pergunta removida de `FORM_QUESTIONS`, ou opção que não existe mais numa pergunta que continua, tem as respostas antigas descartadas (o script avisa quantas, à parte).
 - Este fluxo é manual/ad-hoc — não está (e não deve entrar, #5192) na registry de tasks agendadas (`scripts/lib/scheduled-tasks.ts`).

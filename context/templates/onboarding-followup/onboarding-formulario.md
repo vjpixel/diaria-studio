@@ -3,6 +3,8 @@ e-mail do formulário D+6 (#10605)
 assunto: "Me ajuda a decidir o que vem por aí na diar.ia.br?"
 preview_text: "Uns três minutos, e as perguntas obrigatórias são todas de marcar."
 ONBOARDING-CORPO-PENDENTE — remover esta linha quando o editor aprovar o texto.
+(O marcador fica aqui DE PROPÓSITO: o texto já está aprovado, mas o envio só
+destrava quando a linha sai da cópia em data/snippets, depois do merge.)
 
 TEXTO v3, aprovado pelo editor em 09/11/2026 (e-mail 2; "Quando você enviar,
 os lembretes param." ajustado pelo editor no mesmo dia). O destravamento é em

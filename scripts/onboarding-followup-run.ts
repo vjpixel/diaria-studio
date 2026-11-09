@@ -63,7 +63,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import { listAllKitSubscribers, getSubscriberById, updateSubscriberFields, getKitSubscriberByEmail } from "./lib/kit-subscribers.ts";
 import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts";
-import { findTagIdByName, listAllTagSubscriberEmails, deleteBroadcast, tagSubscriber } from "./lib/kit-broadcasts.ts";
+import { findTagIdByName, listAllTagSubscriberEmails, listSubscriberTags, deleteBroadcast, tagSubscriber } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
 import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts";
 import { withFileLock } from "./lib/file-lock.ts";
@@ -79,7 +79,7 @@ import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
   ALL_FOLLOWUP_STEPS,
   FORM_RESPONDENT_TAG,
-  planRespondentTagging,
+  resolveRespondentIds,
   applyBaseInviteToPeople,
   baseInviteRecipientIds,
   decideBaseInviteConfirm,
@@ -1004,7 +1004,8 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   const failedLastRound = (d: FollowupDue) => hasLiveFailure(block.people[String(d.kit_subscriber_id)], d.kind);
   // Etapa adiada pela regra de pedidos não tem mais prazo de janela: para o
   // rodízio, a projeção do teto e a classificação de falhas ela é "sem janela".
-  const windowAnchor = (d: FollowupDue) => (isAskDeferred(block.people[String(d.kit_subscriber_id)], d.kind) ? null : orderSec(d));
+  const windowAnchor = (d: FollowupDue) =>
+    isAskDeferred(block.people[String(d.kit_subscriber_id)], d.kind, nowSec, cfg.askMinGapDays) ? null : orderSec(d);
   const demoted = (d: FollowupDue) => isCapDemoted(d, failedLastRound(d), windowAnchor(d), nowSec, cfg);
   const { within: dueWithinCap, deferred: capDeferred } = splitDueByCap(due, cfg.maxRecipientsPerLot, orderSec, demoted);
   for (const o of capDeferred) {
@@ -1170,7 +1171,7 @@ interface CliArgs {
   envRoot?: string;
 }
 
-function parseArgs(argv: string[]): CliArgs {
+export function parseArgs(argv: string[]): CliArgs {
   const a: CliArgs = { send: false, initSnippets: false, status: false, tagRespondents: false, apply: false, skipIfDisabled: false };
   for (let i = 0; i < argv.length; i++) {
     const f = argv[i];
@@ -1188,6 +1189,18 @@ function parseArgs(argv: string[]): CliArgs {
       process.stderr.write(`${LOG} flag desconhecida: ${f}\n`);
       throw new CliExit(2);
     }
+  }
+  const conflict =
+    a.apply && !a.tagRespondents
+      ? "--apply só vale com --tag-respondents (a rodada grava com --send)"
+      : (a.status || a.tagRespondents) && a.send
+        ? "--status/--tag-respondents não combinam com --send"
+        : a.status && a.tagRespondents
+          ? "--status e --tag-respondents são modos separados"
+          : null;
+  if (conflict) {
+    process.stderr.write(`${LOG} ${conflict}\n`);
+    throw new CliExit(2);
   }
   return a;
 }
@@ -1219,18 +1232,29 @@ export function formStatusReport(responses: readonly FormResponse[]): Record<str
 
 export interface TagRespondentsDeps {
   findTagId(name: string): Promise<number | null>;
-  listTaggedEmails(tagId: number): Promise<string[]>;
   fetchFormResponses(): Promise<FormResponseRecord[]>;
-  lookupIdByEmail(email: string): Promise<number | null>;
+  /** Assinante pelo e-mail (`null` = não existe no Kit). Pode lançar. */
+  lookupByEmail(email: string): Promise<{ id: number; state: string | null } | null>;
+  /** Estado atual do assinante (`GET /subscribers/{id}`). Pode lançar. */
+  getState(kitId: number): Promise<string | null>;
+  /** Ids das tags do assinante (`GET /subscribers/{id}/tags`, sem o atraso da listagem por tag). Pode lançar. */
+  listSubscriberTagIds(kitId: number): Promise<number[]>;
   tag(tagId: number, kitId: number): Promise<void>;
 }
 
 /**
  * `--tag-respondents` (#10605, para a #12495). Dry-run por padrão: só
- * planeja. Com `apply`, aplica a tag em quem falta e RELÊ a tag no fim (2xx
- * do Kit não prova escrita). Tag inexistente: `tag_ausente`, nada lido nem
- * gravado além da busca da tag. Exit 1 quando alguma marcação não se
- * confirmou ou um e-mail não achou assinante.
+ * planeja. Tag inexistente: `tag_ausente`, sai 2, nada lido nem gravado além
+ * da busca da tag. Cada respondente vira um id Kit (store, ou leitura por
+ * e-mail em try/catch: falha = `lookup_falhou`, segue com os outros); a
+ * comparação é por id. Fora de `active` no Kit fica em `nao_ativo` (não
+ * recebe a tag). Quem já tem a tag sai pela leitura das tags DO ASSINANTE
+ * (`GET /subscribers/{id}/tags`): a listagem por tag
+ * (`GET /tags/{id}/subscribers`) atrasa uns 180 s (armadilha 5 de
+ * `kit-client.ts`). Com `apply`, aplica a tag e confirma pessoa a pessoa pela
+ * mesma leitura; leitura que falha = `nao_confirmados` (ainda). Exit 1 quando
+ * alguma leitura falhou, alguma marcação falhou ou não se confirmou. Sem
+ * assinante no Kit e fora de `active` só são contados (nada a fazer).
  */
 export async function runTagRespondents(
   people: Readonly<Record<string, FollowupBlock["people"][string]>>,
@@ -1248,38 +1272,85 @@ export async function runTagRespondents(
       },
     };
   }
-  const responses = await deps.fetchFormResponses();
-  const tagged = new Set((await deps.listTaggedEmails(tagId)).map(normalizeEmail));
-  const plan = planRespondentTagging(responses, people, tagged);
+  const ids = resolveRespondentIds(await deps.fetchFormResponses(), people);
+  const err = (e: unknown) => redactEmails((e as Error).message);
+  let lookupFalhou = 0;
+  let semAssinante = 0;
+  let naoAtivo = 0;
+  let alreadyTagged = 0;
+  const candidates = new Map<number, string | null>(); // id → estado (null = ainda não lido)
+  for (const r of ids.resolved) candidates.set(r.kit_subscriber_id, null);
+  for (const email of ids.unresolved) {
+    try {
+      const s = await deps.lookupByEmail(email);
+      if (s == null) semAssinante++;
+      else if (!candidates.has(s.id) || candidates.get(s.id) == null) candidates.set(s.id, s.state ?? "");
+    } catch (e) {
+      lookupFalhou++;
+      process.stderr.write(`${LOG} leitura por e-mail falhou: ${err(e)}\n`);
+    }
+  }
+  const toTag: number[] = [];
+  for (const [id, known] of candidates) {
+    try {
+      const state = known ?? (await deps.getState(id));
+      if (state !== "active") {
+        naoAtivo++;
+        continue;
+      }
+      if ((await deps.listSubscriberTagIds(id)).includes(tagId)) alreadyTagged++;
+      else toTag.push(id);
+    } catch (e) {
+      lookupFalhou++;
+      process.stderr.write(`${LOG} leitura de ${id} falhou: ${err(e)}\n`);
+    }
+  }
   const report: Record<string, unknown> = {
     mode: apply ? "tag-respondents --apply" : "tag-respondents (dry-run)",
     tag: FORM_RESPONDENT_TAG,
-    respondentes: plan.respondents,
-    ja_com_tag: plan.alreadyTagged,
-    a_marcar: plan.toTag.length + plan.unresolved.length,
-    fora_do_store: plan.unresolved.length,
+    respondentes: ids.respondents,
+    ja_com_tag: alreadyTagged,
+    a_marcar: toTag.length,
+    nao_ativo: naoAtivo,
+    sem_assinante_no_kit: semAssinante,
+    lookup_falhou: lookupFalhou,
   };
-  if (!apply) return { code: 0, report };
-  const targets = [...plan.toTag];
-  let semAssinante = 0;
-  for (const email of plan.unresolved) {
-    const id = await deps.lookupIdByEmail(email);
-    if (id == null) semAssinante++;
-    else targets.push({ email, kit_subscriber_id: id });
-  }
+  if (!apply) return { code: lookupFalhou > 0 ? 1 : 0, report };
   let falhas = 0;
-  for (const t of targets) {
+  let confirmados = 0;
+  let naoConfirmados = 0;
+  for (const id of toTag) {
     try {
-      await deps.tag(tagId, t.kit_subscriber_id);
+      await deps.tag(tagId, id);
     } catch (e) {
       falhas++;
-      process.stderr.write(`${LOG} tag em ${t.kit_subscriber_id} falhou: ${redactEmails((e as Error).message)}\n`);
+      process.stderr.write(`${LOG} tag em ${id} falhou: ${err(e)}\n`);
+      continue;
+    }
+    try {
+      if ((await deps.listSubscriberTagIds(id)).includes(tagId)) confirmados++;
+      else naoConfirmados++;
+    } catch (e) {
+      naoConfirmados++;
+      process.stderr.write(`${LOG} releitura das tags de ${id} falhou (ainda não confirmado): ${err(e)}\n`);
     }
   }
-  const after = new Set((await deps.listTaggedEmails(tagId)).map(normalizeEmail));
-  const confirmados = targets.filter((t) => after.has(t.email)).length;
-  Object.assign(report, { marcados_confirmados: confirmados, nao_confirmados: targets.length - confirmados, falhas, sem_assinante_no_kit: semAssinante });
-  return { code: confirmados === targets.length && semAssinante === 0 ? 0 : 1, report };
+  Object.assign(report, { marcados_confirmados: confirmados, nao_confirmados: naoConfirmados, falhas });
+  return { code: falhas === 0 && naoConfirmados === 0 && lookupFalhou === 0 ? 0 : 1, report };
+}
+
+/** Pessoas do store para o `--tag-respondents`: store ausente ou corrompido sai 2 (nunca `{}`). */
+export function loadPeopleForTagging(storePath: string): FollowupBlock["people"] {
+  if (!existsSync(storePath)) {
+    process.stderr.write(`${LOG} store "${storePath}" não existe — sem ele quem respondeu com e-mail antigo não casa; recusando.\n`);
+    throw new CliExit(2);
+  }
+  try {
+    return readStoreOrThrow(storePath, "marcar quem respondeu").followup!.people;
+  } catch (e) {
+    process.stderr.write(`${(e as Error).message}\n`);
+    throw new CliExit(2);
+  }
 }
 
 function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDeps {
@@ -1355,7 +1426,7 @@ async function main(): Promise<void> {
   const rawCfg = JSON.parse(readFileSync(configPathAbs, "utf8")) as {
     onboarding?: { store_path?: string; snippets_dir?: string; followup?: FollowupConfigRaw };
   };
-  const cfg = resolveFollowupConfig(rawCfg.onboarding?.followup);
+  const cfg = resolveFollowupConfig(rawCfg.onboarding?.followup, (m) => process.stderr.write(`${LOG} ⚠ ${m}\n`));
   const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? rawCfg.onboarding?.snippets_dir ?? "data/snippets");
 
   if (args.initSnippets) {
@@ -1378,12 +1449,16 @@ async function main(): Promise<void> {
     }
     const kitCfg = kitResult.config;
     const storePathT = args.storePath ?? resolve(ROOT, rawCfg.onboarding?.store_path ?? DEFAULT_STORE_PATH);
-    const people = existsSync(storePathT) ? (readStore(storePathT).store.followup?.people ?? {}) : {};
+    const people = loadPeopleForTagging(storePathT);
     const out = await runTagRespondents(people, args.apply, {
       findTagId: (name) => findTagIdByName(name, kitCfg),
-      listTaggedEmails: (id) => listAllTagSubscriberEmails(id, kitCfg),
       fetchFormResponses: () => fetchFormResponsesReal(cfg),
-      lookupIdByEmail: async (email) => (await getKitSubscriberByEmail(email, kitCfg))?.id ?? null,
+      async lookupByEmail(email) {
+        const s = await getKitSubscriberByEmail(email, kitCfg);
+        return s ? { id: s.id, state: s.state ?? null } : null;
+      },
+      getState: async (id) => (await getSubscriberById(id, kitCfg)).state ?? null,
+      listSubscriberTagIds: async (id) => (await listSubscriberTags(id, kitCfg)).map((t) => t.id),
       tag: (tagId, kitId) => tagSubscriber(tagId, kitId, kitCfg),
     });
     console.log(JSON.stringify(out.report, null, 2));

@@ -28,7 +28,8 @@ import {
   isAsk,
   parseFollowupSnippet,
   planFollowup,
-  planRespondentTagging,
+  askGapBlocks,
+  resolveRespondentIds,
   recordAskDeferrals,
   resolveFollowupConfig,
   type AskContext,
@@ -36,7 +37,9 @@ import {
   type FollowupSnippets,
   type FollowupStepKind,
 } from "../scripts/lib/onboarding-followup.ts";
-import { formStatusReport, runFollowupRound, runTagRespondents, type FollowupRoundDeps } from "../scripts/onboarding-followup-run.ts";
+import { formStatusReport, loadPeopleForTagging, parseArgs, runFollowupRound, runTagRespondents, type FollowupRoundDeps, type TagRespondentsDeps } from "../scripts/onboarding-followup-run.ts";
+import { CliExit } from "../scripts/lib/cli-exit.ts";
+import { writeFileSync } from "node:fs";
 import { conversaRows, parseConversaArgs, renderConversaTable } from "../scripts/onboarding-form-conversas.ts";
 import { FORM_CONVERSA_SIM, type FormResponse } from "../scripts/lib/onboarding-form-contract.ts";
 import { emptyStore, readStore, writeStore, type OnboardingEntry } from "../scripts/lib/onboarding-store.ts";
@@ -61,9 +64,45 @@ describe("#10605 v3: config e ponto único do que é pedido", () => {
     assert.deepEqual(resolveFollowupConfig({ form_reminder_days_onboarding: [49, 19] }).formReminderDaysOnboarding, [19, 49, 79], "fora de ordem cai no default");
   });
 
-  it("isAsk: apoio, convites, os 3 lembretes e o e-mail 3 da escada; edições e e-mails 1/2 não", () => {
-    for (const k of ["apoio30", "apoio90", "apoio180", "apoio360", "form", "form_base", "form_lembrete", "form_lembrete2", "form_lembrete3", "email3"]) assert.ok(isAsk(k), k);
-    for (const k of ["email1", "email2", "edicao", "diaria"]) assert.ok(!isAsk(k), k);
+  it("isAsk: apoio, convites, os 3 lembretes e o e-mail 3 da escada (edições e e-mails 1/2 nem são AskKind)", () => {
+    for (const k of ["apoio30", "apoio90", "apoio180", "apoio360", "form", "form_base", "form_lembrete", "form_lembrete2", "form_lembrete3", "email3"] as const) assert.ok(isAsk(k), k);
+    // @ts-expect-error — edição diária não é pedido: o tipo nem aceita.
+    assert.equal(isAsk("edicao"), false);
+  });
+
+  it("avisa chave obsoleta min_gap_days e form_reminder_days_onboarding inválido", () => {
+    const warns: string[] = [];
+    resolveFollowupConfig({ min_gap_days: 7, form_reminder_days_onboarding: [49, 19] } as never, (m) => warns.push(m));
+    assert.equal(warns.length, 2);
+    assert.match(warns[0], /min_gap_days é obsoleto/);
+    assert.match(warns[1], /form_reminder_days_onboarding inválido/);
+    const none: string[] = [];
+    resolveFollowupConfig({ form_reminder_days_onboarding: [19, 49, 79] }, (m) => none.push(m));
+    assert.deepEqual(none, []);
+  });
+
+  it("parseArgs: --apply só com --tag-respondents; --status/--tag-respondents não combinam com --send nem entre si", () => {
+    const code = (argv: string[]) => {
+      try {
+        parseArgs(argv);
+        return 0;
+      } catch (e) {
+        return e instanceof CliExit ? e.code : -1;
+      }
+    };
+    const origWrite = process.stderr.write;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    try {
+      assert.equal(code(["--apply"]), 2);
+      assert.equal(code(["--send", "--apply"]), 2);
+      assert.equal(code(["--status", "--send"]), 2);
+      assert.equal(code(["--tag-respondents", "--send"]), 2);
+      assert.equal(code(["--status", "--tag-respondents"]), 2);
+      assert.equal(code(["--tag-respondents", "--apply"]), 0);
+      assert.equal(code(["--status"]), 0);
+    } finally {
+      process.stderr.write = origWrite;
+    }
   });
 });
 
@@ -91,6 +130,27 @@ const cad = (sec: number) => [{ kit_subscriber_id: 1, email: "a@x.com", cadastro
 const formCand = (anchor: number | null) => [{ kit_subscriber_id: 1, email: "a@x.com", anchorSec: anchor }];
 
 describe("#10605 v3: regra de pedidos", () => {
+  it("askGapBlocks: fronteira de 10 dias barra e 11 libera; fronteira do 1º mês; sem âncora e sem pedido", () => {
+    const last = T0 + 40 * DAY;
+    assert.equal(askGapBlocks(last + 10 * DAY, [T0], last, 11), true, "10 dias barra");
+    assert.equal(askGapBlocks(last + 11 * DAY - 1, [T0], last, 11), true, "1 s antes dos 11 dias ainda barra");
+    assert.equal(askGapBlocks(last + 11 * DAY, [T0], last, 11), false, "11 dias libera");
+    assert.equal(askGapBlocks(T0 + 30 * DAY - 1, [T0], T0 + 25 * DAY, 11), false, "1º mês: não barra");
+    assert.equal(askGapBlocks(T0 + 30 * DAY, [T0], T0 + 25 * DAY, 11), true, "em âncora + 30 dias a regra já vale");
+    assert.equal(askGapBlocks(T0 + 30 * DAY, [T0 + 10 * DAY, T0], T0 + 25 * DAY, 11), true, "vale a âncora mais antiga");
+    assert.equal(askGapBlocks(T0 + 5 * DAY, [null, null], T0, 11), true, "sem âncora: regra vale (conservador)");
+    assert.equal(askGapBlocks(T0 + 5 * DAY, [null, null], null, 11), false, "sem pedido anterior não barra");
+  });
+
+  it("lembrete do onboarding nunca a menos de 11 dias do e-mail anterior do formulário (convite D+6 atrasado)", () => {
+    const p = person({ sends: [{ step: "form", at: iso(T0 + 15 * DAY), lot_id: "f" }] });
+    assert.equal(formStepDue(T0, T0 + 19 * DAY, p, cfg).due, null, "D+19 só 4 dias depois do convite: espera");
+    assert.deepEqual(formStepDue(T0, T0 + 26 * DAY, p, cfg), { due: "form_lembrete" });
+    p.sends.push({ step: "form_lembrete", at: iso(T0 + 45 * DAY), lot_id: "l1" });
+    assert.equal(formStepDue(T0, T0 + 49 * DAY, p, cfg).due, null, "lembrete 1 atrasado empurra o 2");
+    assert.deepEqual(formStepDue(T0, T0 + 56 * DAY, p, cfg), { due: "form_lembrete2" });
+  });
+
   it("no 1º mês não barra: lembrete do D+19 sai 9 dias depois do e-mail 3 (D+10)", () => {
     const people = { "1": person({ cadastro_at: iso(T0), sends: [{ step: "form", at: iso(T0 + 6 * DAY), lot_id: "f" }] }) };
     const askContext = new Map<number, AskContext>([[1, { anchorSec: T0, extraAskSecs: [T0 + 10 * DAY] }]]);
@@ -143,8 +203,17 @@ describe("#10605 v3 REGRESSÃO: adiamento por espaçamento nunca é descartado p
     assert.deepEqual(at(49).due.map((d) => d.kind), ["apoio30"], "sai no 11º dia");
   });
 
+  it("o adiamento expira: executor travado mais que o intervalo não manda a etapa velha", () => {
+    const people = { "1": person({ cadastro_at: iso(T0), sends: sends(), ask_deferred: [{ step: "apoio30", at: iso(T0 + 39 * DAY) }] }) };
+    assert.equal(apoioStepDue(T0, T0 + 50 * DAY, people["1"], 10).due, "apoio30", "ainda dentro de 11 dias + 1 de folga");
+    assert.deepEqual(apoioStepDue(T0, T0 + 51 * DAY, people["1"], 10), { due: null, vencidas: ["apoio30"] }, "passou: janela normal, vencida");
+    const late = planFollowup({ apoioCandidates: cad(T0), formCandidates: [], people, nowSec: T0 + 55 * DAY, cfg, apoioBlocked: null, formBlocked: null });
+    assert.deepEqual(late.due, []);
+    assert.equal(late.counts.apoio30?.vencida, 1);
+  });
+
   it("convite D+6 adiado também espera (exceção vale para o form)", () => {
-    const p = person({ ask_deferred: [{ step: "form", at: iso(T0) }] });
+    const p = person({ ask_deferred: [{ step: "form", at: iso(T0 + 30 * DAY) }] });
     assert.deepEqual(formStepDue(T0, T0 + 40 * DAY, p, cfg), { due: "form" });
     assert.deepEqual(formStepDue(T0, T0 + 40 * DAY, person(), cfg), { due: null, motivo: "vencida" });
   });
@@ -259,35 +328,49 @@ describe("#10605 v3: respostas (histórico) e tag de quem respondeu", () => {
     assert.deepEqual(people["1"].form_answers, { v: "3" });
   });
 
-  it("planRespondentTagging: só quem falta; id do store (também por e-mail antigo); fora do store à parte", () => {
+  it("resolveRespondentIds: id do store (também por e-mail antigo), um por id; fora do store à parte", () => {
     const people = { "1": person(), "2": person({ kit_subscriber_id: 2, email: "novo@x.com", previous_emails: ["velho@x.com"] }) };
-    const plan = planRespondentTagging(
-      [resp("a@x.com", "2026-11-10T00:00:00Z"), resp("A@x.com", "2026-11-11T00:00:00Z"), resp("velho@x.com", "2026-11-10T00:00:00Z"), resp("ja@x.com", "2026-11-10T00:00:00Z"), resp("fora@x.com", "2026-11-10T00:00:00Z")],
+    const r = resolveRespondentIds(
+      [resp("a@x.com", "2026-11-10T00:00:00Z"), resp("A@x.com", "2026-11-11T00:00:00Z"), resp("velho@x.com", "2026-11-10T00:00:00Z"), resp("novo@x.com", "2026-11-10T00:00:00Z"), resp("fora@x.com", "2026-11-10T00:00:00Z")],
       people,
-      new Set(["JA@x.com"]),
     );
-    assert.equal(plan.respondents, 4);
-    assert.equal(plan.alreadyTagged, 1);
-    assert.deepEqual(plan.toTag, [{ email: "a@x.com", kit_subscriber_id: 1 }, { email: "velho@x.com", kit_subscriber_id: 2 }]);
-    assert.deepEqual(plan.unresolved, ["fora@x.com"]);
+    assert.equal(r.respondents, 4);
+    assert.deepEqual(r.resolved, [{ email: "a@x.com", kit_subscriber_id: 1 }, { email: "velho@x.com", kit_subscriber_id: 2 }], "velho e novo são a mesma pessoa");
+    assert.deepEqual(r.unresolved, ["fora@x.com"]);
   });
 
-  function tagDeps(over: { tagId?: number | null; tagged?: string[] } = {}) {
+  const TAG = 77;
+  function tagDeps(over: Partial<TagRespondentsDeps> & { tagId?: number | null; tagged?: number[]; states?: Record<number, string> } = {}) {
     const tagged = new Set(over.tagged ?? []);
     const calls: string[] = [];
-    const deps = {
+    const deps: TagRespondentsDeps & { calls: string[] } = {
       calls,
-      findTagId: async (name: string) => (calls.push(`find:${name}`), over.tagId === undefined ? 77 : over.tagId),
-      listTaggedEmails: async () => [...tagged],
-      fetchFormResponses: async () => [resp("a@x.com", "2026-11-10T00:00:00Z"), resp("fora@x.com", "2026-11-10T00:00:00Z")],
-      lookupIdByEmail: async (email: string) => (email === "fora@x.com" ? 9 : null),
-      tag: async (tagId: number, kitId: number) => {
-        calls.push(`tag:${tagId}:${kitId}`);
-        tagged.add(kitId === 1 ? "a@x.com" : "fora@x.com");
+      findTagId: async (name) => (calls.push(`find:${name}`), over.tagId === undefined ? TAG : over.tagId),
+      fetchFormResponses: async () => [resp("a@x.com", "2026-11-10T00:00:00Z"), resp("fora@x.com", "2026-11-10T00:00:00Z"), resp("nao@x.com", "2026-11-10T00:00:00Z"), resp("erro@x.com", "2026-11-10T00:00:00Z")],
+      async lookupByEmail(email) {
+        if (email === "erro@x.com") throw new Error("Kit 503");
+        if (email === "fora@x.com") return { id: 9, state: "active" };
+        return null;
       },
+      getState: async (id) => over.states?.[id] ?? "active",
+      listSubscriberTagIds: async (id) => (calls.push(`tags:${id}`), tagged.has(id) ? [TAG] : [1]),
+      async tag(tagId, kitId) {
+        calls.push(`tag:${tagId}:${kitId}`);
+        tagged.add(kitId);
+      },
+      ...over,
     };
     return deps;
   }
+  const quiet = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const w = process.stderr.write;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    try {
+      return await fn();
+    } finally {
+      process.stderr.write = w;
+    }
+  };
 
   it("tag inexistente: avisa e para (exit 2), sem ler respostas nem gravar", async () => {
     const deps = tagDeps({ tagId: null });
@@ -298,25 +381,52 @@ describe("#10605 v3: respostas (histórico) e tag de quem respondeu", () => {
     assert.deepEqual(deps.calls, [`find:${FORM_RESPONDENT_TAG}`]);
   });
 
-  it("dry-run por padrão: conta, não grava; --apply marca, relê a tag e confirma", async () => {
-    const dry = tagDeps();
-    const r1 = await runTagRespondents({ "1": person() }, false, dry);
-    assert.equal(r1.code, 0);
-    assert.equal(r1.report.a_marcar, 2);
-    assert.ok(!dry.calls.some((c) => c.startsWith("tag:")));
-    const real = tagDeps();
-    const r2 = await runTagRespondents({ "1": person() }, true, real);
-    assert.equal(r2.code, 0);
-    assert.deepEqual(real.calls.filter((c) => c.startsWith("tag:")), ["tag:77:1", "tag:77:9"]);
-    assert.equal(r2.report.marcados_confirmados, 2);
+  it("dry-run: lê as tags DO ASSINANTE (nunca a listagem da tag), separa não ativos e falhas de leitura, não grava", async () => {
+    const deps = tagDeps({ tagged: [9], states: { 1: "active" } });
+    const out = await quiet(() => runTagRespondents({ "1": person(), "5": person({ kit_subscriber_id: 5, email: "nao@x.com" }) }, false, { ...deps, getState: async (id) => (id === 5 ? "cancelled" : "active") }));
+    assert.equal(out.report.ja_com_tag, 1, "o 9 já tem a tag (por id)");
+    assert.equal(out.report.a_marcar, 1);
+    assert.equal(out.report.nao_ativo, 1);
+    assert.equal(out.report.lookup_falhou, 1, "falha da leitura por e-mail não para os outros");
+    assert.equal(out.code, 1, "leitura falha conta");
+    assert.ok(!deps.calls.some((c) => c.startsWith("tag:")));
   });
 
-  it("--apply com escrita que não aparece na releitura sai 1", async () => {
-    const deps = tagDeps();
-    deps.tag = async (tagId: number, kitId: number) => void deps.calls.push(`tag:${tagId}:${kitId}`);
-    const out = await runTagRespondents({ "1": person() }, true, deps);
-    assert.equal(out.code, 1);
-    assert.equal(out.report.nao_confirmados, 2);
+  it("--apply: marca e confirma pessoa a pessoa pelas tags do assinante; releitura que falha = não confirmado", async () => {
+    const people = { "1": person() };
+    const noErr = { fetchFormResponses: async () => [resp("a@x.com", "2026-11-10T00:00:00Z"), resp("fora@x.com", "2026-11-10T00:00:00Z")] };
+    const ok = tagDeps(noErr);
+    const r = await runTagRespondents(people, true, ok);
+    assert.equal(r.code, 0);
+    assert.deepEqual(ok.calls.filter((c) => c.startsWith("tag:")), [`tag:${TAG}:1`, `tag:${TAG}:9`]);
+    assert.equal(r.report.marcados_confirmados, 2);
+    let reads = 0;
+    const flaky = tagDeps({
+      ...noErr,
+      async listSubscriberTagIds() {
+        reads++;
+        if (reads > 2) throw new Error("Kit 429");
+        return [];
+      },
+    });
+    const r2 = await quiet(() => runTagRespondents(people, true, flaky));
+    assert.equal(r2.code, 1);
+    assert.equal(r2.report.nao_confirmados, 2);
+  });
+
+  it("store ausente ou corrompido sai 2 (nunca vira {})", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tag-store-"));
+    const bad = join(dir, "store.json");
+    writeFileSync(bad, "{ não é json");
+    for (const p of [join(dir, "nao-existe.json"), bad]) {
+      const w = process.stderr.write;
+      process.stderr.write = (() => true) as typeof process.stderr.write;
+      try {
+        assert.throws(() => loadPeopleForTagging(p), (e) => e instanceof CliExit && e.code === 2, p);
+      } finally {
+        process.stderr.write = w;
+      }
+    }
   });
 });
 
@@ -349,6 +459,8 @@ describe("#10605 v3: --status e lista de conversas", () => {
     assert.match(renderConversaTable([]), /Ninguém/);
     assert.deepEqual(parseConversaArgs(["--area", "saude", "--json"]), { filters: { area: "saude" }, json: true });
     assert.throws(() => parseConversaArgs(["--nada"]), /desconhecida/);
+    assert.throws(() => parseConversaArgs(["--desde", "2026-13-01"]), /AAAA-MM-DD/);
+    assert.throws(() => parseConversaArgs(["--desde", "ontem"]), /AAAA-MM-DD/);
   });
 });
 
@@ -414,5 +526,45 @@ describe("#10605 v3 / #12490: Worker grava histórico, versão e tempo de preenc
     assert.equal(all.responses.length, 4);
     assert.equal(all.responses.filter((r) => r.form_version === "v3" && r.duration_s == null).length, 1, "forjado sem tempo");
     assert.equal(all.responses.filter((r) => r.form_version == null).length, 1, "legado lido junto");
+  });
+
+  it("registro ilegível no KV é pulado com log sem e-mail; falha ao assinar a hora não derruba a página", async () => {
+    const { default: worker } = await import("../workers/onboarding-form/src/index.ts");
+    const { signFormEmail } = await import("../scripts/lib/onboarding-form-link-sig.ts");
+    const kv = memKv({ "resp:a@x.com:2026-11-10T00:00:00.000Z:abcd1234": "{quebrado", "resp:b@x.com": JSON.stringify({ email: "b@x.com", submitted_at: "2026-10-01T00:00:00Z", answers: {} }) });
+    const env = { ONBOARDING_FORM: kv.ns, RESPONSES_TOKEN: "tok", ONBOARDING_FORM_LINK_SECRET: SECRET } as never;
+    const errs: string[] = [];
+    const origErr = console.error;
+    console.error = (m: string) => void errs.push(String(m));
+    try {
+      const res = await worker.fetch(new Request("https://f.example/api/respostas", { headers: { authorization: "Bearer tok" } }), env);
+      assert.equal(res.status, 200);
+      assert.equal(((await res.json()) as { responses: unknown[] }).responses.length, 1);
+      assert.equal(errs.length, 1);
+      assert.match(errs[0], /resposta_ilegivel/);
+      assert.ok(!errs[0].includes("a@x.com"), "log sem e-mail");
+      // 2ª chamada a crypto.subtle.sign (a da hora) falha: página sai sem o campo `t`.
+      const sig = await signFormEmail("a@x.com", SECRET);
+      const subtle = globalThis.crypto.subtle;
+      const origSign = subtle.sign.bind(subtle);
+      let n = 0;
+      (subtle as { sign: typeof subtle.sign }).sign = (async (...args: Parameters<typeof subtle.sign>) => {
+        n++;
+        if (n === 2) throw new Error("sign falhou");
+        return origSign(...args);
+      }) as typeof subtle.sign;
+      try {
+        errs.length = 0;
+        const page = await worker.fetch(new Request(`https://f.example/?email=a@x.com&sig=${sig}`), env);
+        assert.equal(page.status, 200);
+        const body = await page.text();
+        assert.ok(body.includes('name="sig"') && !body.includes('name="t"'));
+        assert.ok(errs.some((e) => /rendered_at_sign_failed/.test(e)));
+      } finally {
+        (subtle as { sign: typeof subtle.sign }).sign = origSign;
+      }
+    } finally {
+      console.error = origErr;
+    }
   });
 });

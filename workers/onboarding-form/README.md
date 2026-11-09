@@ -1,8 +1,10 @@
 # onboarding-form (#10605)
 
 No ar em https://formulario.diar.ia.br (22/10/2026: KV, secrets, rota, `form_sig` no Kit,
-`ONBOARDING_FORM_TOKEN`/`ONBOARDING_FORM_LINK_SECRET` no Doppler). O envio segue
-travado só pela aprovação dos textos e das perguntas pelo editor.
+`ONBOARDING_FORM_TOKEN`/`ONBOARDING_FORM_LINK_SECRET` no Doppler). Perguntas e
+textos v3 aprovados pelo editor em 09/11/2026; o envio segue travado só até os
+textos serem destravados em `data/snippets` (tirar o marcador
+`ONBOARDING-CORPO-PENDENTE`), depois do merge.
 
 Formulário de perfil/interesses do onboarding (decisão do editor, 20/10/2026:
 form próprio num Worker nosso). O executor `scripts/onboarding-followup-run.ts`
@@ -63,8 +65,8 @@ travados pelo marcador `ONBOARDING-CORPO-PENDENTE` até o editor aprovar):
 KV `ONBOARDING_FORM`, secrets `RESPONSES_TOKEN` e `ONBOARDING_FORM_LINK_SECRET`,
 rota pública, `onboarding.followup.form_url`/`form_responses_url` no config,
 `ONBOARDING_FORM_TOKEN`/`ONBOARDING_FORM_LINK_SECRET` no `.env` do executor e
-o custom field `form_sig` no Kit. Falta só a aprovação dos textos e das
-perguntas pelo editor.
+o custom field `form_sig` no Kit. Textos e perguntas aprovados (09/11/2026);
+falta só destravar os textos em `data/snippets`.
 
 O envio dos e-mails do formulário fica travado enquanto isso
 (`formContentGate` → `form_nao_configurado` / `texto_pendente` /

@@ -122,6 +122,9 @@ export function isFormReminder(kind: string): kind is FormReminderKind {
  *  sequências, mas conta como pedido anterior na regra de espaçamento. */
 export const WELCOME_EMAIL3_ASK = "email3";
 
+/** O que pode ser pedido: as etapas destas sequências e o e-mail 3 da escada. */
+export type AskKind = FollowupStepKind | typeof WELCOME_EMAIL3_ASK;
+
 /**
  * Ponto ÚNICO que diz o que é PEDIDO para a regra de espaçamento (decisão do
  * editor de 09/11/2026): todas as etapas destas sequências (pedidos de apoio,
@@ -129,8 +132,9 @@ export const WELCOME_EMAIL3_ASK = "email3";
  * entra aqui, sem regra própria. Edições diárias (e os e-mails 1 e 2 da
  * escada) não são pedido.
  */
-export function isAsk(kind: string): boolean {
-  return isApoioStep(kind) || isFormStep(kind) || kind === WELCOME_EMAIL3_ASK;
+export function isAsk(kind: AskKind): boolean {
+  if (kind === WELCOME_EMAIL3_ASK) return true;
+  return isApoioStep(kind) || isFormStep(kind);
 }
 
 /** Convite único para a base já cadastrada (#10605, decisão 11 do editor).
@@ -406,26 +410,43 @@ function posInt(v: unknown, dflt: number): number {
 /** Default dos lembretes do onboarding (dias da âncora). */
 export const DEFAULT_FORM_REMINDER_DAYS_ONBOARDING: readonly number[] = [19, 49, 79];
 
-/** Lista crescente de inteiros positivos; qualquer coisa fora disso cai no default. */
-function reminderDays(v: unknown): number[] {
-  const ok =
+function isValidReminderDays(v: unknown): v is number[] {
+  return (
     Array.isArray(v) &&
     v.length > 0 &&
-    v.every((x, i) => typeof x === "number" && Number.isInteger(x) && x > 0 && (i === 0 || x > (v[i - 1] as number)));
-  return ok ? [...(v as number[])] : [...DEFAULT_FORM_REMINDER_DAYS_ONBOARDING];
+    v.every((x, i) => typeof x === "number" && Number.isInteger(x) && x > 0 && (i === 0 || x > (v[i - 1] as number)))
+  );
+}
+
+/** Lista crescente de inteiros positivos; qualquer coisa fora disso cai no default. */
+function reminderDays(v: unknown): number[] {
+  return isValidReminderDays(v) ? [...v] : [...DEFAULT_FORM_REMINDER_DAYS_ONBOARDING];
 }
 
 function nonEmpty(v: unknown): string | null {
   return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
 }
 
-/** @pure — valores inválidos caem no default (nunca 0/negativo). */
-export function resolveFollowupConfig(raw: FollowupConfigRaw | undefined | null): FollowupConfig {
+/** Intervalo mínimo entre pedidos (decisão do editor de 09/11/2026). */
+export const DEFAULT_ASK_MIN_GAP_DAYS = 11;
+
+/** Valores inválidos caem no default (nunca 0/negativo). `warn` recebe o
+ *  aviso de chave inválida ou obsoleta (o executor passa o stderr). */
+export function resolveFollowupConfig(
+  raw: (FollowupConfigRaw & { min_gap_days?: unknown }) | undefined | null,
+  warn: (msg: string) => void = () => {},
+): FollowupConfig {
   const r = raw ?? {};
+  if (r.min_gap_days !== undefined) {
+    warn("onboarding.followup.min_gap_days é obsoleto e é ignorado: o espaçamento é ask_min_gap_days (#10605, 09/11/2026)");
+  }
+  if (r.form_reminder_days_onboarding !== undefined && !isValidReminderDays(r.form_reminder_days_onboarding)) {
+    warn(`onboarding.followup.form_reminder_days_onboarding inválido (${JSON.stringify(r.form_reminder_days_onboarding)}): precisa ser uma lista crescente de inteiros positivos; usando ${JSON.stringify(DEFAULT_FORM_REMINDER_DAYS_ONBOARDING)}`);
+  }
   return {
     enabled: r.enabled === true,
     graceDays: posInt(r.grace_days, 10),
-    askMinGapDays: posInt(r.ask_min_gap_days, 11),
+    askMinGapDays: posInt(r.ask_min_gap_days, DEFAULT_ASK_MIN_GAP_DAYS),
     formFirstDays: posInt(r.form_first_days, 6),
     formReminderDays: posInt(r.form_reminder_days, 30),
     formReminderDaysOnboarding: reminderDays(r.form_reminder_days_onboarding),
@@ -594,10 +615,27 @@ function hasStepRecord(person: FollowupPerson | undefined, kind: FollowupStepKin
   return person.sends.some((s) => s.step === kind) || (person.skips ?? []).some((s) => s.step === kind);
 }
 
-/** A regra de pedidos já adiou esta etapa para a pessoa (nunca vence pela janela). */
-export function isAskDeferred(person: FollowupPerson | undefined, kind: FollowupStepKind): boolean {
-  return (person?.ask_deferred ?? []).some((d) => d.step === kind);
+/**
+ * A regra de pedidos adiou esta etapa e o adiamento ainda vale AGORA. A marca
+ * é renovada a cada rodada que adia de novo (`recordAskDeferrals`), então ela
+ * só protege enquanto a regra de fato segura a etapa: até `askMinGapDays`
+ * (+1 dia de folga da rodada diária) depois do último adiamento. Passado
+ * isso, a etapa volta à janela normal: se ela já fechou (executor travado
+ * mais tempo que o intervalo), a etapa velha vence e NÃO sai atrasada.
+ */
+export function isAskDeferred(
+  person: FollowupPerson | undefined,
+  kind: FollowupStepKind,
+  nowSec: number,
+  askMinGapDays: number = DEFAULT_ASK_MIN_GAP_DAYS,
+): boolean {
+  return (person?.ask_deferred ?? []).some((d) => {
+    if (d.step !== kind) return false;
+    const at = isoToSec(d.at);
+    return at != null && nowSec < at + (askMinGapDays + 1) * DAY_S;
+  });
 }
+
 
 export interface ApoioDueResult {
   /** Etapa de apoio dentro da janela e ainda não enviada/pulada — `null` = nenhuma. */
@@ -612,6 +650,7 @@ export function apoioStepDue(
   nowSec: number,
   person: FollowupPerson | undefined,
   graceDays: number,
+  askMinGapDays: number = DEFAULT_ASK_MIN_GAP_DAYS,
 ): ApoioDueResult {
   const vencidas: ApoioStepKind[] = [];
   if (cadastroSec == null) return { due: null, vencidas };
@@ -620,7 +659,7 @@ export function apoioStepDue(
     const start = cadastroSec + step.days * DAY_S;
     if (nowSec < start) break; // etapas seguintes ainda mais no futuro
     // Adiada pela regra de pedidos: espera, nunca é descartada pela janela.
-    if (nowSec < start + graceDays * DAY_S || isAskDeferred(person, step.kind)) return { due: step.kind, vencidas };
+    if (nowSec < start + graceDays * DAY_S || isAskDeferred(person, step.kind, nowSec, askMinGapDays)) return { due: step.kind, vencidas };
     vencidas.push(step.kind);
   }
   return { due: null, vencidas };
@@ -676,7 +715,7 @@ export function formStepDue(
   nowSec: number,
   person: FollowupPerson | undefined,
   cfg: Pick<FollowupConfig, "formFirstDays" | "formReminderDays" | "graceDays"> &
-    Partial<Pick<FollowupConfig, "formReminderMax" | "formReminderDaysOnboarding">>,
+    Partial<Pick<FollowupConfig, "formReminderMax" | "formReminderDaysOnboarding" | "askMinGapDays">>,
 ): FormDueResult {
   if (person?.form_filled_at) return { due: null, motivo: "preencheu" };
   // #10675: quem saiu do Kit não volta a ser devido (nem ocupa vaga do teto).
@@ -686,28 +725,22 @@ export function formStepDue(
     if (anchorSec == null) return { due: null, motivo: "sem_ancora" };
     const start = anchorSec + cfg.formFirstDays * DAY_S;
     if (nowSec < start) return { due: null, motivo: "nao_venceu" };
-    if (nowSec >= start + cfg.graceDays * DAY_S && !isAskDeferred(person, "form")) return { due: null, motivo: "vencida" };
+    if (nowSec >= start + cfg.graceDays * DAY_S && !isAskDeferred(person, "form", nowSec, cfg.askMinGapDays)) return { due: null, motivo: "vencida" };
     return { due: "form" };
   }
   const n = formReminderCount(person);
   if (n >= Math.min(cfg.formReminderMax ?? 3, FORM_REMINDER_STEPS.length)) return { due: null, motivo: "teto_lembretes" };
   const kind = FORM_REMINDER_STEPS[n].kind;
   const days = cfg.formReminderDaysOnboarding ?? DEFAULT_FORM_REMINDER_DAYS_ONBOARDING;
+  // Onboarding: D+19/49/79 da âncora, mas nunca menos de `askMinGapDays`
+  // depois do e-mail anterior do formulário (convite D+6 ou lembrete que
+  // saíram atrasados não puxam o seguinte para poucos dias depois).
+  const gap = (cfg.askMinGapDays ?? DEFAULT_ASK_MIN_GAP_DAYS) * DAY_S;
   const dueAt =
     formInviteOf(person) === "form" && anchorSec != null && n < days.length
-      ? anchorSec + days[n] * DAY_S
+      ? Math.max(anchorSec + days[n] * DAY_S, last + gap)
       : last + cfg.formReminderDays * DAY_S;
   return nowSec >= dueAt ? { due: kind } : { due: null, motivo: "nao_venceu" };
-}
-
-/** Último envio de QUALQUER e-mail destas sequências para a pessoa (epoch s). */
-export function lastFollowupSendSec(person: FollowupPerson | undefined): number | null {
-  let last: number | null = null;
-  for (const s of person?.sends ?? []) {
-    const sec = isoToSec(s.at);
-    if (sec != null && (last == null || sec > last)) last = sec;
-  }
-  return last;
 }
 
 /** A regra de pedidos só vale DEPOIS do 1º mês da pessoa (âncora + 30 dias). */
@@ -724,11 +757,14 @@ export interface AskContext {
 /** @pure — último pedido (`isAsk`) da pessoa: envios destas sequências + os de fora. */
 export function lastAskSec(person: FollowupPerson | undefined, extraAskSecs: readonly number[] = []): number | null {
   let last: number | null = null;
+  // Todo envio destas sequências é pedido; o filtro fica para quando entrar
+  // aqui uma etapa que não seja (`isAsk` é o ponto único).
   for (const s of person?.sends ?? []) {
     if (!isAsk(s.step)) continue;
     const sec = isoToSec(s.at);
     if (sec != null && (last == null || sec > last)) last = sec;
   }
+  // `extraAskSecs`: pedidos de fora (o e-mail 3 da escada, `askContextFromEntries`).
   for (const sec of extraAskSecs) if (last == null || sec > last) last = sec;
   return last;
 }
@@ -758,7 +794,8 @@ export function askContextFromEntries(entries: readonly OnboardingEntry[]): Map<
     const kitId = kitIdForEntry(e);
     if (kitId == null) continue;
     const extra: number[] = [];
-    if (e.email3_state === "campaign_created") {
+    // O e-mail 3 da escada é pedido (`isAsk(WELCOME_EMAIL3_ASK)`): conta como anterior.
+    if (isAsk(WELCOME_EMAIL3_ASK) && e.email3_state === "campaign_created") {
       const sec = isoToSec(e.email3_decided_at);
       if (sec != null) extra.push(sec);
     }
@@ -767,7 +804,8 @@ export function askContextFromEntries(entries: readonly OnboardingEntry[]): Map<
   return out;
 }
 
-/** @pure — grava `ask_deferred` (etapas com janela) para os adiados da rodada. Idempotente. */
+/** @pure — grava `ask_deferred` (etapas com janela) para os adiados da rodada e renova
+ *  a marca de quem foi adiado de novo. Devolve quantas marcas NOVAS. */
 export function recordAskDeferrals(
   people: Record<string, FollowupPerson>,
   deferred: readonly FollowupDue[],
@@ -778,7 +816,14 @@ export function recordAskDeferrals(
   for (const d of deferred) {
     if (isFormReminder(d.kind) || d.kind === "form_base") continue; // sem janela: nada a proteger
     const p = ensurePerson(people, d.kit_subscriber_id, d.email, cadastroById.get(d.kit_subscriber_id) ?? null);
-    if (isAskDeferred(p, d.kind) || hasStepRecord(p, d.kind)) continue;
+    if (hasStepRecord(p, d.kind)) continue;
+    // Adiada de novo nesta rodada: renova a marca (o adiamento vale enquanto a
+    // regra segue segurando a etapa, `isAskDeferred`).
+    const mark = (p.ask_deferred ?? []).find((m) => m.step === d.kind);
+    if (mark) {
+      mark.at = nowIso;
+      continue;
+    }
     (p.ask_deferred ??= []).push({ step: d.kind, at: nowIso });
     n++;
   }
@@ -863,7 +908,7 @@ export function planFollowup(opts: {
 
   for (const c of opts.apoioCandidates) {
     const person = people[String(c.kit_subscriber_id)];
-    const r = apoioStepDue(isoToSec(c.cadastro_at), nowSec, person, cfg.graceDays);
+    const r = apoioStepDue(isoToSec(c.cadastro_at), nowSec, person, cfg.graceDays, cfg.askMinGapDays);
     for (const v of r.vencidas) bump(counts, v, "vencida");
     if (r.due == null) continue;
     if (isEnvioBrevo(c.email)) {
@@ -1894,28 +1939,25 @@ export function evaluateFollowupHealth(
  *  executor nunca cria a tag (`--tag-respondents` avisa e para). */
 export const FORM_RESPONDENT_TAG = "formulario-respondeu";
 
-export interface RespondentTagPlan {
+export interface RespondentIds {
   /** Respondentes (e-mails únicos) que o Worker devolveu. */
   respondents: number;
-  /** Já têm a tag no Kit. */
-  alreadyTagged: number;
-  /** Faltam a tag e têm id Kit no store. */
-  toTag: { email: string; kit_subscriber_id: number }[];
-  /** Faltam a tag e não estão no store (o id sai da leitura por e-mail no `--apply`). */
+  /** Respondentes com id Kit no store, um por id (dois e-mails da mesma pessoa viram um). */
+  resolved: { email: string; kit_subscriber_id: number }[];
+  /** Respondentes fora do store (o id sai da leitura por e-mail). */
   unresolved: string[];
 }
 
 /**
- * @pure — quem precisa ganhar a tag `FORM_RESPONDENT_TAG`: respondentes (por
- * e-mail, o mais recente) que ainda não estão na tag. O id Kit vem do store
- * (`people`, casando também pelos `previous_emails`, #10774); quem não está
- * lá fica em `unresolved`.
+ * @pure — id Kit de cada respondente (mais recente por e-mail), pelo store
+ * (`people`, casando também pelos `previous_emails`, #10774). A comparação
+ * com a tag é por id, nunca por e-mail: quem trocou de e-mail no Kit
+ * respondeu com o antigo e continua sendo a mesma pessoa.
  */
-export function planRespondentTagging(
+export function resolveRespondentIds(
   responses: readonly FormResponseRecord[],
   people: Readonly<Record<string, FollowupPerson>>,
-  taggedEmails: ReadonlySet<string>,
-): RespondentTagPlan {
+): RespondentIds {
   const idByEmail = new Map<string, number>();
   for (const p of Object.values(people)) idByEmail.set(normalizeEmail(p.email), p.kit_subscriber_id);
   for (const p of Object.values(people)) {
@@ -1924,18 +1966,17 @@ export function planRespondentTagging(
       if (k !== "" && !idByEmail.has(k)) idByEmail.set(k, p.kit_subscriber_id);
     }
   }
-  const tagged = new Set([...taggedEmails].map(normalizeEmail));
   const latest = latestFormResponses(responses);
-  const plan: RespondentTagPlan = { respondents: latest.length, alreadyTagged: 0, toTag: [], unresolved: [] };
+  const out: RespondentIds = { respondents: latest.length, resolved: [], unresolved: [] };
+  const seen = new Set<number>();
   for (const r of latest) {
     const email = normalizeEmail(r.email);
-    if (tagged.has(email)) {
-      plan.alreadyTagged++;
-      continue;
-    }
     const id = idByEmail.get(email);
-    if (id != null) plan.toTag.push({ email, kit_subscriber_id: id });
-    else plan.unresolved.push(email);
+    if (id == null) out.unresolved.push(email);
+    else if (!seen.has(id)) {
+      seen.add(id);
+      out.resolved.push({ email, kit_subscriber_id: id });
+    }
   }
-  return plan;
+  return out;
 }

@@ -123,6 +123,11 @@ export async function loadOnboardingFormSurveyResponses(cfg: PlatformConfig, fet
       `[audience-run] ⚠ ${converted.legacyAnswers} resposta(s) a perguntas de versões anteriores do formulário (nível, seções, inglês, preço, sugestão) — ignorada(s) no perfil.`,
     );
   }
+  if (converted.legacyOptionAnswers > 0) {
+    console.error(
+      `[audience-run] ⚠ ${converted.legacyOptionAnswers} opção(ões) marcada(s) que não existem mais nas perguntas atuais (respostas v1/v2 de área, formato ou tema) — ignorada(s) no perfil.`,
+    );
+  }
   if (converted.emptyResponses > 0) {
     console.error(`[audience-run] ⚠ ${converted.emptyResponses} resposta(s) sem nenhuma resposta a pergunta atual — não contam como respondente.`);
   }

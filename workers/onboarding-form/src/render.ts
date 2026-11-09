@@ -99,9 +99,6 @@ export const FORM_SCRIPT =
   "if(ex){for(var i=0;i<g.length;i++){if(g[i]===t)continue;if(t.value===ex||g[i].value===ex)g[i].checked=false;}}" +
   "if(mx){var n=0;for(var k=0;k<g.length;k++)if(g[k].checked)n++;if(n>Number(mx))t.checked=false;}}u();});u();})();";
 
-/** Alias antigo (v2): o script cresceu, o nome ficou. */
-export const HIDE_SCRIPT = FORM_SCRIPT;
-
 /** Campo de texto curto do "Outro/Outra" (sempre visível sem JavaScript). */
 function otherTextField(q: ChoiceQuestion): string {
   if (!q.otherOption) return "";

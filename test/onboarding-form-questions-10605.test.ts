@@ -27,6 +27,7 @@ import {
   cleanOtherText,
   latestFormResponses,
   numberedQuestions,
+  validateFormQuestions,
   otherTextFieldId,
   parseFormSubmission,
   summarizeFormResponses,
@@ -141,6 +142,20 @@ describe("#10605 v3: perguntas do formulário (aprovadas em 09/11/2026)", () => 
     for (const q of FORM_QUESTIONS.filter((x) => x.subOf)) {
       const i = FORM_QUESTIONS.indexOf(q);
       assert.equal(FORM_QUESTIONS[i - 1].id, q.subOf, `${q.id} logo depois da mãe`);
+    }
+  });
+
+  it("validateFormQuestions: FORM_QUESTIONS coerente; pega referência para frente, opção inexistente e campo no tipo errado", () => {
+    assert.deepEqual(validateFormQuestions(FORM_QUESTIONS), []);
+    const bad = validateFormQuestions([
+      { id: "a", label: "A", kind: "select", options: ["x", "y"], otherOption: "z", hiddenWhen: { questionId: "b", option: "x" } },
+      { id: "b", label: "B", kind: "checkbox", options: ["x"], maxChoices: 0, exclusiveOption: "w" },
+      { id: "c", label: "C", kind: "select", options: ["x", "q"], optionsFrom: "b", shownWhen: { questionId: "a", anyOf: ["nada"] } },
+      { id: "d", label: "D", kind: "textarea", maxChoices: 2 } as never,
+      { id: "a", label: "A2", kind: "text" },
+    ]);
+    for (const re of [/a: otherOption/, /a: hiddenWhen aponta para "b"/, /b: maxChoices/, /b: exclusiveOption/, /c: opção "q" fora de b/, /c: shownWhen.anyOf "nada"/, /d: maxChoices só em pergunta de escolha/, /a: id repetido/]) {
+      assert.ok(bad.some((e) => re.test(e)), String(re));
     }
   });
 
@@ -593,6 +608,14 @@ describe("#10605 v3: respostas do formulário no perfil de audiência", () => {
     assert.deepEqual(responses[0].answers.filter((a) => a.question_id === "form:ferramentas").map((a) => a.answer), ["ChatGPT", "Claude"]);
   });
 
+  it("opção de versão anterior em pergunta que continua (área, formato, tema) fica fora dos blocos v3", () => {
+    const old = R({ area: "Engenharia/Software/Dados/TI", produto_formato: J("Aula ou workshop ao vivo", "Formato que saiu"), produto_tema: "Riscos, ética e regulação", uso_ia: choice("uso_ia").options[0] }, "v2@x.com");
+    const conv = onboardingFormToSurveyResponses([old]);
+    assert.equal(conv.legacyOptionAnswers, 3);
+    const answers = conv.responses[0].answers.map((a) => a.answer);
+    assert.ok(answers.includes("Aula ou workshop ao vivo") && !answers.includes("Engenharia/Software/Dados/TI") && !answers.includes("Formato que saiu"));
+  });
+
   it("histórico: vale a resposta mais recente de cada e-mail", () => {
     const old = R({ uso_ia: choice("uso_ia").options[3], area: "RH ou gestão de pessoas" }, "a@x.com", "2026-11-01T00:00:00Z");
     const conv = onboardingFormToSurveyResponses([old, ...sample]).responses;
@@ -716,7 +739,7 @@ describe("#10605 leitura do formulário do onboarding", () => {
     await assert.rejects(loadOnboardingFormSurveyResponses({}, async () => null), AudienceAbort);
     await assert.rejects(loadOnboardingFormSurveyResponses({}, async () => { throw new Error("HTTP 500"); }), AudienceAbort);
     await assert.rejects(loadOnboardingFormSurveyResponses({}, async () => []), AudienceAbort);
-    assert.equal((await loadOnboardingFormSurveyResponses({}, async () => [R({ area: "RH" })])).length, 1);
+    assert.equal((await loadOnboardingFormSurveyResponses({}, async () => [R({ area: "Engenharia" })])).length, 1);
   });
 
   it("fetchOnboardingFormResponsesReal: sem URL = null, sem chamar fetch", async () => {

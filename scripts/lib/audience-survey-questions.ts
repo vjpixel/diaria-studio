@@ -82,6 +82,9 @@ export interface FormToSurveyResult {
   unknownAnswers: number;
   /** Respostas a perguntas das versões anteriores (v1/v2, `LEGACY_FORM_ANSWER_IDS`) — descartadas. */
   legacyAnswers: number;
+  /** Opções marcadas em pergunta que continua (ex.: `area`, `produto_tema`, `produto_formato`) mas
+   *  que não existem mais nas opções atuais (v1/v2) — descartadas, nunca misturadas aos blocos v3. */
+  legacyOptionAnswers: number;
   /** Respostas sem nenhuma resposta aproveitável (só perguntas desconhecidas ou vazias) — não contam como respondente. */
   emptyResponses: number;
 }
@@ -112,6 +115,7 @@ export function onboardingFormToSurveyResponses(
   const otherTextIds = new Set(questions.filter((q) => isChoiceQuestion(q) && q.otherOption).map(otherTextFieldId));
   let unknownAnswers = 0;
   let legacyAnswers = 0;
+  let legacyOptionAnswers = 0;
   let emptyResponses = 0;
   const legacy = new Set(LEGACY_FORM_ANSWER_IDS);
   const out: SurveyResponseRecord[] = [];
@@ -127,7 +131,14 @@ export function onboardingFormToSurveyResponses(
       }
       if (typeof value !== "string" || value.trim() === "") continue;
       const parts = q.kind === "checkbox" ? splitMultiAnswer(value) : isChoiceQuestion(q) ? [value.trim()] : [OPEN_ANSWER_MARK];
-      for (const answer of parts) answers.push({ question_id: `form:${q.id}`, question_prompt: q.label, answer });
+      for (const answer of parts) {
+        // Opção de versão anterior (ex.: "Engenharia/Software/Dados/TI" em `area`): fora dos blocos v3.
+        if (isChoiceQuestion(q) && !q.options.includes(answer)) {
+          legacyOptionAnswers++;
+          continue;
+        }
+        answers.push({ question_id: `form:${q.id}`, question_prompt: q.label, answer });
+      }
     }
     if (answers.length === 0) {
       emptyResponses++;
@@ -135,5 +146,5 @@ export function onboardingFormToSurveyResponses(
     }
     out.push({ id: `${ONBOARDING_FORM_RESPONSE_ID_PREFIX}${out.length + 1}`, answers });
   }
-  return { responses: out, unknownAnswers, legacyAnswers, emptyResponses };
+  return { responses: out, unknownAnswers, legacyAnswers, legacyOptionAnswers, emptyResponses };
 }
