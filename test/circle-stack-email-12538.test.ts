@@ -322,21 +322,21 @@ describe("publish-circle-stack-email-kit (#12538)", () => {
     const k = kitDeps({ createThrows: true });
     await assert.rejects(run(root, k.deps), (e: Error) => e instanceof StackEmailIncidentError && /PODE tê-lo aceitado/.test(e.message));
     assert.equal(record(paths).status, "pending");
-    await assert.rejects(run(root, kitDeps().deps), (e: Error) => e instanceof StackEmailGuardError && /estado ambíguo/.test(e.message));
+    await assert.rejects(run(root, kitDeps().deps), (e: Error) => e instanceof StackEmailIncidentError && /estado ambíguo/.test(e.message));
   });
 
   it("registro ilegível bloqueia (nunca vira 'nunca enviado')", async () => {
     const { root, paths } = setupRoot();
     writeFileSync(paths.publishedPath, "{trunc");
     const k = kitDeps();
-    await assert.rejects(run(root, k.deps), (e: Error) => e instanceof StackEmailGuardError && /ilegível/.test(e.message));
+    await assert.rejects(run(root, k.deps), (e: Error) => e instanceof StackEmailIncidentError && /ilegível/.test(e.message));
     assert.equal(k.created.length, 0);
   });
 
-  it("lock de outro envio em andamento recusa", async () => {
+  it("lock de outro envio (ou de um que morreu) é incidente", async () => {
     const { root, paths } = setupRoot();
     writeFileSync(paths.lockPath, "{}");
-    await assert.rejects(run(root, kitDeps().deps), (e: Error) => e instanceof StackEmailGuardError && /em andamento/.test(e.message));
+    await assert.rejects(run(root, kitDeps().deps), (e: Error) => e instanceof StackEmailIncidentError && /em andamento/.test(e.message));
   });
 
   it("releitura falha na 1ª e confirma na 2ª: enviado, com espera entre elas", async () => {
@@ -407,6 +407,44 @@ describe("publish-circle-stack-email-kit (#12538)", () => {
     assert.equal(k.deleted.length, 0);
   });
 
+  it("já enviado responde antes das travas de conteúdo (seleção editada ou canal desligado depois)", async () => {
+    const { root } = setupRoot();
+    await run(root, kitDeps().deps);
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ kit_stack: { audience_tag: "apoio-stack" }, circle_stack: { enabled: false } }));
+    assert.equal((await run(root, kitDeps().deps)).kind, "ja-enviado");
+  });
+
+  it("erro de leitura da tag no Kit ou seleção inválida: guard (nada criado), não incidente", async () => {
+    const { root } = setupRoot();
+    const k = kitDeps();
+    k.deps.findTagId = async () => {
+      throw new KitApiError("/tags", 503, "fora");
+    };
+    await assert.rejects(run(root, k.deps), (e: Error) => e instanceof StackEmailGuardError && /conferir a audiência/.test(e.message));
+    const bad = setupRoot();
+    writeFileSync(bad.paths.selectionPath, "{");
+    await assert.rejects(run(bad.root, kitDeps().deps), StackEmailGuardError);
+  });
+
+  it("--force por cima de `sent`: o `pending` guarda o registro anterior em `previous`", async () => {
+    const { root, paths } = setupRoot();
+    await run(root, kitDeps().deps);
+    const before = readFileSync(paths.publishedPath, "utf8");
+    await assert.rejects(run(root, kitDeps({ createThrows: true }).deps, { force: true }), StackEmailIncidentError);
+    const rec = record(paths);
+    assert.equal(rec.status, "pending");
+    assert.equal(rec.previous, before);
+  });
+
+  it("--force por cima de registro ambíguo e cancelado: mantém o ambíguo e a mensagem pede --force", async () => {
+    const { root, paths } = setupRoot();
+    writeFileSync(paths.publishedPath, JSON.stringify({ status: "pending", cycle: CYCLE, attemptedAt: "x" }));
+    const before = readFileSync(paths.publishedPath, "utf8");
+    const k = kitDeps({ rereads: [{ ...SCHEDULED, subscriber_filter: [{ all: [] }] }, notFound] });
+    await assert.rejects(run(root, k.deps, { force: true }), /CANCELADO[\s\S]*rode de novo com --force/);
+    assert.equal(readFileSync(paths.publishedPath, "utf8"), before);
+  });
+
   it("verifyStackEmailReread exige filtro E agendamento", () => {
     assert.equal(verifyStackEmailReread(SCHEDULED, 42).verified, true);
     assert.equal(verifyStackEmailReread({ ...SCHEDULED, subscriber_filter: buildTagFilter(7) }, 42).verified, false);
@@ -426,6 +464,19 @@ describe("classifyStackEmailRun e o aviso ao editor (#12538)", () => {
     assert.equal((await classifyStackEmailRun(async () => { throw new StackEmailIncidentError("x", 1, true); })).kind, "cancelado");
     assert.equal((await classifyStackEmailRun(async () => { throw new StackEmailIncidentError("x", 1); })).kind, "incidente");
     assert.equal((await classifyStackEmailRun(async () => { throw new Error("rede"); })).kind, "incidente");
+  });
+
+  it("registro ambíguo na execução real vira incidente, nunca 'não saiu'", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stack-email-amb-"));
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ kit_stack: { audience_tag: "apoio-stack" } }));
+    const paths = resolveStackEmailPaths(root, MONDAY);
+    mkdirSync(join(paths.selectionPath, ".."), { recursive: true });
+    writeFileSync(paths.selectionPath, JSON.stringify(selection()));
+    writeFileSync(paths.publishedPath, JSON.stringify({ status: "pending", cycle: CYCLE, attemptedAt: "x" }));
+    const o = await classifyStackEmailRun(() =>
+      runCircleStackEmail({ rootDir: root, dataRoot: root, publishMonday: MONDAY, mode: { kind: "send", force: false }, log: () => {} }),
+    );
+    assert.equal(o.kind, "incidente");
   });
 
   const base = { subject: "Radar de Notícias Stack 26w45: Publicado", body: "Nada a fazer." };

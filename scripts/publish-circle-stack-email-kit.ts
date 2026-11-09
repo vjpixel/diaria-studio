@@ -47,7 +47,7 @@
  *     fazer (resultado `ja-enviado`, não erro). O registro só é apagado quando
  *     o cancelamento automático foi confirmado.
  *
- * Erros: `StackEmailGuardError` = nada foi criado NESTA execução (corrigir e
+ * Erros: `StackEmailGuardError` = nada foi criado nem pode estar pendente (corrigir e
  * rodar de novo); `StackEmailIncidentError` = um broadcast PODE existir no Kit
  * (conferir antes de qualquer reexecução).
  *
@@ -94,6 +94,7 @@ import {
   type PersistedAudienceVerification,
 } from "./publish-artigo-especial-kit.ts";
 import { parseStoredCircleStackSelection, resolveCircleStackConfig } from "./publish-circle-stack.ts";
+import type { CircleStackSelection } from "./lib/circle-stack-render.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[publish-circle-stack-email-kit]";
@@ -124,8 +125,18 @@ export interface StackEmailSent {
 /** O que o arquivo de registro pode conter. Tudo que não é `sent` é ambíguo. */
 type StackEmailRecord =
   | StackEmailSent
-  | { status: "pending"; cycle: string; attemptedAt: string }
-  | { status: "cancel-failed"; cycle: string; broadcastId: number; sendAt: string; reason: string; at: string };
+  | { status: "pending"; cycle: string; attemptedAt: string; previous?: string }
+  | {
+      status: "cancel-failed";
+      cycle: string;
+      broadcastId: number;
+      sendAt: string;
+      reason: string;
+      at: string;
+      previous?: string;
+    };
+// `previous`: conteúdo do registro que o --force sobrescreveu, guardado para
+// não perder a evidência de um envio anterior quando este falha no meio.
 
 type RecordRead = { kind: "none" } | { kind: "sent"; record: StackEmailSent } | { kind: "ambiguous"; reason: string };
 
@@ -276,9 +287,11 @@ function acquireExclusiveLock(lockPath: string): () => void {
     fd = openSync(lockPath, "wx");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    throw new StackEmailGuardError(
-      `outro envio do e-mail da Stack está em andamento (lock ${lockPath}). Se nenhum está rodando (processo ` +
-        "morto), confira Broadcasts no Kit e apague o arquivo antes de tentar de novo.",
+    // Incidente, não guard: um lock que sobrou é de um envio que morreu no
+    // meio, e esse envio pode ter criado o broadcast.
+    throw new StackEmailIncidentError(
+      `outro envio do e-mail da Stack está em andamento ou morreu no meio (lock ${lockPath}). Se nenhum está ` +
+        "rodando, confira Broadcasts no Kit (um broadcast deste ciclo pode ter sido criado) e só então apague o arquivo.",
     );
   }
   try {
@@ -337,11 +350,24 @@ export async function runCircleStackEmail(options: StackEmailRunOptions): Promis
       `seleção do ciclo ${paths.cycle} não existe (${paths.selectionPath}) — rode /diaria-stack antes.`,
     );
   }
-  const { selection } = parseStoredCircleStackSelection(
-    readFileSync(paths.selectionPath, "utf8"),
-    paths.selectionPath,
-    paths.cycle,
-  );
+  let selection: CircleStackSelection;
+  try {
+    ({ selection } = parseStoredCircleStackSelection(readFileSync(paths.selectionPath, "utf8"), paths.selectionPath, paths.cycle));
+  } catch (e) {
+    throw new StackEmailGuardError((e as Error).message);
+  }
+
+  // Ciclo já enviado responde "já enviado" antes das travas de conteúdo: a
+  // seleção editada (ou o canal desligado) depois do envio não pode fazer o
+  // aviso dizer que o e-mail "não saiu". O lock reconfere em `sendLocked`.
+  if (mode.kind === "send" && !mode.force) {
+    const prior = readStackEmailRecord(paths.publishedPath);
+    if (prior.kind === "sent") {
+      log(`ciclo ${paths.cycle} já enviado (broadcast ${prior.record.broadcastId}, ${formatStackEmailBrt(prior.record.sendAt)}) — nada a fazer.`);
+      return { kind: "ja-enviado", record: prior.record };
+    }
+  }
+
   const problems = stackEmailContentProblems(selection, platformConfig as Record<string, unknown>);
   const email = renderStackEmail(selection);
 
@@ -387,7 +413,9 @@ async function sendLocked(
     return { kind: "ja-enviado", record: prior.record };
   }
   if (prior.kind === "ambiguous" && !force) {
-    throw new StackEmailGuardError(
+    // Incidente, não guard: o registro ambíguo é justamente um broadcast que
+    // PODE estar agendado ou ter saído — "nada saiu" seria a leitura errada.
+    throw new StackEmailIncidentError(
       `estado ambíguo do e-mail do ciclo ${paths.cycle}: ${prior.reason}. Confira no Kit (Broadcasts → Scheduled ` +
         `e Sent, descrição "${buildStackEmailDescription(paths.cycle)}") e só então rode com --force (que cria um ` +
         "broadcast NOVO: se o anterior saiu, os apoiadores recebem duas vezes).",
@@ -402,16 +430,22 @@ async function sendLocked(
   if (!kitConfigResult.ok) throw new StackEmailGuardError(kitConfigResult.reason);
   const kitConfig = kitConfigResult.config;
 
-  const audienceResolution = await resolveVerifiedAudience(
-    rawTag,
-    "kit_stack.audience_tag",
-    STACK_EMAIL_TAG_SYNC_COMMAND,
-    async (name) => {
-      const tagId = await deps.findTagId(name, kitConfig);
-      return { tagId, memberCount: tagId === null ? 0 : await deps.countTagMembers(tagId, kitConfig) };
-    },
-    STACK_EMAIL_NIVEIS,
-  );
+  let audienceResolution: Awaited<ReturnType<typeof resolveVerifiedAudience>>;
+  try {
+    audienceResolution = await resolveVerifiedAudience(
+      rawTag,
+      "kit_stack.audience_tag",
+      STACK_EMAIL_TAG_SYNC_COMMAND,
+      async (name) => {
+        const tagId = await deps.findTagId(name, kitConfig);
+        return { tagId, memberCount: tagId === null ? 0 : await deps.countTagMembers(tagId, kitConfig) };
+      },
+      STACK_EMAIL_NIVEIS,
+    );
+  } catch (e) {
+    // Erro de leitura da tag (Kit fora, rede): nada foi criado.
+    throw new StackEmailGuardError(`não foi possível conferir a audiência no Kit (${(e as Error).message}).`);
+  }
   if (!audienceResolution.ok) throw new StackEmailGuardError(audienceResolution.reason);
   const audience = audienceResolution.audience;
 
@@ -419,7 +453,7 @@ async function sendLocked(
   // Kit aceitar, a próxima execução cai no estado ambíguo em vez de duplicar.
   const writeRecord = (r: StackEmailRecord) => deps.writeFile(paths.publishedPath, JSON.stringify(r, null, 2) + "\n");
   try {
-    writeRecord({ status: "pending", cycle: paths.cycle, attemptedAt: now().toISOString() });
+    writeRecord({ status: "pending", cycle: paths.cycle, attemptedAt: now().toISOString(), previous: priorRaw ?? undefined });
   } catch (e) {
     throw new StackEmailGuardError(
       `não foi possível gravar o registro antes do envio (${(e as Error).message}) — sem ele não há proteção contra ` +
@@ -526,9 +560,19 @@ async function cancelUnverified(
     } catch {
       // Sobra um `pending`: a próxima execução pede --force, o que é seguro (o broadcast foi apagado).
     }
+    let priorStatus: unknown = null;
+    try {
+      priorStatus = priorRaw === null ? null : JSON.parse(priorRaw)?.status;
+    } catch {
+      priorStatus = "ilegível";
+    }
+    const rerun =
+      priorRaw === null || priorStatus === "sent"
+        ? "Confira a tag no Kit e rode de novo."
+        : "O registro ambíguo anterior foi mantido: confira a tag e o Kit e rode de novo com --force.";
     throw new StackEmailIncidentError(
       `AUDIÊNCIA ${label}: ${verification.reason} O broadcast Kit id=${broadcastId} foi CANCELADO (exclusão ` +
-        "conferida) antes do envio — nenhum e-mail saiu. Confira a tag no Kit e rode de novo.",
+        `conferida) antes do envio — este broadcast não saiu. ${rerun}`,
       broadcastId,
       true,
     );
@@ -536,7 +580,15 @@ async function cancelUnverified(
 
   let recordError = "";
   try {
-    writeRecord({ status: "cancel-failed", cycle: paths.cycle, broadcastId, sendAt, reason: cancelError, at: now().toISOString() });
+    writeRecord({
+      status: "cancel-failed",
+      cycle: paths.cycle,
+      broadcastId,
+      sendAt,
+      reason: cancelError,
+      at: now().toISOString(),
+      previous: priorRaw ?? undefined,
+    });
   } catch (e) {
     recordError = ` O registro do ciclo também não foi gravado (${(e as Error).message}).`;
   }

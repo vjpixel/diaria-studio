@@ -244,11 +244,12 @@ npx tsx scripts/publish-circle-stack-email-kit.ts --publish-monday {AAMMDD} --se
 Ele agenda o broadcast no Kit para daqui a 5 minutos (o "enviar agora" da
 API). Ciclo já enviado (`_internal/circle-stack-email-published.json` com
 `status: sent`) sai com exit 0 sem reenviar. Recusa tag ausente ou vazia e
-registro ambíguo (tentativa anterior sem confirmação), e cancela sozinho o
-broadcast, conferindo a exclusão, se a releitura não confirmar a audiência e o
-agendamento. Exit 2 é guard (nada criado nesta execução); exit 1 é incidente:
-levar o erro literal ao editor e não reexecutar antes de conferir o Kit (o
-`--force` cria um broadcast novo).
+travas de conteúdo (exit 2, guard: nada criado nem pendente, corrigir e rodar
+de novo). Registro ambíguo (tentativa anterior sem confirmação) ou lock que
+sobrou são incidente (exit 1), e o broadcast é cancelado sozinho, com a
+exclusão conferida, se a releitura não confirmar audiência e agendamento.
+Incidente: levar o erro literal ao editor e não reexecutar antes de conferir o
+Kit (o `--force` cria um broadcast novo).
 
 O publicador recusa sozinho ciclo já publicado ou ambíguo (só `--force`,
 que esta skill nunca passa sem pedido explícito do editor), link não oficial
