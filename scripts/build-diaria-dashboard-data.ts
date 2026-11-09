@@ -1085,10 +1085,17 @@ export function buildAudienceSummary(
     const lowerLine = line.toLowerCase();
     if (line.startsWith("###")) {
       // Detect subsection headings (case-insensitive, tolerant of accents stripped in fixtures)
-      // "### Conteúdo preferido" (survey antiga) e "### Seções preferidas" (formulário do onboarding, #10605).
+      // "### Conteúdo preferido" (survey antiga) e "### Seções preferidas" (formulário do onboarding v1,
+      // #10605) — legado: só aparecem em perfil herdado/antigo. Desde a v2 o formulário não pergunta
+      // preferência de conteúdo, então `content_preferences` fica VAZIO num perfil novo (decisão
+      // registrada na PR #12471): "### Uso do que lê" e os blocos da v3 (ferramentas, objetivo,
+      // dificuldades, produto) caem no reset abaixo, nunca em `content`.
+      // `knowledge`: "### Nível de conhecimento em IA" (antigo) e "### Nível de uso de IA" (v3,
+      // pergunta `uso_ia`, o sinal de nível desde 09/11/2026).
+      // `sectors`: "### Setores" (survey antiga) e "### Áreas de atuação" (formulário).
       if ((lowerLine.includes("conte") || /se[çc][õo]es/.test(lowerLine)) && lowerLine.includes("preferid")) { currentSection = "content"; continue; }
       if (lowerLine.includes("nível") || lowerLine.includes("nivel") || lowerLine.includes("conhecimento")) { currentSection = "knowledge"; continue; }
-      if (lowerLine.includes("setor")) { currentSection = "sectors"; continue; }
+      if (lowerLine.includes("setor") || /[áa]reas de atua[çc][ãa]o/.test(lowerLine)) { currentSection = "sectors"; continue; }
       // Unknown ### subsection: reset survey tracking
       currentSection = null;
       continue;

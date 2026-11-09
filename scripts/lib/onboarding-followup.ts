@@ -11,13 +11,15 @@
  *    D+6 da escada (`form`, antes do pedido de apoio do e-mail 3) e o e-mail
  *    ÚNICO para a base já cadastrada (`form_base`, rascunho montado por
  *    `scripts/onboarding-form-base-prep.ts`, enviado à mão pelo editor no
- *    Kit). Para quem recebeu QUALQUER um dos dois e não respondeu, um
- *    lembrete (`form_lembrete`) 30 dias depois do último e-mail do
- *    formulário, com teto de 3 lembretes por pessoa (decisão do editor de
- *    08/11/2026, que trocou o "sem teto" de 20/10). O convite que a pessoa
- *    recebeu fica em `people[id].form_invite`. Âncora do D+6 = a mesma da
- *    escada (`reguaAnchorSec`, a confirmação do double opt-in), porque o
- *    formulário entra NA escada.
+ *    Kit). Para quem recebeu QUALQUER um dos dois e não respondeu, até 3
+ *    lembretes, um texto por lembrete (`form_lembrete`, `form_lembrete2`,
+ *    `form_lembrete3`, decisão do editor de 09/11/2026). Quem recebeu o D+6
+ *    recebe em D+19, D+49 e D+79 da âncora (`form_reminder_days_onboarding`);
+ *    quem recebeu o e-mail da base, 30 dias depois do envio anterior
+ *    (`form_reminder_days`). O convite que a pessoa recebeu fica em
+ *    `people[id].form_invite`. Âncora do D+6 = a mesma da escada
+ *    (`reguaAnchorSec`, a confirmação do double opt-in), porque o formulário
+ *    entra NA escada.
  *
  * Sem I/O: tudo recebe valores e devolve valores. O executor
  * (`scripts/onboarding-followup-run.ts`) lê o Kit/store e chama isto.
@@ -30,7 +32,9 @@
  *   de envio travado — pula a etapa e segue para a PRÓXIMA ainda não vencida,
  *   nunca recebe as atrasadas de uma vez. Mesma decisão do editor que
  *   descartou o backlog do e-mail 3 (#10603). O 1º e-mail do formulário segue
- *   a mesma janela; os lembretes não têm janela (contam do envio anterior).
+ *   a mesma janela; os lembretes não têm janela. EXCEÇÃO: etapa adiada pela
+ *   regra de pedidos (abaixo) nunca vira `vencida` por isso
+ *   (`people[id].ask_deferred`).
  * - **Idempotência.** Cada etapa de apoio sai no máximo 1 vez por pessoa
  *   (registro em `people[id].sends`, gravado só depois de o broadcast ser
  *   relido agendado/enviado). O lembrete do formulário sai no máximo 1 vez por
@@ -41,14 +45,21 @@
  *   `fields` defasado). Leitura que falha nunca autoriza envio.
  *   `apoio_nivel` não zera na virada do mês: o sync (`sync-apoio-nivel-kit.ts`)
  *   aplica carência de 1 mês (#4436).
- * - **Espaçamento mínimo** entre e-mails de apoio e de formulário para a
- *   mesma pessoa (`min_gap_days`, padrão 7). Se os dois vencem juntos, sai o
- *   de apoio (janela fixa) e o de formulário espera (o lembrete conta do
- *   envio anterior, não perde nada esperando).
+ * - **Regra de pedidos (decisão do editor de 09/11/2026).** Depois do
+ *   primeiro mês da pessoa (a âncora mais antiga conhecida, cadastro ou
+ *   confirmação, + `ASK_RULE_STARTS_AFTER_DAYS`), dois PEDIDOS nunca saem a
+ *   10 dias ou menos um do outro: intervalo mínimo `ask_min_gap_days` (11,
+ *   substituiu o `min_gap_days: 7` antigo). Pedido = `isAsk(kind)`: todas as
+ *   etapas destas sequências (apoio, convites e lembretes do formulário) e o
+ *   e-mail 3 da escada (pedido de apoio do D+10), que conta como pedido
+ *   anterior mas sai no primeiro mês, fora desta regra. Edições diárias não
+ *   contam. O pedido que cai perto de outro ESPERA, nunca é pulado: a etapa
+ *   adiada ganha `ask_deferred` e deixa de vencer pela janela. Se apoio e
+ *   formulário vencem juntos, sai o de apoio e o de formulário espera.
  * - **Envio TRAVADO até os textos serem aprovados.** Os 4 textos de apoio
  *   (`data/snippets/apoio-{30,90,180,360}.md`) destravam a sequência de apoio
- *   JUNTOS; os 2 do formulário (`onboarding-formulario.md`,
- *   `formulario-lembrete.md`) mais a URL do formulário destravam a de
+ *   JUNTOS; os 4 do formulário (`onboarding-formulario.md`,
+ *   `formulario-lembrete-{1,2,3}.md`) mais a URL do formulário destravam a de
  *   formulário. Arquivo ausente, marcador `ONBOARDING-CORPO-PENDENTE`, assunto
  *   ou corpo faltando: bloqueio EXPLÍCITO com motivo, nunca erro silencioso.
  * - **Teto de lote, em lotes parciais (#10631).** Uma etapa com mais elegíveis
@@ -63,7 +74,7 @@ import type { OnboardingEntry } from "./onboarding-store.ts";
 import type { KitBroadcastLot } from "./onboarding-kit-transport.ts";
 import { PENDING_BODY_MARKER, parseOnboardingSnippet, reguaAnchorSec, type OnboardingSnippet } from "./onboarding-state.ts";
 import { checkLinkSecret, FORM_SIG_KIT_FIELD } from "./onboarding-form-link-sig.ts";
-import { resolveFormResults, type FormResults } from "./onboarding-form-contract.ts";
+import { latestFormResponses, resolveFormResults, type FormResults } from "./onboarding-form-contract.ts";
 
 const DAY_S = 86_400;
 
@@ -75,11 +86,13 @@ export type ApoioStepKind = "apoio30" | "apoio90" | "apoio180" | "apoio360";
 /** `form` = convite D+6 da escada; `form_base` = convite único da base já
  *  cadastrada (nunca sai pelo executor diário: o rascunho é montado por
  *  `onboarding-form-base-prep.ts` e o envio é do editor); `form_lembrete` =
- *  lembrete, para quem recebeu qualquer um dos dois convites.
+ *  lembrete, para quem recebeu qualquer um dos dois convites (um texto por
+ *  lembrete, `FORM_REMINDER_STEPS`).
  *  #12490: `form_anual` = convite anual para quem respondeu há 12 meses ou
  *  mais; `form_anual_lembrete` = lembrete dele (no máximo
  *  `form_annual_reminder_max`). */
-export type FormStepKind = "form" | "form_base" | "form_lembrete" | FormAnnualStepKind;
+export type FormReminderKind = "form_lembrete" | "form_lembrete2" | "form_lembrete3";
+export type FormStepKind = "form" | "form_base" | FormReminderKind | FormAnnualStepKind;
 /** #12490: as duas etapas do reenvio anual. */
 export type FormAnnualStepKind = "form_anual" | "form_anual_lembrete";
 /** Os dois convites do formulário. */
@@ -96,10 +109,44 @@ export const APOIO_STEPS: readonly { kind: ApoioStepKind; days: number; snippetF
   { kind: "apoio360", days: 360, snippetFile: "apoio-360.md" },
 ];
 
+/** Os 3 lembretes, em ordem: o N-ésimo lembrete da pessoa usa o N-ésimo
+ *  texto (decisão do editor de 09/11/2026). `form_lembrete` (sem número) é o
+ *  1º, o mesmo nome de antes, para registros antigos continuarem valendo. */
+export const FORM_REMINDER_STEPS: readonly { kind: FormReminderKind; snippetFile: string }[] = [
+  { kind: "form_lembrete", snippetFile: "formulario-lembrete-1.md" },
+  { kind: "form_lembrete2", snippetFile: "formulario-lembrete-2.md" },
+  { kind: "form_lembrete3", snippetFile: "formulario-lembrete-3.md" },
+];
+
 export const FORM_STEPS: readonly { kind: FormStepKind; snippetFile: string }[] = [
   { kind: "form", snippetFile: "onboarding-formulario.md" },
-  { kind: "form_lembrete", snippetFile: "formulario-lembrete.md" },
+  ...FORM_REMINDER_STEPS,
 ];
+
+export function isFormReminder(kind: string): kind is FormReminderKind {
+  return FORM_REMINDER_STEPS.some((s) => s.kind === kind);
+}
+
+/** Pedido do e-mail 3 da escada (D+10, `onboarding-state.ts`) — fora destas
+ *  sequências, mas conta como pedido anterior na regra de espaçamento. */
+export const WELCOME_EMAIL3_ASK = "email3";
+
+/** O que pode ser pedido: as etapas destas sequências e o e-mail 3 da escada. */
+export type AskKind = FollowupStepKind | typeof WELCOME_EMAIL3_ASK;
+
+/**
+ * Ponto ÚNICO que diz o que é PEDIDO para a regra de espaçamento (decisão do
+ * editor de 09/11/2026): todas as etapas destas sequências (pedidos de apoio,
+ * convites e lembretes do formulário) e o e-mail 3 da escada. Pedido novo
+ * entra aqui, sem regra própria. Edições diárias (e os e-mails 1 e 2 da
+ * escada) não são pedido.
+ */
+export function isAsk(kind: AskKind): boolean {
+  if (kind === WELCOME_EMAIL3_ASK) return true;
+  // `isFormStep` inclui o reenvio anual (#12490): também é pedido. O e-mail
+  // dos resultados (`form_resultados`, #12495) entrega algo, não pede: fica de fora.
+  return isApoioStep(kind) || isFormStep(kind);
+}
 
 /** Convite único para a base já cadastrada (#10605, decisão 11 do editor).
  *  Fora de `FORM_STEPS` de propósito: o gate da escada (`formContentGate`)
@@ -131,7 +178,7 @@ export function isApoioStep(kind: string): kind is ApoioStepKind {
 
 /** Etapas cujo e-mail leva o link ASSINADO do formulário (`{{FORM_URL}}`). */
 export function isFormStep(kind: string): kind is FormStepKind {
-  return kind === "form" || kind === "form_base" || kind === "form_lembrete" || isFormAnnualStep(kind);
+  return kind === "form" || kind === "form_base" || isFormReminder(kind) || isFormAnnualStep(kind);
 }
 
 export function isFormAnnualStep(kind: string): kind is FormAnnualStepKind {
@@ -216,6 +263,11 @@ export interface FollowupPerson {
    *  "nenhum convite" (registro anterior ao campo): ler sempre por
    *  `formInviteOf`, que deriva de `sends`. O lembrete vale para os dois. */
   form_invite?: FormInviteKind;
+  /** #10605 (regra de pedidos, 09/11/2026): etapas COM JANELA (apoio, convite
+   *  D+6) que a regra de espaçamento adiou. Etapa aqui nunca vira `vencida`
+   *  pela janela: o pedido espera, nunca é pulado. Gravado na 1ª rodada
+   *  `--send` que adiou; sem efeito depois que a etapa tem envio/pulo. */
+  ask_deferred?: { step: FollowupStepKind; at: string }[];
   /** #10763: etapas cuja leitura singular falhou na última tentativa (transitório,
    *  NUNCA pulo terminal). Só rebaixa a pessoa na ordem do teto; sai no 1º sucesso. */
   live_failures?: { step: FollowupStepKind; at: string; n: number }[];
@@ -415,9 +467,13 @@ export interface FollowupBlock {
 export interface FollowupConfigRaw {
   enabled?: boolean;
   grace_days?: number;
-  min_gap_days?: number;
+  /** Intervalo mínimo entre pedidos depois do 1º mês (regra de 09/11/2026: 11). */
+  ask_min_gap_days?: number;
   form_first_days?: number;
+  /** Lembretes de quem recebeu o convite da BASE: dias depois do envio anterior. */
   form_reminder_days?: number;
+  /** Lembretes de quem recebeu o convite do ONBOARDING: dias da âncora (`[19, 49, 79]`). */
+  form_reminder_days_onboarding?: number[];
   /** #10605: teto de lembretes por pessoa (decisão do editor de 08/11/2026: 3). */
   form_reminder_max?: number;
   /** #10605 regra B: o e-mail da base exclui quem vai receber o D+6 em até N dias. */
@@ -438,9 +494,10 @@ export interface FollowupConfigRaw {
 export interface FollowupConfig {
   enabled: boolean;
   graceDays: number;
-  minGapDays: number;
+  askMinGapDays: number;
   formFirstDays: number;
   formReminderDays: number;
+  formReminderDaysOnboarding: number[];
   formReminderMax: number;
   baseInviteWindowDays: number;
   maxRecipientsPerLot: number;
@@ -457,6 +514,22 @@ function posInt(v: unknown, dflt: number): number {
   return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : dflt;
 }
 
+/** Default dos lembretes do onboarding (dias da âncora). */
+export const DEFAULT_FORM_REMINDER_DAYS_ONBOARDING: readonly number[] = [19, 49, 79];
+
+function isValidReminderDays(v: unknown): v is number[] {
+  return (
+    Array.isArray(v) &&
+    v.length > 0 &&
+    v.every((x, i) => typeof x === "number" && Number.isInteger(x) && x > 0 && (i === 0 || x > (v[i - 1] as number)))
+  );
+}
+
+/** Lista crescente de inteiros positivos; qualquer coisa fora disso cai no default. */
+function reminderDays(v: unknown): number[] {
+  return isValidReminderDays(v) ? [...v] : [...DEFAULT_FORM_REMINDER_DAYS_ONBOARDING];
+}
+
 function nonNegInt(v: unknown, dflt: number): number {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : dflt;
 }
@@ -465,15 +538,29 @@ function nonEmpty(v: unknown): string | null {
   return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
 }
 
-/** @pure — valores inválidos caem no default (nunca 0/negativo). */
-export function resolveFollowupConfig(raw: FollowupConfigRaw | undefined | null): FollowupConfig {
+/** Intervalo mínimo entre pedidos (decisão do editor de 09/11/2026). */
+export const DEFAULT_ASK_MIN_GAP_DAYS = 11;
+
+/** Valores inválidos caem no default (nunca 0/negativo). `warn` recebe o
+ *  aviso de chave inválida ou obsoleta (o executor passa o stderr). */
+export function resolveFollowupConfig(
+  raw: (FollowupConfigRaw & { min_gap_days?: unknown }) | undefined | null,
+  warn: (msg: string) => void = () => {},
+): FollowupConfig {
   const r = raw ?? {};
+  if (r.min_gap_days !== undefined) {
+    warn("onboarding.followup.min_gap_days é obsoleto e é ignorado: o espaçamento é ask_min_gap_days (#10605, 09/11/2026)");
+  }
+  if (r.form_reminder_days_onboarding !== undefined && !isValidReminderDays(r.form_reminder_days_onboarding)) {
+    warn(`onboarding.followup.form_reminder_days_onboarding inválido (${JSON.stringify(r.form_reminder_days_onboarding)}): precisa ser uma lista crescente de inteiros positivos; usando ${JSON.stringify(DEFAULT_FORM_REMINDER_DAYS_ONBOARDING)}`);
+  }
   return {
     enabled: r.enabled === true,
     graceDays: posInt(r.grace_days, 10),
-    minGapDays: posInt(r.min_gap_days, 7),
+    askMinGapDays: posInt(r.ask_min_gap_days, DEFAULT_ASK_MIN_GAP_DAYS),
     formFirstDays: posInt(r.form_first_days, 6),
     formReminderDays: posInt(r.form_reminder_days, 30),
+    formReminderDaysOnboarding: reminderDays(r.form_reminder_days_onboarding),
     formReminderMax: posInt(r.form_reminder_max, 3),
     baseInviteWindowDays: posInt(r.base_invite_window_days, 7),
     maxRecipientsPerLot: posInt(r.max_recipients_per_lot, 300),
@@ -691,7 +778,7 @@ export function snippetTemplate(kind: FollowupStepKind): string {
             ? "lembrete do convite anual, no máximo 1 (#12490)"
             : kind === "form_resultados"
               ? "link dos resultados para quem respondeu depois do envio da edição especial (#12495)"
-              : "lembrete do formulário, 30 dias depois do último e-mail, até 3 vezes (#10605)";
+              : `lembrete ${FORM_REMINDER_STEPS.findIndex((s) => s.kind === kind) + 1} de 3 do formulário (#10605)`;
   return [
     "<!--",
     what,
@@ -720,6 +807,28 @@ function hasStepRecord(person: FollowupPerson | undefined, kind: FollowupStepKin
   return person.sends.some((s) => s.step === kind) || (person.skips ?? []).some((s) => s.step === kind);
 }
 
+/**
+ * A regra de pedidos adiou esta etapa e o adiamento ainda vale AGORA. A marca
+ * é renovada a cada rodada que adia de novo (`recordAskDeferrals`), então ela
+ * só protege enquanto a regra de fato segura a etapa: até `askMinGapDays`
+ * (+1 dia de folga da rodada diária) depois do último adiamento. Passado
+ * isso, a etapa volta à janela normal: se ela já fechou (executor travado
+ * mais tempo que o intervalo), a etapa velha vence e NÃO sai atrasada.
+ */
+export function isAskDeferred(
+  person: FollowupPerson | undefined,
+  kind: FollowupStepKind,
+  nowSec: number,
+  askMinGapDays: number = DEFAULT_ASK_MIN_GAP_DAYS,
+): boolean {
+  return (person?.ask_deferred ?? []).some((d) => {
+    if (d.step !== kind) return false;
+    const at = isoToSec(d.at);
+    return at != null && nowSec < at + (askMinGapDays + 1) * DAY_S;
+  });
+}
+
+
 export interface ApoioDueResult {
   /** Etapa de apoio dentro da janela e ainda não enviada/pulada — `null` = nenhuma. */
   due: ApoioStepKind | null;
@@ -733,6 +842,7 @@ export function apoioStepDue(
   nowSec: number,
   person: FollowupPerson | undefined,
   graceDays: number,
+  askMinGapDays: number = DEFAULT_ASK_MIN_GAP_DAYS,
 ): ApoioDueResult {
   const vencidas: ApoioStepKind[] = [];
   if (cadastroSec == null) return { due: null, vencidas };
@@ -740,19 +850,20 @@ export function apoioStepDue(
     if (hasStepRecord(person, step.kind)) continue;
     const start = cadastroSec + step.days * DAY_S;
     if (nowSec < start) break; // etapas seguintes ainda mais no futuro
-    if (nowSec < start + graceDays * DAY_S) return { due: step.kind, vencidas };
+    // Adiada pela regra de pedidos: espera, nunca é descartada pela janela.
+    if (nowSec < start + graceDays * DAY_S || isAskDeferred(person, step.kind, nowSec, askMinGapDays)) return { due: step.kind, vencidas };
     vencidas.push(step.kind);
   }
   return { due: null, vencidas };
 }
 
 export type FormDueResult =
-  | { due: "form" | "form_lembrete" }
+  | { due: "form" | FormReminderKind }
   | { due: null; motivo: "preencheu" | "saiu" | "sem_ancora" | "nao_venceu" | "vencida" | "teto_lembretes" };
 
-/** Lembretes do formulário já registrados para a pessoa. */
+/** Lembretes do formulário já registrados para a pessoa (os 3 textos somados). */
 export function formReminderCount(person: FollowupPerson | undefined): number {
-  return (person?.sends ?? []).filter((s) => s.step === "form_lembrete").length;
+  return (person?.sends ?? []).filter((s) => isFormReminder(s.step)).length;
 }
 
 /** @pure — o convite que a pessoa recebeu: `form_invite`, ou o 1º convite em `sends`. */
@@ -780,12 +891,23 @@ export function lastFormSendSec(person: FollowupPerson | undefined): number | nu
   return last;
 }
 
-/** @pure — qual e-mail de formulário está devido agora. */
+/**
+ * @pure — qual e-mail de formulário está devido agora.
+ *
+ * Lembretes (decisão do editor de 09/11/2026): o N-ésimo lembrete usa o
+ * N-ésimo texto (`FORM_REMINDER_STEPS`). Quem recebeu o convite do
+ * ONBOARDING (`form`) e tem âncora recebe o N-ésimo em
+ * `anchor + formReminderDaysOnboarding[N-1]` (D+19, D+49, D+79); quem recebeu
+ * o convite da BASE (ou sem âncora conhecida) recebe `formReminderDays` depois
+ * do envio anterior. Teto: `formReminderMax` (e nunca mais lembretes que
+ * textos). O espaçamento entre pedidos é do `planFollowup`, não daqui.
+ */
 export function formStepDue(
   anchorSec: number | null,
   nowSec: number,
   person: FollowupPerson | undefined,
-  cfg: Pick<FollowupConfig, "formFirstDays" | "formReminderDays" | "graceDays"> & Partial<Pick<FollowupConfig, "formReminderMax">>,
+  cfg: Pick<FollowupConfig, "formFirstDays" | "formReminderDays" | "graceDays"> &
+    Partial<Pick<FollowupConfig, "formReminderMax" | "formReminderDaysOnboarding" | "askMinGapDays">>,
 ): FormDueResult {
   if (person?.form_filled_at) return { due: null, motivo: "preencheu" };
   // #10675: quem saiu do Kit não volta a ser devido (nem ocupa vaga do teto).
@@ -795,14 +917,22 @@ export function formStepDue(
     if (anchorSec == null) return { due: null, motivo: "sem_ancora" };
     const start = anchorSec + cfg.formFirstDays * DAY_S;
     if (nowSec < start) return { due: null, motivo: "nao_venceu" };
-    if (nowSec >= start + cfg.graceDays * DAY_S) return { due: null, motivo: "vencida" };
+    if (nowSec >= start + cfg.graceDays * DAY_S && !isAskDeferred(person, "form", nowSec, cfg.askMinGapDays)) return { due: null, motivo: "vencida" };
     return { due: "form" };
   }
-  // Lembrete N dias depois do último e-mail do formulário (convite D+6, convite
-  // da base ou lembrete anterior), com teto por pessoa (decisão do editor de
-  // 08/11/2026: 3; antes era sem teto). Depois do 3º, para mesmo sem resposta.
-  if (formReminderCount(person) >= (cfg.formReminderMax ?? 3)) return { due: null, motivo: "teto_lembretes" };
-  return nowSec >= last + cfg.formReminderDays * DAY_S ? { due: "form_lembrete" } : { due: null, motivo: "nao_venceu" };
+  const n = formReminderCount(person);
+  if (n >= Math.min(cfg.formReminderMax ?? 3, FORM_REMINDER_STEPS.length)) return { due: null, motivo: "teto_lembretes" };
+  const kind = FORM_REMINDER_STEPS[n].kind;
+  const days = cfg.formReminderDaysOnboarding ?? DEFAULT_FORM_REMINDER_DAYS_ONBOARDING;
+  // Onboarding: D+19/49/79 da âncora, mas nunca menos de `askMinGapDays`
+  // depois do e-mail anterior do formulário (convite D+6 ou lembrete que
+  // saíram atrasados não puxam o seguinte para poucos dias depois).
+  const gap = (cfg.askMinGapDays ?? DEFAULT_ASK_MIN_GAP_DAYS) * DAY_S;
+  const dueAt =
+    formInviteOf(person) === "form" && anchorSec != null && n < days.length
+      ? Math.max(anchorSec + days[n] * DAY_S, last + gap)
+      : last + cfg.formReminderDays * DAY_S;
+  return nowSec >= dueAt ? { due: kind } : { due: null, motivo: "nao_venceu" };
 }
 
 /** #12490: 1ª resposta registrada (epoch s): `form_first_filled_at`, senão `form_filled_at`. */
@@ -917,14 +1047,91 @@ export function pickAnnualMonthBatch(
   return { keep, deferred, labels };
 }
 
-/** Último envio de QUALQUER e-mail destas sequências para a pessoa (epoch s). */
-export function lastFollowupSendSec(person: FollowupPerson | undefined): number | null {
+/** A regra de pedidos só vale DEPOIS do 1º mês da pessoa (âncora + 30 dias). */
+export const ASK_RULE_STARTS_AFTER_DAYS = 30;
+
+/** Contexto de pedidos de uma pessoa vindo de fora destas sequências (a escada). */
+export interface AskContext {
+  /** Âncora da escada (`reguaAnchorSec`, a confirmação). */
+  anchorSec: number | null;
+  /** Epoch s de pedidos feitos fora daqui (o e-mail 3 da escada). */
+  extraAskSecs: readonly number[];
+}
+
+/** @pure — último pedido (`isAsk`) da pessoa: envios destas sequências + os de fora. */
+export function lastAskSec(person: FollowupPerson | undefined, extraAskSecs: readonly number[] = []): number | null {
   let last: number | null = null;
+  // Só pedidos contam (`isAsk`): o e-mail dos resultados (#12495) não.
   for (const s of person?.sends ?? []) {
+    if (!isAsk(s.step)) continue;
     const sec = isoToSec(s.at);
     if (sec != null && (last == null || sec > last)) last = sec;
   }
+  // `extraAskSecs`: pedidos de fora (o e-mail 3 da escada, `askContextFromEntries`).
+  for (const sec of extraAskSecs) if (last == null || sec > last) last = sec;
   return last;
+}
+
+/**
+ * @pure — a regra de pedidos barra um pedido AGORA? Depois do 1º mês (a
+ * âncora mais antiga conhecida + `ASK_RULE_STARTS_AFTER_DAYS`; sem âncora
+ * nenhuma a regra vale, lado conservador), um pedido só sai com
+ * `askMinGapDays` dias ou mais desde o último. Dentro do 1º mês não barra
+ * (D+6, D+10 e D+19 estão nele).
+ */
+export function askGapBlocks(nowSec: number, anchors: readonly (number | null)[], lastAsk: number | null, askMinGapDays: number): boolean {
+  if (lastAsk == null) return false;
+  const known = anchors.filter((a): a is number => a != null);
+  if (known.length > 0 && nowSec < Math.min(...known) + ASK_RULE_STARTS_AFTER_DAYS * DAY_S) return false;
+  return nowSec < lastAsk + askMinGapDays * DAY_S;
+}
+
+/**
+ * @pure — contexto de pedidos a partir das entradas da escada, por id Kit:
+ * âncora (`reguaAnchorSec`) e a hora do e-mail 3 quando ele saiu
+ * (`email3_state: "campaign_created"`, `email3_decided_at`).
+ */
+export function askContextFromEntries(entries: readonly OnboardingEntry[]): Map<number, AskContext> {
+  const out = new Map<number, AskContext>();
+  for (const e of entries) {
+    const kitId = kitIdForEntry(e);
+    if (kitId == null) continue;
+    const extra: number[] = [];
+    // O e-mail 3 da escada é pedido (`isAsk(WELCOME_EMAIL3_ASK)`): conta como anterior.
+    if (isAsk(WELCOME_EMAIL3_ASK) && e.email3_state === "campaign_created") {
+      const sec = isoToSec(e.email3_decided_at);
+      if (sec != null) extra.push(sec);
+    }
+    out.set(kitId, { anchorSec: reguaAnchorSec(e), extraAskSecs: extra });
+  }
+  return out;
+}
+
+/** @pure — grava `ask_deferred` (etapas com janela) para os adiados da rodada e renova
+ *  a marca de quem foi adiado de novo. Devolve quantas marcas NOVAS. */
+export function recordAskDeferrals(
+  people: Record<string, FollowupPerson>,
+  deferred: readonly FollowupDue[],
+  nowIso: string,
+  cadastroById: ReadonlyMap<number, string | null> = new Map(),
+): number {
+  let n = 0;
+  for (const d of deferred) {
+    // Sem janela (lembretes, base, reenvio anual, resultados): nada a proteger.
+    if (isFormReminder(d.kind) || d.kind === "form_base" || isFormAnnualStep(d.kind) || d.kind === "form_resultados") continue;
+    const p = ensurePerson(people, d.kit_subscriber_id, d.email, cadastroById.get(d.kit_subscriber_id) ?? null);
+    if (hasStepRecord(p, d.kind)) continue;
+    // Adiada de novo nesta rodada: renova a marca (o adiamento vale enquanto a
+    // regra segue segurando a etapa, `isAskDeferred`).
+    const mark = (p.ask_deferred ?? []).find((m) => m.step === d.kind);
+    if (mark) {
+      mark.at = nowIso;
+      continue;
+    }
+    (p.ask_deferred ??= []).push({ step: d.kind, at: nowIso });
+    n++;
+  }
+  return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -954,6 +1161,9 @@ export interface FollowupPlan {
   due: FollowupDue[];
   /** Por etapa, contagem por motivo de quem NÃO entrou (`vencida`, `espacamento`, `bloqueado_*`). */
   counts: Partial<Record<FollowupStepKind, Record<string, number>>>;
+  /** Devidos que a regra de pedidos adiou nesta rodada (o executor grava
+   *  `ask_deferred` com `recordAskDeferrals`, para a janela não descartá-los). */
+  askDeferred: FollowupDue[];
 }
 
 function bump(counts: FollowupPlan["counts"], kind: FollowupStepKind, motivo: string, n = 1): void {
@@ -971,8 +1181,8 @@ export function planFollowup(opts: {
   formCandidates: readonly FormCandidate[];
   people: Readonly<Record<string, FollowupPerson>>;
   nowSec: number;
-  cfg: Pick<FollowupConfig, "graceDays" | "minGapDays" | "formFirstDays" | "formReminderDays"> &
-    Partial<Pick<FollowupConfig, "formReminderMax" | "formAnnualDays" | "formAnnualReminderMax" | "results">>;
+  cfg: Pick<FollowupConfig, "graceDays" | "askMinGapDays" | "formFirstDays" | "formReminderDays"> &
+    Partial<Pick<FollowupConfig, "formReminderMax" | "formReminderDaysOnboarding" | "formAnnualDays" | "formAnnualReminderMax" | "results">>;
   apoioBlocked: FollowupBlockReason | null;
   formBlocked: FollowupBlockReason | null;
   /**
@@ -987,6 +1197,11 @@ export function planFollowup(opts: {
    * contados como `email_da_base_pendente`, fora de `due`.
    */
   baseInviteRecipientIds?: ReadonlySet<string>;
+  /**
+   * Regra de pedidos: âncora da escada e pedidos feitos fora daqui (e-mail 3)
+   * por id Kit (`askContextFromEntries`). Ausente = só os envios do store.
+   */
+  askContext?: ReadonlyMap<number, AskContext>;
   /**
    * #12490: avalia o reenvio anual para quem já respondeu (`people` com
    * `form_filled_at`). Ausente (`undefined`) = não avalia (nem conta);
@@ -1003,10 +1218,12 @@ export function planFollowup(opts: {
   const isEnvioBrevo = (email: string) => opts.excludedEmails?.has(normalizeEmail(email)) ?? false;
   const counts: FollowupPlan["counts"] = {};
   const byId = new Map<number, { email: string; apoio: ApoioStepKind | null; form: Exclude<FollowupStepKind, ApoioStepKind> | null }>();
+  const cadastroSecById = new Map(opts.apoioCandidates.map((c) => [c.kit_subscriber_id, isoToSec(c.cadastro_at)] as const));
+  const formAnchorById = new Map(opts.formCandidates.map((c) => [c.kit_subscriber_id, c.anchorSec] as const));
 
   for (const c of opts.apoioCandidates) {
     const person = people[String(c.kit_subscriber_id)];
-    const r = apoioStepDue(isoToSec(c.cadastro_at), nowSec, person, cfg.graceDays);
+    const r = apoioStepDue(isoToSec(c.cadastro_at), nowSec, person, cfg.graceDays, cfg.askMinGapDays);
     for (const v of r.vencidas) bump(counts, v, "vencida");
     if (r.due == null) continue;
     if (isEnvioBrevo(c.email)) {
@@ -1086,24 +1303,34 @@ export function planFollowup(opts: {
   }
 
   const due: FollowupDue[] = [];
+  const askDeferred: FollowupDue[] = [];
+  const defer = (id: number, email: string, kind: FollowupStepKind) => {
+    bump(counts, kind, "espacamento");
+    askDeferred.push({ kit_subscriber_id: id, email, kind });
+  };
   for (const [id, v] of byId) {
     const person = people[String(id)];
-    const last = lastFollowupSendSec(person);
-    const tooSoon = last != null && nowSec < last + cfg.minGapDays * DAY_S;
-    if (tooSoon) {
-      if (v.apoio) bump(counts, v.apoio, "espacamento");
-      if (v.form) bump(counts, v.form, "espacamento");
+    const ctx = opts.askContext?.get(id);
+    const cadastro = cadastroSecById.get(id) ?? isoToSec(person?.cadastro_at);
+    const anchors = [cadastro ?? null, ctx?.anchorSec ?? formAnchorById.get(id) ?? null];
+    const last = lastAskSec(person, ctx?.extraAskSecs ?? []);
+    if (askGapBlocks(nowSec, anchors, last, cfg.askMinGapDays)) {
+      if (v.apoio) defer(id, v.email, v.apoio);
+      // Pedido do formulário (convite, lembrete, reenvio anual) espera. O
+      // e-mail dos resultados não é pedido (`isAsk`): a regra não o segura.
+      if (v.form && isAsk(v.form)) defer(id, v.email, v.form);
+      else if (v.form) due.push({ kit_subscriber_id: id, email: v.email, kind: v.form });
       continue;
     }
     if (v.apoio) {
       due.push({ kit_subscriber_id: id, email: v.email, kind: v.apoio });
       // Os dois vencendo juntos: sai o de apoio (janela fixa); o formulário espera.
-      if (v.form) bump(counts, v.form, "espacamento");
+      if (v.form) defer(id, v.email, v.form);
       continue;
     }
     if (v.form) due.push({ kit_subscriber_id: id, email: v.email, kind: v.form });
   }
-  return { due, counts };
+  return { due, counts, askDeferred };
 }
 
 /** Por etapa, quantos elegíveis havia e quantos ficaram para os dias seguintes. */
@@ -1301,7 +1528,7 @@ export function capWindowOverflows(
 ): CapWindowOverflow[] {
   const byKind = new Map<FollowupStepKind, FollowupDue[]>();
   for (const d of due) {
-    if (d.kind === "form_lembrete") continue;
+    if (isFormReminder(d.kind)) continue;
     const list = byKind.get(d.kind);
     if (list) list.push(d);
     else byKind.set(d.kind, [d]);
@@ -1621,7 +1848,8 @@ export function applyFormResponses(
   }
   let marked = 0;
   let unmatched = 0;
-  for (const r of responses) {
+  // v3 (#12490): o Worker devolve TODOS os envios; vale o mais recente por e-mail.
+  for (const r of latestFormResponses(responses)) {
     const p = byEmail.get(normalizeEmail(r.email));
     if (!p) {
       unmatched++;
@@ -1941,9 +2169,9 @@ export function idsInConfirmedFollowupLots(lots: Readonly<Record<string, Followu
   const ids = new Set<string>();
   for (const lot of Object.values(lots)) {
     if (lot.kind !== kind || lot.broadcast_id == null || lot.status === "cancelled" || lot.schedule_failed === true) continue;
-    // Lembrete do formulário repete por desenho — a dedup dele é a janela de 30 dias.
-    // #12490: o reenvio anual também (um ciclo por ano; a dedup é `formAnnualStepDue`).
-    if (kind === "form_lembrete" || isFormAnnualStep(kind)) continue;
+    // #12490: o reenvio anual repete por desenho (um ciclo por ano; a dedup é `formAnnualStepDue`).
+    // Os 3 lembretes do formulário saem uma vez cada (etapas distintas desde a v3), então entram na dedup.
+    if (isFormAnnualStep(kind)) continue;
     for (const id of lot.recipient_subscription_ids) ids.add(id);
   }
   return ids;
@@ -2064,4 +2292,54 @@ export function evaluateFollowupHealth(
   }
   if (failed >= threshold) return { verdict: "stale", reason: "rodadas_falhando", lastRunAt: run.at, consecutiveFailedRuns: failed };
   return { verdict: "ok", reason: null, lastRunAt: run.at, consecutiveFailedRuns: failed };
+}
+
+// ---------------------------------------------------------------------------
+// Tag de quem respondeu o formulário (#10605, para a #12495)
+// ---------------------------------------------------------------------------
+
+/** Tag do Kit para quem respondeu o formulário. Precisa EXISTIR no Kit: o
+ *  executor nunca cria a tag (`--tag-respondents` avisa e para). */
+export const FORM_RESPONDENT_TAG = "formulario-respondeu";
+
+export interface RespondentIds {
+  /** Respondentes (e-mails únicos) que o Worker devolveu. */
+  respondents: number;
+  /** Respondentes com id Kit no store, um por id (dois e-mails da mesma pessoa viram um). */
+  resolved: { email: string; kit_subscriber_id: number }[];
+  /** Respondentes fora do store (o id sai da leitura por e-mail). */
+  unresolved: string[];
+}
+
+/**
+ * @pure — id Kit de cada respondente (mais recente por e-mail), pelo store
+ * (`people`, casando também pelos `previous_emails`, #10774). A comparação
+ * com a tag é por id, nunca por e-mail: quem trocou de e-mail no Kit
+ * respondeu com o antigo e continua sendo a mesma pessoa.
+ */
+export function resolveRespondentIds(
+  responses: readonly FormResponseRecord[],
+  people: Readonly<Record<string, FollowupPerson>>,
+): RespondentIds {
+  const idByEmail = new Map<string, number>();
+  for (const p of Object.values(people)) idByEmail.set(normalizeEmail(p.email), p.kit_subscriber_id);
+  for (const p of Object.values(people)) {
+    for (const e of p.previous_emails ?? []) {
+      const k = normalizeEmail(e);
+      if (k !== "" && !idByEmail.has(k)) idByEmail.set(k, p.kit_subscriber_id);
+    }
+  }
+  const latest = latestFormResponses(responses);
+  const out: RespondentIds = { respondents: latest.length, resolved: [], unresolved: [] };
+  const seen = new Set<number>();
+  for (const r of latest) {
+    const email = normalizeEmail(r.email);
+    const id = idByEmail.get(email);
+    if (id == null) out.unresolved.push(email);
+    else if (!seen.has(id)) {
+      seen.add(id);
+      out.resolved.push({ email, kit_subscriber_id: id });
+    }
+  }
+  return out;
 }
