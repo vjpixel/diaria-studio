@@ -17,7 +17,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -117,5 +119,61 @@ describe("reconcileReportAtTrainEnd — --report com report.md ainda inexistente
     assert.deepEqual(seen, [[7]]);
     assert.equal(line.level, "warn");
     assert.match(line.message, /reconcile do relatório \(#11461\): falhou/);
+  });
+});
+
+describe("resolveReportPathAgainstMainCheckout — --report relativo com cwd num worktree (#12458)", () => {
+  it("relativo resolve contra a raiz do checkout principal (pai do .git comum), não contra o cwd do worktree", async () => {
+    const { resolveReportPathAgainstMainCheckout } = await import("../scripts/run-merge-train.ts");
+    const main = resolve("/repo/main");
+    const worktree = join(main, ".claude", "worktrees", "agent-abc");
+    const r = resolveReportPathAgainstMainCheckout("data/overnight/261108/report.md", worktree, () => join(main, ".git"));
+    assert.equal(r.path, join(main, "data", "overnight", "261108", "report.md"));
+    assert.equal(r.warning, null);
+    // plan.json derivado do report.md fica no checkout principal também
+    assert.equal(join(dirname(r.path), "plan.json"), join(main, "data", "overnight", "261108", "plan.json"));
+  });
+
+  it("absoluto fica como veio, sem consultar o git", async () => {
+    const { resolveReportPathAgainstMainCheckout } = await import("../scripts/run-merge-train.ts");
+    const abs = resolve("/outro/lugar/report.md");
+    let called = false;
+    const r = resolveReportPathAgainstMainCheckout(abs, resolve("/repo/main/.claude/worktrees/agent-x"), () => {
+      called = true;
+      return null;
+    });
+    assert.equal(r.path, abs);
+    assert.equal(r.warning, null);
+    assert.equal(called, false);
+  });
+
+  it("git-common-dir ilegível ou fora de <raiz>/.git: cai no cwd e devolve aviso (nunca em silêncio)", async () => {
+    const { resolveReportPathAgainstMainCheckout } = await import("../scripts/run-merge-train.ts");
+    const cwd = resolve("/algum/cwd");
+    for (const common of [null, resolve("/srv/repo.git")]) {
+      const r = resolveReportPathAgainstMainCheckout("data/r.md", cwd, () => common);
+      assert.equal(r.path, join(cwd, "data", "r.md"));
+      assert.match(r.warning ?? "", /raiz do checkout principal não resolvida/);
+    }
+  });
+
+  it("git real: de dentro de um worktree vinculado, aponta pro checkout principal", async (t) => {
+    const { resolveReportPathAgainstMainCheckout } = await import("../scripts/run-merge-train.ts");
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "mt-12458-")));
+    t.after(() => rmSync(base, { recursive: true, force: true }));
+    const main = join(base, "main");
+    const git = (cwd: string, ...args: string[]) => {
+      const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+      assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+    };
+    mkdirSync(main);
+    git(main, "init", "-q");
+    git(main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+    const wt = join(main, ".claude", "worktrees", "agent-test");
+    git(main, "worktree", "add", "-q", wt);
+    const r = resolveReportPathAgainstMainCheckout(join("data", "overnight", "261108", "report.md"), wt);
+    assert.equal(r.warning, null);
+    const expected = join(realpathSync.native(main), "data", "overnight", "261108", "report.md");
+    assert.equal(r.path.toLowerCase(), expected.toLowerCase());
   });
 });
