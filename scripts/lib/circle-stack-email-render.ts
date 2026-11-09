@@ -158,7 +158,7 @@ export function renderStackEmail(sel: CircleStackSelection): RenderedStackEmail 
         <tr><td style="padding:36px 32px 32px;">
           <h1 style="margin:0 0 20px;font-family:${SERIF};font-size:26px;line-height:1.25;color:${INK};">${escHtml(post.title)}</h1>
 ${stackMarkdownToHtml(post.markdown)}
-          <p style="margin:28px 0 0;font-family:${SANS};font-size:13px;line-height:1.6;color:${INK};opacity:.7;">Voc&ecirc; recebe este e-mail porque apoia a diar.ia.br no n&iacute;vel N&uacute;cleo. &Eacute; o post semanal que a diar.ia.br publica na comunidade Stack, para quem constr&oacute;i com IA. Obrigado por sustentar o projeto.</p>
+          <p style="margin:28px 0 0;font-family:${SANS};font-size:13px;line-height:1.6;color:${INK};opacity:.7;">Voc&ecirc; recebe este e-mail porque apoia a diar.ia.br no n&iacute;vel N&uacute;cleo. Obrigado por sustentar o projeto.</p>
         </td></tr>
       </table>
     </td></tr>

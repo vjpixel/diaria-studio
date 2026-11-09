@@ -117,8 +117,10 @@ describe("render do e-mail (#12538)", () => {
     assert.match(e.html, /n&iacute;vel N&uacute;cleo/);
   });
 
-  it("o e-mail não abre com o rótulo \"Radar de Notícias Stack\"", () => {
-    assert.ok(!renderStackEmail(selection()).html.includes("Radar de Not"));
+  it("o e-mail não abre com o rótulo \"Radar de Notícias Stack\" nem explica o que é o post", () => {
+    const html = renderStackEmail(selection()).html;
+    assert.ok(!html.includes("Radar de Not"));
+    assert.ok(!html.includes("post semanal que a diar.ia.br publica"));
   });
 
   it("#12550: o e-mail não leva \"Outros destaques da semana\"; o Circle continua levando", () => {
