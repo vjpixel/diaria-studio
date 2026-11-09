@@ -19,13 +19,25 @@ do script, com outro parser:
   PEM fica inválida;
 - o dotenv guarda o valor literal, que é o correto.
 
-Desde o #12477 o `env-loader` reconhece esse caso: se o valor do ambiente é
-exatamente o que o systemd leria do `.env` e difere do que o dotenv lê, ele
-adota o valor do dotenv e não avisa. O parser do systemd está em
+O `.env` tem dois estados possíveis para essa linha, e em cada um quem acerta
+é um parser diferente:
+
+| Estado do `.env` | Quem grava | dotenv | systemd | Valor canônico |
+| --- | --- | --- | --- | --- |
+| Sem aspas | `materialize-google-ads-credentials.ts` (#6704) | literal, correto | tira as barras, PEM quebrada | o do dotenv |
+| Entre aspas duplas, `\"` internos | `npm run sync-env` (formato do Doppler) | expande os `\n` dentro da string, JSON inválido (#6450) | desfaz `\"`, JSON correto | o do systemd |
+
+Num valor sem aspas com `#` no meio (`K=abc#def`) o dotenv ainda corta no `#`
+e o systemd guarda tudo.
+
+Desde o #12477 o `env-loader` reconhece o caso "mesma fonte": se o valor do
+ambiente é exatamente o que o systemd leria do `.env`, o aviso não sai. O
+valor só é trocado pelo do dotenv quando o do dotenv é um JSON de service
+account válido e o do ambiente não é (`isValidServiceAccountJson`), ou seja,
+só no estado sem aspas. Em qualquer outro caso o valor do systemd fica,
+inclusive o de `#`. O parser do systemd está em
 `scripts/lib/systemd-env-file.ts`. A comparação é por igualdade exata, então
 qualquer valor vindo de outra fonte continua vencendo e continua avisando.
-
-O valor canônico é o do `.env` sincronizado do Doppler, lido pelo dotenv.
 
 ## Se o aviso continuar saindo sob systemd
 

@@ -49,11 +49,14 @@
  * `materialize-google-ads-credentials.ts`) o systemd remove as barras e os
  * `\n` da `private_key` viram `n`: o aviso saía em todo log de task e o
  * processo ficava com uma chave PEM corrompida. Não são duas credenciais, é
- * uma lida por dois parsers. `adoptDotenvForSystemdParsedKeys` reconhece esse
- * caso por igualdade EXATA (valor do ambiente === parse systemd do `.env` E
- * !== parse dotenv) e adota o valor do dotenv, que é o formato em que o
- * projeto grava o arquivo. Qualquer outra divergência (processo pai, shell,
- * app desktop como no #8237) segue intacta: o ambiente vence e o aviso sai.
+ * uma lida por dois parsers. O caso é reconhecido por igualdade EXATA (valor
+ * do ambiente === parse systemd do `.env`): aí o aviso não sai. O valor só é
+ * trocado pelo do dotenv quando o do dotenv é um JSON de service account
+ * válido e o do ambiente não é (`adoptDotenvForSystemdParsedKeys`), porque
+ * qual parser acerta depende do formato da linha: entre aspas duplas (formato
+ * do Doppler) quem corrompe é o dotenv, e num valor sem aspas com `#` o dotenv
+ * corta no `#`. Qualquer outra divergência (processo pai, shell, app desktop
+ * como no #8237) segue intacta: o ambiente vence e o aviso sai.
  *
  * Uso:
  * ```ts
@@ -93,13 +96,21 @@ const warnedKeys = new Set<string>();
  */
 export function warnOnEnvDivergence(envFile: string, env: NodeJS.ProcessEnv = process.env): void {
   let parsed: Record<string, string>;
+  let systemdParsed: Record<string, string>;
   try {
-    parsed = dotenvParse(readFileSync(envFile, "utf8"));
+    const content = readFileSync(envFile, "utf8");
+    parsed = dotenvParse(content);
+    systemdParsed = parseSystemdEnvironmentFile(content);
   } catch {
     return; // fail-soft — dotenvConfig() é quem trata erro de leitura/parse de verdade
   }
   for (const [key, fileValue] of Object.entries(parsed)) {
     const envValue = env[key];
+    // Mesmo `.env` lido pelo systemd (`EnvironmentFile=`, #12477): é uma fonte
+    // só lida por dois parsers, não duas credenciais. Sem aviso; o valor do
+    // ambiente segue vencendo (só `adoptDotenvForSystemdParsedKeys` troca, e
+    // só quando o do dotenv é comprovadamente o bom).
+    if (envValue !== undefined && envValue === systemdParsed[key]) continue;
     if (envValue !== undefined && envValue !== fileValue && !warnedKeys.has(key)) {
       warnedKeys.add(key);
       console.warn(
@@ -118,10 +129,47 @@ export function warnOnEnvDivergence(envFile: string, env: NodeJS.ProcessEnv = pr
 }
 
 /**
+ * `true` se `value` é o JSON de uma service account do Google com a chave PEM
+ * íntegra: faz parse, `type === "service_account"`, `client_email` string e
+ * `private_key` com as quebras de linha reais em volta do cabeçalho/rodapé
+ * PEM. É o critério que separa o valor bom do corrompido nos dois estados do
+ * `.env` (#12477): sem aspas (formato do materialize, #6704) o systemd tira as
+ * barras e os `\n` viram `n` (falha aqui); entre aspas duplas (formato do
+ * Doppler, `npm run sync-env`) o dotenv expande os `\n` em quebras reais dentro
+ * da string JSON e o parse falha (#6450).
+ */
+export function isValidServiceAccountJson(value: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const sa = parsed as Record<string, unknown>;
+  return (
+    sa.type === "service_account" &&
+    typeof sa.client_email === "string" &&
+    typeof sa.private_key === "string" &&
+    sa.private_key.includes("-----BEGIN PRIVATE KEY-----\n") &&
+    sa.private_key.includes("\n-----END PRIVATE KEY-----")
+  );
+}
+
+/**
  * Para cada chave cujo valor no ambiente é exatamente o que o systemd leria do
  * `.env` (`EnvironmentFile=`) e difere do que o dotenv lê, troca pelo valor do
- * dotenv (#12477). Devolve as chaves trocadas. Nunca lança: erro de leitura
- * vira lista vazia, e aí nada muda (o aviso de divergência decide sozinho).
+ * dotenv SÓ quando o do dotenv é um JSON de service account válido e o do
+ * ambiente não é (#12477). Devolve as chaves trocadas. Nunca lança: erro de
+ * leitura vira lista vazia, e aí nada muda.
+ *
+ * Por que a troca é tão estreita: qual parser acerta depende do formato da
+ * linha. Sem aspas o dotenv acerta e o systemd corrompe as barras; entre aspas
+ * duplas (formato do Doppler) é o contrário; e num valor sem aspas com `#` no
+ * meio o dotenv corta no `#` e o systemd guarda tudo. Fora do caso em que dá
+ * para PROVAR qual valor é o bom, o valor do ambiente fica como está (nunca
+ * trocar um valor bom por um quebrado); o aviso de divergência só se cala,
+ * porque é a mesma fonte (ver `warnOnEnvDivergence`).
  *
  * Igualdade exata com o parse do systemd é a prova de que o valor veio deste
  * arquivo e não de outra fonte; sem ela, o ambiente continua vencendo.
@@ -142,7 +190,12 @@ export function adoptDotenvForSystemdParsedKeys(envFile: string, env: NodeJS.Pro
     const envValue = env[key];
     const systemdValue = systemdValues[key];
     if (envValue === undefined || systemdValue === undefined) continue;
-    if (envValue === systemdValue && envValue !== fileValue) {
+    if (
+      envValue === systemdValue &&
+      envValue !== fileValue &&
+      isValidServiceAccountJson(fileValue) &&
+      !isValidServiceAccountJson(envValue)
+    ) {
       env[key] = fileValue;
       adopted.push(key);
     }
