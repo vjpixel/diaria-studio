@@ -162,13 +162,16 @@ describe("#12490 applyFormResponses vale a resposta mais recente", () => {
     assert.deepEqual(applyFormResponses(people, [{ email: "a@x.com", submitted_at: "2026-11-20T10:00:00Z", answers: { q: "outra" } }]), { marked: 0, unmatched: 0 });
     assert.deepEqual(applyFormResponses(people, [{ email: "a@x.com", submitted_at: "2026-10-01T10:00:00Z" }]), { marked: 0, unmatched: 0 });
     assert.equal(people["1"]!.form_answers!.q, "velha");
+    assert.equal(people["1"]!.form_filled_at, "2026-11-20T10:00:00Z");
+    // #12530: o envio mais antigo (histórico) vira a 1ª resposta, sem mexer na mais recente.
+    assert.equal(people["1"]!.form_first_filled_at, "2026-10-01T10:00:00Z");
     assert.deepEqual(applyFormResponses(people, [{ email: "a@x.com", submitted_at: "2027-12-01T10:00:00Z", answers: { q: "nova" } }]), { marked: 1, unmatched: 0 });
     assert.equal(people["1"]!.form_filled_at, "2027-12-01T10:00:00Z");
-    assert.equal(people["1"]!.form_first_filled_at, "2026-11-20T10:00:00Z");
+    assert.equal(people["1"]!.form_first_filled_at, "2026-10-01T10:00:00Z");
     assert.equal(people["1"]!.form_answers!.q, "nova");
     // 3ª resposta: a 1ª continua a de 2026.
     applyFormResponses(people, [{ email: "a@x.com", submitted_at: "2028-12-01T10:00:00Z" }]);
-    assert.equal(people["1"]!.form_first_filled_at, "2026-11-20T10:00:00Z");
+    assert.equal(people["1"]!.form_first_filled_at, "2026-10-01T10:00:00Z");
   });
 
   it("o D+6 e o lembrete continuam parados para quem respondeu (nada do anual vaza para lá)", () => {

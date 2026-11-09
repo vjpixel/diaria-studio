@@ -1866,6 +1866,23 @@ export function applyFormResponses(
     if (r.answers) p.form_answers = { ...r.answers };
     marked++;
   }
+  // #12530: a 1ª resposta vem do histórico (o executor lê `?historico=1`
+  // junto), não só do que o store já viu. Quem respondeu antes da edição
+  // especial enquanto o store não gravava (gate travado, e-mail sem par) e
+  // reenviou depois ficaria só com a resposta nova e receberia os resultados
+  // de novo. Envio mais antigo que a 1ª registrada vira a 1ª.
+  const earliest = new Map<FollowupPerson, { sec: number; iso: string }>();
+  for (const r of responses) {
+    const p = byEmail.get(normalizeEmail(r.email));
+    const sec = isoToSec(r.submitted_at);
+    if (!p || sec == null) continue;
+    const cur = earliest.get(p);
+    if (!cur || sec < cur.sec) earliest.set(p, { sec, iso: r.submitted_at });
+  }
+  for (const [p, e] of earliest) {
+    const known = firstFormFilledSec(p);
+    if (known != null && e.sec < known) p.form_first_filled_at = e.iso;
+  }
   return { marked, unmatched };
 }
 
