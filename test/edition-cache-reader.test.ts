@@ -23,6 +23,7 @@ import {
   editorialDate,
   isPublicEdition,
   filterPublicEditionsWithWarning,
+  nonPublicEditionReason,
   KIT_STATUS_TO_BEEHIIV_STATUS,
   DEFAULT_BEEHIIV_POSTS_DIR,
   type UnifiedCachedPost,
@@ -545,6 +546,57 @@ describe("filterPublicEditionsWithWarning (#8233 — isPublicEdition + aviso agr
     assert.match(written[0], /\[teste-label\]/);
     assert.match(written[0], /teste-260715/);
     assert.match(written[0], /260715-normal-patronos/);
+  });
+
+  it("#12469: post sem slug não é rotulado como teste/Patronos — separa kit-nao-publico (contagem + amostra) de sem-slug (listado por data + título)", () => {
+    const kitNaoPublico = Array.from({ length: 5 }, (_, i) => ({
+      slug: undefined,
+      public: false,
+      subject: `Você está dentro ${i}`,
+      publish_date: Date.UTC(2026, 10, 1 + i, 12) / 1000,
+    }));
+    const posts = [
+      { slug: "260715-normal" },
+      { slug: "teste-260715" },
+      { slug: undefined, title: "Edição real sem slug", publish_date: Date.UTC(2026, 10, 3, 9) / 1000 },
+      ...kitNaoPublico,
+    ];
+    const originalWrite = process.stderr.write;
+    const written: string[] = [];
+    process.stderr.write = ((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let kept: typeof posts;
+    try {
+      kept = filterPublicEditionsWithWarning(posts, "teste-label");
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.deepEqual(kept.map((p) => p.slug), ["260715-normal"]);
+    assert.equal(written.length, 1);
+    const msg = written[0];
+    assert.match(msg, /7 edição\(ões\) excluída\(s\)/);
+    assert.match(msg, /1 envio\(s\) de teste do Stage 5 \/ variante Patronos: teste-260715/);
+    assert.match(msg, /1 post\(s\) SEM SLUG e sem public:false que explique: 2026-11-03 "Edição real sem slug"/);
+    assert.match(msg, /5 broadcast\(s\) Kit sem página pública/);
+    assert.match(msg, /2026-11-01 "Você está dentro 0"/);
+    assert.match(msg, /\(\+2\)/);
+    // A amostra é capada: o 4º/5º broadcast não aparecem pelo nome.
+    assert.doesNotMatch(msg, /Você está dentro 3/);
+    assert.doesNotMatch(msg, /\(sem slug\)/);
+  });
+
+  it("#12469: nonPublicEditionReason nomeia o motivo e é a mesma decisão de isPublicEdition", () => {
+    assert.equal(nonPublicEditionReason({ slug: undefined, public: false }), "kit-nao-publico");
+    assert.equal(nonPublicEditionReason({ slug: "" }), "sem-slug");
+    assert.equal(nonPublicEditionReason({ slug: undefined, public: true }), "sem-slug");
+    assert.equal(nonPublicEditionReason({ slug: "teste-260715" }), "teste");
+    assert.equal(nonPublicEditionReason({ slug: "260715-x-patronos" }), "patronos");
+    assert.equal(nonPublicEditionReason({ slug: "260715-normal" }), null);
+    for (const p of [{ slug: undefined, public: false }, { slug: "teste-1" }, { slug: "260715-normal" }]) {
+      assert.equal(isPublicEdition(p), nonPublicEditionReason(p) === null);
+    }
   });
 
   it("sem nada a excluir, não imprime warning nenhum", () => {

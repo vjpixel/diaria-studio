@@ -496,10 +496,58 @@ export function editorialDate(post: Pick<UnifiedCachedPost, "displayed_date" | "
  * explícito no ponto de uso.
  */
 export function isPublicEdition(post: Pick<UnifiedCachedPost, "slug">): boolean {
-  const slug = post.slug ?? "";
-  if (slug === "") return false;
-  return !/^teste-/.test(slug) && !/-patronos$/.test(slug);
+  return nonPublicEditionReason(post) === null;
 }
+
+/**
+ * Por que `isPublicEdition` recusou o post (#12469) — `null` quando ele é
+ * público. Mesma decisão de `isPublicEdition` (que é definido em cima disto),
+ * só que nomeando o motivo, pra o aviso de `filterPublicEditionsWithWarning`
+ * não chamar de "envio de teste / Patronos" o que é outra coisa:
+ *
+ * - **`kit-nao-publico`** — slug vazio E `public: false`. É o broadcast Kit
+ *   que nunca virou página: sem `public_url`, `normalizeKitBroadcast` não
+ *   tem de onde tirar slug. Medição de 08/11/2026 (`data/kit-cache/
+ *   broadcasts/`, 168 arquivos): os 106 sem `public_url` têm todos `public:
+ *   false` e nenhum é edição diária — envio de teste `[teste]` do Stage 5,
+ *   broadcasts da sequência de boas-vindas ("Você está dentro", "Tem um erro
+ *   de propósito em toda edição", "Por que a diar.ia.br pede apoio"),
+ *   Retrospectiva dos apoiadores (`public: false` de propósito, #7633) e a
+ *   votação do Artigo Especial. Eram 104 dos 114 `(sem slug)` do aviso da
+ *   issue.
+ * - **`sem-slug`** — slug vazio sem o `public: false` que explicaria. É o
+ *   caso suspeito (edição real que perdeu o slug na normalização) e por
+ *   isso vai listado por título/data no aviso.
+ * - **`teste`** / **`patronos`** — prefixo `teste-` / sufixo `-patronos`.
+ */
+export type NonPublicEditionReason = "kit-nao-publico" | "sem-slug" | "teste" | "patronos";
+
+export function nonPublicEditionReason(
+  post: Pick<UnifiedCachedPost, "slug"> & Partial<Pick<UnifiedCachedPost, "public">>,
+): NonPublicEditionReason | null {
+  const slug = post.slug ?? "";
+  if (slug === "") return post.public === false ? "kit-nao-publico" : "sem-slug";
+  if (/^teste-/.test(slug)) return "teste";
+  if (/-patronos$/.test(slug)) return "patronos";
+  return null;
+}
+
+/** Campos opcionais que o aviso usa pra identificar um post sem slug. */
+type WarnablePost = Pick<UnifiedCachedPost, "slug"> &
+  Partial<Pick<UnifiedCachedPost, "public" | "title" | "subject" | "publish_date" | "displayed_date">>;
+
+/** Identificador legível de um post sem slug: data editorial (AAAA-MM-DD,
+ *  UTC) + título/assunto. Nunca vazio — cai em "(sem título)". */
+function describeSluglessPost(p: WarnablePost): string {
+  const ts = p.displayed_date ?? p.publish_date ?? undefined;
+  const date = typeof ts === "number" && Number.isFinite(ts) ? new Date(ts * 1000).toISOString().slice(0, 10) : "sem data";
+  const title = (p.title ?? p.subject ?? "").trim() || "(sem título)";
+  return `${date} "${title}"`;
+}
+
+/** Quantos exemplos o aviso mostra do grupo `kit-nao-publico` — esse grupo é
+ *  esperado e grande (100+), listar tudo era o ruído da #12469. */
+const KIT_NAO_PUBLICO_SAMPLE = 3;
 
 /**
  * `isPublicEdition` aplicado + WARNING AGREGADO no drop (#8233), pra
@@ -519,24 +567,60 @@ export function isPublicEdition(post: Pick<UnifiedCachedPost, "slug">): boolean 
  * array, custo desproporcional ao ganho aqui (estes scripts já imprimem
  * avisos ad-hoc via stderr em vários outros pontos, mesma convenção).
  * `label` identifica o call site na saída (ex: "select-linkedin-weekly").
+ *
+ * **O aviso separa os motivos (#12469)** — ver `nonPublicEditionReason`.
+ * Antes, todo post recusado entrava numa lista só, rotulada "envio de teste /
+ * variante Patronos", e os broadcasts Kit sem página saíam como `(sem slug)`
+ * repetido 104 vezes: ninguém conseguia conferir nada e o aviso virava
+ * ruído. Agora: teste/Patronos listados por slug; `sem-slug` (o caso
+ * suspeito) listado por data + título; `kit-nao-publico` (esperado) só com
+ * contagem e alguns exemplos.
  */
-export function filterPublicEditionsWithWarning<T extends Pick<UnifiedCachedPost, "slug">>(
+export function filterPublicEditionsWithWarning<T extends WarnablePost>(
   posts: readonly T[],
   label: string,
 ): T[] {
-  const excluded: string[] = [];
+  const byReason: Record<NonPublicEditionReason, T[]> = {
+    teste: [],
+    patronos: [],
+    "sem-slug": [],
+    "kit-nao-publico": [],
+  };
   const kept = posts.filter((p) => {
-    if (isPublicEdition(p)) return true;
-    excluded.push(p.slug ?? "(sem slug)");
+    const reason = nonPublicEditionReason(p);
+    if (reason === null) return true;
+    byReason[reason].push(p);
     return false;
   });
-  if (excluded.length > 0) {
-    process.stderr.write(
-      `[${label}] ${excluded.length} edição(ões) excluída(s) por isPublicEdition (envio de teste do Stage 5 / ` +
-        `variante Patronos): ${excluded.join(", ")} — se alguma for uma edição REAL cujo slug começa com "teste-" ` +
-        `ou termina em "-patronos", o filtro por prefixo/sufixo enganou e precisa de um sinal mais forte (#8233).\n`,
+  const total = posts.length - kept.length;
+  if (total === 0) return kept;
+
+  const parts: string[] = [];
+  const testePatronos = [...byReason.teste, ...byReason.patronos];
+  if (testePatronos.length > 0) {
+    parts.push(
+      `${testePatronos.length} envio(s) de teste do Stage 5 / variante Patronos: ` +
+        `${testePatronos.map((p) => p.slug).join(", ")} — se alguma for uma edição REAL cujo slug começa com ` +
+        `"teste-" ou termina em "-patronos", o filtro por prefixo/sufixo enganou e precisa de um sinal mais forte (#8233)`,
     );
   }
+  if (byReason["sem-slug"].length > 0) {
+    parts.push(
+      `${byReason["sem-slug"].length} post(s) SEM SLUG e sem public:false que explique: ` +
+        `${byReason["sem-slug"].map(describeSluglessPost).join(", ")} — se algum for edição real, ela sumiu da ` +
+        `superfície pública por falta de slug (#12469)`,
+    );
+  }
+  const kitNaoPublico = byReason["kit-nao-publico"];
+  if (kitNaoPublico.length > 0) {
+    const sample = kitNaoPublico.slice(0, KIT_NAO_PUBLICO_SAMPLE).map(describeSluglessPost).join(", ");
+    const rest = kitNaoPublico.length - KIT_NAO_PUBLICO_SAMPLE;
+    parts.push(
+      `${kitNaoPublico.length} broadcast(s) Kit sem página pública (public:false, sem public_url — teste, ` +
+        `boas-vindas, apoiadores; esperado), ex.: ${sample}${rest > 0 ? ` (+${rest})` : ""}`,
+    );
+  }
+  process.stderr.write(`[${label}] ${total} edição(ões) excluída(s) por isPublicEdition: ${parts.join("; ")}.\n`);
   return kept;
 }
 
