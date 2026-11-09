@@ -67,17 +67,17 @@ const SURVEY_FIXTURE = [
   {
     id: "onboarding-form:1",
     answers: [
-      { question_id: "form:uso_recente", question_prompt: "Pense na última vez que algo que você leu na diar.ia.br foi útil. Para que você usou?", answer: "Testei ou passei a usar uma ferramenta" },
-      { question_id: "form:nivel_ia", question_prompt: "Qual seu nível de conhecimento em IA?", answer: "Uso casual" },
-      { question_id: "form:area", question_prompt: "Qual sua principal área de atuação?", answer: "Tecnologia" },
+      { question_id: "form:uso_recente", question_prompt: "Pense na última vez que algo que você leu na diar.ia.br foi útil. O que você fez com isso?", answer: "Testei ou passei a usar uma ferramenta" },
+      { question_id: "form:uso_ia", question_prompt: "Como você usa IA hoje?", answer: "Uso pouco: só testei ou uso de vez em quando" },
+      { question_id: "form:area", question_prompt: "Em que área você trabalha ou estuda?", answer: "Tecnologia" },
     ],
   },
   {
     id: "onboarding-form:2",
     answers: [
-      { question_id: "form:uso_recente", question_prompt: "Pense na última vez que algo que você leu na diar.ia.br foi útil. Para que você usou?", answer: "Mudei a forma de fazer uma tarefa" },
-      { question_id: "form:nivel_ia", question_prompt: "Qual seu nível de conhecimento em IA?", answer: "Entusiasta" },
-      { question_id: "form:area", question_prompt: "Qual sua principal área de atuação?", answer: "Educação" },
+      { question_id: "form:uso_recente", question_prompt: "Pense na última vez que algo que você leu na diar.ia.br foi útil. O que você fez com isso?", answer: "Mudei a forma de fazer uma tarefa" },
+      { question_id: "form:uso_ia", question_prompt: "Como você usa IA hoje?", answer: "Trabalho com a tecnologia em si: programo, integro por API, treino ou ajusto modelos" },
+      { question_id: "form:area", question_prompt: "Em que área você trabalha ou estuda?", answer: "Educação" },
     ],
   },
 ];
@@ -153,6 +153,7 @@ describe("main() — forma do documento gerado (#8151)", () => {
 
       // Survey
       assert.match(doc, /\*\*respondentes survey:\*\* 2/);
+      assert.match(doc, /### Nível de uso de IA\n\n- \*\*Uso pouco: só testei ou uso de vez em quando\*\* — weight 0\.5 \(1 respostas\)/);
       assert.match(doc, /### Uso do que lê\n\n- \*\*Testei ou passei a usar uma ferramenta\*\* — weight 0\.5 \(1 respostas\)/);
       assert.match(doc, /Tecnologia/);
 

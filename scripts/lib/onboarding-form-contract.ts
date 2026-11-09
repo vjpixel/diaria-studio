@@ -6,48 +6,59 @@
  * (custo zero, dados nossos, `?email=` pré-preenchido pela merge tag do Kit).
  * Puro e sem dependência de Node: importado pelo Worker
  * (`workers/onboarding-form/src/index.ts` e `src/render.ts`), pelo executor
- * das sequências (`scripts/onboarding-followup-run.ts`, que marca "preencheu")
+ * das sequências (`scripts/onboarding-followup-run.ts`, que marca "preencheu"),
+ * pela lista de quem aceitou conversar (`scripts/onboarding-form-conversas.ts`)
  * e pela regeneração do perfil de audiência (`scripts/audience-run.ts` via
- * `scripts/lib/audience-survey-questions.ts`), pra os três lados nunca
- * divergirem sobre o formato.
+ * `scripts/lib/audience-survey-questions.ts`), pra os lados nunca divergirem
+ * sobre o formato.
  *
  * ## Endpoints do Worker
  *
  *  - `GET  /?email={e-mail}&sig={assinatura}` — página do formulário para
  *    aquele e-mail (fixo, em campo oculto). Sem assinatura válida: página de
- *    link inválido (#10657, `onboarding-form-link-sig.ts`).
+ *    link inválido (#10657, `onboarding-form-link-sig.ts`). A página leva a
+ *    hora em que foi gerada, assinada (`FORM_RENDERED_FIELD`), para o envio
+ *    gravar o tempo de preenchimento (`duration_s`).
  *  - `POST /enviar` (form-urlencoded) — exige a assinatura do e-mail enviado
  *    (senão 403, nada gravado); valida com `parseFormSubmission` e grava a
- *    resposta (KV, chave `resp:{email normalizado}`; a última resposta vence).
- *  - `GET  /api/respostas` com `Authorization: Bearer {token}` — lista as
- *    respostas no formato `FormResponsesPayload`. É o que o executor lê a
- *    cada rodada para marcar "preencheu" no store e parar os lembretes.
+ *    resposta. Desde a v3 cada envio é uma chave própria
+ *    (`formSubmissionKey`: `resp:{e-mail}:{submitted_at}:{nonce}`) e NUNCA
+ *    sobrescreve o envio anterior da mesma pessoa (#12490, histórico). A
+ *    chave antiga `resp:{e-mail}` (v1/v2, uma por pessoa) continua sendo lida.
+ *  - `GET  /api/respostas` com `Authorization: Bearer {token}` — lista TODOS
+ *    os envios no formato `FormResponsesPayload` (inclusive vários da mesma
+ *    pessoa). Quem consome usa `latestFormResponses` (a mais recente por
+ *    e-mail): o perfil e os lembretes valem pela última resposta.
  *
- * ## Perguntas (v2, decisões do editor de 08/11/2026)
+ * ## Perguntas (v3, aprovada pelo editor em 09/11/2026)
  *
- * Duas frentes: (1) perfil e interesses, para as notícias refletirem o
- * público; (2) sondagem de produto (que cursos, aulas, guias ou mentorias
- * oferecer). Decisões do editor (/diaria-develop 261108): nível sem jargão;
- * foco em B2C (preço só por
- * faixas, sem "quem pagaria"; o único sinal B2B é a opção "Treinamento para a
- * equipe da empresa onde trabalho"); tema e preço somem quando a pessoa marca
- * "Nada disso" no que ela faria além da newsletter (`hiddenWhen`); sem
- * pergunta de ferramentas nem de porte de empresa; só nível e área são
- * obrigatórias. A 3ª pergunta, `uso_recente` (decisão do editor de
- * 08/11/2026), substituiu a das seções da newsletter (`conteudo`): pergunta
- * para que a pessoa usou a última coisa útil que leu. Resposta antiga com
- * `conteudo` continua legível (`parseFormResponsesPayload` guarda qualquer
- * chave) e é ignorada no perfil, contada como pergunta que não existe mais.
- * Depois dela, uma pergunta opcional sobre o que a pessoa faz quando o link
- * abre em inglês (`leitura_ingles`). Área, uso e tema têm a opção
+ * Doze perguntas numeradas, mais três subperguntas sem número
+ * (`subOf`): o relato de falha (texto livre, dentro das dificuldades), a
+ * escolha de um formato só (aparece com 2 ou mais formatos marcados) e o
+ * gasto mensal (aparece só para quem paga do próprio bolso). Toda pergunta de
+ * escolha é renderizada como rádio ou caixa, nunca menu suspenso. Só as
+ * marcadas como opcionais podem ficar em branco (`required` em todas as
+ * outras, inclusive as condicionais quando aparecem).
+ *
+ * Condicionais: `hiddenWhen` (tema some com "Nada disso") e `shownWhen`
+ * (escolha única e gasto mensal). Pergunta que não aparece é tratada como
+ * ausente: o cliente desabilita os campos e o servidor descarta o que vier.
+ * `optionsFrom` restringe as opções às que a pessoa marcou em outra pergunta
+ * (sem JavaScript todas aparecem e o servidor confere). `maxChoices` limita
+ * as caixas ("Marque até 3").
+ *
  * "Outro/Outra" com campo de texto curto (`otherOption`, texto em
- * `{id}_outro`), que fica só no KV do Worker (lido por `/api/respostas`) e
- * nunca entra no perfil. O envio segue travado pelo marcador de texto pendente
- * (`formContentGate`) até o editor aprovar o texto final.
+ * `{id}_outro`) e o relato de falha ficam só no KV do Worker (lidos por
+ * `/api/respostas` e pela lista local de conversas) e nunca entram no perfil.
  *
- * Desde a decisão 10 do editor (08/11/2026) o perfil de audiência sai SÓ
- * deste formulário: as respostas da survey antiga da Beehiiv (e do Tally)
- * foram descartadas. Cada pergunta casa com exatamente um matcher de
+ * Respostas antigas (v1/v2) seguem legíveis: `parseFormResponsesPayload`
+ * guarda qualquer chave, e os ids que saíram (`LEGACY_FORM_ANSWER_IDS`) são
+ * contados à parte na conversão para o perfil, como aviso.
+ *
+ * O envio segue travado pelo marcador de texto pendente (`formContentGate`)
+ * até o editor destravar os textos em `data/snippets`.
+ *
+ * Cada pergunta casa com exatamente um matcher de
  * `scripts/lib/audience-survey-questions.ts`, travado por
  * `test/onboarding-form-questions-10605.test.ts`: mudar o rótulo sem mexer no
  * matcher tiraria a pergunta do perfil em silêncio.
@@ -57,20 +68,31 @@ interface FormQuestionBase {
   /** Chave da resposta (`answers[id]`) — estável, sem espaço. */
   id: string;
   label: string;
+  /** Obrigatória QUANDO aparece (condicional escondida nunca é exigida). */
   required?: boolean;
   /** Linha de ajuda curta abaixo do rótulo. */
   help?: string;
+  /** Ajuda depois das opções em vez de antes (pergunta da conversa). */
+  helpAfter?: boolean;
   /**
    * Pergunta escondida quando a pessoa marca `option` na pergunta `questionId`
-   * (um `checkbox` que vem ANTES desta na lista). Escondida, a resposta é
+   * (uma pergunta que vem ANTES desta na lista). Escondida, a resposta é
    * tratada como ausente: o cliente desabilita os campos e o servidor
-   * descarta o que vier (`parseFormSubmission`). Nunca combina com `required`.
+   * descarta o que vier (`parseFormSubmission`).
    */
   hiddenWhen?: { questionId: string; option: string };
+  /**
+   * Pergunta que só aparece quando a resposta de `questionId` (anterior)
+   * marca uma das opções de `anyOf`, ou tem pelo menos `minChecked` opções
+   * marcadas. Fora disso é tratada como ausente, igual a `hiddenWhen`.
+   */
+  shownWhen?: { questionId: string; anyOf?: readonly string[]; minChecked?: number };
+  /** Subpergunta sem número própria, renderizada logo depois da pergunta `subOf`. */
+  subOf?: string;
 }
 
-/** Pergunta de escolha: `select` = uma opção; `checkbox` = várias (gravadas
- *  numa string só, separadas por `FORM_MULTI_SEPARATOR`). */
+/** Pergunta de escolha: `select` = uma opção (rádio); `checkbox` = várias
+ *  (gravadas numa string só, separadas por `FORM_MULTI_SEPARATOR`). */
 export interface ChoiceQuestion extends FormQuestionBase {
   kind: "select" | "checkbox";
   options: readonly string[];
@@ -85,11 +107,17 @@ export interface ChoiceQuestion extends FormQuestionBase {
    * audiência (o perfil vai para prompts): lá só conta a opção.
    */
   otherOption?: string;
+  /** Só `checkbox`: no máximo N opções marcadas ("Marque até 3"). */
+  maxChoices?: number;
+  /** Só `select`: a resposta precisa estar entre as opções marcadas na
+   *  pergunta `optionsFrom` (a escolha de um formato só). */
+  optionsFrom?: string;
 }
 
-/** Pergunta aberta, sempre texto livre truncado em `FORM_ANSWER_MAX_LEN`. */
+/** Pergunta aberta, sempre texto livre limpo e truncado em `FORM_ANSWER_MAX_LEN`. */
 export interface OpenQuestion extends FormQuestionBase {
   kind: "text" | "textarea";
+  placeholder?: string;
 }
 
 export type FormQuestion = ChoiceQuestion | OpenQuestion;
@@ -102,130 +130,278 @@ export function isChoiceQuestion(q: FormQuestion): q is ChoiceQuestion {
  *  única de `answers[id]`. Nenhuma opção pode conter este texto (teste). */
 export const FORM_MULTI_SEPARATOR = " | ";
 
-/** Opção de `produto_formato` que esconde tema e preço (decisão 5 do editor). */
+/** Versão do formulário gravada em cada envio (`form_version`). */
+export const FORM_VERSION = "v3";
+
+/** Opção de `produto_formato` que esconde o tema (decisão 5 do editor). */
 export const FORM_NADA_DISSO = "Nada disso, a newsletter já me basta";
 
-/** v2 (#10605, decisões do editor de 08/11/2026). */
+/** Opções de `quem_paga` que mostram o gasto mensal. */
+export const FORM_PAGA_DO_BOLSO = ["Eu, do próprio bolso", "Eu e a empresa, uma parte cada"] as const;
+
+/** Única opção da pergunta da conversa (caixa única). */
+export const FORM_CONVERSA_SIM = "Sim, topo. Pode me escrever para combinar.";
+
+/** Ids das versões anteriores (v1/v2) que saíram do contrato — lidos sem
+ *  quebrar, contados à parte e ignorados no perfil. */
+export const LEGACY_FORM_ANSWER_IDS: readonly string[] = ["nivel_ia", "conteudo", "leitura_ingles", "produto_preco", "sugestao"];
+
+const FORMATOS = [
+  "Curso online gravado, no meu ritmo",
+  "Aula ou workshop ao vivo",
+  "Mentoria individual ou em grupo pequeno",
+  "Treinamento para a equipe da empresa onde trabalho",
+  "Guias e modelos prontos (prompts, fluxos de trabalho)",
+  "Comunidade para trocar experiências com outros leitores",
+] as const;
+
+/** v3 (#10605, aprovada pelo editor em 09/11/2026). */
 export const FORM_QUESTIONS: readonly FormQuestion[] = [
   {
-    id: "nivel_ia",
-    label: "Qual seu nível de conhecimento em IA?",
+    id: "uso_ia",
+    label: "Como você usa IA hoje?",
     kind: "select",
     required: true,
     options: [
-      "Estou começando: uso IA de vez em quando",
-      "Uso ChatGPT ou parecidos para tarefas simples todo dia",
-      "Entendo como a IA funciona e acompanho as novidades",
-      "Consigo usar um modelo por API ou preparar dados para ele",
-      "Trabalho com IA: ajusto modelos ou planejo como uma empresa vai usar IA",
+      "Uso pouco: só testei ou uso de vez em quando",
+      "Uso com frequência em tarefas do dia a dia (textos, resumos, pesquisas)",
+      "Já montei coisas mais elaboradas (assistentes personalizados, automações, prompts reutilizáveis)",
+      "Trabalho com a tecnologia em si: programo, integro por API, treino ou ajusto modelos",
+    ],
+  },
+  {
+    id: "situacao",
+    label: "Qual é a sua situação hoje?",
+    kind: "select",
+    required: true,
+    options: [
+      "Empregado(a) em empresa ou organização privada",
+      "Servidor(a) público(a)",
+      "Autônomo(a) ou freelancer",
+      "Tenho meu próprio negócio",
+      "Estudante",
+      "Aposentado(a) ou sem trabalho no momento",
     ],
   },
   {
     id: "area",
-    label: "Qual sua principal área de atuação?",
+    label: "Em que área você trabalha ou estuda?",
     kind: "select",
     required: true,
+    help: "Se está aposentado(a) ou sem trabalho, marque a área em que trabalhou por último.",
     options: [
-      "Engenharia/Software/Dados/TI",
-      "Contabilidade/Bancos/Finanças",
-      "Pesquisa/Academia/Educação",
-      "Administrativo/Escritório",
-      "Marketing/Relações Públicas/Mídia/Conteúdo",
-      "Gerenciamento de Produtos/Projetos",
-      "Saúde/Biotecnologia/Farmacêutico",
-      "Fundador(a) / Empreendedor(a)",
-      "Jurídico",
-      "RH",
-      "Vendas",
-      "Atendimento ao Cliente/Suporte Técnico",
-      "Design/Criação",
-      "Operações",
-      "Estudante",
+      "Administração, gestão ou consultoria",
+      "Contabilidade",
+      "Direito (advocacia, área jurídica)",
+      "Educação (professor, coordenação)",
+      "Engenharia",
+      "Finanças, bancos ou investimentos",
+      "Fiscalização",
+      "Marketing, comunicação, design ou criação de conteúdo",
+      "RH ou gestão de pessoas",
+      "Saúde (medicina, enfermagem, psicologia, farmácia…)",
+      "Tecnologia (programação, dados, TI)",
+      "Vendas ou atendimento",
       "Outra",
     ],
     otherOption: "Outra",
   },
   {
     id: "uso_recente",
-    label: "Pense na última vez que algo que você leu na diar.ia.br foi útil. Para que você usou?",
+    label: "Pense na última vez que algo que você leu na diar.ia.br foi útil. O que você fez com isso?",
     kind: "select",
+    required: true,
     options: [
       "Testei ou passei a usar uma ferramenta",
       "Mudei a forma de fazer uma tarefa",
-      "Levei o assunto para uma conversa ou reunião",
-      "Ajudou numa decisão na empresa ou na equipe",
-      "Outro",
+      "Comentei ou compartilhei com alguém",
+      "Usei para tomar uma decisão na empresa ou na equipe",
       "Só fiquei por dentro, sem usar para nada específico",
       "Não lembro de nenhuma vez",
+      "Outro",
     ],
     otherOption: "Outro",
   },
   {
-    id: "leitura_ingles",
-    label: "Quando você abre um link da diar.ia.br e o texto está em inglês, o que costuma fazer?",
-    kind: "select",
+    id: "ferramentas",
+    label: "Quais ferramentas de IA você usou no último mês?",
+    kind: "checkbox",
+    required: true,
+    help: "Pode marcar mais de uma.",
     options: [
-      "Leio normalmente",
-      "Leio com o tradutor do navegador ou do celular",
-      "Continuo só se o assunto me interessar muito",
-      "Fecho e sigo para o próximo",
+      "ChatGPT",
+      "Gemini",
+      "Claude",
+      "Microsoft Copilot",
+      "Meta AI (no WhatsApp ou Instagram)",
+      "Perplexity",
+      "NotebookLM",
+      "DeepSeek",
+      "Grok",
+      "Ferramentas de imagem ou vídeo (Midjourney, Leonardo, Sora, recursos de IA do Canva…)",
+      "Ferramentas de programação ou criação de apps (Cursor, Lovable, Replit, Claude Code, Codex…)",
+      "Ferramentas de automação (n8n, Make, Zapier)",
+      "Nenhuma",
+      "Outra",
     ],
+    exclusiveOption: "Nenhuma",
+    otherOption: "Outra",
+  },
+  {
+    id: "motivacao",
+    label: "O que você mais quer conseguir com IA nos próximos meses?",
+    kind: "select",
+    required: true,
+    options: [
+      "Ganhar tempo nas tarefas do meu trabalho",
+      "Crescer ou melhorar meu negócio",
+      "Mudar de carreira ou conseguir um emprego melhor",
+      "Não ficar para trás e entender o que está acontecendo",
+      "Ensinar ou ajudar outras pessoas a usar (equipe, alunos, família)",
+      "Criar coisas por conta própria (textos, imagens, vídeos, apps)",
+      "Só curiosidade, sem objetivo definido",
+      "Outro",
+    ],
+    otherOption: "Outro",
+  },
+  {
+    id: "dificuldades",
+    label: "O que mais atrapalha você a usar IA hoje?",
+    kind: "checkbox",
+    required: true,
+    help: "Marque até 3.",
+    maxChoices: 3,
+    options: [
+      "Não sei direito o que pedir, nem como pedir",
+      "As respostas vêm erradas ou inventadas, e eu não confio",
+      "Não sei qual ferramenta usar para cada coisa",
+      "Falta tempo para aprender",
+      "A versão gratuita não dá conta, e a paga é cara",
+      "Minha empresa não permite ou não oferece ferramenta",
+      "Muita coisa só em inglês",
+      "Preocupação com privacidade ou com os dados que envio",
+      "Nada me atrapalha",
+      "Outro",
+    ],
+    exclusiveOption: "Nada me atrapalha",
+    otherOption: "Outro",
+  },
+  {
+    id: "relato_falha",
+    label: "Se quiser, conte a última vez que você tentou usar IA e não deu certo. O que aconteceu?",
+    kind: "textarea",
+    subOf: "dificuldades",
+    placeholder: "Ex.: pedi um resumo de um PDF e ele inventou números.",
   },
   {
     id: "produto_formato",
-    label: "Além da newsletter, o que você teria interesse em fazer com a diar.ia.br?",
+    label: "Além da newsletter, o que mais você gostaria que a diar.ia.br oferecesse, mesmo que fosse pago?",
     kind: "checkbox",
+    required: true,
     help: "Pode marcar mais de um.",
-    options: [
-      "Curso online gravado, no meu ritmo",
-      "Aula ou workshop ao vivo",
-      "Mentoria individual ou em grupo pequeno",
-      "Treinamento para a equipe da empresa onde trabalho",
-      "Guias e modelos prontos (prompts, fluxos de trabalho)",
-      "Comunidade para trocar experiências com outros leitores",
-      FORM_NADA_DISSO,
-    ],
+    options: [...FORMATOS, FORM_NADA_DISSO],
     exclusiveOption: FORM_NADA_DISSO,
+  },
+  {
+    id: "produto_escolha",
+    label: "Se só um deles existisse, qual você escolheria?",
+    kind: "select",
+    required: true,
+    subOf: "produto_formato",
+    shownWhen: { questionId: "produto_formato", minChecked: 2 },
+    optionsFrom: "produto_formato",
+    options: FORMATOS,
   },
   {
     id: "produto_tema",
     label: "Sobre qual tema você gostaria de aprender com a diar.ia.br (curso, aula, guia ou mentoria)?",
     kind: "checkbox",
-    help: "Pode marcar mais de um.",
+    required: true,
+    help: "Marque até 3.",
+    maxChoices: 3,
     hiddenWhen: { questionId: "produto_formato", option: FORM_NADA_DISSO },
     options: [
+      "Entender o básico: o que a IA faz bem, o que faz mal e como funciona",
       "IA no trabalho do dia a dia (textos, planilhas, e-mails)",
       "Como escrever bons prompts",
-      "Automatizar tarefas e montar agentes",
+      "Automatizar tarefas repetitivas",
       "IA aplicada à minha área",
+      "Aplicar IA no meu próprio negócio",
       "Programar com ajuda de IA",
-      "Criar imagens, vídeos e áudio com IA",
+      "Criar e editar imagens, vídeos e áudio com IA",
       "Como levar IA para dentro de uma empresa",
-      "Riscos, ética e regulação",
+      "Checar informações e evitar erros da IA",
+      "Usar IA com segurança no trabalho (privacidade, regras e riscos)",
       "Outro",
     ],
     otherOption: "Outro",
   },
   {
-    id: "produto_preco",
-    label: "Quanto você investiria para aprender algo que resolvesse uma necessidade sua?",
+    id: "quem_paga",
+    label: "Quem paga pelas ferramentas de IA que você usa?",
     kind: "select",
-    hiddenWhen: { questionId: "produto_formato", option: FORM_NADA_DISSO },
-    options: ["Só faria se fosse gratuito", "Até R$ 100", "R$ 100 a R$ 300", "R$ 300 a R$ 1.000", "Mais de R$ 1.000"],
+    required: true,
+    options: [
+      FORM_PAGA_DO_BOLSO[0],
+      "A empresa ou instituição onde trabalho ou estudo",
+      FORM_PAGA_DO_BOLSO[1],
+      "Ninguém: só uso versões gratuitas",
+      "Não uso ferramentas de IA",
+    ],
   },
   {
-    id: "sugestao",
-    label: "Quer contar mais alguma coisa? Um assunto que falta na newsletter, ou algo que você gostaria de aprender com a gente.",
-    kind: "textarea",
-    help: "Opcional.",
+    id: "gasto_mensal",
+    label: "Quanto você paga por mês, somando todas as ferramentas de IA?",
+    kind: "select",
+    subOf: "quem_paga",
+    shownWhen: { questionId: "quem_paga", anyOf: FORM_PAGA_DO_BOLSO },
+    help: "Conte só a parte que sai do seu bolso; se o plano for anual, divida por 12. Para referência: planos como ChatGPT Plus, Claude Pro e Google AI Pro custam cerca de R$ 100 por mês.",
+    options: ["Até R$ 50", "De R$ 51 a R$ 150", "De R$ 151 a R$ 400", "De R$ 401 a R$ 900", "Mais de R$ 900"],
+  },
+  {
+    id: "maior_gasto",
+    label: "Nos últimos dois anos, quanto custou, no total, o curso, mentoria ou material de estudo mais caro que você pagou do próprio bolso?",
+    kind: "select",
+    required: true,
+    help: "De qualquer assunto: inclui aulas, workshops, eventos, livros e guias. Conte o preço cheio, mesmo parcelado. Não conte faculdade nem pós-graduação.",
+    options: [
+      "Não paguei por nenhum",
+      "Até R$ 100",
+      "De R$ 101 a R$ 300",
+      "De R$ 301 a R$ 1.000",
+      "De R$ 1.001 a R$ 3.000",
+      "Mais de R$ 3.000",
+      "Prefiro não dizer",
+    ],
+  },
+  {
+    id: "conversa",
+    label: "Toparia uma conversa de 20 minutos comigo sobre o que você quer fazer com IA e o que falta para chegar lá?",
+    kind: "checkbox",
+    help: "Por chamada de vídeo ou telefone, no horário que for melhor para você. Não precisa entender de IA, e a conversa não é para vender nada. Escolho algumas pessoas por vez e escrevo para o e-mail com que você está respondendo, então nem todo mundo recebe o convite.",
+    helpAfter: true,
+    options: [FORM_CONVERSA_SIM],
   },
 ];
 
+/** Perguntas numeradas (sem `subOf`) — "São até 12 perguntas". */
+export function numberedQuestions(questions: readonly FormQuestion[] = FORM_QUESTIONS): FormQuestion[] {
+  return questions.filter((q) => !q.subOf);
+}
+
 /** @pure — a pergunta fica escondida dadas as respostas JÁ validadas das anteriores. */
 export function isQuestionHidden(q: FormQuestion, answers: Readonly<Record<string, string>>): boolean {
-  if (!q.hiddenWhen) return false;
-  const v = answers[q.hiddenWhen.questionId];
-  return v != null && splitMultiAnswer(v).includes(q.hiddenWhen.option);
+  if (q.hiddenWhen) {
+    const v = answers[q.hiddenWhen.questionId];
+    if (v != null && splitMultiAnswer(v).includes(q.hiddenWhen.option)) return true;
+  }
+  if (q.shownWhen) {
+    const v = answers[q.shownWhen.questionId];
+    const picked = v == null ? [] : splitMultiAnswer(v);
+    if (q.shownWhen.anyOf && !q.shownWhen.anyOf.some((o) => picked.includes(o))) return true;
+    if (q.shownWhen.minChecked != null && picked.length < q.shownWhen.minChecked) return true;
+  }
+  return false;
 }
 
 export const FORM_ANSWER_MAX_LEN = 2000;
@@ -241,23 +417,44 @@ export function otherTextFieldId(q: { id: string }): string {
   return `${q.id}${FORM_OTHER_TEXT_SUFFIX}`;
 }
 
+/** Trunca por caractere (code point), nunca no meio de um par UTF-16. */
+function truncateCodePoints(s: string, max: number): string {
+  const chars = Array.from(s);
+  return chars.length <= max ? s : chars.slice(0, max).join("");
+}
+
 /**
- * @pure — limpa o texto do "Outro/Outra": tira marcação HTML (tags e `<`/`>`
- * soltos), caracteres de controle e quebras de linha (vira uma linha só, com
- * espaços colapsados), faz trim e TRUNCA em `FORM_OTHER_TEXT_MAX_LEN` (o
- * campo já tem `maxlength`, então só um envio fora do navegador passa disso;
- * truncar não perde a resposta inteira por um excesso). `""` = sem texto.
+ * @pure — limpa texto livre: tira marcação HTML (tags e `<`/`>` soltos) e
+ * caracteres de controle, faz trim e TRUNCA em `max` caracteres (code points:
+ * um emoji na fronteira nunca vira meia surrogate). `multiline` mantém as
+ * quebras de linha (no máximo uma linha em branco seguida); sem ele vira uma
+ * linha só. O campo já tem `maxlength`, então só um envio fora do navegador
+ * passa do limite; truncar não perde a resposta inteira por um excesso.
+ * `""` = sem texto.
  */
-export function cleanOtherText(raw: string): string {
-  return raw
+export function cleanFreeText(raw: string, max: number, multiline = false): string {
+  let s = String(raw ?? "")
     .replace(/<\/?[a-zA-Z!][^<>]*>/g, " ")
     .replace(/[<>]/g, "")
+    .replace(/\r\n?/g, "\n");
+  if (multiline) {
+    s = s
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, " ")
+      .split("\n")
+      .map((l) => l.replace(/\s+/g, " ").trim())
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n");
+  } else {
     // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, FORM_OTHER_TEXT_MAX_LEN)
-    .trim();
+    s = s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ");
+  }
+  return truncateCodePoints(s.trim(), max).trim();
+}
+
+/** @pure — texto do "Outro/Outra": uma linha, até `FORM_OTHER_TEXT_MAX_LEN`. */
+export function cleanOtherText(raw: string): string {
+  return cleanFreeText(raw, FORM_OTHER_TEXT_MAX_LEN, false);
 }
 
 export interface FormSubmission {
@@ -267,6 +464,10 @@ export interface FormSubmission {
 
 export interface FormResponse extends FormSubmission {
   submitted_at: string;
+  /** `"v3"` desde a v3; ausente nas respostas v1/v2. */
+  form_version?: string;
+  /** Segundos entre a página ser gerada e o envio (só com a hora assinada válida). */
+  duration_s?: number;
 }
 
 export interface FormResponsesPayload {
@@ -293,24 +494,27 @@ export function normalizeFormEmail(raw: string): string {
   return String(raw ?? "").trim().toLowerCase();
 }
 
+type Fields = Readonly<Record<string, string | readonly string[] | undefined>>;
+
 /**
  * @pure — valida a submissão: e-mail válido, só respostas de perguntas
  * conhecidas (campo desconhecido é descartado, nunca gravado), obrigatórias
- * presentes, texto truncado em `FORM_ANSWER_MAX_LEN`, `select` só aceita uma
- * das opções. `checkbox`: aceita string única ou lista (um valor por caixa
- * marcada); toda opção precisa ser conhecida, a gravação segue a ordem da
- * pergunta e descarta repetição; `exclusiveOption` junto com outra opção é
- * recusado; obrigatória = pelo menos uma marcada. Pergunta com `hiddenWhen`
- * cuja condição vale (resposta já validada da pergunta de controle) é tratada
- * como ausente: o valor que vier é descartado sem validar (o cliente esconde e
- * desabilita o campo, mas um navegador sem JavaScript ainda pode mandá-lo).
- * Pergunta com `otherOption`: o texto de `{id}_outro` (opcional) só é gravado
- * quando essa opção foi marcada, limpo e truncado por `cleanOtherText`; sem a
- * opção marcada, o texto é descartado sem erro (sem JavaScript o campo
- * aparece sempre, e a pessoa pode ter digitado e trocado de opção).
+ * presentes QUANDO a pergunta aparece, `select` só aceita uma das opções (e,
+ * com `optionsFrom`, só uma das marcadas na outra pergunta). `checkbox`:
+ * aceita string única ou lista (um valor por caixa marcada); toda opção
+ * precisa ser conhecida, a gravação segue a ordem da pergunta e descarta
+ * repetição; `exclusiveOption` junto com outra opção é recusado; acima de
+ * `maxChoices` é recusado. Pergunta que não aparece (`hiddenWhen`/`shownWhen`
+ * avaliados sobre as respostas já validadas) é tratada como ausente: o valor
+ * que vier é descartado sem validar (o cliente esconde e desabilita o campo,
+ * mas um navegador sem JavaScript ainda pode mandá-lo). Texto livre é limpo
+ * por `cleanFreeText` (multilinha no `textarea`). Pergunta com `otherOption`:
+ * o texto de `{id}_outro` (opcional) só é gravado quando essa opção foi
+ * marcada, limpo e truncado por `cleanOtherText`; sem a opção marcada, o
+ * texto é descartado sem erro.
  */
 export function parseFormSubmission(
-  fields: Readonly<Record<string, string | readonly string[] | undefined>>,
+  fields: Fields,
   questions: readonly FormQuestion[] = FORM_QUESTIONS,
 ): { ok: true; submission: FormSubmission } | { ok: false; error: string } {
   const email = normalizeFormEmail(firstValue(fields.email));
@@ -333,29 +537,37 @@ export function parseFormSubmission(
       if (q.exclusiveOption && chosen.includes(q.exclusiveOption) && chosen.length > 1) {
         return { ok: false, error: `"${q.exclusiveOption}" não combina com outras opções em: ${q.label}` };
       }
+      if (q.maxChoices != null && chosen.length > q.maxChoices) {
+        return { ok: false, error: `marque no máximo ${q.maxChoices} opções em: ${q.label}` };
+      }
       answers[q.id] = chosen.join(FORM_MULTI_SEPARATOR);
       addOtherText(q, chosen, fields, answers);
       continue;
     }
-    const v = firstValue(raw).trim();
-    if (v === "") {
+    if (q.kind === "select") {
+      const v = firstValue(raw).trim();
+      if (v === "") {
+        if (q.required) return { ok: false, error: `resposta obrigatória ausente: ${q.label}` };
+        continue;
+      }
+      const allowed = q.optionsFrom != null ? q.options.filter((o) => splitMultiAnswer(answers[q.optionsFrom!] ?? "").includes(o)) : q.options;
+      if (!allowed.includes(v)) return { ok: false, error: `opção inválida em: ${q.label}` };
+      answers[q.id] = v;
+      addOtherText(q, [v], fields, answers);
+      continue;
+    }
+    const text = cleanFreeText(firstValue(raw), FORM_ANSWER_MAX_LEN, q.kind === "textarea");
+    if (text === "") {
       if (q.required) return { ok: false, error: `resposta obrigatória ausente: ${q.label}` };
       continue;
     }
-    if (q.kind === "select" && !q.options.includes(v)) return { ok: false, error: `opção inválida em: ${q.label}` };
-    answers[q.id] = v.slice(0, FORM_ANSWER_MAX_LEN);
-    if (q.kind === "select") addOtherText(q, [v], fields, answers);
+    answers[q.id] = text;
   }
   return { ok: true, submission: { email, answers } };
 }
 
 /** Grava o texto do "Outro/Outra" só se a opção foi marcada e o texto não é vazio. */
-function addOtherText(
-  q: ChoiceQuestion,
-  chosen: readonly string[],
-  fields: Readonly<Record<string, string | readonly string[] | undefined>>,
-  answers: Record<string, string>,
-): void {
+function addOtherText(q: ChoiceQuestion, chosen: readonly string[], fields: Fields, answers: Record<string, string>): void {
   if (!q.otherOption || !chosen.includes(q.otherOption)) return;
   const text = cleanOtherText(firstValue(fields[otherTextFieldId(q)]));
   if (text !== "") answers[otherTextFieldId(q)] = text;
@@ -378,7 +590,8 @@ export function splitMultiAnswer(value: string): string[] {
 /**
  * @pure — valida o payload de `GET /api/respostas` (lado do executor).
  * Qualquer forma inesperada LANÇA: resposta malformada nunca vira "ninguém
- * preencheu" (o que reenviaria lembretes a quem já respondeu).
+ * preencheu" (o que reenviaria lembretes a quem já respondeu). Lê os dois
+ * formatos: v1/v2 (sem `form_version`) e v3 (`form_version`, `duration_s`).
  */
 export function parseFormResponsesPayload(data: unknown): FormResponse[] {
   if (data == null || typeof data !== "object" || !Array.isArray((data as { responses?: unknown }).responses)) {
@@ -397,14 +610,69 @@ export function parseFormResponsesPayload(data: unknown): FormResponse[] {
     if (answersRaw && typeof answersRaw === "object") {
       for (const [k, v] of Object.entries(answersRaw)) if (typeof v === "string") answers[k] = v;
     }
-    out.push({ email, submitted_at: at, answers });
+    const rec: FormResponse = { email, submitted_at: at, answers };
+    const version = (r as FormResponse).form_version;
+    if (typeof version === "string" && version !== "") rec.form_version = version;
+    const dur = (r as FormResponse).duration_s;
+    if (typeof dur === "number" && Number.isFinite(dur) && dur >= 0) rec.duration_s = dur;
+    out.push(rec);
   }
   return out;
 }
 
-/** Chave KV de uma resposta (1 por e-mail; a última vence). */
+/**
+ * @pure — a resposta mais recente de cada e-mail (por `submitted_at`; empate
+ * fica com a que veio depois na lista). O perfil e os lembretes usam esta.
+ * A ordem de saída é a da 1ª aparição de cada e-mail.
+ */
+export function latestFormResponses<T extends Pick<FormResponse, "email" | "submitted_at">>(responses: readonly T[]): T[] {
+  const best = new Map<string, T>();
+  for (const r of responses) {
+    const k = normalizeFormEmail(r.email);
+    const cur = best.get(k);
+    if (!cur || Date.parse(r.submitted_at) >= Date.parse(cur.submitted_at)) best.set(k, r);
+  }
+  return [...best.values()];
+}
+
+/** Resumo do tempo de preenchimento (segundos) das respostas v3 mais recentes. */
+export interface FormDurationSummary {
+  /** Respostas (mais recente por e-mail) por versão; `"v1/v2"` = sem `form_version`. */
+  by_version: Record<string, number>;
+  /** Envios no total, contando o histórico de quem respondeu mais de uma vez. */
+  submissions: number;
+  with_duration: number;
+  median_s: number | null;
+  p75_s: number | null;
+}
+
+/** @pure — percentil por posição mais próxima (sem interpolação). */
+function percentile(sorted: readonly number[], p: number): number | null {
+  if (sorted.length === 0) return null;
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))];
+}
+
+/** @pure — contagem por versão e mediana/p75 do `duration_s` (mais recente por e-mail). */
+export function summarizeFormResponses(responses: readonly FormResponse[]): FormDurationSummary {
+  const latest = latestFormResponses(responses);
+  const by_version: Record<string, number> = {};
+  for (const r of latest) {
+    const v = r.form_version ?? "v1/v2";
+    by_version[v] = (by_version[v] ?? 0) + 1;
+  }
+  const durs = latest.map((r) => r.duration_s).filter((d): d is number => typeof d === "number").sort((a, b) => a - b);
+  return { by_version, submissions: responses.length, with_duration: durs.length, median_s: percentile(durs, 0.5), p75_s: percentile(durs, 0.75) };
+}
+
+/** Chave KV LEGADA (v1/v2: uma por e-mail, a última vencia). Só leitura desde a v3. */
 export function formResponseKey(email: string): string {
   return `resp:${normalizeFormEmail(email)}`;
+}
+
+/** Chave KV de UM envio (v3, #12490): nunca sobrescreve o envio anterior.
+ *  Mesmo prefixo `resp:` da legada, então a listagem lê as duas. */
+export function formSubmissionKey(email: string, submittedAt: string, nonce: string): string {
+  return `${formResponseKey(email)}:${submittedAt}:${nonce}`;
 }
 
 /** @pure — compara o token do header `Authorization` em tempo constante. */

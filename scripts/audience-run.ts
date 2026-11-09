@@ -118,6 +118,11 @@ export async function loadOnboardingFormSurveyResponses(cfg: PlatformConfig, fet
       `[audience-run] ⚠ ${converted.unknownAnswers} resposta(s) do formulário a pergunta(s) que não existem mais em FORM_QUESTIONS — descartada(s).`,
     );
   }
+  if (converted.legacyAnswers > 0) {
+    console.error(
+      `[audience-run] ⚠ ${converted.legacyAnswers} resposta(s) a perguntas de versões anteriores do formulário (nível, seções, inglês, preço, sugestão) — ignorada(s) no perfil.`,
+    );
+  }
   if (converted.emptyResponses > 0) {
     console.error(`[audience-run] ⚠ ${converted.emptyResponses} resposta(s) sem nenhuma resposta a pergunta atual — não contam como respondente.`);
   }

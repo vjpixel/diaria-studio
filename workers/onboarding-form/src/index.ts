@@ -20,13 +20,21 @@
  */
 
 import {
-  formResponseKey,
+  FORM_VERSION,
+  formSubmissionKey,
   isAuthorizedResponsesRequest,
   parseFormSubmission,
   prefillEmailFromQuery,
   type FormResponse,
 } from "../../../scripts/lib/onboarding-form-contract.ts";
-import { checkFormEmailSig, checkLinkSecret, type FormSigRejection } from "../../../scripts/lib/onboarding-form-link-sig.ts";
+import {
+  checkFormEmailSig,
+  checkLinkSecret,
+  formDurationFromToken,
+  FORM_RENDERED_FIELD,
+  signFormRenderedAt,
+  type FormSigRejection,
+} from "../../../scripts/lib/onboarding-form-link-sig.ts";
 import { collectFormFields, renderErrorHtml, renderFormHtml, renderInvalidLinkHtml, renderThanksHtml } from "./render.ts";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts"; // #10809
 
@@ -96,7 +104,9 @@ export default {
       const sig = url.searchParams.get("sig") ?? "";
       const check = await checkFormEmailSig(email, sig, secret);
       if (!check.ok) return rejectLink("/", check.reason);
-      return html(renderFormHtml(email, sig));
+      // v3: hora em que a página foi gerada, assinada — o envio grava `duration_s`.
+      const rendered = await signFormRenderedAt(email, Date.now() / 1000, secret);
+      return html(renderFormHtml(email, sig, undefined, rendered));
     }
 
     if (request.method === "POST" && url.pathname === "/enviar") {
@@ -123,9 +133,14 @@ export default {
       if (!check.ok) return rejectLink("/enviar", check.reason);
       const parsed = parseFormSubmission(fields);
       if (!parsed.ok) return html(renderErrorHtml(parsed.error), 400);
-      const record: FormResponse = { ...parsed.submission, submitted_at: new Date().toISOString() };
+      const nowMs = Date.now();
+      const record: FormResponse = { ...parsed.submission, submitted_at: new Date(nowMs).toISOString(), form_version: FORM_VERSION };
+      // Tempo de preenchimento: só com a hora assinada para ESTE e-mail (senão fica sem o campo).
+      const duration = await formDurationFromToken(record.email, one(fields[FORM_RENDERED_FIELD]), secret, nowMs / 1000);
+      if (duration != null) record.duration_s = duration;
       try {
-        await env.ONBOARDING_FORM.put(formResponseKey(record.email), JSON.stringify(record));
+        // #12490: uma chave por envio — o envio anterior da mesma pessoa fica (histórico).
+        await env.ONBOARDING_FORM.put(formSubmissionKey(record.email, record.submitted_at, crypto.randomUUID().slice(0, 8)), JSON.stringify(record));
       } catch (e) {
         // Falha de gravação nunca vira "Obrigado": a pessoa precisa saber que não registrou.
         console.error(`[onboarding-form] falha ao gravar resposta no KV: ${(e as Error).message}`);

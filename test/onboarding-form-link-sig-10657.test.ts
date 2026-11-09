@@ -108,7 +108,7 @@ describe("#10657 assinatura do link (HMAC-SHA256, Web Crypto)", () => {
 describe("#10657 executor: link com assinatura, envio travado sem segredo / campo / Worker", () => {
   const cfg = resolveFollowupConfig({ enabled: true, form_url: "https://form.example/", form_responses_url: "https://form.example/api/respostas" });
   const ok = parseFollowupSnippet(`<!--\nassunto: "A"\npreview_text: "P"\n-->\nResponda: {{FORM_URL}}`);
-  const formSnippets: FollowupSnippets = { apoio30: null, apoio90: null, apoio180: null, apoio360: null, form: ok, form_lembrete: ok };
+  const formSnippets: FollowupSnippets = { apoio30: null, apoio90: null, apoio180: null, apoio360: null, form: ok, form_lembrete: ok, form_lembrete2: ok, form_lembrete3: ok };
 
   it("o link leva o e-mail CRU (sem filtro Liquid) e a assinatura do custom field form_sig", () => {
     assert.equal(FORM_SIG_KIT_FIELD, "form_sig");
@@ -587,7 +587,9 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
       const { e, puts } = env();
       const post2 = await worker.fetch(post([["email", email], ["sig", sig], ...answers()]), e);
       assert.equal(post2.status, 200, email);
-      assert.deepEqual(puts.map(([k]) => k), [`resp:${email}`], email);
+      // v3 (#12490): uma chave por envio, `resp:{e-mail}:{submitted_at}:{nonce}`.
+      assert.equal(puts.length, 1, email);
+      assert.ok(puts[0][0].startsWith(`resp:${email}:`), email);
     }
   });
 
@@ -621,7 +623,10 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
     const sig = await signFormEmail("a@x.com", SECRET);
     const res = await worker.fetch(post([["email", "a@x.com"], ["sig", sig], ...answers()]), e);
     assert.equal(res.status, 200);
-    assert.deepEqual(puts.map(([k]) => k), ["resp:a@x.com"]);
+    assert.equal(puts.length, 1);
+    assert.match(puts[0][0], /^resp:a@x\.com:\d{4}-\d{2}-\d{2}T[^:]+:[^:]+:[^:]+:[0-9a-f]{8}$/);
+    const rec = JSON.parse(puts[0][1]);
+    assert.equal(rec.form_version, "v3");
   });
 
   it("POST sem assinatura, com assinatura errada ou de OUTRO e-mail: 403, log e nada no KV", async () => {
@@ -657,7 +662,8 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
       const { e, puts } = env();
       const res = await worker.fetch(post([["email", "atacante@x.com"], ["email", "vitima@x.com"], ["sig", sigAtacante], ["sig", "lixo"], ...answers()]), e);
       assert.equal(res.status, 200);
-      assert.deepEqual(puts.map(([k]) => k), ["resp:atacante@x.com"]);
+      assert.equal(puts.length, 1);
+      assert.ok(puts[0][0].startsWith("resp:atacante@x.com:"));
     }
   });
 

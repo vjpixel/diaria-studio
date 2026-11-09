@@ -42,6 +42,17 @@
  *   npx tsx scripts/onboarding-followup-run.ts                 # dry-run
  *   npx tsx scripts/onboarding-followup-run.ts --send          # cria/agenda os lotes devidos
  *   npx tsx scripts/onboarding-followup-run.ts --init-snippets # cria os textos faltantes com o marcador (rascunho versionado quando há)
+ *   npx tsx scripts/onboarding-followup-run.ts --status        # só leitura: respostas por versão + tempo de preenchimento (mediana, p75)
+ *   npx tsx scripts/onboarding-followup-run.ts --tag-respondents          # dry-run: quem ganharia a tag formulario-respondeu
+ *   npx tsx scripts/onboarding-followup-run.ts --tag-respondents --apply  # aplica a tag no Kit (a tag precisa existir)
+ *
+ * `--tag-respondents` (#10605, para a #12495): lê as respostas do Worker e
+ * aplica no Kit a tag `formulario-respondeu` (`FORM_RESPONDENT_TAG`) em quem
+ * respondeu e ainda não a tem. Dry-run por padrão; `--apply` grava e relê a
+ * tag para confirmar (2xx do Kit não é prova). A tag NÃO é criada aqui: se ela
+ * não existir, o comando avisa e sai 2. Para criar: no Kit, Grow > Subscribers
+ * > Tags > "Create a tag", nome exato `formulario-respondeu` (ou a tool
+ * `create_tag` do conector do Kit), e rodar de novo.
  * Flags auxiliares: --store <path>, --snippets-dir <path>, --config <path>, --env-root <path>, --skip-if-disabled.
  */
 
@@ -50,9 +61,9 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
-import { listAllKitSubscribers, getSubscriberById, updateSubscriberFields } from "./lib/kit-subscribers.ts";
+import { listAllKitSubscribers, getSubscriberById, updateSubscriberFields, getKitSubscriberByEmail } from "./lib/kit-subscribers.ts";
 import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts";
-import { findTagIdByName, listAllTagSubscriberEmails, deleteBroadcast } from "./lib/kit-broadcasts.ts";
+import { findTagIdByName, listAllTagSubscriberEmails, deleteBroadcast, tagSubscriber } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
 import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts";
 import { withFileLock } from "./lib/file-lock.ts";
@@ -62,11 +73,13 @@ import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from 
 import { buildOnboardingLotFilter, decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type RefreshKitCandidatesOpts } from "./lib/onboarding-kit-transport.ts";
 import { isKitTransientError } from "./onboarding-welcome-run.ts";
 import { redactEmails, verifyPilotBroadcastFilter } from "./lib/onboarding-kit-pilot.ts";
-import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
+import { parseFormResponsesPayload, summarizeFormResponses, type FormResponse } from "./lib/onboarding-form-contract.ts";
 import { FORM_PAGE_MARKER, FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
 import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
   ALL_FOLLOWUP_STEPS,
+  FORM_RESPONDENT_TAG,
+  planRespondentTagging,
   applyBaseInviteToPeople,
   baseInviteRecipientIds,
   decideBaseInviteConfirm,
@@ -74,6 +87,9 @@ import {
   apoioContentGate,
   applyFollowupLotToPeople,
   applyFormResponses,
+  askContextFromEntries,
+  isAskDeferred,
+  recordAskDeferrals,
   buildFollowupLotId,
   filterDueByLiveCheck,
   isConcreteKitState,
@@ -940,8 +956,20 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     excludedEmails: envioBrevoEmails,
     // #10605: destinatários do e-mail da base ainda não saído não recebem o D+6.
     baseInviteRecipientIds: baseInviteRecipientIds(block.base_invite),
+    // Regra de pedidos (09/11/2026): âncora da escada + e-mail 3 como pedido anterior.
+    askContext: askContextFromEntries(Object.values(store.entries)),
   });
   run.counts = plan.counts;
+  // O pedido adiado pela regra de pedidos espera, nunca é descartado pela janela:
+  // grava `ask_deferred` na 1ª rodada `--send` que adiou.
+  if (send && plan.askDeferred.length > 0) {
+    const cadastroAtById = new Map(apoioCandidates.map((c) => [c.kit_subscriber_id, c.cadastro_at] as const));
+    const deferred = plan.askDeferred;
+    persistFollowupPeople(storePath, (people) => {
+      recordAskDeferrals(people, deferred, nowIso, cadastroAtById);
+    });
+    recordAskDeferrals(block.people, deferred, nowIso, cadastroAtById);
+  }
   const bump = (kind: FollowupStepKind, motivo: string, n = 1) => {
     const k = (run.counts[kind] ??= {});
     k[motivo] = (k[motivo] ?? 0) + n;
@@ -974,7 +1002,10 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   // #10763 rodízio; #10773: o rebaixamento cede no último dia da janela, e a
   // projeção do teto (`capWindowOverflows`) aplica a mesma regra.
   const failedLastRound = (d: FollowupDue) => hasLiveFailure(block.people[String(d.kit_subscriber_id)], d.kind);
-  const demoted = (d: FollowupDue) => isCapDemoted(d, failedLastRound(d), orderSec(d), nowSec, cfg);
+  // Etapa adiada pela regra de pedidos não tem mais prazo de janela: para o
+  // rodízio, a projeção do teto e a classificação de falhas ela é "sem janela".
+  const windowAnchor = (d: FollowupDue) => (isAskDeferred(block.people[String(d.kit_subscriber_id)], d.kind) ? null : orderSec(d));
+  const demoted = (d: FollowupDue) => isCapDemoted(d, failedLastRound(d), windowAnchor(d), nowSec, cfg);
   const { within: dueWithinCap, deferred: capDeferred } = splitDueByCap(due, cfg.maxRecipientsPerLot, orderSec, demoted);
   for (const o of capDeferred) {
     bump(o.kind, "adiado_teto", o.deferred);
@@ -987,7 +1018,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   // precede o filtro ao vivo: exclusões ocupam vaga sem reposição hoje; falhas de
   // consulta podem voltar amanhã. Estimativa, sem limite garantido de perdas
   // e com imprecisão de ~1h na fronteira diária (ver capWindowOverflows).
-  const windowOverflows = capWindowOverflows(due, cfg.maxRecipientsPerLot, nowSec, cfg, orderSec, failedLastRound);
+  const windowOverflows = capWindowOverflows(due, cfg.maxRecipientsPerLot, nowSec, cfg, windowAnchor, failedLastRound);
   run.cap_window_overflow = windowOverflows.length;
   for (const w of windowOverflows) {
     bump(w.kind, "excede_janela", w.projected_vencidas);
@@ -1004,7 +1035,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   const checks = await liveCheckDue(dueWithinCap, opts, deps);
   const failures: LookupFailure[] = [];
   for (const f of checks.failed.values()) {
-    failures.push({ due: f.due, transient: f.transient, anchorSec: orderSec(f.due) });
+    failures.push({ due: f.due, transient: f.transient, anchorSec: windowAnchor(f.due) });
   }
   const lookupSplit = classifyLookupFailures(failures, checks.total, nowSec, cfg);
   run.lookups_failed += lookupSplit.blocking;
@@ -1129,6 +1160,9 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
 interface CliArgs {
   send: boolean;
   initSnippets: boolean;
+  status: boolean;
+  tagRespondents: boolean;
+  apply: boolean;
   skipIfDisabled: boolean;
   storePath?: string;
   snippetsDir?: string;
@@ -1137,11 +1171,14 @@ interface CliArgs {
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const a: CliArgs = { send: false, initSnippets: false, skipIfDisabled: false };
+  const a: CliArgs = { send: false, initSnippets: false, status: false, tagRespondents: false, apply: false, skipIfDisabled: false };
   for (let i = 0; i < argv.length; i++) {
     const f = argv[i];
     if (f === "--send") a.send = true;
     else if (f === "--init-snippets") a.initSnippets = true;
+    else if (f === "--status") a.status = true;
+    else if (f === "--tag-respondents") a.tagRespondents = true;
+    else if (f === "--apply") a.apply = true;
     else if (f === "--skip-if-disabled") a.skipIfDisabled = true;
     else if (f === "--store") a.storePath = argv[++i];
     else if (f === "--snippets-dir") a.snippetsDir = argv[++i];
@@ -1153,6 +1190,96 @@ function parseArgs(argv: string[]): CliArgs {
     }
   }
   return a;
+}
+
+/** `GET form_responses_url` com o token de `form_responses_token_env`. Lança em qualquer falha. */
+export async function fetchFormResponsesReal(cfg: FollowupConfig, fetchImpl: typeof fetch = fetch): Promise<FormResponse[]> {
+  const token = process.env[cfg.formResponsesTokenEnv];
+  if (!cfg.formResponsesUrl || !token) throw new Error(`endpoint de respostas ou ${cfg.formResponsesTokenEnv} ausente`);
+  const res = await fetchImpl(cfg.formResponsesUrl, { headers: { authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`GET respostas do formulário: HTTP ${res.status}`);
+  }
+  return parseFormResponsesPayload(await res.json());
+}
+
+/** `--status` (#10605 v3): só leitura, sem Kit. Respostas por versão e o tempo de preenchimento. */
+export function formStatusReport(responses: readonly FormResponse[]): Record<string, unknown> {
+  const sum = summarizeFormResponses(responses);
+  const min = (sec: number | null) => (sec == null ? null : Math.round((sec / 60) * 10) / 10);
+  return {
+    mode: "status",
+    respondentes: Object.values(sum.by_version).reduce((a, b) => a + b, 0),
+    envios: sum.submissions,
+    por_versao: sum.by_version,
+    tempo_de_preenchimento: { respostas_com_tempo: sum.with_duration, mediana_s: sum.median_s, p75_s: sum.p75_s, mediana_min: min(sum.median_s), p75_min: min(sum.p75_s) },
+  };
+}
+
+export interface TagRespondentsDeps {
+  findTagId(name: string): Promise<number | null>;
+  listTaggedEmails(tagId: number): Promise<string[]>;
+  fetchFormResponses(): Promise<FormResponseRecord[]>;
+  lookupIdByEmail(email: string): Promise<number | null>;
+  tag(tagId: number, kitId: number): Promise<void>;
+}
+
+/**
+ * `--tag-respondents` (#10605, para a #12495). Dry-run por padrão: só
+ * planeja. Com `apply`, aplica a tag em quem falta e RELÊ a tag no fim (2xx
+ * do Kit não prova escrita). Tag inexistente: `tag_ausente`, nada lido nem
+ * gravado além da busca da tag. Exit 1 quando alguma marcação não se
+ * confirmou ou um e-mail não achou assinante.
+ */
+export async function runTagRespondents(
+  people: Readonly<Record<string, FollowupBlock["people"][string]>>,
+  apply: boolean,
+  deps: TagRespondentsDeps,
+): Promise<{ code: 0 | 1 | 2; report: Record<string, unknown> }> {
+  const tagId = await deps.findTagId(FORM_RESPONDENT_TAG);
+  if (tagId == null) {
+    return {
+      code: 2,
+      report: {
+        mode: "tag-respondents",
+        error: "tag_ausente",
+        detalhe: `a tag "${FORM_RESPONDENT_TAG}" não existe no Kit e este comando não a cria. Crie no Kit (Grow > Subscribers > Tags > "Create a tag", nome exato "${FORM_RESPONDENT_TAG}", ou a tool create_tag do conector do Kit) e rode de novo.`,
+      },
+    };
+  }
+  const responses = await deps.fetchFormResponses();
+  const tagged = new Set((await deps.listTaggedEmails(tagId)).map(normalizeEmail));
+  const plan = planRespondentTagging(responses, people, tagged);
+  const report: Record<string, unknown> = {
+    mode: apply ? "tag-respondents --apply" : "tag-respondents (dry-run)",
+    tag: FORM_RESPONDENT_TAG,
+    respondentes: plan.respondents,
+    ja_com_tag: plan.alreadyTagged,
+    a_marcar: plan.toTag.length + plan.unresolved.length,
+    fora_do_store: plan.unresolved.length,
+  };
+  if (!apply) return { code: 0, report };
+  const targets = [...plan.toTag];
+  let semAssinante = 0;
+  for (const email of plan.unresolved) {
+    const id = await deps.lookupIdByEmail(email);
+    if (id == null) semAssinante++;
+    else targets.push({ email, kit_subscriber_id: id });
+  }
+  let falhas = 0;
+  for (const t of targets) {
+    try {
+      await deps.tag(tagId, t.kit_subscriber_id);
+    } catch (e) {
+      falhas++;
+      process.stderr.write(`${LOG} tag em ${t.kit_subscriber_id} falhou: ${redactEmails((e as Error).message)}\n`);
+    }
+  }
+  const after = new Set((await deps.listTaggedEmails(tagId)).map(normalizeEmail));
+  const confirmados = targets.filter((t) => after.has(t.email)).length;
+  Object.assign(report, { marcados_confirmados: confirmados, nao_confirmados: targets.length - confirmados, falhas, sem_assinante_no_kit: semAssinante });
+  return { code: confirmados === targets.length && semAssinante === 0 ? 0 : 1, report };
 }
 
 function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDeps {
@@ -1192,16 +1319,7 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
       if (tagId == null) throw new Error(`tag ${KIT_ENVIO_BREVO_TAG_NAME} não existe no Kit`);
       return listAllTagSubscriberEmails(tagId, kitCfg);
     },
-    async fetchFormResponses() {
-      const token = process.env[cfg.formResponsesTokenEnv];
-      if (!cfg.formResponsesUrl || !token) throw new Error(`endpoint de respostas ou ${cfg.formResponsesTokenEnv} ausente`);
-      const res = await fetch(cfg.formResponsesUrl, { headers: { authorization: `Bearer ${token}` } });
-      if (!res.ok) {
-        await res.body?.cancel().catch(() => {});
-        throw new Error(`GET respostas do formulário: HTTP ${res.status}`);
-      }
-      return parseFormResponsesPayload(await res.json());
-    },
+    fetchFormResponses: () => fetchFormResponsesReal(cfg),
     async runLot(lot, content) {
       // Import tardio: o executor da escada carrega o resto do transporte Kit.
       const { runProductionKitLot, buildPilotKitDeps, productionOrphanAlert } = await import("./onboarding-kit-transport-run.ts");
@@ -1246,6 +1364,30 @@ async function main(): Promise<void> {
     // (Antes do #10605 a chave única era `created`.)
     const { written, skipped } = initFollowupSnippets(snippetsDirAbs);
     console.log(JSON.stringify({ mode: "init-snippets", written, skipped }));
+    return;
+  }
+  if (args.status) {
+    console.log(JSON.stringify(formStatusReport(await fetchFormResponsesReal(cfg)), null, 2));
+    return;
+  }
+  if (args.tagRespondents) {
+    const kitResult = resolveKitConfig();
+    if (!kitResult.ok) {
+      process.stderr.write(`${LOG} config Kit: ${kitResult.reason}\n`);
+      throw new CliExit(2);
+    }
+    const kitCfg = kitResult.config;
+    const storePathT = args.storePath ?? resolve(ROOT, rawCfg.onboarding?.store_path ?? DEFAULT_STORE_PATH);
+    const people = existsSync(storePathT) ? (readStore(storePathT).store.followup?.people ?? {}) : {};
+    const out = await runTagRespondents(people, args.apply, {
+      findTagId: (name) => findTagIdByName(name, kitCfg),
+      listTaggedEmails: (id) => listAllTagSubscriberEmails(id, kitCfg),
+      fetchFormResponses: () => fetchFormResponsesReal(cfg),
+      lookupIdByEmail: async (email) => (await getKitSubscriberByEmail(email, kitCfg))?.id ?? null,
+      tag: (tagId, kitId) => tagSubscriber(tagId, kitId, kitCfg),
+    });
+    console.log(JSON.stringify(out.report, null, 2));
+    if (out.code !== 0) throw new CliExit(out.code);
     return;
   }
   if (!cfg.enabled) {

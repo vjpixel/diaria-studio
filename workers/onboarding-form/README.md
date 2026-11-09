@@ -12,12 +12,23 @@ para os lembretes. `scripts/audience-run.ts` lê o mesmo endpoint e gera o
 perfil de audiência (`context/audience-profile.md`) SÓ com estas respostas
 (decisão 10 do editor, 08/11/2026: a survey da Beehiiv foi descartada).
 
-Contrato e perguntas (v2, decisões do editor de 08/11/2026):
-`scripts/lib/onboarding-form-contract.ts` (`FORM_QUESTIONS`). Tema e preço
-(`hiddenWhen`) somem quando a pessoa marca "Nada disso" no que faria além da
-newsletter: o HTML esconde e desabilita os campos (`HIDE_SCRIPT` em
-`src/render.ts`) e o servidor descarta o que vier deles. HTML: `src/render.ts`
-(mobile primeiro, sem dependência de runtime de Worker).
+Contrato e perguntas (v3, aprovada pelo editor em 09/11/2026):
+`scripts/lib/onboarding-form-contract.ts` (`FORM_QUESTIONS`): 12 perguntas
+numeradas e 3 subperguntas sem número, todas de rádio ou caixa (nunca menu
+suspenso). Condicionais (`hiddenWhen`/`shownWhen`), opção exclusiva e o limite
+de "até 3" rodam no cliente (`FORM_SCRIPT` em `src/render.ts`) e são
+validados de novo no servidor, que descarta o que vier de pergunta que não
+aparece. HTML: `src/render.ts` (mobile primeiro, sem dependência de runtime
+de Worker).
+
+Histórico e versão (#12490): cada envio é uma chave própria no KV
+(`resp:{e-mail}:{submitted_at}:{nonce}`), com `form_version: "v3"`, e nunca
+sobrescreve o anterior. `GET /api/respostas` devolve todos os envios
+(inclusive os antigos `resp:{e-mail}`); o perfil e os lembretes usam o mais
+recente por e-mail (`latestFormResponses`). Tempo de preenchimento: a página
+leva a hora em que foi gerada, assinada (campo oculto `t`,
+`signFormRenderedAt`), e o envio grava `duration_s`; mediana e p75 saem em
+`onboarding-followup-run.ts --status`.
 
 ## Quem recebe o link
 
@@ -39,8 +50,11 @@ travados pelo marcador `ONBOARDING-CORPO-PENDENTE` até o editor aprovar):
    recebê-lo em até 7 dias (padrão de `base_invite_window_days`), e quem já
    respondeu; enquanto o e-mail não sai, eles não recebem o D+6. Rodar
    `audience-run.ts` só depois de haver respostas.
-3. `formulario-lembrete.md`: para quem recebeu o 1 OU o 2 e não respondeu, 30
-   dias depois do último e-mail do formulário, até 3 vezes por pessoa. O
+3. `formulario-lembrete-{1,2,3}.md`: para quem recebeu o 1 OU o 2 e não
+   respondeu, até 3 vezes por pessoa, um texto por lembrete. Quem recebeu o
+   D+6 recebe em D+19, D+49 e D+79 da confirmação do cadastro; quem recebeu o
+   e-mail da base, 30 dias depois do envio anterior. Depois do primeiro mês,
+   nenhum pedido sai a 10 dias ou menos de outro (`ask_min_gap_days: 11`). O
    store guarda qual convite a pessoa recebeu (`followup.people[id].form_invite`;
    registro antigo sem o campo: ler por `formInviteOf`, que deriva de `sends`).
 
