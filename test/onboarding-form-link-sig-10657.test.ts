@@ -587,9 +587,7 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
       const { e, puts } = env();
       const post2 = await worker.fetch(post([["email", email], ["sig", sig], ...answers()]), e);
       assert.equal(post2.status, 200, email);
-      // v3 (#12490): uma chave por envio, `resp:{e-mail}:{submitted_at}:{nonce}`.
-      assert.equal(puts.length, 1, email);
-      assert.ok(puts[0][0].startsWith(`resp:${email}:`), email);
+      assert.deepEqual(puts.map(([k]) => k.replace(/^(hist:[^:]+):.*$/, "$1")), [`hist:${email}`, `resp:${email}`], email);
     }
   });
 
@@ -623,10 +621,8 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
     const sig = await signFormEmail("a@x.com", SECRET);
     const res = await worker.fetch(post([["email", "a@x.com"], ["sig", sig], ...answers()]), e);
     assert.equal(res.status, 200);
-    assert.equal(puts.length, 1);
-    assert.match(puts[0][0], /^resp:a@x\.com:\d{4}-\d{2}-\d{2}T[^:]+:[^:]+:[^:]+:[0-9a-f]{8}$/);
-    const rec = JSON.parse(puts[0][1]);
-    assert.equal(rec.form_version, "v3");
+    assert.deepEqual(puts.map(([k]) => k.replace(/^(hist:[^:]+):.*$/, "$1")), ["hist:a@x.com", "resp:a@x.com"]);
+    assert.equal(JSON.parse(puts[1][1]).form_version, 3);
   });
 
   it("POST sem assinatura, com assinatura errada ou de OUTRO e-mail: 403, log e nada no KV", async () => {
@@ -662,8 +658,7 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
       const { e, puts } = env();
       const res = await worker.fetch(post([["email", "atacante@x.com"], ["email", "vitima@x.com"], ["sig", sigAtacante], ["sig", "lixo"], ...answers()]), e);
       assert.equal(res.status, 200);
-      assert.equal(puts.length, 1);
-      assert.ok(puts[0][0].startsWith("resp:atacante@x.com:"));
+      assert.deepEqual(puts.map(([k]) => k.replace(/^(hist:[^:]+):.*$/, "$1")), ["hist:atacante@x.com", "resp:atacante@x.com"]);
     }
   });
 

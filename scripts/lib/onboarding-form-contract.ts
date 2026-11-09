@@ -21,14 +21,17 @@
  *    gravar o tempo de preenchimento (`duration_s`).
  *  - `POST /enviar` (form-urlencoded) — exige a assinatura do e-mail enviado
  *    (senão 403, nada gravado); valida com `parseFormSubmission` e grava a
- *    resposta. Desde a v3 cada envio é uma chave própria
- *    (`formSubmissionKey`: `resp:{e-mail}:{submitted_at}:{nonce}`) e NUNCA
- *    sobrescreve o envio anterior da mesma pessoa (#12490, histórico). A
- *    chave antiga `resp:{e-mail}` (v1/v2, uma por pessoa) continua sendo lida.
- *  - `GET  /api/respostas` com `Authorization: Bearer {token}` — lista TODOS
- *    os envios no formato `FormResponsesPayload` (inclusive vários da mesma
- *    pessoa). Quem consome usa `latestFormResponses` (a mais recente por
- *    e-mail): o perfil e os lembretes valem pela última resposta.
+ *    resposta (KV, chave `resp:{email normalizado}` = a mais recente por
+ *    pessoa) e, desde o #12490, também no histórico (`hist:{e-mail}:{submitted_at}`,
+ *    uma chave por envio, nunca sobrescrita; `planFormResponseWrites`). Cada
+ *    envio leva `form_version` e, com a hora assinada da página, `duration_s`.
+ *  - `GET  /api/respostas` com `Authorization: Bearer {token}` — lista as
+ *    respostas no formato `FormResponsesPayload` (a mais recente por pessoa).
+ *    É o que o executor lê a cada rodada para marcar "preencheu" no store e
+ *    parar os lembretes. Com `?historico=1` (#12490) lista TODAS as respostas
+ *    guardadas (`hist:`), uma por envio, para comparar um ano com o outro.
+ *    Quem consome ainda passa por `latestFormResponses` (defesa: a lista do
+ *    histórico tem várias por pessoa).
  *
  * ## Perguntas (v3, aprovada pelo editor em 09/11/2026)
  *
@@ -129,9 +132,6 @@ export function isChoiceQuestion(q: FormQuestion): q is ChoiceQuestion {
 /** Separador das opções marcadas numa pergunta `checkbox`, dentro da string
  *  única de `answers[id]`. Nenhuma opção pode conter este texto (teste). */
 export const FORM_MULTI_SEPARATOR = " | ";
-
-/** Versão do formulário gravada em cada envio (`form_version`). */
-export const FORM_VERSION = "v3";
 
 /** Opção de `produto_formato` que esconde o tema (decisão 5 do editor). */
 export const FORM_NADA_DISSO = "Nada disso, a newsletter já me basta";
@@ -515,14 +515,47 @@ export interface FormSubmission {
 
 export interface FormResponse extends FormSubmission {
   submitted_at: string;
-  /** `"v3"` desde a v3; ausente nas respostas v1/v2. */
-  form_version?: string;
+  /**
+   * #12490: versão das perguntas em que a resposta foi dada (`FORM_VERSION`
+   * no momento do envio). Ausente = resposta gravada antes do campo existir
+   * (perguntas v2). A comparação entre um ano e outro só vale entre respostas
+   * da mesma versão (ou de perguntas que não mudaram entre as duas).
+   */
+  form_version?: number;
   /** Segundos entre a página ser gerada e o envio (só com a hora assinada válida). */
   duration_s?: number;
 }
 
 export interface FormResponsesPayload {
   responses: FormResponse[];
+}
+
+/**
+ * #12490: versão ATUAL das perguntas. Sobe sempre que `FORM_QUESTIONS` muda
+ * (id, tipo, rótulo ou opções); `test/onboarding-form-history-12490.test.ts`
+ * trava a impressão digital das perguntas contra este número, então mudar a
+ * pergunta sem subir a versão quebra o teste. O Worker grava o número em
+ * cada resposta (`FormResponse.form_version`).
+ */
+export const FORM_VERSION = 3;
+
+/** Versão das respostas antigas, gravadas antes do campo `form_version`. */
+export const FORM_VERSION_LEGACY = 2;
+
+/** @pure — versão de uma resposta (ausente = `FORM_VERSION_LEGACY`). */
+export function formVersionOf(r: Pick<FormResponse, "form_version">): number {
+  return typeof r.form_version === "number" && Number.isInteger(r.form_version) && r.form_version > 0 ? r.form_version : FORM_VERSION_LEGACY;
+}
+
+/**
+ * @pure — impressão digital das perguntas (id, tipo, rótulo, opções, ordem),
+ * para o teste travar `FORM_VERSION`. Texto estável, sem hash: o diff do
+ * teste mostra o que mudou.
+ */
+export function formQuestionsFingerprint(questions: readonly FormQuestion[] = FORM_QUESTIONS): string {
+  return questions
+    .map((q) => [q.id, q.kind, q.label, ...(isChoiceQuestion(q) ? q.options : [])].join("\u001f"))
+    .join("\u001e");
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -662,8 +695,9 @@ export function parseFormResponsesPayload(data: unknown): FormResponse[] {
       for (const [k, v] of Object.entries(answersRaw)) if (typeof v === "string") answers[k] = v;
     }
     const rec: FormResponse = { email, submitted_at: at, answers };
+    // #12490: versão só quando veio válida; ausente = legado (`formVersionOf`).
     const version = (r as FormResponse).form_version;
-    if (typeof version === "string" && version !== "") rec.form_version = version;
+    if (typeof version === "number" && Number.isInteger(version) && version > 0) rec.form_version = version;
     const dur = (r as FormResponse).duration_s;
     if (typeof dur === "number" && Number.isFinite(dur) && dur >= 0) rec.duration_s = dur;
     out.push(rec);
@@ -688,7 +722,7 @@ export function latestFormResponses<T extends Pick<FormResponse, "email" | "subm
 
 /** Resumo do tempo de preenchimento (segundos) das respostas v3 mais recentes. */
 export interface FormDurationSummary {
-  /** Respostas (mais recente por e-mail) por versão; `"v1/v2"` = sem `form_version`. */
+  /** Respostas (mais recente por e-mail) por versão (`v{formVersionOf}`; sem o campo = `v2`). */
   by_version: Record<string, number>;
   /** Envios no total, contando o histórico de quem respondeu mais de uma vez. */
   submissions: number;
@@ -708,7 +742,7 @@ export function summarizeFormResponses(responses: readonly FormResponse[]): Form
   const latest = latestFormResponses(responses);
   const by_version: Record<string, number> = {};
   for (const r of latest) {
-    const v = r.form_version ?? "v1/v2";
+    const v = `v${formVersionOf(r)}`;
     by_version[v] = (by_version[v] ?? 0) + 1;
   }
   const durs = latest.map((r) => r.duration_s).filter((d): d is number => typeof d === "number").sort((a, b) => a - b);
@@ -720,10 +754,83 @@ export function formResponseKey(email: string): string {
   return `resp:${normalizeFormEmail(email)}`;
 }
 
-/** Chave KV de UM envio (v3, #12490): nunca sobrescreve o envio anterior.
- *  Mesmo prefixo `resp:` da legada, então a listagem lê as duas. */
-export function formSubmissionKey(email: string, submittedAt: string, nonce: string): string {
-  return `${formResponseKey(email)}:${submittedAt}:${nonce}`;
+/**
+ * #12490: chave KV do HISTÓRICO — uma por resposta, nunca sobrescrita
+ * (`hist:{e-mail}:{submitted_at}`). A `resp:` continua sendo a mais recente
+ * por pessoa (é a que o executor e o perfil de audiência leem); o histórico
+ * serve à comparação de um ano com o outro (`GET /api/respostas?historico=1`).
+ * O `submitted_at` é ISO em UTC, então a ordem lexicográfica das chaves de
+ * uma pessoa é a ordem cronológica.
+ */
+export function formHistoryKey(email: string, submittedAt: string): string {
+  return `${FORM_HISTORY_PREFIX}${normalizeFormEmail(email)}:${submittedAt}`;
+}
+
+export const FORM_HISTORY_PREFIX = "hist:";
+
+/**
+ * @pure — #12490: o que gravar no KV quando chega uma resposta nova. Sempre
+ * `resp:` (a mais recente) e o `hist:` dela; e, quando a resposta anterior da
+ * pessoa existe e é de antes do histórico (gravada só em `resp:`), também o
+ * `hist:` dela — senão a 1ª resposta de quem respondeu antes do histórico
+ * existir seria apagada pela 2ª. Regravar um `hist:` que já existe escreve o
+ * mesmo conteúdo (a chave inclui o `submitted_at`), então é idempotente.
+ */
+export function planFormResponseWrites(
+  record: FormResponse,
+  previousRaw: string | null,
+): { key: string; value: string }[] {
+  const value = JSON.stringify(record);
+  const writes = [
+    { key: formHistoryKey(record.email, record.submitted_at), value },
+    { key: formResponseKey(record.email), value },
+  ];
+  if (previousRaw != null) {
+    try {
+      const prev = JSON.parse(previousRaw) as Partial<FormResponse>;
+      if (
+        prev &&
+        typeof prev.submitted_at === "string" &&
+        Number.isFinite(Date.parse(prev.submitted_at)) &&
+        prev.submitted_at !== record.submitted_at
+      ) {
+        writes.unshift({ key: formHistoryKey(record.email, prev.submitted_at), value: previousRaw });
+      }
+    } catch {
+      // Anterior ilegível: não há o que preservar com segurança; a nova vale.
+    }
+  }
+  return writes;
+}
+
+/**
+ * #12495: resultados da pesquisa já publicados (a edição especial para quem
+ * respondeu, decisão do editor de 09/11/2026), com a versão web restrita —
+ * fora da busca, link entregue só a quem respondeu. O editor registra os dois
+ * valores DEPOIS do envio da edição especial: `url` é a versão web e
+ * `published_at` é o instante do envio. Quem respondeu antes dele já recebeu
+ * a edição especial; quem responde depois recebe o link na página de obrigado
+ * e por e-mail (`form_resultados` do executor).
+ */
+export interface FormResults {
+  url: string;
+  published_at: string;
+}
+
+/**
+ * @pure — os resultados só valem com os DOIS valores válidos: URL https e
+ * instante ISO. Qualquer um ausente ou malformado = `null` = nada muda (a
+ * página de obrigado continua a genérica, ninguém recebe o e-mail). Usado pelo
+ * Worker (vars do `wrangler.toml`) e pelo executor
+ * (`onboarding.followup.results_*` no `platform.config.json`).
+ */
+export function resolveFormResults(url: unknown, publishedAt: unknown): FormResults | null {
+  if (typeof url !== "string" || typeof publishedAt !== "string") return null;
+  const u = url.trim();
+  const at = publishedAt.trim();
+  if (!/^https:\/\/[^\s/]+\.[^\s]+$/.test(u)) return null;
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(at) || !Number.isFinite(Date.parse(at))) return null;
+  return { url: u, published_at: at };
 }
 
 /** @pure — compara o token do header `Authorization` em tempo constante. */

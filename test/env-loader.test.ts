@@ -11,7 +11,15 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { loadProjectEnv, warnOnEnvDivergence } from "../scripts/lib/env-loader.ts";
+import { parse as dotenvParse } from "dotenv";
+
+import {
+  adoptDotenvForSystemdParsedKeys,
+  isValidServiceAccountJson,
+  loadProjectEnv,
+  warnOnEnvDivergence,
+} from "../scripts/lib/env-loader.ts";
+import { parseSystemdEnvironmentFile } from "../scripts/lib/systemd-env-file.ts";
 
 describe("#923 loadProjectEnv", () => {
   let tmpRoot: string;
@@ -189,5 +197,136 @@ describe("#8237 warnOnEnvDivergence", () => {
 
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /TEST_ENV_LOADER_WIRED_DIVERGENCE/);
+  });
+
+  it("sob systemd (INVOCATION_ID), o aviso aponta onde procurar a outra fonte (#12477)", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-divergence-systemd-hint-"));
+    const envFile = resolve(tmpRoot, ".env");
+    writeFileSync(envFile, "SYSTEMD_HINT_KEY=from-dotenv\n");
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    try {
+      warnOnEnvDivergence(envFile, { SYSTEMD_HINT_KEY: "outra-fonte", INVOCATION_ID: "abc" } as NodeJS.ProcessEnv);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /show-environment/);
+    assert.match(warnings[0], /systemd-env-divergence\.md/);
+  });
+});
+
+describe("#12477 mesmo .env lido pelo systemd (EnvironmentFile=)", () => {
+  let tmpRoot: string;
+
+  after(() => {
+    if (tmpRoot) rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  // Linha como `materialize-google-ads-credentials.ts` grava (#6704): JSON sem
+  // aspas, com `\n` escapados dentro da private_key.
+  const SA_JSON = '{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\\nMIIabc\\n-----END PRIVATE KEY-----\\n","client_email":"x@y.iam.gserviceaccount.com"}';
+  // O que o systemd põe no ambiente da unit a partir dessa linha: barras removidas.
+  const SA_JSON_SYSTEMD = SA_JSON.replace(/\\/g, "");
+
+  it("reproduz o cenário: ambiente = parse systemd do .env => adota o valor do dotenv, sem aviso", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-systemd-"));
+    const key = "TEST_ENV_LOADER_GADS_SA_JSON";
+    writeFileSync(resolve(tmpRoot, ".env"), `${key}=${SA_JSON}\n`);
+    process.env[key] = SA_JSON_SYSTEMD;
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    let loaded: string | undefined;
+    try {
+      loadProjectEnv(tmpRoot);
+      loaded = process.env[key];
+    } finally {
+      console.warn = originalWarn;
+      delete process.env[key];
+    }
+
+    assert.equal(loaded, SA_JSON);
+    const parsed = JSON.parse(loaded!);
+    assert.match(parsed.private_key, /-----BEGIN PRIVATE KEY-----\nMIIabc\n/);
+    assert.equal(warnings.filter((w) => w.includes(key)).length, 0);
+  });
+
+  it("adoptDotenvForSystemdParsedKeys devolve só as chaves trocadas", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-systemd-adopt-"));
+    const envFile = resolve(tmpRoot, ".env");
+    writeFileSync(envFile, `SA=${SA_JSON}\nPLAIN=igual\n`);
+    const env = { SA: SA_JSON_SYSTEMD, PLAIN: "igual" } as NodeJS.ProcessEnv;
+
+    assert.deepEqual(adoptDotenvForSystemdParsedKeys(envFile, env), ["SA"]);
+    assert.equal(env.SA, SA_JSON);
+    assert.equal(env.PLAIN, "igual");
+  });
+
+  it("valor de OUTRA fonte (não bate com o parse systemd) continua vencendo", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-systemd-other-"));
+    const envFile = resolve(tmpRoot, ".env");
+    writeFileSync(envFile, `SA=${SA_JSON}\n`);
+    const env = { SA: '{"type":"service_account","client_email":"outra@y"}' } as NodeJS.ProcessEnv;
+
+    assert.deepEqual(adoptDotenvForSystemdParsedKeys(envFile, env), []);
+    assert.equal(env.SA, '{"type":"service_account","client_email":"outra@y"}');
+  });
+
+  it(".env no formato do Doppler (aspas duplas): mantém o valor do systemd, que é o bom, e não avisa", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-systemd-doppler-"));
+    const key = "TEST_ENV_LOADER_GADS_SA_JSON_QUOTED";
+    // Como o Doppler grava: entre aspas duplas, `\"` internos, `\n` literais.
+    const line = `${key}="${SA_JSON.replace(/"/g, '\\"')}"\n`;
+    writeFileSync(resolve(tmpRoot, ".env"), line);
+    const systemdValue = parseSystemdEnvironmentFile(line)[key];
+    assert.ok(isValidServiceAccountJson(systemdValue), "pré-condição: o systemd lê o JSON certo");
+    assert.ok(!isValidServiceAccountJson(dotenvParse(line)[key]), "pré-condição: o dotenv corrompe");
+    process.env[key] = systemdValue;
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    let loaded: string | undefined;
+    try {
+      loadProjectEnv(tmpRoot);
+      loaded = process.env[key];
+    } finally {
+      console.warn = originalWarn;
+      delete process.env[key];
+    }
+
+    assert.equal(loaded, systemdValue);
+    assert.equal(warnings.filter((w) => w.includes(key)).length, 0);
+  });
+
+  it("valor sem aspas com `#` no meio: a unit continua com o valor inteiro do systemd, sem aviso", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-systemd-hash-"));
+    const key = "TEST_ENV_LOADER_HASH_VALUE";
+    writeFileSync(resolve(tmpRoot, ".env"), `${key}=abc#def\n`);
+    process.env[key] = "abc#def";
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+    let loaded: string | undefined;
+    try {
+      loadProjectEnv(tmpRoot);
+      loaded = process.env[key];
+    } finally {
+      console.warn = originalWarn;
+      delete process.env[key];
+    }
+
+    assert.equal(loaded, "abc#def");
+    assert.equal(warnings.filter((w) => w.includes(key)).length, 0);
+  });
+
+  it("arquivo ilegível vira lista vazia, sem lançar", () => {
+    assert.deepEqual(adoptDotenvForSystemdParsedKeys(resolve(tmpdir(), "nao-existe-12477.env"), {}), []);
   });
 });

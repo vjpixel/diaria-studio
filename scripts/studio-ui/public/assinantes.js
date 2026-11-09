@@ -527,15 +527,24 @@ function renderOnboardingFollowup(followup) {
   const blocked = [];
   if (followup.blocked.apoio) blocked.push(`Apoio D+30/90/180/360 travado: ${followup.blocked.apoio.detalhe}`);
   if (followup.blocked.form) blocked.push(`Formulário travado: ${followup.blocked.form.detalhe}`);
+  // #12490/#12495: campos ausentes em payload antigo.
+  if (followup.blocked.annual) blocked.push(`Convite anual do formulário travado: ${followup.blocked.annual.detalhe}`);
+  if (followup.blocked.results) blocked.push(`Link dos resultados travado: ${followup.blocked.results.detalhe}`);
   el.onboardingFollowupBlocked.hidden = blocked.length === 0 && followup.lastRunAt != null;
   el.onboardingFollowupBlocked.textContent =
     followup.lastRunAt == null ? "Executor das sequências de apoio/formulário ainda sem rodada registrada." : blocked.join(" · ");
-  el.onboardingStepsTbody.innerHTML = followup.steps
-    .map(
-      (s) =>
-        `<tr><td>${escapeHtml(s.label)}</td><td class="mono">${s.recebidos}</td><td class="mono">${s.porTransporte.kit}</td><td class="mono">${s.porTransporte.brevo}</td><td>${motivosHtml(s.pendentes)}</td><td>${motivosHtml(s.pulados)}</td><td class="mono">${s.falhos}</td></tr>`,
-    )
-    .join("");
+  const annual = followup.annual;
+  el.onboardingStepsTbody.innerHTML =
+    followup.steps
+      .map(
+        (s) =>
+          `<tr><td>${escapeHtml(s.label)}</td><td class="mono">${s.recebidos}</td><td class="mono">${s.porTransporte.kit}</td><td class="mono">${s.porTransporte.brevo}</td><td>${motivosHtml(s.pendentes)}</td><td>${motivosHtml(s.pulados)}</td><td class="mono">${s.falhos}</td></tr>`,
+      )
+      .join("") +
+    // #12490: reenvio anual — elegíveis hoje, convidados e quem respondeu de novo.
+    (annual
+      ? `<tr><td colspan="7">Reenvio anual do formulário: <span class="mono">${annual.elegiveis}</span> elegíveis hoje, <span class="mono">${annual.convidados}</span> convidados, <span class="mono">${annual.responderamDeNovo}</span> responderam de novo</td></tr>`
+      : "");
   onboardingPeople = followup.people;
   renderOnboardingPeople();
 }

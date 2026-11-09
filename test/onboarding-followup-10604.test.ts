@@ -231,17 +231,21 @@ describe("#10604/#10605 envio travado até os textos serem aprovados", () => {
     assert.ok(!out.includes("url_encode"));
   });
 
-  it("--init-snippets cria os 9 textos com o marcador e nunca sobrescreve", () => {
+  it("--init-snippets cria os 12 textos com o marcador e nunca sobrescreve", () => {
     const dir = mkdtempSync(join(tmpdir(), "followup-snip-"));
     writeFileSync(join(dir, "apoio-30.md"), "editado pelo editor");
     const { written, skipped } = initFollowupSnippets(dir);
-    assert.equal(written.length, 8);
+    // 4 de apoio + D+6 + 3 lembretes + base (#10604/#10605 v3) + convite anual, lembrete anual (#12490) e resultados (#12495).
+    assert.equal(written.length, 11);
     assert.deepEqual(skipped, [{ path: join(dir, "apoio-30.md"), reason: "texto_existente" }]);
     assert.equal(readFileSync(join(dir, "apoio-30.md"), "utf8"), "editado pelo editor");
     const snips = loadFollowupSnippets(dir);
     assert.equal(snips.apoio90?.hasPendingMarker, true);
     assert.equal(snips.form?.hasPendingMarker, true);
     assert.equal(snips.form_base?.hasPendingMarker, true, "e-mail da base também nasce travado");
+    assert.equal(snips.form_anual?.hasPendingMarker, true, "convite anual nasce travado (#12490)");
+    assert.equal(snips.form_anual_lembrete?.hasPendingMarker, true);
+    assert.equal(snips.form_resultados?.hasPendingMarker, true, "e-mail dos resultados nasce travado (#12495)");
   });
 });
 

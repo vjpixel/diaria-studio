@@ -29,6 +29,7 @@ import {
   parseFollowupSnippet,
   planFollowup,
   askGapBlocks,
+  lastAskSec,
   resolveRespondentIds,
   recordAskDeferrals,
   resolveFollowupConfig,
@@ -184,6 +185,63 @@ describe("#10605 v3: regra de pedidos", () => {
   });
 });
 
+describe("#10605 v3 x #12490/#12495: reenvio anual é pedido; resultados não", () => {
+  const filled = T0 + 400 * DAY;
+  const base = (now: number, sends: FollowupPerson["sends"], extraCfg: Partial<typeof cfg> = {}) =>
+    planFollowup({
+      apoioCandidates: [],
+      formCandidates: [],
+      people: { "1": person({ cadastro_at: iso(T0), form_filled_at: iso(filled), sends }) },
+      nowSec: now,
+      cfg: { ...cfg, ...extraCfg },
+      apoioBlocked: null,
+      formBlocked: null,
+      annualBlocked: null,
+      resultsBlocked: null,
+    });
+
+  it("isAsk: form_anual e form_anual_lembrete são pedidos; form_resultados não", () => {
+    assert.ok(isAsk("form_anual") && isAsk("form_anual_lembrete"));
+    assert.equal(isAsk("form_resultados"), false);
+  });
+
+  it("convite anual a 10 dias ou menos de outro pedido espera (11 dias); sem marca de janela", () => {
+    const due = filled + 365 * DAY;
+    const sends = [{ step: "apoio360" as const, at: iso(due - 5 * DAY), lot_id: "a" }];
+    const held = base(due, sends);
+    assert.deepEqual(held.due, []);
+    assert.equal(held.counts.form_anual?.espacamento, 1);
+    const people = { "1": person({ form_filled_at: iso(filled), sends }) };
+    assert.equal(recordAskDeferrals(people, held.askDeferred, iso(due)), 0, "anual não tem janela: nada a marcar");
+    assert.deepEqual(base(due + 5 * DAY, sends).due.map((d) => d.kind), [], "10 dias depois do apoio ainda espera");
+    assert.deepEqual(base(due + 6 * DAY, sends).due.map((d) => d.kind), ["form_anual"], "11 dias: sai");
+  });
+
+  it("o envio do convite anual conta como pedido anterior para o seguinte", () => {
+    const due = filled + 365 * DAY;
+    const sends = [{ step: "form_anual" as const, at: iso(due), lot_id: "f" }];
+    const people = { "1": person({ cadastro_at: iso(T0), form_filled_at: iso(filled), sends }) };
+    assert.equal(askGapBlocks(due + 10 * DAY, [T0], lastAskSec(people["1"]), 11), true);
+  });
+
+  it("e-mail dos resultados não é segurado pela regra (não é pedido) e não conta como anterior", () => {
+    const results = { url: "https://r.example/x", published_at: iso(T0) };
+    const recent = filled + 3 * DAY;
+    const r = planFollowup({
+      apoioCandidates: [],
+      formCandidates: [],
+      people: { "1": person({ cadastro_at: iso(T0), form_filled_at: iso(filled), sends: [{ step: "apoio360", at: iso(recent - 2 * DAY), lot_id: "a" }] }) },
+      nowSec: recent,
+      cfg: { ...cfg, results },
+      apoioBlocked: null,
+      formBlocked: null,
+      resultsBlocked: null,
+    });
+    assert.deepEqual(r.due.map((d) => d.kind), ["form_resultados"]);
+    assert.equal(lastAskSec(person({ sends: [{ step: "form_resultados", at: iso(recent), lot_id: "r" }] })), null);
+  });
+});
+
 describe("#10605 v3 REGRESSÃO: adiamento por espaçamento nunca é descartado por grace_days", () => {
   // Lembrete da base em T0+38: o apoio do D+30 (janela [30, 40)) só pode sair em T0+49, fora da janela.
   const sends = () => [{ step: "form_base" as const, at: iso(T0 + 8 * DAY), lot_id: "b" }, { step: "form_lembrete" as const, at: iso(T0 + 38 * DAY), lot_id: "l" }];
@@ -319,13 +377,15 @@ describe("#10605 v3 REGRESSÃO: confirmação tardia do cadastro (âncoras deslo
 describe("#10605 v3: respostas (histórico) e tag de quem respondeu", () => {
   const resp = (email: string, at: string, answers: Record<string, string> = { uso_ia: "x" }) => ({ email, submitted_at: at, answers });
 
-  it("applyFormResponses: vale o envio mais recente; reenvio troca as respostas sem contar como novo preenchimento", () => {
+  it("applyFormResponses (#12490): vale o envio mais recente; a 1ª resposta fica em form_first_filled_at", () => {
     const people = { "1": person() };
     assert.deepEqual(applyFormResponses(people, [resp("a@x.com", "2026-11-11T00:00:00Z", { v: "2" }), resp("a@x.com", "2026-11-10T00:00:00Z", { v: "1" })]), { marked: 1, unmatched: 0 });
     assert.deepEqual(people["1"].form_answers, { v: "2" });
     assert.equal(people["1"].form_filled_at, "2026-11-11T00:00:00Z");
-    assert.deepEqual(applyFormResponses(people, [resp("a@x.com", "2026-11-12T00:00:00Z", { v: "3" })]), { marked: 0, unmatched: 0 });
+    assert.deepEqual(applyFormResponses(people, [resp("a@x.com", "2026-11-12T00:00:00Z", { v: "3" })]), { marked: 1, unmatched: 0 });
     assert.deepEqual(people["1"].form_answers, { v: "3" });
+    assert.equal(people["1"].form_filled_at, "2026-11-12T00:00:00Z");
+    assert.equal(people["1"].form_first_filled_at, "2026-11-11T00:00:00Z");
   });
 
   it("resolveRespondentIds: id do store (também por e-mail antigo), um por id; fora do store à parte", () => {
@@ -434,9 +494,9 @@ describe("#10605 v3: --status e lista de conversas", () => {
   const R = (email: string, at: string, answers: Record<string, string>, extra: Partial<FormResponse> = {}): FormResponse => ({ email, submitted_at: at, answers, ...extra });
 
   it("--status: respondentes por versão e tempo em segundos e minutos", () => {
-    const rep = formStatusReport([R("a@x.com", "2026-11-10T00:00:00Z", {}, { form_version: "v3", duration_s: 120 }), R("b@x.com", "2026-11-10T00:00:00Z", {}, { form_version: "v3", duration_s: 240 }), R("c@x.com", "2026-10-10T00:00:00Z", {})]);
+    const rep = formStatusReport([R("a@x.com", "2026-11-10T00:00:00Z", {}, { form_version: 3, duration_s: 120 }), R("b@x.com", "2026-11-10T00:00:00Z", {}, { form_version: 3, duration_s: 240 }), R("c@x.com", "2026-10-10T00:00:00Z", {})]);
     assert.equal(rep.respondentes, 3);
-    assert.deepEqual(rep.por_versao, { v3: 2, "v1/v2": 1 });
+    assert.deepEqual(rep.por_versao, { v3: 2, v2: 1 });
     assert.deepEqual(rep.tempo_de_preenchimento, { respostas_com_tempo: 2, mediana_s: 120, p75_s: 240, mediana_min: 2, p75_min: 4 });
   });
 
@@ -496,7 +556,7 @@ describe("#10605 v3 / #12490: Worker grava histórico, versão e tempo de preenc
     ["maior_gasto", "Até R$ 100"],
   ];
 
-  it("dois envios da mesma pessoa: duas chaves, o anterior não é sobrescrito; /api/respostas devolve os dois e o legado", async () => {
+  it("dois envios da mesma pessoa: resp: fica a mais recente, hist: guarda os dois e o legado; versão 3 e tempo gravados", async () => {
     const { default: worker } = await import("../workers/onboarding-form/src/index.ts");
     const { signFormEmail } = await import("../scripts/lib/onboarding-form-link-sig.ts");
     const legacy = { email: "a@x.com", submitted_at: "2026-10-01T00:00:00Z", answers: { nivel_ia: "x" } };
@@ -512,20 +572,21 @@ describe("#10605 v3 / #12490: Worker grava histórico, versão e tempo de preenc
       assert.equal(res.status, 200);
       await new Promise((r) => setTimeout(r, 5));
     }
-    const keys = [...kv.m.keys()].filter((k) => k.startsWith("resp:a@x.com:"));
-    assert.equal(keys.length, 2, "histórico: uma chave por envio");
-    assert.ok(kv.m.has("resp:a@x.com"), "legado intacto");
-    const rec = JSON.parse(kv.m.get(keys[0])!);
-    assert.equal(rec.form_version, "v3");
-    assert.equal(typeof rec.duration_s, "number");
-    assert.ok(rec.duration_s >= 0 && rec.duration_s < 60);
+    const hist = [...kv.m.keys()].filter((k) => k.startsWith("hist:a@x.com:"));
+    assert.equal(hist.length, 3, "legado copiado + os dois envios, nada sobrescrito");
+    const latest = JSON.parse(kv.m.get("resp:a@x.com")!);
+    assert.equal(latest.form_version, 3);
+    assert.equal(typeof latest.duration_s, "number");
+    assert.ok(latest.duration_s >= 0 && latest.duration_s < 60);
     // Token forjado: grava sem duration_s.
     const forged = new URLSearchParams([["email", "a@x.com"], ["sig", sig], ["t", "1.AAAA"], ...minimal]);
     await worker.fetch(new Request("https://f.example/enviar", { method: "POST", body: forged }), env);
-    const all = await (await worker.fetch(new Request("https://f.example/api/respostas", { headers: { authorization: "Bearer tok" } }), env)).json() as { responses: FormResponse[] };
-    assert.equal(all.responses.length, 4);
-    assert.equal(all.responses.filter((r) => r.form_version === "v3" && r.duration_s == null).length, 1, "forjado sem tempo");
-    assert.equal(all.responses.filter((r) => r.form_version == null).length, 1, "legado lido junto");
+    assert.equal(JSON.parse(kv.m.get("resp:a@x.com")!).duration_s, undefined, "forjado sem tempo");
+    const get = async (q: string) => ((await (await worker.fetch(new Request(`https://f.example/api/respostas${q}`, { headers: { authorization: "Bearer tok" } }), env)).json()) as { responses: FormResponse[] }).responses;
+    assert.equal((await get("")).length, 1, "a mais recente por pessoa");
+    const all = await get("?historico=1");
+    assert.equal(all.length, 4);
+    assert.equal(all.filter((r) => r.form_version == null).length, 1, "legado lido junto");
   });
 
   it("registro ilegível no KV é pulado com log sem e-mail; falha ao assinar a hora não derruba a página", async () => {

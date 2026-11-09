@@ -17,14 +17,23 @@
  * POST sem assinatura válida para o e-mail enviado responde 403 e não grava
  * nada no KV. Toda recusa vai pro log com o motivo, nunca com e-mail ou
  * assinatura.
+ *
+ * #12490: cada resposta leva `form_version` e vai também para o histórico
+ * (`hist:`, nunca sobrescrito; `planFormResponseWrites`); `/api/respostas`
+ * segue servindo a mais recente por pessoa, `?historico=1` serve o histórico.
+ * #12495: com `RESULTS_URL`/`RESULTS_PUBLISHED_AT` preenchidos, a página de
+ * obrigado mostra o link dos resultados.
  */
 
 import {
+  FORM_HISTORY_PREFIX,
   FORM_VERSION,
-  formSubmissionKey,
+  formResponseKey,
   isAuthorizedResponsesRequest,
   parseFormSubmission,
+  planFormResponseWrites,
   prefillEmailFromQuery,
+  resolveFormResults,
   type FormResponse,
 } from "../../../scripts/lib/onboarding-form-contract.ts";
 import {
@@ -61,6 +70,11 @@ export interface Env {
   RESPONSES_TOKEN?: string;
   /** #10657: segredo do HMAC do link (mesmo valor do executor). */
   ONBOARDING_FORM_LINK_SECRET?: string;
+  /** #12495: versão web restrita dos resultados e instante do envio da
+   *  edição especial (`[vars]` do wrangler.toml). Os dois vazios = página de
+   *  obrigado genérica (`resolveFormResults`). */
+  RESULTS_URL?: string;
+  RESULTS_PUBLISHED_AT?: string;
 }
 
 function html(body: string, status = 200): Response {
@@ -139,39 +153,45 @@ export default {
       if (!check.ok) return rejectLink("/enviar", check.reason);
       const parsed = parseFormSubmission(fields);
       if (!parsed.ok) return html(renderErrorHtml(parsed.error), 400);
+      // #12490: versão das perguntas em cada resposta, e histórico sem
+      // sobrescrever (`hist:`); `resp:` segue sendo a mais recente.
       const nowMs = Date.now();
       const record: FormResponse = { ...parsed.submission, submitted_at: new Date(nowMs).toISOString(), form_version: FORM_VERSION };
       // Tempo de preenchimento: só com a hora assinada para ESTE e-mail (senão fica sem o campo).
       const duration = await formDurationFromToken(record.email, one(fields[FORM_RENDERED_FIELD]), secret, nowMs / 1000);
       if (duration != null) record.duration_s = duration;
       try {
-        // #12490: uma chave por envio — o envio anterior da mesma pessoa fica (histórico).
-        await env.ONBOARDING_FORM.put(formSubmissionKey(record.email, record.submitted_at, crypto.randomUUID().slice(0, 8)), JSON.stringify(record));
+        const previous = await env.ONBOARDING_FORM.get(formResponseKey(record.email));
+        // `resp:` por último: se uma gravação do histórico falhar, a pessoa vê o
+        // erro e tenta de novo, sem a resposta nova ter virado "a mais recente".
+        for (const w of planFormResponseWrites(record, previous)) await env.ONBOARDING_FORM.put(w.key, w.value);
       } catch (e) {
         // Falha de gravação nunca vira "Obrigado": a pessoa precisa saber que não registrou.
         console.error(`[onboarding-form] falha ao gravar resposta no KV: ${(e as Error).message}`);
         return html(renderErrorHtml("tivemos um problema para guardar suas respostas, tente de novo em alguns minutos"), 503);
       }
-      return html(renderThanksHtml());
+      return html(renderThanksHtml(resolveFormResults(env.RESULTS_URL, env.RESULTS_PUBLISHED_AT)));
     }
 
     if (request.method === "GET" && url.pathname === "/api/respostas") {
       if (!isAuthorizedResponsesRequest(request.headers.get("authorization"), env.RESPONSES_TOKEN)) {
         return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
       }
+      // #12490: `?historico=1` lista todas as respostas guardadas (uma por envio).
+      const prefix = url.searchParams.get("historico") === "1" ? FORM_HISTORY_PREFIX : "resp:";
       const responses: FormResponse[] = [];
       let cursor: string | undefined;
       do {
-        const list = await env.ONBOARDING_FORM.list({ prefix: "resp:", cursor });
+        const list = await env.ONBOARDING_FORM.list({ prefix, cursor });
         for (const k of list.keys) {
           const raw = await env.ONBOARDING_FORM.get(k.name);
           if (!raw) continue;
           try {
             responses.push(JSON.parse(raw) as FormResponse);
           } catch {
-            // Registro ilegível não derruba a listagem. O log leva só o sufixo
-            // da chave (data e nonce), nunca o e-mail que vem depois de `resp:`.
-            console.error(JSON.stringify({ event: "resposta_ilegivel", key_suffix: k.name.split(":").slice(2).join(":") || "(legada)" }));
+            // Registro ilegível não derruba a listagem. O log leva só o tipo da
+            // chave (ou a data, no `hist:`), nunca o e-mail que vem depois do prefixo.
+            console.error(JSON.stringify({ event: "resposta_ilegivel", key_suffix: k.name.startsWith(FORM_HISTORY_PREFIX) ? k.name.split(":").slice(2).join(":") : "resp" }));
           }
         }
         cursor = list.list_complete ? undefined : list.cursor;

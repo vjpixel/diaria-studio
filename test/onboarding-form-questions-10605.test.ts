@@ -448,14 +448,14 @@ describe("#10605 v3: hora assinada e tempo de preenchimento", () => {
 
   it("resumo: mais recente por e-mail, versão, mediana e p75", () => {
     const rs: FormResponse[] = [
-      { email: "a@x.com", submitted_at: "2026-11-10T10:00:00Z", answers: {}, form_version: "v3", duration_s: 100 },
-      { email: "a@x.com", submitted_at: "2026-11-11T10:00:00Z", answers: {}, form_version: "v3", duration_s: 300 },
-      { email: "b@x.com", submitted_at: "2026-11-10T10:00:00Z", answers: {}, form_version: "v3", duration_s: 200 },
-      { email: "c@x.com", submitted_at: "2026-11-10T10:00:00Z", answers: {}, form_version: "v3", duration_s: 400 },
+      { email: "a@x.com", submitted_at: "2026-11-10T10:00:00Z", answers: {}, form_version: 3, duration_s: 100 },
+      { email: "a@x.com", submitted_at: "2026-11-11T10:00:00Z", answers: {}, form_version: 3, duration_s: 300 },
+      { email: "b@x.com", submitted_at: "2026-11-10T10:00:00Z", answers: {}, form_version: 3, duration_s: 200 },
+      { email: "c@x.com", submitted_at: "2026-11-10T10:00:00Z", answers: {}, form_version: 3, duration_s: 400 },
       { email: "d@x.com", submitted_at: "2026-10-10T10:00:00Z", answers: {} },
     ];
     const s = summarizeFormResponses(rs);
-    assert.deepEqual(s.by_version, { v3: 3, "v1/v2": 1 });
+    assert.deepEqual(s.by_version, { v3: 3, v2: 1 });
     assert.equal(s.submissions, 5);
     assert.equal(s.with_duration, 3);
     assert.equal(s.median_s, 300);
@@ -565,7 +565,7 @@ describe("#10605 v3: rascunhos dos e-mails (semente do --init-snippets)", () => 
   });
 });
 
-const R = (answers: Record<string, string>, email = "a@x.com", submitted_at = "2026-11-10T12:00:00Z"): FormResponse => ({ email, submitted_at, answers, form_version: "v3" });
+const R = (answers: Record<string, string>, email = "a@x.com", submitted_at = "2026-11-10T12:00:00Z"): FormResponse => ({ email, submitted_at, answers, form_version: 3 });
 const J = (...xs: string[]) => xs.join(FORM_MULTI_SEPARATOR);
 
 describe("#10605 v3: respostas do formulário no perfil de audiência", () => {

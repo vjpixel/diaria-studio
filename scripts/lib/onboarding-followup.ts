@@ -74,7 +74,7 @@ import type { OnboardingEntry } from "./onboarding-store.ts";
 import type { KitBroadcastLot } from "./onboarding-kit-transport.ts";
 import { PENDING_BODY_MARKER, parseOnboardingSnippet, reguaAnchorSec, type OnboardingSnippet } from "./onboarding-state.ts";
 import { checkLinkSecret, FORM_SIG_KIT_FIELD } from "./onboarding-form-link-sig.ts";
-import { latestFormResponses } from "./onboarding-form-contract.ts";
+import { latestFormResponses, resolveFormResults, type FormResults } from "./onboarding-form-contract.ts";
 
 const DAY_S = 86_400;
 
@@ -86,12 +86,21 @@ export type ApoioStepKind = "apoio30" | "apoio90" | "apoio180" | "apoio360";
 /** `form` = convite D+6 da escada; `form_base` = convite único da base já
  *  cadastrada (nunca sai pelo executor diário: o rascunho é montado por
  *  `onboarding-form-base-prep.ts` e o envio é do editor); `form_lembrete` =
- *  lembrete, para quem recebeu qualquer um dos dois convites. */
+ *  lembrete, para quem recebeu qualquer um dos dois convites (um texto por
+ *  lembrete, `FORM_REMINDER_STEPS`).
+ *  #12490: `form_anual` = convite anual para quem respondeu há 12 meses ou
+ *  mais; `form_anual_lembrete` = lembrete dele (no máximo
+ *  `form_annual_reminder_max`). */
 export type FormReminderKind = "form_lembrete" | "form_lembrete2" | "form_lembrete3";
-export type FormStepKind = "form" | "form_base" | FormReminderKind;
+export type FormStepKind = "form" | "form_base" | FormReminderKind | FormAnnualStepKind;
+/** #12490: as duas etapas do reenvio anual. */
+export type FormAnnualStepKind = "form_anual" | "form_anual_lembrete";
 /** Os dois convites do formulário. */
 export type FormInviteKind = "form" | "form_base";
-export type FollowupStepKind = ApoioStepKind | FormStepKind;
+/** #12495: e-mail com o link dos resultados para quem responde DEPOIS do envio
+ *  da edição especial. Não é etapa do formulário (o link não é assinado). */
+export type ResultsStepKind = "form_resultados";
+export type FollowupStepKind = ApoioStepKind | FormStepKind | ResultsStepKind;
 
 export const APOIO_STEPS: readonly { kind: ApoioStepKind; days: number; snippetFile: string }[] = [
   { kind: "apoio30", days: 30, snippetFile: "apoio-30.md" },
@@ -134,6 +143,8 @@ export type AskKind = FollowupStepKind | typeof WELCOME_EMAIL3_ASK;
  */
 export function isAsk(kind: AskKind): boolean {
   if (kind === WELCOME_EMAIL3_ASK) return true;
+  // `isFormStep` inclui o reenvio anual (#12490): também é pedido. O e-mail
+  // dos resultados (`form_resultados`, #12495) entrega algo, não pede: fica de fora.
   return isApoioStep(kind) || isFormStep(kind);
 }
 
@@ -142,18 +153,36 @@ export function isAsk(kind: AskKind): boolean {
  *  não depende do texto dele, e ele nunca entra no plano diário. */
 export const FORM_BASE_STEP: { kind: "form_base"; snippetFile: string } = { kind: "form_base", snippetFile: "pesquisa-base.md" };
 
+/** #12490: reenvio anual. Fora de `FORM_STEPS` de propósito: o gate dele é
+ *  outro (`formAnnualContentGate`), e o texto pendente do anual nunca trava o
+ *  D+6 nem o lembrete. */
+export const FORM_ANNUAL_STEPS: readonly { kind: FormAnnualStepKind; snippetFile: string }[] = [
+  { kind: "form_anual", snippetFile: "formulario-anual.md" },
+  { kind: "form_anual_lembrete", snippetFile: "formulario-anual-lembrete.md" },
+];
+
+/** #12495: e-mail dos resultados (gate próprio, `formResultsContentGate`). */
+export const FORM_RESULTS_STEP: { kind: ResultsStepKind; snippetFile: string } = { kind: "form_resultados", snippetFile: "formulario-resultados.md" };
+
 export const ALL_FOLLOWUP_STEPS: readonly FollowupStepKind[] = [
   ...APOIO_STEPS.map((s) => s.kind),
   ...FORM_STEPS.map((s) => s.kind),
   FORM_BASE_STEP.kind,
+  ...FORM_ANNUAL_STEPS.map((s) => s.kind),
+  FORM_RESULTS_STEP.kind,
 ];
 
 export function isApoioStep(kind: string): kind is ApoioStepKind {
   return APOIO_STEPS.some((s) => s.kind === kind);
 }
 
+/** Etapas cujo e-mail leva o link ASSINADO do formulário (`{{FORM_URL}}`). */
 export function isFormStep(kind: string): kind is FormStepKind {
-  return kind === "form" || kind === "form_base" || isFormReminder(kind);
+  return kind === "form" || kind === "form_base" || isFormReminder(kind) || isFormAnnualStep(kind);
+}
+
+export function isFormAnnualStep(kind: string): kind is FormAnnualStepKind {
+  return kind === "form_anual" || kind === "form_anual_lembrete";
 }
 
 export function isFormInvite(kind: string): kind is FormInviteKind {
@@ -164,12 +193,23 @@ export function snippetFileFor(kind: FollowupStepKind): string {
   const apoio = APOIO_STEPS.find((s) => s.kind === kind);
   if (apoio) return apoio.snippetFile;
   if (kind === FORM_BASE_STEP.kind) return FORM_BASE_STEP.snippetFile;
+  if (kind === FORM_RESULTS_STEP.kind) return FORM_RESULTS_STEP.snippetFile;
+  const annual = FORM_ANNUAL_STEPS.find((s) => s.kind === kind);
+  if (annual) return annual.snippetFile;
   return FORM_STEPS.find((s) => s.kind === kind)!.snippetFile;
 }
 
 /** Placeholder que o corpo dos e-mails de formulário precisa conter — vira o
  *  link do formulário com o e-mail pré-preenchido (merge tag do Kit). */
 export const FORM_URL_PLACEHOLDER = "{{FORM_URL}}";
+
+/** #12490: no convite anual, vira "{mês} de {ano}" da última resposta de
+ *  quem está no lote (o lote anual sai um mês de resposta por vez,
+ *  `pickAnnualMonthBatch`, porque o corpo é um só pro lote). */
+export const RESPONDEU_EM_PLACEHOLDER = "{{RESPONDEU_EM}}";
+
+/** #12495: no e-mail dos resultados, vira o link da versão web restrita. */
+export const RESULTS_URL_PLACEHOLDER = "{{RESULTADOS_URL}}";
 
 // ---------------------------------------------------------------------------
 // Store (namespace `followup` de data/onboarding/store.json)
@@ -207,12 +247,16 @@ export interface FollowupPerson {
   /** Resultado da última checagem de apoio perto do envio (`null` = nunca checado). */
   apoia?: boolean | null;
   apoio_checked_at?: string | null;
-  /** ISO — quando preencheu o formulário (para os lembretes na hora). */
+  /** ISO — quando preencheu o formulário (para os lembretes na hora). Desde o
+   *  #12490 é a resposta MAIS RECENTE (o reenvio anual conta dela). */
   form_filled_at?: string | null;
-  /** Respostas do formulário, como vieram do Worker (#10605) — as do envio mais recente. */
+  /** #12490: ISO da 1ª resposta registrada, gravado quando a resposta mais
+   *  recente muda. Ausente = a 1ª é `form_filled_at` (registro anterior ao
+   *  campo, ou quem respondeu uma vez só). Ler por `firstFormFilledSec`. */
+  form_first_filled_at?: string | null;
+  /** Respostas do formulário, como vieram do Worker (#10605) — as da resposta
+   *  mais recente. O histórico completo fica no Worker (`hist:`). */
   form_answers?: Record<string, string>;
-  /** ISO do envio de onde vieram `form_answers` (#12490: a pessoa pode reenviar). */
-  form_answers_at?: string | null;
   /** #10605 (regra A do editor, 08/11/2026): qual convite do formulário a
    *  pessoa recebeu primeiro — `form` (D+6 da escada) ou `form_base` (e-mail
    *  único da base). Gravado junto do envio confirmado. Ausente não prova
@@ -253,6 +297,8 @@ export type FollowupBlockReason =
   | "link_rejeitado_pelo_worker"
   | "respostas_indisponiveis"
   | "kit_indisponivel"
+  /** #12495: `results_url`/`results_published_at` ainda não registrados. */
+  | "resultados_nao_publicados"
   | "desligado";
 
 export interface FollowupRunRecord {
@@ -260,6 +306,12 @@ export interface FollowupRunRecord {
   /** `null` = sequência liberada nesta rodada. */
   apoio_blocked: { motivo: FollowupBlockReason; detalhe: string } | null;
   form_blocked: { motivo: FollowupBlockReason; detalhe: string } | null;
+  /** #12490: reenvio anual travado (texto pendente, ou o formulário travado).
+   *  Opcional: registros anteriores não têm o campo. */
+  form_annual_blocked?: { motivo: FollowupBlockReason; detalhe: string } | null;
+  /** #12495: e-mail dos resultados travado. Ausente com resultados não
+   *  publicados (nada a fazer, não é bloqueio). */
+  form_results_blocked?: { motivo: FollowupBlockReason; detalhe: string } | null;
   lots_created: number;
   lots_failed: number;
   /** Etapas que não saíram por passar do teto de lote (`max_recipients_per_lot`).
@@ -386,6 +438,13 @@ export interface FollowupConfigRaw {
   form_url?: string | null;
   form_responses_url?: string | null;
   form_responses_token_env?: string;
+  /** #12490: dias desde a última resposta até o convite anual (365). */
+  form_annual_days?: number;
+  /** #12490: teto de lembretes do convite anual por ciclo (1; 0 = nenhum). */
+  form_annual_reminder_max?: number;
+  /** #12495: versão web restrita dos resultados + ISO do envio da edição especial. */
+  results_url?: string | null;
+  results_published_at?: string | null;
 }
 
 export interface FollowupConfig {
@@ -401,6 +460,10 @@ export interface FollowupConfig {
   formUrl: string | null;
   formResponsesUrl: string | null;
   formResponsesTokenEnv: string;
+  formAnnualDays: number;
+  formAnnualReminderMax: number;
+  /** `null` = resultados ainda não publicados (nada muda). */
+  results: FormResults | null;
 }
 
 function posInt(v: unknown, dflt: number): number {
@@ -421,6 +484,10 @@ function isValidReminderDays(v: unknown): v is number[] {
 /** Lista crescente de inteiros positivos; qualquer coisa fora disso cai no default. */
 function reminderDays(v: unknown): number[] {
   return isValidReminderDays(v) ? [...v] : [...DEFAULT_FORM_REMINDER_DAYS_ONBOARDING];
+}
+
+function nonNegInt(v: unknown, dflt: number): number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : dflt;
 }
 
 function nonEmpty(v: unknown): string | null {
@@ -456,6 +523,9 @@ export function resolveFollowupConfig(
     formUrl: nonEmpty(r.form_url),
     formResponsesUrl: nonEmpty(r.form_responses_url),
     formResponsesTokenEnv: nonEmpty(r.form_responses_token_env) ?? "ONBOARDING_FORM_TOKEN",
+    formAnnualDays: posInt(r.form_annual_days, 365),
+    formAnnualReminderMax: nonNegInt(r.form_annual_reminder_max, 1),
+    results: resolveFormResults(r.results_url, r.results_published_at),
   };
 }
 
@@ -546,6 +616,54 @@ export function formContentGate(
   return { blocked: false, linkSecret: secret.secret };
 }
 
+/**
+ * @pure — #12490: o reenvio anual só destrava com os 2 textos dele aprovados
+ * (convite e lembrete) e o link do formulário no corpo. O resto (URL,
+ * respostas, segredo do link) é o `formContentGate`: o executor trava o anual
+ * também quando ele trava, porque o link é o mesmo.
+ */
+export function formAnnualContentGate(snippets: FollowupSnippets): ContentGate {
+  for (const step of FORM_ANNUAL_STEPS) {
+    const gate = checkSnippet(step.kind, snippets[step.kind]);
+    if (gate.blocked) return gate;
+    if (!snippets[step.kind]!.body.includes(FORM_URL_PLACEHOLDER)) {
+      return {
+        blocked: true,
+        motivo: "snippet_invalido",
+        detalhe: `data/snippets/${step.snippetFile} sem ${FORM_URL_PLACEHOLDER} no corpo (o e-mail sairia sem o link do formulário)`,
+      };
+    }
+  }
+  return { blocked: false };
+}
+
+/**
+ * @pure — #12495: o e-mail dos resultados só destrava com os resultados
+ * registrados no config (`results`) e o texto aprovado, com o link deles
+ * (`{{RESULTADOS_URL}}`). `{{FORM_URL}}` nesse texto TRAVA: o link do
+ * formulário só é trocado nas etapas do formulário.
+ */
+export function formResultsContentGate(snippets: FollowupSnippets, cfg: Pick<FollowupConfig, "results">): ContentGate {
+  if (cfg.results == null) {
+    return {
+      blocked: true,
+      motivo: "resultados_nao_publicados",
+      detalhe: "onboarding.followup.results_url/results_published_at vazios — o editor registra depois do envio da edição especial (#12495)",
+    };
+  }
+  const gate = checkSnippet(FORM_RESULTS_STEP.kind, snippets[FORM_RESULTS_STEP.kind]);
+  if (gate.blocked) return gate;
+  const body = snippets[FORM_RESULTS_STEP.kind]!.body;
+  const file = `data/snippets/${FORM_RESULTS_STEP.snippetFile}`;
+  if (!body.includes(RESULTS_URL_PLACEHOLDER)) {
+    return { blocked: true, motivo: "snippet_invalido", detalhe: `${file} sem ${RESULTS_URL_PLACEHOLDER} no corpo (o e-mail sairia sem o link dos resultados)` };
+  }
+  if (body.includes(FORM_URL_PLACEHOLDER)) {
+    return { blocked: true, motivo: "snippet_invalido", detalhe: `${file} contém ${FORM_URL_PLACEHOLDER}, que só vale nos e-mails do formulário (o leitor veria o texto cru)` };
+  }
+  return { blocked: false };
+}
+
 /** @pure — link do formulário: `{formUrl}?email=...&sig=...` (ou `&email=`
  *  se a URL já tem query). Usado com merge tags no corpo e com valores reais
  *  na sonda (`FORM_LINK_PROBE_EMAIL`), pra os dois nunca divergirem. */
@@ -578,6 +696,29 @@ export function renderFollowupBody(body: string, formUrl: string | null): string
   return body.split(FORM_URL_PLACEHOLDER).join(link);
 }
 
+/**
+ * @pure — #12490/#12495: corpo final do lote de cada etapa. Formulário:
+ * `{{FORM_URL}}` (`renderFollowupBody`); convite anual: também
+ * `{{RESPONDEU_EM}}` com o mês do lote (`pickAnnualMonthBatch`); resultados:
+ * `{{RESULTADOS_URL}}` com a versão web registrada. Apoio passa intacto (o
+ * gate de apoio já trava placeholder de formulário).
+ */
+export function renderStepBody(
+  kind: FollowupStepKind,
+  body: string,
+  ctx: { formUrl: string | null; results: FormResults | null; respondeuEm?: string | null },
+): string {
+  if (kind === "form_resultados") {
+    return ctx.results ? body.split(RESULTS_URL_PLACEHOLDER).join(ctx.results.url) : body;
+  }
+  if (!isFormStep(kind)) return body;
+  const out = renderFollowupBody(body, ctx.formUrl);
+  if (!isFormAnnualStep(kind) || !out.includes(RESPONDEU_EM_PLACEHOLDER)) return out;
+  // Sem o mês do lote o leitor veria o placeholder cru: o lote falha, nunca sai.
+  if (!ctx.respondeuEm) throw new Error(`[onboarding-followup] ${kind}: ${RESPONDEU_EM_PLACEHOLDER} sem o mês da resposta do lote`);
+  return out.split(RESPONDEU_EM_PLACEHOLDER).join(ctx.respondeuEm);
+}
+
 /** Template gravado por `--init-snippets` (nunca sobrescreve arquivo existente). */
 export function snippetTemplate(kind: FollowupStepKind): string {
   const isForm = isFormStep(kind);
@@ -587,7 +728,13 @@ export function snippetTemplate(kind: FollowupStepKind): string {
       ? "e-mail do formulário D+6 (#10605)"
       : kind === "form_base"
         ? "e-mail único da pesquisa para a base já cadastrada (#10605)"
-        : `lembrete ${FORM_REMINDER_STEPS.findIndex((s) => s.kind === kind) + 1} de 3 do formulário (#10605)`;
+        : kind === "form_anual"
+          ? "convite anual do formulário, para quem respondeu há 12 meses ou mais (#12490)"
+          : kind === "form_anual_lembrete"
+            ? "lembrete do convite anual, no máximo 1 (#12490)"
+            : kind === "form_resultados"
+              ? "link dos resultados para quem respondeu depois do envio da edição especial (#12495)"
+              : `lembrete ${FORM_REMINDER_STEPS.findIndex((s) => s.kind === kind) + 1} de 3 do formulário (#10605)`;
   return [
     "<!--",
     what,
@@ -595,6 +742,7 @@ export function snippetTemplate(kind: FollowupStepKind): string {
     `preview_text: ""`,
     `${PENDING_BODY_MARKER} — remover esta linha quando o editor aprovar o texto.`,
     ...(isForm ? [`O corpo precisa conter ${FORM_URL_PLACEHOLDER} (vira o link do formulário com o e-mail pré-preenchido).`] : []),
+    ...(kind === "form_resultados" ? [`O corpo precisa conter ${RESULTS_URL_PLACEHOLDER} (vira o link da versão web dos resultados).`] : []),
     "-->",
     "",
   ].join("\n");
@@ -743,6 +891,118 @@ export function formStepDue(
   return nowSec >= dueAt ? { due: kind } : { due: null, motivo: "nao_venceu" };
 }
 
+/** #12490: 1ª resposta registrada (epoch s): `form_first_filled_at`, senão `form_filled_at`. */
+export function firstFormFilledSec(person: FollowupPerson | undefined): number | null {
+  return isoToSec(person?.form_first_filled_at ?? null) ?? isoToSec(person?.form_filled_at ?? null);
+}
+
+export type FormAnnualDueResult =
+  | { due: FormAnnualStepKind }
+  | { due: null; motivo: "nunca_respondeu" | "saiu" | "nao_venceu" | "teto_lembretes" };
+
+/**
+ * @pure — #12490 (decisão do editor de 09/11/2026): qual e-mail do reenvio
+ * anual está devido. Elegível = respondeu há `formAnnualDays` (365) ou mais,
+ * contados da ÚLTIMA resposta (`form_filled_at`, que o executor atualiza a
+ * cada resposta nova), e sem convite anual desde ela. Depois do convite, no
+ * máximo `formAnnualReminderMax` lembretes, cada um `formReminderDays` depois
+ * do e-mail anterior do ciclo. Responder de novo zera o ciclo (a resposta
+ * nova fica depois de todo envio). Sem janela de vencimento: quem passou do
+ * prazo durante um período travado recebe quando destravar. "Continua
+ * assinante ativo" é conferido perto do envio (`filterDueByLiveCheck`); quem
+ * saiu do Kit numa etapa do formulário não volta (`saiu`).
+ */
+export function formAnnualStepDue(
+  person: FollowupPerson | undefined,
+  nowSec: number,
+  cfg: Pick<FollowupConfig, "formAnnualDays" | "formAnnualReminderMax" | "formReminderDays">,
+): FormAnnualDueResult {
+  const filled = isoToSec(person?.form_filled_at ?? null);
+  if (filled == null) return { due: null, motivo: "nunca_respondeu" };
+  if (leftKitInFormSequence(person)) return { due: null, motivo: "saiu" };
+  const after = (step: FormAnnualStepKind, from: number) =>
+    (person?.sends ?? [])
+      .filter((s) => s.step === step)
+      .map((s) => isoToSec(s.at))
+      .filter((sec): sec is number => sec != null && sec > from);
+  const invites = after("form_anual", filled);
+  if (invites.length === 0) {
+    return nowSec >= filled + cfg.formAnnualDays * DAY_S ? { due: "form_anual" } : { due: null, motivo: "nao_venceu" };
+  }
+  const invite = Math.max(...invites);
+  const reminders = after("form_anual_lembrete", invite);
+  if (reminders.length >= cfg.formAnnualReminderMax) return { due: null, motivo: "teto_lembretes" };
+  const last = Math.max(invite, ...reminders);
+  return nowSec >= last + cfg.formReminderDays * DAY_S ? { due: "form_anual_lembrete" } : { due: null, motivo: "nao_venceu" };
+}
+
+export type FormResultsDueResult =
+  | { due: ResultsStepKind }
+  | { due: null; motivo: "nunca_respondeu" | "recebeu_edicao_especial" | "registrado" };
+
+/**
+ * @pure — #12495: o e-mail dos resultados é para quem respondeu pela 1ª vez
+ * DEPOIS do envio da edição especial (`results.published_at`). Quem respondeu
+ * antes já recebeu a edição especial (`recebeu_edicao_especial`), inclusive
+ * quando responde de novo no reenvio anual. Sai uma vez por pessoa (envio ou
+ * pulo terminal registrado = `registrado`).
+ */
+export function formResultsStepDue(person: FollowupPerson | undefined, results: FormResults): FormResultsDueResult {
+  const first = firstFormFilledSec(person);
+  if (first == null) return { due: null, motivo: "nunca_respondeu" };
+  const published = isoToSec(results.published_at);
+  if (published == null || first <= published) return { due: null, motivo: "recebeu_edicao_especial" };
+  if (hasStepRecord(person, "form_resultados")) return { due: null, motivo: "registrado" };
+  return { due: "form_resultados" };
+}
+
+const PT_MONTHS = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"] as const;
+
+/** @pure — "{mês} de {ano}" de um instante, no horário de Brasília (UTC−3, sem horário de verão desde 2019). */
+export function brtMonthYearLabel(sec: number): string {
+  const d = new Date((sec - 3 * 3600) * 1000);
+  return `${PT_MONTHS[d.getUTCMonth()]} de ${d.getUTCFullYear()}`;
+}
+
+/**
+ * @pure — #12490: o corpo do convite anual é um só por lote e diz "você
+ * respondeu em {mês/ano}", então cada etapa anual sai, numa rodada, só para
+ * quem respondeu no mês MAIS ANTIGO entre os devidos dela. O resto fica para
+ * as rodadas seguintes (`adiado_mes`, sem registro: continua devido). Em
+ * operação normal todo mundo do dia respondeu no mesmo mês (o prazo é de 365
+ * dias); o corte só aparece num acúmulo, depois de um período travado.
+ * Etapas que não são anuais passam intactas. Devolve o rótulo por etapa.
+ */
+export function pickAnnualMonthBatch(
+  due: readonly FollowupDue[],
+  people: Readonly<Record<string, FollowupPerson>>,
+): { keep: FollowupDue[]; deferred: FollowupDue[]; labels: Partial<Record<FormAnnualStepKind, string>> } {
+  const filledOf = (d: FollowupDue) => isoToSec(people[String(d.kit_subscriber_id)]?.form_filled_at ?? null);
+  const labels: Partial<Record<FormAnnualStepKind, string>> = {};
+  for (const step of FORM_ANNUAL_STEPS) {
+    let oldest: number | null = null;
+    for (const d of due) {
+      if (d.kind !== step.kind) continue;
+      const sec = filledOf(d);
+      if (sec != null && (oldest == null || sec < oldest)) oldest = sec;
+    }
+    if (oldest != null) labels[step.kind] = brtMonthYearLabel(oldest);
+  }
+  const keep: FollowupDue[] = [];
+  const deferred: FollowupDue[] = [];
+  for (const d of due) {
+    if (!isFormAnnualStep(d.kind)) {
+      keep.push(d);
+      continue;
+    }
+    const sec = filledOf(d);
+    // Sem data legível não há rótulo verdadeiro para a pessoa: fica de fora.
+    if (sec != null && brtMonthYearLabel(sec) === labels[d.kind]) keep.push(d);
+    else deferred.push(d);
+  }
+  return { keep, deferred, labels };
+}
+
 /** A regra de pedidos só vale DEPOIS do 1º mês da pessoa (âncora + 30 dias). */
 export const ASK_RULE_STARTS_AFTER_DAYS = 30;
 
@@ -757,8 +1017,7 @@ export interface AskContext {
 /** @pure — último pedido (`isAsk`) da pessoa: envios destas sequências + os de fora. */
 export function lastAskSec(person: FollowupPerson | undefined, extraAskSecs: readonly number[] = []): number | null {
   let last: number | null = null;
-  // Todo envio destas sequências é pedido; o filtro fica para quando entrar
-  // aqui uma etapa que não seja (`isAsk` é o ponto único).
+  // Só pedidos contam (`isAsk`): o e-mail dos resultados (#12495) não.
   for (const s of person?.sends ?? []) {
     if (!isAsk(s.step)) continue;
     const sec = isoToSec(s.at);
@@ -814,7 +1073,8 @@ export function recordAskDeferrals(
 ): number {
   let n = 0;
   for (const d of deferred) {
-    if (isFormReminder(d.kind) || d.kind === "form_base") continue; // sem janela: nada a proteger
+    // Sem janela (lembretes, base, reenvio anual, resultados): nada a proteger.
+    if (isFormReminder(d.kind) || d.kind === "form_base" || isFormAnnualStep(d.kind) || d.kind === "form_resultados") continue;
     const p = ensurePerson(people, d.kit_subscriber_id, d.email, cadastroById.get(d.kit_subscriber_id) ?? null);
     if (hasStepRecord(p, d.kind)) continue;
     // Adiada de novo nesta rodada: renova a marca (o adiamento vale enquanto a
@@ -878,7 +1138,7 @@ export function planFollowup(opts: {
   people: Readonly<Record<string, FollowupPerson>>;
   nowSec: number;
   cfg: Pick<FollowupConfig, "graceDays" | "askMinGapDays" | "formFirstDays" | "formReminderDays"> &
-    Partial<Pick<FollowupConfig, "formReminderMax" | "formReminderDaysOnboarding">>;
+    Partial<Pick<FollowupConfig, "formReminderMax" | "formReminderDaysOnboarding" | "formAnnualDays" | "formAnnualReminderMax" | "results">>;
   apoioBlocked: FollowupBlockReason | null;
   formBlocked: FollowupBlockReason | null;
   /**
@@ -898,11 +1158,22 @@ export function planFollowup(opts: {
    * por id Kit (`askContextFromEntries`). Ausente = só os envios do store.
    */
   askContext?: ReadonlyMap<number, AskContext>;
+  /**
+   * #12490: avalia o reenvio anual para quem já respondeu (`people` com
+   * `form_filled_at`). Ausente (`undefined`) = não avalia (nem conta);
+   * `null` = liberado; motivo = devido mas travado (`bloqueado_{motivo}`).
+   */
+  annualBlocked?: FollowupBlockReason | null;
+  /**
+   * #12495: idem para o e-mail dos resultados. Só é avaliado com os
+   * resultados registrados (`cfg.results`); sem eles nada muda nem é contado.
+   */
+  resultsBlocked?: FollowupBlockReason | null;
 }): FollowupPlan {
   const { nowSec, cfg, people } = opts;
   const isEnvioBrevo = (email: string) => opts.excludedEmails?.has(normalizeEmail(email)) ?? false;
   const counts: FollowupPlan["counts"] = {};
-  const byId = new Map<number, { email: string; apoio: ApoioStepKind | null; form: "form" | FormReminderKind | null }>();
+  const byId = new Map<number, { email: string; apoio: ApoioStepKind | null; form: Exclude<FollowupStepKind, ApoioStepKind> | null }>();
   const cadastroSecById = new Map(opts.apoioCandidates.map((c) => [c.kit_subscriber_id, isoToSec(c.cadastro_at)] as const));
   const formAnchorById = new Map(opts.formCandidates.map((c) => [c.kit_subscriber_id, c.anchorSec] as const));
 
@@ -947,6 +1218,46 @@ export function planFollowup(opts: {
     else byId.set(c.kit_subscriber_id, { email: c.email, apoio: null, form: r.due });
   }
 
+  // #12490/#12495: quem já respondeu. O D+6 e o lembrete nunca valem para
+  // essas pessoas (`formStepDue` → `preencheu`), então o slot do formulário
+  // está livre. Resultados primeiro: é a promessa do e-mail para quem acabou
+  // de responder; o convite anual espera (não tem janela, nada se perde).
+  const annualCfg = {
+    formAnnualDays: cfg.formAnnualDays ?? 365,
+    formAnnualReminderMax: cfg.formAnnualReminderMax ?? 1,
+    formReminderDays: cfg.formReminderDays,
+  };
+  const results = opts.resultsBlocked !== undefined ? (cfg.results ?? null) : null;
+  if (opts.annualBlocked !== undefined || results) {
+    for (const p of Object.values(people)) {
+      if (!p.form_filled_at) continue;
+      let kind: FormAnnualStepKind | ResultsStepKind | null = null;
+      if (results) {
+        const r = formResultsStepDue(p, results);
+        if (r.due) kind = r.due;
+      }
+      if (kind == null && opts.annualBlocked !== undefined) {
+        const r = formAnnualStepDue(p, nowSec, annualCfg);
+        if (r.due) kind = r.due;
+        else if (r.motivo === "teto_lembretes") bump(counts, "form_anual_lembrete", "teto_lembretes");
+      }
+      if (kind == null) continue;
+      if (isEnvioBrevo(p.email)) {
+        bump(counts, kind, "envio_brevo");
+        continue;
+      }
+      const blocked = kind === "form_resultados" ? opts.resultsBlocked : opts.annualBlocked;
+      if (blocked) {
+        bump(counts, kind, `bloqueado_${blocked}`);
+        continue;
+      }
+      const cur = byId.get(p.kit_subscriber_id);
+      if (cur) {
+        if (cur.form == null) cur.form = kind;
+      } else byId.set(p.kit_subscriber_id, { email: p.email, apoio: null, form: kind });
+    }
+  }
+
   const due: FollowupDue[] = [];
   const askDeferred: FollowupDue[] = [];
   const defer = (id: number, email: string, kind: FollowupStepKind) => {
@@ -961,7 +1272,10 @@ export function planFollowup(opts: {
     const last = lastAskSec(person, ctx?.extraAskSecs ?? []);
     if (askGapBlocks(nowSec, anchors, last, cfg.askMinGapDays)) {
       if (v.apoio) defer(id, v.email, v.apoio);
-      if (v.form) defer(id, v.email, v.form);
+      // Pedido do formulário (convite, lembrete, reenvio anual) espera. O
+      // e-mail dos resultados não é pedido (`isAsk`): a regra não o segura.
+      if (v.form && isAsk(v.form)) defer(id, v.email, v.form);
+      else if (v.form) due.push({ kit_subscriber_id: id, email: v.email, kind: v.form });
       continue;
     }
     if (v.apoio) {
@@ -1472,7 +1786,9 @@ export function refreshPeopleEmailsFromChecks(
  * por e-mail (minúsculo, sem espaços) com as pessoas já conhecidas (só quem
  * recebeu o e-mail do formulário tem o link). Casa pelo e-mail atual e, sem
  * colisão com o atual de outra pessoa, pelos `previous_emails` (#10774).
- * Devolve marcadas e não casadas.
+ * #12490: resposta mais nova que a registrada (reenvio anual) atualiza
+ * `form_filled_at`/`form_answers` e conta em `marked`.
+ * Devolve marcadas (ou atualizadas) e não casadas.
  */
 export function applyFormResponses(
   people: Record<string, FollowupPerson>,
@@ -1495,21 +1811,15 @@ export function applyFormResponses(
       unmatched++;
       continue;
     }
-    if (p.form_filled_at) {
-      // Já preencheu (os lembretes já pararam): só troca as respostas por um envio mais novo.
-      const prev = isoToSec(p.form_answers_at ?? p.form_filled_at);
-      const cur = isoToSec(r.submitted_at);
-      if (r.answers && cur != null && (prev == null || cur > prev)) {
-        p.form_answers = { ...r.answers };
-        p.form_answers_at = r.submitted_at;
-      }
-      continue;
-    }
+    // #12490: vale a resposta MAIS RECENTE (o reenvio anual conta dela). A 1ª
+    // fica em `form_first_filled_at` (é ela que separa quem já recebeu a
+    // edição especial, #12495). Resposta igual ou mais antiga: nada muda.
+    const cur = isoToSec(p.form_filled_at ?? null);
+    const next = isoToSec(r.submitted_at);
+    if (p.form_filled_at && (next == null || (cur != null && next <= cur))) continue;
+    if (p.form_filled_at && p.form_first_filled_at == null) p.form_first_filled_at = p.form_filled_at;
     p.form_filled_at = r.submitted_at;
-    if (r.answers) {
-      p.form_answers = { ...r.answers };
-      p.form_answers_at = r.submitted_at;
-    }
+    if (r.answers) p.form_answers = { ...r.answers };
     marked++;
   }
   return { marked, unmatched };
@@ -1815,6 +2125,9 @@ export function idsInConfirmedFollowupLots(lots: Readonly<Record<string, Followu
   const ids = new Set<string>();
   for (const lot of Object.values(lots)) {
     if (lot.kind !== kind || lot.broadcast_id == null || lot.status === "cancelled" || lot.schedule_failed === true) continue;
+    // #12490: o reenvio anual repete por desenho (um ciclo por ano; a dedup é `formAnnualStepDue`).
+    // Os 3 lembretes do formulário saem uma vez cada (etapas distintas desde a v3), então entram na dedup.
+    if (isFormAnnualStep(kind)) continue;
     for (const id of lot.recipient_subscription_ids) ids.add(id);
   }
   return ids;

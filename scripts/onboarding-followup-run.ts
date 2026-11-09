@@ -97,11 +97,16 @@ import {
   formCandidatesFromEntries,
   formBaseCandidatesFromPeople,
   formContentGate,
+  formAnnualContentGate,
+  formResultsContentGate,
+  pickAnnualMonthBatch,
+  renderStepBody,
   buildFormLink,
   FORM_LINK_PROBE_EMAIL,
   idsInConfirmedFollowupLots,
   idsInUnresolvedFollowupLots,
   isApoioStep,
+  isFormAnnualStep,
   isFormStep,
   isoToSec,
   isUnresolvedFollowupLot,
@@ -116,7 +121,6 @@ import {
   resolveFollowupExitCode,
   recordApoioChecks,
   recordFollowupRun,
-  renderFollowupBody,
   splitDueByCap,
   capWindowOverflows,
   classifyLookupFailures,
@@ -859,19 +863,34 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   // Segredo já validado (trim + tamanho) — é o que assina; nunca o valor cru.
   const linkSecret = formGate.blocked ? null : formGate.linkSecret;
   let formBlocked = gateReason(formGate);
+  // #12490: o convite anual leva o mesmo link assinado do formulário — trava
+  // quando o formulário trava, e também com os textos dele pendentes.
+  const annualTextBlocked = gateReason(formAnnualContentGate(snippets));
+  // #12495: com os resultados não publicados (`cfg.results` nulo) nada muda:
+  // nem avalia, nem conta. Publicados, o gate é o texto do e-mail.
+  let resultsBlocked = cfg.results != null ? gateReason(formResultsContentGate(snippets, cfg)) : null;
+  const resultsOn = cfg.results != null;
+  const resultsLive = () => resultsOn && resultsBlocked == null;
   const run: FollowupRunRecord = {
     at: nowIso,
     apoio_blocked: apoioBlocked,
     form_blocked: formBlocked,
+    form_annual_blocked: formBlocked ?? annualTextBlocked,
+    ...(resultsOn ? { form_results_blocked: resultsBlocked } : {}),
     lots_created: 0,
     lots_failed: 0,
     over_cap: 0,
     lookups_failed: 0,
     counts: {},
   };
+  const blockResults = (b: { motivo: FollowupBlockReason; detalhe: string }) => {
+    if (!resultsOn || resultsBlocked) return;
+    resultsBlocked = b;
+    run.form_results_blocked = b;
+  };
   const lotsOut: unknown[] = [];
-  // Com as duas travadas: nenhuma chamada ao Kit — só o registro do bloqueio.
-  if (apoioBlocked && formBlocked) return { run, lots: lotsOut };
+  // Com todas travadas: nenhuma chamada ao Kit — só o registro do bloqueio.
+  if (apoioBlocked && formBlocked && !resultsLive()) return { run, lots: lotsOut };
 
   const store = readStoreOrThrow(storePath, "planejar");
   const block = store.followup!;
@@ -899,8 +918,11 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     }
   }
 
-  // Formulário: quem preencheu sai dos lembretes ANTES de planejar.
-  if (!formBlocked) {
+  // Formulário: quem preencheu sai dos lembretes ANTES de planejar. #12490:
+  // resposta nova de quem já tinha respondido atualiza a data (reenvio anual).
+  // #12495: o e-mail dos resultados depende da mesma leitura (quem respondeu
+  // depois do envio da edição especial).
+  if (!formBlocked || resultsLive()) {
     try {
       const responses = await deps.fetchFormResponses();
       const apply = (people: FollowupBlock["people"]) => applyFormResponses(people, responses);
@@ -908,8 +930,12 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
       if (send) persistFollowupPeople(storePath, apply);
     } catch (e) {
       // Sem saber quem preencheu, lembrete poderia ir pra quem já respondeu: trava.
-      formBlocked = { motivo: "respostas_indisponiveis", detalhe: redactEmails((e as Error).message) };
-      run.form_blocked = formBlocked;
+      const b = { motivo: "respostas_indisponiveis" as const, detalhe: redactEmails((e as Error).message) };
+      if (!formBlocked) {
+        formBlocked = b;
+        run.form_blocked = formBlocked;
+      }
+      blockResults(b);
     }
   }
 
@@ -917,7 +943,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   // de apoio/formulário pelo Kit (review #10623). Sem conseguir ler a tag,
   // trava os dois lados: enviar às cegas mandaria pra quem saiu do Kit.
   let envioBrevoEmails = new Set<string>();
-  if (!apoioBlocked || !formBlocked) {
+  if (!apoioBlocked || !formBlocked || resultsLive()) {
     try {
       envioBrevoEmails = new Set((await deps.listEnvioBrevoEmails()).map(normalizeEmail));
     } catch (e) {
@@ -925,8 +951,12 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
       const detalhe = `tag envio-brevo ilegível: ${redactEmails((e as Error).message)}`;
       if (!apoioBlocked) run.apoio_blocked = apoioBlocked = { motivo: "kit_indisponivel", detalhe };
       if (!formBlocked) run.form_blocked = formBlocked = { motivo: "kit_indisponivel", detalhe };
+      blockResults({ motivo: "kit_indisponivel", detalhe });
     }
   }
+  // #12490: estado final do formulário (respostas e tag envio-brevo já lidas).
+  const annualBlocked = formBlocked ?? annualTextBlocked;
+  run.form_annual_blocked = annualBlocked;
 
   let apoioCandidates: ApoioCandidate[] = [];
   if (!apoioBlocked) {
@@ -958,6 +988,9 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     baseInviteRecipientIds: baseInviteRecipientIds(block.base_invite),
     // Regra de pedidos (09/11/2026): âncora da escada + e-mail 3 como pedido anterior.
     askContext: askContextFromEntries(Object.values(store.entries)),
+    // #12490/#12495: reenvio anual e link dos resultados (quem já respondeu).
+    annualBlocked: annualBlocked?.motivo ?? null,
+    resultsBlocked: resultsOn ? (resultsBlocked?.motivo ?? null) : undefined,
   });
   run.counts = plan.counts;
   // O pedido adiado pela regra de pedidos espera, nunca é descartado pela janela:
@@ -979,7 +1012,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   // ter saído — fica fora até a releitura resolver o lote.
   const unresolvedIds = idsInUnresolvedFollowupLots(block.lots);
   // Defesa em profundidade: já num lote confirmado desta etapa (registro perdido).
-  const due = plan.due.filter((d) => {
+  const dueRaw = plan.due.filter((d) => {
     const id = String(d.kit_subscriber_id);
     if (unresolvedIds.has(id)) {
       bump(d.kind, "lote_nao_confirmado");
@@ -989,6 +1022,11 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     bump(d.kind, "ja_em_lote");
     return false;
   });
+  // #12490: o convite anual diz "você respondeu em {mês/ano}" e o corpo é um
+  // só pro lote — sai um mês de resposta por vez; o resto fica para amanhã.
+  const monthPick = pickAnnualMonthBatch(dueRaw, block.people);
+  for (const d of monthPick.deferred) bump(d.kind, "adiado_mes");
+  const due = monthPick.keep;
 
   // Teto de lote ANTES das leituras singulares (review #10623), em lote PARCIAL
   // (#10631): saem até o teto, cadastro mais antigo primeiro (a janela dele
@@ -1132,8 +1170,13 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
       await deps.runLot(lot, {
         subject: snip.assunto ?? "",
         // {{FORM_URL}} só existe nas etapas do formulário; num texto de apoio
-        // o `apoioContentGate` já travou (#10657).
-        body: isFormStep(kind) ? renderFollowupBody(snip.body, cfg.formUrl) : snip.body,
+        // o `apoioContentGate` já travou (#10657). #12490: {{RESPONDEU_EM}} no
+        // anual; #12495: {{RESULTADOS_URL}} nos resultados.
+        body: renderStepBody(kind, snip.body, {
+          formUrl: cfg.formUrl,
+          results: cfg.results,
+          respondeuEm: isFormAnnualStep(kind) ? monthPick.labels[kind] ?? null : null,
+        }),
         previewText: snip.previewText ?? undefined,
       });
       const marked = persistFollowupLot(storePath, lot, cadastroById, nowMs);
@@ -1499,9 +1542,11 @@ async function main(): Promise<void> {
   // Cru: a normalização (trim + tamanho mínimo) é do `formContentGate`/`checkLinkSecret`.
   const formLinkSecret = process.env[ONBOARDING_FORM_LINK_SECRET_ENV] ?? null;
   const formGate = formContentGate(snippets, cfg, formLinkSecret);
-  // Travado pelos dois lados: nem precisa de credencial do Kit.
+  // #12495: o link dos resultados é independente dos dois (só com eles publicados).
+  const resultsLive = cfg.results != null && !formResultsContentGate(snippets, cfg).blocked;
+  // Travado por todos os lados: nem precisa de credencial do Kit.
   let deps: FollowupRoundDeps;
-  if (apoioGate.blocked && formGate.blocked) {
+  if (apoioGate.blocked && formGate.blocked && !resultsLive) {
     deps = {
       listActiveSubscribers: () => Promise.reject(new Error("não chamado")),
       getSubscriber: () => Promise.reject(new Error("não chamado")),

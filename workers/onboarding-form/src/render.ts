@@ -39,6 +39,7 @@ import {
   otherTextFieldId,
   type ChoiceQuestion,
   type FormQuestion,
+  type FormResults,
 } from "../../../scripts/lib/onboarding-form-contract.ts";
 import { FORM_PAGE_MARKER, FORM_RENDERED_FIELD } from "../../../scripts/lib/onboarding-form-link-sig.ts";
 
@@ -212,10 +213,23 @@ export function renderFormHtml(
   );
 }
 
-export function renderThanksHtml(): string {
+/**
+ * Página de obrigado. #12495: com os resultados já publicados (`results`,
+ * de `resolveFormResults`), mostra o link da versão web da edição especial
+ * no lugar do aviso genérico sobre os lembretes; sem eles, nada muda.
+ */
+export function renderThanksHtml(results: FormResults | null = null): string {
+  const tail = `<p>Se quiser mudar alguma resposta, é só preencher de novo: vale a mais recente.</p>`;
+  if (results) {
+    return renderPage(
+      `<h1>Obrigado!</h1><p>Suas respostas chegaram.</p>` +
+        `<p>Já contei o que descobri com a pesquisa numa edição especial para quem respondeu. ` +
+        `<a href="${escapeHtml(results.url)}">Leia a edição especial</a>. Também mando o link para o seu e-mail.</p>` +
+        tail,
+    );
+  }
   return renderPage(
-    `<h1>Obrigado!</h1><p>Suas respostas chegaram. Em breve você para de receber lembretes sobre este formulário.</p>` +
-      `<p>Se quiser mudar alguma resposta, é só preencher de novo: vale a mais recente.</p>`,
+    `<h1>Obrigado!</h1><p>Suas respostas chegaram. Em breve você para de receber lembretes sobre este formulário.</p>` + tail,
   );
 }
 
