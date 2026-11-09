@@ -1,8 +1,10 @@
 # onboarding-form (#10605)
 
 No ar em https://formulario.diar.ia.br (22/10/2026: KV, secrets, rota, `form_sig` no Kit,
-`ONBOARDING_FORM_TOKEN`/`ONBOARDING_FORM_LINK_SECRET` no Doppler). O envio segue
-travado só pela aprovação dos textos e das perguntas pelo editor.
+`ONBOARDING_FORM_TOKEN`/`ONBOARDING_FORM_LINK_SECRET` no Doppler). Perguntas e
+textos v3 aprovados pelo editor em 09/11/2026; o envio segue travado só até os
+textos serem destravados em `data/snippets` (tirar o marcador
+`ONBOARDING-CORPO-PENDENTE`), depois do merge.
 
 Formulário de perfil/interesses do onboarding (decisão do editor, 20/10/2026:
 form próprio num Worker nosso). O executor `scripts/onboarding-followup-run.ts`
@@ -12,12 +14,23 @@ para os lembretes. `scripts/audience-run.ts` lê o mesmo endpoint e gera o
 perfil de audiência (`context/audience-profile.md`) SÓ com estas respostas
 (decisão 10 do editor, 08/11/2026: a survey da Beehiiv foi descartada).
 
-Contrato e perguntas (v2, decisões do editor de 08/11/2026):
-`scripts/lib/onboarding-form-contract.ts` (`FORM_QUESTIONS`). Tema e preço
-(`hiddenWhen`) somem quando a pessoa marca "Nada disso" no que faria além da
-newsletter: o HTML esconde e desabilita os campos (`HIDE_SCRIPT` em
-`src/render.ts`) e o servidor descarta o que vier deles. HTML: `src/render.ts`
-(mobile primeiro, sem dependência de runtime de Worker).
+Contrato e perguntas (v3, aprovada pelo editor em 09/11/2026):
+`scripts/lib/onboarding-form-contract.ts` (`FORM_QUESTIONS`): 12 perguntas
+numeradas e 3 subperguntas sem número, todas de rádio ou caixa (nunca menu
+suspenso). Condicionais (`hiddenWhen`/`shownWhen`), opção exclusiva e o limite
+de "até 3" rodam no cliente (`FORM_SCRIPT` em `src/render.ts`) e são
+validados de novo no servidor, que descarta o que vier de pergunta que não
+aparece. HTML: `src/render.ts` (mobile primeiro, sem dependência de runtime
+de Worker).
+
+Histórico e versão (#12490): cada envio é uma chave própria no KV
+(`resp:{e-mail}:{submitted_at}:{nonce}`), com `form_version: "v3"`, e nunca
+sobrescreve o anterior. `GET /api/respostas` devolve todos os envios
+(inclusive os antigos `resp:{e-mail}`); o perfil e os lembretes usam o mais
+recente por e-mail (`latestFormResponses`). Tempo de preenchimento: a página
+leva a hora em que foi gerada, assinada (campo oculto `t`,
+`signFormRenderedAt`), e o envio grava `duration_s`; mediana e p75 saem em
+`onboarding-followup-run.ts --status`.
 
 ## Quem recebe o link
 
@@ -39,8 +52,11 @@ travados pelo marcador `ONBOARDING-CORPO-PENDENTE` até o editor aprovar):
    recebê-lo em até 7 dias (padrão de `base_invite_window_days`), e quem já
    respondeu; enquanto o e-mail não sai, eles não recebem o D+6. Rodar
    `audience-run.ts` só depois de haver respostas.
-3. `formulario-lembrete.md`: para quem recebeu o 1 OU o 2 e não respondeu, 30
-   dias depois do último e-mail do formulário, até 3 vezes por pessoa. O
+3. `formulario-lembrete-{1,2,3}.md`: para quem recebeu o 1 OU o 2 e não
+   respondeu, até 3 vezes por pessoa, um texto por lembrete. Quem recebeu o
+   D+6 recebe em D+19, D+49 e D+79 da confirmação do cadastro; quem recebeu o
+   e-mail da base, 30 dias depois do envio anterior. Depois do primeiro mês,
+   nenhum pedido sai a 10 dias ou menos de outro (`ask_min_gap_days: 11`). O
    store guarda qual convite a pessoa recebeu (`followup.people[id].form_invite`;
    registro antigo sem o campo: ler por `formInviteOf`, que deriva de `sends`).
 
@@ -79,8 +95,8 @@ Com os campos vazios nada muda.
 KV `ONBOARDING_FORM`, secrets `RESPONSES_TOKEN` e `ONBOARDING_FORM_LINK_SECRET`,
 rota pública, `onboarding.followup.form_url`/`form_responses_url` no config,
 `ONBOARDING_FORM_TOKEN`/`ONBOARDING_FORM_LINK_SECRET` no `.env` do executor e
-o custom field `form_sig` no Kit. Falta só a aprovação dos textos e das
-perguntas pelo editor.
+o custom field `form_sig` no Kit. Textos e perguntas aprovados (09/11/2026);
+falta só destravar os textos em `data/snippets`.
 
 O envio dos e-mails do formulário fica travado enquanto isso
 (`formContentGate` → `form_nao_configurado` / `texto_pendente` /

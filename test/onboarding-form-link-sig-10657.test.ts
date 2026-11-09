@@ -108,7 +108,7 @@ describe("#10657 assinatura do link (HMAC-SHA256, Web Crypto)", () => {
 describe("#10657 executor: link com assinatura, envio travado sem segredo / campo / Worker", () => {
   const cfg = resolveFollowupConfig({ enabled: true, form_url: "https://form.example/", form_responses_url: "https://form.example/api/respostas" });
   const ok = parseFollowupSnippet(`<!--\nassunto: "A"\npreview_text: "P"\n-->\nResponda: {{FORM_URL}}`);
-  const formSnippets: FollowupSnippets = { apoio30: null, apoio90: null, apoio180: null, apoio360: null, form: ok, form_lembrete: ok };
+  const formSnippets: FollowupSnippets = { apoio30: null, apoio90: null, apoio180: null, apoio360: null, form: ok, form_lembrete: ok, form_lembrete2: ok, form_lembrete3: ok };
 
   it("o link leva o e-mail CRU (sem filtro Liquid) e a assinatura do custom field form_sig", () => {
     assert.equal(FORM_SIG_KIT_FIELD, "form_sig");
@@ -622,6 +622,7 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
     const res = await worker.fetch(post([["email", "a@x.com"], ["sig", sig], ...answers()]), e);
     assert.equal(res.status, 200);
     assert.deepEqual(puts.map(([k]) => k.replace(/^(hist:[^:]+):.*$/, "$1")), ["hist:a@x.com", "resp:a@x.com"]);
+    assert.equal(JSON.parse(puts[1][1]).form_version, 3);
   });
 
   it("POST sem assinatura, com assinatura errada ou de OUTRO e-mail: 403, log e nada no KV", async () => {
