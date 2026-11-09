@@ -140,9 +140,21 @@ describe("#12081 — post semanal da Stack", () => {
     const lines = md.split("\n\n");
     const i = lines.findIndex((l) => l.startsWith(CIRCLE_STACK_VIDEO_LEAD));
     assert.ok(i > 0, "linha do vídeo presente");
-    assert.equal(i, lines.length - 2, "logo antes da última linha (CTA)");
+    assert.equal(lines[i + 1], "## Destaques da semana", "logo antes dos destaques da semana");
     assert.match(lines[i], /\[Vídeo da semana\]\(https:\/\/youtu\.be\/bbbbbbbbbbb\?utm_source=stack&utm_medium=circle&utm_campaign=stack-26w45&utm_content=video\)/);
     assert.ok(!/[→←]/.test(md));
+  });
+
+  it("descrição do vídeo vai logo abaixo da linha do vídeo; sem descrição, nada muda", () => {
+    const video = { title: "Vídeo da semana", url: `https://youtu.be/${B}`, editionDate: "261103" };
+    const withDesc = renderCircleStackPost(stackSel({ video: { ...video, description: "O Pixel comenta o destaque." } })).markdown.split("\n\n");
+    const i = withDesc.findIndex((l) => l.startsWith(CIRCLE_STACK_VIDEO_LEAD));
+    assert.equal(withDesc[i + 1], "O Pixel comenta o destaque.");
+    assert.equal(withDesc[i + 2], "## Destaques da semana");
+    const without = renderCircleStackPost(stackSel({ video })).markdown.split("\n\n");
+    assert.equal(without[without.findIndex((l) => l.startsWith(CIRCLE_STACK_VIDEO_LEAD)) + 1], "## Destaques da semana");
+    const raw = JSON.stringify({ ...stackSel(), video: { ...video, description: 5 } });
+    assert.throws(() => parseStoredCircleStackSelection(raw, "sel.json", "26w45"), /video\.description/);
   });
 
   it("sem vídeo medido: post igual ao de antes", () => {

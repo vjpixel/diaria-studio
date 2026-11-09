@@ -146,7 +146,7 @@ export function stackMarkdownToHtml(markdown: string): string {
  */
 export function renderStackEmail(sel: CircleStackSelection): RenderedStackEmail {
   const post = renderCircleStackPost(sel, {
-    channel: { utmSource: STACK_EMAIL_UTM_SOURCE, utmMedium: STACK_EMAIL_UTM_MEDIUM, omitSubscribeCta: true },
+    channel: { utmSource: STACK_EMAIL_UTM_SOURCE, utmMedium: STACK_EMAIL_UTM_MEDIUM, omitSubscribeCta: true, omitOtherHighlights: true },
   });
   const html = `<!doctype html>
 <html lang="pt-BR">
