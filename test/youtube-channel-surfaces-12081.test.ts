@@ -133,7 +133,7 @@ function stackSel(extra: Partial<CircleStackSelection> = {}): CircleStackSelecti
 }
 
 describe("#12081 — post semanal da Stack", () => {
-  it("linha do vídeo antes do CTA final, com UTM do canal (utm_content=video), sem seta", () => {
+  it("linha do vídeo logo antes dos destaques, com UTM do canal (utm_content=video), sem seta", () => {
     const video = circleStackVideoField(TOP, new Map());
     assert.ok(video);
     const md = renderCircleStackPost(stackSel({ video: video! })).markdown;

@@ -7,10 +7,10 @@
  * `data/weekly/{cycle}/_internal/circle-stack-selection.json`).
  *
  * Estrutura (#11186): título = título do D1 · abertura (resumo da semana com
- * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · Destaques da semana (título com link da fonte, corpo e
+ * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · vídeo mais assistido
+ * da semana, se medido (#12081), com descrição opcional · Destaques da semana (título com link da fonte, corpo e
  * "Por que isso importa:" iguais aos da edição diária) · Lançamentos · Use melhor · Radar ·
- * Outros destaques da semana (só o que não apareceu acima) · vídeo mais assistido
- * da semana, se medido (#12081) · última linha ("Assine a diar.ia.br. Chega de segunda a
+ * Outros destaques da semana (só o que não apareceu acima; o e-mail omite, #12550) · última linha ("Assine a diar.ia.br. Chega de segunda a
  * sexta...", link e fecho na mesma linha).
  *
  * Sem capa por destaque: o contrato do webhook da Stack não aceita imagem no

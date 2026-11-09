@@ -11,7 +11,7 @@
  * Markdown daquele render — um subconjunto pequeno e fixo: parágrafo, `##`,
  * `###`, lista com `- `, link `[rótulo](url)` e negrito `**…**` — em HTML de
  * e-mail. Escrever um 2º render em HTML duplicaria as regras do post (abertura,
- * "Outros destaques", vídeo da semana) e as duas versões divergiriam.
+ * vídeo da semana) e as duas versões divergiriam.
  *
  * Regras de e-mail, as mesmas de `artigo-especial-email-render.ts`: tudo
  * inline, tabela externa 100% + interna 600, `paperEmail` e não `paper`, sem
