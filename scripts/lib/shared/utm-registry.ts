@@ -239,6 +239,17 @@ export function buildArtigoEspecialEmailCampaign(ano: string, slug: string): str
 }
 
 /**
+ * `utm_source`/`utm_medium` do e-mail do post semanal da Stack aos apoiadores
+ * Núcleo (#12538) — o mesmo post do Radar de Notícias Stack, enviado pelo Kit.
+ * Fonte própria para não misturar com o Circle (`stack`/`circle`) nem com a
+ * diária (`kit`). `utm_campaign` reusa `stack-{cycle}` do Circle: é o mesmo
+ * conteúdo, e o source já separa o canal. Consumido por
+ * `scripts/lib/circle-stack-email-render.ts`.
+ */
+export const STACK_EMAIL_UTM_SOURCE = "stack-email";
+export const STACK_EMAIL_UTM_MEDIUM = "email";
+
+/**
  * `utm_source`/`utm_medium` dos e-mails de EVENTO (#10315) — comunicação com
  * quem comprou ingresso de imersão/evento ao vivo, enviada à mão pelo Gmail.
  * Fora do pipeline: o link vive no texto do e-mail, montado à mão com
@@ -1093,6 +1104,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "são garantidamente mensais. `utm_source` próprio pra separar a série de cliques deste envio da " +
       "diária ('kit') e do digest mensal de apoiadores ('mensal-apoiadores-kit'), que têm audiência e " +
       "cadência distintas.",
+    status: "ativo",
+  },
+  {
+    id: "stack-email",
+    label: "Post semanal da Stack (e-mail, apoio Núcleo)",
+    source: STACK_EMAIL_UTM_SOURCE,
+    medium: STACK_EMAIL_UTM_MEDIUM,
+    campaignPattern: "stack-{cycle}",
+    originFile: "scripts/lib/circle-stack-email-render.ts",
+    description:
+      "O post semanal do Radar de Notícias Stack enviado também por e-mail, via Kit, aos apoiadores " +
+      "Núcleo (#12538). Mesmo conteúdo e mesmo campaign do Circle (`stack-{cycle}`); o `utm_source` " +
+      "próprio separa os cliques do e-mail dos do Circle e da diária.",
     status: "ativo",
   },
   {
