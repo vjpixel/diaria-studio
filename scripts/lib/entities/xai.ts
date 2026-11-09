@@ -117,6 +117,16 @@ const MENTIONS: EntityContent["mentions"] = [
     summary:
       "Uma ação coletiva nos Estados Unidos acusa a xAI de ter treinado o chatbot Grok com imagens de abuso sexual infantil, incluindo fotos da própria autora do processo — que afirma que o modelo passou a gerar novos conteúdos ilegais a partir desse material, ampliando o abuso original décadas depois do crime.",
   },
+  {
+    // Menção incluída por decisão do editor (#12423, 08/11/2026): o Grok
+    // divide o D1 com o Claude, mas tem papel próprio no ataque.
+    date: "2026-10-26",
+    headline: "Hackers usam Claude e Grok contra bancos",
+    editionUrl: "https://diar.ia.br/p/hackers-usam-claude-e-grok-contra-bancos",
+    editionTitle: "Hackers usam Claude e Grok contra bancos",
+    summary:
+      "Uma investigação da empresa de cibersegurança Straiker mostrou que o grupo criminoso CyberCartel colocou o Grok para trabalhar num ataque contra mais de 400 bancos, empresas de pagamento e fintechs da América Latina. Cinco agentes do Grok coletavam dados, enquanto agentes do Claude, da Anthropic, faziam o reconhecimento e escreviam o código de ataque; para driblar as travas dos modelos, os operadores diziam fazer testes de segurança autorizados. O banco de dados do grupo tinha 4.493 registros, com 903 contas bancárias, e a xAI disse que analisava o caso, enquanto a Anthropic bloqueou a credencial usada.",
+  },
 ];
 
 /** Nota de metodologia DERIVADA de `MENTIONS` — mesma disciplina de
@@ -137,7 +147,7 @@ export function getXaiEntity(): EntityContent {
       "Linha do tempo da xAI na cobertura da diar.ia.br: disputas judiciais, o Grok 4.1 e o escândalo global de imagens sexualizadas geradas pelo Grok.",
     introHeading: "Como o Grok da xAI foi de disputa judicial a escândalo global de segurança?",
     introParagraph:
-      "A xAI entrou na cobertura da diar.ia.br em pé de guerra jurídica — processando a Apple e a OpenAI por práticas monopolistas, e um ex-engenheiro por roubo de segredos comerciais — enquanto lançava modelos cada vez mais baratos e capazes (Grok 4 Fast, Grok 4.1) e fechava uma parceria de infraestrutura com a Arábia Saudita. A virada veio em janeiro de 2026: reguladores do Reino Unido, da União Europeia e de mais de meia dúzia de países abriram investigações depois que o Grok gerou dezenas de milhares de imagens sexualizadas, incluindo material envolvendo crianças, e o Brasil deu à empresa um prazo de 30 dias sob ameaça de bloqueio. No mesmo período vazou que a empresa queimava bilhões de dólares construindo infraestrutura própria. Meses depois, a xAI ainda brigava na Justiça — dessa vez contra uma lei estadual americana que restringe a geração de nudes sem consentimento — e voltou a ser alvo de uma ação judicial acusando o Grok de ter sido treinado com imagens de abuso sexual infantil. Esta página reúne, em ordem cronológica, cada vez que a xAI apareceu nas edições da diária.",
+      "A xAI entrou na cobertura da diar.ia.br em pé de guerra jurídica — processando a Apple e a OpenAI por práticas monopolistas, e um ex-engenheiro por roubo de segredos comerciais — enquanto lançava modelos cada vez mais baratos e capazes (Grok 4 Fast, Grok 4.1) e fechava uma parceria de infraestrutura com a Arábia Saudita. A virada veio em janeiro de 2026: reguladores do Reino Unido, da União Europeia e de mais de meia dúzia de países abriram investigações depois que o Grok gerou dezenas de milhares de imagens sexualizadas, incluindo material envolvendo crianças, e o Brasil deu à empresa um prazo de 30 dias sob ameaça de bloqueio. No mesmo período vazou que a empresa queimava bilhões de dólares construindo infraestrutura própria. Meses depois, a xAI ainda brigava na Justiça — dessa vez contra uma lei estadual americana que restringe a geração de nudes sem consentimento — e voltou a ser alvo de uma ação judicial acusando o Grok de ter sido treinado com imagens de abuso sexual infantil. Em outubro de 2026, o Grok apareceu do outro lado de um ataque: um grupo criminoso usou agentes do modelo para coletar dados de mais de 400 bancos e fintechs da América Latina. Esta página reúne, em ordem cronológica, cada vez que a xAI apareceu nas edições da diária.",
     mentions: MENTIONS,
     faq: [
       {
@@ -171,7 +181,7 @@ export function getXaiEntity(): EntityContent {
       },
     ],
     publishedDate: "2026-08-14",
-    updatedDate: "2026-09-28",
+    updatedDate: "2026-11-08",
     methodologyNote: buildMethodologyNote(MENTIONS),
     footerNavUtm: entityFooterNavUtm("xai"),
   };
