@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
 
-import { encryptBackup, parseBackupKey } from "../scripts/lib/backup-offsite-crypto.ts";
+import { backupBinding, encryptBackup, parseBackupKey } from "../scripts/lib/backup-offsite-crypto.ts";
 import {
   describeKvDump,
   dumpKvPrefixes,
@@ -345,7 +345,7 @@ describe("#11413 review — main() do backup-offsite", () => {
 // ---------------------------------------------------------------------------
 // 13. restauração: pasta temporária + CLI
 
-const ENC_VOTES = encryptBackup(gzipSync(Buffer.from('{"key":"vote:1:a","value":"x"}\n')), KEY);
+const ENC_VOTES = encryptBackup(gzipSync(Buffer.from('{"key":"vote:1:a","value":"x"}\n')), KEY, backupBinding("eia-votes", "2026-11-08"));
 
 function r2Bucket(objects: Record<string, { body: Buffer; lm: string }>) {
   const fetchFn = async (url: string) => {
@@ -377,7 +377,7 @@ describe("#11413 review — restauração", () => {
   it("tar que falha não deixa --out nem pasta temporária", () => {
     const dir = out();
     const failing: TarRunner = () => ({ status: 2, stdout: Buffer.alloc(0), stderr: "corrompido" });
-    assert.throws(() => restoreBlob(encryptBackup(Buffer.from("x"), KEY), KEY, "beehiiv", "b/2026-11-08.tar.gz.enc", dir, failing), /tar -xzf falhou/);
+    assert.throws(() => restoreBlob(encryptBackup(Buffer.from("x"), KEY, backupBinding("beehiiv", "2026-11-08")), KEY, "beehiiv", "b/2026-11-08.tar.gz.enc", dir, failing), /tar -xzf falhou/);
     assert.equal(existsSync(dir), false);
     assert.deepEqual(readdirSync(dirname(dir)), []);
   });

@@ -13,7 +13,7 @@
  *   doppler run -- npx tsx scripts/restore-backup-offsite.ts --list
  *   doppler run -- npx tsx scripts/restore-backup-offsite.ts --latest beehiiv --out /tmp/restore-bh
  *   doppler run -- npx tsx scripts/restore-backup-offsite.ts --key beehiiv/2026-11-08.tar.gz.enc --out /tmp/restore-bh
- *   doppler run -- npx tsx scripts/restore-backup-offsite.ts --file ./x.tar.gz.enc --out /tmp/r   # arquivo já baixado
+ *   doppler run -- npx tsx scripts/restore-backup-offsite.ts --file ./2026-11-08.tar.gz.enc --out /tmp/r   # arquivo já baixado, nome original
  *   ... --key-env BACKUP_ENCRYPTION_KEY_OLD   # chave antiga, depois de uma rotação
  *
  * `--latest` escolhe pela data da chave (não pelo `LastModified`, que só
@@ -25,6 +25,12 @@
  * decifra ou do `tar` não deixa nada pela metade. Restaurar em `data/` é passo
  * manual depois de conferir o conteúdo.
  *
+ * Formato v2 (#11961): o blob é autenticado junto com `{tipo}/{data}` tirado
+ * da chave do objeto. No `--file`, o tipo e a data saem do NOME do arquivo:
+ * um arquivo renomeado pra outra data/tipo não decifra (é a proteção contra
+ * rollback no bucket). Mantenha o nome original (`2026-11-08.tar.gz.enc`).
+ * Backups v1 (gravados antes da mudança) seguem restaurando, com aviso.
+ *
  * Exit: 0 ok, 1 falha (download, chave, autenticação, extração), 2 uso inválido.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
@@ -34,7 +40,7 @@ import { resolve, join } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
-import { BACKUP_KEY_ENV, decryptBackup, parseBackupKey, type BackupKey } from "./lib/backup-offsite-crypto.ts";
+import { BACKUP_KEY_ENV, backupFormatVersion, decryptBackup, parseBackupKey, type BackupKey } from "./lib/backup-offsite-crypto.ts";
 import {
   dateFromOffsiteKey,
   extractTarGz,
@@ -47,6 +53,7 @@ import {
   listOffsiteObjects,
   loadOffsiteAccess,
   OFFSITE_KINDS,
+  offsiteBindingFromName,
   offsitePrefix,
   systemTar,
   type OffsiteKind,
@@ -61,12 +68,13 @@ const LOG = "[restore-backup-offsite]";
 /**
  * Decifra e grava em `outDir`. Devolve o que foi escrito (pra log/teste).
  * Lança em qualquer falha sem deixar `outDir` criada pela metade; `outDir`
- * não vazia é recusada.
+ * não vazia é recusada. `name` (chave do objeto ou nome do arquivo) dá o
+ * vínculo `{tipo}/{data}` que o formato v2 autentica (#11961).
  */
 export function restoreBlob(blob: Buffer, key: BackupKey, kind: OffsiteKind, name: string, outDir: string, tar: TarRunner = systemTar): string {
   const existed = existsSync(outDir);
   if (existed && readdirSync(outDir).length > 0) throw new Error(`--out ${outDir} não está vazia — escolha uma pasta nova`);
-  const plain = decryptBackup(blob, key);
+  const plain = decryptBackup(blob, key, offsiteBindingFromName(name));
   if (kind === "eia-votes") {
     const jsonl = gunzip(plain);
     mkdirSync(outDir, { recursive: true });
@@ -169,6 +177,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Restore
       log(`${LOG} baixado ${objKey}: ${formatBytes(blob.length)}`);
     }
     const kind = kindFromKey(name)!;
+    if (backupFormatVersion(blob) === 1) log(`${LOG} aviso: backup no formato v1 (sem vínculo à chave do objeto, #11961): autentica o conteúdo, mas não detecta rollback`);
     const written = restoreBlob(blob, encKey, kind, name, outDir, deps.tar ?? systemTar);
     log(`${LOG} restaurado (${kind}) em ${written}`);
     return 0;

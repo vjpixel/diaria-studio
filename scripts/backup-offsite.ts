@@ -74,6 +74,7 @@ import {
   isOffsiteKind,
   kvRestDumpSource,
   loadOffsiteConfig,
+  offsiteBinding,
   offsiteObjectKey,
   putAndVerifyOffsite,
   POLL_KV_NAMESPACE_ID_DEFAULT,
@@ -169,7 +170,8 @@ export async function runOffsiteBackup(opts: RunOffsiteOpts, deps: RunOffsiteDep
         plain = gzip(Buffer.from(dump.jsonl, "utf8"));
         what = describeKvDump(dump);
       }
-      const enc = encryptBackup(plain, cfg.key);
+      // v2 (#11961): o blob fica amarrado a `{kind}/{date}`, o mesmo par da chave do objeto.
+      const enc = encryptBackup(plain, cfg.key, offsiteBinding(kind, opts.date));
       if (opts.dryRun) {
         log(`${LOG} ${kind}: --dry-run, ${what}: ${formatBytes(plain.length)} compactado, ${formatBytes(enc.length)} cifrado → ${key} (NÃO enviado)`);
         results.push({ kind, status: "dry-run", key, bytes: enc.length });
