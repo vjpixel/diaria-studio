@@ -41,7 +41,8 @@ export const CIRCLE_STACK_SUBSCRIBE_BASE_URL = "https://diar.ia.br";
 export type CircleStackUtmContent = "edicao" | "cta-fim" | "video";
 
 /** #12081: começo da linha do vídeo mais visto da semana (link no título do vídeo). */
-export const CIRCLE_STACK_VIDEO_LEAD = "Vídeo mais assistido da semana no canal da diar.ia.br:";
+/** Título da seção do vídeo: segue o formato das demais (## seção, ### título com link, parágrafo). */
+export const CIRCLE_STACK_VIDEO_LEAD = "## Vídeo mais assistido da semana";
 
 /**
  * Abertura de reserva: só entra quando nenhum destaque rende uma frase de
@@ -285,11 +286,12 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     DEFAULT_CIRCLE_STACK_OPENING;
   blocks.push(...paragraphs(opening));
 
-  // #12081: o vídeo mais assistido da semana, numa linha, logo depois da abertura e antes dos destaques
+  // #12081: o vídeo mais assistido da semana, como seção (## / ### com link / descrição), logo depois da abertura e antes dos destaques
   // (pedido do editor, 09/11/2026; antes ficava antes do CTA final).
   if (sel.video && sel.video.url.trim() && sel.video.title.trim()) {
     blocks.push(
-      `${CIRCLE_STACK_VIDEO_LEAD} ${link(buildCircleStackUrl(sel.video.url, sel.cycle, "video", opts.channel), sel.video.title)}`,
+      CIRCLE_STACK_VIDEO_LEAD,
+      `### ${link(buildCircleStackUrl(sel.video.url, sel.cycle, "video", opts.channel), sel.video.title)}`,
     );
     if (sel.video.description?.trim()) blocks.push(...paragraphs(sel.video.description));
   }
