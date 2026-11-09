@@ -601,6 +601,10 @@ QUEUE_AGE_H_THRESHOLD=12
 # outro problema) disparou sozinha o alarme de idade (12.6h >= 12h) — a PR
 # está exatamente onde deveria estar, esperando o editor, não travada por
 # falha de gate/coordenação.
+# #12460: draft do contínuo aberto SEM a label (PR #12351) contava aqui e abria
+# P1 falso (#12370). A label agora vem na criação (prompt do implementador) e,
+# se faltar, `continuo-resolve-stuck-prs.ts` (`needsDraftBlockLabel`) a aplica
+# no tick seguinte do merger. O filtro abaixo continua exigindo a label.
 #
 # #9031: mesma classe pra label `continuo-escalado` (#7446 item 2) — ela já
 # significa "ganhou dono, notificado 1x, aguardando editor ou pickup do
