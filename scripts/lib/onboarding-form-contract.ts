@@ -24,6 +24,10 @@
  *    É o que o executor lê a cada rodada para marcar "preencheu" no store e
  *    parar os lembretes. Com `?historico=1` (#12490) lista TODAS as respostas
  *    guardadas (`hist:`), uma por envio, para comparar um ano com o outro.
+ *    Paginado desde o #12509: cada chamada devolve até
+ *    `FORM_RESPONSES_PAGE_SIZE` respostas e `next_cursor` (repassar como
+ *    `?cursor=`); quem lê usa `fetchAllFormResponses`. Falha do KV = 503 com
+ *    `{error: "kv_failure", reason}`.
  *
  * ## Perguntas (v2, decisões do editor de 08/11/2026)
  *
@@ -230,6 +234,11 @@ export interface FormResponse extends FormSubmission {
 
 export interface FormResponsesPayload {
   responses: FormResponse[];
+  /**
+   * #12509: cursor da próxima página de `GET /api/respostas` (repassado como
+   * `?cursor=`). Ausente ou `null` = esta é a última página.
+   */
+  next_cursor?: string | null;
 }
 
 /**
@@ -373,6 +382,138 @@ export function parseFormResponsesPayload(data: unknown): FormResponse[] {
     out.push(rec);
   }
   return out;
+}
+
+/**
+ * #12509: o Workers limita as operações de KV por invocação a 1000. O
+ * `GET /api/respostas` fazia um `list` e um `get` por chave da lista inteira
+ * na mesma invocação, então passava do teto quando o número de chaves
+ * passasse de ~1000 (e com ele falhavam a rodada de follow-up, o `--status`,
+ * o `--tag-respondents` e o perfil de audiência). Agora cada chamada lê UMA
+ * página: 1 `list` com `limit` = `FORM_RESPONSES_PAGE_SIZE` + no máximo esse
+ * número de `get`, e devolve `next_cursor`; quem lê segue os cursores
+ * (`fetchAllFormResponses`). 500 deixa folga: 501 operações por invocação.
+ */
+export const FORM_RESPONSES_PAGE_SIZE = 500;
+
+/** #12509: teto de páginas do lado de quem lê (500 mil chaves): cursor que
+ *  nunca termina vira erro, nunca laço infinito. */
+const FORM_RESPONSES_MAX_PAGES = 1000;
+
+/** `get` simultâneos dentro de uma página (não muda a contagem de operações,
+ *  só o tempo da invocação). */
+const FORM_RESPONSES_GET_CONCURRENCY = 50;
+
+/** O mínimo do `KVNamespace` que a leitura paginada usa (testável sem Workers). */
+export interface FormResponsesKv {
+  list(options: { prefix: string; cursor?: string; limit?: number }): Promise<{ keys: { name: string }[]; list_complete: boolean; cursor?: string }>;
+  get(key: string): Promise<string | null>;
+}
+
+export interface FormResponsesPage {
+  responses: FormResponse[];
+  next_cursor: string | null;
+  /** Chaves cujo valor não é JSON legível (puladas, nunca derrubam a página). */
+  unreadable: number;
+}
+
+/**
+ * #12509: lê UMA página de respostas do KV (lado do Worker). Faz exatamente 1
+ * `list` e no máximo `pageSize` `get`. Chave que sumiu entre o `list` e o
+ * `get` é pulada; valor ilegível também (contado em `unreadable`, para o
+ * Worker registrar no log sem o e-mail). Falha do KV LANÇA: o Worker responde
+ * 5xx com o motivo, nunca uma lista parcial com cara de completa.
+ */
+export async function readFormResponsesPage(
+  kv: FormResponsesKv,
+  prefix: string,
+  cursor: string | undefined,
+  pageSize: number = FORM_RESPONSES_PAGE_SIZE,
+): Promise<FormResponsesPage> {
+  const list = await kv.list({ prefix, cursor, limit: pageSize });
+  const names = list.keys.slice(0, pageSize).map((k) => k.name);
+  const raws: (string | null)[] = [];
+  for (let i = 0; i < names.length; i += FORM_RESPONSES_GET_CONCURRENCY) {
+    raws.push(...(await Promise.all(names.slice(i, i + FORM_RESPONSES_GET_CONCURRENCY).map((n) => kv.get(n)))));
+  }
+  const responses: FormResponse[] = [];
+  let unreadable = 0;
+  for (const raw of raws) {
+    if (raw == null) continue;
+    try {
+      responses.push(JSON.parse(raw) as FormResponse);
+    } catch {
+      unreadable++;
+    }
+  }
+  const next = !list.list_complete && typeof list.cursor === "string" && list.cursor !== "" ? list.cursor : null;
+  return { responses, next_cursor: next, unreadable };
+}
+
+/**
+ * @pure — #12509: valida uma página de `GET /api/respostas` (lado de quem lê):
+ * as respostas como em `parseFormResponsesPayload` e o `next_cursor`, que só
+ * pode ser string não vazia, `null` ou ausente. Qualquer outra forma LANÇA.
+ */
+export function parseFormResponsesPage(data: unknown): { responses: FormResponse[]; next_cursor: string | null } {
+  const responses = parseFormResponsesPayload(data);
+  const next = (data as FormResponsesPayload).next_cursor;
+  if (next == null) return { responses, next_cursor: null };
+  if (typeof next !== "string" || next === "") throw new Error("[onboarding-form] next_cursor inválido no payload de respostas");
+  return { responses, next_cursor: next };
+}
+
+export interface FetchAllFormResponsesIo {
+  fetchImpl?: typeof fetch;
+  /** Timeout de CADA página (default 30 s). */
+  timeoutMs?: number;
+  maxPages?: number;
+}
+
+/**
+ * #12509: lê TODAS as respostas de `GET /api/respostas`, seguindo
+ * `next_cursor` página a página (1ª chamada na URL configurada, sem
+ * `cursor`). Usado pelo executor (`onboarding-followup-run.ts`), pela
+ * preparação do convite da base e pelo perfil de audiência. Qualquer falha
+ * LANÇA: HTTP de erro (o 5xx do Worker leva o motivo, repassado na mensagem),
+ * payload malformado, cursor repetido ou mais de `maxPages` páginas. Nunca
+ * devolve uma lista parcial, que viraria "essas pessoas não preencheram".
+ */
+export async function fetchAllFormResponses(url: string, token: string, io: FetchAllFormResponsesIo = {}): Promise<FormResponse[]> {
+  const fetchImpl = io.fetchImpl ?? fetch;
+  const maxPages = io.maxPages ?? FORM_RESPONSES_MAX_PAGES;
+  const out: FormResponse[] = [];
+  const seen = new Set<string>();
+  let cursor: string | null = null;
+  for (let page = 0; page < maxPages; page++) {
+    let target = url;
+    if (cursor != null) {
+      const u = new URL(url);
+      u.searchParams.set("cursor", cursor);
+      target = u.toString();
+    }
+    const res = await fetchImpl(target, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(io.timeoutMs ?? 30_000),
+    });
+    if (!res.ok) {
+      let reason = "";
+      try {
+        const body = (await res.json()) as { reason?: unknown };
+        if (typeof body?.reason === "string") reason = ` (${body.reason})`;
+      } catch {
+        // corpo sem JSON: fica só o status
+      }
+      throw new Error(`GET respostas do formulário: HTTP ${res.status}${reason}`);
+    }
+    const parsed = parseFormResponsesPage(await res.json());
+    out.push(...parsed.responses);
+    if (parsed.next_cursor == null) return out;
+    if (seen.has(parsed.next_cursor)) throw new Error("[onboarding-form] next_cursor repetido: paginação de respostas não avança");
+    seen.add(parsed.next_cursor);
+    cursor = parsed.next_cursor;
+  }
+  throw new Error(`[onboarding-form] respostas passaram de ${maxPages} páginas sem terminar`);
 }
 
 /** Chave KV de uma resposta (1 por e-mail; a última vence). */

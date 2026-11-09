@@ -48,7 +48,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { parseFormResponsesPayload, type FormResponse } from "./lib/onboarding-form-contract.ts";
+import { fetchAllFormResponses, type FormResponse } from "./lib/onboarding-form-contract.ts";
 import { resolveFollowupConfig, type FollowupConfigRaw } from "./lib/onboarding-followup.ts";
 import { onboardingFormToSurveyResponses, type SurveyResponseRecord } from "./lib/audience-survey-questions.ts";
 
@@ -146,15 +146,8 @@ export async function fetchOnboardingFormResponsesReal(cfg: PlatformConfig, io: 
   if (fc.formResponsesUrl == null) return null;
   const token = env[fc.formResponsesTokenEnv];
   if (!token) throw new Error(`${fc.formResponsesTokenEnv} ausente no ambiente`);
-  const res = await fetchImpl(fc.formResponsesUrl, {
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(io.timeoutMs ?? 30_000),
-  });
-  if (!res.ok) {
-    await res.body?.cancel().catch(() => {});
-    throw new Error(`GET respostas do formulário: HTTP ${res.status}`);
-  }
-  return parseFormResponsesPayload(await res.json());
+  // #12509: segue as páginas (`next_cursor`) até a última.
+  return fetchAllFormResponses(fc.formResponsesUrl, token, { fetchImpl, timeoutMs: io.timeoutMs });
 }
 
 export interface StepResult {

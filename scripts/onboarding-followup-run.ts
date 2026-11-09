@@ -62,7 +62,7 @@ import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from 
 import { buildOnboardingLotFilter, decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type RefreshKitCandidatesOpts } from "./lib/onboarding-kit-transport.ts";
 import { isKitTransientError } from "./onboarding-welcome-run.ts";
 import { redactEmails, verifyPilotBroadcastFilter } from "./lib/onboarding-kit-pilot.ts";
-import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
+import { fetchAllFormResponses } from "./lib/onboarding-form-contract.ts";
 import { FORM_PAGE_MARKER, FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
 import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
@@ -1238,12 +1238,8 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
     async fetchFormResponses() {
       const token = process.env[cfg.formResponsesTokenEnv];
       if (!cfg.formResponsesUrl || !token) throw new Error(`endpoint de respostas ou ${cfg.formResponsesTokenEnv} ausente`);
-      const res = await fetch(cfg.formResponsesUrl, { headers: { authorization: `Bearer ${token}` } });
-      if (!res.ok) {
-        await res.body?.cancel().catch(() => {});
-        throw new Error(`GET respostas do formulário: HTTP ${res.status}`);
-      }
-      return parseFormResponsesPayload(await res.json());
+      // #12509: segue as páginas (`next_cursor`) até a última.
+      return fetchAllFormResponses(cfg.formResponsesUrl, token);
     },
     async runLot(lot, content) {
       // Import tardio: o executor da escada carrega o resto do transporte Kit.
