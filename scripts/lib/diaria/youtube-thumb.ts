@@ -326,7 +326,7 @@ export function buildVignetteSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H, cx = 
  * largura máxima vale mesmo quando a fonte efetiva tem métrica diferente da
  * estimada em `hookFontSize` (fallback sem Georgia sai bem mais largo).
  */
-export function buildHookSvg(hook: string, align: "end" | "start" = "end"): string {
+export function buildHookSvg(hook: string, align: "end" | "start" | "middle" = "end"): string {
   const parts = splitHook(hook);
   const size = hookFontSize(parts);
   const textAttrs = `font-family="${escapeXml(FONTS.serif)}" font-weight="700" font-size="${size}" fill="${COLORS.onInk}"`;
@@ -352,7 +352,8 @@ export function buildHookSvg(hook: string, align: "end" | "start" = "end"): stri
   const lineHeight = Math.round(size * HOOK_LINE_HEIGHT_EM);
   const w = Math.ceil(chars * size * 0.9) + 2 * size;
   const h = Math.ceil(size * 1.6) + lineHeight * (parts.lines.length - 1);
-  const x = align === "end" ? w - size : size;
+  // #12462: `middle` centraliza as linhas entre si (capa vertical do Short).
+  const x = align === "end" ? w - size : align === "middle" ? Math.round(w / 2) : size;
   const rows = parts.lines.map((line, i) => {
     const isLast = i === parts.lines!.length - 1;
     const y = Math.round(size * 1.2) + i * lineHeight;
@@ -368,7 +369,7 @@ export function buildHookSvg(hook: string, align: "end" | "start" = "end"): stri
 async function renderHookLayer(
   hook: string,
   maxWidth = HOOK_MAX_WIDTH,
-  align: "end" | "start" = "end",
+  align: "end" | "start" | "middle" = "end",
 ): Promise<{ png: Buffer; width: number; height: number }> {
   let png = await sharp(Buffer.from(buildHookSvg(hook, align))).png().trim().toBuffer();
   let meta = await sharp(png).metadata();
@@ -662,16 +663,25 @@ export interface ShortCoverPlan {
 }
 
 /**
- * Argumentos do `ffmpeg` para extrair a capa do Short: um frame do próprio
- * vertical em `atSeconds`. Fora da janela do lettering do título vira aviso
- * (a capa aprovada mostra o título do D1 em Georgia no topo).
+ * Argumentos do `ffmpeg` para extrair o frame da capa do Short em
+ * `atSeconds`. Sem gancho (`withHook: false`, a capa antiga): fora da janela
+ * do lettering do título vira aviso (a capa mostrava o título do D1 em
+ * Georgia no topo). Com gancho próprio (#12462, o padrão desde 08/11/2026):
+ * o aviso inverte, porque dentro da janela o lettering do título do D1
+ * apareceria junto do gancho.
  */
-export function planShortCoverFrame(video: string, atSeconds: number, out: string): ShortCoverPlan {
+export function planShortCoverFrame(video: string, atSeconds: number, out: string, opts: { withHook?: boolean } = {}): ShortCoverPlan {
   if (!Number.isFinite(atSeconds) || atSeconds < 0) {
     throw new Error(`--at inválido: ${atSeconds} (segundos, ex.: 1.8)`);
   }
   const warnings: string[] = [];
-  if (atSeconds > SHORT_COVER_LETTERING_WINDOW_S) {
+  if (opts.withHook) {
+    if (atSeconds <= SHORT_COVER_LETTERING_WINDOW_S) {
+      warnings.push(
+        `frame aos ${atSeconds}s está dentro da janela do lettering do título (0–${SHORT_COVER_LETTERING_WINDOW_S}s) — o título do D1 apareceria junto do gancho; escolha um frame depois de ${SHORT_COVER_LETTERING_WINDOW_S}s`,
+      );
+    }
+  } else if (atSeconds > SHORT_COVER_LETTERING_WINDOW_S) {
     warnings.push(
       `frame aos ${atSeconds}s está fora da janela do lettering do título (0–${SHORT_COVER_LETTERING_WINDOW_S}s) — a capa sairia sem o título do D1`,
     );
@@ -680,4 +690,141 @@ export function planShortCoverFrame(video: string, atSeconds: number, out: strin
     args: ["-hide_banner", "-loglevel", "error", "-ss", String(atSeconds), "-i", video, "-frames:v", "1", "-q:v", "2", "-y", out],
     warnings,
   };
+}
+
+// ─── Capa vertical do Short com gancho próprio (#12462 itens 3 e 4) ─────────
+
+/** Capa vertical do Short (feed de Shorts, Studio web): 1080x1920. */
+export const SHORT_COVER_W = 1080;
+export const SHORT_COVER_H = 1920;
+/**
+ * Gancho da capa vertical: 2 a 5 palavras (decisão do editor de 08/11/2026,
+ * #12462 item 3). Um a mais que o horizontal (2 a 4), porque a capa vertical
+ * quebra o gancho em 2 linhas. A palavra-chave fica no título (#12463/#12464);
+ * a capa traz o gancho, nunca repete o título do D1.
+ */
+export const SHORT_HOOK_MIN_WORDS = 2;
+export const SHORT_HOOK_MAX_WORDS = 5;
+/**
+ * Onde começa o painel escuro do gancho, em fração da altura. Cobre a
+ * legenda queimada do vertical (terço de baixo) e deixa o rosto no alto
+ * visível — o layout do corte de 08/11/2026, feito à mão (#12462 item 4).
+ */
+export const SHORT_COVER_PANEL_TOP_RATIO = 0.62;
+export const SHORT_COVER_PANEL_OPACITY = 0.88;
+/** Largura máxima do gancho na capa vertical (margem de 60 px de cada lado). */
+const SHORT_HOOK_MAX_WIDTH = SHORT_COVER_W - 120;
+
+/**
+ * Palavras do gancho vertical com a mesma contagem do `hookWords` do horizontal
+ * (#12278): moeda e número formam um token ("R$ 100 mil?" = 2). Cada token
+ * guarda a copy original (o espaço entre "R$" e "100" fica), para a quebra em
+ * 2 linhas nunca separar a moeda do número.
+ */
+function shortHookTokens(line: string): string[] {
+  const out: string[] = [];
+  for (const w of line.split(" ").filter(Boolean)) {
+    const prev = out[out.length - 1];
+    if (prev !== undefined && /^(?:[A-Z]{1,3}\$|\p{Sc})$/u.test(prev) && /^\d/.test(w)) out[out.length - 1] = `${prev} ${w}`;
+    else out.push(w);
+  }
+  return out;
+}
+
+function shortHookWords(line: string): string[] {
+  return shortHookTokens(line.replace(/[?!.…]+$/u, ""));
+}
+
+/**
+ * Pure (#12462): valida o gancho da capa vertical (2 a 5 palavras no total) e
+ * devolve no formato de linhas do `splitHook` (`"linha 1|linha 2"`). Gancho
+ * em 1 linha com mais de 3 palavras quebra em 2 linhas equilibradas (a
+ * primeira fica com a metade arredondada para cima); quebra explícita do
+ * editor (`|`, `\n`) é respeitada.
+ */
+export function normalizeShortCoverHook(hook: string): string {
+  const lines = hook.split(HOOK_LINE_BREAK_RE).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (lines.length === 0) throw new Error('gancho vazio — passe --hook "IA ladra?" (2 a 5 palavras, #12462)');
+  const total = lines.reduce((acc, l) => acc + shortHookWords(l).length, 0);
+  if (total < SHORT_HOOK_MIN_WORDS || total > SHORT_HOOK_MAX_WORDS) {
+    throw new Error(
+      `gancho da capa vertical ${JSON.stringify(hook)} tem ${total} palavra(s); a regra é ${SHORT_HOOK_MIN_WORDS} a ${SHORT_HOOK_MAX_WORDS} (#12462). ` +
+        `A capa traz o gancho, não o título do D1`,
+    );
+  }
+  let normalized = lines.join("|");
+  if (lines.length === 1) {
+    const words = shortHookTokens(lines[0]);
+    if (shortHookWords(lines[0]).length > 3) {
+      const cut = Math.ceil(words.length / 2);
+      normalized = `${words.slice(0, cut).join(" ")}|${words.slice(cut).join(" ")}`;
+    }
+  }
+  splitHook(normalized); // mesma validação de linhas do horizontal (até 2 linhas, até 4 por linha)
+  return normalized;
+}
+
+/** Pure (#12462): painel escuro na base da capa vertical, atrás do gancho. */
+export function buildShortCoverPanelSvg(panelTopRatio = SHORT_COVER_PANEL_TOP_RATIO, w = SHORT_COVER_W, h = SHORT_COVER_H): string {
+  if (!(panelTopRatio > 0 && panelTopRatio < 1)) throw new Error(`--panel-top inválido: ${panelTopRatio} (fração da altura entre 0 e 1, ex.: 0.62)`);
+  const y = Math.round(h * panelTopRatio);
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+    `<rect x="0" y="${y}" width="${w}" height="${h - y}" fill="${COLORS.ink}" fill-opacity="${SHORT_COVER_PANEL_OPACITY}"/>` +
+    `</svg>`
+  );
+}
+
+export interface ComposeShortCoverInput {
+  /** Frame do vertical (JPEG/PNG), em qualquer tamanho 9:16. */
+  frame: Buffer;
+  hook: string;
+  panelTopRatio?: number;
+}
+
+/**
+ * Compõe a capa vertical do Short (#12462): o frame do vertical em 1080x1920
+ * (recorte central se não for 9:16), painel escuro cobrindo a legenda
+ * queimada e o gancho em Georgia bold cor papel, `?` em teal, centralizado
+ * no painel. JPEG ≤ 2 MB.
+ */
+export async function composeShortCover(input: ComposeShortCoverInput): Promise<ComposeThumbResult> {
+  const warnings: string[] = [];
+  const hook = normalizeShortCoverHook(input.hook);
+  const panelTopRatio = input.panelTopRatio ?? SHORT_COVER_PANEL_TOP_RATIO;
+  const panel = buildShortCoverPanelSvg(panelTopRatio);
+  const meta = await sharp(input.frame).metadata();
+  if (!meta.width || !meta.height) throw new Error("frame ilegível (sem dimensões)");
+  if (Math.abs(meta.width / meta.height - 9 / 16) > (9 / 16) * 0.02) {
+    warnings.push(`frame ${meta.width}x${meta.height} não é 9:16 — recortado no centro`);
+  }
+  const base = await sharp(input.frame).rotate().resize(SHORT_COVER_W, SHORT_COVER_H, { fit: "cover", position: "centre" }).toBuffer();
+  const hookLayer = await renderHookLayer(hook, SHORT_HOOK_MAX_WIDTH, "middle");
+  const panelTop = Math.round(SHORT_COVER_H * panelTopRatio);
+  const panelH = SHORT_COVER_H - panelTop;
+  if (hookLayer.height > panelH - 80) {
+    warnings.push(`gancho com ${hookLayer.height}px de altura quase não cabe no painel (${panelH}px) — encurte o gancho ou suba o painel (--panel-top)`);
+  }
+  const compose = (quality: number) =>
+    sharp(base)
+      .composite([
+        { input: Buffer.from(panel), left: 0, top: 0 },
+        {
+          input: hookLayer.png,
+          left: Math.max(0, Math.round((SHORT_COVER_W - hookLayer.width) / 2)),
+          top: Math.max(panelTop, panelTop + Math.round((panelH - hookLayer.height) / 2)),
+        },
+      ])
+      .flatten({ background: COLORS.ink })
+      .jpeg({ quality, mozjpeg: true })
+      .toBuffer();
+  let jpeg = await compose(90);
+  for (const q of [82, 74, 66]) {
+    if (jpeg.length <= YOUTUBE_THUMB_MAX_BYTES) break;
+    jpeg = await compose(q);
+  }
+  if (jpeg.length > YOUTUBE_THUMB_MAX_BYTES) {
+    throw new Error(`capa vertical com ${jpeg.length} bytes passa do limite de 2 MB do YouTube mesmo em qualidade 66`);
+  }
+  return { jpeg, warnings };
 }

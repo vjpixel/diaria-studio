@@ -148,6 +148,7 @@ import {
 // D1, `MAX_SUBJECT_LENGTH`). O do card 4x5 depende da quebra de linha e vem no
 // lint `title-card-4x5`, não no contador.
 import { MAX_SUBJECT_LENGTH, checkTitleCardFit, checkTitleEmailSubject } from "../lib/lint-checks/title-limits.ts";
+import { SHORTS_FEED_VISIBLE_TITLE_CHARS, checkD1ShortsFrontLoad } from "../lib/lint-checks/title-shorts-front-load.ts"; // #12464
 
 // ── Arquivos revisáveis ─────────────────────────────────────────────────
 
@@ -658,6 +659,13 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
     // #11254: os dois limites reais do título, fora do gate 4 (aviso, nunca bloqueio).
     runCheck("title-card-4x5", "Título cabe no card 4x5 (3 linhas a 62px)", false, () => checkTitleCardFit(md)),
     runCheck("title-email-subject", "Título do D1 cabe no assunto do e-mail (≤70 chars)", false, () => checkTitleEmailSubject(md)),
+    // #12464: o D1 é o título do Short; o detalhe traz a fatia visível (`visible`) que o feed mostra. Aviso, nunca bloqueio.
+    runCheck(
+      "title-shorts-front-load",
+      `Título do D1 se lê sozinho nos ~${SHORTS_FEED_VISIBLE_TITLE_CHARS} chars do feed de Shorts`,
+      false,
+      () => checkD1ShortsFrontLoad(md),
+    ),
     runCheck("why-matters-format", "'Por que isso importa' sem abertura 'Para [audiência],'", true, () => checkWhyMattersFormat(md)),
     runCheck("eai-section", "Seção É IA? presente", true, () => checkEaiSection(md)),
     runCheck("intro-count", "Intro bate com contagem real de itens (#743)", true, () => lintIntroCount(md)),

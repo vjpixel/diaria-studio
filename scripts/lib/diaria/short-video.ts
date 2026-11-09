@@ -10,11 +10,14 @@
  *   - objetivo é levar gente pro canal do YouTube (@diariabr); no Instagram o
  *     CTA manda pro "link da bio". Desde #11617 (29/10/2026) nenhum texto do
  *     vertical mostra link (nem a edição com UTM, nem o vídeo completo, nem o
- *     domínio solto);
+ *     domínio solto). Exceção do #12465 (08/11/2026): nas contas PESSOAIS
+ *     (página VJ Pixel, perfil pessoal do Facebook, LinkedIn e Threads) o
+ *     texto cita o perfil da diar.ia.br daquela rede (`diariaFollowLine`);
  *   - Reels TODO DIA nas páginas diar.ia.br e VJ Pixel (MemeLab saiu, #10790)
  *     e no perfil pessoal do editor. Jandig, Teatro vs Game e Criaturas Afetivas ficam fora
  *     da rotina — só quando o editor pedir, nunca automático;
- *   - YouTube Shorts: título `{D1} #Shorts`, descrição curta, vídeo
+ *   - YouTube Shorts: título = o do D1 (sem `#Shorts` desde #12463; a tag
+ *     fica na descrição), descrição curta, vídeo
  *     relacionado = o longo da edição — fluxo validado à mão no 1º Short,
  *     https://youtube.com/shorts/nhMUtgPPs4U. SEM comentário fixado (#10831):
  *     desde 2023 link em descrição E em comentário de Short não é clicável; o
@@ -57,7 +60,7 @@ import {
   type SlotRule,
 } from "../social-slot-planner.ts";
 import { DEFAULT_EDITION_SCHEDULE_HHMM } from "../edition-scheduled-at.ts";
-import { YOUTUBE_TITLE_MAX_CHARS, buildYouTubeTitle, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
+import { buildYouTubeTitle, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
 import type { ShortCoverRecord } from "./short-cover.ts";
 
 /** Canal do YouTube que os Shorts/Reels divulgam. */
@@ -104,7 +107,7 @@ export const SHORTS_PUBLISHED_FILE = "_internal/06-shorts-published.json";
 /** Teto da legenda do Reels no Instagram (2.200 caracteres, doc `ig-user/media`). */
 export const INSTAGRAM_CAPTION_MAX_CHARS = 2200;
 
-/** Hashtags fixas — `#Shorts` só no YouTube, onde ajuda a classificação. */
+/** Hashtags fixas. `#Shorts` só na descrição do YouTube, nunca no título (#12463). */
 export const SHORTS_HASHTAGS = ["#IA", "#inteligênciaartificial"] as const;
 
 export interface ShortD1Input {
@@ -143,14 +146,18 @@ export interface YouTubeShortMetadata {
   description: string;
 }
 
-/** Título `{D1} #Shorts`, truncando só o D1 se passar de 100 caracteres. */
+/**
+ * Título do Short = título do D1 (ou o `--title` do corte), SEM sufixo
+ * (#12463, decisão do editor de 08/11/2026): `#Shorts` vai só na descrição
+ * (`buildYouTubeShortMetadata`). O YouTube classifica o Short pelo formato,
+ * não pela tag, e no feed do celular ` #Shorts` gastava 8 dos ~40 caracteres
+ * visíveis. Mesmo texto do horizontal (`buildYouTubeTitle`): o teto de 100
+ * caracteres vale para o título inteiro. Os Shorts publicados até 08/11/2026
+ * têm `{D1} #Shorts` no título; o reconhecimento de Short já no canal aceita
+ * as duas formas (`matchEditionVideo`, `kind: "short"`).
+ */
 export function buildYouTubeShortTitle(d1Title: string): string {
-  const suffix = " #Shorts";
-  const base = sanitizeForYouTube(stripInlineMarkdown(d1Title).replace(/\s+/g, " ").trim());
-  const room = YOUTUBE_TITLE_MAX_CHARS - suffix.length;
-  const chars = Array.from(base);
-  const head = chars.length <= room ? base : `${chars.slice(0, room - 1).join("").trimEnd()}…`;
-  return `${head}${suffix}`;
+  return buildYouTubeTitle(d1Title);
 }
 
 /**
@@ -197,6 +204,96 @@ export function buildYouTubeShortMetadata(input: { d1: ShortD1Input; horizontalT
 
 export type ReelsPlatform = "facebook" | "instagram";
 
+// ─── Perfil da diar.ia.br nas contas pessoais (#12465) ──────────────────────
+
+/**
+ * #12465 (decisão do editor de 08/11/2026): o post do vídeo nas contas
+ * PESSOAIS do editor leva a menção (ou o link) do perfil da diar.ia.br naquela
+ * mesma rede — o botão Seguir ao lado do vídeo segue o editor, e o card de
+ * encerramento pede "Siga a diar.ia.br". Revisa o #11617 (nenhum texto do
+ * vertical mostra link) só para o perfil da diar.ia.br: menção nativa onde a
+ * API aceita (LinkedIn, `@[Nome](urn:li:organization:ID)`, mantida pelo
+ * `toLittleText`; Threads, `@handle`) e URL do perfil onde não há menção
+ * confirmada pela API (Facebook: a tag de página na descrição de vídeo da
+ * Graph API não foi medida). Fonte única dos perfis: `publishing.shorts.
+ * diaria_profiles` no `platform.config.json`.
+ *
+ * LinkedIn: a menção só vira link quando o texto entre colchetes é o nome
+ * EXATO da página, e o efeito de um nome divergente na Posts API (4xx, que
+ * derrubaria o vídeo do perfil pessoal, ou texto puro) não foi medido (review
+ * do PR #12489). Por isso a menção só sai com `urn` configurado E
+ * `mention_verified: true` (o editor conferiu o nome atual da página); fora
+ * disso a linha cai na URL do perfil, que publica em qualquer caso.
+ */
+export interface DiariaProfiles {
+  linkedin: { name: string; urn: string | null; url: string; mentionVerified: boolean };
+  threads: { handle: string | null; url: string };
+  facebook: { url: string };
+}
+
+export const DEFAULT_DIARIA_PROFILES: Readonly<DiariaProfiles> = Object.freeze({
+  linkedin: { name: "diar.ia.br", urn: "urn:li:organization:110742958", url: "https://www.linkedin.com/company/diar.ia.br/", mentionVerified: false },
+  threads: { handle: "diar.ia.br", url: "https://www.threads.com/@diar.ia.br" },
+  facebook: { url: "https://www.facebook.com/diar.ia.br" },
+});
+
+/** Slug da página diar.ia.br em `publishing.social.facebook.pages` (as outras são de terceiros/pessoais). */
+export const DIARIA_FACEBOOK_PAGE_SLUG = "diaria";
+
+/** URL sem `https://` e sem `www.` nem barra final, como entra no texto. */
+function shortProfileUrl(url: string): string {
+  return url.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
+}
+
+/**
+ * Pure (#12465): a linha "Siga a diar.ia.br" do post do vídeo no destino, ou
+ * `null` nos destinos que já publicam pela conta da diar.ia.br (YouTube,
+ * página diar.ia.br, Instagram @diar.ia.br, X @diariabr, TikTok @diar.ia.br).
+ */
+export function diariaFollowLine(destination: string, profiles: DiariaProfiles = DEFAULT_DIARIA_PROFILES): string | null {
+  if (destination === "linkedin_profile") {
+    const p = profiles.linkedin;
+    return p.urn && p.mentionVerified === true ? `Siga @[${p.name}](${p.urn})` : `Siga a diar.ia.br: ${shortProfileUrl(p.url)}`;
+  }
+  if (destination === "threads_profile") {
+    const p = profiles.threads;
+    return p.handle ? `Siga @${p.handle}` : `Siga a diar.ia.br: ${shortProfileUrl(p.url)}`;
+  }
+  if (destination === "facebook_profile" || (destination.startsWith("facebook:") && destination !== `facebook:${DIARIA_FACEBOOK_PAGE_SLUG}`)) {
+    return `Siga a diar.ia.br: ${shortProfileUrl(profiles.facebook.url)}`;
+  }
+  return null;
+}
+
+/** Lê `publishing.shorts.diaria_profiles` (ausente = `DEFAULT_DIARIA_PROFILES`); campo inválido lança. */
+export function loadDiariaProfiles(raw: unknown): DiariaProfiles {
+  if (raw === undefined) return structuredClone(DEFAULT_DIARIA_PROFILES) as DiariaProfiles;
+  const bad = (why: string) => new Error(`[shorts] publishing.shorts.diaria_profiles: ${why} (#12465).`);
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw bad("precisa ser um objeto");
+  const r = raw as Record<string, any>;
+  const url = (v: unknown, key: string): string => {
+    if (typeof v !== "string" || !/^https:\/\/\S+$/.test(v)) throw bad(`${key} precisa ser uma URL https`);
+    return v;
+  };
+  const d = DEFAULT_DIARIA_PROFILES;
+  const li = r.linkedin ?? {};
+  const th = r.threads ?? {};
+  const fb = r.facebook ?? {};
+  const urn = li.urn === undefined ? d.linkedin.urn : li.urn;
+  if (urn !== null && (typeof urn !== "string" || !/^urn:li:organization:\d+$/.test(urn))) throw bad("linkedin.urn precisa ser urn:li:organization:ID ou null");
+  const name = li.name ?? d.linkedin.name;
+  if (typeof name !== "string" || !name.trim() || /[[\]()]/.test(name)) throw bad("linkedin.name precisa ser o nome da página, sem colchetes nem parênteses");
+  const mentionVerified = li.mention_verified ?? d.linkedin.mentionVerified;
+  if (typeof mentionVerified !== "boolean") throw bad("linkedin.mention_verified precisa ser true ou false");
+  const handle = th.handle === undefined ? d.threads.handle : th.handle;
+  if (handle !== null && (typeof handle !== "string" || !/^[A-Za-z0-9._]{1,30}$/.test(handle))) throw bad("threads.handle precisa ser o username sem @ ou null");
+  return {
+    linkedin: { name, urn, url: url(li.url ?? d.linkedin.url, "linkedin.url"), mentionVerified },
+    threads: { handle, url: url(th.url ?? d.threads.url, "threads.url") },
+    facebook: { url: url(fb.url ?? d.facebook.url, "facebook.url") },
+  };
+}
+
 /**
  * #11388 (decisão do editor, 27/10/2026, testada à mão na legenda do Reels de
  * 261027): a legenda do Reels diz o que é a diar.ia.br em vez de pressupor que
@@ -214,14 +311,16 @@ export const INSTAGRAM_REELS_CTA = `${REELS_NEWSLETTER_SENTENCE} Assine pelo lin
  * da legenda. No Instagram a chamada é pro link da bio (`INSTAGRAM_REELS_CTA`);
  * no Facebook, que não tem bio, fica só a frase da newsletter: o link da
  * edição com UTM saiu da legenda (#11617, pedido do editor: post do vídeo
- * sem link no texto).
+ * sem link no texto). Exceção (#12465): na página VJ Pixel e no perfil
+ * pessoal, `follow` acrescenta o perfil da diar.ia.br.
  */
-export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1Input }): string {
+export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1Input; follow?: string | null }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
   const cta = input.platform === "instagram" ? INSTAGRAM_REELS_CTA : REELS_NEWSLETTER_SENTENCE;
-  const caption = [title, hook, cta, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+  // #12465: `follow` = `diariaFollowLine(destino)`, só nas contas pessoais (página VJ Pixel, perfil pessoal).
+  const caption = [title, hook, cta, input.follow ?? "", SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (input.platform === "instagram" && Array.from(caption).length > INSTAGRAM_CAPTION_MAX_CHARS) {
     throw new Error(`legenda do Instagram passou de ${INSTAGRAM_CAPTION_MAX_CHARS} caracteres`);
   }
@@ -265,18 +364,23 @@ export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
  *
  * LinkedIn: título, gancho (1ª frase do D1) e hashtags.
  * X e Threads: título e gancho no teto da rede (`fitShortText`).
+ *
+ * #12465: `follow` (de `diariaFollowLine`) entra no perfil pessoal (LinkedIn,
+ * Threads) antes das hashtags e nunca é cortado; o X sai pela @diariabr e não
+ * leva a linha.
  */
-export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: ShortD1Input }): string {
+export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: ShortD1Input; follow?: string | null }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
+  const follow = input.follow ?? "";
   if (input.platform === "linkedin") {
-    const text = [title, hook, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+    const text = [title, hook, follow, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
     if (Array.from(text).length > LINKEDIN_COMMENTARY_MAX_CHARS) throw new Error(`texto do LinkedIn passou de ${LINKEDIN_COMMENTARY_MAX_CHARS} caracteres`);
     return text;
   }
-  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads");
-  return fitShortText(title, hook, computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, "X");
+  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads", follow);
+  return fitShortText(title, hook, computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, "X", follow);
 }
 
 const UTF8 = new TextEncoder();
@@ -301,14 +405,16 @@ export function threadsTextLength(text: string): number {
  * tag de tópico, e no X elas tirariam espaço do gancho. Não cabe → tira o
  * gancho; ainda não cabe → corta o título. Lança se nem o título mínimo couber.
  */
-function fitShortText(title: string, hook: string, measure: (t: string) => number, max: number, label: string): string {
+function fitShortText(title: string, hook: string, measure: (t: string) => number, max: number, label: string, tail = ""): string {
+  // #12465: `tail` (a linha "Siga @diar.ia.br") fica sempre no fim; sai o gancho, depois encurta o título.
+  const withTail = (body: string) => (tail ? `${body}\n\n${tail}` : body);
   if (hook) {
-    const withHook = `${title}\n\n${hook}`;
+    const withHook = withTail(`${title}\n\n${hook}`);
     if (measure(withHook) <= max) return withHook;
   }
   const chars = Array.from(title);
   for (let n = chars.length; n >= 10; n--) {
-    const head = n === chars.length ? title : `${chars.slice(0, n - 1).join("").trimEnd()}…`;
+    const head = withTail(n === chars.length ? title : `${chars.slice(0, n - 1).join("").trimEnd()}…`);
     if (measure(head) <= max) return head;
   }
   throw new Error(`texto do ${label} não cabe em ${max} caracteres`);
@@ -391,6 +497,11 @@ export interface ShortsConfig {
    * skill (#11550).
    */
   corteViaTimer: boolean;
+  /**
+   * #12465: perfis da diar.ia.br citados no post do vídeo nas contas pessoais
+   * (`publishing.shorts.diaria_profiles`). Ausente = `DEFAULT_DIARIA_PROFILES`.
+   */
+  diariaProfiles?: DiariaProfiles;
 }
 
 /** Limite de collaborators por mídia na Graph API do Instagram. */
@@ -513,6 +624,7 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     tiktok,
     tiktokBufferChannelId: tiktokChannel,
     corteViaTimer: optionalBool(raw, "corte_via_timer", DEFAULT_SHORTS_CONFIG.corteViaTimer),
+    diariaProfiles: loadDiariaProfiles(raw.diaria_profiles),
   };
 }
 
