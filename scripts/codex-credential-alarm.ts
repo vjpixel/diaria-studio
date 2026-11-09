@@ -63,7 +63,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
   evaluateCodexPool,
@@ -144,7 +144,16 @@ function render(verdict: CodexPoolVerdict, nowIso: string): string {
   return buildCodexAlarmMessage(verdict, nowIso);
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/codex-credential-alarm.ts",
+  booleans: ["dry-run", "json"],
+  values: ["auth-json"],
+};
+
 async function main(argv: string[]): Promise<number> {
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) return cliExit;
   const dryRun = hasFlag(argv, "dry-run");
   const asJson = hasFlag(argv, "json");
   // `getArg` colapsa flag ausente em "" (não `undefined`), então `??` não

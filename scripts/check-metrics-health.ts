@@ -83,7 +83,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { findUnknownFlags, getArg, hasFlag, isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule, resolveCliAction } from "./lib/cli-args.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getKitActiveSummary, getSubscriptionAsOf } from "./lib/diaria-subscribers-db.ts";
 import { summarizeStoreLeitoresCanonicalDedup, LEITOR_DIARIA_PLATFORMS, type StoreLeitorSummary } from "./lib/leitor-store.ts";
@@ -389,8 +389,8 @@ function parseFloatArg(argv: string[], key: string): number | undefined {
 // Validação de argv ANTES de qualquer I/O (#12476)
 // ---------------------------------------------------------------------------
 
-/** Flags booleanas (sem valor). `h` é o atalho `-h` de `--help`. */
-const BOOLEAN_FLAGS = ["dry-run", "help", "h"] as const;
+/** Flags booleanas (sem valor). `help`/`-h` entram sozinhos via `resolveCliAction`. */
+const BOOLEAN_FLAGS = ["dry-run"] as const;
 /** Flags que exigem valor (`--flag valor` ou `--flag=valor`). */
 const VALUE_FLAGS = [
   "to",
@@ -443,56 +443,15 @@ export type MetricsHealthCliAction =
  * @pure
  */
 export function resolveMetricsHealthCliAction(argv: readonly string[]): MetricsHealthCliAction {
-  const list = [...argv];
-
-  // Tokens consumidos como VALOR de uma flag de valor (`--flag valor`, mesma
-  // regra de `parseArgs`: o próximo token que não começa com `--`) não são
-  // flags. Sem isto, `--queda-min-pct -5` saía "flag desconhecida: -5" e
-  // `--to -h` virava help (#12502).
-  const valueFlagSet = new Set<string>(VALUE_FLAGS);
-  const flagTokens: string[] = [];
-  for (let i = 0; i < list.length; i++) {
-    const a = list[i];
-    flagTokens.push(a);
-    if (a.startsWith("--") && !a.includes("=") && valueFlagSet.has(a.slice(2))) {
-      const next = list[i + 1];
-      if (next !== undefined && !next.startsWith("--")) i++;
-    }
-  }
-
-  // Flag desconhecida vence o help: `--bogus --help` recusa o `--bogus`.
-  const unknown = findUnknownFlags(flagTokens, [...BOOLEAN_FLAGS, ...VALUE_FLAGS]);
-  if (unknown.length > 0) {
-    return { kind: "error", message: `flag(s) desconhecida(s): ${unknown.join(", ")}` };
-  }
-  if (flagTokens.includes("-h") || flagTokens.includes("--help")) return { kind: "help" };
-
-  const parsed = parseArgs(list);
-  if (parsed.positional.length > 0) {
-    return { kind: "error", message: `argumento(s) inesperado(s): ${parsed.positional.join(", ")}` };
-  }
-  for (const flag of BOOLEAN_FLAGS) {
-    if (flag in parsed.values) {
-      return { kind: "error", message: `--${flag} não aceita valor (recebido "${parsed.values[flag]}")` };
-    }
-  }
-  for (const flag of VALUE_FLAGS) {
-    const value = parsed.values[flag];
-    if (parsed.flags.has(flag) || value === "") {
-      return { kind: "error", message: `--${flag} exige um valor` };
-    }
-    if (value === undefined) continue;
-    if (NUMERIC_VALUE_FLAGS.has(flag)) {
-      // Nenhum limiar do alarme faz sentido negativo (#12502).
-      const n = Number(value);
-      if (!Number.isFinite(n) || n < 0) {
-        return { kind: "error", message: `--${flag} deve ser um número não-negativo (recebido "${value}")` };
-      }
-    } else if (value.startsWith("-")) {
-      return { kind: "error", message: `--${flag} exige um valor (recebido "${value}", que parece uma flag)` };
-    }
-  }
-  return { kind: "run" };
+  // #12503: a lógica virou `resolveCliAction` em `lib/cli-args.ts`, usada por
+  // todos os alarmes. Nenhum limiar do alarme faz sentido negativo (#12502).
+  return resolveCliAction(argv, {
+    script: "scripts/check-metrics-health.ts",
+    booleans: BOOLEAN_FLAGS,
+    values: VALUE_FLAGS,
+    numeric: [...NUMERIC_VALUE_FLAGS],
+    usage: CHECK_METRICS_HEALTH_USAGE,
+  });
 }
 
 function resolveThresholds(argv: string[]): MetricsHealthThresholds {
