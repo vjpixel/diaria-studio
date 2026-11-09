@@ -1141,6 +1141,32 @@ describe("apply-factcheck-autofix cenário 9 — claim social-only (#3224, antes
     }
   });
 
+  it("#12511: sem selo anterior, o selo aceita sem prova só a seção que o autofix mudou (não D1/D2 inteiros)", () => {
+    const fixture = createFixture({
+      newsletterContent: "DESTAQUE 1\n\nTexto sem o claim aqui.\n",
+      socialContent: "# LinkedIn\n\n## d1\n\nO GPT-4o foi superado.\n\n## d2\n\nOutro texto sem humanizador.\n",
+      factCheckClaims: [
+        {
+          verdict: "DIVERGENT",
+          claim_type: "number",
+          destaque: 1,
+          text: "GPT-4o",
+          suggested_fix: "GPT-5.4",
+          sources: ["social"],
+        } as Partial<FactClaim>,
+      ],
+    });
+    try {
+      const result = runCli(fixture.dir);
+      assert.equal(result.status, 0, `exit 0. stderr: ${result.stderr}`);
+      const sentinel = JSON.parse(readFileSync(join(fixture.dir, "_internal", ".humanizer-social-done.json"), "utf8"));
+      assert.deepEqual(sentinel.unproven_sections, ["main_d1"]);
+      assert.equal(checkSentinel(fixture.dir).ok, true);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("claim social-only sem o texto no arquivo → skipped_text_not_found, sentinel não tocado", () => {
     const fixture = createFixture({
       newsletterContent: "DESTAQUE 1\n\nTexto sem o claim aqui.\n",

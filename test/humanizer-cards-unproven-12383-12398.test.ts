@@ -181,8 +181,9 @@ describe("#12398: --unproven-ok com o selo já batendo com 03-social.md", () => 
       writeFileSync(join(dir, "03-social.md"), plain);
       writeSentinel(dir); // primeiro --write sem --record-run (#12331)
       assert.equal(rule.run(dir).length, 3);
-      assert.match(rule.run(dir)[0].message, /--write --unproven-ok "<motivo>"/, "selo fresco: a dica dispensa --bypass-reason");
-      writeSentinel(dir, undefined, { unprovenOk: "editor manteve o texto dele" });
+      assert.match(rule.run(dir)[0].message, /--write --unproven-ok "<motivo>" --unproven-ok-section main_d1 /, "selo fresco: a dica dispensa --bypass-reason");
+      // #12511: sem mudança desde o selo, o aceite nomeia as seções.
+      writeSentinel(dir, undefined, { unprovenOk: "editor manteve o texto dele", unprovenOkSections: ["d1", "d2", "d3"] });
       assert.deepEqual(rule.run(dir), []);
       const seal = readSeal(dir);
       assert.deepEqual(seal.unproven_sections?.sort(), ["main_d1", "main_d2", "main_d3"]);
@@ -204,7 +205,7 @@ describe("#12398: --unproven-ok com o selo já batendo com 03-social.md", () => 
       assert.equal(rule.run(dir).length, 3);
       const r = spawnSync(
         process.execPath,
-        ["--import", "tsx", SCRIPT, "--write", "--unproven-ok", "editor", "--edition-dir", dir],
+        ["--import", "tsx", SCRIPT, "--write", "--unproven-ok", "editor", "--unproven-ok-section", "main_d1,d2,d3", "--edition-dir", dir],
         { encoding: "utf8", cwd: ROOT },
       );
       assert.equal(r.status, 0, r.stderr);
