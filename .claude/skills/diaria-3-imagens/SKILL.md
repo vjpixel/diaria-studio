@@ -132,12 +132,19 @@ npx tsx scripts/check-invariants.ts --stage 3 --edition-dir {EDIR}/
 
 Exit 0 → seguir para o gate abaixo. Exit 1 → bloquear o gate, mostrar as violações ao editor (qual destaque/arquivo falta) e voltar ao passo 2b antes de tentar de novo — **nunca apresentar o gate com invariante vermelho**.
 
+**Lista de outputs do sentinel depende de `destaque_count` (#12256, #2316).** O sentinel declara os arquivos que o Stage 4 confere com `assertSentinel` — arquivo listado que não existe reprova o Stage 4. Edição de 2 destaques não tem nenhuma imagem do D3, então ela usa a variante sem `04-d3-*`. `destaque_count` = campo `destaqueCount` do JSON do runner do passo 2b (`stage-3-run.ts`); ausente, `highlights.length` de `_internal/01-approved-capped.json` (default 3, mesmo cálculo do runner). O hero 2:1 (`04-d{N}-2x1.jpg`) de cada destaque entra na lista: é a imagem da newsletter (`d{N}_2x1` em `06-public-images.json`, #2133), a única além do card 4:5 desde o #12226.
+
 **Se `--no-gate`:** pular. Emitir `[AUTO] Etapa 3 auto-aprovada`, escrever o sentinel (#5793) e finalizar:
 
 ```bash
+# destaque_count=3:
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition $1 --step 3 \
-  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-4x5.jpg,04-d2-4x5.jpg,04-d3-4x5.jpg"
+  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-4x5.jpg,04-d2-2x1.jpg,04-d2-4x5.jpg,04-d3-2x1.jpg,04-d3-4x5.jpg"
+# destaque_count=2:
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition $1 --step 3 \
+  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-4x5.jpg,04-d2-2x1.jpg,04-d2-4x5.jpg"
 ```
 
 **Caso contrário:**
@@ -152,7 +159,7 @@ Etapa 3 — Imagens prontas.
 Imagens de destaque:
   📁 {EDIR}/04-d1-2x1.jpg  (+ 04-d1-4x5.jpg)
   📁 {EDIR}/04-d2-2x1.jpg  (+ 04-d2-4x5.jpg)
-  📁 {EDIR}/04-d3-2x1.jpg  (+ 04-d3-4x5.jpg)
+  📁 {EDIR}/04-d3-2x1.jpg  (+ 04-d3-4x5.jpg)   [só se destaque_count=3]
 
 Aprovar (sim) / regenerar imagem individual (ex: "d2") / pedir retry completo?
 ```
@@ -164,9 +171,14 @@ Caso contrário, aguardar resposta. "sim" → finalizar (escrever o sentinel aba
 **Escrever sentinel de conclusão (#5793)** — cobre tanto `--no-gates` quanto o "sim" respondido organicamente pelo editor:
 
 ```bash
+# destaque_count=3:
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition $1 --step 3 \
-  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-4x5.jpg,04-d2-4x5.jpg,04-d3-4x5.jpg"
+  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-4x5.jpg,04-d2-2x1.jpg,04-d2-4x5.jpg,04-d3-2x1.jpg,04-d3-4x5.jpg"
+# destaque_count=2:
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition $1 --step 3 \
+  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-4x5.jpg,04-d2-2x1.jpg,04-d2-4x5.jpg"
 ```
 
 ## Outputs

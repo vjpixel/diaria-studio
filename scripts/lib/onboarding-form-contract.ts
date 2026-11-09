@@ -23,23 +23,27 @@
  *    respostas no formato `FormResponsesPayload`. É o que o executor lê a
  *    cada rodada para marcar "preencheu" no store e parar os lembretes.
  *
- * ## Perguntas (rascunho da sessão, aguardando aprovação do editor)
+ * ## Perguntas (v2, decisões do editor de 08/11/2026)
  *
- * Decisão do editor (/diaria-develop 261020b): a sessão RASCUNHA, o editor
- * aprova. Duas frentes: (1) perfil e interesses, para as notícias refletirem
- * o público; (2) sondagem de produto, que cursos ou outros produtos o editor
- * poderia vender a esse público. Enquanto o editor não aprovar, o envio dos
- * e-mails do formulário segue travado pelo marcador de texto pendente
- * (`formContentGate`), então nenhum leitor chega ao formulário antes disso.
+ * Duas frentes: (1) perfil e interesses, para as notícias refletirem o
+ * público; (2) sondagem de produto (que cursos, aulas, guias ou mentorias
+ * oferecer). Decisões do editor (/diaria-develop 261108): nível sem jargão;
+ * conteúdo perguntado pelas SEÇÕES da newsletter; foco em B2C (preço só por
+ * faixas, sem "quem pagaria"; o único sinal B2B é a opção "Treinamento para a
+ * equipe da empresa onde trabalho"); tema e preço somem quando a pessoa marca
+ * "Nada disso" no que ela faria além da newsletter (`hiddenWhen`); sem
+ * pergunta de ferramentas nem de porte de empresa; só nível e área são
+ * obrigatórias. Depois das seções, uma pergunta opcional sobre o que a pessoa
+ * faz quando o link abre em inglês (`leitura_ingles`, decisão do editor de
+ * 08/11/2026). O envio segue travado pelo marcador de texto pendente
+ * (`formContentGate`) até o editor aprovar o texto final.
  *
- * As 3 primeiras perguntas (nível, área, tipos de conteúdo) têm rótulo
- * DIFERENTE do da survey de perfil antiga da Beehiiv, mas casam com os mesmos
- * matchers de `scripts/lib/audience-survey-questions.ts` e usam opções
- * compatíveis (as mesmas da survey, mais "Estudante" em área), para as
- * respostas somarem nas mesmas seções de `context/audience-profile.md`.
- * `test/onboarding-form-questions-10605.test.ts` trava o casamento e congela
- * as opções. Mudar o rótulo sem mexer no matcher tiraria a pergunta do perfil
- * em silêncio; o teste existe para pegar isso.
+ * Desde a decisão 10 do editor (08/11/2026) o perfil de audiência sai SÓ
+ * deste formulário: as respostas da survey antiga da Beehiiv (e do Tally)
+ * foram descartadas. Cada pergunta casa com exatamente um matcher de
+ * `scripts/lib/audience-survey-questions.ts`, travado por
+ * `test/onboarding-form-questions-10605.test.ts`: mudar o rótulo sem mexer no
+ * matcher tiraria a pergunta do perfil em silêncio.
  */
 
 interface FormQuestionBase {
@@ -49,6 +53,13 @@ interface FormQuestionBase {
   required?: boolean;
   /** Linha de ajuda curta abaixo do rótulo. */
   help?: string;
+  /**
+   * Pergunta escondida quando a pessoa marca `option` na pergunta `questionId`
+   * (um `checkbox` que vem ANTES desta na lista). Escondida, a resposta é
+   * tratada como ausente: o cliente desabilita os campos e o servidor
+   * descarta o que vier (`parseFormSubmission`). Nunca combina com `required`.
+   */
+  hiddenWhen?: { questionId: string; option: string };
 }
 
 /** Pergunta de escolha: `select` = uma opção; `checkbox` = várias (gravadas
@@ -76,7 +87,10 @@ export function isChoiceQuestion(q: FormQuestion): q is ChoiceQuestion {
  *  única de `answers[id]`. Nenhuma opção pode conter este texto (teste). */
 export const FORM_MULTI_SEPARATOR = " | ";
 
-/** Rascunho da sessão (#10605), aguardando aprovação do editor. */
+/** Opção de `produto_formato` que esconde tema e preço (decisão 5 do editor). */
+export const FORM_NADA_DISSO = "Nada disso, a newsletter já me basta";
+
+/** v2 (#10605, decisões do editor de 08/11/2026). */
 export const FORM_QUESTIONS: readonly FormQuestion[] = [
   {
     id: "nivel_ia",
@@ -84,11 +98,11 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
     kind: "select",
     required: true,
     options: [
-      "Uso casual (uso ferramentas eventualmente)",
-      "Uso consciente (uso GenAI para tarefas simples diariamente)",
-      "Entusiasta (sei diferenciar IA, Machine Learning e Deep Learning)",
-      "Praticante (consigo usar um modelo via API e/ou limpar e coletar dados)",
-      "Especialista (sei otimizar modelos e/ou traduzir um problema de negócio em uma estratégia que use IA eficientemente)",
+      "Estou começando: uso IA de vez em quando",
+      "Uso ChatGPT ou parecidos para tarefas simples todo dia",
+      "Entendo como a IA funciona e acompanho as novidades",
+      "Consigo usar um modelo por API ou preparar dados para ele",
+      "Trabalho com IA: ajusto modelos ou planejo como uma empresa vai usar IA",
     ],
   },
   {
@@ -117,17 +131,26 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
   },
   {
     id: "conteudo",
-    label: "Que tipos de conteúdo você mais quer ver na newsletter?",
+    label: "Quais seções da newsletter você mais gosta de ler?",
     kind: "checkbox",
-    help: "Pode marcar mais de um.",
+    help: "Pode marcar mais de uma.",
     options: [
-      "Tutoriais práticos",
-      "Curadoria de novas ferramentas",
-      "Notícias do mundo de IA",
-      "Estudos de caso (como uma empresa usa IA)",
-      "Análises mais aprofundadas sobre um tema específico",
-      "Pesquisas sobre IA",
-      "Artigos de opinião e editoriais",
+      "Destaques (as notícias principais do dia, com contexto)",
+      "Lançamentos (ferramentas e modelos novos)",
+      "Use Melhor (dicas e tutoriais práticos)",
+      "Radar (outras notícias, em poucas linhas)",
+      "É IA? (o jogo de adivinhar se a imagem é de IA)",
+    ],
+  },
+  {
+    id: "leitura_ingles",
+    label: "Quando você abre um link da diar.ia.br e o texto está em inglês, o que costuma fazer?",
+    kind: "select",
+    options: [
+      "Leio normalmente",
+      "Leio com o tradutor do navegador ou do celular",
+      "Continuo só se o assunto me interessar muito",
+      "Fecho e sigo para o próximo",
     ],
   },
   {
@@ -142,15 +165,16 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
       "Treinamento para a equipe da empresa onde trabalho",
       "Guias e modelos prontos (prompts, fluxos de trabalho)",
       "Comunidade para trocar experiências com outros leitores",
-      "Nada disso, a newsletter já me basta",
+      FORM_NADA_DISSO,
     ],
-    exclusiveOption: "Nada disso, a newsletter já me basta",
+    exclusiveOption: FORM_NADA_DISSO,
   },
   {
     id: "produto_tema",
-    label: "Sobre qual tema você faria um curso?",
+    label: "Sobre qual tema você gostaria de aprender com a diar.ia.br (curso, aula, guia ou mentoria)?",
     kind: "checkbox",
     help: "Pode marcar mais de um.",
+    hiddenWhen: { questionId: "produto_formato", option: FORM_NADA_DISSO },
     options: [
       "IA no trabalho do dia a dia (textos, planilhas, e-mails)",
       "Como escrever bons prompts",
@@ -164,24 +188,25 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
   },
   {
     id: "produto_preco",
-    label: "Quanto você investiria num curso que resolvesse uma necessidade sua?",
+    label: "Quanto você investiria para aprender algo que resolvesse uma necessidade sua?",
     kind: "select",
-    options: [
-      "Só faria se fosse gratuito",
-      "Até R$ 100",
-      "De R$ 100 a R$ 300",
-      "De R$ 300 a R$ 1.000",
-      "Mais de R$ 1.000",
-      "Quem pagaria é a empresa onde trabalho",
-    ],
+    hiddenWhen: { questionId: "produto_formato", option: FORM_NADA_DISSO },
+    options: ["Só faria se fosse gratuito", "Até R$ 100", "R$ 100 a R$ 300", "R$ 300 a R$ 1.000", "Mais de R$ 1.000"],
   },
   {
     id: "sugestao",
-    label: "Quer contar mais alguma coisa? Um assunto que falta na newsletter, ou um curso que você gostaria que a gente fizesse.",
+    label: "Quer contar mais alguma coisa? Um assunto que falta na newsletter, ou algo que você gostaria de aprender com a gente.",
     kind: "textarea",
     help: "Opcional.",
   },
 ];
+
+/** @pure — a pergunta fica escondida dadas as respostas JÁ validadas das anteriores. */
+export function isQuestionHidden(q: FormQuestion, answers: Readonly<Record<string, string>>): boolean {
+  if (!q.hiddenWhen) return false;
+  const v = answers[q.hiddenWhen.questionId];
+  return v != null && splitMultiAnswer(v).includes(q.hiddenWhen.option);
+}
 
 export const FORM_ANSWER_MAX_LEN = 2000;
 
@@ -225,7 +250,10 @@ export function normalizeFormEmail(raw: string): string {
  * das opções. `checkbox`: aceita string única ou lista (um valor por caixa
  * marcada); toda opção precisa ser conhecida, a gravação segue a ordem da
  * pergunta e descarta repetição; `exclusiveOption` junto com outra opção é
- * recusado; obrigatória = pelo menos uma marcada.
+ * recusado; obrigatória = pelo menos uma marcada. Pergunta com `hiddenWhen`
+ * cuja condição vale (resposta já validada da pergunta de controle) é tratada
+ * como ausente: o valor que vier é descartado sem validar (o cliente esconde e
+ * desabilita o campo, mas um navegador sem JavaScript ainda pode mandá-lo).
  */
 export function parseFormSubmission(
   fields: Readonly<Record<string, string | readonly string[] | undefined>>,
@@ -235,6 +263,7 @@ export function parseFormSubmission(
   if (!EMAIL_RE.test(email)) return { ok: false, error: "e-mail inválido" };
   const answers: Record<string, string> = {};
   for (const q of questions) {
+    if (isQuestionHidden(q, answers)) continue;
     const raw = fields[q.id];
     if (q.kind === "checkbox") {
       // Várias opções: todas precisam ser conhecidas; a ordem gravada segue a

@@ -21,7 +21,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -251,7 +251,10 @@ describe("#10265 republicação reaplica redirect/remoção de TODOS os slugs an
     assert.ok(t.files.includes(`workers/site/public/p/${A}/index.html`), "página atual tem que ficar");
     assert.ok(t.redirects.includes(`/p/${B} /p/${A} 301\n`));
     assert.ok(!t.redirects.split("\n").some((l) => l.startsWith(`/p/${A} `)), `regra com origem no slug atual:\n${t.redirects}`);
-    const current = readFileSync(join(rootDir, "workers", "site", "public", "p", A, "index.html"), "utf8");
+    const current = realGit(["show", `origin/site-publish/${A}:workers/site/public/p/${A}/index.html`], rootDir);
     assert.ok(current.length > 0);
+    // #11673: a geração acontece no worktree de publicação; o checkout
+    // compartilhado só ganha a página pelo merge (aqui, p/A do 1º merge).
+    assert.equal(realGit(["status", "--porcelain"], rootDir), "", "checkout compartilhado sai limpo");
   });
 });

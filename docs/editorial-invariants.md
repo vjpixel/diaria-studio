@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 137 invariants.
+**Total**: 141 invariants.
 
 ## Static (estrutura do repo)
 
@@ -91,6 +91,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `carousel-text-overflow` | parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078; warning com arte mantida pelo editor em carousel-keep-art.json, #11210) | #6078 |
 | `carousel-upload-incomplete` | slides do carrossel existem no disco mas 06-public-images.json não tem todas as 5 chaves (#6064, warning-only) | #6064 |
 | `carousel-upload-stale` | arte do carrossel no KV está atrás do arquivo local (md5 divergente) — post sairia com a arte velha (#6068) | #6068 |
+| `clarice-pending` | revisão da Clarice pendente: o Stage 2 gravou 02-reviewed.md sem a Clarice (API indisponível) e o marcador _internal/02-clarice-pending.json continua (#12257, warning-only) | #12257 |
 | `curto-x-weight` | post do # Curto passa de 280 no peso do X (URL = 23) — o Stage 5 pularia o post no X (#11124, mesmo cálculo do lint #10180) | #11124 |
 | `editor-destaque-request` | link enviado pelo editor com pedido explícito de destaque (inbox) que ficou fora dos destaques ou em outra posição, com o motivo (#12193, warning-only) | #12193 |
 | `eia-credit-synced` | crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825) | #3825 |
@@ -110,6 +111,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
 | `newsletter-html-not-behind-reviewed` | newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245; error desde #10258 — bloqueia o sentinel do Stage 4; reviewed só tocado, com sha256 igual ao carimbo do render, não acusa) | #10245 |
 | `newsletter-html-size` | _internal/newsletter-final.html acima de 45000 bytes — sinal de crescimento perto do limite de clipping do Gmail (#5232, warning-only) | #5232 |
+| `newsletter-intake` | intake completo e scores de todos os links IA (#12188) | #12188 |
 | `no-duplicate-urls-vs-past-editions` | URL editorial de 02-reviewed.md repetida contra os últimos ~30 dias de edições (past-editions.md, #9955) — dedup do Stage 1 não vê itens inseridos/promovidos no gate (#8993, warning-only) | #8993 |
 | `no-trailing-ellipsis` | descrição de item secundário não termina em reticências herdadas da fonte (#2881) | #2881 |
 | `public-images-md5-matches-local` | hero 2:1 do e-mail (cover/d1_play/d2_2x1/d3_2x1) em 06-public-images.json tem o md5 do arquivo local — troca de destaque não deixa imagem antiga no e-mail (#11252) | #11252 |
@@ -130,6 +132,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `title-ia-as-agent` | título de destaque não põe 'IA' como sujeito quando o corpo descreve ator humano (#12106, warning-only) | #12106 |
 | `title-mentions-ia` | título de destaque sem menção a 'IA'/'AI'/'inteligência artificial' quando evitável (#4825, warning-only) | #4825 |
 | `title-publisher-suffix` | título sem sufixo residual de veículo (' \| Veículo' / ' - Veículo', #2664) | #2664 |
+| `title-shorts-front-load` | título do D1 se lê sozinho nos ~40 caracteres que o feed de Shorts mostra (#12464, warning-only) | #12464 |
 | `title-trailing-period` | título de destaque/item sem ponto final único (#2672) | #2672 |
 | `titulo-subtitulo-not-provisional` | TÍTULO/SUBTÍTULO não carrega o título provisório (da fonte) deixado pelo swap-destaque depois que o D{N} ganhou título final (#9601) | #9601 |
 | `top3-merit-warning` | item fora do top-3 com score ≥ maior do trio (warning-only) | #10792 |
@@ -147,6 +150,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
+| `clarice-pending-at-publish` | newsletter publicada sem a revisão da Clarice: _internal/02-clarice-pending.json ainda existe no Stage 5 (#12257, warning-only, qualquer fase) | #12257 |
 | `close-poll-marker-exists` | _internal/.close-poll-done.json escrito (#1367) | #1367 |
 | `consent-binding` | canais com consent=auto devem ter dispatch real (#1575) | #1575 |
 | `edition-url-file-exists` | _internal/05-edition-url.txt existe e contém URL válida antes do dispatch social (#2454) | #2454 |

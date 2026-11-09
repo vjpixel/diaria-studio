@@ -66,6 +66,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX } from "./lib/edition-url.ts";
 import { PUBLIC_IMAGES_R2_INERT_LOG_PREFIX } from "./lib/public-images-r2.ts"; // #12194
 import { readHandoff, type HandoffEntry, type HandoffRead } from "./lib/session-handoff.ts";
+import { CLARICE_PENDING_REL, readClaricePending } from "./lib/clarice-pending.ts"; // #12257
 import {
   WRITER_INPUTS_CUTOVER_EDITION,
   checkWriterInputSnapshots,
@@ -111,7 +112,8 @@ export interface Signal {
     | "test_email_unconfirmed"
     | "recurring_editor_request"
     | "session1_handoff"
-    | "writer_source_text_gap";
+    | "writer_source_text_gap"
+    | "clarice_pending_at_publish";
   severity: Severity;
   title: string;
   details: Record<string, unknown>;
@@ -1602,6 +1604,8 @@ export function signalsFromClariceSkips(
   let count = 0;
   const reasons: string[] = [];
   const firstAt: string[] = [];
+  // #12257: tentativas de retomar a Clarice (`clarice-pending.ts resume`).
+  const resumeStatuses: string[] = [];
 
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -1617,6 +1621,11 @@ export function signalsFromClariceSkips(
     if (edition && !parsed.edition) continue;
 
     const msg = (parsed.message ?? "").toLowerCase();
+    if (msg === "clarice_resume") {
+      const st = (parsed.details as Record<string, unknown> | undefined)?.status;
+      resumeStatuses.push(typeof st === "string" ? st : "?");
+      continue;
+    }
     // Match both structured "clarice_skip" and legacy prose variants used
     // in the run-log from 260616 ("clarice SKIP consciente").
     // Word-boundary anchored to avoid false positives from messages like
@@ -1645,12 +1654,43 @@ export function signalsFromClariceSkips(
         count,
         first_occurrences: firstAt,
         reasons,
+        // #12257: quantas vezes o resume tentou e como terminou.
+        resume_attempts: resumeStatuses.length,
+        resume_statuses: resumeStatuses.slice(0, 10),
       },
       suggested_action:
         "Edição foi publicada sem passar pela revisão Clarice (MCP + REST falharam e o editor aprovou o skip). " +
         "Aumentar timeout/retry em clarice-correct.ts (--retry --timeout-ms 60000 --max-attempts 3) ou investigar " +
         "instabilidade do endpoint cortex.clarice.ai. Se recorrente (≥2 edições), abrir issue no clarice-mcp.",
       related_issue: "#2320",
+    },
+  ];
+}
+
+/**
+ * #12257: a edição chegou ao fim da publicação com o marcador
+ * `_internal/02-clarice-pending.json` — a newsletter saiu sem a revisão da
+ * Clarice. Lê o arquivo (não o run-log): é o estado real, mesmo que o evento
+ * `clarice_skip` tenha se perdido. Um sinal por edição, sempre `high`.
+ */
+export function signalsFromClaricePendingAtPublish(editionDir: string): Signal[] {
+  const path = resolve(editionDir, CLARICE_PENDING_REL);
+  if (!existsSync(path)) return [];
+  const marker = readClaricePending(editionDir);
+  return [
+    {
+      kind: "clarice_pending_at_publish",
+      severity: "high",
+      title: `Clarice não rodou na newsletter publicada (${marker?.reason ?? "motivo ilegível"})`,
+      details: {
+        reason: marker?.reason ?? null,
+        skipped_at: marker?.skipped_at ?? null,
+        last_outcome: marker?.last_outcome ?? null,
+      },
+      suggested_action:
+        "A edição foi publicada com o marcador _internal/02-clarice-pending.json: o Stage 2 seguiu sem a Clarice " +
+        "e o resume do Stage 4 não a aplicou. Conferir o texto publicado e a saúde da API da Clarice.",
+      related_issue: "#12257",
     },
   ];
 }
@@ -2138,6 +2178,9 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
   // Signal 8 (#9374): handoff da 1ª sessão (Etapas 1–4). Fail-soft: o
   // próprio `readHandoff` devolve "corrupt" em vez de lançar.
   signals.push(...signalsFromSessionHandoff(readHandoff(editionDir)));
+
+  // Signal 8b (#12257): newsletter publicada sem a revisão da Clarice.
+  signals.push(...signalsFromClaricePendingAtPublish(editionDir));
 
   // Signal 9 (#9648): texto-fonte do writer-destaque ausente/truncado.
   // Fail-soft: `readWriterInputsRecord` devolve "corrupt" em vez de lançar.

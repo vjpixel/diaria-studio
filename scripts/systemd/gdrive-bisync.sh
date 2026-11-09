@@ -28,6 +28,10 @@
 # o sync está travado/falhando. O exit code do rclone é o do script, sem
 # mudança.
 #
+# Exit 7 por 401/authError (token OAuth vencendo no meio de uma listagem
+# longa) ganha um resync automático (#12412), que pode ressuscitar arquivo
+# apagado durante a rodada (#12444) — ver o bloco antes da chamada do rclone.
+#
 # Testável sem tocar produção: GDRIVE_* e RCLONE_BIN sobrescrevíveis por env.
 
 set -u
@@ -130,13 +134,77 @@ elif ! cmp -s "$FILTERS_SRC" "$FILTERS"; then
   fi
 fi
 
-"$RCLONE_BIN" bisync "$REMOTE" "$LOCAL" \
-  --check-access --check-filename "$SENTINEL" \
-  --max-delete "$MAX_DELETE" \
-  --filters-file "$FILTERS" --ignore-case \
-  --drive-skip-gdocs --drive-skip-dangling-shortcuts \
-  --create-empty-src-dirs \
-  --resilient --recover --max-lock 15m \
-  --conflict-resolve newer --conflict-loser num \
-  --log-level NOTICE "$@"
-finish $?
+# Retry em erro de autenticação (#12412). Quando a listagem do Drive passa
+# de 1h, o access token OAuth vence no meio dela e algumas listagens
+# concorrentes levam `Error 401: Invalid Credentials, authError` antes de o
+# rclone renovar o token. O bisync aborta com exit 7 ("Must run --resync to
+# recover") e, sem isto, o sync ficava parado até alguém rodar o resync à mão.
+# Regra: SÓ exit 7 com `Error 401`/`authError` no log da tentativa dispara um
+# resync automático, até GDRIVE_AUTH_RETRY_MAX vezes (default 1), depois de
+# GDRIVE_AUTH_RETRY_DELAY segundos (default 60). Qualquer outro exit, ou exit 7
+# sem erro de autenticação (too many deletes, filtro mudado, sentinela), segue
+# como antes: sai com o exit do rclone, sem retry. O resync automático mantém
+# o `--check-access` e usa o filtro INSTALADO (nunca adota o do checkout,
+# #12396), com `--resync-mode newer` para não sobrescrever um arquivo local
+# mais novo com a versão do Drive. O `--max-delete` segue na linha de comando,
+# mas não protege nada aqui: resync não apaga, só une os dois lados (#12444).
+# O risco do resync é o inverso: ele descarta as listagens anteriores, e um
+# arquivo apagado de um lado durante a rodada longa volta copiado do outro,
+# com exit 0 (o `--resync-mode newer` só decide arquivo presente nos dois
+# lados). Por isso cada resync automático termina com um aviso no stderr.
+# `--dry-run` nunca retenta.
+AUTH_RETRY_MAX="${GDRIVE_AUTH_RETRY_MAX:-1}"
+AUTH_RETRY_DELAY="${GDRIVE_AUTH_RETRY_DELAY:-60}"
+# Valor não numérico no env cai no default: um `[ -ge ]` com lixo daria erro
+# (falso) e o teto deixaria de valer.
+case "$AUTH_RETRY_MAX" in ''|*[!0-9]*) AUTH_RETRY_MAX=1 ;; esac
+case "$AUTH_RETRY_DELAY" in ''|*[!0-9]*) AUTH_RETRY_DELAY=60 ;; esac
+RCLONE_LOG="$STATE_DIR/last-rclone.log"
+RCLONE_RC="$STATE_DIR/last-rclone.rc"
+
+# Roda o bisync com as travas fixas + "$@", espelhando a saída no journal e
+# em $RCLONE_LOG (lido pelo detector de 401). O exit do rclone volta em
+# $RC; sem arquivo de exit legível, RC=1 (nunca 0 por falha de leitura).
+run_bisync() {
+  rm -f "$RCLONE_RC"
+  {
+    "$RCLONE_BIN" bisync "$REMOTE" "$LOCAL" \
+      --check-access --check-filename "$SENTINEL" \
+      --max-delete "$MAX_DELETE" \
+      --filters-file "$FILTERS" --ignore-case \
+      --drive-skip-gdocs --drive-skip-dangling-shortcuts \
+      --create-empty-src-dirs \
+      --resilient --recover --max-lock 15m \
+      --conflict-resolve newer --conflict-loser num \
+      --log-level NOTICE "$@" 2>&1
+    echo $? > "$RCLONE_RC"
+  } | tee "$RCLONE_LOG"
+  RC=$(cat "$RCLONE_RC" 2>/dev/null)
+  case "$RC" in
+    ''|*[!0-9]*) RC=1 ;;
+  esac
+}
+
+auth_error_in_log() {
+  grep -E -q 'Error 401|authError' "$RCLONE_LOG" 2>/dev/null
+}
+
+run_bisync "$@"
+attempt=0
+while [ "$RC" -eq 7 ] && [ "$DRY_RUN" -eq 0 ] && auth_error_in_log; do
+  if [ "$attempt" -ge "$AUTH_RETRY_MAX" ]; then
+    echo "gdrive-bisync: rclone saiu 7 com erro de autenticacao (401/authError) e os $AUTH_RETRY_MAX resync(s) automatico(s) se esgotaram — rode --resync a mao (#12412)" >&2
+    break
+  fi
+  attempt=$((attempt + 1))
+  echo "gdrive-bisync: rclone saiu 7 com erro de autenticacao (401/authError) no log — resync automatico $attempt/$AUTH_RETRY_MAX em ${AUTH_RETRY_DELAY}s (#12412)" >&2
+  sleep "$AUTH_RETRY_DELAY"
+  if [ "$RESYNC" -eq 1 ]; then
+    run_bisync "$@"
+  else
+    run_bisync "$@" --resync --resync-mode newer
+  fi
+  echo "gdrive-bisync: resync automatico $attempt/$AUTH_RETRY_MAX terminou com exit $RC (#12412)" >&2
+  echo "gdrive-bisync: aviso — o resync automatico une os dois lados e nao apaga nada: arquivo apagado em um lado durante a rodada pode ter voltado do outro (#12444)" >&2
+done
+finish "$RC"

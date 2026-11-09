@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { generateCard, WEEKLY_OVERLAY_WRAP } from "../gen-social-card-4x5.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
+import { archiveUploadedFileToR2 } from "./public-images-archive.ts";
 import { DIARIA_EIA_URL } from "./canonical-urls.ts";
 import { cloudflareKvKey } from "../upload-images-public.ts";
 
@@ -103,6 +104,7 @@ export const defaultNewsCardGenerator: NewsCardGenerator = async ({ editionDir, 
     throw new Error("platform.config.json → poll.kv_namespace_id não configurado (recomposição de card de notícia pro carrossel)");
   }
   const url = await uploadImageToWorkerKV(cardPath, kvKey, { kvNamespaceId, workerUrl });
+  await archiveUploadedFileToR2(cardPath, kvKey); // #11412 fatia 3: cópia durável no R2, nunca lança
   return { url };
 };
 

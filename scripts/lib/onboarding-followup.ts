@@ -7,10 +7,15 @@
  *  - **Pedido de apoio (#10604)** em D+30, D+90, D+180 e D+360 contados do
  *    CADASTRO (`created_at` do assinante no Kit), só para quem não apoia e
  *    está ativo.
- *  - **Formulário de perfil/interesses (#10605)** em D+6 (antes do pedido de
- *    apoio do e-mail 3) e, para quem não preencheu, um lembrete a cada 30
- *    dias contados do envio ANTERIOR — sem teto (decisão do editor no
- *    briefing do overnight 261020), até preencher. Âncora do D+6 = a mesma da
+ *  - **Formulário de perfil/interesses (#10605)** com DOIS convites: o e-mail
+ *    D+6 da escada (`form`, antes do pedido de apoio do e-mail 3) e o e-mail
+ *    ÚNICO para a base já cadastrada (`form_base`, rascunho montado por
+ *    `scripts/onboarding-form-base-prep.ts`, enviado à mão pelo editor no
+ *    Kit). Para quem recebeu QUALQUER um dos dois e não respondeu, um
+ *    lembrete (`form_lembrete`) 30 dias depois do último e-mail do
+ *    formulário, com teto de 3 lembretes por pessoa (decisão do editor de
+ *    08/11/2026, que trocou o "sem teto" de 20/10). O convite que a pessoa
+ *    recebeu fica em `people[id].form_invite`. Âncora do D+6 = a mesma da
  *    escada (`reguaAnchorSec`, a confirmação do double opt-in), porque o
  *    formulário entra NA escada.
  *
@@ -66,7 +71,13 @@ const DAY_S = 86_400;
 // ---------------------------------------------------------------------------
 
 export type ApoioStepKind = "apoio30" | "apoio90" | "apoio180" | "apoio360";
-export type FormStepKind = "form" | "form_lembrete";
+/** `form` = convite D+6 da escada; `form_base` = convite único da base já
+ *  cadastrada (nunca sai pelo executor diário: o rascunho é montado por
+ *  `onboarding-form-base-prep.ts` e o envio é do editor); `form_lembrete` =
+ *  lembrete, para quem recebeu qualquer um dos dois convites. */
+export type FormStepKind = "form" | "form_base" | "form_lembrete";
+/** Os dois convites do formulário. */
+export type FormInviteKind = "form" | "form_base";
 export type FollowupStepKind = ApoioStepKind | FormStepKind;
 
 export const APOIO_STEPS: readonly { kind: ApoioStepKind; days: number; snippetFile: string }[] = [
@@ -81,9 +92,15 @@ export const FORM_STEPS: readonly { kind: FormStepKind; snippetFile: string }[] 
   { kind: "form_lembrete", snippetFile: "formulario-lembrete.md" },
 ];
 
+/** Convite único para a base já cadastrada (#10605, decisão 11 do editor).
+ *  Fora de `FORM_STEPS` de propósito: o gate da escada (`formContentGate`)
+ *  não depende do texto dele, e ele nunca entra no plano diário. */
+export const FORM_BASE_STEP: { kind: "form_base"; snippetFile: string } = { kind: "form_base", snippetFile: "pesquisa-base.md" };
+
 export const ALL_FOLLOWUP_STEPS: readonly FollowupStepKind[] = [
   ...APOIO_STEPS.map((s) => s.kind),
   ...FORM_STEPS.map((s) => s.kind),
+  FORM_BASE_STEP.kind,
 ];
 
 export function isApoioStep(kind: string): kind is ApoioStepKind {
@@ -91,12 +108,17 @@ export function isApoioStep(kind: string): kind is ApoioStepKind {
 }
 
 export function isFormStep(kind: string): kind is FormStepKind {
-  return kind === "form" || kind === "form_lembrete";
+  return kind === "form" || kind === "form_base" || kind === "form_lembrete";
+}
+
+export function isFormInvite(kind: string): kind is FormInviteKind {
+  return kind === "form" || kind === "form_base";
 }
 
 export function snippetFileFor(kind: FollowupStepKind): string {
   const apoio = APOIO_STEPS.find((s) => s.kind === kind);
   if (apoio) return apoio.snippetFile;
+  if (kind === FORM_BASE_STEP.kind) return FORM_BASE_STEP.snippetFile;
   return FORM_STEPS.find((s) => s.kind === kind)!.snippetFile;
 }
 
@@ -144,6 +166,12 @@ export interface FollowupPerson {
   form_filled_at?: string | null;
   /** Respostas do formulário, como vieram do Worker (#10605). */
   form_answers?: Record<string, string>;
+  /** #10605 (regra A do editor, 08/11/2026): qual convite do formulário a
+   *  pessoa recebeu primeiro — `form` (D+6 da escada) ou `form_base` (e-mail
+   *  único da base). Gravado junto do envio confirmado. Ausente não prova
+   *  "nenhum convite" (registro anterior ao campo): ler sempre por
+   *  `formInviteOf`, que deriva de `sends`. O lembrete vale para os dois. */
+  form_invite?: FormInviteKind;
   /** #10763: etapas cuja leitura singular falhou na última tentativa (transitório,
    *  NUNCA pulo terminal). Só rebaixa a pessoa na ordem do teto; sai no 1º sucesso. */
   live_failures?: { step: FollowupStepKind; at: string; n: number }[];
@@ -205,15 +233,81 @@ export interface FollowupRunRecord {
    *  `--send` (releitura falhou, ou rascunho que não deu pra apagar). Opcional:
    *  registros anteriores não têm o campo. */
   lots_unresolved?: number;
+  /** #10605: a releitura do e-mail da base falhou (404, status `aborted` ou
+   *  desconhecido, filtro divergente/não ecoado) ou ele está `divergent`.
+   *  Conta como rodada falha. Opcional: registros anteriores não têm o campo. */
+  base_invite_failed?: number;
   /** Por etapa: contagem de enviados nesta rodada e de pulados/adiados por motivo. */
   counts: Partial<Record<FollowupStepKind, Record<string, number>>>;
   aborted?: boolean;
   error?: string | null;
 }
 
+/**
+ * #10605 (decisão 11 do editor): o rascunho do e-mail único para a base,
+ * montado por `onboarding-form-base-prep.ts --step draft --apply`. Fica FORA
+ * de `lots` de propósito: um lote `created` com broadcast é tratado pelo
+ * executor diário como "não resolvido", e a releitura dele APAGARIA um
+ * rascunho que não foi agendado. Os envios por pessoa (`form_base`) só são
+ * gravados por `--step confirm`, depois que o editor agendou/enviou no Kit e
+ * a releitura do broadcast confirmou.
+ */
+export interface FollowupBaseInvite {
+  lot_id: string;
+  tag_name: string;
+  tag_id: number | null;
+  broadcast_id: number | null;
+  recipient_subscription_ids: string[];
+  recipient_emails: string[];
+  /** `pending` = reivindicado, sem broadcast; `draft` = rascunho no Kit;
+   *  `scheduled` = o editor agendou no Kit (relido a cada rodada; desagendado
+   *  volta a `draft`), ainda sem registro por pessoa; `divergent` = a
+   *  audiência do rascunho não foi confirmada e a exclusão dele não foi
+   *  confirmada (gravado ANTES de tentar apagar): nada é marcado como enviado
+   *  até `--step reset`; `sent` = o Kit mostrou o broadcast saindo/saído
+   *  (`sending`/`completed`) e o envio foi gravado por pessoa;
+   *  `sent_unverified` = terminal, só por `--step reset --mark-sent-unverified
+   *  --force` quando o Kit mostra o broadcast saindo/saído mas a audiência
+   *  nunca foi confirmada: para o alarme e libera o D+6 dos destinatários
+   *  gravados, SEM registro `form_base` por pessoa (o público real é
+   *  desconhecido) — o lembrete não se aplica a esse convite. */
+  status: "pending" | "draft" | "scheduled" | "divergent" | "sent" | "sent_unverified";
+  created_at: string;
+  send_at: string | null;
+  confirmed_at: string | null;
+  last_error: string | null;
+  /** Tentativa de montagem (1, 2, ...): a tag do lote leva o número quando
+   *  a tentativa anterior deixou na tag gente fora do público novo. Ausente = 1. */
+  attempt?: number;
+  /** ISO de quando `createBroadcast` foi chamado nesta tentativa. Com o
+   *  broadcast ainda nulo (timeout, queda no meio), o Kit PODE ter criado o
+   *  rascunho: a montagem seguinte recusa até `--step reset --force`. */
+  create_attempted_at?: string | null;
+}
+
+/** Status do e-mail da base em que pode existir broadcast no Kit para os
+ *  destinatários gravados (rascunho, agendado, ou exclusão não confirmada). */
+export function baseInviteMayExist(invite: Pick<FollowupBaseInvite, "status" | "broadcast_id" | "create_attempted_at"> | null | undefined): boolean {
+  if (!invite) return false;
+  if (invite.status === "draft" || invite.status === "scheduled" || invite.status === "divergent") return true;
+  return invite.status === "pending" && (invite.broadcast_id != null || invite.create_attempted_at != null);
+}
+
+/**
+ * @pure — #10605 (item 8 do review): enquanto o e-mail da base pode sair
+ * (`baseInviteMayExist`), os destinatários dele não recebem o D+6 — senão
+ * quem o editor agendasse tarde receberia os dois convites. Quem responde o
+ * formulário entre o rascunho e o envio continua no público congelado da tag
+ * do lote (aceito: tirar da tag exigiria uma escrita por pessoa no Kit).
+ */
+export function baseInviteRecipientIds(invite: FollowupBaseInvite | null | undefined): Set<string> {
+  return baseInviteMayExist(invite) ? new Set(invite!.recipient_subscription_ids) : new Set();
+}
+
 export interface FollowupBlock {
   people: Record<string, FollowupPerson>;
   lots: Record<string, FollowupLot>;
+  base_invite?: FollowupBaseInvite | null;
   last_run?: FollowupRunRecord | null;
   consecutive_failed_runs?: number;
 }
@@ -228,6 +322,10 @@ export interface FollowupConfigRaw {
   min_gap_days?: number;
   form_first_days?: number;
   form_reminder_days?: number;
+  /** #10605: teto de lembretes por pessoa (decisão do editor de 08/11/2026: 3). */
+  form_reminder_max?: number;
+  /** #10605 regra B: o e-mail da base exclui quem vai receber o D+6 em até N dias. */
+  base_invite_window_days?: number;
   max_recipients_per_lot?: number;
   form_url?: string | null;
   form_responses_url?: string | null;
@@ -240,6 +338,8 @@ export interface FollowupConfig {
   minGapDays: number;
   formFirstDays: number;
   formReminderDays: number;
+  formReminderMax: number;
+  baseInviteWindowDays: number;
   maxRecipientsPerLot: number;
   formUrl: string | null;
   formResponsesUrl: string | null;
@@ -263,6 +363,8 @@ export function resolveFollowupConfig(raw: FollowupConfigRaw | undefined | null)
     minGapDays: posInt(r.min_gap_days, 7),
     formFirstDays: posInt(r.form_first_days, 6),
     formReminderDays: posInt(r.form_reminder_days, 30),
+    formReminderMax: posInt(r.form_reminder_max, 3),
+    baseInviteWindowDays: posInt(r.base_invite_window_days, 7),
     maxRecipientsPerLot: posInt(r.max_recipients_per_lot, 300),
     formUrl: nonEmpty(r.form_url),
     formResponsesUrl: nonEmpty(r.form_responses_url),
@@ -396,7 +498,9 @@ export function snippetTemplate(kind: FollowupStepKind): string {
     ? `pedido de apoio D+${APOIO_STEPS.find((s) => s.kind === kind)!.days} (#10604)`
     : kind === "form"
       ? "e-mail do formulário D+6 (#10605)"
-      : "lembrete do formulário, a cada 30 dias até preencher (#10605)";
+      : kind === "form_base"
+        ? "e-mail único da pesquisa para a base já cadastrada (#10605)"
+        : "lembrete do formulário, 30 dias depois do último e-mail, até 3 vezes (#10605)";
   return [
     "<!--",
     what,
@@ -451,8 +555,21 @@ export function apoioStepDue(
 }
 
 export type FormDueResult =
-  | { due: FormStepKind }
-  | { due: null; motivo: "preencheu" | "saiu" | "sem_ancora" | "nao_venceu" | "vencida" };
+  | { due: "form" | "form_lembrete" }
+  | { due: null; motivo: "preencheu" | "saiu" | "sem_ancora" | "nao_venceu" | "vencida" | "teto_lembretes" };
+
+/** Lembretes do formulário já registrados para a pessoa. */
+export function formReminderCount(person: FollowupPerson | undefined): number {
+  return (person?.sends ?? []).filter((s) => s.step === "form_lembrete").length;
+}
+
+/** @pure — o convite que a pessoa recebeu: `form_invite`, ou o 1º convite em `sends`. */
+export function formInviteOf(person: FollowupPerson | undefined): FormInviteKind | null {
+  if (person?.form_invite) return person.form_invite;
+  const invites = (person?.sends ?? []).filter((s) => isFormInvite(s.step));
+  invites.sort((a, b) => (isoToSec(a.at) ?? 0) - (isoToSec(b.at) ?? 0));
+  return invites.length > 0 ? (invites[0].step as FormInviteKind) : null;
+}
 
 /** #10675: a checagem perto do envio já viu a pessoa fora do Kit numa etapa
  *  do formulário — a sequência do formulário acabou para ela. */
@@ -476,7 +593,7 @@ export function formStepDue(
   anchorSec: number | null,
   nowSec: number,
   person: FollowupPerson | undefined,
-  cfg: Pick<FollowupConfig, "formFirstDays" | "formReminderDays" | "graceDays">,
+  cfg: Pick<FollowupConfig, "formFirstDays" | "formReminderDays" | "graceDays"> & Partial<Pick<FollowupConfig, "formReminderMax">>,
 ): FormDueResult {
   if (person?.form_filled_at) return { due: null, motivo: "preencheu" };
   // #10675: quem saiu do Kit não volta a ser devido (nem ocupa vaga do teto).
@@ -489,7 +606,10 @@ export function formStepDue(
     if (nowSec >= start + cfg.graceDays * DAY_S) return { due: null, motivo: "vencida" };
     return { due: "form" };
   }
-  // Lembrete SEM teto (decisão do editor, 20/10/2026): a cada N dias do envio anterior.
+  // Lembrete N dias depois do último e-mail do formulário (convite D+6, convite
+  // da base ou lembrete anterior), com teto por pessoa (decisão do editor de
+  // 08/11/2026: 3; antes era sem teto). Depois do 3º, para mesmo sem resposta.
+  if (formReminderCount(person) >= (cfg.formReminderMax ?? 3)) return { due: null, motivo: "teto_lembretes" };
   return nowSec >= last + cfg.formReminderDays * DAY_S ? { due: "form_lembrete" } : { due: null, motivo: "nao_venceu" };
 }
 
@@ -547,7 +667,7 @@ export function planFollowup(opts: {
   formCandidates: readonly FormCandidate[];
   people: Readonly<Record<string, FollowupPerson>>;
   nowSec: number;
-  cfg: Pick<FollowupConfig, "graceDays" | "minGapDays" | "formFirstDays" | "formReminderDays">;
+  cfg: Pick<FollowupConfig, "graceDays" | "minGapDays" | "formFirstDays" | "formReminderDays"> & Partial<Pick<FollowupConfig, "formReminderMax">>;
   apoioBlocked: FollowupBlockReason | null;
   formBlocked: FollowupBlockReason | null;
   /**
@@ -556,11 +676,17 @@ export function planFollowup(opts: {
    * apoio nem formulário pelo Kit: contados como `envio_brevo`, fora de `due`.
    */
   excludedEmails?: ReadonlySet<string>;
+  /**
+   * #10605: ids (string) dos destinatários do e-mail da base enquanto ele
+   * pode sair (`baseInviteRecipientIds`). Não recebem o D+6 (`form`):
+   * contados como `email_da_base_pendente`, fora de `due`.
+   */
+  baseInviteRecipientIds?: ReadonlySet<string>;
 }): FollowupPlan {
   const { nowSec, cfg, people } = opts;
   const isEnvioBrevo = (email: string) => opts.excludedEmails?.has(normalizeEmail(email)) ?? false;
   const counts: FollowupPlan["counts"] = {};
-  const byId = new Map<number, { email: string; apoio: ApoioStepKind | null; form: FormStepKind | null }>();
+  const byId = new Map<number, { email: string; apoio: ApoioStepKind | null; form: "form" | "form_lembrete" | null }>();
 
   for (const c of opts.apoioCandidates) {
     const person = people[String(c.kit_subscriber_id)];
@@ -583,10 +709,15 @@ export function planFollowup(opts: {
     const r = formStepDue(c.anchorSec, nowSec, person, cfg);
     if (r.due == null) {
       if (r.motivo === "vencida") bump(counts, "form", "vencida");
+      if (r.motivo === "teto_lembretes") bump(counts, "form_lembrete", "teto_lembretes");
       continue;
     }
     if (isEnvioBrevo(c.email)) {
       bump(counts, r.due, "envio_brevo");
+      continue;
+    }
+    if (r.due === "form" && opts.baseInviteRecipientIds?.has(String(c.kit_subscriber_id))) {
+      bump(counts, "form", "email_da_base_pendente");
       continue;
     }
     if (opts.formBlocked) {
@@ -990,6 +1121,8 @@ export function applyFollowupLotToPeople(
     const person = ensurePerson(people, kitId, lot.recipient_emails[i] ?? "", cadastroById.get(kitId) ?? null);
     if (person.sends.some((s) => s.lot_id === lot.lot_id)) return;
     person.sends.push({ step: lot.kind, at, lot_id: lot.lot_id });
+    // #10605 regra A: registra o convite (o primeiro vale; o lembrete serve aos dois).
+    if (isFormInvite(lot.kind) && person.form_invite == null) person.form_invite = lot.kind;
     n++;
   });
   return n;
@@ -1160,6 +1293,26 @@ export function kitIdForEntry(entry: OnboardingEntry): number | null {
   return /^\d+$/.test(entry.subscription_id) && Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
+/**
+ * @pure — #10605 regra A: quem recebeu o convite da BASE (`form_base`) e não
+ * está entre os candidatos da escada (a maior parte da base: gente que entrou
+ * antes da escada existir) também é candidato, só para o lembrete. Âncora
+ * nula: com um envio de formulário registrado, `formStepDue` só olha o
+ * último envio e o teto de lembretes.
+ */
+export function formBaseCandidatesFromPeople(
+  people: Readonly<Record<string, FollowupPerson>>,
+  alreadyCandidates: ReadonlySet<number>,
+): FormCandidate[] {
+  const out: FormCandidate[] = [];
+  for (const p of Object.values(people)) {
+    if (alreadyCandidates.has(p.kit_subscriber_id)) continue;
+    if (!(p.sends ?? []).some((s) => s.step === "form_base")) continue;
+    out.push({ kit_subscriber_id: p.kit_subscriber_id, email: p.email, anchorSec: null });
+  }
+  return out;
+}
+
 /** @pure — entradas da escada que podem receber o formulário (fora piloto e
  *  recuperação manual; precisa de id Kit — o envio é broadcast por tag). */
 export function formCandidatesFromEntries(entries: readonly OnboardingEntry[]): {
@@ -1178,6 +1331,220 @@ export function formCandidatesFromEntries(entries: readonly OnboardingEntry[]): 
     candidates.push({ kit_subscriber_id: kitId, email: e.email, anchorSec: reguaAnchorSec(e) });
   }
   return { candidates, semKitId };
+}
+
+// ---------------------------------------------------------------------------
+// E-mail único para a base já cadastrada (#10605, decisão 11 + regra B)
+// ---------------------------------------------------------------------------
+
+export interface BaseInviteSubscriber {
+  kit_subscriber_id: number;
+  email: string;
+}
+
+/** Por que um assinante ativo ficou fora do e-mail da base. */
+export type BaseInviteExclusion =
+  /** Já recebeu o convite D+6 da escada (ou está num lote dele). */
+  | "ja_recebeu_formulario"
+  /** Já recebeu este mesmo e-mail da base (idempotência). */
+  | "ja_recebeu_base"
+  /** Vai receber o D+6 em até `baseInviteWindowDays` (cadastro recente na escada). */
+  | "formulario_em_breve"
+  /** Já respondeu o formulário NOVO. */
+  | "respondeu"
+  /** Tag `envio-brevo` (#10437): não recebe pelo Kit. */
+  | "envio_brevo"
+  /** Saiu do Kit numa etapa do formulário (#10675): a sequência acabou para ela. */
+  | "saiu_do_formulario";
+
+export const BASE_INVITE_EXCLUSIONS: readonly BaseInviteExclusion[] = [
+  "ja_recebeu_formulario",
+  "ja_recebeu_base",
+  "formulario_em_breve",
+  "respondeu",
+  "envio_brevo",
+  "saiu_do_formulario",
+];
+
+export interface BaseInviteAudience {
+  recipients: BaseInviteSubscriber[];
+  excluded: Record<BaseInviteExclusion, number>;
+}
+
+/**
+ * @pure — #10605 regra B: público do e-mail único para a base já cadastrada.
+ * Parte dos assinantes ATIVOS do Kit (a listagem; o rascunho é conferido de
+ * novo pela tag do lote antes de existir) e tira:
+ *   - quem já recebeu o convite D+6 (`form` em `sends`, ou destinatário de um
+ *     lote `form` não cancelado — defesa em profundidade);
+ *   - quem está a até `baseInviteWindowDays` de recebê-lo: entrada da escada
+ *     cuja janela do D+6 ainda não fechou e começa em até N dias, ou entrada
+ *     ainda sem confirmação criada há pouco (`formFirstDays + N` dias) — a
+ *     escada cuida dessas pessoas;
+ *   - quem já respondeu o formulário NOVO (`form_filled_at`, ou o e-mail
+ *     atual/anterior nas respostas do Worker);
+ *   - quem já recebeu este e-mail (`form_base`), quem tem `envio-brevo` e
+ *     quem saiu do Kit numa etapa do formulário.
+ * Quem passou da janela do D+6 sem receber (a base que entrou com o envio
+ * travado) entra: é exatamente para essas pessoas que o e-mail existe. Quem
+ * recebe este e-mail e depois aparece na escada não recebe o D+6: com um
+ * envio de formulário registrado, `formStepDue` só oferece o lembrete.
+ * A ordem dos destinatários segue a do `subscribers`, sem repetição de id.
+ * As contagens de `excluded` são mutuamente exclusivas: cada pessoa conta
+ * em UM motivo, o primeiro desta precedência — `envio_brevo`, `respondeu`,
+ * `ja_recebeu_formulario`, `ja_recebeu_base`, `saiu_do_formulario`,
+ * `formulario_em_breve`. A janela é de 7 dias por padrão
+ * (`base_invite_window_days`).
+ */
+export function selectBaseInviteAudience(opts: {
+  subscribers: readonly BaseInviteSubscriber[];
+  entries: readonly OnboardingEntry[];
+  people: Readonly<Record<string, FollowupPerson>>;
+  lots?: Readonly<Record<string, FollowupLot>>;
+  responseEmails: ReadonlySet<string>;
+  excludedEmails?: ReadonlySet<string>;
+  nowSec: number;
+  cfg: Pick<FollowupConfig, "formFirstDays" | "graceDays" | "baseInviteWindowDays">;
+}): BaseInviteAudience {
+  const { nowSec, cfg } = opts;
+  const excluded = Object.fromEntries(BASE_INVITE_EXCLUSIONS.map((k) => [k, 0])) as Record<BaseInviteExclusion, number>;
+  const responded = new Set([...opts.responseEmails].map(normalizeEmail));
+  const brevo = new Set([...(opts.excludedEmails ?? [])].map(normalizeEmail));
+
+  const entryById = new Map<number, OnboardingEntry>();
+  const entryByEmail = new Map<string, OnboardingEntry>();
+  for (const e of opts.entries) {
+    if (e.subscription_id.startsWith("pilot:") || e.seeded_by) continue;
+    const id = kitIdForEntry(e);
+    if (id != null) entryById.set(id, e);
+    entryByEmail.set(normalizeEmail(e.email), e);
+  }
+  const formLotIds = new Set<string>();
+  for (const lot of Object.values(opts.lots ?? {})) {
+    if (lot.kind !== "form" || lot.status === "cancelled") continue;
+    for (const id of lot.recipient_subscription_ids) formLotIds.add(id);
+  }
+
+  const windowS = cfg.baseInviteWindowDays * DAY_S;
+  const reguaSoon = (e: OnboardingEntry | undefined): boolean => {
+    if (!e) return false;
+    const anchor = reguaAnchorSec(e);
+    if (anchor == null) {
+      // Ainda sem confirmação: a escada manda o D+6 se ela confirmar. Só conta
+      // como "em breve" se a entrada é recente; entrada velha sem âncora
+      // (envio do e-mail 1 que nunca saiu) fica com a base.
+      const created = typeof e.created_at === "number" ? e.created_at : isoToSec(e.detected_at);
+      return created != null && nowSec - created < (cfg.formFirstDays * DAY_S + windowS);
+    }
+    const start = anchor + cfg.formFirstDays * DAY_S;
+    const closed = nowSec >= start + cfg.graceDays * DAY_S;
+    return !closed && start - nowSec <= windowS;
+  };
+
+  const seen = new Set<number>();
+  const recipients: BaseInviteSubscriber[] = [];
+  for (const sub of opts.subscribers) {
+    if (seen.has(sub.kit_subscriber_id)) continue;
+    seen.add(sub.kit_subscriber_id);
+    const email = normalizeEmail(sub.email);
+    const person = opts.people[String(sub.kit_subscriber_id)];
+    const emails = [email, ...(person?.previous_emails ?? []).map(normalizeEmail), ...(person ? [normalizeEmail(person.email)] : [])];
+    let motivo: BaseInviteExclusion | null = null;
+    if (brevo.has(email)) motivo = "envio_brevo";
+    else if (person?.form_filled_at || emails.some((e) => e !== "" && responded.has(e))) motivo = "respondeu";
+    else if ((person?.sends ?? []).some((s) => s.step === "form") || formLotIds.has(String(sub.kit_subscriber_id))) motivo = "ja_recebeu_formulario";
+    else if ((person?.sends ?? []).some((s) => s.step === "form_base")) motivo = "ja_recebeu_base";
+    else if (leftKitInFormSequence(person)) motivo = "saiu_do_formulario";
+    else if (reguaSoon(entryById.get(sub.kit_subscriber_id) ?? entryByEmail.get(email))) motivo = "formulario_em_breve";
+    if (motivo) {
+      excluded[motivo]++;
+      continue;
+    }
+    recipients.push({ kit_subscriber_id: sub.kit_subscriber_id, email: sub.email });
+  }
+  return { recipients, excluded };
+}
+
+/**
+ * @pure — o rascunho do e-mail da base só é montado com o texto aprovado
+ * (`data/snippets/pesquisa-base.md` sem `ONBOARDING-CORPO-PENDENTE`, com
+ * assunto, corpo e `{{FORM_URL}}`), o formulário configurado e o segredo do
+ * link válido — mesmas condições do gate da escada, aplicadas a este texto.
+ */
+export function baseInviteContentGate(
+  snippet: OnboardingSnippet | null | undefined,
+  cfg: Pick<FollowupConfig, "formUrl" | "formResponsesUrl">,
+  linkSecret: string | null | undefined,
+): FormContentGate {
+  const gate = checkSnippet("form_base", snippet);
+  if (gate.blocked) return gate;
+  if (!snippet!.body.includes(FORM_URL_PLACEHOLDER)) {
+    return {
+      blocked: true,
+      motivo: "snippet_invalido",
+      detalhe: `data/snippets/${FORM_BASE_STEP.snippetFile} sem ${FORM_URL_PLACEHOLDER} no corpo (o e-mail sairia sem o link do formulário)`,
+    };
+  }
+  if (cfg.formUrl == null || cfg.formResponsesUrl == null) {
+    return { blocked: true, motivo: "form_nao_configurado", detalhe: "onboarding.followup.form_url/form_responses_url ausentes" };
+  }
+  const secret = checkLinkSecret(linkSecret);
+  if (!secret.ok) return { blocked: true, motivo: "assinatura_nao_configurada", detalhe: `${secret.detalhe} no ambiente` };
+  return { blocked: false, linkSecret: secret.secret };
+}
+
+export type BaseInviteConfirmDecision =
+  | { action: "sent"; sendAt: string }
+  | { action: "scheduled"; sendAt: string }
+  | { action: "still_draft" }
+  | { action: "unknown"; reason: string };
+
+/**
+ * @pure — lê a releitura do broadcast do e-mail da base: só `sending`/
+ * `completed` é envio (grava por pessoa); `scheduled` com `send_at` válido é
+ * um estado próprio, relido a cada rodada (o editor pode desagendar);
+ * `draft` segue rascunho; o resto (`aborted`, status desconhecido, agendado
+ * sem `send_at`) não prova nada e conta como falha da releitura.
+ */
+export function decideBaseInviteConfirm(
+  reread: { status?: string | null; send_at?: string | null },
+  nowIso: string,
+): BaseInviteConfirmDecision {
+  const status = reread.status ?? null;
+  const sendAt = typeof reread.send_at === "string" && ISO_RE.test(reread.send_at) ? reread.send_at : null;
+  if (status === "scheduled") return sendAt ? { action: "scheduled", sendAt } : { action: "unknown", reason: "scheduled sem send_at válido" };
+  if (status === "sending" || status === "completed") return { action: "sent", sendAt: sendAt ?? nowIso };
+  if (status === "draft") return { action: "still_draft" };
+  return { action: "unknown", reason: `status "${status ?? "?"}"` };
+}
+
+/**
+ * Grava o envio do e-mail da base (`form_base`) para cada destinatário do
+ * rascunho, depois que `--step confirm` releu o broadcast agendado/enviado.
+ * Idempotente pelo `lot_id` (mesma regra de `applyFollowupLotToPeople`).
+ * Devolve quantas pessoas ganharam registro.
+ */
+export function applyBaseInviteToPeople(
+  people: Record<string, FollowupPerson>,
+  invite: FollowupBaseInvite,
+  sendAtIso: string,
+  nowIso: string,
+): number {
+  const lot: FollowupLot = {
+    lot_id: invite.lot_id,
+    kind: "form_base",
+    tag_name: invite.tag_name,
+    tag_id: invite.tag_id,
+    broadcast_id: invite.broadcast_id,
+    recipient_subscription_ids: invite.recipient_subscription_ids,
+    recipient_emails: invite.recipient_emails,
+    status: "scheduled",
+    created_at: invite.created_at,
+    send_at: sendAtIso,
+    last_reconciled_at: nowIso,
+    last_error: null,
+  };
+  return applyFollowupLotToPeople(people, lot, nowIso);
 }
 
 // ---------------------------------------------------------------------------
@@ -1249,6 +1616,7 @@ export function idsInUnresolvedFollowupLots(lots: Readonly<Record<string, Follow
 export function isFailedFollowupRun(run: FollowupRunRecord): boolean {
   if (run.aborted === true) return true;
   if (run.lots_failed > 0 || run.over_cap > 0 || run.lookups_failed > 0 || (run.lots_unresolved ?? 0) > 0) return true;
+  if ((run.base_invite_failed ?? 0) > 0) return true;
   // #10652: excedente do teto que não cabe na janela vira `vencida` em silêncio.
   if ((run.cap_window_overflow ?? 0) > 0) return true;
   // #10657: os três motivos da assinatura só aparecem com textos aprovados E
@@ -1280,9 +1648,9 @@ export const FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE = 3;
  * `FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE`; o resto é `0`.
  */
 export function resolveFollowupExitCode(
-  run: Pick<FollowupRunRecord, "lots_failed" | "over_cap" | "lots_unresolved" | "cap_window_overflow">,
+  run: Pick<FollowupRunRecord, "lots_failed" | "over_cap" | "lots_unresolved" | "cap_window_overflow" | "base_invite_failed">,
 ): 0 | 1 | typeof FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE {
-  if (run.lots_failed > 0 || run.over_cap > 0 || (run.lots_unresolved ?? 0) > 0) return 1;
+  if (run.lots_failed > 0 || run.over_cap > 0 || (run.lots_unresolved ?? 0) > 0 || (run.base_invite_failed ?? 0) > 0) return 1;
   if ((run.cap_window_overflow ?? 0) > 0) return FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE;
   return 0;
 }

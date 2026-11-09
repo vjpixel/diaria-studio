@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import { backupKeyFromBytes, backupKeyId, BACKUP_HEADER_LEN, decryptBackup, encryptBackup, parseBackupKey } from "../scripts/lib/backup-offsite-crypto.ts";
+import { offsiteBinding } from "../scripts/lib/backup-offsite.ts";
 import {
   BACKUP_OFFSITE_BUCKET,
   checkRemoteOffsiteBackup,
@@ -48,29 +49,31 @@ const ENV = {
   BACKUP_ENCRYPTION_KEY: KEY_B64,
 };
 const NOW = new Date("2026-11-08T06:05:00Z");
+const BIND = offsiteBinding("beehiiv", "2026-11-08");
+const BIND_VOTES = offsiteBinding("eia-votes", "2026-11-08");
 
 // ---------------------------------------------------------------------------
 
 describe("#11413 cifra AES-256-GCM", () => {
   it("encrypt→decrypt devolve os mesmos bytes (inclusive vazio e grande)", () => {
     for (const plain of [Buffer.alloc(0), Buffer.from("olá, backup"), randomBytes(1_000_003)]) {
-      const enc = encryptBackup(plain, KEY);
+      const enc = encryptBackup(plain, KEY, BIND);
       assert.equal(enc.subarray(0, 8).toString("ascii"), "DIARIABK");
-      assert.equal(enc[8], 1, "versão do formato");
+      assert.equal(enc[8], 2, "versão do formato (v2 desde #11961)");
       assert.equal(enc.length, BACKUP_HEADER_LEN + plain.length);
-      assert.ok(decryptBackup(enc, KEY).equals(plain));
+      assert.ok(decryptBackup(enc, KEY, BIND).equals(plain));
     }
   });
 
   it("IV aleatório: o mesmo conteúdo cifra diferente a cada vez", () => {
     const p = Buffer.from("x".repeat(100));
-    assert.ok(!encryptBackup(p, KEY).equals(encryptBackup(p, KEY)));
+    assert.ok(!encryptBackup(p, KEY, BIND).equals(encryptBackup(p, KEY, BIND)));
   });
 
   it("chave errada falha alto, apontando o keyId (nunca a chave)", () => {
-    const enc = encryptBackup(Buffer.from("segredo"), KEY);
+    const enc = encryptBackup(Buffer.from("segredo"), KEY, BIND);
     const other = backupKeyFromBytes(Buffer.alloc(32, 9));
-    assert.throws(() => decryptBackup(enc, other), (e: Error) => {
+    assert.throws(() => decryptBackup(enc, other, BIND), (e: Error) => {
       assert.match(e.message, /outra chave/);
       assert.ok(e.message.includes(backupKeyId(KEY).toString("hex")));
       assert.ok(!e.message.includes(KEY_B64));
@@ -79,26 +82,26 @@ describe("#11413 cifra AES-256-GCM", () => {
   });
 
   it("qualquer byte adulterado (corpo, tag, IV, keyId) falha", () => {
-    const enc = encryptBackup(Buffer.from("conteúdo de assinantes"), KEY);
+    const enc = encryptBackup(Buffer.from("conteúdo de assinantes"), KEY, BIND);
     for (const pos of [enc.length - 1, BACKUP_HEADER_LEN - 1, 20 /* IV */]) {
       const bad = Buffer.from(enc);
       bad[pos] ^= 0x01;
-      assert.throws(() => decryptBackup(bad, KEY), /autenticação/);
+      assert.throws(() => decryptBackup(bad, KEY, BIND), /autenticação/);
     }
     const badKid = Buffer.from(enc);
     badKid[10] ^= 0x01;
-    assert.throws(() => decryptBackup(badKid, KEY), /outra chave/);
+    assert.throws(() => decryptBackup(badKid, KEY, BIND), /outra chave/);
   });
 
   it("magic, versão e tamanho mínimo são conferidos", () => {
-    const enc = encryptBackup(Buffer.from("a"), KEY);
+    const enc = encryptBackup(Buffer.from("a"), KEY, BIND);
     const badMagic = Buffer.from(enc);
     badMagic[0] = 0x41 + 25;
-    assert.throws(() => decryptBackup(badMagic, KEY), /magic/);
+    assert.throws(() => decryptBackup(badMagic, KEY, BIND), /magic/);
     const badVer = Buffer.from(enc);
-    badVer[8] = 2;
-    assert.throws(() => decryptBackup(badVer, KEY), /versão/);
-    assert.throws(() => decryptBackup(enc.subarray(0, 20), KEY), /curto/);
+    badVer[8] = 3;
+    assert.throws(() => decryptBackup(badVer, KEY, BIND), /versão/);
+    assert.throws(() => decryptBackup(enc.subarray(0, 20), KEY, BIND), /curto/);
   });
 
   it("parseBackupKey recusa ausente, não-base64 e tamanho errado sem ecoar o valor", () => {
@@ -159,11 +162,11 @@ describe("#11413 chave do objeto e config", () => {
   it("BackupKey: backupKeyFromBytes recusa tamanho errado, e encrypt/decrypt só aceitam a chave validada (#11961)", () => {
     assert.throws(() => backupKeyFromBytes(Buffer.alloc(16)), /32 bytes \(tem 16\)/);
     const k = backupKeyFromBytes(Buffer.alloc(32, 3));
-    assert.ok(decryptBackup(encryptBackup(Buffer.from("x"), k), k).equals(Buffer.from("x")));
+    assert.ok(decryptBackup(encryptBackup(Buffer.from("x"), k, BIND), k, BIND).equals(Buffer.from("x")));
     // @ts-expect-error Buffer cru não é BackupKey: o tipo exige passar pelo parse
-    encryptBackup(Buffer.from("x"), Buffer.alloc(32));
+    encryptBackup(Buffer.from("x"), Buffer.alloc(32), BIND);
     // @ts-expect-error idem no decrypt (antes só o encrypt conferia o tamanho)
-    assert.throws(() => decryptBackup(encryptBackup(Buffer.from("x"), k), Buffer.alloc(32)));
+    assert.throws(() => decryptBackup(encryptBackup(Buffer.from("x"), k, BIND), Buffer.alloc(32), BIND));
   });
 });
 
@@ -253,8 +256,8 @@ describe("#11413 runOffsiteBackup", () => {
     assert.deepEqual(s.calls.map((c) => c.method), ["PUT", "HEAD", "PUT", "HEAD"]);
     // O que subiu decifra pro tar.gz exato e pro JSONL dos votos.
     const bh = s.store.get("/diaria-backup/beehiiv/2026-11-08.tar.gz.enc")!;
-    assert.ok(decryptBackup(bh, KEY).equals(FAKE_TAR));
-    const votes = gunzipSync(decryptBackup(s.store.get("/diaria-backup/eia-votes/2026-11-08.jsonl.gz.enc")!, KEY)).toString("utf8");
+    assert.ok(decryptBackup(bh, KEY, BIND).equals(FAKE_TAR));
+    const votes = gunzipSync(decryptBackup(s.store.get("/diaria-backup/eia-votes/2026-11-08.jsonl.gz.enc")!, KEY, BIND_VOTES)).toString("utf8");
     assert.equal(votes.trim().split("\n").length, 3);
     // Tamanho de cada upload vai pro log (faixa grátis do R2).
     assert.ok(logs.some((l) => /beehiiv: enviado .* bytes/.test(l)));
@@ -483,7 +486,7 @@ describe("#11413 restauração (tar real do sistema)", { skip: !hasTar && "tar a
   it("tar.gz → cifra → restoreBlob devolve os mesmos arquivos byte a byte", () => {
     const root = snapshotFixture();
     const src = join(root, "2026-11-08");
-    const enc = encryptBackup(tarGzDirectory(src), KEY);
+    const enc = encryptBackup(tarGzDirectory(src), KEY, BIND);
     const out = join(mkdtempSync(join(tmpdir(), "restore-11413-")), "bh");
     restoreBlob(enc, KEY, "beehiiv", "beehiiv/2026-11-08.tar.gz.enc", out);
     for (const f of ["manifest.json", "subscribers.jsonl", join("posts", "p1.json")]) {
@@ -495,7 +498,7 @@ describe("#11413 restauração (tar real do sistema)", { skip: !hasTar && "tar a
 
   it("votos: restaura o JSONL; chave errada não escreve nada", async () => {
     const d = await dumpKvPrefixes(votesSource(3));
-    const enc = encryptBackup(gzipSync(Buffer.from(d.jsonl, "utf8")), KEY);
+    const enc = encryptBackup(gzipSync(Buffer.from(d.jsonl, "utf8")), KEY, BIND_VOTES);
     const out = join(mkdtempSync(join(tmpdir(), "restore-11413-")), "votes");
     const file = restoreBlob(enc, KEY, "eia-votes", "eia-votes/2026-11-08.jsonl.gz.enc", out);
     assert.equal(file, join(out, "eia-votes-2026-11-08.jsonl"));

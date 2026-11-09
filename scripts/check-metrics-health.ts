@@ -119,6 +119,7 @@ import {
   evaluateRegistryMudo,
   closedPaidAcquisitionWindows,
   serieQuedaSemDiaCorrente,
+  tipoDiaEdicao,
   metricsHealthFingerprint,
   type PaidTestWindowSource,
   type MedicaoDia,
@@ -843,10 +844,13 @@ async function main(): Promise<void> {
     const diasComInsumo = id === "base-ativa" || id === "leitor-v1" ? diasComSnapshot : diasComColetaCapturaLog;
     // #10647: aquisição compara o último dia COMPLETO (o corrente ainda não
     // foi ingerido — ver `serieQuedaSemDiaCorrente`) contra uma baseline sem
-    // janela paga encerrada. As demais métricas seguem como antes.
+    // janela paga encerrada. #12475: e só contra dias do mesmo tipo (útil ×
+    // fim de semana) — o cadastro acompanha a edição, que sai seg-sex. As
+    // demais métricas seguem como antes.
     const { finding: quedaFinding, skipMotivo } = isAcquisition
       ? evaluateQueda(def, serieQuedaSemDiaCorrente(medicoes, hoje), diasComInsumo, thresholds, {
           baselineExcluida: baselineExcluidaAquisicao,
+          baselineMesmoTipoDia: tipoDiaEdicao,
         })
       : evaluateQueda(def, medicoes, diasComInsumo, thresholds);
     if (quedaFinding) findings.push(quedaFinding);

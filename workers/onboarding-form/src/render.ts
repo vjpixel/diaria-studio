@@ -9,6 +9,12 @@
  * uma vez, um toque) e acima disso vira menu suspenso (uma lista de 16 rádios
  * empurraria o resto do formulário para fora da tela); `text`/`textarea`
  * são campos livres limitados a `FORM_ANSWER_MAX_LEN`.
+ *
+ * Pergunta com `hiddenWhen` (#10605 v2: tema e preço somem com "Nada disso")
+ * leva `data-hide-q`/`data-hide-opt` no `<fieldset>` e um script inline curto
+ * (`HIDE_SCRIPT`) esconde e DESABILITA os campos quando a opção está marcada:
+ * campo desabilitado não vai no POST. Sem JavaScript as perguntas aparecem, e
+ * o servidor descarta a resposta escondida do mesmo jeito (`parseFormSubmission`).
  */
 
 import { FORM_ANSWER_MAX_LEN, FORM_QUESTIONS, isChoiceQuestion, type FormQuestion } from "../../../scripts/lib/onboarding-form-contract.ts";
@@ -48,15 +54,30 @@ export function renderPage(body: string): string {
   );
 }
 
+/** Esconde/desabilita as perguntas com `hiddenWhen` conforme a resposta de controle. */
+export const HIDE_SCRIPT =
+  "(function(){var f=document.querySelector('form');if(!f)return;" +
+  "function u(){var l=f.querySelectorAll('fieldset[data-hide-q]');for(var i=0;i<l.length;i++){var fs=l[i];" +
+  "var c=f.querySelectorAll('input[name=\"'+fs.getAttribute('data-hide-q')+'\"]:checked'),on=false;" +
+  "for(var j=0;j<c.length;j++)if(c[j].value===fs.getAttribute('data-hide-opt'))on=true;" +
+  "fs.hidden=on;var x=fs.querySelectorAll('input,select,textarea');for(var k=0;k<x.length;k++)x[k].disabled=on;}}" +
+  "f.addEventListener('change',u);u();})();";
+
+function fieldsetOpen(q: FormQuestion): string {
+  if (!q.hiddenWhen) return "<fieldset>";
+  return `<fieldset data-hide-q="${escapeHtml(q.hiddenWhen.questionId)}" data-hide-opt="${escapeHtml(q.hiddenWhen.option)}">`;
+}
+
 function renderQuestion(q: FormQuestion): string {
   const id = escapeHtml(q.id);
+  const fs = fieldsetOpen(q);
   const help = q.help ? `<p class="help">${escapeHtml(q.help)}</p>` : "";
   const req = q.required ? " required" : "";
   if (!isChoiceQuestion(q)) {
     const label = `<label class="q" for="${id}">${escapeHtml(q.label)}</label>`;
     const max = ` maxlength="${FORM_ANSWER_MAX_LEN}"`;
-    if (q.kind === "textarea") return `<fieldset>${label}${help}<textarea id="${id}" name="${id}"${max}${req}></textarea></fieldset>`;
-    return `<fieldset>${label}${help}<input id="${id}" name="${id}" type="text"${max}${req}></fieldset>`;
+    if (q.kind === "textarea") return `${fs}${label}${help}<textarea id="${id}" name="${id}"${max}${req}></textarea></fieldset>`;
+    return `${fs}${label}${help}<input id="${id}" name="${id}" type="text"${max}${req}></fieldset>`;
   }
   const opts = q.options;
   if (q.kind === "checkbox" || opts.length <= RADIO_MAX_OPTIONS) {
@@ -69,11 +90,11 @@ function renderQuestion(q: FormQuestion): string {
         return `<label class="opt" for="${oid}"><input type="${type}" id="${oid}" name="${id}" value="${escapeHtml(o)}"${r}><span>${escapeHtml(o)}</span></label>`;
       })
       .join("");
-    return `<fieldset><legend>${escapeHtml(q.label)}</legend>${help}${items}</fieldset>`;
+    return `${fs}<legend>${escapeHtml(q.label)}</legend>${help}${items}</fieldset>`;
   }
   const label = `<label class="q" for="${id}">${escapeHtml(q.label)}</label>`;
   const options = opts.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
-  return `<fieldset>${label}${help}<select id="${id}" name="${id}"${req}><option value="">Escolha uma opção</option>${options}</select></fieldset>`;
+  return `${fs}${label}${help}<select id="${id}" name="${id}"${req}><option value="">Escolha uma opção</option>${options}</select></fieldset>`;
 }
 
 /** Página do formulário para o e-mail do link assinado (#10657): o e-mail e a
@@ -82,7 +103,7 @@ function renderQuestion(q: FormQuestion): string {
 export function renderFormHtml(email: string, sig: string, questions: readonly FormQuestion[] = FORM_QUESTIONS): string {
   return renderPage(
     `<h1>Conte pra gente sobre você</h1>` +
-      `<p class="intro">São ${questions.length} perguntas rápidas, leva uns dois minutos. ` +
+      `<p class="intro">São até ${questions.length} perguntas rápidas, leva uns dois minutos. ` +
       `As respostas ajudam a escolher o que entra na diar.ia.br e o que mais podemos oferecer além dela.</p>` +
       `<form method="post" action="/enviar">` +
       `<input type="hidden" name="email" value="${escapeHtml(email)}">` +
@@ -90,7 +111,8 @@ export function renderFormHtml(email: string, sig: string, questions: readonly F
       `${FORM_PAGE_MARKER} value="${escapeHtml(sig)}">` +
       `<p class="intro">Respondendo como <strong>${escapeHtml(email)}</strong>.</p>` +
       questions.map(renderQuestion).join("") +
-      `<button type="submit">Enviar respostas</button></form>`,
+      `<button type="submit">Enviar respostas</button></form>` +
+      (questions.some((q) => q.hiddenWhen) ? `<script>${HIDE_SCRIPT}</script>` : ""),
   );
 }
 

@@ -262,7 +262,7 @@ export interface OnboardingStore {
 
   /**
    * #10604/#10605/#10606: sequências DEPOIS da escada de boas-vindas — pedido
-   * de apoio em D+30/90/180/360 e formulário (D+6 + lembrete a cada 30 dias).
+   * de apoio em D+30/90/180/360 e formulário (D+6 ou e-mail da base + até 3 lembretes, 30 dias depois do último e-mail).
    * Namespace PRÓPRIO dentro do mesmo arquivo (mesma decisão do
    * `kit_transport`: sem outra fonte de verdade): `people` guarda, por id
    * Kit, cada envio com data (o painel `/assinantes` conta daqui, sem
@@ -336,6 +336,10 @@ export function readStore(path: string = DEFAULT_STORE_PATH): { store: Onboardin
           ...(raw.followup?.consecutive_failed_runs != null
             ? { consecutive_failed_runs: raw.followup.consecutive_failed_runs }
             : {}),
+          // #10605: rascunho do e-mail da base — sem isto, o 1º `writeStore`
+          // de qualquer executor apagaria o registro e o `--step confirm` não
+          // saberia quem recebeu.
+          ...(raw.followup?.base_invite != null ? { base_invite: raw.followup.base_invite } : {}),
         },
       },
       corrupted: false,

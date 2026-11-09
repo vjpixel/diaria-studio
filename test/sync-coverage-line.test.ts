@@ -787,7 +787,9 @@ describe("readSubmissionsCountFromMarker (#1368, refined #1414)", () => {
         },
       }),
     );
-    assert.equal(readSubmissionsCountFromMarker(dir), 9);
+    // #12188: remetentes fictícios — sem registro, a contagem não filtra por aprovação.
+    process.env.DIARIA_NEWSLETTER_SENDERS_PATH = join(dir, "sem-registro.json");
+    try { assert.equal(readSubmissionsCountFromMarker(dir), 9); } finally { delete process.env.DIARIA_NEWSLETTER_SENDERS_PATH; }
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -835,7 +837,9 @@ describe("readSubmissionsCountFromMarker (#1368, refined #1414)", () => {
         subject: `Newsletter ${i}`,
       }))),
     );
-    assert.equal(readSubmissionsCountFromMarker(dir), 9);
+    // #12188: remetentes fictícios — sem registro, a contagem não filtra por aprovação.
+    process.env.DIARIA_NEWSLETTER_SENDERS_PATH = join(dir, "sem-registro.json");
+    try { assert.equal(readSubmissionsCountFromMarker(dir), 9); } finally { delete process.env.DIARIA_NEWSLETTER_SENDERS_PATH; }
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -883,7 +887,9 @@ describe("readSubmissionsCountFromMarker (#1368, refined #1414)", () => {
         subject: `Newsletter ${i}`,
       }))),
     );
-    assert.equal(readSubmissionsCountFromMarker(dir), 9);
+    // #12188: remetentes fictícios — sem registro, a contagem não filtra por aprovação.
+    process.env.DIARIA_NEWSLETTER_SENDERS_PATH = join(dir, "sem-registro.json");
+    try { assert.equal(readSubmissionsCountFromMarker(dir), 9); } finally { delete process.env.DIARIA_NEWSLETTER_SENDERS_PATH; }
     rmSync(dir, { recursive: true, force: true });
   });
 });

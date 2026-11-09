@@ -23,7 +23,8 @@
  * cópia dos untracked por tamanho + sha256) e só então remove. Untracked acima
  * do teto (`--rescue-max-files`, default 2000; `--rescue-max-mb`, default 100)
  * deixam o worktree `manter`, com o motivo no relatório. Logo antes de
- * remover, reconfere a PR aberta da branch. Se a remoção falhar depois do
+ * remover, reconfere a PR aberta da branch (em detached HEAD, #12394: que o
+ * HEAD segue detached e sem commit fora do remoto). Se a remoção falhar depois do
  * unlock, o lock volta com a razão original.
  * Nunca remove worktree em uso por sessão viva, com lock ativo/recente ou com
  * PR aberta (a regra completa está na lib). `rescue-dir` default é
@@ -354,11 +355,27 @@ export function runTriage(args: Record<string, string>, repoRoot: string, deps: 
   for (const { facts, decision } of rows) {
     if (decision.verdict !== "descartavel") continue;
     if (only !== null && !only.has(facts.name)) continue;
-    // Reconfere a PR logo antes de remover: uma PR aberta no meio do caminho manda manter.
-    const fresh = facts.branch === null ? { state: "unknown" } : summarizePrState(deps.prsForBranch(facts.branch));
-    if (fresh.state !== "merged" && fresh.state !== "closed") {
-      deps.log(`[triage-preserved-worktrees] mantido ${facts.name}: estado da PR mudou para ${fresh.state}.`);
-      continue;
+    // Reconfere logo antes de remover. Branch: uma PR aberta no meio do caminho
+    // manda manter. Detached HEAD (#12394): continua detached e sem commit fora
+    // do remoto (um commit novo ou um checkout de branch manda manter).
+    if (facts.branch === null) {
+      // `symbolic-ref -q` falha também se o git falhar; aí `unpushedCount`
+      // devolve null e o worktree fica do mesmo jeito.
+      const stillDetached = !git(["symbolic-ref", "-q", "HEAD"], facts.path).ok;
+      const unpushedNow = unpushedCount(facts.path);
+      if (!stillDetached || unpushedNow !== 0) {
+        deps.log(
+          `[triage-preserved-worktrees] mantido ${facts.name}: ` +
+            (stillDetached ? `detached HEAD agora com ${unpushedNow ?? "?"} commit(s) fora do remoto.` : "HEAD saiu do detached."),
+        );
+        continue;
+      }
+    } else {
+      const fresh = summarizePrState(deps.prsForBranch(facts.branch));
+      if (fresh.state !== "merged" && fresh.state !== "closed") {
+        deps.log(`[triage-preserved-worktrees] mantido ${facts.name}: estado da PR mudou para ${fresh.state}.`);
+        continue;
+      }
     }
     let dir: string;
     try {

@@ -22,8 +22,10 @@
  *     `MEDIA`. URL antiga segue no KV, sem mudança.
  *
  * Ficam no KV, sempre: as imagens do É IA? (`noCacheBust`, key de convenção
- * fixa que o `/vote` monta) e as chaves do jogo. Poda do KV e os uploaders
- * semanal/mensal/anual são fatias seguintes da #11412.
+ * fixa que o `/vote` monta) e as chaves do jogo. Fatias 3-4 (arquivo durável
+ * das imagens que só existiam no KV e poda gradual do KV):
+ * `scripts/lib/public-images-archive.ts`, com os CLIs
+ * `archive-kv-public-images.ts` e `prune-kv-public-images.ts`.
  *
  * ATIVAÇÃO (ordem recomendada; desde o F1 da #11456 o uploader confere a URL
  * do Worker `poll` depois do PUT, e desde o #11459 também a do Worker `site`

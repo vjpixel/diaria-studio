@@ -277,7 +277,7 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
   if (existsSync(reviewedPath)) {
     safely("validate-lancamentos", "validate-lancamentos", () => {
       const text = readFileSync(reviewedPath, "utf8");
-      const allowlist = loadToolAllowlist(root);
+      const allowlist = loadToolAllowlist(root, editionDir); // #12442: + pendentes da edição
       const result = validateLancamentos(text, allowlist);
       for (const u of result.invalid_urls) {
         findings.push({

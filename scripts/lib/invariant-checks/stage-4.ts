@@ -25,6 +25,8 @@ import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 import { readMarker } from "../pipeline-state.ts";
+import { computeIntakeFingerprint } from "../newsletter-intake-fingerprint.ts"; // #12188
+import { CLARICE_PENDING_REL, readClaricePending, resumeCommandFor } from "../clarice-pending.ts"; // #12257
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
 import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
@@ -107,6 +109,7 @@ import {
 import { checkNoTrailingEllipsis } from "../lint-checks/no-trailing-ellipsis.ts";
 import { checkTitleMentionsIA } from "../lint-checks/ia-in-title.ts"; // #4825
 import { checkTitleIaAsAgent } from "../lint-checks/title-ia-as-agent.ts"; // #12106
+import { checkD1ShortsFrontLoad, formatShortsFrontLoadWarning } from "../lint-checks/title-shorts-front-load.ts"; // #12464
 import { isTruncatedSummary } from "../truncated-summary.ts";
 import { sectionHeaderRegex } from "../section-naming.ts";
 import {
@@ -1724,6 +1727,26 @@ function checkTitleIaAsAgentInvariant(editionDir: string): InvariantViolation[] 
 }
 
 /**
+ * #12464: o título do D1 é o título do Short, e o feed de Shorts no celular
+ * mostra só os primeiros ~40 caracteres. Acusa a fatia visível que não se lê
+ * sozinha (termina em palavra de ligação ou tem menos de 2 palavras).
+ * WARN-ONLY: a regra é front-load, não teto (o teto do D1 segue 70).
+ */
+export function checkTitleShortsFrontLoadInvariant(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const result = checkD1ShortsFrontLoad(readFileSync(path, "utf8"));
+  if (result.ok) return [];
+  return result.errors.map((w) => ({
+    rule: "title-shorts-front-load",
+    message: `${formatShortsFrontLoadWarning(w)}. Ver context/editorial-rules.md seção 3.`,
+    source_issue: "#12464",
+    severity: "warning",
+    file: path,
+  }));
+}
+
+/**
  * #2881: backstop pra `sanitizeTrailingEllipsis` (roda em `enrich-inbox-
  * articles.ts`, Stage 1). Diferente de `checkTruncatedSecondaryItemSummary`
  * (#2596, que só flagra quando o texto ANTES da reticência parece ter
@@ -1752,6 +1775,69 @@ function checkNoTrailingEllipsisInvariant(editionDir: string): InvariantViolatio
     file: path,
     line: e.line,
   }));
+}
+
+/**
+ * #12188: independent backstop when the gate skipped the deterministic audit.
+ *
+ * Princípio: a auditoria nunca bloqueia a publicação por algo que o pipeline
+ * não controla. `error` só para o que o pipeline deixou de fazer (relatório
+ * ausente/desatualizado com threads a auditar, link no pool sem score/título
+ * sem tentativa registrada). Falha de fetch/enrich registrada (paywall, 403,
+ * challenge) e link removido antes do pool (dedup/data — score ali é só
+ * auditoria) viram `warning`. Os warnings do relatório (pendentes, descoberta
+ * falhou, capture_failed) saem sempre, independente da contagem de threads.
+ */
+export function checkNewsletterIntake(editionDir: string): InvariantViolation[] {
+  const internal = resolve(editionDir, "_internal");
+  const captured = resolve(internal, "captured-newsletters.json");
+  const reportPath = resolve(internal, "newsletter-link-scores.json");
+  const violation = (message: string, severity: "warning" | "error"): InvariantViolation => ({
+    rule: "newsletter-intake", source_issue: "#12188", message, severity, file: reportPath,
+  });
+  const traces = [captured, reportPath, resolve(internal, ".capture-newsletter-failed.json"), resolve(internal, "captured-newsletters.json.fetch.jsonl")];
+  // Captura nunca rodou nesta edição (auto-capture desligado, edição antiga): nada a auditar.
+  if (!traces.some((p) => existsSync(p))) return [];
+  let threadCount = 0;
+  if (existsSync(captured)) {
+    try {
+      const threads = JSON.parse(readFileSync(captured, "utf8"));
+      if (!Array.isArray(threads)) return [violation("Captura de newsletters ilegível", "error")];
+      threadCount = threads.length;
+    } catch (error) {
+      return [violation(`Captura de newsletters ilegível (${error instanceof Error ? error.message : String(error)})`, "error")];
+    }
+  }
+  if (!existsSync(reportPath)) {
+    return [violation("Intake ausente: rodar audit-newsletter-intake.ts antes do gate", threadCount > 0 ? "error" : "warning")];
+  }
+  try {
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
+      links: Array<{url?: string; score: number | null; title?: string; fetch_error?: string; in_pool?: boolean | null}>;
+      rows: Array<{thread_id: string}>; warnings: string[]; pending_senders: string[];
+      input_fingerprint?: string; registry_path?: string; fingerprint_keys?: string[];
+    };
+    if (!Array.isArray(report.links) || !Array.isArray(report.rows) || !Array.isArray(report.warnings) || !Array.isArray(report.pending_senders)) throw new Error("shape inválido");
+    const out: InvariantViolation[] = report.warnings.map((w) => violation(w, "warning"));
+    const missingScore = (l: (typeof report.links)[number]) => typeof l.score !== "number" || !Number.isFinite(l.score);
+    const missingTitle = (l: (typeof report.links)[number]) => !l.title?.trim() || l.title.startsWith("(newsletter:");
+    const attempted = (l: (typeof report.links)[number]) => typeof l.fetch_error === "string" && l.fetch_error.length > 0;
+    const outOfPool = (l: (typeof report.links)[number]) => l.in_pool === false;
+    const blocking = (l: (typeof report.links)[number]) => !attempted(l) && !outOfPool(l);
+    if (report.links.some((l) => missingScore(l) && blocking(l))) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
+    if (report.links.some((l) => missingTitle(l) && blocking(l))) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
+    if (report.pending_senders.length) out.push(violation(`Remetentes pendentes de decisão em lote: ${report.pending_senders.join(", ")}`, "warning"));
+    // #12188 item 7: content hash of the audit inputs, never mtime — a save
+    // that keeps the links (Studio, refresh-use-melhor-tempo, sync-code) is not stale.
+    // Registro relativo resolve contra o seed LOCAL (path absoluto de outra máquina não existe aqui).
+    const registryPath = resolve(ROOT, typeof report.registry_path === "string" ? report.registry_path : "seed/newsletter-senders.json");
+    const keys = Array.isArray(report.fingerprint_keys) ? report.fingerprint_keys
+      : report.links.flatMap((l) => typeof l.url === "string" ? [canonicalize(l.url).toLowerCase()] : []);
+    if (report.input_fingerprint !== computeIntakeFingerprint(editionDir, registryPath, keys)) out.push(violation("Intake desatualizado: re-rodar audit-newsletter-intake.ts para atualizar scores e destinos", "error"));
+    return out;
+  } catch (error) {
+    return [violation(`Relatório de intake ilegível (${error instanceof Error ? error.message : String(error)}): re-rodar audit-newsletter-intake.ts`, "error")];
+  }
 }
 
 /**
@@ -4201,6 +4287,33 @@ export function checkSocialInviteDrift(editionDir: string): InvariantViolation[]
   return [{ rule: "social-invite-drift", message, source_issue: "#10835", severity: "warning", file: path }];
 }
 
+/**
+ * #12257: o Stage 2 seguiu sem a Clarice (`clarice-correct.ts` exit 6,
+ * `clarice_unavailable`) e gravou `02-reviewed.md` a partir do texto
+ * humanizado via `clarice-pending.ts skip`. O marcador só sai quando a
+ * revisão é retomada com sucesso (`clarice-pending.ts resume`). Warning, não
+ * error: publicar sem a Clarice é decisão do editor no gate, e a mensagem traz
+ * o comando de retomada.
+ */
+function checkClaricePending(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, CLARICE_PENDING_REL);
+  if (!existsSync(path)) return [];
+  const marker = readClaricePending(editionDir);
+  const reason = marker?.reason ?? "motivo ilegível no marcador";
+  const resume = resumeCommandFor(editionDir, marker?.edition);
+  return [
+    {
+      rule: "clarice-pending",
+      message:
+        `clarice não rodou (${reason}): 02-reviewed.md saiu do texto humanizado, sem a revisão da Clarice. ` +
+        `Retomar antes de aprovar: ${resume}`,
+      source_issue: "#12257",
+      severity: "warning",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "newsletter-html-not-behind-reviewed",
@@ -4396,6 +4509,17 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#12106",
     stage: 4,
     run: checkTitleIaAsAgentInvariant,
+  },
+  {
+    id: "title-shorts-front-load",
+    description: "título do D1 se lê sozinho nos ~40 caracteres que o feed de Shorts mostra (#12464, warning-only)",
+    source_issue: "#12464",
+    stage: 4,
+    run: checkTitleShortsFrontLoadInvariant,
+  },
+  {
+    id: "newsletter-intake", description: "intake completo e scores de todos os links IA (#12188)",
+    source_issue: "#12188", stage: 4, run: checkNewsletterIntake,
   },
   {
     id: "capture-failed-submission-count",
@@ -4644,6 +4768,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkApprovedItemRemoval,
   },
+  {
+    id: "clarice-pending",
+    description: "revisão da Clarice pendente: o Stage 2 gravou 02-reviewed.md sem a Clarice (API indisponível) e o marcador _internal/02-clarice-pending.json continua (#12257, warning-only)",
+    source_issue: "#12257",
+    stage: 4,
+    run: checkClaricePending,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -4693,4 +4824,5 @@ export {
   checkKitFixtureAudit,
   checkUseMelhorTempoTitleHeuristicShare,
   checkApprovedItemRemoval,
+  checkClaricePending,
 };

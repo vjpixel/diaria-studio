@@ -148,6 +148,7 @@ import {
 // D1, `MAX_SUBJECT_LENGTH`). O do card 4x5 depende da quebra de linha e vem no
 // lint `title-card-4x5`, não no contador.
 import { MAX_SUBJECT_LENGTH, checkTitleCardFit, checkTitleEmailSubject } from "../lib/lint-checks/title-limits.ts";
+import { SHORTS_FEED_VISIBLE_TITLE_CHARS, checkD1ShortsFrontLoad } from "../lib/lint-checks/title-shorts-front-load.ts"; // #12464
 
 // ── Arquivos revisáveis ─────────────────────────────────────────────────
 
@@ -637,11 +638,11 @@ function readApprovedJson(editionDir: string): ApprovedJson | null {
   }
 }
 
-function lintCategorized(md: string, rootDir: string): LintReport {
+function lintCategorized(md: string, rootDir: string, editionDir: string): LintReport {
   const skipped: string[] = [];
   const checks: LintCheckResult[] = [
     runCheck("lancamentos-oficiais", "LANÇAMENTOS só com link oficial (#160)", true, () => {
-      const allowlist = loadToolAllowlist(rootDir);
+      const allowlist = loadToolAllowlist(rootDir, editionDir); // #12442: + pendentes da edição
       const r = validateLancamentos(md, allowlist);
       return { ok: r.status === "ok" && r.invalid_urls.length === 0 && r.not_a_tool.length === 0, ...r };
     }),
@@ -658,6 +659,13 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
     // #11254: os dois limites reais do título, fora do gate 4 (aviso, nunca bloqueio).
     runCheck("title-card-4x5", "Título cabe no card 4x5 (3 linhas a 62px)", false, () => checkTitleCardFit(md)),
     runCheck("title-email-subject", "Título do D1 cabe no assunto do e-mail (≤70 chars)", false, () => checkTitleEmailSubject(md)),
+    // #12464: o D1 é o título do Short; o detalhe traz a fatia visível (`visible`) que o feed mostra. Aviso, nunca bloqueio.
+    runCheck(
+      "title-shorts-front-load",
+      `Título do D1 se lê sozinho nos ~${SHORTS_FEED_VISIBLE_TITLE_CHARS} chars do feed de Shorts`,
+      false,
+      () => checkD1ShortsFrontLoad(md),
+    ),
     runCheck("why-matters-format", "'Por que isso importa' sem abertura 'Para [audiência],'", true, () => checkWhyMattersFormat(md)),
     runCheck("eai-section", "Seção É IA? presente", true, () => checkEaiSection(md)),
     runCheck("intro-count", "Intro bate com contagem real de itens (#743)", true, () => lintIntroCount(md)),
@@ -684,7 +692,7 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
     // no gate real (orchestrator-stage-4.md §4c.2).
     runCheck("domain-diversity", "Máx. 2 URLs do mesmo domínio registrável (#5735)", true, () => validateDomainDiversity(md)),
     runCheck("lancamentos-oficiais", "LANÇAMENTOS só com link oficial (#160)", true, () => {
-      const allowlist = loadToolAllowlist(rootDir);
+      const allowlist = loadToolAllowlist(rootDir, editionDir); // #12442: + pendentes da edição
       const r = validateLancamentos(md, allowlist);
       return { ok: r.status === "ok" && r.invalid_urls.length === 0 && r.not_a_tool.length === 0, ...r };
     }),
@@ -783,7 +791,7 @@ export function runReviewLints(
   slug: ReviewSlug,
   content: string,
 ): LintReport {
-  if (slug === "categorized") return lintCategorized(content, rootDir);
+  if (slug === "categorized") return lintCategorized(content, rootDir, editionDir);
   if (slug === "reviewed") return lintReviewed(content, rootDir, editionDir);
   if (slug === "html-final" || slug === "html-final-patronos") return lintHtmlFinal();
   return lintSocial(content);

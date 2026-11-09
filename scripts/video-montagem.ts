@@ -56,7 +56,7 @@
  *                           `fact-check-input.json`: entrada do agent `fact-checker` em `mode: "video"`,
  *                           que grava `fact-check.json`; o `roteiro` põe os achados graves no Doc do
  *                           Gate 2, com o trecho do bruto e a proposta de corte
- *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|text|off] [--no-speech-detect] [--no-audio-clean]
+ *   build AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode png|off] [--no-speech-detect] [--no-audio-clean]
  *       (#12102) o áudio dos clipes do XML (e da prévia) vem de `{AAMMDD}_audio_tratado-{chave}.wav`
  *       (`cleanAudioFileName`; a chave é o hash dos args do ffmpeg), o áudio do bruto com afftdn +
  *       agate (aproximação do Enhance do Adobe Podcast), ao lado do bruto; ffmpeg falho = áudio
@@ -90,8 +90,8 @@
  *       (#11756): faixa V2 no bloco `titulo` (sem ele, no 1º bloco) com o `screenTitle` do
  *       blocks.json ou o título do D1 (`02-reviewed.md`); --title-mode png (padrão desde o #12091:
  *       o PNG com fundo a 70% como clipe na V2, pendente de conferência no 1º import com o PNG
- *       via XML), text (gerador de
- *       texto do FCP7 sobre fundo Color+Crop, só por flag, ainda não validado) ou off.
+ *       via XML) ou off; o text (gerador de texto do FCP7 sobre fundo Color+Crop)
+ *       saiu no #12104 e agora é erro.
  *   srt AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--from-raw] [--force]
  *       legendas de todas as sequências (#11957: o horizontal também; --seq escolhe uma).
  *       Retranscreve o áudio montado (cache por trechos + identidade do áudio);
@@ -2008,21 +2008,26 @@ export function adjustmentLine(a: CutAdjustment): string {
   return `   ajuste ${a.block} ${edge}: ${a.from.toFixed(2)} → ${a.to.toFixed(2)} s (${a.reason})`;
 }
 
-/** `--title-mode` do build (#11756): PNG na V2 (padrão desde o #12091), gerador de texto (só por flag), ou sem título. */
-export type TitleMode = "text" | "png" | "off";
-
-export function parseTitleModeArg(v: string | undefined): TitleMode {
-  if (v === undefined) return "png";
-  if (v === "text" || v === "png" || v === "off") return v;
-  throw new Error(`--title-mode precisa ser text, png ou off (veio "${v}")`);
-}
+/** `--title-mode` do build (#11756): PNG na V2 (padrão desde o #12091) ou sem título. */
+export type TitleMode = "png" | "off";
 
 /**
- * O título que o `build` passa ao XML para um modo (#12091): `png` = o PNG
- * como clipe (padrão), `text` = o gerador "Text" (só por flag).
+ * #12104: o `text` (gerador "Text" do FCP7 sobre fundo Color+Crop, nunca
+ * validado num import) saiu por decisão do editor. Pedir o modo removido é
+ * erro explícito, para ninguém achar que o gerador ainda sai.
  */
-export function screenTitleXmlFor(mode: Exclude<TitleMode, "off">, text: string, pngXmlPath: string): ScreenTitleXml {
-  return mode === "png" ? { text, mode: "png", pngPath: pngXmlPath } : { text, mode: "text" };
+export function parseTitleModeArg(v: string | undefined): TitleMode {
+  if (v === undefined) return "png";
+  if (v === "png" || v === "off") return v;
+  if (v === "text") {
+    throw new Error('--title-mode text foi removido (#12104): o título da vertical sai só em PNG (padrão, "--title-mode png") ou "--title-mode off" para tirar');
+  }
+  throw new Error(`--title-mode precisa ser png ou off (veio "${v}")`);
+}
+
+/** O título que o `build` passa ao XML (#12091): o PNG como clipe na V2. */
+export function screenTitleXmlFor(text: string, pngXmlPath: string): ScreenTitleXml {
+  return { text, mode: "png", pngPath: pngXmlPath };
 }
 
 /**
@@ -2194,12 +2199,10 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     const t = resolveScreenTitle({ blocksTitle: file.screenTitle, d1Title: readD1Title(ctx.edition) });
     if (t.text) {
       const { png, xmlPath } = await renderVersionedTitlePng({ outDir: ctx.outDir, mediaPath, edition: ctx.edition, text: t.text, width: titled.spec.width, height: titled.spec.height });
-      screenTitle = screenTitleXmlFor(titleMode === "text" ? "text" : "png", t.text, xmlPath);
+      screenTitle = screenTitleXmlFor(t.text, xmlPath);
       console.error(
         `[premissa] título na vertical (${t.how === "blocks" ? "screenTitle do blocks.json" : "título do D1; screenTitle no blocks.json sobrepõe"}): "${t.text}", ` +
-          (titleMode === "png"
-            ? `PNG ${png} na V2 (padrão; pendente de conferência no 1º import com o PNG via XML, #12091)`
-            : `gerador de texto do FCP7 na V3 sobre fundo Color+Crop 70% na V2 (--title-mode text, NÃO validado: na 261104 saiu com &#10; na tela e o fundo como bloco preto; PNG de reserva: ${png}); conferir no import (#12091)`),
+          `PNG ${png} na V2 (padrão; pendente de conferência no 1º import com o PNG via XML, #12091)`,
       );
     } else if (t.how === "missing") console.error("[aviso] vertical sem título: sem screenTitle no blocks.json e sem D1 em 02-reviewed.md (#11756)");
   }
@@ -2219,12 +2222,10 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         continue;
       }
       const { png, xmlPath } = await renderVersionedTitlePng({ outDir: ctx.outDir, mediaPath, edition: ctx.edition, corte, text: t.text, width: p.spec.width, height: p.spec.height });
-      screenTitleByCorte[corte] = screenTitleXmlFor(titleMode === "text" ? "text" : "png", t.text, xmlPath);
+      screenTitleByCorte[corte] = screenTitleXmlFor(t.text, xmlPath);
       console.error(
         `[premissa] título do corte "${corte}" (screenTitle da sequência): "${t.text}", ` +
-          (titleMode === "text"
-            ? `gerador de texto do FCP7 na V3 sobre fundo Color+Crop 70% na V2 (--title-mode text, NÃO validado; PNG de reserva: ${png})`
-            : `PNG ${png} na V2 (padrão; pendente de conferência no 1º import com o PNG via XML)`) +
+          `PNG ${png} na V2 (padrão; pendente de conferência no 1º import com o PNG via XML)` +
           " (#11900, #12091)",
       );
     }
@@ -3346,9 +3347,13 @@ async function runCommand(
         console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");
         return 2;
       }
-      // #12209: a faixa tratada lê o bruto; no modo API ele pode ter saído do cache (o transcribe "pronto" não baixa).
-      if (buildNeedsLocalBruto({ apiMode: d !== null, audioClean: !flags.has("no-audio-clean") })) await needLocalBruto();
-      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)), seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d);
+      {
+        // #12104: o modo removido (`text`) falha aqui, antes de baixar o bruto.
+        const titleMode = parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined));
+        // #12209: a faixa tratada lê o bruto; no modo API ele pode ter saído do cache (o transcribe "pronto" não baixa).
+        if (buildNeedsLocalBruto({ apiMode: d !== null, audioClean: !flags.has("no-audio-clean") })) await needLocalBruto();
+        return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), titleMode, seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d);
+      }
     case "srt": {
       if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "G:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
       let final = values["from-final"];

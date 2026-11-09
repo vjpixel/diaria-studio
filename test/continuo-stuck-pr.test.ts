@@ -13,7 +13,9 @@ import { fileURLToPath } from "node:url";
 import {
   countRejectReviews,
   decideStuckPrAction,
+  EXECUTION_BLOCK_LABEL,
   extractLinkedIssues,
+  needsDraftBlockLabel,
   buildCloseComment,
   REJECT_CAP,
   STALE_HOURS_BEFORE_ACTION,
@@ -178,5 +180,44 @@ describe("wiring em continuo-pr-review.sh", () => {
     const twoDot = prompt.match(/git diff \$BASE_SHA\.\.\$HEAD_SHA/g) ?? [];
     assert.equal(twoDot.length, 1);
     assert.match(prompt, /Nunca use \\`git diff \$BASE_SHA\.\.\$HEAD_SHA\\`/);
+  });
+});
+
+describe("#12460 — draft do contínuo sem bloqueio-execucao ganha a label", () => {
+  it("caso #12351: draft continuo/fix-* sem a label → precisa da label", () => {
+    assert.equal(
+      needsDraftBlockLabel({ headRefName: "continuo/fix-12241-bing-ai-performance", isDraft: true, labels: ["continuo-escalado"] }),
+      true,
+    );
+  });
+  it("draft que já tem a label (resgate, #7484) → nada a fazer", () => {
+    assert.equal(
+      needsDraftBlockLabel({ headRefName: "continuo/rescue-x", isDraft: true, labels: [EXECUTION_BLOCK_LABEL] }),
+      false,
+    );
+  });
+  it("PR não-draft nunca recebe a label (o merger precisa continuar vendo-a)", () => {
+    assert.equal(needsDraftBlockLabel({ headRefName: "continuo/fix-1", isDraft: false, labels: [] }), false);
+  });
+  it("draft fora de continuo/* (overnight, editor) não é tocado", () => {
+    assert.equal(needsDraftBlockLabel({ headRefName: "overnight/fix-1-x", isDraft: true, labels: [] }), false);
+  });
+  it("a label aplicada é a mesma que o alarme de fila (watch-continuo-health.sh) exclui", () => {
+    const watch = readFileSync(resolve(ROOT, "hermes/scripts/watch-continuo-health.sh"), "utf8");
+    assert.ok(
+      watch.includes(`.isDraft and (any(.labels[]; .name == "${EXECUTION_BLOCK_LABEL}"))`),
+      "o filtro da fila no watch não usa a mesma label que o resolvedor aplica",
+    );
+  });
+  it("o resolvedor chama needsDraftBlockLabel e aplica por REST antes do skip de draft", () => {
+    const cli = readFileSync(resolve(ROOT, "scripts/continuo-resolve-stuck-prs.ts"), "utf8");
+    const call = cli.indexOf("needsDraftBlockLabel({");
+    const skip = cli.indexOf("if (raw.isDraft ||");
+    assert.ok(call > 0 && skip > call, "a checagem do draft tem de vir antes do continue de draft");
+    assert.match(cli, /addPrLabelsRest\(raw\.number, \[EXECUTION_BLOCK_LABEL\]/);
+  });
+  it("o prompt do implementador do contínuo manda abrir draft já com a label", () => {
+    const skill = readFileSync(resolve(ROOT, "hermes/skills/hermes-diaria-continuo/SKILL.md"), "utf8");
+    assert.match(skill, /--draft --label bloqueio-execucao/);
   });
 });

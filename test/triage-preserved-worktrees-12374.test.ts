@@ -350,7 +350,8 @@ test("#12374 classifyForDiscard: cada guarda bloqueia sozinha", () => {
     { pr: { state: "open", prNumbers: [1] } },
     { pr: { state: "none", prNumbers: [] } },
     { pr: { state: "unknown", prNumbers: [] } },
-    { branch: null },
+    // Detached HEAD sem branch: só o commit fora do remoto bloqueia (#12394).
+    { branch: null, unpushedCommits: 1 },
     { lastActivityMs: null },
     { lastActivityMs: NOW - 1 * DAY },
     { dirty: null },

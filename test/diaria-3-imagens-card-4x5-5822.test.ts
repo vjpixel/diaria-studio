@@ -88,14 +88,23 @@ describe("diaria-3-imagens/SKILL.md cobre o card 4:5 (#5822, delegação via #67
     assert.ok(idxGateBanner === -1 || idxInvariant < idxGateBanner, "invariant check deve rodar antes do banner do gate");
   });
 
-  it("os sentinels de conclusão (--no-gate e --no-gates/sim) incluem os 3 arquivos 04-d{N}-4x5.jpg", () => {
+  it("os sentinels de conclusão (--no-gate e --no-gates/sim) incluem o 04-d{N}-4x5.jpg de cada destaque da variante", () => {
     const sentinelCalls = skill.match(/pipeline-sentinel\.ts write[\s\S]*?--outputs\s+"[^"]*"/g) ?? [];
     assert.ok(sentinelCalls.length >= 2, `esperado >=2 chamadas de sentinel write, achou ${sentinelCalls.length}`);
     for (const call of sentinelCalls) {
-      for (const file of ["04-d1-4x5.jpg", "04-d2-4x5.jpg", "04-d3-4x5.jpg"]) {
+      for (const file of ["04-d1-4x5.jpg", "04-d2-4x5.jpg"]) {
         assert.match(call, new RegExp(file.replace(/\./g, "\\.")), `sentinel write deve incluir ${file}: ${call}`);
       }
+      // #12256: edição de 2 destaques (#2316) tem variante sem D3; a de 3
+      // destaques (a que cita o hero 2:1 do D3) precisa do card 4:5 do D3.
+      if (/04-d3-2x1\.jpg/.test(call)) {
+        assert.match(call, /04-d3-4x5\.jpg/, `variante de 3 destaques deve incluir 04-d3-4x5.jpg: ${call}`);
+      }
     }
+    assert.ok(
+      sentinelCalls.some((c) => /04-d3-4x5\.jpg/.test(c)),
+      "ao menos a variante de 3 destaques deve exigir 04-d3-4x5.jpg",
+    );
   });
 
   it("a seção ## Outputs documenta os arquivos 4:5 (nativo + card final)", () => {
