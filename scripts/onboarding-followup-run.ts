@@ -73,7 +73,7 @@ import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from 
 import { buildOnboardingLotFilter, decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type RefreshKitCandidatesOpts } from "./lib/onboarding-kit-transport.ts";
 import { isKitTransientError } from "./onboarding-welcome-run.ts";
 import { redactEmails, verifyPilotBroadcastFilter } from "./lib/onboarding-kit-pilot.ts";
-import { parseFormResponsesPayload, summarizeFormResponses, type FormResponse } from "./lib/onboarding-form-contract.ts";
+import { fetchAllFormResponses, summarizeFormResponses, type FormResponse } from "./lib/onboarding-form-contract.ts";
 import { FORM_PAGE_MARKER, FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
 import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
@@ -1248,16 +1248,14 @@ export function parseArgs(argv: string[]): CliArgs {
   return a;
 }
 
-/** `GET form_responses_url` com o token de `form_responses_token_env`. Lança em qualquer falha. */
+/**
+ * `GET form_responses_url` com o token de `form_responses_token_env`. Lança em qualquer falha.
+ * #12509: segue as páginas (`next_cursor`) até a última via `fetchAllFormResponses`.
+ */
 export async function fetchFormResponsesReal(cfg: FollowupConfig, fetchImpl: typeof fetch = fetch): Promise<FormResponse[]> {
   const token = process.env[cfg.formResponsesTokenEnv];
   if (!cfg.formResponsesUrl || !token) throw new Error(`endpoint de respostas ou ${cfg.formResponsesTokenEnv} ausente`);
-  const res = await fetchImpl(cfg.formResponsesUrl, { headers: { authorization: `Bearer ${token}` } });
-  if (!res.ok) {
-    await res.body?.cancel().catch(() => {});
-    throw new Error(`GET respostas do formulário: HTTP ${res.status}`);
-  }
-  return parseFormResponsesPayload(await res.json());
+  return fetchAllFormResponses(cfg.formResponsesUrl, token, { fetchImpl });
 }
 
 /** `--status` (#10605 v3): só leitura, sem Kit. Respostas por versão e o tempo de preenchimento. */
@@ -1433,6 +1431,7 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
       if (tagId == null) throw new Error(`tag ${KIT_ENVIO_BREVO_TAG_NAME} não existe no Kit`);
       return listAllTagSubscriberEmails(tagId, kitCfg);
     },
+    // #12509: `fetchFormResponsesReal` segue as páginas (`next_cursor`) até a última.
     fetchFormResponses: () => fetchFormResponsesReal(cfg),
     async runLot(lot, content) {
       // Import tardio: o executor da escada carrega o resto do transporte Kit.

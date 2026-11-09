@@ -23,6 +23,8 @@
  * segue servindo a mais recente por pessoa, `?historico=1` serve o histórico.
  * #12495: com `RESULTS_URL`/`RESULTS_PUBLISHED_AT` preenchidos, a página de
  * obrigado mostra o link dos resultados.
+ * #12509: `/api/respostas` é paginado (`?cursor=`, `next_cursor`), uma
+ * página por invocação, para não passar do teto de operações de KV.
  */
 
 import {
@@ -33,8 +35,11 @@ import {
   parseFormSubmission,
   planFormResponseWrites,
   prefillEmailFromQuery,
+  readFormResponsesPage,
   resolveFormResults,
   type FormResponse,
+  type FormResponsesPage,
+  type FormResponsesPayload,
 } from "../../../scripts/lib/onboarding-form-contract.ts";
 import {
   checkFormEmailSig,
@@ -179,24 +184,21 @@ export default {
       }
       // #12490: `?historico=1` lista todas as respostas guardadas (uma por envio).
       const prefix = url.searchParams.get("historico") === "1" ? FORM_HISTORY_PREFIX : "resp:";
-      const responses: FormResponse[] = [];
-      let cursor: string | undefined;
-      do {
-        const list = await env.ONBOARDING_FORM.list({ prefix, cursor });
-        for (const k of list.keys) {
-          const raw = await env.ONBOARDING_FORM.get(k.name);
-          if (!raw) continue;
-          try {
-            responses.push(JSON.parse(raw) as FormResponse);
-          } catch {
-            // Registro ilegível não derruba a listagem. O log leva só o tipo da
-            // chave (ou a data, no `hist:`), nunca o e-mail que vem depois do prefixo.
-            console.error(JSON.stringify({ event: "resposta_ilegivel", key_suffix: k.name.startsWith(FORM_HISTORY_PREFIX) ? k.name.split(":").slice(2).join(":") : "resp" }));
-          }
-        }
-        cursor = list.list_complete ? undefined : list.cursor;
-      } while (cursor);
-      return new Response(JSON.stringify({ responses }), { headers: { "content-type": "application/json" } });
+      // #12509: UMA página por invocação (o Workers limita as operações de KV
+      // por invocação); quem lê segue `next_cursor` (`fetchAllFormResponses`).
+      const cursor = url.searchParams.get("cursor") || undefined;
+      let page: FormResponsesPage;
+      try {
+        page = await readFormResponsesPage(env.ONBOARDING_FORM, prefix, cursor);
+      } catch (e) {
+        // Motivo explícito no 5xx: o executor repassa na mensagem da trava.
+        const reason = (e as Error).message;
+        console.error(JSON.stringify({ event: "respostas_kv_falhou", reason }));
+        return new Response(JSON.stringify({ error: "kv_failure", reason }), { status: 503, headers: { "content-type": "application/json" } });
+      }
+      if (page.unreadable > 0) console.error(JSON.stringify({ event: "resposta_ilegivel", prefix, count: page.unreadable }));
+      const payload: FormResponsesPayload = { responses: page.responses, next_cursor: page.next_cursor };
+      return new Response(JSON.stringify(payload), { headers: { "content-type": "application/json" } });
     }
 
     return new Response("not found", { status: 404 });

@@ -687,6 +687,7 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
     const { e } = env(null);
     const res = await worker.fetch(new Request("https://form.example/api/respostas", { headers: { authorization: "Bearer tok" } }), e);
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { responses: [] });
+    // #12509: a página leva `next_cursor` (null = última).
+    assert.deepEqual(await res.json(), { responses: [], next_cursor: null });
   });
 });
