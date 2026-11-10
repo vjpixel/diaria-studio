@@ -61,6 +61,11 @@
  * #11326). GET inicial que falha não aborta o acompanhamento: com o principal
  * desagendado, segue pro desagendamento relido e, se ele falhar, alarme.
  *
+ * A checagem de segunda vale só pra CRIAR (#12616): semanal já `scheduled`
+ * numa edição que deixou de ser de segunda (renumerada por
+ * `renumber-edition.ts`) segue acompanhando o principal, com o re-sync de
+ * conteúdo (`subscriber_filter` explícito) acima.
+ *
  * Exit: 0 criado/idempotente/pulado (desligado, não é segunda, pausado, tag
  * vazia); 1 falha (API, filtro não confirmado, agendamento não confirmado);
  * 2 precondição (principal não agendado, tag inexistente, config, flags
@@ -257,11 +262,16 @@ export async function publishKitSemanalFrio(
     };
   }
   const edition = basename(editionDir);
-  if (!isMondayEdition(edition)) return { code: 0, status: "not_monday", reason: `edição ${edition} não é de segunda.` };
   const own = deps.readOwnState(editionDir);
+  // #12616 — semanal JÁ agendada acompanha o principal mesmo fora de segunda:
+  // a edição renumerada (`renumber-edition.ts`, ex. 261109 seg → 261110 ter)
+  // leva o estado junto, e sem isto a cópia saía com os IDs antigos (o
+  // re-sync de conteúdo do #11429 nunca rodava) ou, com o principal
+  // desagendado, sozinha. Criar continua só na segunda.
   if (own && own.status === "scheduled" && typeof own.broadcast_id === "number") {
     return followMainSchedule(editionDir, own, opts, deps);
   }
+  if (!isMondayEdition(edition)) return { code: 0, status: "not_monday", reason: `edição ${edition} não é de segunda.` };
   if (opts.followOnly) {
     return { code: 0, status: "nothing_to_follow", reason: "semanal de frio não está agendada — nada a acompanhar." };
   }
