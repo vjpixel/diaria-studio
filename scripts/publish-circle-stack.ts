@@ -131,6 +131,7 @@ import {
 import {
   circleStackSelectionViolations,
   circleStackUnreviewedTitles,
+  isWeakStackDestaque,
   selectCircleStack,
   parseInterestProfile,
   STACK_INTEREST_PROFILE,
@@ -146,7 +147,12 @@ import {
   type CircleStackSelection,
   type CircleStackVideo,
 } from "./lib/circle-stack-render.ts";
-import { circleStackMissingEditionsWarning, circleStackWeakDestaquesWarning, refreshCircleStackWarnings } from "./lib/circle-stack-warnings.ts";
+import {
+  circleStackMissingEditionsWarning,
+  circleStackWeakAffinityDestaquesWarning,
+  circleStackWeakDestaquesWarning,
+  refreshCircleStackWarnings,
+} from "./lib/circle-stack-warnings.ts";
 import { renderCircleStackPreviewHtml } from "./lib/circle-stack-preview-html.ts";
 import { readUtf8WithContext } from "./lib/read-file-with-context.ts";
 import type { StackPostResult } from "./lib/stack-webhook.ts";
@@ -391,7 +397,9 @@ export function readEdition(editionsRootDir: string, date: string, read?: (p: st
   };
 }
 
-function toItem(c: StackScoredCandidate): CircleStackItem & { titleOriginal: string; score: number; matchedTerms: string[] } {
+function toItem(
+  c: StackScoredCandidate,
+): CircleStackItem & { titleOriginal: string; score: number; matchedTerms: string[]; signal: StackScoredCandidate["signal"]; offTopic: boolean } {
   // `titleOriginal` (#11005): o título como veio da edição, para auditoria — o
   // editor reescreve `title` em português na seleção quando a fonte é em inglês.
   return {
@@ -405,6 +413,9 @@ function toItem(c: StackScoredCandidate): CircleStackItem & { titleOriginal: str
     ...(c.kind === "destaque" && c.destaqueN !== undefined ? { destaqueN: c.destaqueN } : {}),
     score: c.score,
     matchedTerms: c.matchedTerms,
+    // #12549: força do sinal, para o aviso de destaque sem aderência ser recontado.
+    signal: c.signal,
+    offTopic: c.offTopic,
   };
 }
 
@@ -439,6 +450,8 @@ export function buildCircleStackSelection(
   if (missingWarning) warnings.push(missingWarning);
   const weakWarning = circleStackWeakDestaquesWarning(picks.destaques.filter((d) => d.score === 0).length);
   if (weakWarning) warnings.push(weakWarning);
+  const weakAffinity = circleStackWeakAffinityDestaquesWarning(picks.destaques.filter(isWeakStackDestaque).map((d) => d.title));
+  if (weakAffinity) warnings.push(weakAffinity);
 
   const weeklyEditions: CircleStackEdition[] = found
     .filter((e) => e.d1Title)
