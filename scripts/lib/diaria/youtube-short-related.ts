@@ -9,7 +9,9 @@
  * `.claude/skills/diaria-publica-video/short-related-task.md`). Este módulo
  * só decide O QUE a task faz, de forma determinística (#573):
  *
- *   - `skip`  — fim de semana, sem edição, edição sem vídeo, ou já vinculado;
+ *   - `skip`  — fim de semana, sem edição, edição sem vídeo (marcador manual
+ *               ou, desde o #12541, sem evidência positiva de vídeo —
+ *               `assessEditionVideoEvidence`), ou já vinculado;
  *   - `link`  — horizontal confirmado PÚBLICO pela API (e com título lido, que
  *               é o que o seletor do Studio mostra): abrir o Studio e vincular;
  *   - `wait`  — algo ainda não está pronto (horizontal não público, ID ainda
@@ -30,6 +32,7 @@
 
 import type { PublishState } from "../publish-state.ts";
 import { extractYouTubeVideoId } from "./d1-video-link.ts";
+import type { EditionVideoEvidence } from "./edition-video-evidence.ts";
 import type { ShortsPublishedFile } from "./short-video.ts";
 import type { ExistingEditionVideo } from "./youtube-upload.ts";
 import type { YouTubeRecordSummary } from "./youtube-video-link-gate.ts";
@@ -356,6 +359,13 @@ export interface ShortRelatedPlanInput {
   now: Date;
   editionExists: boolean;
   noVideo: boolean;
+  /**
+   * #12541: evidência positiva de vídeo na edição (`assessEditionVideoEvidence`,
+   * a mesma regra do alarme do `300`). Sem evidência = `skip`, com ou sem o
+   * marcador manual `no-video.json`. Obrigatório de propósito: um caller que
+   * esquecesse dele voltaria a alertar sobre edição sem vídeo.
+   */
+  videoEvidence: EditionVideoEvidence;
   horizontal: ResolvedVideoId | null;
   short: ResolvedVideoId | null;
   horizontalState: PublishState | null;
@@ -403,6 +413,8 @@ export function decideShortRelatedPlan(input: ShortRelatedPlanInput): ShortRelat
   if (!isWeekdayEdition(input.aammdd)) return done("skip", "fim de semana: não há edição");
   if (!input.editionExists) return done("skip", "sem edição neste dia (pasta da edição não existe)");
   if (input.noVideo) return done("skip", "edição marcada sem vídeo (_internal/no-video.json)");
+  // #12541: sem evidência positiva de vídeo, nada a vincular (a 261109 alertou sem ter vídeo).
+  if (!input.videoEvidence.hasEvidence) return done("skip", input.videoEvidence.reason);
 
   const rec = input.record;
   if (rec?.status === "linked") {

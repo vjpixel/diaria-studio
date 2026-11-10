@@ -26,14 +26,20 @@
  * OneDrive (`context/overnight-dispatch-rules.md` item 23). O alarme sai
  * mesmo assim, porque o custo de um alarme falso é o editor conferir o
  * Studio (1 minuto), e o de um silêncio é o Short ficar sem vínculo; o corpo
- * do alarme diz isso explicitamente.
+ * do alarme diz isso explicitamente. Desde o #12541 o `missing-record` sai
+ * como issue `acao` (sem e-mail urgente, `shortRelatedMissedSeverity`) até o
+ * registro do vínculo ganhar um canal fora do OneDrive, e a precondição
+ * "haveria vídeo" é a mesma do plano da task (`assessEditionVideoEvidence`).
  */
 
 import { SHORT_RELATED_GIVE_UP_MINUTES, isWeekdayEdition, type ShortRelatedRecord } from "./youtube-short-related.ts";
 import type { ShortsPublishedFile } from "./short-video.ts";
+import { YOUTUBE_SHORTS_DESTINATION, assessEditionVideoEvidence, type FileRead } from "./edition-video-evidence.ts";
+import type { NotifySeverity } from "../editor-notify.ts";
 
-/** Destino do registro do vertical que conta como "Short publicado no YouTube". */
-export const YOUTUBE_SHORTS_DESTINATION = "youtube_shorts";
+// Reexportados: o destino e o `FileRead` nasceram aqui (#11353) e moraram no
+// helper compartilhado desde o #12541.
+export { YOUTUBE_SHORTS_DESTINATION, type FileRead };
 
 export type ShortRelatedMissedVerdict =
   // Não alarma
@@ -61,15 +67,18 @@ export function isAlarmingShortRelatedVerdict(v: ShortRelatedMissedVerdict): boo
   return ALARMING.has(v);
 }
 
-/** Leitura de um arquivo da edição: ausente, lido, ou ilegível (com o erro). */
-export type FileRead<T> = { kind: "absent" } | { kind: "ok"; value: T } | { kind: "unreadable"; error: string };
-
 export interface ShortRelatedMissedInput {
   aammdd: string;
   now: Date;
   editionExists: boolean;
   noVideo: boolean;
   shortsRegistry: FileRead<ShortsPublishedFile>;
+  /** `05-youtube-step.json` (#12541, regra de evidência compartilhada). Default: ausente. */
+  youtubeStep?: FileRead<{ outcome?: unknown }>;
+  /** `05-youtube-published.json` existe (#12541). Default: `false`. */
+  horizontalUploadRecord?: boolean;
+  /** `05-video-url.txt` com link do YouTube (#12541). Default: `false`. */
+  d1VideoUrl?: boolean;
   record: FileRead<ShortRelatedRecord>;
   /**
    * Horário do Short (BRT, no dia da edição). `null` = não derivado (config
@@ -109,7 +118,15 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
 
   if (!isWeekdayEdition(input.aammdd)) return out("weekend", "fim de semana: não há edição");
   if (!input.editionExists) return out("no-edition", "pasta da edição não existe");
-  if (input.noVideo) return out("no-video", "edição marcada sem vídeo (_internal/no-video.json)");
+  // #12541: a mesma regra de evidência positiva que o plano da task do Neo usa.
+  const evidence = assessEditionVideoEvidence({
+    noVideo: input.noVideo,
+    shortsRegistry: input.shortsRegistry,
+    youtubeStep: input.youtubeStep,
+    horizontalUploadRecord: input.horizontalUploadRecord,
+    d1VideoUrl: input.d1VideoUrl,
+  });
+  if (!evidence.hasEvidence) return out("no-video", evidence.reason);
 
   const reg = input.shortsRegistry;
   if (reg.kind === "absent") return out("no-short", "sem _internal/06-shorts-published.json: o Short não foi registrado");
@@ -135,6 +152,19 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
   if (rec.value.status === "linked") return out("linked", `já vinculado (${rec.value.shortId} → ${rec.value.horizontalId})`);
   if (rec.value.alertedAt) return out("task-alerted", `a task já avisou o editor em ${rec.value.alertedAt}`);
   return out("failed-not-alerted", `registro "${rec.value.status}" sem alertedAt: a task registrou a falha mas o alerta não saiu`);
+}
+
+/**
+ * Pure (#12541): severidade do alarme. `missing-record` é o único veredito
+ * que nasce só da AUSÊNCIA de um arquivo replicado pelo OneDrive, e ausência
+ * vista no `300` não prova que a task do Neo não rodou (item 23 das regras de
+ * dispatch; a 261105, #12315, alarmou assim). Enquanto o registro do vínculo
+ * não tiver um canal fora do OneDrive, ele vira issue `acao` (sem e-mail sob
+ * `email_policy: "urgent_only"`). Os demais leem um arquivo que EXISTE e
+ * continuam `urgente`.
+ */
+export function shortRelatedMissedSeverity(verdict: ShortRelatedMissedVerdict): Extract<NotifySeverity, "acao" | "urgente"> {
+  return verdict === "missing-record" ? "acao" : "urgente";
 }
 
 /** Pure: assunto e corpo do alarme (issue + e-mail). */
