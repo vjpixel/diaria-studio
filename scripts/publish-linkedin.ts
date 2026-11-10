@@ -124,6 +124,7 @@ import {
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #12584 — slides do carrossel diário (#6005)
 import {
   enqueueLinkedInDocumentOrCarousel,
+  linkedInDailyIdempotencyKey,
   isAlarmingDocumentFallback,
   linkedInDailyDocumentFallbackFingerprint,
   prepareDailyLinkedInDocument,
@@ -652,6 +653,12 @@ export async function dispatchEntry(
   // Motivo do fallback pra imagem única quando o documento não chega a ser tentado.
   let singleImageReasons: Record<string, string | undefined> =
     docPlan?.status === "skip" ? { document_fallback_reason: docPlan.reason } : {};
+  // #12661 — mesma chave nos três degraus (documento → carrossel → imagem
+  // única na fila do Worker): retry depois de resposta perdida e degrau por
+  // cima de entry gravada sem resposta caem na MESMA entry, um post só.
+  const dailyIdempotencyKey = docPlan
+    ? linkedInDailyIdempotencyKey(ctx.editionDate, d, { isTest: ctx.isTest === true })
+    : undefined;
 
   try {
     let entry: PostEntry | null = null;
@@ -666,7 +673,7 @@ export async function dispatchEntry(
         rich = await enqueueLinkedInDocumentOrCarousel(
           ctx.workerUrl,
           ctx.workerToken,
-          { text, scheduled_at: scheduledAt as string, destaque: d },
+          { text, scheduled_at: scheduledAt as string, destaque: d, idempotency_key: dailyIdempotencyKey as string },
           { carouselImageUrls: docPlan.carouselImageUrls, prepareDocument: docPlan.prepareDocument },
         );
       } catch (e) {
@@ -710,7 +717,11 @@ export async function dispatchEntry(
     } else if (route === "worker_queue") {
       console.log(`Queuing ${tag} via Cloudflare Worker (fire at ${scheduledAt})...`);
       try {
-        const response = await postToWorkerQueue(ctx.workerUrl, ctx.workerToken, payload);
+        const response = await postToWorkerQueue(
+          ctx.workerUrl,
+          ctx.workerToken,
+          dailyIdempotencyKey ? { ...payload, idempotency_key: dailyIdempotencyKey } : payload,
+        );
         entry = {
           platform: "linkedin",
           destaque: d,

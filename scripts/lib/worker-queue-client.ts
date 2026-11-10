@@ -185,12 +185,16 @@ export async function deleteFromWorkerQueue(
 export class WorkerQueueError extends Error {
   readonly status: number;
   readonly code?: string;
+  /** Corpo da resposta inteiro (a mensagem corta em 300 chars). #12661: o 409
+   *  do enqueue idempotente traz `error` e `key` depois de uma `message` longa. */
+  readonly body: string;
 
   constructor(status: number, body: string, code?: string) {
     super(`Worker queue HTTP ${status}: ${body.slice(0, 300)}`);
     this.name = "WorkerQueueError";
     this.status = status;
     this.code = code;
+    this.body = body;
   }
 }
 

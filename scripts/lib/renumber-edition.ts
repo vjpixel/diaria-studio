@@ -9,9 +9,11 @@
  * Em 10/11/2026 duas edições foram renumeradas à mão (261110 → 261111 e
  * 261109 → 261110). As armadilhas da troca manual que este módulo fixa:
  *
- * - **Borda numérica.** O ID só é trocado quando não tem dígito colado dos
- *   dois lados: `20261109_150417.mp4` (nome do bruto no Drive) e
- *   `2026-11-09` ficam como estão.
+ * - **Borda alfanumérica.** O ID só é trocado quando não tem letra nem dígito
+ *   colado de nenhum lado: `20261109_150417.mp4` (nome do bruto no Drive),
+ *   `2026-11-09` e um ID dentro de hash hex ou de ID do YouTube/Drive
+ *   (`a1261109f`) ficam como estão (#12662: antes só dígito contava, e o ID
+ *   entre letras era trocado, corrompendo o hash em silêncio).
  * - **`img-{de}-…` não é trocado.** É o nome do objeto já publicado no R2
  *   (`upload-images-public.ts`): trocar o texto apontaria pra uma imagem que
  *   não existe. Quem gera as URLs novas é o re-upload (passo remoto 1-2).
@@ -58,13 +60,16 @@ export function isValidEditionId(id: string): boolean {
   return mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31;
 }
 
-/** Regex do ID com borda numérica (sem dígito colado de nenhum lado). */
+/**
+ * Regex do ID com borda alfanumérica (#12662): nem letra nem dígito colado de
+ * nenhum lado. Separador (`-`, `_`, `/`, `.`, `=`, espaço, aspas) é borda.
+ */
 function idRegex(id: string): RegExp {
-  return new RegExp(`(?<![0-9])${id}(?![0-9])`, "g");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${id}(?![\\p{L}\\p{N}])`, "gu");
 }
 
 /**
- * Troca `from` por `to` com borda numérica, preservando `img-{from}-…`
+ * Troca `from` por `to` com borda alfanumérica, preservando `img-{from}-…`
  * (objeto já publicado no R2). Devolve o texto novo e quantas trocas fez.
  */
 export function replaceEditionId(text: string, from: string, to: string): { text: string; count: number } {
@@ -213,7 +218,7 @@ export function scanLocal(fromDir: string, from: string, to: string): LocalScan 
     const buf = readFileSync(e.abs);
     if (looksBinary(buf)) continue;
     const text = buf.toString("utf8");
-    preserved += (text.match(new RegExp(`img-${from}(?![0-9])`, "g")) ?? []).length;
+    preserved += (text.match(new RegExp(`img-${from}(?![\\p{L}\\p{N}])`, "gu")) ?? []).length;
     const r = replaceEditionId(text, from, to);
     if (r.count > 0) rewritten.push({ path: rel, count: r.count });
   }
@@ -342,6 +347,58 @@ export function buildRemoteSteps(root: string, dir: string, to: string): RemoteS
     });
   }
   return steps;
+}
+
+/** Envio ou post já agendado com o horário do dia antigo (#12662). */
+export interface ScheduledSend {
+  /** `kit-newsletter` ou `social:{plataforma}/{destaque}[/{subtipo}]`. */
+  what: string;
+  scheduled_at: string | null;
+  /** Como reagendar, pronto pra copiar (com a pasta NOVA). */
+  reschedule: string;
+}
+
+/**
+ * #12662 — o que já está AGENDADO na edição. O horário fica gravado em ISO
+ * (`scheduled_at: "2026-11-09T09:00:00Z"`), que a troca de ID não toca, e
+ * nenhum passo remoto o move: `publish-newsletter-kit.ts` faz o PATCH do
+ * broadcast repondo `send_at = existing.scheduled_at` (o e-mail sai no dia
+ * antigo) e os posts na fila do Worker (`06-social-published.json`) disparam
+ * no horário e com o texto antigos. `stateDir` é onde o estado está agora
+ * (origem antes do `--apply`, destino na retomada); `newDirRel` entra nos
+ * comandos de reagendamento.
+ */
+export function detectScheduledSends(stateDir: string, newDirRel: string): ScheduledSend[] {
+  const out: ScheduledSend[] = [];
+  const kit = readJson(join(stateDir, "_internal", "newsletter-kit-published.json"));
+  if (kit && kit.status === "scheduled") {
+    const at = typeof kit.scheduled_at === "string" ? kit.scheduled_at : null;
+    out.push({
+      what: "kit-newsletter",
+      scheduled_at: at,
+      reschedule: `npx tsx scripts/schedule-newsletter-kit.ts --edition-dir ${newDirRel} --scheduled-at <novo horário ISO>`,
+    });
+  }
+  const socialPath = [join(stateDir, "_internal", "06-social-published.json"), join(stateDir, "06-social-published.json")].find(
+    (p) => existsSync(p),
+  );
+  const social = socialPath ? readJson(socialPath) : null;
+  const posts = social && Array.isArray(social.posts) ? (social.posts as Array<Record<string, unknown>>) : [];
+  for (const p of posts) {
+    if (p === null || typeof p !== "object" || p.status !== "scheduled") continue;
+    const parts = [p.platform, p.destaque, p.subtype && p.subtype !== "main" ? p.subtype : null].filter(
+      (x): x is string => typeof x === "string" && x !== "",
+    );
+    const key = typeof p.worker_queue_key === "string" ? p.worker_queue_key : null;
+    out.push({
+      what: `social:${parts.join("/")}`,
+      scheduled_at: typeof p.scheduled_at === "string" ? p.scheduled_at : null,
+      reschedule: key
+        ? `npx tsx scripts/reschedule-worker-queue-post.ts --key ${JSON.stringify(key)} --scheduled-at <novo horário ISO> … (texto novo da pasta ${newDirRel})`
+        : "reagendar na própria plataforma (sem worker_queue_key no registro)",
+    });
+  }
+  return out;
 }
 
 /** Alinha o estado dos passos do relatório com a lista atual (passo novo entra `pending`). */
