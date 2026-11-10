@@ -15,8 +15,10 @@
  *    lembretes, um texto por lembrete (`form_lembrete`, `form_lembrete2`,
  *    `form_lembrete3`, decisão do editor de 09/11/2026). Quem recebeu o D+6
  *    recebe em D+19, D+49 e D+79 da âncora (`form_reminder_days_onboarding`);
- *    quem recebeu o e-mail da base, 30 dias depois do envio anterior
- *    (`form_reminder_days`). O convite que a pessoa recebeu fica em
+ *    quem recebeu o e-mail da base, em D+9, D+24 e D+64 do dia do envio
+ *    (`form_reminder_days_base`, #12699, decisão de 10/11/2026; sem ele, 30
+ *    dias depois do envio anterior, `form_reminder_days`, que segue valendo
+ *    para o lembrete do convite anual). O convite que a pessoa recebeu fica em
  *    `people[id].form_invite`. Âncora do D+6 = a mesma da escada
  *    (`reguaAnchorSec`, a confirmação do double opt-in), porque o formulário
  *    entra NA escada.
@@ -37,8 +39,9 @@
  *   (`people[id].ask_deferred`).
  * - **Idempotência.** Cada etapa de apoio sai no máximo 1 vez por pessoa
  *   (registro em `people[id].sends`, gravado só depois de o broadcast ser
- *   relido agendado/enviado). O lembrete do formulário sai no máximo 1 vez por
- *   janela de 30 dias (conta do último envio de formulário registrado).
+ *   relido agendado/enviado). Cada lembrete do formulário sai no máximo 1
+ *   vez: os já registrados escolhem o texto e a data do seguinte
+ *   (`formStepDue`), até o teto `form_reminder_max`.
  * - **Só quem não apoia / só ativo.** A checagem é feita PERTO DO ENVIO, pela
  *   leitura singular do assinante no Kit (`GET /subscribers/{id}`: `state` e
  *   o custom field `apoio_nivel`), nunca pelo snapshot da listagem (que serve
@@ -503,6 +506,13 @@ export interface FollowupConfigRaw {
   form_reminder_days?: number;
   /** Lembretes de quem recebeu o convite do ONBOARDING: dias da âncora (`[19, 49, 79]`). */
   form_reminder_days_onboarding?: number[];
+  /**
+   * #12699: lembretes de quem recebeu o convite da BASE (`form_base`): dias
+   * contados do DIA (BRT) do envio do convite (`[9, 24, 64]`, decisão do
+   * editor de 10/11/2026). Ausente = regra antiga, `form_reminder_days`
+   * depois do envio anterior.
+   */
+  form_reminder_days_base?: number[];
   /** #10605: teto de lembretes por pessoa (decisão do editor de 08/11/2026: 3). */
   form_reminder_max?: number;
   /** #10605 regra B: o e-mail da base exclui quem vai receber o D+6 em até N dias. */
@@ -527,6 +537,8 @@ export interface FollowupConfig {
   formFirstDays: number;
   formReminderDays: number;
   formReminderDaysOnboarding: number[];
+  /** #12699: `null` = regra antiga da base (`formReminderDays` do envio anterior). */
+  formReminderDaysBase: number[] | null;
   formReminderMax: number;
   baseInviteWindowDays: number;
   maxRecipientsPerLot: number;
@@ -583,6 +595,9 @@ export function resolveFollowupConfig(
   if (r.form_reminder_days_onboarding !== undefined && !isValidReminderDays(r.form_reminder_days_onboarding)) {
     warn(`onboarding.followup.form_reminder_days_onboarding inválido (${JSON.stringify(r.form_reminder_days_onboarding)}): precisa ser uma lista crescente de inteiros positivos; usando ${JSON.stringify(DEFAULT_FORM_REMINDER_DAYS_ONBOARDING)}`);
   }
+  if (r.form_reminder_days_base !== undefined && !isValidReminderDays(r.form_reminder_days_base)) {
+    warn(`onboarding.followup.form_reminder_days_base inválido (${JSON.stringify(r.form_reminder_days_base)}): precisa ser uma lista crescente de inteiros positivos; usando a regra antiga (form_reminder_days depois do envio anterior)`);
+  }
   return {
     enabled: r.enabled === true,
     graceDays: posInt(r.grace_days, 10),
@@ -590,6 +605,7 @@ export function resolveFollowupConfig(
     formFirstDays: posInt(r.form_first_days, 6),
     formReminderDays: posInt(r.form_reminder_days, 30),
     formReminderDaysOnboarding: reminderDays(r.form_reminder_days_onboarding),
+    formReminderDaysBase: isValidReminderDays(r.form_reminder_days_base) ? [...r.form_reminder_days_base] : null,
     formReminderMax: posInt(r.form_reminder_max, 3),
     baseInviteWindowDays: posInt(r.base_invite_window_days, 7),
     maxRecipientsPerLot: posInt(r.max_recipients_per_lot, 300),
@@ -962,23 +978,62 @@ export function lastFormSendSec(person: FollowupPerson | undefined): number | nu
   return last;
 }
 
+/** Fuso da contagem por dia do calendário (BRT, UTC-3 fixo; o Brasil não tem horário de verão desde 2019). */
+const BRT_OFFSET_S = 3 * 3600;
+
+/** @pure — início (00:00 BRT, em epoch s) do dia BRT que contém `sec`. */
+export function brtDayStartSec(sec: number): number {
+  return Math.floor((sec - BRT_OFFSET_S) / DAY_S) * DAY_S + BRT_OFFSET_S;
+}
+
+/** @pure — hora (epoch s) do 1º registro `form_base` da pessoa, ou `null`. */
+export function baseInviteSec(person: FollowupPerson | undefined): number | null {
+  let first: number | null = null;
+  for (const s of person?.sends ?? []) {
+    if (s.step !== "form_base") continue;
+    const sec = isoToSec(s.at);
+    if (sec != null && (first == null || sec < first)) first = sec;
+  }
+  return first;
+}
+
+/**
+ * @pure — #12699: quando o N-ésimo lembrete (0-based) de quem recebeu o
+ * convite da BASE vence pelo cronograma `days` (`formReminderDaysBase`):
+ * 00:00 BRT do dia `D+days[n]`, contado do DIA (BRT) do envio do convite.
+ * Conta por dia do calendário, não por 24h corridas: o convite saiu às 16:39
+ * BRT e o executor roda às 09:05 BRT, então "9 × 24h depois" só cairia na
+ * rodada do dia seguinte e mudaria o dia da semana. `null` = fora do
+ * cronograma (sem convite da base registrado, ou `n` além da lista).
+ */
+export function baseReminderDueSec(person: FollowupPerson | undefined, n: number, days: readonly number[]): number | null {
+  const invite = baseInviteSec(person);
+  if (invite == null || n < 0 || n >= days.length) return null;
+  return brtDayStartSec(invite) + days[n] * DAY_S;
+}
+
 /**
  * @pure — qual e-mail de formulário está devido agora.
  *
  * Lembretes (decisão do editor de 09/11/2026): o N-ésimo lembrete usa o
  * N-ésimo texto (`FORM_REMINDER_STEPS`). Quem recebeu o convite do
  * ONBOARDING (`form`) e tem âncora recebe o N-ésimo em
- * `anchor + formReminderDaysOnboarding[N-1]` (D+19, D+49, D+79); quem recebeu
- * o convite da BASE (ou sem âncora conhecida) recebe `formReminderDays` depois
- * do envio anterior. Teto: `formReminderMax` (e nunca mais lembretes que
- * textos). O espaçamento entre pedidos é do `planFollowup`, não daqui.
+ * `anchor + formReminderDaysOnboarding[N-1]` (D+19, D+49, D+79). Quem recebeu
+ * o convite da BASE recebe o N-ésimo no dia `D+formReminderDaysBase[N-1]` do
+ * envio do convite (#12699, decisão de 10/11/2026: D+9, D+24, D+64, ver
+ * `baseReminderDueSec`); sem esse cronograma configurado (ou sem âncora
+ * conhecida), `formReminderDays` depois do envio anterior. Teto:
+ * `formReminderMax` (e nunca mais lembretes que textos). O espaçamento entre
+ * pedidos é do `planFollowup`, não daqui: ele ainda pode adiar um lembrete
+ * do cronograma da base (o D+9 fica a 9 dias do convite, abaixo de
+ * `askMinGapDays`).
  */
 export function formStepDue(
   anchorSec: number | null,
   nowSec: number,
   person: FollowupPerson | undefined,
   cfg: Pick<FollowupConfig, "formFirstDays" | "formReminderDays" | "graceDays"> &
-    Partial<Pick<FollowupConfig, "formReminderMax" | "formReminderDaysOnboarding" | "askMinGapDays">>,
+    Partial<Pick<FollowupConfig, "formReminderMax" | "formReminderDaysOnboarding" | "formReminderDaysBase" | "askMinGapDays">>,
 ): FormDueResult {
   if (person?.form_filled_at) return { due: null, motivo: "preencheu" };
   // #10675: quem saiu do Kit não volta a ser devido (nem ocupa vaga do teto).
@@ -999,10 +1054,15 @@ export function formStepDue(
   // depois do e-mail anterior do formulário (convite D+6 ou lembrete que
   // saíram atrasados não puxam o seguinte para poucos dias depois).
   const gap = (cfg.askMinGapDays ?? DEFAULT_ASK_MIN_GAP_DAYS) * DAY_S;
+  const invite = formInviteOf(person);
+  // #12699: convite da base com cronograma próprio (D+9/24/64 do dia do envio).
+  const baseDue = invite === "form_base" && cfg.formReminderDaysBase ? baseReminderDueSec(person, n, cfg.formReminderDaysBase) : null;
   const dueAt =
-    formInviteOf(person) === "form" && anchorSec != null && n < days.length
-      ? Math.max(anchorSec + days[n] * DAY_S, last + gap)
-      : last + cfg.formReminderDays * DAY_S;
+    baseDue != null
+      ? baseDue
+      : invite === "form" && anchorSec != null && n < days.length
+        ? Math.max(anchorSec + days[n] * DAY_S, last + gap)
+        : last + cfg.formReminderDays * DAY_S;
   return nowSec >= dueAt ? { due: kind } : { due: null, motivo: "nao_venceu" };
 }
 
@@ -1253,7 +1313,7 @@ export function planFollowup(opts: {
   people: Readonly<Record<string, FollowupPerson>>;
   nowSec: number;
   cfg: Pick<FollowupConfig, "graceDays" | "askMinGapDays" | "formFirstDays" | "formReminderDays"> &
-    Partial<Pick<FollowupConfig, "formReminderMax" | "formReminderDaysOnboarding" | "formAnnualDays" | "formAnnualReminderMax" | "results">>;
+    Partial<Pick<FollowupConfig, "formReminderMax" | "formReminderDaysOnboarding" | "formReminderDaysBase" | "formAnnualDays" | "formAnnualReminderMax" | "results">>;
   apoioBlocked: FollowupBlockReason | null;
   formBlocked: FollowupBlockReason | null;
   /**
