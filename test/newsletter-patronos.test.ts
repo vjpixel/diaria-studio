@@ -229,3 +229,18 @@ describe("applyPatronosBoxes (#4275, pure)", () => {
     rmSync(root, { recursive: true, force: true });
   });
 });
+
+// #12601 (10/11/2026, decisão do editor): os bastidores do Núcleo ficam no
+// grupo de WhatsApp, não no e-mail. `patronos-bastidores.md` se apresenta como
+// nota de bastidores entregue por e-mail ("responda este e-mail"), então não
+// pode ocupar nenhum slot da variante Núcleo no config REAL. Lê o
+// platform.config.json versionado (raiz do repo, default de rootDir) — o
+// snippet em si vive em data/ (gitignored), o que trava aqui é a atribuição.
+describe("platform.config.json real — variante Núcleo sem o box de bastidores por e-mail (#12601)", () => {
+  it("nenhum slot de boxes_divulgacao_patronos aponta pra patronos-bastidores.md", () => {
+    const cfg = loadBoxesDivulgacaoPatronosConfig();
+    for (const [slot, file] of Object.entries(cfg)) {
+      assert.notEqual(file, "patronos-bastidores.md", `${slot} ainda atribui patronos-bastidores.md`);
+    }
+  });
+});
