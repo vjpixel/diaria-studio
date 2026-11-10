@@ -33,9 +33,10 @@ export interface InterestTerm {
   weight: number;
   /**
    * Termo genérico (#12549): casa em quase todo texto de IA ("agentes",
-   * "automação", "programação"). Só pontua no corpo quando o item também casa
-   * um termo NÃO genérico (o "segundo sinal"); no título pontua sempre, porque
-   * ali a notícia é sobre aquilo.
+   * "automação", "programação"). Só pontua no corpo quando o item também tem
+   * um "segundo sinal": um termo NÃO genérico casado, ou qualquer termo do
+   * perfil no título (mantém "OAB-SP vai à Justiça contra a startup Enter");
+   * no título pontua sempre, porque ali a notícia é sobre aquilo.
    */
   generic?: boolean;
 }
