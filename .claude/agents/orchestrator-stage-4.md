@@ -990,7 +990,7 @@ Próximos passos (#10943, #11208, #12591), nesta ordem — abra uma sessão NOVA
   2. /diaria-publica-video {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao} (depois de exportar do Premiere para {AAMMDD}/Final/: horizontal, depois as Etapas 5 e 6 na mesma sessão, depois o vertical)
 
 A Etapa 5 não publica sem o link do vídeo no D1 (#12588). Sem vídeo hoje: npx tsx scripts/set-d1-no-video.ts {AAMMDD}
-(depois o upload em modo newsletter e o re-render do HTML) e /diaria-5-publicacao {AAMMDD}.
+(depois o upload em modo newsletter e o re-render do HTML) e /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}.
 
 Isso mantém o contexto desta revisão fora da Publicação/Agendamento (#6171) — o `/diaria-publica-video` cobre o vídeo e as Etapas 5 e 6 nessa sessão nova e retoma sozinho dos arquivos em disco (#5578).
 ```

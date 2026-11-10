@@ -60,7 +60,7 @@ describe("#12588 decideYouTubeStep: só lê a pasta, nunca sobe", () => {
   it("link válido → already-published (info)", () => {
     const dir = edition({ "_internal/05-video-url.txt": "https://youtu.be/14SLJsdrjqE\n" });
     try {
-      const r = decideYouTubeStep(dir, "261110", true);
+      const r = decideYouTubeStep(dir, "261110");
       assert.equal(r.outcome, "already-published");
       assert.equal(r.video_url, "https://youtu.be/14SLJsdrjqE");
       assert.equal(youtubeStepLevel(r), "info");
@@ -72,16 +72,33 @@ describe("#12588 decideYouTubeStep: só lê a pasta, nunca sobe", () => {
   it("no-video.json vence o link (#11125) → no-video-marked", () => {
     const dir = edition({ "_internal/05-video-url.txt": "https://youtu.be/14SLJsdrjqE\n", "_internal/no-video.json": "{}" });
     try {
-      assert.equal(decideYouTubeStep(dir, "261110", true).outcome, "no-video-marked");
+      assert.equal(decideYouTubeStep(dir, "261110").outcome, "no-video-marked");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("consent desligado vence tudo → consent-off", () => {
-    const dir = edition({});
+  it("--skip youtube sem link → consent-off (info, não bloqueia)", () => {
+    const dir = edition({ "_internal/05-publish-consent.json": JSON.stringify({ youtube: "manual" }) });
     try {
-      assert.equal(decideYouTubeStep(dir, "261110", false).outcome, "consent-off");
+      const r = decideYouTubeStep(dir, "261110");
+      assert.equal(r.outcome, "consent-off");
+      assert.equal(r.blocking, false);
+      assert.equal(r.d1_link, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("revisão #12597: --skip youtube com link gravado → already-published (o link vai, os publishers não leem o consent)", () => {
+    const dir = edition({
+      "_internal/05-publish-consent.json": JSON.stringify({ youtube: "manual" }),
+      "_internal/05-video-url.txt": "https://youtu.be/14SLJsdrjqE\n",
+    });
+    try {
+      const r = decideYouTubeStep(dir, "261110");
+      assert.equal(r.outcome, "already-published");
+      assert.equal(r.d1_link, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -90,9 +107,10 @@ describe("#12588 decideYouTubeStep: só lê a pasta, nunca sobe", () => {
   it("cenário do #12588: mp4 no disco e nada mais → missing-link (warn), sem upload", () => {
     const dir = edition({ "diaria-comentada-261110.mp4": "video" });
     try {
-      const r = decideYouTubeStep(dir, "261110", true);
+      const r = decideYouTubeStep(dir, "261110");
       assert.equal(r.outcome, "missing-link");
       assert.equal(youtubeStepLevel(r), "warn");
+      assert.equal(r.blocking, true);
       assert.match(r.detail ?? "", /\/diaria-publica-video 261110/);
       assert.match(r.detail ?? "", /set-d1-no-video\.ts 261110/);
     } finally {
@@ -103,7 +121,7 @@ describe("#12588 decideYouTubeStep: só lê a pasta, nunca sobe", () => {
   it("vídeo registrado sem link liberado → missing-link apontando o link-video-d1", () => {
     const dir = edition({ "_internal/05-youtube-published.json": "{}" });
     try {
-      const r = decideYouTubeStep(dir, "261110", true);
+      const r = decideYouTubeStep(dir, "261110");
       assert.equal(r.outcome, "missing-link");
       assert.match(r.detail ?? "", /link-video-d1\.ts 261110 --save/);
     } finally {
@@ -114,9 +132,12 @@ describe("#12588 decideYouTubeStep: só lê a pasta, nunca sobe", () => {
   it("link inválido → needs-editor (warn)", () => {
     const dir = edition({ "_internal/05-video-url.txt": "colar aqui\n" });
     try {
-      const r = decideYouTubeStep(dir, "261110", true);
+      const r = decideYouTubeStep(dir, "261110");
       assert.equal(r.outcome, "needs-editor");
       assert.equal(youtubeStepLevel(r), "warn");
+      assert.equal(r.blocking, true);
+      assert.equal(r.d1_link, false, "arquivo inválido não é link no D1");
+      assert.match(r.detail ?? "", /link-video-d1\.ts 261110 --save --video-url URL/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -128,10 +149,11 @@ describe("#12588 decideYouTubeStep: só lê a pasta, nunca sobe", () => {
   });
 
   it("CLI: as flags do upload antigo são recusadas (exit 2) e nada é gravado", () => {
-    for (const flag of ["--upload-from-final", "--ignore-pending-approval"]) {
+    // `--flag valor` cai em `values` no parseArgs: também tem que ser recusada.
+    for (const extra of [["--upload-from-final"], ["--ignore-pending-approval"], ["--ignore-pending-approval", "sim"]]) {
       const dir = edition({});
       try {
-        const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "stage5-youtube.ts"), "261110", "--edition-dir", dir, flag], {
+        const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "stage5-youtube.ts"), "--edition-dir", dir, ...extra, "261110"], {
           encoding: "utf8",
           cwd: ROOT,
         });
@@ -144,18 +166,35 @@ describe("#12588 decideYouTubeStep: só lê a pasta, nunca sobe", () => {
     }
   });
 
-  it("CLI: grava o registro e sai 0 mesmo sem link", () => {
+  it("CLI: sem link grava o registro e sai 3 (2ª barreira antes do dispatch social)", () => {
     const dir = edition({ "_internal/05-publish-consent.json": JSON.stringify({ youtube: "auto" }) });
     try {
       const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "stage5-youtube.ts"), "261110", "--edition-dir", dir], {
         encoding: "utf8",
         cwd: ROOT,
       });
-      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.status, 3, r.stderr);
       const rec = JSON.parse(readFileSync(join(dir, YOUTUBE_STEP_FILE), "utf8"));
       assert.equal(rec.outcome, "missing-link");
       assert.equal(rec.d1_link, false);
-      assert.match(r.stderr, /\[aviso\] YouTube/);
+      assert.equal(rec.blocking, true);
+      assert.match(r.stderr, /\[halt\] YouTube/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("revisão #12597: retry de canal depois da Etapa 5 não bloqueia", () => {
+  it("sem link mas com .step-5-done.json → missing-link sem blocking; CLI sai 0", () => {
+    const dir = edition({ "_internal/.step-5-done.json": "{}" });
+    try {
+      const r = decideYouTubeStep(dir, "261110");
+      assert.equal(r.outcome, "missing-link");
+      assert.equal(r.blocking, false);
+      assert.match(r.detail ?? "", /retry de canal/);
+      const cli = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "stage5-youtube.ts"), "261110", "--edition-dir", dir], { encoding: "utf8", cwd: ROOT });
+      assert.equal(cli.status, 0, cli.stderr);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

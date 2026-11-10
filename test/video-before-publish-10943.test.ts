@@ -10,7 +10,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { assessVideoBeforePublish } from "../scripts/lib/diaria/video-before-publish.ts";
+import { assessVideoBeforePublish, BLOCKING_STATUSES } from "../scripts/lib/diaria/video-before-publish.ts";
+import { readD1VideoUrlForPosts } from "../scripts/lib/diaria/d1-video-link-file.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 
@@ -64,13 +65,15 @@ describe("assessVideoBeforePublish (#10943 item 2, gate desde #12588)", () => {
     }
   });
 
-  it("05-video-url.txt inválido não lança: bloqueia com o motivo", () => {
+  it("05-video-url.txt inválido não lança: invalid-link bloqueia apontando o link-video-d1 (não o /diaria-publica-video, que pularia a Parte A)", () => {
     const dir = edition({ "_internal/05-video-url.txt": "não é url\n" });
     try {
       const r = assessVideoBeforePublish(dir, "261024");
-      assert.equal(r.status, "no-video");
+      assert.equal(r.status, "invalid-link");
       assert.equal(r.blocking, true);
       assert.match(r.warning ?? "", /ignorado/);
+      assert.match(r.warning ?? "", /link-video-d1\.ts 261024 --save --video-url URL/);
+      assert.doesNotMatch(r.warning ?? "", /ausentes/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -101,6 +104,68 @@ describe("assessVideoBeforePublish (#10943 item 2, gate desde #12588)", () => {
     }
   });
 
+  it("precedência (revisão #12597): marcador > link > link inválido > --skip > vídeo sem link > nada", () => {
+    const skip = JSON.stringify({ youtube: "manual" });
+    const url = "https://youtu.be/QRbXMprk9o0\n";
+    const cases: Array<[Record<string, string>, string]> = [
+      [{ "_internal/no-video.json": "{}", "_internal/05-publish-consent.json": skip }, "no-video-marked"],
+      [{ "_internal/05-video-url.txt": url, "_internal/05-publish-consent.json": skip }, "link-ready"],
+      [{ "_internal/05-video-url.txt": "x\n", "_internal/05-publish-consent.json": skip }, "invalid-link"],
+      [{ "_internal/05-youtube-published.json": "{}", "_internal/05-publish-consent.json": skip }, "skipped-by-consent"],
+      [{ "_internal/05-publish-consent.json": "{}" }, "no-video"],
+      [{ "_internal/05-publish-consent.json": "null" }, "no-video"],
+      [{ "_internal/05-publish-consent.json": "[]" }, "no-video"],
+    ];
+    for (const [files, status] of cases) {
+      const dir = edition(files);
+      try {
+        const r = assessVideoBeforePublish(dir, "261024");
+        assert.equal(r.status, status, JSON.stringify(files));
+        assert.equal(r.blocking, BLOCKING_STATUSES.has(r.status), "blocking deriva do status");
+        assert.equal(r.videoUrl !== null, r.status === "link-ready");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("consent ilegível bloqueia e diz que o --skip youtube não valeu", () => {
+    const dir = edition({ "_internal/05-publish-consent.json": "{quebrado" });
+    try {
+      const r = assessVideoBeforePublish(dir, "261024");
+      assert.equal(r.blocking, true);
+      assert.match(r.warning ?? "", /ilegível/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retry de canal depois da Etapa 5 concluída não bloqueia (o --skip youtube da 1ª rodada não fica gravado)", () => {
+    const dir = edition({ "_internal/.step-5-done.json": "{}" });
+    try {
+      const r = assessVideoBeforePublish(dir, "261024");
+      assert.equal(r.status, "no-video");
+      assert.equal(r.blocking, false);
+      assert.match(r.warning ?? "", /retry de canal/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("revisão #12597: os posts do D1 respeitam o marcador sem vídeo mesmo com o link gravado", () => {
+    const dir = edition({ "_internal/no-video.json": "{}", "_internal/05-video-url.txt": "https://youtu.be/QRbXMprk9o0\n" });
+    try {
+      assert.equal(readD1VideoUrlForPosts(dir).url, null);
+      rmSync(join(dir, "_internal/no-video.json"));
+      assert.equal(readD1VideoUrlForPosts(dir).url, "https://youtu.be/QRbXMprk9o0");
+      for (const f of ["prep-twitter-posts.ts", "publish-threads.ts", "publish-facebook.ts"]) {
+        assert.match(readFileSync(join(ROOT, "scripts", f), "utf8"), /readD1VideoUrlForPosts as readD1VideoUrl/, f);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   const cli = (dir: string) =>
     spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts/check-video-before-publish.ts"), "261024", "--edition-dir", dir], {
       encoding: "utf8",
@@ -116,6 +181,12 @@ describe("assessVideoBeforePublish (#10943 item 2, gate desde #12588)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("CLI: pasta inexistente ou sem AAMMDD sai 2", () => {
+    assert.equal(cli("/nao/existe/261024").status, 2);
+    const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts/check-video-before-publish.ts")], { encoding: "utf8" });
+    assert.equal(r.status, 2);
   });
 
   it("CLI: com o link sai 0; marcada sem vídeo sai 0 com [aviso]", () => {

@@ -144,26 +144,24 @@ describe("#12122 publish-youtube --dry-run grava o marcador", () => {
   });
 });
 
-describe("#12588 stage5-youtube.ts com o marcador: só cita o plano pendente, nunca sobe", () => {
+describe("#12588 stage5-youtube.ts com o marcador: só cita o plano pendente, nunca sobe, para sem o link", () => {
   const run = (dir: string) =>
     spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "stage5-youtube.ts"), AAMMDD, "--edition-dir", dir], {
       encoding: "utf8",
       cwd: ROOT,
     });
 
-  it("cenário da 261104: mp4 baixado pela skill + marcador → missing-link citando o pode publicar, mp4 intacto", () => {
+  it("cenário da 261104: mp4 baixado pela skill + marcador → missing-link (exit 3) citando o pode publicar", () => {
     const dir = tmpEdition();
     try {
       writeFileSync(join(dir, "diaria-comentada-261104.mp4"), "video");
       writeFileSync(join(dir, "_internal", "05-publish-consent.json"), JSON.stringify({ youtube: "auto" }));
       writePendingApproval(dir, AAMMDD, NOW);
       const r = run(dir);
-      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.status, 3, r.stderr);
       const rec = JSON.parse(readFileSync(join(dir, YOUTUBE_STEP_FILE), "utf8"));
       assert.equal(rec.outcome, "missing-link");
-      assert.equal(rec.upload_exit, undefined, "o upload não existe mais");
       assert.match(rec.detail, /pode publicar/);
-      assert.ok(existsSync(join(dir, "diaria-comentada-261104.mp4")), "o mp4 da skill fica intacto");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

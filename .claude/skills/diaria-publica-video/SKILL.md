@@ -17,9 +17,11 @@ Decisão do editor (10/11/2026): a ordem `/diaria-video-montagem` → vídeo →
 
 Por que isso não fere o #5578 nem o #6171: é uma fusão explícita de invocação, como a 5→6 do #7983, e não encadeamento por inércia. A fronteira pós-gate 4 continua (esta skill sempre começa numa sessão nova, depois da montagem), os estados seguem separados (sentinels `.step-5-done.json`/`.step-6-done.json`, invariantes, `find-current-edition`), e as confirmações do vídeo (#11741) seguem uma por parte. O custo por etapa continua medido por janela de tempo dentro da sessão (`capture-stage-usage.ts` usa o `start`/`end` de cada stage), então a Parte A não entra na conta da Etapa 5.
 
-**Sem link ao fim da Parte A** (upload falhou, o editor vai subir pelo Studio, `needs-editor` no Drive): **não entrar na Etapa 5**. O pré-requisito dela (`check-video-before-publish.ts`, exit 3) pararia de qualquer jeito; aqui o halt banner (`render-halt-banner.ts --stage "Vídeo — Parte A"`) diz o que falta e as duas saídas: o link (`--video-url URL`, ou `link-video-d1.ts {AAMMDD} --save`) e rodar `/diaria-publica-video {AAMMDD}` de novo, ou marcar a edição sem vídeo (abaixo). **Sem vídeo no Drive** (`fetch` com `action: "none"`): o mesmo halt, com "exportar do Premiere para `{AAMMDD}/Final/`" ou "marcar sem vídeo".
+**Sem link ao fim da Parte A** (upload falhou, o editor vai subir pelo Studio, `needs-editor` no Drive): **não entrar na Etapa 5**. O pré-requisito dela (`check-video-before-publish.ts`, exit 3) pararia de qualquer jeito; aqui o halt banner (`render-halt-banner.ts --stage "Vídeo — Parte A"`) diz o que falta e as duas saídas: o link (`--video-url URL`, ou `link-video-d1.ts {AAMMDD} --save`) e rodar `/diaria-publica-video {AAMMDD}` de novo, ou marcar a edição sem vídeo (abaixo). **Sem vídeo no Drive** (`fetch` com `action: "none"`): o mesmo halt, com "exportar do Premiere para `{AAMMDD}/Final/`" ou "marcar sem vídeo". Exceção: com `--skip youtube` nesta invocação, o editor já dispensou o link: seguir para as Etapas 5 e 6 sem ele (o Passo 0b aceita). A Parte A roda normalmente com `--skip youtube` (a flag é só da Etapa 5; para não subir vídeo, `--so vertical` ou marcar sem vídeo).
 
-**Edição sem vídeo** (`_internal/no-video.json`, "Edição sem vídeo" no Passo 0): pular as Partes A e B e ir direto para as Etapas 5 e 6.
+Conferir o link com `npx tsx scripts/check-video-before-publish.ts {AAMMDD} --edition-dir {EDITION_DIR}` antes de entrar na Etapa 5: exit 0 segue, exit 3 é o halt acima (com o `warning` do JSON).
+
+**Edição sem vídeo** (`_internal/no-video.json`, "Edição sem vídeo" no Passo 0): pular as Partes A e B e ir direto para as Etapas 5 e 6, depois de conferir que o upload em modo newsletter e o re-render do HTML daquele passo já rodaram (o gate aceita o marcador sem conferir isso).
 
 **Retomada** (rodar de novo com o mesmo `AAMMDD`): Parte A pula o que já foi feito (abaixo); com `.step-5-done.json` presente e `.step-6-done.json` ausente, entrar pelo `/diaria-6-agendamento` (o gate); com os dois presentes, ir direto à Parte B.
 
@@ -33,7 +35,7 @@ Por que isso não fere o #5578 nem o #6171: é uma fusão explícita de invocaç
 - `--skip canal[,canal...]` — repassado à Etapa 5 (mesma flag e canais do `/diaria-5-publicacao`).
 - `--video-url URL` — o link do horizontal quando ele já está no canal (subido pelo Studio, fallback do Passo A5). Sem ele, a skill sobe o vídeo pela API (Passo A3, o padrão desde #11385).
 
-**Retomada:** cada parte pula o que já foi feito, pelos registros em disco. Parte A está feita quando existe `_internal/05-video-url.txt` (link no D1) ou `_internal/05-youtube-published.json` com `videoId` desta edição; Parte B, destino a destino, por `_internal/06-shorts-published.json` (o `publish-shorts.ts` já pula o que está registrado). Só uma das partes presente no Drive vira aviso para a outra, nunca aborto.
+**Retomada:** cada parte pula o que já foi feito, pelos registros em disco. Parte A está feita quando `_internal/05-video-url.txt` tem link válido do YouTube (`check-video-before-publish.ts` com `status: "link-ready"`; arquivo inválido não conta, `invalid-link`) ou `_internal/05-youtube-published.json` tem `videoId` desta edição (aí, sem link, falta só liberá-lo no Passo A4); Parte B, destino a destino, por `_internal/06-shorts-published.json` (o `publish-shorts.ts` já pula o que está registrado). Só uma das partes presente no Drive vira aviso para a outra, nunca aborto.
 
 ## Confirmação explícita e interrupção (#11741)
 
@@ -71,7 +73,9 @@ npx tsx scripts/pipeline-sentinel.ts exists --edition {AAMMDD} --step 4
 - exit 0 → seguir.
 - exit 1 → **parar**, sem concluir "etapa não aprovada" (#11729): o sentinel pode ter sido escrito em outra máquina (gate aprovado no Neo) e o OneDrive ainda não ter trazido `data/` para esta. Repassar ao editor a linha `[aviso]` que o comando imprime no stderr (traz "possível defasagem de sync do OneDrive" e a idade do arquivo mais recente da edição nesta máquina) e as duas saídas: se o gate já foi aprovado em outra máquina, esperar o sync e rodar `/diaria-publica-video` de novo; se não foi, aprovar o gate (`/diaria-4-revisao {AAMMDD}` ou `/diaria-edicao {AAMMDD}`) antes, porque o D1 ainda pode mudar. Vale para as duas partes, em dry-run ou não.
 
-**Código atualizado no início (#2686, #8684):** como esta é a sessão que publica, rodar logo depois do sentinel o Passo -3 do `/diaria-5-publicacao` (`npx tsx scripts/sync-code.ts --edition-dir {EDITION_DIR}`, Bash `timeout: 570000`, fail-soft). A Etapa 5 roda o mesmo passo de novo quando começa (idempotente).
+**`{EDITION_DIR}`:** resolver uma vez, logo depois do sentinel: `EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})` (layout flat ou nested, #2463).
+
+**Código atualizado no início (#2686, #8684):** como esta é a sessão que publica, rodar logo depois o Passo -3 do `/diaria-5-publicacao` (`npx tsx scripts/sync-code.ts --edition-dir {EDITION_DIR}`, Bash `timeout: 570000`, fail-soft). A Etapa 5 roda o mesmo passo de novo quando começa (idempotente).
 
 Com `--so` ou `--sem-publicacao`, ao terminar, sugerir o próximo comando (`/diaria-5-publicacao {AAMMDD}`, se a Etapa 5 ainda não rodou) sem rodá-lo.
 

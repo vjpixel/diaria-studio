@@ -332,7 +332,7 @@ export function linkedinVerticalTime(config: unknown, aammdd: string): { at: str
 /**
  * Puro (#11618): a espera do Drive vira alarme? Só num dia que teve vídeo
  * (`videoSeen`: a pasta da edição no Drive ou outro destino registrado) — dia
- * sem vídeo não avisa (a Etapa 5 segue sem). Ambíguo: a partir do horário do
+ * sem vídeo (`videoSeen` falso) não avisa. Ambíguo: a partir do horário do
  * vertical (o editor precisa escolher). Sem vertical: 1 h depois do horário
  * (o export pode estar subindo). Antes disso, null: espera calada.
  */
