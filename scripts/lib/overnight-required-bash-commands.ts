@@ -129,6 +129,13 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   { command: "npx tsx scripts/check-pr-checks-gate.ts --pr 1", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "npx tsx scripts/check-pr-checks-gate.ts --pr {N} [--issue {ref}]" },
   { command: "gh pr checks 1 --watch", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh pr checks {N} --watch" },
   { command: "gh run view 123 --log-failed", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh run view --log-failed" },
+  // O gh 2.46 do 300 devolve 0 linhas no `--log-failed` (#12733): o log vem
+  // pelo REST via wrapper.
+  {
+    command: "npx tsx scripts/gh-failed-job-logs.ts --run 123 --attempt 1",
+    source: "context/overnight-dispatch-rules.md",
+    mention: "npx tsx scripts/gh-failed-job-logs.ts",
+  },
   { command: "gh run list --branch master --limit 1", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh run list --branch master --limit 1" },
   { command: "gh run rerun 123", source: "context/overnight-dispatch-rules.md", mention: "gh run rerun" },
   // Atualizar a branch da PR com a base é o wrapper REST, não `git merge`

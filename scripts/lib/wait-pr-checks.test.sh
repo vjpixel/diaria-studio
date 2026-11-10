@@ -195,6 +195,59 @@ wait_pr_checks "10" 1 1 60 >/dev/null 2>&1
 RC10=$?
 assert_eq "check em execução sem concluir (queued=0) -> exit 1 no teto normal" "1" "$RC10"
 
+# ── 11. #12733: virada de segundo antes da 1ª leitura nunca dá TIMEOUT ──────
+# O vermelho intermitente do job Shell tests (PR #12717) era o caso 9 dando
+# rc=1 "após 1s": `start=$(date +%s)` e o 1º `now=$(date +%s)` caíram em
+# segundos diferentes, elapsed=1 >= teto=1, e o laço saiu sem consultar o
+# gate. Aqui a virada é forçada: `date` falso avança 1s por chamada e `sleep`
+# não espera, então o resultado não depende do relógio da máquina.
+DATE_FILE11="$(mktemp)"
+echo 1000 > "$DATE_FILE11"
+date() {
+  local t
+  t=$(cat "$DATE_FILE11")
+  echo $(( t + 1 )) > "$DATE_FILE11"
+  echo "$t"
+}
+sleep() { :; }
+GATE_CALLS11="$(mktemp)"
+echo 0 > "$GATE_CALLS11"
+check_pr_checks_once() {
+  echo $(( $(cat "$GATE_CALLS11") + 1 )) > "$GATE_CALLS11"
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] PR #11: verdict=pending — 2 check(s) ainda não concluído(s): a, b
+[check-pr-checks-gate] queue: queued=2 pending=2"
+  return 2
+}
+wait_pr_checks "11" 1 1 3 >/dev/null 2>&1
+RC11=$?
+CALLS11=$(cat "$GATE_CALLS11")
+unset -f date sleep
+rm -f "$DATE_FILE11" "$GATE_CALLS11"
+assert_eq "virada de segundo antes da 1ª leitura -> fila (rc=7), nunca TIMEOUT sem consultar o gate" "7" "$RC11"
+if [ "$CALLS11" -ge 1 ]; then
+  echo "ok: gate consultado antes de avaliar o teto (${CALLS11} leitura(s))"
+else
+  echo "FAIL: o laço avaliou o teto sem nenhuma leitura do gate"
+  FAILED=1
+fi
+
+# Mesma virada com o gate resolvendo na 1ª leitura: sai 0, nunca TIMEOUT.
+DATE_FILE11="$(mktemp)"
+echo 1000 > "$DATE_FILE11"
+date() {
+  local t
+  t=$(cat "$DATE_FILE11")
+  echo $(( t + 1 )) > "$DATE_FILE11"
+  echo "$t"
+}
+sleep() { :; }
+check_pr_checks_once() { return 0; }
+wait_pr_checks "11" 1 1 >/dev/null 2>&1
+RC11B=$?
+unset -f date sleep
+rm -f "$DATE_FILE11"
+assert_eq "virada de segundo antes da 1ª leitura com CI já resolvido -> exit 0" "0" "$RC11B"
+
 # ── 4. uso inválido do entrypoint (PR ausente) -> exit 2 ────────────────────
 OUT4=$(bash "$DIR/wait-pr-checks.sh" 2>&1)
 RC4=$?
