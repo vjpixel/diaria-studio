@@ -865,7 +865,9 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
   // anterior que parou no principal). Se o principal falha, ele segue agendado
   // no dia antigo e a semanal não: reexecutar o `--unschedule` não a vê mais
   // (já não está `scheduled`), e uma troca abandonada deixaria a base fria sem
-  // envio. O `failed` do principal diz isso, com o comando que a reagenda.
+  // envio. O `failed` do principal diz isso, com o caminho de reagendá-la: o
+  // comando do publisher, ou reagendar à mão no Kit quando o principal não tem
+  // `broadcast_id` (#12729).
   let semanalUnscheduledId: number | null =
     semanal && semanal.status === "created_unverified" && typeof semanal.broadcast_id === "number" ? semanal.broadcast_id : null;
   // #12730 — `created_unverified` herdado de antes desta execução não prova
@@ -884,9 +886,14 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
     const reschedule = mainHasId
       ? `reagendar a semanal junto do principal: npx tsx scripts/publish-kit-semanal-frio.ts --edition-dir ${stateDir} --push`
       : "reagendar a semanal à mão no Kit, junto do principal (o registro do principal não tem broadcast_id, e o publish-kit-semanal-frio.ts recusa sem ele)";
+    // Sem `broadcast_id` no principal, repetir o comando cai de novo no mesmo
+    // ramo e falha: só termina a troca depois de desagendar o principal à mão.
+    const retry = mainHasId
+      ? "Repetir o mesmo comando termina a troca"
+      : "Desagendar o principal à mão no Kit e repetir o mesmo comando termina a troca";
     return (
       ` ATENÇÃO: a semanal de frio (broadcast ${semanalUnscheduledId}) ${where} e o principal segue agendado ` +
-      "no horário antigo. Repetir o mesmo comando termina a troca (a Etapa 6 da pasta nova reagenda os dois); se a troca for abandonada, " +
+      `no horário antigo. ${retry} (a Etapa 6 da pasta nova reagenda os dois); se a troca for abandonada, ` +
       reschedule
     );
   };

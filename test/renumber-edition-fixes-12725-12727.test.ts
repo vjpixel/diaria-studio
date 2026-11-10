@@ -348,6 +348,9 @@ describe("#12727 — principal falha depois de a semanal sair da agenda", () => 
     assert.match(main.detail, /registro sem broadcast_id/);
     assert.match(main.detail, /reagendar a semanal à mão no Kit, junto do principal/);
     assert.doesNotMatch(main.detail, /--push/);
+    // Repetir sozinho cai no mesmo ramo: o aviso pede desagendar o principal à mão antes.
+    assert.match(main.detail, /Desagendar o principal à mão no Kit e repetir o mesmo comando termina a troca/);
+    assert.doesNotMatch(main.detail, /horário antigo\. Repetir o mesmo comando/);
   });
 
   it("principal desagendado com sucesso ⇒ sem o aviso", async () => {
