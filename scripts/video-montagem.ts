@@ -158,7 +158,12 @@
  * Opções comuns:
  *   --drive-root DIR   pasta YouTube local do Drive (default: env DIARIA_VIDEO_DRIVE_ROOT ou
  *                      "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube"); a edição é {DIR}/{AAMMDD}/
- *   --state-dir DIR    onde ficam os JSON (default: data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem)
+ *   --premiere-root DIR  (build) a mesma pasta YouTube como o Mac que abre o XML a vê
+ *                      (/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu Drive/…/YouTube):
+ *                      todo pathurl (bruto, áudio tratado, PNG do título, vinheta, card de CTA)
+ *                      troca a raiz do Neo por ela (#12707). Default: publishing.video.premiere_root
+ *                      do config; sem ele, a raiz do Neo (G:). "off" ignora o config.
+ *   --state-dir DIR   onde ficam os JSON (default: data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem)
  *   --work-dir DIR     áudio e clipes temporários (default: {tmp}/diaria-video-montagem/{AAMMDD};
  *                      no modo API, {cache}/work, em disco)
  *   --out-dir DIR      onde saem XML, SRT e prévia (default: a pasta da edição no Drive; no modo
@@ -259,6 +264,8 @@ import {
   mirroredPremise,
   parseSilenceDetect,
   pickRawSource,
+  premiereRootFrom,
+  unmappedPremierePaths,
   previewClipArgs,
   previewCropFor,
   clipFraming,
@@ -303,6 +310,7 @@ import {
   type Framing,
   type Interval,
   type PlannedClip,
+  type PremierePathMap,
   type RawClip,
   type ScreenTitleXml,
   type Segment,
@@ -458,6 +466,8 @@ interface Ctx {
   xmlMediaRoot?: string;
   /** #11653: raiz do Drive no Neo pedida por `--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT` (só no modo local); vai para o XML. */
   driveRoot?: string;
+  /** #12707: a raiz do Neo trocada pela do Mac em todo `pathurl` (`--premiere-root`/`publishing.video.premiere_root`); ausente = caminho do Neo. */
+  premierePaths?: PremierePathMap;
 }
 
 const f = (ctx: Pick<Ctx, "stateDir">, name: string) => join(ctx.stateDir, name);
@@ -517,6 +527,16 @@ function nonEmptyWords(path: string, what: string): Word[] {
   const words = transcriptWords(readJson<Transcript>(path, what));
   if (words.length === 0) throw new Error(`${what} sem nenhuma palavra (${path}): áudio mudo ou transcrição falhou; refazer com --force`);
   return words;
+}
+
+/** O platform.config.json, ou `null` ilegível (com aviso): o `premiere_root` some e o XML sai com a raiz do Neo (#12707). */
+function readPlatformConfigSafe(): unknown {
+  try {
+    return JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  } catch (e) {
+    console.error(`[aviso] platform.config.json ilegível (${(e as Error).message}): sem publishing.video.premiere_root, XML com a raiz do Neo (#12707)`);
+    return null;
+  }
 }
 
 /** `publishing.video.mirrored_default` do config (#11959); config ilegível = `null` (vale o default do código, com aviso). */
@@ -968,6 +988,8 @@ export interface XmlBuildOptions {
   screenTitleByCorte?: Readonly<Record<string, ScreenTitleXml | null>>;
   /** #12571: o card de CTA de cada sequência (chave = `sequenceKey`), como o `buildXmeml` recebe; só entra no hash o card que a sequência leva. */
   ctaCard?: Readonly<Record<string, CtaCardAsset>> | null;
+  /** #12707: a tradução de raiz dos `pathurl` para o Premiere do Mac; ausente/null = fora do hash (o de antes). */
+  premierePaths?: PremierePathMap | null;
 }
 
 /** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
@@ -1012,6 +1034,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(typeof opts.gainDb === "number" ? { gainDb: opts.gainDb } : {}),
         ...(title ? { screenTitle: title } : {}),
         ...(opts.ctaCard?.[sequenceKey(plan.spec)] ? { ctaCard: ctaCardHashPart(opts.ctaCard[sequenceKey(plan.spec)]) } : {}),
+        ...(opts.premierePaths ? { premierePaths: opts.premierePaths } : {}),
       }),
     )
     .update("\0plan\0")
@@ -2687,6 +2710,15 @@ function readD1Title(edition: string): string | null {
   return parseDestaques(readFileSync(path, "utf8")).find((d) => d.n === 1)?.title ?? null;
 }
 
+/** Relato da raiz dos `pathurl` do XML (#12707): Neo ou Mac, e o que ficou fora da tradução. */
+export function premierePathsLine(map: PremierePathMap | undefined, unmapped: readonly string[]): string {
+  if (!map) {
+    return "[premissa] pathurl do XML com a raiz do Neo (G:): abre vinculado no Premiere do Windows; para o Mac, publishing.video.premiere_root no config ou --premiere-root /Users/…/YouTube (#12707)";
+  }
+  const base = `[premissa] pathurl do XML com a raiz ${map.to} no lugar de ${map.from} (bruto, áudio, título, vinheta e card de CTA); conferir no 1º import no Mac (#12707)`;
+  return unmapped.length ? `${base}\n[aviso] fora de ${map.from}, com o caminho de origem no XML (devem chegar offline no Mac): ${unmapped.join(", ")} (#12707)` : base;
+}
+
 /** Relato do ganho de áudio do XML (#11755). */
 export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: number, measuredOn: "bruto" | "faixa tratada" = "bruto"): string {
   if (!g) return `[aviso] sem ganho de áudio no XML: loudness ${measuredOn === "bruto" ? "do bruto" : "da faixa tratada"} não medido (ou sem true peak para um ganho positivo); nível à mão no Premiere`;
@@ -2879,6 +2911,16 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   for (const p of picked) {
     if (!ctaCard[sequenceKey(p.spec)] && !sequenceHasSpokenCta(p)) console.error(`[aviso] ${p.spec.name} sai sem CTA nenhum (sem card e sem cta_* falado) (#12571)`);
   }
+  // #12707: todo `pathurl` com a mesma raiz; o que ficar fora dela sai com o caminho do Neo, e isso é dito.
+  const xmlFilePaths = [
+    ...(mediaPaths ?? [mediaPath]),
+    ...(treated ? [treated.xmlPath] : []),
+    ...(screenTitle ? [screenTitle.pngPath] : []),
+    ...Object.values(screenTitleByCorte).flatMap((t) => (t ? [t.pngPath] : [])),
+    ...(vinheta ? [vinheta.path] : []),
+    ...Object.values(ctaCard).map((c) => c.xmlPath),
+  ];
+  console.error(premierePathsLine(ctx.premierePaths, unmappedPremierePaths(xmlFilePaths, ctx.premierePaths)));
   // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
   // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
   // #12163: e com o título, o caminho do bruto e o ganho calculado — por isso só aqui, depois de resolvê-los.
@@ -2894,6 +2936,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     screenTitle,
     screenTitleByCorte,
     ctaCard,
+    premierePaths: ctx.premierePaths ?? null,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
@@ -2913,7 +2956,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -4018,6 +4061,14 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   }
   const explicitRoot = values["drive-root"] ?? process.env.DIARIA_VIDEO_DRIVE_ROOT;
   const driveRoot = explicitRoot ?? DEFAULT_DRIVE_ROOT;
+  // #12707: a raiz do Premiere (Mac) no lugar da do Neo em todo pathurl do XML.
+  let premiere: ReturnType<typeof premiereRootFrom>;
+  try {
+    premiere = premiereRootFrom(values["premiere-root"], readPlatformConfigSafe());
+  } catch (e) {
+    console.error(`video-montagem: ${(e as Error).message}`);
+    return 2;
+  }
   const driveDir = join(driveRoot, edition);
   const mode = driveModeFor({
     driveRootExists: existsSync(driveRoot),
@@ -4043,6 +4094,8 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     xmlMediaRoot: values["xml-media-root"],
     // A raiz explícita é a do Neo só no modo local; no modo API ela não existe aqui (#11653).
     driveRoot: mode === "local" ? explicitRoot : undefined,
+    // A raiz de origem é a do Neo que o XML grava: a explícita do modo local, senão a padrão (a vinheta mora nela).
+    ...(premiere.root ? { premierePaths: { from: mode === "local" && explicitRoot ? explicitRoot : DEFAULT_DRIVE_ROOT, to: premiere.root } } : {}),
   };
   const seq = values["seq"];
   if ((VIDEO_ONLY_COMMANDS as readonly string[]).includes(cmd)) {
