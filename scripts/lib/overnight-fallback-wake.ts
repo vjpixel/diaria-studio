@@ -31,8 +31,9 @@
  *
  * Este módulo dá ao coordenador uma **terceira sub-camada** de proteção:
  * fallback wake determinístico. Ao dispatchar OU resumir qualquer
- * subagente, o coordenador agenda um `ScheduleWakeup` (delay ~1200s / 20min)
- * que, ao acordar — MESMO sem ter recebido nenhum evento do subagente —
+ * subagente, o coordenador arma um timer (~1200s / 20min; desde o #12535 é
+ * `sleep 1200` em `Bash` com `run_in_background: true`, não `ScheduleWakeup`,
+ * que é do modo `/loop`) que, ao acordar — MESMO sem ter recebido nenhum evento do subagente —
  * calcula `elapsed = now - timeline.dispatch` via `shouldWakeCheck` e
  * aplica o fluxo de stall do #2768 se o threshold
  * (`OVERNIGHT_STALL_THRESHOLD_MIN`, 45 min) foi cruzado.

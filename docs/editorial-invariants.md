@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 141 invariants.
+**Total**: 142 invariants.
 
 ## Static (estrutura do repo)
 
@@ -107,6 +107,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
 | `kit-fixture-audit` | assinante de fixture de teste (ex: ana@example.com) ATIVO na base Kit de produção (#6336) | #6336 |
 | `kit-html-too-large` | _internal/newsletter-final-kit.html acima de 104448 bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506) | #6506 |
+| `lancamento-sem-fabricante` | Item de LANÇAMENTOS cita o fabricante (empresa ou produto da URL) no título ou na descrição (heurístico, warning-only) | #12595 |
 | `max-content-items` | rascunho do Gate 4 com no máximo 13 conteúdos (destaques + seções secundárias) (#9785) | #9785 |
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
 | `newsletter-html-not-behind-reviewed` | newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245; error desde #10258 — bloqueia o sentinel do Stage 4; reviewed só tocado, com sha256 igual ao carimbo do render, não acusa) | #10245 |
