@@ -19,6 +19,13 @@
  * Destino existente ⇒ recusa (exit 2). Relatório em
  * `{pasta nova}/_internal/renumber-edition.json`.
  *
+ * Stores globais de `data/` com o ID (#12691): `intentional-errors.jsonl`,
+ * `eia-used.json`, `exploration-quota.json` — só o campo da edição muda, e
+ * entrada já existente do ID novo (ou store ilegível) recusa com exit 2. O
+ * dry-run e o `--apply` terminam com a lista do que fica fora (pasta do vídeo
+ * no Drive, cache local do vídeo, outras sessões, histórico) e avisam se há
+ * `edition-lock` vivo na pasta.
+ *
  * ## Passos remotos
  *
  * Re-upload das imagens (newsletter + social), `close-poll.ts`, atualização do
@@ -68,7 +75,11 @@ import { getBroadcast } from "./lib/kit-client.ts";
 import {
   buildRemoteSteps,
   detectScheduledSends,
+  globalStoresRefusal,
+  leftOutItems,
+  liveEditionLock,
   mergeStepStates,
+  scanGlobalStores,
   planRenumber,
   readRenumberReport,
   renumberLocal,
@@ -117,6 +128,12 @@ export async function runUnschedule(
     deps.log(`ERRO: ${plan.reason}`);
     return plan.code;
   }
+  // #12691 — a troca seria recusada depois: não desagendar nada à toa.
+  const refusal = plan.resume ? null : globalStoresRefusal(scanGlobalStores(deps.root, opts.from, opts.to), opts.to);
+  if (refusal) {
+    deps.log(`ERRO: ${refusal}`);
+    return 2;
+  }
   const outcomes = await unscheduleSends(plan.resume ? plan.toDir : plan.fromDir, deps.unschedule);
   if (outcomes.length === 0) deps.log("--unschedule: nada agendado.");
   for (const o of outcomes) deps.log(`--unschedule [${o.result}] ${o.what}: ${o.detail}`);
@@ -135,6 +152,27 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
     return plan.code;
   }
   const newDirRel = editionDir(opts.to);
+
+  // #12691 — trava viva de outra sessão: a pasta some debaixo dela.
+  const lock = liveEditionLock(plan.resume ? plan.toDir : plan.fromDir, Date.parse(deps.nowIso()));
+  if (lock) {
+    log(
+      `ATENÇÃO: edition-lock vivo (sessão ${lock.session_id}, host ${lock.host || "?"}, Stage ${lock.stage}, heartbeat ${lock.heartbeat_at}). ` +
+        `A trava vai junto pra ${newDirRel}; se não é esta sessão, a outra perde o diretório — encerrá-la antes.`,
+    );
+  }
+
+  // #12691 — stores globais de data/: conflito ou store ilegível recusa antes de tudo.
+  const globalChanges = plan.resume ? [] : scanGlobalStores(root, opts.from, opts.to);
+  const globalRefusal = globalStoresRefusal(globalChanges, opts.to);
+  if (globalRefusal) {
+    log(`ERRO: ${globalRefusal}`);
+    return 2;
+  }
+  const printLeftOut = (prefix: string) => {
+    log(`${prefix}fica fora (à mão, depois da troca):`);
+    for (const item of leftOutItems(opts.from, opts.to)) log(`  - ${item}`);
+  };
 
   // #12662 — envio/post já agendado sai no dia antigo: nenhum passo o move.
   const scheduled = detectScheduledSends(plan.resume ? plan.toDir : plan.fromDir, newDirRel);
@@ -156,6 +194,7 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
       log(`[dry-run] reescreveria ${scan.rewritten.length} arquivo(s) (${scan.rewritten.reduce((n, f) => n + f.count, 0)} troca(s)); ${scan.preserved} img-${opts.from}-… preservado(s).`);
       for (const r of scan.renames) log(`[dry-run] renomearia ${r.from} → ${r.to}`);
       if (scan.publicImages) log(`[dry-run] moveria 06-public-images.json pra _internal/_forensic/06-public-images.${opts.from}.json.`);
+      for (const g of globalChanges) log(`[dry-run] reescreveria ${g.path}: ${g.count} entrada(s) de ${opts.from} → ${opts.to}.`);
     }
     // Na dry-run de execução nova o estado vive na pasta de origem.
     const stateRoot = plan.resume ? newDirRel : relative(root, plan.fromDir);
@@ -165,6 +204,7 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
     }));
     log("[dry-run] passos remotos depois do --apply:");
     for (const s of steps) log(`  ${formatStep(s)}   # ${s.why}`);
+    printLeftOut("[dry-run] ");
     return 0;
   }
 
@@ -180,6 +220,8 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
       `${report.from_dir} → ${report.to_dir}: ${report.rewritten_files.length} arquivo(s) reescrito(s), ` +
         `${report.renamed_paths.length} renomeado(s), ${report.preserved_img_refs} img-${opts.from}-… preservado(s).`,
     );
+    for (const g of report.global_stores ?? []) log(`${g.path}: ${g.count} entrada(s) de ${opts.from} → ${opts.to}.`);
+    printLeftOut("");
   } else {
     log(`retomando: parte local já feita em ${newDirRel}.`);
   }
