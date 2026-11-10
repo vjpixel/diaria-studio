@@ -1,13 +1,13 @@
 ---
 name: diaria-video-roteiro
-description: Escreve o roteiro de fala do vídeo "diar.ia.br comentada" do dia, antes da gravação — um vídeo horizontal e dois verticais que saem da mesma gravação, a partir do D1 da edição. Entrega um artefato (página) com título, texto da capa e falas numeradas por vídeo, e itera com o editor até ele gravar. Roda depois do gate da Etapa 4 e antes da gravação; standalone, sem encadear. Uso — `/diaria-video-roteiro [AAMMDD]`.
+description: Escreve o roteiro de fala do vídeo "diar.ia.br comentada" do dia, antes da gravação — um vídeo horizontal e dois verticais que saem da mesma gravação, a partir do D1 da edição. Entrega um artefato (página) com título, texto da capa e falas numeradas por vídeo, e itera com o editor até ele gravar; depois da gravação, confere a transcrição ditada contra o roteiro e diz o que regravar. Roda depois do gate da Etapa 4 e antes da gravação; standalone, sem encadear. Uso — `/diaria-video-roteiro [AAMMDD]`.
 ---
 
 # /diaria-video-roteiro AAMMDD
 
 Escreve o roteiro que o editor lê para gravar o vídeo do dia. Nasceu do processo da edição 261112 (10/11/2026), feito à mão numa sessão: o roteiro saiu de uma primeira versão até a 22ª em conversa com o editor. Exemplo completo, com o layout da página: `data/editions/2611/261112/_internal/roteiro-d1.html` (em `data/`, fora do git; sem ele, o Passo 5 descreve o layout).
 
-**Fora de escopo:** gravar, decupar, checar os fatos da fala gravada e montar (tudo do `/diaria-video-montagem`), publicar (`/diaria-publica`). Esta skill não altera `02-reviewed.md` nem `03-social.md`.
+**Fora de escopo:** gravar, decupar, checar os fatos da fala gravada no bruto e montar (tudo do `/diaria-video-montagem`), publicar (`/diaria-publica`). Esta skill não altera `02-reviewed.md` nem `03-social.md`.
 
 **Argumento:** `AAMMDD`, opcional. Sem ele, assumir D+1, imprimir o banner `Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.` e seguir.
 
@@ -101,8 +101,30 @@ Quando o editor pedir, ou quando o roteiro parar de mudar:
    - a caixa do topo e as notas descrevem a versão atual?
 3. Entregar as mudanças aplicadas e, separadas, as decisões que são do editor.
 
+## Passo 8 — Conferir a gravação contra o roteiro (#12754)
+
+Depois de gravar, o editor entrega na mesma sessão a transcrição da gravação, ditada pelo botão de gravar do Claude Code. O passo diz se o que foi gravado serve, ainda no set, antes da montagem.
+
+**Premissa:** a transcrição é a do ditado, não a do áudio do vídeo. Ditada junto com a câmera, as duas coincidem; ditada depois, de memória, o passo confere um ensaio e não o bruto. Se o editor não disser como ditou, assumir que foi junto com a câmera e escrever isso na resposta.
+
+1. Gravar as falas da versão atual em `_internal/roteiro-falas.json` (`{ "edicao", "veiculos": [veículos da fonte do D1], "falas": [{ "id": "H1", "texto", "videos": ["horizontal", "vertical1"], "gravarAParte": false }] }`), uma entrada por fala numerada mais as gravadas à parte, e a transcrição em `_internal/gravacao-transcricao.txt` (tomada nova do mesmo dia: `gravacao-transcricao-2.txt`, e assim por diante).
+2. Rodar `npx tsx scripts/video-roteiro-confere.ts --falas {…}/roteiro-falas.json --transcricao {…}/gravacao-transcricao.txt`. É a primeira passada, determinística: casa cada fala com o trecho mais parecido da transcrição por conteúdo (a ordem da gravação pode não ser a do roteiro), aponta número do roteiro que sumiu, veículo dito em voz alta e trechos que nenhuma fala explica. Todo veredito diferente de `ok` vem marcado para confirmar.
+3. Confirmar lendo o trecho de cada fala e dar o veredito final:
+   - **ok**: dita como no roteiro, ou com outras palavras e o mesmo sentido;
+   - **diferente-mas-cabe**: outras palavras, mesmo fato e mesmo sentido, mas a montagem deve partir do que foi dito; citar a frase gravada;
+   - **regravar**: mudou um fato, um número ou um nome; quebrou uma regra da fala (citou o veículo, CTA falado fora da exceção do vertical 1); ou deixou de funcionar sozinha num vertical que a reaproveita;
+   - **faltou**: não aparece na transcrição.
+4. Cuidados ao confirmar:
+   - O ditado distorce nomes de produto, siglas e nomes de arquivo. Diferença que é claramente erro de transcrição não conta como desvio. Na dúvida entre erro de ditado e fala errada, perguntar ao editor em vez de mandar regravar.
+   - Número ditado por extenso conta como o mesmo número; o script já aceita os casos simples ("quinhentos", "dois mil"). Número que o script deu como ausente e que está lá com outra grafia é `ok`.
+   - Improviso bom (frase nova que melhora a fala, nos trechos sem fala correspondente) não é erro: apontar, conferir o fato contra a fonte se houver um, e atualizar a fala na página para a montagem partir do que foi dito (Passo 6, mesmo link). Fato que não está na fonte: sinalizar para checagem, sem reprovar sozinho.
+   - Trecho repetido costuma ser outra tomada da mesma fala; não é improviso.
+5. Responder com um veredito por fala, na ordem do roteiro, e no fim a lista curta do que gravar de novo: o id, o texto da fala e os vídeos afetados (horizontal, vertical 1, vertical 2). Se nada faltar nem precisar regravar, dizer que está pronto para o `/diaria-video-montagem {AAMMDD}`.
+
+Este passo não substitui o fact-check da fala gravada nem a decupagem do `/diaria-video-montagem`, que trabalham sobre o bruto com tempo por palavra. Nova tomada depois de regravar: repetir o passo só com a transcrição nova.
+
 ## Fim
 
-Dizer que o roteiro está pronto para gravar e que o próximo comando, depois da gravação, é `/diaria-video-montagem {AAMMDD}`. Não rodar.
+Dizer que o roteiro está pronto para gravar e que o próximo comando, depois da gravação, é `/diaria-video-montagem {AAMMDD}`. Não rodar. Se o editor quiser conferir a gravação antes, ele dita a transcrição nesta sessão (Passo 8).
 
 Na mesma mensagem, repetir o título e o texto da capa de cada vídeo e avisar o que ainda é manual (#12751): a montagem e a publicação não leem este roteiro. O corte do vertical 2, o título do YouTube quando difere do D1 e a publicação do vertical 2 uma semana depois dependem do editor ou de pedido explícito nas sessões seguintes.
