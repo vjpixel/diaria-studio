@@ -77,14 +77,14 @@ b. **Texto bruto primeiro (#8595).** `scripts/run-fact-checker.ts` pré-baixa o 
    - **SUSTAINED**: claim está explicitamente confirmado na fonte (mesma cifra, mesma frase, mesma data)
    - **DIVERGENT**: claim está na fonte mas com valor diferente (ex: fonte diz R$ 24,99, texto diz R$ 99). Quando o valor correto for determinístico e extraído verbatim da fonte (nome/versão de modelo, número exato, data), preencher `suggested_fix` com o valor correto. Não preencher `suggested_fix` se a correção for ambígua ou se `claim_type === "superlative"`.
    - **NOT_FOUND_IN_SOURCE**: claim não encontrado na fonte primária (pode estar em fonte secundária não verificável aqui). **Nunca emitir `suggested_fix` para NOT_FOUND_IN_SOURCE** — a ausência de suporte não implica qual seria o valor correto.
-   - **SOURCE_UNREACHABLE**: URL não respondeu; incluir mas marcar como não verificado
+   - **SOURCE_UNREACHABLE**: URL não respondeu; incluir mas marcar como não verificado (também quando o claim só casou com o `article.summary`, passo 3c)
    - **INFERRED**: claim parece ser inferência/arredondamento de valor da fonte (ex: fonte diz "a partir de R$ 25", texto diz "R$ 25/mês") — marcar como INFERRED com nota
 
    **Previsão editorial (#11073, só "Por que isso importa" dos destaques)**: frase de previsão marcada com "tende a" ou "à medida que" é inferência editorial permitida pelo editor, não claim a sustentar na fonte — (vale só para esse parágrafo, não para o corpo nem para social) não classificar como DIVERGENT nem NOT_FOUND_IN_SOURCE por a fonte não prever; extrair apenas os fatos verificáveis ao redor (cifras, datas, nomes). Previsão SEM esse marcador continua sujeita às regras normais.
 
    **Para superlativos/ineditismo**: classificar como SUSTAINED só se a fonte primária usa a mesma linguagem explicitamente. Se a fonte não suporta o claim de ineditismo, classificar como NOT_FOUND_IN_SOURCE com nota `"superlativo sem suporte explícito na fonte"`.
 
-c. Se fetch falhar ou URL indisponível, tentar o `article.summary` do `approved_json` como fonte secundária. **Modo mensal**: não há `article.summary` — se todas as URLs candidatas falharem o fetch, classificar como `SOURCE_UNREACHABLE` diretamente (sem fallback).
+c. Se fetch falhar ou URL indisponível, conferir o claim contra o `article.summary` do `approved_json` só como pista. O `article.summary` é um resumo curto gerado na pesquisa, não a fonte: claim conferido SÓ contra ele **nunca sai `SUSTAINED` nem `INFERRED`** (#12540). Emitir `SOURCE_UNREACHABLE` com `"secondary_match": true` quando o summary traz o mesmo valor (ou `"secondary_match": false` quando não traz) e `note` dizendo que a fonte não abriu e que o claim só casou com o resumo do approved. Se o summary CONTRADIZ o claim, `DIVERGENT` segue valendo, com a mesma ressalva na `note`. O runner rebaixa para `SOURCE_UNREACHABLE` qualquer `SUSTAINED`/`INFERRED` com `secondary_match: true` ou com `note` citando o `article.summary`, e o gate destaca o destaque cuja fonte principal ficou `blocked`/`error` no manifest. **Modo mensal**: não há `article.summary` — se todas as URLs candidatas falharem o fetch, classificar como `SOURCE_UNREACHABLE` diretamente (sem fallback).
 
 ### 4. Gravar output
 
@@ -110,7 +110,8 @@ Gravar em `{out_path}` o JSON com o schema abaixo.
       "source_text": "trecho da fonte que sustenta ou contradiz o claim",
       "note": "Fonte diz R$ 24,99; texto diz R$ 99",
       "suggested_fix": "R$ 24,99",
-      "primary_status": "not_found|unavailable (opcional, #11691)"
+      "primary_status": "not_found|unavailable (opcional, #11691)",
+      "secondary_match": "true|false (opcional, #12540 — só com SOURCE_UNREACHABLE conferido contra article.summary)"
     }
   ],
   "summary": {
