@@ -94,6 +94,11 @@
  *       relato e em `plan.json` (`cutAdjustments`, `cutRefine`). A banda alta (>3 kHz, -51 dBFS ou mais com o piso do bruto, #11968) protege fonemas com 30 ms de ar e 80 ms de silêncio (#11940). Sem `audio.wav` nesta máquina,
  *       ou com --no-audio-refine, os cortes ficam como os tempos do Whisper, com [aviso].
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
+ *       (#12711) item com fala demais para o texto (ritmo da gravação) ou frase repetida no
+ *       intervalo = [aviso] de tomada repetida (o Whisper colapsa a repetição); o roteiro confere
+ *       também a retranscrição da janela de cada item (palavra esticada, fala divergente).
+ *       (#12712) sequência de corte sem "hook" nem resumo_curto = [aviso] com a 1ª fala como
+ *       sugestão (o mesmo erro do video-extra-verticals.ts); com gancho, [premissa] com ele.
  *       Vertical montada acima de 3:00 (Shorts) sai como [aviso] com quanto passa (#11377); o
  *       corte só na vertical é um item com "skip"/"targets" no blocks.json.
  *       Ganho de áudio (#11755): Audio Levels em cada clipe de áudio, para -14 LUFS com teto
@@ -142,6 +147,8 @@
  *       `--seq` (#11900): o slug do corte escolhe aquela vertical extra (várias por
  *       plano); o destino escolhe a sequência sem corte dele, ou o único corte dele.
  *       Arquivos de trabalho por sequência: seq-{corte|destino}.wav, previa-…, review-….
+ *       (#12711) palavra esticada sobre fala na transcrição da prévia = achado tomada-colapsada
+ *       (também no verify-xml e no review-final). (#12712) corte sem gancho = [aviso].
  *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes|{corte}] [--no-text] [--retranscribe]
  *       revisão do EXPORT do Premiere (#11557): formato contra o destino (proporção,
  *       faixa preta, fps, teto do vertical), loudness/true peak, estalos e fragmentos
@@ -302,6 +309,7 @@ import {
   fitWarnings,
   framingOfFile,
   joinWordTexts,
+  type BlockKey,
   type ResolvedItem,
   type ReviewFinding,
   type BlocksFile,
@@ -322,6 +330,7 @@ import {
   type Transcript,
   type VocabAlias,
   type VocabRule,
+  type TokenMatcher,
   type Word,
 } from "./lib/diaria/video-montage.ts";
 import {
@@ -440,6 +449,8 @@ import { buildYouTubeTitle, stripInlineMarkdown } from "./lib/diaria/youtube-vid
 import { youtubeCaptionFileName } from "./lib/diaria/youtube-captions.ts";
 import { factCheckItems, factCheckItemsSha256, factCheckSection, parseVideoFactCheck, type FactCheckItem } from "./lib/diaria/video-fact-check.ts";
 import { SHORT_WORD_WINDOW_PAD_S, shortWordDivergences, shortWordSection, type ShortWordItemCheck } from "./lib/diaria/video-short-words.ts";
+import { stretchedWordFindings, takeRepeatItems, takeRepeatLine, takeRepeatWarnings, windowHeardSuspects, type TakeRepeatSuspect } from "./lib/diaria/video-montage-repeat.ts";
+import { corteHookLine } from "./lib/diaria/extra-verticals.ts";
 import sharp from "sharp";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -1086,6 +1097,15 @@ function silences(ctx: Ctx): Interval[] {
  */
 /** #12263: `energy` = os quadros do detector, para a checagem de entrada que corta som. */
 type SpeechCut = { silences: Interval[]; islands: Interval[]; energy?: FrameEnergy };
+
+/**
+ * Tomada repetida que o Whisper colapsou (#12711), no `build` e no `roteiro`:
+ * item com muito mais fala que o texto pede, ou com a mesma frase mais vezes
+ * no intervalo que no texto. Só avisa (o editor confere no áudio).
+ */
+function printTakeRepeatWarnings(ctx: Ctx, resolved: Partial<Record<BlockKey, ResolvedItem[]>>): void {
+  for (const w of takeRepeatWarnings(takeRepeatItems(resolved), silences(ctx), makeMatcher(loadVocab().aliases))) console.error(`[aviso] ${w}`);
+}
 
 function plans(ctx: Ctx, speech?: SpeechCut | null) {
   const { file, text } = loadBlocks(ctx);
@@ -2093,8 +2113,13 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
       const tj = join(dir, "xml.transcript.json");
       transcribeWithPython(ctx, wav, tj, { vad: false, noCondition: true });
       const heard = reviewTranscriptWords(readJson<Transcript>(tj, "transcrição do áudio do XML"));
-      findings = reviewPreview({ words: heard, script: plan.script, cuts: sequenceCutsS(parsed.clips, parsed.rate), durationS: durS, aliases: loadVocab().aliases })
-        .filter((x) => x.kind === "fala-faltando" || x.kind === "fala-extra");
+      // #12711: a palavra esticada sobre fala no áudio montado (a 261111 tinha "fazer" por 4,5 s), que o casamento com o roteiro não vê.
+      const xmlSilences = parseSilenceDetect(run("ffmpeg", ["-hide_banner", "-nostats", "-i", wav, "-vn", "-af", REVIEW_SILENCE_FILTER, "-f", "null", "-"]).stderr, durS);
+      findings = [
+        ...reviewPreview({ words: heard, script: plan.script, cuts: sequenceCutsS(parsed.clips, parsed.rate), durationS: durS, aliases: loadVocab().aliases })
+          .filter((x) => x.kind === "fala-faltando" || x.kind === "fala-extra"),
+        ...stretchedWordFindings(heard, xmlSilences),
+      ];
       console.log("transcrição do áudio montado pelo XML x roteiro:");
       if (!findings.length) console.log("  sem diferenças");
       for (const x of findings) console.log(`  ${clockTime(x.at)}  ${x.kind}: ${x.detail}`);
@@ -2104,7 +2129,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   }
   writeJson(f(ctx, "verify-xml.json"), report);
   if (bad) {
-    console.error(`[erro] verify-xml: ${bad} problema(s) no XML (borda com SOM CORTADO, estrutura ou fala divergente): corrigir o blocks.json/build antes da prévia (#12561)`);
+    console.error(`[erro] verify-xml: ${bad} problema(s) no XML (borda com SOM CORTADO, estrutura, fala divergente ou tomada colapsada, #12711): corrigir o blocks.json/build antes da prévia (#12561)`);
     return 1;
   }
   console.error(`[video-montagem] verify-xml: zero bordas cortadas${transcribe ? " e áudio do XML batendo com o roteiro" : "; fala NÃO conferida (--no-transcribe)"} (#12561)`);
@@ -2212,6 +2237,7 @@ function cmdGaze(ctx: Ctx, target: string | undefined): number {
 
 function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   const { file, source, plans: ps, resolved } = plans(ctx);
+  printTakeRepeatWarnings(ctx, resolved);
   // As linhas "alternativa" da decupagem viram as opções B, C… do roteiro (#11361).
   const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
   const dplan = loadDecupagemPlan(ctx, tr.segments);
@@ -2247,10 +2273,24 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
     const n = short.checks!.reduce((k, c) => k + c.divergences.length, 0);
     if (n) console.error(`[aviso] ${n} palavra(s) curta(s) do roteiro diferente(s) da retranscrição da janela: seção "Palavras curtas" do roteiro, para o editor decidir no Gate 2 (#12093)`);
   }
-  const md = `${base.trimEnd()}\n\n${section.lines.join("\n")}\n\n${shortWordSection(short.checks, short.skipped).join("\n")}\n`;
+  // #12711: a retranscrição da janela de cada item (sem o roteiro no prompt) contra a tomada repetida que o Whisper colapsa.
+  const repeat = short.heard ? windowRepeatSuspects(factCheckItems(ps, resolved), short.heard, sil, makeMatcher(loadVocab().aliases)) : [];
+  for (const x of repeat) console.error(`[aviso] ${takeRepeatLine(x)}`);
+  const md = `${base.trimEnd()}\n\n${section.lines.join("\n")}\n\n${shortWordSection(short.checks, short.skipped).join("\n")}\n${takeRepeatSection(repeat)}`;
   writeFileAtomic(f(ctx, "roteiro.md"), md);
   process.stdout.write(md);
   return 0;
+}
+
+/** Suspeitas de tomada repetida nas janelas retranscritas do roteiro (#12711): uma lista por item, na ordem de `items`. */
+export function windowRepeatSuspects(items: ReadonlyArray<Pick<FactCheckItem, "id" | "text" | "start" | "end">>, heard: ReadonlyArray<readonly Word[]>, sil: Interval[], match: TokenMatcher): TakeRepeatSuspect[] {
+  return items.flatMap((it, i) => windowHeardSuspects(it, heard[i] ?? [], sil, match));
+}
+
+/** Seção do roteiro com as suspeitas de tomada repetida (#12711); vazia sem suspeita. */
+export function takeRepeatSection(repeat: readonly TakeRepeatSuspect[]): string {
+  if (!repeat.length) return "";
+  return `\n## Tomada repetida? (#12711)\n\nConferir no áudio antes do Gate 2: o Whisper junta a tomada repetida numa só e o casamento com o roteiro não vê.\n\n${repeat.map((x) => `- ${mdCell(takeRepeatLine(x))}`).join("\n")}\n`;
 }
 
 /** Cache da retranscrição das janelas dos itens do roteiro (#12093). */
@@ -2262,7 +2302,7 @@ export const SHORT_WORD_CACHE_FILE = "roteiro-retranscribe.json";
  * com a retranscrição falhando, devolve o motivo em `skipped` (o roteiro sai
  * assim mesmo, com o aviso no Doc).
  */
-function shortWordChecks(ctx: Ctx, items: FactCheckItem[], enabled: boolean): { checks: ShortWordItemCheck[] | null; skipped?: string } {
+function shortWordChecks(ctx: Ctx, items: FactCheckItem[], enabled: boolean): { checks: ShortWordItemCheck[] | null; skipped?: string; heard?: Word[][] } {
   if (!enabled) return { checks: null, skipped: "--no-short-word-check" };
   const audio = join(ctx.workDir, "audio.wav");
   if (!existsSync(audio)) return { checks: null, skipped: `áudio do bruto ausente (${audio})` };
@@ -2280,6 +2320,8 @@ function shortWordChecks(ctx: Ctx, items: FactCheckItem[], enabled: boolean): { 
   const aliases = loadVocab().aliases;
   return {
     checks: items.map((it, i) => ({ id: it.id, text: it.text, start: it.start, end: it.end, divergences: shortWordDivergences(heard.get(windows[i].key) ?? [], it.text, aliases) })),
+    // #12711: as mesmas janelas servem à conferência de tomada repetida (palavra esticada, fala divergente).
+    heard: windows.map((w) => heard.get(w.key) ?? []),
   };
 }
 
@@ -2737,6 +2779,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   if (speech.cut) console.error(`[premissa] corte de pausas pelo detector de fala (#12089): ${speech.cut.islands.length} ilhas de fala, pausa de ${SPEECH_DETECT.minGapS} s ou mais sai com ${SPEECH_DETECT.padBeforeS * 1000} ms antes da fala e ${SPEECH_DETECT.padAfterS * 1000} ms depois; o começo da fala recua até ${SPEECH_DETECT.attackMaxS * 1000} ms no ataque acima do piso do bruto + ${SPEECH_DETECT.attackAboveFloorDb} dB (#12263); --no-speech-detect volta ao silences.json`);
   else console.error(`[aviso] corte de pausas pelo silences.json (${speech.reason}): respiração e ruído de sala contam como fala num bruto quente (#12089)`);
   const { file, source, plans: ps0, hash, resolved } = plans(ctx, speech.cut);
+  printTakeRepeatWarnings(ctx, resolved);
   const refined = refineCuts(ctx, ps0, source, audioRefine, speech.cut !== null);
   refined.info.speechDetect = speech.cut ? { applied: true, islands: speech.cut.islands.length } : { applied: false, reason: speech.reason ?? "desligado" };
   const ps = refined.plans;
@@ -2771,6 +2814,9 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${CTA_CARD.durationS} s (#12571)`}`);
     const g = ganchoWarning(p);
     if (g) console.error(`[aviso] ${g}`);
+    // #12712: o corte sem gancho de publicação avisa já na montagem, com o mesmo erro do video-extra-verticals.ts.
+    const hook = corteHookLine(file, p.spec);
+    if (hook) console.error(`[${hook.level}] ${p.spec.name}: ${hook.text}`);
     for (const w of p.warnings ?? []) console.error(`[aviso] ${w}`);
     // #12101: o refino dos cortes pode encolher o respiro depois do título; conferir no plano final.
     // #12586: o respiro vem depois do bloco de abertura (o título, ou o gancho falado sem título).
@@ -3504,10 +3550,26 @@ export function previewSubtitleDecision(input: { srtPath: string; exists: boolea
   return { use: true, message: null };
 }
 
+/**
+ * O gancho de publicação do corte na prévia e na revisão (#12712), lido do
+ * blocks.json atual (o gancho não entra no plan.json). blocks.json ilegível
+ * só avisa: a prévia segue.
+ */
+function printCorteHook(ctx: Ctx, spec: SequenceSpec): void {
+  if (spec.corte === undefined) return;
+  try {
+    const hook = corteHookLine(loadBlocks(ctx).file, spec);
+    if (hook) console.error(`[${hook.level}] ${spec.name}: ${hook.text}`);
+  } catch (e) {
+    console.error(`[aviso] ${spec.name}: gancho do corte não conferido (${(e as Error).message}) (#12712)`);
+  }
+}
+
 async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSession | null = null, noSubs = false): Promise<number> {
   const pf = loadPlan(ctx);
   // #12096: `--seq youtube` também (o horizontal, 960x540); sem --seq, a vertical da edição.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
+  printCorteHook(ctx, plan.spec);
   if (pf.framingAssumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (o mesmo do build)");
   for (const w of framingWarningsByFile([plan], pf.source, pf.framing, pf.fileOverrides).mug) console.error(`[aviso] ${w}`);
   const fps = pf.source.fps;
@@ -3649,6 +3711,7 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
   // #12096: o horizontal também (`--seq youtube`), com a mesma recusa de prévia mais velha que o build.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
+  printCorteHook(ctx, plan.spec);
   const preview = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   if (!existsSync(preview)) throw new Error(`prévia ausente: ${preview} (rode preview)`);
   if (mtime(preview) < sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(f(ctx, "plan.json")))) throw new Error(`${preview} é mais velha que o build de ${plan.spec.name} no plan.json: rode preview de novo`);
@@ -3675,7 +3738,9 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   const pauses = longPauses(previewSilences, cutPoints(plan, pf.source.fps), speechS);
   console.error(`[video-montagem] ritmo de ${plan.spec.name}: ${pauses.length ? pauses.map((x) => `${clockTime(x.at)} (${x.durationS.toFixed(2)} s, ${x.atCut ? "no corte" : "dentro da fala"})`).join("; ") : "nenhuma pausa acima de 0,3 s"} (#12561)`);
   // Cada achado leva também o tempo no BRUTO (#11500): é lá que o corte se corrige.
-  const findings = reviewPreview({ words, audioEndS, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS: speechS, aliases: loadVocab().aliases }).map((x) => ({
+  // #12711: palavra esticada sobre fala (tomada repetida que o Whisper colapsou), sem depender do roteiro.
+  const reviewed = [...reviewPreview({ words, audioEndS, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS: speechS, aliases: loadVocab().aliases }), ...stretchedWordFindings(words, previewSilences)];
+  const findings = reviewed.map((x) => ({
     ...x,
     srcAt: exportTimeToRaw(x.at, plan, pf.source.fps),
   }));
@@ -3787,7 +3852,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   findings.push(...dedupeAudioFindings(clicks, detectFragments(sil)));
 
   if (withText && plan) {
-    findings.push(...checkText({ audioEndS: audioEndFromSilences(sil, probe.durationS), words: transcribeExport(ctx, path, key, true), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
+    findings.push(...checkText({ audioEndS: audioEndFromSilences(sil, probe.durationS), words: transcribeExport(ctx, path, key, true), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases, silences: sil }));
   }
 
   const table = finalReviewTable(findings);

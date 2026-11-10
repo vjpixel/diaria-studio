@@ -4011,7 +4011,8 @@ export function cutPoints(plan: SequencePlan, fps: number): number[] {
 
 // ── Autorrevisão da prévia ────────────────────────────────────────────────
 
-export type ReviewKind = "tomada-duplicada" | "silaba-vazada" | "fala-extra" | "fala-faltando" | "final-seco";
+/** `tomada-colapsada` (#12711): palavra esticada sobre som na transcrição do áudio montado (`stretchedWordFindings`). */
+export type ReviewKind = "tomada-duplicada" | "tomada-colapsada" | "silaba-vazada" | "fala-extra" | "fala-faltando" | "final-seco";
 
 export interface ReviewFinding {
   kind: ReviewKind;

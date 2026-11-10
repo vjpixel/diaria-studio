@@ -102,6 +102,39 @@ export function extraVerticalHook(file: Pick<BlocksFile, "blocks">, spec: Sequen
   return null;
 }
 
+/** O erro da publicação para o corte sem gancho (#11900); o `build`, a prévia e a revisão avisam com o mesmo texto (#12712). */
+export function missingHookProblem(corte: string): string {
+  return `corte "${corte}" sem gancho: informe "hook" na sequência ou um resumo_curto com texto nesta vertical`;
+}
+
+/** A 1ª fala do corte na ordem da sequência (texto do 1º item com texto que entra nela): a sugestão de gancho (#12712). */
+export function firstCorteSpeech(file: Pick<BlocksFile, "blocks">, spec: SequenceSpec): string | null {
+  for (const key of spec.order) {
+    for (const it of file.blocks[key] ?? []) {
+      if (!itemInTarget(it, spec)) continue;
+      const t = itemText(it);
+      if (t) return t;
+    }
+  }
+  return null;
+}
+
+/**
+ * O gancho do corte na montagem (#12712): `premissa` com o gancho que a
+ * publicação vai usar, ou `aviso` com o mesmo erro do
+ * `video-extra-verticals.ts` e a 1ª fala do corte como sugestão. `null` para
+ * sequência sem corte (a vertical da edição e o horizontal não têm gancho de
+ * publicação). Mesma regra de `extraVerticalHook`, sem cópia.
+ */
+export function corteHookLine(file: Pick<BlocksFile, "blocks">, spec: SequenceSpec): { level: "aviso" | "premissa"; text: string } | null {
+  if (typeof spec.corte !== "string") return null;
+  const hook = extraVerticalHook(file, spec);
+  if (hook) return { level: "premissa", text: `gancho da publicação do corte "${spec.corte}" (${hook.how === "hook" ? "hook da sequência" : `${hook.how} desta vertical; o "hook" da sequência sobrepõe`}): "${hook.text}" (#12712)` };
+  const first = firstCorteSpeech(file, spec);
+  const tip = first ? `; sugestão: a 1ª fala do corte, "hook": ${JSON.stringify(first)}` : "";
+  return { level: "aviso", text: `${missingHookProblem(spec.corte)}: a publicação (video-extra-verticals.ts) recusa o corte assim${tip} (#12712)` };
+}
+
 /**
  * Horário da extra no dia `date`: o seguinte ao da principal daquele dia em
  * `rotation_times` (ciclo). Desde o #12250 a principal sai em horário fixo
@@ -181,7 +214,7 @@ export function planExtraVerticals(input: {
     const title = titleRaw || null;
     if (!title) problems.push(`sequência do corte "${corte}" sem screenTitle: é o título da publicação (--title); informe na sequência do blocks.json`);
     const hook = extraVerticalHook(input.file, spec);
-    if (!hook) problems.push(`corte "${corte}" sem gancho: informe "hook" na sequência ou um resumo_curto com texto nesta vertical`);
+    if (!hook) problems.push(missingHookProblem(corte));
     else if (hook.how !== "hook") premises.push(`gancho do ${hook.how} desta vertical (o "hook" da sequência sobrepõe)`);
     const slug = extraVerticalSlug(corte, input.edition);
     const driveId = input.driveIds?.[corte]?.trim() || null;
