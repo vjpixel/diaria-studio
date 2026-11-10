@@ -2856,6 +2856,26 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7665",
   },
   {
+    name: "Diaria-Top-YouTube-Video-Measure",
+    description:
+      "mede o horizontal mais assistido do canal desde o inicio (YouTube Data API, so leitura) e grava " +
+      "data/youtube/top-video.json -- resolve o {{VIDEO_MAIS_ASSISTIDO}} do e-mail 2 do onboarding",
+    steps: [{ key: "measure", script: "scripts/measure-top-youtube-video.ts" }],
+    logPath: "youtube/.top-video-measure.log",
+    // Segunda 08:50 BRT — antes de Diaria-Onboarding-Welcome-Run (09:05), pra
+    // rodada da segunda já sair com a medição da semana. Semanal basta (#12542):
+    // a frase é "o mais assistido até agora", e a ordem muda devagar. Slot
+    // livre (vizinha mais próxima: a daily das 08:45).
+    // Sem guard: sem `data/editions` montado a medição não acha vídeo e NÃO
+    // grava (o registro anterior fica intacto); sem credencial do YouTube idem.
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado) — armar via
+    // `scripts/setup-systemd-timers.ts --task Diaria-Top-YouTube-Video-Measure`
+    // no `300` é ação POSTERIOR. Até lá o e-mail 2 sai com o último valor
+    // conhecido (`FALLBACK_TOP_VIDEO`), o mesmo texto de antes.
+    schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 8, minute: 50 },
+    issue: "#12542",
+  },
+  {
     name: "Diaria-Session-Registry-Gc",
     description:
       "GC de registros ENCERRADOS de data/sessions/ (arquivo real + backups de conflito do OneDrive) — " +
