@@ -3859,7 +3859,8 @@ export async function ensureBrutoLocal(ctx: Pick<Ctx, "stateDir" | "edition">, d
     log(`[aviso] bruto ${source.path} ausente e sem ${BRUTO_DRIVE_FILE}: não veio do Drive por este script, nada a baixar`);
     return;
   }
-  if (info.localPath !== toPosix(source.path)) {
+  // #12564: os dois lados normalizados: bruto.drive.json com `\` (gravado antes do toPosix, ou à mão) é o mesmo caminho.
+  if (toPosix(info.localPath) !== toPosix(source.path)) {
     throw new Error(`source.json aponta ${source.path}, mas ${BRUTO_DRIVE_FILE} registrou ${info.localPath} (o --cache-dir mudou?): rode transcribe de novo`);
   }
   const meta = await fetchFileMeta(d.deps, info.id);
@@ -3898,7 +3899,7 @@ export function localBrutoMissing(ctx: Pick<Ctx, "stateDir" | "edition">): strin
   }
   if (existsSync(source.path)) return null;
   const info = readBrutoDrive(ctx);
-  const origin = info && info.localPath === toPosix(source.path) ? ` (o cache do modo API de outra máquina; o bruto no Drive é ${info.name})` : "";
+  const origin = info && toPosix(info.localPath) === toPosix(source.path) ? ` (o cache do modo API de outra máquina; o bruto no Drive é ${info.name})` : "";
   return `bruto do source.json não existe nesta máquina: ${source.path}${origin}. Rode transcribe --force aqui (com o bruto em G:, ou --from-drive para baixá-lo pela API)`;
 }
 
