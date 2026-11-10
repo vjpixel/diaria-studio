@@ -380,6 +380,9 @@ import { buildMetricsData } from "./studio-metrics.ts";
 // ao vivo opcional da Brevo (dedup por campanha, nunca por assinante). Ver
 // studio-onboarding.ts.
 import { buildOnboardingFunnelData, refreshBrevoCampaignStates, listPendingBrevoCampaignIds } from "./studio-onboarding.ts";
+// #12583: resultado parcial do formulário (formulario.diar.ia.br) — leitura ao
+// vivo do Worker, só quando o editor pede. Ver studio-onboarding-form.ts.
+import { buildFormResultsView } from "./studio-onboarding-form.ts";
 import { watchStudioSource, type StudioSourceChange, type StudioSourceWatchHandle } from "./studio-source-watch.ts";
 // #5894: sendJson + readRequestBody extraídos pra http-utils.ts; handlers de
 // Caixas extraídos pra routes/boxes.ts — server.ts encolheu de 2389 → ~1700 linhas.
@@ -1431,6 +1434,19 @@ function handleApiOnboardingFunnel(rootDir: string, res: ServerResponse): void {
   }
 }
 
+/** `GET /api/onboarding/form-results` (#12583) — resultado parcial do
+ * formulário: lê AO VIVO as respostas do Worker (mesmo endpoint e token do
+ * executor) + a origem de cada uma no store local. Só leitura. Falha
+ * conhecida (endpoint/token ausente, Worker fora) volta 200 com
+ * `available: false` e o motivo, para a página mostrar. */
+async function handleApiOnboardingFormResults(rootDir: string, res: ServerResponse): Promise<void> {
+  try {
+    sendJson(res, 200, await buildFormResultsView(rootDir));
+  } catch (e) {
+    sendJson(res, 500, { error: (e as Error).message });
+  }
+}
+
 /** `POST /api/onboarding/funnel/refresh-brevo` (#7917) — botão "Atualizar
  * via Brevo": consulta ao vivo SÓ as campanhas `email3_campaign_id`
  * distintas ainda em `campaign_created` (dedup — nunca 1 GET por
@@ -1799,6 +1815,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // arquivo, não abaixo).
       if (urlPath === "/api/onboarding/funnel") {
         handleApiOnboardingFunnel(rootDir, res);
+        return;
+      }
+      // #12583: resultado parcial do formulário (leitura ao vivo do Worker).
+      if (urlPath === "/api/onboarding/form-results") {
+        void handleApiOnboardingFormResults(rootDir, res);
         return;
       }
       // #3924: seção "Caixas" — GET (PUT de save já tratado acima, antes do
