@@ -237,6 +237,15 @@ fix/draft. Depois do `updated`, o worktree local está atrás do remoto:
 `git pull --ff-only` dentro do próprio worktree antes de testar ou de
 qualquer novo commit.
 
+**Log de job de CI que falhou (#12733).** O `gh` 2.46 do `300` devolve zero
+linhas em `gh run view --log-failed` e em `gh run view --job J --log`, para
+qualquer job, com o log disponível no GitHub (run 42874610549, PR #12717: o
+vermelho parecia "sem log recuperável" e o log existia). Quando o `gh run
+view` vier vazio, ler pelo REST com `npx tsx scripts/gh-failed-job-logs.ts
+--run R [--attempt A] [--repo owner/name] [--tail 100]`: imprime o fim do log
+de cada job `failure`/`timed_out` da run, sem a limpeza pós-job do runner.
+Vermelho que um rerun apagou é da tentativa anterior: passe `--attempt`.
+
 **Diff grande (>500 adições) exige também `removal-declaration:` no corpo — ver
 item 29.** Incluir já na criação evita uma volta de CI; esquecer é recuperável
 (o gate relê o corpo pela API desde o #7140).
