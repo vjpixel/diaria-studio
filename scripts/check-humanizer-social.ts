@@ -61,6 +61,16 @@
  *             #12398: com o selo já batendo com o `03-social.md` (ou sem selo
  *             anterior), aceita as seções hoje sem prova no `.humanizer-run.json` —
  *             antes saía exit 0 sem aceitar nada.
+ *             #12511: nesse caso (sem mudança desde o selo) exige
+ *             `--unproven-ok-section`; sem ele, exit 5 listando as seções sem prova
+ *             e nada gravado.
+ *
+ *   --unproven-ok-section <seções>   (#12511, só com --unproven-ok) seções aceitas
+ *             sem prova, separadas por vírgula: nome completo (`main_d2`,
+ *             `main_d2-cards`, `comment_pixel_d1`, `post_pixel`) ou atalho sem
+ *             `main_` (`d2`, `d2-cards`, `um`). Obrigatório sem mudança desde o
+ *             selo; com mudança, restringe o aceite (seção sem prova não nomeada
+ *             sai exit 4). Seção inexistente no `03-social.md`: exit 1.
  *
  *   --bypass-reason <motivo>   (opcional, só válido com --write)
  *             Registra o motivo no sentinel quando --write é chamado com hash
@@ -97,6 +107,7 @@ import {
   planRunRecord,
   planUnprovenOkWithoutChanges,
   readRunRecord,
+  resolveSectionSelector,
   sealTracksCards,
   writeRunRecord,
   type AcceptedSectionReason,
@@ -167,9 +178,48 @@ export class UnprovenSectionsError extends Error {
   }
 }
 
+/**
+ * #12511: `--unproven-ok` sem `--unproven-ok-section` quando não há mudança desde o
+ * selo (primeiro `--write`, selo ilegível ou já batendo com o texto). Aceitar tudo
+ * nesse caso silenciava D1/D2/D3 de uma vez, inclusive a seção em que o
+ * humanizador simplesmente não rodou.
+ */
+export class UnprovenOkSectionRequiredError extends Error {
+  constructor(public readonly candidates: string[]) {
+    super(
+      `check-humanizer-social: --unproven-ok sem mudança desde o selo exige --unproven-ok-section nomeando as seções ` +
+        `que o editor pediu para manter sem humanizar (sem prova hoje: ${candidates.join(", ")}). ` +
+        "Seção em que o humanizador não rodou não se aceita: rodar o humanizador e a Clarice e registrar com " +
+        "--record-run (#12511). Nada foi gravado.",
+    );
+    this.name = "UnprovenOkSectionRequiredError";
+  }
+}
+
+/** #12511: `--unproven-ok-section` com nome que não casa com nenhuma seção do texto atual. */
+export class UnknownSectionSelectorError extends Error {
+  constructor(
+    public readonly unknown: string[],
+    public readonly available: string[],
+  ) {
+    super(
+      `check-humanizer-social: --unproven-ok-section com seção inexistente em 03-social.md: ${unknown.join(", ")} ` +
+        `(seções: ${available.join(", ")}). Nada foi gravado (#12511).`,
+    );
+    this.name = "UnknownSectionSelectorError";
+  }
+}
+
 export interface WriteSentinelOptions {
   /** Aceita seções sem prova; o motivo fica no selo. Ex.: autofix mecânico de fact-check. */
   unprovenOk?: string;
+  /**
+   * #12511: seções que o `unprovenOk` aceita (`main_d2` ou o atalho `d2`).
+   * Obrigatório quando não há mudança desde o selo; com mudança, restringe o
+   * aceite às seções nomeadas e as demais sem prova recusam (exit 4).
+   * Ausente com mudança: aceita as seções que mudaram, como antes.
+   */
+  unprovenOkSections?: string[];
 }
 
 /**
@@ -216,6 +266,16 @@ export function writeSentinelDetailed(
   mkdirSync(internalDir, { recursive: true });
   const sentinelPath = join(internalDir, SENTINEL_FILENAME);
 
+  // #12511: seletor de seção do --unproven-ok, validado contra o texto atual
+  // antes de qualquer gravação (nome errado não pode virar "aceitou nada").
+  let selected: Set<string> | undefined;
+  if (opts.unprovenOkSections !== undefined) {
+    const available = Object.keys(computeSectionHashes(readFileSync(socialPath, "utf8")));
+    const { sections, unknown } = resolveSectionSelector(opts.unprovenOkSections, available);
+    if (unknown.length > 0) throw new UnknownSectionSelectorError(unknown, available);
+    selected = new Set(sections);
+  }
+
   // Guard #2373: se sentinel anterior existe e hash diverge, exigir bypassReason
   // para evitar uso de --write como atalho que bypassa a humanização.
   let provenance: SectionProvenance[] | undefined;
@@ -246,6 +306,9 @@ export function writeSentinelDetailed(
         if (unproven.length > 0 && !opts.unprovenOk) {
           throw new UnprovenSectionsError(unproven, cls.changed);
         }
+        // #12511: com seletor, só as seções nomeadas saem aceitas; o resto recusa.
+        const notSelected = selected ? unproven.filter((s) => !selected.has(s)) : [];
+        if (notSelected.length > 0) throw new UnprovenSectionsError(notSelected, cls.changed);
       }
     }
   }
@@ -260,8 +323,15 @@ export function writeSentinelDetailed(
   // como "mudou" e o aceite acima não pega nenhuma seção — o `--unproven-ok` que a
   // invariante do Stage 2 sugere saía exit 0 sem efeito. Aqui ele aceita as seções
   // que estão hoje sem prova dos dois passos no registro.
+  // #12511: só as que o seletor nomeia. Sem seletor, recusa (antes aceitava TODAS,
+  // e o guard do #12331 caía justo na 1ª gravação do Stage 2).
   if (opts.unprovenOk && provenance === undefined) {
-    for (const s of planUnprovenOkWithoutChanges(socialMd, record, accepted)) {
+    const candidates = planUnprovenOkWithoutChanges(socialMd, record, accepted);
+    if (candidates.length > 0 && selected === undefined) {
+      throw new UnprovenOkSectionRequiredError(candidates.map((s) => s.section));
+    }
+    for (const s of candidates) {
+      if (!selected?.has(s.section)) continue;
       accepted[s.hash] = "unproven_ok";
       unproven.push(s.section);
     }
@@ -524,7 +594,7 @@ function main(): void {
   if (!editionDirArg) {
     console.error(
       "Uso: check-humanizer-social.ts [--write|--check|--record-run|--provenance] --edition-dir data/editions/AAMMDD/ " +
-        "[--bypass-reason <motivo>] [--unproven-ok <motivo>] [--step humanizador|clarice --pre <arq> --post <arq> [--sections a,b] [--note <motivo>]]",
+        "[--bypass-reason <motivo>] [--unproven-ok <motivo> [--unproven-ok-section d2,...]] [--step humanizador|clarice --pre <arq> --post <arq> [--sections a,b] [--note <motivo>]]",
     );
     process.exit(1);
   }
@@ -532,6 +602,13 @@ function main(): void {
   const editionDir = resolve(ROOT, editionDirArg);
   const bypassReason = values["bypass-reason"];
   const unprovenOk = values["unproven-ok"];
+  // #12511: seções aceitas pelo --unproven-ok (`main_d2` ou `d2`, vírgula separa).
+  const unprovenOkSectionsArg = values["unproven-ok-section"];
+  const unprovenOkSections = unprovenOkSectionsArg?.split(",").map((s) => s.trim()).filter(Boolean);
+  if (unprovenOkSectionsArg !== undefined && !unprovenOk) {
+    console.error("[check-humanizer-social] ERRO: --unproven-ok-section só vale junto com --unproven-ok \"<motivo>\" (#12511).");
+    process.exit(1);
+  }
 
   if (flags.has("record-run")) {
     const step = values["step"];
@@ -633,7 +710,7 @@ function main(): void {
 
   if (flags.has("write")) {
     try {
-      const { path, unproven } = writeSentinelDetailed(editionDir, bypassReason, { unprovenOk });
+      const { path, unproven } = writeSentinelDetailed(editionDir, bypassReason, { unprovenOk, unprovenOkSections });
       const out: Record<string, unknown> = { ok: true, sentinel_path: path };
       if (bypassReason) out["bypass_reason"] = bypassReason;
       if (unproven.length > 0) {
@@ -649,6 +726,17 @@ function main(): void {
         console.error(`[check-humanizer-social] PROVA AUSENTE — ${e.message}`);
         console.log(JSON.stringify({ ok: false, reason: "unproven_sections", unproven_sections: e.sections, provenance: e.provenance }));
         process.exit(4);
+      }
+      if (e instanceof UnprovenOkSectionRequiredError) {
+        // #12511: exit 5 — --unproven-ok sem mudança desde o selo pede o seletor.
+        console.error(`[check-humanizer-social] SELETOR AUSENTE — ${e.message}`);
+        console.log(JSON.stringify({ ok: false, reason: "unproven_ok_section_required", candidates: e.candidates }));
+        process.exit(5);
+      }
+      if (e instanceof UnknownSectionSelectorError) {
+        console.error(`[check-humanizer-social] SELETOR INVÁLIDO — ${e.message}`);
+        console.log(JSON.stringify({ ok: false, reason: "unknown_section", unknown: e.unknown, available: e.available }));
+        process.exit(1);
       }
       const msg = (e as Error).message;
       if (msg.includes("hash diverge") || msg.includes("--bypass-reason")) {

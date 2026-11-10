@@ -479,11 +479,13 @@ function checkSocialHumanizerProvenance(editionDir: string): InvariantViolation[
   const seal = readSealView(editionDir, socialMd);
   const hashes = computeSectionHashes(socialMd);
   // #12398: com o selo batendo com o texto, o --write não precisa de
-  // --bypass-reason, e o --unproven-ok sozinho já aceita as seções sem prova
-  // (antes a dica saía exit 0 sem efeito). Com o selo divergente, os dois.
-  const keepCmd = seal.fresh
-    ? `\`check-humanizer-social.ts --write --unproven-ok "<motivo>" --edition-dir ${editionDir}/\``
-    : `\`check-humanizer-social.ts --write --bypass-reason "<motivo>" --unproven-ok "<motivo>" --edition-dir ${editionDir}/\``;
+  // --bypass-reason (antes a dica saía exit 0 sem efeito). Com o selo divergente, os dois.
+  // #12511: a dica nomeia a seção da linha (--unproven-ok-section), nunca um
+  // --unproven-ok solto que aceitaria D1/D2/D3 de uma vez.
+  const keepCmd = (section: string) =>
+    seal.fresh
+      ? `\`check-humanizer-social.ts --write --unproven-ok "<motivo>" --unproven-ok-section ${section} --edition-dir ${editionDir}/\``
+      : `\`check-humanizer-social.ts --write --bypass-reason "<motivo>" --unproven-ok "<motivo>" --unproven-ok-section ${section} --edition-dir ${editionDir}/\``;
   return describeProvenance(socialMd, readRunRecord(editionDir))
     .filter((row) => !row.humanizador || !row.clarice)
     // #12361: seção aceita pelo selo atual (--unproven-ok do editor no gate §2d,
@@ -497,7 +499,7 @@ function checkSocialHumanizerProvenance(editionDir: string): InvariantViolation[
         message: `${row.section}: humanizador ${row.humanizador ? "sim" : "NÃO"} · Clarice ${row.clarice ? "sim" : "NÃO"}. ` +
           "Registre os passos executados com check-humanizer-social.ts --record-run --step humanizador|clarice " +
           "usando os snapshots pré/pós do arquivo inteiro (Stage 2 §2c); o selo --write sozinho não prova execução. " +
-          `Se o editor editou esta seção no gate e quer manter o texto dele, rode ${keepCmd} (#12361, #12398).` +
+          `Se o editor editou esta seção no gate e quer manter o texto dele, rode ${keepCmd(row.section)} (#12361, #12398, #12511).` +
           (legacyCards
             ? " Aviso, não erro: o selo desta edição é anterior à prova dos cards (#12383)."
             : ""),

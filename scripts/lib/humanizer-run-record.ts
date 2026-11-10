@@ -383,6 +383,11 @@ export function planAcceptedSectionHashes(
  * isto o `--unproven-ok` sugerido pela invariante `social-humanizer-provenance-recorded`
  * saía exit 0 sem gravar aceite nenhum (`planAcceptedSectionHashes` só olha o
  * que mudou desde o selo).
+ *
+ * #12511: devolve os CANDIDATOS; o `--write` só aceita os que o seletor
+ * `--unproven-ok-section` nomeia. Sem seletor, nada é aceito (o caller recusa):
+ * sem mudança desde o selo não há como distinguir "o editor manteve o texto
+ * dele" de "o humanizador nunca rodou nesta seção".
  */
 export function planUnprovenOkWithoutChanges(
   currentMd: string,
@@ -396,6 +401,29 @@ export function planUnprovenOkWithoutChanges(
       return !(p.humanizador && p.clarice);
     })
     .map(([section, hash]) => ({ section, hash }));
+}
+
+/**
+ * #12511: resolve o seletor de `--unproven-ok-section` contra as seções do texto
+ * atual. Aceita o nome completo (`main_d2`, `main_d2-cards`, `comment_pixel_d1`,
+ * `post_pixel`) e o atalho sem o prefixo `main_` (`d2`, `d2-cards`, `um`).
+ * `unknown` = nome que não casa com nenhuma seção do `03-social.md` atual.
+ */
+export function resolveSectionSelector(
+  selector: string[],
+  available: string[],
+): { sections: string[]; unknown: string[] } {
+  const avail = new Set(available);
+  const sections: string[] = [];
+  const unknown: string[] = [];
+  for (const raw of selector) {
+    const name = raw.trim();
+    if (!name) continue;
+    const resolved = avail.has(name) ? name : avail.has(`main_${name}`) ? `main_${name}` : undefined;
+    if (resolved === undefined) unknown.push(name);
+    else if (!sections.includes(resolved)) sections.push(resolved);
+  }
+  return { sections, unknown };
 }
 
 /**
