@@ -149,6 +149,7 @@ import {
   type PilotKitDeps,
 } from "./lib/onboarding-kit-pilot.ts";
 import type { OnboardingEntry } from "./lib/onboarding-store.ts";
+import { readTopVideoRecord, TOP_VIDEO_RECORD_RELPATH } from "./lib/onboarding-top-video.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -207,7 +208,10 @@ function parseArgs(argv: string[]): CliArgs {
 function loadSnippet(dirAbs: string, numero: 1 | 2 | 3): ReturnType<typeof parseOnboardingSnippet> {
   const p = resolve(dirAbs, `onboarding-${numero}.md`);
   if (!existsSync(p)) return null;
-  return parseOnboardingSnippet(readFileSync(p, "utf8"), numero);
+  // #12542: vídeo mais assistido medido pela task semanal (fail-soft: sem
+  // registro, o parse usa o último valor conhecido).
+  const topVideo = readTopVideoRecord(resolve(ROOT, TOP_VIDEO_RECORD_RELPATH));
+  return parseOnboardingSnippet(readFileSync(p, "utf8"), numero, topVideo);
 }
 
 const KIND_TO_SNIPPET_NUM: Record<OnboardingKitLotKind, 1 | 2 | 3> = { email1: 1, email2: 2, email3: 3 };

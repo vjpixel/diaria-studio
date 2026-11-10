@@ -247,7 +247,7 @@ describe("#12123 prompt do retrato", () => {
 
 describe("#12123 skill documenta o layout right e o --bg-crop", () => {
   it("Passo A2 cita --layout right, --bg-crop e o --layout no --portrait-prompts", () => {
-    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
     const a2 = skill.slice(skill.indexOf("### Passo A2"), skill.indexOf("### Passo A3"));
     assert.match(a2, /--layout right/);
     assert.match(a2, /--bg-crop/);

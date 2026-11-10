@@ -28,7 +28,7 @@ const FILES = [
   "scripts/publish-shorts.ts",
   "scripts/shorts-instagram-timer.ts",
   "platform.config.json",
-  ".claude/skills/diaria-publica-video/SKILL.md",
+  ".claude/skills/diaria-publica/SKILL.md",
 ];
 
 // Frases do texto antigo (#11477) sobre X/Threads sem R2.
@@ -50,7 +50,7 @@ for (const rel of FILES) {
 }
 
 test("#11498: a SKILL cita a delegação ao timer do Threads no 300 (#11410)", () => {
-  const skill = readFileSync(join(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+  const skill = readFileSync(join(ROOT, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
   const line = skill.split("\n").find((l) => l.startsWith("| `threads_profile`"));
   assert.ok(line, "linha threads_profile da tabela");
   assert.match(line, /threads_profile_via_timer/);

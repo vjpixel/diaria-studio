@@ -6,7 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -33,7 +33,7 @@ describe("assessVideoBeforePublish (#10943 item 2, gate desde #12588)", () => {
       assert.equal(r.blocking, true);
       assert.equal(r.videoUrl, null);
       assert.match(r.warning ?? "", /não publica sem o link do vídeo/);
-      assert.match(r.warning ?? "", /\/diaria-publica-video 261024/);
+      assert.match(r.warning ?? "", /\/diaria-publica 261024/);
       assert.match(r.warning ?? "", /set-d1-no-video\.ts 261024/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -207,7 +207,7 @@ describe("assessVideoBeforePublish (#10943 item 2, gate desde #12588)", () => {
 describe("prosa do fluxo novo (#10943 itens 1, 2 e 4)", () => {
   const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
   // #12591: montagem → /diaria-publica-video, que roda horizontal → Etapas 5 e 6 → vertical.
-  const sequence = /\/diaria-video-montagem[\s\S]{0,400}\/diaria-publica-video[\s\S]{0,300}Etapas 5 e 6/;
+  const sequence = /\/diaria-video-montagem[\s\S]{0,400}\/diaria-publica(?![-\w])[\s\S]{0,300}Etapas 5 e 6/;
 
   it("mensagem de fim do Stage 4 cita a sequência nova, a exigência do link e diz que nada encadeia", () => {
     const stage4 = read(".claude/agents/orchestrator-stage-4.md");
@@ -232,11 +232,11 @@ describe("prosa do fluxo novo (#10943 itens 1, 2 e 4)", () => {
     assert.match(s5, /check-video-before-publish\.ts/);
     assert.match(s5, /exit 3[\s\S]{0,200}parar antes de qualquer dispatch/);
     assert.doesNotMatch(s5, /Aviso de vídeo do D1 \(#10943, aviso, não gate\)/);
-    assert.match(read(".claude/skills/diaria-publica-video/SKILL.md"), /pipeline-sentinel\.ts exists --edition \{AAMMDD\} --step 4/);
+    assert.match(read(".claude/skills/diaria-publica/SKILL.md"), /pipeline-sentinel\.ts exists --edition \{AAMMDD\} --step 4/);
   });
 
   it("#12591: /diaria-publica-video roda horizontal, depois o /diaria-5-publicacao inteiro, depois o vertical", () => {
-    const skill = read(".claude/skills/diaria-publica-video/SKILL.md");
+    const skill = read(".claude/skills/diaria-publica/SKILL.md");
     const start = skill.indexOf("## Fluxo da sessão");
     assert.ok(start > 0, "seção do fluxo da sessão");
     const flow = skill.slice(start, skill.indexOf("\n## ", start + 5));
@@ -255,14 +255,49 @@ describe("prosa do fluxo novo (#10943 itens 1, 2 e 4)", () => {
     for (const [alias, part] of [["diaria-youtube", "--so horizontal"], ["diaria-shorts", "--so vertical"]] as const) {
       const skill = read(`.claude/skills/${alias}/SKILL.md`);
       assert.match(skill, new RegExp(`^---\\nname: ${alias}\\n`));
-      assert.ok(skill.includes(".claude/skills/diaria-publica-video/SKILL.md"), `${alias} aponta para a skill nova`);
+      assert.ok(skill.includes(".claude/skills/diaria-publica/SKILL.md"), `${alias} aponta para a skill nova`);
       assert.ok(skill.includes(part), `${alias} repassa ${part}`);
       assert.ok(skill.split("\n").length < 30, `${alias} é só um alias (${skill.split("\n").length} linhas)`);
       assert.doesNotMatch(skill, /publish-(youtube|shorts)\.ts/, `${alias} não repete os comandos do fluxo`);
     }
-    const merged = read(".claude/skills/diaria-publica-video/SKILL.md");
-    assert.match(merged, /^---\nname: diaria-publica-video\n/);
+    const merged = read(".claude/skills/diaria-publica/SKILL.md");
+    assert.match(merged, /^---\nname: diaria-publica\n/);
     assert.match(merged, /--so horizontal\|vertical/);
     assert.ok(merged.indexOf("## Parte A") < merged.indexOf("## Parte B"), "horizontal antes do vertical (o Short aponta pro horizontal)");
+  });
+
+  it("#12620: /diaria-publica-video virou alias fino da /diaria-publica, que repassa todos os argumentos", () => {
+    const alias = read(".claude/skills/diaria-publica-video/SKILL.md");
+    assert.match(alias, /^---\nname: diaria-publica-video\n/);
+    assert.ok(alias.includes(".claude/skills/diaria-publica/SKILL.md"), "aponta para a skill renomeada");
+    for (const flag of ["--so", "--sem-publicacao", "--skip", "--video-url"]) {
+      assert.ok(alias.includes(flag), `repassa ${flag}`);
+    }
+    assert.ok(alias.split("\n").length < 30, `é só um alias (${alias.split("\n").length} linhas)`);
+    assert.doesNotMatch(alias, /publish-(youtube|shorts)\.ts/, "não repete os comandos do fluxo");
+    // O roteiro da task do Neo fica nesta pasta (o prompt da task o lê por este caminho).
+    assert.ok(existsSync(join(ROOT, ".claude/skills/diaria-publica-video/short-related-task.md")));
+    // A skill renomeada nomeia o alias e se diferencia da Etapa 5 isolada.
+    const merged = read(".claude/skills/diaria-publica/SKILL.md");
+    const description = merged.slice(0, merged.indexOf("\n---", 4));
+    // A descrição antiga tinha 1023 caracteres: o limite de 1024 da spec de skills.
+    const descLine = /^---\n[\s\S]*?\ndescription: (.*)\n/.exec(merged)?.[1] ?? "";
+    assert.ok(descLine.length > 0 && descLine.length <= 1024, `descrição com ${descLine.length} caracteres (limite 1024)`);
+    assert.match(description, /`\/diaria-publica-video`/);
+    assert.match(description, /\/diaria-5-publicacao`, que é a Etapa 5 isolada/);
+    assert.match(read(".claude/skills/diaria-5-publicacao/SKILL.md"), /`\/diaria-publica` é a entrada do dia normal/);
+  });
+
+  it("#12620: as mensagens que indicam o próximo comando usam o nome novo", () => {
+    for (const p of [
+      ".claude/agents/orchestrator-stage-4.md",
+      ".claude/skills/diaria-edicao/SKILL.md",
+      ".claude/skills/diaria-4-revisao/SKILL.md",
+      ".claude/skills/diaria-video-montagem/SKILL.md",
+      "CLAUDE.md",
+      "README.md",
+    ]) {
+      assert.doesNotMatch(read(p), /\/diaria-publica-video \{AAMMDD\}|`\/diaria-publica-video AAMMDD`/, `${p} ainda manda rodar o nome antigo`);
+    }
   });
 });

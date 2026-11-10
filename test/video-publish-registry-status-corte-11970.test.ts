@@ -157,7 +157,7 @@ describe("#11970: releitura do registro do corte", () => {
     });
   });
   it("a skill cita a forma do comando para o corte", () => {
-    const skill = readFileSync(join(ROOT, ".claude", "skills", "diaria-publica-video", "SKILL.md"), "utf8");
+    const skill = readFileSync(join(ROOT, ".claude", "skills", "diaria-publica", "SKILL.md"), "utf8");
     assert.match(skill, /video-publish-registry-status\.ts --corte \{slug\} --since/);
   });
 });

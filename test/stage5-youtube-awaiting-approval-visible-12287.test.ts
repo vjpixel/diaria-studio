@@ -35,7 +35,7 @@ describe("#12287 — hold do YouTube no Stage 5 fica visível", () => {
     const read = pending("2026-11-05T21:00:00Z");
     assert.equal(pendingApprovalStaleNote(read, AAMMDD, now), null);
     const text = describePendingApproval(read, AAMMDD, now);
-    assert.match(text, /\/diaria-publica-video 261106/);
+    assert.match(text, /\/diaria-publica 261106/);
     assert.match(text, /set-d1-no-video\.ts 261106/);
     assert.doesNotMatch(text, /--ignore-pending-approval/, "flag removida no #12588");
     assert.doesNotMatch(text, /ATENÇÃO/);
