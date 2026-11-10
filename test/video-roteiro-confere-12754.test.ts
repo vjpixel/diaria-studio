@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   conferirGravacao,
   numerosDaFala,
+  numerosPorExtenso,
   renderConferencia,
   validarRoteiroFalas,
   type RoteiroFalas,
@@ -88,6 +89,40 @@ describe("conferirGravacao (#12754)", () => {
       "foram quase dois mil projetos afetados no mundo",
     );
     assert.equal(porId(r, "H9").veredito, "ok");
+  });
+
+  it("número composto por extenso casa (ano, dezena com 'e', decimal) — review #12759", () => {
+    const casos: Array<[string, string]> = [
+      ["Em 2026 a empresa mudou a política de senhas.", "em dois mil e vinte e seis a empresa mudou a política de senhas"],
+      ["A falha atingiu 37% dos projetos analisados.", "a falha atingiu trinta e sete por cento dos projetos analisados"],
+      ["O ataque custou 1,5 milhão de dólares à empresa.", "o ataque custou um e meio milhão de dólares à empresa"],
+      ["O ataque custou 1,5 milhão de dólares à empresa.", "o ataque custou um vírgula cinco milhão de dólares à empresa"],
+      ["Foram 120 empresas afetadas pela falha.", "foram cento e vinte empresas afetadas pela falha"],
+    ];
+    for (const [texto, trans] of casos) {
+      const f = porId(conferirGravacao({ falas: [{ id: "H9", texto, videos: ["horizontal"] }] }, trans), "H9");
+      assert.deepEqual(f.numerosAusentes, [], `${texto} / ${trans}`);
+      assert.equal(f.veredito, "ok", `${texto} / ${trans}`);
+    }
+  });
+
+  it("número composto diferente continua regravar", () => {
+    const f = porId(
+      conferirGravacao(
+        { falas: [{ id: "H9", texto: "A falha atingiu 37% dos projetos analisados.", videos: ["horizontal"] }] },
+        "a falha atingiu trinta e oito por cento dos projetos analisados",
+      ),
+      "H9",
+    );
+    assert.equal(f.veredito, "regravar");
+    assert.deepEqual(f.numerosAusentes, ["37"]);
+  });
+
+  it("numerosPorExtenso monta compostos", () => {
+    assert.deepEqual(numerosPorExtenso(["dois", "mil", "e", "vinte", "e", "seis"]), ["2026"]);
+    assert.deepEqual(numerosPorExtenso(["trinta", "e", "sete", "por", "cento"]), ["37", "100"]);
+    assert.deepEqual(numerosPorExtenso(["um", "e", "meio"]), ["15"]);
+    assert.deepEqual(numerosPorExtenso(["2", "mil"]), ["2000"]);
   });
 
   it("outras palavras com boa parte do conteúdo: diferente-mas-cabe, a confirmar", () => {

@@ -49,7 +49,7 @@ export interface RoteiroFalas {
 
 /**
  * - `ok`: dita como no roteiro.
- * - `diferente-mas-cabe`: outras palavras; o modelo confirma que o sentido e o fato ficaram.
+ * - `diferente-mas-cabe`: reformulação; o modelo confirma que o sentido e o fato ficaram (muda o texto da página).
  * - `regravar`: número do roteiro ausente ou veículo citado no trecho.
  * - `faltou`: nenhum trecho da transcrição se parece com a fala.
  */
@@ -148,8 +148,75 @@ export function numerosDaFala(texto: string): string[] {
   return [...new Set(out)];
 }
 
-function numeroPresente(num: string, janela: Set<string>): boolean {
-  if (janela.has(num)) return true;
+/** Valor de cada palavra de número por extenso (compostos montados em `numerosPorExtenso`). */
+const VALOR_EXTENSO: Record<string, number> = { cento: 100 };
+for (const [n, ws] of Object.entries(EXTENSO)) for (const w of ws) VALOR_EXTENSO[w] = Number(n);
+const MULTIPLICADOR: Record<string, number> = {
+  mil: 1000,
+  milhao: 1_000_000, milhoes: 1_000_000,
+  bilhao: 1_000_000_000, bilhoes: 1_000_000_000,
+};
+const CONECTOR_NUMERO = new Set(["e", "virgula", "meio", "meia"]);
+
+function ehPalavraDeNumero(norm: string): boolean {
+  return norm in VALOR_EXTENSO || norm in MULTIPLICADOR || /^\d+$/.test(norm);
+}
+
+/**
+ * Números compostos ditos por extenso na sequência de tokens, já na forma de
+ * `numerosDaFala` (só dígitos): "dois mil e vinte e seis" → "2026", "trinta e
+ * sete" → "37", "um e meio" / "um vírgula cinco" → "15" (o "1,5" do roteiro).
+ * Também aceita dígito com multiplicador ("2 mil" → "2000").
+ */
+export function numerosPorExtenso(normTokens: string[]): string[] {
+  const out = new Set<string>();
+  let i = 0;
+  while (i < normTokens.length) {
+    if (!(normTokens[i] in VALOR_EXTENSO) && !(normTokens[i] in MULTIPLICADOR) && !/^\d+$/.test(normTokens[i])) {
+      i++;
+      continue;
+    }
+    let total = 0;
+    let atual = 0;
+    let decimal = "";
+    let k = i;
+    let ultimoFoiNumero = false;
+    while (k < normTokens.length) {
+      const w = normTokens[k];
+      if (w in MULTIPLICADOR) {
+        total += (atual || 1) * MULTIPLICADOR[w];
+        atual = 0;
+        ultimoFoiNumero = true;
+      } else if (w in VALOR_EXTENSO || /^\d+$/.test(w)) {
+        // Dois valores colados sem "e" ("vinte seis") começam outro número, exceto
+        // depois de multiplicador ("dois mil vinte e seis" continua o mesmo).
+        if (ultimoFoiNumero && !(normTokens[k - 1] in MULTIPLICADOR)) break;
+        atual += w in VALOR_EXTENSO ? VALOR_EXTENSO[w] : Number(w);
+        ultimoFoiNumero = true;
+      } else if (w === "e" && ultimoFoiNumero && (normTokens[k + 1] === "meio" || normTokens[k + 1] === "meia")) {
+        decimal = "5";
+        k += 2;
+        break;
+      } else if (w === "e" && ultimoFoiNumero && k + 1 < normTokens.length && ehPalavraDeNumero(normTokens[k + 1])) {
+        ultimoFoiNumero = false;
+      } else if (w === "virgula" && ultimoFoiNumero && k + 1 < normTokens.length) {
+        const frac = normTokens[k + 1];
+        if (/^\d+$/.test(frac)) decimal = frac;
+        else if (frac in VALOR_EXTENSO && VALOR_EXTENSO[frac] < 100) decimal = String(VALOR_EXTENSO[frac]);
+        if (decimal) k += 2;
+        break;
+      } else break;
+      k++;
+    }
+    const inteiro = total + atual;
+    out.add(`${inteiro}${decimal}`);
+    i = Math.max(k, i + 1);
+  }
+  return [...out];
+}
+
+function numeroPresente(num: string, janela: Set<string>, compostos: Set<string> = new Set()): boolean {
+  if (janela.has(num) || compostos.has(num)) return true;
   const ext = EXTENSO[num];
   if (ext && ext.some((w) => janela.has(w))) return true;
   // "2000" dito "dois mil": aceitar quando aparecem "mil" e a primeira parte por extenso.
@@ -239,8 +306,17 @@ export function conferirGravacao(roteiro: RoteiroFalas, transcricao: string): Re
     }
     for (let k = j.inicio; k < j.fim; k++) coberto[k] = true;
     const janelaNorm = transNorm.slice(j.inicio, j.fim);
-    const janelaSet = new Set(janelaNorm);
-    const numerosAusentes = numerosDaFala(f.texto).filter((n) => !numeroPresente(n, janelaSet));
+    // A janela é aparada nas palavras da fala, então um número por extenso na
+    // ponta ("caiu trinta e sete por cento") fica de fora: estender a leitura de
+    // números pelas palavras de número/conectores vizinhas.
+    let ni = j.inicio;
+    let nf = j.fim;
+    while (ni > 0 && (ehPalavraDeNumero(transNorm[ni - 1]) || CONECTOR_NUMERO.has(transNorm[ni - 1]))) ni--;
+    while (nf < transNorm.length && (ehPalavraDeNumero(transNorm[nf]) || CONECTOR_NUMERO.has(transNorm[nf]))) nf++;
+    const numerosJanela = transNorm.slice(ni, nf);
+    const janelaNumSet = new Set(numerosJanela);
+    const compostos = new Set(numerosPorExtenso(numerosJanela));
+    const numerosAusentes = numerosDaFala(f.texto).filter((n) => !numeroPresente(n, janelaNumSet, compostos));
     const veiculosCitados = veiculos.filter((v) => contemFrase(janelaNorm, v));
     const motivos: string[] = [];
     let veredito: VereditoFala;

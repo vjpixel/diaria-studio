@@ -110,13 +110,13 @@ Depois de gravar, o editor entrega na mesma sessão a transcrição da gravaçã
 1. Gravar as falas da versão atual em `_internal/roteiro-falas.json` (`{ "edicao", "veiculos": [veículos da fonte do D1], "falas": [{ "id": "H1", "texto", "videos": ["horizontal", "vertical1"], "gravarAParte": false }] }`), uma entrada por fala numerada mais as gravadas à parte, e a transcrição em `_internal/gravacao-transcricao.txt` (tomada nova do mesmo dia: `gravacao-transcricao-2.txt`, e assim por diante).
 2. Rodar `npx tsx scripts/video-roteiro-confere.ts --falas {…}/roteiro-falas.json --transcricao {…}/gravacao-transcricao.txt`. É a primeira passada, determinística: casa cada fala com o trecho mais parecido da transcrição por conteúdo (a ordem da gravação pode não ser a do roteiro), aponta número do roteiro que sumiu, veículo dito em voz alta e trechos que nenhuma fala explica. Todo veredito diferente de `ok` vem marcado para confirmar.
 3. Confirmar lendo o trecho de cada fala e dar o veredito final:
-   - **ok**: dita como no roteiro, ou com outras palavras e o mesmo sentido;
-   - **diferente-mas-cabe**: outras palavras, mesmo fato e mesmo sentido, mas a montagem deve partir do que foi dito; citar a frase gravada;
+   - **ok**: as palavras do roteiro; a diferença, se houver, é só de ditado, conectivo ou ordem miúda, e o texto da página não muda;
+   - **diferente-mas-cabe**: reformulação, com outras palavras, que mantém o mesmo fato e o mesmo sentido; muda o texto da página, porque a montagem parte do que foi dito; citar a frase gravada;
    - **regravar**: mudou um fato, um número ou um nome; quebrou uma regra da fala (citou o veículo, CTA falado fora da exceção do vertical 1); ou deixou de funcionar sozinha num vertical que a reaproveita;
    - **faltou**: não aparece na transcrição.
 4. Cuidados ao confirmar:
    - O ditado distorce nomes de produto, siglas e nomes de arquivo. Diferença que é claramente erro de transcrição não conta como desvio. Na dúvida entre erro de ditado e fala errada, perguntar ao editor em vez de mandar regravar.
-   - Número ditado por extenso conta como o mesmo número; o script já aceita os casos simples ("quinhentos", "dois mil"). Número que o script deu como ausente e que está lá com outra grafia é `ok`.
+   - Número ditado por extenso conta como o mesmo número; o script já aceita os simples e os compostos ("quinhentos", "dois mil", "dois mil e vinte e seis", "trinta e sete", "um e meio"). Número que o script deu como ausente e que está lá com outra grafia é `ok`.
    - Improviso bom (frase nova que melhora a fala, nos trechos sem fala correspondente) não é erro: apontar, conferir o fato contra a fonte se houver um, e atualizar a fala na página para a montagem partir do que foi dito (Passo 6, mesmo link). Fato que não está na fonte: sinalizar para checagem, sem reprovar sozinho.
    - Trecho repetido costuma ser outra tomada da mesma fala; não é improviso.
 5. Responder com um veredito por fala, na ordem do roteiro, e no fim a lista curta do que gravar de novo: o id, o texto da fala e os vídeos afetados (horizontal, vertical 1, vertical 2). Se nada faltar nem precisar regravar, dizer que está pronto para o `/diaria-video-montagem {AAMMDD}`.
