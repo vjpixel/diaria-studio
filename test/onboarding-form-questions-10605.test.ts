@@ -159,8 +159,8 @@ describe("#10605 v3: perguntas do formulário (aprovadas em 09/11/2026)", () => 
     }
   });
 
-  it("só gasto mensal, relato e conversa são opcionais", () => {
-    assert.deepEqual(FORM_QUESTIONS.filter((q) => !q.required).map((q) => q.id), ["relato_falha", "gasto_mensal", "conversa"]);
+  it("só relato e conversa são opcionais (gasto mensal virou obrigatório quando aparece, #12587)", () => {
+    assert.deepEqual(FORM_QUESTIONS.filter((q) => !q.required).map((q) => q.id), ["relato_falha", "conversa"]);
   });
 
   it("saíram nível, seções, inglês, preço e o 'mais alguma coisa' (lidos como legado)", () => {
@@ -294,15 +294,18 @@ describe("#10605 v3: validação no servidor", () => {
     assert.equal(parse({ ...dois, produto_escolha: "Curso online gravado, no meu ritmo" }).ok, false, "formato não marcado recusa");
   });
 
-  it("gasto mensal: opcional para quem paga do bolso, descartado para os demais", () => {
+  it("gasto mensal: obrigatório para quem paga do bolso (#12587), descartado para os demais", () => {
     for (const quem of FORM_PAGA_DO_BOLSO) {
-      assert.ok(parse({ quem_paga: quem }).ok, "opcional");
+      const sem = parse({ quem_paga: quem });
+      assert.ok(!sem.ok && sem.questionId === "gasto_mensal", "do bolso sem gasto mensal: recusado");
+      assert.ok(!sem.ok && /resposta obrigatória ausente/.test(sem.error));
       const r = parse({ quem_paga: quem, gasto_mensal: "Até R$ 50" });
       assert.ok(r.ok && r.submission.answers.gasto_mensal === "Até R$ 50");
       assert.equal(parse({ quem_paga: quem, gasto_mensal: "R$ 1 milhão" }).ok, false);
     }
     const empresa = parse({ quem_paga: "A empresa ou instituição onde trabalho ou estudo", gasto_mensal: "Até R$ 50" });
     assert.ok(empresa.ok && !("gasto_mensal" in empresa.submission.answers));
+    assert.ok(parse({ quem_paga: "Ninguém: só uso versões gratuitas" }).ok, "sem a pergunta visível, não exige");
   });
 
   it("conversa: caixa única opcional", () => {
@@ -390,7 +393,8 @@ describe("#10605 v3: HTML do formulário", () => {
   it("numeração 1..12 só nas perguntas principais; obrigatória sem marca, opcional com 'opcional'", () => {
     const nums = [...html.matchAll(/<span class="n">(\d+)<\/span>/g)].map((m) => Number(m[1]));
     assert.deepEqual(nums, Array.from({ length: 12 }, (_, i) => i + 1));
-    assert.equal((html.match(/<span class="req">opcional<\/span>/g) ?? []).length, 3);
+    assert.equal((html.match(/<span class="req">opcional<\/span>/g) ?? []).length, 2, "relato e conversa (#12587: gasto mensal deixou de ser opcional)");
+    assert.ok(html.includes(`<legend>${escapeHtml(choice("gasto_mensal").label)}</legend>`), "gasto mensal sem 'opcional'");
     assert.ok(html.includes(`<legend><span class="n">12</span>${escapeHtml(choice("conversa").label)} <span class="req">opcional</span></legend>`));
     assert.ok(html.includes(`<legend>${escapeHtml(choice("produto_escolha").label)}</legend>`), "subpergunta sem número");
   });
