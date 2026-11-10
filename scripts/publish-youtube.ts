@@ -30,8 +30,8 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  * imprime o request de `videos.insert` + o passo de `thumbnails.set` como
  * JSON — SEM chamar a API. A única escrita é o marcador
  * `_internal/05-youtube-pending-approval.json` (#12122): o plano está com o
- * editor à espera do "pode publicar", e o `stage5-youtube.ts` não sobe o vídeo
- * enquanto ele existir (o `--upload` e o `link-video-d1.ts --save` o apagam).
+ * editor à espera do "pode publicar" (informativo desde o #12588, que tirou o
+ * upload da Etapa 5; o `--upload` e o `link-video-d1.ts --save` o apagam).
  * Vídeo já registrado ou link já colado não grava. Sem `04-youtube-thumb.jpg`, o
  * JSON traz `cover_prerequisites` (ffmpeg, codex, Georgia, rembg desta
  * máquina, a sonda de `check-video-env.ts`, #11532): o que falta para gerar a
@@ -1130,10 +1130,11 @@ function loadPodcastPlaylistIdFromConfig(): { id: string | null; warning: string
 
 /**
  * #12122: depois do `--dry-run`, grava o marcador de "à espera do pode publicar"
- * que segura o upload automático do `stage5-youtube.ts`. Não grava quando o
+ * (informativo desde o #12588: a Etapa 5 não sobe mais vídeo e só cita o
+ * marcador quando falta o link). Não grava quando o
  * vídeo desta edição já existe no canal (registro `done`) ou o link já foi
  * colado (`05-video-url.txt`): aí não há confirmação pendente. Registro
- * ilegível ou em estado incerto grava (o erro seguro é segurar o Stage 5).
+ * ilegível ou em estado incerto grava.
  * Nunca lança: o dry-run não falha por causa do marcador.
  */
 export function markPendingApprovalAfterDryRun(dir: string, aammdd: string, now: Date, log: (line: string) => void): boolean {
@@ -1147,10 +1148,10 @@ export function markPendingApprovalAfterDryRun(dir: string, aammdd: string, now:
     }
     if (done) return false;
     const path = writePendingApproval(dir, aammdd, now);
-    log(`[premissa] ${path} gravado: o stage5-youtube.ts não sobe o horizontal até o --upload confirmado (ou o link colado) apagá-lo (#12122)`);
+    log(`[premissa] ${path} gravado: plano do horizontal à espera do "pode publicar" (#12122)`);
     return true;
   } catch (e) {
-    log(`[aviso] marcador de confirmação pendente não gravado (${(e as Error).message}) — com a Etapa 5 rodando em paralelo, o stage5-youtube.ts pode subir o vídeo antes do "pode publicar" (#12122)`);
+    log(`[aviso] marcador de confirmação pendente não gravado (${(e as Error).message}) (#12122; informativo desde o #12588)`);
     return false;
   }
 }

@@ -183,7 +183,7 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * Link da edição: `--edition-url` > `_internal/05-edition-url.txt` (gravado no
  * Stage 5) > slug derivado do título do D1. O derivado é premissa, não aviso: é
  * a mesma regra com que o Stage 5 grava `05-edition-url.txt` (#7420), então o
- * vertical pode sair antes da Etapa 5 (fluxo do #10943).
+ * vertical pode sair antes da Etapa 5 (`--so vertical` ou `--sem-publicacao`; no fluxo padrão do #12591 ele sai depois).
  *
  * Registro por destino em `{edição}/_internal/06-shorts-published.json`
  * (escrita atômica, logo após cada destino). Destino registrado é pulado.
