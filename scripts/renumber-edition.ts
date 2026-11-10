@@ -54,7 +54,8 @@
  * Threads, LinkedIn) e tira o `send_at` do broadcast do Kit (relido). O
  * estado local passa a `deleted`/`draft`, e a Etapa 5/6 na pasta nova
  * reagenda com o dia e o texto novos. A semanal de frio agendada é
- * desagendada antes do principal (#12720), e volta junto com ele na Etapa 6.
+ * desagendada antes do principal (#12720), e volta junto com ele na Etapa 6
+ * da pasta nova, mesmo que a edição tenha deixado de ser de segunda (#12725).
  * Buffer (X) e Brevo seguem manuais e continuam no aviso acima. Item que
  * falhou ⇒ exit 1, nada renumerado; 404 no Worker (post pode ter disparado)
  * mantém o aviso e a exigência de `--ack-scheduled`. As recusas de
@@ -63,7 +64,14 @@
  *
  * Stores globais depois do `mv` (#12719): falha ao mover a pasta deixa os
  * stores intactos (rodar de novo é execução nova); falha num store depois do
- * `mv` fica em `global_stores_pending` no relatório e a retomada termina.
+ * `mv` fica em `global_stores_pending` no relatório e a retomada termina. A
+ * retomada recusa (exit 2, nada escrito no store) se o store pendente ganhou
+ * entrada do ID novo ou se as entradas do ID antigo mudaram desde a tentativa
+ * anterior (impressão digital no relatório, #12726).
+ *
+ * Falha no principal depois de a semanal de frio sair da agenda (#12727): o
+ * `failed` do principal diz que a semanal ficou `created_unverified` e dá o
+ * comando que a reagenda se a troca for abandonada.
  *
  * ## Vídeo (#12713)
  *
@@ -102,6 +110,8 @@ import {
   buildRemoteSteps,
   completePendingGlobalStores,
   detectScheduledSends,
+  GlobalStoreRefusalError,
+  pendingGlobalStoresRefusal,
   globalStoresRefusal,
   leftOutItems,
   liveEditionLock,
@@ -176,8 +186,14 @@ export async function runUnschedule(
     deps.log(`ERRO: ${plan.reason}`);
     return plan.code;
   }
-  // #12691 — a troca seria recusada depois: não desagendar nada à toa.
-  const refusal = plan.resume ? null : globalStoresRefusal(scanGlobalStores(deps.root, opts.from, opts.to), opts.to);
+  // #12691 — a troca seria recusada depois: não desagendar nada à toa. Na
+  // retomada, a recusa dos stores pendentes (#12726).
+  const priorReport = plan.resume ? readRenumberReport(plan.toDir) : null;
+  const refusal = plan.resume
+    ? priorReport
+      ? pendingGlobalStoresRefusal(deps.root, priorReport)
+      : null
+    : globalStoresRefusal(scanGlobalStores(deps.root, opts.from, opts.to), opts.to);
   if (refusal) {
     deps.log(`ERRO: ${refusal}`);
     return 2;
@@ -348,9 +364,13 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
   if (!opts.apply) {
     if (plan.resume) {
       log(`[dry-run] parte local já feita (${relative(root, plan.toDir)} tem o relatório de ${opts.from} → ${opts.to}).`);
-      for (const p of readRenumberReport(plan.toDir)?.global_stores_pending ?? []) {
+      const prior = readRenumberReport(plan.toDir);
+      for (const p of prior?.global_stores_pending ?? []) {
         log(`[dry-run] store global pendente da tentativa anterior: ${p} (o --apply termina).`);
       }
+      // #12726 — o --apply recusaria a retomada (exit 2): avisar já no dry-run.
+      const pendingRefusal = prior ? pendingGlobalStoresRefusal(root, prior) : null;
+      if (pendingRefusal) log(`[dry-run] ERRO: o --apply recusaria: ${pendingRefusal}`);
     } else {
       const scan = scanLocal(plan.fromDir, opts.from, opts.to);
       log(`[dry-run] moveria ${relative(root, plan.fromDir)} → ${newDirRel}.`);
@@ -397,7 +417,8 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
         }
       } catch (e) {
         log(`ERRO nos stores globais pendentes: ${(e as Error).message}`);
-        return 1;
+        // #12726 — store mudado desde a tentativa anterior: precondição, não falha transitória.
+        return e instanceof GlobalStoreRefusalError ? 2 : 1;
       }
     }
   }

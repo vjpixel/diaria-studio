@@ -64,7 +64,10 @@
  * A checagem de segunda vale só pra CRIAR (#12616): semanal já `scheduled`
  * numa edição que deixou de ser de segunda (renumerada por
  * `renumber-edition.ts`) segue acompanhando o principal, com o re-sync de
- * conteúdo (`subscriber_filter` explícito) acima.
+ * conteúdo (`subscriber_filter` explícito) acima. O rascunho já criado
+ * (`created_unverified`, ex. desagendado pelo `renumber-edition.ts
+ * --unschedule`) também é retomado fora de segunda quando o principal está
+ * agendado (#12725).
  *
  * Exit: 0 criado/idempotente/pulado (desligado, não é segunda, pausado, tag
  * vazia); 1 falha (API, filtro não confirmado, agendamento não confirmado);
@@ -271,7 +274,15 @@ export async function publishKitSemanalFrio(
   if (own && own.status === "scheduled" && typeof own.broadcast_id === "number") {
     return followMainSchedule(editionDir, own, opts, deps);
   }
-  if (!isMondayEdition(edition)) return { code: 0, status: "not_monday", reason: `edição ${edition} não é de segunda.` };
+  // #12725 — o rascunho JÁ criado (`created_unverified`) também é retomado
+  // fora de segunda. O `renumber-edition.ts --unschedule` desagenda a semanal
+  // (ex. 261109 seg → 261110 ter) e conta com a Etapa 6 da pasta nova pra
+  // reagendá-la junto com o principal; com a checagem de segunda antes do
+  // resume, ela devolvia `not_monday` em silêncio e a base fria ficava sem a
+  // edição da semana. A semanal só nasce na segunda, então `created_unverified`
+  // numa pasta de outro dia veio de uma edição de segunda renumerada.
+  const resumable = own !== null && own.status === "created_unverified" && typeof own.broadcast_id === "number";
+  if (!resumable && !isMondayEdition(edition)) return { code: 0, status: "not_monday", reason: `edição ${edition} não é de segunda.` };
   if (opts.followOnly) {
     return { code: 0, status: "nothing_to_follow", reason: "semanal de frio não está agendada — nada a acompanhar." };
   }
@@ -279,7 +290,7 @@ export async function publishKitSemanalFrio(
   if (!main || main.status !== "scheduled" || typeof main.scheduled_at !== "string" || typeof main.broadcast_id !== "number") {
     return { code: 2, status: "failed", reason: "broadcast principal da diária não está agendado (newsletter-kit-published.json) — a semanal sai junto dele." };
   }
-  const resuming = own && own.status === "created_unverified" && typeof own.broadcast_id === "number" ? own : null;
+  const resuming = resumable ? own : null;
   const pause = deps.readPause();
   if (pause.paused) {
     // Um rascunho retomável (created_unverified) fica como está: rascunho não envia.
