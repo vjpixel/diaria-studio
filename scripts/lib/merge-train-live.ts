@@ -370,8 +370,13 @@ export interface Gate2Result {
   /** #12734: presente quando a reprovação veio da condição 2 com thread(s)
    * de review não resolvida(s) que bloqueiam — os IDs das threads retidas.
    * Ausente quando a condição 2 falhou por erro de query/paginação (aí não
-   * há lista confiável, e o rótulo segue o caminho genérico). */
+   * há lista confiável — ver `threadsUnreadable`). */
   blockingThreads?: string[];
+  /** #12734 (review da PR #12740): `true` quando a condição 2 falhou por
+   * ERRO de query/paginação das threads — não há lista confiável, então o
+   * chamador rotula `threads-ilegiveis` (nem `threads-bloqueantes`, nem o
+   * genérico `lock-blocked`). */
+  threadsUnreadable?: true;
 }
 
 /**
@@ -413,7 +418,7 @@ export function revalidateGate2(runner: TrainRunner, prNumber: number, sessionId
     return { status: r.ok ? 0 : 1, stdout: r.stdout, stderr: r.stderr };
   });
   if (threads.exitCode !== THREADS_EXIT_OK) {
-    if (threads.error) return { ok: false, reason: `condição 2 (threads) — ${threads.error}` };
+    if (threads.error) return { ok: false, reason: `condição 2 (threads) — ${threads.error}`, threadsUnreadable: true };
     return {
       ok: false,
       reason: `condição 2 (threads) — ${threads.blocking.length} thread(s) não resolvida(s) que bloqueiam: ${threads.blocking.join(", ")}`,
@@ -607,14 +612,18 @@ export interface MergeTrainBatchResult {
   threadsBlockedPr?: number;
   /** IDs das threads retidas do `threadsBlockedPr`. */
   blockingThreads?: string[];
+  /** PR do lote cuja condição 2 falhou por erro de leitura das threads —
+   * `runMergeTrain` rotula o outcome como `threads-ilegiveis`. */
+  threadsUnreadablePr?: number;
 }
 
 /** Campos de `MergeTrainBatchResult` derivados das condições 2 e 3 do Gate 2. */
 function gate2FailureFields(
   gate: Gate2Result,
   pr: number,
-): Pick<MergeTrainBatchResult, "retidoPr" | "retidoIlegivel" | "threadsBlockedPr" | "blockingThreads"> {
+): Pick<MergeTrainBatchResult, "retidoPr" | "retidoIlegivel" | "threadsBlockedPr" | "blockingThreads" | "threadsUnreadablePr"> {
   if (gate.blockingThreads !== undefined) return { threadsBlockedPr: pr, blockingThreads: gate.blockingThreads };
+  if (gate.threadsUnreadable) return { threadsUnreadablePr: pr };
   if (gate.retido === undefined) return {};
   return gate.retido === null ? { retidoPr: pr, retidoIlegivel: true } : { retidoPr: pr };
 }
@@ -990,6 +999,11 @@ export interface TrainBatchOutcome {
    * leitura da thread em vez de investigar sessão concorrente. Terminal e
    * conta como falha real (trabalho pendente), como o `lock-blocked` que
    * rotulava este caso antes.
+   *
+   * `"threads-ilegiveis"` (#12734, review da PR #12740): a condição 2 do
+   * Gate 2 falhou por ERRO de query/paginação das threads — não há lista
+   * confiável, então não é `threads-bloqueantes` (nenhuma thread aberta foi
+   * confirmada) nem lock. Terminal e conta como falha real (fail-closed).
    */
   status:
     | "merged"
@@ -998,6 +1012,7 @@ export interface TrainBatchOutcome {
     | "abandoned"
     | "lock-blocked"
     | "threads-bloqueantes"
+    | "threads-ilegiveis"
     | "indeterminate"
     | "retido"
     | "retido-ilegivel";
@@ -1008,7 +1023,7 @@ export interface TrainBatchOutcome {
 
 /**
  * Exit code do `run-merge-train.ts` (#10299): falha real = `solo-failed`,
- * `lock-blocked`, `threads-bloqueantes` (#12734), `indeterminate`,
+ * `lock-blocked`, `threads-bloqueantes`/`threads-ilegiveis` (#12734), `indeterminate`,
  * `retido-ilegivel`, ou sinal de retenção ilegível já na descoberta
  * (`retidoReadFailure`). `retido` de fato e `abandoned` (rastro de
  * bissecção) nunca contam.
@@ -1021,6 +1036,7 @@ export function trainHasRealFailure(outcomes: readonly TrainBatchOutcome[], reti
         o.status === "solo-failed" ||
         o.status === "lock-blocked" ||
         o.status === "threads-bloqueantes" ||
+        o.status === "threads-ilegiveis" ||
         o.status === "indeterminate" ||
         o.status === "retido-ilegivel",
     )
@@ -1029,20 +1045,31 @@ export function trainHasRealFailure(outcomes: readonly TrainBatchOutcome[], reti
 
 /**
  * Outcome `threads-bloqueantes` (#12734) a partir de um merge reprovado na
- * condição 2 do Gate 2 — `undefined` quando a falha não foi essa. O detalhe
- * abre com o PR e os IDs das threads retidas, e mantém a mensagem original
- * da revalidação depois.
+ * condição 2 do Gate 2 — ou `threads-ilegiveis` quando a condição 2 falhou
+ * por erro de leitura das threads; `undefined` quando a falha não foi na
+ * condição 2. O detalhe de `threads-bloqueantes` lista cada ID uma vez só (a
+ * mensagem da revalidação repetiria os mesmos IDs, review da PR #12740).
  */
 export function threadsBlockedOutcome(batch: TrainBatch, result: MergeTrainBatchResult): TrainBatchOutcome | undefined {
-  if (result.ok || result.threadsBlockedPr === undefined || result.blockingThreads === undefined) return undefined;
-  const pr = result.threadsBlockedPr;
-  const threads = result.blockingThreads;
-  return {
-    batch,
-    status: "threads-bloqueantes",
-    detail: `PR #${pr} com ${threads.length} thread(s) de review aberta(s) que bloqueiam (não é lock) — threads retidas: ${threads.join(", ")} — ${result.error ?? ""}`.trimEnd(),
-    blockingThreads: { pr, threads: [...threads] },
-  };
+  if (result.ok) return undefined;
+  if (result.threadsBlockedPr !== undefined && result.blockingThreads !== undefined) {
+    const pr = result.threadsBlockedPr;
+    const threads = result.blockingThreads;
+    return {
+      batch,
+      status: "threads-bloqueantes",
+      detail: `PR #${pr} com ${threads.length} thread(s) de review aberta(s) que bloqueiam (não é lock) — threads retidas: ${threads.join(", ")}`,
+      blockingThreads: { pr, threads: [...threads] },
+    };
+  }
+  if (result.threadsUnreadablePr !== undefined) {
+    return {
+      batch,
+      status: "threads-ilegiveis",
+      detail: `PR #${result.threadsUnreadablePr}: threads de review ilegíveis na revalidação do Gate 2 (não é lock, nem thread aberta confirmada) — ${result.error ?? "sem detalhe do erro"}`,
+    };
+  }
+  return undefined;
 }
 
 const DEFAULT_CI_TIMEOUT_MS = 30 * 60 * 1000;
@@ -1248,7 +1275,8 @@ export async function runMergeTrain(
         // específico) e conta como falha real pro exit code. Thread de
         // review aberta (condição 2 do Gate 2) ganha rótulo próprio com os
         // IDs das threads (#12734): sob `lock-blocked`, quem lia só o status
-        // ia investigar sessão concorrente. O resto (CI regrediu, claims,
+        // ia investigar sessão concorrente; erro de leitura das threads vira
+        // `threads-ilegiveis`. O resto (CI regrediu, claims,
         // gh pr merge falhou por outro motivo) segue no rótulo genérico.
         outcomes.push(
           threadsBlockedOutcome(batch, mergeResult) ?? { batch, status: "lock-blocked", detail: `merge falhou (não-lock): ${mergeResult.error}` },
