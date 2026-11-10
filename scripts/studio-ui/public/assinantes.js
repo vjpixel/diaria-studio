@@ -10,6 +10,7 @@
 // contexto sem ação vive no <details> "Detalhes".
 
 import { escapeHtml, actionItemsHtml, panelState, stageBreakdownRows } from "./assinantes-actions.js";
+import { formSummaryHtml, formQuestionsHtml, formOpenAnswersHtml, conversaHtml, formUnavailableText } from "./formulario-parcial.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -624,6 +625,49 @@ el.acoesList.addEventListener("click", (ev) => {
   const btn = ev.target instanceof Element ? ev.target.closest('[data-action="refresh-brevo"]') : null;
   if (btn) refreshOnboardingViaBrevo();
 });
+
+// #12583: resultado parcial do formulário. Só no clique: cada leitura
+// percorre as páginas do KV no Worker.
+const formEl = {
+  btn: document.getElementById("formulario-load-btn"),
+  status: document.getElementById("formulario-status"),
+  result: document.getElementById("formulario-result"),
+  summary: document.getElementById("formulario-summary"),
+  perguntas: document.getElementById("formulario-perguntas"),
+  abertas: document.getElementById("formulario-abertas"),
+  conversa: document.getElementById("formulario-conversa"),
+};
+
+async function loadFormResults() {
+  formEl.btn.disabled = true;
+  formEl.btn.textContent = "Carregando…";
+  formEl.status.hidden = true;
+  try {
+    const res = await fetch("/api/onboarding/form-results");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data || data.available !== true) {
+      formEl.status.textContent = formUnavailableText(data);
+      formEl.status.hidden = false;
+      return;
+    }
+    formEl.summary.innerHTML = formSummaryHtml(data);
+    formEl.perguntas.innerHTML = formQuestionsHtml(data.perguntas);
+    formEl.abertas.innerHTML = formOpenAnswersHtml(data.abertas);
+    formEl.conversa.innerHTML = conversaHtml(data.conversa);
+    formEl.status.textContent = `Lido em ${fmtTime(data.geradoEm)}.`;
+    formEl.status.hidden = false;
+    formEl.result.hidden = false;
+  } catch (e) {
+    formEl.status.textContent = `Falha ao carregar: ${e.message}`;
+    formEl.status.hidden = false;
+  } finally {
+    formEl.btn.disabled = false;
+    formEl.btn.textContent = "Atualizar resultado parcial";
+  }
+}
+
+formEl.btn.addEventListener("click", loadFormResults);
 
 refreshCohort();
 refreshCohortOrigem();
