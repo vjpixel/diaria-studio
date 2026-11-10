@@ -31,7 +31,10 @@ export const INTAKE_INPUT_FILES = [
   "newsletter-extra-scores.json",
   "01-approved.json",
   "tmp-articles-raw.json",
-  "tmp-scoring-pool.json", // #12593: é o "pool" da auditoria
+  // #12593: é o "pool" da auditoria. Entrar na lista muda o fingerprint, então relatório gravado
+  // antes dessa mudança dá "Intake desatualizado" uma vez. Esperado: o Stage 4 re-roda
+  // audit-newsletter-intake.ts antes dos invariantes e antes do sentinel (orchestrator-stage-4.md).
+  "tmp-scoring-pool.json",
   "tmp-dates-reviewed.json",
   "captured-newsletter-articles.json",
   "newsletter-unscored.enrich.json",

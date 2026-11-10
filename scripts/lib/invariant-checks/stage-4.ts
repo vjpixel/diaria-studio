@@ -26,6 +26,7 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 import { readMarker } from "../pipeline-state.ts";
 import { computeIntakeFingerprint } from "../newsletter-intake-fingerprint.ts"; // #12188
+import { linkScoreBlocks, linkTitleBlocks } from "../newsletter-intake-link-rules.ts"; // #12593
 import { CLARICE_PENDING_REL, readClaricePending, resumeCommandFor } from "../clarice-pending.ts"; // #12257
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
@@ -1821,16 +1822,9 @@ export function checkNewsletterIntake(editionDir: string): InvariantViolation[] 
     };
     if (!Array.isArray(report.links) || !Array.isArray(report.rows) || !Array.isArray(report.warnings) || !Array.isArray(report.pending_senders)) throw new Error("shape inválido");
     const out: InvariantViolation[] = report.warnings.map((w) => violation(w, "warning"));
-    const missingScore = (l: (typeof report.links)[number]) => typeof l.score !== "number" || !Number.isFinite(l.score);
-    const missingTitle = (l: (typeof report.links)[number]) => !l.title?.trim() || l.title.startsWith("(newsletter:");
-    const attempted = (l: (typeof report.links)[number]) => typeof l.fetch_error === "string" && l.fetch_error.length > 0;
-    const outOfPool = (l: (typeof report.links)[number]) => l.in_pool === false;
-    const blocking = (l: (typeof report.links)[number]) => !attempted(l) && !outOfPool(l);
-    if (report.links.some((l) => missingScore(l) && blocking(l))) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
-    // #12593: título placeholder só bloqueia link NA edição (pontuado e fora dela é só exibição da auditoria).
-    // Relatório sem `destino` (formato antigo) conta como na edição: na dúvida, bloqueia como antes.
-    const inEdition = (l: (typeof report.links)[number]) => l.destino !== "fora da edição";
-    if (report.links.some((l) => missingTitle(l) && blocking(l) && (missingScore(l) || inEdition(l)))) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
+    // #12188/#12593: mesmas regras de `audit-newsletter-intake.ts` (lib compartilhada, sem importar o CLI).
+    if (report.links.some(linkScoreBlocks)) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
+    if (report.links.some(linkTitleBlocks)) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
     if (report.pending_senders.length) out.push(violation(`Remetentes pendentes de decisão em lote: ${report.pending_senders.join(", ")}`, "warning"));
     // #12188 item 7: content hash of the audit inputs, never mtime — a save
     // that keeps the links (Studio, refresh-use-melhor-tempo, sync-code) is not stale.

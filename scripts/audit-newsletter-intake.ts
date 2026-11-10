@@ -19,6 +19,7 @@ import {
 } from "./lib/newsletter-senders.ts";
 import { computeIntakeFingerprint, reviewedEntries } from "./lib/newsletter-intake-fingerprint.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { linkMissing, linkMissingBlocks, linkMissingScore, linkMissingTitle, OUT_OF_EDITION } from "./lib/newsletter-intake-link-rules.ts";
 
 export interface IntakeThread extends CapturedThread { capture_error?: string }
 type Item = Record<string, unknown>;
@@ -31,26 +32,8 @@ export interface LinkAudit {
   in_pool: boolean | null;
   fetch_error?: string;
 }
-/**
- * #12188: o que falta num link pode bloquear o gate? Só quando NINGUÉM tentou:
- * falha de fetch/enrich registrada (paywall, 403, challenge) ou link removido
- * antes do pool (dedup/data — score aí é só auditoria) viram warning.
- */
-export function linkMissing(l: Pick<LinkAudit, "score" | "title">): boolean {
-  return linkMissingScore(l) || linkMissingTitle(l);
-}
-export function linkMissingScore(l: Pick<LinkAudit, "score">): boolean { return typeof l.score !== "number" || !Number.isFinite(l.score); }
-export function linkMissingTitle(l: Pick<LinkAudit, "title">): boolean { return !l.title?.trim() || l.title.startsWith("(newsletter:"); }
-/** Destino de link que não está no `02-reviewed.md` (nem no `01-approved.json`). */
-export const OUT_OF_EDITION = "fora da edição";
-/**
- * #12593: título placeholder só bloqueia link que está NA edição. Link pontuado e fora da
- * edição já foi avaliado; o título ali é só exibição da tabela de auditoria (warning).
- */
-export function linkMissingBlocks(l: Pick<LinkAudit, "score" | "title" | "fetch_error" | "in_pool" | "destino">): boolean {
-  if (l.fetch_error || l.in_pool === false) return false;
-  return linkMissingScore(l) || (linkMissingTitle(l) && l.destino !== OUT_OF_EDITION);
-}
+// #12188/#12593: regras de bloqueio por link vivem em lib, compartilhadas com o invariante do Stage 4.
+export { linkMissing, linkMissingBlocks, linkMissingScore, linkMissingTitle, OUT_OF_EDITION } from "./lib/newsletter-intake-link-rules.ts";
 export interface IntakeOptions {
   /** Threads da descoberta (`discovered-newsletters.json`) — só auditoria. */
   discovered?: DiscoveredThread[];
@@ -115,7 +98,7 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
     }
   }
   const poolKeys = new Set(collectItemsSkipping(pool, NOT_IN_POOL_KEYS).flatMap((i) => [i.url, i.resolvedFrom, i.original_url])
-    .filter((u): u is string => typeof u === "string").map(urlKey));
+    .filter((u): u is string => typeof u === "string").map(joinKey)); // #12593: mesma chave da junção de score
   const destinations = new Map<string, string>();
   // #12188 item 8: "destaque" wins over any section that also lists the URL.
   const setDestination = (key: string, destination: string) => {
@@ -150,7 +133,7 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
       const link: LinkAudit = {url: article.url, title: titles.get(joinKey(article.url)) ?? (typeof match?.title === "string" ? match.title : article.title),
         score: typeof match?.score === "number" ? match.score : null, score_status: match ? "pontuado" : "pendente",
         thread_id: thread.thread_id, newsletter: thread.sender, destino: destination ?? OUT_OF_EDITION,
-        in_pool: poolKnown ? poolKeys.has(key) || (matchKey !== undefined && poolKeys.has(matchKey)) : null};
+        in_pool: poolKnown ? poolKeys.has(joinKey(article.url)) || (matchKey !== undefined && poolKeys.has(joinKey(matchKey))) : null};
       if (fetchError && linkMissing(link)) { link.fetch_error = fetchError; if (link.score === null) link.score_status = "falha-fetch"; }
       links.push(link);
     }
@@ -158,7 +141,7 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
     const pending = threadLinks.filter((l) => l.score === null).length;
     const untitled = threadLinks.filter((l) => !l.title.trim() || l.title.startsWith("(newsletter:")).length;
     const fetchFailed = threadLinks.filter((l) => l.fetch_error).length;
-    const inPool = articles.filter((a) => poolKeys.has(urlKey(a.url))).length;
+    const inPool = articles.filter((a) => poolKeys.has(joinKey(a.url))).length;
     const ia = classification.classificacao === "IA";
     // #12188 item 3: approved newsletter with 0 links is a failure, never "lida".
     const [estado, estado_motivo] =

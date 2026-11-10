@@ -96,6 +96,14 @@ describe("#12593 newsletter-intake não bloqueia o sentinel em toda edição", (
     assert.equal(result.links[0].title, "Model X");
   });
 
+  it("http:// capturado sem score está no pool https:// (in_pool usa a mesma chave da junção)", () => {
+    const http = "http://huggingface.co/acme/model-y";
+    const result = buildIntake([thread(http)], registry, [], [{url: "https://huggingface.co/acme/model-y"}], {});
+    assert.equal(result.links[0].score, null);
+    assert.equal(result.links[0].in_pool, true);
+    assert.equal(linkMissingBlocks(result.links[0]), true);
+  });
+
   it("pontuado com título placeholder: warning fora da edição, erro dentro dela", () => temp((dir) => {
     const {editionDir, write, audit, report} = setup(dir);
     write("tmp-scoring-pool.json", {categorized: {radar: urls.map((url) => ({url, title: "(newsletter:AI)"})), lancamento: [], use_melhor: [], video: []}});
