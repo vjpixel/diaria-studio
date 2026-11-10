@@ -4,7 +4,9 @@ Description=diar.ia.br: rclone bisync dedicado de data/ (diaria-studio-data no G
 # gdrive-data-bisync.sh, com remote, pasta local, filtro, state dir e workdir
 # do rclone proprios. Remote e pasta vem de ~/.config/diaria/gdrive-data-bisync.env
 # (lido pelo wrapper, tambem numa rodada manual); sem o arquivo, os defaults
-# gdrive:diaria-studio-data <-> /mnt/hd-sata/GoogleDrive/diaria-studio-data.
+# gdrive-diaria:diaria-studio-data <-> /mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data
+# (conta diaria.editor, #12575). Pasta local sobreposta ao espelho do bisync
+# grande (/mnt/hd-sata/GoogleDrive) sai 78 antes do rclone.
 # A trava contra pasta vazia e a do script (mountpoint + sentinela
 # .diaria-bisync-sentinel na raiz da pasta, nos dois lados + --max-delete);
 # numa unit de usuario o RequiresMountsFor abaixo so ordena.

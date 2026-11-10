@@ -10,8 +10,9 @@
  *      com os defaults, a invocação do rclone, o filtro instalado e os
  *      carimbos são exatamente os de antes da #12478 — e nenhuma variável
  *      `GDRIVE_DATA_*` vaza para ele.
- *   2. O wrapper de `data/`: defaults (`gdrive:diaria-studio-data` ↔
- *      `/mnt/hd-sata/GoogleDrive/diaria-studio-data`), override pelo arquivo
+ *   2. O wrapper de `data/`: defaults (`gdrive-diaria:diaria-studio-data` ↔
+ *      `/mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data`), trava de
+ *      sobreposição com o espelho do Drive inteiro (exit 78), override pelo arquivo
  *      `~/.config/diaria/gdrive-data-bisync.env` (só chaves conhecidas, nunca
  *      executado como shell) e pelo ambiente, estado separado, retry de 401.
  *   3. As units: mesmo padrão das do bisync grande, apontando para o wrapper.
@@ -32,7 +33,16 @@ import {
   DEFAULT_GDRIVE_SYNC_TOLERANCES,
   FULL_DRIVE_BISYNC_TARGET,
   DATA_BISYNC_TARGET,
+  dataBisyncTarget,
 } from "../scripts/lib/gdrive-sync-alarm.ts";
+import {
+  parseDataBisyncEnvFile,
+  resolveDataBisyncConfig,
+  DATA_BISYNC_ENV_KEYS,
+  DEFAULT_DATA_BISYNC_REMOTE,
+  DEFAULT_DATA_BISYNC_MOUNT,
+  DEFAULT_DATA_BISYNC_LOCAL_REL,
+} from "../scripts/lib/gdrive-data-bisync-config.ts";
 import {
   toSyncAlarmFinding,
   toDataSyncAlarmFinding,
@@ -111,6 +121,9 @@ function run(
     RCLONE_BIN: fakeRclone,
     GDRIVE_MOUNTPOINT_CMD: "true",
     GDRIVE_AUTH_RETRY_DELAY: "0",
+    // O wrapper de data/ ignora as duas de cima (isolamento, #12478) e lê estas.
+    GDRIVE_DATA_MOUNTPOINT_CMD: "true",
+    GDRIVE_DATA_AUTH_RETRY_DELAY: "0",
   };
   for (const [k, v] of Object.entries(opts.env ?? {})) env[k] = v.replaceAll("{SB}", sb);
   const r = spawnSync("/bin/sh", [script, ...(opts.args ?? [])], { encoding: "utf8", env });
@@ -193,15 +206,15 @@ describe("bisync do Drive inteiro: invocação idêntica à de antes da #12478",
 });
 
 describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnly, () => {
-  const DATA_DEFAULT_ENV = { GDRIVE_DATA_MOUNT: "{SB}", GDRIVE_DATA_LOCAL: "{SB}/GoogleDrive/diaria-studio-data" };
+  const DATA_DEFAULT_ENV = { GDRIVE_DATA_MOUNT: "{SB}", GDRIVE_DATA_LOCAL: "{SB}/GoogleDrive-diaria/diaria-studio-data" };
 
-  it("defaults: remote gdrive:diaria-studio-data, filtro de data/, state dir e workdir próprios", () => {
-    const r = run(DATA_SCRIPT, { env: DATA_DEFAULT_ENV, localRel: "GoogleDrive/diaria-studio-data" });
+  it("defaults: remote gdrive-diaria:diaria-studio-data, pasta {mount}/GoogleDrive-diaria/diaria-studio-data, filtro, state dir e workdir próprios", () => {
+    const r = run(DATA_SCRIPT, { env: { GDRIVE_DATA_MOUNT: "{SB}" }, localRel: "GoogleDrive-diaria/diaria-studio-data" });
     try {
       assert.equal(r.status, 0, r.stderr);
       const state = join(r.sb, ".cache", "diaria", "gdrive-data-bisync");
       assert.deepEqual(r.calls, [
-        `bisync gdrive:diaria-studio-data ${join(r.sb, "GoogleDrive", "diaria-studio-data")} ` +
+        `bisync gdrive-diaria:diaria-studio-data ${join(r.sb, "GoogleDrive-diaria", "diaria-studio-data")} ` +
           `${FIXED_FLAGS_BEFORE_12478.replace("{FILTERS}", join(state, "filters.txt"))} --workdir ${join(state, "rclone-workdir")}`,
       ]);
       assert.equal(r.read(".cache/diaria/gdrive-data-bisync/filters.txt"), readFileSync(DATA_FILTERS, "utf8"));
@@ -209,16 +222,104 @@ describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnl
       assert.ok(r.exists(".cache/diaria/gdrive-data-bisync/last-success.json"));
       assert.ok(r.exists(".cache/diaria/gdrive-data-bisync/last-rclone.log"));
       assert.equal(r.exists(".cache/diaria/gdrive-bisync"), false, "o bisync de data/ nunca toca o state dir do Drive inteiro");
+      assert.ok(r.exists(".cache/diaria/gdrive-data-bisync/rclone-workdir"), "o wrapper cria o --workdir");
     } finally {
       rmSync(r.sb, { recursive: true, force: true });
     }
   });
 
-  it("default da pasta local é /mnt/hd-sata/GoogleDrive/diaria-studio-data e o do remote é gdrive:diaria-studio-data", () => {
+  it("defaults do shell = defaults do lado TS (gdrive-diaria:diaria-studio-data, /mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data)", () => {
     const sh = readFileSync(DATA_SCRIPT, "utf8");
-    assert.match(sh, /GDRIVE_DATA_REMOTE:-gdrive:diaria-studio-data\}/);
-    assert.match(sh, /GDRIVE_DATA_LOCAL:-\$MOUNT_DEFAULT\/GoogleDrive\/diaria-studio-data\}/);
-    assert.match(sh, /GDRIVE_DATA_MOUNT:-\/mnt\/hd-sata\}/);
+    assert.equal(DEFAULT_DATA_BISYNC_REMOTE, "gdrive-diaria:diaria-studio-data");
+    assert.equal(DEFAULT_DATA_BISYNC_MOUNT, "/mnt/hd-sata");
+    assert.equal(DEFAULT_DATA_BISYNC_LOCAL_REL, "GoogleDrive-diaria/diaria-studio-data");
+    assert.ok(sh.includes(`GDRIVE_DATA_REMOTE:-${DEFAULT_DATA_BISYNC_REMOTE}}`));
+    assert.ok(sh.includes(`GDRIVE_DATA_LOCAL:-$MOUNT_DEFAULT/${DEFAULT_DATA_BISYNC_LOCAL_REL}}`));
+    assert.ok(sh.includes(`GDRIVE_DATA_MOUNT:-${DEFAULT_DATA_BISYNC_MOUNT}}`));
+    // A lista de chaves aceitas no arquivo é a mesma nos dois lados.
+    const shKeys = /^\s*(GDRIVE_DATA_[A-Z_|]+)\)$/m.exec(sh)?.[1].split("|");
+    assert.deepEqual(shKeys, [...DATA_BISYNC_ENV_KEYS]);
+  });
+
+  it("trava de sobreposição: pasta de data/ dentro do espelho do Drive inteiro → exit 78, rclone nunca chamado", () => {
+    for (const local of ["{SB}/GoogleDrive/diaria-studio-data", "{SB}/GoogleDrive", "{SB}/GoogleDrive/", "{SB}", "{SB}/x/../GoogleDrive/diaria-studio-data"]) {
+      const r = run(DATA_SCRIPT, {
+        env: { GDRIVE_DATA_MOUNT: "{SB}", GDRIVE_DATA_LOCAL: local, GDRIVE_DATA_FULL_DRIVE_LOCAL: "{SB}/GoogleDrive" },
+        localRel: "GoogleDrive/diaria-studio-data",
+      });
+      try {
+        assert.equal(r.status, 78, `${local}: ${r.stderr}`);
+        assert.deepEqual(r.calls, [], local);
+        assert.match(r.stderr, /se sobrepõe ao espelho do bisync do Drive inteiro/);
+        assert.match(r.read(".cache/diaria/gdrive-data-bisync/last-run.json") ?? "", /"exit":78/);
+        assert.equal(r.exists(".cache/diaria/gdrive-data-bisync/last-success.json"), false);
+      } finally {
+        rmSync(r.sb, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("trava de sobreposição compara por componente: GoogleDrive-diaria não está dentro de GoogleDrive", () => {
+    const r = run(DATA_SCRIPT, {
+      env: { GDRIVE_DATA_MOUNT: "{SB}", GDRIVE_DATA_FULL_DRIVE_LOCAL: "{SB}/GoogleDrive" },
+      localRel: "GoogleDrive-diaria/diaria-studio-data",
+    });
+    try {
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.calls.length, 1);
+    } finally {
+      rmSync(r.sb, { recursive: true, force: true });
+    }
+  });
+
+  it("trava de sobreposição também vale contra o GDRIVE_LOCAL do bisync grande vindo do ambiente", () => {
+    const r = run(DATA_SCRIPT, {
+      env: { GDRIVE_DATA_MOUNT: "{SB}", GDRIVE_LOCAL: "{SB}/GoogleDrive-diaria" },
+      localRel: "GoogleDrive-diaria/diaria-studio-data",
+    });
+    try {
+      assert.equal(r.status, 78, r.stderr);
+      assert.deepEqual(r.calls, []);
+    } finally {
+      rmSync(r.sb, { recursive: true, force: true });
+    }
+  });
+
+  it("trava de sobreposição com a raiz real: /mnt/hd-sata/GoogleDrive/... aborta, sem tocar o HD", () => {
+    const r = run(DATA_SCRIPT, {
+      env: { GDRIVE_DATA_LOCAL: "/mnt/hd-sata/GoogleDrive/diaria-studio-data", GDRIVE_DATA_STATE_DIR: "{SB}/st" },
+      localRel: "nada",
+    });
+    try {
+      assert.equal(r.status, 78, r.stderr);
+      assert.deepEqual(r.calls, []);
+    } finally {
+      rmSync(r.sb, { recursive: true, force: true });
+    }
+  });
+
+  it("GDRIVE_SENTINEL, GDRIVE_AUTH_RETRY_*, GDRIVE_MOUNTPOINT_CMD e GDRIVE_MAX_DELETE do bisync grande não vazam", () => {
+    const r = run(DATA_SCRIPT, {
+      env: {
+        ...DATA_DEFAULT_ENV,
+        GDRIVE_SENTINEL: "outra-sentinela",
+        GDRIVE_AUTH_RETRY_MAX: "9",
+        GDRIVE_AUTH_RETRY_DELAY: "abc",
+        GDRIVE_MOUNTPOINT_CMD: "false",
+        GDRIVE_MAX_DELETE: "50",
+      },
+      localRel: "GoogleDrive-diaria/diaria-studio-data",
+      seq: ["7:auth", "7:auth", "7:auth"],
+    });
+    try {
+      // Mountpoint do bisync grande ("false") ignorado; sentinela e max-delete default.
+      assert.notEqual(r.status, 75, r.stderr);
+      assert.match(r.calls[0], /--check-filename \.diaria-bisync-sentinel --max-delete 5 /);
+      // Retry max default (1), não o 9 do bisync grande: 1 chamada + 1 resync.
+      assert.equal(r.calls.length, 2);
+    } finally {
+      rmSync(r.sb, { recursive: true, force: true });
+    }
   });
 
   it("arquivo ~/.config/diaria/gdrive-data-bisync.env troca remote e pasta (destino da conta diaria.editor)", () => {
@@ -249,7 +350,7 @@ describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnl
   it("o arquivo de env nunca é executado como shell", () => {
     const r = run(DATA_SCRIPT, {
       env: DATA_DEFAULT_ENV,
-      localRel: "GoogleDrive/diaria-studio-data",
+      localRel: "GoogleDrive-diaria/diaria-studio-data",
       envFile: "GDRIVE_DATA_REMOTE=gdrive:x$(touch {SB}/pwned)\n`touch {SB}/pwned2`\n",
     });
     try {
@@ -265,12 +366,12 @@ describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnl
   it("arquivo de env com CRLF: o \\r não vai colado no valor", () => {
     const r = run(DATA_SCRIPT, {
       env: { GDRIVE_DATA_MOUNT: "{SB}" },
-      localRel: "GoogleDrive/diaria-studio-data",
-      envFile: "GDRIVE_DATA_REMOTE=gdrive-diaria:diaria-studio-data\r\nGDRIVE_DATA_LOCAL={SB}/GoogleDrive/diaria-studio-data\r\n",
+      localRel: "GoogleDrive-diaria/diaria-studio-data",
+      envFile: "GDRIVE_DATA_REMOTE=gdrive-diaria:diaria-studio-data\r\nGDRIVE_DATA_LOCAL={SB}/GoogleDrive-diaria/diaria-studio-data\r\n",
     });
     try {
       assert.equal(r.status, 0, r.stderr);
-      assert.ok(r.calls[0].startsWith(`bisync gdrive-diaria:diaria-studio-data ${join(r.sb, "GoogleDrive", "diaria-studio-data")} `), r.calls[0]);
+      assert.ok(r.calls[0].startsWith(`bisync gdrive-diaria:diaria-studio-data ${join(r.sb, "GoogleDrive-diaria", "diaria-studio-data")} `), r.calls[0]);
     } finally {
       rmSync(r.sb, { recursive: true, force: true });
     }
@@ -279,7 +380,7 @@ describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnl
   it("ambiente vence o arquivo de env", () => {
     const r = run(DATA_SCRIPT, {
       env: { ...DATA_DEFAULT_ENV, GDRIVE_DATA_REMOTE: "do-env:diaria-studio-data" },
-      localRel: "GoogleDrive/diaria-studio-data",
+      localRel: "GoogleDrive-diaria/diaria-studio-data",
       envFile: "GDRIVE_DATA_REMOTE=do-arquivo:diaria-studio-data\n",
     });
     try {
@@ -293,11 +394,11 @@ describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnl
   it("GDRIVE_REMOTE/GDRIVE_STATE_DIR do bisync grande no ambiente não vazam para o de data/", () => {
     const r = run(DATA_SCRIPT, {
       env: { ...DATA_DEFAULT_ENV, GDRIVE_REMOTE: "gdrive:", GDRIVE_STATE_DIR: "{SB}/big-state", GDRIVE_FILTERS: BIG_FILTERS },
-      localRel: "GoogleDrive/diaria-studio-data",
+      localRel: "GoogleDrive-diaria/diaria-studio-data",
     });
     try {
       assert.equal(r.status, 0, r.stderr);
-      assert.ok(r.calls[0].startsWith("bisync gdrive:diaria-studio-data "), r.calls[0]);
+      assert.ok(r.calls[0].startsWith("bisync gdrive-diaria:diaria-studio-data "), r.calls[0]);
       assert.equal(r.exists("big-state"), false);
       assert.equal(r.read(".cache/diaria/gdrive-data-bisync/filters.txt"), readFileSync(DATA_FILTERS, "utf8"));
     } finally {
@@ -307,12 +408,12 @@ describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnl
 
   it("trava contra pasta vazia vale igual: desmontado ou sem sentinela → exit 75, rclone nunca chamado", () => {
     const unmounted = run(DATA_SCRIPT, {
-      env: { ...DATA_DEFAULT_ENV, GDRIVE_MOUNTPOINT_CMD: "false" },
-      localRel: "GoogleDrive/diaria-studio-data",
+      env: { ...DATA_DEFAULT_ENV, GDRIVE_DATA_MOUNTPOINT_CMD: "false" },
+      localRel: "GoogleDrive-diaria/diaria-studio-data",
     });
     const noSentinel = run(DATA_SCRIPT, {
       env: { GDRIVE_DATA_MOUNT: "{SB}", GDRIVE_DATA_LOCAL: "{SB}/outra-pasta" },
-      localRel: "GoogleDrive/diaria-studio-data",
+      localRel: "GoogleDrive-diaria/diaria-studio-data",
     });
     try {
       assert.equal(unmounted.status, 75);
@@ -328,7 +429,7 @@ describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnl
   });
 
   it("retry de 401 (#12412) mantém o --workdir próprio no resync automático", () => {
-    const r = run(DATA_SCRIPT, { env: DATA_DEFAULT_ENV, localRel: "GoogleDrive/diaria-studio-data", seq: ["7:auth", "0"] });
+    const r = run(DATA_SCRIPT, { env: DATA_DEFAULT_ENV, localRel: "GoogleDrive-diaria/diaria-studio-data", seq: ["7:auth", "0"] });
     try {
       assert.equal(r.status, 0, r.stderr);
       assert.equal(r.calls.length, 2);
@@ -342,7 +443,7 @@ describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnl
   it("filtro instalado só muda no --resync (#12396), no state dir de data/", () => {
     const r = run(DATA_SCRIPT, {
       env: { ...DATA_DEFAULT_ENV, GDRIVE_DATA_STATE_DIR: "{SB}/st" },
-      localRel: "GoogleDrive/diaria-studio-data",
+      localRel: "GoogleDrive-diaria/diaria-studio-data",
     });
     try {
       mkdirSync(join(r.sb, "st"), { recursive: true });
@@ -353,9 +454,9 @@ describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnl
           PATH: process.env.PATH ?? "/usr/bin:/bin",
           HOME: r.sb,
           RCLONE_BIN: join(r.sb, "rclone"),
-          GDRIVE_MOUNTPOINT_CMD: "true",
+          GDRIVE_DATA_MOUNTPOINT_CMD: "true",
           GDRIVE_DATA_MOUNT: r.sb,
-          GDRIVE_DATA_LOCAL: join(r.sb, "GoogleDrive", "diaria-studio-data"),
+          GDRIVE_DATA_LOCAL: join(r.sb, "GoogleDrive-diaria", "diaria-studio-data"),
           GDRIVE_DATA_STATE_DIR: join(r.sb, "st"),
         },
       });
@@ -368,7 +469,7 @@ describe("gdrive-data-bisync.sh — bisync dedicado de data/ (#12478)", posixOnl
   });
 
   it("--dry-run não carimba nada", () => {
-    const r = run(DATA_SCRIPT, { env: DATA_DEFAULT_ENV, localRel: "GoogleDrive/diaria-studio-data", args: ["--dry-run"] });
+    const r = run(DATA_SCRIPT, { env: DATA_DEFAULT_ENV, localRel: "GoogleDrive-diaria/diaria-studio-data", args: ["--dry-run"] });
     try {
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.calls[0], /--dry-run$/);
@@ -486,9 +587,49 @@ describe("alarme do bisync de data/ (#12478)", () => {
     assert.equal(buildGdriveAlarmEmail(outcomes.slice(0, 1), big, QUOTA_OK).subject, "⚠️ Google Drive: alarm-bisync-blocked");
   });
 
-  it("state dir de data/: GDRIVE_DATA_STATE_DIR ou ~/.cache/diaria/gdrive-data-bisync", () => {
-    assert.equal(defaultGdriveDataStateDir({ GDRIVE_DATA_STATE_DIR: "/x" }), "/x");
-    assert.match(defaultGdriveDataStateDir({}), /\.cache\/diaria\/gdrive-data-bisync$/);
+  it("state dir de data/: ambiente > arquivo de env > ~/.cache/diaria/gdrive-data-bisync", () => {
+    const noFile = () => null;
+    const file = (text: string) => (p: string) => (p === "/h/.config/diaria/gdrive-data-bisync.env" ? text : null);
+    assert.equal(defaultGdriveDataStateDir({ GDRIVE_DATA_STATE_DIR: "/x" }, noFile), "/x");
+    assert.equal(defaultGdriveDataStateDir({ HOME: "/h" }, noFile), "/h/.cache/diaria/gdrive-data-bisync");
+    assert.equal(defaultGdriveDataStateDir({ HOME: "/h" }, file("GDRIVE_DATA_STATE_DIR=/do-arquivo\n")), "/do-arquivo");
+    assert.equal(defaultGdriveDataStateDir({ HOME: "/h", GDRIVE_DATA_STATE_DIR: "/do-env" }, file("GDRIVE_DATA_STATE_DIR=/do-arquivo\n")), "/do-env");
+    // Definida no ambiente mesmo vazia vence o arquivo (`${CHAVE+x}` do wrapper) e cai no default.
+    assert.equal(defaultGdriveDataStateDir({ HOME: "/h", GDRIVE_DATA_STATE_DIR: "" }, file("GDRIVE_DATA_STATE_DIR=/do-arquivo\n")), "/h/.cache/diaria/gdrive-data-bisync");
+    // GDRIVE_DATA_ENV_FILE troca o arquivo.
+    const other = (p: string) => (p === "/outro.env" ? "GDRIVE_DATA_STATE_DIR=/outro\n" : null);
+    assert.equal(defaultGdriveDataStateDir({ HOME: "/h", GDRIVE_DATA_ENV_FILE: "/outro.env" }, other), "/outro");
+  });
+
+  it("parser do arquivo de env: mesmas regras do wrapper (comentário, CRLF, sem '=', chave desconhecida, 1ª vence, nunca avalia)", () => {
+    const p = parseDataBisyncEnvFile(
+      "# c\r\n\nGDRIVE_DATA_REMOTE=a:b\r\nsem-igual\nOUTRA=1\nGDRIVE_DATA_REMOTE=c:d\nGDRIVE_DATA_LOCAL=/x/$(touch y)=z",
+    );
+    assert.deepEqual(p.values, { GDRIVE_DATA_REMOTE: "a:b", GDRIVE_DATA_LOCAL: "/x/$(touch y)=z" });
+    assert.equal(p.warnings.length, 2);
+    assert.match(p.warnings.join(" "), /OUTRA/);
+  });
+
+  it("config resolvida: defaults reais e workdir derivado do state dir", () => {
+    const c = resolveDataBisyncConfig({ HOME: "/h" }, () => null);
+    assert.equal(c.remote, "gdrive-diaria:diaria-studio-data");
+    assert.equal(c.local, "/mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data");
+    assert.equal(c.workdir, "/h/.cache/diaria/gdrive-data-bisync/rclone-workdir");
+    const m = resolveDataBisyncConfig({ HOME: "/h" }, () => "GDRIVE_DATA_MOUNT=/m\n");
+    assert.equal(m.local, "/m/GoogleDrive-diaria/diaria-studio-data");
+  });
+
+  it("texto do alarme de data/ mostra o remote e a pasta efetivos, sem placeholder", () => {
+    const t = dataBisyncTarget({ remote: "outro:pasta", local: "/l/data", stateDir: "/s" });
+    const failed = describeGdriveSyncVerdict(evalData(3, 60), t);
+    assert.match(failed, /`rclone touch outro:pasta\/\.diaria-bisync-sentinel`/);
+    assert.doesNotMatch(failed, /\{GDRIVE_DATA_REMOTE\}/);
+    assert.match(describeGdriveSyncVerdict(evalData(75, 60), t), /`\/l\/data\/\.diaria-bisync-sentinel`/);
+    assert.match(describeGdriveSyncVerdict(evalData(3, 60), DATA_BISYNC_TARGET), /rclone touch gdrive-diaria:diaria-studio-data\/\.diaria-bisync-sentinel/);
+    assert.equal(dataBisyncTarget({ remote: "gdrive:", local: "/l" }).remoteSentinelTouch, "rclone touch gdrive:.diaria-bisync-sentinel");
+    assert.equal(t.stateDirHint, "/s/");
+    const f = toDataSyncAlarmFinding(evalData(3, 60), "gdrive", t);
+    assert.match(f.body, /rclone touch outro:pasta\//);
   });
 
   it(
@@ -513,12 +654,49 @@ describe("alarme do bisync de data/ (#12478)", () => {
         const r = spawnSync(
           process.execPath,
           ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", big, "--data-state-dir", data],
-          { encoding: "utf8", cwd: ROOT, env: { ...process.env, RCLONE_BIN: fake } },
+          { encoding: "utf8", cwd: ROOT, env: { ...process.env, RCLONE_BIN: fake, GDRIVE_DATA_ENV_FILE: join(sb, "nao-existe.env") } },
         );
         assert.equal(r.status, 0, r.stderr);
         assert.match(r.stdout, /sync: verdict=ok/);
         assert.match(r.stdout, /sync data\/: verdict=alarm-sync-stale/);
         assert.match(r.stdout, /--dry-run: 1 ação/);
+      } finally {
+        rmSync(sb, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it(
+    "CLI sem --data-state-dir acha o state dir de data/ pelo arquivo de env",
+    { skip: process.platform === "win32" ? "rclone falso é shell" : false },
+    () => {
+      const sb = mkdtempSync(join(tmpdir(), "gdrive-data-alarm-envfile-12478-"));
+      try {
+        const big = join(sb, "big");
+        const data = join(sb, "data-do-arquivo");
+        mkdirSync(big);
+        mkdirSync(data);
+        const fresh = new Date().toISOString();
+        const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+        writeFileSync(join(big, "last-run.json"), JSON.stringify({ at: fresh, exit: 0 }));
+        writeFileSync(join(big, "last-success.json"), JSON.stringify({ at: fresh, exit: 0 }));
+        writeFileSync(join(data, "last-run.json"), JSON.stringify({ at: fresh, exit: 0 }));
+        writeFileSync(join(data, "last-success.json"), JSON.stringify({ at: hourAgo, exit: 0 }));
+        const envFile = join(sb, "gdrive-data-bisync.env");
+        writeFileSync(envFile, `GDRIVE_DATA_STATE_DIR=${data}\n`);
+        const fake = join(sb, "rclone");
+        writeFileSync(fake, `#!/bin/sh\necho '{"total":100,"used":10,"free":90}'\n`);
+        chmodSync(fake, 0o755);
+        const env: NodeJS.ProcessEnv = { ...process.env, RCLONE_BIN: fake, GDRIVE_DATA_ENV_FILE: envFile };
+        delete env.GDRIVE_DATA_STATE_DIR;
+        const r = spawnSync(
+          process.execPath,
+          ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", big],
+          { encoding: "utf8", cwd: ROOT, env },
+        );
+        assert.equal(r.status, 0, r.stderr);
+        assert.match(r.stdout, /sync data\/: verdict=alarm-sync-stale/);
+        assert.ok(r.stdout.includes(`stateDir=${data}`), r.stdout);
       } finally {
         rmSync(sb, { recursive: true, force: true });
       }

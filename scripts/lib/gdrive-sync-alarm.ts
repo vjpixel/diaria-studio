@@ -58,6 +58,12 @@
  * tolerância (`DATA_GDRIVE_SYNC_TOLERANCES`, curta, adequada à cadência).
  */
 
+import {
+  DEFAULT_DATA_BISYNC_REMOTE,
+  DEFAULT_DATA_BISYNC_MOUNT,
+  DEFAULT_DATA_BISYNC_LOCAL_REL,
+} from "./gdrive-data-bisync-config.ts";
+
 export interface BisyncStamp {
   /** ISO 8601 (UTC) da rodada. */
   at: string;
@@ -142,19 +148,28 @@ export const FULL_DRIVE_BISYNC_TARGET: BisyncTarget = {
   scriptCmd: "sh scripts/systemd/gdrive-bisync.sh",
 };
 
-/** Bisync dedicado de `data/` (#12478). Remote e pasta vêm de
- * `~/.config/diaria/gdrive-data-bisync.env` (defaults no wrapper), então o
- * texto aponta para lá em vez de fixar um caminho. */
-export const DATA_BISYNC_TARGET: BisyncTarget = {
-  subject: "do `data/` no Google Drive (bisync dedicado)",
-  unit: "diaria-gdrive-data-bisync",
-  stateDirHint: "~/.cache/diaria/gdrive-data-bisync/",
-  localSentinelHint:
-    "`.diaria-bisync-sentinel` na raiz da pasta local de `data/` (`GDRIVE_DATA_LOCAL` em " +
-    "`~/.config/diaria/gdrive-data-bisync.env`; default `/mnt/hd-sata/GoogleDrive/diaria-studio-data`)",
-  remoteSentinelTouch: "rclone touch {GDRIVE_DATA_REMOTE}/.diaria-bisync-sentinel",
-  scriptCmd: "sh scripts/systemd/gdrive-data-bisync.sh",
-};
+/** Bisync dedicado de `data/` (#12478), com o remote e a pasta local
+ * EFETIVOS (arquivo `~/.config/diaria/gdrive-data-bisync.env` + ambiente +
+ * defaults, `resolveDataBisyncConfig`): os comandos do texto saem coláveis. */
+export function dataBisyncTarget(cfg: { remote: string; local: string; stateDir?: string }): BisyncTarget {
+  const sep = cfg.remote.endsWith(":") || cfg.remote.endsWith("/") ? "" : "/";
+  return {
+    subject: "do `data/` no Google Drive (bisync dedicado)",
+    unit: "diaria-gdrive-data-bisync",
+    stateDirHint: cfg.stateDir ? `${cfg.stateDir.replace(/\/+$/, "")}/` : "~/.cache/diaria/gdrive-data-bisync/",
+    localSentinelHint:
+      `\`${cfg.local}/.diaria-bisync-sentinel\` (pasta local de \`data/\`: \`GDRIVE_DATA_LOCAL\` em ` +
+      "`~/.config/diaria/gdrive-data-bisync.env`)",
+    remoteSentinelTouch: `rclone touch ${cfg.remote}${sep}.diaria-bisync-sentinel`,
+    scriptCmd: "sh scripts/systemd/gdrive-data-bisync.sh",
+  };
+}
+
+/** Target de `data/` com os defaults do wrapper (sem arquivo de env). */
+export const DATA_BISYNC_TARGET: BisyncTarget = dataBisyncTarget({
+  remote: DEFAULT_DATA_BISYNC_REMOTE,
+  local: `${DEFAULT_DATA_BISYNC_MOUNT}/${DEFAULT_DATA_BISYNC_LOCAL_REL}`,
+});
 
 export interface GdriveSyncEvaluation {
   verdict: GdriveSyncVerdict;

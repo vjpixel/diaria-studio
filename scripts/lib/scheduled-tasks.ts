@@ -2255,7 +2255,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // inofensivo: só a cota (`rclone about`, só leitura) é medida.
     // Desde a #12478 também lê os carimbos do bisync dedicado de `data/`
     // (~/.cache/diaria/gdrive-data-bisync, limiar de 30 min). Sem eles
-    // (instalação pendente, #12575/#12576) o sinal é `not-installed`, mudo.
+    // (instalação pendente, #12576) o sinal é `not-installed`, mudo.
     schedule: { kind: "interval", hours: 1 },
     issue: "#12357",
   },

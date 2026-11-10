@@ -1,6 +1,6 @@
 # Filtros do rclone bisync DEDICADO de data/ (#12478). A raiz deste sync e a
-# propria pasta de data/ (default gdrive:diaria-studio-data <->
-# /mnt/hd-sata/GoogleDrive/diaria-studio-data; ver gdrive-data-bisync.sh), entao
+# propria pasta de data/ (default gdrive-diaria:diaria-studio-data <->
+# /mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data; ver gdrive-data-bisync.sh), entao
 # os padroes sao relativos a ela. Mudar este arquivo exige rodar o bisync de
 # data/ uma vez com --resync (sh scripts/systemd/gdrive-data-bisync.sh --resync,
 # timer parado; o filtro instalado vive em ~/.cache/diaria/gdrive-data-bisync).

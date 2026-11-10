@@ -19,8 +19,11 @@
  *      carimbos, do bisync DEDICADO de `data/` (`diaria-gdrive-data-bisync`,
  *      a cada 1 min, state dir `~/.cache/diaria/gdrive-data-bisync`), com as
  *      tolerâncias curtas de `DATA_GDRIVE_SYNC_TOLERANCES` (sem sucesso há
- *      30 min). O sinal 1 não muda. Antes da instalação (#12575/#12576) não há
- *      carimbo: `not-installed`, silencioso, como o 1 era antes da #12356.
+ *      30 min). State dir, remote e pasta local saem do mesmo
+ *      `~/.config/diaria/gdrive-data-bisync.env` que o wrapper lê (mesmo
+ *      parser, `lib/gdrive-data-bisync-config.ts`; o ambiente vence). O sinal
+ *      1 não muda. Antes da instalação (#12576) não há carimbo:
+ *      `not-installed`, silencioso, como o 1 era antes da #12356.
  *
  * Canal de alerta: o mesmo do alarme do OneDrive — issue por achado
  * (`alarm-issues.ts`, fecha sozinha depois de 2 execuções limpas) e e-mail
@@ -62,10 +65,10 @@
  *   npx tsx scripts/gdrive-sync-alarm.ts --failed-minutes 30   # tolerância da falha (outro exit, default 30)
  *   npx tsx scripts/gdrive-sync-alarm.ts --quota-warn-pct 90   # aviso de cota (default 90)
  *   npx tsx scripts/gdrive-sync-alarm.ts --remote gdrive:      # remote do rclone (default gdrive:)
- *   npx tsx scripts/gdrive-sync-alarm.ts --data-state-dir DIR  # carimbos do bisync de data/ (default $GDRIVE_DATA_STATE_DIR ou ~/.cache/diaria/gdrive-data-bisync)
+ *   npx tsx scripts/gdrive-sync-alarm.ts --data-state-dir DIR  # carimbos do bisync de data/ (default: GDRIVE_DATA_STATE_DIR do ambiente, depois do ~/.config/diaria/gdrive-data-bisync.env, depois ~/.cache/diaria/gdrive-data-bisync)
  *
  * Env: `RCLONE_BIN` (default `~/.local/bin/rclone`), `GDRIVE_STATE_DIR`,
- * `GDRIVE_DATA_STATE_DIR`. Os limiares `--stale-hours`/`--blocked-minutes`/
+ * `GDRIVE_DATA_STATE_DIR`, `GDRIVE_DATA_ENV_FILE`. Os limiares `--stale-hours`/`--blocked-minutes`/
  * `--failed-minutes` valem só pro sinal 1; o de `data/` usa os seus.
  * Estado das issues: `{state dir}/.gdrive-sync-alarm-issues.json`, SEMPRE fora
  * de `data/` (review da #12357: com o estado em `data/` e fallback pro state
@@ -88,10 +91,12 @@ import {
   DATA_GDRIVE_SYNC_TOLERANCES,
   FULL_DRIVE_BISYNC_TARGET,
   DATA_BISYNC_TARGET,
+  dataBisyncTarget,
   type BisyncTarget,
   type BisyncStampRead,
   type GdriveSyncEvaluation,
 } from "./lib/gdrive-sync-alarm.ts";
+import { resolveDataBisyncConfig } from "./lib/gdrive-data-bisync-config.ts";
 import {
   readRcloneAboutDetailed,
   resolveRcloneBin,
@@ -131,11 +136,14 @@ export function defaultGdriveStateDir(env: NodeJS.ProcessEnv = process.env): str
     : join(homedir(), ".cache", "diaria", "gdrive-bisync");
 }
 
-/** State dir do bisync dedicado de `data/` (#12478). */
-export function defaultGdriveDataStateDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.GDRIVE_DATA_STATE_DIR && env.GDRIVE_DATA_STATE_DIR.length > 0
-    ? env.GDRIVE_DATA_STATE_DIR
-    : join(homedir(), ".cache", "diaria", "gdrive-data-bisync");
+/** State dir do bisync dedicado de `data/` (#12478): ambiente, depois o
+ * arquivo `~/.config/diaria/gdrive-data-bisync.env` que o wrapper lê (mesmo
+ * parser, só leitura), depois o default — a mesma precedência do wrapper. */
+export function defaultGdriveDataStateDir(
+  env: NodeJS.ProcessEnv = process.env,
+  readText?: (path: string) => string | null,
+): string {
+  return resolveDataBisyncConfig(env, readText).stateDir;
 }
 
 /** Arquivo de estado das issues do alarme: sempre no state dir, nunca em
@@ -177,6 +185,10 @@ const FULL_DRIVE_SYNC_KIND: SyncFindingKind = {
   target: FULL_DRIVE_BISYNC_TARGET,
 };
 
+function dataSyncKind(target: BisyncTarget): SyncFindingKind {
+  return { ...DATA_SYNC_KIND, target };
+}
+
 const DATA_SYNC_KIND: SyncFindingKind = {
   check: DATA_SYNC_CHECK,
   titlePrefix: "[diar.ia.br] Google Drive data/ sync",
@@ -191,8 +203,12 @@ export function toSyncAlarmFinding(ev: GdriveSyncEvaluation, backend: DataSyncBa
 
 /** Achado do bisync dedicado de `data/` (#12478): mesmas regras de label e
  * prioridade do sinal do Drive inteiro, check e texto próprios. */
-export function toDataSyncAlarmFinding(ev: GdriveSyncEvaluation, backend: DataSyncBackend): AlarmFinding {
-  return syncAlarmFinding(ev, backend, DATA_SYNC_KIND);
+export function toDataSyncAlarmFinding(
+  ev: GdriveSyncEvaluation,
+  backend: DataSyncBackend,
+  target: BisyncTarget = DATA_BISYNC_TARGET,
+): AlarmFinding {
+  return syncAlarmFinding(ev, backend, dataSyncKind(target));
 }
 
 function syncAlarmFinding(ev: GdriveSyncEvaluation, backend: DataSyncBackend, kind: SyncFindingKind): AlarmFinding {
@@ -329,6 +345,7 @@ export function buildGdriveAlarmEmail(
   quota: GdriveQuotaEvaluation,
   quotaUnmeasuredReason: string | null = null,
   dataSync: GdriveSyncEvaluation | null = null,
+  dataTarget: BisyncTarget = DATA_BISYNC_TARGET,
 ): { subject: string; body: string } {
   const parts: string[] = [];
   const subjects: string[] = [];
@@ -340,7 +357,7 @@ export function buildGdriveAlarmEmail(
     subjects.push(sync.verdict);
   }
   if (d && dataSync) {
-    parts.push(`${describeGdriveSyncVerdict(dataSync, DATA_BISYNC_TARGET)}${issueLineFor(d)}`);
+    parts.push(`${describeGdriveSyncVerdict(dataSync, dataTarget)}${issueLineFor(d)}`);
     subjects.push(`data/ ${dataSync.verdict}`);
   }
   if (q) {
@@ -371,8 +388,13 @@ async function main(): Promise<void> {
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");
   const stateDir = getStringArg(argv, "state-dir", { example: "~/.cache/diaria/gdrive-bisync" }) ?? defaultGdriveStateDir();
+  // Config do bisync de data/ como o wrapper a vê (#12478): ambiente >
+  // ~/.config/diaria/gdrive-data-bisync.env > defaults.
+  const dataCfg = resolveDataBisyncConfig(process.env);
+  for (const w of dataCfg.warnings) console.log(`${LOG_PREFIX} aviso: ${w}`);
   const dataStateDir =
-    getStringArg(argv, "data-state-dir", { example: "~/.cache/diaria/gdrive-data-bisync" }) ?? defaultGdriveDataStateDir();
+    getStringArg(argv, "data-state-dir", { example: "~/.cache/diaria/gdrive-data-bisync" }) ?? dataCfg.stateDir;
+  const dataTarget = dataBisyncTarget({ remote: dataCfg.remote, local: dataCfg.local, stateDir: dataStateDir });
   const staleHours = getIntArg(argv, "stale-hours", { min: 1 });
   const blockedMinutes = getIntArg(argv, "blocked-minutes", { min: 1 });
   const failedMinutes = getIntArg(argv, "failed-minutes", { min: 1 });
@@ -420,7 +442,7 @@ async function main(): Promise<void> {
   const findings: AlarmFinding[] = [];
   if (isAlarmingGdriveSyncVerdict(sync.verdict)) findings.push(toSyncAlarmFinding(sync, backend));
   if (quotaFindingVerdict(quota, sync.verdict) !== null) findings.push(toQuotaAlarmFinding(quota, about.error));
-  if (isAlarmingGdriveSyncVerdict(dataSync.verdict)) findings.push(toDataSyncAlarmFinding(dataSync, backend));
+  if (isAlarmingGdriveSyncVerdict(dataSync.verdict)) findings.push(toDataSyncAlarmFinding(dataSync, backend, dataTarget));
 
   const statePath = gdriveAlarmIssuesStatePath(stateDir);
   const alarmState = loadAlarmIssuesState(statePath);
@@ -453,7 +475,7 @@ async function main(): Promise<void> {
   const result = await notifyEditorForOutcomes(
     findingOutcomes,
     "acao",
-    (qualifying) => buildGdriveAlarmEmail(qualifying, sync, quota, about.error, dataSync),
+    (qualifying) => buildGdriveAlarmEmail(qualifying, sync, quota, about.error, dataSync, dataTarget),
     {
       cwd: ROOT,
       platformConfigPath: PLATFORM_CONFIG_PATH,
