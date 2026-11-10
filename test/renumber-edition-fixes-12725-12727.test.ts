@@ -327,6 +327,32 @@ describe("#12727 — principal falha depois de a semanal sair da agenda", () => 
     assert.ok(existsSync(fromDir()));
   });
 
+  it("REGRESSÃO #12730: desagendada nesta execução ⇒ afirma 'está FORA'; herdada created_unverified ⇒ só 'pode estar FORA'", async () => {
+    const first = await unscheduleSends(fromDir(), fakes("not_ok").deps);
+    const d1 = first.find((o) => o.what === "kit-newsletter")!.detail;
+    assert.match(d1, /está FORA da agenda \(desagendada nesta execução\)/);
+    assert.doesNotMatch(d1, /pode estar FORA/);
+    const second = await unscheduleSends(fromDir(), fakes("not_ok").deps);
+    const d2 = second.find((o) => o.what === "kit-newsletter")!.detail;
+    assert.match(d2, /pode estar FORA da agenda \(created_unverified: .*conferir no Kit\)/);
+    assert.doesNotMatch(d2, /está FORA da agenda/);
+  });
+
+  it("REGRESSÃO #12729: principal sem broadcast_id ⇒ aviso manda reagendar à mão no Kit, sem o comando do publisher que recusa", async () => {
+    put("_internal/newsletter-kit-published.json", JSON.stringify({ status: "scheduled", scheduled_at: "2026-11-10T09:00:00Z" }));
+    const f = fakes("not_ok");
+    const out = await unscheduleSends(fromDir(), f.deps);
+    assert.deepEqual(f.calls, ["kit:11"]);
+    const main = out.find((o) => o.what === "kit-newsletter")!;
+    assert.equal(main.result, "failed");
+    assert.match(main.detail, /registro sem broadcast_id/);
+    assert.match(main.detail, /reagendar a semanal à mão no Kit, junto do principal/);
+    assert.doesNotMatch(main.detail, /--push/);
+    // Repetir sozinho cai no mesmo ramo: o aviso pede desagendar o principal à mão antes.
+    assert.match(main.detail, /Desagendar o principal à mão no Kit e repetir o mesmo comando termina a troca/);
+    assert.doesNotMatch(main.detail, /horário antigo\. Repetir o mesmo comando/);
+  });
+
   it("principal desagendado com sucesso ⇒ sem o aviso", async () => {
     const calls: string[] = [];
     const out = await unscheduleSends(fromDir(), {

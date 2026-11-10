@@ -294,7 +294,13 @@ import {
   type YouTubeShortMetadata,
   shortDestinationAccount,
   shortDestinationAlsoAccounts,
+  shortHorizontalRoute,
+  type ShortHorizontalRoute,
 } from "./lib/diaria/short-video.ts";
+// #12735: o link do horizontal na legenda e o redirect fixo da bio (diar.ia.br/video).
+import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
+import { latestVideoBioLink, type LatestVideoBioNetwork } from "./lib/shared/latest-video-redirect.ts";
+import { describeLatestVideoOutcome, pollKvFromEnv, readEditionHorizontalUrl, updateLatestVideoRedirect } from "./set-latest-video-redirect.ts";
 import {
   instagramTimerScopeError,
   linkedinTimerScopeError,
@@ -549,8 +555,47 @@ export interface ShortsPlan {
    * precisa publicar" — nenhum destino volta para ele como passo manual.
    */
   owners: ShortsDestinationOwner[];
+  /**
+   * #12735: caminho de cada destino até o horizontal — o link na legenda
+   * (`05-video-url.txt`), o link da bio (`diar.ia.br/video` com UTM da rede),
+   * o vídeo relacionado do Short ou o repost. `link: null` = sem link nesta
+   * rodada (`note` diz por quê). Ausente no corte avulso (não tem horizontal).
+   */
+  horizontalLinks?: Record<string, ShortHorizontalLinkPlan>;
   premises: string[];
   warnings: string[];
+}
+
+/** #12735: o link do horizontal usado por um destino do vertical. */
+export interface ShortHorizontalLinkPlan {
+  route: ShortHorizontalRoute;
+  link: string | null;
+  note: string;
+}
+
+/**
+ * Pure (#12735): o caminho até o horizontal de cada destino do plano.
+ * `horizontalUrl` = o `05-video-url.txt` da edição (`null` = ainda sem link,
+ * ou edição sem vídeo: `noVideo`).
+ */
+export function planShortHorizontalLinks(destinations: readonly string[], horizontalUrl: string | null, noVideo: boolean): Record<string, ShortHorizontalLinkPlan> {
+  const out: Record<string, ShortHorizontalLinkPlan> = {};
+  for (const id of destinations) {
+    const route = shortHorizontalRoute(id);
+    if (route === "caption") {
+      out[id] = horizontalUrl
+        ? { route, link: horizontalUrl, note: "na legenda (05-video-url.txt)" }
+        : { route, link: null, note: noVideo ? "edição marcada sem vídeo: legenda sem link" : `${D1_VIDEO_URL_FILE} ausente: legenda sem link (rode depois do horizontal)` };
+    } else if (route === "bio") {
+      const network: LatestVideoBioNetwork = id === "threads_profile" ? "threads" : (id as "tiktok" | "instagram");
+      out[id] = { route, link: latestVideoBioLink(network), note: "link da bio (passo manual do editor na rede): sempre o horizontal mais recente; a legenda não tem link clicável" };
+    } else if (route === "related_video") {
+      out[id] = { route, link: null, note: "vídeo relacionado do Short (#10811); link na descrição de Short não é clicável (#10831)" };
+    } else {
+      out[id] = { route, link: horizontalUrl, note: "repost do vídeo do perfil: herda o texto do linkedin_profile" };
+    }
+  }
+  return out;
 }
 
 /**
@@ -778,7 +823,7 @@ interface ShortsPlanCommonInput {
    * título (`readHorizontalVideoForShort`). Ausente = sem registro e sem
    * marcador de "sem vídeo": cita o título derivado do D1. Ignorado no corte.
    */
-  horizontalVideo?: { recordTitle: string | null; noVideo: boolean };
+  horizontalVideo?: { recordTitle: string | null; noVideo: boolean; url?: string | null };
   editionUrl?: string;
   /** De onde veio o `editionUrl` (só pra premissa). */
   editionUrlSource?: string;
@@ -913,17 +958,32 @@ export function corteTimerStaleWarning(delegated: readonly string[], hb: CorteTi
  * marcador de edição sem vídeo. Fail-soft: registro ausente ou ilegível vira
  * `recordTitle: null` (a citação cai no título derivado do D1).
  */
-export function readHorizontalVideoForShort(editionDir: string): { recordTitle: string | null; noVideo: boolean } {
+export function readHorizontalVideoForShort(editionDir: string): { recordTitle: string | null; noVideo: boolean; url: string | null } {
   const noVideo = isNoVideoEdition(editionDir);
+  const url = noVideo ? null : readHorizontalUrlForShort(editionDir);
   const recordPath = join(editionDir, YOUTUBE_PUBLISHED_FILE);
-  if (!existsSync(recordPath)) return { recordTitle: null, noVideo };
+  if (!existsSync(recordPath)) return { recordTitle: null, noVideo, url };
   try {
     const raw = JSON.parse(readFileSync(recordPath, "utf8")) as { title?: unknown } | null;
     const title = raw && typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : null;
-    return { recordTitle: title, noVideo };
+    return { recordTitle: title, noVideo, url };
   } catch {
     console.error(`[aviso] ${recordPath} ilegível — o Short cita o título do horizontal derivado do D1 (#12191)`);
-    return { recordTitle: null, noVideo };
+    return { recordTitle: null, noVideo, url };
+  }
+}
+
+/**
+ * #12735: o link do horizontal da edição (`_internal/05-video-url.txt`) para a
+ * legenda do vertical. Fail-soft: ausente → `null`; conteúdo que não é vídeo
+ * do YouTube → aviso e `null` (a legenda sai sem link, nunca com URL errada).
+ */
+export function readHorizontalUrlForShort(editionDir: string): string | null {
+  try {
+    return readEditionHorizontalUrl(editionDir);
+  } catch (e) {
+    console.error(`[aviso] ${join(editionDir, D1_VIDEO_URL_FILE)}: ${(e as Error).message} — o vertical sai sem o link do horizontal (#12735)`);
+    return null;
   }
 }
 
@@ -967,6 +1027,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     );
   }
   const youtube = buildYouTubeShortMetadata({ d1: d1In, horizontalTitle });
+  // #12735: o horizontal DA edição na legenda das redes que aceitam link (LinkedIn, X, Facebook). Nunca no corte.
+  const horizontalLink = corte || input.horizontalVideo?.noVideo ? null : (input.horizontalVideo?.url ?? null);
 
   // #10831: o vertical tem horário próprio (nunca as 06:00 do horizontal).
   // #12250: fixo POR DESTINO (YouTube Shorts 06:30, os outros 12:00). `time` é o
@@ -1137,6 +1199,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       platform,
       d1: d1In,
       follow: diariaFollowLine(platform === "linkedin" ? "linkedin_profile" : platform === "threads" ? "threads_profile" : "x", cfg.diariaProfiles),
+      horizontalLink, // #12735: ignorado no Threads
     });
 
   // #10772 F4: a Posts API do LinkedIn não agenda — o vídeo sai quando a rodada
@@ -1398,7 +1461,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         destination: dest.id,
         mode: "guided",
         action: "guided",
-        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles) }), // #12465
+        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles), horizontalLink }), // #12465, #12735
         detail: "perfil pessoal: a Graph API não publica em perfil de pessoa — Chrome, ou compartilhar o Reels da página",
       };
     }
@@ -1414,7 +1477,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         mode: "api",
         action: "publish",
         // #12465: a página VJ Pixel (não a diar.ia.br) leva o perfil da diar.ia.br.
-        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles) }),
+        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles), horizontalLink }), // #12735
         scheduledAt: schedule.mode === "scheduled" ? schedule.at : null,
       };
     }
@@ -1548,7 +1611,17 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }),
   );
   const destinationTimes = Object.fromEntries(destinations.map((d) => [d.id, timeFor(d.id)]));
-  return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, destinationTimes, slots, items, owners, premises, warnings };
+  // #12735: o dry-run mostra, por destino, o link do horizontal que o vertical usa.
+  const horizontalLinks = corte ? undefined : planShortHorizontalLinks(destinations.map((d) => d.id), horizontalLink, input.horizontalVideo?.noVideo ?? false);
+  if (horizontalLinks) {
+    // Prefixo próprio: premissas que começam com `{destino}:` são as de horário (testes do #10772/#10907 as distinguem assim).
+    for (const [id, h] of Object.entries(horizontalLinks)) premises.push(`caminho até o horizontal (${id}): ${h.route}${h.link ? ` ${h.link}` : ""} — ${h.note} (#12735)`);
+  }
+  return {
+    aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, destinationTimes, slots, items, owners,
+    ...(horizontalLinks ? { horizontalLinks } : {}),
+    premises, warnings,
+  };
 }
 
 /**
@@ -4402,6 +4475,7 @@ async function runUpdateScheduled(input: {
     const horizontalTitle = horizontal ? resolveShortHorizontalTitle({ d1Title: d1.title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }) : null;
     items = planScheduledUpdates({
       entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known,
+      horizontalLink: horizontal?.url ?? null, // #12735
       ...(shortsCfg.diariaProfiles ? { diariaProfiles: shortsCfg.diariaProfiles } : {}),
     });
   } catch (e) {
@@ -4802,6 +4876,17 @@ async function main(): Promise<number> {
   if (!file) {
     console.error(`publish-shorts: vídeo curto ausente em ${videoPath}`);
     return 1;
+  }
+  if (!corte) {
+    // #12735: o link fixo da bio (diar.ia.br/video) passa a apontar para o horizontal desta edição.
+    // Fail-soft: o vertical sai mesmo sem o KV; a gravação só avança (edição anterior não sobrescreve).
+    try {
+      const kvEnv = pollKvFromEnv();
+      if (!kvEnv.kv) console.error(`[aviso] diar.ia.br/video não atualizado: ${kvEnv.reason} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
+      else console.error(`[ok] ${describeLatestVideoOutcome(await updateLatestVideoRedirect({ editionDir: dir, aammdd, kv: kvEnv.kv, apply: true, now: new Date() }))} (#12735)`);
+    } catch (e) {
+      console.error(`[aviso] diar.ia.br/video não atualizado: ${(e as Error).message} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
+    }
   }
   // #11912: só o --publish confirmado do corte grava o "pode publicar" (e o --only usado) no
   // corte.json; o timer do 300 não publica sem ele. Dry-run, --mark e --update-scheduled já
