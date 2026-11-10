@@ -38,6 +38,7 @@ import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./l
 import { weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
 import { mostRecentCompletedCycle, evaluateLinkedinWeeklyStalenessAlarm, buildLinkedinWeeklyStalenessAlarmEmail } from "./lib/linkedin-weekly-staleness-alarm.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
+import { isManualPublicationRecord } from "./lib/linkedin-weekly-manual-publish.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
@@ -103,6 +104,9 @@ export function toAlarmFinding(cycle: string): AlarmFinding {
       "",
       `Rode manualmente: /diaria-linkedin-semanal --publish-monday {AAMMDD da próxima segunda útil}.`,
       "",
+      "Se o ciclo já foi publicado à mão, registre a publicação (#12745):",
+      `npx tsx scripts/mark-linkedin-weekly-published.ts --cycle ${cycle} --url {URL do artigo}.`,
+      "",
       "Esta issue é criada automaticamente pelo alarme (#5339) e será",
       "comentada/fechada sozinha quando o achado deixar de reproduzir por",
       `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
@@ -115,6 +119,15 @@ export function toAlarmFinding(cycle: string): AlarmFinding {
 /** `data/weekly/{cycle}/ln-{cycle}.json` existe no disco? (I/O isolado pra facilitar teste do resto do fluxo.) */
 export function artifactExistsForCycle(cycle: string, rootDir: string = ROOT): boolean {
   return existsSync(join(rootDir, weeklyLinkedinRelDir(cycle), `ln-${cycle}.json`));
+}
+
+/** #12745: `ln-{cycle}.json` é registro de publicação manual? Ilegível = `false` (só log). */
+export function artifactIsManualPublication(cycle: string, rootDir: string = ROOT): boolean {
+  try {
+    return isManualPublicationRecord(readFileSync(join(rootDir, weeklyLinkedinRelDir(cycle), `ln-${cycle}.json`), "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 /** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
@@ -138,7 +151,10 @@ async function main(): Promise<void> {
   const cycle = mostRecentCompletedCycle(new Date());
   const exists = artifactExistsForCycle(cycle);
   const evaluation = evaluateLinkedinWeeklyStalenessAlarm(cycle, exists);
-  console.log(`${LOG_PREFIX} cycle=${cycle} artifact_exists=${exists} verdict=${evaluation.verdict}`);
+  // #12745: registro de publicação manual (`mark-linkedin-weekly-published.ts`)
+  // conta como artefato; o log distingue para auditoria.
+  const manual = exists && artifactIsManualPublication(cycle);
+  console.log(`${LOG_PREFIX} cycle=${cycle} artifact_exists=${exists} manual=${manual} verdict=${evaluation.verdict}`);
 
   // #5339 — reconcilia uma issue pro ciclo faltante; roda toda execução
   // não-dry-run. #7960: o e-mail (abaixo) é decidido a partir do OUTCOME
