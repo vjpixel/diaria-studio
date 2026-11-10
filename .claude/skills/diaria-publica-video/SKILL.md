@@ -7,6 +7,8 @@ description: Publica os dois vídeos da edição ("diar.ia.br comentada", o Pixe
 
 Os dois vídeos da edição numa skill só (decisão do editor, 26–27/10/2026): **Parte A** é o horizontal no YouTube (`@diariabr`, #10659), **Parte B** é o vertical (Shorts, Reels e afins, #10769). A ordem A → B é a dependência real: o Short aponta para o horizontal (descrição, vídeo relacionado, #10831/#10811), então o horizontal vem primeiro.
 
+**Diagnóstico de paralelização (#12622):** ver `docs/publica-video-fluxo-hibrido.md` (medição, dependências e proposta híbrida; implementação nas filhas #12654/#12655). Até os guards dessas filhas existirem, manter o fluxo serial e a confirmação imediata abaixo.
+
 ## Fluxo da sessão: horizontal → Etapas 5 e 6 → vertical (#12591)
 
 Decisão do editor (10/11/2026): a ordem `/diaria-video-montagem` → vídeo → Etapa 5 é obrigatória, porque o link do YouTube entra na edição (#12588), e juntar o vídeo com a publicação economiza o tempo dele. Numa invocação sem `--so` nem `--sem-publicacao`, esta skill roda, **na mesma sessão**:
