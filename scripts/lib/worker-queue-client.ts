@@ -198,6 +198,27 @@ export class WorkerQueueError extends Error {
   }
 }
 
+/**
+ * #12661 — 409 do enqueue idempotente. `already_fired`/`fire_in_progress`: o
+ * post desta chave já saiu ou está saindo, então é sucesso (nada a
+ * enfileirar) e devolve a key da entry. `send_unknown` (disparo ambíguo, foi
+ * pra DLQ), 409 ilegível e qualquer outro erro devolvem `null`: o chamador
+ * PROPAGA, porque o post pode ou não ter saído e nenhum degrau publica por cima.
+ * Compartilhado pela diária (`linkedin-daily-document.ts`) e pelo semanal
+ * (`publish-weekly-social.ts`, #12372 item 3).
+ */
+export function idempotentConflictKey(e: unknown): string | null {
+  if (!(e instanceof WorkerQueueError) || e.status !== 409) return null;
+  let parsed: { error?: unknown; key?: unknown };
+  try {
+    parsed = JSON.parse(e.body) as { error?: unknown; key?: unknown };
+  } catch {
+    return null;
+  }
+  if (parsed.error !== "already_fired" && parsed.error !== "fire_in_progress") return null;
+  return typeof parsed.key === "string" && parsed.key !== "" ? parsed.key : null;
+}
+
 export async function postToWorkerQueue(
   workerUrl: string,
   token: string,
