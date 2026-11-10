@@ -51,6 +51,7 @@ import {
 import { resolveCircleStackState } from "./lib/publish-state.ts";
 import { sendPushNotification, type PushMessage, type PushNotifyResult } from "./lib/push-notify.ts";
 import { circleStackSelectionViolations, circleStackUnreviewedTitles } from "./lib/circle-stack-select.ts";
+import { readUtf8WithContext } from "./lib/read-file-with-context.ts";
 import {
   buildCircleStackApproval,
   buildCircleStackOutcomeEmail,
@@ -196,7 +197,8 @@ export interface CyclePaths {
 }
 
 function readIfExists(path: string): string | null {
-  return existsSync(path) ? readFileSync(path, "utf8") : null;
+  // #12554: arquivo offline no OneDrive sai com o caminho, não só `UNKNOWN`.
+  return existsSync(path) ? readUtf8WithContext(path) : null;
 }
 
 export function resolveCyclePaths(dataRoot: string, publishMonday: string): CyclePaths {

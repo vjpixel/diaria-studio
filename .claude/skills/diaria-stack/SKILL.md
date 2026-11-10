@@ -87,7 +87,16 @@ npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD}
 (com `--reselect` se a skill recebeu a flag). Monta ou reusa
 `data/weekly/{cycle}/_internal/circle-stack-selection.json`, traduz títulos em
 inglês (o editor revisa na seleção) e grava a prévia. Os avisos (`⚠`) que ele
-imprime entram no resumo do Passo 5.
+imprime entram no resumo do Passo 5. Eles são recalculados a cada execução
+sobre a seleção atual (#12553): título reescrito à mão deixa de ser "traduzido
+— revisar", e dia sem diretório de edição (feriado) não conta como edição
+faltando.
+
+Item que o editor tira da semana vai para o campo `excluded` da seleção
+(`[{ "title": "...", "note": "..." }]`, ou `url`; #12557), nunca só apagado da
+seção: assim ele não volta em "Outros destaques da semana" e sobrevive ao
+`--reselect`. Gravar o `title` (a entrada só por `url` não alcança "Outros
+destaques" depois que o item sai da seção).
 
 Seleção com título sem sinal de português ainda não revisado (#11161) não
 impede esta skill de escrever; só bloqueia o `--publish` lá na frente.
@@ -154,9 +163,11 @@ cita o assunto que o dry-run imprimiu. A prévia vai SEMPRE para
 um Artifact, com ou sem `--publish`; o chat leva só o link e um resumo de
 uma linha (título e estado do ciclo), nunca o post inteiro.
 
-1. **HTML** em `data/weekly/{cycle}/_internal/circle-stack-preview.html`
-   (arquivo local, regravado a cada rodada), página estática com o conteúdo
-   de `circle-stack-{cycle}.md` e dos arquivos do ciclo, sem texto novo:
+1. **HTML** em `data/weekly/{cycle}/_internal/circle-stack-preview.html`,
+   GERADO pelo dry-run acima (`renderCircleStackPreviewHtml`,
+   `scripts/lib/circle-stack-preview-html.ts`, #12555) a partir da mesma
+   seleção e do payload. Nunca escrever nem editar o HTML à mão: ajuste
+   (vídeo, Radar, título) vai na seleção e o dry-run regrava a prévia. Ele traz:
    - o post inteiro, com os links, e o texto escrito para a Stack (abertura e
      `stackNote`) em destaque visual;
    - o título que vai ao webhook (`payload.titulo` em
@@ -258,6 +269,13 @@ dele vai literal ao editor. Depois do envio, conferir o estado com o resolver
 determinístico (#573) antes de dizer "publicado":
 `_internal/circle-stack-published.json` com `published_at` = confirmado pelo
 webhook; sem `published_at` = ambíguo, conferir no Radar.
+
+Link do post (#12556): o `--publish` imprime `Link do post: ...`. O webhook da
+Stack devolve hoje só `{"ok": true}`, sem a URL; nesse caso a linha aponta o
+espaço (`plataforma.stack.com.br/c/radar-de-noticias-stack`) e o título, e o
+editor acha o post pelo título lá. Se a Stack passar a devolver a URL
+(`url`/`post_url`/`link`), ela é gravada em `post_url` no state, sai no
+`--publish`, no e-mail da task de segunda e na prévia HTML.
 
 ## Fora de escopo
 

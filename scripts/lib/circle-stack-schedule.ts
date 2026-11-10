@@ -158,8 +158,22 @@ export function circleStackBrtDay(now: Date): Date {
   return day;
 }
 
+/**
+ * Pure (#12556): a linha do link do post para o editor. O webhook da Stack
+ * devolve hoje só `{"ok": true}`, sem a URL do post: sem ela, a linha aponta o
+ * espaço do Radar e o título para achar o post lá.
+ */
+export function circleStackPostLinkLine(postUrl: string | null | undefined, title: string | null | undefined): string {
+  if (postUrl) return `Link do post: ${postUrl}`;
+  const t = title?.replace(/\s+/g, " ").trim();
+  return (
+    `Link do post: o webhook da Stack não devolve a URL do post — abra ${CIRCLE_STACK_RADAR_URL}` +
+    (t ? ` e procure pelo título "${t}".` : " e procure pelo título do post.")
+  );
+}
+
 export type CircleStackScheduledOutcome =
-  | { kind: "publicado"; publishedAt: string }
+  | { kind: "publicado"; publishedAt: string; postUrl?: string | null; title?: string | null }
   | { kind: "ambiguo"; attemptedAt: string; error: string | null }
   | { kind: "falhou"; error: string }
   | { kind: "nao-enviado"; reason: string };
@@ -206,7 +220,12 @@ export function classifyCircleStackRun(input: ClassifyRunInput): CircleStackSche
   }
   const attempted = attemptedThisRun(stateAfter, cycle, runStartedAt);
   const published = attempted ? confirmedPublishedAt(stateAfter, cycle) : null;
-  if (published) return { kind: "publicado", publishedAt: published };
+  if (published) {
+    // #12556: link do post, se o webhook o devolveu; o título serve para achar o post no espaço.
+    const postUrl = typeof stateAfter?.post_url === "string" && stateAfter.post_url ? stateAfter.post_url : null;
+    const title = typeof stateAfter?.title === "string" ? stateAfter.title : null;
+    return { kind: "publicado", publishedAt: published, ...(postUrl ? { postUrl } : {}), ...(title ? { title } : {}) };
+  }
   if (attempted) {
     return { kind: "ambiguo", attemptedAt: attempted, error: input.error === undefined ? null : errorText(input.error) };
   }
@@ -247,8 +266,10 @@ export function buildCircleStackOutcomeEmail(
       lines = [
         `O post do ciclo ${ctx.cycle} saiu no Radar de Notícias Stack às ${outcome.publishedAt} (confirmado pelo webhook).`,
         "",
-        "Nada a fazer. Para conferir:",
-        CIRCLE_STACK_RADAR_URL,
+        "",
+        circleStackPostLinkLine(outcome.postUrl, outcome.title),
+        "",
+        "Nada a fazer.",
       ];
       break;
     case "ambiguo":
