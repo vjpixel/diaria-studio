@@ -165,6 +165,12 @@
  * já está `active`, e deixa quem está não-active no Kit (#8728) seguir pra
  * avaliação normal (contador `beehiivSelfConfirmedAwaitingKit`).
  *
+ * Falha ao ler o status Beehiiv neste passo (429, 5xx, rede) é AVISO desde
+ * o #12543 (`beehiivStatusUnavailable`), fora de `failed` e do exit code: a
+ * auto-confirmação fica pra próxima rodada e o contato segue pro Passo 2. O
+ * passo ainda decide alguma coisa (2 auto-confirmações Beehiiv no
+ * `.evaluate.log` do 300 até 09/11/2026), por isso a consulta ficou.
+ *
  * ## Passo 2: score (taxa de abertura + piso de amostra, 2 variantes)
  *
  * `GET /v3/contacts/{email}` da Brevo retorna `statistics.messagesSent` e
@@ -247,7 +253,8 @@
  * qualquer classe: checagem de estado Brevo, checagem de status Beehiiv,
  * promoção, supressão, ou verificação pós-escrita não confirmada) sempre
  * incrementa `failed` — nunca silenciosamente reportado como sucesso
- * (#738). Falha no passo 0 (estado Brevo) faz o contato pular pra próxima
+ * (#738). Única exceção: status Beehiiv indisponível no Passo 1, que é
+ * aviso (`beehiivStatusUnavailable`, #12543, ver Passo 1 acima). Falha no passo 0 (estado Brevo) faz o contato pular pra próxima
  * rodada inteiro (`continue` sem avaliar auto-confirmação/score com dado
  * incompleto) — mais seguro que decidir com informação parcial.
  *
@@ -2217,6 +2224,17 @@ export interface RunEvaluationResult {
    */
   failedContacts: FailedContact[];
   /**
+   * #12543 — contatos de origem Beehiiv cujo status a Beehiiv não devolveu
+   * no Passo 1 (auto-confirmação), com o motivo (429, 5xx, rede). AVISO, não
+   * entra em `failed` nem no exit code: a única consequência é adiar a
+   * auto-confirmação pra próxima rodada, e o contato segue avaliado pela
+   * abertura (Passo 2) nesta. A Beehiiv é só arquivo desde o #11225, e 22
+   * 429 dela numa rodada (09/11/2026) reabriram o alarme #6786 com o push
+   * concluído. A falha do Passo 0 (contato `emailBlacklisted`) continua em
+   * `failed`: ali o contato fica sem decisão nenhuma.
+   */
+  beehiivStatusUnavailable: { email: string; reason: string }[];
+  /**
    * #9291 — quantos incrementos de `failed` vieram de 429 da Kit API que
    * sobreviveu ao retry (`kitFetch` já respeita `Retry-After`). SUBCONJUNTO
    * de `failed` (nunca somado à parte). Contato nessa situação não teve
@@ -2278,6 +2296,19 @@ export function resolveEvaluateExitCode(
   if (result.failed - rateLimited > 0) return PARTIAL_FAILURE_EXIT_CODE;
   if (rateLimited > KIT_RATE_LIMIT_TOLERATED_MAX) return PARTIAL_FAILURE_EXIT_CODE;
   return 0;
+}
+
+/**
+ * Pura (#12543) — linha de aviso do resumo pros contatos sem status Beehiiv
+ * no Passo 1. Diz que não muda o exit code, pra quem lê o log da unit não
+ * confundir com as falhas de `detalhe das falhas`.
+ */
+export function beehiivStatusUnavailableMessage(entries: { email: string; reason: string }[]): string {
+  return (
+    `warn: ${entries.length} contato(s) sem status Beehiiv no Passo 1 (auto-confirmação adiada pra próxima rodada, ` +
+    `avaliado(s) pela abertura nesta; não muda o exit code, #12543): ` +
+    entries.map((e) => `${e.email} [${e.reason}]`).join(" | ")
+  );
 }
 
 /** #9291 — teto de incrementos de `failed` por 429 esgotado da Kit tolerados
@@ -2389,6 +2420,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let kept = 0;
   let failed = 0;
   const failedContacts: FailedContact[] = []; // #8724
+  const beehiivStatusUnavailable: { email: string; reason: string }[] = []; // #12543
   let kitAutoConfirmSkipped = 0;
   let kitSemAberturaPreexistingBlacklist = 0; // #10536
   let kitSemAberturaBlacklistReverted = 0; // #10557
@@ -2933,15 +2965,23 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         // `emailBlacklisted`) — nunca um 2º GET pro mesmo contato no mesmo
         // run.
         if (beehiivStatus === undefined) {
+          let beehiivStatusError: string | undefined; // #12543
           beehiivSubscription = await fetchBeehiivSubscription(publicationId, beehiivApiKey, contact.email).catch((e) => {
             log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
             statusCheckFailed = true;
+            beehiivStatusError = (e as Error).message;
             return undefined;
           });
           beehiivStatus = beehiivSubscription === undefined ? undefined : (beehiivSubscription?.status ?? null);
           if (statusCheckFailed) {
-            failed++;
-            failedContacts.push({ email: contact.email, reason: "falha ao checar status Beehiiv (Passo 1)" });
+            // #12543 — AVISO, nunca `failed`: sem o status Beehiiv o único
+            // efeito é adiar a auto-confirmação desta rodada (`beehiivStatus`
+            // fica `undefined`, nunca "active"), e o contato segue pra
+            // avaliação normal (Passo 2) igual a qualquer não confirmado.
+            // Nenhuma decisão é tomada com dado incompleto, e a próxima
+            // rodada retenta. Contar em `failed` fazia um 429 da Beehiiv
+            // (só arquivo desde #11225) derrubar a unit com exit 3.
+            beehiivStatusUnavailable.push({ email: contact.email, reason: beehiivStatusError ?? "erro desconhecido" });
           }
         }
 
@@ -3479,6 +3519,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     doiResendFormActive: doiResendFormForNoop !== undefined, // #9986
     staleAwaitingKitConfirmation: findStaleAwaitingKitConfirmation(store), // #8753
     failedContacts,
+    beehiivStatusUnavailable, // #12543
     kitRateLimited: failedContacts.filter((f) => f.kitRateLimited).length, // #9291
     promotedByClick,
     kitSemAberturaReturnedToFrio,
@@ -3602,6 +3643,7 @@ export async function main(): Promise<number> {
       `${result.selfConfirmed} auto-confirmado(s), ` +
       `${result.promoted} promovido(s) por taxa de abertura, ${result.suppressed} suprimido(s), ` +
       `${result.kept} mantido(s), ${result.failed} falha(s), ` +
+      `${result.beehiivStatusUnavailable.length} sem status Beehiiv no Passo 1 (aviso, #12543), ` +
       `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A), ` +
       `${result.kitSemAberturaPreexistingBlacklist} kit-sem-abertura com blacklist anterior à entrada ` +
       `(${result.kitSemAberturaBlacklistReverted} devolvido(s) ao Kit, tag ${KIT_ENVIO_BREVO_TAG_NAME} removida, #10536/#10557), ` +
@@ -3670,9 +3712,12 @@ export async function main(): Promise<number> {
           : ` (até ${KIT_RATE_LIMIT_TOLERATED_MAX} não derruba a unit).`),
     );
   }
+  if (result.beehiivStatusUnavailable.length > 0) {
+    log(beehiivStatusUnavailableMessage(result.beehiivStatusUnavailable));
+  }
   if (result.failedContacts.length > 0) {
     log(
-      `detalhe das falhas: ${result.failedContacts.map((f) => `${f.email} [${f.reason}]`).join(" | ")}`,
+      `detalhe das falhas:${result.failedContacts.map((f) => `${f.email} [${f.reason}]`).join(" | ")}`,
     );
   }
 
