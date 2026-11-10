@@ -865,6 +865,13 @@ daqui.
   (#5536):** Passo 7 pula a cópia da imagem de capa com warning explícito
   em `ln-{cycle}.json` (`coverImagePath: null`) — o artefato HTML sai
   normalmente, só a capa fica ausente. Avise o editor no Passo 8.
+- **Ciclo publicado à mão, fora desta skill (#12745):** sem
+  `ln-{cycle}.json` o `linkedin-weekly-staleness-alarm.ts` segue alarmando
+  depois da publicação. Registre com `npx tsx
+  scripts/mark-linkedin-weekly-published.ts --cycle {cycle} --url {URL do
+  artigo}`: grava (ou completa) `ln-{cycle}.json` com `published_manually:
+  true` e a URL. A API do LinkedIn não lista artigos de newsletter, então
+  não há confirmação automática; a URL é a prova.
 
 ## Outputs
 
