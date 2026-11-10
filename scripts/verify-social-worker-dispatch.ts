@@ -231,6 +231,16 @@ function toDlqIndex(dlq: Set<string> | DlqIndex): DlqIndex {
  * refaz) — e a invariante `social-published-send-unknown` e o check 0l passam
  * a enxergar o caso. Os demais itens da DLQ viram `failed`, com o `last_error`
  * do Worker quando houver.
+ *
+ * `cancelling` (#12421, só o carrossel semanal grava): o `--reschedule` gravou
+ * a intenção de cancelar e o DELETE pode ou não ter chegado ao Worker. Entra
+ * SÓ no ramo da DLQ: item na DLQ prova que o Worker tentou disparar (o DELETE
+ * não chegou a tempo) e falhou, então vira `failed`/`send_unknown` como a
+ * `scheduled`. Fora da DLQ não há conclusão: ausente da fila tanto pode ser
+ * "disparou" quanto "o DELETE apagou", e o Worker não guarda histórico de
+ * disparo — a entrada fica `cancelling` e o alarme de entrada presa
+ * (`findStuckCancellingEntries`, `retro-semanal-staleness-alarm.ts`) avisa o
+ * editor quando o horário antigo passa.
  */
 export function reconcileWorkerEntry(
   entry: PostEntry,
@@ -241,7 +251,7 @@ export function reconcileWorkerEntry(
   if (!WORKER_RECONCILABLE_PLATFORMS.has(entry.platform)) {
     return { updated: entry, changed: false };
   }
-  if (entry.status !== "scheduled") {
+  if (entry.status !== "scheduled" && entry.status !== "cancelling") {
     return { updated: entry, changed: false };
   }
   const key = entry.worker_queue_key as string | undefined;
@@ -250,6 +260,9 @@ export function reconcileWorkerEntry(
   }
 
   const dead = toDlqIndex(dlq).get(workerKeyId(key));
+  if (!dead && entry.status === "cancelling") {
+    return { updated: entry, changed: false };
+  }
   if (dead) {
     const lastError = dead.last_error;
     if (lastError?.startsWith(WORKER_SEND_UNKNOWN_PREFIX)) {

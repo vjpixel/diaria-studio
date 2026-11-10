@@ -39,6 +39,11 @@
  *   npx tsx scripts/route-issue.ts --issue 1234 --track agendada \
  *     --until 2026-09-01 --reason "aguardando resposta da Beehiiv"
  *
+ * Argv quebrado (flag desconhecida, argumento solto, flag de valor sem valor
+ * ou com valor que começa com `-`) sai 1 antes de qualquer chamada ao `gh`;
+ * `--help` sai 0 com o uso (#12528, `CLI_SPEC` abaixo). Um texto de
+ * `--reason`/`--body` que comece com `-` precisa de outra redação.
+ *
  * `--reason` é **obrigatório** pra `--track bloqueada` e `--track agendada`
  * (#7270/#7288 — bloqueio/agendamento sem motivo registrado é o padrão que
  * as duas issues corrigiram); opcional pros demais tracks. `--until` só é
@@ -172,7 +177,7 @@ import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { dirname, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_ISSUE_REPO, isDefaultIssueRepo, loadIssueRepos, normalizeRepoSlug, parseIssueRef } from "./lib/issue-repos.ts";
-import { isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, isMainModule } from "./lib/cli-args.ts";
 import {
   applyRouteLabelPlan,
   autoMotivoForTrack,
@@ -1000,8 +1005,33 @@ function parseForCreateArgs(argv: string[]): ForCreateOptions | { error: string 
   return { track: track as RouteTrack, motivo: motivo as RouteMotivo | undefined, until, body };
 }
 
+/**
+ * Flags aceitas (#12528) — as mesmas de `parseRawArgs`, que continua
+ * recusando o que não conhece (defesa pra quem chama `parseArgs` direto).
+ * Validado antes de qualquer `gh`.
+ */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/route-issue.ts",
+  booleans: ["for-create", "force"],
+  values: ["issue", "track", "reason", "motivo", "until", "body", "depends-on", "sessao", "triaged-at", "override-newer", "override-decision", "override-unblock"],
+  usage: [
+    "uso: npx tsx scripts/route-issue.ts --issue N|owner/repo#N --track {track} [--reason <texto>] [--motivo <m>]",
+    "  [--until AAAA-MM-DD] [--depends-on N] [--sessao continuo|overnight|develop] [--triaged-at <iso>]",
+    "  [--override-newer <motivo>] [--override-decision <motivo>] [--override-unblock <motivo>] [--force] [--help | -h]",
+    "uso: npx tsx scripts/route-issue.ts --for-create --track {track} [--motivo <m>] [--until AAAA-MM-DD] [--body <texto>]",
+    "",
+    "Sem --for-create aplica labels e comenta na issue (escrita real no GitHub).",
+    "Flag desconhecida, argumento solto ou flag sem o valor esperado sai 1 sem rodar nada (#12528).",
+  ].join("\n"),
+};
+
 async function main() {
   const argv = process.argv.slice(2);
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   if (argv.includes("--for-create")) {
     const parsed = parseForCreateArgs(argv);
     if ("error" in parsed) {

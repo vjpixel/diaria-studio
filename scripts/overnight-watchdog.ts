@@ -126,7 +126,7 @@ import { execFileSync } from "node:child_process";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
 import { mtimeMs } from "./lib/mtime.ts";
-import { isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { listActiveSessions } from "./lib/session-registry.ts";
 import { readPhase as readOvernightSessionMarkerPhase } from "./overnight-session-marker.ts";
@@ -1132,6 +1132,14 @@ function emitRunLogEvent(
  * SEGUE com o default: avisar é o objetivo, abortar o watchdog por causa de
  * um override malformado seria pior que rodar com o valor padrão.
  *
+ * Fronteira (#12528): esta função só cuida do VALOR (`--threshold abc`/`0`).
+ * Argv estruturalmente quebrado — flag desconhecida (`--dryrun`), argumento
+ * solto, `--threshold` sem valor ou com valor que parece flag — é recusado
+ * antes, em `main()`, por `applyCliAction(CLI_SPEC)`: sai 1 sem rodar, porque
+ * um typo de `--dry-run` rodaria o watchdog REAL (e-mail + banner). A
+ * tolerância "sem valor → avisa" abaixo continua valendo pra quem chama a
+ * função direto (testes).
+ *
  * O guard de piso (`CI_WAIT_TIMEOUT_MIN`) também só avisa, nunca recusa — um
  * limiar abaixo do timeout de CI é quase certamente engano (alarme em toda
  * espera de CI saudável), mas pode ser intencional num teste pontual, e é
@@ -1592,7 +1600,23 @@ export async function runAllWatchedKinds(
   return anyFailed;
 }
 
+/**
+ * Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12528).
+ * `threshold` fica fora de `numeric`: valor não-numérico avisa e segue com o
+ * default (`parseArgs` acima), não aborta o watchdog.
+ */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/overnight-watchdog.ts",
+  booleans: ["dry-run"],
+  values: ["threshold"],
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv();
 
   const ROOT = resolve(process.cwd());

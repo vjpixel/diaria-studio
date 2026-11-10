@@ -68,10 +68,14 @@
  * Uso:
  *   npx tsx scripts/aquisicao-reconcile-daily.ts                # dia BRT anterior
  *   npx tsx scripts/aquisicao-reconcile-daily.ts --day AAAA-MM-DD  # override p/ teste/backfill
+ *
+ * Argv inválido (flag desconhecida, `--day` sem valor) sai 1 sem rodar nada;
+ * `--help` sai 0 (#12528). É a única saída ≠ 0 do script: o fail-soft acima
+ * vale pra falha de ingestão, não pra typo de quem chamou.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { brtDateOf, shiftDate } from "./lib/ads-rolling-window.ts";
 import {
   aggregateBaseline,
@@ -109,7 +113,15 @@ export function defaultProcessingDay(now: Date): string {
   return shiftDate(brtDateOf(now), -1);
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12528). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/aquisicao-reconcile-daily.ts",
+  values: ["day"],
+};
+
 async function main(argv: string[]): Promise<number> {
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) return cliExit;
   const args = parseArgs(argv).values;
   const day = typeof args.day === "string" && args.day ? args.day : defaultProcessingDay(new Date());
 

@@ -29,8 +29,14 @@
  * Ausentes → o veredito usa só o store local e o achado registra isso.
  *
  * Estado: `data/weekly/retro-semanal-staleness-alarm-issues.json`.
+ *
+ * Segundo achado, no mesmo estado (#12421): entrada presa em `cancelling` em
+ * QUALQUER semana de `data/weekly/` com o horário antigo já passado (um
+ * `--reschedule` que parou no meio; o registro não diz se o post saiu). Issue
+ * própria por entrada (`weekly-social-cancelling-stuck`, família `estado`) e
+ * e-mail próprio. Lógica pura em `scripts/lib/weekly-cancelling-stuck-alarm.ts`.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -49,6 +55,14 @@ import {
   type RetroSemanalWorkerLookup,
 } from "./lib/retro-semanal-staleness-alarm.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
+import {
+  findStuckCancellingEntries,
+  toStuckCancellingFinding,
+  buildStuckCancellingEmail,
+  WEEKLY_CANCELLING_STUCK_CHECK,
+  type StuckCancellingEntry,
+} from "./lib/weekly-cancelling-stuck-alarm.ts";
+import type { PostEntry } from "./lib/social-published-store.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
@@ -89,6 +103,27 @@ export function readWeeklyStore(saturday: string, rootDir: string = ROOT): unkno
     console.error(`${LOG_PREFIX} ${path} ilegível — tratado como sem evidência: ${(e as Error).message}`);
     return null;
   }
+}
+
+/**
+ * #12421: entradas `cancelling` com horário antigo passado em todas as semanas
+ * de `data/weekly/` (pastas `AAMMDD`; as `-clicked`/`-highlights` são de
+ * imagem e não têm registro). Varre todas, não só o sábado da execução: a
+ * entrada presa costuma ser de uma semana anterior, e a issue (família
+ * `estado`) só pode fechar quando a entrada deixar de estar presa, nunca por
+ * sair de uma janela. Registro ilegível é pulado com log; `data/weekly/`
+ * ausente devolve `[]`.
+ */
+export function scanStuckCancellingEntries(rootDir: string = ROOT, now: Date = new Date()): StuckCancellingEntry[] {
+  const weeklyDir = resolve(rootDir, "data", "weekly");
+  if (!existsSync(weeklyDir)) return [];
+  const out: StuckCancellingEntry[] = [];
+  for (const week of readdirSync(weeklyDir).filter((d) => /^\d{6}$/.test(d)).sort()) {
+    const store = readWeeklyStore(week, rootDir) as { posts?: unknown } | null;
+    if (!store || !Array.isArray(store.posts)) continue;
+    out.push(...findStuckCancellingEntries(week, store.posts as PostEntry[], now));
+  }
+  return out;
 }
 
 /** Converte a avaliação num `AlarmFinding` (#5339). `fingerprint` = sábado
@@ -188,7 +223,16 @@ async function main(): Promise<void> {
       `verdict=${evaluation.verdict}`,
   );
 
-  const alarmFindings: AlarmFinding[] = evaluation.verdict === "alarm-missing" ? [toAlarmFinding(evaluation)] : [];
+  // #12421: entrada presa em `cancelling` (qualquer semana) entra no mesmo
+  // estado de alarm-issues, com check e fingerprint próprios.
+  const stuck = scanStuckCancellingEntries(ROOT, new Date());
+  const stuckFindings = stuck.map(toStuckCancellingFinding);
+  console.log(`${LOG_PREFIX} entradas presas em "cancelling" com horário antigo passado: ${stuck.length}`);
+
+  const alarmFindings: AlarmFinding[] = [
+    ...(evaluation.verdict === "alarm-missing" ? [toAlarmFinding(evaluation)] : []),
+    ...stuckFindings,
+  ];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
 
   if (isDryRun) {
@@ -218,25 +262,47 @@ async function main(): Promise<void> {
     return;
   }
 
-  const result = await notifyEditorForOutcomes(
-    findingOutcomes,
-    "acao",
-    (qualifying) => buildRetroSemanalStalenessAlarmEmail(evaluation, qualifying[0]),
-    {
-      cwd: ROOT,
-      platformConfigPath: PLATFORM_CONFIG_PATH,
-      emailTo: toOverride,
-      // Mesmo racional do irmão (#8271): 1 ocorrência por sábado; retry no
-      // mesmo sábado reusa a issue e não re-emite e-mail sob `legacy`.
-      legacyResendIntent: "dedupe-new-occurrences-only",
-    },
-  );
+  // Um e-mail por tipo de achado: cada um tem o próprio texto e a própria ação.
+  const stalenessOutcomes = findingOutcomes.filter((o) => o.check !== WEEKLY_CANCELLING_STUCK_CHECK);
+  const stuckOutcomes = findingOutcomes.filter((o) => o.check === WEEKLY_CANCELLING_STUCK_CHECK);
+  if (stalenessOutcomes.length > 0) {
+    await emailOutcomes(stalenessOutcomes, (qualifying) => buildRetroSemanalStalenessAlarmEmail(evaluation, qualifying[0]), toOverride, `saturday=${saturday}`);
+  }
+  if (stuckOutcomes.length > 0) {
+    const byFingerprint = new Map(stuck.map((e, i) => [stuckFindings[i].fingerprint, e]));
+    await emailOutcomes(
+      stuckOutcomes,
+      (qualifying) =>
+        buildStuckCancellingEmail(
+          qualifying.flatMap((o) => byFingerprint.get(o.fingerprint) ?? []),
+          qualifying,
+        ),
+      toOverride,
+      `${stuckOutcomes.length} entrada(s) "cancelling"`,
+    );
+  }
+}
+
+async function emailOutcomes(
+  outcomes: Parameters<typeof notifyEditorForOutcomes>[0],
+  build: Parameters<typeof notifyEditorForOutcomes>[2],
+  toOverride: string,
+  label: string,
+): Promise<void> {
+  const result = await notifyEditorForOutcomes(outcomes, "acao", build, {
+    cwd: ROOT,
+    platformConfigPath: PLATFORM_CONFIG_PATH,
+    emailTo: toOverride,
+    // Mesmo racional do irmão (#8271): 1 ocorrência por achado; retry reusa
+    // a issue e não re-emite e-mail sob `legacy`.
+    legacyResendIntent: "dedupe-new-occurrences-only",
+  });
   if (result.qualifying.length === 0) {
-    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome.`);
+    console.log(`${LOG_PREFIX} política '${result.emailPolicy}': nenhum e-mail necessário pra este outcome (${label}).`);
   } else if (result.emailSent) {
-    console.log(`${LOG_PREFIX} e-mail de alarme enviado (saturday=${saturday}).`);
+    console.log(`${LOG_PREFIX} e-mail de alarme enviado (${label}).`);
   } else {
-    console.error(`${LOG_PREFIX} falha ao enviar e-mail: ${result.emailError}`);
+    console.error(`${LOG_PREFIX} falha ao enviar e-mail (${label}): ${result.emailError}`);
   }
 }
 

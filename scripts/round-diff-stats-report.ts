@@ -26,12 +26,16 @@
  *   npx tsx scripts/round-diff-stats-report.ts
  *   npx tsx scripts/round-diff-stats-report.ts --check-alarm
  *   npx tsx scripts/round-diff-stats-report.ts --check-alarm --dry-run
+ *
+ * Flag desconhecida ou argumento solto sai 1 antes de qualquer I/O; `--help`
+ * sai 0 (#12528). Antes, `--check-alarm --dryrun` reconciliava a issue de
+ * alarme de verdade.
  */
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
 import {
   computeAllRoundDiffStatsWindows,
@@ -195,8 +199,19 @@ export function pendingFindingsForCheckAlarm(
   return [buildRoundDiffRatioFinding(window7d.ratio, window7d.added, window7d.netPerDay, window7d.rounds)];
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12528). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/round-diff-stats-report.ts",
+  booleans: ["check-alarm", "dry-run"],
+};
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   const checkAlarm = hasFlag(argv, "check-alarm");
   const dryRun = hasFlag(argv, "dry-run");
 

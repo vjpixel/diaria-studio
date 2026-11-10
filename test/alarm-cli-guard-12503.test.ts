@@ -123,24 +123,26 @@ describe("applyCliAction (#12503)", () => {
 
 /**
  * Scripts de alarme ainda SEM validação de argv. Só pode encolher: ao migrar
- * um, tire daqui. Cada um tem parser próprio ou formato de argv que pede
- * cuidado à parte (follow-up da #12503).
+ * um, tire daqui. A #12528 migrou os 12 que sobravam da #12503 e esvaziou a
+ * lista; script de alarme novo já nasce validando o argv.
  */
-const PENDENTES = new Set([
-  "aquisicao-reconcile-daily.ts",
-  "check-alarm-retirement-candidates.ts",
-  "geo-citation-monitor.ts",
-  "hubs-weekly-regen.ts",
-  "kit-subscriber-state-transition-alarm.ts",
-  "overnight-watchdog.ts",
-  "publish-circle-stack.ts",
-  "reconcile-send-audiences.ts",
-  "register-pending-data-writes.ts",
-  "round-diff-stats-report.ts",
-  "route-issue.ts",
-  "run-tests.ts",
-  "sync-kit-frio.ts",
-]);
+const PENDENTES = new Set<string>([]);
+
+/**
+ * Casam o regex de `alarmScripts()` só por citar `alarm-issues` num
+ * COMENTÁRIO: não importam o módulo de alarme nem chamam
+ * `notifyEditorForOutcomes`. O teste "NAO_ALARMES" trava isso: se um deles
+ * virar alarme de verdade, sai daqui e passa a validar o argv.
+ *   - `run-tests.ts`: o runner da suíte (`npm test`). O argv é repassado ao
+ *     `node --test` (`--test-name-pattern`, `--test-reporter`...), e uma lista
+ *     fechada de flags quebraria o runner (#12528).
+ */
+const NAO_ALARMES = new Set(["run-tests.ts"]);
+
+/** Importa o módulo de alarme ou chama o portão de e-mail: código, não comentário. */
+function isRealAlarm(src: string): boolean {
+  return /from\s+["']\.\/lib\/alarm-issues(\.ts)?["']|\bnotifyEditorForOutcomes\(/.test(src);
+}
 
 function alarmScripts(): { file: string; src: string }[] {
   return readdirSync(SCRIPTS)
@@ -173,8 +175,20 @@ describe("scripts de alarme validam o argv (#12503)", () => {
   const scripts = alarmScripts();
 
   test("todo alarme fora da allowlist valida o argv antes do I/O", () => {
-    const faltando = scripts.filter(({ file, src }) => !PENDENTES.has(file) && !validatesArgv(src)).map((s) => s.file);
+    const faltando = scripts
+      .filter(({ file, src }) => !PENDENTES.has(file) && !NAO_ALARMES.has(file) && !validatesArgv(src))
+      .map((s) => s.file);
     assert.deepEqual(faltando, [], `alarmes sem validação de argv: ${faltando.join(", ")} — use applyCliAction (scripts/lib/cli-args.ts)`);
+  });
+
+  test("NAO_ALARMES: casam o regex só por comentário, sem importar alarm-issues (#12528)", () => {
+    const byFile = new Map(scripts.map((s) => [s.file, s.src]));
+    for (const file of NAO_ALARMES) {
+      const src = byFile.get(file);
+      assert.ok(src !== undefined, `${file} não casa mais o regex de alarme — tire de NAO_ALARMES`);
+      assert.ok(!isRealAlarm(src), `${file} virou alarme de verdade — tire de NAO_ALARMES e valide o argv`);
+      assert.ok(!PENDENTES.has(file), `${file} está em PENDENTES e em NAO_ALARMES`);
+    }
   });
 
   test("allowlist só encolhe: pendente que já valida o argv sai da lista", () => {
@@ -200,7 +214,8 @@ describe("scripts de alarme validam o argv (#12503)", () => {
         assert.ok(!spec.values.includes(b), `${file}: --${b} em booleans e values`);
       }
     }
-    assert.ok(migrados >= 40, `esperava ≥40 alarmes migrados, achei ${migrados}`);
+    // 40 da #12503 + 12 da #12528.
+    assert.ok(migrados >= 52, `esperava ≥52 alarmes migrados, achei ${migrados}`);
   });
 
   test("args das tasks agendadas passam no CLI_SPEC do script", () => {
