@@ -27,6 +27,9 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { APROFUNDE_HEADER_RE, APROFUNDE_ITEM_RE } from "./extract-destaques.ts";
+import { extractUrlsWithLines } from "./validate-domains.ts";
+import { editorialDomain, DEFAULT_MAX_PER_DOMAIN } from "./lib/domain-diversity.ts"; // #12328
 import { cleanSummary } from "./lib/clean-summary.ts";
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1790 (era inline divergente)
 import {
@@ -56,6 +59,53 @@ import { findDuplicateSnippetUrls, formatDuplicateSnippetUrlWarnings, loadSnippe
 import { resolveBoxesForEdition } from "./select-boxes-by-clicks.ts"; // #4626: seleção automática de boxes 1/2/3 por cliques+tendência+anti-repetição — só afeta main() (CLI), stitchNewsletter() em si permanece pura/sem I/O de auto-seleção
 import { matchEditionHub, extractBoldLinkTitles } from "./lib/hub-match.ts"; // #4907: link contextual pro hub temático quando as manchetes do dia casam HUB_KEYWORD_PATTERNS
 import { selectRelatedEditions, renderRelatedEditionsMarkdown, loadRecentRelatedEditionUrls } from "./lib/related-editions.ts"; // #5122/#5181: aresta edição->edição no fim do corpo — independente do #4907 acima (não exige match único edição-wide), exclusão mútua aplicada abaixo
+
+/** #12328: only Aprofunde links compete for the edition's remaining slots.
+ * Keep source order (canonical first), facts and all other sections intact.
+ * Called on the assembled edition, never on reviewed/editor-authored files.
+ */
+export function limitAprofundeLinks(md: string): string {
+  const lines = md.split("\n");
+  const blocks: Array<{ header: number; items: Array<{ index: number; url: string }> }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!APROFUNDE_HEADER_RE.test(lines[i].trim())) continue;
+    const block = { header: i, items: [] as Array<{ index: number; url: string }> };
+    for (let j = i + 1; j < lines.length; j++) {
+      if (!lines[j].trim()) continue;
+      const item = lines[j].trim().match(APROFUNDE_ITEM_RE);
+      if (!item) break; // malformed content is left for the existing lint
+      block.items.push({ index: j, url: item[2] });
+    }
+    blocks.push(block);
+  }
+  const itemLines = new Set(blocks.flatMap(b => b.items.map(item => item.index)));
+  const urls = new Set(extractUrlsWithLines(lines.filter((_, i) => !itemLines.has(i)).join("\n")).map(e => e.url));
+  const domains = new Map<string, number>();
+  for (const url of urls) {
+    const domain = editorialDomain(url);
+    if (domain) domains.set(domain, (domains.get(domain) ?? 0) + 1);
+  }
+  const removed = new Set<number>();
+  const pages = new Set<string>(); // Dedup across all Aprofunde blocks.
+  for (const block of blocks) {
+    for (const item of block.items) {
+      const page = item.url.split("#")[0];
+      const domain = editorialDomain(item.url);
+      const duplicate = pages.has(page);
+      const excess = domain && !urls.has(item.url) && (domains.get(domain) ?? 0) >= DEFAULT_MAX_PER_DOMAIN;
+      if (duplicate || excess) {
+        removed.add(item.index);
+        console.error(`[stitch-newsletter] Aprofunde: omitido ${item.url} (${duplicate ? "página repetida" : "limite de domínio da edição"})`);
+        continue;
+      }
+      pages.add(page);
+      if (!urls.has(item.url) && domain) domains.set(domain, (domains.get(domain) ?? 0) + 1);
+      urls.add(item.url);
+    }
+    if (block.items.length > 0 && block.items.every(item => removed.has(item.index))) removed.add(block.header);
+  }
+  return lines.filter((_, i) => !removed.has(i)).join("\n");
+}
 
 interface ArticleLike {
   url?: string;
@@ -1011,7 +1061,7 @@ export function stitchNewsletter(input: StitchInput): string {
   parts.push(buildParaEncerrar(input.paraEncerrar, relatedEditionsMarkdown, input.snippetsRootDir));
   parts.push("");
 
-  return parts.join("\n");
+  return limitAprofundeLinks(parts.join("\n"));
 }
 
 async function main(): Promise<number | void> {
