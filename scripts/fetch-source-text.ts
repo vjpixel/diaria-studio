@@ -23,6 +23,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { assessPaywallPreview, type PaywallPreviewResult } from "./lib/diaria/paywall-preview.ts";
 
 export const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
@@ -121,7 +122,15 @@ export function validateUrl(url: string): string | null {
 }
 
 export type FetchTextResult =
-  | { ok: true; status: number; text: string; bytes: number; truncated: boolean }
+  | {
+      ok: true;
+      status: number;
+      text: string;
+      bytes: number;
+      truncated: boolean;
+      /** #12537: artigo inteiro ou prévia de paywall (`lib/diaria/paywall-preview.ts`). */
+      paywall: PaywallPreviewResult;
+    }
   | { ok: false; kind: "blocked" | "error"; status?: number; message: string };
 
 export function blockedMessage(status: number): string {
@@ -188,13 +197,15 @@ export async function fetchSourceText(
     } catch {
       body = new TextDecoder("utf-8").decode(slice);
     }
-    let text = /html|xml/i.test(ct) || /^\s*</.test(body) ? htmlToText(body) : body.trim();
+    const isMarkup = /html|xml/i.test(ct) || /^\s*</.test(body);
+    let text = isMarkup ? htmlToText(body) : body.trim();
     if (text.length > MAX_TEXT_CHARS) {
       text = text.slice(0, MAX_TEXT_CHARS);
       truncated = true;
     }
     if (!text) return { ok: false, kind: "error", status: res.status, message: "corpo vazio" };
-    return { ok: true, status: res.status, text, bytes: Buffer.byteLength(text, "utf8"), truncated };
+    const paywall = assessPaywallPreview(isMarkup ? body : "", text);
+    return { ok: true, status: res.status, text, bytes: Buffer.byteLength(text, "utf8"), truncated, paywall };
   } catch (e) {
     return { ok: false, kind: "error", message: `erro: ${(e as Error).message}` };
   }
