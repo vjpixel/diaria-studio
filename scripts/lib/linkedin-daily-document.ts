@@ -30,7 +30,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { buildCarouselPdf } from "./shared/carousel-pdf.ts";
-import { postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./worker-queue-client.ts";
+import { idempotentConflictKey, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./worker-queue-client.ts";
 import { parseDestaques } from "../extract-destaques.ts";
 import { cloudflareKvKey } from "../upload-images-public.ts";
 
@@ -196,24 +196,6 @@ export type LinkedInDailyRichResult =
  */
 function isDefinitiveRejection(e: unknown): e is WorkerQueueError {
   return e instanceof WorkerQueueError && e.status >= 400 && e.status < 500 && e.status !== 409;
-}
-
-/**
- * #12661 — 409 do enqueue idempotente. `already_fired`/`fire_in_progress`: o
- * post desta chave já saiu ou está saindo, então é sucesso (nada a
- * enfileirar). `send_unknown` (disparo ambíguo, foi pra DLQ) e 409 ilegível
- * PROPAGAM: o post pode ou não ter saído, e nenhum degrau publica por cima.
- */
-function idempotentConflictKey(e: unknown): string | null {
-  if (!(e instanceof WorkerQueueError) || e.status !== 409) return null;
-  let parsed: { error?: unknown; key?: unknown };
-  try {
-    parsed = JSON.parse(e.body) as { error?: unknown; key?: unknown };
-  } catch {
-    return null;
-  }
-  if (parsed.error !== "already_fired" && parsed.error !== "fire_in_progress") return null;
-  return typeof parsed.key === "string" && parsed.key !== "" ? parsed.key : null;
 }
 
 /**

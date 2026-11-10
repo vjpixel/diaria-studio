@@ -1062,3 +1062,154 @@ describe("#9752 — runDesbloqueioScan ignora marcador de autor sem vínculo com
     );
   });
 });
+
+describe("#12546 — semMudancaDesdeUltimaRevisao: não repetir o comentário de revisão", () => {
+  const block = formatExecutionBlockMarker({
+    recorded_at: "2026-10-27T10:00:00Z",
+    motivo: "conta de terceiro não existe",
+    sessao: "develop",
+    condicao: { tipo: "externo", descricao: "editor abrir a conta" },
+  });
+  const blocoDep = formatExecutionBlockMarker({
+    recorded_at: "2026-10-27T10:00:00Z",
+    motivo: "depende de outra",
+    sessao: "develop",
+    condicao: { tipo: "depends_on", issue: 999 },
+  });
+  const revisao =
+    "Revisado por /diaria-desbloqueia (08/11): bloqueio de execução de 2026-10-27 segue valendo, nenhuma mudança.";
+  const ultimaRevisao = { body: revisao, createdAt: "2026-11-08T23:26:24Z", confiavel: true };
+
+  it("cenário da issue: último comentário é a revisão e o updatedAt é o do próprio POST → true", () => {
+    // Medido na #10731: updatedAt 23:26:25Z, revisão criada 23:26:24Z.
+    const c = classifyDesbloqueioCandidate(
+      baseInput({ updatedAt: "2026-11-08T23:26:25Z", comments: [block, revisao], ultimoComentario: ultimaRevisao }),
+    );
+    assert.equal(c?.status, "bloqueio-confirmado");
+    assert.equal(c?.semMudancaDesdeUltimaRevisao, true);
+  });
+
+  it("algo mudou depois da revisão (label, edição, comentário) → updatedAt além da folga → false", () => {
+    const c = classifyDesbloqueioCandidate(
+      baseInput({ updatedAt: "2026-11-09T10:00:00Z", comments: [block, revisao], ultimoComentario: ultimaRevisao }),
+    );
+    assert.equal(c?.status, "bloqueio-confirmado");
+    assert.equal(c?.semMudancaDesdeUltimaRevisao, false);
+  });
+
+  it("último comentário não é a revisão → false (primeira revisão ou comentário novo)", () => {
+    const outro = "Atualização: a conta foi aberta ontem.";
+    const c = classifyDesbloqueioCandidate(
+      baseInput({
+        updatedAt: "2026-11-08T23:26:25Z",
+        comments: [block, outro],
+        ultimoComentario: { body: outro, createdAt: "2026-11-08T23:26:24Z", confiavel: true },
+      }),
+    );
+    assert.equal(c?.semMudancaDesdeUltimaRevisao, false);
+  });
+
+  it("revisão escrita por autor não confiável → false (#9752)", () => {
+    const c = classifyDesbloqueioCandidate(
+      baseInput({
+        updatedAt: "2026-11-08T23:26:25Z",
+        comments: [block],
+        ultimoComentario: { ...ultimaRevisao, confiavel: false },
+      }),
+    );
+    assert.equal(c?.semMudancaDesdeUltimaRevisao, false);
+  });
+
+  it("sem ultimoComentario, data inválida ou dependência não resolvida → false", () => {
+    const sem = classifyDesbloqueioCandidate(baseInput({ comments: [block, revisao] }));
+    assert.equal(sem?.semMudancaDesdeUltimaRevisao, false);
+    const dataRuim = classifyDesbloqueioCandidate(
+      baseInput({
+        updatedAt: "2026-11-08T23:26:25Z",
+        comments: [block, revisao],
+        ultimoComentario: { ...ultimaRevisao, createdAt: "ontem" },
+      }),
+    );
+    assert.equal(dataRuim?.semMudancaDesdeUltimaRevisao, false);
+    const missing = classifyDesbloqueioCandidate(
+      baseInput({
+        updatedAt: "2026-11-08T23:26:25Z",
+        comments: [blocoDep, revisao],
+        dependencyState: "missing",
+        ultimoComentario: ultimaRevisao,
+      }),
+    );
+    assert.equal(missing?.status, "bloqueio-confirmado");
+    assert.equal(missing?.semMudancaDesdeUltimaRevisao, false);
+  });
+
+  it("dependência fechou (bloqueio-obsoleto) → false mesmo com a revisão por último", () => {
+    const c = classifyDesbloqueioCandidate(
+      baseInput({
+        updatedAt: "2026-11-08T23:26:25Z",
+        comments: [blocoDep, revisao],
+        dependencyState: "closed",
+        ultimoComentario: ultimaRevisao,
+      }),
+    );
+    assert.equal(c?.status, "bloqueio-obsoleto");
+    assert.equal(c?.semMudancaDesdeUltimaRevisao, false);
+  });
+
+  it("alarme de estado (fora-de-rodada, acao-imediata-candidata) também recebe o sinal", () => {
+    const revisaoAlarme = "Revisado por /diaria-desbloqueia (08/11): não há ação do editor que destrave agora.";
+    const c = classifyDesbloqueioCandidate(
+      baseInput({
+        labels: ["on-hold"],
+        incluirEngavetadas: true,
+        updatedAt: "2026-11-08T23:26:21Z",
+        comments: [revisaoAlarme],
+        ultimoComentario: { body: revisaoAlarme, createdAt: "2026-11-08T23:26:21Z", confiavel: true },
+      }),
+    );
+    assert.equal(c?.status, "acao-imediata-candidata");
+    assert.equal(c?.semMudancaDesdeUltimaRevisao, true);
+  });
+
+  it("runDesbloqueioScan: lê o último comentário da thread INTEIRA, inclusive de autor sem vínculo", () => {
+    const gh =
+      (comments: Record<string, unknown>[], updatedAt: string): GhRunFn =>
+      (args) => {
+        if (args[1] === "list") {
+          return {
+            status: 0,
+            stdout: JSON.stringify([
+              { number: 77, title: "issue 77", labels: [{ name: "external-blocker" }], body: null, state: "OPEN", updatedAt },
+            ]),
+            stderr: "",
+          };
+        }
+        return { status: 0, stdout: JSON.stringify({ comments }), stderr: "" };
+      };
+    const owner = (body: string, createdAt: string) => ({
+      body,
+      createdAt,
+      authorAssociation: "OWNER",
+      author: { login: "vjpixel" },
+    });
+
+    const limpo = runDesbloqueioScan(".", {
+      runGh: gh([owner(block, "2026-10-27T10:00:01Z"), owner(revisao, "2026-11-08T23:26:24Z")], "2026-11-08T23:26:25Z"),
+    });
+    assert.equal(limpo.bloqueioConfirmado[0]?.semMudancaDesdeUltimaRevisao, true);
+
+    // Comentário de conta sem vínculo DEPOIS da revisão: some de `comments`
+    // (filtro #9752), mas é algo novo na thread — não pode suprimir.
+    const comTerceiro = runDesbloqueioScan(".", {
+      runGh: gh(
+        [
+          owner(block, "2026-10-27T10:00:01Z"),
+          owner(revisao, "2026-11-08T23:26:24Z"),
+          { body: "isso já foi resolvido?", createdAt: "2026-11-08T23:26:24Z", authorAssociation: "NONE", author: { login: "x" } },
+        ],
+        "2026-11-08T23:26:25Z",
+      ),
+    });
+    assert.equal(comTerceiro.bloqueioConfirmado[0]?.semMudancaDesdeUltimaRevisao, false);
+  });
+});

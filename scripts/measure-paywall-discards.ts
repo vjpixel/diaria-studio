@@ -11,7 +11,8 @@
  * Fonte: `data/editions/{AAMM}/{AAMMDD}/_internal/link-verify-all.json` de
  * cada edição da janela. Separa o veredito por origem:
  *   - `domain`  — lista fixa de domínios (`known-paywall domain`);
- *   - `marker`  — frase achada no HTML (`marker: ...` / `browser marker: ...`).
+ *   - `marker`  — veredito por conteúdo: frase solta no HTML (`marker: ...` /
+ *     `browser marker: ...`, até o #12645) ou prévia de paywall (`paywall preview: ...`).
  *
  * Uso:
  *   npx tsx scripts/measure-paywall-discards.ts [--days 60] [--editions-dir data/editions]
@@ -91,7 +92,7 @@ export function summarizePaywallDiscards(
     const h = hosts.get(d.host) ?? { count: 0, origin: d.origin };
     h.count++;
     hosts.set(d.host, h);
-    const key = d.note.replace(/^browser marker:/, "marker:");
+    const key = d.note.replace(/^browser (marker:|paywall preview:)/, "$1");
     notes.set(key, (notes.get(key) ?? 0) + 1);
   }
   return {

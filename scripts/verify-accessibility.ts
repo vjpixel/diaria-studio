@@ -18,6 +18,8 @@ import type { VerifyOptions } from "./lib/verify-options.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { extractDateFromBody } from "./lib/extract-date.ts"; // #1554 P2 — populate published_date inline
+import { assessPaywallPreview } from "./lib/diaria/paywall-preview.ts"; // #12645
+import { htmlToText } from "./fetch-source-text.ts"; // #12645
 import { isVideoUrl } from "./lib/video-youtube-resolve.ts"; // #3288: fonte única — antes duplicada byte-a-byte aqui e em launch-heuristics.ts
 
 // #717 hypothesis #3: concorrência do browser fallback. Default 4 — Puppeteer
@@ -136,16 +138,43 @@ const PRIMARY_SOURCE_PREFIXES = [
   // perplexity.ai/* (outros paths) continua sendo tratado como agregador abaixo
 ];
 
-const PAYWALL_MARKERS = [
-  "subscribe to continue",
-  "subscribers only",
-  "subscribe now",
-  "sign in to read",
-  "premium content",
-  "this article is for subscribers",
-  "assinantes",
-  "conteúdo exclusivo para assinantes",
-];
+// #12645: o veredito `paywall` por conteúdo (não por domínio) vem do detector
+// de prévia do #12537 (`lib/diaria/paywall-preview.ts`): sinal de paywall
+// (schema.org `isAccessibleForFree: false`, `article:content_tier`, classe de
+// paywall no HTML ou frase de CORTE no texto extraído) E texto curto o bastante
+// pra ser só a prévia. Antes era substring solta no HTML (`"assinantes"`,
+// `"subscribe now"`, `"premium content"`...): casava menu, rodapé, caixa de
+// newsletter e até o título de notícia sobre assinaturas, e descartava ~13
+// itens gratuitos por edição (44 de 45 abriram com o artigo inteiro, medição
+// de 10/11/2026). Artigo inteiro no HTML com sinal de paywall continua
+// `accessible` (o site manda o texto e só esconde por JS).
+
+/** Prefixo da nota do veredito `paywall` por conteúdo (path GET). */
+export const PAYWALL_PREVIEW_NOTE_PREFIX = "paywall preview:";
+
+/**
+ * Nota de veredito gravada pelo detector ANTIGO (substring solta, pré-#12645):
+ * `marker: ...` (GET) ou `browser marker: ...` (Puppeteer). Entradas assim no
+ * cache cross-edition (TTL 7 dias) são ignoradas e reverificadas, pra o fix
+ * valer já na próxima edição em vez de daqui a uma semana. @pure
+ */
+export function isLegacyMarkerPaywallNote(note: string | undefined): boolean {
+  return typeof note === "string" && /^(?:browser )?marker: /.test(note);
+}
+
+/**
+ * Decide se o corpo baixado é prévia de paywall. `html` é o HTML bruto
+ * (schema.org/meta/classe); `text`, o texto visível — quando omitido, sai do
+ * `html` via `htmlToText`. Devolve a nota do veredito `paywall`, ou `null`
+ * se a página é aberta. @pure
+ */
+export function detectPaywallPreview(html: string, text?: string): string | null {
+  const visible = text ?? htmlToText(html);
+  const r = assessPaywallPreview(html, visible);
+  if (r.completeness !== "preview") return null;
+  const declared = r.declared_words !== null ? ` de ${r.declared_words} declaradas` : "";
+  return `${PAYWALL_PREVIEW_NOTE_PREFIX} ${r.signals.join(", ")} (${r.words} palavras${declared})`;
+}
 
 // #4730: `needs_reverify` é um verdict distinto de `uncertain` — sinaliza que
 // AMBAS as tentativas determinísticas (fetch direto + browser fallback)
@@ -379,7 +408,9 @@ export async function verify(
   // #836: !isRetry guard removed — recursive primary URLs benefit from cache.
   if (verifyCache !== null) {
     const cached = getVerifyCached(verifyCache, effectiveUrl, verifyCacheTtlMs);
-    if (cached !== null) {
+    // #12645: `paywall` gravado pelo detector antigo (substring solta) não é
+    // confiável — reverifica em vez de devolver o falso positivo cacheado.
+    if (cached !== null && !(cached.verdict === "paywall" && isLegacyMarkerPaywallNote(cached.note))) {
       return {
         verdict: cached.verdict,
         finalUrl: cached.finalUrl ?? effectiveUrl,
@@ -472,9 +503,8 @@ export async function verify(
     const rawBody = await get.body.text();
     saveCachedBody(bodiesDir, effectiveUrl, rawBody);
     const body = rawBody.slice(0, 50_000).toLowerCase();
-    for (const marker of PAYWALL_MARKERS) {
-      if (body.includes(marker)) return { verdict: "paywall", finalUrl: effectiveUrl, note: `marker: ${marker}`, ...(resolvedFrom ? { resolvedFrom } : {}) };
-    }
+    const paywallNote = detectPaywallPreview(rawBody);
+    if (paywallNote) return { verdict: "paywall", finalUrl: effectiveUrl, note: paywallNote, ...(resolvedFrom ? { resolvedFrom } : {}) };
     if (body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").length < 500) {
       if (browser) return { ...(await verifyWithBrowser(url, browser, bodiesDir)), ...(resolvedFrom ? { resolvedFrom } : {}) };
       return { verdict: "uncertain", finalUrl: effectiveUrl, note: "body < 500 chars", ...(resolvedFrom ? { resolvedFrom } : {}) };
@@ -596,10 +626,12 @@ async function verifyWithBrowser(
     }
 
     const bodyText = await page.evaluate(() => document.body?.innerText ?? "");
-    for (const marker of PAYWALL_MARKERS) {
-      if (bodyText.toLowerCase().includes(marker)) {
-        return { verdict: "paywall", finalUrl, note: `browser marker: ${marker}` };
-      }
+    // #12645: mesmo detector de prévia do path GET, com o HTML renderizado
+    // (schema.org/meta/classe) e o texto visível (frase de corte + palavras).
+    const renderedHtml = await page.content();
+    const browserPaywallNote = detectPaywallPreview(renderedHtml, bodyText);
+    if (browserPaywallNote) {
+      return { verdict: "paywall", finalUrl, note: `browser ${browserPaywallNote}` };
     }
     if (bodyText.replace(/\s+/g, " ").trim().length < 500) {
       return { verdict: "uncertain", finalUrl, note: "browser body < 500 chars" };
@@ -613,7 +645,7 @@ async function verifyWithBrowser(
     // isso, artigos que só passam pelo fallback (ex: anti-bot) nunca tinham
     // published_date e o "benefício da dúvida" de filter-date-window.ts os
     // deixava passar mesmo com semanas de idade (#3211).
-    const html = await page.content();
+    const html = renderedHtml;
     const dateResult = extractDateFromBody(html);
     // #7668: o path primário (GET) salva o body em `bodiesDir`, mas URLs que
     // só passam pelo browser fallback (body < 500 chars, fetch error, anti-bot
