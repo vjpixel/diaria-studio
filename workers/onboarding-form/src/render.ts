@@ -322,6 +322,9 @@ export function renderFormHtml(
  * Página de obrigado. #12495: com os resultados já publicados (`results`,
  * de `resolveFormResults`), mostra o link da versão web da edição especial
  * no lugar do aviso genérico sobre os lembretes; sem eles, nada muda.
+ * #12604: a página não promete o e-mail `form_resultados`. O Worker não sabe
+ * se ele sai (só sai na 1ª resposta depois do envio, para pessoa conhecida em
+ * `followup.people` e sem a tag `envio-brevo`), e o link já está aqui.
  */
 export function renderThanksHtml(results: FormResults | null = null): string {
   const tail = `<p>Se quiser mudar alguma resposta, é só preencher de novo: vale a mais recente.</p>`;
@@ -329,7 +332,7 @@ export function renderThanksHtml(results: FormResults | null = null): string {
     return renderPage(
       `<h1>Obrigado!</h1><p>Suas respostas chegaram.</p>` +
         `<p>Já contei o que descobri com a pesquisa numa edição especial para quem respondeu. ` +
-        `<a href="${escapeHtml(results.url)}">Leia a edição especial</a>. Também mando o link para o seu e-mail.</p>` +
+        `<a href="${escapeHtml(results.url)}">Leia a edição especial</a>.</p>` +
         tail,
     );
   }
