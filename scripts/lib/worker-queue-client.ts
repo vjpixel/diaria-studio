@@ -168,6 +168,72 @@ export async function deleteFromWorkerQueue(
   return { deleted: true, alreadyGone: false, key };
 }
 
+/** Resultado de `findWorkerQueueEntryByIdempotencyKey` (#12664). */
+export type IdempotencyLookupResult =
+  | { status: "found"; key: string }
+  /** Toda tentativa leu a fila e nenhuma trouxe a chave. */
+  | { status: "absent" }
+  /** Alguma tentativa não conseguiu ler a fila: a ausência não está provada. */
+  | { status: "error"; error: string };
+
+export interface IdempotencyLookupOptions {
+  /** Leituras de `GET /list`. Default 3: o KV leva ~20s pra listar uma entry nova (#6016). */
+  maxAttempts?: number;
+  /** Espera entre leituras (ms). Default 10000. */
+  backoffMs?: number;
+  /** Injetável pra teste. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * #12664 — procura na fila do Worker (`GET /list`) a entry de uma
+ * `idempotency_key`. Usado depois de um POST que terminou em 5xx/timeout:
+ * o Worker pode ter gravado a entry e perdido a resposta, e publicar por outro
+ * caminho por cima duplicaria o post.
+ *
+ * `/list` sai do KV, que demora a listar uma entry recém-gravada; por isso a
+ * leitura se repete. Achou em qualquer tentativa: `found`. `absent` só quando
+ * TODAS as leituras deram certo e nenhuma trouxe a chave. Qualquer leitura com
+ * erro devolve `error` (nunca lança): o caller não pode tratar isso como
+ * ausência.
+ */
+export async function findWorkerQueueEntryByIdempotencyKey(
+  workerUrl: string,
+  token: string,
+  idempotencyKey: string,
+  opts: IdempotencyLookupOptions = {},
+): Promise<IdempotencyLookupResult> {
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const backoffMs = opts.backoffMs ?? 10_000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const listUrl = workerUrl.replace(/\/+$/, "") + "/list";
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1) await sleep(backoffMs);
+    try {
+      const res = await fetch(listUrl, {
+        headers: { "X-Diaria-Token": token },
+        signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        return { status: "error", error: `Worker /list HTTP ${res.status}: ${body.slice(0, 200)}` };
+      }
+      const parsed = (await res.json()) as { items?: unknown };
+      if (!Array.isArray(parsed.items)) {
+        return { status: "error", error: "Worker /list sem `items` no corpo" };
+      }
+      for (const item of parsed.items as Array<Record<string, unknown>>) {
+        if (item && item.idempotency_key === idempotencyKey && typeof item.key === "string") {
+          return { status: "found", key: item.key };
+        }
+      }
+    } catch (e) {
+      return { status: "error", error: `Worker /list: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+  return { status: "absent" };
+}
+
 /**
  * WorkerQueueError (#8303)
  *

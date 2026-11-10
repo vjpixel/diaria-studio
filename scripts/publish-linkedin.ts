@@ -36,6 +36,9 @@
  *   quebrado, etc.), o script cai gracefully em `postToMakeWebhook` (post imediato,
  *   ignora `scheduled_at`). Entry recebe `fallback_used = true` + `fallback_reason`
  *   para auditoria. Razão: post real é melhor que post falhado; editor revê no gate.
+ *   Post da diária (com `idempotency_key`, #12661) procura a chave na fila
+ *   (`GET /list`) antes do Make (#12664): achou = `scheduled`, sem Make; fila
+ *   ilegível = `failed`, sem Make; ausente em todas as leituras = Make.
  *
  * Uso:
  *   npx tsx scripts/publish-linkedin.ts \
@@ -106,7 +109,11 @@ import {
 // #8311 — cópia local de postToWorkerQueue colapsada no cliente compartilhado
 // (era duplicação de scripts/lib/worker-queue-client.ts sem o guard de 4xx
 // do #8303; publish-instagram.ts já delegava assim desde #3944 Parte B).
-import { postToWorkerQueue as sharedPostToWorkerQueue } from "./lib/worker-queue-client.ts";
+import {
+  postToWorkerQueue as sharedPostToWorkerQueue,
+  findWorkerQueueEntryByIdempotencyKey,
+  type IdempotencyLookupOptions,
+} from "./lib/worker-queue-client.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import {
   finalizeUseMelhorTextChannelPostText, // #9999
@@ -595,6 +602,9 @@ export interface DispatchContext {
    * passa `ROOT` explicitamente (nunca confia em `process.cwd()` implícito).
    */
   rootDir?: string;
+  /** #12664 — leituras da fila (`GET /list`) antes do fallback Make do post
+   *  com `idempotency_key`. Só testes passam (backoff 0). */
+  queueLookup?: IdempotencyLookupOptions;
 }
 
 /**
@@ -757,25 +767,63 @@ export async function dispatchEntry(
           const reasonSuffix = is4xx ? " (Worker 4xx — validação do payload; fallback imediato não é aceitável)" : " (fallback desativado: allowImmediateFallback=false)";
           throw new Error(`${wmsg}${reasonSuffix}`);
         }
-        console.warn(
-          `[publish-linkedin] Worker falhou (${wmsg}), fallback pra Make direto (post imediato, ignora scheduled_at)`,
-        );
-        const response = await postToMakeWebhook(ctx.webhookUrl, payload, 2, ctx.apiKey);
-        entry = {
-          platform: "linkedin",
-          destaque: d,
-          subtype,
-          url: null,
-          status: "draft",
-          scheduled_at: scheduledAt,
-          route,
-          make_request_id: response.request_id,
-          fallback_used: true,
-          fallback_reason: sanitizeFallbackReason(wmsg),
-          webhook_target: input.webhookTarget,
-          action: input.action,
-          ...formatTag("single_image", singleImageReasons),
-        };
+        // #12664 — post com `idempotency_key` (a diária): o 5xx/timeout pode ter
+        // vindo DEPOIS de o Worker gravar a entry. Antes do Make (que publica na
+        // hora), procurar a chave na fila: achou = o post já está agendado;
+        // fila ilegível = ausência não provada, `failed` sem Make por cima.
+        if (dailyIdempotencyKey) {
+          const lookup = await findWorkerQueueEntryByIdempotencyKey(
+            ctx.workerUrl,
+            ctx.workerToken,
+            dailyIdempotencyKey,
+            ctx.queueLookup,
+          );
+          if (lookup.status === "found") {
+            console.warn(
+              `[publish-linkedin] Worker falhou (${wmsg}), mas a fila já tem ${lookup.key} com a idempotency_key ${dailyIdempotencyKey} — agendado, sem fallback Make (#12664)`,
+            );
+            entry = {
+              platform: "linkedin",
+              destaque: d,
+              subtype,
+              url: null,
+              status: "scheduled",
+              scheduled_at: scheduledAt,
+              route,
+              worker_queue_key: lookup.key,
+              webhook_target: input.webhookTarget,
+              action: input.action,
+              ...formatTag("single_image", singleImageReasons),
+            };
+          } else if (lookup.status === "error") {
+            throw new Error(
+              `${wmsg} (fila do Worker ilegível depois da falha: ${lookup.error} — o post pode estar na fila; sem fallback Make por cima, #12664. Confira a fila do Worker antes de re-rodar)`,
+            );
+          }
+        }
+        // Fallback Make (#887): 5xx/timeout sem chave, ou com a chave ausente
+        // da fila em todas as leituras (#12664).
+        if (!entry) {
+          console.warn(
+            `[publish-linkedin] Worker falhou (${wmsg}), fallback pra Make direto (post imediato, ignora scheduled_at)`,
+          );
+          const response = await postToMakeWebhook(ctx.webhookUrl, payload, 2, ctx.apiKey);
+          entry = {
+            platform: "linkedin",
+            destaque: d,
+            subtype,
+            url: null,
+            status: "draft",
+            scheduled_at: scheduledAt,
+            route,
+            make_request_id: response.request_id,
+            fallback_used: true,
+            fallback_reason: sanitizeFallbackReason(wmsg),
+            webhook_target: input.webhookTarget,
+            action: input.action,
+            ...formatTag("single_image", singleImageReasons),
+          };
+        }
       }
     } else {
       // route === "make_now"
