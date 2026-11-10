@@ -20,6 +20,8 @@
  *     publicação) — não é aviso.
  *   - Destaques sem termo de interesse: recontado sobre os destaques atuais
  *     (quando eles trazem `score`).
+ *   - Destaques sem aderência (#12549): recontado sobre os destaques atuais que
+ *     trazem `signal`; destaque posto à mão no lugar sai do aviso.
  *   - Qualquer outro aviso gravado fica como está.
  */
 import type { CircleStackItem, CircleStackSelection } from "./circle-stack-render.ts";
@@ -41,6 +43,27 @@ export function circleStackMissingEditionsWarning(dates: readonly string[]): str
 /** Pure: aviso de destaques sem nenhum termo de interesse (0 = sem aviso). */
 export function circleStackWeakDestaquesWarning(count: number): string | null {
   return count > 0 ? `${count} destaque(s) sem nenhum termo de interesse da Stack — revisar a seleção` : null;
+}
+
+export const CIRCLE_STACK_WEAK_AFFINITY_PREFIX = "Destaque(s) sem aderência ao público da Stack";
+
+/**
+ * Pure (#12549): destaques que preencheram a vaga sem sinal específico (só termo
+ * genérico, nenhum termo, ou assunto de outro setor). Vazio = sem aviso.
+ */
+export function circleStackWeakAffinityDestaquesWarning(titles: readonly string[]): string | null {
+  if (titles.length === 0) return null;
+  return (
+    `${CIRCLE_STACK_WEAK_AFFINITY_PREFIX} (só termo genérico ou assunto de outro setor): ` +
+    `${titles.map((t) => `"${t}"`).join("; ")} — semana com pouco conteúdo de builder; revisar ou trocar`
+  );
+}
+
+/** Pure: o item traz a marcação da seleção (#12549)? Item posto à mão não traz. */
+function weakAffinity(it: CircleStackItem): boolean | null {
+  const rec = it as CircleStackItem & { signal?: unknown; offTopic?: unknown };
+  if (typeof rec.signal !== "string") return null;
+  return rec.signal !== "especifico" || rec.offTopic === true;
 }
 
 const SECTIONS = ["destaques", "lancamentos", "useMelhor", "radar"] as const;
@@ -91,6 +114,11 @@ export function refreshCircleStackWarnings(
       const scores = sel.destaques.map((d) => (d as CircleStackItem & { score?: unknown }).score);
       if (scores.every((s) => typeof s === "number")) push(circleStackWeakDestaquesWarning(scores.filter((s) => s === 0).length));
       else push(w);
+      continue;
+    }
+    if (w.startsWith(CIRCLE_STACK_WEAK_AFFINITY_PREFIX)) {
+      // #12549: recontado sobre os destaques atuais; destaque trocado à mão (sem marcação) não conta.
+      push(circleStackWeakAffinityDestaquesWarning(sel.destaques.filter((d) => weakAffinity(d) === true).map((d) => d.title)));
       continue;
     }
     push(w);
