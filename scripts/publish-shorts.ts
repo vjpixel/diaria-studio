@@ -498,7 +498,12 @@ export type ShortsPlanItem =
    * recebem o vídeo por URL pública), não de credencial do destino. Só o pulo
    * por credencial conta como terminal pra limpeza do vertical.
    */
-  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late" | "skip_delegated"; detail: string; cause?: "public_video" }
+  /**
+   * `retryAt` (#12761): só no `linkedin_page_repost` em `skip_invalid` porque o
+   * vídeo do perfil ainda vai sair por um dono automático — o horário em que a
+   * re-execução repostará (grade da página, ≥30 min depois do perfil).
+   */
+  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late" | "skip_delegated"; detail: string; cause?: "public_video"; retryAt?: string }
   /** `at`: horário planejado do passo guiado (repost da página, #10772; Instagram manual acima do teto, slot da grade, #10933). Ausente = `shortTime`. */
   /**
    * `upload` (#10915): o arquivo a subir no passo guiado — no Instagram acima
@@ -749,6 +754,25 @@ export function assignShortsDestinationOwners(
       );
     } else if (action === "buffer") {
       owners.push({ destination, action, by: "agent", note: "o agente agenda pela Buffer MCP (create_post) nesta rodada" });
+    } else if (item.action === "skip_invalid" && destination === "linkedin_page_repost" && item.retryAt !== undefined) {
+      // #12761: o repost espera o perfil, que sai por outro dono (timer do 300 ou --now do agente).
+      // A re-execução leva o linkedin_profile junto: se ele ainda não saiu, o repost segue bloqueado
+      // e ganha dono de novo; se saiu, o --publish reposta pela fila do Worker (#11121).
+      const at = item.retryAt;
+      const command = `${base} --only linkedin_profile,linkedin_page_repost --publish ${publishConfirmSuffix(ctx.aammdd)}`;
+      const later = Date.parse(at) - ctx.now.getTime() > OWNER_SCHEDULE_MIN_LEAD_MS;
+      owners.push(
+        later
+          ? {
+              destination,
+              action,
+              by: "agent-scheduled-task",
+              at,
+              command,
+              note: `repost depende do vídeo do perfil, que sai por outro dono: a skill cria uma task agendada one-shot para ${at} (depois do perfil) com este comando`,
+            }
+          : { destination, action, by: "agent", at, command, note: "repost depende do vídeo do perfil: o agente re-executa este comando nesta rodada, depois que o perfil sair" },
+      );
     }
   }
   return owners;
@@ -1223,33 +1247,49 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // #10772 F1: o repost da página só existe se o vídeo do perfil já está
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
   // receberia um passo de repost de um vídeo que não existe.
-  const profileBlocker = ((): string | null => {
+  // #12761: `pendingAt` = o perfil ainda vai sair por um dono automático (timer
+  // do 300, timer do corte, ou o agente com --now): horário esperado do perfil,
+  // base do dono do repost bloqueado. Ausente = bloqueio sem saída automática.
+  const profileBlock = ((): { reason: string; pendingAt?: string } | null => {
     // #10907: `send_unknown` conta como feito pra NÃO repostar o vídeo do perfil,
     // mas não prova que ele existe — o repost espera o editor conferir e registrar a URL.
     if (input.published.entries.some((e) => e.destination === "linkedin_profile" && e.status === "send_unknown")) {
-      return PROFILE_SEND_UNKNOWN_BLOCKER;
+      return { reason: PROFILE_SEND_UNKNOWN_BLOCKER };
     }
     if (isDestinationDone(input.published, "linkedin_profile")) return null;
     const dest = destinations.find((d) => d.kind === "linkedin_profile");
-    if (!dest) return "o vídeo do perfil (linkedin_profile) não está registrado nem nesta rodada";
-    if (!publishable(dest)) return "o vídeo do perfil (linkedin_profile) não sai nesta rodada (sem credencial)";
-    if (profileDelegated) return `o vídeo do perfil (linkedin_profile) ${LINKEDIN_TIMER_DETAIL}`;
-    if (corte && corteTimerOwnsNow("linkedin_profile")) return `o vídeo do perfil (linkedin_profile) ${corteTimerDelegatedDetail(corte.slug)}`;
-    if (profileLate) return `o vídeo do perfil (linkedin_profile) não sai nesta rodada (${profileLate})`;
+    if (!dest) return { reason: "o vídeo do perfil (linkedin_profile) não está registrado nem nesta rodada" };
+    if (!publishable(dest)) return { reason: "o vídeo do perfil (linkedin_profile) não sai nesta rodada (sem credencial)" };
+    const plannedProfileAt = slotOf.get("linkedin_profile")?.at ?? timeFor(dest.id).at;
+    // #12761 (review): teto da cadeia de re-agendamento. Cada re-execução com o perfil ainda
+    // pendente reagendaria o repost de novo, sem fim; passado o teto desde o horário planejado
+    // do perfil, o repost perde o dono e o plano pede intervenção do editor.
+    const profileStale = isProfileRepostChainStale(plannedProfileAt, input.now);
+    const pending = (reason: string, pendingAt: string): { reason: string; pendingAt?: string } =>
+      profileStale ? { reason: `${reason}; ${PROFILE_REPOST_CHAIN_STALE_DETAIL}` } : { reason, pendingAt };
+    if (profileDelegated) return pending(`o vídeo do perfil (linkedin_profile) ${LINKEDIN_TIMER_DETAIL}`, plannedProfileAt);
+    if (corte && corteTimerOwnsNow("linkedin_profile")) {
+      return pending(`o vídeo do perfil (linkedin_profile) ${corteTimerDelegatedDetail(corte.slug)}`, plannedProfileAt);
+    }
+    // skip_late: o dono do perfil (o agente) publica já, com --now.
+    if (profileLate) return pending(`o vídeo do perfil (linkedin_profile) não sai nesta rodada (${profileLate})`, input.now.toISOString());
     try {
       socialText("linkedin");
     } catch (e) {
-      return `o vídeo do perfil (linkedin_profile) não sai nesta rodada (${(e as Error).message})`;
+      return { reason: `o vídeo do perfil (linkedin_profile) não sai nesta rodada (${(e as Error).message})` };
     }
     return null;
   })();
+  const profileBlocker = profileBlock?.reason ?? null;
 
   // #10772: repost da página — depois do vídeo do perfil, num horário da grade da página.
+  // #12761: com o perfil pendente de um dono automático, o horário sai do horário esperado do perfil.
   const repostSlot = (() => {
     if (!destinations.some((d) => d.kind === "linkedin_page_repost") || isDestinationDone(input.published, "linkedin_page_repost")) return null;
-    if (profileBlocker) return null;
+    if (profileBlock && profileBlock.pendingAt === undefined) return null;
     const profileEntry = input.published.entries.find((e) => e.destination === "linkedin_profile");
-    const profileAt = profileEntry ? (profileEntry.scheduled_at ?? profileEntry.at) : (slotOf.get("linkedin_profile")?.at ?? shortTime.at);
+    const profileAt =
+      profileBlock?.pendingAt ?? (profileEntry ? (profileEntry.scheduled_at ?? profileEntry.at) : (slotOf.get("linkedin_profile")?.at ?? shortTime.at));
     const plannedGrid = [
       ...(input.grid ?? []),
       ...slots.map((s) => ({ account: s.account, at: s.at, label: `shorts ${s.destination}`, ...(s.alsoAccounts ? { alsoAccounts: s.alsoAccounts } : {}) })),
@@ -1336,7 +1376,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       if (profileBlocker) {
         const detail = `${profileBlocker} — repost só depois que o vídeo do perfil sair (ou for registrado com --mark linkedin_profile=URL)`;
         warnings.push(`linkedin_page_repost: ${detail}`);
-        return { destination: dest.id, mode: "guided", action: "skip_invalid", detail };
+        // #12761: perfil pendente de um dono automático → o repost leva o horário da re-execução (dono em owners[]).
+        return { destination: dest.id, mode: "guided", action: "skip_invalid", detail, ...(repostSlot ? { retryAt: repostSlot.at } : {}) };
       }
       const profile = input.published.entries.find((e) => e.destination === "linkedin_profile");
       const where = profile?.url ? ` (${profile.url})` : profile ? "" : " — depois que o vídeo do perfil (linkedin_profile) sair";
@@ -1696,6 +1737,25 @@ export function shortsReelsIdempotencyKey(aammdd: string, account: WorkerInstagr
 /** #10907 — motivo do bloqueio do repost quando o vídeo do perfil ficou em `send_unknown`. */
 export const PROFILE_SEND_UNKNOWN_BLOCKER =
   "o vídeo do perfil (linkedin_profile) ficou em send_unknown (envio ambíguo) — confira o perfil e registre com --mark linkedin_profile=URL";
+
+/**
+ * #12761 (review): teto, contado do horário planejado do vídeo do perfil, da
+ * cadeia de re-agendamento do repost da página. Cada re-execução com o perfil
+ * ainda pendente (timer do 300 que falhou, `--now` que o agente não rodou)
+ * criaria outra task one-shot; passado o teto, o repost fica sem dono.
+ * 12 h: folga sobre o teto de 3 h do alarme do timer e sobre o `skip_late` do
+ * mesmo dia (vertical ao meio-dia → meia-noite).
+ */
+export const PROFILE_REPOST_CHAIN_MAX_MS = 12 * 60 * 60_000;
+
+export const PROFILE_REPOST_CHAIN_STALE_DETAIL =
+  "passaram mais de 12 h do horário planejado do perfil e ele não saiu: o repost fica sem dono automático, falta intervenção do editor (publicar o perfil e registrar com --mark linkedin_profile=URL)";
+
+/** Pure (#12761): o perfil passou do teto da cadeia de re-agendamento do repost? */
+export function isProfileRepostChainStale(plannedProfileAt: string, now: Date): boolean {
+  const planned = Date.parse(plannedProfileAt);
+  return Number.isFinite(planned) && now.getTime() - planned > PROFILE_REPOST_CHAIN_MAX_MS;
+}
 
 export type InstagramQueueReadiness = { ready: true; account: WorkerInstagramAccount } | { ready: false; reason: string };
 
