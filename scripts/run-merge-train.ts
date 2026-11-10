@@ -53,12 +53,15 @@
  *       `run-merge-train: PULADO — …`; quem precisa saber o que entrou lê o
  *       stdout, não só o exit code.
  *   1 = pelo menos 1 terminou `solo-failed`, `lock-blocked`,
- *       `retido-ilegivel` (#10299 — sinal de retenção ilegível no instante
- *       do merge) OU `indeterminate` (falha real de merge, ou lote sem resolução — não
+ *       `threads-bloqueantes` (#12734 — revalidação do Gate 2 barrou um PR
+ *       por thread de review aberta; o detalhe lista o PR e os IDs das
+ *       threads retidas), `retido-ilegivel` (#10299 — sinal de retenção
+ *       ilegível no instante do merge) OU `indeterminate` (falha real de
+ *       merge, ou lote sem resolução — não
  *       "vermelho de CI", que sempre resolve via bisecção até o piso;
  *       `lock-blocked` é um lote que provou passar junto no CI mas não
  *       conseguiu a janela de merge lock após retries, ou falhou na
- *       revalidação de Gate 2; `indeterminate` (#7064) é um lote cujas 2
+ *       revalidação de Gate 2 por motivo que não é thread; `indeterminate` (#7064) é um lote cujas 2
  *       execuções de reconfirmação discordaram — assinatura da corrida do
  *       #7060, nunca reprovação — precisa de nova invocação do trem, não
  *       de um fixer — ver `scripts/lib/merge-train-live.ts`)
@@ -489,6 +492,7 @@ async function main() {
   // abaixo (registrado no array só como rastro de ONDE a bisecção
   // aconteceu). Falha real = solo-failed (piso da bissecção falhou) OU
   // lock-blocked (lote provou passar mas não conseguiu mergear) OU
+  // threads-bloqueantes (#12734 — thread de review aberta barrou o merge) OU
   // indeterminate (#7064 — 2 execuções de reconfirmação discordaram; não é
   // "PR com defeito", mas também não é "resolvido" — precisa de nova
   // invocação do trem, então conta pro exit != 0 pelo mesmo motivo que
