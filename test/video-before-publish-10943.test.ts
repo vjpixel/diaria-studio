@@ -280,6 +280,9 @@ describe("prosa do fluxo novo (#10943 itens 1, 2 e 4)", () => {
     // A skill renomeada nomeia o alias e se diferencia da Etapa 5 isolada.
     const merged = read(".claude/skills/diaria-publica/SKILL.md");
     const description = merged.slice(0, merged.indexOf("\n---", 4));
+    // A descrição antiga tinha 1023 caracteres: o limite de 1024 da spec de skills.
+    const descLine = /^---\n[\s\S]*?\ndescription: (.*)\n/.exec(merged)?.[1] ?? "";
+    assert.ok(descLine.length > 0 && descLine.length <= 1024, `descrição com ${descLine.length} caracteres (limite 1024)`);
     assert.match(description, /`\/diaria-publica-video`/);
     assert.match(description, /\/diaria-5-publicacao`, que é a Etapa 5 isolada/);
     assert.match(read(".claude/skills/diaria-5-publicacao/SKILL.md"), /`\/diaria-publica` é a entrada do dia normal/);
