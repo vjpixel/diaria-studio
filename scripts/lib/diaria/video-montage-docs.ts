@@ -543,16 +543,29 @@ export function shortsWarning(plan: Pick<SequencePlan, "spec" | "durationFrames"
 // ── Duração-alvo da vertical (#11757) ─────────────────────────────────────
 
 /**
- * Duração-alvo da vertical (#11757, decisão do editor 02/11/2026): as verticais
- * publicadas têm 75–84 s e o editor cortava frases inteiras no Premiere para
- * chegar nisso. Passou do alvo, o roteiro (Gate 2) avisa e sugere quais frases
- * do comentário cortar; quem decide é o editor. `verticalTargetS` no
- * `blocks.json` sobrepõe por edição.
+ * Duração-alvo da vertical (#12694, decisão do editor 10/11/2026).
+ * Passou do alvo, o roteiro propõe frases a cortar e a prévia fica bloqueada;
+ * quem decide os cortes é o editor no Gate 2. `verticalTargetS` no
+ * `blocks.json` pode reduzir o alvo (máximo 75 s, #12694).
  */
-export const VERTICAL_TARGET_S = 85;
+export const VERTICAL_TARGET_S = 75;
+
+/** #12694: durationFrames contém só a montagem; o card de CTA é um asset separado. */
+export function verticalPreviewGate(
+  plan: Pick<SequencePlan, "spec" | "durationFrames">,
+  fps: number,
+  targetS = VERTICAL_TARGET_S,
+): string | null {
+  if (plan.spec.target === "youtube") return null;
+  const limit = Math.min(targetS, VERTICAL_TARGET_S);
+  const seconds = plan.durationFrames / fps;
+  if (seconds <= limit + 1e-9) return null;
+  return `[aviso] GATE BLOQUEADO: ${plan.spec.name} tem ${seconds.toFixed(2)} s de fala, acima de ${limit} s (card de CTA fora da conta). Antes da prévia/review, rodar roteiro, mostrar ao editor o roteiro enxuto com duração por frase, o que sai e por quê; aplicar o corte no blocks.json e refazer build. A prévia só sai da versão que cabe (#12694).`;
+}
 
 export interface VerticalCutSuggestion {
-  /** Índice do item no bloco `comentario` do `blocks.json`. */
+  block: BlockKey;
+  /** Índice do item no bloco do `blocks.json`. */
   index: number;
   text: string;
   /** Segundos do item na montagem (silêncios já fora, quando informados). */
@@ -597,7 +610,7 @@ export function verticalTargetCheck(
   opts: { targetS?: number; silences?: Interval[] } = {},
 ): VerticalTargetCheck | null {
   if (plan.spec.target === "youtube") return null;
-  const targetS = opts.targetS ?? VERTICAL_TARGET_S;
+  const targetS = Math.min(opts.targetS ?? VERTICAL_TARGET_S, VERTICAL_TARGET_S);
   const totalS = plan.durationFrames / fps;
   const overS = totalS - targetS;
   if (overS <= 1e-9) return null;
@@ -606,7 +619,7 @@ export function verticalTargetCheck(
   const comment = (resolved.comentario ?? []).map((it, index) => ({ it, index })).filter(({ it }) => plan.spec.order.includes("comentario") && itemInTarget(it, plan.spec));
   const secondsOf = (it: ResolvedItem) =>
     opts.silences ? speechParts(it.interval.start, it.interval.end, opts.silences).reduce((a, p) => a + (p.end - p.start), 0) : it.interval.end - it.interval.start;
-  const candidates = comment.slice(comment.length > 1 ? 1 : 0).map(({ it, index }, k, all) => {
+  const candidates = comment.slice(1).map(({ it, index }, k, all) => {
     const toks = tokenize(it.text);
     const reasons: string[] = [];
     if (overlapRatio(toks, summary) >= REPEATS_SUMMARY_RATIO) reasons.push("repete o resumo");
@@ -618,8 +631,20 @@ export function verticalTargetCheck(
   let coveredS = 0;
   for (const c of ordered) {
     if (coveredS >= overS - 1e-9) break;
-    cuts.push({ index: c.index, text: c.text, seconds: c.seconds, reason: c.reasons.length ? c.reasons.join(", ") : "frase do fim do comentário" });
+    cuts.push({ block: "comentario", index: c.index, text: c.text, seconds: c.seconds, reason: c.reasons.length ? c.reasons.join(", ") : "frase do fim do comentário" });
     coveredS += c.seconds;
+  }
+  // Se o comentário não bastar (inclusive Shorts sem comentário), propor
+  // frases de outros blocos de trás para frente, preservando o primeiro gancho.
+  const spoken = plan.spec.order.flatMap((block) =>
+    (resolved[block] ?? []).map((it, index) => ({ block, it, index })).filter(({ it }) => itemInTarget(it, plan.spec)));
+  for (const c of spoken.slice(1).reverse()) {
+    if (coveredS >= overS - 1e-9) break;
+    if (cuts.some((cut) => cut.block === c.block && cut.index === c.index)) continue;
+    if (c.block === "comentario" && c.index === comment[0]?.index) continue;
+    const seconds = secondsOf(c.it);
+    cuts.push({ block: c.block, index: c.index, text: c.it.text, seconds, reason: "reduzir a duração preservando o gancho inicial" });
+    coveredS += seconds;
   }
   return { totalS, targetS, overS, cuts, coveredS };
 }
@@ -628,7 +653,7 @@ const sec = (x: number) => `${x.toFixed(1).replace(".", ",")} s`;
 
 /** O aviso da vertical acima do alvo, numa linha (o `[aviso]` do build e do roteiro). */
 export function verticalTargetWarning(name: string, c: VerticalTargetCheck): string {
-  const cover = c.cuts.length ? `; sugestão: cortar ${c.cuts.map((x) => `comentário [${x.index}]`).join(", ")} (~${sec(c.coveredS)})` : "";
+  const cover = c.cuts.length ? `; sugestão: cortar ${c.cuts.map((x) => `${BLOCK_LABELS[x.block].toLowerCase()} [${x.index}]`).join(", ")} (~${sec(c.coveredS)})` : "";
   return `${name}: ${sec(c.totalS)}, ${sec(c.overS)} acima do alvo da vertical (${c.targetS} s)${cover}; quem decide é o editor no Gate 2`;
 }
 
@@ -766,10 +791,18 @@ export function roteiroMarkdown(
     // Duração-alvo da vertical (#11757): aviso + as frases sugeridas, para o editor decidir aqui e não no Premiere.
     const target = verticalTargetCheck(p, resolved, fps, { targetS: opts.verticalTargetS, silences: opts.silences });
     if (target) {
-      lines.push(`**[aviso] ${sec(target.totalS)}, ${sec(target.overS)} acima do alvo da vertical (${target.targetS} s).** Sugestão de corte (só na vertical: \`"skip": ["${sequenceKey(p.spec)}"]\` no item do comentário):`, "");
-      for (const c of target.cuts) lines.push(`- Comentário [${c.index}] (${sec(c.seconds)}, ${c.reason}): "${mdCell(c.text)}"`);
-      if (target.coveredS < target.overS - 1e-9) lines.push(`- As sugestões tiram ~${sec(target.coveredS)}; o resto (~${sec(target.overS - target.coveredS)}) sai de outro bloco ou fica acima do alvo.`);
-      lines.push("");
+      lines.push(`**[aviso] ${sec(target.totalS)}, ${sec(target.overS)} acima do alvo da vertical (${target.targetS} s).** Sugestão de corte (só na vertical: \`"skip": ["${sequenceKey(p.spec)}"]\` no item do bloco indicado):`, "");
+      for (const c of target.cuts) lines.push(`- ${BLOCK_LABELS[c.block]} [${c.index}] (${sec(c.seconds)}, ${c.reason}): "${mdCell(c.text)}"`);
+      if (target.coveredS < target.overS - 1e-9) lines.push(`- As sugestões tiram ~${sec(target.coveredS)}; ainda faltam ~${sec(target.overS - target.coveredS)}. Enxugar ou regravar a fala preservada com o editor antes de liberar a prévia; a prévia permanece bloqueada.`);
+      lines.push("", "**Roteiro enxuto proposto (mostrar ao editor antes da prévia):**", "", "| Bloco / frase | Fala mantida | Duração |", "|---|---|---|");
+      for (const key of p.spec.order) {
+        (resolved[key] ?? []).forEach((it, index) => {
+          if (!itemInTarget(it, p.spec) || target.cuts.some((c) => c.block === key && c.index === index)) return;
+          const seconds = opts.silences ? speechParts(it.interval.start, it.interval.end, opts.silences).reduce((sum, part) => sum + part.end - part.start, 0) : it.interval.end - it.interval.start;
+          lines.push(`| ${BLOCK_LABELS[key]} [${index}] | ${mdCell(it.text)} | ${sec(seconds)} |`);
+        });
+      }
+      lines.push("", `Estimativa após os cortes: ${sec(target.totalS - target.coveredS)} de fala; refazer build para medir e liberar o gate de ${target.targetS} s (CTA fora da conta).`, "");
     }
     lines.push("| Bloco | Fala | Bruto |", "|---|---|---|");
     // Só os itens desta versão (`targets`/`skip`, #11377).

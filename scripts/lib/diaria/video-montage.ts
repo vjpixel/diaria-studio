@@ -1412,7 +1412,7 @@ export interface BlocksFile {
   vocabulary?: VocabRule[];
   /** Blocos que seguram `FECHO_HOLD_S` depois da última palavra. Default ["fecho"]. */
   holdBlocks?: BlockKey[];
-  /** Duração-alvo da vertical nesta edição, em segundos (#11757); ausente = `VERTICAL_TARGET_S` (85). */
+  /** Duração-alvo da vertical nesta edição, em segundos (#12694); ausente = 75, máximo 75. */
   verticalTargetS?: number;
   /**
    * Título em texto na abertura das verticais (#11756): sobrepõe o título do D1
@@ -1560,7 +1560,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
       });
     }
   }
-  if (raw.verticalTargetS !== undefined && !(isNum(raw.verticalTargetS) && raw.verticalTargetS > 0)) errors.push("verticalTargetS precisa ser um número de segundos maior que 0");
+  if (raw.verticalTargetS !== undefined && !(isNum(raw.verticalTargetS) && raw.verticalTargetS > 0 && raw.verticalTargetS <= 75)) errors.push("verticalTargetS precisa ser um número de segundos maior que 0 e no máximo 75");
   if (raw.screenTitle !== undefined && typeof raw.screenTitle !== "string") errors.push('screenTitle precisa ser texto ("" = sem título na vertical)');
   if (raw.ctaCard !== undefined && typeof raw.ctaCard !== "boolean") errors.push("ctaCard precisa ser true ou false (false = sem o card de CTA no fim, #12571)");
   if (raw.ctaShare !== undefined && typeof raw.ctaShare !== "string") errors.push("ctaShare precisa ser texto (a linha de compartilhar do card de CTA, #12571)");

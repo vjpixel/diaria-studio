@@ -4,9 +4,12 @@
  *   - #11753: pausas de 0,35–0,8 s dentro do clipe (o build só cortava ≥0,8 s);
  *   - #11754: tomada colapsada pelo Whisper (uma tomada só no transcript onde
  *     houve várias) e a última tomada como padrão;
- *   - #11757: duração-alvo da vertical (≤85 s) com sugestão de frases a cortar.
+ *   - #11757: duração-alvo da vertical (≤75 s) com sugestão de frases a cortar.
  */
 
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -27,8 +30,8 @@ import {
   type SequenceSpec,
   type Word,
 } from "../scripts/lib/diaria/video-montage.ts";
-import { VERTICAL_TARGET_S, roteiroMarkdown, verticalTargetCheck, verticalTargetWarning } from "../scripts/lib/diaria/video-montage-docs.ts";
-import { collapsedSegmentWarnings, silenceDetectStaleWarning } from "../scripts/video-montagem.ts";
+import { verticalPreviewGate, VERTICAL_TARGET_S, roteiroMarkdown, verticalTargetCheck, verticalTargetWarning } from "../scripts/lib/diaria/video-montage-docs.ts";
+import { main, planHashOf, collapsedSegmentWarnings, silenceDetectStaleWarning } from "../scripts/video-montagem.ts";
 
 /** Palavras com duração fixa a partir de `t0`, separadas por `gap`. */
 function say(text: string, t0: number, dur = 0.3, gap = 0.05): Word[] {
@@ -248,35 +251,85 @@ describe("#11757: duração-alvo da vertical no Gate 2", () => {
   };
   const vplan = (seconds: number): SequencePlan => ({ spec: SPEC_V, clips: [], durationFrames: Math.round(seconds * 30), script: "", missingBlocks: [], dropped: [] });
 
-  it("regressão 261030: vertical de 102,3 s passa do alvo de 85 s e a sugestão começa pelo conselho genérico do fim", () => {
-    assert.equal(VERTICAL_TARGET_S, 85);
+  it("regressão 261030: vertical de 102,3 s passa do alvo de 75 s e a sugestão começa pelo conselho genérico do fim", () => {
+    assert.equal(VERTICAL_TARGET_S, 75);
     const c = verticalTargetCheck(vplan(102.3), resolved, 30);
     assert.ok(c);
-    assert.ok(Math.abs(c.overS - 17.3) < 0.05);
+    assert.ok(Math.abs(c.overS - 27.3) < 0.05);
     assert.equal(c.cuts[0].index, 3);
     assert.match(c.cuts[0].reason, /conselho genérico/);
     assert.ok(c.cuts.some((x) => x.index === 1 && /repete o resumo/.test(x.reason)), JSON.stringify(c.cuts));
     assert.ok(!c.cuts.some((x) => x.index === 0), "a 1ª frase do comentário (gancho) fica");
     assert.ok(c.coveredS >= c.overS);
-    assert.match(verticalTargetWarning(SPEC_V.name, c), /17,3 s acima do alvo da vertical \(85 s\); sugestão: cortar comentário \[3\]/);
+    assert.match(verticalTargetWarning(SPEC_V.name, c), /27,3 s acima do alvo da vertical \(75 s\); sugestão: cortar comentário \[3\]/);
   });
 
-  it("horizontal, vertical dentro do alvo e alvo da edição maior não avisam", () => {
+  it("horizontal e vertical dentro do alvo não avisam", () => {
     assert.equal(verticalTargetCheck({ spec: SPEC_H, durationFrames: 200 * 30 }, resolved, 30), null);
-    assert.equal(verticalTargetCheck(vplan(84.5), resolved, 30), null);
-    assert.equal(verticalTargetCheck(vplan(102.3), resolved, 30, { targetS: 110 }), null);
+    assert.equal(verticalTargetCheck(vplan(74.5), resolved, 30), null);
+    assert.ok(verticalTargetCheck(vplan(80), resolved, 30, { targetS: 110 }));
   });
 
   it("o roteiro (Gate 2) mostra o aviso e as frases sugeridas, com o skip da vertical", () => {
     const md = roteiroMarkdown("261030", [vplan(102.3)], resolved, 30);
-    assert.match(md, /\*\*\[aviso\] 102,3 s, 17,3 s acima do alvo da vertical \(85 s\)\.\*\*/);
+    assert.match(md, /\*\*\[aviso\] 102,3 s, 27,3 s acima do alvo da vertical \(75 s\)\.\*\*/);
     assert.match(md, /"skip": \["outras-redes"\]/);
     assert.match(md, /- Comentário \[3\] \(12,1 s, fecha com conselho genérico\): "Não utilize IA/);
   });
 
+  it("gate de prévia/review: 75 s cabe sem contar card; cortes avulsos também bloqueiam", () => {
+    assert.equal(verticalPreviewGate(vplan(75), 30), null);
+    assert.match(verticalPreviewGate(vplan(75.04), 30)!, /GATE BLOQUEADO/);
+    assert.match(verticalPreviewGate(vplan(80), 30, 85)!, /acima de 75 s/);
+    assert.match(verticalPreviewGate(vplan(70), 30, 60)!, /acima de 60 s/);
+    assert.equal(verticalPreviewGate({ spec: SPEC_H, durationFrames: 300 * 30 }, 30), null);
+    const corte = vplan(87);
+    corte.spec = { ...SPEC_V, corte: "automacao" };
+    assert.match(verticalPreviewGate(corte, 30)!, /card de CTA fora da conta/);
+    const md = roteiroMarkdown("261111", [vplan(102.3)], resolved, 30);
+    assert.match(md, /Roteiro enxuto proposto/);
+    assert.match(md, /Fala mantida.*Duração/);
+  });
+
+  it("Short sem comentário propõe cortes em outros blocos e preserva o gancho", () => {
+    const plan = { ...vplan(100), spec: { ...SPEC_V, corte: "avulso", order: ["titulo", "resumo_curto", "fecho"] as BlockKey[] } };
+    const check = verticalTargetCheck(plan, resolved, 30)!;
+    assert.ok(check.cuts.some((c) => c.block === "resumo_curto"));
+    assert.ok(!check.cuts.some((c) => c.block === "titulo"));
+    const md = roteiroMarkdown("261111", [plan], resolved, 30);
+    assert.match(md, /reduzir a duração preservando o gancho inicial/);
+    assert.ok(!md.split("Roteiro enxuto proposto")[1].split("Estimativa após")[0].includes(resolved.resumo_curto[0].text));
+  });
+
+  it("CLI preview e review retornam 1 antes de acessar bruto ou prévia, inclusive cortes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vertical-12694-"));
+    const source = JSON.stringify({ path: join(root, "ausente.mp4"), fps: 30 });
+    const blocks = JSON.stringify({ edition: "261111", blocks: { titulo: [{ text: "Gancho" }] } });
+    const oldError = console.error;
+    const messages: string[] = [];
+    console.error = (...args) => { messages.push(args.join(" ")); };
+    try {
+      writeFileSync(join(root, "source.json"), source);
+      writeFileSync(join(root, "blocks.json"), blocks);
+      for (const corte of [undefined, "automacao"]) {
+        const plan = { ...vplan(87), spec: { ...SPEC_V, ...(corte ? { corte } : {}) } };
+        writeFileSync(join(root, "plan.json"), JSON.stringify({ hash: planHashOf(blocks, source, null), source: { fps: 30 }, plans: [plan] }));
+        for (const cmd of ["preview", "review"]) {
+          assert.equal(await main([cmd, "261111", "--drive-root", root, "--state-dir", root, "--work-dir", root, "--out-dir", root, "--seq", corte ?? "outras-redes"]), 1);
+        }
+      }
+      assert.equal(messages.filter((m) => m.includes("GATE BLOQUEADO")).length, 4);
+    } finally {
+      console.error = oldError;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("verticalTargetS no blocks.json é validado", () => {
     const base = { edition: "261030", blocks: { titulo: [{ text: "x" }] } };
-    assert.equal(parseBlocksFile({ ...base, verticalTargetS: 90 }).ok, true);
+    assert.equal(parseBlocksFile({ ...base, verticalTargetS: 75 }).ok, true);
+    assert.equal(parseBlocksFile({ ...base, verticalTargetS: 60 }).ok, true);
+    for (const verticalTargetS of [90, 75.01, Infinity, NaN, -1]) assert.equal(parseBlocksFile({ ...base, verticalTargetS }).ok, false);
     const bad = parseBlocksFile({ ...base, verticalTargetS: 0 });
     assert.equal(bad.ok, false);
     assert.match(!bad.ok ? bad.errors.join() : "", /verticalTargetS/);

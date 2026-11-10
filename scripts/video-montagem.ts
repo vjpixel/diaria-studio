@@ -349,6 +349,7 @@ import {
   SHORTS_MAX_S,
   shortsWarning,
   suggestedDurations,
+  verticalPreviewGate,
   verticalTargetCheck,
   verticalTargetWarning,
   type DecupagemPlan,
@@ -3461,10 +3462,16 @@ export function previewSubtitleDecision(input: { srtPath: string; exists: boolea
   return { use: true, message: null };
 }
 
-async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSession | null = null, noSubs = false): Promise<number> {
+async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSession | null = null, noSubs = false, needLocalBruto?: () => Promise<unknown>): Promise<number> {
   const pf = loadPlan(ctx);
   // #12096: `--seq youtube` também (o horizontal, 960x540); sem --seq, a vertical da edição.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
+  const durationGate = verticalPreviewGate(plan, pf.source.fps, loadBlocks(ctx).file.verticalTargetS);
+  if (durationGate) {
+    console.error(durationGate);
+    return 1;
+  }
+  await needLocalBruto?.();
   if (pf.framingAssumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (o mesmo do build)");
   for (const w of framingWarningsByFile([plan], pf.source, pf.framing, pf.fileOverrides).mug) console.error(`[aviso] ${w}`);
   const fps = pf.source.fps;
@@ -3606,6 +3613,11 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
   // #12096: o horizontal também (`--seq youtube`), com a mesma recusa de prévia mais velha que o build.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
+  const durationGate = verticalPreviewGate(plan, pf.source.fps, loadBlocks(ctx).file.verticalTargetS);
+  if (durationGate) {
+    console.error(durationGate);
+    return 1;
+  }
   const preview = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   if (!existsSync(preview)) throw new Error(`prévia ausente: ${preview} (rode preview)`);
   if (mtime(preview) < sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(f(ctx, "plan.json")))) throw new Error(`${preview} é mais velha que o build de ${plan.spec.name} no plan.json: rode preview de novo`);
@@ -4147,8 +4159,7 @@ async function runCommand(
       return cmdSrtFromFinal(ctx, final, plan, flags.has("heard-text") ? "ouvido" : "roteiro");
     }
     case "preview":
-      await needLocalBruto();
-      return cmdPreview(ctx, seq, d, flags.has("no-subs"));
+      return cmdPreview(ctx, seq, d, flags.has("no-subs"), needLocalBruto);
     case "review":
       return cmdReview(ctx, seq);
     case "review-final": {
