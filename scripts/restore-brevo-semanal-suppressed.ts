@@ -47,6 +47,7 @@ import {
   DEFAULT_STORE_PATH,
   applyRestoredToSemanal,
   createBatchedStoreWriter,
+  flushStoreOnSignal,
   readStore,
   writeStore,
   type BrevoDiariaContact,
@@ -139,6 +140,8 @@ export async function runRestoreSemanal(
   // #12474: gravar o store a cada contato fazia o OneDrive do 300 reverter o
   // arquivo (integrity failure → safeBackup). Grava em lote + flush no fim.
   const storeWriter = createBatchedStoreWriter(deps.writeStore);
+  // #12513: Ctrl-C/SIGTERM não roda o `finally`; o handler grava o pendente.
+  const removeSignalFlush = flushStoreOnSignal(storeWriter);
   try {
     for (const c of candidates) {
       try {
@@ -179,6 +182,7 @@ export async function runRestoreSemanal(
       }
     }
   } finally {
+    removeSignalFlush();
     storeWriter.flush();
   }
   log(
