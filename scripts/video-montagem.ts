@@ -198,7 +198,7 @@ import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -3838,6 +3838,20 @@ function readBrutoDrive(ctx: Pick<Ctx, "stateDir" | "edition">): BrutoDriveInfo 
   return info.edition === undefined || info.edition === ctx.edition ? info : null;
 }
 
+/** Valida a procedência por segmentos e retorna o destino no host atual. */
+export function brutoCacheTarget(cacheDir: string, name: string, localPath: string): string {
+  // O nome do Drive é um único segmento, independentemente do host.
+  if (!name || name === "." || name === ".." || posix.isAbsolute(name) || win32.isAbsolute(name) || /[\\/:]/.test(name)) {
+    throw new Error(`nome de bruto inválido: ${name}`);
+  }
+  const target = join(cacheDir, "bruto", name);
+  const normalized = (p: string) => posix.normalize(toPosix(p));
+  if (toPosix(localPath).split("/").includes("..") || normalized(localPath) !== normalized(target)) {
+    throw new Error(`bruto registrado no cache ${localPath}, fora do cache desta máquina (${cacheDir}): rode transcribe --force aqui para baixar e transcrever de novo`);
+  }
+  return target;
+}
+
 /**
  * frame/preview no modo API: o bruto do source.json sumiu do cache (limpeza,
  * reboot) → confere no Drive se é o mesmo arquivo do transcribe e baixa de
@@ -3863,15 +3877,12 @@ export async function ensureBrutoLocal(ctx: Pick<Ctx, "stateDir" | "edition">, d
   if (toPosix(info.localPath) !== toPosix(source.path)) {
     throw new Error(`source.json aponta ${source.path}, mas ${BRUTO_DRIVE_FILE} registrou ${info.localPath} (o --cache-dir mudou?): rode transcribe de novo`);
   }
+  const target = brutoCacheTarget(d.cacheDir, info.name, info.localPath);
   const meta = await fetchFileMeta(d.deps, info.id);
   const metaSize = parseDriveSize(meta.size);
   if ((info.size !== null && metaSize !== null && metaSize !== info.size) || (info.modifiedTime && meta.modifiedTime && meta.modifiedTime !== info.modifiedTime)) {
     throw new Error(`o bruto ${info.name} mudou no Drive desde o transcribe (tamanho/modifiedTime): rode transcribe --force e revise a transcrição e os cortes antes de refazer o build.` +
       (opts.audioCleanBuild ? ` Build interrompido para não tratar áudio de outro bruto. Para gerar sem faixa tratada, use build ${ctx.edition} --no-audio-clean (áudio cru; confira a correspondência do bruto com a transcrição e os cortes no Premiere).` : ""));
-  }
-  // O cache gravado é de outra máquina (o state dir sincroniza): baixar lá não serve aqui.
-  if (!toPosix(info.localPath).startsWith(toPosix(d.cacheDir) + "/")) {
-    throw new Error(`bruto registrado no cache ${info.localPath}, fora do cache desta máquina (${d.cacheDir}): rode transcribe --force aqui para baixar e transcrever de novo`);
   }
   const size = metaSize ?? info.size;
   const estimate = size === null
@@ -3880,7 +3891,7 @@ export async function ensureBrutoLocal(ctx: Pick<Ctx, "stateDir" | "edition">, d
   log(`[drive] bruto ausente do cache (${source.path}); baixando o arquivo inteiro do Drive: ${estimate}`);
   if (opts.audioCleanBuild) log(`[aviso] o build precisa do bruto inteiro para tratar o áudio; para evitar o download, interrompa e use build ${ctx.edition} --no-audio-clean (XML e prévia com áudio cru; aplicar Enhance no Premiere)`);
   // Pelo nome registrado: um rename no Drive não pode mudar o caminho que o source.json aponta.
-  await ensureCachedFile(d.deps, { ...meta, name: info.name }, dirname(info.localPath), log);
+  await ensureCachedFile(d.deps, { ...meta, name: info.name }, dirname(target), log);
 }
 
 /**
