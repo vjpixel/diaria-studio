@@ -2,6 +2,8 @@
 /**
  * scripts/measure-top-youtube-video.ts (#12542)
  *
+ * @one-off-validity: permanente motivo="roda toda segunda na task Diaria-Top-YouTube-Video-Measure (#12542); só o nome coincide com o padrão"
+ *
  * Mede, pela YouTube Data API, o horizontal mais assistido do canal desde o
  * início (todas as edições com vídeo no disco, mesmo helper da mensal e da
  * Stack: `resolveTopEditionVideo`) e grava em `data/youtube/top-video.json`.
