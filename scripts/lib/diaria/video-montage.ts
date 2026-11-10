@@ -1728,14 +1728,56 @@ export function horizontalSequenceName(version = "V1"): string {
 }
 
 /**
+ * A frase falada que abre o vídeo (#12586). Desde a 261109 o editor abre as
+ * duas versões com um gancho falado ("A inteligência dos Estados Unidos
+ * suspeita que…") e não lê mais o título: essa frase vai no bloco `gancho`, e
+ * "Título" fica para o texto na tela e nos metadados. `titulo` com item é o
+ * modelo de antes (título lido em voz alta, com o gancho do #12093, a 1ª frase
+ * do resumo, só no horizontal) e continua valendo.
+ */
+export type OpeningBlock = "titulo" | "gancho";
+
+/**
+ * O bloco de abertura de um `blocks.json`/decupagem (#12586): `titulo` quando
+ * ele tem item (o modelo de antes), senão `gancho` quando ele tem item, senão
+ * `titulo` (a falta continua sendo apontada como antes).
+ */
+export function openingBlockOf(blocks: Partial<Record<BlockKey, ReadonlyArray<unknown> | undefined>>): OpeningBlock {
+  if ((blocks.titulo?.length ?? 0) > 0) return "titulo";
+  return (blocks.gancho?.length ?? 0) > 0 ? "gancho" : "titulo";
+}
+
+/**
+ * O bloco de abertura de uma sequência, pela ordem (#12586): `titulo` se a
+ * ordem o tem, senão `gancho`; nenhum dos dois (entrevista) = null. É depois
+ * dele que entram o respiro e a vinheta.
+ */
+export function openingBlockOfOrder(order: readonly BlockKey[]): OpeningBlock | null {
+  if (order.includes("titulo")) return "titulo";
+  return order.includes("gancho") ? "gancho" : null;
+}
+
+/** O bloco de abertura pelos clipes montados (#12586): `titulo` se algum clipe (ou pedaço fundido) é dele, senão `gancho`; nenhum = null. */
+export function openingBlockOfClips(clips: ReadonlyArray<Pick<PlannedClip, "block" | "parts">>): OpeningBlock | null {
+  const has = (k: BlockKey) => clips.some((c) => c.block === k || c.parts?.some((p) => p.block === k));
+  if (has("titulo")) return "titulo";
+  return has("gancho") ? "gancho" : null;
+}
+
+/**
  * As 2 versões (#11491). Nomes no padrão dos finais da pasta `Final/`
  * (`Diaria comentada horizontal_V3.mp4`, #12609; antes `_Youtube_V3`, #11222): o Premiere sugere o nome da
  * sequência no export, e `videoTargetOf` lê o destino dele. Escalas:
  * `YOUTUBE_SCALES` (60/85, olhos a 1/3, #12093) no horizontal;
  * 115/130 nas verticais (a da prévia aprovada da 261027; o XML dela saiu com
  * 89/105, "enquadramento pequeno" na autorrevisão), nos dois formatos.
+ *
+ * `opening` (#12586, `openingBlockOf`): com `gancho`, a frase falada de
+ * abertura (o gancho) abre as duas versões, no lugar do `titulo`, e é nela que
+ * o respiro, a vinheta e o PNG do título se ancoram. Com `titulo` (default), a
+ * ordem de antes.
  */
-export function defaultSequences(version = "V1", format: VideoFormat = "monologo"): SequenceSpec[] {
+export function defaultSequences(version = "V1", format: VideoFormat = "monologo", opening: OpeningBlock = "titulo"): SequenceSpec[] {
   if (format === "entrevista") {
     // #11507 (261029): sem título nem resumo gravados, a ordem que o editor montou à mão.
     return [
@@ -1750,7 +1792,10 @@ export function defaultSequences(version = "V1", format: VideoFormat = "monologo
       width: 1920,
       height: 1080,
       // #12093: o gancho (1ª frase do resumo) abre o horizontal, antes do "Olá, eu sou o Pixel".
-      order: ["gancho", "titulo", "abertura", "resumo", "comentario", "cta_yt", "fecho"],
+      // #12586: com o gancho falado de abertura, ele abre sem título falado.
+      order: opening === "gancho"
+        ? ["gancho", "abertura", "resumo", "comentario", "cta_yt", "fecho"]
+        : ["gancho", "titulo", "abertura", "resumo", "comentario", "cta_yt", "fecho"],
       scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]],
       eyeFraction: YOUTUBE_EYE_FRACTION,
     },
@@ -1759,7 +1804,8 @@ export function defaultSequences(version = "V1", format: VideoFormat = "monologo
       name: `Diaria comentada_Vertical_${version}`,
       width: 1080,
       height: 1920,
-      order: ["titulo", "resumo_curto", "comentario", "cta_vertical", "fecho"],
+      // #12586: a frase falada de abertura abre também a vertical.
+      order: [opening, "resumo_curto", "comentario", "cta_vertical", "fecho"],
       scales: [115, 130],
     },
   ];
@@ -2209,7 +2255,8 @@ export interface SequencePlan {
   /** Avisos do plano que não barram o build (respiro da vinheta menor que o pedido, #12101). */
   warnings?: string[];
   /**
-   * #12101: fim da última palavra do bloco `titulo` nesta versão, em segundos
+   * #12101: fim da última palavra do bloco `titulo` nesta versão (#12586: do
+   * bloco de abertura, `openingBlockOfOrder`; o gancho sem título), em segundos
    * do bruto: a âncora da vinheta (`vinhetaSpan`) e do respiro conferido
    * depois do refino (`titleBreathS`). Ausente = sem título com palavra.
    */
@@ -2281,6 +2328,7 @@ export function buildSequencePlan(
     }
   }
   let titleSpeechEndS: number | undefined;
+  const opening = openingBlockOfOrder(spec.order);
   const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
   const fps = source.fps;
   const raws: RawClip[] = [];
@@ -2329,8 +2377,9 @@ export function buildSequencePlan(
         // #12559: o respiro do fecho nunca passa do fim do arquivo do item (nem pelo piso da última palavra).
         lastPart.end = round3(Math.min(bounds ? bounds[file].end : Number.POSITIVE_INFINITY, Math.max(floor, Math.min(it.holdLimit, source.durationS, target))));
       }
-      // #12101: a âncora da vinheta é o fim da última palavra do título que entra nesta versão.
-      if (key === "titulo" && n === mine.length - 1 && it.lastWordEnd !== null) titleSpeechEndS = it.lastWordEnd;
+      // #12101: a âncora da vinheta é o fim da última palavra do título que entra nesta versão
+      // (#12586: do bloco de abertura, o gancho quando a ordem não tem título).
+      if (key === opening && n === mine.length - 1 && it.lastWordEnd !== null) titleSpeechEndS = it.lastWordEnd;
       // #12101: respiro sem fala depois do bloco (a vinheta do logo entra dentro dele), tirado do próprio bruto.
       const breath = opts.breathAfter?.[key];
       if (breath && !holding && n === mine.length - 1 && parts.length) {
@@ -3010,8 +3059,9 @@ export const SCREEN_TITLE_MAX_S = 7.5;
 
 /**
  * Trecho da sequência que leva o título, em frames: os clipes do bloco
- * `titulo`; sem ele (gravação sem bloco de título, 261029), os clipes do 1º
- * bloco da sequência (o gancho). Sequência vazia = null.
+ * `titulo`; sem ele, os do `gancho` (#12586: a frase falada de abertura, que
+ * abre a vertical no lugar do título); sem nenhum dos dois (261029), os clipes
+ * do 1º bloco da sequência. Sequência vazia = null.
  *
  * #11756: só a 1ª sequência CONTÍGUA de clipes do bloco (um corte cujo
  * roteiro é um bloco só, ou um bloco que volta mais adiante, não estende o
@@ -3022,7 +3072,7 @@ export const SCREEN_TITLE_MAX_S = 7.5;
 export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number): { start: number; end: number; block: BlockKey } | null {
   if (plan.clips.length === 0) return null;
   const clips = [...plan.clips].sort((a, b) => a.seqStart - b.seqStart);
-  const block: BlockKey = clips.some((c) => c.block === "titulo") ? "titulo" : clips[0].block;
+  const block: BlockKey = openingBlockOfClips(clips) ?? clips[0].block;
   const first = clips.findIndex((c) => c.block === block);
   const start = clips[first].seqStart;
   let end = start;
@@ -3051,9 +3101,18 @@ export const VINHETA_BREATH_S = 0.7;
 /** Começo da vinheta na sequência sem bloco `titulo` (261029, vertical "soberana": 2–3 s). */
 export const VINHETA_NO_TITLE_START_S = 2;
 
-/** O respiro de cada sequência: só o horizontal (`youtube`) com `titulo` na ordem. */
+/**
+ * O respiro de cada sequência: só o horizontal (`youtube`), depois do bloco de
+ * abertura da ordem (`titulo`; sem ele, o `gancho` falado de abertura, #12586).
+ */
 export function vinhetaBreathFor(spec: Pick<SequenceSpec, "target" | "order">): Partial<Record<BlockKey, number>> | undefined {
-  return spec.target === "youtube" && spec.order.includes("titulo") ? { titulo: VINHETA_BREATH_S } : undefined;
+  const b = vinhetaBreathBlock(spec);
+  return b ? { [b]: VINHETA_BREATH_S } : undefined;
+}
+
+/** O bloco depois do qual o horizontal abre o respiro da vinheta (#12586); sem respiro = null. */
+export function vinhetaBreathBlock(spec: Pick<SequenceSpec, "target" | "order">): OpeningBlock | null {
+  return spec.target === "youtube" ? openingBlockOfOrder(spec.order) : null;
 }
 
 /** `publishing.video.vinheta_logo` do config: o caminho do MOV (ProRes 4444 com alpha). `null` = ausente, vazio ou não string. */
@@ -3110,7 +3169,8 @@ export function parseVinhetaProbe(json: string, path: string): VinhetaAsset {
  * `VINHETA_AFTER_SPEECH_S` depois da última palavra do título
  * (`plan.titleSpeechEndS`), dentro do respiro, quando esse instante do bruto
  * está num clipe; senão no fim do bloco `titulo` (o respiro da vertical é
- * curto: a fala seguinte começa antes); sem título, em
+ * curto: a fala seguinte começa antes). Sem `titulo`, o bloco é o `gancho`
+ * falado de abertura (#12586, `openingBlockOfClips`); sem nenhum dos dois, em
  * `VINHETA_NO_TITLE_START_S`. Dura o MOV inteiro, cortado no fim da sequência.
  * Sequência curta demais = null.
  */
@@ -3119,7 +3179,8 @@ export function vinhetaSpan(
   fps: number,
   asset: Pick<VinhetaAsset, "durationS">,
 ): { start: number; end: number; afterTitle: boolean } | null {
-  const titleEnd = blockRunEndFrame(plan.clips, "titulo", fps);
+  const opening = openingBlockOfClips(plan.clips);
+  const titleEnd = opening ? blockRunEndFrame(plan.clips, opening, fps) : null;
   let start = titleEnd ?? Math.round(VINHETA_NO_TITLE_START_S * fps);
   if (titleEnd !== null && plan.titleSpeechEndS !== undefined) {
     const at = seqFrameOfSource(plan.clips, plan.titleSpeechEndS + VINHETA_AFTER_SPEECH_S, fps);
