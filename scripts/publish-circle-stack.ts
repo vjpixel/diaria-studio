@@ -76,13 +76,17 @@
  *   (opcionais: --reselect, --opening-file <path>, --closing-file <path>, --force, --data-root <dir>)
  *   --closing-file: a ÚLTIMA linha do arquivo vira a cauda de "[Assine a diar.ia.br](url). {linha}";
  *   linhas anteriores saem como parágrafos antes dela.
+ *
+ * Argv inválido (flag desconhecida, argumento solto, flag de valor sem valor)
+ * sai 1 antes de qualquer I/O; `--help` sai 0 (#12528). Antes, `--publsh` ou
+ * `--next-mondy` eram ignorados em silêncio e a rodada seguia com o default.
  */
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
   currentOrPreviousMondayAAMMDD,
@@ -1052,7 +1056,31 @@ ${rendered.markdown}
   if (closeRes.failed.length > 0) console.warn(`⚠ Não consegui fechar a(s) issue(s) de aviso ${closeRes.failed.join(", ")} — fechar à mão.`);
 }
 
+/**
+ * Flags aceitas (#12528); o resto sai 1 antes de qualquer I/O, `--help` sai 0.
+ * Validado só no `main()`: `publish-circle-stack-scheduled.ts` chama
+ * `runCircleStack` com um argv montado em código, não digitado.
+ */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/publish-circle-stack.ts",
+  booleans: ["publish", "notify", "next-monday", "hello", "force", "reselect", "translate-titles", "no-translate", "resolve-skill-default-monday"],
+  values: ["publish-monday", "data-root", "opening-file", "closing-file"],
+  usage: [
+    "uso: npx tsx scripts/publish-circle-stack.ts [--publish-monday AAMMDD | --next-monday] [--publish] [--notify]",
+    "  [--reselect] [--translate-titles | --no-translate] [--opening-file <path>] [--closing-file <path>]",
+    "  [--force] [--data-root <dir>] [--hello] [--resolve-skill-default-monday] [--help | -h]",
+    "",
+    "Sem --publish só monta a seleção e a prévia (nada é enviado à Stack). --hello envia o post de teste.",
+    "Flag desconhecida, argumento solto ou flag sem o valor esperado sai 1 sem rodar nada (#12528).",
+  ].join("\n"),
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv(ROOT);
   await runCircleStack(process.argv.slice(2), {
     rootDir: ROOT,

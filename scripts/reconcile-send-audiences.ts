@@ -69,6 +69,10 @@
  *   npx tsx scripts/reconcile-send-audiences.ts             # texto humano + issue
  *   npx tsx scripts/reconcile-send-audiences.ts --json      # JSON + issue
  *   npx tsx scripts/reconcile-send-audiences.ts --dry-run   # só relata, sem tocar issue
+ *
+ * Argv inválido (flag desconhecida, argumento solto) sai 1 antes de qualquer
+ * chamada à Beehiiv/Kit; `--help` sai 0 (#12528). Exit 2 segue reservado pra
+ * "não consegui medir" (config/rede).
  */
 
 import { readFileSync } from "node:fs";
@@ -76,7 +80,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { findTagIdByName, listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
@@ -395,7 +399,18 @@ function emitError(asJson: boolean, message: string, code: "config" | "network")
   process.exitCode = 2;
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12528). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/reconcile-send-audiences.ts",
+  booleans: ["json", "dry-run"],
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv();
   const asJson = hasFlag(process.argv.slice(2), "json");
   const dryRun = hasFlag(process.argv.slice(2), "dry-run");
