@@ -129,12 +129,19 @@ function indexPeopleByEmail(people: Readonly<Record<string, FollowupPerson>>): M
   return byEmail;
 }
 
-/** @pure — origem do respondente pelo convite registrado no store. */
-export function formResponseOrigin(person: FollowupPerson | undefined): FormResponseOrigin {
+/**
+ * @pure — origem do respondente pelo convite registrado no store. Sem convite
+ * registrado por pessoa, mas entre os destinatários do e-mail da base
+ * (`followup.base_invite.recipient_emails`): lote da base. Cobre o intervalo
+ * entre o envio e o registro `form_base` por pessoa (passo `confirm` do
+ * `onboarding-form-base-prep.ts` ou o executor diário), e o
+ * `sent_unverified`, que nunca grava esse registro.
+ */
+export function formResponseOrigin(person: FollowupPerson | undefined, inBaseRecipients = false): FormResponseOrigin {
   const invite = formInviteOf(person);
   if (invite === "form_base") return "base";
   if (invite === "form") return "onboarding";
-  return "sem_convite";
+  return inBaseRecipients ? "base" : "sem_convite";
 }
 
 function day(iso: string): string {
@@ -151,6 +158,8 @@ function chosenValues(q: FormQuestion, raw: string): string[] {
 export interface BuildFormPartialResultsOptions {
   /** `followup.people` do store; ausente = todos caem em `sem_convite`. */
   people?: Readonly<Record<string, FollowupPerson>>;
+  /** `followup.base_invite.recipient_emails` do store (ver `formResponseOrigin`). */
+  baseRecipientEmails?: readonly string[];
   questions?: readonly FormQuestion[];
   testEmails?: readonly string[];
   currentVersion?: number;
@@ -166,6 +175,7 @@ export function buildFormPartialResults(responses: readonly FormResponse[], opts
   const testEmails = opts.testEmails ?? EDITOR_SEED_EMAILS;
   const currentVersion = opts.currentVersion ?? FORM_VERSION;
   const byEmail = indexPeopleByEmail(opts.people ?? {});
+  const baseRecipients = new Set((opts.baseRecipientEmails ?? []).map(normalizeFormEmail));
 
   const latest = latestFormResponses(responses);
   const kept: FormResponse[] = [];
@@ -178,7 +188,8 @@ export function buildFormPartialResults(responses: readonly FormResponse[], opts
   const porOrigem: Record<FormResponseOrigin, number> = { base: 0, onboarding: 0, sem_convite: 0 };
   const origemOf = new Map<FormResponse, FormResponseOrigin>();
   for (const r of kept) {
-    const o = formResponseOrigin(byEmail.get(normalizeFormEmail(r.email)));
+    const email = normalizeFormEmail(r.email);
+    const o = formResponseOrigin(byEmail.get(email), baseRecipients.has(email));
     origemOf.set(r, o);
     porOrigem[o]++;
   }

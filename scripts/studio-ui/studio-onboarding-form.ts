@@ -62,6 +62,7 @@ export async function buildFormResultsView(rootDir: string, deps: FormResultsDep
   const storePath = deps.storePath ?? resolve(rootDir, "data", "onboarding", "store.json");
   const { store, corrupted } = readStore(storePath);
   const people: Record<string, FollowupPerson> = corrupted ? {} : (store.followup?.people ?? {});
+  const baseRecipientEmails = corrupted ? [] : (store.followup?.base_invite?.recipient_emails ?? []);
   const storeLido = !corrupted && Object.keys(people).length > 0;
-  return { available: true, geradoEm, storeLido, ...buildFormPartialResults(responses, { people }) };
+  return { available: true, geradoEm, storeLido, ...buildFormPartialResults(responses, { people, baseRecipientEmails }) };
 }

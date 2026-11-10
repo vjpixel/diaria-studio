@@ -139,6 +139,12 @@ describe("#12583 buildFormPartialResults", () => {
     assert.ok(!isFormTestEmail("outra+vjpixel@gmail.com"));
   });
 
+  it("destinatário do e-mail da base sem registro por pessoa ainda: lote da base", () => {
+    const s = buildFormPartialResults(RESPONSES, { people: PEOPLE, baseRecipientEmails: ["Sumido@x.com"] });
+    assert.deepEqual(s.por_origem, { base: 3, onboarding: 1, sem_convite: 1 });
+    assert.equal(formResponseOrigin(person(9, "a@x.com", "form"), true), "onboarding", "convite registrado vence a lista");
+  });
+
   it("sem store: todo mundo sem convite registrado", () => {
     const s = buildFormPartialResults(RESPONSES);
     assert.deepEqual(s.por_origem, { base: 0, onboarding: 0, sem_convite: 5 });
