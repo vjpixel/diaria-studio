@@ -14,10 +14,11 @@
  * para que a listagem (tamanho + MD5) seja a do estado que vai ser apagado. Para
  * cada bruto listado numa pasta de edição elegível:
  *   1. acha a cópia local: a do arquivo (`{archive}/{pasta}/{arquivo}`, rodada
- *      anterior interrompida) se tiver o tamanho do Drive, senão a do espelho
- *      do bisync (`/mnt/hd-sata/GoogleDrive/...`) se tiver o tamanho do Drive,
- *      senão baixa do Drive para um `.partial` ao lado do destino e renomeia
- *      (uma cópia ruim no arquivo é sobrescrita, nunca trava o bruto);
+ *      anterior interrompida) se tiver o tamanho e o MD5 do Drive, senão a do
+ *      espelho do bisync (`/mnt/hd-sata/GoogleDrive/...`) se tiver o tamanho
+ *      do Drive, senão baixa do Drive para um `.partial` ao lado do destino e
+ *      renomeia. Uma cópia ruim no arquivo, de tamanho errado ou de mesmo
+ *      tamanho com MD5 diferente (#12603), é sobrescrita, nunca trava o bruto;
  *   2. confere tamanho e MD5 contra o Drive. Divergência, MD5 local que não
  *      pôde ser calculado ou Drive sem MD5 = não apaga, exit 1;
  *   3. move a cópia do espelho para o arquivo (`rename`, mesmo disco);
@@ -44,7 +45,12 @@
  * usa, qualquer bruto pode ser dele).
  *
  * O timer volta no fim em qualquer caso, inclusive SIGTERM/SIGINT; morte por
- * SIGKILL fica para o alarme de sync parado (#12357).
+ * SIGKILL fica para o alarme de sync parado (#12357). Por isso a rodada é
+ * assíncrona (#12603): com `spawnSync`/`Atomics.wait` o handler do sinal só
+ * rodaria quando a rodada acabasse, e com um handler instalado o Node deixa de
+ * morrer no SIGTERM, ou seja, o sinal ficava ignorado. Agora o sinal marca a
+ * parada, mata o filho em curso (rclone/md5sum), nenhum filho novo sobe, o
+ * laço para antes do próximo bruto e o `finally` religa o timer.
  *
  * Relatório: stdout (texto ou `--json`) e, com `--apply`,
  * `~/.cache/diaria/video-bruto-archive/last-report.json`, com o espaço livre do
@@ -64,7 +70,7 @@
  * Testável sem tocar produção: VIDEO_ARCHIVE_* e RCLONE_BIN/SYSTEMCTL_BIN/
  * MD5SUM_BIN/VIDEO_ARCHIVE_MOUNTPOINT_CMD sobrescrevíveis por env.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -191,13 +197,80 @@ export interface ArchiveReport {
   archivedBytes: number;
 }
 
-function run(bin: string, args: string[], opts: { timeoutMs?: number } = {}): { ok: boolean; stdout: string; stderr: string } {
-  const r = spawnSync(bin, args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, timeout: opts.timeoutMs });
-  return { ok: r.status === 0, stdout: r.stdout ?? "", stderr: (r.stderr ?? "") + (r.error ? String(r.error.message) : "") };
+/**
+ * Parada pedida por sinal (#12603). `signal` marca a parada; os filhos em curso
+ * morrem na hora e nenhum filho novo sobe (salvo o que religa o timer).
+ */
+export interface StopController {
+  signal: NodeJS.Signals | null;
+  children: Set<ChildProcess>;
 }
 
-function driveFree(cfg: ArchiveConfig, warnings: string[]): number | null {
-  const r = run(cfg.rclone, ["about", cfg.remoteName, "--json"], { timeoutMs: 120_000 });
+export function createStopController(): StopController {
+  return { signal: null, children: new Set() };
+}
+
+/** Marca a parada e mata os filhos em curso. Repetido, mata com SIGKILL. */
+export function requestStop(stop: StopController, sig: NodeJS.Signals): void {
+  const again = stop.signal !== null;
+  if (!again) stop.signal = sig;
+  for (const c of stop.children) c.kill(again ? "SIGKILL" : "SIGTERM");
+}
+
+interface RunResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+}
+
+/** Roda um filho sem bloquear o event loop (o handler do sinal precisa rodar no meio). */
+function run(
+  stop: StopController,
+  bin: string,
+  args: string[],
+  opts: { timeoutMs?: number; evenIfStopped?: boolean } = {},
+): Promise<RunResult> {
+  if (stop.signal && !opts.evenIfStopped) {
+    return Promise.resolve({ ok: false, stdout: "", stderr: `não executado: ${stop.signal} recebido` });
+  }
+  return new Promise((done) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) {
+      done({ ok: false, stdout: "", stderr: (e as Error).message });
+      return;
+    }
+    stop.children.add(child);
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let extra = "";
+    let settled = false;
+    const timer = opts.timeoutMs
+      ? setTimeout(() => {
+          extra += ` timeout de ${opts.timeoutMs} ms`;
+          child.kill("SIGTERM");
+        }, opts.timeoutMs)
+      : undefined;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      stop.children.delete(child);
+      done({ ok: code === 0 && !extra, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") + extra });
+    };
+    child.stdout?.on("data", (d: Buffer) => out.push(d));
+    child.stderr?.on("data", (d: Buffer) => err.push(d));
+    child.on("error", (e) => {
+      extra += ` ${e.message}`;
+      finish(null);
+    });
+    child.on("close", (code) => finish(code));
+  });
+}
+
+async function driveFree(cfg: ArchiveConfig, stop: StopController, warnings: string[]): Promise<number | null> {
+  const r = await run(stop, cfg.rclone, ["about", cfg.remoteName, "--json"], { timeoutMs: 120_000 });
   const free = r.ok ? (parseRcloneAboutJson(r.stdout)?.free ?? null) : null;
   if (free === null) warnings.push(`rclone about falhou ou veio ilegível: ${r.stderr.trim().slice(-200) || r.stdout.trim().slice(0, 200)}`);
   return free;
@@ -218,8 +291,8 @@ export function bisyncIdle(state: string): boolean {
   return state === "inactive" || state === "failed";
 }
 
-function sleep(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 /**
@@ -227,26 +300,33 @@ function sleep(ms: number): void {
  * terminar. Devolve se o timer estava ativo (= deve ser religado). Lança se a
  * rodada não terminar no prazo, já com `timerWasActive` preenchido em `state`.
  */
-export function pauseBisync(cfg: ArchiveConfig, state: { timerWasActive: boolean }, log: (l: string) => void): void {
-  state.timerWasActive = run(cfg.systemctl, ["--user", "is-active", BISYNC_TIMER]).stdout.trim() === "active";
+export async function pauseBisync(
+  cfg: ArchiveConfig,
+  stop: StopController,
+  state: { timerWasActive: boolean },
+  log: (l: string) => void,
+): Promise<void> {
+  state.timerWasActive = (await run(stop, cfg.systemctl, ["--user", "is-active", BISYNC_TIMER])).stdout.trim() === "active";
   if (state.timerWasActive) {
-    const stop = run(cfg.systemctl, ["--user", "stop", BISYNC_TIMER]);
-    if (!stop.ok) throw new Error(`não consegui parar ${BISYNC_TIMER}: ${stop.stderr.trim()}`);
+    const st = await run(stop, cfg.systemctl, ["--user", "stop", BISYNC_TIMER]);
+    if (!st.ok) throw new Error(`não consegui parar ${BISYNC_TIMER}: ${st.stderr.trim()}`);
     log(`${LOG_PREFIX} ${BISYNC_TIMER} parado; esperando a rodada em curso do bisync terminar.`);
   } else {
     log(`${LOG_PREFIX} ${BISYNC_TIMER} já estava parado; fica parado no fim.`);
   }
   const deadline = Date.now() + cfg.waitMinutes * 60_000;
   for (;;) {
-    const st = run(cfg.systemctl, ["--user", "is-active", BISYNC_SERVICE]).stdout.trim();
+    if (stop.signal) throw new Error(`${stop.signal} recebido na espera do bisync; nada arquivado`);
+    const st = (await run(stop, cfg.systemctl, ["--user", "is-active", BISYNC_SERVICE])).stdout.trim();
     if (bisyncIdle(st)) return;
     if (Date.now() > deadline) throw new Error(`${BISYNC_SERVICE} seguia "${st}" depois de ${cfg.waitMinutes} min`);
-    sleep(Math.max(cfg.pollSeconds, 0.05) * 1000);
+    await sleep(Math.max(cfg.pollSeconds, 0.05) * 1000);
   }
 }
 
-export function resumeBisync(cfg: ArchiveConfig, log: (l: string) => void): string | null {
-  const r = run(cfg.systemctl, ["--user", "start", BISYNC_TIMER]);
+/** Religa o timer; roda mesmo depois do sinal (é o que o sinal precisa garantir). */
+export async function resumeBisync(cfg: ArchiveConfig, stop: StopController, log: (l: string) => void): Promise<string | null> {
+  const r = await run(stop, cfg.systemctl, ["--user", "start", BISYNC_TIMER], { evenIfStopped: true });
   if (!r.ok) return `não consegui religar ${BISYNC_TIMER}: ${r.stderr.trim()}`;
   log(`${LOG_PREFIX} ${BISYNC_TIMER} religado.`);
   return null;
@@ -355,8 +435,8 @@ function fileSize(p: string): number | null {
   }
 }
 
-function listRemote(cfg: ArchiveConfig, target: string): { files: RemoteFile[] } | { error: string } {
-  const r = run(cfg.rclone, ["lsjson", "-R", "--files-only", "--hash", "--hash-type", "md5", target], { timeoutMs: 600_000 });
+async function listRemote(cfg: ArchiveConfig, stop: StopController, target: string): Promise<{ files: RemoteFile[] } | { error: string }> {
+  const r = await run(stop, cfg.rclone, ["lsjson", "-R", "--files-only", "--hash", "--hash-type", "md5", target], { timeoutMs: 600_000 });
   if (!r.ok) return { error: `rclone lsjson falhou: ${r.stderr.trim().slice(-300)}` };
   try {
     return { files: parseRcloneLsjson(r.stdout) };
@@ -366,10 +446,10 @@ function listRemote(cfg: ArchiveConfig, target: string): { files: RemoteFile[] }
 }
 
 /** O arquivo ainda está no Drive? `null` = não deu para saber. */
-function stillOnDrive(cfg: ArchiveConfig, folder: string, path: string): boolean | null {
+async function stillOnDrive(cfg: ArchiveConfig, stop: StopController, folder: string, path: string): Promise<boolean | null> {
   const parent = path.includes("/") ? `/${path.slice(0, path.lastIndexOf("/"))}` : "";
   const name = path.slice(path.lastIndexOf("/") + 1);
-  const r = run(cfg.rclone, ["lsjson", "--files-only", `${cfg.remoteRoot}/${folder}${parent}`], { timeoutMs: 300_000 });
+  const r = await run(stop, cfg.rclone, ["lsjson", "--files-only", `${cfg.remoteRoot}/${folder}${parent}`], { timeoutMs: 300_000 });
   if (!r.ok) return null;
   try {
     return parseRcloneLsjson(r.stdout).some((f) => f.path === name);
@@ -384,53 +464,69 @@ function sizeTimeoutMs(size: number): number {
 }
 
 /** Processa um bruto (com `--apply`). Nunca lança: o erro vira status. */
-function archiveOne(cfg: ArchiveConfig, folder: string, remote: RemoteFile): FileResult {
+async function archiveOne(cfg: ArchiveConfig, stop: StopController, folder: string, remote: RemoteFile): Promise<FileResult> {
   const base: FileResult = { folder, path: remote.path, sizeBytes: remote.size, status: "sairia" };
   try {
-    return archiveOneUnsafe(cfg, folder, remote, base);
+    return await archiveOneUnsafe(cfg, stop, folder, remote, base);
   } catch (e) {
     return { ...base, status: "falha-mover", detail: `erro inesperado: ${(e as Error).message}` };
   }
 }
 
-function archiveOneUnsafe(cfg: ArchiveConfig, folder: string, remote: RemoteFile, base: FileResult): FileResult {
+async function archiveOneUnsafe(
+  cfg: ArchiveConfig,
+  stop: StopController,
+  folder: string,
+  remote: RemoteFile,
+  base: FileResult,
+): Promise<FileResult> {
   const archivePath = join(cfg.archiveRoot, folder, ...remote.path.split("/"));
   const mirrorPath = join(cfg.localRoot, folder, ...remote.path.split("/"));
   const remotePath = `${cfg.remoteRoot}/${folder}/${remote.path}`;
   const timeoutMs = sizeTimeoutMs(remote.size);
+  const check = async (p: string): Promise<{ verify: VerifyVerdict; md5Stderr: string }> => {
+    const md5Run = await run(stop, cfg.md5sum, [p], { timeoutMs });
+    const localMd5 = md5Run.ok ? parseMd5sumLine(md5Run.stdout) : null;
+    return { verify: verifyCopy(remote, { size: fileSize(p) ?? -1, md5: localMd5 }), md5Stderr: md5Run.stderr };
+  };
+  const failVerify = (src: NonNullable<FileResult["source"]>, c: { verify: VerifyVerdict; md5Stderr: string }): FileResult => {
+    const detail = c.verify === "md5-local-indisponivel" ? c.md5Stderr.trim().slice(-300) : undefined;
+    return { ...base, source: src, verify: c.verify, status: "falha-conferencia", ...(detail ? { detail } : {}) };
+  };
 
-  let source: NonNullable<FileResult["source"]>;
-  let localPath: string;
+  let source: NonNullable<FileResult["source"]> | null = null;
+  let localPath = archivePath;
   if (fileSize(archivePath) === remote.size) {
-    source = "arquivo";
-    localPath = archivePath;
-  } else if (fileSize(mirrorPath) === remote.size) {
-    source = "espelho";
-    localPath = mirrorPath;
-  } else {
-    source = "download";
-    localPath = archivePath;
-    const partial = `${archivePath}.partial`;
-    try {
-      mkdirSync(dirname(archivePath), { recursive: true });
-    } catch (e) {
-      return { ...base, source, status: "falha-download", detail: (e as Error).message };
-    }
-    const dl = run(cfg.rclone, ["copyto", remotePath, partial], { timeoutMs });
-    if (!dl.ok) {
-      rmSync(partial, { force: true });
-      return { ...base, source, status: "falha-download", detail: dl.stderr.trim().slice(-500) };
-    }
-    renameSync(partial, archivePath);
+    const c = await check(archivePath);
+    if (c.verify === "ok") source = "arquivo";
+    // #12603: cópia de mesmo tamanho com outro conteúdo não trava o bruto; o espelho ou um download a substitui.
+    else if (c.verify === "md5-diverge") base = { ...base, detail: "a cópia que estava no arquivo tinha MD5 diferente do Drive" };
+    else return failVerify("arquivo", c);
   }
-
-  const md5Run = run(cfg.md5sum, [localPath], { timeoutMs });
-  const localMd5 = md5Run.ok ? parseMd5sumLine(md5Run.stdout) : null;
-  const verify = verifyCopy(remote, { size: fileSize(localPath) ?? -1, md5: localMd5 });
-  if (verify !== "ok") {
-    const detail = verify === "md5-local-indisponivel" ? md5Run.stderr.trim().slice(-300) : undefined;
-    return { ...base, source, verify, status: "falha-conferencia", ...(detail ? { detail } : {}) };
+  if (source === null) {
+    if (fileSize(mirrorPath) === remote.size) {
+      source = "espelho";
+      localPath = mirrorPath;
+    } else {
+      source = "download";
+      const partial = `${archivePath}.partial`;
+      try {
+        mkdirSync(dirname(archivePath), { recursive: true });
+      } catch (e) {
+        return { ...base, source, status: "falha-download", detail: (e as Error).message };
+      }
+      const dl = await run(stop, cfg.rclone, ["copyto", remotePath, partial], { timeoutMs });
+      if (!dl.ok) {
+        rmSync(partial, { force: true });
+        return { ...base, source, status: "falha-download", detail: dl.stderr.trim().slice(-500) };
+      }
+      renameSync(partial, archivePath);
+    }
+    // A cópia do arquivo que conferiu já foi checada acima; espelho e download são checados aqui.
+    const c = await check(localPath);
+    if (c.verify !== "ok") return failVerify(source, c);
   }
+  const verify: VerifyVerdict = "ok";
 
   if (source === "espelho") {
     try {
@@ -441,12 +537,12 @@ function archiveOneUnsafe(cfg: ArchiveConfig, folder: string, remote: RemoteFile
     }
   }
 
-  const del = run(cfg.rclone, ["deletefile", "--drive-use-trash=false", remotePath], { timeoutMs: 600_000 });
+  const del = await run(stop, cfg.rclone, ["deletefile", "--drive-use-trash=false", remotePath], { timeoutMs: 600_000 });
   if (del.ok) return { ...base, source, verify, status: "arquivado" };
 
   // O `deletefile` falhou. Reler antes de qualquer coisa: o Drive pode ter apagado e só a resposta se perdeu.
   const errText = del.stderr.trim().slice(-500);
-  const present = stillOnDrive(cfg, folder, remote.path);
+  const present = await stillOnDrive(cfg, stop, folder, remote.path);
   if (present === false) {
     return { ...base, source, verify, status: "arquivado", detail: `deletefile saiu com erro, mas o arquivo já não está no Drive: ${errText}` };
   }
@@ -470,7 +566,7 @@ function archiveOneUnsafe(cfg: ArchiveConfig, folder: string, remote: RemoteFile
   return { ...base, source, verify, status, detail: errText + restoreNote };
 }
 
-export function runArchive(opts: {
+export async function runArchive(opts: {
   cfg: ArchiveConfig;
   apply: boolean;
   today: Date;
@@ -479,10 +575,11 @@ export function runArchive(opts: {
   publishedMinDays?: number;
   only?: Set<string>;
   log?: (l: string) => void;
-  /** Quem chama registra aqui o religamento para os handlers de sinal (main). */
-  onPaused?: (resume: () => void) => void;
-}): ArchiveReport {
+  /** #12603: parada por sinal; `main` liga SIGTERM/SIGINT nele. */
+  stop?: StopController;
+}): Promise<ArchiveReport> {
   const { cfg, apply } = opts;
+  const stop = opts.stop ?? createStopController();
   const log = opts.log ?? (() => {});
   const report: ArchiveReport = {
     at: new Date().toISOString(),
@@ -497,7 +594,7 @@ export function runArchive(opts: {
   };
 
   const [mpBin, ...mpArgs] = cfg.mountpointCmd;
-  if (!run(mpBin, [...mpArgs, cfg.mount]).ok) {
+  if (!(await run(stop, mpBin, [...mpArgs, cfg.mount])).ok) {
     report.errors.push(`${cfg.mount} não está montado — nada feito`);
     return report;
   }
@@ -522,7 +619,7 @@ export function runArchive(opts: {
   if (!apply) {
     // Dry-run: lista sem pausar nada (só leitura).
     for (const name of eligible) {
-      const l = listRemote(cfg, `${cfg.remoteRoot}/${name}`);
+      const l = await listRemote(cfg, stop, `${cfg.remoteRoot}/${name}`);
       if ("error" in l) report.errors.push(`${name}: ${l.error}`);
       else
         for (const f of l.files.filter((f) => isBrutoFile(f.path))) {
@@ -539,33 +636,41 @@ export function runArchive(opts: {
 
   const bisync = { timerWasActive: false };
   let resumed = false;
-  const resume = () => {
+  const resume = async () => {
     if (resumed || !cfg.pauseBisync) return;
     resumed = true;
     if (!bisync.timerWasActive) return;
-    const err = resumeBisync(cfg, log);
+    const err = await resumeBisync(cfg, stop, log);
     if (err) report.errors.push(err);
+  };
+  const interrupted = () => {
+    if (!stop.signal) return false;
+    report.errors.push(`${stop.signal} recebido: rodada interrompida; o que faltou fica para a próxima`);
+    return true;
   };
   try {
     if (cfg.pauseBisync) {
-      opts.onPaused?.(resume);
       try {
-        pauseBisync(cfg, bisync, log);
+        await pauseBisync(cfg, stop, bisync, log);
       } catch (e) {
         report.errors.push((e as Error).message);
         return report;
       }
     }
-    report.driveFreeBefore = driveFree(cfg, report.warnings);
+    if (interrupted()) return report;
+    report.driveFreeBefore = await driveFree(cfg, stop, report.warnings);
     // A listagem vem DEPOIS da pausa: tamanho e MD5 são os do estado que vai ser apagado.
-    for (const folder of eligible) {
-      const l = listRemote(cfg, `${cfg.remoteRoot}/${folder}`);
+    folders: for (const folder of eligible) {
+      if (stop.signal) break;
+      const l = await listRemote(cfg, stop, `${cfg.remoteRoot}/${folder}`);
       if ("error" in l) {
         report.errors.push(`${folder}: ${l.error}`);
         continue;
       }
       const dups = duplicatePaths(l.files);
       for (const f of l.files.filter((f) => isBrutoFile(f.path))) {
+        // #12603: o sinal para a rodada entre um bruto e outro.
+        if (stop.signal) break folders;
         const inUse = inUseResult(folder, f, refs);
         if (inUse) {
           report.files.push(inUse);
@@ -576,15 +681,16 @@ export function runArchive(opts: {
           continue;
         }
         log(`${LOG_PREFIX} ${folder}/${f.path} (${formatBytes(f.size)})…`);
-        const res = archiveOne(cfg, folder, f);
+        const res = await archiveOne(cfg, stop, folder, f);
         report.files.push(res);
         if (res.status === "arquivado") report.archivedBytes += res.sizeBytes;
         log(`${LOG_PREFIX}   ${res.status}${res.detail ? `: ${res.detail}` : ""}`);
       }
     }
-    report.driveFreeAfter = driveFree(cfg, report.warnings);
+    if (interrupted()) return report;
+    report.driveFreeAfter = await driveFree(cfg, stop, report.warnings);
   } finally {
-    resume();
+    await resume();
   }
   return report;
 }
@@ -622,7 +728,7 @@ function printText(report: ArchiveReport): void {
   for (const e of report.errors) console.error(`${LOG_PREFIX} erro: ${e}`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const apply = hasFlag(argv, "apply");
   const unpublishedMaxDays = getIntArg(argv, "unpublished-max-days", { min: 0 }) ?? DEFAULT_ARCHIVE_UNPUBLISHED_MAX_DAYS;
@@ -630,7 +736,15 @@ function main(): void {
   const onlyRaw = getStringArg(argv, "only", { example: "261027,261028" });
   const only = onlyRaw ? new Set(onlyRaw.split(",").map((s) => s.trim()).filter(Boolean)) : undefined;
   const cfg = defaultConfig();
-  const report = runArchive({
+  // #12603: o sinal só marca a parada; a rodada para entre um bruto e outro e o `finally` religa o timer.
+  const stop = createStopController();
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.on(sig, () => {
+      console.error(`${LOG_PREFIX} ${sig} recebido; parando a rodada e religando o timer do bisync.`);
+      requestStop(stop, sig);
+    });
+  }
+  const report = await runArchive({
     cfg,
     apply,
     today: todayBrt(),
@@ -638,16 +752,7 @@ function main(): void {
     publishedMinDays,
     only,
     log: (l) => console.error(l),
-    // SIGTERM/SIGINT não passam pelo `finally`: religa o timer antes de sair.
-    onPaused: (resume) => {
-      for (const sig of ["SIGTERM", "SIGINT"] as const) {
-        process.once(sig, () => {
-          console.error(`${LOG_PREFIX} ${sig} recebido; religando o timer do bisync e saindo.`);
-          resume();
-          process.exit(1);
-        });
-      }
-    },
+    stop,
   });
   if (apply) {
     try {
@@ -666,10 +771,8 @@ function main(): void {
 }
 
 if (isMainModule(import.meta.url)) {
-  try {
-    main();
-  } catch (e) {
+  main().catch((e) => {
     console.error(`${LOG_PREFIX} erro: ${(e as Error).message}`);
     process.exit(1);
-  }
+  });
 }
