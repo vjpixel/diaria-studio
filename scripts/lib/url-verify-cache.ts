@@ -68,7 +68,8 @@ export interface CacheEntry {
  * vasta maioria de páginas editoriais (heads, JSON-LD, primeiros parágrafos).
  *
  * Compatível com a truncagem de 50K em `verify-accessibility.ts` antes
- * dos paywall markers — mesmo prefix do body bruto.
+ * dos checks de body curto/soft 404 — mesmo prefix do body bruto (o
+ * detector de prévia de paywall, #12645, lê o body inteiro).
  */
 export const MAX_CACHED_BODY_SIZE = 50_000;
 
