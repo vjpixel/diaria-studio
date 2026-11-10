@@ -66,6 +66,13 @@ describe("stripPostJobCleanup + tailLines (#12733)", () => {
     assert.doesNotMatch(out, /git version/);
   });
 
+  it("step que imprime a mesma frase não corta antes da falha: vale a última ocorrência", () => {
+    const withEcho = ["2026-11-10T18:23:30.0Z Post job cleanup.", log].join("\n");
+    const out = stripPostJobCleanup(withEcho);
+    assert.match(out, /exit code 1/);
+    assert.doesNotMatch(out, /git version/);
+  });
+
   it("log sem a linha de limpeza volta inteiro", () => {
     assert.equal(stripPostJobCleanup("a\nb\n"), "a\nb\n");
   });

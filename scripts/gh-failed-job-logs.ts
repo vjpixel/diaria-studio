@@ -37,7 +37,12 @@ export interface RunJob {
   conclusion: string | null;
 }
 
-/** Conclusões de job que contam como falha a investigar. */
+/**
+ * Conclusões de job que contam como falha a investigar. `cancelled` fica de
+ * fora de propósito: job cancelado por concorrência ou à mão não é falha, e o
+ * cancelado por `timeout-minutes` já vem `timed_out`. Para ler o log de um job
+ * qualquer, seja qual for a conclusão, use `--job J`.
+ */
 const FAILED_CONCLUSIONS = new Set(["failure", "timed_out"]);
 
 export function jobsApiPath(run: number, repo: string | undefined, attempt?: number): string {
@@ -62,11 +67,14 @@ export function selectFailedJobs(jobsJson: string): RunJob[] {
 /**
  * Corta o log na linha `Post job cleanup.` do runner: o que vem depois é a
  * limpeza do checkout/setup (~20 linhas de `git config`), que empurraria a
- * falha para fora do `--tail`. Log sem essa linha volta inteiro.
+ * falha para fora do `--tail`. Log sem essa linha volta inteiro. Corta na
+ * ÚLTIMA ocorrência: a marca do runner vem depois de todos os steps, então um
+ * step que imprima a mesma frase sozinha na linha não esconde a falha real.
  */
 export function stripPostJobCleanup(text: string): string {
-  const m = /^\S*\s?Post job cleanup\.\s*$/m.exec(text);
-  return m ? text.slice(0, m.index) : text;
+  let last = -1;
+  for (const m of text.matchAll(/^\S*\s?Post job cleanup\.\s*$/gm)) last = m.index ?? last;
+  return last >= 0 ? text.slice(0, last) : text;
 }
 
 /** Últimas `n` linhas de `text` (`n <= 0` devolve tudo). Ignora a quebra final. */

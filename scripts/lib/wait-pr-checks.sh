@@ -110,6 +110,8 @@ wait_pr_checks() {
   # `now=` dava TIMEOUT (rc=1) sem nunca ter consultado o gate — inclusive
   # quando a fila de runner (rc=7) ou um "pass" (rc=0) seria a resposta
   # certa. Foi o vermelho intermitente do job Shell tests na PR #12717.
+  # Consequência deliberada: teto 0 também faz 1 leitura antes do TIMEOUT
+  # (nenhum chamador do repo passa teto 0).
   local polled=0
 
   # O teto absoluto nunca fica abaixo do teto normal (chamador que passou
