@@ -19,6 +19,8 @@
  *
  * Só leitura: nunca escreve em `data/`. `--fetch` faz GET das URLs (sem
  * login), em série, e imprime o resultado por URL.
+ *
+ * @one-off-validity: expira=2026-12-10 pergunta="Quantas histórias descartadas por paywall nas edições recentes abrem em texto completo sem login (#12537)?"
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
