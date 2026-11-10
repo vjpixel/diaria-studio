@@ -4,9 +4,9 @@
  * Um dry-run abandonado fazia toda Etapa 5 seguinte segurar o horizontal em
  * silêncio, e o D1 saía sem o link do vídeo.
  *
- * Fix: `warn` no run-log, `[aviso]` no stderr com o comando de liberar, e o
- * texto cita a idade do marcador e o D0 já passado. Nunca publica sozinho
- * (decisão deliberada do #12122): o marcador continua segurando o upload.
+ * Fix: `warn` no run-log, `[aviso]` no stderr, e o texto cita a idade do
+ * marcador e o D0 já passado. Desde o #12588 a Etapa 5 não sobe vídeo: o
+ * marcador é só informativo e quem barra a falta do link é o Passo 0b.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -25,17 +25,19 @@ const pending = (at: string): Exclude<PendingApprovalRead, { kind: "none" }> => 
 });
 
 describe("#12287 — hold do YouTube no Stage 5 fica visível", () => {
-  it("awaiting-approval é warn (era info)", () => {
-    assert.equal(youtubeStepLevel({ outcome: "awaiting-approval" }), "warn");
+  it("#12588: sem o link (o caso em que o marcador aparece) é warn", () => {
+    assert.equal(youtubeStepLevel({ outcome: "missing-link" }), "warn");
     assert.equal(youtubeStepLevel({ outcome: "already-published" }), "info");
   });
 
-  it("marcador recente, edição por vir: sem nota, mas o texto cita o comando de liberar", () => {
+  it("marcador recente, edição por vir: sem nota; o texto aponta a skill e o set-d1-no-video (#12588)", () => {
     const now = new Date("2026-11-05T22:00:00Z"); // 19:00 BRT de 05/11, véspera do D0
     const read = pending("2026-11-05T21:00:00Z");
     assert.equal(pendingApprovalStaleNote(read, AAMMDD, now), null);
     const text = describePendingApproval(read, AAMMDD, now);
-    assert.match(text, /stage5-youtube\.ts 261106 --ignore-pending-approval/);
+    assert.match(text, /\/diaria-publica-video 261106/);
+    assert.match(text, /set-d1-no-video\.ts 261106/);
+    assert.doesNotMatch(text, /--ignore-pending-approval/, "flag removida no #12588");
     assert.doesNotMatch(text, /ATENÇÃO/);
   });
 

@@ -120,11 +120,11 @@ describe("#11741 chamadores automáticos autorizados passam a confirmação", ()
     const ig = instagramPublishArgs(AAMMDD, { kind: "use-local", path: "/e/ig.mp4", source: "instagram-cut" } as never);
     assert.equal(ig[ig.indexOf("--confirm-publish") + 1], AAMMDD);
   });
-  it("timer do LinkedIn e stage5-youtube montam o comando com a flag", () => {
+  it("timer do LinkedIn monta o comando com a flag; stage5-youtube não publica mais (#12588)", () => {
     const li = readFileSync(join(ROOT, "scripts", "shorts-linkedin-profile-timer.ts"), "utf8");
     assert.match(li, /"--publish", "--linkedin-timer", \.\.\.publishConfirmArgs\(aammdd\)\]/);
     const s5 = readFileSync(join(ROOT, "scripts", "stage5-youtube.ts"), "utf8");
-    assert.match(s5, /"--upload", "--edition-dir", dir, \.\.\.publishConfirmArgs\(aammdd\)\]/);
+    assert.doesNotMatch(s5, /publishConfirmArgs|"--upload"/);
   });
   it("owners[]: task one-shot e skip_late levam a flag no command", () => {
     const owners = assignShortsDestinationOwners(

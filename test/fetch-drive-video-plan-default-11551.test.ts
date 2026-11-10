@@ -125,7 +125,7 @@ test("download explícito abaixo do teto: baixa e loga tamanho/destino antes", (
     assert.ok(logs.some((l) => l.startsWith("[download]") && l.includes("diaria-comentada-261029.mp4")));
   }));
 
-test("stage5-youtube: o fetch que sobe o vídeo passa --download (senão o novo default não baixaria)", () => {
+test("stage5-youtube não baixa nada do Drive (#12588: a Etapa 5 só lê o link)", () => {
   const src = readFileSync(new URL("../scripts/stage5-youtube.ts", import.meta.url), "utf8");
-  assert.match(src, /runTsx\(\[\.\.\.fetchArgs, "--download"\]\)/);
+  assert.doesNotMatch(src, /"--download"|"scripts\/fetch-drive-video\.ts"/);
 });

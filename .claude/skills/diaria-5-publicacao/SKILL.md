@@ -9,6 +9,8 @@ effort: low
 
 Dispara a Etapa 5 unificada (publicação paralela: newsletter + todos os canais sociais + canais de reativação/parceiro em paralelo, sem gate interativo) e, **na mesma sessão**, a Etapa 6 (gate humano de agendamento → Schedule → auto-reporter → relatório).
 
+**Entrada normal desde #12591: o `/diaria-publica-video`.** A ordem `/diaria-video-montagem` → vídeo → Etapa 5 é obrigatória (o link do YouTube entra na edição, #12588), e a skill de vídeo lê este arquivo e o executa inteiro depois do horizontal, na mesma sessão, antes do vertical. Invocado direto, este comando serve para retomada, retry de canal (`newsletter`/`social`) e para a edição marcada sem vídeo. Nos dois casos o pré-requisito do Passo 0b barra a Etapa 5 sem o link do vídeo.
+
 ## Fusão 5+6 (#7983, decisão do editor 11/09/2026)
 
 Este comando leva a edição do dispatch até o fim do pipeline. Ao terminar o Stage 5, **continue lendo `.claude/agents/orchestrator-stage-6.md` nesta mesma sessão** — não imprima "rode `/diaria-6-agendamento`" como próximo passo do editor.
@@ -19,7 +21,9 @@ Este comando leva a edição do dispatch até o fim do pipeline. Ao terminar o S
 
 **O gate NÃO sai — e desde #8205 é a ÚNICA parada da skill inteira.** O gate de agendamento (§6c do playbook do Stage 6) é um dos dois gates de projeto do CLAUDE.md — critério 1, irreversível pra terceiros — e agora também pede explicitamente a revisão visual do e-mail de teste pelo editor. Tudo que antes tinha parada própria (pedidos editoriais registrados, auto-reporter) virou contexto dentro deste único gate ou execução automática sem pergunta — nunca uma 2ª parada.
 
-**Exceção nomeada ao princípio #5578.** Esta é a única transição `/diaria-N-*` que encadeia sozinha. O princípio segue valendo em todas as outras — inclusive na fronteira pós-gate 4 (#6171), que é quem garante que esta skill sempre começa em sessão nova.
+**Exceção nomeada ao princípio #5578.** Esta é a única transição `/diaria-N-*` que encadeia sozinha (a outra fusão explícita é a do `/diaria-publica-video`, que entra aqui depois do horizontal e volta para o vertical no fim, #12591). O princípio segue valendo em todas as outras — inclusive na fronteira pós-gate 4 (#6171), que é quem garante que esta skill sempre começa em sessão nova.
+
+**Vindo do `/diaria-publica-video` (#12591):** ao fim do Stage 6, voltar para a Parte B (vertical) daquela skill; o relato final é o dela, que inclui o desta.
 
 **Retomada:** se a sessão morrer entre o dispatch e o gate, ou o editor sair e voltar horas depois, `/diaria-6-agendamento {AAMMDD}` retoma direto no gate (o sentinel do Stage 5 já está no disco).
 
@@ -41,7 +45,7 @@ Stage 5 dispatcha, hoje, **7 canais** — lista completa em `.claude/agents/orch
 - `/diaria-5-publicacao newsletter AAMMDD` — re-dispara só a newsletter (Kit); útil pra fix isolado após template errado
 - `/diaria-5-publicacao social AAMMDD` — re-dispara só os canais sociais (LinkedIn, Facebook, Instagram, Threads, Twitter/X); útil pra retry de social falhado sem regerar a newsletter
 
-**Opt-out por canal (#1326):** flag `--skip {canal[,canal...]}` (CSV) ignora dispatch dos canais listados. Canais válidos: `newsletter`, `linkedin`, `facebook`, `instagram`, `threads`, `twitter`, `brevo`, `youtube` (#10659, §5b-youtube; ver `VALID` em `scripts/lib/publish-consent.ts`). Default = tudo auto. Exemplos:
+**Opt-out por canal (#1326):** flag `--skip {canal[,canal...]}` (CSV) ignora dispatch dos canais listados. Canais válidos: `newsletter`, `linkedin`, `facebook`, `instagram`, `threads`, `twitter`, `brevo`, `youtube` (#10659; desde o #12588 `--skip youtube` significa "publicar sem o link do vídeo no D1" — a Etapa 5 não sobe vídeo; ver `VALID` em `scripts/lib/publish-consent.ts`). Default = tudo auto. Exemplos:
 - `/diaria-5-publicacao AAMMDD --skip newsletter` — só canais sociais/Brevo automáticos, newsletter manual
 - `/diaria-5-publicacao AAMMDD --skip linkedin,facebook,instagram,threads,twitter` — só newsletter (+Brevo) automático
 - `/diaria-5-publicacao AAMMDD --skip brevo` — pula o canal de reativação nesta edição. O token `kit` é recusado desde o #11225: o e-mail da diária é o canal `newsletter`
@@ -63,6 +67,7 @@ Crítico: este é o stage **publicador** (newsletter + todos os canais sociais +
 
 - Etapas 1–4 completas: `02-reviewed.md`, `03-social.md`, `01-eia.md` + `01-eia-A/B.jpg`, `04-d{1,2,3}*.jpg`
 - `_internal/newsletter-final.html` (pré-renderizado pelo Stage 4)
+- Link do vídeo do D1 em `_internal/05-video-url.txt` (gravado pela Parte A do `/diaria-publica-video`), ou a edição marcada sem vídeo (`_internal/no-video.json`), ou `--skip youtube` — sem isso o Passo 0b para (#12588)
 - Chrome com extensão **Claude in Chrome** ativa (ver `docs/browser-publish-setup.md`) — opcional: só o teste pela UI do Kit usa browser (sem ele, fallback `--send-test`); LinkedIn/Facebook/Instagram/Threads/Brevo/Kit são scripts shell puros
 - **Beehiiv não é pré-requisito (#11225):** a conta é só arquivo histórico, não precisa estar logada nem com o conector no ar
 - Bloco `publishing` em `platform.config.json` configurado (inclui `publishing.social.twitter.buffer_channel_id` pra X/Buffer)
@@ -129,19 +134,19 @@ ao ar. Pra excluir um canal desta edição, rode de novo com
 threads, twitter, brevo, youtube).
 ```
 
-## Passo 0b — Aviso de vídeo do D1 (#10943, aviso, não gate)
+## Passo 0b — Pré-requisito: link do vídeo no D1 (#10943, gate desde #12588)
 
-Fluxo ideal desde 22/10/2026 (#11209 juntou as duas skills de vídeo): `/diaria-edicao` → `/diaria-publica-video` → `/diaria-5-publicacao`, cada skill numa sessão própria, nenhuma encadeia (#5578). Antes do dispatch, conferir se o vídeo do dia já passou pelo `/diaria-publica-video`:
+Ordem obrigatória (decisão do editor, 10/11/2026): `/diaria-edicao` → `/diaria-video-montagem` → `/diaria-publica-video` (que segue para esta Etapa 5 depois do horizontal, #12591), porque o link do YouTube entra na edição. Antes de qualquer dispatch, conferir:
 
 ```bash
 npx tsx scripts/check-video-before-publish.ts {AAMMDD} --edition-dir {EDITION_DIR}
 ```
 
-- `status: "link-ready"` → `_internal/05-video-url.txt` existe; o Stage 5 põe o link no D1 de X, Threads e Facebook. Seguir.
-- `status: "no-video"` ou `"video-without-link"` → mostrar ao editor a linha `[aviso]` do stderr (o D1 sairá **sem** o link do vídeo; no 2º caso, o comando `link-video-d1.ts` que libera o link) e **seguir com o dispatch sem esperar resposta**. Não é gate: o vídeo pode ainda não existir, e a Etapa 5 nunca para por isso. Este aviso é uma foto de ANTES do dispatch: o §5b-youtube do playbook (#10659) roda em todo caso com escopo `all`/`social` (pulado em `newsletter`, com `--skip youtube` e com `none`/consent `"skipped"` — `youtubeUploadEnabled`; no-op se `05-youtube-published.json` já registra o vídeo), baixa do Drive o `.mp4` horizontal com "final" como palavra no nome e o sobe com `publishAt` 06:00 BRT, fail-soft, antes do dispatch social. Enquanto `YOUTUBE_API_PROJECT_AUDITED` for `false`, vídeo agendado **não** grava `05-video-url.txt` (#10865): o D1 sai sem o link e o resumo aponta `link-video-d1.ts` (o caso agendado/privado no D1 é da PR #10975). **O resumo final da Etapa 5 é a autoridade** sobre o link do D1, não este aviso.
-- Exit != 0 (uso inválido, erro inesperado) → logar warn e seguir.
+- **exit 0** → seguir. `status: "link-ready"`: `_internal/05-video-url.txt` existe e o Stage 5 põe o link no D1 de X, Threads e Facebook. `"no-video-marked"` (edição marcada sem vídeo, `set-d1-no-video.ts`, #11125) ou `"skipped-by-consent"` (`--skip youtube` nesta rodada): repetir a linha `[aviso]` do stderr no resumo (o D1 sai sem o vídeo por decisão do editor) e seguir.
+- **exit 3** (`status: "no-video"` ou `"video-without-link"`, `blocking: true`) → **parar antes de qualquer dispatch**: `npx tsx scripts/render-halt-banner.ts --stage "5 — Publicação" --reason "D1 sem o link do vídeo (_internal/05-video-url.txt)" --action "{warning do JSON}"` e esperar o editor. As saídas estão no `warning`: rodar `/diaria-publica-video {AAMMDD}` (sobe o horizontal, grava o link e volta para cá), liberar o link de um vídeo já subido (`link-video-d1.ts {AAMMDD} --save`), marcar a edição sem vídeo (`set-d1-no-video.ts {AAMMDD}`, depois o upload em modo newsletter e o re-render do HTML) ou rodar de novo com `--skip youtube`. Até o #12588 isto era só aviso e o D1 saía sem o link em silêncio.
+- Exit 2 (uso inválido, pasta inexistente) → halt com o stderr.
 
-Não rodar `/diaria-publica-video` (nem os aliases `/diaria-youtube`/`/diaria-shorts`) daqui — é skill standalone que o editor invoca.
+O §5b-youtube do playbook (`stage5-youtube.ts`) **só lê** o link e registra o passo: desde o #12588 a Etapa 5 nunca busca nem sobe vídeo. Quem sobe o horizontal é só o `/diaria-publica-video`, depois do "pode publicar" (#11741). Não rodar `/diaria-publica-video` (nem os aliases `/diaria-youtube`/`/diaria-shorts`) de dentro desta skill: com o link faltando, o halt devolve a decisão ao editor.
 
 ## O que faz
 

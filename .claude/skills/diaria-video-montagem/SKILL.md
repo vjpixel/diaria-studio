@@ -13,7 +13,7 @@ Leva o bruto que o editor gravou até o ponto de partida no Premiere, o fluxo qu
 
 - `AAMMDD` — opcional. Sem ele, assumir D+1 com o banner padrão do `CLAUDE.md` (`Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.`) e seguir; os scripts recebem sempre a data explícita.
 
-**Fluxo do dia (#10943, #11209):** `/diaria-edicao` → (o editor grava, depois do gate 4) → `/diaria-video-montagem` → (Premiere e export para `Final/`) → `/diaria-publica-video` → `/diaria-5-publicacao`. Cada skill numa sessão própria, nenhuma encadeia (#5578): ao terminar, sugerir o próximo comando sem rodá-lo.
+**Fluxo do dia (#10943, #11209):** `/diaria-edicao` → (o editor grava, depois do gate 4) → `/diaria-video-montagem` → (Premiere e export para `Final/`) → `/diaria-publica-video` (horizontal, Etapas 5 e 6 e vertical na mesma sessão, #12591). Esta skill roda numa sessão própria e não encadeia (#5578): ao terminar, sugerir o próximo comando sem rodá-lo.
 
 **Onde fica cada coisa:** os JSON em `data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem/`; o áudio e os clipes temporários em `{tmp}/diaria-video-montagem/{AAMMDD}/`; XML, SRTs e prévia na pasta da edição no Drive (`G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube/{AAMMDD}/`; `--drive-root` ou `DIARIA_VIDEO_DRIVE_ROOT` para outra). No modo API (o 300, Passo 0) tudo fica num cache em disco (`~/.cache/diaria-video-montagem/{AAMMDD}/`: `bruto/`, `out/`, `work/` no lugar do `{tmp}`, e `final/` para o `review-final`; `--cache-dir` ou `DIARIA_VIDEO_CACHE_DIR`) e as saídas sobem sozinhas para a mesma pasta da edição. `DIARIA_VIDEO_CACHE_DIR` aponta para um SUBDIRETÓRIO dentro do ponto de montagem do HD, nunca o ponto em si; apontando para um diretório que não existe, ou que está no mesmo disco do home (HD desmontado), a montagem para com erro em vez de gravar o cache no disco raiz (#12365). O cache tem retenção: a task `Diaria-Video-Montage-Cache-Prune` (diária, `scripts/prune-video-montage-cache.ts`, dry-run sem `--apply`) varre a raiz padrão e a configurada e apaga `{AAMMDD}/` com mais de 3 dias se o vídeo foi publicado (ou já enviado ao YouTube), ou com mais de 14 se não foi; edição em uso (modificada nas últimas 6h) ou com upload para o Drive pendente fica. Nada vai para `Final/`: essa pasta é só dos exports do editor, e é dela que o `/diaria-publica-video` lê.
 
@@ -235,7 +235,7 @@ Uma mensagem: links dos dois Docs, caminho do XML, dos SRTs e das prévias, a fo
 2. Importar o SRT de cada vertical na sequência dela (o do horizontal já está na pasta da edição como `diaria-comentada-{AAMMDD}.srt`, para o upload do YouTube, #11957).
 3. Edição fina; logo no início se quiser (a 261023 tinha; não entra na montagem, ver Premissas).
 4. Exportar para **`{AAMMDD}/Final/`** com o destino no nome: `Diaria comentada_Youtube_V{n}.mp4`, `Diaria comentada_Vertical_V{n}.mp4`. O Premiere sugere o nome da sequência, que já segue esse padrão (`videoTargetOf` em `scripts/lib/diaria/drive-video-source.ts`; o `blocks.json` recusa sequência cujo nome indique outro destino).
-5. Rodar `/diaria-publica-video {AAMMDD}` (sugerir, nunca rodar daqui).
+5. Rodar `/diaria-publica-video {AAMMDD}` numa sessão nova (sugerir, nunca rodar daqui): ela sobe o horizontal, roda as Etapas 5 e 6 e depois o vertical (#12591).
 
 ## Revisão do export final (#11557)
 
