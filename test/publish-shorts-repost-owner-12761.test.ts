@@ -10,7 +10,14 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { LINKEDIN_TIMER_DETAIL, assignShortsDestinationOwners, planShortsPublish, type ShortsPlanItem } from "../scripts/publish-shorts.ts";
+import {
+  LINKEDIN_TIMER_DETAIL,
+  PROFILE_REPOST_CHAIN_MAX_MS,
+  assignShortsDestinationOwners,
+  isProfileRepostChainStale,
+  planShortsPublish,
+  type ShortsPlanItem,
+} from "../scripts/publish-shorts.ts";
 import { LINKEDIN_REPOST_MIN_DELAY_MINUTES } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
@@ -144,5 +151,37 @@ describe("#12761 assignShortsDestinationOwners", () => {
       { aammdd: "261022", now: BEFORE, instagramViaTimer: false },
     );
     assert.deepEqual(owners, []);
+  });
+});
+
+describe("#12761 (review) teto da cadeia de re-agendamento do repost", () => {
+  // Perfil planejado 12:00 BRT; 13 h depois passa do teto de 12 h.
+  const STALE = new Date(PROFILE_AT + PROFILE_REPOST_CHAIN_MAX_MS + 60 * 60_000);
+
+  it("isProfileRepostChainStale: só acima do teto, contado do horário planejado do perfil", () => {
+    const at = new Date(PROFILE_AT).toISOString();
+    assert.equal(isProfileRepostChainStale(at, new Date(PROFILE_AT + PROFILE_REPOST_CHAIN_MAX_MS)), false);
+    assert.equal(isProfileRepostChainStale(at, new Date(PROFILE_AT + PROFILE_REPOST_CHAIN_MAX_MS + 1)), true);
+    assert.equal(isProfileRepostChainStale("lixo", STALE), false);
+  });
+
+  it("perfil skip_delegated (timer do 300 falhou) passado o teto: repost sem retryAt nem dono, plano pede o editor", () => {
+    const config = { publishing: { shorts: { ...li, linkedin_profile_via_timer: true } } };
+    const p = planShortsPublish({ ...base, config, now: STALE });
+    assert.equal(itemOf(p, "linkedin_profile").action, "skip_delegated");
+    const repost = itemOf(p, "linkedin_page_repost");
+    assert.equal(repost.action, "skip_invalid");
+    assert.equal(repost.retryAt, undefined, "a cadeia termina: sem horário de re-execução");
+    assert.equal(ownerOf(p, "linkedin_page_repost"), undefined);
+    assert.match(repost.detail, /falta intervenção do editor/);
+  });
+
+  it("perfil skip_late passado o teto: a re-execução não reagenda o repost de novo", () => {
+    const p = planShortsPublish({ ...base, config: { publishing: { shorts: li } }, now: STALE });
+    assert.equal(itemOf(p, "linkedin_profile").action, "skip_late");
+    const repost = itemOf(p, "linkedin_page_repost");
+    assert.equal(repost.retryAt, undefined);
+    assert.equal(ownerOf(p, "linkedin_page_repost"), undefined);
+    assert.match(repost.detail, /falta intervenção do editor/);
   });
 });
