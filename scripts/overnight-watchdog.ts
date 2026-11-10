@@ -9,7 +9,9 @@
  *   data/overnight/{AAMMDD}/plan.json existe E report.md ausente.
  *
  * Mede "última atividade" como max(mtime plan.json, último evento run-log
- * com agent:"overnight" para a edição desta rodada).
+ * com agent:"overnight" para a edição desta rodada, heartbeat da sessão
+ * coordenadora no session-registry — #12676, casada pelo `session_id` do
+ * plan.json).
  *
  * Stall = "última atividade" > `OVERNIGHT_STALL_THRESHOLD_MIN` (45 min desde
  * 17/08/2026, #5568 — antes 60) atrás. O número vive em
@@ -128,7 +130,7 @@ import { resolveRunLogPath } from "./lib/run-log.ts";
 import { mtimeMs } from "./lib/mtime.ts";
 import { applyCliAction, type CliSpec, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { listActiveSessions } from "./lib/session-registry.ts";
+import { listActiveSessions, type SessionRecord } from "./lib/session-registry.ts";
 import { readPhase as readOvernightSessionMarkerPhase } from "./overnight-session-marker.ts";
 import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
 import { PUSH_IO_TIMEOUT_MS } from "./lib/push-notify.ts";
@@ -274,6 +276,50 @@ export function computeLastActivity(
     return { ts: planMs, source: "plan.json mtime" };
   }
   return { ts: logMs, source: "run-log" };
+}
+
+/** Campos do registro de sessão que o watchdog lê (#12676). */
+export type SessionHeartbeatSource = Pick<SessionRecord, "kind" | "sessionId" | "lastHeartbeat" | "active_worktrees">;
+
+/**
+ * #12676 — heartbeat da sessão coordenadora DESTA rodada no session-registry.
+ *
+ * O `.claude/hooks/session-beacon.mjs` grava `lastHeartbeat` a cada chamada de
+ * ferramenta do COORDENADOR (subagente em worktree vinculado não emite beacon,
+ * ver `isLinkedWorktree` no hook). Na rodada 261110c o
+ * coordenador passou 50 min sem gravar `plan.json` nem run-log, esperando CI e
+ * 10 subagentes de uma onda, e o watchdog abriu um STALL P1 (#12644) com o
+ * heartbeat vivo e as ondas seguindo até o fim.
+ *
+ * Só conta a sessão cujo `sessionId` é o `session_id` gravado no `plan.json`:
+ * o registro mora em `data/` (sincronizado entre máquinas) e outra rodada viva
+ * do mesmo kind, em outra máquina, não pode mascarar o stall desta. Plano sem
+ * `session_id` (legado) → `null`, comportamento anterior.
+ */
+export function sessionHeartbeatActivity(
+  sessions: readonly SessionHeartbeatSource[],
+  kind: WatchableKind,
+  planSessionId: unknown,
+): { ts: number; activeWorktrees: number } | null {
+  if (typeof planSessionId !== "string" || planSessionId.length === 0) return null;
+  let best: { ts: number; activeWorktrees: number } | null = null;
+  for (const s of sessions) {
+    if (s.kind !== kind || s.sessionId !== planSessionId) continue;
+    const ts = Date.parse(s.lastHeartbeat ?? "");
+    if (isNaN(ts) || ts <= 0) continue;
+    if (best === null || ts > best.ts) best = { ts, activeWorktrees: s.active_worktrees ?? 0 };
+  }
+  return best;
+}
+
+/** Pure: `max(atividade de arquivo, heartbeat)` — o heartbeat só vence se for mais recente. */
+export function withSessionHeartbeat(
+  activity: { ts: number; source: string },
+  heartbeat: { ts: number; activeWorktrees: number } | null,
+): { ts: number; source: string } {
+  if (heartbeat === null || heartbeat.ts <= activity.ts) return activity;
+  const wt = heartbeat.activeWorktrees > 0 ? `, ${heartbeat.activeWorktrees} worktree(s) em voo` : "";
+  return { ts: heartbeat.ts, source: `session-registry heartbeat${wt}` };
 }
 
 /**
@@ -511,6 +557,8 @@ export function resolveRunActivity(
   kind: WatchableKind,
   aammdd: string,
   planPath: string,
+  /** #12676 — leitor do session-registry (injetável em teste). */
+  listSessions: (rootDir: string, nowMs: number) => readonly SessionHeartbeatSource[] = listActiveSessions,
 ): { ts: number; source: string } {
   const rawPlanMtime = mtimeMs(planPath);
   const plan = readPlanForStallHandling(planPath);
@@ -530,7 +578,14 @@ export function resolveRunActivity(
     ? null
     : rawPlanMtime;
 
-  const activity = computeLastActivity(planMtime, getLastRunLogActivity(rootDir, aammdd, kind));
+  const fileActivity = computeLastActivity(planMtime, getLastRunLogActivity(rootDir, aammdd, kind));
+  // #12676: o heartbeat da sessão coordenadora (session-registry) também é
+  // atividade da rodada — esperando CI e uma onda de subagentes, ela passa
+  // 45+ min sem gravar plan.json nem run-log, mas o beacon segue vivo.
+  const activity = withSessionHeartbeat(
+    fileActivity,
+    sessionHeartbeatActivity(listSessions(rootDir, Date.now()), kind, plan?.session_id),
+  );
   if (activity.ts > 0) return activity;
 
   // #5520 (achado do review): quando as DUAS fontes são descontadas por serem

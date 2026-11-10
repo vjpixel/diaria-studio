@@ -159,6 +159,16 @@ tag P0-P3 (`**Confiança:** alta`, `Alta confiança`, `[P2 | alta]`). Desde o
 no resto do corpo (a prioridade de uma issue que o código abre, por exemplo)
 não é a severidade do finding, e 1ª linha sem tag fica retida.
 
+**Nota informativa sem defeito leva o rótulo `nota` no prefixo (#12677):**
+`Confiança alta, P3, nota: ...`. É o caso de deploy pendente pós-merge,
+escopo parcial já declarado como `REFS` no corpo, limite aceito de propósito:
+nada a corrigir antes do merge, mesmo com confiança alta de que o fato é
+verdade. P2/P3 com `nota` no prefixo (ou com a frase "Não bloqueia o merge."
+fechando uma linha) sai resolvida pelo `--low-severity-only`; sem o rótulo,
+"Confiança alta, P3" segue retida e trava o trem em rodada desassistida
+(rodada 261110c). Finding com cenário de falha real nunca leva `nota`, e
+`nota` nunca rebaixa P0/P1.
+
 Comentário inline sai por `npx tsx scripts/gh-pr-review-api.ts comment --pr N
 --path P --line L --body-file F` (resposta a um comentário, no fixer: `reply
 --pr N --comment-id ID --body-file F`), nunca `gh api` à mão: o modo agendado
