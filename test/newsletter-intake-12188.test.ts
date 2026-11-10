@@ -10,7 +10,7 @@ import { evaluateCaptureYield } from "../scripts/lib/newsletter-capture-yield.ts
 import { fetchThread, searchThreadIds, mergeCaptured, main as fetchMain } from "../scripts/fetch-newsletter-threads.ts";
 import { main as captureMain } from "../scripts/capture-newsletter-urls.ts";
 import { checkNewsletterIntake } from "../scripts/lib/invariant-checks/stage-4.ts";
-import { discoveryWarnings, portableRegistryPath, readFetchFailures, linkMissingBlocks } from "../scripts/audit-newsletter-intake.ts";
+import { captureCountWarning, discoveryWarnings, portableRegistryPath, readFetchFailures, linkMissingBlocks } from "../scripts/audit-newsletter-intake.ts";
 import { resolveSenderRegistry, fallbackSenderRegistry } from "../scripts/lib/newsletter-senders.ts";
 import { countSubmissionSources, countableCapturedNewsletters, readSubmissionCountFromMarker } from "../scripts/lib/inbox-stats.ts";
 import { searchThreadIdsPaged } from "../scripts/fetch-newsletter-threads.ts";
@@ -172,6 +172,35 @@ function setupEdition(dir: string) {
   const audit = () => spawnSync(process.execPath, ["--import", "tsx", "scripts/audit-newsletter-intake.ts", "--edition", "261105", "--edition-dir", editionDir, "--data-dir", dir, "--registry", registryPath], {encoding: "utf8"});
   return {editionDir, internal, registryPath, audit};
 }
+
+describe("#12516 captured acumulado × manifesto com 2 eventos", () => {
+  const manifest = (internal: string, events: object[]) =>
+    writeFileSync(resolve(internal, "captured-newsletters.json.fetch.jsonl"), events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  const warningsOf = (internal: string) =>
+    (JSON.parse(readFileSync(resolve(internal, "newsletter-link-scores.json"), "utf8")) as {warnings: string[]}).warnings;
+
+  it("thread da rodada anterior no registro não gera aviso de total (excesso não é perda)", () => {
+    const events = [{scope: "S", thread_ids: ["new"]}];
+    assert.equal(captureCountWarning(events as never, ["old", "new"]), null);
+    assert.equal(captureCountWarning(events as never, ["old"]), "total no inbox na janela (1) != total registrado (0)");
+  });
+
+  it("CLI: resume com janela andada — captured acumula a thread antiga, último evento só tem a nova", () => temp((dir) => {
+    const {internal, audit} = setupEdition(dir);
+    writeFileSync(resolve(internal, "captured-newsletters.json"), JSON.stringify([thread("old"), thread("a")]));
+    manifest(internal, [{scope: "S", thread_ids: ["old", "a"]}, {scope: "S", thread_ids: ["a"]}]);
+    assert.equal(audit().status, 0);
+    assert.ok(!warningsOf(internal).some((w) => w.startsWith("total no inbox")), warningsOf(internal).join(" | "));
+  }));
+
+  it("CLI: id esperado do último evento ausente do registro continua avisando", () => temp((dir) => {
+    const {internal, audit} = setupEdition(dir);
+    writeFileSync(resolve(internal, "captured-newsletters.json"), JSON.stringify([thread("old"), thread("a")]));
+    manifest(internal, [{scope: "S", thread_ids: ["old"]}, {scope: "S", thread_ids: ["a", "perdida"]}]);
+    assert.equal(audit().status, 0);
+    assert.ok(warningsOf(internal).includes("total no inbox na janela (2) != total registrado (1)"), warningsOf(internal).join(" | "));
+  }));
+});
 
 describe("#12188 fleet-review fixes", () => {
   it("item 7: editing 02-reviewed.md text (and touching files) does not make the intake stale; changing a link does", () => temp((dir) => {

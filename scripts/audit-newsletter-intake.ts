@@ -234,6 +234,19 @@ export function latestManifestEvents(manifestPath: string): FetchManifestEvent[]
   const events = readFileSync(manifestPath, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as FetchManifestEvent);
   return [...new Map(events.map((e) => [e.scope ?? e.query ?? "", e])).values()];
 }
+/**
+ * #12516: total no inbox (último evento por escopo) × total registrado.
+ * `captured-newsletters.json` ACUMULA threads de rodadas anteriores
+ * (`mergeCaptured` mantém as antigas), então o excesso no registro não é perda:
+ * só um id esperado ausente do registro é. A contagem "registrado" é restrita
+ * ao conjunto do último evento, para o número do aviso ser comparável.
+ */
+export function captureCountWarning(events: FetchManifestEvent[], recordedIds: Iterable<string>): string | null {
+  const expected = new Set(events.flatMap((e) => e.thread_ids ?? []));
+  const recorded = new Set(recordedIds);
+  const present = [...expected].filter((id) => recorded.has(id)).length;
+  return present === expected.size ? null : `total no inbox na janela (${expected.size}) != total registrado (${present})`;
+}
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /**
  * #12188 P3: registro dentro do repo vai RELATIVO (`seed/newsletter-senders.json`),
@@ -346,9 +359,8 @@ export function main(argv = process.argv.slice(2)): void {
   if (!existsSync(capturedPath)) warnings.push("Captura indisponível: captured-newsletters.json ausente");
   if (captureEvents.length) {
     for (const event of captureEvents) if (event.failed) warnings.push(`capture_failed: ${event.error}`);
-    const ids = new Set(captureEvents.flatMap((e) => e.thread_ids ?? []));
-    const recorded = new Set(result.rows.map((r) => r.thread_id));
-    if (ids.size !== recorded.size || [...ids].some((id) => !recorded.has(id))) warnings.push(`total no inbox na janela (${ids.size}) != total registrado (${recorded.size})`);
+    const countWarning = captureCountWarning(captureEvents, result.rows.map((r) => r.thread_id));
+    if (countWarning) warnings.push(countWarning);
   } else warnings.push("Total no inbox na janela indisponível: manifesto da captura ausente");
   warnings.push(...discoveryWarnings(latestManifestEvents(resolve(internal, "discovered-newsletters.json.fetch.jsonl")), discoveredRead.status));
   if (result.discovery.aprovados_fora_da_captura) warnings.push(`${result.discovery.aprovados_fora_da_captura} thread(s) de remetente aprovado achada(s) só pela descoberta — re-rodar a captura por remetente`);

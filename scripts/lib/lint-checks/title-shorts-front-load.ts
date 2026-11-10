@@ -44,10 +44,18 @@ export const DANGLING_TAIL_WORDS: ReadonlySet<string> = new Set([
 
 const TRAILING_JOINERS_RE = /[\s,;—–-]+$/u;
 const WORD_EDGE_PUNCT_RE = /^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu;
+/**
+ * Grafema logo depois do corte que prova que a palavra antes dele já terminou:
+ * espaço ou pontuação (`,` `:` `.` `?` …), #12514. Hífen e apóstrofo ficam de
+ * fora: ligam partes da MESMA palavra ("GPT-6", "d'água"), então cortar ali
+ * ainda é cortar no meio da palavra.
+ */
+const WORD_BOUNDARY_AFTER_CUT_RE = /^(?![-‐'’])[\s\p{P}]$/u;
 
 /**
  * Fatia visível do título no feed de Shorts: os primeiros `max` grafemas,
  * recuando até o último espaço quando o corte cai no meio de uma palavra.
+ * Corte seguido de espaço ou pontuação já está em fronteira (#12514).
  * Título que cabe volta inteiro.
  */
 export function shortsFeedVisibleSlice(title: string, max = SHORTS_FEED_VISIBLE_TITLE_CHARS): string {
@@ -55,7 +63,7 @@ export function shortsFeedVisibleSlice(title: string, max = SHORTS_FEED_VISIBLE_
   const graphemes = [...new Intl.Segmenter().segment(clean)].map((s) => s.segment);
   if (graphemes.length <= max) return clean;
   const head = graphemes.slice(0, max).join("");
-  const cutsAtBoundary = graphemes[max] === " ";
+  const cutsAtBoundary = WORD_BOUNDARY_AFTER_CUT_RE.test(graphemes[max]);
   const lastSpace = head.lastIndexOf(" ");
   const slice = cutsAtBoundary || lastSpace <= 0 ? head : head.slice(0, lastSpace);
   return slice.replace(TRAILING_JOINERS_RE, "");
