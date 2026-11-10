@@ -24,12 +24,21 @@ import {
   referencingEditions,
   verifyCopy,
 } from "../scripts/lib/diaria/video-bruto-archive.ts";
-import { bisyncIdle, defaultConfig, isPermissionError, reportFailed, runArchive } from "../scripts/archive-video-brutos.ts";
+import { spawn } from "node:child_process";
+import {
+  bisyncIdle,
+  createStopController,
+  defaultConfig,
+  isPermissionError,
+  reportFailed,
+  requestStop,
+  runArchive,
+} from "../scripts/archive-video-brutos.ts";
 
 const TODAY = new Date("2026-11-09T00:00:00Z");
 
 describe("isBrutoFile (#12548)", () => {
-  it("pega os nomes de câmera, o bruto unido e o que está em Brutos/", () => {
+  it("pega os nomes de câmera, o bruto unido e o que está em Brutos/", async () => {
     for (const p of [
       "20261104_124252.mp4",
       "20261027_135240.MP4",
@@ -42,7 +51,7 @@ describe("isBrutoFile (#12548)", () => {
     }
   });
 
-  it("deixa no Drive exports, prévias, áudio e o que está em Final/ e Editado/", () => {
+  it("deixa no Drive exports, prévias, áudio e o que está em Final/ e Editado/", async () => {
     for (const p of [
       "261105 - previa youtube.mp4",
       "20261104_124252 previa.mp4",
@@ -60,26 +69,26 @@ describe("isBrutoFile (#12548)", () => {
 });
 
 describe("editionsOfFolder / decideFolder (#12548)", () => {
-  it("lê AAMMDD e AAMMDD-DD, recusa o resto", () => {
+  it("lê AAMMDD e AAMMDD-DD, recusa o resto", async () => {
     assert.deepEqual(editionsOfFolder("261105"), ["261105"]);
     assert.deepEqual(editionsOfFolder("261109-10"), ["261109", "261110"]);
     assert.equal(editionsOfFolder("_marca"), null);
     assert.equal(editionsOfFolder("261110-09"), null);
   });
 
-  it("entra com vídeo publicado em todas as edições do nome", () => {
+  it("entra com vídeo publicado em todas as edições do nome", async () => {
     const d = decideFolder({ name: "261105", published: { "261105": true } }, TODAY);
     assert.equal(d.eligible, true);
     assert.equal(d.reason, "publicado");
   });
 
-  it("pasta de 2 edições só entra com as duas publicadas", () => {
+  it("pasta de 2 edições só entra com as duas publicadas", async () => {
     const d = decideFolder({ name: "261109-10", published: { "261109": true, "261110": false } }, TODAY);
     assert.equal(d.eligible, false);
     assert.equal(d.reason, "aguardando-publicacao");
   });
 
-  it("sem registro de publicação, entra só depois do teto (edições anteriores ao publica-video)", () => {
+  it("sem registro de publicação, entra só depois do teto (edições anteriores ao publica-video)", async () => {
     assert.equal(decideFolder({ name: "261021", published: { "261021": false } }, TODAY).eligible, true);
     assert.equal(decideFolder({ name: "261030", published: { "261030": false } }, TODAY).eligible, false);
     const unknown = decideFolder({ name: "261105", published: { "261105": null } }, TODAY);
@@ -87,13 +96,13 @@ describe("editionsOfFolder / decideFolder (#12548)", () => {
     assert.equal(unknown.reason, "publicacao-desconhecida");
   });
 
-  it("nome fora do padrão nunca entra", () => {
+  it("nome fora do padrão nunca entra", async () => {
     assert.equal(decideFolder({ name: "_marca", published: {} }, TODAY).eligible, false);
   });
 });
 
 describe("conferência (#12548)", () => {
-  it("parseia md5sum e lsjson", () => {
+  it("parseia md5sum e lsjson", async () => {
     assert.equal(parseMd5sumLine("D41D8CD98F00B204E9800998ECF8427E  /x/a.mp4\n"), "d41d8cd98f00b204e9800998ecf8427e");
     assert.equal(parseMd5sumLine("md5sum: x: No such file"), null);
     const files = parseRcloneLsjson(
@@ -110,7 +119,7 @@ describe("conferência (#12548)", () => {
     assert.throws(() => parseRcloneLsjson("não é json"));
   });
 
-  it("só libera apagar com tamanho e MD5 iguais", () => {
+  it("só libera apagar com tamanho e MD5 iguais", async () => {
     const remote = { path: "a.mp4", size: 3, md5: "aa".repeat(16) };
     assert.equal(verifyCopy(remote, { size: 3, md5: "aa".repeat(16) }), "ok");
     assert.equal(verifyCopy(remote, { size: 2, md5: "aa".repeat(16) }), "tamanho-diverge");
@@ -119,7 +128,7 @@ describe("conferência (#12548)", () => {
     assert.equal(verifyCopy({ ...remote, md5: null }, { size: 3, md5: "aa".repeat(16) }), "sem-md5-no-drive");
   });
 
-  it("reconhece a recusa por permissão do Drive", () => {
+  it("reconhece a recusa por permissão do Drive", async () => {
     assert.equal(isPermissionError("googleapi: Error 403: The user does not have sufficient permissions, insufficientFilePermissions"), true);
     assert.equal(isPermissionError("Failed to delete: context deadline exceeded"), false);
   });
@@ -143,6 +152,8 @@ function sandbox(
     /** O que `is-active` do serviço imprime quando ocupado. */
     busyState?: string;
     failStart?: boolean;
+    /** #12603: `deletefile` grava `hang` e fica parado (para mandar SIGTERM no meio). */
+    hangDelete?: boolean;
   } = {},
 ) {
   const sb = mkdtempSync(join(tmpdir(), "bruto-archive-"));
@@ -154,6 +165,7 @@ function sandbox(
   const bin = join(sb, "bin");
   for (const d of [drive, local, archive, bin, join(data, "editions")]) mkdirSync(d, { recursive: true });
   const calls = join(sb, "calls.log");
+  const hang = join(sb, "hang");
 
   const put = (root: string, rel: string, content: string) => {
     mkdirSync(join(root, rel, ".."), { recursive: true });
@@ -193,6 +205,7 @@ case "$cmd" in
   deletefile)
     for a in "$@"; do p="$a"; done
     f="$(strip "$p")"
+    ${opts.hangDelete ? `touch "${hang}"; exec sleep 30` : ""}
     case "${deleteMode}" in
       locked)
         if echo "$f" | grep -E -q "${locked || "__nada__"}"; then
@@ -250,24 +263,24 @@ exit 0
     put(drive, rel, content);
     put(local, rel, content);
   };
-  return { sb, drive, local, archive, calls, cfg, both, put, publish };
+  return { sb, drive, local, archive, calls, hang, bin, data, mount, cfg, both, put, publish };
 }
 
 const posixOnly = { skip: process.platform === "win32" ? "precisa de /bin/sh" : false };
 
 describe("runArchive contra Drive falso (#12548)", posixOnly, () => {
-  it("dry-run lista e não toca nada", () => {
+  it("dry-run lista e não toca nada", async () => {
     const s = sandbox();
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: false, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: false, today: TODAY, unpublishedMaxDays: 14 });
     assert.deepEqual(r.files.map((f) => [f.path, f.status]), [["20261104_124252.mp4", "sairia"]]);
     assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
     assert.ok(!readFileSync(s.calls, "utf8").includes("deletefile"));
     assert.ok(!readFileSync(s.calls, "utf8").includes("systemctl"));
   });
 
-  it("--apply move o bruto do espelho pro arquivo, apaga do Drive sem lixeira e deixa o resto", () => {
+  it("--apply move o bruto do espelho pro arquivo, apaga do Drive sem lixeira e deixa o resto", async () => {
     const s = sandbox();
     s.both("261105/20261104_124252.mp4", "bruto-1");
     s.both("261105/Brutos/20261103_000000.mp4", "bruto-2");
@@ -275,7 +288,7 @@ describe("runArchive contra Drive falso (#12548)", posixOnly, () => {
     s.both("261105/261105 - previa youtube.mp4", "previa");
     s.both("261109-10/20261109_150417.mp4", "nao-publicado");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(reportFailed(r), false, JSON.stringify(r, null, 2));
     assert.deepEqual(r.files.map((f) => f.status), ["arquivado", "arquivado"]);
     for (const rel of ["20261104_124252.mp4", "Brutos/20261103_000000.mp4"]) {
@@ -293,11 +306,11 @@ describe("runArchive contra Drive falso (#12548)", posixOnly, () => {
     assert.ok(calls.lastIndexOf("start diaria-gdrive-bisync.timer") > calls.lastIndexOf("deletefile"));
   });
 
-  it("MD5 divergente não apaga e a rodada falha", () => {
+  it("MD5 divergente não apaga e a rodada falha", async () => {
     const s = sandbox({ badMd5: ["20261104_124252.mp4"] });
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "falha-conferencia");
     assert.equal(reportFailed(r), true);
     assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
@@ -305,34 +318,34 @@ describe("runArchive contra Drive falso (#12548)", posixOnly, () => {
     assert.match(readFileSync(s.calls, "utf8"), /start diaria-gdrive-bisync.timer/);
   });
 
-  it("arquivo de outro dono: devolve a cópia ao espelho e não conta como falha", () => {
+  it("arquivo de outro dono: devolve a cópia ao espelho e não conta como falha", async () => {
     const s = sandbox({ lockedFiles: ["20261104_124252"] });
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "nao-apagado-sem-permissao");
     assert.equal(reportFailed(r), false);
     assert.ok(existsSync(join(s.local, "261105/20261104_124252.mp4")), "voltou ao espelho");
     assert.ok(!existsSync(join(s.archive, "261105/20261104_124252.mp4")));
   });
 
-  it("sem cópia no espelho, baixa do Drive direto para o arquivo", () => {
+  it("sem cópia no espelho, baixa do Drive direto para o arquivo", async () => {
     const s = sandbox();
     s.put(s.drive, "261105/20261104_124252.mp4", "so-no-drive");
     mkdirSync(join(s.local, "261105"), { recursive: true });
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].source, "download");
     assert.equal(r.files[0].status, "arquivado");
     assert.equal(readFileSync(join(s.archive, "261105/20261104_124252.mp4"), "utf8"), "so-no-drive");
     assert.ok(!existsSync(join(s.drive, "261105/20261104_124252.mp4")));
   });
 
-  it("HD desmontado: não faz nada e falha", () => {
+  it("HD desmontado: não faz nada e falha", async () => {
     const s = sandbox();
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: { ...s.cfg, mountpointCmd: ["false"] }, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: { ...s.cfg, mountpointCmd: ["false"] }, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(reportFailed(r), true);
     assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
     assert.ok(!existsSync(s.calls), "nenhuma chamada a rclone/systemctl");
@@ -340,63 +353,63 @@ describe("runArchive contra Drive falso (#12548)", posixOnly, () => {
 
   // ── regressões do review da PR #12567 ──
 
-  it("deletefile com erro mas o Drive apagou: relê, conta como arquivado e a cópia NÃO volta ao espelho", () => {
+  it("deletefile com erro mas o Drive apagou: relê, conta como arquivado e a cópia NÃO volta ao espelho", async () => {
     const s = sandbox({ deleteMode: "apagou-mas-erro" });
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "arquivado");
     assert.ok(existsSync(join(s.archive, "261105/20261104_124252.mp4")), "cópia conferida fica no arquivo");
     assert.ok(!existsSync(join(s.local, "261105/20261104_124252.mp4")), "não volta ao espelho (o bisync a apagaria)");
   });
 
-  it("deletefile com erro e o arquivo continua no Drive: devolve ao espelho e falha", () => {
+  it("deletefile com erro e o arquivo continua no Drive: devolve ao espelho e falha", async () => {
     const s = sandbox({ deleteMode: "erro" });
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "falha-apagar");
     assert.equal(reportFailed(r), true);
     assert.ok(existsSync(join(s.local, "261105/20261104_124252.mp4")));
     assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
   });
 
-  it("403 de rate limit é falha, não 'sem permissão'", () => {
+  it("403 de rate limit é falha, não 'sem permissão'", async () => {
     const s = sandbox({ deleteMode: "ratelimit" });
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "falha-apagar");
     assert.equal(reportFailed(r), true);
   });
 
-  it("nome repetido no Drive: não apaga nenhum dos dois", () => {
+  it("nome repetido no Drive: não apaga nenhum dos dois", async () => {
     const s = sandbox({ dupFirst: true });
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.ok(r.files.every((f) => f.status === "nome-duplicado-no-drive"));
     assert.equal(reportFailed(r), true);
     assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
     assert.ok(!readFileSync(s.calls, "utf8").includes("deletefile"));
   });
 
-  it("download que falha não deixa .partial nem apaga nada", () => {
+  it("download que falha não deixa .partial nem apaga nada", async () => {
     const s = sandbox({ failCopyto: true });
     s.put(s.drive, "261105/20261104_124252.mp4", "so-no-drive");
     mkdirSync(join(s.local, "261105"), { recursive: true });
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "falha-download");
     assert.ok(!existsSync(join(s.archive, "261105/20261104_124252.mp4.partial")));
     assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
   });
 
-  it("espera a rodada do bisync em curso e só então lista e apaga", () => {
+  it("espera a rodada do bisync em curso e só então lista e apaga", async () => {
     const s = sandbox({ serviceBusyPolls: 2 });
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "arquivado");
     const calls = readFileSync(s.calls, "utf8").split("\n");
     const lastPoll = calls.map((l, i) => (l.includes("is-active diaria-gdrive-bisync.service") ? i : -1)).filter((i) => i >= 0).pop()!;
@@ -405,11 +418,11 @@ describe("runArchive contra Drive falso (#12548)", posixOnly, () => {
   });
 
   for (const busyState of ["activating", ""]) {
-    it(`bisync que não termina ("${busyState || "vazio"}"): não apaga nada, religa o timer e falha`, () => {
+    it(`bisync que não termina ("${busyState || "vazio"}"): não apaga nada, religa o timer e falha`, async () => {
       const s = sandbox({ serviceBusyPolls: -1, busyState });
       s.both("261105/20261104_124252.mp4", "bruto");
       s.publish("261105");
-      const r = runArchive({ cfg: { ...s.cfg, waitMinutes: 0 }, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+      const r = await runArchive({ cfg: { ...s.cfg, waitMinutes: 0 }, apply: true, today: TODAY, unpublishedMaxDays: 14 });
       assert.equal(reportFailed(r), true);
       const calls = readFileSync(s.calls, "utf8");
       assert.ok(!calls.includes("deletefile") && !calls.includes("lsjson"));
@@ -418,90 +431,90 @@ describe("runArchive contra Drive falso (#12548)", posixOnly, () => {
     });
   }
 
-  it("timer já parado fica parado no fim", () => {
+  it("timer já parado fica parado no fim", async () => {
     const s = sandbox({ timerActive: false });
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "arquivado");
     const calls = readFileSync(s.calls, "utf8");
     assert.ok(!calls.includes("stop diaria-gdrive-bisync.timer") && !calls.includes("start diaria-gdrive-bisync.timer"));
   });
 
-  it("falha ao religar o timer falha a rodada", () => {
+  it("falha ao religar o timer falha a rodada", async () => {
     const s = sandbox({ failStart: true });
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "arquivado");
     assert.equal(reportFailed(r), true);
   });
 
-  it("retomada: cópia já no arquivo com o tamanho do Drive é conferida e o Drive é apagado", () => {
+  it("retomada: cópia já no arquivo com o tamanho do Drive é conferida e o Drive é apagado", async () => {
     const s = sandbox();
     s.put(s.drive, "261105/20261104_124252.mp4", "bruto");
     s.put(s.archive, "261105/20261104_124252.mp4", "bruto");
     mkdirSync(join(s.local, "261105"), { recursive: true });
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].source, "arquivo");
     assert.equal(r.files[0].status, "arquivado");
     assert.ok(!existsSync(join(s.drive, "261105/20261104_124252.mp4")));
   });
 
-  it("cópia truncada no arquivo não trava: usa o espelho e a sobrescreve", () => {
+  it("cópia truncada no arquivo não trava: usa o espelho e a sobrescreve", async () => {
     const s = sandbox();
     s.both("261105/20261104_124252.mp4", "bruto-inteiro");
     s.put(s.archive, "261105/20261104_124252.mp4", "bru");
     s.publish("261105");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].source, "espelho");
     assert.equal(r.files[0].status, "arquivado");
     assert.equal(readFileSync(join(s.archive, "261105/20261104_124252.mp4"), "utf8"), "bruto-inteiro");
   });
 
-  it("pasta AAMMDD-DD entra com as duas edições publicadas", () => {
+  it("pasta AAMMDD-DD entra com as duas edições publicadas", async () => {
     const s = sandbox();
     s.both("261103-04/20261102_094530.mp4", "bruto");
     s.publish("261103");
     s.publish("261104");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "arquivado");
     assert.ok(existsSync(join(s.archive, "261103-04/20261102_094530.mp4")));
   });
 
-  it("sem data/editions: só a pasta além do teto sai", () => {
+  it("sem data/editions: só a pasta além do teto sai", async () => {
     const s = sandbox();
     s.both("261021/WIN_20261020_21_24_22_Pro.mp4", "velho");
     s.both("261105/20261104_124252.mp4", "novo");
-    const r = runArchive({ cfg: { ...s.cfg, dataRoot: join(s.sb, "sem-data") }, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: { ...s.cfg, dataRoot: join(s.sb, "sem-data") }, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.deepEqual(r.files.map((f) => [f.folder, f.status]), [["261021", "arquivado"]]);
     assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
   });
 });
 
 describe("regressões puras do review (#12567)", () => {
-  it("PXL_ com milissegundos é bruto", () => {
+  it("PXL_ com milissegundos é bruto", async () => {
     assert.equal(isBrutoFile("PXL_20261104_124252345.mp4"), true);
   });
-  it("rate limit e cota nunca são 'sem permissão'", () => {
+  it("rate limit e cota nunca são 'sem permissão'", async () => {
     assert.equal(isPermissionError("googleapi: Error 403: User Rate Limit Exceeded, userRateLimitExceeded"), false);
     assert.equal(isPermissionError("googleapi: Error 403: The user's Drive storage quota has been exceeded., storageQuotaExceeded"), false);
     assert.equal(isPermissionError("googleapi: Error 403: forbidden"), false);
   });
-  it("md5sum que falhou não é 'conteúdo diferente'", () => {
+  it("md5sum que falhou não é 'conteúdo diferente'", async () => {
     assert.equal(verifyCopy({ path: "a", size: 1, md5: "aa".repeat(16) }, { size: 1, md5: null }), "md5-local-indisponivel");
   });
-  it("duplicatePaths acha o nome repetido", () => {
+  it("duplicatePaths acha o nome repetido", async () => {
     const f = (path: string) => ({ path, size: 1, md5: null });
     assert.deepEqual([...duplicatePaths([f("a"), f("b"), f("a")])], ["a"]);
   });
-  it("bisyncIdle só libera unit parada", () => {
+  it("bisyncIdle só libera unit parada", async () => {
     assert.equal(bisyncIdle("inactive"), true);
     assert.equal(bisyncIdle("failed"), true);
     for (const s of ["", "active", "activating", "refreshing", "deactivating"]) assert.equal(bisyncIdle(s), false, s);
   });
-  it("env numérica inválida falha cedo", () => {
+  it("env numérica inválida falha cedo", async () => {
     assert.throws(() => defaultConfig({ VIDEO_ARCHIVE_WAIT_MINUTES: "abc" }));
   });
 });
@@ -509,7 +522,7 @@ describe("regressões puras do review (#12567)", () => {
 // ── #12602: bruto que outra edição ou o Short ainda usa ─────────────────────
 
 describe("idade mínima da pasta publicada (#12602)", () => {
-  it("horizontal publicado há menos de 4 dias fica (Short e cortes saem nos dias seguintes)", () => {
+  it("horizontal publicado há menos de 4 dias fica (Short e cortes saem nos dias seguintes)", async () => {
     // TODAY = 261109; 261106 (sexta) tem 3 dias: o corte de terça ainda não saiu.
     const d = decideFolder({ name: "261106", published: { "261106": true } }, TODAY);
     assert.equal(d.eligible, false);
@@ -520,13 +533,13 @@ describe("idade mínima da pasta publicada (#12602)", () => {
 });
 
 describe("referências do source.json (#12602)", () => {
-  it("chave é o nome do arquivo, em qualquer separador", () => {
+  it("chave é o nome do arquivo, em qualquer separador", async () => {
     assert.equal(brutoRefKey("G:/Meu Drive/Work/Mentoria Fluxo/VTSD/YouTube/261106/20261106_101010.mp4"), "20261106_101010.mp4");
     assert.equal(brutoRefKey("G:\\Meu Drive\\YouTube\\261106\\20261106_101010.MP4"), "20261106_101010.mp4");
     assert.equal(brutoRefKey("Brutos/20261103_000000.mp4"), "20261103_000000.mp4");
   });
 
-  it("lê path e files[].path; formato estranho é null", () => {
+  it("lê path e files[].path; formato estranho é null", async () => {
     assert.deepEqual(montageSourceRefs({ path: "a/x.mp4" }), ["a/x.mp4"]);
     assert.deepEqual(montageSourceRefs({ path: "a/x.mp4", files: [{ path: "a/x.mp4" }, { path: "b/y.mp4" }] }), ["a/x.mp4", "a/x.mp4", "b/y.mp4"]);
     assert.equal(montageSourceRefs({}), null);
@@ -535,7 +548,7 @@ describe("referências do source.json (#12602)", () => {
     assert.equal(montageSourceRefs([]), null);
   });
 
-  it("referencingEditions casa pelo nome", () => {
+  it("referencingEditions casa pelo nome", async () => {
     const refs = new Map([["20261106_101010.mp4", ["261110"]]]);
     assert.deepEqual(referencingEditions("20261106_101010.mp4", refs), ["261110"]);
     assert.deepEqual(referencingEditions("Brutos/20261106_101010.mp4", refs), ["261110"]);
@@ -548,7 +561,7 @@ describe("runArchive com montagem de outra edição em curso (#12602)", posixOnl
     s.put(join(s.cfg.dataRoot, "editions", ed.slice(0, 4), ed), "_internal/video-montagem/source.json", typeof source === "string" ? source : JSON.stringify(source));
   };
 
-  it("bruto da edição seguinte guardado na pasta publicada fica no Drive até ela sair; o resto sai", () => {
+  it("bruto da edição seguinte guardado na pasta publicada fica no Drive até ela sair; o resto sai", async () => {
     const s = sandbox();
     s.both("261105/20261105_090000.mp4", "bruto-da-261105");
     s.both("261105/20261105_100000.mp4", "bruto-da-261110");
@@ -558,7 +571,7 @@ describe("runArchive com montagem de outra edição em curso (#12602)", posixOnl
       path: "G:/Meu Drive/Work/Mentoria Fluxo/VTSD/YouTube/261105/20261105_100000.mp4",
       files: [{ id: "20261105_100000", path: "G:\\Meu Drive\\Work\\Mentoria Fluxo\\VTSD\\YouTube\\261105\\20261105_100000.mp4" }],
     });
-    const dry = runArchive({ cfg: s.cfg, apply: false, today: TODAY, unpublishedMaxDays: 14 });
+    const dry = await runArchive({ cfg: s.cfg, apply: false, today: TODAY, unpublishedMaxDays: 14 });
     assert.deepEqual(
       dry.files.map((f) => [f.path, f.status]),
       [
@@ -566,7 +579,7 @@ describe("runArchive com montagem de outra edição em curso (#12602)", posixOnl
         ["20261105_100000.mp4", "em-uso-por-outra-edicao"],
       ],
     );
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(reportFailed(r), false, JSON.stringify(r, null, 2));
     const used = r.files.find((f) => f.path === "20261105_100000.mp4")!;
     assert.equal(used.status, "em-uso-por-outra-edicao");
@@ -577,35 +590,35 @@ describe("runArchive com montagem de outra edição em curso (#12602)", posixOnl
     assert.equal(r.files.find((f) => f.path === "20261105_090000.mp4")!.status, "arquivado");
   });
 
-  it("edição que referencia o bruto, publicada mas recente, ainda segura; passada a idade mínima, não segura mais", () => {
+  it("edição que referencia o bruto, publicada mas recente, ainda segura; passada a idade mínima, não segura mais", async () => {
     const s = sandbox();
     s.both("261105/20261105_100000.mp4", "bruto");
     s.publish("261105");
     s.publish("261107");
     montage(s, "261107", { path: "/x/261105/20261105_100000.mp4" });
-    const held = runArchive({ cfg: s.cfg, apply: false, today: TODAY, unpublishedMaxDays: 14 });
+    const held = await runArchive({ cfg: s.cfg, apply: false, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(held.files[0].status, "em-uso-por-outra-edicao");
-    const later = runArchive({ cfg: s.cfg, apply: false, today: new Date("2026-11-12T00:00:00Z"), unpublishedMaxDays: 14 });
+    const later = await runArchive({ cfg: s.cfg, apply: false, today: new Date("2026-11-12T00:00:00Z"), unpublishedMaxDays: 14 });
     assert.equal(later.files[0].status, "sairia", "261107 com 5 dias já sairia: não segura");
   });
 
-  it("source.json ilegível de edição em uso: erro e nada sai do Drive", () => {
+  it("source.json ilegível de edição em uso: erro e nada sai do Drive", async () => {
     const s = sandbox();
     s.both("261105/20261105_090000.mp4", "bruto");
     s.publish("261105");
     montage(s, "261110", "{ quebrado");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(reportFailed(r), true);
     assert.match(r.errors.join("\n"), /261110.*source\.json ilegível/);
     assert.ok(existsSync(join(s.drive, "261105/20261105_090000.mp4")));
     assert.ok(!existsSync(s.calls) || !readFileSync(s.calls, "utf8").includes("deletefile"));
   });
 
-  it("horizontal publicado ontem: a pasta fica (o Short da vertical nativa sai no dia útil seguinte)", () => {
+  it("horizontal publicado ontem: a pasta fica (o Short da vertical nativa sai no dia útil seguinte)", async () => {
     const s = sandbox();
     s.both("261108/20261108_090000.mp4", "bruto");
     s.publish("261108");
-    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.folders[0].reason, "publicado-recente");
     assert.deepEqual(r.files, []);
     assert.ok(existsSync(join(s.drive, "261108/20261108_090000.mp4")));
@@ -620,5 +633,127 @@ describe("task agendada (#12548)", () => {
     assert.deepEqual(t.steps.map((s) => [s.script, s.args]), [["scripts/archive-video-brutos.ts", ["--apply"]]]);
     assert.deepEqual(t.schedule, { kind: "weekly", dayOfWeek: "Saturday", hour: 3, minute: 0 });
     assert.notEqual(t.enabled, false);
+  });
+});
+
+// ── #12603: sinal no meio da rodada e cópia de mesmo tamanho com MD5 errado ──
+
+const BRUTOS_12603 = ["20261104_124252.mp4", "Brutos/20261103_000000.mp4"];
+
+describe("regressões do review (#12603)", posixOnly, () => {
+  it("cópia de mesmo tamanho e MD5 diferente no arquivo não trava: usa o espelho e a sobrescreve", async () => {
+    const s = sandbox();
+    s.both("261105/20261104_124252.mp4", "bruto-1");
+    s.put(s.archive, "261105/20261104_124252.mp4", "bruto-X"); // mesmo tamanho, outro conteúdo
+    s.publish("261105");
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(reportFailed(r), false, JSON.stringify(r, null, 2));
+    assert.equal(r.files[0].source, "espelho");
+    assert.equal(r.files[0].status, "arquivado");
+    assert.match(r.files[0].detail ?? "", /MD5 diferente/);
+    assert.equal(readFileSync(join(s.archive, "261105/20261104_124252.mp4"), "utf8"), "bruto-1");
+    assert.ok(!existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+  });
+
+  it("cópia de mesmo tamanho e MD5 diferente no arquivo, sem espelho: baixa de novo e sobrescreve", async () => {
+    const s = sandbox();
+    s.put(s.drive, "261105/20261104_124252.mp4", "bruto-1");
+    s.put(s.archive, "261105/20261104_124252.mp4", "bruto-X");
+    mkdirSync(join(s.local, "261105"), { recursive: true });
+    s.publish("261105");
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].source, "download");
+    assert.equal(r.files[0].status, "arquivado");
+    assert.equal(readFileSync(join(s.archive, "261105/20261104_124252.mp4"), "utf8"), "bruto-1");
+  });
+
+  it("MD5 do Drive que não bate com nenhuma cópia continua falha e não apaga", async () => {
+    const s = sandbox({ badMd5: ["20261104_124252.mp4"] });
+    s.both("261105/20261104_124252.mp4", "bruto-1");
+    s.put(s.archive, "261105/20261104_124252.mp4", "bruto-X");
+    s.publish("261105");
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].status, "falha-conferencia");
+    assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+    assert.ok(existsSync(join(s.local, "261105/20261104_124252.mp4")), "espelho intacto");
+  });
+
+  it("parada pedida no meio: para antes do próximo bruto, religa o timer e falha", async () => {
+    const s = sandbox();
+    s.both("261105/20261104_124252.mp4", "bruto-1");
+    s.both("261105/Brutos/20261103_000000.mp4", "bruto-2");
+    s.publish("261105");
+    const stop = createStopController();
+    let seen = 0;
+    const r = await runArchive({
+      cfg: s.cfg,
+      apply: true,
+      today: TODAY,
+      unpublishedMaxDays: 14,
+      stop,
+      // Pede a parada ao começar o 1º bruto (o que o handler de SIGTERM faz em main).
+      log: (l) => {
+        if (/\.mp4 \(/.test(l) && seen++ === 0) requestStop(stop, "SIGTERM");
+      },
+    });
+    assert.equal(reportFailed(r), true);
+    assert.ok(r.errors.some((e) => /SIGTERM/.test(e)), JSON.stringify(r.errors));
+    assert.equal(r.files.length, 1, "o 2º bruto nem começa");
+    const other = BRUTOS_12603.find((p) => p !== r.files[0].path)!;
+    assert.ok(existsSync(join(s.drive, "261105", other)) && existsSync(join(s.local, "261105", other)), "2º intacto no Drive e no espelho");
+    assert.match(readFileSync(s.calls, "utf8"), /start diaria-gdrive-bisync.timer/);
+  });
+
+  it("SIGTERM no processo real durante um rclone: sai logo, religa o timer e grava o relatório", async () => {
+    const s = sandbox({ hangDelete: true });
+    s.both("261105/20261104_124252.mp4", "bruto-1");
+    s.both("261105/Brutos/20261103_000000.mp4", "bruto-2");
+    s.publish("261105");
+    const child = spawn(process.execPath, ["--import", "tsx", "scripts/archive-video-brutos.ts", "--apply", "--only", "261105"], {
+      env: {
+        ...process.env,
+        HOME: s.sb,
+        VIDEO_ARCHIVE_MOUNT: s.mount,
+        VIDEO_ARCHIVE_LOCAL_ROOT: s.local,
+        VIDEO_ARCHIVE_ROOT: s.archive,
+        VIDEO_ARCHIVE_REMOTE_ROOT: "remote:",
+        VIDEO_ARCHIVE_REMOTE: "remote:",
+        VIDEO_ARCHIVE_DATA_ROOT: s.data,
+        RCLONE_BIN: join(s.bin, "rclone"),
+        SYSTEMCTL_BIN: join(s.bin, "systemctl"),
+        MD5SUM_BIN: join(s.bin, "md5sum"),
+        VIDEO_ARCHIVE_MOUNTPOINT_CMD: "true",
+        VIDEO_ARCHIVE_POLL_SECONDS: "0",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d));
+    const exited = new Promise<number | null>((res) => child.on("exit", (code) => res(code)));
+    const deadline = Date.now() + 60_000;
+    while (!existsSync(s.hang)) {
+      if (Date.now() > deadline) {
+        child.kill("SIGKILL");
+        assert.fail(`deletefile nunca começou: ${stderr}`);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    child.kill("SIGTERM");
+    const code = await Promise.race([exited, new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 15_000))]);
+    if (code === "timeout") child.kill("SIGKILL");
+    assert.notEqual(code, "timeout", `o sinal foi ignorado (o rclone parado seguiria até o SIGKILL): ${stderr}`);
+    assert.equal(code, 1, stderr);
+    const calls = readFileSync(s.calls, "utf8");
+    assert.ok(calls.lastIndexOf("start diaria-gdrive-bisync.timer") > calls.lastIndexOf("deletefile"), calls);
+    assert.equal((calls.match(/deletefile/g) ?? []).length, 1, "nenhum bruto novo depois do sinal");
+    const report = JSON.parse(readFileSync(join(s.sb, ".cache", "diaria", "video-bruto-archive", "last-report.json"), "utf8"));
+    assert.ok(report.errors.some((e: string) => /SIGTERM/.test(e)), JSON.stringify(report.errors));
+    assert.ok(
+      BRUTOS_12603.some((p) => existsSync(join(s.drive, "261105", p)) && existsSync(join(s.local, "261105", p))),
+      "o bruto que não começou segue no Drive e no espelho",
+    );
+    for (const p of BRUTOS_12603) {
+      assert.ok(existsSync(join(s.drive, "261105", p)) || existsSync(join(s.archive, "261105", p)), `${p} nunca some dos dois lados`);
+    }
   });
 });
