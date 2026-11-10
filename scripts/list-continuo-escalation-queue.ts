@@ -27,7 +27,7 @@ if (isMainModule(import.meta.url)) {
       const pages = gh(["api", `repos/{owner}/{repo}/issues/${pr.number}/events`, "--paginate", "--slurp"]) as Parameters<typeof overdueEscalation>[0][];
       const since = overdueEscalation(pages.flat(), Date.now());
       if (!since) continue;
-      const gate = spawnSync("npx", ["tsx", "scripts/check-continuo-merge-gate.ts", "--pr", String(pr.number)], { encoding: "utf8", timeout: 180_000 });
+      const gate = spawnSync(process.execPath, ["--import", "tsx", "scripts/check-continuo-merge-gate.ts", "--pr", String(pr.number)], { encoding: "utf8", timeout: 180_000 });
       if (gate.error || ![0, 1, 2].includes(gate.status ?? -1)) throw new Error(`gate #${pr.number} falhou: ${gate.stderr}`);
       const result = JSON.parse(gate.stdout);
       queue.push({ ...pr, since, owner: "editor", queue: "briefing overnight/develop", action: result.action, reason: result.reason });
