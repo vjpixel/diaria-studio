@@ -59,11 +59,31 @@
  * renumerado; 404 no Worker (post pode ter disparado) mantém o aviso e a
  * exigência de `--ack-scheduled`.
  *
+ * ## Vídeo (#12713)
+ *
+ * Origem só com o vídeo (`_internal/video-montagem/` e `diaria-comentada-{de}*`
+ * na raiz) e destino já existente — o caso de quando a montagem rodou com o
+ * AAMMDD errado: em vez de recusar, move só o vídeo pra edição de destino,
+ * com a mesma troca de ID no conteúdo (o `"edition"` do `blocks.json`, que o
+ * `build` confere, e os caminhos `YouTube/{de}/{de}_…` em `source.json`,
+ * `plan.json`, `audio-tratado.meta.json`) e nos nomes. Recusa se a origem tem
+ * qualquer outra coisa ou se o destino já tem vídeo. Sem passo remoto (a
+ * edição de destino é outra); relatório em
+ * `{destino}/_internal/video-montagem/renumber-video.json`.
+ *
+ * `--video-dir PASTA` (nos dois modos): a pasta `YouTube/{de}` pelo caminho
+ * local (Drive montado). Troca o ID nos nomes (`{de}_audio_tratado-*.wav`,
+ * `{de}_titulo_vertical*.png`, `{de} - previa *.mp4`) e no conteúdo dos XMLs
+ * (`pathurl`), SRT e JSON, com a mesma borda (o bruto `20261112_*.mp4` fica).
+ * A pasta em si não é renomeada — continua na lista "fica fora", junto com o
+ * Doc do roteiro e o cache local do vídeo.
+ *
  * Exit: 0 ok; 1 passo remoto falhou, desagendamento falhou ou erro na parte
  * local; 2 argumento ou precondição (destino existe, origem ausente, agendado
  * sem `--ack-scheduled`).
  */
 import { spawnSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -84,11 +104,17 @@ import {
   readRenumberReport,
   renumberLocal,
   scanLocal,
+  scanVideoMerge,
+  scanVideoOutDir,
+  applyVideoOutDir,
+  planVideoMerge,
+  renumberVideoMerge,
   writeRenumberReport,
   unscheduleSends,
   type RemoteStep,
   type RemoteStepState,
   type UnscheduleDeps,
+  type VideoMergePlan,
 } from "./lib/renumber-edition.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -108,6 +134,8 @@ export interface RenumberCliOptions {
   runRemote: boolean;
   /** #12662 — quem chama já reagendou (ou vai reagendar) o que estava agendado. */
   ackScheduled?: boolean;
+  /** #12713 — pasta local `YouTube/{AAMMDD}` do vídeo (Drive montado): troca nomes e XMLs dentro dela. */
+  videoDir?: string;
 }
 
 export function formatStep(s: RemoteStep): string {
@@ -125,6 +153,11 @@ export async function runUnschedule(
 ): Promise<number> {
   const plan = planRenumber(deps.root, opts.from, opts.to);
   if (!plan.ok) {
+    // #12713 — origem só de vídeo: nada agendado nela, segue pra mescla.
+    if (planVideoMerge(deps.root, opts.from, opts.to).ok) {
+      deps.log("--unschedule: origem só tem vídeo, nada a desagendar.");
+      return 0;
+    }
     deps.log(`ERRO: ${plan.reason}`);
     return plan.code;
   }
@@ -144,11 +177,104 @@ export async function runUnschedule(
   return 0;
 }
 
+/**
+ * #12713 — `--video-dir`: a pasta `YouTube/{AAMMDD}` do vídeo, pelo caminho
+ * local (Drive montado). Dry-run lista; `apply` troca. Devolve `null` se ok,
+ * senão o exit code. `done` diz se os arquivos de dentro ficaram resolvidos.
+ */
+function handleVideoDir(opts: RenumberCliOptions, deps: RenumberCliDeps, apply: boolean): { code: number | null; done: boolean } {
+  if (!opts.videoDir) return { code: null, done: false };
+  const dir = resolve(deps.root, opts.videoDir);
+  const tag = apply ? "" : "[dry-run] ";
+  try {
+    const scan = apply ? applyVideoOutDir(dir, opts.from, opts.to) : scanVideoOutDir(dir, opts.from, opts.to);
+    const trocas = scan.rewritten.reduce((n, f) => n + f.count, 0);
+    deps.log(
+      apply
+        ? `--video-dir ${dir}: ${scan.rewritten.length} arquivo(s) reescrito(s) (${trocas} troca(s)), ${scan.renames.length} renomeado(s).`
+        : `${tag}--video-dir ${dir}: reescreveria ${scan.rewritten.length} arquivo(s) (${trocas} troca(s)).`,
+    );
+    for (const r of scan.renames) deps.log(`${tag}--video-dir ${apply ? "renomeado" : "renomearia"} ${r.from} → ${r.to}`);
+    return { code: null, done: apply };
+  } catch (e) {
+    deps.log(`ERRO no --video-dir: ${(e as Error).message}`);
+    return { code: 1, done: false };
+  }
+}
+
+/** #12713 — a origem só tem o vídeo e o destino já existe: mescla só o vídeo. */
+function runVideoMerge(
+  opts: RenumberCliOptions,
+  deps: RenumberCliDeps,
+  vm: Extract<VideoMergePlan, { ok: true }>,
+): number {
+  const printLeftOut = (prefix: string, videoDirDone: boolean) => {
+    deps.log(`${prefix}fica fora (à mão, depois da troca):`);
+    for (const item of leftOutItems(opts.from, opts.to, { videoDirDone })) deps.log(`  - ${item}`);
+  };
+  const toRel = relative(deps.root, vm.toDir);
+  if (vm.done) {
+    deps.log(`mescla do vídeo ${opts.from} → ${opts.to} já feita (${toRel}/_internal/video-montagem/renumber-video.json).`);
+    if (!opts.apply) {
+      const v = handleVideoDir(opts, deps, false);
+      printLeftOut("[dry-run] ", false);
+      return v.code ?? 0;
+    }
+    const v = handleVideoDir(opts, deps, true);
+    printLeftOut("", v.done);
+    return v.code ?? 0;
+  }
+  const lock = liveEditionLock(vm.fromDir, Date.parse(deps.nowIso()));
+  if (lock) {
+    deps.log(
+      `ATENÇÃO: edition-lock vivo em ${relative(deps.root, vm.fromDir)} (sessão ${lock.session_id}, host ${lock.host || "?"}, Stage ${lock.stage}). ` +
+        "Se uma montagem está rodando nessa pasta, encerrá-la antes.",
+    );
+  }
+  const note = `origem ${relative(deps.root, vm.fromDir)} só tem vídeo e ${toRel} já existe: mescla só o vídeo (#12713), sem passo remoto (a edição ${opts.to} é outra).`;
+  if (!opts.apply) {
+    const scan = scanVideoMerge(vm, opts.from, opts.to);
+    deps.log(`[dry-run] ${note}`);
+    for (const m of scan.moved) deps.log(`[dry-run] moveria ${m.from} → ${toRel}/${m.to}`);
+    deps.log(`[dry-run] reescreveria ${scan.rewritten.length} arquivo(s) (${scan.rewritten.reduce((n, f) => n + f.count, 0)} troca(s)).`);
+    for (const r of scan.renames) deps.log(`[dry-run] renomearia ${r.from} → ${r.to}`);
+    const v = handleVideoDir(opts, deps, false);
+    printLeftOut("[dry-run] ", false);
+    return v.code ?? 0;
+  }
+  let report;
+  try {
+    report = renumberVideoMerge(deps.root, opts.from, opts.to, deps.nowIso());
+  } catch (e) {
+    deps.log(`ERRO na mescla do vídeo: ${(e as Error).message}`);
+    return 1;
+  }
+  deps.log(note);
+  deps.log(
+    `${report.from_dir} → ${report.to_dir}: ${report.moved.length} item(ns) movido(s), ${report.rewritten_files.length} arquivo(s) reescrito(s), ` +
+      `${report.renamed_paths.length} renomeado(s)${report.removed_from_dir ? `; ${report.from_dir} removida (vazia)` : ""}.`,
+  );
+  const v = handleVideoDir(opts, deps, true);
+  printLeftOut("", v.done);
+  return v.code ?? 0;
+}
+
 export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDeps): number {
   const { root, log } = deps;
+  if (opts.videoDir) {
+    const dir = resolve(root, opts.videoDir);
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+      log(`ERRO: --video-dir ${dir} não existe ou não é pasta.`);
+      return 2;
+    }
+  }
   const plan = planRenumber(root, opts.from, opts.to);
   if (!plan.ok) {
+    // #12713 — destino existente com origem só de vídeo: mescla só o vídeo.
+    const vm = planVideoMerge(root, opts.from, opts.to);
+    if (vm.ok) return runVideoMerge(opts, deps, vm);
     log(`ERRO: ${plan.reason}`);
+    if (vm.reason) log(`ERRO (mescla do vídeo, #12713): ${vm.reason}`);
     return plan.code;
   }
   const newDirRel = editionDir(opts.to);
@@ -169,9 +295,9 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
     log(`ERRO: ${globalRefusal}`);
     return 2;
   }
-  const printLeftOut = (prefix: string) => {
+  const printLeftOut = (prefix: string, videoDirDone = false) => {
     log(`${prefix}fica fora (à mão, depois da troca):`);
-    for (const item of leftOutItems(opts.from, opts.to)) log(`  - ${item}`);
+    for (const item of leftOutItems(opts.from, opts.to, { videoDirDone })) log(`  - ${item}`);
   };
 
   // #12662 — envio/post já agendado sai no dia antigo: nenhum passo o move.
@@ -204,8 +330,9 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
     }));
     log("[dry-run] passos remotos depois do --apply:");
     for (const s of steps) log(`  ${formatStep(s)}   # ${s.why}`);
+    const v = handleVideoDir(opts, deps, false);
     printLeftOut("[dry-run] ");
-    return 0;
+    return v.code ?? 0;
   }
 
   let report = plan.resume ? readRenumberReport(plan.toDir) : null;
@@ -221,10 +348,14 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
         `${report.renamed_paths.length} renomeado(s), ${report.preserved_img_refs} img-${opts.from}-… preservado(s).`,
     );
     for (const g of report.global_stores ?? []) log(`${g.path}: ${g.count} entrada(s) de ${opts.from} → ${opts.to}.`);
-    printLeftOut("");
   } else {
     log(`retomando: parte local já feita em ${newDirRel}.`);
   }
+  // #12713 — a pasta do vídeo no Drive montado, depois da parte local (falha
+  // aqui não desfaz a troca; rodar de novo retoma e repete só o --video-dir).
+  const videoDir = handleVideoDir(opts, deps, true);
+  if (!plan.resume) printLeftOut("", videoDir.done);
+  if (videoDir.code !== null) return videoDir.code;
   if (!report) {
     log("ERRO: relatório da renumeração ilegível.");
     return 1;
@@ -293,16 +424,18 @@ async function main(): Promise<void> {
   const log = (msg: string) => process.stderr.write(`[renumber-edition] ${msg}\n`);
   let from: string | undefined;
   let to: string | undefined;
+  let videoDir: string | undefined;
   try {
     from = getStringArg(argv, "from");
     to = getStringArg(argv, "to");
+    videoDir = getStringArg(argv, "video-dir");
   } catch (e) {
     log(`ERRO: ${(e as Error).message}`);
     process.exitCode = 2;
     return;
   }
   if (!from || !to) {
-    log("uso: npx tsx scripts/renumber-edition.ts --from AAMMDD --to AAMMDD [--apply] [--unschedule] [--run-remote] [--ack-scheduled]");
+    log("uso: npx tsx scripts/renumber-edition.ts --from AAMMDD --to AAMMDD [--apply] [--unschedule] [--run-remote] [--ack-scheduled] [--video-dir PASTA]");
     process.exitCode = 2;
     return;
   }
@@ -325,7 +458,7 @@ async function main(): Promise<void> {
     }
   }
   process.exitCode = runRenumberEdition(
-    { from, to, apply: hasFlag(argv, "apply"), runRemote: hasFlag(argv, "run-remote"), ackScheduled: hasFlag(argv, "ack-scheduled") },
+    { from, to, apply: hasFlag(argv, "apply"), runRemote: hasFlag(argv, "run-remote"), ackScheduled: hasFlag(argv, "ack-scheduled"), videoDir },
     {
       root: ROOT,
       log,

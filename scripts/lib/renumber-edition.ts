@@ -29,6 +29,10 @@
  *   vídeo, outras sessões/máquinas e histórico — `leftOutItems`, impresso
  *   pelo CLI.
  *
+ * - **Vídeo com destino existente** (#12713): origem só com o vídeo vira
+ *   mescla só do vídeo (`planVideoMerge`/`renumberVideoMerge`), e
+ *   `applyVideoOutDir` troca nomes e XMLs na pasta `YouTube/{AAMMDD}` local.
+ *
  * Idempotente: a pasta nova guarda `_internal/renumber-edition.json`; rodar de
  * novo com a origem já movida e esse relatório no destino retoma (pula a parte
  * local, segue nos passos remotos ainda não concluídos).
@@ -42,6 +46,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -234,6 +239,239 @@ export function scanLocal(fromDir: string, from: string, to: string): LocalScan 
   return { rewritten, renames, preserved, publicImages: existsSync(join(fromDir, PUBLIC_IMAGES_FILENAME)) };
 }
 
+/** Recusa (lança) se algum nome novo do `scan` já existe em `dir`. Não escreve nada. */
+function assertNoRenameCollision(dir: string, scan: LocalScan, where: string): void {
+  for (const r of scan.renames) {
+    if (existsSync(join(dir, r.to))) throw new Error(`${r.to} já existe ${where} — recusado (renomear sobrescreveria).`);
+  }
+}
+
+/**
+ * Aplica um `LocalScan` em `dir`: reescreve o conteúdo e renomeia. `walk`
+ * lista filhos antes dos pais, então renomear nessa ordem mantém válidos os
+ * caminhos ainda não renomeados.
+ */
+function applyLocalScan(dir: string, scan: LocalScan, from: string, to: string): void {
+  for (const f of scan.rewritten) {
+    const abs = join(dir, f.path);
+    writeFileSync(abs, replaceEditionId(readFileSync(abs, "utf8"), from, to).text);
+  }
+  for (const r of scan.renames) renameSync(join(dir, r.from), join(dir, r.to));
+}
+
+// ---------------------------------------------------------------------------
+// #12713 — vídeo fora do caminho da renumeração da edição inteira.
+//
+// Caso de 10/11/2026 (Nubank, 261112 → 261111): a pasta de origem só tinha o
+// vídeo (`_internal/video-montagem/` + `diaria-comentada-{AAMMDD}.srt`) e a
+// edição de destino já existia. `planRenumber` recusa destino existente (nunca
+// mescla duas edições); aqui a mescla é permitida SÓ quando tudo na origem é
+// artefato de vídeo e o destino não tem vídeo nenhum. O conteúdo passa pela
+// mesma troca com borda (o `"edition"` do `blocks.json`, que o `build` confere,
+// e os caminhos `YouTube/{AAMMDD}/{AAMMDD}_…` de `source.json`, `plan.json`,
+// `audio-tratado.meta.json`), e os nomes com o ID são renomeados.
+// ---------------------------------------------------------------------------
+
+export const VIDEO_STATE_REL = join("_internal", "video-montagem");
+export const VIDEO_MERGE_REPORT_FILENAME = "renumber-video.json";
+
+/** `diaria-comentada-{id}…` na raiz da edição (srt, mp4, short), com borda depois do ID. */
+function isRootVideoFile(name: string, id: string): boolean {
+  const prefix = `diaria-comentada-${id}`;
+  return name.startsWith(prefix) && !/^[\p{L}\p{N}]/u.test(name.slice(prefix.length));
+}
+
+function isUnder(rel: string, dirRel: string): boolean {
+  return rel === dirRel || rel.startsWith(dirRel + sep);
+}
+
+export interface VideoMergeReport {
+  from: string;
+  to: string;
+  from_dir: string;
+  to_dir: string;
+  merged_at: string;
+  /** Arquivos/pastas movidos da origem pro destino (relativos à pasta da edição, nome novo). */
+  moved: Array<{ from: string; to: string }>;
+  rewritten_files: Array<{ path: string; count: number }>;
+  renamed_paths: Array<{ from: string; to: string }>;
+  /** A pasta de origem ficou vazia e foi removida. */
+  removed_from_dir: boolean;
+}
+
+export type VideoMergePlan =
+  | { ok: true; done: false; fromDir: string; toDir: string; rootFiles: string[]; hasState: boolean }
+  | { ok: true; done: true; fromDir: string; toDir: string }
+  | { ok: false; reason: string | null };
+
+/**
+ * #12713 — decide se a troca pode ser a mescla só do vídeo. `reason: null` =
+ * não se aplica (a recusa do `planRenumber` é a que vale); com texto = se
+ * aplicaria, mas é recusada por isto. Não escreve nada.
+ */
+export function planVideoMerge(root: string, from: string, to: string): VideoMergePlan {
+  if (!isValidEditionId(from) || !isValidEditionId(to) || from === to) return { ok: false, reason: null };
+  const fromDir = resolve(root, editionDir(from));
+  const toDir = resolve(root, editionDir(to));
+  const fromExists = existsSync(fromDir);
+  const toExists = existsSync(toDir);
+  if (!toExists) return { ok: false, reason: null };
+  if (!fromExists) {
+    const p = join(toDir, VIDEO_STATE_REL, VIDEO_MERGE_REPORT_FILENAME);
+    const report = existsSync(p) ? (readJson(p) as Partial<VideoMergeReport> | null) : null;
+    if (report && report.from === from && report.to === to) return { ok: true, done: true, fromDir, toDir };
+    return { ok: false, reason: null };
+  }
+  const others: string[] = [];
+  const rootFiles: string[] = [];
+  let hasState = false;
+  for (const e of walk(fromDir)) {
+    if (e.isDir) continue;
+    if (isUnder(e.rel, VIDEO_STATE_REL)) {
+      hasState = true;
+      continue;
+    }
+    if (!e.rel.includes(sep) && isRootVideoFile(e.rel, from)) {
+      rootFiles.push(e.rel);
+      continue;
+    }
+    others.push(e.rel.split(sep).join("/"));
+  }
+  // `walk` pula `_internal/_forensic/`: forense na origem também não é "só vídeo".
+  if (existsSync(join(fromDir, FORENSIC_DIR))) others.push(FORENSIC_DIR.split(sep).join("/") + "/");
+  const toRel = relative(root, toDir).split(sep).join("/");
+  if (others.length > 0) {
+    const sample = others.slice(0, 5).join(", ") + (others.length > 5 ? `, … (+${others.length - 5})` : "");
+    return {
+      ok: false,
+      reason: `a origem não é só vídeo (${sample}) — a mescla no destino existente só vale pra origem com _internal/video-montagem/ e diaria-comentada-${from}*.`,
+    };
+  }
+  if (!hasState && rootFiles.length === 0) return { ok: false, reason: null };
+  if (hasState && existsSync(join(toDir, VIDEO_STATE_REL))) {
+    return { ok: false, reason: `${toRel}/_internal/video-montagem/ já existe — recusado (nunca mescla dois vídeos).` };
+  }
+  for (const name of rootFiles) {
+    const next = renamedSegment(name, from, to) ?? name;
+    if (existsSync(join(toDir, next))) return { ok: false, reason: `${toRel}/${next} já existe — recusado (mover sobrescreveria).` };
+  }
+  return { ok: true, done: false, fromDir, toDir, rootFiles: rootFiles.sort(), hasState };
+}
+
+export interface VideoMergeScan {
+  moved: Array<{ from: string; to: string }>;
+  rewritten: Array<{ path: string; count: number }>;
+  renames: Array<{ from: string; to: string }>;
+}
+
+/** O que a mescla do vídeo faria (dry-run). Caminhos relativos à pasta da edição. */
+export function scanVideoMerge(plan: Extract<VideoMergePlan, { ok: true; done: false }>, from: string, to: string): VideoMergeScan {
+  const stateRel = VIDEO_STATE_REL.split(sep).join("/");
+  const moved: Array<{ from: string; to: string }> = [];
+  const rewritten: Array<{ path: string; count: number }> = [];
+  const renames: Array<{ from: string; to: string }> = [];
+  if (plan.hasState) {
+    const s = scanLocal(join(plan.fromDir, VIDEO_STATE_REL), from, to);
+    moved.push({ from: stateRel + "/", to: stateRel + "/" });
+    for (const f of s.rewritten) rewritten.push({ path: `${stateRel}/${f.path}`, count: f.count });
+    for (const r of s.renames) renames.push({ from: `${stateRel}/${r.from}`, to: `${stateRel}/${r.to}` });
+  }
+  for (const name of plan.rootFiles) {
+    moved.push({ from: name, to: renamedSegment(name, from, to) ?? name });
+    const abs = join(plan.fromDir, name);
+    const ext = name.includes(".") ? name.slice(name.lastIndexOf(".")).toLowerCase() : "";
+    if (BINARY_EXTENSIONS.has(ext) || statSync(abs).size > MAX_TEXT_BYTES) continue;
+    const buf = readFileSync(abs);
+    if (looksBinary(buf)) continue;
+    const r = replaceEditionId(buf.toString("utf8"), from, to);
+    if (r.count > 0) rewritten.push({ path: name, count: r.count });
+  }
+  return { moved, rewritten, renames };
+}
+
+/**
+ * #12713 — move o vídeo da origem pra edição de destino já existente: troca o
+ * ID no conteúdo e nos nomes (na origem, antes de mover), move
+ * `_internal/video-montagem/` e os `diaria-comentada-{de}*` da raiz, apaga as
+ * pastas da origem que ficaram vazias (`rmdir`, nunca recursivo) e grava
+ * `_internal/video-montagem/renumber-video.json` no destino. Não toca no resto
+ * do destino nem roda passo remoto nenhum (a edição de destino é outra).
+ */
+export function renumberVideoMerge(root: string, from: string, to: string, nowIso: string): VideoMergeReport {
+  const plan = planVideoMerge(root, from, to);
+  if (!plan.ok) throw new Error(plan.reason ?? `mescla do vídeo ${from} → ${to} não se aplica.`);
+  if (plan.done) throw new Error("renumberVideoMerge chamado com a mescla já feita.");
+  const scan = scanVideoMerge(plan, from, to);
+  const stateFrom = join(plan.fromDir, VIDEO_STATE_REL);
+  const stateScan = plan.hasState ? scanLocal(stateFrom, from, to) : null;
+  if (stateScan) assertNoRenameCollision(stateFrom, stateScan, "no vídeo da origem");
+
+  if (stateScan) applyLocalScan(stateFrom, stateScan, from, to);
+  for (const name of plan.rootFiles) {
+    if (!scan.rewritten.some((f) => f.path === name)) continue;
+    const abs = join(plan.fromDir, name);
+    writeFileSync(abs, replaceEditionId(readFileSync(abs, "utf8"), from, to).text);
+  }
+  if (plan.hasState) {
+    mkdirSync(join(plan.toDir, "_internal"), { recursive: true });
+    renameSync(stateFrom, join(plan.toDir, VIDEO_STATE_REL));
+  }
+  for (const m of scan.moved) {
+    if (m.from.endsWith("/")) continue;
+    renameSync(join(plan.fromDir, m.from), join(plan.toDir, m.to));
+  }
+  const removedFromDir = removeEmptyDirs(plan.fromDir);
+
+  const report: VideoMergeReport = {
+    from,
+    to,
+    from_dir: relative(root, plan.fromDir).split(sep).join("/"),
+    to_dir: relative(root, plan.toDir).split(sep).join("/"),
+    merged_at: nowIso,
+    moved: scan.moved,
+    rewritten_files: scan.rewritten,
+    renamed_paths: scan.renames,
+    removed_from_dir: removedFromDir,
+  };
+  // Sem vídeo de estado (só o .srt na raiz) o relatório vai pra uma pasta nova
+  // do vídeo no destino: é ali que a retomada procura.
+  const reportPath = join(plan.toDir, VIDEO_STATE_REL, VIDEO_MERGE_REPORT_FILENAME);
+  mkdirSync(dirname(reportPath), { recursive: true });
+  writeFileSync(reportPath, JSON.stringify(report, null, 2) + "\n");
+  return report;
+}
+
+/** Remove `dir` e subpastas se estiverem vazios (`rmdirSync`, nunca recursivo). Devolve se `dir` sumiu. */
+function removeEmptyDirs(dir: string): boolean {
+  for (const name of readdirSync(dir)) {
+    const abs = join(dir, name);
+    if (statSync(abs).isDirectory()) removeEmptyDirs(abs);
+  }
+  if (readdirSync(dir).length > 0) return false;
+  rmdirSync(dir);
+  return true;
+}
+
+/**
+ * #12713 — pasta de saída do vídeo (`--video-dir`, a pasta `YouTube/{AAMMDD}`
+ * da edição pelo Drive montado, ex.: `G:/Meu Drive/…/YouTube/261112`): troca o
+ * ID no conteúdo dos XMLs/SRT/JSON (os `pathurl` do Premiere) e nos nomes com o
+ * ID (`{AAMMDD}_audio_tratado-*.wav`, `{AAMMDD}_titulo_vertical-*.png`,
+ * `{AAMMDD} - previa *.mp4`), com a mesma borda: o bruto `20261112_*.mp4`
+ * fica como está. A pasta em si NÃO é renomeada (fica na lista "fica fora").
+ * Só o caminho local que quem chama passou; nada de API do Drive.
+ */
+export function scanVideoOutDir(dir: string, from: string, to: string): LocalScan {
+  return scanLocal(dir, from, to);
+}
+
+export function applyVideoOutDir(dir: string, from: string, to: string): LocalScan {
+  const scan = scanVideoOutDir(dir, from, to);
+  assertNoRenameCollision(dir, scan, "na pasta do vídeo");
+  applyLocalScan(dir, scan, from, to);
+  return scan;
+}
+
 /**
  * Parte local, na pasta de ORIGEM (antes do `mv`, pra uma falha no meio deixar
  * tudo debaixo de um único caminho): tira o `06-public-images.json` do
@@ -259,9 +497,7 @@ export function renumberLocal(
   if (scan.publicImages && existsSync(forensicTarget)) {
     throw new Error(`${relative(root, forensicTarget)} já existe — recusado (não sobrescreve forense).`);
   }
-  for (const r of scan.renames) {
-    if (existsSync(join(fromDir, r.to))) throw new Error(`${r.to} já existe na edição — recusado (renomear sobrescreveria).`);
-  }
+  assertNoRenameCollision(fromDir, scan, "na edição");
   // #12691 — stores globais conferidos ANTES de qualquer escrita.
   const globalChanges = scanGlobalStores(root, from, to);
   const globalRefusal = globalStoresRefusal(globalChanges, to);
@@ -273,13 +509,7 @@ export function renumberLocal(
     renameSync(join(fromDir, PUBLIC_IMAGES_FILENAME), forensicTarget);
     publicImagesMovedTo = relative(fromDir, forensicTarget).split(sep).join("/");
   }
-  for (const f of scan.rewritten) {
-    const abs = join(fromDir, f.path);
-    writeFileSync(abs, replaceEditionId(readFileSync(abs, "utf8"), from, to).text);
-  }
-  // `walk` lista filhos antes dos pais: renomear nessa ordem mantém válidos os
-  // caminhos ainda não renomeados.
-  for (const r of scan.renames) renameSync(join(fromDir, r.from), join(fromDir, r.to));
+  applyLocalScan(fromDir, scan, from, to);
 
   // #12691 — só na execução nova, nunca na retomada: depois da troca outra
   // edição pode ter assumido o ID antigo (261110 → 261111 seguido de
@@ -661,9 +891,13 @@ export function globalStoresRefusal(changes: GlobalStoreChange[], to: string): s
  * `--apply` pra a troca não depender de memória. Tudo aqui exige rede, outra
  * máquina ou decisão humana.
  */
-export function leftOutItems(from: string, to: string): string[] {
+export function leftOutItems(from: string, to: string, opts: { videoDirDone?: boolean } = {}): string[] {
+  const inside = opts.videoDirDone
+    ? "os arquivos dentro dela já foram renomeados e os XMLs reescritos (--video-dir)"
+    : `os arquivos dentro dela (${from}_audio_tratado-*.wav, ${from}_titulo_vertical*.png, "${from} - previa *.mp4") e os pathurl dos XMLs seguem com ${from}: repetir com --video-dir {pasta montada} ou trocar à mão`;
   return [
-    `Drive: renomear a pasta ${from}/ da pasta YouTube (G:/Meu Drive/…/YouTube/${from}/) pra ${to}/ — os caminhos em _internal/video-montagem/ já apontam pro nome novo, e a montagem e o /diaria-publica procuram a pasta pelo AAMMDD.`,
+    `Drive: renomear a pasta ${from}/ da pasta YouTube (G:/Meu Drive/…/YouTube/${from}/) pra ${to}/ — os caminhos em _internal/video-montagem/ já apontam pro nome novo, e a montagem e o /diaria-publica procuram a pasta pelo AAMMDD; ${inside}.`,
+    `Vídeo fora do disco: o título do Doc do roteiro no Drive e o projeto do Premiere (.prproj, aponta pro caminho antigo) seguem com ${from} — renomear o Doc e reimportar o XML (ou religar a mídia).`,
     `Cache local do vídeo: ~/.cache/diaria-video-montagem/${from}/ (ou DIARIA_VIDEO_CACHE_DIR) e {tmp}/diaria-video-montagem/${from}/ ficam com o nome antigo — renomear pra ${to}/ ou deixar a próxima montagem baixar de novo.`,
     `Outras máquinas e sessões: a pasta nova chega pelo sync de data/; sessão aberta (aqui ou em outra máquina) que trabalhava em ${from} precisa recomeçar com ${to}.`,
     `Histórico não reescrito: data/run-log.jsonl, data/type-hint-divergence.jsonl, data/sources/ e _internal/_forensic/ seguem com ${from} (registro do que aconteceu).`,
