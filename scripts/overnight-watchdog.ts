@@ -285,7 +285,8 @@ export type SessionHeartbeatSource = Pick<SessionRecord, "kind" | "sessionId" | 
  * #12676 — heartbeat da sessão coordenadora DESTA rodada no session-registry.
  *
  * O `.claude/hooks/session-beacon.mjs` grava `lastHeartbeat` a cada chamada de
- * ferramenta da sessão (inclusive dos subagentes dela). Na rodada 261110c o
+ * ferramenta do COORDENADOR (subagente em worktree vinculado não emite beacon,
+ * ver `isLinkedWorktree` no hook). Na rodada 261110c o
  * coordenador passou 50 min sem gravar `plan.json` nem run-log, esperando CI e
  * 10 subagentes de uma onda, e o watchdog abriu um STALL P1 (#12644) com o
  * heartbeat vivo e as ondas seguindo até o fim.
