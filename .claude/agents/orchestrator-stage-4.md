@@ -657,7 +657,7 @@ Facebook  D3  "{hook_d3_facebook}"
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Aprovar e prosseguir para Publicação (Etapa 5)?{generic_study_reminder_line}
 
-  sim     → segue para o vídeo e a publicação (/diaria-video-montagem, /diaria-publica)
+  sim     → segue para o vídeo e a publicação (/diaria-video-roteiro, /diaria-video-montagem, /diaria-publica)
   editar  → halt; editor edita localmente (ou via Studio) → responde "sim" quando pronto
   ajustar → editor dita a mudança no chat; orchestrator aplica e re-apresenta o resumo
   abortar → encerra sem publicar (sentinel não escrito)
@@ -985,9 +985,10 @@ Stage 4 aprovado — edição {AAMMDD}.
 O pré-render já deixou tudo pronto para a Etapa 5 (HTML final, preview social,
 imagens públicas, gabarito do É IA?) — nada disso precisa ser refeito.
 
-Próximos passos (#10943, #11208, #12591), nesta ordem — abra uma sessão NOVA para cada um, nenhum encadeia no seguinte:
-  1. /diaria-video-montagem {AAMMDD} (depois de gravar o vídeo do D1; monta o XML do Premiere)
-  2. /diaria-publica {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao} (depois de exportar do Premiere para {AAMMDD}/Final/: horizontal, depois as Etapas 5 e 6 na mesma sessão, depois o vertical)
+Próximos passos (#10943, #11208, #12591, #12750), nesta ordem — abra uma sessão NOVA para cada um, nenhum encadeia no seguinte:
+  1. /diaria-video-roteiro {AAMMDD} (roteiro de fala do vídeo do D1, antes de gravar)
+  2. /diaria-video-montagem {AAMMDD} (depois de gravar o vídeo do D1; monta o XML do Premiere)
+  3. /diaria-publica {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao} (depois de exportar do Premiere para {AAMMDD}/Final/: horizontal, depois as Etapas 5 e 6 na mesma sessão, depois o vertical)
 
 A Etapa 5 não publica sem o link do vídeo no D1 (#12588). Sem vídeo hoje: npx tsx scripts/set-d1-no-video.ts {AAMMDD}
 (depois o upload em modo newsletter e o re-render do HTML) e /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}.

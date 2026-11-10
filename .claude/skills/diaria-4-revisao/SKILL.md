@@ -79,7 +79,7 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 4 --
 
 ## Próximo passo
 
-Após aprovação, numa sessão nova cada: `/diaria-video-montagem {AAMMDD}` e `/diaria-publica {AAMMDD}` (vídeo, Etapas 5 e 6, #12591; o nome antigo `/diaria-publica-video` segue como alias, #12620). A Etapa 5 não publica sem o link do vídeo no D1 (#12588); sem vídeo no dia, marcar a edição com `set-d1-no-video.ts {AAMMDD}` e rodar `/diaria-5-publicacao {AAMMDD}`.
+Após aprovação, numa sessão nova cada: `/diaria-video-roteiro {AAMMDD}` (antes de gravar, #12750), `/diaria-video-montagem {AAMMDD}` e `/diaria-publica {AAMMDD}` (vídeo, Etapas 5 e 6, #12591; o nome antigo `/diaria-publica-video` segue como alias, #12620). A Etapa 5 não publica sem o link do vídeo no D1 (#12588); sem vídeo no dia, marcar a edição com `set-d1-no-video.ts {AAMMDD}` e rodar `/diaria-5-publicacao {AAMMDD}`.
 
 ## Notas
 
