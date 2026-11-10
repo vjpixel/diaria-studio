@@ -93,9 +93,14 @@ describe("#9101: proposer pula grafias/entidades já usadas", () => {
     });
     assert.equal(c?.wrong_value, "Gemine");
   });
-  it("só entidades já usadas → null em vez de repetir", () => {
+  it("só entidades já usadas → nunca repete grafia nem entidade da janela", () => {
+    // Anthropic (260928) está na janela: vetada. Claude só fora da janela, e
+    // "Craude" já foi usada: #12612 passa pra próxima grafia em vez de null.
     const c = proposeIntentionalErrorCandidate(MD_WITH("O Claude e a Anthropic."), { history: HISTORY, edition: "260930" });
-    assert.equal(c, null);
+    assert.equal(c?.correct_value, "Claude");
+    assert.notEqual(c?.wrong_value, "Craude");
+    const anthropicOnly = proposeIntentionalErrorCandidate(MD_WITH("Só a Anthropic."), { history: HISTORY, edition: "260930" });
+    assert.equal(anthropicOnly, null);
   });
   it("prefere entidade inédita mesmo aparecendo depois no documento", () => {
     const history: IntentionalError[] = [
@@ -135,8 +140,8 @@ describe("#9101: invariante Stage 2/Stage 4", () => {
   });
   it("Anthropik em 260930 → violação error (caso real)", () => {
     const v = checkIntentionalErrorNotRecentRepeat(fixture(ANTHROPIK, JSONL));
-    // agrupado por campo: 1 error (grafia repetida) + 1 warning (mesma entidade)
-    assert.deepEqual(v.map((x) => x.severity), ["error", "warning"]);
+    // agrupado por campo: grafia repetida + mesma entidade, os dois error desde #12612
+    assert.deepEqual(v.map((x) => x.severity), ["error", "error"]);
     assert.ok(v.every((x) => x.rule === "intentional-error-not-recent-repeat"));
     assert.match(v[0].message, /260928/);
   });

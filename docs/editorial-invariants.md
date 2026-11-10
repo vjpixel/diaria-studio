@@ -54,7 +54,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `erro-intencional-rendered` | render-erro-intencional.ts rodou — sem placeholder literal remanescente em 02-reviewed.md (#6337, #1073) | #6337 |
 | `humanizer-ran` | humanizer rodou em 02-reviewed.md + 03-social.md (#1385) | #1385 |
 | `intentional-error-json-exists` | _internal/intentional-error.json existe — render-erro-intencional.ts inseriu o placeholder (#6337, #2284/#3222) | #6337 |
-| `intentional-error-not-recent-repeat` | erro intencional não reusa wrong_value (error) nem correct_value (warning) de edição dos últimos 30 dias em data/intentional-errors.jsonl (#9101) | #9101 |
+| `intentional-error-not-recent-repeat` | erro intencional não reusa wrong_value nem correct_value (ambos error, #12612) de edição dos últimos 30 dias em data/intentional-errors.jsonl (#9101) | #9101 |
 | `newsletter-humanizador-diff-ran` | humanizador da newsletter rodou (diff _internal/02-normalized.md vs _internal/02-humanized.md) (#6337, #1072) | #6337 |
 | `por-que-isso-importa-separate-line` | 'Por que isso importa:' em linha separada (editorial-rules) | #editorial-rules |
 | `reveal-temporal-prefix` | intentional-error.json.reveal (quando preenchido) começa com prefixo temporal reconhecido pelo renderer da edição seguinte (#6337, #6139) | #6337 |

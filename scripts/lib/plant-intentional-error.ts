@@ -15,7 +15,12 @@
  * substituído por uma declaração que não entrega a resposta.
  */
 
-import type { IntentionalErrorCandidate } from "./propose-intentional-error-candidate.ts";
+import {
+  brandKindFor,
+  brandKindLabel,
+  type BrandKind,
+  type IntentionalErrorCandidate,
+} from "./propose-intentional-error-candidate.ts";
 
 export const NARRATIVE_PLACEHOLDER = "{PREENCHER_NARRATIVA_DO_ERRO}";
 
@@ -103,15 +108,18 @@ export function plantWrongValue(md: string, section: string, correct: string, wr
 }
 
 /** Declaração da edição corrente — dá a pista (seção + tipo) sem entregar a resposta. */
-export function buildCurrentNarrative(section: string): string {
+export function buildCurrentNarrative(section: string, kind: BrandKind = "ia"): string {
   // Frase ÚNICA terminada em "." — `extractRawCurrentNarrative` captura até o
   // 1º ponto, e um rerun do render-erro-intencional reconstrói a linha a partir dela.
-  return `Nessa edição, o nome de uma marca de IA bem conhecida saiu grafado errado na seção ${section.replace(/\?$/, "")}.`;
+  // #12612: marca do 2º nível do catálogo sai como "marca de tecnologia".
+  return `Nessa edição, o nome de uma ${brandKindLabel(kind)} bem conhecida saiu grafado errado na seção ${section.replace(/\?$/, "")}.`;
 }
 
 export interface PlantResult {
   md: string;
   section: string;
+  /** Linha "Nessa edição, …" correspondente ao candidato (#12612). */
+  narrative: string;
 }
 
 /**
@@ -124,9 +132,8 @@ export function plantIntentionalError(md: string, candidate: IntentionalErrorCan
   if (!section) return null;
   const planted = plantWrongValue(md, section, candidate.correct_value, candidate.wrong_value);
   if (planted === null) return null;
+  const narrative = buildCurrentNarrative(section, brandKindFor(candidate.correct_value));
   const narrativeLineRe = new RegExp(`^.*${escapeRegExp(NARRATIVE_PLACEHOLDER)}.*$`, "m");
-  const withNarrative = narrativeLineRe.test(planted)
-    ? planted.replace(narrativeLineRe, buildCurrentNarrative(section))
-    : planted;
-  return { md: withNarrative, section };
+  const withNarrative = narrativeLineRe.test(planted) ? planted.replace(narrativeLineRe, () => narrative) : planted;
+  return { md: withNarrative, section, narrative };
 }
