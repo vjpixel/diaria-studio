@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 /**
- * scripts/check-video-before-publish.ts (#10943)
+ * scripts/check-video-before-publish.ts (#10943, gate desde #12588)
  *
- * Aviso do `/diaria-5-publicacao` (Passo 0b): o D1 vai sair com o link do
- * vídeo do dia? Lê `_internal/05-video-url.txt` e
- * `_internal/05-youtube-published.json` da edição. Miolo em
- * `lib/diaria/video-before-publish.ts`.
+ * Pré-requisito do `/diaria-5-publicacao` (Passo 0b): sem o link do vídeo no
+ * D1 (`_internal/05-video-url.txt`), sem a edição marcada sem vídeo
+ * (`_internal/no-video.json`) e sem `--skip youtube`, a Etapa 5 para ANTES do
+ * dispatch. Miolo em `lib/diaria/video-before-publish.ts`.
  *
  * Uso:
  *   npx tsx scripts/check-video-before-publish.ts AAMMDD [--edition-dir DIR]
  *
- * Saída: JSON `{status, videoUrl, warning}` no stdout; com aviso, a linha
- * `[aviso] ...` no stderr. Exit 0 SEMPRE que a checagem roda (é aviso, não
- * gate: vídeo ausente nunca bloqueia a Etapa 5). Exit 2 só para uso inválido
- * ou pasta da edição inexistente.
+ * Saída: JSON `{status, videoUrl, blocking, warning}` no stdout; com texto,
+ * a linha `[halt]` (bloqueio) ou `[aviso]` no stderr.
+ * Exit 0 = pode publicar; exit 3 = bloqueado (renderizar o halt banner com o
+ * `warning`); exit 2 = uso inválido ou pasta da edição inexistente.
  */
 
 import { existsSync } from "node:fs";
@@ -22,6 +22,8 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { assessVideoBeforePublish } from "./lib/diaria/video-before-publish.ts";
+
+export const EXIT_BLOCKED = 3;
 
 export function main(argv: string[] = process.argv.slice(2)): number {
   const { values, positional } = parseArgs(argv);
@@ -36,9 +38,9 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     return 2;
   }
   const result = assessVideoBeforePublish(dir, aammdd);
-  if (result.warning) console.error(`[aviso] ${result.warning}`);
+  if (result.warning) console.error(`[${result.blocking ? "halt" : "aviso"}] ${result.warning}`);
   console.log(JSON.stringify(result, null, 2));
-  return 0;
+  return result.blocking ? EXIT_BLOCKED : 0;
 }
 
 if (isMainModule(import.meta.url)) {

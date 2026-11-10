@@ -108,7 +108,7 @@ describe("#10657 assinatura do link (HMAC-SHA256, Web Crypto)", () => {
 describe("#10657 executor: link com assinatura, envio travado sem segredo / campo / Worker", () => {
   const cfg = resolveFollowupConfig({ enabled: true, form_url: "https://form.example/", form_responses_url: "https://form.example/api/respostas" });
   const ok = parseFollowupSnippet(`<!--\nassunto: "A"\npreview_text: "P"\n-->\nResponda: {{FORM_URL}}`);
-  const formSnippets: FollowupSnippets = { apoio30: null, apoio90: null, apoio180: null, apoio360: null, form: ok, form_lembrete: ok };
+  const formSnippets: FollowupSnippets = { apoio30: null, apoio90: null, apoio180: null, apoio360: null, form: ok, form_lembrete: ok, form_lembrete2: ok, form_lembrete3: ok };
 
   it("o link leva o e-mail CRU (sem filtro Liquid) e a assinatura do custom field form_sig", () => {
     assert.equal(FORM_SIG_KIT_FIELD, "form_sig");
@@ -587,7 +587,7 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
       const { e, puts } = env();
       const post2 = await worker.fetch(post([["email", email], ["sig", sig], ...answers()]), e);
       assert.equal(post2.status, 200, email);
-      assert.deepEqual(puts.map(([k]) => k), [`resp:${email}`], email);
+      assert.deepEqual(puts.map(([k]) => k.replace(/^(hist:[^:]+):.*$/, "$1")), [`hist:${email}`, `resp:${email}`], email);
     }
   });
 
@@ -621,7 +621,8 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
     const sig = await signFormEmail("a@x.com", SECRET);
     const res = await worker.fetch(post([["email", "a@x.com"], ["sig", sig], ...answers()]), e);
     assert.equal(res.status, 200);
-    assert.deepEqual(puts.map(([k]) => k), ["resp:a@x.com"]);
+    assert.deepEqual(puts.map(([k]) => k.replace(/^(hist:[^:]+):.*$/, "$1")), ["hist:a@x.com", "resp:a@x.com"]);
+    assert.equal(JSON.parse(puts[1][1]).form_version, 3);
   });
 
   it("POST sem assinatura, com assinatura errada ou de OUTRO e-mail: 403, log e nada no KV", async () => {
@@ -657,7 +658,7 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
       const { e, puts } = env();
       const res = await worker.fetch(post([["email", "atacante@x.com"], ["email", "vitima@x.com"], ["sig", sigAtacante], ["sig", "lixo"], ...answers()]), e);
       assert.equal(res.status, 200);
-      assert.deepEqual(puts.map(([k]) => k), ["resp:atacante@x.com"]);
+      assert.deepEqual(puts.map(([k]) => k.replace(/^(hist:[^:]+):.*$/, "$1")), ["hist:atacante@x.com", "resp:atacante@x.com"]);
     }
   });
 
@@ -686,6 +687,7 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
     const { e } = env(null);
     const res = await worker.fetch(new Request("https://form.example/api/respostas", { headers: { authorization: "Bearer tok" } }), e);
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { responses: [] });
+    // #12509: a página leva `next_cursor` (null = última).
+    assert.deepEqual(await res.json(), { responses: [], next_cursor: null });
   });
 });

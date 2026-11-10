@@ -5,7 +5,12 @@
  * está mostrando o plano do horizontal ao editor e ainda não ouviu o "pode
  * publicar" (#11741).
  *
- * Por que existe: na edição 261104 o `/diaria-5-publicacao` rodou numa sessão
+ * Desde o #12588 o marcador é só INFORMATIVO: a Etapa 5 não sobe mais vídeo
+ * (o `stage5-youtube.ts` só lê o link), então não há mais upload para segurar.
+ * Ele entra no texto do Stage 5 quando falta o link, para dizer que o plano do
+ * horizontal ficou à espera do "pode publicar".
+ *
+ * Por que existia: na edição 261104 o `/diaria-5-publicacao` rodou numa sessão
  * paralela enquanto a skill de vídeo ainda iterava a capa com o editor. O
  * `stage5-youtube.ts` achou `diaria-comentada-261104.mp4` (baixado pela skill,
  * à espera da confirmação) e subiu o horizontal às 03:50 UTC com a capa
@@ -18,14 +23,12 @@
  *   - apagado quando o vídeo passa a existir no canal: `publish-youtube.ts
  *     --upload` com registro gravado (enviado agora, já no canal, já
  *     registrado) e `link-video-d1.ts --save` (fallback do Studio);
- *   - abandono (o editor desistiu do vídeo pela skill): o Stage 5 não sobe
- *     sozinho; o editor decide com `stage5-youtube.ts --ignore-pending-approval`
- *     ou apagando o arquivo. Nunca expira por tempo: na dúvida, não publica.
- *     Desde o #12287 o hold sai em `warn` no run-log, com aviso no stderr, e
- *     o texto cita a idade do marcador e o D0 já passado.
+ *   - abandono (o editor desistiu do vídeo pela skill): sem efeito desde o
+ *     #12588 (o pré-requisito do Passo 0b barra a Etapa 5 pela falta do link,
+ *     não pelo marcador). O texto cita a idade do marcador e o D0 já passado
+ *     (#12287).
  *
- * Nada aqui lança na leitura: arquivo ilegível conta como presente (o passo do
- * Stage 5 pula o upload e manda conferir), porque o erro seguro é não subir.
+ * Nada aqui lança na leitura: arquivo ilegível conta como presente.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -82,7 +85,7 @@ export function clearPendingApproval(editionDir: string, log?: (line: string) =>
     rmSync(path, { force: true });
     return true;
   } catch (e) {
-    log?.(`[aviso] marcador ${path} não apagado (${(e as Error).message}) — o stage5-youtube.ts vai pular o upload até ele sumir (#12122)`);
+    log?.(`[aviso] marcador ${path} não apagado (${(e as Error).message}) (#12122; informativo desde o #12588)`);
     return false;
   }
 }
@@ -112,7 +115,7 @@ export function pendingApprovalStaleNote(
   return notes.length > 0 ? notes.join("; ") : null;
 }
 
-/** Texto do `detail` do Stage 5 quando o marcador segura o upload. */
+/** Texto que o Stage 5 acrescenta quando falta o link e o marcador existe (#12588: informativo). */
 export function describePendingApproval(
   read: Exclude<PendingApprovalRead, { kind: "none" }>,
   aammdd: string,
@@ -121,9 +124,9 @@ export function describePendingApproval(
   const since = read.kind === "pending" ? `desde ${read.marker.at} (${read.marker.source})` : `marcador ilegível: ${read.reason}`;
   const stale = now ? pendingApprovalStaleNote(read, aammdd, now) : null;
   return (
-    `o /diaria-publica-video está com o horizontal à espera do "pode publicar" do editor ${since} (#12122): nada baixado nem enviado. ` +
+    `o /diaria-publica-video ficou com o horizontal à espera do "pode publicar" do editor ${since} (#12122). ` +
     (stale ? `ATENÇÃO (#12287): ${stale}. ` : "") +
-    `A skill sobe o vídeo depois da confirmação. Se o vídeo pela skill foi abandonado, rodar ` +
-    `\`npx tsx scripts/stage5-youtube.ts ${aammdd} --ignore-pending-approval\` (ou apagar ${YOUTUBE_PENDING_APPROVAL_FILE})`
+    `Responder o "pode publicar" na skill (ou rodar /diaria-publica-video ${aammdd} de novo); ` +
+    `vídeo abandonado: marcar a edição sem vídeo (set-d1-no-video.ts ${aammdd})`
   );
 }

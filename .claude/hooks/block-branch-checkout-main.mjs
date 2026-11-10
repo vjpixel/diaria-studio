@@ -278,17 +278,24 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
   // delimitador que o hook não reconhece não abre heredoc nenhum.
   let pendingHeredocs = [];
   let lineSegStart = 0; // índice em `segments` do 1º segmento da linha corrente
-  let inComment = false; // `#` no início de palavra, até o fim da linha
   let i = 0;
   while (i < n) {
     const ch = command[i];
-    if (ch === "#" && !inToken) inComment = true;
+    if (ch === "#" && !inToken) {
+      // Comentário: vai até o fim da linha e nada dentro dele é tokenizado —
+      // nem aspas (#12512: `# it's ok` abria uma aspa simples que só fechava
+      // no apóstrofo do comentário seguinte, engolindo o `git checkout` das
+      // linhas do meio), nem `\` + newline (o bash não continua comentário),
+      // nem `<<` (não abre heredoc, #12286). O `\n` é tratado no laço.
+      const end = command.indexOf("\n", i);
+      i = end === -1 ? n : end;
+      continue;
+    }
     if (
       ch === "<" &&
       command[i + 1] === "<" &&
       command[i + 2] !== "<" &&
       command[i - 1] !== "<" &&
-      !inComment &&
       !insideArithmetic(command, i)
     ) {
       const open = parseHeredocOpen(command, i);
@@ -312,7 +319,6 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
       // `cat <<EOF |` + newline: o pipeline continua DEPOIS do corpo.
       const lineEndsInPipe = pipeNext && tokens.length === 0 && !inToken;
       pushSegment();
-      inComment = false;
       const keepBody =
         lineEndsInPipe ||
         !pendingHeredocs.every((h) => !h.inSubst && heredocBodyIsText(segments, pipedSegs, h.seg));
@@ -349,10 +355,7 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
     }
     if (ch === "\n" || ch === ";" || ch === "&" || ch === "|") {
       pushSegment();
-      if (ch === "\n") {
-        lineSegStart = segments.length;
-        inComment = false;
-      }
+      if (ch === "\n") lineSegStart = segments.length;
       // `|` (e `|&`) sozinho é pipe: o próximo segmento lê o stdout deste.
       if (ch === "|" && command[i + 1] !== "|") {
         pipeNext = true;

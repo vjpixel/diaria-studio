@@ -117,6 +117,29 @@ describe("#10606 contagem por e-mail e por pessoa", () => {
   });
 });
 
+describe("#12504 enviado_rascunho no last_run não vira pendente", () => {
+  it("a variante do lembrete é subconjunto de 'enviado': nem pendente nem contada de novo", () => {
+    const store = emptyStore();
+    store.followup = {
+      people: {
+        "3": { kit_subscriber_id: 3, email: "c@x.com", cadastro_at: "2026-09-20T00:00:00Z", sends: [{ step: "form_lembrete", at: "2026-10-20T12:05:00Z", lot_id: "f" }], apoia: false, form_filled_at: null },
+      },
+      lots: {},
+      last_run: {
+        at: "2026-10-20T12:10:00Z", apoio_blocked: null, form_blocked: null,
+        lots_created: 1, lots_failed: 0, over_cap: 0, lookups_failed: 0,
+        counts: { form_lembrete: { enviado: 1, enviado_rascunho: 1, espacamento: 2 } },
+      },
+      consecutive_failed_runs: 0,
+    };
+    const s = buildFollowupPanel(store).steps.find((x) => x.step === "form_lembrete")!;
+    assert.equal(s.recebidos, 1);
+    assert.equal(s.pendentes.enviado_rascunho, undefined);
+    assert.equal(s.pulados.enviado_rascunho, undefined);
+    assert.equal(s.pendentes.espacamento, 2);
+  });
+});
+
 describe("#10623 e-mail 3 da Brevo: rascunho pré-#10603 não conta como recebido", () => {
   it("campaign_created sem email3_scheduled_at fica em pendentes; com ele conta como brevo", () => {
     const store = emptyStore();

@@ -75,7 +75,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { readStore, DEFAULT_STORE_PATH, type OnboardingStore } from "./lib/onboarding-store.ts";
 import { EMAIL3_FAILURE_ALARM_THRESHOLD_RUNS } from "./lib/onboarding-state.ts";
 import {
@@ -170,7 +170,7 @@ export function toFollowupAlarmFinding(evaluation: FollowupHealthEvaluation): Al
       notRunning
         ? `Sinal: ${evaluation.reason === "rodada_ausente" ? "nenhuma rodada registrada" : `última rodada em ${evaluation.lastRunAt}`} ` +
           "com `onboarding.followup.enabled: true` (passo `followup` da task `Diaria-Onboarding-Welcome-Run`)."
-        : `Sinal: ${evaluation.consecutiveFailedRuns} rodadas \`--send\` seguidas com falha (lote falho, teto de lote, consulta ao Kit ou ao formulário).`,
+        : `Sinal: ${evaluation.consecutiveFailedRuns} rodadas \`--send\` seguidas com falha (lote falho, teto de lote, consulta ao Kit ou ao formulário, e-mail da base com falha ou parado em rascunho segurando o D+6).`,
       "",
       "Ver `followup.last_run` em `data/onboarding/store.json` e o painel `/assinantes` do Studio.",
       "",
@@ -424,7 +424,19 @@ export function evaluateContinuityRound(input: ContinuityRoundInput): Continuity
   return { transport, evaluation, kitEvaluation, followupEvaluation, evaluatedChecks, findings };
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/onboarding-continuity-alarm.ts",
+  booleans: ["dry-run"],
+  values: ["to"],
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");

@@ -87,7 +87,7 @@ import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { closeSupersededAlarmIssues, defaultAlarmGhRun, type GhRunFn } from "./lib/alarm-issues.ts";
@@ -312,7 +312,19 @@ export async function runOverStore(
   }
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/check-acquisition-health.ts",
+  booleans: ["dry-run"],
+  values: ["to", "root", "state", "config", "store-db"],
+};
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv();
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");

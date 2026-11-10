@@ -110,6 +110,7 @@ import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-d
 import { clearEstiloRegenDestaques, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
 import { planPublicImagesInvalidation, publicImagesInvalidatedWarning } from "./lib/public-images-invalidate.ts"; // #11252
 import { clearCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
+import { invalidateStage4D1Capture } from "./lib/stage4-capture-state.ts"; // #12589
 import { lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts"; // #9601
 import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-naming.ts"; // #9601
 import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
@@ -1626,6 +1627,17 @@ function main(): void {
   if (keepArt.warning) {
     console.error(`AVISO: ${keepArt.warning}`);
     (result.warnings ??= []).push(keepArt.warning);
+  }
+
+  // 8. D1 trocado: zera whatsappUrl/metaDescriptionSuggestion do §4c.1b/§4c.1c
+  // (#12589) — derivavam do D1 que acabou de sair.
+  if (demotePosition === 1) {
+    const d1Capture = invalidateStage4D1Capture(editionDir);
+    if (d1Capture.rewritten) result.modified.rewritten.push(d1Capture.rewritten);
+    if (d1Capture.message) {
+      console.error(`AVISO: ${d1Capture.message}`);
+      (result.warnings ??= []).push(d1Capture.message);
+    }
   }
 
   // -------------------------------------------------------------------------

@@ -48,6 +48,10 @@ export const BLOCK_ACTIONS = Object.freeze({
     link: null,
   }),
   kit_indisponivel: Object.freeze({ acao: "Investigar o acesso ao Kit na última rodada", link: TAREFAS_LINK }),
+  resultados_nao_publicados: Object.freeze({
+    acao: "Depois do envio da edição especial, preencher onboarding.followup.results_url e results_published_at (e os mesmos valores no wrangler.toml do formulário, #12495)",
+    link: null,
+  }),
 });
 
 const SEQUENCIA_LABEL = { apoio: "Apoio D+30/90/180/360", form: "Formulário" };
@@ -88,6 +92,8 @@ export function alertAction(alert) {
       return { acao: "Investigar falha de envio: rodar npx tsx scripts/onboarding-followup-run.ts (dry-run) e ler o erro", link: TAREFAS_LINK };
     case "cap_window_overflow":
       return { acao: "Subir onboarding.followup.max_recipients_per_lot ou grace_days em platform.config.json (#10652)", link: null };
+    case "base_invite_draft_stale":
+      return { acao: "Agendar o rascunho do e-mail da base no painel do Kit, ou apagá-lo lá e rodar onboarding-form-base-prep.ts --step reset --apply (#12517)", link: null };
     default:
       return { acao: "Investigar o alerta: ler o erro da última rodada do executor", link: TAREFAS_LINK };
   }

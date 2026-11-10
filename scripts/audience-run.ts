@@ -48,7 +48,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { parseFormResponsesPayload, type FormResponse } from "./lib/onboarding-form-contract.ts";
+import { fetchAllFormDrafts, fetchAllFormResponses, type FormDraft, type FormResponse } from "./lib/onboarding-form-contract.ts";
 import { resolveFollowupConfig, type FollowupConfigRaw } from "./lib/onboarding-followup.ts";
 import { onboardingFormToSurveyResponses, type SurveyResponseRecord } from "./lib/audience-survey-questions.ts";
 
@@ -92,13 +92,20 @@ export const LEGACY_FLAG_MESSAGE =
 /** `null` = formulário não configurado (sem `form_responses_url`). Lança em falha de leitura. */
 export type FetchFormResponsesFn = (cfg: PlatformConfig) => Promise<FormResponse[] | null>;
 
+/** #12504: rascunhos (`null` = não configurado). Lança em falha de leitura. */
+export type FetchFormDraftsFn = (cfg: PlatformConfig) => Promise<FormDraft[] | null>;
+
 /**
  * Respostas do formulário no formato de `data/audience-raw.json`. Não
  * configurado, leitura falhando ou zero respostas: ABORTA (o perfil não é
  * regenerado — um perfil sem a única fonte declarativa, sem ninguém
  * perceber, seria pior que o perfil anterior).
  */
-export async function loadOnboardingFormSurveyResponses(cfg: PlatformConfig, fetchFn: FetchFormResponsesFn): Promise<SurveyResponseRecord[]> {
+export async function loadOnboardingFormSurveyResponses(
+  cfg: PlatformConfig,
+  fetchFn: FetchFormResponsesFn,
+  fetchDraftsFn?: FetchFormDraftsFn,
+): Promise<SurveyResponseRecord[]> {
   let responses: FormResponse[] | null;
   try {
     responses = await fetchFn(cfg);
@@ -112,10 +119,33 @@ export async function loadOnboardingFormSurveyResponses(cfg: PlatformConfig, fet
       "formulário do onboarding não configurado (onboarding.followup.form_responses_url ausente) — ele é a única fonte do perfil (#10605). Perfil NÃO regenerado.",
     );
   }
-  const converted = onboardingFormToSurveyResponses(responses);
+  // #12504: rascunhos de quem não enviou entram por pergunta. Leitura que
+  // falha NÃO aborta: o perfil só das respostas enviadas segue válido (é o
+  // perfil de antes dos rascunhos), e o aviso diz o que ficou de fora.
+  let drafts: FormDraft[] = [];
+  if (fetchDraftsFn) {
+    try {
+      drafts = (await fetchDraftsFn(cfg)) ?? [];
+    } catch (e) {
+      console.error(`[audience-run] ⚠ rascunhos do formulário não lidos (${(e as Error).message}) — o perfil sai só com as respostas enviadas.`);
+    }
+  }
+  const converted = onboardingFormToSurveyResponses(responses, undefined, drafts);
+  const fromDrafts = converted.responses.filter((r) => r.draft === true).length;
+  if (fromDrafts > 0) console.error(`[audience-run] ${fromDrafts} rascunho(s) de quem não enviou contam nas perguntas que responderam (#12504).`);
   if (converted.unknownAnswers > 0) {
     console.error(
       `[audience-run] ⚠ ${converted.unknownAnswers} resposta(s) do formulário a pergunta(s) que não existem mais em FORM_QUESTIONS — descartada(s).`,
+    );
+  }
+  if (converted.legacyAnswers > 0) {
+    console.error(
+      `[audience-run] ⚠ ${converted.legacyAnswers} resposta(s) a perguntas de versões anteriores do formulário (nível, seções, inglês, preço, sugestão) — ignorada(s) no perfil.`,
+    );
+  }
+  if (converted.legacyOptionAnswers > 0) {
+    console.error(
+      `[audience-run] ⚠ ${converted.legacyOptionAnswers} opção(ões) marcada(s) que não existem mais nas perguntas atuais (respostas v1/v2 de área, formato ou tema) — ignorada(s) no perfil.`,
     );
   }
   if (converted.emptyResponses > 0) {
@@ -146,15 +176,18 @@ export async function fetchOnboardingFormResponsesReal(cfg: PlatformConfig, io: 
   if (fc.formResponsesUrl == null) return null;
   const token = env[fc.formResponsesTokenEnv];
   if (!token) throw new Error(`${fc.formResponsesTokenEnv} ausente no ambiente`);
-  const res = await fetchImpl(fc.formResponsesUrl, {
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(io.timeoutMs ?? 30_000),
-  });
-  if (!res.ok) {
-    await res.body?.cancel().catch(() => {});
-    throw new Error(`GET respostas do formulário: HTTP ${res.status}`);
-  }
-  return parseFormResponsesPayload(await res.json());
+  // #12509: segue as páginas (`next_cursor`) até a última.
+  return fetchAllFormResponses(fc.formResponsesUrl, token, { fetchImpl, timeoutMs: io.timeoutMs });
+}
+
+/** #12504: os rascunhos, com a mesma URL e o mesmo token das respostas. */
+export async function fetchOnboardingFormDraftsReal(cfg: PlatformConfig, io: FormFetchEnv = {}): Promise<FormDraft[] | null> {
+  const env = io.env ?? process.env;
+  const fc = resolveFollowupConfig(cfg.onboarding?.followup);
+  if (fc.formResponsesUrl == null) return null;
+  const token = env[fc.formResponsesTokenEnv];
+  if (!token) throw new Error(`${fc.formResponsesTokenEnv} ausente no ambiente`);
+  return fetchAllFormDrafts(fc.formResponsesUrl, token, { fetchImpl: io.fetchImpl ?? fetch, timeoutMs: io.timeoutMs });
 }
 
 export interface StepResult {
@@ -189,6 +222,8 @@ export interface AudienceRunDeps {
   readFile: (path: string) => string;
   writeFile: (path: string, content: string) => void;
   fetchFormResponses: FetchFormResponsesFn;
+  /** #12504: ausente = perfil só das respostas enviadas. */
+  fetchFormDrafts?: FetchFormDraftsFn;
 }
 
 export function productionDeps(rootDir: string = ROOT): AudienceRunDeps {
@@ -198,6 +233,7 @@ export function productionDeps(rootDir: string = ROOT): AudienceRunDeps {
     readFile: (p) => readFileSync(p, "utf8"),
     writeFile: (p, c) => writeFileSync(p, c, "utf8"),
     fetchFormResponses: (cfg) => fetchOnboardingFormResponsesReal(cfg),
+    fetchFormDrafts: (cfg) => fetchOnboardingFormDraftsReal(cfg),
   };
 }
 
@@ -223,7 +259,7 @@ export async function runAudience(argv: string[], deps: AudienceRunDeps): Promis
   }
 
   try {
-    const responses = await loadOnboardingFormSurveyResponses(cfg, deps.fetchFormResponses);
+    const responses = await loadOnboardingFormSurveyResponses(cfg, deps.fetchFormResponses, deps.fetchFormDrafts);
     const audienceRawPath = resolve(deps.rootDir, "data/audience-raw.json");
 
     if (dryRun) {

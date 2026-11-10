@@ -24,12 +24,18 @@ import type { OnboardingEntry, OnboardingStore } from "./onboarding-store.ts";
 import type { OnboardingKitLot } from "./onboarding-kit-transport.ts";
 import {
   APOIO_STEPS,
+  FORM_ANNUAL_STEPS,
+  FORM_RESULTS_STEP,
   FORM_STEPS,
+  formAnnualStepDue,
   isApoioStep,
   isFormStep,
+  isoToSec,
   kitIdForEntry,
   normalizeEmail,
+  type FollowupConfig,
   type FollowupLot,
+  type FollowupPerson,
   type FollowupRunRecord,
   type FollowupStepKind,
 } from "./onboarding-followup.ts";
@@ -57,7 +63,12 @@ export const STEP_LABELS: Record<OnboardingEmailStep, string> = {
   apoio360: "Apoio D+360",
   form: "Formulário (D+6)",
   form_base: "Pesquisa nova (e-mail único para a base)",
-  form_lembrete: "Lembrete do formulário (30 dias, até 3)",
+  form_lembrete: "Lembrete 1 do formulário (D+19, ou 30 dias na base)",
+  form_lembrete2: "Lembrete 2 do formulário (D+49, ou 30 dias na base)",
+  form_lembrete3: "Lembrete 3 do formulário (D+79, ou 30 dias na base)",
+  form_anual: "Convite anual do formulário (12 meses depois da última resposta)",
+  form_anual_lembrete: "Lembrete do convite anual (até 1)",
+  form_resultados: "Link dos resultados (respondeu depois da edição especial)",
 };
 
 export interface EmailStepCount {
@@ -101,7 +112,9 @@ export type PanelAlertKind =
   /** Lote com broadcast não agendado e não apagado (`schedule_failed`). */
   | "lot_schedule_failed"
   /** Excedente do teto de lote que não cabe na janela (#10652). */
-  | "cap_window_overflow";
+  | "cap_window_overflow"
+  /** E-mail da base parado em rascunho segurando o D+6 (#12517). */
+  | "base_invite_draft_stale";
 
 export interface PanelAlert {
   kind: PanelAlertKind;
@@ -111,12 +124,56 @@ export interface PanelAlert {
   mensagem: string;
 }
 
+/** #12490: reenvio anual do formulário, contado do store. */
+export interface AnnualResendSummary {
+  /** Devidos hoje no convite anual (respondeu há 12 meses ou mais, sem convite desde então). */
+  elegiveis: number;
+  /** Pessoas que já receberam ao menos um convite anual. */
+  convidados: number;
+  /** Convidados que responderam de novo depois do 1º convite anual. */
+  responderamDeNovo: number;
+}
+
 export interface FollowupPanelView {
   steps: EmailStepCount[];
   people: PersonRow[];
   alerts: PanelAlert[];
-  blocked: { apoio: FollowupRunRecord["apoio_blocked"]; form: FollowupRunRecord["form_blocked"] };
+  blocked: {
+    apoio: FollowupRunRecord["apoio_blocked"];
+    form: FollowupRunRecord["form_blocked"];
+    /** #12490/#12495: só informativos no painel (não viram item de ação: o
+     *  texto do anual fica pendente por meses de propósito). Opcionais:
+     *  payload de servidor anterior aos campos não os traz. */
+    annual?: FollowupRunRecord["form_annual_blocked"] | null;
+    results?: FollowupRunRecord["form_results_blocked"] | null;
+  };
+  /** #12490: opcional pelo mesmo motivo. */
+  annual?: AnnualResendSummary;
   lastRunAt: string | null;
+}
+
+/**
+ * @pure — #12490: quantos estão elegíveis ao convite anual agora, quantos já
+ * foram convidados e quantos destes responderam de novo. "Elegível" usa a
+ * mesma regra do executor (`formAnnualStepDue`) com o config da rodada; a
+ * checagem de "ativo" acontece perto do envio, então quem saiu do Kit sem
+ * ter sido checado ainda aparece aqui.
+ */
+export function summarizeAnnualResend(
+  people: Readonly<Record<string, FollowupPerson>>,
+  nowSec: number,
+  cfg: Pick<FollowupConfig, "formAnnualDays" | "formAnnualReminderMax" | "formReminderDays">,
+): AnnualResendSummary {
+  const out: AnnualResendSummary = { elegiveis: 0, convidados: 0, responderamDeNovo: 0 };
+  for (const p of Object.values(people)) {
+    if (formAnnualStepDue(p, nowSec, cfg).due === "form_anual") out.elegiveis++;
+    const invites = (p.sends ?? []).filter((s) => s.step === "form_anual").map((s) => isoToSec(s.at)).filter((s): s is number => s != null);
+    if (invites.length === 0) continue;
+    out.convidados++;
+    const filled = isoToSec(p.form_filled_at ?? null);
+    if (filled != null && filled > Math.min(...invites)) out.responderamDeNovo++;
+  }
+  return out;
 }
 
 function emptyCount(step: OnboardingEmailStep, daUltimaRodada = false): EmailStepCount {
@@ -163,7 +220,12 @@ function email3Received(entry: OnboardingEntry, lotsById: ReadonlyMap<string, On
  */
 export function buildFollowupPanel(
   store: Pick<OnboardingStore, "entries" | "kit_transport" | "followup" | "consecutive_email3_failures" | "last_email3_error">,
-  opts: { apoiaByEmail?: (email: string) => boolean | null } = {},
+  opts: {
+    apoiaByEmail?: (email: string) => boolean | null;
+    /** #12490: agora (epoch s) e config do reenvio anual; padrão = relógio e 365/1/30. */
+    nowSec?: number;
+    annualCfg?: Pick<FollowupConfig, "formAnnualDays" | "formAnnualReminderMax" | "formReminderDays">;
+  } = {},
 ): FollowupPanelView {
   const entries = Object.values(store.entries).filter((e) => !e.subscription_id.startsWith(PILOT_SUBSCRIPTION_PREFIX));
   const kitLots = Object.values(store.kit_transport?.lots ?? {}).filter((l) => !isPilotLot(l));
@@ -211,7 +273,12 @@ export function buildFollowupPanel(
   // --- Sequências de apoio/formulário (#10604/#10605) ---
   const people = followup.people ?? {};
   const fLots = Object.values(followup.lots ?? {}) as FollowupLot[];
-  const followupSteps = [...APOIO_STEPS.map((s) => s.kind), ...FORM_STEPS.map((s) => s.kind)];
+  const followupSteps = [
+    ...APOIO_STEPS.map((s) => s.kind),
+    ...FORM_STEPS.map((s) => s.kind),
+    ...FORM_ANNUAL_STEPS.map((s) => s.kind),
+    FORM_RESULTS_STEP.kind,
+  ];
   const followupCounts = new Map<FollowupStepKind, EmailStepCount>(followupSteps.map((k) => [k, emptyCount(k, true)] as const));
   for (const p of Object.values(people)) {
     for (const s of p.sends ?? []) {
@@ -239,7 +306,8 @@ export function buildFollowupPanel(
       // `enviado`/`falhou` já contados pelos registros; `apoia`/`nao_ativo` vêm dos pulos gravados.
       // `excede_janela` (#10652) é projeção sobre quem já está em `adiado_teto` —
       // somar dobraria a contagem; aparece como alerta.
-      if (motivo === "enviado" || motivo === "falhou" || motivo === "apoia" || motivo === "nao_ativo" || motivo === "excede_janela") continue;
+      // `enviado_rascunho` (#12504) é subconjunto de `enviado` (a variante do lembrete): já contado.
+      if (motivo === "enviado" || motivo === "enviado_rascunho" || motivo === "falhou" || motivo === "apoia" || motivo === "nao_ativo" || motivo === "excede_janela") continue;
       bump(TERMINAL_RUN_MOTIVOS.has(motivo) ? c.pulados : c.pendentes, motivo, n);
     }
   }
@@ -308,6 +376,15 @@ export function buildFollowupPanel(
       mensagem: `excedente do teto de lote não cabe na janela — estimativa de vencimento sem envio: ${perda} (subir max_recipients_per_lot ou grace_days)`,
     });
   }
+  // #12517: rascunho do e-mail da base parado com D+6 suspenso — já na 1ª rodada.
+  if ((lastRun?.base_invite_draft_stale ?? 0) > 0) {
+    const inv = followup.base_invite;
+    alerts.push({
+      kind: "base_invite_draft_stale",
+      etapa: "E-mail da base (formulário)",
+      mensagem: `rascunho${inv?.broadcast_id != null ? ` (broadcast ${inv.broadcast_id})` : ""} parado desde ${inv?.created_at?.slice(0, 10) ?? "?"}: ${lastRun!.base_invite_draft_stale} destinatário(s) com o D+6 suspenso até ele sair`,
+    });
+  }
   for (const lot of [...kitLots, ...fLots]) {
     if (lot.schedule_failed === true && lot.status !== "cancelled") {
       const step = lot.kind in STEP_LABELS ? (lot.kind as OnboardingEmailStep) : undefined;
@@ -319,7 +396,17 @@ export function buildFollowupPanel(
     steps: [c1, c2, c3, ...followupSteps.map((k) => followupCounts.get(k)!)],
     people: peopleRows,
     alerts,
-    blocked: { apoio: lastRun?.apoio_blocked ?? null, form: lastRun?.form_blocked ?? null },
+    blocked: {
+      apoio: lastRun?.apoio_blocked ?? null,
+      form: lastRun?.form_blocked ?? null,
+      annual: lastRun?.form_annual_blocked ?? null,
+      results: lastRun?.form_results_blocked ?? null,
+    },
+    annual: summarizeAnnualResend(
+      people,
+      opts.nowSec ?? Math.floor(Date.now() / 1000),
+      opts.annualCfg ?? { formAnnualDays: 365, formAnnualReminderMax: 1, formReminderDays: 30 },
+    ),
     lastRunAt: lastRun?.at ?? null,
   };
 }

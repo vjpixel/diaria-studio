@@ -91,7 +91,8 @@ describe("regra A: lembrete para os dois convites, teto de 3, convite registrado
 
   it("o teto conta os lembretes, não o convite; formReminderMax configurável", () => {
     const p = person({ sends: [{ step: "form", at: iso(T0), lot_id: "a" }, { step: "form_lembrete", at: iso(T0 + 30 * DAY), lot_id: "b" }] });
-    assert.deepEqual(formStepDue(T0, T0 + 60 * DAY, p, cfg), { due: "form_lembrete" });
+    // v3: o 2º lembrete do convite do onboarding é o 2º texto, em D+49 da âncora.
+    assert.deepEqual(formStepDue(T0, T0 + 60 * DAY, p, cfg), { due: "form_lembrete2" });
     assert.deepEqual(formStepDue(T0, T0 + 60 * DAY, p, { ...cfg, formReminderMax: 1 }), { due: null, motivo: "teto_lembretes" });
   });
 
@@ -334,7 +335,7 @@ describe("onboarding-form-base-prep: rascunho no Kit", () => {
     const f = fakeDeps(await rowsWithSigs(3, [1, 3]));
     const r = await runBaseDraft(opts, f.deps);
     assert.deepEqual([r.audience, r.recipients, r.excluded.sem_assinatura], [3, 2, 1]);
-    assert.match(r.subject, /pesquisa nova/);
+    assert.match(r.subject, /decidir o que vem por aí/);
     assert.deepEqual(f.calls, ["list"]);
     assert.equal(readStore(storePath).store.followup?.base_invite, undefined);
   });

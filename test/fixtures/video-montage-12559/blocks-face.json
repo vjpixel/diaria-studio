@@ -1,0 +1,12 @@
+{
+  "edition": "261110",
+  "framing": { "faceX": 0.48, "eyeY": 0.54 },
+  "blocks": {
+    "comentario": [
+      { "text": "o nubank lançou um assistente" },
+      { "text": "e isso muda a conta", "framing": { "faceX": 0.4, "eyeY": 0.5 } }
+    ],
+    "fecho": [{ "text": "até amanhã" }]
+  },
+  "vocabulary": [{ "pattern": "nu bank", "replacement": "Nubank", "flags": "gi" }]
+}

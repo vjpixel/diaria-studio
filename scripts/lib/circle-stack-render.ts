@@ -7,10 +7,10 @@
  * `data/weekly/{cycle}/_internal/circle-stack-selection.json`).
  *
  * Estrutura (#11186): título = título do D1 · abertura (resumo da semana com
- * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · Destaques da semana (título com link da fonte, corpo e
+ * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · vídeo mais assistido
+ * da semana, se medido (#12081), com descrição opcional · Destaques da semana (título com link da fonte, corpo e
  * "Por que isso importa:" iguais aos da edição diária) · Lançamentos · Use melhor · Radar ·
- * Outros destaques da semana (só o que não apareceu acima) · vídeo mais assistido
- * da semana, se medido (#12081) · última linha ("Assine a diar.ia.br. Chega de segunda a
+ * Outros destaques da semana (só o que não apareceu acima; o e-mail omite, #12550) · última linha ("Assine a diar.ia.br. Chega de segunda a
  * sexta...", link e fecho na mesma linha).
  *
  * Sem capa por destaque: o contrato do webhook da Stack não aceita imagem no
@@ -41,7 +41,8 @@ export const CIRCLE_STACK_SUBSCRIBE_BASE_URL = "https://diar.ia.br";
 export type CircleStackUtmContent = "edicao" | "cta-fim" | "video";
 
 /** #12081: começo da linha do vídeo mais visto da semana (link no título do vídeo). */
-export const CIRCLE_STACK_VIDEO_LEAD = "Vídeo mais assistido da semana no canal da diar.ia.br:";
+/** Título da seção do vídeo: segue o formato das demais (## seção, ### título com link, parágrafo). */
+export const CIRCLE_STACK_VIDEO_LEAD = "## Vídeo mais assistido da semana";
 
 /**
  * Abertura de reserva: só entra quando nenhum destaque rende uma frase de
@@ -119,6 +120,17 @@ export interface CircleStackVideo {
   url: string;
   editionDate: string;
   views?: number;
+  /** Texto curto sobre o que o vídeo entrega ao público (pedido do editor, 09/11/2026); opcional, editável à mão. */
+  description?: string;
+}
+
+/** #12538: canal de distribuição do post além do Circle (ver `CircleStackRenderOptions.channel`). */
+export interface CircleStackChannel {
+  utmSource: string;
+  utmMedium: string;
+  omitSubscribeCta?: boolean;
+  /** Tira a seção "Outros destaques da semana" (pedido do editor, 09/11/2026, #12550): o e-mail aos apoiadores não a leva. */
+  omitOtherHighlights?: boolean;
 }
 
 export interface CircleStackRenderOptions {
@@ -126,6 +138,14 @@ export interface CircleStackRenderOptions {
   closing?: string;
   /** Link de assinatura alternativo (ex: link rastreado da própria Stack). Sem UTM adicionada se informado. */
   subscribeUrl?: string;
+  /**
+   * #12538: canal do mesmo post fora do Circle (e-mail Kit aos apoiadores
+   * Núcleo). Troca `utm_source`/`utm_medium` pelos do canal nos links que
+   * levam UTM (edição e vídeo; `utm_campaign`/`utm_content` ficam) e, com
+   * `omitSubscribeCta`, tira a última linha "Assine a diar.ia.br" — quem
+   * recebe já é assinante e apoiador. Ausente = Circle, como sempre.
+   */
+  channel?: CircleStackChannel;
 }
 
 export interface CircleStackRendered {
@@ -138,11 +158,16 @@ export function circleStackCampaign(cycle: string): string {
   return `stack-${cycle}`;
 }
 
-/** Pure: adiciona o triplo UTM do canal + `utm_content`. */
-export function buildCircleStackUrl(baseUrl: string, cycle: string, content: CircleStackUtmContent): string {
+/** Pure: adiciona o triplo UTM do canal + `utm_content`. `channel` troca source/medium (#12538). */
+export function buildCircleStackUrl(
+  baseUrl: string,
+  cycle: string,
+  content: CircleStackUtmContent,
+  channel?: Pick<CircleStackChannel, "utmSource" | "utmMedium">,
+): string {
   const u = new URL(baseUrl);
-  u.searchParams.set("utm_source", CIRCLE_STACK_UTM_SOURCE);
-  u.searchParams.set("utm_medium", CIRCLE_STACK_UTM_MEDIUM);
+  u.searchParams.set("utm_source", channel?.utmSource ?? CIRCLE_STACK_UTM_SOURCE);
+  u.searchParams.set("utm_medium", channel?.utmMedium ?? CIRCLE_STACK_UTM_MEDIUM);
   u.searchParams.set("utm_campaign", circleStackCampaign(cycle));
   u.searchParams.set("utm_content", content);
   return u.toString();
@@ -261,6 +286,16 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     DEFAULT_CIRCLE_STACK_OPENING;
   blocks.push(...paragraphs(opening));
 
+  // #12081: o vídeo mais assistido da semana, como seção (## / ### com link / descrição), logo depois da abertura e antes dos destaques
+  // (pedido do editor, 09/11/2026; antes ficava antes do CTA final).
+  if (sel.video && sel.video.url.trim() && sel.video.title.trim()) {
+    blocks.push(
+      CIRCLE_STACK_VIDEO_LEAD,
+      `### ${link(buildCircleStackUrl(sel.video.url, sel.cycle, "video", opts.channel), sel.video.title)}`,
+    );
+    if (sel.video.description?.trim()) blocks.push(...paragraphs(sel.video.description));
+  }
+
   blocks.push(`## Destaques da semana`);
   for (const h of sel.destaques) {
     // Título com link para a fonte, como na newsletter; sem "Leia na fonte"/"Na edição de" (pedido do editor, 23/10/2026).
@@ -290,12 +325,12 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
   const others = sel.weeklyEditions
     .map((e) => ({ e, titles: e.destaques.map((t) => String(t).replace(/\s+/g, " ").trim()).filter((t) => t && !shown.has(norm(t))) }))
     .filter((x) => x.titles.length > 0);
-  if (others.length > 0) {
+  if (others.length > 0 && !opts.channel?.omitOtherHighlights) {
     blocks.push(`## Outros destaques da semana`);
     for (const { e, titles } of others) {
       // Sem negrito em volta: o conversor do webhook da Stack não reconhece link dentro de **…**
       // e publica o Markdown cru (achado ao vivo, post de 23/10/2026).
-      blocks.push(link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate)));
+      blocks.push(link(buildCircleStackUrl(e.url, sel.cycle, "edicao", opts.channel), ddmm(e.editionDate)));
       blocks.push(titles.map((t) => `- ${t}`).join("\n"));
     }
   }
@@ -304,15 +339,13 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
   // Última linha do post: link de assinatura + ÚLTIMO parágrafo do fecho (pedido do editor, 23/10/2026).
   // Parágrafos anteriores do fecho (só com --closing-file de várias linhas) vêm antes, para o CTA
   // continuar sendo a última linha. `paragraphs()` nunca devolve vazio aqui (o default cobre fecho vazio).
-  // #12081: o vídeo mais assistido da semana, numa linha, antes do CTA final.
-  if (sel.video && sel.video.url.trim() && sel.video.title.trim()) {
-    blocks.push(`${CIRCLE_STACK_VIDEO_LEAD} ${link(buildCircleStackUrl(sel.video.url, sel.cycle, "video"), sel.video.title)}`);
-  }
+  const title = circleStackTitle(sel.contentWindow, sel.destaques[0]?.title);
+  if (opts.channel?.omitSubscribeCta) return { title, markdown: blocks.join("\n\n") };
 
   const subscribeHref = opts.subscribeUrl?.trim() || buildCircleStackUrl(CIRCLE_STACK_SUBSCRIBE_BASE_URL, sel.cycle, "cta-fim");
   const closingParas = paragraphs(opts.closing?.trim() || DEFAULT_CIRCLE_STACK_CLOSING);
   const closingLast = closingParas.pop() as string;
   blocks.push(...closingParas, `${link(subscribeHref, CTA_FIM_LABEL)}. ${closingLast}`);
 
-  return { title: circleStackTitle(sel.contentWindow, sel.destaques[0]?.title), markdown: blocks.join("\n\n") };
+  return { title, markdown: blocks.join("\n\n") };
 }

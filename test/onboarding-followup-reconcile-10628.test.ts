@@ -34,7 +34,7 @@ function snip(withPlaceholder = false) {
   return parseFollowupSnippet(`<!--\nassunto: "Assunto"\npreview_text: "Prev"\n-->\nCorpo${withPlaceholder ? " {{FORM_URL}}" : ""}`);
 }
 const apoioOnly: FollowupSnippets = { apoio30: snip(), apoio90: snip(), apoio180: snip(), apoio360: snip(), form: null, form_lembrete: null };
-const formOnly: FollowupSnippets = { apoio30: null, apoio90: null, apoio180: null, apoio360: null, form: snip(true), form_lembrete: snip(true) };
+const formOnly: FollowupSnippets = { apoio30: null, apoio90: null, apoio180: null, apoio360: null, form: snip(true), form_lembrete: snip(true), form_lembrete2: snip(true), form_lembrete3: snip(true) };
 
 function tempStore(seed?: (s: ReturnType<typeof emptyStore>) => void): string {
   const p = join(mkdtempSync(join(tmpdir(), "followup-10628-")), "store.json");

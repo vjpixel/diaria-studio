@@ -32,3 +32,15 @@ id = "b40a817cabd547f68a360300a3f41f39"
 
 [observability]
 enabled = true
+
+# #12495 — resultados da pesquisa (edição especial para quem respondeu,
+# decisão do editor de 09/11/2026). Vazios = página de obrigado genérica.
+# Depois do envio da edição especial, o editor preenche os DOIS com os mesmos
+# valores de onboarding.followup.results_url/results_published_at no
+# platform.config.json (o executor manda o e-mail com o link a quem responder
+# depois; test/onboarding-form-results-12495.test.ts trava os dois iguais).
+# RESULTS_URL = versão web restrita (fora da busca); RESULTS_PUBLISHED_AT =
+# instante ISO do envio da edição especial.
+[vars]
+RESULTS_URL = ""
+RESULTS_PUBLISHED_AT = ""
