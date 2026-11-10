@@ -88,11 +88,11 @@ import { isNodeTestContext } from "./lib/test-context-guard.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-function loadSocialConfig(): Record<string, unknown> | null {
-  const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")) as {
+/** #12748: o config inteiro, para o horário do D1 já desviado do vertical (`d1SocialSlotAt`). */
+function loadPlatformConfig(): { publishing?: { social?: Record<string, unknown> } } {
+  return JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")) as {
     publishing?: { social?: Record<string, unknown> };
   };
-  return cfg.publishing?.social ?? null;
 }
 
 function readPublishedEntries(dir: string): { entries: D1PostEntryLike[]; source: string | null } {
@@ -224,7 +224,10 @@ async function main(): Promise<number> {
   const gate = gateVideoLink({
     videoUrl,
     record,
-    d1SlotAt: d1SocialSlotAt(aammdd, loadSocialConfig()),
+    d1SlotAt: (() => {
+      const cfg = loadPlatformConfig();
+      return d1SocialSlotAt(aammdd, cfg.publishing?.social ?? null, cfg);
+    })(),
     newsletterSendAt: send.at,
   });
   if (gate.warning) console.error(`[aviso] ${gate.warning} (envio do D1: ${send.source})`);

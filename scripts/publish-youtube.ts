@@ -1171,7 +1171,7 @@ function loadD1SlotAt(aammdd: string): Date | null {
     const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")) as {
       publishing?: { social?: Record<string, unknown> };
     };
-    return d1SocialSlotAt(aammdd, cfg.publishing?.social ?? null);
+    return d1SocialSlotAt(aammdd, cfg.publishing?.social ?? null, cfg);
   } catch (e) {
     console.error(`[aviso] horário do D1 não derivado (${(e as Error).message}) — só vídeo público vira link no D1`);
     return null;
