@@ -29,6 +29,7 @@
  */
 
 import { corteSuffixOf, videoTargetOf } from "./drive-video-source.ts";
+import { ctaCardClipItem, type CtaCardAsset } from "./video-cta-card.ts";
 import {
   coverScalePct,
   displaySize,
@@ -1148,9 +1149,13 @@ export type BlockKey = (typeof BLOCK_KEYS)[number];
  * Blocos que a sequência pode não ter sem virar "falta no blocks.json"
  * (#12093). O `gancho` (a 1ª frase do resumo, que abre o horizontal antes do
  * "Olá, eu sou o Pixel") é proposto pela decupagem; um `blocks.json` anterior a
- * ele segue montando, com `[aviso]` no build.
+ * ele segue montando, com `[aviso]` no build. Desde o #12571 os CTAs falados
+ * (`cta_yt`, `cta_vertical` e os legados `cta_ig`/`cta_out`) também: o CTA
+ * padrão é o card no fim de todas as sequências (decisão do editor,
+ * 09/11/2026); o falado, se gravado, continua entrando antes do fecho.
  */
-export const OPTIONAL_BLOCKS: readonly BlockKey[] = ["gancho"];
+export const CTA_BLOCKS: readonly BlockKey[] = ["cta_yt", "cta_vertical", "cta_ig", "cta_out"];
+export const OPTIONAL_BLOCKS: readonly BlockKey[] = ["gancho", ...CTA_BLOCKS];
 
 export function isBlockKey(k: string): k is BlockKey {
   return (BLOCK_KEYS as readonly string[]).includes(k);
@@ -1298,6 +1303,11 @@ export interface SequenceSpec {
    */
   hook?: string;
   /**
+   * #12571: a linha de compartilhar do card de CTA DESTA sequência (um corte
+   * tem outro tema); sobrepõe o `ctaShare` do arquivo. Mesmo formato dele.
+   */
+  ctaShare?: string;
+  /**
    * Encaixe dos clipes desta sequência (#12559): `fill` recorta pelo rosto (o
    * de sempre), `fit` mostra o quadro inteiro com faixas, `blur-fill` põe o
    * quadro inteiro sobre o mesmo trecho desfocado. Ausente = `fill`, menos
@@ -1409,6 +1419,17 @@ export interface BlocksFile {
    * (`02-reviewed.md`), para a versão curta que cabe na tela. "" = sem título.
    */
   screenTitle?: string;
+  /**
+   * #12571: card de CTA no fim de todas as sequências (o CTA padrão desde
+   * 09/11/2026). Ausente/true = com card; `false` = sem card (só o CTA falado).
+   */
+  ctaCard?: boolean;
+  /**
+   * #12571: a linha de compartilhar do card ("Compartilhe com quem usa o
+   * ChatGPT", ou só "quem usa o ChatGPT"); ausente = "Compartilhe com quem se
+   * interessa por IA". A sequência pode sobrepor com o `ctaShare` dela.
+   */
+  ctaShare?: string;
   /**
    * Bruto em vários arquivos (#12559): overrides por arquivo (chave = `id` do
    * `source.json`). `framing` vale para os clipes daquele arquivo (o item ainda
@@ -1541,6 +1562,8 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
   }
   if (raw.verticalTargetS !== undefined && !(isNum(raw.verticalTargetS) && raw.verticalTargetS > 0)) errors.push("verticalTargetS precisa ser um número de segundos maior que 0");
   if (raw.screenTitle !== undefined && typeof raw.screenTitle !== "string") errors.push('screenTitle precisa ser texto ("" = sem título na vertical)');
+  if (raw.ctaCard !== undefined && typeof raw.ctaCard !== "boolean") errors.push("ctaCard precisa ser true ou false (false = sem o card de CTA no fim, #12571)");
+  if (raw.ctaShare !== undefined && typeof raw.ctaShare !== "string") errors.push("ctaShare precisa ser texto (a linha de compartilhar do card de CTA, #12571)");
   if (raw.holdBlocks !== undefined) {
     if (!Array.isArray(raw.holdBlocks) || raw.holdBlocks.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push("holdBlocks precisa listar blocos conhecidos");
   }
@@ -1575,6 +1598,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
           else if (s.corte === undefined) errors.push(`${label}: ${k} só vale numa sequência de corte (a vertical da edição usa o screenTitle do arquivo e o D1)`);
         }
         if (typeof s.hook === "string" && !s.hook.trim()) errors.push(`${label}: hook vazio (omita para usar o resumo_curto)`);
+        if (s.ctaShare !== undefined && typeof s.ctaShare !== "string") errors.push(`${label}: ctaShare precisa ser texto (#12571)`);
         if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${label}: sem name`);
         else if (typeof s.corte === "string") {
           if (corteSuffixOf(s.name) !== s.corte) errors.push(`${label}: o nome "${s.name}" de um corte precisa terminar em _V{n}-${s.corte}`);
@@ -3243,6 +3267,12 @@ export function buildXmeml(
     mediaPaths?: readonly string[];
     /** #12559: framing por arquivo do `blocks.json` (`files.{id}.framing`). */
     fileOverrides?: BlocksFile["files"];
+    /**
+     * #12571: o card de CTA de cada sequência (chave = `sequenceKey`), no fim
+     * da V1, depois do último clipe; a `<duration>` da sequência soma o card.
+     * Ausente (ou sem a chave) = sequência sem card.
+     */
+    ctaCard?: Readonly<Record<string, CtaCardAsset>> | null;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
@@ -3351,6 +3381,9 @@ export function buildXmeml(
         : "",
     };
   };
+  // #12571: um `<file>` por MP4 do card (vertical e horizontal são arquivos diferentes), definido no 1º uso.
+  const cardFileIds = new Map<string, string>();
+  const ctaCardOf = (plan: SequencePlan): CtaCardAsset | null => opts.ctaCard?.[sequenceKey(plan.spec)] ?? null;
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE xmeml>", '<xmeml version="4">'];
   plans.forEach((plan, si) => {
     const { spec } = plan;
@@ -3383,11 +3416,18 @@ export function buildXmeml(
         `<clipitem id="a${cid}">${audioHead}${audioFileEl(k)}<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${links}</clipitem>`,
       );
     });
+    const card = ctaCardOf(plan);
+    if (card) {
+      const known = cardFileIds.get(card.xmlPath);
+      const fileId = known ?? (cardFileIds.size === 0 ? "file-cta-card" : `file-cta-card-${cardFileIds.size + 1}`);
+      cardFileIds.set(card.xmlPath, fileId);
+      v.push(ctaCardClipItem({ asset: card, startFrame: plan.durationFrames, rate, id: `cta-card-${si + 1}`, fileId, fileDefined: known !== undefined, pathurl: pathUrl(card.xmlPath) }));
+    }
     const bgTrack = bg.length ? `<track>${bg.join("\n")}</track>` : "";
     const titleTrack = screenTitleTrack(plan, si);
     const vin = vinhetaTracks(plan, si);
     out.push(
-      `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
+      `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames + (card?.frames ?? 0)}</duration>\n` +
         `${rate}\n` +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
         `${bgTrack}<track>${v.join("\n")}</track>${titleTrack}${vin.video}</video>\n` +

@@ -131,7 +131,10 @@
  *       ou palavras do roteiro interpoladas + ouvidas descartadas acima de 10% do roteiro (export
  *       reeditado depois do build). `--heard-text` faz a legenda pela fala do export (grafia e
  *       pontuação do roteiro onde casa); aí só a legenda vazia recusa.
- *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}]   (default a vertical da edição; sempre refaz)
+ *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--no-subs]   (default a vertical da edição; sempre refaz)
+ *       (#12579) sem SRT, ou com SRT mais velho que o build da sequência, sai sem legenda com
+ *       [aviso] (não recusa): as legendas vêm depois da aprovação das prévias; --no-subs tira a
+ *       legenda mesmo com SRT em dia. (#12571) o card de CTA do XML entra no fim da prévia.
  *   review AAMMDD [--seq youtube|instagram|outras-redes|{corte}]    (default a vertical da edição; sempre refaz)
  *       `--seq youtube` (#12096): a prévia do horizontal, 960x540, com o recorte de cada clipe
  *       pelo mesmo `framingFor` do XML (`previewCropFor`), a legenda do horizontal queimada e o
@@ -244,6 +247,7 @@ import {
   mapWordsToSequence,
   trimWordsToSilences,
   isVerticalSpec,
+  CTA_BLOCKS,
   offsetTranscript,
   subWindows,
   parseBlocksFile,
@@ -325,6 +329,7 @@ import {
   type InventoryRow,
 } from "./lib/diaria/video-multi-source.ts";
 import { assemblySegments, edgeFindings, edgeLine, longPauses, parseXmlAudio, sequenceCutsS, toTimeline, xmlPlanIssues, xmlStructureIssues } from "./lib/diaria/video-xml-verify.ts";
+import { CTA_CARD, ctaCardFileName, ctaCardFrames, ctaCardOrientation, ctaCardPreviewClipArgs, ctaCardRenderArgs, ctaCardSvg, ctaCardXmlIssues, ctaShareLine, type CtaCardAsset } from "./lib/diaria/video-cta-card.ts";
 import { applyItemFramings, FACE_SAMPLE_FRACTIONS, gazeMarks, itemFramings, type FrameDetection } from "./lib/diaria/video-face.ts";
 import {
   alternativesFromDecupagem,
@@ -966,6 +971,8 @@ export interface XmlBuildOptions {
   /** #12163: o título da vertical (do blocks.json ou do D1) e o de cada corte, como o `buildXmeml` recebe. Só entra no hash o título que a sequência de fato leva. */
   screenTitle?: ScreenTitleXml | null;
   screenTitleByCorte?: Readonly<Record<string, ScreenTitleXml | null>>;
+  /** #12571: o card de CTA de cada sequência (chave = `sequenceKey`), como o `buildXmeml` recebe; só entra no hash o card que a sequência leva. */
+  ctaCard?: Readonly<Record<string, CtaCardAsset>> | null;
 }
 
 /** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
@@ -1009,12 +1016,19 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(opts.mediaPath !== undefined ? { mediaPath: opts.mediaPath } : {}),
         ...(typeof opts.gainDb === "number" ? { gainDb: opts.gainDb } : {}),
         ...(title ? { screenTitle: title } : {}),
+        ...(opts.ctaCard?.[sequenceKey(plan.spec)] ? { ctaCard: ctaCardHashPart(opts.ctaCard[sequenceKey(plan.spec)]) } : {}),
       }),
     )
     .update("\0plan\0")
     .update(JSON.stringify({ spec, clips: plan.clips, durationFrames: plan.durationFrames }))
     .digest("hex")
     .slice(0, 16);
+}
+
+/** #12571: o que do card muda o XML (o caminho no XML, o tamanho e os quadros); o caminho local da prévia fica fora. */
+function ctaCardHashPart(c: CtaCardAsset): Omit<CtaCardAsset, "path"> {
+  const { path: _path, ...rest } = c;
+  return rest;
 }
 
 function planHash(ctx: Ctx, blocksText: string): string {
@@ -1137,6 +1151,8 @@ export interface SequenceXmlVersion {
 export interface SequenceXmlAssets {
   treatedAudio?: TreatedAudio;
   vinheta?: VinhetaAsset;
+  /** #12571: o card de CTA que o XML desta sequência levou no fim da V1 (a prévia o acrescenta igual). */
+  ctaCard?: CtaCardAsset;
 }
 
 /**
@@ -2022,14 +2038,17 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     const key = sequenceKey(plan.spec);
     const xmlPath = join(ctx.outDir, xmlFileName(plan.spec.name));
     if (!existsSync(xmlPath)) throw new Error(`verify-xml: ${xmlPath} ausente (rode build)`);
-    const parsed = parseXmlAudio(readFileSync(xmlPath, "utf8"));
+    const xmlText = readFileSync(xmlPath, "utf8");
+    const parsed = parseXmlAudio(xmlText);
     const { clips, errors } = toTimeline(parsed, offsets);
-    const issues = [...errors, ...xmlStructureIssues(parsed.clips), ...xmlPlanIssues(parsed, { clips: plan.clips.length, durationFrames: plan.durationFrames })];
+    // #12571: o card de CTA no fim da V1 (sem áudio): logo depois da fala, com a duração do plano.
+    const cardFrames = pf.xmlAssets?.[key]?.ctaCard?.frames ?? null;
+    const issues = [...errors, ...xmlStructureIssues(parsed.clips), ...xmlPlanIssues(parsed, { clips: plan.clips.length, durationFrames: plan.durationFrames }), ...ctaCardXmlIssues(xmlText, { durationFrames: plan.durationFrames, cardFrames })];
     if (parsed.timebase !== pf.source.fps || parsed.ntsc) issues.push(`timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""} diferente dos ${pf.source.fps} fps do bruto`);
     const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thr, undefined, isMultiSource(pf.source) ? fileBounds(pf.source) : undefined);
     const cut = edges.filter((e) => e.cutIn || e.cutOut);
     const durS = (parsed.clips[parsed.clips.length - 1]?.end ?? 0) / parsed.rate;
-    console.log(`== ${basename(xmlPath)}: timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""}, ${clips.length} clipes, ${durS.toFixed(2)} s (plano: ${(plan.durationFrames / pf.source.fps).toFixed(2)} s)`);
+    console.log(`== ${basename(xmlPath)}: timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""}, ${clips.length} clipes, ${durS.toFixed(2)} s (plano: ${(plan.durationFrames / pf.source.fps).toFixed(2)} s)${cardFrames ? ` + card de CTA ${(cardFrames / pf.source.fps).toFixed(2)} s sem fala` : ""}`);
     for (const x of issues) console.log(`[erro] ${x}`);
     for (const e of edges) console.log(edgeLine(e, clockTime));
     let findings: ReviewFinding[] = [];
@@ -2178,7 +2197,9 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
     const t = verticalTargetCheck(p, resolved, source.fps, { targetS: file.verticalTargetS, silences: sil });
     if (t) console.error(`[aviso] ${verticalTargetWarning(p.spec.name, t)}`);
   }
-  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil });
+  // #12571: cada versão fecha com o card de CTA (salvo ctaCard: false), com a linha de compartilhar dela.
+  const ctaCardShare = file.ctaCard === false ? undefined : Object.fromEntries(ps.map((p) => [sequenceKey(p.spec), ctaShareLine(p.spec.ctaShare ?? file.ctaShare)]));
+  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare });
   // #11956: os achados do fact-check da fala entram no Doc do Gate 2.
   const fcPath = f(ctx, VIDEO_FACT_CHECK_FILE);
   let fc: ReturnType<typeof parseVideoFactCheck> | null = null;
@@ -2580,6 +2601,45 @@ export async function renderVersionedTitlePng(input: {
   return { png, xmlPath };
 }
 
+/**
+ * #12571: o card de CTA de uma sequência, em MP4 com o fade-in embutido, na
+ * pasta da edição (out dir), ao lado do bruto no XML. O nome leva o hash do
+ * conteúdo (SVG, fps, duração, fade): o mesmo card é reaproveitado entre
+ * builds e um XML antigo segue achando o dele. PNG intermediário no work dir.
+ */
+export async function renderCtaCard(input: {
+  outDir: string; workDir: string; mediaPath: string; edition: string;
+  width: number; height: number; fps: number; share?: string | null;
+  render?: (png: string, out: string) => void;
+}): Promise<{ asset: CtaCardAsset; reused: boolean }> {
+  const svg = ctaCardSvg({ width: input.width, height: input.height, share: input.share });
+  const hash = createHash("sha256").update(svg).update(`\0${input.fps}\0${CTA_CARD.durationS}\0${CTA_CARD.fadeInS}`).digest("hex").slice(0, 16);
+  const name = ctaCardFileName(input.edition, ctaCardOrientation(input.width, input.height), hash);
+  const out = join(input.outDir, name);
+  const reused = existsSync(out);
+  if (!reused) {
+    mkdirSync(input.workDir, { recursive: true });
+    const png = join(input.workDir, name.replace(/\.mp4$/, ".png"));
+    await sharp(Buffer.from(svg)).png().toFile(png);
+    // Render no work dir e cópia para .part + rename: um build interrompido nunca deixa MP4 pela metade no out dir.
+    const tmp = join(input.workDir, name);
+    (input.render ?? ((a, b) => { run("ffmpeg", ctaCardRenderArgs({ png: a, out: b, fps: input.fps })); }))(png, tmp);
+    copyFileSync(tmp, `${out}.part`);
+    renameSync(`${out}.part`, out);
+  }
+  const p = input.mediaPath.replace(/\\/g, "/");
+  const xmlPath = `${p.slice(0, p.lastIndexOf("/") + 1)}${name}`;
+  return {
+    asset: { path: out, xmlPath, width: input.width, height: input.height, fps: input.fps, frames: ctaCardFrames(input.fps), share: ctaShareLine(input.share) },
+    reused,
+  };
+}
+
+/** #12571: sequência sem card e sem CTA falado (nenhum item de `cta_*` na ordem dela) sai sem CTA nenhum. */
+export function sequenceHasSpokenCta(plan: Pick<SequencePlan, "clips">): boolean {
+  return plan.clips.some((c) => (CTA_BLOCKS as readonly string[]).includes(c.block));
+}
+
 /** Título do D1 em `02-reviewed.md` da edição; ausente ou sem D1 = null. */
 function readD1Title(edition: string): string | null {
   const path = join(editionDirFor(edition), "02-reviewed.md");
@@ -2638,7 +2698,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   for (const w of faceCenterWarnings(warnPlans, source, framing)) console.error(`[aviso] ${w}`);
   for (const p of picked) {
     const d = p.durationFrames / source.fps;
-    console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}`);
+    console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${CTA_CARD.durationS} s (#12571)`}`);
     const g = ganchoWarning(p);
     if (g) console.error(`[aviso] ${g}`);
     for (const w of p.warnings ?? []) console.error(`[aviso] ${w}`);
@@ -2663,7 +2723,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     for (const x of p.dropped) console.error(`   ${x}`);
     for (const a of p.cutAdjustments ?? []) console.error(adjustmentLine(a));
     problems += p.missingBlocks.length + p.dropped.length;
-    const over = shortsWarning(p, source.fps);
+    // #12571: o limite de 3:00 do Shorts conta o card de CTA do fim.
+    const over = shortsWarning(file.ctaCard === false ? p : { ...p, durationFrames: p.durationFrames + ctaCardFrames(source.fps) }, source.fps);
     if (over) console.error(`[aviso] ${over}`);
     const target = verticalTargetCheck(p, resolved, source.fps, { targetS: file.verticalTargetS, silences: silences(ctx) });
     if (target) console.error(`[aviso] ${verticalTargetWarning(p.spec.name, target)}`);
@@ -2755,6 +2816,29 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       );
     }
   }
+  // #12571: o card de CTA no fim de todas as sequências (o CTA padrão); ffmpeg falho = sequência sem card, com aviso.
+  const ctaCard: Record<string, CtaCardAsset> = {};
+  if (file.ctaCard === false) console.error("[aviso] ctaCard: false no blocks.json: as sequências saem sem o card de CTA no fim (#12571)");
+  else {
+    for (const p of picked) {
+      const share = p.spec.ctaShare ?? file.ctaShare;
+      try {
+        const { asset, reused } = await renderCtaCard({ outDir: ctx.outDir, workDir: ctx.workDir, mediaPath, edition: ctx.edition, width: p.spec.width, height: p.spec.height, fps: source.fps, share });
+        ctaCard[sequenceKey(p.spec)] = asset;
+        // Reaproveitado, o card não muda no out dir e o snapshot não o sobe; entra nos pendentes se nunca subiu.
+        if (reused && ctx.mode === "api") queueUploadIfMissing(f(ctx, DRIVE_UPLOADS_FILE), asset.path);
+        console.error(
+          `[premissa] card de CTA no fim de ${p.spec.name}: ${basename(asset.path)}${reused ? " (reaproveitado)" : ""}, ${CTA_CARD.durationS} s na V1 depois do último clipe, fade-in de ${CTA_CARD.fadeInS} s do preto no próprio MP4, sem áudio; ` +
+            `"${asset.share}"${share ? "" : " (default; ctaShare no blocks.json ou na sequência sobrepõe)"}; conferir no 1º import (#12571)`,
+        );
+      } catch (e) {
+        console.error(`[aviso] card de CTA de ${p.spec.name} falhou (${(e as Error).message.split("\n")[0]}): XML sem o card; inserir à mão no Premiere (#12571)`);
+      }
+    }
+  }
+  for (const p of picked) {
+    if (!ctaCard[sequenceKey(p.spec)] && !sequenceHasSpokenCta(p)) console.error(`[aviso] ${p.spec.name} sai sem CTA nenhum (sem card e sem cta_* falado) (#12571)`);
+  }
   // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
   // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
   // #12163: e com o título, o caminho do bruto e o ganho calculado — por isso só aqui, depois de resolvê-los.
@@ -2769,6 +2853,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     gainDb: gain?.db ?? null,
     screenTitle,
     screenTitleByCorte,
+    ctaCard,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
@@ -2788,7 +2873,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -2800,7 +2885,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): ${seq ? "só a sequência do --seq entra no plano novo" : "a versão de cada XML conta como nova"}`); }
   }
   const merged = mergeBuildPlan({
-    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}) }])) },
+    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}) }])) },
     pickedKeys: new Set(picked.map((p) => sequenceKey(p.spec))),
     prev: prevPlan,
     now: Date.now(),
@@ -3321,7 +3406,22 @@ export function montageSrtWarnings(
 /** Notas do alinhamento de cada legenda (#12093), por sequência: o relatório final lista para o editor conferir. */
 export const SRT_NOTES_FILE = "srt-notas.json";
 
-async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSession | null = null): Promise<number> {
+/**
+ * #12579: a legenda da prévia. A ordem do fluxo é prévia sem legenda → review →
+ * aprovação das prévias → `srt`, então SRT ausente ou mais velho que o build
+ * desta sequência não recusa mais a prévia: ela sai sem legenda, com
+ * `[aviso]`. `--no-subs` tira a legenda mesmo com SRT em dia. Puro.
+ */
+export function previewSubtitleDecision(input: { srtPath: string; exists: boolean; srtMtimeMs?: number; builtAtMs: number; noSubs: boolean }): { use: boolean; message: string | null } {
+  if (input.noSubs) return { use: false, message: "[video-montagem] prévia sem legenda (--no-subs): as legendas (srt) vêm depois da aprovação das prévias (#12579)" };
+  if (!input.exists) return { use: false, message: `[aviso] sem ${input.srtPath}: a prévia sai sem legenda; as legendas (srt) vêm depois da aprovação das prévias (#12579)` };
+  if ((input.srtMtimeMs ?? 0) < input.builtAtMs) {
+    return { use: false, message: `[aviso] ${input.srtPath} é mais velho que o build desta sequência no plan.json: a prévia sai sem legenda; rode srt depois da aprovação das prévias (e a prévia de novo, se quiser a legenda queimada) (#12579)` };
+  }
+  return { use: true, message: null };
+}
+
+async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSession | null = null, noSubs = false): Promise<number> {
   const pf = loadPlan(ctx);
   // #12096: `--seq youtube` também (o horizontal, 960x540); sem --seq, a vertical da edição.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
@@ -3330,8 +3430,10 @@ async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSess
   const fps = pf.source.fps;
   const srt = join(ctx.outDir, srtFileName(plan.spec.name));
   const planPath = f(ctx, "plan.json");
-  // #11969: contra o build DESTA sequência, não o último build de qualquer uma.
-  if (existsSync(srt) && mtime(srt) < sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(planPath))) throw new Error(`${srt} é mais velho que o build de ${plan.spec.name} no plan.json: rode srt de novo antes da prévia`);
+  // #11969: contra o build DESTA sequência, não o último build de qualquer uma. #12579: defasado = prévia sem legenda, não recusa.
+  const srtExists = existsSync(srt);
+  const subs = previewSubtitleDecision({ srtPath: srt, exists: srtExists, srtMtimeMs: srtExists ? mtime(srt) : undefined, builtAtMs: sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(planPath)), noSubs });
+  if (subs.message) console.error(subs.message);
   const dir = join(ctx.workDir, `previa-${sequenceKey(plan.spec)}`);
   mkdirSync(dir, { recursive: true });
   const list: string[] = [];
@@ -3369,13 +3471,30 @@ async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSess
     list.push(`file '${name}'`);
     console.error(`[video-montagem] clipe ${i + 1}/${plan.clips.length} (${c.block})`);
   });
+  // #12571: o card de CTA que o XML desta sequência levou, como último clipe (com áudio em silêncio para o concat).
+  const card = assets.ctaCard ?? null;
+  let cardS = 0;
+  if (card && existsSync(card.path)) {
+    const name = `c${String(plan.clips.length).padStart(2, "0")}-cta-card.mp4`;
+    try {
+      // O mesmo formato de pixel dos clipes do bruto (o concat não recodifica); ffprobe falho = o do card.
+      let pixFmt: string | undefined;
+      try { pixFmt = run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0", join(dir, "c00.mp4")]).stdout.trim() || undefined; } catch { pixFmt = undefined; }
+      run("ffmpeg", ctaCardPreviewClipArgs({ src: card.path, out: join(dir, name), fps, ...size, durationS: card.frames / fps, pixFmt }));
+      list.push(`file '${name}'`);
+      cardS = card.frames / fps;
+      console.error(`[video-montagem] card de CTA no fim da prévia (${cardS.toFixed(2)} s, #12571)`);
+    } catch (e) {
+      console.error(`[aviso] card de CTA na prévia falhou (${(e as Error).message.split("\n")[0]}): prévia sem o card; o XML o tem (#12571)`);
+    }
+  } else if (card) console.error(`[aviso] card de CTA do XML não encontrado nesta máquina (${card.path}): prévia sem ele; rode build nesta máquina (#12571)`);
   writeFileSync(join(dir, "list.txt"), list.join("\n") + "\n");
   run("ffmpeg", ["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", "list.txt", "-c", "copy", "joined.mp4"], { cwd: dir });
   let subtitles: string | undefined;
-  if (existsSync(srt)) {
+  if (subs.use) {
     copyFileSync(srt, join(dir, "leg.srt"));
     subtitles = `subtitles=leg.srt:force_style='${isVerticalSpec(plan.spec) ? PREVIEW_SUBTITLE_STYLE : PREVIEW_SUBTITLE_STYLE_HORIZONTAL}'`;
-  } else console.error(`[aviso] sem ${srt}: a prévia sai sem legenda (rode srt antes)`);
+  }
   mkdirSync(ctx.outDir, { recursive: true });
   const out = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   // #12101: a mesma vinheta do XML desta sequência por cima, no mesmo instante e no mesmo tamanho relativo.
@@ -3407,7 +3526,7 @@ async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSess
   } else run("ffmpeg", finalArgs(plain), { cwd: dir });
   copyFileSync(join(dir, "previa.mp4"), out);
   // 14 quadros (7x2) espalhados pela prévia inteira, qualquer que seja a duração.
-  const dur = Math.max(1, plan.durationFrames / fps);
+  const dur = Math.max(1, plan.durationFrames / fps + cardS);
   const sheet = f(ctx, `previa-${sequenceKey(plan.spec)}.jpg`);
   run("ffmpeg", ["-y", "-v", "error", "-i", join(dir, "previa.mp4"), "-vf", `fps=${(14 / dur).toFixed(4)},scale=${isVerticalSpec(plan.spec) ? 270 : 480}:-1,tile=7x2`, "-frames:v", "1", sheet]);
   console.log(JSON.stringify({ preview: out, sheet }, null, 2));
@@ -3415,6 +3534,33 @@ async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSess
 }
 
 const REVIEW_SILENCE_FILTER = "silencedetect=noise=-40dB:d=0.08";
+
+/**
+ * #12571: o trecho da prévia que a autorrevisão mede. Com o card de CTA no fim
+ * (sem fala), a revisão corta no fim da montagem: palavras e silêncios depois
+ * dele saem, e o `final-seco`/ritmo seguem medindo a fala como antes do card.
+ * Duas conferências do card: a prévia precisa durar a montagem + o card, e
+ * nenhuma palavra pode cair no card (o trecho sem fala). Sem card, tudo igual. Puro.
+ */
+export function reviewCardScope(input: {
+  durationS: number; montageS: number; cardS: number;
+  words: Word[]; silences: Interval[];
+}): { speechS: number; cardS: number; words: Word[]; silences: Interval[]; warnings: string[] } {
+  if (!(input.cardS > 0)) return { speechS: input.durationS, cardS: 0, words: input.words, silences: input.silences, warnings: [] };
+  const speechS = Math.min(input.durationS, input.montageS);
+  const warnings: string[] = [];
+  const missing = input.montageS + input.cardS - input.durationS;
+  if (missing > 0.5) warnings.push(`a prévia dura ${input.durationS.toFixed(2)} s, a montagem + o card de CTA ${(input.montageS + input.cardS).toFixed(2)} s: o card não entrou inteiro (rode preview de novo) (#12571)`);
+  const onCard = input.words.filter((w) => w.start >= speechS + 0.1);
+  if (onCard.length) warnings.push(`fala dentro do card de CTA (${onCard.map((w) => w.text.trim()).join(" ")}), a partir de ${onCard[0].start.toFixed(2)} s: o card é sem áudio; conferir a prévia (#12571)`);
+  return {
+    speechS,
+    cardS: input.cardS,
+    words: input.words.filter((w) => w.start < speechS + 0.1),
+    silences: input.silences.filter((x) => x.start < speechS).map((x) => ({ start: x.start, end: Math.min(x.end, speechS) })),
+    warnings,
+  };
+}
 
 function cmdReview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
@@ -3430,17 +3576,23 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   transcribeWithPython(ctx, wav, trPath, { vad: false });
   const durationS = Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", preview]).stdout.trim());
   if (!Number.isFinite(durationS) || durationS <= 0) throw new Error(`duração da prévia ilegível no ffprobe (${preview})`);
-  const words = reviewTranscriptWords(readJson<Transcript>(trPath, "transcrição da prévia"));
-  const previewSilences = parseSilenceDetect(
+  const allWords = reviewTranscriptWords(readJson<Transcript>(trPath, "transcrição da prévia"));
+  const allSilences = parseSilenceDetect(
     run("ffmpeg", ["-hide_banner", "-nostats", "-i", preview, "-vn", "-af", REVIEW_SILENCE_FILTER, "-f", "null", "-"]).stderr,
     durationS,
   );
-  const audioEndS = audioEndFromSilences(previewSilences, durationS);
+  // #12571: o card de CTA do fim (sem fala) fica fora da revisão da fala: os achados medem só a montagem.
+  const scope = reviewCardScope({ durationS, montageS: plan.durationFrames / pf.source.fps, cardS: (pf.xmlAssets?.[sequenceKey(plan.spec)]?.ctaCard?.frames ?? 0) / pf.source.fps, words: allWords, silences: allSilences });
+  for (const w of scope.warnings) console.error(`[aviso] ${w}`);
+  const words = scope.words;
+  const previewSilences = scope.silences;
+  const speechS = scope.speechS;
+  const audioEndS = audioEndFromSilences(previewSilences, speechS);
   // #12561: ritmo, portado do review do edicao-video: pausa acima de 0,3 s entre falas = respiro sobrando (apertar o corte).
-  const pauses = longPauses(previewSilences, cutPoints(plan, pf.source.fps), durationS);
+  const pauses = longPauses(previewSilences, cutPoints(plan, pf.source.fps), speechS);
   console.error(`[video-montagem] ritmo de ${plan.spec.name}: ${pauses.length ? pauses.map((x) => `${clockTime(x.at)} (${x.durationS.toFixed(2)} s, ${x.atCut ? "no corte" : "dentro da fala"})`).join("; ") : "nenhuma pausa acima de 0,3 s"} (#12561)`);
   // Cada achado leva também o tempo no BRUTO (#11500): é lá que o corte se corrige.
-  const findings = reviewPreview({ words, audioEndS, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS, aliases: loadVocab().aliases }).map((x) => ({
+  const findings = reviewPreview({ words, audioEndS, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS: speechS, aliases: loadVocab().aliases }).map((x) => ({
     ...x,
     srcAt: exportTimeToRaw(x.at, plan, pf.source.fps),
   }));
@@ -3450,8 +3602,9 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   // #11939: a caneca na folha de frames da prévia; o cálculo diz em que escala ela não sai inteira.
   const mugWarnings = mugFramingWarnings([firstFileClips(plan, pf.source)], pf.source, pf.framing);
   for (const warning of mugWarnings) console.error(`[aviso] ${warning}`);
-  writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings, highBandWarnings, mugWarnings, pauses });
-  console.log(JSON.stringify({ preview, durationS, findings, highBandWarnings, mugWarnings, pauses }, null, 2));
+  const card = scope.cardS > 0 ? { cardS: scope.cardS, warnings: scope.warnings } : undefined;
+  writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings, highBandWarnings, mugWarnings, pauses, ...(card ? { ctaCard: card } : {}) });
+  console.log(JSON.stringify({ preview, durationS, findings, highBandWarnings, mugWarnings, pauses, ...(card ? { ctaCard: card } : {}) }, null, 2));
   return 0;
 }
 
@@ -3943,7 +4096,7 @@ async function runCommand(
     }
     case "preview":
       await needLocalBruto();
-      return cmdPreview(ctx, seq, d);
+      return cmdPreview(ctx, seq, d, flags.has("no-subs"));
     case "review":
       return cmdReview(ctx, seq);
     case "review-final": {
