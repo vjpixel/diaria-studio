@@ -20,6 +20,8 @@ Se `missing_scores > 0` ou `missing_titles > 0`: `_internal/newsletter-unscored.
 
 **O que bloqueia e o que não (#12188).** A auditoria nunca bloqueia a publicação por algo que o pipeline não controla. Só bloqueia (`error` no invariante, exit 1 no `--require-scores`) link de newsletter aprovada sem score/título em que ninguém tentou: está no pool e não tem falha de leitura registrada. Viram `warning`, mostrados ao editor mas sem bloquear (nem em `--no-gates`): link com falha de fetch/enrich registrada (`FALHA FETCH (motivo)` na tabela) e link removido antes do pool por dedup/data (`in_pool: false`). O score deste último é opcional, porque o item está fora da edição por regra e o score seria só auditoria.
 
+"Pool" é o que foi de fato ao scorer, `_internal/tmp-scoring-pool.json` (pós dedup, data e cap; #12593). O bruto `tmp-articles-raw.json` só é usado em edição sem esse arquivo. Fonte fundida num cluster (`cluster_sources`) também conta como fora do pool: quem é pontuado é o item principal. Link pontuado e fora da edição cujo título continua placeholder (`(newsletter:...)`) vira warning: o score já é a avaliação, o título ali é só exibição da tabela. Score fora de 0-100 é score real (bônus e penalidades somados ao `score_base`).
+
 Scores suplementares são só auditoria, não promovem nem reintroduzem itens na edição. Sem pontuação real, mostrar a falha; não fabricar zero para satisfazer o check.
 
 #### Remetentes novos

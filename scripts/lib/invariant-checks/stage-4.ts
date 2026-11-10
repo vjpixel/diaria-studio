@@ -26,6 +26,7 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 import { readMarker } from "../pipeline-state.ts";
 import { computeIntakeFingerprint } from "../newsletter-intake-fingerprint.ts"; // #12188
+import { linkScoreBlocks, linkTitleBlocks } from "../newsletter-intake-link-rules.ts"; // #12593
 import { CLARICE_PENDING_REL, readClaricePending, resumeCommandFor } from "../clarice-pending.ts"; // #12257
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
@@ -1787,6 +1788,8 @@ function checkNoTrailingEllipsisInvariant(editionDir: string): InvariantViolatio
  * challenge) e link removido antes do pool (dedup/data — score ali é só
  * auditoria) viram `warning`. Os warnings do relatório (pendentes, descoberta
  * falhou, capture_failed) saem sempre, independente da contagem de threads.
+ * #12593: "pool" é o `tmp-scoring-pool.json` (o que foi ao scorer), não o bruto
+ * pré-dedup; e título placeholder de link já pontuado e fora da edição é warning.
  */
 export function checkNewsletterIntake(editionDir: string): InvariantViolation[] {
   const internal = resolve(editionDir, "_internal");
@@ -1813,19 +1816,15 @@ export function checkNewsletterIntake(editionDir: string): InvariantViolation[] 
   }
   try {
     const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
-      links: Array<{url?: string; score: number | null; title?: string; fetch_error?: string; in_pool?: boolean | null}>;
+      links: Array<{url?: string; score: number | null; title?: string; fetch_error?: string; in_pool?: boolean | null; destino?: string}>;
       rows: Array<{thread_id: string}>; warnings: string[]; pending_senders: string[];
       input_fingerprint?: string; registry_path?: string; fingerprint_keys?: string[];
     };
     if (!Array.isArray(report.links) || !Array.isArray(report.rows) || !Array.isArray(report.warnings) || !Array.isArray(report.pending_senders)) throw new Error("shape inválido");
     const out: InvariantViolation[] = report.warnings.map((w) => violation(w, "warning"));
-    const missingScore = (l: (typeof report.links)[number]) => typeof l.score !== "number" || !Number.isFinite(l.score);
-    const missingTitle = (l: (typeof report.links)[number]) => !l.title?.trim() || l.title.startsWith("(newsletter:");
-    const attempted = (l: (typeof report.links)[number]) => typeof l.fetch_error === "string" && l.fetch_error.length > 0;
-    const outOfPool = (l: (typeof report.links)[number]) => l.in_pool === false;
-    const blocking = (l: (typeof report.links)[number]) => !attempted(l) && !outOfPool(l);
-    if (report.links.some((l) => missingScore(l) && blocking(l))) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
-    if (report.links.some((l) => missingTitle(l) && blocking(l))) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
+    // #12188/#12593: mesmas regras de `audit-newsletter-intake.ts` (lib compartilhada, sem importar o CLI).
+    if (report.links.some(linkScoreBlocks)) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
+    if (report.links.some(linkTitleBlocks)) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
     if (report.pending_senders.length) out.push(violation(`Remetentes pendentes de decisão em lote: ${report.pending_senders.join(", ")}`, "warning"));
     // #12188 item 7: content hash of the audit inputs, never mtime — a save
     // that keeps the links (Studio, refresh-use-melhor-tempo, sync-code) is not stale.
