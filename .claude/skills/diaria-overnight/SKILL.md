@@ -51,6 +51,18 @@ Roteamento que contraria a decisão leva `--override-decision "motivo"`,
 nunca uma razão reescrita só para passar no regex.
 
 
+## Fila obrigatória de escaladas do contínuo (#12684)
+
+No briefing inicial, rodar `npx tsx scripts/list-continuo-escalation-queue.ts`.
+Cada item de `queue` é uma PR escalada há mais de 24h: apresentar URL,
+`since` e `reason` como pendência explícita do editor, dono da fila
+`briefing overnight/develop`, e registrar destino e decisão no plano/relatório.
+Fila vazia dispensa esta seção; erro do comando é bloqueio de leitura da fila,
+nunca evidência de ausência de pendências. `action=merge` indica condição
+transitória resolvida: revalidar os gates normais antes de qualquer ação.
+Draft, `bloqueio-execucao` e retenção para editor continuam bloqueados até
+liberação explícita; o briefing nunca promove draft automaticamente.
+
 ## Contagem final de entrega (#11235)
 
 Em TODA saída do modo `--agendado`, inclusive fila vazia, dry-run, halt da sonda e preempção, grave no `report.md` desta rodada exatamente um marcador estruturado:
