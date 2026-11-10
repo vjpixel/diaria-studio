@@ -101,7 +101,7 @@ export interface FormPartialResults {
   };
 }
 
-/** `fulano+teste@gmail.com` → `fulano@gmail.com` (para casar os testes do editor). */
+/** Tira o `+sufixo` da parte local do e-mail (para casar os testes do editor). */
 function stripPlusTag(email: string): string {
   const at = email.lastIndexOf("@");
   if (at < 0) return email;
