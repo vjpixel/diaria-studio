@@ -132,6 +132,7 @@ import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estil
 import { publicImageKeysForPosition } from "./lib/public-images-invalidate.ts"; // #11252
 import { EXTRAS_MANIFEST, extraSourceFileName } from "./lib/fact-check-extra-sources.ts"; // #11531
 import { describeCarouselKeepArtRemap, remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
+import { invalidateStage4D1Capture } from "./lib/stage4-capture-state.ts"; // #12589
 import {
   readCarouselSourceHashes,
   writeCarouselSourceHashes,
@@ -1896,6 +1897,17 @@ function main(): void {
     if (r.warning) {
       console.warn(`WARN: reorder-destaques — ${r.warning}`);
       warnings.push(r.warning);
+    }
+  }
+
+  // 8c. _internal/stage4-capture-state.json (#12589): outro destaque assumiu a
+  // posição 1 — whatsappUrl/metaDescriptionSuggestion derivavam do D1 antigo.
+  if (!args.dryRun && args.newOrder[0] !== 1) {
+    const d1Capture = invalidateStage4D1Capture(editionDir);
+    if (d1Capture.rewritten) modified.rewritten.push(d1Capture.rewritten);
+    if (d1Capture.message) {
+      console.warn(`WARN: reorder-destaques — ${d1Capture.message}`);
+      warnings.push(d1Capture.message);
     }
   }
 

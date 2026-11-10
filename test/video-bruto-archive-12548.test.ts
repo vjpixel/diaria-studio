@@ -13,12 +13,15 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  brutoRefKey,
   decideFolder,
   duplicatePaths,
   editionsOfFolder,
   isBrutoFile,
+  montageSourceRefs,
   parseMd5sumLine,
   parseRcloneLsjson,
+  referencingEditions,
   verifyCopy,
 } from "../scripts/lib/diaria/video-bruto-archive.ts";
 import { bisyncIdle, defaultConfig, isPermissionError, reportFailed, runArchive } from "../scripts/archive-video-brutos.ts";
@@ -500,6 +503,112 @@ describe("regressões puras do review (#12567)", () => {
   });
   it("env numérica inválida falha cedo", () => {
     assert.throws(() => defaultConfig({ VIDEO_ARCHIVE_WAIT_MINUTES: "abc" }));
+  });
+});
+
+// ── #12602: bruto que outra edição ou o Short ainda usa ─────────────────────
+
+describe("idade mínima da pasta publicada (#12602)", () => {
+  it("horizontal publicado há menos de 4 dias fica (Short e cortes saem nos dias seguintes)", () => {
+    // TODAY = 261109; 261106 (sexta) tem 3 dias: o corte de terça ainda não saiu.
+    const d = decideFolder({ name: "261106", published: { "261106": true } }, TODAY);
+    assert.equal(d.eligible, false);
+    assert.equal(d.reason, "publicado-recente");
+    assert.equal(decideFolder({ name: "261105", published: { "261105": true } }, TODAY).eligible, true);
+    assert.equal(decideFolder({ name: "261106", published: { "261106": true } }, TODAY, 14, 3).eligible, true);
+  });
+});
+
+describe("referências do source.json (#12602)", () => {
+  it("chave é o nome do arquivo, em qualquer separador", () => {
+    assert.equal(brutoRefKey("G:/Meu Drive/Work/Mentoria Fluxo/VTSD/YouTube/261106/20261106_101010.mp4"), "20261106_101010.mp4");
+    assert.equal(brutoRefKey("G:\\Meu Drive\\YouTube\\261106\\20261106_101010.MP4"), "20261106_101010.mp4");
+    assert.equal(brutoRefKey("Brutos/20261103_000000.mp4"), "20261103_000000.mp4");
+  });
+
+  it("lê path e files[].path; formato estranho é null", () => {
+    assert.deepEqual(montageSourceRefs({ path: "a/x.mp4" }), ["a/x.mp4"]);
+    assert.deepEqual(montageSourceRefs({ path: "a/x.mp4", files: [{ path: "a/x.mp4" }, { path: "b/y.mp4" }] }), ["a/x.mp4", "a/x.mp4", "b/y.mp4"]);
+    assert.equal(montageSourceRefs({}), null);
+    assert.equal(montageSourceRefs({ files: "x" }), null);
+    assert.equal(montageSourceRefs({ path: "a", files: [{ id: "sem-path" }] }), null);
+    assert.equal(montageSourceRefs([]), null);
+  });
+
+  it("referencingEditions casa pelo nome", () => {
+    const refs = new Map([["20261106_101010.mp4", ["261110"]]]);
+    assert.deepEqual(referencingEditions("20261106_101010.mp4", refs), ["261110"]);
+    assert.deepEqual(referencingEditions("Brutos/20261106_101010.mp4", refs), ["261110"]);
+    assert.deepEqual(referencingEditions("20261106_999999.mp4", refs), []);
+  });
+});
+
+describe("runArchive com montagem de outra edição em curso (#12602)", posixOnly, () => {
+  const montage = (s: ReturnType<typeof sandbox>, ed: string, source: unknown) => {
+    s.put(join(s.cfg.dataRoot, "editions", ed.slice(0, 4), ed), "_internal/video-montagem/source.json", typeof source === "string" ? source : JSON.stringify(source));
+  };
+
+  it("bruto da edição seguinte guardado na pasta publicada fica no Drive até ela sair; o resto sai", () => {
+    const s = sandbox();
+    s.both("261105/20261105_090000.mp4", "bruto-da-261105");
+    s.both("261105/20261105_100000.mp4", "bruto-da-261110");
+    s.publish("261105");
+    montage(s, "261105", { path: "G:/Meu Drive/Work/Mentoria Fluxo/VTSD/YouTube/261105/20261105_090000.mp4" });
+    montage(s, "261110", {
+      path: "G:/Meu Drive/Work/Mentoria Fluxo/VTSD/YouTube/261105/20261105_100000.mp4",
+      files: [{ id: "20261105_100000", path: "G:\\Meu Drive\\Work\\Mentoria Fluxo\\VTSD\\YouTube\\261105\\20261105_100000.mp4" }],
+    });
+    const dry = runArchive({ cfg: s.cfg, apply: false, today: TODAY, unpublishedMaxDays: 14 });
+    assert.deepEqual(
+      dry.files.map((f) => [f.path, f.status]),
+      [
+        ["20261105_090000.mp4", "sairia"],
+        ["20261105_100000.mp4", "em-uso-por-outra-edicao"],
+      ],
+    );
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(reportFailed(r), false, JSON.stringify(r, null, 2));
+    const used = r.files.find((f) => f.path === "20261105_100000.mp4")!;
+    assert.equal(used.status, "em-uso-por-outra-edicao");
+    assert.match(used.detail ?? "", /261110/);
+    assert.ok(existsSync(join(s.drive, "261105/20261105_100000.mp4")), "bruto da 261110 continua no Drive");
+    assert.ok(existsSync(join(s.local, "261105/20261105_100000.mp4")), "e no espelho");
+    assert.ok(!existsSync(join(s.drive, "261105/20261105_090000.mp4")), "o bruto da própria 261105 sai");
+    assert.equal(r.files.find((f) => f.path === "20261105_090000.mp4")!.status, "arquivado");
+  });
+
+  it("edição que referencia o bruto, publicada mas recente, ainda segura; passada a idade mínima, não segura mais", () => {
+    const s = sandbox();
+    s.both("261105/20261105_100000.mp4", "bruto");
+    s.publish("261105");
+    s.publish("261107");
+    montage(s, "261107", { path: "/x/261105/20261105_100000.mp4" });
+    const held = runArchive({ cfg: s.cfg, apply: false, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(held.files[0].status, "em-uso-por-outra-edicao");
+    const later = runArchive({ cfg: s.cfg, apply: false, today: new Date("2026-11-12T00:00:00Z"), unpublishedMaxDays: 14 });
+    assert.equal(later.files[0].status, "sairia", "261107 com 5 dias já sairia: não segura");
+  });
+
+  it("source.json ilegível de edição em uso: erro e nada sai do Drive", () => {
+    const s = sandbox();
+    s.both("261105/20261105_090000.mp4", "bruto");
+    s.publish("261105");
+    montage(s, "261110", "{ quebrado");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(reportFailed(r), true);
+    assert.match(r.errors.join("\n"), /261110.*source\.json ilegível/);
+    assert.ok(existsSync(join(s.drive, "261105/20261105_090000.mp4")));
+    assert.ok(!existsSync(s.calls) || !readFileSync(s.calls, "utf8").includes("deletefile"));
+  });
+
+  it("horizontal publicado ontem: a pasta fica (o Short da vertical nativa sai no dia útil seguinte)", () => {
+    const s = sandbox();
+    s.both("261108/20261108_090000.mp4", "bruto");
+    s.publish("261108");
+    const r = runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.folders[0].reason, "publicado-recente");
+    assert.deepEqual(r.files, []);
+    assert.ok(existsSync(join(s.drive, "261108/20261108_090000.mp4")));
   });
 });
 

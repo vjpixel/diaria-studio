@@ -104,6 +104,58 @@ export function canonicalize(url: string): string {
 }
 
 /**
+ * #12592: domínios que servem a MESMA página sob prefixo de idioma no caminho
+ * (`openai.com/pt-BR/index/x` = `openai.com/index/x`). Neles, até o prefixo
+ * curto de 2 letras (`/pt/`, `/en/`) é idioma. Fora desta lista só o formato
+ * com região (`/pt-BR/`, `/en-us/`, `/zh-Hans/`) é tratado como idioma: um
+ * segmento de 2 letras solto pode ser seção real (`/it/`, `/ai/`). O domínio
+ * casa o hostname exato ou qualquer subdomínio.
+ */
+export const LOCALE_PATH_DOMAINS: ReadonlyArray<string> = [
+  "openai.com",
+  "anthropic.com",
+  "claude.com",
+  "google",
+  "google.com",
+  "microsoft.com",
+  "nvidia.com",
+  "amazon.com",
+  "meta.com",
+];
+
+const LOCALE_WITH_REGION = /^[a-z]{2}[-_](?:[a-z]{2}|[a-z]{4})$/i;
+const LOCALE_BARE = /^[a-z]{2}$/i;
+
+function isLocalePathDomain(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^www\./, "");
+  return LOCALE_PATH_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`));
+}
+
+/**
+ * Chave de comparação do dedup (#12592): `canonicalize` + remoção do prefixo
+ * de idioma do 1º segmento do caminho. Só para COMPARAR URLs — nunca para
+ * gravar o link: a variante com idioma (`/pt-BR/`) é a que o leitor recebe e
+ * continua intacta no artigo. Idempotente; URL inválida volta como veio.
+ */
+export function dedupUrlKey(url: string): string {
+  const canon = canonicalize(url);
+  try {
+    const u = new URL(canon);
+    const segments = u.pathname.split("/");
+    // pathname começa com "/", então segments[0] === "" e o 1º segmento é [1].
+    const first = segments[1] ?? "";
+    const isLocale =
+      LOCALE_WITH_REGION.test(first) || (LOCALE_BARE.test(first) && isLocalePathDomain(u.hostname));
+    if (!isLocale) return canon;
+    segments.splice(1, 1);
+    u.pathname = segments.join("/") || "/";
+    return u.toString();
+  } catch {
+    return canon;
+  }
+}
+
+/**
  * Extrai o hostname sem www.
  * Retorna null se a URL for invalida.
  */
