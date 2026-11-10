@@ -29,6 +29,8 @@ import {
   clockTime,
   decideTakes,
   defaultSequences,
+  openingBlockOf,
+  type OpeningBlock,
   describeCollapsedSuspect,
   isBlockKey,
   itemInTarget,
@@ -333,7 +335,7 @@ export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[])
 /** Molde do plano: todos os blocos vazios e a listagem dos segmentos como nota (`_segmentos`), para a skill classificar. */
 export function decupagemPlanTemplate(edition: string, segments: Segment[], voices?: Array<VoiceMark | null>): Record<string, unknown> {
   return {
-    _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou. Um segmento fica numa linha só, exceto 'usar' repetido entre resumo e resumo_curto ou entre os CTAs.",
+    _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou. Um segmento fica numa linha só, exceto 'usar' repetido entre resumo e resumo_curto ou entre os CTAs. A frase falada que abre o vídeo vai em gancho (abre as duas versões); titulo só quando o título é lido em voz alta (#12586).",
     _criterio:
       "Uma tomada por frase, decidida nesta ordem: (1) a aprovada pela direção; (2) a que emenda com a frase seguinte do roteiro; (3) a última completa. As outras 'cortar' com o motivo. 'alternativa' só quando nenhum critério decide, depois de retranscrever o trecho (retranscribe --from --to), com a justificativa.",
     _segmentos: segmentLines(segments, voices),
@@ -658,6 +660,16 @@ export function blocksFromDecupagem(doc: DecupagemDoc): Record<BlockKey, Array<{
   >;
   for (const b of doc.blocks) for (const r of b.rows) if (!r.bastidor && r.suggestion === "usar") out[b.key].push({ start: r.start, end: r.end, text: r.fala });
   return out;
+}
+
+/**
+ * O bloco de abertura da decupagem (#12586), lido do plano como a skill o
+ * escreveu, ANTES do `proposeGancho`: o gancho escrito no plano é a frase
+ * falada de abertura e abre as duas versões; o gancho proposto (a 1ª frase do
+ * resumo, #12093) é só do horizontal e não muda a ordem da vertical.
+ */
+export function decupagemOpeningBlock(planned: DecupagemDoc): OpeningBlock {
+  return openingBlockOf(blocksFromDecupagem(planned));
 }
 
 /** As linhas "alternativa" da decupagem, por bloco: viram as opções B, C… do roteiro final. */
