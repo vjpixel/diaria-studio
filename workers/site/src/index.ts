@@ -127,6 +127,16 @@ import {
   saldoLiquido,
 } from "../../../scripts/lib/shared/hotmart-vendas.ts";
 import { secretMatches } from "../../../scripts/lib/shared/secret-compare.ts";
+// #12735: `/video`, o link fixo da bio até o horizontal mais recente.
+import {
+  LATEST_VIDEO_KV_KEY,
+  LATEST_VIDEO_PATH,
+  buildLatestVideoTarget,
+  latestVideoClickCounterKey,
+  latestVideoClickSource,
+  parseLatestVideoRecord,
+  type LatestVideoRecord,
+} from "../../../scripts/lib/shared/latest-video-redirect.ts";
 
 export interface Env {
   ASSETS: Fetcher;
@@ -482,6 +492,22 @@ function buildApoiarTarget(reqUrl: URL): string {
   return target.toString();
 }
 
+/**
+ * #12735: registro do horizontal mais recente no KV `POLL` (escrito pela
+ * pipeline, `scripts/set-latest-video-redirect.ts`). Lido como arrayBuffer
+ * porque é o único tipo que o binding declara (`KvImageStore`). Falha de
+ * leitura vira `null`: o redirect cai na lista de vídeos do canal.
+ */
+async function readLatestVideoRecord(env: Env): Promise<LatestVideoRecord | null> {
+  try {
+    const buf = await env.POLL.get(LATEST_VIDEO_KV_KEY, "arrayBuffer");
+    return buf ? parseLatestVideoRecord(new TextDecoder().decode(buf)) : null;
+  } catch (err) {
+    console.error(`[video] leitura de ${LATEST_VIDEO_KV_KEY} falhou — redirect cai na lista do canal (#12735):`, err);
+    return null;
+  }
+}
+
 /** Conta o clique do dia; `incrementApoiarCounter` já é fail-soft (nunca lança). */
 async function countApoiarClick(env: Env, keyFn: (day: string) => string = apoiarClickCounterKey): Promise<void> {
   const day = new Date().toISOString().slice(0, 10);
@@ -672,6 +698,19 @@ export default {
     if (request.method === "GET" && (reqUrl.pathname === "/apoiar" || reqUrl.pathname === "/apoiar/")) {
       await countApoiarClick(env, apoiarLegacyCounterKey);
       return Response.redirect(buildApoiarTarget(reqUrl), 301);
+    }
+
+    // #12735: /video — link fixo da bio (TikTok, Instagram, Threads) até o
+    // horizontal mais recente no YouTube. 302, nunca 301: o destino muda a
+    // cada edição e o navegador não pode guardá-lo. Conta o clique por rede
+    // (utm_source) no mesmo KV dos contadores de /apoiar, fail-soft.
+    if ((request.method === "GET" || request.method === "HEAD") && (reqUrl.pathname === LATEST_VIDEO_PATH || reqUrl.pathname === `${LATEST_VIDEO_PATH}/`)) {
+      const record = await readLatestVideoRecord(env);
+      if (request.method === "GET") {
+        const day = new Date().toISOString().slice(0, 10);
+        await incrementApoiarCounter(env.CURSOS_SUBSCRIBERS, latestVideoClickCounterKey(latestVideoClickSource(reqUrl), day));
+      }
+      return Response.redirect(buildLatestVideoTarget(reqUrl, record), 302);
     }
 
     const response = await env.ASSETS.fetch(request);
