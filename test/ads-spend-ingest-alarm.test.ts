@@ -16,7 +16,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   parseLatestLogRun,
@@ -470,13 +472,55 @@ describe("CLI: resolução de --google-log-path/--meta-log-path ausentes (#7518,
     // o texto do console. Este teste fixa esse comportamento de propósito,
     // pra nunca virar surpresa quando alguém notar o console mudando de
     // "ok" pra "cannot-verify" num ambiente sem o log do Meta.
-    const result = spawnSync(process.execPath, ["--import", "tsx", SCRIPT_PATH, "--dry-run"], {
-      cwd: PROJECT_ROOT,
-      encoding: "utf8",
-    });
-    const stdout = result.stdout ?? "";
-    assert.match(stdout, /verdict=cannot-verify/);
-    assert.match(stdout, /cannot-verify — pelo menos uma plataforma sem log legível; nenhum alarme disparado \(fail-soft\)\./);
+    //
+    // #12703: o teste rodava o CLI com os DEFAULT_*_LOG_PATH reais e
+    // pressupunha `data/aquisicao/` sem os logs — numa máquina com os 2
+    // logs presentes e saudáveis o CLI dizia `ok` (correto) e o teste
+    // falhava. Os logs agora vêm de um diretório temporário via
+    // `--google-log-path`/`--meta-log-path`: o veredito não depende mais
+    // do `data/` real, que o teste nunca lê nem altera.
+    const dir = mkdtempSync(join(tmpdir(), "ads-spend-ingest-alarm-12703-"));
+    try {
+      const stdout = runCliWithLogs(join(dir, ".google-ads-ingest.log"), join(dir, ".meta-ads-ingest.log"));
+      assert.match(stdout, /verdict=cannot-verify/);
+      assert.match(stdout, /google=cannot-verify\(/);
+      assert.match(stdout, /meta=cannot-verify\(/);
+      assert.match(stdout, /cannot-verify — pelo menos uma plataforma sem log legível; nenhum alarme disparado \(fail-soft\)\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#12703 — com o log do Google presente e saudável de hoje, o 3º log (Meta) ausente ainda leva o veredito combinado a cannot-verify", () => {
+    // Prova que o CLI lê o log do Meta mesmo quando o outro está ok, sem
+    // depender do estado do `data/` real da máquina: os 2 logs vivem num
+    // diretório temporário. Não cobre o caso "os 2 presentes e ok" pelo CLI
+    // de propósito — esse caminho lê o estado de dedup de issues em
+    // `data/` (ALARM_ISSUES_STATE_PATH), que o teste não deve tocar; a
+    // composição `ok` já é coberta pela função pura acima.
+    const dir = mkdtempSync(join(tmpdir(), "ads-spend-ingest-alarm-12703-"));
+    try {
+      const googleLog = join(dir, ".google-ads-ingest.log");
+      writeFileSync(googleLog, GOOGLE_OK_RUN.replace("2026-08-17T09:50:00.000Z", new Date().toISOString()));
+      const stdout = runCliWithLogs(googleLog, join(dir, ".meta-ads-ingest.log"));
+      assert.match(stdout, /google=ok\(/);
+      assert.match(stdout, /meta=cannot-verify\(/);
+      assert.match(stdout, /verdict=cannot-verify/);
+      assert.match(stdout, /nenhum alarme disparado \(fail-soft\)\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
+
+/** Roda o CLI em --dry-run com os 2 logs apontados para paths explícitos (#12703). */
+function runCliWithLogs(googleLogPath: string, metaLogPath: string): string {
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", SCRIPT_PATH, "--dry-run", "--google-log-path", googleLogPath, "--meta-log-path", metaLogPath],
+    { cwd: PROJECT_ROOT, encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, `CLI saiu com status ${result.status}: ${result.stderr}`);
+  return result.stdout ?? "";
+}
 
