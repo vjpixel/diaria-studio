@@ -164,7 +164,8 @@ não é a severidade do finding, e 1ª linha sem tag fica retida.
 escopo parcial já declarado como `REFS` no corpo, limite aceito de propósito:
 nada a corrigir antes do merge, mesmo com confiança alta de que o fato é
 verdade. P2/P3 com `nota` no prefixo (ou com a frase "Não bloqueia o merge."
-fechando uma linha) sai resolvida pelo `--low-severity-only`; sem o rótulo,
+fechando a ÚLTIMA linha do corpo; no meio do corpo ela não conta, #12722) sai
+resolvida pelo `--low-severity-only`; sem o rótulo,
 "Confiança alta, P3" segue retida e trava o trem em rodada desassistida
 (rodada 261110c). Finding com cenário de falha real nunca leva `nota`, e
 `nota` nunca rebaixa P0/P1.
