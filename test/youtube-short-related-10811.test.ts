@@ -57,6 +57,7 @@ function input(over: Partial<ShortRelatedPlanInput> = {}): ShortRelatedPlanInput
     now: brtInstant(ED, "06:06"),
     editionExists: true,
     noVideo: false,
+    videoEvidence: { hasEvidence: true, sources: ["shorts-registry"], reason: "evidência de vídeo: shorts-registry" },
     horizontal: { id: H, source: "upload-record" },
     short: { id: S, source: "shorts-registry" },
     horizontalState: "published",
