@@ -1,0 +1,41 @@
+cd /home/vjpixel/diaria-studio; S=/tmp/claude-1000/-home-vjpixel-diaria-studio/a16e5821-a2fb-457f-96d6-6eaaedf7f36d/scratchpad; cat > $S/e1.md <<'EOF'
+## Achado
+
+Item 7 do review do PR #12597 (silent-failure-hunter), mantido fora do escopo. O pré-requisito do vídeo da Etapa 5 (#12588, `assessVideoBeforePublish`) deixa a edição passar assim que existe `_internal/no-video.json`. Os passos que o #11125 exige depois de marcar a edição sem vídeo ficam só no texto, e nada confere se foram feitos:
+
+- `upload-images-public.ts --mode newsletter`, que tira `d1_play` de `06-public-images.json`;
+- o re-render do HTML.
+
+## Cenário
+
+O editor roda só `set-d1-no-video.ts AAMMDD` e volta direto para `/diaria-5-publicacao`. O gate passa. O que usa o HTML do Stage 4 (a página do site no §5b-site, o preview) ainda leva o convite "Clique para assistir" para um vídeo que não existe. O impacto no e-mail pode ser menor, porque o Kit re-renderiza o payload; isso não foi medido.
+
+Desde o #12591 esse passou a ser o caminho padrão do dia sem vídeo (mensagem pós-gate 4).
+
+## Proposta
+
+Com o marcador presente, o gate confere `06-public-images.json` (sem `d1_play`) e o `newsletter-final.html` (sem a imagem play). Se encontrar algum dos dois, bloqueia com o comando de upload e re-render.
+
+## Prioridade
+
+**P3**: o caminho sem vídeo é raro e o efeito é cosmético, um convite a um vídeo inexistente. Não perde nem corrompe publicação.
+EOF
+gh issue create --title "Gate do vídeo aceita no-video.json sem conferir o upload em modo newsletter e o re-render do HTML" --label enhancement --label P3 --body-file $S/e1.md
+cat > $S/e2.md <<'EOF'
+## Achado
+
+Na sessão de 10/11/2026 (PR #12597), o hook do guard de merge (#5716) bloqueou um comando Bash que **não continha `gh pr merge`** nem `gh api`. O comando era `cd /home/vjpixel/diaria-wt-12591 && python3 - <<'X' ... X`, um script Python que fazia `str.replace` em `scripts/lib/diaria/youtube-pending-approval.ts`. A mensagem de erro foi a do bloqueio de `gh pr merge` ("há uma rodada /diaria-overnight, /diaria-develop ou /diaria-continuo ativa ... O comando não está na forma que o guard consegue provar").
+
+O texto do heredoc tinha trechos como `stage5-youtube.ts`, `--ignore-pending-approval`, `--upload` e `link-video-d1.ts --save`, mas nenhum `gh`. Contornei aplicando a mesma edição com o Edit e com um script Python gravado em arquivo.
+
+Issues parecidas, já fechadas: #11325 (texto citando `gh api` em heredoc) e #11501 (texto citado em heredoc). Este caso não tinha nem `gh`, então ou é outro padrão casando ou é regressão.
+
+## Para reproduzir
+
+Com uma coordenadora overnight/develop ativa, rodar de uma sessão interativa um `python3 - <<'X'` que contenha os trechos acima e confirmar o bloqueio. A reprodução não foi tentada na sessão.
+
+## Prioridade
+
+**P3**: há contorno (Edit ou script em arquivo) e o guard falha para o lado seguro. Mas cada ocorrência custa uma volta e pode levar quem não conhece o contorno a desistir de uma edição legítima.
+EOF
+gh issue create --title "Guard de merge (#5716) bloqueia heredoc Python sem gh no texto" --label bug --label P3 --body-file $S/e2.md

@@ -75,7 +75,10 @@
 //     <<'D' …)", gh pr|issue create/comment --body "$(cat <<'D' …)", com
 //     `cd <caminho simples> && ` opcional antes — #10777; desde o #11325
 //     também `cat <<'D' > arq` / `cat > arq <<'D'` seguido no máximo de um
-//     consumidor de texto, e `gh pr|issue comment … --body-file - <<'D'`).
+//     consumidor de texto, e `gh pr|issue comment … --body-file - <<'D'`;
+//     desde o #12619 vários blocos `cat` na mesma chamada). À parte, o corpo
+//     de `python3|node - <<'D'` sem `gh`/`merge` no texto não é lido como
+//     shell (`stripInterpreterHeredocBody`, #12619).
 //     Falso positivo fora dela (ex.: `cat <<'EOF' | tee nota.md` citando o
 //     merge) é aceito;
 //   - wrappers fora da lista `WRAPPERS` abaixo (ex.: `chronic`, `doas`);
@@ -1597,20 +1600,32 @@ const HEAD_FORMS = [
     re: new RegExp(`^${CD_PREFIX}gh (?:pr|issue) (?:comment|create|edit)${ARGS} --body-file - <<${DELIM}$`),
     tail: /^\s*$/,
   },
-  // #11325: cat <<'D' > ARQ  /  cat > ARQ <<'D'  (também `>>`) — o corpo vai
-  // pra um ARQUIVO, nunca pra um shell. Depois do D: nada, ou UM consumidor
-  // de texto (abaixo). Executar o arquivo na mesma chamada (`bash ARQ`,
-  // `. ARQ`, `| sh`) não casa e segue fail-closed. ARQ só `.md`/`.txt`: os
-  // consumidores executam código do repo (`scripts/*.ts`, hooks do git,
-  // `tsconfig.json`/`package.json`) — sobrescrever um deles e rodá-lo na
-  // mesma chamada seria bypass.
-  // #11501: `$NOME` no caminho (ver VAR_REF); `NOME=valor; ` antes só com
-  // consumidor `gh … --body-file` (ver SAFE_ASSIGN_NAME).
-  { re: new RegExp(`^${CD_PREFIX}cat <<${DELIM} ?>>? ?${VAR_TEXT_FILE}$`), tail: catTail(false) },
-  { re: new RegExp(`^${CD_PREFIX}cat ?>>? ?${VAR_TEXT_FILE} <<${DELIM}$`), tail: catTail(false) },
-  { re: new RegExp(`^${ASSIGN_PREFIX}${CD_PREFIX}cat <<${DELIM} ?>>? ?${VAR_TEXT_FILE}$`), tail: catTail(true) },
-  { re: new RegExp(`^${ASSIGN_PREFIX}${CD_PREFIX}cat ?>>? ?${VAR_TEXT_FILE} <<${DELIM}$`), tail: catTail(true) },
+  // As formas `cat <<'D' > ARQ` (#11325, #11501) vivem em `isCatToFileChain`
+  // logo abaixo: desde o #12619 aceitam mais de um bloco na mesma chamada.
 ];
+
+// #11325: cat <<'D' > ARQ  /  cat > ARQ <<'D'  (também `>>`) — o corpo vai
+// pra um ARQUIVO, nunca pra um shell. Depois do D: nada, ou consumidores de
+// texto (`catTail`). Executar o arquivo na mesma chamada (`bash ARQ`,
+// `. ARQ`, `| sh`) não casa e segue fail-closed. ARQ só `.md`/`.txt`: os
+// consumidores executam código do repo (`scripts/*.ts`, hooks do git,
+// `tsconfig.json`/`package.json`) — sobrescrever um deles e rodá-lo na
+// mesma chamada seria bypass.
+// #11501: `$NOME` no caminho (ver VAR_REF); `NOME=valor; ` antes só com
+// consumidor `gh … --body-file` (ver SAFE_ASSIGN_NAME).
+// #12619: o prefixo é uma sequência de `cd X` e atribuições inócuas, em
+// qualquer ordem, separadas por `; ` ou ` && ` (o caso real era `cd X; S=…;
+// cat > $S/e1.md <<'EOF'`), e depois de cada bloco vêm, linha a linha,
+// consumidores de texto ou OUTRO cabeçalho `cat … <<'D'` (dois corpos de
+// issue gravados e criados na mesma chamada). Qualquer outra linha tira o
+// comando inteiro da whitelist.
+const CAT_PREFIX_ITEM = `(?:cd ${SIMPLE_ARG}|${SAFE_ASSIGN_NAME}=${SIMPLE_ARG})(?:; | && )`;
+const CAT_HEAD_RES = [
+  new RegExp(`^((?:${CAT_PREFIX_ITEM})*)cat <<${DELIM} ?>>? ?${VAR_TEXT_FILE}$`),
+  new RegExp(`^((?:${CAT_PREFIX_ITEM})*)cat ?>>? ?${VAR_TEXT_FILE} <<${DELIM}$`),
+];
+/** O prefixo de um cabeçalho `cat` tem atribuição (`NOME=valor`)? */
+const PREFIX_HAS_ASSIGN_RE = new RegExp(`(?:^|; | && )${SAFE_ASSIGN_NAME}=`);
 
 /**
  * Fecho aceito depois de um `cat <<'D' > ARQ` (#11325), contado a partir da
@@ -1640,20 +1655,71 @@ export function isHeredocDataCommand(command) {
   for (const { re, tail } of HEAD_FORMS) {
     const m = re.exec(lines[0]);
     if (!m) continue;
-    const close = lines.indexOf(m[1], 1);
+    const close = heredocCloseLine(lines, 1, m[1]);
     if (close === -1) return false;
-    // Dentro de `$(...)` o bash também fecha o heredoc numa linha `D` seguida
-    // de espaços/tabs e `)` (`D)"`, `D )"; gh pr merge 5`) — e a variante com
-    // espaço no fim é ambígua entre shells. Qualquer linha dessas ANTES do
-    // fecho exato tira o comando da whitelist (fail-closed).
-    const delim = m[1];
-    const early = new RegExp(`^${delim}[ \\t]*\\)`);
-    for (let k = 1; k < close; k++) {
-      if (early.test(lines[k]) || lines[k].replace(/[ \t]+$/, "") === delim) return false;
-    }
     return tail.test(lines.slice(close + 1).join("\n"));
   }
-  return false;
+  return isCatToFileChain(lines);
+}
+
+/**
+ * Linha do fecho do heredoc de delimitador `delim` cujo corpo começa em
+ * `from`, ou `-1` (sem fecho, ou fecho ambíguo antes do exato).
+ * Dentro de `$(...)` o bash também fecha o heredoc numa linha `D` seguida
+ * de espaços/tabs e `)` (`D)"`, `D )"; gh pr merge 5`) — e a variante com
+ * espaço no fim é ambígua entre shells. Qualquer linha dessas ANTES do
+ * fecho exato tira o comando da whitelist (fail-closed).
+ */
+function heredocCloseLine(lines, from, delim) {
+  const close = lines.indexOf(delim, from);
+  if (close === -1) return -1;
+  const early = new RegExp(`^${delim}[ \\t]*\\)`);
+  for (let k = from; k < close; k++) {
+    if (early.test(lines[k]) || lines[k].replace(/[ \t]+$/, "") === delim) return -1;
+  }
+  return close;
+}
+
+/**
+ * #11325/#11501/#12619: cadeia de blocos `cat … > ARQ <<'D'` (ver
+ * `CAT_HEAD_RES`). A 1ª linha é um cabeçalho; depois de cada corpo, cada
+ * linha é vazia, um consumidor de texto (`catTail`) ou outro cabeçalho. Com
+ * atribuição em QUALQUER prefixo, todo consumidor da cadeia fica restrito a
+ * `gh … --body-file` (review da #11510).
+ */
+function isCatToFileChain(lines) {
+  const header = (line) => {
+    for (const re of CAT_HEAD_RES) {
+      const m = re.exec(line);
+      if (m) return { prefix: m[1], delim: m[2] };
+    }
+    return null;
+  };
+  const first = header(lines[0]);
+  if (first === null) return false;
+  const blocks = [];
+  let k = 0;
+  let h = first;
+  while (h !== null) {
+    const close = heredocCloseLine(lines, k + 1, h.delim);
+    if (close === -1) return false;
+    blocks.push(h);
+    k = close + 1;
+    h = null;
+    const rest = [];
+    for (; k < lines.length; k++) {
+      const next = header(lines[k]);
+      if (next !== null) {
+        h = next;
+        break;
+      }
+      rest.push(lines[k]);
+    }
+    blocks[blocks.length - 1].rest = rest;
+  }
+  const afterAssign = blocks.some((b) => PREFIX_HAS_ASSIGN_RE.test(b.prefix));
+  const consumer = catTail(afterAssign);
+  return blocks.every((b) => b.rest.every((line) => consumer.test(line)));
 }
 
 /**
@@ -1692,8 +1758,41 @@ export function findGhPrMergeInvocations(command, opts = {}) {
     importSeen: false,
     configOverridden: CONFIG_OVERRIDE_RES.some((re) => re.test(command)),
   };
-  collect(command, 0, out, { skipHeredocData: isHeredocDataCommand(command) }, env);
+  // #12619: corpo de script Python/Node passado por heredoc não é lido como shell.
+  const effective = stripInterpreterHeredocBody(command) ?? command;
+  collect(effective, 0, out, { skipHeredocData: isHeredocDataCommand(effective) }, env);
   return out;
+}
+
+// #12619: `python3 - <<'D'` / `node - <<'D'` — o corpo é o SCRIPT do
+// interpretador, não texto pra um shell. Lido como comandos de shell, código
+// Python com aspas triplas e crases de template literal aninhava além de
+// `MAX_DEPTH` e virava merge opaco ("depth"), sem `gh` nenhum no texto. O
+// corpo só sai da leitura quando (1) a 1ª linha é EXATAMENTE o interpretador
+// lendo o stdin (prefixo opcional de `cd X`/atribuições inócuas, nada depois
+// do `<<'D'`: nem pipe, nem `&&`), (2) o delimitador é aspado (sem aspas o
+// bash expande `$(...)` do corpo antes de entregá-lo) e (3) o corpo não cita
+// `gh` como palavra nem `merge` — um script que chama o merge (`subprocess`,
+// `execSync`, `curl …/merge`) continua lido, fail-closed. O resto do comando
+// (linha do cabeçalho e o que vem depois do fecho) segue lido inteiro, como
+// sempre. O interpretador poder rodar um merge OFUSCADO é o mesmo limite de
+// `python3 -c '…'` e de script em arquivo (topo do módulo).
+const INTERP_HEAD_RE = new RegExp(`^((?:${CAT_PREFIX_ITEM})*)(?:python3?|node)(?: -)? <<${DELIM}$`);
+const MERGE_TEXT_RE = /(?:^|[^A-Za-z0-9_-])gh(?:\.exe)?(?:[^A-Za-z0-9_-]|$)|merge/i;
+
+/**
+ * `command` com o corpo do heredoc do interpretador removido (cabeçalho, fecho
+ * e o resto intactos), ou `null` quando a forma do #12619 não se aplica.
+ */
+export function stripInterpreterHeredocBody(command) {
+  if (typeof command !== "string" || command.includes("\r")) return null;
+  const lines = command.split("\n");
+  const m = INTERP_HEAD_RE.exec(lines[0]);
+  if (!m) return null;
+  const close = heredocCloseLine(lines, 1, m[2]);
+  if (close === -1) return null;
+  if (MERGE_TEXT_RE.test(lines.slice(1, close).join("\n"))) return null;
+  return [lines[0], ...lines.slice(close)].join("\n");
 }
 
 /** `true` se `command` executa um merge de PR (ver limites no topo). */
