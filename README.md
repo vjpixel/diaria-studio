@@ -29,7 +29,8 @@ Slash commands disponíveis (pipeline completa ou etapas isoladas):
 
 | Skill | O que faz |
 |---|---|
-| `/diaria-edicao AAMMDD [--no-gates]` | Etapas 1-4 (pesquisa → revisão/gate). Retoma do ponto que parou se interrompido; após o gate, instrui `/diaria-video-montagem` e `/diaria-publica`, cada um numa sessão nova (#6171, #12591). |
+| `/diaria-edicao AAMMDD [--no-gates]` | Etapas 1-4 (pesquisa → revisão/gate). Retoma do ponto que parou se interrompido; após o gate, instrui `/diaria-video-roteiro`, `/diaria-video-montagem` e `/diaria-publica`, cada um numa sessão nova (#6171, #12591). |
+| `/diaria-video-roteiro [AAMMDD]` | Roteiro de fala do vídeo do D1 (horizontal + 2 verticais), depois do gate 4 e antes da gravação; standalone, não encadeia (#12750). |
 | `/diaria-publica AAMMDD` | Entrada do dia normal: vídeo horizontal no YouTube, depois as Etapas 5 e 6 na mesma sessão, depois o vertical (#12591). Era `/diaria-publica-video`, que segue como alias (#12620). |
 | `/diaria-1-pesquisa AAMMDD` | Etapa 1 (pesquisa + dedup + categorize + score). |
 | `/diaria-2-escrita AAMMDD [newsletter\|social]` | Etapa 2 (newsletter + posts sociais em paralelo). |
