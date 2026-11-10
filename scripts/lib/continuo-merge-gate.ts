@@ -41,6 +41,8 @@
  * 1. `superseded` — issue(s) já fechada(s) por outra coisa → `reject`
  *    incondicional, ANTES até do veredito da revisão (não importa o que o
  *    review achou: não há mais nada útil a mergear, #6238).
+ * 1a. Draft ou `bloqueio-execucao` (ou estado desconhecido) →
+ *    `escalate`, sem promoção automática a ready (#12684).
  * 1b. PR retida para o editor (#10278 — label `retido-para-editor` ou
  *    marcador no corpo, ver `scripts/lib/pr-retido-para-editor.ts`; `null`
  *    = labels ilegíveis, fail-closed) → `escalate`. VEM ANTES do veredito
@@ -108,6 +110,9 @@ export interface ContinuoMergeGateInput {
   /** `true` quando o gate de superseded (#6238) já confirmou que toda issue
    *  referenciada pela PR está `CLOSED` — ver `computeSupersededVerdict`. */
   superseded: boolean;
+  /** Unknown draft/labels fail closed (#12684). */
+  isDraft: boolean | null;
+  bloqueioExecucao: boolean | null;
   /** #10278: `true` = PR retida para o editor (label `retido-para-editor`
    *  ou marcador no corpo); `null` = labels ilegíveis (fail-closed, tratado
    *  como retida). Ver `evaluatePrRetido`. */
@@ -155,6 +160,17 @@ export function evaluateContinuoMergeGate(input: ContinuoMergeGateInput): Contin
     return {
       action: "reject",
       reason: "superseded: issue(s) referenciada(s) já fechada(s) por outra coisa (#6238)",
+    };
+  }
+
+  if (input.isDraft !== false || input.bloqueioExecucao !== false) {
+    return {
+      action: "escalate",
+      reason: input.bloqueioExecucao === true
+        ? "bloqueio-execucao — liberação explícita necessária; draft não é promovido automaticamente"
+        : input.isDraft === true
+          ? "draft — aguardando autor marcar ready; nunca mergear rascunho"
+          : "estado draft/bloqueio-execucao desconhecido — fail-closed",
     };
   }
 

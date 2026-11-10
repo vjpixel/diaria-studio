@@ -87,6 +87,7 @@ import { evaluatePrRetido } from "./lib/pr-retido-para-editor.ts";
 export const EFFORT_DIFF_LINE_THRESHOLD = 500;
 
 interface GhPrViewPayload {
+  isDraft?: unknown;
   headRefOid?: unknown;
   mergeable?: unknown;
   statusCheckRollup?: unknown;
@@ -180,7 +181,7 @@ function run(): number {
 
   const cwd = process.cwd();
   const prView = ghJson<GhPrViewPayload>(
-    ["pr", "view", String(prNumber), "--json", "headRefOid,mergeable,statusCheckRollup,comments,body,additions,deletions,labels"],
+    ["pr", "view", String(prNumber), "--json", "isDraft,headRefOid,mergeable,statusCheckRollup,comments,body,additions,deletions,labels"],
     cwd,
   );
 
@@ -217,7 +218,13 @@ function run(): number {
   const diffLineCount = additions !== null && deletions !== null ? additions + deletions : null;
 
   const claims = checkContinuoPrSessionClaims(resolveRepoRoot, payload.body);
+  const isDraft = typeof payload.isDraft === "boolean" ? payload.isDraft : null;
+  const bloqueioExecucao = Array.isArray(payload.labels) && payload.labels.every(
+    (label) => label && typeof label.name === "string",
+  ) ? payload.labels.some((label) => label.name === "bloqueio-execucao") : null;
   const gateResult = evaluateContinuoMergeGate({
+    isDraft,
+    bloqueioExecucao,
     superseded: supersededVerdict.superseded,
     retidoParaEditor: retido.retido,
     verdict,
@@ -239,6 +246,8 @@ function run(): number {
     action: result.action,
     reason: result.reason,
     details: {
+      isDraft,
+      bloqueioExecucao,
       sessionClaims: claims,
       superseded: supersededVerdict,
       retidoParaEditor: retido,
