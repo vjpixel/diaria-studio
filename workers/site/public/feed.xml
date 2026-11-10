@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Fri, 06 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Mon, 09 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Nvidia: CEO admite caso com suposta espiã</title>
+      <link>https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia</guid>
+      <pubDate>Mon, 09 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Claude passa a ler seu extrato bancário | Google corta 30% do preço do vídeo do Gemini</description>
+    </item>
     <item>
       <title>Google paga até 12 salários para quem sair</title>
       <link>https://diar.ia.br/p/google-paga-ate-12-salarios-para-quem-sair</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/seu-chatbot-pode-ter-lido-propaganda-israelense</guid>
       <pubDate>Thu, 27 Aug 2026 09:00:00 GMT</pubDate>
       <description>Agora o ChatGPT faz login nos seus sites | OpenAI lança chip Jalapeño para rivalizar Nvidia</description>
-    </item>
-    <item>
-      <title>Empresas recontratam quem demitiu por IA</title>
-      <link>https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia</guid>
-      <pubDate>Wed, 26 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Infraestrutura trava 1 em cada 3 startups de IA | Google mira escritórios de advocacia com Gemini</description>
     </item>
   </channel>
 </rss>
