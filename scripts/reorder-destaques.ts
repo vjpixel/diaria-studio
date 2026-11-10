@@ -19,7 +19,10 @@
  *   - `04-d{N}-*.jpg` (rename files — 2x1, 1x1, 4x5, 4x5-nativo, master; #5085
  *     cobriu 4x5-nativo, que o regex antigo excluía por causa do hífen no
  *     sufixo; #5564 trocou o mecanismo de rename-em-2-passos por staging
- *     local + escrita direta no destino — ver `stageAndWriteVerified`)
+ *     local + escrita direta no destino — ver `stageAndWriteVerified`).
+ *     Exceção: `04-d1-2x1-play.jpg` (só o D1 tem) nunca é renomeado — com
+ *     outro destaque no D1 ele é apagado e o upload `--mode newsletter`
+ *     regera (#12692, `removeStaleD1PlayImages`)
  *   - `03-social.md` (sections `## d{N}` em cada plataforma)
  *   - `_internal/.social-source-hash.json` (recomputado quando o
  *     `03-social.md` foi de fato reordenado — #6062)
@@ -129,7 +132,7 @@ import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // 
 import { hashFromApprovedFile, writeSocialSourceHash } from "./lib/social-source-hash.ts"; // #6062, #8596
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
-import { publicImageKeysForPosition } from "./lib/public-images-invalidate.ts"; // #11252
+import { publicImageKeysForPosition, uploadImagesNextSteps } from "./lib/public-images-invalidate.ts"; // #11252, #12692
 import { EXTRAS_MANIFEST, extraSourceFileName } from "./lib/fact-check-extra-sources.ts"; // #11531
 import { describeCarouselKeepArtRemap, remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import { invalidateStage4D1Capture } from "./lib/stage4-capture-state.ts"; // #12589
@@ -470,6 +473,8 @@ export function parseArgs(argv: string[]): CliArgs {
 interface FilesModified {
   rewritten: string[];
   renamed: Array<{ from: string; to: string }>;
+  /** #12692: play do D1 defasado / órfão apagado (regerado pelo upload em modo newsletter). */
+  removed: string[];
 }
 
 /**
@@ -904,6 +909,10 @@ export function renameDestaqueImages(
   }
   const pending: PendingFileRename[] = [];
   for (const f of files) {
+    // #12692: a cópia com o convite do vídeo (`04-d1-2x1-play.jpg`) é derivada
+    // do hero do D1 e só existe no D1 — nunca segue o destaque para outra
+    // posição. `removeStaleD1PlayImages` cuida dela depois dos renames.
+    if (D1_PLAY_FILE_RE.test(f)) continue;
     const m = f.match(/^04-d([123])-(.+)$/);
     if (!m) continue;
     const oldN = parseInt(m[1], 10);
@@ -915,6 +924,52 @@ export function renameDestaqueImages(
     return pending.map((p) => ({ from: p.originalName, to: p.finalName }));
   }
   return stageAndWriteVerified(editionDir, pending, deps);
+}
+
+/** #12692: `04-d{N}-2x1-play.{jpg,png,jpeg}` — a cópia do hero com o convite do vídeo. */
+const D1_PLAY_FILE_RE = /^04-d[123]-2x1-play\.(?:jpg|png|jpeg)$/i;
+
+/**
+ * (#12692) Remove a cópia do hero com o convite do vídeo que deixou de valer
+ * depois do reorder. Só o D1 tem play (`04-d1-2x1-play.jpg`, gerada por
+ * `upload-images-public.ts --mode newsletter` a partir de `04-d1-2x1.jpg`,
+ * `lib/diaria/d1-play-image.ts`):
+ *   - com outro destaque na posição 1 (`newOrder[0] !== 1`), a cópia do D1 é
+ *     do hero ANTIGO — apagada; o upload em modo newsletter regera a partir do
+ *     hero novo. Antes ela era renomeada junto com o destaque e sobrava como
+ *     `04-d2-2x1-play.jpg` órfão (achado na edição 261111);
+ *   - `04-d2-`/`04-d3-2x1-play` são sempre órfãos (resíduo de um reorder
+ *     anterior a este fix) — apagados em qualquer ordem.
+ *
+ * Artefato derivado e regerável, por isso apagado e não guardado em
+ * `_forensic`. Best-effort como o Passo 4 do `stageAndWriteVerified`: falha
+ * no unlink vira aviso, nunca aborta o reorder já gravado.
+ */
+export function removeStaleD1PlayImages(
+  editionDir: string,
+  newOrder: number[],
+  dryRun: boolean,
+  deps: Pick<RenameFileDeps, "existsSync" | "unlinkSync"> = defaultRenameFileDeps,
+): { removed: string[]; warnings: string[] } {
+  const removed: string[] = [];
+  const warnings: string[] = [];
+  if (!deps.existsSync(editionDir)) return { removed, warnings };
+  const d1Moved = newOrder[0] !== 1;
+  for (const f of readdirSync(editionDir).filter((x) => D1_PLAY_FILE_RE.test(x)).sort()) {
+    const isD1 = /^04-d1-/i.test(f);
+    if (isD1 && !d1Moved) continue;
+    if (dryRun) {
+      removed.push(f);
+      continue;
+    }
+    try {
+      (deps.unlinkSync ?? unlinkSync)(join(editionDir, f));
+      removed.push(f);
+    } catch (e) {
+      warnings.push(`não foi possível remover ${f} (play do D1 defasado, #12692): ${(e as Error).message ?? e}`);
+    }
+  }
+  return { removed, warnings };
 }
 
 /**
@@ -1506,7 +1561,7 @@ function main(): void {
     return;
   }
 
-  const modified: FilesModified = { rewritten: [], renamed: [] };
+  const modified: FilesModified = { rewritten: [], renamed: [], removed: [] };
   // (#8679, review finding #1) Avisos não-fatais que precisam sobreviver no
   // relatório JSON final — nunca só `console.warn`/`console.error`, senão um
   // caller que só lê stdout estruturado (ex: um orchestrator futuro) nunca
@@ -1534,6 +1589,14 @@ function main(): void {
   modified.renamed.push(
     ...renameDestaquePrompts(internalDir, args.newOrder, args.dryRun),
   );
+  // #12692: play do D1 defasado (outro destaque na posição 1) e órfãos
+  // `04-d{2,3}-2x1-play` — depois dos renames, que podem abortar.
+  const stalePlay = removeStaleD1PlayImages(editionDir, args.newOrder, args.dryRun);
+  modified.removed.push(...stalePlay.removed);
+  for (const w of stalePlay.warnings) {
+    console.warn(`WARN: reorder-destaques — ${w}`);
+    warnings.push(w);
+  }
 
   // 3. JSONs canônicos. #9188: 01-approved*.json, 02-reviewed.md e
   // 03-social.md são acumulados em `pendingWrites` e gravados num LOTE
@@ -1930,8 +1993,11 @@ function main(): void {
       warnings.push(`.social-source-hash.json ilegível pós-reorder (${(e as Error).message ?? e})`);
     }
   }
-  if (modified.rewritten.includes(publicImagesPath)) {
-    nextSteps.push(`Re-subir as imagens das posições afetadas: npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}/`);
+  // #12692: imagem renomeada (ou chave pública removida) = upload nos DOIS
+  // modos — sem `--mode`, o upload roda só o social e não gera cover/d{N}_2x1.
+  const imagesMoved = modified.renamed.some((r) => /^04-d[123]-/i.test(basename(r.from)));
+  if (modified.rewritten.includes(publicImagesPath) || imagesMoved || modified.removed.length > 0) {
+    nextSteps.push(...uploadImagesNextSteps(editionDir));
   }
 
   // #3982: validação PÓS-reorder do limite de chars por slot (janela única

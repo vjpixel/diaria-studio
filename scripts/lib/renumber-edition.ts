@@ -22,6 +22,12 @@
  *   com o cache no lugar, o re-upload reaproveitaria as URLs antigas.
  * - **`_internal/_forensic/` não é tocado.** É registro histórico.
  * - **Destino existente ⇒ recusa.** Nunca mescla duas edições.
+ * - **Stores globais de `data/`** (#12691): `intentional-errors.jsonl`,
+ *   `eia-used.json` e `exploration-quota.json` guardam o ID fora da pasta;
+ *   só o campo/chave da edição muda, e entrada já existente do ID novo recusa.
+ * - **O que fica fora** (#12691): pasta do vídeo no Drive, cache local do
+ *   vídeo, outras sessões/máquinas e histórico — `leftOutItems`, impresso
+ *   pelo CLI.
  *
  * Idempotente: a pasta nova guarda `_internal/renumber-edition.json`; rodar de
  * novo com a origem já movida e esse relatório no destino retoma (pula a parte
@@ -41,6 +47,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { editionDir } from "./edition-paths.ts";
+import { EDITION_LOCK_TTL_MS, readEditionLock, type EditionLockRecord } from "./edition-lock.ts";
 
 export const RENUMBER_REPORT_FILENAME = "renumber-edition.json";
 const FORENSIC_DIR = join("_internal", "_forensic");
@@ -122,6 +129,8 @@ export interface RenumberReport {
   /** `img-{de}-…` deixados como estão (o re-upload gera os novos). */
   preserved_img_refs: number;
   public_images_moved_to: string | null;
+  /** #12691 — stores globais de `data/` reescritos (opcional: relatório antigo não tem). */
+  global_stores?: Array<{ path: string; count: number }>;
   remote_steps: RemoteStepState[];
 }
 
@@ -253,6 +262,10 @@ export function renumberLocal(
   for (const r of scan.renames) {
     if (existsSync(join(fromDir, r.to))) throw new Error(`${r.to} já existe na edição — recusado (renomear sobrescreveria).`);
   }
+  // #12691 — stores globais conferidos ANTES de qualquer escrita.
+  const globalChanges = scanGlobalStores(root, from, to);
+  const globalRefusal = globalStoresRefusal(globalChanges, to);
+  if (globalRefusal) throw new Error(globalRefusal);
 
   let publicImagesMovedTo: string | null = null;
   if (scan.publicImages) {
@@ -268,6 +281,19 @@ export function renumberLocal(
   // caminhos ainda não renomeados.
   for (const r of scan.renames) renameSync(join(fromDir, r.from), join(fromDir, r.to));
 
+  // #12691 — só na execução nova, nunca na retomada: depois da troca outra
+  // edição pode ter assumido o ID antigo (261110 → 261111 seguido de
+  // 261109 → 261110 no mesmo dia), e regravar mudaria as entradas dela.
+  const globalStores: Array<{ path: string; count: number }> = [];
+  for (const store of GLOBAL_EDITION_STORES) {
+    const abs = resolve(root, store.path);
+    if (!existsSync(abs)) continue;
+    const r = rewriteGlobalStore(store, readFileSync(abs, "utf8"), from, to);
+    if (r.count === 0) continue;
+    writeFileSync(abs, r.text, "utf8");
+    globalStores.push({ path: store.path, count: r.count });
+  }
+
   mkdirSync(dirname(toDir), { recursive: true });
   renameSync(fromDir, toDir);
 
@@ -281,6 +307,7 @@ export function renumberLocal(
     renamed_paths: scan.renames,
     preserved_img_refs: scan.preserved,
     public_images_moved_to: publicImagesMovedTo,
+    global_stores: globalStores,
     remote_steps: remoteSteps.map((s) => ({ id: s.id, status: "pending" })),
   };
   writeRenumberReport(toDir, report);
@@ -500,6 +527,158 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
     out.push({ what: "brevo-diaria", result: "manual", detail: "campanha agendada na Brevo: desagendar à mão no painel." });
   }
   return out;
+}
+
+/**
+ * #12691 — stores GLOBAIS em `data/` indexados pelo ID da edição, fora da
+ * pasta dela. A troca manual de 10/11/2026 (261110 → 261111) teve de editar
+ * `data/intentional-errors.jsonl` à mão; os outros dois têm a mesma forma.
+ * Cada um muda só o campo/chave do ID, nunca o texto livre de outras edições.
+ * Logs append-only (`run-log.jsonl`, `type-hint-divergence.jsonl`, `sources/`)
+ * ficam de fora de propósito: são registro do que aconteceu sob o ID antigo.
+ */
+export type GlobalEditionStore =
+  | { path: string; kind: "jsonl-field"; field: string }
+  | { path: string; kind: "array-field"; field: string }
+  | { path: string; kind: "object-key"; container: string };
+
+export const GLOBAL_EDITION_STORES: readonly GlobalEditionStore[] = [
+  { path: "data/intentional-errors.jsonl", kind: "jsonl-field", field: "edition" },
+  { path: "data/eia-used.json", kind: "array-field", field: "edition_date" },
+  { path: "data/exploration-quota.json", kind: "object-key", container: "editions" },
+];
+
+export interface GlobalStoreRewrite {
+  text: string;
+  /** Entradas de `from` trocadas pra `to`. */
+  count: number;
+  /** Entradas que JÁ são de `to` (trocar mesclaria duas edições). */
+  conflict: number;
+  /** JSON ilegível: nada é reescrito e quem chama recusa. */
+  unreadable: boolean;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/** Pura: reescreve o conteúdo de um store global trocando o ID da edição. */
+export function rewriteGlobalStore(store: GlobalEditionStore, text: string, from: string, to: string): GlobalStoreRewrite {
+  const none = (unreadable: boolean): GlobalStoreRewrite => ({ text, count: 0, conflict: 0, unreadable });
+  if (store.kind === "jsonl-field") {
+    let count = 0;
+    let conflict = 0;
+    // Linha que não é JSON (append pela metade) fica como está, byte a byte.
+    const lines = text.split("\n").map((line) => {
+      if (line.trim() === "") return line;
+      let obj: unknown;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        return line;
+      }
+      if (!isPlainObject(obj)) return line;
+      if (obj[store.field] === to) conflict += 1;
+      if (obj[store.field] !== from) return line;
+      count += 1;
+      return JSON.stringify({ ...obj, [store.field]: to });
+    });
+    return { text: count > 0 ? lines.join("\n") : text, count, conflict, unreadable: false };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return none(true);
+  }
+  if (store.kind === "array-field") {
+    if (!Array.isArray(parsed)) return none(true);
+    let count = 0;
+    let conflict = 0;
+    const next = parsed.map((e) => {
+      if (!isPlainObject(e)) return e;
+      if (e[store.field] === to) conflict += 1;
+      if (e[store.field] !== from) return e;
+      count += 1;
+      return { ...e, [store.field]: to };
+    });
+    return { text: count > 0 ? JSON.stringify(next, null, 2) + "\n" : text, count, conflict, unreadable: false };
+  }
+  if (!isPlainObject(parsed) || !isPlainObject(parsed[store.container])) return none(true);
+  const inner = parsed[store.container] as Record<string, unknown>;
+  const conflict = Object.hasOwn(inner, to) ? 1 : 0;
+  if (!Object.hasOwn(inner, from)) return { text, count: 0, conflict, unreadable: false };
+  // Mesma serialização do dono do arquivo (`exploration-quota.ts`): chaves em ordem.
+  const renamed: Record<string, unknown> = {};
+  for (const k of Object.keys(inner)) if (k !== from) renamed[k] = inner[k];
+  renamed[to] = inner[from];
+  const ordered: Record<string, unknown> = {};
+  for (const k of Object.keys(renamed).sort()) ordered[k] = renamed[k];
+  return {
+    text: JSON.stringify({ ...parsed, [store.container]: ordered }, null, 2) + "\n",
+    count: 1,
+    conflict,
+    unreadable: false,
+  };
+}
+
+export interface GlobalStoreChange {
+  path: string;
+  count: number;
+  conflict: number;
+  unreadable: boolean;
+}
+
+/** O que cada store global existente mudaria. Só lista os que têm algo a dizer. */
+export function scanGlobalStores(root: string, from: string, to: string): GlobalStoreChange[] {
+  const out: GlobalStoreChange[] = [];
+  for (const store of GLOBAL_EDITION_STORES) {
+    const abs = resolve(root, store.path);
+    if (!existsSync(abs)) continue;
+    const r = rewriteGlobalStore(store, readFileSync(abs, "utf8"), from, to);
+    if (r.count > 0 || r.conflict > 0 || r.unreadable) {
+      out.push({ path: store.path, count: r.count, conflict: r.conflict, unreadable: r.unreadable });
+    }
+  }
+  return out;
+}
+
+/** Motivo de recusa da parte global (conflito ou store ilegível), ou `null`. */
+export function globalStoresRefusal(changes: GlobalStoreChange[], to: string): string | null {
+  const bad = changes.filter((c) => c.conflict > 0 || c.unreadable);
+  if (bad.length === 0) return null;
+  return bad
+    .map((c) =>
+      c.unreadable
+        ? `${c.path} ilegível (sync em trânsito?) — recusado, nada escrito.`
+        : `${c.path} já tem ${c.conflict} entrada(s) de ${to} — recusado (nunca mescla duas edições); resolver à mão.`,
+    )
+    .join(" ");
+}
+
+/**
+ * #12691 — o que a renumeração NÃO faz, impresso no dry-run e no fim do
+ * `--apply` pra a troca não depender de memória. Tudo aqui exige rede, outra
+ * máquina ou decisão humana.
+ */
+export function leftOutItems(from: string, to: string): string[] {
+  return [
+    `Drive: renomear a pasta ${from}/ da pasta YouTube (G:/Meu Drive/…/YouTube/${from}/) pra ${to}/ — os caminhos em _internal/video-montagem/ já apontam pro nome novo, e a montagem e o /diaria-publica procuram a pasta pelo AAMMDD.`,
+    `Cache local do vídeo: ~/.cache/diaria-video-montagem/${from}/ (ou DIARIA_VIDEO_CACHE_DIR) e {tmp}/diaria-video-montagem/${from}/ ficam com o nome antigo — renomear pra ${to}/ ou deixar a próxima montagem baixar de novo.`,
+    `Outras máquinas e sessões: a pasta nova chega pelo sync de data/; sessão aberta (aqui ou em outra máquina) que trabalhava em ${from} precisa recomeçar com ${to}.`,
+    `Histórico não reescrito: data/run-log.jsonl, data/type-hint-divergence.jsonl, data/sources/ e _internal/_forensic/ seguem com ${from} (registro do que aconteceu).`,
+    `Já publicado (não agendado): post, e-mail ou vídeo que saiu com ${from} no link fica como saiu.`,
+  ];
+}
+
+/** Trava viva da edição (#10309): heartbeat dentro do TTL e sem tombstone. */
+export function liveEditionLock(dir: string, nowMs: number): EditionLockRecord | null {
+  const lock = readEditionLock(dir);
+  if (!lock) return null;
+  if (lock.released_at !== undefined || lock.completed_stage !== undefined || lock.interrupted_stage !== undefined) return null;
+  const hb = Date.parse(lock.heartbeat_at);
+  if (!Number.isFinite(hb) || nowMs - hb > EDITION_LOCK_TTL_MS) return null;
+  return lock;
 }
 
 /** Alinha o estado dos passos do relatório com a lista atual (passo novo entra `pending`). */
