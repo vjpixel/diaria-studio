@@ -398,6 +398,107 @@ export function detectScheduledSends(stateDir: string, newDirRel: string): Sched
         : "reagendar na própria plataforma (sem worker_queue_key no registro)",
     });
   }
+  // #12688 — a campanha da Brevo diária agendada também sai no dia antigo.
+  const brevo = readJson(join(stateDir, "_internal", "brevo-diaria-published.json"));
+  if (brevo && brevo.status === "scheduled") {
+    out.push({
+      what: "brevo-diaria",
+      scheduled_at: typeof brevo.scheduled_at === "string" ? brevo.scheduled_at : null,
+      reschedule: "desagendar/reagendar à mão no painel da Brevo (campanha agendada não é editável pela API)",
+    });
+  }
+  return out;
+}
+
+/** Chamadas externas do `--unschedule` (#12688), injetáveis nos testes. */
+export interface UnscheduleDeps {
+  /** `DELETE /queue/:key` no Worker; `alreadyGone` = 404 (post pode já ter disparado). */
+  deleteWorkerEntry: (key: string) => Promise<{ deleted: boolean; alreadyGone: boolean }>;
+  /** `send_at: null` no broadcast + releitura; `ok` só com o desagendamento confirmado. */
+  unscheduleKit: (broadcastId: number) => Promise<{ ok: boolean; message: string }>;
+  nowIso: () => string;
+}
+
+export interface UnscheduleOutcome {
+  /** Mesmo rótulo de `ScheduledSend.what`. */
+  what: string;
+  /** `manual` = sem caminho automático (Buffer/X, Brevo, post sem key). */
+  result: "unscheduled" | "already_gone" | "failed" | "manual";
+  detail: string;
+}
+
+/**
+ * #12688 — desagenda o que `detectScheduledSends` acusa, antes da troca de ID:
+ * apaga da fila do Worker os posts `scheduled` com `worker_queue_key` (estado
+ * vira `deleted`, e a Etapa 5 da pasta nova reenfileira com o texto e o dia
+ * novos) e tira o `send_at` do broadcast do Kit (estado volta pra `draft`,
+ * sem `scheduled_at`, e a Etapa 6 reagenda). Substitui os dois scripts
+ * avulsos da troca 261109 → 261110.
+ *
+ * Só grava o estado local do que foi confirmado. 404 no Worker
+ * (`already_gone`) não mexe no registro: o post pode ter disparado, e quem
+ * chama confere antes de seguir. Falha de um item não interrompe os outros.
+ * Buffer (X), Brevo e post sem key saem `manual`, com o mesmo texto do aviso.
+ */
+export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): Promise<UnscheduleOutcome[]> {
+  const out: UnscheduleOutcome[] = [];
+  const kitPath = join(stateDir, "_internal", "newsletter-kit-published.json");
+  const kit = readJson(kitPath);
+  if (kit && kit.status === "scheduled") {
+    const id = typeof kit.broadcast_id === "number" ? kit.broadcast_id : null;
+    if (id === null) {
+      out.push({ what: "kit-newsletter", result: "failed", detail: "registro sem broadcast_id — desagendar à mão no Kit." });
+    } else {
+      try {
+        const r = await deps.unscheduleKit(id);
+        if (r.ok) {
+          const { scheduled_at: _dropped, ...rest } = kit;
+          writeFileSync(kitPath, JSON.stringify({ ...rest, status: "draft" }, null, 2) + "\n", "utf8");
+          out.push({ what: "kit-newsletter", result: "unscheduled", detail: `broadcast ${id}: ${r.message}` });
+        } else {
+          out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${r.message}` });
+        }
+      } catch (e) {
+        out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${(e as Error).message}` });
+      }
+    }
+  }
+
+  const socialPath = [join(stateDir, "_internal", "06-social-published.json"), join(stateDir, "06-social-published.json")].find(
+    (p) => existsSync(p),
+  );
+  const social = socialPath ? readJson(socialPath) : null;
+  const posts = social && Array.isArray(social.posts) ? (social.posts as Array<Record<string, unknown>>) : [];
+  for (const [i, p] of posts.entries()) {
+    if (p === null || typeof p !== "object" || p.status !== "scheduled") continue;
+    const parts = [p.platform, p.destaque, p.subtype && p.subtype !== "main" ? p.subtype : null].filter(
+      (x): x is string => typeof x === "string" && x !== "",
+    );
+    const what = `social:${parts.join("/")}`;
+    const key = typeof p.worker_queue_key === "string" ? p.worker_queue_key : null;
+    if (!key) {
+      out.push({ what, result: "manual", detail: "sem worker_queue_key (Buffer/X ou API direta): desagendar na própria plataforma." });
+      continue;
+    }
+    try {
+      const r = await deps.deleteWorkerEntry(key);
+      if (r.deleted) {
+        posts[i] = { ...p, status: "deleted", deleted_at: deps.nowIso(), deleted_reason: "renumber_edition" };
+        // Grava a cada item: uma falha adiante não perde o que já saiu da fila.
+        writeFileSync(socialPath!, JSON.stringify({ ...social, posts }, null, 2) + "\n", "utf8");
+        out.push({ what, result: "unscheduled", detail: `${key} removida da fila do Worker.` });
+      } else {
+        out.push({ what, result: "already_gone", detail: `${key} não está mais na fila (404): o post pode já ter disparado — conferir antes de seguir.` });
+      }
+    } catch (e) {
+      out.push({ what, result: "failed", detail: `${key}: ${(e as Error).message}` });
+    }
+  }
+
+  const brevo = readJson(join(stateDir, "_internal", "brevo-diaria-published.json"));
+  if (brevo && brevo.status === "scheduled") {
+    out.push({ what: "brevo-diaria", result: "manual", detail: "campanha agendada na Brevo: desagendar à mão no painel." });
+  }
   return out;
 }
 

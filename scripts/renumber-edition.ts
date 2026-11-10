@@ -8,6 +8,7 @@
  *   npx tsx scripts/renumber-edition.ts --from 261109 --to 261110              # dry-run: mostra o plano
  *   npx tsx scripts/renumber-edition.ts --from 261109 --to 261110 --apply      # parte local + lista dos passos remotos
  *   npx tsx scripts/renumber-edition.ts --from 261109 --to 261110 --apply --run-remote   # e roda os remotos
+ *   npx tsx scripts/renumber-edition.ts --from 261109 --to 261110 --apply --unschedule   # desagenda antes (#12688)
  *
  * ## Parte local (`--apply`)
  *
@@ -39,14 +40,31 @@
  * `--run-remote` é RECUSADO (exit 2, nada escrito) até quem chama reagendar e
  * repetir com `--ack-scheduled`.
  *
- * Exit: 0 ok; 1 passo remoto falhou ou erro na parte local; 2 argumento ou
- * precondição (destino existe, origem ausente, agendado sem `--ack-scheduled`).
+ * ## Desagendar antes da troca (#12688)
+ *
+ * `--apply --unschedule` desfaz o agendamento ANTES da parte local: apaga da
+ * fila do Worker os posts `scheduled` com `worker_queue_key` (Instagram,
+ * Threads, LinkedIn) e tira o `send_at` do broadcast do Kit (relido). O
+ * estado local passa a `deleted`/`draft`, e a Etapa 5/6 na pasta nova
+ * reagenda com o dia e o texto novos (a semanal de frio acompanha o
+ * principal desagendado no passo `kit-semanal-frio`). Buffer (X) e Brevo
+ * seguem manuais e continuam no aviso acima. Item que falhou ⇒ exit 1, nada
+ * renumerado; 404 no Worker (post pode ter disparado) mantém o aviso e a
+ * exigência de `--ack-scheduled`.
+ *
+ * Exit: 0 ok; 1 passo remoto falhou, desagendamento falhou ou erro na parte
+ * local; 2 argumento ou precondição (destino existe, origem ausente, agendado
+ * sem `--ack-scheduled`).
  */
 import { spawnSync } from "node:child_process";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+import { deleteFromWorkerQueue } from "./lib/worker-queue-client.ts";
+import { updateBroadcast } from "./lib/kit-broadcasts.ts";
+import { getBroadcast } from "./lib/kit-client.ts";
 import {
   buildRemoteSteps,
   detectScheduledSends,
@@ -56,8 +74,10 @@ import {
   renumberLocal,
   scanLocal,
   writeRenumberReport,
+  unscheduleSends,
   type RemoteStep,
   type RemoteStepState,
+  type UnscheduleDeps,
 } from "./lib/renumber-edition.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -81,6 +101,30 @@ export interface RenumberCliOptions {
 
 export function formatStep(s: RemoteStep): string {
   return `npx tsx ${s.argv.map((a) => (/[\s"'$`]/.test(a) ? JSON.stringify(a) : a)).join(" ")}`;
+}
+
+/**
+ * #12688 — `--unschedule`: desagenda Kit + fila do Worker antes da troca.
+ * Devolve 0 pra seguir com a renumeração; 1 se algum item falhou (nada
+ * renumerado); o código do `planRenumber` se a precondição falhar.
+ */
+export async function runUnschedule(
+  opts: { from: string; to: string },
+  deps: { root: string; log: (msg: string) => void; unschedule: UnscheduleDeps },
+): Promise<number> {
+  const plan = planRenumber(deps.root, opts.from, opts.to);
+  if (!plan.ok) {
+    deps.log(`ERRO: ${plan.reason}`);
+    return plan.code;
+  }
+  const outcomes = await unscheduleSends(plan.resume ? plan.toDir : plan.fromDir, deps.unschedule);
+  if (outcomes.length === 0) deps.log("--unschedule: nada agendado.");
+  for (const o of outcomes) deps.log(`--unschedule [${o.result}] ${o.what}: ${o.detail}`);
+  if (outcomes.some((o) => o.result === "failed")) {
+    deps.log("ERRO: desagendamento incompleto — nada renumerado. Corrigir e repetir o mesmo comando (o que já saiu não é refeito).");
+    return 1;
+  }
+  return 0;
 }
 
 export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDeps): number {
@@ -179,7 +223,30 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
   return 0;
 }
 
-function main(): void {
+/** Chamadas reais do `--unschedule`. Só o CLI as usa; os testes injetam fakes. */
+function productionUnscheduleDeps(): UnscheduleDeps {
+  return {
+    nowIso: () => new Date().toISOString(),
+    deleteWorkerEntry: async (key) => {
+      const url = process.env.DIARIA_LINKEDIN_CRON_URL ?? "";
+      const token = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+      if (!url || !token) throw new Error("DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN ausentes no env");
+      return deleteFromWorkerQueue(url, token, key, "renumber-edition");
+    },
+    unscheduleKit: async (id) => {
+      const before = await getBroadcast(id);
+      if (before.status === "completed" || before.status === "sending") {
+        return { ok: false, message: `já ${before.status} no Kit — não dá pra desagendar` };
+      }
+      await updateBroadcast(id, { send_at: null });
+      const after = await getBroadcast(id);
+      if (after.send_at != null) return { ok: false, message: `releitura ainda mostra send_at=${after.send_at}` };
+      return { ok: true, message: "send_at: null confirmado por releitura" };
+    },
+  };
+}
+
+async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const log = (msg: string) => process.stderr.write(`[renumber-edition] ${msg}\n`);
   let from: string | undefined;
@@ -193,7 +260,7 @@ function main(): void {
     return;
   }
   if (!from || !to) {
-    log("uso: npx tsx scripts/renumber-edition.ts --from AAMMDD --to AAMMDD [--apply] [--run-remote] [--ack-scheduled]");
+    log("uso: npx tsx scripts/renumber-edition.ts --from AAMMDD --to AAMMDD [--apply] [--unschedule] [--run-remote] [--ack-scheduled]");
     process.exitCode = 2;
     return;
   }
@@ -201,6 +268,19 @@ function main(): void {
     log("ERRO: --run-remote exige --apply.");
     process.exitCode = 2;
     return;
+  }
+  if (hasFlag(argv, "unschedule")) {
+    if (!hasFlag(argv, "apply")) {
+      log("ERRO: --unschedule exige --apply.");
+      process.exitCode = 2;
+      return;
+    }
+    loadProjectEnv(ROOT);
+    const code = await runUnschedule({ from, to }, { root: ROOT, log, unschedule: productionUnscheduleDeps() });
+    if (code !== 0) {
+      process.exitCode = code;
+      return;
+    }
   }
   process.exitCode = runRenumberEdition(
     { from, to, apply: hasFlag(argv, "apply"), runRemote: hasFlag(argv, "run-remote"), ackScheduled: hasFlag(argv, "ack-scheduled") },
@@ -213,4 +293,4 @@ function main(): void {
   );
 }
 
-if (isMainModule(import.meta.url)) main();
+if (isMainModule(import.meta.url)) void main();
