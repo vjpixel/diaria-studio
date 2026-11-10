@@ -152,7 +152,16 @@ export function noVideoLeftovers(editionDir: string): string[] {
     } catch (e) {
       out.push(`${NEWSLETTER_FINAL_HTML_FILE} ilegível (${(e as Error).message}): não dá para confirmar que o convite saiu`);
     }
-    if (html !== null && (html.includes(D1_INVITE_TEXT) || html.includes(D1_PLAY_HERO_FILE) || (playUrl !== null && html.includes(playUrl)))) {
+    // Sinais da imagem do D1 com o convite: o `<a class="hero-video">` que o
+    // render só emite com o link do vídeo/canal (#10784), o texto do convite
+    // no alt, o nome da cópia (antes da troca de URL) ou a URL do `d1_play`.
+    const linked =
+      html !== null &&
+      (/<a\b[^>]*\bclass="hero-video"/.test(html) ||
+        html.includes(D1_INVITE_TEXT) ||
+        html.includes(D1_PLAY_HERO_FILE) ||
+        (playUrl !== null && html.includes(playUrl)));
+    if (linked) {
       out.push(`${NEWSLETTER_FINAL_HTML_FILE} ainda leva a imagem do D1 com o convite "${D1_INVITE_TEXT}"`);
     }
   }

@@ -190,6 +190,17 @@ describe("#12618: edição marcada sem vídeo, com o convite do vídeo ainda na 
     );
   });
 
+  it("HTML com o <a class=\"hero-video\"> do render (URL já trocada, sem o texto do convite) também acusa", () => {
+    withDir(
+      {
+        ...marker,
+        "06-public-images.json": cacheClean,
+        "_internal/newsletter-final.html": `<a class="hero-video" href="https://youtu.be/x"><img class="hero" src="https://img/outra.jpg" alt="x"></a>`,
+      },
+      (dir) => assert.equal(assessVideoBeforePublish(dir, "261111").status, "no-video-stale"),
+    );
+  });
+
   it("marcador aplicado (cache e HTML limpos) → no-video-marked, não bloqueia", () => {
     withDir({ ...marker, "06-public-images.json": cacheClean, "_internal/newsletter-final.html": htmlClean }, (dir) => {
       const r = assessVideoBeforePublish(dir, "261111");
