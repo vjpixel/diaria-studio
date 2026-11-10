@@ -50,10 +50,11 @@ import { evaluateGdriveQuota } from "../scripts/lib/gdrive-quota.ts";
  * de env de TESTE (nunca o ~/.config real). */
 function cliEnv(sb: string, extra: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("GDRIVE_")) env[k] = v;
+  for (const [k, v] of Object.entries(process.env)) if (k !== "HOME" && !k.startsWith("GDRIVE_")) env[k] = v;
   const envFile = join(sb, "teste-gdrive-data-bisync.env");
   if (!existsSync(envFile)) writeFileSync(envFile, "");
   env.GDRIVE_DATA_ENV_FILE = envFile;
+  env.HOME = sb;
   return { ...env, ...extra };
 }
 import {
@@ -64,6 +65,7 @@ import {
   defaultGdriveDataStateDir,
   collectGdriveAlarmFindings,
   dataDirDependsOnDataBisync,
+  resolveDataDirPath,
   DATA_SYNC_CHECK,
   DATA_QUOTA_CHECK,
   DATA_CONFIG_CHECK,
@@ -1175,6 +1177,8 @@ describe("alarme de data/: dependência, configuração, cota e textos (#12478)"
     dataSync: notInstalled,
     dataTarget: DATA_BISYNC_TARGET,
     dataDirReal: null as string | null,
+    dataDirResolved: true,
+    platform: "linux" as NodeJS.Platform,
     dataQuota: null,
     dataQuotaError: null,
   };
@@ -1190,6 +1194,49 @@ describe("alarme de data/: dependência, configuração, cota e textos (#12478)"
     assert.equal(collectGdriveAlarmFindings({ ...baseInputs, dataDirReal: `${LOCAL}-outro` }).findings.length, 0);
     assert.equal(collectGdriveAlarmFindings({ ...baseInputs, dataDirReal: null }).findings.length, 0);
     assert.equal(dataDirDependsOnDataBisync("/x", "relativo"), false);
+  });
+
+  it("win32: nenhum sinal de data/ é avaliado (nem config inválida) e as issues de data/ congelam", () => {
+    const r = collectGdriveAlarmFindings({
+      ...baseInputs,
+      platform: "win32",
+      dataDirReal: LOCAL,
+      dataCfg: { ...baseInputs.dataCfg, errors: ["GDRIVE_DATA_LOCAL precisa ser caminho absoluto (C:\\x)"] },
+      dataSync: evaluateGdriveSync({ kind: "ok", stamp: { at: ago(1), exit: 3 } }, { kind: "ok", stamp: { at: ago(600), exit: 0 } }, now, DATA_GDRIVE_SYNC_TOLERANCES),
+    });
+    assert.deepEqual(r.findings, []);
+    assert.equal(r.dataMissing, false);
+    for (const key of [
+      alarmIssueStateKey(DATA_SYNC_CHECK, DATA_BISYNC_MISSING),
+      alarmIssueStateKey(DATA_SYNC_CHECK, "alarm-bisync-failed"),
+      alarmIssueStateKey(DATA_CONFIG_CHECK, "alarm-data-config-invalid"),
+      alarmIssueStateKey(DATA_QUOTA_CHECK, "quota-near"),
+    ]) {
+      assert.equal(r.isAbsenceUnmeasured(key), true, key);
+    }
+    // O sinal do Drive inteiro segue igual no win32.
+    assert.equal(r.isAbsenceUnmeasured(alarmIssueStateKey(SYNC_CHECK, "alarm-sync-stale")), false);
+  });
+
+  it("HD desmontado: data/ resolve pelo alvo literal do link e o achado missing aberto congela", () => {
+    const broken = () => {
+      throw new Error("ENOENT");
+    };
+    assert.deepEqual(resolveDataDirPath("/repo/data", broken, () => LOCAL), { path: LOCAL, resolved: false });
+    assert.deepEqual(resolveDataDirPath("/repo/data", broken, () => "../alvo"), { path: "/alvo", resolved: false });
+    assert.deepEqual(resolveDataDirPath("/repo/data", broken, () => null), { path: null, resolved: false });
+    assert.deepEqual(resolveDataDirPath("/repo/data", (p) => `/real${p}`), { path: "/real/repo/data", resolved: true });
+    const missingKey = alarmIssueStateKey(DATA_SYNC_CHECK, DATA_BISYNC_MISSING);
+    // Pelo alvo literal o achado ainda é emitido...
+    const lit = collectGdriveAlarmFindings({ ...baseInputs, dataDirReal: LOCAL, dataDirResolved: false });
+    assert.equal(lit.findings.some((f) => f.fingerprint === DATA_BISYNC_MISSING), true);
+    // ...e sem caminho nenhum ele não some fechando a issue: congela.
+    const none = collectGdriveAlarmFindings({ ...baseInputs, dataDirReal: null, dataDirResolved: false });
+    assert.equal(none.findings.length, 0);
+    assert.equal(none.isAbsenceUnmeasured(missingKey), true);
+    // Com o data/ resolvido fora da pasta, a ausência é medida: fecha.
+    const out = collectGdriveAlarmFindings({ ...baseInputs, dataDirReal: "/home/vj/OneDrive/x", dataDirResolved: true });
+    assert.equal(out.isAbsenceUnmeasured(missingKey), false);
   });
 
   it("fiação: sem carimbo de data/ as issues de data/ congelam; com carimbo, não", () => {

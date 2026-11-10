@@ -2242,7 +2242,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-GDrive-Sync-Alarm",
     description:
-      "alarme do rclone bisync do Google Drive (trava persistente, falha persistente, sem sucesso ha 6h) + cota da conta + bisync dedicado de data/ (sem sucesso ha 30 min, #12478; silencioso ate a instalacao)",
+      "alarme do rclone bisync do Google Drive (trava persistente, falha persistente, sem sucesso ha 6h) + cota da conta + bisync dedicado de data/ (#12478: sem sucesso ha 30 min, configuracao invalida, cota da conta; sem carimbo e mudo so enquanto o data/ da maquina nao depende dele)",
     steps: [{ key: "alarm", script: "scripts/gdrive-sync-alarm.ts" }],
     logPath: "gdrive-sync-alarm/.alarm.log",
     // De hora em hora (#12357): o bisync roda a cada 2 min e a trava (exit

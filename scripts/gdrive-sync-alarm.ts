@@ -91,7 +91,7 @@
  * estado em dois arquivos e o alarme reabria issue já aberta). Também evita
  * o arquivo de UMA máquina viajar pelo sync pras outras.
  */
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, lstatSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -342,6 +342,34 @@ export function dataDirDependsOnDataBisync(dataDirReal: string | null, dataLocal
   return a === b || a.startsWith(`${b}/`);
 }
 
+/** Caminho do `data/` para a regra de dependência: `realpath`; se o alvo
+ * não resolve (HD desmontado), o alvo LITERAL do link, resolvido contra a
+ * pasta do link (mesmo recurso do `detectDataSyncBackend`), com
+ * `resolved: false`. */
+export function resolveDataDirPath(
+  dataDir: string,
+  realpathFn: (p: string) => string = realpathSync,
+  readLinkTargetFn: (p: string) => string | null = (p) => {
+    try {
+      return lstatSync(p).isSymbolicLink() ? readlinkSync(p) : null;
+    } catch {
+      return null;
+    }
+  },
+): { path: string | null; resolved: boolean } {
+  try {
+    return { path: realpathFn(dataDir), resolved: true };
+  } catch {
+    let target: string | null = null;
+    try {
+      target = readLinkTargetFn(dataDir);
+    } catch {
+      target = null;
+    }
+    return { path: target === null ? null : resolve(dirname(dataDir), target), resolved: false };
+  }
+}
+
 /** Sinal 3 sem carimbo, com o `data/` dependendo dele (#12478). */
 export function toDataBisyncMissingFinding(dataDirReal: string, target: BisyncTarget = DATA_BISYNC_TARGET): AlarmFinding {
   return {
@@ -533,8 +561,15 @@ export interface GdriveAlarmInputs {
   dataCfg: Pick<DataBisyncConfig, "errors" | "envFile" | "local" | "remoteName">;
   dataSync: GdriveSyncEvaluation;
   dataTarget: BisyncTarget;
-  /** `realpath` do `data/` desta máquina; `null` = não resolve. */
+  /** Caminho do `data/` desta máquina (`resolveDataDirPath`): `realpath`,
+   * ou o alvo literal do link quando o alvo não resolve; `null` = nenhum. */
   dataDirReal: string | null;
+  /** `false` quando só o alvo literal do link (ou nada) foi achado — HD
+   * desmontado: o achado `alarm-data-bisync-missing` aberto fica congelado. */
+  dataDirResolved: boolean;
+  /** Plataforma desta execução (injetável). O bisync de `data/` só existe no
+   * Linux: em `win32` nenhum sinal de `data/` é avaliado. */
+  platform: NodeJS.Platform;
   /** Cota da conta de `data/`; `null` = não medida (sem carimbo de data/). */
   dataQuota: GdriveQuotaEvaluation | null;
   dataQuotaError: string | null;
@@ -550,6 +585,17 @@ export function collectGdriveAlarmFindings(i: GdriveAlarmInputs): {
   const findings: AlarmFinding[] = [];
   if (isAlarmingGdriveSyncVerdict(i.sync.verdict)) findings.push(toSyncAlarmFinding(i.sync, i.backend));
   if (quotaFindingVerdict(i.quota, i.sync.verdict) !== null) findings.push(toQuotaAlarmFinding(i.quota, i.quotaError));
+  if (i.platform === "win32") {
+    // Sem bisync de data/ no Windows: os caminhos default nem fazem sentido
+    // aqui (sairiam `C:\…`), e nenhum achado de data/ é medido — congela.
+    const base = absenceUnmeasured({ sync: i.sync.verdict, quota: i.quota.verdict, dataSync: "not-installed", dataQuota: null });
+    const dataChecks = new Set([DATA_SYNC_CHECK, DATA_CONFIG_CHECK, DATA_QUOTA_CHECK]);
+    return {
+      findings,
+      isAbsenceUnmeasured: (key) => base(key) || [...dataChecks].some((c) => key.startsWith(`${c}:`)),
+      dataMissing: false,
+    };
+  }
   if (isAlarmingGdriveSyncVerdict(i.dataSync.verdict)) findings.push(toDataSyncAlarmFinding(i.dataSync, i.backend, i.dataTarget));
   const dataMissing = i.dataSync.verdict === "not-installed" && dataDirDependsOnDataBisync(i.dataDirReal, i.dataCfg.local);
   if (dataMissing && i.dataDirReal !== null) findings.push(toDataBisyncMissingFinding(i.dataDirReal, i.dataTarget));
@@ -557,12 +603,16 @@ export function collectGdriveAlarmFindings(i: GdriveAlarmInputs): {
   if (i.dataQuota !== null && quotaFindingVerdict(i.dataQuota, i.dataSync.verdict) !== null) {
     findings.push(toQuotaAlarmFinding(i.dataQuota, i.dataQuotaError, i.dataCfg.remoteName));
   }
-  const isAbsenceUnmeasured = absenceUnmeasured({
+  const base = absenceUnmeasured({
     sync: i.sync.verdict,
     quota: i.quota.verdict,
     dataSync: i.dataSync.verdict,
     dataQuota: i.dataQuota === null ? null : i.dataQuota.verdict,
   });
+  // `data/` sem realpath (HD desmontado, alvo some): ausência do achado
+  // "missing" não prova nada — congela em vez de fechar sozinho.
+  const missingKey = alarmIssueStateKey(DATA_SYNC_CHECK, DATA_BISYNC_MISSING);
+  const isAbsenceUnmeasured = (key: string) => base(key) || (!i.dataDirResolved && key === missingKey);
   return { findings, isAbsenceUnmeasured, dataMissing };
 }
 
@@ -580,7 +630,9 @@ async function main(): Promise<void> {
   // Config do bisync de data/ como o wrapper a vê (#12478): ambiente >
   // ~/.config/diaria/gdrive-data-bisync.env > defaults.
   const dataCfg = resolveDataBisyncConfig(process.env);
-  for (const e of dataCfg.errors) console.error(`${LOG_PREFIX} configuração de data/ inválida: ${e}`);
+  if (process.platform !== "win32") {
+    for (const e of dataCfg.errors) console.error(`${LOG_PREFIX} configuração de data/ inválida: ${e}`);
+  }
   const dataStateDir =
     getStringArg(argv, "data-state-dir", { example: "~/.cache/diaria/gdrive-data-bisync" }) ?? dataCfg.stateDir;
   const dataTarget = dataBisyncTarget({
@@ -591,12 +643,7 @@ async function main(): Promise<void> {
     envFile: dataCfg.envFile,
   });
   const dataDir = getStringArg(argv, "data-dir", { example: "/caminho/do/data" }) ?? join(ROOT, "data");
-  let dataDirReal: string | null = null;
-  try {
-    dataDirReal = realpathSync(dataDir);
-  } catch {
-    dataDirReal = null;
-  }
+  const { path: dataDirReal, resolved: dataDirResolved } = resolveDataDirPath(dataDir);
   const staleHours = getIntArg(argv, "stale-hours", { min: 1 });
   const blockedMinutes = getIntArg(argv, "blocked-minutes", { min: 1 });
   const failedMinutes = getIntArg(argv, "failed-minutes", { min: 1 });
@@ -646,7 +693,7 @@ async function main(): Promise<void> {
   // Cota da conta de data/: só com o bisync de data/ instalado (há carimbo).
   let dataQuota: QuotaEval | null = null;
   let dataQuotaError: string | null = null;
-  if (dataSync.verdict !== "not-installed" && dataCfg.remoteName.length > 1) {
+  if (process.platform !== "win32" && dataSync.verdict !== "not-installed" && dataCfg.remoteName.length > 1) {
     const dataAbout = readRcloneAboutDetailed(resolveRcloneBin(), dataCfg.remoteName);
     dataQuota = evaluateGdriveQuota(dataAbout.about, warnPct);
     dataQuotaError = dataAbout.error;
@@ -666,6 +713,8 @@ async function main(): Promise<void> {
     dataSync,
     dataTarget,
     dataDirReal,
+    dataDirResolved,
+    platform: process.platform,
     dataQuota,
     dataQuotaError,
   });
