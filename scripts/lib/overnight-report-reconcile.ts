@@ -31,6 +31,12 @@ export interface PrView {
   state: string;
   mergedAt: string | null;
   comments: Array<{ body?: unknown; authorAssociation?: unknown }>;
+  /** Corpo da PR (#12678: declaração `requer agent-eval:` do implementador). */
+  body?: unknown;
+  /** `gh pr view --json labels` (#12678). */
+  labels?: unknown;
+  /** `gh pr view --json statusCheckRollup` (#12678). */
+  statusCheckRollup?: unknown;
 }
 
 export interface ReconciledPr {
@@ -41,6 +47,36 @@ export interface ReconciledPr {
   /** PR-trem que levou esta PR pra master (só `merged-via-train`). */
   trainPr?: number;
   mergedAt?: string | null;
+  /** PR aberta retida no `Check agent-eval gate` (#12678, só `open`). */
+  awaitingAgentEval?: boolean;
+}
+
+/** Label que `run-agent-eval-for-pr.ts --live` aplica (#8144). */
+export const AGENT_EVAL_PASSED_LABEL = "agent-eval:passed";
+/** Nome do job em `.github/workflows/agent-eval-required.yml`. */
+export const AGENT_EVAL_CHECK_NAME = "Check agent-eval gate";
+/** Linha que o implementador põe no corpo quando o diff muda corpo/`model:` de agent com replay (#12678). */
+export const REQUIRES_AGENT_EVAL_RE = /^\s*requer agent-eval\b/im;
+
+/**
+ * PR aberta retida no gate de eval de agent (#8144, #12678): sem a label
+ * `agent-eval:passed` e com o check do gate vermelho, ou, enquanto o check não
+ * concluiu (ausente ou pendente), com a declaração `requer agent-eval:` no
+ * corpo. Check verde (nenhum agent elegível tocado, ou label já posta) nunca
+ * retém, mesmo com a declaração.
+ */
+export function isAwaitingAgentEval(view: Pick<PrView, "body" | "labels" | "statusCheckRollup">): boolean {
+  const labels = Array.isArray(view.labels) ? view.labels : [];
+  if (labels.some((l) => (l as { name?: unknown })?.name === AGENT_EVAL_PASSED_LABEL)) return false;
+  const rollup = Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : [];
+  const node = rollup.find((n) => {
+    const c = n as { name?: unknown; context?: unknown };
+    return c?.name === AGENT_EVAL_CHECK_NAME || c?.context === AGENT_EVAL_CHECK_NAME;
+  }) as { conclusion?: unknown; state?: unknown } | undefined;
+  const outcome = String(node?.conclusion ?? node?.state ?? "").toUpperCase();
+  if (outcome === "SUCCESS" || outcome === "NEUTRAL" || outcome === "SKIPPED") return false;
+  if (outcome === "FAILURE" || outcome === "ERROR") return true;
+  return typeof view.body === "string" && REQUIRES_AGENT_EVAL_RE.test(view.body);
 }
 
 /** Comentário que o trem posta na PR original antes de fechá-la (`merge-train-live.ts`). */
@@ -63,7 +99,7 @@ export function extractTrainPr(comments: PrView["comments"]): number | null {
 export function classifyPr(view: PrView, trainStates: ReadonlyMap<number, string>): ReconciledPr {
   const base = { number: view.number, title: view.title, url: view.url };
   if (view.state === "MERGED") return { ...base, state: "merged", mergedAt: view.mergedAt };
-  if (view.state === "OPEN") return { ...base, state: "open" };
+  if (view.state === "OPEN") return isAwaitingAgentEval(view) ? { ...base, state: "open", awaitingAgentEval: true } : { ...base, state: "open" };
   const train = extractTrainPr(view.comments);
   if (train !== null && trainStates.get(train) === "MERGED") return { ...base, state: "merged-via-train", trainPr: train };
   return { ...base, state: "closed" };
@@ -142,9 +178,23 @@ export function renderReconcileBody(prs: ReconciledPr[], reportProse: string): s
     lines.push("| PR | estado | título |");
     lines.push("|---|---|---|");
     for (const p of prs) {
-      const state = p.state === "merged-via-train" ? `${STATE_LABEL[p.state]} #${p.trainPr}` : STATE_LABEL[p.state];
+      const state =
+        p.state === "merged-via-train"
+          ? `${STATE_LABEL[p.state]} #${p.trainPr}`
+          : p.awaitingAgentEval
+            ? `${STATE_LABEL[p.state]}, aguarda agent-eval`
+            : STATE_LABEL[p.state];
       lines.push(`| [#${p.number}](${p.url}) | ${state} | ${p.title.replace(/\|/g, "\\|")} |`);
     }
+  }
+  const awaitingEval = prs.filter((p) => p.awaitingAgentEval);
+  if (awaitingEval.length > 0) {
+    lines.push("");
+    lines.push(
+      `Pendência: ${awaitingEval.map((p) => `#${p.number}`).join(", ")} retida(s) no agent-eval gate (#8144, #12678). ` +
+        "O coordenador roda `npx tsx scripts/run-agent-eval-for-pr.ts --pr N --live` no worktree da PR (procedimento #11616); " +
+        "a label `agent-eval:passed` sai do script. Sem o eval rodado, a PR fica para o editor.",
+    );
   }
   if (merged > 0 && STALE_NO_MERGE_RE.test(reportProse)) {
     lines.push("");
