@@ -136,6 +136,13 @@ export interface RenumberReport {
   public_images_moved_to: string | null;
   /** #12691 — stores globais de `data/` reescritos (opcional: relatório antigo não tem). */
   global_stores?: Array<{ path: string; count: number }>;
+  /**
+   * #12719 — stores globais ainda por reescrever. Gravado logo depois do
+   * `renameSync` e esvaziado store a store: falha no meio deixa a lista no
+   * relatório da pasta nova, e a retomada (`completePendingGlobalStores`)
+   * termina o que faltou.
+   */
+  global_stores_pending?: string[];
   remote_steps: RemoteStepState[];
 }
 
@@ -476,9 +483,10 @@ export function applyVideoOutDir(dir: string, from: string, to: string): LocalSc
  * Parte local, na pasta de ORIGEM (antes do `mv`, pra uma falha no meio deixar
  * tudo debaixo de um único caminho): tira o `06-public-images.json` do
  * caminho, reescreve o conteúdo dos arquivos de texto, renomeia arquivos e
- * pastas com o ID (filhos antes dos pais) e por fim move a pasta pra
- * `editionDir(to)`. Colisão de nome em qualquer ponto ⇒ lança ANTES de
- * escrever (a varredura confere todas primeiro).
+ * pastas com o ID (filhos antes dos pais), move a pasta pra `editionDir(to)`
+ * e só então reescreve os stores globais (#12719). Colisão de nome ou
+ * conflito nos stores em qualquer ponto ⇒ lança ANTES de escrever (a
+ * varredura confere todas primeiro).
  */
 export function renumberLocal(
   root: string,
@@ -486,6 +494,7 @@ export function renumberLocal(
   to: string,
   nowIso: string,
   remoteSteps: RemoteStep[] = [],
+  io: RenumberIo = DEFAULT_RENUMBER_IO,
 ): RenumberReport {
   const plan = planRenumber(root, from, to);
   if (!plan.ok) throw new Error(plan.reason);
@@ -511,21 +520,15 @@ export function renumberLocal(
   }
   applyLocalScan(fromDir, scan, from, to);
 
-  // #12691 — só na execução nova, nunca na retomada: depois da troca outra
-  // edição pode ter assumido o ID antigo (261110 → 261111 seguido de
-  // 261109 → 261110 no mesmo dia), e regravar mudaria as entradas dela.
-  const globalStores: Array<{ path: string; count: number }> = [];
-  for (const store of GLOBAL_EDITION_STORES) {
-    const abs = resolve(root, store.path);
-    if (!existsSync(abs)) continue;
-    const r = rewriteGlobalStore(store, readFileSync(abs, "utf8"), from, to);
-    if (r.count === 0) continue;
-    writeFileSync(abs, r.text, "utf8");
-    globalStores.push({ path: store.path, count: r.count });
-  }
-
-  mkdirSync(dirname(toDir), { recursive: true });
-  renameSync(fromDir, toDir);
+  // #12719 — a pasta é movida ANTES de tocar nos stores globais. Antes, os
+  // stores eram gravados primeiro: um `renameSync` que falhasse (EPERM/EBUSY
+  // do sync do Drive/OneDrive, arquivo aberto) deixava `edition: to` nos
+  // stores com a pasta ainda em `from/`, e toda nova tentativa caía no
+  // conflito do `globalStoresRefusal` (exit 2). Agora uma falha aqui deixa os
+  // stores intactos, e a retomada é a execução nova de sempre (o conteúdo já
+  // trocado na origem não tem mais o ID antigo: a nova varredura não refaz).
+  io.mkdirp(dirname(toDir));
+  io.renameDir(fromDir, toDir);
 
   const report: RenumberReport = {
     from,
@@ -537,10 +540,61 @@ export function renumberLocal(
     renamed_paths: scan.renames,
     preserved_img_refs: scan.preserved,
     public_images_moved_to: publicImagesMovedTo,
-    global_stores: globalStores,
+    global_stores: [],
+    // Só os stores com entrada de `from`, conferidos acima (sem conflito).
+    global_stores_pending: globalChanges.filter((c) => c.count > 0).map((c) => c.path),
     remote_steps: remoteSteps.map((s) => ({ id: s.id, status: "pending" })),
   };
   writeRenumberReport(toDir, report);
+  return completePendingGlobalStores(root, toDir, report, io);
+}
+
+/** Escrita de disco que os testes trocam pra simular falha (#12719). */
+export interface RenumberIo {
+  mkdirp: (dir: string) => void;
+  renameDir: (from: string, to: string) => void;
+  writeStore: (abs: string, text: string) => void;
+}
+
+export const DEFAULT_RENUMBER_IO: RenumberIo = {
+  mkdirp: (dir) => void mkdirSync(dir, { recursive: true }),
+  renameDir: (a, b) => renameSync(a, b),
+  writeStore: (abs, text) => writeFileSync(abs, text, "utf8"),
+};
+
+/**
+ * #12719 — reescreve os stores globais listados em `global_stores_pending`,
+ * um por vez, gravando o relatório depois de cada um (falha no meio não perde
+ * o que já foi). Roda no fim do `renumberLocal` e na retomada.
+ *
+ * Sem a recusa por conflito: entradas de `to` aqui são as que esta mesma troca
+ * gravou numa tentativa anterior. A troca seguinte que quisesse usar `from`
+ * como destino (261110 → 261111 seguido de 261109 → 261110) recusa enquanto
+ * houver pendência, porque ainda há entrada de `from` nos stores. Store
+ * ilegível lança, e a lista fica como estava pra próxima tentativa.
+ */
+export function completePendingGlobalStores(
+  root: string,
+  toDir: string,
+  reportIn: RenumberReport,
+  io: RenumberIo = DEFAULT_RENUMBER_IO,
+): RenumberReport {
+  let report = reportIn;
+  const pending = [...(report.global_stores_pending ?? [])];
+  for (const path of pending) {
+    const store = GLOBAL_EDITION_STORES.find((s) => s.path === path);
+    const abs = resolve(root, path);
+    if (store && existsSync(abs)) {
+      const r = rewriteGlobalStore(store, readFileSync(abs, "utf8"), report.from, report.to);
+      if (r.unreadable) throw new Error(`${path} ilegível (sync em trânsito?) — store global pendente; rodar de novo o mesmo comando termina.`);
+      if (r.count > 0) {
+        io.writeStore(abs, r.text);
+        report = { ...report, global_stores: [...(report.global_stores ?? []), { path, count: r.count }] };
+      }
+    }
+    report = { ...report, global_stores_pending: (report.global_stores_pending ?? []).filter((p) => p !== path) };
+    writeRenumberReport(toDir, report);
+  }
   return report;
 }
 
@@ -596,7 +650,11 @@ export function buildRemoteSteps(root: string, dir: string, to: string): RemoteS
       why: "página da edição republicada (datePublished, UTMs, jogar?edition=).",
     });
   }
-  if (existsSync(join(abs, "_internal", "kit-semanal-frio-published.json"))) {
+  // #12720 — só a semanal AGENDADA acompanha o principal. Desagendada pelo
+  // `--unschedule` (`created_unverified`), ela volta junto com o principal na
+  // Etapa 6 da pasta nova; rodar o passo aqui, com o principal em rascunho,
+  // recusaria (exit 2) numa edição de segunda.
+  if (readJson(join(abs, "_internal", SEMANAL_FRIO_STATE))?.status === "scheduled") {
     steps.push({
       id: "kit-semanal-frio",
       argv: ["scripts/publish-kit-semanal-frio.ts", "--edition-dir", dir, "--push"],
@@ -606,13 +664,23 @@ export function buildRemoteSteps(root: string, dir: string, to: string): RemoteS
   return steps;
 }
 
+/** Estado da semanal de frio do Kit (`publish-kit-semanal-frio.ts`). */
+const SEMANAL_FRIO_STATE = "kit-semanal-frio-published.json";
+
 /** Envio ou post já agendado com o horário do dia antigo (#12662). */
 export interface ScheduledSend {
-  /** `kit-newsletter` ou `social:{plataforma}/{destaque}[/{subtipo}]`. */
+  /** `kit-newsletter`, `kit-semanal-frio`, `brevo-diaria` ou `social:{plataforma}/{destaque}[/{subtipo}]`. */
   what: string;
   scheduled_at: string | null;
   /** Como reagendar, pronto pra copiar (com a pasta NOVA). */
   reschedule: string;
+  /**
+   * #12721 — o `--unschedule` tem caminho automático pra este item (Kit com
+   * `broadcast_id`, post com `worker_queue_key`). `false` = segue agendado
+   * depois do `--unschedule` (Brevo, Buffer/X), e o `--run-remote` continua
+   * exigindo `--ack-scheduled`.
+   */
+  auto_unschedule: boolean;
 }
 
 /**
@@ -634,6 +702,19 @@ export function detectScheduledSends(stateDir: string, newDirRel: string): Sched
       what: "kit-newsletter",
       scheduled_at: at,
       reschedule: `npx tsx scripts/schedule-newsletter-kit.ts --edition-dir ${newDirRel} --scheduled-at <novo horário ISO>`,
+      auto_unschedule: typeof kit.broadcast_id === "number",
+    });
+  }
+  // #12720 — a semanal de frio é um broadcast à parte, agendado no mesmo
+  // horário do principal: sem isto ela sumia do aviso quando o principal
+  // virava rascunho, e disparava sozinha no dia antigo.
+  const semanal = readJson(join(stateDir, "_internal", SEMANAL_FRIO_STATE));
+  if (semanal && semanal.status === "scheduled") {
+    out.push({
+      what: "kit-semanal-frio",
+      scheduled_at: typeof semanal.scheduled_at === "string" ? semanal.scheduled_at : null,
+      reschedule: `acompanha o principal: depois de reagendá-lo, npx tsx scripts/publish-kit-semanal-frio.ts --edition-dir ${newDirRel} --push`,
+      auto_unschedule: typeof semanal.broadcast_id === "number",
     });
   }
   const socialPath = [join(stateDir, "_internal", "06-social-published.json"), join(stateDir, "06-social-published.json")].find(
@@ -653,6 +734,7 @@ export function detectScheduledSends(stateDir: string, newDirRel: string): Sched
       reschedule: key
         ? `npx tsx scripts/reschedule-worker-queue-post.ts --key ${JSON.stringify(key)} --scheduled-at <novo horário ISO> … (texto novo da pasta ${newDirRel})`
         : "reagendar na própria plataforma (sem worker_queue_key no registro)",
+      auto_unschedule: key !== null,
     });
   }
   // #12688 — a campanha da Brevo diária agendada também sai no dia antigo.
@@ -662,6 +744,7 @@ export function detectScheduledSends(stateDir: string, newDirRel: string): Sched
       what: "brevo-diaria",
       scheduled_at: typeof brevo.scheduled_at === "string" ? brevo.scheduled_at : null,
       reschedule: "desagendar/reagendar à mão no painel da Brevo (campanha agendada não é editável pela API)",
+      auto_unschedule: false,
     });
   }
   return out;
@@ -689,7 +772,9 @@ export interface UnscheduleOutcome {
  * apaga da fila do Worker os posts `scheduled` com `worker_queue_key` (estado
  * vira `deleted`, e a Etapa 5 da pasta nova reenfileira com o texto e o dia
  * novos) e tira o `send_at` do broadcast do Kit (estado volta pra `draft`,
- * sem `scheduled_at`, e a Etapa 6 reagenda). Substitui os dois scripts
+ * sem `scheduled_at`, e a Etapa 6 reagenda). A semanal de frio agendada sai
+ * primeiro, pelo mesmo `unscheduleKit` (estado `created_unverified`, #12720).
+ * Substitui os dois scripts
  * avulsos da troca 261109 → 261110.
  *
  * Só grava o estado local do que foi confirmado. 404 no Worker
@@ -699,11 +784,52 @@ export interface UnscheduleOutcome {
  */
 export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): Promise<UnscheduleOutcome[]> {
   const out: UnscheduleOutcome[] = [];
+
+  // #12720 — a semanal de frio ANTES do principal: com o principal em
+  // rascunho e a semanal agendada, ela dispara sozinha no horário antigo, com
+  // os links do ID antigo, pra base fria. Se ela não sair da agenda, o
+  // principal também fica (o par segue coerente e os dois voltam `failed`).
+  let semanalBlocked = false;
+  const semanalPath = join(stateDir, "_internal", SEMANAL_FRIO_STATE);
+  const semanal = readJson(semanalPath);
+  if (semanal && semanal.status === "scheduled") {
+    const id = typeof semanal.broadcast_id === "number" ? semanal.broadcast_id : null;
+    let failure: string | null = null;
+    if (id === null) {
+      failure = "registro sem broadcast_id — desagendar à mão no Kit.";
+    } else {
+      try {
+        const r = await deps.unscheduleKit(id);
+        if (r.ok) {
+          // Mesmo estado que `followMainSchedule` grava ao desagendar junto
+          // com o principal: o próximo agendamento do principal a retoma.
+          const next = { ...semanal, status: "created_unverified", reason: "principal desagendado (renumber-edition, #12720)" };
+          writeFileSync(semanalPath, JSON.stringify(next, null, 2) + "\n", "utf8");
+          out.push({ what: "kit-semanal-frio", result: "unscheduled", detail: `broadcast ${id}: ${r.message}` });
+        } else {
+          failure = `broadcast ${id}: ${r.message}`;
+        }
+      } catch (e) {
+        failure = `broadcast ${id}: ${(e as Error).message}`;
+      }
+    }
+    if (failure !== null) {
+      semanalBlocked = true;
+      out.push({ what: "kit-semanal-frio", result: "failed", detail: failure });
+    }
+  }
+
   const kitPath = join(stateDir, "_internal", "newsletter-kit-published.json");
   const kit = readJson(kitPath);
   if (kit && kit.status === "scheduled") {
     const id = typeof kit.broadcast_id === "number" ? kit.broadcast_id : null;
-    if (id === null) {
+    if (semanalBlocked) {
+      out.push({
+        what: "kit-newsletter",
+        result: "failed",
+        detail: "não desagendado: a semanal de frio segue agendada e sairia sozinha — desagendá-la primeiro.",
+      });
+    } else if (id === null) {
       out.push({ what: "kit-newsletter", result: "failed", detail: "registro sem broadcast_id — desagendar à mão no Kit." });
     } else {
       try {

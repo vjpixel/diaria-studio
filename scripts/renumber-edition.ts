@@ -53,11 +53,17 @@
  * fila do Worker os posts `scheduled` com `worker_queue_key` (Instagram,
  * Threads, LinkedIn) e tira o `send_at` do broadcast do Kit (relido). O
  * estado local passa a `deleted`/`draft`, e a Etapa 5/6 na pasta nova
- * reagenda com o dia e o texto novos (a semanal de frio acompanha o
- * principal desagendado no passo `kit-semanal-frio`). Buffer (X) e Brevo
- * seguem manuais e continuam no aviso acima. Item que falhou ⇒ exit 1, nada
- * renumerado; 404 no Worker (post pode ter disparado) mantém o aviso e a
- * exigência de `--ack-scheduled`.
+ * reagenda com o dia e o texto novos. A semanal de frio agendada é
+ * desagendada antes do principal (#12720), e volta junto com ele na Etapa 6.
+ * Buffer (X) e Brevo seguem manuais e continuam no aviso acima. Item que
+ * falhou ⇒ exit 1, nada renumerado; 404 no Worker (post pode ter disparado)
+ * mantém o aviso e a exigência de `--ack-scheduled`. As recusas de
+ * `--video-dir` inválido e de `--run-remote` sem `--ack-scheduled` com item
+ * manual agendado vêm ANTES de qualquer desagendamento (#12721).
+ *
+ * Stores globais depois do `mv` (#12719): falha ao mover a pasta deixa os
+ * stores intactos (rodar de novo é execução nova); falha num store depois do
+ * `mv` fica em `global_stores_pending` no relatório e a retomada termina.
  *
  * ## Vídeo (#12713)
  *
@@ -94,6 +100,7 @@ import { updateBroadcast } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
 import {
   buildRemoteSteps,
+  completePendingGlobalStores,
   detectScheduledSends,
   globalStoresRefusal,
   leftOutItems,
@@ -148,9 +155,17 @@ export function formatStep(s: RemoteStep): string {
  * renumerado); o código do `planRenumber` se a precondição falhar.
  */
 export async function runUnschedule(
-  opts: { from: string; to: string },
+  opts: { from: string; to: string; runRemote?: boolean; ackScheduled?: boolean; videoDir?: string },
   deps: { root: string; log: (msg: string) => void; unschedule: UnscheduleDeps },
 ): Promise<number> {
+  // #12721 — as recusas que o `runRenumberEdition` faria DEPOIS vêm antes de
+  // qualquer efeito externo: senão o Kit vira rascunho e os posts saem da fila
+  // do Worker, e a troca em seguida recusa com exit 2 (nada renumerado).
+  const videoDirError = videoDirRefusal(deps.root, opts.videoDir);
+  if (videoDirError) {
+    deps.log(`ERRO: ${videoDirError}`);
+    return 2;
+  }
   const plan = planRenumber(deps.root, opts.from, opts.to);
   if (!plan.ok) {
     // #12713 — origem só de vídeo: nada agendado nela, segue pra mescla.
@@ -167,7 +182,21 @@ export async function runUnschedule(
     deps.log(`ERRO: ${refusal}`);
     return 2;
   }
-  const outcomes = await unscheduleSends(plan.resume ? plan.toDir : plan.fromDir, deps.unschedule);
+  const stateDir = plan.resume ? plan.toDir : plan.fromDir;
+  // #12721 — o que o `--unschedule` não tira da agenda (Brevo, Buffer/X)
+  // continua no aviso, e o `--run-remote` seria recusado sem --ack-scheduled.
+  if (opts.runRemote && !opts.ackScheduled) {
+    const manual = detectScheduledSends(stateDir, editionDir(opts.to)).filter((s) => !s.auto_unschedule);
+    if (manual.length > 0) {
+      for (const s of manual) deps.log(`  ${s.what} @ ${s.scheduled_at ?? "?"} → ${s.reschedule}`);
+      deps.log(
+        `ERRO: ${manual.length} item(ns) agendado(s) acima ficam agendados depois do --unschedule (sem caminho automático): ` +
+          "--run-remote seria recusado. Nada desagendado. Reagende-os e repita com --ack-scheduled (ou rode sem --run-remote).",
+      );
+      return 2;
+    }
+  }
+  const outcomes = await unscheduleSends(stateDir, deps.unschedule);
   if (outcomes.length === 0) deps.log("--unschedule: nada agendado.");
   for (const o of outcomes) deps.log(`--unschedule [${o.result}] ${o.what}: ${o.detail}`);
   if (outcomes.some((o) => o.result === "failed")) {
@@ -259,14 +288,19 @@ function runVideoMerge(
   return v.code ?? 0;
 }
 
+/** `--video-dir` inexistente ou que não é pasta ⇒ motivo da recusa (exit 2); `null` = ok ou ausente. */
+export function videoDirRefusal(root: string, videoDir: string | undefined): string | null {
+  if (!videoDir) return null;
+  const dir = resolve(root, videoDir);
+  return existsSync(dir) && statSync(dir).isDirectory() ? null : `--video-dir ${dir} não existe ou não é pasta.`;
+}
+
 export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDeps): number {
   const { root, log } = deps;
-  if (opts.videoDir) {
-    const dir = resolve(root, opts.videoDir);
-    if (!existsSync(dir) || !statSync(dir).isDirectory()) {
-      log(`ERRO: --video-dir ${dir} não existe ou não é pasta.`);
-      return 2;
-    }
+  const videoDirError = videoDirRefusal(root, opts.videoDir);
+  if (videoDirError) {
+    log(`ERRO: ${videoDirError}`);
+    return 2;
   }
   const plan = planRenumber(root, opts.from, opts.to);
   if (!plan.ok) {
@@ -314,6 +348,9 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
   if (!opts.apply) {
     if (plan.resume) {
       log(`[dry-run] parte local já feita (${relative(root, plan.toDir)} tem o relatório de ${opts.from} → ${opts.to}).`);
+      for (const p of readRenumberReport(plan.toDir)?.global_stores_pending ?? []) {
+        log(`[dry-run] store global pendente da tentativa anterior: ${p} (o --apply termina).`);
+      }
     } else {
       const scan = scanLocal(plan.fromDir, opts.from, opts.to);
       log(`[dry-run] moveria ${relative(root, plan.fromDir)} → ${newDirRel}.`);
@@ -350,6 +387,19 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
     for (const g of report.global_stores ?? []) log(`${g.path}: ${g.count} entrada(s) de ${opts.from} → ${opts.to}.`);
   } else {
     log(`retomando: parte local já feita em ${newDirRel}.`);
+    // #12719 — store global que ficou pendente na tentativa anterior.
+    if (report && (report.global_stores_pending ?? []).length > 0) {
+      try {
+        const before = new Set((report.global_stores ?? []).map((g) => g.path));
+        report = completePendingGlobalStores(root, plan.toDir, report);
+        for (const g of report.global_stores ?? []) {
+          if (!before.has(g.path)) log(`${g.path}: ${g.count} entrada(s) de ${opts.from} → ${opts.to} (pendente da tentativa anterior).`);
+        }
+      } catch (e) {
+        log(`ERRO nos stores globais pendentes: ${(e as Error).message}`);
+        return 1;
+      }
+    }
   }
   // #12713 — a pasta do vídeo no Drive montado, depois da parte local (falha
   // aqui não desfaz a troca; rodar de novo retoma e repete só o --video-dir).
@@ -451,7 +501,10 @@ async function main(): Promise<void> {
       return;
     }
     loadProjectEnv(ROOT);
-    const code = await runUnschedule({ from, to }, { root: ROOT, log, unschedule: productionUnscheduleDeps() });
+    const code = await runUnschedule(
+      { from, to, runRemote: hasFlag(argv, "run-remote"), ackScheduled: hasFlag(argv, "ack-scheduled"), videoDir },
+      { root: ROOT, log, unschedule: productionUnscheduleDeps() },
+    );
     if (code !== 0) {
       process.exitCode = code;
       return;
