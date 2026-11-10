@@ -202,6 +202,8 @@ describe("#12504 Worker", () => {
     assert.equal((await post([["situacao", "Servidor(a) público(a)"]])).status, 429);
 
     const required = FORM_QUESTIONS.filter((q) => q.required && !q.shownWhen && "options" in q && q.options).map((q) => [q.id, q.options![0]!] as [string, string]);
+    // #12587: a 1ª opção de quem_paga é "do bolso", então o gasto mensal aparece e é obrigatório.
+    required.push(["gasto_mensal", "Até R$ 50"]);
     const sent = await worker.fetch(new Request("https://f.example/enviar", { method: "POST", body: new URLSearchParams([["email", "a@x.com"], ["sig", sig], ...required]) }), env);
     assert.equal(sent.status, 200);
     assert.equal(kv.has(formDraftKey("a@x.com")), false, "o envio apaga o rascunho");

@@ -40,7 +40,8 @@ function kvEnv() {
 
 /** Todas as obrigatórias com a 1ª opção, como um envio válido. */
 function validFields(): [string, string][] {
-  return FORM_QUESTIONS.filter((q) => q.required && !q.shownWhen && "options" in q && q.options).map((q) => [q.id, q.options![0]!]);
+  // #12587: a 1ª opção de quem_paga é "do bolso", então o gasto mensal aparece e é obrigatório.
+  return [...FORM_QUESTIONS.filter((q) => q.required && !q.shownWhen && "options" in q && q.options).map((q): [string, string] => [q.id, q.options![0]!]), ["gasto_mensal", "Até R$ 50"]];
 }
 
 describe("#12522 aviso do limite de caixas", () => {
