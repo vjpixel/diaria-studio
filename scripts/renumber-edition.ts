@@ -30,8 +30,17 @@
  * estado de cada um no relatório; rodar de novo (mesmo `--from`/`--to`)
  * retoma do passo que falhou.
  *
+ * ## Edição já agendada (#12662)
+ *
+ * O horário de envio fica em ISO no estado (`scheduled_at`), e a troca de ID
+ * não o move: o PATCH do Kit repõe o `send_at` antigo e os posts na fila do
+ * Worker disparam no dia e com o texto antigos. Com broadcast do Kit ou post
+ * social `scheduled`, o CLI lista cada um com o comando de reagendamento, e
+ * `--run-remote` é RECUSADO (exit 2, nada escrito) até quem chama reagendar e
+ * repetir com `--ack-scheduled`.
+ *
  * Exit: 0 ok; 1 passo remoto falhou ou erro na parte local; 2 argumento ou
- * precondição (destino existe, origem ausente).
+ * precondição (destino existe, origem ausente, agendado sem `--ack-scheduled`).
  */
 import { spawnSync } from "node:child_process";
 import { dirname, relative, resolve } from "node:path";
@@ -40,6 +49,7 @@ import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
 import {
   buildRemoteSteps,
+  detectScheduledSends,
   mergeStepStates,
   planRenumber,
   readRenumberReport,
@@ -65,6 +75,8 @@ export interface RenumberCliOptions {
   to: string;
   apply: boolean;
   runRemote: boolean;
+  /** #12662 — quem chama já reagendou (ou vai reagendar) o que estava agendado. */
+  ackScheduled?: boolean;
 }
 
 export function formatStep(s: RemoteStep): string {
@@ -79,6 +91,17 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
     return plan.code;
   }
   const newDirRel = editionDir(opts.to);
+
+  // #12662 — envio/post já agendado sai no dia antigo: nenhum passo o move.
+  const scheduled = detectScheduledSends(plan.resume ? plan.toDir : plan.fromDir, newDirRel);
+  if (scheduled.length > 0) {
+    log(`ATENÇÃO: ${scheduled.length} envio(s)/post(s) já AGENDADO(S) com o horário de ${opts.from} — a renumeração não move o horário:`);
+    for (const s of scheduled) log(`  ${s.what} @ ${s.scheduled_at ?? "?"} → reagendar: ${s.reschedule}`);
+    if (opts.runRemote && !opts.ackScheduled) {
+      log("ERRO: --run-remote recusado: reagende os itens acima e repita com --ack-scheduled (ou rode --apply sem --run-remote e siga os passos à mão).");
+      return 2;
+    }
+  }
 
   if (!opts.apply) {
     if (plan.resume) {
@@ -170,7 +193,7 @@ function main(): void {
     return;
   }
   if (!from || !to) {
-    log("uso: npx tsx scripts/renumber-edition.ts --from AAMMDD --to AAMMDD [--apply] [--run-remote]");
+    log("uso: npx tsx scripts/renumber-edition.ts --from AAMMDD --to AAMMDD [--apply] [--run-remote] [--ack-scheduled]");
     process.exitCode = 2;
     return;
   }
@@ -180,7 +203,7 @@ function main(): void {
     return;
   }
   process.exitCode = runRenumberEdition(
-    { from, to, apply: hasFlag(argv, "apply"), runRemote: hasFlag(argv, "run-remote") },
+    { from, to, apply: hasFlag(argv, "apply"), runRemote: hasFlag(argv, "run-remote"), ackScheduled: hasFlag(argv, "ack-scheduled") },
     {
       root: ROOT,
       log,

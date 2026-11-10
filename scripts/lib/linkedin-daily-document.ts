@@ -142,6 +142,34 @@ export interface LinkedInDailyQueueBase {
   text: string;
   scheduled_at: string;
   destaque: string;
+  /**
+   * #12661 — chave idempotente do post (`linkedInDailyIdempotencyKey`). A
+   * MESMA nos três degraus: o retry do `postToWorkerQueue` depois de uma
+   * resposta perdida cai na mesma entry do Worker (#10906), e um degrau
+   * seguinte por cima de uma entry gravada sem resposta a SUBSTITUI na mesma
+   * key (conteúdo mudou, #10917) em vez de criar um 2º post.
+   */
+  idempotency_key: string;
+}
+
+/**
+ * #12661 — chave idempotente do post principal do destaque na fila do Worker:
+ * `linkedin-daily:{AAMMDD}:{d}:main` (`linkedin-daily-test:` em `--test`, pra
+ * um teste nunca reaproveitar nem substituir a entry de produção). Fixa por
+ * edição e destaque, então rodar a Etapa 5 de novo (retry de entry `failed`)
+ * também cai na mesma entry. Formato aceito pelo Worker:
+ * `[A-Za-z0-9._:-]{1,128}` (`IDEMPOTENCY_KEY_RE`).
+ *
+ * Uma chave só para documento, carrossel e imagem única, e não um sufixo por
+ * degrau (a issue sugeria `:carousel`): com chaves distintas, o documento
+ * gravado com a resposta perdida (tentativa 1 expira, a 2 recebe 4xx) e o
+ * carrossel enfileirado em seguida seriam duas entries, dois posts. Com a
+ * mesma chave o Worker troca o conteúdo da entry e sai um post só.
+ */
+export function linkedInDailyIdempotencyKey(edition: string, destaque: string, opts: { isTest?: boolean } = {}): string {
+  const key = `${opts.isTest ? "linkedin-daily-test" : "linkedin-daily"}:${edition}:${destaque}:main`;
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new Error(`idempotency_key inválida para o Worker: ${JSON.stringify(key)}`);
+  return key;
 }
 
 export type LinkedInDailyRichResult =
@@ -160,8 +188,32 @@ export type LinkedInDailyRichResult =
       carousel_fallback_reason: string;
     };
 
+/**
+ * 4xx que prova que NADA foi gravado para este pedido. 409 fica de fora
+ * (#12661): com `idempotency_key`, é o Worker dizendo que a entry desta chave
+ * já disparou ou está disparando (`idempotentConflict`), ou seja, o post
+ * existe e descer um degrau publicaria outro.
+ */
 function isDefinitiveRejection(e: unknown): e is WorkerQueueError {
-  return e instanceof WorkerQueueError && e.status >= 400 && e.status < 500;
+  return e instanceof WorkerQueueError && e.status >= 400 && e.status < 500 && e.status !== 409;
+}
+
+/**
+ * #12661 — 409 do enqueue idempotente. `already_fired`/`fire_in_progress`: o
+ * post desta chave já saiu ou está saindo, então é sucesso (nada a
+ * enfileirar). `send_unknown` (disparo ambíguo, foi pra DLQ) e 409 ilegível
+ * PROPAGAM: o post pode ou não ter saído, e nenhum degrau publica por cima.
+ */
+function idempotentConflictKey(e: unknown): string | null {
+  if (!(e instanceof WorkerQueueError) || e.status !== 409) return null;
+  let parsed: { error?: unknown; key?: unknown };
+  try {
+    parsed = JSON.parse(e.body) as { error?: unknown; key?: unknown };
+  } catch {
+    return null;
+  }
+  if (parsed.error !== "already_fired" && parsed.error !== "fire_in_progress") return null;
+  return typeof parsed.key === "string" && parsed.key !== "" ? parsed.key : null;
 }
 
 /**
@@ -190,6 +242,7 @@ export async function enqueueLinkedInDocumentOrCarousel(
     scheduled_at: base.scheduled_at,
     destaque: base.destaque,
     channel: "linkedin",
+    idempotency_key: base.idempotency_key,
   };
 
   let documentFallbackReason: string | undefined;
@@ -217,6 +270,11 @@ export async function enqueueLinkedInDocumentOrCarousel(
       );
       return { queued: true, key: response.key, format: "document", document_url: doc.url };
     } catch (e) {
+      const firedKey = idempotentConflictKey(e);
+      if (firedKey !== null) {
+        log(`WARN linkedin/${base.destaque} — a fila do Worker já tem este post disparado ou disparando (${base.idempotency_key}); nada novo enfileirado (#12661).`);
+        return { queued: true, key: firedKey, format: "document", document_url: doc.url };
+      }
       if (!isDefinitiveRejection(e)) throw e;
       documentFallbackReason = `document_rejected:${e.code ?? e.status}`;
     }
@@ -234,6 +292,11 @@ export async function enqueueLinkedInDocumentOrCarousel(
     );
     return { queued: true, key: response.key, format: "carousel", ...fallbackTag };
   } catch (e) {
+    const firedKey = idempotentConflictKey(e);
+    if (firedKey !== null) {
+      log(`WARN linkedin/${base.destaque} — a fila do Worker já tem este post disparado ou disparando (${base.idempotency_key}); nada novo enfileirado (#12661).`);
+      return { queued: true, key: firedKey, format: "carousel", ...fallbackTag };
+    }
     if (!isDefinitiveRejection(e)) throw e;
     const carouselFallbackReason = `carousel_rejected:${e.code ?? e.status}`;
     log(`WARN linkedin/${base.destaque} — carrossel recusado (${carouselFallbackReason}); fallback: imagem única.`);
