@@ -196,10 +196,10 @@ describe("achados e congelamento (#12357)", () => {
   });
 
   it("not-installed e cota unmeasured congelam as issues abertas (não fecham por falta de medida)", () => {
-    const frozen = absenceUnmeasured("not-installed", "unmeasured");
+    const frozen = absenceUnmeasured({ sync: "not-installed", quota: "unmeasured", dataSync: "ok", dataQuota: "ok" });
     assert.equal(frozen(alarmIssueStateKey("gdrive-sync", "alarm-bisync-blocked")), true);
     assert.equal(frozen(alarmIssueStateKey("gdrive-quota", "quota-near")), true);
-    const live = absenceUnmeasured("ok", "ok");
+    const live = absenceUnmeasured({ sync: "ok", quota: "ok", dataSync: "ok", dataQuota: "ok" });
     assert.equal(live(alarmIssueStateKey("gdrive-sync", "alarm-bisync-blocked")), false);
   });
 });
@@ -362,7 +362,7 @@ describe("carimbo ilegível/inválido alarma (review #12357)", () => {
     assert.equal(evaluateGdriveSync(stamp(-24 * H, 0), stamp(7 * H, 0), NOW).verdict, "alarm-stamp-unreadable");
   });
   it("carimbo ilegível congela os outros achados de sync (não fecham sem medida)", () => {
-    const frozen = absenceUnmeasured("alarm-stamp-unreadable", "ok");
+    const frozen = absenceUnmeasured({ sync: "alarm-stamp-unreadable", quota: "ok", dataSync: "ok", dataQuota: "ok" });
     for (const f of ["alarm-bisync-blocked", "alarm-bisync-failed", "alarm-sync-stale"]) {
       assert.equal(frozen(alarmIssueStateKey("gdrive-sync", f)), true, f);
     }
@@ -374,19 +374,19 @@ describe("carimbo ilegível/inválido alarma (review #12357)", () => {
 
 describe("absenceUnmeasured: congelamentos independentes (review #12357)", () => {
   it("cota sem medida NÃO congela as chaves de sync", () => {
-    const f = absenceUnmeasured("ok", "unmeasured");
+    const f = absenceUnmeasured({ sync: "ok", quota: "unmeasured", dataSync: "ok", dataQuota: "ok" });
     assert.equal(f(alarmIssueStateKey("gdrive-sync", "alarm-bisync-blocked")), false);
     assert.equal(f(alarmIssueStateKey("gdrive-quota", "quota-full")), true);
     // Máquina COM bisync: o quota-unmeasured é emitido, então não congela.
     assert.equal(f(alarmIssueStateKey("gdrive-quota", "quota-unmeasured")), false);
   });
   it("not-installed NÃO congela as chaves de cota medida", () => {
-    const f = absenceUnmeasured("not-installed", "ok");
+    const f = absenceUnmeasured({ sync: "not-installed", quota: "ok", dataSync: "ok", dataQuota: "ok" });
     assert.equal(f(alarmIssueStateKey("gdrive-quota", "quota-near")), false);
     assert.equal(f(alarmIssueStateKey("gdrive-sync", "alarm-stamp-unreadable")), true);
   });
   it("nunca congela chave do alarme do OneDrive (outro check)", () => {
-    const f = absenceUnmeasured("not-installed", "unmeasured");
+    const f = absenceUnmeasured({ sync: "not-installed", quota: "unmeasured", dataSync: "ok", dataQuota: "ok" });
     assert.equal(f(alarmIssueStateKey("onedrive-sync", "alarm-service-dead")), false);
     assert.equal(f(alarmIssueStateKey("onedrive-quota", "quota-near")), false);
   });

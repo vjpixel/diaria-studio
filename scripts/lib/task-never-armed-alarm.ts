@@ -60,9 +60,10 @@ import { unitBaseName } from "./systemd-units.ts";
  * `ScheduledTaskSchedule` não expressa.
  *
  * `diaria-gdrive-data-bisync` (#12478): o mesmo script, pelo wrapper
- * `scripts/systemd/gdrive-data-bisync.sh`, só para a pasta de `data/`, a cada
- * 1 min — mesma razão. Instalação pendente (#12575, #12576): até lá não há
- * timer armado e a entrada aqui não muda nada.
+ * `scripts/systemd/gdrive-data-bisync.sh`, só para a pasta de `data/`, 1 min
+ * depois do fim da rodada anterior — mesma razão. Estado de instalação: ver
+ * `docs/scheduled-tasks-registry.md`; sem timer armado a entrada aqui não
+ * muda nada.
  */
 export const KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES: readonly string[] = [
   "diaria-edicao-diaria",

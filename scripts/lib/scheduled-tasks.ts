@@ -44,9 +44,9 @@
  * `gdrive-data-bisync.sh` do bisync dedicado de `data/`), com cadência de
  * 1-2 min (`OnUnitInactiveSec`) que `ScheduledTaskSchedule` não expressa. As
  * units vivem em `scripts/systemd/` e o registro operacional em
- * `docs/scheduled-tasks-registry.md`. **`diaria-gdrive-data-bisync`: NÃO
- * INSTALADA — instalação pendente (#12575, #12576).** O alarme dos dois é a
- * task `Diaria-GDrive-Sync-Alarm` abaixo.
+ * `docs/scheduled-tasks-registry.md` (estado de instalação do
+ * `diaria-gdrive-data-bisync`: ver o registro). O alarme dos dois é a task
+ * `Diaria-GDrive-Sync-Alarm` abaixo.
  *
  * **Este arquivo NÃO executa nada** — é dado puro. Execução é
  * `scripts/lib/task-runner.ts` (`runScheduledTask`); geração de units
@@ -2254,8 +2254,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `Diaria-Remediate-Never-Armed-Tasks` antes da instalação da #12356 é
     // inofensivo: só a cota (`rclone about`, só leitura) é medida.
     // Desde a #12478 também lê os carimbos do bisync dedicado de `data/`
-    // (~/.cache/diaria/gdrive-data-bisync, limiar de 30 min). Sem eles
-    // (instalação pendente, #12576) o sinal é `not-installed`, mudo.
+    // (~/.cache/diaria/gdrive-data-bisync, limiar de 30 min), a config dele
+    // e a cota da conta dele. Sem carimbo o sinal é `not-installed`, mudo,
+    // a menos que o `data/` desta máquina já more na pasta desse bisync.
     schedule: { kind: "interval", hours: 1 },
     issue: "#12357",
   },

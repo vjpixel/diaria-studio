@@ -53,9 +53,11 @@
  *
  * Duas instâncias de bisync, o mesmo veredito (#12478): o do Drive inteiro
  * (`diaria-gdrive-bisync`, carimbos em `~/.cache/diaria/gdrive-bisync`) e o
- * dedicado de `data/` (`diaria-gdrive-data-bisync`, a cada 1 min, carimbos em
- * `~/.cache/diaria/gdrive-data-bisync`). Muda só o texto (`BisyncTarget`) e a
- * tolerância (`DATA_GDRIVE_SYNC_TOLERANCES`, curta, adequada à cadência).
+ * dedicado de `data/` (`diaria-gdrive-data-bisync`, 1 min depois do fim da
+ * rodada anterior, carimbos em `~/.cache/diaria/gdrive-data-bisync`). Muda só
+ * o texto (`BisyncTarget`) e a tolerância (`DATA_GDRIVE_SYNC_TOLERANCES`).
+ * Exit 78 (EX_CONFIG) só sai do wrapper de `data/` (configuração inválida ou
+ * sobreposição): cai em `alarm-bisync-failed`, com texto próprio.
  */
 
 import {
@@ -82,6 +84,8 @@ export function parseBisyncStamp(raw: unknown): BisyncStamp | null {
 
 /** Exit code da trava do `gdrive-bisync.sh` (EX_TEMPFAIL). */
 export const BISYNC_BLOCKED_EXIT = 75;
+/** Exit code do wrapper de `data/` para configuração inválida (EX_CONFIG). */
+export const BISYNC_CONFIG_EXIT = 78;
 
 export const DEFAULT_BLOCKED_TOLERANCE_MS = 60 * 60 * 1000;
 export const DEFAULT_FAILED_TOLERANCE_MS = 30 * 60 * 1000;
@@ -111,11 +115,18 @@ export const DEFAULT_GDRIVE_SYNC_TOLERANCES: GdriveSyncTolerances = {
   staleMs: DEFAULT_STALE_TOLERANCE_MS,
 };
 
-/** Tolerâncias do bisync dedicado de `data/` (#12478). Ele roda a cada 1 min
- * e existe para o `data/` não ficar mais que minutos atrás entre as máquinas:
- * 30 min sem sucesso já é o problema que ele veio resolver (o bisync do Drive
- * inteiro deixava até ~70 min). Falha persistente alarma antes (15 min, ~15
- * rodadas seguidas); trava (exit 75) e stale em 30 min. */
+/** Tolerâncias do bisync dedicado de `data/` (#12478). Ele roda 1 min depois
+ * do fim da rodada anterior e existe para o `data/` não ficar mais que
+ * minutos atrás entre as máquinas: 30 min sem sucesso já é o problema que ele
+ * veio resolver (o bisync do Drive inteiro deixava até ~70 min). Falha
+ * persistente conta a partir de 15 min; trava (exit 75) e stale de 30 min.
+ * O stale (30 min) fica acima do teto da unit (`TimeoutStartSec=20min`): uma
+ * rodada normal, mesmo lenta, nunca o dispara sozinha. A carga inicial
+ * grande é o `--resync` manual, fora da unit.
+ *
+ * Latência real de detecção: o alarme roda DE HORA EM HORA, então o aviso
+ * chega até ~1h depois de a tolerância vencer (até ~75 min para falha, ~90
+ * min para trava/stale), não em 15/30 min. */
 export const DATA_GDRIVE_SYNC_TOLERANCES: GdriveSyncTolerances = {
   blockedMs: 30 * 60 * 1000,
   failedMs: 15 * 60 * 1000,
@@ -126,6 +137,10 @@ export const DATA_GDRIVE_SYNC_TOLERANCES: GdriveSyncTolerances = {
 export interface BisyncTarget {
   /** Nome da instância no texto ("do Google Drive", "do `data/` no Google Drive"). */
   subject: string;
+  /** Ponto de montagem efetivo (o `mountpoint` que a trava confere). */
+  mount: string;
+  /** Arquivo de env que configura a instância; `null` = não tem. */
+  envFile: string | null;
   /** Nome-base da unit (sem `.service`/`.timer`). */
   unit: string;
   /** State dir como aparece no texto (com `~`). */
@@ -141,6 +156,8 @@ export interface BisyncTarget {
 /** Bisync do Drive inteiro (#12356): o texto de sempre. */
 export const FULL_DRIVE_BISYNC_TARGET: BisyncTarget = {
   subject: "do Google Drive",
+  mount: "/mnt/hd-sata",
+  envFile: null,
   unit: "diaria-gdrive-bisync",
   stateDirHint: "~/.cache/diaria/gdrive-bisync/",
   localSentinelHint: "/mnt/hd-sata/GoogleDrive/.diaria-bisync-sentinel",
@@ -148,18 +165,27 @@ export const FULL_DRIVE_BISYNC_TARGET: BisyncTarget = {
   scriptCmd: "sh scripts/systemd/gdrive-bisync.sh",
 };
 
-/** Bisync dedicado de `data/` (#12478), com o remote e a pasta local
- * EFETIVOS (arquivo `~/.config/diaria/gdrive-data-bisync.env` + ambiente +
- * defaults, `resolveDataBisyncConfig`): os comandos do texto saem coláveis. */
-export function dataBisyncTarget(cfg: { remote: string; local: string; stateDir?: string }): BisyncTarget {
+/** Bisync dedicado de `data/` (#12478), com remote, pasta, mount, state dir
+ * e arquivo de env EFETIVOS (`resolveDataBisyncConfig`): os comandos do
+ * texto saem coláveis. */
+export function dataBisyncTarget(cfg: {
+  remote: string;
+  local: string;
+  stateDir?: string;
+  mount?: string;
+  envFile?: string;
+}): BisyncTarget {
   const sep = cfg.remote.endsWith(":") || cfg.remote.endsWith("/") ? "" : "/";
+  const envFile = cfg.envFile ?? "~/.config/diaria/gdrive-data-bisync.env";
   return {
     subject: "do `data/` no Google Drive (bisync dedicado)",
+    mount: cfg.mount ?? DEFAULT_DATA_BISYNC_MOUNT,
+    envFile,
     unit: "diaria-gdrive-data-bisync",
     stateDirHint: cfg.stateDir ? `${cfg.stateDir.replace(/\/+$/, "")}/` : "~/.cache/diaria/gdrive-data-bisync/",
     localSentinelHint:
       `\`${cfg.local}/.diaria-bisync-sentinel\` (pasta local de \`data/\`: \`GDRIVE_DATA_LOCAL\` em ` +
-      "`~/.config/diaria/gdrive-data-bisync.env`)",
+      `\`${envFile}\`)`,
     remoteSentinelTouch: `rclone touch ${cfg.remote}${sep}.diaria-bisync-sentinel`,
     scriptCmd: "sh scripts/systemd/gdrive-data-bisync.sh",
   };
@@ -307,13 +333,23 @@ export function describeGdriveSyncVerdict(ev: GdriveSyncEvaluation, target: Bisy
     case "alarm-bisync-blocked":
       return (
         `O \`rclone bisync\` ${t.subject} está TRAVADO pela proteção contra pasta vazia ${ctx}: ` +
-        `o HD \`/mnt/hd-sata\` não está montado, a sentinela LOCAL ${localSentinel} ` +
+        `o HD \`${t.mount}\` não está montado, a sentinela LOCAL ${localSentinel} ` +
         "sumiu, ou o arquivo de filtros não foi achado (a sentinela do lado do Drive não cai aqui: o " +
         "`--check-access` do rclone a acusa como falha, `alarm-bisync-failed`). Nada sincroniza enquanto isso. " +
-        `Conferir \`mountpoint /mnt/hd-sata\` e \`journalctl --user -u ${t.unit} -n 20\`; sentinela local ` +
+        `Conferir \`mountpoint ${t.mount}\` e \`journalctl --user -u ${t.unit} -n 20\`; sentinela local ` +
         `apagada → recriar com \`touch\` (ver \`docs/scheduled-tasks-registry.md\`, \`${t.unit}\`).`
       );
     case "alarm-bisync-failed":
+      if (ev.lastRun?.exit === BISYNC_CONFIG_EXIT && t.envFile !== null) {
+        return (
+          `O \`rclone bisync\` ${t.subject} NÃO RODA: configuração inválida ou sobreposição ${ctx}. O wrapper saiu ` +
+          `${BISYNC_CONFIG_EXIT} (EX_CONFIG) antes de chamar o rclone: arquivo \`${t.envFile}\` malformado (chave ` +
+          "desconhecida ou repetida, espaço em volta do `=`, BOM, ilegível), caminho relativo em alguma " +
+          "`GDRIVE_DATA_*`, remote igual ao do bisync do Drive inteiro, ou pasta local dentro do espelho do Drive " +
+          `inteiro. Ver as \`GDRIVE_DATA_*\` e o arquivo de env; o motivo exato está em ` +
+          `\`journalctl --user -u ${t.unit} -n 20\` (ou rode \`${t.scriptCmd} --dry-run\`). Este alarme nunca roda o sync.`
+        );
+      }
       return (
         `O \`rclone bisync\` ${t.subject} está FALHANDO ${ctx}. Causas comuns: "too many deletes" (a trava do ` +
         `\`--max-delete\`: confirmar que a deleção foi intencional e rodar \`${t.scriptCmd} --force\` ` +
