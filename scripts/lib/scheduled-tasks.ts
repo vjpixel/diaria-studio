@@ -38,6 +38,16 @@
  * (`scripts/lib/task-never-armed-alarm.ts`), pra `Diaria-Task-Never-Armed-Alarm`
  * não alarmar "timer órfão" sobre uma exclusão documentada e intencional.
  *
+ * **`diaria-gdrive-bisync` (#12356) e `diaria-gdrive-data-bisync` (#12478)
+ * também ficam de fora pelo mesmo motivo de schema:** shell puro que chama o
+ * `rclone bisync` (`scripts/systemd/gdrive-bisync.sh`, e o wrapper
+ * `gdrive-data-bisync.sh` do bisync dedicado de `data/`), com cadência de
+ * 1-2 min (`OnUnitInactiveSec`) que `ScheduledTaskSchedule` não expressa. As
+ * units vivem em `scripts/systemd/` e o registro operacional em
+ * `docs/scheduled-tasks-registry.md` (estado de instalação do
+ * `diaria-gdrive-data-bisync`: ver o registro). O alarme dos dois é a task
+ * `Diaria-GDrive-Sync-Alarm` abaixo.
+ *
  * **Este arquivo NÃO executa nada** — é dado puro. Execução é
  * `scripts/lib/task-runner.ts` (`runScheduledTask`); geração de units
  * systemd é `scripts/lib/systemd-units.ts` + `scripts/setup-systemd-timers.ts`.
@@ -2232,7 +2242,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-GDrive-Sync-Alarm",
     description:
-      "alarme do rclone bisync do Google Drive (trava persistente, falha persistente, sem sucesso ha 6h) + cota da conta",
+      "alarme do rclone bisync do Google Drive (trava persistente, falha persistente, sem sucesso ha 6h) + cota da conta + bisync dedicado de data/ (#12478: sem sucesso ha 30 min, configuracao invalida, cota da conta; sem carimbo e mudo so enquanto o data/ da maquina nao depende dele)",
     steps: [{ key: "alarm", script: "scripts/gdrive-sync-alarm.ts" }],
     logPath: "gdrive-sync-alarm/.alarm.log",
     // De hora em hora (#12357): o bisync roda a cada 2 min e a trava (exit
@@ -2243,6 +2253,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `not-installed`), então o arme automático do
     // `Diaria-Remediate-Never-Armed-Tasks` antes da instalação da #12356 é
     // inofensivo: só a cota (`rclone about`, só leitura) é medida.
+    // Desde a #12478 também lê os carimbos do bisync dedicado de `data/`
+    // (~/.cache/diaria/gdrive-data-bisync, limiar de 30 min), a config dele
+    // e a cota da conta dele. Sem carimbo o sinal é `not-installed`, mudo,
+    // a menos que o `data/` desta máquina já more na pasta desse bisync.
     schedule: { kind: "interval", hours: 1 },
     issue: "#12357",
   },

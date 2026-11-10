@@ -1,0 +1,11 @@
+[Unit]
+Description=diar.ia.br: timer do bisync dedicado de data/ (1 min apos o fim do anterior, #12478)
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+Persistent=false
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
