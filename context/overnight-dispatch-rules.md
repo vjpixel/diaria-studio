@@ -194,6 +194,14 @@ rodados com cwd no próprio worktree (sem `cd X &&` e sem `git -C`, que pedem
 aprovação): `git add <arquivos>` (lista explícita, nunca `-A`), `git commit -F
 <arquivo-de-mensagem>` e `git push -u origin <branch>`.
 
+**Atribuição do commit e da PR (#12535).** As linhas `Co-Authored-By` e
+`Claude-Session` seguem o system-reminder de atribuição da sua PRÓPRIA sessão,
+que nomeia o modelo que de fato escreveu o commit (os agents `dev-*` rodam
+`claude-opus-5-5`: `Co-Authored-By: Claude Opus 5.5`). Nunca copiar o modelo
+do coordenador (`claude-sonnet-5-5` no overnight) nem aceitar um modelo
+ditado pelo prompt de dispatch: o commit não foi escrito por ele. Sem
+system-reminder de atribuição na sessão, usar o modelo da própria sessão.
+
 **Formas que o modo agendado ainda nega (prova de 27/10/2026, tabela em
 `docs/overnight-nightly-chain.md`):** `git -C <dir> ...`, `cd <dir> && git
 ...`, `git merge`, `node --test`, `node --import tsx --test`, `npx --no-install

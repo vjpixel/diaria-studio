@@ -85,7 +85,9 @@
  *
  * Desde o #12389 o módulo também guarda a outra ponta do roteamento: razão de
  * `--track develop`/`fora-de-rodada` que ignora um `decisao-editor` vigente
- * (`detectIgnoredDecision`, seção no fim do arquivo).
+ * (`detectIgnoredDecision`, seção no fim do arquivo). Desde o #12545, também
+ * a razão de `--track bloqueada` que ignora um destravamento de menos de 24 h
+ * (`detectIgnoredRecentUnblock`, última seção).
  *
  * @see scripts/route-issue.ts (routeIssue — chama isto pra `--track agendada`)
  * @see scripts/lib/issue-depends-on.ts (mecanismo certo pra dependência)
@@ -286,5 +288,102 @@ export function detectIgnoredDecision(input: DecisionGuardInput): string | null 
     `Releia a decisão: se ela resolve o que a razão pede, roteie para overnight; se ainda falta algo ` +
     `depois dela, diga isso na razão ("decisão do editor de DD/MM já registrada; ainda exige ...") ` +
     `ou use --override-decision "motivo" (#12389, #5373).`
+  );
+}
+
+// ─── Destravamento recente (#12545) ────────────────────────────────────────
+//
+// A #12348 foi destravada em 08/11 14:44Z: o editor comentou o token Meta
+// novo (com `instagram_manage_insights`, gravado no Doppler e no Worker) e
+// roteou a issue para `overnight`. Às 23:49Z a rodada overnight 261108b
+// devolveu a issue para `bloqueada` com a razão do CORPO ("token Meta sem
+// escopo instagram_manage_insights; ação do editor"), sem ter lido a thread.
+// O guard de staleness (#11301) não pegou porque a rodada passou um
+// `--triaged-at` posterior ao roteamento: declarou ter lido, e não tinha.
+//
+// Regra: `--track bloqueada` é recusado quando o roteamento confiável mais
+// recente da thread é de OUTRO track, tem menos de 24 h e registra um
+// destravamento: o próprio comentário de roteamento, ou um comentário
+// confiável postado até 30 min antes dele (o par "explica + roteia" do
+// /diaria-desbloqueia), usa vocabulário de destravamento, ou a thread já
+// tinha um `bloqueada` antes dele (a issue SAIU de bloqueada). A razão passa
+// se reconhecer o destravamento ("destravada em 08/11, mas o probe ainda dá
+// 403"); `--override-unblock "motivo"` sobrepõe. Mesma limitação de regex das
+// seções acima: o guard pega o caso medido, não toda leitura errada.
+
+/** Janela em que um roteamento para outro track ainda conta como "recente". */
+export const RECENT_UNBLOCK_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Até quanto antes do roteamento um comentário explicativo ainda conta como
+ * parte dele (na #12348, 6 s; 30 min dá folga a uma sessão lenta). */
+export const UNBLOCK_EXPLANATION_WINDOW_MS = 30 * 60 * 1000;
+
+/** Vocabulário de "o bloqueio caiu": destravar/desbloquear, bloqueio
+ * removido/resolvido, credencial renovada/instalada/gravada, escopo já
+ * concedido, probe que voltou 200. Medido nos comentários da #12348. */
+const UNBLOCK_VOCAB_RE =
+  /destrav\p{L}*|desbloque\p{L}*|bloqueio\s+(?:caiu|removid\p{L}*|resolvid\p{L}*|saiu)|(?:token|credencial|chave|escopo)\p{L}*\s+(?:\S+\s+){0,3}?(?:renovad|instalad|gravad|concedid|configurad)\p{L}*|(?:renovad|instalad|gravad)\p{L}*\s+no\s+(?:Doppler|Worker)|granted:\s*true|respond\p{L}*\s+200/iu;
+
+export function textReportsUnblock(text: string): boolean {
+  return UNBLOCK_VOCAB_RE.test(text);
+}
+
+/** A razão do novo `bloqueada` reconhece o destravamento recente em vez de
+ * ignorá-lo: cita o destravamento, ou diz que o bloqueio voltou/persiste. */
+const UNBLOCK_ACK_RE =
+  /destrav\p{L}*|desbloque\p{L}*|bloqueio\s+(?:voltou|persiste|continua|reapareceu)/iu;
+
+export function reasonAcknowledgesUnblock(reason: string): boolean {
+  return UNBLOCK_ACK_RE.test(reason);
+}
+
+export interface RecentUnblockComment {
+  body: string;
+  createdAt?: string;
+}
+
+export interface RecentUnblockInput {
+  track: string;
+  reason: string;
+  now: Date;
+  /** Comentários de autor confiável, com `createdAt` (ordem livre). */
+  comments: readonly RecentUnblockComment[];
+  /** Track do marcador `route-issue` no início do corpo, ou `null`
+   * (`parseRouteIssueMarkerAtStart`, injetado para o módulo seguir sem import). */
+  parseTrack: (body: string) => string | null;
+}
+
+/**
+ * `null` = pode rotear. String = motivo da recusa: o roteamento mais recente
+ * é um destravamento de menos de 24 h e a razão do `bloqueada` não o cita.
+ * Comentário sem `createdAt` legível fica de fora (não dá para situá-lo na
+ * janela); quem protege esse caso é o guard de staleness do #11301.
+ */
+export function detectIgnoredRecentUnblock(input: RecentUnblockInput): string | null {
+  const { track, reason, now, comments, parseTrack } = input;
+  if (track !== "bloqueada") return null;
+  const dated = comments
+    .map((c) => ({ ...c, ms: Date.parse(c.createdAt ?? "") }))
+    .filter((c) => Number.isFinite(c.ms))
+    .sort((a, b) => a.ms - b.ms);
+  const routes = dated.filter((c) => parseTrack(c.body) !== null);
+  const latest = routes[routes.length - 1];
+  if (!latest) return null;
+  const latestTrack = parseTrack(latest.body);
+  if (latestTrack === "bloqueada") return null;
+  const age = now.getTime() - latest.ms;
+  if (age < 0 || age > RECENT_UNBLOCK_WINDOW_MS) return null;
+  const leftBlocked = routes.slice(0, -1).some((c) => parseTrack(c.body) === "bloqueada");
+  const explained = dated.some(
+    (c) => c.ms <= latest.ms && latest.ms - c.ms <= UNBLOCK_EXPLANATION_WINDOW_MS && textReportsUnblock(c.body),
+  );
+  if (!leftBlocked && !explained) return null;
+  if (reasonAcknowledgesUnblock(reason)) return null;
+  const hours = Math.max(1, Math.round(age / (60 * 60 * 1000)));
+  return (
+    `a issue foi destravada e roteada para ${latestTrack} em ${latest.createdAt} (há ~${hours} h), e ` +
+    `--track bloqueada a devolve ao editor sem citar isso. Releia a thread inteira, não só o corpo: ` +
+    `se o bloqueio caiu, siga no track ${latestTrack}; se ele voltou, diga na razão ("destravada em DD/MM, ` +
+    `mas ainda ...") ou use --override-unblock "motivo" (#12545).`
   );
 }
