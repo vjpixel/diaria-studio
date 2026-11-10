@@ -75,6 +75,36 @@
       "status": "aprovado",
       "reason": "Remetente já aprovado em newsletter_auto_capture.senders; migração #12188",
       "decided_at": "2026-11-04"
+    },
+    "created@thenewscc.com.br": {
+      "status": "aprovado",
+      "reason": "decisão do editor (delegada) no gate da edição 261112: newsletter diária brasileira que cobre notícias de IA e tecnologia",
+      "decided_at": "2026-11-10T18:15:00.000Z"
+    },
+    "lenny+how-i-ai@substack.com": {
+      "status": "aprovado",
+      "reason": "decisão do editor (delegada) no gate da edição 261112: newsletter focada em uso prático de IA",
+      "decided_at": "2026-11-10T18:15:00.000Z"
+    },
+    "help@mail.kit.com": {
+      "status": "rejeitado",
+      "reason": "decisão do editor (delegada) no gate da edição 261112: marketing do próprio Kit, não é conteúdo de IA",
+      "decided_at": "2026-11-10T18:15:00.000Z"
+    },
+    "jobalerts@leapfrog.works": {
+      "status": "rejeitado",
+      "reason": "decisão do editor (delegada) no gate da edição 261112: alertas de vagas",
+      "decided_at": "2026-11-10T18:15:00.000Z"
+    },
+    "levelupwithethanevans@substack.com": {
+      "status": "rejeitado",
+      "reason": "decisão do editor (delegada) no gate da edição 261112: liderança e carreira, fora do escopo de IA",
+      "decided_at": "2026-11-10T18:15:00.000Z"
+    },
+    "relocateme@substack.com": {
+      "status": "rejeitado",
+      "reason": "decisão do editor (delegada) no gate da edição 261112: relocação de profissionais, fora do escopo de IA",
+      "decided_at": "2026-11-10T18:15:00.000Z"
     }
   }
 }
