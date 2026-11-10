@@ -18,6 +18,9 @@
  *   npx tsx scripts/reconcile-overnight-report.ts --report data/overnight/261028/report.md
  *   npx tsx scripts/reconcile-overnight-report.ts --report ... [--plan path] [--prs 1,2] [--no-discover] [--check]
  *
+ * PR aberta retida no `Check agent-eval gate` (#8144) sai como "aberta, aguarda
+ * agent-eval" e numa linha de pendência abaixo da tabela (#12678).
+ *
  * `--check` não grava: sai 1 se o bloco estiver ausente ou diferente do estado
  * atual (relatório defasado).
  *
@@ -61,7 +64,7 @@ export const realGhJson: GhJson = (args) => {
 };
 
 function viewPr(n: number, gh: GhJson): PrView {
-  const r = gh(["pr", "view", String(n), "--json", "number,title,url,state,mergedAt,comments"]);
+  const r = gh(["pr", "view", String(n), "--json", "number,title,url,state,mergedAt,comments,body,labels,statusCheckRollup"]);
   if (!r.ok) throw new Error(r.error);
   const d = r.data as Partial<PrView>;
   if (typeof d?.state !== "string") throw new Error(`gh pr view ${n}: payload sem state`);
@@ -72,6 +75,9 @@ function viewPr(n: number, gh: GhJson): PrView {
     state: d.state,
     mergedAt: typeof d.mergedAt === "string" && d.mergedAt ? d.mergedAt : null,
     comments: Array.isArray(d.comments) ? d.comments : [],
+    body: d.body,
+    labels: d.labels,
+    statusCheckRollup: d.statusCheckRollup,
   };
 }
 
