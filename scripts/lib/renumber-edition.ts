@@ -50,6 +50,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { editionDir } from "./edition-paths.ts";
 import { EDITION_LOCK_TTL_MS, readEditionLock, type EditionLockRecord } from "./edition-lock.ts";
@@ -143,6 +144,14 @@ export interface RenumberReport {
    * termina o que faltou.
    */
   global_stores_pending?: string[];
+  /**
+   * #12726 — impressão digital (sha256) das entradas de `from` de cada store
+   * pendente, tirada na mesma leitura que conferiu o conflito. A retomada
+   * recusa se ela mudou: outra sessão escreveu sob o ID antigo (ex.
+   * `/diaria-edicao {de}` de uma edição nova) e a troca levaria isso junto.
+   * Ausente em relatório anterior ao #12726: só a checagem de conflito vale.
+   */
+  global_stores_fingerprints?: Record<string, string>;
   remote_steps: RemoteStepState[];
 }
 
@@ -543,6 +552,9 @@ export function renumberLocal(
     global_stores: [],
     // Só os stores com entrada de `from`, conferidos acima (sem conflito).
     global_stores_pending: globalChanges.filter((c) => c.count > 0).map((c) => c.path),
+    global_stores_fingerprints: Object.fromEntries(
+      globalChanges.filter((c) => c.count > 0 && c.fingerprint !== null).map((c) => [c.path, c.fingerprint!]),
+    ),
     remote_steps: remoteSteps.map((s) => ({ id: s.id, status: "pending" })),
   };
   writeRenumberReport(toDir, report);
@@ -563,15 +575,64 @@ export const DEFAULT_RENUMBER_IO: RenumberIo = {
 };
 
 /**
+ * #12726 — recusa da retomada de um store global pendente: o store mudou
+ * desde a tentativa que o deixou pendente, e reescrevê-lo agora mesclaria (ou
+ * levaria pro ID novo) o que outra sessão gravou. Quem chama sai com exit 2
+ * e nada é escrito naquele store; a lista de pendentes fica como estava.
+ */
+export class GlobalStoreRefusalError extends Error {
+  override name = "GlobalStoreRefusalError";
+}
+
+/**
+ * #12726 — motivo de recusa da retomada de UM store pendente, ou `null`.
+ * Sem entrada de `from` (`count === 0`) não há o que recusar: a tentativa
+ * anterior já gravou o store e só o relatório ficou pra trás. Com entrada de
+ * `from`, recusa se já existe entrada de `to` (`conflict`) ou se as entradas
+ * de `from` não são mais as da impressão digital gravada.
+ */
+export function pendingStoreRefusal(path: string, r: GlobalStoreRewrite, from: string, to: string, recorded: string | undefined, current: string | null): string | null {
+  if (r.count === 0) return null;
+  if (r.conflict > 0) {
+    return `${path} já tem ${r.conflict} entrada(s) de ${to} além das de ${from} pendentes — recusado (nunca mescla duas edições); resolver à mão.`;
+  }
+  if (recorded !== undefined && recorded !== current) {
+    return (
+      `${path}: as entradas de ${from} mudaram desde a tentativa anterior (outra sessão escreveu sob ${from}, ex. uma edição nova com o ID antigo) — ` +
+      `recusado, nada reescrito; conferir à mão quais são da edição renumerada.`
+    );
+  }
+  return null;
+}
+
+/** #12726 — o que a retomada recusaria nos stores pendentes do relatório (sem escrever), ou `null`. */
+export function pendingGlobalStoresRefusal(root: string, report: RenumberReport): string | null {
+  const reasons: string[] = [];
+  for (const path of report.global_stores_pending ?? []) {
+    const store = GLOBAL_EDITION_STORES.find((s) => s.path === path);
+    const abs = resolve(root, path);
+    if (!store || !existsSync(abs)) continue;
+    const text = readFileSync(abs, "utf8");
+    const r = rewriteGlobalStore(store, text, report.from, report.to);
+    if (r.unreadable) continue; // ilegível é transitório: a retomada lança (exit 1) e a próxima tenta.
+    const why = pendingStoreRefusal(path, r, report.from, report.to, report.global_stores_fingerprints?.[path], globalStoreFromFingerprint(store, text, report.from));
+    if (why) reasons.push(why);
+  }
+  return reasons.length > 0 ? reasons.join(" ") : null;
+}
+
+/**
  * #12719 — reescreve os stores globais listados em `global_stores_pending`,
  * um por vez, gravando o relatório depois de cada um (falha no meio não perde
  * o que já foi). Roda no fim do `renumberLocal` e na retomada.
  *
- * Sem a recusa por conflito: entradas de `to` aqui são as que esta mesma troca
- * gravou numa tentativa anterior. A troca seguinte que quisesse usar `from`
- * como destino (261110 → 261111 seguido de 261109 → 261110) recusa enquanto
- * houver pendência, porque ainda há entrada de `from` nos stores. Store
- * ilegível lança, e a lista fica como estava pra próxima tentativa.
+ * #12726 — na retomada o store pode ter mudado desde a tentativa anterior
+ * (EBUSY do sync, e alguém roda `/diaria-edicao {de}` antes de retomar):
+ * entrada de `to` já existente ou entradas de `from` diferentes da impressão
+ * digital gravada ⇒ `GlobalStoreRefusalError` (exit 2), nada escrito naquele
+ * store. Store sem entrada de `from` sai da lista sem escrita (a tentativa
+ * anterior gravou e só o relatório ficou pra trás). Store ilegível lança, e a
+ * lista fica como estava pra próxima tentativa.
  */
 export function completePendingGlobalStores(
   root: string,
@@ -585,8 +646,11 @@ export function completePendingGlobalStores(
     const store = GLOBAL_EDITION_STORES.find((s) => s.path === path);
     const abs = resolve(root, path);
     if (store && existsSync(abs)) {
-      const r = rewriteGlobalStore(store, readFileSync(abs, "utf8"), report.from, report.to);
+      const text = readFileSync(abs, "utf8");
+      const r = rewriteGlobalStore(store, text, report.from, report.to);
       if (r.unreadable) throw new Error(`${path} ilegível (sync em trânsito?) — store global pendente; rodar de novo o mesmo comando termina.`);
+      const refusal = pendingStoreRefusal(path, r, report.from, report.to, report.global_stores_fingerprints?.[path], globalStoreFromFingerprint(store, text, report.from));
+      if (refusal) throw new GlobalStoreRefusalError(refusal);
       if (r.count > 0) {
         io.writeStore(abs, r.text);
         report = { ...report, global_stores: [...(report.global_stores ?? []), { path, count: r.count }] };
@@ -652,8 +716,10 @@ export function buildRemoteSteps(root: string, dir: string, to: string): RemoteS
   }
   // #12720 — só a semanal AGENDADA acompanha o principal. Desagendada pelo
   // `--unschedule` (`created_unverified`), ela volta junto com o principal na
-  // Etapa 6 da pasta nova; rodar o passo aqui, com o principal em rascunho,
-  // recusaria (exit 2) numa edição de segunda.
+  // Etapa 6 da pasta nova: `schedule-newsletter-kit.ts` chama o publisher da
+  // semanal, que retoma o rascunho mesmo fora de segunda (#12725). Rodar o
+  // passo aqui, com o principal em rascunho, recusaria (exit 2: principal não
+  // agendado).
   if (readJson(join(abs, "_internal", SEMANAL_FRIO_STATE))?.status === "scheduled") {
     steps.push({
       id: "kit-semanal-frio",
@@ -773,8 +839,11 @@ export interface UnscheduleOutcome {
  * vira `deleted`, e a Etapa 5 da pasta nova reenfileira com o texto e o dia
  * novos) e tira o `send_at` do broadcast do Kit (estado volta pra `draft`,
  * sem `scheduled_at`, e a Etapa 6 reagenda). A semanal de frio agendada sai
- * primeiro, pelo mesmo `unscheduleKit` (estado `created_unverified`, #12720).
- * Substitui os dois scripts
+ * primeiro, pelo mesmo `unscheduleKit` (estado `created_unverified`, #12720),
+ * e a Etapa 6 da pasta nova a retoma junto com o principal, mesmo numa edição
+ * que deixou de ser de segunda (#12725). Se o principal falhar depois de a
+ * semanal ter saído da agenda, o `failed` do principal diz isso e como
+ * reagendá-la (#12727). Substitui os dois scripts
  * avulsos da troca 261109 → 261110.
  *
  * Só grava o estado local do que foi confirmado. 404 no Worker
@@ -792,6 +861,19 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
   let semanalBlocked = false;
   const semanalPath = join(stateDir, "_internal", SEMANAL_FRIO_STATE);
   const semanal = readJson(semanalPath);
+  // #12727 — semanal fora da agenda (desagendada nesta execução ou numa
+  // anterior que parou no principal). Se o principal falha, ele segue agendado
+  // no dia antigo e a semanal não: reexecutar o `--unschedule` não a vê mais
+  // (já não está `scheduled`), e uma troca abandonada deixaria a base fria sem
+  // envio. O `failed` do principal diz isso, com o comando que a reagenda.
+  let semanalUnscheduledId: number | null =
+    semanal && semanal.status === "created_unverified" && typeof semanal.broadcast_id === "number" ? semanal.broadcast_id : null;
+  const semanalLeftNote = (): string =>
+    semanalUnscheduledId === null
+      ? ""
+      : ` ATENÇÃO: a semanal de frio (broadcast ${semanalUnscheduledId}) está FORA da agenda (created_unverified) e o principal segue agendado ` +
+        "no horário antigo. Repetir o mesmo comando termina a troca (a Etapa 6 da pasta nova reagenda os dois); se a troca for abandonada, " +
+        `reagendar a semanal junto do principal: npx tsx scripts/publish-kit-semanal-frio.ts --edition-dir ${stateDir} --push`;
   if (semanal && semanal.status === "scheduled") {
     const id = typeof semanal.broadcast_id === "number" ? semanal.broadcast_id : null;
     let failure: string | null = null;
@@ -805,6 +887,7 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
           // com o principal: o próximo agendamento do principal a retoma.
           const next = { ...semanal, status: "created_unverified", reason: "principal desagendado (renumber-edition, #12720)" };
           writeFileSync(semanalPath, JSON.stringify(next, null, 2) + "\n", "utf8");
+          semanalUnscheduledId = id;
           out.push({ what: "kit-semanal-frio", result: "unscheduled", detail: `broadcast ${id}: ${r.message}` });
         } else {
           failure = `broadcast ${id}: ${r.message}`;
@@ -830,7 +913,7 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
         detail: "não desagendado: a semanal de frio segue agendada e sairia sozinha — desagendá-la primeiro.",
       });
     } else if (id === null) {
-      out.push({ what: "kit-newsletter", result: "failed", detail: "registro sem broadcast_id — desagendar à mão no Kit." });
+      out.push({ what: "kit-newsletter", result: "failed", detail: `registro sem broadcast_id — desagendar à mão no Kit.${semanalLeftNote()}` });
     } else {
       try {
         const r = await deps.unscheduleKit(id);
@@ -839,10 +922,10 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
           writeFileSync(kitPath, JSON.stringify({ ...rest, status: "draft" }, null, 2) + "\n", "utf8");
           out.push({ what: "kit-newsletter", result: "unscheduled", detail: `broadcast ${id}: ${r.message}` });
         } else {
-          out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${r.message}` });
+          out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${r.message}${semanalLeftNote()}` });
         }
       } catch (e) {
-        out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${(e as Error).message}` });
+        out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${(e as Error).message}${semanalLeftNote()}` });
       }
     }
   }
@@ -978,11 +1061,50 @@ export function rewriteGlobalStore(store: GlobalEditionStore, text: string, from
   };
 }
 
+/**
+ * #12726 — pura: sha256 das entradas de `from` no store (linhas JSONL com o
+ * campo, elementos do array, valor da chave), na ordem em que aparecem.
+ * `null` sem entrada de `from` ou com store ilegível.
+ */
+export function globalStoreFromFingerprint(store: GlobalEditionStore, text: string, from: string): string | null {
+  const parts: string[] = [];
+  if (store.kind === "jsonl-field") {
+    for (const line of text.split("\n")) {
+      if (line.trim() === "") continue;
+      try {
+        const obj: unknown = JSON.parse(line);
+        if (isPlainObject(obj) && obj[store.field] === from) parts.push(line.trim());
+      } catch {
+        // linha pela metade: fora da impressão, como fica fora da troca.
+      }
+    }
+  } else {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    if (store.kind === "array-field") {
+      if (!Array.isArray(parsed)) return null;
+      for (const e of parsed) if (isPlainObject(e) && e[store.field] === from) parts.push(JSON.stringify(e));
+    } else {
+      if (!isPlainObject(parsed) || !isPlainObject(parsed[store.container])) return null;
+      const inner = parsed[store.container] as Record<string, unknown>;
+      if (Object.hasOwn(inner, from)) parts.push(JSON.stringify(inner[from]));
+    }
+  }
+  if (parts.length === 0) return null;
+  return createHash("sha256").update(JSON.stringify(parts), "utf8").digest("hex");
+}
+
 export interface GlobalStoreChange {
   path: string;
   count: number;
   conflict: number;
   unreadable: boolean;
+  /** #12726 — `globalStoreFromFingerprint` da mesma leitura. */
+  fingerprint: string | null;
 }
 
 /** O que cada store global existente mudaria. Só lista os que têm algo a dizer. */
@@ -991,9 +1113,10 @@ export function scanGlobalStores(root: string, from: string, to: string): Global
   for (const store of GLOBAL_EDITION_STORES) {
     const abs = resolve(root, store.path);
     if (!existsSync(abs)) continue;
-    const r = rewriteGlobalStore(store, readFileSync(abs, "utf8"), from, to);
+    const text = readFileSync(abs, "utf8");
+    const r = rewriteGlobalStore(store, text, from, to);
     if (r.count > 0 || r.conflict > 0 || r.unreadable) {
-      out.push({ path: store.path, count: r.count, conflict: r.conflict, unreadable: r.unreadable });
+      out.push({ path: store.path, count: r.count, conflict: r.conflict, unreadable: r.unreadable, fingerprint: globalStoreFromFingerprint(store, text, from) });
     }
   }
   return out;
