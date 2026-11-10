@@ -3128,6 +3128,8 @@ describe("main(): dispatch mockado", () => {
       assert.deepEqual(li.image_urls, capturedByChannel.instagram.image_urls, "carrossel segue junto como fallback");
       assert.equal(capturedByChannel.instagram.document_url, undefined, "Instagram intocado");
       assert.equal(capturedByChannel.threads.document_url, undefined, "Threads intocado");
+      // #12372 item 3 — o enqueue do documento leva a chave idempotente do ciclo.
+      assert.equal(li.idempotency_key, `linkedin-weekly:${saturdayStr}-clicked:main`);
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       const liEntry = out.posts.find((p: any) => p.platform === "linkedin");

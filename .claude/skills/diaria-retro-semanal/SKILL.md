@@ -706,16 +706,21 @@ ambígua no `POST /rest/posts` do documento (5xx ou timeout) vira
 `send_unknown` e nada é publicado por cima, porque o post pode já ter
 saído: nesse caso o editor confere o perfil.
 
-**O primeiro disparo real confirma o Development Tier.** Segundo a
-#12376, o upload do PDF e o `initializeUpload` da Documents API foram
-validados em 07/11/2026; o `POST /rest/posts` com documento no
-Development Tier da Community Management API ainda não foi confirmado ao
-vivo (o corpo da PR #12371, escrito antes, diz que nada foi conferido ao
-vivo). O primeiro disparo real confirma. Se o tier recusar a criação
-do post com 4xx, o Worker publica o carrossel de imagens no próprio
-disparo e o alerta `[document-fallback]` traz o motivo. Depois do primeiro sábado (ou domingo)
-com retro, conferir o post no LinkedIn antes de dar o formato como
-confirmado.
+**Development Tier confirmado ao vivo (#12372 item 5).** O upload do PDF
+e o `initializeUpload` da Documents API foram validados em 07/11/2026
+(#12376); o primeiro disparo real, o mais clicados do ciclo 261107
+(domingo 08/11/2026, 21:00 BRT), saiu como documento: o post
+`urn:li:ugcPost:7525346427347357696` da página tem `content.media` com
+`urn:li:document:` e o título do PDF (conferido em 10/11/2026 pelo
+`GET /rest/posts?q=author`, somente leitura). Se um dia o tier recusar a
+criação do post com 4xx, o Worker publica o carrossel de imagens no
+próprio disparo e o alerta `[document-fallback]` traz o motivo.
+
+O enqueue do LinkedIn semanal leva `idempotency_key`
+`linkedin-weekly:{AAMMDD do sábado}-{mode}:main`, a mesma nos três
+degraus (#12372 item 3, mesma premissa da diária, #12661): re-rodar o
+script cai na mesma entry do Worker, e um post que já saiu responde 409
+`already_fired`, tratado como sucesso sem enfileirar nada.
 
 **Caption: NENHUM
 `formatLinkedInWeekly` foi criado** — `publish-weekly-social.ts` passa
