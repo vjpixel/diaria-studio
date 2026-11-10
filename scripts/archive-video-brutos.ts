@@ -35,6 +35,14 @@
  * Nome repetido na mesma pasta do Drive (o Drive aceita) não é apagado:
  * `deletefile` não diz qual dos dois apaga, e só um foi conferido.
  *
+ * Bruto que a montagem de outra edição ainda usa fica no Drive (#12602): antes
+ * de listar, o script lê o `_internal/video-montagem/source.json` de cada
+ * edição de `data/editions` que ainda não sairia (mesma `decideFolder`, só com
+ * ela) e segura todo bruto com o mesmo nome de arquivo
+ * (`em-uso-por-outra-edicao`, não é falha). `source.json` ilegível de uma
+ * edição em uso = erro, e com `--apply` nada sai do Drive (sem saber o que ele
+ * usa, qualquer bruto pode ser dele).
+ *
  * O timer volta no fim em qualquer caso, inclusive SIGTERM/SIGINT; morte por
  * SIGKILL fica para o alarme de sync parado (#12357).
  *
@@ -51,12 +59,13 @@
  *   npx tsx scripts/archive-video-brutos.ts --apply            # arquiva e apaga do Drive
  *   npx tsx scripts/archive-video-brutos.ts --apply --only 261027,261028
  *   npx tsx scripts/archive-video-brutos.ts --json
+ *   npx tsx scripts/archive-video-brutos.ts --published-min-days 7   # idade mínima da pasta publicada (default 4)
  *
  * Testável sem tocar produção: VIDEO_ARCHIVE_* e RCLONE_BIN/SYSTEMCTL_BIN/
  * MD5SUM_BIN/VIDEO_ARCHIVE_MOUNTPOINT_CMD sobrescrevíveis por env.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,13 +74,17 @@ import { formatBytes } from "./lib/onedrive-quota.ts";
 import { parseRcloneAboutJson } from "./lib/gdrive-quota.ts";
 import { editionDirUnder, editionVideoPublished, todayBrt } from "./prune-video-montage-cache.ts";
 import {
+  DEFAULT_ARCHIVE_PUBLISHED_MIN_DAYS,
   DEFAULT_ARCHIVE_UNPUBLISHED_MAX_DAYS,
+  brutoRefKey,
   decideFolder,
   duplicatePaths,
   editionsOfFolder,
   isBrutoFile,
+  montageSourceRefs,
   parseMd5sumLine,
   parseRcloneLsjson,
+  referencingEditions,
   verifyCopy,
   type FolderDecision,
   type RemoteFile,
@@ -137,6 +150,7 @@ export type FileStatus =
   | "sairia"
   | "nao-apagado-sem-permissao"
   | "nome-duplicado-no-drive"
+  | "em-uso-por-outra-edicao"
   | "falha-conferencia"
   | "falha-download"
   | "falha-mover"
@@ -148,6 +162,7 @@ export const STATUS_IS_FAILURE: Record<FileStatus, boolean> = {
   sairia: false,
   "nao-apagado-sem-permissao": false,
   "nome-duplicado-no-drive": true,
+  "em-uso-por-outra-edicao": false,
   "falha-conferencia": true,
   "falha-download": true,
   "falha-mover": true,
@@ -257,6 +272,78 @@ function publishedSignals(cfg: ArchiveConfig, name: string, warnings: string[]):
     out[e] = sig.value;
   }
   return out;
+}
+
+/** `source.json` da montagem, relativo à pasta da edição (`stateDir` default de `video-montagem.ts`). */
+export const MONTAGE_SOURCE_REL = join("_internal", "video-montagem", "source.json");
+
+export interface InUseRefs {
+  /** `brutoRefKey` → edições em uso que o referenciam. */
+  byKey: Map<string, string[]>;
+  /** `source.json` ilegível de edição em uso: não dá para saber o que ela usa. */
+  errors: string[];
+}
+
+/**
+ * #12602: brutos usados pela montagem de edições que ainda não sairiam da
+ * rodada. Varre `data/editions/{AAMM}/{AAMMDD}/` (sem `data/editions`, vazio:
+ * aí só o teto de idade tira pastas, e a montagem em curso tem menos de 14
+ * dias). Edição que já sairia (publicada há `publishedMinDays`, ou além do
+ * teto) não segura nada.
+ */
+export function inUseMontageRefs(
+  cfg: ArchiveConfig,
+  today: Date,
+  unpublishedMaxDays: number,
+  publishedMinDays: number,
+  warnings: string[],
+): InUseRefs {
+  const out: InUseRefs = { byKey: new Map(), errors: [] };
+  const root = join(cfg.dataRoot, "editions");
+  if (!existsSync(root)) return out;
+  const editions: string[] = [];
+  for (const aamm of readdirSync(root, { withFileTypes: true })) {
+    if (!aamm.isDirectory() || !/^\d{4}$/.test(aamm.name)) continue;
+    for (const ed of readdirSync(join(root, aamm.name), { withFileTypes: true })) {
+      if (ed.isDirectory() && /^\d{6}$/.test(ed.name) && ed.name.startsWith(aamm.name)) editions.push(ed.name);
+    }
+  }
+  for (const e of editions.sort()) {
+    const src = join(editionDirUnder(cfg.dataRoot, e), MONTAGE_SOURCE_REL);
+    if (!existsSync(src)) continue;
+    const own = decideFolder({ name: e, published: publishedSignals(cfg, e, warnings) }, today, unpublishedMaxDays, publishedMinDays);
+    if (own.eligible) continue;
+    let refs: string[] | null;
+    try {
+      refs = montageSourceRefs(JSON.parse(readFileSync(src, "utf8")));
+    } catch (err) {
+      out.errors.push(`${e}: ${MONTAGE_SOURCE_REL} ilegível (${(err as Error).message}); sem saber que brutos a montagem usa, nenhum sai do Drive`);
+      continue;
+    }
+    if (!refs) {
+      out.errors.push(`${e}: ${MONTAGE_SOURCE_REL} sem "path"/"files" legíveis; sem saber que brutos a montagem usa, nenhum sai do Drive`);
+      continue;
+    }
+    for (const r of refs) {
+      const key = brutoRefKey(r);
+      const list = out.byKey.get(key) ?? [];
+      if (!list.includes(e)) list.push(e);
+      out.byKey.set(key, list);
+    }
+  }
+  return out;
+}
+
+function inUseResult(folder: string, f: RemoteFile, refs: InUseRefs): FileResult | null {
+  const users = referencingEditions(f.path, refs.byKey);
+  if (users.length === 0) return null;
+  return {
+    folder,
+    path: f.path,
+    sizeBytes: f.size,
+    status: "em-uso-por-outra-edicao",
+    detail: `usado pela montagem de ${users.join(", ")} (source.json), ainda não arquivável`,
+  };
 }
 
 function fileSize(p: string): number | null {
@@ -388,6 +475,8 @@ export function runArchive(opts: {
   apply: boolean;
   today: Date;
   unpublishedMaxDays: number;
+  /** #12602: idade mínima da pasta publicada; default `DEFAULT_ARCHIVE_PUBLISHED_MIN_DAYS`. */
+  publishedMinDays?: number;
   only?: Set<string>;
   log?: (l: string) => void;
   /** Quem chama registra aqui o religamento para os handlers de sinal (main). */
@@ -417,21 +506,36 @@ export function runArchive(opts: {
     return report;
   }
 
+  const publishedMinDays = opts.publishedMinDays ?? DEFAULT_ARCHIVE_PUBLISHED_MIN_DAYS;
   report.folders = listFolders(cfg)
     .filter((n) => !opts.only || opts.only.has(n))
-    .map((name) => decideFolder({ name, published: publishedSignals(cfg, name, report.warnings) }, opts.today, opts.unpublishedMaxDays));
+    .map((name) =>
+      decideFolder({ name, published: publishedSignals(cfg, name, report.warnings) }, opts.today, opts.unpublishedMaxDays, publishedMinDays),
+    );
   const eligible = report.folders.filter((f) => f.eligible).map((f) => f.name);
+  const refs = eligible.length > 0 ? inUseMontageRefs(cfg, opts.today, opts.unpublishedMaxDays, publishedMinDays, report.warnings) : { byKey: new Map<string, string[]>(), errors: [] };
+  report.errors.push(...refs.errors);
+  const dedupWarnings = () => {
+    report.warnings = [...new Set(report.warnings)];
+  };
 
   if (!apply) {
     // Dry-run: lista sem pausar nada (só leitura).
     for (const name of eligible) {
       const l = listRemote(cfg, `${cfg.remoteRoot}/${name}`);
       if ("error" in l) report.errors.push(`${name}: ${l.error}`);
-      else for (const f of l.files.filter((f) => isBrutoFile(f.path))) report.files.push({ folder: name, path: f.path, sizeBytes: f.size, status: "sairia" });
+      else
+        for (const f of l.files.filter((f) => isBrutoFile(f.path))) {
+          report.files.push(inUseResult(name, f, refs) ?? { folder: name, path: f.path, sizeBytes: f.size, status: "sairia" });
+        }
     }
+    dedupWarnings();
     return report;
   }
+  dedupWarnings();
   if (eligible.length === 0) return report;
+  // Sem saber que brutos uma montagem em curso usa, nada sai do Drive (#12602).
+  if (refs.errors.length > 0) return report;
 
   const bisync = { timerWasActive: false };
   let resumed = false;
@@ -462,6 +566,11 @@ export function runArchive(opts: {
       }
       const dups = duplicatePaths(l.files);
       for (const f of l.files.filter((f) => isBrutoFile(f.path))) {
+        const inUse = inUseResult(folder, f, refs);
+        if (inUse) {
+          report.files.push(inUse);
+          continue;
+        }
         if (dups.has(f.path)) {
           report.files.push({ folder, path: f.path, sizeBytes: f.size, status: "nome-duplicado-no-drive", detail: "dois arquivos com o mesmo nome no Drive; apagar por nome não diz qual sai" });
           continue;
@@ -490,6 +599,7 @@ const FOLDER_REASON: Record<FolderDecision["reason"], string> = {
   "nome-fora-do-padrao": "nome fora de AAMMDD ou data inválida",
   "aguardando-publicacao": "vídeo ainda não publicado",
   "publicacao-desconhecida": "publicação desconhecida (sem a pasta da edição em data/editions)",
+  "publicado-recente": "horizontal publicado, esperando o Short e os cortes dos dias seguintes",
 };
 
 function printText(report: ArchiveReport): void {
@@ -516,6 +626,7 @@ function main(): void {
   const argv = process.argv.slice(2);
   const apply = hasFlag(argv, "apply");
   const unpublishedMaxDays = getIntArg(argv, "unpublished-max-days", { min: 0 }) ?? DEFAULT_ARCHIVE_UNPUBLISHED_MAX_DAYS;
+  const publishedMinDays = getIntArg(argv, "published-min-days", { min: 0 }) ?? DEFAULT_ARCHIVE_PUBLISHED_MIN_DAYS;
   const onlyRaw = getStringArg(argv, "only", { example: "261027,261028" });
   const only = onlyRaw ? new Set(onlyRaw.split(",").map((s) => s.trim()).filter(Boolean)) : undefined;
   const cfg = defaultConfig();
@@ -524,6 +635,7 @@ function main(): void {
     apply,
     today: todayBrt(),
     unpublishedMaxDays,
+    publishedMinDays,
     only,
     log: (l) => console.error(l),
     // SIGTERM/SIGINT não passam pelo `finally`: religa o timer antes de sair.

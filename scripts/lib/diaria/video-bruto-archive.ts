@@ -22,6 +22,24 @@
  *     Drive para sempre. Arquivar não é apagar: a cópia fica no HD.
  *   - publicação DESCONHECIDA (sem `data/editions` nesta máquina, ou sem a
  *     pasta da edição nele) só sai pelo teto de idade.
+ *   - #12602: com o horizontal publicado, a pasta ainda espera a edição mais
+ *     nova do nome ter `publishedMinDays` (4) dias. O Short da vertical nativa
+ *     e os cortes (#11900) saem nos dias úteis SEGUINTES, exportados do
+ *     Premiere a partir dos mesmos brutos, e o sinal de publicado só vê o
+ *     horizontal. Premissa declarada: 4 dias corridos cobrem até 2 cortes de
+ *     qualquer dia da semana (edição de sexta: cortes na segunda, +3, e na
+ *     terça, +4); com a rodada só aos sábados, a pasta de quarta a sexta fica
+ *     uma semana a mais no Drive.
+ *
+ * Bruto de OUTRA edição guardado na pasta (o lote gravado para duas edições na
+ * mesma sessão, que entra na montagem por `transcribe --source` sem mover o
+ * original, #12559) nunca sai enquanto a montagem dessa edição o usar: quem
+ * executa lê o `source.json` de cada edição ainda não arquivável e segura no
+ * Drive todo bruto com o mesmo nome de arquivo (`brutoRefKey`, só o nome: o
+ * caminho gravado é o do Neo, `G:/…`, ou o do cache do modo API). Nome de
+ * câmera tem data e hora, então casar só pelo nome erra para o lado de
+ * guardar. A montagem da edição seguinte que ainda nem começou (sem
+ * `source.json`) fica coberta pelos 4 dias acima.
  *
  * O que conta como bruto (premissa declarada, mais estreita que "todo .mp4 da
  * raiz" do texto da issue, para nunca tirar do Drive um export que alguém
@@ -36,6 +54,8 @@ import { editionAgeDays } from "../edition-video-retention.ts";
 
 /** Sem registro de publicação, a pasta entra na rodada depois de 14 dias (mesmo valor do teto do #12365). */
 export const DEFAULT_ARCHIVE_UNPUBLISHED_MAX_DAYS = 14;
+/** #12602: idade mínima da edição mais nova da pasta para sair por "publicado" (Short e cortes saem nos dias seguintes). */
+export const DEFAULT_ARCHIVE_PUBLISHED_MIN_DAYS = 4;
 
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv)$/i;
 /** Nome que a câmera/celular dá: `20261104_124252.mp4`, `VID_20261104_124252.mp4`, `PXL_20261104_124252345.mp4` (Pixel cola os ms). */
@@ -84,7 +104,7 @@ export type FolderDecision =
   | {
       name: string;
       eligible: false;
-      reason: "nome-fora-do-padrao" | "aguardando-publicacao" | "publicacao-desconhecida";
+      reason: "nome-fora-do-padrao" | "aguardando-publicacao" | "publicacao-desconhecida" | "publicado-recente";
       ageDays: number | null;
     };
 
@@ -93,6 +113,7 @@ export function decideFolder(
   input: ArchiveFolderInput,
   today: Date,
   unpublishedMaxDays: number = DEFAULT_ARCHIVE_UNPUBLISHED_MAX_DAYS,
+  publishedMinDays: number = DEFAULT_ARCHIVE_PUBLISHED_MIN_DAYS,
 ): FolderDecision {
   const editions = editionsOfFolder(input.name);
   if (!editions) return { name: input.name, eligible: false, reason: "nome-fora-do-padrao", ageDays: null };
@@ -103,14 +124,52 @@ export function decideFolder(
   // A mais nova manda: a gravação que cobre 2 edições só envelhece com a última.
   const ageDays = Math.min(...(ages as number[]));
   const signals = editions.map((e) => input.published[e] ?? null);
-  if (signals.every((s) => s === true)) return { name: input.name, eligible: true, reason: "publicado", ageDays };
+  const allPublished = signals.every((s) => s === true);
+  if (allPublished && ageDays >= publishedMinDays) return { name: input.name, eligible: true, reason: "publicado", ageDays };
   if (ageDays > unpublishedMaxDays) return { name: input.name, eligible: true, reason: "teto-sem-publicacao", ageDays };
+  if (allPublished) return { name: input.name, eligible: false, reason: "publicado-recente", ageDays };
   return {
     name: input.name,
     eligible: false,
     reason: signals.some((s) => s === null) ? "publicacao-desconhecida" : "aguardando-publicacao",
     ageDays,
   };
+}
+
+/**
+ * Pura — chave de casamento de um bruto entre a listagem do Drive e o
+ * `source.json` da montagem: o nome do arquivo, sem o caminho (`/` ou `\`),
+ * em minúsculas.
+ */
+export function brutoRefKey(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return (parts[parts.length - 1] ?? "").toLowerCase();
+}
+
+/**
+ * Pura — os caminhos de bruto que um `source.json` da montagem usa: `path`
+ * (bruto único) e `files[].path` (bruto em vários arquivos, #12559). `null` =
+ * formato que não dá para ler (quem chama trata como "não sei o que ele usa").
+ */
+export function montageSourceRefs(source: unknown): string[] | null {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const o = source as { path?: unknown; files?: unknown };
+  const out: string[] = [];
+  if (typeof o.path === "string" && o.path.trim() !== "") out.push(o.path);
+  if (o.files !== undefined) {
+    if (!Array.isArray(o.files)) return null;
+    for (const f of o.files) {
+      const p = (f as { path?: unknown } | null)?.path;
+      if (typeof p !== "string" || p.trim() === "") return null;
+      out.push(p);
+    }
+  }
+  return out.length > 0 ? out : null;
+}
+
+/** Pura — edições em uso que referenciam este bruto (`refs` indexado por `brutoRefKey`). */
+export function referencingEditions(relPath: string, refs: ReadonlyMap<string, readonly string[]>): string[] {
+  return [...(refs.get(brutoRefKey(relPath)) ?? [])];
 }
 
 /** Pura — parse de `md5sum` (`<hex>  <path>`); `null` se não houver hash. */
