@@ -113,7 +113,7 @@ export function readVideoConsent(editionDir: string): { skip: boolean; note: str
 /** As saídas do bloqueio, iguais em todo texto. */
 export function videoGateActions(aammdd: string): string {
   return (
-    `rode /diaria-publica-video ${aammdd} (sobe o horizontal, grava o link e segue para a Etapa 5), ` +
+    `rode /diaria-publica ${aammdd} (sobe o horizontal, grava o link e segue para a Etapa 5), ` +
     `ou, se a edição não tem vídeo, npx tsx scripts/set-d1-no-video.ts ${aammdd} ` +
     `(depois upload-images-public.ts --mode newsletter e o re-render do HTML, #11125) e rode de novo, ` +
     `ou rode de novo com --skip youtube`
@@ -301,7 +301,7 @@ export function assessVideoBeforePublish(editionDir: string, aammdd: string, opt
     "no-video",
     null,
     `Nenhum vídeo da edição ${aammdd} (${YOUTUBE_PUBLISHED_FILE} e ${D1_VIDEO_URL_FILE} ausentes)${consentNote}. ` +
-      `A ordem é /diaria-video-montagem, /diaria-publica-video, Etapa 5: a Etapa 5 não publica sem o link do vídeo no D1 (#12588). ` +
+      `A ordem é /diaria-video-montagem, /diaria-publica, Etapa 5: a Etapa 5 não publica sem o link do vídeo no D1 (#12588). ` +
       `Saídas: ${videoGateActions(aammdd)}.`,
   );
 }

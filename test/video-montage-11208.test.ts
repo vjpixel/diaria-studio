@@ -671,13 +671,13 @@ describe("skill e fluxo do dia (#11208)", () => {
     }
     assert.match(skill, /Gate 1/);
     assert.match(skill, /Gate 2/);
-    assert.match(skill, /\/diaria-publica-video/);
+    assert.match(skill, /\/diaria-publica(?![-\w])/);
     assert.match(skill, /Final\//);
   });
 
   it("CLAUDE.md e a /diaria-publica-video põem a montagem antes da publicação do vídeo", () => {
-    assert.match(read("CLAUDE.md"), /\/diaria-video-montagem[\s\S]{0,300}\/diaria-publica-video[\s\S]{0,300}\/diaria-5-publicacao/);
-    assert.match(read(".claude/skills/diaria-publica-video/SKILL.md"), /\/diaria-video-montagem/);
+    assert.match(read("CLAUDE.md"), /\/diaria-video-montagem[\s\S]{0,300}\/diaria-publica(?![-\w])[\s\S]{0,300}\/diaria-5-publicacao/);
+    assert.match(read(".claude/skills/diaria-publica/SKILL.md"), /\/diaria-video-montagem/);
   });
 });
 

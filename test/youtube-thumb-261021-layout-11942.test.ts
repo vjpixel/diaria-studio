@@ -344,7 +344,7 @@ describe("#11942 CLI: opções de retrato", () => {
 });
 
 describe("#11942 skill documenta o padrão da 261021", () => {
-  const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+  const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
   const a2 = skill.slice(skill.indexOf("### Passo A2"), skill.indexOf("### Passo A3"));
 
   it("Passo A2 usa o close-up pelo Codex com folha de expressões e o layout bottom", () => {

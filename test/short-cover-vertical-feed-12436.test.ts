@@ -53,7 +53,7 @@ describe("#12436 vertical_feed aceita studio_web", () => {
   });
 
   it("todo valor de vertical_feed citado no SKILL.md de /diaria-publica-video está no tipo", () => {
-    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
     const cited = new Set<string>();
     for (const m of skill.matchAll(/vertical_feed[`"]?\s*(?::|para)\s*`?"([a-z_]+)"/g)) cited.add(m[1]);
     assert.ok(cited.has("studio_web"), "o B3a cita studio_web");
