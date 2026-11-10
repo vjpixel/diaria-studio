@@ -50,6 +50,12 @@
  * instalação. Só `last-success.json` presente (o `last-run.json` sumiu) NÃO é
  * `not-installed`: o sucesso conta como a última rodada conhecida (exit 0) e
  * a idade dele decide entre `ok` e `alarm-sync-stale`.
+ *
+ * Duas instâncias de bisync, o mesmo veredito (#12478): o do Drive inteiro
+ * (`diaria-gdrive-bisync`, carimbos em `~/.cache/diaria/gdrive-bisync`) e o
+ * dedicado de `data/` (`diaria-gdrive-data-bisync`, a cada 1 min, carimbos em
+ * `~/.cache/diaria/gdrive-data-bisync`). Muda só o texto (`BisyncTarget`) e a
+ * tolerância (`DATA_GDRIVE_SYNC_TOLERANCES`, curta, adequada à cadência).
  */
 
 export interface BisyncStamp {
@@ -97,6 +103,57 @@ export const DEFAULT_GDRIVE_SYNC_TOLERANCES: GdriveSyncTolerances = {
   blockedMs: DEFAULT_BLOCKED_TOLERANCE_MS,
   failedMs: DEFAULT_FAILED_TOLERANCE_MS,
   staleMs: DEFAULT_STALE_TOLERANCE_MS,
+};
+
+/** Tolerâncias do bisync dedicado de `data/` (#12478). Ele roda a cada 1 min
+ * e existe para o `data/` não ficar mais que minutos atrás entre as máquinas:
+ * 30 min sem sucesso já é o problema que ele veio resolver (o bisync do Drive
+ * inteiro deixava até ~70 min). Falha persistente alarma antes (15 min, ~15
+ * rodadas seguidas); trava (exit 75) e stale em 30 min. */
+export const DATA_GDRIVE_SYNC_TOLERANCES: GdriveSyncTolerances = {
+  blockedMs: 30 * 60 * 1000,
+  failedMs: 15 * 60 * 1000,
+  staleMs: 30 * 60 * 1000,
+};
+
+/** O que muda no texto do achado entre as duas instâncias de bisync. */
+export interface BisyncTarget {
+  /** Nome da instância no texto ("do Google Drive", "do `data/` no Google Drive"). */
+  subject: string;
+  /** Nome-base da unit (sem `.service`/`.timer`). */
+  unit: string;
+  /** State dir como aparece no texto (com `~`). */
+  stateDirHint: string;
+  /** Sentinela LOCAL como aparece no texto. */
+  localSentinelHint: string;
+  /** Comando que recria a sentinela do lado do Drive. */
+  remoteSentinelTouch: string;
+  /** Comando manual do script (sem argumentos). */
+  scriptCmd: string;
+}
+
+/** Bisync do Drive inteiro (#12356): o texto de sempre. */
+export const FULL_DRIVE_BISYNC_TARGET: BisyncTarget = {
+  subject: "do Google Drive",
+  unit: "diaria-gdrive-bisync",
+  stateDirHint: "~/.cache/diaria/gdrive-bisync/",
+  localSentinelHint: "/mnt/hd-sata/GoogleDrive/.diaria-bisync-sentinel",
+  remoteSentinelTouch: "rclone touch gdrive:.diaria-bisync-sentinel",
+  scriptCmd: "sh scripts/systemd/gdrive-bisync.sh",
+};
+
+/** Bisync dedicado de `data/` (#12478). Remote e pasta vêm de
+ * `~/.config/diaria/gdrive-data-bisync.env` (defaults no wrapper), então o
+ * texto aponta para lá em vez de fixar um caminho. */
+export const DATA_BISYNC_TARGET: BisyncTarget = {
+  subject: "do `data/` no Google Drive (bisync dedicado)",
+  unit: "diaria-gdrive-data-bisync",
+  stateDirHint: "~/.cache/diaria/gdrive-data-bisync/",
+  localSentinelHint:
+    "`.diaria-bisync-sentinel` na raiz da pasta local de `data/` (`GDRIVE_DATA_LOCAL` em " +
+    "`~/.config/diaria/gdrive-data-bisync.env`; default `/mnt/hd-sata/GoogleDrive/diaria-studio-data`)",
+  remoteSentinelTouch: "rclone touch {GDRIVE_DATA_REMOTE}/.diaria-bisync-sentinel",
+  scriptCmd: "sh scripts/systemd/gdrive-data-bisync.sh",
 };
 
 export interface GdriveSyncEvaluation {
@@ -216,41 +273,45 @@ function hours(ms: number | null): string {
   return ms === null ? "nunca" : `${(ms / 3_600_000).toFixed(1)}h`;
 }
 
-/** Texto do achado (issue e e-mail): o que aconteceu e o passo que resolve. */
-export function describeGdriveSyncVerdict(ev: GdriveSyncEvaluation): string {
+/** Texto do achado (issue e e-mail): o que aconteceu e o passo que resolve.
+ * `target` troca nome, unit, caminhos e comandos entre as duas instâncias
+ * (#12478); o default é o texto de sempre do bisync do Drive inteiro. */
+export function describeGdriveSyncVerdict(ev: GdriveSyncEvaluation, target: BisyncTarget = FULL_DRIVE_BISYNC_TARGET): string {
   const last = ev.lastRun ? `última rodada ${ev.lastRun.at}, exit ${ev.lastRun.exit}` : "nenhuma rodada carimbada";
   const ctx = `(${last}; último sucesso há ${hours(ev.successAgeMs)})`;
+  const t = target;
+  const localSentinel = t.localSentinelHint.startsWith("/") ? `\`${t.localSentinelHint}\`` : t.localSentinelHint;
   switch (ev.verdict) {
     case "alarm-stamp-unreadable":
       return (
-        `Os carimbos do \`rclone bisync\` do Google Drive existem mas não servem ${ctx}: ` +
+        `Os carimbos do \`rclone bisync\` ${t.subject} existem mas não servem ${ctx}: ` +
         `${ev.invalidStamps.join("; ")}. Sem carimbo confiável o alarme não mede o sync (os outros achados ficam ` +
-        "congelados). Conferir `ls -l ~/.cache/diaria/gdrive-bisync/` (permissão, conteúdo, relógio da máquina); " +
-        "apagar o carimbo inválido faz a próxima rodada do `diaria-gdrive-bisync.timer` regravá-lo."
+        `congelados). Conferir \`ls -l ${t.stateDirHint}\` (permissão, conteúdo, relógio da máquina); ` +
+        `apagar o carimbo inválido faz a próxima rodada do \`${t.unit}.timer\` regravá-lo.`
       );
     case "alarm-bisync-blocked":
       return (
-        `O \`rclone bisync\` do Google Drive está TRAVADO pela proteção contra pasta vazia ${ctx}: ` +
-        "o HD `/mnt/hd-sata` não está montado, a sentinela LOCAL `/mnt/hd-sata/GoogleDrive/.diaria-bisync-sentinel` " +
+        `O \`rclone bisync\` ${t.subject} está TRAVADO pela proteção contra pasta vazia ${ctx}: ` +
+        `o HD \`/mnt/hd-sata\` não está montado, a sentinela LOCAL ${localSentinel} ` +
         "sumiu, ou o arquivo de filtros não foi achado (a sentinela do lado do Drive não cai aqui: o " +
         "`--check-access` do rclone a acusa como falha, `alarm-bisync-failed`). Nada sincroniza enquanto isso. " +
-        "Conferir `mountpoint /mnt/hd-sata` e `journalctl --user -u diaria-gdrive-bisync -n 20`; sentinela local " +
-        "apagada → recriar com `touch` (ver `docs/scheduled-tasks-registry.md`, `diaria-gdrive-bisync`)."
+        `Conferir \`mountpoint /mnt/hd-sata\` e \`journalctl --user -u ${t.unit} -n 20\`; sentinela local ` +
+        `apagada → recriar com \`touch\` (ver \`docs/scheduled-tasks-registry.md\`, \`${t.unit}\`).`
       );
     case "alarm-bisync-failed":
       return (
-        `O \`rclone bisync\` do Google Drive está FALHANDO ${ctx}. Causas comuns: "too many deletes" (a trava do ` +
-        "`--max-delete`: confirmar que a deleção foi intencional e rodar `sh scripts/systemd/gdrive-bisync.sh --force` " +
+        `O \`rclone bisync\` ${t.subject} está FALHANDO ${ctx}. Causas comuns: "too many deletes" (a trava do ` +
+        `\`--max-delete\`: confirmar que a deleção foi intencional e rodar \`${t.scriptCmd} --force\` ` +
         "uma vez), bisync pedindo `--resync` (filtros mudaram ou estado perdido), lock preso, token do remote " +
         "expirado, sentinela ausente do lado do Drive (o `--check-access` recusa; recriar com " +
-        "`rclone touch gdrive:.diaria-bisync-sentinel`). Log: `journalctl --user -u diaria-gdrive-bisync -n 50`. " +
+        `\`${t.remoteSentinelTouch}\`). Log: \`journalctl --user -u ${t.unit} -n 50\`. ` +
         "Este alarme nunca roda o sync."
       );
     case "alarm-sync-stale":
       return (
-        `O Google Drive não sincroniza com sucesso há mais que a tolerância ${ctx}. Pode ser o timer ` +
-        "`diaria-gdrive-bisync.timer` desarmado, a unit nem chegando ao script, ou uma rodada pendurada. " +
-        "Conferir `systemctl --user list-timers diaria-gdrive-bisync.timer` e o journal da unit."
+        `O ${t.subject.replace(/^do /, "")} não sincroniza com sucesso há mais que a tolerância ${ctx}. Pode ser o timer ` +
+        `\`${t.unit}.timer\` desarmado, a unit nem chegando ao script, ou uma rodada pendurada. ` +
+        `Conferir \`systemctl --user list-timers ${t.unit}.timer\` e o journal da unit.`
       );
     default:
       return `Estado: verdict=${ev.verdict} ${ctx}.`;

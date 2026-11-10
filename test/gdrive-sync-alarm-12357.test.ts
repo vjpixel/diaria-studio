@@ -268,7 +268,7 @@ describe("CLI --dry-run (#12357)", { skip: process.platform === "win32" ? "rclon
       const fake = join(sb, "rclone");
       writeFileSync(fake, `#!/bin/sh\necho '${ABOUT_SAMPLE.replace(/\s+/g, "")}'\n`);
       chmodSync(fake, 0o755);
-      const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", state], {
+      const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", state, "--data-state-dir", join(sb, "data-state")], {
         encoding: "utf8",
         cwd: ROOT,
         env: { ...process.env, RCLONE_BIN: fake },
@@ -496,7 +496,7 @@ describe("CLI --dry-run com carimbo corrompido (review #12357)", { skip: process
       const fake = join(sb, "rclone");
       writeFileSync(fake, `#!/bin/sh\necho "CRITICAL: didn't find section" >&2\nexit 1\n`);
       chmodSync(fake, 0o755);
-      const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", state], {
+      const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", state, "--data-state-dir", join(sb, "data-state")], {
         encoding: "utf8",
         cwd: ROOT,
         env: { ...process.env, RCLONE_BIN: fake },

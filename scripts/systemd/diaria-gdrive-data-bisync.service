@@ -1,0 +1,21 @@
+[Unit]
+Description=diar.ia.br: rclone bisync dedicado de data/ (diaria-studio-data no Google Drive, #12478)
+# Mesmo gdrive-bisync.sh do bisync do Drive inteiro, pelo wrapper
+# gdrive-data-bisync.sh, com remote, pasta local, filtro, state dir e workdir
+# do rclone proprios. Remote e pasta vem de ~/.config/diaria/gdrive-data-bisync.env
+# (lido pelo wrapper, tambem numa rodada manual); sem o arquivo, os defaults
+# gdrive:diaria-studio-data <-> /mnt/hd-sata/GoogleDrive/diaria-studio-data.
+# A trava contra pasta vazia e a do script (mountpoint + sentinela
+# .diaria-bisync-sentinel na raiz da pasta, nos dois lados + --max-delete);
+# numa unit de usuario o RequiresMountsFor abaixo so ordena.
+RequiresMountsFor=/mnt/hd-sata
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /home/vjpixel/diaria-studio/scripts/systemd/gdrive-data-bisync.sh
+# data/ tem ~3,5 GB e a listagem leva segundos. O teto cobre uma 1a passada
+# grande pos-resync; oneshot nao reentra, o proximo tick so dispara depois
+# deste terminar.
+TimeoutStartSec=1h
+Nice=5
+IOSchedulingClass=best-effort

@@ -15,6 +15,12 @@
  *      sem sucesso há tempo demais. Lógica pura em `lib/gdrive-sync-alarm.ts`.
  *   2. Cota (`check: "gdrive-quota"`): `rclone about gdrive: --json`, só
  *      leitura. Lógica pura em `lib/gdrive-quota.ts`.
+ *   3. Sync de `data/` (`check: "gdrive-data-sync"`, #12478): os mesmos
+ *      carimbos, do bisync DEDICADO de `data/` (`diaria-gdrive-data-bisync`,
+ *      a cada 1 min, state dir `~/.cache/diaria/gdrive-data-bisync`), com as
+ *      tolerâncias curtas de `DATA_GDRIVE_SYNC_TOLERANCES` (sem sucesso há
+ *      30 min). O sinal 1 não muda. Antes da instalação (#12575/#12576) não há
+ *      carimbo: `not-installed`, silencioso, como o 1 era antes da #12356.
  *
  * Canal de alerta: o mesmo do alarme do OneDrive — issue por achado
  * (`alarm-issues.ts`, fecha sozinha depois de 2 execuções limpas) e e-mail
@@ -56,8 +62,11 @@
  *   npx tsx scripts/gdrive-sync-alarm.ts --failed-minutes 30   # tolerância da falha (outro exit, default 30)
  *   npx tsx scripts/gdrive-sync-alarm.ts --quota-warn-pct 90   # aviso de cota (default 90)
  *   npx tsx scripts/gdrive-sync-alarm.ts --remote gdrive:      # remote do rclone (default gdrive:)
+ *   npx tsx scripts/gdrive-sync-alarm.ts --data-state-dir DIR  # carimbos do bisync de data/ (default $GDRIVE_DATA_STATE_DIR ou ~/.cache/diaria/gdrive-data-bisync)
  *
- * Env: `RCLONE_BIN` (default `~/.local/bin/rclone`), `GDRIVE_STATE_DIR`.
+ * Env: `RCLONE_BIN` (default `~/.local/bin/rclone`), `GDRIVE_STATE_DIR`,
+ * `GDRIVE_DATA_STATE_DIR`. Os limiares `--stale-hours`/`--blocked-minutes`/
+ * `--failed-minutes` valem só pro sinal 1; o de `data/` usa os seus.
  * Estado das issues: `{state dir}/.gdrive-sync-alarm-issues.json`, SEMPRE fora
  * de `data/` (review da #12357: com o estado em `data/` e fallback pro state
  * dir quando `data/` some, um HD desmontado depois do cutover dividia o
@@ -76,6 +85,10 @@ import {
   isAlarmingGdriveSyncVerdict,
   describeGdriveSyncVerdict,
   DEFAULT_GDRIVE_SYNC_TOLERANCES,
+  DATA_GDRIVE_SYNC_TOLERANCES,
+  FULL_DRIVE_BISYNC_TARGET,
+  DATA_BISYNC_TARGET,
+  type BisyncTarget,
   type BisyncStampRead,
   type GdriveSyncEvaluation,
 } from "./lib/gdrive-sync-alarm.ts";
@@ -110,11 +123,19 @@ const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 export const SYNC_CHECK = "gdrive-sync";
 export const QUOTA_CHECK = "gdrive-quota";
+export const DATA_SYNC_CHECK = "gdrive-data-sync";
 
 export function defaultGdriveStateDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.GDRIVE_STATE_DIR && env.GDRIVE_STATE_DIR.length > 0
     ? env.GDRIVE_STATE_DIR
     : join(homedir(), ".cache", "diaria", "gdrive-bisync");
+}
+
+/** State dir do bisync dedicado de `data/` (#12478). */
+export function defaultGdriveDataStateDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.GDRIVE_DATA_STATE_DIR && env.GDRIVE_DATA_STATE_DIR.length > 0
+    ? env.GDRIVE_DATA_STATE_DIR
+    : join(homedir(), ".cache", "diaria", "gdrive-data-bisync");
 }
 
 /** Arquivo de estado das issues do alarme: sempre no state dir, nunca em
@@ -141,15 +162,48 @@ export function readBisyncStamp(path: string): BisyncStampRead {
   return read;
 }
 
+/** Instância de bisync de um achado de sync: check, título e texto. */
+interface SyncFindingKind {
+  check: string;
+  titlePrefix: string;
+  origin: string;
+  target: BisyncTarget;
+}
+
+const FULL_DRIVE_SYNC_KIND: SyncFindingKind = {
+  check: SYNC_CHECK,
+  titlePrefix: "[diar.ia.br] Google Drive sync",
+  origin: "Achado automático do alarme `Diaria-GDrive-Sync-Alarm` (`scripts/gdrive-sync-alarm.ts`, #12357).",
+  target: FULL_DRIVE_BISYNC_TARGET,
+};
+
+const DATA_SYNC_KIND: SyncFindingKind = {
+  check: DATA_SYNC_CHECK,
+  titlePrefix: "[diar.ia.br] Google Drive data/ sync",
+  origin:
+    "Achado automático do alarme `Diaria-GDrive-Sync-Alarm` (`scripts/gdrive-sync-alarm.ts`, sinal do bisync dedicado de `data/`, #12478).",
+  target: DATA_BISYNC_TARGET,
+};
+
 export function toSyncAlarmFinding(ev: GdriveSyncEvaluation, backend: DataSyncBackend): AlarmFinding {
+  return syncAlarmFinding(ev, backend, FULL_DRIVE_SYNC_KIND);
+}
+
+/** Achado do bisync dedicado de `data/` (#12478): mesmas regras de label e
+ * prioridade do sinal do Drive inteiro, check e texto próprios. */
+export function toDataSyncAlarmFinding(ev: GdriveSyncEvaluation, backend: DataSyncBackend): AlarmFinding {
+  return syncAlarmFinding(ev, backend, DATA_SYNC_KIND);
+}
+
+function syncAlarmFinding(ev: GdriveSyncEvaluation, backend: DataSyncBackend, kind: SyncFindingKind): AlarmFinding {
   return {
-    check: SYNC_CHECK,
+    check: kind.check,
     fingerprint: ev.verdict,
-    title: `[diar.ia.br] Google Drive sync: ${ev.verdict}`,
+    title: `${kind.titlePrefix}: ${ev.verdict}`,
     body: [
-      "Achado automático do alarme `Diaria-GDrive-Sync-Alarm` (`scripts/gdrive-sync-alarm.ts`, #12357).",
+      kind.origin,
       "",
-      describeGdriveSyncVerdict(ev),
+      describeGdriveSyncVerdict(ev, kind.target),
       "",
       backendImpactLine(backend),
       "",
@@ -238,14 +292,13 @@ export function gdriveAlarmDelivered(
 export function absenceUnmeasured(
   syncVerdict: GdriveSyncEvaluation["verdict"],
   quotaVerdict: GdriveQuotaEvaluation["verdict"],
+  dataSyncVerdict?: GdriveSyncEvaluation["verdict"],
 ): (key: string) => boolean {
   const keys = new Set<string>();
-  // Sem bisync, ou com carimbo ilegível: nenhum dos dois mede o sync.
-  if (syncVerdict === "not-installed" || syncVerdict === "alarm-stamp-unreadable") {
-    for (const f of ["alarm-bisync-blocked", "alarm-bisync-failed", "alarm-sync-stale"]) keys.add(alarmIssueStateKey(SYNC_CHECK, f));
-  }
-  // Sem bisync também não prova que o carimbo ilegível sarou.
-  if (syncVerdict === "not-installed") keys.add(alarmIssueStateKey(SYNC_CHECK, "alarm-stamp-unreadable"));
+  addSyncAbsenceKeys(keys, SYNC_CHECK, syncVerdict);
+  // Bisync de data/ (#12478): mesmas regras, chaves próprias. Sem o veredito
+  // (chamada antiga), nenhuma chave dele é congelada.
+  if (dataSyncVerdict !== undefined) addSyncAbsenceKeys(keys, DATA_SYNC_CHECK, dataSyncVerdict);
   if (quotaVerdict === "unmeasured") {
     for (const f of ["quota-full", "quota-near"]) keys.add(alarmIssueStateKey(QUOTA_CHECK, f));
     // Sem bisync o `quota-unmeasured` nem é emitido — isso não prova que o
@@ -253,6 +306,15 @@ export function absenceUnmeasured(
     if (syncVerdict === "not-installed") keys.add(alarmIssueStateKey(QUOTA_CHECK, "quota-unmeasured"));
   }
   return (key) => keys.has(key);
+}
+
+function addSyncAbsenceKeys(keys: Set<string>, check: string, verdict: GdriveSyncEvaluation["verdict"]): void {
+  // Sem bisync, ou com carimbo ilegível: nenhum dos dois mede o sync.
+  if (verdict === "not-installed" || verdict === "alarm-stamp-unreadable") {
+    for (const f of ["alarm-bisync-blocked", "alarm-bisync-failed", "alarm-sync-stale"]) keys.add(alarmIssueStateKey(check, f));
+  }
+  // Sem bisync também não prova que o carimbo ilegível sarou.
+  if (verdict === "not-installed") keys.add(alarmIssueStateKey(check, "alarm-stamp-unreadable"));
 }
 
 function issueLineFor(outcome: AlarmFindingOutcome): string {
@@ -266,14 +328,20 @@ export function buildGdriveAlarmEmail(
   sync: GdriveSyncEvaluation,
   quota: GdriveQuotaEvaluation,
   quotaUnmeasuredReason: string | null = null,
+  dataSync: GdriveSyncEvaluation | null = null,
 ): { subject: string; body: string } {
   const parts: string[] = [];
   const subjects: string[] = [];
   const s = qualifying.find((o) => o.check === SYNC_CHECK);
   const q = qualifying.find((o) => o.check === QUOTA_CHECK);
+  const d = dataSync ? qualifying.find((o) => o.check === DATA_SYNC_CHECK) : undefined;
   if (s) {
     parts.push(`${describeGdriveSyncVerdict(sync)}${issueLineFor(s)}`);
     subjects.push(sync.verdict);
+  }
+  if (d && dataSync) {
+    parts.push(`${describeGdriveSyncVerdict(dataSync, DATA_BISYNC_TARGET)}${issueLineFor(d)}`);
+    subjects.push(`data/ ${dataSync.verdict}`);
   }
   if (q) {
     parts.push(`${quotaFindingCauseText(quota, quotaUnmeasuredReason)}${issueLineFor(q)}`);
@@ -289,7 +357,7 @@ export function buildGdriveAlarmEmail(
 export const CLI_SPEC: CliSpec = {
   script: "scripts/gdrive-sync-alarm.ts",
   booleans: ["dry-run"],
-  values: ["to", "state-dir", "stale-hours", "blocked-minutes", "failed-minutes", "quota-warn-pct", "remote"],
+  values: ["to", "state-dir", "data-state-dir", "stale-hours", "blocked-minutes", "failed-minutes", "quota-warn-pct", "remote"],
 };
 
 async function main(): Promise<void> {
@@ -303,6 +371,8 @@ async function main(): Promise<void> {
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");
   const stateDir = getStringArg(argv, "state-dir", { example: "~/.cache/diaria/gdrive-bisync" }) ?? defaultGdriveStateDir();
+  const dataStateDir =
+    getStringArg(argv, "data-state-dir", { example: "~/.cache/diaria/gdrive-data-bisync" }) ?? defaultGdriveDataStateDir();
   const staleHours = getIntArg(argv, "stale-hours", { min: 1 });
   const blockedMinutes = getIntArg(argv, "blocked-minutes", { min: 1 });
   const failedMinutes = getIntArg(argv, "failed-minutes", { min: 1 });
@@ -328,6 +398,18 @@ async function main(): Promise<void> {
       `lastSuccess=${lastSuccess?.at ?? "nenhum"} stateDir=${stateDir} data=${backend}`,
   );
 
+  const dataSync = evaluateGdriveSync(
+    readBisyncStamp(join(dataStateDir, "last-run.json")),
+    readBisyncStamp(join(dataStateDir, "last-success.json")),
+    now,
+    DATA_GDRIVE_SYNC_TOLERANCES,
+  );
+  console.log(
+    `${LOG_PREFIX} sync data/: verdict=${dataSync.verdict} ` +
+      `lastRun=${dataSync.lastRun ? `${dataSync.lastRun.at}/exit ${dataSync.lastRun.exit}` : "nenhuma"} ` +
+      `lastSuccess=${dataSync.lastSuccess?.at ?? "nenhum"} stateDir=${dataStateDir}`,
+  );
+
   const about = readRcloneAboutDetailed(resolveRcloneBin(), remote);
   const quota = evaluateGdriveQuota(about.about, warnPct);
   console.log(
@@ -338,10 +420,11 @@ async function main(): Promise<void> {
   const findings: AlarmFinding[] = [];
   if (isAlarmingGdriveSyncVerdict(sync.verdict)) findings.push(toSyncAlarmFinding(sync, backend));
   if (quotaFindingVerdict(quota, sync.verdict) !== null) findings.push(toQuotaAlarmFinding(quota, about.error));
+  if (isAlarmingGdriveSyncVerdict(dataSync.verdict)) findings.push(toDataSyncAlarmFinding(dataSync, backend));
 
   const statePath = gdriveAlarmIssuesStatePath(stateDir);
   const alarmState = loadAlarmIssuesState(statePath);
-  const isAbsenceUnmeasured = absenceUnmeasured(sync.verdict, quota.verdict);
+  const isAbsenceUnmeasured = absenceUnmeasured(sync.verdict, quota.verdict, dataSync.verdict);
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(findings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS, [], isAbsenceUnmeasured);
@@ -370,7 +453,7 @@ async function main(): Promise<void> {
   const result = await notifyEditorForOutcomes(
     findingOutcomes,
     "acao",
-    (qualifying) => buildGdriveAlarmEmail(qualifying, sync, quota, about.error),
+    (qualifying) => buildGdriveAlarmEmail(qualifying, sync, quota, about.error, dataSync),
     {
       cwd: ROOT,
       platformConfigPath: PLATFORM_CONFIG_PATH,

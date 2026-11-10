@@ -58,12 +58,18 @@ import { unitBaseName } from "./systemd-units.ts";
  * (`scripts/systemd/gdrive-bisync.sh`), sem `.ts` pra o `task-runner.ts`
  * executar, e cadência de 2 min (`OnUnitInactiveSec`) que
  * `ScheduledTaskSchedule` não expressa.
+ *
+ * `diaria-gdrive-data-bisync` (#12478): o mesmo script, pelo wrapper
+ * `scripts/systemd/gdrive-data-bisync.sh`, só para a pasta de `data/`, a cada
+ * 1 min — mesma razão. Instalação pendente (#12575, #12576): até lá não há
+ * timer armado e a entrada aqui não muda nada.
  */
 export const KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES: readonly string[] = [
   "diaria-edicao-diaria",
   "diaria-overnight-watchdog",
   "diaria-node-modules-health-check",
   "diaria-gdrive-bisync",
+  "diaria-gdrive-data-bisync",
 ];
 
 /** Pure — extrai os nomes-base de unit (sem `.timer`) da saída de
