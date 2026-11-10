@@ -328,7 +328,7 @@ describe("restrição de duração resolvida na decupagem (#11364)", () => {
     const md = decupagemMarkdown("261028", doc);
     const ig = md.slice(md.indexOf("### Vertical"));
     assert.match(ig, /\*\*Passa de 3:00 \(Shorts\) em ~27\.0 s\*\*.*propõe o corte/);
-    const yt = md.slice(md.indexOf("### Horizontal YouTube"), md.indexOf("### Vertical"));
+    const yt = md.slice(md.indexOf("### Horizontal 1920x1080"), md.indexOf("### Vertical"));
     assert.doesNotMatch(yt, /Passa de/);
   });
 });

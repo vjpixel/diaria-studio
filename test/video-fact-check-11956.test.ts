@@ -45,8 +45,8 @@ describe("#11956: itens da fala que vão ao ar", () => {
   it("união das versões, a mais longa primeiro, cada item uma vez, com as versões dele", () => {
     const items = factCheckItems([V, H], resolved);
     assert.deepEqual(items.map((i) => i.id), ["resumo[0]", "comentario[0]", "comentario[1]", "comentario[2]", "resumo_curto[0]"]);
-    assert.deepEqual(items.find((i) => i.id === "comentario[1]")!.versions, ["Horizontal YouTube 1920x1080", "Vertical 1080x1920"]);
-    assert.deepEqual(items.find((i) => i.id === "comentario[2]")!.versions, ["Horizontal YouTube 1920x1080"], "targets respeitado");
+    assert.deepEqual(items.find((i) => i.id === "comentario[1]")!.versions, ["Horizontal 1920x1080", "Vertical 1080x1920"]);
+    assert.deepEqual(items.find((i) => i.id === "comentario[2]")!.versions, ["Horizontal 1920x1080"], "targets respeitado");
   });
 
   it("a fala ouvida que difere do pedido vai junto: é ela que vai ao ar", () => {
