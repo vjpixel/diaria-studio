@@ -1718,8 +1718,18 @@ export const YOUTUBE_SCALES: readonly [number, number] = [60, 85];
 export const YOUTUBE_EYE_FRACTION = 1 / 3;
 
 /**
+ * Nome da sequência (e do export) do horizontal (#12609): `Diaria comentada
+ * horizontal_V{n}`, simétrico com `Diaria comentada_Vertical_V{n}` (o
+ * horizontal não vai só para o YouTube). O antigo `Diaria comentada_Youtube_V{n}`
+ * segue valendo no `blocks.json` e no fetch (`videoTargetOf`).
+ */
+export function horizontalSequenceName(version = "V1"): string {
+  return `Diaria comentada horizontal_${version}`;
+}
+
+/**
  * As 2 versões (#11491). Nomes no padrão dos finais da pasta `Final/`
- * (`Diaria comentada_Youtube_V3.mp4`, #11222): o Premiere sugere o nome da
+ * (`Diaria comentada horizontal_V3.mp4`, #12609; antes `_Youtube_V3`, #11222): o Premiere sugere o nome da
  * sequência no export, e `videoTargetOf` lê o destino dele. Escalas:
  * `YOUTUBE_SCALES` (60/85, olhos a 1/3, #12093) no horizontal;
  * 115/130 nas verticais (a da prévia aprovada da 261027; o XML dela saiu com
@@ -1729,14 +1739,14 @@ export function defaultSequences(version = "V1", format: VideoFormat = "monologo
   if (format === "entrevista") {
     // #11507 (261029): sem título nem resumo gravados, a ordem que o editor montou à mão.
     return [
-      { target: "youtube", name: `Diaria comentada_Youtube_${version}`, width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]], eyeFraction: YOUTUBE_EYE_FRACTION },
+      { target: "youtube", name: horizontalSequenceName(version), width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]], eyeFraction: YOUTUBE_EYE_FRACTION },
       { target: "outras-redes", name: `Diaria comentada_Vertical_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_vertical", "fecho"], scales: [115, 130] },
     ];
   }
   return [
     {
       target: "youtube",
-      name: `Diaria comentada_Youtube_${version}`,
+      name: horizontalSequenceName(version),
       width: 1920,
       height: 1080,
       // #12093: o gancho (1ª frase do resumo) abre o horizontal, antes do "Olá, eu sou o Pixel".
@@ -2675,11 +2685,59 @@ export function faceCenterWarnings(
   return out;
 }
 
+/**
+ * Os avisos de caneca (`mugFramingWarnings`) e de rosto centrado
+ * (`faceCenterWarnings`) do `build`, da prévia e da `review` (#12566). Bruto
+ * único: as duas funções de sempre, sem mudança no texto. Bruto em vários
+ * arquivos (#12559): uma rodada por arquivo, com os clipes `fill` dele, o
+ * tamanho dele e o framing dele (`framingOfFile`, `files.{id}.framing`), com o
+ * id do arquivo à frente de cada aviso. Clipe `fit`/`blur-fill` não tem
+ * recorte e fica de fora (o `fitWarnings` relata a área dele).
+ */
+export function framingWarningsByFile(
+  plans: ReadonlyArray<Pick<SequencePlan, "spec" | "clips">>,
+  source: Pick<SourceInfo, "path" | "fps" | "durationS" | "width" | "height" | "mirrored" | "files">,
+  framing: Framing,
+  fileOverrides?: BlocksFile["files"],
+): { mug: string[]; face: string[] } {
+  if (!source.files?.length) return { mug: mugFramingWarnings(plans, source, framing), face: faceCenterWarnings(plans, source, framing) };
+  const mug: string[] = [];
+  const face: string[] = [];
+  source.files.forEach((sf, idx) => {
+    const sub = plans
+      .map((p) => ({
+        ...p,
+        clips: p.clips.filter((c) => (c.file ?? 0) === idx && clipGeometry({ source, spec: p.spec, framing, fileOverrides, clip: c }).fit === "fill"),
+      }))
+      .filter((p) => p.clips.length > 0);
+    if (!sub.length) return;
+    const fr = framingOfFile(framing, { files: fileOverrides }, sf.id);
+    const size = { width: sf.width, height: sf.height };
+    mug.push(...mugFramingWarnings(sub, size, fr).map((w) => `${sf.id}: ${w}`));
+    face.push(...faceCenterWarnings(sub, size, fr).map((w) => `${sf.id}: ${w}`));
+  });
+  return { mug, face };
+}
+
 /** Escalas que o `frame` desenha (#11939): as do horizontal (com os olhos a 1/3, #12093) e as das verticais. */
 export const FRAME_PREVIEW_CROPS: ReadonlyArray<{ seqW: number; seqH: number; scales: readonly number[]; color: string; eyeFraction?: number }> = [
   { seqW: 1920, seqH: 1080, scales: YOUTUBE_SCALES, color: "yellow", eyeFraction: YOUTUBE_EYE_FRACTION },
   { seqW: 1080, seqH: 1920, scales: [115, 130], color: "cyan" },
 ];
+
+const FRAME_CROP_COLOR_PT: Record<string, string> = { yellow: "amarelo", cyan: "ciano", magenta: "magenta" };
+
+/**
+ * A legenda dos recortes do `frame` (#12565), montada de `FRAME_PREVIEW_CROPS`:
+ * o texto fixo de antes dizia 50/62% no horizontal depois de as escalas virarem
+ * 60/85 (#12093). Ex.: `amarelo = horizontal 60/85%, ciano = verticais 115/130%, magenta = caneca`.
+ */
+export function frameCropLegend(): string {
+  const parts = FRAME_PREVIEW_CROPS.map(({ seqW, seqH, scales, color }) =>
+    `${FRAME_CROP_COLOR_PT[color] ?? color} = ${seqW > seqH ? "horizontal" : "verticais"} ${scales.join("/")}%`,
+  );
+  return [...parts, "magenta = caneca"].join(", ");
+}
 
 /**
  * Filtros `drawbox` do `frame` (#11939): o recorte de cada escala desenhado
