@@ -1787,6 +1787,8 @@ function checkNoTrailingEllipsisInvariant(editionDir: string): InvariantViolatio
  * challenge) e link removido antes do pool (dedup/data — score ali é só
  * auditoria) viram `warning`. Os warnings do relatório (pendentes, descoberta
  * falhou, capture_failed) saem sempre, independente da contagem de threads.
+ * #12593: "pool" é o `tmp-scoring-pool.json` (o que foi ao scorer), não o bruto
+ * pré-dedup; e título placeholder de link já pontuado e fora da edição é warning.
  */
 export function checkNewsletterIntake(editionDir: string): InvariantViolation[] {
   const internal = resolve(editionDir, "_internal");
@@ -1813,7 +1815,7 @@ export function checkNewsletterIntake(editionDir: string): InvariantViolation[] 
   }
   try {
     const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
-      links: Array<{url?: string; score: number | null; title?: string; fetch_error?: string; in_pool?: boolean | null}>;
+      links: Array<{url?: string; score: number | null; title?: string; fetch_error?: string; in_pool?: boolean | null; destino?: string}>;
       rows: Array<{thread_id: string}>; warnings: string[]; pending_senders: string[];
       input_fingerprint?: string; registry_path?: string; fingerprint_keys?: string[];
     };
@@ -1825,7 +1827,10 @@ export function checkNewsletterIntake(editionDir: string): InvariantViolation[] 
     const outOfPool = (l: (typeof report.links)[number]) => l.in_pool === false;
     const blocking = (l: (typeof report.links)[number]) => !attempted(l) && !outOfPool(l);
     if (report.links.some((l) => missingScore(l) && blocking(l))) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
-    if (report.links.some((l) => missingTitle(l) && blocking(l))) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
+    // #12593: título placeholder só bloqueia link NA edição (pontuado e fora dela é só exibição da auditoria).
+    // Relatório sem `destino` (formato antigo) conta como na edição: na dúvida, bloqueia como antes.
+    const inEdition = (l: (typeof report.links)[number]) => l.destino !== "fora da edição";
+    if (report.links.some((l) => missingTitle(l) && blocking(l) && (missingScore(l) || inEdition(l)))) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
     if (report.pending_senders.length) out.push(violation(`Remetentes pendentes de decisão em lote: ${report.pending_senders.join(", ")}`, "warning"));
     // #12188 item 7: content hash of the audit inputs, never mtime — a save
     // that keeps the links (Studio, refresh-use-melhor-tempo, sync-code) is not stale.

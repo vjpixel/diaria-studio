@@ -31,6 +31,7 @@ export const INTAKE_INPUT_FILES = [
   "newsletter-extra-scores.json",
   "01-approved.json",
   "tmp-articles-raw.json",
+  "tmp-scoring-pool.json", // #12593: é o "pool" da auditoria
   "tmp-dates-reviewed.json",
   "captured-newsletter-articles.json",
   "newsletter-unscored.enrich.json",

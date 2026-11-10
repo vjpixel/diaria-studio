@@ -37,10 +37,19 @@ export interface LinkAudit {
  * antes do pool (dedup/data — score aí é só auditoria) viram warning.
  */
 export function linkMissing(l: Pick<LinkAudit, "score" | "title">): boolean {
-  return typeof l.score !== "number" || !Number.isFinite(l.score) || !l.title?.trim() || l.title.startsWith("(newsletter:");
+  return linkMissingScore(l) || linkMissingTitle(l);
 }
-export function linkMissingBlocks(l: Pick<LinkAudit, "score" | "title" | "fetch_error" | "in_pool">): boolean {
-  return linkMissing(l) && !l.fetch_error && l.in_pool !== false;
+export function linkMissingScore(l: Pick<LinkAudit, "score">): boolean { return typeof l.score !== "number" || !Number.isFinite(l.score); }
+export function linkMissingTitle(l: Pick<LinkAudit, "title">): boolean { return !l.title?.trim() || l.title.startsWith("(newsletter:"); }
+/** Destino de link que não está no `02-reviewed.md` (nem no `01-approved.json`). */
+export const OUT_OF_EDITION = "fora da edição";
+/**
+ * #12593: título placeholder só bloqueia link que está NA edição. Link pontuado e fora da
+ * edição já foi avaliado; o título ali é só exibição da tabela de auditoria (warning).
+ */
+export function linkMissingBlocks(l: Pick<LinkAudit, "score" | "title" | "fetch_error" | "in_pool" | "destino">): boolean {
+  if (l.fetch_error || l.in_pool === false) return false;
+  return linkMissingScore(l) || (linkMissingTitle(l) && l.destino !== OUT_OF_EDITION);
 }
 export interface IntakeOptions {
   /** Threads da descoberta (`discovered-newsletters.json`) — só auditoria. */
@@ -52,15 +61,30 @@ export interface IntakeOptions {
   fetchFailures?: Map<string, string>;
 }
 export function urlKey(url: string): string { return canonicalize(url).toLowerCase(); }
+/**
+ * #12593: chave de JUNÇÃO de score/título — `urlKey` sem distinguir `http:` de `https:`.
+ * O scoring canonicaliza `http://huggingface.co/x` para `https://`, e o link capturado
+ * na newsletter ficava "sem score" mesmo pontuado.
+ */
+export function joinKey(url: string): string { return urlKey(url).replace(/^http:\/\//, "https://"); }
 /** Accept pool, chunk, fallback and approved shapes without selecting only finalists. */
-export function collectItems(value: unknown): Item[] {
-  if (Array.isArray(value)) return value.flatMap(collectItems);
+export function collectItems(value: unknown): Item[] { return collectItemsSkipping(value, NO_SKIP); }
+/** `collectItems` sem descer nas chaves de `skipKeys`. Separada para `flatMap(collectItems)` seguir seguro. */
+function collectItemsSkipping(value: unknown, skipKeys: ReadonlySet<string>): Item[] {
+  if (Array.isArray(value)) return value.flatMap((v) => collectItemsSkipping(v, skipKeys));
   if (!value || typeof value !== "object") return [];
   const obj = value as Item;
   const article = obj.article && typeof obj.article === "object" ? obj.article as Item : undefined;
   const normalized = article && typeof article.url === "string" ? {...article, ...obj, url: article.url} : obj;
-  return [...(typeof normalized.url === "string" ? [normalized] : []), ...Object.entries(obj).filter(([key]) => key !== "article").flatMap(([, child]) => collectItems(child))];
+  return [...(typeof normalized.url === "string" ? [normalized] : []),
+    ...Object.entries(obj).filter(([key]) => key !== "article" && !skipKeys.has(key)).flatMap(([, child]) => collectItemsSkipping(child, skipKeys))];
 }
+const NO_SKIP: ReadonlySet<string> = new Set();
+/**
+ * #12593: fontes fundidas num cluster (`cluster_sources`) não vão ao scorer como item próprio —
+ * quem é pontuado é o item principal. Para a auditoria elas saíram antes do scoring (dedup).
+ */
+const NOT_IN_POOL_KEYS: ReadonlySet<string> = new Set(["cluster_sources"]);
 /** Keys of `01-approved.json` that are NOT in the edition (fallback without 02-reviewed.md). */
 const NOT_IN_EDITION_KEYS = new Set(["runners_up", "all_scored", "coverage", "rejected", "dropped"]);
 const DESTAQUE = "destaque";
@@ -69,25 +93,28 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
   alwaysConsiderSenders: string[] = [], metadata: unknown[] = [], opts: IntakeOptions = {}) {
   const scored = new Map<string, Item>();
   for (const item of scores.flatMap(collectItems)) {
-    if (typeof item.score !== "number" || !Number.isFinite(item.score) || item.score < 0 || item.score > 100) continue;
+    // #12593: sem faixa 0-100 — o score final soma bônus/penalidades ao score_base (72 + bônus = 102 num
+    // destaque; 2 + newsletter:+5 + source-unread:-10 = -3). A faixa descartava esses scores reais, que
+    // viravam "sem score" e bloqueavam o sentinel.
+    if (typeof item.score !== "number" || !Number.isFinite(item.score)) continue;
     for (const alias of [item.url, item.resolvedFrom, item.original_url]) {
-      if (typeof alias === "string") scored.set(urlKey(alias), item);
+      if (typeof alias === "string") scored.set(joinKey(alias), item);
     }
   }
   // Join redirects resolved by enrichment back to the captured URL.
   const metadataItems = [...metadata, pool, final].flatMap(collectItems);
   for (let pass = 0; pass < 3; pass++) for (const item of metadataItems) {
-    const aliases = [item.url, item.resolvedFrom, item.original_url].filter((u): u is string => typeof u === "string").map(urlKey);
+    const aliases = [item.url, item.resolvedFrom, item.original_url].filter((u): u is string => typeof u === "string").map(joinKey);
     const match = aliases.map((k) => scored.get(k)).find(Boolean);
     if (match) for (const key of aliases) scored.set(key, match);
   }
   const titles = new Map<string, string>();
   for (const item of [...scores, ...metadata, pool, final].flatMap(collectItems)) {
     if (typeof item.title === "string" && !item.title.startsWith("(newsletter:")) {
-      for (const alias of [item.url, item.resolvedFrom, item.original_url]) if (typeof alias === "string") titles.set(urlKey(alias), item.title);
+      for (const alias of [item.url, item.resolvedFrom, item.original_url]) if (typeof alias === "string") titles.set(joinKey(alias), item.title);
     }
   }
-  const poolKeys = new Set(collectItems(pool).flatMap((i) => [i.url, i.resolvedFrom, i.original_url])
+  const poolKeys = new Set(collectItemsSkipping(pool, NOT_IN_POOL_KEYS).flatMap((i) => [i.url, i.resolvedFrom, i.original_url])
     .filter((u): u is string => typeof u === "string").map(urlKey));
   const destinations = new Map<string, string>();
   // #12188 item 8: "destaque" wins over any section that also lists the URL.
@@ -115,14 +142,14 @@ export function buildIntake(threads: IntakeThread[], registry: SenderRegistry, s
     const articles = extraction.articles;
     if (classification.classificacao === "IA") for (const article of articles) {
       const key = urlKey(article.url);
-      const match = scored.get(key);
+      const match = scored.get(joinKey(article.url));
       const matchKey = typeof match?.url === "string" ? urlKey(match.url) : undefined;
       fingerprintKeys.add(key); if (matchKey) fingerprintKeys.add(matchKey);
       const destination = destinations.get(key) ?? (matchKey ? destinations.get(matchKey) : undefined);
       const fetchError = opts.fetchFailures?.get(key) ?? (matchKey ? opts.fetchFailures?.get(matchKey) : undefined);
-      const link: LinkAudit = {url: article.url, title: titles.get(key) ?? (typeof match?.title === "string" ? match.title : article.title),
+      const link: LinkAudit = {url: article.url, title: titles.get(joinKey(article.url)) ?? (typeof match?.title === "string" ? match.title : article.title),
         score: typeof match?.score === "number" ? match.score : null, score_status: match ? "pontuado" : "pendente",
-        thread_id: thread.thread_id, newsletter: thread.sender, destino: destination ?? "fora da edição",
+        thread_id: thread.thread_id, newsletter: thread.sender, destino: destination ?? OUT_OF_EDITION,
         in_pool: poolKnown ? poolKeys.has(key) || (matchKey !== undefined && poolKeys.has(matchKey)) : null};
       if (fetchError && linkMissing(link)) { link.fetch_error = fetchError; if (link.score === null) link.score_status = "falha-fetch"; }
       links.push(link);
@@ -325,8 +352,14 @@ export function main(argv = process.argv.slice(2)): void {
   if (!Array.isArray(threads)) throw new Error("captured-newsletters deve ser array");
   const discoveredRead = readDiscovered(resolve(internal, "discovered-newsletters.json"));
   const scores = ["tmp-allscored.json", "tmp-scored.json", "newsletter-extra-scores.json", "01-approved.json"].map((f) => optional(resolve(internal, f)));
-  const pool = optional(resolve(internal, "tmp-articles-raw.json"));
+  // #12593: "pool" = o que foi de fato distribuído ao scoring (`tmp-scoring-pool.json`, pós dedup/data/cap),
+  // não o bruto pré-dedup. Com o bruto, ~500 links removidos por dedup/data contavam como "no pool sem score"
+  // e bloqueavam o sentinel em toda edição. Edição sem o pool de scoring (anterior ao #2496) cai no bruto.
+  const rawPool = optional(resolve(internal, "tmp-articles-raw.json"));
+  const pool = optional(resolve(internal, "tmp-scoring-pool.json")) ?? rawPool;
   const metadata = ["tmp-dates-reviewed.json", "captured-newsletter-articles.json"].map((f) => optional(resolve(internal, f)));
+  // O bruto segue como fonte de título/metadado dos links que saíram antes do scoring.
+  if (pool !== rawPool) metadata.push(rawPool);
   metadata.push(cache(resolve(internal, "newsletter-link-scores.json")), cache(resolve(internal, "newsletter-unscored.json")));
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const final = existsSync(reviewedPath) ? reviewedEntries(readFileSync(reviewedPath, "utf8")) : optional(resolve(internal, "01-approved.json"));
@@ -359,6 +392,9 @@ export function main(argv = process.argv.slice(2)): void {
   if (fetchFailedLinks.length) warnings.push(`${fetchFailedLinks.length} link(s) sem score/título por falha de fetch/enrich registrada (paywall, 403, challenge) — auditoria, não bloqueia`);
   const outOfPool = result.links.filter((l) => !l.fetch_error && l.in_pool === false && linkMissing(l));
   if (outOfPool.length) warnings.push(`${outOfPool.length} link(s) removido(s) antes do pool (dedup/data) sem score/título — score opcional, só auditoria`);
+  // #12593: pontuado, fora da edição, só o título é placeholder — avaliado, não bloqueia.
+  const scoredUntitled = result.links.filter((l) => !l.fetch_error && l.in_pool !== false && !linkMissingScore(l) && linkMissingTitle(l) && l.destino === OUT_OF_EDITION);
+  if (scoredUntitled.length) warnings.push(`${scoredUntitled.length} link(s) pontuado(s) fora da edição com título placeholder — título só de auditoria, não bloqueia`);
   const missing = [...new Map(result.links.filter(linkMissing).map((l) => [urlKey(l.url), l])).values()];
   const blocking = result.links.filter(linkMissingBlocks);
   // Same input contract as scorer-chunk. Supplemental scores never change selection.
@@ -375,7 +411,7 @@ export function main(argv = process.argv.slice(2)): void {
     ...result.links.map((l) => `| ${scoreCell(l)} | ${cell(l.title)} | ${cell(l.newsletter)} | ${cell(l.destino)} | ${cell(l.url)} |`)];
   writeFileSync(resolve(internal, "newsletter-intake-gate.md"), report.join("\n") + "\n");
   console.log(JSON.stringify({threads: result.rows.length, links: result.links.length, missing_scores: result.links.filter((l) => l.score === null).length, missing_titles: result.links.filter((l) => !l.title.trim() || l.title.startsWith("(newsletter:")).length,
-    blocking_missing: blocking.length, fetch_failed: fetchFailedLinks.length, out_of_pool_missing: outOfPool.length,
+    blocking_missing: blocking.length, fetch_failed: fetchFailedLinks.length, out_of_pool_missing: outOfPool.length, scored_untitled_out_of_edition: scoredUntitled.length,
     pending_senders: result.pending_senders, discovery: {...result.discovery, oferecidos: result.discovery.oferecidos.length}, warnings}));
   // #12188: só "ninguém tentou" reprova — falha de fetch registrada e link fora do pool não.
   if (flags.has("require-scores") && blocking.length) process.exitCode = 1;
