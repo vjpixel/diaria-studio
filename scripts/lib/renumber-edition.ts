@@ -865,15 +865,38 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
   // anterior que parou no principal). Se o principal falha, ele segue agendado
   // no dia antigo e a semanal não: reexecutar o `--unschedule` não a vê mais
   // (já não está `scheduled`), e uma troca abandonada deixaria a base fria sem
-  // envio. O `failed` do principal diz isso, com o comando que a reagenda.
+  // envio. O `failed` do principal diz isso, com o caminho de reagendá-la: o
+  // comando do publisher, ou reagendar à mão no Kit quando o principal não tem
+  // `broadcast_id` (#12729).
   let semanalUnscheduledId: number | null =
     semanal && semanal.status === "created_unverified" && typeof semanal.broadcast_id === "number" ? semanal.broadcast_id : null;
-  const semanalLeftNote = (): string =>
-    semanalUnscheduledId === null
-      ? ""
-      : ` ATENÇÃO: a semanal de frio (broadcast ${semanalUnscheduledId}) está FORA da agenda (created_unverified) e o principal segue agendado ` +
-        "no horário antigo. Repetir o mesmo comando termina a troca (a Etapa 6 da pasta nova reagenda os dois); se a troca for abandonada, " +
-        `reagendar a semanal junto do principal: npx tsx scripts/publish-kit-semanal-frio.ts --edition-dir ${stateDir} --push`;
+  // #12730 — `created_unverified` herdado de antes desta execução não prova
+  // que a semanal está fora da agenda: é também o estado de uma confirmação de
+  // agendamento que falhou, em que o Kit pode ter agendado o broadcast. Só o
+  // desagendamento confirmado AQUI permite afirmar; o herdado vira "pode estar".
+  let semanalUnscheduledHere = false;
+  // #12729 — `mainHasId: false` = registro do principal sem `broadcast_id`: o
+  // `publish-kit-semanal-frio.ts --push` exige o id numérico do principal e
+  // recusa (exit 2), então o aviso manda reagendar à mão no Kit.
+  const semanalLeftNote = (mainHasId: boolean): string => {
+    if (semanalUnscheduledId === null) return "";
+    const where = semanalUnscheduledHere
+      ? "está FORA da agenda (desagendada nesta execução)"
+      : "pode estar FORA da agenda (created_unverified: o agendamento dela não foi confirmado — conferir no Kit)";
+    const reschedule = mainHasId
+      ? `reagendar a semanal junto do principal: npx tsx scripts/publish-kit-semanal-frio.ts --edition-dir ${stateDir} --push`
+      : "reagendar a semanal à mão no Kit, junto do principal (o registro do principal não tem broadcast_id, e o publish-kit-semanal-frio.ts recusa sem ele)";
+    // Sem `broadcast_id` no principal, repetir o comando cai de novo no mesmo
+    // ramo e falha: só termina a troca depois de desagendar o principal à mão.
+    const retry = mainHasId
+      ? "Repetir o mesmo comando termina a troca"
+      : "Desagendar o principal à mão no Kit e repetir o mesmo comando termina a troca";
+    return (
+      ` ATENÇÃO: a semanal de frio (broadcast ${semanalUnscheduledId}) ${where} e o principal segue agendado ` +
+      `no horário antigo. ${retry} (a Etapa 6 da pasta nova reagenda os dois); se a troca for abandonada, ` +
+      reschedule
+    );
+  };
   if (semanal && semanal.status === "scheduled") {
     const id = typeof semanal.broadcast_id === "number" ? semanal.broadcast_id : null;
     let failure: string | null = null;
@@ -888,6 +911,7 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
           const next = { ...semanal, status: "created_unverified", reason: "principal desagendado (renumber-edition, #12720)" };
           writeFileSync(semanalPath, JSON.stringify(next, null, 2) + "\n", "utf8");
           semanalUnscheduledId = id;
+          semanalUnscheduledHere = true;
           out.push({ what: "kit-semanal-frio", result: "unscheduled", detail: `broadcast ${id}: ${r.message}` });
         } else {
           failure = `broadcast ${id}: ${r.message}`;
@@ -913,7 +937,7 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
         detail: "não desagendado: a semanal de frio segue agendada e sairia sozinha — desagendá-la primeiro.",
       });
     } else if (id === null) {
-      out.push({ what: "kit-newsletter", result: "failed", detail: `registro sem broadcast_id — desagendar à mão no Kit.${semanalLeftNote()}` });
+      out.push({ what: "kit-newsletter", result: "failed", detail: `registro sem broadcast_id — desagendar à mão no Kit.${semanalLeftNote(false)}` });
     } else {
       try {
         const r = await deps.unscheduleKit(id);
@@ -922,10 +946,10 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
           writeFileSync(kitPath, JSON.stringify({ ...rest, status: "draft" }, null, 2) + "\n", "utf8");
           out.push({ what: "kit-newsletter", result: "unscheduled", detail: `broadcast ${id}: ${r.message}` });
         } else {
-          out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${r.message}${semanalLeftNote()}` });
+          out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${r.message}${semanalLeftNote(true)}` });
         }
       } catch (e) {
-        out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${(e as Error).message}${semanalLeftNote()}` });
+        out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${(e as Error).message}${semanalLeftNote(true)}` });
       }
     }
   }
