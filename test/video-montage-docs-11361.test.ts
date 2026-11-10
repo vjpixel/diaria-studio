@@ -235,7 +235,8 @@ describe("roteiro final por versão (#11361)", () => {
   it("parágrafo inicial diz o que muda entre as versões", () => {
     assert.match(md, /Comum às 2 versões: Título, Comentário, Encerramento\./);
     assert.match(md, /Horizontal YouTube leva ainda Abertura, Resumo, CTA YouTube\./);
-    assert.match(md, /Vertical leva ainda Resumo curto, CTA vertical\./);
+    // #12571: o CTA falado virou opcional (o CTA padrão é o card): sem item, fica fora do parágrafo.
+    assert.match(md, /Vertical leva ainda Resumo curto\./);
     assert.equal(versionsDiffParagraph(specs.slice(0, 1)), "");
   });
 
@@ -251,8 +252,17 @@ describe("roteiro final por versão (#11361)", () => {
     assert.equal(md.match(/Comentário, opção B/g)?.length, 2);
   });
 
-  it("bloco que falta aparece na tabela e no rodapé da versão", () => {
+  it("bloco que falta aparece na tabela; CTA falado ausente não vai para o rodapé (#12571)", () => {
     assert.match(md, /\| CTA vertical \| \(falta no blocks\.json\) \|  \|/);
-    assert.match(md, /Faltam no blocks\.json: CTA vertical\./);
+    assert.doesNotMatch(md, /Faltam no blocks\.json: CTA vertical/);
+  });
+
+  it("com o card de CTA, a versão fecha com a linha do card e o CTA falado ausente aponta o card (#12571)", () => {
+    const withCard = roteiroMarkdown("261028", plans, blocks, 30, {
+      alternatives: alternativesFromDecupagem(doc),
+      ctaCardShare: Object.fromEntries(plans.map((p) => [p.spec.target, "Compartilhe com quem usa o Gmail"])),
+    });
+    assert.match(withCard, /\| CTA vertical \| \(sem CTA falado: o card de CTA fecha a versão\) \|  \|/);
+    assert.equal(withCard.match(/\| Card de CTA \(4 s\) \| Gostou\? Curta o vídeo\. Compartilhe com quem usa o Gmail\. Siga a diar\.ia\.br\. \| card, sem fala/g)?.length, plans.length);
   });
 });

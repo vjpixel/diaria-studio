@@ -23,6 +23,7 @@
 import {
   BLOCK_KEYS,
   OPTIONAL_BLOCKS,
+  CTA_BLOCKS,
   alignTokens,
   clipSecondsOfBlock,
   clockTime,
@@ -50,6 +51,7 @@ import {
   type VocabRule,
 } from "./video-montage.ts";
 import { voiceHint, type VoiceMark } from "./video-voice.ts";
+import { CTA_CARD } from "./video-cta-card.ts";
 
 // ── Rótulos ───────────────────────────────────────────────────────────────
 
@@ -722,6 +724,12 @@ export function roteiroMarkdown(
     verticalTargetS?: number;
     /** Silêncios do bruto: a duração de cada frase sugerida para corte sai sem as pausas. */
     silences?: Interval[];
+    /**
+     * #12571: a linha de compartilhar do card de CTA de cada versão (chave =
+     * `sequenceKey`); presente = a versão fecha com o card (linha no fim da
+     * tabela). Ausente = sem card (`ctaCard: false` no blocks.json).
+     */
+    ctaCardShare?: Readonly<Record<string, string>>;
   } = {},
 ): string {
   const lines = [`# Roteiro final ${edition} (${plans.length} versões)`, ""];
@@ -750,7 +758,9 @@ export function roteiroMarkdown(
       const items = forThis(key);
       const label = BLOCK_LABELS[key];
       if (!all?.length) {
-        lines.push(`| ${label} | (falta no blocks.json) |  |`);
+        // #12571: sem CTA falado, o card de CTA do fim faz o papel dele.
+        const byCard = CTA_BLOCKS.includes(key) && opts.ctaCardShare?.[sequenceKey(p.spec)] !== undefined;
+        lines.push(`| ${label} | ${byCard ? "(sem CTA falado: o card de CTA fecha a versão)" : "(falta no blocks.json)"} |  |`);
         continue;
       }
       if (!items.length) {
@@ -768,6 +778,9 @@ export function roteiroMarkdown(
       });
       alts.forEach((a, k) => lines.push(`| ${mdCell(`${label}, opção ${LETTERS[k + 1] ?? k + 2}`)} | ${mdCell(a.text)} | ${span(a.start, a.end)} |`));
     }
+    // #12571: o card de CTA, último clipe de toda versão (sem fala).
+    const share = opts.ctaCardShare?.[sequenceKey(p.spec)];
+    if (share !== undefined) lines.push(`| Card de CTA (${CTA_CARD.durationS} s) | ${mdCell(`${CTA_CARD.title} ${CTA_CARD.like}. ${share}. ${CTA_CARD.follow}.`)} | card, sem fala (fade-in de ${CTA_CARD.fadeInS} s) |`);
     // A fala ouvida que difere do texto pedido aparece no Gate 2 (#11362).
     const differs = p.spec.order.flatMap((key) =>
       (resolved[key] ?? []).flatMap((it, i) =>
