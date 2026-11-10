@@ -11,7 +11,7 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  *   npx tsx scripts/fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical
  *     [--target youtube|outras-redes|instagram]
  *     [--folder-id ID] [--window-hours N] [--edition-dir DIR]
- *     [--download [--max-mb N]] [--promote] [--dry-run] [--force]
+ *     [--download [--max-mb N]] [--promote | --no-promote] [--dry-run] [--force]
  *   npx tsx scripts/fetch-drive-video.ts --edition AAMMDD --corte SLUG[,SLUG...] [--folder-id ID]
  *
  * **Modo corte (#11900).** Acha o export de cada vertical extra da edição
@@ -40,11 +40,13 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  *
  * **Versão mais alta em `Editados/` e promoção para `Final/` (#11556).** Com
  * `_Youtube_V1`…`_V5` em `Editados/` (sem `Final/`), vale o maior `V{n}` e a
- * escolha sai como `[premissa]` (`premise` no JSON). Com `--promote` (ou
- * `--download`), o escolhido é copiado para `Final/` (criada se faltar) pela
+ * escolha sai como `[premissa]` (`premise` no JSON). Só com `--promote`
+ * explícito o escolhido é copiado para `Final/` (criada se faltar) pela
  * Drive API, para o timer do 300 ler o mesmo arquivo; a cópia leva
- * `appProperties.diaria_promoted_from` e sai em `promoted`. Sem a flag, nada é
- * escrito no Drive.
+ * `appProperties.diaria_promoted_from`, sai em `promoted` e o log avisa antes
+ * (`[aviso] --promote: ...`). Sem a flag, nada é escrito no Drive — inclusive
+ * com `--download`, que até o #12275 promovia sozinho e escrevia no Drive do
+ * editor sem ele pedir. `--no-promote` segue aceito (no-op, compatibilidade).
  *
  * Pasta `Final/` (#11222): dentro de `{AAMMDD}/`, a subpasta `Final/` é listada
  * e os `.mp4` dela contam como finais pelo LUGAR (o nome não leva "final":
@@ -204,8 +206,8 @@ export interface FetchDriveVideoInput {
   force: boolean;
   /**
    * Arquivo escolhido em `Editados/` é copiado para `Final/` (#11556), para o
-   * timer do 300 ler o mesmo arquivo. No CLI: `--promote`, ou implícito em
-   * `--download`. Ausente = não escreve nada no Drive.
+   * timer do 300 ler o mesmo arquivo. No CLI: só `--promote` explícito
+   * (`--download` não implica mais, #12275). Ausente = não escreve nada no Drive.
    */
   promote?: boolean;
   /** Teto do download em bytes (#11551); acima dele, sem `force`, nada é baixado. `null`/ausente = sem teto. */
@@ -749,7 +751,7 @@ export async function runFetchDriveVideo(
   if (localReady) return existsOutcome();
 
   if (sel.kind === "none") {
-    log(`[aviso] ${sel.reason} — nada baixado; quando o vídeo subir, rodar /diaria-publica-video ${aammdd}`);
+    log(`[aviso] ${sel.reason} — nada baixado; quando o vídeo subir, rodar /diaria-publica ${aammdd}`);
     return { exitCode: 0, output: { ...withFolder, action: "none", selection: "none", reason: sel.reason } };
   }
   if (sel.kind === "ambiguous") {
@@ -776,6 +778,7 @@ export async function runFetchDriveVideo(
     withFolder.premise = sel.premise;
   }
   if (file.editedFolder && input.promote && editionFolderId) {
+    log(`[aviso] --promote: copiando ${file.name} de Editados/ para Final/ no Drive do editor (cria Final/ se faltar; o timer do 300 passa a ler essa cópia) (#12275)`);
     const promoted = await promoteToFinal(deps, {
       editionFolderId,
       finalFolderIds: finalOnlyIds,
@@ -788,7 +791,7 @@ export async function runFetchDriveVideo(
     else if (promoted.status === "already") log(`[ok] ${file.name} já está em Final/ (id ${promoted.file_id})`);
     else log(`[ok] ${file.name} copiado para Final/${promoted.created_folder ? " (pasta criada)" : ""}: id ${promoted.file_id} (#11556)`);
   } else if (file.editedFolder) {
-    log(`[premissa] ${file.name} veio de Editados/; não copiado para Final/ (sem --promote/--download)`);
+    log(`[premissa] ${file.name} veio de Editados/; não copiado para Final/ (sem --promote; nada escrito no Drive, #12275)`);
   }
   if (instagramCut) {
     // O publish-shorts.ts usa um vertical só para todos os destinos (o corte
@@ -970,7 +973,8 @@ export function parseCorteList(raw: string): { ok: true; cortes: string[] } | { 
 // ── CLI ───────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "uso: fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical [--target youtube|outras-redes|instagram] [--folder-id ID] [--window-hours N] [--edition-dir DIR] [--download [--max-mb N]] [--promote] [--dry-run] [--force]\n" +
+  "uso: fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical [--target youtube|outras-redes|instagram] [--folder-id ID] [--window-hours N] [--edition-dir DIR] [--download [--max-mb N]] [--promote | --no-promote] [--dry-run] [--force]\n" +
+  "     (--download só baixa; a cópia de Editados/ para Final/ no Drive só com --promote, #12275)\n" +
   "     fetch-drive-video.ts --edition AAMMDD --corte SLUG[,SLUG...] [--folder-id ID]   (export das verticais extras, #11900; só identifica)";
 
 export function readYouTubeDriveConfig(config: unknown): { folderId: string | null; windowHours: number | null; maxDownloadMb?: number | null } {
@@ -996,7 +1000,7 @@ export type ParsedFetchDriveVideoArgs =
       /** Sem `--download` o CLI só planeja (#11551): nenhum byte vai para o disco. */
       dryRun: boolean;
       force: boolean;
-      /** `--promote`, ou implícito em `--download` (#11556). */
+      /** Só `--promote` explícito (#11556); `--download` não implica mais (#12275). */
       promote: boolean;
       /** Teto do download (#11551): `--max-mb`, `drive_max_download_mb` ou `DEFAULT_MAX_DOWNLOAD_MB`. */
       maxBytes: number;
@@ -1010,7 +1014,7 @@ export function parseFetchDriveVideoArgs(
 ): ParsedFetchDriveVideoArgs {
   const { flags, values, positional } = parseArgs(argv);
   // `--dry-run 261025` engoliria a edição como valor da flag; e flag de valor sem valor vira flag solta.
-  const misused = ["dry-run", "force", "download", "promote"].filter((f) => values[f] !== undefined);
+  const misused = ["dry-run", "force", "download", "promote", "no-promote"].filter((f) => values[f] !== undefined);
   const missingValue = ["edition", "orientation", "target", "folder-id", "window-hours", "edition-dir", "max-mb"].filter((f) => flags.has(f));
   if (positional.length || misused.length || missingValue.length) {
     const what = [...positional, ...misused.map((f) => `--${f} não leva valor`), ...missingValue.map((f) => `--${f} sem valor`)];
@@ -1037,6 +1041,7 @@ export function parseFetchDriveVideoArgs(
   if (!Number.isFinite(windowHours) || windowHours <= 0) return { ok: false, error: `--window-hours inválido (${windowRaw})` };
   const download = flags.has("download");
   if (download && flags.has("dry-run")) return { ok: false, error: "--download e --dry-run juntos se contradizem" };
+  if (flags.has("promote") && flags.has("no-promote")) return { ok: false, error: "--promote e --no-promote juntos se contradizem" };
   const maxRaw = values["max-mb"];
   const maxMb = maxRaw !== undefined ? Number(maxRaw) : (cfg.maxDownloadMb ?? DEFAULT_MAX_DOWNLOAD_MB);
   if (!Number.isFinite(maxMb) || maxMb <= 0) return { ok: false, error: `--max-mb inválido (${maxRaw})` };
@@ -1050,7 +1055,9 @@ export function parseFetchDriveVideoArgs(
     editionDir: values["edition-dir"] ?? null,
     dryRun: !download,
     force: flags.has("force"),
-    promote: download || flags.has("promote"),
+    // Só com `--promote` explícito (#12275): `--download` promovia sozinho e escrevia
+    // no Drive do editor sem ele pedir. `--no-promote` é aceito como no-op.
+    promote: flags.has("promote"),
     maxBytes: Math.round(maxMb * 1e6),
   };
 }
@@ -1067,7 +1074,7 @@ export function parseFetchCorteArgs(
   const { flags, values, positional } = parseArgs(argv);
   if (values["corte"] === undefined && !flags.has("corte")) return null;
   if (flags.has("corte")) return { ok: false, error: "--corte sem valor" };
-  const foreign = ["orientation", "target", "window-hours", "edition-dir", "download", "promote", "max-mb", "force", "dry-run"].filter(
+  const foreign = ["orientation", "target", "window-hours", "edition-dir", "download", "promote", "no-promote", "max-mb", "force", "dry-run"].filter(
     (f) => flags.has(f) || values[f] !== undefined,
   );
   if (positional.length || foreign.length) {

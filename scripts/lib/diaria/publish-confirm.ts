@@ -42,9 +42,11 @@
  *    vez de seguir como se nada tivesse saído.
  *
  * Os chamadores automáticos já autorizados por config (timers do 300,
- * `stage5-youtube.ts` com o consent da Etapa 5, tasks one-shot que a skill
+ * tasks one-shot que a skill
  * cria a partir do `owners[]`) passam a flag eles mesmos — a autorização deles
  * é a decisão do editor que os ligou, não uma pergunta a cada execução.
+ * (O `stage5-youtube.ts` deixou de subir vídeo no #12588: só o
+ * `/diaria-publica-video`, depois do "pode publicar", sobe o horizontal.)
  *
  * A flag não protege contra o processo que sobrevive à interrupção (isso é
  * harness); ela garante que o processo só começa depois do "sim".

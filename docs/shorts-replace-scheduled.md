@@ -13,13 +13,13 @@ O primeiro comando só lê e imprime o plano. O segundo exige a confirmação da
 edição, relê o estado remoto, apaga os agendados do YouTube/Facebook, arquiva
 cada ID removido, limpa suas marcas de envio e chama o publisher apenas para
 esse destino, preservando seu horário. Use `--only` para restringir destinos.
-Publicado, envio ambíguo, estado desconhecido e horário a menos de 10 minutos
+Publicado, envio ambíguo, estado desconhecido e horário a 30 minutos ou menos
 ficam fora. Corte avulso, timers, download e `--now` não combinam com a troca.
 
 X e TikTok continuam sendo executados pela skill através da Buffer MCP:
 
 1. Para cada item `action: buffer`, chamar `get_post` com o ID sem `buffer:`.
-   Conferir que segue na fila, não enviado e com `dueAt` futuro. Estado
+   Conferir que segue na fila, não enviado e com `dueAt` com mais de 30 minutos de folga. Estado
    desconhecido, falha de leitura ou envio já realizado: parar nesse destino.
 2. Chamar `delete_post`. Só com exclusão confirmada, repetir o segundo comando
    com `--only x` e `--buffer-deleted x=buffer:ID` (ou `tiktok=buffer:ID`). A flag
@@ -51,3 +51,23 @@ nome do export (validado contra o hash dos bytes). O dry-run do
 concluídos quando há essa origem registrada e avisa se o export selecionado tem
 V maior. Registros antigos sem nome não permitem a comparação de V. Conferir o
 plano depois de baixar o V2 e antes de autorizar qualquer destino pendente.
+
+A janela de exclusão exige mais de 30 minutos (20 minutos de folga sobre o
+guard de 10 minutos do novo upload). A releitura remota aplica a mesma margem.
+Isso reduz a falha entre exclusão e upload; não torna a troca atômica.
+
+Se houver `publication_unparsed: true`, o filho terminou com exit 0, mas seu
+resultado não pôde ser interpretado. Não repetir `--publish` automaticamente.
+Para YouTube/Facebook, reler o registro e conferir a plataforma antes de agir.
+Para X/TikTok, recuperar apenas o preparo R2: `publish-shorts.ts AAMMDD
+--only x --video PATH --scheduled-at ISO --keep-video --require-scheduled
+--publish --confirm-publish AAMMDD` (ou `--only tiktok`),
+usando o horário do plano original. Nesses dois destinos, `--publish` só
+prepara o R2: o post depende do `create_post` externo. Não usar
+`--replace-scheduled`. Conferir que não há novo post Buffer antes de executar
+os passos 3 e `--mark`; obter `videoSha256` e `videoUrl` do novo preparo,
+nunca inventá-los.
+
+`--require-scheduled` é flag interna do filho e do comando exato de recuperação
+impresso na falha. Preservar essa flag e `--scheduled-at` ao recuperar;
+um `--publish` comum pode publicar imediatamente depois do tombstone.

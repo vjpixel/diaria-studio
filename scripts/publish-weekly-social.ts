@@ -64,7 +64,19 @@
  *     [--no-skip-existing] [--force-incomplete-week]
  *     [--force-incomplete-click-data] [--manifest-only]
  *     [--force-urls url1,url2,...] [--force-font-size N]
- *     [--show-ranking] [--check-slot]
+ *     [--show-ranking] [--check-slot] [--reschedule]
+ *
+ * `--reschedule` (#12375, exige `--schedule` e um modo só): muda o horário de
+ * um carrossel JÁ agendado. Cancela as entradas `scheduled` do modo (fila do
+ * Worker pra Instagram/Threads/LinkedIn, post agendado do Facebook na Graph
+ * API), tira do `06-weekly-published.json` as entradas do modo e do
+ * `data/social-schedule-rotation.jsonl` a linha de fim de semana do dia, e
+ * reagenda pelo fluxo normal. Aborta sem cancelar nada se o horário antigo já
+ * passou (ou falta menos de 5 min), e para no 1º DELETE que devolver 404
+ * (post já disparou) sem reagendar. Miolo em `scripts/lib/weekly-social-reschedule.ts`.
+ * #12417: antes do 1º DELETE os alvos viram `cancelling` no registro; se a
+ * limpeza falhar (lock ocupado) ou o processo cair no meio, a próxima rodada
+ * com `--schedule` (com ou sem `--reschedule`) retoma o cancelamento e reagenda.
  *
  * `--show-ranking` (#10388, só `clicked`): imprime o ranking elegível
  * completo por taxa + os excluídos. Os grupos de empate (vencedor e quem
@@ -93,6 +105,15 @@
  * corpo, então o post semanal do LinkedIn diverge dessa convenção. Decisão
  * explícita do editor foi aceitar essa divergência em vez de criar
  * `formatLinkedInWeekly` só pra omitir a URL.
+ *
+ * **LinkedIn como DOCUMENTO PDF (#8055):** no LinkedIn o carrossel sai como
+ * documento (visualizador paginado no feed), não como post de imagens
+ * múltiplas — premissa do editor, item 3 da issue. O PDF encaderna os MESMOS
+ * slides (`buildWeeklyCarouselPdf`), sobe pro KV em `/img/{key}`
+ * (`prepareWeeklyLinkedInDocument`) e vai pro Worker como `document_url`, com
+ * o carrossel em `image_urls` de fallback. Falha do PDF ou recusa 4xx do
+ * Worker cai no carrossel de imagens (`enqueueWeeklyLinkedIn`), com warning e
+ * `document_fallback_reason` no store. Instagram/Facebook/Threads não mudam.
  *
  * `--force-font-size N` (override manual, ad-hoc — #7571): substitui
  * `WEEKLY_CAROUSEL_NEWS_CARD_SIZE` (#8480, 260919 — piso fixo de 62px pra
@@ -205,8 +226,24 @@ import {
   weeklySummariesPath,
   weeklySummaryPassWarnings,
 } from "./lib/weekly-summaries.ts";
-import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
-import { postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
+import { appendSocialPosts, readSocialPublished, rewriteSocialPosts, PostEntry } from "./lib/social-published-store.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
+import { isNodeTestContext } from "./lib/test-context-guard.ts";
+import { deleteFromWorkerQueue, idempotentConflictKey, postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
+import {
+  cancelAndRecordReschedule,
+  deleteFacebookScheduledPost,
+  dropWeekendRotationLines,
+  planWeeklyReschedule,
+  targetLabel,
+  type RescheduleTarget,
+} from "./lib/weekly-social-reschedule.ts";
+import { createHash } from "node:crypto";
+import { buildWeeklyCarouselPdf } from "./gen-weekly-carousel-pdf.ts";
+import { cloudflareKvKey } from "./upload-images-public.ts";
+import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { archiveUploadedFileToR2 } from "./lib/public-images-archive.ts";
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
 import { DEFAULT_WEEKLY_CAROUSEL_TIME, readSocialRotation, weekendRotationSlot } from "./lib/social-schedule-rotation.ts";
 import { validateScheduledTime, publishFacebookCarouselByUrl } from "./publish-facebook.ts";
@@ -598,13 +635,84 @@ function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
  *
  * Qualquer falha propaga (inclusive a do próprio fallback): quem chama decide
  * o bookkeeping (`skipped` pra `linkedin_creds_missing`, `failed` pro resto).
+ *
+ * #12372 item 3 — `idempotencyKey` (`linkedInWeeklyIdempotencyKey`) vai nos
+ * três degraus, a mesma chave (mesma premissa da diária, #12661): o retry do
+ * `postToWorkerQueue` depois de uma resposta perdida cai na mesma entry do
+ * Worker (#10906), e um degrau seguinte por cima de uma entry gravada a
+ * substitui na mesma key (conteúdo mudou, #10917) em vez de somar um 2º post.
+ * 409 `already_fired`/`fire_in_progress` (o post desta chave já saiu ou está
+ * saindo) é sucesso, sem enfileirar nada; `send_unknown` e 409 ilegível
+ * propagam (ambíguo, nenhum degrau publica por cima).
  */
 export async function enqueueWeeklyLinkedIn(
   workerUrl: string,
   workerToken: string,
-  opts: { text: string; carouselImageUrls: string[]; scheduledAt: string; destaque: string },
-): Promise<{ key: string; degraded?: "cover_only" }> {
-  const { text, carouselImageUrls, scheduledAt, destaque } = opts;
+  opts: {
+    text: string;
+    carouselImageUrls: string[];
+    scheduledAt: string;
+    destaque: string;
+    /** #8055 — gera + hospeda o PDF do carrossel e devolve a URL pública e o
+     *  título. Ausente = só carrossel (comportamento anterior). */
+    prepareDocument?: () => Promise<WeeklyLinkedInDocument>;
+    /** #12372 item 3 — chave idempotente do post na fila do Worker. Ausente = sem chave (comportamento anterior). */
+    idempotencyKey?: string;
+  },
+): Promise<WeeklyLinkedInEnqueueResult> {
+  const { text, carouselImageUrls, scheduledAt, destaque, prepareDocument, idempotencyKey } = opts;
+  const keyTag = idempotencyKey ? { idempotency_key: idempotencyKey } : {};
+  const alreadyQueued = (e: unknown): string | null => {
+    const key = idempotencyKey ? idempotentConflictKey(e) : null;
+    if (key !== null) {
+      console.log(`WARN linkedin/${destaque} — a fila do Worker já tem este post disparado ou disparando (${idempotencyKey}); nada novo enfileirado (#12372).`);
+    }
+    return key;
+  };
+
+  // #8055 — o documento PDF SUBSTITUI o carrossel de imagens no LinkedIn
+  // (premissa do editor). Falha na geração/upload do PDF, ou rejeição
+  // DEFINITIVA do Worker (HTTP 4xx: nada foi gravado), cai no carrossel de
+  // sempre com warning — nunca perde o post. Falha AMBÍGUA do enqueue (rede,
+  // 5xx depois dos retries do cliente) propaga: a entry pode ter sido gravada,
+  // e enfileirar o carrossel por cima publicaria duas vezes.
+  let documentFallbackReason: string | undefined;
+  if (prepareDocument) {
+    let doc: WeeklyLinkedInDocument | null = null;
+    try {
+      doc = await prepareDocument();
+    } catch (e) {
+      documentFallbackReason = `pdf_failed:${(e as Error).message}`;
+    }
+    if (doc) {
+      try {
+        const response = await postToWorkerQueue(workerUrl, workerToken, {
+          text,
+          image_url: null,
+          // Fallback do próprio Worker: se o documento falhar no disparo antes
+          // de o post existir, ele publica este carrossel (fireLinkedInDocument).
+          image_urls: carouselImageUrls.length > 0 ? carouselImageUrls : undefined,
+          document_url: doc.url,
+          document_title: doc.title,
+          scheduled_at: scheduledAt,
+          destaque,
+          channel: "linkedin",
+          ...keyTag,
+        });
+        return { key: response.key, format: "document", document_url: doc.url };
+      } catch (e) {
+        const firedKey = alreadyQueued(e);
+        if (firedKey !== null) return { key: firedKey, format: "document", document_url: doc.url };
+        // 409 fica de fora da "rejeição definitiva": com chave, é a entry já
+        // disparada/ambígua (acima ou propagando); sem chave o Worker não devolve 409.
+        if (!(e instanceof WorkerQueueError && e.status >= 400 && e.status < 500 && e.status !== 409)) throw e;
+        documentFallbackReason = `document_rejected:${e.code ?? e.status}`;
+      }
+    }
+    console.log(`WARN linkedin/${destaque} — documento PDF indisponível (${documentFallbackReason}); fallback: carrossel de imagens.`);
+  }
+
+  const fallbackTag = documentFallbackReason ? { document_fallback_reason: documentFallbackReason } : {};
   try {
     const response = await postToWorkerQueue(workerUrl, workerToken, {
       text,
@@ -613,23 +721,124 @@ export async function enqueueWeeklyLinkedIn(
       scheduled_at: scheduledAt,
       destaque,
       channel: "linkedin",
+      ...keyTag,
     });
-    return { key: response.key };
+    return { key: response.key, format: "carousel", ...fallbackTag };
   } catch (e) {
+    const firedKey = alreadyQueued(e);
+    if (firedKey !== null) return { key: firedKey, format: "carousel", ...fallbackTag };
     if (!(e instanceof WorkerQueueError && e.code === "linkedin_creds_missing" && carouselImageUrls.length > 0)) {
       throw e;
     }
   }
   console.log(`WARN linkedin/${destaque} — sem credencial da API direta; fallback: capa como imagem única via Make.`);
-  const response = await postToWorkerQueue(workerUrl, workerToken, {
-    text,
-    image_url: carouselImageUrls[0],
-    scheduled_at: scheduledAt,
-    destaque,
-    channel: "linkedin",
-  });
-  return { key: response.key, degraded: "cover_only" };
+  let response: { key: string };
+  try {
+    response = await postToWorkerQueue(workerUrl, workerToken, {
+      text,
+      image_url: carouselImageUrls[0],
+      scheduled_at: scheduledAt,
+      destaque,
+      channel: "linkedin",
+      ...keyTag,
+    });
+  } catch (e) {
+    const firedKey = alreadyQueued(e);
+    if (firedKey === null) throw e;
+    response = { key: firedKey };
+  }
+  return { key: response.key, degraded: "cover_only", format: "cover_only", ...fallbackTag };
 }
+
+/**
+ * #12372 item 3 — chave idempotente do post semanal do LinkedIn na fila do
+ * Worker: `linkedin-weekly:{AAMMDD do sábado}-{mode}:main`. Fixa por ciclo e
+ * modo (`highlights`/`clicked`), então re-rodar o script (retry de entry
+ * `failed`, `--reschedule`) cai na mesma entry: o Worker devolve a duplicata,
+ * troca o conteúdo ou o horário na mesma key (#10917/#10992), ou responde 409
+ * se o post já saiu. Formato aceito: `[A-Za-z0-9._:-]{1,128}`.
+ */
+export function linkedInWeeklyIdempotencyKey(carouselKey: string): string {
+  const key = `linkedin-weekly:${carouselKey}:main`;
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new Error(`idempotency_key inválida para o Worker: ${JSON.stringify(key)}`);
+  return key;
+}
+
+/** #12394 — `check` do alarme de fallback do documento no lado do script. */
+export const LINKEDIN_DOCUMENT_FALLBACK_CHECK = "linkedin-document-fallback";
+
+/**
+ * Pure (#12394): fingerprint do alarme pelo CÓDIGO do motivo, nunca pela
+ * mensagem livre — o mesmo motivo recorrente reusa a MESMA issue de alarme
+ * toda semana. `pdf_failed:<mensagem>` → `…:pdf_failed`;
+ * `document_rejected:<código ou HTTP>` → `…:document_rejected:<código>`.
+ */
+export function linkedInDocumentFallbackFingerprint(reason: string): string {
+  const sep = reason.indexOf(":");
+  const kind = (sep >= 0 ? reason.slice(0, sep) : reason).trim() || "unknown";
+  const detail = sep >= 0 ? reason.slice(sep + 1).trim() : "";
+  const code = kind === "document_rejected" ? `document_rejected:${detail || "unknown"}` : kind;
+  return `${LINKEDIN_DOCUMENT_FALLBACK_CHECK}:${code}`;
+}
+
+/** #8055 — PDF do carrossel já hospedado, pronto pro Worker baixar. */
+export interface WeeklyLinkedInDocument {
+  url: string;
+  title: string;
+}
+
+export interface WeeklyLinkedInEnqueueResult {
+  key: string;
+  /** #10103 — capa única via Make em vez do carrossel. */
+  degraded?: "cover_only";
+  /** #8055 — formato que de fato foi enfileirado. */
+  format: "document" | "carousel" | "cover_only";
+  document_url?: string;
+  /** #8055 — por que o documento não foi usado, quando foi tentado. */
+  document_fallback_reason?: string;
+}
+
+/** #8055 — uploader do PDF (seam de teste); default `uploadImageToWorkerKV`. */
+export type WeeklyPdfUploader = (filePath: string, kvKey: string) => Promise<string>;
+
+/**
+ * #8055 — gera o PDF do carrossel semanal a partir das URLs JÁ publicadas
+ * (`buildWeeklyCarouselPdf`, mesma ordem do carrossel), grava em
+ * `_internal/06-carousel.pdf` e sobe pro KV `POLL`, servido em `/img/{key}`.
+ * A chave segue a allowlist `^img-[^:]+$` e leva o md5 dos bytes
+ * (content-addressed: `Cache-Control: immutable`, e um PDF regenerado nunca
+ * reaproveita a URL do anterior). O Worker do LinkedIn baixa essa URL no disparo.
+ */
+export async function prepareWeeklyLinkedInDocument(opts: {
+  dataRoot: string;
+  carouselKey: string;
+  carouselImageUrls: string[];
+  title: string;
+  buildPdf?: (urls: readonly string[]) => Promise<Uint8Array>;
+  upload?: WeeklyPdfUploader;
+}): Promise<WeeklyLinkedInDocument> {
+  const { dataRoot, carouselKey, carouselImageUrls, title } = opts;
+  const pdf = await (opts.buildPdf ?? ((urls) => buildWeeklyCarouselPdf(urls)))(carouselImageUrls);
+  const pdfPath = resolve(dataRoot, "weekly", carouselKey, "_internal", "06-carousel.pdf");
+  mkdirSync(dirname(pdfPath), { recursive: true });
+  writeFileSync(pdfPath, pdf);
+  const md5 = createHash("md5").update(pdf).digest("hex");
+  const kvKey = cloudflareKvKey(carouselKey, `weekly-${carouselKey}-carousel.pdf`, md5);
+  const upload = opts.upload ?? defaultWeeklyPdfUploader;
+  const url = await upload(pdfPath, kvKey);
+  if (!/^https:\/\//.test(url)) throw new Error(`URL do PDF não é https: ${url}`);
+  return { url, title };
+}
+
+const defaultWeeklyPdfUploader: WeeklyPdfUploader = async (filePath, kvKey) => {
+  const platformCfg = readPlatformConfig();
+  const kvNamespaceId = platformCfg?.poll?.kv_namespace_id;
+  const workerUrl = platformCfg?.poll?.worker_url ?? DIARIA_EIA_URL;
+  if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id não configurado (PDF do LinkedIn)");
+  const url = await uploadImageToWorkerKV(filePath, kvKey, { kvNamespaceId, workerUrl });
+  await archiveUploadedFileToR2(filePath, kvKey); // #11412 fatia 3: cópia durável do PDF no R2, nunca lança
+  return url;
+};
 
 /**
  * `dataRoot` é injetável (default `{ROOT}/data`, #4101 finding 7) — permite
@@ -646,10 +855,20 @@ export async function main(
     sectionCardGenerator?: SectionCardGenerator;
     flatCardGenerator?: FlatCardGenerator;
     newsCardGenerator?: NewsCardGenerator;
+    /** #8055 — seams do PDF do LinkedIn (teste); default: download real + upload pro KV. */
+    weeklyPdfBuilder?: (urls: readonly string[]) => Promise<Uint8Array>;
+    weeklyPdfUploader?: WeeklyPdfUploader;
     /** Relógio injetável (#10389) — checagem de slot vencido e `validateScheduledTime`. */
     now?: Date;
+    /**
+     * #12397 — relógio lido imediatamente antes de cada DELETE do
+     * `--reschedule` (teste); default: `now` se injetado, senão o relógio real.
+     */
+    clock?: () => Date;
     /** #10458 — config com `publishing.social.facebook.pages` (teste); default: `platform.config.json`. */
     facebookPagesConfig?: unknown;
+    /** #12394 — alarme ao editor no fallback do documento do LinkedIn (teste); default: `notifyEditor`. */
+    notify?: typeof notifyEditor;
   } = {},
 ) {
   const dataRoot = opts.dataRoot ?? resolve(ROOT, "data");
@@ -695,6 +914,27 @@ export async function main(
   // (override manual de agendamento) não compõe com --mode both — cada modo
   // usa seu próprio offset padrão (DEFAULT_MODE_DAY_OFFSET); quem precisar
   // sobrescrever roda os modos separadamente.
+  // #12375: --reschedule cancela o agendamento existente DE UM modo e reagenda.
+  // Só faz sentido agendando, num modo só, com o skip-existing ligado (é ele
+  // que acha as entradas a cancelar).
+  if (flags.has("reschedule")) {
+    const clash = [
+      modeArg === "both" ? "--mode both" : null,
+      !flags.has("schedule") ? "ausência de --schedule" : null,
+      flags.has("no-skip-existing") ? "--no-skip-existing" : null,
+      flags.has("images-only") ? "--images-only" : null,
+      flags.has("manifest-only") ? "--manifest-only" : null,
+      flags.has("summary-manifest") ? "--summary-manifest" : null,
+    ].filter((x): x is string => x !== null);
+    if (clash.length > 0) {
+      console.error(
+        `ERRO: --reschedule não combina com ${clash.join(", ")}. Uso: --mode clicked|highlights --schedule --reschedule [--time HH:MM].`,
+      );
+      process.exit(1);
+      return;
+    }
+  }
+
   if (modeArg === "both") {
     if (values["day-offset"] != null) {
       console.error(
@@ -890,8 +1130,12 @@ async function runOneMode(
     sectionCardGenerator?: SectionCardGenerator;
     flatCardGenerator?: FlatCardGenerator;
     newsCardGenerator?: NewsCardGenerator;
+    weeklyPdfBuilder?: (urls: readonly string[]) => Promise<Uint8Array>;
+    weeklyPdfUploader?: WeeklyPdfUploader;
     now?: Date;
+    clock?: () => Date;
     facebookPagesConfig?: unknown;
+    notify?: typeof notifyEditor;
   },
 ): Promise<boolean> {
   const editionsRoot = resolve(ROOT, values["editions-root"] ?? "data/editions");
@@ -1372,23 +1616,17 @@ async function runOneMode(
   // aplica: mesmo já agendado, o editor ainda pode querer ver o carrossel.
   if (skipExisting && !imagesOnly) {
     const published = readSocialPublished(publishedPath);
-    const existingIg = published.posts.find(
-      (p) => p.platform === "instagram" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
-    );
+    // #12419: `cancelling` conta como existente. Até o bloco de cancelamento
+    // (abaixo) zerar os skips, o canal fica pulado: uma falha no caminho
+    // (horário inválido, título que estoura o card, imagem) não grava `failed`
+    // por cima da entrada, o que apagaria a chave e o `fb_post_id` dela pelo
+    // upsert e tiraria da próxima rodada a retomada do cancelamento.
+    const isExisting = (p: PostEntry): boolean => p.status === "draft" || p.status === "scheduled" || p.status === "cancelling";
+    const existingIg = published.posts.find((p) => p.platform === "instagram" && p.destaque === destaqueKey && isExisting(p));
     const existingFbFor = (slug: string) =>
-      published.posts.find(
-        (p) =>
-          p.platform === "facebook" &&
-          p.destaque === destaqueKey &&
-          resolvePostPage(p) === slug &&
-          (p.status === "draft" || p.status === "scheduled"),
-      );
-    const existingThreads = published.posts.find(
-      (p) => p.platform === "threads" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
-    );
-    const existingLinkedIn = published.posts.find(
-      (p) => p.platform === "linkedin" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
-    );
+      published.posts.find((p) => p.platform === "facebook" && p.destaque === destaqueKey && resolvePostPage(p) === slug && isExisting(p));
+    const existingThreads = published.posts.find((p) => p.platform === "threads" && p.destaque === destaqueKey && isExisting(p));
+    const existingLinkedIn = published.posts.find((p) => p.platform === "linkedin" && p.destaque === destaqueKey && isExisting(p));
     if (existingIg) {
       console.log(`SKIP instagram/${destaqueKey} — already ${existingIg.status}`);
       skipInstagram = true;
@@ -1407,6 +1645,58 @@ async function runOneMode(
       skipLinkedIn = true;
     }
   }
+  // #12375: --reschedule — o PLANO (puro, sem rede) sai aqui, antes da
+  // resolução de imagem, pra abortar cedo quando não é seguro cancelar (post
+  // já disparou, entrada sem id de cancelamento). Os DELETEs só acontecem
+  // logo antes do dispatch (abaixo), depois de toda checagem que pode falhar:
+  // até lá os canais já agendados seguem com skip=true, então uma falha no
+  // caminho não grava `failed` por cima da entrada agendada (o upsert de
+  // `appendSocialPosts` apagaria a chave dela).
+  // #12417: entrada `cancelling` = um --reschedule anterior gravou a intenção
+  // e parou no meio (lock ocupado, kill, OOM). Redespachar direto duplicaria
+  // o post se o DELETE dela não chegou a acontecer: a rodada agendada retoma
+  // o cancelamento (404 conta como cancelado) e só então reagenda. O
+  // skip-existing acima a pula (#12419) até o bloco de cancelamento zerar os
+  // skips depois dos DELETEs.
+  // `--no-skip-existing` é a escolha explícita de redespachar tudo sem ler o
+  // registro (mesma fronteira do skip-existing acima) e não entra aqui.
+  const resumeCancelling =
+    doSchedule &&
+    skipExisting &&
+    !imagesOnly &&
+    !flags.has("reschedule") &&
+    !flags.has("manifest-only") &&
+    !flags.has("summary-manifest") &&
+    readSocialPublished(publishedPath).posts.some((p) => p.destaque === destaqueKey && p.status === "cancelling");
+  if (resumeCancelling) {
+    console.warn(
+      `AVISO ${destaqueKey}: o registro tem entrada(s) "cancelling" — um --reschedule anterior parou no meio (#12417). ` +
+        `Esta rodada retoma o cancelamento antes de reagendar.`,
+    );
+  }
+  const reschedule = doSchedule && (flags.has("reschedule") || resumeCancelling);
+  let rescheduleTargets: RescheduleTarget[] = [];
+  if (reschedule) {
+    const plan = planWeeklyReschedule(readSocialPublished(publishedPath).posts, destaqueKey, now);
+    if (!plan.ok) {
+      console.error(`ERRO ${destaqueKey}: --reschedule abortado antes de cancelar qualquer coisa — ${plan.reason}`);
+      return false;
+    }
+    rescheduleTargets = plan.targets;
+    console.log(
+      rescheduleTargets.length > 0
+        ? `[publish-weekly-social] --reschedule ${destaqueKey}: vai cancelar ${rescheduleTargets.map((t) => `${targetLabel(t)} (${t.scheduledAt})`).join(", ")} e reagendar para ${scheduledAt}.`
+        : `[publish-weekly-social] --reschedule ${destaqueKey}: nada agendado neste modo — segue como agendamento normal para ${scheduledAt}.`,
+    );
+    // #12397: o X grava no mesmo registro, mas quem o agenda é
+    // prep-weekly-twitter.ts — o --reschedule não toca na entrada dele.
+    if (plan.outOfScope.length > 0) {
+      console.warn(
+        `AVISO ${destaqueKey}: --reschedule não mexe em ${plan.outOfScope.join(", ")} — o X segue no horário antigo; ` +
+          `reagende-o à parte (prep-weekly-twitter.ts) se precisar.`,
+      );
+    }
+  }
   const skipFacebook = fbPendingPages.length === 0;
   // #10458: entrada de falha do Facebook = uma por página pendente.
   const failFacebook = (fields: { scheduled_at: string | null; reason: string }): void => {
@@ -1414,10 +1704,11 @@ async function runOneMode(
       tagAndAppend({ platform: "facebook", page: pg.slug, destaque: destaqueKey, url: null, status: "failed", ...fields });
     }
   };
-  if (skipExisting && !imagesOnly && skipInstagram && skipFacebook && skipThreads && skipLinkedIn) return true;
+  if (skipExisting && !imagesOnly && !reschedule && skipInstagram && skipFacebook && skipThreads && skipLinkedIn) return true;
   // #11062: trava dos resumos DEPOIS do skip-existing — re-run sem nada
   // pendente (ou só o Threads, cuja legenda não usa resumo) não é barrado.
-  const captionChannelsPending = !skipInstagram || !skipFacebook || !skipLinkedIn;
+  // #12375: no --reschedule todo canal volta a ser despachado.
+  const captionChannelsPending = reschedule || !skipInstagram || !skipFacebook || !skipLinkedIn;
   if (doSchedule && !allowWhyFallback && summaryProblems.length > 0 && captionChannelsPending) {
     console.error(`ERRO ${mode}: agendamento abortado — resumo ausente ou inválido em ${summaryProblems.length} item(ns) (ver acima).`);
     return false;
@@ -1540,7 +1831,9 @@ async function runOneMode(
     failFacebook({ scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipLinkedIn) tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
-    return true;
+    // #12397 item 4: no --reschedule nada foi cancelado nem reagendado —
+    // exit 0 faria quem orquestra pelo exit code achar que reagendou.
+    return !reschedule;
   }
 
   // Carrossel: 1 imagem por item selecionado (#4146/#4483) — ver
@@ -1592,7 +1885,7 @@ async function runOneMode(
     failFacebook({ scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipLinkedIn) tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
-    return true;
+    return !reschedule; // #12397 item 4
   }
 
   // #5330: capa (sem foto, kicker+título de apresentação) e CTA final (sem
@@ -1625,7 +1918,7 @@ async function runOneMode(
     failFacebook({ scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipLinkedIn) tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
-    return true;
+    return !reschedule; // #12397 item 4
   }
   const carouselImageUrls = [coverUrl, ...resolvedImages.urls, ctaUrl];
 
@@ -1685,6 +1978,35 @@ async function runOneMode(
       ),
     );
     return true;
+  }
+
+  // ── #12375: --reschedule — cancela, limpa o registro e a rotação, e só então
+  // deixa o dispatch abaixo reagendar todos os canais. ──
+  if (reschedule) {
+    const redispatchFbPages = enabledFacebookPages(
+      resolveFacebookPages(loadFacebookPagesConfig(opts.facebookPagesConfig ?? platformConfig), process.env),
+    );
+    const frozenNow = opts.now;
+    const ok = await cancelForReschedule({
+      targets: rescheduleTargets,
+      destaqueKey,
+      publishedPath,
+      rotationLogPath: resolve(ROOT, process.env.DIARIA_SOCIAL_ROTATION_LOG ?? resolve(dataRoot, "social-schedule-rotation.jsonl")),
+      publishIsoDate: publishIsoDateOf(saturday, dayOffset),
+      platformConfig,
+      facebookPagesConfig: opts.facebookPagesConfig,
+      // #12397: a margem é reavaliada com este relógio logo antes de cada DELETE.
+      clock: opts.clock ?? (frozenNow ? () => frozenNow : () => new Date()),
+      redispatchFacebookPages: redispatchFbPages.map((pg) => pg.slug),
+      // #12417: mesma regra do alarme do LinkedIn (#8290) — sob o test runner
+      // sem `opts.notify`, nunca abre issue de verdade.
+      notify: opts.notify ?? (isNodeTestContext() ? null : notifyEditor),
+    });
+    if (!ok) return false;
+    skipInstagram = false;
+    skipThreads = false;
+    skipLinkedIn = false;
+    fbPendingPages = redispatchFbPages;
   }
 
   // ── Instagram (#4146/#4483/#5330) ──
@@ -1881,15 +2203,27 @@ async function runOneMode(
       console.error(`ERRO linkedin/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
       tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
     } else {
-      let response: { key: string; degraded?: "cover_only" } | null = null;
+      let response: WeeklyLinkedInEnqueueResult | null = null;
       try {
-        // Carrossel, com fallback de capa única quando o Worker não tem a
-        // credencial da API direta (helper `enqueueWeeklyLinkedIn`, #10103).
+        // #8055: documento PDF (substitui o carrossel no LinkedIn); fallback
+        // pro carrossel e, sem credencial da API direta, pra capa única
+        // (helper `enqueueWeeklyLinkedIn`, #10103).
+        const range = weekRangeLabel(contentWindow);
         response = await enqueueWeeklyLinkedIn(workerUrl, workerToken, {
           text: fbCaption,
           carouselImageUrls,
           scheduledAt,
           destaque: destaqueKey,
+          idempotencyKey: linkedInWeeklyIdempotencyKey(carouselKey),
+          prepareDocument: () =>
+            prepareWeeklyLinkedInDocument({
+              dataRoot,
+              carouselKey,
+              carouselImageUrls,
+              title: range ? `${flatTexts.cover.title} (${range})` : flatTexts.cover.title,
+              buildPdf: opts.weeklyPdfBuilder,
+              upload: opts.weeklyPdfUploader,
+            }),
         });
       } catch (e: any) {
         // #8303 — o Worker (workers/linkedin-cron/src/index.ts::handleEnqueue)
@@ -1929,7 +2263,9 @@ async function runOneMode(
         }
       }
       if (response) {
-        console.log(`OK linkedin/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
+        console.log(
+          `OK linkedin/${destaqueKey} — ${response.format} scheduled at ${scheduledAt} (worker_queue_key=${response.key})`,
+        );
         try {
           tagAndAppend({
             platform: "linkedin",
@@ -1942,6 +2278,10 @@ async function runOneMode(
             // carrossel) pra auditoria e pro reenvio do carrossel quando a
             // API direta for aprovada (#8055). Ausente = carrossel normal.
             ...(response.degraded ? { degraded: response.degraded } : {}),
+            // #8055 — formato enfileirado + motivo do fallback, quando o PDF não foi usado.
+            format: response.format,
+            ...(response.document_url ? { document_url: response.document_url } : {}),
+            ...(response.document_fallback_reason ? { document_fallback_reason: response.document_fallback_reason } : {}),
           });
         } catch (e: any) {
           console.error(
@@ -1950,11 +2290,137 @@ async function runOneMode(
           );
           throw e;
         }
+        // #12394 item 2: o fallback no ENQUEUE (`pdf_failed:*`/`document_rejected:*`)
+        // tinha só o WARN no console. Alarme `acao` com fingerprint pelo código
+        // do motivo: o mesmo motivo recorrente reusa a mesma issue. Fail-soft —
+        // o carrossel já está na fila e o registro gravado.
+        // Sob o test runner sem `opts.notify` injetado, nem tenta: os testes
+        // que sobem `main()` sem `weeklyPdfBuilder` caem em `pdf_failed` (rede
+        // desligada) e não podem abrir issue nem gravar run-log (#8290).
+        const notify = opts.notify ?? (isNodeTestContext() ? null : notifyEditor);
+        if (response.document_fallback_reason && notify) {
+          const reason = response.document_fallback_reason;
+          const fingerprint = linkedInDocumentFallbackFingerprint(reason);
+          try {
+            await notify(
+              {
+                check: LINKEDIN_DOCUMENT_FALLBACK_CHECK,
+                fingerprint,
+                severity: "acao",
+                subject: `LinkedIn semanal saiu sem o documento PDF (${fingerprint.slice(LINKEDIN_DOCUMENT_FALLBACK_CHECK.length + 1)})`,
+                body:
+                  `O post semanal ${destaqueKey} (agendado para ${scheduledAt}, worker_queue_key=${response.key}) foi enfileirado ` +
+                  `como ${response.format}, sem o documento PDF (#8055).\n\nMotivo: \`${reason}\`\n\n` +
+                  `O post não se perdeu. Confira o motivo antes do próximo retro semanal; o registro fica em ` +
+                  `\`06-weekly-published.json\` (\`document_fallback_reason\`).`,
+              },
+              { cwd: ROOT },
+            );
+          } catch (e) {
+            console.error(`AVISO linkedin/${destaqueKey}: alarme do fallback do documento falhou (${(e as Error).message}) — o post segue agendado.`);
+          }
+        }
       }
     }
   }
 
   console.log(`\n[publish-weekly-social] out_path: ${publishedPath}`);
+  return true;
+}
+
+/** Pure (#12375): data de publicação do modo (AAAA-MM-DD) = `saturday` + `dayOffset`. */
+export function publishIsoDateOf(saturday: string, dayOffset: number): string {
+  const { year, month, day } = parseEditionDate(saturday);
+  return new Date(Date.UTC(year, month - 1, day + dayOffset)).toISOString().slice(0, 10);
+}
+
+/**
+ * #12375: passo de cancelamento do `--reschedule`. Confere as credenciais de
+ * TODOS os alvos antes do 1º DELETE, cancela em sequência
+ * (`executeWeeklyReschedule`) e, só com tudo cancelado, tira do registro as
+ * entradas do modo e do JSONL de rotação a linha do dia. `false` = abortou
+ * (mensagem já impressa) e o dispatch não pode seguir.
+ */
+async function cancelForReschedule(args: {
+  targets: RescheduleTarget[];
+  destaqueKey: string;
+  publishedPath: string;
+  rotationLogPath: string;
+  publishIsoDate: string;
+  platformConfig: any;
+  facebookPagesConfig?: unknown;
+  clock: () => Date;
+  redispatchFacebookPages: readonly string[];
+  /** #12417 — alarme `acao` se o registro não regravar depois dos DELETEs; `null` = sem alarme. */
+  notify: typeof notifyEditor | null;
+}): Promise<boolean> {
+  const { targets, destaqueKey, publishedPath } = args;
+  const workerUrl =
+    process.env.DIARIA_LINKEDIN_CRON_URL ??
+    args.platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
+    args.platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
+    "";
+  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const pages = resolveFacebookPages(loadFacebookPagesConfig(args.facebookPagesConfig ?? args.platformConfig), process.env);
+  const missing: string[] = [];
+  if (targets.some((t) => t.kind === "worker_queue") && (!workerUrl || !workerToken)) {
+    missing.push("Worker (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN)");
+  }
+  for (const t of targets) {
+    if (t.kind !== "facebook") continue;
+    const pg = pages.find((p) => p.slug === t.page);
+    if (!pg || pg.missing.length > 0 || !pg.token) missing.push(`token da página ${t.page} do Facebook`);
+  }
+  if (missing.length > 0) {
+    console.error(`ERRO ${destaqueKey}: --reschedule abortado antes de cancelar qualquer coisa — falta ${missing.join(", ")}.`);
+    return false;
+  }
+
+  const fbApiVersion = process.env.FACEBOOK_API_VERSION || "v25.0";
+  // #12417: intenção `cancelling` antes do 1º DELETE e regravações protegidas
+  // (lock ocupado depois dos DELETEs não perde mais o post em silêncio).
+  // #12397: na limpeza só sai o que o redespacho vai regravar —
+  // `published`/`send_unknown` (barrados no plano) e o X nunca são apagados.
+  const notify = args.notify;
+  const ok = await cancelAndRecordReschedule(targets, destaqueKey, args.redispatchFacebookPages, {
+    deleteQueueKey: async (key) => {
+      const r = await deleteFromWorkerQueue(workerUrl, workerToken, key, "publish-weekly-social");
+      return { alreadyGone: r.alreadyGone };
+    },
+    deleteFacebookPost: async (page, fbPostId) => {
+      const pg = pages.find((p) => p.slug === page)!;
+      return deleteFacebookScheduledPost(fbPostId, pg.token, fbApiVersion);
+    },
+    now: args.clock,
+    rewrite: (transform) => rewriteSocialPosts(publishedPath, transform),
+    notify: notify
+      ? async (alert) => {
+          await notify(alert, { cwd: ROOT });
+        }
+      : null,
+    log: (line) => console.log(line),
+    error: (line) => console.error(line),
+  });
+  if (!ok) return false;
+  // Registro auxiliar da medição (#10305): falha aqui não pode impedir o
+  // reagendamento — os posts já foram cancelados.
+  try {
+    if (existsSync(args.rotationLogPath)) {
+      const { content, removed } = dropWeekendRotationLines(readFileSync(args.rotationLogPath, "utf8"), args.publishIsoDate);
+      if (removed > 0) {
+        writeFileSync(args.rotationLogPath, content, "utf8");
+        console.log(
+          `[publish-weekly-social] --reschedule: ${removed} linha(s) de rotação de ${args.publishIsoDate} removida(s) de ${args.rotationLogPath} ` +
+            `— grave de novo com social-schedule-rotation.ts --record (--time se o horário novo fugir do plano).`,
+        );
+      }
+    }
+  } catch (e) {
+    console.error(
+      `AVISO: --reschedule não conseguiu limpar a linha de rotação de ${args.publishIsoDate} em ${args.rotationLogPath} ` +
+        `(${(e as Error).message}) — apague à mão; o reagendamento segue.`,
+    );
+  }
   return true;
 }
 

@@ -403,7 +403,6 @@ describe("canal YouTube (#10659, §5b-youtube)", () => {
   it("defaults: auto nos automáticos, manual no legado; 'all'/'none' do gate", () => {
     assert.equal(autoApproveConsent().youtube, "auto");
     assert.equal(defaultAutoConsent().youtube, "auto");
-    assert.equal(defaultManualConsent().youtube, "manual");
     assert.equal(parseEditorResponse("all")?.youtube, "auto");
     assert.equal(parseEditorResponse("none")?.youtube, "skipped");
   });
@@ -418,10 +417,48 @@ describe("canal YouTube (#10659, §5b-youtube)", () => {
     assert.equal(youtubeUploadEnabled(parseEditorResponse("none")!), false);
     assert.equal(youtubeUploadEnabled(parseSkipFlag("youtube")!), false);
     assert.equal(youtubeUploadEnabled(parseEditorResponse("all")!), true);
-    assert.equal(youtubeUploadEnabled(parseEditorResponse("1,3")!), false);
-    assert.equal(youtubeUploadEnabled(defaultManualConsent()), false);
     const legacy = { ...defaultAutoConsent() };
     delete legacy.youtube;
     assert.equal(youtubeUploadEnabled(legacy), true);
+  });
+});
+
+describe("construtores legados não dispensam o vídeo sem decisão do editor (#12599)", () => {
+  it("defaultManualConsent grava youtube auto (o vídeo segue exigido na Etapa 5)", () => {
+    const c = defaultManualConsent();
+    assert.equal(c.youtube, "auto");
+    assert.equal(c.newsletter, "manual");
+    assert.equal(youtubeUploadEnabled(c), true);
+  });
+
+  it("parseEditorResponse com lista numérica grava youtube auto, qualquer combinação", () => {
+    for (const input of ["1,3", "2,4,6", "13", "1,2,3,4,5,6,7,8,9,10,11,12,13,14"]) {
+      const c = parseEditorResponse(input)!;
+      assert.equal(c.youtube, "auto", input);
+      assert.equal(youtubeUploadEnabled(c), true, input);
+    }
+  });
+
+  it("'none' continua desligando tudo (decisão explícita do editor)", () => {
+    assert.equal(parseEditorResponse("none")?.youtube, "skipped");
+  });
+
+  it("o gate do vídeo não dá skipped-by-consent com esses consents", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { assessVideoBeforePublish, PUBLISH_CONSENT_FILE } = await import("../scripts/lib/diaria/video-before-publish.ts");
+    for (const consent of [defaultManualConsent(), parseEditorResponse("1,3,5")!]) {
+      const dir = mkdtempSync(join(tmpdir(), "consent-12599-"));
+      try {
+        mkdirSync(join(dir, "_internal"), { recursive: true });
+        writeFileSync(join(dir, PUBLISH_CONSENT_FILE), JSON.stringify(consent));
+        const r = assessVideoBeforePublish(dir, "261110");
+        assert.equal(r.status, "no-video", consent.source);
+        assert.equal(r.blocking, true, consent.source);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
   });
 });

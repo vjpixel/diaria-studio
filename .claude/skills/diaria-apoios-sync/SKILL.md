@@ -72,7 +72,10 @@ As tags de audiência são projeção de `apoio_nivel`. Em dry-run primeiro, com
 npx tsx scripts/sync-apoio-mensal-tag-kit.ts [--push]
 npx tsx scripts/sync-apoio-especial-tag-kit.ts [--push]
 npx tsx scripts/sync-apoio-voto-tema-tag-kit.ts [--push]
+npx tsx scripts/sync-apoio-stack-tag-kit.ts [--push]
 ```
+
+A última é a audiência do e-mail do post semanal da Stack (só Núcleo, #12538).
 
 ## Passo 5 — atualizar o painel Apoios
 

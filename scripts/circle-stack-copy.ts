@@ -23,7 +23,8 @@
  *   (opcionais: --copy-file <path>, --data-root <dir>)
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { readUtf8WithContext } from "./lib/read-file-with-context.ts";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -68,7 +69,7 @@ export async function runCircleStackCopy(argv: string[], rootDir: string = ROOT)
         `npx tsx scripts/publish-circle-stack.ts --publish-monday ${publishMonday}`,
     );
   }
-  const rawSelection = readFileSync(paths.selectionPath, "utf8");
+  const rawSelection = readUtf8WithContext(paths.selectionPath); // #12554
   const { selection } = parseStoredCircleStackSelection(rawSelection, paths.selectionPath, paths.cycle);
 
   if (hasFlag(argv, "manifest")) {
@@ -80,7 +81,7 @@ export async function runCircleStackCopy(argv: string[], rootDir: string = ROOT)
   if (!apply && !hasFlag(argv, "check")) throw new Error("Passe --manifest, --check ou --apply.");
   if (!existsSync(copyPath)) throw new Error(`Texto do ciclo ausente (${copyPath}) — o agente stack-writer ainda não rodou.`);
 
-  const { copy, problems } = parseStackCopy(readFileSync(copyPath, "utf8"), selection);
+  const { copy, problems } = parseStackCopy(readUtf8WithContext(copyPath), selection);
   if (!copy) {
     console.error(`Texto da Stack recusado (${copyPath}) — nada foi aplicado:`);
     for (const p of problems) console.error(`  - ${p}`);

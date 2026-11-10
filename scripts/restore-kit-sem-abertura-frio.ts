@@ -80,6 +80,8 @@ import {
   DEFAULT_STORE_PATH,
   applyConvertedToKit,
   applyKitSemAberturaFrioFromSuppressed,
+  createBatchedStoreWriter,
+  flushStoreOnSignal,
   normalizeEmail,
   readStore,
   writeStore,
@@ -213,52 +215,62 @@ export async function runKitSemAberturaRestore(
   }
   const panel: RestoreTarget[] = [];
   let store = deps.readStore();
-  for (const t of targets) {
-    let kit: { state: string; tagNames: string[] };
-    try {
-      kit = await deps.getKit(t.kitSubscriberId);
-    } catch (e) {
-      counts.falha++;
-      log(`FALHA ao ler ${t.email} no Kit: ${(e as Error).message}`);
-      continue;
-    }
-    const step = decideKitRestore(kit.state, kit.tagNames, t.source);
-    counts[step]++;
-    if (step === "painel") panel.push(t);
-    if (step === "descadastro_proprio") log(`${t.email}: cancelled no Kit por opt-out próprio (origem ${t.source}) — não reativar (#11430).`);
-    if (step === "estado_nao_reativavel") log(`${t.email}: estado '${kit.state}' no Kit — fora desta reparação.`);
-    if (!opts.apply) continue;
-    try {
-      if (step === "tags") {
-        // `frio` primeiro (relida), depois tira `envio-brevo` (relida): cair no
-        // meio deixa as duas tags (fora da diária, na semanal), nunca sem canal.
-        if (!kit.tagNames.includes(KIT_FRIO_TAG_NAME)) await deps.tag(frioId!, t.kitSubscriberId);
-        if (kit.tagNames.includes(KIT_ENVIO_BREVO_TAG_NAME)) await deps.untag(envioId!, t.kitSubscriberId);
+  // #12474: gravar o store a cada contato fazia o OneDrive do 300 reverter o
+  // arquivo (integrity failure → safeBackup). Grava em lote + flush no fim.
+  const storeWriter = createBatchedStoreWriter(deps.writeStore);
+  // #12513: Ctrl-C/SIGTERM não roda o `finally`; o handler grava o pendente.
+  const removeSignalFlush = flushStoreOnSignal(storeWriter);
+  try {
+    for (const t of targets) {
+      let kit: { state: string; tagNames: string[] };
+      try {
+        kit = await deps.getKit(t.kitSubscriberId);
+      } catch (e) {
+        counts.falha++;
+        log(`FALHA ao ler ${t.email} no Kit: ${(e as Error).message}`);
+        continue;
       }
-      if ((step === "tags" || step === "ja_ok") && t.source === "in_brevo") {
-        await deps.unlinkBrevo(t.email);
-        store = applyConvertedToKit(store, t.email, deps.nowIso(), "kit_sem_abertura_frio");
-        deps.writeStore(store);
-      }
-      if ((step === "tags" || step === "ja_ok") && t.source === "suprimido_aguardando_frio") {
-        // Já fora da lista Brevo (o evaluate desvinculou); só o store muda.
-        store = applyKitSemAberturaFrioFromSuppressed(store, t.email, deps.nowIso());
-        deps.writeStore(store);
-      }
-      if (step === "tags" || (step === "ja_ok" && t.source !== "descadastrado_por_supressao")) {
-        counts.aplicado++;
-        try {
-          deps.appendLog(
-            formatKitSemAberturaLogLine({ ts: deps.nowIso(), event: "kit_returned_frio", email: t.email, kit_subscriber_id: t.kitSubscriberId, step: "restore" }),
-          );
-        } catch (e) {
-          log(`aviso: log de ${t.email} não gravado (${(e as Error).message}).`);
+      const step = decideKitRestore(kit.state, kit.tagNames, t.source);
+      counts[step]++;
+      if (step === "painel") panel.push(t);
+      if (step === "descadastro_proprio") log(`${t.email}: cancelled no Kit por opt-out próprio (origem ${t.source}) — não reativar (#11430).`);
+      if (step === "estado_nao_reativavel") log(`${t.email}: estado '${kit.state}' no Kit — fora desta reparação.`);
+      if (!opts.apply) continue;
+      try {
+        if (step === "tags") {
+          // `frio` primeiro (relida), depois tira `envio-brevo` (relida): cair no
+          // meio deixa as duas tags (fora da diária, na semanal), nunca sem canal.
+          if (!kit.tagNames.includes(KIT_FRIO_TAG_NAME)) await deps.tag(frioId!, t.kitSubscriberId);
+          if (kit.tagNames.includes(KIT_ENVIO_BREVO_TAG_NAME)) await deps.untag(envioId!, t.kitSubscriberId);
         }
+        if ((step === "tags" || step === "ja_ok") && t.source === "in_brevo") {
+          await deps.unlinkBrevo(t.email);
+          store = applyConvertedToKit(store, t.email, deps.nowIso(), "kit_sem_abertura_frio");
+          storeWriter.mark(store);
+        }
+        if ((step === "tags" || step === "ja_ok") && t.source === "suprimido_aguardando_frio") {
+          // Já fora da lista Brevo (o evaluate desvinculou); só o store muda.
+          store = applyKitSemAberturaFrioFromSuppressed(store, t.email, deps.nowIso());
+          storeWriter.mark(store);
+        }
+        if (step === "tags" || (step === "ja_ok" && t.source !== "descadastrado_por_supressao")) {
+          counts.aplicado++;
+          try {
+            deps.appendLog(
+              formatKitSemAberturaLogLine({ ts: deps.nowIso(), event: "kit_returned_frio", email: t.email, kit_subscriber_id: t.kitSubscriberId, step: "restore" }),
+            );
+          } catch (e) {
+            log(`aviso: log de ${t.email} não gravado (${(e as Error).message}).`);
+          }
+        }
+      } catch (e) {
+        counts.falha++;
+        log(`FALHA ao devolver ${t.email} ao Kit com ${KIT_FRIO_TAG_NAME}: ${(e as Error).message}`);
       }
-    } catch (e) {
-      counts.falha++;
-      log(`FALHA ao devolver ${t.email} ao Kit com ${KIT_FRIO_TAG_NAME}: ${(e as Error).message}`);
     }
+  } finally {
+    removeSignalFlush();
+    storeWriter.flush();
   }
   if (panel.length > 0) {
     log(

@@ -96,6 +96,19 @@
  *   npx tsx scripts/desbloqueia-scan.ts --incluir-engavetadas    # varre também on-hold/wontfix
  *   npx tsx scripts/desbloqueia-scan.ts --limit 50               # teto de issues na passada 1 (default 500)
  *   npx tsx scripts/desbloqueia-scan.ts --repo vjpixel/diaria-design  # #10901: outro repo de issue_repos
+ *   npx tsx scripts/desbloqueia-scan.ts --dump-threads DIR       # #12388: 1 JSON de thread por candidata em DIR
+ *   npx tsx scripts/desbloqueia-scan.ts --include-threads        # #12388: thread inline no stdout
+ *
+ * **Threads já lidas (#12388).** O scan lê corpo e comentários de toda
+ * candidata; sem flag, o relatório traz só metadados e o coordenador
+ * refazia 1 `gh issue view --json body,comments` por candidata (54 numa
+ * rodada de 07/11/2026). `--dump-threads DIR` grava
+ * `DIR/{owner}__{repo}__{N}.json` (`ref`, `title`, `body`, `comments` com
+ * `author`/`createdAt`/`body`, só autor confiável) e põe `threadFile` em cada
+ * candidata, mais `threadsDir` no topo; `--include-threads` põe `thread` no
+ * próprio JSON (stdout cresce com o backlog). `comments: null` = a leitura
+ * falhou (a candidata está em `erroLeitura`), nunca thread vazia. Sem as
+ * flags, a saída é a mesma de antes.
  *
  * **Multi-repo (#10901).** Um repo por execução. Sem `--repo`, o
  * `vjpixel/diaria-studio` (o de sempre, agora com `-R` explícito em toda
@@ -122,9 +135,12 @@ import {
   type DesbloqueioCandidate,
   type DesbloqueioIssueInput,
   type DesbloqueioScanReport,
+  type UltimoComentario,
 } from "./lib/desbloqueia-scan.ts";
 import { latestExecutionBlockFor } from "./lib/issue-decisions.ts";
-import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
+import { isTrustedCommentAuthor, trustedCommentBodies } from "./lib/trusted-comment-author.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { DEFAULT_ISSUE_REPO, ISSUE_REPOS_CONFIG_ROOT, formatIssueRef, resolveRepoFlag } from "./lib/issue-repos.ts";
 
 /**
@@ -215,12 +231,17 @@ function fetchCommentsChecked(
   issueNumber: number,
   cwd: string,
   runGh: GhRunFn,
-): { comments: string[]; error: string | null } {
+): {
+  comments: string[];
+  threadComments: ThreadComment[];
+  ultimoComentario: UltimoComentario | null;
+  error: string | null;
+} {
   const result = runGh(["issue", "view", String(issueNumber), "--json", "comments"], cwd);
   if (result.status !== 0) {
     const reason = result.stderr?.trim() || `gh issue view #${issueNumber} falhou (status ${result.status ?? "null"})`;
     console.error(`[desbloqueia-scan] ${reason}`);
-    return { comments: [], error: reason };
+    return { comments: [], threadComments: [], ultimoComentario: null, error: reason };
   }
   let parsed: unknown;
   try {
@@ -228,17 +249,78 @@ function fetchCommentsChecked(
   } catch (err) {
     const reason = `gh issue view #${issueNumber} — JSON de comentários inválido: ${err instanceof Error ? err.message : String(err)}`;
     console.error(`[desbloqueia-scan] ${reason}`);
-    return { comments: [], error: reason };
+    return { comments: [], threadComments: [], ultimoComentario: null, error: reason };
   }
   const comments = (parsed as { comments?: unknown } | null)?.comments;
   if (!Array.isArray(comments)) {
     const reason = `gh issue view #${issueNumber} — resposta sem array "comments"`;
     console.error(`[desbloqueia-scan] ${reason}`);
-    return { comments: [], error: reason };
+    return { comments: [], threadComments: [], ultimoComentario: null, error: reason };
   }
   // #9752: só autor confiável (OWNER/MEMBER/COLLABORATOR) — repo público,
   // marcador de decisão forjável por qualquer conta. Ver trusted-comment-author.ts.
-  return { comments: trustedCommentBodies(comments) ?? [], error: null };
+  return {
+    comments: trustedCommentBodies(comments) ?? [],
+    threadComments: trustedThreadComments(comments),
+    ultimoComentario: ultimoComentarioDaThread(comments),
+    error: null,
+  };
+}
+
+/**
+ * #12546 — o último comentário da thread INTEIRA (sem o filtro de autor
+ * confiável: um comentário de qualquer conta depois da revisão é "algo
+ * novo"), com a marca de autor confiável para o miolo puro decidir.
+ */
+export function ultimoComentarioDaThread(comments: unknown): UltimoComentario | null {
+  if (!Array.isArray(comments) || comments.length === 0) return null;
+  const node = comments[comments.length - 1] as { body?: unknown; createdAt?: unknown } | null;
+  if (!node || typeof node.body !== "string") return null;
+  return {
+    body: node.body,
+    createdAt: typeof node.createdAt === "string" ? node.createdAt : null,
+    confiavel: isTrustedCommentAuthor(node),
+  };
+}
+
+/**
+ * #12388 — um comentário da thread como o coordenador precisa lê-lo: autor e
+ * data além do corpo. Só autor confiável (o MESMO filtro de
+ * `trustedCommentBodies`, #9752 / regra 30 do dispatch): comentário de conta
+ * sem vínculo nunca chega ao coordenador como se fosse thread da issue.
+ */
+export interface ThreadComment {
+  author: string | null;
+  createdAt: string | null;
+  body: string;
+}
+
+/**
+ * #12388 — corpo + comentários que o scan JÁ leu nas passadas 1 e 2.
+ * `comments: null` quando a leitura dos comentários falhou
+ * (`commentsFetchError` na candidata): lista vazia ali seria a mesma mentira
+ * que o grupo `erroLeitura` existe pra evitar.
+ */
+export interface IssueThread {
+  body: string | null;
+  comments: ThreadComment[] | null;
+}
+
+/** Pura: mesmo filtro e mesma ordem de `trustedCommentBodies`. */
+export function trustedThreadComments(comments: unknown): ThreadComment[] {
+  if (!Array.isArray(comments)) return [];
+  const out: ThreadComment[] = [];
+  for (const c of comments) {
+    if (!isTrustedCommentAuthor(c)) continue;
+    const node = c as { body?: unknown; createdAt?: unknown; author?: { login?: unknown } | null };
+    if (typeof node.body !== "string") continue;
+    out.push({
+      author: typeof node.author?.login === "string" ? node.author.login : null,
+      createdAt: typeof node.createdAt === "string" ? node.createdAt : null,
+      body: node.body,
+    });
+  }
+  return out;
 }
 
 /**
@@ -307,7 +389,13 @@ export function resolveDependencyStates(
  * comentário com `-R`) — com o número pelado, uma varredura do diaria-design
  * re-roteava/comentava a issue de MESMO número do diaria-studio.
  */
-export type DesbloqueioCandidateWithRef = DesbloqueioCandidate & { ref: string };
+export type DesbloqueioCandidateWithRef = DesbloqueioCandidate & {
+  ref: string;
+  /** #12388 — só com `--include-threads`: corpo + comentários já lidos. */
+  thread?: IssueThread;
+  /** #12388 — só com `--dump-threads DIR`: caminho do JSON da thread. */
+  threadFile?: string;
+};
 
 type CandidateGroups = {
   [K in keyof DesbloqueioScanReport]-?: DesbloqueioScanReport[K] extends DesbloqueioCandidate[] ? K : never;
@@ -335,6 +423,55 @@ export function withIssueRefs(report: DesbloqueioScanReport, repo: string): Desb
   };
 }
 
+/** Os grupos de candidatas, na ordem de `withIssueRefs`. */
+const CANDIDATE_GROUP_KEYS = [
+  "jaDestravadas",
+  "bloqueioConfirmado",
+  "precisaPergunta",
+  "bloqueioObsoleto",
+  "semSinalNaoTriadas",
+  "acaoImediataCandidatas",
+  "acaoAdiada",
+  "erroLeitura",
+] as const satisfies readonly CandidateGroups[];
+
+/**
+ * #12388 — nome do arquivo da thread em `--dump-threads`. Leva o repo além
+ * do número: o #N colide entre `issue_repos` (#10935), e um mesmo diretório
+ * pode receber uma varredura do studio e outra do design.
+ */
+export function threadFileName(repo: string, issueNumber: number): string {
+  return `${repo.replace(/[^A-Za-z0-9._-]+/g, "__")}__${issueNumber}.json`;
+}
+
+/**
+ * #12388 — anexa a thread que o scan já leu a cada candidata, em vez de
+ * descartá-la (o coordenador refazia 1 `gh issue view --json body,comments`
+ * por candidata). Puro: `inline` põe `thread` no JSON; `files` (número →
+ * caminho já gravado pelo chamador) põe `threadFile`. Sem nenhum dos dois,
+ * devolve o relatório como veio — a saída default não muda de forma.
+ */
+export function attachThreads(
+  report: DesbloqueioScanReportWithRefs,
+  threads: ReadonlyMap<number, IssueThread>,
+  mode: { inline: boolean; files: ReadonlyMap<number, string> | null },
+): DesbloqueioScanReportWithRefs {
+  if (!mode.inline && !mode.files) return report;
+  const out = { ...report };
+  for (const key of CANDIDATE_GROUP_KEYS) {
+    out[key] = report[key].map((c) => {
+      const thread = threads.get(c.number);
+      const file = mode.files?.get(c.number);
+      return {
+        ...c,
+        ...(mode.inline && thread ? { thread } : {}),
+        ...(file ? { threadFile: file } : {}),
+      };
+    });
+  }
+  return out;
+}
+
 export function runDesbloqueioScan(
   cwd: string,
   opts: {
@@ -346,10 +483,15 @@ export function runDesbloqueioScan(
     /** #10901 — repo varrido (`owner/name`, já validado contra a
      * allowlist). Ausente = o repo default. */
     repo?: string;
+    /** #12388 — põe `thread` (corpo + comentários) em cada candidata. */
+    includeThreads?: boolean;
+    /** #12388 — grava 1 JSON de thread por candidata neste diretório e põe
+     * `threadFile` em cada candidata. Mantém o stdout enxuto. */
+    dumpThreadsDir?: string;
     /** Injetável só pra teste — ver `GhRunFn`. */
     runGh?: GhRunFn;
   } = {},
-): DesbloqueioScanReportWithRefs & { repo?: string } {
+): DesbloqueioScanReportWithRefs & { repo?: string; threadsDir?: string } {
   const limit = opts.limit ?? 500;
   const baseRunGh = opts.runGh ?? spawnGhSync;
   // #10901: toda chamada `gh` escopada no repo varrido com `-R` (no default
@@ -393,9 +535,16 @@ export function runDesbloqueioScan(
 
   // Passada 2: só pras candidatas reais, busca a thread completa.
   const fetched = candidates.map((issue) => {
-    const { comments, error } = fetchCommentsChecked(issue.number, cwd, runGh);
-    return { issue, comments, error };
+    const { comments, threadComments, ultimoComentario, error } = fetchCommentsChecked(issue.number, cwd, runGh);
+    return { issue, comments, threadComments, ultimoComentario, error };
   });
+  // #12388: a thread que as passadas 1 e 2 já leram, por número.
+  const threads = new Map<number, IssueThread>(
+    fetched.map(({ issue, threadComments, error }) => [
+      issue.number,
+      { body: issue.body, comments: error ? null : threadComments },
+    ]),
+  );
 
   // Passada 3 (#7707): resolve as dependências declaradas nos bloqueios que
   // acabaram de ser lidos. Roda DEPOIS da 2 porque só a thread diz quais
@@ -408,7 +557,7 @@ export function runDesbloqueioScan(
   }
   const dependencyStates = resolveDependencyStates(deps, openNumbers, cwd, runGh);
 
-  const inputs: DesbloqueioIssueInput[] = fetched.map(({ issue, comments, error }) => {
+  const inputs: DesbloqueioIssueInput[] = fetched.map(({ issue, comments, ultimoComentario, error }) => {
     const bloco = error ? null : latestExecutionBlockFor(comments);
     const depIssue = bloco?.condicao.tipo === "depends_on" ? bloco.condicao.issue : null;
     return {
@@ -422,6 +571,7 @@ export function runDesbloqueioScan(
       commentsFetchError: error,
       dependencyState: depIssue === null ? null : (dependencyStates.get(depIssue) ?? "missing"),
       incluirEngavetadas: opts.incluirEngavetadas,
+      ultimoComentario,
     };
   });
 
@@ -436,10 +586,37 @@ export function runDesbloqueioScan(
     .filter(([, estado]) => estado === "missing")
     .map(([n]) => n);
 
-  const report = withIssueRefs(scanDesbloqueioCandidates(inputs), scanRepo);
+  // #12388: `--dump-threads` grava uma thread por candidata (com `ref` e
+  // título, pra o arquivo se ler sozinho). Falha de escrita lança — um
+  // `threadFile` apontando pra arquivo que não existe faria o coordenador
+  // concluir "thread vazia".
+  let files: Map<number, string> | null = null;
+  let threadsDir: string | undefined;
+  if (opts.dumpThreadsDir) {
+    threadsDir = resolve(cwd, opts.dumpThreadsDir);
+    mkdirSync(threadsDir, { recursive: true });
+    files = new Map();
+    for (const { issue } of fetched) {
+      const path = join(threadsDir, threadFileName(scanRepo, issue.number));
+      const record = {
+        ref: formatIssueRef({ repo: scanRepo, number: issue.number }),
+        number: issue.number,
+        title: issue.title,
+        ...threads.get(issue.number),
+      };
+      writeFileSync(path, JSON.stringify(record, null, 2) + "\n", "utf8");
+      files.set(issue.number, path);
+    }
+  }
+
+  const report = attachThreads(withIssueRefs(scanDesbloqueioCandidates(inputs), scanRepo), threads, {
+    inline: opts.includeThreads === true,
+    files,
+  });
   return {
     // #10901: só fora do default, pra o JSON de sempre não mudar de forma.
     ...(scanRepo === DEFAULT_ISSUE_REPO ? {} : { repo: scanRepo }),
+    ...(threadsDir ? { threadsDir } : {}),
     ...report,
     // Une o que a passada 1 rejeitou com o que o miolo rejeitou. Os dois
     // conjuntos são disjuntos por construção (o miolo só vê o que passou),
@@ -480,6 +657,12 @@ async function main() {
   // nunca pelo cwd); fora da allowlist/ilegível lança — nunca cai no default.
   const repoFlag = resolveRepoFlag(values, flags, ISSUE_REPOS_CONFIG_ROOT);
   if ("error" in repoFlag) throw new Error(`[desbloqueia-scan] ${repoFlag.error}`);
+  const includeThreads = flags.has("include-threads") || values["include-threads"] === "true";
+  // `--dump-threads` sem valor cai em `flags`: lançar, em vez de rodar sem
+  // gravar nada e deixar o coordenador sem as threads que pediu.
+  if (flags.has("dump-threads") || values["dump-threads"] === "") {
+    throw new Error("[desbloqueia-scan] --dump-threads exige um diretório (ex: --dump-threads /tmp/desbloqueia-threads)");
+  }
 
   const report = runDesbloqueioScan(process.cwd(), {
     limit,
@@ -488,6 +671,8 @@ async function main() {
     skipSemSinal,
     incluirEngavetadas,
     repo: repoFlag.repo,
+    includeThreads,
+    dumpThreadsDir: values["dump-threads"],
   });
   console.log(JSON.stringify(report, null, 2));
 }

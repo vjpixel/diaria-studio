@@ -4,3 +4,6 @@
 # achado no 300 em 29/10/2026, edição 261030).
 faster-whisper==1.2.1
 av==18.0.0
+# Rosto automático por tomada (#12560, `face`/`gaze`): Haar cascade do OpenCV.
+# headless (sem GUI) e < 5, como no edicao-video; só o face/gaze dependem dele.
+opencv-python-headless<5

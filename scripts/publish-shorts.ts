@@ -91,8 +91,11 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     ou `--now`). Envio ambíguo grava `send_unknown` e nunca re-posta.
  *   - `linkedin_page_repost` (guiado, #10772) — repost do vídeo do perfil pela
  *     página, no horário que a grade da PÁGINA permite (`planLinkedInRepostSlot`:
- *     2 h dos posts da rotação #10305, picos, ≥30 min depois do perfil). Guiado
- *     porque não há token de organização local (a página publica pelo Worker).
+ *     2 h dos posts da rotação #10305, picos, ≥30 min depois do perfil). Desde
+ *     #11121 o `--publish` põe o repost na fila do Worker `diaria-linkedin-cron`
+ *     (`action: "repost"`, API direta como página) quando a URN do vídeo do
+ *     perfil está no registro; o Worker sem o token da página (#8816) recusa
+ *     com `linkedin_creds_missing` e o passo segue guiado no Chrome, com aviso.
  *   - `x` (guiado, #10772) — X @diariabr pela Buffer (MCP, só a skill alcança).
  *     O plano traz texto (≤280 ponderado) e `dueAt`; com R2 configurado o
  *     `--publish` sobe o vertical e devolve `results[].buffer.videoUrl` (e
@@ -147,9 +150,12 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * linkedin_profile=URL`) — qualquer outro destino nessa rodada cairia no
  * registro do timer e voltaria a ter dois escritores em máquinas diferentes.
  *
- * Horário (#10831): o do vertical, `resolveShortTime` — teste de 15 dias úteis
- * alternando 06:30/08:00/12:00 BRT a partir de 261026 (`publishing.shorts.schedule`),
- * nunca as 06:00 do horizontal. Com pelo menos 10 min de folga o Facebook
+ * Horário (#10831, #12250): o do vertical, `resolveShortTime(sched, aammdd, destino)`
+ * — fixo POR DESTINO (`publishing.shorts.schedule`): YouTube Shorts às 06:30
+ * (`by_destination`), os outros destinos às 12:00 (`default_time`); nunca as
+ * 06:00 do horizontal (o vídeo relacionado do Short precisa dele já público,
+ * #10811). O teste rotativo 06:30/08:00/12:00 (261026 a 261106) foi encerrado
+ * no #12250. Com pelo menos 10 min de folga o Facebook
  * agenda (a folga é reconferida antes de cada página); senão publica na hora.
  * O Instagram não agenda Reels pela API. Desde #11265 (decisão do editor,
  * 27/10/2026) quem publica é o timer do 300 (`publishing.shorts.instagram_backend`
@@ -172,10 +178,11 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * aviso (manuais).
  *
  * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
- * (`_internal/06-social-published.json` + `06-shorts-published.json`). Durante
- * o teste do #10831 o horário do teste vale pra todos os destinos e a grade só
- * avisa quando ele cola num post da mesma conta; fora do teste, cada destino
- * de API tem o próprio horário (`slots` no plano) pelo `social-slot-planner`.
+ * (`_internal/06-social-published.json` + `06-shorts-published.json`). O horário
+ * fixo de cada destino (#12250) nunca é movido: a grade só avisa quando ele
+ * cola num post da mesma conta (`slots` no plano, aviso em `warnings`). Antes
+ * do #12250, fora do teste do #10831, o `social-slot-planner` escolhia outro
+ * horário por destino.
  * O Instagram manual acima do teto (#10893) também reserva slot (#10933): é um
  * post da conta naquele horário, só que feito no app. O Reels do Instagram
  * conta também como post dos collabs (a @diar.ia.br, decisão do editor
@@ -185,7 +192,7 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * Link da edição: `--edition-url` > `_internal/05-edition-url.txt` (gravado no
  * Stage 5) > slug derivado do título do D1. O derivado é premissa, não aviso: é
  * a mesma regra com que o Stage 5 grava `05-edition-url.txt` (#7420), então o
- * vertical pode sair antes da Etapa 5 (fluxo do #10943).
+ * vertical pode sair antes da Etapa 5 (`--so vertical` ou `--sem-publicacao`; no fluxo padrão do #12591 ele sai depois).
  *
  * Registro por destino em `{edição}/_internal/06-shorts-published.json`
  * (escrita atômica, logo após cada destino). Destino registrado é pulado.
@@ -281,6 +288,7 @@ import {
   resolveReelsSchedule,
   resolveShortTime,
   buildShortSocialText,
+  diariaFollowLine,
   buildTikTokPost,
   planLinkedInRepostSlot,
   shortVideoFileName,
@@ -343,6 +351,7 @@ import {
 } from "./lib/social-slot-planner.ts";
 import { loadR2UploadConfig, r2ObjectHasBody, r2PublicUrl, reuseOrUploadToR2 } from "./lib/r2-object-upload.ts";
 import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
+import { buildPageRepostPayload, enqueuePageAction, linkedInPostUrnFrom, type EnqueueFn, type PageActionResult } from "./lib/diaria/linkedin-page-actions.ts"; // #11121
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
 import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "./lib/linkedin-video.ts";
@@ -352,6 +361,7 @@ import {
   bufferThumbnailOffsetMs,
   clampBufferThumbnailOffsetMs,
   carryOverCover,
+  keepStudioWebVerticalFeed,
   parseShortCoverSource,
   planCoverDestination,
   withCoverRecord,
@@ -533,6 +543,12 @@ export interface ShortsPlan {
   youtube: YouTubeShortMetadata;
   /** Horário do vertical (#10831): HH:MM BRT, ISO no dia da edição, de onde veio. Base dos destinos guiados. */
   shortTime: ShortTime & { at: string };
+  /**
+   * #12250: horário de cada destino do plano (id → HH:MM BRT, ISO e origem).
+   * Difere de `shortTime` só no destino com horário próprio em
+   * `by_destination` (hoje o `youtube_shorts`, 06:30).
+   */
+  destinationTimes: Record<string, ShortTime & { at: string }>;
   /** Horário de cada destino de API desta rodada contra a grade já agendada (#10819). */
   slots: ShortSlot[];
   items: ShortsPlanItem[];
@@ -962,8 +978,23 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const youtube = buildYouTubeShortMetadata({ d1: d1In, horizontalTitle });
 
   // #10831: o vertical tem horário próprio (nunca as 06:00 do horizontal).
-  const time = corte ? corteShortTime(corte.hhmm) : resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd);
+  // #12250: fixo POR DESTINO (YouTube Shorts 06:30, os outros 12:00). `time` é o
+  // dos destinos sem horário próprio (`default_time`); `timeFor` resolve cada um.
+  // O corte avulso usa o `--at` em todos os destinos.
+  const schedCfg = corte ? null : loadShortScheduleConfig(input.config);
+  const time = corte ? corteShortTime(corte.hhmm) : resolveShortTime(schedCfg!, input.aammdd);
   const shortTime = { ...time, at: resolveEditionScheduledAt(input.aammdd, time.hhmm) };
+  const destinationTimeCache = new Map<string, ShortTime & { at: string }>();
+  const timeFor = (destinationId: string): ShortTime & { at: string } => {
+    if (!schedCfg) return shortTime;
+    let t = destinationTimeCache.get(destinationId);
+    if (!t) {
+      const own = resolveShortTime(schedCfg, input.aammdd, destinationId);
+      t = own.hhmm === time.hhmm && own.source === time.source ? shortTime : { ...own, at: resolveEditionScheduledAt(input.aammdd, own.hhmm) };
+      destinationTimeCache.set(destinationId, t);
+    }
+    return t;
+  };
   premises.push(`horário do vertical: ${time.hhmm} BRT (${time.reason})`);
   if (input.forceNow) premises.push("--now: publica na hora");
   if (!input.video.exists) warnings.push(`vídeo curto ausente em ${input.video.path} — nada a publicar até ele existir`);
@@ -986,6 +1017,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   }
 
   const destinations = listShortDestinations(cfg).filter((d) => !only || only.has(d.id));
+  // #12250: destino com horário próprio (ex.: YouTube Shorts 06:30) vira premissa explícita.
+  for (const d of destinations) {
+    const t = timeFor(d.id);
+    if (t !== shortTime) premises.push(`horário de ${d.id}: ${t.hhmm} BRT (${t.reason})`);
+  }
   // #10893: Reels acima do teto medido da API do Instagram vira passo guiado
   // ANTES do upload, em vez de falhar no rupload depois de subir o arquivo.
   // #10916: o teto é POR CONTA (a autora do Reels), não global.
@@ -1062,13 +1098,17 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
   const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
   const fixedInstagram = instagramViaTimer ? slotDestinations.find((d) => d.kind === "instagram") : undefined;
-  const fixedInstagramSlot: ShortSlot | null = fixedInstagram ? instagramTimerSlot(fixedInstagram, cfg, time.hhmm, shortTime.at) : null;
+  const fixedInstagramSlot: ShortSlot | null = fixedInstagram ? instagramTimerSlot(fixedInstagram, cfg, timeFor(fixedInstagram.id).hhmm, timeFor(fixedInstagram.id).at) : null;
   const slots = [
     ...(fixedInstagramSlot ? [fixedInstagramSlot] : []),
     ...planShortSlots({
       aammdd: input.aammdd,
       time,
       timeAt: shortTime.at,
+      timeFor: (id) => {
+        const t = timeFor(id);
+        return { time: t, at: t.at };
+      },
       destinations: slotDestinations.filter((d) => d !== fixedInstagram),
       cfg,
       grid: [
@@ -1082,7 +1122,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const slotOf = new Map(slots.map((s) => [s.destination, s]));
   for (const s of slots) {
     if (s.rule === "timer-300" || s.rule === "explicit") premises.push(`${s.destination}: ${s.hhmm} BRT (${s.premise})`);
-    else if (s.rule !== "test-schedule") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
+    else if (s.rule !== "test-schedule" && s.rule !== "fixed-time") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
     if (s.warning) warnings.push(s.warning);
   }
   const scheduleFor = (s: ShortSlot) => (input.forceNow ? ({ mode: "immediate" } as const) : resolveReelsSchedule(s.at, input.now));
@@ -1100,8 +1140,13 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     );
   }
 
+  // #12465: o perfil pessoal (LinkedIn, Threads) cita o perfil da diar.ia.br; o X sai pela @diariabr.
   const socialText = (platform: "linkedin" | "x" | "threads") =>
-    buildShortSocialText({ platform, d1: d1In });
+    buildShortSocialText({
+      platform,
+      d1: d1In,
+      follow: diariaFollowLine(platform === "linkedin" ? "linkedin_profile" : platform === "threads" ? "threads_profile" : "x", cfg.diariaProfiles),
+    });
 
   // #10772 F4: a Posts API do LinkedIn não agenda — o vídeo sai quando a rodada
   // roda. Sem teto, uma rodada horas depois (ou no dia seguinte) publicaria fora
@@ -1174,13 +1219,15 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (dest.kind === "youtube_shorts") {
       // #11070: Data API com publishAt (o horizontal provou em 23/10 que o
       // agendado vira público sozinho, sem a auditoria). Sem credencial, guiado.
+      // #12250: horário próprio do Short (06:30), não o dos outros destinos.
+      const ytTime = timeFor(dest.id);
       if (cfg.youtubeShortsApi && input.youtubeApi?.ready === true) {
-        const sch = input.forceNow ? null : resolveYouTubeSchedule(input.aammdd, input.now, shortTime.at);
+        const sch = input.forceNow ? null : resolveYouTubeSchedule(input.aammdd, input.now, ytTime.at);
         const publishAt = sch?.mode === "scheduled" ? sch.publishAt : null;
         premises.push(
           publishAt
-            ? `youtube_shorts: Data API, agendado (private + publishAt ${publishAt}, ${time.hhmm} BRT do vertical) (#11070)`
-            : `youtube_shorts: Data API, público na hora (${input.forceNow ? "--now" : `${time.hhmm} BRT já passou ou falta menos de 15 min`}) (#11070)`,
+            ? `youtube_shorts: Data API, agendado (private + publishAt ${publishAt}, ${ytTime.hhmm} BRT do vertical) (#11070)`
+            : `youtube_shorts: Data API, público na hora (${input.forceNow ? "--now" : `${ytTime.hhmm} BRT já passou ou falta menos de 15 min`}) (#11070)`,
         );
         return { destination: dest.id, mode: "api", action: "publish", caption: youtube.description, scheduledAt: publishAt, title: youtube.title };
       }
@@ -1190,7 +1237,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
           ? input.youtubeApi.reason
           : "credencial YOUTUBE_* não conferida";
       if (cfg.youtubeShortsApi) warnings.push(`youtube_shorts: ${why} — vira passo guiado no YouTube Studio (#11070)`);
-      return { destination: dest.id, mode: "guided", action: "guided", detail: `YouTube Studio no Chrome (${why})` };
+      return { destination: dest.id, mode: "guided", action: "guided", detail: `YouTube Studio no Chrome (${why}), agendado para ${ytTime.hhmm} BRT`, at: ytTime.at };
     }
     if (dest.kind === "linkedin_profile") {
       if (profileDelegated) {
@@ -1246,7 +1293,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         at: repostSlot!.at,
         detail:
           `repost pela página diar.ia.br às ${repostSlot!.hhmm} BRT: no Chrome, como a página, "Repostar" o vídeo do perfil${where}. ` +
-          `Sem token de organização local, por isso guiado; registre com --mark linkedin_page_repost=URL`,
+          `O --publish tenta antes a fila do Worker (repost como página, #11121); este passo só vale se ela recusar ` +
+          `(Worker sem o token da página, #8816) — registre com --mark linkedin_page_repost=URL`,
       };
     }
     if (dest.kind === "x") {
@@ -1359,7 +1407,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         destination: dest.id,
         mode: "guided",
         action: "guided",
-        caption: buildReelsCaption({ platform: "facebook", d1: d1In }),
+        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles) }), // #12465
         detail: "perfil pessoal: a Graph API não publica em perfil de pessoa — Chrome, ou compartilhar o Reels da página",
       };
     }
@@ -1374,7 +1422,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         destination: dest.id,
         mode: "api",
         action: "publish",
-        caption: buildReelsCaption({ platform: "facebook", d1: d1In }),
+        // #12465: a página VJ Pixel (não a diar.ia.br) leva o perfil da diar.ia.br.
+        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles) }),
         scheduledAt: schedule.mode === "scheduled" ? schedule.at : null,
       };
     }
@@ -1385,7 +1434,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (!igFit.fits) {
       // #10933: o horário vem da grade (o mesmo slot que os outros destinos já enxergaram).
       const slot = slotOf.get(dest.id);
-      const hhmm = slot?.hhmm ?? time.hhmm;
+      const hhmm = slot?.hhmm ?? timeFor(dest.id).hhmm;
       // #10915: o --publish gera a versão comprimida pro file_upload do Chrome (campo `upload` do item).
       // #11794: a rota à mão tem a mesma autoria da API (@diar.ia.br autora, @vjpixel em collab).
       const detail =
@@ -1399,7 +1448,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       } catch (e) {
         warnings.push(`instagram: ${(e as Error).message}`);
       }
-      return { destination: dest.id, mode: "guided", action: "guided", ...(caption ? { caption } : {}), detail, at: slot?.at ?? shortTime.at };
+      return { destination: dest.id, mode: "guided", action: "guided", ...(caption ? { caption } : {}), detail, at: slot?.at ?? timeFor(dest.id).at };
     }
     // Só quando o caller MEDIU e não conseguiu ler (null); ausente = não medido (testes, chamadas antigas).
     if (input.videoDurationSeconds === null && igMax !== null && input.video.exists && input.instagramReady) {
@@ -1507,7 +1556,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       ...(!corte && input.editionDirOverride !== undefined ? { editionDirOverride: input.editionDirOverride } : {}),
     }),
   );
-  return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
+  const destinationTimes = Object.fromEntries(destinations.map((d) => [d.id, timeFor(d.id)]));
+  return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, destinationTimes, slots, items, owners, premises, warnings };
 }
 
 /**
@@ -3797,7 +3847,10 @@ export async function executeScheduledUpdates(
       let coverRecord: ShortCoverRecord | null = null;
       if (item.action === "update_youtube") {
         const r = await deps.youtube(item.videoId, { title: item.title, description: item.description, thumbnail: item.cover ? cover : null });
-        coverRecord = youtubeShortsCoverRecord(r.thumbnail); // #12100: `vertical_feed: "manual"` no sucesso
+        // #12100: `vertical_feed: "manual"` no sucesso; #12459: o `studio_web` já
+        // aplicado no Studio web (Passo B3a) é preservado, o `thumbnails.set`
+        // não mexe na capa do feed de Shorts.
+        coverRecord = keepStudioWebVerticalFeed(youtubeShortsCoverRecord(r.thumbnail), entry.cover);
       } else {
         coverRecord = (await deps.facebook(item.slug, item.videoId, item.description, item.cover ? cover : null)).cover;
       }
@@ -3842,6 +3895,67 @@ export function blockRepostOnProfileFailure(
   );
 }
 
+/**
+ * #11121: o repost da página sai pela fila do Worker `diaria-linkedin-cron`
+ * (API direta como página, `action: "repost"`) no horário do passo guiado
+ * (`at`, a grade da página). Só com a URN do vídeo do perfil conhecida (o
+ * registro do `linkedin_profile`). Enfileirado: registra `scheduled` com a key
+ * da fila e o item vira `skip_done`. Sem os segredos da página no Worker
+ * (#8816), sem Worker nesta máquina ou com falha: o passo guiado de sempre
+ * fica, com aviso. Idempotente pela `idempotency_key` da edição.
+ */
+export async function enqueuePageRepostViaWorker(
+  enqueue: EnqueueFn | null,
+  input: {
+    aammdd: string;
+    items: ShortsPlanItem[];
+    profileEntry: { id?: unknown; url?: unknown } | null | undefined;
+    now: Date;
+    corteSlug?: string;
+  },
+): Promise<{ items: ShortsPlanItem[]; entry?: ShortPublishedEntry; result?: PageActionResult; warning?: string }> {
+  const idx = input.items.findIndex((i) => i.destination === "linkedin_page_repost" && i.action === "guided");
+  if (idx === -1) return { items: input.items };
+  const item = input.items[idx] as Extract<ShortsPlanItem, { action: "guided" }>;
+  const keepGuided = (why: string, result?: PageActionResult) => {
+    const items = [...input.items];
+    items[idx] = { ...item, detail: `${item.detail} (fila do Worker: ${why})` };
+    return { items, ...(result ? { result } : {}), warning: `linkedin_page_repost: segue guiado — ${why} (#11121)` };
+  };
+  const urn = linkedInPostUrnFrom(input.profileEntry);
+  if (!urn) return keepGuided("URN do vídeo do perfil desconhecida no registro do linkedin_profile");
+  let payload: WorkerQueuePayload;
+  try {
+    payload = buildPageRepostPayload({
+      aammdd: input.aammdd,
+      targetPostUrn: urn,
+      scheduledAt: item.at ?? input.now.toISOString(),
+      now: input.now,
+      ...(input.corteSlug ? { variant: input.corteSlug } : {}),
+    });
+  } catch (e) {
+    return keepGuided((e as Error).message);
+  }
+  const result = await enqueuePageAction(enqueue, payload);
+  const at = input.now.toISOString();
+  const done = (entry: ShortPublishedEntry) => {
+    const items = [...input.items];
+    items[idx] = { destination: item.destination, mode: "api", action: "skip_done" };
+    return { items, entry, result };
+  };
+  if (result.status === "queued") {
+    return done({ destination: "linkedin_page_repost", status: "scheduled", id: result.key, scheduled_at: result.scheduled_at, at });
+  }
+  if (result.status === "already_fired") {
+    return done({ destination: "linkedin_page_repost", status: "published", id: `worker-queue:${payload.idempotency_key}`, scheduled_at: null, at });
+  }
+  const why =
+    result.status === "failed" && result.ambiguous
+      ? `${result.detail} — confira a fila do Worker (GET /list) antes de repostar à mão`
+      : result.detail;
+  return keepGuided(why, result);
+}
+
 /** Link da edição: --edition-url > `_internal/05-edition-url.txt` > (derivado, no plano). */
 export function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: string; source?: string } {
   if (flag) return { url: flag, source: "--edition-url" };
@@ -3872,6 +3986,7 @@ const USAGE =
   "                                                                                 # --allow-unwatched-dir roda mesmo assim, sem alarme de destino faltante (#11911)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
+// --require-scheduled is internal to replacement recovery: never fall back to publish-now.
 export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video", "update-scheduled", "replace-scheduled", "require-scheduled", "require-corte-authorization", ALLOW_UNWATCHED_DIR_FLAG] as const;
 
 /**
@@ -4295,11 +4410,15 @@ async function runUpdateScheduled(input: {
   let items: ScheduledUpdateItem[];
   let known: Set<string>;
   try {
-    known = knownDestinationIds(loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))));
+    const shortsCfg = loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
+    known = knownDestinationIds(shortsCfg);
     // #12191: a troca da descrição do Short mantém a citação do horizontal (o corte não tem horizontal).
     const horizontal = corte ? null : readHorizontalVideoForShort(dir);
     const horizontalTitle = horizontal ? resolveShortHorizontalTitle({ d1Title: d1.title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }) : null;
-    items = planScheduledUpdates({ entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known });
+    items = planScheduledUpdates({
+      entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known,
+      ...(shortsCfg.diariaProfiles ? { diariaProfiles: shortsCfg.diariaProfiles } : {}),
+    });
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
     return 2;
@@ -4368,7 +4487,7 @@ async function runUpdateScheduled(input: {
 /** #12279: strict remote reread, then delete. Unknown/missing state never permits deletion. */
 export async function deleteFacebookScheduledVideo(deps: GraphDeps, page: ResolvedFacebookPage, apiVersion: string, videoId: string): Promise<void> {
   const cur = await graphGet(deps, videoId, { fields: 'published,scheduled_publish_time', access_token: page.token }, apiVersion);
-  if (cur?.published !== false || !(Number(cur.scheduled_publish_time) * 1000 > deps.now().getTime() + 600_000)) throw new Error('vídeo não está agendado com mais de 10 min; nada apagado');
+  if (cur?.published !== false || !(Number(cur.scheduled_publish_time) * 1000 > deps.now().getTime() + 1_800_000)) throw new Error('vídeo não está agendado com mais de 30 min; nada apagado');
   const res = await deps.fetch(`${GRAPH}/${apiVersion}/${encodeURIComponent(videoId)}?${new URLSearchParams({ access_token: page.token })}`, {
     method: 'DELETE', signal: AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS),
   });
@@ -5274,6 +5393,34 @@ async function main(): Promise<number> {
     console.error("[aviso] linkedin_page_repost: o vídeo do perfil falhou ou ficou em send_unknown nesta rodada — repost não oferecido");
     plan = { ...plan, items: finalItems };
   }
+  // #11121: repost da página pela fila do Worker (como página, API direta).
+  // Sem os segredos da página no Worker (#8816), o passo guiado fica.
+  if (plan.items.some((i) => i.destination === "linkedin_page_repost" && i.action === "guided")) {
+    const profileThisRun = results.find((r) => r.destination === "linkedin_profile" && r.ok && r.entry)?.entry as ShortPublishedEntry | undefined;
+    const repost = await enqueuePageRepostViaWorker(
+      workerUrl && workerToken ? (p) => postToWorkerQueue(workerUrl, workerToken, p, 2, "publish-shorts") : null,
+      {
+        aammdd,
+        items: plan.items,
+        profileEntry: profileThisRun ?? published.entries.find((e) => e.destination === "linkedin_profile"),
+        now: new Date(),
+        ...(corte ? { corteSlug: corte.slug } : {}),
+      },
+    );
+    if (repost.warning) console.error(`[aviso] ${repost.warning}`);
+    if (repost.entry) {
+      try {
+        published = persist(repost.entry);
+        results.push({ destination: "linkedin_page_repost", ok: true, entry: repost.entry });
+        console.error(`[ok] linkedin_page_repost: ${repost.entry.status} pela fila do Worker (${repost.entry.id}${repost.entry.scheduled_at ? `, ${repost.entry.scheduled_at}` : ""})`);
+      } catch (e) {
+        const msg = `repost NA FILA do Worker (${repost.entry.id}) mas o registro não foi gravado: ${(e as Error).message}. Registre com --mark linkedin_page_repost=${repost.entry.id}; não reposte à mão.`;
+        results.push({ destination: "linkedin_page_repost", ok: false, entry: repost.entry, error: msg });
+        console.error(`[erro] linkedin_page_repost: ${msg}`);
+      }
+    }
+    plan = { ...plan, items: repost.items };
+  }
   // #10915: Instagram acima do teto vira passo guiado no Chrome. A compressão
   // só alimenta esse passo, então roda DEPOIS das APIs: um encode lento ou
   // travado nunca atrasa os Reels/vídeos que saem por API.
@@ -5551,7 +5698,7 @@ function instagramConfirmContext(
   const markers = instagramEditionMarkers({ aammdd, d1Title: d1?.title ?? null, d1Body: d1?.body ?? null, editionUrl: resolveEditionUrlInput(dir, editionUrlFlag).url ?? null });
   let expectedAtIso: string | null = null;
   try {
-    expectedAtIso = resolveEditionScheduledAt(aammdd, resolveShortTime(loadShortScheduleConfig(config), aammdd).hhmm);
+    expectedAtIso = resolveEditionScheduledAt(aammdd, resolveShortTime(loadShortScheduleConfig(config), aammdd, "instagram").hhmm);
   } catch {
     expectedAtIso = null; // config de horário inválido: fica só o marcador (a recusa segue segura)
   }

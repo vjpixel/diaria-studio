@@ -1167,7 +1167,7 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
     globalThis.fetch = origFetch;
   }
 
-  it("dry-run sem brevoApiKey: falha ao checar status Beehiiv de 1 contato conta em failed, mas os demais são avaliados normalmente", async () => {
+  it("dry-run sem brevoApiKey: falha ao checar status Beehiiv de 1 contato vira aviso (não failed, #12543), e os demais são avaliados normalmente", async () => {
     const logs: string[] = [];
     const log = (m: string) => logs.push(m);
     globalThis.fetch = (async (url: string | URL) => {
@@ -1196,7 +1196,9 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
         listId: 7,
         log,
       });
-      assert.equal(result.failed, 1, "1 falha de checagem contada");
+      // #12543: status Beehiiv indisponível no Passo 1 é aviso, nunca failed.
+      assert.equal(result.failed, 0, "falha do Passo 1 Beehiiv não conta em failed (#12543)");
+      assert.deepEqual(result.beehiivStatusUnavailable.map((e) => e.email), ["falha@b.com"]);
       assert.equal(result.kept, 2, "ambos avaliados por taxa de abertura mesmo com a falha de auto-confirmação");
       assert.ok(logs.some((l) => l.includes("falha ao checar status Beehiiv de falha@b.com")));
     } finally {

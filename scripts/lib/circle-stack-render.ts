@@ -7,10 +7,10 @@
  * `data/weekly/{cycle}/_internal/circle-stack-selection.json`).
  *
  * Estrutura (#11186): título = título do D1 · abertura (resumo da semana com
- * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · Destaques da semana (título com link da fonte, corpo e
+ * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · vídeo mais assistido
+ * da semana, se medido (#12081), com descrição opcional · Destaques da semana (título com link da fonte, corpo e
  * "Por que isso importa:" iguais aos da edição diária) · Lançamentos · Use melhor · Radar ·
- * Outros destaques da semana (só o que não apareceu acima) · vídeo mais assistido
- * da semana, se medido (#12081) · última linha ("Assine a diar.ia.br. Chega de segunda a
+ * Outros destaques da semana (só o que não apareceu acima; o e-mail omite, #12550) · última linha ("Assine a diar.ia.br. Chega de segunda a
  * sexta...", link e fecho na mesma linha).
  *
  * Sem capa por destaque: o contrato do webhook da Stack não aceita imagem no
@@ -41,7 +41,8 @@ export const CIRCLE_STACK_SUBSCRIBE_BASE_URL = "https://diar.ia.br";
 export type CircleStackUtmContent = "edicao" | "cta-fim" | "video";
 
 /** #12081: começo da linha do vídeo mais visto da semana (link no título do vídeo). */
-export const CIRCLE_STACK_VIDEO_LEAD = "Vídeo mais assistido da semana no canal da diar.ia.br:";
+/** Título da seção do vídeo: segue o formato das demais (## seção, ### título com link, parágrafo). */
+export const CIRCLE_STACK_VIDEO_LEAD = "## Vídeo mais assistido da semana";
 
 /**
  * Abertura de reserva: só entra quando nenhum destaque rende uma frase de
@@ -75,6 +76,12 @@ export interface CircleStackItem {
    * palavra funcional do português ("Codex Launch Notes").
    */
   titleReviewed?: boolean;
+  /**
+   * #12553: título que o `stack-title-translator` gravou. Enquanto `title` for
+   * igual a ele (e sem `titleReviewed`), o aviso "Título traduzido — revisar"
+   * segue de pé; título reescrito à mão deixa de ser aviso.
+   */
+  titleTranslated?: string;
   body: string;
   why: string;
   stackNote?: string;
@@ -112,6 +119,24 @@ export interface CircleStackSelection {
    * Ausente = sem linha do vídeo (sem vídeo na semana, ou views não medidas).
    */
   video?: CircleStackVideo;
+  /**
+   * #12557: itens que o editor descartou da semana. Cada entrada casa por
+   * `url` ou por `title` (comparado sem caixa e sem espaço repetido, também
+   * contra `titleOriginal`). Sai de Destaques, Lançamentos, Use melhor, Radar
+   * E de "Outros destaques da semana" — sem isso, o destaque diário tirado à
+   * mão do Radar voltava ali. "Outros destaques" só tem títulos, então a
+   * entrada só por `url` tira o item de lá enquanto ele ainda está numa seção
+   * da seleção; para valer sempre, gravar o `title`.
+   */
+  excluded?: CircleStackExclusion[];
+}
+
+/** #12557: um item descartado — `url` e/ou `title` (pelo menos um). */
+export interface CircleStackExclusion {
+  url?: string;
+  title?: string;
+  /** Motivo, livre (só para o editor). */
+  note?: string;
 }
 
 export interface CircleStackVideo {
@@ -119,6 +144,17 @@ export interface CircleStackVideo {
   url: string;
   editionDate: string;
   views?: number;
+  /** Texto curto sobre o que o vídeo entrega ao público (pedido do editor, 09/11/2026); opcional, editável à mão. */
+  description?: string;
+}
+
+/** #12538: canal de distribuição do post além do Circle (ver `CircleStackRenderOptions.channel`). */
+export interface CircleStackChannel {
+  utmSource: string;
+  utmMedium: string;
+  omitSubscribeCta?: boolean;
+  /** Tira a seção "Outros destaques da semana" (pedido do editor, 09/11/2026, #12550): o e-mail aos apoiadores não a leva. */
+  omitOtherHighlights?: boolean;
 }
 
 export interface CircleStackRenderOptions {
@@ -126,6 +162,14 @@ export interface CircleStackRenderOptions {
   closing?: string;
   /** Link de assinatura alternativo (ex: link rastreado da própria Stack). Sem UTM adicionada se informado. */
   subscribeUrl?: string;
+  /**
+   * #12538: canal do mesmo post fora do Circle (e-mail Kit aos apoiadores
+   * Núcleo). Troca `utm_source`/`utm_medium` pelos do canal nos links que
+   * levam UTM (edição e vídeo; `utm_campaign`/`utm_content` ficam) e, com
+   * `omitSubscribeCta`, tira a última linha "Assine a diar.ia.br" — quem
+   * recebe já é assinante e apoiador. Ausente = Circle, como sempre.
+   */
+  channel?: CircleStackChannel;
 }
 
 export interface CircleStackRendered {
@@ -138,11 +182,16 @@ export function circleStackCampaign(cycle: string): string {
   return `stack-${cycle}`;
 }
 
-/** Pure: adiciona o triplo UTM do canal + `utm_content`. */
-export function buildCircleStackUrl(baseUrl: string, cycle: string, content: CircleStackUtmContent): string {
+/** Pure: adiciona o triplo UTM do canal + `utm_content`. `channel` troca source/medium (#12538). */
+export function buildCircleStackUrl(
+  baseUrl: string,
+  cycle: string,
+  content: CircleStackUtmContent,
+  channel?: Pick<CircleStackChannel, "utmSource" | "utmMedium">,
+): string {
   const u = new URL(baseUrl);
-  u.searchParams.set("utm_source", CIRCLE_STACK_UTM_SOURCE);
-  u.searchParams.set("utm_medium", CIRCLE_STACK_UTM_MEDIUM);
+  u.searchParams.set("utm_source", channel?.utmSource ?? CIRCLE_STACK_UTM_SOURCE);
+  u.searchParams.set("utm_medium", channel?.utmMedium ?? CIRCLE_STACK_UTM_MEDIUM);
   u.searchParams.set("utm_campaign", circleStackCampaign(cycle));
   u.searchParams.set("utm_content", content);
   return u.toString();
@@ -238,6 +287,87 @@ export function circleStackSummaryOpening(destaques: Pick<CircleStackItem, "body
   return [...sentences, CIRCLE_STACK_SUMMARY_TAIL].join(" ");
 }
 
+/** Pure: título normalizado para comparação (sem caixa, sem espaço repetido). */
+export function normCircleStackTitle(t: string): string {
+  return String(t).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+const EXCLUSION_SECTIONS = ["destaques", "lancamentos", "useMelhor", "radar"] as const;
+
+/**
+ * Pure (#12557): tira da seleção os itens de `excluded` — das quatro seções e
+ * dos títulos de `weeklyEditions` (a fonte de "Outros destaques da semana").
+ * Idempotente; sem `excluded` (ou lista vazia) devolve a própria seleção.
+ * A entrada só por `url` também alcança "Outros destaques" quando o item ainda
+ * está numa seção: o título dele (e o `titleOriginal`) entra no filtro.
+ */
+export function applyCircleStackExclusions<T extends CircleStackSelection>(sel: T): T {
+  const ex = Array.isArray(sel.excluded) ? sel.excluded : [];
+  if (ex.length === 0) return sel;
+  const urls = new Set(ex.map((e) => e.url?.trim()).filter((u): u is string => !!u));
+  const titles = new Set(ex.map((e) => (e.title ? normCircleStackTitle(e.title) : "")).filter(Boolean));
+  const isExcluded = (it: CircleStackItem) =>
+    urls.has(it.url.trim()) ||
+    titles.has(normCircleStackTitle(it.title)) ||
+    (typeof it.titleOriginal === "string" && titles.has(normCircleStackTitle(it.titleOriginal)));
+  const dropTitles = new Set(titles);
+  const next = { ...sel };
+  for (const section of EXCLUSION_SECTIONS) {
+    const items = sel[section] ?? [];
+    for (const it of items) {
+      if (!isExcluded(it)) continue;
+      dropTitles.add(normCircleStackTitle(it.title));
+      if (typeof it.titleOriginal === "string" && it.titleOriginal.trim()) dropTitles.add(normCircleStackTitle(it.titleOriginal));
+    }
+    next[section] = items.filter((it) => !isExcluded(it));
+  }
+  next.weeklyEditions = (sel.weeklyEditions ?? []).map((e) => ({
+    ...e,
+    destaques: e.destaques.filter((t) => !dropTitles.has(normCircleStackTitle(t))),
+  }));
+  return next;
+}
+
+/**
+ * Pure (#11186): abertura do post — `--opening-file` > `opening` da seleção >
+ * resumo dos destaques > reserva fixa. Exportada para a prévia HTML (#12555)
+ * mostrar o mesmo texto que o post leva.
+ */
+export function resolveCircleStackOpening(sel: Pick<CircleStackSelection, "opening" | "destaques">, openingOverride?: string): {
+  text: string;
+  source: "arquivo" | "selecao" | "resumo" | "reserva";
+} {
+  const fromFile = openingOverride?.trim();
+  if (fromFile) return { text: fromFile, source: "arquivo" };
+  const fromSel = typeof sel.opening === "string" ? sel.opening.trim() : "";
+  if (fromSel) return { text: fromSel, source: "selecao" };
+  const summary = circleStackSummaryOpening(sel.destaques);
+  if (summary) return { text: summary, source: "resumo" };
+  return { text: DEFAULT_CIRCLE_STACK_OPENING, source: "reserva" };
+}
+
+/**
+ * Pure: "Outros destaques da semana" (pedido do editor, 23/10/2026) — só os
+ * destaques das edições que NÃO apareceram acima (comparação por título
+ * normalizado). Data sem título restante some. Recebe a seleção já com as
+ * exclusões aplicadas (#12557).
+ */
+export function circleStackOtherHighlights(sel: CircleStackSelection): { edition: CircleStackEdition; titles: string[] }[] {
+  // #11186: o título da edição (weeklyEditions) é o original; item com `title` traduzido/reescrito
+  // na seleção só é reconhecido pelo `titleOriginal` — sem ele, o D1 voltava em "Outros destaques".
+  const shown = new Set(
+    [...sel.destaques, ...sel.lancamentos, ...sel.useMelhor, ...sel.radar].flatMap((it) =>
+      [it.title, it.titleOriginal].filter((t): t is string => typeof t === "string" && t.trim() !== "").map(normCircleStackTitle),
+    ),
+  );
+  return sel.weeklyEditions
+    .map((edition) => ({
+      edition,
+      titles: edition.destaques.map((t) => String(t).replace(/\s+/g, " ").trim()).filter((t) => t && !shown.has(normCircleStackTitle(t))),
+    }))
+    .filter((x) => x.titles.length > 0);
+}
+
 function listSection(heading: string, items: CircleStackItem[]): string[] {
   if (items.length === 0) return [];
   const lines = items.map((it) => {
@@ -248,18 +378,25 @@ function listSection(heading: string, items: CircleStackItem[]): string[] {
 }
 
 /** Pure: monta título + corpo em Markdown do post (formato aceito pelo webhook da Stack). */
-export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleStackRenderOptions = {}): CircleStackRendered {
+export function renderCircleStackPost(input: CircleStackSelection, opts: CircleStackRenderOptions = {}): CircleStackRendered {
+  // #12557: item descartado pelo editor não sai em seção nenhuma, nem em "Outros destaques".
+  const sel = applyCircleStackExclusions(input);
   if (sel.destaques.length === 0) throw new Error(`Seleção ${sel.cycle} sem destaques — nada a publicar`);
 
   const blocks: string[] = [];
 
   // #11186: --opening-file > `opening` da seleção > resumo dos destaques > reserva fixa.
-  const opening =
-    opts.opening?.trim() ||
-    (typeof sel.opening === "string" ? sel.opening.trim() : "") ||
-    circleStackSummaryOpening(sel.destaques) ||
-    DEFAULT_CIRCLE_STACK_OPENING;
-  blocks.push(...paragraphs(opening));
+  blocks.push(...paragraphs(resolveCircleStackOpening(sel, opts.opening).text));
+
+  // #12081: o vídeo mais assistido da semana, como seção (## / ### com link / descrição), logo depois da abertura e antes dos destaques
+  // (pedido do editor, 09/11/2026; antes ficava antes do CTA final).
+  if (sel.video && sel.video.url.trim() && sel.video.title.trim()) {
+    blocks.push(
+      CIRCLE_STACK_VIDEO_LEAD,
+      `### ${link(buildCircleStackUrl(sel.video.url, sel.cycle, "video", opts.channel), sel.video.title)}`,
+    );
+    if (sel.video.description?.trim()) blocks.push(...paragraphs(sel.video.description));
+  }
 
   blocks.push(`## Destaques da semana`);
   for (const h of sel.destaques) {
@@ -277,25 +414,14 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
   blocks.push(...listSection("Use melhor", sel.useMelhor));
   blocks.push(...listSection("Radar", sel.radar));
 
-  // "Outros destaques da semana" (pedido do editor, 23/10/2026): só os destaques das edições
-  // que NÃO apareceram acima (comparação por título normalizado). Data sem título restante some.
-  const norm = (t: string) => String(t).replace(/\s+/g, " ").trim().toLowerCase();
-  // #11186: o título da edição (weeklyEditions) é o original; item com `title` traduzido/reescrito
-  // na seleção só é reconhecido pelo `titleOriginal` — sem ele, o D1 voltava em "Outros destaques".
-  const shown = new Set(
-    [...sel.destaques, ...sel.lancamentos, ...sel.useMelhor, ...sel.radar].flatMap((it) =>
-      [it.title, it.titleOriginal].filter((t): t is string => typeof t === "string" && t.trim() !== "").map(norm),
-    ),
-  );
-  const others = sel.weeklyEditions
-    .map((e) => ({ e, titles: e.destaques.map((t) => String(t).replace(/\s+/g, " ").trim()).filter((t) => t && !shown.has(norm(t))) }))
-    .filter((x) => x.titles.length > 0);
-  if (others.length > 0) {
+  // "Outros destaques da semana": só o que não apareceu acima (`circleStackOtherHighlights`).
+  const others = circleStackOtherHighlights(sel);
+  if (others.length > 0 && !opts.channel?.omitOtherHighlights) {
     blocks.push(`## Outros destaques da semana`);
-    for (const { e, titles } of others) {
+    for (const { edition: e, titles } of others) {
       // Sem negrito em volta: o conversor do webhook da Stack não reconhece link dentro de **…**
       // e publica o Markdown cru (achado ao vivo, post de 23/10/2026).
-      blocks.push(link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate)));
+      blocks.push(link(buildCircleStackUrl(e.url, sel.cycle, "edicao", opts.channel), ddmm(e.editionDate)));
       blocks.push(titles.map((t) => `- ${t}`).join("\n"));
     }
   }
@@ -304,15 +430,13 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
   // Última linha do post: link de assinatura + ÚLTIMO parágrafo do fecho (pedido do editor, 23/10/2026).
   // Parágrafos anteriores do fecho (só com --closing-file de várias linhas) vêm antes, para o CTA
   // continuar sendo a última linha. `paragraphs()` nunca devolve vazio aqui (o default cobre fecho vazio).
-  // #12081: o vídeo mais assistido da semana, numa linha, antes do CTA final.
-  if (sel.video && sel.video.url.trim() && sel.video.title.trim()) {
-    blocks.push(`${CIRCLE_STACK_VIDEO_LEAD} ${link(buildCircleStackUrl(sel.video.url, sel.cycle, "video"), sel.video.title)}`);
-  }
+  const title = circleStackTitle(sel.contentWindow, sel.destaques[0]?.title);
+  if (opts.channel?.omitSubscribeCta) return { title, markdown: blocks.join("\n\n") };
 
   const subscribeHref = opts.subscribeUrl?.trim() || buildCircleStackUrl(CIRCLE_STACK_SUBSCRIBE_BASE_URL, sel.cycle, "cta-fim");
   const closingParas = paragraphs(opts.closing?.trim() || DEFAULT_CIRCLE_STACK_CLOSING);
   const closingLast = closingParas.pop() as string;
   blocks.push(...closingParas, `${link(subscribeHref, CTA_FIM_LABEL)}. ${closingLast}`);
 
-  return { title: circleStackTitle(sel.contentWindow, sel.destaques[0]?.title), markdown: blocks.join("\n\n") };
+  return { title, markdown: blocks.join("\n\n") };
 }

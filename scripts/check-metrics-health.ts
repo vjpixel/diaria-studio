@@ -59,7 +59,11 @@
  *   npx tsx scripts/check-metrics-health.ts [--dry-run] [--to editor@exemplo]
  *     [--db path] [--root data/beehiiv-backup] [--metas data/metas.json]
  *     [--queda-min-pct N] [--frescor-max-dias N] [--min-dias-serie N]
- *     [--indeterminado-max-fracao N]
+ *     [--indeterminado-max-fracao N] [--help | -h]
+ *
+ *   --help/-h  imprime o uso e sai 0. Flag desconhecida, argumento solto ou
+ *              flag sem o valor esperado sai 1 — tudo isso ANTES de qualquer
+ *              I/O (#12476; antes caía em silêncio no modo real).
  *
  *   --dry-run  avalia + imprime os achados e fingerprints — NÃO envia
  *              e-mail, NÃO abre/comenta/fecha issue, NÃO persiste estado.
@@ -79,7 +83,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule, resolveCliAction } from "./lib/cli-args.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getKitActiveSummary, getSubscriptionAsOf } from "./lib/diaria-subscribers-db.ts";
 import { summarizeStoreLeitoresCanonicalDedup, LEITOR_DIARIA_PLATFORMS, type StoreLeitorSummary } from "./lib/leitor-store.ts";
@@ -119,6 +123,7 @@ import {
   evaluateRegistryMudo,
   closedPaidAcquisitionWindows,
   serieQuedaSemDiaCorrente,
+  tipoDiaEdicao,
   metricsHealthFingerprint,
   type PaidTestWindowSource,
   type MedicaoDia,
@@ -380,6 +385,75 @@ function parseFloatArg(argv: string[], key: string): number | undefined {
   return value;
 }
 
+// ---------------------------------------------------------------------------
+// Validação de argv ANTES de qualquer I/O (#12476)
+// ---------------------------------------------------------------------------
+
+/** Flags booleanas (sem valor). `help`/`-h` entram sozinhos via `resolveCliAction`. */
+const BOOLEAN_FLAGS = ["dry-run"] as const;
+/** Flags que exigem valor (`--flag valor` ou `--flag=valor`). */
+const VALUE_FLAGS = [
+  "to",
+  "db",
+  "root",
+  "metas",
+  "queda-min-pct",
+  "frescor-max-dias",
+  "min-dias-serie",
+  "indeterminado-max-fracao",
+] as const;
+/** Subconjunto numérico de `VALUE_FLAGS` (limiares; valor finito e ≥ 0). */
+const NUMERIC_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "queda-min-pct",
+  "frescor-max-dias",
+  "min-dias-serie",
+  "indeterminado-max-fracao",
+]);
+
+export const CHECK_METRICS_HEALTH_USAGE = `uso: npx tsx scripts/check-metrics-health.ts [--dry-run] [--to editor@exemplo]
+  [--db path] [--root data/beehiiv-backup] [--metas data/metas.json]
+  [--queda-min-pct N] [--frescor-max-dias N] [--min-dias-serie N]
+  [--indeterminado-max-fracao N] [--help | -h]
+
+  --dry-run  avalia + imprime os achados e fingerprints. NÃO envia e-mail,
+             NÃO abre/comenta/fecha issue, NÃO persiste estado.
+  --help/-h  imprime este uso e sai 0, sem avaliar nada.
+
+Sem --dry-run roda o modo REAL (e-mail ao editor + issues do alarme).
+Qualquer flag desconhecida, argumento solto ou flag sem o valor esperado sai 1
+sem avaliar nada (#12476).`;
+
+export type MetricsHealthCliAction =
+  | { kind: "help" }
+  | { kind: "error"; message: string }
+  | { kind: "run" };
+
+/**
+ * #12476 — decide, antes de qualquer I/O, se o argv autoriza rodar. Antes
+ * disto `--help` (ou um typo como `--dryrun`) era ignorado em silêncio e o
+ * script caía no modo REAL (e-mail + issues). Agora:
+ *   - `--help`/`-h` → `help` (imprimir uso, sair 0), salvo se houver flag
+ *     desconhecida junto (essa vence: `error`);
+ *   - limiar numérico negativo ou não-numérico → `error`;
+ *   - flag desconhecida, argumento posicional solto, flag booleana com valor
+ *     (`--dry-run foo` faria `parseArgs` engolir `foo` como valor e
+ *     `hasFlag("dry-run")` virar false = modo real) ou flag de valor sem valor
+ *     → `error` (sair 1);
+ *   - resto → `run`.
+ * @pure
+ */
+export function resolveMetricsHealthCliAction(argv: readonly string[]): MetricsHealthCliAction {
+  // #12503: a lógica virou `resolveCliAction` em `lib/cli-args.ts`, usada por
+  // todos os alarmes. Nenhum limiar do alarme faz sentido negativo (#12502).
+  return resolveCliAction(argv, {
+    script: "scripts/check-metrics-health.ts",
+    booleans: BOOLEAN_FLAGS,
+    values: VALUE_FLAGS,
+    numeric: [...NUMERIC_VALUE_FLAGS],
+    usage: CHECK_METRICS_HEALTH_USAGE,
+  });
+}
+
 function resolveThresholds(argv: string[]): MetricsHealthThresholds {
   const quedaMinPct = parseFloatArg(argv, "queda-min-pct");
   const frescorMaxDias = parseFloatArg(argv, "frescor-max-dias");
@@ -511,8 +585,21 @@ export function toMetricsHealthAlarmFinding(f: MetricsHealthFinding): AlarmFindi
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
+  // #12476: argv validado ANTES de env/data/e-mail/issues — `--help` ou typo
+  // nunca chega ao modo real.
+  const cliAction = resolveMetricsHealthCliAction(argv);
+  if (cliAction.kind === "help") {
+    console.log(CHECK_METRICS_HEALTH_USAGE);
+    return;
+  }
+  if (cliAction.kind === "error") {
+    console.error(`${LOG_PREFIX} ${cliAction.message}`);
+    console.error(CHECK_METRICS_HEALTH_USAGE);
+    process.exitCode = 1;
+    return;
+  }
+  loadProjectEnv(ROOT);
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");
   const thresholds = resolveThresholds(argv);
@@ -843,10 +930,13 @@ async function main(): Promise<void> {
     const diasComInsumo = id === "base-ativa" || id === "leitor-v1" ? diasComSnapshot : diasComColetaCapturaLog;
     // #10647: aquisição compara o último dia COMPLETO (o corrente ainda não
     // foi ingerido — ver `serieQuedaSemDiaCorrente`) contra uma baseline sem
-    // janela paga encerrada. As demais métricas seguem como antes.
+    // janela paga encerrada. #12475: e só contra dias do mesmo tipo (útil ×
+    // fim de semana) — o cadastro acompanha a edição, que sai seg-sex. As
+    // demais métricas seguem como antes.
     const { finding: quedaFinding, skipMotivo } = isAcquisition
       ? evaluateQueda(def, serieQuedaSemDiaCorrente(medicoes, hoje), diasComInsumo, thresholds, {
           baselineExcluida: baselineExcluidaAquisicao,
+          baselineMesmoTipoDia: tipoDiaEdicao,
         })
       : evaluateQueda(def, medicoes, diasComInsumo, thresholds);
     if (quedaFinding) findings.push(quedaFinding);

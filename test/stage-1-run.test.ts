@@ -1538,7 +1538,10 @@ describe("runStage1 --phase post-gate", () => {
               JSON.stringify(
                 {
                   passed: true,
-                  violations: [{ rule: "lancamento-has-product-signal", severity: "warning", message: "1 item(ns) em lancamento[] sem sinal POSITIVO — https://blog.google/x" }],
+                  violations: [
+                    { rule: "lancamento-has-product-signal", severity: "warning", message: "1 item(ns) em lancamento[] sem sinal POSITIVO — https://blog.google/x" },
+                    { rule: "pool-story-twice-in-edition", severity: "warning", message: "G1 e Wired repetem Google nas escolas" },
+                  ],
                 },
                 null,
                 2,
@@ -1550,6 +1553,7 @@ describe("runStage1 --phase post-gate", () => {
       return runStage1(["--phase", "post-gate", "--edition", "260423", "--auto"], deps).then((result) => {
         assert.equal(result.code, 0);
         assert.ok(result.notes.some((n) => n.includes("https://blog.google/x") && n.includes("#11748")));
+        assert.ok(result.notes.some(n => n.includes("G1 e Wired") && n.includes("#12327")));
         assert.ok(calls.some((c) => c.script.endsWith("pipeline-sentinel.ts") && c.args[0] === "write"));
       });
     });

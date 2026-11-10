@@ -749,13 +749,16 @@ try_merge_gate() {
         INFRA_ERRORS=$((INFRA_ERRORS + 1))
         log_infra_error "$pr" "escalate_label_rc=$ESCALATE_RC" "$ESCALATE_STDERR"
       fi
+      GATE_REASON=$(printf '%s' "$GATE_JSON" | jq -r '.reason // "motivo não disponível" | gsub("[\r\n]"; " ")')
+      GATE_REASON=$(redact_public_text "$GATE_REASON")
       if [ "$FIRST_TIME" = "true" ]; then
         echo "[continuo-pr-review] PR #$pr: escalate (1ª vez) — revisão humana" >&2
+        echo "[continuo-pr-review] ATENÇÃO: #$pr ($GATE_REASON) — dono: editor; fila: briefing overnight/develop"
         ESCALATED_NEW=$((ESCALATED_NEW + 1))
       else
         echo "[continuo-pr-review] PR #$pr: escalate (já sinalizada)" >&2
         ESCALATED_RECURRING=$((ESCALATED_RECURRING + 1))
-        ESCALATED_RECURRING_PRS="$ESCALATED_RECURRING_PRS #$pr"
+        ESCALATED_RECURRING_PRS="$ESCALATED_RECURRING_PRS #$pr ($GATE_REASON)"
       fi
       ;;
     2)
@@ -1140,7 +1143,7 @@ fi
 # porque este stdout é o que o Telegram entrega: "escalei de novo, ninguém
 # decidiu" precisa ser distinguível de "escalei agora".
 if [ "$ESCALATED_RECURRING" -gt 0 ]; then
-  echo "[continuo-pr-review] ATENÇÃO: $ESCALATED_RECURRING PR(s) escalada(s) REINCIDENTE(S), ainda sem merge desde a 1ª escalada:$ESCALATED_RECURRING_PRS — o motivo está no JSON do gate (stderr do tick); pode ser decisão pendente OU condição transitória (CI/mergeable)"
+  echo "[continuo-pr-review] ATENÇÃO: $ESCALATED_RECURRING PR(s) escalada(s) REINCIDENTE(S), ainda sem merge desde a 1ª escalada:$ESCALATED_RECURRING_PRS — dono: editor; fila: briefing overnight/develop (consultar list-continuo-escalation-queue.ts para pendências >24h)"
 fi
 # #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
 # infra — a linha de resumo é o que o Telegram carrega; sem isso

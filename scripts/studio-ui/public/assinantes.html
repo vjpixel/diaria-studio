@@ -75,6 +75,35 @@
       <div id="search-results"></div>
     </section>
 
+    <!-- #12583: resultado parcial do formulário (formulario.diar.ia.br). Lê
+         as respostas ao vivo do Worker só quando o editor clica. -->
+    <section class="panel" id="formulario-panel">
+      <h2>Formulário: resultado parcial</h2>
+      <p class="hint">
+        Respostas do formulário até agora (a mais recente de cada pessoa), por
+        origem do convite e por opção. Respostas de teste do editor ficam fora.
+        Os textos abertos aparecem sem e-mail; quem topou a conversa fica num
+        bloco à parte.
+      </p>
+      <button id="formulario-load-btn" type="button" class="assinantes-action-btn">Carregar resultado parcial</button>
+      <p class="hint" id="formulario-status" hidden></p>
+      <div id="formulario-result" hidden>
+        <div id="formulario-summary"></div>
+        <details class="assinantes-subdetails">
+          <summary>Contagem por pergunta</summary>
+          <div id="formulario-perguntas"></div>
+        </details>
+        <details class="assinantes-subdetails">
+          <summary>Respostas abertas (sem e-mail)</summary>
+          <div id="formulario-abertas"></div>
+        </details>
+        <details class="assinantes-subdetails">
+          <summary>Quem topou a conversa de 20 minutos</summary>
+          <div id="formulario-conversa"></div>
+        </details>
+      </div>
+    </section>
+
     <details class="panel assinantes-details" id="detalhes">
       <summary>Detalhes (contexto, sem ação direta)</summary>
       <p class="hint">

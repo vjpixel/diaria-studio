@@ -356,6 +356,11 @@ describe("#11126 — regen do índice isolado do checkout compartilhado", () => 
         git(["push", "origin", "master"], rootDir);
       }
       writeFileSync(join(rootDir, sitemap), `<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${existingArchive ? "<url><loc>https://diar.ia.br/archive/2</loc></url>" : ""}</urlset>`);
+      // #11673: o sitemap-base é o de origin/master (o worktree escreve nele),
+      // não uma cópia não commitada do checkout compartilhado.
+      git(["add", "--", sitemap], rootDir);
+      git(["commit", "-m", "sitemap fixture"], rootDir);
+      git(["push", "origin", "master"], rootDir);
       const before = git(["status", "--porcelain", "--", archive], rootDir);
       const worktreeDir = join(mkdtempSync(join(tmpdir(), "diaria-11126-")), "wt");
       cleanupDirs.push(join(worktreeDir, ".."));
@@ -379,6 +384,7 @@ describe("#11126 — regen do índice isolado do checkout compartilhado", () => 
       assert.equal(result.code, 0, JSON.stringify(result));
       assert.equal("published" in result && result.published, true);
       assert.equal(git(["status", "--porcelain", "--", archive], rootDir), before);
+      assert.equal(git(["status", "--porcelain"], rootDir), "", "checkout compartilhado sai limpo (#11673)");
       if (existingArchive) {
         assert.equal(readFileSync(join(rootDir, archive, "index.html"), "utf8"), "ARCHIVE_ORIGINAL\n");
         assert.equal(readFileSync(join(rootDir, archive, "2/index.html"), "utf8"), "ARCHIVE_ORIGINAL\n");

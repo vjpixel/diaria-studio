@@ -294,6 +294,10 @@ export interface CircleStackPublishedLike {
   attempted_at?: string | null;
   /** ISO da confirmação — regravado só depois do 200 `{ok:true}` do webhook. */
   published_at?: string | null;
+  /** Título do post (gravado na tentativa). Não entra no estado. */
+  title?: string | null;
+  /** Link do post no Circle, quando o webhook o devolve (#12556). Não entra no estado. */
+  post_url?: string | null;
 }
 
 /**
@@ -306,6 +310,8 @@ export interface CircleStackPublishedState {
   title: string;
   attempted_at: string;
   published_at?: string;
+  /** #12556: só quando o webhook devolve o link do post. */
+  post_url?: string;
 }
 
 /**

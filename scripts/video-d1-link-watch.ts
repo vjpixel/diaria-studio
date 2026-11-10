@@ -36,6 +36,8 @@ import { logEvent } from "./lib/run-log.ts";
 import { missingYouTubeCredentials } from "./lib/diaria/youtube-upload.ts";
 import { readEditionVideoMeta } from "./lib/edition-video-meta.ts"; // #12080
 import { siteVideoRepublishDecision } from "./lib/site-page-video-republish.ts"; // #12080
+import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #10983
+import type { EnqueueFn } from "./lib/diaria/linkedin-page-actions.ts"; // #10983
 import {
   VIDEO_D1_WATCH_DEADLINE_BRT,
   VIDEO_D1_WATCH_INTERVAL_MS,
@@ -64,6 +66,30 @@ function resolveFacebookTarget(env: Record<string, string | undefined>, log: (m:
   }
 }
 
+/**
+ * #10983: fila do Worker `diaria-linkedin-cron` para o 1º comentário do D1 da
+ * página. Sem URL/token, o LinkedIn fica manual (como antes). Os segredos da
+ * página no Worker (#8816) são conferidos pelo próprio enqueue.
+ */
+function resolveLinkedInQueue(env: Record<string, string | undefined>, log: (m: string) => void): EnqueueFn | null {
+  let configUrl: string | undefined;
+  try {
+    const config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
+      publishing?: { social?: { linkedin?: { cloudflare_worker_url?: string } } };
+    };
+    configUrl = config.publishing?.social?.linkedin?.cloudflare_worker_url;
+  } catch {
+    configUrl = undefined;
+  }
+  const url = env.DIARIA_LINKEDIN_CRON_URL ?? configUrl ?? "";
+  const token = env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  if (!url || !token) {
+    log("linkedin: sem DIARIA_LINKEDIN_CRON_URL/TOKEN — comentário do D1 fica manual");
+    return null;
+  }
+  return (p) => postToWorkerQueue(url, token, p, 2, "video-d1-link-watch");
+}
+
 /** Comando que republica a página da edição (mesmo do §5b-site da Etapa 5). */
 export function sitePageRepublishArgs(editionDir: string): string[] {
   return [
@@ -74,7 +100,22 @@ export function sitePageRepublishArgs(editionDir: string): string[] {
     "--sitemap",
     "workers/site/public/sitemap.xml",
     "--no-wait-merge",
+    // #12284: a task roda como unit systemd `Type=oneshot`; o waiter destacado
+    // do publisher morreria com o cgroup no fim da task. Sem ele, quem espera
+    // o merge é esta task, em foreground (`sitePageMergeWaiterArgs`).
+    "--no-merge-waiter",
   ];
+}
+
+/** #12284: o waiter do publisher (`--merge-pr`), rodado em foreground pela task. */
+export function sitePageMergeWaiterArgs(editionDir: string, prNumber: number): string[] {
+  return ["scripts/publish-edition-site-page.ts", "--merge-pr", String(prNumber), "--edition-dir", editionDir];
+}
+
+export interface SitePageMergeOutcome {
+  prNumber: number;
+  merged: boolean;
+  exitCode?: number | null;
 }
 
 export interface SitePageRepublishOutcome {
@@ -82,11 +123,31 @@ export interface SitePageRepublishOutcome {
   ok: boolean;
   reason: string;
   exitCode?: number | null;
+  /** #12284: espera do merge do PR da página, quando o publisher não mergeou. */
+  merge?: SitePageMergeOutcome;
+}
+
+/**
+ * #12284: PR da página que o publisher abriu e não mergeou (CI pendente), lido
+ * do state que ele acabou de gravar. `null` = nada a esperar (já mergeado, sem
+ * PR, state ausente/ilegível).
+ */
+export function pendingSitePagePr(state: unknown): number | null {
+  if (!state || typeof state !== "object") return null;
+  const s = state as Record<string, unknown>;
+  if (s.published !== true || s.merged === true) return null;
+  const pr = s.prNumber;
+  return typeof pr === "number" && Number.isInteger(pr) && pr > 0 ? pr : null;
 }
 
 /**
  * #12080: republica `diar.ia.br/p/{slug}` quando a página publicada não
  * embute o vídeo que acabou de ganhar URL. `spawn` injetável para teste.
+ *
+ * #12284: com o PR aberto e não mergeado, espera o merge AQUI, em foreground
+ * (`--merge-pr`, até 35 min) — o waiter destacado não sobrevive ao fim do unit
+ * oneshot. O waiter grava o desfecho no state e alerta o editor se não
+ * mergear (#9616); a task só reflete o resultado no run-log.
  */
 export function republishSitePageIfVideoMissing(
   editionDir: string,
@@ -114,8 +175,32 @@ export function republishSitePageIfVideoMissing(
   log(`site: ${decision.reason} — republicando a página`);
   const res = spawn(sitePageRepublishArgs(editionDir));
   const ok = !res.error && res.status === 0;
-  if (!ok) log(`site: republicação falhou (${res.error?.message ?? `exit ${res.status}`})`);
-  return { ran: true, ok, reason: decision.reason, exitCode: res.status };
+  if (!ok) {
+    log(`site: republicação falhou (${res.error?.message ?? `exit ${res.status}`})`);
+    return { ran: true, ok, reason: decision.reason, exitCode: res.status };
+  }
+
+  let after: unknown = null;
+  try {
+    after = JSON.parse(readFileSync(statePath, "utf8"));
+  } catch (e) {
+    log(`site: state da página ilegível depois da republicação (${(e as Error).message}) — merge não conferido`);
+    return { ran: true, ok: false, reason: decision.reason, exitCode: res.status };
+  }
+  const prNumber = pendingSitePagePr(after);
+  if (prNumber === null) return { ran: true, ok, reason: decision.reason, exitCode: res.status };
+
+  log(`site: PR #${prNumber} da página ainda não mergeado — esperando o merge em foreground (#12284)`);
+  const w = spawn(sitePageMergeWaiterArgs(editionDir, prNumber));
+  const merged = !w.error && w.status === 0;
+  if (!merged) log(`site: PR #${prNumber} não mergeou (${w.error?.message ?? `exit ${w.status}`}) — o waiter avisa o editor (#9616)`);
+  return {
+    ran: true,
+    ok: merged,
+    reason: decision.reason,
+    exitCode: res.status,
+    merge: { prNumber, merged, exitCode: w.status },
+  };
 }
 
 /** Pure: corpo do aviso ao editor quando o vídeo não ficou público no prazo. */
@@ -179,6 +264,7 @@ async function main(): Promise<void> {
             },
       missingYoutubeCreds: missing,
       facebook: resolveFacebookTarget(env, log),
+      linkedinQueue: resolveLinkedInQueue(env, log),
       dryRun,
     },
   );
@@ -201,7 +287,9 @@ async function main(): Promise<void> {
         stage: null,
         agent: "video-d1-link-watch",
         level: site.ok ? "info" : "warn",
-        message: `video-d1-link-watch: página do site ${site.ran ? (site.ok ? "republicada" : "republicação falhou") : "mantida"}`,
+        message: `video-d1-link-watch: página do site ${
+          !site.ran ? "mantida" : site.ok ? "republicada" : site.merge ? `republicada, PR #${site.merge.prNumber} não mergeado` : "republicação falhou"
+        }`,
         details: site,
       },
       ROOT,

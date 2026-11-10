@@ -105,6 +105,22 @@
 * preservado byte a byte: os testes existentes de `commitAndPushSitePage`
 * não mudam.
 *
+* **#11673 (261108): a GERAÇÃO também saiu do checkout compartilhado.** A
+* cópia `rootDir` → worktree acima deixava `p/{slug}/`, `sitemap.xml` e
+* `index.html` sujos no checkout depois de toda publicação, e o `sync-code`
+* da edição seguinte os empurrava pro autostash sempre que não batiam com o
+* master (home regerada pelo cron das 06:00, sitemap podado só no worktree
+* pelo índice do acervo, #11126). Agora `productionDeps` cria o worktree
+* (`prepareSitePublishWorktree`) na 1ª escrita e `writePage`,
+* `updateSitemapAndHome`, o backfill e a limpeza do slug velho escrevem
+* DENTRO dele; `commitAndPushSitePage` recebe `worktreePrepared` e pula o
+* fetch, o `worktree add` e a cópia. O sitemap passa a nascer do
+* `origin/master` recém-buscado, não da cópia do checkout. O site em produção
+* continua saindo do merge do PR em master (`deploy-site.yml`); o checkout
+* compartilhado só recebe a página pelo `sync-code` depois desse merge.
+* A cópia de `rootDir` segue em `commitAndPushSitePage` para quem a chama
+* com conteúdo escrito ali (testes do #8636/#8665).
+*
 * **Quando usar.** Default do `main` (sem `--skip-publish` e sem
 * `--worktree-dir` explícito) é SEMPRE o worktree — o checkout compartilhado
 * nunca mais é o cwd do commit/push. `--skip-publish` (testes, ou rodada
@@ -266,6 +282,7 @@
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --skip-publish
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --sitemap workers/site/public/sitemap.xml
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --sitemap ... --no-wait-merge   (Stage 5, #10160)
+ *   ... --no-wait-merge --no-merge-waiter   (#12284: sem waiter destacado; o chamador roda `--merge-pr N` em foreground)
  *
  * #6454 (achado 04/09/2026: a flag existia desde a 1ª versão, mas só
  * STAGEAVA o arquivo pro commit — nada escrevia conteúdo nele, então o
@@ -1375,7 +1392,23 @@ export function makeSessionRegistryMergeLock(rootDir: string, prNumber: number):
  */
 export type MergeWaiterSpawner = (args: { rootDir: string; prNumber: number; editionDir?: string }) => {
   pid?: number;
+  /** #12284: `true` = nenhum waiter disparado; o CHAMADOR espera o merge
+   * (`--merge-pr` em foreground). Ver `deferredMergeWaiterSpawner`. */
+  deferred?: boolean;
 };
+
+/** #12284: flag que troca o waiter destacado por `deferredMergeWaiterSpawner`. */
+export const NO_MERGE_WAITER_FLAG = "no-merge-waiter";
+
+/**
+ * #12284: não dispara waiter nenhum — o chamador roda `--merge-pr N` em
+ * foreground depois que este processo termina. Para quem roda dentro de um
+ * unit systemd `Type=oneshot` (`Diaria-Video-D1-Link-Watch`): com o
+ * `KillMode=control-group` padrão, o systemd mata o cgroup inteiro quando o
+ * processo principal sai, e `detached`/`setsid` não tira o filho do cgroup —
+ * o waiter destacado morreria junto com a task e o PR ficaria aberto.
+ */
+export const deferredMergeWaiterSpawner: MergeWaiterSpawner = () => ({ deferred: true });
 
 /**
  * Spawner real: o PRÓPRIO script em modo `--merge-pr`, com o mesmo node e os
@@ -1848,6 +1881,34 @@ export function waitAndMergeSitePagePr(
 }
 
 /**
+ * #8636/#8684: `git fetch origin master` (best-effort) + `git worktree add
+ * --detach {worktreeDir} origin/master`. `fetchStale: true` quando o fetch
+ * falhou e o worktree nasceu do ref local. Lança se o `worktree add` falhar.
+ * #11673: chamado por `productionDeps` ANTES do `writePage`, pra a geração da
+ * página, do sitemap e da home acontecer dentro do worktree e o checkout
+ * compartilhado nunca ser escrito; `commitAndPushSitePage` só o chama quando
+ * recebe um worktree ainda não criado.
+ */
+export function prepareSitePublishWorktree(
+  rootDir: string,
+  worktreeDir: string,
+  git: GitRunner = defaultGitRunner,
+): { fetchStale: boolean } {
+  let fetchStale = false;
+  try {
+    git(["fetch", "origin", "master"], rootDir);
+  } catch (e) {
+    fetchStale = true;
+    process.stderr.write(
+      `[site-page] aviso: 'git fetch origin master' falhou (${(e as Error).message}) — seguindo com o ` +
+        `ref local de origin/master, que pode estar desatualizado (#8684).\n`,
+    );
+  }
+  git(["worktree", "add", "--detach", worktreeDir, "origin/master"], rootDir);
+  return { fetchStale };
+}
+
+/**
  * `git checkout -B` numa branch dedicada + (`git commit` condicional) +
  * `git push` + `gh pr create` (reusando PR aberto existente, se houver) — e
  * de volta pro branch original.
@@ -1937,6 +1998,12 @@ export function commitAndPushSitePage(
   // #10265: `priorSlugs` reaplica as regras de TODOS os slugs anteriores.
   redirect?: SlugRedirect,
   prepareWorktree?: (dir: string) => void,
+  // #11673: `true` quando o worktree já foi criado (`prepareSitePublishWorktree`)
+  // e os geradores escreveram DENTRO dele (caminho de `productionDeps`). Aí não
+  // há fetch/`worktree add` aqui, e a cópia `rootDir` → worktree é pulada: o
+  // conteúdo certo já está no worktree, e copiar do checkout compartilhado
+  // sobrescreveria com o estado (defasado) de lá.
+  worktreePrepared = false,
 ): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean; fetchStale: boolean } {
   // #8636: no caminho legado, salva o branch original pra voltar depois.
   let originalBranch = "";
@@ -2031,17 +2098,8 @@ export function commitAndPushSitePage(
     // pior caso é idêntico ao comportamento pré-#8684 (usa o ref já
     // cacheado), nunca pior — mesma disciplina fail-soft do resto do
     // módulo (#6202, ver docstring).
-    if (worktreeDir) {
-      try {
-        git(["fetch", "origin", "master"], rootDir);
-      } catch (e) {
-        fetchStale = true;
-        process.stderr.write(
-          `[site-page] aviso: 'git fetch origin master' falhou (${(e as Error).message}) — seguindo com o ` +
-            `ref local de origin/master, que pode estar desatualizado (#8684).\n`,
-        );
-      }
-      git(["worktree", "add", "--detach", worktreeDir, "origin/master"], rootDir);
+    if (worktreeDir && !worktreePrepared) {
+      fetchStale = prepareSitePublishWorktree(rootDir, worktreeDir, git).fetchStale;
     }
 
     // -B (não -b): sempre recria a branch a partir do master atual, mesmo se
@@ -2081,7 +2139,11 @@ export function commitAndPushSitePage(
     // já decidiu usá-lo, e essas funções rodam antes de `commitAndPushSitePage`
     // ser chamada (ver `publishEditionSitePage`); inverter essa ordem
     // tocaria mais call sites pra um ganho que não paga o risco.
-    if (worktreeDir) {
+    // #11673: a opção B virou o caminho de produção (`productionDeps` cria o
+    // worktree antes do `writePage`, `worktreePrepared`), porque a cópia
+    // deixava o checkout compartilhado sujo a cada edição. Esta cópia segue só
+    // pra quem chama a função com conteúdo escrito em `rootDir`.
+    if (worktreeDir && !worktreePrepared) {
       for (const p of pathsToStage) {
         const src = resolve(rootDir, p);
         // Guard genérico ao loop (cobre relPageDir também, ainda que na
@@ -2403,31 +2465,39 @@ export function productionDeps(
   // Etapa 5 não fica 2min parado esperando um CI que leva ~12min.
   syncWaitMs: number = SITE_PAGE_CI_SYNC_WAIT_MS,
 ): PublishPageDeps {
+  // #11673: com `worktreeDir`, a página, o sitemap, a home, o backfill e a
+  // limpeza do slug velho escrevem DENTRO do worktree de publicação, criado
+  // (fetch + `worktree add` de origin/master) na 1ª escrita. Antes os geradores
+  // escreviam em `rootDir` e `commitAndPushSitePage` copiava pro worktree: o
+  // checkout compartilhado ficava com `p/{slug}/`, `sitemap.xml` e `index.html`
+  // sujos depois de toda publicação, e o `sync-code` da edição seguinte os
+  // empurrava pro autostash quando não batiam com o master (o cron das 06:00
+  // regera a home; o índice do acervo poda o sitemap só no worktree, #11126).
+  // De quebra, o sitemap passa a nascer do origin/master recém-buscado, não da
+  // cópia do checkout, que podia estar atrás. Sem `worktreeDir` (`--skip-publish`,
+  // caminho legado), tudo segue em `rootDir`, como sempre.
+  let writeRootReady = !worktreeDir;
+  let preparedFetchStale = false;
+  const writeRoot = (): string => {
+    if (!worktreeDir) return rootDir;
+    if (!writeRootReady) {
+      preparedFetchStale = prepareSitePublishWorktree(rootDir, worktreeDir, git).fetchStale;
+      writeRootReady = true;
+    }
+    return worktreeDir;
+  };
   return {
     readEditionInputs,
-    // #8636 (comentário atualizado 21/09/2026, pós-regressão): `writePage`
-    // escreve SEMPRE em `rootDir` (o checkout compartilhado, onde o
-    // orchestrator lê os artefatos) — isso não muda. O que mudou é a
-    // suposição sobre o worktree: ele NÃO é um espelho automático do que
-    // acabou de ser escrito aqui. `git worktree add` faz checkout físico a
-    // partir de um ref (`origin/master`) e só reflete o que já está
-    // COMMITADO lá — conteúdo untracked escrito em `rootDir` por esta
-    // chamada (a página é sempre um slug novo) não aparece no worktree por
-    // conta própria. No caminho do worktree, é `commitAndPushSitePage` quem
-    // copia (`cpSync`, ou `rmSync`+`cpSync` para diretórios — ver comentário
-    // no bloco de cópia) o conteúdo de `rootDir` pro `worktreeDir` antes do
-    // `git add`, não este `writePage`. Manter o write só em `rootDir` (nunca
-    // duplicado aqui) continua correto — só a explicação de por que o
-    // worktree o enxerga mudou.
     writePage: (slug, html) => {
-      const dir = join(resolve(rootDir, "workers", "site", "public", "p"), slug);
+      const dir = join(resolve(writeRoot(), "workers", "site", "public", "p"), slug);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "index.html"), html, "utf8");
     },
     updateSitemapAndHome: (post, sitemapRelPath) => {
-      const sitemapAbsPath = resolve(rootDir, sitemapRelPath);
-      const homeAbsPath = resolve(rootDir, homePageRelPathFromSitemap(sitemapRelPath));
-      const pagesDir = resolve(rootDir, "workers", "site", "public", "p");
+      const base = writeRoot();
+      const sitemapAbsPath = resolve(base, sitemapRelPath);
+      const homeAbsPath = resolve(base, homePageRelPathFromSitemap(sitemapRelPath));
+      const pagesDir = resolve(base, "workers", "site", "public", "p");
 
       let existingXml: string;
       try {
@@ -2474,8 +2544,9 @@ export function productionDeps(
     // entrada desta edição) e ANTES do commit único — ver docstring do
     // campo em `PublishPageDeps` pros 2 gaps que isto fecha.
     backfillAndReindexArchive: (slug, sitemapRelPath) => {
-      const sitemapAbsPath = resolve(rootDir, sitemapRelPath);
-      const pagesDirAbs = resolve(rootDir, "workers", "site", "public", "p");
+      const base = writeRoot();
+      const sitemapAbsPath = resolve(base, sitemapRelPath);
+      const pagesDirAbs = resolve(base, "workers", "site", "public", "p");
 
       let seoImageAdded = false;
       try {
@@ -2497,9 +2568,11 @@ export function productionDeps(
 
       return { seoImageAdded, archiveIndexRegenerated, archiveIndexDeferred: !!worktreeDir };
     },
-    supersedePrevious: (args) => supersedePreviousSitePage(rootDir, gh, args, git),
+    supersedePrevious: (args) => supersedePreviousSitePage(rootDir, gh, args, git, writeRoot()),
     publish: (slug, sitemapPath?: string, editionDir?: string, removedPaths?: string[], redirect?: { oldSlug: string; newSlug: string }) => {
-      const { pushed, prUrl, prNumber, prCreated, fetchStale } = commitAndPushSitePage(
+      // #11673: garante o worktree mesmo se nenhuma escrita o criou (deps de teste).
+      writeRoot();
+      const committedResult = commitAndPushSitePage(
         rootDir,
         slug,
         git,
@@ -2511,7 +2584,10 @@ export function productionDeps(
         removedPaths,
         redirect,
         sitemapPath ? (dir) => { regenerateArchiveIndex(dir, sitemapPath); } : undefined,
+        !!worktreeDir,
       );
+      const { pushed, prUrl, prNumber, prCreated } = committedResult;
+      const fetchStale = committedResult.fetchStale || preparedFetchStale;
       // #8158 (revoga #6598): só tenta mergear quando há um PR de verdade
       // pra checar — `prNumber` ausente (gh pr create/list não devolveu URL
       // parseável) não é motivo pra lançar aqui, é motivo pra não tentar.
@@ -2537,11 +2613,12 @@ export function productionDeps(
         // PR parado até alguém mergear à mão. Fail-soft: spawn falho só vira
         // texto no motivo (o PR fica aberto, mesmo fallback de antes).
         try {
-          const { pid } = spawnWaiter({ rootDir, prNumber, editionDir });
-          mergeReason =
-            `${attempt.reason}; merge delegado ao waiter em background (pid ${pid ?? "?"}, até ` +
-            `${Math.round(SITE_PAGE_CI_BACKGROUND_WAIT_MS / 60_000)}min) — ele grava o desfecho em ` +
-            `_internal/site-page-published.json (#9593)`;
+          const { pid, deferred } = spawnWaiter({ rootDir, prNumber, editionDir });
+          mergeReason = deferred
+            ? `${attempt.reason}; merge fica com o chamador (--merge-pr ${prNumber} em foreground, #12284)`
+            : `${attempt.reason}; merge delegado ao waiter em background (pid ${pid ?? "?"}, até ` +
+              `${Math.round(SITE_PAGE_CI_BACKGROUND_WAIT_MS / 60_000)}min) — ele grava o desfecho em ` +
+              `_internal/site-page-published.json (#9593)`;
         } catch (e) {
           mergeReason = `${attempt.reason}; waiter em background NÃO disparou (${(e as Error).message}) (#9593)`;
         }
@@ -2742,10 +2819,11 @@ export function publishEditionSitePage(
   try {
     publishResult = deps.publish(built.post.slug, sitemapRelPath, editionDir, removedPaths, redirect);
   } catch (e) {
-    // A página JÁ está escrita (e pode já estar commitada, se só o push
-    // falhou) — a próxima rodada/push manual a leva junto. Por isso a
-    // falha de publicação não invalida o trabalho, só adia.
-    const reason = `commit/push falhou (a página ficou escrita localmente): ${(e as Error).message}`;
+    // #11673: a página foi gerada no worktree temporário, que sai junto com
+    // a falha (no caminho legado/`--skip-publish` ela fica em `rootDir`). A
+    // geração é determinística a partir dos insumos da edição: re-rodar o
+    // script regera tudo, então a falha só adia a publicação.
+    const reason = `commit/push falhou — re-rodar o script regera a página (#11673): ${(e as Error).message}`;
     deps.log(reason);
     return { code: 3, reason };
   }
@@ -3095,10 +3173,10 @@ function viewPrState(rootDir: string, prNumber: number, gh: GhRunner): string | 
  *    na branch local do checkout compartilhado fora do lock — #8158) + DELETE
  *    só da ref remota via `gh api`, fail-soft; se o close falhar, relê o
  *    estado (o waiter pode ter mergeado no intervalo).
- * 3. Tira a `<loc>` do slug velho do sitemap em `rootDir` SEMPRE — mesmo com o
- *    PR velho só aberto, a escrita local da chamada anterior deixou a entrada
+ * 3. Tira a `<loc>` do slug velho do sitemap em `writeRoot` SEMPRE — mesmo com
+ *    o PR velho só aberto, a escrita local da chamada anterior deixou a entrada
  *    no sitemap do checkout, e o commit novo a carregaria (duplicata).
- * 4. Apaga `p/{slug-velho}` do disco em `rootDir`; quando o PR velho está
+ * 4. Apaga `p/{slug-velho}` do disco em `writeRoot`; quando o PR velho está
  *    MERGED (ou o estado não pôde ser lido), devolve esse path em
  *    `removedPaths` pra `commitAndPushSitePage` tirar a página do master no
  *    MESMO commit do PR novo — lá só sai o que estiver TRACKED.
@@ -3110,6 +3188,9 @@ export function supersedePreviousSitePage(
   gh: GhRunner,
   args: SupersedeArgs,
   git: GitRunner = defaultGitRunner,
+  // #11673: onde a página e o sitemap desta publicação são escritos — o
+  // worktree de publicação em produção. `rootDir` segue como cwd do `gh`/`git`.
+  writeRoot: string = rootDir,
 ): SupersedeOutcome {
   const notes: string[] = [];
   const { oldSlug, newSlug, oldPrNumber, sitemapRelPath, editionDirAbs } = args;
@@ -3171,7 +3252,7 @@ export function supersedePreviousSitePage(
 
   let sitemapEntryRemoved = false;
   if (sitemapRelPath) {
-    const sitemapAbs = resolve(rootDir, sitemapRelPath);
+    const sitemapAbs = resolve(writeRoot, sitemapRelPath);
     try {
       if (existsSync(sitemapAbs)) {
         const xml = readFileSync(sitemapAbs, "utf8");
@@ -3199,7 +3280,7 @@ export function supersedePreviousSitePage(
 
   const relOldPageDir = ["workers", "site", "public", "p", oldSlug].join("/");
   try {
-    rmSync(resolve(rootDir, relOldPageDir), { recursive: true, force: true });
+    rmSync(resolve(writeRoot, relOldPageDir), { recursive: true, force: true });
   } catch (e) {
     notes.push(`página local /p/${oldSlug} não apagada (${(e as Error).message})`);
   }
@@ -3511,7 +3592,7 @@ export async function main(): Promise<void> {
   }
   if (!editionDir) {
     console.error(
-      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>] [--allow-stale-code] [--no-fresh-code-fallback] [--no-wait-merge] [--slug-from-d1]\n" +
+      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>] [--allow-stale-code] [--no-fresh-code-fallback] [--no-wait-merge] [--no-merge-waiter] [--slug-from-d1]\n" +
         "     npx tsx scripts/publish-edition-site-page.ts --merge-pr <N> [--edition-dir <dir>]   (waiter do #9593)",
     );
     process.exitCode = 1;
@@ -3588,8 +3669,11 @@ export async function main(): Promise<void> {
         undefined,
         undefined,
         undefined,
-        worktreeDir ?? explicitWorktreeDir,
-        undefined,
+        // #11673: com `--skip-publish` a página fica em `rootDir` — sem worktree,
+        // mesmo com `--worktree-dir` explícito (as escritas iriam pra ele).
+        hasFlag(argv, "skip-publish") ? undefined : (worktreeDir ?? explicitWorktreeDir),
+        // #12284: `--no-merge-waiter` = o chamador espera o merge (`--merge-pr`).
+        hasFlag(argv, NO_MERGE_WAITER_FLAG) ? deferredMergeWaiterSpawner : undefined,
         // #10160: Stage 5 abre o PR e segue — nada espera o merge aqui.
         hasFlag(argv, "no-wait-merge") ? 0 : SITE_PAGE_CI_SYNC_WAIT_MS,
       ),
@@ -3608,10 +3692,11 @@ export async function main(): Promise<void> {
     result = { code: 3, reason: `erro inesperado: ${(e as Error).message}` };
   } finally {
     // #8636: cleanup own. `commitAndPushSitePage` já remove o worktree no
-    // `finally` dele (fail-soft) — este trecho só é reached quando o worktree
-    // NÃO foi criado por `commitAndPushSitePage` (ex: `--skip-publish`, ou
-    // `publishEditionSitePage` retornou code 2/4/5 antes de chamar
-    // `deps.publish`), ou quando a remoção dele falhou. `force: true` cobre
+    // `finally` dele (fail-soft) — este trecho cobre o diretório que nunca
+    // virou worktree (ex: `publishEditionSitePage` retornou code 2/4/5 antes
+    // da 1ª escrita), o worktree criado na escrita (#11673) quando
+    // `deps.publish` lançou antes do `try` de `commitAndPushSitePage` (lock),
+    // e a remoção que falhou. `force: true` cobre
     // worktree já removido; o `git worktree prune` é o fallback de registry
     // (entries órfãos de worktrees que sumiram sem `git worktree remove`).
     if (worktreeDir) {

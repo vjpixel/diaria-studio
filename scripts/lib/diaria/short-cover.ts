@@ -11,11 +11,12 @@
  *     JPEG na `thumbnailUploadUrl`;
  *   - `youtube_shorts`: `thumbnails.set` depois do `videos.insert` (medido pelo
  *     editor em 28/10/2026: HTTP 200 num Short, comentário da #11547). Só
- *     troca a miniatura 16:9 (busca, player, relacionados): a imagem do feed
- *     de Shorts (`i.ytimg.com/vi/{id}/oar2.jpg`) é escolhida à parte e segue o
- *     frame automático (#12100, medido em 04/11/2026 nos 9 Shorts públicos). A
+ *     troca a miniatura 16:9 (busca, player, relacionados): a imagem da aba
+ *     Shorts (`i.ytimg.com/vi/{id}/sardefault.jpg`, #12251) é escolhida à
+ *     parte e, sem miniatura vertical própria, cai no frame automático (#12100). A
  *     YouTube Data API não tem chamada para ela: o registro grava
- *     `vertical_feed: "manual"` e o passo vai à mão no app do YouTube;
+ *     `vertical_feed: "manual"` e o agente aplica a capa vertical no Studio web
+ *     (Passo B3a de `/diaria-publica-video`, #12254);
  *   - `x` (Buffer): não aceita imagem, só `thumbnailOffset` (ms) no asset de
  *     vídeo. Derivado do timecode que o Premiere põe no nome do Still
  *     (`…V1.00_00_03_08.Still001.jpg` = 3 s + 8 frames);
@@ -54,11 +55,22 @@ export interface ShortCoverRecord {
   error?: string;
   /**
    * #12100: só no `thumbnails_set` com `ok: true`. O `ok` diz que a miniatura
-   * 16:9 foi trocada; a capa do feed de Shorts (`oar2.jpg`) não muda pela API
-   * e fica para o app do YouTube (`manual`).
+   * 16:9 foi trocada; a capa do feed de Shorts (`sardefault.jpg`, #12251) não muda pela API
+   * e fica para o Studio web (`manual`, Passo B3a, #12254). Depois que o agente
+   * aplica o JPG vertical pelo Studio web e confere a persistência, o Passo B3a
+   * de `/diaria-publica-video` troca o valor para `studio_web` (#12436).
    */
-  vertical_feed?: "manual";
+  vertical_feed?: ShortVerticalFeedCover;
 }
+
+/**
+ * #12436: estado da capa do feed de Shorts no registro. `manual` = pendente
+ * (o script grava após o `thumbnails.set`); `studio_web` = aplicada pelo Studio
+ * web e conferida (gravado pelo agente no Passo B3a). Só `manual` gera o aviso
+ * de `youtubeShortsVerticalCoverWarning`.
+ */
+export const SHORT_VERTICAL_FEED_COVER_VALUES = ["manual", "studio_web"] as const;
+export type ShortVerticalFeedCover = (typeof SHORT_VERTICAL_FEED_COVER_VALUES)[number];
 
 export interface ShortCoverSource {
   name: string;
@@ -153,14 +165,32 @@ export function planCoverDestination(
 
 /**
  * #12100: o que o plano promete para o Short pela API. O `thumbnails.set` só
- * troca a miniatura 16:9; a do feed de Shorts fica para o app do YouTube.
+ * troca a miniatura 16:9; a do feed de Shorts fica para o Studio web (#12254).
  */
 export const YOUTUBE_SHORTS_COVER_PLAN =
-  "thumbnails_set (só a miniatura 16:9; a capa do feed de Shorts é manual no app do YouTube, #12100)";
+  "thumbnails_set (só a miniatura 16:9; a capa do feed de Shorts é manual no Studio web, Passo B3a, #12100/#12254)";
 
-/** #12100: imagem que o feed de Shorts mostra (proporção original do vertical). */
+/**
+ * #12251/#12254: como aplicar a capa vertical do Short, citado nos avisos do
+ * verificador (`check-short-feed-cover.ts`) e do registro `vertical_feed:
+ * "manual"`. O passo é do agente no Studio web (Passo B3a de
+ * `/diaria-publica-video`), nunca uma tarefa do editor no app do celular: os
+ * avisos diziam "no app do YouTube, Editar → Miniatura" depois que o #12254
+ * mudou o passo no SKILL.md.
+ */
+export const SHORT_VERTICAL_COVER_HOWTO =
+  "no Studio web (studio.youtube.com), Detalhes → Miniatura → enviar o JPG 1080x1920, salvar e conferir após reload (Passo B3a de /diaria-publica-video, #12254)";
+
+/**
+ * #12100/#12251: imagem que a aba Shorts do canal mostra. Medido pelo editor na
+ * rede da página do canal (04/11/2026, #12251): a aba carrega `sardefault.jpg`
+ * quando o Short tem miniatura vertical própria e cai no frame automático
+ * (`oar2.jpg`/`oar1.jpg`) quando não tem — 404 no `sardefault` = sem capa
+ * vertical. O `oar2.jpg`, que o #12100 media, é sempre o frame automático,
+ * inclusive nos Shorts que mostram a capa na aba.
+ */
 export function youtubeShortFeedThumbUrl(videoId: string): string {
-  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/oar2.jpg`;
+  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/sardefault.jpg`;
 }
 
 /**
@@ -184,9 +214,32 @@ export function youtubeShortsCoverRecord(
 export function youtubeShortsVerticalCoverWarning(videoId: string, cover: ShortCoverRecord | null | undefined): string | null {
   if (!cover || cover.method !== "thumbnails_set" || !cover.ok || cover.vertical_feed !== "manual") return null;
   return (
-    `capa 16:9 aplicada; a do feed de Shorts não muda pela API (#12100): no app do YouTube, Editar → Miniatura → enviar ${SHORT_COVER_FILE}, ` +
+    `capa 16:9 aplicada; a do feed de Shorts não muda pela API (#12100): aplicar ${SHORT_COVER_FILE} ${SHORT_VERTICAL_COVER_HOWTO}, ` +
     `e conferir com npx tsx scripts/check-short-feed-cover.ts --id ${videoId} --cover {capa} (${youtubeShortFeedThumbUrl(videoId)})`
   );
+}
+
+/**
+ * Pure (#12459): a re-execução que troca a capa 16:9 de um Short já agendado
+ * (`--update-scheduled`, inclusive a do timer do corte) grava de novo
+ * `vertical_feed: "manual"`, o que reverteria a capa do feed já aplicada pelo
+ * agente no Studio web (`studio_web`, Passo B3a, #12436) e reabriria o aviso.
+ * O `thumbnails.set` não mexe na capa do feed de Shorts (#12100), então o
+ * `studio_web` do registro anterior vale: o campo é preservado (merge), não
+ * substituído. Vale também quando o `thumbnails.set` da re-execução FALHA
+ * (review do PR #12489): a falha é da miniatura 16:9, a capa do feed aplicada
+ * no Studio web continua lá, e o registro da falha guarda `studio_web` para o
+ * Passo B3a não perder essa informação (o aviso só acende com `ok` +
+ * `manual`). Qualquer outro caso devolve `next` como veio.
+ */
+export function keepStudioWebVerticalFeed(
+  next: ShortCoverRecord | null,
+  prior: ShortCoverRecord | null | undefined,
+): ShortCoverRecord | null {
+  if (!next || next.method !== "thumbnails_set") return next;
+  if (next.ok && next.vertical_feed !== "manual") return next;
+  if (prior?.method !== "thumbnails_set" || prior.vertical_feed !== "studio_web") return next;
+  return { ...next, vertical_feed: "studio_web" };
 }
 
 /**

@@ -84,7 +84,7 @@ function usage(): string {
     "Modes (exatamente um):",
     "  --auto-approve              auto em todos os canais (source: auto_approve_default)",
     "  --default-auto              tudo auto, default de Stage 5 (#1326) — source: default_auto",
-    "  --default-manual            manual em todos os canais (LEGACY — source: default_manual)",
+    "  --default-manual            manual em todos os canais menos o youtube, que fica auto (LEGACY — source: default_manual, #12599)",
     "  --skip <channels>           tudo auto exceto canais listados (--skip newsletter,linkedin)",
     "                              canais válidos: newsletter, linkedin, facebook, instagram, threads, twitter, brevo, youtube",
     "  --editor-response <input>   parse resposta do gate ('all', 'none', '1,3,5,7,9,11,13')",

@@ -5,7 +5,7 @@
 // (#6509). Desde a #12165 também recusa, nas mesmas condições, trocar o
 // checkout principal para uma branch existente que não seja master
 // (`changesBranch`) — inclusive o par `git branch X && git checkout X` citado
-// abaixo como contorno.
+// abaixo como contorno. Desde a #12308 inclui `gh pr checkout` (alvo cwd/cd).
 //
 // Incidente de origem: achado ao vivo na rodada `/diaria-overnight 260828b`
 // (corpo completo em #6481, item 3) — o checkout PRINCIPAL compartilhado foi
@@ -81,7 +81,13 @@
 // (`git -C <principal> switch X`, `cd <principal> && git checkout X`, ou o
 // mesmo comando com cwd no principal) agora conta como `checkout -b` —
 // `changesBranch`. Voltar para master/main segue livre; restauração de
-// arquivo (`checkout -- f`, `checkout <ref> <paths>`) fica de fora. O texto
+// arquivo (`checkout -- f`, `checkout <ref> <paths>`) fica de fora — e, desde
+// a #12286, também `checkout X` quando X existe no disco relativo ao alvo
+// (`Makefile`, `scripts`) e não é branch local nem tag. Também desde a #12286
+// o corpo de heredoc não é lido como comando quando quem o lê é um
+// consumidor de texto conhecido (`cat`, `gh`, `npx tsx`, `git commit -F`);
+// qualquer outro leitor (`bash`, `timeout 30 bash`, `| sh`) mantém o corpo
+// tokenizado (fail-closed). O texto
 // abaixo fica como registro do porquê de ter ficado fora até ali.
 //
 // Escopo explicitamente FORA (#6509, reconfirmado no #8937):
@@ -148,7 +154,7 @@ export const BLOCK_REASON =
   "conta como checkout principal — use o caminho literal do worktree. " +
   "Trocar o checkout principal para uma branch existente (`git -C <principal> switch X`, `cd <principal> && " +
   "git checkout X`) também é bloqueado, exceto para master pelo nome (`git checkout master`, não `-`/`@{-1}`; " +
-  "#12165). Restaurar arquivo: `git checkout -- <path>` ou `git restore <path>`. " +
+  "#12165). `gh pr checkout` também troca a branch local e é bloqueado (#12308). Restaurar arquivo: `git checkout -- <path>` ou `git restore <path>`. " +
   "Se você é a coordenadora e está vendo este bloqueio por " +
   "engano (ex: seu próprio registro expirou por staleness), rode `npx tsx scripts/lib/session-registry.ts " +
   "register --kind {overnight|develop|continuo}` (o SEU kind) para renovar o registro que já era seu, e " +
@@ -175,13 +181,15 @@ export { stripQuotedSpans };
  * exato depois de `git checkout`/`git switch`, nunca como substring de outra
  * flag (`--builder` não casa).
  */
-export function isBranchCreateCheckoutCommand(command) {
+export function isBranchCreateCheckoutCommand(command, baseCwd = null) {
   if (typeof command !== "string") return false;
   // #12165: reconhece também opções globais antes do subcomando (`git -C
   // <dir> switch -c X`, `git -c k=v checkout -b X`) e `VAR=x git ...` — o
   // tokenizer de `resolveBranchCreateTargets` mantém o conteúdo entre aspas
   // num token só, então um `git checkout -b` citado num `--body` segue fora.
-  return resolveBranchCreateTargets(command, null).length > 0;
+  // #12286: sem `baseCwd`, `git checkout Makefile` não tem como ser conferido
+  // no disco e segue contando como troca; com ele, path existente é restauração.
+  return resolveBranchCreateTargets(command, baseCwd).length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,15 +255,90 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
     inToken = false;
     rawStart = true;
   };
+  // Índices (em `segments`) dos segmentos que recebem stdin de um `|` (#12286).
+  const pipedSegs = new Set();
+  let pipeNext = false;
   const pushSegment = () => {
     pushToken();
-    if (tokens.length > 0) segments.push(tokens);
+    if (tokens.length > 0) {
+      if (pipeNext) pipedSegs.add(segments.length);
+      segments.push(tokens);
+    }
+    pipeNext = false;
     tokens = [];
   };
   const n = command.length;
+  // #12286: heredocs abertos na linha corrente (`<<EOF`, `<<'EOF'`, `<<-EOF`,
+  // `<<END-OF-X`), em ordem. O corpo começa na linha seguinte e só deixa de
+  // virar segmento quando quem lê o stdin é um consumidor de TEXTO conhecido
+  // (`heredocBodyIsText`) — senão uma linha do corpo de `gh-pr-review-api.ts
+  // reply --body-file - <<'EOF'` que começasse com `git checkout x` era lida
+  // como comando. Fail-closed: qualquer outro leitor (`bash`, `timeout 30
+  // bash`, `source /dev/stdin`, `| sh`) mantém o corpo tokenizado, e um
+  // delimitador que o hook não reconhece não abre heredoc nenhum.
+  let pendingHeredocs = [];
+  let lineSegStart = 0; // índice em `segments` do 1º segmento da linha corrente
   let i = 0;
   while (i < n) {
     const ch = command[i];
+    if (ch === "#" && !inToken) {
+      // Comentário: vai até o fim da linha e nada dentro dele é tokenizado —
+      // nem aspas (#12512: `# it's ok` abria uma aspa simples que só fechava
+      // no apóstrofo do comentário seguinte, engolindo o `git checkout` das
+      // linhas do meio), nem `\` + newline (o bash não continua comentário),
+      // nem `<<` (não abre heredoc, #12286). O `\n` é tratado no laço.
+      const end = command.indexOf("\n", i);
+      i = end === -1 ? n : end;
+      continue;
+    }
+    if (
+      ch === "<" &&
+      command[i + 1] === "<" &&
+      command[i + 2] !== "<" &&
+      command[i - 1] !== "<" &&
+      !insideArithmetic(command, i)
+    ) {
+      const open = parseHeredocOpen(command, i);
+      if (open) {
+        pushToken();
+        // Segmento a que o heredoc pertence: o corrente, ainda não empurrado.
+        // `inSubst`: aberto dentro de `$(...)`/`<(...)`/`( ... )` — a saída
+        // pode virar comando (`eval $(cat <<EOF`, `bash <(cat <<EOF`), então o
+        // corpo segue tokenizado (review da PR #12433).
+        pendingHeredocs.push({
+          delim: open.delim,
+          dash: open.dash,
+          seg: segments.length,
+          inSubst: parenStack.length > 0,
+        });
+        i = open.end;
+        continue;
+      }
+    }
+    if (ch === "\n" && pendingHeredocs.length > 0) {
+      // `cat <<EOF |` + newline: o pipeline continua DEPOIS do corpo.
+      const lineEndsInPipe = pipeNext && tokens.length === 0 && !inToken;
+      pushSegment();
+      const keepBody =
+        lineEndsInPipe ||
+        !pendingHeredocs.every((h) => !h.inSubst && heredocBodyIsText(segments, pipedSegs, h.seg));
+      let j = i + 1;
+      for (const h of pendingHeredocs) {
+        // Cada heredoc consome as linhas até o seu terminador, na ordem.
+        while (j < n) {
+          const end = command.indexOf("\n", j);
+          const line = command.slice(j, end === -1 ? n : end);
+          j = end === -1 ? n : end + 1;
+          if ((h.dash ? line.replace(/^\t+/, "") : line).replace(/[ \t]+$/, "") === h.delim) break;
+        }
+      }
+      pendingHeredocs = [];
+      lineSegStart = segments.length;
+      // Corpo que pode ser comando: segue tokenizando a partir da linha
+      // seguinte. Corpo de texto: retoma no terminador (ou no fim).
+      i = keepBody ? i + 1 : j;
+      continue;
+    }
     if (ch === "\\" && i + 1 < n) {
       if (command[i + 1] !== "\n") {
         if (!inToken) rawStart = false;
@@ -272,6 +355,14 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
     }
     if (ch === "\n" || ch === ";" || ch === "&" || ch === "|") {
       pushSegment();
+      if (ch === "\n") lineSegStart = segments.length;
+      // `|` (e `|&`) sozinho é pipe: o próximo segmento lê o stdout deste.
+      if (ch === "|" && command[i + 1] !== "|") {
+        pipeNext = true;
+        if (command[i + 1] === "&") i++;
+        i++;
+        continue;
+      }
       // `&&`, `||`, `;;` contam como um separador só.
       if ((ch === "&" || ch === "|" || ch === ";") && command[i + 1] === ch) i++;
       i++;
@@ -346,6 +437,115 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
   }
   pushSegment();
   return segments;
+}
+
+/** Caracteres que encerram a palavra do delimitador fora de aspas. */
+const HEREDOC_WORD_END = new Set([" ", "\t", "\n", ";", "&", "|", "<", ">", "(", ")"]);
+
+/**
+ * Lê a abertura de heredoc que começa em `command[i]` (`<<`): `-` opcional,
+ * brancos e a PALAVRA inteira do delimitador, como o bash (#12286): `END-OF-X`,
+ * `EOF.x`, `'EOF'`, `"END-MSG"`, `E'O'F` e `\EOF` viram o delimitador sem as
+ * aspas. Devolve `{ delim, dash, end }` (`end` = índice depois da palavra) ou
+ * `null` quando não há palavra reconhecível (`<<` no fim, aspa sem fechar,
+ * delimitador vazio) — aí o `<<` não abre heredoc e o resto segue lido como
+ * comando (fail-closed).
+ */
+function parseHeredocOpen(command, i) {
+  const n = command.length;
+  let j = i + 2;
+  const dash = command[j] === "-";
+  if (dash) j++;
+  while (command[j] === " " || command[j] === "\t") j++;
+  let delim = "";
+  while (j < n && !HEREDOC_WORD_END.has(command[j])) {
+    const c = command[j];
+    if (c === "'") {
+      const close = command.indexOf("'", j + 1);
+      if (close === -1) return null;
+      delim += command.slice(j + 1, close);
+      j = close + 1;
+      continue;
+    }
+    if (c === '"') {
+      let k = j + 1;
+      while (k < n && command[k] !== '"') {
+        if (command[k] === "\\" && k + 1 < n && '"\\$`'.includes(command[k + 1])) k++;
+        delim += command[k++];
+      }
+      if (k >= n) return null;
+      j = k + 1;
+      continue;
+    }
+    if (c === "\\") {
+      if (j + 1 >= n || command[j + 1] === "\n") return null;
+      delim += command[j + 1];
+      j += 2;
+      continue;
+    }
+    delim += c;
+    j++;
+  }
+  if (delim === "") return null;
+  return { delim, dash, end: j };
+}
+
+/**
+ * `true` só quando o corpo do heredoc aberto no segmento `segIdx` é TEXTO com
+ * certeza (#12286, fail-closed): o comando que o lê é um consumidor de texto
+ * conhecido (`isHeredocTextConsumer`), e todo segmento que recebe esse stdout
+ * por pipe na mesma linha também é. Subshell/substituição de processo depois
+ * do heredoc (`| (bash)`, `tee >(sh)`) ou segmento inexistente → `false`, e o
+ * corpo segue tokenizado como comando.
+ */
+function heredocBodyIsText(segments, pipedSegs, segIdx) {
+  if (!isHeredocTextConsumer(segments[segIdx])) return false;
+  for (let k = segIdx + 1; k < segments.length; k++) {
+    const seg = segments[k];
+    if (seg.length === 1 && seg[0].paren) return false;
+    if (pipedSegs.has(k) && !isHeredocTextConsumer(seg)) return false;
+  }
+  return true;
+}
+
+/** Comandos que só leem o stdin como texto/dado, nunca como comando de shell. */
+const HEREDOC_TEXT_CONSUMERS = new Set(["gh", "node"]);
+/** `cat`/`tee` só contam como texto quando escrevem no stdout (review da PR
+ * #12433): com arquivo (`tee /tmp/f.sh`, `cat > /tmp/f.sh`) o corpo pode
+ * virar script executado depois (`sh /tmp/f.sh`). */
+const HEREDOC_STDOUT_ONLY_CONSUMERS = new Set(["cat", "tee"]);
+
+/** `true` quando o segmento começa (fora atribuições `VAR=x`) por um
+ * consumidor de texto: `cat`/`tee` sem arquivo nem redirecionamento de
+ * saída, `gh`, `node`, `npx tsx` ou `git commit -F|--file`. Prefixo
+ * (`timeout`, `sudo`, `env`), interpretador (`bash`, `source`, `.`), token
+ * dinâmico ou qualquer outro comando → `false`. */
+function isHeredocTextConsumer(seg) {
+  if (!Array.isArray(seg) || seg.length === 0 || seg[0].paren) return false;
+  const k = skipAssignments(seg);
+  const head = seg[k];
+  if (!head || head.dynamic) return false;
+  const name = head.value.replace(/^.*[\\/]/, "");
+  if (HEREDOC_STDOUT_ONLY_CONSUMERS.has(name)) {
+    return seg.slice(k + 1).every((t) => !t.dynamic && t.value.startsWith("-") && !t.value.includes(">"));
+  }
+  if (HEREDOC_TEXT_CONSUMERS.has(name)) return true;
+  if (name === "npx") return seg[k + 1]?.value === "tsx" && !seg[k + 1].dynamic;
+  if (name !== "git") return false;
+  let j = k + 1;
+  while (j < seg.length && seg[j].value.startsWith("-")) j += seg[j].value === "-C" || seg[j].value === "-c" ? 2 : 1;
+  if (seg[j]?.value !== "commit") return false;
+  return seg.slice(j + 1).some((t) => /^-F/.test(t.value) || t.value === "--file" || t.value.startsWith("--file="));
+}
+
+/** true quando `index` cai dentro de `((...))`/`$((...))` aberto na mesma
+ * linha — ali `<<` é shift aritmético, não heredoc (#9214). Cópia de
+ * `block-npm-install-node-modules-symlink.mjs` (self-contained). */
+function insideArithmetic(command, index) {
+  const lineStart = command.lastIndexOf("\n", index - 1) + 1;
+  const before = command.slice(lineStart, index);
+  const open = before.lastIndexOf("((");
+  return open !== -1 && before.indexOf("))", open) === -1;
 }
 
 /**
@@ -430,7 +630,12 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
   let cwd = typeof baseCwd === "string" && baseCwd.trim() !== "" ? resolvePath(baseCwd) : UNRESOLVED;
   const stack = [];
   let vars = new Map(home ? [["HOME", home]] : []);
-  for (const seg of tokenizeShellSegments(command, home)) {
+  const segments = tokenizeShellSegments(command, home);
+  // Review da PR #12433: se o mesmo comando cria/atualiza refs (`git branch
+  // docs && git checkout docs`), o estado do disco lido agora não vale para
+  // o checkout — o disco não é consultado e `checkout X` conta como troca.
+  const refsMayChange = segments.some(segmentMutatesRefs);
+  for (const seg of segments) {
     if (seg.length === 1 && seg[0].paren) {
       // Subshell: `cd` e atribuições lá dentro não vazam para fora.
       if (seg[0].value === "(") stack.push({ cwd, vars: new Map(vars) });
@@ -448,6 +653,26 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
     }
     if (head.value === "popd") {
       cwd = UNRESOLVED;
+      continue;
+    }
+    // #12308: gh troca a branch local mesmo com -R apontando para outro repo.
+    // As opções globais podem aparecer antes de `pr` ou entre `pr` e `checkout`.
+    if (head.value === "gh") {
+      let j = k + 1;
+      const skipRepoFlags = () => {
+        while (j < seg.length) {
+          const v = seg[j].value;
+          if (v === "-R" || v === "--repo") j += 2;
+          else if (v.startsWith("--repo=") || (v.startsWith("-R") && v.length > 2)) j++;
+          else break;
+        }
+      };
+      skipRepoFlags();
+      if (seg[j]?.value === "pr") {
+        j++;
+        skipRepoFlags();
+        if (seg[j]?.value === "checkout") targets.push(cwd);
+      }
       continue;
     }
     if (head.value !== "git") continue;
@@ -485,9 +710,29 @@ export function resolveBranchCreateTargets(command, baseCwd, home = safeHomedir(
     }
     const sub = seg[j]?.value;
     const rest = seg.slice(j + 1).map((t) => t.value);
-    if (changesBranch(sub, rest)) targets.push(target);
+    if (changesBranch(sub, rest, refsMayChange ? null : target)) targets.push(target);
   }
   return targets;
+}
+
+/** Subcomandos do git que criam ou movem refs (review da PR #12433). */
+const REF_MUTATING_GIT_SUBS = new Set(["branch", "fetch", "update-ref", "pull", "tag"]);
+
+/** `true` quando o segmento roda `git branch|fetch|update-ref|pull|tag` ou
+ * `git worktree add` (opções globais entre `git` e o subcomando puladas). */
+function segmentMutatesRefs(seg) {
+  if (seg.length === 1 && seg[0].paren) return false;
+  const k = skipAssignments(seg);
+  if (seg[k]?.value !== "git") return false;
+  let j = k + 1;
+  while (j < seg.length && seg[j].value.startsWith("-")) {
+    const v = seg[j].value;
+    j += v === "-C" || GIT_GLOBAL_OPTS_WITH_VALUE.has(v) || GIT_TARGET_OVERRIDE_OPTS.includes(v) ? 2 : 1;
+  }
+  const sub = seg[j]?.value;
+  if (sub === undefined || seg[j].dynamic) return sub !== undefined;
+  if (REF_MUTATING_GIT_SUBS.has(sub)) return true;
+  return sub === "worktree" && seg[j + 1]?.value === "add";
 }
 
 /** Branches para as quais trocar o checkout principal é sempre livre (#12165,
@@ -540,8 +785,15 @@ function stripRedirections(rest) {
  * Restauração de arquivo (`checkout -- f`, `checkout <ref> <paths>`,
  * `checkout ./f`, `checkout --ours f`) não troca branch e fica de fora;
  * `checkout X --`, sem nada depois do `--`, é troca de branch.
+ *
+ * #12286: `targetDir` (diretório em que o git roda, quando resolvido) desfaz a
+ * ambiguidade de `git checkout X` com X sem cara de path: se `targetDir/X`
+ * existe (`Makefile`, `scripts`) e X não é branch local nem tag no repo do
+ * alvo (`isKnownNotRef`), é restauração de arquivo/pasta. Alvo não
+ * resolvido (`null`) não consulta o disco e segue contando como troca
+ * (fail-closed). `git switch` nunca restaura arquivo, então não consulta.
  */
-export function changesBranch(sub, rawRest) {
+export function changesBranch(sub, rawRest, targetDir = null) {
   if (sub !== "checkout" && sub !== "switch") return false;
   const rest = stripRedirections(rawRest);
   if (rest.some((t) => isCreateFlag(sub, t))) return true;
@@ -559,7 +811,76 @@ export function changesBranch(sub, rawRest) {
   const name = positional[0];
   if (FREE_SWITCH_TARGETS.has(name)) return false;
   if (sub === "checkout" && looksLikePath(name)) return false;
+  if (sub === "checkout" && isExistingPath(targetDir, name) && isKnownNotRef(targetDir, name)) return false;
   return true;
+}
+
+/** `true` quando `name` é um arquivo/pasta existente relativo a `dir`
+ * (#12286). `-` e `@{-N}` são sintaxe de branch anterior, nunca path. */
+function isExistingPath(dir, name) {
+  if (typeof dir !== "string" || dir === "" || name === "-" || name.startsWith("@{")) return false;
+  try {
+    return existsSync(resolvePath(dir, name));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `true` só quando dá para afirmar, sem spawnar git, que `name` NÃO é branch
+ * local nem tag no repo de `dir` (#12286, review da PR #12433): com a branch
+ * `docs` e a pasta `docs`, `git checkout docs` troca de branch — o git
+ * prefere o ref. Lê `refs/<name>`, `refs/{heads,tags,remotes}/<name>` e
+ * `packed-refs` no diretório COMUM do repo (worktree linkado: `gitdir:` do
+ * arquivo `.git` e o `commondir` dele). Repo ou gitdir que não dá para ler,
+ * ou repo em reftable → `false` (fail-closed: na dúvida, conta como troca).
+ */
+function isKnownNotRef(dir, name) {
+  try {
+    if (name.split("/").some((p) => p === "" || p === "." || p === "..")) return false;
+    const commonDir = gitCommonDirOf(dir);
+    if (commonDir === null) return false;
+    // reftable: refs num formato binário que este hook não lê → na dúvida, ref.
+    if (existsSync(join(commonDir, "reftable"))) return false;
+    const parts = name.split("/");
+    // `refs/<name>` (ex.: `stash`), `refs/{heads,tags}/<name>` e
+    // `refs/remotes/<name>` (remoto inteiro, `git checkout origin` → HEAD dele).
+    for (const ns of [[], ["heads"], ["tags"], ["remotes"]]) {
+      if (existsSync(join(commonDir, "refs", ...ns, ...parts))) return false;
+    }
+    const packed = join(commonDir, "packed-refs");
+    if (existsSync(packed)) {
+      const wanted = new Set([`refs/${name}`, `refs/heads/${name}`, `refs/tags/${name}`, `refs/remotes/${name}`]);
+      const remotePrefix = `refs/remotes/${name}/`;
+      for (const line of readFileSync(packed, "utf8").split(/\r?\n/)) {
+        const ref = line.split(" ")[1]?.trim();
+        if (ref !== undefined && (wanted.has(ref) || ref.startsWith(remotePrefix))) return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Diretório git COMUM (onde ficam `refs/` e `packed-refs`) do repo que
+ * contém `dir`, sem spawnar git; `null` se não der para resolver. */
+function gitCommonDirOf(dir) {
+  const root = findGitRootNoSpawn(dir, 32);
+  if (root === null) return null;
+  const gitPath = join(root, ".git");
+  if (statIsDirectory(gitPath)) return gitPath;
+  const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(gitPath, "utf8"));
+  if (!m) return null;
+  const gitdir = isAbsolute(m[1]) ? m[1] : resolvePath(root, m[1]);
+  const commondirFile = join(gitdir, "commondir");
+  if (existsSync(commondirFile)) {
+    const rel = readFileSync(commondirFile, "utf8").trim();
+    return rel === "" ? null : isAbsolute(rel) ? rel : resolvePath(gitdir, rel);
+  }
+  // Sem `commondir`: `.../<principal>/.git/worktrees/<nome>` → `.../.git`.
+  const wt = /^(.*[\\/]\.git)[\\/]worktrees[\\/][^\\/]+[\\/]?$/.exec(gitdir);
+  return wt ? wt[1] : gitdir;
 }
 
 /**

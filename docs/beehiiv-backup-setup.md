@@ -80,7 +80,7 @@ O snapshot local vive só no OneDrive (`data/`), que já lotou uma vez (#10957) 
 | `eia-votes/{AAAA-MM-DD}.jsonl.gz.enc` | JSONL `{key, value}` das chaves `vote:`, `score:` e `correct:` do KV `POLL` (nunca as imagens) |
 
 - **Bucket:** sem r2.dev, sem domínio; lifecycle `retencao-8-semanas` (apaga após 56 dias), configurado no painel. Credencial S3 própria, restrita ao bucket (`R2_BACKUP_ACCESS_KEY_ID`/`R2_BACKUP_SECRET_ACCESS_KEY`); endpoint sai de `R2_ACCOUNT_ID`. Nunca as credenciais dos shorts, nunca URL pública: toda leitura, inclusive a conferência pós-upload, usa a API S3 assinada.
-- **Cifra:** AES-256-GCM (`scripts/lib/backup-offsite-crypto.ts`), cabeçalho versionado `DIARIABK` + versão + keyId + IV + tag. A chave (`BACKUP_ENCRYPTION_KEY`, 32 bytes em base64) fica no Doppler `diaria-studio/dev` e numa 2ª cópia com o editor (Bitwarden), nunca no bucket. **Rotação:** guardar a chave antiga nos dois cofres enquanto houver backup cifrado com ela (56 dias); a restauração lê outra var com `--key-env`.
+- **Cifra:** AES-256-GCM (`scripts/lib/backup-offsite-crypto.ts`), cabeçalho versionado `DIARIABK` + versão + keyId + IV + tag. Desde o formato v2 (#11961), o tipo e a data da chave do objeto (`beehiiv/2026-11-08`) entram no AAD sem ser gravados no arquivo: um blob antigo copiado por cima da chave de outra data (rollback por quem tem a credencial R/W) não autentica. Backups v1, gravados antes disso, seguem restaurando, com aviso. A chave (`BACKUP_ENCRYPTION_KEY`, 32 bytes em base64) fica no Doppler `diaria-studio/dev` e numa 2ª cópia com o editor (Bitwarden), nunca no bucket. **Rotação:** guardar a chave antiga nos dois cofres enquanto houver backup cifrado com ela (56 dias); a restauração lê outra var com `--key-env`.
 - **Quando sobe:** só se o snapshot do dia for bem-sucedido (diretório + `manifest.json` + `isSubscribersSnapshotUsable`). Senão o Beehiiv é pulado e os votos sobem do mesmo jeito; na execução agendada (sem `--date`) o pulo vira achado (`backup-offsite-skipped:beehiiv`), com exit 0. Os votos são sempre os de agora, então `--date` diferente de hoje exige `--only beehiiv`.
 - **Conferência:** depois do PUT, HEAD assinado com o mesmo tamanho e, quando comparável (PUT simples), ETag igual ao MD5 do corpo.
 - **Falha:** issue de alarme via `notifyEditor` (`check: backup-offsite`, fingerprint `backup-offsite-failed:{tipo}`) e exit 1 do passo. O snapshot local continua valendo.
@@ -100,7 +100,9 @@ doppler run -- npx tsx scripts/backup-offsite.ts --date 2026-11-08 --only beehii
 doppler run -- npx tsx scripts/restore-backup-offsite.ts --list
 doppler run -- npx tsx scripts/restore-backup-offsite.ts --latest beehiiv --out /tmp/restore-beehiiv
 doppler run -- npx tsx scripts/restore-backup-offsite.ts --key eia-votes/2026-11-08.jsonl.gz.enc --out /tmp/restore-votos
-doppler run -- npx tsx scripts/restore-backup-offsite.ts --file ./copia.tar.gz.enc --out /tmp/r   # arquivo já baixado
+doppler run -- npx tsx scripts/restore-backup-offsite.ts --file ./2026-11-08.tar.gz.enc --out /tmp/r   # arquivo já baixado, com o nome original
 ```
+
+No `--file`, o tipo e a data saem do nome do arquivo (sufixo + `AAAA-MM-DD`). Um arquivo v2 renomeado para outra data ou tipo falha a autenticação; mantenha o nome do objeto.
 
 Baixa pela API assinada, autentica e decifra (chave errada ou byte alterado falham alto, sem escrever nada) e extrai em `--out`, que precisa estar vazia; a extração vai por uma pasta temporária e só vira `--out` se der certo. `--latest` escolhe pela data da chave. Voltar o conteúdo para `data/beehiiv-backup/` é passo manual, depois de conferir.

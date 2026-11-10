@@ -29,12 +29,13 @@ Slash commands disponíveis (pipeline completa ou etapas isoladas):
 
 | Skill | O que faz |
 |---|---|
-| `/diaria-edicao AAMMDD [--no-gates]` | Etapas 1-4 (pesquisa → revisão/gate). Retoma do ponto que parou se interrompido; após o gate, instrui `/diaria-5-publicacao`/`/diaria-6-agendamento` numa sessão nova (#6171). |
+| `/diaria-edicao AAMMDD [--no-gates]` | Etapas 1-4 (pesquisa → revisão/gate). Retoma do ponto que parou se interrompido; após o gate, instrui `/diaria-video-montagem` e `/diaria-publica`, cada um numa sessão nova (#6171, #12591). |
+| `/diaria-publica AAMMDD` | Entrada do dia normal: vídeo horizontal no YouTube, depois as Etapas 5 e 6 na mesma sessão, depois o vertical (#12591). Era `/diaria-publica-video`, que segue como alias (#12620). |
 | `/diaria-1-pesquisa AAMMDD` | Etapa 1 (pesquisa + dedup + categorize + score). |
 | `/diaria-2-escrita AAMMDD [newsletter\|social]` | Etapa 2 (newsletter + posts sociais em paralelo). |
 | `/diaria-3-imagens AAMMDD [eai\|d1\|d2\|d3]` | Etapa 3 (É IA? + 3 imagens de destaque). |
 | `/diaria-4-revisao AAMMDD` | Etapa 4 (Revisão: pré-render + gate humano pré-publicação). |
-| `/diaria-5-publicacao [all\|newsletter\|social] AAMMDD` | Etapa 5 (Beehiiv rascunho + LinkedIn + Facebook). |
+| `/diaria-5-publicacao [all\|newsletter\|social] AAMMDD` | Etapas 5 e 6 (rascunho Kit + redes agendadas + gate de agendamento). Exige o link do vídeo no D1 ou a edição marcada sem vídeo (#12588); É a Etapa 5 isolada (dia sem vídeo, retomada, retry de canal); no dia normal roda de dentro do `/diaria-publica`. |
 | `/diaria-mensal --cycle YYMM-MM [--no-gate]` | Digest mensal (coleta/análise → escrita → imagens → revisão consolidada → publicação Brevo, #2795). |
 | `/diaria-test [AAMMDD]` | Edição de teste (sem Drive sync, social agendado 10 dias à frente). |
 | `/diaria-atualiza-audiencia` | Recarrega perfil de audiência via Beehiiv survey. |

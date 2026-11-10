@@ -12,8 +12,8 @@ export function planScheduledReplacements(entries: readonly ShortPublishedEntry[
   if (only?.some(d => !entries.some(e => e.destination === d))) throw new Error('--only contém destino sem registro');
   return entries.filter(e => !only || only.includes(e.destination)).map(entry => {
     if (videoHash && entry.video_sha256 === videoHash) return { entry, action: 'skip', reason: 'mesmos bytes já registrados; nada a substituir' };
-    if (entry.status !== 'scheduled' || !entry.scheduled_at || !(Date.parse(entry.scheduled_at) > now.getTime() + 600_000)) {
-      return { entry, action: 'skip', reason: 'exige agendamento futuro com mais de 10 min; publicado, ambíguo ou horário desconhecido não é substituído' };
+    if (entry.status !== 'scheduled' || !entry.scheduled_at || !(Date.parse(entry.scheduled_at) > now.getTime() + 1_800_000)) {
+      return { entry, action: 'skip', reason: 'exige agendamento futuro com mais de 30 min; publicado, ambíguo ou horário desconhecido não é substituído' };
     }
     if ((entry.destination === 'x' || entry.destination === 'tiktok') && /^buffer:.+/.test(entry.id)) return { entry, action: 'buffer' };
     if (entry.destination === 'youtube_shorts' || /^facebook:.+/.test(entry.destination)) return { entry, action: 'replace' };

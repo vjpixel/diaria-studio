@@ -4,7 +4,7 @@ Roteiro da task LOCAL `diaria-short-video-relacionado` (app Claude desktop, MCP 
 
 **Por que é task local no Neo e não script no `300`:** a YouTube Data API não expõe o campo de vídeo relacionado de um Short (`docs/youtube-short-related-video.md`). O vínculo só existe no YouTube Studio, e o Studio precisa do Chrome logado no @diariabr, que fica no Neo. A decisão é do editor (22/10/2026, reconfirmada em 26/10) e abre uma exceção à regra "tasks só no servidor". É 1 ação editorial por dia na conta do editor, dentro da regra de ToS do `CLAUDE.md`.
 
-**Por que 06:05:** o horizontal publica às 06:00, e o slot mais cedo do Short no teste de horário é 06:30 (`publishing.shorts.schedule.rotation_times`). Às 06:05 a task normalmente já encontra o horizontal público; se ainda não estiver, o `wait` cobre o atraso.
+**Por que 06:05:** o horizontal publica às 06:00, e o Short sai às 06:30 (`publishing.shorts.schedule.by_destination.youtube_shorts`, #12250; o loader recusa horário às 06:00 ou antes). Às 06:05 a task normalmente já encontra o horizontal público; se ainda não estiver, o `wait` cobre o atraso.
 
 **Divisão de trabalho:** a API (pelo script) acha os IDs, confirma que o horizontal está **público** (#573) e lê o título dele. O Chrome só clica no Studio e relê a página. Nada aqui publica, agenda, despublica ou edita outro campo do vídeo.
 

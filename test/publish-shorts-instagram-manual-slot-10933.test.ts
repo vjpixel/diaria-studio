@@ -32,7 +32,7 @@ const shorts = { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagr
 const SCHEDULE = { rotation_times: ["12:00", "19:00"], rotation_start: "2026-10-22", rotation_end: "2026-11-04", default_time: "12:00" };
 const config = { publishing: { shorts: { ...shorts, schedule: SCHEDULE } } };
 
-/** Fora da janela do teste de horário (#10831): a grade decide por destino. */
+/** Fora da janela do teste de horário (#10831): horário fixo (#12250), a grade só avisa. */
 function planOutside(grid: ScheduledSlot[], extra: Partial<Extract<Parameters<typeof planShortsPublish>[0], { corte?: undefined; editionDirOverride?: undefined }>> = {}) {
   return planShortsPublish({
     aammdd: "261110",
@@ -66,12 +66,15 @@ describe("#10933 Instagram manual acima do teto entra na grade", () => {
     assert.ok(p.premises.some((m) => /instagram: passo manual \(Chrome ou app\)/.test(m) && /#10933/.test(m)));
   });
 
-  it("cenário da issue: a grade da conta já tem post às 12:00 → o Instagram manual NÃO cola nele", () => {
+  it("grade da conta já tem post às 12:00: desde o #12250 o Instagram manual MANTÉM o horário fixo e só avisa", () => {
+    // Antes do #12250 o planner movia o post manual pra longe do das 12:00; a
+    // decisão do editor (horário fixo, 12:00) troca isso por aviso.
     const account = planOutside([]).slots.find((s) => s.destination === "instagram")!.account;
     const p = planOutside([{ account, at: "2026-11-10T15:00:00Z", label: "instagram d1" }]); // 12:00 BRT
     const slot = p.slots.find((s) => s.destination === "instagram")!;
-    const gapMin = Math.abs(Date.parse(slot.at) - Date.parse("2026-11-10T15:00:00Z")) / 60_000;
-    assert.ok(gapMin >= 60, `Instagram manual a ${gapMin} min do post da mesma conta (${brt(slot.at)} BRT)`);
+    assert.equal(brt(slot.at), "12:00");
+    assert.equal(slot.rule, "fixed-time");
+    assert.ok(p.warnings.some((w) => w.startsWith("instagram:") && /mesma conta/.test(w) && /#12250/.test(w)), p.warnings.join("\n"));
     const ig = p.items.find((i) => i.destination === "instagram") as { at?: string };
     assert.equal(ig.at, slot.at);
   });

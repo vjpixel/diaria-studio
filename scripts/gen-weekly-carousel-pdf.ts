@@ -19,20 +19,13 @@
  * Corolário: este script só funciona DEPOIS que a semana foi publicada.
  * Sem cache, falha alto dizendo qual arquivo falta — nunca inventa slide.
  *
- * ## Estado (#8055) — RE-DERIVAR, nunca confiar neste parágrafo
+ * ## Consumidor (#8055)
  *
- * A PUBLICAÇÃO do PDF no LinkedIn depende da Documents API, sob o produto
- * Community Management API. Na última medição (18/09/2026) o produto estava
- * "Review in progress" no app `264772062` e o Worker não tinha
- * `LINKEDIN_ACCESS_TOKEN` provisionado — então este script é a metade que
- * NÃO depende disso: gera e valida o artefato, e quando a aprovação sair
- * resta só a chamada de upload.
- *
- * Essas DUAS condições vivem fora do repositório (fila de review da
- * LinkedIn; segredos do Worker no Cloudflare), e nenhum teste aqui as
- * verifica — pela disciplina do #1172, quem for retomar isto re-deriva ao
- * vivo (`wrangler secret list` no `diaria-linkedin-cron`; aba Products do
- * app no Developer Portal) em vez de tomar esta data como estado atual.
+ * `publish-weekly-social.ts` usa `buildWeeklyCarouselPdf` na hora de
+ * publicar (`prepareWeeklyLinkedInDocument`): o LinkedIn semanal sai como
+ * documento PDF pelo Worker `diaria-linkedin-cron` (`fireLinkedInDocument`,
+ * Documents API). Este CLI segue útil pra regenerar/inspecionar o PDF de uma
+ * semana já publicada.
  *
  * ## Uso
  *
@@ -45,14 +38,13 @@ import { resolve, dirname } from "node:path";
 
 import { isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
-import { buildImagePdf, type ImagePdfPage } from "./lib/image-pdf.ts";
+import { buildCarouselPdf, downloadJpeg, LINKEDIN_DOC_MAX_BYTES } from "./lib/shared/carousel-pdf.ts";
 
-/** Teto da Documents API do LinkedIn — 100MB por documento. Conferido
- *  aqui pra a falha aparecer na geração, não no upload. */
-const LINKEDIN_DOC_MAX_BYTES = 100 * 1024 * 1024;
-/** Idem, 300 páginas. Um carrossel semanal tem 6-7, então isto é só uma
- *  rede de segurança contra chamada com a chave errada. */
-const LINKEDIN_DOC_MAX_PAGES = 300;
+// #12584 — o miolo (download + tetos + montagem) foi extraído para
+// `lib/shared/carousel-pdf.ts`, onde a diária também o usa. Reexportado aqui
+// pra os consumidores do semanal (`publish-weekly-social.ts`, testes) não
+// mudarem de import.
+export { downloadJpeg, LINKEDIN_DOC_MAX_BYTES };
 
 export interface WeeklyCarouselSlides {
   /** URLs na ordem final do carrossel: capa, notícias, CTA. */
@@ -150,62 +142,13 @@ export function resolveSlideUrlsFromCache(dataRoot: string, carouselKey: string)
   return { urls: [coverUrl, ...newsUrls, ctaUrl], source: "cache-chronological" };
 }
 
-export async function downloadJpeg(url: string): Promise<Uint8Array> {
-  const res = await fetch(url);
-  if (!res.ok) {
-    // #9991: corpo não lido segura o socket e a saída via exitCode.
-    await res.body?.cancel().catch(() => {});
-    throw new Error(`gen-weekly-carousel-pdf: GET ${url} -> ${res.status} ${res.statusText}`);
-  }
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  // Corpo cortado no meio da transferência chega com 200 e sem erro
-  // nenhum (#8305 review). `readJpegHeader` pega o caso pelo EOI ausente,
-  // mas conferir aqui nomeia a causa REAL — "veio menos byte do que o
-  // servidor prometeu" — em vez de mandar quem depura investigar um JPEG
-  // supostamente malformado na origem.
-  const declared = res.headers.get("content-length");
-  if (declared != null && Number(declared) !== bytes.length) {
-    throw new Error(
-      `gen-weekly-carousel-pdf: GET ${url} veio truncado — content-length dizia ${declared} bytes, chegaram ${bytes.length}.`,
-    );
-  }
-  if (bytes.length === 0) throw new Error(`gen-weekly-carousel-pdf: GET ${url} devolveu corpo vazio.`);
-  return bytes;
-}
-
-/** Baixa os slides e monta o PDF. Separado do `main` pra ser testável com
- *  um `fetchImpl` de mentira. */
+/** Baixa os slides e monta o PDF (alias semanal de {@link buildCarouselPdf},
+ *  #12584). Separado do `main` pra ser testável com um `fetchJpeg` de mentira. */
 export async function buildWeeklyCarouselPdf(
   urls: readonly string[],
   fetchJpeg: (url: string) => Promise<Uint8Array> = downloadJpeg,
 ): Promise<Uint8Array> {
-  if (urls.length > LINKEDIN_DOC_MAX_PAGES) {
-    throw new Error(`gen-weekly-carousel-pdf: ${urls.length} páginas excede o teto de ${LINKEDIN_DOC_MAX_PAGES} da Documents API.`);
-  }
-  const pages: ImagePdfPage[] = [];
-  let bytesSoFar = 0;
-  for (const url of urls) {
-    const jpeg = await fetchJpeg(url);
-    bytesSoFar += jpeg.length;
-    // Aborta assim que os JPEGs já somam mais que o teto, em vez de baixar o
-    // resto e montar um PDF que não tem como ser aceito. O PDF é ~a soma dos
-    // JPEGs (DCTDecode não recomprime), então esta soma é um piso honesto do
-    // tamanho final — a checagem final continua depois, sobre o valor real.
-    if (bytesSoFar > LINKEDIN_DOC_MAX_BYTES) {
-      throw new Error(
-        `gen-weekly-carousel-pdf: os slides já somam ${(bytesSoFar / 1024 / 1024).toFixed(1)}MB, acima do teto de ` +
-          `${LINKEDIN_DOC_MAX_BYTES / 1024 / 1024}MB da Documents API — abortado sem baixar o resto.`,
-      );
-    }
-    pages.push({ jpeg });
-  }
-  const pdf = buildImagePdf(pages);
-  if (pdf.length > LINKEDIN_DOC_MAX_BYTES) {
-    throw new Error(
-      `gen-weekly-carousel-pdf: PDF com ${(pdf.length / 1024 / 1024).toFixed(1)}MB excede o teto de 100MB da Documents API.`,
-    );
-  }
-  return pdf;
+  return buildCarouselPdf(urls, fetchJpeg);
 }
 
 function parseArgs(argv: readonly string[]): { key: string; out?: string; dataRoot?: string } {

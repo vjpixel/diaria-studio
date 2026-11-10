@@ -9,6 +9,8 @@ import {
 // ruim por vez, isolando qual portão decidiu.
 const GREEN: ContinuoMergeGateInput = {
   superseded: false,
+  isDraft: false,
+  bloqueioExecucao: false,
   retidoParaEditor: false,
   verdict: "approve",
   currentHeadSha: "abc123",
@@ -214,4 +216,15 @@ describe("evaluateContinuoMergeGate (#10278) — PR retida para o editor", () =>
   it("controle: retidoParaEditor=false com tudo verde → merge", () => {
     assert.equal(evaluateContinuoMergeGate({ ...GREEN, retidoParaEditor: false }).action, "merge");
   });
+});
+
+// #12351: docs + all green + deliberate execution block must never merge.
+describe("#12684 draft and execution block", () => {
+  for (const [isDraft, bloqueioExecucao] of [[true, true], [true, false], [false, true], [null, false], [false, null]] as const) {
+    it(`isDraft=${isDraft}, bloqueioExecucao=${bloqueioExecucao} escalates`, () => {
+      const result = evaluateContinuoMergeGate({ ...GREEN, isDraft, bloqueioExecucao });
+      assert.equal(result.action, "escalate");
+      assert.match(result.reason, /draft|bloqueio-execucao/);
+    });
+  }
 });

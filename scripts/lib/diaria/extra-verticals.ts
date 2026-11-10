@@ -22,9 +22,9 @@
  *     `data/editions/`.
  *
  * Premissa do horário (registrada no plano): no dia da extra também sai a
- * vertical principal da edição DAQUELE dia, nas mesmas contas, no horário do
- * teste (#10831, `resolveShortTime`). A extra usa o horário seguinte da mesma
- * lista (`rotation_times`, em ciclo), nunca o mesmo da principal do dia.
+ * vertical principal da edição DAQUELE dia, nas mesmas contas, no horário fixo
+ * por destino (#12250, `resolveShortTime`). A extra usa o horário seguinte da
+ * lista `rotation_times` (em ciclo) que não seja nenhum horário da principal.
  *
  * Feriado não é conhecido aqui: "dia útil" = segunda a sexta.
  *
@@ -38,7 +38,7 @@
  * `--video`, mas com aviso explícito em `warnings` e a instrução de trocar.
  */
 
-import { resolveShortTime, type ShortScheduleConfig } from "./short-video.ts";
+import { fixedShortTimes, resolveShortTime, type ShortScheduleConfig } from "./short-video.ts";
 import { corteSuffixOf } from "./drive-video-source.ts";
 import { corteVideoPortabilityWarning, shellQuote } from "./short-corte.ts";
 import { itemInTarget, type BlockItem, type BlocksFile, type SequenceSpec } from "./video-montage.ts";
@@ -102,18 +102,61 @@ export function extraVerticalHook(file: Pick<BlocksFile, "blocks">, spec: Sequen
   return null;
 }
 
-/** Horário da extra no dia `date`: o seguinte ao da principal daquele dia em `rotation_times` (ciclo). */
+/** O erro da publicação para o corte sem gancho (#11900); o `build`, a prévia e a revisão avisam com o mesmo texto (#12712). */
+export function missingHookProblem(corte: string): string {
+  return `corte "${corte}" sem gancho: informe "hook" na sequência ou um resumo_curto com texto nesta vertical`;
+}
+
+/** A 1ª fala do corte na ordem da sequência (texto do 1º item com texto que entra nela): a sugestão de gancho (#12712). */
+export function firstCorteSpeech(file: Pick<BlocksFile, "blocks">, spec: SequenceSpec): string | null {
+  for (const key of spec.order) {
+    for (const it of file.blocks[key] ?? []) {
+      if (!itemInTarget(it, spec)) continue;
+      const t = itemText(it);
+      if (t) return t;
+    }
+  }
+  return null;
+}
+
+/**
+ * O gancho do corte na montagem (#12712): `premissa` com o gancho que a
+ * publicação vai usar, ou `aviso` com o mesmo erro do
+ * `video-extra-verticals.ts` e a 1ª fala do corte como sugestão. `null` para
+ * sequência sem corte (a vertical da edição e o horizontal não têm gancho de
+ * publicação). Mesma regra de `extraVerticalHook`, sem cópia.
+ */
+export function corteHookLine(file: Pick<BlocksFile, "blocks">, spec: SequenceSpec): { level: "aviso" | "premissa"; text: string } | null {
+  if (typeof spec.corte !== "string") return null;
+  const hook = extraVerticalHook(file, spec);
+  if (hook) return { level: "premissa", text: `gancho da publicação do corte "${spec.corte}" (${hook.how === "hook" ? "hook da sequência" : `${hook.how} desta vertical; o "hook" da sequência sobrepõe`}): "${hook.text}" (#12712)` };
+  const first = firstCorteSpeech(file, spec);
+  const tip = first ? `; sugestão: a 1ª fala do corte, "hook": ${JSON.stringify(first)}` : "";
+  return { level: "aviso", text: `${missingHookProblem(spec.corte)}: a publicação (video-extra-verticals.ts) recusa o corte assim${tip} (#12712)` };
+}
+
+/**
+ * Horário da extra no dia `date`: o seguinte ao da principal daquele dia em
+ * `rotation_times` (ciclo). Desde o #12250 a principal sai em horário fixo
+ * POR DESTINO (YouTube Shorts 06:30, os outros 12:00): fora da janela do
+ * teste encerrado do #10831, a extra pula TODOS esses horários, senão
+ * colaria na principal em algum destino (ex.: dois Shorts às 06:30 no canal).
+ * `principal` = horário da principal nos destinos sem horário próprio.
+ */
 export function extraVerticalTime(sched: ShortScheduleConfig, date: string): { hhmm: string; principal: string; reason: string; collides: boolean } {
-  const principal = resolveShortTime(sched, date).hhmm;
+  const main = resolveShortTime(sched, date);
+  const principal = main.hhmm;
+  const taken = new Set(main.source === "rotation" ? [principal] : fixedShortTimes(sched));
+  const takenText = [...taken].join(", ");
   const times = sched.rotationTimes;
   const i = times.indexOf(principal);
   for (let step = 1; step <= times.length; step++) {
     const t = times[((i < 0 ? -1 : i) + step + times.length) % times.length];
-    if (t !== principal) {
-      return { hhmm: t, principal, collides: false, reason: `a vertical principal de ${date} sai às ${principal}; a extra usa o horário seguinte de rotation_times (${times.join("/")})` };
+    if (!taken.has(t)) {
+      return { hhmm: t, principal, collides: false, reason: `a vertical principal de ${date} sai às ${takenText}; a extra usa o horário seguinte livre de rotation_times (${times.join("/")})` };
     }
   }
-  return { hhmm: principal, principal, collides: true, reason: `rotation_times só tem ${principal}: a extra cai no mesmo horário da vertical principal de ${date}` };
+  return { hhmm: principal, principal, collides: true, reason: `rotation_times (${times.join("/")}) não tem horário fora de ${takenText}: a extra cai no mesmo horário da vertical principal de ${date}` };
 }
 
 /** Aspas simples de shell POSIX (#11944: mora em `short-corte.ts`, usada também pelos comandos do plano). */
@@ -171,7 +214,7 @@ export function planExtraVerticals(input: {
     const title = titleRaw || null;
     if (!title) problems.push(`sequência do corte "${corte}" sem screenTitle: é o título da publicação (--title); informe na sequência do blocks.json`);
     const hook = extraVerticalHook(input.file, spec);
-    if (!hook) problems.push(`corte "${corte}" sem gancho: informe "hook" na sequência ou um resumo_curto com texto nesta vertical`);
+    if (!hook) problems.push(missingHookProblem(corte));
     else if (hook.how !== "hook") premises.push(`gancho do ${hook.how} desta vertical (o "hook" da sequência sobrepõe)`);
     const slug = extraVerticalSlug(corte, input.edition);
     const driveId = input.driveIds?.[corte]?.trim() || null;

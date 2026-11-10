@@ -35,6 +35,16 @@
  *                                     (default: habilitado em granularity=default)
  *     [--paragraph-timeout-ms N]     # (#5082) timeout por request no fallback/granularity=paragraph
  *                                     (default: PARAGRAPH_FALLBACK_TIMEOUT_MS = 20000)
+ *     [--chunks-out <json>]          # (#12257) sugestões POR CHUNK (offset, tamanho,
+ *                                     sugestões), só nos modos chunked; o `resume` de
+ *                                     clarice-pending.ts reaplica um subconjunto chunk a chunk
+ *     [--deadline-ms N]              # (#12257) teto de tempo TOTAL da chamada, somando
+ *                                     chunks, retries, backoff e fallback por-parágrafo
+ *                                     (default: CLARICE_TOTAL_DEADLINE_MS = 480000, 8 min).
+ *                                     Estourou → exit 6 `clarice_unavailable`.
+ *                                     Vale para todos os modos (inclusive
+ *                                     `--granularity paragraph` e sem `--retry`):
+ *                                     corrida longa fora do harness sobe o teto aqui.
  *
  * Observabilidade (#2798, campo chunksInFlight adicionado em #4952): com
  * --retry, cada tentativa (sucesso, retry por timeout/5xx, ou falha fatal por
@@ -75,6 +85,11 @@
  *       não refletiu esta execução (ex: no-op silencioso do fallback REST
  *       em background já observado ao vivo, #5755). Nunca confiar no
  *       conteúdo nesse caso — ver `checkCorrectedOutFreshness` abaixo.
+ *   6 — `clarice_unavailable` (#12257): o teto de tempo total (`--deadline-ms`)
+ *       estourou antes de a Clarice responder. Nada é gravado em --out nem em
+ *       --corrected-out. O Stage 2 não para: grava `02-reviewed.md` sem a
+ *       Clarice via `scripts/clarice-pending.ts skip` e deixa a revisão como
+ *       passo retomável (`clarice-pending.ts resume`).
  */
 
 import "dotenv/config";
@@ -145,6 +160,19 @@ export interface ChunkedResult {
   correctedText: string;
   rawSuggestions: ClariceSuggestions;
   chunkCount: number;
+  /**
+   * #12257: sugestões por chunk, na ordem de `splitIntoChunks` (`--chunks-out`).
+   * O `resume` de `clarice-pending.ts` reaplica um subconjunto filtrado chunk a
+   * chunk, como o Stage 2, em vez de sobre o texto inteiro.
+   */
+  chunkSuggestions?: ChunkSuggestionsEntry[];
+}
+
+/** Sugestões de um chunk e onde ele fica no texto enviado (#12257). */
+export interface ChunkSuggestionsEntry {
+  startOffset: number;
+  length: number;
+  suggestions: ClariceSuggestions;
 }
 
 /**
@@ -513,6 +541,7 @@ async function runChunked<Extra>(
   rawSuggestions: ClariceSuggestions;
   chunkCount: number;
   extras: Extra[];
+  chunkSuggestions?: ChunkSuggestionsEntry[];
 }> {
   const chunks = splitIntoChunks(text, chunkThreshold);
 
@@ -525,6 +554,11 @@ async function runChunked<Extra>(
     rawSuggestions: perChunkResults.flatMap((r) => r.rawSuggestions),
     chunkCount: chunks.length,
     extras: perChunkResults.map((r) => r.extra),
+    chunkSuggestions: perChunkResults.map((r, i) => ({
+      startOffset: chunks[i].startOffset,
+      length: chunks[i].text.length,
+      suggestions: r.rawSuggestions,
+    })),
   };
 }
 
@@ -598,6 +632,7 @@ export async function correctTextChunked(
     correctedText: result.correctedText,
     rawSuggestions: result.rawSuggestions,
     chunkCount: result.chunkCount,
+    chunkSuggestions: result.chunkSuggestions,
   };
 }
 
@@ -716,10 +751,66 @@ export async function withClariceRetryChunked(
     correctedText: result.correctedText,
     rawSuggestions: result.rawSuggestions,
     chunkCount: result.chunkCount,
+    chunkSuggestions: result.chunkSuggestions,
     totalAttempts,
     usedParagraphFallbackChunks,
     paragraphFallbackStats,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Teto de tempo total da chamada (#12257)
+// ---------------------------------------------------------------------------
+
+/**
+ * Teto default de tempo TOTAL de uma chamada do CLI (#12257): 8 min.
+ *
+ * Os tetos que já existiam são por tentativa (60s), por chunk (~3min15s com
+ * `--retry`) e por parágrafo (20s), mas nada limitava a SOMA. Com a API fora
+ * do ar, uma newsletter de ~13 mil caracteres (3 chunks) passava por 3
+ * tentativas por chunk e depois pelo fallback por-parágrafo, um parágrafo de
+ * cada vez, e passava de 10 min (edição 261105). O harness do Claude Code
+ * encerra o comando Bash em 10 min (teto do `timeout` da tool) e o Stage 2
+ * terminava sem `02-reviewed.md`. 8 min deixa ~2 min de margem para o
+ * processo sair com exit 6 (e o log do `clarice_unavailable`) antes de o
+ * harness matar o comando; o `clarice-pending.ts skip` roda num comando
+ * seguinte. Só vale se o Bash for chamado com `timeout: 600000`: o default
+ * da tool é 2 min, e aí o comando é cortado antes do teto (os playbooks pedem
+ * o timeout explícito).
+ */
+export const CLARICE_TOTAL_DEADLINE_MS = 480_000;
+
+/** Exit code do CLI quando o teto total estoura (#12257). */
+export const CLARICE_UNAVAILABLE_EXIT_CODE = 6;
+
+/** Erro de teto total estourado — o CLI o converte em exit 6 `clarice_unavailable`. */
+export class ClariceDeadlineError extends Error {
+  readonly deadlineMs: number;
+  constructor(deadlineMs: number) {
+    super(
+      `clarice_unavailable: a API da Clarice não respondeu dentro do teto total de ${deadlineMs / 1000}s ` +
+        `(chunks + retries + fallback por-parágrafo, #12257)`,
+    );
+    this.name = "ClariceDeadlineError";
+    this.deadlineMs = deadlineMs;
+  }
+}
+
+/**
+ * Corre `work` contra um teto de tempo total. Estourou → rejeita com
+ * `ClariceDeadlineError` sem esperar `work` terminar (as requisições em voo
+ * ficam para trás; o CLI sai logo em seguida com `process.exit`, que as
+ * encerra). Em sucesso ou erro de `work` antes do teto, o timer é limpo — sem
+ * isso o processo ficaria vivo até o teto mesmo depois de terminar.
+ */
+export function withTotalDeadline<T>(work: Promise<T>, deadlineMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new ClariceDeadlineError(deadlineMs)), deadlineMs);
+  });
+  return Promise.race([work, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -798,6 +889,8 @@ export interface CliArgs {
   outPath: string;
   /** Caminho opcional para gravar o texto corrigido (pós-apply chunk-local). */
   correctedOutPath?: string;
+  /** #12257 — grava as sugestões POR CHUNK (`ChunkSuggestionsEntry[]`); só modos chunked. */
+  chunksOutPath?: string;
   retry: boolean;
   timeoutMs?: number;
   maxAttempts?: number;
@@ -818,6 +911,8 @@ export interface CliArgs {
   noParagraphFallback: boolean;
   /** #5082 — timeout por request no fallback/modo por-parágrafo (default: PARAGRAPH_FALLBACK_TIMEOUT_MS). */
   paragraphTimeoutMs?: number;
+  /** #12257 — teto de tempo total da chamada (default: CLARICE_TOTAL_DEADLINE_MS). */
+  deadlineMs?: number;
 }
 
 export function parseCliArgs(argv: string[]): CliArgs | null {
@@ -831,6 +926,7 @@ export function parseCliArgs(argv: string[]): CliArgs | null {
     if (flag === "--in" && value) { out.inPath = value; i++; }
     else if (flag === "--out" && value) { out.outPath = value; i++; }
     else if (flag === "--corrected-out" && value) { out.correctedOutPath = value; i++; }
+    else if (flag === "--chunks-out" && value) { out.chunksOutPath = value; i++; }
     else if (flag === "--retry") { out.retry = true; }
     else if (flag === "--timeout-ms" && value) {
       const n = Number(value);
@@ -879,6 +975,15 @@ export function parseCliArgs(argv: string[]): CliArgs | null {
       out.paragraphTimeoutMs = n;
       i++;
     }
+    else if (flag === "--deadline-ms" && value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) {
+        console.error(`--deadline-ms deve ser um número positivo (recebido: ${value})`);
+        process.exit(1);
+      }
+      out.deadlineMs = n;
+      i++;
+    }
   }
   if (!out.inPath || !out.outPath) return null;
   return out as CliArgs;
@@ -892,7 +997,7 @@ export async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
   if (!args) {
     console.error(
-      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N] [--edition AAMMDD] [--stage N] [--agent nome] [--granularity default|paragraph] [--no-paragraph-fallback] [--paragraph-timeout-ms N]",
+      "Uso: clarice-correct.ts --in <text-file> --out <suggestions-json> [--corrected-out <corrected-text>] [--retry] [--timeout-ms N] [--max-attempts N] [--edition AAMMDD] [--stage N] [--agent nome] [--granularity default|paragraph] [--no-paragraph-fallback] [--paragraph-timeout-ms N] [--deadline-ms N] [--chunks-out <json>]",
     );
     process.exit(1);
   }
@@ -913,6 +1018,7 @@ export async function main(): Promise<void> {
   let rawSuggestions: ClariceSuggestions;
   let correctedText: string;
   let logExtra: Record<string, unknown> = {};
+  let chunkSuggestions: ChunkSuggestionsEntry[] | undefined;
 
   // #2798 — loga cada tentativa (sucesso/retry/fatal) em data/run-log.jsonl,
   // pra permitir diagnosticar padrões sem depender só do resultado final
@@ -921,7 +1027,12 @@ export async function main(): Promise<void> {
   // (nunca "error"), porque 1 parágrafo falhar isolado é esperado/tolerado
   // (fail-fast por design) e não deve soar como incidente igual a um chunk
   // inteiro esgotando os retries normais.
+  // #12257: depois do teto, as tentativas abandonadas (withTotalDeadline não
+  // as cancela) não logam mais — senão, chamado em-processo, o run-log ganha
+  // tentativas de uma chamada que já saiu com clarice_unavailable.
+  let deadlineHit = false;
   const onAttempt = (entry: AttemptLogEntry): void => {
+    if (deadlineHit) return;
     logEvent({
       edition: args.edition ?? null,
       stage: args.stage ?? 2,
@@ -939,20 +1050,27 @@ export async function main(): Promise<void> {
     });
   };
 
-  try {
+  const runCorrection = async (): Promise<{
+    rawSuggestions: ClariceSuggestions;
+    correctedText: string;
+    logExtra: Record<string, unknown>;
+    chunkSuggestions?: ChunkSuggestionsEntry[];
+  }> => {
     if (args.granularity === "paragraph") {
       const result = await correctTextViaParagraphs(
         { apiKey, text, timeoutMs: args.paragraphTimeoutMs ?? args.timeoutMs, onAttempt },
         args.paragraphTimeoutMs ?? args.timeoutMs ?? PARAGRAPH_FALLBACK_TIMEOUT_MS,
       );
-      rawSuggestions = result.rawSuggestions;
-      correctedText = result.correctedText;
-      logExtra = {
-        granularity: "paragraph",
-        paragraphs_total: result.stats.paragraphsTotal,
-        paragraphs_substantive: result.stats.paragraphsSubstantive,
-        paragraphs_succeeded: result.stats.paragraphsSucceeded,
-        paragraphs_failed: result.stats.paragraphsFailed,
+      return {
+        rawSuggestions: result.rawSuggestions,
+        correctedText: result.correctedText,
+        logExtra: {
+          granularity: "paragraph",
+          paragraphs_total: result.stats.paragraphsTotal,
+          paragraphs_substantive: result.stats.paragraphsSubstantive,
+          paragraphs_succeeded: result.stats.paragraphsSucceeded,
+          paragraphs_failed: result.stats.paragraphsFailed,
+        },
       };
     } else if (args.retry) {
       const policy: RetryPolicy = {
@@ -968,25 +1086,59 @@ export async function main(): Promise<void> {
         undefined,
         { enabled: !args.noParagraphFallback, timeoutMs: args.paragraphTimeoutMs },
       );
-      rawSuggestions = result.rawSuggestions;
-      correctedText = result.correctedText;
-      logExtra = {
-        attempts_used: result.totalAttempts,
-        chunks: result.chunkCount,
-        chunks_used_paragraph_fallback: result.usedParagraphFallbackChunks,
+      return {
+        rawSuggestions: result.rawSuggestions,
+        correctedText: result.correctedText,
+        chunkSuggestions: result.chunkSuggestions,
+        logExtra: {
+          attempts_used: result.totalAttempts,
+          chunks: result.chunkCount,
+          chunks_used_paragraph_fallback: result.usedParagraphFallbackChunks,
+          // #12257: parágrafos que o fallback não corrigiu (saem sem a Clarice).
+          // O `resume` de clarice-pending.ts lê isto pra não dar correção
+          // parcial por completa.
+          paragraphs_failed: result.paragraphFallbackStats.reduce((n, s) => n + s.paragraphsFailed, 0),
+        },
       };
-    } else {
-      const result = await correctTextChunked(
-        { apiKey, text, timeoutMs: args.timeoutMs, onAttempt },
-        undefined,
-        undefined,
-        { enabled: !args.noParagraphFallback, timeoutMs: args.paragraphTimeoutMs },
-      );
-      rawSuggestions = result.rawSuggestions;
-      correctedText = result.correctedText;
-      logExtra = { chunks: result.chunkCount };
     }
+    const result = await correctTextChunked(
+      { apiKey, text, timeoutMs: args.timeoutMs, onAttempt },
+      undefined,
+      undefined,
+      { enabled: !args.noParagraphFallback, timeoutMs: args.paragraphTimeoutMs },
+    );
+    return {
+      rawSuggestions: result.rawSuggestions,
+      correctedText: result.correctedText,
+      chunkSuggestions: result.chunkSuggestions,
+      logExtra: { chunks: result.chunkCount },
+    };
+  };
+
+  const deadlineMs = args.deadlineMs ?? CLARICE_TOTAL_DEADLINE_MS;
+  try {
+    const outcome = await withTotalDeadline(runCorrection(), deadlineMs);
+    rawSuggestions = outcome.rawSuggestions;
+    correctedText = outcome.correctedText;
+    logExtra = outcome.logExtra;
+    chunkSuggestions = outcome.chunkSuggestions;
   } catch (e) {
+    if (e instanceof ClariceDeadlineError) {
+      deadlineHit = true;
+      // #12257 — API sem resposta pelo teto inteiro. Evento próprio (não
+      // `clarice_rest_attempt`) pra o Stage 2 e o auto-reporter distinguirem
+      // "API indisponível" de "erro HTTP".
+      logEvent({
+        edition: args.edition ?? null,
+        stage: args.stage ?? 2,
+        agent: args.agent ?? "clarice-correct-rest",
+        level: "error",
+        message: "clarice_unavailable",
+        details: { deadlineMs, elapsedMs: Date.now() - callStartMs, inPath: args.inPath },
+      });
+      console.error(`${e.message}. Nada foi gravado em --out/--corrected-out.`);
+      process.exit(CLARICE_UNAVAILABLE_EXIT_CODE);
+    }
     console.error(`erro chamando Clarice REST: ${(e as Error).message}`);
     process.exit(3);
   }
@@ -996,6 +1148,15 @@ export async function main(): Promise<void> {
   } catch (e) {
     console.error(`erro escrevendo --out: ${(e as Error).message}`);
     process.exit(4);
+  }
+
+  if (args.chunksOutPath && chunkSuggestions) {
+    try {
+      writeFileSync(args.chunksOutPath, JSON.stringify(chunkSuggestions, null, 2), "utf8");
+    } catch (e) {
+      console.error(`erro escrevendo --chunks-out: ${(e as Error).message}`);
+      process.exit(4);
+    }
   }
 
   if (args.correctedOutPath) {

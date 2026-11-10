@@ -57,7 +57,7 @@ import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getStringArg, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
 import {
@@ -296,7 +296,19 @@ export function resolveFatalExitCode(current: string | number | null | undefined
   return current === LEAK_FOUND_EXIT_CODE ? LEAK_FOUND_EXIT_CODE : 1;
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/openrouter-billing-leak-check.ts",
+  booleans: ["dry-run"],
+  values: ["to", "days"],
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");

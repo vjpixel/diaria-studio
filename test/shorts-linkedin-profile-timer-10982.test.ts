@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireTimerLock, decideTimerRun, interpretDriveLookup, TIMER_LOCK_STALE_MS } from "../scripts/shorts-linkedin-profile-timer.ts";
 import { LINKEDIN_TIMER_DETAIL, SHORTS_BOOLEAN_FLAGS, planShortsPublish } from "../scripts/publish-shorts.ts";
-import { loadShortsConfig } from "../scripts/lib/diaria/short-video.ts";
+import { loadShortScheduleConfig, loadShortsConfig, timerDueTimes } from "../scripts/lib/diaria/short-video.ts";
 import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 import platformConfig from "../platform.config.json" with { type: "json" };
@@ -138,8 +138,8 @@ describe("#10982 tasks do 300 cobrem os horários do vertical", () => {
   });
 
   it("todo horário do teste fora da hora cheia é o da diária menos 1 min (o resto cai na de hora em hora)", () => {
-    const sched = (platformConfig as any).publishing.shorts.schedule;
-    const times: string[] = [...sched.rotation_times, sched.default_time];
+    // #12250: inclui o horário próprio do destino em by_destination.
+    const times = timerDueTimes(loadShortScheduleConfig(platformConfig), "linkedin_profile");
     assert.equal(daily!.schedule.kind, "daily");
     const d = daily!.schedule as { hour: number; minute: number };
     const offHour = times.filter((t) => !t.endsWith(":00"));

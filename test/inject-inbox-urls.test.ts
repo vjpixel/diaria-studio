@@ -716,8 +716,9 @@ describe("marker capture_failed propagation (#2878)", () => {
     writeFileSync(resolve(internalDir, "captured-newsletters.json"), JSON.stringify(
       Array.from({ length: 45 }, (_, i) => ({ sender: `Nome ${i} <NEWS${i % 14}@example.com>` })),
     ));
+    // #12188: remetentes fictícios — sem registro, a contagem não filtra por aprovação.
     execSync(`npx tsx scripts/inject-inbox-urls.ts --inbox-md "${inboxPath}" --out "${resolve(internalDir, "pool.json")}" --captured-articles "${capPath}"`,
-      { cwd: ROOT, encoding: "utf8" });
+      { cwd: ROOT, encoding: "utf8", env: { ...process.env, DIARIA_NEWSLETTER_SENDERS_PATH: resolve(TMP_DIR, "sem-registro.json") } });
     const marker = JSON.parse(readFileSync(resolve(internalDir, ".marker-inject-inbox-urls.json"), "utf8")).details;
     assert.equal(marker.captured_newsletter_count, 45);
     assert.equal(marker.distinct_newsletter_senders, 14);

@@ -62,6 +62,8 @@ Com `--no-gates` (ou `auto_approve = true`): pular o gate, ir direto ao sentinel
 ### Etapa 4d. Escrever sentinel de conclusão
 
 ```bash
+# #12188: re-audita o intake de newsletters antes do sentinel (edição de link no gate muda o fingerprint)
+npx tsx scripts/audit-newsletter-intake.ts --edition {AAMMDD} --edition-dir {EDITION_DIR}
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition {AAMMDD} --step 4 \
   --outputs "02-reviewed.md,03-social.md"
@@ -77,7 +79,7 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 4 --
 
 ## Próximo passo
 
-Após aprovação: `/diaria-5-publicacao {AAMMDD}` para dispatch da newsletter e social.
+Após aprovação, numa sessão nova cada: `/diaria-video-montagem {AAMMDD}` e `/diaria-publica {AAMMDD}` (vídeo, Etapas 5 e 6, #12591; o nome antigo `/diaria-publica-video` segue como alias, #12620). A Etapa 5 não publica sem o link do vídeo no D1 (#12588); sem vídeo no dia, marcar a edição com `set-d1-no-video.ts {AAMMDD}` e rodar `/diaria-5-publicacao {AAMMDD}`.
 
 ## Notas
 

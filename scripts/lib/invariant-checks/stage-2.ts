@@ -11,6 +11,9 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { describeProvenance, readRunRecord } from "../humanizer-run-record.ts";
+import { hashSocialContent, HUMANIZER_SOCIAL_SENTINEL } from "../humanizer-social-seal.ts"; // #12361
+import { computeSectionHashes, isCardsSection } from "../social-lint-rules.ts"; // #12361, #12383
 import { assertHumanized } from "../assert-humanized.ts";
 import { checkSentinel as checkSocialHumanizerSentinel } from "../../check-humanizer-social.ts"; // #6305
 import {
@@ -419,6 +422,96 @@ function checkSocialHumanizerSentinelWritten(editionDir: string): InvariantViola
 }
 
 /**
+ * #12361: hashes aceitos sem prova (`accepted_section_hashes`) do selo social,
+ * só quando o selo bate com o `03-social.md` atual — selo velho não aceita nada
+ * (a regra `social-humanizer-sentinel-written` já acusa o hash divergente).
+ */
+interface SealView {
+  /** Hashes aceitos sem prova, só quando o selo bate com o texto atual. */
+  accepted: Set<string>;
+  /** O selo bate com o `03-social.md` atual. */
+  fresh: boolean;
+  /**
+   * #12383: o selo foi gravado com `main_d{N}-cards` nos hashes. `false` = selo
+   * anterior à #12383 (edição em curso na transição): o registro dela não tem
+   * prova dos cards, e a falta vira aviso em vez de erro. Sem selo = `true`
+   * (edição nova; a regra `social-humanizer-sentinel-written` já acusa a ausência).
+   */
+  tracksCards: boolean;
+}
+
+function readSealView(editionDir: string, socialMd: string): SealView {
+  const sealPath = resolve(editionDir, "_internal", HUMANIZER_SOCIAL_SENTINEL);
+  if (!existsSync(sealPath)) return { accepted: new Set(), fresh: false, tracksCards: true };
+  try {
+    const seal = JSON.parse(readFileSync(sealPath, "utf8")) as {
+      social_sha256?: unknown;
+      accepted_section_hashes?: unknown;
+      cards_sections_tracked?: unknown;
+    };
+    const tracksCards = seal.cards_sections_tracked === true;
+    if (seal.social_sha256 !== hashSocialContent(socialMd)) return { accepted: new Set(), fresh: false, tracksCards };
+    const acc = seal.accepted_section_hashes;
+    if (!acc || typeof acc !== "object") return { accepted: new Set(), fresh: true, tracksCards };
+    return {
+      accepted: new Set(
+        Object.entries(acc as Record<string, unknown>)
+          .filter(([, reason]) => reason === "formatting" || reason === "unproven_ok")
+          .map(([hash]) => hash),
+      ),
+      fresh: true,
+      tracksCards,
+    };
+  } catch {
+    // selo ilegível: nenhum aceite (fail-closed; a regra do selo acusa)
+    return { accepted: new Set(), fresh: false, tracksCards: true };
+  }
+}
+
+/** #12331: o primeiro --write sela o hash mesmo sem --record-run.
+ * Exigir o registro no gate do Stage 2 impede que esse selo sozinho seja
+ * confundido com prova dos dois passos. Não inferir execução dos snapshots.
+ */
+function checkSocialHumanizerProvenance(editionDir: string): InvariantViolation[] {
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) return [];
+  const socialMd = readFileSync(socialPath, "utf8");
+  const seal = readSealView(editionDir, socialMd);
+  const hashes = computeSectionHashes(socialMd);
+  // #12398: com o selo batendo com o texto, o --write não precisa de
+  // --bypass-reason (antes a dica saía exit 0 sem efeito). Com o selo divergente, os dois.
+  // #12511: a dica nomeia a seção da linha (--unproven-ok-section), nunca um
+  // --unproven-ok solto que aceitaria D1/D2/D3 de uma vez.
+  const keepCmd = (section: string) =>
+    seal.fresh
+      ? `\`check-humanizer-social.ts --write --unproven-ok "<motivo>" --unproven-ok-section ${section} --edition-dir ${editionDir}/\``
+      : `\`check-humanizer-social.ts --write --bypass-reason "<motivo>" --unproven-ok "<motivo>" --unproven-ok-section ${section} --edition-dir ${editionDir}/\``;
+  return describeProvenance(socialMd, readRunRecord(editionDir))
+    .filter((row) => !row.humanizador || !row.clarice)
+    // #12361: seção aceita pelo selo atual (--unproven-ok do editor no gate §2d,
+    // ou mudança só de formatação sobre texto provado) não é falta de prova.
+    .filter((row) => !seal.accepted.has(hashes[row.section]))
+    .map((row) => {
+      // #12383: cards de edição selada antes de a prova cobri-los não bloqueiam.
+      const legacyCards = isCardsSection(row.section) && !seal.tracksCards;
+      return {
+        rule: "social-humanizer-provenance-recorded",
+        message: `${row.section}: humanizador ${row.humanizador ? "sim" : "NÃO"} · Clarice ${row.clarice ? "sim" : "NÃO"}. ` +
+          "Registre os passos executados com check-humanizer-social.ts --record-run --step humanizador|clarice " +
+          "usando os snapshots pré/pós do arquivo inteiro (Stage 2 §2c); o selo --write sozinho não prova execução. " +
+          `Se o editor editou esta seção no gate e quer manter o texto dele, rode ${keepCmd(row.section)} (#12361, #12398, #12511).` +
+          (legacyCards
+            ? " Aviso, não erro: o selo desta edição é anterior à prova dos cards (#12383)."
+            : ""),
+        source_issue: "#12331",
+        // #9619: o post opcional UM não bloqueia os destaques.
+        severity: row.section === "main_um" || legacyCards ? "warning" as const : "error" as const,
+        file: "03-social.md",
+      };
+    });
+}
+
+/**
  * #6337: registra em `STAGE_2_RULES` os checks de
  * `scripts/check-stage2-invariants.ts` (#1072/#1073) que até aqui só rodavam
  * como passo em prosa do playbook (`orchestrator-stage-2.md` ~L375-380).
@@ -633,6 +726,13 @@ export const STAGE_2_RULES: InvariantRule[] = [
     run: checkSocialHumanizerSentinelWritten,
   },
   {
+    id: "social-humanizer-provenance-recorded",
+    description: "Humanizador e Clarice registrados por conteúdo antes de concluir Stage 2 (#12331)",
+    source_issue: "#12331",
+    stage: 2,
+    run: checkSocialHumanizerProvenance,
+  },
+  {
     id: "newsletter-humanizador-diff-ran",
     description: "humanizador da newsletter rodou (diff _internal/02-normalized.md vs _internal/02-humanized.md) (#6337, #1072)",
     source_issue: "#6337",
@@ -669,7 +769,7 @@ export const STAGE_2_RULES: InvariantRule[] = [
   },
   {
     id: "intentional-error-not-recent-repeat",
-    description: "erro intencional não reusa wrong_value (error) nem correct_value (warning) de edição dos últimos 30 dias em data/intentional-errors.jsonl (#9101)",
+    description: "erro intencional não reusa wrong_value nem correct_value (ambos error, #12612) de edição dos últimos 30 dias em data/intentional-errors.jsonl (#9101)",
     source_issue: "#9101",
     stage: 2,
     run: (editionDir) => checkIntentionalErrorNotRecentRepeat(editionDir),

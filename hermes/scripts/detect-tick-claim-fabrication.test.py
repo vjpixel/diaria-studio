@@ -1097,7 +1097,31 @@ def test_regressao_10069_erro_posterior_nao_esconde_fabricacao_anterior():
     print("regressão #10069: erro de provider posterior não esconde fabricação anterior — OK")
 
 
+def test_regressao_12340_sem_comentario_ou_claim():
+    mod = _load_module()
+    # Transcript cron_5d791ef6fc2c_20261106_122331, write_file real.
+    report = (
+        "- #12311 e #12309 não reivindicadas: gate de coerência rejeitou por "
+        "compartilharem caminhos com trabalho recente/PR aberta. "
+        "Sem comentário ou claim criado."
+    )
+    assert mod.extract_claimed_issue_refs(report) == {}
+    assert mod.check_claimed_issues(
+        report, set(), True, True, True, set(),
+    )["status"] == "not_applicable"
+    for text in (
+        "#12309: sem conflito, claim registrado.",
+        "#12309: sem comentário. Claim registrado.",
+        "#12309: claim registrado sem comentário.",
+    ):
+        assert 12309 in mod.extract_claimed_issue_refs(text), text
+        assert mod.check_claimed_issues(
+            text, set(), True, True, True, set(),
+        )["status"] == "fabrication_suspected"
+
+
 def main() -> int:
+    test_regressao_12340_sem_comentario_ou_claim()
     mod = _load_module()
     now = datetime.now(timezone.utc)
 

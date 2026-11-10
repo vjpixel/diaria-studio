@@ -46,7 +46,7 @@
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { buildDmarcEnforcementReport, DMARC_TARGET_DOMAIN } from "./dmarc-enforcement-engine.ts";
 import { resolveDmarcEnforcementReport, toAlarmFindings } from "./lib/dmarc-enforcement-alarm.ts";
@@ -68,7 +68,15 @@ const LOG_PREFIX = "[dmarc-enforcement-alarm]";
  *  desta task. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/dmarc-enforcement-alarm.ts",
+  booleans: ["dry-run"],
+};
+
 export async function main(argv = process.argv.slice(2)): Promise<number> {
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) return cliExit;
   loadProjectEnv(ROOT);
   const isDryRun = hasFlag(argv, "dry-run");
 

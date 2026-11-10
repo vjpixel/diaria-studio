@@ -110,7 +110,7 @@ import {
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #8056 — multi-imagem
 import { TWITTER_CHAR_LIMIT, TWITTER_URL_WEIGHT, computeTwitterWeightedLength } from "./lib/twitter-weight.ts"; // #10180
 import { injectVideoLinkWithinLimit } from "./lib/diaria/d1-video-link.ts"; // #10772
-import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772
+import { readD1VideoUrlForPosts as readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772; no-video.json vence a URL (#12588)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

@@ -2,6 +2,13 @@
 /**
  * scripts/fetch-tally-audience.ts (#466 — migração Beehiiv → Kit, #461)
  *
+ * **DESCONTINUADO como fonte do perfil (#10605, decisão 10 do editor,
+ * 08/11/2026):** o perfil de audiência sai só do formulário do onboarding.
+ * `runAudience` recusa `--responses` (exit 1, com a explicação), então este
+ * script ainda busca e conta as respostas do Tally (`--dry-run` segue útil
+ * para consulta), mas não regenera mais o perfil. Remoção do script: fora do
+ * escopo do #10605.
+ *
  * Substitui as Fases 1-2 do fluxo `/diaria-atualiza-audiencia` (que hoje
  * dependem de MCP pra listar/paginar a survey Beehiiv) por um pull DIRETO
  * via REST — `GET /forms/{formId}/submissions`, paginado, sem MCP nenhum

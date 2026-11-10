@@ -8,7 +8,8 @@
  * no dia seguinte — e, por ter a âncora mais antiga, ficava com a vaga do teto
  * antes dos ativos. Agora `nao_ativo` vira pulo terminal gravado e encerra a
  * sequência do formulário para a pessoa (`formStepDue` → `saiu`), sem
- * ressuscitar. O lembrete segue sem teto de tempo para quem está ativo.
+ * ressuscitar. Para quem está ativo, o lembrete não tem janela de tempo
+ * (o teto, desde 08/11/2026, é de 3 lembretes, não de dias).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -44,6 +45,8 @@ const snippets: FollowupSnippets = {
   apoio360: null,
   form: parseFollowupSnippet(okSnippet()),
   form_lembrete: parseFollowupSnippet(okSnippet()),
+  form_lembrete2: parseFollowupSnippet(okSnippet()),
+  form_lembrete3: parseFollowupSnippet(okSnippet()),
 };
 
 function entry(id: number, anchorSec: number): OnboardingEntry {
@@ -145,7 +148,7 @@ describe("#10675 descadastrado não fica devido para sempre no lembrete do formu
     assert.equal(after.skips?.length, 1, "pulo gravado uma vez só");
   });
 
-  it("ativo continua recebendo lembretes sem teto de tempo (decisão do editor de 20/10)", () => {
+  it("ativo continua recebendo o lembrete sem janela de tempo (o teto é de 3 lembretes, não de dias)", () => {
     const p: FollowupPerson = { kit_subscriber_id: 2, email: "2@x.com", cadastro_at: null, sends: [{ step: "form", at: iso(T0 + 6 * DAY), lot_id: "f" }] };
     const far = T0 + 6 * DAY + 3000 * DAY;
     assert.deepEqual(formStepDue(T0, far, p, cfgBase), { due: "form_lembrete" });

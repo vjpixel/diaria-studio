@@ -70,14 +70,14 @@ async function withRun(input: Partial<FetchDriveVideoInput>, check: (r: { out: A
   }
 }
 
-test("parse: sem --download o CLI só planeja; --download baixa e promove; os dois juntos = erro", () => {
+test("parse: sem --download o CLI só planeja; --download baixa (sem promover, #12275); os dois juntos = erro", () => {
   const plain = parseFetchDriveVideoArgs(["--edition", "261029", "--orientation", "horizontal"], CFG);
   assert.equal(plain.ok && plain.dryRun, true, "o caso do incidente: verificação sem flag não baixa");
   assert.equal(plain.ok && plain.promote, false);
   assert.equal(plain.ok && plain.maxBytes, DEFAULT_MAX_DOWNLOAD_MB * 1e6);
   const dl = parseFetchDriveVideoArgs(["--edition", "261029", "--orientation", "horizontal", "--download", "--max-mb", "500"], CFG);
   assert.equal(dl.ok && dl.dryRun, false);
-  assert.equal(dl.ok && dl.promote, true);
+  assert.equal(dl.ok && dl.promote, false, "#12275: --download não promove sozinho");
   assert.equal(dl.ok && dl.maxBytes, 500e6);
   const promote = parseFetchDriveVideoArgs(["--edition", "261029", "--orientation", "vertical", "--promote"], CFG);
   assert.equal(promote.ok && promote.promote, true);
@@ -125,7 +125,7 @@ test("download explícito abaixo do teto: baixa e loga tamanho/destino antes", (
     assert.ok(logs.some((l) => l.startsWith("[download]") && l.includes("diaria-comentada-261029.mp4")));
   }));
 
-test("stage5-youtube: o fetch que sobe o vídeo passa --download (senão o novo default não baixaria)", () => {
+test("stage5-youtube não baixa nada do Drive (#12588: a Etapa 5 só lê o link)", () => {
   const src = readFileSync(new URL("../scripts/stage5-youtube.ts", import.meta.url), "utf8");
-  assert.match(src, /runTsx\(\[\.\.\.fetchArgs, "--download"\]\)/);
+  assert.doesNotMatch(src, /"--download"|"scripts\/fetch-drive-video\.ts"/);
 });

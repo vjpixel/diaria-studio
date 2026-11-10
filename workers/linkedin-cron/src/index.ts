@@ -77,10 +77,15 @@
  *   THREADS_USER_ID                → (#3944 Parte B) Threads user ID da conta @diar.ia.br
  *   LINKEDIN_ACCESS_TOKEN          → (#8052) token com escopo w_organization_social (ou w_member_social)
  *                                    pra API DIRETA do LinkedIn (Images API + Posts API) — usado SÓ
- *                                    pelo caminho carrossel (image_urls > 1). O post single-image
+ *                                    pelo caminho carrossel (image_urls > 1) e pelo documento PDF
+ *                                    (document_url, #8055, Documents API). O post single-image
  *                                    continua indo pelo webhook Make (MAKE_WEBHOOK_URL acima).
  *   LINKEDIN_AUTHOR_URN            → (#8052) URN da página/perfil que publica o carrossel
- *                                    (urn:li:organization:{id} ou urn:li:person:{id})
+ *                                    (urn:li:organization:{id} ou urn:li:person:{id}).
+ *                                    Os dois também habilitam o repost da página (#11121) e o
+ *                                    comentário como página (#10983); sem eles o enqueue
+ *                                    recusa com `code: "linkedin_creds_missing"` e o caller
+ *                                    segue no caminho guiado/manual de sempre.
  * Vars (via [vars] no wrangler.toml, não-secretas):
  *   INSTAGRAM_API_VERSION          → (#3817) default "v25.0" se ausente (aplicado em dispatch.ts)
  *   THREADS_API_VERSION            → (#3944 Parte B) default "v1.0" se ausente (aplicado em dispatch.ts)
@@ -148,7 +153,16 @@ export type WebhookTarget = "diaria" | "pixel";
 // publicado nas redes, só na newsletter. Recusar no enqueue é o guard pra não voltar.
 // #10823: `shorts` — Reels do vídeo curto da edição (/diaria-shorts).
 export const QUEUE_DESTAQUE_RE = /^(d[123]|um|shorts|weekly(-[a-z]+)?|especial(-[a-z]+)?)$/;
-export type QueueAction = "post" | "comment";
+/**
+ * #11121/#10983 — `repost` (a página reposta um post existente, `target_post_urn`)
+ * e `comment` com `webhook_target` "diaria" + alvo (`target_post_urn` ou
+ * `parent_scheduled_at`) saem pela API DIRETA do LinkedIn como a página
+ * (`LINKEDIN_ACCESS_TOKEN`/`LINKEDIN_AUTHOR_URN`). `comment` sem alvo segue o
+ * caminho antigo (só o webhook "pixel" aceita).
+ */
+export type QueueAction = "post" | "comment" | "repost";
+/** #11121/#10983 — URN de post que a API aceita como alvo de comentário/repost. */
+export const LINKEDIN_POST_URN_RE = /^urn:li:(share|ugcPost):\d{1,30}$/;
 // #3817/#3944 Parte B — canal de disparo. Ausente/undefined = "linkedin" SEMPRE
 // (backward-compat obrigatória: entries já em produção no KV nunca tiveram este campo).
 export type QueueChannel = "linkedin" | "instagram" | "threads";
@@ -184,6 +198,26 @@ export interface QueueEntry {
   webhook_target?: WebhookTarget;
   action?: QueueAction;
   parent_destaque?: string; // qual destaque o comment pertence (auditoria)
+  /**
+   * #11121/#10983 — post alvo (`urn:li:share:N` ou `urn:li:ugcPost:N`): o que a
+   * página reposta (`action: "repost"`, obrigatório) ou comenta
+   * (`action: "comment"`, alternativa a `parent_scheduled_at`).
+   */
+  target_post_urn?: string;
+  /**
+   * #10983 — horário (ISO) em que o post da PÁGINA a comentar foi agendado. O
+   * post do D1 sai pelo webhook Make, que não devolve a URN; no disparo o
+   * Worker lista os posts da página e comenta no mais próximo desse horário
+   * (`findPagePostNear`, dispatch.ts). Só com `action: "comment"`.
+   */
+  parent_scheduled_at?: string;
+  /**
+   * #10983 — trecho do texto do post da página a comentar (a abertura do D1),
+   * até `PAGE_POST_TEXT_HINT_MAX` chars. Com ele, o post achado pela hora
+   * também precisa conter esse trecho; sem nenhum que case, o comentário não
+   * sai (retenta e vai pra DLQ). Só junto de `parent_scheduled_at`.
+   */
+  parent_text_hint?: string;
   // #3817 — canal de disparo. Ver QueueChannel acima — default "linkedin".
   channel?: QueueChannel;
   // #4153 — lista de imagens pro carrossel do Instagram (5 cards do post
@@ -212,6 +246,16 @@ export interface QueueEntry {
    * fixa comentário).
    */
   first_comment?: string;
+  /**
+   * #8055 — documento PDF do LinkedIn (Documents API, visualizador paginado no
+   * feed). Só `channel: "linkedin"`. URL https pública que o Worker baixa no
+   * disparo e sobe pro LinkedIn (`fireLinkedInDocument`). `image_urls`, se
+   * vier junto, é o FALLBACK: falha definitiva antes de o post existir cai no
+   * carrossel de imagens (`fireLinkedInCarousel`), nunca perde o post.
+   */
+  document_url?: string;
+  /** #8055 — título do documento (`content.media.title`, exigido pela Posts API). */
+  document_title?: string;
   /**
    * #10906 — chave idempotente do enqueue, quando o caller manda. Define o
    * segmento final da key (`idempotentQueueUuid`): o mesmo POST repetido cai
@@ -258,6 +302,15 @@ export const MAX_URL_LENGTH = 2_000; // #882 — limite de comprimento de image_
 // já implica length >= 2.
 export const CAROUSEL_MIN_ITEMS = 2;
 export const CAROUSEL_MAX_ITEMS = 10;
+/** #8055 — teto do título do documento do LinkedIn (`content.media.title`).
+ *  Folga sobre qualquer título real ("Os principais destaques de IA da
+ *  semana (2–6 nov)" tem ~50); barra só payload errado. */
+export const MAX_DOCUMENT_TITLE_LENGTH = 400;
+/** #8055 — teto do PDF do documento do LinkedIn. A Documents API aceita até
+ *  100 MB, mas o Worker carrega o PDF inteiro em memória (`arrayBuffer`) e o
+ *  isolate tem ~128 MB (#12372 item 4): 20 MB deixa folga ampla. Os PDFs reais
+ *  do carrossel semanal têm 1 a 2 MB. */
+export const LINKEDIN_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;
 export const DLQ_TTL_SECONDS = 30 * 24 * 3600; // #894 P1-B — DLQ entries expiram em 30 dias
 // (#2219 bug 2 fix) TTL do claim: se `claiming=true` por mais de 5min, o claim
 // é considerado expirado (crash mid-flight sem release). CF DO tem timeout de
@@ -476,6 +529,9 @@ const IDEMPOTENT_CONTENT_FIELDS = [
   "webhook_target",
   "action",
   "parent_destaque",
+  "target_post_urn",
+  "parent_scheduled_at",
+  "parent_text_hint",
   "channel",
   "media_type",
   "video_url",
@@ -483,6 +539,8 @@ const IDEMPOTENT_CONTENT_FIELDS = [
   "collaborators",
   "ig_account",
   "first_comment",
+  "document_url",
+  "document_title",
 ] as const satisfies readonly (keyof QueueEntry)[];
 
 /**
@@ -577,6 +635,8 @@ import {
   resolveThreadsCreds,
   resolveLinkedInCreds,
   probeInstagramCommentScope,
+  normalizePostTextForMatch,
+  PAGE_POST_TEXT_HINT_MAX,
 } from "./dispatch";
 
 /**
@@ -663,6 +723,107 @@ export function validateFirstComment(body: Partial<QueueEntry>): string | null {
   return null;
 }
 
+/**
+ * #8055 — valida `document_url`/`document_title` (documento PDF do LinkedIn).
+ * Os dois andam juntos; só `channel: "linkedin"` (ou ausente), nunca com
+ * comment/pixel nem Reels; URL https com o mesmo teto de `image_url`. Exige a
+ * credencial da API direta — mesmo `code` do carrossel (#8303), pra o caller
+ * cair no fallback sem parsear prosa. Devolve o corpo do 400 ou `null`.
+ */
+export function validateDocumentFields(
+  body: Partial<QueueEntry>,
+  env: Env,
+): { error: string; code?: string } | null {
+  if (body.document_url === undefined && body.document_title === undefined) return null;
+  if (typeof body.document_url !== "string" || !body.document_url) {
+    return { error: "document_url is required (string) when document_title is set" };
+  }
+  if (body.document_url.length > MAX_URL_LENGTH) {
+    return { error: `document_url exceeds ${MAX_URL_LENGTH} chars` };
+  }
+  if (!/^https:\/\//.test(body.document_url)) {
+    return { error: "document_url must be a public https URL (the Worker downloads it at fire time)" };
+  }
+  if (typeof body.document_title !== "string" || !body.document_title.trim()) {
+    return { error: "document_title is required (non-empty string) with document_url" };
+  }
+  if (body.document_title.length > MAX_DOCUMENT_TITLE_LENGTH) {
+    return { error: `document_title exceeds ${MAX_DOCUMENT_TITLE_LENGTH} chars` };
+  }
+  if (body.channel !== undefined && body.channel !== "linkedin") {
+    return { error: "document_url only applies to channel='linkedin'" };
+  }
+  if (body.action === "comment" || body.webhook_target === "pixel" || body.media_type !== undefined) {
+    return { error: "document_url is a page post: not compatible with action='comment', webhook_target='pixel' or media_type" };
+  }
+  if (!resolveLinkedInCreds(env)) {
+    return {
+      error:
+        "channel='linkedin' com documento (document_url) requer LINKEDIN_ACCESS_TOKEN e LINKEDIN_AUTHOR_URN configurados no Worker (API direta, #8055) — não configurados",
+      code: "linkedin_creds_missing",
+    };
+  }
+  return null;
+}
+
+/**
+ * #11121/#10983 — valida o repost da página (`action: "repost"`) e o
+ * comentário como página (`action: "comment"` com `target_post_urn` ou
+ * `parent_scheduled_at`). Os dois saem pela API direta do LinkedIn e exigem a
+ * credencial dela — mesmo `code` do carrossel (#8303), pra o caller voltar ao
+ * caminho guiado/manual sem parsear prosa. `comment` SEM alvo não passa por
+ * aqui (caminho antigo do Make, inalterado). Devolve o corpo do 400 ou `null`.
+ */
+export function validatePageApiFields(
+  body: Partial<QueueEntry>,
+  env: Env,
+): { error: string; code?: string } | null {
+  const hasTarget = body.target_post_urn !== undefined;
+  const hasParentAt = body.parent_scheduled_at !== undefined;
+  const isRepost = body.action === "repost";
+  const isPageComment = body.action === "comment" && body.webhook_target !== "pixel" && (hasTarget || hasParentAt);
+  if (!isRepost && !isPageComment) {
+    if (hasTarget || hasParentAt || body.parent_text_hint !== undefined) {
+      return { error: "target_post_urn/parent_scheduled_at/parent_text_hint only apply to action='repost' or to action='comment' on the page" };
+    }
+    return null;
+  }
+  if (body.channel !== undefined && body.channel !== "linkedin") {
+    return { error: `action='${body.action}' on the page only applies to channel='linkedin'` };
+  }
+  if (body.image_url || body.image_urls !== undefined || body.document_url !== undefined || body.media_type !== undefined) {
+    return { error: `action='${body.action}' does not take image_url/image_urls/document_url/media_type` };
+  }
+  if (hasTarget && (typeof body.target_post_urn !== "string" || !LINKEDIN_POST_URN_RE.test(body.target_post_urn))) {
+    return { error: "target_post_urn must be urn:li:share:{id} or urn:li:ugcPost:{id}" };
+  }
+  if (isRepost) {
+    if (!hasTarget) return { error: "action='repost' requires target_post_urn" };
+    if (hasParentAt) return { error: "parent_scheduled_at only applies to action='comment'" };
+  }
+  if (hasParentAt && (typeof body.parent_scheduled_at !== "string" || Number.isNaN(Date.parse(body.parent_scheduled_at)))) {
+    return { error: "parent_scheduled_at must be a valid ISO 8601 date" };
+  }
+  if (body.parent_text_hint !== undefined) {
+    if (!hasParentAt) return { error: "parent_text_hint only applies with parent_scheduled_at" };
+    if (
+      typeof body.parent_text_hint !== "string" ||
+      body.parent_text_hint.length > PAGE_POST_TEXT_HINT_MAX ||
+      !normalizePostTextForMatch(body.parent_text_hint)
+    ) {
+      return { error: `parent_text_hint must be a non-empty string up to ${PAGE_POST_TEXT_HINT_MAX} chars with letters or digits` };
+    }
+  }
+  if (!resolveLinkedInCreds(env)) {
+    return {
+      error:
+        `action='${body.action}' como página requer LINKEDIN_ACCESS_TOKEN e LINKEDIN_AUTHOR_URN configurados no Worker (API direta, #11121/#10983; provisionamento no #8816) — não configurados`,
+      code: "linkedin_creds_missing",
+    };
+  }
+  return null;
+}
+
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) {
     return json({ error: "unauthorized" }, 401);
@@ -677,7 +838,9 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
 
   const required = ["text", "scheduled_at", "destaque"] as const;
   for (const field of required) {
-    if (!body[field] || typeof body[field] !== "string") {
+    // #11121: o repost da página vai sem comentário próprio (texto vazio).
+    const emptyRepostText = field === "text" && body.action === "repost" && body.text === "";
+    if (!emptyRepostText && (!body[field] || typeof body[field] !== "string")) {
       return json({ error: `missing or invalid field: ${field}` }, 400);
     }
   }
@@ -704,14 +867,17 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   if (body.webhook_target !== undefined && body.webhook_target !== "diaria" && body.webhook_target !== "pixel") {
     return json({ error: "webhook_target must be 'diaria' or 'pixel'" }, 400);
   }
-  if (body.action !== undefined && body.action !== "post" && body.action !== "comment") {
-    return json({ error: "action must be 'post' or 'comment'" }, 400);
+  if (body.action !== undefined && body.action !== "post" && body.action !== "comment" && body.action !== "repost") {
+    return json({ error: "action must be 'post', 'comment' or 'repost'" }, 400);
   }
   // Pixel scenario só faz comment — rejeitar combinação inválida no enqueue
   // pra falhar early em vez de DLQ no fire.
-  if (body.webhook_target === "pixel" && body.action === "post") {
+  if (body.webhook_target === "pixel" && (body.action === "post" || body.action === "repost")) {
     return json({ error: "webhook_target='pixel' supports only action='comment'" }, 400);
   }
+  // #11121/#10983 — repost e comentário como página (API direta).
+  const pageApiError = validatePageApiFields(body, env);
+  if (pageApiError) return json(pageApiError, 400);
   if (body.parent_destaque !== undefined) {
     if (typeof body.parent_destaque !== "string") {
       return json({ error: "parent_destaque must be a string" }, 400);
@@ -777,6 +943,9 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // #11724 — comentário pós-publicação: validado no enqueue pelo mesmo motivo.
   const firstCommentError = validateFirstComment(body);
   if (firstCommentError) return json({ error: firstCommentError }, 400);
+  // #8055 — documento PDF do LinkedIn: validado no enqueue pelo mesmo motivo.
+  const documentError = validateDocumentFields(body, env);
+  if (documentError) return json(documentError, 400);
 
   // #10906 — chave idempotente (opcional). Validada antes de qualquer escrita.
   if (body.idempotency_key !== undefined) {
@@ -884,6 +1053,10 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.webhook_target !== undefined && { webhook_target: body.webhook_target as WebhookTarget }),
     ...(body.action !== undefined && { action: body.action as QueueAction }),
     ...(body.parent_destaque !== undefined && { parent_destaque: body.parent_destaque as string }),
+    // #11121/#10983 — omitidos se undefined: alvo do repost/comentário como página
+    ...(body.target_post_urn !== undefined && { target_post_urn: body.target_post_urn }),
+    ...(body.parent_scheduled_at !== undefined && { parent_scheduled_at: body.parent_scheduled_at }),
+    ...(body.parent_text_hint !== undefined && { parent_text_hint: body.parent_text_hint }),
     // #3817 — omitido se undefined: entries sem channel resolvem "linkedin" (default)
     ...(body.channel !== undefined && { channel: body.channel as QueueEntry["channel"] }),
     // #4153 — omitido se undefined: entries sem image_urls usam image_url (single-image)
@@ -896,6 +1069,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.ig_account !== undefined && { ig_account: body.ig_account }),
     // #11724 — omitido se undefined: sem comentário pós-publicação
     ...(body.first_comment !== undefined && { first_comment: body.first_comment }),
+    // #8055 — omitidos se undefined: sem documento, segue imagem/carrossel de sempre
+    ...(body.document_url !== undefined && { document_url: body.document_url, document_title: body.document_title }),
     ...(body.idempotency_key !== undefined && { idempotency_key: body.idempotency_key }),
   };
   // #11133 — a reserva cobre cancel → KV put → arm; finally libera o

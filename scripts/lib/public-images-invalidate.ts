@@ -116,3 +116,19 @@ export function publicImagesInvalidatedWarning(removedKeys: readonly string[]): 
     `--mode newsletter e --mode social (#11252).`
   );
 }
+
+/**
+ * (#12692) Os dois passos de upload depois de mexer nas imagens dos destaques,
+ * para o `next_steps` de `reorder-destaques.ts`/`swap-destaques.ts`: o modo
+ * `newsletter` gera `cover`/`d{N}_2x1` e regera o play do D1
+ * (`04-d1-2x1-play.jpg`); o `social` gera as 4:5 e o carrossel.
+ * `upload-images-public.ts` sem `--mode` roda só o social, e o invariante
+ * `public-images-newsletter-hero` só acusava a falta das chaves 2:1 depois.
+ */
+export function uploadImagesNextSteps(editionDir: string): string[] {
+  const dir = editionDir.replace(/[\\/]+$/, "");
+  return [
+    `Re-subir as imagens da newsletter (hero 2:1 + play do D1): npx tsx scripts/upload-images-public.ts --edition-dir ${dir}/ --mode newsletter`,
+    `Re-subir as imagens das redes (4:5 + carrossel): npx tsx scripts/upload-images-public.ts --edition-dir ${dir}/ --mode social`,
+  ];
+}

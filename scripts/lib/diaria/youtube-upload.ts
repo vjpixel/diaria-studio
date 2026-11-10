@@ -571,6 +571,15 @@ function normalizeTitle(s: string): string {
 }
 
 /**
+ * #12463: título de Short sem o `#Shorts` final. Até 08/11/2026 o Short subia
+ * como `{D1} #Shorts`; desde então o título é só o D1. Comparar sem a tag
+ * reconhece o Short antigo e o novo pelo mesmo título, sem reenviar.
+ */
+function normalizeShortTitle(s: string): string {
+  return normalizeTitle(s).replace(/\s*#shorts?$/, "").trimEnd();
+}
+
+/**
  * Decide se algum dos vídeos é o desta edição. Sinais, do mais forte ao mais
  * fraco: (1) AAMMDD — `utm_campaign=AAMMDD` na descrição (nosso upload) ou
  * AAMMDD como token no título/tags; (2) título igual ao do D1; (3) período —
@@ -589,14 +598,18 @@ function normalizeTitle(s: string): string {
  *
  * #11070: com `kind: "short"` a busca é pelo Short (só vídeos `#Shorts`), com
  * os mesmos três sinais, menos o `utm_campaign` (é a marca do horizontal).
+ * #12463: o `#Shorts` saiu do título (fica na descrição), então o título do
+ * Short é comparado sem a tag final e, no `long`, Short nunca casa por título.
  * Puro: sem rede.
  */
 export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVideoCriteria): ExistingEditionVideo | null {
   const { aammdd } = criteria;
   const token = new RegExp(`(?<!\\d)${aammdd}(?!\\d)`);
   const campaignRe = /utm_campaign=(\d{6})(?!\d)/g;
-  const wanted = new Set([criteria.title, ...(criteria.altTitles ?? [])].map(normalizeTitle).filter(Boolean));
-  const titleMatches = (t: string): boolean => wanted.has(normalizeTitle(t));
+  // #12463: no Short, o título é comparado sem o `#Shorts` final (antigo `{D1} #Shorts` e novo `{D1}`).
+  const norm = criteria.kind === "short" ? normalizeShortTitle : normalizeTitle;
+  const wanted = new Set([criteria.title, ...(criteria.altTitles ?? [])].map(norm).filter(Boolean));
+  const titleMatches = (t: string): boolean => wanted.has(norm(t));
   const { startMs, endMs } = editionDayWindowMs(aammdd);
   const inDay = (iso?: string | null): boolean => {
     if (!iso) return false;
@@ -632,7 +645,10 @@ export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVide
       matchedBy = "edition-tag";
     } else if (otherEdition) {
       matchedBy = null;
-    } else if (titleMatches(title)) {
+    } else if (!isShort && titleMatches(title)) {
+      // #12463: desde que o Short perdeu o `#Shorts` do título, ele tem o MESMO
+      // título do horizontal; só a tag na descrição o separa. Sem o `!isShort`,
+      // o Short da edição seria lido como o horizontal já no canal.
       matchedBy = "title";
     } else if (!isShort && (inDay(v.status?.publishAt) || inDay(v.snippet?.publishedAt))) {
       matchedBy = "period";
@@ -866,8 +882,8 @@ export async function deleteScheduledYouTubeVideo(deps: YouTubeUploadDeps, creds
   if (!res.ok) throw new Error(`videos.list HTTP ${res.status}`);
   const json = await res.json() as { items?: Array<{ id: string; snippet?: { channelId?: string }; status?: { privacyStatus?: string; publishAt?: string } }> };
   const item = json.items?.find(i => i.id === videoId);
-  if (item?.snippet?.channelId !== creds.channelId || item.status?.privacyStatus !== 'private' || !(Date.parse(item.status.publishAt ?? '') > deps.now().getTime() + 600_000)) {
-    throw new Error('vídeo não está agendado no canal esperado com mais de 10 min; nada apagado');
+  if (item?.snippet?.channelId !== creds.channelId || item.status?.privacyStatus !== 'private' || !(Date.parse(item.status.publishAt ?? '') > deps.now().getTime() + 1_800_000)) {
+    throw new Error('vídeo não está agendado no canal esperado com mais de 30 min; nada apagado');
   }
   const deleted = await deps.fetch(`${YOUTUBE_API_BASE}/videos?id=${encodeURIComponent(videoId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
   if (deleted.status !== 204) throw new Error(`videos.delete sem confirmação (HTTP ${deleted.status}); confira a plataforma antes de tentar novamente`);

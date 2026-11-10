@@ -43,13 +43,14 @@ const yt = (p: ReturnType<typeof planShortsPublish>) => p.items.find((i) => i.de
 const SLOT = "2026-10-22T15:00:00.000Z";
 
 describe("#11070 plano do youtube_shorts", () => {
-  it("credencial pronta e horário futuro: API, agendado no horário do vertical, título #Shorts", () => {
+  it("credencial pronta e horário futuro: API, agendado no horário do vertical, título sem #Shorts (#12463)", () => {
     const p = planShortsPublish({ ...base, now: new Date("2026-10-22T10:00:00Z") });
     const item = yt(p);
     assert.equal(item.mode, "api");
     assert.equal(item.action, "publish");
     assert.equal(item.scheduledAt, SLOT);
-    assert.match(item.title, /#Shorts$/);
+    assert.doesNotMatch(item.title, /#Shorts/);
+    assert.match(item.caption, /#Shorts/);
     assert.equal(item.caption, p.youtube.description);
     assert.ok(p.premises.some((l) => l.includes("youtube_shorts: Data API, agendado")));
   });

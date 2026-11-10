@@ -177,6 +177,7 @@ import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { CAPTURE_EMPTY_MESSAGE, evaluateCaptureYield } from "./lib/newsletter-capture-yield.ts";
+import { classifySender, parseSenderRegistry } from "./lib/newsletter-senders.ts"; // #12188
 import { getHowToDiscoveryQueries } from "./lib/use-melhor-curation.ts";
 import { getNegativeImpactDiscoveryQueries } from "./lib/negative-impact-curation.ts";
 import { loadSearchDemandIdeas, pickSearchDemandDiscoveryQueries } from "./lib/search-demand-curation.ts"; // #8370 Peça 1
@@ -1055,7 +1056,20 @@ async function runPostResearchPreScore(deps: Stage1RunDeps, opts: Stage1RunOptio
       const abs = resolve(deps.rootDir, internalPath(editionDir, file));
       return deps.existsSync(abs) ? deps.readFile(abs) : null;
     };
-    const yieldCheck = evaluateCaptureYield(readIfExists("captured-newsletters.json"), readIfExists("captured-newsletter-articles.json"));
+    // #12188: só threads de remetente aprovado contam (registro inválido/ausente → todas).
+    let countsThread: ((t: { sender?: string }) => boolean) | undefined;
+    const registryAbs = resolve(deps.rootDir, "seed/newsletter-senders.json");
+    if (deps.existsSync(registryAbs)) {
+      try {
+        const registry = parseSenderRegistry(deps.readFile(registryAbs));
+        countsThread = (t) => !t.sender || classifySender(t.sender, registry).classificacao === "IA";
+      } catch (err) {
+        // Stage 1 standalone (sem o Stage 0 desta sessão) não pode deixar o
+        // registro inválido passar em silêncio (#12188).
+        logEvent(deps, opts.edition, "warn", `1h: seed/newsletter-senders.json inválido (${err instanceof Error ? err.message : String(err)}) — guard #9368 conta todas as threads (#12188)`);
+      }
+    }
+    const yieldCheck = evaluateCaptureYield(readIfExists("captured-newsletters.json"), readIfExists("captured-newsletter-articles.json"), countsThread);
     if (yieldCheck.empty) {
       report.note(`❌ 1h: ${yieldCheck.threads} ${CAPTURE_EMPTY_MESSAGE}`);
       logEvent(deps, opts.edition, "error", `1h: ${CAPTURE_EMPTY_MESSAGE}`, {
@@ -1510,6 +1524,10 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
   const mdPath = `${editionDir}/01-categorized.md`;
   step(deps, report, "render-categorized-md (1v)", "scripts/render-categorized-md.ts", ["--in", categorizedPath, "--out", mdPath, "--edition", opts.edition, "--source-health", "data/source-health.json"]);
 
+  softStep(deps, report, "audit-newsletter-intake (#12188)", "scripts/audit-newsletter-intake.ts", [
+    "--edition", opts.edition, "--edition-dir", editionDir,
+  ]);
+
   // --- §1v-scoring-features: feature store de scoring (#7975, Camada 1 da
   // #7972) ---
   //
@@ -1668,6 +1686,9 @@ async function runPostGate(deps: Stage1RunDeps, opts: Stage1RunOptions, report: 
   // sobe pro relatório porque quem resolve é o Stage 2 §2a, não este passo.
   const invariantsJson = parseStepJson<{ violations?: Array<{ rule?: string; message?: string }> }>(invariants.stdout);
   for (const v of invariantsJson?.violations ?? []) {
+    if (v.rule === "pool-story-twice-in-edition") {
+      report.note(`⚠️  ${v.message ?? "mesma história no pool"} (#12327)`);
+    }
     if (v.rule === "lancamento-has-product-signal") {
       report.note(`ℹ️  ${v.message ?? "lançamento sem sinal de produto"} (#11748)`);
     }

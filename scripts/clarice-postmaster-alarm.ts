@@ -36,7 +36,7 @@ import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { DEFAULT_DASHBOARD_URL, fetchPostmasterSpamEntryDetailed } from "./clarice-schedule-ramp.ts";
@@ -203,7 +203,19 @@ export function saveCampaignSpamMissingState(
 // loadAlarmIssuesState/saveAlarmIssuesState: consolidados em
 // scripts/lib/alarm-issues.ts (#7124) — importados acima.
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/clarice-postmaster-alarm.ts",
+  booleans: ["dry-run"],
+  values: ["to", "dashboard-url"],
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");

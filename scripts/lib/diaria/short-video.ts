@@ -10,19 +10,25 @@
  *   - objetivo é levar gente pro canal do YouTube (@diariabr); no Instagram o
  *     CTA manda pro "link da bio". Desde #11617 (29/10/2026) nenhum texto do
  *     vertical mostra link (nem a edição com UTM, nem o vídeo completo, nem o
- *     domínio solto);
+ *     domínio solto). Exceção do #12465 (08/11/2026): nas contas PESSOAIS
+ *     (página VJ Pixel, perfil pessoal do Facebook, LinkedIn e Threads) o
+ *     texto cita o perfil da diar.ia.br daquela rede (`diariaFollowLine`);
  *   - Reels TODO DIA nas páginas diar.ia.br e VJ Pixel (MemeLab saiu, #10790)
  *     e no perfil pessoal do editor. Jandig, Teatro vs Game e Criaturas Afetivas ficam fora
  *     da rotina — só quando o editor pedir, nunca automático;
- *   - YouTube Shorts: título `{D1} #Shorts`, descrição curta, vídeo
+ *   - YouTube Shorts: título = o do D1 (sem `#Shorts` desde #12463; a tag
+ *     fica na descrição), descrição curta, vídeo
  *     relacionado = o longo da edição — fluxo validado à mão no 1º Short,
  *     https://youtube.com/shorts/nhMUtgPPs4U. SEM comentário fixado (#10831):
  *     desde 2023 link em descrição E em comentário de Short não é clicável; o
  *     único caminho clicável é o vídeo relacionado, vinculado depois que o
  *     horizontal publica (#10811);
- *   - horário próprio do vertical (#10831): o horizontal sai às 06:00 junto da
- *     newsletter; o vertical sai num teste de 15 dias úteis alternando 06:30, 08:00 e
- *     12:00 BRT (`resolveShortTime`, config `publishing.shorts.schedule`).
+ *   - horário próprio do vertical (#10831, #12250): o horizontal sai às 06:00
+ *     junto da newsletter; o vertical sai em horário FIXO POR DESTINO — o
+ *     YouTube Shorts às 06:30 e os outros destinos às 12:00 BRT
+ *     (`resolveShortTime(sched, aammdd, destino)`, config
+ *     `publishing.shorts.schedule.by_destination` + `default_time`). O teste
+ *     rotativo 06:30/08:00/12:00 (261026 a 261106) foi encerrado no #12250.
  *
  * Por que YouTube Shorts e o perfil pessoal são passos GUIADOS (Chrome, com o
  * editor escolhendo o arquivo) e não API:
@@ -48,13 +54,13 @@ import {
   brtDayWindow,
   instagramCollabAccounts,
   planSlot,
-  planSlots,
   slotAccounts,
   socialAccountKey,
   type ScheduledSlot,
   type SlotRule,
 } from "../social-slot-planner.ts";
-import { YOUTUBE_TITLE_MAX_CHARS, buildYouTubeTitle, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
+import { DEFAULT_EDITION_SCHEDULE_HHMM } from "../edition-scheduled-at.ts";
+import { buildYouTubeTitle, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
 import type { ShortCoverRecord } from "./short-cover.ts";
 
 /** Canal do YouTube que os Shorts/Reels divulgam. */
@@ -101,7 +107,7 @@ export const SHORTS_PUBLISHED_FILE = "_internal/06-shorts-published.json";
 /** Teto da legenda do Reels no Instagram (2.200 caracteres, doc `ig-user/media`). */
 export const INSTAGRAM_CAPTION_MAX_CHARS = 2200;
 
-/** Hashtags fixas — `#Shorts` só no YouTube, onde ajuda a classificação. */
+/** Hashtags fixas. `#Shorts` só na descrição do YouTube, nunca no título (#12463). */
 export const SHORTS_HASHTAGS = ["#IA", "#inteligênciaartificial"] as const;
 
 export interface ShortD1Input {
@@ -140,14 +146,18 @@ export interface YouTubeShortMetadata {
   description: string;
 }
 
-/** Título `{D1} #Shorts`, truncando só o D1 se passar de 100 caracteres. */
+/**
+ * Título do Short = título do D1 (ou o `--title` do corte), SEM sufixo
+ * (#12463, decisão do editor de 08/11/2026): `#Shorts` vai só na descrição
+ * (`buildYouTubeShortMetadata`). O YouTube classifica o Short pelo formato,
+ * não pela tag, e no feed do celular ` #Shorts` gastava 8 dos ~40 caracteres
+ * visíveis. Mesmo texto do horizontal (`buildYouTubeTitle`): o teto de 100
+ * caracteres vale para o título inteiro. Os Shorts publicados até 08/11/2026
+ * têm `{D1} #Shorts` no título; o reconhecimento de Short já no canal aceita
+ * as duas formas (`matchEditionVideo`, `kind: "short"`).
+ */
 export function buildYouTubeShortTitle(d1Title: string): string {
-  const suffix = " #Shorts";
-  const base = sanitizeForYouTube(stripInlineMarkdown(d1Title).replace(/\s+/g, " ").trim());
-  const room = YOUTUBE_TITLE_MAX_CHARS - suffix.length;
-  const chars = Array.from(base);
-  const head = chars.length <= room ? base : `${chars.slice(0, room - 1).join("").trimEnd()}…`;
-  return `${head}${suffix}`;
+  return buildYouTubeTitle(d1Title);
 }
 
 /**
@@ -194,6 +204,96 @@ export function buildYouTubeShortMetadata(input: { d1: ShortD1Input; horizontalT
 
 export type ReelsPlatform = "facebook" | "instagram";
 
+// ─── Perfil da diar.ia.br nas contas pessoais (#12465) ──────────────────────
+
+/**
+ * #12465 (decisão do editor de 08/11/2026): o post do vídeo nas contas
+ * PESSOAIS do editor leva a menção (ou o link) do perfil da diar.ia.br naquela
+ * mesma rede — o botão Seguir ao lado do vídeo segue o editor, e o card de
+ * encerramento pede "Siga a diar.ia.br". Revisa o #11617 (nenhum texto do
+ * vertical mostra link) só para o perfil da diar.ia.br: menção nativa onde a
+ * API aceita (LinkedIn, `@[Nome](urn:li:organization:ID)`, mantida pelo
+ * `toLittleText`; Threads, `@handle`) e URL do perfil onde não há menção
+ * confirmada pela API (Facebook: a tag de página na descrição de vídeo da
+ * Graph API não foi medida). Fonte única dos perfis: `publishing.shorts.
+ * diaria_profiles` no `platform.config.json`.
+ *
+ * LinkedIn: a menção só vira link quando o texto entre colchetes é o nome
+ * EXATO da página, e o efeito de um nome divergente na Posts API (4xx, que
+ * derrubaria o vídeo do perfil pessoal, ou texto puro) não foi medido (review
+ * do PR #12489). Por isso a menção só sai com `urn` configurado E
+ * `mention_verified: true` (o editor conferiu o nome atual da página); fora
+ * disso a linha cai na URL do perfil, que publica em qualquer caso.
+ */
+export interface DiariaProfiles {
+  linkedin: { name: string; urn: string | null; url: string; mentionVerified: boolean };
+  threads: { handle: string | null; url: string };
+  facebook: { url: string };
+}
+
+export const DEFAULT_DIARIA_PROFILES: Readonly<DiariaProfiles> = Object.freeze({
+  linkedin: { name: "diar.ia.br", urn: "urn:li:organization:110742958", url: "https://www.linkedin.com/company/diar.ia.br/", mentionVerified: false },
+  threads: { handle: "diar.ia.br", url: "https://www.threads.com/@diar.ia.br" },
+  facebook: { url: "https://www.facebook.com/diar.ia.br" },
+});
+
+/** Slug da página diar.ia.br em `publishing.social.facebook.pages` (as outras são de terceiros/pessoais). */
+export const DIARIA_FACEBOOK_PAGE_SLUG = "diaria";
+
+/** URL sem `https://` e sem `www.` nem barra final, como entra no texto. */
+function shortProfileUrl(url: string): string {
+  return url.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
+}
+
+/**
+ * Pure (#12465): a linha "Siga a diar.ia.br" do post do vídeo no destino, ou
+ * `null` nos destinos que já publicam pela conta da diar.ia.br (YouTube,
+ * página diar.ia.br, Instagram @diar.ia.br, X @diariabr, TikTok @diar.ia.br).
+ */
+export function diariaFollowLine(destination: string, profiles: DiariaProfiles = DEFAULT_DIARIA_PROFILES): string | null {
+  if (destination === "linkedin_profile") {
+    const p = profiles.linkedin;
+    return p.urn && p.mentionVerified === true ? `Siga @[${p.name}](${p.urn})` : `Siga a diar.ia.br: ${shortProfileUrl(p.url)}`;
+  }
+  if (destination === "threads_profile") {
+    const p = profiles.threads;
+    return p.handle ? `Siga @${p.handle}` : `Siga a diar.ia.br: ${shortProfileUrl(p.url)}`;
+  }
+  if (destination === "facebook_profile" || (destination.startsWith("facebook:") && destination !== `facebook:${DIARIA_FACEBOOK_PAGE_SLUG}`)) {
+    return `Siga a diar.ia.br: ${shortProfileUrl(profiles.facebook.url)}`;
+  }
+  return null;
+}
+
+/** Lê `publishing.shorts.diaria_profiles` (ausente = `DEFAULT_DIARIA_PROFILES`); campo inválido lança. */
+export function loadDiariaProfiles(raw: unknown): DiariaProfiles {
+  if (raw === undefined) return structuredClone(DEFAULT_DIARIA_PROFILES) as DiariaProfiles;
+  const bad = (why: string) => new Error(`[shorts] publishing.shorts.diaria_profiles: ${why} (#12465).`);
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw bad("precisa ser um objeto");
+  const r = raw as Record<string, any>;
+  const url = (v: unknown, key: string): string => {
+    if (typeof v !== "string" || !/^https:\/\/\S+$/.test(v)) throw bad(`${key} precisa ser uma URL https`);
+    return v;
+  };
+  const d = DEFAULT_DIARIA_PROFILES;
+  const li = r.linkedin ?? {};
+  const th = r.threads ?? {};
+  const fb = r.facebook ?? {};
+  const urn = li.urn === undefined ? d.linkedin.urn : li.urn;
+  if (urn !== null && (typeof urn !== "string" || !/^urn:li:organization:\d+$/.test(urn))) throw bad("linkedin.urn precisa ser urn:li:organization:ID ou null");
+  const name = li.name ?? d.linkedin.name;
+  if (typeof name !== "string" || !name.trim() || /[[\]()]/.test(name)) throw bad("linkedin.name precisa ser o nome da página, sem colchetes nem parênteses");
+  const mentionVerified = li.mention_verified ?? d.linkedin.mentionVerified;
+  if (typeof mentionVerified !== "boolean") throw bad("linkedin.mention_verified precisa ser true ou false");
+  const handle = th.handle === undefined ? d.threads.handle : th.handle;
+  if (handle !== null && (typeof handle !== "string" || !/^[A-Za-z0-9._]{1,30}$/.test(handle))) throw bad("threads.handle precisa ser o username sem @ ou null");
+  return {
+    linkedin: { name, urn, url: url(li.url ?? d.linkedin.url, "linkedin.url"), mentionVerified },
+    threads: { handle, url: url(th.url ?? d.threads.url, "threads.url") },
+    facebook: { url: url(fb.url ?? d.facebook.url, "facebook.url") },
+  };
+}
+
 /**
  * #11388 (decisão do editor, 27/10/2026, testada à mão na legenda do Reels de
  * 261027): a legenda do Reels diz o que é a diar.ia.br em vez de pressupor que
@@ -211,14 +311,16 @@ export const INSTAGRAM_REELS_CTA = `${REELS_NEWSLETTER_SENTENCE} Assine pelo lin
  * da legenda. No Instagram a chamada é pro link da bio (`INSTAGRAM_REELS_CTA`);
  * no Facebook, que não tem bio, fica só a frase da newsletter: o link da
  * edição com UTM saiu da legenda (#11617, pedido do editor: post do vídeo
- * sem link no texto).
+ * sem link no texto). Exceção (#12465): na página VJ Pixel e no perfil
+ * pessoal, `follow` acrescenta o perfil da diar.ia.br.
  */
-export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1Input }): string {
+export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1Input; follow?: string | null }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
   const cta = input.platform === "instagram" ? INSTAGRAM_REELS_CTA : REELS_NEWSLETTER_SENTENCE;
-  const caption = [title, hook, cta, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+  // #12465: `follow` = `diariaFollowLine(destino)`, só nas contas pessoais (página VJ Pixel, perfil pessoal).
+  const caption = [title, hook, cta, input.follow ?? "", SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (input.platform === "instagram" && Array.from(caption).length > INSTAGRAM_CAPTION_MAX_CHARS) {
     throw new Error(`legenda do Instagram passou de ${INSTAGRAM_CAPTION_MAX_CHARS} caracteres`);
   }
@@ -262,18 +364,23 @@ export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
  *
  * LinkedIn: título, gancho (1ª frase do D1) e hashtags.
  * X e Threads: título e gancho no teto da rede (`fitShortText`).
+ *
+ * #12465: `follow` (de `diariaFollowLine`) entra no perfil pessoal (LinkedIn,
+ * Threads) antes das hashtags e nunca é cortado; o X sai pela @diariabr e não
+ * leva a linha.
  */
-export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: ShortD1Input }): string {
+export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: ShortD1Input; follow?: string | null }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
+  const follow = input.follow ?? "";
   if (input.platform === "linkedin") {
-    const text = [title, hook, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+    const text = [title, hook, follow, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
     if (Array.from(text).length > LINKEDIN_COMMENTARY_MAX_CHARS) throw new Error(`texto do LinkedIn passou de ${LINKEDIN_COMMENTARY_MAX_CHARS} caracteres`);
     return text;
   }
-  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads");
-  return fitShortText(title, hook, computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, "X");
+  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads", follow);
+  return fitShortText(title, hook, computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, "X", follow);
 }
 
 const UTF8 = new TextEncoder();
@@ -298,14 +405,16 @@ export function threadsTextLength(text: string): number {
  * tag de tópico, e no X elas tirariam espaço do gancho. Não cabe → tira o
  * gancho; ainda não cabe → corta o título. Lança se nem o título mínimo couber.
  */
-function fitShortText(title: string, hook: string, measure: (t: string) => number, max: number, label: string): string {
+function fitShortText(title: string, hook: string, measure: (t: string) => number, max: number, label: string, tail = ""): string {
+  // #12465: `tail` (a linha "Siga @diar.ia.br") fica sempre no fim; sai o gancho, depois encurta o título.
+  const withTail = (body: string) => (tail ? `${body}\n\n${tail}` : body);
   if (hook) {
-    const withHook = `${title}\n\n${hook}`;
+    const withHook = withTail(`${title}\n\n${hook}`);
     if (measure(withHook) <= max) return withHook;
   }
   const chars = Array.from(title);
   for (let n = chars.length; n >= 10; n--) {
-    const head = n === chars.length ? title : `${chars.slice(0, n - 1).join("").trimEnd()}…`;
+    const head = withTail(n === chars.length ? title : `${chars.slice(0, n - 1).join("").trimEnd()}…`);
     if (measure(head) <= max) return head;
   }
   throw new Error(`texto do ${label} não cabe em ${max} caracteres`);
@@ -388,6 +497,11 @@ export interface ShortsConfig {
    * skill (#11550).
    */
   corteViaTimer: boolean;
+  /**
+   * #12465: perfis da diar.ia.br citados no post do vídeo nas contas pessoais
+   * (`publishing.shorts.diaria_profiles`). Ausente = `DEFAULT_DIARIA_PROFILES`.
+   */
+  diariaProfiles?: DiariaProfiles;
 }
 
 /** Limite de collaborators por mídia na Graph API do Instagram. */
@@ -510,6 +624,7 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     tiktok,
     tiktokBufferChannelId: tiktokChannel,
     corteViaTimer: optionalBool(raw, "corte_via_timer", DEFAULT_SHORTS_CONFIG.corteViaTimer),
+    diariaProfiles: loadDiariaProfiles(raw.diaria_profiles),
   };
 }
 
@@ -622,23 +737,29 @@ export function parseShortsPublishedFile(raw: string, aammdd: string, where = SH
 }
 
 /**
- * Horário do vertical (#10831). O horizontal sai às 06:00 BRT junto da
- * newsletter; o vertical sai em horário PRÓPRIO, num teste de 15 dias úteis que
- * alterna `rotation_times` dia a dia a partir de `rotation_start` (261022 saiu
- * às 12:00, à mão), comparando as visualizações nas primeiras 24 h. Fora da
- * janela `[rotation_start, rotation_end]` vale `default_time`.
+ * Horário do vertical (#10831, #12250). O horizontal sai às 06:00 BRT junto da
+ * newsletter; o vertical sai em horário PRÓPRIO, fixo POR DESTINO desde o
+ * #12250 (decisão do editor de 05/11/2026): o YouTube Shorts às 06:30
+ * (`by_destination.youtube_shorts`) e todos os outros destinos às 12:00
+ * (`default_time`). O mesmo config é lido pelo `publish-shorts.ts` E pelos
+ * timers do 300 (Instagram, LinkedIn e Threads pessoais), cada um passando o
+ * próprio destino a `resolveShortTime`: um horário calculado só na máquina
+ * que roda a skill não chegaria neles.
  *
- * Premissas registradas (não documentadas na decisão do editor):
- *   - o horário vale pro vertical em TODOS os destinos (Shorts, Reels das
- *     páginas, Instagram, perfil) — em 261022 "tudo foi ajustado à mão pra 12:00";
- *   - a alternância conta dias CORRIDOS, não edições publicadas: dia sem
- *     edição não desloca o horário dos seguintes (plano reconstruível);
- *   - fora da janela, `default_time` = 12:00 (o horário de 261022) até o
- *     editor decidir o vencedor do teste e mudar o config.
+ * Histórico: de 261026 a 261106 o vertical saiu num teste rotativo que
+ * alternava `rotation_times` (06:30/08:00/12:00) dia a dia a partir de
+ * `rotation_start`, em todos os destinos. O #12250 encerrou o teste
+ * (`rotation_end` = 2026-11-06); a janela continua no config só pra
+ * re-derivar o horário das edições daquele período (alarmes e conferências
+ * que olham um dia passado) e porque `rotation_times` é a lista de onde a
+ * vertical extra escolhe um horário livre (`extraVerticalTime`).
  *
- * A regra de grade da #10819 (alinhar com o que já está agendado em outras
- * contas / espaçar na mesma conta) entra por `planShortSlots`, abaixo: durante
- * o teste este horário tem precedência; fora dele, a grade decide.
+ * Por que o Short do YouTube nunca sai junto (ou antes) do horizontal das
+ * 06:00 (#10831/#10811, conferido no #12250): o "vídeo relacionado" do Short
+ * só aceita vídeo PÚBLICO, então o vínculo (task `diaria-short-video-relacionado`,
+ * 06:05 BRT no Neo) precisa do horizontal já no ar e de folga antes do Short.
+ * `loadShortScheduleConfig` recusa `by_destination.youtube_shorts` que não
+ * seja estritamente depois de `DEFAULT_EDITION_SCHEDULE_HHMM`.
  */
 export interface ShortScheduleConfig {
   rotationTimes: string[];
@@ -646,19 +767,49 @@ export interface ShortScheduleConfig {
   /** Inclusivo. `null` = sem fim. */
   rotationEnd: CivilDate | null;
   defaultTime: string;
+  /** #12250: horário fixo por destino (id do destino → HH:MM BRT); destino ausente usa `defaultTime`. */
+  byDestination: Readonly<Record<string, string>>;
 }
 
 const HHMM_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
-/** Decisão do editor de 22/10/2026 (#10831, #10939): 15 dias úteis alternando 06:30/08:00/12:00, de 261026 a 261113 (só há edição de segunda a sexta). */
+/**
+ * Ids fixos de destino aceitos como chave de `by_destination` (#12250). Espelha
+ * os ids de `ShortDestination` (exceto `facebook:{slug}`, validado por
+ * prefixo): o loader não tem a `ShortsConfig` em mãos, então valida contra o
+ * conjunto fixo. Chave fora dele (ex.: `youtube_short`) é erro, nunca fallback
+ * silencioso pro `default_time`.
+ */
+export const SCHEDULE_DESTINATION_IDS: ReadonlySet<Exclude<ShortDestination["id"], FacebookDestinationId>> = new Set([
+  "youtube_shorts",
+  "instagram",
+  "facebook_profile",
+  "linkedin_profile",
+  "linkedin_page_repost",
+  "x",
+  "tiktok",
+  "threads_profile",
+] as const);
+
+function isScheduleDestinationKey(key: string): boolean {
+  if ((SCHEDULE_DESTINATION_IDS as ReadonlySet<string>).has(key)) return true;
+  return /^facebook:[^\s:]+$/.test(key);
+}
+
+/**
+ * Decisão do editor de 05/11/2026 (#12250): YouTube Shorts às 06:30, os
+ * outros destinos às 12:00. A rotação de 22/10/2026 (#10831, #10939) fica com
+ * a janela encerrada em 261106 (último dia útil antes do #12250).
+ */
 export const DEFAULT_SHORT_SCHEDULE_RAW = Object.freeze({
   rotation_times: Object.freeze(["06:30", "08:00", "12:00"]),
   rotation_start: "2026-10-26",
-  rotation_end: "2026-11-13",
+  rotation_end: "2026-11-06",
   default_time: "12:00",
+  by_destination: Object.freeze({ youtube_shorts: "06:30" }),
 });
 
-/** Lê `publishing.shorts.schedule`; ausente → default (#10831). Malformado LANÇA (estragaria o teste em silêncio). */
+/** Lê `publishing.shorts.schedule`; ausente → default (#10831, #12250). Malformado LANÇA (estragaria o horário em silêncio). */
 export function loadShortScheduleConfig(config: unknown): ShortScheduleConfig {
   const raw = (config as any)?.publishing?.shorts?.schedule ?? DEFAULT_SHORT_SCHEDULE_RAW;
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -679,32 +830,90 @@ export function loadShortScheduleConfig(config: unknown): ShortScheduleConfig {
     end = parseIsoCivilDate(raw.rotation_end, "publishing.shorts.schedule.rotation_end");
     if (civilDayNumber(end) < civilDayNumber(start)) throw new Error("[shorts] publishing.shorts.schedule.rotation_end antes de rotation_start.");
   }
-  return { rotationTimes: [...times], rotationStart: start, rotationEnd: end, defaultTime: raw.default_time };
+  const byDestination: Record<string, string> = {};
+  const rawBy = raw.by_destination;
+  if (rawBy !== undefined && rawBy !== null) {
+    if (typeof rawBy !== "object" || Array.isArray(rawBy)) {
+      throw new Error("[shorts] publishing.shorts.schedule.by_destination precisa ser um objeto { destino: \"HH:MM\" } (#12250).");
+    }
+    for (const [dest, hhmm] of Object.entries(rawBy as Record<string, unknown>)) {
+      if (!isScheduleDestinationKey(dest)) {
+        throw new Error(
+          `[shorts] publishing.shorts.schedule.by_destination: destino desconhecido "${dest}" — ` +
+            `use um de ${[...SCHEDULE_DESTINATION_IDS].join(", ")} ou facebook:{slug} (#12250; chave errada cairia em silêncio no default_time).`,
+        );
+      }
+      if (typeof hhmm !== "string" || !HHMM_RE.test(hhmm)) {
+        throw new Error(`[shorts] publishing.shorts.schedule.by_destination.${dest} precisa ser HH:MM (#12250).`);
+      }
+      byDestination[dest] = hhmm;
+    }
+  }
+  const yt = byDestination.youtube_shorts;
+  if (yt !== undefined && yt <= DEFAULT_EDITION_SCHEDULE_HHMM) {
+    throw new Error(
+      `[shorts] publishing.shorts.schedule.by_destination.youtube_shorts (${yt}) precisa ser depois das ${DEFAULT_EDITION_SCHEDULE_HHMM} do horizontal: ` +
+        "o vídeo relacionado do Short só vincula com o horizontal já público (#10811, #12250).",
+    );
+  }
+  return { rotationTimes: [...times], rotationStart: start, rotationEnd: end, defaultTime: raw.default_time, byDestination };
 }
 
 export interface ShortTime {
   /** HH:MM em BRT, no dia da edição. */
   hhmm: string;
-  /** `explicit` (#11795): corte avulso com `--at`, fora do teste do #10831. */
-  source: "rotation" | "default" | "explicit";
+  /**
+   * `rotation`: dia dentro da janela do teste encerrado do #10831 (histórico);
+   * `destination`: horário fixo do destino (`by_destination`, #12250);
+   * `default`: horário fixo dos demais destinos (`default_time`, #12250);
+   * `explicit` (#11795): corte avulso com `--at`.
+   */
+  source: "rotation" | "default" | "destination" | "explicit";
   /** Explicação curta pra premissa do plano. */
   reason: string;
 }
 
-/** Pure: horário (BRT) do vertical da edição `AAMMDD` (#10831). */
-export function resolveShortTime(sched: ShortScheduleConfig, aammdd: string): ShortTime {
+/**
+ * Pure: horário (BRT) do vertical da edição `AAMMDD` no destino `destination`
+ * (#10831, #12250). Sem destino (ou destino sem entrada em `by_destination`)
+ * = `default_time`. Dentro da janela do teste encerrado vale a rotação, em
+ * todos os destinos, como valeu na época.
+ */
+export function resolveShortTime(sched: ShortScheduleConfig, aammdd: string, destination?: string): ShortTime {
   const m = /^(\d{2})(\d{2})(\d{2})$/.exec(aammdd);
   if (!m) throw new Error(`AAMMDD inválido: ${JSON.stringify(aammdd)}`);
   const date = parseIsoCivilDate(`20${m[1]}-${m[2]}-${m[3]}`, "data da edição");
   const day = civilDayNumber(date);
   const start = civilDayNumber(sched.rotationStart);
   const inWindow = day >= start && (sched.rotationEnd === null || day <= civilDayNumber(sched.rotationEnd));
-  if (!inWindow) {
-    return { hhmm: sched.defaultTime, source: "default", reason: `fora do teste de horário (${formatCivilDate(sched.rotationStart)} a ${sched.rotationEnd ? formatCivilDate(sched.rotationEnd) : "sem fim"}) — horário fixo` };
+  if (inWindow) {
+    const k = day - start;
+    const hhmm = sched.rotationTimes[k % sched.rotationTimes.length];
+    return { hhmm, source: "rotation", reason: `teste de horário do vertical, dia ${k + 1} (alterna ${sched.rotationTimes.join("/")})` };
   }
-  const k = day - start;
-  const hhmm = sched.rotationTimes[k % sched.rotationTimes.length];
-  return { hhmm, source: "rotation", reason: `teste de horário do vertical, dia ${k + 1} (alterna ${sched.rotationTimes.join("/")})` };
+  const own = destination !== undefined ? sched.byDestination[destination] : undefined;
+  if (own !== undefined) {
+    return { hhmm: own, source: "destination", reason: `horário fixo de ${destination} (#12250)` };
+  }
+  return { hhmm: sched.defaultTime, source: "default", reason: "horário fixo do vertical (#12250)" };
+}
+
+/**
+ * Horários que o timer de um destino do 300 precisa cobrir (#12250): os do
+ * teste rotativo (re-derivação de dias passados), o `default_time` e o horário
+ * próprio do destino em `by_destination`, sem repetição. Os guards de par
+ * timer×horário (`test/shorts-*-timer-*.test.ts`) leem daqui: um horário
+ * próprio fora da hora cheia sem execução diária logo depois quebra o teste,
+ * em vez de sair até ~59 min atrasado pela execução de hora em hora.
+ */
+export function timerDueTimes(sched: ShortScheduleConfig, destination: string): string[] {
+  const own = sched.byDestination[destination];
+  return [...new Set([...sched.rotationTimes, sched.defaultTime, ...(own !== undefined ? [own] : [])])];
+}
+
+/** Todos os horários fixos do vertical fora do teste (`default_time` + `by_destination`), sem repetição (#12250). */
+export function fixedShortTimes(sched: ShortScheduleConfig): string[] {
+  return [...new Set([sched.defaultTime, ...Object.values(sched.byDestination)])];
 }
 
 /** Horário escolhido pra um destino de API do vertical (#10819). */
@@ -718,10 +927,12 @@ export interface ShortSlot {
   at: string;
   /** HH:MM BRT. */
   hhmm: string;
-  /** `test-schedule` = horário do teste do #10831 mantido; o resto vem do planner. */
+  /** `test-schedule` = horário do teste (encerrado) do #10831 mantido, nas edições daquela janela. */
+  /** `fixed-time` (#12250): horário fixo do destino (`by_destination`/`default_time`) mantido; a grade só avisa. */
   /** `timer-300` (#11265): Instagram pelo timer do 300, sempre no horário do vertical, fora da grade. */
   /** `explicit` (#11795): horário do corte avulso (`--at`), mantido em todos os destinos como o do teste. */
-  rule: "test-schedule" | "timer-300" | "explicit" | SlotRule;
+  /** `SlotRule`: só o repost da página do LinkedIn (`planLinkedInRepostSlot`) ainda passa pelo planner. */
+  rule: "test-schedule" | "fixed-time" | "timer-300" | "explicit" | SlotRule;
   premise: string;
   warning?: string;
 }
@@ -805,32 +1016,31 @@ export function planLinkedInRepostSlot(input: { aammdd: string; profileAt: strin
 const brtHHMM = (iso: string) => new Date(Date.parse(iso) - 3 * 3_600_000).toISOString().slice(11, 16);
 
 /**
- * Pure (#10819): horário de cada destino de API do vertical contra a grade já
- * agendada (`gridFromSocialPublished` + `gridFromShortsPublished`).
+ * Pure (#10819, #12250): horário de cada destino de API do vertical contra a
+ * grade já agendada (`gridFromSocialPublished` + `gridFromShortsPublished`).
  *
- * Premissas (registradas em `premise`; a precedência do teste veio do
- * coordenador da rodada, o resto não veio do editor):
- *   - DURANTE o teste de horário do #10831 (`time.source === "rotation"`) o
- *     horário do teste vale pra todos os destinos: mover um destino tiraria
- *     aquele dia da comparação entre horários. A grade só gera AVISO quando o
- *     horário do teste cai a menos de `DEFAULT_MIN_GAP_MINUTES` de um post da
- *     MESMA conta (colado/empilhado), pro editor decidir à mão;
- *   - FORA do teste (`default_time`), `planSlots` decide por destino com
- *     `preferredAt` = `default_time`, janela 06:00–22:00 BRT do dia da edição e
- *     sem `notBefore` (o plano não depende da hora em que roda; horário que já
- *     passou cai em "publica na hora" no `resolveReelsSchedule`, como antes).
- *     Cada destino planejado entra na grade antes do seguinte;
- *   - destinos guiados (YouTube Shorts, perfil pessoal) seguem `shortTime`: o
- *     skill lê um horário só pra eles;
- *   - o Instagram conta também como post dos collabs (`cfg.instagramCollaborators`,
- *     decisão do editor 261023): o aviso do teste e o espaçamento do planner
- *     olham os posts da autora E os dos collabs (hoje a @vjpixel, #11223).
+ * Desde o #12250 o horário do vertical é FIXO por destino (decisão do editor
+ * de 05/11/2026): cada destino sai no horário que `timeFor` devolve (o do
+ * destino em `by_destination`, senão `default_time`; no corte avulso, o
+ * `--at`; nas edições da janela do teste encerrado do #10831, o da rotação).
+ * A grade nunca move o vídeo: quando o horário cai a menos de
+ * `DEFAULT_MIN_GAP_MINUTES` de um post da MESMA conta (ou de um collab do
+ * Instagram, decisão do editor 261023), o slot é mantido e sai um AVISO pro
+ * editor mover à mão se quiser (premissa decidida no #12250, a mesma que o
+ * teste do #10831 e o corte explícito já seguiam). Antes do #12250, fora do
+ * teste, o `planSlots` escolhia outro horário por destino em silêncio.
+ *
+ * Destinos guiados (YouTube Shorts, perfil pessoal do Facebook) não entram:
+ * a skill lê o horário deles do item do plano.
  */
 export function planShortSlots(input: {
   aammdd: string;
+  /** Horário dos destinos sem `timeFor` (e base do aviso). */
   time: ShortTime;
   /** ISO do `time.hhmm` no dia da edição. */
   timeAt: string;
+  /** #12250: horário por destino; ausente = `time`/`timeAt` em todos. */
+  timeFor?: (destinationId: string) => { time: ShortTime; at: string };
   destinations: readonly ShortDestination[];
   cfg: Pick<ShortsConfig, "instagramAuthorPage"> & Partial<Pick<ShortsConfig, "instagramCollaborators">>;
   grid: readonly ScheduledSlot[];
@@ -840,65 +1050,38 @@ export function planShortSlots(input: {
     .filter((x): x is { dest: ShortDestination; account: string; also: string[] } => x.account !== null);
   const withAlso = (also: string[]) => (also.length ? { alsoAccounts: also } : {});
 
-  if (input.time.source === "rotation" || input.time.source === "explicit") {
+  return api.map(({ dest, account, also }) => {
+    const { time, at } = input.timeFor ? input.timeFor(dest.id) : { time: input.time, at: input.timeAt };
+    const t = Date.parse(at);
+    const mine = new Set([account, ...also]);
+    const close = input.grid
+      .filter((s) => slotAccounts(s).some((a) => mine.has(a)) && Math.abs(Date.parse(s.at) - t) < DEFAULT_MIN_GAP_MINUTES * 60_000)
+      .map((s) => brtHHMM(s.at));
     // #11795: o horário explícito do corte avulso é mantido como o do teste (o
     // editor escolheu), mas nunca leva o rótulo nem a premissa do teste.
-    const explicit = input.time.source === "explicit";
-    const t = Date.parse(input.timeAt);
-    return api.map(({ dest, account, also }) => {
-      const mine = new Set([account, ...also]);
-      const close = input.grid
-        .filter((s) => slotAccounts(s).some((a) => mine.has(a)) && Math.abs(Date.parse(s.at) - t) < DEFAULT_MIN_GAP_MINUTES * 60_000)
-        .map((s) => brtHHMM(s.at));
-      const slot: ShortSlot = {
-        destination: dest.id,
-        account,
-        ...withAlso(also),
-        at: new Date(t).toISOString(),
-        hhmm: input.time.hhmm,
-        rule: explicit ? "explicit" : "test-schedule",
-        premise: explicit
-          ? "horário explícito do corte avulso (--at, #11795) tem precedência sobre a grade (#10819)"
-          : `teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)`,
-      };
-      if (close.length) {
-        slot.warning =
-          `${dest.id}: o horário ${explicit ? "do corte" : "do teste"} (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
-          `(${[...new Set(close)].join(", ")} BRT) — mantido ${explicit ? "porque o horário do corte é explícito" : "por causa do teste"}; mova à mão se não quiser colado`;
-      }
-      return slot;
-    });
-  }
-
-  const window = brtDayWindow(input.aammdd);
-  const decisions = planSlots(
-    input.grid,
-    api.map(({ account, also }) => ({ account, ...withAlso(also), window, preferredAt: input.timeAt })),
-  );
-  return api.map(({ dest, account, also }, i) => {
-    const d = decisions[i];
-    if (!d.at) {
-      return {
-        destination: dest.id,
-        account,
-        ...withAlso(also),
-        at: new Date(Date.parse(input.timeAt)).toISOString(),
-        hhmm: input.time.hhmm,
-        rule: d.rule,
-        premise: d.premise,
-        warning: `${dest.id}: a grade não achou horário (${d.premise}) — mantido ${input.time.hhmm} BRT`,
-      };
-    }
-    return {
+    const kind = time.source === "explicit" ? "explicit" : time.source === "rotation" ? "test-schedule" : "fixed-time";
+    const slot: ShortSlot = {
       destination: dest.id,
       account,
       ...withAlso(also),
-      at: d.at,
-      hhmm: brtHHMM(d.at),
-      rule: d.rule,
-      premise: d.premise,
-      ...(d.warning ? { warning: `${dest.id}: ${d.warning}` } : {}),
+      at: new Date(t).toISOString(),
+      hhmm: time.hhmm,
+      rule: kind,
+      premise:
+        kind === "explicit"
+          ? "horário explícito do corte avulso (--at, #11795) tem precedência sobre a grade (#10819)"
+          : kind === "test-schedule"
+            ? "teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)"
+            : `horário fixo do vertical em ${dest.id} (#12250) tem precedência sobre a grade (#10819)`,
     };
+    if (close.length) {
+      const what = kind === "explicit" ? "do corte" : kind === "test-schedule" ? "do teste" : "fixo";
+      const why = kind === "explicit" ? "porque o horário do corte é explícito" : kind === "test-schedule" ? "por causa do teste" : "porque o horário do vertical é fixo (#12250)";
+      slot.warning =
+        `${dest.id}: o horário ${what} (${time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
+        `(${[...new Set(close)].join(", ")} BRT) — mantido ${why}; mova à mão se não quiser colado`;
+    }
+    return slot;
   });
 }
 

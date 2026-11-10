@@ -132,7 +132,7 @@ describe("#9255: plantio determinístico do erro intencional no Stage 2 headless
   });
 
   it("sem menção plantável → exit 1 e nada gravado (placeholder segue barrando)", () => {
-    const md = MD_261001.replace(/Claude|Copilot|Anthropic/g, "Fulano");
+    const md = MD_261001.replace(/Claude|Copilot|Anthropic|GitHub|OpenAI/g, "Fulano"); // OpenAI e GitHub entraram no catálogo no #12612
     const { root, dir } = makeEditionDir(md);
     try {
       assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", join(root, "none.jsonl")])), 1);

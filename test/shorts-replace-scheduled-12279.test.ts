@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { planScheduledReplacements, shortVideoChangeWarnings, newerShortVersionWarnings } from '../scripts/lib/diaria/short-scheduled-replace.ts';
-import { deleteFacebookScheduledVideo, runShortReplacementUpload, readShortVideoSourceName, parseShortsCliArgs, type GraphDeps } from '../scripts/publish-shorts.ts';
+import { publishFacebookReel, deleteFacebookScheduledVideo, runShortReplacementUpload, readShortVideoSourceName, parseShortsCliArgs, type GraphDeps } from '../scripts/publish-shorts.ts';
 import { deleteScheduledYouTubeVideo } from '../scripts/lib/diaria/youtube-upload.ts';
 import { persistShortEntry, readShortsRegistry, recordShortReplacementDeletion, readShortReplacementHistory } from '../scripts/lib/diaria/shorts-published-store.ts';
 import type { ShortPublishedEntry } from '../scripts/lib/diaria/short-video.ts';
@@ -72,6 +72,25 @@ describe('#12279 replacement planning and registry', () => {
     assert.throws(() => planScheduledReplacements([entry()], now, ['typo']));
     assert.equal(planScheduledReplacements([entry(), entry('x')], now, ['x']).length, 1);
   });
+  it('reserves twenty minutes beyond the child upload guard before deleting', async () => {
+    for (const minutes of [10, 11, 29, 30]) {
+      const scheduled_at = new Date(now.getTime() + minutes * 60_000).toISOString();
+      assert.equal(planScheduledReplacements([entry('youtube_shorts', { scheduled_at })], now)[0].action, 'skip');
+      let deletes = 0;
+      await assert.rejects(deleteFacebookScheduledVideo(graph(async (_url, init) => {
+        if (init?.method === 'DELETE') deletes++;
+        return Response.json({ published: false, scheduled_publish_time: Date.parse(scheduled_at) / 1000 });
+      }), page, 'v24.0', 'old'), /30 min/);
+      await assert.rejects(deleteScheduledYouTubeVideo({ now: () => now, fetch: async (url, init) => {
+        if (init?.method === 'DELETE') deletes++;
+        if (url.includes('oauth2')) return Response.json({ access_token: 'fake' });
+        if (url.includes('/channels')) return Response.json({ items: [{ id: 'channel' }] });
+        return Response.json({ items: [{ id: 'old', snippet: { channelId: 'channel' }, status: { privacyStatus: 'private', publishAt: scheduled_at } }] });
+      } }, { clientId: 'fake', clientSecret: 'fake', refreshToken: 'fake', channelId: 'channel' }, 'old'), /30 min/);
+      assert.equal(deletes, 0);
+    }
+    assert.equal(planScheduledReplacements([entry('youtube_shorts', { scheduled_at: new Date(now.getTime() + 31 * 60_000).toISOString() })], now)[0].action, 'replace');
+  });
   it('warns when bytes change, including a re-export under the same filename', () => {
     assert.equal(shortVideoChangeWarnings([entry('x', { video_sha256: 'v1' })], 'v2').length, 1);
     assert.deepEqual(shortVideoChangeWarnings([entry('x', { video_sha256: 'v1' }), entry()], 'v1'), []);
@@ -135,6 +154,14 @@ describe('#12279 remote deletion guards (mock network only)', () => {
       assert.deepEqual(calls, ['GET']);
     });
   }
+  it('replacement upload never falls back to immediate Facebook publication', async () => {
+    let calls = 0;
+    await assert.rejects(publishFacebookReel(graph(async () => {
+      calls++;
+      throw new Error('network must not be called');
+    }), page, 'v24.0', Buffer.from('fake'), 'caption', new Date(now.getTime() + 9 * 60_000).toISOString(), null, true), /nada enviado/);
+    assert.equal(calls, 0);
+  });
   it('Facebook requires a positive deletion acknowledgement', async () => {
     const calls: string[] = [];
     await deleteFacebookScheduledVideo(graph(async (url, init) => {
@@ -166,6 +193,16 @@ describe('#12279 remote deletion guards (mock network only)', () => {
       assert.ok(!calls.includes('DELETE'));
     });
   }
+  it('YouTube never deletes a video belonging to another channel', async () => {
+    let deletes = 0;
+    await assert.rejects(deleteScheduledYouTubeVideo({ now: () => now, fetch: async (url, init) => {
+      if (init?.method === 'DELETE') deletes++;
+      if (url.includes('oauth2')) return Response.json({ access_token: 'fake' });
+      if (url.includes('/channels')) return Response.json({ items: [{ id: 'channel' }] });
+      return Response.json({ items: [{ id: 'old', snippet: { channelId: 'other' }, status: { privacyStatus: 'private', publishAt: '2026-11-05T12:00:00Z' } }] });
+    } }, { clientId: 'fake', clientSecret: 'fake', refreshToken: 'fake', channelId: 'channel' }, 'old'));
+    assert.equal(deletes, 0);
+  });
   it('YouTube checks ownership and private future schedule before DELETE', async () => {
     const calls: string[] = [];
     await deleteScheduledYouTubeVideo({ now: () => now, fetch: async (url, init) => {

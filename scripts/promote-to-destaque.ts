@@ -84,6 +84,7 @@ import {
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { clearEstiloRegenDestaques, reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335, #10404
 import { describeCarouselKeepArtRemap, remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
+import { invalidateStage4D1Capture } from "./lib/stage4-capture-state.ts"; // #12589
 import {
   removePoolItemFromMd,
   syncIntroCountInMd,
@@ -100,6 +101,7 @@ import {
   type PendingTitulo,
 } from "./lib/titulo-provisional.ts"; // #9755
 import { useMelhorPostReselectStep } from "./lib/use-melhor-post.ts"; // #9755
+import { promotedSourceUnreadWarning } from "./lib/diaria/source-readability.ts"; // #12258
 
 /** Pure: newOrder que insere o slot vazio (3) na `position` (1..3). */
 export function insertionOrder(position: number): number[] {
@@ -328,6 +330,9 @@ export function promoteToDestaque(
     if (promotedTitle === null) {
       const art = (data.highlights![position - 1] as { article?: { title?: unknown } }).article;
       promotedTitle = typeof art?.title === "string" && art.title.trim() ? art.title.trim() : url;
+      // #12258: avisa quando a fonte do item promovido não foi lida.
+      const unread = promotedSourceUnreadWarning(data.highlights![position - 1], promotedTitle);
+      if (unread) warnings.push(unread);
     }
     updated.push({ path: p, data });
   }
@@ -521,6 +526,14 @@ export function promoteToDestaque(
   );
   if (keepArt.rewritten) rewritten.push(keepArt.rewritten);
   if (keepArt.warning) warnings.push(keepArt.warning);
+
+  // 8c. _internal/stage4-capture-state.json (#12589): item novo na posição 1 —
+  //     whatsappUrl/metaDescriptionSuggestion derivavam do D1 antigo.
+  if (!dryRun && position === 1) {
+    const d1Capture = invalidateStage4D1Capture(editionDir);
+    if (d1Capture.rewritten) rewritten.push(d1Capture.rewritten);
+    if (d1Capture.message) warnings.push(d1Capture.message);
+  }
 
   const d = `d${position}`;
   const nextSteps = [

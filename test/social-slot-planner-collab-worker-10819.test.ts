@@ -108,7 +108,9 @@ describe("#10819 planShortSlots com o collab (horário injetado, sem config viva
   ];
   const cfg = { instagramAuthorPage: "vjpixel", instagramCollaborators: ["diar.ia.br"] };
 
-  it("fora do teste: o Instagram espalha entre os posts da diar.ia.br; a página VJ pixel (sem collab) alinha", () => {
+  it("fora do teste (#12250): horário fixo fica; o Instagram avisa pelo post da conta em collab, a página VJ pixel não", () => {
+    // Antes do #12250 o planner movia o Instagram pra longe dos posts da
+    // diar.ia.br; o horário fixo do vertical troca o deslocamento por aviso.
     const slots = planShortSlots({
       aammdd: "261022",
       time: { hhmm: "12:00", source: "default", reason: "injetado" },
@@ -118,10 +120,13 @@ describe("#10819 planShortSlots com o collab (horário injetado, sem config viva
       grid: diariaIg,
     });
     const by = Object.fromEntries(slots.map((s) => [s.destination, s]));
-    assert.equal(by["facebook:vjpixel"].rule, "align-other-account");
-    assert.equal(by["instagram"].rule, "spread-same-account");
+    assert.equal(by["facebook:vjpixel"].rule, "fixed-time");
+    assert.equal(by["facebook:vjpixel"].warning, undefined);
+    assert.equal(by["instagram"].rule, "fixed-time");
+    assert.equal(by["instagram"].hhmm, "12:00");
     assert.deepEqual(by["instagram"].alsoAccounts, ["instagram:diaria"]);
-    for (const s of diariaIg) assert.ok(Math.abs(Date.parse(by["instagram"].at) - Date.parse(s.at)) >= 120 * 60_000);
+    assert.match(by["instagram"].warning ?? "", /11:00 BRT/);
+    assert.match(by["instagram"].warning ?? "", /em collab/);
   });
 
   it("durante o teste do vertical: o horário do teste fica, mas avisa quando cola num post da conta em collab", () => {

@@ -25,6 +25,8 @@ import {
   resolveFollowupConfig,
   evaluateFollowupHealth,
   recordFollowupRun,
+  isFailedFollowupRun,
+  resolveFollowupExitCode,
   parseFollowupSnippet,
   snippetTemplate,
   formCandidatesFromEntries,
@@ -58,6 +60,8 @@ function allApproved(): FollowupSnippets {
     apoio360: parseFollowupSnippet(okSnippet()),
     form: parseFollowupSnippet(okSnippet(true)),
     form_lembrete: parseFollowupSnippet(okSnippet(true)),
+    form_lembrete2: parseFollowupSnippet(okSnippet(true)),
+    form_lembrete3: parseFollowupSnippet(okSnippet(true)),
   };
 }
 
@@ -126,21 +130,22 @@ describe("#10604 filtro 'não apoia' e só ativo, perto do envio", () => {
 });
 
 describe("#10605 cadência do formulário", () => {
-  it("D+6 da confirmação; quem preencheu nunca recebe; lembrete a cada 30 dias do envio anterior, sem teto", () => {
+  it("D+6 da confirmação; quem preencheu nunca recebe; lembretes do onboarding em D+19/49/79, um texto por lembrete, até 3 (#10605 v3)", () => {
     assert.deepEqual(formStepDue(T0, T0 + 5 * DAY, undefined, cfg), { due: null, motivo: "nao_venceu" });
     assert.deepEqual(formStepDue(T0, T0 + 6 * DAY, undefined, cfg), { due: "form" });
     assert.deepEqual(formStepDue(null, T0 + 6 * DAY, undefined, cfg), { due: null, motivo: "sem_ancora" });
     assert.deepEqual(formStepDue(T0, T0 + 20 * DAY, undefined, cfg), { due: null, motivo: "vencida" });
     assert.deepEqual(formStepDue(T0, T0 + 6 * DAY, person({ form_filled_at: "2026-01-02T00:00:00Z" }), cfg), { due: null, motivo: "preencheu" });
 
-    const p = person();
-    let at = T0 + 6 * DAY;
-    for (let i = 0; i < 12; i++) {
-      p.sends.push({ step: i === 0 ? "form" : "form_lembrete", at: new Date(at * 1000).toISOString(), lot_id: `l${i}` });
-      assert.deepEqual(formStepDue(T0, at + 29 * DAY, p, cfg), { due: null, motivo: "nao_venceu" });
-      assert.deepEqual(formStepDue(T0, at + 30 * DAY, p, cfg), { due: "form_lembrete" }, `lembrete ${i + 1} segue devido (sem teto)`);
-      at += 30 * DAY;
-    }
+    const p = person({ sends: [{ step: "form", at: new Date((T0 + 6 * DAY) * 1000).toISOString(), lot_id: "l0" }] });
+    const kinds = ["form_lembrete", "form_lembrete2", "form_lembrete3"] as const;
+    [19, 49, 79].forEach((d, i) => {
+      assert.deepEqual(formStepDue(T0, T0 + (d - 1) * DAY, p, cfg), { due: null, motivo: "nao_venceu" }, `D+${d - 1}`);
+      assert.deepEqual(formStepDue(T0, T0 + d * DAY, p, cfg), { due: kinds[i] }, `lembrete ${i + 1} em D+${d}`);
+      p.sends.push({ step: kinds[i], at: new Date((T0 + d * DAY) * 1000).toISOString(), lot_id: `l${i + 1}` });
+    });
+    // Depois do 3º lembrete, para mesmo sem resposta (decisão do editor de 08/11/2026).
+    assert.deepEqual(formStepDue(T0, T0 + 400 * DAY, p, cfg), { due: null, motivo: "teto_lembretes" });
   });
 
   it("resposta do formulário para os lembretes na hora", () => {
@@ -181,7 +186,7 @@ describe("#10605 espaçamento mínimo entre apoio e formulário", () => {
     assert.equal(plan.counts.form?.espacamento, 1);
   });
 
-  it("e-mail das sequências há menos de min_gap_days: nada sai pra pessoa nesta rodada", () => {
+  it("depois do 1º mês, pedido a 10 dias ou menos do anterior espera (ask_min_gap_days 11)", () => {
     const p = person({ sends: [{ step: "form", at: new Date((T0 + 27 * DAY) * 1000).toISOString(), lot_id: "f" }] });
     const plan = planFollowup({
       ...base,
@@ -191,9 +196,12 @@ describe("#10605 espaçamento mínimo entre apoio e formulário", () => {
     });
     assert.equal(plan.due.length, 0);
     assert.equal(plan.counts.apoio30?.espacamento, 1);
-    // Na janela de 10 dias ainda dá pra sair depois do intervalo (D+34 = 7 dias depois).
-    const later = planFollowup({ ...base, nowSec: T0 + 34 * DAY, apoioCandidates: [{ kit_subscriber_id: 1, email: "a@x.com", cadastro_at: new Date(T0 * 1000).toISOString() }], formCandidates: [], people: { "1": p } });
-    assert.deepEqual(later.due.map((d) => d.kind), ["apoio30"]);
+    assert.deepEqual(plan.askDeferred.map((d) => d.kind), ["apoio30"]);
+    // D+37 = 10 dias depois: ainda espera; D+38 = 11 dias: sai.
+    const at = (nowSec: number) =>
+      planFollowup({ ...base, nowSec, apoioCandidates: [{ kit_subscriber_id: 1, email: "a@x.com", cadastro_at: new Date(T0 * 1000).toISOString() }], formCandidates: [], people: { "1": p } });
+    assert.deepEqual(at(T0 + 37 * DAY).due, []);
+    assert.deepEqual(at(T0 + 38 * DAY).due.map((d) => d.kind), ["apoio30"]);
   });
 });
 
@@ -223,16 +231,22 @@ describe("#10604/#10605 envio travado até os textos serem aprovados", () => {
     assert.ok(!out.includes("url_encode"));
   });
 
-  it("--init-snippets cria os 6 textos com o marcador e nunca sobrescreve", () => {
+  it("--init-snippets cria os 12 textos com o marcador e nunca sobrescreve", () => {
     const dir = mkdtempSync(join(tmpdir(), "followup-snip-"));
     writeFileSync(join(dir, "apoio-30.md"), "editado pelo editor");
     const { written, skipped } = initFollowupSnippets(dir);
-    assert.equal(written.length, 5);
+    // 4 de apoio + D+6 + 3 lembretes + base (#10604/#10605 v3) + convite anual, lembrete anual (#12490) e resultados (#12495)
+    // + as 3 variantes "rascunho" dos lembretes (#12504).
+    assert.equal(written.length, 14);
     assert.deepEqual(skipped, [{ path: join(dir, "apoio-30.md"), reason: "texto_existente" }]);
     assert.equal(readFileSync(join(dir, "apoio-30.md"), "utf8"), "editado pelo editor");
     const snips = loadFollowupSnippets(dir);
     assert.equal(snips.apoio90?.hasPendingMarker, true);
     assert.equal(snips.form?.hasPendingMarker, true);
+    assert.equal(snips.form_base?.hasPendingMarker, true, "e-mail da base também nasce travado");
+    assert.equal(snips.form_anual?.hasPendingMarker, true, "convite anual nasce travado (#12490)");
+    assert.equal(snips.form_anual_lembrete?.hasPendingMarker, true);
+    assert.equal(snips.form_resultados?.hasPendingMarker, true, "e-mail dos resultados nasce travado (#12495)");
   });
 });
 
@@ -337,6 +351,33 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
     const block = { people: {}, lots: {} };
     recordFollowupRun(block, run);
     assert.equal((block as { consecutive_failed_runs?: number }).consecutive_failed_runs, 0);
+  });
+
+  it("#10605 releitura do e-mail da base lançando (404) ou 'aborted' conta como falha da rodada (alarme + exit 1), sem gravar envio", async () => {
+    for (const reread of [
+      async () => {
+        throw new Error("Kit 404 Not Found");
+      },
+      async () => ({ status: "aborted", send_at: null }),
+    ]) {
+      const storePath = tempStore();
+      const s = readStore(storePath).store;
+      s.followup!.base_invite = {
+        lot_id: "form_base-2026-01-01-01", tag_name: "t", tag_id: 5, broadcast_id: 42, recipient_subscription_ids: ["1"], recipient_emails: ["a@x.com"],
+        status: "draft", created_at: "2026-01-01T00:00:00Z", send_at: null, confirmed_at: null, last_error: null,
+      };
+      writeStore(s, storePath);
+      const deps = fakeDeps({ getBroadcast: reread });
+      const { run, lots } = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
+      assert.equal(run.base_invite_failed, 1);
+      assert.ok(isFailedFollowupRun(run));
+      assert.equal(resolveFollowupExitCode(run), 1);
+      assert.ok(lots.some((l) => (l as { base_invite?: boolean; failed?: boolean }).base_invite && (l as { failed?: boolean }).failed));
+      const after = readStore(storePath).store.followup!;
+      assert.equal(after.base_invite?.status, "draft", "nada muda de estado sem prova do Kit");
+      assert.ok(after.base_invite?.last_error, "o motivo fica no store");
+      assert.equal(after.people["1"], undefined, "nenhum envio gravado");
+    }
   });
 
   it("#10623/#10631 teto aplicado ANTES das leituras singulares: só quem cabe no lote é consultado no Kit", async () => {

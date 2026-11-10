@@ -1,0 +1,16 @@
+[Unit]
+Description=diar.ia.br: rclone bisync do Google Drive inteiro em /mnt/hd-sata/GoogleDrive (#12356)
+# Nunca pode rodar com o HD desmontado (senao a pasta vazia vira "tudo
+# apagado" na nuvem). Quem garante e o SCRIPT (mountpoint + sentinela +
+# --max-delete): numa unit de usuario o RequiresMountsFor abaixo so ordena,
+# o user manager nao enxerga a mount unit do fstab.
+RequiresMountsFor=/mnt/hd-sata
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /home/vjpixel/diaria-studio/scripts/systemd/gdrive-bisync.sh
+# Um sync grande (primeira passada pos-resync) pode passar dos 2 min do timer;
+# oneshot nao reentra, o proximo tick so dispara depois deste terminar.
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=idle

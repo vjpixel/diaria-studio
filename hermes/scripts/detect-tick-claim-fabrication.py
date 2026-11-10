@@ -662,6 +662,13 @@ _ABSENT_CLAIM = re.compile(
 _SEM_CLAIM_MARKER = re.compile(r"\bsem\s+(?:\w+\s+){0,1}$", re.IGNORECASE)
 _SEM_CLAIM_WINDOW = 20
 
+# #12340: "Sem comentário ou claim criado" nega os dois substantivos.
+# Lista fechada: não ampliar a janela de "sem" para frases independentes
+# como "sem conflito, claim registrado" (que afirmam uma claim real).
+_SEM_COORDINATED_CLAIM = re.compile(
+    r"\bsem\s+coment[áa]rios?\s+(?:ou|e)\s+$", re.IGNORECASE,
+)
+
 
 # #12046: relatório real de 03/11/2026 15:50 UTC descreve uma tentativa
 # recusada e um claim concorrente ativo. Ambos têm keyword + ref, mas não
@@ -698,6 +705,8 @@ def _is_negated_claim_keyword(segment: str, keyword_start: int, keyword_text: st
     if _NON_OWN_CLAIM.match(segment, keyword_start):
         return True
     if _ABSENT_CLAIM.match(segment, keyword_start):
+        return True
+    if _SEM_COORDINATED_CLAIM.search(segment[:keyword_start]):
         return True
     window_start = max(0, keyword_start - _NEGATION_WINDOW)
     window = segment[window_start:keyword_start]

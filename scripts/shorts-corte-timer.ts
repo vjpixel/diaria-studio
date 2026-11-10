@@ -97,6 +97,8 @@ import { clearShortSendingAll, openSendingMarks, readShortsSending, type ShortSe
 import { SHORTS_TIMER_LOCK_STALE_MS } from "./lib/diaria/vertical-download-guard.ts";
 import { corteAuthorizedDestinations, corteContentCheck, corteRevokedDestinations, type CorteContentFingerprint } from "./lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "./lib/diaria/corte-content.ts";
+import { corteHasMissingApprovedFiles, recoverCorteFilesFromR2, type CorteR2RecoverDeps } from "./lib/diaria/corte-r2-recover.ts";
+import { loadR2UploadConfig } from "./lib/r2-object-upload.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { corteUnscheduledDestinations } from "./lib/diaria/corte-owner-watch.ts";
 import { acquireTimerLock } from "./lib/diaria/timer-lock.ts";
@@ -632,6 +634,38 @@ export interface CorteTimerRunDeps {
   notify: NotifyEditorDeps;
   /** Teste: troca o alarme real (notifyEditor). `variant`: ver `corteAlarmId`. */
   alarm?: (dir: string, spec: CorteSpec, destination: string, key: CorteTimerAlarmKey, reason: string, variant?: string) => Promise<boolean>;
+  /**
+   * #12473: acesso ao R2 para baixar o vídeo/capa aprovados que faltam nesta
+   * máquina (`recoverCorteFilesFromR2`). `null`/ausente = sem recuperação (o
+   * `missing-video` de antes); `missing` lista as vars que faltam no `.env`.
+   */
+  r2?: CorteR2RecoverDeps | { missing: string[] } | null;
+}
+
+/**
+ * #12473: tenta trazer do R2 o que o OneDrive não trouxe e devolve as notas
+ * para o motivo do alarme (vazio = nada faltava, ou tudo recuperado).
+ */
+async function recoverMissingFromR2(dir: string, spec: CorteSpec, deps: CorteTimerRunDeps): Promise<string[]> {
+  const r2 = deps.r2;
+  if (!r2) return [];
+  if (!corteHasMissingApprovedFiles(dir, spec)) return [];
+  if ("missing" in r2) {
+    const note = `sem acesso ao R2 para recuperar (${r2.missing.join(", ")})`;
+    console.error(`${LOG_PREFIX} ${spec.slug}: ${note}`);
+    return [note];
+  }
+  const notes: string[] = [];
+  for (const o of await recoverCorteFilesFromR2(dir, spec, r2)) {
+    if (o.kind === "recovered") {
+      console.log(`${LOG_PREFIX} ${spec.slug}: ${o.file} ausente nesta máquina recuperado do R2 (${o.key}, ${o.bytes} bytes, sha256 do "pode publicar" confere)`);
+    } else {
+      const note = `R2 ${o.key}: ${o.reason}`;
+      console.error(`${LOG_PREFIX} ${spec.slug}: ${o.file} não recuperado do R2 — ${o.reason}`);
+      notes.push(note);
+    }
+  }
+  return notes;
 }
 
 /**
@@ -716,8 +750,11 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
   }
   try {
     const video = resolveCorteVideo(dir, spec.video);
+    // #12473: vídeo/capa aprovados que o OneDrive não trouxe saem do R2 (já subidos pelos destinos da API),
+    // conferidos pelo sha256 aprovado antes de gravar; falha vira o motivo do `missing-video` abaixo.
+    const r2Notes = dryRun ? [] : await recoverMissingFromR2(dir, spec, deps);
     if (!existsSync(video)) {
-      const reason = `vídeo do corte ausente nesta máquina: ${video}`;
+      const reason = `vídeo do corte ausente nesta máquina: ${video}${r2Notes.length ? ` (${r2Notes.join("; ")})` : ""}`;
       console.error(`${LOG_PREFIX} ${spec.slug}: ${reason}`);
       if (dryRun) return 0;
       let ok = sideOk;
@@ -730,7 +767,8 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
     const check = corteContentCheck(spec.publish_confirmed_content, content);
     if (check.kind !== "ok") {
       const key: CorteTimerAlarmKey = check.kind === "missing" ? "missing-video" : "content-changed";
-      const reason = check.kind === "missing" ? check.reason : `${check.reason}: o timer não publica conteúdo que o editor não aprovou`;
+      const reason =
+        check.kind === "missing" ? `${check.reason}${r2Notes.length ? ` (${r2Notes.join("; ")})` : ""}` : `${check.reason}: o timer não publica conteúdo que o editor não aprovou`;
       console.error(`${LOG_PREFIX} ${spec.slug}: ${reason}`);
       if (dryRun) return 0;
       let ok = sideOk;
@@ -822,11 +860,14 @@ async function runCortes(dirs: string[], cortesDir: string, dryRun: boolean): Pr
     console.log(`${LOG_PREFIX} nenhum corte em ${cortesDir} — nada a fazer`);
     return 0;
   }
+  const r2 = loadR2UploadConfig(process.env);
   const deps: CorteTimerRunDeps = {
     config: JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")),
     now: new Date(),
     runScript: runTsx,
     notify: { cwd: ROOT },
+    // #12473: o unit do 300 carrega o `.env` (EnvironmentFile), com os mesmos `R2_*` do publish-shorts.
+    r2: r2.ready ? { config: r2.config, fetch: (u, i) => fetch(u, i), now: () => new Date() } : { missing: r2.missing },
   };
   let exit = 0;
   for (const dir of dirs) {

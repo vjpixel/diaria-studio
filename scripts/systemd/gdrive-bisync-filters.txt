@@ -1,0 +1,55 @@
+# Filtros do rclone bisync do Google Drive (#12356). Mudar este arquivo exige
+# rodar o bisync uma vez com --resync (o rclone guarda o hash dos filtros).
+# O script passa --ignore-case: os padroes casam sem diferenciar maiusculas,
+# como o skip_file do OneDrive (#12357).
+#
+# Globais (Drive inteiro): lixo de editor, temporarios e WAL/SHM de SQLite (#12357).
+- ~*
+- .~*
+- *.tmp
+- *.swp
+- *.partial
+- *.db-shm
+- *.db-wal
+- *.sqlite-shm
+- *.sqlite-wal
+- *.sqlite3-shm
+- *.sqlite3-wal
+- *safeBackup*
+- desktop.ini
+- .DS_Store
+- Thumbs.db
+# node_modules/ em qualquer profundidade (#12412): arvores de projetos antigos
+# com milhares de diretorios alongavam a listagem do Drive para alem de 1h, e
+# o access token OAuth vencia no meio dela (401 -> bisync abortado). So
+# node_modules: .git/objects fica no sync (decisao do editor, 08/11/2026).
+# O "/**" deixa o rclone pular o diretorio sem lista-lo.
+- node_modules/**
+#
+# Arquivos de data/ que ficam locais por maquina (mesma lista do skip_file do
+# OneDrive), so dentro da pasta diaria-studio-data: um "- *.mp4" global tiraria
+# do sync os videos-fonte que vivem no Drive. Regerar com
+#   npx tsx scripts/lib/data-sync-exclusions.ts
+# e colar no lugar do bloco abaixo (test/data-sync-exclusions-12357.test.ts trava).
+# BEGIN data-local-only (#12357) - GERADO de scripts/lib/data-sync-exclusions.ts, nao editar a mao
+- diaria-studio-data/*.db-shm
+- diaria-studio-data/**/*.db-shm
+- diaria-studio-data/*.db-wal
+- diaria-studio-data/**/*.db-wal
+- diaria-studio-data/*.sqlite3-shm
+- diaria-studio-data/**/*.sqlite3-shm
+- diaria-studio-data/*.sqlite3-wal
+- diaria-studio-data/**/*.sqlite3-wal
+- diaria-studio-data/run-log.jsonl
+- diaria-studio-data/**/run-log.jsonl
+- diaria-studio-data/*.mp4
+- diaria-studio-data/**/*.mp4
+- diaria-studio-data/run-log*.jsonl
+- diaria-studio-data/**/run-log*.jsonl
+- diaria-studio-data/inbox*.md
+- diaria-studio-data/**/inbox*.md
+- diaria-studio-data/drive-cache*.json
+- diaria-studio-data/**/drive-cache*.json
+- diaria-studio-data/*safeBackup*
+- diaria-studio-data/**/*safeBackup*
+# END data-local-only

@@ -37,7 +37,7 @@
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { closeSupersededAlarmIssues } from "./lib/alarm-issues.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
@@ -99,7 +99,19 @@ export function listOpenOnHoldIssues(cwd: string = ROOT): OnHoldIssueInput[] | n
   }
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/on-hold-vencimento-alarm.ts",
+  booleans: ["dry-run"],
+  values: ["to"],
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");

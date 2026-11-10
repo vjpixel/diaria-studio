@@ -35,8 +35,9 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
+import { SNAPSHOT_FILENAME } from "./snapshot-audience-profile.ts";
 import {
   findDuplicateArchiveEntries,
   findDuplicateSnapshotEntries,
@@ -48,6 +49,8 @@ import {
   SNAPSHOT_FILE_RE,
   applySinceFloor,
   findSnapshotAgeFinding,
+  embeddedUpdatedAt,
+  partitionByCheckoutDivergence,
   type AudienceStalenessLogEntry,
   type SnapshotFile,
 } from "./lib/audience-profile-staleness-alarm.ts";
@@ -60,6 +63,7 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HISTORY_DIR = resolve(ROOT, "docs", "audience-history");
+const EDITIONS_DIR = resolve(ROOT, "data", "editions");
 const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "audience-profile-staleness-alarm-issues.json");
 const LOG_PREFIX = "[audience-profile-staleness-alarm]";
 /** `family: "evento"` nunca fecha de fato via este caminho (ver docstring
@@ -102,13 +106,68 @@ function readSnapshotFiles(historyDir: string): SnapshotFile[] {
     .map((name) => ({ name, content: readFileSync(resolve(historyDir, name), "utf8") }));
 }
 
+/**
+ * I/O (#12311): datas `updated_at` dos `_internal/audience-profile-snapshot.md`
+ * das edições (`data/editions/{AAMM}/{AAMMDD}/`), a prova de que o
+ * `update-audience.ts` daquele Stage 0 escreveu o profile. `data/` ausente
+ * (CI, worktree sem junction) devolve conjunto vazio: nenhum par é descartado
+ * e o alarme se comporta como antes.
+ */
+function readEditionRegenerationDates(editionsDir: string): Set<string> {
+  const dates = new Set<string>();
+  if (!existsSync(editionsDir)) return dates;
+  for (const month of readdirSync(editionsDir)) {
+    if (!/^\d{4}$/.test(month)) continue;
+    const monthDir = resolve(editionsDir, month);
+    let editions: string[];
+    try {
+      editions = readdirSync(monthDir);
+    } catch {
+      continue;
+    }
+    for (const edition of editions) {
+      if (!/^\d{6}$/.test(edition)) continue;
+      const p = resolve(monthDir, edition, "_internal", SNAPSHOT_FILENAME);
+      if (!existsSync(p)) continue;
+      try {
+        const d = embeddedUpdatedAt(readFileSync(p, "utf8"));
+        if (d) dates.add(d);
+      } catch (err) {
+        console.warn(`${LOG_PREFIX} falha lendo ${p}: ${(err as Error).message}`);
+      }
+    }
+  }
+  return dates;
+}
+
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12503). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/audience-profile-staleness-alarm.ts",
+  booleans: ["dry-run"],
+};
+
 function main(): void {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   const dryRun = hasFlag(process.argv, "dry-run");
   const logPath = resolveRunLogPath(ROOT);
 
   const { entries: logEntries, filesRead } = readRunLogEntries(logPath);
   const snapshots = readSnapshotFiles(HISTORY_DIR);
-  const snapshotEntries = findDuplicateSnapshotEntries(snapshots);
+  const regeneratedDates = readEditionRegenerationDates(EDITIONS_DIR);
+  const { kept: snapshotEntries, explained } = partitionByCheckoutDivergence(
+    findDuplicateSnapshotEntries(snapshots),
+    regeneratedDates,
+  );
+  for (const e of explained) {
+    console.log(
+      `${LOG_PREFIX} par idêntico ${e.details?.latest_file} → ${e.details?.today_file} descartado: ` +
+        `regeneração intermediária comprovada em audience-profile-snapshot.md de edição (divergência entre checkouts, #12311).`,
+    );
+  }
   console.log(
     `${LOG_PREFIX} fontes: ${filesRead} run-log(s) em ${dirname(logPath)} (${logEntries.length} ocorrência(s)), ` +
       `${snapshots.length} snapshot(s) em ${HISTORY_DIR} (${snapshotEntries.length} par(es) idêntico(s) desde ${SNAPSHOT_SCAN_SINCE}).`,

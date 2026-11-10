@@ -144,7 +144,15 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
     }
   }
   for (const branch of branches) {
-    const raw = query("gh", ["pr", "list", "--head", branch, "--state", "open", "--limit", "100", "--json", "number,url,headRefName"]);
+    // #12307: REST, não `gh pr list` (GraphQL). Sessão cloud do Claude Code bloqueia GraphQL
+    // (HTTP 403), e o check nunca conseguia atestar o encerramento lá. `{owner}`/`{repo}` vêm do
+    // remote do checkout; o `--jq` devolve o mesmo formato que `gh pr list --json` dava.
+    const raw = query("gh", [
+      "api",
+      `repos/{owner}/{repo}/pulls?state=open&per_page=100&head={owner}:${encodeURIComponent(branch)}`,
+      "--jq",
+      "[.[] | {number, url: .html_url, headRefName: .head.ref}]",
+    ]);
     if (raw !== undefined) {
       try {
         const prs: { number: number; url: string; headRefName: string }[] = JSON.parse(raw);

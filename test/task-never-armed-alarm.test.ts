@@ -97,10 +97,18 @@ describe("evaluateTaskNeverArmed", () => {
       "diaria-edicao-diaria",
       "diaria-overnight-watchdog",
       "diaria-node-modules-health-check",
+      "diaria-gdrive-bisync",
+      "diaria-gdrive-data-bisync",
     ]);
     const ev = evaluateTaskNeverArmed(
       [],
-      ["diaria-edicao-diaria", "diaria-overnight-watchdog", "diaria-node-modules-health-check"],
+      [
+        "diaria-edicao-diaria",
+        "diaria-overnight-watchdog",
+        "diaria-node-modules-health-check",
+        "diaria-gdrive-bisync",
+        "diaria-gdrive-data-bisync",
+      ],
     );
     assert.equal(ev.verdict, "ok");
   });

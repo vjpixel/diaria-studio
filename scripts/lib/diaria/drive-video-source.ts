@@ -43,7 +43,7 @@
  *   como finais pelo lugar, sem exigir "final" no nome.
  * - Com algum `.mp4` em `Final/`, só ela conta (precede a regra do nome na
  *   subpasta da edição). Sem `.mp4` lá, cai na regra antiga da subpasta.
- * - Horizontal = `_Youtube_`; uma única vertical `_Vertical_V{n}` atende
+ * - Horizontal = `horizontal_V{n}` (#12609; o antigo `_Youtube_` segue valendo); uma única vertical `_Vertical_V{n}` atende
  *   todos os destinos (#11491). O target técnico segue `outras-redes`.
  *   Fallback histórico, inclusive para `target: "instagram"`: `_Outras redes_`,
  *   depois `_Instagram_`. Empate no mesmo padrão continua ambíguo.
@@ -133,7 +133,7 @@ export function isEditedFolderName(name: string): boolean {
 }
 
 /**
- * Destino pelo nome: `_Youtube_`, `_Vertical_V{n}`/`_Vertical_FINAL` (com texto
+ * Destino pelo nome: `horizontal_V{n}`/`horizontal_FINAL` (#12609) ou o antigo `_Youtube_`, `_Vertical_V{n}`/`_Vertical_FINAL` (com texto
  * livre no meio, `_Vertical_Edição 09_V1`, #12133), `_Instagram_`, `_Outras redes_` (separador
  * `_`, `-`, espaço ou `.`; sem diferenciar maiúsculas). Mais de um destino no
  * mesmo nome, ou nenhum, é `null`. Nome de corte (`…_V1-soberana`, ver
@@ -144,7 +144,9 @@ export function videoTargetOf(name: string): VideoTarget | null {
   if (corteSuffixOf(name)) return null;
   const n = ` ${name.normalize("NFC").toLowerCase().replace(/[_.\-]+/g, " ").replace(/\s+/g, " ")} `;
   const found: VideoTarget[] = [];
-  if (/ you ?tube /.test(n)) found.push("youtube");
+  // #12609: o horizontal passou de `_Youtube_V{n}` para `horizontal_V{n}`
+  // (simétrico com `_Vertical_V{n}`); os dois valem, o antigo pelas edições já exportadas.
+  if (/ you ?tube | horizontal (?:final|(?:\S+ )*?v\d+) /.test(n)) found.push("youtube");
   if (/ instagram /.test(n)) found.push("instagram");
   // #12133: o editor põe texto livre entre o destino e a versão
   // (`_Vertical_Edição 09_V1`); vale `_Vertical_` seguido, em algum ponto, de
@@ -177,7 +179,7 @@ export interface CorteRef {
  * Palavras que já identificam a vertical da edição no nome: um corte com esse
  * slug/título casaria com todo arquivo, então não serve para reconhecer corte.
  */
-const RESERVED_CORTE_KEYS = new Set(["vertical", "final", "youtube", "instagram", "outras redes", "diaria", "comentada", "diaria comentada", "still"]);
+const RESERVED_CORTE_KEYS = new Set(["vertical", "horizontal", "final", "youtube", "instagram", "outras redes", "diaria", "comentada", "diaria comentada", "still"]);
 
 /** Minúsculas, sem acento, separadores e espaços colapsados, com espaço nas pontas (casamento por palavra). */
 function nameTokens(name: string): string {
@@ -488,7 +490,7 @@ export function selectDriveVideo(allFiles: DriveVideoFile[], opts: SelectDriveVi
       orientation: opts.orientation,
       reason:
         `${where} da edição tem ${finalFolderPool.length} .mp4, mas nenhum do destino ${target} ` +
-        `(sufixo no nome, ex.: "Diaria comentada_${target === "youtube" ? "Youtube" : target === "instagram" ? "Instagram" : "Vertical"}_V3.mp4") nem sem sufixo na proporção ${opts.orientation}`,
+        `(sufixo no nome, ex.: "Diaria comentada${target === "youtube" ? " horizontal" : target === "instagram" ? "_Instagram" : "_Vertical"}_V3.mp4") nem sem sufixo na proporção ${opts.orientation}`,
     };
   }
 

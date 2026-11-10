@@ -20,6 +20,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, statSync, statfsSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { DRIVE_API, DRIVE_UPLOAD } from "../drive-constants.ts";
 import { escapeDriveQueryString } from "../drive-helpers.ts";
@@ -38,7 +39,7 @@ export interface MontageDriveDeps {
   /**
    * Chamada autenticada SEM retry (`gFetch`), para o PUT do conteúdo do upload
    * resumable: reenviar o corpo inteiro na mesma sessão depois de um 5xx não é o
-   * protocolo; `uploadToFolder` abre uma sessão nova a cada tentativa. Ausente =
+   * protocolo; arquivos grandes consultam o Range antes de retomar. Ausente =
    * `driveFetch` (testes).
    */
   uploadFetch?(url: string, init?: RequestInit): Promise<Response>;
@@ -268,9 +269,91 @@ export function driveModeFor(o: { driveRootExists: boolean; fromDrive: boolean; 
   return "api";
 }
 
-/** Cache em DISCO do modo API (o `/tmp` do 300 é tmpfs): `--cache-dir`, `DIARIA_VIDEO_CACHE_DIR` ou `~/.cache/diaria-video-montagem`. */
-export function driveCacheDir(edition: string, flag: string | undefined, env: string | undefined, home: string): string {
-  return resolve(join(flag ?? env ?? join(home, ".cache", "diaria-video-montagem"), edition));
+/** Por que a raiz de `DIARIA_VIDEO_CACHE_DIR` foi recusada (#12365). */
+export type CacheRootCheck = "ok" | "missing" | "same-device-as-home";
+
+/**
+ * `DIARIA_VIDEO_CACHE_DIR` aponta para um diretório que não existe, ou que
+ * está no mesmo disco do home (HD desmontado, #12365).
+ */
+export class VideoCacheRootMissingError extends Error {
+  constructor(
+    message: string,
+    readonly path: string,
+    readonly reason: Exclude<CacheRootCheck, "ok">,
+  ) {
+    super(message);
+    this.name = "VideoCacheRootMissingError";
+  }
+}
+
+/**
+ * Checagem padrão da raiz da variável: tem de existir e estar em outro
+ * device que o home. Com o HD desmontado, o próprio ponto de montagem (ou um
+ * diretório criado por engano embaixo dele) existe no disco raiz, o mesmo do
+ * home; só o `dev` diferente prova que o HD está lá.
+ */
+export function checkCacheRootDevice(p: string, home: string): CacheRootCheck {
+  if (!existsSync(p)) return "missing";
+  try {
+    return statSync(p).dev === statSync(home).dev ? "same-device-as-home" : "ok";
+  } catch {
+    return "missing";
+  }
+}
+
+/**
+ * Raiz do cache em DISCO do modo API (o `/tmp` do 300 é tmpfs): `--cache-dir`,
+ * `DIARIA_VIDEO_CACHE_DIR` ou `~/.cache/diaria-video-montagem`.
+ *
+ * Guard da variável (#12365): ela aponta para outro disco (o HD do 300,
+ * #12352), num SUBDIRETÓRIO dentro do ponto de montagem, nunca o ponto em si.
+ * Se o diretório não existe, ou existe no mesmo disco do home, o HD
+ * provavelmente está desmontado: o `mkdir -p` do download criaria o cache no
+ * disco raiz e o encheria em silêncio. Por isso falha alto aqui. `--cache-dir`
+ * explícito e o default em `~/.cache` seguem criando o diretório sozinhos.
+ * Também é a raiz que `prune-video-montage-cache.ts` varre.
+ */
+export function videoCacheRoot(
+  flag: string | undefined,
+  env: string | undefined,
+  home: string,
+  check: (p: string) => CacheRootCheck = (p) => checkCacheRootDevice(p, home),
+): string {
+  if (flag) return resolve(flag);
+  const fromEnv = env?.trim();
+  if (fromEnv) {
+    const status = check(fromEnv);
+    if (status !== "ok") {
+      const what = status === "missing" ? "que não existe" : "que está no mesmo disco do home";
+      throw new VideoCacheRootMissingError(
+        `DIARIA_VIDEO_CACHE_DIR aponta para ${fromEnv}, ${what} — HD desmontado? ` +
+          `Monte o disco (ou crie o diretório COM O HD MONTADO, num subdiretório dentro do ponto de montagem) antes de rodar; ` +
+          `sem a variável o cache volta para ~/.cache/diaria-video-montagem. ` +
+          `Nada foi criado, para não gravar o cache no disco raiz embaixo do ponto de montagem vazio (#12365).`,
+        fromEnv,
+        status,
+      );
+    }
+    return resolve(fromEnv);
+  }
+  return defaultVideoCacheRoot(home);
+}
+
+/** Raiz padrão do cache, sem a variável nem `--cache-dir`. */
+export function defaultVideoCacheRoot(home: string): string {
+  return resolve(join(home, ".cache", "diaria-video-montagem"));
+}
+
+/** Cache da edição: `{videoCacheRoot}/{AAMMDD}` (`bruto/`, `work/`, `out/`, `final/`). Lança como `videoCacheRoot`. */
+export function driveCacheDir(
+  edition: string,
+  flag: string | undefined,
+  env: string | undefined,
+  home: string,
+  check?: (p: string) => CacheRootCheck,
+): string {
+  return resolve(join(videoCacheRoot(flag, env, home, check), edition));
 }
 
 /** Work dir (áudio 16 kHz, clipes da prévia): no modo API também em disco, no cache; no Neo o `tmp` de sempre. */
@@ -409,15 +492,73 @@ export async function findByName(
 /** Tentativas do upload (cada uma com sessão nova). */
 export const UPLOAD_ATTEMPTS = 3;
 
+export const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024; // múltiplo de 256 KiB
+export const UPLOAD_CHUNK_THRESHOLD = 256 * 1024 * 1024;
+
+/** Um único bloco em memória; após falha, consulta o offset confirmado na mesma sessão. */
+async function uploadChunks(
+  put: NonNullable<MontageDriveDeps["uploadFetch"]>,
+  location: string, localPath: string, size: number, mime: string,
+): Promise<Response> {
+  const file = await open(localPath, "r");
+  try {
+    const buffer = Buffer.alloc(Math.min(UPLOAD_CHUNK_BYTES, size));
+    let offset = 0;
+    let failures = 0;
+    let probing = false;
+    while (true) {
+      let length = 0;
+      if (!probing) {
+        const wanted = Math.min(buffer.length, size - offset);
+        while (length < wanted) {
+          const { bytesRead } = await file.read(buffer, length, wanted - length, offset + length);
+          if (!bytesRead) throw new Error("arquivo terminou antes do tamanho informado");
+          length += bytesRead;
+        }
+      }
+      let res: Response;
+      try {
+        res = await put(location, {
+          method: "PUT",
+          headers: {
+            "Content-Type": mime,
+            "Content-Length": String(length),
+            "Content-Range": probing ? `bytes */${size}` : `bytes ${offset}-${offset + length - 1}/${size}`,
+          },
+          body: probing ? undefined : buffer.subarray(0, length),
+          signal: AbortSignal.timeout(downloadBudgetMs(length, { minMs: 120_000 })),
+        });
+      } catch (error) {
+        if (++failures >= UPLOAD_ATTEMPTS) throw error;
+        probing = true;
+        continue;
+      }
+      if (res.status >= 500 || res.status === 429) {
+        if (++failures >= UPLOAD_ATTEMPTS) return res;
+        probing = true;
+        continue;
+      }
+      if (res.status !== 308) return res;
+      const range = res.headers.get("range");
+      const match = range?.match(/^bytes=0-(\d+)$/);
+      const next = range === null ? 0 : match ? Number(match[1]) + 1 : NaN;
+      if (!Number.isSafeInteger(next) || next < offset || next > offset + length && !probing || next >= size) {
+        throw new Error(`Range inválido no upload: ${range}`);
+      }
+      if (next > offset) failures = 0;
+      else if (++failures >= UPLOAD_ATTEMPTS) throw new Error("upload sem progresso");
+      offset = next;
+      probing = false;
+    }
+  } finally {
+    await file.close();
+  }
+}
+
 /**
- * Sobe `localPath` para a pasta (#11640): atualiza o conteúdo do arquivo de
- * mesmo nome que já esteja lá (sem duplicar) ou cria. Upload resumable em duas
- * chamadas (sessão + conteúdo): serve para a prévia de centenas de MB (o
- * arquivo vai inteiro na memória; as prévias de 720x1280 ficam bem abaixo do
- * limite de Buffer) e para o XML de poucos KB. 5xx, 429 ou falha de rede no
- * PUT abre uma sessão NOVA e reenvia (até `UPLOAD_ATTEMPTS`), cada tentativa
- * com o seu próprio timeout, e antes procura de novo o arquivo pelo nome (o PUT
- * pode ter gravado sem a resposta chegar); outro 4xx é erro na hora.
+ * Cria ou atualiza pelo nome. Até 256 MiB preserva o PUT único; acima disso,
+ * lê blocos do disco e retoma pelo Range do Drive. Sessão expirada/PUT pequeno
+ * com falha transitória reinicia até UPLOAD_ATTEMPTS vezes, sem duplicar nomes.
  */
 export async function uploadToFolder(
   deps: MontageDriveDeps,
@@ -426,7 +567,9 @@ export async function uploadToFolder(
   log: (line: string) => void = () => {},
 ): Promise<{ id: string; name: string; webViewLink: string | null; updated: boolean }> {
   const name = basename(localPath);
-  const content = readFileSync(localPath);
+  const size = statSync(localPath).size;
+  const chunked = size > UPLOAD_CHUNK_THRESHOLD;
+  const content = chunked ? undefined : readFileSync(localPath);
   const mime = uploadMimeFor(name);
   const found = await findByName(deps, folderId, name);
   if (found.file && found.duplicates) log(`[aviso] ${found.duplicates + 1} arquivos "${name}" na pasta do Drive: atualizando o mais recente (${found.file.id})`);
@@ -445,7 +588,7 @@ export async function uploadToFolder(
       headers: {
         "Content-Type": "application/json; charset=UTF-8",
         "X-Upload-Content-Type": mime,
-        "X-Upload-Content-Length": String(content.length),
+        "X-Upload-Content-Length": String(size),
       },
       body: JSON.stringify(existing ? {} : { name, parents: [folderId] }),
       signal: AbortSignal.timeout(60_000),
@@ -455,18 +598,18 @@ export async function uploadToFolder(
     if (!location) throw new Error(`upload de ${name} para o Drive: sessão sem Location`);
     let res: Response;
     try {
-      res = await put(location, {
+      res = chunked ? await uploadChunks(put, location, localPath, size, mime) : await put(location, {
         method: "PUT",
         headers: { "Content-Type": mime },
         body: content,
-        signal: AbortSignal.timeout(downloadBudgetMs(content.length, { minMs: 120_000 })),
+        signal: AbortSignal.timeout(downloadBudgetMs(size, { minMs: 120_000 })),
       });
     } catch (e) {
       lastError = (e as Error).message;
       log(`[aviso] upload de ${name}: tentativa ${attempt}/${UPLOAD_ATTEMPTS} falhou na rede (${lastError})`);
       continue;
     }
-    if (res.status >= 500 || res.status === 429) {
+    if (res.status >= 500 || res.status === 429 || chunked && res.status === 404) {
       lastError = `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`;
       log(`[aviso] upload de ${name}: tentativa ${attempt}/${UPLOAD_ATTEMPTS} recebeu ${res.status}; sessão nova`);
       continue;

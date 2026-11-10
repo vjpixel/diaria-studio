@@ -5,7 +5,12 @@
  * está mostrando o plano do horizontal ao editor e ainda não ouviu o "pode
  * publicar" (#11741).
  *
- * Por que existe: na edição 261104 o `/diaria-5-publicacao` rodou numa sessão
+ * Desde o #12588 o marcador é só INFORMATIVO: a Etapa 5 não sobe mais vídeo
+ * (o `stage5-youtube.ts` só lê o link), então não há mais upload para segurar.
+ * Ele entra no texto do Stage 5 quando falta o link, para dizer que o plano do
+ * horizontal ficou à espera do "pode publicar".
+ *
+ * Por que existia: na edição 261104 o `/diaria-5-publicacao` rodou numa sessão
  * paralela enquanto a skill de vídeo ainda iterava a capa com o editor. O
  * `stage5-youtube.ts` achou `diaria-comentada-261104.mp4` (baixado pela skill,
  * à espera da confirmação) e subiu o horizontal às 03:50 UTC com a capa
@@ -18,17 +23,18 @@
  *   - apagado quando o vídeo passa a existir no canal: `publish-youtube.ts
  *     --upload` com registro gravado (enviado agora, já no canal, já
  *     registrado) e `link-video-d1.ts --save` (fallback do Studio);
- *   - abandono (o editor desistiu do vídeo pela skill): o Stage 5 não sobe
- *     sozinho; o editor decide com `stage5-youtube.ts --ignore-pending-approval`
- *     ou apagando o arquivo. Nunca expira por tempo: na dúvida, não publica.
+ *   - abandono (o editor desistiu do vídeo pela skill): sem efeito desde o
+ *     #12588 (o pré-requisito do Passo 0b barra a Etapa 5 pela falta do link,
+ *     não pelo marcador). O texto cita a idade do marcador e o D0 já passado
+ *     (#12287).
  *
- * Nada aqui lança na leitura: arquivo ilegível conta como presente (o passo do
- * Stage 5 pula o upload e manda conferir), porque o erro seguro é não subir.
+ * Nada aqui lança na leitura: arquivo ilegível conta como presente.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeFileAtomic } from "../atomic-write.ts";
+import { BRT_TIMEZONE, datePartsInTz, toAammdd } from "../next-edition-date.ts";
 
 export const YOUTUBE_PENDING_APPROVAL_FILE = "_internal/05-youtube-pending-approval.json";
 
@@ -79,17 +85,48 @@ export function clearPendingApproval(editionDir: string, log?: (line: string) =>
     rmSync(path, { force: true });
     return true;
   } catch (e) {
-    log?.(`[aviso] marcador ${path} não apagado (${(e as Error).message}) — o stage5-youtube.ts vai pular o upload até ele sumir (#12122)`);
+    log?.(`[aviso] marcador ${path} não apagado (${(e as Error).message}) (#12122; informativo desde o #12588)`);
     return false;
   }
 }
 
-/** Texto do `detail` do Stage 5 quando o marcador segura o upload. */
-export function describePendingApproval(read: Exclude<PendingApprovalRead, { kind: "none" }>, aammdd: string): string {
+/** #12287: marcador mais velho que isto é tratado como provável abandono (só no texto; nunca publica). */
+export const PENDING_APPROVAL_STALE_MS = 12 * 60 * 60_000;
+
+/**
+ * #12287: o marcador nunca expira sozinho (na dúvida, não publica), mas a
+ * idade dele e o D0 já passado vão no texto — um hold esquecido não pode
+ * parecer desfecho normal. Puro. `null` = marcador recente, edição por vir.
+ */
+export function pendingApprovalStaleNote(
+  read: Exclude<PendingApprovalRead, { kind: "none" }>,
+  aammdd: string,
+  now: Date,
+): string | null {
+  const notes: string[] = [];
+  if (read.kind === "pending") {
+    const at = Date.parse(read.marker.at);
+    if (Number.isFinite(at) && now.getTime() - at > PENDING_APPROVAL_STALE_MS) {
+      const hours = Math.floor((now.getTime() - at) / 3_600_000);
+      notes.push(`marcador gravado há ${hours}h, provável abandono da skill`);
+    }
+  }
+  if (toAammdd(datePartsInTz(now, BRT_TIMEZONE)) > aammdd) notes.push(`a edição ${aammdd} já passou do D0, o D1 saiu sem o link do vídeo`);
+  return notes.length > 0 ? notes.join("; ") : null;
+}
+
+/** Texto que o Stage 5 acrescenta quando falta o link e o marcador existe (#12588: informativo). */
+export function describePendingApproval(
+  read: Exclude<PendingApprovalRead, { kind: "none" }>,
+  aammdd: string,
+  now?: Date,
+): string {
   const since = read.kind === "pending" ? `desde ${read.marker.at} (${read.marker.source})` : `marcador ilegível: ${read.reason}`;
+  const stale = now ? pendingApprovalStaleNote(read, aammdd, now) : null;
   return (
-    `o /diaria-publica-video está com o horizontal à espera do "pode publicar" do editor ${since} (#12122): nada baixado nem enviado. ` +
-    `A skill sobe o vídeo depois da confirmação. Se o vídeo pela skill foi abandonado, rodar ` +
-    `\`npx tsx scripts/stage5-youtube.ts ${aammdd} --ignore-pending-approval\` (ou apagar ${YOUTUBE_PENDING_APPROVAL_FILE})`
+    `o /diaria-publica ficou com o horizontal à espera do "pode publicar" do editor ${since} (#12122). ` +
+    (stale ? `ATENÇÃO (#12287): ${stale}. ` : "") +
+    `Responder o "pode publicar" na skill (ou rodar /diaria-publica ${aammdd} de novo); ` +
+    `vídeo abandonado: marcar a edição sem vídeo (set-d1-no-video.ts ${aammdd})`
   );
 }

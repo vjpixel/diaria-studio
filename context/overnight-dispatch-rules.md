@@ -159,6 +159,17 @@ tag P0-P3 (`**Confiança:** alta`, `Alta confiança`, `[P2 | alta]`). Desde o
 no resto do corpo (a prioridade de uma issue que o código abre, por exemplo)
 não é a severidade do finding, e 1ª linha sem tag fica retida.
 
+**Nota informativa sem defeito leva o rótulo `nota` no prefixo (#12677):**
+`Confiança alta, P3, nota: ...`. É o caso de deploy pendente pós-merge,
+escopo parcial já declarado como `REFS` no corpo, limite aceito de propósito:
+nada a corrigir antes do merge, mesmo com confiança alta de que o fato é
+verdade. P2/P3 com `nota` no prefixo (ou com a frase "Não bloqueia o merge."
+fechando a ÚLTIMA linha do corpo; no meio do corpo ela não conta, #12722) sai
+resolvida pelo `--low-severity-only`; sem o rótulo,
+"Confiança alta, P3" segue retida e trava o trem em rodada desassistida
+(rodada 261110c). Finding com cenário de falha real nunca leva `nota`, e
+`nota` nunca rebaixa P0/P1.
+
 Comentário inline sai por `npx tsx scripts/gh-pr-review-api.ts comment --pr N
 --path P --line L --body-file F` (resposta a um comentário, no fixer: `reply
 --pr N --comment-id ID --body-file F`), nunca `gh api` à mão: o modo agendado
@@ -193,6 +204,14 @@ Comandos do commit, na forma que o allow list do modo agendado libera (#11235),
 rodados com cwd no próprio worktree (sem `cd X &&` e sem `git -C`, que pedem
 aprovação): `git add <arquivos>` (lista explícita, nunca `-A`), `git commit -F
 <arquivo-de-mensagem>` e `git push -u origin <branch>`.
+
+**Atribuição do commit e da PR (#12535).** As linhas `Co-Authored-By` e
+`Claude-Session` seguem o system-reminder de atribuição da sua PRÓPRIA sessão,
+que nomeia o modelo que de fato escreveu o commit (os agents `dev-*` rodam
+`claude-opus-5-5`: `Co-Authored-By: Claude Opus 5.5`). Nunca copiar o modelo
+do coordenador (`claude-sonnet-5-5` no overnight) nem aceitar um modelo
+ditado pelo prompt de dispatch: o commit não foi escrito por ele. Sem
+system-reminder de atribuição na sessão, usar o modelo da própria sessão.
 
 **Formas que o modo agendado ainda nega (prova de 27/10/2026, tabela em
 `docs/overnight-nightly-chain.md`):** `git -C <dir> ...`, `cd <dir> && git
@@ -1464,3 +1483,45 @@ confirmado ele roda `scripts/register-pending-data-writes.ts`, que abre uma
 issue de alarme (`alarm-evento`, P2) com as linhas e avisa no resumo do tick.
 Nenhum dos dois aplica a escrita: o formato é prosa, e a aplicação segue com
 o coordenador, como acima.
+
+## 36. Diff que muda prompt de agent com eval de replay: declarar `requer agent-eval:` no corpo (#12678)
+
+**Sintoma (rodada 261110c):** PR que muda o corpo ou o `model:` de
+`.claude/agents/writer-destaque.md` ou `.claude/agents/social-writer.md`
+(`PROMPT_EVAL_AGENTS`, #8143) fica com o check `Check agent-eval gate`
+vermelho até a label `agent-eval:passed` (#8144). O eval roda ao vivo, e
+nenhum dos dois lados o rodava: o implementador não pode (gasto de execução,
+item 1) e o coordenador só descobria lendo o CI vermelho. As PRs #12649 e
+#12426 ficaram abertas, CI verde fora esse check, sem pendência registrada.
+
+**Implementador:** antes do `gh pr create`, rodar `git diff --stat
+origin/master...HEAD -- .claude/agents/writer-destaque.md
+.claude/agents/social-writer.md`. Se a mudança tocar o corpo do prompt ou a
+linha `model:` (outras chaves do frontmatter não disparam, ver
+`evaluateAgentEvalTrigger` em `scripts/lib/agent-eval-trigger-allowlist.ts`),
+o corpo da PR leva já na criação uma linha começando por:
+
+```
+requer agent-eval: writer-destaque (corpo do prompt mudou)
+```
+
+Uma linha por PR basta, com os agents tocados. Não rodar o eval, não aplicar
+a label, não separar a mudança de prompt do resto da PR. Citar a linha também
+no retorno ao coordenador, junto do número da PR e de `self-review: N
+findings`.
+
+**Coordenador:** a PR com essa linha (ou com o check do gate vermelho) segue
+o procedimento #11616 do `.claude/skills/diaria-overnight/SKILL.md` (Fase 1,
+Gate 2): `npx tsx scripts/run-agent-eval-for-pr.ts --pr N --live` no
+worktree da PR, que aplica a label ao registrar o resultado. Decisão do
+editor de 10/11/2026 (#12678): é o coordenador quem roda, na própria rodada.
+
+**Relatório:** `scripts/reconcile-overnight-report.ts` marca a PR aberta
+retida no gate como `aberta, aguarda agent-eval` e lista as retidas numa
+linha `Pendência:` abaixo da tabela de estado (lógica em
+`isAwaitingAgentEval`, `scripts/lib/overnight-report-reconcile.ts`). Critério:
+sem a label e com o check vermelho; enquanto o check não concluiu, vale a
+linha `requer agent-eval:` do corpo. Check verde nunca retém. Assim a PR que
+o coordenador não conseguiu avaliar (eval saiu `1` por falta de edição de
+referência, sessão sem assinatura) chega ao editor como pendência explícita,
+não como CI vermelho a ser descoberto.

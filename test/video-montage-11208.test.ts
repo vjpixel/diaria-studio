@@ -268,11 +268,12 @@ describe("plano das sequências e xmeml (#11208)", () => {
     const { file, words } = blocksFixture();
     const { blocks, errors } = resolveAt(file, words);
     assert.deepEqual(errors, []);
-    const plan = buildSequencePlan({ ...SPEC_V, order: [...SPEC_V.order, "cta_out"] }, blocks, [], SOURCE);
+    // #12571: os CTAs falados viraram opcionais (o CTA padrão é o card); bloco que falta é outro.
+    const plan = buildSequencePlan({ ...SPEC_V, order: [...SPEC_V.order, "resumo_curto"] }, blocks, [], SOURCE);
     assert.deepEqual(plan.clips.map((c) => c.scale), [115, 130, 115]);
     const ultima = words[words.length - 1].end;
     assert.equal(plan.clips[2].srcOut, Math.round((ultima + FECHO_HOLD_S) * 1000) / 1000, "0,5 s depois da ÚLTIMA PALAVRA, não do fim do intervalo");
-    assert.deepEqual(plan.missingBlocks, ["cta_out"]);
+    assert.deepEqual(plan.missingBlocks, ["resumo_curto"]);
     assert.deepEqual(plan.dropped, []);
     assert.equal(plan.clips[1].seqStart, plan.clips[0].seqEnd, "clipes encostados na sequência");
     assert.match(plan.script, /^Google pode ler seu Gmail\? O comentário de hoje é este\. Até amanhã\.$/);
@@ -670,13 +671,13 @@ describe("skill e fluxo do dia (#11208)", () => {
     }
     assert.match(skill, /Gate 1/);
     assert.match(skill, /Gate 2/);
-    assert.match(skill, /\/diaria-publica-video/);
+    assert.match(skill, /\/diaria-publica(?![-\w])/);
     assert.match(skill, /Final\//);
   });
 
   it("CLAUDE.md e a /diaria-publica-video põem a montagem antes da publicação do vídeo", () => {
-    assert.match(read("CLAUDE.md"), /\/diaria-video-montagem[\s\S]{0,300}\/diaria-publica-video[\s\S]{0,300}\/diaria-5-publicacao/);
-    assert.match(read(".claude/skills/diaria-publica-video/SKILL.md"), /\/diaria-video-montagem/);
+    assert.match(read("CLAUDE.md"), /\/diaria-video-montagem[\s\S]{0,300}\/diaria-publica(?![-\w])[\s\S]{0,300}\/diaria-5-publicacao/);
+    assert.match(read(".claude/skills/diaria-publica/SKILL.md"), /\/diaria-video-montagem/);
   });
 });
 

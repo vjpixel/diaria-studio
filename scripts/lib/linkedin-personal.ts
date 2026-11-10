@@ -259,18 +259,35 @@ export function computeExpiresAt(now: Date, expiresInSec: number): Date {
  * início ou depois de espaço/quebra de linha) vira o template
  * `{hashtag|\#|tag}` pra continuar clicável; `#` no meio de palavra ou de URL
  * fica só escapado.
+ *
+ * #12465: menção a página/pessoa no formato do little text,
+ * `@[Nome](urn:li:organization:ID)` (ou `urn:li:person:ID`), passa sem
+ * escape para continuar clicável (o post do vertical no perfil pessoal cita a
+ * página da diar.ia.br, `diariaFollowLine`). Só o nome dentro dos colchetes é
+ * escapado; qualquer outro `@`/`[`/`(` segue escapado.
  */
 export function toLittleText(text: string): string {
   const escape = (s: string) => s.replace(/[\\|{}@[\]()<>#*_~]/g, (c) => `\\${c}`);
+  const withHashtags = (chunk: string): string => {
+    let out = "";
+    let last = 0;
+    const re = /(^|\s)#([\p{L}\p{N}_]+)/gu;
+    for (const m of chunk.matchAll(re)) {
+      const start = m.index ?? 0;
+      out += escape(chunk.slice(last, start)) + m[1] + `{hashtag|\\#|${escape(m[2])}}`;
+      last = start + m[0].length;
+    }
+    return out + escape(chunk.slice(last));
+  };
   let out = "";
   let last = 0;
-  const re = /(^|\s)#([\p{L}\p{N}_]+)/gu;
-  for (const m of text.matchAll(re)) {
+  const mention = /@\[([^\]\n]+)\]\((urn:li:(?:organization|person):[A-Za-z0-9_-]+)\)/g;
+  for (const m of text.matchAll(mention)) {
     const start = m.index ?? 0;
-    out += escape(text.slice(last, start)) + m[1] + `{hashtag|\\#|${escape(m[2])}}`;
+    out += withHashtags(text.slice(last, start)) + `@[${escape(m[1])}](${m[2]})`;
     last = start + m[0].length;
   }
-  return out + escape(text.slice(last));
+  return out + withHashtags(text.slice(last));
 }
 
 // ── Publicação ───────────────────────────────────────────────────────────

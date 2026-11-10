@@ -265,7 +265,96 @@ export function classifyClariceNoise(from: string, to: string, text?: string): C
 
 export interface FilteredClariceSuggestions<T> {
   kept: T[];
-  dropped: Array<{ suggestion: T; reason: ClariceNoiseReason | "invalid_shape" }>;
+  dropped: Array<{ suggestion: T; reason: ClariceNoiseReason | "invalid_shape" | "fact_check_protected" }>;
+}
+
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+const TOKEN = /[\p{L}\p{N}][\p{L}\p{N}%.,'’-]*/gu;
+
+/** Início de frase: nada antes, ou pontuação final de frase antes do espaço. */
+function atSentenceStart(text: string, pos: number): boolean {
+  const before = text.slice(0, pos).trimEnd();
+  return before === "" || /[.!?:;"“(\n]$/.test(before);
+}
+
+/**
+ * Palavras funcionais que abrem frase com maiúscula sem ser nome próprio
+ * (#12399): artigo, preposição, pronome, conjunção e advérbio comuns. Só
+ * consultada para token em início de frase; no meio da frase a maiúscula já
+ * basta.
+ */
+const SENTENCE_OPENERS = new Set([
+  "o", "os", "as", "um", "uma", "uns", "umas",
+  "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "ao", "aos", "à", "às",
+  "para", "pra", "por", "pelo", "pela", "pelos", "pelas", "com", "sem", "sob", "sobre",
+  "entre", "segundo", "conforme", "após", "até", "desde", "contra", "durante", "perante",
+  "ele", "ela", "eles", "elas", "eu", "nós", "você", "vocês", "isso", "isto", "aquilo",
+  "esse", "essa", "esses", "essas", "este", "esta", "estes", "estas", "aquele", "aquela",
+  "seu", "sua", "seus", "suas", "nosso", "nossa", "meu", "minha", "cujo", "cuja",
+  "e", "mas", "porém", "contudo", "entretanto", "todavia", "como", "quando", "se", "que",
+  "enquanto", "embora", "porque", "pois", "ou", "nem", "logo", "assim", "portanto",
+  "ainda", "já", "também", "além", "mesmo", "só", "apenas", "hoje", "ontem", "amanhã",
+  "agora", "não", "sim", "mais", "menos", "muito", "muitos", "muitas", "pouco", "depois",
+  "antes", "então", "aqui", "ali", "lá", "todo", "toda", "todos", "todas", "cada",
+  "outro", "outra", "outros", "outras", "qual", "quais", "quem", "onde",
+]);
+
+/** Maiúscula interna ou sigla (`xAI`, `iPhone`, `OpenAI`, `GPT`): nome em qualquer posição. */
+function hasInnerCapital(tok: string): boolean {
+  return /\p{L}/u.test(tok[0] ?? "") && /^.\p{L}*\p{Lu}/u.test(tok) && /\p{L}{2,}/u.test(tok);
+}
+
+/** `tok` segue presente, com fronteira de palavra, em `text`? */
+function containsWord(text: string, tok: string): boolean {
+  for (let pos = text.indexOf(tok); pos !== -1; pos = text.indexOf(tok, pos + 1)) {
+    if (WORD_CHAR.test(text[pos - 1] ?? "") || WORD_CHAR.test(text[pos + tok.length] ?? "")) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * A sugestão mexe no fato que o fact-check corrigiu (#12362)? Antes (#12329)
+ * bastava `from` ser substring de qualquer `suggested_fix` aplicado, sem
+ * fronteira de palavra: `{from: "a", to: "à"}` ou `{from: "empresa", to:
+ * "empresas"}` caíam como `fact_check_protected` só porque "a" e "empresa"
+ * aparecem dentro de uma frase corrigida em outra peça. Agora `from` só é
+ * protegido quando:
+ *   - contém o trecho corrigido inteiro; ou
+ *   - aparece no trecho corrigido com fronteira de palavra E carrega um token
+ *     factual — número (`40%`, `2026`) ou nome próprio — ou cobre pelo menos
+ *     metade do trecho corrigido.
+ *
+ * Nome próprio (#12399): maiúscula interna/sigla (`xAI`, `iPhone`, `OpenAI`)
+ * em qualquer posição; maiúscula inicial fora do início de frase; ou maiúscula
+ * inicial em início de frase (o `suggested_fix` costuma começar pelo nome
+ * corrigido, "Anthropic lançou...") quando o token não é palavra funcional
+ * (`SENTENCE_OPENERS`) E a sugestão o altera (não segue igual em `to`). Essa
+ * última condição segura o falso positivo de substantivo comum que abre frase
+ * ("Empresas anunciaram" → "Empresas anunciaram ontem" segue aplicada).
+ */
+function touchesCorrectedFact(from: string, to: string, corrected: string): boolean {
+  if (from.includes(corrected)) return true;
+  const needsLeft = WORD_CHAR.test(from[0] ?? "");
+  const needsRight = WORD_CHAR.test(from[from.length - 1] ?? "");
+  for (let pos = corrected.indexOf(from); pos !== -1; pos = corrected.indexOf(from, pos + 1)) {
+    const prev = corrected[pos - 1] ?? "";
+    const next = corrected[pos + from.length] ?? "";
+    if (needsLeft && WORD_CHAR.test(prev)) continue;
+    if (needsRight && WORD_CHAR.test(next)) continue;
+    if (from.trim().length * 2 >= corrected.trim().length) return true;
+    for (const m of from.matchAll(TOKEN)) {
+      const tok = m[0];
+      if (/\p{N}/u.test(tok)) return true;
+      if (hasInnerCapital(tok)) return true;
+      if (!/^\p{Lu}/u.test(tok) || !/\p{L}{2,}/u.test(tok)) continue;
+      const abs = pos + (m.index ?? 0);
+      if (!atSentenceStart(corrected, abs)) return true;
+      const word = tok.replace(/[%.,'’-]+$/u, "");
+      if (!SENTENCE_OPENERS.has(word.toLowerCase()) && !containsWord(to, word)) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -273,8 +362,14 @@ export interface FilteredClariceSuggestions<T> {
  * que o LLM aplica "todas as sugestões" à mão (post semanal, artigo especial,
  * stack, voto-tema, apoiadores) não passam por `clarice-apply.ts`; o CLI
  * `scripts/clarice-filter.ts` usa isto pra que eles recusem o mesmo ruído.
+ * `protection` no Stage 4 retém mudanças factuais para revisão humana:
+ * sugestão sobre o fato corrigido (número, nome próprio ou boa parte do trecho,
+ * `touchesCorrectedFact`, #12362) e remoções de verbos condicionais.
  */
-export function filterClariceSuggestions<T>(suggestions: T[]): FilteredClariceSuggestions<T> {
+export function filterClariceSuggestions<T>(
+  suggestions: T[],
+  protection?: { correctedTexts: string[]; protectConditional: boolean },
+): FilteredClariceSuggestions<T> {
   const kept: T[] = [];
   const dropped: FilteredClariceSuggestions<T>["dropped"] = [];
   for (const s of suggestions) {
@@ -283,7 +378,17 @@ export function filterClariceSuggestions<T>(suggestions: T[]): FilteredClariceSu
       dropped.push({ suggestion: s, reason: "invalid_shape" });
       continue;
     }
-    const reason = classifyClariceNoise(o.from, o.to);
+    // Stage 4: não deixar a revisão linguística desfazer a revisão factual.
+    // from pode ser só uma palavra ("seria") dentro do trecho corrigido.
+    const conditional = /\b(?:seria|seriam|teria|teriam|poderia|poderiam|deveria|deveriam|estaria|estariam)\b/gi;
+    const removedConditional = (o.from.match(conditional) ?? []).some(
+      (word) => !(o.to as string).toLowerCase().includes(word.toLowerCase()),
+    );
+    const protectedChange = protection && o.from !== o.to && o.from.trim() !== "" && (
+      protection.correctedTexts.some((text) => touchesCorrectedFact(o.from as string, o.to as string, text)) ||
+      (protection.protectConditional && removedConditional)
+    );
+    const reason = protectedChange ? "fact_check_protected" : classifyClariceNoise(o.from, o.to);
     if (reason) dropped.push({ suggestion: s, reason });
     else kept.push(s);
   }

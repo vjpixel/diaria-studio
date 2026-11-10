@@ -12,6 +12,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { uploadImageToWorkerKV } from "../cloudflare-kv-upload.ts";
+import { archiveUploadedFileToR2 } from "../public-images-archive.ts";
 import { DIARIA_EIA_URL } from "../canonical-urls.ts"; // #3904
 
 // scripts/lib/mensal/ → raiz são 3 níveis (mensal → lib → scripts). #2747 desceu
@@ -63,10 +64,14 @@ export async function uploadMonthlyImage(
   const workerUrl = process.env.POLL_WORKER_URL ?? cfg?.poll?.worker_url ?? DIARIA_EIA_URL; // #3904
   const key = monthlyEiaImageKey(edition, keyFilename ?? filePath);
 
-  return uploadImageToWorkerKV(filePath, key, {
+  const url = await uploadImageToWorkerKV(filePath, key, {
     kvNamespaceId,
     workerUrl,
   });
+  // #11412 fatia 3: cópia durável no R2 (as keys `img-{AAMM-MM}-…` da
+  // Retrospectiva só existiam no KV). Nunca lança; sem flag/env, não faz nada.
+  await archiveUploadedFileToR2(filePath, key, root);
+  return url;
 }
 
 /**

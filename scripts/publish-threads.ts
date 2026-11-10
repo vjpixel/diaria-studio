@@ -88,7 +88,7 @@ import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn 
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Instagram
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { injectVideoLinkWithinLimit } from "./lib/diaria/d1-video-link.ts"; // #10772
-import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772
+import { readD1VideoUrlForPosts as readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772; no-video.json vence a URL (#12588)
 import { chooseThreadsTopicTag } from "./lib/threads-topic-tag.ts"; // #11664 — 1ª hashtag = topic tag escolhido
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295

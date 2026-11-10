@@ -198,6 +198,7 @@
  * {group}-lists.json (registro de listas, #3228), todos em segments/.
  */
 
+import { applyStoredBoxSwap } from "./lib/clarice-campaign-box-swap.ts";
 import { isWaveReleased, waveReleasedRefusal } from "./lib/clarice-wave-released.ts"; // #9761
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -1678,7 +1679,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           sender: { name: brevo.sender_name, email: brevo.sender_email },
           ...(brevo.reply_to ? { replyTo: brevo.reply_to } : {}),
           recipients: { listIds: [listId] },
-          htmlContent: html,
+          htmlContent: applyStoredBoxSwap(html, segmentsDir, n),
         });
         campaignId = n;
         console.error(`✓ ${key} → campanha #${campaignId} reusada (--update-existing)`);
@@ -1728,7 +1729,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (!c) throw new Error(`campanha '${key}' não criada — rode --create antes.`);
     // #10271: guarda é `envioWentOut(c)` (dentro de runUpdateHtml), não só `status`;
     // #10348: marcador de sendNow consulta o status ao vivo (mesma regra do --send-now).
-    const updated = await runUpdateHtml(c, campaigns, campaignsPath, html, quero, {
+    const updated = await runUpdateHtml(c, campaigns, campaignsPath, applyStoredBoxSwap(html, segmentsDir, c.campaignId), quero, {
       putHtmlFn: async (id, h) => {
         await brevoPut(apiKey, `/emailCampaigns/${id}`, { htmlContent: h });
       },

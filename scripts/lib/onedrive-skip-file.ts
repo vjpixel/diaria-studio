@@ -23,6 +23,7 @@
  * OneDrive (YouTube, R2 pros verticais, a fonte no Drive). Era o grosso da
  * cota que parou o sync de `data/` em 23/10/2026.
  */
+import { DATA_LOCAL_ONLY_PATTERNS } from "./data-sync-exclusions.ts";
 
 /**
  * Procedimento depois de mudar o `skip_file` (#11256). No cliente v2.5.x,
@@ -53,15 +54,12 @@ export const ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE: readonly string[] = ["~*", ".~*"
 
 /** Padrões que o projeto exige fora do sync. Os seis primeiros vêm do
  * `docs/onedrive-sync-setup.md` (#5548, arquivos transitórios e o
- * append-only `run-log.jsonl`); `*.mp4` é do #10957. */
-export const REQUIRED_SKIP_FILE_PATTERNS: readonly string[] = [
-  "*.db-shm",
-  "*.db-wal",
-  "*.sqlite3-shm",
-  "*.sqlite3-wal",
-  "run-log.jsonl",
-  "*.mp4",
-];
+ * append-only `run-log.jsonl`); `*.mp4` é do #10957. Desde o #12357 a lista
+ * mora em `data-sync-exclusions.ts` (fonte única com o filtro do rclone
+ * bisync do Google Drive) e ganhou os quatro padrões que só existiam na
+ * config viva do `300` (`run-log*.jsonl`, `inbox*.md`, `drive-cache*.json`,
+ * `*safeBackup*`). */
+export const REQUIRED_SKIP_FILE_PATTERNS: readonly string[] = DATA_LOCAL_ONLY_PATTERNS;
 
 /** Valor entre aspas duplas (formato da doc do cliente) ou simples — o
  * parser de config do cliente aceita as duas. Grupo 3 = valor. */

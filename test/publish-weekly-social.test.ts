@@ -51,6 +51,8 @@ import {
   DEFAULT_WEEKLY_TIME,
   WEEKLY_MIN_ITEMS,
   enqueueWeeklyLinkedIn,
+  prepareWeeklyLinkedInDocument,
+  linkedInDocumentFallbackFingerprint,
   main,
 } from "../scripts/publish-weekly-social.ts";
 import { WorkerQueueError } from "../scripts/lib/worker-queue-client.ts";
@@ -1986,6 +1988,396 @@ describe("main(): dispatch mockado", () => {
     });
   });
 
+  describe("#12375: --reschedule — cancela o agendamento do modo, limpa registro + rotação e reagenda", () => {
+    const OLD_AT = "2027-12-26T08:00:00-03:00";
+    function seedScheduled(saturdayStr: string, extra: unknown[] = []): string {
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const path = resolve(publishedDir, "06-weekly-published.json");
+      writeFileSync(
+        path,
+        JSON.stringify({
+          posts: [
+            { platform: "instagram", destaque: "weekly-clicked", url: null, status: "scheduled", scheduled_at: OLD_AT, worker_queue_key: "queue:instagram:old" },
+            { platform: "threads", destaque: "weekly-clicked", url: null, status: "scheduled", scheduled_at: OLD_AT, worker_queue_key: "queue:threads:old" },
+            // outro modo: nunca tocado pelo --reschedule do clicked
+            { platform: "instagram", destaque: "weekly-highlights", url: null, status: "scheduled", scheduled_at: "2027-12-25T11:00:00-03:00", worker_queue_key: "queue:instagram:hl" },
+            ...extra,
+          ],
+        }),
+      );
+      return path;
+    }
+    function setupWeek(): string {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      return saturdayStr;
+    }
+    const args = (saturdayStr: string) => [
+      "--saturday", saturdayStr, "--mode", "clicked", "--editions-root", editionsRoot,
+      "--schedule", "--reschedule", "--time", "19:00", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data",
+    ];
+
+    it("cenário da issue: DELETE da fila de cada canal ANTES de qualquer POST, registro do modo trocado pelas chaves novas, rotação do dia removida", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const rotationPath = resolve(dataRoot, "social-schedule-rotation.jsonl");
+      writeFileSync(
+        rotationPath,
+        [
+          JSON.stringify({ date: "2027-12-25", kind: "weekend", day: "sabado", time: "11:00", source: "rotation" }),
+          JSON.stringify({ date: "2027-12-26", kind: "weekend", day: "domingo", time: "08:00", source: "rotation" }),
+        ].join("\n") + "\n",
+      );
+
+      const calls: string[] = [];
+      const pool = mockAgent.get("https://worker.test");
+      for (const key of ["queue:instagram:old", "queue:threads:old"]) {
+        pool.intercept({ path: `/queue/${key}`, method: "DELETE" }).reply(() => {
+          calls.push(`DELETE ${key}`);
+          return { statusCode: 200, data: JSON.stringify({ deleted: true }) };
+        });
+      }
+      pool
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(`POST ${body.channel}`);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        })
+        .persist();
+
+      await main(args(saturdayStr), {
+        dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+        weeklyPdfBuilder: async () => new Uint8Array([37, 80, 68, 70]),
+        weeklyPdfUploader: async (_p, kvKey) => `https://eia.test/img/${kvKey}`,
+      });
+
+      const firstPost = calls.findIndex((c) => c.startsWith("POST"));
+      assert.deepEqual(calls.slice(0, 2), ["DELETE queue:instagram:old", "DELETE queue:threads:old"], "os 2 DELETEs vêm primeiro, na ordem do registro");
+      assert.ok(firstPost >= 2, `nenhum POST antes dos DELETEs: ${calls.join(" | ")}`);
+
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const ig = out.posts.find((p: any) => p.platform === "instagram" && p.destaque === "weekly-clicked");
+      assert.equal(ig.status, "scheduled");
+      assert.equal(ig.worker_queue_key, "queue:instagram:new");
+      assert.equal(ig.scheduled_at, "2027-12-26T19:00:00-03:00");
+      assert.equal(out.posts.filter((p: any) => p.destaque === "weekly-clicked" && p.platform === "instagram").length, 1);
+      const hl = out.posts.find((p: any) => p.destaque === "weekly-highlights");
+      assert.equal(hl.worker_queue_key, "queue:instagram:hl", "o outro modo fica intacto");
+
+      const rotation = readFileSync(rotationPath, "utf8");
+      assert.doesNotMatch(rotation, /2027-12-26/, "linha de domingo (data de publicação do clicked) removida");
+      assert.match(rotation, /2027-12-25/, "linha de sábado preservada");
+    });
+
+    it("DELETE devolve 404 (post já disparou) → aborta sem POST e sem apagar nada do registro", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const before = readFileSync(publishedPath, "utf8");
+      const pool = mockAgent.get("https://worker.test");
+      pool.intercept({ path: "/queue/queue:instagram:old", method: "DELETE" }).reply(404, { error: "not_found" });
+      // Nenhum intercept de POST nem do DELETE do threads: disableNetConnect()
+      // faria qualquer chamada além desta lançar.
+
+      await expectMockedExit(
+        () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
+        1,
+      );
+      // #12417: a intenção "cancelling" é gravada antes do DELETE e revertida
+      // no abort — o arquivo é regravado (formatação muda), o conteúdo não.
+      assert.deepEqual(JSON.parse(readFileSync(publishedPath, "utf8")), JSON.parse(before), "registro intocado");
+    });
+
+    it("404 no 2º DELETE → o já cancelado vira 'deleted', o que deu 404 fica 'scheduled', nada é reagendado", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const pool = mockAgent.get("https://worker.test");
+      pool.intercept({ path: "/queue/queue:instagram:old", method: "DELETE" }).reply(200, { deleted: true });
+      pool.intercept({ path: "/queue/queue:threads:old", method: "DELETE" }).reply(404, { error: "not_found" });
+
+      await expectMockedExit(
+        () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
+        1,
+      );
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      assert.equal(out.posts.length, 3, "nenhuma entrada removida");
+      assert.equal(out.posts.find((p: any) => p.platform === "instagram" && p.destaque === "weekly-clicked").status, "deleted");
+      assert.equal(out.posts.find((p: any) => p.platform === "threads").status, "scheduled");
+    });
+
+    it("horário antigo já passou → aborta antes de qualquer DELETE", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const before = readFileSync(publishedPath, "utf8");
+      await expectMockedExit(
+        () =>
+          main(args(saturdayStr), {
+            dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+            now: new Date("2027-12-26T12:00:00Z"), // 09:00 BRT, depois das 08:00 do post antigo
+          }),
+        1,
+      );
+      assert.equal(readFileSync(publishedPath, "utf8"), before);
+    });
+
+    it("#12397: entrada do modo já published (reconciliada) → aborta sem DELETE nem POST, registro intocado", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr, [
+        { platform: "linkedin", destaque: "weekly-clicked", url: "https://lnkd.in/x", status: "published", scheduled_at: OLD_AT, worker_queue_key: "queue:linkedin:old", published_at: "2027-12-26T11:00:03Z" },
+      ]);
+      const before = readFileSync(publishedPath, "utf8");
+      // Nenhum intercept: qualquer DELETE/POST lançaria (disableNetConnect).
+      await expectMockedExit(
+        () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
+        1,
+      );
+      assert.equal(readFileSync(publishedPath, "utf8"), before);
+    });
+
+    it("#12397: entradas do X (scheduled e failed) sobrevivem ao reagendamento; failed do LinkedIn é substituída pela nova", async () => {
+      const saturdayStr = setupWeek();
+      const xScheduled = { platform: "twitter", destaque: "weekly-clicked", url: null, status: "scheduled", scheduled_at: OLD_AT, buffer_post_id: "bf_1" };
+      const publishedPath = seedScheduled(saturdayStr, [
+        xScheduled,
+        { platform: "linkedin", destaque: "weekly-clicked", url: null, status: "failed", scheduled_at: null, reason: "HTTP 500" },
+      ]);
+      const pool = mockAgent.get("https://worker.test");
+      for (const key of ["queue:instagram:old", "queue:threads:old"]) {
+        pool.intercept({ path: `/queue/${key}`, method: "DELETE" }).reply(200, { deleted: true });
+      }
+      pool
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        })
+        .persist();
+
+      await main(args(saturdayStr), {
+        dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+        weeklyPdfBuilder: async () => new Uint8Array([37, 80, 68, 70]),
+        weeklyPdfUploader: async (_p, kvKey) => `https://eia.test/img/${kvKey}`,
+      });
+
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const x = out.posts.filter((p: any) => p.platform === "twitter");
+      assert.deepEqual(x, [xScheduled], "a entrada do X fica exatamente como estava");
+      const li = out.posts.filter((p: any) => p.platform === "linkedin" && p.destaque === "weekly-clicked");
+      assert.equal(li.length, 1);
+      assert.equal(li[0].status, "scheduled");
+      assert.equal(li[0].worker_queue_key, "queue:linkedin:new");
+    });
+
+    it("#12397: margem vencida entre o plano e o DELETE (relógio do cancelamento) → nenhum DELETE, registro intocado", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const before = readFileSync(publishedPath, "utf8");
+      const deletes: string[] = [];
+      const pool = mockAgent.get("https://worker.test");
+      for (const key of ["queue:instagram:old", "queue:threads:old"]) {
+        pool.intercept({ path: `/queue/${key}`, method: "DELETE" }).reply(() => {
+          deletes.push(key);
+          return { statusCode: 200, data: JSON.stringify({ deleted: true }) };
+        });
+      }
+      await expectMockedExit(
+        () =>
+          main(args(saturdayStr), {
+            dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+            now: new Date("2027-12-26T09:00:00Z"), // 06:00 BRT: plano ok (post às 08:00)
+            clock: () => new Date("2027-12-26T10:57:00Z"), // 07:57 BRT na hora do DELETE
+          }),
+        1,
+      );
+      assert.deepEqual(deletes, [], "nenhum DELETE com menos de 5 min até o disparo");
+      // #12417: conteúdo igual (intenção "cancelling" revertida); a formatação muda.
+      assert.deepEqual(JSON.parse(readFileSync(publishedPath, "utf8")), JSON.parse(before));
+    });
+
+    it("#12417: registro não regrava depois dos DELETEs → exit 1, nenhum POST, alvos em 'cancelling' e alarme acao com as chaves", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const calls: string[] = [];
+      const pool = mockAgent.get("https://worker.test");
+      pool.intercept({ path: "/queue/queue:instagram:old", method: "DELETE" }).reply(() => {
+        calls.push("DELETE ig");
+        return { statusCode: 200, data: JSON.stringify({ deleted: true }) };
+      });
+      pool.intercept({ path: "/queue/queue:threads:old", method: "DELETE" }).reply(() => {
+        calls.push("DELETE th");
+        // Simula a falha da regravação (lock/disco) logo depois do último
+        // DELETE: o `.tmp` do rename vira diretório e o writeFileSync lança.
+        mkdirSync(publishedPath + ".tmp", { recursive: true });
+        return { statusCode: 200, data: JSON.stringify({ deleted: true }) };
+      });
+      // Nenhum intercept de POST: disableNetConnect() faria um POST lançar.
+      const alerts: any[] = [];
+      await expectMockedExit(
+        () =>
+          main(args(saturdayStr), {
+            dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+            notify: (async (finding: any) => {
+              alerts.push(finding);
+              return { severity: finding.severity } as any;
+            }) as any,
+          }),
+        1,
+      );
+      rmSync(publishedPath + ".tmp", { recursive: true, force: true });
+      assert.deepEqual(calls, ["DELETE ig", "DELETE th"]);
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const clicked = out.posts.filter((p: any) => p.destaque === "weekly-clicked");
+      assert.deepEqual(clicked.map((p: any) => p.status), ["cancelling", "cancelling"], "nunca 'scheduled' com chave já cancelada");
+      assert.equal(out.posts.find((p: any) => p.destaque === "weekly-highlights").status, "scheduled");
+      assert.equal(alerts.length, 1);
+      assert.equal(alerts[0].severity, "acao");
+      assert.match(alerts[0].body, /worker_queue_key=queue:instagram:old/);
+      assert.match(alerts[0].body, /worker_queue_key=queue:threads:old/);
+    });
+
+    it("#12419: registro 'cancelling' + título que estoura o card → exit 1, chaves mantidas, nenhum 'failed' por cima (a 3ª rodada ainda retoma)", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [
+        {
+          n: 1,
+          title: "Superconstitucionalissimamente inconstitucionalizavelmente: palavra que nenhuma quebra de linha consegue dividir, como pode surgir num item de RADAR ou USE MELHOR",
+          url: "https://exemplo.com/d1",
+        },
+      ]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const publishedPath = resolve(publishedDir, "06-weekly-published.json");
+      // Estado de um --reschedule morto antes/durante os DELETEs.
+      const cancelling = [
+        { platform: "instagram", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, worker_queue_key: "queue:instagram:old" },
+        { platform: "threads", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, worker_queue_key: "queue:threads:old" },
+        { platform: "linkedin", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, worker_queue_key: "queue:linkedin:old" },
+        { platform: "facebook", page: "diaria", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, fb_post_id: "fb_old" },
+      ];
+      writeFileSync(publishedPath, JSON.stringify({ posts: cancelling }));
+      // Nenhum intercept: o overflow aborta antes de qualquer DELETE/POST
+      // (disableNetConnect() faria qualquer chamada lançar).
+      await expectMockedExit(
+        () =>
+          main(
+            [
+              "--saturday", saturdayStr, "--mode", "clicked", "--editions-root", editionsRoot,
+              "--schedule", "--time", "19:00", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data",
+            ],
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} },
+          ),
+        1,
+      );
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      assert.deepEqual(out.posts, cancelling, "entradas 'cancelling' intactas, com as chaves");
+      assert.ok(!out.posts.some((p: any) => p.status === "failed"), "nenhum 'failed' gravado por cima");
+    });
+
+    it("#12419: --reschedule com DELETE que lança → o já cancelado vira 'deleted', o que lançou fica 'cancelling' com a chave, nada é reagendado", async () => {
+      const saturdayStr = setupWeek();
+      const publishedPath = seedScheduled(saturdayStr);
+      const pool = mockAgent.get("https://worker.test");
+      pool.intercept({ path: "/queue/queue:instagram:old", method: "DELETE" }).reply(200, { deleted: true });
+      pool.intercept({ path: "/queue/queue:threads:old", method: "DELETE" }).replyWithError(new Error("socket hang up"));
+      // Nenhum intercept de POST: disableNetConnect() faria um POST lançar.
+      await expectMockedExit(
+        () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
+        1,
+      );
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      assert.equal(out.posts.length, 3, "nenhuma entrada removida");
+      assert.equal(out.posts.find((p: any) => p.platform === "instagram" && p.destaque === "weekly-clicked").status, "deleted");
+      const th = out.posts.find((p: any) => p.platform === "threads");
+      assert.equal(th.status, "cancelling", "estado desconhecido: nunca 'scheduled' com chave talvez já apagada");
+      assert.equal(th.worker_queue_key, "queue:threads:old");
+      assert.equal(out.posts.find((p: any) => p.destaque === "weekly-highlights").status, "scheduled");
+    });
+
+    it("#12417/#12419: rodada normal (sem --reschedule) com 'cancelling' retoma: 404 do já apagado conta, o outro é cancelado, e reagenda", async () => {
+      const saturdayStr = setupWeek();
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const publishedPath = resolve(publishedDir, "06-weekly-published.json");
+      // Estado de uma rodada que caiu entre o DELETE do instagram e a limpeza.
+      writeFileSync(
+        publishedPath,
+        JSON.stringify({
+          posts: [
+            { platform: "instagram", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, worker_queue_key: "queue:instagram:old" },
+            { platform: "threads", destaque: "weekly-clicked", url: null, status: "cancelling", scheduled_at: OLD_AT, worker_queue_key: "queue:threads:old" },
+          ],
+        }),
+      );
+      const calls: string[] = [];
+      const pool = mockAgent.get("https://worker.test");
+      pool.intercept({ path: "/queue/queue:instagram:old", method: "DELETE" }).reply(() => {
+        calls.push("DELETE ig");
+        return { statusCode: 404, data: JSON.stringify({ error: "not_found" }) };
+      });
+      pool.intercept({ path: "/queue/queue:threads:old", method: "DELETE" }).reply(() => {
+        calls.push("DELETE th");
+        return { statusCode: 200, data: JSON.stringify({ deleted: true }) };
+      });
+      pool
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(`POST ${body.channel}`);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        })
+        .persist();
+
+      await main(
+        [
+          "--saturday", saturdayStr, "--mode", "clicked", "--editions-root", editionsRoot,
+          "--schedule", "--time", "19:00", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data",
+        ],
+        {
+          dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {},
+          weeklyPdfBuilder: async () => new Uint8Array([37, 80, 68, 70]),
+          weeklyPdfUploader: async (_p, kvKey) => `https://eia.test/img/${kvKey}`,
+        },
+      );
+
+      assert.deepEqual(calls.slice(0, 2), ["DELETE ig", "DELETE th"], "retoma o cancelamento antes de qualquer POST");
+      assert.ok(calls.includes("POST instagram") && calls.includes("POST threads"), `reagenda (nunca pula): ${calls.join(" | ")}`);
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const ig = out.posts.filter((p: any) => p.platform === "instagram" && p.destaque === "weekly-clicked");
+      assert.equal(ig.length, 1);
+      assert.equal(ig[0].status, "scheduled");
+      assert.equal(ig[0].worker_queue_key, "queue:instagram:new");
+      assert.ok(!out.posts.some((p: any) => p.status === "cancelling"));
+    });
+
+    it("#12397 item 4: overflow de título durante o --reschedule sai com exit 1 (antes 0, sem ter reagendado nada)", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [
+        {
+          n: 1,
+          title: "Superconstitucionalissimamente inconstitucionalizavelmente: palavra que nenhuma quebra de linha consegue dividir, como pode surgir num item de RADAR ou USE MELHOR",
+          url: "https://exemplo.com/d1",
+        },
+      ]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      const publishedPath = seedScheduled(saturdayStr);
+      await expectMockedExit(
+        () => main(args(saturdayStr), { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig: {} }),
+        1,
+      );
+      const out = JSON.parse(readFileSync(publishedPath, "utf8"));
+      assert.equal(out.posts.find((p: any) => p.platform === "instagram" && p.destaque === "weekly-clicked").status, "scheduled", "agendamento antigo de pé");
+    });
+
+    it("--reschedule sem --schedule, ou com --mode both → recusa antes de ler qualquer coisa", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      await expectMockedExit(() => main(["--saturday", saturdayStr, "--mode", "clicked", "--reschedule"], { dataRoot }), 1);
+      await expectMockedExit(() => main(["--saturday", saturdayStr, "--mode", "both", "--schedule", "--reschedule"], { dataRoot }), 1);
+    });
+  });
+
   describe("#8480 (260919): capa sempre 84px (CTA = layout do diário), cards internos sempre 62px — overflow ABORTA em vez de encolher", () => {
     it("capa: card sem foto sempre renderiza fixo em 84px (CTA no layout do diário), mesmo com título curto que ANTES encolheria/cresceria via fill", async () => {
       const saturday = new Date(2027, 11, 25);
@@ -2523,6 +2915,302 @@ describe("main(): dispatch mockado", () => {
         (e: any) => e instanceof WorkerQueueError && e.code === "invalid_payload",
       );
       assert.equal(calls.length, 1, "só o carrossel — o fallback é exclusivo de linkedin_creds_missing");
+    });
+
+    // ── #8055: documento PDF substitui o carrossel no LinkedIn ──
+
+    const DOC = { url: "https://eia.test/img/img-unknown-weekly-271225-clicked-carousel-abcd1234.pdf", title: "Título (20–24 dez)" };
+    const CAROUSEL = ["https://cdn.test/cover-4x5.jpg", "https://cdn.test/n1.jpg", "https://cdn.test/cta-4x5.jpg"];
+    function queueOk(body: any) {
+      return {
+        statusCode: 200,
+        data: JSON.stringify({ queued: true, key: `queue:${body.channel}:${body.document_url ? "doc" : "car"}`, scheduled_at: body.scheduled_at, destaque: body.destaque }),
+      };
+    }
+
+    it("#8055: enqueueWeeklyLinkedIn com PDF pronto — 1 POST com document_url/document_title e o carrossel como fallback do Worker", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(body);
+          return queueOk(body);
+        });
+
+      const res = await enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+        text: "legenda",
+        carouselImageUrls: CAROUSEL,
+        scheduledAt: "2027-12-26T11:00:00-03:00",
+        destaque: "weekly-clicked",
+        prepareDocument: async () => DOC,
+      });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].channel, "linkedin");
+      assert.equal(calls[0].document_url, DOC.url);
+      assert.equal(calls[0].document_title, DOC.title);
+      assert.deepEqual(calls[0].image_urls, CAROUSEL, "carrossel vai junto como fallback do disparo");
+      assert.deepEqual(res, { key: "queue:linkedin:doc", format: "document", document_url: DOC.url });
+    });
+
+    it("#8055: geração/upload do PDF falha — cai no carrossel de imagens com o motivo registrado (nunca perde o post)", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(body);
+          return queueOk(body);
+        });
+
+      const res = await enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+        text: "legenda",
+        carouselImageUrls: CAROUSEL,
+        scheduledAt: "2027-12-26T11:00:00-03:00",
+        destaque: "weekly-clicked",
+        prepareDocument: async () => {
+          throw new Error("KV upload 500");
+        },
+      });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].document_url, undefined);
+      assert.deepEqual(calls[0].image_urls, CAROUSEL);
+      assert.equal(res.format, "carousel");
+      assert.match(res.document_fallback_reason ?? "", /^pdf_failed:KV upload 500/);
+    });
+
+    it("#8055: Worker recusa o documento (4xx) — 2º POST com o carrossel", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(body);
+          if (body.document_url) return { statusCode: 400, data: JSON.stringify({ error: "document_title exceeds 400 chars" }) };
+          return queueOk(body);
+        })
+        .times(2);
+
+      const res = await enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+        text: "legenda",
+        carouselImageUrls: CAROUSEL,
+        scheduledAt: "2027-12-26T11:00:00-03:00",
+        destaque: "weekly-clicked",
+        prepareDocument: async () => DOC,
+      });
+      assert.equal(calls.length, 2);
+      assert.ok(calls[0].document_url);
+      assert.equal(calls[1].document_url, undefined);
+      assert.equal(res.format, "carousel");
+      assert.equal(res.document_fallback_reason, "document_rejected:400");
+    });
+
+    it("#8055: documento e carrossel recusados por falta de credencial — termina na capa única (cover_only)", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          calls.push(body);
+          if (body.document_url || body.image_urls) {
+            return { statusCode: 400, data: JSON.stringify({ error: "sem credencial", code: "linkedin_creds_missing" }) };
+          }
+          return queueOk(body);
+        })
+        .times(3);
+
+      const res = await enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+        text: "legenda",
+        carouselImageUrls: CAROUSEL,
+        scheduledAt: "2027-12-26T11:00:00-03:00",
+        destaque: "weekly-clicked",
+        prepareDocument: async () => DOC,
+      });
+      assert.equal(calls.length, 3, "documento + carrossel + capa única");
+      assert.equal(calls[2].image_url, CAROUSEL[0]);
+      assert.equal(res.degraded, "cover_only");
+      assert.equal(res.document_fallback_reason, "document_rejected:linkedin_creds_missing");
+    });
+
+    it("#8055: enqueue do documento AMBÍGUO (5xx depois dos retries) propaga — nunca enfileira o carrossel por cima", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          calls.push(JSON.parse(opts.body as string));
+          return { statusCode: 503, data: "upstream" };
+        })
+        .times(2);
+
+      await assert.rejects(
+        enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+          text: "legenda",
+          carouselImageUrls: CAROUSEL,
+          scheduledAt: "2027-12-26T11:00:00-03:00",
+          destaque: "weekly-clicked",
+          prepareDocument: async () => DOC,
+        }),
+        (e: any) => e instanceof WorkerQueueError && e.status === 503,
+      );
+      assert.ok(calls.length >= 1);
+      assert.ok(calls.every((c) => c.document_url), "nenhum POST de carrossel depois da falha ambígua");
+    });
+
+    it("#8055: prepareWeeklyLinkedInDocument — grava o PDF em _internal, chave na allowlist /img/ com md5, devolve URL https", async () => {
+      const pdf = new TextEncoder().encode("%PDF-1.4 fake");
+      const uploads: Array<{ filePath: string; kvKey: string }> = [];
+      const doc = await prepareWeeklyLinkedInDocument({
+        dataRoot,
+        carouselKey: "271225-clicked",
+        carouselImageUrls: CAROUSEL,
+        title: "Título",
+        buildPdf: async (urls) => {
+          assert.deepEqual(urls, CAROUSEL, "PDF encaderna exatamente as URLs do carrossel, na ordem");
+          return pdf;
+        },
+        upload: async (filePath, kvKey) => {
+          uploads.push({ filePath, kvKey });
+          return `https://eia.test/img/${kvKey}`;
+        },
+      });
+      const pdfPath = resolve(dataRoot, "weekly", "271225-clicked", "_internal", "06-carousel.pdf");
+      assert.deepEqual(new Uint8Array(readFileSync(pdfPath)), pdf);
+      assert.equal(uploads.length, 1);
+      const [uploaded] = uploads;
+      assert.equal(uploaded.filePath, pdfPath);
+      assert.match(uploaded.kvKey, /^img-[^:]+$/, "chave precisa casar com a allowlist do /img/ (#4112)");
+      assert.match(uploaded.kvKey, /-[0-9a-f]{8}\.pdf$/, "content-addressed (md5 curto)");
+      assert.deepEqual(doc, { url: `https://eia.test/img/${uploaded.kvKey}`, title: "Título" });
+    });
+
+    it("#8055: main() — LinkedIn semanal enfileira o DOCUMENTO (Instagram/Threads seguem com o carrossel) e o store registra format=document", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      const capturedByChannel: Record<string, any> = {};
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          capturedByChannel[body.channel] = body;
+          return queueOk(body);
+        })
+        .times(3);
+
+      let builtFrom: readonly string[] = [];
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        {
+          dataRoot,
+          flatCardGenerator: fakeFlatCardGenerator,
+          newsCardGenerator: fakeNewsCardGenerator,
+          weeklyPdfBuilder: async (urls) => {
+            builtFrom = urls;
+            return new TextEncoder().encode("%PDF-1.4 fake");
+          },
+          weeklyPdfUploader: async (_p, kvKey) => `https://eia.test/img/${kvKey}`,
+        },
+      );
+
+      const li = capturedByChannel.linkedin;
+      assert.ok(li, "LinkedIn bateu /queue");
+      assert.match(li.document_url, /^https:\/\/eia\.test\/img\/img-[^:]+\.pdf$/);
+      assert.match(li.document_title, /^As notícias de IA mais lidas da semana/);
+      assert.deepEqual(builtFrom, capturedByChannel.instagram.image_urls, "PDF = mesmos slides, mesma ordem do carrossel");
+      assert.deepEqual(li.image_urls, capturedByChannel.instagram.image_urls, "carrossel segue junto como fallback");
+      assert.equal(capturedByChannel.instagram.document_url, undefined, "Instagram intocado");
+      assert.equal(capturedByChannel.threads.document_url, undefined, "Threads intocado");
+      // #12372 item 3 — o enqueue do documento leva a chave idempotente do ciclo.
+      assert.equal(li.idempotency_key, `linkedin-weekly:${saturdayStr}-clicked:main`);
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const liEntry = out.posts.find((p: any) => p.platform === "linkedin");
+      assert.equal(liEntry.status, "scheduled");
+      assert.equal(liEntry.format, "document");
+      assert.equal(liEntry.document_url, li.document_url);
+    });
+
+    it("#12394: fallback do documento no enqueue (pdf_failed) → alarme `acao` com fingerprint pelo código do motivo; post segue agendado", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => queueOk(JSON.parse(opts.body as string)))
+        .times(3);
+
+      const findings: any[] = [];
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        {
+          dataRoot,
+          flatCardGenerator: fakeFlatCardGenerator,
+          newsCardGenerator: fakeNewsCardGenerator,
+          weeklyPdfBuilder: async () => {
+            throw new Error("gen-weekly-carousel-pdf: PDF com 22.0MB excede o teto de 20MB do Worker do LinkedIn.");
+          },
+          notify: async (finding) => {
+            findings.push(finding);
+            return { severity: finding.severity, emailPolicy: "urgent_only", emailSent: false };
+          },
+        },
+      );
+
+      assert.equal(findings.length, 1, "um alarme por fallback");
+      assert.equal(findings[0].severity, "acao");
+      assert.equal(findings[0].check, "linkedin-document-fallback");
+      assert.equal(findings[0].fingerprint, "linkedin-document-fallback:pdf_failed", "fingerprint sem a mensagem livre");
+      assert.match(findings[0].body, /teto de 20MB/);
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const liEntry = out.posts.find((p: any) => p.platform === "linkedin");
+      assert.equal(liEntry.status, "scheduled");
+      assert.equal(liEntry.format, "carousel");
+    });
+
+    it("#12394: alarme que lança não derruba o post já agendado", async () => {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => queueOk(JSON.parse(opts.body as string)))
+        .times(3);
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        {
+          dataRoot,
+          flatCardGenerator: fakeFlatCardGenerator,
+          newsCardGenerator: fakeNewsCardGenerator,
+          weeklyPdfBuilder: async () => {
+            throw new Error("boom");
+          },
+          notify: async () => {
+            throw new Error("gh fora do ar");
+          },
+        },
+      );
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      assert.equal(out.posts.find((p: any) => p.platform === "linkedin").status, "scheduled");
+    });
+
+    it("#12394: linkedInDocumentFallbackFingerprint usa o código, nunca a mensagem", () => {
+      assert.equal(linkedInDocumentFallbackFingerprint("pdf_failed:KV upload 500 em 12:03"), "linkedin-document-fallback:pdf_failed");
+      assert.equal(linkedInDocumentFallbackFingerprint("document_rejected:400"), "linkedin-document-fallback:document_rejected:400");
+      assert.equal(
+        linkedInDocumentFallbackFingerprint("document_rejected:linkedin_creds_missing"),
+        "linkedin-document-fallback:document_rejected:linkedin_creds_missing",
+      );
+      assert.equal(linkedInDocumentFallbackFingerprint(""), "linkedin-document-fallback:unknown");
     });
 
     it("skip-existing: LinkedIn já 'scheduled' de uma tentativa anterior NÃO é re-tentado", async () => {

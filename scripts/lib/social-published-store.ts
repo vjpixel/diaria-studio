@@ -49,7 +49,12 @@ export interface PostEntry {
   // #11076 — "send_unknown": o envio (threads_publish) foi AMBÍGUO (rede/5xx/2xx
   // sem id) — a Meta pode ter publicado. Terminal: nunca re-tentar sem conferir
   // o perfil. Hoje só o publish-threads grava.
-  status: "draft" | "scheduled" | "failed" | "published" | "deleted" | "skipped" | "send_unknown";
+  // #12417 — "cancelling": o `--reschedule` do carrossel semanal
+  // (publish-weekly-social.ts) vai cancelar este agendamento e gravou a
+  // intenção ANTES do 1º DELETE. Estado desconhecido (o DELETE pode ou não ter
+  // acontecido): nunca é pulado como "scheduled" — a próxima rodada retoma o
+  // cancelamento e reagenda. Só o semanal grava.
+  status: "draft" | "scheduled" | "failed" | "published" | "deleted" | "skipped" | "send_unknown" | "cancelling";
   scheduled_at: string | null;
   reason?: string;
   /** Campos platform-specific (fb_post_id, make_request_id, published_at,
@@ -127,6 +132,27 @@ export function appendSocialPosts(publishedPath: string, posts: PostEntry[]): vo
 
     const tmpPath = publishedPath + ".tmp";
     writeFileSync(tmpPath, JSON.stringify(current, null, 2) + "\n", "utf8");
+    renameSync(tmpPath, publishedPath);
+  } finally {
+    releaseLock(lockPath);
+  }
+}
+
+/**
+ * Reescreve a lista de posts sob o mesmo lock do append (#12375): `transform`
+ * recebe os posts atuais e devolve a lista nova (remover/marcar entradas, o
+ * que o upsert de `appendSocialPosts` não faz). Arquivo ausente = lista vazia.
+ */
+export function rewriteSocialPosts(publishedPath: string, transform: (posts: PostEntry[]) => PostEntry[]): void {
+  const lockPath = publishedPath + ".lock";
+  acquireLock(lockPath);
+  try {
+    const current: SocialPublished = existsSync(publishedPath)
+      ? JSON.parse(readFileSync(publishedPath, "utf8"))
+      : { posts: [] };
+    const next: SocialPublished = { ...current, posts: transform(current.posts ?? []) };
+    const tmpPath = publishedPath + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify(next, null, 2) + "\n", "utf8");
     renameSync(tmpPath, publishedPath);
   } finally {
     releaseLock(lockPath);

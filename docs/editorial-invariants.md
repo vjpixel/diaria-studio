@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 132 invariants.
+**Total**: 142 invariants.
 
 ## Static (estrutura do repo)
 
@@ -40,6 +40,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `no-missing-summary-highlights` | highlights[] nunca contém item com article.summary ausente/vazio (#5081) | #5081 |
 | `no-placeholder-title-highlights` | highlights[] nunca contém item com título placeholder não-enriquecido (#4102) | #4102 |
 | `no-use-melhor-highlights` | highlights[] nunca contém item do bucket USE MELHOR/tutorial (#3436) | #3436 |
+| `pool-story-twice-in-edition` | Mesma história entre itens RADAR/LANÇAMENTOS (warning-only) | #12327 |
 | `top3-merit-warning` | item fora do top-3 com score ≥ maior do trio (warning-only) | #10792 |
 | `url-matches-article-url` | url === article.url em todo item de highlights[] e runners_up[] (#4837, #4865) | #4837 |
 
@@ -53,11 +54,12 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `erro-intencional-rendered` | render-erro-intencional.ts rodou — sem placeholder literal remanescente em 02-reviewed.md (#6337, #1073) | #6337 |
 | `humanizer-ran` | humanizer rodou em 02-reviewed.md + 03-social.md (#1385) | #1385 |
 | `intentional-error-json-exists` | _internal/intentional-error.json existe — render-erro-intencional.ts inseriu o placeholder (#6337, #2284/#3222) | #6337 |
-| `intentional-error-not-recent-repeat` | erro intencional não reusa wrong_value (error) nem correct_value (warning) de edição dos últimos 30 dias em data/intentional-errors.jsonl (#9101) | #9101 |
+| `intentional-error-not-recent-repeat` | erro intencional não reusa wrong_value nem correct_value (ambos error, #12612) de edição dos últimos 30 dias em data/intentional-errors.jsonl (#9101) | #9101 |
 | `newsletter-humanizador-diff-ran` | humanizador da newsletter rodou (diff _internal/02-normalized.md vs _internal/02-humanized.md) (#6337, #1072) | #6337 |
 | `por-que-isso-importa-separate-line` | 'Por que isso importa:' em linha separada (editorial-rules) | #editorial-rules |
 | `reveal-temporal-prefix` | intentional-error.json.reveal (quando preenchido) começa com prefixo temporal reconhecido pelo renderer da edição seguinte (#6337, #6139) | #6337 |
 | `reviewed-passes-all-lints` | 02-reviewed.md passa lint-newsletter-md granulares, incl. destaque sem categoria NOTÍCIAS (#964, #8200/#9105), resumos do pool completos/traduzidos (#9358) e itens de seção com URL resolvível pelo parser real (#3821/#10311) | #964 |
+| `social-humanizer-provenance-recorded` | Humanizador e Clarice registrados por conteúdo antes de concluir Stage 2 (#12331) | #12331 |
 | `social-humanizer-sentinel-written` | check-humanizer-social.ts --write rodou de fato no fim do Stage 2 — sentinel .humanizer-social-done.json existe e bate com 03-social.md atual (#6305) | #6305 |
 | `social-no-trailing-editorial-hook` | 03-social.md sem gancho editorial emendado via ', e' — warn-only (#2658) | #2658 |
 | `social-passes-lints` | 03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 + personal-post-no-newsletter-deixis + platform-headers-unicos + humanizer-section-coverage (#595, #1861, #2148, #3388) | #595 |
@@ -89,6 +91,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `carousel-text-overflow` | parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078; warning com arte mantida pelo editor em carousel-keep-art.json, #11210) | #6078 |
 | `carousel-upload-incomplete` | slides do carrossel existem no disco mas 06-public-images.json não tem todas as 5 chaves (#6064, warning-only) | #6064 |
 | `carousel-upload-stale` | arte do carrossel no KV está atrás do arquivo local (md5 divergente) — post sairia com a arte velha (#6068) | #6068 |
+| `clarice-pending` | revisão da Clarice pendente: o Stage 2 gravou 02-reviewed.md sem a Clarice (API indisponível) e o marcador _internal/02-clarice-pending.json continua (#12257, warning-only) | #12257 |
 | `curto-x-weight` | post do # Curto passa de 280 no peso do X (URL = 23) — o Stage 5 pularia o post no X (#11124, mesmo cálculo do lint #10180) | #11124 |
 | `editor-destaque-request` | link enviado pelo editor com pedido explícito de destaque (inbox) que ficou fora dos destaques ou em outra posição, com o motivo (#12193, warning-only) | #12193 |
 | `eia-credit-synced` | crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825) | #3825 |
@@ -104,19 +107,24 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
 | `kit-fixture-audit` | assinante de fixture de teste (ex: ana@example.com) ATIVO na base Kit de produção (#6336) | #6336 |
 | `kit-html-too-large` | _internal/newsletter-final-kit.html acima de 104448 bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506) | #6506 |
+| `lancamento-sem-fabricante` | Item de LANÇAMENTOS cita o fabricante (empresa ou produto da URL) no título ou na descrição (heurístico, warning-only) | #12595 |
 | `max-content-items` | rascunho do Gate 4 com no máximo 13 conteúdos (destaques + seções secundárias) (#9785) | #9785 |
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
 | `newsletter-html-not-behind-reviewed` | newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245; error desde #10258 — bloqueia o sentinel do Stage 4; reviewed só tocado, com sha256 igual ao carimbo do render, não acusa) | #10245 |
 | `newsletter-html-size` | _internal/newsletter-final.html acima de 45000 bytes — sinal de crescimento perto do limite de clipping do Gmail (#5232, warning-only) | #5232 |
+| `newsletter-intake` | intake completo e scores de todos os links IA (#12188) | #12188 |
 | `no-duplicate-urls-vs-past-editions` | URL editorial de 02-reviewed.md repetida contra os últimos ~30 dias de edições (past-editions.md, #9955) — dedup do Stage 1 não vê itens inseridos/promovidos no gate (#8993, warning-only) | #8993 |
 | `no-trailing-ellipsis` | descrição de item secundário não termina em reticências herdadas da fonte (#2881) | #2881 |
 | `public-images-md5-matches-local` | hero 2:1 do e-mail (cover/d1_play/d2_2x1/d3_2x1) em 06-public-images.json tem o md5 do arquivo local — troca de destaque não deixa imagem antiga no e-mail (#11252) | #11252 |
 | `public-images-populated` | 06-public-images.json com URLs d1/d2/d3 (#999) | #999 |
 | `render-warnings-consumed` | eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1 / whatsapp_share_d1_mismatch / convite_amigo_snippet_missing) surfaced no gate (#4673, warning-only) | #4673 |
+| `reviewed-no-pending-placeholder` | 02-reviewed.md sem placeholder de destaque não integrado ([RASCUNHO PENDENTE …]/[TEXTO PENDENTE …] do swap/promote) (#12259) | #12259 |
+| `reviewed-onedrive-conflict-copy` | avisa quando o OneDrive deixou cópia de conflito (*-safeBackup-*.md) de 02-reviewed.md/03-social.md — o principal pode ter perdido uma edição (#12259) | #12259 |
 | `social-hash-fresh` | social.md hash bate com approved.json highlights (#1413) | #1413 |
 | `social-humanizer-seal-fresh` | selo do humanizador bate com o 03-social.md atual — social reescrito no Stage 4 foi re-humanizado (#9820) | #9820 |
 | `social-invite-drift` | convite social do PARA ENCERRAR diverge do SOCIAL_INVITE atual — não reconhecido (sai sem a borda de box) ou com texto desatualizado (#10835, warning-only) | #10835 |
 | `social-not-behind-reviewed` | 03-social.md não ficou atrás de 02-reviewed.md — destaque reescrito no gate sem cascata do social (#9820) | #9820 |
+| `source-not-read` | lista no gate os itens da edição cuja fonte não foi lida (403, vídeo, resumo curto) (#12258) | #12258 |
 | `sponsored-source-marker` | página-fonte de item com marcador de publieditorial (/publicidade/, conteúdo de marca, patrocinado, Pré-MBA) — warning-only, decisão fica no gate (#10169) | #10169 |
 | `story-continuation` | Destaque que continua história publicada nos últimos 30 dias (produto+versão no lead ou URL que continua a anterior; informativo, warning-only) | #11897 |
 | `story-twice-in-edition` | Mesma história duas vezes na edição final (destaque × destaque, pool × destaque) ou repetindo item publicado nas últimas 3 edições por produto+versão (heurístico, warning-only) | #11496 |
@@ -125,6 +133,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `title-ia-as-agent` | título de destaque não põe 'IA' como sujeito quando o corpo descreve ator humano (#12106, warning-only) | #12106 |
 | `title-mentions-ia` | título de destaque sem menção a 'IA'/'AI'/'inteligência artificial' quando evitável (#4825, warning-only) | #4825 |
 | `title-publisher-suffix` | título sem sufixo residual de veículo (' \| Veículo' / ' - Veículo', #2664) | #2664 |
+| `title-shorts-front-load` | título do D1 se lê sozinho nos ~40 caracteres que o feed de Shorts mostra (#12464, warning-only) | #12464 |
 | `title-trailing-period` | título de destaque/item sem ponto final único (#2672) | #2672 |
 | `titulo-subtitulo-not-provisional` | TÍTULO/SUBTÍTULO não carrega o título provisório (da fonte) deixado pelo swap-destaque depois que o D{N} ganhou título final (#9601) | #9601 |
 | `top3-merit-warning` | item fora do top-3 com score ≥ maior do trio (warning-only) | #10792 |
@@ -142,6 +151,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
+| `clarice-pending-at-publish` | newsletter publicada sem a revisão da Clarice: _internal/02-clarice-pending.json ainda existe no Stage 5 (#12257, warning-only, qualquer fase) | #12257 |
 | `close-poll-marker-exists` | _internal/.close-poll-done.json escrito (#1367) | #1367 |
 | `consent-binding` | canais com consent=auto devem ter dispatch real (#1575) | #1575 |
 | `edition-url-file-exists` | _internal/05-edition-url.txt existe e contém URL válida antes do dispatch social (#2454) | #2454 |

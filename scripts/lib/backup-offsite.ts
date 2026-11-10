@@ -27,7 +27,7 @@ import { spawnSync } from "node:child_process";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import { kvRestBulkGet, KvRestHttpError, KV_BULK_GET_MAX_KEYS, type KvRestConfig } from "./cloudflare-kv-rest.ts";
-import { BACKUP_KEY_ENV, parseBackupKey, type BackupKey } from "./backup-offsite-crypto.ts";
+import { BACKUP_KEY_ENV, backupBinding, parseBackupKey, type BackupBinding, type BackupKey } from "./backup-offsite-crypto.ts";
 import {
   etagConflictsBody,
   etagMatchesBody,
@@ -69,6 +69,26 @@ export function offsiteObjectKey(kind: OffsiteKind, date: string): string {
 /** Data `AAAA-MM-DD` embutida numa chave de objeto, ou `null`. */
 export function dateFromOffsiteKey(key: string): string | null {
   return /(?:^|[/\\])(\d{4}-\d{2}-\d{2})\.[a-z.]+$/.exec(key)?.[1] ?? null;
+}
+
+/**
+ * Vínculo `{tipo}/{AAAA-MM-DD}` que o formato v2 autentica (#11961 item 4).
+ * O upload usa o mesmo `kind`/`date` de `offsiteObjectKey`, então o blob só
+ * decifra sob a chave em que foi gravado.
+ */
+export function offsiteBinding(kind: OffsiteKind, date: string): BackupBinding {
+  return backupBinding(kind, date);
+}
+
+/**
+ * Vínculo recalculado a partir da chave do objeto ou do nome de um arquivo já
+ * baixado: tipo pelo sufixo, data pelo nome. `null` se faltar um dos dois (um
+ * blob v1 ainda restaura; um v2 falha pedindo o nome original).
+ */
+export function offsiteBindingFromName(name: string): BackupBinding | null {
+  const kind = kindFromKey(name);
+  const date = dateFromOffsiteKey(name);
+  return kind && date ? offsiteBinding(kind, date) : null;
 }
 
 // ---------------------------------------------------------------------------

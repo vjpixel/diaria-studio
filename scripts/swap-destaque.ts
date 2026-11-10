@@ -110,12 +110,14 @@ import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-d
 import { clearEstiloRegenDestaques, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
 import { planPublicImagesInvalidation, publicImagesInvalidatedWarning } from "./lib/public-images-invalidate.ts"; // #11252
 import { clearCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
+import { invalidateStage4D1Capture } from "./lib/stage4-capture-state.ts"; // #12589
 import { lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts"; // #9601
 import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-naming.ts"; // #9601
 import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
 import { useMelhorPostReselectStep } from "./lib/use-melhor-post.ts"; // #9755
 import { lintNewsletter, type ApprovedJson } from "./lib/lint-checks/url-bucket.ts"; // #9961
 import { urlsMatch } from "./lib/url-utils.ts"; // #11497
+import { promotedSourceUnreadWarning } from "./lib/diaria/source-readability.ts"; // #12258
 import {
   backupDemotedDestaque,
   findSwapBackupForUrl,
@@ -1322,6 +1324,14 @@ function main(): void {
     ],
   };
 
+  // #12258: item promovido cuja fonte não foi lida (403/vídeo/resumo curto) —
+  // avisa já no swap, antes do writer-destaque escrever só com título e resumo.
+  const unreadWarning = promotedSourceUnreadWarning(promotedItem, promotedTitle);
+  if (unreadWarning) {
+    console.error(`AVISO: ${unreadWarning}`);
+    (result.warnings ??= []).push(unreadWarning);
+  }
+
   const keepArtSwapOperation = `swap trocou a história de d${demotePosition} (remover essa chave)`;
 
   if (dryRun) {
@@ -1352,7 +1362,7 @@ function main(): void {
         ? `_internal/carousel-keep-art.json: ${keepArtPlan.warning}`
         : `_internal/carousel-keep-art.json: sem exceção de d${demotePosition}, nada a remover (#11213)`;
     const planWarnings = [estiloPlan.warning, keepArtPlan.warning].filter((w): w is string => !!w);
-    if (planWarnings.length > 0) result.warnings = planWarnings;
+    if (planWarnings.length > 0) result.warnings = [...(result.warnings ?? []), ...planWarnings];
     console.log(
       JSON.stringify(
         {
@@ -1617,6 +1627,17 @@ function main(): void {
   if (keepArt.warning) {
     console.error(`AVISO: ${keepArt.warning}`);
     (result.warnings ??= []).push(keepArt.warning);
+  }
+
+  // 8. D1 trocado: zera whatsappUrl/metaDescriptionSuggestion do §4c.1b/§4c.1c
+  // (#12589) — derivavam do D1 que acabou de sair.
+  if (demotePosition === 1) {
+    const d1Capture = invalidateStage4D1Capture(editionDir);
+    if (d1Capture.rewritten) result.modified.rewritten.push(d1Capture.rewritten);
+    if (d1Capture.message) {
+      console.error(`AVISO: ${d1Capture.message}`);
+      (result.warnings ??= []).push(d1Capture.message);
+    }
   }
 
   // -------------------------------------------------------------------------

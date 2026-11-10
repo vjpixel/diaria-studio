@@ -7,6 +7,16 @@ effort: medium
 
 # /diaria-desbloqueia
 
+**Preflight obrigatório de ambiente (#12307), antes de qualquer outro passo:**
+rodar `npx tsx scripts/lib/exec-mode.ts --require-shared-issue-registry`.
+Exit diferente de zero ou falha ao executar: exibir o motivo e encerrar a skill,
+sem scan, registro, claim, roteamento, implementação ou dispatch (inclusive
+`--dry-run`/`--no-implement`). Não criar `data/` nem usar REST manual para
+contornar: o registro efêmero não é visto pela continuo no `300`, e os scripts
+de triagem ainda dependem de GraphQL, bloqueado no cloud. Retomar numa sessão
+local com `data/` sincronizado ou deixar a fila para o `300`. Este preflight
+vem antes de qualquer criação de `data/` pela própria skill.
+
 Issue de origem: #6628. Pedido direto do editor: uma skill que **só**
 pergunta o que falta pra uma issue rodar no `/diaria-overnight` ou no
 `/diaria-develop` — sem abrir a sessão inteira de implementação pra isso —
@@ -45,7 +55,8 @@ livre: escolher `/model` antes de invocar.
 **A skill é projetada para rodar num único turno (#9526, regra
 obrigatória): nunca encerrar o turno esperando notificação — tudo em
 foreground para Bash e leitura direta pelo coordenador.** O coordenador lê
-corpo + TODOS os comentários do output de `desbloqueia-scan.ts` e faz o
+corpo + TODOS os comentários do output de `desbloqueia-scan.ts` (rodado com
+`--dump-threads DIR`: os `threadFile` de cada candidata, #12388) e faz o
 julgamento sem despachar Agent para ler threads (#11032). No modo interativo com fork-mode ligado (contexto de uso de desbloqueia/develop), o schema do Agent remove `run_in_background` e os subagentes rodam em background; em non-interactive `-p` ou fork-mode-off o parâmetro pode existir: se exposto e o próximo passo depende do resultado, usar o booleano `run_in_background: false` e conferir o retorno real. Não aplicar essa receita ao modo interativo com fork. Referência: https://code.claude.com/docs/en/sub-agents#run-subagents-in-foreground-or-background (consultada em 23/10/2026).
 
 Evidência do harness reportado na #11032 (sessão `576bee41`, 23/10/2026): `run_in_background: "false"` retornou `Async agent launched successfully`. A string enviada não valida o booleano `false` em outros modos; nesse harness a chamada foi assíncrona. A sonda registrou `ok:true`, tally `{claude-opus-5-5/medium: 26}`; é uma observação daquela sessão, não garantia geral sobre notificações/pin.
@@ -81,6 +92,16 @@ início da sessão nem gerar o timestamp apenas na hora da escrita. Se surgir
 marcador concorrente posterior, reler e reavaliar; não usar `--override-newer`
 para destravar automaticamente. Isso também vale para reclassificações
 posteriores na mesma sessão e chamadas sem identidade no registry.
+
+**Decisão do editor vigente (#12389/#12413).** Com `decisao-editor` na
+thread, `route-issue.ts --track develop` e `--track fora-de-rodada` são
+recusados se a `--reason` não cita a decisão. Releia-a: se ela resolve o que
+a razão pede, roteie para `overnight`; se ainda falta algo depois dela, diga
+na razão ("decisão do editor de DD/MM já registrada; ainda exige ...").
+Roteamento que contraria a decisão leva `--override-decision "motivo"`,
+nunca uma razão reescrita só para passar no regex. Vale também para a
+decisão que esta sessão acabou de postar: rotear `develop` logo depois dela
+exige citá-la.
 
 
 ## Requisito central — ler tudo antes de perguntar QUALQUER coisa
@@ -156,7 +177,17 @@ npx tsx scripts/desbloqueia-scan.ts --track bloqueada    # 1 bucket (bloqueada|d
 npx tsx scripts/desbloqueia-scan.ts --skip-sem-sinal     # sem o bucket ·sem sinal
 npx tsx scripts/desbloqueia-scan.ts --incluir-engavetadas  # varre também on-hold/wontfix
 npx tsx scripts/desbloqueia-scan.ts --repo vjpixel/diaria-design  # #10901: outro repo de issue_repos (números DAQUELE repo; re-rotear com route-issue.ts --issue owner/repo#N --triaged-at "{triaged_at}")
+npx tsx scripts/desbloqueia-scan.ts --dump-threads "$TMPDIR/desbloqueia-threads-$RANDOM"  # #12388: 1 JSON de thread por candidata (threadFile)
 ```
+
+**Rodar com `--dump-threads` (#12388).** É o modo da skill: o scan grava
+`{DIR}/{owner}__{repo}__{N}.json` com `ref`, `title`, `body` e `comments`
+(`author`, `createdAt`, `body`; só autor confiável, #9752) de cada
+candidata, e o JSON aponta cada uma pro arquivo em `threadFile`. É dele
+que o coordenador lê a thread nos Passos 2, 2b, 3 e 3b, nunca de um
+`gh issue view` refeito. `--include-threads` põe a thread inline no
+stdout (cresce com o backlog; prefira o dump). DIR fora da árvore do
+checkout (`$TMPDIR` ou o scratchpad da sessão).
 
 **Toda ação sobre uma issue usa o `ref` que o scan devolve, nunca o número
 pelado (#10935).** Cada candidata do relatório traz `ref` (`owner/repo#N`,
@@ -212,6 +243,18 @@ bloqueio segue de pé e já está documentado. Comentar (curto, sem
 e o estado é o mesmo: `Revisado por /diaria-desbloqueia — bloqueio de
 execução de {recorded_at} ("{motivo}") segue valendo, nenhuma mudança.`
 **Nunca** perguntar de novo O QUE o `bloqueio-execucao` já documenta.
+
+> **Não repetir a revisão quando nada mudou (#12546).** Toda candidata do
+> scan traz `semMudancaDesdeUltimaRevisao`. `true` = o último comentário da
+> issue já é um "Revisado por /diaria-desbloqueia" de autor confiável e o
+> `updatedAt` da issue não passou dele (nenhum comentário, label, edição ou
+> mudança de estado depois). Aí **não postar** um novo comentário de
+> revisão, aqui nem no destino (b) do Passo 3b: a issue continua contada
+> como revisada no relatório (Passo 5), com a nota "sem mudança desde a
+> revisão anterior". O que o sinal não vê é o toggle em `data/`, então a
+> exceção é a conferência abaixo: `DECISÃO CONTRADITA` comenta a
+> divergência mesmo com o sinal `true`. Sinal `false` (primeira revisão,
+> algo novo na thread, dependência não resolvida): comentar como antes.
 
 > **Decisão sobre estado verificável — conferir o estado real antes de
 > "segue valendo" (#10105).** Vale pra `bloqueioConfirmado` e pra
@@ -374,11 +417,16 @@ antes de montar a bateria (#8909)** — vale tanto para `acaoImediataCandidatas`
 quanto para `bloqueioConfirmado`, nunca só o título. Cada candidata termina
 classificada num destes três destinos, e nenhuma fica "não avaliada": (a)
 vira pergunta; (b) não tem ação do editor, e segue com o comentário de
-revisão do Passo 2; (c) resolve por default (#5321) e é roteada.
+revisão do Passo 2 (pulado quando `semMudancaDesdeUltimaRevisao: true`,
+#12546); (c) resolve por default (#5321) e é roteada.
 
 A leitura das threads fica com o coordenador, diretamente no output completo
-do scan, sem delegar a subagente (#11032). O scan já entrega corpo e
-comentários; um novo Agent duplicaria a leitura e acrescentaria uma espera
+do scan, sem delegar a subagente (#11032). O scan entrega corpo e
+comentários quando chamado com `--dump-threads DIR` (#12388): cada
+candidata traz `threadFile`, e o coordenador lê esse arquivo em vez de
+rodar `gh issue view --json body,comments` de novo (sem a flag, o JSON só
+tem metadados). `comments: null` no arquivo = leitura falhou, candidata em
+`erroLeitura`. Um novo Agent duplicaria a leitura e acrescentaria uma espera
 assíncrona que pode atravessar a fronteira de turno. Para pool grande,
 dividir o scan por `--issues N,M`, ler cada lote por completo e só então
 montar a bateria. É um trade-off de contexto: o coordenador absorve as threads para evitar dispatch assíncrono neste modo; não há medição de custo comparativa. A sonda do Passo 5 continua obrigatória.

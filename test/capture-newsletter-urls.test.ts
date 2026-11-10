@@ -37,7 +37,7 @@ function tmpFile(name: string): string {
 function makeThread(overrides: Partial<CapturedThread> = {}): CapturedThread {
   return {
     thread_id: "t1",
-    sender: "AI Roundup <airoundup@mail.beehiiv.com>",
+    sender: "Cyberman <cyberman@mail.beehiiv.com>",
     subject: "AI Roundup - Issue 42",
     date: "2026-05-25T10:00:00Z",
     body: "Check out https://openai.com/blog/gpt-5 and https://anthropic.com/news for the latest.",

@@ -4,9 +4,13 @@
  *   1. **CTR comportamental** (primário) — `data/link-ctr-table.csv`
  *      Gerado por `build-link-ctr.ts`. Mostra o que a audiência realmente clica.
  *
- *   2. **Survey declarativo** (secundário) — `data/audience-raw.json`
- *      Gerado via Beehiiv MCP (/diaria-atualiza-audiencia). Mostra quem são
- *      e o que dizem preferir.
+ *   2. **Formulário do onboarding** (secundário) — `data/audience-raw.json`
+ *      Gerado por `scripts/audience-run.ts` (/diaria-atualiza-audiencia) a
+ *      partir das respostas do formulário (`workers/onboarding-form`). Mostra
+ *      quem são e o que dizem preferir. Desde a decisão 10 do editor
+ *      (08/11/2026, #10605) a survey antiga da Beehiiv (e o Tally) foi
+ *      descartada: resposta que não vem do formulário é ignorada aqui, mesmo
+ *      que ainda esteja num `audience-raw.json` antigo.
  *
  * Subscriber count respeita `publishing.newsletter.subscriber_backend`
  * (#8145): backend "kit" lê `getKitActiveSummary` do store unificado local
@@ -88,35 +92,150 @@ function countAnswers(responses: BeehiivResponse[], questionMatcher: RegExp) {
     .sort((a, b) => b.weight - a.weight);
 }
 
-/** #10605: " (N do formulário do onboarding)" quando há respostas de lá. */
+/** #10605: " (N do formulário do onboarding)" quando há respostas de lá.
+ *  #12504: com rascunhos, diz quantos não enviaram (eles contam por pergunta). */
 export function formRespondentsNote(responses: readonly BeehiivResponse[]): string {
-  const n = responses.filter(isOnboardingFormResponse).length;
-  return n > 0 ? ` (${n} do formulário do onboarding)` : "";
+  const form = responses.filter(isOnboardingFormResponse);
+  const drafts = form.filter((r) => r.draft === true).length;
+  if (form.length === 0) return "";
+  return drafts > 0 ? ` (${form.length} do formulário do onboarding, ${drafts} sem enviar: contam nas perguntas que responderam)` : ` (${form.length} do formulário do onboarding)`;
+}
+
+/** #12504: quantas pessoas responderam a pergunta (cada uma uma vez), e quantas delas por rascunho. */
+export function questionRespondents(responses: readonly BeehiivResponse[], questionMatcher: RegExp): { total: number; drafts: number } {
+  let total = 0;
+  let drafts = 0;
+  for (const r of responses) {
+    if (!r.answers.some((a) => a.answer && questionMatcher.test(a.question_prompt))) continue;
+    total++;
+    if (r.draft === true) drafts++;
+  }
+  return { total, drafts };
+}
+
+/** #12504: a linha do N da pergunta (as primeiras perguntas têm N maior: quem para no meio só conta até ali). */
+export function questionNLine(n: { total: number; drafts: number }): string {
+  const who = n.total === 1 ? "1 pessoa" : `${n.total} pessoas`;
+  return n.drafts > 0 ? `N = ${who} (${n.drafts} sem enviar o formulário).` : `N = ${who}.`;
+}
+
+/** Sufixo dos títulos das seções 2 e 3 herdadas do perfil anterior (#10605). */
+export const PREVIOUS_DECLARED_SUFFIX = " — anterior, até haver respostas do formulário novo";
+
+/**
+ * @pure — #10605 (item 10 do review): enquanto o formulário do onboarding não
+ * tem respostas, as seções 2 e 3 do último `context/audience-profile.md`
+ * seguem no perfil, com o título marcado como anteriores, em vez de sumirem
+ * (o Stage 0 regenera o perfil a cada edição). Devolve as linhas desde o
+ * `## 2.` até antes do próximo `## ` que não seja o `## 3.`, ou do rodapé
+ * `---`; `[]` quando o perfil anterior não tem a seção 2. Idempotente: o
+ * sufixo não se acumula a cada regeneração.
+ */
+export function carryOverDeclaredSections(previousMd: string | null | undefined): string[] {
+  if (!previousMd) return [];
+  const lines = previousMd.split(/\r?\n/);
+  const start = lines.findIndex((l) => /^## 2\.\s/.test(l));
+  if (start < 0) return [];
+  const out: string[] = [];
+  for (let i = start; i < lines.length; i++) {
+    const l = lines[i];
+    if (i > start && l.startsWith("## ") && !/^## 3\.\s/.test(l)) break;
+    if (l.trim() === "---") break;
+    if (/^## [23]\.\s/.test(l)) {
+      out.push(`${l.split(PREVIOUS_DECLARED_SUFFIX).join("").trimEnd()}${PREVIOUS_DECLARED_SUFFIX}`);
+    } else out.push(l);
+  }
+  while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
+  return out;
+}
+
+type CountEntry = { label: string; weight: number; count: number };
+
+/** Linhas `- **opção** — weight X (N respostas)` (formato que o painel lê). */
+function countLines(entries: readonly CountEntry[]): string[] {
+  return entries.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`);
+}
+
+/** Bloco `### título` com a distribuição; vazio quando ninguém respondeu.
+ *  #12504: com `n`, a linha do N da pergunta logo depois da distribuição. */
+function surveyBlock(title: string, entries: readonly CountEntry[], note?: string, n?: { total: number; drafts: number }): string[] {
+  if (entries.length === 0) return [];
+  return ["", `### ${title}`, "", ...countLines(entries), ...(n ? ["", questionNLine(n)] : []), ...(note ? ["", note] : [])];
+}
+
+/** `surveyBlock` de uma pergunta, com o N dela (#12504). */
+function questionBlock(title: string, responses: BeehiivResponse[], matcher: RegExp, note?: string): string[] {
+  return surveyBlock(title, countAnswers(responses, matcher), note, questionRespondents(responses, matcher));
+}
+
+/**
+ * #10605 (decisão do editor de 08/11/2026, v3 de 09/11): o que o leitor fez
+ * com a última coisa útil que leu (`uso_recente`). Vazio quando ninguém
+ * respondeu. "Outro" entra só como contagem: o texto livre fica no Worker e
+ * nunca vem para o perfil.
+ */
+export function renderRecentUseBlock(responses: BeehiivResponse[]): string[] {
+  return questionBlock(
+    "Uso do que lê",
+    responses,
+    SURVEY_MATCHERS.recentUse,
+    "> **Como usar:** mostra o que o público faz com o que lê. É só informativo: não muda a pontuação das notícias enquanto o editor não decidir uma regra.",
+  );
+}
+
+/**
+ * #10605 v3: seção 2 do perfil (o que o leitor declara sobre o uso de IA).
+ * `uso_ia` substitui o nível de conhecimento antigo como sinal de nível para
+ * a curadoria (título com "Nível", que o painel lê como nível). O relato de
+ * falha entra só como contagem: o texto fica no Worker e na lista local de
+ * conversas (`onboarding-form-conversas.ts`).
+ */
+export function renderDeclaredUseBlocks(responses: BeehiivResponse[]): string[] {
+  const relatos = countAnswers(responses, SURVEY_MATCHERS.failureStory).reduce((s, e) => s + e.count, 0);
+  return [
+    ...questionBlock(
+      "Nível de uso de IA",
+      responses,
+      SURVEY_MATCHERS.aiUse,
+      "> **Como usar:** é o sinal de nível do público para a curadoria. Calibrar o jargão por ele; termo técnico sempre com explicação.",
+    ),
+    ...renderRecentUseBlock(responses),
+    ...questionBlock("Ferramentas de IA usadas no último mês", responses, SURVEY_MATCHERS.tools),
+    ...questionBlock("O que quer conseguir com IA nos próximos meses", responses, SURVEY_MATCHERS.goals),
+    ...questionBlock("O que mais atrapalha o uso de IA", responses, SURVEY_MATCHERS.obstacles),
+    ...(relatos > 0 ? ["", `Relatos de quando a IA não deu certo: ${relatos} (o texto livre não entra no perfil).`] : []),
+  ];
+}
+
+/** #10605 v3: seção 3 do perfil (quem são, e quanto gastam). */
+export function renderWhoTheyAreBlocks(responses: BeehiivResponse[]): string[] {
+  return [
+    ...questionBlock("Situação profissional", responses, SURVEY_MATCHERS.situation),
+    ...questionBlock("Áreas de atuação", responses, SURVEY_MATCHERS.areas),
+    ...questionBlock("Quem paga as ferramentas de IA", responses, SURVEY_MATCHERS.whoPays),
+    ...questionBlock("Gasto mensal com IA, do próprio bolso", responses, SURVEY_MATCHERS.monthlySpend),
+    ...questionBlock("Maior gasto com curso ou material de estudo (dois anos)", responses, SURVEY_MATCHERS.biggestSpend),
+  ];
 }
 
 /**
  * #10605: seção 4 do perfil, sondagem de produto (só existe no formulário do
- * onboarding). Vazia quando ninguém respondeu essas perguntas, para o perfil
- * de quem só tem a survey antiga não ganhar uma seção sem dado. Texto livre
- * NÃO entra no perfil (o arquivo vai para prompts): só a contagem.
+ * onboarding). Vazia quando ninguém respondeu essas perguntas. Só contagens:
+ * texto livre nunca entra no perfil (o arquivo vai para prompts).
  */
 export function renderProductInterestSection(responses: BeehiivResponse[]): string[] {
   const formats = countAnswers(responses, SURVEY_MATCHERS.productFormats);
+  const choice = countAnswers(responses, SURVEY_MATCHERS.productChoice);
   const topics = countAnswers(responses, SURVEY_MATCHERS.courseTopics);
-  const price = countAnswers(responses, SURVEY_MATCHERS.coursePrice);
-  const openCount = countAnswers(responses, SURVEY_MATCHERS.openSuggestion).reduce((s, e) => s + e.count, 0);
-  if (formats.length === 0 && topics.length === 0 && price.length === 0 && openCount === 0) return [];
-  const block = (title: string, entries: { label: string; weight: number; count: number }[]): string[] =>
-    entries.length === 0 ? [] : ["", `### ${title}`, "", ...entries.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`)];
+  if (formats.length === 0 && choice.length === 0 && topics.length === 0) return [];
   return [
     "",
     "## 4. Interesse em produtos (formulário do onboarding)",
     "",
     `Fonte: formulário do onboarding (#10605). Sondagem para decidir que cursos ou outros produtos oferecer; não usar para pontuar notícias.`,
-    ...block("Formatos de interesse", formats),
-    ...block("Temas de curso", topics),
-    ...block("Quanto investiria num curso", price),
-    ...(openCount > 0 ? ["", `Respostas abertas: ${openCount} (o texto livre não entra no perfil; ler em \`data/audience-raw.json\`).`] : []),
+    ...surveyBlock("Formatos de interesse", formats, undefined, questionRespondents(responses, SURVEY_MATCHERS.productFormats)),
+    ...surveyBlock("Formato escolhido se só um existisse", choice, undefined, questionRespondents(responses, SURVEY_MATCHERS.productChoice)),
+    ...surveyBlock("Temas para aprender", topics, undefined, questionRespondents(responses, SURVEY_MATCHERS.courseTopics)),
   ];
 }
 
@@ -759,7 +878,13 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
   if (surveyPath && existsSync(surveyPath)) {
     try {
       const all: BeehiivResponse[] = JSON.parse(readFileSync(surveyPath, "utf8"));
-      surveyResponses = all.filter((r) => !r.status || r.status === "active");
+      const active = all.filter((r) => !r.status || r.status === "active");
+      // #10605 decisão 10: só o formulário do onboarding entra no perfil.
+      surveyResponses = active.filter(isOnboardingFormResponse);
+      const discarded = active.length - surveyResponses.length;
+      if (discarded > 0) {
+        warnFn(`[update-audience] ${discarded} resposta(s) de survey antiga (Beehiiv/Tally) ignorada(s): o perfil sai só do formulário do onboarding (#10605).`);
+      }
     } catch (error) {
       logFileReadWarning("survey JSON", surveyPath, error, spawnFn, warnFn);
     }
@@ -944,45 +1069,35 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
   // ─── Section 2: Survey (secondary) ────────────────────────────────────────
 
   if (surveyResponses.length > 0) {
-    const contentTypes = countAnswers(surveyResponses, SURVEY_MATCHERS.contentTypes);
-    const sectors = countAnswers(surveyResponses, SURVEY_MATCHERS.sectors);
-    const areas = countAnswers(surveyResponses, SURVEY_MATCHERS.areas);
-    const aiLevel = countAnswers(surveyResponses, SURVEY_MATCHERS.aiLevel);
-
     lines.push(
       "",
-      "## 2. Preferências declaradas (survey)",
+      "## 2. Preferências declaradas (formulário)",
       "",
-      `Fonte secundária: ${surveyResponses.length} respondentes. Usar para calibrar tom e vocabulário, não para priorizar temas.`,
-      "",
-      "### Conteúdo preferido",
-      "",
-      ...contentTypes.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
-      "",
-      "### Nível de conhecimento em IA",
-      "",
-      ...aiLevel.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
-      "",
-      "> **Como usar:** maioria é uso casual/consciente. Evitar jargão técnico sem explicação.",
+      `Fonte secundária: ${surveyResponses.length} respondentes do formulário do onboarding. Usar para calibrar tom e vocabulário, não para priorizar temas.`,
+      ...renderDeclaredUseBlocks(surveyResponses),
       "",
       "## 3. Quem são (demographics)",
-      "",
-      "### Setores",
-      "",
-      ...sectors.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
-      "",
-      "### Áreas de atuação",
-      "",
-      ...areas.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
+      ...renderWhoTheyAreBlocks(surveyResponses),
     );
     lines.push(...renderProductInterestSection(surveyResponses));
+  } else {
+    // #10605: sem resposta do formulário ainda, mantém as seções 2 e 3 do
+    // perfil anterior (marcadas) em vez de apagá-las a cada regeneração.
+    let previous: string | null = null;
+    try {
+      previous = existsSync(outPath) ? readFileSync(outPath, "utf8") : null;
+    } catch (error) {
+      logFileReadWarning("perfil anterior", outPath, error, spawnFn, warnFn);
+    }
+    const carried = carryOverDeclaredSections(previous);
+    if (carried.length > 0) lines.push("", ...carried);
   }
 
   lines.push(
     "",
     "---",
     "",
-    "_Regerado por `scripts/update-audience.ts` a partir de CTR (`data/link-ctr-table.csv`) e survey (`data/audience-raw.json`)._",
+    "_Regerado por `scripts/update-audience.ts` a partir de CTR (`data/link-ctr-table.csv`) e do formulário do onboarding (`data/audience-raw.json`)._",
   );
 
   // Archive existing — feito aqui (logo antes do write final), não no topo do

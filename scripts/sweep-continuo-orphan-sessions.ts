@@ -20,7 +20,8 @@
  *      da sessão atual (`--exclude`);
  *   3. `claimed_issues` E `claimed_foreign_issues` (#10618) vazios —
  *      encerrar nunca libera uma claim. Vale a
- *      UNIÃO do arquivo real com as cópias `-safeBackup-` do grupo (#10015,
+ *      UNIÃO do arquivo real com as cópias de conflito do grupo (`-safeBackup-`
+ *      do OneDrive ou `.conflictN` do rclone, #12380) (#10015,
  *      mesma semântica do registry, #6623): claim só no backup também mantém;
  *   4. heartbeat mais recente (`lastHeartbeat ?? startedAt`, também da união) mais velho que
  *      `ORPHAN_SWEEP_MIN_AGE_MS` (6h) — DE PROPÓSITO bem acima do
@@ -38,7 +39,7 @@
  *      cron que já terminou com `## Error` (tick morreu no provider antes do
  *      relatório) é encerrada sem esperar as 6h — ver `readDeadTickSessionIds`.
  *      Os critérios 1–3 continuam valendo.
- * Cópias de conflito (`-safeBackup-`) não são candidatas por si (o GC,
+ * Cópias de conflito (`-safeBackup-`, `.conflictN`) não são candidatas por si (o GC,
  * `session-registry.ts gc`, cuida delas) — só entram na decisão do arquivo
  * real a que pertencem; o encerramento usa `endSession`, que carimba
  * `endedAt` nelas.
@@ -60,6 +61,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { isSyncConflictCopyName } from "./lib/sync-conflict-copy.ts";
 import {
   endSession,
   machineTag,
@@ -153,8 +155,9 @@ export function planContinuoOrphanSweep(
   return out;
 }
 
-/** Lê os registros do kind `continuo`, um por arquivo REAL (sem
- *  `-safeBackup-`), já unidos às cópias de conflito do grupo (#10015):
+/** Lê os registros do kind `continuo`, um por arquivo REAL (nunca uma cópia
+ *  de conflito: `-safeBackup-` do OneDrive nem `.conflictN` do rclone,
+ *  #12380), já unidos às cópias de conflito do grupo (#10015):
  *  `claimed_issues` e heartbeat vêm da união real+backups
  *  (`readEffectiveSessionRecord`, semântica #6623) — uma claim que só
  *  sobreviveu num backup ainda impede o encerramento, porque `endSession`
@@ -167,7 +170,7 @@ export function readContinuoRecords(repoRoot: string): SessionRecord[] {
   if (!existsSync(dir)) return [];
   const records: SessionRecord[] = [];
   for (const name of readdirSync(dir)) {
-    if (!name.startsWith("continuo-") || !name.endsWith(".json") || name.includes("-safeBackup-")) continue;
+    if (!name.startsWith("continuo-") || !name.endsWith(".json") || isSyncConflictCopyName(name)) continue;
     const path = join(dir, name);
     let real: SessionRecord;
     try {

@@ -1,9 +1,10 @@
 import { describe, it } from "node:test";
+import { validateDomainDiversity } from "../scripts/validate-domain-diversity.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, loadDivulgacaoSnippet, loadAgradecimentoSnippet, buildParaEncerrar, loadParaEncerrarConfig, type ParaEncerrarConfig, type UseMelhorTempoInstrumentationEntry } from "../scripts/stitch-newsletter.ts";
+import { limitAprofundeLinks, renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, loadDivulgacaoSnippet, loadAgradecimentoSnippet, buildParaEncerrar, loadParaEncerrarConfig, type ParaEncerrarConfig, type UseMelhorTempoInstrumentationEntry } from "../scripts/stitch-newsletter.ts";
 import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3, BOX0_SENTINEL } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 import { SOCIAL_INVITE } from "../scripts/lib/shared/encerramento-snippet.ts"; // #4413: convite social é bloco fixo
@@ -221,7 +222,7 @@ describe("stitchNewsletter (#1463)", () => {
       );
       writeFileSync(
         join(internalDir, "02-d2-draft.md"),
-        "**DESTAQUE 2 | ⚖️ REGULAÇÃO**\n\n[**Title 2**](https://example.com/d2)\n\nbody2",
+        "**DESTAQUE 2 | ⚖️ REGULAÇÃO**\n\n[**Title 2**](https://example.com/d2)\n\nbody2\n\nAprofunde:\n" + [1, 2, 3, 4].map(n => `* [Novidade ${n}](https://docs.lovable.dev/changelog#nov-${n}) - Lovable`).join("\n"),
       );
       writeFileSync(
         join(internalDir, "02-d3-draft.md"),
@@ -247,6 +248,8 @@ describe("stitchNewsletter (#1463)", () => {
         editionDir: dir,
         sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
+      assert.equal((result.match(/docs\.lovable\.dev\/changelog/g) ?? []).length, 1);
+      assert.match(result, /body2/);
       // Ordem canonical (#2546, VÍDEO/RADAR trocados em #3100, VÍDEO subiu pra
       // antes de LANÇAMENTOS em #3820, USE MELHOR > LANÇAMENTOS > É IA? em
       // #6323): coverage > D1 > D2 > D3 >
@@ -2517,5 +2520,49 @@ describe("#10832 stitch não regenera mais o box rotativo de hubs", () => {
     const src = readFileSync(join(import.meta.dirname, "..", "scripts", "stitch-newsletter.ts"), "utf8");
     assert.doesNotMatch(src, /build-hub-divulgacao-box/);
     assert.doesNotMatch(src, /regenerateHubDivulgacaoBox/);
+  });
+});
+
+describe("Aprofunde #12328", () => {
+  const link = (url: string) => `* [Fonte](${url}) - Lovable`;
+  it("deduplica quatro âncoras do changelog, preservando a primeira e os fatos", () => {
+    const primary = "https://docs.lovable.dev/changelog#nov-1";
+    const body = `[D2](${primary})\n\nFatos das quatro atualizações.\n\nPor que isso importa:\nImpacto.\n\n`;
+    const md = body + "Aprofunde:\n\n" + [1, 2, 3, 4].map(n => link(`https://docs.lovable.dev/changelog#nov-${n}`)).join("\n");
+    const out = limitAprofundeLinks(md);
+    assert.equal(out, body + "Aprofunde:\n\n" + link(primary));
+    assert.equal(validateDomainDiversity(out).ok, true);
+    assert.equal(limitAprofundeLinks(out), out);
+  });
+  it("reserva URLs de toda a edição e soma subdomínios no limite de dois", () => {
+    const body = "[D1](https://lovable.dev/main)\nFatos preservados.\n";
+    const block = "Aprofunde:\n" + ["https://docs.lovable.dev/guide", "https://blog.lovable.dev/news", "https://other.org/source"].map(link).join("\n");
+    const out = limitAprofundeLinks(body + block);
+    assert.equal(out, body + "Aprofunde:\n" + link("https://docs.lovable.dev/guide") + "\n" + link("https://other.org/source"));
+    assert.equal(validateDomainDiversity(out).ok, true);
+    const radar = "\n\n---\n[Radar](https://blog.lovable.dev/radar)";
+    assert.equal(limitAprofundeLinks(body + block + radar), body + "Aprofunde:\n" + link("https://other.org/source") + radar);
+  });
+  it("compartilha o saldo entre blocos e omite cabeçalho que ficaria vazio", () => {
+    const first = "Aprofunde:\n" + link("https://lovable.dev/a") + "\n" + link("https://docs.lovable.dev/b");
+    const second = "\n\n---\nAprofunde:\n" + link("https://lovable.dev/c");
+    const out = limitAprofundeLinks(first + second);
+    assert.equal(out, first + "\n\n---");
+    assert.equal(validateDomainDiversity(out).ok, true);
+  });
+  it("deduplica páginas entre blocos sem confundir a contagem de URLs do gate", () => {
+    const first = "Aprofunde:\n" + link("https://lovable.dev/a#one");
+    const second = "\n\n---\nAprofunde:\n" + link("https://lovable.dev/a#two");
+    assert.equal(limitAprofundeLinks(first + second), first + "\n\n---");
+    // O gate conta URLs completas: âncoras novas também consomem saldo.
+    const body = "[A](https://lovable.dev/a)\n[B](https://lovable.dev/b)\n";
+    const out = limitAprofundeLinks(body + "Aprofunde:\n" + link("https://lovable.dev/a#one"));
+    assert.equal(out, body.trimEnd());
+    assert.equal(validateDomainDiversity(out).ok, true);
+  });
+  it("não corta conteúdo fora do Aprofunde mesmo quando excede o limite", () => {
+    const md = [1, 2, 3].map(n => `[Item](https://lovable.dev/${n})`).join("\n");
+    assert.equal(limitAprofundeLinks(md), md);
+    assert.equal(validateDomainDiversity(md).ok, false);
   });
 });

@@ -3426,7 +3426,13 @@ export function processInlineLinks(s: string): string {
   // `escText`) nunca convertiam itálico, mesmo com o marcador presente no MD.
   return tokenizeInline(
     s,
-    (seg) => applyInlineBold(applyBrandWordmark(processInlineItalics(esc(seg)))),
+    // #12273: máscaras manuais dos ganhadores ainda expõem um domínio
+    // linkificável. Quebra cada ponto só no texto, preservando hrefs/labels
+    // explícitos e o U+200B que o editor eventualmente já inseriu.
+    (seg) => applyInlineBold(applyBrandWordmark(processInlineItalics(esc(
+      seg.replace(/((?:•{3,}|…|\*{3,})@)([\p{L}\p{N}-]+(?:\u200B?\.[\p{L}\p{N}-]+)+)/gu,
+        (_match, mask: string, domain: string) => mask + domain.replace(/\u200B?\./g, "\u200B.")),
+    )))),
     inlineLinkHtml,
   );
 }

@@ -8,12 +8,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import sharp from "sharp";
 
-import { resolveSlideUrlsFromCache, buildWeeklyCarouselPdf, downloadJpeg } from "../scripts/gen-weekly-carousel-pdf.ts";
+import { resolveSlideUrlsFromCache, buildWeeklyCarouselPdf, downloadJpeg, LINKEDIN_DOC_MAX_BYTES } from "../scripts/gen-weekly-carousel-pdf.ts";
 
 function makeRoot(): string {
   return mkdtempSync(join(tmpdir(), "weekly-pdf-"));
@@ -196,9 +196,9 @@ describe("#8305 buildWeeklyCarouselPdf — teto de bytes e ligação página/ima
   });
 
   it("aborta assim que os slides estouram o teto de bytes, SEM baixar o resto", async () => {
-    // JPEG grande o bastante pra que poucos slides passem de 100MB — a
+    // JPEG grande o bastante pra que poucos slides passem do teto — a
     // checagem tem que vir durante o download, não depois de montar tudo.
-    const big = new Uint8Array(30 * 1024 * 1024);
+    const big = new Uint8Array(8 * 1024 * 1024);
     big.set([0xff, 0xd8]);
     let downloads = 0;
     await assert.rejects(
@@ -207,9 +207,23 @@ describe("#8305 buildWeeklyCarouselPdf — teto de bytes e ligação página/ima
           downloads++;
           return big;
         }),
-      /acima do teto de 100MB|excede o teto/,
+      /acima do teto de 20MB|excede o teto/,
     );
     assert.ok(downloads < 6, `abortou no meio (baixou ${downloads} de 6), em vez de baixar tudo antes de reclamar`);
+  });
+
+  it("#12394: PDF entre 20MB e 100MB falha na GERAÇÃO (antes passava e só caía no fallback do Worker, no disparo)", async () => {
+    // 2 slides de 11MB = 22MB: acima do teto do Worker, abaixo dos 100MB da Documents API.
+    const slide = new Uint8Array(11 * 1024 * 1024);
+    slide.set([0xff, 0xd8]);
+    await assert.rejects(() => buildWeeklyCarouselPdf(["a", "b"], async () => slide), /teto de 20MB do Worker/);
+  });
+
+  it("#12394: teto do gerador = LINKEDIN_DOCUMENT_MAX_BYTES do Worker (paridade pelo fonte, o Worker não é importável daqui)", () => {
+    const src = readFileSync(resolve(import.meta.dirname, "..", "workers", "linkedin-cron", "src", "index.ts"), "utf8");
+    const m = src.match(/export const LINKEDIN_DOCUMENT_MAX_BYTES\s*=\s*(\d+)\s*\*\s*(\d+)\s*\*\s*(\d+)\s*;/);
+    assert.ok(m, "LINKEDIN_DOCUMENT_MAX_BYTES não encontrado no formato `A * B * C` — atualize este teste junto");
+    assert.equal(Number(m[1]) * Number(m[2]) * Number(m[3]), LINKEDIN_DOC_MAX_BYTES);
   });
 
   it("cada página do PDF embute o JPEG da SUA url — não só a contagem certa", async () => {

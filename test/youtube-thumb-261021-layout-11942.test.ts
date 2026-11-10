@@ -34,6 +34,7 @@ import {
   THUMB_PORTRAITS_DIR,
   buildPortraitPrompt,
   parseExpressions,
+  portraitExpressionLabel,
 } from "../scripts/lib/diaria/youtube-thumb-portrait.ts";
 // @ts-expect-error — módulo JS sem tipos
 import { buildCodexPrompt } from "../scripts/codex-image.js";
@@ -203,7 +204,7 @@ describe("#11942 retrato por IA com expressão editável", () => {
     assert.equal(DEFAULT_PORTRAIT_EXPRESSIONS[0], "desconfiado");
     assert.deepEqual(parseExpressions(" Surpreso, serio "), ["surpreso", "serio"]);
     assert.throws(() => parseExpressions(""), /vazio/);
-    assert.throws(() => parseExpressions("feliz"), /desconhecida/);
+    assert.throws(() => parseExpressions("inexistente"), /desconhecida/);
     assert.throws(() => parseExpressions("serio,serio"), /repete/);
     assert.throws(() => parseExpressions("serio,surpreso,preocupado,ironico,intrigado"), /máximo/);
   });
@@ -238,6 +239,15 @@ describe("#11942 retrato por IA com expressão editável", () => {
 });
 
 describe("#11942 CLI: opções de retrato", () => {
+  it("#12277 aceita expressões positivas e lê o positive editado sem confiar nos metadados", () => {
+    assert.deepEqual(parseExpressions("feliz,animado,satisfeito"), ["feliz", "animado", "satisfeito"]);
+    for (const expression of parseExpressions("feliz,animado,satisfeito")) {
+      assert.equal(portraitExpressionLabel(buildPortraitPrompt(expression, "/frame.jpg")), expression);
+    }
+    assert.equal(portraitExpressionLabel({ positive: "Portrait. Facial expression: feliz, animado e satisfeito. Same identity." }), "feliz, animado e satisfeito");
+    assert.throws(() => portraitExpressionLabel({ positive: "sem expressão" }), /Facial expression/);
+    assert.throws(() => portraitExpressionLabel({}), /positive/);
+  });
   const run = (args: string[]) =>
     spawnSync(process.execPath, ["--import", "tsx", "scripts/gen-youtube-thumb.ts", "261103", ...args], { cwd: ROOT, encoding: "utf8" });
 
@@ -271,6 +281,14 @@ describe("#11942 CLI: opções de retrato", () => {
       assert.equal(sheet.status, 0, sheet.stderr);
       assert.ok(existsSync(join(dir, THUMB_PORTRAITS_DIR, "opcoes.jpg")));
       assert.match(sheet.stderr, /1=desconfiado, 2=serio/);
+
+      // #12277: o workaround edita apenas positive; retratos.json continua antigo.
+      prompt1.positive = buildPortraitPrompt("feliz", ref).positive;
+      writeFileSync(out.options[0].prompt, JSON.stringify(prompt1));
+      const editedSheet = run(["--portrait-sheet", "--edition-dir", dir]);
+      assert.equal(editedSheet.status, 0, editedSheet.stderr);
+      assert.match(editedSheet.stderr, /1=feliz, 2=serio/);
+      assert.doesNotMatch(editedSheet.stderr, /desconfiado/);
 
       const badPick = run(["--pick-portrait", "3", "--edition-dir", dir]);
       assert.equal(badPick.status, 1);
@@ -326,7 +344,7 @@ describe("#11942 CLI: opções de retrato", () => {
 });
 
 describe("#11942 skill documenta o padrão da 261021", () => {
-  const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+  const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
   const a2 = skill.slice(skill.indexOf("### Passo A2"), skill.indexOf("### Passo A3"));
 
   it("Passo A2 usa o close-up pelo Codex com folha de expressões e o layout bottom", () => {

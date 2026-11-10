@@ -36,6 +36,7 @@ import {
   type VocabAlias,
   type Word,
 } from "./video-montage.ts";
+import { stretchedWordFindings } from "./video-montage-repeat.ts";
 
 /** Loudness alvo do export (referência de plataforma, #11557). */
 export const FINAL_TARGET_LUFS = -14;
@@ -284,6 +285,7 @@ export function exportTimeToRaw(t: number, plan: SequencePlan, fps: number): num
 
 const TEXT_FIX: Record<ReviewKind, string> = {
   "tomada-duplicada": "tirar a repetição (fica uma tomada só)",
+  "tomada-colapsada": "conferir no áudio: palavra esticada sobre fala (tomada repetida que o Whisper juntou); deixar só a tomada completa",
   "silaba-vazada": "aparar o corte (sílaba da tomada vizinha)",
   "fala-extra": "cortar (hesitação, falso começo ou fala fora do roteiro)",
   "fala-faltando": "repor a fala (o corte comeu a palavra)",
@@ -296,15 +298,19 @@ export function checkText(input: {
   plan: SequencePlan;
   fps: number;
   durationS: number;
+  audioEndS?: number;
   aliases?: VocabAlias[];
+  /** Silêncios do export: com eles, a palavra esticada sobre fala vira `tomada-colapsada` (#12711). */
+  silences?: Interval[];
 }): FinalReviewFinding[] {
-  const findings = reviewPreview({
+  const findings = [...reviewPreview({
     words: input.words,
+    audioEndS: input.audioEndS,
     script: input.plan.script,
     cuts: cutPoints(input.plan, input.fps),
     durationS: input.durationS,
     aliases: input.aliases,
-  });
+  }), ...(input.silences ? stretchedWordFindings(input.words, input.silences) : [])];
   return findings.map((f) => ({
     kind: f.kind,
     at: f.at,

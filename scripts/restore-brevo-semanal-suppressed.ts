@@ -46,6 +46,8 @@ import { brevoGet, brevoPut } from "./lib/brevo-client.ts";
 import {
   DEFAULT_STORE_PATH,
   applyRestoredToSemanal,
+  createBatchedStoreWriter,
+  flushStoreOnSignal,
   readStore,
   writeStore,
   type BrevoDiariaContact,
@@ -135,43 +137,53 @@ export async function runRestoreSemanal(
   let eligible = 0;
   let restored = 0;
   let failed = 0;
-  for (const c of candidates) {
-    try {
-      const res = await deps.getBrevoContact(c.email);
-      if (res.status !== 200 && res.status !== 404) throw new Error(`GET /contacts respondeu HTTP ${res.status}`);
-      const kitState = res.status === 404 ? null : await deps.kitStateByEmail(c.email);
-      const verdict = decideRestore({
-        brevoFound: res.status === 200,
-        statistics: res.body?.statistics as never,
-        openedInStore: c.opens_count >= 1 || c.ever_opened === true,
-        kitState,
-      });
-      if (!verdict.restore) {
-        skipped[verdict.reason] = (skipped[verdict.reason] ?? 0) + 1;
-        continue;
-      }
-      eligible++;
-      if (!opts.apply) continue;
-      await deps.putBrevoContact(c.email, { emailBlacklisted: false, listIds: [opts.listId] });
-      const check = await deps.getBrevoContact(c.email);
-      const ok = check.status === 200 && check.body?.emailBlacklisted !== true && Array.isArray(check.body?.listIds) && check.body!.listIds!.includes(opts.listId);
-      if (!ok) {
-        failed++;
-        log(`FALHA: ${c.email} — releitura não confirma (blacklist=${check.body?.emailBlacklisted}, listIds=${JSON.stringify(check.body?.listIds)}).`);
-        continue;
-      }
-      store = applyRestoredToSemanal(store, c.email, deps.nowIso());
-      deps.writeStore(store);
-      restored++;
+  // #12474: gravar o store a cada contato fazia o OneDrive do 300 reverter o
+  // arquivo (integrity failure → safeBackup). Grava em lote + flush no fim.
+  const storeWriter = createBatchedStoreWriter(deps.writeStore);
+  // #12513: Ctrl-C/SIGTERM não roda o `finally`; o handler grava o pendente.
+  const removeSignalFlush = flushStoreOnSignal(storeWriter);
+  try {
+    for (const c of candidates) {
       try {
-        deps.appendLog(JSON.stringify({ ts: deps.nowIso(), event: "restored_to_semanal", email: c.email }) + "\n");
+        const res = await deps.getBrevoContact(c.email);
+        if (res.status !== 200 && res.status !== 404) throw new Error(`GET /contacts respondeu HTTP ${res.status}`);
+        const kitState = res.status === 404 ? null : await deps.kitStateByEmail(c.email);
+        const verdict = decideRestore({
+          brevoFound: res.status === 200,
+          statistics: res.body?.statistics as never,
+          openedInStore: c.opens_count >= 1 || c.ever_opened === true,
+          kitState,
+        });
+        if (!verdict.restore) {
+          skipped[verdict.reason] = (skipped[verdict.reason] ?? 0) + 1;
+          continue;
+        }
+        eligible++;
+        if (!opts.apply) continue;
+        await deps.putBrevoContact(c.email, { emailBlacklisted: false, listIds: [opts.listId] });
+        const check = await deps.getBrevoContact(c.email);
+        const ok = check.status === 200 && check.body?.emailBlacklisted !== true && Array.isArray(check.body?.listIds) && check.body!.listIds!.includes(opts.listId);
+        if (!ok) {
+          failed++;
+          log(`FALHA: ${c.email} — releitura não confirma (blacklist=${check.body?.emailBlacklisted}, listIds=${JSON.stringify(check.body?.listIds)}).`);
+          continue;
+        }
+        store = applyRestoredToSemanal(store, c.email, deps.nowIso());
+        storeWriter.mark(store);
+        restored++;
+        try {
+          deps.appendLog(JSON.stringify({ ts: deps.nowIso(), event: "restored_to_semanal", email: c.email }) + "\n");
+        } catch (e) {
+          log(`aviso: log de ${c.email} não gravado (${(e as Error).message}).`);
+        }
       } catch (e) {
-        log(`aviso: log de ${c.email} não gravado (${(e as Error).message}).`);
+        failed++;
+        log(`FALHA em ${c.email}: ${(e as Error).message}`);
       }
-    } catch (e) {
-      failed++;
-      log(`FALHA em ${c.email}: ${(e as Error).message}`);
     }
+  } finally {
+    removeSignalFlush();
+    storeWriter.flush();
   }
   log(
     `${opts.apply ? "" : "[dry-run] "}${eligible} elegível(is), ${restored} devolvido(s) à semanal, ${failed} falha(s). Fora: ` +

@@ -8,9 +8,11 @@
  * as issues fechadas com a label `alarm` via `gh issue list`, passa pra
  * lógica pura, e imprime o relatório.
  *
- * É RELATÓRIO, não gate — nunca aposenta nada sozinho, e sempre sai 0
- * (mesmo com candidatos encontrados, mesmo se `gh` falhar). A decisão de
- * cortar um alarme candidato é do editor.
+ * É RELATÓRIO, não gate — nunca aposenta nada sozinho, e sai 0 mesmo com
+ * candidatos encontrados ou com `gh` falhando. A decisão de cortar um alarme
+ * candidato é do editor. A única saída ≠ 0 é argv inválido (flag
+ * desconhecida, `--threshold` sem valor ou negativo): sai 1 antes de chamar o
+ * `gh`, e `--help` sai 0 (#12528).
  *
  * Uso:
  *   npx tsx scripts/check-alarm-retirement-candidates.ts [--threshold N] [--json]
@@ -21,7 +23,7 @@
  *                   `scripts/lib/scheduled-tasks.ts --json`).
  */
 import { spawnSync } from "node:child_process";
-import { hasFlag, getIntArg, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { ALARM_LABEL } from "./lib/alarm-issues.ts";
 import {
   findAlarmRetirementCandidates,
@@ -131,8 +133,18 @@ function printReport(candidates: ReturnType<typeof findAlarmRetirementCandidates
   console.log(`${LOG_PREFIX} isto é relatório, não gate — decisão de cortar continua do editor.`);
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12528). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/check-alarm-retirement-candidates.ts",
+  booleans: ["json"],
+  values: ["threshold"],
+  numeric: ["threshold"],
+};
+
 if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) process.exit(cliExit);
   const asJson = hasFlag(argv, "json");
 
   let threshold = ALARM_RETIREMENT_THRESHOLD;

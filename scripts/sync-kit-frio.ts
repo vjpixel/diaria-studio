@@ -42,13 +42,15 @@
  *   npx tsx scripts/sync-kit-frio.ts --push    # aplica as tags (exige as flags)
  *
  * Exit: 0 ok/desligado; 1 falha em algum assinante (os demais seguem); 2
- * precondição (config, chave, tag inexistente, registro ilegível).
+ * precondição (config, chave, tag inexistente, registro ilegível) ou argv
+ * inválido (flag desconhecida, argumento solto, #12528 — sai antes de ler o
+ * Kit). `--help` sai 0.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { findTagIdByName } from "./lib/kit-broadcasts.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
@@ -485,7 +487,24 @@ export function readSemanalFrioPause(path: string = DEFAULT_SEMANAL_FRIO_PAUSE_P
   return parseSemanalFrioPauseState(existsSync(path) ? readFileSync(path, "utf8") : null);
 }
 
+/** Flags aceitas (#12528). Erro de argv sai 2, como as demais precondições. */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/sync-kit-frio.ts",
+  booleans: ["push"],
+  usage: [
+    "uso: npx tsx scripts/sync-kit-frio.ts [--push] [--help | -h]",
+    "",
+    "Sem --push é dry-run (lê o Kit, não escreve). --push aplica as tags (exige as flags do config).",
+    "Flag desconhecida ou argumento solto sai 2 sem rodar nada (#12528).",
+  ].join("\n"),
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit === 0 ? 0 : 2;
+    return;
+  }
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const push = hasFlag(argv, "push");

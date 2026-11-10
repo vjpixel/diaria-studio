@@ -8,6 +8,16 @@ effort: medium
 
 # /diaria-develop
 
+**Preflight obrigatório de ambiente (#12307), antes de qualquer outro passo:**
+rodar `npx tsx scripts/lib/exec-mode.ts --require-shared-issue-registry`.
+Exit diferente de zero ou falha ao executar: exibir o motivo e encerrar a skill,
+sem scan, registro, claim, roteamento, implementação ou dispatch (inclusive
+`--dry-run`/`--no-implement`). Não criar `data/` nem usar REST manual para
+contornar: o registro efêmero não é visto pela continuo no `300`, e os scripts
+de triagem ainda dependem de GraphQL, bloqueado no cloud. Retomar numa sessão
+local com `data/` sincronizado ou deixar a fila para o `300`. Este preflight
+vem antes de qualquer criação de `data/` pela própria skill.
+
 Sessão de desenvolvimento **supervisionada/interativa**. Historicamente focada só nas issues **COM BLOQUEIO** — exatamente as que o `/diaria-overnight` pula — mas desde #4319 o escopo **default** é o backlog aberto inteiro, trabalhado em 4 ondas priorizadas (ver "Goal de esgotamento" abaixo). O que não muda: como o editor está presente, ele desbloqueia ao vivo (cola um token, confirma que criou uma conta de terceiro, decide um trade-off de produto/editorial, ou autoriza uma mudança de alto blast-radius); a skill **valida o desbloqueio deterministicamente (#573)** e leva a issue até o merge **reusando a maquinaria de implementação do overnight**, com uma diferença central: **paraleliza tudo que for seguro** (inverte o #636 — ver seção de Paralelização).
 
 **Por padrão (#4319, `goal_policy=exhaust_all`), a sessão trabalha até nenhuma issue estar aberta** — todo o backlog, não só o bloqueado, em 4 ondas priorizadas: bugs (bloqueados ou não) → bloqueadas restantes → elegíveis P0/P1 → o resto. `goal_policy=blocked_only` volta ao alvo estreito de #2636/#4297 (só o backlog bloqueado). Não é uma garantia incondicional: o Fallback de ausência (editor sai no meio), uma **interrupção do editor no gate do grupo 3** (default auto-entra desde #5321 — deixou de ser obrigatório, mas o editor ainda pode intervir ali) e o guard de colisão editorial continuam podendo encerrar a sessão com o alvo não esgotado — nesse caso o Goal fica registrado como não atingido, não bloqueia o encerramento. **Os caps mecânicos de re-varredura e de profundidade de finding foram eliminados no develop (#4319)** — quem segura a sessão agora é só o editor, pelos gates que ainda bloqueiam quando disparam (Gate 1 residual cat. C/E-com-custo, Gate B — #5695 tirou cat. A/B do Gate 1 e o Gate de Onda inteiro desta lista de bloqueio garantido) ou saindo; ver "Goal de esgotamento" pra definição exata do que conta como alvo, como terminal, e por que os caps saíram. `goal_policy = table_only` no briefing (ou `--no-implement`, que força o mesmo comportamento) volta ao comportamento pré-#4297 (fecha quando a tabela da Fase 0 acaba, sem re-varredura).
@@ -30,6 +40,26 @@ marcador concorrente posterior, reler e reavaliar; não usar `--override-newer`
 para destravar automaticamente. Isso também vale para reclassificações
 posteriores na mesma sessão e chamadas sem identidade no registry.
 
+**Decisão do editor vigente (#12389/#12413).** Com `decisao-editor` na
+thread, `route-issue.ts --track develop` e `--track fora-de-rodada` são
+recusados se a `--reason` não cita a decisão. Releia-a: se ela resolve o que
+a razão pede, roteie para `overnight`; se ainda falta algo depois dela, diga
+na razão ("decisão do editor de DD/MM já registrada; ainda exige ...").
+Roteamento que contraria a decisão leva `--override-decision "motivo"`,
+nunca uma razão reescrita só para passar no regex.
+
+
+## Fila obrigatória de escaladas do contínuo (#12684)
+
+No briefing inicial, rodar `npx tsx scripts/list-continuo-escalation-queue.ts`.
+Cada item de `queue` é uma PR escalada há mais de 24h: apresentar URL,
+`since` e `reason` como pendência explícita do editor, dono da fila
+`briefing overnight/develop`, e registrar destino e decisão no plano/relatório.
+Fila vazia dispensa esta seção; erro do comando é bloqueio de leitura da fila,
+nunca evidência de ausência de pendências. `action=merge` indica condição
+transitória resolvida: revalidar os gates normais antes de qualquer ação.
+Draft, `bloqueio-execucao` e retenção para editor continuam bloqueados até
+liberação explícita; o briefing nunca promove draft automaticamente.
 
 ## Como difere de /diaria-overnight
 
@@ -950,7 +980,7 @@ File-based (grava em `data/reports/index.jsonl`) — nunca depende do `npm run s
 
 Então, antes do `end`: `git status --porcelain` limpo? (sujo → commitar, stashar ou mover pra fora do repo — **nunca** encerrar deixando trabalho não commitado em `master` num checkout compartilhado); toda issue com PR mergeada já saiu de `claimed_issues`? `conflicts` acusando `branch-drift` (a branch registrada não é mais a do checkout) → outra sessão trocou o checkout embaixo, checar antes de encerrar. Registrar o resultado no relatório.
 
-**Limpeza de worktrees mergeados (#4335, follow-up do #4326):** por último, depois do relatório salvo/registrado, **encerrar o registro desta sessão primeiro** (`npx tsx scripts/lib/session-registry.ts end --kind develop`, `--session-id` auto-injetado — #5156, senão esta própria sessão aparece como "outra sessão ativa" pro guard abaixo) e só então rodar `npx tsx scripts/cleanup-merged-worktrees.ts` — varre `.claude/worktrees/` (worktrees concorrentes desta sessão + sobras de rodadas anteriores), confirma via `gh pr list --head {branch} --state merged` quais branches já foram mergeadas e remove (`git worktree remove --force`) só essas. **FAIL-SOFT**: o script já nunca lança nem sai não-zero por falha de `gh`/permissão; mesmo assim, tratar qualquer stderr como warning — nunca travar o encerramento da sessão por causa desta limpeza. **Guard de sessão compartilhada embutido no próprio script (#5156 item 9):** ele consulta `session-registry.ts` e PULA a varredura inteira, sozinho, se detectar qualquer outra sessão ainda ativa nesta máquina (ex: um overnight que começou depois desta sessão develop) — não insistir com `--confirm-shared` sem certeza de que não há colisão. **Em seguida, republicar a contagem (#8495 — call site de FECHAMENTO, obrigatório, par do call site de abertura na Fase 1):** rodar `npx tsx scripts/lib/session-registry.ts heartbeat --kind develop --active-worktrees {N}` com `{N}` já refletindo os worktrees removidos por `cleanup-merged-worktrees.ts` acima — nesta skill o cleanup roda em LOTE no fim da sessão (não por PR individual como no overnight), então este é o ponto real onde o número de worktrees vivos desta sessão muda de verdade. **Standalone**, mesma disciplina de injeção do call site de abertura. **Este heartbeat roda DEPOIS do `end` e é no-op por desenho (#11059):** `heartbeat` recusa auto-registrar sessão que já tem evento `ended` no log de lifecycle (imprime `heartbeat no-op (sessão já encerrada...)`, exit 0) — antes disso ele ressuscitava a sessão e ela terminava ATIVA no registro. Não reordenar `end` para depois do cleanup: o guard do `cleanup-merged-worktrees.ts` precisa que esta sessão já esteja encerrada.
+**Limpeza de worktrees mergeados (#4335, follow-up do #4326):** por último, depois do relatório salvo/registrado, **encerrar o registro desta sessão primeiro** (`npx tsx scripts/lib/session-registry.ts end --kind develop`, `--session-id` auto-injetado — #5156, senão esta própria sessão aparece como "outra sessão ativa" pro guard abaixo) e só então rodar `npx tsx scripts/cleanup-merged-worktrees.ts` — varre `.claude/worktrees/` (worktrees concorrentes desta sessão + sobras de rodadas anteriores), confirma via `gh pr list --head {branch} --state merged` quais branches já foram mergeadas e remove (`git worktree remove --force`) só essas. **FAIL-SOFT**: o script já nunca lança nem sai não-zero por falha de `gh`/permissão; mesmo assim, tratar qualquer stderr como warning — nunca travar o encerramento da sessão por causa desta limpeza. **Guard de sessão compartilhada embutido no próprio script (#5156 item 9):** ele consulta `session-registry.ts` e PULA a varredura inteira, sozinho, se detectar qualquer outra sessão ainda ativa nesta máquina (ex: um overnight que começou depois desta sessão develop) — não insistir com `--confirm-shared` sem certeza de que não há colisão. **Logo depois, a triagem dos preservados (#12374, ligada no #12394):** rodar `npx tsx scripts/triage-preserved-worktrees.ts` (relatório somente leitura dos worktrees que o cleanup preservou por arquivo sujo ou commit não enviado, com veredito `descartavel`/`manter` e o motivo), anexar a tabela ao fim do `report.md` da sessão (seção `## Worktrees preservados`) e mostrá-la ao editor no resumo final. O descarte com resgate (`--discard`, opcionalmente `--only nome1,nome2`) só roda se o editor pedir nesta sessão. Fail-soft como o cleanup: falha vira aviso, nunca trava o encerramento. **Em seguida, republicar a contagem (#8495 — call site de FECHAMENTO, obrigatório, par do call site de abertura na Fase 1):** rodar `npx tsx scripts/lib/session-registry.ts heartbeat --kind develop --active-worktrees {N}` com `{N}` já refletindo os worktrees removidos por `cleanup-merged-worktrees.ts` acima — nesta skill o cleanup roda em LOTE no fim da sessão (não por PR individual como no overnight), então este é o ponto real onde o número de worktrees vivos desta sessão muda de verdade. **Standalone**, mesma disciplina de injeção do call site de abertura. **Este heartbeat roda DEPOIS do `end` e é no-op por desenho (#11059):** `heartbeat` recusa auto-registrar sessão que já tem evento `ended` no log de lifecycle (imprime `heartbeat no-op (sessão já encerrada...)`, exit 0) — antes disso ele ressuscitava a sessão e ela terminava ATIVA no registro. Não reordenar `end` para depois do cleanup: o guard do `cleanup-merged-worktrees.ts` precisa que esta sessão já esteja encerrada.
 
 ## Guard de colisão editorial — aviso interativo, sem auto-preempt
 

@@ -55,6 +55,7 @@ import { resolveYouTubeState, type PublishState } from "./lib/publish-state.ts";
 import { sendPushNotification } from "./lib/push-notify.ts";
 import { isNoVideoEdition } from "./lib/diaria/d1-no-video.ts";
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
+import { assessEditionVideoEvidence, readEditionVideoEvidenceInput } from "./lib/diaria/edition-video-evidence.ts";
 import { buildYouTubeShortTitle, loadShortScheduleConfig, resolveShortTime } from "./lib/diaria/short-video.ts";
 import { readShortsRegistry } from "./lib/diaria/shorts-published-store.ts";
 import {
@@ -119,7 +120,7 @@ function readD1Title(dir: string): string {
 function loadShortAt(aammdd: string): Date | null {
   try {
     const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
-    return brtInstant(aammdd, resolveShortTime(loadShortScheduleConfig(cfg), aammdd).hhmm);
+    return brtInstant(aammdd, resolveShortTime(loadShortScheduleConfig(cfg), aammdd, "youtube_shorts").hhmm);
   } catch (e) {
     console.error(`[aviso] horário do Short não derivado (${(e as Error).message})`);
     return null;
@@ -154,10 +155,14 @@ async function computePlan(aammdd: string, dir: string, now: Date): Promise<Shor
     now,
     editionExists,
     noVideo: editionExists && isNoVideoEdition(dir),
+    // #12541: mesma regra do alarme do 300 (`assessEditionVideoEvidence`).
+    videoEvidence: assessEditionVideoEvidence(
+      editionExists ? readEditionVideoEvidenceInput(dir, aammdd) : { noVideo: false, shortsRegistry: { kind: "absent" } },
+    ),
     shortAt: loadShortAt(aammdd),
     record,
   };
-  if (!isWeekdayEdition(aammdd) || !editionExists || common.noVideo) {
+  if (!isWeekdayEdition(aammdd) || !editionExists || common.noVideo || !common.videoEvidence.hasEvidence) {
     return decideShortRelatedPlan({ ...common, horizontal: null, short: null, horizontalState: null });
   }
 

@@ -2,12 +2,12 @@
  * bing.ts — constantes do Bing Webmaster Tools compartilhadas pelos scripts
  * de SEO (`bing-pull.ts`).
  *
- * As duas propriedades foram verificadas por DNS (CNAME, via API da
- * Cloudflare) em 11/ago/2026 — ver `docs/seo-notes.md` §Fato 3 pro histórico
+ * As quatro propriedades estão verificadas por DNS (CNAME, via API da
+ * Cloudflare) desde 19/08/2026 — ver `docs/seo-notes.md` §Fato 13 e §Fato 3 pro histórico
  * completo da verificação (armadilhas de `AddSite`/`GetUserSites`/`SubmitFeed`
  * encontradas ao vivo). Diferente do Search Console (que usa a propriedade de
  * domínio única `sc-domain:diar.ia.br`, ver `lib/gsc.ts`), o BWT foi
- * verificado como DUAS propriedades de **prefixo de URL** — cada host é
+ * verificado como QUATRO propriedades de **prefixo de URL** — cada host é
  * consultado separadamente, com `siteUrl` completo (protocolo + barra final).
  */
 
@@ -18,12 +18,10 @@ export const BING_DEFAULT_SITE = "https://diar.ia.br/";
 export const BING_API_BASE = "https://ssl.bing.com/webmaster/api.svc/json/";
 
 /**
- * Os 4 hosts do projeto (#5621) — só `diar.ia.br` e `arquivo.diar.ia.br`
- * estão de fato cadastrados/verificados no BWT hoje (11/ago/2026, ver §Fato 3
- * de `docs/seo-notes.md`); `livros.diar.ia.br` e `cursos.diar.ia.br` ainda
- * não são propriedades — `AddSite` + verificação DNS pendentes (#5621).
- * Mantido aqui como o registro único dos 4 hosts que o projeto PODE
- * cadastrar no BWT, não como afirmação de que os 4 já estão verificados —
+ * Os 4 hosts do projeto (#5621) — `diar.ia.br`, `arquivo.diar.ia.br`,
+ * `livros.diar.ia.br` e `cursos.diar.ia.br` — estão cadastrados/verificados
+ * no BWT desde 19/08/2026 (ver `docs/seo-notes.md` §Fato 13).
+ * Mantido aqui como o registro único dos 4 hosts verificados no BWT —
  * `bing-pull.ts --mode site --site all` itera esta lista com falha
  * per-site tolerada (host ainda não verificado não derruba os outros 3).
  */

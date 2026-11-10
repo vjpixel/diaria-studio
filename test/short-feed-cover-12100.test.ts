@@ -1,12 +1,14 @@
 /**
  * test/short-feed-cover-12100.test.ts (#12100)
  *
- * O `thumbnails.set` troca só a miniatura 16:9 do Short; o feed de Shorts
- * mostra `oar2.jpg`, que segue o frame automático. Antes do fix o registro
- * dizia `cover: { method: "thumbnails_set", ok: true }` e ninguém sabia que a
- * capa do feed faltava. Agora o registro grava `vertical_feed: "manual"`, o
- * plano e o resultado avisam do passo no app do YouTube, e
- * `check-short-feed-cover.ts` confere o `oar2` contra a capa local.
+ * O `thumbnails.set` troca só a miniatura 16:9 do Short; a aba Shorts mostra
+ * `sardefault.jpg` quando o Short tem miniatura vertical própria e o frame
+ * automático (`oar2.jpg`/`oar1.jpg`) quando não tem (#12251; 404 no
+ * `sardefault` = sem miniatura vertical). Antes do fix o registro dizia
+ * `cover: { method: "thumbnails_set", ok: true }` e ninguém sabia que a capa
+ * do feed faltava. Agora o registro grava `vertical_feed: "manual"`, o plano e
+ * o resultado avisam do passo no Studio web (#12254), e
+ * `check-short-feed-cover.ts` confere o `sardefault` contra a capa local.
  * Sem rede: o fetch da CDN é falso e as imagens são sintéticas.
  */
 
@@ -62,12 +64,12 @@ describe("#12100 registro e plano da capa do Short", () => {
     assert.equal(youtubeShortsCoverRecord(undefined), null);
   });
 
-  it("aviso do passo manual só para o thumbnails_set aplicado, com o oar2 e o comando de conferência", () => {
+  it("aviso do passo manual só para o thumbnails_set aplicado, com o sardefault (#12251) e o comando de conferência", () => {
     const w = youtubeShortsVerticalCoverWarning("5jX3X0sgMtg", { method: "thumbnails_set", ok: true, vertical_feed: "manual" });
     assert.ok(w);
     assert.match(w!, /capa 16:9 aplicada/);
-    assert.match(w!, /Editar → Miniatura/);
-    assert.ok(w!.includes("https://i.ytimg.com/vi/5jX3X0sgMtg/oar2.jpg"));
+    assert.match(w!, /Studio web.*Passo B3a/);
+    assert.ok(w!.includes("https://i.ytimg.com/vi/5jX3X0sgMtg/sardefault.jpg"));
     assert.match(w!, /check-short-feed-cover\.ts --id 5jX3X0sgMtg/);
     assert.equal(youtubeShortsVerticalCoverWarning("x", { method: "thumbnails_set", ok: false, error: "e" }), null);
     assert.equal(youtubeShortsVerticalCoverWarning("x", { method: "thumbnail_upload", ok: true }), null);
@@ -81,8 +83,8 @@ describe("#12100 registro e plano da capa do Short", () => {
     assert.match(YOUTUBE_SHORTS_COVER_PLAN, /feed de Shorts é manual/);
   });
 
-  it("youtubeShortFeedThumbUrl aponta o oar2", () => {
-    assert.equal(youtubeShortFeedThumbUrl("uIwtuFBqGkg"), "https://i.ytimg.com/vi/uIwtuFBqGkg/oar2.jpg");
+  it("youtubeShortFeedThumbUrl aponta o sardefault (#12251: o oar2 é sempre o frame automático)", () => {
+    assert.equal(youtubeShortFeedThumbUrl("uIwtuFBqGkg"), "https://i.ytimg.com/vi/uIwtuFBqGkg/sardefault.jpg");
   });
 });
 
@@ -103,7 +105,7 @@ describe("#12100 publishYouTubeShort avisa do passo manual", () => {
     },
   };
 
-  it("capa aplicada no 16:9: registro com vertical_feed manual e aviso com o oar2", async () => {
+  it("capa aplicada no 16:9: registro com vertical_feed manual e aviso com o sardefault", async () => {
     const out = await publishYouTubeShort({
       deps,
       env: ENV,
@@ -119,11 +121,11 @@ describe("#12100 publishYouTubeShort avisa do passo manual", () => {
     assert.deepEqual(out.entry.cover, { method: "thumbnails_set", ok: true, vertical_feed: "manual" });
     const warnings = (out.warnings ?? []).join("\n");
     assert.match(warnings, /feed de Shorts não muda pela API/);
-    assert.ok(warnings.includes("https://i.ytimg.com/vi/s1/oar2.jpg"));
+    assert.ok(warnings.includes("https://i.ytimg.com/vi/s1/sardefault.jpg"));
   });
 });
 
-describe("#12100 conferência do oar2 contra a capa (dHash)", () => {
+describe("#12100 conferência do sardefault contra a capa (dHash)", () => {
   it("dHash tem DHASH_SIZE² bits; distância 0 com a mesma imagem; tamanhos diferentes lançam", async () => {
     const h = await dHash(await capa());
     assert.equal(h.length, DHASH_SIZE * DHASH_SIZE);
@@ -141,23 +143,25 @@ describe("#12100 conferência do oar2 contra a capa (dHash)", () => {
     assert.equal(other.verdict, "frame-automatico", `distância ${other.distance}`);
   });
 
-  it("fetchFeedImage: pede o oar2 e recusa HTTP de erro ou resposta que não é imagem", async () => {
+  it("fetchFeedImage: pede o sardefault, 404 = sem capa vertical (null), recusa outro HTTP de erro ou resposta que não é imagem", async () => {
     const urls: string[] = [];
     const ok = (async (url: string) => {
       urls.push(url);
       return new Response(Buffer.from([1, 2, 3]), { status: 200, headers: { "content-type": "image/jpeg" } });
     }) as unknown as typeof fetch;
-    assert.deepEqual([...(await fetchFeedImage("5jX3X0sgMtg", ok))], [1, 2, 3]);
-    assert.deepEqual(urls, ["https://i.ytimg.com/vi/5jX3X0sgMtg/oar2.jpg"]);
+    assert.deepEqual([...((await fetchFeedImage("5jX3X0sgMtg", ok)) ?? [])], [1, 2, 3]);
+    assert.deepEqual(urls, ["https://i.ytimg.com/vi/5jX3X0sgMtg/sardefault.jpg"]);
     const notFound = (async () => new Response("", { status: 404 })) as unknown as typeof fetch;
-    await assert.rejects(fetchFeedImage("5jX3X0sgMtg", notFound), /HTTP 404/);
+    assert.equal(await fetchFeedImage("5jX3X0sgMtg", notFound), null);
+    const serverError = (async () => new Response("", { status: 500 })) as unknown as typeof fetch;
+    await assert.rejects(fetchFeedImage("5jX3X0sgMtg", serverError), /HTTP 500/);
     const html = (async () => new Response("<html>", { status: 200, headers: { "content-type": "text/html" } })) as unknown as typeof fetch;
     await assert.rejects(fetchFeedImage("5jX3X0sgMtg", html), /esperado imagem/);
   });
 
   it("fetchFeedImage: HTTP de erro e resposta não-imagem cancelam o corpo (#9991)", async () => {
     for (const [init, re] of [
-      [{ status: 404 }, /HTTP 404/],
+      [{ status: 503 }, /HTTP 503/],
       [{ status: 200, headers: { "content-type": "text/html" } }, /esperado imagem/],
     ] as const) {
       let cancelled = false;
@@ -175,14 +179,22 @@ describe("#12100 conferência do oar2 contra a capa (dHash)", () => {
   });
 });
 
-describe("#12100 skill: passo manual da capa do feed de Shorts", () => {
-  it("o Passo A2 manda aplicar no app e conferir com check-short-feed-cover.ts", () => {
-    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+describe("#12254 skill: capa vertical do Short pelo Studio web", () => {
+  it("documenta o sardefault e o passo do agente, sem devolver a tarefa ao editor", () => {
+    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
     const a2 = skill.slice(skill.indexOf("### Passo A2"), skill.indexOf("### Passo A3"));
-    assert.match(a2, /Capa do feed de Shorts é passo manual \(#12100\)/);
-    assert.match(a2, /oar2\.jpg/);
-    assert.match(a2, /scripts\/check-short-feed-cover\.ts --id/);
-    assert.match(a2, /vertical_feed: "manual"/);
+    const b3a = skill.slice(skill.indexOf("### Passo B3a"), skill.indexOf("### Passo B3b"));
+    assert.match(a2, /sardefault\.jpg/);
+    // #12377 item 3: o verificador já lê o sardefault; o A2 não pode mais dizer que ele consulta o oar2.
+    assert.doesNotMatch(a2, /ainda consulta `oar2\.jpg`/);
+    assert.match(a2, /404 no `sardefault\.jpg`/);
+    assert.match(a2, /Passo B3a/);
+    assert.match(skill, /vertical_feed: "studio_web"/);
+    assert.doesNotMatch(a2, /Capa do feed de Shorts é passo manual/);
+    assert.match(b3a, /file_upload/);
+    assert.match(b3a, /Salvar/);
+    assert.match(b3a, /studio_web/);
+    assert.match(b3a, /mandar o editor usar o app/);
   });
 });
 
@@ -206,7 +218,8 @@ describe("#12100 CLI check-short-feed-cover (offline, --feed-image)", () => {
       const r1 = run(["--feed-image", other, "--cover", c]);
       assert.equal(r1.status, 1, r1.stderr);
       assert.equal(JSON.parse(r1.stdout).verdict, "frame-automatico");
-      assert.match(r1.stderr, /Editar → Miniatura/);
+      assert.match(r1.stderr, /Studio web.*Passo B3a/);
+      assert.doesNotMatch(r1.stderr, /app do YouTube/);
 
       assert.equal(run(["--cover", c]).status, 2);
       assert.equal(run(["--id", "curto", "--cover", c]).status, 2);

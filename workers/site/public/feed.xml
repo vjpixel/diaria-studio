@@ -6,7 +6,28 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Wed, 04 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Mon, 09 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Nvidia: CEO admite caso com suposta espiã</title>
+      <link>https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia</guid>
+      <pubDate>Mon, 09 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Claude passa a ler seu extrato bancário | Google corta 30% do preço do vídeo do Gemini</description>
+    </item>
+    <item>
+      <title>Google paga até 12 salários para quem sair</title>
+      <link>https://diar.ia.br/p/google-paga-ate-12-salarios-para-quem-sair</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/google-paga-ate-12-salarios-para-quem-sair</guid>
+      <pubDate>Fri, 06 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Lovable &quot;sonha&quot; e reescreve a memória do seu app | Sua produtividade com IA chega ao caixa da empresa?</description>
+    </item>
+    <item>
+      <title>Justiça proíbe Meta de treinar IA com reportagens</title>
+      <link>https://diar.ia.br/p/justica-proibe-meta-de-treinar-ia-com-reportagens</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/justica-proibe-meta-de-treinar-ia-com-reportagens</guid>
+      <pubDate>Thu, 05 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Anthropic avisa: autoaprimoramento pode estar perto | Seu filho usa o Gemini? O Google prepara um limite</description>
+    </item>
     <item>
       <title>Golpe da selfie: criminosos usam IA para copiar seu rosto</title>
       <link>https://diar.ia.br/p/golpe-da-selfie-criminosos-usam-ia-para-copiar-seu-rosto</link>
@@ -335,27 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/seu-chatbot-pode-ter-lido-propaganda-israelense</guid>
       <pubDate>Thu, 27 Aug 2026 09:00:00 GMT</pubDate>
       <description>Agora o ChatGPT faz login nos seus sites | OpenAI lança chip Jalapeño para rivalizar Nvidia</description>
-    </item>
-    <item>
-      <title>Empresas recontratam quem demitiu por IA</title>
-      <link>https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia</guid>
-      <pubDate>Wed, 26 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Infraestrutura trava 1 em cada 3 startups de IA | Google mira escritórios de advocacia com Gemini</description>
-    </item>
-    <item>
-      <title>Brasil investe R$ 2,3 bi em infraestrutura de IA</title>
-      <link>https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia</guid>
-      <pubDate>Tue, 25 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Grátis, poderoso e sem dono: o mistério Ox Alpha | SoftBank capta US$ 6,3 bi para apostar na OpenAI</description>
-    </item>
-    <item>
-      <title>Roteiristas pagos para treinar quem os substitui</title>
-      <link>https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui</guid>
-      <pubDate>Mon, 24 Aug 2026 09:00:00 GMT</pubDate>
-      <description>O estudo que fura o hype do uso no trabalho | Google lança simulado do Enem no Gemini</description>
     </item>
   </channel>
 </rss>

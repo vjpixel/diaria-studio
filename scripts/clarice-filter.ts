@@ -8,11 +8,14 @@
  * Uso:
  *   npx tsx scripts/clarice-filter.ts --suggestions <in.json> --out <filtradas.json>
  *
+ * --edition-dir <edição> protege trechos do autofix e verbos condicionais no Stage 4.
+ * Log ausente é permitido; log inválido aborta sem gravar o filtrado.
  * Grava só as sugestões legítimas em --out (mesmo formato) e imprime no stdout
  * o resumo `{kept, dropped, dropped_details}`. Exit 1 args inválidos, 2 I/O.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { isMainModule } from "./lib/cli-args.ts";
+import { readFactCheckProtection } from "./lib/fact-check-protection.ts";
 import { filterClariceSuggestions } from "./lib/clarice-suggestion-guard.ts";
 
 function arg(argv: string[], name: string): string | undefined {
@@ -37,7 +40,18 @@ function main(): void {
     console.error(`[clarice-filter] erro lendo --suggestions: ${(e as Error).message}`);
     process.exit(2);
   }
-  const { kept, dropped } = filterClariceSuggestions(list);
+  const editionDir = arg(argv, "edition-dir");
+  let correctedTexts: string[] = [];
+  if (editionDir) {
+    try {
+      correctedTexts = readFactCheckProtection(editionDir).correctedTexts;
+    } catch (e) {
+      console.error(`[clarice-filter] erro lendo proteção factual: ${(e as Error).message}`);
+      process.exit(2);
+    }
+  }
+  const { kept, dropped } = filterClariceSuggestions(list, editionDir
+    ? { correctedTexts, protectConditional: true } : undefined);
   try {
     writeFileSync(out, JSON.stringify(kept, null, 2), "utf8");
   } catch (e) {

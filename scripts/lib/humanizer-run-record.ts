@@ -37,7 +37,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { computeSectionHashes, extractSocialSections } from "./social-lint-rules.ts";
+import { computeSectionHashes, extractSocialSections, isCardsSection } from "./social-lint-rules.ts";
 
 export const HUMANIZER_RUN_RECORD = ".humanizer-run.json";
 
@@ -272,22 +272,42 @@ export function sectionProof(hash: string, record: HumanizerRunRecord): { humani
   return { humanizador: clarice || record.humanizador.includes(hash), clarice };
 }
 
+/** Campos do selo que a comparação selo × texto atual lê. */
+export interface StoredSealSections {
+  section_hashes?: Record<string, string>;
+  section_format_hashes?: Record<string, string>;
+  /**
+   * #12383: o selo foi gravado já com `main_d{N}-cards` nos hashes por seção.
+   * Ausente = selo anterior à #12383: os cards ficam fora da comparação (não
+   * contam como "mudou" só por não terem hash no selo), senão toda edição em
+   * curso passaria a exigir prova dos cards no primeiro `--write`.
+   */
+  cards_sections_tracked?: boolean;
+}
+
+/** #12383: o selo compara os cards? Só quando foi gravado com eles nos hashes. */
+export function sealTracksCards(stored: StoredSealSections | null | undefined): boolean {
+  return stored?.cards_sections_tracked === true;
+}
+
 /**
  * Pure: classifica as seções que mudaram entre o selo armazenado e o
  * `03-social.md` atual. Seção removida não entra (não há texto a provar).
  */
 export function classifySealChanges(
-  stored: { section_hashes?: Record<string, string>; section_format_hashes?: Record<string, string> },
+  stored: StoredSealSections,
   currentMd: string,
   record: HumanizerRunRecord,
 ): SealChangeClassification {
   const current = computeSectionHashes(currentMd);
   const currentFormat = computeSectionFormatHashes(currentMd);
   const legacy = !stored.section_hashes;
+  const tracksCards = sealTracksCards(stored);
   // Endereçado por conteúdo: um reorder troca o nome da seção, não o texto.
   const storedFormat = new Set(Object.values(stored.section_format_hashes ?? {}));
   const changed: SectionProvenance[] = [];
   for (const [name, hash] of Object.entries(current)) {
+    if (!tracksCards && isCardsSection(name)) continue; // #12383: selo antigo, sem hash dos cards
     if (!legacy && stored.section_hashes![name] === hash) continue;
     const formatOnly = currentFormat[name] !== undefined && storedFormat.has(currentFormat[name]);
     changed.push({ section: name, change: formatOnly ? "formatting" : "redaction", ...sectionProof(hash, record) });
@@ -296,6 +316,114 @@ export function classifySealChanges(
     .filter((c) => c.change === "redaction" && !(c.humanizador && c.clarice))
     .map((c) => c.section);
   return { legacy, changed, unproven };
+}
+
+/** #12361: por que uma seção sem prova no registro foi aceita pelo selo. */
+export type AcceptedSectionReason = "formatting" | "unproven_ok";
+
+/**
+ * #12361: hashes de seção (conteúdo, mesmo vocabulário de `computeSectionHashes`)
+ * que o `--write` aceitou sem prova dos dois passos no registro:
+ *
+ *   - `unproven_ok`: seção listada em `unproven` e aceita com `--unproven-ok`
+ *     (ex.: o editor editou o social no gate do Stage 2 e pediu para manter o texto);
+ *   - `formatting`: mudança só de `{quebra}`/hashtags/espaços sobre um texto
+ *     que já estava provado (registro) ou aceito (selo anterior). Formatação
+ *     sobre texto que nunca teve prova NÃO vira aceite, senão o selo inicial
+ *     sem `--record-run` (#12331) passaria com um espaço a mais.
+ *
+ * Entradas do selo anterior cujo texto ainda existe no social atual são
+ * mantidas; um `--write` sem mudança não apaga o aceite. Endereçado por conteúdo:
+ * reorder D1↔D3 não perde o aceite.
+ */
+export function planAcceptedSectionHashes(
+  stored: (StoredSealSections & { accepted_section_hashes?: Record<string, string> }) | null,
+  currentMd: string,
+  record: HumanizerRunRecord,
+  unproven: string[] = [],
+  unprovenOk?: string,
+): Record<string, AcceptedSectionReason> {
+  const current = computeSectionHashes(currentMd);
+  const currentHashes = new Set(Object.values(current));
+  const out: Record<string, AcceptedSectionReason> = {};
+  const prevAccepted = stored?.accepted_section_hashes ?? {};
+  for (const [hash, reason] of Object.entries(prevAccepted)) {
+    if (currentHashes.has(hash) && (reason === "formatting" || reason === "unproven_ok")) out[hash] = reason;
+  }
+  if (!stored) return out;
+
+  const isCovered = (hash: string) => {
+    const p = sectionProof(hash, record);
+    return (p.humanizador && p.clarice) || hash in prevAccepted;
+  };
+  const currentFormat = computeSectionFormatHashes(currentMd);
+  const storedHashes = stored.section_hashes ?? {};
+  const storedFormat = stored.section_format_hashes ?? {};
+  const cls = classifySealChanges(stored, currentMd, record);
+  for (const c of cls.changed) {
+    const hash = current[c.section];
+    if (hash === undefined || (c.humanizador && c.clarice)) continue;
+    if (c.change === "formatting") {
+      const fmt = currentFormat[c.section];
+      const predecessorCovered = Object.entries(storedFormat).some(
+        ([name, f]) => f === fmt && storedHashes[name] !== undefined && isCovered(storedHashes[name]),
+      );
+      if (predecessorCovered) out[hash] = "formatting";
+    } else if (unprovenOk && unproven.includes(c.section)) {
+      out[hash] = "unproven_ok";
+    }
+  }
+  return out;
+}
+
+/**
+ * #12398: seções do texto atual sem prova dos dois passos no registro e ainda
+ * não aceitas — o que um `--write --unproven-ok` aceita quando NÃO há mudança
+ * em relação ao selo (selo já batendo com o texto, ou primeiro `--write`). Sem
+ * isto o `--unproven-ok` sugerido pela invariante `social-humanizer-provenance-recorded`
+ * saía exit 0 sem gravar aceite nenhum (`planAcceptedSectionHashes` só olha o
+ * que mudou desde o selo).
+ *
+ * #12511: devolve os CANDIDATOS; o `--write` só aceita os que o seletor
+ * `--unproven-ok-section` nomeia. Sem seletor, nada é aceito (o caller recusa):
+ * sem mudança desde o selo não há como distinguir "o editor manteve o texto
+ * dele" de "o humanizador nunca rodou nesta seção".
+ */
+export function planUnprovenOkWithoutChanges(
+  currentMd: string,
+  record: HumanizerRunRecord,
+  accepted: Record<string, AcceptedSectionReason>,
+): Array<{ section: string; hash: string }> {
+  return Object.entries(computeSectionHashes(currentMd))
+    .filter(([, hash]) => !(hash in accepted))
+    .filter(([, hash]) => {
+      const p = sectionProof(hash, record);
+      return !(p.humanizador && p.clarice);
+    })
+    .map(([section, hash]) => ({ section, hash }));
+}
+
+/**
+ * #12511: resolve o seletor de `--unproven-ok-section` contra as seções do texto
+ * atual. Aceita o nome completo (`main_d2`, `main_d2-cards`, `comment_pixel_d1`,
+ * `post_pixel`) e o atalho sem o prefixo `main_` (`d2`, `d2-cards`, `um`).
+ * `unknown` = nome que não casa com nenhuma seção do `03-social.md` atual.
+ */
+export function resolveSectionSelector(
+  selector: string[],
+  available: string[],
+): { sections: string[]; unknown: string[] } {
+  const avail = new Set(available);
+  const sections: string[] = [];
+  const unknown: string[] = [];
+  for (const raw of selector) {
+    const name = raw.trim();
+    if (!name) continue;
+    const resolved = avail.has(name) ? name : avail.has(`main_${name}`) ? `main_${name}` : undefined;
+    if (resolved === undefined) unknown.push(name);
+    else if (!sections.includes(resolved)) sections.push(resolved);
+  }
+  return { sections, unknown };
 }
 
 /**

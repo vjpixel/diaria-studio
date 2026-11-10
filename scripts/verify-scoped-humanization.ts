@@ -16,6 +16,10 @@
  *     --post <path-depois-da-humanização, geralmente 03-social.md> \
  *     --sections main_d2,comment_pixel_d2
  *
+ * Seções conhecidas (#12383): `main_d{N}`, `main_d{N}-cards`, `main_um`,
+ * `comment_pixel_d{N}` e `post_pixel`. Mudança em qualquer uma delas fora de
+ * `--sections` (inclusive nos cards) sai em `unexpectedChanges`.
+ *
  * Exit code:
  *   0 = ok — apenas as seções pedidas mudaram, e todas elas mudaram
  *   1 = escopo violado (untouchedTargets e/ou unexpectedChanges não-vazios)

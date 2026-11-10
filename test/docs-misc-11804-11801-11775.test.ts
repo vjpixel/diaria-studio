@@ -44,6 +44,21 @@ describe("#11804 — token do Instagram é de usuário do sistema", () => {
     assert.match(section, /wrangler secret put INSTAGRAM_ACCESS_TOKEN/);
     assert.match(section, /NÃO gerar:\*\* no Graph API Explorer/);
   });
+
+  // #12454: rotação seguindo a doc antiga perdia as métricas (follower_count,
+  // erro #10, Fase 2 da #8260) e não dizia que o token só aparece uma vez.
+  it("#12454: a seção pede os escopos de insights, avisa do token único e valida por debug_token", () => {
+    const doc = read("docs/secret-rotation.md");
+    const start = doc.indexOf("### `INSTAGRAM_ACCESS_TOKEN`");
+    const section = doc.slice(start, doc.indexOf("\n### ", start + 1));
+    assert.match(section, /instagram_manage_insights/);
+    assert.match(section, /read_insights/);
+    assert.match(section, /latest\/settings\/system_users/);
+    assert.match(section, /só aparece uma vez/);
+    assert.match(section, /debug_token\?input_token=\$INSTAGRAM_ACCESS_TOKEN&access_token=\$INSTAGRAM_ACCESS_TOKEN/);
+    assert.match(section, /metric=follower_count/);
+    assert.match(section, /MACHINE_LOCAL_ENV_KEYS/);
+  });
 });
 
 describe("#11801 — cancelled reativa pelo vínculo ao form de sistema, com consentimento", () => {

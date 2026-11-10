@@ -188,6 +188,7 @@ describe("buildActionItems (#10606)", () => {
       campo_assinatura_ausente: true,
       link_rejeitado_pelo_worker: true,
       kit_indisponivel: true,
+      resultados_nao_publicados: true,
       desligado: true,
     };
     for (const m of Object.keys(all) as FollowupBlockReason[]) {
