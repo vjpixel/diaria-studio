@@ -24,6 +24,7 @@ import {
   resolveBlocks,
   shortPauseCuts,
   speechParts,
+  type BlockKey,
   type ResolvedItem,
   type Segment,
   type SequencePlan,
