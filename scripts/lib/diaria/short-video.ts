@@ -12,7 +12,10 @@
  *     vertical mostra link (nem a edição com UTM, nem o vídeo completo, nem o
  *     domínio solto). Exceção do #12465 (08/11/2026): nas contas PESSOAIS
  *     (página VJ Pixel, perfil pessoal do Facebook, LinkedIn e Threads) o
- *     texto cita o perfil da diar.ia.br daquela rede (`diariaFollowLine`);
+ *     texto cita o perfil da diar.ia.br daquela rede (`diariaFollowLine`).
+ *     Exceção do #12735 (10/11/2026): LinkedIn, X e Facebook levam o link do
+ *     horizontal da edição (`shortHorizontalRoute`); TikTok, Instagram e
+ *     Threads chegam a ele pelo link da bio (`diar.ia.br/video`);
  *   - Reels TODO DIA nas páginas diar.ia.br e VJ Pixel (MemeLab saiu, #10790)
  *     e no perfil pessoal do editor. Jandig, Teatro vs Game e Criaturas Afetivas ficam fora
  *     da rotina — só quando o editor pedir, nunca automático;
@@ -62,6 +65,7 @@ import {
 import { DEFAULT_EDITION_SCHEDULE_HHMM } from "../edition-scheduled-at.ts";
 import { buildYouTubeTitle, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
 import type { ShortCoverRecord } from "./short-cover.ts";
+import { videoLinkLine } from "./d1-video-link.ts"; // #12735
 
 /** Canal do YouTube que os Shorts/Reels divulgam. */
 export const DIARIA_YOUTUBE_CHANNEL_URL = "https://www.youtube.com/@diariabr";
@@ -312,15 +316,19 @@ export const INSTAGRAM_REELS_CTA = `${REELS_NEWSLETTER_SENTENCE} Assine pelo lin
  * no Facebook, que não tem bio, fica só a frase da newsletter: o link da
  * edição com UTM saiu da legenda (#11617, pedido do editor: post do vídeo
  * sem link no texto). Exceção (#12465): na página VJ Pixel e no perfil
- * pessoal, `follow` acrescenta o perfil da diar.ia.br.
+ * pessoal, `follow` acrescenta o perfil da diar.ia.br. #12735: no Facebook
+ * (páginas e perfil pessoal), `horizontalLink` acrescenta o horizontal da
+ * edição depois do gancho; no Instagram é ignorado (o caminho é a bio).
  */
-export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1Input; follow?: string | null }): string {
+export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1Input; follow?: string | null; horizontalLink?: string | null }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
   const cta = input.platform === "instagram" ? INSTAGRAM_REELS_CTA : REELS_NEWSLETTER_SENTENCE;
+  // #12735: o horizontal da edição só no Facebook (a legenda do Reels no Instagram não tem link clicável; lá o caminho é a bio).
+  const link = input.platform === "facebook" ? shortHorizontalLinkLine(input.horizontalLink) : "";
   // #12465: `follow` = `diariaFollowLine(destino)`, só nas contas pessoais (página VJ Pixel, perfil pessoal).
-  const caption = [title, hook, cta, input.follow ?? "", SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+  const caption = [title, hook, link, cta, input.follow ?? "", SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (input.platform === "instagram" && Array.from(caption).length > INSTAGRAM_CAPTION_MAX_CHARS) {
     throw new Error(`legenda do Instagram passou de ${INSTAGRAM_CAPTION_MAX_CHARS} caracteres`);
   }
@@ -368,19 +376,60 @@ export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
  * #12465: `follow` (de `diariaFollowLine`) entra no perfil pessoal (LinkedIn,
  * Threads) antes das hashtags e nunca é cortado; o X sai pela @diariabr e não
  * leva a linha.
+ *
+ * #12735: `horizontalLink` (o `05-video-url.txt` da edição) volta a pôr o
+ * horizontal no texto do LinkedIn e do X (`shortHorizontalLinkLine`), depois
+ * do gancho; no X ele nunca é cortado (sai o gancho antes). O Threads ignora
+ * o link: lá o caminho é a bio (`shortHorizontalRoute`).
  */
-export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: ShortD1Input; follow?: string | null }): string {
+export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: ShortD1Input; follow?: string | null; horizontalLink?: string | null }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
   const follow = input.follow ?? "";
+  // #12735: o horizontal da edição entra no LinkedIn e no X; o Threads pessoal segue sem link (o caminho é a bio).
+  const link = input.platform === "threads" ? "" : shortHorizontalLinkLine(input.horizontalLink);
   if (input.platform === "linkedin") {
-    const text = [title, hook, follow, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+    const text = [title, hook, link, follow, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
     if (Array.from(text).length > LINKEDIN_COMMENTARY_MAX_CHARS) throw new Error(`texto do LinkedIn passou de ${LINKEDIN_COMMENTARY_MAX_CHARS} caracteres`);
     return text;
   }
   if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads", follow);
-  return fitShortText(title, hook, computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, "X", follow);
+  return fitShortText(title, hook, computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, "X", [link, follow].filter(Boolean).join("\n\n"));
+}
+
+// ─── Caminho do vertical até o horizontal (#12735) ──────────────────────────
+
+/**
+ * #12735 (decisão do editor no briefing do overnight 261110e, 10/11/2026):
+ * "link na bio + legenda". Revisa o #11617 (nenhum texto do vertical leva
+ * link) para o horizontal DA edição, só onde a rede aceita link clicável no
+ * texto do post:
+ *   - `caption`: LinkedIn pessoal, X, páginas do Facebook e perfil pessoal do
+ *     Facebook levam `Assista no YouTube: https://youtu.be/{id}` lido de
+ *     `_internal/05-video-url.txt`;
+ *   - `bio`: TikTok, Instagram e Threads pessoal não têm link clicável na
+ *     legenda (Threads por decisão anterior, #11617); o caminho é o link da
+ *     bio, `diar.ia.br/video?utm_source={rede}` (Worker do apex, sempre o
+ *     horizontal mais recente). A troca da bio é passo manual do editor;
+ *   - `related_video`: o YouTube Shorts leva ao horizontal pelo vídeo
+ *     relacionado (#10811); link na descrição de Short não é clicável (#10831);
+ *   - `repost`: o repost da página do LinkedIn herda o texto do perfil.
+ */
+export type ShortHorizontalRoute = "caption" | "bio" | "related_video" | "repost";
+
+/** Destino → caminho até o horizontal (`facebook:{slug}` vale para toda página). */
+export function shortHorizontalRoute(destination: string): ShortHorizontalRoute {
+  if (destination === "youtube_shorts") return "related_video";
+  if (destination === "linkedin_page_repost") return "repost";
+  if (destination === "tiktok" || destination === "instagram" || destination === "threads_profile") return "bio";
+  return "caption";
+}
+
+/** Linha do link do horizontal na legenda (`""` sem link). Mesmo rótulo dos posts do D1 (`videoLinkLine`, #10772). */
+export function shortHorizontalLinkLine(url: string | null | undefined): string {
+  const u = (url ?? "").trim();
+  return u ? videoLinkLine(u) : "";
 }
 
 const UTF8 = new TextEncoder();
