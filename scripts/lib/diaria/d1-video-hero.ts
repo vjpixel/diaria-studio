@@ -51,11 +51,21 @@ export const D1_VIDEO_FALLBACK_URL = DIARIA_YOUTUBE_URL;
 export const D1_INVITE_TEXT = "Clique para assistir meus comentários";
 
 /**
+ * O convite sai em DUAS linhas e com o corpo do texto da newsletter (pedido do
+ * editor, 10/11/2026: em 1 linha, a 2,4% da largura, ficava ilegível no celular).
+ * A quebra é fixa: a 1ª linha é a mais larga e define a largura da faixa.
+ */
+export const D1_INVITE_LINES = ["Clique para assistir", "meus comentários"] as const;
+
+/** Tamanho da fonte do convite como fração da largura da imagem (era 0,024). */
+export const D1_INVITE_FONT_RATIO = 0.05;
+
+/**
  * Versão do desenho do convite, carimbada junto do md5 do hero: mudar o desenho
  * (texto, faixa, posição) sem mudar o hero também regera a cópia. Subir a versão
  * a cada mudança em `buildInviteSvg`/`D1_INVITE_TEXT`.
  */
-export const D1_INVITE_VERSION = "invite-v6";
+export const D1_INVITE_VERSION = "invite-v7";
 
 /** `alt` da imagem do D1 quando ela é link: a imagem é o único conteúdo do link e o convite está só nos pixels. */
 export function d1HeroAlt(title: string): string {
@@ -117,8 +127,8 @@ export interface InviteTextMetrics {
 }
 
 export function estimateInviteTextMetrics(width: number): InviteTextMetrics {
-  const fontSize = width * 0.024;
-  return { textW: fontSize * 19.5, ascent: fontSize * 0.74, descent: fontSize * 0.22 };
+  const fontSize = width * D1_INVITE_FONT_RATIO;
+  return { textW: fontSize * 10.6, ascent: fontSize * 0.74, descent: fontSize * 0.22 };
 }
 
 /**
@@ -130,13 +140,16 @@ export function estimateInviteTextMetrics(width: number): InviteTextMetrics {
  */
 export function inviteGeometry(width: number, height: number, m: InviteTextMetrics = estimateInviteTextMetrics(width)) {
   if (!(width > 0 && height > 0)) throw new Error(`buildInviteSvg: dimensões inválidas ${width}x${height}`);
-  const fontSize = width * 0.024;
+  const fontSize = width * D1_INVITE_FONT_RATIO;
   const margin = width * 0.03;
   const padX = fontSize * 0.9;
   const iconD = fontSize * 1.5;
   const gap = fontSize * 0.5;
   const w = padX * 2 + iconD + gap + m.textW;
-  const h = fontSize * 2.4;
+  const lineH = fontSize * 1.2;
+  const padY = fontSize * 0.6;
+  // Caixa de tinta do texto: do topo da 1ª linha (ascent) ao pé da 2ª (sem descendentes).
+  const h = m.ascent + lineH + padY * 2;
   const x = width - margin - w;
   const y = height - margin - h;
   const cyMid = y + h / 2;
@@ -144,8 +157,8 @@ export function inviteGeometry(width: number, height: number, m: InviteTextMetri
   const textX = x + padX + iconD + gap;
   // O retângulo do texto vai de (baseline - ascent) a (baseline + descent);
   // centro em cyMid => baseline = cyMid + (ascent - descent) / 2.
-  const baseline = cyMid + (m.ascent - m.descent) / 2;
-  return { fontSize, padX, iconD, gap, pill: { x, y, w, h }, cyMid, iconCx, textX, baseline };
+  const baseline = cyMid - lineH / 2 + m.ascent / 2;
+  return { fontSize, padX, iconD, gap, pill: { x, y, w, h }, cyMid, iconCx, textX, baseline, baseline2: baseline + lineH };
 }
 
 /**
@@ -173,7 +186,8 @@ export function buildInviteSvg(
     `<rect x="${f(pill.x)}" y="${f(pill.y)}" width="${f(pill.w)}" height="${f(pill.h)}" rx="${f(pill.h * 0.28)}" fill="#171411" fill-opacity="0.82"/>` +
     `<circle cx="${f(g.iconCx)}" cy="${f(g.cyMid)}" r="${f(r)}" fill="#FFFFFF"/>` +
     `<polygon points="${f(tx1)},${f(g.cyMid - tri / 2)} ${f(tx2)},${f(g.cyMid)} ${f(tx1)},${f(g.cyMid + tri / 2)}" fill="#171411"/>` +
-    `<text x="${f(g.textX)}" y="${f(g.baseline)}" font-family="${fontFamily}" font-weight="bold" font-size="${f(g.fontSize)}" fill="#FFFFFF">${D1_INVITE_TEXT}</text>` +
+    `<text x="${f(g.textX)}" y="${f(g.baseline)}" font-family="${fontFamily}" font-weight="bold" font-size="${f(g.fontSize)}" fill="#FFFFFF">${D1_INVITE_LINES[0]}</text>` +
+    `<text x="${f(g.textX)}" y="${f(g.baseline2)}" font-family="${fontFamily}" font-weight="bold" font-size="${f(g.fontSize)}" fill="#FFFFFF">${D1_INVITE_LINES[1]}</text>` +
     `</svg>`
   );
 }

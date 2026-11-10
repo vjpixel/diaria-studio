@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 import { md5OfFile } from "../shared/file-md5.ts";
-import { D1_HERO_FILE, D1_INVITE_VERSION, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, D1_INVITE_FONT_FAMILY, D1_INVITE_TEXT, buildInviteSvg, type InviteTextMetrics } from "./d1-video-hero.ts";
+import { D1_HERO_FILE, D1_INVITE_VERSION, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, D1_INVITE_FONT_FAMILY, D1_INVITE_LINES, D1_INVITE_FONT_RATIO, buildInviteSvg, type InviteTextMetrics } from "./d1-video-hero.ts";
 
 export type D1PlayImageResult =
   | { status: "generated" | "fresh"; path: string }
@@ -50,7 +50,7 @@ function readStamp(stampPath: string): { md5: string | null; overlay: string | n
  * a fonte de reserva do servidor Linux.
  */
 export async function measureInviteText(width: number, fontFamily: string = D1_INVITE_FONT_FAMILY): Promise<InviteTextMetrics> {
-  const fontSize = width * 0.024;
+  const fontSize = width * D1_INVITE_FONT_RATIO;
   const W = Math.ceil(fontSize * 30);
   const H = Math.ceil(fontSize * 4);
   const baseline = Math.round(fontSize * 2.5);
@@ -58,7 +58,7 @@ export async function measureInviteText(width: number, fontFamily: string = D1_I
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
     `<rect width="${W}" height="${H}" fill="#000000"/>` +
-    `<text x="${x0}" y="${baseline}" font-family="${fontFamily}" font-weight="bold" font-size="${fontSize.toFixed(1)}" fill="#FFFFFF">${D1_INVITE_TEXT}</text>` +
+    `<text x="${x0}" y="${baseline}" font-family="${fontFamily}" font-weight="bold" font-size="${fontSize.toFixed(1)}" fill="#FFFFFF">${D1_INVITE_LINES[0]}</text>` +
     `</svg>`;
   const { info } = await sharp(Buffer.from(svg)).trim({ background: "#000000", threshold: 40 }).toBuffer({ resolveWithObject: true });
   const top = -(info.trimOffsetTop ?? 0);

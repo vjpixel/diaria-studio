@@ -13,6 +13,7 @@ import sharp from "sharp";
 import {
   D1_INVITE_FONT_FAMILY,
   D1_INVITE_TEXT,
+  D1_INVITE_LINES,
   D1_INVITE_VERSION,
   D1_PLAY_HERO_FILE,
   D1_PLAY_STAMP_FILE,
@@ -200,9 +201,9 @@ describe("#10784 — cópia do hero com play", () => {
       // #11475: cópia com a copy anterior regera mesmo com o hero igual.
       const stampPath = join(dir, D1_PLAY_STAMP_FILE);
       const stamp = JSON.parse(readFileSync(stampPath, "utf8"));
-      assert.equal(D1_INVITE_VERSION, "invite-v6");
+      assert.equal(D1_INVITE_VERSION, "invite-v7");
       assert.equal(stamp.overlay, D1_INVITE_VERSION);
-      stamp.overlay = "invite-v5";
+      stamp.overlay = "invite-v6";
       writeFileSync(stampPath, JSON.stringify(stamp));
       assert.equal((await ensureD1PlayImage(dir)).status, "generated", "mudou só o desenho: regera");
 
@@ -262,13 +263,15 @@ describe("#10784 — cópia do hero com play", () => {
     }
   });
 
-  it("buildInviteSvg: faixa no canto inferior direito, play ao lado do texto de 1 linha", () => {
+  it("buildInviteSvg: faixa no canto inferior direito, play ao lado do texto de 2 linhas", () => {
     const svg = buildInviteSvg(1600, 800);
     const { pill } = inviteGeometry(1600, 800);
     assert.ok(svg.includes(`x="${pill.x.toFixed(1)}"`) && svg.includes(`y="${pill.y.toFixed(1)}"`), svg);
     assert.ok(pill.x + pill.w < 1600 && pill.y + pill.h < 800 && pill.x + pill.w / 2 > 800 && pill.y > 400, "canto inferior direito, com margem");
-    assert.equal((svg.match(/<text /g) ?? []).length, 1, "convite em uma linha só");
-    assert.ok(svg.includes(D1_INVITE_TEXT), D1_INVITE_TEXT);
+    assert.equal((svg.match(/<text /g) ?? []).length, 2, "convite em duas linhas (#10 nov: legível no celular)");
+    assert.ok(svg.includes("Clique para assistir") && svg.includes("meus comentários"), D1_INVITE_TEXT);
+    assert.equal(D1_INVITE_LINES.join(" "), D1_INVITE_TEXT);
+    assert.ok(inviteGeometry(1600, 800).fontSize >= 1600 * 0.045, "fonte do convite no corpo do texto da newsletter, não 2,4% da largura");
     assert.equal(D1_INVITE_TEXT, "Clique para assistir meus comentários");
     assert.ok(svg.includes(`fill="#171411"`));
     assert.ok(svg.includes("<circle") && svg.includes("<polygon"), "símbolo de play ao lado do texto");
