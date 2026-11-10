@@ -282,6 +282,8 @@ import {
   parseVinhetaProbe,
   previewVinhetaFilter,
   vinhetaBreathFor,
+  vinhetaBreathBlock,
+  openingBlockOf,
   vinhetaConfigFrom,
   vinhetaScalePct,
   vinhetaSpan,
@@ -1082,7 +1084,8 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
   if (errors.length) throw new Error(`blocks.json com problema:\n  - ${errors.join("\n  - ")}`);
   const fmt = effectiveFormat(file);
   if (!file.sequences && fmt.inferred) console.error("[premissa] blocks.json sem título nem resumo: formato entrevista, sequências abertura → comentário → CTA → fecho (#11507); `format`/`sequences` sobrepõem");
-  const specs = file.sequences ?? defaultSequences("V1", fmt.format);
+  // #12586: sem `titulo` e com `gancho`, a frase falada de abertura (o gancho) abre as duas versões.
+  const specs = file.sequences ?? defaultSequences("V1", fmt.format, openingBlockOf(file.blocks));
   // Review da PR #12142: palavra transcrita dita baixo demais para virar ilha não pode cair numa pausa cortada.
   let speechSil = speech?.silences ?? [];
   if (speech) {
@@ -1788,7 +1791,10 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   const blocks = blocksFromDecupagem(doc);
   const { format } = effectiveFormat({ blocks });
   if (format === "entrevista") console.error("[premissa] nenhum título nem resumo na decupagem: formato entrevista, sequências abertura → comentário → CTA → fecho (#11507); `format`/`sequences` no blocks.json sobrepõem");
-  const sequences = defaultSequences("V1", format);
+  // #12586: a frase falada de abertura no `gancho` (sem `titulo`) abre as duas versões no molde.
+  const opening = openingBlockOf(blocks);
+  if (format === "monologo" && opening === "gancho") console.error("[premissa] decupagem sem título falado e com gancho: o gancho abre as duas versões, com o PNG do título, o respiro e a vinheta nele (#12586)");
+  const sequences = defaultSequences("V1", format, opening);
   for (const d of suggestedDurations(doc, sequences)) {
     if (d.overS > 0) console.error(`[aviso] ${d.spec.name}: ~${d.totalS.toFixed(1)} s na montagem sugerida, ${d.overS.toFixed(1)} s acima do teto do Shorts (${SHORTS_MAX_S} s, antes de tirar os silêncios): propor o corte no Doc`);
   }
@@ -2732,7 +2738,9 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     if (g) console.error(`[aviso] ${g}`);
     for (const w of p.warnings ?? []) console.error(`[aviso] ${w}`);
     // #12101: o refino dos cortes pode encolher o respiro depois do título; conferir no plano final.
-    const breath = vinhetaBreathFor(p.spec)?.titulo;
+    // #12586: o respiro vem depois do bloco de abertura (o título, ou o gancho falado sem título).
+    const breathBlock = vinhetaBreathBlock(p.spec);
+    const breath = breathBlock ? vinhetaBreathFor(p.spec)?.[breathBlock] : undefined;
     if (breath) {
       const before = titleBreathS(ps0.find((q) => sequenceKey(q.spec) === sequenceKey(p.spec)) ?? p, source.fps);
       const after = titleBreathS(p, source.fps);
@@ -2745,7 +2753,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       console.error(vs ? `   vinheta do logo em ${(vs.start / source.fps).toFixed(2)}–${(vs.end / source.fps).toFixed(2)} s (${vs.afterTitle ? "depois do título" : "sem título: aos 2 s"})` : "   [aviso] sequência curta demais para a vinheta do logo (#12101)");
     }
     // #12101: a pausa longa depois do título no horizontal é o respiro da vinheta, de propósito.
-    if (speech.cut) for (const w of speechJoinWarnings(p.clips, speech.cut.islands, source.fps, { longJoinOkAfter: breath ? ["titulo"] : [] })) console.error(`[aviso] ${p.spec.name}: ${w}`);
+    if (speech.cut) for (const w of speechJoinWarnings(p.clips, speech.cut.islands, source.fps, { longJoinOkAfter: breath && breathBlock ? [breathBlock] : [] })) console.error(`[aviso] ${p.spec.name}: ${w}`);
     // #12263: entrada com som nos 40 ms antes do corte (piso + 45% da faixa), o critério da conferência à mão da 261105.
     if (speech.cut?.energy) for (const w of entryCutSoundWarnings(p.clips, speech.cut.energy, source.fps)) console.error(`[aviso] ${p.spec.name}: ${w}`);
     if (p.missingBlocks.length) console.error(`   faltam no blocks.json: ${p.missingBlocks.join(", ")}`);
