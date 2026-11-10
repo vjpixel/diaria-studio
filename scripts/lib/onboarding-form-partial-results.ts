@@ -16,7 +16,9 @@
  *  - respostas abertas (`relato_falha` e os textos de "Outro/Outra"), SEM
  *    e-mail, mais recentes primeiro;
  *  - quantas pessoas toparam a conversa de 20 minutos e, num bloco separado,
- *    quem (e-mail + data), para o editor escrever.
+ *    quem (e-mail + data), para o editor escrever, com a marcação da persona 2
+ *    e as faixas de gasto, ordenado por potencial de compra (#12715);
+ *  - quantos respondentes estão na persona 2, "Quem já paga para aprender".
  *
  * Respostas de teste (os endereços do editor, `EDITOR_SEED_EMAILS`, inclusive
  * com `+sufixo`) ficam fora de tudo e são só contadas.
@@ -26,6 +28,8 @@
  */
 
 import {
+  FORM_NADA_DISSO,
+  FORM_PAGA_DO_BOLSO,
   FORM_QUESTIONS,
   FORM_VERSION,
   formVersionOf,
@@ -77,6 +81,12 @@ export interface FormConversaPerson {
   email: string;
   data: string;
   origem: FormResponseOrigin;
+  /** #12715: se encaixa na persona 2, "Quem já paga para aprender" (`isPersona2`). */
+  persona2: boolean;
+  /** #12715: faixa de `maior_gasto` (curso ou material mais caro), como respondida; `null` = em branco. */
+  maior_gasto: string | null;
+  /** #12715: faixa de `gasto_mensal` (ferramentas de IA), como respondida; `null` = em branco ou pergunta não exibida. */
+  gasto_mensal: string | null;
 }
 
 export interface FormPartialResults {
@@ -94,11 +104,83 @@ export interface FormPartialResults {
   ultima: string | null;
   perguntas: FormChoiceTally[];
   abertas: FormOpenAnswersBlock[];
+  /** #12715: respondentes (sobre `total`) na persona 2, "Quem já paga para aprender". */
+  persona2: number;
   conversa: {
     toparam: number;
-    /** Único bloco com e-mail: mais recentes primeiro. */
+    /**
+     * Único bloco com e-mail. Ordem por potencial de compra (#12715,
+     * `comparePurchasePotential`): persona 2 primeiro; dentro de cada grupo,
+     * maior faixa de `maior_gasto`, depois maior faixa de `gasto_mensal`; no
+     * empate, mais recente primeiro.
+     */
     pessoas: FormConversaPerson[];
   };
+}
+
+/** #12715: opções de `maior_gasto` que não contam como "já paga para aprender". */
+export const FORM_MAIOR_GASTO_NENHUM = "Não paguei por nenhum";
+export const FORM_MAIOR_GASTO_NAO_DIZ = "Prefiro não dizer";
+
+/**
+ * @pure — persona 2, "Quem já paga para aprender" (#12715): os três critérios
+ * juntos.
+ *  - `maior_gasto` respondido e diferente de "Não paguei por nenhum" e de
+ *    "Prefiro não dizer";
+ *  - `quem_paga` é "Eu, do próprio bolso" ou "Eu e a empresa, uma parte cada"
+ *    (`FORM_PAGA_DO_BOLSO`);
+ *  - `produto_formato` não contém "Nada disso, a newsletter já me basta".
+ * A comparação é pelo texto exato da opção: resposta de versão anterior com
+ * outro texto não entra (não se adivinha equivalência).
+ */
+export function isPersona2(answers: Readonly<Record<string, string | undefined>>): boolean {
+  const maior = (answers.maior_gasto ?? "").trim();
+  if (maior === "" || maior === FORM_MAIOR_GASTO_NENHUM || maior === FORM_MAIOR_GASTO_NAO_DIZ) return false;
+  const quem = (answers.quem_paga ?? "").trim();
+  if (!(FORM_PAGA_DO_BOLSO as readonly string[]).includes(quem)) return false;
+  return !splitMultiAnswer(answers.produto_formato ?? "").includes(FORM_NADA_DISSO);
+}
+
+/**
+ * @pure — posição da faixa na escala crescente da pergunta (índice da opção
+ * em `FORM_QUESTIONS`). Em branco, fora da lista ou "Prefiro não dizer" = -1:
+ * sem informação fica abaixo da menor faixa conhecida, inclusive de "Não
+ * paguei por nenhum" (#12715, premissa conservadora: não se presume gasto que
+ * a pessoa não declarou).
+ */
+export function spendBandRank(
+  questionId: "maior_gasto" | "gasto_mensal",
+  value: string | null | undefined,
+  questions: readonly FormQuestion[] = FORM_QUESTIONS,
+): number {
+  const v = (value ?? "").trim();
+  if (v === "" || v === FORM_MAIOR_GASTO_NAO_DIZ) return -1;
+  const q = questions.find((x) => x.id === questionId);
+  if (!q || !isChoiceQuestion(q)) return -1;
+  return q.options.indexOf(v);
+}
+
+/**
+ * @pure — comparador de potencial de compra (#12715) para `Array.sort`
+ * (estável): persona 2 primeiro; dentro de cada grupo, maior faixa de
+ * `maior_gasto`; no empate, maior faixa de `gasto_mensal`. Empate total
+ * devolve 0, e a ordem anterior (mais recente primeiro) se mantém.
+ * Faixas, não score: a amostra é pequena e as respostas são faixas.
+ */
+export function comparePurchasePotential(
+  a: Pick<FormConversaPerson, "persona2" | "maior_gasto" | "gasto_mensal">,
+  b: Pick<FormConversaPerson, "persona2" | "maior_gasto" | "gasto_mensal">,
+  questions: readonly FormQuestion[] = FORM_QUESTIONS,
+): number {
+  if (a.persona2 !== b.persona2) return a.persona2 ? -1 : 1;
+  const maior = spendBandRank("maior_gasto", b.maior_gasto, questions) - spendBandRank("maior_gasto", a.maior_gasto, questions);
+  if (maior !== 0) return maior;
+  return spendBandRank("gasto_mensal", b.gasto_mensal, questions) - spendBandRank("gasto_mensal", a.gasto_mensal, questions);
+}
+
+function answerOrNull(r: FormResponse, id: string): string | null {
+  const v = (r.answers[id] ?? "").trim();
+  return v === "" ? null : v;
 }
 
 /** Tira o `+sufixo` da parte local do e-mail (para casar os testes do editor). */
@@ -245,7 +327,16 @@ export function buildFormPartialResults(responses: readonly FormResponse[], opts
   const pessoas: FormConversaPerson[] = [...kept]
     .filter((r) => (r.answers.conversa ?? "").trim() !== "")
     .sort((a, b) => (a.submitted_at < b.submitted_at ? 1 : a.submitted_at > b.submitted_at ? -1 : 0))
-    .map((r) => ({ email: normalizeFormEmail(r.email), data: day(r.submitted_at), origem: origemOf.get(r) ?? "sem_convite" }));
+    .map((r) => ({
+      email: normalizeFormEmail(r.email),
+      data: day(r.submitted_at),
+      origem: origemOf.get(r) ?? "sem_convite",
+      persona2: isPersona2(r.answers),
+      maior_gasto: answerOrNull(r, "maior_gasto"),
+      gasto_mensal: answerOrNull(r, "gasto_mensal"),
+    }))
+    // #12715: estável, então o empate segue mais recente primeiro.
+    .sort((a, b) => comparePurchasePotential(a, b, questions));
 
   return {
     total: kept.length,
@@ -257,6 +348,7 @@ export function buildFormPartialResults(responses: readonly FormResponse[], opts
     ultima: dates[dates.length - 1] ?? null,
     perguntas,
     abertas,
+    persona2: kept.filter((r) => isPersona2(r.answers)).length,
     conversa: { toparam: pessoas.length, pessoas },
   };
 }
