@@ -350,6 +350,7 @@ ETAPA 0 — TRADUÇÃO (#1525, #1697):
 - Itens de seções secundárias (LANÇAMENTOS/RADAR/USE MELHOR) com a DESCRIÇÃO marcada [TRADUZIR] estão com a descrição em inglês. Traduza APENAS a descrição (2ª linha) para PT-BR natural e remova o prefixo [TRADUZIR].
 - O TÍTULO/link do item NUNCA é traduzido (#1634) — preserve o nome original do recurso (PT ou EN). Mesmo que o título esteja em inglês, mantenha-o no idioma original; só a descrição vai pra PT.
 - Se um item não tiver [TRADUZIR] mas a descrição estiver em inglês, traduza a descrição também (mantendo o título original).
+- Em LANÇAMENTOS, se nem o título nem a descrição dizem de quem é o produto (título genérico de changelog), a descrição passa a citar o fabricante, indicado pelo domínio da URL (#12595): 'Voice Chat with Agents' de cursor.com vira 'O Cursor passou a permitir...'.
 
 ETAPA 1 — RASCUNHO:
 - Leia o arquivo, identifique padrões de IA (travessão excessivo >1/5 parágrafos, gerúndio em cascata, inflação de importância, fechamentos genéricos, negação paralela, conectores repetitivos, verbos pomposos, anglicismos desnecessários)

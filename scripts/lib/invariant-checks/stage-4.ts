@@ -75,6 +75,7 @@ import { readCarouselKeepArtSafe, carouselKeepArtPath, CAROUSEL_KEEP_ART_FILENAM
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
 
 import { lintIntroCount, countSelectedItems } from "../newsletter-count.ts";
+import { findLancamentosSemFabricante } from "../lancamento-maker.ts"; // #12595
 import { MAX_EDITION_CONTENT_ITEMS } from "../apply-stage2-caps.ts"; // #9785
 import { checkTituloSubtituloNotProvisional } from "../titulo-provisional.ts"; // #9601 review PR #9666
 import { checkReviewedNoPendingPlaceholder, checkReviewedOnedriveConflictCopy } from "../diaria/reviewed-integrity.ts"; // #12259
@@ -2199,6 +2200,28 @@ export function checkIntraEditionFactRecurrence(editionDir: string): InvariantVi
       message: `Possível mesma história na edição: [${w.item_label}] “${w.item_title}” (${w.item_url}) repete ${w.matched_label} “${w.matched_title}” (${why}). Heurístico: cortar no gate se não for desdobramento.`,
     };
   });
+}
+
+/**
+ * #12595: item de LANÇAMENTOS cujo título e descrição não dizem de quem é o
+ * lançamento (caso 261109: "Voice Chat with Agents", cursor.com, descrição sem
+ * "Cursor"). Os nomes aceitos saem da URL (`lancamento-maker.ts`: empresa do
+ * registro oficial + rótulo do host + dono do repo). Severity "warning": a
+ * correção é reescrever a descrição, escolha do editor no gate.
+ */
+export function checkLancamentoSemFabricante(editionDir: string): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  return findLancamentosSemFabricante(readFileSync(file, "utf8")).map((it) => ({
+    rule: "lancamento-sem-fabricante",
+    source_issue: "#12595",
+    severity: "warning" as const,
+    file,
+    message:
+      `LANÇAMENTOS “${it.title}” (${it.url}) não cita o fabricante no título nem na descrição ` +
+      `(esperado um de: ${it.expected.join(", ")}). Reescrever a descrição dizendo de quem é o produto ` +
+      `(ex.: "O ${it.expected[0]} lançou..."). Heurístico: falso positivo, seguir sem mudar.`,
+  }));
 }
 
 /** #11496: quantas edições anteriores entram na comparação de MESMA HISTÓRIA
@@ -4546,6 +4569,11 @@ export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "intra-edition-fact-recurrence", description: "Item do pool com a mesma história de um destaque ou de outro item da edição (heurístico, warning-only)",
     source_issue: "#11173", stage: 4, run: checkIntraEditionFactRecurrence,
+  },
+  {
+    id: "lancamento-sem-fabricante",
+    description: "Item de LANÇAMENTOS cita o fabricante (empresa ou produto da URL) no título ou na descrição (heurístico, warning-only)",
+    source_issue: "#12595", stage: 4, run: checkLancamentoSemFabricante,
   },
   {
     id: "story-twice-in-edition",
