@@ -60,15 +60,24 @@ Medido no `300` em 10/11/2026, com o `data/` ainda no OneDrive
    só acrescentar padrões a essa lista.
 5. **O que a Cloudflare oferece, e para quê serve cada peça.** A conta é
    Workers Paid.
-   - **KV**: chave-valor com consistência eventual (a Cloudflare documenta até
-     60 s para uma escrita aparecer em outros pontos) e sem compare-and-swap.
+   - **KV**: chave-valor com consistência eventual e sem compare-and-swap. A
+     Cloudflare documenta "up to 60 seconds or more" para uma escrita
+     aparecer em outros pontos (conferido em 10/11/2026 em
+     https://developers.cloudflare.com/kv/concepts/how-kv-works/); o número
+     é piso, não teto.
      Serve para registro "último valor vence" e sinal de um escritor só. Não
      serve para lock. Cliente REST pronto: `scripts/lib/cloudflare-kv-rest.ts`
      (`createKvRestOps`, linha 109).
    - **D1**: SQLite gerenciado com um primário, consistente, consultável por
-     REST (`/accounts/{id}/d1/database/{db}/query`) sem Worker. Serve para
+     REST (`POST /accounts/{account_id}/d1/database/{database_id}/query`)
+     sem Worker. Serve para
      lock com TTL e registro com escrita condicional (`INSERT ... ON CONFLICT
-     DO UPDATE ... WHERE`). O projeto ainda não tem banco D1.
+     DO UPDATE ... WHERE`). O projeto ainda não tem banco D1. O endpoint foi
+     conferido em 10/11/2026 em
+     https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/;
+     o modelo de consistência (primário único, e o efeito da replicação de
+     leitura se ela for ligada) fica a verificar nos docs da Cloudflare pela
+     issue do G2a, antes de desenhar a tabela de locks.
    - **Durable Object**: consistência forte por objeto, mas exige Worker
      próprio. Só compensa se o D1 não der conta, o que nada aqui indica.
    - **R2**: objetos grandes. O bucket `diaria-shorts` já é usado
@@ -461,6 +470,13 @@ Gerado de `npx tsx scripts/lib/scheduled-tasks.ts --json` em 10/11/2026.
 faltar). A coluna de grupos é por nome da task e arquivo exigido; G10 vale
 para todas, porque todo log está em `data/`.
 
+**Limite desta coluna:** os grupos saem do nome da task e do `requiredFile`,
+não da leitura de cada script. Task com dependência fora do padrão do nome
+pode ter ficado só em G10, e uma marcação pode sobrar (caso corrigido:
+`Diaria-Clarice-Dashboard-Precompute`, ver a linha). A tabela serve para
+decidir os grupos; a issue filha de cada grupo refaz a lista de tasks lendo os
+scripts antes de escopar a migração.
+
 Task fora do systemd: `diaria-short-video-relacionado` (Neo, `5 6 * * 1-5`,
 `.claude/skills/diaria-publica-video/short-related-task.md`), grupos G3 e G4.
 
@@ -477,7 +493,7 @@ Task fora do systemd: `diaria-short-video-relacionado` (Neo, `5 6 * * 1-5`,
 | Diaria-Home-Meta-Check | daily 09:35 | armada | `scripts/home-meta-check.ts` | `home-meta-check/.meta-check.log` |  | G10 |
 | Diaria-Brevo-Diaria-Guardrail | interval 4h | armada | `scripts/check-brevo-diaria-guardrail.ts` | `brevo-diaria/.guardrail-check.log` |  | G5, G7, G10 |
 | Diaria-Clarice-Cohorts-Crawl | daily 21:00 | armada | `scripts/clarice-engagement-cohorts-v2.ts` | `clarice-subscribers/.cohorts-v2-crawl.log` |  | G8, G5, G10 |
-| Diaria-Clarice-Dashboard-Precompute | interval 1h | armada | `scripts/clarice-dashboard-precompute.ts` | `clarice-dashboard/.precompute.log` |  | G8, G5, G10 |
+| Diaria-Clarice-Dashboard-Precompute | interval 1h | armada | `scripts/clarice-dashboard-precompute.ts` | `clarice-dashboard/.precompute.log` |  | G10 (conferido no script: só faz `GET /` no Worker `clarice-dashboard`; não abre SQLite nem usa `brevo-rate-state.json`, as chamadas à Brevo correm dentro do Worker) |
 | Diaria-Clarice-Backfill-Campaigns | daily 11:20 | armada | `scripts/clarice-backfill-campaigns.ts` | `clarice-dashboard/.backfill-campaigns.log` |  | G8, G5, G10 |
 | Diaria-Coupon-Clarice-Class | daily 11:25 | armada | `scripts/coupon-clarice-class.ts` | `clarice-dashboard/.coupon-clarice-class.log` | `clarice-subscribers/clarice-users.db` | G8, G5, G10 |
 | Diaria-Clarice-Guardrail-Alarm | interval 4h | armada | `scripts/clarice-guardrail-alarm.ts` | `clarice-subscribers/.guardrail-alarm.log` |  | G8, G5, G10 |
