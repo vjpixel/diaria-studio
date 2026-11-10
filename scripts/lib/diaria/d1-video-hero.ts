@@ -63,7 +63,7 @@ export const D1_INVITE_FONT_RATIO = 0.05;
 /**
  * Versão do desenho do convite, carimbada junto do md5 do hero: mudar o desenho
  * (texto, faixa, posição) sem mudar o hero também regera a cópia. Subir a versão
- * a cada mudança em `buildInviteSvg`/`D1_INVITE_TEXT`.
+ * a cada mudança em `buildInviteSvg`/`D1_INVITE_TEXT`/`D1_INVITE_LINES`/`D1_INVITE_FONT_RATIO`.
  */
 export const D1_INVITE_VERSION = "invite-v7";
 
@@ -133,7 +133,7 @@ export function estimateInviteTextMetrics(width: number): InviteTextMetrics {
 
 /**
  * Geometria do convite: faixa no CANTO INFERIOR DIREITO, com o símbolo de play
- * à esquerda e o texto em UMA linha à direita dele. Separada do SVG para o
+ * à esquerda e o texto em DUAS linhas à direita dele. Separada do SVG para o
  * teste conferir o alinhamento. A faixa tem padding igual dos dois lados do
  * conteúdo (play + texto) e o texto fica centralizado na vertical pelo seu
  * retângulo real (do topo do "l"/"q" ao rodapé do "q"), não pela linha de base.
@@ -155,8 +155,8 @@ export function inviteGeometry(width: number, height: number, m: InviteTextMetri
   const cyMid = y + h / 2;
   const iconCx = x + padX + iconD / 2;
   const textX = x + padX + iconD + gap;
-  // O retângulo do texto vai de (baseline - ascent) a (baseline + descent);
-  // centro em cyMid => baseline = cyMid + (ascent - descent) / 2.
+  // Caixa de tinta: da linha 1 (baseline - ascent) à linha de base da linha 2
+  // (sem descendentes); centro em cyMid => baseline = cyMid - lineH/2 + ascent/2.
   const baseline = cyMid - lineH / 2 + m.ascent / 2;
   return { fontSize, padX, iconD, gap, pill: { x, y, w, h }, cyMid, iconCx, textX, baseline, baseline2: baseline + lineH };
 }
@@ -165,7 +165,7 @@ export function inviteGeometry(width: number, height: number, m: InviteTextMetri
  * SVG do convite, do tamanho da imagem, para compor sobre o hero: faixa na cor
  * de tinta do design system (#171411, 82% de opacidade) no canto inferior
  * direito, com círculo branco e triângulo de play à esquerda e o texto branco
- * em uma linha. Fica fora do centro para não cobrir o assunto da arte.
+ * em duas linhas. Com a fonte maior (10/11/2026) a faixa passa da metade da imagem: escolha do editor, legibilidade no celular antes de não cobrir a arte.
  * `textLength` não é usado: o rasterizador (librsvg) o ignora.
  */
 export function buildInviteSvg(

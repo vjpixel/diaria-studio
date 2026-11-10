@@ -55,14 +55,20 @@ export async function measureInviteText(width: number, fontFamily: string = D1_I
   const H = Math.ceil(fontSize * 4);
   const baseline = Math.round(fontSize * 2.5);
   const x0 = Math.round(fontSize);
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
-    `<rect width="${W}" height="${H}" fill="#000000"/>` +
-    `<text x="${x0}" y="${baseline}" font-family="${fontFamily}" font-weight="bold" font-size="${fontSize.toFixed(1)}" fill="#FFFFFF">${D1_INVITE_LINES[0]}</text>` +
-    `</svg>`;
-  const { info } = await sharp(Buffer.from(svg)).trim({ background: "#000000", threshold: 40 }).toBuffer({ resolveWithObject: true });
-  const top = -(info.trimOffsetTop ?? 0);
-  return { textW: info.width, ascent: baseline - top, descent: top + info.height - baseline };
+  // Mede cada linha do convite; a largura é a da mais larga (qualquer fonte), o
+  // ascent/descent vêm da 1ª linha (a que tem ascendentes e descendentes).
+  const measured: InviteTextMetrics[] = [];
+  for (const line of D1_INVITE_LINES) {
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
+      `<rect width="${W}" height="${H}" fill="#000000"/>` +
+      `<text x="${x0}" y="${baseline}" font-family="${fontFamily}" font-weight="bold" font-size="${fontSize.toFixed(1)}" fill="#FFFFFF">${line}</text>` +
+      `</svg>`;
+    const { info } = await sharp(Buffer.from(svg)).trim({ background: "#000000", threshold: 40 }).toBuffer({ resolveWithObject: true });
+    const top = -(info.trimOffsetTop ?? 0);
+    measured.push({ textW: info.width, ascent: baseline - top, descent: top + info.height - baseline });
+  }
+  return { ...measured[0], textW: Math.max(...measured.map((m) => m.textW)) };
 }
 
 /** Compõe o convite sobre o hero e devolve o JPEG. */
