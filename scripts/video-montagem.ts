@@ -230,7 +230,6 @@ import {
   effectiveFraming,
   effectiveSource,
   firstTitledVertical,
-  faceCenterWarnings,
   forceAlignToScript,
   forcedAlignmentNotes,
   ganchoWarning,
@@ -241,8 +240,9 @@ import {
   versionedSequenceId,
   versionedSequenceName,
   frameCropOverlays,
+  frameCropLegend,
   loudnessWarning,
-  mugFramingWarnings,
+  framingWarningsByFile,
   makeMatcher,
   mapWordsToSequence,
   trimWordsToSilences,
@@ -425,7 +425,7 @@ import {
 export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { parseDestaques } from "./extract-destaques.ts";
-import { stripInlineMarkdown } from "./lib/diaria/youtube-video.ts";
+import { buildYouTubeTitle, stripInlineMarkdown } from "./lib/diaria/youtube-video.ts";
 import { youtubeCaptionFileName } from "./lib/diaria/youtube-captions.ts";
 import { factCheckItems, factCheckItemsSha256, factCheckSection, parseVideoFactCheck, type FactCheckItem } from "./lib/diaria/video-fact-check.ts";
 import { SHORT_WORD_WINDOW_PAD_S, shortWordDivergences, shortWordSection, type ShortWordItemCheck } from "./lib/diaria/video-short-words.ts";
@@ -796,14 +796,6 @@ function cmdFrameOrientations(ctx: Ctx, at: string | undefined): number {
 
 function measuredSource(ctx: Pick<Ctx, "stateDir">): SourceInfo {
   return checkedSource(readJson<SourceInfo>(f(ctx, "source.json"), "source.json (rode transcribe)"));
-}
-
-/**
- * #12559: os avisos de caneca/rosto medem no tamanho do 1º arquivo: no bruto em
- * vários arquivos, só os clipes dele entram (os demais seriam avisos falsos).
- */
-function firstFileClips(plan: SequencePlan, source: SourceInfo): SequencePlan {
-  return isMultiSource(source) ? { ...plan, clips: plan.clips.filter((c) => (c.file ?? 0) === 0) } : plan;
 }
 
 /** #12559: o `source.json` lido do disco, com os `files` conferidos (ids, offsets, duração); um arquivo só vira bruto único. */
@@ -1912,7 +1904,7 @@ function cmdFrame(ctx: Ctx, at: string | undefined): number {
   run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", String(at0.localS), "-i", at0.view.path, "-frames:v", "1", "-vf", vf, out]);
   console.log(out);
   for (const w of overlays.warnings) console.error(`[aviso] ${w}`);
-  console.error(`[video-montagem] mirrored=${source.mirrored}; grade em décimos: centro do rosto (faceX), linha dos olhos (eyeY) e caixa da caneca (framing.mug) em fração do quadro, no framing do blocks.json; recortes: amarelo = horizontal 50/62%, ciano = verticais 115/130%, magenta = caneca (#11939)`);
+  console.error(`[video-montagem] mirrored=${source.mirrored}; grade em décimos: centro do rosto (faceX), linha dos olhos (eyeY) e caixa da caneca (framing.mug) em fração do quadro, no framing do blocks.json; recortes: ${frameCropLegend()} (#11939, #12565)`);
   return 0;
 }
 
@@ -2199,7 +2191,9 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   }
   // #12571: cada versão fecha com o card de CTA (salvo ctaCard: false), com a linha de compartilhar dela.
   const ctaCardShare = file.ctaCard === false ? undefined : Object.fromEntries(ps.map((p) => [sequenceKey(p.spec), ctaShareLine(p.spec.ctaShare ?? file.ctaShare)]));
-  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare });
+  // #12585: o título de cada vídeo, das mesmas funções do build e dos publicadores.
+  const videoTitles = videoTitlesFor(ps.map((p) => p.spec), { blocksTitle: file.screenTitle, d1Title: readD1Title(ctx.edition) });
+  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare, videoTitles });
   // #11956: os achados do fact-check da fala entram no Doc do Gate 2.
   const fcPath = f(ctx, VIDEO_FACT_CHECK_FILE);
   let fc: ReturnType<typeof parseVideoFactCheck> | null = null;
@@ -2576,6 +2570,43 @@ export function resolveScreenTitle(input: { blocksTitle?: string; d1Title?: stri
   return d1 ? { text: d1, how: "d1" } : { text: null, how: "missing" };
 }
 
+/**
+ * O título de cada vídeo para o roteiro (#12585), chave = `sequenceKey`, com a
+ * origem entre parênteses. Fonte única com o que vai ao ar:
+ * - horizontal: `buildYouTubeTitle` do D1, o mesmo do `publish-youtube.ts`
+ *   (sem `--title`);
+ * - vertical da edição: `resolveScreenTitle` com o `screenTitle` do
+ *   `blocks.json` ou o D1, o mesmo texto do PNG do título do `build`;
+ * - corte: o `screenTitle` da sequência (o `--title` do `publish-shorts.ts
+ *   --corte`); sem ele, o build usa o título da vertical da edição.
+ */
+export function videoTitlesFor(
+  specs: ReadonlyArray<Pick<SequenceSpec, "target" | "corte" | "screenTitle">>,
+  input: { blocksTitle?: string; d1Title?: string | null },
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const vertical = resolveScreenTitle(input);
+  const verticalText =
+    vertical.how === "blocks" ? `${vertical.text} (screenTitle do blocks.json)`
+      : vertical.how === "d1" ? `${vertical.text} (título do D1; screenTitle no blocks.json sobrepõe)`
+        : vertical.how === "blocks-off" ? "(sem título na tela: screenTitle vazio no blocks.json)"
+          : "(sem título: nem screenTitle no blocks.json nem D1 em 02-reviewed.md)";
+  for (const s of specs) {
+    const key = sequenceKey(s);
+    if (s.corte !== undefined) {
+      const t = s.screenTitle === undefined ? null : resolveScreenTitle({ blocksTitle: s.screenTitle });
+      out[key] = !t ? `${verticalText}, o da vertical da edição: o corte não tem screenTitle na sequência`
+        : t.text ? `${t.text} (screenTitle da sequência do corte)` : "(sem título na tela: screenTitle vazio na sequência do corte)";
+    } else if (s.target === "youtube") {
+      const yt = input.d1Title ? buildYouTubeTitle(input.d1Title) : "";
+      out[key] = yt ? `${yt} (título do D1, o do publish-youtube.ts sem --title)` : "(sem D1 em 02-reviewed.md: o publish-youtube.ts não acha o título)";
+    } else {
+      out[key] = verticalText;
+    }
+  }
+  return out;
+}
+
 /** PNG do título (fallback do gerador de texto, #11756): sai no out dir, ao lado do XML. */
 export function titlePngFileName(edition: string, corte?: string): string {
   return corte ? `${edition}_titulo_vertical-${corte}.png` : `${edition}_titulo_vertical.png`;
@@ -2683,19 +2714,17 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         `na faixa de vídeo do topo, ${VINHETA_AFTER_SPEECH_S} s depois da última palavra do título (sem título: aos 2 s), cabendo no quadro; conferir alpha e tamanho no 1º import (#12101)`,
     );
   }
-  // #12559: os avisos de caneca e rosto medem no tamanho do 1º arquivo; no bruto em vários arquivos, só os clipes dele.
-  const warnPlans = source.files?.length ? picked.map((p) => ({ ...p, clips: p.clips.filter((c) => (c.file ?? 0) === 0) })) : picked;
+  // #12566: no bruto em vários arquivos, caneca e rosto conferidos por arquivo (tamanho e framing de cada um).
+  const framingWarn = framingWarningsByFile(picked, source, framing, file.files);
   if (source.files?.length) {
-    const unchecked = [...new Set(picked.flatMap((p) => p.clips.filter((c) => (c.file ?? 0) !== 0).map((c) => source.files![c.file ?? 0]?.id)))].filter(Boolean);
-    if (unchecked.length) console.error(`[aviso] caneca e rosto centrado conferidos só em ${source.files[0].id}; ${unchecked.join(", ")} sem conferência: ver a folha de frames da prévia ou o gaze (#12559)`);
     if (picked.some((p) => p.clips.some((c) => clipGeometry({ source, spec: p.spec, framing, fileOverrides: file.files, clip: c }).fit === "blur-fill"))) {
       console.error("[premissa] blur-fill no XML = faixa V1 com o Gaussian Blur do FCP7 sob o clipe: conferir no 1º import que o Premiere traduz o efeito (senão, aplicar o desfoque à mão) (#12559)");
     }
   }
   // #11939: a caneca é esforço, nunca barra o build; o relato diz onde ela não sai inteira.
-  for (const w of mugFramingWarnings(warnPlans, source, framing)) console.error(`[aviso] ${w}`);
+  for (const w of framingWarn.mug) console.error(`[aviso] ${w}`);
   // #12093: o rosto centrado nos dois zooms; escala pequena demais bate na borda do bruto.
-  for (const w of faceCenterWarnings(warnPlans, source, framing)) console.error(`[aviso] ${w}`);
+  for (const w of framingWarn.face) console.error(`[aviso] ${w}`);
   for (const p of picked) {
     const d = p.durationFrames / source.fps;
     console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${CTA_CARD.durationS} s (#12571)`}`);
@@ -3426,7 +3455,7 @@ async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSess
   // #12096: `--seq youtube` também (o horizontal, 960x540); sem --seq, a vertical da edição.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
   if (pf.framingAssumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (o mesmo do build)");
-  for (const w of mugFramingWarnings([firstFileClips(plan, pf.source)], pf.source, pf.framing)) console.error(`[aviso] ${w}`);
+  for (const w of framingWarningsByFile([plan], pf.source, pf.framing, pf.fileOverrides).mug) console.error(`[aviso] ${w}`);
   const fps = pf.source.fps;
   const srt = join(ctx.outDir, srtFileName(plan.spec.name));
   const planPath = f(ctx, "plan.json");
@@ -3600,7 +3629,7 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
     ?? ["build sem verificação de banda alta: rode build com o bruto disponível (#11940)"];
   for (const warning of highBandWarnings) console.error(`[aviso] ${warning}`);
   // #11939: a caneca na folha de frames da prévia; o cálculo diz em que escala ela não sai inteira.
-  const mugWarnings = mugFramingWarnings([firstFileClips(plan, pf.source)], pf.source, pf.framing);
+  const mugWarnings = framingWarningsByFile([plan], pf.source, pf.framing, pf.fileOverrides).mug;
   for (const warning of mugWarnings) console.error(`[aviso] ${warning}`);
   const card = scope.cardS > 0 ? { cardS: scope.cardS, warnings: scope.warnings } : undefined;
   writeJson(f(ctx, `review-${sequenceKey(plan.spec)}.json`), { preview, durationS, findings, highBandWarnings, mugWarnings, pauses, ...(card ? { ctaCard: card } : {}) });
@@ -3638,7 +3667,7 @@ export function reviewFinalSequence(file: string, seq: string | undefined, specs
     return { target: hit.target, key: corte };
   }
   const t = exportTarget(basename(file));
-  if (!t) throw new Error(`destino não reconhecido no nome ${basename(file)} (_Youtube_, _Instagram_, _Outras redes_): passe --seq`);
+  if (!t) throw new Error(`destino não reconhecido no nome ${basename(file)} (horizontal_V{n} ou _Youtube_, _Vertical_, _Instagram_, _Outras redes_): passe --seq`);
   return { target: t, key: t };
 }
 

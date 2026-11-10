@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -21,11 +21,16 @@ import {
   montageSourceRefs,
   parseMd5sumLine,
   parseRcloneLsjson,
+  parseRunLock,
+  parseVerifiedRecord,
   referencingEditions,
+  runLockIsStale,
+  verifiedRecordTrusted,
   verifyCopy,
 } from "../scripts/lib/diaria/video-bruto-archive.ts";
 import { spawn } from "node:child_process";
 import {
+  acquireRunLock,
   bisyncIdle,
   createStopController,
   defaultConfig,
@@ -257,6 +262,8 @@ exit 0
     md5sum: join(bin, "md5sum"),
     mountpointCmd: ["true"],
     pollSeconds: 0,
+    // #12573: nunca a trava real em ~/.cache.
+    lockPath: join(sb, "run.lock"),
   };
   // Mesmo arquivo nos dois lados = o espelho do bisync em dia.
   const both = (rel: string, content: string) => {
@@ -318,15 +325,16 @@ describe("runArchive contra Drive falso (#12548)", posixOnly, () => {
     assert.match(readFileSync(s.calls, "utf8"), /start diaria-gdrive-bisync.timer/);
   });
 
-  it("arquivo de outro dono: devolve a cópia ao espelho e não conta como falha", async () => {
+  it("arquivo de outro dono: devolve a cópia ao espelho, guarda outra no arquivo e não conta como falha (#12570)", async () => {
     const s = sandbox({ lockedFiles: ["20261104_124252"] });
     s.both("261105/20261104_124252.mp4", "bruto");
     s.publish("261105");
     const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
     assert.equal(r.files[0].status, "nao-apagado-sem-permissao");
     assert.equal(reportFailed(r), false);
-    assert.ok(existsSync(join(s.local, "261105/20261104_124252.mp4")), "voltou ao espelho");
-    assert.ok(!existsSync(join(s.archive, "261105/20261104_124252.mp4")));
+    assert.equal(readFileSync(join(s.local, "261105/20261104_124252.mp4"), "utf8"), "bruto", "voltou ao espelho");
+    assert.equal(readFileSync(join(s.archive, "261105/20261104_124252.mp4"), "utf8"), "bruto", "cópia guardada no arquivo");
+    assert.ok(!existsSync(join(s.archive, "261105/20261104_124252.mp4.partial")));
   });
 
   it("sem cópia no espelho, baixa do Drive direto para o arquivo", async () => {
@@ -755,5 +763,164 @@ describe("regressões do review (#12603)", posixOnly, () => {
     for (const p of BRUTOS_12603) {
       assert.ok(existsSync(join(s.drive, "261105", p)) || existsSync(join(s.archive, "261105", p)), `${p} nunca some dos dois lados`);
     }
+  });
+});
+
+describe("bruto de outro dono guardado no arquivo (#12570)", posixOnly, () => {
+  /** md5sum que registra cada chamada, para saber se a rodada recalculou. */
+  const countingMd5 = (s: ReturnType<typeof sandbox>) => {
+    const log = join(s.sb, "md5.log");
+    const wrapper = join(s.bin, "md5sum-contado");
+    writeFileSync(wrapper, `#!/bin/sh\necho "$1" >> "${log}"\nexec "${join(s.bin, "md5sum")}" "$1"\n`);
+    chmodSync(wrapper, 0o755);
+    s.cfg.md5sum = wrapper;
+    return () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
+  };
+
+  it("rodadas seguintes entram pela cópia do arquivo, gravam o MD5 conferido e param de recalcular; a dona apagando, a cópia fica", async () => {
+    const s = sandbox({ lockedFiles: ["20261104_124252"] });
+    const rel = "261105/20261104_124252.mp4";
+    s.both(rel, "bruto-alheio");
+    s.publish("261105");
+    const md5Calls = countingMd5(s);
+    const record = join(s.archive, `${rel}.md5.json`);
+
+    const r1 = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.deepEqual([r1.files[0].source, r1.files[0].status], ["espelho", "nao-apagado-sem-permissao"]);
+    assert.ok(existsSync(join(s.archive, rel)) && existsSync(join(s.local, rel)));
+    assert.ok(!existsSync(record), "cópia recém-copiada ainda não foi conferida: sem registro");
+
+    const before2 = md5Calls().length;
+    const r2 = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.deepEqual([r2.files[0].source, r2.files[0].status], ["arquivo", "nao-apagado-sem-permissao"]);
+    assert.deepEqual(md5Calls().slice(before2), [join(s.archive, rel)], "confere a cópia do arquivo uma vez");
+    assert.ok(existsSync(record), "registro do MD5 gravado");
+    assert.equal(reportFailed(r2), false);
+
+    const before3 = md5Calls().length;
+    const r3 = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.deepEqual([r3.files[0].source, r3.files[0].status], ["arquivo", "nao-apagado-sem-permissao"]);
+    assert.equal(md5Calls().length, before3, "sem recálculo do MD5");
+    assert.equal((readFileSync(s.calls, "utf8").match(/rclone copyto/g) ?? []).length, 0, "nunca recopia do Drive");
+
+    // A dona apaga do Drive e o bisync apaga o espelho: a cópia do arquivo é a que sobra.
+    rmSync(join(s.drive, rel));
+    rmSync(join(s.local, rel));
+    const r4 = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r4.files.length, 0);
+    assert.equal(readFileSync(join(s.archive, rel), "utf8"), "bruto-alheio");
+  });
+
+  it("cópia do arquivo mexida depois do registro: recalcula o MD5", async () => {
+    const s = sandbox({ lockedFiles: ["20261104_124252"] });
+    const rel = "261105/20261104_124252.mp4";
+    s.both(rel, "bruto-alheio");
+    s.publish("261105");
+    const md5Calls = countingMd5(s);
+    await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    // mesmo tamanho, outro conteúdo e outro mtime
+    writeFileSync(join(s.archive, rel), "BRUTO-ALHEIO");
+    utimesSync(join(s.archive, rel), new Date(2020, 0, 1), new Date(2020, 0, 1));
+    const before = md5Calls().length;
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.ok(md5Calls().length > before, "registro não vale mais: recalcula");
+    assert.equal(r.files[0].status, "nao-apagado-sem-permissao");
+    assert.equal(readFileSync(join(s.archive, rel), "utf8"), "bruto-alheio", "a cópia ruim foi trocada pela do espelho");
+  });
+
+  it("registro só vale com tamanho, mtime e MD5 do Drive iguais", async () => {
+    const remote = { path: "a.mp4", size: 3, md5: "aa".repeat(16) };
+    const rec = parseVerifiedRecord({ size: 3, mtimeMs: 10, md5: "AA".repeat(16) });
+    assert.ok(rec);
+    assert.equal(verifiedRecordTrusted(rec, { size: 3, mtimeMs: 10 }, remote), true);
+    assert.equal(verifiedRecordTrusted(rec, { size: 3, mtimeMs: 11 }, remote), false);
+    assert.equal(verifiedRecordTrusted(rec, { size: 4, mtimeMs: 10 }, remote), false);
+    assert.equal(verifiedRecordTrusted(rec, { size: 3, mtimeMs: 10 }, { ...remote, md5: "bb".repeat(16) }), false, "a dona trocou o arquivo");
+    assert.equal(verifiedRecordTrusted(rec, { size: 3, mtimeMs: 10 }, { ...remote, md5: null }), false);
+    assert.equal(verifiedRecordTrusted(null, { size: 3, mtimeMs: 10 }, remote), false);
+    assert.equal(parseVerifiedRecord({ size: 3, mtimeMs: 10, md5: "xyz" }), null);
+    assert.equal(parseVerifiedRecord([]), null);
+  });
+});
+
+describe("trava contra duas execuções (#12573)", posixOnly, () => {
+  it("lock de PID vivo: a 2ª execução sai com erro sem tocar no timer nem no Drive", async () => {
+    const s = sandbox();
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    writeFileSync(s.cfg.lockPath, JSON.stringify({ pid: process.pid, startedAt: "x" }));
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(reportFailed(r), true);
+    assert.ok(r.errors.some((e) => /outra execução/.test(e)), JSON.stringify(r.errors));
+    assert.ok(!existsSync(s.calls), "nenhuma chamada a rclone/systemctl");
+    assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+    assert.ok(existsSync(s.cfg.lockPath), "a trava alheia continua lá");
+  });
+
+  it("duas execuções ao mesmo tempo: só uma arquiva, o timer é parado e religado uma vez", async () => {
+    const s = sandbox();
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const [a, b] = await Promise.all([
+      runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 }),
+      runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 }),
+    ]);
+    const refused = [a, b].filter((r) => r.errors.some((e) => /outra execução/.test(e)));
+    assert.equal(refused.length, 1);
+    assert.equal(refused[0].files.length, 0);
+    const calls = readFileSync(s.calls, "utf8");
+    assert.equal((calls.match(/stop diaria-gdrive-bisync.timer/g) ?? []).length, 1);
+    assert.equal((calls.match(/start diaria-gdrive-bisync.timer/g) ?? []).length, 1);
+    assert.equal((calls.match(/deletefile/g) ?? []).length, 1);
+    assert.ok(!existsSync(s.cfg.lockPath), "trava solta no fim");
+  });
+
+  it("lock de PID morto é retomado e solto no fim; dry-run não trava", async () => {
+    const s = sandbox();
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const dead = spawn("true");
+    const deadPid = dead.pid!;
+    await new Promise((r) => dead.on("exit", r));
+    writeFileSync(s.cfg.lockPath, JSON.stringify({ pid: deadPid, startedAt: "x" }));
+    const dry = await runArchive({ cfg: s.cfg, apply: false, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(reportFailed(dry), false);
+    assert.equal(JSON.parse(readFileSync(s.cfg.lockPath, "utf8")).pid, deadPid, "dry-run não mexe na trava");
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(reportFailed(r), false, JSON.stringify(r.errors));
+    assert.equal(r.files[0].status, "arquivado");
+    assert.ok(!existsSync(s.cfg.lockPath));
+  });
+
+  it("trava é solta também quando a rodada falha", async () => {
+    const s = sandbox();
+    s.both("261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = await runArchive({ cfg: { ...s.cfg, mountpointCmd: ["false"] }, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(reportFailed(r), true);
+    assert.ok(!existsSync(s.cfg.lockPath));
+  });
+
+  it("runLockIsStale / parseRunLock", async () => {
+    assert.equal(parseRunLock('{"pid":123,"startedAt":"x"}'), 123);
+    assert.equal(parseRunLock("lixo"), null);
+    assert.equal(parseRunLock('{"pid":-1}'), null);
+    assert.equal(runLockIsStale(123, () => true), false);
+    assert.equal(runLockIsStale(123, () => false), true);
+    assert.equal(runLockIsStale(null, () => true), true, "trava ilegível é retomável");
+  });
+
+  it("acquireRunLock: segunda tentativa no mesmo processo é recusada até soltar", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bruto-lock-"));
+    const p = join(dir, "sub", "run.lock");
+    const first = acquireRunLock(p);
+    assert.ok("release" in first);
+    assert.ok("error" in acquireRunLock(p));
+    first.release();
+    const again = acquireRunLock(p);
+    assert.ok("release" in again);
+    again.release();
+    assert.ok(!existsSync(p));
   });
 });

@@ -28,10 +28,21 @@
  *      decidir: sumiu (o Drive apagou e só a resposta se perdeu) = arquivado;
  *      continua lá = a cópia volta ao espelho quando veio dele (senão o bisync
  *      tentaria apagar no Drive a cada rodada), e o arquivo sai como "não
- *      apagado" (permissão: arquivo de outro dono) ou como falha (exit 1);
+ *      apagado" (permissão: arquivo de outro dono) ou como falha (exit 1).
+ *      No "não apagado" o arquivo guarda também uma cópia própria (#12570):
+ *      se a dona apagar do Drive, o bisync apaga o espelho, e sem ela não
+ *      sobraria nenhuma. Nas rodadas seguintes o bruto entra pela cópia do
+ *      arquivo, com o MD5 conferido gravado ao lado (`{arquivo}.md5.json`,
+ *      vale enquanto tamanho, mtime e o MD5 do Drive não mudarem), e só o
+ *      `deletefile` se repete;
  *      não deu para reler = a cópia conferida fica no arquivo e é falha.
  *      Devolver ao espelho sem reler podia perder o arquivo: o bisync veria
  *      "apagado no Drive" e apagaria o espelho, sem lixeira em lado nenhum.
+ *
+ * Uma execução com `--apply` por vez (#12573): trava em
+ * `~/.cache/diaria/video-bruto-archive/run.lock` (`O_EXCL`, PID + início;
+ * trava de PID morto é retomada). A 2ª execução sai com exit 1 sem tocar no
+ * timer do bisync. Dry-run não trava (só lê).
  *
  * Nome repetido na mesma pasta do Drive (o Drive aceita) não é apagado:
  * `deletefile` não diz qual dos dois apaga, e só um foi conferido.
@@ -67,11 +78,25 @@
  *   npx tsx scripts/archive-video-brutos.ts --json
  *   npx tsx scripts/archive-video-brutos.ts --published-min-days 7   # idade mínima da pasta publicada (default 4)
  *
- * Testável sem tocar produção: VIDEO_ARCHIVE_* e RCLONE_BIN/SYSTEMCTL_BIN/
+ * Testável sem tocar produção: VIDEO_ARCHIVE_* (inclusive VIDEO_ARCHIVE_LOCK) e RCLONE_BIN/SYSTEMCTL_BIN/
  * MD5SUM_BIN/VIDEO_ARCHIVE_MOUNTPOINT_CMD sobrescrevíveis por env.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
+import { copyFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,6 +107,7 @@ import { editionDirUnder, editionVideoPublished, todayBrt } from "./prune-video-
 import {
   DEFAULT_ARCHIVE_PUBLISHED_MIN_DAYS,
   DEFAULT_ARCHIVE_UNPUBLISHED_MAX_DAYS,
+  VERIFIED_RECORD_SUFFIX,
   brutoRefKey,
   decideFolder,
   duplicatePaths,
@@ -90,7 +116,11 @@ import {
   montageSourceRefs,
   parseMd5sumLine,
   parseRcloneLsjson,
+  parseRunLock,
+  parseVerifiedRecord,
   referencingEditions,
+  runLockIsStale,
+  verifiedRecordTrusted,
   verifyCopy,
   type FolderDecision,
   type RemoteFile,
@@ -122,6 +152,8 @@ export interface ArchiveConfig {
   waitMinutes: number;
   pollSeconds: number;
   pauseBisync: boolean;
+  /** #12573: trava contra duas execuções com `--apply` ao mesmo tempo. */
+  lockPath: string;
 }
 
 function positiveNumber(raw: string | undefined, fallback: number, name: string): number {
@@ -148,6 +180,7 @@ export function defaultConfig(env: NodeJS.ProcessEnv = process.env): ArchiveConf
     waitMinutes: positiveNumber(env.VIDEO_ARCHIVE_WAIT_MINUTES, 90, "VIDEO_ARCHIVE_WAIT_MINUTES"),
     pollSeconds: positiveNumber(env.VIDEO_ARCHIVE_POLL_SECONDS, 15, "VIDEO_ARCHIVE_POLL_SECONDS"),
     pauseBisync: env.VIDEO_ARCHIVE_NO_BISYNC_PAUSE !== "1",
+    lockPath: env.VIDEO_ARCHIVE_LOCK ?? join(homedir(), ".cache", "diaria", "video-bruto-archive", "run.lock"),
   };
 }
 
@@ -160,7 +193,8 @@ export type FileStatus =
   | "falha-conferencia"
   | "falha-download"
   | "falha-mover"
-  | "falha-apagar";
+  | "falha-apagar"
+  | "falha-guardar-copia";
 
 /** Exaustivo de propósito: um status novo não compila sem dizer se é falha. */
 export const STATUS_IS_FAILURE: Record<FileStatus, boolean> = {
@@ -173,6 +207,7 @@ export const STATUS_IS_FAILURE: Record<FileStatus, boolean> = {
   "falha-download": true,
   "falha-mover": true,
   "falha-apagar": true,
+  "falha-guardar-copia": true,
 };
 
 export interface FileResult {
@@ -330,6 +365,68 @@ export async function resumeBisync(cfg: ArchiveConfig, stop: StopController, log
   if (!r.ok) return `não consegui religar ${BISYNC_TIMER}: ${r.stderr.trim()}`;
   log(`${LOG_PREFIX} ${BISYNC_TIMER} religado.`);
   return null;
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM = existe, só é de outro usuário: conta como viva.
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * #12573: trava por arquivo (`O_EXCL`) para duas execuções com `--apply` não
+ * rodarem juntas (a task de sábado e uma rodada manual): a que terminasse
+ * primeiro religaria o timer do bisync no meio da outra, e as duas podiam
+ * pegar o mesmo bruto. Lock de PID morto é retomado. Devolve a função que
+ * solta a trava, ou a mensagem de erro (a 2ª execução sai sem tocar no timer).
+ *
+ * Premissa declarada: a retomada olha só o PID. Um PID reaproveitado por
+ * outro processo depois de um SIGKILL deixa a trava presa (a rodada falha alto
+ * com o caminho do lock na mensagem), nunca solta a trava de uma rodada viva.
+ */
+export function acquireRunLock(lockPath: string, alive: (pid: number) => boolean = pidAlive): { release: () => void } | { error: string } {
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const body = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let fd: number;
+    try {
+      fd = openSync(lockPath, "wx");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") return { error: `não consegui criar a trava ${lockPath}: ${(e as Error).message}` };
+      let text = "";
+      try {
+        text = readFileSync(lockPath, "utf8");
+      } catch {
+        // Sumiu entre o open e a leitura: a outra execução acabou de soltar; tenta de novo.
+        continue;
+      }
+      const holder = parseRunLock(text);
+      if (!runLockIsStale(holder, alive)) {
+        return { error: `outra execução com --apply está em curso (PID ${holder}, trava ${lockPath}); nada feito, timer do bisync intocado` };
+      }
+      rmSync(lockPath, { force: true });
+      continue;
+    }
+    try {
+      writeSync(fd, body);
+    } finally {
+      closeSync(fd);
+    }
+    return {
+      release: () => {
+        try {
+          if (parseRunLock(readFileSync(lockPath, "utf8")) === process.pid) rmSync(lockPath, { force: true });
+        } catch {
+          // Trava já removida: nada a soltar.
+        }
+      },
+    };
+  }
+  return { error: `não consegui obter a trava ${lockPath} (disputada por outra execução)` };
 }
 
 function listFolders(cfg: ArchiveConfig): string[] {
@@ -494,10 +591,12 @@ async function archiveOneUnsafe(
     return { ...base, source: src, verify: c.verify, status: "falha-conferencia", ...(detail ? { detail } : {}) };
   };
 
+  const recordPath = `${archivePath}${VERIFIED_RECORD_SUFFIX}`;
   let source: NonNullable<FileResult["source"]> | null = null;
   let localPath = archivePath;
   if (fileSize(archivePath) === remote.size) {
-    const c = await check(archivePath);
+    // #12570: a cópia guardada de um arquivo de outro dono não tem o MD5 recalculado toda rodada.
+    const c = recordStillValid(recordPath, archivePath, remote) ? { verify: "ok" as const, md5Stderr: "" } : await check(archivePath);
     if (c.verify === "ok") source = "arquivo";
     // #12603: cópia de mesmo tamanho com outro conteúdo não trava o bruto; o espelho ou um download a substitui.
     else if (c.verify === "md5-diverge") base = { ...base, detail: "a cópia que estava no arquivo tinha MD5 diferente do Drive" };
@@ -538,12 +637,16 @@ async function archiveOneUnsafe(
   }
 
   const del = await run(stop, cfg.rclone, ["deletefile", "--drive-use-trash=false", remotePath], { timeoutMs: 600_000 });
-  if (del.ok) return { ...base, source, verify, status: "arquivado" };
+  if (del.ok) {
+    rmSync(recordPath, { force: true });
+    return { ...base, source, verify, status: "arquivado" };
+  }
 
   // O `deletefile` falhou. Reler antes de qualquer coisa: o Drive pode ter apagado e só a resposta se perdeu.
   const errText = del.stderr.trim().slice(-500);
   const present = await stillOnDrive(cfg, stop, folder, remote.path);
   if (present === false) {
+    rmSync(recordPath, { force: true });
     return { ...base, source, verify, status: "arquivado", detail: `deletefile saiu com erro, mas o arquivo já não está no Drive: ${errText}` };
   }
   if (present === null) {
@@ -562,8 +665,65 @@ async function archiveOneUnsafe(
       restoreNote = ` (NÃO consegui devolver a cópia ao espelho: ${(e as Error).message})`;
     }
   }
-  const status: FileStatus = isPermissionError(del.stderr) && !restoreFailed ? "nao-apagado-sem-permissao" : "falha-apagar";
-  return { ...base, source, verify, status, detail: errText + restoreNote };
+  const permission = isPermissionError(del.stderr);
+  if (!permission || restoreFailed) return { ...base, source, verify, status: "falha-apagar", detail: errText + restoreNote };
+
+  // #12570: arquivo de outro dono. O espelho fica com a dele (o bisync não tenta apagar no Drive), e o arquivo
+  // guarda uma cópia própria: se a dona apagar do Drive, o bisync apaga o espelho, e sem esta cópia não sobraria nada.
+  if (source === "espelho") {
+    rmSync(recordPath, { force: true });
+    const kept = await keepArchiveCopy(mirrorPath, archivePath, remote.size);
+    if (kept) return { ...base, source, verify, status: "falha-guardar-copia", detail: `${errText}${restoreNote}; ${kept}` };
+    restoreNote += "; cópia guardada no arquivo";
+  } else {
+    // A cópia conferida já está no arquivo (veio dele ou do download): registra o MD5 para a próxima rodada não recalcular.
+    writeVerifiedRecord(recordPath, archivePath, remote);
+  }
+  return { ...base, source, verify, status: "nao-apagado-sem-permissao", detail: errText + restoreNote };
+}
+
+/** O registro do MD5 conferido vale para a cópia de hoje? Ilegível/ausente = não (recalcula). */
+function recordStillValid(recordPath: string, archivePath: string, remote: RemoteFile): boolean {
+  try {
+    const st = statSync(archivePath);
+    const rec = parseVerifiedRecord(JSON.parse(readFileSync(recordPath, "utf8")));
+    return verifiedRecordTrusted(rec, { size: st.size, mtimeMs: st.mtimeMs }, remote);
+  } catch {
+    return false;
+  }
+}
+
+/** Grava o registro do MD5 conferido. Falhar aqui só custa um recálculo na próxima rodada. */
+function writeVerifiedRecord(recordPath: string, archivePath: string, remote: RemoteFile): void {
+  if (!remote.md5) return;
+  try {
+    const st = statSync(archivePath);
+    writeFileSync(recordPath, JSON.stringify({ size: st.size, mtimeMs: st.mtimeMs, md5: remote.md5 }) + "\n");
+  } catch {
+    // Sem registro, a próxima rodada recalcula o MD5.
+  }
+}
+
+/**
+ * #12570: copia a cópia conferida do espelho para o arquivo (reflink quando o
+ * sistema de arquivos permite), via `.partial` + rename, para um corte no meio
+ * nunca deixar no arquivo uma cópia truncada com o nome final. Assíncrono para
+ * o handler de sinal seguir rodando. Devolve a mensagem de erro, ou `null`.
+ * Sem registro de MD5: a cópia nova é conferida de verdade na próxima rodada,
+ * que então grava o registro.
+ */
+async function keepArchiveCopy(mirrorPath: string, archivePath: string, size: number): Promise<string | null> {
+  const partial = `${archivePath}.partial`;
+  try {
+    mkdirSync(dirname(archivePath), { recursive: true });
+    await copyFile(mirrorPath, partial, fsConstants.COPYFILE_FICLONE);
+    if (fileSize(partial) !== size) throw new Error(`a cópia saiu com ${fileSize(partial)} bytes, esperado ${size}`);
+    renameSync(partial, archivePath);
+    return null;
+  } catch (e) {
+    rmSync(partial, { force: true });
+    return `NÃO consegui guardar a cópia no arquivo: ${(e as Error).message}`;
+  }
 }
 
 export async function runArchive(opts: {
@@ -593,6 +753,31 @@ export async function runArchive(opts: {
     archivedBytes: 0,
   };
 
+  // #12573: com --apply, uma execução por vez. A 2ª sai antes de tocar no timer do bisync.
+  let releaseLock: (() => void) | null = null;
+  if (apply) {
+    const lock = acquireRunLock(cfg.lockPath);
+    if ("error" in lock) {
+      report.errors.push(lock.error);
+      return report;
+    }
+    releaseLock = lock.release;
+  }
+  try {
+    return await runArchiveLocked(opts, cfg, apply, stop, log, report);
+  } finally {
+    releaseLock?.();
+  }
+}
+
+async function runArchiveLocked(
+  opts: Parameters<typeof runArchive>[0],
+  cfg: ArchiveConfig,
+  apply: boolean,
+  stop: StopController,
+  log: (l: string) => void,
+  report: ArchiveReport,
+): Promise<ArchiveReport> {
   const [mpBin, ...mpArgs] = cfg.mountpointCmd;
   if (!(await run(stop, mpBin, [...mpArgs, cfg.mount])).ok) {
     report.errors.push(`${cfg.mount} não está montado — nada feito`);

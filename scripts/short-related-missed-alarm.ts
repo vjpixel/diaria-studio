@@ -28,9 +28,8 @@ import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { logEvent } from "./lib/run-log.ts";
-import { isNoVideoEdition } from "./lib/diaria/d1-no-video.ts";
-import { loadShortScheduleConfig, resolveShortTime, type ShortsPublishedFile } from "./lib/diaria/short-video.ts";
-import { readShortsRegistry } from "./lib/diaria/shorts-published-store.ts";
+import { loadShortScheduleConfig, resolveShortTime } from "./lib/diaria/short-video.ts";
+import { readEditionVideoEvidenceInput } from "./lib/diaria/edition-video-evidence.ts";
 import {
   SHORT_RELATED_FILE,
   brtInstant,
@@ -43,20 +42,12 @@ import {
   buildShortRelatedMissedAlarm,
   evaluateShortRelatedMissed,
   isAlarmingShortRelatedVerdict,
+  shortRelatedMissedSeverity,
   type FileRead,
 } from "./lib/diaria/short-related-missed-alarm.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[short-related-missed-alarm]";
-
-function readRegistry(dir: string, aammdd: string): FileRead<ShortsPublishedFile> {
-  try {
-    const reg = readShortsRegistry(dir, aammdd);
-    return reg.entries.length ? { kind: "ok", value: reg } : { kind: "absent" };
-  } catch (e) {
-    return { kind: "unreadable", error: (e as Error).message };
-  }
-}
 
 function readRecord(dir: string, aammdd: string): FileRead<ShortRelatedRecord> {
   const path = join(dir, SHORT_RELATED_FILE);
@@ -102,12 +93,17 @@ async function main(): Promise<void> {
   const dir = resolve(ROOT, editionDirFor(aammdd));
   const editionExists = existsSync(dir);
 
+  // #12541: as mesmas fontes de evidência de vídeo que o plano da task do Neo lê.
+  const evidence = editionExists ? readEditionVideoEvidenceInput(dir, aammdd) : null;
   const ev = evaluateShortRelatedMissed({
     aammdd,
     now,
     editionExists,
-    noVideo: editionExists && isNoVideoEdition(dir),
-    shortsRegistry: editionExists ? readRegistry(dir, aammdd) : { kind: "absent" },
+    noVideo: evidence?.noVideo ?? false,
+    shortsRegistry: evidence?.shortsRegistry ?? { kind: "absent" },
+    youtubeStep: evidence?.youtubeStep,
+    horizontalUploadRecord: evidence?.horizontalUploadRecord,
+    d1VideoUrl: evidence?.d1VideoUrl,
     record: editionExists ? readRecord(dir, aammdd) : { kind: "absent" },
     shortAt: loadShortAt(aammdd),
   });
@@ -137,11 +133,14 @@ async function main(): Promise<void> {
   // `urgente`: o editor precisa vincular no mesmo dia, com o Short já no ar,
   // e sob `email_policy: "urgent_only"` só `urgente` recém-criado vira e-mail
   // — o mesmo canal do `--alert` que a própria task usaria se tivesse rodado.
+  // Exceção (#12541): `missing-record` vem só da ausência de um arquivo
+  // replicado pelo OneDrive e sai `acao` (issue sem e-mail) enquanto o
+  // registro do vínculo não tiver canal fora do OneDrive.
   const res = await notifyEditor(
     {
       check: "short-related-missed",
       fingerprint: aammdd,
-      severity: "urgente",
+      severity: shortRelatedMissedSeverity(ev.verdict),
       subject,
       body,
       priority: "P2",

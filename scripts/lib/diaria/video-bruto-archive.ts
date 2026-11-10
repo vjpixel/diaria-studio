@@ -218,6 +218,65 @@ export function verifyCopy(remote: RemoteFile, local: { size: number; md5: strin
 }
 
 /**
+ * #12570: registro do MD5 já conferido de uma cópia do arquivo, gravado ao lado
+ * dela (`{arquivo}.md5.json`) quando o Drive recusa apagar o original (arquivo
+ * de outro dono). Sem ele, toda rodada de sábado recalcularia o MD5 de GBs só
+ * para ouvir a mesma recusa.
+ */
+export interface VerifiedRecord {
+  size: number;
+  mtimeMs: number;
+  md5: string;
+}
+
+/** Sufixo do registro de MD5 conferido, ao lado da cópia no arquivo. */
+export const VERIFIED_RECORD_SUFFIX = ".md5.json";
+
+/** Pura — lê o registro; qualquer formato estranho = `null` (recalcula). */
+export function parseVerifiedRecord(raw: unknown): VerifiedRecord | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.size !== "number" || !Number.isFinite(o.size) || o.size < 0) return null;
+  if (typeof o.mtimeMs !== "number" || !Number.isFinite(o.mtimeMs)) return null;
+  if (typeof o.md5 !== "string" || !/^[0-9a-f]{32}$/i.test(o.md5)) return null;
+  return { size: o.size, mtimeMs: o.mtimeMs, md5: o.md5.toLowerCase() };
+}
+
+/**
+ * Pura — o registro ainda vale para a cópia de hoje? Só com o mesmo tamanho e
+ * o mesmo mtime da cópia (ninguém mexeu nela) e o mesmo MD5 que o Drive mostra
+ * agora (a dona não trocou o arquivo). Qualquer divergência recalcula.
+ */
+export function verifiedRecordTrusted(
+  record: VerifiedRecord | null,
+  local: { size: number; mtimeMs: number } | null,
+  remote: RemoteFile,
+): boolean {
+  if (!record || !local || !remote.md5) return false;
+  return record.size === local.size && record.mtimeMs === local.mtimeMs && record.md5 === remote.md5 && record.size === remote.size;
+}
+
+/**
+ * Pura (#12573) — o lock de uma execução anterior pode ser retomado? Só quando
+ * o PID gravado não existe mais (`alive` falso). PID ilegível = lock corrompido,
+ * também retomável. PID vivo = outra execução em curso, nunca retomável.
+ */
+export function runLockIsStale(holderPid: number | null, alive: (pid: number) => boolean): boolean {
+  if (holderPid === null || !Number.isInteger(holderPid) || holderPid <= 0) return true;
+  return !alive(holderPid);
+}
+
+/** Pura — PID gravado no lock (`{ pid, startedAt }`); `null` se ilegível. */
+export function parseRunLock(text: string): number | null {
+  try {
+    const o = JSON.parse(text) as { pid?: unknown };
+    return typeof o?.pid === "number" && Number.isInteger(o.pid) && o.pid > 0 ? o.pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Pura — caminhos que aparecem mais de uma vez na listagem. O Drive aceita dois
  * arquivos com o mesmo nome na mesma pasta, e `rclone deletefile` por nome não
  * diz qual apaga: esses nunca são apagados.

@@ -123,7 +123,7 @@ describe("decupagem por bloco (#11361)", () => {
 
   it("Montagem sugerida por versão, com os timecodes das linhas 'usar'", () => {
     const tail = md.slice(md.indexOf("## Montagem sugerida"));
-    assert.match(tail, /### Horizontal YouTube 1920x1080: Diaria comentada_Youtube_V1/);
+    assert.match(tail, /### Horizontal 1920x1080: Diaria comentada horizontal_V1/);
     assert.match(tail, /\| Título \| 00:11\.0–00:13\.1 \|/);
     assert.match(tail, /\| Abertura \| 00:05\.0–00:07\.7 \|/);
     // A vertical não leva abertura nem resumo; a falta de CTA vertical aparece.
@@ -228,13 +228,13 @@ describe("roteiro final por versão (#11361)", () => {
 
   it("uma tabela Bloco | Fala | Bruto por versão, com a duração no título", () => {
     assert.equal(md.match(/\| Bloco \| Fala \| Bruto \|/g)?.length, 2);
-    assert.match(md, /^## Horizontal YouTube 1920x1080: Diaria comentada_Youtube_V1 \(\d\d:\d\d\.\d\)$/m);
+    assert.match(md, /^## Horizontal 1920x1080: Diaria comentada horizontal_V1 \(\d\d:\d\d\.\d\)$/m);
     assert.match(md, /^## Vertical 1080x1920: Diaria comentada_Vertical_V1 \(\d\d:\d\d\.\d\)$/m);
   });
 
   it("parágrafo inicial diz o que muda entre as versões", () => {
     assert.match(md, /Comum às 2 versões: Título, Comentário, Encerramento\./);
-    assert.match(md, /Horizontal YouTube leva ainda Abertura, Resumo, CTA YouTube\./);
+    assert.match(md, /Horizontal leva ainda Abertura, Resumo, CTA YouTube\./);
     // #12571: o CTA falado virou opcional (o CTA padrão é o card): sem item, fica fora do parágrafo.
     assert.match(md, /Vertical leva ainda Resumo curto\./);
     assert.equal(versionsDiffParagraph(specs.slice(0, 1)), "");
