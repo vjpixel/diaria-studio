@@ -29,6 +29,8 @@ import {
   clockTime,
   decideTakes,
   defaultSequences,
+  openingBlockOf,
+  type OpeningBlock,
   describeCollapsedSuspect,
   isBlockKey,
   itemInTarget,
@@ -658,6 +660,16 @@ export function blocksFromDecupagem(doc: DecupagemDoc): Record<BlockKey, Array<{
   >;
   for (const b of doc.blocks) for (const r of b.rows) if (!r.bastidor && r.suggestion === "usar") out[b.key].push({ start: r.start, end: r.end, text: r.fala });
   return out;
+}
+
+/**
+ * O bloco de abertura da decupagem (#12586), lido do plano como a skill o
+ * escreveu, ANTES do `proposeGancho`: o gancho escrito no plano é a frase
+ * falada de abertura e abre as duas versões; o gancho proposto (a 1ª frase do
+ * resumo, #12093) é só do horizontal e não muda a ordem da vertical.
+ */
+export function decupagemOpeningBlock(planned: DecupagemDoc): OpeningBlock {
+  return openingBlockOf(blocksFromDecupagem(planned));
 }
 
 /** As linhas "alternativa" da decupagem, por bloco: viram as opções B, C… do roteiro final. */

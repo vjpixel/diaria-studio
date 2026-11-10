@@ -340,6 +340,7 @@ import {
   checkDecupagemCriteria,
   decupagemMarkdown,
   decupagemPlanTemplate,
+  decupagemOpeningBlock,
   mdCell,
   parseDecupagemPlan,
   proposeGancho,
@@ -1783,7 +1784,8 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   for (const w of crit.warnings) console.error(`[aviso] ${w}`);
   if (crit.errors.length) throw new Error(`decupagem-plan.json não decide por critério:\n  - ${crit.errors.join("\n  - ")}`);
   // #12093: o gancho (1ª frase do resumo) abre o horizontal; o Doc e o molde já o trazem separado.
-  const proposed = proposeGancho(buildDecupagemDoc(plan, segments, loadVocab().rules), segments);
+  const planned = buildDecupagemDoc(plan, segments, loadVocab().rules);
+  const proposed = proposeGancho(planned, segments);
   if (proposed.note) console.error(`[premissa] ${proposed.note}`);
   const doc = proposed.doc;
   const source = measuredSource(ctx);
@@ -1791,8 +1793,9 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   const blocks = blocksFromDecupagem(doc);
   const { format } = effectiveFormat({ blocks });
   if (format === "entrevista") console.error("[premissa] nenhum título nem resumo na decupagem: formato entrevista, sequências abertura → comentário → CTA → fecho (#11507); `format`/`sequences` no blocks.json sobrepõem");
-  // #12586: a frase falada de abertura no `gancho` (sem `titulo`) abre as duas versões no molde.
-  const opening = openingBlockOf(blocks);
+  // #12586: a frase falada de abertura no `gancho` (sem `titulo`) abre as duas versões no molde. Só o
+  // gancho escrito no plano conta: o proposto da 1ª frase do resumo (#12093) é só do horizontal.
+  const opening = decupagemOpeningBlock(planned);
   if (format === "monologo" && opening === "gancho") console.error("[premissa] decupagem sem título falado e com gancho: o gancho abre as duas versões, com o PNG do título, o respiro e a vinheta nele (#12586)");
   const sequences = defaultSequences("V1", format, opening);
   for (const d of suggestedDurations(doc, sequences)) {

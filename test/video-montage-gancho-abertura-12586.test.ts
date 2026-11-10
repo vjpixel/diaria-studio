@@ -33,7 +33,15 @@ import {
   type VinhetaAsset,
   type Word,
 } from "../scripts/lib/diaria/video-montage.ts";
-import { BLOCK_LABELS, decupagemPlanTemplate } from "../scripts/lib/diaria/video-montage-docs.ts";
+import {
+  BLOCK_LABELS,
+  blocksFromDecupagem,
+  decupagemOpeningBlock,
+  decupagemPlanTemplate,
+  proposeGancho,
+  type DecupagemDoc,
+  type DecupagemTableRow,
+} from "../scripts/lib/diaria/video-montage-docs.ts";
 
 const VIN: VinhetaAsset = { path: "vinheta.mov", durationS: 1.2, width: 1920, height: 1080, hasAudio: false };
 const src = { fps: 30, durationS: 600 };
@@ -169,6 +177,19 @@ describe("#12586: nomenclatura do roteiro e do molde", () => {
   it("o roteiro rotula a frase de abertura como Gancho", () => {
     const key: BlockKey = openingBlockOf({ gancho: [{}] });
     assert.equal(BLOCK_LABELS[key], "Gancho");
+  });
+
+  it("decupagem: só o gancho escrito no plano abre as duas versões; o proposto da 1ª frase do resumo (#12093) não", () => {
+    const row = (fala: string, start: number, end: number): DecupagemTableRow => ({ start, end, fala, sugestao: "usar", bastidor: false, suggestion: "usar", segments: [1] });
+    const legacy: DecupagemDoc = { blocks: [{ key: "resumo", rows: [row("A Nvidia admitiu tudo.", 10, 12)] }] };
+    const proposed = proposeGancho(legacy, []);
+    assert.ok(proposed.doc.blocks.some((b) => b.key === "gancho"), "o gancho foi proposto");
+    // Lido depois da proposta, o gancho proposto viraria abertura das duas versões (a vertical repetiria a frase do resumo curto).
+    assert.equal(openingBlockOf(blocksFromDecupagem(proposed.doc)), "gancho");
+    assert.equal(decupagemOpeningBlock(legacy), "titulo");
+    const novo: DecupagemDoc = { blocks: [{ key: "gancho", rows: [row("teve um caso com uma espiã chinesa.", 1, 3)] }, ...legacy.blocks] };
+    assert.equal(decupagemOpeningBlock(novo), "gancho");
+    assert.equal(proposeGancho(novo, []).doc, novo, "com o gancho escrito, nada é proposto");
   });
 
   it("o molde da decupagem diz onde vai a frase falada de abertura", () => {
