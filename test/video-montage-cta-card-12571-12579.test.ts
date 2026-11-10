@@ -28,7 +28,7 @@ import {
   ctaCardSvg,
   ctaCardXmlIssues,
   ctaShareLine,
-  wrapCardText,
+  wrapCardTextByWidth,
   type CtaCardAsset,
 } from "../scripts/lib/diaria/video-cta-card.ts";
 import {
@@ -87,13 +87,12 @@ describe("card de CTA: conteúdo (#12571)", () => {
     assert.match(svg, /Georgia/);
   });
 
-  it("a linha longa quebra na vertical (cabe na largura) e não quebra no horizontal", () => {
+  it("o compartilhar sai em 'Compartilhe com' + complemento, igual na vertical e no horizontal (#12701: o horizontal é o mesmo desenho)", () => {
     const v = ctaCardLayout(1080, 1920, CTA_CARD_DEFAULT_SHARE);
     const h = ctaCardLayout(1920, 1080, CTA_CARD_DEFAULT_SHARE);
-    assert.ok(v.rows[1].lines.length >= 2, `vertical: ${JSON.stringify(v.rows[1].lines)}`);
-    for (const l of v.rows.flatMap((r) => r.lines)) assert.ok(l.length <= v.maxChars, l);
-    assert.equal(h.rows[1].lines.length, 1);
-    assert.deepEqual(wrapCardText("a b c", 3), ["a b", "c"]);
+    assert.deepEqual(v.shareLines, ["Compartilhe com", "quem se interessa por IA"]);
+    assert.deepEqual(h.shareLines, v.shareLines);
+    assert.deepEqual(wrapCardTextByWidth("a b c", 100, 140), ["a b", "c"]);
   });
 
   it("o SVG renderiza no tamanho da sequência (vertical e horizontal)", async () => {
