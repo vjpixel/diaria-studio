@@ -136,6 +136,17 @@
  * develop pedindo a decisão que o editor já tinha tomado
  * (`scripts/lib/route-reason-guard.ts`, `detectIgnoredDecision`).
  *
+ * ## Destravamento recente (#12545)
+ *
+ * `--track bloqueada` é recusado quando o roteamento confiável mais recente é
+ * de outro track, tem menos de 24 h e registra um destravamento (vocabulário
+ * de destravamento nele ou num comentário confiável até 30 min antes, ou a
+ * issue saindo de um `bloqueada` anterior), e a `--reason` não o cita.
+ * `--override-unblock "motivo"` sobrepõe e grava o motivo no comentário.
+ * `--force`, `--override-newer` e `--override-decision` não dispensam. Caso
+ * de origem: a #12348, destravada às 14:44Z e devolvida a bloqueada às 23:49Z
+ * pela rodada que julgou pelo corpo (`detectIgnoredRecentUnblock`).
+ *
  * ## `--for-create` (#6205 — declarar o track NA CRIAÇÃO da issue)
  *
  * Modo alternativo, sem nenhuma chamada `gh`: a issue ainda não existe, não
@@ -193,7 +204,12 @@ import {
 import { formatExecutionBlockMarker, latestDecisionFor, type SessionKind } from "./lib/issue-decisions.ts";
 import { isTrustedCommentAuthor } from "./lib/trusted-comment-author.ts";
 import { parseDependsOn } from "./lib/issue-depends-on.ts";
-import { detectIgnoredDecision, detectNonDateReason, type NonDateReasonFinding } from "./lib/route-reason-guard.ts";
+import {
+  detectIgnoredDecision,
+  detectIgnoredRecentUnblock,
+  detectNonDateReason,
+  type NonDateReasonFinding,
+} from "./lib/route-reason-guard.ts";
 
 export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
@@ -243,6 +259,9 @@ export interface RouteIssueOptions {
    * `decisao-editor` vigente que a razão não cita. Motivo obrigatório,
    * registrado no comentário junto com a decisão sobreposta. */
   overrideDecision?: string;
+  /** #12545 — rotear para `bloqueada` apesar de um destravamento de menos de
+   * 24 h que a razão não cita. Motivo obrigatório, registrado no comentário. */
+  overrideUnblock?: string;
   cwd: string;
   ghRun?: GhRunFn;
   /** Injetável pra teste; default `new Date()`. Usado só na validação final
@@ -384,6 +403,9 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   if (options.overrideDecision !== undefined && !options.overrideDecision.trim()) {
     return failResult("--override-decision exige motivo não-vazio.");
   }
+  if (options.overrideUnblock !== undefined && !options.overrideUnblock.trim()) {
+    return failResult("--override-unblock exige motivo não-vazio.");
+  }
 
   // Validation antés da I/O: --motivo explícito, e --until só com agendada.
   if (options.motivo && !(options.motivo in MOTIVO_LABEL)) {
@@ -478,6 +500,23 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     const ignored = detectIgnoredDecision({ track, reason: reasonTrimmed, decision });
     if (ignored) {
       return failResult(`--track ${track} recusado na issue ${issueLabel}: ${ignored} Nenhuma escrita realizada.`);
+    }
+  }
+
+  // #12545 — `bloqueada` logo depois de um destravamento (caso #12348): a
+  // razão precisa citar o destravamento, ou sobreposição explícita. Mesma
+  // fonte confiável dos dois guards acima; `--force`/`--override-newer` não
+  // dispensam.
+  if (!options.overrideUnblock) {
+    const ignoredUnblock = detectIgnoredRecentUnblock({
+      track,
+      reason: reasonTrimmed,
+      now,
+      comments: fetchedBefore.data.routingComments,
+      parseTrack: parseRouteIssueMarkerAtStart,
+    });
+    if (ignoredUnblock) {
+      return failResult(`--track ${track} recusado na issue ${issueLabel}: ${ignoredUnblock} Nenhuma escrita realizada.`);
     }
   }
 
@@ -654,7 +693,8 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
       ? `\n\nSobreposição da decisão do editor` +
         (decision ? ` de ${decision.decided_at.slice(0, 10)} ("${decision.resposta}")` : "") +
         `: ${options.overrideDecision.trim()}`
-      : "");
+      : "") +
+    (options.overrideUnblock ? `\n\nSobreposição de destravamento recente: ${options.overrideUnblock.trim()}` : "");
   let commentAction: CommentAction;
   const alreadyPosted = fetchedBefore.data.comments.some((c) => c.trim() === commentBody.trim());
   if (alreadyPosted) {
@@ -850,6 +890,7 @@ interface ParsedArgs {
   triagedAt?: string;
   overrideNewer?: string;
   overrideDecision?: string;
+  overrideUnblock?: string;
   /** `--issue` cru — `N` ou `owner/repo#N` (#10618). */
   issue?: string;
   track?: string;
@@ -879,11 +920,12 @@ function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
     else if (a === "--body") out.body = argv[++i];
     else if (a === "--depends-on") out.dependsOn = argv[++i];
     else if (a === "--sessao") out.sessao = argv[++i];
-    else if (a === "--triaged-at" || a === "--override-newer" || a === "--override-decision") {
+    else if (a === "--triaged-at" || a === "--override-newer" || a === "--override-decision" || a === "--override-unblock") {
       const value = argv[++i];
       if (!value || value.startsWith("--")) return { error: `${a} exige valor` };
       if (a === "--triaged-at") out.triagedAt = value;
       else if (a === "--override-newer") out.overrideNewer = value;
+      else if (a === "--override-unblock") out.overrideUnblock = value;
       else out.overrideDecision = value;
     }
     else if (a === "--force") out.force = true;
@@ -943,6 +985,7 @@ export function parseArgs(argv: string[]): RouteIssueOptions | { error: string }
     triagedAt: raw.triagedAt,
     overrideNewer: raw.overrideNewer,
     overrideDecision: raw.overrideDecision,
+    overrideUnblock: raw.overrideUnblock,
     cwd: process.cwd(),
   };
 }
