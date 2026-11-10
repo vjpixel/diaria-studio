@@ -82,7 +82,11 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: lay
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
 import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-dropped-items.ts"; // #10100
 import { clearEstiloRegenDestaques, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
-import { planPublicImagesInvalidation, publicImagesInvalidatedWarning } from "./lib/public-images-invalidate.ts"; // #11252
+import {
+  planPublicImagesInvalidation,
+  publicImagesInvalidatedWarning,
+  uploadImagesNextSteps, // #12692
+} from "./lib/public-images-invalidate.ts"; // #11252
 import { clearCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import { invalidateStage4D1Capture } from "./lib/stage4-capture-state.ts"; // #12589
 import {
@@ -282,7 +286,8 @@ export function buildSwapNextSteps(editionDir: string, slots: SlotSwap[]): strin
       (s) =>
         `Escrever _internal/02-d${s.position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${dir}/_internal/02-d${s.position}-prompt.md --out-dir ${dir}/ --destaque d${s.position}`,
     ),
-    `gen-carousel-cards.ts + upload-images-public.ts após as imagens novas`,
+    `Gerar os cards do carrossel das posições novas: npx tsx scripts/gen-carousel-cards.ts --edition-dir ${dir}`,
+    ...uploadImagesNextSteps(dir), // #12692: --mode newsletter e --mode social, nessa ordem
     `fact-checker completo antes do gate (destaques novos, sem checagem prévia)`,
     `npx tsx scripts/check-invariants.ts --edition-dir ${dir} --stage 4`,
   ];
