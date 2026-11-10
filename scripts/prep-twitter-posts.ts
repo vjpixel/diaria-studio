@@ -109,7 +109,7 @@ import {
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #8056 — multi-imagem
 import { TWITTER_CHAR_LIMIT, TWITTER_URL_WEIGHT, computeTwitterWeightedLength } from "./lib/twitter-weight.ts"; // #10180
-import { injectVideoLinkWithinLimit } from "./lib/diaria/d1-video-link.ts"; // #10772
+import { buildTwitterVideoReplyText, injectVideoLinkWithinLimit, textHasVideoLink } from "./lib/diaria/d1-video-link.ts"; // #10772, #12762
 import { readD1VideoUrlForPosts as readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772; no-video.json vence a URL (#12588)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -168,6 +168,14 @@ export interface PrepResult {
     altText: string | null;
     /** #8056: até `TWITTER_IMAGE_LIMIT` imagens — preferir isto a `imageUrl`/`altText` no dispatch. */
     images: Array<{ url: string; altText: string }>;
+    /**
+     * #12762: resposta com o link do vídeo do dia, só no D1 e só quando o link
+     * não coube no texto (nem sem as hashtags, #11402). No dispatch (Stage 5,
+     * passo 5c-3b) vira o 2º item de `metadata.twitter.thread` do MESMO
+     * `create_post` do D1: 1º item = `text` (+ imagens), 2º = `videoReply.text`.
+     * `null`/ausente = post simples, sem thread.
+     */
+    videoReply?: { text: string } | null;
   }>;
   skipped: Array<{ destaque: string; reason: string }>;
   /** #4264: destaques com post normal mas sem imagem resolvida — motivo aqui, nunca em `skipped`. */
@@ -410,14 +418,22 @@ export function prepTwitterPosts(
     if (editionUrl) text = tagEditionUrlInText(text, editionUrl, TWITTER_EDITION_UTM);
 
     // #10772: só se couber no peso do X — estourar mantém o texto original
-    // (o link vai depois, como resposta), nunca derruba o post do D1. #11402:
+    // (o link vai como resposta, #12762), nunca derruba o post do D1. #11402:
     // antes de desistir, tenta sem as hashtags do fim.
+    let videoReply: { text: string } | null = null;
     if (d === "d1" && d1Video.url) {
       const inj = injectVideoLinkWithinLimit(text, d1Video.url, TWITTER_CHAR_LIMIT, computeTwitterWeightedLength);
       if (inj.injected) {
         text = inj.text;
         if (inj.droppedHashtags) console.warn("AVISO twitter/d1: hashtags removidas para o link do vídeo caber em 280 (#11402)");
-      } else console.warn(`AVISO twitter/d1: link do vídeo não entrou no texto — ${inj.reason}`);
+      } else if (!textHasVideoLink(text, d1Video.url)) {
+        // #12762: o "para depois" ganha dono — a resposta sai na thread do
+        // mesmo post da Buffer (passo 5c-3b do Stage 5), nunca fica sem passo.
+        videoReply = { text: buildTwitterVideoReplyText(d1Video.url) };
+        console.warn(
+          `AVISO twitter/d1: link do vídeo não entrou no texto — ${inj.reason}; vai como resposta (2º item da thread do D1, #12762)`,
+        );
+      }
     }
 
     // #4285/#4264 adendo do editor: conta URL como TWITTER_URL_WEIGHT (peso
@@ -451,7 +467,7 @@ export function prepTwitterPosts(
     const imageUrl = images[0]?.url ?? null;
     const altText = images[0]?.altText ?? null;
 
-    posts.push({ destaque: d, text, dueAt, imageUrl, altText, images });
+    posts.push({ destaque: d, text, dueAt, imageUrl, altText, images, videoReply });
   }
 
   // ── 4º post (USE MELHOR, #9568) — `## um` de `# Curto`, slot use_melhor_time.
