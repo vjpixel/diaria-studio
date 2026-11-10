@@ -19,7 +19,8 @@
  * significa "ainda não rodou nesta edição". Se o editor mudar o título do D1
  * via "ajustar" (§4d.1), `whatsapp_url` precisa ser recomputado e
  * regravado — este módulo não faz cache invalidation sozinho, é o playbook
- * quem decide recomputar.
+ * quem decide recomputar. Exceção (#12589): os scripts que trocam a história
+ * do D1 zeram os dois via `invalidateStage4D1Capture`.
  *
  * Fail-soft na leitura — arquivo ausente/corrompido/shape inesperado -> os
  * dois campos `null`.
@@ -144,6 +145,42 @@ export function writeStage4CaptureState(
   } finally {
     releaseLock(lockPath);
   }
+}
+
+export interface InvalidateD1CaptureResult {
+  /** Path gravado, quando algum campo foi zerado. */
+  rewritten?: string;
+  /** Linha para `warnings`/`next_steps` de quem chamou. */
+  message?: string;
+}
+
+/**
+ * #12589: os 2 valores deste estado derivam do D1 (`whatsappUrl` sai de
+ * `seoSlug(título_d1)`, `metaDescriptionSuggestion` do corpo do D1). Um script
+ * que troca a HISTÓRIA da posição 1 (`swap-destaques`, `swap-destaque`,
+ * `reorder-destaques`, `promote-to-destaque`) chama isto para zerar os dois:
+ * `null` volta a significar "ainda não computado", o §4c.1b/§4c.1c recomputa,
+ * e o gate mostra "indisponível" em vez do link da notícia antiga (edição
+ * 261109: o link de compartilhamento apontava para o D1 que saiu).
+ *
+ * No-op quando o arquivo não existe ou os 2 campos já são `null` — nunca cria
+ * o estado. Erro de escrita propaga (mesma política de `writeStage4CaptureState`).
+ */
+export function invalidateStage4D1Capture(
+  editionDir: string,
+  opts: { now?: () => Date } = {},
+): InvalidateD1CaptureResult {
+  const p = statePath(editionDir);
+  if (!existsSync(p)) return {};
+  const current = readStage4CaptureState(editionDir);
+  if (current.whatsappUrl === null && current.metaDescriptionSuggestion === null) return {};
+  writeStage4CaptureState(editionDir, { whatsappUrl: null, metaDescriptionSuggestion: null }, opts);
+  return {
+    rewritten: p,
+    message:
+      "_internal/stage4-capture-state.json: whatsappUrl e metaDescriptionSuggestion zerados porque o D1 mudou (#12589) — " +
+      "recomputar §4c.1b (buildWhatsappEditionUrl com o título do D1 novo) e §4c.1c antes do gate.",
+  };
 }
 
 const FIELD_BY_FLAG: Record<string, keyof Omit<Stage4CaptureState, "capturedAt">> = {

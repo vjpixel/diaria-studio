@@ -1019,8 +1019,9 @@ function checkStageUsageCaptured(editionDir: string): InvariantViolation[] {
  * #10659: o §5b-youtube rodou? Na 261026 o passo (então dois comandos e um
  * `log-event` em prosa) não rodou e nada acusou. Desde então ele é um comando
  * só (`scripts/stage5-youtube.ts`), que SEMPRE grava `05-youtube-step.json` —
- * inclusive com o consent desligado ou sem vídeo no Drive. Sem esse registro e
- * sem `05-youtube-published.json` (upload pelo `/diaria-youtube`), o passo foi
+ * inclusive com o consent desligado ou sem o link (desde o #12588 o passo só
+ * lê o link, nunca sobe vídeo). Sem esse registro e
+ * sem `05-youtube-published.json` (upload pelo `/diaria-publica-video`), o passo foi
  * pulado. Warning: o vídeo é fail-soft, nunca trava o Stage 6. Sem
  * `05-publish-consent.json` (edição antiga, ou Stage 5 sem 5b) não acusa.
  */
@@ -1041,7 +1042,7 @@ export function checkYouTubeStepRan(editionDir: string): InvariantViolation[] {
       rule: "youtube-step-ran",
       message:
         "§5b-youtube não rodou: consent youtube auto, mas sem _internal/05-youtube-step.json nem 05-youtube-published.json — " +
-        "rode `npx tsx scripts/stage5-youtube.ts {AAMMDD} --edition-dir {EDITION_DIR}` (ou /diaria-youtube)",
+        "rode `npx tsx scripts/stage5-youtube.ts {AAMMDD} --edition-dir {EDITION_DIR}` (só lê o link do vídeo, #12588)",
       source_issue: "#10659",
       severity: "warning",
       file: step,

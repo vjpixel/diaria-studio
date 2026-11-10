@@ -37,7 +37,10 @@
  *      das posições trocadas removida;
  *   7. `06-public-images.json` (#11252): todas as chaves das posições
  *      trocadas (hero 2:1, 4:5, carrossel, legado) removidas — a URL pública
- *      ainda era da arte do destaque antigo.
+ *      ainda era da arte do destaque antigo;
+ *   8. `_internal/stage4-capture-state.json` (#12589): com o D1 trocado,
+ *      `whatsappUrl`/`metaDescriptionSuggestion` zerados (derivavam do D1
+ *      antigo; o §4c.1b/§4c.1c recomputa).
  *
  * O que NÃO faz (exige LLM/agente ou decisão editorial — sai em
  * `next_steps`, mesmo padrão do promote-to-destaque.ts):
@@ -81,6 +84,7 @@ import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-d
 import { clearEstiloRegenDestaques, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
 import { planPublicImagesInvalidation, publicImagesInvalidatedWarning } from "./lib/public-images-invalidate.ts"; // #11252
 import { clearCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
+import { invalidateStage4D1Capture } from "./lib/stage4-capture-state.ts"; // #12589
 import {
   extractUrl,
   extractTitle,
@@ -603,6 +607,15 @@ function main(): void {
   if (keepArt.warning) {
     console.error(`AVISO: ${keepArt.warning}`);
     result.warnings.push(keepArt.warning);
+  }
+
+  // 7. D1 trocado: zera whatsappUrl/metaDescriptionSuggestion capturados no
+  // §4c.1b/§4c.1c (#12589) — derivavam do D1 antigo e o gate mostraria o
+  // link de compartilhamento da notícia que saiu.
+  if (slots.some((s) => s.position === 1)) {
+    const d1Capture = invalidateStage4D1Capture(editionDir);
+    if (d1Capture.rewritten) result.modified.rewritten.push(d1Capture.rewritten);
+    if (d1Capture.message) result.warnings.push(d1Capture.message);
   }
 
   result.next_steps = buildSwapNextSteps(editionDir, slots);

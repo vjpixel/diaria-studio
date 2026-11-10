@@ -84,6 +84,7 @@ import {
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { clearEstiloRegenDestaques, reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335, #10404
 import { describeCarouselKeepArtRemap, remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
+import { invalidateStage4D1Capture } from "./lib/stage4-capture-state.ts"; // #12589
 import {
   removePoolItemFromMd,
   syncIntroCountInMd,
@@ -525,6 +526,14 @@ export function promoteToDestaque(
   );
   if (keepArt.rewritten) rewritten.push(keepArt.rewritten);
   if (keepArt.warning) warnings.push(keepArt.warning);
+
+  // 8c. _internal/stage4-capture-state.json (#12589): item novo na posição 1 —
+  //     whatsappUrl/metaDescriptionSuggestion derivavam do D1 antigo.
+  if (!dryRun && position === 1) {
+    const d1Capture = invalidateStage4D1Capture(editionDir);
+    if (d1Capture.rewritten) rewritten.push(d1Capture.rewritten);
+    if (d1Capture.message) warnings.push(d1Capture.message);
+  }
 
   const d = `d${position}`;
   const nextSteps = [
