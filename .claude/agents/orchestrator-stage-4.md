@@ -657,7 +657,7 @@ Facebook  D3  "{hook_d3_facebook}"
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Aprovar e prosseguir para Publicação (Etapa 5)?{generic_study_reminder_line}
 
-  sim     → segue para o vídeo e a publicação (/diaria-video-montagem, /diaria-publica-video)
+  sim     → segue para o vídeo e a publicação (/diaria-video-montagem, /diaria-publica)
   editar  → halt; editor edita localmente (ou via Studio) → responde "sim" quando pronto
   ajustar → editor dita a mudança no chat; orchestrator aplica e re-apresenta o resumo
   abortar → encerra sem publicar (sentinel não escrito)
@@ -987,12 +987,12 @@ imagens públicas, gabarito do É IA?) — nada disso precisa ser refeito.
 
 Próximos passos (#10943, #11208, #12591), nesta ordem — abra uma sessão NOVA para cada um, nenhum encadeia no seguinte:
   1. /diaria-video-montagem {AAMMDD} (depois de gravar o vídeo do D1; monta o XML do Premiere)
-  2. /diaria-publica-video {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao} (depois de exportar do Premiere para {AAMMDD}/Final/: horizontal, depois as Etapas 5 e 6 na mesma sessão, depois o vertical)
+  2. /diaria-publica {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao} (depois de exportar do Premiere para {AAMMDD}/Final/: horizontal, depois as Etapas 5 e 6 na mesma sessão, depois o vertical)
 
 A Etapa 5 não publica sem o link do vídeo no D1 (#12588). Sem vídeo hoje: npx tsx scripts/set-d1-no-video.ts {AAMMDD}
 (depois o upload em modo newsletter e o re-render do HTML) e /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}.
 
-Isso mantém o contexto desta revisão fora da Publicação/Agendamento (#6171) — o `/diaria-publica-video` cobre o vídeo e as Etapas 5 e 6 nessa sessão nova e retoma sozinho dos arquivos em disco (#5578).
+Isso mantém o contexto desta revisão fora da Publicação/Agendamento (#6171) — o `/diaria-publica` (era `/diaria-publica-video`, que segue como alias, #12620) cobre o vídeo e as Etapas 5 e 6 nessa sessão nova e retoma sozinho dos arquivos em disco (#5578).
 ```
 
-Isto vale mesmo em `auto_approve = true` (`--no-gates`): o pré-render já rodou, o sentinel já foi escrito, e a mensagem acima ainda é o que a sessão imprime antes de encerrar — `--no-gates` pula a CONFIRMAÇÃO do gate, não a fronteira de contexto pós-gate. **Vídeo antes da Etapa 5 (#10943, editor 22/10/2026; obrigatório desde #12588):** o vídeo é gravado depois deste gate (o D1 só está final aqui); o `/diaria-publica-video` sobe o horizontal, grava `_internal/05-video-url.txt` e segue para as Etapas 5 e 6 na mesma sessão (#12591), então o link entra no D1 de X, Threads e Facebook na criação (#10772, #10858). Esta sessão só IMPRIME a sequência, nunca roda nenhuma das skills (#5578).
+Isto vale mesmo em `auto_approve = true` (`--no-gates`): o pré-render já rodou, o sentinel já foi escrito, e a mensagem acima ainda é o que a sessão imprime antes de encerrar — `--no-gates` pula a CONFIRMAÇÃO do gate, não a fronteira de contexto pós-gate. **Vídeo antes da Etapa 5 (#10943, editor 22/10/2026; obrigatório desde #12588):** o vídeo é gravado depois deste gate (o D1 só está final aqui); o `/diaria-publica` sobe o horizontal, grava `_internal/05-video-url.txt` e segue para as Etapas 5 e 6 na mesma sessão (#12591), então o link entra no D1 de X, Threads e Facebook na criação (#10772, #10858). Esta sessão só IMPRIME a sequência, nunca roda nenhuma das skills (#5578).

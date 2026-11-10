@@ -164,7 +164,7 @@ async function main(): Promise<number> {
     if (flags.has(f) || f in values) {
       console.error(
         `stage5-youtube: --${f} foi removida (#12588): a Etapa 5 não sobe mais vídeo. ` +
-          `O horizontal sobe pelo /diaria-publica-video (Parte A, com o "pode publicar").`,
+          `O horizontal sobe pelo /diaria-publica (Parte A, com o "pode publicar").`,
       );
       return 2;
     }

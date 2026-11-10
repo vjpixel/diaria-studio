@@ -222,7 +222,7 @@ describe("CLI gen-youtube-thumb.ts (#10800)", () => {
   });
 
   it("a skill /diaria-publica-video documenta o script (#11209)", () => {
-    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
     assert.match(skill, /gen-youtube-thumb\.ts/);
   });
 });

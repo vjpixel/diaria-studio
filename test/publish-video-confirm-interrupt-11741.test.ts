@@ -218,7 +218,7 @@ describe("#11741 releitura do registro depois da interrupção", () => {
 });
 
 describe("#11741 a skill instrui confirmação e releitura", () => {
-  const skill = readFileSync(join(ROOT, ".claude", "skills", "diaria-publica-video", "SKILL.md"), "utf8");
+  const skill = readFileSync(join(ROOT, ".claude", "skills", "diaria-publica", "SKILL.md"), "utf8");
   it("não diz mais que invocar a skill é o pedido de publicação", () => {
     assert.doesNotMatch(skill, /Invocar a skill (já )?é o pedido/);
   });

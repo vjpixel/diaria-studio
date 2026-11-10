@@ -4,7 +4,7 @@
 
 Premissa original: **Neo, Windows x64 do editor**, é a máquina de mídia/capas.
 Desde o #11223 (viagem do editor, o Neo ligado poucas horas por dia) o mesmo
-setup também roda no **300 (Linux x86_64)**, para o `/diaria-publica-video`
+setup também roda no **300 (Linux x86_64)**, para o `/diaria-publica`
 sair inteiro de lá, comandado do celular. Este patch só versiona o setup; não
 instala dependências no host que implementa a issue. A instalação em cada
 máquina fica pendente até executar os comandos abaixo.
@@ -100,7 +100,7 @@ decodifica um áudio de teste em vez de só importar o pacote.
 No 300 o bruto é baixado para `~/.cache/diaria-video-montagem/{AAMMDD}/bruto/`
 e o work dir (áudio, clipes da prévia) fica em `.../{AAMMDD}/work/` (em disco: o
 `/tmp` dele é tmpfs); o check pede 3x o tamanho do bruto livre nesse disco;
-apagar a pasta da edição depois do `/diaria-publica-video` libera o espaço.
+apagar a pasta da edição depois do `/diaria-publica` libera o espaço.
 Auth: o OAuth do projeto (`data/.credentials.json`), o mesmo do
 `fetch-drive-video.ts`.
 
