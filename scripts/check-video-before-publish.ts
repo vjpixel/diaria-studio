@@ -5,7 +5,11 @@
  * Pré-requisito do `/diaria-5-publicacao` (Passo 0b): sem o link do vídeo no
  * D1 (`_internal/05-video-url.txt`), sem a edição marcada sem vídeo
  * (`_internal/no-video.json`) e sem `--skip youtube`, a Etapa 5 para ANTES do
- * dispatch. Miolo em `lib/diaria/video-before-publish.ts`.
+ * dispatch. Miolo em `lib/diaria/video-before-publish.ts`. Também para
+ * com a edição marcada sem vídeo e o convite ainda no cache de imagens ou no
+ * HTML final (`no-video-stale`, #12618), e só avisa quando o vídeo do link
+ * pode não abrir para o leitor (`link-may-not-open`, #12598). O gate da
+ * Etapa 6 roda o mesmo comando para repetir esse aviso.
  *
  * Uso:
  *   npx tsx scripts/check-video-before-publish.ts AAMMDD [--edition-dir DIR]

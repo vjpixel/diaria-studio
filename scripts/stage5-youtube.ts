@@ -60,6 +60,8 @@ export type YouTubeStepOutcome =
   | "already-published"
   /** `_internal/no-video.json` (#11125): edição sem vídeo, decisão do editor. */
   | "no-video-marked"
+  /** #12618: marcada sem vídeo, mas o convite ainda está no cache de imagens ou no HTML final. */
+  | "no-video-stale"
   /** `--skip youtube`/`none` sem link gravado: o D1 sai sem o vídeo. */
   | "consent-off"
   /** `05-video-url.txt` presente mas sem link do YouTube. */
@@ -75,6 +77,12 @@ export interface YouTubeStepRecord {
   video_url?: string | null;
   /** O D1 sai com o link (= `already-published`). */
   d1_link: boolean;
+  /**
+   * #12598: link pronto, mas o registro do upload diz que o vídeo pode não
+   * abrir no horário do D1 (privado, não confirmado, agendado depois). Só
+   * aviso: o resumo e o gate da Etapa 6 repetem o `detail`.
+   */
+  video_may_not_open?: true;
   /** `true` = o passo saiu 3 e a Etapa 5 parou antes do dispatch social. */
   blocking: boolean;
   detail?: string;
@@ -82,7 +90,9 @@ export interface YouTubeStepRecord {
 
 const OUTCOME_BY_STATUS: Record<VideoBeforePublishStatus, YouTubeStepOutcome> = {
   "link-ready": "already-published",
+  "link-may-not-open": "already-published",
   "no-video-marked": "no-video-marked",
+  "no-video-stale": "no-video-stale",
   "skipped-by-consent": "consent-off",
   "invalid-link": "needs-editor",
   "video-without-link": "missing-link",
@@ -92,6 +102,7 @@ const OUTCOME_BY_STATUS: Record<VideoBeforePublishStatus, YouTubeStepOutcome> = 
 const LEVEL_BY_OUTCOME: Record<YouTubeStepOutcome, "info" | "warn"> = {
   "already-published": "info",
   "no-video-marked": "info",
+  "no-video-stale": "warn",
   "consent-off": "info",
   "needs-editor": "warn",
   "missing-link": "warn",
@@ -134,13 +145,15 @@ export function decideYouTubeStep(dir: string, aammdd: string, now: Date = new D
     outcome,
     ...(gate.videoUrl ? { video_url: gate.videoUrl } : {}),
     d1_link: outcome === "already-published",
+    ...(gate.status === "link-may-not-open" ? { video_may_not_open: true as const } : {}),
     blocking: gate.blocking,
     detail,
   };
 }
 
-/** Puro: nível do run-log. Sem o link (ou com link inválido) é `warn`. */
-export function youtubeStepLevel(rec: Pick<YouTubeStepRecord, "outcome">): "info" | "warn" {
+/** Puro: nível do run-log. Sem o link (ou com link inválido, ou vídeo que pode não abrir, #12598) é `warn`. */
+export function youtubeStepLevel(rec: Pick<YouTubeStepRecord, "outcome" | "video_may_not_open">): "info" | "warn" {
+  if (rec.video_may_not_open) return "warn";
   return LEVEL_BY_OUTCOME[rec.outcome] ?? "warn";
 }
 

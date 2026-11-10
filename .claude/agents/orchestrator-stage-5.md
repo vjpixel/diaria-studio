@@ -184,12 +184,13 @@ npx tsx scripts/stage5-youtube.ts {AAMMDD} --edition-dir {EDITION_DIR}
 ```
 **Um comando so (#10659, 261026: o passo em dois comandos foi pulado sem ninguem notar).** `stage5-youtube.ts` le a pasta da edicao e grava SEMPRE `_internal/05-youtube-step.json` (`outcome`, `d1_link`, `blocking`, `detail`) + o `log-event` do passo. As flags do upload antigo foram removidas (exit 2). A invariante `youtube-step-ran` (§5i) acusa a edicao com consent auto sem esse registro. Rodar SEMPRE. **Exit:** `0` = seguir para o 5c-3; **`3` = PARAR antes do dispatch social**: liberar a trava (`edition-lock.ts release`, como em todo halt deste stage) e `render-halt-banner.ts --stage "5 — Publicacao" --reason "D1 sem o link do video" --action "{detail do JSON}"`; qualquer outro exit != 0 = mesmo halt com o stderr. A newsletter ja virou rascunho no Kit (reversivel, o Schedule e do Stage 6). Precedencia (primeira que casa) e `outcome`:
 - `no-video-marked` → `_internal/no-video.json` (#11125, vence a URL): o D1 sai com o hero puro, por decisao do editor.
-- `already-published` → `_internal/05-video-url.txt` com link do YouTube (lido pelo `parseD1VideoUrlFile`, #11297): o 5c-3 poe o link no D1 de X, Threads e Facebook.
+- `no-video-stale` (exit 3, #12618) → marcada sem video, mas o convite ainda esta em `06-public-images.json` (`d1_play`) ou em `_internal/newsletter-final.html`: rodar o upload em modo newsletter e o re-render que o `detail` traz.
+- `already-published` → `_internal/05-video-url.txt` com link do YouTube (lido pelo `parseD1VideoUrlFile`, #11297): o 5c-3 poe o link no D1 de X, Threads e Facebook. Com `video_may_not_open: true` (#12598, nivel warn) o registro do upload diz que o video pode nao abrir no horario do D1 (privado, nao confirmado, agendado depois): so aviso, repetir o `detail` no resumo; o gate da Etapa 6 repete.
 - `needs-editor` (exit 3) → o arquivo do link existe mas nao e link do YouTube: corrigir com `link-video-d1.ts {AAMMDD} --save --video-url URL`.
 - `consent-off` → `--skip youtube`/`none` sem link gravado.
 - `missing-link` (exit 3) → nem link nem marcador nem `--skip youtube`. O `detail` traz as saidas e, com `_internal/05-youtube-pending-approval.json` presente, cita o plano do horizontal a espera do "pode publicar" (#12122, informativo desde o #12588).
 
-Com `.step-5-done.json` ja presente (retry de canal depois da Etapa 5 concluida), `needs-editor`/`missing-link` nao bloqueiam (`blocking: false`, exit 0): a 1a rodada ja decidiu o video.
+Com `.step-5-done.json` ja presente (retry de canal depois da Etapa 5 concluida), `needs-editor`/`missing-link`/`no-video-stale` nao bloqueiam (`blocking: false`, exit 0): a 1a rodada ja decidiu o video.
 
 **Resumo** (autoridade sobre o link do D1): uma linha "YouTube:" com o `outcome` e "link no D1: sim" ou "nao" (`d1_link`) com o `detail`. O `log-event` do passo ja sai do `stage5-youtube.ts` (nao logar de novo). O upload, a legenda, o podcast e a tela final sao do `/diaria-publica-video` Parte A, que os relata; o vertical segue na Parte B dela, depois das Etapas 5 e 6 (#12591).
 
