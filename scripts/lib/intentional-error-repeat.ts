@@ -14,6 +14,9 @@
  * #10344): arquivo ausente = `[]`; existente-mas-ilegível = falha alta, nunca `[]` calado.
  *
  * Premissa (#9101): janela default de 30 dias, injetável.
+ * #12612: repetir a ENTIDADE (`correct_value`) na janela também é `error`, não
+ * mais `warning` — a 261110 repetiu DeepMind (261030) com outra grafia e o
+ * gate só avisou.
  */
 
 import { basename, dirname, join, resolve } from "node:path";
@@ -281,16 +284,17 @@ export function checkIntentionalErrorNotRecentRepeat(
     const hits = matches.filter((m) => m.field === field);
     if (hits.length === 0) continue;
     const refs = hits.map((m) => `${m.edition} ("${m.past_value}")`).join(", ");
-    // Grafia errada repetida = leitor já sabe a resposta → bloqueia. Mesma entidade
-    // com grafia NOVA é mais fraco (e comum no histórico) → aviso pro gate.
-    const blocking = field === "wrong_value";
+    // Grafia errada repetida = leitor já sabe a resposta. Mesma entidade com
+    // grafia nova (261030 "DeepMinde" → 261110 "DeepMing") deixa o jogo
+    // previsível: decisão do editor (#12612), as duas bloqueiam o sentinel —
+    // inclusive erro declarado ou replantado à mão.
     out.push({
       rule,
       message:
         `erro intencional repete ${field}="${hits[0].value}" já usado em ${refs} (janela de ` +
-        `${windowDays} dias) — ${blocking ? "leitores já sabem a resposta; troque a grafia/entidade" : "mesma entidade de um erro recente; prefira outra"} (#9101)`,
-      source_issue: "#9101",
-      severity: blocking ? "error" : "warning",
+        `${windowDays} dias) — ${field === "wrong_value" ? "leitores já sabem a resposta; troque a grafia/entidade" : "mesma entidade de um erro recente; troque por outra (replant-intentional-error.ts --edition-dir …)"} (#9101, #12612)`,
+      source_issue: field === "wrong_value" ? "#9101" : "#12612",
+      severity: "error",
       file: jsonPath,
     });
   }

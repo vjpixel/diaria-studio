@@ -57,7 +57,7 @@ import {
   replaceEditionInJsonlRaw,
 } from "./lib/intentional-errors.ts";
 import { intentionalErrorsJsonlPathForEditionDir } from "./lib/intentional-error-repeat.ts";
-import { buildCurrentNarrative, plantIntentionalError } from "./lib/plant-intentional-error.ts";
+import { plantIntentionalError } from "./lib/plant-intentional-error.ts";
 import { checkIntentionalErrorNotRecentRepeat } from "./lib/intentional-error-repeat.ts";
 import { checkIntentionalErrorPresentInFinal } from "./lib/invariant-checks/stage-4.ts";
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts";
@@ -391,7 +391,7 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     tried.push(c.location);
     const planted = plantIntentionalError(md, c);
     if (!planted) continue;
-    const newMd = planted.md.replace(CURRENT_NARRATIVE_LINE_RE, () => buildCurrentNarrative(planted.section));
+    const newMd = planted.md.replace(CURRENT_NARRATIVE_LINE_RE, () => planted.narrative);
     // Record só do candidato: campos do record antigo (reveal etc.) descreveriam o erro velho.
     const record: IntentionalErrorJson = { ...c };
     const violations = validateInScratch(edition, newMd, record, history);
