@@ -78,6 +78,7 @@ import { getBroadcast, KitApiError } from "./lib/kit-client.ts";
 import { resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
 import { resolveVerifiedAudience, type ResolvedAudience } from "./lib/shared/kit-apoio-tag.ts";
 import { circleStackSelectionViolations, circleStackUnreviewedTitles } from "./lib/circle-stack-select.ts";
+import { readUtf8WithContext } from "./lib/read-file-with-context.ts"; // #12554
 import {
   STACK_EMAIL_NIVEIS,
   STACK_EMAIL_TAG_SYNC_COMMAND,
@@ -352,7 +353,7 @@ export async function runCircleStackEmail(options: StackEmailRunOptions): Promis
   }
   let selection: CircleStackSelection;
   try {
-    ({ selection } = parseStoredCircleStackSelection(readFileSync(paths.selectionPath, "utf8"), paths.selectionPath, paths.cycle));
+    ({ selection } = parseStoredCircleStackSelection(readUtf8WithContext(paths.selectionPath), paths.selectionPath, paths.cycle));
   } catch (e) {
     throw new StackEmailGuardError((e as Error).message);
   }
@@ -424,7 +425,7 @@ async function sendLocked(
   if (prior.kind !== "none") log(`AVISO: --force passando por cima do registro anterior (${prior.kind}).`);
   // Conteúdo anterior, para devolvê-lo se este envio for cancelado: o --force
   // por cima de um `sent` não pode apagar o registro do envio que já saiu.
-  const priorRaw = prior.kind === "none" ? null : readFileSync(paths.publishedPath, "utf8");
+  const priorRaw = prior.kind === "none" ? null : readUtf8WithContext(paths.publishedPath);
 
   const kitConfigResult = deps.resolveKitConfig();
   if (!kitConfigResult.ok) throw new StackEmailGuardError(kitConfigResult.reason);
