@@ -244,6 +244,18 @@ e o estado é o mesmo: `Revisado por /diaria-desbloqueia — bloqueio de
 execução de {recorded_at} ("{motivo}") segue valendo, nenhuma mudança.`
 **Nunca** perguntar de novo O QUE o `bloqueio-execucao` já documenta.
 
+> **Não repetir a revisão quando nada mudou (#12546).** Toda candidata do
+> scan traz `semMudancaDesdeUltimaRevisao`. `true` = o último comentário da
+> issue já é um "Revisado por /diaria-desbloqueia" de autor confiável e o
+> `updatedAt` da issue não passou dele (nenhum comentário, label, edição ou
+> mudança de estado depois). Aí **não postar** um novo comentário de
+> revisão, aqui nem no destino (b) do Passo 3b: a issue continua contada
+> como revisada no relatório (Passo 5), com a nota "sem mudança desde a
+> revisão anterior". O que o sinal não vê é o toggle em `data/`, então a
+> exceção é a conferência abaixo: `DECISÃO CONTRADITA` comenta a
+> divergência mesmo com o sinal `true`. Sinal `false` (primeira revisão,
+> algo novo na thread, dependência não resolvida): comentar como antes.
+
 > **Decisão sobre estado verificável — conferir o estado real antes de
 > "segue valendo" (#10105).** Vale pra `bloqueioConfirmado` e pra
 > `jaDestravadas`: quando a decisão/bloqueio registrado é sobre um estado
@@ -405,7 +417,8 @@ antes de montar a bateria (#8909)** — vale tanto para `acaoImediataCandidatas`
 quanto para `bloqueioConfirmado`, nunca só o título. Cada candidata termina
 classificada num destes três destinos, e nenhuma fica "não avaliada": (a)
 vira pergunta; (b) não tem ação do editor, e segue com o comentário de
-revisão do Passo 2; (c) resolve por default (#5321) e é roteada.
+revisão do Passo 2 (pulado quando `semMudancaDesdeUltimaRevisao: true`,
+#12546); (c) resolve por default (#5321) e é roteada.
 
 A leitura das threads fica com o coordenador, diretamente no output completo
 do scan, sem delegar a subagente (#11032). O scan entrega corpo e

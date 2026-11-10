@@ -195,7 +195,8 @@ export interface DesbloqueioIssueInput {
   /** ISO 8601 — `updatedAt` de `gh issue view --json updatedAt`. Mantido na
    * entrada por ser um campo padrão de toda leitura de issue (auditoria,
    * logging do chamador), mas `classifyDesbloqueioCandidate` NÃO o usa mais
-   * na decisão (#6961 — ver docstring do módulo acima). */
+   * na decisão do `status` (#6961 — ver docstring do módulo acima). Só
+   * entra em `semMudancaDesdeUltimaRevisao` (#12546), que não muda status. */
   updatedAt: string;
   /** Bodies de TODOS os comentários da issue, na ordem — não um subconjunto.
    * Se a leitura falhou, o caller passa `[]` aqui E preenche
@@ -221,6 +222,14 @@ export interface DesbloqueioIssueInput {
    * (`--incluir-engavetadas`). Default `false`: engavetada pelo editor não
    * se repergunta a cada rodada. */
   incluirEngavetadas?: boolean;
+  /**
+   * #12546 — o ÚLTIMO comentário da thread inteira, sem o filtro de autor
+   * confiável que `comments` aplica (um comentário de conta sem vínculo
+   * depois da revisão também é "algo novo"). `null`/ausente = thread sem
+   * comentário ou o caller não informou; nos dois casos
+   * `semMudancaDesdeUltimaRevisao` sai `false`.
+   */
+  ultimoComentario?: UltimoComentario | null;
   /** Injetável pra teste; default `new Date()`. */
   now?: Date;
 }
@@ -257,6 +266,74 @@ export interface DesbloqueioCandidate {
   /** Espelha `DesbloqueioIssueInput.commentsFetchError` — `null` quando a
    * leitura foi OK. */
   commentsFetchError: string | null;
+  /**
+   * #12546 — `true` quando o último comentário da issue já é um "Revisado
+   * por /diaria-desbloqueia" de autor confiável e nada mudou na issue
+   * depois dele (ver `semMudancaDesdeUltimaRevisao`). O playbook então NÃO
+   * posta um novo comentário de revisão; a issue segue contada como
+   * revisada no relatório.
+   */
+  semMudancaDesdeUltimaRevisao: boolean;
+}
+
+/** #12546 — o último comentário da thread, como o CLI o lê do `gh`. */
+export interface UltimoComentario {
+  body: string;
+  createdAt: string | null;
+  /** `isTrustedCommentAuthor` (#9752) aplicado ao comentário. */
+  confiavel: boolean;
+}
+
+/** Início do comentário de revisão que a skill posta (Passo 2 / Passo 3b
+ * destino b): `Revisado por /diaria-desbloqueia (08/11): …`. */
+export const REVISAO_COMMENT_PREFIX = "Revisado por /diaria-desbloqueia";
+
+/**
+ * #12546 — folga entre o `createdAt` do comentário de revisão e o
+ * `updatedAt` da issue. O próprio POST do comentário move o `updatedAt`
+ * para o mesmo instante (medido em 10/11/2026: 0-1 s de diferença na
+ * #10731 e na #11720). Qualquer evento posterior (label, edição do corpo,
+ * mudança de estado, comentário novo) empurra o `updatedAt` para além da
+ * folga.
+ */
+export const REVISAO_UPDATED_AT_TOLERANCE_MS = 120_000;
+
+/**
+ * #12546 — a issue não mudou desde o último comentário de revisão do
+ * `/diaria-desbloqueia`?
+ *
+ * Usa o `updatedAt` da issue como relógio de "algo aconteceu": o GitHub o
+ * move em comentário novo, label, edição de corpo/título e mudança de
+ * estado. Se o último comentário é a revisão e o `updatedAt` não passou
+ * dele (mais a folga), nada aconteceu desde então.
+ *
+ * Fica `false` (e o playbook comenta como antes) quando:
+ *   - falta dado (sem último comentário, datas ausentes ou inválidas);
+ *   - o último comentário não é a revisão, ou é de autor não confiável
+ *     (#9752: qualquer conta pode escrever o prefixo num repo público);
+ *   - o status é `erro-leitura` ou `bloqueio-obsoleto` (o estado mudou por
+ *     definição: a dependência fechou);
+ *   - a dependência declarada não foi resolvida (`missing`): sem
+ *     confirmação, não se afirma "nada mudou".
+ *
+ * Mudança de dependência que fecha NÃO move o `updatedAt` desta issue; é
+ * coberta pelo status (`bloqueio-obsoleto`). Mudança de toggle em `data/`
+ * também não; quem a pega é `check-decision-state-drift.ts`, que o
+ * playbook continua rodando antes de pular o comentário.
+ */
+export function semMudancaDesdeUltimaRevisao(
+  input: Pick<DesbloqueioIssueInput, "updatedAt" | "ultimoComentario" | "dependencyState">,
+  status: DesbloqueioStatus,
+): boolean {
+  if (status === "erro-leitura" || status === "bloqueio-obsoleto") return false;
+  if (input.dependencyState === "missing") return false;
+  const ultimo = input.ultimoComentario;
+  if (!ultimo || !ultimo.confiavel || !ultimo.createdAt) return false;
+  if (!ultimo.body.trimStart().startsWith(REVISAO_COMMENT_PREFIX)) return false;
+  const criado = Date.parse(ultimo.createdAt);
+  const atualizado = Date.parse(input.updatedAt);
+  if (Number.isNaN(criado) || Number.isNaN(atualizado)) return false;
+  return atualizado - criado <= REVISAO_UPDATED_AT_TOLERANCE_MS;
 }
 
 /**
@@ -318,6 +395,7 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
       executionBlock: null,
       commentsRead: input.comments.length,
       commentsFetchError: input.commentsFetchError,
+      semMudancaDesdeUltimaRevisao: false,
     };
   }
 
@@ -349,6 +427,7 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
     executionBlock,
     commentsRead: input.comments.length,
     commentsFetchError: null,
+    semMudancaDesdeUltimaRevisao: semMudancaDesdeUltimaRevisao(input, status),
   };
 }
 
