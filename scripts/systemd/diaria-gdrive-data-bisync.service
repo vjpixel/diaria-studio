@@ -16,7 +16,7 @@ RequiresMountsFor=/mnt/hd-sata
 [Service]
 Type=oneshot
 ExecStart=/bin/sh /home/vjpixel/diaria-studio/scripts/systemd/gdrive-data-bisync.sh
-# data/ tem ~3,5 GB e a listagem leva segundos. A carga inicial grande e o
+# Rodada incremental de ~3,5 min (10/11/2026). A carga inicial grande e o
 # --resync MANUAL (fora da unit), entao o teto fica em 20 min: abaixo do stale
 # de 30 min do alarme (DATA_GDRIVE_SYNC_TOLERANCES), para uma rodada lenta
 # virar falha (timeout) antes de virar "sem sucesso" mudo. oneshot nao
