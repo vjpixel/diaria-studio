@@ -22,11 +22,26 @@ import { STYLE_SUFFIX, styleSuffixFor, buildPositivePrompt, type ImageRatio } fr
 describe("image-generate styleSuffixFor — sufixo por formato (#12422)", () => {
   const ALL: ImageRatio[] = ["2x1", "4x5", "1x1", "master"];
   const OWN: Record<ImageRatio, RegExp> = {
-    "2x1": /wide 2:1 landscape image \(1600×800\)/,
-    "4x5": /portrait 4:5 image \(1080×1350\)/,
-    "1x1": /1:1 image \(1024×1024\)/,
-    master: /6:5 image \(1600×1350\)/,
+    "2x1": /wide 2:1 landscape image\b/,
+    "4x5": /portrait 4:5 image\b/,
+    "1x1": /\b1:1 image\b/,
+    master: /\b6:5 image\b/,
   };
+
+  // #12799: o #12422 pôs a resolução em pixels no sufixo (`(1600×800)`),
+  // contra a regra invariável "prompt de imagem SEM resolução em pixels"
+  // (context/editorial-rules.md, CLAUDE.md). Número no prompt puxa dígitos
+  // para a arte, e nenhum outro check lê o sufixo.
+  for (const r of ALL) {
+    it(`#12799 ${r}: sufixo e prompt completo sem resolução em pixels`, () => {
+      const s = styleSuffixFor(r);
+      assert.doesNotMatch(s, /\d+\s*[×xX*]\s*\d+/, "resolução WxH no sufixo");
+      assert.doesNotMatch(s, /\d+\s*px\b/i, "medida em px no sufixo");
+      assert.doesNotMatch(s, /\b\d{3,}\b/, "número de 3+ dígitos (pixels) no sufixo");
+      const p = buildPositivePrompt("Um robô lê um livro.", r);
+      assert.doesNotMatch(p, /\d+\s*[×xX*]\s*\d+/, "resolução WxH no prompt enviado");
+    });
+  }
 
   for (const r of ALL) {
     it(`${r}: cita o próprio formato e não descreve recorte de arte única nem 9:16`, () => {
