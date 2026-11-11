@@ -25,6 +25,7 @@ import {
   LATEST_VIDEO_BIO_UTM_MEDIUM,
   latestVideoBioLink,
 } from "../scripts/lib/shared/latest-video-redirect.ts";
+import { applyMetadata, computeDrift } from "../scripts/studio-ui/studio-utms.ts";
 import {
   missingHorizontalLinkWarning,
   planShortHorizontalLinks,
@@ -52,6 +53,14 @@ describe("#12786 item 1: UTMs da bio no registry", () => {
     const src = readFileSync(new URL("../scripts/lib/shared/latest-video-redirect.ts", import.meta.url), "utf8");
     assert.ok(!/=\s*"video-horizontal"/.test(src), "literal video-horizontal voltou ao módulo do redirect");
     assert.ok(!/=\s*"bio"/.test(src), "literal bio voltou ao módulo do redirect");
+  });
+
+  it("o /utms não acusa sem_conversao no link da bio (leva ao YouTube, não ao cadastro)", () => {
+    const findings = computeDrift(UTM_EMITTERS.map((e) => applyMetadata(e, undefined)), {});
+    const keys = new Set(findings.map((f) => f.key));
+    for (const s of LATEST_VIDEO_BIO_UTM_SOURCES) assert.ok(!keys.has(`${s}-bio-video-horizontal-12735`), s);
+    // Controle: emissor comum sem conversão continua acusado.
+    assert.ok(findings.some((f) => f.kind === "sem_conversao"));
   });
 
   it("as entradas novas não colidem com outro emissor", () => {

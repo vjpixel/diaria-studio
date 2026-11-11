@@ -995,6 +995,13 @@ export interface UtmEmitter {
   description: string;
   /** Status editorial default (a UI pode sobrescrever via metadados). */
   status: UtmEmitterStatus;
+  /**
+   * #12786: `true` quando o link leva para fora do cadastro (ex.: o
+   * `diar.ia.br/video` da bio, que redireciona ao YouTube). Não converter em
+   * assinante é o esperado, então o `/utms` não acusa `sem_conversao`.
+   * Ausente = o link leva ao cadastro e a falta de conversão é drift.
+   */
+  noSignupExpected?: true;
 }
 
 /**
@@ -1025,6 +1032,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       "Link fixo da bio (diar.ia.br/video, #12735): redireciona ao horizontal mais recente no YouTube; o editor cola o link na bio da rede. Leva ao YouTube, não ao cadastro.",
     status: "ativo" as const,
+    noSignupExpected: true as const,
   })),
   {
     id: "site-apoiar-redirect",
