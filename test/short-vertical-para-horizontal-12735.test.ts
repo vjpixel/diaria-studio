@@ -264,7 +264,8 @@ describe("#12735 diar.ia.br/video: registro e redirect", () => {
       assert.equal((await updateLatestVideoRedirect({ editionDir: comLink, aammdd: "261111", kv, apply: false, now })).status, "would_write");
       assert.equal(kv.puts, 0, "sem --apply não grava");
       assert.equal((await updateLatestVideoRedirect({ editionDir: comLink, aammdd: "261111", kv, apply: true, now })).status, "written");
-      assert.deepEqual(parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY]), { url: URL_H, aammdd: "261111", updated_at: now.toISOString() });
+      // #12801 (resíduo): sem registro do upload, `public_at` presumido = 06:00 BRT da edição.
+      assert.deepEqual(parseLatestVideoRecord(kv.store[LATEST_VIDEO_KV_KEY]), { url: URL_H, aammdd: "261111", updated_at: now.toISOString(), public_at: "2026-11-11T09:00:00.000Z" });
       assert.equal((await updateLatestVideoRedirect({ editionDir: comLink, aammdd: "261111", kv, apply: true, now })).status, "unchanged");
       assert.equal((await updateLatestVideoRedirect({ editionDir: comLink, aammdd: "261110", kv, apply: true, now })).status, "older");
       assert.equal(kv.puts, 1);

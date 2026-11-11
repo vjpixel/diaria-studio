@@ -19,7 +19,9 @@
  * (`shouldReplaceLatestVideo`). Horizontal agendado (#12801): o registro leva
  * o `public_at` do upload e o horizontal anterior em `previous`; o Worker só
  * passa a servir o novo depois do `public_at` — gravar na noite de D-1 nunca
- * manda o link da bio para um vídeo ainda privado. Credenciais: `CLOUDFLARE_ACCOUNT_ID` +
+ * manda o link da bio para um vídeo ainda privado. Sem o registro do upload
+ * (caminho de reserva: subido pelo YouTube Studio, link colado), o `public_at`
+ * presumido é 06:00 BRT do dia da edição (`resolveEditionHorizontalPublicAt`). Credenciais: `CLOUDFLARE_ACCOUNT_ID` +
  * `CLOUDFLARE_WORKERS_TOKEN` (as mesmas do upload de imagens no KV `POLL`).
  *
  * Exit: 0 gravado/sem mudança/plano; 1 falha (credencial, KV, link ausente
@@ -36,6 +38,7 @@ import { createKvRestOps } from "./lib/cloudflare-kv-rest.ts";
 import { D1_VIDEO_URL_FILE, parseD1VideoUrlFile } from "./lib/diaria/d1-video-link.ts";
 import { extractYouTubeVideoId } from "./lib/diaria/d1-video-link.ts";
 import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
+import { DEFAULT_EDITION_SCHEDULE_HHMM, resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import {
   LATEST_VIDEO_KV_KEY,
   isLatestVideoPublic,
@@ -71,27 +74,71 @@ export function readEditionHorizontalUrl(editionDir: string): string | null {
 /**
  * #12801: quando o horizontal `url` fica público, lido do registro do upload
  * (`_internal/05-youtube-published.json`: `rereadStatus.publishAt`, senão
- * `requested.publishAt`). `null` = sem agendamento conhecido (upload na hora,
- * link colado à mão, registro de outro vídeo ou ilegível): conta como público.
+ * `requested.publishAt`). `null` = sem agendamento no registro (upload na
+ * hora, link colado à mão, registro de outro vídeo ou ilegível). Quem grava o
+ * KV usa `resolveEditionHorizontalPublicAt`, que separa o upload na hora do
+ * caminho de reserva.
  */
 export function readEditionHorizontalPublicAt(editionDir: string, url: string): string | null {
+  return readUploadRecordForVideo(editionDir, url).publishAt;
+}
+
+/**
+ * #12801: o registro do upload (`05-youtube-published.json`) é DESTE vídeo?
+ * `matched: false` = sem registro, ilegível ou de outro vídeo — o link veio
+ * do caminho de reserva (upload pelo YouTube Studio + link colado,
+ * `link-video-d1.ts --save`), e o estado do vídeo é desconhecido.
+ */
+function readUploadRecordForVideo(editionDir: string, url: string): { matched: boolean; publishAt: string | null } {
+  const none = { matched: false, publishAt: null };
   const path = join(editionDir, YOUTUBE_PUBLISHED_FILE);
-  if (!existsSync(path)) return null;
+  if (!existsSync(path)) return none;
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    return null;
+    return none;
   }
-  if (!raw || typeof raw !== "object") return null;
+  if (!raw || typeof raw !== "object") return none;
   const r = raw as Record<string, unknown>;
   const id = extractYouTubeVideoId(url);
-  if (!id || r.videoId !== id) return null;
+  if (!id || r.videoId !== id) return none;
   const pick = (o: unknown): string | null => {
     const v = o && typeof o === "object" ? (o as Record<string, unknown>).publishAt : null;
     return typeof v === "string" && !Number.isNaN(Date.parse(v)) ? v : null;
   };
-  return pick(r.rereadStatus) ?? pick(r.requested);
+  return { matched: true, publishAt: pick(r.rereadStatus) ?? pick(r.requested) };
+}
+
+export type HorizontalPublicAtSource = "upload" | "upload_immediate" | "edition_default";
+
+/**
+ * #12801 (resíduo): o `public_at` do registro do KV.
+ *   - registro do upload deste vídeo com `publishAt` → ele (`upload`);
+ *   - registro deste vídeo sem `publishAt` (upload na hora) → `null`, vale já
+ *     (`upload_immediate`);
+ *   - sem registro deste vídeo (caminho de reserva: o editor subiu pelo
+ *     YouTube Studio e colou o link) → 06:00 BRT do dia da edição
+ *     (`edition_default`), o horário em que o horizontal é agendado. Premissa
+ *     conservadora: se o editor publicou na hora, o link da bio só segue no
+ *     horizontal anterior (público) até as 06:00; sem ela, ia para um vídeo
+ *     possivelmente privado até lá. Depois das 06:00 o default já passou e o
+ *     registro vale na hora, como antes.
+ */
+export function resolveEditionHorizontalPublicAt(
+  editionDir: string,
+  url: string,
+  aammdd: string,
+): { publicAt: string | null; source: HorizontalPublicAtSource } {
+  const upload = readUploadRecordForVideo(editionDir, url);
+  if (upload.matched) return { publicAt: upload.publishAt, source: upload.publishAt ? "upload" : "upload_immediate" };
+  let publicAt: string | null = null;
+  try {
+    publicAt = resolveEditionScheduledAt(aammdd, DEFAULT_EDITION_SCHEDULE_HHMM);
+  } catch {
+    publicAt = null; // AAMMDD fora do calendário: sem horário a presumir
+  }
+  return { publicAt, source: "edition_default" };
 }
 
 /** #12801: o registro sem o `previous` aninhado (o KV guarda um nível só). */
@@ -129,7 +176,8 @@ export async function updateLatestVideoRedirect(input: {
   const record: LatestVideoRecord = { url, aammdd: input.aammdd, updated_at: input.now.toISOString() };
   // #12801: o horizontal agendado (private até 06:00 BRT de D) leva o `public_at`, e o
   // registro guarda o anterior para o Worker servir até lá (`effectiveLatestVideoRecord`).
-  const publicAt = readEditionHorizontalPublicAt(input.editionDir, url);
+  // Resíduo: no caminho de reserva (sem registro do upload) presume as 06:00 BRT da edição.
+  const { publicAt } = resolveEditionHorizontalPublicAt(input.editionDir, url, input.aammdd);
   if (publicAt) record.public_at = publicAt;
   const current = parseLatestVideoRecord(await input.kv.get(LATEST_VIDEO_KV_KEY));
   const previous = previousForNewRecord(current, input.aammdd, input.now);
