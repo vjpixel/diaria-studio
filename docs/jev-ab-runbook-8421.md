@@ -43,8 +43,9 @@ do calendário (mesmas condições do B, controle concorrente).
 ## Publicar no epic #8412
 
 ```
-npx tsx scripts/jev-ab-report.ts --editions <lista> > relatorio.md
-gh issue comment 8412 --body-file relatorio.md
+F=/tmp/jev-ab-8412-$(date +%s).md   # nome único (#12746)
+npx tsx scripts/jev-ab-report.ts --editions <lista> > "$F"
+gh issue comment 8412 --body-file "$F"
 ```
 
 Depois comentar em #8421 com o link e, cumprido o critério (uma edição inteira B + >=5/braço),

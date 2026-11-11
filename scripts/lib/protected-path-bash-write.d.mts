@@ -12,6 +12,8 @@ export interface ShellCommand {
 export interface ProtectedPathWriteFinding {
   kind: string;
   path: string;
+  /** `"interpreter-code"` quando o achado veio de código de interpretador. */
+  source?: string;
 }
 
 export interface ProtectedPathWriteOptions {
@@ -22,6 +24,7 @@ export interface ProtectedPathWriteOptions {
 
 export function isProtectedPath(p: string, cwd?: string): boolean;
 export function tokenizeShell(src: unknown): ShellCommand[];
+export function resolveCommandWords(words: unknown, depth?: number): string[];
 export function codeWritesProtectedPath(code: unknown, cwd?: string): boolean;
 export function findProtectedPathWrite(
   command: unknown,
@@ -33,3 +36,5 @@ export function shouldBlockProtectedPathWrite(
   opts?: ProtectedPathWriteOptions,
 ): ProtectedPathWriteFinding | null;
 export function protectedPathWriteReason(finding: ProtectedPathWriteFinding): string;
+export function isInterpreterCodeFinding(finding: ProtectedPathWriteFinding | null | undefined): boolean;
+export const INTERPRETER_TEXT_WORKAROUND: string;

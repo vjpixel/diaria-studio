@@ -24,10 +24,15 @@ import {
 
 const MAX_SCRIPT_BYTES = 512 * 1024;
 
-/** Lê script fora do projeto (`/tmp/fix.py`) para a análise; `null` se não der. */
-function readScript(path) {
+/**
+ * Lê script fora do projeto (`/tmp/fix.py`) ou arquivo de patch para a
+ * análise; `null` se não der. Só arquivo regular: FIFO e `/dev/zero` travariam
+ * o `readFileSync` (e o hook) — re-review da PR #12846, #12812.
+ */
+export function readScript(path) {
   try {
-    if (statSync(path).size > MAX_SCRIPT_BYTES) return null;
+    const st = statSync(path);
+    if (!st.isFile() || st.size > MAX_SCRIPT_BYTES) return null;
     return readFileSync(path, "utf8");
   } catch {
     return null;
@@ -55,8 +60,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
           },
         }),
       );
-    } catch {
-      // Fail-open, sempre.
+    } catch (err) {
+      // Fail-open, mas nunca calado: o erro vai para o stderr (review da PR
+      // #12846). Erro de UM comando já não chega aqui — o laço da lib isola
+      // por comando e bloqueia o que crashou citando caminho protegido.
+      process.stderr.write(`block-bash-protected-path-write (#12009): erro, comando liberado: ${err?.stack ?? err}\n`);
     }
   });
 }
