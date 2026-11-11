@@ -20,7 +20,9 @@
  * RELIDO da plataforma (#573), nunca o 2xx da mutação. Até lá o item vencido
  * vira alarme e o dono indicado no item publica. O tick também nunca grava no
  * banco: o arquivo vem pelo OneDrive, e uma escrita daqui disputaria a das
- * sessões que registram os itens.
+ * sessões que registram os itens. A releitura que marca `publicado` é o
+ * `npx tsx scripts/agendamentos.ts verificar`, rodado pela sessão do dono
+ * (`scripts/lib/diaria/agendamentos-verificar.ts`; só o YouTube tem leitor).
  *
  * Uso:
  *   npx tsx scripts/agendamentos-tick.ts            # avalia e alarma
