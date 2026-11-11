@@ -341,7 +341,7 @@ Antes de reivindicar, contar as PRs `continuo/*` abertas (exclui `continuo/rescu
 npx tsx scripts/check-continuo-pr-cap.ts
 ```
 
-Retorna `{"open":N,"cap":3,"mayClaim":boolean,"counted":string[]}`. Se `mayClaim` false (`open >= 3`): **não reivindicar** — trabalhar a própria fila (§3b: consertar/rejeitar uma das 3; fechar rejeitada; consertar CI se aplicável) e reportar no relatório do tick. Se `mayClaim` true: reivindicar normalmente.
+Retorna `{"open":N,"cap":3,"mayClaim":boolean,"counted":string[]}`; `mayClaim` exige vaga também no teto global (#12765). Se `mayClaim` false (`open >= 3`): **não reivindicar** — trabalhar a própria fila (§3b: consertar/rejeitar uma das 3; fechar rejeitada; consertar CI se aplicável) e reportar no relatório do tick. Se `mayClaim` true: reivindicar normalmente.
 
 Fail-soft (mesma disciplina do §3b `checked: -1`): `gh pr list` falhando → `mayClaim=true`, `counted=[]`, motivo visível no stderr; um tick a mais é barato, contínuo travado por infra não é (#7746).
 

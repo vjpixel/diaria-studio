@@ -63,6 +63,24 @@ transitória resolvida: revalidar os gates normais antes de qualquer ação.
 Draft, `bloqueio-execucao` e retenção para editor continuam bloqueados até
 liberação explícita; o briefing nunca promove draft automaticamente.
 
+**Prazo de validade de 48h (#12765).** Cada item traz `expired` e
+`destination`. Passadas 48h a escalada sai da fila de pendências sem prazo:
+rodar `npx tsx scripts/list-continuo-escalation-queue.ts --apply`, que fecha
+as de destino `fechar-redundante`, `fechar-para-issue` e `fechar-reabrir-issue`
+(comentário na PR e na issue de origem, branch preservada, `gh pr reopen`
+desfaz). Destino `fixer` = despachar `dev-fixer` na branch existente para
+rebase no master + correção do CI e aplicar a label `continuo-ci-fix-tentado`;
+na rodada seguinte, se continuar vermelha, ela vira `fechar-reabrir-issue`.
+Destino `briefing` segue como pendência do editor.
+
+**Teto global de PRs abertos (#12765).** Antes de compor cada onda, rodar
+`npx tsx scripts/check-open-pr-cap.ts` e passar `slots` como
+`--open-pr-slots` no `record-overnight-wave.ts` (o script recusa onda maior).
+A onda tem no máximo `min(10, slots)` unidades. `slots = 0`: não abrir onda
+nova; a iteração drena as PRs abertas (fixer, merge, destino das escaladas
+vencidas acima) e registra no relatório que o teto segurou o despacho.
+`verified:false` (exit 2) = não verificado, segue com o teto da onda.
+
 ## Contagem final de entrega (#11235)
 
 Em TODA saída do modo `--agendado`, inclusive fila vazia, dry-run, halt da sonda e preempção, grave no `report.md` desta rodada exatamente um marcador estruturado:

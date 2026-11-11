@@ -9,7 +9,9 @@
  * `--units "8290,8291;8300"` — unidades despachadas (`;` separa unidades,
  * `,` separa issues do lote). `--deferred N` — unidades prontas seguradas
  * pelo teto (default 0; valor não-numérico ou flag sem valor = exit 2, nunca
- * `cap_hit` falso-negativo silencioso).
+ * `cap_hit` falso-negativo silencioso). `--open-pr-slots N` — vagas do teto
+ * global de PRs abertos (`scripts/check-open-pr-cap.ts`, #12765): onda com
+ * mais unidades que N é recusada (exit 1), já que cada unidade vira uma PR.
  *
  * Exit: 0 = gravado (ou onda duplicada detectada — no-op idempotente, #8496
  * item 3: mesmo conjunto de issues já registrado em `plan.waves` dentro de
@@ -32,6 +34,7 @@ import {
 } from "./lib/overnight-waves.ts";
 import { formatIssueRef, legacyIssueNumber, parseIssueRef } from "./lib/issue-repos.ts";
 import { recordUnitTimeline } from "./lib/overnight-unit-timeline.ts";
+import { waveOpenPrCapError } from "./lib/open-pr-cap.ts";
 
 const INT = /^\d+$/;
 
@@ -55,7 +58,7 @@ export function parseUnits(raw: string): WaveIssueId[][] {
 
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
-  const usage = '[record-overnight-wave] uso: --plan {path} --units "8290,8291;8300" [--deferred N]';
+  const usage = '[record-overnight-wave] uso: --plan {path} --units "8290,8291;8300" [--deferred N] [--open-pr-slots N]';
   if (!values.plan || !values.units) {
     console.error(usage);
     process.exit(2);
@@ -69,6 +72,10 @@ if (isMainModule(import.meta.url)) {
   // parseArgs descarta a flag sem valor em silêncio — checar o argv cru.
   if (process.argv.includes("--deferred") && !(typeof values.deferred === "string" && INT.test(values.deferred))) {
     console.error(`[record-overnight-wave] --deferred exige inteiro não-negativo (recebido: ${JSON.stringify(values.deferred)})`);
+    process.exit(2);
+  }
+  if (process.argv.includes("--open-pr-slots") && !(typeof values["open-pr-slots"] === "string" && INT.test(values["open-pr-slots"]))) {
+    console.error(`[record-overnight-wave] --open-pr-slots exige inteiro não-negativo (recebido: ${JSON.stringify(values["open-pr-slots"])})`);
     process.exit(2);
   }
 
@@ -89,6 +96,10 @@ if (isMainModule(import.meta.url)) {
     const units = parseUnits(values.units);
     const all = units.flat();
     if (new Set(all).size !== all.length) throw new Error("issue repetida entre/dentro das unidades da onda");
+    if (typeof values["open-pr-slots"] === "string") {
+      const capErr = waveOpenPrCapError(units.length, Number(values["open-pr-slots"]));
+      if (capErr) throw new Error(capErr);
+    }
     record = buildWaveRecord({ units, deferred: values.deferred ? Number(values.deferred) : 0 });
   } catch (e) {
     console.error(`[record-overnight-wave] ${(e as Error).message}`);
