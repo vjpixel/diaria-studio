@@ -4,7 +4,8 @@
  *   - #11753: pausas de 0,35–0,8 s dentro do clipe (o build só cortava ≥0,8 s);
  *   - #11754: tomada colapsada pelo Whisper (uma tomada só no transcript onde
  *     houve várias) e a última tomada como padrão;
- *   - #11757: duração-alvo da vertical (≤85 s) com sugestão de frases a cortar.
+ *   - #11757: duração-alvo da vertical com sugestão de frases a cortar (alvo
+ *     de 85 s, baixado para 75 s pelo #12694: ver video-montage-vertical-75s-12694).
  */
 
 import { describe, it } from "node:test";
@@ -248,28 +249,28 @@ describe("#11757: duração-alvo da vertical no Gate 2", () => {
   };
   const vplan = (seconds: number): SequencePlan => ({ spec: SPEC_V, clips: [], durationFrames: Math.round(seconds * 30), script: "", missingBlocks: [], dropped: [] });
 
-  it("regressão 261030: vertical de 102,3 s passa do alvo de 85 s e a sugestão começa pelo conselho genérico do fim", () => {
-    assert.equal(VERTICAL_TARGET_S, 85);
+  it("regressão 261030: vertical de 102,3 s passa do alvo de 75 s (#12694) e a sugestão começa pelo conselho genérico do fim", () => {
+    assert.equal(VERTICAL_TARGET_S, 75);
     const c = verticalTargetCheck(vplan(102.3), resolved, 30);
     assert.ok(c);
-    assert.ok(Math.abs(c.overS - 17.3) < 0.05);
+    assert.ok(Math.abs(c.overS - 27.3) < 0.05);
     assert.equal(c.cuts[0].index, 3);
     assert.match(c.cuts[0].reason, /conselho genérico/);
     assert.ok(c.cuts.some((x) => x.index === 1 && /repete o resumo/.test(x.reason)), JSON.stringify(c.cuts));
     assert.ok(!c.cuts.some((x) => x.index === 0), "a 1ª frase do comentário (gancho) fica");
     assert.ok(c.coveredS >= c.overS);
-    assert.match(verticalTargetWarning(SPEC_V.name, c), /17,3 s acima do alvo da vertical \(85 s\); sugestão: cortar comentário \[3\]/);
+    assert.match(verticalTargetWarning(SPEC_V.name, c), /27,3 s acima do alvo da vertical \(75 s\); sugestão: cortar comentário \[3\]/);
   });
 
-  it("horizontal, vertical dentro do alvo e alvo da edição maior não avisam", () => {
+  it("horizontal e vertical dentro do alvo não avisam; alvo da edição maior que 75 s não libera (#12694)", () => {
     assert.equal(verticalTargetCheck({ spec: SPEC_H, durationFrames: 200 * 30 }, resolved, 30), null);
-    assert.equal(verticalTargetCheck(vplan(84.5), resolved, 30), null);
-    assert.equal(verticalTargetCheck(vplan(102.3), resolved, 30, { targetS: 110 }), null);
+    assert.equal(verticalTargetCheck(vplan(74.5), resolved, 30), null);
+    assert.equal(verticalTargetCheck(vplan(102.3), resolved, 30, { targetS: 110 })?.targetS, 75);
   });
 
   it("o roteiro (Gate 2) mostra o aviso e as frases sugeridas, com o skip da vertical", () => {
     const md = roteiroMarkdown("261030", [vplan(102.3)], resolved, 30);
-    assert.match(md, /\*\*\[aviso\] 102,3 s, 17,3 s acima do alvo da vertical \(85 s\)\.\*\*/);
+    assert.match(md, /\*\*\[aviso\] 102,3 s, 27,3 s acima do alvo da vertical \(75 s, card de CTA fora da conta\)\./);
     assert.match(md, /"skip": \["outras-redes"\]/);
     assert.match(md, /- Comentário \[3\] \(12,1 s, fecha com conselho genérico\): "Não utilize IA/);
   });

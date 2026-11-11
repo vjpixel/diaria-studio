@@ -501,6 +501,17 @@ em `ln-{cycle}.json`, sem travar o resto do render. `coverImagePath` no
 JSON é `null` quando isso acontece; confira antes do Passo 7b se veio
 populado — é a mesma imagem que o editor sobe manualmente no Passo 9.
 
+**Seção "Vídeo da semana" (#12777).** Quando `ln-selection.json` tem
+`video`, o render põe a seção logo depois da manchete que o vídeo comenta
+(o D1 da edição do vídeo; se nenhuma manchete for esse D1, depois da
+manchete 1, com warning para o editor revisar o "destaque acima"). O link
+do vídeo (`utm_content=video`) fica no texto, sem `<img>` no HTML. O mesmo
+comando copia o `04-d1-2x1.jpg` (sem o overlay de play, que sugere um
+clique que o LinkedIn não oferece) da edição do vídeo para
+`data/weekly/{cycle}/video-04-d1-2x1.jpg`, fail-soft, e grava o caminho em
+`videoImagePath` no `ln-{cycle}.json`: é a imagem que o editor sobe à mão
+na seção (Passo 9).
+
 ## Passo 7b — Publicar a prévia visual do artefato (#8027, obrigatório antes do Passo 8)
 
 **Diferente de simplesmente colar `ln-{cycle}.html` cru num Artifact, esta
@@ -521,8 +532,9 @@ Publique via `Artifact`:
    colável do Passo 7) numa página visual — tipografia legível (Georgia ou
    equivalente, mesma família da newsletter), a imagem de capa
    (`coverImagePath`, se não for `null`) no topo, e o corpo tal como sai do
-   render (headlines sem numeração, "da edição de DD/MM" sob cada uma, bloco
-   Use Melhor, "Outros destaques da semana", abertura e fecho). Não invente texto
+   render (headlines sem numeração, "da edição de DD/MM" sob cada uma, a
+   seção "Vídeo da semana" quando houver, bloco Use Melhor, "Outros
+   destaques da semana", abertura e fecho). Não invente texto
    novo — é uma RENDERIZAÇÃO do que já existe em `ln-{cycle}.html`, nunca
    uma reescrita.
 2. **Nota do mecanismo, sempre visível no topo da página:** um aviso claro
@@ -539,6 +551,17 @@ Publique via `Artifact`:
    mensagem ao editor) qualquer warning pendente de `ln-{cycle}.json`
    (capa ausente, comentário do Use Melhor ausente, trocas #5538) — regra
    do #5321, default aplicado precisa aparecer visível.
+5. **Onde montar a prévia (#12788):** no scratchpad da sessão, nunca em
+   `data/`. `data/` é junction/symlink para fora do working directory
+   (OneDrive), e a ferramenta `Artifact` recusa arquivo de suporte que não
+   esteja no working directory nem no scratchpad: no ciclo `26w45` a 1ª
+   tentativa falhou por a capa estar em `data/weekly/{cycle}/`. Antes de
+   publicar, copie para uma pasta do scratchpad (ex.
+   `{scratchpad}/ln-{cycle}/`) a capa (`coverImagePath`) e qualquer outra
+   imagem do ciclo que a prévia mostre (ex. `videoImagePath`, Passo 7), e
+   escreva o HTML da prévia nessa mesma pasta, referenciando as imagens por
+   caminho relativo e publicando-as em `files`. Os arquivos de `data/`
+   continuam sendo a fonte: a cópia no scratchpad é só para a prévia.
 
 Publicada a prévia, apresente o link ao editor ANTES de prosseguir pro
 Passo 8 — é o ponto em que ele revisa o conteúdo final antes de qualquer
@@ -646,6 +669,9 @@ import direto). Âncora de "diar.ia.br" sem a UTM esperada é acusada
 explicitamente, com ou sem continuação após o wordmark (#10385; o caso
 `26w42` é a âncora só com o wordmark tendo o href reescrito pra
 `http://diar.ia.br`, ver `context/publishers/linkedin.md` item (f)).
+Menção a "diar.ia.br" em texto puro (a frase da seção "Vídeo da semana",
+#12777) vira auto-link do LinkedIn para a home: a auditoria desconta essas
+âncoras a mais da contagem, até o número de menções em texto puro da fonte.
 
 - **`result.ok === true`:** prosseguir pro Passo 8d.
 - **Exceção, a perda esperada da menção (#10385, decisão do editor de
@@ -697,24 +723,87 @@ preencher o campo de título do editor, digite direto nele, nunca chegue
 nele por setas a partir do corpo (ver "atalhos que corrompem" no
 playbook).
 
-**Tamanho e hashtags do post de feed (#10386).** Default: um parágrafo
-de 2 a 4 frases que diga do que trata a edição e cite as manchetes da
-semana, seguido de um bloco de hashtags na mesma regra dos posts sociais
-da diária (`.claude/agents/social-writer.md`, #367): até 5 hashtags,
-sempre `#InteligenciaArtificial`, nunca `#Tecnologia`, em português
-quando possível, num bloco contíguo no fim. Extensão diferente (mais
-curta ou mais longa) é escolha do editor: se ele pedir, siga e não volte
-ao default no mesmo ciclo.
+**Estrutura e hashtags do post de feed (#12787, substitui o default de
+"um parágrafo de 2 a 4 frases" do #10386).** O post é escrito para quem
+ainda não conhece a newsletter. Padrão, nesta ordem:
+
+1. **Abertura com o formato**, fixa: "Toda semana eu trago aqui as três
+   notícias de IA que os leitores da minha newsletter mais clicaram na
+   semana anterior:". Não amarre a um dia da semana: o texto continua
+   certo quando o post sai fora da segunda.
+2. **Um parágrafo curto por manchete** (1 a 2 frases), com o fato
+   concreto e o número mais forte de cada uma logo no início (ex.: 3,6
+   milhões de rostos, até 12 salários, R$ 5 mil).
+3. **O que tem no artigo**: o resumo de cada manchete, o vídeo da semana
+   (só quando `ln-selection.json` tiver `video`) e o Use Melhor, descrito
+   pelo benefício ao leitor.
+4. **Apresentação da newsletter e convite no fim**: o que é a diar.ia.br,
+   a frequência ("todo dia útil"), "5 minutos por dia", grátis, e que o
+   link para assinar está no artigo.
+5. **Bloco de hashtags** na mesma regra dos posts sociais da diária
+   (`.claude/agents/social-writer.md`, #367): até 5 hashtags, sempre
+   `#InteligenciaArtificial`, nunca `#Tecnologia`, em português quando
+   possível, num bloco contíguo no fim.
+
+Referência, a versão publicada pelo editor no ciclo `26w45`:
+
+```
+Toda semana eu trago aqui as três notícias de IA que os leitores da minha newsletter mais clicaram na semana anterior:
+
+Golpistas usam IA para copiar o rosto de pessoas reais a partir de fotos públicas e passar pelo reconhecimento facial de bancos. Só a Certiface já tem 3,6 milhões de rostos na lista de suspeita de fraude.
+
+O Google paga até 12 salários a quem aceitar sair da empresa. Quem trabalha nos projetos de IA ficou fora da oferta.
+
+Um advogado levou multa de R$ 5 mil no STF por esconder, numa petição, em letra miúda, uma ordem para a IA que analisa os processos.
+
+No artigo tem o resumo de cada uma, um vídeo meu comentando o golpe da selfie e um passo a passo para conferir se a fonte que o ChatGPT cita diz mesmo o que ele afirma.
+
+As três saíram na diar.ia.br, a newsletter de IA que escrevo e mando por e-mail todo dia útil. São 5 minutos por dia e é grátis. O link para assinar está no artigo.
+
+#InteligenciaArtificial #SegurancaDigital #Trabalho #Justica
+```
+
+A referência mostra a forma, não o texto a copiar: os parágrafos 2 a 4 e
+as hashtags mudam a cada ciclo, com os fatos das manchetes aprovadas no
+Passo 3. Sem vídeo na semana, o parágrafo "No artigo tem" não cita vídeo.
+Extensão ou estrutura diferente é escolha do editor: se ele pedir, siga e
+não volte ao padrão no mesmo ciclo.
 
 **Humanizador + Clarice são obrigatórios antes do Passo 9 (#10384).** O
 texto do post de feed é redação nova a cada ciclo. Antes de entregá-lo:
 
 1. `Skill("humanizador", ...)` no processo completo de 9 passos (mesma
    chamada do Passo 5);
-2. `mcp__clarice__correct_text` sobre o resultado, aplicando **todas** as
+2. tirar todos os travessões do resultado (nem `—` nem `–`): o texto final
+   tem de ter **zero travessões**, e a troca vem ANTES da Clarice porque
+   qualquer edição depois dela exige nova passada;
+3. gravar esse texto (Write) em
+   `data/weekly/{cycle}/_internal/ln-feed-post-clarice-input.txt` e rodar
+   `mcp__clarice__correct_text` sobre ele, aplicando **todas** as
    sugestões legítimas (filtradas por `clarice-filter.ts`, #11798; mesma regra do Passo 5, #4514; exceção só pra marca ou
-   identificador técnico, sinalizada ao editor);
-3. conferir que o texto final tem **zero travessões** (nem `—` nem `–`).
+   identificador técnico, sinalizada ao editor). O filtro roda com
+   `--source-text`, que amarra o filtrado a esse texto:
+   `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json --source-text data/weekly/{cycle}/_internal/ln-feed-post-clarice-input.txt`.
+
+**Guard mecânico (#12794, a prosa acima falhou em `26w42` e `26w45`).**
+Grave o texto final em `data/weekly/{cycle}/_internal/ln-feed-post.txt`
+(Write) e, com o `{S}-filtrado.json` do `clarice-filter.ts` em mãos, rode:
+
+```bash
+npx tsx scripts/weekly-feed-post-review.ts --cycle {cycle} --mark --humanizador --clarice-filtered {S}-filtrado.json
+```
+
+O script grava `_internal/ln-feed-post-review.json` com o hash do texto e
+recusa (exit 2) texto com travessão, sem o arquivo da Clarice ou com
+sugestão mantida que não aparece aplicada. Também recusa o filtrado que
+não é do texto enviado à Clarice (sem o sidecar `{S}-filtrado.json.source.json`,
+ou com o hash de outra versão, inclusive um `[]` velho) e o texto final
+que não é o texto enviado com as sugestões aplicadas (edição depois da
+Clarice): nos dois casos, passe a Clarice de novo na versão atual. Sugestão recusada de propósito
+(marca, identificador técnico) passa com `--allow-unapplied "<motivo>"`,
+que fica no marcador e vai pro editor no Passo 9. `--humanizador` é o seu
+atestado de que a skill rodou sobre ESTE texto: nunca passe a flag sem a
+passada.
 
 Texto do post sem as duas passadas não vai pro Passo 9. Se o editor
 pedir outra versão (mais longa, com hashtags, outro tom), a versão nova
@@ -732,9 +821,18 @@ editor, nesta ordem:
    o conteúdo antes de subir a capa.
 2. **O caminho do arquivo de capa** (`data/weekly/{cycle}/04-d1-2x1.jpg`),
    se `coverImagePath` veio populado — ou aviso explícito de que não há
-   capa disponível (fail-soft do Passo 7), sem inventar substituto.
+   capa disponível (fail-soft do Passo 7), sem inventar substituto. Se o
+   artigo tiver a seção "Vídeo da semana" e `videoImagePath` veio
+   populado, passe também esse caminho, para o editor subir a imagem à mão
+   logo abaixo do parágrafo do vídeo (#12777: o LinkedIn não linka imagem,
+   o link do vídeo fica no texto e o HTML colado não leva `<img>`).
 3. **O texto do post de feed** (Passo 8d), já com humanizador + Clarice
-   aplicados e sem travessão, pronto pra colar.
+   aplicados e sem travessão, pronto pra colar. Antes de entregar, rode
+   `npx tsx scripts/weekly-feed-post-review.ts --cycle {cycle} --check`
+   (#12794) e entregue exatamente o texto que ele imprime no stdout. Exit
+   2 = texto sem revisão ou alterado depois dela: volte ao Passo 8d, nunca
+   entregue a versão recusada. Cada versão nova que o editor pedir passa
+   pelo mesmo ciclo (Write, duas passadas, `--mark`, `--check`).
 4. **Pedido de ajuste manual da âncora da menção (#10385, decisão do
    editor de 18/10/2026)**, só quando o `ln-{cycle}.html` tiver uma âncora
    com `utm_content=mencao-abertura` (abertura sem a marca não gera

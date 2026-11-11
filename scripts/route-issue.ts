@@ -152,6 +152,17 @@
  * de origem: a #12348, destravada às 14:44Z e devolvida a bloqueada às 23:49Z
  * pela rodada que julgou pelo corpo (`detectIgnoredRecentUnblock`).
  *
+ * ## Roteamento mais recente contrariado (#12744)
+ *
+ * Fora da janela de 24 h do #12545, `--track bloqueada` continua recusado
+ * quando o roteamento confiável mais recente é de outro track e a `--reason`
+ * não o cita ("roteada para overnight em 09/11, mas ..."). `--override-reroute
+ * "motivo"` (ou `--override-unblock`) sobrepõe e grava o motivo no comentário.
+ * Caso de origem: a #12348, roteada para overnight em 09/11 14:42Z e devolvida
+ * a bloqueada em 10/11 18:46Z, 28 h depois (`detectIgnoredLatestRoute`). Na
+ * mesma issue, o guard de decisão do #12389 passou a cobrir também `--motivo
+ * trade-off` (caso #12737: decisão às 00:11, trade-off-real às 00:17).
+ *
  * ## `--for-create` (#6205 — declarar o track NA CRIAÇÃO da issue)
  *
  * Modo alternativo, sem nenhuma chamada `gh`: a issue ainda não existe, não
@@ -211,6 +222,7 @@ import { isTrustedCommentAuthor } from "./lib/trusted-comment-author.ts";
 import { parseDependsOn } from "./lib/issue-depends-on.ts";
 import {
   detectIgnoredDecision,
+  detectIgnoredLatestRoute,
   detectIgnoredRecentUnblock,
   detectNonDateReason,
   type NonDateReasonFinding,
@@ -267,6 +279,10 @@ export interface RouteIssueOptions {
   /** #12545 — rotear para `bloqueada` apesar de um destravamento de menos de
    * 24 h que a razão não cita. Motivo obrigatório, registrado no comentário. */
   overrideUnblock?: string;
+  /** #12744 — rotear para `bloqueada` contrariando o roteamento mais recente
+   * (de outro track) que a razão não cita. Motivo obrigatório, registrado no
+   * comentário. `overrideUnblock` também dispensa este guard. */
+  overrideReroute?: string;
   cwd: string;
   ghRun?: GhRunFn;
   /** Injetável pra teste; default `new Date()`. Usado só na validação final
@@ -411,6 +427,9 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   if (options.overrideUnblock !== undefined && !options.overrideUnblock.trim()) {
     return failResult("--override-unblock exige motivo não-vazio.");
   }
+  if (options.overrideReroute !== undefined && !options.overrideReroute.trim()) {
+    return failResult("--override-reroute exige motivo não-vazio.");
+  }
 
   // Validation antés da I/O: --motivo explícito, e --until só com agendada.
   if (options.motivo && !(options.motivo in MOTIVO_LABEL)) {
@@ -502,7 +521,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   // "registrada" por conta externa não segura nada.
   const decision = latestDecisionFor(fetchedBefore.data.routingComments.map((c) => c.body));
   if (!options.overrideDecision) {
-    const ignored = detectIgnoredDecision({ track, reason: reasonTrimmed, decision });
+    const ignored = detectIgnoredDecision({ track, reason: reasonTrimmed, decision, motivo: options.motivo });
     if (ignored) {
       return failResult(`--track ${track} recusado na issue ${issueLabel}: ${ignored} Nenhuma escrita realizada.`);
     }
@@ -522,6 +541,20 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     });
     if (ignoredUnblock) {
       return failResult(`--track ${track} recusado na issue ${issueLabel}: ${ignoredUnblock} Nenhuma escrita realizada.`);
+    }
+  }
+
+  // #12744 — `bloqueada` contrariando o roteamento mais recente, sem janela
+  // de tempo (o #12545 acima só cobre as 24 h seguintes a um destravamento).
+  if (!options.overrideReroute && !options.overrideUnblock) {
+    const ignoredRoute = detectIgnoredLatestRoute({
+      track,
+      reason: reasonTrimmed,
+      comments: fetchedBefore.data.routingComments,
+      parseTrack: parseRouteIssueMarkerAtStart,
+    });
+    if (ignoredRoute) {
+      return failResult(`--track ${track} recusado na issue ${issueLabel}: ${ignoredRoute} Nenhuma escrita realizada.`);
     }
   }
 
@@ -699,7 +732,8 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
         (decision ? ` de ${decision.decided_at.slice(0, 10)} ("${decision.resposta}")` : "") +
         `: ${options.overrideDecision.trim()}`
       : "") +
-    (options.overrideUnblock ? `\n\nSobreposição de destravamento recente: ${options.overrideUnblock.trim()}` : "");
+    (options.overrideUnblock ? `\n\nSobreposição de destravamento recente: ${options.overrideUnblock.trim()}` : "") +
+    (options.overrideReroute ? `\n\nSobreposição do roteamento mais recente: ${options.overrideReroute.trim()}` : "");
   let commentAction: CommentAction;
   const alreadyPosted = fetchedBefore.data.comments.some((c) => c.trim() === commentBody.trim());
   if (alreadyPosted) {
@@ -896,6 +930,7 @@ interface ParsedArgs {
   overrideNewer?: string;
   overrideDecision?: string;
   overrideUnblock?: string;
+  overrideReroute?: string;
   /** `--issue` cru — `N` ou `owner/repo#N` (#10618). */
   issue?: string;
   track?: string;
@@ -925,12 +960,13 @@ function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
     else if (a === "--body") out.body = argv[++i];
     else if (a === "--depends-on") out.dependsOn = argv[++i];
     else if (a === "--sessao") out.sessao = argv[++i];
-    else if (a === "--triaged-at" || a === "--override-newer" || a === "--override-decision" || a === "--override-unblock") {
+    else if (a === "--triaged-at" || a === "--override-newer" || a === "--override-decision" || a === "--override-unblock" || a === "--override-reroute") {
       const value = argv[++i];
       if (!value || value.startsWith("--")) return { error: `${a} exige valor` };
       if (a === "--triaged-at") out.triagedAt = value;
       else if (a === "--override-newer") out.overrideNewer = value;
       else if (a === "--override-unblock") out.overrideUnblock = value;
+      else if (a === "--override-reroute") out.overrideReroute = value;
       else out.overrideDecision = value;
     }
     else if (a === "--force") out.force = true;
@@ -991,6 +1027,7 @@ export function parseArgs(argv: string[]): RouteIssueOptions | { error: string }
     overrideNewer: raw.overrideNewer,
     overrideDecision: raw.overrideDecision,
     overrideUnblock: raw.overrideUnblock,
+    overrideReroute: raw.overrideReroute,
     cwd: process.cwd(),
   };
 }
@@ -1013,11 +1050,12 @@ function parseForCreateArgs(argv: string[]): ForCreateOptions | { error: string 
 export const CLI_SPEC: CliSpec = {
   script: "scripts/route-issue.ts",
   booleans: ["for-create", "force"],
-  values: ["issue", "track", "reason", "motivo", "until", "body", "depends-on", "sessao", "triaged-at", "override-newer", "override-decision", "override-unblock"],
+  values: ["issue", "track", "reason", "motivo", "until", "body", "depends-on", "sessao", "triaged-at", "override-newer", "override-decision", "override-unblock", "override-reroute"],
   usage: [
     "uso: npx tsx scripts/route-issue.ts --issue N|owner/repo#N --track {track} [--reason <texto>] [--motivo <m>]",
     "  [--until AAAA-MM-DD] [--depends-on N] [--sessao continuo|overnight|develop] [--triaged-at <iso>]",
-    "  [--override-newer <motivo>] [--override-decision <motivo>] [--override-unblock <motivo>] [--force] [--help | -h]",
+    "  [--override-newer <motivo>] [--override-decision <motivo>] [--override-unblock <motivo>]",
+    "  [--override-reroute <motivo>] [--force] [--help | -h]",
     "uso: npx tsx scripts/route-issue.ts --for-create --track {track} [--motivo <m>] [--until AAAA-MM-DD] [--body <texto>]",
     "",
     "Sem --for-create aplica labels e comenta na issue (escrita real no GitHub).",

@@ -88,7 +88,11 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  * Título (#11739): derivado do D1; `--title "..."` (dry-run e upload) troca pelo
  * título que o editor escolheu para o YouTube. O título efetivo vai para o
  * registro (`title`, com `title_source: "flag"` e o `d1_title` derivado), e a
- * detecção do vídeo já no canal casa por qualquer um dos dois. Trocar o título
+ * detecção do vídeo já no canal casa por qualquer um dos dois. Sem `--title`,
+ * o título do horizontal no roteiro do vídeo (`_internal/roteiro-falas.json`,
+ * `porVideo.horizontal.titulo`, #12751) vale no lugar do D1, com
+ * `title_source: "roteiro"`; o texto da capa do roteiro sai como premissa
+ * (gancho da capa). Trocar o título
  * DEPOIS do upload (`videos.update`) exige o escopo `youtube.force-ssl`, que o
  * `youtube-oauth-setup.ts` já pede desde #11384: token anterior a isso (403
  * `ACCESS_TOKEN_SCOPE_INSUFFICIENT`) se resolve rodando o setup de novo.
@@ -112,6 +116,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
+import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
@@ -197,6 +202,13 @@ export interface YouTubePublishPlanInput {
    * (markdown, `<`/`>`, 100 caracteres). Ausente = título do D1.
    */
   title?: string;
+  /**
+   * #12751: título e texto da capa do horizontal no roteiro do
+   * `/diaria-video-roteiro` (`_internal/roteiro-falas.json`, `porVideo.horizontal`).
+   * O título vale quando não há `--title` (precedência: `--title` > roteiro >
+   * D1); a capa entra no plano como sugestão de gancho para a capa (Passo A2).
+   */
+  roteiro?: { titulo?: string; capa?: string };
   video: { path: string; exists: boolean; sizeBytes: number | null };
   thumb: { path: string; exists: boolean };
   /** Legenda SRT do horizontal (#11384). Ausente = sem legenda no plano. */
@@ -216,8 +228,10 @@ export interface YouTubePublishPlan {
    * ele, segue valendo como 2º título na detecção do vídeo já no canal (#11080).
    */
   d1Title: string;
-  /** De onde veio `metadata.title`: o D1 ou o `--title` do editor (#11739). */
-  titleSource: "d1" | "flag";
+  /** De onde veio `metadata.title`: o D1, o `--title` do editor (#11739) ou o roteiro do vídeo (#12751). */
+  titleSource: "d1" | "flag" | "roteiro";
+  /** #12751: o texto da capa do horizontal no roteiro, ausente sem roteiro. */
+  roteiroCapa?: string;
   schedule: YouTubeScheduleDecision;
   /** O que o vídeo de fato fica — difere de `schedule` sem a auditoria do GCP. */
   effective: YouTubeEffectiveVisibility;
@@ -271,7 +285,23 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
     if (Array.from(input.title.trim()).length > Array.from(custom).length) {
       warnings.push(`--title passou de 100 caracteres e foi cortado para "${custom}"`);
     }
+    const doRoteiro = input.roteiro?.titulo ? buildYouTubeTitle(input.roteiro.titulo) : "";
+    if (doRoteiro && doRoteiro !== custom) premises.push(`--title sobrepõe o título do roteiro do vídeo ("${doRoteiro}", #12751)`);
+  } else if (input.roteiro?.titulo) {
+    // #12751: sem --title, o título do horizontal no roteiro do vídeo.
+    const doRoteiro = buildYouTubeTitle(input.roteiro.titulo);
+    if (!doRoteiro) warnings.push(`título do roteiro vazio depois do saneamento (${JSON.stringify(input.roteiro.titulo)}): usando o do D1`);
+    else if (doRoteiro !== derived.title) {
+      metadata = { ...derived, title: doRoteiro };
+      titleSource = "roteiro";
+      premises.push(`título do YouTube vindo do roteiro do vídeo (_internal/roteiro-falas.json): "${doRoteiro}" (o do D1 seria "${derived.title}"; --title sobrepõe, #12751)`);
+      if (Array.from(input.roteiro.titulo.trim()).length > Array.from(doRoteiro).length) {
+        warnings.push(`título do roteiro passou de 100 caracteres e foi cortado para "${doRoteiro}"`);
+      }
+    }
   }
+  const roteiroCapa = input.roteiro?.capa?.trim() || undefined;
+  if (roteiroCapa) premises.push(`texto da capa no roteiro do vídeo: "${roteiroCapa}" (o gancho da capa no Passo A2, #12751)`);
   const schedule = resolveYouTubeSchedule(input.aammdd, input.now, input.publishAt ?? null);
   premises.push(schedule.premise);
   const themes = youtubeD1Themes({ title: d1.title, body: d1.body, category: d1.category });
@@ -316,6 +346,7 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
     metadata,
     d1Title: derived.title,
     titleSource,
+    ...(roteiroCapa ? { roteiroCapa } : {}),
     schedule,
     effective,
     request,
@@ -348,10 +379,11 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
   /** O plano previa o rebaixamento pra private (projeto GCP sem auditoria). */
   audit_blocked: boolean;
   /**
-   * #11739: o `title` veio de `--title` (≠ D1). Ausente = título do D1. O
-   * título derivado do D1 fica em `d1_title` para conferência.
+   * #11739: o `title` veio de `--title` (≠ D1); `roteiro` (#12751): do roteiro
+   * do vídeo. Ausente = título do D1. O título derivado do D1 fica em
+   * `d1_title` para conferência.
    */
-  title_source?: "flag";
+  title_source?: "flag" | "roteiro";
   d1_title?: string;
   /** Registros substituídos por `--force` (mais antigo primeiro). */
   previous_uploads?: PreviousUploadEntry[];
@@ -536,9 +568,9 @@ export function readPublishedRecord(path: string, aammdd: string): PublishedReco
   return { kind: "done", record: rec as unknown as YouTubePublishedRecord };
 }
 
-/** Origem do título no registro (#11739): só aparece quando veio de `--title`. */
+/** Origem do título no registro (#11739): só aparece quando veio de `--title` ou do roteiro (#12751). */
 function titleProvenance(plan: YouTubePublishPlan): Pick<YouTubePublishedRecord, "title_source" | "d1_title"> {
-  return plan.titleSource === "flag" ? { title_source: "flag", d1_title: plan.d1Title } : {};
+  return plan.titleSource === "d1" ? {} : { title_source: plan.titleSource, d1_title: plan.d1Title };
 }
 
 /** Histórico a carregar no próximo registro, a partir do que está no disco. */
@@ -889,7 +921,7 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
               aammdd: plan.aammdd,
               title: plan.metadata.title,
               // #11739: com --title, o título do D1 também reconhece o vídeo (upload manual com o título padrão).
-              ...(plan.titleSource === "flag" ? { altTitles: [plan.d1Title] } : {}),
+              ...(plan.titleSource !== "d1" ? { altTitles: [plan.d1Title] } : {}),
               acceptedPeriodVideoId: typeof input.acceptPeriodMatch === "string" ? input.acceptPeriodMatch : undefined,
             },
           }),
@@ -1272,6 +1304,8 @@ async function main(): Promise<number> {
   const videoPath = resolve(values["video"] ?? join(dir, youtubeVideoFileName(aammdd)));
   const videoExists = existsSync(videoPath);
   const thumbPath = join(dir, YOUTUBE_THUMB_FILE);
+  // #12751: título e capa do horizontal no roteiro do vídeo, quando a /diaria-video-roteiro gravou o JSON.
+  const roteiro = readRoteiroHorizontal(dir, (w) => console.error(`[aviso] ${w}`));
 
   const plan = planYouTubePublish({
     aammdd,
@@ -1281,6 +1315,7 @@ async function main(): Promise<number> {
     editionUrl: values["edition-url"],
     publishAt: values["publish-at"],
     title: values["title"],
+    ...(roteiro ? { roteiro } : {}),
     video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
     thumb: { path: thumbPath, exists: existsSync(thumbPath) },
     ...(flags.has("no-captions") ? {} : { captions: { path: captionsPath, exists: existsSync(captionsPath) } }),

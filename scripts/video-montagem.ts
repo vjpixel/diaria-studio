@@ -136,7 +136,11 @@
  *       ou palavras do roteiro interpoladas + ouvidas descartadas acima de 10% do roteiro (export
  *       reeditado depois do build). `--heard-text` faz a legenda pela fala do export (grafia e
  *       pontuação do roteiro onde casa); aí só a legenda vazia recusa.
- *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--no-subs]   (default a vertical da edição; sempre refaz)
+ *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--no-subs] [--over-target]   (default a vertical da edição; sempre refaz)
+ *       (#12694) vertical (da edição ou corte/Short) com mais de 75 s de fala (card de CTA fora
+ *       da conta; `verticalTargetS` da edição só reduz) = exit 1 com `[aviso] GATE BLOQUEADO`,
+ *       antes de baixar o bruto: o corte é proposto no `roteiro` e aplicado no blocks.json.
+ *       `--over-target` força a prévia (só com o editor pedindo); o review aceita a mesma flag.
  *       (#12579) sem SRT, ou com SRT mais velho que o build da sequência, sai sem legenda com
  *       [aviso] (não recusa): as legendas vêm depois da aprovação das prévias; --no-subs tira a
  *       legenda mesmo com SRT em dia. (#12571) o card de CTA do XML entra no fim da prévia.
@@ -216,6 +220,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
+import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import {
   AUDIO_GAIN_TARGET_LUFS,
   AUDIO_GAIN_TP_CEILING_DBTP,
@@ -366,7 +371,9 @@ import {
   SHORTS_MAX_S,
   shortsWarning,
   suggestedDurations,
+  verticalPreviewGate,
   verticalTargetCheck,
+  verticalTargetOverrideWarning,
   verticalTargetWarning,
   type DecupagemPlan,
 } from "./lib/diaria/video-montage-docs.ts";
@@ -2243,6 +2250,8 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   const dplan = loadDecupagemPlan(ctx, tr.segments);
   const alternatives = dplan ? alternativesFromDecupagem(buildDecupagemDoc(dplan, tr.segments, loadVocab().rules)) : undefined;
   const sil = silences(ctx);
+  const targetOverride = verticalTargetOverrideWarning(file.verticalTargetS);
+  if (targetOverride) console.error(`[aviso] ${targetOverride}`);
   for (const p of ps) {
     const t = verticalTargetCheck(p, resolved, source.fps, { targetS: file.verticalTargetS, silences: sil });
     if (t) console.error(`[aviso] ${verticalTargetWarning(p.spec.name, t)}`);
@@ -2250,7 +2259,11 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   // #12571: cada versão fecha com o card de CTA (salvo ctaCard: false), com a linha de compartilhar dela.
   const ctaCardShare = file.ctaCard === false ? undefined : Object.fromEntries(ps.map((p) => [sequenceKey(p.spec), ctaShareLine(p.spec.ctaShare ?? file.ctaShare)]));
   // #12585: o título de cada vídeo, das mesmas funções do build e dos publicadores.
-  const videoTitles = videoTitlesFor(ps.map((p) => p.spec), { blocksTitle: file.screenTitle, d1Title: readD1Title(ctx.edition) });
+  const videoTitles = videoTitlesFor(ps.map((p) => p.spec), {
+    blocksTitle: file.screenTitle,
+    d1Title: readD1Title(ctx.edition),
+    roteiroTitle: readRoteiroHorizontal(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`))?.titulo ?? null,
+  });
   const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare, videoTitles });
   // #11956: os achados do fact-check da fala entram no Doc do Gate 2.
   const fcPath = f(ctx, VIDEO_FACT_CHECK_FILE);
@@ -2656,7 +2669,7 @@ export function resolveScreenTitle(input: { blocksTitle?: string; d1Title?: stri
  */
 export function videoTitlesFor(
   specs: ReadonlyArray<Pick<SequenceSpec, "target" | "corte" | "screenTitle">>,
-  input: { blocksTitle?: string; d1Title?: string | null },
+  input: { blocksTitle?: string; d1Title?: string | null; roteiroTitle?: string | null },
 ): Record<string, string> {
   const out: Record<string, string> = {};
   const vertical = resolveScreenTitle(input);
@@ -2672,6 +2685,12 @@ export function videoTitlesFor(
       out[key] = !t ? `${verticalText}, o da vertical da edição: o corte não tem screenTitle na sequência`
         : t.text ? `${t.text} (screenTitle da sequência do corte)` : "(sem título na tela: screenTitle vazio na sequência do corte)";
     } else if (s.target === "youtube") {
+      // #12751: o título do horizontal no roteiro do vídeo vence o do D1, como no publish-youtube.ts.
+      const doRoteiro = input.roteiroTitle ? buildYouTubeTitle(input.roteiroTitle) : "";
+      if (doRoteiro) {
+        out[key] = `${doRoteiro} (título do roteiro do vídeo, o do publish-youtube.ts sem --title)`;
+        continue;
+      }
       const yt = input.d1Title ? buildYouTubeTitle(input.d1Title) : "";
       out[key] = yt ? `${yt} (título do D1, o do publish-youtube.ts sem --title)` : "(sem D1 em 02-reviewed.md: o publish-youtube.ts não acha o título)";
     } else {
@@ -2809,9 +2828,11 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   for (const w of framingWarn.mug) console.error(`[aviso] ${w}`);
   // #12093: o rosto centrado nos dois zooms; escala pequena demais bate na borda do bruto.
   for (const w of framingWarn.face) console.error(`[aviso] ${w}`);
+  const targetOverride = verticalTargetOverrideWarning(file.verticalTargetS);
+  if (targetOverride) console.error(`[aviso] ${targetOverride}`);
   for (const p of picked) {
     const d = p.durationFrames / source.fps;
-    console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${CTA_CARD.durationS} s (#12571)`}`);
+    console.error(`== ${p.spec.name}: ${p.clips.length} clipes,${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${CTA_CARD.durationS} s (#12571)`}`);
     const g = ganchoWarning(p);
     if (g) console.error(`[aviso] ${g}`);
     // #12712: o corte sem gancho de publicação avisa já na montagem, com o mesmo erro do video-extra-verticals.ts.
@@ -3565,10 +3586,42 @@ function printCorteHook(ctx: Ctx, spec: SequenceSpec): void {
   }
 }
 
-async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSession | null = null, noSubs = false): Promise<number> {
+/**
+ * O gate de duração da prévia (#12694): vertical (da edição ou corte/Short
+ * avulso) acima do alvo não ganha prévia nem review. Imprime o `[aviso] GATE
+ * BLOQUEADO` e devolve true para o comando sair com 1, ANTES de baixar o bruto
+ * ou renderizar. `overTarget` (`--over-target`) força, com o aviso mesmo assim.
+ */
+export function verticalDurationGateBlocks(
+  plan: Pick<SequencePlan, "spec" | "durationFrames">,
+  fps: number,
+  targetS: number | undefined,
+  overTarget: boolean,
+  log: (line: string) => void = (l) => console.error(l),
+): boolean {
+  const gate = verticalPreviewGate(plan, fps, targetS);
+  if (!gate) return false;
+  if (overTarget) {
+    log(`${gate.replace("GATE BLOQUEADO", "acima do alvo, forçado por --over-target")}`);
+    return false;
+  }
+  log(gate);
+  return true;
+}
+
+async function cmdPreview(
+  ctx: Ctx,
+  target: string | undefined,
+  drive: DriveSession | null = null,
+  noSubs = false,
+  opts: { overTarget?: boolean; needLocalBruto?: () => Promise<unknown> } = {},
+): Promise<number> {
   const pf = loadPlan(ctx);
   // #12096: `--seq youtube` também (o horizontal, 960x540); sem --seq, a vertical da edição.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
+  // #12694: acima de 75 s de fala, a prévia não sai (nem o bruto é baixado).
+  if (verticalDurationGateBlocks(plan, pf.source.fps, loadBlocks(ctx).file.verticalTargetS, opts.overTarget === true)) return 1;
+  await opts.needLocalBruto?.();
   printCorteHook(ctx, plan.spec);
   if (pf.framingAssumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (o mesmo do build)");
   for (const w of framingWarningsByFile([plan], pf.source, pf.framing, pf.fileOverrides).mug) console.error(`[aviso] ${w}`);
@@ -3707,10 +3760,12 @@ export function reviewCardScope(input: {
   };
 }
 
-function cmdReview(ctx: Ctx, target: string | undefined): number {
+function cmdReview(ctx: Ctx, target: string | undefined, overTarget = false): number {
   const pf = loadPlan(ctx);
   // #12096: o horizontal também (`--seq youtube`), com a mesma recusa de prévia mais velha que o build.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
+  // #12694: o mesmo gate da prévia (uma prévia velha, de antes do gate, não é revisada).
+  if (verticalDurationGateBlocks(plan, pf.source.fps, loadBlocks(ctx).file.verticalTargetS, overTarget)) return 1;
   printCorteHook(ctx, plan.spec);
   const preview = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   if (!existsSync(preview)) throw new Error(`prévia ausente: ${preview} (rode preview)`);
@@ -4265,10 +4320,10 @@ async function runCommand(
       return cmdSrtFromFinal(ctx, final, plan, flags.has("heard-text") ? "ouvido" : "roteiro");
     }
     case "preview":
-      await needLocalBruto();
-      return cmdPreview(ctx, seq, d, flags.has("no-subs"));
+      // #12694: o gate de duração roda antes de baixar o bruto.
+      return cmdPreview(ctx, seq, d, flags.has("no-subs"), { overTarget: flags.has("over-target"), needLocalBruto });
     case "review":
-      return cmdReview(ctx, seq);
+      return cmdReview(ctx, seq, flags.has("over-target"));
     case "review-final": {
       let file = values["file"];
       // #11639: no modo API, o export é procurado pelo nome em Final/ da edição no Drive.

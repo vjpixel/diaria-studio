@@ -114,6 +114,8 @@ npx tsx scripts/refresh-destaque-sources.ts --edition-dir {EDITION_DIR}/ --appro
 ```
 Grava `_internal/fact-check-sources/d{N}.txt` com o texto completo de cada `article.url` (fail-soft: download falho vira `error`, writer segue só com o summary). Sem isso o writer escreve do `summary` curto e inventa fatos (261001). `--record-writer-inputs` (#9648, só aqui — nunca no Stage 4) grava `_internal/02-writer-inputs.json` (+ cópia do texto), registro do que cada writer recebeu que a troca de destaque no Stage 4 não sobrescreve. **0b. 4º post social — item USE MELHOR (#9568), ANTES do dispatch:** `npx tsx scripts/select-use-melhor-post.ts --edition-dir {EDITION_DIR}/`. Stdout JSON. **`enabled: false` (quando `publishing.social.use_melhor_time` for `null`/inválido OU colidir com um slot de destaque `fallback_schedule.d{N}_time` — desde 05/10/2026 o valor é `"07:45"`, decisão do editor) → feature INERTE: não passar nada novo aos social agents, dispatch exatamente como abaixo.** `enabled: true` + `item` não-nulo → passar `use_melhor_post_path = {EDITION_DIR}/_internal/use-melhor-post.json` ao `social-writer` E ao `social-curto` (passos 2/3), que escrevem também a seção `## um`. `enabled: true` + `item: null` → não passar (4º post pulado; o `reason` aparece no gate do Stage 4). Fail-soft: erro do script nunca aborta o Stage 2.
 
+**0c. Pesquisa de títulos do D1 no YouTube (#12552), ANTES do dispatch:** `npx tsx scripts/youtube-title-research.ts --edition-dir {EDITION_DIR}/ --approved {EDITION_DIR}/_internal/01-approved-capped.json`. Busca os vídeos de maior audiência dos últimos 4 dias sobre a história do D1 (até 3 queries, nomes próprios + termo principal em PT e EN) e grava `_internal/youtube-title-research.json` com os títulos, views, canal, idioma e os termos que mais se repetem no topo. Stdout JSON `{ status, reason, path, videos, top_terms }`. **`status: "ok"`** → passar `youtube_title_research_path = {EDITION_DIR}/_internal/youtube-title-research.json` ao `writer-destaque` do **D1** (só dele; D2/D3 não recebem) e, depois do gate, ao `title-picker` (§2d). Qualquer outro `status` (`skipped` sem credencial, `error` de cota/token/rede, `no_results`) → não passar nada e seguir; o motivo aparece no gate do Stage 4. Exit sempre 0 (fail-soft), nunca aborta o Stage 2. É só vocabulário: nenhum título é trocado por este passo.
+
 **Dispatch paralelo (uma única mensagem com N+2 chamadas Agent — N writer + 2 social, onde N = highlights.length ∈ {2,3}):** **Nunca fazer polling (#9223).** As N+2 chamadas `Agent` são SÍNCRONAS: a mensagem só volta quando os subagentes terminaram, com os resultados já na resposta. Não há o que esperar — nunca usar `sleep`, `while … sleep`, `tasklist`, `ls` em loop ou script de poll para "aguardar" os subagentes. Em sessão headless (`claude --print`, spawn do `edition-stage-runner.ts`) esses comandos são negados (`permission_denials`) e cada tentativa queima um turno do teto `--max-turns` (edição 261001: ~15 tentativas negadas, 120 turnos esgotados sem sentinela). Se um output esperado não existir depois da resposta do `Agent`, o subagente falhou — tratar como falha, não esperar mais. **Antes desta mensagem, guardar o instante do dispatch (#9962):** `npx tsx scripts/verify-agent-outputs.ts --now` → `{DISPATCH_AT}` (usado no check pós-dispatch abaixo).
 
 1. `Agent` → `writer-destaque` × N — uma instância por destaque (n=1..N). Cada uma recebe:
@@ -123,6 +125,7 @@ Grava `_internal/fact-check-sources/d{N}.txt` com o texto completo de cada `arti
    - `edition_date`; `source_url` = `highlights[N-1].article.url` **literal** — a única URL permitida no link do título (#9252: writer headless já inventou URL "parecida"); `source_text_path` = o `path` da entrada com `destaque === N` no JSON do passo **0** acima (omitir se a entrada veio com `error`)
    - `out_path = {EDITION_DIR}/_internal/02-d{N}-draft.md`
    - `image_prompt_out_path = {EDITION_DIR}/_internal/02-d{N}-prompt.md`
+   - `youtube_title_research_path` (#12552): **só no D1** e só quando o passo 0c saiu `status: "ok"` — senão omitir.
 
 2. `Agent` → `social-writer` (#3991, reverte #3486 — colapsa `social-linkedin`+`social-facebook`+`social-instagram` num único agent) passando:
    - `approved_json_path = {EDITION_DIR}/_internal/01-approved-capped.json`
@@ -503,6 +506,7 @@ Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, 
     - `audience_path = context/audience-profile.md`
     - `editorial_rules_path = context/editorial-rules.md`
     - `picks_log_path = {EDITION_DIR}/_internal/02-title-picks.json`
+    - `youtube_title_research_path = {EDITION_DIR}/_internal/youtube-title-research.json` (#12552) — só quando o arquivo existe com `status: "ok"` (passo 0c de §2a); senão omitir.
 
     ```bash
     cp {EDITION_DIR}/02-reviewed.md {EDITION_DIR}/_internal/02-pre-title-picker.md

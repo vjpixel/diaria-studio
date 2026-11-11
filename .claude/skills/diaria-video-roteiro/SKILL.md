@@ -1,6 +1,8 @@
 ---
 name: diaria-video-roteiro
 description: Escreve o roteiro de fala do vídeo "diar.ia.br comentada" do dia, antes da gravação — um vídeo horizontal e dois verticais que saem da mesma gravação, a partir do D1 da edição. Entrega um artefato (página) com título, texto da capa e falas numeradas por vídeo, e itera com o editor até ele gravar; depois da gravação, confere a transcrição ditada contra o roteiro e diz o que regravar. Roda depois do gate da Etapa 4 e antes da gravação; standalone, sem encadear. Uso — `/diaria-video-roteiro [AAMMDD]`.
+model: claude-opus-5-5
+effort: medium
 ---
 
 # /diaria-video-roteiro AAMMDD
@@ -9,9 +11,13 @@ Escreve o roteiro que o editor lê para gravar o vídeo do dia. Nasceu do proces
 
 **Fora de escopo:** gravar, decupar, checar os fatos da fala gravada no bruto e montar (tudo do `/diaria-video-montagem`), publicar (`/diaria-publica`). Esta skill não altera `02-reviewed.md` nem `03-social.md`.
 
-**Argumento:** `AAMMDD`, opcional. Sem ele, assumir D+1, imprimir o banner `Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.` e seguir.
+## Argumentos
 
-**Fluxo do dia:** `/diaria-edicao` → `/diaria-video-roteiro` → (o editor grava) → `/diaria-video-montagem` → `/diaria-publica`. Sessão própria, sem encadear (#5578): ao terminar, sugerir o próximo passo sem rodá-lo.
+- `AAMMDD` — opcional. Sem ele, assumir D+1, imprimir o banner `Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.` e seguir.
+
+## Fluxo do dia
+
+`/diaria-edicao` → `/diaria-video-roteiro` → (o editor grava) → `/diaria-video-montagem` → `/diaria-publica`. Sessão própria, sem encadear (#5578): ao terminar, sugerir o próximo passo sem rodá-lo.
 
 ## Passo 1 — Ler antes de escrever
 
@@ -37,7 +43,7 @@ Regras de estrutura:
 - Toda fala usada num vertical precisa funcionar sem a anterior: repetir o sujeito ("o Claude Code", não "ele") e não depender de uma fala que ficou só no horizontal.
 - Quando o vídeo entrega dicas, o gancho promete: "Fica até o final, que eu vou te dar três dicas pra…". No vertical 1 a promessa vira a chamada final para o vídeo completo no YouTube. É falada porque fora do YouTube Shorts o post não leva link para o horizontal (#12735).
 - Abertura fixa, sempre a mesma: "Oi! Eu sou o Pixel, editor da diar.ia.br, e neste canal comento as principais notícias de IA com foco no que pode impactar sua vida."
-- Cada vídeo tem título e texto da capa. O título é pensado para a busca e o clique no YouTube e pode ser diferente do título do D1 na newsletter; avisar quando for.
+- Cada vídeo tem título e texto da capa. O título é pensado para a busca e o clique no YouTube e pode ser diferente do título do D1 na newsletter; avisar quando for. O texto da capa segue a diretriz de `docs/youtube-capa-texto.md` (#12737): complementa o título, 2 a 6 palavras (5 no vertical), pergunta ou afirmação; ordenar os candidatos com `npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --candidates-file {arquivo}` e trazer os primeiros como opções.
 
 ## Passo 3 — Regras da fala
 
@@ -74,11 +80,30 @@ Gravar a página em `data/editions/{AAMM}/{AAMMDD}/_internal/roteiro-d1.html` e 
 
 Na resposta, dar o link e citar só o que mudou.
 
+**O roteiro em JSON (#12751).** Junto com a página, gravar `data/editions/{AAMM}/{AAMMDD}/_internal/roteiro-falas.json`, que é o que a montagem e a publicação leem (a página é para o editor ler; nenhum script lê o HTML):
+
+```json
+{
+  "edicao": "AAMMDD",
+  "veiculos": ["veículos da fonte do D1"],
+  "porVideo": {
+    "horizontal": { "titulo": "título do YouTube", "capa": "texto da capa" },
+    "vertical1": { "titulo": "…", "capa": "…" },
+    "vertical2": { "titulo": "…", "capa": "…" }
+  },
+  "falas": [
+    { "id": "H1", "bloco": "gancho", "texto": "…", "videos": ["horizontal", "vertical1"], "gravarAParte": false }
+  ]
+}
+```
+
+Uma entrada por fala numerada, mais as gravadas à parte. `bloco` é o bloco da montagem em que a fala entra no horizontal (ou no vertical, quando ela só existe lá): `gancho`, `abertura`, `resumo`, `comentario`, `cta_vertical` (a chamada final do vertical 1); o resumo do horizontal vira o resumo curto nos verticais sozinho. `porVideo` traz o título e o texto da capa de cada vídeo, como na página. Validar com `npx tsx scripts/video-roteiro-blocos.ts {AAMMDD}` (exit 0 = o JSON serve; os `[aviso]` apontam fala sem bloco ou fora da ordem do vertical).
+
 ## Passo 6 — Iterar com o editor
 
 O editor dita ajustes por voz, um de cada vez. Para cada um:
 
-1. Aplicar com `Edit` no arquivo e republicar no mesmo link, com um rótulo de versão. Na página, o texto de uma fala aparece de novo em cada vídeo que a usa: mudar todas as cópias (`replace_all` com um trecho que só exista nas falas) e conferir que as notas de gravação continuam certas.
+1. Aplicar com `Edit` no arquivo e republicar no mesmo link, com um rótulo de versão. Na página, o texto de uma fala aparece de novo em cada vídeo que a usa: mudar todas as cópias (`replace_all` com um trecho que só exista nas falas) e conferir que as notas de gravação continuam certas. Aplicar a mesma mudança no `roteiro-falas.json` (fala, título, capa, quais vídeos usam a fala): ele tem de descrever a versão da página.
 2. Responder com a fala nova entre aspas.
 3. Se o ajuste criar um problema (um fato errado, uma fala que perdeu a referência), dizer e propor a saída, sem aplicar por conta própria o que muda o sentido.
 
@@ -107,7 +132,7 @@ Depois de gravar, o editor entrega na mesma sessão a transcrição da gravaçã
 
 **Premissa:** a transcrição é a do ditado, não a do áudio do vídeo. Ditada junto com a câmera, as duas coincidem; ditada depois, de memória, o passo confere um ensaio e não o bruto. Se o editor não disser como ditou, assumir que foi junto com a câmera e escrever isso na resposta.
 
-1. Gravar as falas da versão atual em `_internal/roteiro-falas.json` (`{ "edicao", "veiculos": [veículos da fonte do D1], "falas": [{ "id": "H1", "texto", "videos": ["horizontal", "vertical1"], "gravarAParte": false }] }`), uma entrada por fala numerada mais as gravadas à parte, e a transcrição em `_internal/gravacao-transcricao.txt` (tomada nova do mesmo dia: `gravacao-transcricao-2.txt`, e assim por diante).
+1. Conferir que `_internal/roteiro-falas.json` (Passo 5) descreve a versão atual e gravar a transcrição em `_internal/gravacao-transcricao.txt` (tomada nova do mesmo dia: `gravacao-transcricao-2.txt`, e assim por diante).
 2. Rodar `npx tsx scripts/video-roteiro-confere.ts --falas {…}/roteiro-falas.json --transcricao {…}/gravacao-transcricao.txt`. É a primeira passada, determinística: casa cada fala com o trecho mais parecido da transcrição por conteúdo (a ordem da gravação pode não ser a do roteiro), aponta número do roteiro que sumiu, veículo dito em voz alta e trechos que nenhuma fala explica. Todo veredito diferente de `ok` vem marcado para confirmar.
 3. Confirmar lendo o trecho de cada fala e dar o veredito final:
    - **ok**: as palavras do roteiro; a diferença, se houver, é só de ditado, conectivo ou ordem miúda, e o texto da página não muda;
@@ -119,6 +144,8 @@ Depois de gravar, o editor entrega na mesma sessão a transcrição da gravaçã
    - Número ditado por extenso conta como o mesmo número; o script já aceita os simples e os compostos ("quinhentos", "dois mil", "dois mil e vinte e seis", "trinta e sete", "um e meio"). Número que o script deu como ausente e que está lá com outra grafia é `ok`.
    - Improviso bom (frase nova que melhora a fala, nos trechos sem fala correspondente) não é erro: apontar, conferir o fato contra a fonte se houver um, e atualizar a fala na página para a montagem partir do que foi dito (Passo 6, mesmo link). Fato que não está na fonte: sinalizar para checagem, sem reprovar sozinho.
    - Trecho repetido costuma ser outra tomada da mesma fala; não é improviso.
+   - Uma palavra dita uma vez só serve a uma fala (#12781): se duas falas se parecem, a que perdeu as palavras para a vizinha sai `faltou`. Confirmar lendo a transcrição antes de mandar gravar.
+   - A empresa que o roteiro cita de propósito e que também é o veículo (#12781) não conta como "citou o veículo" na fala que a traz; dita em outra fala ou fora das falas, segue apontada.
 5. Responder com um veredito por fala, na ordem do roteiro, e no fim a lista curta do que gravar de novo: o id, o texto da fala e os vídeos afetados (horizontal, vertical 1, vertical 2). Se nada faltar nem precisar regravar, dizer que está pronto para o `/diaria-video-montagem {AAMMDD}`.
 
 Este passo não substitui o fact-check da fala gravada nem a decupagem do `/diaria-video-montagem`, que trabalham sobre o bruto com tempo por palavra. Nova tomada depois de regravar: repetir o passo só com a transcrição nova.
@@ -127,4 +154,4 @@ Este passo não substitui o fact-check da fala gravada nem a decupagem do `/diar
 
 Dizer que o roteiro está pronto para gravar e que o próximo comando, depois da gravação, é `/diaria-video-montagem {AAMMDD}`. Não rodar. Se o editor quiser conferir a gravação antes, ele dita a transcrição nesta sessão (Passo 8).
 
-Na mesma mensagem, repetir o título e o texto da capa de cada vídeo e avisar o que ainda é manual (#12751): a montagem e a publicação não leem este roteiro. O corte do vertical 2, o título do YouTube quando difere do D1 e a publicação do vertical 2 uma semana depois dependem do editor ou de pedido explícito nas sessões seguintes.
+Na mesma mensagem, repetir o título e o texto da capa de cada vídeo. O que segue daqui (#12751): a montagem lê o `roteiro-falas.json` para propor os blocos dos dois verticais (o vertical 2 como corte `guia`), e o `/diaria-publica` usa o título do horizontal no YouTube (salvo `--title`) e os textos da capa. A publicação do vertical 2 uma semana depois vai para o banco de agendamentos (#12774): quem registra é a montagem, depois do Gate 2, quando o corte `guia` existe (registrar aqui, antes da gravação, alarmaria um vertical que talvez nem seja gravado).

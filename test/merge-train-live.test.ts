@@ -869,15 +869,22 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
 
   it("regressão #12734: lote barrado por thread aberta na revalidação do Gate 2 vira 'threads-bloqueantes' com os IDs, nunca 'lock-blocked'", async () => {
     const runner = fullRunner();
-    runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => ok("https://github.com/x/y/pull/9001\n"));
-    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => {
-      throw new Error("não deveria mergear lote com thread bloqueante");
+    let createCalls = 0;
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => {
+      createCalls++;
+      return ok(`https://github.com/x/y/pull/900${createCalls}\n`);
+    });
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+      if (a[2] === "9001") throw new Error("não deveria mergear o lote que contém a PR com thread bloqueante");
+      return ok();
     });
     runner.on("gh", isThreadsQueryFor(102), () => ok(threadsJson(["PRRT_kwDOabc123"])));
 
     const outcomes = await runMergeTrain(runner, { prs: [100, 101, 102] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
-    assert.equal(outcomes.length, 1);
-    const [o] = outcomes;
+    const barrados = outcomes.filter((o) => o.status === "threads-bloqueantes");
+    assert.equal(barrados.length, 1);
+    const [o] = barrados;
+    assert.deepEqual([...o.batch.prs], [102], "o outcome é da PR barrada sozinha (#12784)");
     assert.equal(o.status, "threads-bloqueantes");
     assert.notEqual(o.status, "lock-blocked");
     assert.deepEqual(o.blockingThreads, { pr: 102, threads: ["PRRT_kwDOabc123"] });
@@ -886,8 +893,66 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
     assert.equal(o.detail.split("PRRT_kwDOabc123").length - 1, 1, "cada ID de thread aparece uma vez só no detalhe (review da PR #12740)");
     assert.doesNotMatch(o.detail, /^merge falhou \(não-lock\)/, "o rótulo não pode mais abrir com a frase genérica de lock");
     assert.equal(trainHasRealFailure(outcomes), true, "thread bloqueante é trabalho pendente: exit != 0, como antes");
-    assert.ok(!runner.calls.some((c) => c.cmd === "npx" && c.args.includes("merge-lock-acquire")), "barrado na revalidação, nunca chega a pedir o lock");
+    assert.ok(!outcomes.some((o) => o.status === "lock-blocked"));
     assert.ok(runner.calls.some((c) => c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "close" && c.args[2] === "9001"), "PR-trem descartável é fechado");
+  });
+
+  // #12784: achado 1 do self-review da PR #12740 — com `threads-bloqueantes`
+  // o lote inteiro terminava ali e as PRs sem thread não voltavam à fila, ao
+  // contrário da PR retida para o editor. Agora a PR com thread sai sozinha e
+  // o resto é refeito e mergeado.
+  it("regressão #12784: PR com thread bloqueante sai do lote e as demais são refeitas e mergeadas", async () => {
+    const runner = fullRunner();
+    let createCalls = 0;
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => {
+      createCalls++;
+      return ok(`https://github.com/x/y/pull/900${createCalls}\n`);
+    });
+    const merged: string[] = [];
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+      merged.push(a[2]);
+      return ok();
+    });
+    runner.on("gh", isThreadsQueryFor(101), () => ok(threadsJson(["PRRT_x1"])));
+
+    const outcomes = await runMergeTrain(runner, { prs: [100, 101, 102] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
+    const statuses = outcomes.map((o) => o.status);
+    assert.deepEqual(statuses, ["abandoned", "threads-bloqueantes", "merged"]);
+    const barrado = outcomes[1];
+    assert.deepEqual([...barrado.batch.prs], [101]);
+    assert.deepEqual(barrado.blockingThreads, { pr: 101, threads: ["PRRT_x1"] });
+    const mergedOutcome = outcomes[2];
+    assert.deepEqual([...mergedOutcome.batch.prs], [100, 102], "as PRs sem thread voltam à fila e mergeiam");
+    assert.deepEqual(merged, ["9002"], "só o 2º PR-trem (sem a PR barrada) é mergeado");
+    assert.ok(!merged.includes("101"), "a PR com thread nunca é mergeada");
+    assert.equal(trainHasRealFailure(outcomes), true, "a thread aberta continua sendo trabalho pendente");
+  });
+
+  it("#12784: lote de 2 com thread numa PR: a outra cai no merge solo", async () => {
+    const runner = fullRunner();
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => ok("https://github.com/x/y/pull/9001\n"));
+    const merged: string[] = [];
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+      merged.push(a[2]);
+      return ok();
+    });
+    runner.on("gh", isThreadsQueryFor(100), () => ok(threadsJson(["T-1"])));
+
+    const outcomes = await runMergeTrain(runner, { prs: [100, 101] }, prInfos3.slice(0, 2), { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
+    assert.deepEqual(outcomes.map((o) => o.status), ["abandoned", "threads-bloqueantes", "solo-merged"]);
+    assert.deepEqual([...outcomes[2].batch.prs], [101]);
+    assert.deepEqual(merged, ["101"]);
+  });
+
+  it("#12784: 'threads-ilegiveis' num lote segue terminal pro lote inteiro (erro de leitura não é estado de um PR)", async () => {
+    const runner = fullRunner();
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => ok("https://github.com/x/y/pull/9001\n"));
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => {
+      throw new Error("não deveria mergear");
+    });
+    runner.on("gh", isThreadsQueryFor(100), () => fail("HTTP 502"));
+    const outcomes = await runMergeTrain(runner, { prs: [100, 101] }, prInfos3.slice(0, 2), { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
+    assert.deepEqual(outcomes.map((o) => o.status), ["threads-ilegiveis"]);
   });
 
   it("#12734: PR solo barrado por thread aberta também vira 'threads-bloqueantes' (não 'solo-failed')", async () => {

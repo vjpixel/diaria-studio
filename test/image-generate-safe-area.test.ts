@@ -15,7 +15,72 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { STYLE_SUFFIX } from "../scripts/image-generate.ts";
+import { STYLE_SUFFIX, styleSuffixFor, buildPositivePrompt, type ImageRatio } from "../scripts/image-generate.ts";
+
+// #12422: o sufixo antigo dizia que uma arte única era recortada em 2:1, 4:5 e
+// 9:16. O Stage 3 gera 2:1 e 4:5 nativo em chamadas separadas e 9:16 não existe.
+describe("image-generate styleSuffixFor — sufixo por formato (#12422)", () => {
+  const ALL: ImageRatio[] = ["2x1", "4x5", "1x1", "master"];
+  const OWN: Record<ImageRatio, RegExp> = {
+    "2x1": /wide 2:1 landscape image\b/,
+    "4x5": /portrait 4:5 image\b/,
+    "1x1": /\b1:1 image\b/,
+    master: /\b6:5 image\b/,
+  };
+
+  // #12799: o #12422 pôs a resolução em pixels no sufixo (`(1600×800)`),
+  // contra a regra invariável "prompt de imagem SEM resolução em pixels"
+  // (context/editorial-rules.md, CLAUDE.md). Número no prompt puxa dígitos
+  // para a arte, e nenhum outro check lê o sufixo.
+  for (const r of ALL) {
+    it(`#12799 ${r}: sufixo e prompt completo sem resolução em pixels`, () => {
+      const s = styleSuffixFor(r);
+      assert.doesNotMatch(s, /\d+\s*[×xX*]\s*\d+/, "resolução WxH no sufixo");
+      assert.doesNotMatch(s, /\d+\s*px\b/i, "medida em px no sufixo");
+      assert.doesNotMatch(s, /\b\d{3,}\b/, "número de 3+ dígitos (pixels) no sufixo");
+      const p = buildPositivePrompt("Um robô lê um livro.", r);
+      assert.doesNotMatch(p, /\d+\s*[×xX*]\s*\d+/, "resolução WxH no prompt enviado");
+    });
+  }
+
+  for (const r of ALL) {
+    it(`${r}: cita o próprio formato e não descreve recorte de arte única nem 9:16`, () => {
+      const s = styleSuffixFor(r);
+      assert.match(s, OWN[r]);
+      assert.doesNotMatch(s, /cropped/i, "nenhum formato é recorte de outra arte no gerador");
+      assert.doesNotMatch(s, /9:16/);
+      assert.doesNotMatch(s, /single artwork/i);
+      for (const other of ALL.filter((o) => o !== r)) {
+        assert.doesNotMatch(s, OWN[other], `${r} não pode citar o formato de ${other}`);
+      }
+    });
+
+    it(`${r}: mantém os guards compartilhados`, () => {
+      const s = styleSuffixFor(r);
+      assert.match(s, /impasto/i);
+      assert.match(s, /calm, even fields of color/);
+      assert.match(s, /human, robot, or humanoid/);
+      assert.match(s, /cut off the top of the head/);
+      assert.match(s, /bottom fifth/);
+      assert.match(s, /no faces, hands or key objects/);
+      assert.match(s, /no written characters/);
+      assert.match(s, /left or right edges/);
+      assert.match(s, /never touch any edge/);
+      assert.doesNotMatch(s, /starry night|swirl/i);
+    });
+  }
+
+  it("STYLE_SUFFIX é o sufixo do 2:1 (formato padrão dos destaques)", () => {
+    assert.equal(STYLE_SUFFIX, styleSuffixFor("2x1"));
+  });
+
+  it("buildPositivePrompt usa o sufixo do ratio pedido", () => {
+    const p = buildPositivePrompt("# Cena\nUm **robô** lê.", "4x5");
+    assert.ok(p.startsWith("Cena Um robô lê."));
+    assert.ok(p.endsWith(styleSuffixFor("4x5")));
+    assert.ok(!p.includes(styleSuffixFor("2x1")));
+  });
+});
 
 describe("image-generate STYLE_SUFFIX — safe-area central (#2657)", () => {
   it("contém instrução de agrupar sujeitos no centro do frame", () => {
@@ -91,25 +156,11 @@ describe("image-generate STYLE_SUFFIX — safe-area central (#2657)", () => {
     );
   });
 
-  // A arte 2:1 do e-mail também vira card de feed (4:5) e story (9:16). Antes,
-  // a safe-area só falava do crop 1:1 — os formatos retrato cortavam figura
-  // (edição 260727: D2 e D3 decapitados, 2 regenerações manuais no gate).
-  it("instrui composição para os crops RETRATO (4:5 e 9:16)", () => {
-    assert.match(
-      STYLE_SUFFIX,
-      /4:5|9:16|portrait/i,
-      "STYLE_SUFFIX deve mencionar os formatos retrato derivados",
-    );
-    assert.match(
-      STYLE_SUFFIX,
-      /central 67% of the width/i,
-      "zona segura horizontal = interseção com o crop retrato (1080 de 1600)",
-    );
-    assert.match(
-      STYLE_SUFFIX,
-      /central 59% of the height/i,
-      "zona segura vertical = interseção com o crop wide (800 de 1350)",
-    );
+  // Edição 260727: D2 e D3 decapitados nos formatos retrato. A zona segura
+  // "central 67% × 59%" era a interseção dos crops de uma arte única (master),
+  // fluxo aposentado no #12422; o que fica é a margem em todas as bordas.
+  it("mantém elementos essenciais longe de todas as bordas", () => {
+    assert.match(STYLE_SUFFIX, /never touch any edge/i);
   });
 
   // O título do card é sobreposto na base da imagem: sem área calma reservada,

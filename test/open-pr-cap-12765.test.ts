@@ -204,7 +204,9 @@ describe("destino da escalada vencida (#12765)", () => {
   it("conflito ou CI parado → fixer na 1ª vez, fecha e reabre depois da tentativa", () => {
     assert.equal(d({ mergeStateStatus: "DIRTY" }), "fixer");
     assert.equal(d({ mergeable: "CONFLICTING", mergeStateStatus: "UNKNOWN" }), "fixer");
-    for (const v of ["fail", "error", "pending", "blocked_by_conflict"]) assert.equal(d({ checksVerdict: v }), "fixer", v);
+    for (const v of ["fail", "pending", "blocked_by_conflict"]) assert.equal(d({ checksVerdict: v }), "fixer", v);
+    // `error` = checks ilegíveis: briefing, nunca fixer (#12804).
+    assert.equal(d({ checksVerdict: "error" }), "briefing");
     assert.equal(d({ mergeStateStatus: "DIRTY", labels: ["continuo-ci-fix-tentado"] }), "fechar-reabrir-issue");
     assert.equal(d({ checksVerdict: "fail", labels: ["continuo-ci-fix-tentado"], issue: null }), "briefing");
   });
