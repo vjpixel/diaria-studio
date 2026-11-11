@@ -128,3 +128,18 @@ describe("concurrency: `edited` não cancela a rodada do commit (#9262)", () => 
     assert.match(block, /cancel-in-progress: \$\{\{ github\.event\.action != 'edited' \}\}/);
   });
 });
+
+describe("nomes de checks preservam referências de issue (#12782)", () => {
+  it("protege nomes com espaço + # contra comentários YAML", () => {
+    const yamlText = readFileSync(PR_CHECKS_PATH, "utf8");
+    const namesWithIssue = yamlText.split("\n").filter((line) => /^\s*(?:- )?name:.* #\d/.test(line));
+    assert.ok(namesWithIssue.length > 0, "sanity: workflow contém nomes com referências de issue");
+    for (const line of namesWithIssue) {
+      assert.match(
+        line,
+        /^\s*(?:- )?name: (?:"[^"\n]* #\d[^"\n]*"|'[^'\n]* #\d[^'\n]*')\s*$/,
+        `nome com referência precisa de aspas para não ser truncado pelo YAML: ${line}`,
+      );
+    }
+  });
+});
