@@ -22,7 +22,7 @@ export interface ProtectedPathWriteOptions {
 
 export function isProtectedPath(p: string, cwd?: string): boolean;
 export function tokenizeShell(src: unknown): ShellCommand[];
-export function codeWritesProtectedPath(code: unknown, cwd?: string, depth?: number): boolean;
+export function codeWritesProtectedPath(code: unknown, cwd?: string): boolean;
 export function findProtectedPathWrite(
   command: unknown,
   opts?: ProtectedPathWriteOptions,
