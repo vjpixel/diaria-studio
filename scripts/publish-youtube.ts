@@ -18,7 +18,12 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  *   npx tsx scripts/publish-youtube.ts AAMMDD --upload --accept-period-match VIDEO_ID
  *   npx tsx scripts/publish-youtube.ts AAMMDD --captions-list [--video-id VIDEO_ID]
  *     Só lê (`captions.list`, #12429): as faixas de legenda do vídeo registrado (ou do
- *     --video-id) e se a pt-BR enviada está publicada (exit 0) ou não (exit 1).
+ *     --video-id) e se a pt-BR `standard` enviada está publicada (exit 0) ou não (exit 1).
+ *
+ * `--captions-only` recusa (exit 1) o SRT marcado como não revisado pelo
+ * `video-montagem.ts srt --from-final --no-plan` (#12429, a marca
+ * `youtubeCaptionNoPlanMarkerPath` ao lado dele): só envia com
+ * `--captions-reviewed`, dado depois de conferir nomes e números no SRT.
  *
  * `--upload` exige `--confirm-publish AAMMDD` (a mesma edição), dada só depois
  * do "pode publicar" explícito do editor; sem ela sai exit 2 sem enviar nada
@@ -167,6 +172,7 @@ import {
   uploadCaptionSafely,
   uploadCaptionsOnly,
   youtubeCaptionFileName,
+  youtubeCaptionNoPlanMarkerPath,
   type CaptionTrack,
   type CaptionUploadResult,
 } from "./lib/diaria/youtube-captions.ts";
@@ -1067,6 +1073,8 @@ export interface RunCaptionsOnlyInput {
   env: Record<string, string | undefined>;
   /** Envia mesmo com uma legenda já registrada (cria outra faixa). */
   force: boolean;
+  /** #12429: `--captions-reviewed`, o SRT sem plano (marcado como não revisado) foi conferido. */
+  captionsReviewed?: boolean;
   readFile: (p: string) => Buffer;
   log: (line: string) => void;
 }
@@ -1076,8 +1084,9 @@ export interface RunCaptionsOnlyInput {
  * `_internal/05-youtube-published.json` (pelo `videoId`), sem tocar no vídeo.
  * Exit 0 = legenda enviada, já registrada (sem `--force`) ou token sem o
  * escopo `youtube.force-ssl` (fail-soft: `[aviso]` com o comando de setup);
- * exit 1 = sem registro, sem `.srt`, sem credencial, canal/token errado ou
- * erro da API na legenda.
+ * exit 1 = sem registro, sem `.srt`, `.srt` sem plano não revisado (sem
+ * `--captions-reviewed`, #12429), sem credencial, canal/token errado ou erro
+ * da API na legenda.
  */
 export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaptionsOnlyInput): Promise<RunUploadOutcome> {
   const { log } = input;
@@ -1105,6 +1114,17 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
   if (!existsSync(input.captionsPath)) {
     log(`publish-youtube: legenda ausente em ${input.captionsPath} (passe --captions PATH). Nenhuma legenda enviada.`);
     return { exitCode: 1, record: null, skipped: false };
+  }
+  const noPlanMarker = youtubeCaptionNoPlanMarkerPath(input.captionsPath);
+  if (existsSync(noPlanMarker)) {
+    if (!input.captionsReviewed) {
+      log(
+        `publish-youtube: ${input.captionsPath} saiu do srt --from-final --no-plan (texto ouvido, sem roteiro) e não foi revisado ` +
+          `(marca ${noPlanMarker}). Confira nomes e números no SRT e rode de novo com --captions-reviewed (#12429). Nenhuma legenda enviada.`,
+      );
+      return { exitCode: 1, record: null, skipped: false };
+    }
+    log(`[premissa] legenda sem plano enviada como revisada (--captions-reviewed, #12429): ${input.captionsPath}`);
   }
   const missing = missingYouTubeCredentials(input.env);
   if (missing.length > 0) {
@@ -1172,6 +1192,14 @@ export async function runCaptionsList(deps: YouTubeUploadDeps, input: RunCaption
   const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
   try {
     const read = readPublishedRecord(recordPath, input.aammdd);
+    if (read.kind === "pending") {
+      const why = `o registro ${recordPath} está em estado incerto (${read.sentinel.status}): o upload pode não ter terminado`;
+      if (!videoId) {
+        log(`publish-youtube: ${why} — confira o canal e passe --video-id VIDEO_ID.`);
+        return { exitCode: 1, tracks: null, videoId: null };
+      }
+      log(`[aviso] ${why}; conferindo o --video-id ${videoId} sem o captionId do registro`);
+    }
     if (read.kind === "done") {
       if (videoId && videoId !== read.record.videoId) log(`[aviso] --video-id ${videoId} difere do vídeo registrado (${read.record.videoId}): conferindo o --video-id`);
       else recordedCaptionId = read.record.captions?.ok ? read.record.captions.captionId : null;
@@ -1279,7 +1307,7 @@ function loadD1SlotAt(aammdd: string): Date | null {
 }
 
 const USAGE =
-  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--force] | --captions-list [--video-id VIDEO_ID] | --thumbnail-only [--thumbnail PATH]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO]";
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--force] [--captions-reviewed] | --captions-list [--video-id VIDEO_ID] | --thumbnail-only [--thumbnail PATH]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO]";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -1298,13 +1326,17 @@ async function main(): Promise<number> {
     console.error(
       modes > 1
         ? "publish-youtube: --dry-run, --upload, --captions-only, --captions-list e --thumbnail-only são exclusivos."
-        : "publish-youtube: escolha o modo — --dry-run (só o plano), --upload (envio real; sem a auditoria do YouTube API Services o vídeo sai private, #10659) ou --captions-only (só a legenda do vídeo registrado, #11384).",
+        : "publish-youtube: escolha o modo — --dry-run (só o plano), --upload (envio real; sem a auditoria do YouTube API Services o vídeo sai private, #10659), --captions-only (só a legenda do vídeo registrado, #11384), --captions-list (só confere as faixas de legenda, #12429) ou --thumbnail-only (só a capa, #12134).",
     );
     console.error(USAGE);
     return 2;
   }
   if (!captionsList && (flags.has("video-id") || values["video-id"] !== undefined)) {
     console.error("publish-youtube: --video-id só vale com --captions-list (#12429).");
+    return 2;
+  }
+  if (!captionsOnly && (flags.has("captions-reviewed") || values["captions-reviewed"] !== undefined)) {
+    console.error("publish-youtube: --captions-reviewed só vale com --captions-only (#12429).");
     return 2;
   }
   if (values["captions"] !== undefined && flags.has("no-captions")) {
@@ -1374,6 +1406,7 @@ async function main(): Promise<number> {
       captionsPath,
       env: process.env,
       force: flags.has("force"),
+      captionsReviewed: flags.has("captions-reviewed"),
       readFile: (p) => readFileSync(p),
       log: (line) => console.error(line),
     });

@@ -8,20 +8,23 @@
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Word } from "../scripts/lib/diaria/video-montage.ts";
-import { applyProperNounLexicon, properNounLexicon, summarizeLexiconChanges } from "../scripts/lib/diaria/video-caption-lexicon.ts";
-import { main, srtFromExportNoPlan } from "../scripts/video-montagem.ts";
-import { captionBackfillStatus, listCaptions, type CaptionTrack } from "../scripts/lib/diaria/youtube-captions.ts";
-import { runCaptionsList } from "../scripts/publish-youtube.ts";
+import { sequenceKey, type Word } from "../scripts/lib/diaria/video-montage.ts";
+import { LEXICON_AMBIGUOUS, applyProperNounLexicon, editorialText, properNounLexicon, summarizeLexiconChanges } from "../scripts/lib/diaria/video-caption-lexicon.ts";
+import { NO_PLAN_SEQ_KEY, applyYoutubeSrtCopy, main, srtFromExportNoPlan } from "../scripts/video-montagem.ts";
+import { captionBackfillStatus, listCaptions, youtubeCaptionNoPlanMarkerPath, type CaptionTrack } from "../scripts/lib/diaria/youtube-captions.ts";
+import { runCaptionsList, runCaptionsOnly } from "../scripts/publish-youtube.ts";
 import type { YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 
 const say = (text: string, t0: number, dur = 0.3): Word[] =>
   text.split(" ").map((w, i) => ({ start: +(t0 + i * dur).toFixed(3), end: +(t0 + (i + 1) * dur).toFixed(3), text: w }));
 
-// Trecho real do 02-reviewed.md da 261021 (cabeçalhos em maiúsculas, link, URL).
+// Baseado no 02-reviewed.md da 261021 (cabeçalhos em maiúsculas, link, URL), com linhas sintéticas
+// para os casos de borda (Meta/Opus/Use melhor/Casa Branca/Banco do Brasil). O texto real inteiro de
+// uma edição está em test/fixtures/reviewed-261028-12429.md, usado mais abaixo.
 const REVIEWED = `TÍTULO
 
 Você já viu IA mentir. Já viu roubar?
@@ -111,7 +114,7 @@ describe("#12429 applyProperNounLexicon", () => {
 });
 
 describe("#12429 srtFromExportNoPlan", () => {
-  // Parte da fala real do export da 261021 (transcrição salva na pasta da edição).
+  // Baseado na fala do export da 261021 (transcrição salva na pasta da edição), com linhas sintéticas.
   const heard = [
     ...say("Olá, eu sou o Pixel, sou editor da Diária e a partir de hoje", 14),
     ...say("Sem saldo para pagar taxas na sepoia, que é uma rede de testes do ethereum,", 55),
@@ -264,5 +267,244 @@ describe("#12429 publish-youtube --captions-list (só leitura)", () => {
     const err = await runCaptionsList(deps([], () => json(500, { error: "x" })), { aammdd: "261030", editionDir: dir, env: ENV, log: (l) => logs.push(l) });
     assert.equal(err.exitCode, 1);
     assert.match(logs.join("\n"), /captions\.list respondeu 500/);
+  });
+});
+
+describe("#12429 léxico: achados do review (acento, pontuação interna, conectivo, cabeçalho, template)", () => {
+  const texts = (ws: Word[]) => ws.map((w) => w.text);
+
+  it("regressão: 'aí' falado nunca vira 'AI' (acento ouvido não sai; 'ai' é ambígua)", () => {
+    assert.equal(LEXICON_AMBIGUOUS.has("ai"), true);
+    assert.equal(properNounLexicon("Teste no Workers AI hoje.").has("ai"), false);
+    // Mesmo com "AI" no léxico, o acento ouvido manda.
+    const { words, changes } = applyProperNounLexicon(say("e aí o modelo", 0), new Map([["ai", "AI"]]));
+    assert.deepEqual(texts(words), ["e", "aí", "o", "modelo"]);
+    assert.deepEqual(changes, []);
+    // Acento que o Whisper não escreveu entra; o que ele escreveu fica.
+    const lex = new Map([["sao", "São"], ["camara", "Câmara"]]);
+    assert.deepEqual(texts(applyProperNounLexicon(say("sao câmara", 0), lex).words), ["São", "Câmara"]);
+  });
+
+  it("regressão: pontuação interna diferente não troca ('GPT-55' ouvido não vira 'GPT-5.5')", () => {
+    const lex = new Map([["gpt55", "GPT-5.5"]]);
+    const a = applyProperNounLexicon(say("o GPT-55 saiu", 0), lex);
+    assert.deepEqual(texts(a.words), ["o", "GPT-55", "saiu"]);
+    assert.deepEqual(a.changes, []);
+    assert.deepEqual(texts(applyProperNounLexicon(say("o gpt-5.5 saiu", 0), lex).words), ["o", "GPT-5.5", "saiu"]);
+  });
+
+  it("regressão: 'e' não une nomes ('Google e Microsoft' são dois nomes no léxico)", () => {
+    const lex = properNounLexicon("Hoje a Google e Microsoft anunciaram acordos.");
+    assert.equal(lex.get("google"), "Google");
+    assert.equal(lex.get("microsoft"), "Microsoft");
+  });
+
+  it("regressão: cabeçalho citado em caixa-alta no meio da linha fica fora, sigla conhecida entra", () => {
+    const lex = properNounLexicon("Errei no USE MELHOR e na seção RADAR de LANÇAMENTOS. O negócio depende do CADE e da OpenAI.");
+    for (const k of ["melhor", "radar", "lancamentos"]) assert.equal(lex.has(k), false, k);
+    assert.equal(lex.get("cade"), "CADE");
+    assert.equal(lex.get("openai"), "OpenAI");
+  });
+
+  it("sigla também cai se o texto a escreve em minúscula (lowerSeen sem atalho)", () => {
+    assert.equal(properNounLexicon("Usei a API hoje. A api caiu.").has("api"), false);
+    assert.equal(properNounLexicon("Usei a API hoje.").get("api"), "API");
+  });
+
+  it("editorialText tira É IA?, ERRO INTENCIONAL, SORTEIO, PARA ENCERRAR e box de CTA; mantém destaques", () => {
+    const md = readFileSync(join(import.meta.dirname, "fixtures", "reviewed-261028-12429.md"), "utf8");
+    const t = editorialText(md);
+    assert.match(t, /OpenAI lançou o GPT-6\.1 Terra/);
+    assert.match(t, /\*\*\[Apple solta a nova Siri/, "título de link em negrito fica");
+    for (const gone of ["Wispr Flow", "ChatGTP", "Bonde articulado", "caneca da diar.ia.br", "curadoria de livros", "Mais sobre Mercado"]) {
+      assert.equal(t.includes(gone), false, gone);
+    }
+  });
+
+  it("02-reviewed.md real (261028): pro/melhor/aí/mercado/geral/ajustes não mudam; nomes da edição sim", () => {
+    const md = readFileSync(join(import.meta.dirname, "fixtures", "reviewed-261028-12429.md"), "utf8");
+    const lex = properNounLexicon(md);
+    for (const k of ["pro", "melhor", "ai", "mercado", "geral", "ajustes", "radar", "lancamentos", "wispr", "flow", "beehiiv", "chatgtp", "moscou"]) {
+      assert.equal(lex.has(k), false, k);
+    }
+    const heard = say("e aí, o plano pro do mercado melhor vai pro ajustes geral da openai e da apple no iphone", 0);
+    const { words } = applyProperNounLexicon(heard, lex);
+    assert.equal(
+      texts(words).join(" "),
+      "e aí, o plano pro do mercado melhor vai pro ajustes geral da OpenAI e da Apple no iPhone",
+    );
+  });
+});
+
+describe("#12429 NO_PLAN_SEQ_KEY", () => {
+  it("é a chave do horizontal pelo sequenceKey (a do cache da transcrição do export)", () => {
+    assert.equal(NO_PLAN_SEQ_KEY, sequenceKey({ target: "youtube" }));
+    assert.equal(NO_PLAN_SEQ_KEY, "youtube");
+  });
+});
+
+describe("#12429 marca de legenda sem plano não revisada", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "srt-mark-12429-"));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("applyYoutubeSrtCopy com noPlan grava a marca e origin no registro; a cópia seguinte com plano a apaga", () => {
+    const path = join(dir, "ed", "diaria-comentada-261021.srt");
+    const recordPath = join(dir, "youtube-srt.json");
+    const marker = youtubeCaptionNoPlanMarkerPath(path);
+    assert.equal(applyYoutubeSrtCopy({ path, recordPath, srt: "1\n00:00:00,000 --> 00:00:01,000\noi\n", force: false, origin: { name: "x.mp4" }, noPlan: true }), "write");
+    assert.equal(JSON.parse(readFileSync(recordPath, "utf8")).origin, "no-plan");
+    assert.equal(JSON.parse(readFileSync(marker, "utf8")).origin, "no-plan");
+    assert.equal(applyYoutubeSrtCopy({ path, recordPath, srt: "1\n00:00:00,000 --> 00:00:01,000\ntchau\n", force: false, origin: { name: "x.mp4" } }), "write");
+    assert.equal(existsSync(marker), false);
+    assert.equal(JSON.parse(readFileSync(recordPath, "utf8")).origin, undefined);
+  });
+
+  it("regressão: --captions-only recusa o SRT marcado sem --captions-reviewed, sem chamar a API", async () => {
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "_internal", "05-youtube-published.json"), JSON.stringify({ aammdd: "261021", videoId: "VID" }));
+    const srtPath = join(dir, "diaria-comentada-261021.srt");
+    writeFileSync(srtPath, "1\n00:00:00,000 --> 00:00:01,000\noi\n");
+    writeFileSync(youtubeCaptionNoPlanMarkerPath(srtPath), JSON.stringify({ origin: "no-plan" }));
+    const calls: string[] = [];
+    const deps: YouTubeUploadDeps = { now: () => new Date(), fetch: async (url) => { calls.push(url); throw new Error("sem rede"); } };
+    const logs: string[] = [];
+    const base = { aammdd: "261021", editionDir: dir, captionsPath: srtPath, force: false, readFile: (p: string) => readFileSync(p), log: (l: string) => logs.push(l) };
+    const refused = await runCaptionsOnly(deps, { ...base, env: {} });
+    assert.equal(refused.exitCode, 1);
+    assert.match(logs.join("\n"), /--captions-reviewed/);
+    assert.equal(calls.length, 0);
+    // Com --captions-reviewed passa da marca (e para na credencial ausente, ainda sem rede).
+    logs.length = 0;
+    const reviewed = await runCaptionsOnly(deps, { ...base, env: {}, captionsReviewed: true });
+    assert.equal(reviewed.exitCode, 1);
+    assert.match(logs.join("\n"), /\[premissa\] legenda sem plano enviada como revisada/);
+    assert.match(logs.join("\n"), /faltam/);
+    assert.equal(calls.length, 0);
+  });
+});
+
+describe("#12429 CLI --no-plan com plan.json que tem o horizontal", () => {
+  let dir: string;
+  const origErr = console.error;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "vm-12429b-"));
+    console.error = () => {};
+  });
+  afterEach(() => {
+    console.error = origErr;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const base = () => ["srt", "261021", "--state-dir", dir, "--work-dir", dir, "--out-dir", dir, "--no-drive-api", "--drive-root", dir];
+
+  it("recusa sem --force; com --force segue (e para no export ausente)", async () => {
+    writeFileSync(join(dir, "plan.json"), JSON.stringify({ hash: "x", plans: [{ spec: { target: "youtube", name: "h", width: 1920, height: 1080 }, script: "oi" }], source: { fps: 30 } }));
+    await assert.rejects(main([...base(), "--from-final", join(dir, "nao-existe.mp4"), "--no-plan"]), /--no-plan recusado.*--force/);
+    await assert.rejects(main([...base(), "--from-final", join(dir, "nao-existe.mp4"), "--no-plan", "--force"]), /export não encontrado/);
+  });
+});
+
+describe("#12429 captionBackfillStatus e runCaptionsList: casos de borda", () => {
+  const ENV = { GOOGLE_CLIENT_ID: "cid", GOOGLE_CLIENT_SECRET: "cs", YOUTUBE_REFRESH_TOKEN: "rt", YOUTUBE_CHANNEL_ID: "UCx" };
+  const okBody = { items: [{ id: "cap1", snippet: { language: "pt-BR", trackKind: "standard", isDraft: false } }] };
+  function deps(calls: string[]): YouTubeUploadDeps {
+    return {
+      now: () => new Date("2026-11-11T12:00:00Z"),
+      fetch: async (url) => {
+        calls.push(url);
+        if (url === "https://oauth2.googleapis.com/token") return Response.json({ access_token: "tok" });
+        if (url.startsWith("https://www.googleapis.com/youtube/v3/captions?")) return Response.json(okBody);
+        throw new Error(`rota não mockada: ${url}`);
+      },
+    };
+  }
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "yt-12429b-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const writeRecord = (rec: unknown) => writeFileSync(join(dir, "_internal", "05-youtube-published.json"), JSON.stringify(rec));
+
+  it("captionBackfillStatus: captionId registrado que é asr ou de outra língua não conta", () => {
+    const base: CaptionTrack = { id: "cap1", language: "pt-BR", name: "", trackKind: "standard", isDraft: false, lastUpdated: null };
+    assert.equal(captionBackfillStatus([{ ...base, trackKind: "asr" }], "cap1").ok, false);
+    assert.equal(captionBackfillStatus([{ ...base, language: "en" }], "cap1").ok, false);
+    assert.equal(captionBackfillStatus([{ ...base, trackKind: "forced" }], null).ok, false);
+  });
+
+  it("listCaptions: trackKind fora do conhecido vira 'unknown'", async () => {
+    const d: YouTubeUploadDeps = { now: () => new Date(), fetch: async () => Response.json({ items: [{ id: "x", snippet: { trackKind: "WeIrD", language: "pt-BR" } }] }) };
+    assert.equal((await listCaptions(d, "tok", "V"))[0].trackKind, "unknown");
+  });
+
+  it("--video-id diferente do registrado: confere o --video-id, sem o captionId do registro", async () => {
+    writeRecord({ aammdd: "261030", videoId: "REG", captions: { ok: true, captionId: "outra" } });
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const out = await runCaptionsList(deps(calls), { aammdd: "261030", editionDir: dir, videoId: "OUTRO", env: ENV, log: (l) => logs.push(l) });
+    assert.equal(out.exitCode, 0, logs.join("\n"));
+    assert.equal(out.videoId, "OUTRO");
+    assert.match(logs.join("\n"), /difere do vídeo registrado/);
+    assert.ok(calls.some((u) => u.includes("videoId=OUTRO")));
+  });
+
+  it("registro de outra edição: sem --video-id = exit 1 sem API; com --video-id, confere", async () => {
+    writeRecord({ aammdd: "261029", videoId: "REG" });
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const none = await runCaptionsList(deps(calls), { aammdd: "261030", editionDir: dir, env: ENV, log: (l) => logs.push(l) });
+    assert.equal(none.exitCode, 1);
+    assert.equal(calls.length, 0);
+    assert.match(logs.join("\n"), /outra edição/);
+    const byId = await runCaptionsList(deps(calls), { aammdd: "261030", editionDir: dir, videoId: "V", env: ENV, log: (l) => logs.push(l) });
+    assert.equal(byId.exitCode, 0, logs.join("\n"));
+  });
+
+  it("registro em estado incerto (pending): mensagem própria; sem --video-id = exit 1", async () => {
+    writeRecord({ aammdd: "261030", status: "in_progress" });
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const out = await runCaptionsList(deps(calls), { aammdd: "261030", editionDir: dir, env: ENV, log: (l) => logs.push(l) });
+    assert.equal(out.exitCode, 1);
+    assert.equal(calls.length, 0);
+    assert.match(logs.join("\n"), /estado incerto \(in_progress\).*--video-id/);
+    logs.length = 0;
+    const byId = await runCaptionsList(deps(calls), { aammdd: "261030", editionDir: dir, videoId: "V", env: ENV, log: (l) => logs.push(l) });
+    assert.equal(byId.exitCode, 0, logs.join("\n"));
+    assert.match(logs.join("\n"), /\[aviso\].*estado incerto/);
+  });
+
+  it("credencial ausente: exit 1 sem chamar a API", async () => {
+    writeRecord({ aammdd: "261030", videoId: "REG" });
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const out = await runCaptionsList(deps(calls), { aammdd: "261030", editionDir: dir, env: {}, log: (l) => logs.push(l) });
+    assert.equal(out.exitCode, 1);
+    assert.equal(calls.length, 0);
+    assert.match(logs.join("\n"), /faltam/);
+  });
+});
+
+describe("#12429 CLI publish-youtube: flags de --captions-list e --captions-reviewed (spawnSync)", () => {
+  it("combinações inválidas saem 2 antes de qualquer API", () => {
+    const dir = mkdtempSync(join(tmpdir(), "yt-cli-12429-"));
+    try {
+      for (const [args, message] of [
+        [["--captions-only", "--video-id", "X"], /--video-id só vale com --captions-list/],
+        [["--captions-list", "--video-id"], /--video-id exige o VIDEO_ID/],
+        [["--captions-list", "--dry-run"], /exclusivos/],
+        [["--dry-run", "--captions-reviewed"], /--captions-reviewed só vale com --captions-only/],
+        [[], /--captions-list.*--thumbnail-only/],
+      ] as const) {
+        const r = spawnSync(process.execPath, ["--import", "tsx", "scripts/publish-youtube.ts", "261021", "--edition-dir", dir, ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "" } });
+        assert.equal(r.status, 2, `${args.join(" ")}: ${r.stderr}`);
+        assert.match(r.stderr, message);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
