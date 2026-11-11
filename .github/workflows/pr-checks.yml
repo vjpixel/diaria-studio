@@ -59,7 +59,7 @@ env:
 
 jobs:
   unused-code-check:
-    name: Unused code check (knip, #1008)
+    name: "Unused code check (knip, #1008)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +112,7 @@ jobs:
         run: npx tsx scripts/check-pr-bugfix.ts
 
   seed-html-sync:
-    name: Seed/HTML sync (cursos/livros, #3105)
+    name: "Seed/HTML sync (cursos/livros, #3105)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -169,7 +169,7 @@ jobs:
         run: npx tsx scripts/check-pr-removal-declaration.ts
 
   hub-page-drift:
-    name: Hub page drift (workers/arquivo/src/hubs, #4897)
+    name: "Hub page drift (workers/arquivo/src/hubs, #4897)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -190,7 +190,7 @@ jobs:
     # entry em tsc-baseline.json, ou mais ocorrências de um erro já
     # conhecido). Ver scripts/lib/tsc-baseline.ts pro contrato exato e
     # scripts/typecheck-ratchet.ts pra como baixar a baseline.
-    name: Typecheck ratchet (test/**, #6217)
+    name: "Typecheck ratchet (test/**, #6217)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -210,7 +210,7 @@ jobs:
     # e agent/skill SÃO .md — um PR que só edita frontmatter de agent (ex: o
     # incidente do PR #7301) nunca dispararia ci.yml. pr-checks.yml não tem
     # paths-ignore, roda em todo PR.
-    name: Validate agents (frontmatter YAML + MCP tool names, #122/#7279)
+    name: "Validate agents (frontmatter YAML + MCP tool names, #122/#7279)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -233,7 +233,7 @@ jobs:
     # Aqui e não em ci.yml pelo mesmo motivo do `validate-agents` acima:
     # ci.yml tem `paths-ignore` e um PR que só mexa em shell/markdown poderia
     # não disparar. pr-checks.yml roda em todo PR.
-    name: Shell tests (*.test.sh, #7129)
+    name: "Shell tests (*.test.sh, #7129)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
