@@ -155,7 +155,10 @@ export function parseCli(argv: string[]): CliOptions {
 
 async function fetchTallyHtml(url: string): Promise<string> {
   const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-  if (!res.ok) throw new Error(`Tally HTTP ${res.status} em ${url}`);
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`Tally HTTP ${res.status} em ${url}`);
+  }
   return res.text();
 }
 
