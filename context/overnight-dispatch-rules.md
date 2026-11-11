@@ -1524,6 +1524,11 @@ o procedimento #11616 do `.claude/skills/diaria-overnight/SKILL.md` (Fase 1,
 Gate 2): `npx tsx scripts/run-agent-eval-for-pr.ts --pr N --live` no
 worktree da PR, que aplica a label ao registrar o resultado. Decisão do
 editor de 10/11/2026 (#12678): é o coordenador quem roda, na própria rodada.
+Desde o #12830 o script também reexecuta o check do gate depois da label
+(rerun pela API; recusado, tira e repõe a label) e só sai `0` com ele verde
+no head da PR: sem `gh run rerun` à mão. Saída `1` depois de "Label e
+comentário já estão na PR" é o check que não ficou verde no prazo
+(`--check-timeout-sec`, default 600).
 
 **Relatório:** `scripts/reconcile-overnight-report.ts` marca a PR aberta
 retida no gate como `aberta, aguarda agent-eval` e lista as retidas numa
