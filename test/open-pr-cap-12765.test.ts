@@ -2,13 +2,14 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   combineContinuoCaps,
   computeOpenPrSlots,
   isDependencyBotPr,
   OPEN_PR_CAP,
+  resolveWaveOpenPrSlots,
   waveOpenPrCapError,
 } from "../scripts/lib/open-pr-cap.ts";
 import { OPEN_PR_LIST_LIMIT, readOpenPrCap } from "../scripts/check-open-pr-cap.ts";
@@ -102,14 +103,32 @@ describe("teto global de PRs abertos (#12765)", () => {
   });
 });
 
+/**
+ * `gh` falso no PATH (#12873): o script mede o teto sozinho, e o teste não
+ * pode depender do `gh` real (autenticado na máquina do dev, ausente no CI).
+ * `openPrs` = lista devolvida por `gh pr list`; `null` = gh falha (exit 1).
+ */
+function fakeGhPath(openPrs: number | null): string {
+  const bin = mkdtempSync(join(tmpdir(), "fake-gh-12873-"));
+  const payload = openPrs === null ? "" : JSON.stringify(
+    Array.from({ length: openPrs }, (_, i) => ({ number: 9000 + i, headRefName: `overnight/fix-${i}`, author: { login: "vjpixel" } })),
+  );
+  const body = openPrs === null
+    ? "#!/bin/sh\necho 'gh: offline' >&2\nexit 1\n"
+    : `#!/bin/sh\ncat <<'JSON'\n${payload}\nJSON\n`;
+  writeFileSync(join(bin, "gh"), body, { mode: 0o755 });
+  return `${bin}${delimiter}${process.env.PATH ?? ""}`;
+}
+
 describe("record-overnight-wave --open-pr-slots (#12765)", () => {
-  const setup = () => {
+  const setup = (openPrs: number | null = null) => {
     const dir = mkdtempSync(join(tmpdir(), "wave-12765-"));
     const plan = join(dir, "plan.json");
     writeFileSync(plan, "{}\n");
+    const env = { ...process.env, PATH: fakeGhPath(openPrs) };
     const run = (...extra: string[]) => spawnSync(process.execPath, [
       "--import", "tsx", "scripts/record-overnight-wave.ts", "--plan", plan, "--units", "1;2", ...extra,
-    ], { encoding: "utf8" });
+    ], { encoding: "utf8", env });
     return { plan, run };
   };
 
@@ -138,6 +157,59 @@ describe("record-overnight-wave --open-pr-slots (#12765)", () => {
     assert.equal(again.status, 0, again.stderr);
     assert.match(again.stdout, /no-op idempotente/);
     assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves.length, 1);
+  });
+});
+
+describe("record-overnight-wave mede o teto sozinho (#12873)", () => {
+  const setup = (openPrs: number | null) => {
+    const dir = mkdtempSync(join(tmpdir(), "wave-12873-"));
+    const plan = join(dir, "plan.json");
+    writeFileSync(plan, "{}\n");
+    const env = { ...process.env, PATH: fakeGhPath(openPrs) };
+    const run = (...extra: string[]) => spawnSync(process.execPath, [
+      "--import", "tsx", "scripts/record-overnight-wave.ts", "--plan", plan, "--units", "1;2", ...extra,
+    ], { encoding: "utf8", env });
+    return { plan, run };
+  };
+
+  it("caso real da 261111b: informado 5 com 1 vaga medida recusa onda de 2, sem gravar", () => {
+    const { plan, run } = setup(OPEN_PR_CAP - 1);
+    const r = run("--open-pr-slots", "5");
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /diverge do teto medido agora \(9 PR\(s\) aberta\(s\), 1 vaga\(s\)\)/);
+    assert.match(r.stderr, /estoura as 1 vaga/);
+    assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves, undefined);
+  });
+
+  it("informado abaixo do medido: vale o medido, com aviso, e a onda entra", () => {
+    const { plan, run } = setup(0);
+    const r = run("--open-pr-slots", "1");
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /diverge do teto medido/);
+    assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves.length, 1);
+  });
+
+  it("informado igual ao medido: sem aviso", () => {
+    const { run } = setup(OPEN_PR_CAP - 2);
+    const r = run("--open-pr-slots", "2");
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stderr, /AVISO/);
+  });
+
+  it("gh indisponível: aceita o informado com aviso", () => {
+    const { plan, run } = setup(null);
+    const r = run("--open-pr-slots", "2");
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /não medido .*sem conferência/);
+    assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves.length, 1);
+  });
+
+  it("resolveWaveOpenPrSlots (puro)", () => {
+    assert.deepEqual(resolveWaveOpenPrSlots(3, { verified: true, slots: 3, open: 7 }), { slots: 3, warning: null });
+    assert.equal(resolveWaveOpenPrSlots(5, { verified: true, slots: 1, open: 9 }).slots, 1);
+    const off = resolveWaveOpenPrSlots(4, { verified: false, reason: "x" });
+    assert.equal(off.slots, 4);
+    assert.match(off.warning ?? "", /não medido/);
   });
 });
 

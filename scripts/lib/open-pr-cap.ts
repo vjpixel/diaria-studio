@@ -72,6 +72,33 @@ export function waveOpenPrCapError(unitCount: number, slots: number): string | n
 }
 
 /**
+ * Pure (#12873): vagas que valem para a onda, dado o `--open-pr-slots`
+ * informado pelo coordenador e a medição do teto feita pelo próprio script.
+ *
+ * - Medição verificada: vale o MEDIDO. Informado diferente gera aviso; é
+ *   o caso da rodada 261111b (informou 5 com 1 vaga medida e a onda de 2
+ *   unidades entrou com `cap_hit=false`).
+ * - Medição não verificada (`gh` caído, fail-soft do #7746): vale o
+ *   informado, com aviso de que nada foi conferido.
+ */
+export function resolveWaveOpenPrSlots(
+  informed: number,
+  measured: { verified: true; slots: number; open: number } | { verified: false; reason: string },
+): { slots: number; warning: string | null } {
+  if (!measured.verified) {
+    return {
+      slots: informed,
+      warning: `teto de PRs abertos não medido (${measured.reason}); usando --open-pr-slots ${informed} sem conferência`,
+    };
+  }
+  if (measured.slots === informed) return { slots: informed, warning: null };
+  return {
+    slots: measured.slots,
+    warning: `--open-pr-slots ${informed} diverge do teto medido agora (${measured.open} PR(s) aberta(s), ${measured.slots} vaga(s)); vale o medido`,
+  };
+}
+
+/**
  * Pure: decisão final do contínuo (#7746 + #12765). Só reivindica com vaga
  * nos DOIS tetos. Não verificado (`slots === null`) não segura o teto global
  * (fail-soft do #7746: tick travado por infra custa mais que um tick a mais).

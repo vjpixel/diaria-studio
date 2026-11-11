@@ -36,6 +36,9 @@
  * Caminho relativo resolve contra a raiz do checkout PRINCIPAL, não contra o
  * cwd (#12458): rodar o trem de dentro de um worktree de agente grava a
  * timeline no `plan.json` certo (`resolveReportPathAgainstMainCheckout`).
+ * Com `--report`, o fim do trem também preenche no `plan.json` vizinho os
+ * `timeline.pr_opened`/`ci_green`/`merged` que faltam, pelo estado real das
+ * PRs (`backfill-overnight-timeline.ts`, #12874), fail-soft.
  *
  * Escrita pendente em `data/` (#12026): no fim, para cada PR mergeado (no
  * PR-trem ou solo) cuja seção `Escrita pendente em data/` (item 35 de
@@ -98,6 +101,7 @@ import {
 import { logEvent } from "./lib/run-log.ts";
 import { resolveReviewThreads, EXIT_OK as THREADS_EXIT_OK } from "./resolve-review-threads.ts";
 import { reconcileReport, realGhJson } from "./reconcile-overnight-report.ts";
+import { backfillPlanTimeline } from "./backfill-overnight-timeline.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { existsSync } from "node:fs";
@@ -144,6 +148,32 @@ export function resolveReportPathAgainstMainCheckout(
     path: resolvePath(cwd, raw),
     warning: `run-merge-train: raiz do checkout principal não resolvida (git-common-dir ${common ? `"${common}" fora do formato <raiz>/.git` : "ilegível"}) — --report resolvido contra o cwd (${cwd}); se o cwd for um worktree de agente, a timeline e o reconcile vão mirar o lugar errado`,
   };
+}
+
+/**
+ * Timeline das unidades no fim do trem (#12874): preenche `pr_opened`,
+ * `ci_green` e `merged` que faltam no `plan.json` (ao lado do `report.md`) a
+ * partir do estado real das PRs — inclusive as que entraram no plano depois
+ * do merge ou que mergearam numa invocação anterior do trem. Fail-soft: nunca
+ * lança nem muda o exit code; o merge já aconteceu (ou não).
+ */
+export function backfillTimelineAtTrainEnd(
+  reportPath: string,
+  deps: { backfill?: typeof backfillPlanTimeline } = {},
+): { level: "log" | "warn"; message: string } {
+  try {
+    const r = (deps.backfill ?? backfillPlanTimeline)({
+      planPath: join(dirname(reportPath), "plan.json"),
+      gh: realGhJson,
+      warn: (m) => console.warn(m),
+    });
+    return {
+      level: r.exitCode === 0 ? "log" : "warn",
+      message: `run-merge-train: timeline do plano (#12874): ${r.messages.join("; ")}`,
+    };
+  } catch (err) {
+    return { level: "warn", message: `run-merge-train: timeline do plano (#12874) não preenchida: ${err instanceof Error ? err.message : String(err)}` };
+  }
 }
 
 /**
@@ -343,6 +373,8 @@ async function main() {
   const trainedPrs = [...prNumbers];
   const finish = (code: number): void => {
     if (reportPath) {
+      const tl = backfillTimelineAtTrainEnd(reportPath);
+      (tl.level === "log" ? console.log : console.warn)(tl.message);
       const line = reconcileReportAtTrainEnd(reportPath, trainedPrs);
       (line.level === "log" ? console.log : console.warn)(line.message);
     }
