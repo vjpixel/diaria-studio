@@ -202,7 +202,8 @@ loadProjectEnv();
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
@@ -368,6 +369,11 @@ import {
   SHORT_COVER_MISSING_ERROR,
   type ShortCoverRecord,
 } from "./lib/diaria/short-cover.ts"; // #11547, #12100
+import {
+  FIRST_FRAME_FFMPEG_TIMEOUT_MS,
+  prepareYouTubeFirstFrameCover,
+  type FirstFrameCoverDeps,
+} from "./lib/diaria/short-first-frame-cover.ts"; // #12100 opção 2
 import {
   THREADS_PROFILE_DESTINATION,
   ThreadsTimerGateError,
@@ -1670,7 +1676,12 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   }
 
   // #11547: o que cada destino faz com a capa (Still) — ver scripts/lib/diaria/short-cover.ts.
-  const coverCtx = { coverPath: input.coverPath ?? null, coverUploadReady: input.coverUploadReady === true, bufferOffsetMs: input.coverBufferOffsetMs ?? null };
+  const coverCtx = {
+    coverPath: input.coverPath ?? null,
+    coverUploadReady: input.coverUploadReady === true,
+    bufferOffsetMs: input.coverBufferOffsetMs ?? null,
+    youtubeFirstFrameMs: cfg.youtubeFirstFrameCoverMs, // #12100 opção 2
+  };
   const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination, planCoverDestination(i, coverCtx)])) };
   // #11986: delegar a um timer parado deixa os destinos sem sair por até 3 h, sem alarme do timer.
   if (corteTimer && input.corteTimerHeartbeat && corteTimerHeartbeatStale(input.corteTimerHeartbeat, input.now)) {
@@ -3502,6 +3513,61 @@ export async function publishLinkedInProfileVideo(
   throw new Error(r.reason);
 }
 
+/** #12100 opção 2: I/O real da capa no 1º frame (ffprobe/ffmpeg do PATH, diretório em `os.tmpdir()`). */
+export const defaultFirstFrameCoverDeps: FirstFrameCoverDeps = {
+  runFfprobe: (args) => {
+    const r = spawnSync("ffprobe", args, { encoding: "utf8", timeout: 60_000 });
+    if (r.error) return { ok: false, error: r.error.message };
+    if (r.status !== 0) return { ok: false, error: (r.stderr ?? "").trim().slice(-500) || `exit ${r.status}` };
+    return { ok: true, stdout: r.stdout };
+  },
+  runFfmpeg: (args) => {
+    const r = spawnSync("ffmpeg", args, { encoding: "utf8", timeout: FIRST_FRAME_FFMPEG_TIMEOUT_MS });
+    if (r.error) return { ok: false, error: `${r.error.message}${r.signal ? ` (sinal ${r.signal})` : ""}` };
+    if (r.signal) return { ok: false, error: `ffmpeg encerrado por ${r.signal}` };
+    if (r.status !== 0) return { ok: false, error: (r.stderr ?? "").trim().slice(-500) || `exit ${r.status}` };
+    return { ok: true };
+  },
+  makeTempDir: () => mkdtempSync(join(tmpdir(), "diaria-short-first-frame-")),
+  writeFile: (p, b) => writeFileSync(p, b),
+  readFile: (p) => readFileSync(p),
+  removeDir: (d) => rmSync(d, { recursive: true, force: true }),
+};
+
+/**
+ * #12100 opção 2: o arquivo que sobe para o YouTube Shorts. Com a opção ligada
+ * e a capa no disco, o vertical ganha a capa nos primeiros `leadMs`; desligada,
+ * sem capa ou com falha do ffmpeg, sobe o vertical original (com `[aviso]` na
+ * falha). Loga o que foi feito. Nunca lança.
+ */
+export function youtubeShortUploadFile(input: {
+  file: Buffer;
+  videoPath: string;
+  cover: Buffer | null;
+  leadMs: number | null;
+  log: (line: string) => void;
+  deps?: FirstFrameCoverDeps;
+}): { file: Buffer; firstFrame: { ms: number } | null } {
+  if (input.leadMs === null) {
+    input.log("[premissa] youtube_shorts: capa no 1º frame desligada (publishing.shorts.youtube_first_frame_cover = false) — sobe o vertical original");
+    return { file: input.file, firstFrame: null };
+  }
+  if (!input.cover) {
+    input.log("[aviso] youtube_shorts: sem capa local, o vertical sobe sem a capa no 1º frame (#12100)");
+    return { file: input.file, firstFrame: null };
+  }
+  const r = prepareYouTubeFirstFrameCover(input.deps ?? defaultFirstFrameCoverDeps, { videoPath: input.videoPath, cover: input.cover, leadMs: input.leadMs });
+  if (!r.ok) {
+    input.log(`[aviso] youtube_shorts: capa no 1º frame não aplicada (${r.error}) — sobe o vertical original (#12100)`);
+    return { file: input.file, firstFrame: null };
+  }
+  input.log(
+    `[ok] youtube_shorts: capa nos primeiros ${r.leadMs} ms (${r.frames} frames a ${r.probe.fpsExpr} fps, ${r.probe.width}x${r.probe.height}) do vertical enviado; ` +
+      `arquivo temporário de ${(r.bytes.length / 1e6).toFixed(1)} MB, o vertical da edição não muda (#12100, não confirmado: medir o oar2.jpg)`,
+  );
+  return { file: r.bytes, firstFrame: { ms: r.leadMs } };
+}
+
 /** URL pública do Short (#11070) — o `youtu.be/{id}` também abre, mas o registro guarda a de Shorts. */
 export function youtubeShortUrl(videoId: string): string {
   return `https://youtube.com/shorts/${videoId}`;
@@ -3532,6 +3598,12 @@ export async function publishYouTubeShort(input: {
   onBeforeBytes?: (entry: ShortPublishedEntry) => void;
   /** #11547: capa (JPEG) — `thumbnails.set` depois do insert; falha não desfaz o Short. */
   cover?: Buffer | null;
+  /**
+   * #12100 opção 2: `file` já leva a capa nos primeiros `ms` (gerado por
+   * `prepareYouTubeFirstFrameCover`). Só muda o registro: `vertical_feed:
+   * "first_frame_cover"` + `first_frame_ms`, sem afirmar que o feed mostra a capa.
+   */
+  firstFrame?: { ms: number } | null;
   /**
    * #11795: corte avulso — só o título conta como "já está no canal". A marca
    * da edição e o dia acusariam o Short da EDIÇÃO do mesmo dia.
@@ -3597,7 +3669,7 @@ export async function publishYouTubeShort(input: {
   const failed = failedUploadStatus(result.rereadStatus);
   // #11547: `thumbnails.set` vale para Short (medido em 28/10/2026); falha só vira registro.
   // #12100: o sucesso troca só a miniatura 16:9; a capa do feed de Shorts vira aviso de passo manual.
-  const cover = youtubeShortsCoverRecord(result.thumbnail);
+  const cover = youtubeShortsCoverRecord(result.thumbnail, input.firstFrame ?? null);
   if (cover && !cover.ok) warnings.push(`capa não aplicada (${cover.error}) — troque no YouTube Studio (Miniatura → Enviar arquivo)`);
   const verticalWarning = youtubeShortsVerticalCoverWarning(result.videoId, cover);
   if (verticalWarning) warnings.push(verticalWarning);
@@ -5174,6 +5246,8 @@ async function main(): Promise<number> {
           shortCover.bytes,
         );
       } else if (item.destination === "youtube_shorts") {
+        // #12100 opção 2: a capa nos primeiros frames do vertical que vai ao YouTube (arquivo temporário; o da edição não muda).
+        const yt = youtubeShortUploadFile({ file, videoPath, cover: shortCover.bytes, leadMs: shortsCfg.youtubeFirstFrameCoverMs, log: (l) => console.error(l) });
         outcome = await publishYouTubeShort({
           deps: defaultYouTubeUploadDeps,
           env: process.env,
@@ -5181,7 +5255,8 @@ async function main(): Promise<number> {
           title: item.title ?? plan.youtube.title,
           description: item.caption,
           scheduledAt: item.scheduledAt,
-          file,
+          file: yt.file,
+          firstFrame: yt.firstFrame,
           cover: shortCover.bytes,
           force: flags.has("force-youtube"),
           matchTitleOnly: corte !== null,

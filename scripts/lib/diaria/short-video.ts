@@ -66,6 +66,7 @@ import { DEFAULT_EDITION_SCHEDULE_HHMM } from "../edition-scheduled-at.ts";
 import { buildYouTubeTitle, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
 import type { ShortCoverRecord } from "./short-cover.ts";
 import { videoLinkLine } from "./d1-video-link.ts"; // #12735
+import { SHORT_FIRST_FRAME_COVER_DEFAULT_MS, SHORT_FIRST_FRAME_COVER_MAX_MS, SHORT_FIRST_FRAME_COVER_MIN_MS } from "./short-first-frame-cover.ts"; // #12100
 
 /** Canal do YouTube que os Shorts/Reels divulgam. */
 export const DIARIA_YOUTUBE_CHANNEL_URL = "https://www.youtube.com/@diariabr";
@@ -502,6 +503,15 @@ export interface ShortsConfig {
    */
   youtubeShortsApi: boolean;
   /**
+   * #12100 opção 2 (decisão do editor de 11/11/2026): ms da capa
+   * (`04-youtube-short-capa.jpg`) nos primeiros frames do vertical enviado ao
+   * YouTube Shorts, para o frame automático do feed (`oar2.jpg`) cair nela.
+   * Arquivo derivado em diretório temporário: o vertical da edição não muda e
+   * os outros destinos seguem com ele. `null` = desligado
+   * (`publishing.shorts.youtube_first_frame_cover: false`).
+   */
+  youtubeFirstFrameCoverMs: number | null;
+  /**
    * #10982: o vídeo do perfil pessoal do LinkedIn sai pelo timer do `300`
    * (`scripts/shorts-linkedin-profile-timer.ts`), não pela rodada do
    * `/diaria-shorts`. Com `true`, uma rodada sem `--linkedin-timer` pula o
@@ -571,6 +581,8 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   threadsProfile: true,
   // #11070: o publishAt publica sozinho mesmo sem a auditoria (medido em 23/10/2026).
   youtubeShortsApi: true,
+  // #12100 opção 2 (decisão do editor, 11/11/2026): ligada por padrão; medir no oar2.jpg do próximo Short.
+  youtubeFirstFrameCoverMs: SHORT_FIRST_FRAME_COVER_DEFAULT_MS,
   // #10982: desligado no código; o platform.config.json liga junto com o timer.
   linkedinProfileViaTimer: false,
   // #11410: desligado; o editor liga no platform.config.json junto com o arme da task no 300.
@@ -597,6 +609,7 @@ function defaultShortsConfig(): ShortsConfig {
     x: DEFAULT_SHORTS_CONFIG.x,
     threadsProfile: DEFAULT_SHORTS_CONFIG.threadsProfile,
     youtubeShortsApi: DEFAULT_SHORTS_CONFIG.youtubeShortsApi,
+    youtubeFirstFrameCoverMs: DEFAULT_SHORTS_CONFIG.youtubeFirstFrameCoverMs,
     linkedinProfileViaTimer: DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer,
     threadsProfileViaTimer: DEFAULT_SHORTS_CONFIG.threadsProfileViaTimer,
     instagramBackend: DEFAULT_SHORTS_CONFIG.instagramBackend,
@@ -613,6 +626,23 @@ function optionalBool(raw: Record<string, unknown>, key: string, fallback: boole
   if (v === undefined) return fallback;
   if (typeof v !== "boolean") throw new Error(`[shorts] publishing.shorts.${key} precisa ser boolean (#10772).`);
   return v;
+}
+
+/**
+ * #12100 opção 2: `youtube_first_frame_cover` (boolean, default true) liga a
+ * capa no 1º frame do vertical do YouTube; `youtube_first_frame_cover_ms`
+ * (inteiro entre 100 e 2000, default 400) diz quanto tempo. Desligada → null.
+ */
+export function loadYouTubeFirstFrameCoverMs(raw: Record<string, unknown>): number | null {
+  if (!optionalBool(raw, "youtube_first_frame_cover", true)) return null;
+  const ms = raw.youtube_first_frame_cover_ms;
+  if (ms === undefined) return SHORT_FIRST_FRAME_COVER_DEFAULT_MS;
+  if (typeof ms !== "number" || !Number.isInteger(ms) || ms < SHORT_FIRST_FRAME_COVER_MIN_MS || ms > SHORT_FIRST_FRAME_COVER_MAX_MS) {
+    throw new Error(
+      `[shorts] publishing.shorts.youtube_first_frame_cover_ms precisa ser um inteiro entre ${SHORT_FIRST_FRAME_COVER_MIN_MS} e ${SHORT_FIRST_FRAME_COVER_MAX_MS} (#12100).`,
+    );
+  }
+  return ms;
 }
 
 /** Lê e valida `publishing.shorts`; ausente → default (decisão do editor, #10769/#10790). */
@@ -666,6 +696,7 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     x: optionalBool(raw, "x", DEFAULT_SHORTS_CONFIG.x),
     threadsProfile: optionalBool(raw, "threads_profile", DEFAULT_SHORTS_CONFIG.threadsProfile),
     youtubeShortsApi: optionalBool(raw, "youtube_shorts_api", DEFAULT_SHORTS_CONFIG.youtubeShortsApi),
+    youtubeFirstFrameCoverMs: loadYouTubeFirstFrameCoverMs(raw),
     linkedinProfileViaTimer: optionalBool(raw, "linkedin_profile_via_timer", DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer),
     threadsProfileViaTimer: optionalBool(raw, "threads_profile_via_timer", DEFAULT_SHORTS_CONFIG.threadsProfileViaTimer),
     instagramBackend: backend,
