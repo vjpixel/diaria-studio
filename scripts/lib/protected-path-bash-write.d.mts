@@ -33,3 +33,5 @@ export function shouldBlockProtectedPathWrite(
   opts?: ProtectedPathWriteOptions,
 ): ProtectedPathWriteFinding | null;
 export function protectedPathWriteReason(finding: ProtectedPathWriteFinding): string;
+export function isInterpreterCodeFinding(finding: ProtectedPathWriteFinding | null | undefined): boolean;
+export const INTERPRETER_TEXT_WORKAROUND: string;
