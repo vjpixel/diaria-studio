@@ -51,6 +51,7 @@ export {
   assertCampaignQuotaHeadroom,
   BrevoCampaignQuotaLowError,
   readCampaignQuotaState,
+  refreshCampaignQuotaStateFromKv, // #12841
   warnIfCampaignQuotaLow, // #6458
   type BrevoCampaignQuotaState,
 } from "./brevo-rate-state.ts";

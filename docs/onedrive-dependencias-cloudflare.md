@@ -268,6 +268,15 @@ orçamento.
   muda o caminho crítico.
 - **Risco:** baixo. Uma ida à rede por resposta da Brevo; manter o arquivo
   local como cache e mandar ao KV sem bloquear a chamada.
+- **Feito (#12841):** chave `brevo-rate:email-campaigns` no namespace
+  `diaria-ops-state` (`ops_state_kv`, o mesmo do #12541). A escrita grava o
+  arquivo e manda o estado ao KV em segundo plano (PUTs do mesmo processo em
+  ordem, intermediários coalescidos); os leitores chamam
+  `refreshCampaignQuotaStateFromKv()` antes do assert, que traz a observação
+  do KV para o arquivo quando é mais nova. KV fora do ar ou sem credencial
+  (`CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WORKERS_TOKEN`) cai no arquivo, sem
+  lançar; `BREVO_RATE_STATE_KV=0` desliga. A chave é uma só, como o arquivo:
+  o header não diz de qual conta Brevo veio a resposta.
 
 ### G6. Interruptores e overrides do editor
 

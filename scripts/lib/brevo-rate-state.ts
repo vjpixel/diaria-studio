@@ -25,11 +25,34 @@
  * Fail-soft por design: falha de leitura/escrita do arquivo de estado nunca
  * deve quebrar a chamada real à Brevo que está em curso em `brevo-client.ts`
  * — o pior caso é perder visibilidade da cota, não a chamada em si.
+ *
+ * #12841 (G5 de `docs/onedrive-dependencias-cloudflare.md`): o estado também
+ * vive no KV da Cloudflare (namespace `diaria-ops-state`, chave
+ * `BREVO_RATE_KV_KEY`), porque a cota é da CONTA e o arquivo em `data/` é
+ * escrito por todas as máquinas — com a replicação do Drive, escrita
+ * concorrente perde o contador de uma delas. O arquivo local continua sendo o
+ * cache que as leituras SÍNCRONAS (`readCampaignQuotaState` e os asserts)
+ * consultam:
+ *   - escrita: grava o arquivo (síncrono, como antes) e manda o mesmo estado
+ *     ao KV em segundo plano (`recordCampaignQuotaRemaining` nunca espera a
+ *     rede; falha vira um aviso único em stderr). "Último valor vence": o
+ *     valor vem do header da própria Brevo.
+ *   - leitura: quem vai decidir por cota chama antes
+ *     `await refreshCampaignQuotaStateFromKv()`, que traz a observação do KV
+ *     para o arquivo quando ela é mais nova que a local (o leitor de cada
+ *     janela horária vê a última observação de QUALQUER máquina). KV fora do
+ *     ar, sem credencial ou com valor ilegível → segue só com o arquivo,
+ *     nunca lança, nunca bloqueia envio.
+ * Sem `CLOUDFLARE_ACCOUNT_ID`/token no ambiente o módulo se comporta como
+ * antes (só arquivo). Sob `node --test` o KV padrão fica desligado: teste
+ * injeta o backend com `setCampaignQuotaKvOpsForTest` (nenhum teste fala com
+ * a Cloudflare real).
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createKvRestOps, type KvOps } from "./cloudflare-kv-rest.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -120,7 +143,174 @@ export function recordCampaignQuotaRemaining(
   reset?: number,
   path: string = DEFAULT_RATE_STATE_PATH,
 ): void {
-  writeCampaignQuotaState({ remaining, limit, reset, updatedAt: new Date().toISOString() }, path);
+  const state: BrevoCampaignQuotaState = { remaining, limit, reset, updatedAt: new Date().toISOString() };
+  writeCampaignQuotaState(state, path);
+  scheduleCampaignQuotaKvPush(state);
+}
+
+// ---------------------------------------------------------------------------
+// #12841 — espelho no KV da Cloudflare (ver docstring do módulo).
+// ---------------------------------------------------------------------------
+
+/** Chave do estado no namespace `ops_state_kv` (`diaria-ops-state`). Um valor
+ *  só, como o arquivo: o header não diz de qual conta Brevo veio a resposta. */
+export const BREVO_RATE_KV_KEY = "brevo-rate:email-campaigns";
+
+/** Timeout por request ao KV: a leitura antecede um sweep/render, não pode pendurar. */
+export const BREVO_RATE_KV_TIMEOUT_MS = 4_000;
+
+/** Interpreta o valor do KV. `null` para ausente, JSON inválido ou shape inesperado. */
+export function parseCampaignQuotaState(raw: string | null): BrevoCampaignQuotaState | null {
+  if (raw == null) return null;
+  try {
+    const v = JSON.parse(raw);
+    if (typeof v?.remaining !== "number" || !Number.isFinite(v.remaining)) return null;
+    if (typeof v?.updatedAt !== "string" || Number.isNaN(Date.parse(v.updatedAt))) return null;
+    const out: BrevoCampaignQuotaState = { remaining: v.remaining, updatedAt: v.updatedAt };
+    if (typeof v.limit === "number") out.limit = v.limit;
+    if (typeof v.reset === "number") out.reset = v.reset;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * "Último valor vence": devolve a observação mais recente pelo `updatedAt`.
+ * `updatedAt` ilegível perde para um legível; empate fica com `local`.
+ */
+export function pickNewerCampaignQuotaState(
+  local: BrevoCampaignQuotaState | null,
+  remote: BrevoCampaignQuotaState | null,
+): BrevoCampaignQuotaState | null {
+  if (!remote) return local;
+  if (!local) return remote;
+  const l = Date.parse(local.updatedAt);
+  const r = Date.parse(remote.updatedAt);
+  if (Number.isNaN(r)) return local;
+  if (Number.isNaN(l)) return remote;
+  return r > l ? remote : local;
+}
+
+/** Resolve o backend KV a partir de `platform.config.json` + ambiente. `null` = só arquivo. */
+export function resolveCampaignQuotaKvOps(
+  platformConfig: unknown,
+  env: Record<string, string | undefined>,
+): KvOps | null {
+  const optOut = (env.BREVO_RATE_STATE_KV ?? "").trim().toLowerCase();
+  if (optOut === "0" || optOut === "off" || optOut === "false") return null;
+  const ns = (platformConfig as { ops_state_kv?: { namespace_id?: unknown } } | null)?.ops_state_kv?.namespace_id;
+  const namespaceId = typeof ns === "string" ? ns.trim() : "";
+  const accountId = (env.CLOUDFLARE_ACCOUNT_ID ?? "").trim();
+  const token = (env.CLOUDFLARE_WORKERS_TOKEN ?? "").trim() || (env.CLOUDFLARE_API_TOKEN ?? "").trim();
+  if (!namespaceId || !accountId || !token) return null;
+  return createKvRestOps({ accountId, token, namespaceId, timeoutMs: BREVO_RATE_KV_TIMEOUT_MS });
+}
+
+/** `undefined` = ainda não resolvido neste processo. */
+let kvOpsCache: KvOps | null | undefined;
+let kvOpsInjected = false;
+
+function getCampaignQuotaKvOps(): KvOps | null {
+  if (kvOpsInjected) return kvOpsCache ?? null;
+  if (kvOpsCache !== undefined) return kvOpsCache;
+  // Sob `node --test` (o runner exporta NODE_TEST_CONTEXT para os processos de
+  // teste e seus filhos) o KV real nunca é tocado, mesmo com credencial no shell.
+  if (process.env.NODE_TEST_CONTEXT) {
+    kvOpsCache = null;
+    return null;
+  }
+  try {
+    const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+    kvOpsCache = resolveCampaignQuotaKvOps(cfg, process.env);
+  } catch {
+    kvOpsCache = null;
+  }
+  return kvOpsCache;
+}
+
+/**
+ * Seam de teste: injeta o backend KV (fake) ou `null` (desligado). `undefined`
+ * volta à resolução padrão. Também zera a fila de escrita e o aviso único.
+ */
+export function setCampaignQuotaKvOpsForTest(ops: KvOps | null | undefined): void {
+  kvOpsInjected = ops !== undefined;
+  kvOpsCache = ops === undefined ? undefined : ops;
+  kvPending = null;
+  kvWarned = false;
+}
+
+let kvWarned = false;
+function warnKvOnce(what: string, err: unknown): void {
+  if (kvWarned) return;
+  kvWarned = true;
+  console.error(
+    `⚠️  brevo-rate-state: KV da Cloudflare indisponível (${what}: ${(err as Error)?.message ?? String(err)}) — ` +
+      "seguindo com o arquivo local (#12841).",
+  );
+}
+
+let kvPending: BrevoCampaignQuotaState | null = null;
+let kvInFlight: Promise<void> | null = null;
+
+/**
+ * Manda o estado ao KV em segundo plano, sem bloquear quem gravou. Coalesce:
+ * com um PUT em voo, só a observação mais nova espera a vez (as intermediárias
+ * são descartadas), e os PUTs deste processo saem em ordem — uma observação
+ * velha nunca sobrescreve uma nova vinda do mesmo processo.
+ */
+function scheduleCampaignQuotaKvPush(state: BrevoCampaignQuotaState): void {
+  if (!getCampaignQuotaKvOps()) return;
+  kvPending = state;
+  if (kvInFlight) return;
+  kvInFlight = (async () => {
+    while (kvPending) {
+      const next = kvPending;
+      kvPending = null;
+      const ops = getCampaignQuotaKvOps();
+      if (!ops) return;
+      try {
+        await ops.put(BREVO_RATE_KV_KEY, JSON.stringify(next));
+      } catch (e) {
+        warnKvOnce("escrita", e);
+      }
+    }
+  })()
+    .catch((e) => warnKvOnce("escrita", e))
+    .finally(() => {
+      kvInFlight = null;
+    });
+}
+
+/** Espera os PUTs pendentes deste processo. Nunca lança. */
+export async function flushCampaignQuotaKvWrites(): Promise<void> {
+  while (kvInFlight) await kvInFlight;
+}
+
+/**
+ * Traz a observação do KV para o arquivo local quando ela é mais nova que a
+ * local, para que as leituras síncronas (`assertCampaignQuotaHeadroom`,
+ * `warnIfCampaignQuotaLow`, `readCampaignQuotaState`) vejam a última
+ * observação de qualquer máquina. Chamar logo antes delas. Nunca lança: KV
+ * fora do ar, sem credencial ou com valor ilegível → devolve o estado local.
+ * Devolve o estado vencedor (o que fica no arquivo).
+ */
+export async function refreshCampaignQuotaStateFromKv(
+  path: string = DEFAULT_RATE_STATE_PATH,
+): Promise<BrevoCampaignQuotaState | null> {
+  const local = readCampaignQuotaState(path);
+  const ops = getCampaignQuotaKvOps();
+  if (!ops) return local;
+  let remote: BrevoCampaignQuotaState | null;
+  try {
+    remote = parseCampaignQuotaState(await ops.get(BREVO_RATE_KV_KEY));
+  } catch (e) {
+    warnKvOnce("leitura", e);
+    return local;
+  }
+  const winner = pickNewerCampaignQuotaState(local, remote);
+  if (winner && winner === remote) writeCampaignQuotaState(winner, path);
+  return winner;
 }
 
 /**

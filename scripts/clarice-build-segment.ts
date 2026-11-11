@@ -331,7 +331,7 @@ import {
   sendMonthStartIso,
 } from "./lib/clarice-paths.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds, warnIfCampaignQuotaLow } from "./lib/brevo-client.ts"; // #6458
+import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds, warnIfCampaignQuotaLow, refreshCampaignQuotaStateFromKv } from "./lib/brevo-client.ts"; // #6458
 import { parseHoldArg, applyHolds, type HoldSegmentName } from "./lib/clarice-hold.ts";
 import {
   resolveNotSentCutoff,
@@ -1164,6 +1164,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // caminho de escrita (que continua NUNCA chamando `assertCampaignQuotaHeadroom`
     // — ele é o beneficiário da reserva, não quem a respeita, ver
     // scripts/lib/brevo-rate-state.ts).
+    await refreshCampaignQuotaStateFromKv(); // #12841: última observação de qualquer máquina
     warnIfCampaignQuotaLow();
     try {
       if (dailyArg) {

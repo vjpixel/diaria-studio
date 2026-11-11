@@ -48,7 +48,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireCycleArg, clariceSegmentsDir, cycleSendMonthStartIso, CLARICE_BASE } from "./lib/clarice-paths.ts";
 import { archivedListsInWindow } from "./lib/clarice-list-consolidation.ts"; // #9532
-import { assertCampaignQuotaHeadroom, fetchCampaignsByStatus } from "./lib/brevo-client.ts";
+import { assertCampaignQuotaHeadroom, fetchCampaignsByStatus, refreshCampaignQuotaStateFromKv } from "./lib/brevo-client.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { loadStoreRows } from "./lib/clarice-segment.ts";
 import { extractCsvEmails } from "./clarice-import-waves.ts";
@@ -107,6 +107,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // #5697/#7880: consumidor READ-ONLY/diagnóstico — recusa gastar cota da
   // família /emailCampaigns* se já estiver abaixo da reserva que o caminho
   // de ESCRITA (clarice-build-segment.ts/clarice-plan-wave.ts) precisa.
+  await refreshCampaignQuotaStateFromKv(); // #12841: última observação de qualquer máquina
   assertCampaignQuotaHeadroom();
 
   const csvPath = resolve(clariceSegmentsDir(cycle, dataRoot), `${group}.csv`);
