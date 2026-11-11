@@ -66,6 +66,9 @@ describe("CLI", () => {
     const r = run();
     assert.equal(r.status, 4);
     assert.match(r.stderr, /Aguardar o sync/);
+    // #12837: pós-virada do data/ (#12359), a dica aponta o Drive, não o OneDrive.
+    assert.match(r.stderr, /sync do Drive/);
+    assert.doesNotMatch(r.stderr, /OneDrive/);
   });
   it("lock de outro host: exit 4; --force sai 0", () => {
     const dir = mkdtempSync(join(tmpdir(), "stale-"));

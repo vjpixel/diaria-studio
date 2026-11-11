@@ -334,23 +334,44 @@ export interface AgendamentosAvaliacao {
   aPublicar: AgendamentoItem[];
   /** Itens em aberto que ainda não venceram. */
   futuros: AgendamentoItem[];
+  /**
+   * Itens `agendado` vencidos que NÃO viram achado porque o envio de cada
+   * destino está registrado (#12825, ver `semAlarme`). Seguem esperando a
+   * marcação à mão (`marcar --estado publicado`); o tick só os relata.
+   */
+  semAlarme: AgendamentoItem[];
+}
+
+export interface AvaliarAgendamentosOpts {
+  graceMinutes?: number;
+  /**
+   * Ids de itens `agendado` cujo envio está registrado em todos os destinos
+   * sem leitor (e relido no ar nos que têm leitor), decisão do editor na
+   * #12825, opção (a): vencidos, não viram achado. Calculado por
+   * `agendadosComEnvioRegistrado` (`agendamentos-verificar.ts`). Só vale
+   * para o estado `agendado`: `pendente`/`pronto` vencidos alarmam sempre.
+   */
+  semAlarme?: ReadonlySet<string>;
 }
 
 /**
  * Puro: o que o consumidor vê no instante `now`. Item em aberto passado
- * `alvo + grace` vira achado `vencido-sem-publicacao`; item `falhou` vira
- * achado sempre (alguém precisa refazer). `aPublicar` lista os `pronto` já no
- * horário: o consumidor ainda não publica (nenhum publicador ligado, ver
+ * `alvo + grace` vira achado `vencido-sem-publicacao` (exceto o `agendado`
+ * listado em `opts.semAlarme`, que sai em `semAlarme`, #12825); item `falhou`
+ * vira achado sempre (alguém precisa refazer). `aPublicar` lista os `pronto`
+ * já no horário: o consumidor ainda não publica (nenhum publicador ligado, ver
  * `scripts/agendamentos-tick.ts`), só relata.
  */
 export function avaliarAgendamentos(
   banco: AgendamentosBanco,
   now: Date,
-  graceMinutes = AGENDAMENTO_VENCIDO_GRACE_MINUTES,
+  opts: AvaliarAgendamentosOpts = {},
 ): AgendamentosAvaliacao {
+  const graceMinutes = opts.graceMinutes ?? AGENDAMENTO_VENCIDO_GRACE_MINUTES;
   const achados: AgendamentoAchado[] = [];
   const aPublicar: AgendamentoItem[] = [];
   const futuros: AgendamentoItem[] = [];
+  const semAlarme: AgendamentoItem[] = [];
   for (const item of banco.itens) {
     const atrasoMin = Math.floor((now.getTime() - Date.parse(item.alvo)) / 60_000);
     if (item.estado === "falhou") {
@@ -363,10 +384,15 @@ export function avaliarAgendamentos(
       continue;
     }
     if (item.estado === "pronto") aPublicar.push(item);
-    if (atrasoMin > graceMinutes) achados.push({ tipo: "vencido-sem-publicacao", item, atrasoMin });
+    if (atrasoMin <= graceMinutes) continue;
+    if (item.estado === "agendado" && opts.semAlarme?.has(item.id)) {
+      semAlarme.push(item);
+      continue;
+    }
+    achados.push({ tipo: "vencido-sem-publicacao", item, atrasoMin });
   }
   futuros.sort((a, b) => a.alvo.localeCompare(b.alvo));
-  return { achados, aPublicar, futuros };
+  return { achados, aPublicar, futuros, semAlarme };
 }
 
 /** Puro: fingerprint do CONJUNTO de achados (muda quando o conjunto muda). */
@@ -397,7 +423,7 @@ export function buildAgendamentosAlarm(achados: readonly AgendamentoAchado[]): {
         `| \`${a.item.id}\` | ${a.tipo === "falhou" ? "falhou" : a.item.estado} | ${fmtBrt(a.item.alvo)} | ${a.atrasoMin >= 0 ? `${a.atrasoMin} min` : "—"} | ${a.item.destinos.join(", ")} | ${a.item.dono} |`,
     ),
     "",
-    "Para resolver: publicar o item pelo dono indicado e marcar com a releitura da plataforma (#573). Item `agendado` do vertical: o `verificar` relê na plataforma os destinos que têm leitor (hoje só o YouTube) e marca `publicado` quando todos os destinos do item foram relidos no ar; com algum destino sem leitor o item continua `agendado`, e a marcação é à mão, depois de conferir na rede:",
+    "Para resolver: publicar o item pelo dono indicado e marcar com a releitura da plataforma (#573). Item `agendado` do vertical: o `verificar` relê na plataforma os destinos que têm leitor (hoje só o YouTube) e marca `publicado` quando todos os destinos do item foram relidos no ar; com algum destino sem leitor o item continua `agendado`, e a marcação é à mão, depois de conferir na rede. Item `agendado` só chega a este alarme quando falta o registro de envio de algum destino (ou a releitura do YouTube não o confirma no ar): com o envio registrado em todos, o tick não alarma (#12825):",
     "",
     "```",
     "npx tsx scripts/agendamentos.ts verificar --id {id}",

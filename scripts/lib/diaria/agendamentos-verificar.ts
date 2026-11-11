@@ -30,6 +30,13 @@
  *
  * Nunca rebaixa nem marca `falhou`: leitura que não confirma deixa o item
  * como está e sai no relatório (o alarme do tick cuida do vencido).
+ *
+ * Alarme do tick (#12825, decisão do editor, opção a): como destino
+ * `sem-leitor` deixa o item `agendado` para sempre, o tick
+ * (`avaliarAgendamentosComEnvio`) não alarma o `agendado` vencido cujos
+ * destinos sem leitor têm registro de envio (`published`/`scheduled`) e cujos
+ * destinos com leitor foram relidos no ar. Falta de registro, `send_unknown`,
+ * leitura que não confirma ou que falha mantêm o alarme.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -47,7 +54,13 @@ import {
   refreshYouTubeAccessToken,
   type YouTubeUploadDeps,
 } from "./youtube-upload.ts";
-import type { AgendamentoItem, AgendamentoVerificacao, AgendamentosBanco } from "./agendamentos.ts";
+import {
+  avaliarAgendamentos,
+  type AgendamentoItem,
+  type AgendamentoVerificacao,
+  type AgendamentosAvaliacao,
+  type AgendamentosBanco,
+} from "./agendamentos.ts";
 
 /** Peça do banco → corte do `publish-shorts.ts` que a publica. */
 export const PECA_CORTE: Readonly<Record<string, string>> = { "vertical-2": VERTICAL2_CORTE_SLUG };
@@ -59,8 +72,13 @@ export type LeituraDestino =
   | { destino: string; status: "nao-publicado"; motivo: string }
   /** O registro do corte não tem o destino (nada foi enviado, ou não por este caminho). */
   | { destino: string; status: "sem-registro"; motivo: string }
-  /** Não há leitor da plataforma para este destino (ver docblock). */
-  | { destino: string; status: "sem-leitor"; motivo: string }
+  /**
+   * Não há leitor da plataforma para este destino (ver docblock). `envio` é o
+   * status da entrada do registro do corte (só existe `sem-leitor` com
+   * registro; sem registro a leitura é `sem-registro`), usado pelo tick para
+   * não alarmar envio registrado (#12825).
+   */
+  | { destino: string; status: "sem-leitor"; motivo: string; envio?: ShortPublishedEntry["status"] }
   /** A leitura falhou (rede, credencial, registro ilegível). */
   | { destino: string; status: "erro"; motivo: string };
 
@@ -202,7 +220,12 @@ export async function lerDestinosDoItem(item: AgendamentoItem, deps: VerificarDe
     }
     const leitor = deps.leitores[destino];
     if (!leitor) {
-      out.push({ destino, status: "sem-leitor", motivo: `sem leitura da plataforma ligada para ${destino}: conferir na rede e marcar à mão (#573)` });
+      out.push({
+        destino,
+        status: "sem-leitor",
+        motivo: `sem leitura da plataforma ligada para ${destino}: conferir na rede e marcar à mão (#573)`,
+        envio: entry.status,
+      });
       continue;
     }
     try {
@@ -212,6 +235,91 @@ export async function lerDestinosDoItem(item: AgendamentoItem, deps: VerificarDe
     }
   }
   return out;
+}
+
+// ─── Alarme do tick (#12825) ─────────────────────────────────────────────────
+
+/**
+ * Status de entrada do registro que contam como "envio registrado" para o
+ * alarme. `send_unknown` (timeout/5xx na criação, #10772) fica de fora: o
+ * envio pode não ter saído, e o editor precisa conferir, então o alarme fica.
+ */
+export const ENVIO_REGISTRADO_STATUS: readonly ShortPublishedEntry["status"][] = ["published", "scheduled"];
+
+/**
+ * Puro (#12825, decisão do editor: opção a). O item `agendado` vencido não
+ * alarma quando CADA destino dele tem uma destas leituras:
+ *   - `publicado` (destino com leitor, relido no ar);
+ *   - `sem-leitor` com envio registrado (`ENVIO_REGISTRADO_STATUS`).
+ * Qualquer outra (`sem-registro`, `nao-publicado`, `erro`, `sem-leitor` de
+ * envio `send_unknown`, destino sem leitura) mantém o alarme.
+ */
+export function envioRegistradoSemAlarme(item: Pick<AgendamentoItem, "destinos">, leituras: readonly LeituraDestino[]): boolean {
+  if (item.destinos.length === 0) return false;
+  const porDestino = new Map(leituras.map((l) => [l.destino, l]));
+  return item.destinos.every((d) => {
+    const l = porDestino.get(d);
+    return l !== undefined && leituraSemAlarme(l);
+  });
+}
+
+/** Puro: a leitura de UM destino dispensa o alarme? (ver `envioRegistradoSemAlarme`). */
+export function leituraSemAlarme(l: LeituraDestino): boolean {
+  if (l.status === "publicado") return true;
+  return l.status === "sem-leitor" && l.envio !== undefined && ENVIO_REGISTRADO_STATUS.includes(l.envio);
+}
+
+export interface EnvioRegistradoItem {
+  item: AgendamentoItem;
+  leituras: LeituraDestino[];
+  semAlarme: boolean;
+}
+
+/**
+ * Relê os destinos dos itens `agendado` de peça com corte conhecido (os
+ * `ids` dados, ou todos) e diz quais têm o envio registrado
+ * (`envioRegistradoSemAlarme`). Somente leitura; nunca lança (falha de
+ * leitura vira `erro`, que mantém o alarme). O tick passa só os vencidos,
+ * para não reler a plataforma à toa.
+ */
+export async function agendadosComEnvioRegistrado(
+  banco: AgendamentosBanco,
+  deps: VerificarDeps,
+  ids?: ReadonlySet<string>,
+): Promise<EnvioRegistradoItem[]> {
+  const out: EnvioRegistradoItem[] = [];
+  for (const item of itensVerificaveis(banco)) {
+    if (ids && !ids.has(item.id)) continue;
+    const leituras = await lerDestinosDoItem(item, deps);
+    out.push({ item, leituras, semAlarme: envioRegistradoSemAlarme(item, leituras) });
+  }
+  return out;
+}
+
+export interface AvaliacaoComEnvio {
+  avaliacao: AgendamentosAvaliacao;
+  /** Releituras feitas nos `agendado` vencidos (vazio quando não há nenhum). */
+  envios: EnvioRegistradoItem[];
+}
+
+/**
+ * O que o tick avalia (#12825): `avaliarAgendamentos` com os `agendado`
+ * vencidos cujo envio está registrado fora dos achados. Relê a plataforma só
+ * para os `agendado` que seriam achado; sem nenhum, não lê nada.
+ */
+export async function avaliarAgendamentosComEnvio(
+  banco: AgendamentosBanco,
+  deps: VerificarDeps,
+  graceMinutes?: number,
+): Promise<AvaliacaoComEnvio> {
+  const base = avaliarAgendamentos(banco, deps.now, { graceMinutes });
+  const candidatos = new Set(
+    base.achados.filter((a) => a.tipo === "vencido-sem-publicacao" && a.item.estado === "agendado").map((a) => a.item.id),
+  );
+  if (candidatos.size === 0) return { avaliacao: base, envios: [] };
+  const envios = await agendadosComEnvioRegistrado(banco, deps, candidatos);
+  const semAlarme = new Set(envios.filter((e) => e.semAlarme).map((e) => e.item.id));
+  return { avaliacao: avaliarAgendamentos(banco, deps.now, { graceMinutes, semAlarme }), envios };
 }
 
 /** Relê os itens verificáveis do banco e decide cada um. Não grava. */

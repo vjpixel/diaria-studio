@@ -1,15 +1,55 @@
 # workers/site
 
-Worker de static assets que vai eventualmente servir o apex `diar.ia.br`
-(#467 — decisão do editor de 25/08/2026: "o apex aponta pro nosso Worker;
-o Kit fica só com o e-mail").
+Worker (`diaria-site`) que serve o apex `diar.ia.br` (#467 — decisão do
+editor de 25/08/2026: "o apex aponta pro nosso Worker; o Kit fica só com o
+e-mail").
 
-**Estado desta unidade: acervo `/p/{slug}` das 253 edições publicadas**
-(`status: "confirmed"` em `data/beehiiv-cache/posts/`) **+ `/` e
-`/subscribe` (#6359, 26/08/2026, stub — ver abaixo).** `custom_domain`/
-`routes` apontando pro apex **não estão ligados ainda** — este Worker só
-roda em `workers.dev` até o cutover de DNS (fora de escopo, blast-radius
-real, ver `docs/apex-cutover-rollback.md`).
+**O cutover já aconteceu (#467/#6498, confirmado ao vivo em 28/08/2026):**
+`https://diar.ia.br/` responde com o `public/index.html` deste Worker
+(`server: cloudflare`, não mais Beehiiv). A amarração do custom hostname do
+apex a este Worker foi feita na configuração da zona, fora do repo — por
+isso não aparece `custom_domain`/`[[routes]]` no `wrangler.toml`. Rollback:
+`docs/apex-cutover-rollback.md`.
+
+Conteúdo servido: o acervo `/p/{slug}` das edições publicadas, a home `/`,
+`/assinar`, `/subscribe` (ver abaixo) e as rotas do script (próxima seção).
+
+## Script (`src/index.ts`) e bindings
+
+O Worker não é mais só de static assets: desde o #6429 tem `main =
+"src/index.ts"`, com `run_worker_first = true` no `[assets]` (sem isso o
+asset ganharia a request antes do script). O script resolve, antes do
+`env.ASSETS.fetch`:
+
+- `POST /webhooks/hotmart`, `GET /hotmart/abandonos` e `GET /hotmart/vendas`
+  — webhook e leitura de abandonos/vendas da Hotmart (#10082, #10734);
+- `/img/{key}` — capas da edição lidas do KV `POLL` (com fallback no R2
+  `MEDIA`), mesma origem do documento (#7657, #11412);
+- `/confirmada` (página do double opt-in, #7737/#8554) e `/confirmado`
+  (301 para `/confirmada`);
+- `/produto/conteudo-autentico` — 302 para a versão ativa da página de venda;
+- a chave do IndexNow, quando `INDEXNOW_KEY` está configurada (#8355);
+- `/apoiar/ir` (302 para o apoia.se, conta o clique) e `/apoiar` (301,
+  #7915/#8498);
+- `/video` — 302 para o horizontal mais recente no YouTube, link fixo da bio
+  (#12735, #12801).
+
+Depois do asset lookup: `/p/{slug}` servido ganha ETag/Last-Modified/304
+(#8355), e `/p/{slug}` inexistente cai num 302 para o permalink no Kit
+(#6429). Toda request também passa pelos contadores de bot de IA e de
+Referer de assistente (#8062).
+
+Bindings declarados no `wrangler.toml`:
+
+- `ASSETS` — `./public`, `html_handling = "drop-trailing-slash"` (#467);
+- KV `POLL` — o mesmo namespace de `workers/poll`, só leitura: as imagens
+  via `serveKvImage` (allowlist de key do #4112) e o registro do vídeo mais
+  recente lido pelo `/video` (chave fixa, #12735);
+- R2 `MEDIA` — bucket `diaria-shorts` (`media.diar.ia.br`, #11412);
+- KV `CURSOS_SUBSCRIBERS` — contadores (`counter:*`, #8062/#8498/#12735) e
+  registros da Hotmart (`hotmart:*`, #10082/#10734).
+
+`observability` ligado (#5920).
 
 ### `/` e `/subscribe` (#6359, redesign #6375)
 
@@ -99,7 +139,6 @@ redesign — 7 blocos, links reais pro acervo) + `test/site-home-signup-6976.tes
 
 Fora de escopo aqui:
 
-- o cutover de DNS em si
 - POST real pro Kit (#6318)
 - medição de conversão visitante→assinante (item separado da issue #6375,
   requer decisão de instrumentação)
@@ -116,10 +155,11 @@ deste Worker deixou de ser um snapshot estático das 253 edições antigas.
 `[assets]`, renderiza on-the-fly a partir do sitemap). Este Worker é o
 espelho 1:1 do acervo — cada `/p/{slug}` é o HTML COMPLETO que a Beehiiv já
 gerou pra aquela edição (`content.free.web`), sem transformação de
-conteúdo. São dois papéis diferentes (curadoria vs. mirror), e o segundo é
-justamente o candidato a virar o apex algum dia — juntar os dois faria
-`workers/arquivo` carregar uma responsabilidade (servir o site de verdade)
-que hoje não é dele. Mesmo padrão de assets puro de `workers/artigos`.
+conteúdo. São dois papéis diferentes (curadoria vs. mirror), e o segundo
+virou o apex no cutover (#6498) — juntar os dois faria `workers/arquivo`
+carregar uma responsabilidade (servir o site de verdade) que não é dele.
+Nasceu no mesmo padrão de assets puro de `workers/artigos`; o script veio
+depois (seção acima).
 
 ## Gerar as páginas
 
@@ -164,4 +204,7 @@ cd workers/site && npx wrangler deploy
 ```
 
 ou via `.github/workflows/deploy-site.yml` (push em `master` tocando
-`workers/site/**`, mesmo padrão de `deploy-artigos.yml`).
+`workers/site/**`, mesmo padrão de `deploy-artigos.yml`). Como o apex já é
+servido por este Worker, todo deploy vai direto pra produção: um binding que
+o deploy não resolva (KV/R2 do `wrangler.toml`) faz o deploy falhar e deixa o
+apex na versão anterior.

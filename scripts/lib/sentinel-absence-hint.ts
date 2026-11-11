@@ -10,7 +10,7 @@
  * `300` recusou como se a etapa não tivesse sido aprovada.
  *
  * Este módulo monta a mensagem que substitui essa conclusão: diz "possível
- * defasagem de sync do OneDrive" e mostra a idade do arquivo mais recente da
+ * defasagem de sync do Drive" (`SYNC_LAG_PHRASE`) e mostra a idade do arquivo mais recente da
  * pasta da edição nesta máquina. A idade é o que deixa o editor decidir: se o
  * arquivo mais novo é de horas atrás e a etapa foi aprovada há minutos em outra
  * máquina, o sync não chegou; se a pasta está em dia, a etapa provavelmente
@@ -27,7 +27,10 @@
 import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
-export const SYNC_LAG_PHRASE = "possível defasagem de sync do OneDrive";
+// #12837: o `data/` saiu do OneDrive para o Google Drive da diaria.editor na
+// virada da #12359 (11/11/2026) — a defasagem agora é do bisync do `300` ou
+// do Drive for desktop do Neo.
+export const SYNC_LAG_PHRASE = "possível defasagem de sync do Drive (bisync do 300 / Drive for desktop)";
 
 export interface NewestFile {
   /** Caminho relativo à pasta da edição, com `/`. */

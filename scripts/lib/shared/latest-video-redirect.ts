@@ -74,7 +74,8 @@ export interface LatestVideoRecord {
   updated_at: string;
   /**
    * #12801: ISO de quando o horizontal fica público (o `publishAt` do upload
-   * agendado). Ausente = já público (upload na hora, link colado no Studio).
+   * agendado; no caminho de reserva, sem registro do upload, as 06:00 BRT
+   * presumidas da edição). Ausente = já público (upload na hora pela API).
    * Enquanto não passa, o redirect usa `previous` (ou a lista do canal).
    */
   public_at?: string;
