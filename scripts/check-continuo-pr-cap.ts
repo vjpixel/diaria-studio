@@ -1,48 +1,59 @@
 #!/usr/bin/env node
 /**
- * CLI: verifica teto de PRs continuo/* abertas (#7746).
- * Saída JSON: {open, cap, mayClaim, counted}
- * Fail-soft: se gh falhar → mayClaim=true, counted=[], motivo visível no stderr.
+ * CLI: verifica teto de PRs continuo/* abertas (#7746) E o teto global de PRs
+ * abertas no repo (#12765, `scripts/lib/open-pr-cap.ts`).
+ * Saída JSON: {open, cap, mayClaim, counted, heldBy, verified, global: {open, cap, slots, verified}}
+ * `mayClaim` só é true se os DOIS tetos têm vaga (`combineContinuoCaps`);
+ * `heldBy` diz qual segurou ("continuo" | "global" | null).
+ * Fail-soft (#7746): gh falhando → `verified:false`, mayClaim=true, counted=[],
+ * motivo no stderr. Mesma leitura do `check-open-pr-cap.ts` (`readOpenPrCap`).
  */
 import { spawnSync } from "child_process";
 import { shouldClaimNewIssue } from "./lib/continuo-pr-cap.js";
+import { combineContinuoCaps, type OpenPrLike } from "./lib/open-pr-cap.ts";
+import { OPEN_PR_LIST_LIMIT, readOpenPrCap } from "./check-open-pr-cap.ts";
 
-function ghList(): { ok: boolean; branches: string[]; reason?: string } {
+function ghList(): { ok: boolean; prs: OpenPrLike[]; reason?: string } {
   const res = spawnSync(
     "gh",
-    ["pr", "list", "--repo", "vjpixel/diaria-studio", "--state", "open", "--json", "headRefName", "--limit", "100"],
+    ["pr", "list", "--repo", "vjpixel/diaria-studio", "--state", "open", "--json", "number,headRefName,author", "--limit", String(OPEN_PR_LIST_LIMIT)],
     { encoding: "utf8", timeout: 15000 }
   );
   if (res.error || res.status !== 0) {
-    return { ok: false, branches: [], reason: res.stderr?.trim() || res.error?.message || "gh falhou" };
+    return { ok: false, prs: [], reason: res.stderr?.trim() || res.error?.message || "gh falhou" };
   }
   try {
-    const arr = JSON.parse(res.stdout || "[]") as Array<{ headRefName: string }>;
-    const branches = arr
-      .map((r) => r.headRefName)
-      .filter((b): b is string => typeof b === "string" && b.startsWith("continuo/"));
-    return { ok: true, branches };
+    const arr = JSON.parse(res.stdout || "[]") as OpenPrLike[];
+    if (!Array.isArray(arr)) throw new Error("saída do gh não é array");
+    return { ok: true, prs: arr.filter((r) => typeof r?.headRefName === "string") };
   } catch (e) {
-    return { ok: false, branches: [], reason: String(e) };
+    return { ok: false, prs: [], reason: String(e) };
   }
 }
 
 const list = ghList();
-let result: ReturnType<typeof shouldClaimNewIssue>;
-
 if (!list.ok) {
   // Fail-soft na direção de PERMITIR (não trava tick por infra), #7746
-  result = shouldClaimNewIssue([], 3);
-  // Ajustar: quando gh falha, contamos 0 abertas, portanto mayClaim=true
-  // Mas queremos sinalizar falha — expomos motivo via stderr, não alteramos JSON
   console.error(`continuo-pr-cap: gh falhou (${list.reason}); assumindo mayClaim=true (fail-soft)`);
-} else {
-  result = shouldClaimNewIssue(list.branches, 3);
 }
+const result = shouldClaimNewIssue(
+  list.prs.map((p) => p.headRefName).filter((b) => b.startsWith("continuo/")),
+  3,
+);
+// Reusa a mesma saída do gh (sem 2ª chamada) pela mesma função do CLI global.
+const global = readOpenPrCap(
+  (() => (list.ok
+    ? { status: 0, stdout: JSON.stringify(list.prs), stderr: "" }
+    : { status: 1, stdout: "", stderr: list.reason ?? "gh falhou" })) as unknown as typeof spawnSync,
+);
+const combined = combineContinuoCaps(result.mayClaim, global.verified ? global.slots : null);
 
 console.log(JSON.stringify({
   open: result.open,
   cap: result.cap,
-  mayClaim: result.mayClaim,
+  mayClaim: combined.mayClaim,
+  heldBy: combined.heldBy,
   counted: result.counted,
+  verified: list.ok,
+  global: { open: global.open, cap: global.cap, slots: global.slots, verified: global.verified },
 }));

@@ -61,6 +61,21 @@ transitória resolvida: revalidar os gates normais antes de qualquer ação.
 Draft, `bloqueio-execucao` e retenção para editor continuam bloqueados até
 liberação explícita; o briefing nunca promove draft automaticamente.
 
+**Prazo de validade de 48h (#12765).** Cada item traz `expired` e
+`destination`. Passadas 48h, rodar
+`npx tsx scripts/list-continuo-escalation-queue.ts --apply`, que fecha as de
+destino `fechar-redundante`, `fechar-para-issue` e `fechar-reabrir-issue`
+(comentário na PR e na issue de origem, branch preservada, `gh pr reopen`
+desfaz). Destino `fixer` = `dev-fixer` na branch existente (rebase + CI;
+draft verde vira ready) e `npx tsx scripts/mark-continuo-ci-fix-attempted.ts --pr {N}`;
+destino `briefing` segue com o editor, inclusive PR retida (#10278) ou
+reivindicada por sessão viva. `failures[]` não vazio (exit 1) = reportar.
+
+**Teto global de PRs abertos (#12765).** Antes de compor cada onda, rodar
+`npx tsx scripts/check-open-pr-cap.ts`: a onda tem no máximo
+`min(6, slots)` unidades; `slots = 0` = drenar as PRs abertas antes de abrir
+PR nova. `verified:false` (exit 2) = não verificado, segue com o teto da onda.
+
 ## Como difere de /diaria-overnight
 
 | Eixo | /diaria-overnight | /diaria-develop |
