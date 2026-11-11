@@ -138,8 +138,14 @@ export const SET_GUARDS: readonly SetGuardRule[] = [
       "test/scheduled-tasks.test.ts",
       "test/scheduled-tasks-drift.test.ts",
       "test/scheduled-tasks-4819.test.ts",
+      // #12736: apêndice A do mapa de dependências do data/ sincronizado.
+      "test/onedrive-dependencias-inventario-12736.test.ts",
     ],
-    triggerPatterns: ["scripts/lib/scheduled-tasks.ts", "docs/scheduled-tasks-registry.md"],
+    triggerPatterns: [
+      "scripts/lib/scheduled-tasks.ts",
+      "docs/scheduled-tasks-registry.md",
+      "docs/onedrive-dependencias-cloudflare.md",
+    ],
     reason:
       "adicionar/remover/renomear uma task no registro varre o array SCHEDULED_TASKS inteiro contra o doc — " +
       "nenhum teste de arquivo isolado cobre a task nova",
