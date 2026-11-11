@@ -33,8 +33,9 @@
  *
  * Desde o #12541 item 2 o registro também vai para o KV da Cloudflare
  * (`short-related:{AAMMDD}`, `scripts/lib/diaria/short-related-kv.ts`), que a
- * task do Neo grava por API. Ordem de leitura: KV com registro decide; KV sem
- * registro cai no arquivo replicado (como antes); KV que não respondeu com o
+ * task do Neo grava por API. Ordem de leitura: KV com registro decide (com o
+ * arquivo também com registro, vence o mais avançado, `pickMoreAdvancedRecord`);
+ * KV sem registro cai no arquivo replicado (como antes); KV que não respondeu com o
  * arquivo também sem registro vira `record-unconfirmed`, veredito explícito de
  * incerteza (issue `acao`, sem afirmar falha). Arquivo com registro decide
  * mesmo com o KV fora.
@@ -173,18 +174,35 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
   }
 
   // #12541 item 2: o KV é gravado pela task do Neo por API e lido aqui na
-  // hora; vem antes do arquivo replicado pelo OneDrive.
+  // hora; vem antes do arquivo replicado em `data/`.
   const decide = (r: ShortRelatedRecord, where: string): ShortRelatedMissedEvaluation => {
     if (r.status === "linked") return out("linked", `já vinculado (${r.shortId} → ${r.horizontalId}), registro no ${where}`);
     if (r.alertedAt) return out("task-alerted", `a task já avisou o editor em ${r.alertedAt} (registro no ${where})`);
     return out("failed-not-alerted", `registro "${r.status}" sem alertedAt no ${where}: a task registrou a falha mas o alerta não saiu`);
   };
+  const rec = input.record;
+  if (kv.kind === "ok" && rec.kind === "ok") {
+    // Os dois canais com registro (#12541 fleet review): vence o mais
+    // avançado (linked > alertado > failed sem alerta); empate, o `at` mais
+    // recente; empate de novo, o KV. Nunca "KV sempre vence": um KV que
+    // ficou com `failed` de uma execução anterior (publicação posterior
+    // falhou) não pode virar e-mail urgente com o arquivo já `linked`.
+    const pick = pickMoreAdvancedRecord(kv.value, rec.value);
+    recordSource = pick;
+    const chosen = pick === "kv" ? kv.value : rec.value;
+    const ev = decide(chosen, pick === "kv" ? "KV" : "arquivo replicado");
+    const divergent = recordRank(kv.value) !== recordRank(rec.value) || kv.value.at !== rec.value.at;
+    if (!divergent) return ev;
+    return {
+      ...ev,
+      reason: `${ev.reason}; KV e arquivo divergem (KV: ${describeRecord(kv.value)}; arquivo: ${describeRecord(rec.value)}), valeu o ${pick === "kv" ? "KV" : "arquivo"}`,
+    };
+  }
   if (kv.kind === "ok") {
     recordSource = "kv";
     return decide(kv.value, "KV");
   }
 
-  const rec = input.record;
   if (rec.kind === "ok") {
     recordSource = "file";
     return decide(rec.value, "arquivo replicado");
@@ -201,8 +219,28 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
   }
   return out(
     "missing-record",
-    "sem registro no KV nem _internal/06-short-related.json no 300 depois do prazo: execução da task e vínculo não confirmados; possível atraso de replicação do OneDrive (ou o Neo ainda sem gravar no KV)",
+    "sem registro no KV nem _internal/06-short-related.json no 300 depois do prazo: execução da task e vínculo não confirmados; possível atraso de replicação do arquivo em data/ (ou o Neo ainda sem gravar no KV)",
   );
+}
+
+/** Quão avançado é o registro: 2 vinculado, 1 alerta enviado, 0 falha sem alerta. */
+function recordRank(r: ShortRelatedRecord): number {
+  if (r.status === "linked") return 2;
+  return r.alertedAt ? 1 : 0;
+}
+
+function describeRecord(r: ShortRelatedRecord): string {
+  return `${r.status}${r.alertedAt ? ` alertado ${r.alertedAt}` : ""} em ${r.at}`;
+}
+
+/**
+ * Pure (#12541): KV e arquivo com registro, qual decide. O mais avançado
+ * vence; empate, o `at` mais recente (ISO compara como string); empate, o KV.
+ */
+export function pickMoreAdvancedRecord(kv: ShortRelatedRecord, file: ShortRelatedRecord): "kv" | "file" {
+  const dr = recordRank(kv) - recordRank(file);
+  if (dr !== 0) return dr > 0 ? "kv" : "file";
+  return (file.at ?? "") > (kv.at ?? "") ? "file" : "kv";
 }
 
 /**
@@ -234,15 +272,17 @@ export function buildShortRelatedMissedAlarm(ev: ShortRelatedMissedEvaluation, s
       `Horário do Short: ${ev.shortAt ?? "não derivado"}; prazo da task: ${ev.deadline ?? "não derivado"}`,
       "",
       "A task LOCAL `diaria-short-video-relacionado` (#10811) roda no Neo pelo app Claude desktop.",
-      `Fonte do registro: ${ev.recordSource === "kv" ? "KV da Cloudflare (short-related:" + ev.aammdd + ")" : ev.recordSource === "file" ? "arquivo replicado pelo OneDrive" : "nenhuma"}${ev.kvError ? `; leitura do KV falhou: ${ev.kvError}` : ""}.`,
+      `Fonte do registro: ${ev.recordSource === "kv" ? "KV da Cloudflare (short-related:" + ev.aammdd + ")" : ev.recordSource === "file" ? "arquivo replicado em data/" : "nenhuma"}${ev.kvError ? `; leitura do KV falhou: ${ev.kvError}` : ""}.`,
       "A ausência de confirmação no 300 não comprova falha da task no Neo nem ausência do vínculo no YouTube.",
       "O check consulta o KV da Cloudflare (gravado pela task por API, #12541) e o registro replicado; não consulta o vínculo no Studio/YouTube.",
       "",
       `Para conferir o vínculo e, somente se estiver ausente, vincular à mão: ${studioUrl} → o Short → Elementos do vídeo → Vídeo relacionado → Adicionar → Escolha um vídeo específico → o horizontal → Salvar.`,
       "",
-      ev.verdict === "record-unconfirmed"
-        ? "Incerteza: o KV não respondeu e o arquivo replicado não tem registro. Isto NÃO afirma que a task falhou; conferir o Short no Studio resolve."
-        : "Ressalva: a task só grava no KV depois que o Neo tem o token Cloudflare no `.env` e o passo final do roteiro; antes disso, sem registro no KV vale o arquivo replicado pelo OneDrive, que pode atrasar. Conferir o Short no Studio resolve as duas hipóteses.",
+      ...(ev.verdict === "record-unconfirmed"
+        ? ["Incerteza: o KV não respondeu e o arquivo replicado não tem registro. Isto NÃO afirma que a task falhou; conferir o Short no Studio resolve."]
+        : ev.verdict === "missing-record"
+          ? ["Ressalva: a task só grava no KV depois que o Neo tem o token Cloudflare no `.env` e o passo final do roteiro; antes disso, sem registro no KV vale o arquivo replicado em `data/`, que pode atrasar. Conferir o Short no Studio resolve as duas hipóteses."]
+          : []),
     ].join("\n"),
   };
 }

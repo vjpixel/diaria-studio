@@ -197,7 +197,8 @@ orçamento.
 - **Quem grava / lê:** grava a task do Neo `diaria-short-video-relacionado`
   (`.claude/skills/diaria-publica-video/short-related-task.md:62`); lê o
   `Diaria-Short-Related-Missed-Alarm` no `300`
-  (`scripts/short-related-missed-alarm.ts:136`, o caso `missing-record`).
+  (`scripts/short-related-missed-alarm.ts`, `evaluateShortRelatedMissed`, o
+  caso `missing-record`).
 - **Natureza:** sinal pequeno, um escritor, uma chave por edição, 1 escrita
   por dia útil.
 - **Problema:** a ausência do arquivo no `300` não diz se a task não rodou ou

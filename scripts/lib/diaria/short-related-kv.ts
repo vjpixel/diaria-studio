@@ -2,7 +2,7 @@
  * scripts/lib/diaria/short-related-kv.ts (#12541 item 2)
  *
  * Registro do vínculo do vídeo relacionado do Short no KV da Cloudflare, fora
- * do OneDrive. A task LOCAL `diaria-short-video-relacionado` (Neo, #10811)
+ * da replicação de arquivos de `data/`. A task LOCAL `diaria-short-video-relacionado` (Neo, #10811)
  * grava aqui pelo `scripts/short-related-kv-publish.ts` depois de registrar o
  * resultado em `_internal/06-short-related.json`; o alarme
  * `Diaria-Short-Related-Missed-Alarm` (#11353, no `300`) lê daqui antes de
@@ -11,7 +11,7 @@
  *
  * Namespace: `diaria-ops-state` (`platform.config.json` →
  * `ops_state_kv.namespace_id`), criado para isto e pensado para os próximos
- * sinais operacionais que saírem do OneDrive (G5 em
+ * sinais operacionais que saírem do arquivo replicado em `data/` (G5 em
  * `docs/onedrive-dependencias-cloudflare.md`). Por isso a chave leva prefixo.
  *
  * Chave: `short-related:{AAMMDD}`. Valor: o mesmo JSON do arquivo da edição
@@ -97,25 +97,47 @@ export async function readShortRelatedKv(ops: Pick<KvOps, "get">, aammdd: string
   }
 }
 
+/** Intervalos entre as releituras depois do PUT (ms): 1ª imediata, depois estes. */
+export const SHORT_RELATED_KV_REREAD_DELAYS_MS: readonly number[] = [1000, 3000];
+
+const RECORD_FIELDS = ["aammdd", "status", "horizontalId", "shortId", "note", "at", "alertedAt"] as const;
+
+/** Campo a campo: a ordem das chaves do JSON varia conforme quem montou o registro. */
+function sameRecord(a: ShortRelatedRecord, b: ShortRelatedRecord): boolean {
+  // `|| null`: o parser normaliza string vazia para null.
+  return RECORD_FIELDS.every((f) => (a[f] || null) === (b[f] || null));
+}
+
 /**
  * Grava o registro e relê para confirmar (o PUT 2xx não prova que a leitura
- * do `300` vai ver o mesmo valor). Lança se o PUT falhar ou se a releitura
- * não devolver o registro gravado. A releitura vem do mesmo ponto de presença
- * que gravou, então a consistência eventual do KV não a afeta.
+ * do `300` vai ver o mesmo valor). O KV é eventualmente consistente e a API
+ * REST não garante que a releitura caia no mesmo ponto de presença que
+ * gravou, então uma releitura vazia ou defasada logo depois do PUT pode ser
+ * só propagação: relê de novo após cada intervalo de `delaysMs` antes de
+ * desistir. Lança se o PUT falhar, ou com "PUT ok, releitura divergente" se
+ * nenhuma releitura devolver o registro gravado.
  */
-export async function publishShortRelatedKv(ops: Pick<KvOps, "get" | "put">, rec: ShortRelatedRecord): Promise<string> {
+export async function publishShortRelatedKv(
+  ops: Pick<KvOps, "get" | "put">,
+  rec: ShortRelatedRecord,
+  opts: { delaysMs?: readonly number[]; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<string> {
   const key = shortRelatedKvKey(rec.aammdd);
   const value = serializeShortRelatedKvValue(rec);
   await ops.put(key, value);
-  const back = await readShortRelatedKv(ops, rec.aammdd);
-  if (back.kind !== "ok") {
-    throw new Error(`KV ${key}: releitura depois do PUT deu ${back.kind}${back.kind === "error" ? ` (${back.error})` : ""}`);
+  const delays = opts.delaysMs ?? SHORT_RELATED_KV_REREAD_DELAYS_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let last = "";
+  for (let i = 0; i <= delays.length; i++) {
+    if (i > 0) await sleep(delays[i - 1]);
+    const back = await readShortRelatedKv(ops, rec.aammdd);
+    if (back.kind === "ok" && sameRecord(back.value, rec)) return key;
+    last =
+      back.kind === "ok"
+        ? `outro registro (${back.value.status} em ${back.value.at})`
+        : back.kind === "error"
+          ? `error (${back.error})`
+          : "absent";
   }
-  // Campo a campo: a ordem das chaves do JSON varia conforme quem montou o registro.
-  const fields = ["aammdd", "status", "horizontalId", "shortId", "note", "at", "alertedAt"] as const;
-  // `|| null`: o parser normaliza string vazia para null.
-  if (fields.some((f) => (back.value[f] || null) !== (rec[f] || null))) {
-    throw new Error(`KV ${key}: releitura depois do PUT devolveu outro registro`);
-  }
-  return key;
+  throw new Error(`KV ${key}: PUT ok, releitura divergente após ${delays.length + 1} leituras (última: ${last})`);
 }

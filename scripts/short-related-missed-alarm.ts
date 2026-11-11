@@ -10,7 +10,7 @@
  * por API) e depois o arquivo replicado. Lógica pura em
  * `scripts/lib/diaria/short-related-missed-alarm.ts`; aqui só leitura de
  * disco, relógio e o portão `notifyEditor`. Nunca grava na pasta da edição
- * (o Neo escreve ali; uma escrita daqui disputaria o OneDrive).
+ * (o Neo escreve ali; uma escrita daqui disputaria a replicação de `data/`).
  *
  * Uso:
  *   npx tsx scripts/short-related-missed-alarm.ts                    # edição de hoje (BRT)
@@ -144,8 +144,11 @@ async function main(): Promise<void> {
       edition: aammdd,
       stage: null,
       agent: "short-related-missed-alarm",
-      level: alarming ? "error" : "info",
-      message: `short-related-missed-alarm: ${ev.verdict}`,
+      // KV ilegível com veredito decidido pelo arquivo (#12541): `warn`, para
+      // a falha do KV (inclusive config ausente, que é determinística e se
+      // repete todo dia) ficar visível no run-log e não só no stderr.
+      level: alarming ? "error" : ev.kvError ? "warn" : "info",
+      message: `short-related-missed-alarm: ${ev.verdict}${ev.kvError ? ` (KV ilegível: ${ev.kvError})` : ""}`,
       details: ev,
     },
     ROOT,

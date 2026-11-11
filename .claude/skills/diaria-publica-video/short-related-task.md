@@ -76,18 +76,19 @@ O exit code diz o desfecho:
 
 ## Passo 6: publicar o registro no KV
 
-Sempre que a execução tiver passado pelo Passo 4 ou pelo Passo 5 (vinculado, `failed` ou alerta), rode **por último**:
+Sempre que a execução tiver passado pelo Passo 4 ou pelo Passo 5 (vinculado, `failed` ou alerta), e também no `skip` do Passo 1 por **já vinculado**, rode **por último**:
 
 ```bash
 npx tsx scripts/short-related-kv-publish.ts --edition {AAMMDD}
 ```
 
-Use o mesmo AAMMDD do Passo 1 (o `aammdd` do JSON). O script lê o `_internal/06-short-related.json` que o Passo 4 ou o 5 acabou de gravar e o publica no KV da Cloudflare (`short-related:{AAMMDD}`, namespace `diaria-ops-state`, #12541), de onde o alarme do `300` (`Diaria-Short-Related-Missed-Alarm`) lê na hora, sem esperar o OneDrive replicar. O arquivo da edição continua sendo gravado. Precisa de `CLOUDFLARE_ACCOUNT_ID` e `CLOUDFLARE_WORKERS_TOKEN` no `.env` do checkout.
+Use o mesmo AAMMDD do Passo 1 (o `aammdd` do JSON); o `--edition` é obrigatório. O script lê o `_internal/06-short-related.json` que o Passo 4 ou o 5 gravou e o publica no KV da Cloudflare (`short-related:{AAMMDD}`, namespace `diaria-ops-state`, #12541), de onde o alarme do `300` (`Diaria-Short-Related-Missed-Alarm`) lê na hora, sem esperar o arquivo replicado em `data/`. O arquivo da edição continua sendo gravado. No `skip` por já vinculado a publicação é idempotente e cobre uma execução anterior cuja publicação falhou. Precisa de `CLOUDFLARE_ACCOUNT_ID` e `CLOUDFLARE_WORKERS_TOKEN` no `.env` do checkout.
 
-- Exit 0: publicado e relido (ou nada a publicar, quando a edição não tem registro).
-- Exit 1: não publicou (credencial ausente, rede, registro ilegível). Diga isso no resumo final com a mensagem do erro; não repita o vínculo nem o alerta por causa disso. O alarme do `300` cai no arquivo replicado.
+- Exit 0: publicado e relido.
+- Exit 1: não publicou: `data/` não montada, edição sem `_internal/06-short-related.json`, registro ilegível, credencial ausente, rede, ou releitura divergente depois do PUT. Diga isso no resumo final com a mensagem do erro; não repita o vínculo nem o alerta por causa disso. O alarme do `300` cai no arquivo replicado.
+- Exit 2: chamada errada (sem `--edition`, AAMMDD inválido). Corrija o comando e rode de novo.
 
-Com `skip` no Passo 1 não há o que publicar: pule este passo.
+Com os demais `skip` do Passo 1 (fim de semana, sem edição, sem vídeo) não há registro a publicar: pule este passo.
 
 ## Fim
 
