@@ -663,7 +663,17 @@ function optionValues(args, { short = [], long = [], cluster = false } = {}) {
   return out;
 }
 
-const hasFlag = (args, ...names) => args.some((a) => names.includes(a) || names.some((n) => n.startsWith("--") && a.startsWith(`${n}=`)));
+/**
+ * `args` tem alguma das flags `names`? Flag curta de uma letra (`-n`) também
+ * casa agrupada (`-rn`, `-nr`; re-review da PR #12846, #12812).
+ */
+const hasFlag = (args, ...names) =>
+  args.some(
+    (a) =>
+      names.includes(a) ||
+      names.some((n) => n.startsWith("--") && a.startsWith(`${n}=`)) ||
+      (/^-[A-Za-z]{2,}$/.test(a) && names.some((n) => /^-[A-Za-z]$/.test(n) && a.slice(1).includes(n[1]))),
+  );
 
 /** Junta `dir` (relativo a `cwd`) e `p`. */
 function joinPath(dir, p) {
@@ -885,7 +895,8 @@ function toolWrite(head, args, cwd) {
   if (head === "unzip") {
     // Modo só-leitura, também agrupado (`-ql`, `-tq`).
     if (args.some((a) => /^-[A-Za-z]+$/.test(a) && /[lptvZz]/.test(a.slice(1)))) return null;
-    const d = optionValues(args, { short: ["-d"] });
+    // `-d` também agrupado (`-od <dir>`, `-qod<dir>`; #12812).
+    const d = optionValues(args, { short: ["-d"], cluster: true });
     const p = first(d);
     if (p) return { kind: "unzip -d", path: p };
     if (!d.length && isProtectedPath(".", cwd)) return { kind: "unzip (cwd)", path: cwd };
@@ -1253,6 +1264,7 @@ function patchWrite(head, s, cmd, cmds, command, cwd, opts) {
   const texts = [...cmd.stdin];
   const files = [...s.patchFiles];
   let unreadable = false;
+  const unreadableFiles = [];
   // `patch -p1 < /tmp/x.diff`: o patch chega por redirecionamento de entrada.
   if (!files.length) files.push(...cmd.redirects.filter((r) => r.op === "<").map((r) => r.target));
   if (!files.length && !texts.length) {
@@ -1265,21 +1277,41 @@ function patchWrite(head, s, cmd, cmds, command, cwd, opts) {
   }
   for (const f of files) {
     const text = readPatchFile(f, s.dir, opts.readFile);
-    if (text == null) unreadable = true;
-    else texts.push(text);
+    if (text == null) {
+      unreadable = true;
+      unreadableFiles.push(toPosix(f));
+    } else texts.push(text);
   }
   for (const t of texts) {
     const p = patchTargets(t).find((x) => isProtectedPath(x, s.dir));
     if (p) return { kind: `${head} (patch)`, path: p };
   }
   if (unreadable) {
-    const ref = protectedRefIn([command]) ?? cmds.flatMap((c) => c.words).find((w) => isProtectedPath(w, cwd));
+    // #12812 (re-review da PR #12846): a citação só conta no pipeline do
+    // `apply` e nos comandos que gravam o arquivo do patch (`git diff --
+    // <protegido> > p`, `--output=p`). Varrer o comando inteiro bloqueava
+    // `gh pr diff N | git apply && git commit -m '... .claude/hooks ...'`.
+    const words = cmdsWritingPatch(cmd, cmds, unreadableFiles).flatMap((c) => [...c.words, ...c.redirects.map((r) => r.target)]);
+    const ref = words.find((w) => isProtectedPath(w, cwd)) ?? protectedRefIn([words.join(" ")]);
     if (ref) return { kind: `${head} (patch ilegível; o comando cita caminho protegido)`, path: ref };
   }
   return null;
 }
 
-/** Texto de um patch em arquivo, esteja onde estiver; `null` se ilegível. */
+/** Comandos do pipeline do `apply` e os que citam (gravam) um dos arquivos de patch. */
+function cmdsWritingPatch(cmd, cmds, files) {
+  const mentions = (w) => {
+    const p = toPosix(w);
+    return files.some((f) => p === f || p.endsWith(`=${f}`) || (f.length > 1 && p.endsWith(`/${f.replace(/^\.\//, "")}`)) || f.endsWith(`/${p}`));
+  };
+  return cmds.filter((c) => c.pipeline === cmd.pipeline || (files.length && [...c.words, ...c.redirects.map((r) => r.target)].some(mentions)));
+}
+
+/**
+ * Texto de um patch em arquivo, esteja onde estiver; `null` se ilegível. A
+ * leitura é a `readFile` injetada (no hook, `readScript`, que só lê arquivo
+ * regular: FIFO e `/dev/zero` não travam o hook).
+ */
 function readPatchFile(file, dir, readFile) {
   if (typeof readFile !== "function") return null;
   const p = toPosix(file);

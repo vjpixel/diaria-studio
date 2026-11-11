@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   findProtectedPathWrite,
   isProtectedPath,
@@ -346,6 +347,38 @@ describe("review de fleet da PR #12846 (#12812)", () => {
     passes(`git rm -n .claude/hooks/x.mjs`);
     passes(`git rm --dry-run -r .claude/skills`);
     passes(`unzip -ql /tmp/s.zip`, { cwd });
+    // re-review da PR #12846: dry-run agrupado.
+    passes(`git rm -rn .claude/skills`);
+    passes(`git rm -nr .claude/skills`);
+    blocks(`git rm -rf .claude/skills`);
+  });
+  it("re-review #12846: unzip -d agrupado", () => {
+    blocks(`unzip -od .claude/hooks /tmp/a.zip`);
+    blocks(`unzip -qo -d .claude/hooks /tmp/a.zip`);
+    blocks(`unzip -od.claude/hooks /tmp/a.zip`);
+    passes(`unzip -od /tmp/out /tmp/a.zip`);
+  });
+  it("re-review #12846: patch ilegível só olha o pipeline do apply e quem grava o arquivo do patch", () => {
+    const opts = { readFile: () => null };
+    passes(`gh pr diff 12 | git apply && git commit -am 'fix .claude/hooks guard'`, opts);
+    passes(`gh pr diff 12 | git apply; cat .claude/settings.json`, opts);
+    passes(`git apply /tmp/p-1.patch; ls .claude/skills`, opts);
+    // seguem bloqueando
+    blocks(`git diff -- .claude/hooks > /tmp/p-12846.patch; git apply /tmp/p-12846.patch`, opts);
+    blocks(`git show HEAD~1 -- .claude/settings.json | git apply -R`, opts);
+    blocks(`git diff --output=/tmp/p-2.patch -- .claude/hooks; git apply /tmp/p-2.patch`, opts);
+    blocks(`cd /tmp && git -C ${CWD} diff -- .claude/skills > p.patch; git apply /tmp/p.patch`, opts);
+  });
+  it("re-review #12846: readScript do hook só lê arquivo regular (FIFO / /dev/zero não travam)", async () => {
+    const { readScript } = await import("../.claude/hooks/block-bash-protected-path-write.mjs");
+    assert.equal(readScript("/dev/zero"), null);
+    const dir = mkdtempSync(join(tmpdir(), "pp-12812-"));
+    const fifo = join(dir, "f");
+    if (spawnSync("mkfifo", [fifo]).status === 0) assert.equal(readScript(fifo), null);
+    const reg = join(dir, "r.patch");
+    writeFileSync(reg, "--- a/x\n");
+    assert.equal(readScript(reg), "--- a/x\n");
+    rmSync(dir, { recursive: true, force: true });
   });
   it("P3: isInterpreterCodeFinding lê o campo source, não o texto do kind", () => {
     assert.equal(isInterpreterCodeFinding({ kind: "x (código)", path: "p" }), false);
