@@ -24,6 +24,11 @@
  * problema recusa TUDO (nada é aplicado pela metade), e a seleção segue com o
  * texto anterior.
  *
+ * Vídeo da semana (#12549 item 6, decisão do editor de 10/11/2026): quando a
+ * seleção tem `video`, o agente escreve também `videoDescription`, só com os
+ * fatos do destaque que o vídeo comenta (o D1 da edição do vídeo). Vai para
+ * `video.description` na seleção, que o render e a prévia já mostram.
+ *
  * Fontes oficiais das ferramentas dos cursos (#10952): cada item cuja URL é de
  * blog/changelog/docs de uma dessas ferramentas leva `tool` no insumo, e o
  * agente escreve o que muda no uso dela. Lista em par com `official-domains.ts`.
@@ -40,6 +45,8 @@ export const STACK_COPY_OPENING_TARGET_CHARS = 200;
 export const STACK_COPY_OPENING_MAX_CHARS = 280;
 /** Teto da descrição de cada item de lista: 1 ou 2 frases. */
 export const STACK_COPY_NOTE_MAX_CHARS = 240;
+/** Teto da descrição do vídeo da semana (#12549 item 6): 1 a 3 frases curtas. */
+export const STACK_COPY_VIDEO_DESCRIPTION_MAX_CHARS = 280;
 
 /** Seções de lista cujos itens recebem `stackNote` (destaques ficam como na diária). */
 export const STACK_COPY_LIST_SECTIONS = ["lancamentos", "useMelhor", "radar"] as const;
@@ -94,19 +101,72 @@ export interface StackWriterDestaque {
   tool: string | null;
 }
 
+/** #12549 item 6: o destaque que o vídeo da semana comenta (D1 da edição do vídeo). */
+export interface StackVideoDestaque {
+  editionDate: string;
+  url: string;
+  title: string;
+  body: string;
+  why: string;
+}
+
+/** #12549 item 6: o vídeo da semana no insumo do agente. */
+export interface StackWriterVideo {
+  title: string;
+  url: string;
+  editionDate: string;
+  /** Única fonte de fatos da descrição. */
+  destaque: StackVideoDestaque;
+  /** Descrição já gravada na seleção (rodada anterior ou editada à mão). */
+  currentDescription: string | null;
+}
+
 /** Insumo do agente `stack-writer` (impresso por `circle-stack-copy.ts --manifest`). */
 export interface StackWriterInput {
   cycle: string;
   /** Onde o agente grava a resposta. */
   copyPath: string;
-  limits: { openingTargetChars: number; openingMaxChars: number; noteMaxChars: number };
+  limits: { openingTargetChars: number; openingMaxChars: number; noteMaxChars: number; videoDescriptionMaxChars: number };
   currentOpening: string | null;
   destaques: StackWriterDestaque[];
   items: StackWriterItem[];
+  /**
+   * Vídeo da semana a descrever, ou `null` (seleção sem vídeo, ou sem o
+   * destaque que ele comenta: sem fato, sem descrição).
+   */
+  video: StackWriterVideo | null;
 }
 
-/** Pure: monta o insumo do agente a partir da seleção gravada. URL repetida entre seções entra uma vez. */
-export function buildStackWriterInput(sel: CircleStackSelection, copyPath: string): StackWriterInput {
+/** Pure: a seleção tem vídeo da semana utilizável (o render só mostra com url e título). */
+export function hasStackVideo(sel: CircleStackSelection): boolean {
+  return !!sel.video && !!sel.video.url?.trim() && !!sel.video.title?.trim();
+}
+
+/**
+ * Pure: o D1 da edição do vídeo, quando ele está em alguma seção da seleção
+ * (destaque diário guarda `destaqueN`, mesmo se caiu no Radar). `null` quando
+ * não está: aí o CLI lê o `02-reviewed.md` da edição.
+ */
+export function videoDestaqueFromSelection(sel: CircleStackSelection): StackVideoDestaque | null {
+  if (!hasStackVideo(sel)) return null;
+  const date = (sel.video as NonNullable<CircleStackSelection["video"]>).editionDate;
+  for (const section of ["destaques", ...STACK_COPY_LIST_SECTIONS] as const) {
+    const it = sel[section].find((i) => i.editionDate === date && i.destaqueN === 1);
+    if (it) return { editionDate: it.editionDate, url: it.url, title: it.titleOriginal ?? it.title, body: it.body, why: it.why };
+  }
+  return null;
+}
+
+/**
+ * Pure: monta o insumo do agente a partir da seleção gravada. URL repetida
+ * entre seções entra uma vez. `videoDestaque` é o D1 que o vídeo comenta
+ * (default: procurado na própria seleção).
+ */
+export function buildStackWriterInput(
+  sel: CircleStackSelection,
+  copyPath: string,
+  videoDestaque: StackVideoDestaque | null = videoDestaqueFromSelection(sel),
+): StackWriterInput {
   const seen = new Set<string>();
   const items: StackWriterItem[] = [];
   for (const section of STACK_COPY_LIST_SECTIONS) {
@@ -131,11 +191,55 @@ export function buildStackWriterInput(sel: CircleStackSelection, copyPath: strin
       openingTargetChars: STACK_COPY_OPENING_TARGET_CHARS,
       openingMaxChars: STACK_COPY_OPENING_MAX_CHARS,
       noteMaxChars: STACK_COPY_NOTE_MAX_CHARS,
+      videoDescriptionMaxChars: STACK_COPY_VIDEO_DESCRIPTION_MAX_CHARS,
     },
     currentOpening: typeof sel.opening === "string" && sel.opening.trim() ? sel.opening.trim() : null,
     destaques: sel.destaques.map((d) => ({ url: d.url, title: d.title, body: d.body, why: d.why, tool: stackCourseTool(d.url) })),
     items,
+    video:
+      sel.video && hasStackVideo(sel) && videoDestaque
+        ? {
+            title: sel.video.title.trim(),
+            url: sel.video.url.trim(),
+            editionDate: sel.video.editionDate,
+            destaque: videoDestaque,
+            currentDescription: sel.video.description?.trim() ? sel.video.description.trim() : null,
+          }
+        : null,
   };
+}
+
+/**
+ * #12549 item 5: fecho de recomendação ao leitor ("Quem constrói X deveria
+ * ver", "Quem tem fluxo apoiado nele precisa migrar", "Vale testar"). O
+ * editor tirou esse tom do post; o texto diz o que mudou, não o que o leitor
+ * deve fazer.
+ */
+const READER_ADVICE_PATTERNS: readonly RegExp[] = [
+  /\bquem\s+[^.!?]{1,80}?\b(deveria|deveriam|deve|devem|precisa|precisam|vale)\b/i,
+  /\b(você|vocês)\s+(deveria|deveriam|deve|devem|precisa|precisam)\b/i,
+  /\b(vale|valeria)\s+(a\s+pena\s+)?(ver|ler|reler|conferir|testar|acompanhar|olhar|experimentar|assistir)\b/i,
+  /\bdeveria(m)?\s+(ver|ler|conferir|testar|acompanhar|olhar|experimentar|assistir)\b/i,
+];
+
+/** Pure: o texto aconselha o leitor (deveria/vale/precisa)? */
+export function hasReaderAdvice(text: string): boolean {
+  return READER_ADVICE_PATTERNS.some((re) => re.test(text));
+}
+
+/**
+ * Pure: números do texto que não aparecem em nenhuma das fontes (#12549 item
+ * 6: a descrição do vídeo só leva fatos do destaque). Compara o número como
+ * escrito e com o separador decimal trocado ("1,5" casa "1.5").
+ */
+export function unsourcedNumbers(text: string, sources: readonly string[]): string[] {
+  const src = sources.join("\n");
+  const out: string[] = [];
+  for (const tok of text.match(/\d+(?:[.,]\d+)*/g) ?? []) {
+    const swapped = tok.replace(/[.,]/g, (c) => (c === "." ? "," : "."));
+    if (!src.includes(tok) && !src.includes(swapped) && !out.includes(tok)) out.push(tok);
+  }
+  return out;
 }
 
 /**
@@ -154,6 +258,7 @@ export function stackCopyTextProblems(text: string, maxChars: number): string[] 
   if (/https?:\/\/|www\./i.test(s)) problems.push("tem URL (os links já vêm da seleção)");
   if (/\bagentiv[oa]s?\b/i.test(s)) problems.push('usa "agentivo" (é "agêntico")');
   if (/\p{Extended_Pictographic}/u.test(s)) problems.push("tem emoji");
+  if (hasReaderAdvice(s)) problems.push('aconselha o leitor ("deveria/vale/precisa") — diga o que mudou, não o que fazer (#12549)');
   return problems;
 }
 
@@ -161,6 +266,13 @@ export interface StackCopy {
   cycle: string;
   opening: string;
   notes: { url: string; stackNote: string }[];
+  /** #12549 item 6: presente só quando o insumo tinha `video`. */
+  videoDescription?: string;
+}
+
+export interface ParseStackCopyOptions {
+  /** D1 que o vídeo comenta; default: procurado na seleção (o CLI passa o lido do disco). */
+  videoDestaque?: StackVideoDestaque | null;
 }
 
 /**
@@ -170,7 +282,11 @@ export interface StackCopy {
  * da seleção, nenhuma URL a mais e o mesmo ciclo (cópia de outra semana, ou
  * escrita antes de um `--reselect`, é recusada).
  */
-export function parseStackCopy(raw: string, sel: CircleStackSelection): { copy: StackCopy | null; problems: string[] } {
+export function parseStackCopy(
+  raw: string,
+  sel: CircleStackSelection,
+  opts: ParseStackCopyOptions = {},
+): { copy: StackCopy | null; problems: string[] } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -185,7 +301,22 @@ export function parseStackCopy(raw: string, sel: CircleStackSelection): { copy: 
   else for (const p of stackCopyTextProblems(rec.opening, STACK_COPY_OPENING_MAX_CHARS)) problems.push(`opening: ${p}`);
   if (!Array.isArray(rec.notes)) problems.push("notes ausente (esperada uma lista)");
 
-  const expected = new Set(buildStackWriterInput(sel, "").items.map((i) => i.url));
+  const input = buildStackWriterInput(sel, "", opts.videoDestaque === undefined ? videoDestaqueFromSelection(sel) : opts.videoDestaque);
+  const expected = new Set(input.items.map((i) => i.url));
+  // #12549 item 6: descrição do vídeo exigida quando (e só quando) o insumo tinha vídeo.
+  let videoDescription: string | undefined;
+  if (input.video) {
+    if (typeof rec.videoDescription !== "string") problems.push("videoDescription ausente ou não é texto (a seleção tem vídeo da semana)");
+    else {
+      for (const p of stackCopyTextProblems(rec.videoDescription, STACK_COPY_VIDEO_DESCRIPTION_MAX_CHARS)) problems.push(`videoDescription: ${p}`);
+      const d = input.video.destaque;
+      const extra = unsourcedNumbers(rec.videoDescription, [d.title, d.body, d.why, input.video.title]);
+      if (extra.length > 0) problems.push(`videoDescription: número(s) fora do destaque comentado (${extra.join(", ")})`);
+      videoDescription = rec.videoDescription.trim();
+    }
+  } else if (rec.videoDescription !== undefined) {
+    problems.push("videoDescription sem vídeo da semana (com o destaque comentado) no insumo — apague o campo");
+  }
   const notes: { url: string; stackNote: string }[] = [];
   const seen = new Set<string>();
   if (Array.isArray(rec.notes)) {
@@ -205,11 +336,14 @@ export function parseStackCopy(raw: string, sel: CircleStackSelection): { copy: 
   for (const url of expected) if (!seen.has(url)) problems.push(`sem stackNote para ${url}`);
 
   if (problems.length > 0) return { copy: null, problems };
-  return { copy: { cycle: sel.cycle, opening: (rec.opening as string).trim(), notes }, problems };
+  return {
+    copy: { cycle: sel.cycle, opening: (rec.opening as string).trim(), notes, ...(videoDescription !== undefined ? { videoDescription } : {}) },
+    problems,
+  };
 }
 
 /**
- * Pure: grava a abertura e as descrições na seleção. Destaques e o resto dos
+ * Pure: grava a abertura, as descrições e (#12549) a descrição do vídeo na seleção. Destaques e o resto dos
  * campos ficam como estão; o `stackNote` de um destaque (que o render ignora)
  * não é tocado.
  */
@@ -218,8 +352,10 @@ export function applyStackCopy<S extends CircleStackSelection>(sel: S, copy: Sta
   const byUrl = new Map(copy.notes.map((n) => [n.url, n.stackNote]));
   const withNote = (items: CircleStackItem[]): CircleStackItem[] =>
     items.map((it) => (byUrl.has(it.url) ? { ...it, stackNote: byUrl.get(it.url) as string } : it));
+  if (copy.videoDescription !== undefined && !sel.video) throw new Error(`Cópia do ciclo ${copy.cycle} traz videoDescription, mas a seleção não tem vídeo`);
   return {
     ...sel,
+    ...(copy.videoDescription !== undefined && sel.video ? { video: { ...sel.video, description: copy.videoDescription } } : {}),
     opening: copy.opening,
     lancamentos: withNote(sel.lancamentos),
     useMelhor: withNote(sel.useMelhor),

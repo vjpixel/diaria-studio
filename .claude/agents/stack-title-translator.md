@@ -24,7 +24,8 @@ O prompt traz, depois desta instrução, um JSON:
 2. **Título em inglês vira uma frase em português**, curta e direta, no tom da newsletter: quem fez o quê. Ex.: "Diffusion at Scale: Introducing Mercury 3" vira "Inception lança o Mercury 3, LLM de difusão"; "How to build agents with the Claude Agent SDK" vira "Como criar agentes com o Claude Agent SDK".
 3. **Nomes próprios ficam como estão**: produto, empresa, modelo, recurso com nome de marca (Mercury 3, Claude Cowork, Nemotron, Agent SDK, Copilot Workspace). A regra vale para a frase, não para a marca.
 4. **Só o que está no título ou no `body`.** Nunca invente número, data, nome ou adjetivo. Se precisar nomear quem lançou e isso só aparece no `body`, pode usar.
-5. **Até 90 caracteres.** Sem markdown, sem emoji, sem setas (→ ←), sem aspas em volta, sem ponto final. "Agêntico", nunca "agentivo".
+5. **Produto ou fabricante sempre no título (#12549).** No blog do fabricante o título original costuma omitir de quem é o recurso, porque a fonte já diz. No post, o título aparece sozinho na lista, então o produto (ou o fabricante) precisa estar nele. Se o título original não o nomeia, tire o nome do `body` ou, se o `body` não nomear, do domínio da `url` (claude.com e anthropic.com: Claude; openai.com: OpenAI; n8n.io: n8n). Ex.: "Message threads make long-running agents faster", do blog do Claude, vira "Message threads deixam agentes de longa duração mais rápidos no Claude", nunca só "Message threads deixam agentes de longa duração mais rápidos". Título já em português continua igual (regra 1).
+6. **Até 90 caracteres.** Sem markdown, sem emoji, sem setas (→ ←), sem aspas em volta, sem ponto final. "Agêntico", nunca "agentivo".
 
 ## Saída
 

@@ -144,7 +144,7 @@ export interface CircleStackVideo {
   url: string;
   editionDate: string;
   views?: number;
-  /** Texto curto sobre o que o vídeo entrega ao público (pedido do editor, 09/11/2026); opcional, editável à mão. */
+  /** Texto curto sobre o que o vídeo entrega ao público (pedido do editor, 09/11/2026); escrito pelo `stack-writer` só com fatos do destaque comentado (#12549 item 6), editável à mão. */
   description?: string;
 }
 

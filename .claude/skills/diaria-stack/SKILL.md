@@ -112,9 +112,13 @@ Agent(subagent_type="stack-writer", prompt="Manifest: {scratchpad}/stack-manifes
 ```
 
 O agente grava `data/weekly/{cycle}/_internal/circle-stack-copy.json` com
-`{cycle, opening, notes: [{url, stackNote}]}`. Os itens com `tool` no manifest
+`{cycle, opening, notes: [{url, stackNote}], videoDescription}`. Os itens com `tool` no manifest
 vêm das fontes oficiais das ferramentas dos cursos (#10952) e ganham o ângulo
-de uso daquela ferramenta.
+de uso daquela ferramenta. `videoDescription` (#12549 item 6, decisão do editor
+de 10/11/2026) só existe quando o manifest traz `video`: a descrição do vídeo
+mais assistido da semana, escrita só com os fatos do destaque que ele comenta
+(o D1 da edição do vídeo, lido da seleção ou do `02-reviewed.md`). O `--apply`
+grava em `video.description`.
 
 ## Passo 3 — Humanizador e Clarice
 
@@ -122,10 +126,10 @@ Na ordem da diária. `{C}` = o `circle-stack-copy.json`.
 
 1. Humanizador, passe completo, sobre os textos:
    ```
-   Skill("humanizador", "Leia {C}, humanize SÓ os campos opening e notes[].stackNote (passe completo), calibrando a voz com data/past-editions-recent.md, e salve no mesmo arquivo sem tocar cycle nem url. Tetos: opening curta, alvo ~200 e no máximo 280 caracteres, uma ideia por frase e sem aposto longo; cada stackNote 240 caracteres e no máximo 2 frases. Sem markdown, sem URL, sem emoji, sem seta.")
+   Skill("humanizador", "Leia {C}, humanize SÓ os campos opening, notes[].stackNote e videoDescription (se existir) (passe completo), calibrando a voz com data/past-editions-recent.md, e salve no mesmo arquivo sem tocar cycle nem url. Tetos: opening curta, alvo ~200 e no máximo 280 caracteres, uma ideia por frase e sem aposto longo; cada stackNote 240 caracteres e no máximo 2 frases; videoDescription 280 caracteres, sem fato novo. Sem markdown, sem URL, sem emoji, sem seta, sem conselho ao leitor (deveria/vale/precisa).")
    ```
-2. Clarice: `mcp__clarice__correct_text` sobre a abertura e sobre cada
-   `stackNote`, uma chamada por vez (serial, #4952). Filtrar as sugestões com
+2. Clarice: `mcp__clarice__correct_text` sobre a abertura, sobre cada
+   `stackNote` e sobre a `videoDescription`, uma chamada por vez (serial, #4952). Filtrar as sugestões com
    `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` (ruído do MCP, #11798) e aplicar as filtradas
    (aceitar as sugestões da Clarice é o padrão do projeto) e regravar `{C}`.
    Clarice indisponível = halt banner (#738), nunca seguir em silêncio.
@@ -138,7 +142,9 @@ npx tsx scripts/circle-stack-copy.ts --publish-monday {AAMMDD} --apply
 
 Valida o arquivo inteiro contra a seleção (um texto para cada item de lista,
 nenhuma URL a mais, mesmo ciclo, tetos, sem markdown/URL/emoji/seta,
-"agêntico") e só então grava `opening` e `stackNote` na seleção. `exit 1`
+"agêntico", sem conselho ao leitor, #12549; descrição do vídeo presente
+quando há vídeo e sem número fora do destaque comentado) e só então grava
+`opening`, `stackNote` e `video.description` na seleção. `exit 1`
 lista os problemas e não aplica nada: corrigir `{C}` (à mão para ajuste
 pontual, ou de volta ao Passo 2 com os problemas no prompt do agente) e
 rodar de novo. Nunca editar a seleção direto para contornar a validação.

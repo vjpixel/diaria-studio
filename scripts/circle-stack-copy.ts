@@ -10,7 +10,8 @@
  *               ferramenta de curso da Stack de cada fonte oficial, onde gravar
  *               a resposta) e para.
  *   --check     valida `_internal/circle-stack-copy.json` contra a seleção.
- *   --apply     valida e grava `opening` + `stackNote` na seleção
+ *   --apply     valida e grava `opening` + `stackNote` (+ `video.description`,
+ *               #12549) na seleção
  *               (`_internal/circle-stack-selection.json`). Qualquer problema
  *               recusa tudo (exit 1) e a seleção fica como estava.
  *
@@ -30,8 +31,16 @@ import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir, currentOrPreviousMondayAAMMDD } from "./lib/weekly-linkedin-cycle.ts";
-import { parseStoredCircleStackSelection } from "./publish-circle-stack.ts";
-import { applyStackCopy, buildStackWriterInput, parseStackCopy } from "./lib/circle-stack-copy.ts";
+import { parseStoredCircleStackSelection, readEdition } from "./publish-circle-stack.ts";
+import {
+  applyStackCopy,
+  buildStackWriterInput,
+  hasStackVideo,
+  parseStackCopy,
+  videoDestaqueFromSelection,
+  type StackVideoDestaque,
+} from "./lib/circle-stack-copy.ts";
+import type { CircleStackSelection } from "./lib/circle-stack-render.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -53,6 +62,28 @@ export function circleStackCopyPaths(dataRoot: string, publishMonday: string): C
   };
 }
 
+/**
+ * #12549 item 6: o D1 que o vídeo da semana comenta. Primeiro na seleção; se o
+ * destaque não entrou em nenhuma seção, no `02-reviewed.md` da edição do
+ * vídeo. Sem vídeo, ou sem o destaque (edição ilegível), `null`: o agente não
+ * escreve descrição e o `--apply` não a exige (sem fato, sem descrição).
+ */
+export function resolveVideoDestaque(sel: CircleStackSelection, dataRoot: string): StackVideoDestaque | null {
+  if (!hasStackVideo(sel) || !sel.video) return null;
+  const fromSel = videoDestaqueFromSelection(sel);
+  if (fromSel) return fromSel;
+  const date = sel.video.editionDate;
+  try {
+    const ed = readEdition(join(dataRoot, "data", "editions"), date);
+    const d1 = ed && ed !== "sem-edicao" ? ed.candidates.find((c) => c.kind === "destaque" && c.destaqueN === 1) : undefined;
+    if (d1) return { editionDate: date, url: d1.url, title: d1.title, body: d1.body, why: d1.why };
+  } catch (err) {
+    console.error(`⚠ D1 da edição ${date} ilegível (${err instanceof Error ? err.message : String(err)}).`);
+  }
+  console.error(`⚠ Vídeo da semana sem o destaque que ele comenta (D1 de ${date}): a descrição do vídeo não será escrita.`);
+  return null;
+}
+
 export async function runCircleStackCopy(argv: string[], rootDir: string = ROOT): Promise<number> {
   let publishMonday = getStringArg(argv, "publish-monday", { example: "261026" });
   if (!publishMonday) {
@@ -72,8 +103,9 @@ export async function runCircleStackCopy(argv: string[], rootDir: string = ROOT)
   const rawSelection = readUtf8WithContext(paths.selectionPath); // #12554
   const { selection } = parseStoredCircleStackSelection(rawSelection, paths.selectionPath, paths.cycle);
 
+  const videoDestaque = resolveVideoDestaque(selection, dataRoot);
   if (hasFlag(argv, "manifest")) {
-    console.log(JSON.stringify(buildStackWriterInput(selection, copyPath), null, 2));
+    console.log(JSON.stringify(buildStackWriterInput(selection, copyPath, videoDestaque), null, 2));
     return 0;
   }
 
@@ -81,21 +113,23 @@ export async function runCircleStackCopy(argv: string[], rootDir: string = ROOT)
   if (!apply && !hasFlag(argv, "check")) throw new Error("Passe --manifest, --check ou --apply.");
   if (!existsSync(copyPath)) throw new Error(`Texto do ciclo ausente (${copyPath}) — o agente stack-writer ainda não rodou.`);
 
-  const { copy, problems } = parseStackCopy(readUtf8WithContext(copyPath), selection);
+  const { copy, problems } = parseStackCopy(readUtf8WithContext(copyPath), selection, { videoDestaque });
   if (!copy) {
     console.error(`Texto da Stack recusado (${copyPath}) — nada foi aplicado:`);
     for (const p of problems) console.error(`  - ${p}`);
     return 1;
   }
   if (!apply) {
-    console.log(`OK: abertura + ${copy.notes.length} descrição(ões) válidas para o ciclo ${copy.cycle}.`);
+    console.log(`OK: abertura + ${copy.notes.length} descrição(ões)${copy.videoDescription !== undefined ? " + descrição do vídeo" : ""} válidas para o ciclo ${copy.cycle}.`);
     return 0;
   }
   // Grava sobre o JSON cru (não sobre o objeto validado) para preservar campos que
   // o render não lê, como `warnings`, `generatedAt` e `titleOriginal`.
   const stored = JSON.parse(rawSelection) as typeof selection;
   writeFileAtomic(paths.selectionPath, JSON.stringify(applyStackCopy(stored, copy), null, 2));
-  console.log(`Seleção atualizada: ${paths.selectionPath} (abertura + ${copy.notes.length} descrição(ões)).`);
+  console.log(
+    `Seleção atualizada: ${paths.selectionPath} (abertura + ${copy.notes.length} descrição(ões)${copy.videoDescription !== undefined ? " + descrição do vídeo" : ""}).`,
+  );
   return 0;
 }
 
