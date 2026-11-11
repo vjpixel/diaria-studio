@@ -127,6 +127,10 @@
     "kv_namespace_id": "72784da4ae39444481eb422ebac357c6",
     "enabled": true
   },
+  "ops_state_kv": {
+    "namespace_id": "35cdc7ea4951452b965da27bdcf9e0c2",
+    "_comment": "#12541 item 2 (11/11/2026): namespace KV `diaria-ops-state`, criado por API para sinais operacionais entre máquinas fora do arquivo replicado em data/. 1º uso: `short-related:{AAMMDD}` (registro do vínculo do vídeo relacionado do Short; o Neo grava por scripts/short-related-kv-publish.ts, o alarme do 300 lê). Sem binding em Worker: só a API REST com CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_WORKERS_TOKEN. Lógica em scripts/lib/diaria/short-related-kv.ts."
+  },
   "public_images_r2": {
     "_comment": "#11412 fatia 1: imagens novas da edição no R2 (img/{AAMMDD}/…) em vez do KV POLL, mesma URL /img/. Ligado em 04/11/2026 (/diaria-develop 261104b) depois do binding MEDIA (#12112) e do probe --write passar nos dois Workers (ordem em scripts/lib/public-images-r2.ts). Sem env do R2 na máquina da edição, cai no KV com aviso.",
     "enabled": true

@@ -5,10 +5,12 @@
  * Entrypoint da task `Diaria-Short-Related-Missed-Alarm` (diária 13:30 BRT no
  * `300`, `scripts/lib/scheduled-tasks.ts`): alarma quando a task LOCAL do
  * vídeo relacionado do Short (#10811, no Neo) não deixou registro na edição
- * do dia depois do prazo de desistência. Lógica pura em
+ * do dia depois do prazo de desistência. Desde o #12541 item 2 consulta
+ * primeiro o KV da Cloudflare (`short-related:{AAMMDD}`, gravado pela task
+ * por API) e depois o arquivo replicado. Lógica pura em
  * `scripts/lib/diaria/short-related-missed-alarm.ts`; aqui só leitura de
  * disco, relógio e o portão `notifyEditor`. Nunca grava na pasta da edição
- * (o Neo escreve ali; uma escrita daqui disputaria o OneDrive).
+ * (o Neo escreve ali; uma escrita daqui disputaria a replicação de `data/`).
  *
  * Uso:
  *   npx tsx scripts/short-related-missed-alarm.ts                    # edição de hoje (BRT)
@@ -30,6 +32,8 @@ import { notifyEditor } from "./lib/editor-notify.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { loadShortScheduleConfig, resolveShortTime } from "./lib/diaria/short-video.ts";
 import { readEditionVideoEvidenceInput } from "./lib/diaria/edition-video-evidence.ts";
+import { createKvRestOps } from "./lib/cloudflare-kv-rest.ts";
+import { readShortRelatedKv, resolveOpsStateKvConfig, type ShortRelatedKvRead } from "./lib/diaria/short-related-kv.ts";
 import {
   SHORT_RELATED_FILE,
   brtInstant,
@@ -70,6 +74,23 @@ function loadShortAt(aammdd: string): Date | null {
 }
 
 /**
+ * #12541 item 2: registro no KV da Cloudflare, gravado pela task do Neo por
+ * API. Configuração ausente ou falha de leitura viram `error` (incerteza
+ * explícita no veredito), nunca `absent`: não ter como perguntar não é o
+ * mesmo que o KV responder "não existe".
+ */
+async function readKvRecord(aammdd: string): Promise<ShortRelatedKvRead> {
+  try {
+    const cfgJson = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+    const cfg = resolveOpsStateKvConfig(cfgJson, process.env);
+    if (!cfg.ok) return { kind: "error", error: `configuração do KV ausente: ${cfg.missing.join(", ")}` };
+    return await readShortRelatedKv(createKvRestOps(cfg.config), aammdd);
+  } catch (e) {
+    return { kind: "error", error: (e as Error).message };
+  }
+}
+
+/**
  * Edição avaliada: `--edition AAMMDD` quando passada, senão a de hoje em BRT
  * (o timer chama sem a flag). Usa `getStringArg`, que devolve `undefined`
  * quando a flag está ausente: com `getArg` (que devolve `""`) o `??` nunca
@@ -105,9 +126,12 @@ async function main(): Promise<void> {
     horizontalUploadRecord: evidence?.horizontalUploadRecord,
     d1VideoUrl: evidence?.d1VideoUrl,
     record: editionExists ? readRecord(dir, aammdd) : { kind: "absent" },
+    // Só consulta a rede quando a pasta existe; o veredito decide se importa.
+    kvRecord: editionExists ? await readKvRecord(aammdd) : { kind: "absent" },
     shortAt: loadShortAt(aammdd),
   });
-  console.log(`${LOG_PREFIX} aammdd=${aammdd} verdict=${ev.verdict} — ${ev.reason}`);
+  console.log(`${LOG_PREFIX} aammdd=${aammdd} verdict=${ev.verdict} source=${ev.recordSource ?? "-"} — ${ev.reason}`);
+  if (ev.kvError) console.error(`${LOG_PREFIX} [aviso] leitura do KV falhou: ${ev.kvError}`);
 
   const alarming = isAlarmingShortRelatedVerdict(ev.verdict);
   if (dryRun) {
@@ -120,8 +144,11 @@ async function main(): Promise<void> {
       edition: aammdd,
       stage: null,
       agent: "short-related-missed-alarm",
-      level: alarming ? "error" : "info",
-      message: `short-related-missed-alarm: ${ev.verdict}`,
+      // KV ilegível com veredito decidido pelo arquivo (#12541): `warn`, para
+      // a falha do KV (inclusive config ausente, que é determinística e se
+      // repete todo dia) ficar visível no run-log e não só no stderr.
+      level: alarming ? "error" : ev.kvError ? "warn" : "info",
+      message: `short-related-missed-alarm: ${ev.verdict}${ev.kvError ? ` (KV ilegível: ${ev.kvError})` : ""}`,
       details: ev,
     },
     ROOT,
@@ -133,9 +160,9 @@ async function main(): Promise<void> {
   // `urgente`: o editor precisa vincular no mesmo dia, com o Short já no ar,
   // e sob `email_policy: "urgent_only"` só `urgente` recém-criado vira e-mail
   // — o mesmo canal do `--alert` que a própria task usaria se tivesse rodado.
-  // Exceção (#12541): `missing-record` vem só da ausência de um arquivo
-  // replicado pelo OneDrive e sai `acao` (issue sem e-mail) enquanto o
-  // registro do vínculo não tiver canal fora do OneDrive.
+  // Exceções (#12541): `missing-record` (ausência de registro) e
+  // `record-unconfirmed` (KV fora, nada no arquivo) saem `acao` (issue sem
+  // e-mail) — ver `shortRelatedMissedSeverity`.
   const res = await notifyEditor(
     {
       check: "short-related-missed",
