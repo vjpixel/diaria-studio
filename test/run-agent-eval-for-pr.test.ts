@@ -722,7 +722,9 @@ describe("edição de referência ilegível — placeholder OneDrive (#12534)", 
       assert.match(bad[1].reason, /não encontrada/);
       const msg = formatUnreadableEditionsMessage(bad, ["261104", "261105"]);
       assert.match(msg, /261106 \(/);
-      assert.match(msg, /OneDrive/);
+      // #12837: pós-virada do data/ (#12359) a causa provável é o Drive, não o OneDrive.
+      assert.match(msg, /Drive for desktop/);
+      assert.doesNotMatch(msg, /OneDrive/);
       assert.match(msg, /--reference-editions 261104,261105/);
       assert.match(formatUnreadableEditionsMessage(bad, []), /Nenhuma outra edição legível/);
     } finally {

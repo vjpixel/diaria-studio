@@ -307,7 +307,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     console.error(
       `⚠️  STORE PARCIAL: ${stripe.skipped_files.length} CSV(s) de fonte ilegíveis ` +
         `(${stripe.skipped_files.join(", ")}) — faltam os contatos desses arquivos. ` +
-        `Hidrate-os (OneDrive) e re-rode pra completar.`,
+        `Baixe-os nesta máquina (Drive for desktop: "Disponível off-line"; no 300, aguarde o bisync) e re-rode pra completar.`,
     );
   }
 
@@ -318,7 +318,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     console.error(
       `⚠️  MV PARCIAL: ${mv.skipped.length} arquivo(s) MV ilegíveis ` +
         `(${mv.skipped.join(", ")}) — verificação desses ciclos fora do store. ` +
-        `Hidrate-os (OneDrive) e re-rode.`,
+        `Baixe-os nesta máquina (Drive for desktop: "Disponível off-line"; no 300, aguarde o bisync) e re-rode.`,
     );
   }
 

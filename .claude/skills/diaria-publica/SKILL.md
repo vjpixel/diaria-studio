@@ -79,7 +79,7 @@ npx tsx scripts/pipeline-sentinel.ts exists --edition {AAMMDD} --step 4
 ```
 
 - exit 0 → seguir.
-- exit 1 → **parar**, sem concluir "etapa não aprovada" (#11729): o sentinel pode ter sido escrito em outra máquina (gate aprovado no Neo) e o OneDrive ainda não ter trazido `data/` para esta. Repassar ao editor a linha `[aviso]` que o comando imprime no stderr (traz "possível defasagem de sync do OneDrive" e a idade do arquivo mais recente da edição nesta máquina) e as duas saídas: se o gate já foi aprovado em outra máquina, esperar o sync e rodar `/diaria-publica` de novo; se não foi, aprovar o gate (`/diaria-4-revisao {AAMMDD}` ou `/diaria-edicao {AAMMDD}`) antes, porque o D1 ainda pode mudar. Vale para as duas partes, em dry-run ou não.
+- exit 1 → **parar**, sem concluir "etapa não aprovada" (#11729): o sentinel pode ter sido escrito em outra máquina (gate aprovado no Neo) e o sync do Drive (bisync do 300 / Drive for desktop, #12837) ainda não ter trazido `data/` para esta. Repassar ao editor a linha `[aviso]` que o comando imprime no stderr (traz "possível defasagem de sync do Drive" e a idade do arquivo mais recente da edição nesta máquina) e as duas saídas: se o gate já foi aprovado em outra máquina, esperar o sync e rodar `/diaria-publica` de novo; se não foi, aprovar o gate (`/diaria-4-revisao {AAMMDD}` ou `/diaria-edicao {AAMMDD}`) antes, porque o D1 ainda pode mudar. Vale para as duas partes, em dry-run ou não.
 
 **`{EDITION_DIR}`:** resolver uma vez, logo depois do sentinel: `EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})` (layout flat ou nested, #2463).
 
