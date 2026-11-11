@@ -13,7 +13,10 @@ function run(extra: Partial<Parameters<typeof routeIssue>[0]> = {}, comments: Ar
   const calls: string[][] = [];
   let labels: string[] = [...initialLabels];
   const result = routeIssue({
-    issue: 11251, track: "bloqueada", reason: "credencial que só o editor provisiona",
+    issue: 11251, track: "bloqueada",
+    // #12744: a razão cita o roteamento para overnight que contraria; o guard
+    // de staleness é testado isolado.
+    reason: "roteada para overnight em 27/10, mas a credencial só o editor provisiona",
     triagedAt: initial, now, cwd: "/tmp", ...extra,
     ghRun(args) {
       calls.push(args);
