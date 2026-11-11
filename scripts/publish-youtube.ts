@@ -116,6 +116,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
+import { buildHorizontalManifest, planSha256, readVideoPlanSources, sha256File, writeVideoPlanManifest, type VideoPlanManifest } from "./lib/diaria/video-publish-plan.ts";
+import { authorizationRefusalMessage, consumeBeforeExternalEffects } from "./lib/diaria/video-publish-authorization.ts";
 import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
@@ -1210,6 +1212,29 @@ function loadD1SlotAt(aammdd: string): Date | null {
   }
 }
 
+/**
+ * #12654: manifesto canônico do plano do horizontal (hashes dos bytes de
+ * vídeo/capa/legenda, título/descrição/tags, horário, destino e comando). O
+ * dry-run grava e imprime o `plan_sha256` que o editor aprova; o `--upload`
+ * recalcula e confere antes de qualquer efeito externo.
+ */
+export function buildYouTubePlanManifest(plan: YouTubePublishPlan, editionDir: string, generatedAt?: string): VideoPlanManifest {
+  return buildHorizontalManifest({
+    aammdd: plan.aammdd,
+    metadata: plan.metadata,
+    schedule: { mode: plan.schedule.mode, publishAt: plan.schedule.publishAt },
+    privacy: plan.request.body.status.privacyStatus,
+    media: {
+      video_sha256: plan.video.exists ? sha256File(plan.video.path) : null,
+      cover_sha256: plan.thumbnail ? sha256File(plan.thumbnail.path) : null,
+      captions_sha256: plan.captions ? sha256File(plan.captions.path) : null,
+    },
+    sources: readVideoPlanSources(editionDir),
+    command: `npx tsx scripts/publish-youtube.ts ${plan.aammdd} --upload --confirm-publish ${plan.aammdd}`,
+    ...(generatedAt ? { generatedAt } : {}),
+  });
+}
+
 const USAGE =
   "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--force] | --thumbnail-only [--thumbnail PATH]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO]";
 
@@ -1338,9 +1363,45 @@ async function main(): Promise<number> {
     const themeCfg = loadThemePlaylistsFromConfig();
     for (const w of themeCfg.warnings) console.error(w);
     const themePlaylists = planThemePlaylists(plan.themes, themeCfg);
-    console.log(JSON.stringify({ dry_run: true, ...plan, theme_playlists: themePlaylists, ...(coverPrereqs ? { cover_prerequisites: coverPrereqs } : {}) }, null, 2));
+    // #12654: o plano que o editor aprova é este manifesto; o hash vai no JSON e no comando do grant.
+    const manifest = buildYouTubePlanManifest(plan, dir, new Date().toISOString());
+    const planHash = planSha256(manifest);
+    try {
+      const manifestPath = writeVideoPlanManifest(dir, manifest);
+      console.error(`[premissa] plano do horizontal: plan_sha256 ${planHash} (${manifestPath}). Depois do "pode publicar" explícito do editor sobre ESTE plano: npx tsx scripts/video-publish-authorize.ts grant ${aammdd} --part horizontal --plan-sha256 ${planHash} --confirmation "{resposta do editor}" (#12654)`);
+    } catch (e) {
+      console.error(`[aviso] manifesto do plano não gravado (${(e as Error).message}): sem ele o grant recusa e o --upload não sai (#12654)`);
+    }
+    if (!manifest.media.video_sha256) console.error(`[aviso] vídeo ausente: o plano sem o vídeo não é aprovável (#12654) — baixe o vídeo e refaça o dry-run antes de pedir o "pode publicar"`);
+    console.log(JSON.stringify({ dry_run: true, ...plan, theme_playlists: themePlaylists, ...(coverPrereqs ? { cover_prerequisites: coverPrereqs } : {}), plan_sha256: planHash, plan_manifest: manifest }, null, 2));
     markPendingApprovalAfterDryRun(dir, aammdd, new Date(), (line) => console.error(line));
     return 0;
+  }
+
+  // #12654: o --upload só sai com a autorização de uso único do plano aprovado, conferida (manifesto
+  // recalculado agora) e consumida ANTES de credencial, rede ou qualquer gravação. O
+  // --accept-period-match não envia nada e fica de fora, como na confirmação do #11741.
+  if (values["accept-period-match"] === undefined) {
+    // Sem vídeo e sem registro "done", o upload pararia antes da rede (exit 1): não gasta autorização.
+    let recordDone = false;
+    try {
+      recordDone = readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd).kind === "done";
+    } catch {
+      // registro ilegível: o miolo do upload recusa com a mensagem própria; a autorização é conferida antes.
+    }
+    if (!plan.video.exists && !recordDone) {
+      console.error(`publish-youtube: vídeo ausente em ${plan.video.path} — nada foi enviado (passe --video PATH)`);
+      return 1;
+    }
+    const auth = consumeBeforeExternalEffects({
+      editionDir: dir, edition: aammdd, manifest: buildYouTubePlanManifest(plan, dir), destinations: ["youtube"],
+      now: new Date(), pid: process.pid, by: "publish-youtube --upload",
+    });
+    if (!auth.ok) {
+      console.error(authorizationRefusalMessage("publish-youtube", "horizontal", aammdd, auth.error));
+      return 2;
+    }
+    console.error(`[ok] autorização do plano consumida (uso único): youtube, plan_sha256 ${auth.consumed[0].plan_sha256} (#12654)`);
   }
 
   loadProjectEnv(ROOT);

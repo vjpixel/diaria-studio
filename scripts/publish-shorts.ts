@@ -208,6 +208,8 @@ import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { publishConfirmSuffix, publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
+import { buildVerticalManifest, planSha256, readVideoPlanSources, sha256Hex, VERTICAL_RUN_ACTIONS, writeVideoPlanManifest, type VideoPlanManifest } from "./lib/diaria/video-publish-plan.ts";
+import { authorizationRefusalMessage, consumeBeforeExternalEffects } from "./lib/diaria/video-publish-authorization.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
@@ -486,7 +488,8 @@ export const MARKABLE_DESTINATIONS = new Set([...GUIDED_DESTINATIONS, "instagram
 export type ShortsPlanItem =
   /** `title`: título da mídia (vídeo do LinkedIn pessoal, #10772). */
   | { destination: string; mode: "api"; action: "publish"; caption: string; scheduledAt: string | null; title?: string }
-  | { destination: string; mode: "api"; action: "pending_schedule"; caption: string; scheduledAt: string; detail: string }
+  /** `title` (#12654): o mesmo título de mídia que o `publish` levaria, para o plano aprovado já trazê-lo. */
+  | { destination: string; mode: "api"; action: "pending_schedule"; caption: string; scheduledAt: string; detail: string; title?: string }
   /** #10823: Reels do Instagram com horário futuro, entregue à fila do Worker. */
   /** `idempotencyKey` (#10906): o POST /queue repetido cai na mesma entry do Worker. */
   | { destination: string; mode: "api"; action: "enqueue"; caption: string; scheduledAt: string; igAccount: WorkerInstagramAccount; idempotencyKey: string }
@@ -1410,6 +1413,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
           caption: text,
           scheduledAt: schedule.at,
           detail: `a Posts API do LinkedIn não agenda — ${pendingRunner(slot.hhmm)}`,
+          title, // #12654: a task one-shot publica com este título; o plano aprovado já o mostra
         };
       }
       return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null, title };
@@ -4648,6 +4652,42 @@ async function runUpdateScheduled(input: {
   return results.some((r) => !r.ok) ? 1 : 0;
 }
 
+/**
+ * #12654: manifesto canônico do plano do vertical da edição (hashes dos bytes
+ * do vídeo e da capa, título/descrição do Short, horário por destino, texto de
+ * cada destino, dono/comando, fontes editoriais). O dry-run grava e imprime o
+ * `plan_sha256` que o editor aprova; o `--publish` (rodada principal e task
+ * one-shot) recalcula e confere a projeção de cada destino que vai agir antes
+ * de qualquer efeito externo. Só no modo edição: o corte tem a autorização
+ * própria (#11912) e os timers do 300 a da config que os ligou (#11741).
+ */
+export function buildShortsPlanManifest(
+  plan: ShortsPlan,
+  input: { editionDir: string; videoBytes: Buffer | null; coverBytes: Buffer | null; generatedAt?: string },
+): VideoPlanManifest {
+  return buildVerticalManifest({
+    aammdd: plan.aammdd,
+    items: plan.items,
+    owners: plan.owners,
+    destinationAt: (id) => plan.destinationTimes[id]?.at ?? plan.shortTime.at,
+    horizontalLink: (id) => plan.horizontalLinks?.[id]?.link ?? null,
+    metadata: { title: plan.youtube.title, description: plan.youtube.description },
+    media: {
+      video_sha256: input.videoBytes ? sha256Hex(input.videoBytes) : null,
+      cover_sha256: input.coverBytes ? sha256Hex(input.coverBytes) : null,
+      captions_sha256: null, // o vertical não sobe legenda em arquivo: o texto de cada destino está em `content`
+    },
+    sources: readVideoPlanSources(input.editionDir),
+    publishCommand: `npx tsx scripts/publish-shorts.ts ${plan.aammdd} --publish ${publishConfirmSuffix(plan.aammdd)}`,
+    ...(input.generatedAt ? { generatedAt: input.generatedAt } : {}),
+  });
+}
+
+/** #12654: destinos que esta rodada `--publish` executa (efeito externo pelo publisher). */
+export function shortsRunDestinations(items: readonly ShortsPlanItem[]): string[] {
+  return items.filter((i) => VERTICAL_RUN_ACTIONS.has(i.action)).map((i) => i.destination);
+}
+
 async function main(): Promise<number> {
   const parsed = parseShortsCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
@@ -4974,13 +5014,51 @@ async function main(): Promise<number> {
   for (const p of plan.premises) console.error(`[premissa] ${p}`);
   for (const w of plan.warnings) console.error(`[aviso] ${w}`);
 
+  // #12654: o plano da edição (fora do corte e dos timers do 300) passa pela autorização por hash.
+  const planGated = !corte && writer === "main";
   if (!flags.has("publish")) {
-    console.log(JSON.stringify({ dry_run: true, ...plan, ...revokedOut() }, null, 2));
+    let planOut: { plan_sha256: string; plan_manifest: VideoPlanManifest } | Record<string, never> = {};
+    if (planGated) {
+      const manifest = buildShortsPlanManifest(plan, { editionDir: dir, videoBytes: file, coverBytes: shortCover.bytes, generatedAt: new Date().toISOString() });
+      const planHash = planSha256(manifest);
+      planOut = { plan_sha256: planHash, plan_manifest: manifest };
+      // Só a rodada de plano inteiro grava o manifesto que o grant lê (um --only parcial não substitui o plano da parte).
+      if (!onlyList) {
+        try {
+          const manifestPath = writeVideoPlanManifest(dir, manifest);
+          console.error(`[premissa] plano do vertical: plan_sha256 ${planHash} (${manifestPath}). Depois do "pode publicar" explícito do editor sobre ESTE plano: npx tsx scripts/video-publish-authorize.ts grant ${aammdd} --part vertical --plan-sha256 ${planHash} --confirmation "{resposta do editor}" (#12654)`);
+        } catch (e) {
+          console.error(`[aviso] manifesto do plano não gravado (${(e as Error).message}): sem ele o grant recusa e o --publish não sai (#12654)`);
+        }
+      } else {
+        console.error(`[premissa] plano parcial (--only): plan_sha256 ${planHash} só confere; o manifesto da parte não é regravado (#12654)`);
+      }
+    }
+    console.log(JSON.stringify({ dry_run: true, ...plan, ...revokedOut(), ...planOut }, null, 2));
     return 0;
   }
   if (!file) {
     console.error(`publish-shorts: vídeo curto ausente em ${videoPath}`);
     return 1;
+  }
+  if (planGated) {
+    // #12654: confere e consome (uso único) a autorização de cada destino que esta rodada executa,
+    // com o manifesto recalculado agora, ANTES do 1º efeito externo (KV do link da bio, R2, APIs).
+    const acting = shortsRunDestinations(plan.items);
+    if (acting.length) {
+      const auth = consumeBeforeExternalEffects({
+        editionDir: dir, edition: aammdd,
+        manifest: buildShortsPlanManifest(plan, { editionDir: dir, videoBytes: file, coverBytes: shortCover.bytes }),
+        destinations: acting, now: new Date(), pid: process.pid, by: "publish-shorts --publish",
+      });
+      if (!auth.ok) {
+        console.error(authorizationRefusalMessage("publish-shorts", "vertical", aammdd, auth.error));
+        return 2;
+      }
+      console.error(`[ok] autorização do plano consumida (uso único): ${auth.consumed.map((a) => a.destination).join(", ")} (#12654)`);
+    } else {
+      console.error("[premissa] nenhum destino sai por esta rodada: nenhuma autorização consumida (os adiados saem pelos donos do owners[], cada um com a sua) (#12654)");
+    }
   }
   if (shouldUpdateLatestVideoOnPublish({ corte: !!corte, writer })) {
     // #12735: o link fixo da bio (diar.ia.br/video) passa a apontar para o horizontal desta edição.

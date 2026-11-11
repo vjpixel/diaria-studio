@@ -39,9 +39,17 @@
  * `registered_since` — o destino pode estar saindo agora. Com marca em aberto o
  * veredito nunca é `nothing-since`.
  *
+ * `--record` (#12654): grava a releitura (instante, `--since`, veredito e
+ * destinos saídos) no registro de autorizações da edição
+ * (`_internal/video-publish-authorizations.json`). É a única escrita deste
+ * script, e só com a flag: depois de uma interrupção/rejeição (invalidação) ou
+ * de um consumo, a nova autorização (`video-publish-authorize.ts grant`) só sai
+ * com uma releitura gravada que cubra o evento. Exige `--since`; não vale no
+ * modo corte (o corte tem a própria autorização, #11912).
+ *
  * Saída: JSON no stdout. Exit 0 = registros lidos; exit 1 = algum registro
  * ilegível (não dá para saber o que saiu: conferir as contas antes de
- * qualquer nova chamada); exit 2 = uso.
+ * qualquer nova chamada) ou releitura não gravada; exit 2 = uso.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -54,6 +62,7 @@ import { readPublishedRecord, type PublishedRecordRead } from "./publish-youtube
 import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
 import { openSendingMarks, readShortsSending, type ShortSendingMark } from "./lib/diaria/shorts-sending-marker.ts";
 import { CORTE_SPEC_FILE, corteRelDir, parseCorteSpec, validateCorteSlug } from "./lib/diaria/short-corte.ts";
+import { recordRegistryCheck, updateAuthorizationStore } from "./lib/diaria/video-publish-authorization.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -208,7 +217,7 @@ function readSafely<T>(read: () => T): RegistryRead<T> {
 }
 
 const USAGE =
-  "uso: video-publish-registry-status.ts AAMMDD [--since ISO] [--edition-dir DIR]\n" +
+  "uso: video-publish-registry-status.ts AAMMDD [--since ISO [--record]] [--edition-dir DIR]\n" +
   "     video-publish-registry-status.ts --corte SLUG [AAMMDD] [--since ISO] [--edition-dir DIR]";
 
 /**
@@ -252,8 +261,14 @@ function resolveCorte(
   return { ok: true, dir, aammdd: date };
 }
 
-export function main(argv: string[] = process.argv.slice(2), root: string = ROOT): number {
+export function main(argv: string[] = process.argv.slice(2), root: string = ROOT, now: () => Date = () => new Date()): number {
   const { flags, values, positional } = parseArgs(argv);
+  const record = flags.has("record");
+  if (record && (values["since"] === undefined || values["corte"] !== undefined || flags.has("corte"))) {
+    console.error("video-publish-registry-status: --record exige --since e não vale com --corte (#12654)");
+    console.error(USAGE);
+    return 2;
+  }
   const corteSlug = values["corte"];
   if (flags.has("corte")) {
     console.error("video-publish-registry-status: --corte exige o SLUG do corte");
@@ -303,6 +318,19 @@ export function main(argv: string[] = process.argv.slice(2), root: string = ROOT
   const status: VideoRegistryStatus = corte ? { ...summary, corte } : summary;
   console.log(JSON.stringify(status, null, 2));
   console.error(`[${status.verdict}] ${status.message}`);
+  if (record) {
+    // #12654: a releitura vira evento no registro de autorizações; o grant de retry exige uma que cubra o evento.
+    try {
+      updateAuthorizationStore(dir, aammdd, (store) => ({
+        store: recordRegistryCheck(store, { now: now(), since: since!, verdict: status.verdict, registered: status.registered_since ?? [] }),
+        result: null,
+      }));
+      console.error(`[ok] releitura gravada no registro de autorizações (${status.verdict}) (#12654)`);
+    } catch (e) {
+      console.error(`video-publish-registry-status: releitura NÃO gravada (${(e as Error).message}): o grant de retry vai recusar`);
+      return 1;
+    }
+  }
   return status.verdict === "unreadable" ? 1 : 0;
 }
 
