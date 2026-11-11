@@ -2425,7 +2425,8 @@ export function buildSequencePlan(
   // aparado pela pausa pode ser menor que meio quadro e cair logo fora dele.
   const frameTolS = 0.5 / fps + 1e-9;
   for (const { label, words } of wordChecks) {
-    const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start - frameTolS && (w.start + w.end) / 2 <= p.end + frameTolS) && !wordCoveredBySilence(w, kept, silences));
+    // #12089: a palavra esticada por cima da pausa do detector (agora sem proteção) tem o trecho fora dos clipes arredondado ao quadro, como o meio acima.
+    const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start - frameTolS && (w.start + w.end) / 2 <= p.end + frameTolS) && !wordCoveredBySilence(w, kept, silences, frameTolS));
     if (lost.length) dropped.push(`${label}: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
   }
   return {

@@ -167,6 +167,29 @@ export function speechSeconds(s: SegmentSpan): number {
   return speechSpans(s).reduce((n, [a, b]) => n + (b - a), 0);
 }
 
+/**
+ * Quadros com voz na grade do detector de fala (#12089): F0 por autocorrelação
+ * (`frameF0`, janela de `VOICE.frameS` centrada no quadro) só nos quadros que
+ * `candidate` aponta (os que já têm som; medir o bruto inteiro custaria o
+ * dobro sem mudar nada), a cada 2 quadros, valendo para os dois. É o que
+ * separa a vogal curta ("A empresa", -26 dB, 40 ms) da respiração e do ruído de
+ * sala do mesmo nível: a vogal tem F0, o ar não. Sem piso de energia aqui
+ * (`minDb` -90): quem decide o que é som é o detector.
+ */
+export function voicedFrames(samples: Int16Array, sampleRate: number, hopS: number, n: number, candidate: (i: number) => boolean): Uint8Array {
+  const { x, rate } = decimate(samples, sampleRate);
+  const len = Math.round(VOICE.frameS * rate);
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i += 2) {
+    if (!candidate(i) && !(i + 1 < n && candidate(i + 1))) continue;
+    const from = Math.round((i + 1) * hopS * rate - len / 2);
+    if (frameF0(x, Math.max(0, from), len, rate, { minDb: -90 }) === null) continue;
+    out[i] = 1;
+    if (i + 1 < n) out[i + 1] = 1;
+  }
+  return out;
+}
+
 /** F0 mediana de cada segmento, só nas palavras dele quando têm tempo (#11675); decima o áudio uma vez só. */
 export function segmentF0s(samples: Int16Array, sampleRate: number, segments: Array<SegmentSpan>): Array<number | null> {
   const { x, rate } = decimate(samples, sampleRate);
