@@ -211,6 +211,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { publishConfirmSuffix, publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
 import { buildVerticalManifest, PAGE_REPOST_DESTINATION, planSha256, readVideoPlanSources, sha256Hex, VERTICAL_RUN_ACTIONS, writeVideoPlanManifest, type VideoPlanManifest } from "./lib/diaria/video-publish-plan.ts";
 import { authorizationRefusalMessage, consumeBeforeExternalEffects } from "./lib/diaria/video-publish-authorization.ts";
+import { alarmTaskAuthorizationRefusal } from "./lib/diaria/video-publish-authorization-alarm.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
@@ -5164,16 +5165,19 @@ async function main(): Promise<number> {
     });
     gatedActing = acting;
     if (acting.length) {
+      const authCommand = `npx tsx scripts/publish-shorts.ts ${process.argv.slice(2).join(" ")}`;
       const auth = consumeBeforeExternalEffects({
         editionDir: dir, edition: aammdd,
         manifest: buildShortsPlanManifest(plan, { editionDir: dir, videoBytes: file, coverBytes: shortCover.bytes }),
         destinations: acting, now: new Date(), pid: process.pid, by: "publish-shorts --publish",
-        command: `npx tsx scripts/publish-shorts.ts ${process.argv.slice(2).join(" ")}`,
+        command: authCommand,
         fallbackCommand: shortsMainPublishCommand(aammdd),
         forceNow: flags.has("now"),
       });
       if (!auth.ok) {
         console.error(authorizationRefusalMessage("publish-shorts", "vertical", aammdd, auth.error));
+        // #12859: a task one-shot roda sem ninguém olhando; a recusa dela vira alarme ao editor.
+        await alarmTaskAuthorizationRefusal({ editionDir: dir, aammdd, part: "vertical", command: authCommand, refusals: auth.refusals ?? [], notifyDeps: { cwd: ROOT } });
         return 2;
       }
       console.error(`[ok] autorização do plano consumida (uso único): ${auth.consumed.map((a) => a.destination).join(", ")} (#12654)`);
