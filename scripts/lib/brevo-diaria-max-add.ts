@@ -51,7 +51,7 @@ export function resolveStage5MaxAdd(params: {
     return {
       ok: false,
       reason:
-        "store ausente (data/brevo-diaria/contacts.json) — provável junction data/ (OneDrive) não montada. " +
+        "store ausente (data/brevo-diaria/contacts.json) — provável link data/ (Google Drive) não montado. " +
         "Pulando o canal Brevo diária nesta rodada da Etapa 5.",
     };
   }
