@@ -331,7 +331,7 @@ import {
   sendMonthStartIso,
 } from "./lib/clarice-paths.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds, warnIfCampaignQuotaLow, refreshCampaignQuotaStateFromKv } from "./lib/brevo-client.ts"; // #6458
+import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds, warnIfCampaignQuotaLow, refreshCampaignQuotaStateFromKv, exitAfterCampaignQuotaKvFlush } from "./lib/brevo-client.ts"; // #6458, #12862
 import { parseHoldArg, applyHolds, type HoldSegmentName } from "./lib/clarice-hold.ts";
 import {
   resolveNotSentCutoff,
@@ -1217,14 +1217,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.error(`⚠️  Não foi possível consultar campanhas agendadas/disparadas na Brevo: ${msg}`);
       if (!dryRun) {
         console.error("❌ escrita real requer a checagem de campanhas agendadas/disparadas bem-sucedida — evita envio duplicado. Abortando (use --dry-run pra inspecionar sem essa checagem).");
-        process.exit(1);
+        // #12862: daqui em diante as saídas esperam o PUT da cota ao KV.
+        return exitAfterCampaignQuotaKvFlush(1);
       }
     }
   } else if (!dryRun) {
     console.error(
       "❌ BREVO_CLARICE_API_KEY não definida — necessária pra checar campanhas agendadas/disparadas antes de escrever (--dry-run funciona sem ela).",
     );
-    process.exit(1);
+    return exitAfterCampaignQuotaKvFlush(1);
   }
   // #7406: `--daily` NÃO aplica um guard único aqui — `universe` é só o
   // pós-recência, e a exclusão por contato acontece dentro de
@@ -1250,7 +1251,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     holds = parseHoldArg(getStringArg(argv, "hold", { example: "juridico" }));
   } catch (e) {
     console.error(`❌ ${(e as Error).message}`);
-    process.exit(1);
+    return exitAfterCampaignQuotaKvFlush(1);
   }
   const holdResult = applyHolds(universe, holds);
 
@@ -1381,7 +1382,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `Sob operação normal isto nunca deveria acontecer — investigue antes de prosseguir. ` +
         `Use --force pra destravar depois de olhar.`,
     );
-    process.exit(1);
+    return exitAfterCampaignQuotaKvFlush(1);
   }
   if (recencyCheck.forced) {
     console.error(
@@ -1411,7 +1412,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `(--exact-budget ativo). Universo mudou desde a última prévia (guards ao vivo/novos registros) — ` +
         `revisar composição com o editor, ou omitir --exact-budget pra aceitar um total menor.`,
     );
-    process.exit(1);
+    return exitAfterCampaignQuotaKvFlush(1);
   }
 
   // O número que importa pro operador não é quantos contatos do segmento
@@ -1468,7 +1469,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // função pura visível); em operação normal nunca dispara.
       if (!cap.ok) {
         console.error(cap.message);
-        process.exit(1);
+        return exitAfterCampaignQuotaKvFlush(1);
       }
     }
   }
@@ -1567,7 +1568,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `, ou se o filtro de recência (${recencyCutoffSource === "explicit" ? "--not-sent-within/--not-sent-since" : "automático — início do mês de envio, #4765"}: ${excludedByRecency} excluído(s)) zerou o universo` +
         `. Nada escrito.`,
     );
-    process.exit(1);
+    return exitAfterCampaignQuotaKvFlush(1);
   }
 
   if (!dryRun) {
@@ -1609,6 +1610,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(String((e as Error)?.stack || e));
-    process.exit(1);
+    return exitAfterCampaignQuotaKvFlush(1); // #12862
   });
 }

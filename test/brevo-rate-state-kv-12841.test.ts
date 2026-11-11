@@ -22,6 +22,7 @@ import {
   BREVO_RATE_KV_KEY,
   BrevoCampaignQuotaLowError,
   assertCampaignQuotaHeadroom,
+  exitAfterCampaignQuotaKvFlush,
   flushCampaignQuotaKvWrites,
   parseCampaignQuotaState,
   pickNewerCampaignQuotaState,
@@ -263,6 +264,88 @@ describe("#12841 — leitores relêem o KV antes de decidir por cota", () => {
         src.indexOf("shouldSkipForLowQuota()", refresh),
       ].filter((i) => i >= 0);
       assert.ok(decide.length > 0, `${rel}: a decisão por cota vem depois do refresh`);
+    });
+  }
+});
+
+describe("#12862 — PUT ao KV não se perde no intervalo do finally nem no process.exit", () => {
+  it("regressão: observação gravada entre o fim do laço e o finally ainda chega ao KV", async () => {
+    // O intervalo entre o `while` sair e o `.finally` zerar `kvInFlight` são
+    // algumas microtasks. Varre profundidades para cair dentro dele: com o bug,
+    // a observação fica em `kvPending` sem ninguém para enviá-la.
+    for (let depth = 0; depth <= 12; depth++) {
+      const kv = fakeKv();
+      let injected = false;
+      const basePut = kv.put.bind(kv);
+      kv.put = async (key, value) => {
+        await basePut(key, value);
+        if (injected) return;
+        injected = true;
+        let p: Promise<void> = Promise.resolve();
+        for (let i = 0; i < depth; i++) p = p.then(() => {});
+        void p.then(() => recordCampaignQuotaRemaining(7, 100, undefined, pathA));
+      };
+      setCampaignQuotaKvOpsForTest(kv);
+      recordCampaignQuotaRemaining(50, 100, undefined, pathA);
+      await flushCampaignQuotaKvWrites();
+      await new Promise((r) => setImmediate(r)); // drena todas as microtasks
+      await flushCampaignQuotaKvWrites();
+      assert.equal(
+        parseCampaignQuotaState(kv.store.get(BREVO_RATE_KV_KEY) ?? null)?.remaining,
+        7,
+        `profundidade ${depth}: a última observação ficou presa em kvPending`,
+      );
+    }
+  });
+
+  it("exitAfterCampaignQuotaKvFlush espera o PUT antes de chamar process.exit", async () => {
+    const kv = fakeKv();
+    setCampaignQuotaKvOpsForTest(kv);
+    let storeAtExit: string | undefined;
+    let exitCode: number | undefined;
+    const exitMock = mock.method(process, "exit", ((code?: number) => {
+      exitCode = code;
+      storeAtExit = kv.store.get(BREVO_RATE_KV_KEY);
+      return undefined as never;
+    }) as typeof process.exit);
+    try {
+      recordCampaignQuotaRemaining(12, 100, undefined, pathA);
+      assert.equal(kv.store.size, 0, "o PUT sai em segundo plano");
+      await exitAfterCampaignQuotaKvFlush(1);
+      assert.equal(exitMock.mock.callCount(), 1);
+      assert.equal(exitCode, 1);
+      assert.equal(parseCampaignQuotaState(storeAtExit ?? null)?.remaining, 12, "o KV já tinha a observação no exit");
+    } finally {
+      exitMock.mock.restore();
+    }
+  });
+
+  it("KV fora do ar: exitAfterCampaignQuotaKvFlush sai com o código pedido", async () => {
+    const kv = fakeKv();
+    kv.failPut = true;
+    setCampaignQuotaKvOpsForTest(kv);
+    const errors = mock.method(console, "error", () => {});
+    const exitMock = mock.method(process, "exit", (() => undefined as never) as typeof process.exit);
+    try {
+      recordCampaignQuotaRemaining(12, 100, undefined, pathA);
+      await exitAfterCampaignQuotaKvFlush(3);
+      assert.deepEqual(exitMock.mock.calls[0]?.arguments, [3]);
+    } finally {
+      exitMock.mock.restore();
+      errors.mock.restore();
+    }
+  });
+
+  // Os CLIs que gravam cota e saem por `process.exit` esperam o PUT: depois da
+  // 1ª chamada à Brevo (o refresh da cota), nenhum `process.exit(` cru.
+  for (const rel of ["scripts/clarice-build-segment.ts", "scripts/clarice-guardrail-alarm.ts"]) {
+    it(`${rel}: nenhum process.exit cru depois do refresh da cota`, () => {
+      const src = readFileSync(join(ROOT, rel), "utf8");
+      const refresh = src.indexOf("await refreshCampaignQuotaStateFromKv(");
+      assert.ok(refresh >= 0);
+      const tail = src.slice(refresh);
+      assert.ok(!/^\s*process\.exit\(/m.test(tail), `${rel} ainda tem process.exit( depois do refresh`);
+      assert.match(tail, /main\(\)\.catch\([^]*?exitAfterCampaignQuotaKvFlush\(1\)/, "o catch do main espera o PUT");
     });
   }
 });

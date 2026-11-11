@@ -206,7 +206,11 @@ export function describeLatestVideoOutcome(o: LatestVideoUpdateOutcome): string 
     case "unchanged":
       return `diar.ia.br/video já aponta para ${o.record.url} (edição ${o.record.aammdd})`;
     case "older":
-      return `diar.ia.br/video mantido em ${o.current.url} (edição ${o.current.aammdd}, mais nova que ${o.record.aammdd})`;
+      // #12863: `older` só sai com a edição gravada estritamente mais nova; o texto
+      // não presume isso, pra não voltar a dizer "mais nova que" ela mesma.
+      return o.current.aammdd === o.record.aammdd
+        ? `diar.ia.br/video mantido em ${o.current.url} (edição ${o.current.aammdd}, o registro novo não muda nada)`
+        : `diar.ia.br/video mantido em ${o.current.url} (edição ${o.current.aammdd}, mais nova que ${o.record.aammdd})`;
     case "would_write":
       return `diar.ia.br/video passaria a ${o.record.url} (edição ${o.record.aammdd}; hoje ${o.current ? `${o.current.url}, ${o.current.aammdd}` : "sem registro"}) — rode com --apply`;
     case "written":
