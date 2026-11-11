@@ -20,9 +20,10 @@
  * ordem de regravar (na dúvida, a skill pergunta ao editor).
  */
 
-import { normalizeToken } from "./video-montage.ts";
+import { isBlockKey, normalizeToken, type BlockKey } from "./video-montage.ts";
 
 export type VideoRoteiro = "horizontal" | "vertical1" | "vertical2";
+export const VIDEOS_ROTEIRO: readonly VideoRoteiro[] = ["horizontal", "vertical1", "vertical2"];
 
 export const VIDEO_LABEL: Record<VideoRoteiro, string> = {
   horizontal: "horizontal",
@@ -38,6 +39,19 @@ export interface FalaRoteiro {
   videos: VideoRoteiro[];
   /** Fala gravada à parte (gancho do vertical 2, chamada final do vertical 1). */
   gravarAParte?: boolean;
+  /**
+   * Bloco da montagem (`BlockKey` do `/diaria-video-montagem`) em que a fala
+   * entra no horizontal, ou no vertical quando ela não está no horizontal
+   * (#12751): `gancho`, `abertura`, `resumo`, `comentario`, `cta_vertical`…
+   * A proposta de blocos (`scripts/lib/diaria/roteiro-videos.ts`) lê daqui.
+   */
+  bloco?: BlockKey;
+}
+
+/** Título e texto da capa de um vídeo do roteiro (#12751). */
+export interface PecaVideo {
+  titulo?: string;
+  capa?: string;
 }
 
 export interface RoteiroFalas {
@@ -45,12 +59,19 @@ export interface RoteiroFalas {
   /** Nomes de veículo que não podem ser ditos (regra "nunca citar o veículo"). */
   veiculos?: string[];
   falas: FalaRoteiro[];
+  /**
+   * Título e texto da capa de cada vídeo, como a página do roteiro os traz
+   * (#12751). A montagem usa o título dos verticais na tela; o
+   * `/diaria-publica` usa o título do horizontal no YouTube e os textos da capa.
+   */
+  porVideo?: Partial<Record<VideoRoteiro, PecaVideo>>;
 }
 
 /**
  * - `ok`: dita como no roteiro.
  * - `diferente-mas-cabe`: reformulação; o modelo confirma que o sentido e o fato ficaram (muda o texto da página).
- * - `regravar`: número do roteiro ausente ou veículo citado no trecho.
+ * - `regravar`: número do roteiro ausente ou veículo citado no trecho (o veículo
+ *   que o próprio texto da fala cita, a empresa que também é veículo, não conta, #12781).
  * - `faltou`: nenhum trecho da transcrição se parece com a fala.
  */
 export type VereditoFala = "ok" | "diferente-mas-cabe" | "regravar" | "faltou";
@@ -241,10 +262,18 @@ interface Janela {
   inicio: number;
   fim: number; // exclusivo
   cobertura: number;
+  /** Posições da transcrição que contaram para a cobertura (as que a fala reclama, #12781). */
+  usados: number[];
 }
 
-/** Melhor janela da transcrição para a fala, por cobertura das palavras de conteúdo. */
-function melhorJanela(fala: Tok[], trans: Tok[]): Janela | null {
+/**
+ * Melhor janela da transcrição para a fala, por cobertura das palavras de
+ * conteúdo. Posições já reclamadas por outra fala (`ocupado`, #12781) não
+ * contam: a mesma palavra dita uma vez não serve a duas falas. Entre janelas de
+ * mesma cobertura, vence a de trecho mais curto depois de aparada (a mais
+ * densa), para a fala reclamar as próprias palavras e não as da vizinha.
+ */
+function melhorJanela(fala: Tok[], trans: Tok[], ocupado?: readonly boolean[]): Janela | null {
   // Números ficam fora da cobertura: podem vir por extenso no ditado e são
   // conferidos à parte (`numerosAusentes`), que é o que decide `regravar`.
   const conteudo = fala.map((t) => t.norm).filter((w) => isConteudo(w) && !/^\d+$/.test(w));
@@ -252,6 +281,8 @@ function melhorJanela(fala: Tok[], trans: Tok[]): Janela | null {
   if (alvo.length === 0 || trans.length === 0) return null;
   const precisa = new Map<string, number>();
   for (const w of alvo) precisa.set(w, (precisa.get(w) ?? 0) + 1);
+  const livre = (k: number) => !ocupado?.[k];
+  const set = new Set(fala.map((t) => t.norm));
 
   const largura = Math.min(trans.length, Math.max(4, Math.ceil(fala.length * 1.5)));
   let melhor: Janela | null = null;
@@ -259,20 +290,56 @@ function melhorJanela(fala: Tok[], trans: Tok[]): Janela | null {
     const conta = new Map<string, number>();
     for (let k = i; k < i + largura; k++) {
       const w = trans[k].norm;
-      if (precisa.has(w)) conta.set(w, (conta.get(w) ?? 0) + 1);
+      if (precisa.has(w) && livre(k)) conta.set(w, (conta.get(w) ?? 0) + 1);
     }
     let achadas = 0;
     for (const [w, n] of precisa) achadas += Math.min(n, conta.get(w) ?? 0);
     const cobertura = achadas / alvo.length;
-    if (!melhor || cobertura > melhor.cobertura) melhor = { inicio: i, fim: i + largura, cobertura };
+    if (melhor && cobertura < melhor.cobertura) continue;
+    // Aparar as pontas da janela até a primeira/última palavra livre da fala.
+    let inicio = i;
+    let fim = i + largura;
+    while (inicio < fim && !(set.has(trans[inicio].norm) && livre(inicio))) inicio++;
+    while (fim > inicio && !(set.has(trans[fim - 1].norm) && livre(fim - 1))) fim--;
+    if (melhor && cobertura === melhor.cobertura && fim - inicio >= melhor.fim - melhor.inicio) continue;
+    // As posições que contaram: cada palavra da fala até o número de vezes que ela pede.
+    const resta = new Map(precisa);
+    const usados: number[] = [];
+    for (let k = inicio; k < fim; k++) {
+      const w = trans[k].norm;
+      const n = resta.get(w) ?? 0;
+      if (n > 0 && livre(k)) {
+        usados.push(k);
+        resta.set(w, n - 1);
+      }
+    }
+    melhor = { inicio, fim, cobertura, usados };
   }
-  if (!melhor) return null;
-  // Aparar as pontas da janela até a primeira/última palavra da fala.
-  const set = new Set(fala.map((t) => t.norm));
-  let { inicio, fim } = melhor;
-  while (inicio < fim && !set.has(trans[inicio].norm)) inicio++;
-  while (fim > inicio && !set.has(trans[fim - 1].norm)) fim--;
-  return { inicio, fim, cobertura: melhor.cobertura };
+  return melhor;
+}
+
+/**
+ * Atribui a cada fala a sua janela sem que duas falas reclamem as mesmas
+ * palavras (#12781). Primeiro cada fala acha a melhor janela sozinha; depois,
+ * da maior cobertura para a menor (empate: ordem do roteiro), cada uma refaz a
+ * busca só com as posições que as anteriores não reclamaram. Assim uma fala
+ * que não foi gravada, cujas palavras aparecem nas vizinhas, perde essas
+ * palavras para as vizinhas e sai `faltou` em vez de `diferente-mas-cabe`.
+ */
+function atribuirJanelas(falas: Tok[][], trans: Tok[]): Array<Janela | null> {
+  const sozinha = falas.map((ft) => melhorJanela(ft, trans));
+  const ordem = falas
+    .map((_, i) => i)
+    .sort((a, b) => (sozinha[b]?.cobertura ?? 0) - (sozinha[a]?.cobertura ?? 0) || a - b);
+  const ocupado = new Array<boolean>(trans.length).fill(false);
+  const out = new Array<Janela | null>(falas.length).fill(null);
+  for (const i of ordem) {
+    const j = melhorJanela(falas[i], trans, ocupado);
+    out[i] = j;
+    // Só reclama quem casou de verdade: uma fala `faltou` não tira palavra de ninguém.
+    if (j && j.cobertura >= COBERTURA_MINIMA && j.fim > j.inicio) for (const k of j.usados) ocupado[k] = true;
+  }
+  return out;
 }
 
 /** Confere a transcrição ditada contra as falas do roteiro. */
@@ -281,10 +348,15 @@ export function conferirGravacao(roteiro: RoteiroFalas, transcricao: string): Re
   const transNorm = trans.map((t) => t.norm);
   const coberto = new Array<boolean>(trans.length).fill(false);
   const veiculos = (roteiro.veiculos ?? []).filter((v) => v.trim());
+  const falaToks = roteiro.falas.map((f) => toks(f.texto));
+  const janelas = atribuirJanelas(falaToks, trans);
+  // #12781: veículo que o próprio roteiro cita (a empresa que também é o
+  // veículo, citada de propósito) não é "citou o veículo" na fala que o traz.
+  const citaNoRoteiro = (texto: string, v: string) => contemFrase(toks(texto).map((t) => t.norm), v);
+  const veiculosDoRoteiro = veiculos.filter((v) => roteiro.falas.some((f) => citaNoRoteiro(f.texto, v)));
 
-  const falas: ConferenciaFala[] = roteiro.falas.map((f) => {
-    const ft = toks(f.texto);
-    const j = melhorJanela(ft, trans);
+  const falas: ConferenciaFala[] = roteiro.falas.map((f, idx) => {
+    const j = janelas[idx];
     const cobertura = j ? Math.round(j.cobertura * 100) / 100 : 0;
     const base = {
       id: f.id,
@@ -317,7 +389,7 @@ export function conferirGravacao(roteiro: RoteiroFalas, transcricao: string): Re
     const janelaNumSet = new Set(numerosJanela);
     const compostos = new Set(numerosPorExtenso(numerosJanela));
     const numerosAusentes = numerosDaFala(f.texto).filter((n) => !numeroPresente(n, janelaNumSet, compostos));
-    const veiculosCitados = veiculos.filter((v) => contemFrase(janelaNorm, v));
+    const veiculosCitados = veiculos.filter((v) => !citaNoRoteiro(f.texto, v) && contemFrase(janelaNorm, v));
     const motivos: string[] = [];
     let veredito: VereditoFala;
     if (numerosAusentes.length > 0) motivos.push(`número do roteiro ausente no trecho: ${numerosAusentes.join(", ")}`);
@@ -354,8 +426,15 @@ export function conferirGravacao(roteiro: RoteiroFalas, transcricao: string): Re
   });
   fecha();
 
+  // Veículo dito fora das falas casadas. O que o roteiro cita de propósito
+  // (#12781) só conta se aparecer nas palavras que nenhuma fala cobre: dentro
+  // da fala que o cita, é o roteiro; numa fala que não o cita, já saiu acima.
   const veiculosNasFalas = new Set(falas.flatMap((f) => f.veiculosCitados));
-  const veiculosForaDeFala = veiculos.filter((v) => !veiculosNasFalas.has(v) && contemFrase(transNorm, v));
+  const foraDasFalas = transNorm.map((w, k) => (coberto[k] ? "" : w));
+  const veiculosForaDeFala = veiculos.filter((v) => {
+    if (veiculosNasFalas.has(v)) return false;
+    return veiculosDoRoteiro.includes(v) ? contemFrase(foraDasFalas, v) : contemFrase(transNorm, v);
+  });
 
   const pendencias = falas.filter((f) => f.veredito === "regravar" || f.veredito === "faltou");
   const ordem: VideoRoteiro[] = ["horizontal", "vertical1", "vertical2"];
@@ -390,9 +469,25 @@ export function validarRoteiroFalas(x: unknown): string[] {
     ) {
       problemas.push(`falas[${i}].videos deve listar horizontal|vertical1|vertical2`);
     }
+    if (o.bloco !== undefined && !(typeof o.bloco === "string" && isBlockKey(o.bloco))) {
+      problemas.push(`falas[${i}].bloco deve ser um bloco da montagem (gancho, titulo, abertura, resumo, resumo_curto, comentario, cta_yt, cta_vertical, cta_ig, cta_out, fecho)`);
+    }
   });
   if (r.veiculos !== undefined && (!Array.isArray(r.veiculos) || !r.veiculos.every((v) => typeof v === "string"))) {
     problemas.push("`veiculos` deve ser lista de strings");
+  }
+  if (r.porVideo !== undefined) {
+    if (!r.porVideo || typeof r.porVideo !== "object" || Array.isArray(r.porVideo)) problemas.push("`porVideo` deve ser objeto por vídeo");
+    else {
+      for (const [k, v] of Object.entries(r.porVideo as Record<string, unknown>)) {
+        if (!(VIDEOS_ROTEIRO as readonly string[]).includes(k)) problemas.push(`porVideo.${k}: vídeo desconhecido (horizontal|vertical1|vertical2)`);
+        const p = (v ?? {}) as Record<string, unknown>;
+        if (!v || typeof v !== "object") problemas.push(`porVideo.${k} deve ser objeto { titulo, capa }`);
+        for (const campo of ["titulo", "capa"] as const) {
+          if (p[campo] !== undefined && (typeof p[campo] !== "string" || !(p[campo] as string).trim())) problemas.push(`porVideo.${k}.${campo} deve ser texto não vazio`);
+        }
+      }
+    }
   }
   return problemas;
 }
