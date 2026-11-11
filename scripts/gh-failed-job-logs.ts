@@ -47,7 +47,7 @@ const FAILED_CONCLUSIONS = new Set(["failure", "timed_out"]);
 
 export function jobsApiPath(run: number, repo: string | undefined, attempt?: number): string {
   const base = `repos/${repo ?? "{owner}/{repo}"}/actions/runs/${run}`;
-  return attempt ? `${base}/attempts/${attempt}/jobs?per_page=100` : `${base}/jobs?per_page=100`;
+  return attempt !== undefined ? `${base}/attempts/${attempt}/jobs?per_page=100` : `${base}/jobs?per_page=100`;
 }
 
 export function jobLogApiPath(job: number, repo: string | undefined): string {
@@ -96,11 +96,38 @@ function ghApi(path: string): string {
   return r.stdout;
 }
 
-function positiveInt(raw: string | undefined, flag: string): number | undefined {
+/**
+ * Inteiro da flag `--{flag}`, com piso `min`. `--run`, `--attempt` e `--job`
+ * usam piso 1 (#12775): `0` não é id de run/job nem número de tentativa, e
+ * aceitá-lo fazia `--attempt 0` cair na tentativa mais recente (a que o rerun
+ * deixou verde, respondendo "nenhum job com falha") e `--run 0`/`--job 0`
+ * virarem consulta inválida em vez de erro de uso. `--tail` usa piso 0, onde
+ * `0` quer dizer log inteiro.
+ */
+export function intFlag(raw: string | undefined, flag: string, min: 0 | 1): number | undefined {
   if (raw === undefined) return undefined;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0) throw new Error(`--${flag} inválido: ${raw}`);
+  const n = raw.trim() === "" ? Number.NaN : Number(raw);
+  if (!Number.isInteger(n) || n < min) {
+    throw new Error(`--${flag} inválido: ${raw} (esperado inteiro >= ${min})`);
+  }
   return n;
+}
+
+export interface CliNumbers {
+  run?: number;
+  attempt?: number;
+  job?: number;
+  tail: number;
+}
+
+/** Valida as flags numéricas; lança com a mensagem de uso (exit 3 no `main`). */
+export function parseCliNumbers(values: Record<string, string | undefined>): CliNumbers {
+  return {
+    run: intFlag(values.run, "run", 1),
+    attempt: intFlag(values.attempt, "attempt", 1),
+    job: intFlag(values.job, "job", 1),
+    tail: intFlag(values.tail, "tail", 0) ?? 100,
+  };
 }
 
 function main(): number {
@@ -111,10 +138,7 @@ function main(): number {
   const { values } = parseArgs(process.argv.slice(2));
   const repo = values.repo;
   try {
-    run = positiveInt(values.run, "run");
-    attempt = positiveInt(values.attempt, "attempt");
-    jobId = positiveInt(values.job, "job");
-    tail = positiveInt(values.tail, "tail") ?? 100;
+    ({ run, attempt, job: jobId, tail } = parseCliNumbers(values));
   } catch (e) {
     console.error(`[gh-failed-job-logs] ${e instanceof Error ? e.message : e}`);
     return 3;
@@ -136,7 +160,7 @@ function main(): number {
   }
   if (jobs.length === 0) {
     console.error(
-      `[gh-failed-job-logs] run ${run}${attempt ? ` (tentativa ${attempt})` : ""}: nenhum job com falha. ` +
+      `[gh-failed-job-logs] run ${run}${attempt !== undefined ? ` (tentativa ${attempt})` : ""}: nenhum job com falha. ` +
         "Se o vermelho foi numa tentativa anterior, passe --attempt.",
     );
     return 1;
