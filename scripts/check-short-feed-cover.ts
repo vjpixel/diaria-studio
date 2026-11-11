@@ -12,7 +12,9 @@
  *
  * #12100 opção 2 (capa nos primeiros frames do vertical enviado): `--image
  * oar2` baixa o frame automático (`oar2.jpg`) em vez do `sardefault.jpg` e
- * mede se ele caiu na capa. O `oar2` sempre existe; 404 nele é erro (exit 2).
+ * mede se ele caiu na capa. O `oar2` existe em todo Short público e
+ * processado; 404 nele é erro (exit 2: privado, inexistente ou processando),
+ * nunca "sem capa" (o 404 do `sardefault` é exit 1).
  *
  * Uso:
  *   npx tsx scripts/check-short-feed-cover.ts --id VIDEO_ID --cover 04-youtube-short-capa.jpg
@@ -20,9 +22,10 @@
  *   npx tsx scripts/check-short-feed-cover.ts --feed-image sardefault.jpg --cover capa.jpg   (offline)
  *
  * Saída: JSON no stdout (`verdict`, `distance`, `threshold`, `feed_url`).
- * Exit 0 = o feed mostra a capa; 1 = mostra outro frame, ou `sem-capa-vertical`
- * (404 no `sardefault`: o passo manual não foi feito, ou não pegou); 2 = uso
- * errado ou falha ao ler/baixar.
+ * Exit 0 = o feed mostra a capa (com `--image oar2`: o frame automático é a
+ * capa); 1 = mostra outro frame, ou `sem-capa-vertical` (404 no `sardefault`:
+ * o passo manual não foi feito, ou não pegou); 2 = uso errado (inclusive
+ * `--image` fora de sardefault/oar2), falha ao ler/baixar ou 404 no `oar2`.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -39,19 +42,29 @@ const USAGE =
 /** Id de vídeo do YouTube: 11 caracteres de [A-Za-z0-9_-]. */
 export const YOUTUBE_VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 
-/**
- * Baixa o `sardefault.jpg` do Short. `null` = HTTP 404, o Short não tem
- * miniatura vertical própria (#12251) — o corpo que vem com o 404 (no teste
- * de 04/11, ~1 KB gravado pelo curl) nunca entra na comparação como se fosse
- * a imagem do feed. Outro erro HTTP ou resposta que não é imagem lança.
- */
+/** Imagem medida: `sardefault` (aba Shorts, #12251) ou `oar2` (frame automático, #12100 opção 2). */
 export type FeedImageKind = "sardefault" | "oar2";
+
+/** Pure: valor de `--image` → kind; ausente = `sardefault`; inválido → null (o CLI sai com 2). */
+export function parseFeedImageKind(raw: string | undefined): FeedImageKind | null {
+  const v = raw ?? "sardefault";
+  return v === "sardefault" || v === "oar2" ? v : null;
+}
 
 /** URL da imagem medida: `sardefault` (aba Shorts, #12251) ou `oar2` (frame automático, #12100 opção 2). */
 export function feedImageUrl(videoId: string, kind: FeedImageKind): string {
   return kind === "oar2" ? youtubeShortAutoFrameUrl(videoId) : youtubeShortFeedThumbUrl(videoId);
 }
 
+/**
+ * Baixa a imagem do Short escolhida por `kind` (default `sardefault.jpg`).
+ * `null` = HTTP 404, cujo significado depende do tipo: no `sardefault`, o
+ * Short não tem miniatura vertical própria (#12251, exit 1 no CLI); no `oar2`,
+ * o vídeo é privado, inexistente ou ainda processando (exit 2 no CLI). O corpo
+ * que vem com o 404 (no teste de 04/11, ~1 KB gravado pelo curl) nunca entra
+ * na comparação como se fosse a imagem do feed. Outro erro HTTP ou resposta
+ * que não é imagem lança.
+ */
 export async function fetchFeedImage(videoId: string, fetchImpl: typeof fetch = fetch, kind: FeedImageKind = "sardefault"): Promise<Buffer | null> {
   const url = feedImageUrl(videoId, kind);
   // UA de navegador: sem ele a CDN às vezes responde com outra coisa.
@@ -73,17 +86,17 @@ export async function fetchFeedImage(videoId: string, fetchImpl: typeof fetch = 
   return Buffer.from(await res.arrayBuffer());
 }
 
-async function main(): Promise<number> {
-  const { values } = parseArgs(process.argv.slice(2));
+/** CLI; `argv`/`fetchImpl` injetáveis para o teste dos exit codes (offline). */
+export async function main(argv: string[] = process.argv.slice(2), fetchImpl: typeof fetch = fetch): Promise<number> {
+  const { values } = parseArgs(argv);
   const coverPath = values["cover"];
   const id = values["id"]?.trim();
   const feedPath = values["feed-image"];
-  const kindRaw = values["image"] ?? "sardefault";
-  if (kindRaw !== "sardefault" && kindRaw !== "oar2") {
-    console.error(`check-short-feed-cover: --image ${JSON.stringify(kindRaw)} inválido (sardefault ou oar2)\n${USAGE}`);
+  const kind = parseFeedImageKind(values["image"]);
+  if (kind === null) {
+    console.error(`check-short-feed-cover: --image ${JSON.stringify(values["image"])} inválido (sardefault ou oar2)\n${USAGE}`);
     return 2;
   }
-  const kind: FeedImageKind = kindRaw;
   if (!coverPath || (!id && !feedPath) || (id && feedPath)) {
     console.error(USAGE);
     return 2;
@@ -98,9 +111,9 @@ async function main(): Promise<number> {
       return 2;
     }
   }
-  const feed = id ? await fetchFeedImage(id, fetch, kind) : readFileSync(resolve(feedPath!));
+  const feed = id ? await fetchFeedImage(id, fetchImpl, kind) : readFileSync(resolve(feedPath!));
   if (feed === null && kind === "oar2") {
-    // O frame automático sempre existe num Short processado: 404 aqui é vídeo inexistente/privado, nunca "sem capa".
+    // O frame automático existe em todo Short público e processado: 404 aqui é vídeo inexistente/privado/processando, nunca "sem capa".
     console.error(`check-short-feed-cover: ${feedImageUrl(id!, kind)} deu 404 (vídeo inexistente, privado ou ainda processando)`);
     return 2;
   }

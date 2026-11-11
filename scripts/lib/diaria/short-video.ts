@@ -505,7 +505,8 @@ export interface ShortsConfig {
   /**
    * #12100 opção 2 (decisão do editor de 11/11/2026): ms da capa
    * (`04-youtube-short-capa.jpg`) nos primeiros frames do vertical enviado ao
-   * YouTube Shorts, para o frame automático do feed (`oar2.jpg`) cair nela.
+   * YouTube Shorts (arredondado ao frame), para o frame automático do feed
+   * (`oar2.jpg`) cair nela.
    * Arquivo derivado em diretório temporário: o vertical da edição não muda e
    * os outros destinos seguem com ele. `null` = desligado
    * (`publishing.shorts.youtube_first_frame_cover: false`).
@@ -632,15 +633,21 @@ function optionalBool(raw: Record<string, unknown>, key: string, fallback: boole
  * #12100 opção 2: `youtube_first_frame_cover` (boolean, default true) liga a
  * capa no 1º frame do vertical do YouTube; `youtube_first_frame_cover_ms`
  * (inteiro entre 100 e 2000, default 400) diz quanto tempo. Desligada → null.
+ * `_ms` inválido NÃO derruba a rodada (review da PR #12844): a capa no 1º
+ * frame é opcional e o config é lido por todos os destinos, então vira
+ * `[aviso]` e cai no default 400. O boolean inválido segue lançando, como as
+ * outras flags de `publishing.shorts`.
  */
-export function loadYouTubeFirstFrameCoverMs(raw: Record<string, unknown>): number | null {
+export function loadYouTubeFirstFrameCoverMs(raw: Record<string, unknown>, warn: (line: string) => void = (l) => console.error(l)): number | null {
   if (!optionalBool(raw, "youtube_first_frame_cover", true)) return null;
   const ms = raw.youtube_first_frame_cover_ms;
   if (ms === undefined) return SHORT_FIRST_FRAME_COVER_DEFAULT_MS;
   if (typeof ms !== "number" || !Number.isInteger(ms) || ms < SHORT_FIRST_FRAME_COVER_MIN_MS || ms > SHORT_FIRST_FRAME_COVER_MAX_MS) {
-    throw new Error(
-      `[shorts] publishing.shorts.youtube_first_frame_cover_ms precisa ser um inteiro entre ${SHORT_FIRST_FRAME_COVER_MIN_MS} e ${SHORT_FIRST_FRAME_COVER_MAX_MS} (#12100).`,
+    warn(
+      `[aviso] publishing.shorts.youtube_first_frame_cover_ms = ${JSON.stringify(ms)} inválido (inteiro entre ${SHORT_FIRST_FRAME_COVER_MIN_MS} e ` +
+        `${SHORT_FIRST_FRAME_COVER_MAX_MS}) — usa o default ${SHORT_FIRST_FRAME_COVER_DEFAULT_MS} ms (#12100)`,
     );
+    return SHORT_FIRST_FRAME_COVER_DEFAULT_MS;
   }
   return ms;
 }

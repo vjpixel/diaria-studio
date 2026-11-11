@@ -3537,13 +3537,16 @@ export const defaultFirstFrameCoverDeps: FirstFrameCoverDeps = {
 /**
  * #12100 opção 2: o arquivo que sobe para o YouTube Shorts. Com a opção ligada
  * e a capa no disco, o vertical ganha a capa nos primeiros `leadMs`; desligada,
- * sem capa ou com falha do ffmpeg, sobe o vertical original (com `[aviso]` na
- * falha). Loga o que foi feito. Nunca lança.
+ * sem capa (ou capa ilegível, `coverUnreadable`) ou com falha do ffmpeg, sobe o
+ * vertical original (com `[aviso]` na falha). Loga o que foi feito — "arquivo
+ * preparado", nunca "enviado": roda antes do upload. Nunca lança.
  */
 export function youtubeShortUploadFile(input: {
   file: Buffer;
   videoPath: string;
   cover: Buffer | null;
+  /** #12100: motivo da leitura falha da capa (`readShortCover().unreadable`): a capa existe, mas não deu para ler. */
+  coverUnreadable?: string;
   leadMs: number | null;
   log: (line: string) => void;
   deps?: FirstFrameCoverDeps;
@@ -3553,19 +3556,36 @@ export function youtubeShortUploadFile(input: {
     return { file: input.file, firstFrame: null };
   }
   if (!input.cover) {
-    input.log("[aviso] youtube_shorts: sem capa local, o vertical sobe sem a capa no 1º frame (#12100)");
+    input.log(
+      input.coverUnreadable
+        ? `[aviso] youtube_shorts: capa local ilegível (${input.coverUnreadable}), o vertical sobe sem a capa no 1º frame (#12100)`
+        : "[aviso] youtube_shorts: sem capa local, o vertical sobe sem a capa no 1º frame (#12100)",
+    );
     return { file: input.file, firstFrame: null };
   }
-  const r = prepareYouTubeFirstFrameCover(input.deps ?? defaultFirstFrameCoverDeps, { videoPath: input.videoPath, cover: input.cover, leadMs: input.leadMs });
+  const deps = { ...(input.deps ?? defaultFirstFrameCoverDeps), log: input.log };
+  const r = prepareYouTubeFirstFrameCover(deps, { videoPath: input.videoPath, cover: input.cover, leadMs: input.leadMs });
   if (!r.ok) {
     input.log(`[aviso] youtube_shorts: capa no 1º frame não aplicada (${r.error}) — sobe o vertical original (#12100)`);
     return { file: input.file, firstFrame: null };
   }
   input.log(
-    `[ok] youtube_shorts: capa nos primeiros ${r.leadMs} ms (${r.frames} frames a ${r.probe.fpsExpr} fps, ${r.probe.width}x${r.probe.height}) do vertical enviado; ` +
-      `arquivo temporário de ${(r.bytes.length / 1e6).toFixed(1)} MB, o vertical da edição não muda (#12100, não confirmado: medir o oar2.jpg)`,
+    `[ok] youtube_shorts: arquivo preparado com a capa nos primeiros ${r.leadMs} ms (${r.frames} frames a ${r.probe.fpsExpr} fps, ${r.probe.width}x${r.probe.height}); ` +
+      `${(r.bytes.length / 1e6).toFixed(1)} MB em memória, o vertical da edição não muda (#12100, não confirmado: medir o oar2.jpg)`,
   );
   return { file: r.bytes, firstFrame: { ms: r.leadMs } };
+}
+
+/**
+ * #12100 opção 2 (review da PR #12844): o `youtube_shorts` desta rodada prepara
+ * o arquivo com a capa no 1º frame? Só no `publish` e com a credencial do
+ * canal no ambiente. Pure; o CLI chama ANTES de `markShortSending`.
+ */
+export function youtubeShortsPrepareBeforeMarker(
+  item: { destination: string; action?: string },
+  env: Record<string, string | undefined>,
+): boolean {
+  return item.destination === "youtube_shorts" && item.action === "publish" && missingYouTubeCredentials(env).length === 0;
 }
 
 /** URL pública do Short (#11070) — o `youtu.be/{id}` também abre, mas o registro guarda a de Shorts. */
@@ -5202,6 +5222,20 @@ async function main(): Promise<number> {
       continue;
     }
     if (item.action !== "publish" && item.action !== "enqueue") continue;
+    // #12100 opção 2 (review da PR #12844): o encode da capa no 1º frame roda ANTES do
+    // marcador de envio — um processo morto no ffmpeg (até minutos) não deixa o marcador
+    // "pode ter saído" preso — e só com a credencial do canal presente (sem ela,
+    // `publishYouTubeShort` recusa e o encode seria jogado fora).
+    const ytUpload = youtubeShortsPrepareBeforeMarker(item, process.env)
+      ? youtubeShortUploadFile({
+          file,
+          videoPath,
+          cover: shortCover.bytes,
+          coverUnreadable: shortCover.unreadable,
+          leadMs: shortsCfg.youtubeFirstFrameCoverMs,
+          log: (l) => console.error(l),
+        })
+      : null;
     // #11741 (finding P2 da PR #11827): marca "envio em curso" ANTES de publicar.
     // O registro só recebe o destino depois do aceite; sem a marca, a releitura
     // logo após uma interrupção (processo ainda vivo) sairia `nothing-since`.
@@ -5246,8 +5280,8 @@ async function main(): Promise<number> {
           shortCover.bytes,
         );
       } else if (item.destination === "youtube_shorts") {
-        // #12100 opção 2: a capa nos primeiros frames do vertical que vai ao YouTube (arquivo temporário; o da edição não muda).
-        const yt = youtubeShortUploadFile({ file, videoPath, cover: shortCover.bytes, leadMs: shortsCfg.youtubeFirstFrameCoverMs, log: (l) => console.error(l) });
+        // #12100 opção 2: o arquivo foi preparado antes do marcador (acima); sem credencial, sobe o original (e a função recusa).
+        const yt = ytUpload ?? { file, firstFrame: null };
         outcome = await publishYouTubeShort({
           deps: defaultYouTubeUploadDeps,
           env: process.env,
