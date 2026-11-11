@@ -15,8 +15,10 @@
  *     `publish-shorts.ts`) monta e grava o registro a partir de
  *     `_internal/05-video-url.txt` da edição.
  *
- * Registro no KV (`LATEST_VIDEO_KV_KEY`): JSON `{ url, aammdd, updated_at }`,
- * com `url` sempre `https://youtu.be/{id}` (a forma que `05-video-url.txt`
+ * Registro no KV (`LATEST_VIDEO_KV_KEY`): JSON `{ url, aammdd, updated_at,
+ * public_at?, previous? }` (#12801: `public_at` = quando o horizontal agendado
+ * fica público; `previous` = o registro que vigorava antes, servido até lá —
+ * `effectiveLatestVideoRecord`), com `url` sempre `https://youtu.be/{id}` (a forma que `05-video-url.txt`
  * guarda). Registro ausente, ilegível ou com URL fora dessa forma → o
  * redirect cai na lista de vídeos do canal (`LATEST_VIDEO_FALLBACK_URL`),
  * que também mostra o horizontal mais recente no topo: o link da bio nunca
@@ -70,10 +72,37 @@ export interface LatestVideoRecord {
   aammdd: string;
   /** ISO da gravação. */
   updated_at: string;
+  /**
+   * #12801: ISO de quando o horizontal fica público (o `publishAt` do upload
+   * agendado). Ausente = já público (upload na hora, link colado no Studio).
+   * Enquanto não passa, o redirect usa `previous` (ou a lista do canal).
+   */
+  public_at?: string;
+  /**
+   * #12801: o horizontal que o link da bio servia antes deste registro (sem
+   * `previous` aninhado: um nível só). Cobre a janela entre o upload da
+   * noite de D-1 e o `public_at` de D.
+   */
+  previous?: LatestVideoPrevious;
 }
+
+/** #12801: o registro anterior guardado dentro do novo. */
+export type LatestVideoPrevious = Omit<LatestVideoRecord, "previous">;
 
 const YOUTU_BE_RE = /^https:\/\/youtu\.be\/[A-Za-z0-9_-]{11}$/;
 const AAMMDD_RE = /^\d{6}$/;
+
+/** Pure: um registro (sem `previous`) a partir de um objeto já decodificado, ou `null`. */
+function parseRecordFields(v: unknown): LatestVideoPrevious | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const r = v as Record<string, unknown>;
+  if (typeof r.url !== "string" || !YOUTU_BE_RE.test(r.url)) return null;
+  if (typeof r.aammdd !== "string" || !AAMMDD_RE.test(r.aammdd)) return null;
+  const out: LatestVideoPrevious = { url: r.url, aammdd: r.aammdd, updated_at: typeof r.updated_at === "string" ? r.updated_at : "" };
+  // #12801: `public_at` ilegível é descartado (o registro conta como já público, o comportamento de antes).
+  if (typeof r.public_at === "string" && !Number.isNaN(Date.parse(r.public_at))) out.public_at = r.public_at;
+  return out;
+}
 
 /** Pure: o registro lido do KV, ou `null` se ausente/ilegível/fora do formato. Nunca lança. */
 export function parseLatestVideoRecord(raw: string | null | undefined): LatestVideoRecord | null {
@@ -84,11 +113,32 @@ export function parseLatestVideoRecord(raw: string | null | undefined): LatestVi
   } catch {
     return null;
   }
-  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
-  const r = v as Record<string, unknown>;
-  if (typeof r.url !== "string" || !YOUTU_BE_RE.test(r.url)) return null;
-  if (typeof r.aammdd !== "string" || !AAMMDD_RE.test(r.aammdd)) return null;
-  return { url: r.url, aammdd: r.aammdd, updated_at: typeof r.updated_at === "string" ? r.updated_at : "" };
+  const out: LatestVideoRecord | null = parseRecordFields(v);
+  if (!out) return null;
+  // `previous` ilegível some sem invalidar o registro principal.
+  const previous = parseRecordFields((v as Record<string, unknown>).previous);
+  if (previous) out.previous = previous;
+  return out;
+}
+
+/** Pure (#12801): o registro já é público em `now`? Sem `public_at`, sim. */
+export function isLatestVideoPublic(record: LatestVideoPrevious, now: Date): boolean {
+  if (!record.public_at) return true;
+  return Date.parse(record.public_at) <= now.getTime();
+}
+
+/**
+ * Pure (#12801): o registro que o redirect usa em `now`. O horizontal de D é
+ * gravado na noite de D-1 ainda `private` (publica às 06:00 BRT de D); até
+ * o `public_at` passar, o link da bio segue no horizontal anterior
+ * (`previous`) e, sem ele (ou se também não for público), cai na lista do
+ * canal (`null`). Nunca devolve um vídeo privado.
+ */
+export function effectiveLatestVideoRecord(record: LatestVideoRecord | null, now: Date): LatestVideoPrevious | null {
+  if (!record) return null;
+  if (isLatestVideoPublic(record, now)) return record;
+  if (record.previous && isLatestVideoPublic(record.previous, now)) return record.previous;
+  return null;
 }
 
 /**
@@ -108,7 +158,7 @@ export function shouldReplaceLatestVideo(current: LatestVideoRecord | null, next
  * resto da query string fica de fora, pra o link da bio não virar um
  * redirecionador aberto de parâmetros.
  */
-export function buildLatestVideoTarget(reqUrl: URL, record: LatestVideoRecord | null): string {
+export function buildLatestVideoTarget(reqUrl: URL, record: LatestVideoPrevious | null): string {
   const target = new URL(record ? record.url : LATEST_VIDEO_FALLBACK_URL);
   for (const [k, v] of reqUrl.searchParams) {
     if (/^utm_[a-z]+$/.test(k) && v) target.searchParams.set(k, v);
