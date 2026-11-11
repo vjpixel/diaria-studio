@@ -21,6 +21,11 @@
  * consultar o ESP — e é por isso que `--mark-sent` existe, embora nada o
  * force.
  *
+ * O erro inverso também aconteceu (#12739): o ciclo 2609-10 ficou `sent` com
+ * o broadcast Kit 26211180 em rascunho, porque o `--mark-sent` rodou 15s
+ * depois de o rascunho ser criado, sem envio nenhum. Por isso o `--mark-sent`
+ * agora relê o broadcast no Kit antes de gravar (ver `runMarkSent`).
+ *
  * ## #7633 — render trocado de Brevo pra Kit
  *
  * Mesma troca que o #7121 abaixo fez (Beehiiv → Brevo), agora Brevo → Kit, e
@@ -82,8 +87,10 @@
  *
  * Este script NUNCA chama a API de escrita da Beehiiv — só lê `draft.md` +
  * `public-images.json` local e escreve HTML/estado locais. `--mark-sent` só
- * atualiza o JSON de estado local a partir de uma confirmação MANUAL do
- * editor (que já enviou de verdade pela UI) — nunca dispara nada sozinho.
+ * atualiza o JSON de estado local — nunca dispara nada sozinho. Desde o
+ * #12739, com `kitBroadcastId` no state ele RELÊ o broadcast no Kit (GET,
+ * somente leitura) e só grava `sent` se o Kit devolver
+ * `scheduled`/`sending`/`completed`; rascunho recusa (`runMarkSent`).
  *
  * Uso:
  *   npx tsx scripts/send-monthly-apoiadores.ts --cycle 2607-08              # prepara (idempotente)
@@ -105,6 +112,17 @@ import {
 } from "./lib/mensal/monthly-apoiadores-state.ts";
 import { APOIO_SEGMENTS_CANONICAL_KIT } from "./lib/apoio-segments-canonical-kit.ts";
 import { APOIADORES_MENSAL_NIVEIS } from "./lib/mensal/apoiadores-kit-channel.ts";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+import { resolveKitConfig } from "./lib/kit-config.ts";
+import { getBroadcast } from "./lib/kit-client.ts";
+import {
+  confirmKitBroadcastSent,
+  type KitBroadcastSendSnapshot,
+} from "./lib/mensal/apoiadores-kit-sent-confirmation.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * Audiência-alvo do envio extra (decisão 2 do #4482 — só Mantenedor/Patrono,
@@ -120,6 +138,76 @@ export const APOIADORES_TARGET_SEGMENT_NAMES: readonly string[] = APOIO_SEGMENTS
   (s) => s.nivel !== null && APOIADORES_MENSAL_NIVEIS.includes(s.nivel),
 ).map((s) => s.name);
 
+export interface MarkSentDeps {
+  readState: (dir: string) => ApoiadoresState | null;
+  writeState: (dir: string, state: ApoiadoresState) => void;
+  /** Releitura do broadcast no Kit. `null` = sem credencial (`KIT_API_KEY` ausente). */
+  getBroadcast: ((id: number) => Promise<KitBroadcastSendSnapshot>) | null;
+  now: () => Date;
+}
+
+export type MarkSentResult = { action: "written" | "noop"; message: string } | { action: "error"; reason: string };
+
+/**
+ * `--mark-sent` (#12739): com `kitBroadcastId` no state, só grava `sent`
+ * depois de RELER o broadcast no Kit e ver `scheduled`/`sending`/`completed`
+ * (`confirmKitBroadcastSent`). Rascunho, status ausente, releitura que falha ou
+ * credencial ausente recusam sem tocar o state: o ciclo 2609-10 ficou `sent`
+ * com o broadcast 26211180 em rascunho porque esta confirmação era só a
+ * palavra de quem rodava o comando. `sentAt` vem do `send_at` relido quando o
+ * Kit o devolve (horário real do envio/agendamento), senão do relógio.
+ *
+ * Sem `kitBroadcastId` (state legado Beehiiv/Brevo, ex. 2607-08 enviado pela UI
+ * da Brevo, #7655) não há broadcast Kit para reler: segue a confirmação manual
+ * de antes, avisando que ela não foi conferida no ESP.
+ */
+export async function runMarkSent(opts: { cycle: string; monthlyDir: string; deps: MarkSentDeps }): Promise<MarkSentResult> {
+  const { cycle, monthlyDir, deps } = opts;
+  const decision = decideMarkSentAction(deps.readState(monthlyDir));
+  if (decision.action === "error") return { action: "error", reason: decision.reason };
+  if (decision.action === "noop") return { action: "noop", message: decision.reason };
+
+  const broadcastId = decision.state.kitBroadcastId;
+  let sentAt = deps.now().toISOString();
+  let note: string;
+  if (broadcastId != null) {
+    if (!deps.getBroadcast) {
+      return {
+        action: "error",
+        reason:
+          `o ciclo ${cycle} tem o broadcast Kit id=${broadcastId}, e marcar 'sent' exige reler o broadcast no Kit ` +
+          "(#12739), mas KIT_API_KEY não está no ambiente. Nada gravado.",
+      };
+    }
+    let live: KitBroadcastSendSnapshot;
+    try {
+      live = await deps.getBroadcast(broadcastId);
+    } catch (e) {
+      return {
+        action: "error",
+        reason:
+          `a releitura do broadcast Kit id=${broadcastId} falhou (${(e as Error).message}) — sem ela não há como ` +
+          "saber se o e-mail saiu. Nada gravado (#12739).",
+      };
+    }
+    const confirmation = confirmKitBroadcastSent(live, broadcastId);
+    if (!confirmation.ok) return { action: "error", reason: `${confirmation.reason} Nada gravado.` };
+    if (confirmation.sendAt) sentAt = confirmation.sendAt;
+    note = ` (conferido no Kit: broadcast ${broadcastId} "${confirmation.status}")`;
+  } else {
+    note =
+      " (sem broadcast Kit no state — confirmação MANUAL, não conferida no ESP; confira na API do ESP antes de " +
+      "afirmar que saiu, #7655)";
+  }
+  // #4572/#4593 self-review: extraído pra buildSentState (pura, testada em
+  // monthly-apoiadores-state.test.ts) em vez de montar o objeto ad hoc aqui
+  // — preserva brevoCampaignId (e qualquer campo futuro) por construção,
+  // não por disciplina de manter o spread atualizado a cada novo campo.
+  const updated: ApoiadoresState = buildSentState(decision.state, sentAt);
+  deps.writeState(monthlyDir, updated);
+  return { action: "written", message: `Registrado: ciclo ${cycle} marcado como ENVIADO em ${updated.sentAt}${note}.` };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const cycle = requireMonthlyCycleArg(argv);
@@ -127,28 +215,29 @@ async function main(): Promise<void> {
   const force = hasFlag(argv, "force");
   const markSent = hasFlag(argv, "mark-sent");
 
-  const state = readApoiadoresState(monthlyDir);
-
   if (markSent) {
-    const decision = decideMarkSentAction(state);
-    if (decision.action === "error") {
-      console.error(`[send-monthly-apoiadores] ${decision.reason}`);
+    loadProjectEnv(ROOT);
+    const kitConfigResult = resolveKitConfig();
+    const result = await runMarkSent({
+      cycle,
+      monthlyDir,
+      deps: {
+        readState: readApoiadoresState,
+        writeState: writeApoiadoresState,
+        getBroadcast: kitConfigResult.ok ? (id) => getBroadcast(id, kitConfigResult.config) : null,
+        now: () => new Date(),
+      },
+    });
+    if (result.action === "error") {
+      console.error(`[send-monthly-apoiadores] ${result.reason}`);
       process.exit(1);
       return;
     }
-    if (decision.action === "noop") {
-      console.log(`[send-monthly-apoiadores] ${decision.reason}`);
-      return;
-    }
-    // #4572/#4593 self-review: extraído pra buildSentState (pura, testada em
-    // monthly-apoiadores-state.test.ts) em vez de montar o objeto ad hoc aqui
-    // — preserva brevoCampaignId (e qualquer campo futuro) por construção,
-    // não por disciplina de manter o spread atualizado a cada novo campo.
-    const updated: ApoiadoresState = buildSentState(decision.state, new Date().toISOString());
-    writeApoiadoresState(monthlyDir, updated);
-    console.log(`[send-monthly-apoiadores] Registrado: ciclo ${cycle} marcado como ENVIADO em ${updated.sentAt}.`);
+    console.log(`[send-monthly-apoiadores] ${result.message}`);
     return;
   }
+
+  const state = readApoiadoresState(monthlyDir);
 
   const decision = decidePrepareAction(state, force);
   if (decision.action === "blocked") {

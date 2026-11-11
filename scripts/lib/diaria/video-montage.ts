@@ -1412,7 +1412,11 @@ export interface BlocksFile {
   vocabulary?: VocabRule[];
   /** Blocos que seguram `FECHO_HOLD_S` depois da última palavra. Default ["fecho"]. */
   holdBlocks?: BlockKey[];
-  /** Duração-alvo da vertical nesta edição, em segundos (#11757); ausente = `VERTICAL_TARGET_S` (85). */
+  /**
+   * Duração-alvo da vertical nesta edição, em segundos de fala (#11757); ausente
+   * = `VERTICAL_TARGET_S` (75, #12694). Só reduz o alvo: acima de 75 o valor é
+   * limitado a 75 com aviso (`effectiveVerticalTargetS`), sem falhar o parse.
+   */
   verticalTargetS?: number;
   /**
    * Título em texto na abertura das verticais (#11756): sobrepõe o título do D1
@@ -2820,18 +2824,18 @@ export function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
-/** `file://localhost/G:/Meu%20Drive/...` (o formato que o Premiere importou na 261027). */
+/** `file://localhost/I:/Meu%20Drive/...` (o formato que o Premiere importou na 261027). */
 export function pathUrl(path: string): string {
   const p = path.replace(/\\/g, "/").replace(/^\/+/, "");
   return "file://localhost/" + p.split("/").map((seg) => encodeURIComponent(seg).replace(/%3A/gi, ":")).join("/");
 }
 
 /**
- * #12707: a pasta YouTube como a máquina que abre o XML no Premiere a vê.
+ * #12707: a pasta de vídeo como a máquina que abre o XML no Premiere a vê.
  * `from` = a raiz no Neo (o prefixo de todo caminho do XML: bruto, áudio
  * tratado, PNG do título, vinheta em `_marca/`, card de CTA); `to` = a mesma
  * pasta no Mac (`/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu
- * Drive/…/YouTube`). Um mapa só para todos os `<file>`: o título e o card
+ * Drive/diaria-studio-video`, pelo symlink `/Users/Shared/diaria-studio-video`, #12578). Um mapa só para todos os `<file>`: o título e o card
  * chegavam offline no Mac porque o XML gravava `G:/` para todos e só o bruto
  * era revinculado à mão.
  */
@@ -2844,7 +2848,7 @@ function trimRoot(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
-/** O caminho como o Premiere o abre: sob `from` troca a raiz por `to` (comparação sem caixa, `G:` = `g:`); fora dela, igual. */
+/** O caminho como o Premiere o abre: sob `from` troca a raiz por `to` (comparação sem caixa, `I:` = `i:`); fora dela, igual. */
 export function premierePath(path: string, map: PremierePathMap | null | undefined): string {
   const p = path.replace(/\\/g, "/");
   if (!map) return p;
@@ -2866,7 +2870,7 @@ export function unmappedPremierePaths(paths: readonly string[], map: PremierePat
 
 /**
  * `--premiere-root` (vence) ou `publishing.video.premiere_root` do config:
- * a pasta YouTube na máquina do Premiere. `off` no flag = o caminho do Neo
+ * a pasta de vídeo na máquina do Premiere. `off` no flag = o caminho do Neo
  * mesmo com o config. Precisa ser absoluta (`/…` ou `X:/…`); vazia ou
  * ausente = sem tradução (o XML de sempre, com o caminho do Neo).
  */
@@ -3456,7 +3460,7 @@ export function buildXmeml(
     /**
      * #12707: a raiz do Neo trocada pela da máquina do Premiere em TODO
      * `pathurl` (bruto, áudio tratado, PNG do título, vinheta, card de CTA).
-     * Ausente = o caminho do Neo (`G:/…`), como sempre.
+     * Ausente = o caminho do Neo (`I:/…`), como sempre.
      */
     premierePaths?: PremierePathMap | null;
   } = {},

@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Mon, 09 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Wed, 11 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Nubank demite time antifraude e põe IA no lugar</title>
+      <link>https://diar.ia.br/p/nubank-demite-time-antifraude-e-poe-ia-no-lugar</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/nubank-demite-time-antifraude-e-poe-ia-no-lugar</guid>
+      <pubDate>Wed, 11 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Anthropic lança Fable 5.2 perto da bolsa | Você filmaria sua faxina para treinar um robô?</description>
+    </item>
     <item>
       <title>Nvidia: CEO admite caso com suposta espiã</title>
       <link>https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego</guid>
       <pubDate>Fri, 28 Aug 2026 09:00:00 GMT</pubDate>
       <description>OpenAI amplia presença oficial no Brasil | GLM-5.3-Flash: modelo aberto chega perto do Opus</description>
-    </item>
-    <item>
-      <title>Seu chatbot pode ter lido propaganda israelense</title>
-      <link>https://diar.ia.br/p/seu-chatbot-pode-ter-lido-propaganda-israelense</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/seu-chatbot-pode-ter-lido-propaganda-israelense</guid>
-      <pubDate>Thu, 27 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Agora o ChatGPT faz login nos seus sites | OpenAI lança chip Jalapeño para rivalizar Nvidia</description>
     </item>
   </channel>
 </rss>

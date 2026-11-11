@@ -10,7 +10,7 @@ import { loadDivulgacaoGrid, planDivulgacao } from "./divulgacao-slot-planner.ts
  *
  *   | canal             | formato                                  | via |
  *   |-------------------|------------------------------------------|-----|
- *   | `linkedin_pagina` | imagem (capa 4:5) + texto                | `dispatchEntry` (`publish-linkedin.ts`), Worker, `allowImmediateFallback: false` e SEM URL do Make (o `make_now` falha em vez de publicar na hora) |
+ *   | `linkedin_pagina` | documento PDF dos 5 slides + texto (#12584; fallback carrossel → capa 4:5) | `dispatchEntry` (`publish-linkedin.ts`), Worker, `allowImmediateFallback: false` e SEM URL do Make (o `make_now` falha em vez de publicar na hora) |
  *   | `facebook`        | imagem (capa 4:5) + texto                | `publishFacebookCarouselByUrl` (`publish-facebook.ts`), agendamento nativo da Graph API, 1 foto |
  *   | `instagram`       | carrossel de 5 (capa + 3 parágrafos + CTA) | `postToWorkerQueue` com `image_urls` (#6005 Parte B) |
  *   | `threads`         | carrossel de 5                           | `postToWorkerQueue` com `image_urls` (#6095) |
@@ -82,7 +82,8 @@ import { loadDivulgacaoGrid, planDivulgacao } from "./divulgacao-slot-planner.ts
  * Uso:
  *   npx tsx scripts/publish-retrospectiva-social.ts --cycle 2609-10 \
  *     [--skip linkedin,facebook,instagram:d2,...] [--force canal[:dN][,...]] [--old-cancelled facebook:d1,x] \
- *     [--replace-linkedin-single] [--base-date AAAA-MM-DD] [--at ISO] [--dry-run]
+ *     [--replace-linkedin-single] [--base-date AAAA-MM-DD] [--at ISO] [--dry-run] \
+ *     [--linkedin-format document|image]   # #12584: default documento PDF; `image` = capa única
  *
  * Exit: 0 = ok; 1 = post falhou, reconciliação não rodou, ou texto/agenda
  * recusados (nada despachado); 2 = uso.
@@ -101,7 +102,20 @@ import {
   loadResolvedFacebookPages,
   resolvePostPage,
 } from "./lib/facebook-pages.ts"; // #10458
-import { dispatchEntry, type DispatchContext } from "./publish-linkedin.ts";
+import {
+  alarmLinkedInDocumentFallbacks,
+  defaultLinkedInPdfUploader,
+  dispatchEntry,
+  type DispatchContext,
+  type DispatchInput,
+  type LinkedInDocumentPlan,
+  type LinkedInPdfUploaderConfig,
+} from "./publish-linkedin.ts";
+import {
+  prepareLinkedInCarouselDocument,
+  retrospectivaLinkedInIdempotencyKey,
+  type LinkedInPdfUploader,
+} from "./lib/linkedin-daily-document.ts"; // #12584 item 5 — documento PDF na página LinkedIn
 import { verifyWorkerDispatch, formatVerifySummary } from "./verify-social-worker-dispatch.ts";
 import { WORKER_DESTAQUE_RE } from "./publish-artigo-especial-linkedin.ts";
 import { TWITTER_IMAGE_LIMIT } from "./prep-twitter-posts.ts";
@@ -193,6 +207,9 @@ export interface SocialDispatchInput {
   text: string;
   /** Ordem do formato da rede (ver `imageUrlsFor`): 1 (capa), 5 (carrossel). */
   imageUrls: string[];
+  /** #12584 item 5 — os 5 slides da história (capa → p1 → p2 → p3 → CTA), em
+   *  toda rede: a página LinkedIn os encaderna no documento PDF. */
+  carouselUrls: string[];
   scheduledAt: string;
 }
 
@@ -410,6 +427,61 @@ export function imageUrlsFor(channel: RetrospectivaPostChannel, cards: Retrospec
   if (channel === "instagram" || channel === "threads") return carousel;
   if (channel === "x") return carousel.slice(0, -1).slice(0, TWITTER_IMAGE_LIMIT); // #8202: sem o CTA
   return [cards.cover];
+}
+
+/**
+ * #12584 item 5 — `DispatchInput` da página LinkedIn para uma história: o
+ * documento PDF dos 5 slides é o formato padrão (o mesmo da diária), com
+ * fallback documento → carrossel → capa única no `dispatchEntry`. Faltou
+ * slide (ou slide sem URL https, ex. `--dry-run`) = capa única, motivo
+ * `carousel_incomplete` no store; `--linkedin-format image` = `opt_out`.
+ * Chave idempotente por história (`retrospectivaLinkedInIdempotencyKey`): as
+ * 3 usam o mesmo `destaque`, e sem a história na chave cairiam numa entry só.
+ * `allowImmediateFallback: false` como antes: nunca publica fora da agenda.
+ */
+export function retrospectivaLinkedInDispatchInput(
+  i: SocialDispatchInput,
+  o: {
+    cycle: string;
+    cycleDir: string;
+    title: string | null | undefined;
+    documentOptOut: boolean;
+    upload: LinkedInPdfUploader;
+    buildPdf?: (urls: readonly string[]) => Promise<Uint8Array>;
+  },
+): DispatchInput {
+  const slides = i.carouselUrls;
+  const complete = slides.length === RETROSPECTIVA_CARD_SLOTS.length && slides.every((u) => /^https:\/\//.test(u));
+  const linkedInDocument: LinkedInDocumentPlan = o.documentOptOut
+    ? { status: "skip", reason: "opt_out" }
+    : !complete
+      ? { status: "skip", reason: "carousel_incomplete" }
+      : {
+          status: "ready",
+          carouselImageUrls: [...slides],
+          prepareDocument: () =>
+            prepareLinkedInCarouselDocument({
+              pdfPath: resolve(o.cycleDir, "_internal", `divulgacao-linkedin-${i.historia}-carousel.pdf`),
+              // `^img-[^:]+$` do Worker de imagens; md5 = URL nova a cada PDF regenerado.
+              kvKeyFor: (md5) => `img-${o.cycle}-linkedin-${i.historia}-carousel-${md5.slice(0, 8)}.pdf`,
+              carouselImageUrls: slides,
+              title: o.title?.trim() || `Retrospectiva diar.ia.br ${o.cycle} — ${i.historia}`,
+              upload: o.upload,
+              buildPdf: o.buildPdf,
+            }),
+        };
+  return {
+    destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
+    subtype: "main",
+    text: i.text,
+    imageUrl: i.imageUrls[0] ?? null,
+    scheduledAt: i.scheduledAt,
+    webhookTarget: "diaria",
+    action: "post",
+    allowImmediateFallback: false,
+    linkedInDocument,
+    idempotencyKey: retrospectivaLinkedInIdempotencyKey(o.cycle, i.historia),
+  };
 }
 
 /**
@@ -768,6 +840,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       historia,
       text: unitText(u),
       imageUrls: imageUrlsFor(channel, images[historia]!.cards),
+      carouselUrls: RETROSPECTIVA_CARD_SLOTS.map((s) => images[historia]!.cards[s]),
       scheduledAt: schedule[historia][channel],
     };
     let entry: PostEntry;
@@ -1020,6 +1093,12 @@ async function main(): Promise<void> {
   const cycle = requireMonthlyCycleArg(argv);
   const { values, flags } = parseArgs(argv);
   const dryRun = flags.has("dry-run");
+  // #12584 item 5 — documento PDF é o padrão da página LinkedIn; `image` é o opt-out (capa única).
+  const linkedInFormatArg = values["linkedin-format"] ?? "document";
+  if (linkedInFormatArg !== "document" && linkedInFormatArg !== "image") {
+    throw new Error(`--linkedin-format deve ser "document" (default) ou "image" (recebido: "${linkedInFormatArg}").`);
+  }
+  const documentOptOut = linkedInFormatArg === "image";
   const cycleDir = monthlyDir(cycle);
 
   let skip: Set<string>;
@@ -1206,16 +1285,13 @@ async function main(): Promise<void> {
           rootDir: ROOT,
         };
         return dispatchEntry(
-          {
-            destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
-            subtype: "main",
-            text: i.text,
-            imageUrl: i.imageUrls[0] ?? null,
-            scheduledAt: i.scheduledAt,
-            webhookTarget: "diaria",
-            action: "post",
-            allowImmediateFallback: false,
-          },
+          retrospectivaLinkedInDispatchInput(i, {
+            cycle,
+            cycleDir,
+            title: titles[i.historia],
+            documentOptOut,
+            upload: defaultLinkedInPdfUploader(config as LinkedInPdfUploaderConfig),
+          }),
           ctx,
         );
       },
@@ -1307,6 +1383,14 @@ async function main(): Promise<void> {
       },
       ROOT,
     );
+  }
+  // #12584 item 5 (#12372 item 2) — documento tentado e não saiu: alarme ao editor.
+  if (!dryRun) {
+    const linkedinEntries = r.results.flatMap((x) => (x.action === "dispatched" && x.channel === "linkedin_pagina" ? [{ ...x.entry, destaque: x.historia }] : []));
+    await alarmLinkedInDocumentFallbacks(linkedinEntries, cycle, undefined, {
+      label: "Retrospectiva",
+      store: "_internal/divulgacao-social-d{N}-published.json",
+    });
   }
   if (r.legacyLinkedin.action !== "none") {
     logEvent(

@@ -408,8 +408,10 @@ export function publicPostCtaProblems(
  *     `sent` — mandar com filtro errado é o pior caso do canal, #6126).
  *   - sem `kitBroadcastId` (state legado ou só `draft_prepared`): `sent`
  *     (`--mark-sent` do editor) → `done`; senão `null` (pendente).
- *   - `kitBroadcastId` com audiência confirmada (`true`) → `done`, rascunho
- *     ou agendado.
+ *   - `kitBroadcastId` com audiência confirmada (`true`) → `done` se o state
+ *     está `sent` (agendado/enviado, conferido no Kit desde o #12739); em
+ *     rascunho (`draft_prepared`) → `pending` com o motivo (#12739 — antes
+ *     virava `done`, e o 2609-10 ficou `done` sem envio).
  *   - `kitBroadcastId` com `kitAudienceVerified: null` → `failed`, MESMO com
  *     `status: "sent"` (agendado): "não confirmável" não é "ok" (mesma regra
  *     do canal email do Artigo Especial). Depois de conferir a audiência no
@@ -440,7 +442,21 @@ export function deriveEmailChannelState(apoiadores: ApoiadoresState | null): Cha
   // `sent` mesmo quando a releitura falhou na rede (`kitAudienceVerified:
   // null`), e um broadcast que vai disparar sozinho sem filtro conferido é
   // justamente o pior caso do canal (#6126). Achado do review do PR #9475.
-  if (apoiadores.kitAudienceVerified === true) return { status: "done", attemptedAt, url: null, reason: null };
+  if (apoiadores.kitAudienceVerified === true) {
+    // #12739: `done` só com envio registrado (`sent`, que desde o #12739 vem da
+    // releitura do Kit). Rascunho é `pending` explícito, não `done`: no ciclo
+    // 2609-10 o rascunho 26211180 nunca saiu e o canal dizia `done`. Gravado
+    // (e não `null`) pra sobrescrever um `done` antigo no `--sync-email`.
+    if (apoiadores.status === "sent") return { status: "done", attemptedAt, url: null, reason: null };
+    return {
+      status: "pending",
+      attemptedAt,
+      url: null,
+      reason:
+        `broadcast Kit ${id} criado como RASCUNHO, sem envio registrado — envie/agende pelo painel do Kit e rode ` +
+        "'send-monthly-apoiadores.ts --mark-sent' (relê o Kit) e depois '--sync-email'.",
+    };
+  }
   return {
     status: "failed",
     attemptedAt,

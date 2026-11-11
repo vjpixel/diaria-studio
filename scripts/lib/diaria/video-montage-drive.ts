@@ -1,7 +1,7 @@
 /**
  * video-montage-drive.ts (#11639, #11640, #11641) — a montagem do vídeo fora do
- * Neo: sem o Drive for desktop (`G:`), a pasta da edição
- * (`Mentoria Fluxo VTSD/YouTube/{AAMMDD}/`) é lida e escrita pela API do Drive.
+ * Neo: sem o Drive for desktop (`I:`, conta diaria.editor, #12578), a pasta da
+ * edição (`diaria-studio-video/{AAMMDD}/`) é lida e escrita pela API do Drive.
  *
  * - #11639: o bruto (e o áudio separado do `--from-audio`, e o export do
  *   `review-final`) é baixado para um cache em DISCO (`~/.cache/...`, nunca o
@@ -11,7 +11,7 @@
  *   `{arquivo}.drive.json`), nunca só pelo nome.
  * - #11640: os arquivos que o comando gravou no out dir sobem para a pasta da
  *   edição (nunca `Final/`), atualizando pelo id o arquivo de mesmo nome.
- * - #11641: o XML grava o caminho do bruto no NEO (`G:/Meu Drive/...`), não o
+ * - #11641: o XML grava o caminho do bruto no NEO (`I:/Meu Drive/...`), não o
  *   do cache local, para o Premiere abrir com a mídia online.
  *
  * Funções puras (testadas) + IO com `driveFetch` injetável. Auth em produção:
@@ -30,8 +30,15 @@ import { pickRawSource } from "./video-montage.ts";
 
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
-/** A pasta YouTube do Drive no Neo (Drive for desktop). Fonte única, reexportada pelo `video-montagem.ts`. */
-export const DEFAULT_DRIVE_ROOT = "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube";
+/**
+ * A pasta de vídeo da diária no Neo: `diaria-studio-video`, da conta
+ * diaria.editor, que o Drive for desktop monta em `I:`. Até a virada da
+ * #12578 era `G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube`, da vjpixel. Fonte única,
+ * reexportada pelo `video-montagem.ts`. A letra vem da ordem em que as contas
+ * entraram no Drive for desktop: se mudar, trocar aqui e em
+ * `publishing.video.vinheta_logo.path`.
+ */
+export const DEFAULT_DRIVE_ROOT = "I:/Meu Drive/diaria-studio-video";
 
 export interface MontageDriveDeps {
   /** Chamada autenticada COM retry de transientes (`gFetchRetry`): listagem, metadado, download, sessão de upload. */
@@ -158,7 +165,7 @@ export function spaceShortfall(free: number | null, size: number | null): number
  * - `xmlMediaRoot` explícito (`--xml-media-root`) → `{raiz}/{AAMMDD}/{nome do arquivo}` (`root`);
  * - modo API com um bruto local fora do cache (`--source`) → a raiz do Neo com o
  *   nome do arquivo, como premissa (`api-guess`): o caminho de leitura é desta máquina;
- * - senão (o Neo lendo de `G:`) → o próprio caminho de leitura (`source`).
+ * - senão (o Neo lendo de `I:`) → o próprio caminho de leitura (`source`).
  *
  * A raiz é `xmlMediaRoot`, senão `driveRoot` (#11653: a raiz do Drive no Neo
  * passada por `--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT` no modo local), senão
@@ -255,11 +262,11 @@ export function freeBytes(dir: string): number | null {
 /**
  * Como esta execução chega na pasta da edição (#11639): `local` (Drive for
  * desktop, o Neo) ou `api` (o 300). `--from-drive` força a API; `--no-drive-api`
- * a desliga. Sem flag, decide a RAIZ (a pasta YouTube), nunca a pasta da
- * edição: no Neo com `G:` montado e `{AAMMDD}/` ainda não sincronizada o modo
+ * a desliga. Sem flag, decide a RAIZ (a pasta de vídeo), nunca a pasta da
+ * edição: no Neo com `I:` montado e `{AAMMDD}/` ainda não sincronizada o modo
  * continua local (o `transcribe` para dizendo isso), em vez de baixar 7 GB pela
  * API em silêncio. `--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT` explícito também é
- * local (a raiz foi pedida). Só a raiz padrão ausente (esta máquina não tem `G:`)
+ * local (a raiz foi pedida). Só a raiz padrão ausente (esta máquina não tem `I:`)
  * vira api.
  */
 export function driveModeFor(o: { driveRootExists: boolean; fromDrive: boolean; noDriveApi: boolean; explicitRoot: boolean }): "local" | "api" {
@@ -397,11 +404,11 @@ export async function listChildren(deps: MontageDriveDeps, folderId: string, fil
 /** Pasta da edição ausente ou duplicada no Drive: erro de conteúdo, não de credencial. */
 export class EditionFolderError extends Error {}
 
-/** A pasta `{AAMMDD}/` dentro da pasta YouTube. Nenhuma ou mais de uma é erro (nunca escolhe sozinho). */
+/** A pasta `{AAMMDD}/` dentro da pasta de vídeo. Nenhuma ou mais de uma é erro (nunca escolhe sozinho). */
 export async function findEditionFolder(deps: MontageDriveDeps, rootFolderId: string, edition: string): Promise<DriveEntry> {
   const found = await listChildren(deps, rootFolderId, { name: edition, foldersOnly: true });
   if (found.length === 0) {
-    throw new EditionFolderError(`pasta ${edition}/ não encontrada no Drive (pasta YouTube ${rootFolderId}): o bruto foi enviado? (#11639)`);
+    throw new EditionFolderError(`pasta ${edition}/ não encontrada no Drive (pasta de vídeo ${rootFolderId}): o bruto foi enviado? Desde a #12578 é a diaria-studio-video da diaria.editor, não a pasta antiga da vjpixel (#11639)`);
   }
   if (found.length > 1) throw new EditionFolderError(`${found.length} pastas ${edition}/ no Drive (${found.map((f) => f.id).join(", ")}): junte ou renomeie`);
   return found[0];
@@ -626,7 +633,7 @@ export function finalFolders(children: DriveEntry[]): DriveEntry[] {
   return children.filter((c) => c.mimeType === FOLDER_MIME && isFinalFolderName(c.name));
 }
 
-/** `publishing.youtube.drive_folder_id` do `platform.config.json` (a pasta YouTube). */
+/** `publishing.youtube.drive_folder_id` do `platform.config.json` (a pasta de vídeo). */
 export function youtubeFolderIdFrom(config: unknown): string | null {
   const id = (config as { publishing?: { youtube?: { drive_folder_id?: unknown } } })?.publishing?.youtube?.drive_folder_id;
   return typeof id === "string" && id.trim() ? id.trim() : null;

@@ -323,6 +323,8 @@ export function computeDrift(
   // não converter — não é drift, é o estado declarado.
   for (const e of emitters) {
     if (e.status === "aposentado") continue;
+    // #12786: link que leva para fora do cadastro (bio → YouTube) não converte por definição.
+    if (e.noSignupExpected) continue;
     if (!((seen.get(e.source.toLowerCase()) ?? 0) > 0)) {
       out.push({
         kind: "sem_conversao",

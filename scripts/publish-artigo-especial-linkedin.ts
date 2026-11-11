@@ -381,6 +381,12 @@ export async function runArtigoEspecialLinkedinDispatch(
       scheduledAt: target === "perfil" ? (scheduledAtPerfil ?? scheduledAt) : scheduledAt,
       webhookTarget: targetToWebhook[target],
       action: "post",
+      // #12584 item 5 — o documento PDF é o padrão do LinkedIn, mas o Artigo
+      // Especial não gera carrossel (a arte é o og:image): segue imagem única
+      // e o store registra `format: single_image` com o motivo. Sem chave
+      // idempotente (`null`), como antes: o comportamento da fila não muda.
+      linkedInDocument: { status: "skip", reason: "no_carousel" },
+      idempotencyKey: null,
     };
 
     if (dryRun) {

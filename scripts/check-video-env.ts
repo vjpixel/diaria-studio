@@ -22,8 +22,8 @@
  * Python com faster-whisper (o mesmo que o `video-montagem.ts` usaria,
  * `resolveVideoPython`) decodificando um áudio de teste; o modelo
  * `large-v3-turbo` carregando offline; o acesso à pasta da edição pelo mesmo
- * critério de modo do script (Drive for desktop em `G:` = modo local, com a
- * pasta `{AAMMDD}/` sincronizada; sem `G:` = modo API, com OAuth, a pasta da
+ * critério de modo do script (Drive for desktop em `I:` = modo local, com a
+ * pasta `{AAMMDD}/` sincronizada; sem `I:` = modo API, com OAuth, a pasta da
  * edição e permissão de escrita nela); e, só no modo API, o espaço no disco do
  * cache (3x o bruto da edição, descontado o bruto já baixado; 25 GB sem bruto
  * conhecido). Só lê: não cria pasta nem baixa nada. Exit 0 = a montagem roda
@@ -196,17 +196,17 @@ async function probeDrive(edition: string | undefined, driveRootFlag?: string): 
   } catch (e) {
     return { mode, bruto: null, probe: { ok: false, detail: `platform.config.json ilegível: ${(e as Error).message}`, fix: "corrigir o platform.config.json" } };
   }
-  if (!rootId) return { mode, bruto: null, probe: { ok: false, detail: "sem G: e sem publishing.youtube.drive_folder_id", fix: "preencher publishing.youtube.drive_folder_id no platform.config.json" } };
+  if (!rootId) return { mode, bruto: null, probe: { ok: false, detail: "sem I: e sem publishing.youtube.drive_folder_id", fix: "preencher publishing.youtube.drive_folder_id no platform.config.json" } };
   const deps: MontageDriveDeps = { driveFetch: (url, init) => gFetchRetry(url, init ?? {}) };
   try {
     const res = await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(rootId)}?fields=id,name&supportsAllDrives=true`, { signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) return { mode, bruto: null, probe: { ok: false, detail: `API do Drive: pasta YouTube ${rootId} respondeu ${res.status}` } };
-    if (!edition) return { mode, bruto: null, probe: { ok: true, detail: `API do Drive, modo API (pasta YouTube ${rootId})` } };
+    if (!res.ok) return { mode, bruto: null, probe: { ok: false, detail: `API do Drive: pasta de vídeo ${rootId} respondeu ${res.status}` } };
+    if (!edition) return { mode, bruto: null, probe: { ok: true, detail: `API do Drive, modo API (pasta de vídeo ${rootId})` } };
     const folder = await findEditionFolder(deps, rootId, edition);
     const capRes = await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(folder.id)}?fields=capabilities(canAddChildren,canEdit)&supportsAllDrives=true`, { signal: AbortSignal.timeout(30_000) });
     const caps = capRes.ok ? ((await capRes.json()) as { capabilities?: { canAddChildren?: boolean } }).capabilities : undefined;
     if (caps && caps.canAddChildren === false) {
-      return { mode, bruto: null, probe: { ok: false, detail: `a conta OAuth não pode gravar em ${edition}/ (${folder.id})`, fix: "dar permissão de edição na pasta YouTube à conta OAuth do projeto (as saídas sobem para lá)" } };
+      return { mode, bruto: null, probe: { ok: false, detail: `a conta OAuth não pode gravar em ${edition}/ (${folder.id})`, fix: "dar permissão de edição na pasta de vídeo (diaria-studio-video) à conta OAuth do projeto (as saídas sobem para lá)" } };
     }
     const writeNote = caps ? "" : ` (permissão de escrita não conferida: HTTP ${capRes.status})`;
     const raw = pickDriveBruto(await listChildren(deps, folder.id));
@@ -214,7 +214,7 @@ async function probeDrive(edition: string | undefined, driveRootFlag?: string): 
     const bytes = parseDriveSize(raw.pick.size);
     return { mode, bruto: { name: raw.pick.name, bytes }, probe: { ok: true, detail: `API do Drive, modo API; bruto ${raw.pick.name} (${((bytes ?? 0) / 1e9).toFixed(2)} GB)${writeNote}` } };
   } catch (e) {
-    if (e instanceof EditionFolderError) return { mode, bruto: null, probe: { ok: false, detail: e.message, fix: `subir o bruto para a pasta ${edition}/ da pasta YouTube no Drive (uma pasta só com esse nome)` } };
+    if (e instanceof EditionFolderError) return { mode, bruto: null, probe: { ok: false, detail: e.message, fix: `subir o bruto para a pasta ${edition}/ da diaria-studio-video, conta diaria.editor (uma pasta só com esse nome)` } };
     return { mode, bruto: null, probe: { ok: false, detail: `API do Drive: ${(e as Error).message}` } };
   }
 }

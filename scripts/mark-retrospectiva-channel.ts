@@ -112,7 +112,7 @@ export function runMarkRetrospectivaChannel(o: MarkRetrospectivaChannelOptions):
 }
 
 export type SyncEmailResult =
-  | { action: "written"; status: "done" | "failed"; reason: string | null }
+  | { action: "written"; status: "done" | "failed" | "pending"; reason: string | null }
   | { action: "kept-manual-done" }
   | { action: "nothing" };
 
@@ -137,7 +137,7 @@ export function runSyncEmailChannel(cycle: string, cycleDir: string): SyncEmailR
     return { action: "kept-manual-done" };
   }
   writeRetrospectivaDivulgacaoState(statePath, withChannelState(state, "email", derived));
-  return { action: "written", status: derived.status === "done" ? "done" : "failed", reason: derived.reason };
+  return { action: "written", status: derived.status, reason: derived.reason };
 }
 
 function main(): void {

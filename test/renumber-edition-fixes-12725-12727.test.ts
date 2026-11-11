@@ -316,7 +316,8 @@ describe("#12727 — principal falha depois de a semanal sair da agenda", () => 
     await unscheduleSends(fromDir(), fakes("not_ok").deps);
     const f = fakes("not_ok");
     const out = await unscheduleSends(fromDir(), f.deps);
-    assert.deepEqual(f.calls, ["kit:10"], "a semanal não é desagendada de novo");
+    // #12803 — created_unverified herdada pode estar agendada: desagenda de novo (idempotente) antes do principal.
+    assert.deepEqual(f.calls, ["kit:11", "kit:10"]);
     assert.match(out.find((o) => o.what === "kit-newsletter")!.detail, /FORA da agenda/);
   });
 
@@ -327,15 +328,27 @@ describe("#12727 — principal falha depois de a semanal sair da agenda", () => 
     assert.ok(existsSync(fromDir()));
   });
 
-  it("REGRESSÃO #12730: desagendada nesta execução ⇒ afirma 'está FORA'; herdada created_unverified ⇒ só 'pode estar FORA'", async () => {
+  it("REGRESSÃO #12730/#12803: o aviso só afirma 'está FORA' depois de desagendar confirmado nesta execução", async () => {
     const first = await unscheduleSends(fromDir(), fakes("not_ok").deps);
     const d1 = first.find((o) => o.what === "kit-newsletter")!.detail;
     assert.match(d1, /está FORA da agenda \(desagendada nesta execução\)/);
-    assert.doesNotMatch(d1, /pode estar FORA/);
+    // Herdada created_unverified: desagendada de novo e confirmada nesta execução ⇒ o aviso continua verdadeiro.
     const second = await unscheduleSends(fromDir(), fakes("not_ok").deps);
-    const d2 = second.find((o) => o.what === "kit-newsletter")!.detail;
-    assert.match(d2, /pode estar FORA da agenda \(created_unverified: .*conferir no Kit\)/);
-    assert.doesNotMatch(d2, /está FORA da agenda/);
+    assert.equal(second.find((o) => o.what === "kit-semanal-frio")!.result, "unscheduled");
+    assert.match(second.find((o) => o.what === "kit-newsletter")!.detail, /está FORA da agenda \(desagendada nesta execução\)/);
+    // Herdada cujo desagendamento falha: o principal não é tocado (a semanal sairia sozinha).
+    const calls: string[] = [];
+    const third = await unscheduleSends(fromDir(), {
+      nowIso: () => "x",
+      deleteWorkerEntry: async () => ({ deleted: true, alreadyGone: false }),
+      unscheduleKit: async (id) => {
+        calls.push(`kit:${id}`);
+        return id === 11 ? { ok: false, message: "Kit 503" } : { ok: true, message: "ok" };
+      },
+    });
+    assert.deepEqual(calls, ["kit:11"]);
+    assert.equal(third.find((o) => o.what === "kit-semanal-frio")!.result, "failed");
+    assert.match(third.find((o) => o.what === "kit-newsletter")!.detail, /semanal de frio segue agendada/);
   });
 
   it("REGRESSÃO #12729: principal sem broadcast_id ⇒ aviso manda reagendar à mão no Kit, sem o comando do publisher que recusa", async () => {

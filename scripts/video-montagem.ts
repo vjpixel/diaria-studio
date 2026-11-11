@@ -136,7 +136,11 @@
  *       ou palavras do roteiro interpoladas + ouvidas descartadas acima de 10% do roteiro (export
  *       reeditado depois do build). `--heard-text` faz a legenda pela fala do export (grafia e
  *       pontuação do roteiro onde casa); aí só a legenda vazia recusa.
- *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--no-subs]   (default a vertical da edição; sempre refaz)
+ *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--no-subs] [--over-target]   (default a vertical da edição; sempre refaz)
+ *       (#12694) vertical (da edição ou corte/Short) com mais de 75 s de fala (card de CTA fora
+ *       da conta; `verticalTargetS` da edição só reduz) = exit 1 com `[aviso] GATE BLOQUEADO`,
+ *       antes de baixar o bruto: o corte é proposto no `roteiro` e aplicado no blocks.json.
+ *       `--over-target` força a prévia (só com o editor pedindo); o review aceita a mesma flag.
  *       (#12579) sem SRT, ou com SRT mais velho que o build da sequência, sai sem legenda com
  *       [aviso] (não recusa): as legendas vêm depois da aprovação das prévias; --no-subs tira a
  *       legenda mesmo com SRT em dia. (#12571) o card de CTA do XML entra no fim da prévia.
@@ -163,13 +167,13 @@
  * plano; review recusa uma prévia mais velha que o plano.
  *
  * Opções comuns:
- *   --drive-root DIR   pasta YouTube local do Drive (default: env DIARIA_VIDEO_DRIVE_ROOT ou
- *                      "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube"); a edição é {DIR}/{AAMMDD}/
- *   --premiere-root DIR  (build) a mesma pasta YouTube como o Mac que abre o XML a vê
- *                      (/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu Drive/…/YouTube):
+ *   --drive-root DIR   pasta de vídeo local do Drive (default: env DIARIA_VIDEO_DRIVE_ROOT ou
+ *                      "I:/Meu Drive/diaria-studio-video", #12578); a edição é {DIR}/{AAMMDD}/
+ *   --premiere-root DIR  (build) a mesma pasta de vídeo como o Mac que abre o XML a vê
+ *                      (/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu Drive/diaria-studio-video):
  *                      todo pathurl (bruto, áudio tratado, PNG do título, vinheta, card de CTA)
  *                      troca a raiz do Neo por ela (#12707). Default: publishing.video.premiere_root
- *                      do config; sem ele, a raiz do Neo (G:). "off" ignora o config.
+ *                      do config; sem ele, a raiz do Neo (I:). "off" ignora o config (XML para o Premiere do Windows).
  *   --state-dir DIR   onde ficam os JSON (default: data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem)
  *   --work-dir DIR     áudio e clipes temporários (default: {tmp}/diaria-video-montagem/{AAMMDD};
  *                      no modo API, {cache}/work, em disco)
@@ -179,9 +183,9 @@
  *                      ~/.venv-video-montagem quando existe, ou "python"; #11642)
  *
  * Modo API do Drive (#11639, #11640, #11641), o 300 sem o Drive for desktop:
- * sem a RAIZ {drive-root} no disco (a pasta YouTube; e sem --drive-root/DIARIA_VIDEO_DRIVE_ROOT
+ * sem a RAIZ {drive-root} no disco (a pasta de vídeo; e sem --drive-root/DIARIA_VIDEO_DRIVE_ROOT
  * explícito), ou com --from-drive, a pasta da edição é lida pela API (OAuth do projeto;
- * pasta YouTube em publishing.youtube.drive_folder_id, --folder-id sobrepõe). --no-drive-api
+ * pasta de vídeo em publishing.youtube.drive_folder_id, --folder-id sobrepõe). --no-drive-api
  * desliga. O bruto vai para um cache em disco (--cache-dir, DIARIA_VIDEO_CACHE_DIR ou
  * ~/.cache/diaria-video-montagem/{AAMMDD}: bruto/, out/, work/, final/), registrado em
  * bruto.drive.json; build/srt/preview sobem o que gravaram no out dir para a pasta da edição
@@ -216,6 +220,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
+import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import {
   AUDIO_GAIN_TARGET_LUFS,
   AUDIO_GAIN_TP_CEILING_DBTP,
@@ -366,7 +371,9 @@ import {
   SHORTS_MAX_S,
   shortsWarning,
   suggestedDurations,
+  verticalPreviewGate,
   verticalTargetCheck,
+  verticalTargetOverrideWarning,
   verticalTargetWarning,
   type DecupagemPlan,
 } from "./lib/diaria/video-montage-docs.ts";
@@ -789,7 +796,7 @@ export function gainLoudnessSource(input: {
  * `transcribe` no modo API (o 300) não garante no cache: com a transcrição
  * pronta ele não baixa nada, e o cache pode ter sido limpo. Sem o bruto, o
  * ffmpeg falha e o XML cai para o áudio cru. No modo API o build garante o
- * bruto antes (`ensureBrutoLocal`); no local (G:) o bruto é o do Drive montado.
+ * bruto antes (`ensureBrutoLocal`); no local (I:) o bruto é o do Drive montado.
  */
 export function buildNeedsLocalBruto(o: { apiMode: boolean; audioClean: boolean }): boolean {
   return o.apiMode && o.audioClean;
@@ -1610,7 +1617,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   let src = multiPaths ? multiPaths[0] : sourceArg ? resolve(sourceArg) : undefined;
   if (!src) {
     if (!existsSync(ctx.driveDir)) {
-      throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir} (Drive for desktop montado? a pasta ${ctx.edition}/ ainda não sincronizou? espere, ou passe --from-drive para baixar pela API, ou --drive-root)`);
+      throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir} (Drive for desktop montado? a pasta ${ctx.edition}/ ainda não sincronizou? espere, ou passe --from-drive para baixar pela API, ou --drive-root; desde a #12578 a pasta é a diaria-studio-video da diaria.editor: o bruto pode ter subido para a pasta antiga da vjpixel ou por outra conta)`);
     }
     const files = readdirSync(ctx.driveDir, { withFileTypes: true })
       .filter((d) => d.isFile())
@@ -2243,6 +2250,8 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   const dplan = loadDecupagemPlan(ctx, tr.segments);
   const alternatives = dplan ? alternativesFromDecupagem(buildDecupagemDoc(dplan, tr.segments, loadVocab().rules)) : undefined;
   const sil = silences(ctx);
+  const targetOverride = verticalTargetOverrideWarning(file.verticalTargetS);
+  if (targetOverride) console.error(`[aviso] ${targetOverride}`);
   for (const p of ps) {
     const t = verticalTargetCheck(p, resolved, source.fps, { targetS: file.verticalTargetS, silences: sil });
     if (t) console.error(`[aviso] ${verticalTargetWarning(p.spec.name, t)}`);
@@ -2250,7 +2259,11 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   // #12571: cada versão fecha com o card de CTA (salvo ctaCard: false), com a linha de compartilhar dela.
   const ctaCardShare = file.ctaCard === false ? undefined : Object.fromEntries(ps.map((p) => [sequenceKey(p.spec), ctaShareLine(p.spec.ctaShare ?? file.ctaShare)]));
   // #12585: o título de cada vídeo, das mesmas funções do build e dos publicadores.
-  const videoTitles = videoTitlesFor(ps.map((p) => p.spec), { blocksTitle: file.screenTitle, d1Title: readD1Title(ctx.edition) });
+  const videoTitles = videoTitlesFor(ps.map((p) => p.spec), {
+    blocksTitle: file.screenTitle,
+    d1Title: readD1Title(ctx.edition),
+    roteiroTitle: readRoteiroHorizontal(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`))?.titulo ?? null,
+  });
   const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare, videoTitles });
   // #11956: os achados do fact-check da fala entram no Doc do Gate 2.
   const fcPath = f(ctx, VIDEO_FACT_CHECK_FILE);
@@ -2656,7 +2669,7 @@ export function resolveScreenTitle(input: { blocksTitle?: string; d1Title?: stri
  */
 export function videoTitlesFor(
   specs: ReadonlyArray<Pick<SequenceSpec, "target" | "corte" | "screenTitle">>,
-  input: { blocksTitle?: string; d1Title?: string | null },
+  input: { blocksTitle?: string; d1Title?: string | null; roteiroTitle?: string | null },
 ): Record<string, string> {
   const out: Record<string, string> = {};
   const vertical = resolveScreenTitle(input);
@@ -2672,6 +2685,12 @@ export function videoTitlesFor(
       out[key] = !t ? `${verticalText}, o da vertical da edição: o corte não tem screenTitle na sequência`
         : t.text ? `${t.text} (screenTitle da sequência do corte)` : "(sem título na tela: screenTitle vazio na sequência do corte)";
     } else if (s.target === "youtube") {
+      // #12751: o título do horizontal no roteiro do vídeo vence o do D1, como no publish-youtube.ts.
+      const doRoteiro = input.roteiroTitle ? buildYouTubeTitle(input.roteiroTitle) : "";
+      if (doRoteiro) {
+        out[key] = `${doRoteiro} (título do roteiro do vídeo, o do publish-youtube.ts sem --title)`;
+        continue;
+      }
       const yt = input.d1Title ? buildYouTubeTitle(input.d1Title) : "";
       out[key] = yt ? `${yt} (título do D1, o do publish-youtube.ts sem --title)` : "(sem D1 em 02-reviewed.md: o publish-youtube.ts não acha o título)";
     } else {
@@ -2755,7 +2774,7 @@ function readD1Title(edition: string): string | null {
 /** Relato da raiz dos `pathurl` do XML (#12707): Neo ou Mac, e o que ficou fora da tradução. */
 export function premierePathsLine(map: PremierePathMap | undefined, unmapped: readonly string[]): string {
   if (!map) {
-    return "[premissa] pathurl do XML com a raiz do Neo (G:): abre vinculado no Premiere do Windows; para o Mac, publishing.video.premiere_root no config ou --premiere-root /Users/…/YouTube (#12707)";
+    return "[premissa] pathurl do XML com a raiz do Neo (I:): abre vinculado no Premiere do Windows; para o Mac, publishing.video.premiere_root no config ou --premiere-root /Users/…/diaria-studio-video (#12707)";
   }
   const base = `[premissa] pathurl do XML com a raiz ${map.to} no lugar de ${map.from} (bruto, áudio, título, vinheta e card de CTA); conferir no 1º import no Mac (#12707)`;
   return unmapped.length ? `${base}\n[aviso] fora de ${map.from}, com o caminho de origem no XML (devem chegar offline no Mac): ${unmapped.join(", ")} (#12707)` : base;
@@ -2809,9 +2828,11 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   for (const w of framingWarn.mug) console.error(`[aviso] ${w}`);
   // #12093: o rosto centrado nos dois zooms; escala pequena demais bate na borda do bruto.
   for (const w of framingWarn.face) console.error(`[aviso] ${w}`);
+  const targetOverride = verticalTargetOverrideWarning(file.verticalTargetS);
+  if (targetOverride) console.error(`[aviso] ${targetOverride}`);
   for (const p of picked) {
     const d = p.durationFrames / source.fps;
-    console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${CTA_CARD.durationS} s (#12571)`}`);
+    console.error(`== ${p.spec.name}: ${p.clips.length} clipes,${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${CTA_CARD.durationS} s (#12571)`}`);
     const g = ganchoWarning(p);
     if (g) console.error(`[aviso] ${g}`);
     // #12712: o corte sem gancho de publicação avisa já na montagem, com o mesmo erro do video-extra-verticals.ts.
@@ -3565,10 +3586,42 @@ function printCorteHook(ctx: Ctx, spec: SequenceSpec): void {
   }
 }
 
-async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSession | null = null, noSubs = false): Promise<number> {
+/**
+ * O gate de duração da prévia (#12694): vertical (da edição ou corte/Short
+ * avulso) acima do alvo não ganha prévia nem review. Imprime o `[aviso] GATE
+ * BLOQUEADO` e devolve true para o comando sair com 1, ANTES de baixar o bruto
+ * ou renderizar. `overTarget` (`--over-target`) força, com o aviso mesmo assim.
+ */
+export function verticalDurationGateBlocks(
+  plan: Pick<SequencePlan, "spec" | "durationFrames">,
+  fps: number,
+  targetS: number | undefined,
+  overTarget: boolean,
+  log: (line: string) => void = (l) => console.error(l),
+): boolean {
+  const gate = verticalPreviewGate(plan, fps, targetS);
+  if (!gate) return false;
+  if (overTarget) {
+    log(`${gate.replace("GATE BLOQUEADO", "acima do alvo, forçado por --over-target")}`);
+    return false;
+  }
+  log(gate);
+  return true;
+}
+
+async function cmdPreview(
+  ctx: Ctx,
+  target: string | undefined,
+  drive: DriveSession | null = null,
+  noSubs = false,
+  opts: { overTarget?: boolean; needLocalBruto?: () => Promise<unknown> } = {},
+): Promise<number> {
   const pf = loadPlan(ctx);
   // #12096: `--seq youtube` também (o horizontal, 960x540); sem --seq, a vertical da edição.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
+  // #12694: acima de 75 s de fala, a prévia não sai (nem o bruto é baixado).
+  if (verticalDurationGateBlocks(plan, pf.source.fps, loadBlocks(ctx).file.verticalTargetS, opts.overTarget === true)) return 1;
+  await opts.needLocalBruto?.();
   printCorteHook(ctx, plan.spec);
   if (pf.framingAssumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (o mesmo do build)");
   for (const w of framingWarningsByFile([plan], pf.source, pf.framing, pf.fileOverrides).mug) console.error(`[aviso] ${w}`);
@@ -3707,10 +3760,12 @@ export function reviewCardScope(input: {
   };
 }
 
-function cmdReview(ctx: Ctx, target: string | undefined): number {
+function cmdReview(ctx: Ctx, target: string | undefined, overTarget = false): number {
   const pf = loadPlan(ctx);
   // #12096: o horizontal também (`--seq youtube`), com a mesma recusa de prévia mais velha que o build.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
+  // #12694: o mesmo gate da prévia (uma prévia velha, de antes do gate, não é revisada).
+  if (verticalDurationGateBlocks(plan, pf.source.fps, loadBlocks(ctx).file.verticalTargetS, overTarget)) return 1;
   printCorteHook(ctx, plan.spec);
   const preview = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   if (!existsSync(preview)) throw new Error(`prévia ausente: ${preview} (rode preview)`);
@@ -3901,7 +3956,7 @@ function configRootFolderId(flag: string | undefined): () => string {
   return () => {
     if (flag?.trim()) return flag.trim();
     const id = youtubeFolderIdFrom(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
-    if (!id) throw new Error("modo API do Drive sem pasta YouTube: preencha publishing.youtube.drive_folder_id no platform.config.json ou passe --folder-id");
+    if (!id) throw new Error("modo API do Drive sem pasta de vídeo: preencha publishing.youtube.drive_folder_id no platform.config.json ou passe --folder-id");
     return id;
   };
 }
@@ -4025,12 +4080,12 @@ export function localBrutoMissing(ctx: Pick<Ctx, "stateDir" | "edition">): strin
   // #12559: bruto em vários arquivos: todos precisam estar nesta máquina (o modo API baixa um bruto só).
   if (source.files?.length) {
     const gone = source.files.filter((x) => !existsSync(x.path)).map((x) => x.path);
-    return gone.length ? `arquivo(s) do bruto em vários arquivos ausente(s) nesta máquina: ${gone.join(", ")} (#12559: rode no Neo, com o Drive em G:)` : null;
+    return gone.length ? `arquivo(s) do bruto em vários arquivos ausente(s) nesta máquina: ${gone.join(", ")} (#12559: rode no Neo, com a pasta de vídeo em I:)` : null;
   }
   if (existsSync(source.path)) return null;
   const info = readBrutoDrive(ctx);
   const origin = info && toPosix(info.localPath) === toPosix(source.path) ? ` (o cache do modo API de outra máquina; o bruto no Drive é ${info.name})` : "";
-  return `bruto do source.json não existe nesta máquina: ${source.path}${origin}. Rode transcribe --force aqui (com o bruto em G:, ou --from-drive para baixá-lo pela API)`;
+  return `bruto do source.json não existe nesta máquina: ${source.path}${origin}. Rode transcribe --force aqui (com o bruto em I:, ou --from-drive para baixá-lo pela API)`;
 }
 
 /** Um arquivo pelo nome na pasta da edição (`--from-audio`) ou em `Final/` (`review-final --file`), baixado para o cache. */
@@ -4098,7 +4153,7 @@ export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition">, d: Drive
 
 async function cmdUpload(ctx: Ctx, d: DriveSession | null, file: string | undefined): Promise<number> {
   if (!file) throw new Error("upload exige --file PATH (ex.: o decupagem.md quando o conector do Docs falhar)");
-  if (!d) throw new Error("upload é do modo API do Drive (o 300); no Neo, copie o arquivo para a pasta da edição em G:");
+  if (!d) throw new Error("upload é do modo API do Drive (o 300); no Neo, copie o arquivo para a pasta da edição em I:/Meu Drive/diaria-studio-video (nunca na pasta antiga da vjpixel, #12578)");
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`arquivo não encontrado: ${path}`);
   const r = await uploadAll(ctx, d, [path]);
@@ -4203,7 +4258,7 @@ async function runCommand(
   };
   switch (cmd) {
     case "transcribe": {
-      if (flags.has("from-audio")) throw new Error('--from-audio exige o caminho do áudio separado (ex.: --from-audio "G:/…/Diaria comentada_Youtube.wav")');
+      if (flags.has("from-audio")) throw new Error('--from-audio exige o caminho do áudio separado (ex.: --from-audio "I:/…/Diaria comentada_Youtube.wav")');
       let audio = values["from-audio"];
       // #11639: no modo API, um --from-audio que não existe no disco é o nome do arquivo na pasta da edição.
       if (d && audio !== undefined && !existsSync(audio)) audio = await fetchNamed(d, audio, "edition");
@@ -4251,7 +4306,7 @@ async function runCommand(
         return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), titleMode, seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d);
       }
     case "srt": {
-      if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "G:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
+      if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "I:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
       let final = values["from-final"];
       if (final === undefined) {
         if (flags.has("heard-text")) throw new Error("--heard-text só vale com --from-final (a legenda pela fala do export, #12198)");
@@ -4265,10 +4320,10 @@ async function runCommand(
       return cmdSrtFromFinal(ctx, final, plan, flags.has("heard-text") ? "ouvido" : "roteiro");
     }
     case "preview":
-      await needLocalBruto();
-      return cmdPreview(ctx, seq, d, flags.has("no-subs"));
+      // #12694: o gate de duração roda antes de baixar o bruto.
+      return cmdPreview(ctx, seq, d, flags.has("no-subs"), { overTarget: flags.has("over-target"), needLocalBruto });
     case "review":
-      return cmdReview(ctx, seq);
+      return cmdReview(ctx, seq, flags.has("over-target"));
     case "review-final": {
       let file = values["file"];
       // #11639: no modo API, o export é procurado pelo nome em Final/ da edição no Drive.

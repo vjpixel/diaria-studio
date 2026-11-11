@@ -29,7 +29,7 @@
  * Por que escopar no Drive e não no OneDrive: no OneDrive o `sync_list` do
  * `300` só traz `diaria-studio-data`, então um padrão global de `skip_file`
  * só alcança `data/`. O bisync sincroniza o Drive INTEIRO (#12356): um
- * `- *.mp4` global tiraria do sync os vídeos-fonte da pasta YouTube, que
+ * `- *.mp4` global tiraria do sync os vídeos-fonte da pasta de vídeo, que
  * vivem no Drive. Por isso cada padrão vira duas linhas, ancoradas em
  * `diaria-studio-data/` (raiz e subpastas). Medido com o rclone v1.75.2 do
  * `300` em 08/11/2026: `- diaria-studio-data/*.mp4` +

@@ -67,11 +67,32 @@ de ponta a ponta devem ser feitos na máquina (Neo ou 300) após o setup.
 
 ## Vídeo: montagem (#11642)
 
-`/diaria-video-montagem` roda no Neo (bruto em `G:`, Drive for desktop) e no
+`/diaria-video-montagem` roda no Neo (bruto em `I:/Meu Drive/diaria-studio-video`, Drive for desktop) e no
 300 (pasta da edição pela API do Drive, #11639/#11640/#11641). Precisa de
 ffmpeg, de um Python com faster-whisper e do modelo `large-v3-turbo` no cache do
 Hugging Face: a transcrição roda com `HF_HUB_OFFLINE=1`, então o modelo tem de
-estar baixado antes. O diagnóstico, que é o Passo 0 da skill:
+estar baixado antes.
+
+A pasta de vídeo é a `diaria-studio-video` da conta diaria.editor (#12578).
+Duas máquinas precisam de um passo de setup para enxergá-la:
+
+- **Neo:** adicionar a diaria.editor ao Drive for desktop. Ela monta como
+  `I:` (a letra vem da ordem em que as contas entraram no app). Se sair outra
+  letra, trocar `DEFAULT_DRIVE_ROOT` em `scripts/lib/diaria/video-montage-drive.ts`
+  e `publishing.video.vinheta_logo.path` no `platform.config.json`. Sem o
+  `I:`, a montagem cai sozinha no modo API.
+- **Mac que importa o XML no Premiere:** adicionar a diaria.editor ao Drive
+  for desktop e criar o symlink que `publishing.video.premiere_root` usa
+  (o caminho real leva o e-mail da conta, que não entra no repo, #6753):
+
+  ```bash
+  ln -s "$HOME/Library/CloudStorage/GoogleDrive-<conta>/Meu Drive/diaria-studio-video" /Users/Shared/diaria-studio-video
+  ```
+
+  Sem o symlink, a mídia do XML chega offline. Para importar o XML no Premiere
+  do Windows, gerar com `build --premiere-root off`.
+
+O diagnóstico, que é o Passo 0 da skill:
 
 ```bash
 npx tsx scripts/check-video-env.ts --montagem --edition AAMMDD

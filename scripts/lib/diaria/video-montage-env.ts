@@ -93,7 +93,7 @@ function fixFor(id: MontageEnvItemId, platform: string, python: string): string 
     case "model":
       return `baixar o modelo uma vez, com rede: ${python} -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')"`;
     case "drive":
-      return "Drive for desktop montado (G:) ou OAuth do projeto válido (data/.credentials.json; renovar com scripts/oauth-setup.ts)";
+      return "Drive for desktop com a diaria.editor montada (I:/Meu Drive/diaria-studio-video) ou OAuth do projeto válido (data/.credentials.json; renovar com scripts/oauth-setup.ts)";
     case "disk":
       return "liberar espaço no disco do cache (~/.cache/diaria-video-montagem; DIARIA_VIDEO_CACHE_DIR aponta para outro disco)";
   }
