@@ -28,6 +28,8 @@ describe("#12780 — caminho protegido só em string de prosa não bloqueia", ()
     "aspas duplas dentro de node heredoc": `node - <<'EOF'\nconst fs = require("fs");\nconst j = { nota: "corrigir o guard em ${HOOKS}/x.mjs depois" };\nfs.writeFileSync("${PLAN}", JSON.stringify(j));\nEOF`,
     "python -c com nota": `python3 -c "import json; d={'nota': 'ver ${HOOKS} e .claude/skills na próxima'}; open('${PLAN}','w').write(json.dumps(d))"`,
     ".claude/settings.json citado em prosa": `node -e "require('fs').writeFileSync('/tmp/o-12780.json', JSON.stringify({m: 'mexer em .claude/settings.json pelo Edit'}))"`,
+    "nota sobre .claude/hooks num node -e que não escreve ali": `node -e "require('fs').writeFileSync('${PLAN}', JSON.stringify({nota: 'nota sobre ${HOOKS} (guard x) e o commit do fix'}))"`,
+    "prosa que menciona git no meio da frase": `node -e "require('fs').writeFileSync('${PLAN}', JSON.stringify({nota: 'o hook em ${HOOKS} nega git checkout -- em worktree'}))"`,
   };
   for (const [name, cmd] of Object.entries(passing)) {
     it(name, () => assert.equal(find(cmd), null, `${cmd} → ${JSON.stringify(find(cmd))}`));
@@ -49,6 +51,26 @@ describe("#12780 — escrita real em caminho protegido continua bloqueada", () =
   for (const [name, cmd] of Object.entries(blocked)) {
     it(name, () => assert.notEqual(find(cmd), null, cmd));
   }
+
+  // PR #12811, review de segurança: string de shell-out com espaço, sem o
+  // caminho na 1ª palavra e sem escrita que o parser reconheça era tomada por
+  // prosa e removida — os 4 comandos abaixo, negados antes do #12780, passavam.
+  const shellOut: Record<string, string> = {
+    "execSync git checkout -- hook": `node -e "require('child_process').execSync('git checkout master -- ${HOOKS}/x.mjs'); require('fs').writeFileSync('/tmp/a','')"`,
+    "execSync npx prettier --write hook": `node -e "require('child_process').execSync('npx prettier --write ${HOOKS}/x.mjs'); require('fs').writeFileSync('/tmp/a','')"`,
+    "execSync npx eslint --fix .claude/hooks": `node -e "require('child_process').execSync('npx eslint --fix ${HOOKS}'); require('fs').writeFileSync('/tmp/a','')"`,
+    "subprocess.run shell=True git checkout origin/master": `python3 -c "import subprocess; subprocess.run('git checkout origin/master -- ${HOOKS}/x.mjs', shell=True); open('/tmp/log','w').write('ok')"`,
+  };
+  for (const [name, cmd] of Object.entries(shellOut)) {
+    it(`shell-out: ${name}`, () => assert.notEqual(find(cmd), null, cmd));
+  }
+
+  it("shell-out com verbo depois de && / prefixo de caminho também conta", () => {
+    const viaCd = `node -e "require('child_process').execSync('cd /r && git checkout master -- ${HOOKS}/x.mjs'); require('fs').writeFileSync('/tmp/a','')"`;
+    const viaAbs = `node -e "require('child_process').execSync('/usr/bin/git checkout master -- ${HOOKS}/x.mjs'); require('fs').writeFileSync('/tmp/a','')"`;
+    const viaPy = `python3 -c "import os; os.system('python3.12 tool.py ${HOOKS}/x.mjs'); open('/tmp/log','w').write('ok')"`;
+    for (const cmd of [viaCd, viaAbs, viaPy]) assert.notEqual(find(cmd), null, cmd);
+  });
 
   it("template literal não é tratado como prosa (pode ter ${})", () => {
     assert.equal(codeWritesProtectedPath("const n = `hook em " + HOOKS + " x`; writeFileSync('/tmp/a', n)"), true);
