@@ -1182,6 +1182,7 @@ export async function runCaptionsList(deps: YouTubeUploadDeps, input: RunCaption
       log(`publish-youtube: ${(e as Error).message}`);
       return { exitCode: 1, tracks: null, videoId: null };
     }
+    log(`[aviso] ${(e as Error).message}: conferindo o --video-id ${videoId} sem o captionId do registro`);
   }
   if (!videoId) {
     log(`publish-youtube: sem vídeo registrado em ${recordPath} — passe --video-id VIDEO_ID.`);

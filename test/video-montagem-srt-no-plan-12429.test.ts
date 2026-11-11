@@ -35,9 +35,11 @@ Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor desta newsl
 
 Um modelo de pesquisa da OpenAI, da família GPT-5.6 Sol, gastou o saldo de uma carteira de criptomoedas de terceiros.
 
-Sem saldo para pagar taxas na Sepolia, rede de testes do Ethereum, o modelo escreveu um script. A Meta também testou o Gemini e o Opus da Anthropic.
+Sem saldo para pagar taxas na Sepolia, rede de testes do Ethereum, o modelo escreveu um script. A Meta também testou o Gemini e o Opus. O Opus é da Anthropic.
 
 Use melhor: dá para use o modo de teste.
+
+O teste saiu na Casa Branca, nos Estados Unidos, com o Claude Opus 5 e o Banco do Brasil.
 `;
 
 describe("#12429 properNounLexicon: nomes próprios do texto da edição", () => {
@@ -50,7 +52,6 @@ describe("#12429 properNounLexicon: nomes próprios do texto da edição", () =>
     assert.equal(lex.get("gemini"), "Gemini");
     assert.equal(lex.get("opus"), "Opus");
     assert.equal(lex.get("anthropic"), "Anthropic");
-    assert.equal(lex.get("ia"), "IA");
     assert.equal(lex.get("gpt56"), "GPT-5.6");
     assert.equal(lex.get("pixel"), "Pixel", "o rótulo do link conta, a URL não");
   });
@@ -66,6 +67,13 @@ describe("#12429 properNounLexicon: nomes próprios do texto da edição", () =>
     assert.equal(lex.has("sol"), false);
     assert.equal(lex.has("linkedin"), false, "só na URL");
     assert.equal(lex.has("alignment"), false);
+  });
+
+  it("palavra que só aparece dentro de nome de várias palavras fica fora; 'ia' (verbo) também", () => {
+    for (const k of ["casa", "branca", "estados", "unidos", "claude", "banco", "brasil"]) assert.equal(lex.has(k), false, k);
+    assert.equal(lex.get("opus"), "Opus", "Opus também aparece sozinho no texto");
+    const { words } = applyProperNounLexicon(say("eu ia ficar em casa no estados", 0), lex);
+    assert.deepEqual(words.map((w) => w.text), ["eu", "ia", "ficar", "em", "casa", "no", "estados"]);
   });
 });
 

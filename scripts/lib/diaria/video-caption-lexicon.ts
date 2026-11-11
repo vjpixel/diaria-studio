@@ -28,7 +28,10 @@ import { normalizeToken, type VocabAlias, type Word } from "./video-montage.ts";
  * Palavras comuns em português que também são nome próprio de empresa/produto:
  * o léxico nunca as aplica (a "meta" do ano não vira a "Meta").
  */
-export const LEXICON_AMBIGUOUS = new Set(["meta", "sol", "claro", "vivo", "oi", "nu", "gol", "azul", "uber"]);
+export const LEXICON_AMBIGUOUS = new Set(["meta", "sol", "claro", "vivo", "oi", "nu", "gol", "azul", "uber", "ia", "rio"]);
+
+/** Conectivos que não quebram um nome de várias palavras ("Banco do Brasil"). */
+const NAME_CONNECTORS = new Set(["de", "da", "do", "das", "dos", "e"]);
 
 /** Token de texto: letras/números, com `.`/`-` internos ("GPT-5.6", "diar.ia.br"). */
 const TOKEN_RE = /[\p{L}\p{N}](?:[\p{L}\p{N}.\-]*[\p{L}\p{N}])?/gu;
@@ -61,30 +64,49 @@ function hasInnerUpper(t: string): boolean {
  * grafia. Entra a palavra com maiúscula no meio da frase, ou com maiúscula
  * interna em qualquer posição. Fica fora: palavra que aparece também toda em
  * minúscula no texto ("Use" × "use"), palavra de 1 caractere, número puro,
- * linhas de cabeçalho em maiúsculas e as de `LEXICON_AMBIGUOUS`. Mesma chave
- * com grafias diferentes: vence a mais frequente (empate: a primeira).
+ * linhas de cabeçalho em maiúsculas e as de `LEXICON_AMBIGUOUS` ("ia" é também
+ * o verbo, "eu ia"). Palavra que só aparece dentro de um nome de várias
+ * palavras ("Casa Branca", "Estados Unidos") também fica fora, salvo com
+ * maiúscula interna: sozinha, ela é palavra comum ("em casa"). Mesma chave com
+ * grafias diferentes: vence a mais frequente (empate: a primeira).
  */
 export function properNounLexicon(markdown: string): Map<string, string> {
   const counts = new Map<string, Map<string, number>>();
   const lowerSeen = new Set<string>();
+  const standalone = new Set<string>();
   for (const rawLine of plainText(markdown).split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || isAllCapsLine(line)) continue;
-    for (const m of line.matchAll(TOKEN_RE)) {
+    const toks = [...line.matchAll(TOKEN_RE)];
+    const atStart = toks.map((m) => {
+      const before = line.slice(0, m.index).trimEnd();
+      return before === "" || /[.!?:]["'”»)\]]*$/.test(before) || /^[-–—•\d.)\s]*$/.test(before);
+    });
+    // Vizinho com maiúscula fora do início de frase (pulando conectivos, sem atravessar pontuação) = nome de várias palavras.
+    const capNeighbor = (i: number, step: 1 | -1): boolean => {
+      for (let j = i + step; j >= 0 && j < toks.length; j += step) {
+        const [a, b] = step === 1 ? [toks[i].index + toks[i][0].length, toks[j].index] : [toks[j].index + toks[j][0].length, toks[i].index];
+        if (/[.!?:;,()]/.test(line.slice(a, b))) return false;
+        const t = toks[j][0];
+        if (NAME_CONNECTORS.has(t)) continue;
+        return /^\p{Lu}/u.test(t) && !atStart[j];
+      }
+      return false;
+    };
+    toks.forEach((m, i) => {
       const tok = m[0];
       const key = normalizeToken(tok);
-      if (key.length < 2 || !/\p{L}/u.test(tok)) continue;
+      if (key.length < 2 || !/\p{L}/u.test(tok)) return;
       if (!hasUpper(tok)) {
         lowerSeen.add(key);
-        continue;
+        return;
       }
-      const before = line.slice(0, m.index).trimEnd();
-      const sentenceStart = before === "" || /[.!?:]["'”»)\]]*$/.test(before) || /^[-–—•\d.)\s]*$/.test(before);
-      if (sentenceStart && !hasInnerUpper(tok)) continue;
+      if (atStart[i] && !hasInnerUpper(tok)) return;
+      if (!capNeighbor(i, -1) && !capNeighbor(i, 1)) standalone.add(key);
       const spellings = counts.get(key) ?? new Map<string, number>();
       spellings.set(tok, (spellings.get(tok) ?? 0) + 1);
       counts.set(key, spellings);
-    }
+    });
   }
   const lex = new Map<string, string>();
   for (const [key, spellings] of counts) {
@@ -93,6 +115,7 @@ export function properNounLexicon(markdown: string): Map<string, string> {
     // Palavra que o texto também escreve em minúscula é comum ("Use melhor" × "use"),
     // salvo grafia com maiúscula interna ("IA" × "ia" num link), que é sigla.
     if (lowerSeen.has(key) && !hasInnerUpper(best)) continue;
+    if (!standalone.has(key) && !hasInnerUpper(best)) continue;
     lex.set(key, best);
   }
   return lex;
