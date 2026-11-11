@@ -50,6 +50,13 @@
  *
  * A flag não protege contra o processo que sobrevive à interrupção (isso é
  * harness); ela garante que o processo só começa depois do "sim".
+ *
+ * #12654: a flag sozinha não liga o "sim" a um plano. Desde então o "pode
+ * publicar" é gravado com o SHA-256 do manifesto do plano
+ * (`video-publish-plan.ts`, `video-publish-authorize.ts grant`) e o publisher
+ * consome essa autorização de uso único antes do 1º efeito externo
+ * (`video-publish-authorization.ts`). A flag continua: é a 1ª trava, antes de
+ * qualquer leitura.
  */
 
 export const PUBLISH_CONFIRM_FLAG = "confirm-publish";

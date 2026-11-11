@@ -86,9 +86,11 @@ describe("#12786 item 2: KV do /video só na rodada principal", () => {
   });
   it("o --publish chama o helper antes de tocar o KV", () => {
     const src = readFileSync(new URL("../scripts/publish-shorts.ts", import.meta.url), "utf8");
-    const call = src.indexOf("if (shouldUpdateLatestVideoOnPublish({ corte: !!corte, writer }))");
+    const call = src.indexOf("if (shouldUpdateLatestVideoOnPublish({ corte: !!corte, writer })");
     const kv = src.indexOf("pollKvFromEnv()", call);
     assert.ok(call > 0 && kv > call && kv - call < 600, "a gravação do KV não está guardada pelo helper");
+    // #12654: rodada da edição sem destino autorizado a agir não grava o KV.
+    assert.match(src.slice(call, kv), /gatedActing === null \|\| gatedActing\.length > 0/);
   });
 });
 
