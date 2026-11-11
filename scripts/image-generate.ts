@@ -59,21 +59,56 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // demais verticalmente quando a cena tem um personagem antropomórfico/robótico
 // em pé. Fix editorial pontual aplicado no gate (wide shot + headroom explícito)
 // promovido pra regra global aqui, pra não precisar de ajuste manual por edição.
-// Exportada para teste de regressão em test/image-generate-safe-area.test.ts.
-export const STYLE_SUFFIX =
+// #12422: o sufixo passou a ser POR FORMATO. O texto antigo dizia que uma arte
+// única era recortada em 2:1, 4:5 e 9:16, fluxo que não existe mais: o Stage 3
+// gera o 2:1 e o 4:5 nativo em chamadas separadas (`stage-3-run.ts`, `--ratio
+// 4x5`) e o 9:16 não é gerado. Estilo, superfícies calmas, headroom, faixa do
+// título e anti-texto ficam compartilhados; só o trecho de composição muda.
+// Exportados para teste de regressão em test/image-generate-safe-area.test.ts.
+const STYLE_SUFFIX_HEAD =
   ", post-impressionist oil painting with thick impasto brushstrokes, directional rhythmic brushwork, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast. " +
   // #10312: "swirling textures" (o termo anterior) era convite direto ao motivo
   // de Noite Estrelada — edição 261016 D2 saiu com redemoinho concêntrico
   // azul/amarelo na TELA de um celular. Reforço em fraseado AFIRMATIVO (#1241,
   // #4201: nomear a obra ou o motivo, mesmo negando, ancora o modelo nele):
   // telas, céus e superfícies lisas viram campos calmos de cor, pincelada reta.
-  "Screens, displays, skies, walls and other flat or smooth surfaces are painted as calm, even fields of color built from straight, parallel brushstrokes that follow the shape of the surface. " +
-  "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible when the image is cropped to the portrait 4:5 feed card; do not place key subjects near the left or right edges. " +
+  "Screens, displays, skies, walls and other flat or smooth surfaces are painted as calm, even fields of color built from straight, parallel brushstrokes that follow the shape of the surface. ";
+
+// Trecho de composição de cada formato. O 2:1 é o hero do e-mail e também o
+// último fallback do card 4:5 (`gen-social-card-4x5.ts` reenquadra o 2:1 quando
+// faltam o nativo e o master), por isso mantém a metade central (#2657, #12309).
+const STYLE_SUFFIX_FORMAT: Record<ImageRatio, string> = {
+  "2x1":
+    "This artwork is a wide 2:1 landscape image (1600×800). " +
+    "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible if the image is reframed as the portrait 4:5 feed card; do not place key subjects near the left or right edges. " +
+    "Every essential element must sit well inside the frame and never touch any edge. ",
+  "4x5":
+    "This artwork is a portrait 4:5 image (1080×1350) composed for the vertical frame at its final proportion. " +
+    "Group all principal subjects together near the horizontal center of the frame, each one fully visible with clear margin on every side; do not place key subjects near the left or right edges. " +
+    "Every essential element must sit well inside the frame and never touch any edge. ",
+  "1x1":
+    "This artwork is a 1:1 image (1024×1024). " +
+    "Group all principal subjects together in the center of the frame, each one fully visible; do not place key subjects near the left or right edges. " +
+    "Every essential element must sit well inside the frame and never touch any edge. ",
+  master:
+    "This artwork is a 6:5 image (1600×1350). " +
+    "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible if the image is reframed as the portrait 4:5 feed card; do not place key subjects near the left or right edges. " +
+    "Every essential element must sit well inside the frame and never touch any edge. ",
+};
+
+const STYLE_SUFFIX_TAIL =
   "When the scene includes a standing or upright figure (human, robot, or humanoid character), frame it as a wide shot: the entire figure, including the head and feet, must fit comfortably within the frame with generous empty margin above the head; never crop or cut off the top of the head. " +
-  "Compose for later reframing: this single artwork is cropped into a wide format (2:1, which keeps the full width and trims top and bottom) and into portrait formats (4:5 and 9:16, which keep the full height and trim left and right). Every essential element must therefore sit inside the central 67% of the width and the central 59% of the height — the rectangle common to both crops — and never touch any edge. " +
   "Reserve the bottom fifth of the frame as a calm, low-detail area (ground, shadow, plain surface or penumbra) with no faces, hands or key objects, because a headline will later be placed over it; keep that band darker and simpler than the rest of the scene. " +
   "Purely visual scene with absolutely no written characters, no letters, no digits, no symbols on any surface; " +
   "all signage, papers, screens, books and labels rendered as abstract shapes or solid color blocks without any text or numbers.";
+
+/** Sufixo de estilo do formato pedido (#12422). */
+export function styleSuffixFor(ratio: ImageRatio): string {
+  return STYLE_SUFFIX_HEAD + STYLE_SUFFIX_FORMAT[ratio] + STYLE_SUFFIX_TAIL;
+}
+
+/** Sufixo do formato padrão dos destaques (2:1), mantido para os guards existentes. */
+export const STYLE_SUFFIX = styleSuffixFor("2x1");
 
 // #1241: NEGATIVE_PROMPT enxuto — termos texto-related removidos porque
 // Gemini não respeita negative prompts como Stable Diffusion (pode até induzir
@@ -216,7 +251,8 @@ export function editionFromOutDir(outDir: string): string | null {
   return /^\d{6}$/.test(last) ? last : null;
 }
 
-function buildPositivePrompt(editorialText: string): string {
+/** Cena do prompt editorial + sufixo do formato pedido (#12422). */
+export function buildPositivePrompt(editorialText: string, ratio: ImageRatio): string {
   // Remove markdown formatting (headings, bold, links) and get clean scene description
   const scene = editorialText
     .replace(/^#+\s*/gm, "")           // remove headings
@@ -224,7 +260,7 @@ function buildPositivePrompt(editorialText: string): string {
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // remove links
     .replace(/\n+/g, " ")
     .trim();
-  return scene + STYLE_SUFFIX;
+  return scene + styleSuffixFor(ratio);
 }
 
 function main() {
@@ -255,9 +291,9 @@ function main() {
   // destaques d1/d2/d3 usam 2x1 como hero inline no email, #2133/#2141).
   // #4093: resolução extraída para resolveRatio() — testável sem gerar imagem.
   const rawRatio = args["ratio"];
-  let wide: boolean, portrait45: boolean, master: boolean, sdWidth: number, sdHeight: number;
+  let ratio: ImageRatio, wide: boolean, portrait45: boolean, master: boolean, sdWidth: number, sdHeight: number;
   try {
-    ({ wide, portrait45, master, width: sdWidth, height: sdHeight } = resolveRatio(rawRatio, destaque));
+    ({ ratio, wide, portrait45, master, width: sdWidth, height: sdHeight } = resolveRatio(rawRatio, destaque));
   } catch (e) {
     console.error((e as Error).message);
     process.exit(1);
@@ -265,7 +301,7 @@ function main() {
 
   // Ler prompt editorial
   const editorialText = readFileSync(editorialPath, "utf8");
-  const positivePrompt = buildPositivePrompt(editorialText);
+  const positivePrompt = buildPositivePrompt(editorialText, ratio);
 
   // Montar SD prompt JSON.
   // Wide (2x1): 1600×800 (sem crop 1:1 derivado desde o #12226).
