@@ -42,7 +42,7 @@
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { assertCampaignQuotaHeadroom, fetchCampaignsByStatus } from "./lib/brevo-client.ts";
+import { assertCampaignQuotaHeadroom, fetchCampaignsByStatus, refreshCampaignQuotaStateFromKv } from "./lib/brevo-client.ts";
 import { findOverlappingListCampaigns, type ListOverlap } from "./lib/clarice-overlap.ts";
 
 loadProjectEnv();
@@ -71,6 +71,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // /emailCampaigns* se já estiver abaixo da reserva que o caminho de
   // ESCRITA (clarice-build-segment.ts/clarice-plan-wave.ts) precisa. Nunca
   // espera/retenta sozinho aqui — o editor decide se aguarda o reset horário.
+  await refreshCampaignQuotaStateFromKv(); // #12841: última observação de qualquer máquina
   assertCampaignQuotaHeadroom();
 
   const since = getArg(argv, "since") || undefined;

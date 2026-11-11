@@ -60,6 +60,7 @@ import { getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.t
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
   assertCampaignQuotaHeadroom,
+  refreshCampaignQuotaStateFromKv, // #12841
   brevoGet,
   brevoGetList,
   brevoListContacts,
@@ -191,6 +192,7 @@ export function makeBrevoConsolidationClient(apiKey: string, root: string, confi
       return Array.isArray(body?.listIds) && body.listIds.includes(listId);
     },
     async fetchNonTerminalListRefs() {
+      await refreshCampaignQuotaStateFromKv(); // #12841: última observação de qualquer máquina
       assertCampaignQuotaHeadroom(); // consumidor que não é o caminho de escrita da onda: respeita a reserva
       const ids = new Set<number>();
       for (const status of NON_TERMINAL_FILTERS) {

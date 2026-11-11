@@ -75,6 +75,7 @@ import {
   assertCampaignQuotaHeadroom,
   BrevoCampaignQuotaLowError,
   recordCampaignQuotaRemaining,
+  refreshCampaignQuotaStateFromKv, // #12841
 } from "./lib/brevo-rate-state.ts";
 import type { Env } from "../workers/brevo-dashboard/src/types.ts";
 
@@ -118,6 +119,7 @@ export async function main(): Promise<void> {
     recordCampaignQuotaRemaining(remaining, limit ?? undefined);
   });
 
+  await refreshCampaignQuotaStateFromKv(); // #12841: última observação de qualquer máquina
   try {
     assertCampaignQuotaHeadroom(CAMPAIGNS_FETCH_RESERVE);
   } catch (e) {
