@@ -495,7 +495,8 @@ export function formatUnreadableEditionsMessage(unreadable: SkippedReferenceEdit
       : " Nenhuma outra edição legível encontrada para sugerir.";
   return (
     `[#12534] Edição de referência ilegível: ${list}. ` +
-    `Causa provável: arquivo só na nuvem (Drive for desktop em modo streaming, não baixado) ou ainda não trazido pelo bisync do 300 — marque a pasta da edição como "Disponível off-line" ou abra os arquivos para baixar; no 300, aguarde o bisync.` +
+    `Causa provável: arquivo só na nuvem (Drive for desktop em modo streaming: marque a pasta da edição como "Disponível off-line" ou abra os arquivos) ` +
+    `ou corrompido/em conflito no bisync do 300, onde a cópia local é completa e esperar não resolve (confira o log do bisync e as cópias .conflictN na pasta).` +
     suggestion
   );
 }

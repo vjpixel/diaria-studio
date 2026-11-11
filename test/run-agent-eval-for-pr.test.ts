@@ -725,6 +725,10 @@ describe("edição de referência ilegível — placeholder OneDrive (#12534)", 
       // #12837: pós-virada do data/ (#12359) a causa provável é o Drive, não o OneDrive.
       assert.match(msg, /Drive for desktop/);
       assert.doesNotMatch(msg, /OneDrive/);
+      // #12838 review: no 300 o bisync grava cópia completa — a dica cobre
+      // corrupção/conflito e não manda só "aguardar o bisync".
+      assert.match(msg, /corrompido\/em conflito no bisync/);
+      assert.doesNotMatch(msg, /aguarde o bisync/);
       assert.match(msg, /--reference-editions 261104,261105/);
       assert.match(formatUnreadableEditionsMessage(bad, []), /Nenhuma outra edição legível/);
     } finally {
