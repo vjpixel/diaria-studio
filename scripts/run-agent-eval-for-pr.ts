@@ -92,6 +92,12 @@
  *   npx tsx scripts/run-agent-eval-for-pr.ts --pr 8200 --live \
  *     --arms claude-sonnet-5-5:low,claude-opus-5-5:low
  *
+ * Com `--live`, depois da label o script confere o check `Check agent-eval
+ * gate` no head da PR e só sai `0` com ele verde (#12830): o workflow não
+ * rodava de novo sozinho com a label. Pede o rerun do run vermelho pela API
+ * e, se o rerun for recusado, tira e repõe a label para gerar um `labeled`
+ * novo. Espera até `--check-timeout-sec` (default 600); sem verde, sai `1`.
+ *
  * O relatório (`data/reports/agent-eval/pr-N.md` + `data/reports/index.jsonl`)
  * é gravado no checkout PRINCIPAL, não no worktree de onde o script roda
  * (#11462, `resolveReportsRoot`); `--reports-root <path>` sobrepõe.
@@ -300,6 +306,158 @@ export function postComment(prNumber: string, bodyFilePath: string, runner: Comm
   const r = runner("gh", ["pr", "comment", prNumber, "--body-file", bodyFilePath]);
   if (r.status !== 0) {
     throw new Error(`[#8144] gh pr comment ${prNumber} falhou: ${r.stderr || `exit ${r.status}`}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reexecução do check "Check agent-eval gate" depois da label (#12830)
+// ---------------------------------------------------------------------------
+
+/** Arquivo do workflow do gate (`.github/workflows/agent-eval-required.yml`). */
+export const AGENT_EVAL_WORKFLOW_FILE = "agent-eval-required.yml";
+export const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_CHECK_POLL_MS = 15 * 1000;
+
+export interface WorkflowRunInfo {
+  id: number;
+  status: string;
+  conclusion: string | null;
+  runAttempt: number;
+}
+
+/**
+ * Runs do workflow do gate no SHA head da PR, via REST. Lança em falha do
+ * `gh` ou JSON inválido: uma consulta que falha nunca vira "nenhum run".
+ */
+export function listAgentEvalRuns(headSha: string, runner: CommandRunner): WorkflowRunInfo[] {
+  const r = runner("gh", [
+    "api",
+    `repos/{owner}/{repo}/actions/workflows/${AGENT_EVAL_WORKFLOW_FILE}/runs?head_sha=${headSha}&per_page=30`,
+    "--jq",
+    "[.workflow_runs[] | {id, status, conclusion, run_attempt}]",
+  ]);
+  if (r.status !== 0) {
+    throw new Error(`[#12830] consulta dos runs de ${AGENT_EVAL_WORKFLOW_FILE} em ${headSha.slice(0, 8)} falhou: ${r.stderr || `exit ${r.status}`}`);
+  }
+  let parsed: Array<{ id: number; status: string; conclusion: string | null; run_attempt?: number }>;
+  try {
+    parsed = JSON.parse(r.stdout.trim() || "[]");
+  } catch (err) {
+    throw new Error(`[#12830] runs de ${AGENT_EVAL_WORKFLOW_FILE} vieram em JSON inválido: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return parsed.map((w) => ({ id: w.id, status: w.status, conclusion: w.conclusion ?? null, runAttempt: w.run_attempt ?? 1 }));
+}
+
+/** O run mais recente (maior id; ids do Actions são crescentes). */
+export function latestRun(runs: WorkflowRunInfo[]): WorkflowRunInfo | null {
+  return runs.reduce<WorkflowRunInfo | null>((best, r) => (best === null || r.id > best.id ? r : best), null);
+}
+
+/** Pede a reexecução do run via REST. Devolve o erro em vez de lançar: o caller tenta o fallback. */
+export function requestWorkflowRerun(runId: number, runner: CommandRunner): { ok: true } | { ok: false; error: string } {
+  const r = runner("gh", ["api", "-X", "POST", `repos/{owner}/{repo}/actions/runs/${runId}/rerun`]);
+  if (r.status === 0) return { ok: true };
+  return { ok: false, error: r.stderr || r.stdout || `exit ${r.status}` };
+}
+
+/**
+ * Fallback quando o rerun é recusado (PR #12426: "cannot be rerun; its
+ * workflow file may be broken"): tira e repõe a label, o que gera um evento
+ * `labeled` novo e, com ele, um run novo do workflow. Lança se a remoção ou a
+ * reposição falhar (a reposição relê as labels, `addLabel`).
+ */
+export function retriggerViaLabelToggle(prNumber: string, label: string, runner: CommandRunner): void {
+  const d = runner("gh", ["api", "-X", "DELETE", `repos/{owner}/{repo}/issues/${prNumber}/labels/${encodeURIComponent(label)}`]);
+  if (d.status !== 0 && !/HTTP 404|Not Found|Label does not exist/i.test(d.stderr)) {
+    throw new Error(`[#12830] remoção da label ${label} da PR #${prNumber} falhou: ${d.stderr || `exit ${d.status}`}`);
+  }
+  try {
+    addLabel(prNumber, label, runner);
+  } catch (err) {
+    throw new Error(`[#12830] a label ${label} foi removida para disparar o workflow, mas a reposição falhou — reaplicar à mão: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export interface EnsureCheckGreenParams {
+  prNumber: string;
+  headSha: string;
+  label: string;
+  runner: CommandRunner;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  timeoutMs?: number;
+  pollMs?: number;
+  log?: (msg: string) => void;
+}
+
+export type EnsureCheckGreenResult =
+  | { ok: true; runId: number; action: "none" | "rerun" | "label-toggle" }
+  | { ok: false; error: string };
+
+/**
+ * #12830 — depois da label, o check do gate seguia vermelho até alguém rodar
+ * `gh run rerun` à mão (PR #12649), e numa PR o rerun nem era aceito (#12426).
+ * O gate lê as labels AO VIVO (`check-agent-eval-required.ts`), então basta
+ * um run novo depois da label. Laço:
+ *
+ * - run mais recente em andamento (ex.: o do próprio `labeled`) → espera;
+ * - run mais recente `success` → verde, sucesso;
+ * - run mais recente concluído sem sucesso, nenhuma ação ainda → pede rerun
+ *   (REST); se recusado, ou sem run nenhum, tira e repõe a label;
+ * - depois da ação, um run/tentativa MAIS NOVO que conclui sem sucesso → falha
+ *   (o gate rodou de novo e continua vermelho); o mesmo run antigo ainda
+ *   concluído → a reexecução não registrou ainda, espera;
+ * - prazo esgotado → falha.
+ *
+ * Nunca lança por estado do check: devolve `{ ok: false }` com a mensagem.
+ * Falha na consulta dos runs ou no fallback de label propaga (lança).
+ */
+export async function ensureAgentEvalCheckGreen(params: EnsureCheckGreenParams): Promise<EnsureCheckGreenResult> {
+  const sleep = params.sleep ?? ((ms: number) => new Promise<void>((res) => setTimeout(res, ms)));
+  const now = params.now ?? (() => Date.now());
+  const timeoutMs = params.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS;
+  const pollMs = params.pollMs ?? DEFAULT_CHECK_POLL_MS;
+  const log = params.log ?? ((m: string) => console.log(m));
+  const deadline = now() + timeoutMs;
+  let action: { kind: "rerun" | "label-toggle"; runId: number; attempt: number } | null = null;
+
+  for (;;) {
+    const latest = latestRun(listAgentEvalRuns(params.headSha, params.runner));
+    if (latest && latest.status === "completed" && latest.conclusion === "success") {
+      return { ok: true, runId: latest.id, action: action?.kind ?? "none" };
+    }
+    if (!latest || latest.status === "completed") {
+      if (action === null) {
+        if (latest) {
+          const rr = requestWorkflowRerun(latest.id, params.runner);
+          if (rr.ok) {
+            action = { kind: "rerun", runId: latest.id, attempt: latest.runAttempt };
+            log(`[#12830] check do gate vermelho (run ${latest.id}, ${latest.conclusion}) — reexecução pedida.`);
+          } else {
+            log(`[#12830] rerun do run ${latest.id} recusado (${rr.error.trim()}) — tirando e repondo a label "${params.label}" para disparar um run novo.`);
+            retriggerViaLabelToggle(params.prNumber, params.label, params.runner);
+            action = { kind: "label-toggle", runId: latest.id, attempt: latest.runAttempt };
+          }
+        } else {
+          log(`[#12830] nenhum run de ${AGENT_EVAL_WORKFLOW_FILE} no head ${params.headSha.slice(0, 8)} — tirando e repondo a label "${params.label}" para disparar um.`);
+          retriggerViaLabelToggle(params.prNumber, params.label, params.runner);
+          action = { kind: "label-toggle", runId: 0, attempt: 0 };
+        }
+      } else if (latest && (latest.id > action.runId || latest.runAttempt > action.attempt)) {
+        return {
+          ok: false,
+          error: `[#12830] o check "Check agent-eval gate" rodou de novo depois da label (run ${latest.id}, tentativa ${latest.runAttempt}) e terminou ${latest.conclusion} — ler o log do run.`,
+        };
+      }
+    }
+    if (now() >= deadline) {
+      const state = latest ? `run ${latest.id} ${latest.status}/${latest.conclusion ?? "-"}` : "nenhum run";
+      return {
+        ok: false,
+        error: `[#12830] o check "Check agent-eval gate" não ficou verde em ${Math.round(timeoutMs / 1000)}s (${state}) — conferir com gh pr checks ${params.prNumber}.`,
+      };
+    }
+    await sleep(pollMs);
   }
 }
 
@@ -788,12 +946,13 @@ async function main(): Promise<void> {
   const repetitions = values["repetitions"] ? Number(values["repetitions"]) : DEFAULT_REPETITIONS;
   const baselineRef = values["baseline-ref"] ?? DEFAULT_BASELINE_REF;
   const numEditions = values["num-editions"] ? Number(values["num-editions"]) : DEFAULT_NUM_EDITIONS;
+  const checkTimeoutSec = values["check-timeout-sec"] ? Number(values["check-timeout-sec"]) : DEFAULT_CHECK_TIMEOUT_MS / 1000;
   const editionsResolution = resolveEditionsRootDir({ override: values["editions-dir"], worktreeRoot: ROOT });
   const editionsRootDir = editionsResolution.dir;
   if (editionsResolution.note) console.log(editionsResolution.note);
 
   if (!prNumber) {
-    console.error("Uso: run-agent-eval-for-pr.ts --pr <N> [--repetitions N] [--reference-editions AAMMDD,...] [--baseline-ref REF] [--editions-dir path] [--num-editions N] [--arms modelo[:effort],...] [--reports-root path] [--live]");
+    console.error("Uso: run-agent-eval-for-pr.ts --pr <N> [--repetitions N] [--reference-editions AAMMDD,...] [--baseline-ref REF] [--editions-dir path] [--num-editions N] [--arms modelo[:effort],...] [--reports-root path] [--check-timeout-sec N] [--live]");
     process.exit(2);
     return;
   }
@@ -825,6 +984,11 @@ async function main(): Promise<void> {
     // de um erro claro, mesma classe de falha silenciosa que motivou
     // `getIntArg` (scripts/lib/cli-args.ts, #4497).
     console.error(`[error] --num-editions deve ser um inteiro ≥ 1, recebido "${values["num-editions"]}"`);
+    process.exit(2);
+    return;
+  }
+  if (!Number.isInteger(checkTimeoutSec) || checkTimeoutSec < 1) {
+    console.error(`[error] --check-timeout-sec deve ser um inteiro ≥ 1, recebido "${values["check-timeout-sec"]}"`);
     process.exit(2);
     return;
   }
@@ -1006,6 +1170,22 @@ async function main(): Promise<void> {
   }
 
   console.log(`[#8144] Eval registrado (${outPath}), comentário postado e label "${AGENT_EVAL_LABEL}" aplicada na PR #${prMeta.number}.`);
+
+  // #12830: a label sozinha não deixava o check verde (o workflow não rodava
+  // de novo). Só devolve sucesso com o check do gate verde no head da PR.
+  const check = await ensureAgentEvalCheckGreen({
+    prNumber,
+    headSha: prMeta.headRefOid,
+    label: AGENT_EVAL_LABEL,
+    runner,
+    timeoutMs: checkTimeoutSec * 1000,
+  });
+  if (!check.ok) {
+    console.error(`${check.error} Label e comentário já estão na PR.`);
+    process.exit(1);
+    return;
+  }
+  console.log(`[#12830] check "Check agent-eval gate" verde (run ${check.runId}${check.action === "none" ? "" : `, via ${check.action}`}).`);
 }
 
 if (isMainModule(import.meta.url)) {
