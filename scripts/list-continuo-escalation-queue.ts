@@ -12,7 +12,7 @@
  *   - `fechar-para-issue`   — draft com `bloqueio-execucao`: o bloqueio vive na
  *                             issue, não na lista de PRs; a branch fica;
  *   - `fixer`               — conflito com o master, CI que não fecha
- *                             (fail/error/pending) ou draft sem bloqueio, sem
+ *                             (fail/pending) ou draft sem bloqueio, sem
  *                             tentativa anterior de nenhum fixer: o coordenador
  *                             despacha `dev-fixer` (rebase + CI; draft verde é
  *                             marcado ready) e marca a PR com
@@ -20,7 +20,12 @@
  *   - `fechar-reabrir-issue`— conflito/CI parado AGORA com `continuo-ci-fix-tentado`
  *                             já presente (a label também vem do loop do
  *                             contínuo): devolve a issue para a fila e fecha a
- *                             PR. Sem issue de origem identificável, `briefing`;
+ *                             PR. Sem issue de origem identificável, `briefing`.
+ *                             CI `pending` só fecha se a label de tentativa tem
+ *                             mais de 6h (`PENDING_AFTER_FIX_MS`, #12804): antes
+ *                             disso o CI do conserto ainda pode estar na fila;
+ *                             `error` (checks ilegíveis) nunca fecha nem vai ao
+ *                             fixer — é `briefing` (fail-closed, #12804);
  *   - `briefing`            — o resto (diff grande, caminho sensível, sem
  *                             veredito), e sempre que a PR está retida para o
  *                             editor (#10278) ou reivindicada por sessão viva:
@@ -48,18 +53,30 @@ const ESCALATION_LABEL = "continuo-escalado";
 const HOUR_MS = 60 * 60 * 1000;
 export const ESCALATION_QUEUE_AFTER_MS = 24 * HOUR_MS;
 export const ESCALATION_EXPIRY_MS = 48 * HOUR_MS;
+/**
+ * CI `pending` depois do fixer só conta como parado quando a tentativa
+ * (`continuo-ci-fix-tentado`) tem mais que isto (#12804): a fila de runners
+ * lenta (#10578) deixa o CI do conserto `pending` por horas.
+ */
+export const PENDING_AFTER_FIX_MS = 6 * HOUR_MS;
+const FIX_TRIED_LABEL = "continuo-ci-fix-tentado";
 
 type LabelEvent = { event: string; label?: { name: string }; created_at: string };
 
-/** Pure: desde quando a escalada corrente está aberta (último `labeled` sem `unlabeled` depois). */
-export function escalationSince(events: LabelEvent[]): string | null {
+/** Pure: desde quando `label` está aplicada (último `labeled` sem `unlabeled` depois). */
+export function labelSince(events: LabelEvent[], label: string): string | null {
   let since: string | null = null;
   for (const event of events) {
-    if (event.label?.name !== ESCALATION_LABEL) continue;
+    if (event.label?.name !== label) continue;
     if (event.event === "labeled") since = event.created_at;
     if (event.event === "unlabeled") since = null;
   }
   return since;
+}
+
+/** Pure: desde quando a escalada corrente está aberta. */
+export function escalationSince(events: LabelEvent[]): string | null {
+  return labelSince(events, ESCALATION_LABEL);
 }
 
 export function overdueEscalation(events: LabelEvent[], now: number): string | null {
@@ -108,6 +125,11 @@ export interface DestinationInput {
   redundant: boolean;
   /** Issue de origem (`originIssue`); sem ela, `fechar-reabrir-issue` não tem para onde devolver. */
   issue: number | null;
+  /**
+   * Há quanto tempo `continuo-ci-fix-tentado` foi aplicada (eventos da PR).
+   * Ausente/`null`/não finito = desconhecido: CI `pending` nunca fecha (#12804).
+   */
+  fixTriedAgeMs?: number | null;
 }
 
 /**
@@ -120,15 +142,24 @@ export function escalationDestination(input: DestinationInput): EscalationDestin
   if (input.retido !== false || input.claimed) return "briefing";
   if (input.redundant) return "fechar-redundante";
   if (input.isDraft && input.labels.includes("bloqueio-execucao")) return "fechar-para-issue";
-  const fixTried = input.labels.includes("continuo-ci-fix-tentado");
+  const fixTried = input.labels.includes(FIX_TRIED_LABEL);
   const conflict = input.mergeStateStatus === "DIRTY" || input.mergeable === "CONFLICTING";
-  // `error` (checks ilegíveis) e `pending` passadas 48h também são CI que não
-  // fecha sozinho; `blocked_by_conflict` já é o conflito.
-  const ciStuck = ["fail", "error", "pending", "blocked_by_conflict"].includes(input.checksVerdict ?? "");
+  // `error` = o gate não leu os checks: dado ausente nunca fecha nem despacha
+  // fixer (#12804). Conflito real (lido de outra fonte) segue valendo.
+  if (input.checksVerdict === "error" && !conflict) return "briefing";
+  const pending = input.checksVerdict === "pending";
+  // `pending` passadas 48h também é CI que não fecha sozinho;
+  // `blocked_by_conflict` já é o conflito.
+  const ciStuck = ["fail", "pending", "blocked_by_conflict"].includes(input.checksVerdict ?? "");
   // Só fecha pelo estado ATUAL: conflito ou CI parado depois de uma tentativa
   // de fixer. A label sozinha não fecha nada.
   if (conflict || ciStuck) {
     if (!fixTried) return "fixer";
+    // CI do conserto ainda na fila (#12804): espera a janela antes de fechar.
+    if (pending && !conflict) {
+      const age = input.fixTriedAgeMs;
+      if (typeof age !== "number" || !Number.isFinite(age) || age <= PENDING_AFTER_FIX_MS) return "briefing";
+    }
     return input.issue ? "fechar-reabrir-issue" : "briefing";
   }
   // Draft sem bloqueio, CI verde, sem conflito: falta alguém dá-lo por pronto.
@@ -244,7 +275,8 @@ export function runEscalationQueue(deps: QueueDeps, apply: boolean): QueueResult
   for (const pr of prs) {
     let step = "events";
     try {
-      const since = overdueEscalation(deps.events(pr.number), now);
+      const events = deps.events(pr.number);
+      const since = overdueEscalation(events, now);
       if (!since) continue;
       step = "gate";
       const gate = deps.gate(pr.number);
@@ -252,6 +284,8 @@ export function runEscalationQueue(deps: QueueDeps, apply: boolean): QueueResult
       const ageMs = now - Date.parse(since);
       const expired = Number.isFinite(ageMs) && ageMs > ESCALATION_EXPIRY_MS;
       const issue = originIssue(pr);
+      const fixTriedSince = labelSince(events, FIX_TRIED_LABEL);
+      const fixTriedAgeMs = fixTriedSince ? now - Date.parse(fixTriedSince) : null;
       step = "redundant";
       const redundant = expired ? deps.redundant(pr.headRefName) : false;
       const destination = escalationDestination({
@@ -260,7 +294,7 @@ export function runEscalationQueue(deps: QueueDeps, apply: boolean): QueueResult
         // Sem o campo, trata como retida (fail-closed): nunca fecha por dado ausente.
         retido: typeof gate.details?.retidoParaEditor?.retido === "boolean" ? gate.details.retidoParaEditor.retido : null,
         claimed: gate.details?.sessionClaims?.ok === false,
-        redundant: redundant === true, issue,
+        redundant: redundant === true, issue, fixTriedAgeMs,
       });
       result.queue.push({
         number: pr.number, url: pr.url, since, ...destinationOwner(destination),

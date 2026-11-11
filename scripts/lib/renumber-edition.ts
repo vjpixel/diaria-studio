@@ -54,6 +54,7 @@ import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { editionDir } from "./edition-paths.ts";
 import { EDITION_LOCK_TTL_MS, readEditionLock, type EditionLockRecord } from "./edition-lock.ts";
+import { isoToBrtAammdd } from "./edition-scheduled-at.ts";
 
 export const RENUMBER_REPORT_FILENAME = "renumber-edition.json";
 const FORENSIC_DIR = join("_internal", "_forensic");
@@ -76,9 +77,11 @@ export function isValidEditionId(id: string): boolean {
 /**
  * Regex do ID com borda alfanumérica (#12662): nem letra nem dígito colado de
  * nenhum lado. Separador (`-`, `_`, `/`, `.`, `=`, espaço, aspas) é borda.
+ * Exceção (#12803): `.` entre dígitos não é borda — `12.261112` e `261112.5`
+ * são números (o `"start"` de um JSON de vídeo), não o ID.
  */
 function idRegex(id: string): RegExp {
-  return new RegExp(`(?<![\\p{L}\\p{N}])${id}(?![\\p{L}\\p{N}])`, "gu");
+  return new RegExp(`(?<![\\p{L}\\p{N}])(?<!\\p{N}\\.)${id}(?![\\p{L}\\p{N}])(?!\\.\\p{N})`, "gu");
 }
 
 /**
@@ -497,6 +500,30 @@ export function applyVideoOutDir(dir: string, from: string, to: string): LocalSc
  * conflito nos stores em qualquer ponto ⇒ lança ANTES de escrever (a
  * varredura confere todas primeiro).
  */
+/**
+ * #12803 — recusas da parte local que não dependem de nada remoto (forense
+ * `06-public-images.{de}.json` já existente, colisão de nome), conferidas sem
+ * escrever. O `--unschedule` chama ANTES de desagendar; `renumberLocal` lança
+ * com o mesmo texto. `null` = a parte local não seria recusada por isto.
+ */
+export function localRenumberRefusal(root: string, fromDir: string, from: string, to: string): string | null {
+  const scan = scanLocal(fromDir, from, to);
+  return localScanRefusal(root, fromDir, scan, from);
+}
+
+function localScanRefusal(root: string, fromDir: string, scan: LocalScan, from: string): string | null {
+  const forensicTarget = join(fromDir, FORENSIC_DIR, `06-public-images.${from}.json`);
+  if (scan.publicImages && existsSync(forensicTarget)) {
+    return `${relative(root, forensicTarget)} já existe — recusado (não sobrescreve forense).`;
+  }
+  try {
+    assertNoRenameCollision(fromDir, scan, "na edição");
+  } catch (e) {
+    return (e as Error).message;
+  }
+  return null;
+}
+
 export function renumberLocal(
   root: string,
   from: string,
@@ -512,10 +539,8 @@ export function renumberLocal(
   const scan = scanLocal(fromDir, from, to);
 
   const forensicTarget = join(fromDir, FORENSIC_DIR, `06-public-images.${from}.json`);
-  if (scan.publicImages && existsSync(forensicTarget)) {
-    throw new Error(`${relative(root, forensicTarget)} já existe — recusado (não sobrescreve forense).`);
-  }
-  assertNoRenameCollision(fromDir, scan, "na edição");
+  const localRefusal = localScanRefusal(root, fromDir, scan, from);
+  if (localRefusal) throw new Error(localRefusal);
   // #12691 — stores globais conferidos ANTES de qualquer escrita.
   const globalChanges = scanGlobalStores(root, from, to);
   const globalRefusal = globalStoresRefusal(globalChanges, to);
@@ -828,9 +853,46 @@ export interface UnscheduleDeps {
 export interface UnscheduleOutcome {
   /** Mesmo rótulo de `ScheduledSend.what`. */
   what: string;
-  /** `manual` = sem caminho automático (Buffer/X, Brevo, post sem key). */
-  result: "unscheduled" | "already_gone" | "failed" | "manual";
+  /**
+   * `manual` = sem caminho automático (Buffer/X, Brevo, post sem key).
+   * `kept` = retomada (#12803): agendado para outro dia que não o antigo — é a
+   * agenda da edição NOVA (Etapa 6 na pasta nova), e não é tocado.
+   */
+  result: "unscheduled" | "already_gone" | "failed" | "manual" | "kept";
   detail: string;
+}
+
+export interface UnscheduleOptions {
+  /**
+   * #12803 — retomada: só desagenda o que está agendado para este AAMMDD (o
+   * dia antigo, em BRT). Agendado para outro dia ⇒ `kept`; `scheduled_at`
+   * ilegível ⇒ `failed` (não dá pra saber de qual edição é; nada tocado).
+   */
+  onlyScheduledOn?: string;
+}
+
+/**
+ * #12803 — o item agendado é do dia antigo? `true` também quando o horário é
+ * ilegível (na dúvida, conta como do dia antigo: avisa e exige confirmação).
+ */
+export function scheduledOnOldDate(scheduledAt: unknown, from: string): boolean {
+  if (typeof scheduledAt !== "string" || !Number.isFinite(Date.parse(scheduledAt))) return true;
+  return isoToBrtAammdd(scheduledAt) === from;
+}
+
+/** Filtro da retomada: `null` = desagendar; senão o desfecho sem tocar no item. */
+function resumeGuard(rec: Record<string, unknown>, opts: UnscheduleOptions): Pick<UnscheduleOutcome, "result" | "detail"> | null {
+  if (!opts.onlyScheduledOn) return null;
+  const at = rec.scheduled_at;
+  if (typeof at !== "string" || !Number.isFinite(Date.parse(at))) {
+    return {
+      result: "failed",
+      detail: `retomada: scheduled_at ilegível (${JSON.stringify(at ?? null)}) — não dá pra saber se é a agenda antiga ou a nova; nada tocado, conferir à mão.`,
+    };
+  }
+  const day = isoToBrtAammdd(at);
+  if (day === opts.onlyScheduledOn) return null;
+  return { result: "kept", detail: `retomada: agendado para ${day} (${at}), não para ${opts.onlyScheduledOn} — agenda nova, mantida.` };
 }
 
 /**
@@ -851,7 +913,7 @@ export interface UnscheduleOutcome {
  * chama confere antes de seguir. Falha de um item não interrompe os outros.
  * Buffer (X), Brevo e post sem key saem `manual`, com o mesmo texto do aviso.
  */
-export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): Promise<UnscheduleOutcome[]> {
+export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps, opts: UnscheduleOptions = {}): Promise<UnscheduleOutcome[]> {
   const out: UnscheduleOutcome[] = [];
 
   // #12720 — a semanal de frio ANTES do principal: com o principal em
@@ -861,28 +923,17 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
   let semanalBlocked = false;
   const semanalPath = join(stateDir, "_internal", SEMANAL_FRIO_STATE);
   const semanal = readJson(semanalPath);
-  // #12727 — semanal fora da agenda (desagendada nesta execução ou numa
-  // anterior que parou no principal). Se o principal falha, ele segue agendado
-  // no dia antigo e a semanal não: reexecutar o `--unschedule` não a vê mais
-  // (já não está `scheduled`), e uma troca abandonada deixaria a base fria sem
-  // envio. O `failed` do principal diz isso, com o caminho de reagendá-la: o
-  // comando do publisher, ou reagendar à mão no Kit quando o principal não tem
-  // `broadcast_id` (#12729).
-  let semanalUnscheduledId: number | null =
-    semanal && semanal.status === "created_unverified" && typeof semanal.broadcast_id === "number" ? semanal.broadcast_id : null;
-  // #12730 — `created_unverified` herdado de antes desta execução não prova
-  // que a semanal está fora da agenda: é também o estado de uma confirmação de
-  // agendamento que falhou, em que o Kit pode ter agendado o broadcast. Só o
-  // desagendamento confirmado AQUI permite afirmar; o herdado vira "pode estar".
-  let semanalUnscheduledHere = false;
+  // #12727 — semanal desagendada nesta execução. Se o principal falha, ele
+  // segue agendado no dia antigo e a semanal não: uma troca abandonada
+  // deixaria a base fria sem envio. O `failed` do principal diz isso, com o
+  // caminho de reagendá-la: o comando do publisher, ou reagendar à mão no Kit
+  // quando o principal não tem `broadcast_id` (#12729).
+  let semanalUnscheduledId: number | null = null;
   // #12729 — `mainHasId: false` = registro do principal sem `broadcast_id`: o
   // `publish-kit-semanal-frio.ts --push` exige o id numérico do principal e
   // recusa (exit 2), então o aviso manda reagendar à mão no Kit.
   const semanalLeftNote = (mainHasId: boolean): string => {
     if (semanalUnscheduledId === null) return "";
-    const where = semanalUnscheduledHere
-      ? "está FORA da agenda (desagendada nesta execução)"
-      : "pode estar FORA da agenda (created_unverified: o agendamento dela não foi confirmado — conferir no Kit)";
     const reschedule = mainHasId
       ? `reagendar a semanal junto do principal: npx tsx scripts/publish-kit-semanal-frio.ts --edition-dir ${stateDir} --push`
       : "reagendar a semanal à mão no Kit, junto do principal (o registro do principal não tem broadcast_id, e o publish-kit-semanal-frio.ts recusa sem ele)";
@@ -892,15 +943,28 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
       ? "Repetir o mesmo comando termina a troca"
       : "Desagendar o principal à mão no Kit e repetir o mesmo comando termina a troca";
     return (
-      ` ATENÇÃO: a semanal de frio (broadcast ${semanalUnscheduledId}) ${where} e o principal segue agendado ` +
+      ` ATENÇÃO: a semanal de frio (broadcast ${semanalUnscheduledId}) está FORA da agenda (desagendada nesta execução) e o principal segue agendado ` +
       `no horário antigo. ${retry} (a Etapa 6 da pasta nova reagenda os dois); se a troca for abandonada, ` +
       reschedule
     );
   };
-  if (semanal && semanal.status === "scheduled") {
+  // #12803 — `created_unverified` (#12730) não prova que a semanal está fora
+  // da agenda: é também o estado de uma confirmação de agendamento que falhou,
+  // em que o Kit pode ter agendado o broadcast. Antes ela só entrava no aviso
+  // do principal que falhava; com o principal desagendado com sucesso, ficava
+  // agendada no Kit e saía sozinha no horário antigo. Agora passa pelo mesmo
+  // `unscheduleKit` (idempotente: `send_at: null` + releitura) que a `scheduled`.
+  const semanalMaybeScheduled =
+    semanal !== null && (semanal.status === "scheduled" || (semanal.status === "created_unverified" && typeof semanal.broadcast_id === "number"));
+  if (semanal && semanalMaybeScheduled) {
+    const inherited = semanal.status === "created_unverified";
     const id = typeof semanal.broadcast_id === "number" ? semanal.broadcast_id : null;
+    const guard = resumeGuard(semanal, opts);
     let failure: string | null = null;
-    if (id === null) {
+    if (guard) {
+      if (guard.result === "failed") failure = guard.detail;
+      else out.push({ what: "kit-semanal-frio", ...guard });
+    } else if (id === null) {
       failure = "registro sem broadcast_id — desagendar à mão no Kit.";
     } else {
       try {
@@ -911,8 +975,8 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
           const next = { ...semanal, status: "created_unverified", reason: "principal desagendado (renumber-edition, #12720)" };
           writeFileSync(semanalPath, JSON.stringify(next, null, 2) + "\n", "utf8");
           semanalUnscheduledId = id;
-          semanalUnscheduledHere = true;
-          out.push({ what: "kit-semanal-frio", result: "unscheduled", detail: `broadcast ${id}: ${r.message}` });
+          const how = inherited ? " (estava created_unverified: podia estar agendada, #12803)" : "";
+          out.push({ what: "kit-semanal-frio", result: "unscheduled", detail: `broadcast ${id}: ${r.message}${how}` });
         } else {
           failure = `broadcast ${id}: ${r.message}`;
         }
@@ -930,7 +994,10 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
   const kit = readJson(kitPath);
   if (kit && kit.status === "scheduled") {
     const id = typeof kit.broadcast_id === "number" ? kit.broadcast_id : null;
-    if (semanalBlocked) {
+    const guard = resumeGuard(kit, opts);
+    if (guard) {
+      out.push({ what: "kit-newsletter", ...guard });
+    } else if (semanalBlocked) {
       out.push({
         what: "kit-newsletter",
         result: "failed",
@@ -966,6 +1033,11 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
     );
     const what = `social:${parts.join("/")}`;
     const key = typeof p.worker_queue_key === "string" ? p.worker_queue_key : null;
+    const guard = resumeGuard(p, opts);
+    if (guard) {
+      out.push({ what, ...guard });
+      continue;
+    }
     if (!key) {
       out.push({ what, result: "manual", detail: "sem worker_queue_key (Buffer/X ou API direta): desagendar na própria plataforma." });
       continue;
