@@ -7,7 +7,9 @@
  *   npx tsx scripts/agendamentos.ts registrar --edicao 261111 --peca vertical-2 \
  *       --destinos youtube_shorts,instagram,tiktok --dias 7 --hora 12:00 \
  *       --dono "sessão /diaria-publica do dia" [--estado pendente|pronto|agendado] [--nota "..."]
- *     (ou `--alvo 2026-11-18T12:00:00-03:00` no lugar de `--dias`/`--hora`;
+ *     (`--destinos vertical` = os destinos da vertical da edição na config,
+ *      `publishing.shorts`, os mesmos do plano do `publish-shorts.ts`;
+ *      ou `--alvo 2026-11-18T12:00:00-03:00` no lugar de `--dias`/`--hora`;
  *      `--dias N` conta a partir da edição, `--hora` é BRT, default 12:00)
  *   npx tsx scripts/agendamentos.ts listar [--json] [--todos]
  *     (sem `--todos`, só os itens em aberto e os falhos)
@@ -24,9 +26,11 @@
  * desde a leitura, transição inválida).
  */
 
-import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyCliAction, isMainModule, parseArgs, type CliSpec } from "./lib/cli-args.ts";
+import { listShortDestinations, loadShortsConfig } from "./lib/diaria/short-video.ts";
 import {
   AGENDAMENTO_ESTADOS,
   ESTADOS_EM_ABERTO,
@@ -74,6 +78,32 @@ function parseEstado(s: string): AgendamentoEstado {
     throw new Error(`--estado inválido: ${s} (aceitos: ${AGENDAMENTO_ESTADOS.join(", ")})`);
   }
   return s as AgendamentoEstado;
+}
+
+/**
+ * `--destinos vertical` (#12774): os destinos da vertical da edição na config
+ * (`listShortDestinations` de `publishing.shorts` em `{root}/platform.config.json`,
+ * a mesma lista do plano do `publish-shorts.ts`), para a skill registrar o
+ * vertical 2 sem digitar os ids à mão. Qualquer outro valor é a lista
+ * separada por vírgula, como antes.
+ */
+export const DESTINOS_VERTICAL = "vertical";
+
+export function resolveDestinos(raw: string, root: string): string[] {
+  if (raw.trim() === DESTINOS_VERTICAL) {
+    const configPath = join(root, "platform.config.json");
+    let config: unknown;
+    try {
+      config = JSON.parse(readFileSync(configPath, "utf8"));
+    } catch (e) {
+      throw new Error(`--destinos ${DESTINOS_VERTICAL}: não li ${configPath}: ${(e as Error).message}`);
+    }
+    return listShortDestinations(loadShortsConfig(config)).map((d) => d.id);
+  }
+  return raw
+    .split(",")
+    .map((d) => d.trim())
+    .filter(Boolean);
 }
 
 function formatItem(it: AgendamentoItem): string {
@@ -126,10 +156,7 @@ export function runAgendamentosCli(argv: readonly string[], io: CliIo): number {
         {
           edicao,
           peca: required(values, "peca"),
-          destinos: required(values, "destinos")
-            .split(",")
-            .map((d) => d.trim())
-            .filter(Boolean),
+          destinos: resolveDestinos(required(values, "destinos"), io.root),
           alvo,
           dono: required(values, "dono"),
           estado: values.estado ? parseEstado(values.estado) : undefined,

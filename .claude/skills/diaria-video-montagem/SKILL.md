@@ -161,6 +161,14 @@ Grava `_internal/video-montagem/fact-check-input.json`: cada frase que vai ao ar
 
 Criar o Google Doc **"Roteiro final {AAMMDD} (2 versões)"** na pasta da edição a partir do `roteiro.md`, com as tabelas como tabelas (a do fact-check também). **Gate 2:** o editor revisa; onde ainda não sabe a duração, deixa "XX". As mudanças voltam para o `blocks.json` (texto, tomada, ordem em `sequences`) e o `roteiro` roda de novo até ele aprovar. O texto aprovado é a referência das legendas (grafia e pontuação) e da autorrevisão.
 
+**Vertical 2 no banco de agendamentos (#12774).** Aprovado o Gate 2 com o corte `guia` em `sequences` (a gravação veio do roteiro, Passo 2), registrar a publicação dele uma semana depois, sem perguntar:
+
+```bash
+npx tsx scripts/agendamentos.ts registrar --edicao {AAMMDD} --peca vertical-2 --destinos vertical --dias 7 --hora 12:00 --dono "/diaria-publica {AAMMDD+7}" --nota "corte guia; título: {screenTitle do guia}"
+```
+
+`--destinos vertical` pega os destinos da vertical da edição na config (`publishing.shorts`, os mesmos do plano do `publish-shorts.ts`); `--dias 7` conta a partir da edição e `--hora` é BRT (12:00, o horário fixo dos destinos sem horário próprio, #12250). Registrar de novo com os mesmos dados é no-op (retomada); exit 1 com "mesmo id com outros dados" quer dizer que o item já existe com outro alvo ou destinos: conferir com `npx tsx scripts/agendamentos.ts listar` e, se o registro antigo estiver errado, `remover --id {AAMMDD}-vertical-2` e registrar de novo. Sem o `guia` em `sequences` (edição sem roteiro, ou o editor tirou o vertical 2), não registrar nada. O banco só registra: quem publica é o dono no dia (o `/diaria-publica` da edição de D+7 lista o item), e o tick do 300 (`Diaria-Agendamentos-Tick`) abre alarme se ele passar do horário sem publicação.
+
 Legado: `cta_ig`/`cta_out` continuam válidos com `sequences` explícitas. Sem elas, migrar o CTA escolhido para `cta_vertical` e remover o outro. O target técnico da vertical segue `outras-redes` para preservar escopos e caches antigos.
 
 ## Passo 4 — XML para o Premiere
@@ -260,7 +268,7 @@ No backfill:
 
 ## Relato e passagem para o Premiere
 
-Uma mensagem: links dos dois Docs, caminho do XML, dos SRTs e das prévias, a folha de frames, a duração de cada versão, o loudness do bruto e os achados que sobraram da revisão. Depois, o que fica com o editor:
+Uma mensagem: links dos dois Docs, caminho do XML, dos SRTs e das prévias, a folha de frames, a duração de cada versão, o loudness do bruto, os achados que sobraram da revisão e, com o corte `guia`, a linha do vertical 2 no banco de agendamentos (id, alvo e dono, a saída do `registrar`). Depois, o que fica com o editor:
 
 1. Importar o XML no Premiere (File > Import). Aplicar **Horizontal Flip** nos clipes das 2 sequências (se o bruto estiver espelhado). Enquanto o 1º import não confirmar, conferir que o Audio Levels dos clipes de áudio veio com o ganho do relato (#11755), que o **título apareceu na V2 com fundo transparente** fora da caixa (o PNG via XML, padrão desde o #12091; sem ele, arrastar o PNG da pasta para a V2) e que o **rosto está centrado** na vertical, como na prévia (#12091: a unidade do Center, fração do bruto, foi validada na 261104; o valor corrigido está pendente de re-import). Conferir também o **card de CTA no fim da V1**, com o fade-in (#12571; o Horizontal Flip nunca vai nele, é arte, não o bruto).
 2. Importar o SRT de cada vertical na sequência dela (o do horizontal já está na pasta da edição como `diaria-comentada-{AAMMDD}.srt`, para o upload do YouTube, #11957).

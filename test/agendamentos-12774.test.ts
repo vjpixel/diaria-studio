@@ -27,7 +27,8 @@ import {
   transicionarAgendamento,
   type AgendamentosBanco,
 } from "../scripts/lib/diaria/agendamentos.ts";
-import { runAgendamentosCli } from "../scripts/agendamentos.ts";
+import { DESTINOS_VERTICAL, resolveDestinos, runAgendamentosCli } from "../scripts/agendamentos.ts";
+import { fileURLToPath } from "node:url";
 import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 
 const T0 = new Date("2026-11-11T15:00:00Z");
@@ -81,6 +82,9 @@ describe("addAgendamento", () => {
   it("recusa dono vazio, destinos vazios, edição inválida e nascer publicado", () => {
     assert.throws(() => vertical2(undefined, { dono: "  " }), /dono/);
     assert.throws(() => vertical2(undefined, { destinos: [] }), /destinos/);
+    assert.throws(() => vertical2(undefined, { destinos: ["facebook:"] }), /destinos/);
+    assert.throws(() => vertical2(undefined, { destinos: ["a:b:c"] }), /destinos/);
+    assert.equal(vertical2(undefined, { destinos: ["facebook:diaria"] }).item.destinos[0], "facebook:diaria");
     assert.throws(() => vertical2(undefined, { edicao: "2611" }), /edicao/);
     assert.throws(() => vertical2(undefined, { estado: "publicado" }), /publicado/);
   });
@@ -260,6 +264,34 @@ describe("CLI scripts/agendamentos.ts", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("--destinos vertical expande para os destinos da vertical na config (registro do vertical 2 pela montagem)", () => {
+    const root = tmpRoot();
+    try {
+      const reg = ["registrar", "--edicao", "261111", "--peca", "vertical-2", "--destinos", "vertical", "--dias", "7", "--dono", "d"];
+      // Sem platform.config.json no root: erro claro, nada gravado.
+      const sem = run(root, reg);
+      assert.equal(sem.code, 1);
+      assert.match(sem.err, /--destinos vertical: não li/);
+      writeFileSync(
+        join(root, "platform.config.json"),
+        JSON.stringify({ publishing: { shorts: { facebook_pages: ["diaria"], instagram: true, x: true, tiktok: false, threads_profile: false, linkedin_profile: false, linkedin_page_repost: false, facebook_profile: false } } }),
+      );
+      const ok = run(root, reg);
+      assert.equal(ok.code, 0, ok.err);
+      const banco = JSON.parse(readFileSync(agendamentosPath(root), "utf8"));
+      assert.deepEqual(banco.itens[0].destinos, ["youtube_shorts", "facebook:diaria", "instagram", "x"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--destinos vertical com o platform.config.json real dá ids que o banco aceita", () => {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const ids = resolveDestinos(DESTINOS_VERTICAL, repoRoot);
+    assert.ok(ids.includes("youtube_shorts"));
+    assert.ok(vertical2(undefined, { destinos: ids }).created);
   });
 
   it("erros de uso saem 1: subcomando ausente, flag desconhecida, --alvo sem fuso, --alvo com --dias", () => {
