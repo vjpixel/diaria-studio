@@ -671,6 +671,114 @@ export function parsePassCount(output: string): number | null {
   return last;
 }
 
+/** #12848: um arquivo de teste cujo PROCESSO morreu fora do fluxo do
+ *  node:test (SIGSEGV de código nativo, SIGKILL do OOM killer,
+ *  `process.exit` perdido, `process.exitCode` setado) aparece no reporter
+ *  `spec` só como `'test failed'` na linha 1:1 do arquivo, sem sinal nem
+ *  código de saída. O reporter `tap` traz os dois campos (`exitCode`,
+ *  `signal`) no bloco YAML do `not ok` do arquivo, com `failureType:
+ *  'testCodeFailure'`. Por isso cada batch roda com um 2º reporter `tap`
+ *  gravando num arquivo temporário (a saída do `spec` no stdout fica
+ *  idêntica), e este parser extrai dali o que o `spec` descarta. */
+export interface FileExitDiagnostic {
+  /** Caminho do arquivo de teste (do campo `location`, sem `:linha:coluna`). */
+  file: string;
+  exitCode: number | null;
+  signal: string | null;
+}
+
+/** Marcador estável e greppável da linha de diagnóstico (#12848). */
+export const FILE_EXIT_MARKER = "RUN_TESTS_FILE_EXIT";
+
+/** Pure: valor escalar YAML do jeito que o reporter `tap` do node:test o
+ *  escreve (`~` = null, string entre aspas simples com `''` de escape, ou
+ *  número cru). */
+function parseTapYamlScalar(raw: string): string | number | null {
+  const v = raw.trim();
+  if (v === "~" || v === "null" || v === "") return null;
+  if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) return v.slice(1, -1).replace(/''/g, "'");
+  if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) return v.slice(1, -1);
+  if (/^-?\d+$/.test(v)) return Number(v);
+  return v;
+}
+
+/** Pure (#12848): extrai do output do reporter `tap` os `not ok` cujo
+ *  processo do arquivo morreu — `failureType: 'testCodeFailure'` com
+ *  `exitCode` ou `signal` não-nulo. Falha comum de asserção também tem
+ *  `failureType: 'testCodeFailure'`, mas sem esses dois campos, e fica de
+ *  fora. Só lê as chaves do nível do bloco YAML (mesma indentação do
+ *  `---`), nunca chaves aninhadas de um `error`/`stack` multilinha. TAP
+ *  truncado (batch morto no meio) devolve o que der para ler. */
+export function parseTapFileExits(tap: string): FileExitDiagnostic[] {
+  const lines = tap.split(/\r?\n/);
+  const out: FileExitDiagnostic[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const notOk = /^(\s*)not ok \d+(?: - (.*))?$/.exec(lines[i]);
+    if (!notOk) continue;
+    const open = /^(\s*)---\s*$/.exec(lines[i + 1] ?? "");
+    if (!open) continue;
+    const indent = open[1];
+    const fields = new Map<string, string | number | null>();
+    let j = i + 2;
+    for (; j < lines.length; j++) {
+      const line = lines[j];
+      if (line.trimEnd() === `${indent}...`) break;
+      const kv = /^(\s*)([A-Za-z_]\w*):(?:\s(.*))?$/.exec(line);
+      if (kv && kv[1] === indent) fields.set(kv[2], parseTapYamlScalar(kv[3] ?? ""));
+    }
+    i = j;
+    if (fields.get("failureType") !== "testCodeFailure") continue;
+    const exitCodeRaw = fields.get("exitCode");
+    const signalRaw = fields.get("signal");
+    const exitCode = typeof exitCodeRaw === "number" ? exitCodeRaw : null;
+    const signal = typeof signalRaw === "string" ? signalRaw : null;
+    if (exitCode === null && signal === null) continue;
+    const location = fields.get("location");
+    const file =
+      typeof location === "string" && location
+        ? location.replace(/:\d+:\d+$/, "")
+        : (notOk[2] ?? "(arquivo não identificado)").trim();
+    out.push({ file, exitCode, signal });
+  }
+  return out;
+}
+
+/** Pure (#12848): uma linha por arquivo morto, com marcador greppável. */
+export function formatFileExitDiagnostics(label: string, exits: FileExitDiagnostic[]): string {
+  return exits
+    .map(
+      (e) =>
+        `${FILE_EXIT_MARKER} batch=${label} arquivo=${e.file} signal=${e.signal ?? "null"} exitCode=${e.exitCode ?? "null"}\n` +
+        `run-tests: ${label} — o processo do arquivo ${e.file} morreu fora do node:test ` +
+        (e.signal ? `por sinal ${e.signal}` : `com exit code ${e.exitCode}`) +
+        ` (o reporter spec mostra só 'test failed', #12848).\n`,
+    )
+    .join("");
+}
+
+/** Pure (#12848): flags de reporter do batch. Quem chamou já escolheu um
+ *  reporter (`--test-reporter` nos args extras) → nada é acrescentado, a
+ *  escolha dele vale como antes. Senão, repete EXPLICITAMENTE o reporter
+ *  default do node:test no stdout (passar qualquer `--test-reporter`
+ *  desliga o default implícito) e acrescenta o `tap` no arquivo. Default
+ *  num filho com stdout em pipe: `spec` desde o Node 23, `tap` antes. */
+export function fileExitReporterArgs(
+  extraArgs: readonly string[],
+  tapPath: string,
+  nodeMajor: number = Number(process.versions.node.split(".")[0]),
+): string[] {
+  if (extraArgs.some((a) => a === "--test-reporter" || a.startsWith("--test-reporter=") || a.startsWith("--test-reporter-destination"))) {
+    return [];
+  }
+  const stdoutReporter = nodeMajor >= 23 ? "spec" : "tap";
+  return [
+    `--test-reporter=${stdoutReporter}`,
+    "--test-reporter-destination=stdout",
+    "--test-reporter=tap",
+    `--test-reporter-destination=${tapPath}`,
+  ];
+}
+
 /** Pure: decide se um batch que falhou merece 1 retry — critérios do #6495,
  *  alargados pelo #6857 e pelo #7736. Precisam ser verdadeiros: status != 0
  *  e (`ERR_MODULE_NOT_FOUND` OU a assinatura colateral de arquivo `.test.ts`
@@ -889,6 +997,12 @@ export interface ProcessChunkedBatchesOptions {
    *  afeta nenhuma decisão). `undefined` no caminho single-process
    *  (comportamento idêntico ao de antes do #6877). */
   labelPrefix?: string;
+  /** #12848: grava um 2º reporter `tap` por batch num arquivo temporário e,
+   *  quando o batch falha, imprime `exitCode`/`signal` de cada arquivo cujo
+   *  processo morreu (ver `parseTapFileExits`). Default: ligado com o
+   *  `spawnSync` real, desligado com `spawn` injetado (os fakes dos testes
+   *  leem `args.slice(3)` como o batch e não escrevem TAP nenhum). */
+  fileExitDiagnostics?: boolean;
 }
 
 export interface ProcessChunkedBatchesResult {
@@ -936,6 +1050,12 @@ export function processChunkedBatches(
     sleepFn = sleepSync,
     labelPrefix,
   } = opts;
+  const fileExitDiagnostics = opts.fileExitDiagnostics ?? spawn === spawnSync;
+  /** #12848: arquivos TAP criados pelas tentativas do batch corrente; o
+   *  último é o da tentativa cujo `result` vale. Apagados ao fim de cada
+   *  batch. */
+  let tapPaths: string[] = [];
+  let tapSeq = 0;
   /** #6822 (Defeito B): tenta isolar o(s) arquivo(s) culpado(s) de um batch
    *  que não produziu sumário — só roda se houver orçamento (`bisectBudgetMs
    *  > 0`); escreve o resultado formatado em `stderr` como uma linha extra,
@@ -999,7 +1119,13 @@ export function processChunkedBatches(
       // deste grandchild se recusa a rodar ("run() called recursively").
       env: cleanChildEnv(),
     };
-    const result = spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], spawnOpts);
+    let reporterArgs: string[] = [];
+    if (fileExitDiagnostics) {
+      const tapPath = join(tmpdir(), `run-tests-12848-${process.pid}-${Date.now()}-${tapSeq++}.tap`);
+      reporterArgs = fileExitReporterArgs(extraArgs, tapPath);
+      if (reporterArgs.length > 0) tapPaths.push(tapPath);
+    }
+    const result = spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...reporterArgs, ...batch], spawnOpts);
     // #7753: batch morto por timeout (ETIMEDOUT no spawn, ou `result.signal`
     // batendo com o killSignal) — mata o GRUPO inteiro, não só este PID,
     // pra não vazar os netos do runner. Best-effort/idempotente (ver
@@ -1024,7 +1150,23 @@ export function processChunkedBatches(
     if (err) stderr.write(err);
   };
 
-  batches.forEach((batch, idx) => {
+  /** #12848: lê o TAP da última tentativa do batch e imprime exitCode/signal
+   *  de cada arquivo cujo processo morreu. Best-effort: TAP ausente ou
+   *  ilegível não muda nada além de não haver linha extra. */
+  const reportFileExits = (label: string): void => {
+    const tapPath = tapPaths[tapPaths.length - 1];
+    if (!tapPath) return;
+    let tap = "";
+    try {
+      tap = readFileSync(tapPath, "utf8");
+    } catch {
+      return;
+    }
+    const exits = parseTapFileExits(tap);
+    if (exits.length > 0) stderr.write(`\n${formatFileExitDiagnostics(label, exits)}`);
+  };
+
+  const processBatch = (batch: string[], idx: number): void => {
     const label = labelPrefix ? `${labelPrefix} batch ${idx + 1}/${batches.length}` : `batch ${idx + 1}/${batches.length}`;
     // #6822 (Defeito B, instrumentação): loga os candidatos ANTES de
     // despachar — se este batch travar, o próximo hang já sai com o
@@ -1135,6 +1277,11 @@ export function processChunkedBatches(
       }
     }
 
+    // #12848: antes das mensagens de falha do batch, a causa por arquivo
+    // (exitCode/signal) que o reporter spec descarta. Só em batch que falhou:
+    // no caminho verde a saída fica idêntica à de antes.
+    if (result.signal || (result.status ?? 1) !== 0) reportFileExits(label);
+
     // #6822 — Defeito A: batch morto por timeout/sinal externo (spawnSync
     // seta `signal` quando mata o processo) é falha dura, sempre — nunca
     // deixa um `status` ambíguo (às vezes null, às vezes um código
@@ -1201,6 +1348,21 @@ export function processChunkedBatches(
       );
       exitCode = 1;
       failedBatches.push(label);
+    }
+  };
+
+  batches.forEach((batch, idx) => {
+    tapPaths = [];
+    try {
+      processBatch(batch, idx);
+    } finally {
+      for (const p of tapPaths) {
+        try {
+          rmSync(p, { force: true });
+        } catch {
+          // best-effort: arquivo temporário no tmpdir do SO
+        }
+      }
     }
   });
 
