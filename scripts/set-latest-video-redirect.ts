@@ -45,6 +45,7 @@ import {
   parseLatestVideoRecord,
   shouldReplaceLatestVideo,
   type LatestVideoPrevious,
+  type LatestVideoPublicAtSource,
   type LatestVideoRecord,
 } from "./lib/shared/latest-video-redirect.ts";
 
@@ -110,7 +111,8 @@ function readUploadRecordForVideo(editionDir: string, url: string): { matched: b
   return { matched: true, publishAt: pick(r.rereadStatus) ?? pick(r.requested) };
 }
 
-export type HorizontalPublicAtSource = "upload" | "upload_immediate" | "edition_default";
+/** #12869: o tipo mora no miolo compartilhado, que guarda a fonte no registro do KV. */
+export type HorizontalPublicAtSource = LatestVideoPublicAtSource;
 
 /**
  * #12801 (resíduo): o `public_at` do registro do KV.
@@ -177,12 +179,16 @@ export async function updateLatestVideoRedirect(input: {
   // #12801: o horizontal agendado (private até 06:00 BRT de D) leva o `public_at`, e o
   // registro guarda o anterior para o Worker servir até lá (`effectiveLatestVideoRecord`).
   // Resíduo: no caminho de reserva (sem registro do upload) presume as 06:00 BRT da edição.
-  const { publicAt } = resolveEditionHorizontalPublicAt(input.editionDir, url, input.aammdd);
+  // #12869: a fonte vai no registro; um `edition_default` posterior nunca troca o `public_at` do upload.
+  const { publicAt, source } = resolveEditionHorizontalPublicAt(input.editionDir, url, input.aammdd);
   if (publicAt) record.public_at = publicAt;
+  record.public_at_source = source;
   const current = parseLatestVideoRecord(await input.kv.get(LATEST_VIDEO_KV_KEY));
   const previous = previousForNewRecord(current, input.aammdd, input.now);
   if (previous) record.previous = previous;
-  if (current && current.aammdd === record.aammdd && current.url === record.url && current.public_at === record.public_at) return { status: "unchanged", record: current };
+  // #12869: mesma edição e link sem nada a melhorar (mesmo instante por `Date.parse`, ou fonte
+  // pior que a gravada) = `unchanged`: o registro do KV fica como está.
+  if (current && current.aammdd === record.aammdd && current.url === record.url && !shouldReplaceLatestVideo(current, record)) return { status: "unchanged", record: current };
   if (!shouldReplaceLatestVideo(current, record)) return { status: "older", record, current: current! };
   if (!input.apply) return { status: "would_write", record, current };
   await input.kv.put(LATEST_VIDEO_KV_KEY, JSON.stringify(record));

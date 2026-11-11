@@ -65,6 +65,13 @@ export function latestVideoBioLink(network: LatestVideoBioNetwork, origin = "htt
   return u.toString();
 }
 
+/**
+ * #12869: origem do `public_at` (ver `resolveEditionHorizontalPublicAt` em
+ * `scripts/set-latest-video-redirect.ts`).
+ */
+export const LATEST_VIDEO_PUBLIC_AT_SOURCES = ["upload", "upload_immediate", "edition_default"] as const;
+export type LatestVideoPublicAtSource = (typeof LATEST_VIDEO_PUBLIC_AT_SOURCES)[number];
+
 export interface LatestVideoRecord {
   /** `https://youtu.be/{id}`. */
   url: string;
@@ -79,6 +86,14 @@ export interface LatestVideoRecord {
    * Enquanto não passa, o redirect usa `previous` (ou a lista do canal).
    */
   public_at?: string;
+  /**
+   * #12869: de onde veio o `public_at` — `upload`/`upload_immediate` (o
+   * registro do upload deste vídeo, autoritativo) ou `edition_default` (as
+   * 06:00 BRT presumidas do caminho de reserva). Um `edition_default` nunca
+   * substitui um `public_at` vindo do upload (`shouldReplaceLatestVideo`).
+   * Ausente = registro anterior ao #12869.
+   */
+  public_at_source?: LatestVideoPublicAtSource;
   /**
    * #12801: o horizontal que o link da bio servia antes deste registro (sem
    * `previous` aninhado: um nível só). Cobre a janela entre o upload da
@@ -102,6 +117,10 @@ function parseRecordFields(v: unknown): LatestVideoPrevious | null {
   const out: LatestVideoPrevious = { url: r.url, aammdd: r.aammdd, updated_at: typeof r.updated_at === "string" ? r.updated_at : "" };
   // #12801: `public_at` ilegível é descartado (o registro conta como já público, o comportamento de antes).
   if (typeof r.public_at === "string" && !Number.isNaN(Date.parse(r.public_at))) out.public_at = r.public_at;
+  // #12869: fonte desconhecida é descartada (conta como registro anterior ao campo).
+  if (typeof r.public_at_source === "string" && (LATEST_VIDEO_PUBLIC_AT_SOURCES as readonly string[]).includes(r.public_at_source)) {
+    out.public_at_source = r.public_at_source as LatestVideoPublicAtSource;
+  }
   return out;
 }
 
@@ -143,16 +162,52 @@ export function effectiveLatestVideoRecord(record: LatestVideoRecord | null, now
 }
 
 /**
+ * Pure (#12869): o mesmo instante de publicação? Compara por `Date.parse`, não
+ * como texto: a YouTube API devolve `publishAt` sem milissegundos
+ * (`...T09:00:00Z`) e o default da edição sai de `toISOString()` (`.000Z`).
+ * Os dois ausentes = iguais (já público).
+ */
+export function sameLatestVideoPublicAt(a: string | undefined, b: string | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return Date.parse(a) === Date.parse(b);
+}
+
+/**
+ * Pure (#12869): confiança no `public_at` do registro. O do upload (com ou sem
+ * `publishAt`) vale 2; o presumido da edição vale 1. Registro anterior ao
+ * #12869, sem `public_at_source`: com `public_at` pode ter vindo do upload,
+ * então vale 2 (conservador: o presumido não o sobrescreve); sem `public_at`
+ * (anterior ao #12801) vale 0 e qualquer fonte o completa (#12863).
+ */
+function publicAtRank(r: LatestVideoPrevious): number {
+  if (r.public_at_source === "upload" || r.public_at_source === "upload_immediate") return 2;
+  if (r.public_at_source === "edition_default") return 1;
+  return r.public_at !== undefined ? 2 : 0;
+}
+
+/**
  * Pure: o registro novo substitui o atual? Só quando a edição é igual ou mais
  * nova (AAMMDD compara como texto) e algo mudou: a edição, o link ou, na
  * mesma edição e link, o `public_at` (#12863 — o `publishAt` real que chega
  * depois das 06:00 presumidas do caminho de reserva, ou registro anterior ao
  * #12801 sem `public_at`). Registro atual ilegível (`null`) é substituído.
+ *
+ * #12869: na mesma edição e link, a fonte do `public_at` só sobe — um
+ * `edition_default` (cópia do Drive atrasada, registro do upload ilegível de
+ * passagem) nunca troca o `publishAt` que veio do upload, senão o link da bio
+ * iria para o vídeo ainda privado entre as 06:00 presumidas e o real. O
+ * instante compara por `Date.parse`; mesmo instante com fonte melhor grava,
+ * para o registro passar a proteger o valor.
  */
 export function shouldReplaceLatestVideo(current: LatestVideoRecord | null, next: LatestVideoRecord): boolean {
   if (!current) return true;
   if (next.aammdd < current.aammdd) return false;
-  return next.aammdd !== current.aammdd || next.url !== current.url || next.public_at !== current.public_at;
+  if (next.aammdd !== current.aammdd || next.url !== current.url) return true;
+  const rankNext = publicAtRank(next);
+  const rankCurrent = publicAtRank(current);
+  if (rankNext < rankCurrent) return false;
+  if (!sameLatestVideoPublicAt(next.public_at, current.public_at)) return true;
+  return rankNext > rankCurrent;
 }
 
 /**
