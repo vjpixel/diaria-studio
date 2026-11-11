@@ -103,12 +103,45 @@ export function resolveLinkedInDocumentTitle(
     }
   }
   if (!title) title = `diar.ia.br ${editionDate} — destaque ${Number.isFinite(n) ? n : destaque}`;
+  return clampLinkedInDocumentTitle(title);
+}
+
+/** Pure: corta o título no teto do Worker (`LINKEDIN_DOCUMENT_TITLE_MAX`). */
+export function clampLinkedInDocumentTitle(raw: string): string {
+  const title = plainTitle(raw);
   return title.length > LINKEDIN_DOCUMENT_TITLE_MAX ? title.slice(0, LINKEDIN_DOCUMENT_TITLE_MAX - 1).trimEnd() + "…" : title;
 }
 
 /** Uploader do PDF (seam de teste). Recebe o arquivo local e a chave do KV;
  *  devolve a URL pública https. */
 export type LinkedInPdfUploader = (filePath: string, kvKey: string) => Promise<string>;
+
+/**
+ * Gera o PDF de um carrossel já hospedado, grava em `pdfPath` e sobe pro KV
+ * com a chave que `kvKeyFor(md5)` devolve (content-addressed: um PDF
+ * regenerado nunca reaproveita a URL do anterior, #12371). Miolo comum da
+ * diária e da Retrospectiva mensal (#12584 item 5).
+ */
+export async function prepareLinkedInCarouselDocument(opts: {
+  pdfPath: string;
+  kvKeyFor: (md5Hex: string) => string;
+  carouselImageUrls: readonly string[];
+  title: string;
+  upload: LinkedInPdfUploader;
+  buildPdf?: (urls: readonly string[]) => Promise<Uint8Array>;
+}): Promise<LinkedInDocument> {
+  const pdf = await (opts.buildPdf ?? ((urls) => buildCarouselPdf(urls)))(opts.carouselImageUrls);
+  mkdirSync(dirname(opts.pdfPath), { recursive: true });
+  writeFileSync(opts.pdfPath, pdf);
+  const md5 = createHash("md5").update(pdf).digest("hex");
+  const url = await opts.upload(opts.pdfPath, opts.kvKeyFor(md5));
+  if (!/^https:\/\//.test(url)) throw new Error(`URL do PDF não é https: ${url}`);
+  const title = clampLinkedInDocumentTitle(opts.title);
+  // O Worker recusa `document_title` vazio; recusar aqui desce pro carrossel
+  // como `pdf_failed`, sem gastar o POST.
+  if (!title) throw new Error("document_title vazio");
+  return { url, title };
+}
 
 /**
  * Gera o PDF dos slides do destaque, grava em
@@ -125,16 +158,15 @@ export async function prepareDailyLinkedInDocument(opts: {
   upload: LinkedInPdfUploader;
   buildPdf?: (urls: readonly string[]) => Promise<Uint8Array>;
 }): Promise<LinkedInDocument> {
-  const { editionDir, destaque, carouselImageUrls, title } = opts;
-  const pdf = await (opts.buildPdf ?? ((urls) => buildCarouselPdf(urls)))(carouselImageUrls);
-  const pdfPath = resolve(editionDir, "_internal", `06-linkedin-${destaque}-carousel.pdf`);
-  mkdirSync(dirname(pdfPath), { recursive: true });
-  writeFileSync(pdfPath, pdf);
-  const md5 = createHash("md5").update(pdf).digest("hex");
-  const kvKey = cloudflareKvKey(editionDir, `linkedin-${destaque}-carousel.pdf`, md5);
-  const url = await opts.upload(pdfPath, kvKey);
-  if (!/^https:\/\//.test(url)) throw new Error(`URL do PDF não é https: ${url}`);
-  return { url, title };
+  const { editionDir, destaque } = opts;
+  return prepareLinkedInCarouselDocument({
+    pdfPath: resolve(editionDir, "_internal", `06-linkedin-${destaque}-carousel.pdf`),
+    kvKeyFor: (md5) => cloudflareKvKey(editionDir, `linkedin-${destaque}-carousel.pdf`, md5),
+    carouselImageUrls: opts.carouselImageUrls,
+    title: opts.title,
+    upload: opts.upload,
+    buildPdf: opts.buildPdf,
+  });
 }
 
 /** Base do payload (texto, horário, destaque) compartilhada pelos degraus. */
@@ -166,8 +198,43 @@ export interface LinkedInDailyQueueBase {
  * carrossel enfileirado em seguida seriam duas entries, dois posts. Com a
  * mesma chave o Worker troca o conteúdo da entry e sai um post só.
  */
-export function linkedInDailyIdempotencyKey(edition: string, destaque: string, opts: { isTest?: boolean } = {}): string {
-  const key = `${opts.isTest ? "linkedin-daily-test" : "linkedin-daily"}:${edition}:${destaque}:main`;
+export function linkedInDailyIdempotencyKey(
+  edition: string,
+  destaque: string,
+  opts: { isTest?: boolean; namespace?: string } = {},
+): string {
+  const ns = opts.namespace ?? "linkedin-daily";
+  const key = `${opts.isTest ? `${ns}-test` : ns}:${edition}:${destaque}:main`;
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new Error(`idempotency_key inválida para o Worker: ${JSON.stringify(key)}`);
+  return key;
+}
+
+/**
+ * #12584 item 5 — namespace da chave idempotente para diretório com forma de
+ * edição que NÃO é a edição diária. A Etapa 6 da `/diaria-anual` roda o
+ * `publish-linkedin.ts` em lotes `data/annual/{slug}/social/{AAMMDD}/`
+ * (`prep-annual-social.ts`), com `d1..d3` e o AAMMDD do dia do post: sem
+ * namespace próprio, a chave (`linkedin-daily:{AAMMDD}:d1:main`) seria a
+ * MESMA do D1 da diária daquele dia, e o 2º enfileiramento substituiria o 1º
+ * no Worker (#10917: mesma chave, conteúdo novo = regrava a entry), apagando
+ * um dos dois posts. Pure: `linkedin-annual-{slug}` para o lote da anual;
+ * `undefined` (namespace da diária, inalterado) para todo o resto.
+ */
+export function linkedInIdempotencyNamespaceForDir(dir: string): string | undefined {
+  const m = /(?:^|[\\/])annual[\\/]([^\\/]+)[\\/]social[\\/]\d{6}[\\/]*$/.exec(dir);
+  if (!m) return undefined;
+  const slug = m[1].replace(/[^A-Za-z0-9._-]/g, "-");
+  return `linkedin-annual-${slug}`.slice(0, 80);
+}
+
+/**
+ * #12584 item 5 — chave idempotente do post da Retrospectiva mensal na página
+ * (uma por história). As 3 histórias do ciclo usam o mesmo `destaque`
+ * (`especial-retrospectiva`), então a chave leva a história: sem isso, os 3
+ * posts cairiam na mesma entry do Worker e sairia um só.
+ */
+export function retrospectivaLinkedInIdempotencyKey(cycle: string, historia: string): string {
+  const key = `linkedin-retrospectiva:${cycle}:${historia}:main`;
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new Error(`idempotency_key inválida para o Worker: ${JSON.stringify(key)}`);
   return key;
 }
