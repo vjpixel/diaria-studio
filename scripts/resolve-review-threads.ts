@@ -104,7 +104,8 @@ export interface ReviewThread {
  * - `high`: P0/P1, ou confiança alta em qualquer redação reconhecível — o merge
  *   espera o editor/fixer (CLAUDE.md, #5251: finding de alta confiança pendente
  *   segura o merge);
- * - `low`: P2/P3 com confiança média/baixa declarada e nenhum sinal de `high`;
+ * - `low`: P2/P3 com confiança média/baixa declarada e nenhum sinal de `high`,
+ *   ou P2/P3 que se declara nota informativa (#12677, `isInformativeNote`);
  * - `untagged`: sem severidade reconhecível, OU P2/P3 sem confiança média/baixa
  *   reconhecível (#11575) — fail-closed, tratado como `high` pelo modo
  *   `--low-severity-only` (nunca resolvido às cegas).
@@ -161,6 +162,51 @@ export function findingSeverityHeader(text: string): { tag: string; header: stri
   return { tag: m[0].toUpperCase(), header };
 }
 
+/** #12677 — rótulo de nota informativa no prefixo: "Confiança alta, P3, nota:", "Nota, P3:". */
+const NOTE_LABEL = new RegExp(`${NB}(?:nota|informativ[oa])${NA}`, "iu");
+/**
+ * #12677 — frase de fecho "Não bloqueia o merge." como última frase da linha:
+ * tem de começar a frase (início da linha ou depois de `.`/`!`/`?`) e terminar
+ * logo depois de "merge". "o gate não bloqueia o merge quando o CI falha"
+ * (descrição de defeito) não casa.
+ *
+ * #12722 — sem flag `m`: a regex só roda contra a ÚLTIMA linha não vazia do
+ * corpo (`lastBodyLine`). Com `m`, a frase fechando uma linha do MEIO
+ * ("Confiança alta, P2: o check sai 0 com o CI vermelho. Não bloqueia o
+ * merge.\n\nO alarme também não dispara.") rebaixava um P2 real para `low`.
+ */
+const DOES_NOT_BLOCK_SENTENCE = /(?:^|[.!?]\s+)n[ãa]o\s+bloqueia\s+(?:o\s+)?merge\s*[.!]?\s*$/iu;
+
+/**
+ * #12722 — última linha não vazia do corpo, sem comentários HTML (o marcador
+ * `<!-- diaria-auto-review -->` que o helper acrescenta no fim não conta como
+ * linha do finding).
+ */
+function lastBodyLine(text: string): string {
+  const lines = text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .split(/\r?\n/)
+    .filter((l) => l.trim().length > 0);
+  return lines.length > 0 ? lines[lines.length - 1].trim() : "";
+}
+
+/**
+ * #12677 — o finding P2/P3 se declara nota sem defeito (deploy pendente
+ * pós-merge, escopo parcial já declarado como REFS, limite aceito). Dois
+ * sinais, ambos explícitos e escritos pelo autor do self-review:
+ *
+ * - rótulo `nota`/`informativo` no prefixo estruturado (a forma que o item 7
+ *   de `context/overnight-dispatch-rules.md` pede);
+ * - a frase "Não bloqueia o merge." fechando a ÚLTIMA linha do corpo (forma
+ *   dos comentários da rodada 261110c, anteriores ao rótulo). No meio do
+ *   corpo ela não vale (#12722): o que vem depois pode descrever um defeito.
+ *
+ * Chamada só depois do corte de P0/P1: nota nunca rebaixa P0/P1.
+ */
+function isInformativeNote(header: string, text: string): boolean {
+  return NOTE_LABEL.test(header) || DOES_NOT_BLOCK_SENTENCE.test(lastBodyLine(text));
+}
+
 export function classifyFindingSeverity(body: string | undefined): FindingSeverity {
   if (typeof body !== "string") return "untagged";
   // Markdown fora: `**Confiança:** alta`, ``Confiança `alta` `` e `_alta_` viram texto plano.
@@ -170,6 +216,10 @@ export function classifyFindingSeverity(body: string | undefined): FindingSeveri
   const parsed = findingSeverityHeader(text);
   if (!parsed) return "untagged";
   if (parsed.tag === "P0" || parsed.tag === "P1") return "high";
+  // #12677: nota informativa P2/P3 declarada pelo próprio self-review sai
+  // `low` mesmo com confiança alta — a confiança ali é de o fato ser verdade,
+  // não de haver defeito a corrigir antes do merge.
+  if (isInformativeNote(parsed.header, text)) return "low";
   if (confidenceNear(parsed.header, HIGH_VALUE)) return "high";
   // P2/P3: só é `low` com a confiança não-alta declarada; sem ela, retido.
   return confidenceNear(parsed.header, LOWER_VALUE) ? "low" : "untagged";

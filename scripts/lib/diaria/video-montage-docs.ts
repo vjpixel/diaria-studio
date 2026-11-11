@@ -29,6 +29,8 @@ import {
   clockTime,
   decideTakes,
   defaultSequences,
+  openingBlockOf,
+  type OpeningBlock,
   describeCollapsedSuspect,
   isBlockKey,
   itemInTarget,
@@ -71,7 +73,8 @@ export const BLOCK_LABELS: Readonly<Record<BlockKey, string>> = {
 };
 
 const TARGET_LABELS: Readonly<Record<SequenceTarget, string>> = {
-  youtube: "Horizontal YouTube",
+  // #12609: o horizontal não vai só para o YouTube.
+  youtube: "Horizontal",
   instagram: "Vertical Instagram",
   "outras-redes": "Vertical",
 };
@@ -86,7 +89,7 @@ export function targetLabel(spec: Pick<SequenceSpec, "target" | "corte">): strin
   return spec.corte !== undefined ? `Vertical ${spec.corte}` : TARGET_LABELS[spec.target];
 }
 
-/** "Horizontal YouTube 1920x1080" etc. */
+/** "Horizontal 1920x1080" etc. */
 export function versionLabel(spec: SequenceSpec): string {
   return `${targetLabel(spec)} ${spec.width}x${spec.height}`;
 }
@@ -332,7 +335,7 @@ export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[])
 /** Molde do plano: todos os blocos vazios e a listagem dos segmentos como nota (`_segmentos`), para a skill classificar. */
 export function decupagemPlanTemplate(edition: string, segments: Segment[], voices?: Array<VoiceMark | null>): Record<string, unknown> {
   return {
-    _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou. Um segmento fica numa linha só, exceto 'usar' repetido entre resumo e resumo_curto ou entre os CTAs.",
+    _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou. Um segmento fica numa linha só, exceto 'usar' repetido entre resumo e resumo_curto ou entre os CTAs. A frase falada que abre o vídeo vai em gancho (abre as duas versões); titulo só quando o título é lido em voz alta (#12586).",
     _criterio:
       "Uma tomada por frase, decidida nesta ordem: (1) a aprovada pela direção; (2) a que emenda com a frase seguinte do roteiro; (3) a última completa. As outras 'cortar' com o motivo. 'alternativa' só quando nenhum critério decide, depois de retranscrever o trecho (retranscribe --from --to), com a justificativa.",
     _segmentos: segmentLines(segments, voices),
@@ -659,6 +662,16 @@ export function blocksFromDecupagem(doc: DecupagemDoc): Record<BlockKey, Array<{
   return out;
 }
 
+/**
+ * O bloco de abertura da decupagem (#12586), lido do plano como a skill o
+ * escreveu, ANTES do `proposeGancho`: o gancho escrito no plano é a frase
+ * falada de abertura e abre as duas versões; o gancho proposto (a 1ª frase do
+ * resumo, #12093) é só do horizontal e não muda a ordem da vertical.
+ */
+export function decupagemOpeningBlock(planned: DecupagemDoc): OpeningBlock {
+  return openingBlockOf(blocksFromDecupagem(planned));
+}
+
 /** As linhas "alternativa" da decupagem, por bloco: viram as opções B, C… do roteiro final. */
 export function alternativesFromDecupagem(doc: DecupagemDoc): Partial<Record<BlockKey, Array<{ start: number; end: number; text: string }>>> {
   const out: Partial<Record<BlockKey, Array<{ start: number; end: number; text: string }>>> = {};
@@ -730,6 +743,12 @@ export function roteiroMarkdown(
      * tabela). Ausente = sem card (`ctaCard: false` no blocks.json).
      */
     ctaCardShare?: Readonly<Record<string, string>>;
+    /**
+     * #12585: o título de cada vídeo (chave = `sequenceKey`), já com a
+     * origem entre parênteses, numa linha logo abaixo do cabeçalho da versão.
+     * Ausente = sem a linha.
+     */
+    videoTitles?: Readonly<Record<string, string>>;
   } = {},
 ): string {
   const lines = [`# Roteiro final ${edition} (${plans.length} versões)`, ""];
@@ -740,6 +759,8 @@ export function roteiroMarkdown(
   lines.push("Nenhuma versão leva \"Por que isso importa?\" (decisão do editor, 26/10/2026).", "");
   for (const p of plans) {
     lines.push(`## ${versionLabel(p.spec)}: ${p.spec.name} (${clockTime(p.durationFrames / fps)})`, "");
+    const videoTitle = opts.videoTitles?.[sequenceKey(p.spec)];
+    if (videoTitle !== undefined) lines.push(`**Título do vídeo:** ${videoTitle}`, "");
     const over = shortsWarning(p, fps);
     if (over) lines.push(`**[aviso] ${over}**`, "");
     // Duração-alvo da vertical (#11757): aviso + as frases sugeridas, para o editor decidir aqui e não no Premiere.

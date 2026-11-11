@@ -105,6 +105,14 @@ wait_pr_checks() {
   # pending (um rc=3 transitório não o zera), usado pra escolher rc=7 (fila)
   # vs rc=1 (sem progresso).
   local queued_secs=0 last_queued=0 last_poll_at queued
+  # #12733: o teto só é avaliado depois da 1ª leitura do gate. Sem isso, com
+  # teto de 1s, um `date +%s` que vira de segundo entre `start=` e o 1º
+  # `now=` dava TIMEOUT (rc=1) sem nunca ter consultado o gate — inclusive
+  # quando a fila de runner (rc=7) ou um "pass" (rc=0) seria a resposta
+  # certa. Foi o vermelho intermitente do job Shell tests na PR #12717.
+  # Consequência deliberada: teto 0 também faz 1 leitura antes do TIMEOUT
+  # (nenhum chamador do repo passa teto 0).
+  local polled=0
 
   # O teto absoluto nunca fica abaixo do teto normal (chamador que passou
   # timeout > ceiling mantém o comportamento pré-#10578).
@@ -127,7 +135,7 @@ wait_pr_checks() {
     if [ "$deadline" -gt "$queue_ceiling_secs" ]; then
       deadline="$queue_ceiling_secs"
     fi
-    if [ "$elapsed" -ge "$deadline" ]; then
+    if [ "$polled" -eq 1 ] && [ "$elapsed" -ge "$deadline" ]; then
       if [ "$last_queued" -gt 0 ]; then
         echo "[wait-pr-checks] FILA: PR #$pr com $last_queued check(s) ainda na fila de runner do GitHub após ${elapsed}s (teto absoluto ${queue_ceiling_secs}s, ${queued_secs}s em fila) — nenhuma falha; NÃO é CI vermelho nem ci_timeout, reaguardar (#10578). Conferir: gh pr checks $pr" >&2
         return 7
@@ -139,6 +147,7 @@ wait_pr_checks() {
     LAST_GATE_OUTPUT=""
     check_pr_checks_once "$pr"
     rc=$?
+    polled=1
 
     # #8425: rc=6 (gh_incompatible_flags) é PERMANENTE, nunca transitório —
     # aborta na 1ª ocorrência, sem passar pelo `error_streak` do rc=3 nem

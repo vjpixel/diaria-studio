@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { buildMarkEntry, parseMarkArg } from "../scripts/publish-shorts.ts";
 import { upsertShortEntry, type ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 
-const SKILL = readFileSync(join(import.meta.dirname, "..", ".claude", "skills", "diaria-publica-video", "SKILL.md"), "utf8");
+const SKILL = readFileSync(join(import.meta.dirname, "..", ".claude", "skills", "diaria-publica", "SKILL.md"), "utf8");
 
 function section(start: string, end: string): string {
   const i = SKILL.indexOf(start);

@@ -73,7 +73,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 
-import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import {
   HUB_KEYWORD_PATTERNS,
   loadPosts,
@@ -439,7 +439,16 @@ export const HUBS_WEEKLY_REGEN_USAGE =
   "Uso: npx tsx scripts/hubs-weekly-regen.ts [--dry-run] [--session-id <id>] [--help]\n" +
   "  --dry-run         planeja sem commit/push/deploy\n" +
   "  --session-id <id> sessão dona do merge lock (obrigatório em regen com mudança de dados)\n" +
-  "  --help, -h        mostra esta ajuda e sai sem executar o regen\n";
+  "  --help, -h        mostra esta ajuda e sai sem executar o regen\n" +
+  "Flag desconhecida, argumento solto ou --session-id sem valor sai 1 sem rodar nada (#12528).";
+
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12528). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/hubs-weekly-regen.ts",
+  booleans: ["dry-run"],
+  values: ["session-id"],
+  usage: HUBS_WEEKLY_REGEN_USAGE,
+};
 
 /**
  * Parseia os args de CLI deste script (#8932). Isolado do `main()` pra dar
@@ -460,11 +469,14 @@ export function parseHubsWeeklyRegenArgs(
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const { dryRun, sessionId, help } = parseHubsWeeklyRegenArgs(argv);
-  if (help) {
-    process.stdout.write(HUBS_WEEKLY_REGEN_USAGE);
+  // #12528: `applyCliAction` cobre o `--help` (#8931, sai 0 com o uso) e
+  // recusa typo (`--dryrun`), que antes caía em silêncio no regen REAL.
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
     return;
   }
+  const { dryRun, sessionId } = parseHubsWeeklyRegenArgs(argv);
   dryRunActive = dryRun;
 
   const cachePath = resolve(ROOT, "data", "beehiiv-cache", "posts");

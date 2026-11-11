@@ -124,9 +124,9 @@ export function describePendingApproval(
   const since = read.kind === "pending" ? `desde ${read.marker.at} (${read.marker.source})` : `marcador ilegível: ${read.reason}`;
   const stale = now ? pendingApprovalStaleNote(read, aammdd, now) : null;
   return (
-    `o /diaria-publica-video ficou com o horizontal à espera do "pode publicar" do editor ${since} (#12122). ` +
+    `o /diaria-publica ficou com o horizontal à espera do "pode publicar" do editor ${since} (#12122). ` +
     (stale ? `ATENÇÃO (#12287): ${stale}. ` : "") +
-    `Responder o "pode publicar" na skill (ou rodar /diaria-publica-video ${aammdd} de novo); ` +
+    `Responder o "pode publicar" na skill (ou rodar /diaria-publica ${aammdd} de novo); ` +
     `vídeo abandonado: marcar a edição sem vídeo (set-d1-no-video.ts ${aammdd})`
   );
 }

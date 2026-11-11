@@ -44,6 +44,7 @@ import {
 } from "./lib/fact-check-staleness.ts";
 import { extractDestaqueUrlsByNumber } from "./match-prompts-to-destaques.ts";
 import { canonicalize } from "./lib/url-utils.ts";
+import type { SourceCompleteness } from "./lib/diaria/paywall-preview.ts";
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -373,6 +374,18 @@ export function formatUnverifiedSources(
         `    D${e.destaque}: ${e.status}${e.erro ? ` (${String(e.erro).replace(/\s+/g, " ")})` : ""} — ${e.url}` +
           (n > 0 ? ` · ${n} claim(s) sem verificação na fonte` : ""),
       );
+    }
+  }
+  // (#12537) Baixou com 200, mas o texto é a prévia do paywall: o fact-checker
+  // checou contra os primeiros parágrafos, não contra o artigo inteiro.
+  const previews = (manifest ?? []).filter(
+    (e) => e && typeof e.destaque === "number" && e.status === "ok" && e.completeness === "preview",
+  );
+  if (previews.length > 0) {
+    out.push("  ⚠️  Fonte principal baixada só como prévia de paywall (#12537) — checagem contra texto incompleto:");
+    for (const e of previews) {
+      const sig = (e.paywall_signals ?? []).join(", ");
+      out.push(`    D${e.destaque}: prévia${typeof e.words === "number" ? ` (${e.words} palavras)` : ""}${sig ? ` · ${sig}` : ""} — ${e.url}`);
     }
   }
   const unreachable = claims.filter((c) => c.verdict === "SOURCE_UNREACHABLE");
@@ -1061,7 +1074,17 @@ export async function prefetchHighlightSources(
       const path = join(dir, `d${i + 1}.txt`);
       writeFileSync(path, r.text, "utf8");
       out.push({ destaque: i + 1, url, path });
-      manifest.push({ destaque: i + 1, url, status: "ok", erro: null, bytes: r.bytes, fetched_at });
+      manifest.push({
+        destaque: i + 1,
+        url,
+        status: "ok",
+        erro: null,
+        bytes: r.bytes,
+        fetched_at,
+        completeness: r.paywall.completeness,
+        paywall_signals: r.paywall.signals,
+        words: r.paywall.words,
+      });
     } else {
       out.push({ destaque: i + 1, url, error: r.message });
       manifest.push({ destaque: i + 1, url, status: r.kind === "blocked" ? "blocked" : "error", erro: r.message, bytes: 0, fetched_at });
@@ -1078,6 +1101,16 @@ export interface ManifestEntry {
   erro: string | null;
   bytes: number;
   fetched_at: string;
+  /**
+   * (#12537) Só em `status: "ok"`: `preview` = o texto baixado é a prévia que o
+   * paywall serve, não o artigo inteiro (`lib/diaria/paywall-preview.ts`).
+   * Ausente em manifest anterior ao #12537 (lido como desconhecido).
+   */
+  completeness?: SourceCompleteness;
+  /** (#12537) Sinais de paywall achados na página (vazio = página aberta). */
+  paywall_signals?: string[];
+  /** (#12537) Palavras do texto extraído. */
+  words?: number;
 }
 
 function extractEditionId(editionDir: string): string {

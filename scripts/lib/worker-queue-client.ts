@@ -168,6 +168,72 @@ export async function deleteFromWorkerQueue(
   return { deleted: true, alreadyGone: false, key };
 }
 
+/** Resultado de `findWorkerQueueEntryByIdempotencyKey` (#12664). */
+export type IdempotencyLookupResult =
+  | { status: "found"; key: string }
+  /** Toda tentativa leu a fila e nenhuma trouxe a chave. */
+  | { status: "absent" }
+  /** Alguma tentativa não conseguiu ler a fila: a ausência não está provada. */
+  | { status: "error"; error: string };
+
+export interface IdempotencyLookupOptions {
+  /** Leituras de `GET /list`. Default 3: o KV leva ~20s pra listar uma entry nova (#6016). */
+  maxAttempts?: number;
+  /** Espera entre leituras (ms). Default 10000. */
+  backoffMs?: number;
+  /** Injetável pra teste. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * #12664 — procura na fila do Worker (`GET /list`) a entry de uma
+ * `idempotency_key`. Usado depois de um POST que terminou em 5xx/timeout:
+ * o Worker pode ter gravado a entry e perdido a resposta, e publicar por outro
+ * caminho por cima duplicaria o post.
+ *
+ * `/list` sai do KV, que demora a listar uma entry recém-gravada; por isso a
+ * leitura se repete. Achou em qualquer tentativa: `found`. `absent` só quando
+ * TODAS as leituras deram certo e nenhuma trouxe a chave. Qualquer leitura com
+ * erro devolve `error` (nunca lança): o caller não pode tratar isso como
+ * ausência.
+ */
+export async function findWorkerQueueEntryByIdempotencyKey(
+  workerUrl: string,
+  token: string,
+  idempotencyKey: string,
+  opts: IdempotencyLookupOptions = {},
+): Promise<IdempotencyLookupResult> {
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const backoffMs = opts.backoffMs ?? 10_000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const listUrl = workerUrl.replace(/\/+$/, "") + "/list";
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1) await sleep(backoffMs);
+    try {
+      const res = await fetch(listUrl, {
+        headers: { "X-Diaria-Token": token },
+        signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        return { status: "error", error: `Worker /list HTTP ${res.status}: ${body.slice(0, 200)}` };
+      }
+      const parsed = (await res.json()) as { items?: unknown };
+      if (!Array.isArray(parsed.items)) {
+        return { status: "error", error: "Worker /list sem `items` no corpo" };
+      }
+      for (const item of parsed.items as Array<Record<string, unknown>>) {
+        if (item && item.idempotency_key === idempotencyKey && typeof item.key === "string") {
+          return { status: "found", key: item.key };
+        }
+      }
+    } catch (e) {
+      return { status: "error", error: `Worker /list: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+  return { status: "absent" };
+}
+
 /**
  * WorkerQueueError (#8303)
  *
@@ -185,13 +251,38 @@ export async function deleteFromWorkerQueue(
 export class WorkerQueueError extends Error {
   readonly status: number;
   readonly code?: string;
+  /** Corpo da resposta inteiro (a mensagem corta em 300 chars). #12661: o 409
+   *  do enqueue idempotente traz `error` e `key` depois de uma `message` longa. */
+  readonly body: string;
 
   constructor(status: number, body: string, code?: string) {
     super(`Worker queue HTTP ${status}: ${body.slice(0, 300)}`);
     this.name = "WorkerQueueError";
     this.status = status;
     this.code = code;
+    this.body = body;
   }
+}
+
+/**
+ * #12661 — 409 do enqueue idempotente. `already_fired`/`fire_in_progress`: o
+ * post desta chave já saiu ou está saindo, então é sucesso (nada a
+ * enfileirar) e devolve a key da entry. `send_unknown` (disparo ambíguo, foi
+ * pra DLQ), 409 ilegível e qualquer outro erro devolvem `null`: o chamador
+ * PROPAGA, porque o post pode ou não ter saído e nenhum degrau publica por cima.
+ * Compartilhado pela diária (`linkedin-daily-document.ts`) e pelo semanal
+ * (`publish-weekly-social.ts`, #12372 item 3).
+ */
+export function idempotentConflictKey(e: unknown): string | null {
+  if (!(e instanceof WorkerQueueError) || e.status !== 409) return null;
+  let parsed: { error?: unknown; key?: unknown };
+  try {
+    parsed = JSON.parse(e.body) as { error?: unknown; key?: unknown };
+  } catch {
+    return null;
+  }
+  if (parsed.error !== "already_fired" && parsed.error !== "fire_in_progress") return null;
+  return typeof parsed.key === "string" && parsed.key !== "" ? parsed.key : null;
 }
 
 export async function postToWorkerQueue(

@@ -528,3 +528,15 @@ describe("Ferramentas dos cursos da Stack no gate de LANÇAMENTOS (#10952)", () 
     assert.equal(domainFor("mova o cursor do mouse para o canto"), undefined);
   });
 });
+
+describe("research.meta.ai no gate de LANÇAMENTOS (#12708)", () => {
+  it("research.meta.ai está entre os domínios oficiais de lançamento", () => {
+    assert.ok(lancamentoDomains().has("research.meta.ai"));
+  });
+  it("isOfficialLancamentoUrl aceita o post do Muse Ember no blog de pesquisa da Meta", () => {
+    assert.equal(isOfficialLancamentoUrl("https://research.meta.ai/blog/muse-ember"), true);
+  });
+  it("cobertura de imprensa sobre a Meta segue NÃO-oficial", () => {
+    assert.equal(isOfficialLancamentoUrl("https://thenewstack.io/meta-muse-ember-launch"), false);
+  });
+});

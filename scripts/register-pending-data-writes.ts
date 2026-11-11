@@ -30,13 +30,14 @@
  * Exit codes:
  *   0 = nada a registrar, ou registrado (issue criada/reusada/reaberta)
  *   1 = havia escrita pendente e a issue NÃO foi registrada (`failed`)
- *   2 = uso inválido
+ *   2 = uso inválido (inclui flag desconhecida e `--pr` sem valor, #12528;
+ *       `--help` sai 0 com o uso, sem consultar o `gh`)
  *   3 = PR ilegível (`gh pr view` falhou ou JSON inesperado)
  * Quem chama (o `continuo-pr-review.sh`) trata 1 e 3 como erro de infra do
  * tick, fail-soft: nunca desfaz nem bloqueia o merge, que já aconteceu.
  */
 
-import { isMainModule, getIntArg } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, isMainModule, getIntArg } from "./lib/cli-args.ts";
 import { extractPendingDataWrites, type PendingDataWrite } from "./lib/pending-data-writes.ts";
 import { defaultAlarmGhRun, ensureAlarmIssue, type AlarmFinding, type GhRunFn } from "./lib/alarm-issues.ts";
 
@@ -137,8 +138,30 @@ export function registerPendingDataWrites(opts: {
   return { outcome: "registered", pr: opts.pr, writes, issue: res.issueNumber, url: res.url, action: res.action };
 }
 
+/**
+ * Flags aceitas (#12528). Erro de argv sai 2 (o "uso inválido" de sempre deste
+ * script), não o 1 do helper: o 1 aqui significa "issue não registrada".
+ */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/register-pending-data-writes.ts",
+  booleans: ["dry-run"],
+  values: ["pr"],
+  numeric: ["pr"],
+  usage: [
+    "uso: npx tsx scripts/register-pending-data-writes.ts --pr N [--dry-run] [--help | -h]",
+    "",
+    "Sem --dry-run abre/reusa a issue de alarme da escrita pendente da PR.",
+    "Flag desconhecida, argumento solto ou --pr sem número sai 2 sem rodar nada (#12528).",
+  ].join("\n"),
+};
+
 function main(): void {
   const argv = process.argv.slice(2);
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) {
+    process.exit(cliExit === 0 ? 0 : 2);
+    return;
+  }
   let pr: number | undefined;
   try {
     pr = getIntArg(argv, "pr", { min: 1 });

@@ -1718,29 +1718,84 @@ export const YOUTUBE_SCALES: readonly [number, number] = [60, 85];
 export const YOUTUBE_EYE_FRACTION = 1 / 3;
 
 /**
+ * Nome da sequência (e do export) do horizontal (#12609): `Diaria comentada
+ * horizontal_V{n}`, simétrico com `Diaria comentada_Vertical_V{n}` (o
+ * horizontal não vai só para o YouTube). O antigo `Diaria comentada_Youtube_V{n}`
+ * segue valendo no `blocks.json` e no fetch (`videoTargetOf`).
+ */
+export function horizontalSequenceName(version = "V1"): string {
+  return `Diaria comentada horizontal_${version}`;
+}
+
+/**
+ * A frase falada que abre o vídeo (#12586). Desde a 261109 o editor abre as
+ * duas versões com um gancho falado ("A inteligência dos Estados Unidos
+ * suspeita que…") e não lê mais o título: essa frase vai no bloco `gancho`, e
+ * "Título" fica para o texto na tela e nos metadados. `titulo` com item é o
+ * modelo de antes (título lido em voz alta, com o gancho do #12093, a 1ª frase
+ * do resumo, só no horizontal) e continua valendo.
+ */
+export type OpeningBlock = "titulo" | "gancho";
+
+/**
+ * O bloco de abertura de um `blocks.json`/decupagem (#12586): `titulo` quando
+ * ele tem item (o modelo de antes), senão `gancho` quando ele tem item, senão
+ * `titulo` (a falta continua sendo apontada como antes).
+ */
+export function openingBlockOf(blocks: Partial<Record<BlockKey, ReadonlyArray<unknown> | undefined>>): OpeningBlock {
+  if ((blocks.titulo?.length ?? 0) > 0) return "titulo";
+  return (blocks.gancho?.length ?? 0) > 0 ? "gancho" : "titulo";
+}
+
+/**
+ * O bloco de abertura de uma sequência, pela ordem (#12586): `titulo` se a
+ * ordem o tem, senão `gancho`; nenhum dos dois (entrevista) = null. É depois
+ * dele que entram o respiro e a vinheta.
+ */
+export function openingBlockOfOrder(order: readonly BlockKey[]): OpeningBlock | null {
+  if (order.includes("titulo")) return "titulo";
+  return order.includes("gancho") ? "gancho" : null;
+}
+
+/** O bloco de abertura pelos clipes montados (#12586): `titulo` se algum clipe (ou pedaço fundido) é dele, senão `gancho`; nenhum = null. */
+export function openingBlockOfClips(clips: ReadonlyArray<Pick<PlannedClip, "block" | "parts">>): OpeningBlock | null {
+  const has = (k: BlockKey) => clips.some((c) => c.block === k || c.parts?.some((p) => p.block === k));
+  if (has("titulo")) return "titulo";
+  return has("gancho") ? "gancho" : null;
+}
+
+/**
  * As 2 versões (#11491). Nomes no padrão dos finais da pasta `Final/`
- * (`Diaria comentada_Youtube_V3.mp4`, #11222): o Premiere sugere o nome da
+ * (`Diaria comentada horizontal_V3.mp4`, #12609; antes `_Youtube_V3`, #11222): o Premiere sugere o nome da
  * sequência no export, e `videoTargetOf` lê o destino dele. Escalas:
  * `YOUTUBE_SCALES` (60/85, olhos a 1/3, #12093) no horizontal;
  * 115/130 nas verticais (a da prévia aprovada da 261027; o XML dela saiu com
  * 89/105, "enquadramento pequeno" na autorrevisão), nos dois formatos.
+ *
+ * `opening` (#12586, `openingBlockOf`): com `gancho`, a frase falada de
+ * abertura (o gancho) abre as duas versões, no lugar do `titulo`, e é nela que
+ * o respiro, a vinheta e o PNG do título se ancoram. Com `titulo` (default), a
+ * ordem de antes.
  */
-export function defaultSequences(version = "V1", format: VideoFormat = "monologo"): SequenceSpec[] {
+export function defaultSequences(version = "V1", format: VideoFormat = "monologo", opening: OpeningBlock = "titulo"): SequenceSpec[] {
   if (format === "entrevista") {
     // #11507 (261029): sem título nem resumo gravados, a ordem que o editor montou à mão.
     return [
-      { target: "youtube", name: `Diaria comentada_Youtube_${version}`, width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]], eyeFraction: YOUTUBE_EYE_FRACTION },
+      { target: "youtube", name: horizontalSequenceName(version), width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]], eyeFraction: YOUTUBE_EYE_FRACTION },
       { target: "outras-redes", name: `Diaria comentada_Vertical_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_vertical", "fecho"], scales: [115, 130] },
     ];
   }
   return [
     {
       target: "youtube",
-      name: `Diaria comentada_Youtube_${version}`,
+      name: horizontalSequenceName(version),
       width: 1920,
       height: 1080,
       // #12093: o gancho (1ª frase do resumo) abre o horizontal, antes do "Olá, eu sou o Pixel".
-      order: ["gancho", "titulo", "abertura", "resumo", "comentario", "cta_yt", "fecho"],
+      // #12586: com o gancho falado de abertura, ele abre sem título falado.
+      order: opening === "gancho"
+        ? ["gancho", "abertura", "resumo", "comentario", "cta_yt", "fecho"]
+        : ["gancho", "titulo", "abertura", "resumo", "comentario", "cta_yt", "fecho"],
       scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]],
       eyeFraction: YOUTUBE_EYE_FRACTION,
     },
@@ -1749,7 +1804,8 @@ export function defaultSequences(version = "V1", format: VideoFormat = "monologo
       name: `Diaria comentada_Vertical_${version}`,
       width: 1080,
       height: 1920,
-      order: ["titulo", "resumo_curto", "comentario", "cta_vertical", "fecho"],
+      // #12586: a frase falada de abertura abre também a vertical.
+      order: [opening, "resumo_curto", "comentario", "cta_vertical", "fecho"],
       scales: [115, 130],
     },
   ];
@@ -2199,7 +2255,8 @@ export interface SequencePlan {
   /** Avisos do plano que não barram o build (respiro da vinheta menor que o pedido, #12101). */
   warnings?: string[];
   /**
-   * #12101: fim da última palavra do bloco `titulo` nesta versão, em segundos
+   * #12101: fim da última palavra do bloco `titulo` nesta versão (#12586: do
+   * bloco de abertura, `openingBlockOfOrder`; o gancho sem título), em segundos
    * do bruto: a âncora da vinheta (`vinhetaSpan`) e do respiro conferido
    * depois do refino (`titleBreathS`). Ausente = sem título com palavra.
    */
@@ -2271,6 +2328,7 @@ export function buildSequencePlan(
     }
   }
   let titleSpeechEndS: number | undefined;
+  const opening = openingBlockOfOrder(spec.order);
   const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
   const fps = source.fps;
   const raws: RawClip[] = [];
@@ -2319,8 +2377,9 @@ export function buildSequencePlan(
         // #12559: o respiro do fecho nunca passa do fim do arquivo do item (nem pelo piso da última palavra).
         lastPart.end = round3(Math.min(bounds ? bounds[file].end : Number.POSITIVE_INFINITY, Math.max(floor, Math.min(it.holdLimit, source.durationS, target))));
       }
-      // #12101: a âncora da vinheta é o fim da última palavra do título que entra nesta versão.
-      if (key === "titulo" && n === mine.length - 1 && it.lastWordEnd !== null) titleSpeechEndS = it.lastWordEnd;
+      // #12101: a âncora da vinheta é o fim da última palavra do título que entra nesta versão
+      // (#12586: do bloco de abertura, o gancho quando a ordem não tem título).
+      if (key === opening && n === mine.length - 1 && it.lastWordEnd !== null) titleSpeechEndS = it.lastWordEnd;
       // #12101: respiro sem fala depois do bloco (a vinheta do logo entra dentro dele), tirado do próprio bruto.
       const breath = opts.breathAfter?.[key];
       if (breath && !holding && n === mine.length - 1 && parts.length) {
@@ -2675,11 +2734,59 @@ export function faceCenterWarnings(
   return out;
 }
 
+/**
+ * Os avisos de caneca (`mugFramingWarnings`) e de rosto centrado
+ * (`faceCenterWarnings`) do `build`, da prévia e da `review` (#12566). Bruto
+ * único: as duas funções de sempre, sem mudança no texto. Bruto em vários
+ * arquivos (#12559): uma rodada por arquivo, com os clipes `fill` dele, o
+ * tamanho dele e o framing dele (`framingOfFile`, `files.{id}.framing`), com o
+ * id do arquivo à frente de cada aviso. Clipe `fit`/`blur-fill` não tem
+ * recorte e fica de fora (o `fitWarnings` relata a área dele).
+ */
+export function framingWarningsByFile(
+  plans: ReadonlyArray<Pick<SequencePlan, "spec" | "clips">>,
+  source: Pick<SourceInfo, "path" | "fps" | "durationS" | "width" | "height" | "mirrored" | "files">,
+  framing: Framing,
+  fileOverrides?: BlocksFile["files"],
+): { mug: string[]; face: string[] } {
+  if (!source.files?.length) return { mug: mugFramingWarnings(plans, source, framing), face: faceCenterWarnings(plans, source, framing) };
+  const mug: string[] = [];
+  const face: string[] = [];
+  source.files.forEach((sf, idx) => {
+    const sub = plans
+      .map((p) => ({
+        ...p,
+        clips: p.clips.filter((c) => (c.file ?? 0) === idx && clipGeometry({ source, spec: p.spec, framing, fileOverrides, clip: c }).fit === "fill"),
+      }))
+      .filter((p) => p.clips.length > 0);
+    if (!sub.length) return;
+    const fr = framingOfFile(framing, { files: fileOverrides }, sf.id);
+    const size = { width: sf.width, height: sf.height };
+    mug.push(...mugFramingWarnings(sub, size, fr).map((w) => `${sf.id}: ${w}`));
+    face.push(...faceCenterWarnings(sub, size, fr).map((w) => `${sf.id}: ${w}`));
+  });
+  return { mug, face };
+}
+
 /** Escalas que o `frame` desenha (#11939): as do horizontal (com os olhos a 1/3, #12093) e as das verticais. */
 export const FRAME_PREVIEW_CROPS: ReadonlyArray<{ seqW: number; seqH: number; scales: readonly number[]; color: string; eyeFraction?: number }> = [
   { seqW: 1920, seqH: 1080, scales: YOUTUBE_SCALES, color: "yellow", eyeFraction: YOUTUBE_EYE_FRACTION },
   { seqW: 1080, seqH: 1920, scales: [115, 130], color: "cyan" },
 ];
+
+const FRAME_CROP_COLOR_PT: Record<string, string> = { yellow: "amarelo", cyan: "ciano", magenta: "magenta" };
+
+/**
+ * A legenda dos recortes do `frame` (#12565), montada de `FRAME_PREVIEW_CROPS`:
+ * o texto fixo de antes dizia 50/62% no horizontal depois de as escalas virarem
+ * 60/85 (#12093). Ex.: `amarelo = horizontal 60/85%, ciano = verticais 115/130%, magenta = caneca`.
+ */
+export function frameCropLegend(): string {
+  const parts = FRAME_PREVIEW_CROPS.map(({ seqW, seqH, scales, color }) =>
+    `${FRAME_CROP_COLOR_PT[color] ?? color} = ${seqW > seqH ? "horizontal" : "verticais"} ${scales.join("/")}%`,
+  );
+  return [...parts, "magenta = caneca"].join(", ");
+}
 
 /**
  * Filtros `drawbox` do `frame` (#11939): o recorte de cada escala desenhado
@@ -2717,6 +2824,67 @@ export function escapeXml(s: string): string {
 export function pathUrl(path: string): string {
   const p = path.replace(/\\/g, "/").replace(/^\/+/, "");
   return "file://localhost/" + p.split("/").map((seg) => encodeURIComponent(seg).replace(/%3A/gi, ":")).join("/");
+}
+
+/**
+ * #12707: a pasta YouTube como a máquina que abre o XML no Premiere a vê.
+ * `from` = a raiz no Neo (o prefixo de todo caminho do XML: bruto, áudio
+ * tratado, PNG do título, vinheta em `_marca/`, card de CTA); `to` = a mesma
+ * pasta no Mac (`/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu
+ * Drive/…/YouTube`). Um mapa só para todos os `<file>`: o título e o card
+ * chegavam offline no Mac porque o XML gravava `G:/` para todos e só o bruto
+ * era revinculado à mão.
+ */
+export interface PremierePathMap {
+  from: string;
+  to: string;
+}
+
+function trimRoot(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/** O caminho como o Premiere o abre: sob `from` troca a raiz por `to` (comparação sem caixa, `G:` = `g:`); fora dela, igual. */
+export function premierePath(path: string, map: PremierePathMap | null | undefined): string {
+  const p = path.replace(/\\/g, "/");
+  if (!map) return p;
+  const from = trimRoot(map.from);
+  const to = trimRoot(map.to);
+  if (!from) return p;
+  const lp = p.toLowerCase();
+  const lf = from.toLowerCase();
+  if (lp === lf) return to;
+  if (lp.startsWith(`${lf}/`)) return `${to}${p.slice(from.length)}`;
+  return p;
+}
+
+/** Os caminhos do XML fora de `map.from` (o `premierePath` não os traduz): o build avisa, para nenhum sair com o caminho do Neo em silêncio. */
+export function unmappedPremierePaths(paths: readonly string[], map: PremierePathMap | null | undefined): string[] {
+  if (!map) return [];
+  return [...new Set(paths.filter((p) => premierePath(p, map) === p.replace(/\\/g, "/")))];
+}
+
+/**
+ * `--premiere-root` (vence) ou `publishing.video.premiere_root` do config:
+ * a pasta YouTube na máquina do Premiere. `off` no flag = o caminho do Neo
+ * mesmo com o config. Precisa ser absoluta (`/…` ou `X:/…`); vazia ou
+ * ausente = sem tradução (o XML de sempre, com o caminho do Neo).
+ */
+export function premiereRootFrom(flag: string | undefined, config: unknown): { root: string | null; how: "flag" | "config" | "off" | "none" } {
+  if (flag !== undefined) {
+    const v = flag.trim();
+    if (v === "off") return { root: null, how: "off" };
+    if (!isAbsoluteRoot(v)) throw new Error(`--premiere-root precisa ser um caminho absoluto (/Users/… no Mac) ou "off" (veio "${flag}") (#12707)`);
+    return { root: trimRoot(v), how: "flag" };
+  }
+  const c = (config as { publishing?: { video?: { premiere_root?: unknown } } })?.publishing?.video?.premiere_root;
+  if (typeof c !== "string" || !c.trim()) return { root: null, how: "none" };
+  if (!isAbsoluteRoot(c.trim())) throw new Error(`publishing.video.premiere_root precisa ser um caminho absoluto (veio "${c}") (#12707)`);
+  return { root: trimRoot(c.trim()), how: "config" };
+}
+
+function isAbsoluteRoot(p: string): boolean {
+  return /^\//.test(p) || /^[A-Za-z]:[\\/]/.test(p);
 }
 
 function baseName(path: string): string {
@@ -2952,8 +3120,9 @@ export const SCREEN_TITLE_MAX_S = 7.5;
 
 /**
  * Trecho da sequência que leva o título, em frames: os clipes do bloco
- * `titulo`; sem ele (gravação sem bloco de título, 261029), os clipes do 1º
- * bloco da sequência (o gancho). Sequência vazia = null.
+ * `titulo`; sem ele, os do `gancho` (#12586: a frase falada de abertura, que
+ * abre a vertical no lugar do título); sem nenhum dos dois (261029), os clipes
+ * do 1º bloco da sequência. Sequência vazia = null.
  *
  * #11756: só a 1ª sequência CONTÍGUA de clipes do bloco (um corte cujo
  * roteiro é um bloco só, ou um bloco que volta mais adiante, não estende o
@@ -2964,7 +3133,7 @@ export const SCREEN_TITLE_MAX_S = 7.5;
 export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number): { start: number; end: number; block: BlockKey } | null {
   if (plan.clips.length === 0) return null;
   const clips = [...plan.clips].sort((a, b) => a.seqStart - b.seqStart);
-  const block: BlockKey = clips.some((c) => c.block === "titulo") ? "titulo" : clips[0].block;
+  const block: BlockKey = openingBlockOfClips(clips) ?? clips[0].block;
   const first = clips.findIndex((c) => c.block === block);
   const start = clips[first].seqStart;
   let end = start;
@@ -2993,9 +3162,18 @@ export const VINHETA_BREATH_S = 0.7;
 /** Começo da vinheta na sequência sem bloco `titulo` (261029, vertical "soberana": 2–3 s). */
 export const VINHETA_NO_TITLE_START_S = 2;
 
-/** O respiro de cada sequência: só o horizontal (`youtube`) com `titulo` na ordem. */
+/**
+ * O respiro de cada sequência: só o horizontal (`youtube`), depois do bloco de
+ * abertura da ordem (`titulo`; sem ele, o `gancho` falado de abertura, #12586).
+ */
 export function vinhetaBreathFor(spec: Pick<SequenceSpec, "target" | "order">): Partial<Record<BlockKey, number>> | undefined {
-  return spec.target === "youtube" && spec.order.includes("titulo") ? { titulo: VINHETA_BREATH_S } : undefined;
+  const b = vinhetaBreathBlock(spec);
+  return b ? { [b]: VINHETA_BREATH_S } : undefined;
+}
+
+/** O bloco depois do qual o horizontal abre o respiro da vinheta (#12586); sem respiro = null. */
+export function vinhetaBreathBlock(spec: Pick<SequenceSpec, "target" | "order">): OpeningBlock | null {
+  return spec.target === "youtube" ? openingBlockOfOrder(spec.order) : null;
 }
 
 /** `publishing.video.vinheta_logo` do config: o caminho do MOV (ProRes 4444 com alpha). `null` = ausente, vazio ou não string. */
@@ -3052,7 +3230,8 @@ export function parseVinhetaProbe(json: string, path: string): VinhetaAsset {
  * `VINHETA_AFTER_SPEECH_S` depois da última palavra do título
  * (`plan.titleSpeechEndS`), dentro do respiro, quando esse instante do bruto
  * está num clipe; senão no fim do bloco `titulo` (o respiro da vertical é
- * curto: a fala seguinte começa antes); sem título, em
+ * curto: a fala seguinte começa antes). Sem `titulo`, o bloco é o `gancho`
+ * falado de abertura (#12586, `openingBlockOfClips`); sem nenhum dos dois, em
  * `VINHETA_NO_TITLE_START_S`. Dura o MOV inteiro, cortado no fim da sequência.
  * Sequência curta demais = null.
  */
@@ -3061,7 +3240,8 @@ export function vinhetaSpan(
   fps: number,
   asset: Pick<VinhetaAsset, "durationS">,
 ): { start: number; end: number; afterTitle: boolean } | null {
-  const titleEnd = blockRunEndFrame(plan.clips, "titulo", fps);
+  const opening = openingBlockOfClips(plan.clips);
+  const titleEnd = opening ? blockRunEndFrame(plan.clips, opening, fps) : null;
   let start = titleEnd ?? Math.round(VINHETA_NO_TITLE_START_S * fps);
   if (titleEnd !== null && plan.titleSpeechEndS !== undefined) {
     const at = seqFrameOfSource(plan.clips, plan.titleSpeechEndS + VINHETA_AFTER_SPEECH_S, fps);
@@ -3273,10 +3453,18 @@ export function buildXmeml(
      * Ausente (ou sem a chave) = sequência sem card.
      */
     ctaCard?: Readonly<Record<string, CtaCardAsset>> | null;
+    /**
+     * #12707: a raiz do Neo trocada pela da máquina do Premiere em TODO
+     * `pathurl` (bruto, áudio tratado, PNG do título, vinheta, card de CTA).
+     * Ausente = o caminho do Neo (`G:/…`), como sempre.
+     */
+    premierePaths?: PremierePathMap | null;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
   const mediaPath = opts.mediaPath ?? source.path;
+  // #12707: um tradutor só para todo `<pathurl>`, para nenhum `<file>` ficar com a raiz do Neo.
+  const url = (p: string): string => pathUrl(premierePath(p, opts.premierePaths));
   const fps = source.fps;
   const total = Math.round(source.durationS * fps);
   const rate = `<rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>`;
@@ -3296,7 +3484,7 @@ export function buildXmeml(
     const w = multi ? f.width : source.width;
     const h = multi ? f.height : source.height;
     return (
-      `<file id="${id}"><name>${escapeXml(baseName(path))}</name><pathurl>${escapeXml(pathUrl(path))}</pathurl>\n` +
+      `<file id="${id}"><name>${escapeXml(baseName(path))}</name><pathurl>${escapeXml(url(path))}</pathurl>\n` +
       `${rate}<duration>${dur}</duration>\n` +
       `<media><video><samplecharacteristics><width>${w}</width><height>${h}</height></samplecharacteristics></video>\n` +
       `<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio></media></file>`
@@ -3311,7 +3499,7 @@ export function buildXmeml(
     if (audioDefined) return '<file id="file-audio"/>';
     audioDefined = true;
     return (
-      `<file id="file-audio"><name>${escapeXml(baseName(opts.audioPath))}</name><pathurl>${escapeXml(pathUrl(opts.audioPath))}</pathurl>\n` +
+      `<file id="file-audio"><name>${escapeXml(baseName(opts.audioPath))}</name><pathurl>${escapeXml(url(opts.audioPath))}</pathurl>\n` +
       `${rate}<duration>${total}</duration>\n` +
       `<media><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>1</channelcount></audio></media></file>`
     );
@@ -3335,7 +3523,7 @@ export function buildXmeml(
     const fileId = known ?? (pngFileIds.size === 0 ? "file-titulo" : `file-titulo-${pngFileIds.size + 1}`);
     const fileRef = known
       ? `<file id="${fileId}"/>`
-      : `<file id="${fileId}"><name>${escapeXml(baseName(title.pngPath))}</name><pathurl>${escapeXml(pathUrl(title.pngPath))}</pathurl>\n${rate}<duration>${total}</duration>\n` +
+      : `<file id="${fileId}"><name>${escapeXml(baseName(title.pngPath))}</name><pathurl>${escapeXml(url(title.pngPath))}</pathurl>\n${rate}<duration>${total}</duration>\n` +
         `<media><video><samplecharacteristics><width>${plan.spec.width}</width><height>${plan.spec.height}</height></samplecharacteristics></video></media></file>`;
     pngFileIds.set(title.pngPath, fileId);
     return (
@@ -3360,7 +3548,7 @@ export function buildXmeml(
     const fileLen = Math.round(vin.durationS * (vin.fps ?? fps));
     const fileRef = vinhetaDefined
       ? '<file id="file-vinheta"/>'
-      : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(pathUrl(vin.path))}</pathurl>\n${fileRate}<duration>${fileLen}</duration>\n` +
+      : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(url(vin.path))}</pathurl>\n${fileRate}<duration>${fileLen}</duration>\n` +
         `<media><video><samplecharacteristics><width>${vin.width}</width><height>${vin.height}</height></samplecharacteristics></video>` +
         (vin.hasAudio
           ? `\n<audio><samplecharacteristics><depth>16</depth><samplerate>${vin.audioSampleRate ?? 48000}</samplerate></samplecharacteristics><channelcount>${vin.audioChannels ?? 2}</channelcount></audio>`
@@ -3421,7 +3609,7 @@ export function buildXmeml(
       const known = cardFileIds.get(card.xmlPath);
       const fileId = known ?? (cardFileIds.size === 0 ? "file-cta-card" : `file-cta-card-${cardFileIds.size + 1}`);
       cardFileIds.set(card.xmlPath, fileId);
-      v.push(ctaCardClipItem({ asset: card, startFrame: plan.durationFrames, rate, id: `cta-card-${si + 1}`, fileId, fileDefined: known !== undefined, pathurl: pathUrl(card.xmlPath) }));
+      v.push(ctaCardClipItem({ asset: card, startFrame: plan.durationFrames, rate, id: `cta-card-${si + 1}`, fileId, fileDefined: known !== undefined, pathurl: url(card.xmlPath) }));
     }
     const bgTrack = bg.length ? `<track>${bg.join("\n")}</track>` : "";
     const titleTrack = screenTitleTrack(plan, si);
@@ -3823,7 +4011,8 @@ export function cutPoints(plan: SequencePlan, fps: number): number[] {
 
 // ── Autorrevisão da prévia ────────────────────────────────────────────────
 
-export type ReviewKind = "tomada-duplicada" | "silaba-vazada" | "fala-extra" | "fala-faltando" | "final-seco";
+/** `tomada-colapsada` (#12711): palavra esticada sobre som na transcrição do áudio montado (`stretchedWordFindings`). */
+export type ReviewKind = "tomada-duplicada" | "tomada-colapsada" | "silaba-vazada" | "fala-extra" | "fala-faltando" | "final-seco";
 
 export interface ReviewFinding {
   kind: ReviewKind;

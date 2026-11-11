@@ -176,7 +176,7 @@ describe("pipeline-sentinel.ts — sentinel ausente cita o sync (#11729)", () =>
 
 describe("playbooks repassam a dica em vez de concluir 'não aprovada' (#11729)", () => {
   it("/diaria-publica-video não afirma mais 'não aprovada' no exit 1 do sentinel", () => {
-    const skill = readFileSync(join(repoRoot, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+    const skill = readFileSync(join(repoRoot, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
     assert.doesNotMatch(skill, /da edição \{AAMMDD\} não aprovada/);
     assert.match(skill, /possível defasagem de sync do OneDrive/);
   });

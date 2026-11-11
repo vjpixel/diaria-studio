@@ -105,11 +105,16 @@
  * modo de falha que deixou este monitor inerte por semanas. Quem liga é o
  * step `monitor`/`monitor-hubs` de `Diaria-Geo-Citation-Monitor`
  * (`scripts/lib/scheduled-tasks.ts`, via `scripts/run-task.ts`), e só ele.
+ *
+ * Argv inválido (flag desconhecida, flag de valor sem valor, valor com cara de
+ * flag) sai 2 antes de qualquer chamada paga, o mesmo código do
+ * `--max-monthly-usd` inválido; `--help` sai 0 (#12528). Antes, `--dryrun`
+ * era ignorado e a rodada saía REAL, gastando as APIs.
  */
 import "dotenv/config";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   GEO_PROVIDERS,
   GEO_QUESTIONS,
@@ -477,7 +482,26 @@ export function listSafeBackupConflictFiles(logPath: string): string[] {
   return detectSafeBackupConflictFiles(entries);
 }
 
+/**
+ * Flags aceitas (#12528). `max-monthly-usd` fica fora de `numeric` de
+ * propósito: a validação numérica dele é a de `main()` logo abaixo (sai 2).
+ */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/geo-citation-monitor.ts",
+  booleans: ["dry-run", "strict", "history-report"],
+  values: ["out", "panel", "max-monthly-usd"],
+  usage: [
+    "uso: npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--strict] [--history-report] [--out <path>]",
+    "  [--panel geral|hubs|acervo|entidades] [--max-monthly-usd <n>] [--help | -h]",
+    "",
+    "Sem --dry-run consulta as APIs pagas dos providers com key configurada.",
+    "Flag desconhecida, argumento solto ou flag sem o valor esperado sai 2 sem rodar nada (#12528).",
+  ].join("\n"),
+};
+
 async function main(): Promise<number> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) return cliExit === 0 ? 0 : 2;
   const { flags, values } = parseCliArgs(process.argv.slice(2));
   const dryRun = flags.has("dry-run");
   // Ver docstring do topo: rigidez é opt-in porque na mão "sem key" é estado

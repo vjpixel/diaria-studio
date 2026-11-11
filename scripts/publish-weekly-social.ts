@@ -229,7 +229,7 @@ import {
 import { appendSocialPosts, readSocialPublished, rewriteSocialPosts, PostEntry } from "./lib/social-published-store.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { isNodeTestContext } from "./lib/test-context-guard.ts";
-import { deleteFromWorkerQueue, postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
+import { deleteFromWorkerQueue, idempotentConflictKey, postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
 import {
   cancelAndRecordReschedule,
   deleteFacebookScheduledPost,
@@ -635,6 +635,15 @@ function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
  *
  * Qualquer falha propaga (inclusive a do próprio fallback): quem chama decide
  * o bookkeeping (`skipped` pra `linkedin_creds_missing`, `failed` pro resto).
+ *
+ * #12372 item 3 — `idempotencyKey` (`linkedInWeeklyIdempotencyKey`) vai nos
+ * três degraus, a mesma chave (mesma premissa da diária, #12661): o retry do
+ * `postToWorkerQueue` depois de uma resposta perdida cai na mesma entry do
+ * Worker (#10906), e um degrau seguinte por cima de uma entry gravada a
+ * substitui na mesma key (conteúdo mudou, #10917) em vez de somar um 2º post.
+ * 409 `already_fired`/`fire_in_progress` (o post desta chave já saiu ou está
+ * saindo) é sucesso, sem enfileirar nada; `send_unknown` e 409 ilegível
+ * propagam (ambíguo, nenhum degrau publica por cima).
  */
 export async function enqueueWeeklyLinkedIn(
   workerUrl: string,
@@ -647,9 +656,19 @@ export async function enqueueWeeklyLinkedIn(
     /** #8055 — gera + hospeda o PDF do carrossel e devolve a URL pública e o
      *  título. Ausente = só carrossel (comportamento anterior). */
     prepareDocument?: () => Promise<WeeklyLinkedInDocument>;
+    /** #12372 item 3 — chave idempotente do post na fila do Worker. Ausente = sem chave (comportamento anterior). */
+    idempotencyKey?: string;
   },
 ): Promise<WeeklyLinkedInEnqueueResult> {
-  const { text, carouselImageUrls, scheduledAt, destaque, prepareDocument } = opts;
+  const { text, carouselImageUrls, scheduledAt, destaque, prepareDocument, idempotencyKey } = opts;
+  const keyTag = idempotencyKey ? { idempotency_key: idempotencyKey } : {};
+  const alreadyQueued = (e: unknown): string | null => {
+    const key = idempotencyKey ? idempotentConflictKey(e) : null;
+    if (key !== null) {
+      console.log(`WARN linkedin/${destaque} — a fila do Worker já tem este post disparado ou disparando (${idempotencyKey}); nada novo enfileirado (#12372).`);
+    }
+    return key;
+  };
 
   // #8055 — o documento PDF SUBSTITUI o carrossel de imagens no LinkedIn
   // (premissa do editor). Falha na geração/upload do PDF, ou rejeição
@@ -678,10 +697,15 @@ export async function enqueueWeeklyLinkedIn(
           scheduled_at: scheduledAt,
           destaque,
           channel: "linkedin",
+          ...keyTag,
         });
         return { key: response.key, format: "document", document_url: doc.url };
       } catch (e) {
-        if (!(e instanceof WorkerQueueError && e.status >= 400 && e.status < 500)) throw e;
+        const firedKey = alreadyQueued(e);
+        if (firedKey !== null) return { key: firedKey, format: "document", document_url: doc.url };
+        // 409 fica de fora da "rejeição definitiva": com chave, é a entry já
+        // disparada/ambígua (acima ou propagando); sem chave o Worker não devolve 409.
+        if (!(e instanceof WorkerQueueError && e.status >= 400 && e.status < 500 && e.status !== 409)) throw e;
         documentFallbackReason = `document_rejected:${e.code ?? e.status}`;
       }
     }
@@ -697,22 +721,47 @@ export async function enqueueWeeklyLinkedIn(
       scheduled_at: scheduledAt,
       destaque,
       channel: "linkedin",
+      ...keyTag,
     });
     return { key: response.key, format: "carousel", ...fallbackTag };
   } catch (e) {
+    const firedKey = alreadyQueued(e);
+    if (firedKey !== null) return { key: firedKey, format: "carousel", ...fallbackTag };
     if (!(e instanceof WorkerQueueError && e.code === "linkedin_creds_missing" && carouselImageUrls.length > 0)) {
       throw e;
     }
   }
   console.log(`WARN linkedin/${destaque} — sem credencial da API direta; fallback: capa como imagem única via Make.`);
-  const response = await postToWorkerQueue(workerUrl, workerToken, {
-    text,
-    image_url: carouselImageUrls[0],
-    scheduled_at: scheduledAt,
-    destaque,
-    channel: "linkedin",
-  });
+  let response: { key: string };
+  try {
+    response = await postToWorkerQueue(workerUrl, workerToken, {
+      text,
+      image_url: carouselImageUrls[0],
+      scheduled_at: scheduledAt,
+      destaque,
+      channel: "linkedin",
+      ...keyTag,
+    });
+  } catch (e) {
+    const firedKey = alreadyQueued(e);
+    if (firedKey === null) throw e;
+    response = { key: firedKey };
+  }
   return { key: response.key, degraded: "cover_only", format: "cover_only", ...fallbackTag };
+}
+
+/**
+ * #12372 item 3 — chave idempotente do post semanal do LinkedIn na fila do
+ * Worker: `linkedin-weekly:{AAMMDD do sábado}-{mode}:main`. Fixa por ciclo e
+ * modo (`highlights`/`clicked`), então re-rodar o script (retry de entry
+ * `failed`, `--reschedule`) cai na mesma entry: o Worker devolve a duplicata,
+ * troca o conteúdo ou o horário na mesma key (#10917/#10992), ou responde 409
+ * se o post já saiu. Formato aceito: `[A-Za-z0-9._:-]{1,128}`.
+ */
+export function linkedInWeeklyIdempotencyKey(carouselKey: string): string {
+  const key = `linkedin-weekly:${carouselKey}:main`;
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new Error(`idempotency_key inválida para o Worker: ${JSON.stringify(key)}`);
+  return key;
 }
 
 /** #12394 — `check` do alarme de fallback do documento no lado do script. */
@@ -2165,6 +2214,7 @@ async function runOneMode(
           carouselImageUrls,
           scheduledAt,
           destaque: destaqueKey,
+          idempotencyKey: linkedInWeeklyIdempotencyKey(carouselKey),
           prepareDocument: () =>
             prepareWeeklyLinkedInDocument({
               dataRoot,

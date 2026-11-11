@@ -160,15 +160,16 @@ describe("renumber-edition (#12616)", () => {
   });
 
   it("--run-remote para no 1º passo que falha e a rodada seguinte retoma dali", () => {
+    // O seed tem o Kit `scheduled`: sem --ack-scheduled o --run-remote é recusado (#12662).
     const d1 = cliDeps([0, 0, 3]);
-    assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: true, runRemote: true }, d1), 1);
+    assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: true, runRemote: true, ackScheduled: true }, d1), 1);
     assert.equal(d1.ran.length, 3);
     assert.deepEqual(d1.ran[2], ["scripts/close-poll.ts", "--edition", TO]);
     const states = readRenumberReport(toDir())!.remote_steps.map((s) => s.status);
     assert.deepEqual(states, ["done", "done", "failed", "pending", "pending", "pending"]);
 
     const d2 = cliDeps();
-    assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: true, runRemote: true }, d2), 0);
+    assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: true, runRemote: true, ackScheduled: true }, d2), 0);
     assert.deepEqual(
       d2.ran.map((a) => a[0]),
       ["scripts/close-poll.ts", "scripts/publish-newsletter-kit.ts", "scripts/publish-edition-site-page.ts", "scripts/publish-kit-semanal-frio.ts"],
@@ -195,6 +196,73 @@ describe("renumber-edition (#12616)", () => {
     assert.equal(runRenumberEdition({ from: "26110", to: TO, apply: false, runRemote: false }, cliDeps()), 2);
     assert.equal(runRenumberEdition({ from: FROM, to: FROM, apply: false, runRemote: false }, cliDeps()), 2);
     assert.equal(runRenumberEdition({ from: FROM, to: "261332", apply: false, runRemote: false }, cliDeps()), 2);
+  });
+});
+
+describe("#12662 borda alfanumérica e edição já agendada", () => {
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "renumber-12662-"));
+    seedEdition();
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("REGRESSÃO: ID entre letras (hash hex, ID do YouTube/Drive) não é trocado", () => {
+    const src = 'hash a1261109f etag=261109ab yt=dQ261109xY drive_1abc261109 key=queue:x-261109-d1 "261109" é261109';
+    const r = replaceEditionId(src, "261109", "261110");
+    assert.equal(r.text, 'hash a1261109f etag=261109ab yt=dQ261109xY drive_1abc261109 key=queue:x-261110-d1 "261110" é261109');
+    assert.equal(r.count, 2);
+    assert.equal(renamedSegment("thumb-a261109.jpg", "261109", "261110"), null);
+    assert.equal(renamedSegment("diaria_261109_v2.srt", "261109", "261110"), "diaria_261110_v2.srt");
+  });
+
+  it("REGRESSÃO: Kit agendado ⇒ --run-remote recusado (exit 2, nada escrito), com o comando de reagendamento", () => {
+    put("_internal/newsletter-kit-published.json", '{"broadcast_id":10,"status":"scheduled","scheduled_at":"2026-11-09T09:00:00Z"}');
+    const d = cliDeps();
+    assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: true, runRemote: true }, d), 2);
+    assert.equal(d.ran.length, 0, "nenhum passo remoto");
+    assert.ok(existsSync(fromDir()) && !existsSync(toDir()), "parte local não rodou");
+    const out = d.logs.join("\n");
+    assert.match(out, /kit-newsletter @ 2026-11-09T09:00:00Z/);
+    assert.match(out, /schedule-newsletter-kit\.ts --edition-dir data\/editions\/2611\/261110/);
+    assert.match(out, /--ack-scheduled/);
+  });
+
+  it("REGRESSÃO: post social agendado na fila do Worker entra no aviso, com a key pro reagendamento", () => {
+    put("_internal/newsletter-kit-published.json", '{"broadcast_id":10,"status":"draft"}');
+    // #12720 — semanal agendada também entra no aviso; aqui ela está fora da agenda.
+    put("_internal/kit-semanal-frio-published.json", '{"broadcast_id":11,"status":"created_unverified"}');
+    put(
+      "_internal/06-social-published.json",
+      JSON.stringify({
+        posts: [
+          { platform: "linkedin", destaque: "d1", subtype: "main", status: "scheduled", scheduled_at: "2026-11-09T12:15:00Z", worker_queue_key: "queue:2026-11-09T12:15:00.000Z:abc" },
+          { platform: "facebook", destaque: "d2", status: "failed", scheduled_at: "2026-11-09T12:15:00Z" },
+        ],
+      }),
+    );
+    const d = cliDeps();
+    assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: false, runRemote: false }, d), 0, "dry-run só avisa");
+    const out = d.logs.join("\n");
+    assert.match(out, /ATENÇÃO: 1 envio/);
+    assert.match(out, /social:linkedin\/d1 @ 2026-11-09T12:15:00Z/);
+    assert.match(out, /reschedule-worker-queue-post\.ts --key "queue:2026-11-09T12:15:00.000Z:abc"/);
+    assert.doesNotMatch(out, /facebook/);
+    assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: true, runRemote: true }, cliDeps()), 2);
+  });
+
+  it("com --ack-scheduled segue com o aviso; sem nada agendado nem avisa", () => {
+    const d = cliDeps();
+    assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: true, runRemote: true, ackScheduled: true }, d), 0);
+    assert.ok(d.ran.length > 0);
+    assert.match(d.logs.join("\n"), /ATENÇÃO/, "o aviso continua impresso");
+  });
+
+  it("sem nada agendado, --run-remote segue sem aviso", () => {
+    put("_internal/newsletter-kit-published.json", '{"broadcast_id":10,"status":"draft"}');
+    put("_internal/kit-semanal-frio-published.json", '{"broadcast_id":11,"status":"created_unverified"}');
+    const d = cliDeps();
+    assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: true, runRemote: true }, d), 0);
+    assert.doesNotMatch(d.logs.join("\n"), /ATENÇÃO/);
   });
 });
 

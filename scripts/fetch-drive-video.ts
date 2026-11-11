@@ -744,7 +744,7 @@ export async function runFetchDriveVideo(
   if (localReady) return existsOutcome();
 
   if (sel.kind === "none") {
-    log(`[aviso] ${sel.reason} — nada baixado; quando o vídeo subir, rodar /diaria-publica-video ${aammdd}`);
+    log(`[aviso] ${sel.reason} — nada baixado; quando o vídeo subir, rodar /diaria-publica ${aammdd}`);
     return { exitCode: 0, output: { ...withFolder, action: "none", selection: "none", reason: sel.reason } };
   }
   if (sel.kind === "ambiguous") {

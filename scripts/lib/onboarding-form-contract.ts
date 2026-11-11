@@ -396,6 +396,9 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
     id: "gasto_mensal",
     label: "Quanto você paga por mês, somando todas as ferramentas de IA?",
     kind: "select",
+    // #12587: obrigatória quando aparece (só para quem paga do bolso), como
+    // `produto_escolha`.
+    required: true,
     subOf: "quem_paga",
     shownWhen: { questionId: "quem_paga", anyOf: FORM_PAGA_DO_BOLSO },
     help: "Conte só a parte que sai do seu bolso; se o plano for anual, divida por 12. Para referência: planos como ChatGPT Plus, Claude Pro e Google AI Pro custam cerca de R$ 100 por mês.",

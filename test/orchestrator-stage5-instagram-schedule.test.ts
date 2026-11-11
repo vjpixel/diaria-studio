@@ -32,8 +32,13 @@ function readStage5DispatchBlock(): string {
   const src = readFileSync(STAGE5_PATH, "utf8");
   const blockStart = src.indexOf("**Em uma unica mensagem, disparar simultaneamente**");
   assert.ok(blockStart >= 0, "bloco de dispatch paralelo (§5c-3) não encontrado em orchestrator-stage-5.md");
-  // Bloco cobre os 4 itens numerados (facebook/linkedin/instagram/threads) + notas — 2000 chars é folga suficiente.
-  return src.slice(blockStart, blockStart + 2000);
+  // Bloco cobre os itens numerados 1-4 (facebook/linkedin/instagram/threads) e termina
+  // no item 5 (brevo). Antes era uma janela fixa de 2000 chars, que estourava quando a
+  // nota de um item anterior ao Instagram crescia (#12584: nota do documento PDF do
+  // LinkedIn empurrou o item 3 para fora da janela).
+  const blockEnd = src.indexOf("\n5. ", blockStart);
+  assert.ok(blockEnd > blockStart, "fim do bloco de dispatch paralelo (item 5) não encontrado em orchestrator-stage-5.md");
+  return src.slice(blockStart, blockEnd);
 }
 
 describe("#3944 Parte A: dispatch do Instagram no Stage 5 usa --schedule (não imediato)", () => {

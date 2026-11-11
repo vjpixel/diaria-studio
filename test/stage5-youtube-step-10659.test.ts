@@ -111,7 +111,7 @@ describe("#12588 decideYouTubeStep: só lê a pasta, nunca sobe", () => {
       assert.equal(r.outcome, "missing-link");
       assert.equal(youtubeStepLevel(r), "warn");
       assert.equal(r.blocking, true);
-      assert.match(r.detail ?? "", /\/diaria-publica-video 261110/);
+      assert.match(r.detail ?? "", /\/diaria-publica 261110/);
       assert.match(r.detail ?? "", /set-d1-no-video\.ts 261110/);
     } finally {
       rmSync(dir, { recursive: true, force: true });

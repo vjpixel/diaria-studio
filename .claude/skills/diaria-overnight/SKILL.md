@@ -51,6 +51,40 @@ Roteamento que contraria a decisão leva `--override-decision "motivo"`,
 nunca uma razão reescrita só para passar no regex.
 
 
+## Fila obrigatória de escaladas do contínuo (#12684)
+
+No briefing inicial, rodar `npx tsx scripts/list-continuo-escalation-queue.ts`.
+Cada item de `queue` é uma PR escalada há mais de 24h: apresentar URL,
+`since` e `reason` como pendência explícita do editor, dono da fila
+`briefing overnight/develop`, e registrar destino e decisão no plano/relatório.
+Fila vazia dispensa esta seção; erro do comando é bloqueio de leitura da fila,
+nunca evidência de ausência de pendências. `action=merge` indica condição
+transitória resolvida: revalidar os gates normais antes de qualquer ação.
+Draft, `bloqueio-execucao` e retenção para editor continuam bloqueados até
+liberação explícita; o briefing nunca promove draft automaticamente.
+
+**Prazo de validade de 48h (#12765).** Cada item traz `expired` e
+`destination`. Passadas 48h a escalada sai da fila de pendências sem prazo:
+rodar `npx tsx scripts/list-continuo-escalation-queue.ts --apply`, que fecha
+as de destino `fechar-redundante`, `fechar-para-issue` e `fechar-reabrir-issue`
+(comentário na PR e na issue de origem, branch preservada, `gh pr reopen`
+desfaz). Destino `fixer` = despachar `dev-fixer` na branch existente para
+rebase no master + correção do CI (draft já verde: marcar ready) e marcar a
+PR com `npx tsx scripts/mark-continuo-ci-fix-attempted.ts --pr {N}`; se na rodada
+seguinte ainda houver conflito ou CI parado, ela vira `fechar-reabrir-issue`.
+Destino `briefing` segue como pendência do editor — inclusive toda PR
+retida para o editor (#10278) ou reivindicada por sessão viva, que nunca
+recebe destino automático. Falha parcial do `--apply` sai em `failures[]`
+(exit 1): reportar, nunca tratar como fila vazia.
+
+**Teto global de PRs abertos (#12765).** Antes de compor cada onda, rodar
+`npx tsx scripts/check-open-pr-cap.ts` e passar `slots` como
+`--open-pr-slots` no `record-overnight-wave.ts` (o script recusa onda maior).
+A onda tem no máximo `min(10, slots)` unidades. `slots = 0`: não abrir onda
+nova; a iteração drena as PRs abertas (fixer, merge, destino das escaladas
+vencidas acima) e registra no relatório que o teto segurou o despacho.
+`verified:false` (exit 2) = não verificado, segue com o teto da onda.
+
 ## Contagem final de entrega (#11235)
 
 Em TODA saída do modo `--agendado`, inclusive fila vazia, dry-run, halt da sonda e preempção, grave no `report.md` desta rodada exatamente um marcador estruturado:
@@ -526,7 +560,7 @@ O prompt do subagente inclui, obrigatoriamente:
    erro também bloqueia. Não tomar nem liberar claim alheia. O trem e o gate do
    contínuo fazem a mesma checagem automaticamente.
 
-   **PR que exige o eval do agent (#11616, #8144).** Quando o diff muda corpo ou `model:` de `writer-destaque`/`social-writer`, o check `Check agent-eval gate` fica vermelho até a label `agent-eval:passed` — e o Gate 2 não passa. A label só sai de `run-agent-eval-for-pr.ts --live`, rodado pelo coordenador (nunca no Actions, #5608; nunca pelo subagente, que já retornou). Procedimento: (1) no worktree da PR (o do implementador, ainda vivo), `git pull --ff-only` até `git rev-parse HEAD` bater com o `headRefOid` da PR — com `--live` o script aborta se não bater (#9338); (2) dali, `npx tsx scripts/run-agent-eval-for-pr.ts --pr {N} --live` (cwd no worktree, a forma canônica do item 9 de `context/overnight-dispatch-rules.md`). Sem a junction `data/` no worktree, o script usa sozinho o `data/editions` do checkout principal, e sem `--reference-editions` escolhe as 3 edições mais recentes com `_internal/01-approved.json` nos dois layouts (flat e nested `AAMM/AAMMDD`) — não criar symlink à mão; `--reference-editions` explícito recebe só o `AAMMDD` (a pasta nested é resolvida). Custa ~10 min de assinatura: rodar fora do merge lock, em paralelo com o resto da onda. (3) A label dispara de novo o workflow (`labeled`); reler o Gate 2 no mesmo HEAD. A label sai mesmo quando o eval acha regressão, então o check verde não basta: ler a linha de vereditos do comentário/relatório (`N regressão(ões) / ...`) e, com regressão ≥1, não mergear — tratar como finding P1 (fixer ou draft). Script que sai `1` por falta de edição de referência = registrar no relatório e deixar a PR em draft, nunca aplicar a label à mão. Wrapper `--auto-worktree` (criar worktree + ligar `data/`) ficou de fora: o worktree do implementador já existe e o fallback de `data/editions` cobre o que faltava.
+   **PR que exige o eval do agent (#11616, #8144).** Quando o diff muda corpo ou `model:` de `writer-destaque`/`social-writer`, o check `Check agent-eval gate` fica vermelho até a label `agent-eval:passed` — e o Gate 2 não passa. A label só sai de `run-agent-eval-for-pr.ts --live`, rodado pelo coordenador (nunca no Actions, #5608; nunca pelo subagente, que já retornou). Procedimento: (1) no worktree da PR (o do implementador, ainda vivo), `git pull --ff-only` até `git rev-parse HEAD` bater com o `headRefOid` da PR — com `--live` o script aborta se não bater (#9338); (2) dali, `npx tsx scripts/run-agent-eval-for-pr.ts --pr {N} --live` (cwd no worktree, a forma canônica do item 9 de `context/overnight-dispatch-rules.md`). Sem a junction `data/` no worktree, o script usa sozinho o `data/editions` do checkout principal, e sem `--reference-editions` escolhe as 3 edições mais recentes com `_internal/01-approved.json` nos dois layouts (flat e nested `AAMM/AAMMDD`) — não criar symlink à mão; `--reference-editions` explícito recebe só o `AAMMDD` (a pasta nested é resolvida). Custa ~10 min de assinatura: rodar fora do merge lock, em paralelo com o resto da onda. (3) A label dispara de novo o workflow (`labeled`); reler o Gate 2 no mesmo HEAD. A label sai mesmo quando o eval acha regressão, então o check verde não basta: ler a linha de vereditos do comentário/relatório (`N regressão(ões) / ...`) e, com regressão ≥1, não mergear — tratar como finding P1 (fixer ou draft). Script que sai `1` por falta de edição de referência = registrar no relatório e deixar a PR em draft, nunca aplicar a label à mão. Wrapper `--auto-worktree` (criar worktree + ligar `data/`) ficou de fora: o worktree do implementador já existe e o fallback de `data/editions` cobre o que faltava. Sinal antecipado (#12678): o implementador declara `requer agent-eval: {agents}` no corpo da PR (item 36 de `context/overnight-dispatch-rules.md`); PR com essa linha entra neste procedimento sem esperar o check ficar vermelho. A que não sair daqui com a label aparece no bloco de `reconcile-overnight-report.ts` como `aberta, aguarda agent-eval` e na linha `Pendência:` do relatório.
 
    **Guard de `Closes`/`REFS` antes do merge (#5010).** Imediatamente antes do `gh pr merge` abaixo, pra CADA issue da unidade (`N` = 1 em solo, `N` > 1 em lote), grep o body do PR (`gh pr view {N} --json body`; PR de outro repo: `gh pr view {N} -R {repo} --json body`, #10618) por `[Cc]loses #{issue}` OU `REFS #{issue}, N[ÃA]O CLOSES`. Se alguma issue do lote não tiver nenhum dos dois marcadores, é sinal de que o self-review do subagente esqueceu de declarar (não é, por si só, motivo pra tratar como CI vermelho) — o coordenador decide, a partir da própria leitura do diff/self-review já feita no "review leve" acima: se a issue está de fato totalmente resolvida por este PR, adicionar `Closes #{issue}` ao body **via `npx tsx scripts/lib/gh-pr-safe-edit.ts --pr {N} [--repo {repo}] --body-file {arquivo-com-o-novo-corpo, escrito em /tmp ou no scratchpad da sessão — NUNCA na raiz do checkout, #6971}`, nunca `gh pr edit --body`** (#6292 — `gh pr edit` roda uma mutação que falha em silêncio: sai `exit 0` sem alterar o corpo; o helper usa REST + releitura pós-escrita, falhando alto se a escrita não pegou) ANTES do merge; se houver dúvida genuína sobre se está completa, **não forçar** — deixar sem marcador e seguir (a issue permanece aberta pra triagem, comportamento seguro por padrão). Nunca adicionar `Closes` a uma issue que o coordenador não confirmou como resolvida.
 
@@ -551,7 +585,7 @@ O prompt do subagente inclui, obrigatoriamente:
        --message "fix_iteration" \
        --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "pr": {N}, "tentativa": K}'
      ```
-     Depois: até **2 tentativas de fix**: continuar o mesmo subagente via `SendMessage` com o **tail do log de falha** (`gh run view --log-failed`, últimas ~100 linhas por step — nunca o log inteiro); se o subagente não estiver mais disponível (ou `SendMessage` não existir no harness), dispatchar um novo com `subagent_type: "dev-fixer"` (`isolation: "worktree"`, agent dedicado com `claude-opus-5-5`/`medium` no frontmatter — nunca `general-purpose`, que herdaria o effort do turno do coordenador, #9873) **fazendo checkout da branch existente** (nunca refazer de master); se a falha pedir reimplementar o escopo em vez de corrigir o diff, `subagent_type: "dev-implementador"` no mesmo branch. Num **lote**: se a falha é atribuível a uma issue específica, a tentativa 2 pode **remover o item problemático do lote** (revert das mudanças dele + re-push), comentando na issue removida o diagnóstico — o resto do lote segue. Persistiu vermelho → registrar `timeline.draft = now()` em `plan.json` e emitir:
+     Depois: até **2 tentativas de fix**: continuar o mesmo subagente via `SendMessage` com o **tail do log de falha** (`gh run view --log-failed`, últimas ~100 linhas por step — nunca o log inteiro; se vier vazio, como no `gh` 2.46 do `300`, `npx tsx scripts/gh-failed-job-logs.ts --run R [--attempt A]` lê o mesmo log pelo REST, #12733); se o subagente não estiver mais disponível (ou `SendMessage` não existir no harness), dispatchar um novo com `subagent_type: "dev-fixer"` (`isolation: "worktree"`, agent dedicado com `claude-opus-5-5`/`medium` no frontmatter — nunca `general-purpose`, que herdaria o effort do turno do coordenador, #9873) **fazendo checkout da branch existente** (nunca refazer de master); se a falha pedir reimplementar o escopo em vez de corrigir o diff, `subagent_type: "dev-implementador"` no mesmo branch. Num **lote**: se a falha é atribuível a uma issue específica, a tentativa 2 pode **remover o item problemático do lote** (revert das mudanças dele + re-push), comentando na issue removida o diagnóstico — o resto do lote segue. Persistiu vermelho → registrar `timeline.draft = now()` em `plan.json` e emitir:
      ```bash
      npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level warn \
        --message "draft" \

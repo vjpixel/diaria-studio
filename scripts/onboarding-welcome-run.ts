@@ -118,6 +118,7 @@ import {
 import { brevoPost, brevoGet, brevoDelete, resolveOrCreateBrevoFolder } from "./lib/brevo-client.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { CliExit, runCli } from "./lib/cli-exit.ts";
+import { readTopVideoRecord, TOP_VIDEO_RECORD_RELPATH } from "./lib/onboarding-top-video.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -906,10 +907,13 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 function loadSnippets(dirAbs: string): { 1: ReturnType<typeof parseOnboardingSnippet>; 2: ReturnType<typeof parseOnboardingSnippet>; 3: ReturnType<typeof parseOnboardingSnippet> } {
+  // #12542: vídeo mais assistido medido pela task semanal (fail-soft: sem
+  // registro, o parse usa o último valor conhecido).
+  const topVideo = readTopVideoRecord(resolve(ROOT, TOP_VIDEO_RECORD_RELPATH));
   const load = (n: 1 | 2 | 3) => {
     const p = resolve(dirAbs, `onboarding-${n}.md`);
     if (!existsSync(p)) return null;
-    return parseOnboardingSnippet(readFileSync(p, "utf8"), n);
+    return parseOnboardingSnippet(readFileSync(p, "utf8"), n, topVideo);
   };
   return { 1: load(1), 2: load(2), 3: load(3) };
 }

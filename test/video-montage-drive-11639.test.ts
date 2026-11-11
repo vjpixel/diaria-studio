@@ -44,6 +44,7 @@ import {
   driveCacheDir,
   driveModeFor,
   ensureBrutoLocal,
+  brutoCacheTarget,
   fetchBruto,
   main,
   assertSingleRawVideo,
@@ -527,7 +528,7 @@ describe("#11639/#11640 wiring do modo API (Drive falso)", () => {
     const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
     const localPath = join(cache, "bruto", "b.mp4").replace(/\\/g, "/");
     writeFileSync(join(state, "source.json"), JSON.stringify({ path: localPath, fps: 30, durationS: 10, width: 1920, height: 1080, mirrored: false }));
-    writeFileSync(join(state, BRUTO_DRIVE_FILE), JSON.stringify({ edition: ED, id: "B", name: "b.mp4", size: 3, modifiedTime: "t1", folderId: "p", localPath }));
+    writeFileSync(join(state, BRUTO_DRIVE_FILE), JSON.stringify({ edition: ED, id: "B", name: "b.mp4", size: 3, modifiedTime: "t1", folderId: "p", localPath: localPath.replace(/\//g, "\\") }));
     const ok = fakeDeps([() => json({ id: "B", name: "b.mp4", mimeType: "video/mp4", size: "3", modifiedTime: "t1" }), () => new Response(Buffer.from("abc"), { status: 200, headers: { "content-type": "video/mp4" } })]);
     await ensureBrutoLocal({ stateDir: state, edition: ED }, makeDriveSession(ED, cache, ok.deps, () => "root"));
     assert.equal(readFileSync(localPath, "utf8"), "abc");
@@ -560,6 +561,56 @@ describe("#11639/#11640 wiring do modo API (Drive falso)", () => {
       assert.equal(existsSync(localPath), false);
       assert.equal(readFileSync(join(state, BRUTO_DRIVE_FILE), "utf8"), provenance);
     }
+  });
+
+  it("#12564 compara segmentos POSIX e Windows sem depender do host", () => {
+    for (const root of ["/tmp/cache", "C:/cache", "//server/share/cache"]) {
+      const expected = join(root, "bruto", "b.mp4");
+      for (const path of [`${root}/bruto/b.mp4`, `${root}/bruto/b.mp4`.replace(/\//g, "\\")]) {
+        assert.equal(brutoCacheTarget(root, "b.mp4", path), expected);
+      }
+      for (const name of ["/b.mp4", "C:\\b.mp4", "C:b.mp4", "\\\\server\\share\\b.mp4", "../b.mp4", "..\\b.mp4", "bruto/b.mp4", "bruto\\b.mp4", ".", "..", ""]) {
+        assert.throws(() => brutoCacheTarget(root, name, expected), /nome de bruto inválido/);
+      }
+      for (const path of [`${root}-other/bruto/b.mp4`, `${root}/bruto/../../b.mp4`, `${root}/other/b.mp4`, `${root}/bruto/other.mp4`]) {
+        assert.throws(() => brutoCacheTarget(root, "b.mp4", path), /fora do cache/);
+      }
+    }
+  });
+
+  it("#12564 recusa traversal e nomes injetados antes de consultar o Drive", async () => {
+    const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+    const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
+    for (const [name, localPath] of [
+      ["b.mp4", `${cache}/bruto/../../b.mp4`],
+      ["..\\b.mp4", `${cache}/bruto/b.mp4`],
+      ["C:\\b.mp4", `${cache}/bruto/b.mp4`],
+    ]) {
+      writeFileSync(join(state, "source.json"), JSON.stringify({ path: localPath }));
+      writeFileSync(join(state, BRUTO_DRIVE_FILE), JSON.stringify({ edition: ED, id: "B", name, localPath }));
+      const drive = fakeDeps([]);
+      await assert.rejects(ensureBrutoLocal({ stateDir: state, edition: ED }, makeDriveSession(ED, cache, drive.deps, () => "root")), /fora do cache|nome de bruto inválido/);
+      assert.equal(drive.calls.length, 0);
+    }
+  });
+
+  it("#12564 bruto.drive.json com separador \\ casa com o source.json do mesmo caminho (Windows)", async () => {
+    // No Windows os testes do #12239 gravavam o localPath com `\` e a comparação só
+    // normalizava o lado do source.json: dois caminhos iguais davam "o --cache-dir mudou?".
+    // O separador do Windows é forçado aqui para o caso rodar também no Linux/CI.
+    const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+    const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
+    const posix = join(cache, "bruto", "b.mp4").replace(/\\/g, "/");
+    const windowsStyle = posix.replace(/\//g, "\\");
+    writeFileSync(join(state, "source.json"), JSON.stringify({ path: posix }));
+    writeFileSync(join(state, BRUTO_DRIVE_FILE), JSON.stringify({ edition: ED, id: "B", name: "b.mp4", size: 3, modifiedTime: "t1", localPath: windowsStyle }));
+    const changed = fakeDeps([() => json({ id: "B", name: "b.mp4", size: "3", modifiedTime: "t2" })]);
+    await assert.rejects(ensureBrutoLocal({ stateDir: state, edition: ED }, makeDriveSession(ED, cache, changed.deps, () => "root")), (error: Error) => {
+      assert.doesNotMatch(error.message, /o --cache-dir mudou/);
+      assert.match(error.message, /mudou no Drive/);
+      return true;
+    });
+    assert.match(localBrutoMissing({ stateDir: state, edition: ED }) ?? "", /o cache do modo API de outra máquina; o bruto no Drive é b\.mp4/);
   });
 
   it("#12239 avisa tamanho e estimativa antes de baixar o bruto inteiro para build", async (t) => {

@@ -70,6 +70,10 @@
  *   npx tsx scripts/kit-subscriber-state-transition-alarm.ts --fetch
  *   npx tsx scripts/kit-subscriber-state-transition-alarm.ts            # offline
  *
+ * Flag desconhecida ou argumento solto sai 1 sem ler nem gravar snapshot;
+ * `--help` sai 0 (#12528). Antes, `--dryrun` era ignorado e a rodada gravava
+ * o snapshot e o latch como uma rodada real.
+ *
  * Premissa registrada (#7660): `bounced` INCLUÍDO por default mais seguro
  * (`KIT_STATE_TRANSITION_ALARM_STATES`). Se o editor quiser separar, trocar
  * a constante em `scripts/lib/kit-subscriber-state-transition-alarm.ts`.
@@ -79,7 +83,7 @@
  */
 import { resolve, join } from "node:path";
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, isMainModule } from "./lib/cli-args.ts";
 import {
   detectKitStateTransitions,
   detectKitDisappearances,
@@ -219,7 +223,15 @@ export function loadOnboardingCorrelations(
   return map;
 }
 
+/** Flags aceitas; o resto sai 1 antes de qualquer I/O, `--help` sai 0 (#12528). */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/kit-subscriber-state-transition-alarm.ts",
+  booleans: ["dry-run", "fetch"],
+};
+
 export async function run(argv: readonly string[], now: Date = new Date()): Promise<number> {
+  const cliExit = applyCliAction(argv, CLI_SPEC);
+  if (cliExit !== null) return cliExit;
   const dry = argv.includes("--dry-run");
   const fetchMode = argv.includes("--fetch");
   console.log(

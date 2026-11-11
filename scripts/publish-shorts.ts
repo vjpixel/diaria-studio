@@ -294,7 +294,13 @@ import {
   type YouTubeShortMetadata,
   shortDestinationAccount,
   shortDestinationAlsoAccounts,
+  shortHorizontalRoute,
+  type ShortHorizontalRoute,
 } from "./lib/diaria/short-video.ts";
+// #12735: o link do horizontal na legenda e o redirect fixo da bio (diar.ia.br/video).
+import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
+import { latestVideoBioLink, type LatestVideoBioNetwork } from "./lib/shared/latest-video-redirect.ts";
+import { describeLatestVideoOutcome, pollKvFromEnv, readEditionHorizontalUrl, updateLatestVideoRedirect } from "./set-latest-video-redirect.ts";
 import {
   instagramTimerScopeError,
   linkedinTimerScopeError,
@@ -492,7 +498,12 @@ export type ShortsPlanItem =
    * recebem o vídeo por URL pública), não de credencial do destino. Só o pulo
    * por credencial conta como terminal pra limpeza do vertical.
    */
-  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late" | "skip_delegated"; detail: string; cause?: "public_video" }
+  /**
+   * `retryAt` (#12761): só no `linkedin_page_repost` em `skip_invalid` porque o
+   * vídeo do perfil ainda vai sair por um dono automático — o horário em que a
+   * re-execução repostará (grade da página, ≥30 min depois do perfil).
+   */
+  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late" | "skip_delegated"; detail: string; cause?: "public_video"; retryAt?: string }
   /** `at`: horário planejado do passo guiado (repost da página, #10772; Instagram manual acima do teto, slot da grade, #10933). Ausente = `shortTime`. */
   /**
    * `upload` (#10915): o arquivo a subir no passo guiado — no Instagram acima
@@ -549,8 +560,47 @@ export interface ShortsPlan {
    * precisa publicar" — nenhum destino volta para ele como passo manual.
    */
   owners: ShortsDestinationOwner[];
+  /**
+   * #12735: caminho de cada destino até o horizontal — o link na legenda
+   * (`05-video-url.txt`), o link da bio (`diar.ia.br/video` com UTM da rede),
+   * o vídeo relacionado do Short ou o repost. `link: null` = sem link nesta
+   * rodada (`note` diz por quê). Ausente no corte avulso (não tem horizontal).
+   */
+  horizontalLinks?: Record<string, ShortHorizontalLinkPlan>;
   premises: string[];
   warnings: string[];
+}
+
+/** #12735: o link do horizontal usado por um destino do vertical. */
+export interface ShortHorizontalLinkPlan {
+  route: ShortHorizontalRoute;
+  link: string | null;
+  note: string;
+}
+
+/**
+ * Pure (#12735): o caminho até o horizontal de cada destino do plano.
+ * `horizontalUrl` = o `05-video-url.txt` da edição (`null` = ainda sem link,
+ * ou edição sem vídeo: `noVideo`).
+ */
+export function planShortHorizontalLinks(destinations: readonly string[], horizontalUrl: string | null, noVideo: boolean): Record<string, ShortHorizontalLinkPlan> {
+  const out: Record<string, ShortHorizontalLinkPlan> = {};
+  for (const id of destinations) {
+    const route = shortHorizontalRoute(id);
+    if (route === "caption") {
+      out[id] = horizontalUrl
+        ? { route, link: horizontalUrl, note: "na legenda (05-video-url.txt)" }
+        : { route, link: null, note: noVideo ? "edição marcada sem vídeo: legenda sem link" : `${D1_VIDEO_URL_FILE} ausente: legenda sem link (rode depois do horizontal)` };
+    } else if (route === "bio") {
+      const network: LatestVideoBioNetwork = id === "threads_profile" ? "threads" : (id as "tiktok" | "instagram");
+      out[id] = { route, link: latestVideoBioLink(network), note: "link da bio (passo manual do editor na rede): sempre o horizontal mais recente; a legenda não tem link clicável" };
+    } else if (route === "related_video") {
+      out[id] = { route, link: null, note: "vídeo relacionado do Short (#10811); link na descrição de Short não é clicável (#10831)" };
+    } else {
+      out[id] = { route, link: horizontalUrl, note: "repost do vídeo do perfil: herda o texto do linkedin_profile" };
+    }
+  }
+  return out;
 }
 
 /**
@@ -704,6 +754,25 @@ export function assignShortsDestinationOwners(
       );
     } else if (action === "buffer") {
       owners.push({ destination, action, by: "agent", note: "o agente agenda pela Buffer MCP (create_post) nesta rodada" });
+    } else if (item.action === "skip_invalid" && destination === "linkedin_page_repost" && item.retryAt !== undefined) {
+      // #12761: o repost espera o perfil, que sai por outro dono (timer do 300 ou --now do agente).
+      // A re-execução leva o linkedin_profile junto: se ele ainda não saiu, o repost segue bloqueado
+      // e ganha dono de novo; se saiu, o --publish reposta pela fila do Worker (#11121).
+      const at = item.retryAt;
+      const command = `${base} --only linkedin_profile,linkedin_page_repost --publish ${publishConfirmSuffix(ctx.aammdd)}`;
+      const later = Date.parse(at) - ctx.now.getTime() > OWNER_SCHEDULE_MIN_LEAD_MS;
+      owners.push(
+        later
+          ? {
+              destination,
+              action,
+              by: "agent-scheduled-task",
+              at,
+              command,
+              note: `repost depende do vídeo do perfil, que sai por outro dono: a skill cria uma task agendada one-shot para ${at} (depois do perfil) com este comando`,
+            }
+          : { destination, action, by: "agent", at, command, note: "repost depende do vídeo do perfil: o agente re-executa este comando nesta rodada, depois que o perfil sair" },
+      );
     }
   }
   return owners;
@@ -778,7 +847,7 @@ interface ShortsPlanCommonInput {
    * título (`readHorizontalVideoForShort`). Ausente = sem registro e sem
    * marcador de "sem vídeo": cita o título derivado do D1. Ignorado no corte.
    */
-  horizontalVideo?: { recordTitle: string | null; noVideo: boolean };
+  horizontalVideo?: { recordTitle: string | null; noVideo: boolean; url?: string | null };
   editionUrl?: string;
   /** De onde veio o `editionUrl` (só pra premissa). */
   editionUrlSource?: string;
@@ -913,17 +982,32 @@ export function corteTimerStaleWarning(delegated: readonly string[], hb: CorteTi
  * marcador de edição sem vídeo. Fail-soft: registro ausente ou ilegível vira
  * `recordTitle: null` (a citação cai no título derivado do D1).
  */
-export function readHorizontalVideoForShort(editionDir: string): { recordTitle: string | null; noVideo: boolean } {
+export function readHorizontalVideoForShort(editionDir: string): { recordTitle: string | null; noVideo: boolean; url: string | null } {
   const noVideo = isNoVideoEdition(editionDir);
+  const url = noVideo ? null : readHorizontalUrlForShort(editionDir);
   const recordPath = join(editionDir, YOUTUBE_PUBLISHED_FILE);
-  if (!existsSync(recordPath)) return { recordTitle: null, noVideo };
+  if (!existsSync(recordPath)) return { recordTitle: null, noVideo, url };
   try {
     const raw = JSON.parse(readFileSync(recordPath, "utf8")) as { title?: unknown } | null;
     const title = raw && typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : null;
-    return { recordTitle: title, noVideo };
+    return { recordTitle: title, noVideo, url };
   } catch {
     console.error(`[aviso] ${recordPath} ilegível — o Short cita o título do horizontal derivado do D1 (#12191)`);
-    return { recordTitle: null, noVideo };
+    return { recordTitle: null, noVideo, url };
+  }
+}
+
+/**
+ * #12735: o link do horizontal da edição (`_internal/05-video-url.txt`) para a
+ * legenda do vertical. Fail-soft: ausente → `null`; conteúdo que não é vídeo
+ * do YouTube → aviso e `null` (a legenda sai sem link, nunca com URL errada).
+ */
+export function readHorizontalUrlForShort(editionDir: string): string | null {
+  try {
+    return readEditionHorizontalUrl(editionDir);
+  } catch (e) {
+    console.error(`[aviso] ${join(editionDir, D1_VIDEO_URL_FILE)}: ${(e as Error).message} — o vertical sai sem o link do horizontal (#12735)`);
+    return null;
   }
 }
 
@@ -967,6 +1051,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     );
   }
   const youtube = buildYouTubeShortMetadata({ d1: d1In, horizontalTitle });
+  // #12735: o horizontal DA edição na legenda das redes que aceitam link (LinkedIn, X, Facebook). Nunca no corte.
+  const horizontalLink = corte || input.horizontalVideo?.noVideo ? null : (input.horizontalVideo?.url ?? null);
 
   // #10831: o vertical tem horário próprio (nunca as 06:00 do horizontal).
   // #12250: fixo POR DESTINO (YouTube Shorts 06:30, os outros 12:00). `time` é o
@@ -1137,6 +1223,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       platform,
       d1: d1In,
       follow: diariaFollowLine(platform === "linkedin" ? "linkedin_profile" : platform === "threads" ? "threads_profile" : "x", cfg.diariaProfiles),
+      horizontalLink, // #12735: ignorado no Threads
     });
 
   // #10772 F4: a Posts API do LinkedIn não agenda — o vídeo sai quando a rodada
@@ -1160,33 +1247,49 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // #10772 F1: o repost da página só existe se o vídeo do perfil já está
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
   // receberia um passo de repost de um vídeo que não existe.
-  const profileBlocker = ((): string | null => {
+  // #12761: `pendingAt` = o perfil ainda vai sair por um dono automático (timer
+  // do 300, timer do corte, ou o agente com --now): horário esperado do perfil,
+  // base do dono do repost bloqueado. Ausente = bloqueio sem saída automática.
+  const profileBlock = ((): { reason: string; pendingAt?: string } | null => {
     // #10907: `send_unknown` conta como feito pra NÃO repostar o vídeo do perfil,
     // mas não prova que ele existe — o repost espera o editor conferir e registrar a URL.
     if (input.published.entries.some((e) => e.destination === "linkedin_profile" && e.status === "send_unknown")) {
-      return PROFILE_SEND_UNKNOWN_BLOCKER;
+      return { reason: PROFILE_SEND_UNKNOWN_BLOCKER };
     }
     if (isDestinationDone(input.published, "linkedin_profile")) return null;
     const dest = destinations.find((d) => d.kind === "linkedin_profile");
-    if (!dest) return "o vídeo do perfil (linkedin_profile) não está registrado nem nesta rodada";
-    if (!publishable(dest)) return "o vídeo do perfil (linkedin_profile) não sai nesta rodada (sem credencial)";
-    if (profileDelegated) return `o vídeo do perfil (linkedin_profile) ${LINKEDIN_TIMER_DETAIL}`;
-    if (corte && corteTimerOwnsNow("linkedin_profile")) return `o vídeo do perfil (linkedin_profile) ${corteTimerDelegatedDetail(corte.slug)}`;
-    if (profileLate) return `o vídeo do perfil (linkedin_profile) não sai nesta rodada (${profileLate})`;
+    if (!dest) return { reason: "o vídeo do perfil (linkedin_profile) não está registrado nem nesta rodada" };
+    if (!publishable(dest)) return { reason: "o vídeo do perfil (linkedin_profile) não sai nesta rodada (sem credencial)" };
+    const plannedProfileAt = slotOf.get("linkedin_profile")?.at ?? timeFor(dest.id).at;
+    // #12761 (review): teto da cadeia de re-agendamento. Cada re-execução com o perfil ainda
+    // pendente reagendaria o repost de novo, sem fim; passado o teto desde o horário planejado
+    // do perfil, o repost perde o dono e o plano pede intervenção do editor.
+    const profileStale = isProfileRepostChainStale(plannedProfileAt, input.now);
+    const pending = (reason: string, pendingAt: string): { reason: string; pendingAt?: string } =>
+      profileStale ? { reason: `${reason}; ${PROFILE_REPOST_CHAIN_STALE_DETAIL}` } : { reason, pendingAt };
+    if (profileDelegated) return pending(`o vídeo do perfil (linkedin_profile) ${LINKEDIN_TIMER_DETAIL}`, plannedProfileAt);
+    if (corte && corteTimerOwnsNow("linkedin_profile")) {
+      return pending(`o vídeo do perfil (linkedin_profile) ${corteTimerDelegatedDetail(corte.slug)}`, plannedProfileAt);
+    }
+    // skip_late: o dono do perfil (o agente) publica já, com --now.
+    if (profileLate) return pending(`o vídeo do perfil (linkedin_profile) não sai nesta rodada (${profileLate})`, input.now.toISOString());
     try {
       socialText("linkedin");
     } catch (e) {
-      return `o vídeo do perfil (linkedin_profile) não sai nesta rodada (${(e as Error).message})`;
+      return { reason: `o vídeo do perfil (linkedin_profile) não sai nesta rodada (${(e as Error).message})` };
     }
     return null;
   })();
+  const profileBlocker = profileBlock?.reason ?? null;
 
   // #10772: repost da página — depois do vídeo do perfil, num horário da grade da página.
+  // #12761: com o perfil pendente de um dono automático, o horário sai do horário esperado do perfil.
   const repostSlot = (() => {
     if (!destinations.some((d) => d.kind === "linkedin_page_repost") || isDestinationDone(input.published, "linkedin_page_repost")) return null;
-    if (profileBlocker) return null;
+    if (profileBlock && profileBlock.pendingAt === undefined) return null;
     const profileEntry = input.published.entries.find((e) => e.destination === "linkedin_profile");
-    const profileAt = profileEntry ? (profileEntry.scheduled_at ?? profileEntry.at) : (slotOf.get("linkedin_profile")?.at ?? shortTime.at);
+    const profileAt =
+      profileBlock?.pendingAt ?? (profileEntry ? (profileEntry.scheduled_at ?? profileEntry.at) : (slotOf.get("linkedin_profile")?.at ?? shortTime.at));
     const plannedGrid = [
       ...(input.grid ?? []),
       ...slots.map((s) => ({ account: s.account, at: s.at, label: `shorts ${s.destination}`, ...(s.alsoAccounts ? { alsoAccounts: s.alsoAccounts } : {}) })),
@@ -1273,7 +1376,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       if (profileBlocker) {
         const detail = `${profileBlocker} — repost só depois que o vídeo do perfil sair (ou for registrado com --mark linkedin_profile=URL)`;
         warnings.push(`linkedin_page_repost: ${detail}`);
-        return { destination: dest.id, mode: "guided", action: "skip_invalid", detail };
+        // #12761: perfil pendente de um dono automático → o repost leva o horário da re-execução (dono em owners[]).
+        return { destination: dest.id, mode: "guided", action: "skip_invalid", detail, ...(repostSlot ? { retryAt: repostSlot.at } : {}) };
       }
       const profile = input.published.entries.find((e) => e.destination === "linkedin_profile");
       const where = profile?.url ? ` (${profile.url})` : profile ? "" : " — depois que o vídeo do perfil (linkedin_profile) sair";
@@ -1398,7 +1502,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         destination: dest.id,
         mode: "guided",
         action: "guided",
-        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles) }), // #12465
+        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles), horizontalLink }), // #12465, #12735
         detail: "perfil pessoal: a Graph API não publica em perfil de pessoa — Chrome, ou compartilhar o Reels da página",
       };
     }
@@ -1414,7 +1518,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         mode: "api",
         action: "publish",
         // #12465: a página VJ Pixel (não a diar.ia.br) leva o perfil da diar.ia.br.
-        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles) }),
+        caption: buildReelsCaption({ platform: "facebook", d1: d1In, follow: diariaFollowLine(dest.id, cfg.diariaProfiles), horizontalLink }), // #12735
         scheduledAt: schedule.mode === "scheduled" ? schedule.at : null,
       };
     }
@@ -1548,7 +1652,17 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }),
   );
   const destinationTimes = Object.fromEntries(destinations.map((d) => [d.id, timeFor(d.id)]));
-  return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, destinationTimes, slots, items, owners, premises, warnings };
+  // #12735: o dry-run mostra, por destino, o link do horizontal que o vertical usa.
+  const horizontalLinks = corte ? undefined : planShortHorizontalLinks(destinations.map((d) => d.id), horizontalLink, input.horizontalVideo?.noVideo ?? false);
+  if (horizontalLinks) {
+    // Prefixo próprio: premissas que começam com `{destino}:` são as de horário (testes do #10772/#10907 as distinguem assim).
+    for (const [id, h] of Object.entries(horizontalLinks)) premises.push(`caminho até o horizontal (${id}): ${h.route}${h.link ? ` ${h.link}` : ""} — ${h.note} (#12735)`);
+  }
+  return {
+    aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, destinationTimes, slots, items, owners,
+    ...(horizontalLinks ? { horizontalLinks } : {}),
+    premises, warnings,
+  };
 }
 
 /**
@@ -1623,6 +1737,25 @@ export function shortsReelsIdempotencyKey(aammdd: string, account: WorkerInstagr
 /** #10907 — motivo do bloqueio do repost quando o vídeo do perfil ficou em `send_unknown`. */
 export const PROFILE_SEND_UNKNOWN_BLOCKER =
   "o vídeo do perfil (linkedin_profile) ficou em send_unknown (envio ambíguo) — confira o perfil e registre com --mark linkedin_profile=URL";
+
+/**
+ * #12761 (review): teto, contado do horário planejado do vídeo do perfil, da
+ * cadeia de re-agendamento do repost da página. Cada re-execução com o perfil
+ * ainda pendente (timer do 300 que falhou, `--now` que o agente não rodou)
+ * criaria outra task one-shot; passado o teto, o repost fica sem dono.
+ * 12 h: folga sobre o teto de 3 h do alarme do timer e sobre o `skip_late` do
+ * mesmo dia (vertical ao meio-dia → meia-noite).
+ */
+export const PROFILE_REPOST_CHAIN_MAX_MS = 12 * 60 * 60_000;
+
+export const PROFILE_REPOST_CHAIN_STALE_DETAIL =
+  "passaram mais de 12 h do horário planejado do perfil e ele não saiu: o repost fica sem dono automático, falta intervenção do editor (publicar o perfil e registrar com --mark linkedin_profile=URL)";
+
+/** Pure (#12761): o perfil passou do teto da cadeia de re-agendamento do repost? */
+export function isProfileRepostChainStale(plannedProfileAt: string, now: Date): boolean {
+  const planned = Date.parse(plannedProfileAt);
+  return Number.isFinite(planned) && now.getTime() - planned > PROFILE_REPOST_CHAIN_MAX_MS;
+}
 
 export type InstagramQueueReadiness = { ready: true; account: WorkerInstagramAccount } | { ready: false; reason: string };
 
@@ -4402,6 +4535,7 @@ async function runUpdateScheduled(input: {
     const horizontalTitle = horizontal ? resolveShortHorizontalTitle({ d1Title: d1.title, recordTitle: horizontal.recordTitle, noVideo: horizontal.noVideo }) : null;
     items = planScheduledUpdates({
       entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, horizontalTitle, only: input.only, known,
+      horizontalLink: horizontal?.url ?? null, // #12735
       ...(shortsCfg.diariaProfiles ? { diariaProfiles: shortsCfg.diariaProfiles } : {}),
     });
   } catch (e) {
@@ -4802,6 +4936,17 @@ async function main(): Promise<number> {
   if (!file) {
     console.error(`publish-shorts: vídeo curto ausente em ${videoPath}`);
     return 1;
+  }
+  if (!corte) {
+    // #12735: o link fixo da bio (diar.ia.br/video) passa a apontar para o horizontal desta edição.
+    // Fail-soft: o vertical sai mesmo sem o KV; a gravação só avança (edição anterior não sobrescreve).
+    try {
+      const kvEnv = pollKvFromEnv();
+      if (!kvEnv.kv) console.error(`[aviso] diar.ia.br/video não atualizado: ${kvEnv.reason} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
+      else console.error(`[ok] ${describeLatestVideoOutcome(await updateLatestVideoRedirect({ editionDir: dir, aammdd, kv: kvEnv.kv, apply: true, now: new Date() }))} (#12735)`);
+    } catch (e) {
+      console.error(`[aviso] diar.ia.br/video não atualizado: ${(e as Error).message} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
+    }
   }
   // #11912: só o --publish confirmado do corte grava o "pode publicar" (e o --only usado) no
   // corte.json; o timer do 300 não publica sem ele. Dry-run, --mark e --update-scheduled já
