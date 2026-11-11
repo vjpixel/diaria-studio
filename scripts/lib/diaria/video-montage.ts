@@ -1412,7 +1412,11 @@ export interface BlocksFile {
   vocabulary?: VocabRule[];
   /** Blocos que seguram `FECHO_HOLD_S` depois da última palavra. Default ["fecho"]. */
   holdBlocks?: BlockKey[];
-  /** Duração-alvo da vertical nesta edição, em segundos (#11757); ausente = `VERTICAL_TARGET_S` (85). */
+  /**
+   * Duração-alvo da vertical nesta edição, em segundos de fala (#11757); ausente
+   * = `VERTICAL_TARGET_S` (75, #12694). Só reduz o alvo: acima de 75 o valor é
+   * limitado a 75 com aviso (`effectiveVerticalTargetS`), sem falhar o parse.
+   */
   verticalTargetS?: number;
   /**
    * Título em texto na abertura das verticais (#11756): sobrepõe o título do D1
