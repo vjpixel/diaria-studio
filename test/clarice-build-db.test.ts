@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { main as buildDb } from "../scripts/clarice-build-db.ts";
+import { main as buildDb, UNREADABLE_SOURCE_HINT } from "../scripts/clarice-build-db.ts";
 import { openClariceDb } from "../scripts/lib/clarice-db.ts";
 
 // ---------------------------------------------------------------------------
@@ -96,4 +96,13 @@ test("clarice-build-db main(): linha nua re-entrada via MV ganha cohort correto 
   const semStripe2 = cohortRow(dbPath, "leitora-sem-stripe@gmail.com");
   assert.equal(contato2!.cohort, "leads-2026-06", "2ª rodada é idempotente — sem drift");
   assert.equal(semStripe2!.cohort, null, "2ª rodada — segue NULL, sem drift");
+});
+
+// #12837 / review da PR #12838: no 300 o bisync grava cópia local completa,
+// então CSV ilegível lá é corrupção/conflito — a dica não pode mandar só esperar.
+test("dica de CSV ilegível cobre streaming do Drive e conflito do bisync", () => {
+  assert.match(UNREADABLE_SOURCE_HINT, /Disponível off-line/);
+  assert.match(UNREADABLE_SOURCE_HINT, /corrompido\/em conflito no bisync/);
+  assert.doesNotMatch(UNREADABLE_SOURCE_HINT, /aguarde o bisync/);
+  assert.doesNotMatch(UNREADABLE_SOURCE_HINT, /OneDrive/);
 });

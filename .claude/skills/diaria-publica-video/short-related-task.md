@@ -74,6 +74,22 @@ O exit code diz o desfecho:
 - 1: o e-mail não saiu. Diga isso no resumo final, que passa a ser o último canal.
 - 3: o e-mail saiu, mas o registro do alerta não foi gravado. Diga isso no resumo e não chame `--alert` de novo.
 
+## Passo 6: publicar o registro no KV
+
+Sempre que a execução tiver passado pelo Passo 4 ou pelo Passo 5 (vinculado, `failed` ou alerta), e também no `skip` do Passo 1 por **já vinculado**, rode **por último**:
+
+```bash
+npx tsx scripts/short-related-kv-publish.ts --edition {AAMMDD}
+```
+
+Use o mesmo AAMMDD do Passo 1 (o `aammdd` do JSON); o `--edition` é obrigatório. O script lê o `_internal/06-short-related.json` que o Passo 4 ou o 5 gravou e o publica no KV da Cloudflare (`short-related:{AAMMDD}`, namespace `diaria-ops-state`, #12541), de onde o alarme do `300` (`Diaria-Short-Related-Missed-Alarm`) lê na hora, sem esperar o arquivo replicado em `data/`. O arquivo da edição continua sendo gravado. No `skip` por já vinculado a publicação é idempotente e cobre uma execução anterior cuja publicação falhou. Precisa de `CLOUDFLARE_ACCOUNT_ID` e `CLOUDFLARE_WORKERS_TOKEN` no `.env` do checkout.
+
+- Exit 0: publicado e relido.
+- Exit 1: não publicou: `data/` não montada, edição sem `_internal/06-short-related.json`, registro ilegível, credencial ausente, rede, ou releitura divergente depois do PUT. Diga isso no resumo final com a mensagem do erro; não repita o vínculo nem o alerta por causa disso. O alarme do `300` cai no arquivo replicado.
+- Exit 2: chamada errada (sem `--edition`, AAMMDD inválido). Corrija o comando e rode de novo.
+
+Com os demais `skip` do Passo 1 (fim de semana, sem edição, sem vídeo) não há registro a publicar: pule este passo.
+
 ## Fim
 
-Resumo de uma ou duas linhas: edição, ação final (`vinculado`, `já vinculado`, `pulado: motivo`, `alerta enviado: motivo`) e os IDs. Nada de perguntas: a task roda sem o editor presente.
+Resumo de uma ou duas linhas: edição, ação final (`vinculado`, `já vinculado`, `pulado: motivo`, `alerta enviado: motivo`), os IDs e se o registro foi publicado no KV. Nada de perguntas: a task roda sem o editor presente.

@@ -76,9 +76,10 @@ describe("#12251 — os avisos do verificador apontam o Studio web (Passo B3a, #
     for (const text of [SHORT_VERTICAL_COVER_HOWTO, YOUTUBE_SHORTS_COVER_PLAN, w!]) assert.doesNotMatch(text, /app do YouTube/);
   });
 
-  it("os dois avisos do CLI (404 e frame) usam o mesmo passo", () => {
+  // #12100 opção 2: o aviso do `--image oar2` (capa no 1º frame não pegou) também aponta o mesmo passo.
+  it("os três avisos do CLI (404, frame e oar2) usam o mesmo passo", () => {
     const src = readFileSync(new URL("../scripts/check-short-feed-cover.ts", import.meta.url), "utf8");
     assert.doesNotMatch(src, /app do YouTube/);
-    assert.equal(src.match(/\$\{SHORT_VERTICAL_COVER_HOWTO\}/g)?.length, 2);
+    assert.equal(src.match(/\$\{SHORT_VERTICAL_COVER_HOWTO\}/g)?.length, 3);
   });
 });

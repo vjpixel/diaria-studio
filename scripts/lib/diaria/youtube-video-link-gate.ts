@@ -35,6 +35,7 @@ import {
 } from "../social-schedule-rotation.ts";
 import { DEFAULT_EDITION_SCHEDULE_HHMM, resolveEditionScheduledAt } from "../edition-scheduled-at.ts";
 import { extractYouTubeVideoId } from "./d1-video-link.ts";
+import { clearedDailyPostTimes } from "./vertical-social-clearance.ts";
 import { YOUTUBE_API_PROJECT_AUDITED } from "./youtube-video.ts";
 import { YOUTUBE_PUBLISHED_FILE } from "./youtube-upload.ts";
 
@@ -114,10 +115,16 @@ export function videoLinkEligibility(input: {
  * publicadores (`day_offset` + rotação do #10305). `null` se não der para
  * derivar (edição inválida, D1 sem horário no config).
  */
-export function d1SocialSlotAt(aammdd: string, social: Record<string, unknown> | null | undefined): Date | null {
+export function d1SocialSlotAt(
+  aammdd: string,
+  social: Record<string, unknown> | null | undefined,
+  /** #12748: o config inteiro aplica o desvio do vertical (`clearedDailyPostTimes`), como `computeScheduledAt`. */
+  fullConfig?: unknown,
+): Date | null {
   const date = publishDateForEdition(aammdd, social);
   if (!date) return null;
-  const { time } = resolveDailyPostTime(social, date, "d1");
+  const cleared = fullConfig !== undefined ? clearedDailyPostTimes(fullConfig, date, aammdd)?.d1.time : undefined;
+  const time = cleared ?? resolveDailyPostTime(social, date, "d1").time;
   if (!time) return null;
   const d = new Date(`${formatCivilDate(date)}T${time}:00${BRT_OFFSET}`);
   return Number.isNaN(d.getTime()) ? null : d;

@@ -16,7 +16,10 @@
  *     parte e, sem miniatura vertical própria, cai no frame automático (#12100). A
  *     YouTube Data API não tem chamada para ela: o registro grava
  *     `vertical_feed: "manual"` e o agente aplica a capa vertical no Studio web
- *     (Passo B3a de `/diaria-publica-video`, #12254);
+ *     (Passo B3a de `/diaria-publica-video`, #12254). Desde a opção 2 do
+ *     #12100 (11/11/2026) o vertical enviado leva a capa nos primeiros frames
+ *     (`short-first-frame-cover.ts`) e o registro grava `first_frame_cover`,
+ *     sem confirmação até a medição do `oar2.jpg`;
  *   - `x` (Buffer): não aceita imagem, só `thumbnailOffset` (ms) no asset de
  *     vídeo. Derivado do timecode que o Premiere põe no nome do Still
  *     (`…V1.00_00_03_08.Still001.jpg` = 3 s + 8 frames);
@@ -54,22 +57,40 @@ export interface ShortCoverRecord {
   offset_ms?: number;
   error?: string;
   /**
-   * #12100: só no `thumbnails_set` com `ok: true`. O `ok` diz que a miniatura
+   * #12100: só no `thumbnails_set`. `manual` e `studio_web` só com `ok: true`;
+   * `first_frame_cover` também com `ok: false` (a capa no 1º frame é outro
+   * canal, não depende do `thumbnails.set`). O `ok` diz que a miniatura
    * 16:9 foi trocada; a capa do feed de Shorts (`sardefault.jpg`, #12251) não muda pela API
    * e fica para o Studio web (`manual`, Passo B3a, #12254). Depois que o agente
    * aplica o JPG vertical pelo Studio web e confere a persistência, o Passo B3a
    * de `/diaria-publica-video` troca o valor para `studio_web` (#12436).
+   * Desde a opção 2 do #12100 (11/11/2026), o vertical enviado ao YouTube leva
+   * a capa nos primeiros ~400 ms (arredondado ao frame; `first_frame_ms` grava
+   * o valor efetivo) e o valor é `first_frame_cover`: aplicado, mas
+   * NÃO confirmado — nada aqui afirma que o leitor vê a capa no feed até a
+   * medição do `oar2.jpg` (`check-short-feed-cover.ts --image oar2`).
    */
   vertical_feed?: ShortVerticalFeedCover;
+  /**
+   * #12100 opção 2: duração (ms) da capa no início do vertical enviado ao
+   * YouTube. Fica no registro mesmo depois de o Passo B3a trocar o
+   * `vertical_feed` para `studio_web`, para a medição saber qual Short levou
+   * a capa no 1º frame.
+   */
+  first_frame_ms?: number;
 }
 
 /**
  * #12436: estado da capa do feed de Shorts no registro. `manual` = pendente
- * (o script grava após o `thumbnails.set`); `studio_web` = aplicada pelo Studio
- * web e conferida (gravado pelo agente no Passo B3a). Só `manual` gera o aviso
- * de `youtubeShortsVerticalCoverWarning`.
+ * (o script grava após o `thumbnails.set` sem a capa no 1º frame);
+ * `studio_web` = aplicada pelo Studio web e conferida (gravado pelo agente no
+ * Passo B3a; absorvente no `keepStudioWebVerticalFeed`); `first_frame_cover`
+ * (#12100 opção 2) = a capa foi posta nos primeiros ~400 ms do vertical
+ * enviado (o script grava, com qualquer `ok` do `thumbnails.set`), sem
+ * confirmação de que o frame automático do YouTube caiu nela. `manual` (com
+ * `ok`) e `first_frame_cover` geram o aviso de `youtubeShortsVerticalCoverWarning`.
  */
-export const SHORT_VERTICAL_FEED_COVER_VALUES = ["manual", "studio_web"] as const;
+export const SHORT_VERTICAL_FEED_COVER_VALUES = ["manual", "studio_web", "first_frame_cover"] as const;
 export type ShortVerticalFeedCover = (typeof SHORT_VERTICAL_FEED_COVER_VALUES)[number];
 
 export interface ShortCoverSource {
@@ -144,7 +165,13 @@ export function clampBufferThumbnailOffsetMs(offsetMs: number | null, durationSe
  */
 export function planCoverDestination(
   item: { destination: string; mode?: string; action?: string },
-  ctx: { coverPath: string | null; coverUploadReady: boolean; bufferOffsetMs: number | null },
+  ctx: {
+    coverPath: string | null;
+    coverUploadReady: boolean;
+    bufferOffsetMs: number | null;
+    /** #12100 opção 2: ms da capa no início do vertical do YouTube; null/ausente = desligado. */
+    youtubeFirstFrameMs?: number | null;
+  },
 ): string {
   const d = item.destination;
   if (d === "threads_profile") return "unsupported (a Threads API não tem parâmetro de capa)";
@@ -159,7 +186,10 @@ export function planCoverDestination(
   if (d === "instagram") return ctx.coverUploadReady ? "cover_url" : "unavailable: R2 credentials missing; automatic frame";
   if (d.startsWith("facebook:")) return "thumbnail_upload";
   if (d === "linkedin_profile") return "thumbnail_upload";
-  if (d === "youtube_shorts") return item.mode === "guided" ? "guided (Studio: Miniatura → Enviar arquivo)" : YOUTUBE_SHORTS_COVER_PLAN;
+  if (d === "youtube_shorts") {
+    if (item.mode === "guided") return "guided (Studio: Miniatura → Enviar arquivo)";
+    return ctx.youtubeFirstFrameMs ? `${YOUTUBE_SHORTS_COVER_PLAN}; ${youtubeFirstFrameCoverPlan(ctx.youtubeFirstFrameMs)}` : YOUTUBE_SHORTS_COVER_PLAN;
+  }
   return "unsupported";
 }
 
@@ -169,6 +199,11 @@ export function planCoverDestination(
  */
 export const YOUTUBE_SHORTS_COVER_PLAN =
   "thumbnails_set (só a miniatura 16:9; a capa do feed de Shorts é manual no Studio web, Passo B3a, #12100/#12254)";
+
+/** #12100 opção 2: a parte do plano que descreve a capa no 1º frame (não confirmada). */
+export function youtubeFirstFrameCoverPlan(ms: number): string {
+  return `first_frame_cover (capa nos primeiros ${ms} ms do vertical enviado ao YouTube; não confirmado que o frame automático do feed cai nela, medir o oar2.jpg)`;
+}
 
 /**
  * #12251/#12254: como aplicar a capa vertical do Short, citado nos avisos do
@@ -194,25 +229,52 @@ export function youtubeShortFeedThumbUrl(videoId: string): string {
 }
 
 /**
- * Pure (#12100): registro da capa do Short a partir do resultado do
- * `thumbnails.set`. Sucesso grava `vertical_feed: "manual"`, porque o `ok`
- * vale só para a miniatura 16:9. Tentativa não feita → null.
+ * #12100 opção 2: o frame automático que o YouTube escolheu para o Short
+ * (`oar2.jpg`, 1080x1920). É o que a capa no 1º frame quer mudar: a medição
+ * compara esta imagem com a capa local (`check-short-feed-cover.ts --image oar2`).
  */
-export function youtubeShortsCoverRecord(
-  thumb: { attempted: boolean; ok: boolean; error?: string | null } | null | undefined,
-): ShortCoverRecord | null {
-  if (!thumb?.attempted) return null;
-  return thumb.ok
-    ? { method: "thumbnails_set", ok: true, vertical_feed: "manual" }
-    : { method: "thumbnails_set", ok: false, error: thumb.error ?? "sem detalhe" };
+export function youtubeShortAutoFrameUrl(videoId: string): string {
+  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/oar2.jpg`;
 }
 
 /**
- * Pure (#12100): aviso do passo manual da capa do feed de Shorts, para o
- * registro com `vertical_feed: "manual"`. Qualquer outro registro → null.
+ * Pure (#12100): registro da capa do Short a partir do resultado do
+ * `thumbnails.set`. O `ok` vale só para a miniatura 16:9; o feed vertical fica
+ * em `vertical_feed`: `manual` sem a capa no 1º frame, `first_frame_cover`
+ * (com `first_frame_ms`) quando o vertical enviado levou a capa no início —
+ * nos dois casos sem afirmar que o leitor vê a capa. A capa no 1º frame vale
+ * mesmo com o `thumbnails.set` falho (é outro canal). Tentativa não feita → null.
+ */
+export function youtubeShortsCoverRecord(
+  thumb: { attempted: boolean; ok: boolean; error?: string | null } | null | undefined,
+  firstFrame?: { ms: number } | null,
+): ShortCoverRecord | null {
+  if (!thumb?.attempted) return null;
+  const vertical: Pick<ShortCoverRecord, "vertical_feed" | "first_frame_ms"> = firstFrame
+    ? { vertical_feed: "first_frame_cover", first_frame_ms: firstFrame.ms }
+    : {};
+  return thumb.ok
+    ? { method: "thumbnails_set", ok: true, vertical_feed: "manual", ...vertical }
+    : { method: "thumbnails_set", ok: false, error: thumb.error ?? "sem detalhe", ...vertical };
+}
+
+/**
+ * Pure (#12100): aviso do passo manual da capa do feed de Shorts. Acende no
+ * `vertical_feed: "manual"` com `ok: true` e no `first_frame_cover` com
+ * qualquer `ok` (#12100 opção 2: aplicado, não confirmado — pede a medição do
+ * `oar2` e, até ela confirmar, o Passo B3a). `studio_web` e o resto → null.
  */
 export function youtubeShortsVerticalCoverWarning(videoId: string, cover: ShortCoverRecord | null | undefined): string | null {
-  if (!cover || cover.method !== "thumbnails_set" || !cover.ok || cover.vertical_feed !== "manual") return null;
+  if (!cover || cover.method !== "thumbnails_set") return null;
+  if (cover.vertical_feed === "first_frame_cover") {
+    // #12100 opção 2: aplicado, não confirmado. A medição é o oar2; o passo do Studio web segue até a medição mostrar que o 1º frame basta.
+    return (
+      `capa nos primeiros ${cover.first_frame_ms ?? "?"} ms do vertical enviado (#12100, não confirmado): medir se o frame automático do feed caiu nela com ` +
+      `npx tsx scripts/check-short-feed-cover.ts --id ${videoId} --cover {capa} --image oar2 (${youtubeShortAutoFrameUrl(videoId)}); ` +
+      `até a medição confirmar, aplicar ${SHORT_COVER_FILE} ${SHORT_VERTICAL_COVER_HOWTO}`
+    );
+  }
+  if (!cover.ok || cover.vertical_feed !== "manual") return null;
   return (
     `capa 16:9 aplicada; a do feed de Shorts não muda pela API (#12100): aplicar ${SHORT_COVER_FILE} ${SHORT_VERTICAL_COVER_HOWTO}, ` +
     `e conferir com npx tsx scripts/check-short-feed-cover.ts --id ${videoId} --cover {capa} (${youtubeShortFeedThumbUrl(videoId)})`
@@ -230,16 +292,26 @@ export function youtubeShortsVerticalCoverWarning(videoId: string, cover: ShortC
  * (review do PR #12489): a falha é da miniatura 16:9, a capa do feed aplicada
  * no Studio web continua lá, e o registro da falha guarda `studio_web` para o
  * Passo B3a não perder essa informação (o aviso só acende com `ok` +
- * `manual`). Qualquer outro caso devolve `next` como veio.
+ * `manual`). `studio_web` no registro anterior é absorvente: vence qualquer
+ * `next`, inclusive um `first_frame_cover` (review da PR #12844). Fora dele,
+ * `first_frame_cover` anterior sobrevive a um `next` sem capa no 1º frame (a
+ * re-execução não reenvia o vídeo) e `first_frame_ms` acompanha em todos os
+ * casos. Qualquer outro caso devolve `next` como veio.
  */
 export function keepStudioWebVerticalFeed(
   next: ShortCoverRecord | null,
   prior: ShortCoverRecord | null | undefined,
 ): ShortCoverRecord | null {
   if (!next || next.method !== "thumbnails_set") return next;
-  if (next.ok && next.vertical_feed !== "manual") return next;
-  if (prior?.method !== "thumbnails_set" || prior.vertical_feed !== "studio_web") return next;
-  return { ...next, vertical_feed: "studio_web" };
+  if (prior?.method !== "thumbnails_set") return next;
+  // #12100 opção 2: a re-execução não reenvia o vídeo, então a capa no 1º
+  // frame do vertical já no ar continua lá; `first_frame_ms` acompanha.
+  const firstFrame = next.first_frame_ms === undefined && prior.first_frame_ms !== undefined ? { first_frame_ms: prior.first_frame_ms } : {};
+  // Confirmado no Studio web é absorvente: nenhum ramo abaixo o rebaixa.
+  if (prior.vertical_feed === "studio_web") return { ...next, ...firstFrame, vertical_feed: "studio_web" };
+  if (next.ok && next.vertical_feed !== "manual") return { ...next, ...firstFrame };
+  if (prior.vertical_feed === "first_frame_cover") return { ...next, ...firstFrame, vertical_feed: "first_frame_cover" };
+  return next;
 }
 
 /**

@@ -484,7 +484,7 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
         `Confira o arquivo. Se o novo está certo, dê o "pode publicar" de novo: \`${base} --only ${destination} --publish --confirm-publish ${spec.date}\`. Se não, volte o arquivo aprovado: o timer confere de novo a cada hora, até 3 h depois do horário.`,
       );
     }
-    if (key === "missing-video") lines.push(`O vídeo do corte (${spec.video}) ou a capa aprovada não está nesta máquina (cópia do OneDrive atrasada?): copie para a pasta do corte em data/cortes/${spec.slug}/ ou rode de novo com --from-drive.`);
+    if (key === "missing-video") lines.push(`O vídeo do corte (${spec.video}) ou a capa aprovada não está nesta máquina (sync do Drive atrasado?): copie para a pasta do corte em data/cortes/${spec.slug}/ ou rode de novo com --from-drive.`);
     if (key === "public-video") lines.push("O destino recebe o vídeo por URL pública: confira os secrets do R2 (`SHORTS_R2_*`) no `.env` do 300.");
     if (key === "credentials") lines.push("Confira a credencial do destino no `.env` do 300 (LINKEDIN_PERSONAL_*, THREADS_PERSONAL_*, INSTAGRAM_*).");
     if (RETRY_KEYS.has(key)) lines.push("O timer volta a tentar sozinho de hora em hora até 3 h depois do horário do corte; resolvida a causa, não precisa fazer nada.");

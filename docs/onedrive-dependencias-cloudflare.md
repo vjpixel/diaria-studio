@@ -197,7 +197,8 @@ orçamento.
 - **Quem grava / lê:** grava a task do Neo `diaria-short-video-relacionado`
   (`.claude/skills/diaria-publica-video/short-related-task.md:62`); lê o
   `Diaria-Short-Related-Missed-Alarm` no `300`
-  (`scripts/short-related-missed-alarm.ts:136`, o caso `missing-record`).
+  (`scripts/short-related-missed-alarm.ts`, `evaluateShortRelatedMissed`, o
+  caso `missing-record`).
 - **Natureza:** sinal pequeno, um escritor, uma chave por edição, 1 escrita
   por dia útil.
 - **Problema:** a ausência do arquivo no `300` não diz se a task não rodou ou
@@ -205,6 +206,10 @@ orçamento.
 - **Destino recomendado:** **KV**, já decidido pelo editor na #12541 (item 2).
   Chave `short-related:{AAMMDD}`, valor com `linked|failed|alerted`, IDs e
   timestamp. O arquivo da edição continua sendo gravado, para quem lê a pasta.
+  **Implementado** (11/11/2026): namespace `diaria-ops-state`
+  (`platform.config.json` → `ops_state_kv.namespace_id`), gravação por
+  `scripts/short-related-kv-publish.ts` (Passo 6 do roteiro da task), leitura
+  no alarme antes do arquivo (`scripts/lib/diaria/short-related-kv.ts`).
 - **Esforço:** baixo. Cliente REST pronto; a task do Neo ganha um `put`, o
   alarme ganha um `get`.
 - **Risco:** baixo. Consistência eventual não atrapalha: o alarme roda às

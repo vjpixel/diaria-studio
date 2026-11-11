@@ -87,7 +87,7 @@ fecha de ponta a ponta com `--skip apoiase`.
 | Post apoia.se | **Restrito a R$25+** (valor `25` do `Quem pode ver?`) — mesma lógica de visibilidade do Artigo Especial (restringe ao tier que ganha a recompensa). Texto de **CHAMADA** (título + 2 parágrafos curtos; a URL da retrospectiva vai no campo `Link externo`, nunca repetida no corpo), nunca o conteúdo integral. Fala com quem JÁ apoia, sem CTA de conversão. |
 | Posts públicos (editor, 02/10/2026; CTA revisto em 01/11/2026, #11802) | **Sim — LinkedIn página + perfil.** Desde o #11802 o CTA aponta pra **página da retrospectiva do ciclo** (trecho aberto + paywall), não mais pro apoia.se: linha literal `Apoie nosso trabalho e leia a retrospectiva completa em: retrospectiva.diar.ia.br/{AAMM}` (`retrospectivaPublicCta(ciclo)`, a frase que o editor usou no ciclo 2610-11 — não reescrever, não passar por Clarice/humanizador). URL de retrospectiva de outro ciclo ou do host legado `artigo.` reprova. Texto de chamada, não recorte. |
 | Facebook/Instagram/Threads/X (editor, 02/10/2026, #9500) | **Sim, os quatro**, mesma regra de CTA. X/Threads (≤280) aceitam a linha curta `Apoie e leia a retrospectiva completa: retrospectiva.diar.ia.br/{AAMM}` (`retrospectivaPublicCtaCurto(ciclo)`; premissa do #9500: mantém o "Apoie", corta o resto pra caber); LinkedIn/Facebook/Instagram, a longa. |
-| Um post por história (editor, 02/10/2026, #9508) | **3 posts por rede, um por história** (DESTAQUE 1/2/3 do `draft.md`), no **formato dos destaques diários**: Instagram e Threads = carrossel de 5 slides fixos (capa 4:5 com o título + 3 parágrafos + CTA, #6005 Parte B); X = até 4 imagens (capa + 3 parágrafos, **sem** o slide de CTA, #8202); Facebook e página LinkedIn = 1 imagem (a capa 4:5 da história, como a diária prefere) + texto. O **perfil LinkedIn segue com 1 post só**, manual. Textos (premissa do #9508, espelho da diária `# Social`/`# Curto`): por história, `d{N}.md` = **exatamente 3 parágrafos** (≤260 cada; os slides E o corpo da legenda de LinkedIn/Facebook/Instagram — o script soma a linha longa de CTA) e `d{N}-curto.md` = ≤280 com a linha curta (Threads e X). Parágrafo que não cabe no card é **REESCRITO**, nunca encolhido nem truncado (#6078). Slide de CTA = a linha longa, faixa "Exclusivo para apoiadores". Capa = `04-d{N}-2x1.jpg` do ciclo recortada em 4:5, título da história, linha "Retrospectiva de {Mês}". Tudo por `publish-retrospectiva-social.ts`; X via Buffer MCP pelo top-level (o script só monta os 3 payloads). |
+| Um post por história (editor, 02/10/2026, #9508) | **3 posts por rede, um por história** (DESTAQUE 1/2/3 do `draft.md`), no **formato dos destaques diários**: Instagram e Threads = carrossel de 5 slides fixos (capa 4:5 com o título + 3 parágrafos + CTA, #6005 Parte B); X = até 4 imagens (capa + 3 parágrafos, **sem** o slide de CTA, #8202); Facebook = 1 imagem (a capa 4:5 da história) + texto; página LinkedIn = **documento PDF dos 5 slides** + texto, o padrão do canal desde o #12584 (fallback documento → carrossel → capa única; `--linkedin-format image` volta à capa única). O **perfil LinkedIn segue com 1 post só**, manual. Textos (premissa do #9508, espelho da diária `# Social`/`# Curto`): por história, `d{N}.md` = **exatamente 3 parágrafos** (≤260 cada; os slides E o corpo da legenda de LinkedIn/Facebook/Instagram — o script soma a linha longa de CTA) e `d{N}-curto.md` = ≤280 com a linha curta (Threads e X). Parágrafo que não cabe no card é **REESCRITO**, nunca encolhido nem truncado (#6078). Slide de CTA = a linha longa, faixa "Exclusivo para apoiadores". Capa = `04-d{N}-2x1.jpg` do ciclo recortada em 4:5, título da história, linha "Retrospectiva de {Mês}". Tudo por `publish-retrospectiva-social.ts`; X via Buffer MCP pelo top-level (o script só monta os 3 payloads). |
 | Agenda (editor, 02/10/2026, #9508) | D = data do ENVIO do e-mail (`--base-date`). Os 15 posts no **dia D+1**, nos **mesmos slots dos dias de semana da diária** (`publishing.social.fallback_schedule`, fonte do `compute-social-schedule.ts`): **história 1 às 09:45, 2 às 12:15, 3 às 17:15 BRT** (valores de hoje — a fonte é o config), com as **5 redes no mesmo horário** (sem escalonar). Por isso o dia **não pode ter edição diária agendada**: post vivo no store da diária desse dia (`editionDir(AAMMDD)/_internal/06-social-published.json` (`data/editions/{AAMM}/{AAMMDD}/`)) recusa o pré-voo; pasta da edição sem posts (edição em curso) ou dia útil sem edição viram **aviso** no JSON (`warnings`) e no gate. Sábado/domingo não têm edição — o envio do e-mail no 1º sábado (#9473) cai os posts no domingo. Perfil LinkedIn **D+2 09:30 BRT**, manual (o Worker rejeita `pixel` + `post`). Página `webhook_target: "diaria"`. |
 | Post único legado da página (#9474 → #9508) | O ciclo 2609-10 já tem 1 post geral da página agendado. Enquanto ele estiver vivo no Worker e algum post da página estiver pedido, o pré-voo **inteiro** é recusado (tudo-ou-nada; sairiam 4 na página). O post único do #9500 nas outras redes (`divulgacao-social-published.json`), se existir vivo, também recusa — sem cancelamento por script. `--replace-linkedin-single` cancela a entry (DELETE `/queue/:key`) antes de despachar os 3; se ela já saiu da fila (provavelmente publicada), os 3 seguem e o resultado avisa (`legacy_linkedin.action: "already-gone"`). |
 | Box (editor, 02/10/2026) | **Slot 2, o mesmo do Artigo Especial — os dois se ALTERNAM.** Mecanismo: pin last-writer-wins (quem publica por último ocupa o slot); `--unpin` de um só solta o slot se ele ainda aponta pro arquivo dele, nunca derruba o pin do outro (`scripts/lib/box-slot-pin.ts`). Trade-off do #6748: em edição de 2 destaques o slot 2 não aparece. CTA do box leva à página da Retrospectiva (trecho + paywall, a página feita pra vender o apoio) — mesma escolha do box do Artigo Especial. |
@@ -142,7 +142,9 @@ fecha de ponta a ponta com `--skip apoiase`.
   `--accept-teaser` (Passo 3, `verify-retrospectiva-page.ts`), `--no-pin`
   (Passo 7, `update-retrospectiva-box.ts`), `--old-cancelled post[,post]`
   (Passo 6, `publish-retrospectiva-social.ts` — destrava o `--force` sobre
-  post vivo de Facebook/X que o editor já apagou na rede).
+  post vivo de Facebook/X que o editor já apagou na rede) e
+  `--linkedin-format document|image` (Passo 6, mesmo script, #12584 — default
+  `document`, o PDF dos 5 slides na página LinkedIn; `image` = capa única).
 - `--mark-sent` — **não prepara nada**: registra que o EDITOR já enviou o
   e-mail de verdade pela UI (Passo 4c). Rodar 2x é idempotente.
 
@@ -535,12 +537,26 @@ Pulado post a post por `--skip` ou já `done` sem `--force` (#9508).
    ```bash
    npx tsx scripts/publish-retrospectiva-social.ts --cycle $CYCLE \
      --base-date {data do envio, Passo 0.5} [--at ISO] [--skip ...] [--force canal[:dN][,...]] \
-     [--old-cancelled facebook:d1,x] [--replace-linkedin-single] [--dry-run]
+     [--old-cancelled facebook:d1,x] [--replace-linkedin-single] \
+     [--linkedin-format document|image] [--dry-run]
    ```
    Por história: gera capa 4:5 + 4 slides em `divulgacao/` e sobe os 5 pro KV
    (`img-{ciclo}-04-d{N}-4x5.jpg`, `img-{ciclo}-04-d{N}-carousel-{slot}-4x5.jpg`);
    LinkedIn página por `dispatchEntry` (Worker, `allowImmediateFallback:
    false`, #6015 — sem Worker a rota seria `make_now` e publicaria AGORA),
+   **em documento PDF dos 5 slides** (capa → p1 → p2 → p3 → CTA), o mesmo
+   formato da diária (#12584, `lib/linkedin-daily-document.ts`): o PDF fica
+   em `_internal/divulgacao-linkedin-d{N}-carousel.pdf` e sobe pro KV como
+   `img-{ciclo}-linkedin-d{N}-carousel-{md5}.pdf`. Fallback documento →
+   carrossel → capa única, com o formato que saiu gravado no store
+   (`format: document|carousel|single_image`, com o motivo do fallback).
+   Slide faltando (ou sem URL https, como no `--dry-run`) = capa única
+   (`carousel_incomplete`); `--linkedin-format image` força a capa única
+   (`opt_out`). PDF que falhou ou documento recusado pelo LinkedIn dispara
+   alarme ao editor (`alarmLinkedInDocumentFallbacks`). A chave idempotente do
+   Worker é por ciclo + história (`retrospectivaLinkedInIdempotencyKey`): as
+   3 histórias usam o mesmo `destaque` e, sem a história na chave, cairiam
+   numa entry só.
    Facebook por `publishFacebookCarouselByUrl` (agendamento nativo da Graph
    API, 1 foto), Instagram/Threads por `postToWorkerQueue` com `image_urls`
    (carrossel de 5). `destaque` no Worker = `especial-retrospectiva`
