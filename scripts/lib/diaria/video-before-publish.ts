@@ -32,6 +32,7 @@
  *   6. Nada → `no-video`.
  *
  * Bloqueiam: `invalid-link`, `video-without-link`, `no-video`, `no-video-stale` — exceto
+ * (menos `no-video-stale`, que surge depois da Etapa 5, #12805)
  * depois da Etapa 5 concluída (`.step-5-done.json`): retry de canal
  * (`/diaria-5-publicacao newsletter|social`) não volta a exigir um vídeo que
  * a primeira rodada já dispensou (o Passo 0 reescreve o consent a cada
@@ -252,8 +253,10 @@ export function videoReaderAccessWarning(
 export function assessVideoBeforePublish(editionDir: string, aammdd: string, opts: AssessVideoOptions = {}): VideoBeforePublishResult {
   const result = (status: VideoBeforePublishStatus, videoUrl: string | null, warning: string | null): VideoBeforePublishResult => {
     const stage5Done = existsSync(join(editionDir, STAGE5_DONE_FILE));
-    const blocking = BLOCKING_STATUSES.has(status) && !stage5Done;
-    const retryNote = BLOCKING_STATUSES.has(status) && stage5Done ? " Etapa 5 já concluída (retry de canal): não bloqueia." : "";
+    // no-video-stale surge DEPOIS da Etapa 5 (marcador aplicado sem re-render): retry de canal não dispensa (#12805).
+    const dispensable = BLOCKING_STATUSES.has(status) && status !== "no-video-stale" && stage5Done;
+    const blocking = BLOCKING_STATUSES.has(status) && !dispensable;
+    const retryNote = dispensable ? " Etapa 5 já concluída (retry de canal): não bloqueia." : "";
     return { status, videoUrl, blocking, warning: warning === null ? null : warning + retryNote };
   };
 
