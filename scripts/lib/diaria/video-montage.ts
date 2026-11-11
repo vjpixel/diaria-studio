@@ -2254,6 +2254,8 @@ export interface SequencePlan {
   missingBlocks: BlockKey[];
   /** Itens que sumiram no corte (0 clipes) ou palavras que ficaram fora dos clipes. */
   dropped: string[];
+  /** #12089: as palavras fora dos clipes (as de `dropped`) como dado, com o rótulo do item e o tempo no bruto; ausente = nenhuma. */
+  lostWords?: Array<{ label: string; text: string; start: number; end: number }>;
   /** Emendas de clipes contíguos e, depois do refino por áudio, os ajustes de corte (#11500, #11503). */
   cutAdjustments?: CutAdjustment[];
   /** Avisos do plano que não barram o build (respiro da vinheta menor que o pedido, #12101). */
@@ -2424,12 +2426,16 @@ export function buildSequencePlan(
   // #12270: assembleClips arredonda as bordas ao quadro mais próximo. O núcleo
   // aparado pela pausa pode ser menor que meio quadro e cair logo fora dele.
   const frameTolS = 0.5 / fps + 1e-9;
+  const lostWords: Array<{ label: string; text: string; start: number; end: number }> = [];
   for (const { label, words } of wordChecks) {
-    const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start - frameTolS && (w.start + w.end) / 2 <= p.end + frameTolS) && !wordCoveredBySilence(w, kept, silences));
+    // #12089: a palavra esticada por cima da pausa do detector (agora sem proteção) tem o trecho fora dos clipes arredondado ao quadro, como o meio acima.
+    const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start - frameTolS && (w.start + w.end) / 2 <= p.end + frameTolS) && !wordCoveredBySilence(w, kept, silences, frameTolS));
     if (lost.length) dropped.push(`${label}: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
+    for (const w of lost) lostWords.push({ label, text: w.text.trim(), start: w.start, end: w.end });
   }
   return {
     spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges,
+    ...(lostWords.length ? { lostWords } : {}),
     ...(warnings.length ? { warnings } : {}),
     ...(titleSpeechEndS !== undefined ? { titleSpeechEndS } : {}),
   };

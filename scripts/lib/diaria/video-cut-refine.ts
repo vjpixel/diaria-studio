@@ -638,7 +638,185 @@ export const SPEECH_DETECT = {
   entrySoundFraction: 0.45,
   entryLookS: 0.04,
   topPercentile: 0.95,
+  /**
+   * #12089 (medição da 261105, a 1ª montagem com o detector): com `fullDb`/
+   * `diffDb` fixos, o bruto quente (piso -41 dB no sinal cheio e -50 dB na 1ª
+   * diferença, fala a -7 dB no p95) tinha o ruído de sala acima de -46 dB na
+   * 1ª diferença em quase toda pausa: 121 ilhas em 23 min, uma delas de 69 s, e
+   * a sequência saiu com 41 pausas de 0,45 s ou mais (30 s) contra 14 (9 s) no
+   * final do editor. O limiar passa a ser o MAIOR entre o fixo e o relativo ao
+   * bruto: sinal cheio `fullBelowTopDb` abaixo do topo da fala (percentil
+   * `topPercentile`), 1ª diferença `diffAboveFloorDb` acima do piso (percentil
+   * `floorPercentile`). Num bruto baixo o fixo vence e nada muda.
+   */
+  fullBelowTopDb: 24,
+  diffAboveFloorDb: 10,
+  /**
+   * Fração mínima de quadros com som (não silêncio digital) para o limiar
+   * relativo valer, contada só entre o 1º e o último quadro com som (as pontas
+   * em silêncio digital, comuns no export, não contam): o piso medido precisa
+   * ser ruído de sala.
+   */
+  relativeMinSoundFraction: 0.9,
+  /**
+   * #12089, sanity do relativo: com o topo da fala a menos disto acima do piso
+   * do sinal cheio (bruto ruidoso, ou clipado/comprimido), topo e piso não
+   * separam fala de ruído e o relativo não vale (fica o fixo, com `[aviso]`).
+   */
+  relativeMinGapDb: 20,
+  /** #12089, sanity do relativo: o limiar relativo do sinal cheio tem de ficar mais que isto acima do piso, senão o ruído de sala vira fala. */
+  relativeAboveFloorMinDb: 6,
+  /**
+   * #12089: respiração e ruído no nível da fala baixa (-26 a -33 dB) não têm
+   * F0; a vogal curta ("A empresa", 40 ms a -26 dB) tem. Com a voz medida
+   * (`FrameEnergy.voiced`), quadro acima do limiar só é fala a até
+   * `voicedLeadS` ANTES de uma âncora de voz ou `voicedTailS` DEPOIS (a
+   * consoante surda do ataque, a sibilante final). Âncora = quadro com voz E
+   * acima do limiar FIXO do sinal cheio (`voiceAnchorDb`), não do relativo: a
+   * vogal dita baixo, abaixo do relativo, segura a consoante vizinha. Ilha sem
+   * voz nenhuma (respiração, estalo, ruído) sai.
+   */
+  voicedLeadS: 0.15,
+  voicedTailS: 0.2,
+  /**
+   * #12089, sanity do filtro pela F0: com menos que esta fração dos quadros
+   * acima do limiar com voz, a medição da F0 não está vendo a fala (voz muito
+   * grave/aguda, ruído) e o filtro tiraria fala junto com a respiração: fica
+   * desligado, com `[aviso]`.
+   */
+  voicedMinFraction: 0.2,
+  /**
+   * #12089: com o limiar relativo acima do fixo, a cauda da palavra (o "s"
+   * final a -44 dB na 1ª diferença) fica abaixo dele. O fim da ilha avança
+   * enquanto o quadro está acima do limiar FIXO (`fullDb`/`diffDb`), até
+   * `decayMaxS`, sem encostar na ilha seguinte e, com a voz medida, sem passar
+   * de `voicedTailS` depois da última âncora (o teto da cauda é `voicedTailS`
+   * depois da voz, não `voicedTailS` + `decayMaxS`).
+   */
+  decayMaxS: 0.15,
+  /**
+   * #12089: palavra do transcript com o meio numa pausa que o Whisper esticou
+   * por cima dela (parte numa ilha) não devolve a pausa só quando o corte é
+   * seguro: pelo menos `protectStretchIslandFraction` da duração dela está em
+   * ilhas, ou o trecho dela na pausa é menor que `protectStretchMaxCutS` (a
+   * margem de erro de borda do Whisper, 50–150 ms). Fora disso (a palavra curta
+   * dita baixo dentro da pausa, com a borda do Whisper encostando na ilha) ela
+   * continua protegida. Toda palavra que perde a proteção sai em `[aviso]`.
+   */
+  protectStretchIslandFraction: 0.5,
+  protectStretchMaxCutS: 0.15,
 } as const;
+
+/** Opções numéricas que sobrepõem chaves de `SPEECH_DETECT` (o `as const` faria `Pick` aceitar só o literal). */
+type SpeechDetectOpts<K extends keyof typeof SPEECH_DETECT> = { [P in K]?: number };
+
+/** De onde veio cada limiar do detector de fala (#12089). */
+export type SpeechThresholdSource = "fixo" | "relativo" | "manual";
+
+/**
+ * Situação do limiar relativo (#12089): `relativo` = algum relativo venceu o
+ * fixo; `fixo-venceu` = medido, mas o fixo é maior (bruto baixo); os demais
+ * são as sanidades que o desligam (`sem-ruido-medido`: silêncio digital no
+ * meio do bruto; `gap-insuficiente`: topo e piso próximos demais).
+ */
+export type SpeechRelativeStatus = "relativo" | "fixo-venceu" | "sem-ruido-medido" | "gap-insuficiente";
+
+/** Registro dos limiares do detector de fala (#12089), produzido uma vez por `speechThresholds` e usado por ilhas, ataque e premissa. */
+export interface SpeechThresholds {
+  fullDb: number;
+  diffDb: number;
+  source: { fullDb: SpeechThresholdSource; diffDb: SpeechThresholdSource };
+  status: SpeechRelativeStatus;
+  /** Fração de quadros com som entre o 1º e o último quadro com som. */
+  soundFraction: number;
+  /** Topo da fala (percentil `topPercentile`) e piso do sinal cheio; null sem quadro com som. */
+  topDb: number | null;
+  floorFullDb: number | null;
+  /** Avisos das sanidades (sem o prefixo `[aviso]`). */
+  warnings: string[];
+}
+
+/** Âncora de voz (#12089): limiar do sinal cheio do quadro com voz, o fixo (ou o manual, se abaixo dele). */
+export function voiceAnchorDb(fullDb: number = SPEECH_DETECT.fullDb): number {
+  return Math.min(SPEECH_DETECT.fullDb, fullDb);
+}
+
+/**
+ * Limiares de fala do bruto (#12089): o maior entre o fixo e o relativo (topo
+ * − `fullBelowTopDb`, piso + `diffAboveFloorDb`), com as sanidades que voltam
+ * ao fixo; `overrides` (`--speech-full-db`/`--speech-diff-db`) vencem tudo.
+ */
+export function speechThresholds(e: FrameEnergy, overrides: { fullDb?: number; diffDb?: number } = {}): SpeechThresholds {
+  const D = SPEECH_DETECT;
+  let first = -1;
+  let last = -1;
+  let withSound = 0;
+  for (let i = 0; i < e.fullDb.length; i++) {
+    const d = e.fullDb[i];
+    if (!(Number.isFinite(d) && d > ENVELOPE_DEFAULTS.floorDb)) continue;
+    if (first < 0) first = i;
+    last = i;
+    withSound++;
+  }
+  const soundFraction = first < 0 ? 0 : withSound / (last - first + 1);
+  const top = percentileDb(e.fullDb, D.topPercentile);
+  const floors = speechNoiseFloors(e);
+  const warnings: string[] = [];
+  let status: SpeechRelativeStatus;
+  let relFull = -Infinity;
+  let relDiff = -Infinity;
+  const pct = (x: number) => `${Math.round(x * 100)}%`;
+  if (soundFraction < D.relativeMinSoundFraction || top === null || floors === null) {
+    status = "sem-ruido-medido";
+    warnings.push(
+      `detector de fala (#12089): limiar relativo desligado, só ${pct(soundFraction)} dos quadros entre o 1º e o último som têm som (mínimo ${pct(D.relativeMinSoundFraction)}; silêncio digital no meio do bruto, sem ruído de sala para medir); valem os fixos (${D.fullDb}/${D.diffDb} dB)`,
+    );
+  } else {
+    const gap = top - floors.fullDb;
+    const full = top - D.fullBelowTopDb;
+    if (gap < D.relativeMinGapDb || (full > D.fullDb && full <= floors.fullDb + D.relativeAboveFloorMinDb)) {
+      status = "gap-insuficiente";
+      warnings.push(
+        `detector de fala (#12089): limiar relativo desligado, topo da fala ${top.toFixed(1)} dB só ${gap.toFixed(1)} dB acima do piso ${floors.fullDb.toFixed(1)} dB (bruto ruidoso ou clipado; mínimo ${D.relativeMinGapDb} dB e o limiar ${D.relativeAboveFloorMinDb} dB acima do piso); valem os fixos (${D.fullDb}/${D.diffDb} dB), conferir as pausas no Premiere`,
+      );
+    } else {
+      relFull = full;
+      relDiff = floors.diffDb + D.diffAboveFloorDb;
+      status = relFull > D.fullDb || relDiff > D.diffDb ? "relativo" : "fixo-venceu";
+    }
+  }
+  const pick = (over: number | undefined, fixed: number, rel: number): [number, SpeechThresholdSource] =>
+    over !== undefined ? [over, "manual"] : rel > fixed ? [round3(rel), "relativo"] : [fixed, "fixo"];
+  const [fullDb, fullSrc] = pick(overrides.fullDb, D.fullDb, relFull);
+  const [diffDb, diffSrc] = pick(overrides.diffDb, D.diffDb, relDiff);
+  return {
+    fullDb,
+    diffDb,
+    source: { fullDb: fullSrc, diffDb: diffSrc },
+    status,
+    soundFraction,
+    topDb: top,
+    floorFullDb: floors?.fullDb ?? null,
+    warnings,
+  };
+}
+
+/**
+ * #12089, sanity do filtro pela F0: fração dos quadros acima do limiar
+ * (`fullDb` OU `diffDb`) que têm voz. Null sem a voz medida ou sem quadro
+ * acima do limiar. Abaixo de `voicedMinFraction`, o `build` desliga o filtro.
+ */
+export function voicedFractionAboveThreshold(e: FrameEnergy, th: { fullDb: number; diffDb: number }): number | null {
+  if (!e.voiced) return null;
+  let on = 0;
+  let voiced = 0;
+  for (let i = 0; i < e.fullDb.length; i++) {
+    if (!(e.fullDb[i] > th.fullDb || e.diffDb[i] > th.diffDb)) continue;
+    on++;
+    voiced += e.voiced[i] === 1 ? 1 : 0;
+  }
+  return on === 0 ? null : voiced / on;
+}
 
 /**
  * Quadros com som de cada envelope, já ordenados. O build pede vários
@@ -671,25 +849,40 @@ export function speechNoiseFloors(e: FrameEnergy, p: number = SPEECH_DETECT.floo
  * #12263: recua o começo de cada ilha até o ataque real da fala, medido contra
  * o piso de ruído do bruto (`speechNoiseFloors` + `attackAboveFloorDb`), e não
  * contra o limiar fixo. Para no 1º quadro abaixo disso, em `attackMaxS` ou no
- * fim da ilha anterior. Com o piso alto (piso + 12 dB acima do limiar fixo),
- * nada muda: o quadro antes da ilha já estava abaixo do limiar fixo.
+ * fim da ilha anterior. O limite é o MENOR entre piso + `attackAboveFloorDb` e
+ * o limiar fixo (#12089): no bruto quente o piso + 12 dB fica acima do limiar
+ * relativo das ilhas (piso + 10 dB na 1ª diferença) e o recuo não acharia
+ * nada; com o fixo, a consoante entre o fixo e o relativo volta para a ilha.
+ * Com a voz medida, o recuo nunca passa de `voicedLeadS` antes da 1ª âncora.
  */
 export function extendIslandAttacks(
   e: FrameEnergy,
   islands: Interval[],
-  opts: Partial<Pick<typeof SPEECH_DETECT, "attackAboveFloorDb" | "attackMaxS" | "floorPercentile">> = {},
+  opts: SpeechDetectOpts<"attackAboveFloorDb" | "attackMaxS" | "floorPercentile"> & {
+    /** #12089: limiar do sinal cheio das ilhas; a âncora de voz é `voiceAnchorDb` dele. */
+    speechFullDb?: number;
+  } = {},
 ): Interval[] {
   const floors = speechNoiseFloors(e, opts.floorPercentile);
   if (!floors || !islands.length) return islands;
   const above = opts.attackAboveFloorDb ?? SPEECH_DETECT.attackAboveFloorDb;
   const maxBack = Math.round((opts.attackMaxS ?? SPEECH_DETECT.attackMaxS) / e.hopS);
-  const fullLim = floors.fullDb + above;
-  const diffLim = floors.diffDb + above;
+  const fullLim = Math.min(floors.fullDb + above, SPEECH_DETECT.fullDb);
+  const diffLim = Math.min(floors.diffDb + above, SPEECH_DETECT.diffDb);
   const n = e.fullDb.length;
+  // #12089: com a voz medida, o ataque não recua além de `voicedLeadS` antes da 1ª âncora de voz da ilha (a respiração colada na fala).
+  const anchorDb = voiceAnchorDb(opts.speechFullDb);
+  const lead = Math.round(SPEECH_DETECT.voicedLeadS / e.hopS);
   return islands.map((s, i) => {
     const startIdx = Math.round(s.start / e.hopS);
     const prevEnd = i > 0 ? Math.round(islands[i - 1].end / e.hopS) : 0;
-    const limit = Math.max(prevEnd, startIdx - maxBack, 0);
+    let limit = Math.max(prevEnd, startIdx - maxBack, 0);
+    if (e.voiced) {
+      const endIdx = Math.min(n, Math.round(s.end / e.hopS));
+      let k = startIdx;
+      while (k < endIdx && !(e.voiced[k] === 1 && e.fullDb[k] > anchorDb)) k++;
+      if (k < endIdx) limit = Math.max(limit, k - lead);
+    }
     let j = Math.min(startIdx, n);
     while (j - 1 >= limit && (e.fullDb[j - 1] > fullLim || e.diffDb[j - 1] > diffLim)) j--;
     return j < startIdx ? { start: round3(j * e.hopS), end: s.end } : s;
@@ -709,7 +902,7 @@ export function entryCutSoundWarnings(
   clips: Array<{ block: string; frameIn: number; frameOut: number; seqStart: number }>,
   e: FrameEnergy,
   fps: number,
-  opts: Partial<Pick<typeof SPEECH_DETECT, "entrySoundFraction" | "entryLookS" | "floorPercentile" | "topPercentile">> = {},
+  opts: SpeechDetectOpts<"entrySoundFraction" | "entryLookS" | "floorPercentile" | "topPercentile"> = {},
 ): string[] {
   const floor = percentileDb(e.fullDb, opts.floorPercentile ?? SPEECH_DETECT.floorPercentile);
   const top = percentileDb(e.fullDb, opts.topPercentile ?? SPEECH_DETECT.topPercentile);
@@ -741,6 +934,8 @@ export interface FrameEnergy {
   fullDb: Float64Array;
   /** Da 1ª diferença do sinal (`x[n] − x[n−1]`), um passa-alta simples. */
   diffDb: Float64Array;
+  /** #12089: 1 = quadro com voz (F0, `voicedFrames` de video-voice.ts). Ausente = voz não medida, sem o filtro de respiração. */
+  voiced?: Uint8Array;
 }
 
 /** As duas energias por quadro numa passada, sem cópia do sinal (o bruto de 20 min a 48 kHz tem 57 M amostras). */
@@ -771,22 +966,56 @@ export function frameEnergies(samples: Int16Array, sampleRate: number, hopS: num
 
 /**
  * As ilhas de fala do bruto (#12089): quadros com fala (`fullDb` OU
- * `diffDb`), ilhas a menos de `minGapS` unidas, e só depois as que sobram com
- * menos de `minIslandS` descartadas (vogal curta colada na fala, "A empresa",
- * fica junto da palavra seguinte; o estalo isolado sai).
+ * `diffDb`; por padrão os de `speechThresholds`, ou os de `opts.thresholds`),
+ * ilhas a menos de `minGapS` unidas, e só depois as que sobram com menos de
+ * `minIslandS` descartadas (vogal curta colada na fala, "A empresa", fica junto
+ * da palavra seguinte; o estalo isolado sai). Com a voz medida (`e.voiced`),
+ * quadro a mais de `voicedLeadS` antes ou `voicedTailS` depois de uma âncora de
+ * voz (quadro com F0 acima de `voiceAnchorDb`) não é fala: respiração e ruído
+ * saem. O fim de cada ilha avança pela cauda abaixo do limiar relativo e acima
+ * do fixo, até `decayMaxS` e, com a voz medida, nunca além de `voicedTailS`
+ * depois da última âncora.
  */
-export function speechIslands(e: FrameEnergy, opts: Partial<Pick<typeof SPEECH_DETECT, "fullDb" | "diffDb" | "minGapS" | "minIslandS">> = {}): Interval[] {
-  const fullDb = opts.fullDb ?? SPEECH_DETECT.fullDb;
-  const diffDb = opts.diffDb ?? SPEECH_DETECT.diffDb;
+export function speechIslands(
+  e: FrameEnergy,
+  opts: { fullDb?: number; diffDb?: number; thresholds?: Pick<SpeechThresholds, "fullDb" | "diffDb"> } & SpeechDetectOpts<"minGapS" | "minIslandS"> = {},
+): Interval[] {
+  const base = opts.thresholds ?? (opts.fullDb === undefined || opts.diffDb === undefined ? speechThresholds(e) : null);
+  const fullDb = opts.fullDb ?? base!.fullDb;
+  const diffDb = opts.diffDb ?? base!.diffDb;
   const minGap = opts.minGapS ?? SPEECH_DETECT.minGapS;
   const minIsland = opts.minIslandS ?? SPEECH_DETECT.minIslandS;
+  const n = e.fullDb.length;
+  const on = new Uint8Array(n);
+  for (let i = 0; i < n; i++) on[i] = e.fullDb[i] > fullDb || e.diffDb[i] > diffDb ? 1 : 0;
+  const tail = Math.round(SPEECH_DETECT.voicedTailS / e.hopS);
+  // Última âncora de voz até cada quadro (-1 = nenhuma); null sem a voz medida.
+  let lastAnchor: Int32Array | null = null;
+  if (e.voiced) {
+    const lead = Math.round(SPEECH_DETECT.voicedLeadS / e.hopS);
+    const anchorDb = voiceAnchorDb(fullDb);
+    const isAnchor = (i: number) => e.voiced![i] === 1 && e.fullDb[i] > anchorDb;
+    const nextAnchor = new Int32Array(n).fill(-1);
+    for (let i = n - 1, next = -1; i >= 0; i--) {
+      if (isAnchor(i)) next = i;
+      nextAnchor[i] = next;
+    }
+    lastAnchor = new Int32Array(n).fill(-1);
+    for (let i = 0, prev = -1; i < n; i++) {
+      if (isAnchor(i)) prev = i;
+      lastAnchor[i] = prev;
+      if (!on[i]) continue;
+      const nearAfter = prev >= 0 && i - prev <= tail;
+      const nearBefore = nextAnchor[i] >= 0 && nextAnchor[i] - i <= lead;
+      if (!nearAfter && !nearBefore) on[i] = 0;
+    }
+  }
   const raw: Interval[] = [];
   let open = -1;
-  const n = e.fullDb.length;
   for (let i = 0; i <= n; i++) {
-    const on = i < n && (e.fullDb[i] > fullDb || e.diffDb[i] > diffDb);
-    if (on && open < 0) open = i;
-    else if (!on && open >= 0) {
+    const v = i < n && on[i] === 1;
+    if (v && open < 0) open = i;
+    else if (!v && open >= 0) {
       raw.push({ start: open * e.hopS, end: i * e.hopS });
       open = -1;
     }
@@ -797,7 +1026,20 @@ export function speechIslands(e: FrameEnergy, opts: Partial<Pick<typeof SPEECH_D
     if (last && r.start - last.end < minGap - 1e-9) last.end = r.end;
     else merged.push({ ...r });
   }
-  return merged.filter((r) => r.end - r.start >= minIsland - 1e-9).map((r) => ({ start: round3(r.start), end: round3(r.end) }));
+  const kept = merged.filter((r) => r.end - r.start >= minIsland - 1e-9);
+  // Cauda abaixo do limiar relativo e acima do fixo (só muda algo quando o relativo venceu).
+  const lowFull = SPEECH_DETECT.fullDb;
+  const lowDiff = SPEECH_DETECT.diffDb;
+  const maxFwd = Math.round(SPEECH_DETECT.decayMaxS / e.hopS);
+  // Com a voz medida, o quadro que o filtro de respiração rejeitaria (longe da última âncora) para a cauda.
+  const nearVoice = (j: number) => !lastAnchor || (lastAnchor[j] >= 0 && j - lastAnchor[j] <= tail);
+  return kept.map((r, i) => {
+    const endIdx = Math.round(r.end / e.hopS);
+    const stop = Math.min(n, endIdx + maxFwd, i + 1 < kept.length ? Math.round(kept[i + 1].start / e.hopS) : n);
+    let j = endIdx;
+    while (j < stop && (e.fullDb[j] > lowFull || e.diffDb[j] > lowDiff) && nearVoice(j)) j++;
+    return { start: round3(r.start), end: round3(j * e.hopS) };
+  });
 }
 
 /**
@@ -806,7 +1048,7 @@ export function speechIslands(e: FrameEnergy, opts: Partial<Pick<typeof SPEECH_D
  * seguinte, e as pontas do bruto. `speechParts` as recebe sem respiro próprio
  * (`SPEECH_DETECT_PLAN`). Sem ilha nenhuma, o bruto inteiro é pausa.
  */
-export function speechPauseSilences(islands: Interval[], durationS: number, opts: Partial<Pick<typeof SPEECH_DETECT, "padBeforeS" | "padAfterS">> = {}): Interval[] {
+export function speechPauseSilences(islands: Interval[], durationS: number, opts: SpeechDetectOpts<"padBeforeS" | "padAfterS"> = {}): Interval[] {
   const before = opts.padBeforeS ?? SPEECH_DETECT.padBeforeS;
   const after = opts.padAfterS ?? SPEECH_DETECT.padAfterS;
   if (islands.length === 0) return durationS > 0 ? [{ start: 0, end: round3(durationS) }] : [];
@@ -828,25 +1070,50 @@ export function speechPauseSilences(islands: Interval[], durationS: number, opts
  * meio de uma palavra transcrita (já aparada pelas pausas, como a checagem do
  * `buildSequencePlan` faz) perde o trecho da palavra com as mesmas folgas da
  * fala; a palavra protegida volta para o relato do build como `[aviso]`.
+ * Com `islands` (#12089), a palavra esticada pelo Whisper por cima da pausa
+ * perde a proteção só quando o corte é seguro (`protectStretchIslandFraction`
+ * dela em ilhas, ou menos de `protectStretchMaxCutS` dela na pausa); cada uma
+ * vai para `stretchedWords`, com o trecho dela que o corte tira (`cutS`).
  */
 export function protectTranscribedWords(
   pauses: Interval[],
   words: Array<Interval & { text?: string }>,
-  opts: Partial<Pick<typeof SPEECH_DETECT, "padBeforeS" | "padAfterS">> = {},
-): { silences: Interval[]; protectedWords: Array<{ text: string; start: number; end: number }> } {
+  opts: SpeechDetectOpts<"padBeforeS" | "padAfterS" | "protectStretchIslandFraction" | "protectStretchMaxCutS"> & {
+    /** #12089: as ilhas do detector; palavra esticada pelo Whisper por cima da pausa (parte numa ilha) não devolve a pausa quando o corte é seguro. */
+    islands?: Interval[];
+  } = {},
+): {
+  silences: Interval[];
+  protectedWords: Array<{ text: string; start: number; end: number }>;
+  /** #12089: palavras com o meio na pausa que perderam a proteção por estarem esticadas sobre uma ilha; `cutS` = trecho delas dentro das pausas. */
+  stretchedWords: Array<{ text: string; start: number; end: number; cutS: number }>;
+} {
   const before = opts.padBeforeS ?? SPEECH_DETECT.padBeforeS;
   const after = opts.padAfterS ?? SPEECH_DETECT.padAfterS;
+  const minFrac = opts.protectStretchIslandFraction ?? SPEECH_DETECT.protectStretchIslandFraction;
+  const maxCut = opts.protectStretchMaxCutS ?? SPEECH_DETECT.protectStretchMaxCutS;
   const sorted = [...pauses].sort((a, b) => a.start - b.start);
   const protectedWords: Array<{ text: string; start: number; end: number }> = [];
+  const stretchedWords: Array<{ text: string; start: number; end: number; cutS: number }> = [];
   const holes: Interval[] = [];
+  const overlap = (w: Interval, xs: Interval[]) => xs.reduce((sum, x) => sum + Math.max(0, Math.min(w.end, x.end) - Math.max(w.start, x.start)), 0);
   for (const raw of words) {
     const [w] = trimWordsToSilences([{ text: raw.text ?? "", start: raw.start, end: raw.end } as Word], sorted);
     const mid = (w.start + w.end) / 2;
     if (!sorted.some((p) => mid > p.start + 1e-6 && mid < p.end - 1e-6)) continue;
+    if (opts.islands) {
+      const inIslands = overlap(raw, opts.islands);
+      const cut = overlap(raw, sorted);
+      const dur = raw.end - raw.start;
+      if (inIslands > 1e-9 && (inIslands >= minFrac * dur - 1e-9 || cut < maxCut - 1e-9)) {
+        stretchedWords.push({ text: (raw.text ?? "").trim(), start: raw.start, end: raw.end, cutS: round3(cut) });
+        continue;
+      }
+    }
     protectedWords.push({ text: (raw.text ?? "").trim(), start: raw.start, end: raw.end });
     holes.push({ start: raw.start - before, end: raw.end + after });
   }
-  if (holes.length === 0) return { silences: sorted, protectedWords };
+  if (holes.length === 0) return { silences: sorted, protectedWords, stretchedWords };
   const out: Interval[] = [];
   for (const p of sorted) {
     let pieces: Interval[] = [{ ...p }];
@@ -862,7 +1129,7 @@ export function protectTranscribedWords(
     }
     out.push(...pieces);
   }
-  return { silences: out, protectedWords };
+  return { silences: out, protectedWords, stretchedWords };
 }
 
 /**
@@ -888,7 +1155,7 @@ export function speechJoinWarnings(
   clips: Array<{ block: string; frameIn: number; frameOut: number; seqStart: number }>,
   islands: Interval[],
   fps: number,
-  opts: Partial<Pick<typeof SPEECH_DETECT, "longJoinPauseS" | "shortClipS">> & {
+  opts: SpeechDetectOpts<"longJoinPauseS" | "shortClipS"> & {
     /** #12101: blocos cuja SAÍDA tem pausa longa de propósito (o respiro da vinheta depois do `titulo`): a emenda para o bloco seguinte não avisa. */
     longJoinOkAfter?: readonly string[];
   } = {},
