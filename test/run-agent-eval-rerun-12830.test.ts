@@ -13,6 +13,7 @@ import {
   ensureAgentEvalCheckGreen,
   listAgentEvalRuns,
   latestRun,
+  isCancelledRun,
   requestWorkflowRerun,
   retriggerViaLabelToggle,
   AGENT_EVAL_WORKFLOW_FILE,
@@ -179,6 +180,138 @@ describe("ensureAgentEvalCheckGreen (#12830)", () => {
   it("consulta dos runs falhando propaga (nunca vira 'nenhum run')", async () => {
     const runner: CommandRunner = () => ({ status: 1, stdout: "", stderr: "HTTP 502" });
     await assert.rejects(ensureAgentEvalCheckGreen({ prNumber: "42", headSha: SHA, label: LABEL, runner, ...clock(), log: quiet }), /502/);
+  });
+});
+
+/**
+ * #12861: GitHub roteirizado — cada consulta de runs devolve o próximo
+ * snapshot da lista (o último se repete). O rerun é sempre aceito. Simula a
+ * `concurrency: cancel-in-progress` do workflow derrubando um dos dois runs.
+ */
+function scriptedGithub(snapshots: Run[][]) {
+  const calls: string[][] = [];
+  let i = 0;
+  const runner: CommandRunner = (_cmd, args) => {
+    calls.push(args);
+    const joined = args.join(" ");
+    if (joined.includes(`actions/workflows/${AGENT_EVAL_WORKFLOW_FILE}/runs`)) {
+      const snap = snapshots[Math.min(i, snapshots.length - 1)];
+      i++;
+      return { status: 0, stdout: JSON.stringify(snap), stderr: "" };
+    }
+    if (joined.includes("/rerun")) return { status: 0, stdout: "", stderr: "" };
+    return { status: 1, stdout: "", stderr: `comando inesperado: ${joined}` };
+  };
+  return { runner, calls };
+}
+
+const reruns = (calls: string[][]) => calls.filter((c) => c.join(" ").includes("/rerun")).map((c) => c.join(" "));
+
+describe("ensureAgentEvalCheckGreen: run cancelado pela concurrency (#12861)", () => {
+  it("regressão #12861: o run do labeled (id maior) é cancelado pelo rerun do vermelho → espera a tentativa 2 e devolve ok", async () => {
+    const gh = scriptedGithub([
+      // 1ª consulta: o run do labeled ainda não aparece, só o vermelho antigo.
+      [{ id: 10, status: "completed", conclusion: "failure", run_attempt: 1 }],
+      // o labeled (11) apareceu e foi cancelado; a tentativa 2 do 10 está na fila.
+      [
+        { id: 10, status: "queued", conclusion: null, run_attempt: 2 },
+        { id: 11, status: "completed", conclusion: "cancelled", run_attempt: 1 },
+      ],
+      [
+        { id: 10, status: "completed", conclusion: "success", run_attempt: 2 },
+        { id: 11, status: "completed", conclusion: "cancelled", run_attempt: 1 },
+      ],
+    ]);
+    const res = await ensureAgentEvalCheckGreen({ prNumber: "42", headSha: SHA, label: LABEL, runner: gh.runner, ...clock(), log: quiet });
+    assert.deepEqual(res, { ok: true, runId: 10, action: "rerun" });
+    assert.equal(reruns(gh.calls).length, 1, "um rerun só: o cancelado não pede outro");
+  });
+
+  it("cancelado com id maior e a tentativa 2 já concluída verde na mesma consulta: ok (antes saía failure por causa do cancelado)", async () => {
+    const gh = scriptedGithub([
+      [{ id: 10, status: "completed", conclusion: "failure", run_attempt: 1 }],
+      [
+        { id: 10, status: "completed", conclusion: "success", run_attempt: 2 },
+        { id: 11, status: "completed", conclusion: "cancelled", run_attempt: 1 },
+      ],
+    ]);
+    const res = await ensureAgentEvalCheckGreen({ prNumber: "42", headSha: SHA, label: LABEL, runner: gh.runner, ...clock(), log: quiet });
+    assert.deepEqual(res, { ok: true, runId: 10, action: "rerun" });
+  });
+
+  it("ordem inversa: o rerun do vermelho é que sai cancelado e o labeled roda verde → ok no run do labeled", async () => {
+    const gh = scriptedGithub([
+      [{ id: 10, status: "completed", conclusion: "failure", run_attempt: 1 }],
+      [
+        { id: 10, status: "completed", conclusion: "cancelled", run_attempt: 2 },
+        { id: 11, status: "in_progress", conclusion: null, run_attempt: 1 },
+      ],
+      [
+        { id: 10, status: "completed", conclusion: "cancelled", run_attempt: 2 },
+        { id: 11, status: "completed", conclusion: "success", run_attempt: 1 },
+      ],
+    ]);
+    const res = await ensureAgentEvalCheckGreen({ prNumber: "42", headSha: SHA, label: LABEL, runner: gh.runner, ...clock(), log: quiet });
+    assert.deepEqual(res, { ok: true, runId: 11, action: "rerun" });
+  });
+
+  it("cancelado com id maior e a tentativa 2 termina vermelha: falha citando o failure, não o cancelled", async () => {
+    const gh = scriptedGithub([
+      [{ id: 10, status: "completed", conclusion: "failure", run_attempt: 1 }],
+      [
+        { id: 10, status: "completed", conclusion: "failure", run_attempt: 2 },
+        { id: 11, status: "completed", conclusion: "cancelled", run_attempt: 1 },
+      ],
+    ]);
+    const res = await ensureAgentEvalCheckGreen({ prNumber: "42", headSha: SHA, label: LABEL, runner: gh.runner, ...clock(), log: quiet });
+    assert.equal(res.ok, false);
+    assert.match(!res.ok ? res.error : "", /run 10, tentativa 2\) e terminou failure/);
+  });
+
+  it("só cancelados depois da ação: espera até o prazo (nunca devolve failure por cancelamento)", async () => {
+    const gh = scriptedGithub([
+      [{ id: 10, status: "completed", conclusion: "failure", run_attempt: 1 }],
+      [
+        { id: 10, status: "completed", conclusion: "cancelled", run_attempt: 2 },
+        { id: 11, status: "completed", conclusion: "cancelled", run_attempt: 1 },
+      ],
+    ]);
+    const res = await ensureAgentEvalCheckGreen({ prNumber: "42", headSha: SHA, label: LABEL, runner: gh.runner, ...clock(), timeoutMs: 60_000, pollMs: 15_000, log: quiet });
+    assert.equal(res.ok, false);
+    assert.match(!res.ok ? res.error : "", /não ficou verde em 60s \(run 11 completed\/cancelled\)/);
+    assert.equal(reruns(gh.calls).length, 1, "nenhum rerun extra por causa dos cancelados");
+  });
+
+  it("antes de qualquer ação, só um run cancelado no head: reexecuta o cancelado", async () => {
+    const gh = scriptedGithub([
+      [{ id: 10, status: "completed", conclusion: "cancelled", run_attempt: 1 }],
+      [{ id: 10, status: "completed", conclusion: "success", run_attempt: 2 }],
+    ]);
+    const res = await ensureAgentEvalCheckGreen({ prNumber: "42", headSha: SHA, label: LABEL, runner: gh.runner, ...clock(), log: quiet });
+    assert.deepEqual(res, { ok: true, runId: 10, action: "rerun" });
+    assert.deepEqual(reruns(gh.calls), ["api -X POST repos/{owner}/{repo}/actions/runs/10/rerun"]);
+  });
+
+  it("antes da ação, cancelado mais novo que o vermelho: o rerun vai para o vermelho (o não cancelado mais recente)", async () => {
+    const gh = scriptedGithub([
+      [
+        { id: 10, status: "completed", conclusion: "failure", run_attempt: 1 },
+        { id: 11, status: "completed", conclusion: "cancelled", run_attempt: 1 },
+      ],
+      [
+        { id: 10, status: "completed", conclusion: "success", run_attempt: 2 },
+        { id: 11, status: "completed", conclusion: "cancelled", run_attempt: 1 },
+      ],
+    ]);
+    const res = await ensureAgentEvalCheckGreen({ prNumber: "42", headSha: SHA, label: LABEL, runner: gh.runner, ...clock(), log: quiet });
+    assert.deepEqual(res, { ok: true, runId: 10, action: "rerun" });
+    assert.deepEqual(reruns(gh.calls), ["api -X POST repos/{owner}/{repo}/actions/runs/10/rerun"]);
+  });
+
+  it("isCancelledRun: só completed/cancelled", () => {
+    assert.equal(isCancelledRun({ id: 1, status: "completed", conclusion: "cancelled", runAttempt: 1 }), true);
+    assert.equal(isCancelledRun({ id: 1, status: "completed", conclusion: "failure", runAttempt: 1 }), false);
+    assert.equal(isCancelledRun({ id: 1, status: "in_progress", conclusion: null, runAttempt: 1 }), false);
   });
 });
 
