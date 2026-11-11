@@ -246,6 +246,35 @@ export function isWordmarkAnchorText(text: string): boolean {
   return BARE_DOMAIN_ANCHOR_TEXT_RE.test(text.trim());
 }
 
+const WORDMARK_IN_PROSE_RE = new RegExp(`(^|[^\\w./-])${WORDMARK.replace(/\./g, "\\.")}(?![\\w/-])`, "g");
+
+/**
+ * Pure (#12777): quantas menções ao wordmark ficam em TEXTO PURO na fonte
+ * (fora de `<a>`). O editor do LinkedIn auto-linka cada uma pra home, então o
+ * colado traz uma âncora a mais por menção. A seção "Vídeo da semana" tem uma
+ * ("no canal da diar.ia.br"), e corpo de manchete pode ter outras.
+ */
+export function countUnlinkedWordmarkMentions(sourceHtml: string): number {
+  const text = stripHtmlToText(sourceHtml.replace(ANCHOR_RE, " "));
+  return [...text.matchAll(WORDMARK_IN_PROSE_RE)].length;
+}
+
+/**
+ * Pure (#12777): âncora colada que é o auto-link do LinkedIn sobre uma menção
+ * em texto puro: texto exatamente igual ao wordmark e href na home do domínio,
+ * sem UTM. Só é descontada da contagem quando sobra (não casou com âncora da
+ * fonte) e até o número de menções em texto puro da fonte.
+ */
+export function isExpectedWordmarkAutoLink(a: LinkedinPasteAuditPastedAnchor): boolean {
+  if (normalizeText(a.text).toLowerCase() !== WORDMARK) return false;
+  try {
+    const u = new URL(a.href);
+    return u.hostname.replace(/^www\./, "") === WORDMARK && !u.searchParams.has("utm_content") && (u.pathname === "/" || u.pathname === "");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Hint anexado (#10385) a toda âncora de wordmark cuja UTM não sobreviveu ao
  * paste, ou que sumiu do colado sem continuação a dividir. Exportado pra
@@ -304,14 +333,6 @@ export function auditLinkedinPaste(input: LinkedinPasteAuditInput): LinkedinPast
       "Nenhuma âncora encontrada em sourceHtml — confira se o conteúdo de ln-{cycle}.html foi passado " +
         "corretamente (o artefato sempre tem ao menos os 3 CTAs de assinatura). Sem âncoras de referência, " +
         "esta auditoria não valida nada.",
-    );
-  }
-
-  // 1. Contagem de âncoras.
-  if (sourceAnchors.length !== pasted.length) {
-    issues.push(
-      `Contagem de âncoras diverge: fonte tem ${sourceAnchors.length}, colado tem ${pasted.length}. ` +
-        `Diferença sugere link perdido, duplicado ou dividido no paste.`,
     );
   }
 
@@ -386,6 +407,22 @@ export function auditLinkedinPaste(input: LinkedinPasteAuditInput): LinkedinPast
         );
       }
     }
+  }
+
+  // 1. Contagem de âncoras (depois do casamento por texto, #12777: o auto-link
+  // do LinkedIn sobre menção do wordmark em texto puro é âncora a mais
+  // esperada, não perda nem duplicação — ver `isExpectedWordmarkAutoLink`).
+  const unusedPasted = pasted.filter((_, i) => !usedPastedIdx.has(i));
+  const toleratedAutoLinks = Math.min(
+    unusedPasted.filter((a) => isExpectedWordmarkAutoLink(a)).length,
+    countUnlinkedWordmarkMentions(input.sourceHtml),
+  );
+  if (sourceAnchors.length !== pasted.length - toleratedAutoLinks) {
+    issues.push(
+      `Contagem de âncoras diverge: fonte tem ${sourceAnchors.length}, colado tem ${pasted.length}` +
+        (toleratedAutoLinks > 0 ? ` (${toleratedAutoLinks} auto-link(s) do wordmark descontado(s))` : "") +
+        `. Diferença sugere link perdido, duplicado ou dividido no paste.`,
+    );
   }
 
   // 4. Tamanho do texto — sinal secundário, tolerância relativa (ver docstring da constante).
