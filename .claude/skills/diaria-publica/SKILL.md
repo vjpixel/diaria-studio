@@ -1,6 +1,8 @@
 ---
 name: diaria-publica
 description: Entrada do dia normal depois do gate 4 (#12620) — publica os dois vídeos da edição ("diar.ia.br comentada", o Pixel comentando o D1) e, entre eles, as Etapas 5 e 6 com o link do vídeo no D1 (#12591). Parte A, o horizontal no @diariabr do YouTube (metadados da edição, capa no padrão diar.ia.br, upload pela API com a legenda SRT; o link entra no D1 sozinho; o Studio é só fallback, #11385). Parte B, o vertical como YouTube Shorts, Reels no Facebook, Instagram em collab com @vjpixel, perfil pessoal, X, TikTok, Threads e LinkedIn. Vídeo da pasta `{AAMMDD}/Final/` do Drive (#11222). Roda depois do gate da Etapa 4 e da `/diaria-video-montagem`. Não confundir com `/diaria-5-publicacao`, que é a Etapa 5 isolada (dia sem vídeo, retomada, retry de canal). Era `/diaria-publica-video` até o #12620 (segue como alias); `/diaria-youtube` e `/diaria-shorts` (#11209) são aliases só de vídeo. Uso — `/diaria-publica AAMMDD [--so horizontal|vertical] [--sem-publicacao] [--skip canal[,canal...]] [--video-url URL]`.
+model: claude-opus-5-5
+effort: medium
 ---
 
 # /diaria-publica AAMMDD (#11209, #12620)
@@ -31,7 +33,7 @@ Conferir o link com `npx tsx scripts/check-video-before-publish.ts {AAMMDD} --ed
 
 `/diaria-youtube AAMMDD` e `/diaria-shorts AAMMDD` continuam funcionando como **aliases** (`--so horizontal` e `--so vertical`): rodam só o vídeo, sem as Etapas 5 e 6. `/diaria-publica-video AAMMDD` (o nome antigo, #12620) é alias do fluxo inteiro, com os mesmos argumentos. Este arquivo é o único com o fluxo; os três antigos só redirecionam.
 
-**Argumentos:**
+## Argumentos
 
 - `AAMMDD` — obrigatório. Se não for passado, assumir D+1 com o banner padrão do `CLAUDE.md` (`Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.`), nunca perguntar, e passar a data explicitamente aos scripts (eles exigem).
 - `--so horizontal|vertical` — roda só uma das partes (só um vídeo ficou pronto, ou o outro já saiu), **sem** as Etapas 5 e 6. Sem a flag, o fluxo inteiro acima.
@@ -39,7 +41,9 @@ Conferir o link com `npx tsx scripts/check-video-before-publish.ts {AAMMDD} --ed
 - `--skip canal[,canal...]` — repassado à Etapa 5 (mesma flag e canais do `/diaria-5-publicacao`).
 - `--video-url URL` — o link do horizontal quando ele já está no canal (subido pelo Studio, fallback do Passo A5). Sem ele, a skill sobe o vídeo pela API (Passo A3, o padrão desde #11385).
 
-**Retomada:** cada parte pula o que já foi feito, pelos registros em disco. Parte A está feita quando `_internal/05-video-url.txt` tem link válido do YouTube (`check-video-before-publish.ts` com `status: "link-ready"`; arquivo inválido não conta, `invalid-link`) ou `_internal/05-youtube-published.json` tem `videoId` desta edição (aí, sem link, falta só liberá-lo no Passo A4); Parte B, destino a destino, por `_internal/06-shorts-published.json` (o `publish-shorts.ts` já pula o que está registrado). Só uma das partes presente no Drive vira aviso para a outra, nunca aborto.
+## Retomada por parte
+
+Cada parte pula o que já foi feito, pelos registros em disco. Parte A está feita quando `_internal/05-video-url.txt` tem link válido do YouTube (`check-video-before-publish.ts` com `status: "link-ready"`; arquivo inválido não conta, `invalid-link`) ou `_internal/05-youtube-published.json` tem `videoId` desta edição (aí, sem link, falta só liberá-lo no Passo A4); Parte B, destino a destino, por `_internal/06-shorts-published.json` (o `publish-shorts.ts` já pula o que está registrado). Só uma das partes presente no Drive vira aviso para a outra, nunca aborto.
 
 ## Confirmação explícita e interrupção (#11741)
 
@@ -68,7 +72,7 @@ Decisão do editor (briefing do overnight 261102), depois de 261030: duas chamad
 
 ## Passo 0 — Pré-condição: Stage 4 aprovado (#10943)
 
-Fluxo do dia (#10943, revisto em #11209 e #11208): `/diaria-edicao` → `/diaria-video-montagem` (bruto até XML do Premiere, legendas e prévia; o editor exporta para `{AAMMDD}/Final/`) → `/diaria-publica` (horizontal, Etapas 5 e 6, vertical, #12591). A montagem é sessão própria e não encadeia (#5578). O vídeo comenta o D1, e o D1 só está final depois do gate da Etapa 4, então esta skill só roda com o sentinel do Stage 4:
+Fluxo do dia (#10943, revisto em #11209, #11208 e #12750): `/diaria-edicao` → `/diaria-video-roteiro` (roteiro de fala, antes da gravação) → `/diaria-video-montagem` (bruto até XML do Premiere, legendas e prévia; o editor exporta para `{AAMMDD}/Final/`) → `/diaria-publica` (horizontal, Etapas 5 e 6, vertical, #12591). Roteiro e montagem são sessões próprias e não encadeiam (#5578). O vídeo comenta o D1, e o D1 só está final depois do gate da Etapa 4, então esta skill só roda com o sentinel do Stage 4:
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts exists --edition {AAMMDD} --step 4

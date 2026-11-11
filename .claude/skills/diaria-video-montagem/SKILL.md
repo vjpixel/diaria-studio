@@ -1,6 +1,8 @@
 ---
 name: diaria-video-montagem
 description: Monta o vídeo "diar.ia.br comentada" do dia a partir do bruto no Drive (`{AAMMDD}/` da pasta YouTube) — transcrição por palavra, decupagem (gate 1), roteiro das 2 versões com fact-check da fala (gate 2), XML FCP7 (xmeml v4) com as 2 sequências para o Premiere, SRTs (verticais e horizontal, este já na pasta da edição para o upload do YouTube), prévia vertical 720x1280 e autorrevisão da prévia. Roda depois do gate da Etapa 4 (o vídeo é gravado depois dele) e antes do `/diaria-publica` (o editor exporta do Premiere para `{AAMMDD}/Final/`), standalone, sem encadear. Roda no Neo (Drive em `G:`) ou no 300 (pasta da edição pela API do Drive, #11643); faster-whisper e ffmpeg nos dois. Uso — `/diaria-video-montagem [AAMMDD]`.
+model: claude-opus-5-5
+effort: medium
 ---
 
 # /diaria-video-montagem AAMMDD (#11208)
@@ -9,11 +11,13 @@ Leva o bruto que o editor gravou até o ponto de partida no Premiere, o fluxo qu
 
 **Fora de escopo:** o upload do vídeo final (é do `/diaria-publica`) e a edição fina no Premiere, que continua manual.
 
-**Argumentos:**
+## Argumentos
 
 - `AAMMDD` — opcional. Sem ele, assumir D+1 com o banner padrão do `CLAUDE.md` (`Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.`) e seguir; os scripts recebem sempre a data explícita.
 
-**Fluxo do dia (#10943, #11209):** `/diaria-edicao` → (o editor grava, depois do gate 4) → `/diaria-video-montagem` → (Premiere e export para `Final/`) → `/diaria-publica` (era `/diaria-publica-video`, alias desde o #12620; horizontal, Etapas 5 e 6 e vertical na mesma sessão, #12591). Esta skill roda numa sessão própria e não encadeia (#5578): ao terminar, sugerir o próximo comando sem rodá-lo.
+## Fluxo do dia, arquivos e retomada
+
+**Fluxo do dia (#10943, #11209, #12750):** `/diaria-edicao` → `/diaria-video-roteiro` (roteiro de fala) → (o editor grava, depois do gate 4) → `/diaria-video-montagem` → (Premiere e export para `Final/`) → `/diaria-publica` (era `/diaria-publica-video`, alias desde o #12620; horizontal, Etapas 5 e 6 e vertical na mesma sessão, #12591). Esta skill roda numa sessão própria e não encadeia (#5578): ao terminar, sugerir o próximo comando sem rodá-lo.
 
 **Onde fica cada coisa:** os JSON em `data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem/`; o áudio e os clipes temporários em `{tmp}/diaria-video-montagem/{AAMMDD}/`; XML, SRTs e prévia na pasta da edição no Drive (`G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube/{AAMMDD}/`; `--drive-root` ou `DIARIA_VIDEO_DRIVE_ROOT` para outra). No modo API (o 300, Passo 0) tudo fica num cache em disco (`~/.cache/diaria-video-montagem/{AAMMDD}/`: `bruto/`, `out/`, `work/` no lugar do `{tmp}`, e `final/` para o `review-final`; `--cache-dir` ou `DIARIA_VIDEO_CACHE_DIR`) e as saídas sobem sozinhas para a mesma pasta da edição. `DIARIA_VIDEO_CACHE_DIR` aponta para um SUBDIRETÓRIO dentro do ponto de montagem do HD, nunca o ponto em si; apontando para um diretório que não existe, ou que está no mesmo disco do home (HD desmontado), a montagem para com erro em vez de gravar o cache no disco raiz (#12365). O cache tem retenção: a task `Diaria-Video-Montage-Cache-Prune` (diária, `scripts/prune-video-montage-cache.ts`, dry-run sem `--apply`) varre a raiz padrão e a configurada e apaga `{AAMMDD}/` com mais de 3 dias se o vídeo foi publicado (ou já enviado ao YouTube), ou com mais de 14 se não foi; edição em uso (modificada nas últimas 6h) ou com upload para o Drive pendente fica. Nada vai para `Final/`: essa pasta é só dos exports do editor, e é dela que o `/diaria-publica-video` lê.
 
