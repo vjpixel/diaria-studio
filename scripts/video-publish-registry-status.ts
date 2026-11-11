@@ -62,7 +62,7 @@ import { readPublishedRecord, type PublishedRecordRead } from "./publish-youtube
 import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
 import { openSendingMarks, readShortsSending, type ShortSendingMark } from "./lib/diaria/shorts-sending-marker.ts";
 import { CORTE_SPEC_FILE, corteRelDir, parseCorteSpec, validateCorteSlug } from "./lib/diaria/short-corte.ts";
-import { recordRegistryCheck, updateAuthorizationStore } from "./lib/diaria/video-publish-authorization.ts";
+import { recordRegistryCheck, updateAuthorizationStore, type RegistryCheckVerdict } from "./lib/diaria/video-publish-authorization.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -118,7 +118,14 @@ export interface VideoRegistryStatus {
    * (marca anterior ao corte é de um processo que morreu no meio: também pode ter saído).
    */
   registered_since: string[] | null;
-  verdict: "unreadable" | "registered-since" | "nothing-since" | "no-cutoff";
+  /**
+   * #12654: subconjunto de `registered_since` acusado só por estado incerto
+   * (marcador `pending` do upload do horizontal, marca de envio sem registro).
+   * É o único caso em que o grant de retry aceita `--override-uncertain`,
+   * depois de o editor conferir a conta.
+   */
+  uncertain_since: string[] | null;
+  verdict: RegistryCheckVerdict;
   message: string;
 }
 
@@ -173,6 +180,7 @@ export function summarizeVideoRegistries(input: VideoRegistryStatusInput): Video
 
   const unreadable = youtube.kind === "unreadable" || shorts.kind === "unreadable" || sending.kind === "unreadable";
   let registered: string[] | null = null;
+  let uncertain: string[] | null = null;
   if (sinceMs !== null) {
     const done = [
       ...(youtube.since_match ? ["youtube"] : []),
@@ -180,6 +188,7 @@ export function summarizeVideoRegistries(input: VideoRegistryStatusInput): Video
     ];
     const inFlight = sending.kind === "ok" ? sending.marks.map((m) => m.destination).filter((d) => !done.includes(d)) : [];
     registered = [...done, ...inFlight];
+    uncertain = [...(youtube.kind === "pending" && youtube.since_match ? ["youtube"] : []), ...inFlight];
   }
   const inFlightNote =
     sending.kind === "ok" && sending.marks.length > 0
@@ -205,7 +214,7 @@ export function summarizeVideoRegistries(input: VideoRegistryStatusInput): Video
     verdict = "nothing-since";
     message = `nada registrado nem em envio desde ${input.since}. A interrupção conta como "não": nova chamada só com novo "pode publicar" do editor (#11741)`;
   }
-  return { aammdd: input.aammdd, since: input.since, youtube, shorts, sending, registered_since: registered, verdict, message };
+  return { aammdd: input.aammdd, since: input.since, youtube, shorts, sending, registered_since: registered, uncertain_since: uncertain, verdict, message };
 }
 
 function readSafely<T>(read: () => T): RegistryRead<T> {
@@ -322,7 +331,13 @@ export function main(argv: string[] = process.argv.slice(2), root: string = ROOT
     // #12654: a releitura vira evento no registro de autorizações; o grant de retry exige uma que cubra o evento.
     try {
       updateAuthorizationStore(dir, aammdd, (store) => ({
-        store: recordRegistryCheck(store, { now: now(), since: since!, verdict: status.verdict, registered: status.registered_since ?? [] }),
+        store: recordRegistryCheck(store, {
+          now: now(),
+          since: since!,
+          verdict: status.verdict,
+          registered: status.registered_since ?? [],
+          uncertain: status.uncertain_since ?? [],
+        }),
         result: null,
       }));
       console.error(`[ok] releitura gravada no registro de autorizações (${status.verdict}) (#12654)`);

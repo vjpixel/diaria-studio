@@ -9,7 +9,8 @@
  *
  * Uso:
  *   npx tsx scripts/video-publish-authorize.ts grant AAMMDD --part horizontal|vertical \
- *       --plan-sha256 HASH --confirmation "texto da resposta do editor" [--only d1,d2] [--edition-dir DIR]
+ *       --plan-sha256 HASH --confirmation "texto da resposta do editor" [--only d1,d2]
+ *       [--override-uncertain "o que o editor conferiu na conta"] [--edition-dir DIR]
  *   npx tsx scripts/video-publish-authorize.ts invalidate AAMMDD --part horizontal|vertical|all --reason "..." [--edition-dir DIR]
  *   npx tsx scripts/video-publish-authorize.ts check-task AAMMDD --part vertical --destination ID --command "..." [--edition-dir DIR]
  *   npx tsx scripts/video-publish-authorize.ts status AAMMDD [--edition-dir DIR]
@@ -19,11 +20,17 @@
  *   (`_internal/video-publish-plan.{parte}.json`), confere que o hash é o que o
  *   editor viu (`plan_sha256` do JSON do dry-run) e grava uma autorização de uso
  *   único por destino executável da parte. Depois de consumo ou invalidação,
- *   exige a releitura do registro gravada (`video-publish-registry-status.ts
- *   --since ISO --record`).
+ *   exige releituras do registro gravadas (`video-publish-registry-status.ts
+ *   --since ISO --record`) que cubram todos os eventos, e que o processo que
+ *   consumiu a última autorização do destino esteja morto nesta máquina.
+ *   `--override-uncertain`: só para o destino que a releitura acusou por estado
+ *   incerto (marcador `pending` do horizontal, marca de envio sem registro),
+ *   depois de o editor conferir a conta; o texto fica gravado na autorização.
  * - `invalidate`: SEMPRE que uma chamada de publisher voltar interrompida,
  *   rejeitada, com timeout ou sem saída, e quando o editor disser "não".
  *   Derruba as autorizações ativas da parte (ou de todas) e grava o evento.
+ *   Exit != 0 aqui = a invalidação NÃO foi gravada e a autorização pode estar
+ *   AINDA ATIVA: a skill trata como halt banner, nunca chama o publisher.
  * - `check-task`: antes de criar a task one-shot do `owners[]` do vertical.
  *   Sai 0 só com autorização ativa do destino cujo dono aprovado é essa task
  *   com esse comando; sem isso a task não é criada.
@@ -47,7 +54,7 @@ import {
 import { readVideoPlanManifest, VIDEO_PLAN_PARTS, type VideoPlanPart } from "./lib/diaria/video-publish-plan.ts";
 
 const USAGE =
-  "uso: video-publish-authorize.ts grant AAMMDD --part horizontal|vertical --plan-sha256 HASH --confirmation TEXTO [--only d1,d2] [--edition-dir DIR]\n" +
+  "uso: video-publish-authorize.ts grant AAMMDD --part horizontal|vertical --plan-sha256 HASH --confirmation TEXTO [--only d1,d2] [--override-uncertain TEXTO] [--edition-dir DIR]\n" +
   "     video-publish-authorize.ts invalidate AAMMDD --part horizontal|vertical|all --reason TEXTO [--edition-dir DIR]\n" +
   "     video-publish-authorize.ts check-task AAMMDD --part vertical --destination ID --command TEXTO [--edition-dir DIR]\n" +
   "     video-publish-authorize.ts status AAMMDD [--edition-dir DIR]";
@@ -77,7 +84,7 @@ export function main(argv: string[] = process.argv.slice(2), io: AuthorizeCliIo 
   const [cmd, aammdd] = positional;
   if (!cmd || !["grant", "invalidate", "check-task", "status"].includes(cmd)) return usage(io, cmd ? `subcomando desconhecido: ${cmd}` : undefined);
   if (!aammdd || !/^\d{6}$/.test(aammdd)) return usage(io, "AAMMDD obrigatório (6 dígitos)");
-  for (const k of ["part", "plan-sha256", "confirmation", "reason", "destination", "command", "only", "edition-dir"]) {
+  for (const k of ["part", "plan-sha256", "confirmation", "reason", "destination", "command", "only", "override-uncertain", "edition-dir"]) {
     if (flags.has(k)) return usage(io, `--${k} exige um valor`);
   }
   const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
@@ -101,6 +108,7 @@ export function main(argv: string[] = process.argv.slice(2), io: AuthorizeCliIo 
       const r = updateAuthorizationStore<AuthResult<VideoPublishAuthorization[]>>(dir, aammdd, (store) => {
         const g = grantVideoPublishAuthorization(store, {
           manifest, planSha256: values["plan-sha256"], confirmation: values["confirmation"], now: io.now(), only,
+          overrideUncertain: values["override-uncertain"] ?? null,
         });
         return g.ok ? { store: g.store, result: g } : { store: null, result: g };
       });
@@ -136,6 +144,12 @@ export function main(argv: string[] = process.argv.slice(2), io: AuthorizeCliIo 
     return 0;
   } catch (e) {
     io.err(`video-publish-authorize: ${(e as Error).message}`);
+    if (cmd === "invalidate") {
+      io.err(
+        "video-publish-authorize: invalidação NÃO gravada — a autorização pode estar AINDA ATIVA. Não chame o publisher: " +
+          "halt banner, conferir o registro (_internal/video-publish-authorizations.json) e repetir o invalidate (#12654).",
+      );
+    }
     return 1;
   }
 }

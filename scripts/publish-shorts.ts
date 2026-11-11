@@ -208,7 +208,7 @@ import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { publishConfirmSuffix, publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
-import { buildVerticalManifest, planSha256, readVideoPlanSources, sha256Hex, VERTICAL_RUN_ACTIONS, writeVideoPlanManifest, type VideoPlanManifest } from "./lib/diaria/video-publish-plan.ts";
+import { buildVerticalManifest, PAGE_REPOST_DESTINATION, planSha256, readVideoPlanSources, sha256Hex, VERTICAL_RUN_ACTIONS, writeVideoPlanManifest, type VideoPlanManifest } from "./lib/diaria/video-publish-plan.ts";
 import { authorizationRefusalMessage, consumeBeforeExternalEffects } from "./lib/diaria/video-publish-authorization.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
@@ -4654,11 +4654,13 @@ async function runUpdateScheduled(input: {
 
 /**
  * #12654: manifesto canônico do plano do vertical da edição (hashes dos bytes
- * do vídeo e da capa, título/descrição do Short, horário por destino, texto de
- * cada destino, dono/comando, fontes editoriais). O dry-run grava e imprime o
- * `plan_sha256` que o editor aprova; o `--publish` (rodada principal e task
- * one-shot) recalcula e confere a projeção de cada destino que vai agir antes
- * de qualquer efeito externo. Só no modo edição: o corte tem a autorização
+ * do vídeo e da capa, título/descrição do Short, horário e modo/instante
+ * efetivo por destino, texto de cada destino, dono/comando, fontes
+ * editoriais). O dry-run grava e imprime o `plan_sha256` que o editor aprova;
+ * o `--publish` (rodada principal e task one-shot) recalcula e confere a
+ * projeção de cada destino que vai agir antes de qualquer escrita externa
+ * (leituras com credencial, como a Graph e a fila do Worker para a grade,
+ * acontecem antes, no plano). Só no modo edição: o corte tem a autorização
  * própria (#11912) e os timers do 300 a da config que os ligou (#11741).
  */
 export function buildShortsPlanManifest(
@@ -4678,14 +4680,32 @@ export function buildShortsPlanManifest(
       captions_sha256: null, // o vertical não sobe legenda em arquivo: o texto de cada destino está em `content`
     },
     sources: readVideoPlanSources(input.editionDir),
-    publishCommand: `npx tsx scripts/publish-shorts.ts ${plan.aammdd} --publish ${publishConfirmSuffix(plan.aammdd)}`,
+    publishCommand: shortsMainPublishCommand(plan.aammdd),
     ...(input.generatedAt ? { generatedAt: input.generatedAt } : {}),
   });
 }
 
-/** #12654: destinos que esta rodada `--publish` executa (efeito externo pelo publisher). */
-export function shortsRunDestinations(items: readonly ShortsPlanItem[]): string[] {
-  return items.filter((i) => VERTICAL_RUN_ACTIONS.has(i.action)).map((i) => i.destination);
+/** #12654: o comando da rodada principal do vertical (dono dos destinos que saem nela). */
+export function shortsMainPublishCommand(aammdd: string): string {
+  return `npx tsx scripts/publish-shorts.ts ${aammdd} --publish ${publishConfirmSuffix(aammdd)}`;
+}
+
+/**
+ * #12654: destinos que esta rodada `--publish` executa (escrita externa pelo
+ * publisher): publish/enqueue/buffer e o repost da página quando ele vai à
+ * fila do Worker (guiado, Worker configurado e o vídeo do perfil conhecido no
+ * registro ou saindo nesta rodada). Cada um consome a sua autorização antes do
+ * 1º efeito; com a lista vazia a rodada não faz escrita externa nenhuma.
+ */
+export function shortsRunDestinations(
+  items: readonly ShortsPlanItem[],
+  opts: { repostViaWorker?: boolean; profileUrnKnown?: boolean } = {},
+): string[] {
+  const run = items.filter((i) => VERTICAL_RUN_ACTIONS.has(i.action)).map((i) => i.destination);
+  const repost = items.some((i) => i.destination === PAGE_REPOST_DESTINATION && i.action === "guided");
+  const profileThisRun = run.includes("linkedin_profile");
+  if (repost && opts.repostViaWorker === true && (opts.profileUrnKnown === true || profileThisRun)) run.push(PAGE_REPOST_DESTINATION);
+  return run;
 }
 
 async function main(): Promise<number> {
@@ -5041,15 +5061,24 @@ async function main(): Promise<number> {
     console.error(`publish-shorts: vídeo curto ausente em ${videoPath}`);
     return 1;
   }
+  // #12654: destinos com escrita externa nesta rodada. Fora do plano com autorização (corte, timers) vale tudo como antes.
+  let gatedActing: string[] | null = null;
   if (planGated) {
-    // #12654: confere e consome (uso único) a autorização de cada destino que esta rodada executa,
-    // com o manifesto recalculado agora, ANTES do 1º efeito externo (KV do link da bio, R2, APIs).
-    const acting = shortsRunDestinations(plan.items);
+    // Confere e consome (uso único) a autorização de cada destino que esta rodada executa, com o
+    // manifesto recalculado agora, ANTES da 1ª escrita externa (KV do link da bio, R2, APIs, fila do Worker).
+    const acting = shortsRunDestinations(plan.items, {
+      repostViaWorker: Boolean(workerUrl && workerToken),
+      profileUrnKnown: linkedInPostUrnFrom(published.entries.find((e) => e.destination === "linkedin_profile")) !== null,
+    });
+    gatedActing = acting;
     if (acting.length) {
       const auth = consumeBeforeExternalEffects({
         editionDir: dir, edition: aammdd,
         manifest: buildShortsPlanManifest(plan, { editionDir: dir, videoBytes: file, coverBytes: shortCover.bytes }),
         destinations: acting, now: new Date(), pid: process.pid, by: "publish-shorts --publish",
+        command: `npx tsx scripts/publish-shorts.ts ${process.argv.slice(2).join(" ")}`,
+        fallbackCommand: shortsMainPublishCommand(aammdd),
+        forceNow: flags.has("now"),
       });
       if (!auth.ok) {
         console.error(authorizationRefusalMessage("publish-shorts", "vertical", aammdd, auth.error));
@@ -5057,10 +5086,10 @@ async function main(): Promise<number> {
       }
       console.error(`[ok] autorização do plano consumida (uso único): ${auth.consumed.map((a) => a.destination).join(", ")} (#12654)`);
     } else {
-      console.error("[premissa] nenhum destino sai por esta rodada: nenhuma autorização consumida (os adiados saem pelos donos do owners[], cada um com a sua) (#12654)");
+      console.error("[premissa] nenhum destino sai por esta rodada: nenhuma autorização consumida e nenhuma escrita externa (KV do diar.ia.br/video, fila do Worker); os adiados saem pelos donos do owners[], cada um com a sua (#12654)");
     }
   }
-  if (shouldUpdateLatestVideoOnPublish({ corte: !!corte, writer })) {
+  if (shouldUpdateLatestVideoOnPublish({ corte: !!corte, writer }) && (gatedActing === null || gatedActing.length > 0)) {
     // #12735: o link fixo da bio (diar.ia.br/video) passa a apontar para o horizontal desta edição.
     // Fail-soft: o vertical sai mesmo sem o KV; a gravação só avança (edição anterior não sobrescreve).
     // #12786: só a rodada principal; as dos timers do 300 não leem nem gravam o KV.
@@ -5483,7 +5512,9 @@ async function main(): Promise<number> {
   }
   // #11121: repost da página pela fila do Worker (como página, API direta).
   // Sem os segredos da página no Worker (#8816), o passo guiado fica.
-  if (plan.items.some((i) => i.destination === "linkedin_page_repost" && i.action === "guided")) {
+  // #12654: na rodada com autorização, o repost só vai à fila do Worker se consumiu a autorização dele no início.
+  const repostAuthorized = gatedActing === null || gatedActing.includes(PAGE_REPOST_DESTINATION);
+  if (repostAuthorized && plan.items.some((i) => i.destination === "linkedin_page_repost" && i.action === "guided")) {
     const profileThisRun = results.find((r) => r.destination === "linkedin_profile" && r.ok && r.entry)?.entry as ShortPublishedEntry | undefined;
     const repost = await enqueuePageRepostViaWorker(
       workerUrl && workerToken ? (p) => postToWorkerQueue(workerUrl, workerToken, p, 2, "publish-shorts") : null,

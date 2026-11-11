@@ -116,7 +116,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
-import { buildHorizontalManifest, planSha256, readVideoPlanSources, sha256File, writeVideoPlanManifest, type VideoPlanManifest } from "./lib/diaria/video-publish-plan.ts";
+import { buildHorizontalManifest, planSha256, readVideoPlanSources, sha256File, sha256Hex, writeVideoPlanManifest, type VideoPlanManifest } from "./lib/diaria/video-publish-plan.ts";
 import { authorizationRefusalMessage, consumeBeforeExternalEffects } from "./lib/diaria/video-publish-authorization.ts";
 import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import { runCli } from "./lib/cli-exit.ts";
@@ -1213,10 +1213,14 @@ function loadD1SlotAt(aammdd: string): Date | null {
 }
 
 /**
- * #12654: manifesto canônico do plano do horizontal (hashes dos bytes de
- * vídeo/capa/legenda, título/descrição/tags, horário, destino e comando). O
- * dry-run grava e imprime o `plan_sha256` que o editor aprova; o `--upload`
- * recalcula e confere antes de qualquer efeito externo.
+ * #12654: manifesto canônico do plano do horizontal: hashes dos bytes de
+ * vídeo/capa/legenda, título/descrição/tags, horário e modo efetivo
+ * (`publishAt ?? "now"`), privacidade do upload (`private` agendado ou
+ * `public` na hora), o destino `youtube` com dono e comando, e os hashes das
+ * fontes editoriais (só no plano inteiro: o destino tem o texto no plano, então
+ * a projeção dele não se prende às fontes). O dry-run grava e imprime o
+ * `plan_sha256` que o editor aprova; o `--upload` recalcula e consome a
+ * autorização antes de qualquer efeito externo.
  */
 export function buildYouTubePlanManifest(plan: YouTubePublishPlan, editionDir: string, generatedAt?: string): VideoPlanManifest {
   return buildHorizontalManifest({
@@ -1378,30 +1382,44 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  // #12654: o --upload só sai com a autorização de uso único do plano aprovado, conferida (manifesto
-  // recalculado agora) e consumida ANTES de credencial, rede ou qualquer gravação. O
-  // --accept-period-match não envia nada e fica de fora, como na confirmação do #11741.
+  // #12654: o --upload que pode criar vídeo só sai com a autorização de uso único do plano aprovado,
+  // consumida (projeção do destino recalculada agora, gravada como usada) ANTES de credencial, rede ou
+  // qualquer gravação. O --accept-period-match não envia nada e fica de fora, como na confirmação do #11741.
+  let approvedMedia: VideoPlanManifest["media"] | null = null;
   if (values["accept-period-match"] === undefined) {
-    // Sem vídeo e sem registro "done", o upload pararia antes da rede (exit 1): não gasta autorização.
-    let recordDone = false;
+    // O registro decide se este --upload pode criar vídeo (videos.insert). Ilegível recusa antes de consumir.
+    let record: ReturnType<typeof readPublishedRecord>;
     try {
-      recordDone = readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd).kind === "done";
-    } catch {
-      // registro ilegível: o miolo do upload recusa com a mensagem própria; a autorização é conferida antes.
-    }
-    if (!plan.video.exists && !recordDone) {
-      console.error(`publish-youtube: vídeo ausente em ${plan.video.path} — nada foi enviado (passe --video PATH)`);
+      record = readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd);
+    } catch (e) {
+      console.error(`publish-youtube: registro do upload ilegível (${(e as Error).message}): nenhuma autorização consumida e nada enviado — conferir o canal e o arquivo antes de qualquer nova chamada (#12654)`);
       return 1;
     }
-    const auth = consumeBeforeExternalEffects({
-      editionDir: dir, edition: aammdd, manifest: buildYouTubePlanManifest(plan, dir), destinations: ["youtube"],
-      now: new Date(), pid: process.pid, by: "publish-youtube --upload",
-    });
-    if (!auth.ok) {
-      console.error(authorizationRefusalMessage("publish-youtube", "horizontal", aammdd, auth.error));
-      return 2;
+    // Sem --force, registro "done" (retomada do podcast/playlists) ou "pending" (recusa no miolo) não chega ao
+    // videos.insert: não exige nem gasta autorização. Só a chamada que pode criar vídeo passa pela trava.
+    const canInsert = flags.has("force") || record.kind === "none";
+    if (canInsert) {
+      if (!plan.video.exists) {
+        console.error(`publish-youtube: vídeo ausente em ${plan.video.path} — nada foi enviado (passe --video PATH)`);
+        return 1;
+      }
+      const manifest = buildYouTubePlanManifest(plan, dir);
+      const auth = consumeBeforeExternalEffects({
+        editionDir: dir, edition: aammdd, manifest, destinations: ["youtube"],
+        now: new Date(), pid: process.pid, by: "publish-youtube --upload",
+      });
+      if (!auth.ok) {
+        console.error(authorizationRefusalMessage("publish-youtube", "horizontal", aammdd, auth.error));
+        return 2;
+      }
+      approvedMedia = manifest.media;
+      console.error(`[ok] autorização do plano consumida (uso único): youtube, plan_sha256 ${auth.consumed[0].plan_sha256} (#12654)`);
+      // A legenda é lida depois do vídeo no miolo (e ilegível vira aviso): confere-se aqui, logo antes do upload.
+      if (plan.captions && sha256File(plan.captions.path) !== manifest.media.captions_sha256) {
+        console.error(`publish-youtube: a legenda ${plan.captions.path} mudou desde a conferência da autorização: nada enviado (autorização consumida; refaça o dry-run e peça o "pode publicar" de novo) (#12654)`);
+        return 2;
+      }
     }
-    console.error(`[ok] autorização do plano consumida (uso único): youtube, plan_sha256 ${auth.consumed[0].plan_sha256} (#12654)`);
   }
 
   loadProjectEnv(ROOT);
@@ -1412,7 +1430,18 @@ async function main(): Promise<number> {
     env: process.env,
     force: flags.has("force"),
     acceptPeriodMatch: values["accept-period-match"],
-    readFile: (p) => readFileSync(p),
+    // #12654: o vídeo e a capa que sobem são os bytes aprovados; o hash é do mesmo buffer enviado.
+    readFile: (p) => {
+      const bytes = readFileSync(p);
+      if (approvedMedia) {
+        const expected =
+          p === plan.video.path ? approvedMedia.video_sha256 : plan.thumbnail && p === plan.thumbnail.path ? approvedMedia.cover_sha256 : undefined;
+        if (expected !== undefined && sha256Hex(bytes) !== expected) {
+          throw new Error(`${p} mudou desde a conferência da autorização (#12654): refaça o dry-run e peça o "pode publicar" de novo`);
+        }
+      }
+      return bytes;
+    },
     log: (line) => console.error(line),
     d1SlotAt: loadD1SlotAt(aammdd),
     podcastPlaylistId: podcastCfg.id,

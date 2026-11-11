@@ -13,7 +13,8 @@
  * - edição (`edition`) e parte (`part`);
  * - hashes dos bytes de vídeo, capa e legenda (`media`, `null` = arquivo ausente);
  * - título/descrição/tags (`metadata`);
- * - fuso (`timezone`) e, por destino, horário planejado (`at`);
+ * - fuso (`timezone`) e, por destino, horário planejado (`at`) e o modo/instante
+ *   efetivo (`effective_at`: `scheduledAt ?? "now"`);
  * - destinos com o texto que sai em cada um (`content`) e o dono/comando
  *   (`owner`) que executa;
  * - hashes das fontes editoriais (`sources`: `02-reviewed.md`, `03-social.md`,
@@ -31,17 +32,30 @@
  * - `planSha256(manifest)`: o plano inteiro da parte, o que o editor aprova e
  *   o que a autorização registra junto da confirmação;
  * - `destinationBindingSha256(manifest, id)`: a projeção do plano que vale para
- *   UM destino (núcleo comum + o destino; + `sources` quando o texto não está
- *   no plano). É o que o publisher confere ao executar: a rodada principal e a
- *   task one-shot que publica um destino adiado recalculam o plano em momentos
- *   diferentes, com ações diferentes (`pending_schedule` vira `publish` na hora
- *   da task), então o plano inteiro nunca bateria; a projeção do destino, sim,
- *   enquanto nada editorial, de mídia ou de horário mudar.
+ *   UM destino (núcleo comum + o destino, com o modo/instante efetivo; +
+ *   `sources` quando o texto não está no plano). É o que o publisher confere ao
+ *   executar: a rodada principal e a task one-shot que publica um destino
+ *   adiado recalculam o plano em momentos diferentes, com ações diferentes
+ *   (`pending_schedule` vira `publish` na hora da task), então o plano inteiro
+ *   nunca bateria; a projeção do destino, sim, enquanto nada editorial, de
+ *   mídia, de horário ou de modo mudar.
+ *
+ * ## Modo/instante efetivo (`effective_at`, decisão B do editor, 11/11/2026)
+ *
+ * `scheduledAt ?? "now"` do item do plano: o instante em que o destino sai
+ * (ISO) ou `"now"`. Entra na projeção do destino: um destino aprovado para
+ * sair agendado e executado com `--now` muda de projeção e é recusado. A única
+ * passagem de agendado para "na hora" aceita é a da task one-shot de um
+ * `pending_schedule` (sem `--now`, com o relógio já em `>=` o instante
+ * aprovado), conferida no consumo (`video-publish-authorization.ts`). `null` =
+ * o modo não é decidido pelo plano (passo guiado, repost que espera o perfil:
+ * o instante vem da grade, conferida pelo `at` e pelas fontes).
  *
  * A ação planejada e o dono ficam no plano aprovado (`planSha256`), fora da
  * projeção: eles mudam por definição entre a aprovação e a execução de um
- * destino adiado. O dono é conferido à parte, na criação da task
- * (`checkTaskAuthorization`).
+ * destino adiado. O dono é conferido à parte: na criação da task
+ * (`checkTaskAuthorization`) e no consumo, contra o comando efetivo
+ * (`commandMatchesOwner`).
  */
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs";
@@ -76,12 +90,39 @@ export interface VideoPlanOwner {
   command?: string;
 }
 
+/** Modo do agendamento do horizontal (`YouTubeScheduleDecision.mode`). */
+export type HorizontalPlanAction = "scheduled" | "immediate";
+
+/** Ações do plano do vertical que entram no manifesto (`ShortsPlanItem.action`, menos os pulos sem efeito). */
+export type VerticalPlanAction =
+  | "publish"
+  | "pending_schedule"
+  | "enqueue"
+  | "buffer"
+  | "guided"
+  | "skip_late"
+  | "skip_delegated"
+  | "skip_invalid"
+  | "skip_missing_credentials"
+  | "skip_done";
+
+export type VideoPlanAction = HorizontalPlanAction | VerticalPlanAction;
+
+/** O repost da página no LinkedIn (#10772, #11121): passo guiado que o `--publish` entrega à fila do Worker. */
+export const PAGE_REPOST_DESTINATION = "linkedin_page_repost";
+
 export interface VideoPlanDestination {
   id: string;
   /** Ação planejada no dry-run (só no plano aprovado, fora da projeção do destino). */
-  action: string;
-  /** Horário planejado (ISO); `null` = na hora. */
+  action: VideoPlanAction;
+  /** Horário planejado do destino na grade (ISO); `null` = na hora. */
   at: string | null;
+  /**
+   * Modo/instante efetivo (`scheduledAt ?? "now"` do item): ISO, `"now"`, ou
+   * `null` quando o plano não decide (guiado, repost que espera o perfil).
+   * Entra na projeção do destino (decisão B do editor, 11/11/2026).
+   */
+  effective_at: string | null;
   /** Texto/título que sai no destino; `null` = ainda não existe no plano (vínculo pelas `sources`). */
   content: Record<string, string | string[] | null> | null;
   owner: VideoPlanOwner;
@@ -174,7 +215,7 @@ export function destinationProjection(
     media: m.media,
     metadata: m.metadata,
     timezone: m.timezone,
-    destination: { id: d.id, at: d.at, content: d.content },
+    destination: { id: d.id, at: d.at, effective_at: d.effective_at, content: d.content },
     ...(d.content === null ? { sources: m.sources } : {}),
   };
 }
@@ -182,6 +223,102 @@ export function destinationProjection(
 export function destinationBindingSha256(m: VideoPlanManifest, destinationId: string, opts: { contentBound?: boolean } = {}): string | null {
   const p = destinationProjection(m, destinationId, opts);
   return p === null ? null : sha256Hex(canonicalJson(p));
+}
+
+/**
+ * Destinos de um manifesto que recebem autorização de uso único: lista
+ * POSITIVA de ações que um publisher executa. Fora: dono `timer-300`
+ * (autorizado pela config que o ligou, #11741) e passos guiados que o
+ * publisher não executa. O repost da página entra (guiado ou esperando o
+ * perfil): o `--publish` o entrega à fila do Worker.
+ */
+export const AUTHORIZABLE_VERTICAL_ACTIONS: ReadonlySet<VerticalPlanAction> = new Set<VerticalPlanAction>([
+  "publish",
+  "enqueue",
+  "buffer",
+  "pending_schedule",
+  "skip_late",
+]);
+
+export function isAuthorizableDestination(m: VideoPlanManifest, d: VideoPlanDestination): boolean {
+  if (d.owner.by === "timer-300") return false;
+  if (m.part === "horizontal") return d.id === "youtube" && (d.action === "scheduled" || d.action === "immediate");
+  if ((AUTHORIZABLE_VERTICAL_ACTIONS as ReadonlySet<string>).has(d.action)) return true;
+  return d.id === PAGE_REPOST_DESTINATION && (d.action === "guided" || d.action === "skip_invalid");
+}
+
+/** Forma de um comando de publisher para comparar dono aprovado e comando efetivo. */
+interface CommandShape {
+  script: string | null;
+  only: string[] | null;
+  flags: string[];
+}
+
+/** Flags com valor que não mudam o que sai (a mesma edição, a mesma pasta): fora da comparação. */
+const COMMAND_VALUE_FLAGS_IGNORED = new Set(["--confirm-publish", "--edition-dir"]);
+/** Flags sem valor que não mudam o que sai (o escape da pasta fora da canônica, manter o arquivo local). */
+const COMMAND_BOOLEAN_FLAGS_IGNORED = new Set(["--allow-unwatched-dir", "--keep-video"]);
+
+export function commandShape(command: string): CommandShape {
+  const tokens = command.trim().split(/\s+/).filter(Boolean);
+  let script: string | null = null;
+  let only: string[] | null = null;
+  const flags = new Set<string>();
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (script === null && /(^|\/)scripts\/[\w.-]+\.ts$/.test(t)) {
+      script = t.replace(/^.*?(scripts\/)/, "$1");
+      continue;
+    }
+    if (!t.startsWith("--")) continue;
+    const [name, inline] = t.includes("=") ? [t.slice(0, t.indexOf("=")), t.slice(t.indexOf("=") + 1)] : [t, undefined];
+    const next = tokens[i + 1];
+    const value = inline ?? (next !== undefined && !next.startsWith("--") ? next : undefined);
+    if (name === "--only") {
+      only = (value ?? "").split(",").map((x) => x.trim()).filter(Boolean).sort();
+      if (inline === undefined && value !== undefined) i++;
+      continue;
+    }
+    if (COMMAND_VALUE_FLAGS_IGNORED.has(name)) {
+      if (inline === undefined && value !== undefined) i++;
+      continue;
+    }
+    if (COMMAND_BOOLEAN_FLAGS_IGNORED.has(name)) continue;
+    flags.add(name);
+  }
+  return { script, only, flags: [...flags].sort() };
+}
+
+/**
+ * Pure: o comando efetivo do publisher executa o destino como o dono aprovado
+ * previa? Mesmo script e mesmas flags (`--now`, flag de timer...); o `--only`
+ * do dono, se houver, tem de ser o mesmo conjunto; dono sem `--only` (rodada
+ * principal) aceita um `--only` que contenha o destino. Dono cujo comando não
+ * é de publisher (a re-execução da skill) vale como a rodada principal
+ * (`fallbackCommand`). `null` = confere; senão, o motivo.
+ */
+export function commandMatchesOwner(
+  effective: string,
+  owner: VideoPlanOwner,
+  destination: string,
+  fallbackCommand?: string,
+): string | null {
+  const approvedRaw = owner.command && commandShape(owner.command).script !== null ? owner.command : fallbackCommand;
+  if (!approvedRaw) return null;
+  const a = commandShape(approvedRaw);
+  const e = commandShape(effective);
+  if (a.script !== e.script) return `o comando efetivo (${e.script ?? "?"}) não é o do dono aprovado (${a.script ?? "?"})`;
+  if (canonicalJson(a.flags) !== canonicalJson(e.flags)) {
+    return `as flags do comando efetivo (${e.flags.join(" ") || "nenhuma"}) não são as do dono aprovado (${a.flags.join(" ") || "nenhuma"}): ${approvedRaw}`;
+  }
+  if (a.only !== null) {
+    if (e.only === null || canonicalJson(a.only) !== canonicalJson(e.only)) {
+      return `o --only do comando efetivo (${e.only?.join(",") ?? "nenhum"}) não é o do dono aprovado (${a.only.join(",")})`;
+    }
+  } else if (e.only !== null && !e.only.includes(destination)) {
+    return `o --only do comando efetivo (${e.only.join(",")}) não inclui ${destination}`;
+  }
+  return null;
 }
 
 /**
@@ -274,7 +411,7 @@ export function readVideoPlanSources(editionDir: string): Record<string, string 
 export interface HorizontalManifestInput {
   aammdd: string;
   metadata: { title: string; description: string; tags: string[] };
-  schedule: { mode: string; publishAt: string | null };
+  schedule: { mode: HorizontalPlanAction; publishAt: string | null };
   privacy: string;
   media: VideoPlanMedia;
   sources: Record<string, string | null>;
@@ -297,6 +434,7 @@ export function buildHorizontalManifest(input: HorizontalManifestInput): VideoPl
         id: "youtube",
         action: input.schedule.mode,
         at: input.schedule.publishAt,
+        effective_at: input.schedule.publishAt ?? "now",
         content: { title: input.metadata.title, description: input.metadata.description, tags: [...input.metadata.tags], privacy: input.privacy },
         owner: { by: "agent", command: input.command },
       },
@@ -308,10 +446,18 @@ export function buildHorizontalManifest(input: HorizontalManifestInput): VideoPl
 /** Item do plano do vertical, na forma mínima que o manifesto lê (estrutural, sem importar `publish-shorts.ts`). */
 export interface VerticalPlanItemLike {
   destination: string;
-  action: string;
+  action: VerticalPlanAction;
   caption?: string;
   title?: string;
   retryAt?: string;
+  /** Instante do agendamento do item (`null` = na hora); ausente = o item não agenda. */
+  scheduledAt?: string | null;
+}
+
+/** Pure: modo/instante efetivo de um item do vertical (`scheduledAt ?? "now"`; atrasado sai na hora; guiado, `null`). */
+export function verticalEffectiveAt(item: VerticalPlanItemLike): string | null {
+  if (item.scheduledAt !== undefined) return item.scheduledAt ?? "now";
+  return item.action === "skip_late" ? "now" : null;
 }
 
 export interface VerticalOwnerLike {
@@ -336,9 +482,9 @@ export interface VerticalManifestInput {
 }
 
 /** Ações do vertical que saem pela rodada `--publish` (o efeito externo é do publisher). */
-export const VERTICAL_RUN_ACTIONS: ReadonlySet<string> = new Set(["publish", "enqueue", "buffer"]);
+export const VERTICAL_RUN_ACTIONS: ReadonlySet<VerticalPlanAction> = new Set<VerticalPlanAction>(["publish", "enqueue", "buffer"]);
 /** Ações que não entram no plano: nada a publicar (já feito, sem credencial, inválido). */
-const VERTICAL_SKIPPED_ACTIONS: ReadonlySet<string> = new Set(["skip_done", "skip_missing_credentials", "skip_invalid"]);
+const VERTICAL_SKIPPED_ACTIONS: ReadonlySet<VerticalPlanAction> = new Set<VerticalPlanAction>(["skip_done", "skip_missing_credentials", "skip_invalid"]);
 
 /** Pure: manifesto do vertical. Destinos na ordem do plano. */
 export function buildVerticalManifest(input: VerticalManifestInput): VideoPlanManifest {
@@ -355,14 +501,15 @@ export function buildVerticalManifest(input: VerticalManifestInput): VideoPlanMa
             horizontal_link: input.horizontalLink(item.destination),
           }
         : null;
+    // Destino que sai pela rodada principal sem comando no owners[] (Buffer: o --publish sobe o vertical) é da rodada principal.
+    const command = owner?.command ?? (!owner || VERTICAL_RUN_ACTIONS.has(item.action) ? input.publishCommand : undefined);
     destinations.push({
       id: item.destination,
       action: item.action,
       at: input.destinationAt(item.destination),
+      effective_at: verticalEffectiveAt(item),
       content,
-      owner: owner
-        ? { by: owner.by, ...(owner.task ? { task: owner.task } : {}), ...(owner.command ? { command: owner.command } : {}) }
-        : { by: "agent", command: input.publishCommand },
+      owner: { by: owner?.by ?? "agent", ...(owner?.task ? { task: owner.task } : {}), ...(command ? { command } : {}) },
     });
   }
   return {
