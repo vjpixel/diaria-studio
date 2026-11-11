@@ -779,6 +779,22 @@ texto do post de feed é redação nova a cada ciclo. Antes de entregá-lo:
    identificador técnico, sinalizada ao editor);
 3. conferir que o texto final tem **zero travessões** (nem `—` nem `–`).
 
+**Guard mecânico (#12794, a prosa acima falhou em `26w42` e `26w45`).**
+Grave o texto final em `data/weekly/{cycle}/_internal/ln-feed-post.txt`
+(Write) e, com o `{S}-filtrado.json` do `clarice-filter.ts` em mãos, rode:
+
+```bash
+npx tsx scripts/weekly-feed-post-review.ts --cycle {cycle} --mark --humanizador --clarice-filtered {S}-filtrado.json
+```
+
+O script grava `_internal/ln-feed-post-review.json` com o hash do texto e
+recusa (exit 2) texto com travessão, sem o arquivo da Clarice ou com
+sugestão mantida que não aparece aplicada. Sugestão recusada de propósito
+(marca, identificador técnico) passa com `--allow-unapplied "<motivo>"`,
+que fica no marcador e vai pro editor no Passo 9. `--humanizador` é o seu
+atestado de que a skill rodou sobre ESTE texto: nunca passe a flag sem a
+passada.
+
 Texto do post sem as duas passadas não vai pro Passo 9. Se o editor
 pedir outra versão (mais longa, com hashtags, outro tom), a versão nova
 passa de novo pelas duas passadas antes de ser entregue: em `26w42` as
@@ -801,7 +817,12 @@ editor, nesta ordem:
    logo abaixo do parágrafo do vídeo (#12777: o LinkedIn não linka imagem,
    o link do vídeo fica no texto e o HTML colado não leva `<img>`).
 3. **O texto do post de feed** (Passo 8d), já com humanizador + Clarice
-   aplicados e sem travessão, pronto pra colar.
+   aplicados e sem travessão, pronto pra colar. Antes de entregar, rode
+   `npx tsx scripts/weekly-feed-post-review.ts --cycle {cycle} --check`
+   (#12794) e entregue exatamente o texto que ele imprime no stdout. Exit
+   2 = texto sem revisão ou alterado depois dela: volte ao Passo 8d, nunca
+   entregue a versão recusada. Cada versão nova que o editor pedir passa
+   pelo mesmo ciclo (Write, duas passadas, `--mark`, `--check`).
 4. **Pedido de ajuste manual da âncora da menção (#10385, decisão do
    editor de 18/10/2026)**, só quando o `ln-{cycle}.html` tiver uma âncora
    com `utm_content=mencao-abertura` (abertura sem a marca não gera
