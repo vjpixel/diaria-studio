@@ -353,6 +353,15 @@ export function latestRun(runs: WorkflowRunInfo[]): WorkflowRunInfo | null {
   return runs.reduce<WorkflowRunInfo | null>((best, r) => (best === null || r.id > best.id ? r : best), null);
 }
 
+/**
+ * Run concluído como `cancelled` (#12861) — no gate, quase sempre a
+ * `concurrency: cancel-in-progress` do workflow derrubando um run porque
+ * outro do mesmo ref entrou. Não decide verde nem vermelho.
+ */
+export function isCancelledRun(run: WorkflowRunInfo): boolean {
+  return run.status === "completed" && run.conclusion === "cancelled";
+}
+
 /** Pede a reexecução do run via REST. Devolve o erro em vez de lançar: o caller tenta o fallback. */
 export function requestWorkflowRerun(runId: number, runner: CommandRunner): { ok: true } | { ok: false; error: string } {
   const r = runner("gh", ["api", "-X", "POST", `repos/{owner}/{repo}/actions/runs/${runId}/rerun`]);
@@ -407,6 +416,8 @@ export type EnsureCheckGreenResult =
  * - depois da ação, um run/tentativa MAIS NOVO que conclui sem sucesso → falha
  *   (o gate rodou de novo e continua vermelho); o mesmo run antigo ainda
  *   concluído → a reexecução não registrou ainda, espera;
+ * - run `cancelled` (concurrency `cancel-in-progress`, #12861) nunca decide:
+ *   "mais recente" é sempre o mais recente não cancelado;
  * - prazo esgotado → falha.
  *
  * Nunca lança por estado do check: devolve `{ ok: false }` com a mensagem.
@@ -422,21 +433,29 @@ export async function ensureAgentEvalCheckGreen(params: EnsureCheckGreenParams):
   let action: { kind: "rerun" | "label-toggle"; runId: number; attempt: number } | null = null;
 
   for (;;) {
-    const latest = latestRun(listAgentEvalRuns(params.headSha, params.runner));
+    const runs = listAgentEvalRuns(params.headSha, params.runner);
+    // #12861: `agent-eval-required.yml` tem `concurrency` com
+    // `cancel-in-progress`, então o rerun pedido e o run do `labeled` se
+    // cancelam um ao outro. Run `cancelled` não diz se o gate passa: a decisão
+    // fica com o run mais recente NÃO cancelado. Só cancelados, sem ação ainda
+    // → reexecuta o mais recente deles; com ação já feita → espera o outro
+    // run/tentativa (o prazo cobre o caso em que nenhum aparece).
+    const latest = latestRun(runs.filter((r) => !isCancelledRun(r)));
     if (latest && latest.status === "completed" && latest.conclusion === "success") {
       return { ok: true, runId: latest.id, action: action?.kind ?? "none" };
     }
     if (!latest || latest.status === "completed") {
       if (action === null) {
-        if (latest) {
-          const rr = requestWorkflowRerun(latest.id, params.runner);
+        const target = latest ?? latestRun(runs);
+        if (target) {
+          const rr = requestWorkflowRerun(target.id, params.runner);
           if (rr.ok) {
-            action = { kind: "rerun", runId: latest.id, attempt: latest.runAttempt };
-            log(`[#12830] check do gate vermelho (run ${latest.id}, ${latest.conclusion}) — reexecução pedida.`);
+            action = { kind: "rerun", runId: target.id, attempt: target.runAttempt };
+            log(`[#12830] check do gate vermelho (run ${target.id}, ${target.conclusion}) — reexecução pedida.`);
           } else {
-            log(`[#12830] rerun do run ${latest.id} recusado (${rr.error.trim()}) — tirando e repondo a label "${params.label}" para disparar um run novo.`);
+            log(`[#12830] rerun do run ${target.id} recusado (${rr.error.trim()}) — tirando e repondo a label "${params.label}" para disparar um run novo.`);
             retriggerViaLabelToggle(params.prNumber, params.label, params.runner);
-            action = { kind: "label-toggle", runId: latest.id, attempt: latest.runAttempt };
+            action = { kind: "label-toggle", runId: target.id, attempt: target.runAttempt };
           }
         } else {
           log(`[#12830] nenhum run de ${AGENT_EVAL_WORKFLOW_FILE} no head ${params.headSha.slice(0, 8)} — tirando e repondo a label "${params.label}" para disparar um.`);
@@ -451,7 +470,8 @@ export async function ensureAgentEvalCheckGreen(params: EnsureCheckGreenParams):
       }
     }
     if (now() >= deadline) {
-      const state = latest ? `run ${latest.id} ${latest.status}/${latest.conclusion ?? "-"}` : "nenhum run";
+      const shown = latest ?? latestRun(runs);
+      const state = shown ? `run ${shown.id} ${shown.status}/${shown.conclusion ?? "-"}` : "nenhum run";
       return {
         ok: false,
         error: `[#12830] o check "Check agent-eval gate" não ficou verde em ${Math.round(timeoutMs / 1000)}s (${state}) — conferir com gh pr checks ${params.prNumber}.`,
