@@ -1,14 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   findProtectedPathWrite,
   isProtectedPath,
   codeWritesProtectedPath,
   shouldBlockProtectedPathWrite,
   protectedPathWriteReason,
+  isInterpreterCodeFinding,
 } from "../scripts/lib/protected-path-bash-write.mjs";
 
 // #12009 — overnight 261103, unidade #11990: o dev-implementador alterou
@@ -190,6 +192,238 @@ describe("findProtectedPathWrite — leitura e escrita alheia passam (#12009)", 
     );
     assert.equal(codeWritesProtectedPath(`print(open(".claude/settings.json").read())`), false);
     assert.equal(codeWritesProtectedPath(`s.replace(".claude/skills", "x")`), false, "str.replace não é escrita");
+  });
+});
+
+describe("findProtectedPathWrite — escritores de ferramenta (#12812)", () => {
+  // Achado do review de segurança da PR #12811: estes escritores passavam.
+  it("cenários da issue, um por comando", () => {
+    blocks(`curl -sSL https://x/y.mjs -o .claude/hooks/y.mjs`);
+    blocks(`tar -xzf /tmp/h.tgz -C .claude/hooks`);
+    blocks(`git apply --directory=.claude/hooks /tmp/p.patch`);
+    blocks(`npx prettier --write .claude/hooks/x.mjs`);
+    blocks(`npx eslint --fix .claude/hooks/x.mjs`);
+    blocks(`sh /tmp/fix.sh .claude/hooks/x.mjs`);
+    blocks(`npx tsx scripts/gen.ts --out .claude/hooks/x.mjs`);
+  });
+  it("curl e wget: -o colado, --output=, -O no cwd protegido, --output-dir", () => {
+    blocks(`curl -sSLo.claude/hooks/y.mjs https://x/y`);
+    blocks(`curl --output=.claude/settings.json https://x/s`);
+    blocks(`curl -D .claude/hooks/h.txt https://x`);
+    blocks(`curl -O https://x/y.mjs`, { cwd: "/r/.claude/hooks" });
+    blocks(`curl -O --output-dir .claude/hooks https://x/y.mjs`);
+    blocks(`wget -qO .claude/hooks/y.mjs https://x/y`);
+    blocks(`wget -P .claude/skills/a https://x/SKILL.md`);
+    blocks(`wget https://x/SKILL.md`, { cwd: "/r/.claude/skills/a" });
+  });
+  it("tar/unzip: extração no protegido, membro protegido, arquivo criado no protegido", () => {
+    blocks(`tar xzf /tmp/h.tgz -C .claude/hooks`);
+    blocks(`tar --extract --file=/tmp/h.tar --directory=.claude/skills`);
+    blocks(`tar -xf /tmp/h.tar .claude/hooks/x.mjs`);
+    blocks(`tar -xf /tmp/h.tar`, { cwd: "/r/.claude/hooks" });
+    blocks(`tar -czf .claude/hooks/backup.tgz scripts`);
+    blocks(`unzip /tmp/s.zip -d .claude/skills/nova`);
+    blocks(`unzip -o /tmp/s.zip`, { cwd: "/r/.claude/skills/a" });
+  });
+  it("git apply/am/patch pelo conteúdo do patch; git rm/mv/archive", () => {
+    const PATCH = "diff --git a/.claude/hooks/x.mjs b/.claude/hooks/x.mjs\n--- a/.claude/hooks/x.mjs\n+++ b/.claude/hooks/x.mjs\n@@ -1 +1 @@\n-a\n+b\n";
+    const readFile = (p: string) => (p === "/tmp/p.patch" ? PATCH : null);
+    blocks(`git apply /tmp/p.patch`, { readFile });
+    blocks(`cat /tmp/p.patch | git apply`, { readFile });
+    blocks(`git apply <<'EOF'\n${PATCH}EOF`);
+    blocks(`patch -p1 -i /tmp/p.patch`, { readFile });
+    blocks(`patch -p1 < /tmp/p.patch`, { readFile });
+    blocks(`git apply < /tmp/p.patch`, { readFile });
+    blocks(`patch .claude/settings.json /tmp/s.diff`);
+    blocks(`patch -d .claude/hooks -p1 < /tmp/x.diff`);
+    blocks(`git rm .claude/hooks/block-gh-pr-merge-subagent.mjs`);
+    blocks(`git -C /r mv .claude/agents/a.md .claude/agents/b.md`);
+    blocks(`git archive -o .claude/hooks/x.zip HEAD`);
+    blocks(`find .claude/hooks -name '*.mjs' -exec npx prettier --write {} +`);
+  });
+  it("formatadores, editores, docker cp, split e script de shell", () => {
+    blocks(`npx --yes prettier -w .claude/skills/a/SKILL.md`);
+    blocks(`npx biome format --write .claude/hooks/x.mjs`);
+    blocks(`vim -es -c '%s/a/b/' -c wq .claude/hooks/x.mjs`);
+    blocks(`ed .claude/settings.json < /tmp/cmds`);
+    blocks(`jq . /tmp/s.json | sponge .claude/settings.json`);
+    blocks(`docker cp ctr:/x.mjs .claude/hooks/x.mjs`);
+    blocks(`split -l 10 /tmp/big .claude/hooks/part-`);
+    blocks(`bash /home/u/diaria-studio/hermes/x.sh .claude/agents/writer.md`);
+    blocks(`./fix.sh .claude/agents/writer.md`);
+    blocks(`npx esbuild src/x.ts --outfile=.claude/hooks/x.mjs`);
+    blocks(`sort -o .claude/hooks/list.txt /tmp/list.txt`);
+  });
+  it("script fora do projeto recebendo o caminho por argumento: bloqueia se escreve ou não dá pra ler", () => {
+    const files: Record<string, string> = {
+      "/tmp/fix.py": `import sys\np = sys.argv[1]\ns = open(p).read()\nopen(p, "w").write(s.replace("a", "b"))\n`,
+      "/tmp/count.mjs": `import fs from "node:fs";\nfor (const f of process.argv.slice(2)) console.log(fs.readFileSync(f, "utf8").length);\n`,
+    };
+    const readFile = (p: string) => files[p] ?? null;
+    blocks(`python3 /tmp/fix.py .claude/skills/a/SKILL.md`, { readFile });
+    blocks(`python3 /tmp/sumiu.py .claude/skills/a/SKILL.md`, { readFile });
+    blocks(`python3 "$S/fix.py" .claude/skills/a/SKILL.md`, { readFile });
+    passes(`node /tmp/count.mjs .claude/skills/a/SKILL.md`, { readFile });
+    passes(`npx tsx scripts/check-x.ts .claude/hooks/x.mjs`, { readFile, projectDirs: ["/home/u/diaria-studio"] });
+  });
+  it("leituras e usos legítimos medidos nos transcripts seguem livres", () => {
+    passes(`curl -sSL https://x/y.mjs -o /tmp/y.mjs`);
+    passes(`curl -s https://x | diff - .claude/hooks/y.mjs`);
+    passes(`tar -czf /tmp/hooks.tgz -C .claude hooks`);
+    passes(`tar -tzf /tmp/h.tgz`);
+    passes(`tar -xOf /tmp/h.tar .claude/hooks/x.mjs`);
+    passes(`unzip -l /tmp/s.zip`, { cwd: "/r/.claude/skills/a" });
+    passes(`git apply --check /tmp/p.patch`);
+    passes(`git apply /tmp/p.patch`, { readFile: () => "--- a/scripts/x.ts\n+++ b/scripts/x.ts\n" });
+    passes(`git rm --cached .claude/settings.local.json`);
+    passes(`git checkout origin/master -- .claude/hooks/pr-create-review.mjs`);
+    passes(`git checkout --theirs -- .claude/skills/diaria-publica/SKILL.md`);
+    passes(`npx prettier --check .claude/hooks/x.mjs`);
+    passes(`npx eslint .claude/hooks/x.mjs`);
+    passes(`grep -n "npx tsx scripts/[a-z-]*" -o .claude/skills/diaria-mensal/SKILL.md`);
+    passes(`find .claude/hooks -name a -o -name b`);
+    passes(`bash scripts/x.sh /tmp/out`);
+    passes(`npx tsx scripts/gen.ts --out /tmp/x.json`);
+    passes(`npx tsx scripts/gh-pr-review-api.ts comment --pr 1 --path .claude/hooks/x.mjs --line 3 --body-file /tmp/f-12812.md`);
+  });
+});
+
+describe("review de fleet da PR #12846 (#12812)", () => {
+  const PROTO = ["valueOf", "hasOwnProperty", "__proto__", "constructor", "toString", "isPrototypeOf", "toLocaleString"];
+  it("P1: comando com nome de Object.prototype não derruba a análise dos seguintes", () => {
+    for (const n of PROTO) {
+      blocks(`${n}; echo x > .claude/settings.json`);
+      blocks(`${n} a b && sed -i 's/a/b/' ${SKILL}`);
+      passes(`${n} /tmp/x`);
+      passes(`find /tmp -exec ${n} {} +`);
+      passes(`ls | xargs ${n}`);
+    }
+  });
+  it("P1: hook em processo nega `valueOf; echo x > .claude/settings.json` (no master era bloqueado)", () => {
+    const r = spawnSync("node", [HOOK], {
+      input: JSON.stringify({ tool_name: "Bash", cwd: CWD, tool_input: { command: "valueOf; echo x > .claude/settings.json" } }),
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0);
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny");
+  });
+  it("P2a: tar com -C colado não troca extração por criação", () => {
+    blocks(`tar -xzf /tmp/a.tgz -C.claude/hooks`);
+    blocks(`tar xzf /tmp/a.tgz -C.claude/hooks`);
+    blocks(`tar -x -f /tmp/a.tgz -C.claude/skills`);
+    blocks(`tar -xzf/tmp/a.tgz -C .claude/hooks`);
+    passes(`tar -czf /tmp/a.tgz -C.claude hooks`);
+    passes(`tar -tzf /tmp/a.tgz -C.claude/hooks`);
+  });
+  it("P2b: patch dentro do projeto é lido; patch ilegível bloqueia só quando o comando cita caminho protegido", () => {
+    const PATCH = "--- a/.claude/hooks/x.mjs\n+++ b/.claude/hooks/x.mjs\n@@ -1 +1 @@\n-a\n+b\n";
+    const files: Record<string, string> = { [`${CWD}/fix.patch`]: PATCH, "/home/u/diaria-studio/p/ok.patch": "--- a/scripts/x.ts\n+++ b/scripts/x.ts\n" };
+    const opts = { readFile: (p: string) => files[p] ?? null, projectDirs: ["/home/u/diaria-studio"] };
+    blocks(`git apply fix.patch`, opts);
+    blocks(`patch -p1 < fix.patch`, opts);
+    blocks(`cat fix.patch | git apply`, opts);
+    blocks(`git -C ${CWD} am fix.patch`, opts);
+    passes(`git apply /home/u/diaria-studio/p/ok.patch`, opts);
+    // ilegível + citação no comando
+    blocks(`git diff -- .claude/hooks > /tmp/p-12846.patch; git apply /tmp/p-12846.patch`, opts);
+    blocks(`git show HEAD~1 -- .claude/settings.json | git apply -R`, opts);
+    // ilegível sem citação: limite documentado (portar mudança entre worktrees)
+    passes(`git diff master -- scripts | git apply`, opts);
+    passes(`gh pr diff 12846 | git apply`, opts);
+    passes(`git apply /tmp/ainda-nao-existe-12846.patch`, opts);
+  });
+  it("P3: shells com -o pipefail, formatadores em modo de checagem, patch --dry-run e git rm -n não escrevem", () => {
+    const cwd = "/r/.claude/skills/a";
+    passes(`bash -o pipefail -c 'ls'`, { cwd });
+    passes(`sh -o errexit /tmp/x.sh`, { cwd });
+    passes(`black --check .claude/hooks/x.py`);
+    passes(`black --diff .claude/hooks/x.py`);
+    passes(`ruff format --check .claude/hooks/x.py`);
+    passes(`rustfmt --check .claude/hooks/x.rs`);
+    blocks(`black .claude/hooks/x.py`);
+    blocks(`ruff format .claude/hooks/x.py`);
+    const readFile = () => "--- a/.claude/hooks/x.mjs\n+++ b/.claude/hooks/x.mjs\n";
+    passes(`patch --dry-run -p1 < /tmp/p.patch`, { readFile });
+    passes(`git rm -n .claude/hooks/x.mjs`);
+    passes(`git rm --dry-run -r .claude/skills`);
+    passes(`unzip -ql /tmp/s.zip`, { cwd });
+    // re-review da PR #12846: dry-run agrupado.
+    passes(`git rm -rn .claude/skills`);
+    passes(`git rm -nr .claude/skills`);
+    blocks(`git rm -rf .claude/skills`);
+  });
+  it("re-review #12846: unzip -d agrupado", () => {
+    blocks(`unzip -od .claude/hooks /tmp/a.zip`);
+    blocks(`unzip -qo -d .claude/hooks /tmp/a.zip`);
+    blocks(`unzip -od.claude/hooks /tmp/a.zip`);
+    passes(`unzip -od /tmp/out /tmp/a.zip`);
+  });
+  it("re-review #12846: patch ilegível só olha o pipeline do apply e quem grava o arquivo do patch", () => {
+    const opts = { readFile: () => null };
+    passes(`gh pr diff 12 | git apply && git commit -am 'fix .claude/hooks guard'`, opts);
+    passes(`gh pr diff 12 | git apply; cat .claude/settings.json`, opts);
+    passes(`git apply /tmp/p-1.patch; ls .claude/skills`, opts);
+    // seguem bloqueando
+    blocks(`git diff -- .claude/hooks > /tmp/p-12846.patch; git apply /tmp/p-12846.patch`, opts);
+    blocks(`git show HEAD~1 -- .claude/settings.json | git apply -R`, opts);
+    blocks(`git diff --output=/tmp/p-2.patch -- .claude/hooks; git apply /tmp/p-2.patch`, opts);
+    blocks(`cd /tmp && git -C ${CWD} diff -- .claude/skills > p.patch; git apply /tmp/p.patch`, opts);
+  });
+  it("re-review #12846: readScript do hook só lê arquivo regular (FIFO / /dev/zero não travam)", async () => {
+    const { readScript } = await import("../.claude/hooks/block-bash-protected-path-write.mjs");
+    assert.equal(readScript("/dev/zero"), null);
+    const dir = mkdtempSync(join(tmpdir(), "pp-12812-"));
+    const fifo = join(dir, "f");
+    if (spawnSync("mkfifo", [fifo]).status === 0) assert.equal(readScript(fifo), null);
+    const reg = join(dir, "r.patch");
+    writeFileSync(reg, "--- a/x\n");
+    assert.equal(readScript(reg), "--- a/x\n");
+    rmSync(dir, { recursive: true, force: true });
+  });
+  it("P3: isInterpreterCodeFinding lê o campo source, não o texto do kind", () => {
+    assert.equal(isInterpreterCodeFinding({ kind: "x (código)", path: "p" }), false);
+    const f = find(`python3 -c "open('.claude/hooks/x','w').write('a')"`);
+    assert.equal(f?.source, "interpreter-code");
+    assert.ok(isInterpreterCodeFinding(f));
+  });
+});
+
+describe("mensagem de bloqueio: contorno para texto citado no código (#12780)", () => {
+  // Decisão do editor (11/11/2026): o guard não afrouxa; só a mensagem muda.
+  const PLAN = "/r/data/overnight/261110/plan.json";
+  const inline = `node -e "const fs=require('fs');const p='${PLAN}';const j=JSON.parse(fs.readFileSync(p));j.nota='corrigir .claude/hooks/x.mjs';fs.writeFileSync(p, JSON.stringify(j))"`;
+  it("o cenário da issue continua bloqueado (guard intacto)", () => {
+    blocks(inline);
+  });
+  it("bloqueio de node -e/python -c aponta o contorno do scratchpad e o texto dentro do dado", () => {
+    const f = find(inline);
+    assert.ok(f);
+    assert.ok(isInterpreterCodeFinding(f));
+    const msg = protectedPathWriteReason(f);
+    assert.match(msg, /#12780/);
+    assert.match(msg, /scratchpad/);
+    assert.match(msg, /node <scratchpad>\/x\.cjs/);
+    assert.match(msg, /texto dentro do dado/);
+    const py = find(`python3 -c "open('${PLAN}','w').write('ver .claude/hooks/x')"`);
+    assert.ok(py);
+    assert.match(protectedPathWriteReason(py), /#12780/);
+  });
+  it("bloqueio de escritor de shell não leva o contorno (o alvo é de fato protegido)", () => {
+    const f = find(`sed -i 's/a/b/' ${SKILL}`);
+    assert.ok(f);
+    assert.equal(isInterpreterCodeFinding(f), false);
+    assert.doesNotMatch(protectedPathWriteReason(f), /#12780/);
+  });
+  it("o contorno funciona: script no scratchpad que lê o texto de um arquivo de dados passa", () => {
+    const SCRATCH = "/tmp/claude-1000/proj/sess/scratchpad";
+    const files: Record<string, string> = {
+      [`${SCRATCH}/nota-12780.cjs`]: `const fs = require("fs");\nconst [p, d] = process.argv.slice(2);\nconst j = JSON.parse(fs.readFileSync(p));\nj.nota = fs.readFileSync(d, "utf8");\nfs.writeFileSync(p, JSON.stringify(j));\n`,
+      [`${SCRATCH}/ruim-12780.cjs`]: `const fs = require("fs");\nconst p = "${PLAN}";\nfs.writeFileSync(p, JSON.stringify({ nota: "corrigir .claude/hooks/x.mjs" }));\n`,
+    };
+    const readFile = (p: string) => files[p] ?? null;
+    const opts = { readFile, projectDirs: ["/home/u/diaria-studio"] };
+    passes(`node ${SCRATCH}/nota-12780.cjs ${PLAN} ${SCRATCH}/nota-12780.txt`, opts);
+    blocks(`node ${SCRATCH}/ruim-12780.cjs`, opts);
   });
 });
 

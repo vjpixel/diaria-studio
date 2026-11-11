@@ -1,14 +1,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, utimesSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   findSecrets,
   redactSecrets,
   isGhPublishCommand,
   bodyFileArgs,
   evaluate,
+  evaluateBodyFileName,
+  isUniqueBodyFileName,
+  BODY_FILE_STALE_MS,
 } from "../.claude/hooks/block-gh-comment-secrets.mjs";
+import { OVERNIGHT_REQUIRED_BASH_COMMANDS } from "../scripts/lib/overnight-required-bash-commands.ts";
 
 // #8827: a chave OpenRouter do Hermes vazou num comentário da PR #8800
 // (repo público) e foi revogada. Os valores abaixo são SINTÉTICOS e montados
@@ -188,5 +194,143 @@ describe("#9065: Slack/Doppler/Google/AWS sem word boundary antes do prefixo", (
     ]) {
       assert.deepEqual(findSecrets(body), [], body);
     }
+  });
+});
+
+// #12746: a #12547 nasceu com o corpo da #12348 (0 edições na API). Causa
+// provável: `--body-file` de nome genérico reaproveitado, com a escrita do
+// corpo novo falhando em silêncio. Guard: nome sem número de 4+ dígitos é
+// recusado; arquivo velho gera aviso sem recusa.
+describe("#12746: nome único e frescor do --body-file", () => {
+  const NOW = 1_800_000_000_000;
+  const fresh = { statMtimeMs: () => NOW - 30_000, now: NOW };
+  it("recusa o caso da issue: gh issue create com --body-file genérico", () => {
+    for (const cmd of [
+      "gh issue create --title t --label P3 --body-file /tmp/issue-body.md",
+      "gh issue comment 12547 --body-file /tmp/scratch/comment.md",
+      "gh pr create --title t --body-file pr-body.md",
+      "gh pr edit 12135 --body-file=f1.md",
+      "gh issue edit 12547 -F body.md",
+      'cd /w && gh -R vjpixel/diaria-design issue create -t t -F "/tmp/a b.md"',
+      "gh issue create -t t --body-file /tmp/12547/body.md",
+    ]) {
+      const r = evaluateBodyFileName(cmd, "/w", fresh);
+      assert.ok(r.deny, cmd);
+      assert.match(r.deny, /#12746/);
+    }
+  });
+  it("aceita nome com número de 4+ dígitos, stdin e nome com expansão", () => {
+    for (const cmd of [
+      "gh pr create --title 'x (#12746)' --body-file /tmp/pr-body-12746-4821.md",
+      "gh issue comment 12547 --body-file /tmp/c-12547-77.md",
+      "gh issue create -t t --body-file /tmp/issue-nova-1762871234.md",
+      "gh issue comment 1 --body-file - <<'EOF'\ncorpo\nEOF",
+      'gh issue comment 1 --body-file "$F"',
+      "gh pr create --body-file /tmp/pr-body-$RANDOM.md",
+      "gh issue create --body-file issue-$(date +%s).md",
+    ]) {
+      assert.deepEqual(evaluateBodyFileName(cmd, "/w", fresh), {}, cmd);
+    }
+  });
+  it("só gh issue|pr create|comment|edit: -F de gh api e texto citado não contam", () => {
+    for (const cmd of [
+      "gh api repos/o/r/issues/1/comments -F body=@c.md",
+      "gh pr view 1 --json body",
+      'git commit -m "rode gh issue comment 1 --body-file f.md"',
+      "gh issue comment 1 --body-file - <<'EOF'\nexemplo: gh issue create --body-file body.md\nEOF",
+      "cat > /tmp/x-12746-1.md <<'EOF'\ngh pr create --body-file pr.md\nEOF",
+    ]) {
+      assert.deepEqual(evaluateBodyFileName(cmd, "/w", fresh), {}, cmd);
+    }
+  });
+  it("avisa sem recusar quando o arquivo tem mais de 10 min; recém-escrito ou ausente fica calado", () => {
+    const cmd = "gh issue create -t t --body-file /tmp/issue-12547-1234.md";
+    const old = evaluateBodyFileName(cmd, "/w", { statMtimeMs: () => NOW - BODY_FILE_STALE_MS - 60_000, now: NOW });
+    assert.equal(old.deny, undefined);
+    assert.match(old.warn ?? "", /#12746/);
+    assert.match(old.warn ?? "", /11 min/);
+    assert.deepEqual(evaluateBodyFileName(cmd, "/w", fresh), {});
+    const missing = evaluateBodyFileName(cmd, "/w", {
+      statMtimeMs: () => {
+        throw new Error("ENOENT");
+      },
+      now: NOW,
+    });
+    assert.deepEqual(missing, {});
+  });
+  it("review da PR #12846: wrappers antes do gh, -Fx.md/-F=x.md, /dev/stdin e /dev/fd/0", () => {
+    for (const cmd of [
+      "env GH_TOKEN=x gh issue comment 1 --body-file body.md",
+      "command gh pr create -t t --body-file pr.md",
+      "exec gh issue edit 1 -F body.md",
+      "timeout 30 gh issue create -t t --body-file issue.md",
+      "nice -n 5 gh pr comment 1 --body-file c.md",
+      "sudo -u x gh issue comment 1 --body-file c.md",
+      "echo 1 | xargs -I{} gh issue comment {} --body-file c.md",
+      "gh issue comment 1 -Fbody.md",
+      "gh issue comment 1 -F=body.md",
+    ]) {
+      assert.ok(evaluateBodyFileName(cmd, "/w", fresh).deny, cmd);
+    }
+    for (const cmd of [
+      "gh issue comment 1 --body-file /dev/stdin <<'EOF'\nok\nEOF",
+      "gh issue comment 1 --body-file /dev/fd/0 < /tmp/x-12846-1.md",
+      "gh issue comment 1 -F- <<'EOF'\nok\nEOF",
+      "env A=1 gh issue comment 1 -F=/tmp/c-12846-1.md",
+    ]) {
+      assert.deepEqual(evaluateBodyFileName(cmd, "/w", fresh), {}, cmd);
+    }
+  });
+  it("caminho relativo do --body-file é resolvido contra o cwd para o aviso de frescor", () => {
+    const seen: string[] = [];
+    evaluateBodyFileName("gh issue comment 1 --body-file sub/c-12846-1.md", "/w", {
+      statMtimeMs: (p) => {
+        seen.push(p);
+        return NOW;
+      },
+      now: NOW,
+    });
+    assert.deepEqual(seen, ["/w/sub/c-12846-1.md"]);
+  });
+  it("comandos obrigatórios do overnight (OVERNIGHT_REQUIRED_BASH_COMMANDS) não são negados pela regra de nome", () => {
+    for (const c of OVERNIGHT_REQUIRED_BASH_COMMANDS) {
+      assert.equal(evaluateBodyFileName(c.command, "/w", fresh).deny, undefined, c.command);
+    }
+  });
+  it("isUniqueBodyFileName: mesma regra do gh-pr-review-api.ts (#12169), só o nome-base", () => {
+    assert.ok(isUniqueBodyFileName("/tmp/sr-12169-4821.md"));
+    assert.ok(!isUniqueBodyFileName("/tmp/12169/f1.md"));
+    assert.ok(!isUniqueBodyFileName("C:\\tmp\\12169\\body.md"));
+  });
+  const runHook = (command: string) =>
+    spawnSync(process.execPath, [".claude/hooks/block-gh-comment-secrets.mjs"], {
+      input: JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd: process.cwd() }),
+      encoding: "utf8",
+    });
+  it("processo do hook: deny para nome genérico, aviso sem deny para arquivo velho, calado no stdin", () => {
+    const deny = JSON.parse(runHook("gh issue create -t t --body-file /tmp/body.md").stdout);
+    assert.equal(deny.hookSpecificOutput.permissionDecision, "deny");
+    assert.match(deny.hookSpecificOutput.permissionDecisionReason, /#12746/);
+    const dir = mkdtempSync(join(tmpdir(), "bodyfile-12746-"));
+    const oldFile = join(dir, "issue-12746-4821.md");
+    writeFileSync(oldFile, "corpo antigo");
+    const past = new Date(Date.now() - BODY_FILE_STALE_MS - 5 * 60_000);
+    utimesSync(oldFile, past, past);
+    const warn = JSON.parse(runHook(`gh issue comment 1 --body-file ${oldFile}`).stdout);
+    assert.equal(warn.hookSpecificOutput.permissionDecision, undefined);
+    assert.match(warn.hookSpecificOutput.additionalContext, /#12746/);
+    assert.match(warn.systemMessage, /#12746/);
+    rmSync(dir, { recursive: true, force: true });
+    assert.equal(runHook("gh issue comment 1 --body-file - <<'EOF'\nok\nEOF").stdout, "");
+  });
+  it("processo do hook: segredo no corpo é recusado pelo #8827 mesmo com --body-file genérico no mesmo comando", () => {
+    const out = JSON.parse(runHook(`gh issue comment 1 --body "${OR_KEY}" && gh issue comment 2 --body-file /tmp/body.md`).stdout);
+    assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+    assert.match(out.hookSpecificOutput.permissionDecisionReason, /#8827/);
+  });
+  it("o tokenizer entra por import dinâmico em try: a checagem de segredos não depende dele", () => {
+    const src = readFileSync(".claude/hooks/block-gh-comment-secrets.mjs", "utf8");
+    assert.doesNotMatch(src, /^import[^\n]*protected-path-bash-write/m);
+    assert.match(src, /try \{\n\s*shellLib = await import\("\.\.\/\.\.\/scripts\/lib\/protected-path-bash-write\.mjs"\);/);
   });
 });

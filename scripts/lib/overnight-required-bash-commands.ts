@@ -88,7 +88,7 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   { command: "git reset --soft HEAD~1", source: "context/overnight-dispatch-rules.md", mention: "`git reset --soft HEAD~1`" },
   { command: "git push -u origin overnight/fix-1-x", source: "context/overnight-dispatch-rules.md", mention: "`git push -u origin <branch>`" },
   { command: "git push origin develop/fix-1-x", source: ".claude/agents/dev-fixer.md", mention: "`git push origin <branch>`" },
-  { command: "gh pr create --title t --body-file /tmp/pr-body-1-123.md", source: "context/overnight-dispatch-rules.md", mention: "gh pr create" },
+  { command: "gh pr create --title t --body-file /tmp/pr-body-1-4821.md", source: "context/overnight-dispatch-rules.md", mention: "gh pr create" },
 
   // Coordenador: sync de master e worktrees.
   { command: "git checkout master", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "git checkout master && git pull" },
@@ -119,8 +119,8 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   },
   { command: "gh issue view 1 --json comments", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh issue view N --json comments" },
   { command: "gh issue edit 1 --add-label external-blocker", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh issue edit N --add-label external-blocker" },
-  { command: "gh issue comment 1 --body-file /tmp/c.md", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh issue comment" },
-  { command: "gh issue create --title t --label bug,P2 --body-file /tmp/i.md", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "só vira issue" },
+  { command: "gh issue comment 1 --body-file /tmp/c-1-4821.md", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh issue comment" },
+  { command: "gh issue create --title t --label bug,P2 --body-file /tmp/issue-nova-1762871234.md", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "só vira issue" },
   { command: "gh search issues 'x' --repo vjpixel/diaria-studio", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh search issues" },
 
   // Coordenador: CI, merge gate e review threads.
