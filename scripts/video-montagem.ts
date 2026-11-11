@@ -136,6 +136,18 @@
  *       ou palavras do roteiro interpoladas + ouvidas descartadas acima de 10% do roteiro (export
  *       reeditado depois do build). `--heard-text` faz a legenda pela fala do export (grafia e
  *       pontuação do roteiro onde casa); aí só a legenda vazia recusa.
+ *   srt AAMMDD --from-final PATH --no-plan [--force] [--retranscribe]
+ *       (#12429) a mesma legenda do export para a edição SEM plan.json (horizontais anteriores à
+ *       montagem, 261021–261029): o texto é o ouvido (o --heard-text é implícito), com as regras do
+ *       vocabulário do projeto (e do blocks.json, se houver) e a grafia dos nomes próprios do
+ *       02-reviewed.md da edição, sem os blocos de template (só maiúscula ou acento não ouvido:
+ *       "openai" → "OpenAI"; as trocas saem nas notas). Mesmo cache de transcrição do review-final
+ *       (chave youtube), mesma saída e mesma cópia na pasta da edição. Só a legenda vazia recusa.
+ *       A cópia sai marcada como não revisada (`origin: "no-plan"` em youtube-srt.json e o arquivo
+ *       `diaria-comentada-{AAMMDD}.srt.no-plan.json` ao lado dela): o `--captions-only` recusa
+ *       enviá-la sem `--captions-reviewed`, dado depois de conferir nomes e números no SRT. Com um
+ *       plan.json que tem o horizontal, --no-plan é recusado (use o --from-final com plano), salvo
+ *       --force.
  *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--no-subs] [--over-target]   (default a vertical da edição; sempre refaz)
  *       (#12694) vertical (da edição ou corte/Short) com mais de 75 s de fala (card de CTA fora
  *       da conta; `verticalTargetS` da edição só reduz) = exit 1 com `[aviso] GATE BLOQUEADO`,
@@ -231,6 +243,7 @@ import {
   SPEECH_DEFAULTS,
   alignPunctuationToScript,
   applyVocabularyToWords,
+  horizontalSequenceName,
   sequenceKey,
   assembleClips,
   audioGainFor,
@@ -329,6 +342,7 @@ import {
   type Segment,
   type SequencePlan,
   type SequenceKey,
+  type SequenceRef,
   type SequenceSpec,
   type SequenceTarget,
   type SourceInfo,
@@ -453,7 +467,8 @@ export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { buildYouTubeTitle, stripInlineMarkdown } from "./lib/diaria/youtube-video.ts";
-import { youtubeCaptionFileName } from "./lib/diaria/youtube-captions.ts";
+import { youtubeCaptionFileName, youtubeCaptionNoPlanMarkerPath, type YoutubeCaptionNoPlanMarker } from "./lib/diaria/youtube-captions.ts";
+import { applyProperNounLexicon, properNounLexicon, summarizeLexiconChanges } from "./lib/diaria/video-caption-lexicon.ts";
 import { factCheckItems, factCheckItemsSha256, factCheckSection, parseVideoFactCheck, type FactCheckItem } from "./lib/diaria/video-fact-check.ts";
 import { SHORT_WORD_WINDOW_PAD_S, shortWordDivergences, shortWordSection, type ShortWordItemCheck } from "./lib/diaria/video-short-words.ts";
 import { stretchedWordFindings, takeRepeatItems, takeRepeatLine, takeRepeatWarnings, windowHeardSuspects, type TakeRepeatSuspect } from "./lib/diaria/video-montage-repeat.ts";
@@ -3142,6 +3157,8 @@ interface YoutubeSrtRecord {
   fromExportFile?: { size?: number; mtimeMs?: number; driveModifiedTime?: string | null };
   /** #12285: `<sequence id>` do horizontal no plan.json quando o `--from-final` gravou a cópia. */
   fromExportSequenceId?: string;
+  /** #12429: a cópia saiu do `--from-final --no-plan` (texto ouvido, sem roteiro): não revisada. */
+  origin?: "no-plan";
 }
 
 /**
@@ -3174,6 +3191,11 @@ export function applyYoutubeSrtCopy(input: {
   sequenceBuiltAtMs?: number;
   /** #12285: `<sequence id>` atual do horizontal (gravado no registro quando a cópia vem do export). */
   sequenceId?: string | null;
+  /**
+   * #12429: a legenda veio do `--from-final --no-plan`. Grava `origin: "no-plan"` no registro e a
+   * marca `youtubeCaptionNoPlanMarkerPath` ao lado da cópia; sem ele, a marca de uma cópia anterior sai.
+   */
+  noPlan?: boolean;
   now?: Date;
 }): ReturnType<typeof youtubeSrtCopyDecision> {
   const record = existsSync(input.recordPath) ? readJson<YoutubeSrtRecord>(input.recordPath, "youtube-srt.json") : null;
@@ -3191,15 +3213,25 @@ export function applyYoutubeSrtCopy(input: {
   });
   if (decision !== "write" && decision !== "replace-stale-export") return decision;
   mkdirSync(dirname(input.path), { recursive: true });
+  const markerPath = youtubeCaptionNoPlanMarkerPath(input.path);
+  const sha256 = createHash("sha256").update(input.srt).digest("hex");
+  const writtenAt = (input.now ?? new Date()).toISOString();
+  // A marca sai antes da cópia nova: falha no meio deixa a cópia velha sem marca, nunca a nova sem ela.
+  if (!input.noPlan) rmSync(markerPath, { force: true });
+  else {
+    const marker: YoutubeCaptionNoPlanMarker = { origin: "no-plan", sha256, writtenAt, fromExport: origin?.name ?? "" };
+    writeJson(markerPath, marker);
+  }
   writeFileAtomic(input.path, input.srt);
   const file = origin ? { size: origin.size, mtimeMs: origin.mtimeMs, driveModifiedTime: origin.driveModifiedTime } : null;
   writeJson(input.recordPath, {
     path: input.path,
-    sha256: createHash("sha256").update(input.srt).digest("hex"),
-    writtenAt: (input.now ?? new Date()).toISOString(),
+    sha256,
+    writtenAt,
     ...(origin ? { fromExport: origin.name } : {}),
     ...(file && Object.values(file).some((v) => v !== undefined && v !== null) ? { fromExportFile: file } : {}),
     ...(origin && input.sequenceId ? { fromExportSequenceId: input.sequenceId } : {}),
+    ...(input.noPlan ? { origin: "no-plan" } : {}),
   });
   return decision;
 }
@@ -3219,7 +3251,7 @@ export function srtPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte"
 export function fromFinalPlan<P extends { spec: Pick<SequenceSpec, "target" | "corte" | "width" | "height"> }>(all: P[], seq: string | undefined): P {
   if (seq !== undefined && seq !== "youtube") throw new Error(`--from-final só gera a legenda do horizontal (--seq youtube), veio --seq ${seq}`);
   const hit = all.filter((p) => isYoutubeSpec(p.spec));
-  if (hit.length === 0) throw new Error("plan.json sem a sequência youtube (o horizontal): rode build --seq youtube antes do srt --from-final");
+  if (hit.length === 0) throw new Error("plan.json sem a sequência youtube (o horizontal): rode build --seq youtube antes do srt --from-final, ou --no-plan para a legenda só pela fala do export (#12429)");
   return hit[0];
 }
 
@@ -3337,6 +3369,51 @@ export function srtFromExport(input: {
   };
 }
 
+/**
+ * #12429: a chave do horizontal no modo sem plano: a do cache da transcrição
+ * do export (`transcribeExport`, a mesma do `review-final` e do `--from-final`
+ * com plano) e a das notas em `SRT_NOTES_FILE`. Derivada de `sequenceKey`
+ * para não divergir dela.
+ */
+const NO_PLAN_SEQ_REF: SequenceRef = { target: "youtube" };
+export const NO_PLAN_SEQ_KEY: SequenceKey = sequenceKey(NO_PLAN_SEQ_REF);
+
+/**
+ * #12429: a legenda do horizontal só pela fala do export, SEM `plan.json`
+ * (horizontais anteriores à skill de montagem, 261021–261029). O texto é o
+ * ouvido pelo Whisper, com as regras do vocabulário do projeto (e do
+ * blocks.json, quando existe) e a grafia dos nomes próprios do texto da edição
+ * (`properNounLexicon` sobre o `02-reviewed.md`, `reference`). Sem roteiro não
+ * há divergência a medir: como no `--heard-text`, só a legenda vazia recusa.
+ * Fala depois do fim do export sai. Puro.
+ */
+export function srtFromExportNoPlan(input: {
+  heard: Word[];
+  rules: VocabRule[];
+  aliases: VocabAlias[];
+  /** Texto da edição (`02-reviewed.md`) para a grafia dos nomes; ausente = só o vocabulário. */
+  reference?: string | null;
+  durationS: number;
+  warn?: (msg: string) => void;
+}): { srt: string; notes: string[]; problems: string[] } {
+  const label = "horizontal (export, sem plan.json)";
+  const vocabWords = applyVocabularyToWords(input.heard, input.rules, NO_PLAN_SEQ_REF, input.warn);
+  const inVideo = vocabWords.filter((w) => w.start < input.durationS);
+  const lexicon = input.reference ? properNounLexicon(input.reference) : new Map<string, string>();
+  const { words, changes } = applyProperNounLexicon(inVideo, lexicon, input.aliases);
+  const cues = segmentCues(words);
+  const notes = [
+    `[premissa] ${label}: legenda com o texto ouvido no export (sem roteiro gravado); grafia pelo vocabulário do projeto` +
+      `${input.reference ? ` e por ${lexicon.size} nome(s) próprio(s) do 02-reviewed.md` : ""}; conferir nomes e números antes de subir (#12429)`,
+  ];
+  if (!input.reference) notes.push(`[aviso] ${label}: sem o texto da edição (02-reviewed.md), os nomes próprios ficam com a grafia que o Whisper ouviu`);
+  const summary = summarizeLexiconChanges(changes);
+  if (summary.length) notes.push(`[premissa] ${label}: grafia corrigida: ${summary.join("; ")}`);
+  const dropped = vocabWords.length - inVideo.length;
+  if (dropped) notes.push(`[aviso] ${label}: ${dropped} palavra(s) ouvida(s) depois do fim do export descartada(s)`);
+  return { srt: cuesToSrt(cues), notes, problems: exportSrtProblems({ cues: cueTimings(cues), text: "ouvido" }) };
+}
+
 /** #12198: o que fazer quando a legenda do export é recusada (a linha final do [erro]). */
 export function exportSrtRefusalHint(edition: string, exportPath: string, text: ExportSrtText): string {
   const cmd = `npx tsx scripts/video-montagem.ts srt ${edition} --seq youtube --from-final "${exportPath}"`;
@@ -3384,9 +3461,9 @@ function transcribeExport(ctx: Ctx, path: string, key: string, forReview = false
 }
 
 /** Grava a cópia do horizontal na pasta da edição (ver `applyYoutubeSrtCopy`); devolve a decisão. */
-function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: ExportOrigin, sequenceBuiltAtMs?: number, sequenceId?: string | null): ReturnType<typeof youtubeSrtCopyDecision> {
+function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: ExportOrigin, sequenceBuiltAtMs?: number, sequenceId?: string | null, noPlan = false): ReturnType<typeof youtubeSrtCopyDecision> {
   const path = join(editionDirFor(ctx.edition), youtubeCaptionFileName(ctx.edition));
-  const decision = applyYoutubeSrtCopy({ path, recordPath: f(ctx, "youtube-srt.json"), srt, force: ctx.force, origin, sequenceBuiltAtMs, sequenceId });
+  const decision = applyYoutubeSrtCopy({ path, recordPath: f(ctx, "youtube-srt.json"), srt, force: ctx.force, origin, sequenceBuiltAtMs, sequenceId, noPlan });
   if (decision === "keep-edited") {
     // No --from-final o chamador sai com [erro]; no srt da montagem é só aviso (#11957).
     if (!origin) console.error(`[aviso] ${path} foi editado depois do último srt: mantido (o novo está no out dir; --force sobrescreve, #11957)`);
@@ -3416,6 +3493,7 @@ function writeYoutubeSrtCopy(ctx: Ctx, srt: string, origin?: ExportOrigin, seque
  */
 function loadFromFinalPlan(ctx: Ctx, seq: string | undefined): { plan: SequencePlan; builtAtMs: number; sequenceId: string | null } {
   const planPath = f(ctx, "plan.json");
+  if (!existsSync(planPath)) throw new Error(`sem plan.json (${planPath}): rode build --seq youtube; edição anterior à montagem (sem plano), use --no-plan (a legenda só pela fala do export, #12429)`);
   const pf = readJson<PlanFile>(planPath, "plan.json (rode build --seq youtube)");
   if (!Array.isArray(pf.plans)) throw new Error(`plan.json malformado (sem a lista plans): rode build --seq youtube (${f(ctx, "plan.json")})`);
   const plan = fromFinalPlan(pf.plans, seq);
@@ -3455,43 +3533,131 @@ function cmdSrtFromFinal(ctx: Ctx, file: string, loaded: { plan: SequencePlan; b
         `se ele saiu de um XML anterior, o roteiro do plan.json não casa com ele; reexporte do XML novo (#12209)`,
     );
   }
+  const durationS = exportDurationS(path);
+  const vocab = loadVocab();
+  const heard = transcribeExport(ctx, path, sequenceKey(plan.spec));
+  const { srt, notes: seqNotes, problems } = srtFromExport({ heard, plan, rules: [...vocab.rules, ...blockVocabRules(ctx)], aliases: vocab.aliases, durationS, text, warn: (w) => console.error(`[aviso] ${w}`) });
+  return finishExportSrt(ctx, { path, origin, srt, seqNotes, problems, seqName: plan.spec.name, key: sequenceKey(plan.spec), sequenceId, refusalHint: exportSrtRefusalHint(ctx.edition, path, text) });
+}
+
+/** Duração do export pelo ffprobe (#12078). */
+function exportDurationS(path: string): number {
   const durationS = Number(JSON.parse(run("ffprobe", ["-v", "error", "-show_format", "-of", "json", path]).stdout).format?.duration);
   if (!Number.isFinite(durationS) || durationS <= 0) throw new Error(`duração ilegível no ffprobe (${path})`);
-  const vocab = loadVocab();
-  let blockRules: VocabRule[] = [];
+  return durationS;
+}
+
+/** O vocabulário do blocks.json da edição; sem ele (ou ilegível), só o do projeto. */
+function blockVocabRules(ctx: Ctx, quietWhenMissing = false): VocabRule[] {
+  if (quietWhenMissing && !existsSync(f(ctx, "blocks.json"))) return [];
   try {
-    blockRules = loadBlocks(ctx).file.vocabulary ?? [];
+    return loadBlocks(ctx).file.vocabulary ?? [];
   } catch (e) {
     console.error(`[aviso] blocks.json ilegível (${(e as Error).message}): só o vocabulário do projeto na legenda`);
+    return [];
   }
-  const heard = transcribeExport(ctx, path, sequenceKey(plan.spec));
-  const { srt, notes: seqNotes, problems } = srtFromExport({ heard, plan, rules: [...vocab.rules, ...blockRules], aliases: vocab.aliases, durationS, text, warn: (w) => console.error(`[aviso] ${w}`) });
+}
+
+/**
+ * O fim comum do `srt --from-final` com e sem plano (#12078, #12429): recusa
+ * a legenda imprópria sem gravar nada; senão grava no out dir, a cópia na
+ * pasta da edição (a que o `--captions-only` envia) e as notas.
+ */
+function finishExportSrt(
+  ctx: Ctx,
+  r: { path: string; origin: ExportOrigin; srt: string; seqNotes: string[]; problems: string[]; seqName: string; key: string; sequenceId: string | null; refusalHint: string; noPlan?: boolean },
+): number {
+  const { path, origin, srt, seqNotes, problems, sequenceId } = r;
   for (const n of seqNotes) console.error(n);
   if (problems.length) {
     // #12198: nada gravado (nem o out dir nem a cópia da pasta da edição): o --captions-only seguinte publicaria isto.
     for (const p of problems) console.error(`[erro] legenda do export ${basename(path)}: ${p}`);
-    console.error(exportSrtRefusalHint(ctx.edition, path, text));
+    console.error(r.refusalHint);
     return 1;
   }
   mkdirSync(ctx.outDir, { recursive: true });
-  const out = join(ctx.outDir, srtFromExportFileName(plan.spec.name));
+  const out = join(ctx.outDir, srtFromExportFileName(r.seqName));
   writeFileAtomic(out, srt);
+  // #12429: o arquivo do out dir também leva a marca de não revisado (o --captions-only --captions o enviaria direto).
+  const outMarker = youtubeCaptionNoPlanMarkerPath(out);
+  if (r.noPlan) writeJson(outMarker, { origin: "no-plan", sha256: createHash("sha256").update(srt).digest("hex"), writtenAt: new Date().toISOString(), fromExport: origin.name } satisfies YoutubeCaptionNoPlanMarker);
+  else rmSync(outMarker, { force: true });
   console.log(out);
-  const decision = writeYoutubeSrtCopy(ctx, srt, origin, undefined, sequenceId);
+  const reviewedFlag = r.noPlan ? " --captions-reviewed" : "";
+  const decision = writeYoutubeSrtCopy(ctx, srt, origin, undefined, sequenceId, r.noPlan);
   if (decision === "keep-edited") {
     // Sair 0 aqui deixaria o backfill seguir para o --captions-only com a cópia antiga (tempo da montagem).
     const copy = join(editionDirFor(ctx.edition), youtubeCaptionFileName(ctx.edition));
     console.error(
       `[erro] ${copy} foi editado à mão depois do último srt e NÃO foi substituído: a legenda do export está em ${out}. ` +
-        `Rode de novo com --force para gravá-la na pasta da edição, ou envie-a direto: npx tsx scripts/publish-youtube.ts ${ctx.edition} --captions-only --captions "${out}" (#12078)`,
+        `Rode de novo com --force para gravá-la na pasta da edição, ou envie-a direto${r.noPlan ? ", depois de conferi-la" : ""}: npx tsx scripts/publish-youtube.ts ${ctx.edition} --captions-only --captions "${out}"${reviewedFlag} (#12078)`,
     );
     return 1;
   }
+  if (r.noPlan) {
+    console.error(
+      `[premissa] legenda sem plano marcada como não revisada: confira nomes e números no SRT e envie com ` +
+        `npx tsx scripts/publish-youtube.ts ${ctx.edition} --captions-only --captions-reviewed (#12429)`,
+    );
+  }
   const notesPath = f(ctx, SRT_NOTES_FILE);
   const notes: Record<string, string[]> = existsSync(notesPath) ? readJson<Record<string, string[]>>(notesPath, SRT_NOTES_FILE) : {};
-  notes[sequenceKey(plan.spec)] = seqNotes;
+  notes[r.key] = seqNotes;
   writeJson(notesPath, notes);
   return 0;
+}
+
+/**
+ * #12429: `--no-plan` numa edição cujo plan.json TEM o horizontal descartaria o
+ * roteiro aprovado (a grafia e a pontuação do `--from-final` com plano): recusa,
+ * salvo `--force` (aí só avisa). plan.json ausente ou ilegível não importa aqui:
+ * o modo sem plano não o lê.
+ */
+function checkNoPlanAgainstPlan(ctx: Ctx): void {
+  const planPath = f(ctx, "plan.json");
+  if (!existsSync(planPath)) return;
+  let hasHorizontal = false;
+  try {
+    const pf = JSON.parse(readFileSync(planPath, "utf8")) as Partial<PlanFile>;
+    hasHorizontal = Array.isArray(pf.plans) && pf.plans.some((p) => p?.spec && isYoutubeSpec(p.spec));
+  } catch {
+    return; // ilegível: o modo sem plano segue sem ele
+  }
+  if (!hasHorizontal) return;
+  const msg = `${planPath} tem o horizontal: o --from-final sem --no-plan alinha a legenda ao roteiro aprovado (#12429)`;
+  if (!ctx.force) throw new Error(`--no-plan recusado: ${msg}; --force para usar só a fala do export mesmo assim`);
+  console.error(`[aviso] --no-plan com --force: ${msg}`);
+}
+
+/**
+ * `srt --from-final PATH --no-plan` (#12429): a legenda do horizontal só pela
+ * fala do export, para a edição sem `plan.json` (ou sem o horizontal nele).
+ * Mesma transcrição em cache do `review-final`/`--from-final` (chave
+ * `youtube`), vocabulário do projeto e grafia dos nomes do `02-reviewed.md`.
+ */
+function cmdSrtFromFinalNoPlan(ctx: Ctx, file: string): number {
+  const path = resolve(file);
+  if (!existsSync(path)) throw new Error(`export não encontrado: ${path}`);
+  const origin = exportOriginOf(path);
+  const durationS = exportDurationS(path);
+  const vocab = loadVocab();
+  const reviewedPath = join(editionDirFor(ctx.edition), "02-reviewed.md");
+  const reference = existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : null;
+  const heard = transcribeExport(ctx, path, NO_PLAN_SEQ_KEY);
+  const { srt, notes: seqNotes, problems } = srtFromExportNoPlan({
+    heard,
+    rules: [...vocab.rules, ...blockVocabRules(ctx, true)],
+    aliases: vocab.aliases,
+    reference,
+    durationS,
+    warn: (w) => console.error(`[aviso] ${w}`),
+  });
+  return finishExportSrt(ctx, {
+    path, origin, srt, seqNotes, problems,
+    seqName: horizontalSequenceName(), key: NO_PLAN_SEQ_KEY, sequenceId: null,
+    refusalHint: exportSrtRefusalHint(ctx.edition, path, "ouvido"),
+    noPlan: true,
+  });
 }
 
 function cmdSrt(ctx: Ctx, target: string | undefined, fromRaw: boolean): number {
@@ -4310,9 +4476,17 @@ async function runCommand(
       let final = values["from-final"];
       if (final === undefined) {
         if (flags.has("heard-text")) throw new Error("--heard-text só vale com --from-final (a legenda pela fala do export, #12198)");
+        if (flags.has("no-plan")) throw new Error("--no-plan só vale com --from-final (a legenda só pela fala do export, sem plan.json, #12429)");
         return cmdSrt(ctx, seq, flags.has("from-raw"));
       }
       if (flags.has("from-raw")) throw new Error("--from-final e --from-raw não se combinam: a legenda do export vem da fala do export");
+      if (flags.has("no-plan")) {
+        // #12429: horizontal anterior à montagem, sem plan.json; o texto é o ouvido (o --heard-text é implícito).
+        if (seq !== undefined && seq !== "youtube") throw new Error(`--from-final só gera a legenda do horizontal (--seq youtube), veio --seq ${seq}`);
+        checkNoPlanAgainstPlan(ctx);
+        if (d && !existsSync(final)) final = await fetchNamed(d, final, "final");
+        return cmdSrtFromFinalNoPlan(ctx, final);
+      }
       // --seq e o plano antes do download: um plano sem o horizontal não baixa o export à toa.
       const plan = loadFromFinalPlan(ctx, seq);
       // Como no review-final (#11639): no modo API, o export é procurado pelo nome em Final/ da edição no Drive.
