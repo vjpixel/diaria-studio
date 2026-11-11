@@ -1431,7 +1431,7 @@ classifica `develop`, com a mesma precedência de `windows`.
   Desde o #12812 também `curl -o`, `wget -O`, `tar -x -C`, `unzip -d`, `git
   apply`/`patch` (pelo alvo do patch), `git rm`/`git mv`, formatadores no
   lugar (`prettier --write`, `eslint --fix`), editores (`vim -es`, `sponge`),
-  `sh script.sh <alvo>` e flag de saída (`--out`, `-o`, `--outfile`) em
+  `sh script.sh <alvo>` e flag de saída (`--out`, `--outfile`; `-o` fora de `grep`/`find`/`ssh`/shells) em
   qualquer comando; `git checkout/restore -- .claude/...` fica livre (traz
   conteúdo já versionado). O guard lê o código inteiro de `node -e`/`python -c`
   e não separa alvo de texto: um caminho protegido citado só dentro do dado

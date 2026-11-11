@@ -287,6 +287,74 @@ describe("findProtectedPathWrite — escritores de ferramenta (#12812)", () => {
   });
 });
 
+describe("review de fleet da PR #12846 (#12812)", () => {
+  const PROTO = ["valueOf", "hasOwnProperty", "__proto__", "constructor", "toString", "isPrototypeOf", "toLocaleString"];
+  it("P1: comando com nome de Object.prototype não derruba a análise dos seguintes", () => {
+    for (const n of PROTO) {
+      blocks(`${n}; echo x > .claude/settings.json`);
+      blocks(`${n} a b && sed -i 's/a/b/' ${SKILL}`);
+      passes(`${n} /tmp/x`);
+      passes(`find /tmp -exec ${n} {} +`);
+      passes(`ls | xargs ${n}`);
+    }
+  });
+  it("P1: hook em processo nega `valueOf; echo x > .claude/settings.json` (no master era bloqueado)", () => {
+    const r = spawnSync("node", [HOOK], {
+      input: JSON.stringify({ tool_name: "Bash", cwd: CWD, tool_input: { command: "valueOf; echo x > .claude/settings.json" } }),
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0);
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny");
+  });
+  it("P2a: tar com -C colado não troca extração por criação", () => {
+    blocks(`tar -xzf /tmp/a.tgz -C.claude/hooks`);
+    blocks(`tar xzf /tmp/a.tgz -C.claude/hooks`);
+    blocks(`tar -x -f /tmp/a.tgz -C.claude/skills`);
+    blocks(`tar -xzf/tmp/a.tgz -C .claude/hooks`);
+    passes(`tar -czf /tmp/a.tgz -C.claude hooks`);
+    passes(`tar -tzf /tmp/a.tgz -C.claude/hooks`);
+  });
+  it("P2b: patch dentro do projeto é lido; patch ilegível bloqueia só quando o comando cita caminho protegido", () => {
+    const PATCH = "--- a/.claude/hooks/x.mjs\n+++ b/.claude/hooks/x.mjs\n@@ -1 +1 @@\n-a\n+b\n";
+    const files: Record<string, string> = { [`${CWD}/fix.patch`]: PATCH, "/home/u/diaria-studio/p/ok.patch": "--- a/scripts/x.ts\n+++ b/scripts/x.ts\n" };
+    const opts = { readFile: (p: string) => files[p] ?? null, projectDirs: ["/home/u/diaria-studio"] };
+    blocks(`git apply fix.patch`, opts);
+    blocks(`patch -p1 < fix.patch`, opts);
+    blocks(`cat fix.patch | git apply`, opts);
+    blocks(`git -C ${CWD} am fix.patch`, opts);
+    passes(`git apply /home/u/diaria-studio/p/ok.patch`, opts);
+    // ilegível + citação no comando
+    blocks(`git diff -- .claude/hooks > /tmp/p-12846.patch; git apply /tmp/p-12846.patch`, opts);
+    blocks(`git show HEAD~1 -- .claude/settings.json | git apply -R`, opts);
+    // ilegível sem citação: limite documentado (portar mudança entre worktrees)
+    passes(`git diff master -- scripts | git apply`, opts);
+    passes(`gh pr diff 12846 | git apply`, opts);
+    passes(`git apply /tmp/ainda-nao-existe-12846.patch`, opts);
+  });
+  it("P3: shells com -o pipefail, formatadores em modo de checagem, patch --dry-run e git rm -n não escrevem", () => {
+    const cwd = "/r/.claude/skills/a";
+    passes(`bash -o pipefail -c 'ls'`, { cwd });
+    passes(`sh -o errexit /tmp/x.sh`, { cwd });
+    passes(`black --check .claude/hooks/x.py`);
+    passes(`black --diff .claude/hooks/x.py`);
+    passes(`ruff format --check .claude/hooks/x.py`);
+    passes(`rustfmt --check .claude/hooks/x.rs`);
+    blocks(`black .claude/hooks/x.py`);
+    blocks(`ruff format .claude/hooks/x.py`);
+    const readFile = () => "--- a/.claude/hooks/x.mjs\n+++ b/.claude/hooks/x.mjs\n";
+    passes(`patch --dry-run -p1 < /tmp/p.patch`, { readFile });
+    passes(`git rm -n .claude/hooks/x.mjs`);
+    passes(`git rm --dry-run -r .claude/skills`);
+    passes(`unzip -ql /tmp/s.zip`, { cwd });
+  });
+  it("P3: isInterpreterCodeFinding lê o campo source, não o texto do kind", () => {
+    assert.equal(isInterpreterCodeFinding({ kind: "x (código)", path: "p" }), false);
+    const f = find(`python3 -c "open('.claude/hooks/x','w').write('a')"`);
+    assert.equal(f?.source, "interpreter-code");
+    assert.ok(isInterpreterCodeFinding(f));
+  });
+});
+
 describe("mensagem de bloqueio: contorno para texto citado no código (#12780)", () => {
   // Decisão do editor (11/11/2026): o guard não afrouxa; só a mensagem muda.
   const PLAN = "/r/data/overnight/261110/plan.json";
@@ -301,7 +369,7 @@ describe("mensagem de bloqueio: contorno para texto citado no código (#12780)",
     const msg = protectedPathWriteReason(f);
     assert.match(msg, /#12780/);
     assert.match(msg, /scratchpad/);
-    assert.match(msg, /node \/scratchpad\/x\.cjs/);
+    assert.match(msg, /node <scratchpad>\/x\.cjs/);
     assert.match(msg, /texto dentro do dado/);
     const py = find(`python3 -c "open('${PLAN}','w').write('ver .claude/hooks/x')"`);
     assert.ok(py);

@@ -15,8 +15,13 @@
 // legível. Só padrões de ALTA especificidade (prefixo de provedor + corpo
 // longo), para nunca bloquear texto que só MENCIONA o nome de uma variável.
 //
+// Desde o #12746 o hook também recusa `--body-file` de nome genérico em `gh
+// issue|pr create|comment|edit` e avisa quando o arquivo é velho (bloco
+// `evaluateBodyFileName` abaixo); essa checagem roda depois e à parte da de
+// segredos.
+//
 // Fail-open em qualquer falha de parse/leitura, mesma filosofia dos hooks
-// irmãos.
+// irmãos, com o erro no stderr.
 //
 // Duas brechas conhecidas e deliberadamente fora de escopo deste hook —
 // resolvidas por `hermes/scripts/gh-wrapper.mjs` (#8884), que compartilha os
@@ -30,9 +35,18 @@ import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SECRET_PATTERNS, findSecrets, redactSecrets } from "./lib/secret-patterns.mjs";
-import { tokenizeShell } from "../../scripts/lib/protected-path-bash-write.mjs";
 
 export { SECRET_PATTERNS, findSecrets, redactSecrets };
+
+// O tokenizer do guard #12009 só serve à checagem de nome do #12746. Import
+// dinâmico dentro de try: se o módulo sumir ou quebrar, cai só essa checagem,
+// nunca a de segredos (review da PR #12846).
+let shellLib = null;
+try {
+  shellLib = await import("../../scripts/lib/protected-path-bash-write.mjs");
+} catch (err) {
+  process.stderr.write(`block-gh-comment-secrets (#12746): tokenizer indisponível, checagem de --body-file desligada: ${err?.stack ?? err}\n`);
+}
 
 // ---------------------------------------------------------------------------
 // #12746 — nome único e frescor do `--body-file` de `gh issue|pr
@@ -65,6 +79,9 @@ export function isUniqueBodyFileName(path) {
 
 const GH_VALUE_FLAGS = new Set(["-R", "--repo"]);
 
+/** `--body-file` que é stdin, não arquivo: fora da checagem de nome. */
+const STDIN_BODY_FILES = new Set(["-", "/dev/stdin", "/dev/fd/0"]);
+
 /**
  * Valores de `--body-file`/`-F` dos `gh issue|pr create|comment|edit` do
  * comando. Usa o tokenizer de shell do guard #12009: texto entre aspas e corpo
@@ -72,12 +89,13 @@ const GH_VALUE_FLAGS = new Set(["-R", "--repo"]);
  * --body-file x.md` não conta).
  */
 export function ghBodyFileValues(command) {
-  if (typeof command !== "string") return [];
+  if (typeof command !== "string" || !shellLib) return [];
   const out = [];
-  for (const cmd of tokenizeShell(command)) {
-    const w = cmd.words;
+  for (const cmd of shellLib.tokenizeShell(command)) {
+    // Pula atribuições e wrappers (`env`, `command`, `exec`, `timeout 30`,
+    // `nice`, `sudo`) e desce no `xargs`.
+    const w = shellLib.resolveCommandWords(cmd.words);
     let i = 0;
-    while (i < w.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(w[i])) i++;
     if (w[i] !== "gh" && !/[\\/]gh(?:\.exe)?$/.test(w[i] ?? "")) continue;
     i++;
     while (i < w.length && w[i].startsWith("-")) i += GH_VALUE_FLAGS.has(w[i]) ? 2 : 1;
@@ -89,8 +107,10 @@ export function ghBodyFileValues(command) {
       let v;
       if (a === "--body-file" || a === "-F") v = args[++k];
       else if (a.startsWith("--body-file=")) v = a.slice("--body-file=".length);
+      // `-Fx.md` e `-F=x.md` (o pflag do gh aceita os dois)
+      else if (a.startsWith("-F") && a.length > 2) v = a.slice(a[2] === "=" ? 3 : 2);
       else continue;
-      if (v == null || v === "-" || v === "") continue;
+      if (v == null || v === "" || STDIN_BODY_FILES.has(v)) continue;
       // Nome com expansão (`body-$RANDOM.md`, `"$F"`, `issue-$(date +%s).md`,
       // em que o tokenizer corta no `$(`) só se resolve ao rodar: fora.
       if (v.includes("$") || command.includes(`${v}$`) || command.includes(`${v}\``)) continue;
@@ -232,8 +252,21 @@ if (isMain) {
       const payload = JSON.parse(raw);
       if (payload.tool_name !== "Bash") return;
       const command = payload.tool_input?.command;
-      const bodyFile = evaluateBodyFileName(command, payload.cwd);
-      const reason = evaluate(command, payload.cwd) ?? bodyFile.deny;
+      // Segredos (#8827) primeiro e independente: erro na checagem de nome
+      // do #12746 nunca derruba esta (review da PR #12846).
+      let reason = null;
+      try {
+        reason = evaluate(command, payload.cwd);
+      } catch (err) {
+        process.stderr.write(`block-gh-comment-secrets (#8827): erro na checagem de segredos: ${err?.stack ?? err}\n`);
+      }
+      let bodyFile = {};
+      try {
+        bodyFile = evaluateBodyFileName(command, payload.cwd);
+      } catch (err) {
+        process.stderr.write(`block-gh-comment-secrets (#12746): erro na checagem de --body-file: ${err?.stack ?? err}\n`);
+      }
+      reason = reason ?? bodyFile.deny;
       if (reason) {
         process.stdout.write(
           JSON.stringify({
@@ -253,8 +286,9 @@ if (isMain) {
           }),
         );
       }
-    } catch {
-      // fail-open
+    } catch (err) {
+      // fail-open, com o erro no stderr
+      process.stderr.write(`block-gh-comment-secrets: erro, comando liberado: ${err?.stack ?? err}\n`);
     }
   });
 }

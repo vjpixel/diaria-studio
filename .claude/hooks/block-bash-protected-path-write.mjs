@@ -55,8 +55,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
           },
         }),
       );
-    } catch {
-      // Fail-open, sempre.
+    } catch (err) {
+      // Fail-open, mas nunca calado: o erro vai para o stderr (review da PR
+      // #12846). Erro de UM comando já não chega aqui — o laço da lib isola
+      // por comando e bloqueia o que crashou citando caminho protegido.
+      process.stderr.write(`block-bash-protected-path-write (#12009): erro, comando liberado: ${err?.stack ?? err}\n`);
     }
   });
 }

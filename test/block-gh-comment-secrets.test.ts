@@ -14,6 +14,7 @@ import {
   isUniqueBodyFileName,
   BODY_FILE_STALE_MS,
 } from "../.claude/hooks/block-gh-comment-secrets.mjs";
+import { OVERNIGHT_REQUIRED_BASH_COMMANDS } from "../scripts/lib/overnight-required-bash-commands.ts";
 
 // #8827: a chave OpenRouter do Hermes vazou num comentário da PR #8800
 // (repo público) e foi revogada. Os valores abaixo são SINTÉTICOS e montados
@@ -257,6 +258,45 @@ describe("#12746: nome único e frescor do --body-file", () => {
     });
     assert.deepEqual(missing, {});
   });
+  it("review da PR #12846: wrappers antes do gh, -Fx.md/-F=x.md, /dev/stdin e /dev/fd/0", () => {
+    for (const cmd of [
+      "env GH_TOKEN=x gh issue comment 1 --body-file body.md",
+      "command gh pr create -t t --body-file pr.md",
+      "exec gh issue edit 1 -F body.md",
+      "timeout 30 gh issue create -t t --body-file issue.md",
+      "nice -n 5 gh pr comment 1 --body-file c.md",
+      "sudo -u x gh issue comment 1 --body-file c.md",
+      "echo 1 | xargs -I{} gh issue comment {} --body-file c.md",
+      "gh issue comment 1 -Fbody.md",
+      "gh issue comment 1 -F=body.md",
+    ]) {
+      assert.ok(evaluateBodyFileName(cmd, "/w", fresh).deny, cmd);
+    }
+    for (const cmd of [
+      "gh issue comment 1 --body-file /dev/stdin <<'EOF'\nok\nEOF",
+      "gh issue comment 1 --body-file /dev/fd/0 < /tmp/x-12846-1.md",
+      "gh issue comment 1 -F- <<'EOF'\nok\nEOF",
+      "env A=1 gh issue comment 1 -F=/tmp/c-12846-1.md",
+    ]) {
+      assert.deepEqual(evaluateBodyFileName(cmd, "/w", fresh), {}, cmd);
+    }
+  });
+  it("caminho relativo do --body-file é resolvido contra o cwd para o aviso de frescor", () => {
+    const seen: string[] = [];
+    evaluateBodyFileName("gh issue comment 1 --body-file sub/c-12846-1.md", "/w", {
+      statMtimeMs: (p) => {
+        seen.push(p);
+        return NOW;
+      },
+      now: NOW,
+    });
+    assert.deepEqual(seen, ["/w/sub/c-12846-1.md"]);
+  });
+  it("comandos obrigatórios do overnight (OVERNIGHT_REQUIRED_BASH_COMMANDS) não são negados pela regra de nome", () => {
+    for (const c of OVERNIGHT_REQUIRED_BASH_COMMANDS) {
+      assert.equal(evaluateBodyFileName(c.command, "/w", fresh).deny, undefined, c.command);
+    }
+  });
   it("isUniqueBodyFileName: mesma regra do gh-pr-review-api.ts (#12169), só o nome-base", () => {
     assert.ok(isUniqueBodyFileName("/tmp/sr-12169-4821.md"));
     assert.ok(!isUniqueBodyFileName("/tmp/12169/f1.md"));
@@ -282,5 +322,15 @@ describe("#12746: nome único e frescor do --body-file", () => {
     assert.match(warn.systemMessage, /#12746/);
     rmSync(dir, { recursive: true, force: true });
     assert.equal(runHook("gh issue comment 1 --body-file - <<'EOF'\nok\nEOF").stdout, "");
+  });
+  it("processo do hook: segredo no corpo é recusado pelo #8827 mesmo com --body-file genérico no mesmo comando", () => {
+    const out = JSON.parse(runHook(`gh issue comment 1 --body "${OR_KEY}" && gh issue comment 2 --body-file /tmp/body.md`).stdout);
+    assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+    assert.match(out.hookSpecificOutput.permissionDecisionReason, /#8827/);
+  });
+  it("o tokenizer entra por import dinâmico em try: a checagem de segredos não depende dele", () => {
+    const src = readFileSync(".claude/hooks/block-gh-comment-secrets.mjs", "utf8");
+    assert.doesNotMatch(src, /^import[^\n]*protected-path-bash-write/m);
+    assert.match(src, /try \{\n\s*shellLib = await import\("\.\.\/\.\.\/scripts\/lib\/protected-path-bash-write\.mjs"\);/);
   });
 });

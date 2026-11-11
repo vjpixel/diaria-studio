@@ -34,8 +34,8 @@
 //   - `bash -c`/`sh -c`/`eval`/`bash <<EOF`: analisados como shell, recursivo;
 //   - #12812: `curl -o`/`-O`/`--output-dir`, `wget -O`/`-P`, `tar -x` com `-C`
 //     (ou cwd) protegido e `tar -c` com `-f` protegido, `unzip -d`, `git apply
-//     --directory` e `git apply`/`patch` cujo patch (stdin, arquivo fora do
-//     projeto, `cat x.patch |`) altera caminho protegido, `git rm`/`git mv`,
+//     --directory` e `git apply`/`patch` cujo patch (stdin, arquivo em qualquer
+//     local, `cat x.patch |`) altera caminho protegido, `git rm`/`git mv`,
 //     `git archive -o`, formatadores no lugar (`prettier --write`, `eslint
 //     --fix`, `biome --write`...), editores (`vim -es`, `ed`, `sponge`...),
 //     `docker cp`, `split`, `sh script.sh <alvo>`/`./x.sh <alvo>`, script de
@@ -44,14 +44,34 @@
 //     qualquer comando (`-o`, `--out`, `--output`, `--outfile`, `--outdir`...,
 //     como em `npx tsx scripts/gen.ts --out .claude/hooks/x`).
 //
+// Argumento protegido para um script, por tipo (#12812):
+//   - script de SHELL (`sh x.sh <alvo>`, `./x.sh <alvo>`): bloqueia em
+//     qualquer local, inclusive versionado no repo (o que ele faz com `$1` é
+//     opaco);
+//   - script de INTERPRETADOR fora do projeto: bloqueia se o código usa API
+//     de escrita ou não pôde ser lido;
+//   - script de interpretador DO REPO com argumento posicional (`npx tsx
+//     scripts/x.ts .claude/...`): passa (limite abaixo);
+//   - flag de saída (`--out`, `--output`, `-o` fora de `grep`/`find`/`ssh`/
+//     shells...) com valor protegido: bloqueia em qualquer comando, do repo ou
+//     não.
+//
+// Patch (`git apply`/`git am`/`patch`): o arquivo é lido esteja onde estiver;
+// patch ilegível (criado no mesmo comando, `git diff | git apply`) bloqueia só
+// quando o texto do comando cita caminho protegido.
+//
+// Erro ao analisar um comando não libera os seguintes; o que crashou bloqueia
+// se citar caminho protegido.
+//
 // LIMITES CONHECIDOS (aceitos): caminho montado em variável opaca
-// (`f=.claude/x; echo > "$f"` passa — `$f` não é resolvido), script do próprio
-// repo com argumento posicional (`npx tsx scripts/x.ts .claude/...`, de
-// propósito: os scripts versionados passam por review), `git checkout/restore
-// -- .claude/...` (traz conteúdo já versionado, como merge/rebase; 24 usos
-// legítimos medidos no #12812), formatador sobre diretório ancestral (`prettier
-// --write .` na raiz), e interpretador que monta o caminho em partes não
-// reconhecidas.
+// (`f=.claude/x; echo > "$f"` passa — `$f` não é resolvido), script de
+// interpretador do próprio repo com argumento posicional (`npx tsx
+// scripts/x.ts .claude/...`, de propósito: os scripts versionados passam por
+// review), `git checkout/restore -- .claude/...` (traz conteúdo já versionado,
+// como merge/rebase; 24 usos legítimos medidos no #12812), formatador sobre
+// diretório ancestral (`prettier --write .` na raiz), patch ilegível cujo
+// comando não cita caminho protegido (`gh pr diff N | git apply`), e
+// interpretador que monta o caminho em partes não reconhecidas.
 
 /**
  * Entradas protegidas logo abaixo de um segmento `.claude/`. É a lista única
@@ -418,13 +438,17 @@ function operands(args, valueFlags = new Set()) {
 }
 
 /** `cp`/`install`/`ln`/`rsync`: o destino (`-t DIR` ou o último operando). */
-const COPY_VALUE_FLAGS = {
+// Tabelas indexadas pelo NOME do comando são `Map`: um objeto comum herda
+// `valueOf`/`hasOwnProperty`/`__proto__`/`constructor` de `Object.prototype`,
+// e um comando com esse nome (`valueOf; echo x > <protegido>`) lançava dentro
+// do laço e o hook falhava aberto (review da PR #12846).
+const COPY_VALUE_FLAGS = new Map(Object.entries({
   cp: ["-S", "--suffix"],
   install: ["-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group"],
   ln: ["-S", "--suffix"],
   rsync: ["-e", "--rsh", "--exclude", "--include", "-f", "--filter", "--exclude-from", "--include-from", "-B", "--block-size"],
   scp: ["-P", "-i", "-o", "-F", "-c", "-l", "-J", "-S"],
-};
+}));
 
 function copyDestination(head, args) {
   for (let i = 0; i < args.length; i++) {
@@ -433,7 +457,7 @@ function copyDestination(head, args) {
     if (a.startsWith("--target-directory=")) return a.slice("--target-directory=".length);
     if (/^-t.+/.test(a)) return a.slice(2);
   }
-  const ops = operands(args, new Set(COPY_VALUE_FLAGS[head] ?? []));
+  const ops = operands(args, new Set(COPY_VALUE_FLAGS.get(head) ?? []));
   return ops.length >= 2 ? ops[ops.length - 1] : null;
 }
 
@@ -667,6 +691,9 @@ const OUTPUT_FLAGS_LONG = [
 /** Arquivos que o `curl` grava, além do `-o`. */
 const CURL_WRITE_LONG = ["--output", "--dump-header", "--cookie-jar", "--trace", "--trace-ascii", "--stderr", "--libcurl", "--etag-save", "--output-dir"];
 
+/** Letras curtas do `tar` (GNU) que recebem valor. */
+const TAR_VALUE_LETTERS = new Set(["f", "C", "b", "K", "N", "T", "X", "g", "L", "V", "H", "F", "I"]);
+
 /** Modo e alvos de um `tar` (formato antigo `tar xzf a.tgz`, agrupado e longo). */
 function tarWrite(args, cwd) {
   const prot = (p) => p != null && isProtectedPath(p, cwd);
@@ -689,10 +716,9 @@ function tarWrite(args, cwd) {
     if (letters.includes("O")) toStdout = true;
     let next = 1;
     for (const l of letters) {
-      if (l === "f" || l === "C") {
-        const v = args[next++];
-        if (v != null) (l === "f" ? fileArgs : dirs).push(v);
-      }
+      if (!TAR_VALUE_LETTERS.has(l)) continue;
+      const v = args[next++];
+      if (v != null && (l === "f" || l === "C")) (l === "f" ? fileArgs : dirs).push(v);
     }
     i = next;
   }
@@ -711,16 +737,18 @@ function tarWrite(args, cwd) {
       continue;
     }
     if (a.startsWith("-") && a.length > 1) {
+      // Só as letras ANTES da 1ª que recebe valor são modo/flag: em
+      // `-C<dir>` colado o resto é o diretório, e as letras dele (o `c` de
+      // `.claude`) não podem virar "create" (review da PR #12846).
       const letters = a.slice(1);
-      mode = modeOf(letters) ?? mode;
-      if (letters.includes("O")) toStdout = true;
-      for (let k = 0; k < letters.length; k++) {
-        const l = letters[k];
-        if (l !== "f" && l !== "C") continue;
-        const rest = letters.slice(k + 1);
-        const v = rest || args[++i];
-        if (v != null) (l === "f" ? fileArgs : dirs).push(v);
-        break;
+      const vi = [...letters].findIndex((l) => TAR_VALUE_LETTERS.has(l));
+      const flags = vi === -1 ? letters : letters.slice(0, vi);
+      mode = modeOf(flags) ?? mode;
+      if (flags.includes("O")) toStdout = true;
+      if (vi !== -1) {
+        const l = letters[vi];
+        const v = letters.slice(vi + 1) || args[++i];
+        if (v != null && (l === "f" || l === "C")) (l === "f" ? fileArgs : dirs).push(v);
       }
       continue;
     }
@@ -799,7 +827,7 @@ function gitWrite(args, cwd) {
   // de resolver conflito (`--theirs`). Medido no #12812: 24 usos legítimos
   // nos transcripts, nenhum contorno.
   if (sub === "rm") {
-    if (rest.includes("--cached")) return null;
+    if (hasFlag(rest, "--cached", "-n", "--dry-run")) return null;
     const p = first(operands(rest, new Set(["--pathspec-from-file"])));
     return p ? { kind: "git rm", path: p } : null;
   }
@@ -814,22 +842,25 @@ function gitWrite(args, cwd) {
   return null;
 }
 
-const FORMATTER_WRITE = {
+const FORMATTER_WRITE = new Map(Object.entries({
   prettier: (args) => hasFlag(args, "--write", "-w"),
   eslint: (args) => hasFlag(args, "--fix"),
   biome: (args) => hasFlag(args, "--write", "--apply", "--apply-unsafe", "--fix", "--unsafe"),
   stylelint: (args) => hasFlag(args, "--fix"),
-  black: () => true,
-  ruff: (args) => args[0] === "format" || hasFlag(args, "--fix"),
+  black: (args) => !hasFlag(args, "--check", "--diff"),
+  ruff: (args) => (args[0] === "format" && !hasFlag(args, "--check", "--diff")) || hasFlag(args, "--fix"),
   gofmt: (args) => hasFlag(args, "-w"),
-  rustfmt: () => true,
+  rustfmt: (args) => !hasFlag(args, "--check"),
   "clang-format": (args) => hasFlag(args, "-i"),
-};
+}));
+
+/** O comando é um formatador que vai reescrever os arquivos no lugar? */
+const formatterWrites = (head, args) => FORMATTER_WRITE.get(head)?.(args) === true;
 
 const EDITORS = new Set(["vim", "vi", "nvim", "ex", "ed", "emacs", "nano", "sponge"]);
 
-/** Comandos em que `-o` não é arquivo de saída (medido no #12812: `grep -o`). */
-const DASH_O_NOT_OUTPUT = new Set(["grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "ls", "ps", "ssh", "scp", "sftp", "mount", "set", "shopt", "od", "xxd", "pgrep", "pkill", "tput", "stat"]);
+/** Comandos em que `-o` não é arquivo de saída (medido no #12812: `grep -o`; `bash -o pipefail`). */
+const DASH_O_NOT_OUTPUT = new Set(["bash", "sh", "zsh", "dash", "ksh", "grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "ls", "ps", "ssh", "scp", "sftp", "mount", "set", "shopt", "od", "xxd", "pgrep", "pkill", "tput", "stat"]);
 
 /** Escritores de ferramenta (#12812); `null` quando nada protegido é alvo. */
 function toolWrite(head, args, cwd) {
@@ -852,7 +883,8 @@ function toolWrite(head, args, cwd) {
   }
   if (head === "tar" || head === "bsdtar" || head === "gtar") return tarWrite(args, cwd);
   if (head === "unzip") {
-    if (hasFlag(args, "-l", "-p", "-t", "-v", "-Z", "-z")) return null;
+    // Modo só-leitura, também agrupado (`-ql`, `-tq`).
+    if (args.some((a) => /^-[A-Za-z]+$/.test(a) && /[lptvZz]/.test(a.slice(1)))) return null;
     const d = optionValues(args, { short: ["-d"] });
     const p = first(d);
     if (p) return { kind: "unzip -d", path: p };
@@ -861,6 +893,7 @@ function toolWrite(head, args, cwd) {
   }
   if (head === "git") return gitWrite(args, cwd);
   if (head === "patch") {
+    if (hasFlag(args, "--dry-run", "--check")) return null;
     const o = first(optionValues(args, { short: ["-o", "-d", "-r", "-B"], long: ["--output", "--directory", "--reject-file", "--prefix"] }));
     if (o) return { kind: "patch -o/-d", path: o };
     const ops = operands(args, new Set(["-p", "-i", "--input", "-o", "--output", "-d", "--directory", "-r", "-B", "-F", "-z", "-V", "-D"]));
@@ -869,8 +902,7 @@ function toolWrite(head, args, cwd) {
     if (isProtectedPath(".", cwd)) return { kind: "patch (cwd)", path: cwd };
     return { patchFiles: optionValues(args, { short: ["-i"], long: ["--input"] }), dir: cwd };
   }
-  const fmt = FORMATTER_WRITE[head];
-  if (fmt && fmt(args)) {
+  if (formatterWrites(head, args)) {
     const p = first(operands(args));
     if (p) return { kind: `${head} (formatação no lugar)`, path: p };
   }
@@ -905,8 +937,8 @@ function isWriterInvocation(words) {
   if (head === "sed" || head === "gsed") return args.some((a) => /^-[a-zA-Z]*i/.test(a) || a.startsWith("--in-place"));
   if (head === "perl") return args.some((a) => /^-[a-zA-Z]*i/.test(a));
   if (SHELLS.has(head) || interpreterKind(head)) return true;
-  // #12812: formatadores no lugar, editores, `git checkout/restore/rm/mv`.
-  if (FORMATTER_WRITE[head]?.(args) || EDITORS.has(head)) return true;
+  // #12812: formatadores no lugar, editores, `git rm/mv`.
+  if (formatterWrites(head, args) || EDITORS.has(head)) return true;
   if (head === "git" && ["rm", "mv"].includes(gitInvocation(args, "").sub)) return true;
   if (head === "npx" || head === "pnpx") {
     let k = 0;
@@ -941,6 +973,21 @@ function xargsCommand(args) {
   let i = 0;
   while (i < args.length && args[i].startsWith("-")) i += valueFlags.has(args[i]) ? 2 : 1;
   return args.slice(i);
+}
+
+/**
+ * Palavras de um comando simples a partir do comando de fato executado:
+ * pula atribuições, palavras-chave e wrappers (`env`, `command`, `exec`,
+ * `timeout N`, `nice`, `sudo`...) e desce no `xargs`. `[]` quando não há
+ * comando. Usado pelo hook de `--body-file` (#12746).
+ */
+export function resolveCommandWords(words, depth = 0) {
+  if (!Array.isArray(words) || depth > 4) return [];
+  const hi = headIndex(words);
+  if (hi === -1) return [];
+  const w = words.slice(hi);
+  if (basename(w[0]) === "xargs") return resolveCommandWords(xargsCommand(w.slice(1)), depth + 1);
+  return w;
 }
 
 // ---------------------------------------------------------------------------
@@ -990,6 +1037,9 @@ export function codeWritesProtectedPath(code, cwd = "") {
   if (!cites) return false;
   return WRITE_API_RES.some((re) => re.test(code));
 }
+
+/** `finding.source` dos achados em código de interpretador (`isInterpreterCodeFinding`). */
+const INTERPRETER_CODE_SOURCE = "interpreter-code";
 
 /** Fontes de código de uma chamada de interpretador: inline, stdin e script. */
 function interpreterCode(kind, args, stdin) {
@@ -1054,132 +1104,193 @@ export function findProtectedPathWrite(command, opts = {}, depth = 0) {
   const projectDirs = (opts.projectDirs ?? []).filter(Boolean);
   const cmds = tokenizeShell(command);
   for (const cmd of cmds) {
-    // 1. Redirecionamento de escrita, em qualquer comando.
-    for (const r of cmd.redirects) {
-      if (!WRITE_REDIRECTS.has(r.op)) continue;
-      if (r.op === ">&" && /^(\d+|-)$/.test(r.target)) continue;
-      if (isProtectedPath(r.target, cwd)) return { kind: `redirect ${r.op}`, path: r.target };
-    }
-    const hi = headIndex(cmd.words);
-    if (hi === -1) continue;
-    let head = basename(cmd.words[hi]);
-    let args = cmd.words.slice(hi + 1);
-    // `npx [--yes] tsx -e ...`
-    if (head === "npx" || head === "pnpx") {
-      let k = 0;
-      while (k < args.length && args[k].startsWith("-")) k += args[k] === "-p" || args[k] === "--package" ? 2 : 1;
-      if (k >= args.length) continue;
-      head = basename(args[k]);
-      args = args.slice(k + 1);
-    }
-    if (head === "cd" || head === "pushd") {
-      const target = args.find((a) => !a.startsWith("-"));
-      if (target && target !== "-") cwd = isAnchored(toPosix(target)) || !cwd ? target : `${toPosix(cwd)}/${target}`;
-      continue;
-    }
-    // 2. Escritores de shell e de ferramenta.
-    const s = structuralWrite(head, args, cwd);
-    if (s && s.patchFiles) {
-      // `git apply`/`patch`: o alvo está no próprio patch (stdin, arquivo fora
-      // do projeto ou `cat x.patch |` no mesmo pipeline).
-      const texts = [...cmd.stdin];
-      const files = [...s.patchFiles];
-      // `patch -p1 < /tmp/x.diff`: o patch chega por redirecionamento de entrada.
-      if (!files.length) files.push(...cmd.redirects.filter((r) => r.op === "<").map((r) => r.target));
-      if (!files.length) {
-        for (const c of cmds) {
-          if (c === cmd || c.pipeline !== cmd.pipeline) continue;
-          const ci = headIndex(c.words);
-          if (ci !== -1 && basename(c.words[ci]) === "cat") files.push(...operands(c.words.slice(ci + 1)));
-        }
-      }
-      for (const f of files) {
-        const text = readOutsideScript(f, cwd, projectDirs, opts.readFile);
-        if (text) texts.push(text);
-      }
-      for (const t of texts) {
-        const p = patchTargets(t).find((x) => isProtectedPath(x, s.dir));
-        if (p) return { kind: `${head} (patch)`, path: p };
-      }
-    } else if (s) return s;
-    if (head === "find") {
-      const f = findWrite(args, cwd);
-      if (f) return f;
-    }
-    if (head === "xargs") {
-      const sub = xargsCommand(args);
-      if (isWriterInvocation(sub)) {
-        const sibling = cmds.find((c) => c.pipeline === cmd.pipeline && c !== cmd && c.words.some((w) => isProtectedPath(w, cwd)));
-        const own = sub.slice(1).find((w) => isProtectedPath(w, cwd));
-        if (sibling || own) return { kind: "xargs", path: own ?? sibling.words.find((w) => isProtectedPath(w, cwd)) };
-      }
-      // `xargs bash -c '...'`, `xargs sed -i ... .claude/x`
-      const inner = findProtectedPathWrite(sub.map(shellQuote).join(" "), { ...opts, cwd }, depth + 1);
-      if (inner) return inner;
-      continue;
-    }
-    // `./fix.sh <alvo>`: script de shell executado direto, mesmo critério do
-    // `sh script.sh <alvo>` abaixo (#12812).
-    if (/\.(?:sh|bash|zsh)$/.test(head)) {
-      const protArg = args.find((a) => isProtectedPath(a, cwd));
-      if (protArg) return { kind: `${head} (argumento)`, path: protArg };
-    }
-    // 3. Shell aninhado.
-    if (SHELLS.has(head) || head === "eval") {
-      const scripts = [];
-      if (head === "eval") scripts.push(args.join(" "));
-      else {
-        const ci = args.findIndex((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a));
-        if (ci !== -1 && args[ci + 1] != null) scripts.push(args[ci + 1]);
-        else {
-          scripts.push(...cmd.stdin);
-          const shOps = operands(args, new Set(["-o", "+o", "-O", "+O"]));
-          const file = shOps[0];
-          // #12812: `sh script.sh <alvo>` — o script recebe o caminho
-          // protegido como argumento; o que ele faz com `$1` é opaco, então o
-          // argumento protegido basta, esteja o script onde estiver.
-          const protArg = shOps.slice(1).find((a) => isProtectedPath(a, cwd));
-          if (file && protArg) return { kind: `${head} script (argumento)`, path: protArg };
-          const text = file ? readOutsideScript(file, cwd, projectDirs, opts.readFile) : null;
-          if (text) scripts.push(text);
-        }
-      }
-      for (const sc of scripts) {
-        const inner = findProtectedPathWrite(sc, { ...opts, cwd }, depth + 1);
-        if (inner) return inner;
-      }
-      continue;
-    }
-    // 4. Interpretador com código.
-    const kind = interpreterKind(head);
-    if (kind) {
-      const { inline, stdin, scriptFile } = interpreterCode(kind, args, cmd.stdin);
-      const sources = [...inline, ...stdin];
-      // #12812: script FORA do projeto (`/tmp/fix.py .claude/skills/x`) com
-      // caminho protegido como argumento: o caminho chega por `sys.argv`, e o
-      // código não o cita. Bloqueia quando o código usa API de escrita (ou não
-      // pôde ser lido); script que só lê o argumento passa. Script versionado
-      // do repo segue opaco (passa por review), como o código dele.
-      if (scriptFile && scriptFile !== "-" && !insideProject(scriptFile, cwd, projectDirs)) {
-        const after = args.slice(args.indexOf(scriptFile) + 1);
-        const protArg = after.find((a) => isProtectedPath(a, cwd) || (a.includes("=") && isProtectedPath(a.slice(a.indexOf("=") + 1), cwd)));
-        if (protArg) {
-          const text = readOutsideScript(scriptFile, cwd, projectDirs, opts.readFile);
-          if (text == null || WRITE_API_RES.some((re) => re.test(text))) {
-            return { kind: `${head} script fora do projeto (argumento)`, path: protArg };
-          }
-        }
-      }
-      if (scriptFile && scriptFile !== "-") {
-        const text = readOutsideScript(scriptFile, cwd, projectDirs, opts.readFile);
-        if (text) sources.push(text);
-      }
-      if (sources.some((code) => codeWritesProtectedPath(code, cwd))) {
-        return { kind: `${head} (código)`, path: protectedRefIn(sources) ?? cwd };
+    // Erro na análise de UM comando não pula os seguintes (review da PR
+    // #12846: `valueOf; echo x > <protegido>` lançava no 1º e o hook liberava
+    // tudo). O comando que crashou fica fail-closed quando cita caminho
+    // protegido (ou roda com cwd protegido); sem isso, um bug do parser
+    // travaria Bash legítimo que nem chega perto de `.claude/`.
+    try {
+      const r = analyzeCommand(cmd, cmds, command, cwd, projectDirs, opts, depth);
+      if (r.finding) return r.finding;
+      if (r.cwd !== undefined) cwd = r.cwd;
+    } catch (err) {
+      const words = [...cmd.words, ...cmd.redirects.map((x) => x.target)];
+      const ref = words.find((w) => isProtectedPath(w, cwd)) ?? protectedRefIn([...words, ...cmd.stdin]) ?? (isProtectedPath(".", cwd) ? cwd : null);
+      if (ref) {
+        return { kind: `erro na análise do comando, bloqueado por precaução (${err?.message ?? err})`, path: ref };
       }
     }
   }
   return null;
+}
+
+/**
+ * Analisa um comando simples. Devolve `{ finding }` quando acha escrita em
+ * caminho protegido, `{ cwd }` quando o comando muda o diretório (`cd`), ou
+ * `{}`.
+ */
+function analyzeCommand(cmd, cmds, command, cwd, projectDirs, opts, depth) {
+  const found = (finding) => ({ finding });
+  // 1. Redirecionamento de escrita, em qualquer comando.
+  for (const r of cmd.redirects) {
+    if (!WRITE_REDIRECTS.has(r.op)) continue;
+    if (r.op === ">&" && /^(\d+|-)$/.test(r.target)) continue;
+    if (isProtectedPath(r.target, cwd)) return found({ kind: `redirect ${r.op}`, path: r.target });
+  }
+  const hi = headIndex(cmd.words);
+  if (hi === -1) return {};
+  let head = basename(cmd.words[hi]);
+  let args = cmd.words.slice(hi + 1);
+  // `npx [--yes] tsx -e ...`
+  if (head === "npx" || head === "pnpx") {
+    let k = 0;
+    while (k < args.length && args[k].startsWith("-")) k += args[k] === "-p" || args[k] === "--package" ? 2 : 1;
+    if (k >= args.length) return {};
+    head = basename(args[k]);
+    args = args.slice(k + 1);
+  }
+  if (head === "cd" || head === "pushd") {
+    const target = args.find((a) => !a.startsWith("-"));
+    if (target && target !== "-") return { cwd: isAnchored(toPosix(target)) || !cwd ? target : `${toPosix(cwd)}/${target}` };
+    return {};
+  }
+  // 2. Escritores de shell e de ferramenta.
+  const s = structuralWrite(head, args, cwd);
+  if (s && s.patchFiles) {
+    const p = patchWrite(head, s, cmd, cmds, command, cwd, opts);
+    if (p) return found(p);
+  } else if (s) return found(s);
+  if (head === "find") {
+    const f = findWrite(args, cwd);
+    if (f) return found(f);
+  }
+  if (head === "xargs") {
+    const sub = xargsCommand(args);
+    if (isWriterInvocation(sub)) {
+      const sibling = cmds.find((c) => c.pipeline === cmd.pipeline && c !== cmd && c.words.some((w) => isProtectedPath(w, cwd)));
+      const own = sub.slice(1).find((w) => isProtectedPath(w, cwd));
+      if (sibling || own) return found({ kind: "xargs", path: own ?? sibling.words.find((w) => isProtectedPath(w, cwd)) });
+    }
+    // `xargs bash -c '...'`, `xargs sed -i ... <protegido>`
+    const inner = findProtectedPathWrite(sub.map(shellQuote).join(" "), { ...opts, cwd }, depth + 1);
+    return inner ? found(inner) : {};
+  }
+  // `./fix.sh <alvo>`: script de shell executado direto, mesmo critério do
+  // `sh script.sh <alvo>` abaixo (#12812).
+  if (/\.(?:sh|bash|zsh)$/.test(head)) {
+    const protArg = args.find((a) => isProtectedPath(a, cwd));
+    if (protArg) return found({ kind: `${head} (argumento)`, path: protArg });
+  }
+  // 3. Shell aninhado.
+  if (SHELLS.has(head) || head === "eval") {
+    const scripts = [];
+    if (head === "eval") scripts.push(args.join(" "));
+    else {
+      const ci = args.findIndex((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a));
+      if (ci !== -1 && args[ci + 1] != null) scripts.push(args[ci + 1]);
+      else {
+        scripts.push(...cmd.stdin);
+        const shOps = operands(args, new Set(["-o", "+o", "-O", "+O"]));
+        const file = shOps[0];
+        // #12812: `sh script.sh <alvo>` — o script recebe o caminho
+        // protegido como argumento; o que ele faz com `$1` é opaco, então o
+        // argumento protegido basta, esteja o script onde estiver.
+        const protArg = shOps.slice(1).find((a) => isProtectedPath(a, cwd));
+        if (file && protArg) return found({ kind: `${head} script (argumento)`, path: protArg });
+        const text = file ? readOutsideScript(file, cwd, projectDirs, opts.readFile) : null;
+        if (text) scripts.push(text);
+      }
+    }
+    for (const sc of scripts) {
+      const inner = findProtectedPathWrite(sc, { ...opts, cwd }, depth + 1);
+      if (inner) return found(inner);
+    }
+    return {};
+  }
+  // 4. Interpretador com código.
+  const kind = interpreterKind(head);
+  if (kind) {
+    const { inline, stdin, scriptFile } = interpreterCode(kind, args, cmd.stdin);
+    const sources = [...inline, ...stdin];
+    // #12812: script FORA do projeto (`/tmp/fix.py <protegido>`) com
+    // caminho protegido como argumento: o caminho chega por `sys.argv`, e o
+    // código não o cita. Bloqueia quando o código usa API de escrita (ou não
+    // pôde ser lido); script que só lê o argumento passa. Script versionado
+    // do repo segue opaco (passa por review), como o código dele.
+    if (scriptFile && scriptFile !== "-" && !insideProject(scriptFile, cwd, projectDirs)) {
+      const after = args.slice(args.indexOf(scriptFile) + 1);
+      const protArg = after.find((a) => isProtectedPath(a, cwd) || (a.includes("=") && isProtectedPath(a.slice(a.indexOf("=") + 1), cwd)));
+      if (protArg) {
+        const text = readOutsideScript(scriptFile, cwd, projectDirs, opts.readFile);
+        if (text == null || WRITE_API_RES.some((re) => re.test(text))) {
+          return found({ kind: `${head} script fora do projeto (argumento)`, path: protArg });
+        }
+      }
+    }
+    if (scriptFile && scriptFile !== "-") {
+      const text = readOutsideScript(scriptFile, cwd, projectDirs, opts.readFile);
+      if (text) sources.push(text);
+    }
+    if (sources.some((code) => codeWritesProtectedPath(code, cwd))) {
+      return found({ kind: `${head} (código)`, path: protectedRefIn(sources) ?? cwd, source: INTERPRETER_CODE_SOURCE });
+    }
+  }
+  return {};
+}
+
+/**
+ * `git apply`/`git am`/`patch`: o alvo está no próprio patch — stdin
+ * (heredoc), arquivo (dentro ou fora do projeto: patch não é script
+ * versionado), `< x.patch` ou `cat x.patch |` no mesmo pipeline.
+ *
+ * Patch que não dá para ler (criado no mesmo comando, `git diff | git apply`,
+ * `$VAR`) bloqueia quando o texto do comando cita caminho protegido
+ * (`git diff -- <protegido> > p; git apply p`); sem citação, passa — bloquear
+ * todo patch ilegível pegaria `git diff A B | git apply` e `gh pr diff N |
+ * git apply`, usos de portar mudança entre worktrees (review da PR #12846).
+ */
+function patchWrite(head, s, cmd, cmds, command, cwd, opts) {
+  const texts = [...cmd.stdin];
+  const files = [...s.patchFiles];
+  let unreadable = false;
+  // `patch -p1 < /tmp/x.diff`: o patch chega por redirecionamento de entrada.
+  if (!files.length) files.push(...cmd.redirects.filter((r) => r.op === "<").map((r) => r.target));
+  if (!files.length && !texts.length) {
+    for (const c of cmds) {
+      if (c === cmd || c.pipeline !== cmd.pipeline) continue;
+      const ci = headIndex(c.words);
+      if (ci !== -1 && basename(c.words[ci]) === "cat") files.push(...operands(c.words.slice(ci + 1)));
+      else unreadable = true; // produtor que não é `cat` (`git diff |`)
+    }
+  }
+  for (const f of files) {
+    const text = readPatchFile(f, s.dir, opts.readFile);
+    if (text == null) unreadable = true;
+    else texts.push(text);
+  }
+  for (const t of texts) {
+    const p = patchTargets(t).find((x) => isProtectedPath(x, s.dir));
+    if (p) return { kind: `${head} (patch)`, path: p };
+  }
+  if (unreadable) {
+    const ref = protectedRefIn([command]) ?? cmds.flatMap((c) => c.words).find((w) => isProtectedPath(w, cwd));
+    if (ref) return { kind: `${head} (patch ilegível; o comando cita caminho protegido)`, path: ref };
+  }
+  return null;
+}
+
+/** Texto de um patch em arquivo, esteja onde estiver; `null` se ilegível. */
+function readPatchFile(file, dir, readFile) {
+  if (typeof readFile !== "function") return null;
+  const p = toPosix(file);
+  if (p.startsWith("$") || p === "-") return null;
+  const abs = isAnchored(p) || !dir ? p : `${toPosix(dir)}/${p}`;
+  try {
+    const text = readFile(abs);
+    return typeof text === "string" ? text : null;
+  } catch {
+    return null;
+  }
 }
 
 function shellQuote(w) {
@@ -1230,7 +1341,7 @@ export function shouldBlockProtectedPathWrite(payload, opts = {}) {
 
 /** O achado veio de código de interpretador (`node -e`, `python -c`, heredoc, script em /tmp)? */
 export function isInterpreterCodeFinding(finding) {
-  return typeof finding?.kind === "string" && finding.kind.endsWith("(código)");
+  return finding?.source === INTERPRETER_CODE_SOURCE;
 }
 
 /**
@@ -1243,7 +1354,7 @@ export const INTERPRETER_TEXT_WORKAROUND =
   "Se o alvo da escrita NÃO é um caminho protegido e o caminho só aparece como texto dentro do dado " +
   "(uma nota, o corpo de uma mensagem gravada em `plan.json`), o bloqueio dispara mesmo assim: o guard " +
   "lê o código inteiro e não separa alvo de texto (#12780, decisão de manter o guard). Contorno: grave o " +
-  "script num arquivo no scratchpad da sessão e rode-o (`node /scratchpad/x.cjs`), com o texto que cita o " +
+  "script num arquivo no scratchpad da sessão e rode-o (`node <scratchpad>/x.cjs`), com o texto que cita o " +
   "caminho num arquivo de dados à parte (escrito pelo Write) que o script lê; o guard também lê scripts " +
   "fora do projeto, então o caminho não pode estar no código do script. Para um JSON pequeno, o próprio " +
   "Write/Edit no arquivo-alvo dispensa o script.";
