@@ -604,6 +604,48 @@ export function planShortHorizontalLinks(destinations: readonly string[], horizo
 }
 
 /**
+ * Pure (#12786): a rodada `--publish` grava o `diar.ia.br/video` no KV? Só a
+ * rodada principal da edição (a do `/diaria-publica`). O corte avulso não tem
+ * horizontal, e as rodadas dos timers do 300 (`--linkedin-timer`,
+ * `--instagram-timer`, `--threads-timer`) publicam um destino só, várias vezes
+ * por dia: ler o KV em cada uma era trabalho repetido sem efeito, e um 05
+ * trocado à mão entre duas execuções faria um timer, e não a rodada da edição,
+ * mudar o link da bio.
+ */
+export function shouldUpdateLatestVideoOnPublish(input: { corte: boolean; writer: ShortsRegistryWriter }): boolean {
+  return !input.corte && input.writer === "main";
+}
+
+/**
+ * Pure (#12786): aviso quando um destino que leva o link do horizontal na
+ * legenda vai sair (ou ser agendado) sem ele, porque o `05-video-url.txt`
+ * ainda não existe. `null` = nada a avisar (todos com link, edição sem vídeo,
+ * ou nenhum desses destinos sai nesta rodada). O texto diz como corrigir os
+ * agendados depois do horizontal: o `--update-scheduled` reescreve a legenda
+ * do Facebook e do X com o link (`planScheduledUpdates`).
+ */
+export function missingHorizontalLinkWarning(
+  aammdd: string,
+  horizontalLinks: Record<string, ShortHorizontalLinkPlan> | undefined,
+  items: readonly ShortsPlanItem[],
+  noVideo: boolean,
+): string | null {
+  if (!horizontalLinks || noVideo) return null;
+  const outgoing = new Set(["publish", "pending_schedule", "enqueue", "buffer"]);
+  const missing = items
+    .filter((i) => outgoing.has(i.action))
+    .map((i) => i.destination)
+    .filter((d) => horizontalLinks[d]?.route === "caption" && !horizontalLinks[d]?.link);
+  if (!missing.length) return null;
+  return (
+    `${missing.join(", ")} sai(em) sem o link do horizontal na legenda: ${D1_VIDEO_URL_FILE} ainda não existe (#12786). ` +
+    `O caminho normal é publicar o horizontal antes. Se já agendou, depois do horizontal rode ` +
+    `publish-shorts.ts ${aammdd} --update-scheduled --publish --confirm-publish ${aammdd} (troca a legenda do Facebook e do X agendados); ` +
+    `o que já foi ao ar fica sem o link.`
+  );
+}
+
+/**
  * #11550: o dono automático de um destino.
  *   - `timer-300`: uma task do 300 publica (`task`), sem ação da skill;
  *   - `agent-scheduled-task`: a skill cria uma task agendada one-shot que roda
@@ -1658,6 +1700,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     // Prefixo próprio: premissas que começam com `{destino}:` são as de horário (testes do #10772/#10907 as distinguem assim).
     for (const [id, h] of Object.entries(horizontalLinks)) premises.push(`caminho até o horizontal (${id}): ${h.route}${h.link ? ` ${h.link}` : ""} — ${h.note} (#12735)`);
   }
+  // #12786: destino com link na legenda saindo antes do horizontal fica sem o link.
+  const noHorizontalLink = missingHorizontalLinkWarning(input.aammdd, horizontalLinks, items, input.horizontalVideo?.noVideo ?? false);
+  if (noHorizontalLink) warnings.push(noHorizontalLink);
   return {
     aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, destinationTimes, slots, items, owners,
     ...(horizontalLinks ? { horizontalLinks } : {}),
@@ -4937,9 +4982,10 @@ async function main(): Promise<number> {
     console.error(`publish-shorts: vídeo curto ausente em ${videoPath}`);
     return 1;
   }
-  if (!corte) {
+  if (shouldUpdateLatestVideoOnPublish({ corte: !!corte, writer })) {
     // #12735: o link fixo da bio (diar.ia.br/video) passa a apontar para o horizontal desta edição.
     // Fail-soft: o vertical sai mesmo sem o KV; a gravação só avança (edição anterior não sobrescreve).
+    // #12786: só a rodada principal; as dos timers do 300 não leem nem gravam o KV.
     try {
       const kvEnv = pollKvFromEnv();
       if (!kvEnv.kv) console.error(`[aviso] diar.ia.br/video não atualizado: ${kvEnv.reason} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);

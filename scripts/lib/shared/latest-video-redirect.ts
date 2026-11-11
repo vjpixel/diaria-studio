@@ -31,6 +31,8 @@
  * das redes que aceitam link leva o horizontal DA edição, sem esse problema.
  */
 
+import { LATEST_VIDEO_BIO_UTM, LATEST_VIDEO_BIO_UTM_SOURCES } from "./utm-registry.ts";
+
 /** Caminho do redirect no apex. */
 export const LATEST_VIDEO_PATH = "/video";
 
@@ -40,12 +42,16 @@ export const LATEST_VIDEO_KV_KEY = "video:latest-horizontal";
 /** Destino quando não há registro válido: a aba de vídeos (horizontais) do canal. */
 export const LATEST_VIDEO_FALLBACK_URL = "https://www.youtube.com/@diariabr/videos";
 
-/** `utm_medium`/`utm_campaign` dos links da bio. */
-export const LATEST_VIDEO_BIO_UTM_MEDIUM = "bio";
-export const LATEST_VIDEO_BIO_UTM_CAMPAIGN = "video-horizontal";
+/**
+ * `utm_medium`/`utm_campaign` dos links da bio. Os valores moram no registry
+ * de UTMs (`LATEST_VIDEO_BIO_UTM`, entradas `*-bio-video-horizontal-12735` de
+ * `UTM_EMITTERS`, #12786); aqui só são reexportados.
+ */
+export const LATEST_VIDEO_BIO_UTM_MEDIUM = LATEST_VIDEO_BIO_UTM.medium;
+export const LATEST_VIDEO_BIO_UTM_CAMPAIGN = LATEST_VIDEO_BIO_UTM.campaign;
 
 /** Redes cujo caminho até o horizontal é o link da bio (sem link clicável na legenda do vertical). */
-export const LATEST_VIDEO_BIO_NETWORKS = ["tiktok", "instagram", "threads"] as const;
+export const LATEST_VIDEO_BIO_NETWORKS = LATEST_VIDEO_BIO_UTM_SOURCES;
 export type LatestVideoBioNetwork = (typeof LATEST_VIDEO_BIO_NETWORKS)[number];
 
 /** Link da bio de uma rede: `https://diar.ia.br/video?utm_source={rede}&utm_medium=bio&utm_campaign=video-horizontal`. */
