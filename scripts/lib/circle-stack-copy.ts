@@ -138,7 +138,7 @@ export interface StackWriterInput {
 }
 
 /** Pure: a seleção tem vídeo da semana utilizável (o render só mostra com url e título). */
-export function hasStackVideo(sel: CircleStackSelection): boolean {
+export function hasStackVideo<S extends CircleStackSelection>(sel: S): sel is S & { video: NonNullable<S["video"]> } {
   return !!sel.video && !!sel.video.url?.trim() && !!sel.video.title?.trim();
 }
 
@@ -149,7 +149,7 @@ export function hasStackVideo(sel: CircleStackSelection): boolean {
  */
 export function videoDestaqueFromSelection(sel: CircleStackSelection): StackVideoDestaque | null {
   if (!hasStackVideo(sel)) return null;
-  const date = (sel.video as NonNullable<CircleStackSelection["video"]>).editionDate;
+  const date = sel.video.editionDate;
   for (const section of ["destaques", ...STACK_COPY_LIST_SECTIONS] as const) {
     const it = sel[section].find((i) => i.editionDate === date && i.destaqueN === 1);
     if (it) return { editionDate: it.editionDate, url: it.url, title: it.titleOriginal ?? it.title, body: it.body, why: it.why };
@@ -197,7 +197,7 @@ export function buildStackWriterInput(
     destaques: sel.destaques.map((d) => ({ url: d.url, title: d.title, body: d.body, why: d.why, tool: stackCourseTool(d.url) })),
     items,
     video:
-      sel.video && hasStackVideo(sel) && videoDestaque
+      hasStackVideo(sel) && videoDestaque
         ? {
             title: sel.video.title.trim(),
             url: sel.video.url.trim(),
@@ -214,30 +214,48 @@ export function buildStackWriterInput(
  * ver", "Quem tem fluxo apoiado nele precisa migrar", "Vale testar"). O
  * editor tirou esse tom do post; o texto diz o que mudou, não o que o leitor
  * deve fazer.
+ *
+ * O padrão com "quem" exige verbo de conselho seguido de INFINITIVO
+ * ("deveria ver", "precisa migrar"): "deve", "devem" e "vale" soltos ficam de
+ * fora porque aparecem em frase factual ("quem acompanha o setor, deve lançar
+ * em março"; "para quem usa o Cursor, o limite vale para todos os planos"), e
+ * "precisa de" também ("quem usa IA precisa de 30% menos tempo"). "Vale" só
+ * conta como conselho em "vale (a pena) ver/testar/…" (3º padrão).
  */
 const READER_ADVICE_PATTERNS: readonly RegExp[] = [
-  /\bquem\s+[^.!?]{1,80}?\b(deveria|deveriam|deve|devem|precisa|precisam|vale)\b/i,
+  /\bquem\s+[^.!?]{1,80}?\b(deveria|deveriam|precisa|precisam)\s+(?!de\b)[a-zà-ú]+(ar|er|ir|or)\b/i,
   /\b(você|vocês)\s+(deveria|deveriam|deve|devem|precisa|precisam)\b/i,
   /\b(vale|valeria)\s+(a\s+pena\s+)?(ver|ler|reler|conferir|testar|acompanhar|olhar|experimentar|assistir)\b/i,
   /\bdeveria(m)?\s+(ver|ler|conferir|testar|acompanhar|olhar|experimentar|assistir)\b/i,
 ];
 
-/** Pure: o texto aconselha o leitor (deveria/vale/precisa)? */
+/**
+ * Pure: o texto aconselha o leitor? Casa "quem … deveria/precisa + infinitivo",
+ * "você(s) deveria/deve/precisa", "vale (a pena) ver/testar/…" e
+ * "deveria(m) ver/testar/…". Frase factual com "deve", "vale" ou "precisa de"
+ * passa (ver `READER_ADVICE_PATTERNS`).
+ */
 export function hasReaderAdvice(text: string): boolean {
   return READER_ADVICE_PATTERNS.some((re) => re.test(text));
 }
 
+const NUMBER_TOKEN_RE = /\d+(?:[.,]\d+)*/g;
+/** "1,5" e "1.5" viram a mesma chave; o resto do número fica como escrito. */
+const normalizeNumberToken = (tok: string): string => tok.replace(/,/g, ".");
+
 /**
- * Pure: números do texto que não aparecem em nenhuma das fontes (#12549 item
- * 6: a descrição do vídeo só leva fatos do destaque). Compara o número como
- * escrito e com o separador decimal trocado ("1,5" casa "1.5").
+ * Pure: números do texto que não estão entre os números das fontes (#12549
+ * item 6: a descrição do vídeo só leva fatos do destaque). Compara número
+ * inteiro com número inteiro, por conjunto, nunca por substring: "2" não passa
+ * com "20 milhões" na fonte, nem "3" com "2023". Separador decimal é
+ * normalizado ("1,5" casa "1.5"); grafia diferente do mesmo valor ("2
+ * milhões" contra "2.000.000") é recusada, e o editor ajusta à mão.
  */
 export function unsourcedNumbers(text: string, sources: readonly string[]): string[] {
-  const src = sources.join("\n");
+  const known = new Set((sources.join("\n").match(NUMBER_TOKEN_RE) ?? []).map(normalizeNumberToken));
   const out: string[] = [];
-  for (const tok of text.match(/\d+(?:[.,]\d+)*/g) ?? []) {
-    const swapped = tok.replace(/[.,]/g, (c) => (c === "." ? "," : "."));
-    if (!src.includes(tok) && !src.includes(swapped) && !out.includes(tok)) out.push(tok);
+  for (const tok of text.match(NUMBER_TOKEN_RE) ?? []) {
+    if (!known.has(normalizeNumberToken(tok)) && !out.includes(tok)) out.push(tok);
   }
   return out;
 }
@@ -273,6 +291,11 @@ export interface StackCopy {
 export interface ParseStackCopyOptions {
   /** D1 que o vídeo comenta; default: procurado na seleção (o CLI passa o lido do disco). */
   videoDestaque?: StackVideoDestaque | null;
+  /**
+   * Por que o insumo saiu sem vídeo (`resolveVideoDestaque` do CLI), para a
+   * mensagem de recusa de um `videoDescription` a mais dizer o motivo.
+   */
+  videoUnavailableReason?: string;
 }
 
 /**
@@ -315,7 +338,14 @@ export function parseStackCopy(
       videoDescription = rec.videoDescription.trim();
     }
   } else if (rec.videoDescription !== undefined) {
-    problems.push("videoDescription sem vídeo da semana (com o destaque comentado) no insumo — apague o campo");
+    // Seleção sem vídeo: o campo sobra e sai. Seleção COM vídeo mas sem o D1
+    // comentado: o problema é o destaque não achado, não o texto.
+    const why = opts.videoUnavailableReason ? ` (${opts.videoUnavailableReason})` : "";
+    problems.push(
+      hasStackVideo(sel)
+        ? `videoDescription sem o destaque que o vídeo comenta${why} — sem ele a descrição não tem contra o que ser validada; restaure o D1 da edição do vídeo ou apague o campo`
+        : `videoDescription sem vídeo da semana na seleção${why} — apague o campo`,
+    );
   }
   const notes: { url: string; stackNote: string }[] = [];
   const seen = new Set<string>();

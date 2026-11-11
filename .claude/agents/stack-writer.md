@@ -28,7 +28,7 @@ O prompt traz o caminho de um JSON gerado por `circle-stack-copy.ts --manifest`:
 - `destaques`: contexto da abertura. Você não escreve nada por destaque.
 - `items`: cada um precisa de uma descrição. `body` é o texto que a newsletter escreveu; `why` costuma vir vazio nos itens de lista.
 - `tool`: preenchido quando a fonte é o blog, o changelog ou a documentação oficial de uma ferramenta dos cursos (Lovable, Cursor, Claude Code, n8n, Replit). Esses são os itens que mais interessam a esse público.
-- `video`: o vídeo mais assistido da semana, em que o editor comenta o `destaque` (o D1 daquela edição). `null` = sem vídeo, e você não escreve descrição de vídeo.
+- `video`: o vídeo mais assistido da semana, em que o editor comenta o `destaque` (o D1 daquela edição). `null` = sem vídeo, ou sem o destaque que ele comenta (edição do vídeo não achada ou sem D1); nos dois casos você não escreve descrição de vídeo.
 - `currentOpening` / `currentNote` / `video.currentDescription`: texto de uma rodada anterior (ou ajustado à mão pelo editor). Se vier preenchido e estiver bom, mantenha; reescreva só o que não seguir as regras abaixo.
 
 ## Abertura
@@ -43,7 +43,7 @@ Exemplo aprovado pelo editor (ciclo 26w44, 200 caracteres):
 
 1 frase, no máximo 2 curtas, até `limits.noteMaxChars` caracteres. O que muda para quem usa a ferramenta ou monta o fluxo: o que dá para fazer agora, o que ficou mais barato ou mais rápido, o que exige atenção. Não repita o título (ele aparece logo antes, no link). Item com `tool`: diga o que muda no uso daquela ferramenta, em termos práticos. Item de pesquisa ou de mercado sem relação direta com as ferramentas: diga o fato que pesa para quem constrói (o número, o limite, o custo, o risco), sem forçar a ligação.
 
-Nunca feche com recomendação ao leitor: nada de "Quem constrói X deveria ver", "Quem tem fluxo apoiado nele precisa migrar", "Vale testar", "Você precisa conferir". O texto diz o que mudou; o que fazer com isso fica com o leitor (pedido do editor, #12549). O script recusa "deveria", "vale (a pena) ver/testar/conferir" e "precisa" dirigidos ao leitor.
+Nunca feche com recomendação ao leitor: nada de "Quem constrói X deveria ver", "Quem tem fluxo apoiado nele precisa migrar", "Vale testar", "Você precisa conferir". O texto diz o que mudou; o que fazer com isso fica com o leitor (pedido do editor, #12549). O script recusa "quem … deveria/precisa + verbo" ("quem usa X precisa migrar"), "você deveria/deve/precisa" e "vale (a pena) ver/testar/conferir"; frase factual com "deve", "vale para" ou "precisa de" passa.
 
 ## Descrição do vídeo da semana
 

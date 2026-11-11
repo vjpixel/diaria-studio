@@ -157,6 +157,26 @@ describe("unsourcedNumbers", () => {
     assert.deepEqual(unsourcedNumbers("Custa 1,5 dólar e 40% menos.", ["custa US$ 1.5", "40% menos"]), []);
     assert.deepEqual(unsourcedNumbers("Chegou em 2027.", ["Chegou."]), ["2027"]);
   });
+  it("compara número inteiro por conjunto, nunca por substring (review #12854)", () => {
+    assert.deepEqual(unsourcedNumbers("Lê 2 milhões.", ["lê 20 milhões"]), ["2"]);
+    assert.deepEqual(unsourcedNumbers("Saiu a versão 3.", ["Anunciado em 2023."]), ["3"], "ano na fonte não libera número inventado");
+    assert.deepEqual(unsourcedNumbers("Custa 1,5.", ["custa 11,55"]), ["1,5"]);
+    assert.deepEqual(unsourcedNumbers("Lê 20 milhões em 2023.", ["2023: lê 20 milhões"]), []);
+  });
+});
+
+describe("#12549 review — applyStackCopy sem videoDescription", () => {
+  it("preserva a descrição do vídeo escrita à mão", () => {
+    const s = sel({ video: { ...VIDEO, description: "Escrita à mão pelo editor." } });
+    const applied = applyStackCopy(s, copyFor(s));
+    assert.equal(applied.video?.description, "Escrita à mão pelo editor.");
+  });
+  it("campo a mais com vídeo mas sem o D1: a recusa aponta o destaque, e o motivo, não só manda apagar", () => {
+    const s = sel({ destaques: [] });
+    const r = parseStackCopy(JSON.stringify(copyFor(s, GOOD_DESC)), s, { videoDestaque: null, videoUnavailableReason: "motivo X" });
+    assert.equal(r.copy, null);
+    assert.match(r.problems.join("\n"), /sem o destaque que o vídeo comenta \(motivo X\).*restaure o D1/);
+  });
 });
 
 describe("#12549 item 5 — conselho ao leitor é recusado", () => {
@@ -166,6 +186,8 @@ describe("#12549 item 5 — conselho ao leitor é recusado", () => {
     "Vale testar antes de atualizar.",
     "Vale a pena conferir o changelog.",
     "Você precisa revisar os prompts.",
+    "Quem usa o plano gratuito precisa migrar até março.",
+    "Quem monta fluxos no n8n deveria revisar os gatilhos.",
   ]) {
     it(`recusa: ${t}`, () => {
       assert.ok(hasReaderAdvice(t));
@@ -176,6 +198,10 @@ describe("#12549 item 5 — conselho ao leitor é recusado", () => {
     "O modelo precisa de menos memória para rodar.",
     "A versão nova vale para todos os planos.",
     "O agente deve terminar a tarefa sem pedir confirmação.",
+    // review #12854: frases factuais com "quem" que o padrão largo recusava.
+    "Para quem usa o Cursor, o novo limite vale para todos os planos.",
+    "Segundo quem acompanha o setor, a empresa deve lançar em março.",
+    "Pesquisa mostra que quem usa IA precisa de 30% menos tempo.",
   ]) {
     it(`fato sem conselho passa: ${t}`, () => {
       assert.equal(hasReaderAdvice(t), false);
@@ -266,6 +292,56 @@ describe("#12549 — CLI circle-stack-copy.ts com vídeo", () => {
         console.error = orig;
       }
       assert.equal(readFileSync(selectionPath, "utf8"), before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  async function quiet<T>(fn: () => Promise<T>): Promise<{ result: T; err: string; out: string }> {
+    const [ol, oe] = [console.log, console.error];
+    let out = "";
+    let err = "";
+    console.log = (...a: unknown[]) => void (out += a.join(" ") + "\n");
+    console.error = (...a: unknown[]) => void (err += a.join(" ") + "\n");
+    try {
+      return { result: await fn(), err, out };
+    } finally {
+      console.log = ol;
+      console.error = oe;
+    }
+  }
+
+  it("exceção de leitura da edição do vídeo propaga (não vira 'sem vídeo') e a seleção fica intacta", async () => {
+    const { root, selectionPath, copyPath } = setup(false);
+    try {
+      const edMd = join(root, "data", "editions", "261104", "02-reviewed.md");
+      rmSync(edMd);
+      mkdirSync(edMd); // existe, mas a leitura lança (EISDIR)
+      const before = readFileSync(selectionPath, "utf8");
+      writeFileSync(copyPath, JSON.stringify(copyFor(JSON.parse(before))));
+      await assert.rejects(
+        quiet(() => runCircleStackCopy(["--publish-monday", "261109", "--apply", "--data-root", root], root)),
+      );
+      assert.equal(readFileSync(selectionPath, "utf8"), before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("edição do vídeo ausente: avisa o motivo, a linha OK diz 'sem descrição do vídeo: <motivo>' e avisa da descrição antiga sem validação", async () => {
+    const { root, selectionPath, copyPath } = setup(false);
+    try {
+      rmSync(join(root, "data", "editions", "261104"), { recursive: true, force: true });
+      const stored = JSON.parse(readFileSync(selectionPath, "utf8"));
+      stored.video.description = "Antiga.";
+      writeFileSync(selectionPath, JSON.stringify(stored, null, 2));
+      writeFileSync(copyPath, JSON.stringify(copyFor(stored)));
+      const { result, err, out } = await quiet(() => runCircleStackCopy(["--publish-monday", "261109", "--apply", "--data-root", root], root));
+      assert.equal(result, 0);
+      assert.match(err, /edição 261104 do vídeo não existe/);
+      assert.match(err, /SEM validação/);
+      assert.match(out, /sem descrição do vídeo: a edição 261104 do vídeo não existe/);
+      assert.equal(JSON.parse(readFileSync(selectionPath, "utf8")).video.description, "Antiga.");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
