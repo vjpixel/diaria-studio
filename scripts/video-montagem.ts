@@ -82,10 +82,13 @@
  *       estalo), não do silencedetect; avisa emenda com pausa acima de 0,45 s, clipe abaixo de
  *       0,3 s e borda dentro da fala. --no-speech-detect (ou o bruto ausente) volta ao silences.json.
  *       (#12089, medição da 261105) os limiares são o MAIOR entre o fixo e o relativo ao bruto
- *       (sinal cheio 24 dB abaixo do topo da fala, 1ª diferença 10 dB acima do piso), e com a voz
- *       medida (F0) quadro a mais de 150 ms antes / 200 ms depois de um quadro com voz não é fala
- *       (respiração e ruído de sala saem; a vogal curta fica); palavra esticada pelo Whisper que
- *       já está numa ilha não devolve a pausa. --speech-full-db/--speech-diff-db sobrepõem os
+ *       (sinal cheio 24 dB abaixo do topo da fala, 1ª diferença 10 dB acima do piso; só com 90%
+ *       de quadros com som entre o 1º e o último som e topo 20 dB acima do piso, senão o fixo com
+ *       [aviso]), e com a voz medida (F0) quadro a mais de 150 ms antes / 200 ms depois de uma
+ *       âncora de voz (F0 acima do limiar fixo) não é fala (respiração e ruído de sala saem; a
+ *       vogal curta fica; com menos de 20% dos quadros acima do limiar com voz o filtro desliga);
+ *       palavra esticada pelo Whisper com metade ou mais em ilhas, ou menos de 150 ms na pausa,
+ *       não devolve a pausa ([aviso] por palavra). --speech-full-db/--speech-diff-db sobrepõem os
  *       limiares; --no-speech-voice desliga o filtro pela F0.
  *       (#12263) o começo de cada ilha recua até 120 ms no ataque acima do piso de ruído do bruto
  *       + 12 dB (consoante suave abaixo dos limiares fixos); entrada com som nos 40 ms antes do
@@ -425,6 +428,9 @@ import {
   extendIslandAttacks,
   entryCutSoundWarnings,
   speechThresholds,
+  voiceAnchorDb,
+  voicedFractionAboveThreshold,
+  type SpeechThresholds,
   type EdgeWindow,
   type FrameEnergy,
 } from "./lib/diaria/video-cut-refine.ts";
@@ -1128,25 +1134,34 @@ function printTakeRepeatWarnings(ctx: Ctx, resolved: Partial<Record<BlockKey, Re
   for (const w of takeRepeatWarnings(takeRepeatItems(resolved), silences(ctx), makeMatcher(loadVocab().aliases))) console.error(`[aviso] ${w}`);
 }
 
-/** O `dropped` de palavra perdida do `buildSequencePlan` (a rede da proteção de palavras do detector, #12089). */
-const LOST_WORD_RE = /palavra\(s\) fora dos clipes/;
+/** Palavra fora dos clipes, como o `buildSequencePlan` a expõe (`lostWords`). */
+type LostWord = NonNullable<SequencePlan["lostWords"]>[number];
 
 /**
  * #12089: a proteção de palavras com as ilhas (`protectTranscribedWords` com
- * `islands`) deixa a palavra esticada pelo Whisper fora da proteção, e o
- * `buildSequencePlan` a aceita como coberta pela pausa. Se mesmo assim alguma
- * palavra ficar fora dos clipes (a palavra que atravessa a emenda entre dois
- * itens, por exemplo), a sequência é refeita com a proteção de antes (toda
- * palavra com o meio na pausa), que nunca perde palavra: o build não passa a
- * barrar o que antes passava.
+ * `islands`) deixa sem proteção a palavra esticada pelo Whisper por cima da
+ * pausa, e o `buildSequencePlan` a aceita como coberta pela pausa. Se mesmo
+ * assim alguma palavra ficar fora dos clipes (a que atravessa a emenda entre
+ * dois itens, por exemplo), a sequência é refeita com `fallback` (a proteção de
+ * antes: toda palavra com o meio na pausa) e fica a que perde MENOS palavras
+ * (contadas em `lostWords`, não em linhas do `dropped`). `lost` = as palavras
+ * que o primário perderia, sempre as reais; com `fellBack` false e `lost` não
+ * vazio, o fallback não melhorou e o `dropped` do primário barra o build.
  */
-export function withLostWordFallback<T extends { dropped: string[] }>(build: (pauses: Interval[]) => T, primary: Interval[], fallback: Interval[] | null): { plan: T; fellBack: boolean; lost: string[] } {
+export function withLostWordFallback<T extends { lostWords?: LostWord[] }>(
+  build: (pauses: Interval[]) => T,
+  primary: Interval[],
+  fallback: Interval[] | null,
+): { plan: T; fellBack: boolean; lost: LostWord[] } {
   const p = build(primary);
-  const lost = p.dropped.filter((d) => LOST_WORD_RE.test(d));
-  if (!fallback || lost.length === 0) return { plan: p, fellBack: false, lost: [] };
+  const lost = p.lostWords ?? [];
+  if (!fallback || lost.length === 0) return { plan: p, fellBack: false, lost };
   const q = build(fallback);
-  return q.dropped.length < p.dropped.length ? { plan: q, fellBack: true, lost } : { plan: p, fellBack: false, lost: [] };
+  return (q.lostWords ?? []).length < lost.length ? { plan: q, fellBack: true, lost } : { plan: p, fellBack: false, lost };
 }
+
+/** Palavra com tempo no bruto, para os avisos do detector de fala. */
+const wordAt = (w: { text: string; start: number }) => `"${w.text}" em ${w.start.toFixed(2)} s`;
 
 function plans(ctx: Ctx, speech?: SpeechCut | null) {
   const { file, text } = loadBlocks(ctx);
@@ -1174,13 +1189,18 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
   // Review da PR #12142: palavra transcrita dita baixo demais para virar ilha não pode cair numa pausa cortada.
   let speechSil = speech?.silences ?? [];
   let fallbackSil: Interval[] | null = null;
+  let stretched: Array<{ text: string; start: number; end: number; cutS: number }> = [];
   if (speech) {
     const words = Object.values(blocks).flatMap((items) => (items ?? []).flatMap((it) => it.words));
     // #12089: palavra esticada pelo Whisper por cima da pausa (já dentro de uma ilha) não devolve a pausa.
     const guard = protectTranscribedWords(speech.silences, words, { islands: speech.islands });
     speechSil = guard.silences;
+    stretched = guard.stretchedWords;
     // A proteção sem as ilhas (a de antes) é a rede: sequência que perderia palavra com a nova volta para ela.
     fallbackSil = protectTranscribedWords(speech.silences, words).silences;
+    if (stretched.length) {
+      console.error(`[aviso] detector de fala (#12089): ${stretched.length} palavra(s) esticada(s) pelo Whisper sobre uma pausa perderam a proteção (a pausa sai e corta o trecho dela fora da fala): ${stretched.map((w) => `${wordAt(w)} (${Math.round(w.cutS * 1000)} ms cortados)`).join(", ")}; conferir no Premiere se algo dito baixo sumiu`);
+    }
     if (guard.protectedWords.length) {
       console.error(`[aviso] detector de fala (#12089): ${guard.protectedWords.length} palavra(s) do transcript abaixo do limiar ficaram no corte em vez de sair na pausa: ${guard.protectedWords.map((w) => `"${w.text}" em ${w.start.toFixed(2)} s`).join(", ")}; conferir no áudio (se for ruído, --no-speech-detect ou intervalo no blocks.json)`);
     }
@@ -1189,7 +1209,14 @@ function plans(ctx: Ctx, speech?: SpeechCut | null) {
     // #12101: o respiro da vinheta depois do título, só no horizontal.
     if (!speech) return buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s) });
     const r = withLostWordFallback((pauses) => buildSequencePlan(s, blocks, pauses, source, { holdBlocks: file.holdBlocks, breathAfter: vinhetaBreathFor(s), ...SPEECH_DETECT_PLAN }), speechSil, fallbackSil);
-    if (r.fellBack) console.error(`[aviso] ${s.name}: palavra esticada pelo Whisper ficaria fora dos clipes com a pausa cortada (${r.lost.join("; ")}); a sequência volta à proteção de toda palavra com o meio na pausa, e essas pausas ficam no XML (#12089)`);
+    if (r.fellBack) {
+      // As proteções que a rede trouxe de volta: as palavras esticadas que agora caem dentro dos clipes desta sequência.
+      const back = stretched.filter((w) => r.plan.clips.some((c) => Math.min(w.end, c.frameOut / source.fps) - Math.max(w.start, c.frameIn / source.fps) > 1e-6));
+      console.error(
+        `[aviso] ${s.name}: ${r.lost.length} palavra(s) ficariam fora dos clipes com a pausa cortada (${r.lost.map((w) => `${w.label}: ${wordAt(w)}`).join("; ")}); ` +
+          `a sequência volta à proteção de toda palavra com o meio na pausa (#12089), que devolve a pausa de ${back.length} palavra(s): ${back.map(wordAt).join(", ") || "nenhuma das esticadas"}`,
+      );
+    }
     return r.plan;
   });
   return { file, source, resolved: blocks, plans: ps, hash: planHash(ctx, text) };
@@ -1383,7 +1410,6 @@ export function pickPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte
 
 // ── Subcomandos ───────────────────────────────────────────────────────────
 
-/** `--silence-db` (#11351): número negativo em dB; ausente = limiar relativo ao loudness. */
 /** #12089: `--speech-full-db`/`--speech-diff-db` do `build`: número negativo em dBFS. */
 export function parseSpeechDbArg(flag: string, raw: string): number {
   const n = Number(raw);
@@ -1391,6 +1417,7 @@ export function parseSpeechDbArg(flag: string, raw: string): number {
   return n;
 }
 
+/** `--silence-db` (#11351): número negativo em dB; ausente = limiar relativo ao loudness. */
 export function parseSilenceDbArg(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
   const n = Number(raw);
@@ -2448,7 +2475,7 @@ export interface CutRefineInfo {
  * (`SPEECH_DETECT`). Bruto ausente nesta máquina = null com o motivo: o build
  * segue com o `silences.json`, com [aviso].
  */
-function speechDetection(ctx: Ctx, source: SourceInfo, opts: SpeechDetectOptions = {}): { cut: SpeechCut | null; reason?: string; thresholds?: { fullDb: number; diffDb: number; voice: boolean } } {
+function speechDetection(ctx: Ctx, source: SourceInfo, opts: SpeechDetectOptions = {}): { cut: SpeechCut | null; reason?: string; thresholds?: SpeechThresholds; voice?: SpeechVoiceFilter } {
   const input = audioInputOf(ctx, source);
   if (!existsSync(input)) return { cut: null, reason: `bruto ausente nesta máquina (${input})` };
   const audio = join(ctx.workDir, "audio-48k.wav");
@@ -2463,13 +2490,15 @@ function speechDetection(ctx: Ctx, source: SourceInfo, opts: SpeechDetectOptions
   }
   const { samples, sampleRate } = parseWavPcm16(readFileSync(audio));
   const energy: FrameEnergy = frameEnergies(samples, sampleRate);
-  // #12089: limiar relativo ao bruto (o fixo num bruto baixo) e, com a voz medida, respiração e ruído fora das ilhas.
-  const auto = speechThresholds(energy);
-  const th = { fullDb: opts.fullDb ?? auto.fullDb, diffDb: opts.diffDb ?? auto.diffDb };
-  if (opts.voice !== false) energy.voiced = voicedFrames(samples, sampleRate, energy.hopS, energy.fullDb.length, (i) => energy.fullDb[i] > th.fullDb);
+  // #12089: limiar relativo ao bruto (o fixo num bruto baixo), medido uma vez, e, com a voz medida, respiração e ruído fora das ilhas.
+  const th = speechThresholds(energy, { fullDb: opts.fullDb, diffDb: opts.diffDb });
+  const voice = applyVoiceFilter(energy, th, opts.voice === false ? null : () => {
+    const anchor = voiceAnchorDb(th.fullDb);
+    return voicedFrames(samples, sampleRate, energy.hopS, energy.fullDb.length, (i) => energy.fullDb[i] > anchor);
+  });
   // #12263: o começo de cada ilha recua até o ataque medido contra o piso do bruto, não só o limiar fixo.
-  const islands = extendIslandAttacks(energy, speechIslands(energy, th), { speechFullDb: th.fullDb });
-  return { cut: { islands, silences: speechPauseSilences(islands, source.durationS), energy }, thresholds: { ...th, voice: energy.voiced !== undefined } };
+  const islands = extendIslandAttacks(energy, speechIslands(energy, { thresholds: th }), { speechFullDb: th.fullDb });
+  return { cut: { islands, silences: speechPauseSilences(islands, source.durationS), energy }, thresholds: th, voice };
 }
 
 /** Cache separado do Whisper: nunca reamostrar o WAV de 16 kHz para medir agudos. */
@@ -2838,15 +2867,49 @@ export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: nu
   return `[premissa] ganho de áudio no XML: ${g.db > 0 ? "+" : ""}${g.db.toFixed(2)} dB em cada clipe (Audio Levels, limitado pelo ${why})${from}; conferir no 1º import se o Premiere aplicou (#11755); --no-audio-gain tira`;
 }
 
-/** #12089: a linha de premissa dos limiares do detector de fala no `build`. */
-export function speechThresholdsPremise(th: { fullDb: number; diffDb: number; voice: boolean }, opts: SpeechDetectOptions = {}): string {
-  const how = (over: number | undefined, fixed: number, v: number) => (over !== undefined ? "--speech-*-db" : v > fixed + 1e-9 ? "relativo ao bruto" : "fixo");
-  return (
-    `[premissa] detector de fala (#12089): fala acima de ${th.fullDb.toFixed(1)} dB no sinal cheio (${how(opts.fullDb, SPEECH_DETECT.fullDb, th.fullDb)}) ou ${th.diffDb.toFixed(1)} dB na 1ª diferença (${how(opts.diffDb, SPEECH_DETECT.diffDb, th.diffDb)}); ` +
-    (th.voice
-      ? `respiração e ruído sem F0 a mais de ${SPEECH_DETECT.voicedLeadS * 1000} ms antes / ${SPEECH_DETECT.voicedTailS * 1000} ms depois da voz não contam como fala (--no-speech-voice desliga)`
-      : "sem o filtro de respiração pela F0 (--no-speech-voice)")
-  );
+/** #12089: estado do filtro de respiração pela F0 no `build`. */
+export interface SpeechVoiceFilter {
+  /** `off` = `--no-speech-voice`; `sem-voz` = a F0 não achou voz bastante (sanity, `voicedMinFraction`). */
+  status: "ligado" | "off" | "sem-voz";
+  /** Fração dos quadros acima do limiar com voz; null sem a voz medida. */
+  fraction: number | null;
+}
+
+/**
+ * #12089: mede a voz (`measure`, null = `--no-speech-voice`) e liga o filtro
+ * de respiração em `e.voiced` só se a fração dos quadros acima do limiar com
+ * voz passar de `voicedMinFraction`; abaixo disso, a F0 não está vendo a fala e
+ * o filtro tiraria fala junto com a respiração: fica desligado.
+ */
+export function applyVoiceFilter(e: FrameEnergy, th: Pick<SpeechThresholds, "fullDb" | "diffDb">, measure: (() => Uint8Array) | null): SpeechVoiceFilter {
+  delete e.voiced;
+  if (!measure) return { status: "off", fraction: null };
+  e.voiced = measure();
+  const fraction = voicedFractionAboveThreshold(e, th);
+  if (fraction === null || fraction < SPEECH_DETECT.voicedMinFraction) {
+    delete e.voiced;
+    return { status: "sem-voz", fraction };
+  }
+  return { status: "ligado", fraction };
+}
+
+/** #12089: as linhas do detector de fala no `build`: a `[premissa]` dos limiares e os `[aviso]` das sanidades. */
+export function speechThresholdsPremise(th: SpeechThresholds, voice: SpeechVoiceFilter): string[] {
+  const src = { fixo: "fixo", relativo: "relativo ao bruto", manual: "--speech-*-db" } as const;
+  const pct = (x: number | null) => (x === null ? "sem medida" : `${Math.round(x * 100)}%`);
+  const lines = [
+    `[premissa] detector de fala (#12089): fala acima de ${th.fullDb.toFixed(1)} dB no sinal cheio (${src[th.source.fullDb]}) ou ${th.diffDb.toFixed(1)} dB na 1ª diferença (${src[th.source.diffDb]}); limiar relativo: ${th.status}; ` +
+      (voice.status === "ligado"
+        ? `respiração e ruído sem F0 a mais de ${SPEECH_DETECT.voicedLeadS * 1000} ms antes / ${SPEECH_DETECT.voicedTailS * 1000} ms depois da voz (F0 acima de ${voiceAnchorDb(th.fullDb).toFixed(1)} dB) não contam como fala, ${pct(voice.fraction)} dos quadros acima do limiar com voz (--no-speech-voice desliga)`
+        : voice.status === "off"
+          ? "sem o filtro de respiração pela F0 (--no-speech-voice)"
+          : `sem o filtro de respiração pela F0: só ${pct(voice.fraction)} dos quadros acima do limiar com voz`),
+    ...th.warnings.map((w) => `[aviso] ${w}`),
+  ];
+  if (voice.status === "sem-voz") {
+    lines.push(`[aviso] detector de fala (#12089): filtro de respiração pela F0 desligado, só ${pct(voice.fraction)} dos quadros acima do limiar têm voz (mínimo ${Math.round(SPEECH_DETECT.voicedMinFraction * 100)}%); respiração e ruído acima do limiar contam como fala, conferir as pausas no Premiere`);
+  }
+  return lines;
 }
 
 async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}): Promise<number> {
@@ -2856,7 +2919,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     try { speech = speechDetection(ctx, sourceFor(ctx, loadBlocks(ctx).file), speechOpts); }
     catch (e) { speech = { cut: null, reason: `detector de fala falhou: ${(e as Error).message}` }; }
   }
-  if (speech.cut && speech.thresholds) console.error(speechThresholdsPremise(speech.thresholds, speechOpts));
+  if (speech.cut && speech.thresholds && speech.voice) for (const line of speechThresholdsPremise(speech.thresholds, speech.voice)) console.error(line);
   if (speech.cut) console.error(`[premissa] corte de pausas pelo detector de fala (#12089): ${speech.cut.islands.length} ilhas de fala, pausa de ${SPEECH_DETECT.minGapS} s ou mais sai com ${SPEECH_DETECT.padBeforeS * 1000} ms antes da fala e ${SPEECH_DETECT.padAfterS * 1000} ms depois; o começo da fala recua até ${SPEECH_DETECT.attackMaxS * 1000} ms no ataque acima do piso do bruto + ${SPEECH_DETECT.attackAboveFloorDb} dB (#12263); --no-speech-detect volta ao silences.json`);
   else console.error(`[aviso] corte de pausas pelo silences.json (${speech.reason}): respiração e ruído de sala contam como fala num bruto quente (#12089)`);
   const { file, source, plans: ps0, hash, resolved } = plans(ctx, speech.cut);

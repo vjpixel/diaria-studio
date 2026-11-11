@@ -169,12 +169,15 @@ export function speechSeconds(s: SegmentSpan): number {
 
 /**
  * Quadros com voz na grade do detector de fala (#12089): F0 por autocorrelação
- * (`frameF0`, janela de `VOICE.frameS` centrada no quadro) só nos quadros que
- * `candidate` aponta (os que já têm som; medir o bruto inteiro custaria o
- * dobro sem mudar nada), a cada 2 quadros, valendo para os dois. É o que
- * separa a vogal curta ("A empresa", -26 dB, 40 ms) da respiração e do ruído de
- * sala do mesmo nível: a vogal tem F0, o ar não. Sem piso de energia aqui
- * (`minDb` -90): quem decide o que é som é o detector.
+ * (`frameF0`, janela de `VOICE.frameS` centrada no quadro) só nos pares de
+ * quadros em que `candidate` aponta ao menos um (medir o bruto inteiro custaria
+ * o dobro sem mudar nada), a cada 2 quadros, valendo para os dois. O `build`
+ * passa como candidato o quadro acima da âncora de voz (`voiceAnchorDb`, o
+ * limiar FIXO do sinal cheio), o mesmo critério da âncora em `speechIslands`:
+ * quadro abaixo dele não seria âncora mesmo com voz. É o que separa a vogal
+ * curta ("A empresa", -26 dB, 40 ms) da respiração e do ruído de sala do mesmo
+ * nível: a vogal tem F0, o ar não. Sem piso de energia aqui (`minDb` -90):
+ * quem decide o que é som é o detector.
  */
 export function voicedFrames(samples: Int16Array, sampleRate: number, hopS: number, n: number, candidate: (i: number) => boolean): Uint8Array {
   const { x, rate } = decimate(samples, sampleRate);
