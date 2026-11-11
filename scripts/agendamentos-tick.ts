@@ -54,7 +54,7 @@ import {
   buildAgendamentosAlarm,
   loadAgendamentos,
 } from "./lib/diaria/agendamentos.ts";
-import { avaliarAgendamentosComEnvio, leitoresPadrao, leituraSemAlarme } from "./lib/diaria/agendamentos-verificar.ts";
+import { avaliarAgendamentosComEnvio, leitoresPadrao, leituraSemAlarme, type EnvioRegistradoItem } from "./lib/diaria/agendamentos-verificar.ts";
 import { defaultYouTubeUploadDeps } from "./lib/diaria/youtube-upload.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -75,6 +75,23 @@ function closeSuperseded(fingerprint: string | null): void {
   }
   for (const n of res.closed) console.log(`${LOG_PREFIX} issue #${n} fechada (conjunto de achados mudou).`);
   for (const n of res.failed) console.error(`${LOG_PREFIX} falha ao fechar #${n} — retry na próxima execução.`);
+}
+
+/** #12875: um aviso por execução, incluindo o motivo que impediu a dispensa. */
+export function avisarLeituraIndisponivel(envios: readonly EnvioRegistradoItem[], warn: (message: string) => void = console.warn): void {
+  const motivos = new Set<string>();
+  for (const envio of envios) {
+    if (envio.semAlarme) continue;
+    for (const leitura of envio.leituras) {
+      if (leitura.status === "erro" || leitura.status === "sem-registro" ||
+          (leitura.destino === "youtube_shorts" && leitura.status === "sem-leitor")) {
+        motivos.add(`${envio.item.id}: ${leitura.motivo}`);
+      }
+    }
+  }
+  if (motivos.size) {
+    warn(`${LOG_PREFIX} leitor do YouTube ou registro do corte indisponível, dispensa não aplicada — alarme preservado. ${[...motivos].join("; ")}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -107,6 +124,7 @@ async function main(): Promise<void> {
     now,
     leitores: leitoresPadrao({ deps: defaultYouTubeUploadDeps, env: process.env }),
   });
+  avisarLeituraIndisponivel(envios);
   console.log(
     `${LOG_PREFIX} itens=${banco.itens.length} futuros=${ev.futuros.length} no-horário(pronto)=${ev.aPublicar.length} achados=${ev.achados.length} agendado-com-envio-registrado=${ev.semAlarme.length}`,
   );
