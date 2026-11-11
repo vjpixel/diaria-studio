@@ -38,6 +38,16 @@
  * (`scripts/lib/task-never-armed-alarm.ts`), pra `Diaria-Task-Never-Armed-Alarm`
  * não alarmar "timer órfão" sobre uma exclusão documentada e intencional.
  *
+ * **`diaria-gdrive-bisync` (#12356) e `diaria-gdrive-data-bisync` (#12478)
+ * também ficam de fora pelo mesmo motivo de schema:** shell puro que chama o
+ * `rclone bisync` (`scripts/systemd/gdrive-bisync.sh`, e o wrapper
+ * `gdrive-data-bisync.sh` do bisync dedicado de `data/`), com cadência de
+ * 1-2 min (`OnUnitInactiveSec`) que `ScheduledTaskSchedule` não expressa. As
+ * units vivem em `scripts/systemd/` e o registro operacional em
+ * `docs/scheduled-tasks-registry.md` (estado de instalação do
+ * `diaria-gdrive-data-bisync`: ver o registro). O alarme dos dois é a task
+ * `Diaria-GDrive-Sync-Alarm` abaixo.
+ *
  * **Este arquivo NÃO executa nada** — é dado puro. Execução é
  * `scripts/lib/task-runner.ts` (`runScheduledTask`); geração de units
  * systemd é `scripts/lib/systemd-units.ts` + `scripts/setup-systemd-timers.ts`.
@@ -2232,7 +2242,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-GDrive-Sync-Alarm",
     description:
-      "alarme do rclone bisync do Google Drive (trava persistente, falha persistente, sem sucesso ha 6h) + cota da conta",
+      "alarme do rclone bisync do Google Drive (trava persistente, falha persistente, sem sucesso ha 6h) + cota da conta + bisync dedicado de data/ (#12478: sem sucesso ha 30 min, configuracao invalida, cota da conta; sem carimbo e mudo so enquanto o data/ da maquina nao depende dele)",
     steps: [{ key: "alarm", script: "scripts/gdrive-sync-alarm.ts" }],
     logPath: "gdrive-sync-alarm/.alarm.log",
     // De hora em hora (#12357): o bisync roda a cada 2 min e a trava (exit
@@ -2243,6 +2253,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `not-installed`), então o arme automático do
     // `Diaria-Remediate-Never-Armed-Tasks` antes da instalação da #12356 é
     // inofensivo: só a cota (`rclone about`, só leitura) é medida.
+    // Desde a #12478 também lê os carimbos do bisync dedicado de `data/`
+    // (~/.cache/diaria/gdrive-data-bisync, limiar de 30 min), a config dele
+    // e a cota da conta dele. Sem carimbo o sinal é `not-installed`, mudo,
+    // a menos que o `data/` desta máquina já more na pasta desse bisync.
     schedule: { kind: "interval", hours: 1 },
     issue: "#12357",
   },
@@ -2840,6 +2854,26 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // remediação (envio real a pessoas reais) — fora do escopo desta task,
     // decisão do editor.
     issue: "#7665",
+  },
+  {
+    name: "Diaria-Top-YouTube-Video-Measure",
+    description:
+      "mede o horizontal mais assistido do canal desde o inicio (YouTube Data API, so leitura) e grava " +
+      "data/youtube/top-video.json -- resolve o {{VIDEO_MAIS_ASSISTIDO}} do e-mail 2 do onboarding",
+    steps: [{ key: "measure", script: "scripts/measure-top-youtube-video.ts" }],
+    logPath: "youtube/.top-video-measure.log",
+    // Segunda 08:50 BRT — antes de Diaria-Onboarding-Welcome-Run (09:05), pra
+    // rodada da segunda já sair com a medição da semana. Semanal basta (#12542):
+    // a frase é "o mais assistido até agora", e a ordem muda devagar. Slot
+    // livre (vizinha mais próxima: a daily das 08:45).
+    // Sem guard: sem `data/editions` montado a medição não acha vídeo e NÃO
+    // grava (o registro anterior fica intacto); sem credencial do YouTube idem.
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado) — armar via
+    // `scripts/setup-systemd-timers.ts --task Diaria-Top-YouTube-Video-Measure`
+    // no `300` é ação POSTERIOR. Até lá o e-mail 2 sai com o último valor
+    // conhecido (`FALLBACK_TOP_VIDEO`), o mesmo texto de antes.
+    schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 8, minute: 50 },
+    issue: "#12542",
   },
   {
     name: "Diaria-Session-Registry-Gc",
@@ -3540,6 +3574,31 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     logPath: "video-montage-cache-prune/.prune.log",
     schedule: { kind: "daily", hour: 3, minute: 50 },
     issue: "#12365",
+  },
+  {
+    // #12548 (resolve #12472) — a pasta de vídeo da diária no Drive cresce
+    // ~10 GB por edição, quase tudo bruto do celular, e a cota da conta
+    // Google (Gmail junto) acabava em ~2 semanas. Toda semana guarda os
+    // brutos das edições com vídeo publicado (ou com mais de 14 dias sem
+    // registro) em /mnt/hd-sata/arquivo-video, fora do espelho do bisync,
+    // confere tamanho + MD5 contra o Drive e só então apaga do Drive sem
+    // lixeira. Pausa o diaria-gdrive-bisync.timer durante a rodada (e espera
+    // a rodada em curso terminar, até 90 min) e religa no fim. Política em
+    // lib/diaria/video-bruto-archive.ts. Sábado 03:00 BRT: madrugada, fora da
+    // janela de edição e da montagem; slot livre (a outra semanal de sábado
+    // nessa faixa é 03:40). Sem `guard` de data/: sem o junction a
+    // publicação fica "desconhecida" e só o teto de idade libera a pasta.
+    // HD desmontado, MD5 divergente ou erro do rclone saem exit 1 (unit
+    // `failed`, o alarme de units pega). A rodada é longa (MD5 de dezenas de
+    // GB) e o oneshot gerado não tem TimeoutStartSec.
+    // Sem `enabled: false`: o Diaria-Remediate-Never-Armed-Tasks arma no 300.
+    name: "Diaria-Video-Bruto-Archive",
+    description:
+      "arquivamento semanal dos brutos do video: guarda no HD do 300 (/mnt/hd-sata/arquivo-video), confere MD5 e apaga do Drive sem lixeira (#12548)",
+    steps: [{ key: "archive", script: "scripts/archive-video-brutos.ts", args: ["--apply"] }],
+    logPath: "video-bruto-archive/.archive.log",
+    schedule: { kind: "weekly", dayOfWeek: "Saturday", hour: 3, minute: 0 },
+    issue: "#12548",
   },
   {
     // #8828 — rede de seguranca do EDQUOT de 25/09/2026: Diaria-Tmp-Cleanup

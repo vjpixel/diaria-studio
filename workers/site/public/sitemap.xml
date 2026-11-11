@@ -1256,25 +1256,33 @@
   <url>
     <loc>https://diar.ia.br/p/justica-proibe-meta-de-treinar-ia-com-reportagens</loc>
     <lastmod>2026-11-05</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-11-05T00:00:00.000Z</news:publication_date>
-      <news:title>Justiça proíbe Meta de treinar IA com reportagens</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/google-paga-ate-12-salarios-para-quem-sair</loc>
     <lastmod>2026-11-06</lastmod>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia</loc>
+    <lastmod>2026-11-09</lastmod>
     <news:news>
       <news:publication>
         <news:name>diar.ia.br</news:name>
         <news:language>pt</news:language>
       </news:publication>
-      <news:publication_date>2026-11-06T00:00:00.000Z</news:publication_date>
-      <news:title>Google paga até 12 salários para quem sair</news:title>
+      <news:publication_date>2026-11-09T00:00:00.000Z</news:publication_date>
+      <news:title>Nvidia: CEO admite caso com suposta espiã</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/nubank-demite-time-antifraude-e-poe-ia-no-lugar</loc>
+    <lastmod>2026-11-11</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-11-11T00:00:00.000Z</news:publication_date>
+      <news:title>Nubank demite time antifraude e põe IA no lugar</news:title>
     </news:news>
   </url>
 </urlset>

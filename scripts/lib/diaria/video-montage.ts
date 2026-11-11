@@ -29,6 +29,23 @@
  */
 
 import { corteSuffixOf, videoTargetOf } from "./drive-video-source.ts";
+import { ctaCardClipItem, type CtaCardAsset } from "./video-cta-card.ts";
+import {
+  coverScalePct,
+  displaySize,
+  effectiveFit,
+  fitAreaWarning,
+  fitPreviewFilter,
+  probeExtras,
+  fileBounds,
+  fileIndexAtTime,
+  fitScalePct,
+  isFitMode,
+  isMultiSource,
+  sourceFiles,
+  type FitMode,
+  type SourceFile,
+} from "./video-multi-source.ts";
 
 // ── Tipos básicos ─────────────────────────────────────────────────────────
 
@@ -1132,9 +1149,13 @@ export type BlockKey = (typeof BLOCK_KEYS)[number];
  * Blocos que a sequência pode não ter sem virar "falta no blocks.json"
  * (#12093). O `gancho` (a 1ª frase do resumo, que abre o horizontal antes do
  * "Olá, eu sou o Pixel") é proposto pela decupagem; um `blocks.json` anterior a
- * ele segue montando, com `[aviso]` no build.
+ * ele segue montando, com `[aviso]` no build. Desde o #12571 os CTAs falados
+ * (`cta_yt`, `cta_vertical` e os legados `cta_ig`/`cta_out`) também: o CTA
+ * padrão é o card no fim de todas as sequências (decisão do editor,
+ * 09/11/2026); o falado, se gravado, continua entrando antes do fecho.
  */
-export const OPTIONAL_BLOCKS: readonly BlockKey[] = ["gancho"];
+export const CTA_BLOCKS: readonly BlockKey[] = ["cta_yt", "cta_vertical", "cta_ig", "cta_out"];
+export const OPTIONAL_BLOCKS: readonly BlockKey[] = ["gancho", ...CTA_BLOCKS];
 
 export function isBlockKey(k: string): k is BlockKey {
   return (BLOCK_KEYS as readonly string[]).includes(k);
@@ -1164,6 +1185,14 @@ export const SEQUENCE_TARGETS: readonly SequenceTarget[] = ["youtube", "instagra
  */
 export interface ItemFraming {
   framing?: FramePoint;
+  /**
+   * Bruto em vários arquivos (#12559): de qual arquivo o item vem (`id` do
+   * `source.json`, o nome sem extensão). A tomada é procurada só nele e o
+   * intervalo explícito precisa caber nele. Ausente = a linha do tempo inteira.
+   */
+  source?: string;
+  /** Encaixe do item no quadro (#12559): sobrepõe o da sequência (`fit`/`fill`/`blur-fill`). */
+  fit?: FitMode;
 }
 
 /** Ponto do rosto em fração do quadro do bruto (já desespelhado). */
@@ -1273,12 +1302,38 @@ export interface SequenceSpec {
    * Ausente = o texto do `resumo_curto` (ou do `resumo`) que entra nesta vertical.
    */
   hook?: string;
+  /**
+   * #12571: a linha de compartilhar do card de CTA DESTA sequência (um corte
+   * tem outro tema); sobrepõe o `ctaShare` do arquivo. Mesmo formato dele.
+   */
+  ctaShare?: string;
+  /**
+   * Encaixe dos clipes desta sequência (#12559): `fill` recorta pelo rosto (o
+   * de sempre), `fit` mostra o quadro inteiro com faixas, `blur-fill` põe o
+   * quadro inteiro sobre o mesmo trecho desfocado. Ausente = `fill`, menos
+   * arquivo vertical em sequência horizontal, que vira `blur-fill`
+   * (`effectiveFit`). O `fit` do item sobrepõe.
+   */
+  fit?: FitMode;
+  /**
+   * Bruto em vários arquivos (#12559): a sequência só leva itens deste arquivo
+   * (`id` do `source.json`). Serve ao Short avulso montado do bruto vertical
+   * nativo inteiro, sem passar pelo horizontal. Ausente = itens de todos.
+   */
+  source?: string;
 }
 
 /** O bruto, como o `transcribe` mediu (`source.json`, a fonte única). */
 export interface SourceInfo {
-  /** Caminho local do bruto (Drive for desktop), com `/`. */
+  /** Caminho local do bruto (Drive for desktop), com `/`. No bruto em vários arquivos, o do 1º (só para mensagens). */
   path: string;
+  /**
+   * Bruto em vários arquivos (#12559): a linha do tempo é a concatenação deles
+   * na ordem de gravação; todo tempo do projeto é global e `offsetFrames` leva
+   * ao arquivo. `width`/`height`/`mirrored` do topo são os do 1º; cada arquivo
+   * tem os seus. Ausente = bruto único (o de sempre).
+   */
+  files?: SourceFile[];
   fps: number;
   durationS: number;
   width: number;
@@ -1364,6 +1419,37 @@ export interface BlocksFile {
    * (`02-reviewed.md`), para a versão curta que cabe na tela. "" = sem título.
    */
   screenTitle?: string;
+  /**
+   * #12571: card de CTA no fim de todas as sequências (o CTA padrão desde
+   * 09/11/2026). Ausente/true = com card; `false` = sem card (só o CTA falado).
+   */
+  ctaCard?: boolean;
+  /**
+   * #12571: a linha de compartilhar do card ("Compartilhe com quem usa o
+   * ChatGPT", ou só "quem usa o ChatGPT"); ausente = "Compartilhe com quem se
+   * interessa por IA". A sequência pode sobrepor com o `ctaShare` dela.
+   */
+  ctaShare?: string;
+  /**
+   * Bruto em vários arquivos (#12559): overrides por arquivo (chave = `id` do
+   * `source.json`). `framing` vale para os clipes daquele arquivo (o item ainda
+   * sobrepõe; a caneca do arquivo também); `mirrored` sobrepõe o do arquivo e
+   * o `mirrored` geral.
+   */
+  files?: Record<string, FileOverride>;
+}
+
+export interface FileOverride {
+  framing?: Framing;
+  mirrored?: boolean;
+}
+
+/** `source`/`fit` de item ou sequência (#12559): o id do arquivo é conferido contra o `source.json` no `resolveBlocks`. */
+function validateSourceFit(o: Record<string, unknown>, label: string): string[] {
+  const errors: string[] = [];
+  if (o.source !== undefined && (typeof o.source !== "string" || !o.source.trim())) errors.push(`${label}: source precisa ser o id de um arquivo do bruto (nome sem extensão)`);
+  if (o.fit !== undefined && !isFitMode(o.fit)) errors.push(`${label}: fit precisa ser fill, fit ou blur-fill`);
+  return errors;
 }
 
 /** Slug de corte: minúsculas, dígitos e hífen (`soberana`, `ia-soberana`). */
@@ -1416,16 +1502,32 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
   if (raw.mirrored !== undefined && typeof raw.mirrored !== "boolean") errors.push("mirrored precisa ser true/false");
   if (raw.format !== undefined && !VIDEO_FORMATS.includes(raw.format as VideoFormat)) errors.push(`format precisa ser ${VIDEO_FORMATS.join(" ou ")}`);
   if (raw.source !== undefined && !isObj(raw.source)) errors.push("source (legado) precisa ser objeto");
-  if (raw.framing !== undefined) {
-    const fr = raw.framing;
+  const checkFraming = (fr: unknown, label: string) => {
     if (!isObj(fr) || !isNum(fr.faceX) || !isNum(fr.eyeY) || fr.faceX < 0 || fr.faceX > 1 || fr.eyeY < 0 || fr.eyeY > 1) {
-      errors.push("framing precisa de faceX e eyeY entre 0 e 1 (fração do quadro)");
+      errors.push(`${label} precisa de faceX e eyeY entre 0 e 1 (fração do quadro)`);
     }
     if (isObj(fr) && fr.mug !== undefined) {
       const m = fr.mug;
       const inUnit = (v: unknown) => isNum(v) && v >= 0 && v <= 1;
       if (!isObj(m) || ![m.left, m.right, m.top, m.bottom].every(inUnit) || !((m.left as number) < (m.right as number)) || !((m.top as number) < (m.bottom as number))) {
-        errors.push("framing.mug precisa de left < right e top < bottom, entre 0 e 1 (fração do quadro desespelhado)");
+        errors.push(`${label}.mug precisa de left < right e top < bottom, entre 0 e 1 (fração do quadro desespelhado)`);
+      }
+    }
+  };
+  if (raw.framing !== undefined) checkFraming(raw.framing, "framing");
+  // #12559: overrides por arquivo do bruto em vários arquivos.
+  if (raw.files !== undefined) {
+    if (!isObj(raw.files)) errors.push("files precisa ser um objeto { id do arquivo: { framing?, mirrored? } }");
+    else {
+      for (const [id, ov] of Object.entries(raw.files)) {
+        if (!isObj(ov)) {
+          errors.push(`files.${id}: precisa ser objeto`);
+          continue;
+        }
+        const extra = Object.keys(ov).filter((k) => k !== "framing" && k !== "mirrored");
+        if (extra.length) errors.push(`files.${id}: campo(s) desconhecido(s) ${extra.join(", ")} (válidos: framing, mirrored)`);
+        if (ov.framing !== undefined) checkFraming(ov.framing, `files.${id}.framing`);
+        if (ov.mirrored !== undefined && typeof ov.mirrored !== "boolean") errors.push(`files.${id}.mirrored precisa ser true/false`);
       }
     }
   }
@@ -1454,11 +1556,14 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         }
         errors.push(...validateItemScope(it, label, cortes));
         if (it.framing !== undefined && !isFramePoint(it.framing)) errors.push(`${label}: framing do item precisa só de faceX e eyeY, entre 0 e 1 (fração do quadro; a caneca é a do framing do arquivo)`);
+        errors.push(...validateSourceFit(it, label));
       });
     }
   }
   if (raw.verticalTargetS !== undefined && !(isNum(raw.verticalTargetS) && raw.verticalTargetS > 0)) errors.push("verticalTargetS precisa ser um número de segundos maior que 0");
   if (raw.screenTitle !== undefined && typeof raw.screenTitle !== "string") errors.push('screenTitle precisa ser texto ("" = sem título na vertical)');
+  if (raw.ctaCard !== undefined && typeof raw.ctaCard !== "boolean") errors.push("ctaCard precisa ser true ou false (false = sem o card de CTA no fim, #12571)");
+  if (raw.ctaShare !== undefined && typeof raw.ctaShare !== "string") errors.push("ctaShare precisa ser texto (a linha de compartilhar do card de CTA, #12571)");
   if (raw.holdBlocks !== undefined) {
     if (!Array.isArray(raw.holdBlocks) || raw.holdBlocks.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push("holdBlocks precisa listar blocos conhecidos");
   }
@@ -1493,6 +1598,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
           else if (s.corte === undefined) errors.push(`${label}: ${k} só vale numa sequência de corte (a vertical da edição usa o screenTitle do arquivo e o D1)`);
         }
         if (typeof s.hook === "string" && !s.hook.trim()) errors.push(`${label}: hook vazio (omita para usar o resumo_curto)`);
+        if (s.ctaShare !== undefined && typeof s.ctaShare !== "string") errors.push(`${label}: ctaShare precisa ser texto (#12571)`);
         if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${label}: sem name`);
         else if (typeof s.corte === "string") {
           if (corteSuffixOf(s.name) !== s.corte) errors.push(`${label}: o nome "${s.name}" de um corte precisa terminar em _V{n}-${s.corte}`);
@@ -1505,6 +1611,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         if (!Array.isArray(s.order) || s.order.length === 0 || s.order.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push(`${label}: order precisa listar blocos conhecidos`);
         if (!Array.isArray(s.scales) || s.scales.length !== 2 || s.scales.some((x) => !isNum(x) || x <= 0)) errors.push(`${label}: scales precisa de exatamente 2 números positivos`);
         if (s.eyeFraction !== undefined && !(isNum(s.eyeFraction) && s.eyeFraction > 0 && s.eyeFraction < 1)) errors.push(`${label}: eyeFraction precisa ser uma fração entre 0 e 1 (altura dos olhos no quadro)`);
+        errors.push(...validateSourceFit(s, label));
       });
     }
   }
@@ -1519,7 +1626,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
  * `source.json` (outro bruto, outra duração, outro fps) é erro, nunca
  * escolha silenciosa. fps fracionário também (o XML usa timebase inteiro).
  */
-export function effectiveSource(measured: SourceInfo, file?: Pick<BlocksFile, "mirrored" | "source">): { source: SourceInfo; errors: string[] } {
+export function effectiveSource(measured: SourceInfo, file?: Pick<BlocksFile, "mirrored" | "source" | "files">): { source: SourceInfo; errors: string[] } {
   const errors: string[] = [];
   const legacy = file?.source;
   const norm = (p: string) => p.replace(/\\/g, "/");
@@ -1530,7 +1637,23 @@ export function effectiveSource(measured: SourceInfo, file?: Pick<BlocksFile, "m
   }
   if (!Number.isInteger(measured.fps)) errors.push(`fps ${measured.fps} não inteiro: o XML usa timebase inteiro com NTSC=FALSE`);
   const mirrored = file?.mirrored ?? legacy?.mirrored ?? measured.mirrored ?? true;
-  return { source: { ...measured, mirrored }, errors };
+  if (!measured.files?.length) {
+    if (file?.files && Object.keys(file.files).length) errors.push(`blocks.json traz files (${Object.keys(file.files).join(", ")}), mas o bruto é um arquivo só: use framing/mirrored do topo`);
+    return { source: { ...measured, mirrored }, errors };
+  }
+  // #12559: cada arquivo com o seu espelhamento: o override do arquivo, senão o geral do blocks.json, senão o medido nele.
+  const ids = new Set(measured.files.map((x) => x.id));
+  for (const id of Object.keys(file?.files ?? {})) if (!ids.has(id)) errors.push(`blocks.json files.${id}: arquivo inexistente no source.json (ids: ${[...ids].join(", ")})`);
+  const files = measured.files.map((x) => ({ ...x, mirrored: file?.files?.[x.id]?.mirrored ?? file?.mirrored ?? legacy?.mirrored ?? x.mirrored ?? measured.mirrored ?? true }));
+  return { source: { ...measured, mirrored: files[0].mirrored, files }, errors };
+}
+
+/**
+ * O framing de um arquivo do bruto (#12559): o override do `blocks.json`
+ * (`files.{id}.framing`), senão o do arquivo inteiro. Bruto único = o `framing` de sempre.
+ */
+export function framingOfFile(base: Framing, file: Pick<BlocksFile, "files">, id: string | undefined): Framing {
+  return (id !== undefined && file.files?.[id]?.framing) || base;
 }
 
 /** Enquadramento medido na 261027 (`cx=1850`, olhos em y=1160 no 3840x2160, depois do flip). */
@@ -1595,29 +1718,84 @@ export const YOUTUBE_SCALES: readonly [number, number] = [60, 85];
 export const YOUTUBE_EYE_FRACTION = 1 / 3;
 
 /**
+ * Nome da sequência (e do export) do horizontal (#12609): `Diaria comentada
+ * horizontal_V{n}`, simétrico com `Diaria comentada_Vertical_V{n}` (o
+ * horizontal não vai só para o YouTube). O antigo `Diaria comentada_Youtube_V{n}`
+ * segue valendo no `blocks.json` e no fetch (`videoTargetOf`).
+ */
+export function horizontalSequenceName(version = "V1"): string {
+  return `Diaria comentada horizontal_${version}`;
+}
+
+/**
+ * A frase falada que abre o vídeo (#12586). Desde a 261109 o editor abre as
+ * duas versões com um gancho falado ("A inteligência dos Estados Unidos
+ * suspeita que…") e não lê mais o título: essa frase vai no bloco `gancho`, e
+ * "Título" fica para o texto na tela e nos metadados. `titulo` com item é o
+ * modelo de antes (título lido em voz alta, com o gancho do #12093, a 1ª frase
+ * do resumo, só no horizontal) e continua valendo.
+ */
+export type OpeningBlock = "titulo" | "gancho";
+
+/**
+ * O bloco de abertura de um `blocks.json`/decupagem (#12586): `titulo` quando
+ * ele tem item (o modelo de antes), senão `gancho` quando ele tem item, senão
+ * `titulo` (a falta continua sendo apontada como antes).
+ */
+export function openingBlockOf(blocks: Partial<Record<BlockKey, ReadonlyArray<unknown> | undefined>>): OpeningBlock {
+  if ((blocks.titulo?.length ?? 0) > 0) return "titulo";
+  return (blocks.gancho?.length ?? 0) > 0 ? "gancho" : "titulo";
+}
+
+/**
+ * O bloco de abertura de uma sequência, pela ordem (#12586): `titulo` se a
+ * ordem o tem, senão `gancho`; nenhum dos dois (entrevista) = null. É depois
+ * dele que entram o respiro e a vinheta.
+ */
+export function openingBlockOfOrder(order: readonly BlockKey[]): OpeningBlock | null {
+  if (order.includes("titulo")) return "titulo";
+  return order.includes("gancho") ? "gancho" : null;
+}
+
+/** O bloco de abertura pelos clipes montados (#12586): `titulo` se algum clipe (ou pedaço fundido) é dele, senão `gancho`; nenhum = null. */
+export function openingBlockOfClips(clips: ReadonlyArray<Pick<PlannedClip, "block" | "parts">>): OpeningBlock | null {
+  const has = (k: BlockKey) => clips.some((c) => c.block === k || c.parts?.some((p) => p.block === k));
+  if (has("titulo")) return "titulo";
+  return has("gancho") ? "gancho" : null;
+}
+
+/**
  * As 2 versões (#11491). Nomes no padrão dos finais da pasta `Final/`
- * (`Diaria comentada_Youtube_V3.mp4`, #11222): o Premiere sugere o nome da
+ * (`Diaria comentada horizontal_V3.mp4`, #12609; antes `_Youtube_V3`, #11222): o Premiere sugere o nome da
  * sequência no export, e `videoTargetOf` lê o destino dele. Escalas:
  * `YOUTUBE_SCALES` (60/85, olhos a 1/3, #12093) no horizontal;
  * 115/130 nas verticais (a da prévia aprovada da 261027; o XML dela saiu com
  * 89/105, "enquadramento pequeno" na autorrevisão), nos dois formatos.
+ *
+ * `opening` (#12586, `openingBlockOf`): com `gancho`, a frase falada de
+ * abertura (o gancho) abre as duas versões, no lugar do `titulo`, e é nela que
+ * o respiro, a vinheta e o PNG do título se ancoram. Com `titulo` (default), a
+ * ordem de antes.
  */
-export function defaultSequences(version = "V1", format: VideoFormat = "monologo"): SequenceSpec[] {
+export function defaultSequences(version = "V1", format: VideoFormat = "monologo", opening: OpeningBlock = "titulo"): SequenceSpec[] {
   if (format === "entrevista") {
     // #11507 (261029): sem título nem resumo gravados, a ordem que o editor montou à mão.
     return [
-      { target: "youtube", name: `Diaria comentada_Youtube_${version}`, width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]], eyeFraction: YOUTUBE_EYE_FRACTION },
+      { target: "youtube", name: horizontalSequenceName(version), width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]], eyeFraction: YOUTUBE_EYE_FRACTION },
       { target: "outras-redes", name: `Diaria comentada_Vertical_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_vertical", "fecho"], scales: [115, 130] },
     ];
   }
   return [
     {
       target: "youtube",
-      name: `Diaria comentada_Youtube_${version}`,
+      name: horizontalSequenceName(version),
       width: 1920,
       height: 1080,
       // #12093: o gancho (1ª frase do resumo) abre o horizontal, antes do "Olá, eu sou o Pixel".
-      order: ["gancho", "titulo", "abertura", "resumo", "comentario", "cta_yt", "fecho"],
+      // #12586: com o gancho falado de abertura, ele abre sem título falado.
+      order: opening === "gancho"
+        ? ["gancho", "abertura", "resumo", "comentario", "cta_yt", "fecho"]
+        : ["gancho", "titulo", "abertura", "resumo", "comentario", "cta_yt", "fecho"],
       scales: [YOUTUBE_SCALES[0], YOUTUBE_SCALES[1]],
       eyeFraction: YOUTUBE_EYE_FRACTION,
     },
@@ -1626,7 +1804,8 @@ export function defaultSequences(version = "V1", format: VideoFormat = "monologo
       name: `Diaria comentada_Vertical_${version}`,
       width: 1080,
       height: 1920,
-      order: ["titulo", "resumo_curto", "comentario", "cta_vertical", "fecho"],
+      // #12586: a frase falada de abertura abre também a vertical.
+      order: [opening, "resumo_curto", "comentario", "cta_vertical", "fecho"],
       scales: [115, 130],
     },
   ];
@@ -1672,6 +1851,8 @@ const scopeOf = (it: ItemScope & ItemFraming): ItemScope & ItemFraming => ({
   ...(it.targets ? { targets: it.targets } : {}),
   ...(it.skip ? { skip: it.skip } : {}),
   ...(it.framing ? { framing: { faceX: it.framing.faceX, eyeY: it.framing.eyeY } } : {}),
+  ...(it.source !== undefined ? { source: it.source } : {}),
+  ...(it.fit !== undefined ? { fit: it.fit } : {}),
 });
 
 export interface ResolveOptions {
@@ -1686,6 +1867,12 @@ export interface ResolveOptions {
    * que ela separou (`pickCollapsedTake`).
    */
   retranscribed?: Transcript[];
+  /**
+   * Bruto em vários arquivos (#12559): os arquivos com os limites em segundos
+   * globais. Item com `source` procura a tomada só no arquivo dele; ausente =
+   * bruto único (item com `source` vira erro).
+   */
+  files?: Array<{ id: string; start: number; end: number }>;
 }
 
 /** Apara só as bordas dentro de silêncio; preserva palavras sem núcleo audível. */
@@ -1794,13 +1981,31 @@ export function resolveBlocks(
       picked: { interval: pick.interval, words: pick.words },
     };
   };
+  // #12559: o arquivo pedido pelo item (`source`), com os limites globais dele.
+  const fileSpan = (label: string, id: string | undefined): { ok: true; span: { id: string; start: number; end: number } | null } | { ok: false } => {
+    if (id === undefined) return { ok: true, span: null };
+    const f = opts.files?.find((x) => x.id === id);
+    if (f) return { ok: true, span: f };
+    errors.push(opts.files?.length ? `${label}: source "${id}" não é arquivo do bruto (ids: ${opts.files.map((x) => x.id).join(", ")})` : `${label}: source "${id}" só vale com bruto em vários arquivos (transcribe --source a,b)`);
+    return { ok: false };
+  };
+  // O respiro do fecho nunca passa do fim do arquivo da fala.
+  const fileEndAt = (t: number) => opts.files?.find((x) => t >= x.start - 1e-6 && t < x.end)?.end ?? opts.durationS;
+  // O arquivo da fala: o do `source`, senão o da 1ª palavra (o começo do intervalo pode cair no arquivo anterior pelo pre-roll; review da PR #12563).
+  const itemFileEnd = (span: { end: number } | null, ws: Word[], fallbackT: number) =>
+    span ? span.end : fileEndAt(ws.length ? (ws[0].start + ws[0].end) / 2 : fallbackT);
   for (const [key, items] of Object.entries(file.blocks) as Array<[BlockKey, BlockItem[]]>) {
     const out: ResolvedItem[] = [];
     blocks[key] = out;
     items.forEach((it, i) => {
       const label = `${key}[${i}]`;
+      const fs = fileSpan(label, it.source);
+      if (!fs.ok) return;
       if (it.start !== undefined) {
         if (it.end > opts.durationS + 1e-6) return void errors.push(`${label}: end ${it.end} além da duração do bruto (${opts.durationS})`);
+        if (fs.span && (it.start < fs.span.start - 0.05 || it.end > fs.span.end + 0.05)) {
+          return void errors.push(`${label}: intervalo ${it.start}–${it.end} fora do arquivo ${fs.span.id} (${round3(fs.span.start)}–${round3(fs.span.end)} s na linha do tempo)`);
+        }
         const idx = words.map((w, n) => [w, n] as const).filter(([w]) => (w.start + w.end) / 2 >= it.start && (w.start + w.end) / 2 <= it.end);
         const inside = idx.map(([w]) => w);
         const lastIdx = idx.length ? idx[idx.length - 1][1] : -1;
@@ -1815,16 +2020,35 @@ export function resolveBlocks(
           ...(heard !== undefined ? { heard } : {}),
           words: ws,
           lastWordEnd: ws.length ? ws[ws.length - 1].end : null,
-          holdLimit: round3(Math.min(opts.durationS, holdIdx < 0 ? opts.durationS : limitAfter(holdIdx))),
+          holdLimit: round3(Math.min(opts.durationS, itemFileEnd(fs.span, ws, it.start), holdIdx < 0 ? opts.durationS : limitAfter(holdIdx))),
           ...(col.info ? { collapsed: col.info } : {}),
           ...scopeOf(it),
           how: "explicit",
         });
         return;
       }
-      const c = chooseTake(words, it.text, { take: it.take, match });
-      if (!c.ok) return void errors.push(`${label}: ${c.reason}`);
+      // #12559: com `source`, a tomada é procurada só nas palavras do arquivo (os índices voltam ao global com `off`).
+      let off = 0;
+      let pool = words;
+      if (fs.span) {
+        const span = fs.span;
+        off = words.findIndex((w) => (w.start + w.end) / 2 >= span.start);
+        if (off < 0) off = words.length;
+        const hi = words.findIndex((w) => (w.start + w.end) / 2 >= span.end);
+        pool = words.slice(off, hi < 0 ? words.length : hi);
+      }
+      const c0 = chooseTake(pool, it.text, { take: it.take, match });
+      if (!c0.ok) return void errors.push(`${label}: ${c0.reason}${fs.span ? ` (procurado só em ${fs.span.id})` : ""}`);
+      const c = off ? { ...c0, take: { ...c0.take, firstWord: c0.take.firstWord + off, lastWord: c0.take.lastWord + off } } : c0;
       const takeWords = words.slice(c.take.firstWord, c.take.lastWord + 1);
+      // #12559 (review da PR #12563): tomada que começa num arquivo e termina no outro é a frase colada de duas
+      // gravações (fim de A + começo de B), nunca uma tomada de verdade: erro, pedindo `source`.
+      if (opts.files?.length && takeWords.length) {
+        const fileAt = (w: Word) => opts.files!.findIndex((x) => (w.start + w.end) / 2 >= x.start - 1e-6 && (w.start + w.end) / 2 < x.end);
+        const a = fileAt(takeWords[0]);
+        const b = fileAt(takeWords[takeWords.length - 1]);
+        if (a !== b) return void errors.push(`${label}: a tomada achada atravessa a emenda entre ${opts.files[a]?.id ?? "?"} e ${opts.files[b]?.id ?? "?"} (frase colada de dois arquivos); fixe o arquivo com source ou um intervalo`);
+      }
       // `take` explícito no blocks.json é decisão: a suspeita só é avisada, nunca troca a tomada.
       const col = collapse(label, c.interval, it.text, takeWords, it.take === undefined);
       const ws = col.picked ? col.picked.words : takeWords;
@@ -1835,7 +2059,7 @@ export function resolveBlocks(
         ...(heard !== undefined ? { heard } : {}),
         words: ws,
         lastWordEnd: ws[ws.length - 1].end,
-        holdLimit: round3(Math.min(opts.durationS, col.picked ? limitAfterTime(col.picked.interval.end) : limitAfter(c.take.lastWord + 1))),
+        holdLimit: round3(Math.min(opts.durationS, itemFileEnd(fs.span, ws, c.interval.start), col.picked ? limitAfterTime(col.picked.interval.end) : limitAfter(c.take.lastWord + 1))),
         ...(col.info ? { collapsed: col.info } : {}),
         ...scopeOf(it),
         how: "take",
@@ -1889,6 +2113,10 @@ export interface PlannedClip {
   keepScale?: true;
   /** Enquadramento do item deste clipe (#12233); ausente = o `framing` do arquivo. */
   framing?: FramePoint;
+  /** Bruto em vários arquivos (#12559): índice do arquivo do clipe em `source.files`. Ausente = bruto único (ou o 1º). */
+  file?: number;
+  /** Encaixe pedido pelo item (#12559); ausente = o da sequência ou o default (`effectiveFit`). */
+  fit?: FitMode;
 }
 
 /** Trecho do bruto antes de virar clipe (sem frames, sem posição na sequência, sem escala). */
@@ -1900,6 +2128,8 @@ export interface RawClip {
   parts?: PlannedClip["parts"];
   keepScale?: true;
   framing?: FramePoint;
+  file?: number;
+  fit?: FitMode;
 }
 
 /** Segundos do clipe que são do bloco `key` (clipe fundido de blocos diferentes conta só o pedaço do bloco). */
@@ -1954,7 +2184,8 @@ export function assembleClips(
   for (const r of raws) {
     if (!(r.srcOut > r.srcIn)) continue;
     const prev = merged[merged.length - 1];
-    if (prev && r.srcIn >= prev.srcIn - 1e-9 && r.srcIn - prev.srcOut < frame - 1e-9) {
+    // #12559: nunca funde através da emenda entre dois arquivos (nem trechos com encaixe diferente).
+    if (prev && (prev.file ?? 0) === (r.file ?? 0) && prev.fit === r.fit && r.srcIn >= prev.srcIn - 1e-9 && r.srcIn - prev.srcOut < frame - 1e-9) {
       merges.push({
         block: r.block,
         edge: "emenda",
@@ -1998,6 +2229,8 @@ export function assembleClips(
       ...(r.parts ? { parts: r.parts } : {}),
       ...(r.keepScale && clips.length > 0 ? { keepScale: true as const } : {}),
       ...(r.framing ? { framing: r.framing } : {}),
+      ...(r.file !== undefined ? { file: r.file } : {}),
+      ...(r.fit !== undefined ? { fit: r.fit } : {}),
     });
     t += frameOut - frameIn;
   }
@@ -2022,7 +2255,8 @@ export interface SequencePlan {
   /** Avisos do plano que não barram o build (respiro da vinheta menor que o pedido, #12101). */
   warnings?: string[];
   /**
-   * #12101: fim da última palavra do bloco `titulo` nesta versão, em segundos
+   * #12101: fim da última palavra do bloco `titulo` nesta versão (#12586: do
+   * bloco de abertura, `openingBlockOfOrder`; o gancho sem título), em segundos
    * do bruto: a âncora da vinheta (`vinhetaSpan`) e do respiro conferido
    * depois do refino (`titleBreathS`). Ausente = sem título com palavra.
    */
@@ -2069,17 +2303,37 @@ export function buildSequencePlan(
   spec: SequenceSpec,
   resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
   silences: Interval[],
-  source: Pick<SourceInfo, "fps" | "durationS">,
+  source: Pick<SourceInfo, "fps" | "durationS" | "files">,
   opts: { holdBlocks?: BlockKey[]; breathAfter?: Partial<Record<BlockKey, number>> } & SpeechOptions = {},
 ): SequencePlan {
   const hold = new Set<BlockKey>(opts.holdBlocks ?? ["fecho"]);
   const warnings: string[] = [];
+  // #12559: bruto em vários arquivos. Cada item fica no arquivo da sua fala; nenhum clipe atravessa a emenda.
+  const bounds = source.files && source.files.length > 1
+    ? source.files.map((x) => ({ id: x.id, start: x.offsetFrames / source.fps, end: (x.offsetFrames + x.frames) / source.fps }))
+    : null;
+  const fileOf = (t: number) => {
+    if (!bounds) return 0;
+    for (let k = bounds.length - 1; k >= 0; k--) if (t >= bounds[k].start - 1e-9) return k;
+    return 0;
+  };
+  // `source` da sequência que não casa com um arquivo é erro (vai para `dropped`, que barra o build): ignorar o
+  // filtro montaria o Short avulso com o horizontal misturado (review da PR #12563). -1 = nenhum item entra.
+  let seqFile: number | null = null;
+  let seqSourceProblem: string | null = null;
+  if (spec.source !== undefined) {
+    seqFile = bounds ? bounds.findIndex((b) => b.id === spec.source) : -1;
+    if (seqFile < 0) {
+      seqSourceProblem = `${spec.name}: source "${spec.source}" não é arquivo do bruto${bounds ? ` (ids: ${bounds.map((b) => b.id).join(", ")})` : " (bruto único: source de sequência só vale com vários arquivos)"}; sequência sem clipes`;
+    }
+  }
   let titleSpeechEndS: number | undefined;
+  const opening = openingBlockOfOrder(spec.order);
   const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
   const fps = source.fps;
   const raws: RawClip[] = [];
   const missingBlocks: BlockKey[] = [];
-  const dropped: string[] = [];
+  const dropped: string[] = seqSourceProblem ? [seqSourceProblem] : [];
   const scriptParts: string[] = [];
   const wordChecks: Array<{ label: string; words: Word[] }> = [];
   for (const key of spec.order) {
@@ -2090,21 +2344,42 @@ export function buildSequencePlan(
     }
     const holding = hold.has(key);
     // Só os itens desta versão (`targets`/`skip`, #11377); o rótulo guarda o índice do blocks.json.
-    const mine = items.map((it, idx) => ({ it, idx })).filter(({ it }) => itemInTarget(it, spec));
-    mine.forEach(({ it, idx }, n) => {
+    // #12559: o arquivo do item é o do `source` dele, senão o da 1ª palavra (ou do começo do trecho).
+    const itemFile = (it: ResolvedItem) => {
+      if (!bounds) return 0;
+      const byId = it.source !== undefined ? bounds.findIndex((b) => b.id === it.source) : -1;
+      if (byId >= 0) return byId;
+      const w = it.words[0];
+      return fileOf(w ? (w.start + w.end) / 2 : it.interval.start);
+    };
+    const mine = items
+      .map((it, idx) => ({ it, idx, file: itemFile(it) }))
+      .filter(({ it, file }) => itemInTarget(it, spec) && (seqFile === null || file === seqFile));
+    mine.forEach(({ it, idx, file }, n) => {
       scriptParts.push(it.text);
       // O descarte do clipe curto vem depois do respiro do fecho; o pedaço curto entre pausas curtas já volta ao vizinho aqui (#11753).
-      const parts = speechParts(it.interval.start, it.interval.end, silences, { ...opts, minClipS: 0, fragmentS: opts.fragmentS ?? minClip });
+      let { start: itStart, end: itEnd } = it.interval;
+      if (bounds) {
+        const fb = bounds[file];
+        if (itStart < fb.start - 0.05 || itEnd > fb.end + 0.05) {
+          warnings.push(`${spec.name}: ${key}[${idx}] atravessa a emenda entre arquivos (${round3(itStart)}–${round3(itEnd)} s); fica só a parte de ${fb.id} (#12559)`);
+        }
+        itStart = Math.max(itStart, fb.start);
+        itEnd = Math.min(itEnd, fb.end);
+      }
+      const parts = itEnd > itStart ? speechParts(itStart, itEnd, silences, { ...opts, minClipS: 0, fragmentS: opts.fragmentS ?? minClip }) : [];
       // Corte de pausa curta dentro do item não troca o zoom (#11753).
       const keep = shortPauseCuts(parts, opts);
       if (holding && n === mine.length - 1 && parts.length) {
         const lastPart = parts[parts.length - 1];
         const target = it.lastWordEnd !== null ? it.lastWordEnd + FECHO_HOLD_S : lastPart.end + FECHO_HOLD_S;
         const floor = it.lastWordEnd ?? lastPart.start;
-        lastPart.end = round3(Math.max(floor, Math.min(it.holdLimit, source.durationS, target)));
+        // #12559: o respiro do fecho nunca passa do fim do arquivo do item (nem pelo piso da última palavra).
+        lastPart.end = round3(Math.min(bounds ? bounds[file].end : Number.POSITIVE_INFINITY, Math.max(floor, Math.min(it.holdLimit, source.durationS, target))));
       }
-      // #12101: a âncora da vinheta é o fim da última palavra do título que entra nesta versão.
-      if (key === "titulo" && n === mine.length - 1 && it.lastWordEnd !== null) titleSpeechEndS = it.lastWordEnd;
+      // #12101: a âncora da vinheta é o fim da última palavra do título que entra nesta versão
+      // (#12586: do bloco de abertura, o gancho quando a ordem não tem título).
+      if (key === opening && n === mine.length - 1 && it.lastWordEnd !== null) titleSpeechEndS = it.lastWordEnd;
       // #12101: respiro sem fala depois do bloco (a vinheta do logo entra dentro dele), tirado do próprio bruto.
       const breath = opts.breathAfter?.[key];
       if (breath && !holding && n === mine.length - 1 && parts.length) {
@@ -2120,14 +2395,22 @@ export function buildSequencePlan(
         }
       }
       // Pedaço curto na ponta do item, sem silêncio ali, fica: emenda no item vizinho (#11753). O do fecho é medido depois do respiro.
-      const edge = parts.map((p, k) => !(holding && k === parts.length - 1) && touchesEdge(p, it.interval.start, it.interval.end));
+      const edge = parts.map((p, k) => !(holding && k === parts.length - 1) && touchesEdge(p, itStart, itEnd));
       const kept = parts.map((p, k) => ({ ...p, keepScale: keep.has(k), edge: edge[k] })).filter((p) => p.end - p.start >= minClip - 1e-9 || p.edge);
       if (kept.length === 0) {
         dropped.push(`${key}[${idx}]: some no corte (fala abaixo de ${minClip} s depois de tirar os silêncios)`);
         return;
       }
       wordChecks.push({ label: `${key}[${idx}]`, words: trimWordsToSilences(it.words, silences) });
-      for (const p of kept) raws.push({ block: key, srcIn: p.start, srcOut: p.end, script: it.text, ...(p.keepScale ? { keepScale: true as const } : {}), ...(it.framing ? { framing: { ...it.framing } } : {}) });
+      for (const p of kept) {
+        raws.push({
+          block: key, srcIn: p.start, srcOut: p.end, script: it.text,
+          ...(p.keepScale ? { keepScale: true as const } : {}),
+          ...(it.framing ? { framing: { ...it.framing } } : {}),
+          ...(bounds ? { file } : {}),
+          ...(it.fit !== undefined ? { fit: it.fit } : {}),
+        });
+      }
     });
   }
   // Contíguos no bruto viram um clipe só antes de alternar a escala (#11503).
@@ -2285,6 +2568,84 @@ export function framingFor(input: {
   return { ...base, mug: withMug.mug, mugShift, ...(warning ? { warning } : {}) };
 }
 
+/** Geometria de um clipe no quadro da sequência (#12559): o que o XML e a prévia aplicam. */
+export interface ClipGeometry {
+  /** Índice do arquivo do clipe em `sourceFiles(source)`. */
+  fileIndex: number;
+  file: SourceFile;
+  fit: FitMode;
+  mirrored: boolean;
+  /** Clipe principal: escala e Center do Basic Motion; `crop` só no `fill` (recorte da prévia). */
+  main: { scalePct: number; center: { horiz: number; vert: number }; crop?: FramingResult["crop"] };
+  /** Só no `blur-fill`: a cópia desfocada que cobre o quadro (faixa de baixo). */
+  background?: { scalePct: number; center: { horiz: number; vert: number } };
+}
+
+/**
+ * Geometria de um clipe (#12559): o arquivo dele (tamanho e espelho próprios),
+ * o encaixe (`effectiveFit`: item > sequência > default) e, no `fill`, o
+ * `framingFor` de sempre com o framing do item sobre o do arquivo
+ * (`files.{id}.framing`) sobre o do `blocks.json`. Bruto único + `fill` dá
+ * exatamente o `framingFor` de antes.
+ */
+export function clipGeometry(input: {
+  source: Pick<SourceInfo, "path" | "fps" | "durationS" | "width" | "height" | "mirrored" | "files">;
+  spec: Pick<SequenceSpec, "width" | "height" | "eyeFraction" | "fit">;
+  framing: Framing;
+  fileOverrides?: BlocksFile["files"];
+  clip: Pick<PlannedClip, "scale" | "framing" | "file" | "fit">;
+}): ClipGeometry {
+  const files = sourceFiles(input.source);
+  const fileIndex = input.clip.file ?? 0;
+  // Índice fora da lista = plan.json de outro source.json: erro, nunca o arquivo errado em silêncio (review da PR #12563).
+  if (!Number.isInteger(fileIndex) || fileIndex < 0 || fileIndex >= files.length) {
+    throw new Error(`clipe aponta o arquivo ${fileIndex}, mas o bruto tem ${files.length}: plan.json de outro source.json, rode build de novo (#12559)`);
+  }
+  const file = files[fileIndex];
+  const eff = effectiveFit(file, input.spec, { fit: input.clip.fit });
+  // Bruto único: o default é o recorte de sempre (`fill`), mesmo vertical em horizontal; só `fit` explícito muda (regressão #12559).
+  const fit: FitMode = isMultiSource(input.source) || eff.how !== "default" ? eff.fit : "fill";
+  const mirrored = file.mirrored ?? input.source.mirrored;
+  const seqW = input.spec.width;
+  const seqH = input.spec.height;
+  if (fit === "fill") {
+    const base = input.source.files?.length ? framingOfFile(input.framing, { files: input.fileOverrides }, file.id) : input.framing;
+    const fr = framingFor({ srcW: file.width, srcH: file.height, seqW, seqH, scalePct: input.clip.scale, framing: clipFraming(base, input.clip), eyeFraction: input.spec.eyeFraction });
+    return { fileIndex, file, fit, mirrored, main: { scalePct: fr.scalePct, center: fr.center, crop: fr.crop } };
+  }
+  const main = { scalePct: fitScalePct(file.width, file.height, seqW, seqH), center: { horiz: 0, vert: 0 } };
+  if (fit === "fit") return { fileIndex, file, fit, mirrored, main };
+  return { fileIndex, file, fit, mirrored, main, background: { scalePct: coverScalePct(file.width, file.height, seqW, seqH), center: { horiz: 0, vert: 0 } } };
+}
+
+/**
+ * `[aviso]` de área por sequência e arquivo em `fit`/`blur-fill` (#12559):
+ * quanto do quadro a vertical nativa ocupa dentro do horizontal. Um por par
+ * (sequência, arquivo, encaixe).
+ */
+export function fitWarnings(
+  plans: ReadonlyArray<Pick<SequencePlan, "spec" | "clips">>,
+  source: Pick<SourceInfo, "path" | "fps" | "durationS" | "width" | "height" | "mirrored" | "files">,
+  file: Pick<BlocksFile, "files">,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const p of plans) {
+    for (const c of p.clips) {
+      const g = clipGeometry({ source, spec: p.spec, framing: FRAMING_261027, fileOverrides: file.files, clip: c });
+      const key = `${p.spec.name}|${g.fileIndex}|${g.fit}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const w = fitAreaWarning(g.file, p.spec, g.fit);
+      if (w) out.push(`${w} (#12559)`);
+    }
+  }
+  return out;
+}
+
+/** Raio do Gaussian Blur do fundo do `blur-fill` no XML (o Premiere ajusta à mão se quiser). */
+export const BLUR_FILL_RADIUS = 60;
+
 /**
  * Um `[aviso]` por sequência e escala em que a caneca não sai inteira
  * (#11939), para o relato do `build`, da prévia e da `review`. Sem
@@ -2373,11 +2734,59 @@ export function faceCenterWarnings(
   return out;
 }
 
+/**
+ * Os avisos de caneca (`mugFramingWarnings`) e de rosto centrado
+ * (`faceCenterWarnings`) do `build`, da prévia e da `review` (#12566). Bruto
+ * único: as duas funções de sempre, sem mudança no texto. Bruto em vários
+ * arquivos (#12559): uma rodada por arquivo, com os clipes `fill` dele, o
+ * tamanho dele e o framing dele (`framingOfFile`, `files.{id}.framing`), com o
+ * id do arquivo à frente de cada aviso. Clipe `fit`/`blur-fill` não tem
+ * recorte e fica de fora (o `fitWarnings` relata a área dele).
+ */
+export function framingWarningsByFile(
+  plans: ReadonlyArray<Pick<SequencePlan, "spec" | "clips">>,
+  source: Pick<SourceInfo, "path" | "fps" | "durationS" | "width" | "height" | "mirrored" | "files">,
+  framing: Framing,
+  fileOverrides?: BlocksFile["files"],
+): { mug: string[]; face: string[] } {
+  if (!source.files?.length) return { mug: mugFramingWarnings(plans, source, framing), face: faceCenterWarnings(plans, source, framing) };
+  const mug: string[] = [];
+  const face: string[] = [];
+  source.files.forEach((sf, idx) => {
+    const sub = plans
+      .map((p) => ({
+        ...p,
+        clips: p.clips.filter((c) => (c.file ?? 0) === idx && clipGeometry({ source, spec: p.spec, framing, fileOverrides, clip: c }).fit === "fill"),
+      }))
+      .filter((p) => p.clips.length > 0);
+    if (!sub.length) return;
+    const fr = framingOfFile(framing, { files: fileOverrides }, sf.id);
+    const size = { width: sf.width, height: sf.height };
+    mug.push(...mugFramingWarnings(sub, size, fr).map((w) => `${sf.id}: ${w}`));
+    face.push(...faceCenterWarnings(sub, size, fr).map((w) => `${sf.id}: ${w}`));
+  });
+  return { mug, face };
+}
+
 /** Escalas que o `frame` desenha (#11939): as do horizontal (com os olhos a 1/3, #12093) e as das verticais. */
 export const FRAME_PREVIEW_CROPS: ReadonlyArray<{ seqW: number; seqH: number; scales: readonly number[]; color: string; eyeFraction?: number }> = [
   { seqW: 1920, seqH: 1080, scales: YOUTUBE_SCALES, color: "yellow", eyeFraction: YOUTUBE_EYE_FRACTION },
   { seqW: 1080, seqH: 1920, scales: [115, 130], color: "cyan" },
 ];
+
+const FRAME_CROP_COLOR_PT: Record<string, string> = { yellow: "amarelo", cyan: "ciano", magenta: "magenta" };
+
+/**
+ * A legenda dos recortes do `frame` (#12565), montada de `FRAME_PREVIEW_CROPS`:
+ * o texto fixo de antes dizia 50/62% no horizontal depois de as escalas virarem
+ * 60/85 (#12093). Ex.: `amarelo = horizontal 60/85%, ciano = verticais 115/130%, magenta = caneca`.
+ */
+export function frameCropLegend(): string {
+  const parts = FRAME_PREVIEW_CROPS.map(({ seqW, seqH, scales, color }) =>
+    `${FRAME_CROP_COLOR_PT[color] ?? color} = ${seqW > seqH ? "horizontal" : "verticais"} ${scales.join("/")}%`,
+  );
+  return [...parts, "magenta = caneca"].join(", ");
+}
 
 /**
  * Filtros `drawbox` do `frame` (#11939): o recorte de cada escala desenhado
@@ -2417,6 +2826,67 @@ export function pathUrl(path: string): string {
   return "file://localhost/" + p.split("/").map((seg) => encodeURIComponent(seg).replace(/%3A/gi, ":")).join("/");
 }
 
+/**
+ * #12707: a pasta YouTube como a máquina que abre o XML no Premiere a vê.
+ * `from` = a raiz no Neo (o prefixo de todo caminho do XML: bruto, áudio
+ * tratado, PNG do título, vinheta em `_marca/`, card de CTA); `to` = a mesma
+ * pasta no Mac (`/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu
+ * Drive/…/YouTube`). Um mapa só para todos os `<file>`: o título e o card
+ * chegavam offline no Mac porque o XML gravava `G:/` para todos e só o bruto
+ * era revinculado à mão.
+ */
+export interface PremierePathMap {
+  from: string;
+  to: string;
+}
+
+function trimRoot(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/** O caminho como o Premiere o abre: sob `from` troca a raiz por `to` (comparação sem caixa, `G:` = `g:`); fora dela, igual. */
+export function premierePath(path: string, map: PremierePathMap | null | undefined): string {
+  const p = path.replace(/\\/g, "/");
+  if (!map) return p;
+  const from = trimRoot(map.from);
+  const to = trimRoot(map.to);
+  if (!from) return p;
+  const lp = p.toLowerCase();
+  const lf = from.toLowerCase();
+  if (lp === lf) return to;
+  if (lp.startsWith(`${lf}/`)) return `${to}${p.slice(from.length)}`;
+  return p;
+}
+
+/** Os caminhos do XML fora de `map.from` (o `premierePath` não os traduz): o build avisa, para nenhum sair com o caminho do Neo em silêncio. */
+export function unmappedPremierePaths(paths: readonly string[], map: PremierePathMap | null | undefined): string[] {
+  if (!map) return [];
+  return [...new Set(paths.filter((p) => premierePath(p, map) === p.replace(/\\/g, "/")))];
+}
+
+/**
+ * `--premiere-root` (vence) ou `publishing.video.premiere_root` do config:
+ * a pasta YouTube na máquina do Premiere. `off` no flag = o caminho do Neo
+ * mesmo com o config. Precisa ser absoluta (`/…` ou `X:/…`); vazia ou
+ * ausente = sem tradução (o XML de sempre, com o caminho do Neo).
+ */
+export function premiereRootFrom(flag: string | undefined, config: unknown): { root: string | null; how: "flag" | "config" | "off" | "none" } {
+  if (flag !== undefined) {
+    const v = flag.trim();
+    if (v === "off") return { root: null, how: "off" };
+    if (!isAbsoluteRoot(v)) throw new Error(`--premiere-root precisa ser um caminho absoluto (/Users/… no Mac) ou "off" (veio "${flag}") (#12707)`);
+    return { root: trimRoot(v), how: "flag" };
+  }
+  const c = (config as { publishing?: { video?: { premiere_root?: unknown } } })?.publishing?.video?.premiere_root;
+  if (typeof c !== "string" || !c.trim()) return { root: null, how: "none" };
+  if (!isAbsoluteRoot(c.trim())) throw new Error(`publishing.video.premiere_root precisa ser um caminho absoluto (veio "${c}") (#12707)`);
+  return { root: trimRoot(c.trim()), how: "config" };
+}
+
+function isAbsoluteRoot(p: string): boolean {
+  return /^\//.test(p) || /^[A-Za-z]:[\\/]/.test(p);
+}
+
 function baseName(path: string): string {
   const p = path.replace(/\\/g, "/");
   return p.slice(p.lastIndexOf("/") + 1);
@@ -2427,6 +2897,18 @@ function motionFilter(scale: number, center: { horiz: number; vert: number }): s
     `<filter><effect><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory><effecttype>motion</effecttype><mediatype>video</mediatype>\n` +
     `<parameter><parameterid>scale</parameterid><name>Scale</name><valuemin>0</valuemin><valuemax>1000</valuemax><value>${scale}</value></parameter>\n` +
     `<parameter><parameterid>center</parameterid><name>Center</name><value><horiz>${center.horiz}</horiz><vert>${center.vert}</vert></value></parameter></effect></filter>`
+  );
+}
+
+/**
+ * Gaussian Blur do FCP7 (#12559), o fundo do `blur-fill`. Premissa a conferir
+ * no 1º import: o Premiere traduz o efeito do FCP7 para o Gaussian Blur dele
+ * (o que não traduzir aparece como efeito offline; o raio se ajusta à mão).
+ */
+function gaussianBlurFilter(radius: number): string {
+  return (
+    `<filter><effect><name>Gaussian Blur</name><effectid>Gaussian Blur</effectid><effectcategory>Blur</effectcategory><effecttype>filter</effecttype><mediatype>video</mediatype>\n` +
+    `<parameter><parameterid>radius</parameterid><name>Radius</name><valuemin>0</valuemin><valuemax>100</valuemax><value>${radius}</value></parameter></effect></filter>`
   );
 }
 
@@ -2638,8 +3120,9 @@ export const SCREEN_TITLE_MAX_S = 7.5;
 
 /**
  * Trecho da sequência que leva o título, em frames: os clipes do bloco
- * `titulo`; sem ele (gravação sem bloco de título, 261029), os clipes do 1º
- * bloco da sequência (o gancho). Sequência vazia = null.
+ * `titulo`; sem ele, os do `gancho` (#12586: a frase falada de abertura, que
+ * abre a vertical no lugar do título); sem nenhum dos dois (261029), os clipes
+ * do 1º bloco da sequência. Sequência vazia = null.
  *
  * #11756: só a 1ª sequência CONTÍGUA de clipes do bloco (um corte cujo
  * roteiro é um bloco só, ou um bloco que volta mais adiante, não estende o
@@ -2650,7 +3133,7 @@ export const SCREEN_TITLE_MAX_S = 7.5;
 export function screenTitleSpan(plan: Pick<SequencePlan, "clips">, fps?: number): { start: number; end: number; block: BlockKey } | null {
   if (plan.clips.length === 0) return null;
   const clips = [...plan.clips].sort((a, b) => a.seqStart - b.seqStart);
-  const block: BlockKey = clips.some((c) => c.block === "titulo") ? "titulo" : clips[0].block;
+  const block: BlockKey = openingBlockOfClips(clips) ?? clips[0].block;
   const first = clips.findIndex((c) => c.block === block);
   const start = clips[first].seqStart;
   let end = start;
@@ -2679,9 +3162,18 @@ export const VINHETA_BREATH_S = 0.7;
 /** Começo da vinheta na sequência sem bloco `titulo` (261029, vertical "soberana": 2–3 s). */
 export const VINHETA_NO_TITLE_START_S = 2;
 
-/** O respiro de cada sequência: só o horizontal (`youtube`) com `titulo` na ordem. */
+/**
+ * O respiro de cada sequência: só o horizontal (`youtube`), depois do bloco de
+ * abertura da ordem (`titulo`; sem ele, o `gancho` falado de abertura, #12586).
+ */
 export function vinhetaBreathFor(spec: Pick<SequenceSpec, "target" | "order">): Partial<Record<BlockKey, number>> | undefined {
-  return spec.target === "youtube" && spec.order.includes("titulo") ? { titulo: VINHETA_BREATH_S } : undefined;
+  const b = vinhetaBreathBlock(spec);
+  return b ? { [b]: VINHETA_BREATH_S } : undefined;
+}
+
+/** O bloco depois do qual o horizontal abre o respiro da vinheta (#12586); sem respiro = null. */
+export function vinhetaBreathBlock(spec: Pick<SequenceSpec, "target" | "order">): OpeningBlock | null {
+  return spec.target === "youtube" ? openingBlockOfOrder(spec.order) : null;
 }
 
 /** `publishing.video.vinheta_logo` do config: o caminho do MOV (ProRes 4444 com alpha). `null` = ausente, vazio ou não string. */
@@ -2738,7 +3230,8 @@ export function parseVinhetaProbe(json: string, path: string): VinhetaAsset {
  * `VINHETA_AFTER_SPEECH_S` depois da última palavra do título
  * (`plan.titleSpeechEndS`), dentro do respiro, quando esse instante do bruto
  * está num clipe; senão no fim do bloco `titulo` (o respiro da vertical é
- * curto: a fala seguinte começa antes); sem título, em
+ * curto: a fala seguinte começa antes). Sem `titulo`, o bloco é o `gancho`
+ * falado de abertura (#12586, `openingBlockOfClips`); sem nenhum dos dois, em
  * `VINHETA_NO_TITLE_START_S`. Dura o MOV inteiro, cortado no fim da sequência.
  * Sequência curta demais = null.
  */
@@ -2747,7 +3240,8 @@ export function vinhetaSpan(
   fps: number,
   asset: Pick<VinhetaAsset, "durationS">,
 ): { start: number; end: number; afterTitle: boolean } | null {
-  const titleEnd = blockRunEndFrame(plan.clips, "titulo", fps);
+  const opening = openingBlockOfClips(plan.clips);
+  const titleEnd = opening ? blockRunEndFrame(plan.clips, opening, fps) : null;
   let start = titleEnd ?? Math.round(VINHETA_NO_TITLE_START_S * fps);
   if (titleEnd !== null && plan.titleSpeechEndS !== undefined) {
     const at = seqFrameOfSource(plan.clips, plan.titleSpeechEndS + VINHETA_AFTER_SPEECH_S, fps);
@@ -2949,34 +3443,63 @@ export function buildXmeml(
      * ela em vez do bruto; o vídeo continua sendo o bruto. Ausente = áudio cru.
      */
     audioPath?: string | null;
+    /** #12559: caminho gravado no XML de cada arquivo do bruto em vários arquivos (na ordem de `source.files`); ausente = o `path` de cada um. */
+    mediaPaths?: readonly string[];
+    /** #12559: framing por arquivo do `blocks.json` (`files.{id}.framing`). */
+    fileOverrides?: BlocksFile["files"];
+    /**
+     * #12571: o card de CTA de cada sequência (chave = `sequenceKey`), no fim
+     * da V1, depois do último clipe; a `<duration>` da sequência soma o card.
+     * Ausente (ou sem a chave) = sequência sem card.
+     */
+    ctaCard?: Readonly<Record<string, CtaCardAsset>> | null;
+    /**
+     * #12707: a raiz do Neo trocada pela da máquina do Premiere em TODO
+     * `pathurl` (bruto, áudio tratado, PNG do título, vinheta, card de CTA).
+     * Ausente = o caminho do Neo (`G:/…`), como sempre.
+     */
+    premierePaths?: PremierePathMap | null;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
   const mediaPath = opts.mediaPath ?? source.path;
+  // #12707: um tradutor só para todo `<pathurl>`, para nenhum `<file>` ficar com a raiz do Neo.
+  const url = (p: string): string => pathUrl(premierePath(p, opts.premierePaths));
   const fps = source.fps;
   const total = Math.round(source.durationS * fps);
   const rate = `<rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>`;
-  let defined = false;
+  // #12559: um `<file>` por arquivo do bruto (file-1, file-2…); in/out de cada clipe em quadros locais do arquivo dele.
+  // Bruto único: um arquivo só, file-1, com o `mediaPath` e a duração de sempre.
+  const multi = isMultiSource(source);
+  const files = sourceFiles(source);
+  const defined = new Set<number>();
   let cid = 0;
-  const fileEl = () => {
-    if (defined) return '<file id="file-1"/>';
-    defined = true;
+  const fileEl = (k = 0) => {
+    const id = `file-${k + 1}`;
+    if (defined.has(k)) return `<file id="${id}"/>`;
+    defined.add(k);
+    const f = files[k];
+    const path = multi ? (opts.mediaPaths?.[k] ?? f.path) : mediaPath;
+    const dur = multi ? f.frames : total;
+    const w = multi ? f.width : source.width;
+    const h = multi ? f.height : source.height;
     return (
-      `<file id="file-1"><name>${escapeXml(baseName(mediaPath))}</name><pathurl>${escapeXml(pathUrl(mediaPath))}</pathurl>\n` +
-      `${rate}<duration>${total}</duration>\n` +
-      `<media><video><samplecharacteristics><width>${source.width}</width><height>${source.height}</height></samplecharacteristics></video>\n` +
+      `<file id="${id}"><name>${escapeXml(baseName(path))}</name><pathurl>${escapeXml(url(path))}</pathurl>\n` +
+      `${rate}<duration>${dur}</duration>\n` +
+      `<media><video><samplecharacteristics><width>${w}</width><height>${h}</height></samplecharacteristics></video>\n` +
       `<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio></media></file>`
     );
   };
   const gain = opts.audioGain ? audioLevelsFilter(opts.audioGain.linear) : "";
   // #12102: o `<file>` do áudio dos clipes: o bruto (file-1) ou a faixa tratada, definida no 1º clipe de áudio.
+  // #12559: a faixa tratada cobre a linha do tempo global (in/out globais); sem ela, o áudio é o do arquivo do clipe.
   let audioDefined = false;
-  const audioFileEl = () => {
-    if (!opts.audioPath) return '<file id="file-1"/>';
+  const audioFileEl = (k = 0) => {
+    if (!opts.audioPath) return `<file id="file-${k + 1}"/>`;
     if (audioDefined) return '<file id="file-audio"/>';
     audioDefined = true;
     return (
-      `<file id="file-audio"><name>${escapeXml(baseName(opts.audioPath))}</name><pathurl>${escapeXml(pathUrl(opts.audioPath))}</pathurl>\n` +
+      `<file id="file-audio"><name>${escapeXml(baseName(opts.audioPath))}</name><pathurl>${escapeXml(url(opts.audioPath))}</pathurl>\n` +
       `${rate}<duration>${total}</duration>\n` +
       `<media><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>1</channelcount></audio></media></file>`
     );
@@ -3000,7 +3523,7 @@ export function buildXmeml(
     const fileId = known ?? (pngFileIds.size === 0 ? "file-titulo" : `file-titulo-${pngFileIds.size + 1}`);
     const fileRef = known
       ? `<file id="${fileId}"/>`
-      : `<file id="${fileId}"><name>${escapeXml(baseName(title.pngPath))}</name><pathurl>${escapeXml(pathUrl(title.pngPath))}</pathurl>\n${rate}<duration>${total}</duration>\n` +
+      : `<file id="${fileId}"><name>${escapeXml(baseName(title.pngPath))}</name><pathurl>${escapeXml(url(title.pngPath))}</pathurl>\n${rate}<duration>${total}</duration>\n` +
         `<media><video><samplecharacteristics><width>${plan.spec.width}</width><height>${plan.spec.height}</height></samplecharacteristics></video></media></file>`;
     pngFileIds.set(title.pngPath, fileId);
     return (
@@ -3025,7 +3548,7 @@ export function buildXmeml(
     const fileLen = Math.round(vin.durationS * (vin.fps ?? fps));
     const fileRef = vinhetaDefined
       ? '<file id="file-vinheta"/>'
-      : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(pathUrl(vin.path))}</pathurl>\n${fileRate}<duration>${fileLen}</duration>\n` +
+      : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(url(vin.path))}</pathurl>\n${fileRate}<duration>${fileLen}</duration>\n` +
         `<media><video><samplecharacteristics><width>${vin.width}</width><height>${vin.height}</height></samplecharacteristics></video>` +
         (vin.hasAudio
           ? `\n<audio><samplecharacteristics><depth>16</depth><samplerate>${vin.audioSampleRate ?? 48000}</samplerate></samplecharacteristics><channelcount>${vin.audioChannels ?? 2}</channelcount></audio>`
@@ -3046,37 +3569,83 @@ export function buildXmeml(
         : "",
     };
   };
+  // #12571: um `<file>` por MP4 do card (vertical e horizontal são arquivos diferentes), definido no 1º uso.
+  const cardFileIds = new Map<string, string>();
+  const ctaCardOf = (plan: SequencePlan): CtaCardAsset | null => opts.ctaCard?.[sequenceKey(plan.spec)] ?? null;
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE xmeml>", '<xmeml version="4">'];
   plans.forEach((plan, si) => {
     const { spec } = plan;
     const v: string[] = [];
     const a: string[] = [];
+    // #12559: fundo desfocado do `blur-fill` numa faixa abaixo dos clipes (sem link com o áudio).
+    const bg: string[] = [];
     plan.clips.forEach((c, i) => {
       cid++;
-      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: spec.width, seqH: spec.height, scalePct: c.scale, framing: clipFraming(framing, c), eyeFraction: spec.eyeFraction });
+      const g = clipGeometry({ source, spec, framing, fileOverrides: opts.fileOverrides, clip: c });
+      const k = g.fileIndex;
+      const off = multi ? files[k].offsetFrames : 0;
+      const fileDur = multi ? files[k].frames : total;
       const links =
         `<link><linkclipref>v${cid}</linkclipref><mediatype>video</mediatype></link>` +
         `<link><linkclipref>a${cid}</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>${i + 1}</clipindex></link>`;
       const head =
-        `<name>${escapeXml(c.block)}</name><enabled>TRUE</enabled><duration>${total}</duration>\n` +
-        `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${c.frameIn}</in><out>${c.frameOut}</out>\n`;
-      v.push(`<clipitem id="v${cid}">${head}${fileEl()}${motionFilter(fr.scalePct, fr.center)}\n${links}</clipitem>`);
+        `<name>${escapeXml(c.block)}</name><enabled>TRUE</enabled><duration>${fileDur}</duration>\n` +
+        `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${c.frameIn - off}</in><out>${c.frameOut - off}</out>\n`;
+      // A faixa tratada é a linha do tempo global inteira: in/out globais.
+      const audioHead = multi && opts.audioPath
+        ? `<name>${escapeXml(c.block)}</name><enabled>TRUE</enabled><duration>${total}</duration>\n` +
+          `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${c.frameIn}</in><out>${c.frameOut}</out>\n`
+        : head;
+      v.push(`<clipitem id="v${cid}">${head}${fileEl(k)}${motionFilter(g.main.scalePct, g.main.center)}\n${links}</clipitem>`);
+      if (g.background) {
+        bg.push(`<clipitem id="bg${cid}">${head.replace(`<name>${escapeXml(c.block)}</name>`, `<name>${escapeXml(c.block)}-fundo</name>`)}${fileEl(k)}${motionFilter(g.background.scalePct, g.background.center)}${gaussianBlurFilter(BLUR_FILL_RADIUS)}</clipitem>`);
+      }
       a.push(
-        `<clipitem id="a${cid}">${head}${audioFileEl()}<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${links}</clipitem>`,
+        `<clipitem id="a${cid}">${audioHead}${audioFileEl(k)}<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${links}</clipitem>`,
       );
     });
+    const card = ctaCardOf(plan);
+    if (card) {
+      const known = cardFileIds.get(card.xmlPath);
+      const fileId = known ?? (cardFileIds.size === 0 ? "file-cta-card" : `file-cta-card-${cardFileIds.size + 1}`);
+      cardFileIds.set(card.xmlPath, fileId);
+      v.push(ctaCardClipItem({ asset: card, startFrame: plan.durationFrames, rate, id: `cta-card-${si + 1}`, fileId, fileDefined: known !== undefined, pathurl: url(card.xmlPath) }));
+    }
+    const bgTrack = bg.length ? `<track>${bg.join("\n")}</track>` : "";
     const titleTrack = screenTitleTrack(plan, si);
     const vin = vinhetaTracks(plan, si);
     out.push(
-      `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
+      `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames + (card?.frames ?? 0)}</duration>\n` +
         `${rate}\n` +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
-        `<track>${v.join("\n")}</track>${titleTrack}${vin.video}</video>\n` +
+        `${bgTrack}<track>${v.join("\n")}</track>${titleTrack}${vin.video}</video>\n` +
         `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track>${vin.audio}</audio></media></sequence>`,
     );
   });
   out.push("</xmeml>");
-  return out.join("\n") + "\n";
+  return hoistFileDefinitions(out.join("\n") + "\n");
+}
+
+/**
+ * Garante que a 1ª ocorrência de cada `<file id>` no documento é a definição
+ * completa (convenção do xmeml; review da PR #12563): a faixa do fundo do
+ * `blur-fill` vem antes da principal no documento, mas o `<file>` é definido
+ * no clipe principal. Troca a 1ª referência curta pela definição e a
+ * definição pela referência. Sem `blur-fill` nada muda (a definição já vem antes).
+ */
+export function hoistFileDefinitions(xml: string): string {
+  let doc = xml;
+  for (const m of [...xml.matchAll(/<file id="([^"]+)"><name>[\s\S]*?<\/file>/g)]) {
+    const id = m[1];
+    const def = m[0];
+    const ref = `<file id="${id}"/>`;
+    const refAt = doc.indexOf(ref);
+    const defAt = doc.indexOf(def);
+    if (refAt < 0 || refAt > defAt) continue;
+    doc = doc.slice(0, defAt) + ref + doc.slice(defAt + def.length);
+    doc = doc.slice(0, refAt) + def + doc.slice(refAt + ref.length);
+  }
+  return doc;
 }
 
 // ── Legendas ──────────────────────────────────────────────────────────────
@@ -3442,7 +4011,8 @@ export function cutPoints(plan: SequencePlan, fps: number): number[] {
 
 // ── Autorrevisão da prévia ────────────────────────────────────────────────
 
-export type ReviewKind = "tomada-duplicada" | "silaba-vazada" | "fala-extra" | "fala-faltando" | "final-seco";
+/** `tomada-colapsada` (#12711): palavra esticada sobre som na transcrição do áudio montado (`stretchedWordFindings`). */
+export type ReviewKind = "tomada-duplicada" | "tomada-colapsada" | "silaba-vazada" | "fala-extra" | "fala-faltando" | "final-seco";
 
 export interface ReviewFinding {
   kind: ReviewKind;
@@ -3621,9 +4191,9 @@ export function parseFrameRate(r: string): number {
 }
 
 /**
- * Saída do `ffprobe -show_streams -show_format -of json` → o que a montagem
- * usa. Rotação de metadado (vídeo de celular gravado "em pé") não é tratada:
- * o bruto da diar.ia.br é horizontal sem rotação (261027).
+ * Espelhamento e câmera do bruto (#11959); `parseProbe` (abaixo) lê o
+ * `ffprobe` e, desde o #12559, aplica a rotação de 90/270 do metadado
+ * (celular gravando em pé): vale o tamanho exibido (`displaySize`).
  */
 export type CameraFacing = "front" | "back";
 export type MirroredFrom = "camera-metadata" | "config" | "default";
@@ -3707,7 +4277,9 @@ export function parseProbe(json: string, path: string, opts: { mirroredDefault?:
   }
   const camera = cameraFacingFromTags(j.format?.tags, ...(j.streams ?? []).map((st) => st.tags));
   const m = resolveMirrored(camera, opts.mirroredDefault ?? null);
-  return { path, fps, durationS: round3(durationS), width: v.width, height: v.height, mirrored: m.mirrored, mirroredFrom: m.mirroredFrom, ...(camera ? { camera } : {}) };
+  // #12559: celular gravando em pé guarda 1920x1080 com rotação 90; vale o tamanho exibido (o que ffmpeg e Premiere usam).
+  const size = displaySize(v.width, v.height, probeExtras(json).rotation);
+  return { path, fps, durationS: round3(durationS), width: size.width, height: size.height, mirrored: m.mirrored, mirroredFrom: m.mirroredFrom, ...(camera ? { camera } : {}) };
 }
 
 /**
@@ -3727,16 +4299,29 @@ export function previewClipArgs(input: {
   height?: number;
   /** #12102: o áudio do clipe vem da faixa tratada (mesma linha do tempo do bruto), não do bruto. */
   audioSrc?: string;
+  /**
+   * #12559: início do trecho na faixa de áudio (`audioSrc`), quando difere do
+   * vídeo: no bruto em vários arquivos o vídeo é lido em tempo LOCAL do
+   * arquivo e o áudio (faixa tratada ou concatenada) em tempo global.
+   */
+  audioStart?: number;
+  /** #12559: encaixe `fit`/`blur-fill` (o `crop` é ignorado); ausente/`fill` = recorte de sempre. */
+  fit?: FitMode;
 }): string[] {
   const d = input.end - input.start;
   if (!(d > 0)) throw new Error(`clipe vazio (${input.start}-${input.end})`);
   const { x, y, w, h } = input.crop;
-  const vf = `${input.mirrored ? "hflip," : ""}crop=${w}:${h}:${x}:${y},scale=${input.width ?? 720}:${input.height ?? 1280},setsar=1,fps=${input.fps}`;
+  const outW = input.width ?? 720;
+  const outH = input.height ?? 1280;
+  const vf = input.fit && input.fit !== "fill"
+    ? fitPreviewFilter({ fit: input.fit, mirrored: input.mirrored, outW, outH, fps: input.fps })
+    : `${input.mirrored ? "hflip," : ""}crop=${w}:${h}:${x}:${y},scale=${outW}:${outH},setsar=1,fps=${input.fps}`;
   const af = `afade=t=in:d=0.02,afade=t=out:st=${Math.max(0, d - 0.03).toFixed(3)}:d=0.03`;
+  const aStart = input.audioStart ?? input.start;
   return [
     "-y", "-v", "error",
     "-ss", input.start.toFixed(3), "-to", input.end.toFixed(3), "-i", input.src,
-    ...(input.audioSrc ? ["-ss", input.start.toFixed(3), "-to", input.end.toFixed(3), "-i", input.audioSrc, "-map", "0:v:0", "-map", "1:a:0"] : []),
+    ...(input.audioSrc ? ["-ss", aStart.toFixed(3), "-to", (aStart + d).toFixed(3), "-i", input.audioSrc, "-map", "0:v:0", "-map", "1:a:0"] : []),
     "-vf", vf, "-af", af,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
     "-c:a", "aac", "-ar", "48000", "-ac", "2",

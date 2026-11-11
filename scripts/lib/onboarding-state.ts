@@ -27,6 +27,7 @@
 
 import type { OnboardingEntry, OnboardingStore } from "./onboarding-store.ts";
 import { findKitLotForEntry, hasConfirmedKitLotForEntry, type OnboardingKitLot, type OnboardingKitLotKind } from "./onboarding-kit-transport.ts";
+import { resolveTopVideoPlaceholder, type TopVideoLink } from "./onboarding-top-video.ts";
 
 // ---------------------------------------------------------------------------
 // Snippets (data/snippets/onboarding-{1,2,3}.md)
@@ -48,15 +49,26 @@ export interface OnboardingSnippet {
  * Parse do snippet: cabeçalho é comentário HTML com metadados
  * (`assunto:` / `preview_text:`), corpo vem depois do comentário.
  * Tolerante a arquivo ausente (caller decide o que fazer com `null`).
+ *
+ * #12542: o placeholder `{{VIDEO_MAIS_ASSISTIDO}}` do corpo é SEMPRE trocado
+ * aqui, pelo vídeo medido (`topVideo`, lido de `data/youtube/top-video.json`
+ * pelos executores) ou, sem ele, pelo último valor conhecido
+ * (`FALLBACK_TOP_VIDEO`). Resolver no parse, e não no envio, garante que
+ * nenhum caminho de envio (Brevo, Kit, piloto) manda o placeholder cru.
  */
-export function parseOnboardingSnippet(raw: string | null, numero: number): OnboardingSnippet | null {
+export function parseOnboardingSnippet(
+  raw: string | null,
+  numero: number,
+  topVideo?: TopVideoLink | null,
+): OnboardingSnippet | null {
   if (raw == null) return null;
   const hasPendingMarker = raw.includes(PENDING_BODY_MARKER);
   const assuntoMatch = raw.match(/assunto:\s*"([^"]*)"/);
   const previewMatch = raw.match(/preview_text:\s*"([^"]*)"/);
   // Corpo = tudo depois do FECHAMENTO do primeiro comentário HTML do arquivo.
   const endComment = raw.indexOf("-->");
-  const body = endComment >= 0 ? raw.slice(endComment + 3).trim() : raw.trim();
+  const rawBody = endComment >= 0 ? raw.slice(endComment + 3).trim() : raw.trim();
+  const body = resolveTopVideoPlaceholder(rawBody, topVideo);
   return {
     numero,
     assunto: assuntoMatch ? assuntoMatch[1] : null,

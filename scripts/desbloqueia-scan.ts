@@ -135,6 +135,7 @@ import {
   type DesbloqueioCandidate,
   type DesbloqueioIssueInput,
   type DesbloqueioScanReport,
+  type UltimoComentario,
 } from "./lib/desbloqueia-scan.ts";
 import { latestExecutionBlockFor } from "./lib/issue-decisions.ts";
 import { isTrustedCommentAuthor, trustedCommentBodies } from "./lib/trusted-comment-author.ts";
@@ -230,12 +231,17 @@ function fetchCommentsChecked(
   issueNumber: number,
   cwd: string,
   runGh: GhRunFn,
-): { comments: string[]; threadComments: ThreadComment[]; error: string | null } {
+): {
+  comments: string[];
+  threadComments: ThreadComment[];
+  ultimoComentario: UltimoComentario | null;
+  error: string | null;
+} {
   const result = runGh(["issue", "view", String(issueNumber), "--json", "comments"], cwd);
   if (result.status !== 0) {
     const reason = result.stderr?.trim() || `gh issue view #${issueNumber} falhou (status ${result.status ?? "null"})`;
     console.error(`[desbloqueia-scan] ${reason}`);
-    return { comments: [], threadComments: [], error: reason };
+    return { comments: [], threadComments: [], ultimoComentario: null, error: reason };
   }
   let parsed: unknown;
   try {
@@ -243,20 +249,37 @@ function fetchCommentsChecked(
   } catch (err) {
     const reason = `gh issue view #${issueNumber} — JSON de comentários inválido: ${err instanceof Error ? err.message : String(err)}`;
     console.error(`[desbloqueia-scan] ${reason}`);
-    return { comments: [], threadComments: [], error: reason };
+    return { comments: [], threadComments: [], ultimoComentario: null, error: reason };
   }
   const comments = (parsed as { comments?: unknown } | null)?.comments;
   if (!Array.isArray(comments)) {
     const reason = `gh issue view #${issueNumber} — resposta sem array "comments"`;
     console.error(`[desbloqueia-scan] ${reason}`);
-    return { comments: [], threadComments: [], error: reason };
+    return { comments: [], threadComments: [], ultimoComentario: null, error: reason };
   }
   // #9752: só autor confiável (OWNER/MEMBER/COLLABORATOR) — repo público,
   // marcador de decisão forjável por qualquer conta. Ver trusted-comment-author.ts.
   return {
     comments: trustedCommentBodies(comments) ?? [],
     threadComments: trustedThreadComments(comments),
+    ultimoComentario: ultimoComentarioDaThread(comments),
     error: null,
+  };
+}
+
+/**
+ * #12546 — o último comentário da thread INTEIRA (sem o filtro de autor
+ * confiável: um comentário de qualquer conta depois da revisão é "algo
+ * novo"), com a marca de autor confiável para o miolo puro decidir.
+ */
+export function ultimoComentarioDaThread(comments: unknown): UltimoComentario | null {
+  if (!Array.isArray(comments) || comments.length === 0) return null;
+  const node = comments[comments.length - 1] as { body?: unknown; createdAt?: unknown } | null;
+  if (!node || typeof node.body !== "string") return null;
+  return {
+    body: node.body,
+    createdAt: typeof node.createdAt === "string" ? node.createdAt : null,
+    confiavel: isTrustedCommentAuthor(node),
   };
 }
 
@@ -512,8 +535,8 @@ export function runDesbloqueioScan(
 
   // Passada 2: só pras candidatas reais, busca a thread completa.
   const fetched = candidates.map((issue) => {
-    const { comments, threadComments, error } = fetchCommentsChecked(issue.number, cwd, runGh);
-    return { issue, comments, threadComments, error };
+    const { comments, threadComments, ultimoComentario, error } = fetchCommentsChecked(issue.number, cwd, runGh);
+    return { issue, comments, threadComments, ultimoComentario, error };
   });
   // #12388: a thread que as passadas 1 e 2 já leram, por número.
   const threads = new Map<number, IssueThread>(
@@ -534,7 +557,7 @@ export function runDesbloqueioScan(
   }
   const dependencyStates = resolveDependencyStates(deps, openNumbers, cwd, runGh);
 
-  const inputs: DesbloqueioIssueInput[] = fetched.map(({ issue, comments, error }) => {
+  const inputs: DesbloqueioIssueInput[] = fetched.map(({ issue, comments, ultimoComentario, error }) => {
     const bloco = error ? null : latestExecutionBlockFor(comments);
     const depIssue = bloco?.condicao.tipo === "depends_on" ? bloco.condicao.issue : null;
     return {
@@ -548,6 +571,7 @@ export function runDesbloqueioScan(
       commentsFetchError: error,
       dependencyState: depIssue === null ? null : (dependencyStates.get(depIssue) ?? "missing"),
       incluirEngavetadas: opts.incluirEngavetadas,
+      ultimoComentario,
     };
   });
 

@@ -31,11 +31,23 @@ export interface InterestTerm {
   /** Fonte de regex, casada com flags `iu` e bordas de palavra unicode. */
   pattern: string;
   weight: number;
+  /**
+   * Termo genérico (#12549): casa em quase todo texto de IA ("agentes",
+   * "automação", "programação"). Só pontua no corpo quando o item também tem
+   * um "segundo sinal": um termo NÃO genérico casado, ou qualquer termo do
+   * perfil no título (mantém "OAB-SP vai à Justiça contra a startup Enter");
+   * no título pontua sempre, porque ali a notícia é sobre aquilo.
+   */
+  generic?: boolean;
 }
 
 /**
  * Default derivado do catálogo de cursos da Stack (Lovable, n8n, Pensamento
  * Builder, Claude Code, Replit, Cursor, Agentes de IA, GitHub para Builders).
+ *
+ * #12549: os termos marcados `generic` são os que, no ciclo 26w45, puseram no
+ * Radar "Agentes de compras com IA podem ameaçar Amazon e Walmart" (varejo) e
+ * "O candidato com 278 entrevistas" (recrutamento) só por aparecer no corpo.
  */
 export const STACK_INTEREST_PROFILE: readonly Readonly<InterestTerm>[] = [
   { label: "Lovable", pattern: "lovable", weight: 4 },
@@ -47,16 +59,41 @@ export const STACK_INTEREST_PROFILE: readonly Readonly<InterestTerm>[] = [
   { label: "Codex", pattern: "codex", weight: 3 },
   { label: "vibe coding", pattern: "vibe[ -]?cod\\p{L}*", weight: 4 },
   { label: "no-code", pattern: "no[ -]?code|low[ -]?code|sem c[óo]digo", weight: 4 },
-  { label: "agentes", pattern: "agent\\p{L}*|ag[êe]ntic\\p{L}*", weight: 3 },
-  { label: "automação", pattern: "automa[çt]\\p{L}*|workflows?", weight: 3 },
+  { label: "agentes", pattern: "agent\\p{L}*|ag[êe]ntic\\p{L}*", weight: 3, generic: true },
+  { label: "automação", pattern: "automa[çt]\\p{L}*|workflows?", weight: 3, generic: true },
   { label: "MCP", pattern: "mcp", weight: 3 },
   { label: "protótipo/MVP", pattern: "prot[óo]tip\\p{L}*|prototyp\\p{L}*|mvp", weight: 3 },
-  { label: "app", pattern: "apps?|aplicativos?", weight: 2 },
-  { label: "programação", pattern: "program\\p{L}*|c[óo]digo|coding|desenvolvedor\\p{L}*|devs?", weight: 2 },
+  { label: "app", pattern: "apps?|aplicativos?", weight: 2, generic: true },
+  { label: "programação", pattern: "program\\p{L}*|c[óo]digo|coding|desenvolvedor\\p{L}*|devs?", weight: 2, generic: true },
   { label: "API", pattern: "apis?|sdks?", weight: 2 },
   { label: "open source", pattern: "open[ -]?source|c[óo]digo aberto", weight: 2 },
-  { label: "startup", pattern: "startups?", weight: 1 },
-  { label: "produto", pattern: "produtos?", weight: 1 },
+  { label: "startup", pattern: "startups?", weight: 1, generic: true },
+  { label: "produto", pattern: "produtos?", weight: 1, generic: true },
+];
+
+/**
+ * Assuntos de outro setor (#12549): varejo/publicidade, recrutamento, saúde,
+ * ERP/sistema de gestão corporativo. Casados no título ou no corpo. Item que
+ * cai aqui SEM nenhum sinal específico (termo não genérico do perfil ou de
+ * importância) fica fora do Radar; destaque assim entra no aviso da prévia.
+ * Casos do ciclo 26w45: "Agentes de compras ... Amazon e Walmart", "O candidato
+ * com 278 entrevistas" e "Vale usa IA para transformar reuniões em código"
+ * (troca do sistema de gestão), que o editor tirou à mão.
+ */
+export const STACK_OFF_TOPIC_TERMS: readonly Readonly<InterestTerm>[] = [
+  {
+    label: "varejo/publicidade",
+    pattern: "varej\\p{L}*|e-?commerce|compras|walmart|publicidade|anunciantes?|retail\\p{L}*|advertis\\p{L}*|shopping",
+    weight: 0,
+  },
+  {
+    label: "recrutamento",
+    pattern:
+      "recrut\\p{L}*|recruit\\p{L}*|hiring|curr[íi]culos?|entrevistas? de emprego|job interviews?|rh|recursos humanos",
+    weight: 0,
+  },
+  { label: "saúde", pattern: "sa[úu]de|hospita\\p{L}*|m[ée]dic[oa]s?|pacientes?|healthcare", weight: 0 },
+  { label: "ERP corporativo", pattern: "erp|sistemas? de gest[ãa]o|sap", weight: 0 },
 ];
 
 /** Bônus por seção — itens práticos interessam mais a quem constrói. */
@@ -99,9 +136,21 @@ export const STACK_IMPORTANCE_TERMS: readonly Readonly<InterestTerm>[] = [
 /** Bônus pela posição na edição diária (#11782): o D1 é a notícia que o editor pôs no topo. */
 export const DESTAQUE_POSITION_BONUS: Readonly<Record<1 | 2 | 3, number>> = { 1: 2, 2: 1, 3: 0 };
 
+/**
+ * Força do sinal de interesse (#12549):
+ *   - `especifico`: casou termo não genérico do perfil (ferramenta/produto) ou,
+ *     em destaque, termo de importância no título;
+ *   - `generico`: só termo genérico, e no título;
+ *   - `nenhum`: nada pontuou (termo genérico só no corpo não conta sozinho).
+ */
+export type StackSignal = "especifico" | "generico" | "nenhum";
+
 export interface StackScoredCandidate extends WeeklyRawCandidate {
   score: number;
   matchedTerms: string[];
+  signal: StackSignal;
+  /** Assunto de outro setor (`STACK_OFF_TOPIC_TERMS`) sem sinal específico (#12549). */
+  offTopic: boolean;
 }
 
 export interface CircleStackSelectionCaps {
@@ -128,16 +177,29 @@ function compileTerm(t: InterestTerm): RegExp {
  * Pure: pontua um candidato contra o perfil. Título conta em dobro. Destaque
  * diário soma ainda a importância (#11782): `DESTAQUE_POSITION_BONUS` e
  * `STACK_IMPORTANCE_TERMS`, estes só quando casam no título (peso em dobro).
+ *
+ * #12549: termo `generic` só no corpo pontua apenas quando o item tem também
+ * um sinal específico; `signal` e `offTopic` vão junto para a seleção barrar o
+ * Radar e para o aviso da prévia.
  */
 export function scoreCandidate(c: WeeklyRawCandidate, profile: readonly InterestTerm[] = STACK_INTEREST_PROFILE): StackScoredCandidate {
   let score = SECTION_BONUS[c.section] ?? 0;
   const matched: string[] = [];
   const rest = `${c.body}\n${c.why}`;
-  for (const t of profile) {
+  const hits = profile.map((t) => {
     const re = compileTerm(t);
-    const inTitle = re.test(c.title);
-    const inRest = re.test(rest);
+    return { t, inTitle: re.test(c.title), inRest: re.test(rest) };
+  });
+  const importance = c.kind === "destaque" ? STACK_IMPORTANCE_TERMS.filter((t) => compileTerm(t).test(c.title)) : [];
+  const specific = hits.some((h) => !h.t.generic && (h.inTitle || h.inRest)) || importance.length > 0;
+  // Segundo sinal para o genérico do corpo: termo específico em qualquer lugar,
+  // ou algum termo do perfil no título (a notícia é sobre aquilo).
+  const anyInTitle = hits.some((h) => h.inTitle);
+  let genericInTitle = false;
+  for (const { t, inTitle, inRest } of hits) {
     if (!inTitle && !inRest) continue;
+    if (t.generic && !inTitle && !specific && !anyInTitle) continue; // genérico só no corpo, sem segundo sinal
+    if (t.generic && inTitle) genericInTitle = true;
     score += t.weight * (inTitle ? 2 : 1);
     matched.push(t.label);
   }
@@ -145,13 +207,23 @@ export function scoreCandidate(c: WeeklyRawCandidate, profile: readonly Interest
     if (c.destaqueN !== undefined) score += DESTAQUE_POSITION_BONUS[c.destaqueN] ?? 0;
     // Só no título: "modelo" e "custo" aparecem de passagem em quase todo corpo
     // (medido nos ciclos 26w42-26w44); no título, a notícia É sobre isso.
-    for (const t of STACK_IMPORTANCE_TERMS) {
-      if (!compileTerm(t).test(c.title)) continue;
+    for (const t of importance) {
       score += t.weight * 2;
       matched.push(t.label);
     }
   }
-  return { ...c, score, matchedTerms: matched };
+  const signal: StackSignal = specific ? "especifico" : genericInTitle ? "generico" : "nenhum";
+  const offTopic = !specific && STACK_OFF_TOPIC_TERMS.some((t) => compileTerm(t).test(`${c.title}\n${rest}`));
+  return { ...c, score, matchedTerms: matched, signal, offTopic };
+}
+
+/**
+ * Pure (#12549): destaque escolhido sem aderência ao público da Stack — só
+ * termo genérico (ou nenhum) ou assunto de outro setor. A prévia avisa, em vez
+ * de a semana sair parecendo bem servida.
+ */
+export function isWeakStackDestaque(c: Pick<StackScoredCandidate, "signal" | "offTopic">): boolean {
+  return c.signal !== "especifico" || c.offTopic;
 }
 
 /** Pure: ordena por score desc, depois edição mais recente, depois título. */
@@ -173,7 +245,9 @@ function byScore(a: StackScoredCandidate, b: StackScoredCandidate): number {
  *   `isManufacturerUrl`, registro de `official-domains.ts`). Item dessas
  *   seções vindo de imprensa/blog pessoal/agregador é rebaixado ao radar,
  *   concorrendo sem o bônus de seção.
- * - radar: itens com score > 0; também recebe destaques que não entraram no topo.
+ * - radar: itens com score > 0 e sinal de interesse (#12549: termo genérico só
+ *   no corpo não basta; assunto de outro setor sem sinal específico fica fora);
+ *   também recebe destaques que não entraram no topo.
  * - URL nunca repete entre seções.
  */
 export function selectCircleStack(
@@ -222,8 +296,12 @@ export function selectCircleStack(
   const demoted = all
     .filter((c) => practical(c) && c.kind !== "destaque" && !isManufacturerUrl(c.url))
     .map((c) => ({ ...c, score: c.score - (SECTION_BONUS[c.section] ?? 0) }));
+  // #12549: o Radar exige sinal de interesse que não seja só termo genérico no
+  // corpo, e fora assunto de outro setor sem sinal específico.
   const radar = take(
-    [...all.filter((c) => c.section === "radar" || c.kind === "destaque"), ...demoted].filter((c) => c.score > 0),
+    [...all.filter((c) => c.section === "radar" || c.kind === "destaque"), ...demoted].filter(
+      (c) => c.score > 0 && c.signal !== "nenhum" && !c.offTopic,
+    ),
     caps.radar,
   );
 
@@ -239,7 +317,11 @@ export function parseInterestProfile(raw: unknown): InterestTerm[] | null {
     if (typeof t.pattern !== "string" || typeof t.weight !== "number") {
       throw new Error(`circle_stack.interests[${i}] precisa de pattern (string) e weight (número)`);
     }
-    const term = { label: typeof t.label === "string" ? t.label : t.pattern, pattern: t.pattern, weight: t.weight };
+    if (t.generic !== undefined && typeof t.generic !== "boolean") {
+      throw new Error(`circle_stack.interests[${i}].generic precisa ser true ou false`);
+    }
+    const term: InterestTerm = { label: typeof t.label === "string" ? t.label : t.pattern, pattern: t.pattern, weight: t.weight };
+    if (t.generic === true) term.generic = true;
     compileTerm(term);
     return term;
   });

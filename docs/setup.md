@@ -4,7 +4,7 @@
 
 Premissa original: **Neo, Windows x64 do editor**, é a máquina de mídia/capas.
 Desde o #11223 (viagem do editor, o Neo ligado poucas horas por dia) o mesmo
-setup também roda no **300 (Linux x86_64)**, para o `/diaria-publica-video`
+setup também roda no **300 (Linux x86_64)**, para o `/diaria-publica`
 sair inteiro de lá, comandado do celular. Este patch só versiona o setup; não
 instala dependências no host que implementa a issue. A instalação em cada
 máquina fica pendente até executar os comandos abaixo.
@@ -100,7 +100,7 @@ decodifica um áudio de teste em vez de só importar o pacote.
 No 300 o bruto é baixado para `~/.cache/diaria-video-montagem/{AAMMDD}/bruto/`
 e o work dir (áudio, clipes da prévia) fica em `.../{AAMMDD}/work/` (em disco: o
 `/tmp` dele é tmpfs); o check pede 3x o tamanho do bruto livre nesse disco;
-apagar a pasta da edição depois do `/diaria-publica-video` libera o espaço.
+apagar a pasta da edição depois do `/diaria-publica` libera o espaço.
 Auth: o OAuth do projeto (`data/.credentials.json`), o mesmo do
 `fetch-drive-video.ts`.
 
@@ -141,7 +141,7 @@ mesmo conteúdo operacional, com achados ao vivo (#7106, #4823 etc.) que o
    A pasta-alvo no OneDrive precisa existir antes (criar manualmente na 1ª máquina; nas demais, o OneDrive já sincronizou). Toda `data/` está em `.gitignore` blanket — nada lá dentro vai pro repo.
 
    **Transição pro Google Drive (épica #12353).** O `data/` vai sair do OneDrive pro Google Drive num cutover **simultâneo nas três máquinas** (#12359): máquinas em backends diferentes quebram o merge lock e o `session-registry` em silêncio. Até lá, **não repontar `data/` numa máquina só**. No cutover o alvo passa a ser a pasta `diaria-studio-data` dentro do Drive (o lugar exato no Drive é definido na #12359):
-   - Linux (`300`): `ln -s /mnt/hd-sata/GoogleDrive/<pasta>/diaria-studio-data data` — cópia local do `rclone bisync` (#12356, `docs/scheduled-tasks-registry.md`, `diaria-gdrive-bisync`).
+   - Linux (`300`): `ln -s /mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data data` — cópia local do bisync dedicado de `data/` (conta diaria.editor, #12478, `docs/scheduled-tasks-registry.md`, `diaria-gdrive-data-bisync`), fora do espelho do Drive inteiro em `/mnt/hd-sata/GoogleDrive`.
    - Windows (Drive for desktop): `New-Item -ItemType Junction -Path "data" -Target "G:\Meu Drive\<pasta>\diaria-studio-data"` (`My Drive` no Windows em inglês; a letra `G:` é o default do app).
    - macOS (Drive for desktop): `ln -s ~/Library/CloudStorage/GoogleDrive-<email>/"Meu Drive"/<pasta>/diaria-studio-data data`.
 

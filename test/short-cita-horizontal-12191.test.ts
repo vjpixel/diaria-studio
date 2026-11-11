@@ -121,12 +121,13 @@ describe("#12191 citação do horizontal na descrição do Short", () => {
   it("readHorizontalVideoForShort: título do registro, ausência e arquivo ilegível (fail-soft)", () => {
     const dir = mkdtempSync(join(tmpdir(), "short-12191-"));
     try {
-      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false });
+      // #12735: `url` = o 05-video-url.txt (ausente aqui).
+      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null });
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(join(dir, "_internal", "05-youtube-published.json"), JSON.stringify({ videoId: "v1", title: " Do registro " }));
-      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: "Do registro", noVideo: false });
+      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: "Do registro", noVideo: false, url: null });
       writeFileSync(join(dir, "_internal", "05-youtube-published.json"), "{nao-json");
-      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false });
+      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null });
       writeFileSync(join(dir, "_internal", "no-video.json"), "{}");
       assert.equal(readHorizontalVideoForShort(dir).noVideo, true);
     } finally {

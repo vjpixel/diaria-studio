@@ -87,7 +87,16 @@ npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD}
 (com `--reselect` se a skill recebeu a flag). Monta ou reusa
 `data/weekly/{cycle}/_internal/circle-stack-selection.json`, traduz títulos em
 inglês (o editor revisa na seleção) e grava a prévia. Os avisos (`⚠`) que ele
-imprime entram no resumo do Passo 5.
+imprime entram no resumo do Passo 5. Eles são recalculados a cada execução
+sobre a seleção atual (#12553): título reescrito à mão deixa de ser "traduzido
+— revisar", e dia sem diretório de edição (feriado) não conta como edição
+faltando.
+
+Item que o editor tira da semana vai para o campo `excluded` da seleção
+(`[{ "title": "...", "note": "..." }]`, ou `url`; #12557), nunca só apagado da
+seção: assim ele não volta em "Outros destaques da semana" e sobrevive ao
+`--reselect`. Gravar o `title` (a entrada só por `url` não alcança "Outros
+destaques" depois que o item sai da seção).
 
 Seleção com título sem sinal de português ainda não revisado (#11161) não
 impede esta skill de escrever; só bloqueia o `--publish` lá na frente.
@@ -140,13 +149,25 @@ rodar de novo. Nunca editar a seleção direto para contornar a validação.
 npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD}
 ```
 
-Re-renderiza com o texto novo (a seleção é reusada). A prévia vai SEMPRE para
+Re-renderiza com o texto novo (a seleção é reusada). Rodar também o dry-run do
+e-mail aos apoiadores Núcleo (#12538), que grava
+`_internal/circle-stack-email-preview.html` e não chama o Kit:
+
+```bash
+npx tsx scripts/publish-circle-stack-email-kit.ts --publish-monday {AAMMDD}
+```
+
+O e-mail é o mesmo post (sem a linha "Assine a diar.ia.br", com UTM
+`stack-email`), então não tem texto próprio a revisar: o resumo do Passo 5 só
+cita o assunto que o dry-run imprimiu. A prévia vai SEMPRE para
 um Artifact, com ou sem `--publish`; o chat leva só o link e um resumo de
 uma linha (título e estado do ciclo), nunca o post inteiro.
 
-1. **HTML** em `data/weekly/{cycle}/_internal/circle-stack-preview.html`
-   (arquivo local, regravado a cada rodada), página estática com o conteúdo
-   de `circle-stack-{cycle}.md` e dos arquivos do ciclo, sem texto novo:
+1. **HTML** em `data/weekly/{cycle}/_internal/circle-stack-preview.html`,
+   GERADO pelo dry-run acima (`renderCircleStackPreviewHtml`,
+   `scripts/lib/circle-stack-preview-html.ts`, #12555) a partir da mesma
+   seleção e do payload. Nunca escrever nem editar o HTML à mão: ajuste
+   (vídeo, Radar, título) vai na seleção e o dry-run regrava a prévia. Ele traz:
    - o post inteiro, com os links, e o texto escrito para a Stack (abertura e
      `stackNote`) em destaque visual;
    - o título que vai ao webhook (`payload.titulo` em
@@ -202,7 +223,9 @@ que o envio agendado já passou e que o ciclo só sai com `/diaria-stack
 depois da aprovação a invalida (a task não envia e manda "Não enviado"):
 aprovar de novo. Desfazer: `--revoke --publish-monday {AAMMDD}`.
 
-Na segunda às 06:00 a task envia e manda e-mail ao editor com o resultado:
+Na segunda às 06:00 a task envia ao Circle, depois envia o mesmo post por
+e-mail aos apoiadores Núcleo pelo Kit (#12538, tag `kit_stack.audience_tag`,
+só com o ciclo aprovado, mesmo se o Circle falhar) e manda e-mail ao editor com o resultado:
 Publicado, Ambíguo (conferir no Radar), Falhou (erro literal) ou Não enviado
 (sem aprovação, fora da segunda ou trava da seleção). Ela nunca repete o envio
 nem usa `--force`.
@@ -211,13 +234,33 @@ nem usa `--force`.
 
 Publicar é irreversível para terceiros (critério 1 de "Perguntar é exceção"),
 então a skill para UMA vez: `AskUserQuestion` com a prévia do Passo 5 à mão —
-"Publicar agora no Radar de Notícias Stack?" (opções: publicar / não
-publicar). `AskUserQuestion` falhando = halt banner (#3938), nunca publicar
+"Publicar agora no Radar de Notícias Stack e enviar o e-mail aos apoiadores
+Núcleo?" (opções: publicar / não publicar). `AskUserQuestion` falhando = halt banner (#3938), nunca publicar
 sem a resposta. Com o "publicar":
 
 ```bash
 npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD} --publish
 ```
+
+Depois, o e-mail aos apoiadores Núcleo (#12538), mesmo se o envio ao Circle
+falhar por erro de entrega (a confirmação do editor cobre os dois). Ele
+reaplica as travas de conteúdo do Circle (`circle_stack.enabled`, link fora das
+regras, título não revisado): se o Circle recusou o conteúdo, o e-mail recusa
+igual, então corrigir a seleção e rodar os dois de novo.
+
+```bash
+npx tsx scripts/publish-circle-stack-email-kit.ts --publish-monday {AAMMDD} --send
+```
+
+Ele agenda o broadcast no Kit para daqui a 5 minutos (o "enviar agora" da
+API). Ciclo já enviado (`_internal/circle-stack-email-published.json` com
+`status: sent`) sai com exit 0 sem reenviar. Recusa tag ausente ou vazia e
+travas de conteúdo (exit 2, guard: nada criado nem pendente, corrigir e rodar
+de novo). Registro ambíguo (tentativa anterior sem confirmação) ou lock que
+sobrou são incidente (exit 1), e o broadcast é cancelado sozinho, com a
+exclusão conferida, se a releitura não confirmar audiência e agendamento.
+Incidente: levar o erro literal ao editor e não reexecutar antes de conferir o
+Kit (o `--force` cria um broadcast novo).
 
 O publicador recusa sozinho ciclo já publicado ou ambíguo (só `--force`,
 que esta skill nunca passa sem pedido explícito do editor), link não oficial
@@ -226,6 +269,13 @@ dele vai literal ao editor. Depois do envio, conferir o estado com o resolver
 determinístico (#573) antes de dizer "publicado":
 `_internal/circle-stack-published.json` com `published_at` = confirmado pelo
 webhook; sem `published_at` = ambíguo, conferir no Radar.
+
+Link do post (#12556): o `--publish` imprime `Link do post: ...`. O webhook da
+Stack devolve hoje só `{"ok": true}`, sem a URL; nesse caso a linha aponta o
+espaço (`plataforma.stack.com.br/c/radar-de-noticias-stack`) e o título, e o
+editor acha o post pelo título lá. Se a Stack passar a devolver a URL
+(`url`/`post_url`/`link`), ela é gravada em `post_url` no state, sai no
+`--publish`, no e-mail da task de segunda e na prévia HTML.
 
 ## Fora de escopo
 

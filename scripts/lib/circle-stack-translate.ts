@@ -157,10 +157,33 @@ export function applyStackTitleTranslations<T extends SelectionSections>(
         reportedUrls.add(it.url);
         changed.push({ from: it.title, to: pt });
       }
-      return { ...it, titleOriginal: it.titleOriginal ?? it.title, title: pt };
+      // #12553: `titleTranslated` deixa os avisos serem recalculados a cada execução.
+      return { ...it, titleOriginal: it.titleOriginal ?? it.title, title: pt, titleTranslated: pt };
     }) as T[Section];
   }
   return { selection: next, changed };
+}
+
+/** Prefixo do aviso de título traduzido (#12553: os avisos gravados são reconhecidos por ele). */
+export const STACK_TITLE_TRANSLATED_WARNING_PREFIX = `Título traduzido por ${STACK_TITLE_TRANSLATOR_AGENT} — revisar: `;
+/** Prefixo do aviso de tradução que falhou. */
+export const STACK_TITLE_TRANSLATION_FAILED_PREFIX = "Tradução automática dos títulos falhou";
+
+/** Pure: aviso de título traduzido pela LLM, ainda não revisado. */
+export function stackTitleTranslatedWarning(to: string, from: string): string {
+  return `${STACK_TITLE_TRANSLATED_WARNING_PREFIX}"${to}" (original: "${from}", em titleOriginal)`;
+}
+
+/**
+ * Pure (#12553): título traduzido de um aviso gravado (`"X"` logo depois do
+ * prefixo). `null` = não é aviso de tradução. O original pode conter aspas, então
+ * o corte é no ` (original: "` que fecha o título traduzido.
+ */
+export function parseStackTitleTranslatedWarning(w: string): { to: string; from: string } | null {
+  if (!w.startsWith(STACK_TITLE_TRANSLATED_WARNING_PREFIX)) return null;
+  const rest = w.slice(STACK_TITLE_TRANSLATED_WARNING_PREFIX.length);
+  const m = /^"([\s\S]*?)" \(original: "([\s\S]*)", em titleOriginal\)$/.exec(rest);
+  return m ? { to: m[1], from: m[2] } : null;
 }
 
 export interface TranslateStackTitlesOptions {
@@ -211,16 +234,14 @@ export function translateCircleStackTitles<T extends SelectionSections>(
     });
     const translations = parseStackTitleResponse(text, items);
     const { selection, changed } = applyStackTitleTranslations(sel, translations);
-    const warnings = changed.map(
-      (c) => `Título traduzido por ${STACK_TITLE_TRANSLATOR_AGENT} — revisar: "${c.to}" (original: "${c.from}", em titleOriginal)`,
-    );
+    const warnings = changed.map((c) => stackTitleTranslatedWarning(c.to, c.from));
     return { selection, warnings, translated: changed.length, failed: false };
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     return {
       selection: sel,
       warnings: [
-        `Tradução automática dos títulos falhou (${why.slice(0, 300)}) — ${items.length} título(s) sem sinal de português ` +
+        `${STACK_TITLE_TRANSLATION_FAILED_PREFIX} (${why.slice(0, 300)}) — ${items.length} título(s) sem sinal de português ` +
           "ficaram como na fonte; reescreva o campo title em português na seleção (#11005)",
       ],
       translated: 0,

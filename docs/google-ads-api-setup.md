@@ -335,7 +335,11 @@ Vão para o Doppler (`diaria-studio` / `dev`), nunca para o repo:
   Ads Console nesta rodada). O script de ingestão REST
   (`google-ads-ingest-spend.ts`) é um caminho INDEPENDENTE — usa
   `CLIENT_ID`/`SECRET`/`REFRESH_TOKEN`, já fail-soft, não depende de nada
-  desta seção.
+  desta seção. Nas units do `300`, o systemd lê o mesmo `.env` com outro
+  parser: sem aspas ele tira as barras da `private_key`, entre aspas (formato
+  do Doppler) quem corrompe é o dotenv. O `env-loader` escolhe o valor que é
+  um JSON de service account válido desde o #12477 (ver
+  `docs/systemd-env-divergence.md`).
 - **`scripts/google-ads-ingest-spend.ts`** (+ núcleo puro
   `scripts/lib/google-ads-ingest.ts`): traduz GAQL (`segments.date` +
   `metrics.cost_micros`, agregado por mês) pro formato de

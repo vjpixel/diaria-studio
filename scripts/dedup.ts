@@ -21,7 +21,7 @@ import { isUrlBlocked } from "./lib/url-blocklist.ts";
 import { extractVersionedProducts } from "./lib/same-fact-check.ts";
 import { matchProductVersionStory, hasStorySecondSignal } from "./lib/product-version-story.ts"; // #11576
 import { CONFIG } from "./lib/config.ts";
-import { canonicalize } from "./lib/url-utils.ts";
+import { canonicalize, dedupUrlKey } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
@@ -259,17 +259,25 @@ export function dedup(
   // #1068: quando pastDestaqueUrlsSet fornecido, distingue destaque-passado
   // (bloqueia sempre) vs só-secondary-passado (permite promoção). Quando
   // ausente, comportamento legacy: bloqueia tudo em pastUrlsSet.
+  // #12592: comparação pela chave sem prefixo de idioma (`dedupUrlKey`) —
+  // `openai.com/pt-BR/index/x` é a mesma página de `openai.com/index/x` já
+  // publicada. Os Sets chegam canonicalizados; re-chaveados aqui uma vez.
+  const pastUrlKeys = new Set([...pastUrlsSet].map(dedupUrlKey));
+  const pastDestaqueUrlKeys = pastDestaqueUrlsSet
+    ? new Set([...pastDestaqueUrlsSet].map(dedupUrlKey))
+    : undefined;
+  const destaqueUpgradeEligibleKeys = new Set([...destaqueUpgradeEligibleUrls].map(dedupUrlKey));
   const afterPass1: Article[] = [];
   let promotedFromSecondary = 0;
   for (const art of afterPass0) {
-    const canon = canonicalize(art.url);
-    const wasInPast = pastUrlsSet.has(canon);
+    const canon = dedupUrlKey(art.url);
+    const wasInPast = pastUrlKeys.has(canon);
     // #9100: URL de D1–D3 publicado (02-reviewed.md local) bloqueia mesmo
     // quando `past-editions.md` não a tem — caso 260918 × 260917
     // (claude.com/blog/cowork-is-now-claude): o D2 entrou por troca pós-gate
     // 1, o past-editions.md da época só listava os links do 01-approved.json
     // (#8298) e a URL passou. Esse Set já era carregado e não era usado.
-    const wasPastDestaque = !wasInPast && (pastDestaqueUrlsSet?.has(canon) ?? false);
+    const wasPastDestaque = !wasInPast && (pastDestaqueUrlKeys?.has(canon) ?? false);
     if (!wasInPast && !wasPastDestaque) {
       afterPass1.push(art);
       continue;
@@ -282,8 +290,8 @@ export function dedup(
     // vier inconsistente.
     if (
       wasInPast &&
-      destaqueUpgradeEligibleUrls.has(canon) &&
-      !(pastDestaqueUrlsSet?.has(canon) ?? false)
+      destaqueUpgradeEligibleKeys.has(canon) &&
+      !(pastDestaqueUrlKeys?.has(canon) ?? false)
     ) {
       afterPass1.push({
         ...art,
@@ -316,12 +324,12 @@ export function dedup(
   // mesma matéria recapturada sob outra URL. Submissão do editor nunca é
   // removida (#4192) — ele pode ter mudado de ideia; só fica marcada.
   if (editorRejected.length > 0) {
-    const rejectedByUrl = new Map(editorRejected.map((r) => [canonicalize(r.url), r]));
+    const rejectedByUrl = new Map(editorRejected.map((r) => [dedupUrlKey(r.url), r]));
     const before = afterPass1.length;
     const survivors: Article[] = [];
     for (const art of afterPass1) {
       const hit =
-        rejectedByUrl.get(canonicalize(art.url)) ??
+        rejectedByUrl.get(dedupUrlKey(art.url)) ??
         (art.title && !isNonDescriptiveTitle(art.title) // #10929: "Found" não casa por título
           ? editorRejected.find((r) => titleSimilarity(art.title as string, r.title) >= titleThreshold)
           : undefined);
@@ -649,7 +657,7 @@ export function dedup(
   // Sub-pass 2a: group by canonical URL, keep best per group
   const byUrl = new Map<string, Article[]>();
   for (const art of afterPass1f) {
-    const canon = canonicalize(art.url);
+    const canon = dedupUrlKey(art.url); // #12592: variantes de idioma caem no mesmo grupo
     const group = byUrl.get(canon) ?? [];
     group.push(art);
     byUrl.set(canon, group);

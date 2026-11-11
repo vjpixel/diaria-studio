@@ -51,6 +51,8 @@ export function isGhPrMergeCommand(command: unknown, opts?: GhMergeDetectOptions
 export function extractGhPrMergeTargetPr(command: unknown, opts?: GhMergeDetectOptions): number | undefined;
 export function mergeTargetHints(command: unknown, opts?: GhMergeDetectOptions): { repos: string[]; unknown: boolean };
 export function isHeredocDataCommand(command: unknown): boolean;
+/** #12619: `command` sem o corpo do heredoc de `python3|node - <<'D'` (corpo sem `gh`/`merge`), ou `null`. */
+export function stripInterpreterHeredocBody(command: unknown): string | null;
 /** Variáveis cujo valor o git/gh executam como shell (#11513); fonte única da denylist do heredoc (#11522). */
 export const SHELL_VALUE_VARS: ReadonlySet<string>;
 /** Nomes exatos que nunca são atribuição inócua na whitelist de heredoc (#11522). */

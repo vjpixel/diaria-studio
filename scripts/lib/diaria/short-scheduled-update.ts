@@ -57,6 +57,8 @@ export function planScheduledUpdates(input: {
   known?: ReadonlySet<string>;
   /** #12465: perfis da diar.ia.br (`ShortsConfig.diariaProfiles`); ausente = os do código. */
   diariaProfiles?: DiariaProfiles;
+  /** #12735: link do horizontal da edição (`05-video-url.txt`) na legenda do Facebook e do X; ausente/null = sem link. */
+  horizontalLink?: string | null;
 }): ScheduledUpdateItem[] {
   const only = input.only && input.only.length ? new Set(input.only) : null;
   if (only && input.known) {
@@ -89,14 +91,14 @@ export function planScheduledUpdates(input: {
         slug: e.destination.slice("facebook:".length),
         videoId: e.id,
         // #12465: mesma legenda do publish (a página VJ Pixel cita o perfil da diar.ia.br).
-        description: buildReelsCaption({ platform: "facebook", d1: input.d1, follow: diariaFollowLine(e.destination, input.diariaProfiles) }),
+        description: buildReelsCaption({ platform: "facebook", d1: input.d1, follow: diariaFollowLine(e.destination, input.diariaProfiles), horizontalLink: input.horizontalLink }),
         scheduledAt,
         cover: input.coverPresent,
       });
     } else if ((e.destination === "x" || e.destination === "tiktok") && e.id.startsWith("buffer:")) {
       const bufferId = e.id.slice("buffer:".length);
       if (e.destination === "x") {
-        out.push({ destination: e.destination, action: "buffer_edit", bufferId, text: buildShortSocialText({ platform: "x", d1: input.d1 }), scheduledAt });
+        out.push({ destination: e.destination, action: "buffer_edit", bufferId, text: buildShortSocialText({ platform: "x", d1: input.d1, horizontalLink: input.horizontalLink }), scheduledAt });
       } else {
         const post = buildTikTokPost({ d1: input.d1 });
         out.push({ destination: e.destination, action: "buffer_edit", bufferId, text: post.caption, scheduledAt, tiktokTitle: post.title });

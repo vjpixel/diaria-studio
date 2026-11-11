@@ -60,6 +60,7 @@ import {
 } from "./lib/intentional-errors.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { writeSentinel } from "./check-humanizer-social.ts";
+import { computeSectionHashes } from "./lib/social-lint-rules.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -638,6 +639,8 @@ async function main(): Promise<void> {
   let newsletter = readFileSync(newsletterPath, "utf8");
   const socialExists = existsSync(socialPath);
   let social = socialExists ? readFileSync(socialPath, "utf8") : "";
+  // #12511: o selo só aceita sem prova as seções que o autofix de fato mudou.
+  const socialBeforeAutofix = social;
   // #11671: hash do conteúdo ANTES do autofix, pra recarimbar o fact-check.
   const hashBeforeAutofix = computeContentHash(newsletter, socialExists ? social : null);
 
@@ -762,7 +765,15 @@ async function main(): Promise<void> {
       try {
         // #11534: correção factual mecânica não passa pelo humanizador; o selo
         // registra as seções em `unproven_sections` e o `--provenance` do gate mostra.
-        writeSentinel(editionDir, socialSentinelBypassReason, { unprovenOk: socialSentinelBypassReason });
+        // #12511: só as seções que o autofix mudou — nunca um aceite sem seletor,
+        // que sem selo anterior cobriria D1/D2/D3 inteiros.
+        const before = computeSectionHashes(socialBeforeAutofix);
+        const after = computeSectionHashes(social);
+        const autofixSections = Object.keys(after).filter((s) => before[s] !== after[s]);
+        writeSentinel(editionDir, socialSentinelBypassReason, {
+          unprovenOk: socialSentinelBypassReason,
+          unprovenOkSections: autofixSections,
+        });
       } catch (e) {
         console.warn(`[apply-factcheck-autofix] WARN: falha ao regravar sentinel do humanizador social — ${(e as Error).message}`);
       }

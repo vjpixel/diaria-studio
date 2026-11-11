@@ -149,7 +149,7 @@ describe("#11794: autoria da rota manual", () => {
   });
 
   it("o Passo B3b manda postar logado na @diar.ia.br e convidar a @vjpixel", () => {
-    const skill = readFileSync(".claude/skills/diaria-publica-video/SKILL.md", "utf8");
+    const skill = readFileSync(".claude/skills/diaria-publica/SKILL.md", "utf8");
     assert.match(skill, /Conferir no avatar que a conta é @diar\.ia\.br/);
     assert.match(skill, /\*\*Add collaborators:\*\* digitar `vjpixel`/);
     assert.doesNotMatch(skill, /Conferir no avatar que a conta é @vjpixel/);
@@ -201,7 +201,7 @@ describe("#11794: conferência anti-duplicação com a autora na conta da API", 
     // A conta da API (@diar.ia.br) não tem o Reel, e nada lê o perfil da @vjpixel: `noGraph` e `neverRead` lançam.
     const deps = await chromeDeps();
     assert.deepEqual(await instagramTimerGate({ decide: () => decideInstagramTimerAcrossAccounts({ primary: decideFrom([]), ...deps }), persist: () => {} }), { kind: "publish" });
-    const skill = readFileSync(".claude/skills/diaria-publica-video/SKILL.md", "utf8");
+    const skill = readFileSync(".claude/skills/diaria-publica/SKILL.md", "utf8");
     assert.match(skill, /Nunca postar logado como @vjpixel/);
     assert.match(skill, /--confirm-instagram --url URL` antes do horário/);
   });

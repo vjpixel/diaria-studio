@@ -26,6 +26,7 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 import { readMarker } from "../pipeline-state.ts";
 import { computeIntakeFingerprint } from "../newsletter-intake-fingerprint.ts"; // #12188
+import { linkScoreBlocks, linkTitleBlocks } from "../newsletter-intake-link-rules.ts"; // #12593
 import { CLARICE_PENDING_REL, readClaricePending, resumeCommandFor } from "../clarice-pending.ts"; // #12257
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
@@ -74,6 +75,7 @@ import { readCarouselKeepArtSafe, carouselKeepArtPath, CAROUSEL_KEEP_ART_FILENAM
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
 
 import { lintIntroCount, countSelectedItems } from "../newsletter-count.ts";
+import { findLancamentosSemFabricante } from "../lancamento-maker.ts"; // #12595
 import { MAX_EDITION_CONTENT_ITEMS } from "../apply-stage2-caps.ts"; // #9785
 import { checkTituloSubtituloNotProvisional } from "../titulo-provisional.ts"; // #9601 review PR #9666
 import { checkReviewedNoPendingPlaceholder, checkReviewedOnedriveConflictCopy } from "../diaria/reviewed-integrity.ts"; // #12259
@@ -1787,6 +1789,8 @@ function checkNoTrailingEllipsisInvariant(editionDir: string): InvariantViolatio
  * challenge) e link removido antes do pool (dedup/data — score ali é só
  * auditoria) viram `warning`. Os warnings do relatório (pendentes, descoberta
  * falhou, capture_failed) saem sempre, independente da contagem de threads.
+ * #12593: "pool" é o `tmp-scoring-pool.json` (o que foi ao scorer), não o bruto
+ * pré-dedup; e título placeholder de link já pontuado e fora da edição é warning.
  */
 export function checkNewsletterIntake(editionDir: string): InvariantViolation[] {
   const internal = resolve(editionDir, "_internal");
@@ -1813,19 +1817,15 @@ export function checkNewsletterIntake(editionDir: string): InvariantViolation[] 
   }
   try {
     const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
-      links: Array<{url?: string; score: number | null; title?: string; fetch_error?: string; in_pool?: boolean | null}>;
+      links: Array<{url?: string; score: number | null; title?: string; fetch_error?: string; in_pool?: boolean | null; destino?: string}>;
       rows: Array<{thread_id: string}>; warnings: string[]; pending_senders: string[];
       input_fingerprint?: string; registry_path?: string; fingerprint_keys?: string[];
     };
     if (!Array.isArray(report.links) || !Array.isArray(report.rows) || !Array.isArray(report.warnings) || !Array.isArray(report.pending_senders)) throw new Error("shape inválido");
     const out: InvariantViolation[] = report.warnings.map((w) => violation(w, "warning"));
-    const missingScore = (l: (typeof report.links)[number]) => typeof l.score !== "number" || !Number.isFinite(l.score);
-    const missingTitle = (l: (typeof report.links)[number]) => !l.title?.trim() || l.title.startsWith("(newsletter:");
-    const attempted = (l: (typeof report.links)[number]) => typeof l.fetch_error === "string" && l.fetch_error.length > 0;
-    const outOfPool = (l: (typeof report.links)[number]) => l.in_pool === false;
-    const blocking = (l: (typeof report.links)[number]) => !attempted(l) && !outOfPool(l);
-    if (report.links.some((l) => missingScore(l) && blocking(l))) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
-    if (report.links.some((l) => missingTitle(l) && blocking(l))) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
+    // #12188/#12593: mesmas regras de `audit-newsletter-intake.ts` (lib compartilhada, sem importar o CLI).
+    if (report.links.some(linkScoreBlocks)) out.push(violation("Links IA sem score: pontuar newsletter-unscored.json e re-rodar auditoria", "error"));
+    if (report.links.some(linkTitleBlocks)) out.push(violation("Links IA sem título: enriquecer newsletter-unscored.json e re-rodar auditoria", "error"));
     if (report.pending_senders.length) out.push(violation(`Remetentes pendentes de decisão em lote: ${report.pending_senders.join(", ")}`, "warning"));
     // #12188 item 7: content hash of the audit inputs, never mtime — a save
     // that keeps the links (Studio, refresh-use-melhor-tempo, sync-code) is not stale.
@@ -2200,6 +2200,28 @@ export function checkIntraEditionFactRecurrence(editionDir: string): InvariantVi
       message: `Possível mesma história na edição: [${w.item_label}] “${w.item_title}” (${w.item_url}) repete ${w.matched_label} “${w.matched_title}” (${why}). Heurístico: cortar no gate se não for desdobramento.`,
     };
   });
+}
+
+/**
+ * #12595: item de LANÇAMENTOS cujo título e descrição não dizem de quem é o
+ * lançamento (caso 261109: "Voice Chat with Agents", cursor.com, descrição sem
+ * "Cursor"). Os nomes aceitos saem da URL (`lancamento-maker.ts`: empresa do
+ * registro oficial + rótulo do host + dono do repo). Severity "warning": a
+ * correção é reescrever a descrição, escolha do editor no gate.
+ */
+export function checkLancamentoSemFabricante(editionDir: string): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  return findLancamentosSemFabricante(readFileSync(file, "utf8")).map((it) => ({
+    rule: "lancamento-sem-fabricante",
+    source_issue: "#12595",
+    severity: "warning" as const,
+    file,
+    message:
+      `LANÇAMENTOS “${it.title}” (${it.url}) não cita o fabricante no título nem na descrição ` +
+      `(esperado um de: ${it.expected.join(", ")}). Reescrever a descrição dizendo de quem é o produto ` +
+      `(ex.: "O ${it.expected[0]} lançou..."). Heurístico: falso positivo, seguir sem mudar.`,
+  }));
 }
 
 /** #11496: quantas edições anteriores entram na comparação de MESMA HISTÓRIA
@@ -4547,6 +4569,11 @@ export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "intra-edition-fact-recurrence", description: "Item do pool com a mesma história de um destaque ou de outro item da edição (heurístico, warning-only)",
     source_issue: "#11173", stage: 4, run: checkIntraEditionFactRecurrence,
+  },
+  {
+    id: "lancamento-sem-fabricante",
+    description: "Item de LANÇAMENTOS cita o fabricante (empresa ou produto da URL) no título ou na descrição (heurístico, warning-only)",
+    source_issue: "#12595", stage: 4, run: checkLancamentoSemFabricante,
   },
   {
     id: "story-twice-in-edition",

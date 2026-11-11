@@ -90,6 +90,16 @@ export function buildLinkedInVideoComment(videoUrl: string): string {
   return videoLinkLine(videoUrl);
 }
 
+/**
+ * Texto da resposta com o link do vídeo no D1 do X (#12762), usada quando o
+ * link não coube no texto do post (nem sem as hashtags, #11402). Vai como 2º
+ * item da thread do mesmo post da Buffer (`metadata.twitter.thread`), então o
+ * dono é o passo 5c-3b do Stage 5, na mesma chamada `create_post` do D1.
+ */
+export function buildTwitterVideoReplyText(videoUrl: string): string {
+  return videoLinkLine(videoUrl);
+}
+
 const URL_IN_LINE_RE = /https?:\/\/\S+/;
 
 /** `true` se o texto já cita o vídeo (mesmo id, qualquer forma de URL). */

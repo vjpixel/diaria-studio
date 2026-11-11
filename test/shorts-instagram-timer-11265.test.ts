@@ -650,7 +650,7 @@ describe("#11265 tasks do 300 cobrem os horários do vertical", () => {
 });
 
 describe("#11265/#10978 roteiro da skill", () => {
-  const skill = readFileSync(new URL("../.claude/skills/diaria-publica-video/SKILL.md", import.meta.url), "utf8");
+  const skill = readFileSync(new URL("../.claude/skills/diaria-publica/SKILL.md", import.meta.url), "utf8");
   it("INSTAGRAM_TIMER_DETAIL e o SKILL.md mandam rodar com --only instagram --instagram-timer --publish", () => {
     assert.match(INSTAGRAM_TIMER_DETAIL, /--only instagram --instagram-timer --publish/);
     assert.match(skill, /--only instagram --publish --instagram-timer/);

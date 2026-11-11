@@ -137,7 +137,9 @@ describe("#11353 evaluateShortRelatedMissed", () => {
   });
 
   it("sem registro do vertical não alarma (não houve Short)", () => {
-    assert.equal(evaluateShortRelatedMissed(input({ shortsRegistry: { kind: "absent" } })).verdict, "no-short");
+    // #12541: sem nenhuma outra evidência de vídeo o veredito é no-video; com o horizontal no D1, no-short.
+    assert.equal(evaluateShortRelatedMissed(input({ shortsRegistry: { kind: "absent" } })).verdict, "no-video");
+    assert.equal(evaluateShortRelatedMissed(input({ shortsRegistry: { kind: "absent" }, d1VideoUrl: true })).verdict, "no-short");
   });
 
   it("registro do vertical sem youtube_shorts não alarma", () => {
@@ -145,7 +147,8 @@ describe("#11353 evaluateShortRelatedMissed", () => {
       kind: "ok",
       value: { aammdd: WEEKDAY, entries: [{ destination: "instagram", status: "published", id: "ig1", at: "x" }] },
     };
-    assert.equal(evaluateShortRelatedMissed(input({ shortsRegistry: only })).verdict, "no-short");
+    assert.equal(evaluateShortRelatedMissed(input({ shortsRegistry: only })).verdict, "no-video");
+    assert.equal(evaluateShortRelatedMissed(input({ shortsRegistry: only, horizontalUploadRecord: true })).verdict, "no-short");
   });
 
   it("youtube_shorts em send_unknown conta como Short registrado", () => {

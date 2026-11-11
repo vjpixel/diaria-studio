@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 import { md5OfFile } from "../shared/file-md5.ts";
-import { D1_HERO_FILE, D1_INVITE_VERSION, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, D1_INVITE_FONT_FAMILY, D1_INVITE_TEXT, buildInviteSvg, type InviteTextMetrics } from "./d1-video-hero.ts";
+import { D1_HERO_FILE, D1_INVITE_VERSION, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, D1_INVITE_FONT_FAMILY, D1_INVITE_LINES, buildInviteSvg, inviteFontSize, type InviteTextMetrics } from "./d1-video-hero.ts";
 
 export type D1PlayImageResult =
   | { status: "generated" | "fresh"; path: string }
@@ -48,9 +48,21 @@ function readStamp(stampPath: string): { md5: string | null; overlay: string | n
  * desenha o texto sozinho numa tela maior e corta (`trim`) o espaço vazio. Mede
  * com o mesmo motor que vai desenhar, então vale para Georgia no Windows e para
  * a fonte de reserva do servidor Linux.
+ *
+ * Mede cada linha do convite (#12747, duas linhas) e devolve a largura da mais
+ * larga, o quanto a 1ª sobe da linha de base e o quanto a última desce.
  */
 export async function measureInviteText(width: number, fontFamily: string = D1_INVITE_FONT_FAMILY): Promise<InviteTextMetrics> {
-  const fontSize = width * 0.024;
+  const fontSize = inviteFontSize(width);
+  const lines = await Promise.all(D1_INVITE_LINES.map((line) => measureLine(line, fontSize, fontFamily)));
+  return {
+    textW: Math.max(...lines.map((l) => l.width)),
+    ascent: lines[0].ascent,
+    descent: lines[lines.length - 1].descent,
+  };
+}
+
+async function measureLine(text: string, fontSize: number, fontFamily: string): Promise<{ width: number; ascent: number; descent: number }> {
   const W = Math.ceil(fontSize * 30);
   const H = Math.ceil(fontSize * 4);
   const baseline = Math.round(fontSize * 2.5);
@@ -58,11 +70,11 @@ export async function measureInviteText(width: number, fontFamily: string = D1_I
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
     `<rect width="${W}" height="${H}" fill="#000000"/>` +
-    `<text x="${x0}" y="${baseline}" font-family="${fontFamily}" font-weight="bold" font-size="${fontSize.toFixed(1)}" fill="#FFFFFF">${D1_INVITE_TEXT}</text>` +
+    `<text x="${x0}" y="${baseline}" font-family="${fontFamily}" font-weight="bold" font-size="${fontSize.toFixed(1)}" fill="#FFFFFF">${text}</text>` +
     `</svg>`;
   const { info } = await sharp(Buffer.from(svg)).trim({ background: "#000000", threshold: 40 }).toBuffer({ resolveWithObject: true });
   const top = -(info.trimOffsetTop ?? 0);
-  return { textW: info.width, ascent: baseline - top, descent: top + info.height - baseline };
+  return { width: info.width, ascent: baseline - top, descent: top + info.height - baseline };
 }
 
 /** Compõe o convite sobre o hero e devolve o JPEG. */

@@ -10,7 +10,8 @@
  * `~/OneDrive/Documentos/diaria-studio-data` e só existe localmente — num
  * clone fresco de cloud o path `data/` simplesmente não existe. Depois do
  * cutover pro Google Drive (#12359) o alvo passa a ser a pasta do Drive
- * (`/mnt/hd-sata/GoogleDrive/.../diaria-studio-data` no `300`); o sinal não
+ * (`/mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data` no `300`, mantida
+ * pelo bisync dedicado `diaria-gdrive-data-bisync`, #12478); o sinal não
  * olha o caminho, só se ele resolve, e vale igual pros dois backends. Qual
  * backend é: `detectDataSyncBackend` abaixo (#12357).
  *

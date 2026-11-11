@@ -169,7 +169,7 @@ test("variação de nome da pasta: 'Versão final' conta como Final/", async () 
 
 test("skill: Passo A3 é o upload pela API (padrão); o Studio vira fallback (Passo A5)", async () => {
   const { readFileSync } = await import("node:fs");
-  const skill = readFileSync(join(import.meta.dirname, "..", ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+  const skill = readFileSync(join(import.meta.dirname, "..", ".claude/skills/diaria-publica/SKILL.md"), "utf8");
   assert.match(skill, /### Passo A3 — Upload pela API \(`--upload`, o padrão\)/);
   assert.match(skill, /### Passo A5 — Fallback: o editor sobe pelo Studio/);
   assert.doesNotMatch(skill, /só quando o editor pede/, "o upload não depende mais de pedido do editor");

@@ -44,6 +44,7 @@ import {
 } from "./lib/fact-check-staleness.ts";
 import { extractDestaqueUrlsByNumber } from "./match-prompts-to-destaques.ts";
 import { canonicalize } from "./lib/url-utils.ts";
+import type { SourceCompleteness } from "./lib/diaria/paywall-preview.ts";
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -103,6 +104,13 @@ export interface FactClaim {
    * Ausente = sem ressalva. Preferido ao texto livre de `note`.
    */
   primary_status?: "not_found" | "unavailable";
+  /**
+   * (#12540) Só com `SOURCE_UNREACHABLE`: a fonte não abriu e o claim foi
+   * conferido contra o `article.summary` do approved. `true` = o resumo traz o
+   * mesmo valor; `false` = não traz. O resumo é da pesquisa, não a fonte, então
+   * casar com ele nunca vale `SUSTAINED` (ver `downgradeSummaryOnlyClaim`).
+   */
+  secondary_match?: boolean;
 }
 
 export interface FactCheckSummary {
@@ -312,6 +320,87 @@ export function notConfirmedInPrimary(c: Pick<FactClaim, "note" | "primary_statu
 }
 
 /**
+ * (#12540) `note` que diz que o claim foi conferido contra o resumo do approved
+ * (`article.summary`), não contra a fonte. Formas reais: "verificado contra
+ * article.summary/título do 01-approved.json" (261026 D2), "verificado via
+ * article.summary" (260909 D3, 260915 D2).
+ */
+const SUMMARY_ONLY_NOTE_RE =
+  /\b(?:verificad|conferid|confirmad|checad|sustentad|batid)[oa]s?\s+(?:(?:apenas|s[óo]|somente)\s+)?(?:contra|via|no|na|pelo|pela|com|em)\s+(?:o\s+|a\s+)?(?:article\.summary|summary\s+do|resumo\s+(?:do|da)\s+(?:01-)?approved)|\b(?:apenas|s[óo]|somente)\s+(?:(?:contra|via|no|pelo|com|em)\s+)?(?:o\s+)?(?:article\.summary|resumo\s+do\s+(?:01-)?approved)/i;
+
+/** (#12540) Claim conferido só contra o `article.summary` (campo estruturado ou `note`). */
+export function isSummaryOnlyCheck(c: Pick<FactClaim, "note" | "secondary_match">): boolean {
+  if (c.secondary_match === true) return true;
+  return typeof c.note === "string" && SUMMARY_ONLY_NOTE_RE.test(c.note);
+}
+
+/**
+ * (#12540) `SUSTAINED`/`INFERRED` conferido só contra o `article.summary` vira
+ * `SOURCE_UNREACHABLE` com `secondary_match: true`: o resumo da pesquisa não é
+ * a fonte, e o veredito verde escondia do gate que ninguém leu o artigo.
+ * `DIVERGENT` fica como está (o resumo contradizer o texto já pede atenção).
+ */
+export function downgradeSummaryOnlyClaim(c: FactClaim): FactClaim {
+  if (c.verdict !== "SUSTAINED" && c.verdict !== "INFERRED") return c;
+  if (!isSummaryOnlyCheck(c)) return c;
+  const prefix = `[rebaixado de ${c.verdict}: conferido só contra o article.summary do approved, não contra a fonte (#12540)]`;
+  return {
+    ...c,
+    verdict: "SOURCE_UNREACHABLE",
+    secondary_match: true,
+    note: c.note ? `${prefix} ${c.note}` : prefix,
+  };
+}
+
+/**
+ * (#12540) Linhas do gate para o que ficou sem checagem na fonte: destaque cuja
+ * fonte principal não baixou no pré-download (manifest `blocked`/`error`) e os
+ * claims `SOURCE_UNREACHABLE`. Antes, esses claims não apareciam no resumo e,
+ * sem outro item de atenção, o gate dizia "Todos os claims verificados".
+ */
+export function formatUnverifiedSources(
+  claims: FactClaim[],
+  manifest: ManifestEntry[] | null | undefined,
+): string[] {
+  const out: string[] = [];
+  const failed = (manifest ?? []).filter(
+    (e) => e && typeof e.destaque === "number" && e.status !== "ok",
+  );
+  if (failed.length > 0) {
+    out.push("  ⚠️  Fonte principal não baixada no pré-download (#12540) — trocar a fonte ou checar à mão:");
+    for (const e of failed) {
+      const n = claims.filter((c) => c.destaque === e.destaque && c.verdict === "SOURCE_UNREACHABLE").length;
+      out.push(
+        `    D${e.destaque}: ${e.status}${e.erro ? ` (${String(e.erro).replace(/\s+/g, " ")})` : ""} — ${e.url}` +
+          (n > 0 ? ` · ${n} claim(s) sem verificação na fonte` : ""),
+      );
+    }
+  }
+  // (#12537) Baixou com 200, mas o texto é a prévia do paywall: o fact-checker
+  // checou contra os primeiros parágrafos, não contra o artigo inteiro.
+  const previews = (manifest ?? []).filter(
+    (e) => e && typeof e.destaque === "number" && e.status === "ok" && e.completeness === "preview",
+  );
+  if (previews.length > 0) {
+    out.push("  ⚠️  Fonte principal baixada só como prévia de paywall (#12537) — checagem contra texto incompleto:");
+    for (const e of previews) {
+      const sig = (e.paywall_signals ?? []).join(", ");
+      out.push(`    D${e.destaque}: prévia${typeof e.words === "number" ? ` (${e.words} palavras)` : ""}${sig ? ` · ${sig}` : ""} — ${e.url}`);
+    }
+  }
+  const unreachable = claims.filter((c) => c.verdict === "SOURCE_UNREACHABLE");
+  if (unreachable.length > 0) {
+    out.push("  ⚠️  Claims NÃO verificados na fonte (fonte inacessível):");
+    for (const c of unreachable) {
+      const tag = c.secondary_match === true ? " [só casou com o resumo do approved]" : "";
+      out.push(`    ${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}"${tag}`);
+      if (c.note) out.push(`       → ${c.note.replace(/\s+/g, " ")}`);
+    }
+  }
+  return out;
+}
+
+/**
  * (#11531) Linhas do resumo do gate que dizem de qual fonte veio cada claim
  * sustentado (SUSTAINED/INFERRED com `source_url`). Por destaque, uma linha de
  * contagem por host; claims sustentados por fonte ADICIONAL (URL diferente da
@@ -380,7 +469,7 @@ export function formatSourceAttribution(
 
 export function formatGateSummary(
   result: FactCheckResult,
-  opts: { primaryUrls?: Array<string | undefined> } = {},
+  opts: { primaryUrls?: Array<string | undefined>; manifest?: ManifestEntry[] | null } = {},
 ): string {
   const { claims, summary } = result;
   const lines: string[] = [];
@@ -399,13 +488,15 @@ export function formatGateSummary(
       `${summary.not_found_in_source > 0 ? `⚠️  ${summary.not_found_in_source} não encontrados na fonte` : `✅ 0 não encontrados`}`,
   );
   lines.push(...formatSourceAttribution(claims, opts.primaryUrls));
+  const unverified = formatUnverifiedSources(claims, opts.manifest);
+  lines.push(...unverified);
 
   if (summary.attention_items === 0) {
     const unconfirmedExtra = formatSourceAttribution(claims, opts.primaryUrls).some((l) =>
       l.includes("sem confirmação na fonte principal"),
     );
     lines.push(
-      unconfirmedExtra
+      unconfirmedExtra || unverified.length > 0
         ? "  ⚠️  Sem divergências, mas há claim(s) não confirmado(s) na fonte principal (acima) — não é verde pleno."
         : "  ✅ Todos os claims verificados sem divergências.",
     );
@@ -764,7 +855,16 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
           // Guard: fact-checker pode omitir sources (#2628 gap 2) → default [] para
           // evitar TypeError em entry.sources.includes() downstream.
           sources: Array.isArray(c.sources) ? c.sources : [],
+          // #12540: só booleano vale; "true" string de LLM vira true, resto cai.
+          secondary_match:
+            typeof c.secondary_match === "boolean"
+              ? c.secondary_match
+              : (c.secondary_match as unknown) === "true"
+                ? true
+                : undefined,
         }))
+        // #12540: claim conferido só contra o article.summary nunca sai verde.
+        .map(downgradeSummaryOnlyClaim)
     : [];
 
   const summary: FactCheckSummary = {
@@ -974,7 +1074,17 @@ export async function prefetchHighlightSources(
       const path = join(dir, `d${i + 1}.txt`);
       writeFileSync(path, r.text, "utf8");
       out.push({ destaque: i + 1, url, path });
-      manifest.push({ destaque: i + 1, url, status: "ok", erro: null, bytes: r.bytes, fetched_at });
+      manifest.push({
+        destaque: i + 1,
+        url,
+        status: "ok",
+        erro: null,
+        bytes: r.bytes,
+        fetched_at,
+        completeness: r.paywall.completeness,
+        paywall_signals: r.paywall.signals,
+        words: r.paywall.words,
+      });
     } else {
       out.push({ destaque: i + 1, url, error: r.message });
       manifest.push({ destaque: i + 1, url, status: r.kind === "blocked" ? "blocked" : "error", erro: r.message, bytes: 0, fetched_at });
@@ -991,6 +1101,16 @@ export interface ManifestEntry {
   erro: string | null;
   bytes: number;
   fetched_at: string;
+  /**
+   * (#12537) Só em `status: "ok"`: `preview` = o texto baixado é a prévia que o
+   * paywall serve, não o artigo inteiro (`lib/diaria/paywall-preview.ts`).
+   * Ausente em manifest anterior ao #12537 (lido como desconhecido).
+   */
+  completeness?: SourceCompleteness;
+  /** (#12537) Sinais de paywall achados na página (vazio = página aberta). */
+  paywall_signals?: string[];
+  /** (#12537) Palavras do texto extraído. */
+  words?: number;
 }
 
 function extractEditionId(editionDir: string): string {
@@ -1098,7 +1218,12 @@ async function main(): Promise<number | void> {
     } catch {
       primaryUrls = undefined; // sem approved legível: resumo sai sem a atribuição de fonte
     }
-    console.log(formatGateSummary(result, { primaryUrls }));
+    console.log(
+      formatGateSummary(result, {
+        primaryUrls,
+        manifest: readExistingManifest(join(internalDir, "fact-check-sources")),
+      }),
+    );
     if (staleness.stale) console.log(formatStaleWarning(staleness));
 
     // Exit code 0 sempre neste modo, SALVO --check-blocking (#2468 finding 4 + code-review):

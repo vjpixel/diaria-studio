@@ -84,7 +84,10 @@ export function defaultManualConsent(): PublishConsent {
     threads: "manual",
     twitter: "manual",
     brevo: "manual",
-    youtube: "manual",
+    // #12599: `youtube` != auto dispensa o pré-requisito do vídeo da Etapa 5
+    // (#12588), e este construtor não traz decisão nenhuma do editor sobre o
+    // vídeo. Fica auto: o vídeo segue exigido; dispensar é `--skip youtube`.
+    youtube: "auto",
     source: "default_manual",
   };
 }
@@ -157,7 +160,8 @@ export function parseSkipFlag(input: string): PublishConsent | null {
  *     13=Brevo diária auto, 14=Brevo diária manual
  *
  * Números conflitantes (1 e 2 ambos, etc) usam o último que aparece.
- * Canais não-mencionados na resposta ficam manual (default conservador).
+ * Canais não-mencionados na resposta ficam manual (default conservador),
+ * exceto o `youtube`, que a lista não cobre e fica auto (#12599).
  * Retorna null se input é vazio/inválido.
  */
 export function parseEditorResponse(input: string): PublishConsent | null {
@@ -213,7 +217,10 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     threads: "manual",
     twitter: "manual",
     brevo: "manual",
-    youtube: "manual",
+    // #12599: a lista numérica não tem opção para o YouTube, então nada nela
+    // é decisão sobre o vídeo; manual aqui dispensaria o pré-requisito da
+    // Etapa 5 (#12588) em silêncio. Auto = o vídeo segue exigido.
+    youtube: "auto",
     source: `editor_response_${nums.join("_")}`,
   };
   for (const n of nums) {

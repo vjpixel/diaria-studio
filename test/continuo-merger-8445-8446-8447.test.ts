@@ -65,8 +65,30 @@ describe("#8446 — escalada reincidente vira sinal, não repetição muda", () 
       // a só falar havendo problema (19/09/2026). O invariante deste guard é a
       // ADJACÊNCIA — log da reincidência e incremento do contador andam juntos
       // —, não o canal em que o log sai.
-      /escalate \(já sinalizada\)"( >&2)?\s*\n\s*ESCALATED_RECURRING=\$\(\(ESCALATED_RECURRING \+ 1\)\)\s*\n\s*ESCALATED_RECURRING_PRS="\$ESCALATED_RECURRING_PRS #\$pr"/,
+      /escalate \(já sinalizada\)"( >&2)?\s*\n\s*ESCALATED_RECURRING=\$\(\(ESCALATED_RECURRING \+ 1\)\)\s*\n\s*ESCALATED_RECURRING_PRS="\$ESCALATED_RECURRING_PRS #\$pr \(\$GATE_REASON\)"/,
     );
+  });
+
+  it("reincidências acumulam contador e PRs com seus motivos sem contar escalada nova", () => {
+    const start = review.indexOf('        echo "[continuo-pr-review] PR #$pr: escalate (já sinalizada)"');
+    assert.ok(start > 0, "ramo de reincidência não encontrado");
+    const end = review.indexOf("      fi", start);
+    assert.ok(end > start, "fim do ramo de reincidência não encontrado");
+    const block = review.slice(start, end);
+    const result = spawnSync("bash", ["-c", `set -euo pipefail
+ESCALATED_RECURRING=0
+ESCALATED_RECURRING_PRS=""
+ESCALATED_NEW=0
+pr=123
+GATE_REASON="draft"
+${block}
+pr=456
+GATE_REASON="bloqueio-execucao"
+${block}
+printf '%s\\n' "$ESCALATED_RECURRING" "$ESCALATED_RECURRING_PRS" "$ESCALATED_NEW"`], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "2\n #123 (draft) #456 (bloqueio-execucao)\n0\n");
+    assert.equal(result.stderr.match(/escalate \(já sinalizada\)/g)?.length, 2);
   });
 
   it("os contadores são inicializados (set -u não pode quebrar o tick)", () => {

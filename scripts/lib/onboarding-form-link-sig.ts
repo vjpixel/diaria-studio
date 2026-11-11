@@ -75,10 +75,10 @@ function base64url(bytes: Uint8Array): string {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function hmac(secret: string, message: string): Promise<Uint8Array> {
+async function hmac(secret: string, message: string, context: string = SIG_CONTEXT): Promise<Uint8Array> {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  return new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(SIG_CONTEXT + message)));
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(context + message)));
 }
 
 /** Assinatura (base64url, sem padding) do e-mail normalizado. Lança com
@@ -123,4 +123,51 @@ export async function checkFormEmailSig(
  *  certa para aquele e-mail. Nunca lança. */
 export async function verifyFormEmailSig(email: string | null | undefined, sig: string | null | undefined, secret: string | null | undefined): Promise<boolean> {
   return (await checkFormEmailSig(email, sig, secret)).ok;
+}
+
+// ---------------------------------------------------------------------------
+// Hora em que a página foi gerada (#10605 v3: tempo de preenchimento)
+// ---------------------------------------------------------------------------
+
+/** Campo oculto da página com a hora assinada (`{epoch s}.{assinatura}`). */
+export const FORM_RENDERED_FIELD = "t";
+
+/** Contexto próprio: a assinatura da hora nunca vale como assinatura de link. */
+const RENDERED_CONTEXT = "onboarding-form:rendered:v1:";
+
+/** Acima disso o tempo não é de preenchimento (aba esquecida): não grava. */
+export const MAX_FORM_DURATION_S = 30 * 86_400;
+
+/** `{epoch s}.{HMAC(segredo, epoch + ":" + e-mail normalizado)}` — gerado no GET da página. */
+export async function signFormRenderedAt(email: string, renderedAtSec: number, rawSecret: string): Promise<string> {
+  const s = checkLinkSecret(rawSecret);
+  if (!s.ok) throw new Error(`[onboarding-form-link-sig] recusando assinar: ${s.detalhe}`);
+  const ts = Math.floor(renderedAtSec);
+  return `${ts}.${base64url(await hmac(s.secret, `${ts}:${normalizeFormEmail(email)}`, RENDERED_CONTEXT))}`;
+}
+
+/**
+ * Segundos entre a página ser gerada e `nowSec`, só com a hora assinada para
+ * ESTE e-mail e dentro de `[0, MAX_FORM_DURATION_S]`; `null` em qualquer outro
+ * caso (campo ausente, adulterado, futuro, velho demais). Nunca lança: a
+ * resposta é gravada do mesmo jeito, só sem `duration_s`.
+ */
+export async function formDurationFromToken(
+  email: string,
+  token: string | null | undefined,
+  rawSecret: string | null | undefined,
+  nowSec: number,
+): Promise<number | null> {
+  const m = /^(\d{1,12})\.([A-Za-z0-9_-]+)$/.exec(String(token ?? ""));
+  if (!m) return null;
+  const s = checkLinkSecret(rawSecret);
+  if (!s.ok) return null;
+  try {
+    const expected = await signFormRenderedAt(email, Number(m[1]), s.secret);
+    if (!constantTimeEqual(expected, String(token))) return null;
+  } catch {
+    return null;
+  }
+  const d = Math.floor(nowSec) - Number(m[1]);
+  return d >= 0 && d <= MAX_FORM_DURATION_S ? d : null;
 }

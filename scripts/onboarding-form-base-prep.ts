@@ -87,7 +87,7 @@ import { readStore, writeStore, DEFAULT_STORE_PATH } from "./lib/onboarding-stor
 import { withFileLock } from "./lib/file-lock.ts";
 import { buildOnboardingBroadcastInput } from "./lib/onboarding-kit-transport.ts";
 import { assertPilotTagAudience, rereadPilotFilter, redactEmails, type PilotKitDeps } from "./lib/onboarding-kit-pilot.ts";
-import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
+import { fetchAllFormResponses } from "./lib/onboarding-form-contract.ts";
 import { checkLinkSecret, FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
 import {
   baseInviteContentGate,
@@ -743,12 +743,8 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): BasePrepDeps {
     async fetchFormResponses() {
       const token = process.env[cfg.formResponsesTokenEnv];
       if (!cfg.formResponsesUrl || !token) throw new Error(`endpoint de respostas ou ${cfg.formResponsesTokenEnv} ausente`);
-      const res = await fetch(cfg.formResponsesUrl, { headers: { authorization: `Bearer ${token}` } });
-      if (!res.ok) {
-        await res.body?.cancel().catch(() => {});
-        throw new Error(`GET respostas do formulário: HTTP ${res.status}`);
-      }
-      return parseFormResponsesPayload(await res.json());
+      // #12509: segue as páginas (`next_cursor`) até a última.
+      return fetchAllFormResponses(cfg.formResponsesUrl, token);
     },
     async getSubscriber(kitId) {
       const s = await getSubscriberById(kitId, kitCfg);

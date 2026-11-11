@@ -1,0 +1,26 @@
+[Unit]
+Description=diar.ia.br: rclone bisync dedicado de data/ (diaria-studio-data no Google Drive, #12478)
+# Mesmo gdrive-bisync.sh do bisync do Drive inteiro, pelo wrapper
+# gdrive-data-bisync.sh, com remote, pasta local, filtro, state dir e workdir
+# do rclone proprios. Remote e pasta vem de ~/.config/diaria/gdrive-data-bisync.env
+# (lido pelo wrapper, tambem numa rodada manual); sem o arquivo, os defaults
+# gdrive-diaria:diaria-studio-data <-> /mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data
+# (conta diaria.editor, #12575). Configuracao invalida (arquivo de env
+# malformado, caminho relativo, remote igual ao do bisync grande, pasta
+# sobreposta a /mnt/hd-sata/GoogleDrive) sai 78 antes do rclone.
+# A trava contra pasta vazia e a do script (mountpoint + sentinela
+# .diaria-bisync-sentinel na raiz da pasta, nos dois lados + --max-delete);
+# numa unit de usuario o RequiresMountsFor abaixo so ordena.
+RequiresMountsFor=/mnt/hd-sata
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /home/vjpixel/diaria-studio/scripts/systemd/gdrive-data-bisync.sh
+# Rodada incremental de ~3,5 min (10/11/2026). A carga inicial grande e o
+# --resync MANUAL (fora da unit), entao o teto fica em 20 min: abaixo do stale
+# de 30 min do alarme (DATA_GDRIVE_SYNC_TOLERANCES), para uma rodada lenta
+# virar falha (timeout) antes de virar "sem sucesso" mudo. oneshot nao
+# reentra, o proximo tick so dispara depois deste terminar.
+TimeoutStartSec=20min
+Nice=5
+IOSchedulingClass=best-effort

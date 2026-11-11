@@ -313,7 +313,7 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   },
   {
     company: "Meta AI",
-    domains: ["about.meta.com", "ai.meta.com", "engineering.fb.com", "llama.meta.com", "about.fb.com"],
+    domains: ["about.meta.com", "ai.meta.com", "engineering.fb.com", "llama.meta.com", "about.fb.com", "research.meta.ai"],
     detection_keywords: /\b(meta ai|llama)\b/i,
     primary_domain: "ai.meta.com",
   },

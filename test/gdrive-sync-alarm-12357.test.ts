@@ -45,6 +45,17 @@ import {
 import { alarmIssueStateKey, type AlarmFindingOutcome } from "../scripts/lib/alarm-issues.ts";
 
 const ROOT = join(import.meta.dirname, "..");
+
+/** Ambiente do CLI do alarme isolado da máquina (#12478): sem HOME nem
+ * GDRIVE_* herdados e com um arquivo de env de TESTE — no `300`, depois do
+ * cutover, o data/ real e o ~/.config real somariam achados de data/. */
+function isolatedAlarmEnv(sb: string, extra: Record<string, string>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) if (k !== "HOME" && !k.startsWith("GDRIVE_")) env[k] = v;
+  const envFile = join(sb, "teste-gdrive-data-bisync.env");
+  writeFileSync(envFile, "");
+  return { ...env, HOME: sb, GDRIVE_DATA_ENV_FILE: envFile, ...extra };
+}
 const SCRIPT = join(ROOT, "scripts", "systemd", "gdrive-bisync.sh");
 
 function runBisync(opts: { mounted: boolean; rcloneExit?: number; args?: string[] }) {
@@ -196,10 +207,10 @@ describe("achados e congelamento (#12357)", () => {
   });
 
   it("not-installed e cota unmeasured congelam as issues abertas (não fecham por falta de medida)", () => {
-    const frozen = absenceUnmeasured("not-installed", "unmeasured");
+    const frozen = absenceUnmeasured({ sync: "not-installed", quota: "unmeasured", dataSync: "ok", dataQuota: "ok" });
     assert.equal(frozen(alarmIssueStateKey("gdrive-sync", "alarm-bisync-blocked")), true);
     assert.equal(frozen(alarmIssueStateKey("gdrive-quota", "quota-near")), true);
-    const live = absenceUnmeasured("ok", "ok");
+    const live = absenceUnmeasured({ sync: "ok", quota: "ok", dataSync: "ok", dataQuota: "ok" });
     assert.equal(live(alarmIssueStateKey("gdrive-sync", "alarm-bisync-blocked")), false);
   });
 });
@@ -268,10 +279,10 @@ describe("CLI --dry-run (#12357)", { skip: process.platform === "win32" ? "rclon
       const fake = join(sb, "rclone");
       writeFileSync(fake, `#!/bin/sh\necho '${ABOUT_SAMPLE.replace(/\s+/g, "")}'\n`);
       chmodSync(fake, 0o755);
-      const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", state], {
+      const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", state, "--data-state-dir", join(sb, "data-state"), "--data-dir", join(sb, "sem-data")], {
         encoding: "utf8",
         cwd: ROOT,
-        env: { ...process.env, RCLONE_BIN: fake },
+        env: isolatedAlarmEnv(sb, { RCLONE_BIN: fake }),
       });
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.stdout, /verdict=alarm-bisync-blocked/);
@@ -362,7 +373,7 @@ describe("carimbo ilegível/inválido alarma (review #12357)", () => {
     assert.equal(evaluateGdriveSync(stamp(-24 * H, 0), stamp(7 * H, 0), NOW).verdict, "alarm-stamp-unreadable");
   });
   it("carimbo ilegível congela os outros achados de sync (não fecham sem medida)", () => {
-    const frozen = absenceUnmeasured("alarm-stamp-unreadable", "ok");
+    const frozen = absenceUnmeasured({ sync: "alarm-stamp-unreadable", quota: "ok", dataSync: "ok", dataQuota: "ok" });
     for (const f of ["alarm-bisync-blocked", "alarm-bisync-failed", "alarm-sync-stale"]) {
       assert.equal(frozen(alarmIssueStateKey("gdrive-sync", f)), true, f);
     }
@@ -374,19 +385,19 @@ describe("carimbo ilegível/inválido alarma (review #12357)", () => {
 
 describe("absenceUnmeasured: congelamentos independentes (review #12357)", () => {
   it("cota sem medida NÃO congela as chaves de sync", () => {
-    const f = absenceUnmeasured("ok", "unmeasured");
+    const f = absenceUnmeasured({ sync: "ok", quota: "unmeasured", dataSync: "ok", dataQuota: "ok" });
     assert.equal(f(alarmIssueStateKey("gdrive-sync", "alarm-bisync-blocked")), false);
     assert.equal(f(alarmIssueStateKey("gdrive-quota", "quota-full")), true);
     // Máquina COM bisync: o quota-unmeasured é emitido, então não congela.
     assert.equal(f(alarmIssueStateKey("gdrive-quota", "quota-unmeasured")), false);
   });
   it("not-installed NÃO congela as chaves de cota medida", () => {
-    const f = absenceUnmeasured("not-installed", "ok");
+    const f = absenceUnmeasured({ sync: "not-installed", quota: "ok", dataSync: "ok", dataQuota: "ok" });
     assert.equal(f(alarmIssueStateKey("gdrive-quota", "quota-near")), false);
     assert.equal(f(alarmIssueStateKey("gdrive-sync", "alarm-stamp-unreadable")), true);
   });
   it("nunca congela chave do alarme do OneDrive (outro check)", () => {
-    const f = absenceUnmeasured("not-installed", "unmeasured");
+    const f = absenceUnmeasured({ sync: "not-installed", quota: "unmeasured", dataSync: "ok", dataQuota: "ok" });
     assert.equal(f(alarmIssueStateKey("onedrive-sync", "alarm-service-dead")), false);
     assert.equal(f(alarmIssueStateKey("onedrive-quota", "quota-near")), false);
   });
@@ -496,10 +507,10 @@ describe("CLI --dry-run com carimbo corrompido (review #12357)", { skip: process
       const fake = join(sb, "rclone");
       writeFileSync(fake, `#!/bin/sh\necho "CRITICAL: didn't find section" >&2\nexit 1\n`);
       chmodSync(fake, 0o755);
-      const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", state], {
+      const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "gdrive-sync-alarm.ts"), "--dry-run", "--state-dir", state, "--data-state-dir", join(sb, "data-state"), "--data-dir", join(sb, "sem-data")], {
         encoding: "utf8",
         cwd: ROOT,
-        env: { ...process.env, RCLONE_BIN: fake },
+        env: isolatedAlarmEnv(sb, { RCLONE_BIN: fake }),
       });
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.stdout, /verdict=alarm-stamp-unreadable/);

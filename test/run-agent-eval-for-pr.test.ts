@@ -30,6 +30,10 @@ import {
   runEvalsForTriggering,
   resolveReportsRoot,
   deriveReferenceEditions,
+  deriveReferenceEditionsDetailed,
+  findUnreadableReferenceEditions,
+  formatUnreadableEditionsMessage,
+  probeEditionReadable,
   resolveEditionsRootDir,
   type CommandRunner,
   type CommandRunnerResult,
@@ -631,6 +635,105 @@ describe("deriveReferenceEditions (#11616 — layout nested)", () => {
 
   it("diretório inexistente: array vazio, sem lançar", () => {
     assert.deepEqual(deriveReferenceEditions(join(tmpdir(), "nao-existe-11616-xyz"), 3), []);
+  });
+});
+
+describe("edição de referência ilegível — placeholder OneDrive (#12534)", () => {
+  // Reproduz a rodada 261108b: 261106/261109 existem em disco (existsSync
+  // true), mas a leitura falha como num placeholder só-na-nuvem.
+  function seed(root: string, editions: string[]): void {
+    for (const d of editions) {
+      mkdirSync(join(root, d.slice(0, 4), d, "_internal"), { recursive: true });
+      writeFileSync(join(root, d.slice(0, 4), d, "_internal", "01-approved.json"), "{}");
+    }
+  }
+  const cloudOnly = (names: string[]) => (p: string): string => {
+    if (names.some((n) => p.includes(n))) {
+      const err = new Error("The cloud file provider is not running.") as NodeJS.ErrnoException;
+      err.code = "EIO";
+      throw err;
+    }
+    return readFileSync(p, "utf8");
+  };
+
+  it("derivação automática pula as ilegíveis e segue para as próximas legíveis", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-eval-12534-"));
+    try {
+      seed(root, ["261103", "261104", "261105", "261106", "261109"]);
+      const probe = (dir: string) => probeEditionReadable(dir, cloudOnly(["261106", "261109"]));
+      const out = deriveReferenceEditionsDetailed(root, 3, undefined, probe);
+      assert.deepEqual(out.editions, ["261103", "261104", "261105"]);
+      assert.deepEqual(out.skipped.map((s) => s.edition), ["261109", "261106"]);
+      assert.match(out.skipped[0].reason, /EIO/);
+      assert.deepEqual(deriveReferenceEditions(root, 3, undefined, probe), ["261103", "261104", "261105"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("para de sondar ao juntar o limite (não força hidratar edição antiga)", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-eval-12534-"));
+    try {
+      seed(root, ["261101", "261102", "261103", "261104"]);
+      const probed: string[] = [];
+      const probe = (dir: string) => {
+        probed.push(dir.slice(-6));
+        return { ok: true } as const;
+      };
+      assert.deepEqual(deriveReferenceEditionsDetailed(root, 2, undefined, probe).editions, ["261103", "261104"]);
+      assert.deepEqual(probed, ["261104", "261103"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("probeEditionReadable: vazio e JSON inválido contam como ilegível; ausente não vira 'pulada'", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-eval-12534-"));
+    try {
+      const dir = join(root, "261107");
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      assert.equal(probeEditionReadable(dir).ok, false);
+      writeFileSync(join(dir, "_internal", "01-approved.json"), "");
+      const empty = probeEditionReadable(dir);
+      assert.ok(!empty.ok && /vazio/.test(empty.reason));
+      writeFileSync(join(dir, "_internal", "01-approved.json"), "{trunc");
+      const bad = probeEditionReadable(dir);
+      assert.ok(!bad.ok && /JSON/.test(bad.reason));
+      writeFileSync(join(dir, "_internal", "01-approved.json"), "{}");
+      assert.deepEqual(probeEditionReadable(dir), { ok: true });
+      writeFileSync(join(dir, "01-categorized.md"), "x");
+      const catFail = probeEditionReadable(dir, (p) => {
+        if (p.endsWith("01-categorized.md")) throw Object.assign(new Error("x"), { code: "EIO" });
+        return readFileSync(p, "utf8");
+      });
+      assert.ok(!catFail.ok && /01-categorized\.md/.test(catFail.reason));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--reference-editions explícito: lista ilegíveis e ausentes; mensagem acionável sugere legíveis", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-eval-12534-"));
+    try {
+      seed(root, ["261104", "261105", "261106"]);
+      const probe = (dir: string) => probeEditionReadable(dir, cloudOnly(["261106"]));
+      const bad = findUnreadableReferenceEditions(root, ["261105", "261106", "261199"], undefined, probe);
+      assert.deepEqual(bad.map((b) => b.edition), ["261106", "261199"]);
+      assert.match(bad[1].reason, /não encontrada/);
+      const msg = formatUnreadableEditionsMessage(bad, ["261104", "261105"]);
+      assert.match(msg, /261106 \(/);
+      assert.match(msg, /OneDrive/);
+      assert.match(msg, /--reference-editions 261104,261105/);
+      assert.match(formatUnreadableEditionsMessage(bad, []), /Nenhuma outra edição legível/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("main() checa a lista explícita e usa a derivação que pula ilegíveis", () => {
+    const src = readFileSync(join(ROOT, "scripts", "run-agent-eval-for-pr.ts"), "utf8");
+    assert.match(src, /findUnreadableReferenceEditions\(editionsRootDir, referenceEditions\)/);
+    assert.match(src, /deriveReferenceEditionsDetailed\(editionsRootDir, numEditions\)/);
   });
 });
 

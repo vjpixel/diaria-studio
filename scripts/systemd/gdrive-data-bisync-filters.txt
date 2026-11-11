@@ -1,0 +1,44 @@
+# Filtros do rclone bisync DEDICADO de data/ (#12478). A raiz deste sync e a
+# propria pasta de data/ (default gdrive-diaria:diaria-studio-data <->
+# /mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data; ver gdrive-data-bisync.sh), entao
+# os padroes sao relativos a ela. Mudar este arquivo exige rodar o bisync de
+# data/ uma vez com --resync (sh scripts/systemd/gdrive-data-bisync.sh --resync,
+# timer parado; o filtro instalado vive em ~/.cache/diaria/gdrive-data-bisync).
+# O script passa --ignore-case.
+#
+# Globais: os mesmos do filtro do Drive inteiro (gdrive-bisync-filters.txt);
+# test/data-sync-exclusions-12357.test.ts trava a paridade.
+- ~*
+- .~*
+- *.tmp
+- *.swp
+- *.partial
+- *.db-shm
+- *.db-wal
+- *.sqlite-shm
+- *.sqlite-wal
+- *.sqlite3-shm
+- *.sqlite3-wal
+- *safeBackup*
+- desktop.ini
+- .DS_Store
+- Thumbs.db
+- node_modules/**
+#
+# Arquivos de data/ que ficam locais por maquina (mesma lista do skip_file do
+# OneDrive). Sem "/" no padrao, o rclone casa em qualquer profundidade de
+# data/. Regerar com
+#   npx tsx scripts/lib/data-sync-exclusions.ts --data-root
+# e colar no lugar do bloco abaixo (test/data-sync-exclusions-12357.test.ts trava).
+# BEGIN data-local-only, raiz de data/ (#12478) - GERADO de scripts/lib/data-sync-exclusions.ts --data-root, nao editar a mao
+- *.db-shm
+- *.db-wal
+- *.sqlite3-shm
+- *.sqlite3-wal
+- run-log.jsonl
+- *.mp4
+- run-log*.jsonl
+- inbox*.md
+- drive-cache*.json
+- *safeBackup*
+# END data-local-only, raiz de data/

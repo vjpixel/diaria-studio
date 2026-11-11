@@ -99,7 +99,11 @@
  * Sem `--reference-editions`, deriva as `--num-editions` (default 3) mais
  * recentes sob `--editions-dir` (default `data/editions`, nos layouts flat e
  * nested — #11616, `deriveReferenceEditions`) que já têm
- * `_internal/01-approved.json` em disco. Worktree sem a junction `data/` cai
+ * `_internal/01-approved.json` em disco e LEGÍVEL — edição ilegível
+ * (placeholder do OneDrive só-na-nuvem, #12534) é pulada com aviso e a
+ * derivação segue para a próxima; em `--reference-editions` explícito, edição
+ * ilegível aborta com mensagem acionável e sugestão das legíveis
+ * (`probeEditionReadable`). Worktree sem a junction `data/` cai
  * sozinho no `data/editions` do checkout principal (#11616,
  * `resolveEditionsRootDir`) — somente leitura. Fixtures vão para um diretório
  * temporário, removido em finally após coletar os custos (#11632). Mesmo espírito de
@@ -107,7 +111,7 @@
  * exigir o operador digitar a lista toda vez (#5321, "perguntar é exceção").
  */
 import { tmpdir } from "node:os";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -358,16 +362,141 @@ export function deriveReferenceEditions(
   editionsRootDir: string,
   limit: number = DEFAULT_NUM_EDITIONS,
   enumerate: (root: string) => Map<string, string> = enumerateEditionDirs,
-  fileExists: (path: string) => boolean = existsSync,
+  probe: (editionDir: string) => EditionReadability = probeEditionReadable,
 ): string[] {
+  return deriveReferenceEditionsDetailed(editionsRootDir, limit, enumerate, probe).editions;
+}
+
+// ---------------------------------------------------------------------------
+// Edição de referência ilegível (#12534)
+// ---------------------------------------------------------------------------
+
+/** Resultado da sonda de legibilidade de uma edição de referência (#12534). */
+export type EditionReadability = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Arquivos que o fixture do Stage 2 copia (`STAGE_INPUT_FILES["2"]` de
+ * `replay-stage-input.ts`): `01-approved.json` é obrigatório; os demais
+ * só precisam ser legíveis quando existem.
+ */
+const REQUIRED_REFERENCE_FILE = join("_internal", "01-approved.json");
+const OPTIONAL_REFERENCE_FILES = ["01-categorized.md"];
+
+/**
+ * #12534 — confere se a edição de referência é LEGÍVEL de verdade, não só
+ * presente. Placeholder do OneDrive só-na-nuvem (não hidratado) passa no
+ * `existsSync`, mas a leitura falha (ou volta vazia) — a rodada 261108b
+ * quebrou no meio do `copyFileSync` do fixture com 261106/261109 assim.
+ * Lê o conteúdo inteiro (o que força a hidratação quando o cliente do
+ * OneDrive está de pé) e exige JSON válido no `01-approved.json`. Nunca
+ * lança. `readFile` é injetável pra teste.
+ */
+export function probeEditionReadable(
+  editionDir: string,
+  readFile: (path: string) => string = (p) => readFileSync(p, "utf8"),
+  fileExists: (path: string) => boolean = existsSync,
+): EditionReadability {
+  const approvedPath = join(editionDir, REQUIRED_REFERENCE_FILE);
+  if (!fileExists(approvedPath)) return { ok: false, reason: "sem _internal/01-approved.json" };
+  let raw: string;
+  try {
+    raw = readFile(approvedPath);
+  } catch (err) {
+    return { ok: false, reason: `leitura de _internal/01-approved.json falhou (${errCode(err)})` };
+  }
+  if (raw.trim() === "") return { ok: false, reason: "_internal/01-approved.json vazio (placeholder não hidratado?)" };
+  try {
+    JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: "_internal/01-approved.json não é JSON válido" };
+  }
+  for (const rel of OPTIONAL_REFERENCE_FILES) {
+    const p = join(editionDir, rel);
+    if (!fileExists(p)) continue;
+    try {
+      readFile(p);
+    } catch (err) {
+      return { ok: false, reason: `leitura de ${rel} falhou (${errCode(err)})` };
+    }
+  }
+  return { ok: true };
+}
+
+function errCode(err: unknown): string {
+  if (err && typeof err === "object" && "code" in err && typeof (err as { code: unknown }).code === "string") {
+    return (err as { code: string }).code;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+export interface SkippedReferenceEdition {
+  edition: string;
+  reason: string;
+}
+
+/**
+ * #12534 — derivação automática que PULA edição ilegível e segue para a
+ * próxima mais recente. Sonda da mais recente para a mais antiga e para ao
+ * juntar `limit` legíveis: não lê (nem força hidratar) o arquivo inteiro de
+ * edições que não vão entrar. Saída ascendente, mesma convenção de
+ * `pickDefaultReferenceEditions`; `skipped` vai pro log do operador.
+ */
+export function deriveReferenceEditionsDetailed(
+  editionsRootDir: string,
+  limit: number = DEFAULT_NUM_EDITIONS,
+  enumerate: (root: string) => Map<string, string> = enumerateEditionDirs,
+  probe: (editionDir: string) => EditionReadability = probeEditionReadable,
+): { editions: string[]; skipped: SkippedReferenceEdition[] } {
   const dirs = enumerate(editionsRootDir);
-  return pickDefaultReferenceEditions(
-    [...dirs.keys()],
-    (aammdd) => {
-      const dir = dirs.get(aammdd);
-      return dir !== undefined && fileExists(join(dir, "_internal", "01-approved.json"));
-    },
-    limit,
+  const candidates = [...dirs.keys()].filter((d) => /^\d{6}$/.test(d)).sort().reverse();
+  const picked: string[] = [];
+  const skipped: SkippedReferenceEdition[] = [];
+  for (const edition of candidates) {
+    if (picked.length >= limit) break;
+    const result = probe(dirs.get(edition)!);
+    if (result.ok) picked.push(edition);
+    else if (result.reason !== "sem _internal/01-approved.json") skipped.push({ edition, reason: result.reason });
+  }
+  return { editions: picked.reverse(), skipped };
+}
+
+/**
+ * #12534 — `--reference-editions` explícito: devolve as edições da lista que
+ * não estão em disco ou não são legíveis. Quem passa a lista à mão escolheu
+ * as edições, então o caller aborta com mensagem acionável em vez de trocar
+ * por outras em silêncio.
+ */
+export function findUnreadableReferenceEditions(
+  editionsRootDir: string,
+  editions: string[],
+  enumerate: (root: string) => Map<string, string> = enumerateEditionDirs,
+  probe: (editionDir: string) => EditionReadability = probeEditionReadable,
+): SkippedReferenceEdition[] {
+  const dirs = enumerate(editionsRootDir);
+  const out: SkippedReferenceEdition[] = [];
+  for (const edition of editions) {
+    const dir = dirs.get(edition);
+    if (dir === undefined) {
+      out.push({ edition, reason: `não encontrada sob ${editionsRootDir}` });
+      continue;
+    }
+    const result = probe(dir);
+    if (!result.ok) out.push({ edition, reason: result.reason });
+  }
+  return out;
+}
+
+/** Mensagem acionável (#12534) para edição de referência ilegível. */
+export function formatUnreadableEditionsMessage(unreadable: SkippedReferenceEdition[], readableSuggestion: string[]): string {
+  const list = unreadable.map((u) => `${u.edition} (${u.reason})`).join("; ");
+  const suggestion =
+    readableSuggestion.length > 0
+      ? ` Edições legíveis agora: --reference-editions ${readableSuggestion.join(",")} (ou omita a flag para derivar só as legíveis).`
+      : " Nenhuma outra edição legível encontrada para sugerir.";
+  return (
+    `[#12534] Edição de referência ilegível: ${list}. ` +
+    `Causa provável: placeholder do OneDrive só-na-nuvem (não hidratado) — marque a pasta da edição como "Sempre manter neste dispositivo" ou abra os arquivos para baixar.` +
+    suggestion
   );
 }
 
@@ -742,10 +871,28 @@ async function main(): Promise<void> {
   });
 
   let referenceEditions: string[];
+  let skippedUnreadable: SkippedReferenceEdition[] = [];
   if (values["reference-editions"]) {
     referenceEditions = values["reference-editions"].split(",").map((s) => s.trim()).filter(Boolean);
+    // #12534: edição explícita ilegível (placeholder OneDrive) aborta ANTES do
+    // fixture, com as edições legíveis sugeridas — nunca troca em silêncio.
+    const unreadable = findUnreadableReferenceEditions(editionsRootDir, referenceEditions);
+    if (unreadable.length > 0) {
+      const bad = new Set(unreadable.map((u) => u.edition));
+      const suggestion = existsSync(editionsRootDir)
+        ? deriveReferenceEditions(editionsRootDir, Math.max(referenceEditions.length, 1))
+        : [];
+      console.error(formatUnreadableEditionsMessage(unreadable, suggestion.filter((e) => !bad.has(e))));
+      process.exit(1);
+      return;
+    }
   } else if (existsSync(editionsRootDir)) {
-    referenceEditions = deriveReferenceEditions(editionsRootDir, numEditions);
+    const derived = deriveReferenceEditionsDetailed(editionsRootDir, numEditions);
+    referenceEditions = derived.editions;
+    skippedUnreadable = derived.skipped;
+    for (const s of derived.skipped) {
+      console.warn(`[#12534] edição ${s.edition} pulada: ${s.reason} — provável placeholder do OneDrive só-na-nuvem; seguindo para a próxima legível.`);
+    }
     console.log(`[#8144] --reference-editions omitido — derivadas automaticamente: ${referenceEditions.join(",") || "(nenhuma)"} (#5321, default declarado em vez de perguntar).`);
   } else {
     referenceEditions = [];
@@ -756,6 +903,7 @@ async function main(): Promise<void> {
       `[#8144] Nenhuma edição de referência disponível sob ${editionsRootDir} (junction data/ ausente neste checkout, ou nenhuma edição com _internal/01-approved.json) — ` +
         `passe --reference-editions AAMMDD,... explicitamente, ou rode numa máquina com a junction data/ (CLAUDE.md §2b).`,
     );
+    if (skippedUnreadable.length > 0) console.error(formatUnreadableEditionsMessage(skippedUnreadable, []));
     process.exit(1);
     return;
   }

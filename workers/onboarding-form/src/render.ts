@@ -4,24 +4,54 @@
  * Separado do `index.ts` para ser testável sem runtime de Worker
  * (`test/onboarding-form-questions-10605.test.ts`). Mobile primeiro: coluna
  * única de no máximo 560px com 16px de margem lateral, alvos de toque
- * grandes. Regra de layout por tipo: `checkbox` vira caixas sempre; `select`
- * com até `RADIO_MAX_OPTIONS` opções vira botões de rádio (tudo visível de
- * uma vez, um toque) e acima disso vira menu suspenso (uma lista de 16 rádios
- * empurraria o resto do formulário para fora da tela); `text`/`textarea`
- * são campos livres limitados a `FORM_ANSWER_MAX_LEN`.
+ * grandes. Toda pergunta de escolha vira botões de rádio (`select`) ou caixas
+ * (`checkbox`), nunca menu suspenso (v3, decisão do editor de 09/11/2026: a
+ * área tem 13 opções e aparece inteira). `text`/`textarea` são campos livres
+ * limitados a `FORM_ANSWER_MAX_LEN`.
  *
- * Pergunta com `hiddenWhen` (#10605 v2: tema e preço somem com "Nada disso")
- * leva `data-hide-q`/`data-hide-opt` no `<fieldset>` e um script inline curto
- * (`HIDE_SCRIPT`) esconde e DESABILITA os campos quando a opção está marcada:
- * campo desabilitado não vai no POST. Sem JavaScript as perguntas aparecem, e
- * o servidor descarta a resposta escondida do mesmo jeito (`parseFormSubmission`).
+ * Perguntas numeradas (sem `subOf`) levam o número no `<legend>`; as
+ * subperguntas não têm número: o relato de falha (texto) fica DENTRO do
+ * fieldset da pergunta-mãe, e as de escolha (escolha única, gasto mensal)
+ * vêm num fieldset próprio logo depois. Só as opcionais levam "opcional".
+ *
+ * Progressive enhancement: sem JavaScript tudo aparece e o servidor valida
+ * (`parseFormSubmission`). Com JavaScript, `FORM_SCRIPT`:
+ *  - esconde e DESABILITA as perguntas condicionais (`data-hide-q`/`data-hide-opt`
+ *    para `hiddenWhen`, `data-show-q` + `data-show-any`/`data-show-min` para
+ *    `shownWhen`): campo desabilitado não vai no POST;
+ *  - na escolha única (`data-pick-from`), só mostra as opções marcadas na
+ *    pergunta de origem;
+ *  - aplica a opção exclusiva (`data-exclusive`) e o limite de caixas
+ *    (`data-max`) em tempo real;
+ *  - mostra e habilita o campo do "Outro/Outra" (`{id}_outro`, `maxlength`
+ *    `FORM_OTHER_TEXT_MAX_LEN`) só com a opção marcada.
+ * A ordem importa: condicionais primeiro, "Outro" depois (reabrir uma
+ * pergunta reabilita os campos dela).
+ *  - #12522: a caixa a mais num "Marque até N" é desmarcada e mostra o aviso
+ *    "Marque até N." logo abaixo da opção tocada;
+ *  - #12504: salva o rascunho (`POST /rascunho`, `data-draft` no `<form>`) a
+ *    cada mudança, com debounce, e com `sendBeacon` ao sair da página; nunca
+ *    depois do clique em Enviar. Só com JavaScript aparece o aviso de que o
+ *    que a pessoa marca fica salvo (`.js-only`).
+ * O formulário também volta preenchido (`RenderFormOptions.prefill`): com o
+ * rascunho guardado, ou com o que a pessoa mandou num envio recusado, com a
+ * mensagem do erro na pergunta (#12522).
  */
 
-import { FORM_ANSWER_MAX_LEN, FORM_QUESTIONS, isChoiceQuestion, type FormQuestion } from "../../../scripts/lib/onboarding-form-contract.ts";
-import { FORM_PAGE_MARKER } from "../../../scripts/lib/onboarding-form-link-sig.ts";
-
-/** Acima disso uma pergunta de escolha única vira menu suspenso. */
-export const RADIO_MAX_OPTIONS = 8;
+import {
+  FORM_ANSWER_MAX_LEN,
+  FORM_MULTI_SEPARATOR,
+  FORM_OTHER_TEXT_MAX_LEN,
+  FORM_QUESTIONS,
+  isChoiceQuestion,
+  numberedQuestions,
+  otherTextFieldId,
+  splitMultiAnswer,
+  type ChoiceQuestion,
+  type FormQuestion,
+  type FormResults,
+} from "../../../scripts/lib/onboarding-form-contract.ts";
+import { FORM_PAGE_MARKER, FORM_RENDERED_FIELD } from "../../../scripts/lib/onboarding-form-link-sig.ts";
 
 export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -29,97 +59,285 @@ export function escapeHtml(s: string): string {
 
 const STYLE = [
   ":root{--bg:#fff;--fg:#1a1a1a;--muted:#5c5c5c;--line:#d9d9d9;--accent:#00a0a0;--field:#fff}",
-  "@media (prefers-color-scheme: dark){:root{--bg:#121212;--fg:#ececec;--muted:#a3a3a3;--line:#3a3a3a;--field:#1c1c1c}}",
+  // Sempre claro, inclusive com o aparelho no modo escuro (decisão do editor
+  // de 09/11/2026, #10605): o `color-scheme: only light` mantém claros os
+  // campos nativos e impede o escurecimento automático do Chrome Android.
+  ":root{color-scheme:only light}",
   "*{box-sizing:border-box}",
   "body{margin:0;background:var(--bg);color:var(--fg);font-family:Georgia,serif;font-size:17px;line-height:1.5}",
   "main{max-width:560px;margin:0 auto;padding:24px 16px 48px}",
   "h1{font-size:1.6rem;line-height:1.25;margin:0 0 8px}",
   ".intro{color:var(--muted);margin:0 0 24px}",
-  "fieldset{border:0;border-top:1px solid var(--line);margin:0;padding:20px 0}",
+  "fieldset{border:0;border-top:1px solid var(--line);margin:0;padding:20px 0;min-width:0}",
+  "fieldset.sub{border-top:0;padding-top:4px}",
   "legend,.q{font-weight:bold;padding:0;margin-bottom:6px;display:block}",
+  ".n{color:var(--muted);font-weight:normal;margin-right:6px}",
+  ".req{color:var(--muted);font-weight:normal;font-size:.85rem;margin-left:6px}",
   ".help{color:var(--muted);font-size:.9rem;margin:0 0 8px}",
-  ".opt{display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer}",
+  ".opt{display:flex;gap:10px;align-items:flex-start;padding:8px 0;cursor:pointer}.opt[hidden]{display:none}",
   ".opt input{width:20px;height:20px;margin:3px 0 0;flex:none;accent-color:var(--accent)}",
-  "input[type=email],select,textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--fg)}",
+  ".q.sub{margin-top:12px}",
+  // `[hidden]` explícito: o `display:block` da classe venceria o atributo `hidden` do script.
+  ".other{display:block;margin:2px 0 8px 30px}.other[hidden]{display:none}",
+  "input[type=email],input[type=text],textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--fg)}",
   "textarea{min-height:110px}",
   "button{width:100%;font:inherit;font-weight:bold;padding:14px;border:0;border-radius:999px;background:var(--accent);color:#fff;cursor:pointer;margin-top:8px}",
+  // #12522: aviso do limite de caixas e erro na pergunta; #12504: aviso de retomada.
+  ".limite,.erro{font-size:.9rem;margin:2px 0 8px 30px;color:#b3261e}.limite[hidden]{display:none}",
+  ".erro{margin-left:0}",
+  ".aviso{border-left:3px solid var(--accent);padding:2px 0 2px 10px;color:var(--muted);margin:0 0 16px}",
+  ".js-only[hidden]{display:none}",
 ].join("");
 
 export function renderPage(body: string): string {
   return (
     `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<meta name="color-scheme" content="only light">` +
     `<meta name="robots" content="noindex">` +
     `<title>diar.ia.br</title><style>${STYLE}</style></head><body><main>${body}</main></body></html>`
   );
 }
 
-/** Esconde/desabilita as perguntas com `hiddenWhen` conforme a resposta de controle. */
-export const HIDE_SCRIPT =
-  "(function(){var f=document.querySelector('form');if(!f)return;" +
-  "function u(){var l=f.querySelectorAll('fieldset[data-hide-q]');for(var i=0;i<l.length;i++){var fs=l[i];" +
-  "var c=f.querySelectorAll('input[name=\"'+fs.getAttribute('data-hide-q')+'\"]:checked'),on=false;" +
-  "for(var j=0;j<c.length;j++)if(c[j].value===fs.getAttribute('data-hide-opt'))on=true;" +
-  "fs.hidden=on;var x=fs.querySelectorAll('input,select,textarea');for(var k=0;k<x.length;k++)x[k].disabled=on;}}" +
-  "f.addEventListener('change',u);u();})();";
+/** Script do formulário (ES5, inline). Ver o cabeçalho do módulo. */
+export const FORM_SCRIPT =
+  "(function(){var f=document.querySelector('form');if(!f)return;var SEP=" + JSON.stringify(FORM_MULTI_SEPARATOR) + ";" +
+  "function vals(n){var r=[],c=f.querySelectorAll('[name=\"'+n+'\"]');for(var i=0;i<c.length;i++){var x=c[i];if(x.disabled)continue;if((x.type==='checkbox'||x.type==='radio')?x.checked:x.value!=='')r.push(x.value);}return r;}" +
+  "function dis(fs,on){var x=fs.querySelectorAll('input,textarea');for(var k=0;k<x.length;k++)x[k].disabled=on;}" +
+  "function u(){var l=f.querySelectorAll('fieldset');for(var i=0;i<l.length;i++){var fs=l[i],off=false;" +
+  "var hq=fs.getAttribute('data-hide-q');if(hq&&vals(hq).indexOf(fs.getAttribute('data-hide-opt'))>=0)off=true;" +
+  "var sq=fs.getAttribute('data-show-q');if(sq){var v=vals(sq),any=fs.getAttribute('data-show-any'),min=fs.getAttribute('data-show-min');" +
+  "if(any){var ok=false,a=any.split(SEP);for(var j=0;j<a.length;j++)if(v.indexOf(a[j])>=0)ok=true;if(!ok)off=true;}" +
+  "if(min&&v.length<Number(min))off=true;}" +
+  "fs.hidden=off;dis(fs,off);" +
+  "var pf=fs.getAttribute('data-pick-from');if(pf&&!off){var src=vals(pf),o=fs.querySelectorAll('.opt[data-pick]');" +
+  "for(var p=0;p<o.length;p++){var on=src.indexOf(o[p].getAttribute('data-pick'))>=0,inp=o[p].querySelector('input');o[p].hidden=!on;inp.disabled=!on;if(!on)inp.checked=false;}}}" +
+  "var w=f.querySelectorAll('.other[data-other-for]');for(var m=0;m<w.length;m++){var e=w[m],s=vals(e.getAttribute('data-other-for')).indexOf(e.getAttribute('data-other-opt'))>=0;" +
+  "e.hidden=!s;var t=e.querySelectorAll('input');for(var q=0;q<t.length;q++)t[q].disabled=!s;}}" +
+  // #12504: rascunho salvo no servidor (`data-draft` = rota), com debounce;
+  // `sendBeacon` ao sair da página; nada depois do envio (`sent`).
+  "var D=f.getAttribute('data-draft'),sent=false,dirty=false,tm=null;" +
+  "function save(b){if(!D||sent||!dirty||!window.FormData)return;dirty=false;var fd=new FormData(f);" +
+  "if(b&&navigator.sendBeacon){navigator.sendBeacon(D,fd);return;}if(!window.fetch)return;" +
+  "fetch(D,{method:'POST',body:fd,keepalive:true,credentials:'omit'}).then(function(r){if(r.status===429){dirty=true;sch(3000);}})['catch'](function(){dirty=true;});}" +
+  "function sch(ms){if(!D)return;clearTimeout(tm);tm=setTimeout(function(){save(false);},ms);}" +
+  "if(D&&window.fetch&&window.FormData){var js=document.querySelectorAll('.js-only');for(var z=0;z<js.length;z++)js[z].hidden=false;}" +
+  "f.addEventListener('input',function(ev){var t=ev.target;if(t&&(t.type==='text'||t.tagName==='TEXTAREA')){dirty=true;sch(1500);}});" +
+  "f.addEventListener('submit',function(){sent=true;clearTimeout(tm);});" +
+  "window.addEventListener('pagehide',function(){save(true);});" +
+  "document.addEventListener('visibilitychange',function(){if(document.visibilityState==='hidden')save(true);});" +
+  // #12522: a 4ª caixa num "Marque até 3" é desmarcada E avisa, logo abaixo da opção tocada.
+  "f.addEventListener('change',function(ev){var t=ev.target;if(t&&t.type==='checkbox'){var fs=t.closest('fieldset'),lm=fs&&fs.querySelector('.limite');if(lm)lm.hidden=true;if(t.checked){" +
+  "var ex=fs&&fs.getAttribute('data-exclusive'),mx=fs&&fs.getAttribute('data-max'),g=f.querySelectorAll('input[type=checkbox][name=\"'+t.name+'\"]');" +
+  "if(ex){for(var i=0;i<g.length;i++){if(g[i]===t)continue;if(t.value===ex||g[i].value===ex)g[i].checked=false;}}" +
+  "if(mx){var n=0;for(var k=0;k<g.length;k++)if(g[k].checked)n++;if(n>Number(mx)){t.checked=false;" +
+  "if(lm){var lb=t.closest('label');if(lb&&lb.parentNode)lb.parentNode.insertBefore(lm,lb.nextSibling);lm.hidden=false;}}}}}" +
+  "u();dirty=true;sch(600);});u();})();";
 
-function fieldsetOpen(q: FormQuestion): string {
-  if (!q.hiddenWhen) return "<fieldset>";
-  return `<fieldset data-hide-q="${escapeHtml(q.hiddenWhen.questionId)}" data-hide-opt="${escapeHtml(q.hiddenWhen.option)}">`;
+/**
+ * #12504/#12522: respostas para preencher o formulário — o rascunho guardado
+ * ou o que a pessoa mandou num envio recusado. Mesmo formato de
+ * `answers` (caixas juntas por `FORM_MULTI_SEPARATOR`). Só marca opção que
+ * existe na pergunta; texto sai sempre escapado.
+ */
+export type FormPrefill = Readonly<Record<string, string>>;
+
+/** Opções da pergunta que o preenchimento marca. */
+function prefilledOptions(q: ChoiceQuestion, prefill: FormPrefill | undefined): string[] {
+  const v = prefill?.[q.id];
+  if (v == null || v === "") return [];
+  return q.kind === "checkbox" ? splitMultiAnswer(v) : [v];
 }
 
-function renderQuestion(q: FormQuestion): string {
+/** ` value="..."` para campo de texto preenchido (vazio = nada). */
+function valueAttr(v: string | undefined): string {
+  return v ? ` value="${escapeHtml(v)}"` : "";
+}
+
+/** Campo de texto curto do "Outro/Outra" (sempre visível sem JavaScript). */
+function otherTextField(q: ChoiceQuestion, prefill?: FormPrefill): string {
+  if (!q.otherOption) return "";
+  const tid = escapeHtml(otherTextFieldId(q));
+  return (
+    `<span class="other" data-other-for="${escapeHtml(q.id)}" data-other-opt="${escapeHtml(q.otherOption)}">` +
+    `<input type="text" id="${tid}" name="${tid}" maxlength="${FORM_OTHER_TEXT_MAX_LEN}"${valueAttr(prefill?.[otherTextFieldId(q)])} ` +
+    `placeholder="Qual? (opcional)" aria-label="${escapeHtml(q.otherOption)}: qual? (opcional)"></span>`
+  );
+}
+
+function fieldsetOpen(q: FormQuestion, withId = false): string {
+  const attrs: string[] = [];
+  if (withId) attrs.push(`id="q-${escapeHtml(q.id)}"`);
+  if (q.subOf) attrs.push(`class="sub"`);
+  if (q.hiddenWhen) attrs.push(`data-hide-q="${escapeHtml(q.hiddenWhen.questionId)}" data-hide-opt="${escapeHtml(q.hiddenWhen.option)}"`);
+  if (q.shownWhen) {
+    attrs.push(`data-show-q="${escapeHtml(q.shownWhen.questionId)}"`);
+    if (q.shownWhen.anyOf) attrs.push(`data-show-any="${escapeHtml(q.shownWhen.anyOf.join(FORM_MULTI_SEPARATOR))}"`);
+    if (q.shownWhen.minChecked != null) attrs.push(`data-show-min="${q.shownWhen.minChecked}"`);
+  }
+  if (isChoiceQuestion(q)) {
+    if (q.optionsFrom) attrs.push(`data-pick-from="${escapeHtml(q.optionsFrom)}"`);
+    if (q.exclusiveOption) attrs.push(`data-exclusive="${escapeHtml(q.exclusiveOption)}"`);
+    if (q.maxChoices != null) attrs.push(`data-max="${q.maxChoices}"`);
+  }
+  return attrs.length === 0 ? "<fieldset>" : `<fieldset ${attrs.join(" ")}>`;
+}
+
+const OPTIONAL = `<span class="req">opcional</span>`;
+
+/** Pergunta condicional: sem `required` no HTML (sem JavaScript ela aparece
+ *  sempre e não pode travar o envio de quem não precisa respondê-la). */
+function isConditional(q: FormQuestion): boolean {
+  return q.hiddenWhen != null || q.shownWhen != null;
+}
+
+function renderOpenSub(q: FormQuestion, prefill?: FormPrefill): string {
   const id = escapeHtml(q.id);
-  const fs = fieldsetOpen(q);
+  const ph = "placeholder" in q && q.placeholder ? ` placeholder="${escapeHtml(q.placeholder)}"` : "";
+  const label = `<label class="q sub" for="${id}">${escapeHtml(q.label)}${q.required ? "" : ` ${OPTIONAL}`}</label>`;
+  const tag = q.kind === "textarea" ? "textarea" : "input";
+  const v = prefill?.[q.id];
+  const field =
+    tag === "textarea"
+      ? `<textarea id="${id}" name="${id}" maxlength="${FORM_ANSWER_MAX_LEN}"${ph}>${v ? escapeHtml(v) : ""}</textarea>`
+      : `<input id="${id}" name="${id}" type="text" maxlength="${FORM_ANSWER_MAX_LEN}"${ph}${valueAttr(v)}>`;
+  return label + field;
+}
+
+/** Mensagem do erro dentro da pergunta recusada (#12522). */
+function questionError(message: string | undefined): string {
+  return message ? `<p class="erro" role="alert">${escapeHtml(message)}</p>` : "";
+}
+
+function renderQuestion(q: FormQuestion, number: number | null, inner: readonly FormQuestion[], prefill?: FormPrefill, error?: string): string {
+  const id = escapeHtml(q.id);
+  const fs = fieldsetOpen(q, error != null);
   const help = q.help ? `<p class="help">${escapeHtml(q.help)}</p>` : "";
-  const req = q.required ? " required" : "";
+  const num = number != null ? `<span class="n">${number}</span>` : "";
+  const legend = `<legend>${num}${escapeHtml(q.label)}${q.required ? "" : ` ${OPTIONAL}`}</legend>`;
+  const innerHtml = inner.map((x) => renderOpenSub(x, prefill)).join("");
+  const err = questionError(error);
   if (!isChoiceQuestion(q)) {
-    const label = `<label class="q" for="${id}">${escapeHtml(q.label)}</label>`;
+    const req = q.required && !isConditional(q) ? " required" : "";
     const max = ` maxlength="${FORM_ANSWER_MAX_LEN}"`;
-    if (q.kind === "textarea") return `${fs}${label}${help}<textarea id="${id}" name="${id}"${max}${req}></textarea></fieldset>`;
-    return `${fs}${label}${help}<input id="${id}" name="${id}" type="text"${max}${req}></fieldset>`;
+    const v = prefill?.[q.id];
+    const field =
+      q.kind === "textarea"
+        ? `<textarea id="${id}" name="${id}"${max}${req}>${v ? escapeHtml(v) : ""}</textarea>`
+        : `<input id="${id}" name="${id}" type="text"${max}${req}${valueAttr(v)}>`;
+    return `${fs}<label class="q" for="${id}">${num}${escapeHtml(q.label)}${q.required ? "" : ` ${OPTIONAL}`}</label>${err}${help}${field}${innerHtml}</fieldset>`;
   }
-  const opts = q.options;
-  if (q.kind === "checkbox" || opts.length <= RADIO_MAX_OPTIONS) {
-    const type = q.kind === "checkbox" ? "checkbox" : "radio";
-    const items = opts
-      .map((o, i) => {
-        const oid = `${id}-${i}`;
-        // `required` em rádio vale para o grupo; em caixa exigiria todas, então não vai.
-        const r = type === "radio" ? req : "";
-        return `<label class="opt" for="${oid}"><input type="${type}" id="${oid}" name="${id}" value="${escapeHtml(o)}"${r}><span>${escapeHtml(o)}</span></label>`;
-      })
-      .join("");
-    return `${fs}<legend>${escapeHtml(q.label)}</legend>${help}${items}</fieldset>`;
-  }
-  const label = `<label class="q" for="${id}">${escapeHtml(q.label)}</label>`;
-  const options = opts.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
-  return `${fs}${label}${help}<select id="${id}" name="${id}"${req}><option value="">Escolha uma opção</option>${options}</select></fieldset>`;
+  const type = q.kind === "checkbox" ? "checkbox" : "radio";
+  // `required` em rádio vale para o grupo; em caixa exigiria todas, então não vai.
+  const req = type === "radio" && q.required && !isConditional(q) ? " required" : "";
+  const checked = prefilledOptions(q, prefill);
+  const items = q.options
+    .map((o, i) => {
+      const oid = `${id}-${i}`;
+      const pick = q.optionsFrom ? ` data-pick="${escapeHtml(o)}"` : "";
+      const on = checked.includes(o) ? " checked" : "";
+      const opt = `<label class="opt" for="${oid}"${pick}><input type="${type}" id="${oid}" name="${id}" value="${escapeHtml(o)}"${req}${on}><span>${escapeHtml(o)}</span></label>`;
+      return o === q.otherOption ? opt + otherTextField(q, prefill) : opt;
+    })
+    .join("");
+  const before = q.helpAfter ? "" : help;
+  const after = q.helpAfter ? help : "";
+  // #12522: aviso do limite, escondido até a pessoa tentar a caixa a mais
+  // (o script o move para logo abaixo da opção tocada).
+  const limit = q.kind === "checkbox" && q.maxChoices != null ? `<p class="limite" role="status" hidden>Marque até ${q.maxChoices}.</p>` : "";
+  return `${fs}${legend}${err}${before}${items}${limit}${after}${innerHtml}</fieldset>`;
+}
+
+/** Linha do topo para quem volta com rascunho (#12504, texto do editor). */
+export const FORM_RESUMED_NOTICE = "Você já tinha começado. Suas respostas estão salvas.";
+
+/** Aviso do salvamento automático, junto da linha de uso (#12504, decisão do
+ *  editor). Só aparece com JavaScript: sem ele nada é salvo. */
+export const FORM_AUTOSAVE_NOTICE = "O que você marcar já fica salvo, mesmo que você não termine.";
+
+/** Rota do salvamento do rascunho (#12504). */
+export const FORM_DRAFT_ROUTE = "/rascunho";
+
+export interface RenderFormOptions {
+  /** Respostas que preenchem o formulário (rascunho ou envio recusado). */
+  prefill?: FormPrefill | null;
+  /** Veio do rascunho guardado: mostra `FORM_RESUMED_NOTICE`. */
+  resumed?: boolean;
+  /** Envio recusado (#12522): a mensagem vai na pergunta (e num aviso no topo). */
+  error?: { message: string; questionId?: string } | null;
+  /** Salvamento automático do rascunho (default ligado). */
+  autosave?: boolean;
 }
 
 /** Página do formulário para o e-mail do link assinado (#10657): o e-mail e a
  *  assinatura vão em campos OCULTOS — a pessoa vê para quem está respondendo,
- *  mas não troca o e-mail (trocar invalidaria a assinatura e o Worker recusaria). */
-export function renderFormHtml(email: string, sig: string, questions: readonly FormQuestion[] = FORM_QUESTIONS): string {
+ *  mas não troca o e-mail (trocar invalidaria a assinatura e o Worker
+ *  recusaria). `renderedToken` (`signFormRenderedAt`) vai no campo
+ *  `FORM_RENDERED_FIELD`: com ele o envio grava o tempo de preenchimento.
+ *  `opts` (#12504/#12522): preenchimento, aviso de retomada, erro na pergunta. */
+export function renderFormHtml(
+  email: string,
+  sig: string,
+  questions: readonly FormQuestion[] = FORM_QUESTIONS,
+  renderedToken: string | null = null,
+  opts: RenderFormOptions = {},
+): string {
+  const prefill = opts.prefill ?? undefined;
+  const errQ = opts.error?.questionId != null && questions.some((x) => x.id === opts.error!.questionId) ? opts.error.questionId : null;
+  const parts: string[] = [];
+  let n = 0;
+  for (const q of questions) {
+    // Texto livre de subpergunta vai dentro do fieldset da mãe.
+    if (q.subOf && !isChoiceQuestion(q) && questions.some((x) => x.id === q.subOf)) continue;
+    const inner = questions.filter((x) => x.subOf === q.id && !isChoiceQuestion(x));
+    // Erro de subpergunta de texto aparece na pergunta-mãe (é onde ela está).
+    const hasErr = errQ != null && (errQ === q.id || inner.some((x) => x.id === errQ));
+    parts.push(renderQuestion(q, q.subOf ? null : ++n, inner, prefill, hasErr ? opts.error!.message : undefined));
+  }
+  const autosave = opts.autosave !== false;
+  const needsScript =
+    autosave || questions.some((q) => isConditional(q) || (isChoiceQuestion(q) && (q.otherOption || q.exclusiveOption || q.maxChoices != null || q.optionsFrom)));
+  const top =
+    (opts.error ? `<p class="erro" role="alert">Não deu para enviar: ${escapeHtml(opts.error.message)}.${errQ ? ` <a href="#q-${escapeHtml(errQ)}">Ir para a pergunta</a>.` : ""}</p>` : "") +
+    (opts.resumed ? `<p class="aviso">${FORM_RESUMED_NOTICE}</p>` : "");
   return renderPage(
-    `<h1>Conte pra gente sobre você</h1>` +
-      `<p class="intro">São até ${questions.length} perguntas rápidas, leva uns dois minutos. ` +
-      `As respostas ajudam a escolher o que entra na diar.ia.br e o que mais podemos oferecer além dela.</p>` +
-      `<form method="post" action="/enviar">` +
+    `<h1>Pode me contar um pouco sobre você?</h1>` +
+      top +
+      `<form method="post" action="/enviar"${autosave ? ` data-draft="${FORM_DRAFT_ROUTE}"` : ""}>` +
       `<input type="hidden" name="email" value="${escapeHtml(email)}">` +
       // FORM_PAGE_MARKER: a sonda do executor reconhece a página real por este campo.
       `${FORM_PAGE_MARKER} value="${escapeHtml(sig)}">` +
-      `<p class="intro">Respondendo como <strong>${escapeHtml(email)}</strong>.</p>` +
-      questions.map(renderQuestion).join("") +
+      (renderedToken ? `<input type="hidden" name="${FORM_RENDERED_FIELD}" value="${escapeHtml(renderedToken)}">` : "") +
+      `<p class="intro">Respondendo como <strong>${escapeHtml(email)}</strong>. ` +
+      `As respostas ficam comigo e servem só para planejar a newsletter e o que oferecer além dela. ` +
+      (autosave ? `<span class="js-only" hidden>${FORM_AUTOSAVE_NOTICE} </span>` : "") +
+      `São até ${numberedQuestions(questions).length} perguntas. Só as marcadas como opcionais podem ficar em branco.</p>` +
+      parts.join("") +
       `<button type="submit">Enviar respostas</button></form>` +
-      (questions.some((q) => q.hiddenWhen) ? `<script>${HIDE_SCRIPT}</script>` : ""),
+      (needsScript ? `<script>${FORM_SCRIPT}</script>` : ""),
   );
 }
 
-export function renderThanksHtml(): string {
+/**
+ * Página de obrigado. #12495: com os resultados já publicados (`results`,
+ * de `resolveFormResults`), mostra o link da versão web da edição especial
+ * no lugar do aviso genérico sobre os lembretes; sem eles, nada muda.
+ * #12604: a página não promete o e-mail `form_resultados`. O Worker não sabe
+ * se ele sai (só sai na 1ª resposta depois do envio, para pessoa conhecida em
+ * `followup.people` e sem a tag `envio-brevo`), e o link já está aqui.
+ */
+export function renderThanksHtml(results: FormResults | null = null): string {
+  const tail = `<p>Se quiser mudar alguma resposta, é só preencher de novo: vale a mais recente.</p>`;
+  if (results) {
+    return renderPage(
+      `<h1>Obrigado!</h1><p>Suas respostas chegaram.</p>` +
+        `<p>Já contei o que descobri com a pesquisa numa edição especial para quem respondeu. ` +
+        `<a href="${escapeHtml(results.url)}">Leia a edição especial</a>.</p>` +
+        tail,
+    );
+  }
   return renderPage(
-    `<h1>Obrigado!</h1><p>Suas respostas chegaram. Em breve você para de receber lembretes sobre este formulário.</p>` +
-      `<p>Se quiser mudar alguma resposta, é só preencher de novo: vale a mais recente.</p>`,
+    `<h1>Obrigado!</h1><p>Suas respostas chegaram. Em breve você para de receber lembretes sobre este formulário.</p>` + tail,
   );
 }
 

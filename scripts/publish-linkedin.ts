@@ -36,6 +36,9 @@
  *   quebrado, etc.), o script cai gracefully em `postToMakeWebhook` (post imediato,
  *   ignora `scheduled_at`). Entry recebe `fallback_used = true` + `fallback_reason`
  *   para auditoria. Razão: post real é melhor que post falhado; editor revê no gate.
+ *   Post da diária (com `idempotency_key`, #12661) procura a chave na fila
+ *   (`GET /list`) antes do Make (#12664): achou = `scheduled`, sem Make; fila
+ *   ilegível = `failed`, sem Make; ausente em todas as leituras = Make.
  *
  * Uso:
  *   npx tsx scripts/publish-linkedin.ts \
@@ -45,6 +48,9 @@
  *     [--skip-existing]     # pula posts já em 06-social-published.json (default: true)
  *     [--only d1,d2,d3]     # subset de posts (default: todos)
  *     [--day-offset N]      # override de day_offset do config
+ *     [--linkedin-format document|image]  # #12584: default `document` (PDF dos 5
+ *                           # slides do carrossel, fallback carrossel → imagem única);
+ *                           # `image` = imagem única de sempre (opt-out)
  *
  * Output: appends em {edition-dir}/_internal/06-social-published.json
  * (mesmo arquivo do publish-facebook.ts, mesmo formato, plataforma "linkedin")
@@ -103,7 +109,11 @@ import {
 // #8311 — cópia local de postToWorkerQueue colapsada no cliente compartilhado
 // (era duplicação de scripts/lib/worker-queue-client.ts sem o guard de 4xx
 // do #8303; publish-instagram.ts já delegava assim desde #3944 Parte B).
-import { postToWorkerQueue as sharedPostToWorkerQueue } from "./lib/worker-queue-client.ts";
+import {
+  postToWorkerQueue as sharedPostToWorkerQueue,
+  findWorkerQueueEntryByIdempotencyKey,
+  type IdempotencyLookupOptions,
+} from "./lib/worker-queue-client.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import {
   finalizeUseMelhorTextChannelPostText, // #9999
@@ -118,6 +128,24 @@ import {
   type UseMelhorDispatchSummary,
   type UseMelhorReadyPlan,
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
+import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #12584 — slides do carrossel diário (#6005)
+import {
+  enqueueLinkedInDocumentOrCarousel,
+  linkedInDailyIdempotencyKey,
+  isAlarmingDocumentFallback,
+  linkedInDailyDocumentFallbackFingerprint,
+  prepareDailyLinkedInDocument,
+  resolveLinkedInDocumentTitle,
+  LINKEDIN_DAILY_DOCUMENT_FALLBACK_CHECK,
+  type LinkedInDailyFormat,
+  type LinkedInDocument,
+  type LinkedInPdfUploader,
+} from "./lib/linkedin-daily-document.ts"; // #12584 — documento PDF como padrão do LinkedIn
+import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { archiveUploadedFileToR2 } from "./lib/public-images-archive.ts";
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
+import { isNodeTestContext } from "./lib/test-context-guard.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -526,7 +554,29 @@ export interface DispatchInput {
    * publicar-agora é pior que não-publicar (ex: artigo especial agendado).
    * Default true preserva o comportamento legado (fallback worker→make). */
   allowImmediateFallback?: boolean;
+  /** #12584 — documento PDF, o formato padrão do LinkedIn na diária
+   * (D1/D2/D3 main). `ready` tenta documento → carrossel → imagem única;
+   * `skip` vai direto na imagem única e grava o motivo. Ausente (comments,
+   * 4º post, artigo especial): imagem única, sem `format` no store — mesmo
+   * comportamento de antes do #12584. */
+  linkedInDocument?: LinkedInDocumentPlan;
 }
+
+/** #12584 — plano do documento PDF de um post (ver `DispatchInput.linkedInDocument`). */
+export type LinkedInDocumentPlan =
+  | {
+      status: "ready";
+      /** Os 5 slides (capa → p1 → p2 → p3 → CTA), na ordem do carrossel. */
+      carouselImageUrls: string[];
+      /** Gera e hospeda o PDF; chamado só na rota do Worker. */
+      prepareDocument: () => Promise<LinkedInDocument>;
+    }
+  | {
+      status: "skip";
+      /** `carousel_incomplete` (faltou slide, tudo-ou-nada como no Instagram)
+       *  ou `opt_out` (`--linkedin-format image`). */
+      reason: string;
+    };
 
 export interface DispatchContext {
   publishedPath: string;
@@ -552,6 +602,9 @@ export interface DispatchContext {
    * passa `ROOT` explicitamente (nunca confia em `process.cwd()` implícito).
    */
   rootDir?: string;
+  /** #12664 — leituras da fila (`GET /list`) antes do fallback Make do post
+   *  com `idempotency_key`. Só testes passam (backoff 0). */
+  queueLookup?: IdempotencyLookupOptions;
 }
 
 /**
@@ -598,12 +651,87 @@ export async function dispatchEntry(
     details: { route, scheduled_at: scheduledAt, destaque: d, subtype, webhook_target: input.webhookTarget, action: input.action },
   }, ctx.rootDir);
 
+  // #12584 — campos de formato gravados no store quando o post tem plano de
+  // documento. Ficam vazios sem plano (comments, 4º post, artigo especial).
+  const docPlan = input.linkedInDocument;
+  const formatTag = (format: LinkedInDailyFormat, extra: Record<string, string | undefined> = {}): Record<string, string> => {
+    if (!docPlan) return {};
+    const out: Record<string, string> = { format };
+    for (const [k, v] of Object.entries(extra)) if (v !== undefined) out[k] = v;
+    return out;
+  };
+  // Motivo do fallback pra imagem única quando o documento não chega a ser tentado.
+  let singleImageReasons: Record<string, string | undefined> =
+    docPlan?.status === "skip" ? { document_fallback_reason: docPlan.reason } : {};
+  // #12661 — mesma chave nos três degraus (documento → carrossel → imagem
+  // única na fila do Worker): retry depois de resposta perdida e degrau por
+  // cima de entry gravada sem resposta caem na MESMA entry, um post só.
+  const dailyIdempotencyKey = docPlan
+    ? linkedInDailyIdempotencyKey(ctx.editionDate, d, { isTest: ctx.isTest === true })
+    : undefined;
+
   try {
-    let entry: PostEntry;
-    if (route === "worker_queue") {
+    let entry: PostEntry | null = null;
+    if (route === "worker_queue" && docPlan?.status === "ready") {
+      // #12584 — degraus 1 e 2 (documento → carrossel). Erro ambíguo
+      // (5xx/timeout) propaga para o catch externo e vira `failed`, SEM o
+      // fallback Make imediato do #887: a entry pode ter sido gravada no
+      // Worker, e publicar a imagem única por cima duplicaria o post (#11106).
+      console.log(`Queuing ${tag} as LinkedIn document via Cloudflare Worker (fire at ${scheduledAt})...`);
+      let rich;
+      try {
+        rich = await enqueueLinkedInDocumentOrCarousel(
+          ctx.workerUrl,
+          ctx.workerToken,
+          { text, scheduled_at: scheduledAt as string, destaque: d, idempotency_key: dailyIdempotencyKey as string },
+          { carouselImageUrls: docPlan.carouselImageUrls, prepareDocument: docPlan.prepareDocument },
+        );
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        throw new Error(
+          `${m} (documento/carrossel do LinkedIn: falha ambígua, o post pode estar na fila — sem fallback por cima, #11106; confira a fila do Worker antes de re-rodar)`,
+        );
+      }
+      if (rich.queued) {
+        entry = {
+          platform: "linkedin",
+          destaque: d,
+          subtype,
+          url: null,
+          status: "scheduled",
+          scheduled_at: scheduledAt,
+          route,
+          worker_queue_key: rich.key,
+          webhook_target: input.webhookTarget,
+          action: input.action,
+          ...formatTag(rich.format, {
+            document_url: rich.document_url,
+            document_fallback_reason: rich.document_fallback_reason,
+          }),
+        };
+      } else {
+        singleImageReasons = {
+          document_fallback_reason: rich.document_fallback_reason,
+          carousel_fallback_reason: rich.carousel_fallback_reason,
+        };
+      }
+    } else if (route === "make_now" && docPlan?.status === "ready") {
+      // #12584 — o webhook Make não publica documento: imagem única com aviso.
+      console.warn(
+        `WARN ${tag} — rota make_now (fire-now ou horário passado) não publica documento PDF; fallback: imagem única.`,
+      );
+      singleImageReasons = { document_fallback_reason: "make_now_route" };
+    }
+    if (entry) {
+      // já enfileirado como documento ou carrossel
+    } else if (route === "worker_queue") {
       console.log(`Queuing ${tag} via Cloudflare Worker (fire at ${scheduledAt})...`);
       try {
-        const response = await postToWorkerQueue(ctx.workerUrl, ctx.workerToken, payload);
+        const response = await postToWorkerQueue(
+          ctx.workerUrl,
+          ctx.workerToken,
+          dailyIdempotencyKey ? { ...payload, idempotency_key: dailyIdempotencyKey } : payload,
+        );
         entry = {
           platform: "linkedin",
           destaque: d,
@@ -615,6 +743,7 @@ export async function dispatchEntry(
           worker_queue_key: response.key,
           webhook_target: input.webhookTarget,
           action: input.action,
+          ...formatTag("single_image", singleImageReasons),
         };
       } catch (workerError: unknown) {
         // #887 fallback: Worker falhou → tenta Make direto. Mas Pixel comments
@@ -638,24 +767,63 @@ export async function dispatchEntry(
           const reasonSuffix = is4xx ? " (Worker 4xx — validação do payload; fallback imediato não é aceitável)" : " (fallback desativado: allowImmediateFallback=false)";
           throw new Error(`${wmsg}${reasonSuffix}`);
         }
-        console.warn(
-          `[publish-linkedin] Worker falhou (${wmsg}), fallback pra Make direto (post imediato, ignora scheduled_at)`,
-        );
-        const response = await postToMakeWebhook(ctx.webhookUrl, payload, 2, ctx.apiKey);
-        entry = {
-          platform: "linkedin",
-          destaque: d,
-          subtype,
-          url: null,
-          status: "draft",
-          scheduled_at: scheduledAt,
-          route,
-          make_request_id: response.request_id,
-          fallback_used: true,
-          fallback_reason: sanitizeFallbackReason(wmsg),
-          webhook_target: input.webhookTarget,
-          action: input.action,
-        };
+        // #12664 — post com `idempotency_key` (a diária): o 5xx/timeout pode ter
+        // vindo DEPOIS de o Worker gravar a entry. Antes do Make (que publica na
+        // hora), procurar a chave na fila: achou = o post já está agendado;
+        // fila ilegível = ausência não provada, `failed` sem Make por cima.
+        if (dailyIdempotencyKey) {
+          const lookup = await findWorkerQueueEntryByIdempotencyKey(
+            ctx.workerUrl,
+            ctx.workerToken,
+            dailyIdempotencyKey,
+            ctx.queueLookup,
+          );
+          if (lookup.status === "found") {
+            console.warn(
+              `[publish-linkedin] Worker falhou (${wmsg}), mas a fila já tem ${lookup.key} com a idempotency_key ${dailyIdempotencyKey} — agendado, sem fallback Make (#12664)`,
+            );
+            entry = {
+              platform: "linkedin",
+              destaque: d,
+              subtype,
+              url: null,
+              status: "scheduled",
+              scheduled_at: scheduledAt,
+              route,
+              worker_queue_key: lookup.key,
+              webhook_target: input.webhookTarget,
+              action: input.action,
+              ...formatTag("single_image", singleImageReasons),
+            };
+          } else if (lookup.status === "error") {
+            throw new Error(
+              `${wmsg} (fila do Worker ilegível depois da falha: ${lookup.error} — o post pode estar na fila; sem fallback Make por cima, #12664. Confira a fila do Worker antes de re-rodar)`,
+            );
+          }
+        }
+        // Fallback Make (#887): 5xx/timeout sem chave, ou com a chave ausente
+        // da fila em todas as leituras (#12664).
+        if (!entry) {
+          console.warn(
+            `[publish-linkedin] Worker falhou (${wmsg}), fallback pra Make direto (post imediato, ignora scheduled_at)`,
+          );
+          const response = await postToMakeWebhook(ctx.webhookUrl, payload, 2, ctx.apiKey);
+          entry = {
+            platform: "linkedin",
+            destaque: d,
+            subtype,
+            url: null,
+            status: "draft",
+            scheduled_at: scheduledAt,
+            route,
+            make_request_id: response.request_id,
+            fallback_used: true,
+            fallback_reason: sanitizeFallbackReason(wmsg),
+            webhook_target: input.webhookTarget,
+            action: input.action,
+            ...formatTag("single_image", singleImageReasons),
+          };
+        }
       }
     } else {
       // route === "make_now"
@@ -678,13 +846,16 @@ export async function dispatchEntry(
         make_request_id: response.request_id,
         webhook_target: input.webhookTarget,
         action: input.action,
+        ...formatTag("single_image", singleImageReasons),
       };
     }
+    if (!entry) throw new Error("dispatchEntry: entry não montada (bug de fluxo)");
     if (ctx.isTest) entry.is_test = true; // #1056
     appendSocialPosts(ctx.publishedPath, [entry]);
     const fallbackTag = entry.fallback_used ? " (fallback worker→make)" : "";
+    const formatNote = typeof entry.format === "string" ? ` [${entry.format}]` : "";
     console.log(
-      `OK ${tag} — ${entry.status} via ${route}${fallbackTag}${scheduledAt ? ` at ${scheduledAt}` : ""}`,
+      `OK ${tag} — ${entry.status} via ${route}${formatNote}${fallbackTag}${scheduledAt ? ` at ${scheduledAt}` : ""}`,
     );
     return entry;
   } catch (e: unknown) {
@@ -727,6 +898,72 @@ export function computeCommentScheduledAt(
   return new Date(baseMs + offsetMinutes * 60_000).toISOString();
 }
 
+// ── Documento PDF (#12584) ────────────────────────────────────────────
+
+/** Fatia do platform.config.json lida pelo uploader do PDF. */
+export interface LinkedInPdfUploaderConfig {
+  poll?: { kv_namespace_id?: string; worker_url?: string };
+}
+
+/** Uploader default do PDF: KV `POLL` servido em `/img/{key}` (mesmo caminho
+ *  do PDF semanal, #12371) + cópia durável no R2 (nunca lança). */
+export function defaultLinkedInPdfUploader(config: LinkedInPdfUploaderConfig): LinkedInPdfUploader {
+  return async (filePath, kvKey) => {
+    const kvNamespaceId = config.poll?.kv_namespace_id;
+    const workerUrl = config.poll?.worker_url ?? DIARIA_EIA_URL;
+    if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id não configurado (PDF do LinkedIn)");
+    const url = await uploadImageToWorkerKV(filePath, kvKey, { kvNamespaceId, workerUrl });
+    await archiveUploadedFileToR2(filePath, kvKey);
+    return url;
+  };
+}
+
+/**
+ * #12584 — avisa o editor (alarme `acao`) quando um post da diária tentou o
+ * documento PDF e caiu no fallback (`pdf_failed:*`/`document_rejected:*`).
+ * Um alarme por motivo distinto. Sob o test runner sem `notify` injetado, não
+ * faz nada (#8290). Nunca lança.
+ */
+export async function alarmLinkedInDocumentFallbacks(
+  results: readonly PostEntry[],
+  editionDate: string,
+  notify: typeof notifyEditor | null = isNodeTestContext() ? null : notifyEditor,
+): Promise<number> {
+  if (!notify) return 0;
+  const byFingerprint = new Map<string, PostEntry[]>();
+  for (const r of results) {
+    const reason = typeof r.document_fallback_reason === "string" ? r.document_fallback_reason : undefined;
+    if (r.platform !== "linkedin" || !isAlarmingDocumentFallback(reason)) continue;
+    const fp = linkedInDailyDocumentFallbackFingerprint(reason as string);
+    byFingerprint.set(fp, [...(byFingerprint.get(fp) ?? []), r]);
+  }
+  let sent = 0;
+  for (const [fingerprint, entries] of byFingerprint) {
+    const lines = entries.map(
+      (e) => `- ${e.destaque}: ${String(e.format ?? e.status)} (${String(e.document_fallback_reason)})`,
+    );
+    try {
+      await notify(
+        {
+          check: LINKEDIN_DAILY_DOCUMENT_FALLBACK_CHECK,
+          fingerprint,
+          severity: "acao",
+          subject: `LinkedIn da diária ${editionDate} saiu sem o documento PDF (${fingerprint.slice(LINKEDIN_DAILY_DOCUMENT_FALLBACK_CHECK.length + 1)})`,
+          body:
+            `Posts da edição ${editionDate} que tentaram o documento PDF (#12584) e caíram no fallback:\n\n${lines.join("\n")}\n\n` +
+            `Os posts não se perderam (seguem na fila no formato do fallback). O registro fica em ` +
+            `\`_internal/06-social-published.json\` (\`format\`, \`document_fallback_reason\`).`,
+        },
+        { cwd: ROOT },
+      );
+      sent++;
+    } catch (e) {
+      console.error(`AVISO linkedin: alarme do fallback do documento falhou (${(e as Error).message}) — os posts seguem agendados.`);
+    }
+  }
+  return sent;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<number | void> {
@@ -765,6 +1002,13 @@ async function main(): Promise<number | void> {
     console.warn("AVISO: --skip-existing não tem efeito (flag legada). Use --no-skip-existing pra desligar o skip.");
   }
   const skipExisting = !flags.has("no-skip-existing"); // default true (#725 bug #2)
+  // #12584 — documento PDF é o formato padrão do LinkedIn na diária; `image` é o opt-out.
+  const linkedInFormatArg = values["linkedin-format"] ?? "document";
+  if (linkedInFormatArg !== "document" && linkedInFormatArg !== "image") {
+    console.error(`Erro: --linkedin-format deve ser "document" (default) ou "image" (recebido: "${linkedInFormatArg}").`);
+    return 1;
+  }
+  const documentOptOut = linkedInFormatArg === "image";
   const dayOffsetOverride = values["day-offset"]
     ? parseInt(values["day-offset"], 10)
     : undefined;
@@ -1070,12 +1314,16 @@ async function main(): Promise<number | void> {
   // #595 — pre-carregar imageUrl por destaque (mesmo source pra todos os
   // subtypes; comments não usam imagem mas o helper aceita null).
   const imageUrlByDestaque: Record<string, string | null> = {};
+  // #12584 — os 5 slides do carrossel diário (tudo-ou-nada), base do documento PDF.
+  const carouselUrlsByDestaque: Record<string, string[] | null> = {};
   for (const d of destaques) {
     let imageUrl: string | null = null;
+    carouselUrlsByDestaque[d] = null;
     const imgCachePath = resolve(editionDir, "06-public-images.json");
     if (existsSync(imgCachePath)) {
       try {
         const imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as ImageCacheFile;
+        carouselUrlsByDestaque[d] = resolveCarouselImageUrls(imgCache.images, d);
         const entry = imgCache.images?.[d];
         // #4293: card 4:5 (com título) > 1:1 legado — mesma precedência do
         // Instagram/Twitter-X. no_image continua lido da chave base (entry) abaixo.
@@ -1097,6 +1345,31 @@ async function main(): Promise<number | void> {
     }
     imageUrlByDestaque[d] = imageUrl;
   }
+
+  // #12584 — título do documento = título escolhido do destaque em 02-reviewed.md.
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  const reviewedMd = existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : null;
+  const pdfUploader = defaultLinkedInPdfUploader(config as LinkedInPdfUploaderConfig);
+  const documentPlanFor = (d: string): LinkedInDocumentPlan => {
+    if (documentOptOut) return { status: "skip", reason: "opt_out" };
+    const slides = carouselUrlsByDestaque[d];
+    if (!slides) {
+      console.warn(`linkedin/${d}: carrossel incompleto em 06-public-images.json (faltou slide) — imagem única, sem documento PDF.`);
+      return { status: "skip", reason: "carousel_incomplete" };
+    }
+    return {
+      status: "ready",
+      carouselImageUrls: slides,
+      prepareDocument: () =>
+        prepareDailyLinkedInDocument({
+          editionDir,
+          destaque: d,
+          carouselImageUrls: slides,
+          title: resolveLinkedInDocumentTitle(reviewedMd, d, editionDate),
+          upload: pdfUploader,
+        }),
+    };
+  };
 
   for (const d of destaques) {
     // #918: re-ler estado em cada iteração (publish-facebook pode estar
@@ -1184,6 +1457,7 @@ async function main(): Promise<number | void> {
           scheduledAt: mainAt,
           webhookTarget: "diaria",
           action: "post",
+          linkedInDocument: documentPlanFor(d),
         }, ctx));
       }
     }
@@ -1344,6 +1618,11 @@ async function main(): Promise<number | void> {
       }
     }
   }
+
+  // #12584 (#12372 item 2) — alarme ao editor quando o documento foi tentado e
+  // não saiu. Um por motivo (fingerprint pelo código, reusa a mesma issue).
+  // Fail-soft: o post já está na fila no formato do fallback.
+  if (!isTest) await alarmLinkedInDocumentFallbacks(results, editionDate);
 
   // Sumário final
   const summary = {

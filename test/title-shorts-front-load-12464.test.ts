@@ -61,6 +61,23 @@ describe("shortsFeedVisibleSlice (#12464)", () => {
     assert.equal(shortsFeedVisibleSlice(t), `${"a".repeat(19)} ${"b".repeat(20)}`);
   });
 
+  it("corte seguido de pontuação mantém a última palavra (#12514)", () => {
+    // 40 grafemas exatos terminando em "escolas", com "," no 41º.
+    const head = "Google libera Gemini grátis para escolas";
+    assert.equal(Array.from(head).length, 40);
+    assert.equal(shortsFeedVisibleSlice(`${head}, diz empresa`), head);
+    for (const p of [":", ".", "?", "!", ";", ")"]) {
+      assert.equal(shortsFeedVisibleSlice(`${head}${p} e mais`), head, `pontuação ${p}`);
+    }
+  });
+
+  it("hífen/apóstrofo no 41º ainda é meio de palavra: recua (#12514)", () => {
+    const t = `${"a".repeat(36)} GPT-6 chega ao público`;
+    assert.equal(shortsFeedVisibleSlice(t), "a".repeat(36));
+    const u = `${"a".repeat(33)} copo d'água gelado`;
+    assert.equal(shortsFeedVisibleSlice(u), `${"a".repeat(33)} copo`);
+  });
+
   it("conta grafemas, não unidades UTF-16 (emoji de bandeira)", () => {
     const t = `🇧🇷 ${"x".repeat(37)} fim do título`;
     assert.equal(shortsFeedVisibleSlice(t), `🇧🇷 ${"x".repeat(37)}`);
@@ -90,6 +107,11 @@ describe("checkD1ShortsFrontLoad (#12464)", () => {
     const r = checkD1ShortsFrontLoad(edition(REAL_DANGLING));
     assert.equal(r.errors[0]?.visible, "Golpe da selfie: criminosos usam IA para");
     assert.equal(r.errors[0]?.tail, "para");
+  });
+
+  it("\"…para escolas\" com \",\" no 41º não acende dangling-word falso (#12514)", () => {
+    const r = checkD1ShortsFrontLoad(edition("Google libera Gemini grátis para escolas, diz empresa"));
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
   });
 
   it("título de até 40 caracteres nunca acende", () => {

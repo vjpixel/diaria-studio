@@ -32,6 +32,13 @@
 # longa) ganha um resync automático (#12412), que pode ressuscitar arquivo
 # apagado durante a rodada (#12444) — ver o bloco antes da chamada do rclone.
 #
+# O bisync DEDICADO de data/ (#12478) roda este mesmo script pelo wrapper
+# `gdrive-data-bisync.sh`, que troca remote, pasta local, filtro, state dir e
+# workdir do rclone por env. Sem esse env (a unit diaria-gdrive-bisync), a
+# invocação do rclone é a mesma de antes da #12478: o `--workdir` só entra
+# na linha de comando quando GDRIVE_WORKDIR vem preenchido
+# (test/gdrive-data-bisync-12478.test.ts trava a linha inteira).
+#
 # Testável sem tocar produção: GDRIVE_* e RCLONE_BIN sobrescrevíveis por env.
 
 set -u
@@ -55,6 +62,9 @@ FILTERS="$STATE_DIR/filters.txt"
 MAX_DELETE="${GDRIVE_MAX_DELETE:-5}"
 RCLONE_BIN="${RCLONE_BIN:-$HOME/.local/bin/rclone}"
 MOUNTPOINT_CMD="${GDRIVE_MOUNTPOINT_CMD:-mountpoint -q}"
+# Workdir do rclone bisync (listagens + lock), opcional (#12478). Vazio = o
+# default do rclone (~/.cache/rclone/bisync), sem `--workdir` na linha.
+WORKDIR="${GDRIVE_WORKDIR:-}"
 
 DRY_RUN=0
 RESYNC=0
@@ -188,6 +198,12 @@ run_bisync() {
 auth_error_in_log() {
   grep -E -q 'Error 401|authError' "$RCLONE_LOG" 2>/dev/null
 }
+
+# `--workdir` entra antes dos argumentos do chamador, e o retry de 401
+# abaixo o herda pelo "$@".
+if [ -n "$WORKDIR" ]; then
+  set -- --workdir "$WORKDIR" "$@"
+fi
 
 run_bisync "$@"
 attempt=0

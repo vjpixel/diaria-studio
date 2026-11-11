@@ -26,7 +26,11 @@
  *      `--translate-titles` ou marcar `"titleReviewed": true` no item (#11161).
  *   3. Renderiza a prévia em Markdown `data/weekly/{cycle}/circle-stack-{cycle}.md`.
  *      Abertura (#11186): `--opening-file` > campo `opening` da seleção (escrito
- *      à mão) > resumo automático com a 1ª frase de cada destaque.
+ *      à mão) > resumo automático com a 1ª frase de cada destaque. O dry-run
+ *      grava também a prévia HTML `_internal/circle-stack-preview.html` (#12555),
+ *      que o `/diaria-stack` publica como Artifact. Os avisos são recalculados a
+ *      cada execução sobre a seleção atual (#12553) e os itens do campo
+ *      `excluded` não saem em seção nenhuma (#12557).
  *   4. Só com `--publish`: envia ao webhook n8n da Stack
  *      (`scripts/lib/stack-webhook.ts`), que
  *      publica NA HORA — não há rascunho. Idempotente por ciclo via
@@ -76,13 +80,17 @@
  *   (opcionais: --reselect, --opening-file <path>, --closing-file <path>, --force, --data-root <dir>)
  *   --closing-file: a ÚLTIMA linha do arquivo vira a cauda de "[Assine a diar.ia.br](url). {linha}";
  *   linhas anteriores saem como parágrafos antes dela.
+ *
+ * Argv inválido (flag desconhecida, argumento solto, flag de valor sem valor)
+ * sai 1 antes de qualquer I/O; `--help` sai 0 (#12528). Antes, `--publsh` ou
+ * `--next-mondy` eram ignorados em silêncio e a rodada seguia com o default.
  */
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { applyCliAction, type CliSpec, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
   currentOrPreviousMondayAAMMDD,
@@ -100,7 +108,7 @@ import {
   type PublishState,
 } from "./lib/publish-state.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
-import { CIRCLE_STACK_PUBLISH_HOUR, isCircleStackScheduledRunPast } from "./lib/circle-stack-schedule.ts";
+import { CIRCLE_STACK_PUBLISH_HOUR, circleStackPostLinkLine, isCircleStackScheduledRunPast } from "./lib/circle-stack-schedule.ts";
 import {
   ALARM_LABEL,
   defaultAlarmGhRun,
@@ -123,6 +131,7 @@ import {
 import {
   circleStackSelectionViolations,
   circleStackUnreviewedTitles,
+  isWeakStackDestaque,
   selectCircleStack,
   parseInterestProfile,
   STACK_INTEREST_PROFILE,
@@ -130,12 +139,23 @@ import {
   type StackScoredCandidate,
 } from "./lib/circle-stack-select.ts";
 import {
+  applyCircleStackExclusions,
   renderCircleStackPost,
   type CircleStackEdition,
+  type CircleStackExclusion,
   type CircleStackItem,
   type CircleStackSelection,
   type CircleStackVideo,
 } from "./lib/circle-stack-render.ts";
+import {
+  circleStackMissingEditionsWarning,
+  circleStackWeakAffinityDestaquesWarning,
+  circleStackWeakDestaquesWarning,
+  refreshCircleStackWarnings,
+} from "./lib/circle-stack-warnings.ts";
+import { renderCircleStackPreviewHtml } from "./lib/circle-stack-preview-html.ts";
+import { readUtf8WithContext } from "./lib/read-file-with-context.ts";
+import type { StackPostResult } from "./lib/stack-webhook.ts";
 import { resolveTopEditionVideo, type TopEditionVideo } from "./lib/top-edition-video.ts"; // #12081
 import {
   stackTitleTranslationCandidates,
@@ -354,10 +374,18 @@ interface EditionRead {
   candidates: WeeklyRawCandidate[];
 }
 
-function readEdition(editionsRootDir: string, date: string): EditionRead | null {
-  const mdPath = join(resolveEditionDir(editionsRootDir, date), "02-reviewed.md");
+/**
+ * Lê o `02-reviewed.md` de uma edição. `"sem-edicao"` = o diretório da edição
+ * não existe (feriado, dia sem publicação — #12553: não é aviso); `null` = o
+ * diretório existe e o arquivo não. Erro de leitura (arquivo offline no
+ * OneDrive) sai com o caminho e a dica (#12554), nunca só `UNKNOWN`.
+ */
+export function readEdition(editionsRootDir: string, date: string, read?: (p: string, enc: "utf8") => string): EditionRead | null | "sem-edicao" {
+  const dir = resolveEditionDir(editionsRootDir, date);
+  if (!existsSync(dir)) return "sem-edicao";
+  const mdPath = join(dir, "02-reviewed.md");
   if (!existsSync(mdPath)) return null;
-  const md = readFileSync(mdPath, "utf8");
+  const md = readUtf8WithContext(mdPath, read);
   const destaques = parseDestaques(md)
     .filter((d) => d.n >= 1 && d.n <= 3)
     .sort((a, b) => a.n - b.n);
@@ -369,7 +397,9 @@ function readEdition(editionsRootDir: string, date: string): EditionRead | null 
   };
 }
 
-function toItem(c: StackScoredCandidate): CircleStackItem & { titleOriginal: string; score: number; matchedTerms: string[] } {
+function toItem(
+  c: StackScoredCandidate,
+): CircleStackItem & { titleOriginal: string; score: number; matchedTerms: string[]; signal: StackScoredCandidate["signal"]; offTopic: boolean } {
   // `titleOriginal` (#11005): o título como veio da edição, para auditoria — o
   // editor reescreve `title` em português na seleção quando a fonte é em inglês.
   return {
@@ -383,6 +413,9 @@ function toItem(c: StackScoredCandidate): CircleStackItem & { titleOriginal: str
     ...(c.kind === "destaque" && c.destaqueN !== undefined ? { destaqueN: c.destaqueN } : {}),
     score: c.score,
     matchedTerms: c.matchedTerms,
+    // #12549: força do sinal, para o aviso de destaque sem aderência ser recontado.
+    signal: c.signal,
+    offTopic: c.offTopic,
   };
 }
 
@@ -391,20 +424,34 @@ export function buildCircleStackSelection(
   dataRoot: string,
   publishMonday: string,
   interests: readonly InterestTerm[],
-): CircleStackSelection & { publishMonday: string; editionsFound: string[]; editionsMissing: string[]; warnings: string[]; generatedAt: string } {
+): CircleStackSelection & {
+  publishMonday: string;
+  editionsFound: string[];
+  editionsMissing: string[];
+  editionsWithoutEdition: string[];
+  warnings: string[];
+  generatedAt: string;
+} {
   const r = resolveWeeklyLinkedinCycle(publishMonday);
   if (!r) throw new Error(`--publish-monday inválido: ${publishMonday} (esperado AAMMDD)`);
   const editionsRoot = join(dataRoot, "data", "editions");
   const reads = r.contentWindow.map((d) => ({ date: d, read: readEdition(editionsRoot, d) }));
-  const found = reads.filter((x): x is { date: string; read: EditionRead } => x.read !== null).map((x) => x.read);
+  const found = reads
+    .map((x) => x.read)
+    .filter((x): x is EditionRead => x !== null && x !== "sem-edicao");
   const missing = reads.filter((x) => x.read === null).map((x) => x.date);
+  // #12553: dia sem diretório de edição (feriado, sem publicação) não é arquivo faltando.
+  const withoutEdition = reads.filter((x) => x.read === "sem-edicao").map((x) => x.date);
   if (found.length === 0) throw new Error(`Nenhuma edição da semana ${r.cycle} tem 02-reviewed.md em ${editionsRoot}`);
 
   const picks = selectCircleStack(found.flatMap((e) => e.candidates), { profile: interests });
   const warnings: string[] = [];
-  if (missing.length > 0) warnings.push(`Edições sem 02-reviewed.md: ${missing.join(", ")}`);
-  const weakDestaques = picks.destaques.filter((d) => d.score === 0).length;
-  if (weakDestaques > 0) warnings.push(`${weakDestaques} destaque(s) sem nenhum termo de interesse da Stack — revisar a seleção`);
+  const missingWarning = circleStackMissingEditionsWarning(missing);
+  if (missingWarning) warnings.push(missingWarning);
+  const weakWarning = circleStackWeakDestaquesWarning(picks.destaques.filter((d) => d.score === 0).length);
+  if (weakWarning) warnings.push(weakWarning);
+  const weakAffinity = circleStackWeakAffinityDestaquesWarning(picks.destaques.filter(isWeakStackDestaque).map((d) => d.title));
+  if (weakAffinity) warnings.push(weakAffinity);
 
   const weeklyEditions: CircleStackEdition[] = found
     .filter((e) => e.d1Title)
@@ -416,6 +463,7 @@ export function buildCircleStackSelection(
     contentWindow: r.contentWindow,
     editionsFound: found.map((e) => e.date),
     editionsMissing: missing,
+    editionsWithoutEdition: withoutEdition,
     destaques: picks.destaques.map(toItem),
     lancamentos: picks.lancamentos.map(toItem),
     useMelhor: picks.useMelhor.map(toItem),
@@ -461,6 +509,7 @@ export function parseStoredCircleStackSelection(
     if (!v || typeof v !== "object" || typeof v.title !== "string" || typeof v.url !== "string" || typeof v.editionDate !== "string") {
       return fail("campo video precisa de title, url e editionDate (texto) — ou apague o campo");
     }
+    if (v.description !== undefined && typeof v.description !== "string") return fail("campo video.description não é texto");
   }
   for (const section of ITEM_SECTIONS) {
     const items = sel[section];
@@ -474,13 +523,55 @@ export function parseStoredCircleStackSelection(
       if (rec.stackNote !== undefined && typeof rec.stackNote !== "string") fail(`${section}[${i}].stackNote não é texto`);
       if (rec.titleOriginal !== undefined && typeof rec.titleOriginal !== "string") fail(`${section}[${i}].titleOriginal não é texto`);
       if (rec.titleReviewed !== undefined && typeof rec.titleReviewed !== "boolean") fail(`${section}[${i}].titleReviewed precisa ser true ou false`);
+      if (rec.titleTranslated !== undefined && typeof rec.titleTranslated !== "string") fail(`${section}[${i}].titleTranslated não é texto`);
       if (rec.destaqueN !== undefined && !(Number.isInteger(rec.destaqueN) && (rec.destaqueN as number) >= 1 && (rec.destaqueN as number) <= 3)) {
         fail(`${section}[${i}].destaqueN precisa ser 1, 2 ou 3`);
       }
     });
   }
+  // #12557: itens descartados pelo editor — cada um com `url` ou `title`.
+  if (sel.excluded !== undefined) {
+    if (!Array.isArray(sel.excluded)) return fail("campo excluded precisa ser uma lista de { url | title }");
+    sel.excluded.forEach((e: unknown, i: number) => {
+      const rec = e as Record<string, unknown> | null;
+      if (!rec || typeof rec !== "object") return fail(`excluded[${i}] não é um objeto`);
+      for (const f of ["url", "title", "note"]) {
+        if (rec[f] !== undefined && typeof rec[f] !== "string") fail(`excluded[${i}].${f} não é texto`);
+      }
+      const hasKey = (typeof rec.url === "string" && rec.url.trim() !== "") || (typeof rec.title === "string" && rec.title.trim() !== "");
+      if (!hasKey) fail(`excluded[${i}] precisa de url ou title`);
+    });
+  }
   const warnings = Array.isArray(sel.warnings) ? sel.warnings.filter((w): w is string => typeof w === "string") : [];
-  return { selection: parsed as CircleStackSelection, warnings };
+  // A seleção devolvida já vem sem os descartados (#12557): travas, aprovação e render veem o que sai.
+  return { selection: applyCircleStackExclusions(parsed as CircleStackSelection), warnings };
+}
+
+/**
+ * #12557: `excluded` da seleção gravada, para o `--reselect` não apagar os
+ * descartados do editor. Arquivo ilegível ou sem o campo = lista vazia (o
+ * `--reselect` existe justamente para refazer seleção quebrada); entrada sem
+ * `url` nem `title` é ignorada.
+ */
+export function readStoredCircleStackExclusions(selectionPath: string, read?: (p: string, enc: "utf8") => string): CircleStackExclusion[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readUtf8WithContext(selectionPath, read));
+  } catch (err) {
+    console.warn(`⚠ --reselect: não consegui ler os descartados da seleção anterior (${err instanceof Error ? err.message : String(err)}).`);
+    return [];
+  }
+  const ex = (parsed as { excluded?: unknown } | null)?.excluded;
+  if (!Array.isArray(ex)) return [];
+  return ex.flatMap((e): CircleStackExclusion[] => {
+    if (!e || typeof e !== "object") return [];
+    const rec = e as Record<string, unknown>;
+    const url = typeof rec.url === "string" && rec.url.trim() ? rec.url : undefined;
+    const title = typeof rec.title === "string" && rec.title.trim() ? rec.title : undefined;
+    if (!url && !title) return [];
+    const note = typeof rec.note === "string" ? rec.note : undefined;
+    return [{ ...(url ? { url } : {}), ...(title ? { title } : {}), ...(note ? { note } : {}) }];
+  });
 }
 
 export interface PublishCircleStackCycleInput {
@@ -490,7 +581,7 @@ export interface PublishCircleStackCycleInput {
   payload: StackPostPayload;
   force: boolean;
   /** Envio injetável (produção: `sendStackPost` com URL/chave já validadas). */
-  send: (payload: StackPostPayload) => Promise<void>;
+  send: (payload: StackPostPayload) => Promise<StackPostResult | void>;
   now?: () => Date;
 }
 
@@ -504,7 +595,9 @@ export interface PublishCircleStackCycleInput {
  * `--force`. O post pode ter saído; preferimos exigir conferência humana a
  * duplicar um post numa comunidade de terceiro.
  */
-export async function publishCircleStackCycle(input: PublishCircleStackCycleInput): Promise<{ publishedAt: string; forced: boolean }> {
+export async function publishCircleStackCycle(
+  input: PublishCircleStackCycleInput,
+): Promise<{ publishedAt: string; forced: boolean; postUrl: string | null }> {
   const { statePath, cycle, title, payload, force, send } = input;
   const now = input.now ?? (() => new Date());
   // #10977: o lock vem ANTES da leitura do estado — dois --publish simultâneos
@@ -517,11 +610,13 @@ export async function publishCircleStackCycle(input: PublishCircleStackCycleInpu
 
     const attempt: CircleStackPublishedState = { cycle, title, attempted_at: now().toISOString() };
     writeFileAtomic(statePath, JSON.stringify(attempt, null, 2));
-    await send(payload);
+    const result = await send(payload);
     const publishedAt = now().toISOString();
-    const confirmed: CircleStackPublishedState = { ...attempt, published_at: publishedAt };
+    // #12556: o link do post só existe se o webhook o devolver (hoje devolve só {"ok": true}).
+    const postUrl = result && typeof result.postUrl === "string" && result.postUrl ? result.postUrl : null;
+    const confirmed: CircleStackPublishedState = { ...attempt, published_at: publishedAt, ...(postUrl ? { post_url: postUrl } : {}) };
     writeFileAtomic(statePath, JSON.stringify(confirmed, null, 2));
-    return { publishedAt, forced: blockReason !== null };
+    return { publishedAt, forced: blockReason !== null, postUrl };
   } finally {
     release();
   }
@@ -828,7 +923,7 @@ export interface RunCircleStackDeps {
   /** Chamada da tradução (#11005); default `callClaudeCli`. */
   translateCall?: TranslateStackTitlesOptions["call"];
   /** Envio ao webhook; default `sendStackPost`. */
-  send?: (webhookUrl: string, key: string, payload: StackPostPayload) => Promise<void>;
+  send?: (webhookUrl: string, key: string, payload: StackPostPayload) => Promise<StackPostResult | void>;
   /** `gh` injetável (fechamento de avisos); default `defaultAlarmGhRun`. */
   ghRun?: GhRunFn;
   /**
@@ -863,7 +958,9 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
     await publishCircleStackHello({
       markerPath: circleStackHelloMarkerPath(resolve(getStringArg(argv, "data-root") ?? ROOT)),
       force: hasFlag(argv, "force"),
-      send: () => sendPost(webhookUrl, key, helloPayload),
+      send: async () => {
+        await sendPost(webhookUrl, key, helloPayload);
+      },
     });
     console.log(`Post de teste publicado no Radar de Notícias Stack: "${HELLO_POST.titulo}"`);
     return;
@@ -904,23 +1001,32 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
   // Títulos sem sinal de português em seleção montada NESTA execução (#11005).
   let pendingReviewThisRun = 0;
   if (existsSync(selectionPath) && !hasFlag(argv, "reselect")) {
-    ({ selection, warnings } = parseStoredCircleStackSelection(readFileSync(selectionPath, "utf8"), selectionPath, cycle));
+    ({ selection, warnings } = parseStoredCircleStackSelection(readUtf8WithContext(selectionPath), selectionPath, cycle));
     console.log(`Reusando seleção existente: ${selectionPath} (--reselect refaz)`);
     // #11005: --translate-titles traduz numa seleção já gravada (só o que segue sem
     // sinal de português; título reescrito à mão fica) e regrava o arquivo.
     if (hasFlag(argv, "translate-titles") && hasFlag(argv, "publish")) {
       console.warn("⚠ --translate-titles ignorado junto com --publish: a tradução precisa da revisão do editor antes do envio — rode sem --publish primeiro.");
     } else if (hasFlag(argv, "translate-titles")) {
-      const stored = JSON.parse(readFileSync(selectionPath, "utf8")) as CircleStackSelection & { warnings?: string[] };
+      const stored = JSON.parse(readUtf8WithContext(selectionPath)) as CircleStackSelection & { warnings?: string[] };
       const tr = translateCircleStackTitles(stored, translateOpts);
       const merged = [...warnings, ...tr.warnings.filter((w) => !warnings.includes(w))];
       writeFileAtomic(selectionPath, JSON.stringify({ ...tr.selection, warnings: merged }, null, 2));
-      selection = tr.selection;
+      selection = applyCircleStackExclusions(tr.selection);
       warnings = merged;
       console.log(`Títulos traduzidos: ${tr.translated}${tr.failed ? " (tradução falhou — ver avisos)" : ""}`);
     }
   } else {
-    let built = buildCircleStackSelection(dataRoot, publishMonday, cfg.interests);
+    let built: ReturnType<typeof buildCircleStackSelection> = buildCircleStackSelection(dataRoot, publishMonday, cfg.interests);
+    // #12557: --reselect refaz a seleção, mas os descartados pelo editor sobrevivem (e o log avisa).
+    const carried = existsSync(selectionPath) ? readStoredCircleStackExclusions(selectionPath) : [];
+    if (carried.length > 0) {
+      built = { ...built, excluded: carried };
+      console.warn(
+        `⚠ --reselect manteve ${carried.length} item(ns) descartado(s) da seleção anterior (campo excluded): ` +
+          `${carried.map((e) => e.title ?? e.url).join("; ")} — apague o campo na seleção para trazê-los de volta.`,
+      );
+    }
     // #12081: vídeo mais assistido da semana, medido agora (o editor revisa na prévia).
     const topVideoFn =
       deps.topVideo ??
@@ -949,9 +1055,20 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
       console.log(`Títulos traduzidos: ${tr.translated}${tr.failed ? " (tradução falhou — ver avisos)" : ""}`);
     }
     writeFileAtomic(selectionPath, JSON.stringify(built, null, 2));
-    selection = built;
+    if (built.editionsWithoutEdition.length > 0) {
+      console.log(`Dia(s) sem edição (sem diretório em data/editions — feriado ou sem publicação): ${built.editionsWithoutEdition.join(", ")}`);
+    }
+    selection = applyCircleStackExclusions(built);
     warnings = built.warnings;
   }
+  // #12553: os avisos gravados envelhecem (título reescrito à mão, feriado); recalcula sobre a seleção atual.
+  const editionsRootForWarnings = join(dataRoot, "data", "editions");
+  // Sem `data/editions` nesta máquina não dá para conferir: o aviso de edição faltando fica como gravado.
+  warnings = refreshCircleStackWarnings(
+    selection,
+    warnings,
+    existsSync(editionsRootForWarnings) ? { editionDirExists: (d) => existsSync(resolveEditionDir(editionsRootForWarnings, d)) } : {},
+  );
   // #11004/#11005: checagem sobre a seleção que vai SAIR (inclusive editada à
   // mão e reaproveitada). Dry-run avisa; --publish recusa antes de qualquer envio.
   const violations = circleStackSelectionViolations(selection);
@@ -962,8 +1079,9 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
   warnings = [...warnings, ...[...violations, ...unreviewedTitles].filter((v) => !warnings.includes(v))];
   for (const w of warnings) console.warn(`⚠ ${w}`);
 
+  const openingOverride = readTextArg(argv, "opening-file");
   const rendered = renderCircleStackPost(selection, {
-    opening: readTextArg(argv, "opening-file"),
+    opening: openingOverride,
     closing: readTextArg(argv, "closing-file"),
     subscribeUrl: cfg.subscribeUrl ?? undefined,
   });
@@ -978,14 +1096,32 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
 ${rendered.markdown}
 `);
   const statePath = join(cycleDir, "_internal", "circle-stack-published.json");
-  const publishState = resolveCircleStackState(readCircleStackPublishedState(statePath), cycle);
+  const publishedRecord = readCircleStackPublishedState(statePath);
+  const publishState = resolveCircleStackState(publishedRecord, cycle);
 
   if (!hasFlag(argv, "publish")) {
     writeFileAtomic(join(cycleDir, "_internal", "circle-stack-payload.json"), JSON.stringify(payload, null, 2));
+    // #12555: a prévia HTML que o /diaria-stack publica como Artifact sai daqui, da mesma seleção.
+    const htmlPath = join(cycleDir, "_internal", "circle-stack-preview.html");
+    writeFileAtomic(
+      htmlPath,
+      renderCircleStackPreviewHtml({
+        selection,
+        excluded: selection.excluded,
+        previewTitle,
+        publishMonday,
+        publishState,
+        warnings,
+        openingOverride,
+        postUrl: publishState === "published" && typeof publishedRecord?.post_url === "string" ? publishedRecord.post_url : null,
+        mdPath: `${weeklyLinkedinRelDir(cycle)}/circle-stack-${cycle}.md`,
+      }),
+    );
     console.log(`[dry-run] ${previewTitle}`);
     console.log(`[dry-run] Estado do ciclo ${cycle} na Stack: ${publishState}`);
     console.log(`[dry-run] Seleção: ${selectionPath}`);
     console.log(`[dry-run] Prévia: ${mdPath}`);
+    console.log(`[dry-run] Prévia HTML (Artifact do /diaria-stack): ${htmlPath}`);
     console.log("[dry-run] Passe --publish para enviar (o post sai PUBLICADO na hora).");
     // --notify (task semanal de segunda): avisa o editor conforme o estado do ciclo.
     if (hasFlag(argv, "notify")) {
@@ -1036,7 +1172,7 @@ ${rendered.markdown}
   // rede e não pode deixar o ciclo em "unknown".
   assertStackWebhookConfig(webhookUrl, key);
 
-  const { publishedAt } = await publishCircleStackCycle({
+  const { publishedAt, postUrl } = await publishCircleStackCycle({
     statePath,
     cycle,
     title: rendered.title,
@@ -1045,13 +1181,38 @@ ${rendered.markdown}
     send: (p) => sendPost(webhookUrl, key, p),
   });
   console.log(`Publicado no Radar de Notícias Stack: ${rendered.title}`);
+  console.log(circleStackPostLinkLine(postUrl, rendered.title));
 
   const closeRes = closeCircleStackNotifyIssues(cycle, publishedAt, ROOT, ghRun);
   if (closeRes.closed.length > 0) console.log(`Issue(s) de aviso do ciclo fechada(s): ${closeRes.closed.map((n) => `#${n}`).join(", ")}`);
   if (closeRes.failed.length > 0) console.warn(`⚠ Não consegui fechar a(s) issue(s) de aviso ${closeRes.failed.join(", ")} — fechar à mão.`);
 }
 
+/**
+ * Flags aceitas (#12528); o resto sai 1 antes de qualquer I/O, `--help` sai 0.
+ * Validado só no `main()`: `publish-circle-stack-scheduled.ts` chama
+ * `runCircleStack` com um argv montado em código, não digitado.
+ */
+export const CLI_SPEC: CliSpec = {
+  script: "scripts/publish-circle-stack.ts",
+  booleans: ["publish", "notify", "next-monday", "hello", "force", "reselect", "translate-titles", "no-translate", "resolve-skill-default-monday"],
+  values: ["publish-monday", "data-root", "opening-file", "closing-file"],
+  usage: [
+    "uso: npx tsx scripts/publish-circle-stack.ts [--publish-monday AAMMDD | --next-monday] [--publish] [--notify]",
+    "  [--reselect] [--translate-titles | --no-translate] [--opening-file <path>] [--closing-file <path>]",
+    "  [--force] [--data-root <dir>] [--hello] [--resolve-skill-default-monday] [--help | -h]",
+    "",
+    "Sem --publish só monta a seleção e a prévia (nada é enviado à Stack). --hello envia o post de teste.",
+    "Flag desconhecida, argumento solto ou flag sem o valor esperado sai 1 sem rodar nada (#12528).",
+  ].join("\n"),
+};
+
 async function main(): Promise<void> {
+  const cliExit = applyCliAction(process.argv.slice(2), CLI_SPEC);
+  if (cliExit !== null) {
+    process.exitCode = cliExit;
+    return;
+  }
   loadProjectEnv(ROOT);
   await runCircleStack(process.argv.slice(2), {
     rootDir: ROOT,

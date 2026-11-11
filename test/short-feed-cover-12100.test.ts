@@ -181,7 +181,7 @@ describe("#12100 conferência do sardefault contra a capa (dHash)", () => {
 
 describe("#12254 skill: capa vertical do Short pelo Studio web", () => {
   it("documenta o sardefault e o passo do agente, sem devolver a tarefa ao editor", () => {
-    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
     const a2 = skill.slice(skill.indexOf("### Passo A2"), skill.indexOf("### Passo A3"));
     const b3a = skill.slice(skill.indexOf("### Passo B3a"), skill.indexOf("### Passo B3b"));
     assert.match(a2, /sardefault\.jpg/);

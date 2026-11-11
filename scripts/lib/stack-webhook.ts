@@ -96,7 +96,7 @@ export async function sendStackPost(
   payload: StackPostPayload,
   fetchImpl: FetchLike = fetch,
   timeoutMs: number = STACK_WEBHOOK_TIMEOUT_MS,
-): Promise<void> {
+): Promise<StackPostResult> {
   assertStackWebhookConfig(webhookUrl, key);
   const res = await fetchImpl(webhookUrl, {
     method: "POST",
@@ -107,11 +107,39 @@ export async function sendStackPost(
   const text = await res.text();
   if (res.status === 502) throw new Error(`Webhook da Stack: o Circle recusou ou falhou (502). Avisar a Stack. ${text.slice(0, 300)}`);
   if (!res.ok) throw new Error(`Webhook da Stack: HTTP ${res.status} ${text.slice(0, 300)}`);
-  let ok = false;
+  let parsed: unknown = null;
   try {
-    ok = (JSON.parse(text) as { ok?: unknown }).ok === true;
+    parsed = JSON.parse(text);
   } catch {
-    ok = false;
+    parsed = null;
   }
+  const ok = !!parsed && typeof parsed === "object" && (parsed as { ok?: unknown }).ok === true;
   if (!ok) throw new Error(`Webhook da Stack respondeu ${res.status} sem {"ok": true} — publicação não confirmada: ${text.slice(0, 300)}`);
+  return { postUrl: extractStackPostUrl(parsed) };
+}
+
+/** Resultado do envio confirmado. `postUrl` = link do post, se o webhook devolveu (#12556). */
+export interface StackPostResult {
+  postUrl: string | null;
+}
+
+/** Campos em que o n8n da Stack pode devolver o link do post (#12556; hoje devolve só `{"ok": true}`). */
+export const STACK_POST_URL_FIELDS = ["url", "post_url", "postUrl", "link", "permalink"] as const;
+
+/**
+ * Pure (#12556): link do post na resposta do webhook. Hoje o contrato devolve
+ * só `{"ok": true}` (→ `null`); se a Stack passar a mandar a URL num dos campos
+ * de `STACK_POST_URL_FIELDS` (no topo ou em `post`), ela é gravada no state e
+ * mostrada ao editor. Só `https://` conta.
+ */
+export function extractStackPostUrl(response: unknown): string | null {
+  if (!response || typeof response !== "object") return null;
+  const candidates: unknown[] = [];
+  const rec = response as Record<string, unknown>;
+  const post = rec.post && typeof rec.post === "object" ? (rec.post as Record<string, unknown>) : null;
+  for (const f of STACK_POST_URL_FIELDS) candidates.push(rec[f], post?.[f]);
+  for (const c of candidates) {
+    if (typeof c === "string" && /^https:\/\/\S+$/.test(c.trim())) return c.trim();
+  }
+  return null;
 }
