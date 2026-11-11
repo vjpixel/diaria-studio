@@ -38,6 +38,8 @@
 // repo (`npx tsx scripts/x.ts`, de propósito: os scripts versionados passam
 // por review), `git checkout/restore -- .claude/...`, `patch` lendo o alvo do
 // diff, e interpretador que monta o caminho em partes não reconhecidas.
+// Desde o #12780, caminho protegido citado só dentro de string de PROSA do
+// código (ver `stripProseLiterals`) não conta como citação.
 
 /**
  * Entradas protegidas logo abaixo de um segmento `.claude/`. É a lista única
@@ -660,10 +662,41 @@ const WRITE_API_RES = [
   /\bsed\s+-[a-zA-Z]*i/,
 ];
 
-/** Código que cita caminho protegido e usa alguma API de escrita. */
-export function codeWritesProtectedPath(code, cwd = "") {
+/** Literal de string de uma linha, `'…'` ou `"…"` (template literal fica de fora: pode ter `${}`). */
+const STRING_LITERAL_RE = /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g;
+
+/**
+ * #12780: troca por literal vazio cada string de PROSA que cita caminho
+ * protegido — o caso real foi um `node -e` gravando `data/.../plan.json` com
+ * uma nota que dizia "corrigir em .claude/hooks/…". Prosa aqui é: o conteúdo
+ * tem espaço entre palavras (caminho que o código abre não tem), a citação não
+ * está na 1ª palavra (caminho com espaço no nome começa por ela), não usa API
+ * de escrita (protege contra literal mal pareado que engoliu código) e, lido
+ * como shell, não escreve em caminho protegido (`execSync("sed -i … .claude/x")`
+ * continua contando). Qualquer outra string fica como está: `'.claude/hooks/x'`
+ * sozinho, `os.path.join(".claude", "hooks")`, template literal.
+ */
+function stripProseLiterals(code, cwd, depth) {
+  if (depth >= 4) return code;
+  return code.replace(STRING_LITERAL_RE, (lit) => {
+    const body = lit.slice(1, -1);
+    if (!/\S\s+\S/.test(body)) return lit;
+    if (!PROTECTED_IN_TEXT_RES.some((re) => re.test(body))) return lit;
+    // Caminho com espaço no nome (`".claude/hooks/a b.mjs"`, `"/r/.claude/x y"`):
+    // a citação abre a string, então é caminho, não prosa.
+    const firstWord = body.trim().split(/\s+/)[0];
+    if (PROTECTED_IN_TEXT_RES.some((re) => re.test(firstWord))) return lit;
+    if (WRITE_API_RES.some((re) => re.test(body))) return lit;
+    if (findProtectedPathWrite(body.replace(/\\(.)/g, "$1"), { cwd }, depth + 1) !== null) return lit;
+    return lit[0] + lit[0];
+  });
+}
+
+/** Código que cita caminho protegido (fora de string de prosa, #12780) e usa alguma API de escrita. */
+export function codeWritesProtectedPath(code, cwd = "", depth = 0) {
   if (typeof code !== "string" || code === "") return false;
-  const cites = PROTECTED_IN_TEXT_RES.some((re) => re.test(code)) || (cwd !== "" && isProtectedPath(".", cwd));
+  const outsideProse = stripProseLiterals(code, cwd, depth);
+  const cites = PROTECTED_IN_TEXT_RES.some((re) => re.test(outsideProse)) || (cwd !== "" && isProtectedPath(".", cwd));
   if (!cites) return false;
   return WRITE_API_RES.some((re) => re.test(code));
 }
@@ -802,7 +835,7 @@ export function findProtectedPathWrite(command, opts = {}, depth = 0) {
         const text = readOutsideScript(scriptFile, cwd, projectDirs, opts.readFile);
         if (text) sources.push(text);
       }
-      if (sources.some((code) => codeWritesProtectedPath(code, cwd))) {
+      if (sources.some((code) => codeWritesProtectedPath(code, cwd, depth))) {
         return { kind: `${head} (código)`, path: protectedRefIn(sources) ?? cwd };
       }
     }
