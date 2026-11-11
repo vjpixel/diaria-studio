@@ -27,7 +27,9 @@
  *      espelho do bisync (`/mnt/hd-sata/GoogleDrive/...`) se tiver o tamanho
  *      do Drive, senão baixa do Drive para um `.partial` ao lado do destino e
  *      renomeia. Uma cópia ruim no arquivo, de tamanho errado ou de mesmo
- *      tamanho com MD5 diferente (#12603), é sobrescrita, nunca trava o bruto;
+ *      tamanho com MD5 diferente (#12603), nunca trava o bruto: vai para
+ *      `{arquivo}.conflito-{timestamp}` (#12789, nunca sobrescrita) e a cópia
+ *      conferida toma o lugar;
  *   2. confere tamanho e MD5 contra o Drive. Divergência, MD5 local que não
  *      pôde ser calculado ou Drive sem MD5 = não apaga, exit 1;
  *   3. move a cópia do espelho para o arquivo (`rename`, mesmo disco);
@@ -54,7 +56,10 @@
  * timer do bisync. Dry-run não trava (só lê).
  *
  * Nome repetido na mesma pasta do Drive (o Drive aceita) não é apagado:
- * `deletefile` não diz qual dos dois apaga, e só um foi conferido.
+ * `deletefile` não diz qual dos dois apaga, e só um foi conferido. Pasta de
+ * edição com nome repetido (#12789) é erro da edição: nada baixado nem apagado
+ * dela, as demais seguem, a rodada sai com exit 1. Atalhos do Drive não são
+ * seguidos (`--drive-skip-shortcuts`) em nenhuma listagem nem no `deletefile`.
  *
  * Bruto que a montagem de outra edição ainda usa fica no Drive (#12602): antes
  * de listar, o script lê o `_internal/video-montagem/source.json` de cada
@@ -162,6 +167,13 @@ export const BISYNC_SERVICE = "diaria-gdrive-bisync.service";
 
 const HOUR_MS = 3_600_000;
 
+/**
+ * #12789: atalho do Drive não é seguido nas listagens nem no `deletefile`. Um
+ * atalho para a pasta de outra edição (ou de outra conta) dentro da pasta de
+ * vídeo faria a rodada listar, conferir e apagar o que não é desta pasta.
+ */
+export const DRIVE_FLAGS = ["--drive-skip-shortcuts"] as const;
+
 export interface ArchiveConfig {
   mount: string;
   /**
@@ -195,7 +207,8 @@ function positiveNumber(raw: string | undefined, fallback: number, name: string)
 
 export function defaultConfig(env: NodeJS.ProcessEnv = process.env): ArchiveConfig {
   const mount = env.VIDEO_ARCHIVE_MOUNT ?? DEFAULT_MOUNT;
-  const remoteName = env.VIDEO_ARCHIVE_REMOTE ?? DEFAULT_VIDEO_REMOTE;
+  // #12789: vazio conta como ausente (um `VIDEO_ARCHIVE_REMOTE=` no .env não vira remote "").
+  const remoteName = env.VIDEO_ARCHIVE_REMOTE || DEFAULT_VIDEO_REMOTE;
   // #12789: espelho e origem andam juntos. Um VIDEO_ARCHIVE_LOCAL_ROOT sobrado (o espelho da pasta antiga) com
   // a origem default listaria as pastas do espelho antigo e conferiria contra a diaria-studio-video. Recusa.
   if (env.VIDEO_ARCHIVE_LOCAL_ROOT && !env.VIDEO_ARCHIVE_REMOTE_ROOT) {
@@ -203,12 +216,17 @@ export function defaultConfig(env: NodeJS.ProcessEnv = process.env): ArchiveConf
       "VIDEO_ARCHIVE_LOCAL_ROOT (espelho) exige VIDEO_ARCHIVE_REMOTE_ROOT apontando para a mesma pasta no Drive (#12789)",
     );
   }
+  const remoteRoot = env.VIDEO_ARCHIVE_REMOTE_ROOT || `${remoteName}${VIDEO_FOLDER_REL}`;
+  // Sem `:` o rclone lê o valor como pasta LOCAL: listaria o disco e o `deletefile` apagaria nele.
+  if (!remoteRoot.includes(":")) {
+    throw new Error(`VIDEO_ARCHIVE_REMOTE_ROOT/VIDEO_ARCHIVE_REMOTE=${remoteRoot} não tem "remote:" (#12789)`);
+  }
   return {
     mount,
     // #12789: sem espelho por default; vazio também é "sem espelho".
     localRoot: env.VIDEO_ARCHIVE_LOCAL_ROOT || null,
     archiveRoot: env.VIDEO_ARCHIVE_ROOT ?? join(mount, "arquivo-video"),
-    remoteRoot: env.VIDEO_ARCHIVE_REMOTE_ROOT ?? `${remoteName}${VIDEO_FOLDER_REL}`,
+    remoteRoot,
     remoteName,
     dataRoot: env.VIDEO_ARCHIVE_DATA_ROOT ?? join(ROOT, "data"),
     rclone: env.RCLONE_BIN ?? join(homedir(), ".local", "bin", "rclone"),
@@ -470,20 +488,24 @@ export function acquireRunLock(lockPath: string, alive: (pid: number) => boolean
 /**
  * Pastas de edição candidatas: do espelho, quando há um; senão do remote
  * (#12789, `rclone lsjson --dirs-only`, só o 1º nível). Erro do rclone ou
- * listagem ilegível = `{ error }`, e a rodada não faz nada.
+ * listagem ilegível = `{ error }`, e a rodada não faz nada. `duplicates` =
+ * nomes de pasta repetidos no Drive (a rodada não toca neles).
  */
-async function listFolders(cfg: ArchiveConfig, stop: StopController): Promise<{ names: string[] } | { error: string }> {
+async function listFolders(
+  cfg: ArchiveConfig,
+  stop: StopController,
+): Promise<{ names: string[]; duplicates: string[] } | { error: string }> {
   if (cfg.localRoot !== null) {
     const names = readdirSync(cfg.localRoot, { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => e.name)
       .sort();
-    return { names };
+    return { names, duplicates: [] }; // um sistema de arquivos não tem dois nomes iguais
   }
-  const r = await run(stop, cfg.rclone, ["lsjson", "--dirs-only", cfg.remoteRoot], { timeoutMs: 300_000 });
+  const r = await run(stop, cfg.rclone, ["lsjson", "--dirs-only", ...DRIVE_FLAGS, cfg.remoteRoot], { timeoutMs: 300_000 });
   if (!r.ok) return { error: `pasta de vídeo ${cfg.remoteRoot}: rclone lsjson --dirs-only falhou (${r.stderr.trim().slice(-300)}) — nada feito` };
   try {
-    return { names: parseRcloneLsjsonDirs(r.stdout) };
+    return parseRcloneLsjsonDirs(r.stdout);
   } catch (e) {
     return { error: `pasta de vídeo ${cfg.remoteRoot}: listagem das pastas ilegível (${(e as Error).message}) — nada feito` };
   }
@@ -586,7 +608,7 @@ function fileSize(p: string): number | null {
 }
 
 async function listRemote(cfg: ArchiveConfig, stop: StopController, target: string): Promise<{ files: RemoteFile[] } | { error: string }> {
-  const r = await run(stop, cfg.rclone, ["lsjson", "-R", "--files-only", "--hash", "--hash-type", "md5", target], { timeoutMs: 600_000 });
+  const r = await run(stop, cfg.rclone, ["lsjson", "-R", "--files-only", "--hash", "--hash-type", "md5", ...DRIVE_FLAGS, target], { timeoutMs: 600_000 });
   if (!r.ok) return { error: `rclone lsjson falhou: ${r.stderr.trim().slice(-300)}` };
   try {
     return { files: parseRcloneLsjson(r.stdout) };
@@ -599,7 +621,7 @@ async function listRemote(cfg: ArchiveConfig, stop: StopController, target: stri
 async function stillOnDrive(cfg: ArchiveConfig, stop: StopController, folder: string, path: string): Promise<boolean | null> {
   const parent = path.includes("/") ? `/${path.slice(0, path.lastIndexOf("/"))}` : "";
   const name = path.slice(path.lastIndexOf("/") + 1);
-  const r = await run(stop, cfg.rclone, ["lsjson", "--files-only", `${cfg.remoteRoot}/${folder}${parent}`], { timeoutMs: 300_000 });
+  const r = await run(stop, cfg.rclone, ["lsjson", "--files-only", ...DRIVE_FLAGS, `${cfg.remoteRoot}/${folder}${parent}`], { timeoutMs: 300_000 });
   if (!r.ok) return null;
   try {
     return parseRcloneLsjson(r.stdout).some((f) => f.path === name);
@@ -673,6 +695,12 @@ async function archiveOneUnsafe(
         rmSync(partial, { force: true });
         return { ...base, source, status: "falha-download", detail: dl.stderr.trim().slice(-500) };
       }
+      const aside = setAsideConflict(archivePath);
+      if ("error" in aside) {
+        rmSync(partial, { force: true });
+        return { ...base, source, status: "falha-download", detail: aside.error };
+      }
+      if (aside.moved) base = { ...base, detail: joinDetail(base.detail, `cópia anterior guardada em ${aside.moved}`) };
       renameSync(partial, archivePath);
     }
     // A cópia do arquivo que conferiu já foi checada acima; espelho e download são checados aqui.
@@ -684,13 +712,16 @@ async function archiveOneUnsafe(
   if (source === "espelho" && mirrorPath !== null) {
     try {
       mkdirSync(dirname(archivePath), { recursive: true });
+      const aside = setAsideConflict(archivePath);
+      if ("error" in aside) throw new Error(aside.error);
+      if (aside.moved) base = { ...base, detail: joinDetail(base.detail, `cópia anterior guardada em ${aside.moved}`) };
       renameSync(mirrorPath, archivePath);
     } catch (e) {
       return { ...base, source, verify, status: "falha-mover", detail: (e as Error).message };
     }
   }
 
-  const del = await run(stop, cfg.rclone, ["deletefile", "--drive-use-trash=false", remotePath], { timeoutMs: 600_000 });
+  const del = await run(stop, cfg.rclone, ["deletefile", "--drive-use-trash=false", ...DRIVE_FLAGS, remotePath], { timeoutMs: 600_000 });
   if (del.ok) {
     rmSync(recordPath, { force: true });
     return { ...base, source, verify, status: "arquivado" };
@@ -734,6 +765,31 @@ async function archiveOneUnsafe(
     writeVerifiedRecord(recordPath, archivePath, remote);
   }
   return { ...base, source, verify, status: "nao-apagado-sem-permissao", detail: errText + restoreNote };
+}
+
+/**
+ * #12789: antes de pôr a cópia conferida no lugar, a cópia que já estava no
+ * arquivo com o mesmo nome (e que não conferiu com o Drive: tamanho ou MD5
+ * diferente, chegou aqui por isso) vai para `{arquivo}.conflito-{timestamp}`
+ * em vez de ser sobrescrita. Pode ser um bruto homônimo de outra pasta (a
+ * antiga, da vjpixel), e o arquivo do HD é a única cópia que sobra dele.
+ * `moved` = para onde foi (`null` = não havia cópia).
+ */
+export function setAsideConflict(archivePath: string, now: Date = new Date()): { moved: string | null } | { error: string } {
+  if (!existsSync(archivePath)) return { moved: null };
+  const target = `${archivePath}.conflito-${now.toISOString().replace(/[:.]/g, "-")}`;
+  try {
+    renameSync(archivePath, target);
+    // O registro de MD5 era da cópia que saiu: não vale para a nova.
+    rmSync(`${archivePath}${VERIFIED_RECORD_SUFFIX}`, { force: true });
+    return { moved: target };
+  } catch (e) {
+    return { error: `não consegui guardar a cópia anterior do arquivo em ${target}: ${(e as Error).message}` };
+  }
+}
+
+function joinDetail(a: string | undefined, b: string): string {
+  return a ? `${a}; ${b}` : b;
 }
 
 /** O registro do MD5 conferido vale para a cópia de hoje? Ilegível/ausente = não (recalcula). */
@@ -848,8 +904,16 @@ async function runArchiveLocked(
     report.errors.push(listed.error);
     return report;
   }
+  const wanted = (n: string) => !opts.only || opts.only.has(n);
+  // #12789: duas pastas com o mesmo nome no Drive. O lsjson junta o conteúdo das duas e o deletefile resolve por
+  // nome: o arquivo conferido numa pode não ser o apagado na outra. Erro da edição, nada baixado nem apagado dela;
+  // as demais seguem (mesmo espírito do `nome-duplicado-no-drive` dos arquivos).
+  const dupFolders = new Set(listed.duplicates.filter(wanted));
+  for (const name of dupFolders) {
+    report.errors.push(`${name}: pasta de edição com nome duplicado no Drive; nada baixado nem apagado dela (junte ou renomeie as pastas)`);
+  }
   report.folders = listed.names
-    .filter((n) => !opts.only || opts.only.has(n))
+    .filter((n) => wanted(n) && !dupFolders.has(n))
     .map((name) =>
       decideFolder({ name, published: publishedSignals(cfg, name, report.warnings) }, opts.today, opts.unpublishedMaxDays, publishedMinDays),
     );

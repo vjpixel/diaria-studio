@@ -3603,8 +3603,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // brutos das edições com vídeo publicado (ou com mais de 14 dias sem
     // registro) em /mnt/hd-sata/arquivo-video, fora do espelho do bisync,
     // confere tamanho + MD5 contra o Drive e só então apaga do Drive sem
-    // lixeira. Pausa o diaria-gdrive-bisync.timer durante a rodada (e espera
-    // a rodada em curso terminar, até 90 min) e religa no fim. Política em
+    // lixeira. #12789: a origem default é a diaria-studio-video da
+    // diaria.editor (gdrive-diaria:), que não tem espelho local; todo bruto é
+    // baixado e conferido, e nenhum bisync é pausado. Só numa rodada manual
+    // com espelho legado (VIDEO_ARCHIVE_LOCAL_ROOT + VIDEO_ARCHIVE_REMOTE_ROOT,
+    // a pasta antiga da vjpixel) o diaria-gdrive-bisync.timer é pausado
+    // durante a rodada (espera a rodada em curso, até 90 min) e religado no
+    // fim. Política em
     // lib/diaria/video-bruto-archive.ts. Sábado 03:00 BRT: madrugada, fora da
     // janela de edição e da montagem; slot livre (a outra semanal de sábado
     // nessa faixa é 03:40). Sem `guard` de data/: sem o junction a

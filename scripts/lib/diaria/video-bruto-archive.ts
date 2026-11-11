@@ -204,21 +204,28 @@ export function parseRcloneLsjson(text: string): RemoteFile[] {
 }
 
 /**
- * Pura (#12789) — nomes das pastas de 1º nível de um `rclone lsjson
- * --dirs-only` (sem `-R`), ordenados. É a listagem das pastas de edição
- * quando a pasta de vídeo não tem espelho local. Ignora o que não é pasta e
- * caminho com `/` (não é 1º nível). Lança com JSON ilegível, como
- * `parseRcloneLsjson`: sem a listagem, a rodada falha alto.
+ * Pura (#12789) — pastas de 1º nível de um `rclone lsjson --dirs-only` (sem
+ * `-R`): é a listagem das pastas de edição quando a pasta de vídeo não tem
+ * espelho local. Ignora o que não é pasta e caminho com `/` (não é 1º nível).
+ * Lança com JSON ilegível, como `parseRcloneLsjson`: sem a listagem, a rodada
+ * falha alto.
+ *
+ * `names` traz cada nome uma vez, ordenado; `duplicates`, os nomes que vieram
+ * mais de uma vez. O Drive aceita duas pastas com o mesmo nome no mesmo nível:
+ * o `lsjson` de `remote:261105` lista o conteúdo das duas juntas e o
+ * `deletefile` resolve o caminho por nome, então o arquivo conferido numa pode
+ * não ser o apagado na outra. Quem chama não toca em pasta duplicada.
  */
-export function parseRcloneLsjsonDirs(text: string): string[] {
+export function parseRcloneLsjsonDirs(text: string): { names: string[]; duplicates: string[] } {
   const raw = JSON.parse(text) as unknown;
   if (!Array.isArray(raw)) throw new Error("rclone lsjson não devolveu uma lista");
-  const out = new Set<string>();
+  const seen = new Set<string>();
+  const dups = new Set<string>();
   for (const it of raw as Array<Record<string, unknown>>) {
     if (it?.IsDir !== true || typeof it?.Path !== "string" || it.Path === "" || it.Path.includes("/")) continue;
-    out.add(it.Path);
+    (seen.has(it.Path) ? dups : seen).add(it.Path);
   }
-  return [...out].sort();
+  return { names: [...seen].sort(), duplicates: [...dups].sort() };
 }
 
 export type VerifyVerdict = "ok" | "tamanho-diverge" | "md5-diverge" | "sem-md5-no-drive" | "md5-local-indisponivel";
