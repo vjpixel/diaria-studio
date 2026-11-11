@@ -74,6 +74,21 @@ O exit code diz o desfecho:
 - 1: o e-mail não saiu. Diga isso no resumo final, que passa a ser o último canal.
 - 3: o e-mail saiu, mas o registro do alerta não foi gravado. Diga isso no resumo e não chame `--alert` de novo.
 
+## Passo 6: publicar o registro no KV
+
+Sempre que a execução tiver passado pelo Passo 4 ou pelo Passo 5 (vinculado, `failed` ou alerta), rode **por último**:
+
+```bash
+npx tsx scripts/short-related-kv-publish.ts --edition {AAMMDD}
+```
+
+Use o mesmo AAMMDD do Passo 1 (o `aammdd` do JSON). O script lê o `_internal/06-short-related.json` que o Passo 4 ou o 5 acabou de gravar e o publica no KV da Cloudflare (`short-related:{AAMMDD}`, namespace `diaria-ops-state`, #12541), de onde o alarme do `300` (`Diaria-Short-Related-Missed-Alarm`) lê na hora, sem esperar o OneDrive replicar. O arquivo da edição continua sendo gravado. Precisa de `CLOUDFLARE_ACCOUNT_ID` e `CLOUDFLARE_WORKERS_TOKEN` no `.env` do checkout.
+
+- Exit 0: publicado e relido (ou nada a publicar, quando a edição não tem registro).
+- Exit 1: não publicou (credencial ausente, rede, registro ilegível). Diga isso no resumo final com a mensagem do erro; não repita o vínculo nem o alerta por causa disso. O alarme do `300` cai no arquivo replicado.
+
+Com `skip` no Passo 1 não há o que publicar: pule este passo.
+
 ## Fim
 
-Resumo de uma ou duas linhas: edição, ação final (`vinculado`, `já vinculado`, `pulado: motivo`, `alerta enviado: motivo`) e os IDs. Nada de perguntas: a task roda sem o editor presente.
+Resumo de uma ou duas linhas: edição, ação final (`vinculado`, `já vinculado`, `pulado: motivo`, `alerta enviado: motivo`), os IDs e se o registro foi publicado no KV. Nada de perguntas: a task roda sem o editor presente.

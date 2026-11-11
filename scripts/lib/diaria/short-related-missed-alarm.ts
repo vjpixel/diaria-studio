@@ -30,12 +30,21 @@
  * como issue `acao` (sem e-mail urgente, `shortRelatedMissedSeverity`) até o
  * registro do vínculo ganhar um canal fora do OneDrive, e a precondição
  * "haveria vídeo" é a mesma do plano da task (`assessEditionVideoEvidence`).
+ *
+ * Desde o #12541 item 2 o registro também vai para o KV da Cloudflare
+ * (`short-related:{AAMMDD}`, `scripts/lib/diaria/short-related-kv.ts`), que a
+ * task do Neo grava por API. Ordem de leitura: KV com registro decide; KV sem
+ * registro cai no arquivo replicado (como antes); KV que não respondeu com o
+ * arquivo também sem registro vira `record-unconfirmed`, veredito explícito de
+ * incerteza (issue `acao`, sem afirmar falha). Arquivo com registro decide
+ * mesmo com o KV fora.
  */
 
 import { SHORT_RELATED_GIVE_UP_MINUTES, isWeekdayEdition, type ShortRelatedRecord } from "./youtube-short-related.ts";
 import type { ShortsPublishedFile } from "./short-video.ts";
 import { YOUTUBE_SHORTS_DESTINATION, assessEditionVideoEvidence, type FileRead } from "./edition-video-evidence.ts";
 import type { NotifySeverity } from "../editor-notify.ts";
+import type { ShortRelatedKvRead } from "./short-related-kv.ts";
 
 // Reexportados: o destino e o `FileRead` nasceram aqui (#11353) e moraram no
 // helper compartilhado desde o #12541.
@@ -54,13 +63,17 @@ export type ShortRelatedMissedVerdict =
   | "missing-record"
   | "failed-not-alerted"
   | "record-unreadable"
-  | "shorts-registry-unreadable";
+  | "shorts-registry-unreadable"
+  // Alarma como incerteza (#12541 item 2): o KV não respondeu e o arquivo
+  // replicado também não tem registro. Nunca afirma que a task não rodou.
+  | "record-unconfirmed";
 
 const ALARMING: ReadonlySet<ShortRelatedMissedVerdict> = new Set<ShortRelatedMissedVerdict>([
   "missing-record",
   "failed-not-alerted",
   "record-unreadable",
   "shorts-registry-unreadable",
+  "record-unconfirmed",
 ]);
 
 export function isAlarmingShortRelatedVerdict(v: ShortRelatedMissedVerdict): boolean {
@@ -81,6 +94,12 @@ export interface ShortRelatedMissedInput {
   d1VideoUrl?: boolean;
   record: FileRead<ShortRelatedRecord>;
   /**
+   * Registro no KV da Cloudflare (`short-related:{AAMMDD}`, #12541 item 2),
+   * consultado ANTES do arquivo replicado. Default: `absent` (o comportamento
+   * de antes, só o arquivo decide).
+   */
+  kvRecord?: ShortRelatedKvRead;
+  /**
    * Horário do Short (BRT, no dia da edição). `null` = não derivado (config
    * ilegível): o prazo passa a ser o próprio instante da checagem — a task
    * agendada roda depois do slot mais tardio do teste de horário, então
@@ -97,6 +116,10 @@ export interface ShortRelatedMissedEvaluation {
   shortAt: string | null;
   /** ID/URL do Short no registro do vertical, quando houver. */
   shortRef: string | null;
+  /** De onde veio o registro que decidiu (#12541): KV, arquivo replicado, ou nenhum. */
+  recordSource: "kv" | "file" | null;
+  /** Erro da leitura do KV, quando houve (o veredito pode ter vindo do arquivo). */
+  kvError: string | null;
   reason: string;
 }
 
@@ -109,9 +132,14 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
     shortAt: input.shortAt ? input.shortAt.toISOString() : null,
   };
   let shortRef: string | null = null;
+  let recordSource: "kv" | "file" | null = null;
+  const kv: ShortRelatedKvRead = input.kvRecord ?? { kind: "absent" };
+  const kvError = kv.kind === "error" ? kv.error : null;
   const out = (verdict: ShortRelatedMissedVerdict, reason: string): ShortRelatedMissedEvaluation => ({
     ...base,
     shortRef,
+    recordSource,
+    kvError,
     verdict,
     reason,
   });
@@ -144,27 +172,53 @@ export function evaluateShortRelatedMissed(input: ShortRelatedMissedInput): Shor
     return out("before-deadline", `prazo da task (${base.deadline}) ainda não passou`);
   }
 
-  const rec = input.record;
-  if (rec.kind === "absent") {
-    return out("missing-record", "sem _internal/06-short-related.json no 300 depois do prazo: execução da task e vínculo não confirmados; possível atraso de replicação do OneDrive");
+  // #12541 item 2: o KV é gravado pela task do Neo por API e lido aqui na
+  // hora; vem antes do arquivo replicado pelo OneDrive.
+  const decide = (r: ShortRelatedRecord, where: string): ShortRelatedMissedEvaluation => {
+    if (r.status === "linked") return out("linked", `já vinculado (${r.shortId} → ${r.horizontalId}), registro no ${where}`);
+    if (r.alertedAt) return out("task-alerted", `a task já avisou o editor em ${r.alertedAt} (registro no ${where})`);
+    return out("failed-not-alerted", `registro "${r.status}" sem alertedAt no ${where}: a task registrou a falha mas o alerta não saiu`);
+  };
+  if (kv.kind === "ok") {
+    recordSource = "kv";
+    return decide(kv.value, "KV");
   }
-  if (rec.kind === "unreadable") return out("record-unreadable", `registro do vínculo ilegível (${rec.error})`);
-  if (rec.value.status === "linked") return out("linked", `já vinculado (${rec.value.shortId} → ${rec.value.horizontalId})`);
-  if (rec.value.alertedAt) return out("task-alerted", `a task já avisou o editor em ${rec.value.alertedAt}`);
-  return out("failed-not-alerted", `registro "${rec.value.status}" sem alertedAt: a task registrou a falha mas o alerta não saiu`);
+
+  const rec = input.record;
+  if (rec.kind === "ok") {
+    recordSource = "file";
+    return decide(rec.value, "arquivo replicado");
+  }
+  if (rec.kind === "unreadable") {
+    recordSource = "file";
+    return out("record-unreadable", `registro do vínculo ilegível (${rec.error})`);
+  }
+  if (kv.kind === "error") {
+    return out(
+      "record-unconfirmed",
+      `KV ilegível (${kv.error}) e sem _internal/06-short-related.json no 300: não dá para saber se a task rodou; nada confirma falha`,
+    );
+  }
+  return out(
+    "missing-record",
+    "sem registro no KV nem _internal/06-short-related.json no 300 depois do prazo: execução da task e vínculo não confirmados; possível atraso de replicação do OneDrive (ou o Neo ainda sem gravar no KV)",
+  );
 }
 
 /**
- * Pure (#12541): severidade do alarme. `missing-record` é o único veredito
- * que nasce só da AUSÊNCIA de um arquivo replicado pelo OneDrive, e ausência
- * vista no `300` não prova que a task do Neo não rodou (item 23 das regras de
- * dispatch; a 261105, #12315, alarmou assim). Enquanto o registro do vínculo
- * não tiver um canal fora do OneDrive, ele vira issue `acao` (sem e-mail sob
- * `email_policy: "urgent_only"`). Os demais leem um arquivo que EXISTE e
+ * Pure (#12541): severidade do alarme. `missing-record` nasce da AUSÊNCIA de
+ * registro, e ausência não prova que a task do Neo não rodou (item 23 das
+ * regras de dispatch; a 261105, #12315, alarmou assim). O KV (item 2) tira a
+ * dependência da replicação, mas só depois que o Neo passar a gravar nele
+ * (token no `.env` do Neo + passo final do roteiro); até a gravação estar
+ * comprovada em produção, `missing-record` segue issue `acao` (sem e-mail sob
+ * `email_policy: "urgent_only"`). `record-unconfirmed` (KV fora do ar, nada no
+ * arquivo) é incerteza por definição e também sai `acao`. Os demais leem um
+ * registro que EXISTE e
  * continuam `urgente`.
  */
 export function shortRelatedMissedSeverity(verdict: ShortRelatedMissedVerdict): Extract<NotifySeverity, "acao" | "urgente"> {
-  return verdict === "missing-record" ? "acao" : "urgente";
+  return verdict === "missing-record" || verdict === "record-unconfirmed" ? "acao" : "urgente";
 }
 
 /** Pure: assunto e corpo do alarme (issue + e-mail). */
@@ -180,13 +234,15 @@ export function buildShortRelatedMissedAlarm(ev: ShortRelatedMissedEvaluation, s
       `Horário do Short: ${ev.shortAt ?? "não derivado"}; prazo da task: ${ev.deadline ?? "não derivado"}`,
       "",
       "A task LOCAL `diaria-short-video-relacionado` (#10811) roda no Neo pelo app Claude desktop.",
+      `Fonte do registro: ${ev.recordSource === "kv" ? "KV da Cloudflare (short-related:" + ev.aammdd + ")" : ev.recordSource === "file" ? "arquivo replicado pelo OneDrive" : "nenhuma"}${ev.kvError ? `; leitura do KV falhou: ${ev.kvError}` : ""}.`,
       "A ausência de confirmação no 300 não comprova falha da task no Neo nem ausência do vínculo no YouTube.",
-      "O check consulta somente registros locais replicados; não consulta o vínculo no Studio/YouTube.",
+      "O check consulta o KV da Cloudflare (gravado pela task por API, #12541) e o registro replicado; não consulta o vínculo no Studio/YouTube.",
       "",
       `Para conferir o vínculo e, somente se estiver ausente, vincular à mão: ${studioUrl} → o Short → Elementos do vídeo → Vídeo relacionado → Adicionar → Escolha um vídeo específico → o horizontal → Salvar.`,
       "",
-      "Ressalva: este check lê `data/` replicado pelo OneDrive no `300`. Se o Neo gravou o registro e ele ainda",
-      "não replicou, o alarme é falso — conferir o Short no Studio resolve as duas hipóteses.",
+      ev.verdict === "record-unconfirmed"
+        ? "Incerteza: o KV não respondeu e o arquivo replicado não tem registro. Isto NÃO afirma que a task falhou; conferir o Short no Studio resolve."
+        : "Ressalva: a task só grava no KV depois que o Neo tem o token Cloudflare no `.env` e o passo final do roteiro; antes disso, sem registro no KV vale o arquivo replicado pelo OneDrive, que pode atrasar. Conferir o Short no Studio resolve as duas hipóteses.",
     ].join("\n"),
   };
 }
