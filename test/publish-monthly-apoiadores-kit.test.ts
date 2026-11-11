@@ -161,8 +161,18 @@ function makeSpy(overrides: Partial<ApoiadoresKitDeps> = {}, existing: Apoiadore
       created.push(input);
       return { id: 999 };
     },
-    // Default do caminho feliz: a releitura ecoa exatamente o filtro enviado.
-    getBroadcast: async () => ({ subscriber_filter: [{ all: [{ type: "tag", ids: [42] }] }] }),
+    // Default do caminho feliz: a releitura ecoa exatamente o filtro enviado
+    // e, como o Kit, o status/send_at do broadcast criado (#12739: o `sent`
+    // do state passou a depender do agendamento confirmado na releitura).
+    getBroadcast: async () => {
+      const last = created[created.length - 1];
+      const sendAt = last?.send_at ?? null;
+      return {
+        subscriber_filter: [{ all: [{ type: "tag", ids: [42] }] }],
+        status: sendAt ? "scheduled" : "draft",
+        send_at: sendAt,
+      };
+    },
     // #11813: o caminho de criação nunca atualiza — falha alto se chamado.
     updateBroadcast: async () => {
       throw new Error("updateBroadcast não deveria ser chamado fora do --update");
