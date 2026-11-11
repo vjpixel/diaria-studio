@@ -203,6 +203,24 @@ export function parseRcloneLsjson(text: string): RemoteFile[] {
   return out;
 }
 
+/**
+ * Pura (#12789) — nomes das pastas de 1º nível de um `rclone lsjson
+ * --dirs-only` (sem `-R`), ordenados. É a listagem das pastas de edição
+ * quando a pasta de vídeo não tem espelho local. Ignora o que não é pasta e
+ * caminho com `/` (não é 1º nível). Lança com JSON ilegível, como
+ * `parseRcloneLsjson`: sem a listagem, a rodada falha alto.
+ */
+export function parseRcloneLsjsonDirs(text: string): string[] {
+  const raw = JSON.parse(text) as unknown;
+  if (!Array.isArray(raw)) throw new Error("rclone lsjson não devolveu uma lista");
+  const out = new Set<string>();
+  for (const it of raw as Array<Record<string, unknown>>) {
+    if (it?.IsDir !== true || typeof it?.Path !== "string" || it.Path === "" || it.Path.includes("/")) continue;
+    out.add(it.Path);
+  }
+  return [...out].sort();
+}
+
 export type VerifyVerdict = "ok" | "tamanho-diverge" | "md5-diverge" | "sem-md5-no-drive" | "md5-local-indisponivel";
 
 /**

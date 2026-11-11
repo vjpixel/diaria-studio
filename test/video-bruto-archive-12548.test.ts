@@ -21,6 +21,7 @@ import {
   montageSourceRefs,
   parseMd5sumLine,
   parseRcloneLsjson,
+  parseRcloneLsjsonDirs,
   parseRunLock,
   parseVerifiedRecord,
   referencingEditions,
@@ -198,6 +199,11 @@ case "$cmd" in
   about) echo '{"total":100,"free":50}' ;;
   lsjson)
     for a in "$@"; do p="$a"; done
+    # #12789: --dirs-only (sem -R) lista as pastas de 1º nível, como o Drive sem espelho.
+    case " $* " in *" --dirs-only "*)
+      node -e 'const fs=require("fs");console.log(JSON.stringify(fs.readdirSync(process.argv[1],{withFileTypes:true}).filter(e=>e.isDirectory()).map(e=>({Path:e.name,Name:e.name,Size:-1,IsDir:true}))))' "$(strip "$p")"
+      exit $? ;;
+    esac
     node -e '
       const fs=require("fs"),path=require("path"),c=require("crypto");
       const root=process.argv[1], bad=JSON.parse(process.argv[2]); const out=[];
@@ -922,5 +928,124 @@ describe("trava contra duas execuções (#12573)", posixOnly, () => {
     assert.ok("release" in again);
     again.release();
     assert.ok(!existsSync(p));
+  });
+});
+
+// ── #12789: pasta de vídeo sem espelho local (diaria-studio-video da diaria.editor) ──
+
+describe("defaults sem espelho (#12789)", () => {
+  it("aponta para gdrive-diaria:diaria-studio-video, sem espelho, e o env continua sobrepondo", () => {
+    const d = defaultConfig({});
+    assert.equal(d.remoteName, "gdrive-diaria:");
+    assert.equal(d.remoteRoot, "gdrive-diaria:diaria-studio-video");
+    assert.equal(d.localRoot, null);
+    assert.equal(defaultConfig({ VIDEO_ARCHIVE_LOCAL_ROOT: "" }).localRoot, null, "vazio = sem espelho");
+    const legacy = defaultConfig({
+      VIDEO_ARCHIVE_REMOTE: "gdrive:",
+      VIDEO_ARCHIVE_REMOTE_ROOT: "gdrive:Work/x/YouTube",
+      VIDEO_ARCHIVE_LOCAL_ROOT: "/mnt/hd-sata/GoogleDrive/Work/x/YouTube",
+    });
+    assert.equal(legacy.remoteName, "gdrive:");
+    assert.equal(legacy.remoteRoot, "gdrive:Work/x/YouTube");
+    assert.equal(legacy.localRoot, "/mnt/hd-sata/GoogleDrive/Work/x/YouTube");
+  });
+
+  it("parseRcloneLsjsonDirs pega só pastas de 1º nível, ordenadas; JSON ilegível lança", () => {
+    const text = JSON.stringify([
+      { Path: "261109-10", IsDir: true, Size: -1 },
+      { Path: "261105", IsDir: true, Size: -1 },
+      { Path: "261105/Brutos", IsDir: true, Size: -1 },
+      { Path: "solto.mp4", IsDir: false, Size: 3 },
+    ]);
+    assert.deepEqual(parseRcloneLsjsonDirs(text), ["261105", "261109-10"]);
+    assert.throws(() => parseRcloneLsjsonDirs("{}"));
+    assert.throws(() => parseRcloneLsjsonDirs("não é json"));
+  });
+});
+
+describe("runArchive sem espelho (#12789)", posixOnly, () => {
+  /** Só o "Drive" tem o bruto; nenhum espelho. */
+  const noMirror = (opts: Parameters<typeof sandbox>[0] = {}) => {
+    const s = sandbox(opts);
+    rmSync(s.local, { recursive: true, force: true });
+    return { ...s, cfg: { ...s.cfg, localRoot: null } };
+  };
+  const callLines = (s: { calls: string }) => (existsSync(s.calls) ? readFileSync(s.calls, "utf8").split("\n").filter(Boolean) : []);
+
+  it("--apply lista as pastas pelo remote, baixa, confere e apaga do Drive, sem pausar bisync nenhum", async () => {
+    const s = noMirror();
+    s.put(s.drive, "261105/20261104_124252.mp4", "bruto-1");
+    s.put(s.drive, "261105/Brutos/20261103_000000.mp4", "bruto-2");
+    s.put(s.drive, "261105/Final/export.mp4", "final");
+    s.put(s.drive, "261109-10/20261109_150417.mp4", "nao-publicado");
+    s.publish("261105");
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(reportFailed(r), false, JSON.stringify(r, null, 2));
+    assert.deepEqual(r.folders.map((f) => [f.name, f.eligible]), [["261105", true], ["261109-10", false]]);
+    assert.deepEqual(r.files.map((f) => [f.path, f.source, f.status]).sort(), [
+      ["20261104_124252.mp4", "download", "arquivado"],
+      ["Brutos/20261103_000000.mp4", "download", "arquivado"],
+    ]);
+    assert.equal(readFileSync(join(s.archive, "261105/20261104_124252.mp4"), "utf8"), "bruto-1");
+    assert.equal(readFileSync(join(s.archive, "261105/Brutos/20261103_000000.mp4"), "utf8"), "bruto-2");
+    assert.ok(!existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+    assert.ok(!existsSync(join(s.archive, "261105/20261104_124252.mp4.partial")));
+    assert.ok(existsSync(join(s.drive, "261105/Final/export.mp4")));
+    assert.ok(existsSync(join(s.drive, "261109-10/20261109_150417.mp4")));
+    assert.ok(!existsSync(s.local), "nenhum espelho criado");
+    const calls = callLines(s);
+    assert.ok(calls.some((l) => /^rclone lsjson --dirs-only remote:$/.test(l)), calls.join("\n"));
+    assert.ok(!calls.some((l) => l.startsWith("systemctl")), "sem espelho, nenhum bisync a pausar");
+    // download antes do deletefile
+    const copy = calls.findIndex((l) => l.startsWith("rclone copyto") && l.includes("20261104_124252"));
+    const del = calls.findIndex((l) => l.startsWith("rclone deletefile") && l.includes("20261104_124252"));
+    assert.ok(copy >= 0 && del > copy, calls.join("\n"));
+  });
+
+  it("MD5 divergente depois do download: recusa apagar e a rodada falha", async () => {
+    const s = noMirror({ badMd5: ["20261104_124252.mp4"] });
+    s.put(s.drive, "261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].source, "download");
+    assert.equal(r.files[0].status, "falha-conferencia");
+    assert.equal(r.files[0].verify, "md5-diverge");
+    assert.equal(reportFailed(r), true);
+    assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")), "continua no Drive");
+    assert.ok(!callLines(s).some((l) => l.startsWith("rclone deletefile")), "nenhum deletefile");
+  });
+
+  it("dry-run lista pelo remote e não baixa nem apaga nada", async () => {
+    const s = noMirror();
+    s.put(s.drive, "261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = await runArchive({ cfg: s.cfg, apply: false, today: TODAY, unpublishedMaxDays: 14 });
+    assert.deepEqual(r.files.map((f) => [f.path, f.status]), [["20261104_124252.mp4", "sairia"]]);
+    const calls = callLines(s);
+    assert.ok(!calls.some((l) => /copyto|deletefile|^systemctl/.test(l)), calls.join("\n"));
+    assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+  });
+
+  it("listagem das pastas no remote falha: erro, nada feito", async () => {
+    const s = noMirror();
+    s.put(s.drive, "261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = await runArchive({ cfg: { ...s.cfg, remoteRoot: "remote:nao-existe" }, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(reportFailed(r), true);
+    assert.ok(r.errors.some((e) => /dirs-only falhou/.test(e)), JSON.stringify(r.errors));
+    assert.deepEqual(r.files, []);
+    assert.ok(existsSync(join(s.drive, "261105/20261104_124252.mp4")));
+    assert.ok(!callLines(s).some((l) => /copyto|deletefile|^systemctl/.test(l)));
+  });
+
+  it("retomada sem espelho: cópia conferida já no arquivo não é baixada de novo", async () => {
+    const s = noMirror();
+    s.put(s.drive, "261105/20261104_124252.mp4", "bruto");
+    s.put(s.archive, "261105/20261104_124252.mp4", "bruto");
+    s.publish("261105");
+    const r = await runArchive({ cfg: s.cfg, apply: true, today: TODAY, unpublishedMaxDays: 14 });
+    assert.equal(r.files[0].source, "arquivo");
+    assert.equal(r.files[0].status, "arquivado");
+    assert.ok(!callLines(s).some((l) => l.startsWith("rclone copyto")));
   });
 });

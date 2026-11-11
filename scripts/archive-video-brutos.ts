@@ -7,7 +7,16 @@
  * tamanho e motivo, sem tocar nada. Política pura (quais pastas, quais
  * arquivos, a conferência) em `scripts/lib/diaria/video-bruto-archive.ts`.
  *
- * Com `--apply`, primeiro pausa o bisync do Drive inteiro (#12356): para o
+ * Origem (#12789): por default a `diaria-studio-video` da conta diaria.editor
+ * (`gdrive-diaria:diaria-studio-video`), que NÃO tem espelho local no `300`.
+ * Sem espelho (`VIDEO_ARCHIVE_LOCAL_ROOT` vazio/ausente), as pastas de edição
+ * vêm do remote (`rclone lsjson --dirs-only`), todo bruto é baixado para o
+ * `.partial` e conferido (tamanho + MD5) antes do `deletefile`, e nenhum bisync
+ * é pausado (nenhum cobre a pasta). Os passos abaixo que citam o espelho só
+ * valem com `VIDEO_ARCHIVE_LOCAL_ROOT` apontando para um (a pasta antiga da
+ * vjpixel, `LEGACY_VIDEO_FOLDER_REL`).
+ *
+ * Com `--apply` e espelho, primeiro pausa o bisync do Drive inteiro (#12356): para o
  * `diaria-gdrive-bisync.timer` (só se estava ativo) e espera a rodada em curso
  * terminar (`systemctl --user is-active` = `inactive`/`failed`; qualquer outro
  * valor, inclusive vazio, conta como "ainda rodando"). Só depois lista o Drive,
@@ -69,7 +78,7 @@
  * `rclone about` falhou; o motivo vai em `warnings`). Falha = exit 1, a unit
  * fica `failed` e o alarme de units falhas acusa.
  *
- * Task agendada: `Diaria-Video-Bruto-Archive` (sábado 03:00 BRT, `--apply`).
+ * Task agendada: `Diaria-Video-Bruto-Archive` (sábado 03:00 BRT, `--apply`), com os defaults (sem espelho).
  *
  * Uso:
  *   npx tsx scripts/archive-video-brutos.ts                    # dry-run
@@ -116,6 +125,7 @@ import {
   montageSourceRefs,
   parseMd5sumLine,
   parseRcloneLsjson,
+  parseRcloneLsjsonDirs,
   parseRunLock,
   parseVerifiedRecord,
   referencingEditions,
@@ -130,8 +140,22 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[archive-video-brutos]";
 
-/** Pasta de vídeo da diária, relativa à raiz do Drive. O `／` (largo) é como o rclone grava a `/` do nome "Mentoria Fluxo/VTSD". */
-export const VIDEO_FOLDER_REL = "Work/Mentoria Fluxo／VTSD/YouTube";
+/**
+ * Pasta de vídeo da diária, relativa à raiz do remote (#12789): a
+ * `diaria-studio-video` da conta diaria.editor (#12578), no remote
+ * `gdrive-diaria:`. Não tem espelho local no `300` (o bisync dedicado da
+ * #12478 cobre só a `diaria-studio-data`), então o default é rodar sem espelho.
+ */
+export const VIDEO_FOLDER_REL = "diaria-studio-video";
+export const DEFAULT_VIDEO_REMOTE = "gdrive-diaria:";
+/**
+ * Pasta antiga, da vjpixel, com espelho no bisync do Drive inteiro. Só para
+ * uma rodada manual sobre ela, por env: `VIDEO_ARCHIVE_REMOTE=gdrive:`,
+ * `VIDEO_ARCHIVE_REMOTE_ROOT=gdrive:{LEGACY}` e
+ * `VIDEO_ARCHIVE_LOCAL_ROOT=/mnt/hd-sata/GoogleDrive/{LEGACY}`. O `／` (largo)
+ * é como o rclone grava a `/` do nome "Mentoria Fluxo/VTSD".
+ */
+export const LEGACY_VIDEO_FOLDER_REL = "Work/Mentoria Fluxo／VTSD/YouTube";
 export const DEFAULT_MOUNT = "/mnt/hd-sata";
 export const BISYNC_TIMER = "diaria-gdrive-bisync.timer";
 export const BISYNC_SERVICE = "diaria-gdrive-bisync.service";
@@ -140,7 +164,12 @@ const HOUR_MS = 3_600_000;
 
 export interface ArchiveConfig {
   mount: string;
-  localRoot: string;
+  /**
+   * Espelho local da pasta de vídeo, mantido por um bisync (#12789: opcional).
+   * `null` = sem espelho: as pastas vêm do remote, o bruto é sempre baixado e
+   * conferido, e nenhum bisync é pausado (nenhum cobre a pasta).
+   */
+  localRoot: string | null;
   archiveRoot: string;
   remoteRoot: string;
   remoteName: string;
@@ -151,6 +180,7 @@ export interface ArchiveConfig {
   mountpointCmd: string[];
   waitMinutes: number;
   pollSeconds: number;
+  /** Pausa o `diaria-gdrive-bisync.timer` com `--apply`. Só vale com espelho (`localRoot`): sem ele, nada a pausar. */
   pauseBisync: boolean;
   /** #12573: trava contra duas execuções com `--apply` ao mesmo tempo. */
   lockPath: string;
@@ -165,10 +195,11 @@ function positiveNumber(raw: string | undefined, fallback: number, name: string)
 
 export function defaultConfig(env: NodeJS.ProcessEnv = process.env): ArchiveConfig {
   const mount = env.VIDEO_ARCHIVE_MOUNT ?? DEFAULT_MOUNT;
-  const remoteName = env.VIDEO_ARCHIVE_REMOTE ?? "gdrive:";
+  const remoteName = env.VIDEO_ARCHIVE_REMOTE ?? DEFAULT_VIDEO_REMOTE;
   return {
     mount,
-    localRoot: env.VIDEO_ARCHIVE_LOCAL_ROOT ?? join(mount, "GoogleDrive", VIDEO_FOLDER_REL),
+    // #12789: sem espelho por default; vazio também é "sem espelho".
+    localRoot: env.VIDEO_ARCHIVE_LOCAL_ROOT || null,
     archiveRoot: env.VIDEO_ARCHIVE_ROOT ?? join(mount, "arquivo-video"),
     remoteRoot: env.VIDEO_ARCHIVE_REMOTE_ROOT ?? `${remoteName}${VIDEO_FOLDER_REL}`,
     remoteName,
@@ -429,11 +460,26 @@ export function acquireRunLock(lockPath: string, alive: (pid: number) => boolean
   return { error: `não consegui obter a trava ${lockPath} (disputada por outra execução)` };
 }
 
-function listFolders(cfg: ArchiveConfig): string[] {
-  return readdirSync(cfg.localRoot, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)
-    .sort();
+/**
+ * Pastas de edição candidatas: do espelho, quando há um; senão do remote
+ * (#12789, `rclone lsjson --dirs-only`, só o 1º nível). Erro do rclone ou
+ * listagem ilegível = `{ error }`, e a rodada não faz nada.
+ */
+async function listFolders(cfg: ArchiveConfig, stop: StopController): Promise<{ names: string[] } | { error: string }> {
+  if (cfg.localRoot !== null) {
+    const names = readdirSync(cfg.localRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+    return { names };
+  }
+  const r = await run(stop, cfg.rclone, ["lsjson", "--dirs-only", cfg.remoteRoot], { timeoutMs: 300_000 });
+  if (!r.ok) return { error: `pasta de vídeo ${cfg.remoteRoot}: rclone lsjson --dirs-only falhou (${r.stderr.trim().slice(-300)}) — nada feito` };
+  try {
+    return { names: parseRcloneLsjsonDirs(r.stdout) };
+  } catch (e) {
+    return { error: `pasta de vídeo ${cfg.remoteRoot}: listagem das pastas ilegível (${(e as Error).message}) — nada feito` };
+  }
 }
 
 function publishedSignals(cfg: ArchiveConfig, name: string, warnings: string[]): Record<string, boolean | null> {
@@ -578,7 +624,8 @@ async function archiveOneUnsafe(
   base: FileResult,
 ): Promise<FileResult> {
   const archivePath = join(cfg.archiveRoot, folder, ...remote.path.split("/"));
-  const mirrorPath = join(cfg.localRoot, folder, ...remote.path.split("/"));
+  // #12789: sem espelho, nunca há cópia do espelho; o bruto vem do arquivo ou de um download.
+  const mirrorPath = cfg.localRoot === null ? null : join(cfg.localRoot, folder, ...remote.path.split("/"));
   const remotePath = `${cfg.remoteRoot}/${folder}/${remote.path}`;
   const timeoutMs = sizeTimeoutMs(remote.size);
   const check = async (p: string): Promise<{ verify: VerifyVerdict; md5Stderr: string }> => {
@@ -603,7 +650,7 @@ async function archiveOneUnsafe(
     else return failVerify("arquivo", c);
   }
   if (source === null) {
-    if (fileSize(mirrorPath) === remote.size) {
+    if (mirrorPath !== null && fileSize(mirrorPath) === remote.size) {
       source = "espelho";
       localPath = mirrorPath;
     } else {
@@ -627,7 +674,7 @@ async function archiveOneUnsafe(
   }
   const verify: VerifyVerdict = "ok";
 
-  if (source === "espelho") {
+  if (source === "espelho" && mirrorPath !== null) {
     try {
       mkdirSync(dirname(archivePath), { recursive: true });
       renameSync(mirrorPath, archivePath);
@@ -656,7 +703,7 @@ async function archiveOneUnsafe(
   // Continua no Drive: devolve a cópia ao espelho quando veio dele, senão o bisync tentaria apagar no Drive toda rodada.
   let restoreFailed = false;
   let restoreNote = "";
-  if (source === "espelho") {
+  if (source === "espelho" && mirrorPath !== null) {
     try {
       renameSync(archivePath, mirrorPath);
       restoreNote = " (cópia devolvida ao espelho)";
@@ -670,7 +717,7 @@ async function archiveOneUnsafe(
 
   // #12570: arquivo de outro dono. O espelho fica com a dele (o bisync não tenta apagar no Drive), e o arquivo
   // guarda uma cópia própria: se a dona apagar do Drive, o bisync apaga o espelho, e sem esta cópia não sobraria nada.
-  if (source === "espelho") {
+  if (source === "espelho" && mirrorPath !== null) {
     rmSync(recordPath, { force: true });
     const kept = await keepArchiveCopy(mirrorPath, archivePath, remote.size);
     if (kept) return { ...base, source, verify, status: "falha-guardar-copia", detail: `${errText}${restoreNote}; ${kept}` };
@@ -783,13 +830,18 @@ async function runArchiveLocked(
     report.errors.push(`${cfg.mount} não está montado — nada feito`);
     return report;
   }
-  if (!existsSync(cfg.localRoot)) {
+  if (cfg.localRoot !== null && !existsSync(cfg.localRoot)) {
     report.errors.push(`pasta de vídeo ${cfg.localRoot} ausente no espelho — nada feito`);
     return report;
   }
 
   const publishedMinDays = opts.publishedMinDays ?? DEFAULT_ARCHIVE_PUBLISHED_MIN_DAYS;
-  report.folders = listFolders(cfg)
+  const listed = await listFolders(cfg, stop);
+  if ("error" in listed) {
+    report.errors.push(listed.error);
+    return report;
+  }
+  report.folders = listed.names
     .filter((n) => !opts.only || opts.only.has(n))
     .map((name) =>
       decideFolder({ name, published: publishedSignals(cfg, name, report.warnings) }, opts.today, opts.unpublishedMaxDays, publishedMinDays),
@@ -819,10 +871,12 @@ async function runArchiveLocked(
   // Sem saber que brutos uma montagem em curso usa, nada sai do Drive (#12602).
   if (refs.errors.length > 0) return report;
 
+  // #12789: sem espelho, nenhum bisync cobre a pasta; não há o que pausar.
+  const pause = cfg.pauseBisync && cfg.localRoot !== null;
   const bisync = { timerWasActive: false };
   let resumed = false;
   const resume = async () => {
-    if (resumed || !cfg.pauseBisync) return;
+    if (resumed || !pause) return;
     resumed = true;
     if (!bisync.timerWasActive) return;
     const err = await resumeBisync(cfg, stop, log);
@@ -834,7 +888,7 @@ async function runArchiveLocked(
     return true;
   };
   try {
-    if (cfg.pauseBisync) {
+    if (pause) {
       try {
         await pauseBisync(cfg, stop, bisync, log);
       } catch (e) {
