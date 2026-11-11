@@ -69,9 +69,13 @@ rodar `npx tsx scripts/list-continuo-escalation-queue.ts --apply`, que fecha
 as de destino `fechar-redundante`, `fechar-para-issue` e `fechar-reabrir-issue`
 (comentário na PR e na issue de origem, branch preservada, `gh pr reopen`
 desfaz). Destino `fixer` = despachar `dev-fixer` na branch existente para
-rebase no master + correção do CI e aplicar a label `continuo-ci-fix-tentado`;
-na rodada seguinte, se continuar vermelha, ela vira `fechar-reabrir-issue`.
-Destino `briefing` segue como pendência do editor.
+rebase no master + correção do CI (draft já verde: marcar ready) e marcar a
+PR com `npx tsx scripts/mark-continuo-ci-fix-attempted.ts --pr {N}`; se na rodada
+seguinte ainda houver conflito ou CI parado, ela vira `fechar-reabrir-issue`.
+Destino `briefing` segue como pendência do editor — inclusive toda PR
+retida para o editor (#10278) ou reivindicada por sessão viva, que nunca
+recebe destino automático. Falha parcial do `--apply` sai em `failures[]`
+(exit 1): reportar, nunca tratar como fila vazia.
 
 **Teto global de PRs abertos (#12765).** Antes de compor cada onda, rodar
 `npx tsx scripts/check-open-pr-cap.ts` e passar `slots` como

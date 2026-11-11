@@ -74,7 +74,9 @@ if (isMainModule(import.meta.url)) {
     console.error(`[record-overnight-wave] --deferred exige inteiro não-negativo (recebido: ${JSON.stringify(values.deferred)})`);
     process.exit(2);
   }
-  if (process.argv.includes("--open-pr-slots") && !(typeof values["open-pr-slots"] === "string" && INT.test(values["open-pr-slots"]))) {
+  // Pega `--open-pr-slots N`, `--open-pr-slots=N` e a flag sem valor.
+  const slotsGiven = process.argv.some((a) => a === "--open-pr-slots" || a.startsWith("--open-pr-slots="));
+  if (slotsGiven && !(typeof values["open-pr-slots"] === "string" && INT.test(values["open-pr-slots"]))) {
     console.error(`[record-overnight-wave] --open-pr-slots exige inteiro não-negativo (recebido: ${JSON.stringify(values["open-pr-slots"])})`);
     process.exit(2);
   }
@@ -96,10 +98,6 @@ if (isMainModule(import.meta.url)) {
     const units = parseUnits(values.units);
     const all = units.flat();
     if (new Set(all).size !== all.length) throw new Error("issue repetida entre/dentro das unidades da onda");
-    if (typeof values["open-pr-slots"] === "string") {
-      const capErr = waveOpenPrCapError(units.length, Number(values["open-pr-slots"]));
-      if (capErr) throw new Error(capErr);
-    }
     record = buildWaveRecord({ units, deferred: values.deferred ? Number(values.deferred) : 0 });
   } catch (e) {
     console.error(`[record-overnight-wave] ${(e as Error).message}`);
@@ -122,6 +120,16 @@ if (isMainModule(import.meta.url)) {
       `[record-overnight-wave] onda idêntica já registrada em ${dup.composed_at} (dentro da janela de dedup) — nenhuma onda nova gravada, no-op idempotente${repaired ? "; timeline reparada" : ""}`,
     );
     process.exit(0);
+  }
+
+  // Teto de PRs abertos (#12765) DEPOIS do dedup: re-registrar a mesma onda
+  // (compaction) já com as PRs dela abertas segue sendo no-op exit 0 (#8496).
+  if (slotsGiven) {
+    const capErr = waveOpenPrCapError(record.unit_count, Number(values["open-pr-slots"]));
+    if (capErr) {
+      console.error(`[record-overnight-wave] ${capErr}`);
+      process.exit(1);
+    }
   }
 
   const next = appendWave(recordUnitTimeline(plan, record.units.flatMap((u) => u.issues), "dispatch", record.composed_at), record);
