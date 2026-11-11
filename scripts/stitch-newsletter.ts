@@ -360,7 +360,7 @@ export function loadDivulgacaoSnippet(file: string | null | undefined, rootDir?:
   const raw = readSnippetFile(file, rootDir);
   if (!raw) {
     throw new Error(
-      `loadDivulgacaoSnippet: slot configurado aponta para "data/snippets/${file}", mas o arquivo não existe (ou ficou vazio após remover o header) — verifique se a caixa foi arquivada sem atualizar o slot em platform.config.json, ou se o OneDrive ainda não sincronizou este arquivo nesta máquina.`,
+      `loadDivulgacaoSnippet: slot configurado aponta para "data/snippets/${file}", mas o arquivo não existe (ou ficou vazio após remover o header) — verifique se a caixa foi arquivada sem atualizar o slot em platform.config.json, ou se o sync do Drive (bisync do 300 / Drive for desktop) ainda não trouxe este arquivo para esta máquina.`,
     );
   }
   // #10178: header de comentário fora da 1ª linha — os campos dele (alt:,

@@ -495,7 +495,8 @@ export function formatUnreadableEditionsMessage(unreadable: SkippedReferenceEdit
       : " Nenhuma outra edição legível encontrada para sugerir.";
   return (
     `[#12534] Edição de referência ilegível: ${list}. ` +
-    `Causa provável: placeholder do OneDrive só-na-nuvem (não hidratado) — marque a pasta da edição como "Sempre manter neste dispositivo" ou abra os arquivos para baixar.` +
+    `Causa provável: arquivo só na nuvem (Drive for desktop em modo streaming: marque a pasta da edição como "Disponível off-line" ou abra os arquivos) ` +
+    `ou corrompido/em conflito no bisync do 300, onde a cópia local é completa e esperar não resolve (confira o log do bisync e as cópias .conflictN na pasta).` +
     suggestion
   );
 }
@@ -891,7 +892,7 @@ async function main(): Promise<void> {
     referenceEditions = derived.editions;
     skippedUnreadable = derived.skipped;
     for (const s of derived.skipped) {
-      console.warn(`[#12534] edição ${s.edition} pulada: ${s.reason} — provável placeholder do OneDrive só-na-nuvem; seguindo para a próxima legível.`);
+      console.warn(`[#12534] edição ${s.edition} pulada: ${s.reason} — provável arquivo só na nuvem ou sync do Drive atrasado; seguindo para a próxima legível.`);
     }
     console.log(`[#8144] --reference-editions omitido — derivadas automaticamente: ${referenceEditions.join(",") || "(nenhuma)"} (#5321, default declarado em vez de perguntar).`);
   } else {

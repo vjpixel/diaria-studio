@@ -72,7 +72,7 @@ function main(): void {
     if (d.action === "stale_other_host") {
       const prev = d.previous!;
       console.error(
-        `[edition-lock] trava vencida de OUTRO host (${prev.host}, Stage ${prev.stage}, heartbeat ${formatLockAge(d.previous_age_ms)}): data/ possivelmente defasado (OneDrive) — aguardar sync antes de re-rodar o stage. --force só se o editor confirmar.`,
+        `[edition-lock] trava vencida de OUTRO host (${prev.host}, Stage ${prev.stage}, heartbeat ${formatLockAge(d.previous_age_ms)}): data/ possivelmente defasado (sync do Drive: bisync do 300 / Drive for desktop) — aguardar sync antes de re-rodar o stage. --force só se o editor confirmar.`,
       );
       process.exit(4);
     }

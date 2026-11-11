@@ -178,7 +178,9 @@ describe("playbooks repassam a dica em vez de concluir 'não aprovada' (#11729)"
   it("/diaria-publica-video não afirma mais 'não aprovada' no exit 1 do sentinel", () => {
     const skill = readFileSync(join(repoRoot, ".claude/skills/diaria-publica/SKILL.md"), "utf8");
     assert.doesNotMatch(skill, /da edição \{AAMMDD\} não aprovada/);
-    assert.match(skill, /possível defasagem de sync do OneDrive/);
+    assert.match(skill, /possível defasagem de sync do Drive/);
+    // #12837: depois da virada do data/ (#12359), a dica não aponta mais o OneDrive.
+    assert.doesNotMatch(skill, /defasagem de sync do OneDrive/);
   });
 
   it("Stage 5 e Stage 6 chamam o assert do sentinel anterior com --sync-hint", () => {

@@ -43,7 +43,7 @@ npx tsx scripts/pipeline-sentinel.ts assert \
   --outputs "02-reviewed.md,03-social.md" --sync-hint
 ```
 
-`--sync-hint` (#11729): com sentinel ausente, o comando imprime no stderr uma linha `[aviso]` com "possível defasagem de sync do OneDrive" e a idade do arquivo mais recente da edição nesta máquina. A mensagem do exit `1` abaixo repassa essa linha ao editor.
+`--sync-hint` (#11729): com sentinel ausente, o comando imprime no stderr uma linha `[aviso]` com "possível defasagem de sync do Drive" (bisync do 300 / Drive for desktop, #12837) e a idade do arquivo mais recente da edição nesta máquina. A mensagem do exit `1` abaixo repassa essa linha ao editor.
 
 Exit code handling:
 - `0` → continuar.

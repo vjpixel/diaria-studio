@@ -396,6 +396,8 @@ describe("#11912: trocar vídeo ou capa depois do 'pode publicar' não herda a a
     await runCorteTimerFor(dir, false, deps(at(10 * 60_000), calls, alarms));
     assert.deepEqual([calls, alarms.map((a) => a.key)], [[], ["missing-video"]]);
     assert.match(buildCorteTimerAlarm({ spec: BASE, destination: "threads_profile", key: "missing-video", reason: "x" }).body, /ou a capa aprovada/);
+    // #12837: pós-virada do data/ (#12359), a dica aponta o sync do Drive.
+    assert.match(buildCorteTimerAlarm({ spec: BASE, destination: "threads_profile", key: "missing-video", reason: "x" }).body, /sync do Drive atrasado/);
     assert.deepEqual(corteAuthorizedDestinations(syncCorteAuthorizationWithContent(dir, AT, { log: () => {} })), ["threads_profile"], "capa ausente não revoga");
   });
 
