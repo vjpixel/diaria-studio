@@ -155,7 +155,7 @@ export const DEFAULT_VIDEO_REMOTE = "gdrive-diaria:";
  * `VIDEO_ARCHIVE_LOCAL_ROOT=/mnt/hd-sata/GoogleDrive/{LEGACY}`. O `／` (largo)
  * é como o rclone grava a `/` do nome "Mentoria Fluxo/VTSD".
  */
-export const LEGACY_VIDEO_FOLDER_REL = "Work/Mentoria Fluxo／VTSD/YouTube";
+export const LEGACY_VIDEO_FOLDER_REL = "Work/Mentoria Fluxo／VTSD/YouTube"; // só histórico/rodada manual (#12578, #12789)
 export const DEFAULT_MOUNT = "/mnt/hd-sata";
 export const BISYNC_TIMER = "diaria-gdrive-bisync.timer";
 export const BISYNC_SERVICE = "diaria-gdrive-bisync.service";
@@ -196,6 +196,13 @@ function positiveNumber(raw: string | undefined, fallback: number, name: string)
 export function defaultConfig(env: NodeJS.ProcessEnv = process.env): ArchiveConfig {
   const mount = env.VIDEO_ARCHIVE_MOUNT ?? DEFAULT_MOUNT;
   const remoteName = env.VIDEO_ARCHIVE_REMOTE ?? DEFAULT_VIDEO_REMOTE;
+  // #12789: espelho e origem andam juntos. Um VIDEO_ARCHIVE_LOCAL_ROOT sobrado (o espelho da pasta antiga) com
+  // a origem default listaria as pastas do espelho antigo e conferiria contra a diaria-studio-video. Recusa.
+  if (env.VIDEO_ARCHIVE_LOCAL_ROOT && !env.VIDEO_ARCHIVE_REMOTE_ROOT) {
+    throw new Error(
+      "VIDEO_ARCHIVE_LOCAL_ROOT (espelho) exige VIDEO_ARCHIVE_REMOTE_ROOT apontando para a mesma pasta no Drive (#12789)",
+    );
+  }
   return {
     mount,
     // #12789: sem espelho por default; vazio também é "sem espelho".

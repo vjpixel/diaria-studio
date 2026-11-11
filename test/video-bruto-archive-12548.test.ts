@@ -950,6 +950,17 @@ describe("defaults sem espelho (#12789)", () => {
     assert.equal(legacy.localRoot, "/mnt/hd-sata/GoogleDrive/Work/x/YouTube");
   });
 
+  it("espelho sem a origem explícita é recusado (env sobrado do espelho antigo não confere contra a pasta nova)", () => {
+    assert.throws(
+      () => defaultConfig({ VIDEO_ARCHIVE_LOCAL_ROOT: "/mnt/hd-sata/GoogleDrive/Work/x/YouTube" }),
+      /VIDEO_ARCHIVE_REMOTE_ROOT/,
+    );
+    assert.throws(
+      () => defaultConfig({ VIDEO_ARCHIVE_REMOTE: "gdrive:", VIDEO_ARCHIVE_LOCAL_ROOT: "/mnt/x" }),
+      /VIDEO_ARCHIVE_REMOTE_ROOT/,
+    );
+  });
+
   it("parseRcloneLsjsonDirs pega só pastas de 1º nível, ordenadas; JSON ilegível lança", () => {
     const text = JSON.stringify([
       { Path: "261109-10", IsDir: true, Size: -1 },
