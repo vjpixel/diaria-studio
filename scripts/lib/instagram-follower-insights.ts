@@ -195,7 +195,11 @@ export type NewFollowersSummary =
  * Com a série bruta completa no período, devolve a soma bruta. Faltando
  * qualquer dia, cai no saldo líquido da Fase 1: `followers_count` no fim do
  * período menos o do dia anterior ao início (amostras da `social-followers.jsonl`,
- * plataforma instagram); `value: null` quando nem isso dá para calcular. @pure
+ * plataforma instagram); `value: null` quando nem isso dá para calcular.
+ * O fallback usa as datas UTC da coleta: suas bordas podem diferir em até
+ * 1 dia das datas do Pacífico na série bruta. Sem instante nas amostras
+ * históricas, não é possível convertê-las com precisão; não deslocar datas
+ * por um offset fixo. Coletas faltantes podem ampliar ainda mais a janela. @pure
  */
 export function summarizeInstagramNewFollowers(
   gross: InstagramFollowsDay[],
@@ -219,6 +223,6 @@ export function summarizeInstagramNewFollowers(
     from,
     to,
     missingDays,
-    note: "saldo líquido (novos − deixaram de seguir), não o bruto: faltam dias na série de insights",
+    note: "saldo líquido (novos − deixaram de seguir), não o bruto: faltam dias na série de insights; datas UTC da coleta, com bordas que podem diferir em até 1 dia dos dias do Pacífico (coletas faltantes podem ampliar a janela)",
   };
 }
