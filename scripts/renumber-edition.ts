@@ -73,6 +73,13 @@
  * `failed` do principal diz que a semanal ficou `created_unverified` e dá o
  * comando que a reagenda se a troca for abandonada.
  *
+ * #12803: semanal `created_unverified` herdada (pode estar agendada no Kit)
+ * passa pelo mesmo desagendamento confirmado que a `scheduled`. Forense já
+ * existente, colisão de nome e `edition-lock` vivo recusam o `--unschedule`
+ * antes de qualquer efeito (exit 2). Na retomada, só o que está agendado no
+ * dia antigo (BRT) é desagendado ou avisado: o agendado para outro dia é a
+ * agenda da pasta nova e fica (`kept`); horário ilegível falha sem tocar.
+ *
  * ## Vídeo (#12713)
  *
  * Origem só com o vídeo (`_internal/video-montagem/` e `diaria-comentada-{de}*`
@@ -115,6 +122,8 @@ import {
   globalStoresRefusal,
   leftOutItems,
   liveEditionLock,
+  localRenumberRefusal,
+  scheduledOnOldDate,
   mergeStepStates,
   scanGlobalStores,
   planRenumber,
@@ -198,11 +207,34 @@ export async function runUnschedule(
     deps.log(`ERRO: ${refusal}`);
     return 2;
   }
+  // #12803 — demais recusas da parte local (forense já existente, colisão de
+  // nome), conferidas antes de qualquer efeito externo, como as de cima.
+  if (!plan.resume) {
+    const localRefusal = localRenumberRefusal(deps.root, plan.fromDir, opts.from, opts.to);
+    if (localRefusal) {
+      deps.log(`ERRO: ${localRefusal} Nada desagendado.`);
+      return 2;
+    }
+  }
   const stateDir = plan.resume ? plan.toDir : plan.fromDir;
+  // #12803 — trava viva de outra sessão (Stage 5/6 rodando nesta edição):
+  // desagendar debaixo dela tira a agenda que ela está montando. Recusa; sem
+  // o `--unschedule` a troca segue só com o aviso de sempre.
+  const lock = liveEditionLock(stateDir, Date.parse(deps.unschedule.nowIso()));
+  if (lock) {
+    deps.log(
+      `ERRO: edition-lock vivo em ${relative(deps.root, stateDir)} (sessão ${lock.session_id}, host ${lock.host || "?"}, Stage ${lock.stage}, ` +
+        `heartbeat ${lock.heartbeat_at}): --unschedule recusado, nada desagendado. Encerrar a outra sessão (ou esperar a trava expirar) e repetir.`,
+    );
+    return 2;
+  }
+  // #12803 — na retomada, a pasta nova pode já ter a agenda da edição NOVA
+  // (Etapa 6 rodada depois da falha): só o que está no dia antigo é desagendado.
+  const onlyOld = (s: { scheduled_at: string | null }) => !plan.resume || scheduledOnOldDate(s.scheduled_at, opts.from);
   // #12721 — o que o `--unschedule` não tira da agenda (Brevo, Buffer/X)
   // continua no aviso, e o `--run-remote` seria recusado sem --ack-scheduled.
   if (opts.runRemote && !opts.ackScheduled) {
-    const manual = detectScheduledSends(stateDir, editionDir(opts.to)).filter((s) => !s.auto_unschedule);
+    const manual = detectScheduledSends(stateDir, editionDir(opts.to)).filter((s) => !s.auto_unschedule && onlyOld(s));
     if (manual.length > 0) {
       for (const s of manual) deps.log(`  ${s.what} @ ${s.scheduled_at ?? "?"} → ${s.reschedule}`);
       deps.log(
@@ -212,11 +244,15 @@ export async function runUnschedule(
       return 2;
     }
   }
-  const outcomes = await unscheduleSends(stateDir, deps.unschedule);
+  const outcomes = await unscheduleSends(stateDir, deps.unschedule, plan.resume ? { onlyScheduledOn: opts.from } : {});
   if (outcomes.length === 0) deps.log("--unschedule: nada agendado.");
   for (const o of outcomes) deps.log(`--unschedule [${o.result}] ${o.what}: ${o.detail}`);
   if (outcomes.some((o) => o.result === "failed")) {
-    deps.log("ERRO: desagendamento incompleto — nada renumerado. Corrigir e repetir o mesmo comando (o que já saiu não é refeito).");
+    deps.log(
+      plan.resume
+        ? "ERRO: desagendamento incompleto — retomada parada antes dos passos remotos. Corrigir e repetir o mesmo comando (o que já saiu não é refeito)."
+        : "ERRO: desagendamento incompleto — nada renumerado. Corrigir e repetir o mesmo comando (o que já saiu não é refeito).",
+    );
     return 1;
   }
   return 0;
@@ -351,7 +387,11 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
   };
 
   // #12662 — envio/post já agendado sai no dia antigo: nenhum passo o move.
-  const scheduled = detectScheduledSends(plan.resume ? plan.toDir : plan.fromDir, newDirRel);
+  // #12803 — na retomada, o que já está agendado para outro dia é a agenda
+  // nova (Etapa 6 na pasta nova), não o envio antigo: fica fora do aviso.
+  const scheduled = detectScheduledSends(plan.resume ? plan.toDir : plan.fromDir, newDirRel).filter(
+    (s) => !plan.resume || scheduledOnOldDate(s.scheduled_at, opts.from),
+  );
   if (scheduled.length > 0) {
     log(`ATENÇÃO: ${scheduled.length} envio(s)/post(s) já AGENDADO(S) com o horário de ${opts.from} — a renumeração não move o horário:`);
     for (const s of scheduled) log(`  ${s.what} @ ${s.scheduled_at ?? "?"} → reagendar: ${s.reschedule}`);
