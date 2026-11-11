@@ -59,6 +59,7 @@ import { parseSections } from "./newsletter-parse.ts";
 export { USE_MELHOR_POST_ID } from "./use-melhor-slide-files.ts";
 import { USE_MELHOR_POST_ID } from "./use-melhor-slide-files.ts";
 import { formatCivilDate, publishDateForEdition, resolveDailyPostTime } from "./social-schedule-rotation.ts";
+import { clearedDailyPostTimes } from "./diaria/vertical-social-clearance.ts";
 
 /** `utm_content` próprio do 4º post — mede separado dos destaques. */
 export const USE_MELHOR_UTM_CONTENT = "usemelhor";
@@ -167,8 +168,11 @@ export function useMelhorPostConfigState(
   const publishDate = edition ? publishDateForEdition(edition, social, dayOffsetOverride) : null;
   if (publishDate) {
     const r = resolveDailyPostTime(social, publishDate, "um");
-    if (r.source === "rotation" && r.time && r.time !== time) {
-      return { enabled: true, time: r.time, baseTime: time, publishDate: formatCivilDate(publishDate) };
+    // #12748: o horário exibido é o do agendamento, já desviado do vertical.
+    const cleared = clearedDailyPostTimes(config, publishDate, edition as string)?.um;
+    const shown = cleared?.shifted && cleared.time ? cleared.time : r.time;
+    if ((r.source === "rotation" || cleared?.shifted) && shown && shown !== time) {
+      return { enabled: true, time: shown, baseTime: time, publishDate: formatCivilDate(publishDate) };
     }
   }
   return { enabled: true, time };
