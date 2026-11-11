@@ -14,9 +14,10 @@
  *
  * `followers_count` do Graph API é um TOTAL, não um evento — o saldo do dia
  * é sempre `hoje − ontem` (ou `hoje − última coleta`, se um dia faltou), e é
- * necessariamente LÍQUIDO (ganhos − perdidos), nunca o bruto (isso é Fase 2,
- * que depende de escopo `instagram_manage_insights`/`read_insights` que o
- * token atual não tem — ver corpo da issue).
+ * necessariamente LÍQUIDO (ganhos − perdidos), nunca o bruto. A Fase 2
+ * (#12348) já coleta os ganhos brutos do Instagram com o escopo de Insights
+ * disponível no token; ver `instagram-follower-insights.ts`. Esta série
+ * continua como fallback quando faltam dias na série bruta.
  *
  * ## Dia faltando não quebra o cálculo, só amplia a janela do saldo
  *
@@ -37,7 +38,7 @@
 export type SocialPlatform = "instagram" | "facebook";
 
 /** 1 linha do JSONL — 1 leitura de `followers_count` de 1 plataforma em 1
- *  dia. `date` é `YYYY-MM-DD` (dia de CALENDÁRIO da coleta, não o instante —
+ *  dia. `date` é `YYYY-MM-DD` (dia UTC da coleta, não o instante —
  *  a task roda 1×/dia, então a granularidade é dia, igual ao resto da
  *  `/ads`). */
 export interface SocialFollowerSample {

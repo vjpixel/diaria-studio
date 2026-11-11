@@ -189,6 +189,19 @@ describe("summarizeInstagramNewFollowers — bruto com fallback no saldo líquid
       [{ date: "2026-11-02", follows: 1 }],
     );
   });
+
+  it("#12785: fallback informa a borda UTC vs Pacífico sem deslocar datas históricas", () => {
+    const s = summarizeInstagramNewFollowers([], [
+      { date: "2026-11-01", platform: "instagram", followersCount: 100 },
+      { date: "2026-11-02", platform: "instagram", followersCount: 105 },
+      { date: "2026-11-03", platform: "instagram", followersCount: 125 },
+    ], "2026-11-02", "2026-11-02");
+    assert.equal(s.source, "net-balance");
+    assert.equal(s.value, 5);
+    if (s.source !== "net-balance") assert.fail("esperado fallback");
+    assert.match(s.note, /UTC.*até 1 dia.*Pacífico/);
+    assert.match(s.note, /coletas faltantes.*ampliar/);
+  });
 });
 
 describe("parseInstagramFollowsJsonl — fail-soft por linha", () => {
