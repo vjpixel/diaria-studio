@@ -132,6 +132,13 @@ import {
   resolveMergeTargets,
 } from "./lib/gh-target-repo.mjs";
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
+import {
+  combineWithD1LockHolders,
+  d1LocksClientForHook,
+  d1ReadLockHolder,
+  mergeGrantConsumedD1Name,
+  mergeLockD1Name,
+} from "./lib/d1-locks.mjs";
 
 // Mesmo valor usado em `session-registry.ts`/`pr-create-review.mjs`/
 // `block-askuserquestion-overnight-autonomous.mjs` — uma rodada
@@ -1613,7 +1620,7 @@ if (
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => {
+  process.stdin.on("end", async () => {
     try {
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
@@ -1732,21 +1739,54 @@ if (
         : null;
       const selfAuthStillValid =
         selfAuth !== null && !scan.degraded && onlyUnreachableCoordinatorsActive(scan);
+      // #12842: o merge lock e a marca de consumo da concessão também vivem
+      // no D1, que exclui ENTRE máquinas (o arquivo de data/sessions/ não,
+      // #6182). Os dois lados entram: o holder do D1 soma ao do arquivo
+      // (`combineWithD1LockHolders`, regras no docblock dela). D1 que não
+      // respondeu fica de fora com rastro no run-log e vale só o arquivo:
+      // falha transitória nunca bloqueia merge (nem libera um que o arquivo
+      // bloquearia).
+      const d1 = d1LocksClientForHook(repoRoot);
+      if (d1.reason) appendHookRunLog(repoRoot, "merge-guard", "warn", "d1_locks_unavailable", { reason: d1.reason });
+      const d1LockHolders = [];
+      let d1GrantConsumed = false;
+      if (d1.client) {
+        const [lockReads, markerRead] = await Promise.all([
+          Promise.all(targetRepos.map((r) => d1ReadLockHolder(d1.client, mergeLockD1Name(r)))),
+          grant !== null ? d1ReadLockHolder(d1.client, mergeGrantConsumedD1Name(grant)) : Promise.resolve(null),
+        ]);
+        for (const r of lockReads) {
+          if (r.ok) d1LockHolders.push(r.value);
+          else appendHookRunLog(repoRoot, "merge-guard", "warn", "d1_lock_read_failed", { error: r.error });
+        }
+        if (markerRead !== null && markerRead.ok) d1GrantConsumed = typeof markerRead.value === "string";
+        else if (markerRead !== null) {
+          appendHookRunLog(repoRoot, "merge-guard", "warn", "d1_grant_marker_read_failed", { error: markerRead.error });
+        }
+      }
+      // Concessão já consumida segundo o D1 (consumo gravado por outra
+      // máquina cujo registro ainda não sincronizou): não vale mais.
+      const liveGrant = d1GrantConsumed ? null : grant;
       const ctx = {
         // #6296: os dois sinais que o guard passou a compor — a janela
         // concedida por uma coordenadora, e quem segura o merge lock agora.
         // #6303 Finding S: `grantPr`/`targetPr` escopam a concessão ao PR
         // real sendo mergeado, em vez de bypassar o guard incondicionalmente.
-        hasLiveGrant: grant !== null,
-        grantPr: grant?.pr,
+        hasLiveGrant: liveGrant !== null,
+        grantPr: liveGrant?.pr,
         // #7303: mesmo tratamento aditivo — auto-autorização é uma 3ª porta
         // de identidade, sujeita à MESMA composição com o merge lock.
         hasSelfAuthorization: selfAuthStillValid,
         selfAuthPr: selfAuthStillValid ? selfAuth?.pr : undefined,
         targetPr,
         // #10618: o lock de CADA repo envolvido; o mais restritivo decide.
-        mergeLockHolder: combineMergeLockHolders(
-          targetRepos.map((r) => readMergeLockHolder(repoRoot, Date.now(), r)),
+        // #12842: o D1 entra por cima do arquivo (`combineWithD1LockHolders`).
+        mergeLockHolder: combineWithD1LockHolders(
+          combineMergeLockHolders(
+            targetRepos.map((r) => readMergeLockHolder(repoRoot, Date.now(), r)),
+            payload.session_id,
+          ),
+          d1LockHolders,
           payload.session_id,
         ),
         // #6303 Finding B: varredura degradada não pode alimentar a
@@ -1760,7 +1800,7 @@ if (
         // #7223 review (achado #7171 parte 2) — ver docblock de
         // `resolveGrantWasConsumed`: só conta quando o PR da concessão
         // consumida bate com o PR sendo mergeado agora.
-        grantWasConsumed: resolveGrantWasConsumed(consumedGrant, targetPr),
+        grantWasConsumed: resolveGrantWasConsumed(d1GrantConsumed ? grant : consumedGrant, targetPr),
         // #7712: `payload.cwd` — nunca o cwd do processo deste hook (ver
         // docblock de `isCallerInLinkedWorktree` pro porquê).
         callerInLinkedWorktree: isCallerInLinkedWorktree(payload.cwd),

@@ -42,7 +42,8 @@ const registrySource = readFileSync(registryPath, "utf8");
  * `requireSessionId` fora de um `case`.
  */
 function extractMainBody(source: string): string {
-  const start = source.indexOf("function main(): void {");
+  // #12842: main() virou `async` (merge-lock-* consultam o D1).
+  const start = source.search(/function main\(\): (?:void|Promise<void>) \{/);
   assert.notEqual(start, -1, "main() não encontrado em session-registry.ts — arquivo mudou de forma inesperada");
   const endMarker = "\nif (isMainModule(import.meta.url)) {";
   const end = source.indexOf(endMarker, start);

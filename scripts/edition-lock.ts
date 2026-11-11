@@ -14,15 +14,26 @@
  * 4 trava vencida de OUTRO host (#11690): data/ possivelmente defasado.
  * Stdout: JSON com `action`/`result` e o detentor.
  */
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { d1LocksClientFromRepo } from "./lib/d1-locks.ts";
 import {
   EDITION_LOCK_TTL_MS,
-  acquireEditionLock,
+  acquireEditionLockShared,
   formatLockAge,
   readEditionLock,
-  releaseEditionLock,
+  releaseEditionLockShared,
 } from "./lib/edition-lock.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** #12842: lock `edition:{AAMMDD}` no D1 (entre máquinas); `null` = só o arquivo. */
+function d1Client() {
+  return d1LocksClientFromRepo(ROOT, process.env, (reason) =>
+    console.error(`⚠️  d1-locks (#12842): D1 configurado mas indisponível (${reason}) — seguindo com a trava LOCAL.`),
+  );
+}
 
 const USAGE =
   "Uso: edition-lock.ts acquire --edition-dir DIR --stage N [--force] [--session-id ID]\n" +
@@ -45,7 +56,7 @@ function requireSession(values: Record<string, string>): string {
   return sid;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const { positional, values, flags } = parseArgs(process.argv.slice(2));
   const sub = positional[0];
   if (!values["edition-dir"]) fail(USAGE, 2);
@@ -60,8 +71,10 @@ function main(): void {
     const sessionId = requireSession(values);
     const stage = Number(values.stage);
     if (!values.stage || !Number.isInteger(stage)) fail(`--stage inválido: ${values.stage ?? "(ausente)"}\n${USAGE}`, 2);
-    const d = acquireEditionLock(editionDir, { sessionId, stage, force });
-    console.log(JSON.stringify(d));
+    const d = await acquireEditionLockShared(editionDir, { sessionId, stage, force }, d1Client());
+    if (d.d1Warning) process.stderr.write(d.d1Warning);
+    const { d1Warning: _w, ...out } = d;
+    console.log(JSON.stringify(out));
     if (d.action === "held_by_other") {
       const prev = d.previous!;
       console.error(
@@ -82,16 +95,18 @@ function main(): void {
     const sessionId = requireSession(values);
     const cs = values["complete-stage"];
     if (cs !== undefined && !Number.isInteger(Number(cs))) fail(`--complete-stage inválido: ${cs}\n${USAGE}`, 2);
-    const result = releaseEditionLock(editionDir, {
-      sessionId,
-      force,
-      completedStage: cs === undefined ? undefined : Number(cs),
-    });
-    console.log(JSON.stringify({ result }));
+    const shared = await releaseEditionLockShared(
+      editionDir,
+      { sessionId, force, completedStage: cs === undefined ? undefined : Number(cs) },
+      d1Client(),
+    );
+    if (shared.d1Warning) process.stderr.write(shared.d1Warning);
+    const result = shared.result;
+    console.log(JSON.stringify({ result, backend: shared.backend }));
     if (result === "held_by_other") process.exit(3);
     return;
   }
   fail(USAGE, 2);
 }
 
-if (isMainModule(import.meta.url)) main();
+if (isMainModule(import.meta.url)) void main();

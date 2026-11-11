@@ -118,6 +118,7 @@ import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { breakStaleLock, isDeletePendingExhausted, tryAcquireOwnedLock } from "./lib/registry-lock.mjs";
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
+import { MERGE_GRANT_CONSUMED_D1_TTL_MS, d1ClaimOnce, d1LocksClientForHook, mergeGrantConsumedD1Name } from "./lib/d1-locks.mjs";
 import { execFileSync } from "node:child_process";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 import { extractGhPrMergeTargetPr, isGhPrMergeCommand } from "./lib/gh-pr-merge-command.mjs";
@@ -653,7 +654,7 @@ if (
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => {
+  process.stdin.on("end", async () => {
     try {
       const payload = JSON.parse(data || "{}");
       const sessionId = payload.session_id;
@@ -696,11 +697,29 @@ if (
       });
       if (!decision.consume) return;
       const targetPr = decision.targetPr;
+      // #12842: identidade da concessão lida ANTES de consumir, para a marca
+      // de uso único no D1 (abaixo).
+      const grantToMark = findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, targetPr, targetRepo)?.grant ?? null;
       // #6952: sob o lock compartilhado, relendo fresco lá dentro — nunca o
       // read-modify-write solto que apagava a escrita concorrente do beacon.
       consumeGrantUnderLock(repoRoot, sessionId, new Date().toISOString(), CAS_ATTEMPTS, LOCK_TIMEOUT_MS, targetPr, {
         repo: targetRepo,
       });
+      // #12842: marca de consumo no D1, visível a toda máquina sem esperar o
+      // sync de data/sessions/. O guard (`block-gh-pr-merge-subagent.mjs`)
+      // trata a concessão marcada como consumida. Best-effort: D1 fora do ar
+      // só deixa rastro; o consumo local acima continua valendo.
+      if (grantToMark) {
+        const d1 = d1LocksClientForHook(repoRoot);
+        if (d1.client) {
+          const r = await d1ClaimOnce(d1.client, mergeGrantConsumedD1Name(grantToMark), sessionId, MERGE_GRANT_CONSUMED_D1_TTL_MS);
+          if (!r.ok) {
+            appendHookRunLog(repoRoot, "consume-merge-grant", "warn", "d1_grant_marker_write_failed", { error: r.error });
+          }
+        } else if (d1.reason) {
+          appendHookRunLog(repoRoot, "consume-merge-grant", "warn", "d1_locks_unavailable", { reason: d1.reason });
+        }
+      }
       // Nunca emitir saída — PostToolUse aqui é side-effect puro, nunca decisão.
     } catch {
       // Fail-open total — ver "FAIL-OPEN TOTAL" no topo do arquivo.
