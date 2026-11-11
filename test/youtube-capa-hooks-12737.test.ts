@@ -149,13 +149,13 @@ test("CLI ponta a ponta: sugere a partir do 02-reviewed.md e grava o registro", 
   );
   const cands = join(dir, "cands-12737.txt");
   writeFileSync(cands, "Ensinaram a IA e foram demitidos\nIA demitiu?\n");
-  const out = execFileSync("npx", ["tsx", "scripts/suggest-capa-hooks.ts", "--edition-dir", dir, "--candidates-file", cands, "--json"], { encoding: "utf8" });
+  const out = execFileSync(process.execPath, ["--import", "tsx", "scripts/suggest-capa-hooks.ts", "--edition-dir", dir, "--candidates-file", cands, "--json"], { encoding: "utf8" });
   const parsed = JSON.parse(out) as { d1: { title: string }; suggestions: Array<{ hook: string; horizontal_hook: string | null }> };
   assert.equal(parsed.d1.title, "Nubank demite time antifraude e põe IA no lugar");
   assert.equal(parsed.suggestions[0].hook, "Ensinaram a IA e foram demitidos");
   assert.equal(parsed.suggestions[0].horizontal_hook, "Ensinaram a IA|e foram demitidos");
 
-  execFileSync("npx", ["tsx", "scripts/suggest-capa-hooks.ts", "--edition-dir", dir, "--record", "Ensinaram a IA|e foram demitidos", "--format", "horizontal"], { encoding: "utf8" });
+  execFileSync(process.execPath, ["--import", "tsx", "scripts/suggest-capa-hooks.ts", "--edition-dir", dir, "--record", "Ensinaram a IA|e foram demitidos", "--format", "horizontal"], { encoding: "utf8" });
   const rec = JSON.parse(readFileSync(join(dir, CAPA_HOOKS_RECORD_FILE), "utf8")) as { entries: Array<{ format: string; hook: string }> };
   assert.deepEqual(rec.entries.map((e) => e.hook), ["Ensinaram a IA|e foram demitidos"]);
 });
