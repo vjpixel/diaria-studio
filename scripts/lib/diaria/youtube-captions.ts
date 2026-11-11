@@ -185,3 +185,66 @@ export function describeCaptionOutcome(c: CaptionUploadResult, aammdd: string): 
   return `[aviso] legenda NÃO enviada: ${c.error}. Tente \`${retry}\` ou envie pelo Studio (Legendas → Enviar arquivo). O vídeo segue sem ela.`;
 }
 
+
+/** Uma faixa de legenda do vídeo, como o `captions.list` devolve (só o que a conferência usa). */
+export interface CaptionTrack {
+  id: string;
+  language: string;
+  name: string;
+  trackKind: string;
+  isDraft: boolean;
+  lastUpdated: string | null;
+}
+
+export const YOUTUBE_CAPTIONS_LIST_ENDPOINT = "https://www.googleapis.com/youtube/v3/captions";
+
+/**
+ * `captions.list` (#12429): as faixas do vídeo, para conferir o backfill
+ * (a pt-BR `standard` enviada, além da `asr` automática). Só leitura; 50
+ * unidades de quota; exige o escopo `youtube.force-ssl` (o 403 de escopo vira
+ * `CaptionScopeError`). Faixa sem id é descartada.
+ */
+export async function listCaptions(deps: YouTubeUploadDeps, token: string, videoId: string): Promise<CaptionTrack[]> {
+  const url = `${YOUTUBE_CAPTIONS_LIST_ENDPOINT}?part=snippet&videoId=${encodeURIComponent(videoId)}`;
+  const res = await deps.fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    let text = "";
+    try {
+      text = (await res.text()).slice(0, 300);
+    } catch {
+      // corpo ilegível: segue só com o status
+    }
+    if (isCaptionScopeError(res.status, text)) throw new CaptionScopeError();
+    throw new Error(`captions.list respondeu ${res.status}: ${text}`);
+  }
+  const json = (await res.json()) as { items?: Array<{ id?: unknown; snippet?: Record<string, unknown> }> } | null;
+  return (json?.items ?? []).flatMap((it) => {
+    if (typeof it.id !== "string" || !it.id) return [];
+    const sn = it.snippet ?? {};
+    return [{
+      id: it.id,
+      language: typeof sn.language === "string" ? sn.language : "",
+      name: typeof sn.name === "string" ? sn.name : "",
+      trackKind: typeof sn.trackKind === "string" ? sn.trackKind : "",
+      isDraft: sn.isDraft === true,
+      lastUpdated: typeof sn.lastUpdated === "string" ? sn.lastUpdated : null,
+    }];
+  });
+}
+
+/**
+ * A faixa pt-BR enviada pelo script está no vídeo? (#12429) `captionId` do
+ * registro presente = ok; sem registro, qualquer faixa `standard` pt-BR
+ * publicada conta. Puro.
+ */
+export function captionBackfillStatus(tracks: CaptionTrack[], recordedCaptionId: string | null): { ok: boolean; line: string } {
+  const pt = tracks.filter((t) => t.language.toLowerCase() === YOUTUBE_CAPTION_LANGUAGE.toLowerCase() && t.trackKind.toLowerCase() !== "asr");
+  if (recordedCaptionId) {
+    const hit = tracks.find((t) => t.id === recordedCaptionId);
+    if (hit) return { ok: !hit.isDraft, line: `${hit.isDraft ? "[aviso] faixa registrada em rascunho" : "[ok] faixa registrada no vídeo"}: ${hit.id} (${hit.language}, ${hit.trackKind}, ${hit.lastUpdated ?? "sem data"})` };
+    return { ok: false, line: `[erro] captionId ${recordedCaptionId} do registro não está no vídeo (faixas: ${tracks.map((t) => `${t.id} ${t.language}/${t.trackKind}`).join(", ") || "nenhuma"})` };
+  }
+  const live = pt.filter((t) => !t.isDraft);
+  if (live.length) return { ok: true, line: `[ok] faixa pt-BR publicada: ${live.map((t) => `${t.id} (${t.lastUpdated ?? "sem data"})`).join(", ")} (sem captionId no registro)` };
+  return { ok: false, line: `[erro] nenhuma faixa pt-BR publicada além da automática (faixas: ${tracks.map((t) => `${t.id} ${t.language}/${t.trackKind}`).join(", ") || "nenhuma"})` };
+}
