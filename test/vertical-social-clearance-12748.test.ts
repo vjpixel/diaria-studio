@@ -217,4 +217,50 @@ describe("tabela de horários com o vertical (#12748)", () => {
     assert.ok(table.warnings.some((w) => /^Facebook: D1 11:00/.test(w)));
     assert.ok(!table.warnings.some((w) => /^Threads:/.test(w)));
   });
+
+  it("review #12764: entrada auxiliar (subtype) não ocupa a célula do post principal", () => {
+    const table = buildScheduleTable({
+      aammdd: "261111",
+      config: REAL_CONFIG,
+      social: {
+        posts: [
+          { platform: "linkedin", destaque: "d1", subtype: "comment_diaria", status: "scheduled", scheduled_at: "2026-11-11T10:05:00-03:00" },
+          { platform: "linkedin", destaque: "d1", subtype: "main", status: "scheduled", scheduled_at: "2026-11-11T10:00:00-03:00" },
+          { platform: "facebook", destaque: "d1", subtype: "post_pixel", status: "scheduled", scheduled_at: "2026-11-11T11:30:00-03:00" },
+        ],
+      },
+      shorts: null,
+    });
+    assert.equal(table.rows.find((r) => r.label === "LinkedIn")?.cells.d1.text, "10:00");
+    assert.equal(table.rows.find((r) => r.label === "Facebook")?.cells.d1.text, "—");
+    assert.ok(!table.warnings.some((w) => /^Facebook: D1/.test(w)), JSON.stringify(table.warnings));
+  });
+
+  it("review #12764: destino do vertical sem status vivo não vence o previsto", () => {
+    const table = buildScheduleTable({
+      aammdd: "261111",
+      config: REAL_CONFIG,
+      social: null,
+      shorts: { aammdd: "261111", entries: [{ destination: "x", status: "failed", id: "b1", at: "2026-11-11T13:00:00Z" }] },
+    });
+    assert.equal(table.rows.find((r) => r.label === "X")?.cells.vertical.text, "12:00 (previsto)");
+  });
+
+  it("review #12764: o 4º post do perfil pessoal do LinkedIn entra no espaçamento e no relato", () => {
+    const table = buildScheduleTable({
+      aammdd: "261111",
+      config: REAL_CONFIG,
+      social: null,
+      shorts: null,
+      linkedinPersonal: { status: "armed", scheduled_at: "2026-11-11T11:00:00-03:00" },
+    });
+    const md = renderScheduleTableMarkdown(table);
+    assert.match(md, /^LinkedIn \(perfil pessoal\): 4º post 11:00$/m);
+    assert.ok(
+      table.warnings.some((w) => /^LinkedIn \(perfil pessoal\): Vertical 12:00 e 4º post 11:00 BRT a 60 min/.test(w)),
+      JSON.stringify(table.warnings),
+    );
+    const failed = buildScheduleTable({ aammdd: "261111", config: REAL_CONFIG, social: null, shorts: null, linkedinPersonal: { status: "failed", scheduled_at: "2026-11-11T11:00:00-03:00" } });
+    assert.ok(!failed.warnings.some((w) => /4º post/.test(w)));
+  });
 });

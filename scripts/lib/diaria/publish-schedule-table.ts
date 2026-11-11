@@ -15,12 +15,19 @@
  * Parte B, sai `Parte B`. Rede sem post daquele tipo: `—`.
  *
  * Também acusa, por conta, os pares a menos de 2 h (espaçamento mínimo do
- * #10819), contando o vertical.
+ * #10819), contando o vertical e o 4º post do perfil pessoal do LinkedIn
+ * (`_internal/06-linkedin-personal.json`, #9568), que não tem coluna própria e
+ * sai numa linha abaixo da tabela.
+ *
+ * Só a entrada principal de cada post social preenche a célula (`subtype`
+ * ausente ou `main`): comentário e post auxiliar do mesmo destaque têm horário
+ * próprio e não são o post da grade. No vertical, só destino com status vivo
+ * conta.
  *
  * Puro: sem I/O.
  */
 
-import { DEFAULT_MIN_GAP_MINUTES, socialAccountKey } from "../social-slot-planner.ts";
+import { DEFAULT_MIN_GAP_MINUTES, gridFromLinkedInPersonalIntent, socialAccountKey } from "../social-slot-planner.ts";
 import { ROTATION_POST_TYPES, type RotationPostType } from "../social-schedule-rotation.ts";
 import { verticalDestinationTimes } from "./vertical-social-clearance.ts";
 import { loadShortsConfig } from "./short-video.ts";
@@ -40,6 +47,8 @@ export interface ScheduleRow {
   label: string;
   account: string;
   cells: Record<ScheduleColumn, ScheduleCell>;
+  /** Posts da conta fora das colunas (o 4º post do perfil pessoal do LinkedIn, #9568). */
+  extras?: Array<{ label: string; at: number }>;
 }
 
 export interface ScheduleTable {
@@ -121,6 +130,8 @@ export function buildScheduleTable(input: {
   social: unknown;
   /** Conteúdo de `_internal/06-shorts-published.json` (ou `null`). */
   shorts: unknown;
+  /** Conteúdo de `_internal/06-linkedin-personal.json` (ou `null`/ausente). */
+  linkedinPersonal?: unknown;
   minGapMinutes?: number;
 }): ScheduleTable {
   const gap = (input.minGapMinutes ?? DEFAULT_MIN_GAP_MINUTES) * 60_000;
@@ -140,6 +151,7 @@ export function buildScheduleTable(input: {
     if (typeof p?.platform !== "string" || typeof p.destaque !== "string") continue;
     const col = p.destaque as ScheduleColumn;
     if (!(ROTATION_POST_TYPES as readonly string[]).includes(col)) continue;
+    if (p.subtype !== undefined && p.subtype !== null && p.subtype !== "main") continue;
     const r = row(socialAccountKey(p.platform, typeof p.page === "string" ? p.page : null));
     const iso = isoOf(p);
     if (typeof p.status === "string" && LIVE.has(p.status) && iso) {
@@ -154,6 +166,7 @@ export function buildScheduleTable(input: {
   const recorded = new Map<string, number>();
   for (const e of Array.isArray(entries) ? (entries as Array<Record<string, unknown>>) : []) {
     if (typeof e?.destination !== "string") continue;
+    if (typeof e.status !== "string" || !LIVE.has(e.status)) continue;
     const iso = isoOf(e);
     if (iso) recorded.set(e.destination, Date.parse(iso));
   }
@@ -167,6 +180,11 @@ export function buildScheduleTable(input: {
     } else r.cells.vertical = { text: "Parte B", at: null };
   }
 
+  for (const slot of gridFromLinkedInPersonalIntent(input.linkedinPersonal ?? null)) {
+    const r = row(slot.account);
+    (r.extras ??= []).push({ label: "4º post", at: Date.parse(slot.at) });
+  }
+
   const ordered = [...rows.values()].sort((a, b) => {
     const ia = ROW_ORDER.indexOf(a.account);
     const ib = ROW_ORDER.indexOf(b.account);
@@ -175,13 +193,16 @@ export function buildScheduleTable(input: {
 
   const warnings: string[] = [];
   for (const r of ordered) {
-    const timed = COLUMNS.filter((c) => r.cells[c].at !== null).map((c) => ({ c, at: r.cells[c].at as number }));
+    const timed = [
+      ...COLUMNS.filter((c) => r.cells[c].at !== null).map((c) => ({ name: COLUMN_LABEL[c], at: r.cells[c].at as number })),
+      ...(r.extras ?? []).map((x) => ({ name: x.label, at: x.at })),
+    ];
     for (let i = 0; i < timed.length; i++) {
       for (let j = i + 1; j < timed.length; j++) {
         const diff = Math.abs(timed[i].at - timed[j].at);
         if (diff < gap) {
           warnings.push(
-            `${r.label}: ${COLUMN_LABEL[timed[i].c]} ${brtHHMM(timed[i].at)} e ${COLUMN_LABEL[timed[j].c]} ${brtHHMM(timed[j].at)} BRT ` +
+            `${r.label}: ${timed[i].name} ${brtHHMM(timed[i].at)} e ${timed[j].name} ${brtHHMM(timed[j].at)} BRT ` +
               `a ${Math.round(diff / 60_000)} min (mínimo ${gap / 60_000} min, #10819)`,
           );
         }
@@ -197,6 +218,8 @@ export function renderScheduleTableMarkdown(table: ScheduleTable): string {
   const sep = `|---|${COLUMNS.map(() => "---").join("|")}|`;
   const body = table.rows.map((r) => `| ${r.label} | ${COLUMNS.map((c) => r.cells[c].text).join(" | ")} |`);
   const lines = [head, sep, ...body];
+  const extras = table.rows.flatMap((r) => (r.extras ?? []).map((x) => `${r.label}: ${x.label} ${brtHHMM(x.at)}`));
+  if (extras.length) lines.push("", ...extras);
   if (table.warnings.length) {
     lines.push("", ...table.warnings.map((w) => `Aviso: ${w}`));
   }

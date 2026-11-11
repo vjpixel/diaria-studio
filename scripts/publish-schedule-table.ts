@@ -3,7 +3,8 @@
  *
  * Imprime a tabela de horários da edição (Rede × Use Melhor/D1/D2/D3/Vertical)
  * que fecha o relato do `/diaria-publica`, com os avisos de espaçamento por
- * conta (2 h, #10819) contando o vertical. Só lê; não agenda nada.
+ * conta (2 h, #10819) contando o vertical e o 4º post do perfil pessoal do
+ * LinkedIn (`06-linkedin-personal.json`, #9568). Só lê; não agenda nada.
  *
  * Uso:
  *   npx tsx scripts/publish-schedule-table.ts {AAMMDD} [--edition-dir DIR] [--json]
@@ -44,6 +45,7 @@ function main(): void {
       config,
       social: readJsonIfPresent(dir, "06-social-published.json"),
       shorts: readJsonIfPresent(dir, "06-shorts-published.json"),
+      linkedinPersonal: readJsonIfPresent(dir, "06-linkedin-personal.json"),
     });
     if (argv.includes("--json")) process.stdout.write(JSON.stringify(table, null, 2) + "\n");
     else process.stdout.write(renderScheduleTableMarkdown(table) + "\n");
