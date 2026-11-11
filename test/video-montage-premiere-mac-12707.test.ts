@@ -26,8 +26,8 @@ import {
 } from "../scripts/lib/diaria/video-montage.ts";
 import { DEFAULT_DRIVE_ROOT, premierePathsLine, xmlVersionHashOf, type XmlBuildOptions } from "../scripts/video-montagem.ts";
 
-const NEO = "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube";
-const MAC = "/Users/pixel/Library/CloudStorage/GoogleDrive-conta@gmail.com/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube";
+const NEO = "I:/Meu Drive/diaria-studio-video";
+const MAC = "/Users/pixel/Library/CloudStorage/GoogleDrive-conta@gmail.com/Meu Drive/diaria-studio-video";
 const MAP: PremierePathMap = { from: NEO, to: MAC };
 
 const SOURCE: SourceInfo = { path: `${NEO}/261111/bruto.mov`, fps: 30, durationS: 600, width: 3840, height: 2160, mirrored: false };
@@ -75,10 +75,10 @@ function pathUrls(xml: string): Map<string, string> {
   return out;
 }
 
-const MAC_URL = "file://localhost/Users/pixel/Library/CloudStorage/GoogleDrive-conta%40gmail.com/Meu%20Drive/Work/Mentoria%20Fluxo%20VTSD/YouTube";
+const MAC_URL = "file://localhost/Users/pixel/Library/CloudStorage/GoogleDrive-conta%40gmail.com/Meu%20Drive/diaria-studio-video";
 
 describe("#12707: pathurl do XML com a raiz do Premiere do Mac", () => {
-  it("com o mapa, os 5 arquivos (bruto, áudio, título, vinheta, card) apontam para o Mac, nenhum para G:", () => {
+  it("com o mapa, os 5 arquivos (bruto, áudio, título, vinheta, card) apontam para o Mac, nenhum para I: (raiz do Neo)", () => {
     const urls = pathUrls(build(MAP));
     assert.deepEqual(Object.fromEntries(urls), {
       "bruto.mov": `${MAC_URL}/261111/bruto.mov`,
@@ -87,7 +87,7 @@ describe("#12707: pathurl do XML com a raiz do Premiere do Mac", () => {
       "vinheta-logo-diaria.mov": `${MAC_URL}/_marca/vinheta-logo-diaria.mov`,
       "261111_cta_card_vertical-20cb692b63c11a25.mp4": `${MAC_URL}/261111/261111_cta_card_vertical-20cb692b63c11a25.mp4`,
     });
-    assert.doesNotMatch(build(MAP), /G:/);
+    assert.doesNotMatch(build(MAP), /I:/);
   });
 
   it("título e card usam o mesmo tradutor do bruto: mesma pasta no Mac que o bruto", () => {
@@ -100,15 +100,15 @@ describe("#12707: pathurl do XML com a raiz do Premiere do Mac", () => {
 
   it("sem mapa, o XML é o de antes (raiz do Neo, o formato que o Premiere do Windows importou)", () => {
     const urls = pathUrls(build(null));
-    assert.equal(urls.get("261111_titulo_vertical-b522b4fd3b258a9b.png"), "file://localhost/G:/Meu%20Drive/Work/Mentoria%20Fluxo%20VTSD/YouTube/261111/261111_titulo_vertical-b522b4fd3b258a9b.png");
-    assert.equal(urls.get("261111_cta_card_vertical-20cb692b63c11a25.mp4"), "file://localhost/G:/Meu%20Drive/Work/Mentoria%20Fluxo%20VTSD/YouTube/261111/261111_cta_card_vertical-20cb692b63c11a25.mp4");
+    assert.equal(urls.get("261111_titulo_vertical-b522b4fd3b258a9b.png"), "file://localhost/I:/Meu%20Drive/diaria-studio-video/261111/261111_titulo_vertical-b522b4fd3b258a9b.png");
+    assert.equal(urls.get("261111_cta_card_vertical-20cb692b63c11a25.mp4"), "file://localhost/I:/Meu%20Drive/diaria-studio-video/261111/261111_cta_card_vertical-20cb692b63c11a25.mp4");
     assert.equal(build(undefined), build(null));
   });
 });
 
 describe("#12707: premierePath", () => {
   it("troca só a raiz, sem caixa na letra do drive e com barra invertida", () => {
-    assert.equal(premierePath("g:\\Meu Drive\\Work\\Mentoria Fluxo VTSD\\YouTube\\261111\\x.png", MAP), `${MAC}/261111/x.png`);
+    assert.equal(premierePath("i:\\Meu Drive\\diaria-studio-video\\261111\\x.png", MAP), `${MAC}/261111/x.png`);
     assert.equal(premierePath(NEO, MAP), MAC);
     assert.equal(premierePath(`${NEO}/a.mov`, { from: `${NEO}/`, to: `${MAC}/` }), `${MAC}/a.mov`);
   });

@@ -383,7 +383,7 @@ describe("#11641 pathurl do XML aponta o bruto no Neo", () => {
     const plan = buildSequencePlan({ ...yt, order: ["comentario"] }, blocks, [], { fps: 30, durationS: 60 });
     const source: SourceInfo = { path: drive.localPath, fps: 30, durationS: 60, width: 3840, height: 2160, mirrored: true };
     const xml = buildXmeml([plan], source, { faceX: 0.5, eyeY: 0.5 }, { mediaPath: xmlMediaPath(source.path, { edition: "261030", drive }).path });
-    assert.match(xml, /<pathurl>file:\/\/localhost\/G:\/Meu%20Drive\/Work\/Mentoria%20Fluxo%20VTSD\/YouTube\/261030\/20261029_093444\.mp4<\/pathurl>/);
+    assert.match(xml, /<pathurl>file:\/\/localhost\/I:\/Meu%20Drive\/diaria-studio-video\/261030\/20261029_093444\.mp4<\/pathurl>/);
     assert.match(xml, /<name>20261029_093444\.mp4<\/name>/);
     assert.ok(!xml.includes(".cache"), "o caminho do cache local não pode ir para o XML");
     // Sem mediaPath, o de sempre: o caminho de leitura (o Neo lê de G:).

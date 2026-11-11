@@ -72,7 +72,7 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  *
  * Seleção: `scripts/lib/diaria/drive-video-source.ts` (critério do editor de
  * 25/10/2026). Pasta: `--folder-id` ou `platform.config.json` →
- * `publishing.youtube.drive_folder_id` (`Mentoria Fluxo/VTSD/YouTube`). A
+ * `publishing.youtube.drive_folder_id` (`diaria-studio-video`, conta diaria.editor, #12578). A
  * pasta é conferida antes (`GET files/{id}`): inacessível pela conta OAuth do
  * projeto, ou não-pasta, é exit 1, nunca `none`. Lista a raiz e a subpasta
  * `{AAMMDD}/`, nunca as subpastas de outras edições. Subpasta presente → só ela

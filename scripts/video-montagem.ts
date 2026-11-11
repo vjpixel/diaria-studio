@@ -164,9 +164,9 @@
  *
  * Opções comuns:
  *   --drive-root DIR   pasta YouTube local do Drive (default: env DIARIA_VIDEO_DRIVE_ROOT ou
- *                      "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube"); a edição é {DIR}/{AAMMDD}/
- *   --premiere-root DIR  (build) a mesma pasta YouTube como o Mac que abre o XML a vê
- *                      (/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu Drive/…/YouTube):
+ *                      "I:/Meu Drive/diaria-studio-video", #12578); a edição é {DIR}/{AAMMDD}/
+ *   --premiere-root DIR  (build) a mesma pasta de vídeo como o Mac que abre o XML a vê
+ *                      (/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu Drive/diaria-studio-video):
  *                      todo pathurl (bruto, áudio tratado, PNG do título, vinheta, card de CTA)
  *                      troca a raiz do Neo por ela (#12707). Default: publishing.video.premiere_root
  *                      do config; sem ele, a raiz do Neo (G:). "off" ignora o config.
@@ -2755,7 +2755,7 @@ function readD1Title(edition: string): string | null {
 /** Relato da raiz dos `pathurl` do XML (#12707): Neo ou Mac, e o que ficou fora da tradução. */
 export function premierePathsLine(map: PremierePathMap | undefined, unmapped: readonly string[]): string {
   if (!map) {
-    return "[premissa] pathurl do XML com a raiz do Neo (G:): abre vinculado no Premiere do Windows; para o Mac, publishing.video.premiere_root no config ou --premiere-root /Users/…/YouTube (#12707)";
+    return "[premissa] pathurl do XML com a raiz do Neo (I:): abre vinculado no Premiere do Windows; para o Mac, publishing.video.premiere_root no config ou --premiere-root /Users/…/diaria-studio-video (#12707)";
   }
   const base = `[premissa] pathurl do XML com a raiz ${map.to} no lugar de ${map.from} (bruto, áudio, título, vinheta e card de CTA); conferir no 1º import no Mac (#12707)`;
   return unmapped.length ? `${base}\n[aviso] fora de ${map.from}, com o caminho de origem no XML (devem chegar offline no Mac): ${unmapped.join(", ")} (#12707)` : base;

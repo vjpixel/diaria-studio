@@ -1,7 +1,7 @@
 /**
  * video-montage-drive.ts (#11639, #11640, #11641) — a montagem do vídeo fora do
- * Neo: sem o Drive for desktop (`G:`), a pasta da edição
- * (`Mentoria Fluxo VTSD/YouTube/{AAMMDD}/`) é lida e escrita pela API do Drive.
+ * Neo: sem o Drive for desktop (`I:`, conta diaria.editor, #12578), a pasta da
+ * edição (`diaria-studio-video/{AAMMDD}/`) é lida e escrita pela API do Drive.
  *
  * - #11639: o bruto (e o áudio separado do `--from-audio`, e o export do
  *   `review-final`) é baixado para um cache em DISCO (`~/.cache/...`, nunca o
@@ -11,7 +11,7 @@
  *   `{arquivo}.drive.json`), nunca só pelo nome.
  * - #11640: os arquivos que o comando gravou no out dir sobem para a pasta da
  *   edição (nunca `Final/`), atualizando pelo id o arquivo de mesmo nome.
- * - #11641: o XML grava o caminho do bruto no NEO (`G:/Meu Drive/...`), não o
+ * - #11641: o XML grava o caminho do bruto no NEO (`I:/Meu Drive/...`), não o
  *   do cache local, para o Premiere abrir com a mídia online.
  *
  * Funções puras (testadas) + IO com `driveFetch` injetável. Auth em produção:
@@ -30,8 +30,15 @@ import { pickRawSource } from "./video-montage.ts";
 
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
-/** A pasta YouTube do Drive no Neo (Drive for desktop). Fonte única, reexportada pelo `video-montagem.ts`. */
-export const DEFAULT_DRIVE_ROOT = "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube";
+/**
+ * A pasta de vídeo da diária no Neo: `diaria-studio-video`, da conta
+ * diaria.editor, que o Drive for desktop monta em `I:` (#12578; até a virada
+ * era `G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube`, da vjpixel). Fonte única,
+ * reexportada pelo `video-montagem.ts`. A letra vem da ordem em que as contas
+ * entraram no Drive for desktop: se mudar, trocar aqui e em
+ * `publishing.video.vinheta_logo.path`.
+ */
+export const DEFAULT_DRIVE_ROOT = "I:/Meu Drive/diaria-studio-video";
 
 export interface MontageDriveDeps {
   /** Chamada autenticada COM retry de transientes (`gFetchRetry`): listagem, metadado, download, sessão de upload. */
