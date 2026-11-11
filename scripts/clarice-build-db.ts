@@ -289,7 +289,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   if (!existsSync(dataDir)) {
     console.error(`❌ data-dir não existe: ${dataDir}`);
     console.error(
-      "   (data/ mora no OneDrive como junction — ver CLAUDE.md setup)",
+      "   (data/ é um link para o Google Drive da diaria.editor — ver docs/setup.md, passo 2b)",
     );
     process.exit(1);
   }
