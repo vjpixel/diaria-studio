@@ -390,6 +390,27 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#11353",
   },
   {
+    name: "Diaria-Agendamentos-Tick",
+    description:
+      "consumidor do banco de agendamentos (data/agendamentos/banco.json): item vencido sem publicação ou falho vira issue de alarme; não publica (#12774)",
+    steps: [{ key: "tick", script: "scripts/agendamentos-tick.ts" }],
+    logPath: "agendamentos/.tick.log",
+    // De hora em hora (minuto 0): o alvo dos itens é hora cheia BRT (vertical 2
+    // às 12:00, D+7) e o achado sai depois de `alvo + 60 min`, então o alarme
+    // chega na 2ª execução depois do horário. Só LÊ o banco — nunca grava
+    // (o arquivo vem pelo OneDrive; quem grava são as sessões, pelo CLI
+    // `scripts/agendamentos.ts`). Banco ausente = nada agendado, sem achado.
+    // Sem `enabled: false`: o `Diaria-Remediate-Never-Armed-Tasks` (#8153)
+    // arma no 300 depois do merge.
+    schedule: { kind: "interval", hours: 1 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem avaliar (banco ausente nao e prova de nada agendado).",
+    },
+    issue: "#12774",
+  },
+  {
     name: "Diaria-Continuo-Ratelimit-Watchdog",
     description:
       "roda hermes/scripts/pause-cron-on-ratelimit.py de hora em hora: pausa o contínuo em 403 Key limit exceeded e o retoma logo depois da virada UTC, sem esperar o watch diário (#10070)",
