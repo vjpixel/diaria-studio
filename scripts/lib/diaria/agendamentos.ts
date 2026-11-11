@@ -77,7 +77,7 @@ export interface AgendamentoItem {
   edicao: string;
   /** Peça (slug), ex.: `vertical-2`. */
   peca: string;
-  /** Destinos (slugs dos publicadores), ex.: `youtube_shorts`, `instagram`. */
+  /** Destinos (ids do `publish-shorts.ts`), ex.: `youtube_shorts`, `instagram`, `facebook:diaria`. */
   destinos: string[];
   /** Instante alvo, ISO com offset. */
   alvo: string;
@@ -104,6 +104,8 @@ export function emptyBanco(): AgendamentosBanco {
 
 const AAMMDD_RE = /^\d{6}$/;
 const SLUG_RE = /^[a-z0-9][a-z0-9_-]*$/;
+/** Destino: slug, ou `tipo:slug` como os ids do `publish-shorts.ts` (`facebook:diaria`, #12774). */
+const DESTINO_RE = /^[a-z0-9][a-z0-9_-]*(?::[a-z0-9][a-z0-9_-]*)?$/;
 
 function isIsoInstant(s: unknown): s is string {
   return typeof s === "string" && /^\d{4}-\d{2}-\d{2}T/.test(s) && !Number.isNaN(Date.parse(s));
@@ -123,9 +125,9 @@ export function validateItem(raw: unknown, where = "item"): AgendamentoItem {
   if (
     !Array.isArray(it.destinos) ||
     it.destinos.length === 0 ||
-    !it.destinos.every((d) => typeof d === "string" && SLUG_RE.test(d))
+    !it.destinos.every((d) => typeof d === "string" && DESTINO_RE.test(d))
   ) {
-    throw new Error(`${where}.destinos: lista não vazia de slugs`);
+    throw new Error(`${where}.destinos: lista não vazia de slugs (ou tipo:slug)`);
   }
   if (!isIsoInstant(it.alvo)) throw new Error(`${where}.alvo: instante ISO inválido`);
   if (typeof it.dono !== "string" || !it.dono.trim()) throw new Error(`${where}.dono: vazio`);
