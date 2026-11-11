@@ -39,9 +39,11 @@
  *
  * **#12081 — vídeo da semana.** Antes do render, a CLI mede na YouTube Data
  * API o horizontal do D1 mais visto entre as edições da semana e grava em
- * `ln-selection.json` (`video`); o artigo ganha uma linha com o link antes do
- * fecho. Só mede quando o campo ainda não existe (re-render reusa; o editor
- * pode editar ou apagar). Sem credencial/erro: `video: null`, sem a linha.
+ * `ln-selection.json` (`video`); o artigo ganha a seção "Vídeo da semana"
+ * logo depois da manchete que o vídeo comenta (#12777, era uma linha antes do
+ * fecho) e a CLI copia a imagem dele (`VIDEO_IMAGE_FILENAME`). Só mede
+ * quando o campo ainda não existe (re-render reusa; o editor pode editar ou
+ * apagar). Sem credencial/erro: `video: null`, sem a seção.
  *
  * Escreve:
  *   data/weekly/{cycle}/ln-{cycle}.html   — fragmento HTML colável (sem
@@ -53,6 +55,9 @@
  *   data/weekly/{cycle}/04-d1-2x1.jpg     — imagem de capa (#5536), se a
  *                                            edição de origem da manchete #1
  *                                            ainda tiver o arquivo
+ *   data/weekly/{cycle}/video-04-d1-2x1.jpg — imagem da seção do vídeo
+ *                                            (#12777), da edição do vídeo,
+ *                                            se houver vídeo e o arquivo
  *
  * Uso:
  *   npx tsx scripts/render-linkedin-weekly.ts --cycle 26w31 \
@@ -77,6 +82,15 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Nome do arquivo de imagem de capa (2:1) — mesmo nome no destino e na origem (#5536). */
 export const COVER_IMAGE_FILENAME = "04-d1-2x1.jpg";
+
+/**
+ * #12777: cópia da `04-d1-2x1.jpg` da edição do VÍDEO da semana, para o editor
+ * subir na seção "Vídeo da semana". Nome próprio porque a edição do vídeo pode
+ * não ser a da manchete 1 (a capa). A versão com overlay de play
+ * (`04-d1-2x1-play.jpg`, #12692) não serve: sugere um clique que o LinkedIn
+ * não oferece em imagem.
+ */
+export const VIDEO_IMAGE_FILENAME = "video-04-d1-2x1.jpg";
 
 /**
  * Resolve o caminho da imagem de capa (#5536) na edição de origem da
@@ -155,7 +169,7 @@ export interface WeeklyVideoField {
  * semana (`video`), medido na YouTube Data API. Roda só quando o campo ainda
  * não existe: a re-renderização reusa o valor (e o editor pode editá-lo ou
  * apagá-lo à mão). Fail-soft: sem credencial ou com erro grava `null` e o
- * artigo sai sem a linha do vídeo. `topVideo` injetável para teste.
+ * artigo sai sem a seção do vídeo. `topVideo` injetável para teste.
  */
 export async function ensureWeeklyVideo(
   rootDir: string,
@@ -219,7 +233,7 @@ export function main(rootDirOverride?: string) {
     weeklyEditions: selection.weeklyEditions,
     opening,
     closing,
-    video: selection.video ?? null, // #12081
+    video: selection.video ?? null, // #12081; editionDate posiciona a seção (#12777)
   };
 
   const result = renderLinkedinWeeklyHtml(input);
@@ -249,6 +263,22 @@ export function main(rootDirOverride?: string) {
     }
   }
 
+  // #12777: imagem da seção do vídeo, sem o overlay de play (o LinkedIn não
+  // linka imagem; o editor sobe à mão). Fail-soft, como a capa.
+  let videoImagePath: string | null = null;
+  if (selection.video?.editionDate) {
+    const src = resolveCoverImageSourcePath(join(rootDir, "data/editions"), selection.video.editionDate);
+    if (src) {
+      videoImagePath = join(outDir, VIDEO_IMAGE_FILENAME);
+      copyFileSync(src, videoImagePath);
+    } else {
+      coverWarnings.push(
+        `Imagem do vídeo (#12777): ${COVER_IMAGE_FILENAME} não encontrada na edição do vídeo ` +
+          `(${selection.video.editionDate}) — a seção "Vídeo da semana" sai só com o texto, sem imagem para subir.`,
+      );
+    }
+  }
+
   const allWarnings = [...result.warnings, ...coverWarnings];
   writeFileSync(
     jsonPath,
@@ -259,6 +289,7 @@ export function main(rootDirOverride?: string) {
         headlinesCount: input.headlines.length,
         weeklyEditionsCount: input.weeklyEditions.length,
         coverImagePath,
+        videoImagePath,
         warnings: allWarnings,
         generatedAt: new Date().toISOString(),
       },
@@ -271,6 +302,7 @@ export function main(rootDirOverride?: string) {
   console.log(`OK: ${htmlPath}`);
   console.log(`OK: ${jsonPath}`);
   console.log(coverImagePath ? `OK: ${coverImagePath}` : "SEM CAPA: ver warning abaixo.");
+  if (videoImagePath) console.log(`OK: ${videoImagePath} (imagem da seção do vídeo, subir à mão)`);
   if (allWarnings.length > 0) {
     console.log("\nWarnings:");
     for (const w of allWarnings) console.log(`  - ${w}`);
@@ -286,6 +318,6 @@ if (isMainModule(import.meta.url)) {
     prefetch = ensureWeeklyVideo(ROOT, cycleArg);
   }
   prefetch
-    .catch((e) => console.warn(`[render-linkedin-weekly] vídeo da semana não medido (${(e as Error).message}) — sem a linha do vídeo`))
+    .catch((e) => console.warn(`[render-linkedin-weekly] vídeo da semana não medido (${(e as Error).message}) — sem a seção do vídeo`))
     .then(() => main());
 }
