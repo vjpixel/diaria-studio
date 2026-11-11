@@ -15,18 +15,23 @@ import {
   brtTime,
   canonicalPostUrl,
   captionStart,
+  checkFormConsistency,
+  combineNewFollowers,
+  dailyLinks,
   mergePosts,
   parseCollabArg,
   parseTallyForm,
   postsFromGraphMedia,
   postsFromLocalRecord,
+  readGraphPage,
   resolveDdmm,
   selectWeek,
   summarizeYoutubeSubs,
   weekCsv,
+  youtubeSubsUnavailable,
   type PlannedDay,
 } from "../scripts/lib/mandala-semana.ts";
-import { parseCli } from "../scripts/mandala-semana.ts";
+import { buildPlan, fetchGraphPosts, isLocalRecordFile, parseCli, type PlanInput } from "../scripts/mandala-semana.ts";
 
 // Trecho no formato do JSON embutido no HTML do Tally (semana 2).
 const TALLY_HTML = [
@@ -68,7 +73,7 @@ const GRAPH = [
   ["2026-10-30T18:00:38+0000", "FEED", "https://www.instagram.com/p/DfILS3-DQXo/", "Golpistas"],
   ["2026-10-30T16:55:54+0000", "FEED", "https://www.instagram.com/p/DfID48GDcIh/", "15 funções"],
   ["2026-10-30T16:26:01+0000", "FEED", "https://www.instagram.com/p/DfIAd7qDWA1/", "Bowen Wan"],
-  // 30/10 21:00 BRT: ainda é dia 10 em BRT, embora já seja 31/10 em UTC.
+  // 29/10 21:00 BRT: ainda é dia 9 em BRT, embora já seja 30/10 em UTC.
   ["2026-10-30T00:00:26+0000", "FEED", "https://www.instagram.com/p/DfGPrgZD_3k/", "IA expôs"],
   ["2026-10-29T20:00:41+0000", "FEED", "https://www.instagram.com/p/DfF0PUuCTLm/", "Apagar"],
   ["2026-10-29T16:00:37+0000", "FEED", "https://www.instagram.com/p/DfFYxSlDRmD/", "Videogame"],
@@ -244,6 +249,7 @@ describe("summarizeYoutubeSubs (#12347)", () => {
 
   it("usa o snapshot mais recente de cada dia", () => {
     assert.deepEqual(summarizeYoutubeSubs(jsonl, "2026-11-02", "2026-11-03"), {
+      complete: true,
       value: 5,
       from: "2026-11-02",
       to: "2026-11-03",
@@ -255,5 +261,186 @@ describe("summarizeYoutubeSubs (#12347)", () => {
     const r = summarizeYoutubeSubs(jsonl, "2026-11-02", "2026-11-04");
     assert.deepEqual([r.value, r.missingDays], [5, ["2026-11-04"]]);
     assert.equal(summarizeYoutubeSubs("", "2026-11-02", "2026-11-02").value, null);
+  });
+});
+
+describe("fallback local não vira resposta (#12347, review P1)", () => {
+  const local = postsFromLocalRecord({
+    entries: [
+      { destination: "instagram", status: "published", url: "https://www.instagram.com/reel/DfUJHiND6EE/", at: "2026-11-04T09:33:21.081Z" },
+    ],
+  });
+
+  it("com postsSource local, nenhum daily[] sai com url; o achado vai em candidate", () => {
+    const sel = selectWeek(local, weekDays());
+    const daily = dailyLinks(sel.daily, "local");
+    assert.ok(daily.every((d) => d.url === null && d.verified === false));
+    const d15 = daily.find((d) => d.dayNum === 15)!;
+    assert.ok(!d15.verified && d15.candidate === "https://www.instagram.com/reel/DfUJHiND6EE/");
+  });
+
+  it("com postsSource graph, daily[] passa intacto", () => {
+    const sel = selectWeek(postsFromGraphMedia(GRAPH).posts, weekDays());
+    assert.deepEqual(dailyLinks(sel.daily, "graph"), sel.daily);
+  });
+
+  it("buildPlan local: dailyVerified false e uma falta por dia, citando o candidato", () => {
+    const plan = buildPlan(planInput({ postsSource: "local", selection: selectWeek(local, weekDays()) }));
+    assert.equal(plan.dailyVerified, false);
+    const unverified = plan.missing.filter((m) => /NÃO VERIFICADO/.test(m));
+    assert.equal(unverified.length, 7);
+    assert.ok(unverified.some((m) => m.includes("dia 15") && m.includes("DfUJHiND6EE")));
+  });
+});
+
+function planInput(over: Partial<PlanInput> = {}): PlanInput {
+  return {
+    generatedAt: "2026-11-06T12:00:00.000Z",
+    tallyUrl: "https://tally.so/r/abc",
+    semana: 2,
+    title: "Desafio Mandala Mão na Massa - Semana 2",
+    period: { from: "2026-10-29", to: "2026-11-04" },
+    contatoFile: "/home/x/.config/diaria/mandala-contato.json",
+    contato: { email: "editor-segredo@example.com", telefone: "+55 11 98888-7777" },
+    postsSource: "graph",
+    postsSourceNote: null,
+    selection: selectWeek(postsFromGraphMedia(GRAPH).posts, weekDays()),
+    instagram: { source: "insights", value: 42, from: "2026-10-29", to: "2026-11-04" },
+    youtube: { complete: true, value: 19, from: "2026-10-29", to: "2026-11-04", missingDays: [] },
+    prints: [],
+    csvPath: "data/desafio-mandala/semana2.csv",
+    missing: [],
+    ...over,
+  };
+}
+
+describe("buildPlan — contato fora do plano (#12347, review P2a)", () => {
+  it("o plano serializado não contém e-mail nem telefone, só a presença", () => {
+    const plan = buildPlan(planInput());
+    const json = JSON.stringify(plan);
+    assert.ok(!json.includes("editor-segredo@example.com"));
+    assert.ok(!json.includes("98888-7777"));
+    assert.deepEqual(plan.contato, { file: "/home/x/.config/diaria/mandala-contato.json", email_ok: true, telefone_ok: true });
+    assert.equal(plan.dailyVerified, true);
+  });
+
+  it("contato ausente vira falta, sem valor no plano", () => {
+    const plan = buildPlan(planInput({ contato: { email: null, telefone: null } }));
+    assert.deepEqual([plan.contato.email_ok, plan.contato.telefone_ok], [false, false]);
+    assert.ok(plan.missing.some((m) => /e-mail do Fluxer/.test(m)));
+    assert.ok(plan.missing.some((m) => /telefone do grupo/.test(m)));
+  });
+});
+
+describe("Graph API — 200 sem data é erro (#12347, review P2b)", () => {
+  it("readGraphPage: corpo ilegível ou sem data em array = erro; data [] = página vazia", () => {
+    assert.equal(readGraphPage(null).ok, false);
+    assert.equal(readGraphPage({ paging: {} }).ok, false);
+    assert.equal(readGraphPage({ data: "x" }).ok, false);
+    assert.deepEqual(readGraphPage({ data: [] }), { ok: true, data: [], rawCount: 0, next: null });
+  });
+
+  const res = (body: unknown, status = 200) =>
+    ({ ok: status < 400, status, json: async () => body }) as unknown as Response;
+  const env = { id: "1", token: "t" };
+
+  it("fetchGraphPosts: 200 com corpo sem data devolve erro (cai no local), não semana vazia", async () => {
+    const r = await fetchGraphPosts("2026-10-29T00:00:00-03:00", env, (async () => res({ foo: 1 })) as typeof fetch);
+    assert.match(r.error ?? "", /sem o campo data/);
+  });
+
+  it("fetchGraphPosts: 200 com JSON ilegível devolve erro", async () => {
+    const bad = { ok: true, status: 200, json: async () => { throw new SyntaxError("x"); } } as unknown as Response;
+    const r = await fetchGraphPosts("2026-10-29T00:00:00-03:00", env, (async () => bad) as typeof fetch);
+    assert.match(r.error ?? "", /ilegível/);
+  });
+
+  it("fetchGraphPosts: soma skipped e segue paginando quando a página só tem itens inválidos", async () => {
+    const pages = [
+      { data: [{ timestamp: "2026-11-04T10:00:00+0000" }], paging: { next: "p2" } },
+      { data: [{ permalink: "https://www.instagram.com/p/A/", timestamp: "2026-10-28T10:00:00+0000" }] },
+    ];
+    let i = 0;
+    const r = await fetchGraphPosts("2026-10-29T00:00:00-03:00", env, (async () => res(pages[i++])) as typeof fetch);
+    assert.equal(r.error, null);
+    assert.deepEqual([r.posts.length, r.skipped, r.truncated, i], [1, 1, false, 2]);
+  });
+
+  it("fetchGraphPosts: teto de páginas com next pendente marca truncated", async () => {
+    const page = { data: [{ permalink: "https://www.instagram.com/p/A/", timestamp: "2026-11-04T10:00:00+0000" }], paging: { next: "again" } };
+    const r = await fetchGraphPosts("2026-10-29T00:00:00-03:00", env, (async () => res(page)) as typeof fetch);
+    assert.equal(r.truncated, true);
+  });
+});
+
+describe("total de novos seguidores (#12347, review P2c)", () => {
+  const ytFull = { complete: true as const, value: 19, from: "a", to: "b", missingDays: [] as [] };
+  it("parte nula não vira 0: total null", () => {
+    assert.deepEqual(combineNewFollowers({ source: "insights", value: 42 }, youtubeSubsUnavailable("2026-10-29", "2026-11-04")), {
+      total: null,
+      totalComplete: false,
+    });
+    assert.deepEqual(combineNewFollowers({ source: "net-balance", value: null }, ytFull), { total: null, totalComplete: false });
+  });
+  it("partes presentes mas parciais: soma com totalComplete false", () => {
+    assert.deepEqual(combineNewFollowers({ source: "net-balance", value: 30 }, ytFull), { total: 49, totalComplete: false });
+    assert.deepEqual(
+      combineNewFollowers({ source: "insights", value: 42 }, { complete: false, value: 10, from: "a", to: "b", missingDays: ["x"] }),
+      { total: 52, totalComplete: false },
+    );
+  });
+  it("IG bruto + YouTube completo: totalComplete true; buildPlan não acusa falta", () => {
+    assert.deepEqual(combineNewFollowers({ source: "insights", value: 42 }, ytFull), { total: 61, totalComplete: true });
+    assert.ok(!buildPlan(planInput()).missing.some((m) => /pergunta 12/.test(m)));
+  });
+  it("YouTube ausente: todos os dias do período em missingDays", () => {
+    assert.equal(youtubeSubsUnavailable("2026-10-29", "2026-11-04").missingDays.length, 7);
+  });
+});
+
+describe("validações de entrada (#12347, review P2d/P2e/P3)", () => {
+  it("--collab com horário impossível é erro citando o argumento, não RangeError", () => {
+    for (const bad of ["2026-02-31T07:17", "2026-10-29T25:00", "2026-10-29T07:61", "2026-13-01T07:00"]) {
+      const arg = `https://www.instagram.com/reel/X/@${bad}`;
+      assert.throws(() => parseCollabArg(arg), (e: Error) => !(e instanceof RangeError) && e.message.includes(arg));
+    }
+  });
+
+  it("resolveDdmm rejeita 31/02 e aceita 29/02 só em ano bissexto", () => {
+    assert.throws(() => resolveDdmm("31/02", NOW), /não existe/);
+    assert.throws(() => resolveDdmm("29/02", NOW), /não existe/);
+    assert.equal(resolveDdmm("29/02", new Date("2028-03-05T12:00:00Z")), "2028-02-29");
+  });
+
+  it("registro local via Worker usa scheduled_at, não a hora da reconciliação", () => {
+    const [p] = postsFromLocalRecord({
+      posts: [
+        {
+          platform: "instagram",
+          status: "published",
+          url: "https://www.instagram.com/p/AAA/",
+          scheduled_at: "2026-11-04T09:00:00-03:00",
+          worker_queue_key: "queue:x",
+          published_at: "2026-11-04T12:12:23.680Z",
+        },
+      ],
+    });
+    assert.equal(p.timestamp, "2026-11-04T09:00:00-03:00");
+  });
+
+  it("isLocalRecordFile ignora backups", () => {
+    assert.equal(isLocalRecordFile("06-social-published.json"), true);
+    assert.equal(isLocalRecordFile("06-social-published.bkp.json"), false);
+    assert.equal(isLocalRecordFile("06-social-published-bak.json"), false);
+  });
+
+  it("checkFormConsistency: DD/MM repetido e --semana divergente são erro", () => {
+    const f = parseTallyForm(TALLY_HTML);
+    assert.equal(checkFormConsistency(f, null), 2);
+    assert.equal(checkFormConsistency(f, 2), 2);
+    assert.throws(() => checkFormConsistency(f, 3), /não bate/);
+    const dup = { ...f, days: [...f.days, { dayNum: 16, ddmm: "04/11", question: "q" }] };
+    assert.throws(() => checkFormConsistency(dup, null), /duas perguntas/);
+    assert.throws(() => checkFormConsistency({ ...f, semana: null }, null), /--semana/);
   });
 });

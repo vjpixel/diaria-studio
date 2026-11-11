@@ -42,7 +42,9 @@ pergunta), só com o que falta:
    (Resultados e Público → Tendências no período). Se o editor colar o
    caminho, usar; se preferir, ele salva em
    `data/desafio-mandala/semana{N}-prints/` e o script acha sozinho. Lembrar
-   que o Business Suite mostra as datas no horário do Pacífico.
+   que o Business Suite mostra as datas no horário do Pacífico, e que a série
+   de novos seguidores do Instagram (#12348) também conta dias do Pacífico,
+   não de Brasília: a borda do período pode diferir em algumas horas do print.
 3. **Contato, só na 1ª vez:** se `~/.config/diaria/mandala-contato.json` não
    existir ou estiver incompleto, perguntar e-mail do Fluxer e telefone do
    grupo e gravar o arquivo com `Write` (fora do repo, nunca em `data/`).
@@ -76,23 +78,35 @@ Saídas:
 - **exit 2**: o HTML não trouxe as perguntas (o Tally mudou o formato). Abrir o
   formulário no Chrome só para LER as perguntas (sem responder), passar as
   datas ao editor e parar.
-- **exit 1**: erro de uso ou de rede; mostrar a mensagem e parar.
+- **exit 1**: erro de uso, de rede no Tally, formulário inconsistente (data
+  repetida em duas perguntas, `--semana` diferente do título, `--collab` com
+  horário impossível) ou `--source graph` com a Graph API falhando; mostrar a
+  mensagem e parar. No `--source auto` (padrão) a falha da Graph API NÃO dá
+  exit 1: cai nos registros locais e sai exit 3.
 - **exit 0**: ler `semana{N}.json`. Cada item de `missing[]` é dito ao editor
-  como falta, nunca preenchido com chute. Se `postsSource` for `local`, a
-  Graph API falhou: a lista vem dos registros locais de publicação, sem os
-  carrosséis agendados pelo Worker, então o 1º de cada dia pode estar errado.
-  Dizer isso e pedir ao editor que confira ou que resolva o token antes de
-  seguir.
+  como falta, nunca preenchido com chute.
+- **exit 3**: plano gravado com `postsSource: local` (a Graph API falhou no
+  `auto`, ou o editor pediu `--source local`). Os registros locais não têm a
+  URL dos carrosséis agendados pelo Worker, então o 1º post de cada dia pode
+  estar errado: `dailyVerified` é `false` e cada `daily[]` vem com `url: null`
+  e o link achado em `candidate`. Dizer isso ao editor e oferecer resolver o
+  token e rodar de novo. Sem isso, o Passo 4 fica bloqueado até o editor
+  confirmar ou corrigir o link de CADA dia, um por um; um "ok" geral não vale
+  como confirmação dos 7.
 
 ## Passo 3 — resumo para o editor
 
 Mostrar, num bloco só:
 
 - semana e período;
-- os 7 links por dia (dia N, data, hora BRT, conta, link);
+- um link por dia do formulário (dia N, data, hora BRT, conta, link); dia com
+  `verified: false` aparece como "NÃO VERIFICADO, candidato X";
 - os extras (quantidade + lista);
 - novos seguidores: Instagram (bruto ou, se a série falhou, saldo líquido,
-  com o aviso) + YouTube = total que vai na pergunta 12;
+  com o aviso) + YouTube = total que vai na pergunta 12. Com
+  `newFollowers.totalComplete: false` (alguma parte falta ou é parcial;
+  `total: null` quando falta uma parte inteira), o número da pergunta 12 só
+  entra depois de o editor confirmar ou ditar o valor;
 - prints que vão no upload;
 - caminho da planilha CSV;
 - tudo o que está em `missing[]`.
@@ -110,14 +124,18 @@ parar.
 2. O Tally mostra uma pergunta por tela e o campo já vem com foco. **Ler o
    texto de cada pergunta e casar pelo conteúdo, nunca pela posição** (a
    numeração pode mudar):
-   - "e-mail do FLUXER" → `contato.email`;
-   - "telefone de contato no grupo" → `contato.telefone`;
+   - "e-mail do FLUXER" → `email` lido de `contato.file` nesta hora (o plano
+     em `data/` só diz `email_ok`, nunca guarda o valor);
+   - "telefone de contato no grupo" → `telefone` lido do mesmo arquivo;
    - "Para qual rede" → clicar no label "Ambos";
    - "Link do conteúdo do dia N (DD/MM)" → o `url` do dia N em `daily[]`
-     (casar pelo N e pela data; se o dia estiver sem link, parar e perguntar);
+     (casar pelo N e pela data; se o dia estiver sem link, parar e perguntar;
+     com `dailyVerified: false`, só o link que o editor confirmou para aquele
+     dia, nunca o `candidate` sem confirmação);
    - "conteúdos extras" → `extras[]`, um por linha (no textarea, Shift+Enter
      entre linhas; Enter avança);
-   - "seguidores ou inscritos novos" → `newFollowers.total`;
+   - "seguidores ou inscritos novos" → `newFollowers.total` se
+     `totalComplete`; senão, o valor que o editor confirmou no Passo 3;
    - "print da aba de Insights" → upload dos arquivos de `prints[]` com o
      `file_upload` do Chrome. Se o upload for bloqueado, pedir ao editor que
      anexe à mão e esperar o "pronto".

@@ -107,7 +107,37 @@ export function resolveDdmm(ddmm: string, now: Date): string {
   const candidate = Date.UTC(year, month - 1, day);
   const limit = now.getTime() + 60 * 86400_000;
   const y = candidate > limit ? year - 1 : year;
+  // 31/02 viraria 03/03 em silêncio no Date.UTC: conferir o dia no ano escolhido.
+  if (!isRealDate(y, month, day)) throw new Error(`data inválida: ${ddmm} não existe em ${y}`);
   return `${y}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function isRealDate(y: number, month: number, day: number): boolean {
+  const d = new Date(Date.UTC(y, month - 1, day));
+  return d.getUTCFullYear() === y && d.getUTCMonth() === month - 1 && d.getUTCDate() === day;
+}
+
+/**
+ * Confere a estrutura do formulário antes de montar o plano: `DD/MM` repetido
+ * em duas perguntas de dia, ou `--semana` diferente da semana do título, é
+ * erro (o plano casaria o link errado com a pergunta). Devolve a semana a
+ * usar. @pure
+ */
+export function checkFormConsistency(form: TallyForm, semanaArg: number | null): number {
+  const seen = new Map<string, number>();
+  for (const d of form.days) {
+    const prev = seen.get(d.ddmm);
+    if (prev !== undefined) {
+      throw new Error(`o formulário traz a data ${d.ddmm} em duas perguntas (dia ${prev} e dia ${d.dayNum}); conferir o Tally`);
+    }
+    seen.set(d.ddmm, d.dayNum);
+  }
+  if (semanaArg !== null && form.semana !== null && semanaArg !== form.semana) {
+    throw new Error(`--semana ${semanaArg} não bate com o título do formulário (Semana ${form.semana})`);
+  }
+  const semana = semanaArg ?? form.semana;
+  if (!semana) throw new Error("o título do formulário não traz \"Semana N\": passe --semana N");
+  return semana;
 }
 
 const brtDateFmt = new Intl.DateTimeFormat("en-CA", {
@@ -133,14 +163,16 @@ export function brtTime(iso: string): string {
   return brtTimeFmt.format(new Date(iso));
 }
 
+export type MandalaAccount = typeof MANDALA_ACCOUNT | "vjpixel (collab)";
+export type MandalaFormat = "post" | "reel";
+
 /** Um conteúdo publicado no Instagram, de qualquer fonte. */
 export interface MandalaPost {
   url: string;
   /** Instante de publicação, ISO com fuso. */
   timestamp: string;
-  /** "diar.ia.br" ou "vjpixel (collab)". */
-  account: string;
-  format: "post" | "reel";
+  account: MandalaAccount;
+  format: MandalaFormat;
   caption: string;
 }
 
@@ -181,6 +213,22 @@ export function postsFromGraphMedia(data: unknown): { posts: MandalaPost[]; skip
 }
 
 /**
+ * Uma página de `/media` com HTTP 200. Corpo ilegível ou sem `data` em array é
+ * erro, nunca "semana vazia": uma página vazia de verdade vem como `data: []`.
+ * `rawCount` é o tamanho cru de `data` (a paginação para nele, não no número de
+ * posts válidos). @pure
+ */
+export function readGraphPage(
+  body: unknown,
+): { ok: true; data: unknown[]; rawCount: number; next: string | null } | { ok: false; error: string } {
+  const b = body as { data?: unknown; paging?: { next?: unknown } } | null;
+  if (!b || typeof b !== "object") return { ok: false, error: "Graph API respondeu 200 com corpo ilegível" };
+  if (!Array.isArray(b.data)) return { ok: false, error: "Graph API respondeu 200 sem o campo data" };
+  const next = typeof b.paging?.next === "string" ? b.paging.next : null;
+  return { ok: true, data: b.data, rawCount: b.data.length, next };
+}
+
+/**
  * Lê os registros locais de publicação de uma edição
  * (`_internal/06-social-published.json`, `06-shorts-published*.json`) e devolve
  * os posts do Instagram que já têm URL e instante de publicação. É o caminho de
@@ -199,7 +247,11 @@ export function postsFromLocalRecord(json: unknown): MandalaPost[] {
     if (platform !== "instagram") continue;
     if (it.status !== "published") continue;
     const url = it.url;
-    const ts = (it.published_at ?? it.at) as unknown;
+    // Post que passou pela fila do Worker: `published_at` é a hora em que a
+    // reconciliação confirmou (12:12 para um post das 12:00), não a da
+    // publicação. Nesse caso vale o `scheduled_at`.
+    const viaWorker = it.worker_queue_key !== undefined || it.verification_note !== undefined;
+    const ts = (viaWorker && typeof it.scheduled_at === "string" ? it.scheduled_at : (it.published_at ?? it.at)) as unknown;
     if (typeof url !== "string" || !/instagram\.com\//.test(url) || typeof ts !== "string") continue;
     if (Number.isNaN(Date.parse(ts))) continue;
     out.push({
@@ -225,8 +277,14 @@ export function parseCollabArg(arg: string): MandalaPost {
   if (!/^https:\/\/(www\.)?instagram\.com\/(?:[\w.]+\/)?(reel|p)\/[\w-]+\/?/.test(url)) {
     throw new Error(`--collab com URL que não é de post do Instagram: "${url}"`);
   }
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(when)) {
-    throw new Error(`--collab com horário inválido: "${when}" (use AAAA-MM-DDTHH:MM, horário de Brasília)`);
+  const wm = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(when);
+  if (
+    !wm ||
+    !isRealDate(Number(wm[1]), Number(wm[2]), Number(wm[3])) ||
+    Number(wm[4]) > 23 ||
+    Number(wm[5]) > 59
+  ) {
+    throw new Error(`--collab "${arg}" com horário inválido: "${when}" (use AAAA-MM-DDTHH:MM, horário de Brasília)`);
   }
   // Brasil sem horário de verão desde 2019: BRT é UTC-3 fixo.
   const timestamp = `${when}:00-03:00`;
@@ -269,22 +327,32 @@ export interface PlannedDay {
 }
 
 export interface WeekRow {
-  dayNum: number | null;
+  dayNum: number;
   ddmm: string;
   date: string;
   timeBrt: string;
-  account: string;
-  format: string;
+  account: MandalaAccount;
+  format: MandalaFormat;
   url: string;
   /** `dia N` (resposta da pergunta do dia) ou `extra`. */
-  slot: string;
+  slot: `dia ${number}` | "extra";
   captionStart: string;
 }
 
+/**
+ * Link de um dia do formulário. `verified: true` = a lista de posts era
+ * completa (Graph API) e `url` é a resposta (`null` = nenhum post no dia).
+ * `verified: false` = a lista veio dos registros locais, que não têm a URL dos
+ * carrosséis: `url` fica `null` e o 1º post que achamos vai em `candidate`,
+ * para o editor confirmar ou corrigir antes do preenchimento.
+ */
+export type DailyLink = PlannedDay &
+  ({ verified: true; url: string | null } | { verified: false; url: null; candidate: string | null });
+
 export interface WeekSelection {
   rows: WeekRow[];
-  /** Link de cada dia do formulário (`url: null` = nenhum post naquele dia). */
-  daily: Array<PlannedDay & { url: string | null }>;
+  /** Link de cada dia do formulário, já verificado (`url: null` = nenhum post naquele dia). */
+  daily: Array<PlannedDay & { verified: true; url: string | null }>;
   extras: string[];
   /** Posts fora do período, só para o relatório (nunca entram no formulário). */
   outOfPeriod: number;
@@ -338,8 +406,18 @@ export function selectWeek(posts: MandalaPost[], days: PlannedDay[]): WeekSelect
       captionStart: captionStart(p.caption),
     });
   }
-  const daily = days.map((d) => ({ ...d, url: firstByDate.get(d.date)?.url ?? null }));
+  const daily = days.map((d) => ({ ...d, verified: true as const, url: firstByDate.get(d.date)?.url ?? null }));
   return { rows, daily, extras, outOfPeriod };
+}
+
+/**
+ * Com a lista de posts incompleta (registros locais), nenhum link de dia é
+ * resposta: o 1º achado vira `candidate` e `url` fica `null`, para o plano não
+ * carregar um link plausível e errado como se fosse o certo. @pure
+ */
+export function dailyLinks(daily: WeekSelection["daily"], postsSource: "graph" | "local"): DailyLink[] {
+  if (postsSource === "graph") return daily;
+  return daily.map(({ url, verified: _v, ...d }) => ({ ...d, verified: false as const, url: null, candidate: url }));
 }
 
 /** CSV no formato da planilha da semana 2 (`;`, cabeçalho em português). @pure */
@@ -353,7 +431,8 @@ export function weekCsv(rows: WeekRow[]): string {
   return [header, ...lines].join("\n") + "\n";
 }
 
-function eachDate(from: string, to: string): string[] {
+/** Datas `YYYY-MM-DD` de `from` a `to`, inclusive. @pure */
+export function eachDate(from: string, to: string): string[] {
   const out: string[] = [];
   const end = Date.parse(`${to}T00:00:00Z`);
   for (let t = Date.parse(`${from}T00:00:00Z`); t <= end; t += 86400_000) {
@@ -363,8 +442,8 @@ function eachDate(from: string, to: string): string[] {
 }
 
 export type YoutubeSubsSummary =
-  | { value: number; from: string; to: string; missingDays: [] }
-  | { value: number | null; from: string; to: string; missingDays: string[] };
+  | { complete: true; value: number; from: string; to: string; missingDays: [] }
+  | { complete: false; value: number | null; from: string; to: string; missingDays: string[] };
 
 /**
  * Inscritos novos no YouTube (`subscribersGained`, bruto) entre `from` e `to`,
@@ -393,12 +472,38 @@ export function summarizeYoutubeSubs(jsonl: string, from: string, to: string): Y
   const missingDays = wanted.filter((d) => !latest.has(d));
   const present = wanted.filter((d) => latest.has(d));
   if (missingDays.length === 0) {
-    return { value: present.reduce((s, d) => s + latest.get(d)!.gained, 0), from, to, missingDays: [] };
+    return { complete: true, value: present.reduce((s, d) => s + latest.get(d)!.gained, 0), from, to, missingDays: [] };
   }
   return {
+    complete: false,
     value: present.length ? present.reduce((s, d) => s + latest.get(d)!.gained, 0) : null,
     from,
     to,
     missingDays,
   };
+}
+
+/** Arquivo do YouTube ausente: todos os dias do período faltam. @pure */
+export function youtubeSubsUnavailable(from: string, to: string): YoutubeSubsSummary {
+  return { complete: false, value: null, from, to, missingDays: eachDate(from, to) };
+}
+
+export interface NewFollowersTotal {
+  /** Soma IG + YouTube, só quando as duas partes existem; `null` se alguma falta. */
+  total: number | null;
+  /** `true` só com IG bruto (insights) e YouTube sem dia faltando: aí vai direto na pergunta 12. */
+  totalComplete: boolean;
+}
+
+/**
+ * Total da pergunta 12. Parte nula nunca vira 0 (somaria só o que existe e
+ * pareceria completo); parte presente mas parcial (IG saldo líquido, YouTube
+ * com dia faltando) dá `totalComplete: false`, e a skill pede confirmação. @pure
+ */
+export function combineNewFollowers(
+  ig: { source: "insights" | "net-balance"; value: number | null },
+  yt: YoutubeSubsSummary,
+): NewFollowersTotal {
+  const total = ig.value === null || yt.value === null ? null : ig.value + yt.value;
+  return { total, totalComplete: total !== null && ig.source === "insights" && yt.complete };
 }

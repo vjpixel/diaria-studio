@@ -13,15 +13,18 @@
  *      (INSTAGRAM_BUSINESS_ACCOUNT_ID + INSTAGRAM_ACCESS_TOKEN). Se ela falhar,
  *      cai nos registros locais de publicação
  *      (`data/editions/**\/_internal/06-*published*.json`), que não têm a URL
- *      dos carrosséis agendados pelo Worker: o plano avisa que a lista está
- *      incompleta.
+ *      dos carrosséis agendados pelo Worker: nenhum link de dia sai como
+ *      resposta (`daily[].verified: false`, link achado em `candidate`) e o
+ *      script sai com exit 3.
  *   3. Reels em collab do @vjpixel: a API não devolve; entram por
  *      `--collab URL@AAAA-MM-DDTHH:MM` (horário de Brasília, dito pelo editor).
  *   4. Novos seguidores IG (bruto): `data/metrics/instagram-follows-daily.jsonl`
  *      (#12348); faltando dia, saldo líquido de `social-followers.jsonl`.
  *      Inscritos YouTube: `data/youtube-analytics/channel-daily.jsonl`.
  *   5. Contato (e-mail do Fluxer, telefone do grupo): arquivo FORA do repo,
- *      `~/.config/diaria/mandala-contato.json` (ou `--contato-file`).
+ *      `~/.config/diaria/mandala-contato.json` (ou `--contato-file`). O plano
+ *      grava só se cada campo existe, nunca o valor: `data/` sincroniza no
+ *      Drive. A skill lê os valores do arquivo na hora de preencher.
  *   6. Prints de Insights: `--print arquivo` (repetível) ou os arquivos em
  *      `{out-dir}/semana{N}-prints/`.
  *
@@ -34,9 +37,15 @@
  *     [--collab URL@2026-10-29T07:17 ...] [--print caminho.jpg ...] \
  *     [--semana N] [--source auto|graph|local] [--out-dir data/desafio-mandala]
  *
- * Exit: 0 plano gravado (mesmo com `missing`); 2 formulário sem perguntas de
- * dia (Tally mudou o formato: preencher pelo navegador, lendo as perguntas);
- * 1 erro de uso/rede.
+ * Exit:
+ *   0 plano gravado com a lista de posts da Graph API (mesmo com `missing`);
+ *   3 plano gravado com a lista dos registros locais: os links de dia NÃO são
+ *     resposta, o editor confirma cada um antes do preenchimento;
+ *   2 formulário sem perguntas de dia (o Tally mudou o formato): ler as
+ *     perguntas pelo navegador, sem responder nada, e parar;
+ *   1 erro de uso, de rede no Tally, de formulário inconsistente ou de
+ *     `--source graph` com a Graph API falhando (no `auto` a falha da Graph
+ *     cai nos registros locais, exit 3).
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -51,16 +60,23 @@ import {
   type NewFollowersSummary,
 } from "./lib/instagram-follower-insights.ts";
 import {
+  checkFormConsistency,
+  combineNewFollowers,
+  dailyLinks,
   mergePosts,
   parseCollabArg,
   parseTallyForm,
   postsFromGraphMedia,
   postsFromLocalRecord,
+  readGraphPage,
   resolveDdmm,
   selectWeek,
   summarizeYoutubeSubs,
   weekCsv,
+  youtubeSubsUnavailable,
+  type DailyLink,
   type MandalaPost,
+  type NewFollowersTotal,
   type PlannedDay,
   type WeekSelection,
   type YoutubeSubsSummary,
@@ -68,9 +84,12 @@ import {
 import { parseSocialFollowersJsonl } from "./lib/social-followers.ts";
 
 const GRAPH_API = "https://graph.facebook.com/v25.0"; // mesma versão de social-followers-collect.ts
+const GRAPH_MAX_PAGES = 20;
 const SOCIAL_FOLLOWERS_PATH = "data/metrics/social-followers.jsonl";
 const YOUTUBE_DAILY_PATH = "data/youtube-analytics/channel-daily.jsonl";
 export const DEFAULT_CONTATO_FILE = join(homedir(), ".config", "diaria", "mandala-contato.json");
+/** Exit do plano montado com a lista local: links de dia a confirmar. */
+export const EXIT_LOCAL_UNVERIFIED = 3;
 
 export interface CliOptions {
   tallyUrl: string | null;
@@ -140,40 +159,75 @@ async function fetchTallyHtml(url: string): Promise<string> {
   return res.text();
 }
 
+export interface GraphFetchResult {
+  posts: MandalaPost[];
+  /** Itens de `/media` sem permalink/timestamp legível. */
+  skipped: number;
+  /** Parou no teto de páginas com página seguinte ainda disponível. */
+  truncated: boolean;
+  error: string | null;
+}
+
 /** Graph API paginada até passar do início do período. Token no header (#7779). */
-async function fetchGraphPosts(fromIso: string): Promise<{ posts: MandalaPost[]; error: string | null }> {
-  const id = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
-  const token = process.env.INSTAGRAM_ACCESS_TOKEN;
-  if (!id || !token) return { posts: [], error: "credencial ausente (INSTAGRAM_BUSINESS_ACCOUNT_ID, INSTAGRAM_ACCESS_TOKEN)" };
+export async function fetchGraphPosts(
+  fromIso: string,
+  env: { id?: string; token?: string } = {
+    id: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
+    token: process.env.INSTAGRAM_ACCESS_TOKEN,
+  },
+  fetchImpl: typeof fetch = fetch,
+): Promise<GraphFetchResult> {
+  const result: GraphFetchResult = { posts: [], skipped: 0, truncated: false, error: null };
+  if (!env.id || !env.token) {
+    result.error = "credencial ausente (INSTAGRAM_BUSINESS_ACCOUNT_ID, INSTAGRAM_ACCESS_TOKEN)";
+    return result;
+  }
   const fromMs = Date.parse(fromIso);
-  let url: string | undefined =
-    `${GRAPH_API}/${id}/media?fields=id,permalink,timestamp,media_type,media_product_type,caption&limit=100`;
-  const posts: MandalaPost[] = [];
-  for (let page = 0; url && page < 20; page++) {
-    let body: { data?: unknown; paging?: { next?: string }; error?: { message?: string; code?: number } } | null;
+  let url: string | null =
+    `${GRAPH_API}/${env.id}/media?fields=id,permalink,timestamp,media_type,media_product_type,caption&limit=100`;
+  let page = 0;
+  for (; url && page < GRAPH_MAX_PAGES; page++) {
+    let body: unknown;
     try {
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-      body = (await res.json().catch(() => null)) as typeof body;
+      const res = await fetchImpl(url, { headers: { Authorization: `Bearer ${env.token}` } });
+      body = await res.json().catch(() => null);
       if (!res.ok) {
-        const e = body?.error;
-        return { posts, error: `Graph API HTTP ${res.status}${e ? ` (#${e.code}) ${e.message}` : ""}` };
+        const e = (body as { error?: { message?: string; code?: number } } | null)?.error;
+        result.error = `Graph API HTTP ${res.status}${e ? ` (#${e.code}) ${e.message}` : ""}`;
+        return result;
       }
     } catch (e) {
-      return { posts, error: `falha de rede na Graph API: ${(e as Error).message}` };
+      result.error = `falha de rede na Graph API: ${(e as Error).message}`;
+      return result;
     }
-    const { posts: pagePosts } = postsFromGraphMedia(body?.data);
-    posts.push(...pagePosts);
+    const pg = readGraphPage(body);
+    if (!pg.ok) {
+      result.error = pg.error;
+      return result;
+    }
+    const { posts: pagePosts, skipped } = postsFromGraphMedia(pg.data);
+    result.posts.push(...pagePosts);
+    result.skipped += skipped;
     const oldest = pagePosts.reduce((min, p) => Math.min(min, Date.parse(p.timestamp)), Infinity);
-    if (pagePosts.length === 0 || oldest < fromMs) break;
-    url = body?.paging?.next;
+    url = pg.next;
+    if (pg.rawCount === 0 || oldest < fromMs) {
+      url = null;
+      break;
+    }
   }
-  return { posts, error: null };
+  result.truncated = url !== null && page >= GRAPH_MAX_PAGES;
+  return result;
+}
+
+/** Nome de registro local de publicação; cópia de backup (`.bkp`, `.bak`) fica de fora. @pure */
+export function isLocalRecordFile(name: string): boolean {
+  return /^06-.*published.*\.json$/.test(name) && !/bkp|bak/i.test(name);
 }
 
 /** Registros locais de publicação das edições (até 2 níveis: plano `AAMMDD/` e aninhado `AAMM/AAMMDD/`). */
-function readLocalPosts(root: string): MandalaPost[] {
+function readLocalPosts(root: string): { posts: MandalaPost[]; unreadable: string[] } {
   const editions = join(root, "data", "editions");
-  if (!existsSync(editions)) return [];
+  if (!existsSync(editions)) return { posts: [], unreadable: [] };
   const internals: string[] = [];
   const visit = (dir: string, depth: number): void => {
     for (const name of readdirSync(dir)) {
@@ -186,22 +240,45 @@ function readLocalPosts(root: string): MandalaPost[] {
     }
   };
   visit(editions, 0);
-  const out: MandalaPost[] = [];
+  const posts: MandalaPost[] = [];
+  const unreadable: string[] = [];
   for (const dir of internals) {
     for (const f of readdirSync(dir)) {
-      if (!/^06-.*published.*\.json$/.test(f)) continue;
+      if (!isLocalRecordFile(f)) continue;
+      const path = join(dir, f);
       try {
-        out.push(...postsFromLocalRecord(JSON.parse(readFileSync(join(dir, f), "utf8"))));
+        posts.push(...postsFromLocalRecord(JSON.parse(readFileSync(path, "utf8"))));
       } catch {
-        // arquivo malformado não derruba a coleta; a lista local já é a reserva incompleta
+        unreadable.push(path);
       }
     }
   }
-  return out;
+  return { posts, unreadable };
 }
 
 function readIfExists(path: string): string | null {
   return existsSync(path) ? readFileSync(path, "utf8") : null;
+}
+
+/** Lê o arquivo de contato. Ausente = campos nulos; JSON ilegível ou sem permissão = erro. */
+function readContato(file: string): { email: string | null; telefone: string | null } {
+  let txt: string;
+  try {
+    txt = readFileSync(file, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { email: null, telefone: null };
+    throw new Error(`não consegui ler ${file}: ${(e as Error).message}`);
+  }
+  let c: { email?: unknown; telefone?: unknown };
+  try {
+    c = JSON.parse(txt) as typeof c;
+  } catch (e) {
+    throw new Error(`${file} não é JSON válido: ${(e as Error).message}`);
+  }
+  return {
+    email: typeof c.email === "string" && c.email.trim() ? c.email.trim() : null,
+    telefone: typeof c.telefone === "string" && c.telefone.trim() ? c.telefone.trim() : null,
+  };
 }
 
 export interface MandalaPlan {
@@ -211,16 +288,89 @@ export interface MandalaPlan {
   title: string | null;
   period: { from: string; to: string };
   rede: "Ambos";
-  contato: { email: string | null; telefone: string | null; file: string };
+  /** Só a presença de cada campo: os valores ficam no arquivo, fora de `data/`. */
+  contato: { file: string; email_ok: boolean; telefone_ok: boolean };
   postsSource: "graph" | "local";
   postsSourceNote: string | null;
-  daily: WeekSelection["daily"];
+  /** `false` com `postsSource: local`: nenhum `daily[].url` é resposta até o editor confirmar. */
+  dailyVerified: boolean;
+  daily: DailyLink[];
   extras: string[];
   totalPosts: number;
-  newFollowers: { instagram: NewFollowersSummary; youtube: YoutubeSubsSummary; total: number | null };
+  newFollowers: { instagram: NewFollowersSummary; youtube: YoutubeSubsSummary } & NewFollowersTotal;
   prints: string[];
   csvPath: string;
   missing: string[];
+}
+
+export interface PlanInput {
+  generatedAt: string;
+  tallyUrl: string | null;
+  semana: number;
+  title: string | null;
+  period: { from: string; to: string };
+  contatoFile: string;
+  contato: { email: string | null; telefone: string | null };
+  postsSource: "graph" | "local";
+  postsSourceNote: string | null;
+  selection: WeekSelection;
+  instagram: NewFollowersSummary;
+  youtube: YoutubeSubsSummary;
+  prints: string[];
+  csvPath: string;
+  /** Faltas já apuradas na coleta (posts, prints, arquivos). */
+  missing: string[];
+}
+
+/**
+ * Monta o plano gravado em `semana{N}.json` e acrescenta as faltas que dependem
+ * dele (links de dia, contato, total de seguidores). O contato entra só como
+ * presença. @pure
+ */
+export function buildPlan(input: PlanInput): MandalaPlan {
+  const missing = [...input.missing];
+  const daily = dailyLinks(input.selection.daily, input.postsSource);
+  for (const d of daily) {
+    if (!d.verified) {
+      missing.push(
+        `link do dia ${d.dayNum} (${d.ddmm}): NÃO VERIFICADO (lista local incompleta)` +
+          (d.candidate ? `; candidato ${d.candidate}` : "; nenhum candidato"),
+      );
+    } else if (!d.url) {
+      missing.push(`link do dia ${d.dayNum} (${d.ddmm}): nenhum post do Instagram nesse dia`);
+    }
+  }
+  const email_ok = input.contato.email !== null;
+  const telefone_ok = input.contato.telefone !== null;
+  if (!email_ok) missing.push(`e-mail do Fluxer (gravar em ${input.contatoFile})`);
+  if (!telefone_ok) missing.push(`telefone do grupo (gravar em ${input.contatoFile})`);
+  const totals = combineNewFollowers(input.instagram, input.youtube);
+  if (!totals.totalComplete) {
+    missing.push(
+      totals.total === null
+        ? "total de novos seguidores (pergunta 12): falta Instagram ou YouTube, não somar só a parte que existe"
+        : `total de novos seguidores (pergunta 12): ${totals.total} é parcial, confirmar com o editor`,
+    );
+  }
+  return {
+    generatedAt: input.generatedAt,
+    tallyUrl: input.tallyUrl,
+    semana: input.semana,
+    title: input.title,
+    period: input.period,
+    rede: "Ambos",
+    contato: { file: input.contatoFile, email_ok, telefone_ok },
+    postsSource: input.postsSource,
+    postsSourceNote: input.postsSourceNote,
+    dailyVerified: input.postsSource === "graph",
+    daily,
+    extras: input.selection.extras,
+    totalPosts: input.selection.rows.length,
+    newFollowers: { instagram: input.instagram, youtube: input.youtube, ...totals },
+    prints: input.prints,
+    csvPath: input.csvPath,
+    missing,
+  };
 }
 
 async function main(): Promise<void> {
@@ -234,18 +384,19 @@ async function main(): Promise<void> {
   if (form.days.length === 0) {
     console.error(
       "ERRO: não achei as perguntas \"Link do conteúdo do dia N (DD/MM)\" no HTML do Tally. " +
-        "O formato mudou: ler as perguntas pelo navegador, sem responder nada.",
+        "O formato mudou: ler as perguntas pelo navegador, sem responder nada, e parar.",
     );
     process.exitCode = 2;
     return;
   }
-  const semana = opts.semana ?? form.semana;
-  if (!semana) throw new Error("o título do formulário não traz \"Semana N\": passe --semana N");
+  const semana = checkFormConsistency(form, opts.semana);
 
   const days: PlannedDay[] = form.days.map((d) => ({ ...d, date: resolveDdmm(d.ddmm, now) }));
   const from = form.period ? resolveDdmm(form.period.from, now) : days[0].date;
   const to = form.period ? resolveDdmm(form.period.to, now) : days[days.length - 1].date;
   const missing: string[] = [];
+  // Validar os --collab antes de qualquer rede: horário impossível é erro de uso.
+  const collabs = opts.collabs.map(parseCollabArg);
 
   // Posts
   let postsSource: "graph" | "local" = "graph";
@@ -255,27 +406,27 @@ async function main(): Promise<void> {
     const g = await fetchGraphPosts(`${from}T00:00:00-03:00`);
     if (g.error) {
       if (opts.source === "graph") throw new Error(g.error);
+      postsSource = "local";
       postsSourceNote = `Graph API indisponível (${g.error}); lista montada dos registros locais de publicação, sem a URL dos carrosséis agendados pelo Worker: INCOMPLETA`;
-      missing.push(
-        "lista completa de posts do Instagram (a Graph API falhou; os registros locais não têm todos os links, então o 1º de cada dia pode estar ERRADO)",
-      );
     } else {
       own = g.posts;
+      if (g.skipped > 0) {
+        missing.push(`${g.skipped} item(ns) da Graph API sem permalink ou horário legível: a lista pode estar incompleta`);
+      }
+      if (g.truncated) {
+        missing.push(`a Graph API parou no teto de ${GRAPH_MAX_PAGES} páginas sem chegar ao início do período: a lista pode estar incompleta`);
+      }
     }
-  }
-  if (opts.source === "local" || postsSourceNote) {
+  } else {
     postsSource = "local";
-    own = readLocalPosts(root);
-    if (opts.source === "local") {
-      postsSourceNote = "registros locais de publicação (sem a URL dos carrosséis agendados pelo Worker): pode estar incompleta";
-      missing.push("lista completa de posts do Instagram (--source local: o 1º de cada dia pode estar ERRADO)");
-    }
+    postsSourceNote = "--source local: registros locais de publicação, sem a URL dos carrosséis agendados pelo Worker: INCOMPLETA";
   }
-  const collabs = opts.collabs.map(parseCollabArg);
+  if (postsSource === "local") {
+    const local = readLocalPosts(root);
+    own = local.posts;
+    for (const p of local.unreadable) missing.push(`registro local de publicação ilegível: ${p}`);
+  }
   const selection = selectWeek(mergePosts(collabs, own), days);
-  for (const d of selection.daily) {
-    if (!d.url) missing.push(`link do dia ${d.dayNum} (${d.ddmm}): nenhum post do Instagram nesse dia`);
-  }
 
   // Seguidores
   const grossTxt = readIfExists(join(root, IG_FOLLOWS_DAILY_PATH));
@@ -294,26 +445,12 @@ async function main(): Promise<void> {
     );
   }
   const ytTxt = readIfExists(join(root, YOUTUBE_DAILY_PATH));
-  const yt: YoutubeSubsSummary = ytTxt
-    ? summarizeYoutubeSubs(ytTxt, from, to)
-    : { value: null, from, to, missingDays: [from] };
+  const yt: YoutubeSubsSummary = ytTxt ? summarizeYoutubeSubs(ytTxt, from, to) : youtubeSubsUnavailable(from, to);
   if (!ytTxt) missing.push(`inscritos do YouTube (${YOUTUBE_DAILY_PATH} ausente)`);
   else if (yt.missingDays.length) missing.push(`inscritos do YouTube: faltam os dias ${yt.missingDays.join(", ")}`);
-  const total = ig.value === null && yt.value === null ? null : (ig.value ?? 0) + (yt.value ?? 0);
 
   // Contato (fora do repo)
-  let contato: { email: string | null; telefone: string | null } = { email: null, telefone: null };
-  try {
-    const c = JSON.parse(readFileSync(opts.contatoFile, "utf8")) as { email?: unknown; telefone?: unknown };
-    contato = {
-      email: typeof c.email === "string" && c.email.trim() ? c.email.trim() : null,
-      telefone: typeof c.telefone === "string" && c.telefone.trim() ? c.telefone.trim() : null,
-    };
-  } catch {
-    // ausente na 1ª vez: a skill pergunta e grava
-  }
-  if (!contato.email) missing.push(`e-mail do Fluxer (gravar em ${opts.contatoFile})`);
-  if (!contato.telefone) missing.push(`telefone do grupo (gravar em ${opts.contatoFile})`);
+  const contato = readContato(opts.contatoFile);
 
   // Prints
   const outDir = resolve(root, opts.outDir);
@@ -329,40 +466,47 @@ async function main(): Promise<void> {
   mkdirSync(outDir, { recursive: true });
   const csvPath = join(outDir, `semana${semana}.csv`);
   writeFileSync(csvPath, weekCsv(selection.rows), "utf8");
-  const plan: MandalaPlan = {
+  const plan = buildPlan({
     generatedAt: now.toISOString(),
     tallyUrl: opts.tallyUrl,
     semana,
     title: form.title,
     period: { from, to },
-    rede: "Ambos",
-    contato: { ...contato, file: opts.contatoFile },
+    contatoFile: opts.contatoFile,
+    contato,
     postsSource,
     postsSourceNote,
-    daily: selection.daily,
-    extras: selection.extras,
-    totalPosts: selection.rows.length,
-    newFollowers: { instagram: ig, youtube: yt, total },
+    selection,
+    instagram: ig,
+    youtube: yt,
     prints: prints.filter((p) => existsSync(p)),
     csvPath,
     missing,
-  };
+  });
   const jsonPath = join(outDir, `semana${semana}.json`);
   writeFileSync(jsonPath, JSON.stringify(plan, null, 2) + "\n", "utf8");
 
   console.log(`Semana ${semana} — período ${from} a ${to} (BRT); posts: ${postsSource}`);
   if (postsSourceNote) console.log(`  aviso: ${postsSourceNote}`);
-  for (const d of selection.daily) console.log(`  dia ${d.dayNum} (${d.ddmm}): ${d.url ?? "FALTANDO"}`);
+  for (const d of plan.daily) {
+    const shown = d.verified ? (d.url ?? "FALTANDO") : `NÃO VERIFICADO (candidato: ${d.candidate ?? "nenhum"})`;
+    console.log(`  dia ${d.dayNum} (${d.ddmm}): ${shown}`);
+  }
   console.log(`  extras: ${selection.extras.length}; total de posts no período: ${selection.rows.length}`);
+  const nf = plan.newFollowers;
   console.log(
-    `  novos seguidores: IG ${ig.value ?? "?"} (${ig.source === "insights" ? "bruto" : "saldo líquido"}) + YouTube ${yt.value ?? "?"} = ${total ?? "?"}`,
+    `  novos seguidores: IG ${ig.value ?? "?"} (${ig.source === "insights" ? "bruto" : "saldo líquido"}) + YouTube ${yt.value ?? "?"} = ${nf.total ?? "?"}${nf.totalComplete ? "" : " (INCOMPLETO: confirmar)"}`,
   );
-  console.log(`  prints: ${plan.prints.length}; contato: ${contato.email && contato.telefone ? "ok" : "incompleto"}`);
+  console.log(`  prints: ${plan.prints.length}; contato: ${plan.contato.email_ok && plan.contato.telefone_ok ? "ok" : "incompleto"}`);
   console.log(`  planilha: ${csvPath}`);
   console.log(`  plano: ${jsonPath}`);
-  if (missing.length) {
+  if (plan.missing.length) {
     console.log("FALTA:");
-    for (const m of missing) console.log(`  - ${m}`);
+    for (const m of plan.missing) console.log(`  - ${m}`);
+  }
+  if (!plan.dailyVerified) {
+    console.log("Links de dia NÃO verificados: o editor confirma cada um antes do preenchimento (exit 3).");
+    process.exitCode = EXIT_LOCAL_UNVERIFIED;
   }
 }
 
