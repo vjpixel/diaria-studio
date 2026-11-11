@@ -9,6 +9,9 @@
  *   npx tsx scripts/clarice-filter.ts --suggestions <in.json> --out <filtradas.json>
  *
  * --edition-dir <edição> protege trechos do autofix e verbos condicionais no Stage 4.
+ * --source-text <texto> (#12794) grava também `{out}.source.json` com o sha256
+ *   do texto enviado à Clarice e do filtrado, para o consumidor conferir que
+ *   o filtrado é DESTE texto (`scripts/lib/clarice-source-binding.ts`).
  * Log ausente é permitido; log inválido aborta sem gravar o filtrado.
  * Grava só as sugestões legítimas em --out (mesmo formato) e imprime no stdout
  * o resumo `{kept, dropped, dropped_details}`. Exit 1 args inválidos, 2 I/O.
@@ -17,6 +20,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { isMainModule } from "./lib/cli-args.ts";
 import { readFactCheckProtection } from "./lib/fact-check-protection.ts";
 import { filterClariceSuggestions } from "./lib/clarice-suggestion-guard.ts";
+import { buildClariceSourceSidecar, clariceSourceSidecarPath } from "./lib/clarice-source-binding.ts";
 
 function arg(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -52,8 +56,24 @@ function main(): void {
   }
   const { kept, dropped } = filterClariceSuggestions(list, editionDir
     ? { correctedTexts, protectConditional: true } : undefined);
+  const sourceTextPath = arg(argv, "source-text");
+  let sourceText: string | null = null;
+  if (sourceTextPath) {
+    try {
+      sourceText = readFileSync(sourceTextPath, "utf8");
+    } catch (e) {
+      console.error(`[clarice-filter] erro lendo --source-text: ${(e as Error).message}`);
+      process.exit(2);
+    }
+  }
   try {
-    writeFileSync(out, JSON.stringify(kept, null, 2), "utf8");
+    const content = JSON.stringify(kept, null, 2);
+    writeFileSync(out, content, "utf8");
+    // #12794: amarra o filtrado ao texto enviado à Clarice.
+    if (sourceText !== null) {
+      const sidecar = buildClariceSourceSidecar(sourceText, content, kept.length);
+      writeFileSync(clariceSourceSidecarPath(out), JSON.stringify(sidecar, null, 2) + "\n", "utf8");
+    }
   } catch (e) {
     console.error(`[clarice-filter] erro gravando --out: ${(e as Error).message}`);
     process.exit(2);

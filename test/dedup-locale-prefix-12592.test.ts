@@ -52,6 +52,53 @@ describe("dedupUrlKey (#12592)", () => {
   });
 });
 
+// #12800: o formato `xx-yy` casava slug comum em qualquer domínio e fundia
+// URLs distintas na mesma chave.
+describe("dedupUrlKey não confunde slug com idioma (#12800)", () => {
+  const SLUGS = ["ai-news", "my-blog", "ai-labs", "lg-ai", "go-live", "ai_tool", "mo-labs", "it-ai", "de-ai"];
+  for (const slug of SLUGS) {
+    it(`/${slug}/ fica na chave`, () => {
+      const url = `https://example.com/${slug}/x`;
+      assert.equal(dedupUrlKey(url), canonicalize(url));
+    });
+  }
+
+  it("cenário da issue: /ai-news e /my-blog continuam chaves distintas", () => {
+    assert.notEqual(dedupUrlKey("https://example.com/ai-news"), dedupUrlKey("https://example.com/my-blog"));
+  });
+
+  it("cenário da issue: donos diferentes no GitHub não colapsam", () => {
+    assert.notEqual(dedupUrlKey("https://github.com/ai-labs/foo"), dedupUrlKey("https://github.com/mo-labs/foo"));
+  });
+
+  it("dedup() não descarta a 2ª URL de slug parecido com idioma (Pass 2a)", () => {
+    const result = dedup(
+      [
+        { url: "https://example.com/ai-news", title: "Notícias de IA desta semana no mercado" },
+        { url: "https://example.com/my-blog", title: "Como montei um blog pessoal do zero" },
+      ],
+      new Set(),
+      0.85,
+    );
+    assert.equal(result.kept.length, 2);
+  });
+
+  it("locales reais seguem saindo, em qualquer caixa e separador", () => {
+    for (const loc of ["pt-BR", "en-us", "en-GB", "es-MX", "fr-CA", "zh-Hant", "ja-JP", "de_DE"]) {
+      assert.equal(dedupUrlKey(`https://example.com/${loc}/blog/x`), "https://example.com/blog/x", loc);
+    }
+  });
+
+  it("blog.google com idioma no 2º segmento (/intl/pt-br/) vira a mesma chave", () => {
+    assert.equal(
+      dedupUrlKey("https://blog.google/intl/pt-br/products/x"),
+      dedupUrlKey("https://blog.google/products/x"),
+    );
+    // Fora dos domínios com idioma no caminho, `/intl/` é seção comum.
+    assert.equal(dedupUrlKey("https://example.com/intl/pt-br/x"), "https://example.com/intl/pt-br/x");
+  });
+});
+
 describe("dedup() com prefixo de idioma (#12592)", () => {
   it("bloqueia a variante /pt-BR/ de URL já publicada sem prefixo", () => {
     const pastUrls = new Set([canonicalize(PUBLISHED)]);

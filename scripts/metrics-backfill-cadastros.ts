@@ -207,7 +207,7 @@ async function runBackfill(argv: string[]): Promise<void> {
 
   const dataRoot = dirname(dirname(dbPath));
   if (!existsSync(dataRoot)) {
-    console.error(`❌ data/ não existe: ${dataRoot} (ver CLAUDE.md setup, passo 2b)`);
+    console.error(`❌ data/ não existe: ${dataRoot} (ver docs/setup.md, passo 2b)`);
     process.exitCode = 1;
     return;
   }

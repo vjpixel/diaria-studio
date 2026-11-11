@@ -49,7 +49,7 @@ function requireCorpus() {
     console.error(
       `data/editions/ ausente em ${ROOT}.\n` +
         `Esta máquina não tem o corpus montado (sessão cloud, clone fresco).\n` +
-        `Crie a junction do OneDrive antes de rodar — ver CLAUDE.md passo 2b.`,
+        `Crie o link data/ antes de rodar — ver docs/setup.md, passo 2b.`,
     );
     process.exit(2);
   }

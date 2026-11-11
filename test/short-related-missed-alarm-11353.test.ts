@@ -175,7 +175,7 @@ describe("#11353 buildShortRelatedMissedAlarm", () => {
     const { subject, body } = buildShortRelatedMissedAlarm(ev, studioShortsListUrl());
     assert.equal(ev.verdict, "missing-record");
     assert.ok(isAlarmingShortRelatedVerdict(ev.verdict));
-    assert.match(ev.reason, /não confirmados; possível atraso de replicação do OneDrive/);
+    assert.match(ev.reason, /não confirmados; possível atraso de replicação do arquivo em data\//);
     assert.match(subject, /vínculo do vídeo relacionado não confirmado no 300/);
     assert.doesNotMatch(subject, /sem vídeo relacionado|não registrou/);
     assert.match(body, /não comprova falha da task no Neo nem ausência do vínculo no YouTube/);
@@ -183,13 +183,14 @@ describe("#11353 buildShortRelatedMissedAlarm", () => {
     assert.match(body, /somente se estiver ausente/);
   });
 
-  it("assunto cita a edição; corpo traz o passo manual e a ressalva do OneDrive", () => {
+  it("assunto cita a edição; corpo traz o passo manual e a ressalva de replicação (#12359: data/ não é mais OneDrive)", () => {
     const ev = evaluateShortRelatedMissed(input());
     const { subject, body } = buildShortRelatedMissedAlarm(ev, studioShortsListUrl());
     assert.match(subject, /261027/);
     assert.match(body, /missing-record/);
     assert.match(body, /Vídeo relacionado/);
-    assert.match(body, /OneDrive/);
+    assert.match(body, /Ressalva: .*arquivo replicado em `data\/`/);
+    assert.doesNotMatch(body, /OneDrive/);
     assert.ok(body.includes(studioShortsListUrl()));
   });
 });

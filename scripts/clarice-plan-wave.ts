@@ -66,6 +66,7 @@ import {
   fetchQueuedAndCommittedCampaignListIds, // #7738/#7854 — 1 Promise.all cobre os 2 eixos, sem refazer status=queued
   fetchDraftCampaigns,
   warnIfCampaignQuotaLow, // #6458
+  refreshCampaignQuotaStateFromKv, // #12841
   BrevoRateLimitError, // #6831
 } from "./lib/brevo-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -371,6 +372,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     // real: se a cota já estava baixa por causa de OUTRA sessão/task, o
     // relatório ganha esse contexto mesmo que a chamada abaixo acabe
     // funcionando (ou falhando) de qualquer jeito.
+    await refreshCampaignQuotaStateFromKv(); // #12841: última observação de qualquer máquina
     warnIfCampaignQuotaLow();
     try {
       // #7854 (review): 1 chamada cobre os 2 eixos — `fetchCommittedCampaignListIds`

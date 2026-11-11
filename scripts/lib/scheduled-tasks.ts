@@ -390,6 +390,27 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#11353",
   },
   {
+    name: "Diaria-Agendamentos-Tick",
+    description:
+      "consumidor do banco de agendamentos (data/agendamentos/banco.json): item vencido sem publicação ou falho vira issue de alarme; não publica (#12774)",
+    steps: [{ key: "tick", script: "scripts/agendamentos-tick.ts" }],
+    logPath: "agendamentos/.tick.log",
+    // De hora em hora (minuto 0): o alvo dos itens é hora cheia BRT (vertical 2
+    // às 12:00, D+7) e o achado sai depois de `alvo + 60 min`, então o alarme
+    // chega na 2ª execução depois do horário. Só LÊ o banco — nunca grava
+    // (o arquivo vem pelo OneDrive; quem grava são as sessões, pelo CLI
+    // `scripts/agendamentos.ts`). Banco ausente = nada agendado, sem achado.
+    // Sem `enabled: false`: o `Diaria-Remediate-Never-Armed-Tasks` (#8153)
+    // arma no 300 depois do merge.
+    schedule: { kind: "interval", hours: 1 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem avaliar (banco ausente nao e prova de nada agendado).",
+    },
+    issue: "#12774",
+  },
+  {
     name: "Diaria-Continuo-Ratelimit-Watchdog",
     description:
       "roda hermes/scripts/pause-cron-on-ratelimit.py de hora em hora: pausa o contínuo em 403 Key limit exceeded e o retoma logo depois da virada UTC, sem esperar o watch diário (#10070)",
@@ -3582,8 +3603,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // brutos das edições com vídeo publicado (ou com mais de 14 dias sem
     // registro) em /mnt/hd-sata/arquivo-video, fora do espelho do bisync,
     // confere tamanho + MD5 contra o Drive e só então apaga do Drive sem
-    // lixeira. Pausa o diaria-gdrive-bisync.timer durante a rodada (e espera
-    // a rodada em curso terminar, até 90 min) e religa no fim. Política em
+    // lixeira. #12789: a origem default é a diaria-studio-video da
+    // diaria.editor (gdrive-diaria:), que não tem espelho local; todo bruto é
+    // baixado e conferido, e nenhum bisync é pausado. Só numa rodada manual
+    // com espelho legado (VIDEO_ARCHIVE_LOCAL_ROOT + VIDEO_ARCHIVE_REMOTE_ROOT,
+    // a pasta antiga da vjpixel) o diaria-gdrive-bisync.timer é pausado
+    // durante a rodada (espera a rodada em curso, até 90 min) e religado no
+    // fim. Política em
     // lib/diaria/video-bruto-archive.ts. Sábado 03:00 BRT: madrugada, fora da
     // janela de edição e da montagem; slot livre (a outra semanal de sábado
     // nessa faixa é 03:40). Sem `guard` de data/: sem o junction a

@@ -32,6 +32,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
 import { readSocialRotation, weekdayRotationSlot } from "./lib/social-schedule-rotation.ts";
+import { clearedDailyPostTimes } from "./lib/diaria/vertical-social-clearance.ts";
 
 interface ScheduleConfig {
   d1_time?: string;
@@ -112,6 +113,12 @@ export interface ComputeScheduleInput {
    * 5 publicadores da diária giram juntos sem precisar de flag.
    */
   applyRotation?: boolean;
+  /**
+   * #12748: `false` desliga o desvio do horário fixo do vertical
+   * (`publishing.shorts.schedule`). Default: desvia sempre que o config tem o
+   * bloco `publishing.shorts` e o post sai no dia da edição.
+   */
+  applyVerticalClearance?: boolean;
 }
 
 /**
@@ -298,6 +305,31 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
             `(fixo ${baseTime}; dia útil #${rot.weekdayIndex}, ciclo ${rot.cycle})`,
         );
       }
+    }
+  }
+
+  // #12748: o vertical sai em horário fixo (#12250) nas mesmas contas; o post
+  // que cairia a menos de 2 h dele desvia (default (a) da issue). Depois da
+  // rotação, porque o desvio parte do horário do dia; o mesmo desvio em todas
+  // as redes. O slot explícito e o caller fora da grade (applyRotation: false)
+  // não desviam.
+  if (!slot && input.applyRotation !== false && input.applyVerticalClearance !== false) {
+    const cleared = clearedDailyPostTimes(
+      config,
+      { year: target.getFullYear(), month: target.getMonth() + 1, day: target.getDate() },
+      editionDate,
+    )?.[destaque];
+    if (cleared?.shifted && cleared.original === time && cleared.time) {
+      if (process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
+        console.error(
+          `[compute-schedule] vertical #12748: ${editionDate} ${platform}/${destaque} ${time} → ${cleared.time} ` +
+            `(a menos de 2 h do vertical das ${cleared.blockedBy} BRT, horário fixo do #12250)` +
+            (rotatedSlot ? `; célula da rotação #10305 deslocada, descartar da medição` : ""),
+        );
+      }
+      time = cleared.time;
+    } else if (cleared?.warning && process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
+      console.error(`[compute-schedule] WARN vertical #12748: ${platform}/${cleared.warning}`);
     }
   }
 

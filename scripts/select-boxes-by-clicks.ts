@@ -940,7 +940,7 @@ function main(): void {
 
   if (!existsSync(EDITIONS_DIR)) {
     console.error(
-      `[select-boxes-by-clicks] ${EDITIONS_DIR} não encontrado — data/ ausente (junction OneDrive não criada nesta máquina?)`,
+      `[select-boxes-by-clicks] ${EDITIONS_DIR} não encontrado — data/ ausente (link data/ não criado nesta máquina?)`,
     );
     process.exit(1);
   }

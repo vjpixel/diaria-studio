@@ -132,6 +132,7 @@ import {
   LATEST_VIDEO_KV_KEY,
   LATEST_VIDEO_PATH,
   buildLatestVideoTarget,
+  effectiveLatestVideoRecord,
   latestVideoClickCounterKey,
   latestVideoClickSource,
   parseLatestVideoRecord,
@@ -710,7 +711,8 @@ export default {
         const day = new Date().toISOString().slice(0, 10);
         await incrementApoiarCounter(env.CURSOS_SUBSCRIBERS, latestVideoClickCounterKey(latestVideoClickSource(reqUrl), day));
       }
-      return Response.redirect(buildLatestVideoTarget(reqUrl, record), 302);
+      // #12801: horizontal ainda privado (agendado para 06:00 BRT) cede ao anterior/lista do canal.
+      return Response.redirect(buildLatestVideoTarget(reqUrl, effectiveLatestVideoRecord(record, new Date())), 302);
     }
 
     const response = await env.ASSETS.fetch(request);

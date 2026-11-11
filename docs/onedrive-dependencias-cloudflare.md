@@ -197,7 +197,8 @@ orçamento.
 - **Quem grava / lê:** grava a task do Neo `diaria-short-video-relacionado`
   (`.claude/skills/diaria-publica-video/short-related-task.md:62`); lê o
   `Diaria-Short-Related-Missed-Alarm` no `300`
-  (`scripts/short-related-missed-alarm.ts:136`, o caso `missing-record`).
+  (`scripts/short-related-missed-alarm.ts`, `evaluateShortRelatedMissed`, o
+  caso `missing-record`).
 - **Natureza:** sinal pequeno, um escritor, uma chave por edição, 1 escrita
   por dia útil.
 - **Problema:** a ausência do arquivo no `300` não diz se a task não rodou ou
@@ -205,6 +206,10 @@ orçamento.
 - **Destino recomendado:** **KV**, já decidido pelo editor na #12541 (item 2).
   Chave `short-related:{AAMMDD}`, valor com `linked|failed|alerted`, IDs e
   timestamp. O arquivo da edição continua sendo gravado, para quem lê a pasta.
+  **Implementado** (11/11/2026): namespace `diaria-ops-state`
+  (`platform.config.json` → `ops_state_kv.namespace_id`), gravação por
+  `scripts/short-related-kv-publish.ts` (Passo 6 do roteiro da task), leitura
+  no alarme antes do arquivo (`scripts/lib/diaria/short-related-kv.ts`).
 - **Esforço:** baixo. Cliente REST pronto; a task do Neo ganha um `put`, o
   alarme ganha um `get`.
 - **Risco:** baixo. Consistência eventual não atrapalha: o alarme roda às
@@ -263,6 +268,15 @@ orçamento.
   muda o caminho crítico.
 - **Risco:** baixo. Uma ida à rede por resposta da Brevo; manter o arquivo
   local como cache e mandar ao KV sem bloquear a chamada.
+- **Feito (#12841):** chave `brevo-rate:email-campaigns` no namespace
+  `diaria-ops-state` (`ops_state_kv`, o mesmo do #12541). A escrita grava o
+  arquivo e manda o estado ao KV em segundo plano (PUTs do mesmo processo em
+  ordem, intermediários coalescidos); os leitores chamam
+  `refreshCampaignQuotaStateFromKv()` antes do assert, que traz a observação
+  do KV para o arquivo quando é mais nova. KV fora do ar ou sem credencial
+  (`CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WORKERS_TOKEN`) cai no arquivo, sem
+  lançar; `BREVO_RATE_STATE_KV=0` desliga. A chave é uma só, como o arquivo:
+  o header não diz de qual conta Brevo veio a resposta.
 
 ### G6. Interruptores e overrides do editor
 
@@ -408,6 +422,35 @@ orçamento.
   Cloudflare, o alarme do Drive deixa de proteger estado crítico e pode ter a
   urgência reduzida.
 
+### G14. Banco de agendamentos (sessões gravam, `300` lê)
+
+Acrescentado em 11/11/2026, depois da medição da seção 1: a task
+`Diaria-Agendamentos-Tick` (#12774) entrou no registro depois do censo.
+
+- **Caminho:** `data/agendamentos/banco.json` (`AGENDAMENTOS_DB_REL_PATH`,
+  `scripts/lib/diaria/agendamentos.ts:40`).
+- **Quem grava / lê:** gravam as sessões de vídeo e publicação
+  (`/diaria-video-montagem`, `/diaria-publica`) pelo CLI
+  `scripts/agendamentos.ts`, no Neo ou no `300`; lê a task
+  `Diaria-Agendamentos-Tick` no `300`, de hora em hora
+  (`scripts/agendamentos-tick.ts`), que nunca grava.
+- **Natureza:** registro pequeno (um item por peça agendada, poucas escritas
+  por dia), arquivo único com várias máquinas escrevendo.
+- **Situação:** a escrita é atômica e tem revisão otimista
+  (`saveAgendamentos`, linha 187), mas a revisão é conferida contra o disco
+  local: duas máquinas que gravam antes de o sync replicar a escrita uma da
+  outra passam as duas na conferência, e o cliente de sync fica com uma das
+  versões (ou com uma cópia de conflito). Na prática é uma sessão por vez
+  (comentário da linha 24), e nenhuma escrita perdida publica nada em
+  dobro: um `marcar` perdido vira alarme de item vencido no `tick`, mas um
+  `registrar` perdido some sem alarme (o item não existe para o `tick` nem
+  para a listagem do `/diaria-publica` de D+7).
+- **Destino recomendado:** continua no Drive. Se aparecer cópia de conflito
+  de `banco.json` ou item sumido, o banco vai para o D1 junto da tabela de
+  locks do G2a: a revisão otimista vira `UPDATE ... WHERE revisao = :lida`,
+  que o D1 executa de forma atômica.
+- **Esforço / risco:** nenhum agora.
+
 ## 5. Resumo e ordem sugerida
 
 | Grupo | Dado | Entre máquinas | Destino | Esforço | Risco | Ordem |
@@ -421,6 +464,7 @@ orçamento.
 | G8 | SQLite | não (só `300`) | local + snapshot no Drive/R2 | médio | médio | antes do cutover, se possível |
 | G4 | registro/marca do vertical | sim, já por escritor | Drive; D1 se houver duplicado | nenhum | baixo | reavaliar |
 | G6 | interruptores | sim, escrita rara | Drive; KV se virar freio de emergência | nenhum | baixo | reavaliar |
+| G14 | banco de agendamentos | sim (sessões para `300`) | Drive; D1 se houver conflito | nenhum | baixo | reavaliar |
 | G1, G7, G10, G12 | trabalho, stores do `300`, logs de task, cursores | trabalho sim, resto não | Drive | nenhum | o de hoje | cutover normal |
 | G13 | alarmes do sync | não | sai com a #12360 | baixo | baixo | com a #12360 |
 
@@ -477,6 +521,13 @@ pode ter ficado só em G10, e uma marcação pode sobrar (caso corrigido:
 decidir os grupos; a issue filha de cada grupo refaz a lista de tasks lendo os
 scripts antes de escopar a migração.
 
+**Mantido em dia por teste:** `test/onedrive-dependencias-inventario-12736.test.ts`
+falha quando uma task de `SCHEDULED_TASKS` (ou do `DESKTOP_SCHEDULED_TASKS`)
+não tem linha aqui, quando sobra linha de task que saiu do registro, ou
+quando a coluna de grupos fica vazia ou cita um grupo sem seção `### Gn.` na
+seção 4. Task nova entra com uma linha nesta tabela e os grupos dela; se não
+couber em nenhum grupo, ganha um grupo novo na seção 4.
+
 Task fora do systemd: `diaria-short-video-relacionado` (Neo, `5 6 * * 1-5`,
 `.claude/skills/diaria-publica-video/short-related-task.md`), grupos G3 e G4.
 
@@ -489,6 +540,7 @@ Task fora do systemd: `diaria-short-video-relacionado` (Neo, `5 6 * * 1-5`,
 | Diaria-Video-D1-Link-Watch | daily 06:05 | armada | `scripts/video-d1-link-watch.ts` | `video-d1-link-watch/.watch.log` | `editions` | G4, G1, G10 |
 | Diaria-YouTube-Analytics-Snapshot | daily 11:35 | armada | `scripts/youtube-analytics-snapshot.ts` | `youtube-analytics/.snapshot.log` | `editions` | G4, G1, G10 |
 | Diaria-Short-Related-Missed-Alarm | daily 13:30 | armada | `scripts/short-related-missed-alarm.ts` | `short-related-missed-alarm/.alarm.log` | `editions` | G3, G4, G1, G10 |
+| Diaria-Agendamentos-Tick | interval 1h | armada | `scripts/agendamentos-tick.ts` | `agendamentos/.tick.log` | `editions` | G14, G10 (incluída em 11/11/2026, depois da medição) |
 | Diaria-Continuo-Ratelimit-Watchdog | interval 1h | armada | `scripts/run-continuo-ratelimit-watchdog.ts` | `continuo/.ratelimit-watchdog.log` |  | G2, G10 |
 | Diaria-Home-Meta-Check | daily 09:35 | armada | `scripts/home-meta-check.ts` | `home-meta-check/.meta-check.log` |  | G10 |
 | Diaria-Brevo-Diaria-Guardrail | interval 4h | armada | `scripts/check-brevo-diaria-guardrail.ts` | `brevo-diaria/.guardrail-check.log` |  | G5, G7, G10 |

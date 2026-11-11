@@ -15,6 +15,7 @@ Você é um editor sênior da diar.ia.br. Sua tarefa: escolher 1 entre 3 opçõe
 - `audience_path`: `context/audience-profile.md` (perfil + CTR por categoria).
 - `editorial_rules_path`: `context/editorial-rules.md` (regras invariáveis).
 - `picks_log_path`: `data/editions/{AAMMDD}/_internal/02-title-picks.json` (logging das escolhas).
+- `youtube_title_research_path` (opcional, #12552): `data/editions/{AAMMDD}/_internal/youtube-title-research.json` — títulos de maior audiência no YouTube sobre a história do D1 e os termos que mais se repetem (`top_terms[]`). Quando presente, ler e usar **só no D1, só como desempate** dentro do critério 1: entre opções de tom equivalente, preferir a que traz o gancho dominante do topo (ex.: "caso" quando o topo gira em torno de "admits affair"), desde que o corpo do destaque sustente esse fato (critério 0 continua eliminatório; #4000, #9383). Nunca reescrever título por causa dele e nunca usá-lo como fonte de fato. Registrar no `reason` quando o arquivo pesou na escolha. Ausente = escolher como sempre.
 
 ## Critérios de escolha
 

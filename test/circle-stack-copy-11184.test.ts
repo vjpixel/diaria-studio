@@ -52,7 +52,7 @@ const goodCopy = (s: CircleStackSelection) => ({
   opening: "Semana boa para quem automatiza: o n8n ganhou agentes nativos e o Claude Code mudou o fluxo de revisão.",
   notes: [
     { url: "https://blog.n8n.io/n8n-2", stackNote: "Dá para montar o agente direto no fluxo, sem nó externo." },
-    { url: "https://code.claude.com/docs/en/changelog", stackNote: "Vale reler o changelog antes de atualizar o projeto." },
+    { url: "https://code.claude.com/docs/en/changelog", stackNote: "O changelog lista o que muda no fluxo de revisão." },
     { url: "https://news.example.com/estudo", stackNote: "O número ajuda a calibrar o que prometer ao cliente." },
   ],
 });

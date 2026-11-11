@@ -998,7 +998,9 @@ export interface TrainBatchOutcome {
    * retidas (também em `blockingThreads`), pra quem lê o status ir direto à
    * leitura da thread em vez de investigar sessão concorrente. Terminal e
    * conta como falha real (trabalho pendente), como o `lock-blocked` que
-   * rotulava este caso antes.
+   * rotulava este caso antes. O outcome é sempre do PR barrado sozinho: num
+   * lote >=2, os demais PRs voltam pra fila sem ele (#12784), como no
+   * `retido`.
    *
    * `"threads-ilegiveis"` (#12734, review da PR #12740): a condição 2 do
    * Gate 2 falhou por ERRO de query/paginação das threads — não há lista
@@ -1257,6 +1259,24 @@ export async function runMergeTrain(
           status: mergeResult.retidoIlegivel ? "retido-ilegivel" : "retido",
           detail: mergeResult.error ?? "retido-para-editor",
         });
+        if (rest.length > 0) queue.push({ prs: rest });
+      } else if (mergeResult.threadsBlockedPr !== undefined && mergeResult.blockingThreads !== undefined && batch.prs.length > 1) {
+        // #12784: thread de review aberta é estado de UM PR, como a retenção
+        // acima — o PR com thread sai (terminal `threads-bloqueantes`, com os
+        // IDs) e os demais voltam pra fila como lote estritamente menor, em
+        // vez de o lote inteiro terminar barrado. Anti-livelock preservado
+        // (cada re-entrada encolhe o lote). `threads-ilegiveis` NÃO segue este
+        // caminho: erro de leitura das threads tende a ser da API, não do PR,
+        // e segue terminal pro lote inteiro (fail-closed).
+        const blockedPr = mergeResult.threadsBlockedPr;
+        const rest = batch.prs.filter((p) => p !== blockedPr);
+        outcomes.push({
+          batch,
+          status: "abandoned",
+          detail: `PR #${blockedPr} com thread(s) de review aberta(s) no instante do merge — lote refeito sem ele: ${mergeResult.error}`,
+        });
+        const blockedOutcome = threadsBlockedOutcome({ prs: [blockedPr] }, mergeResult);
+        if (blockedOutcome) outcomes.push(blockedOutcome);
         if (rest.length > 0) queue.push({ prs: rest });
       } else if (mergeResult.lockDenied) {
         // Esgotou os retries e o lock continua negado — achado do fleet

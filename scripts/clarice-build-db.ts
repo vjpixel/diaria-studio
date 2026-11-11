@@ -173,6 +173,16 @@ function ingestStripe(
   };
 }
 
+/**
+ * Dica para CSV de fonte ilegível (#12837). Cobre as duas causas: no Drive for
+ * desktop em streaming o arquivo pode estar só na nuvem; no 300 o bisync grava
+ * cópia local completa, então ilegível lá aponta corrupção ou conflito do
+ * bisync, que esperar não resolve.
+ */
+export const UNREADABLE_SOURCE_HINT =
+  `Causa provável: arquivo só na nuvem (Drive for desktop em streaming: marque "Disponível off-line" ou abra o arquivo) ` +
+  `ou corrompido/em conflito no bisync do 300 (confira o log do bisync e as cópias .conflictN na pasta).`;
+
 // ---------------------------------------------------------------------------
 // MV → upsert colunas mv_* a partir dos mv-export-*.csv de cada ciclo
 // ---------------------------------------------------------------------------
@@ -289,7 +299,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   if (!existsSync(dataDir)) {
     console.error(`❌ data-dir não existe: ${dataDir}`);
     console.error(
-      "   (data/ mora no OneDrive como junction — ver CLAUDE.md setup)",
+      "   (data/ é um link para o Google Drive da diaria.editor — ver docs/setup.md, passo 2b)",
     );
     process.exit(1);
   }
@@ -307,7 +317,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     console.error(
       `⚠️  STORE PARCIAL: ${stripe.skipped_files.length} CSV(s) de fonte ilegíveis ` +
         `(${stripe.skipped_files.join(", ")}) — faltam os contatos desses arquivos. ` +
-        `Hidrate-os (OneDrive) e re-rode pra completar.`,
+        `${UNREADABLE_SOURCE_HINT} Corrija e re-rode pra completar.`,
     );
   }
 
@@ -318,7 +328,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     console.error(
       `⚠️  MV PARCIAL: ${mv.skipped.length} arquivo(s) MV ilegíveis ` +
         `(${mv.skipped.join(", ")}) — verificação desses ciclos fora do store. ` +
-        `Hidrate-os (OneDrive) e re-rode.`,
+        `${UNREADABLE_SOURCE_HINT} Corrija e re-rode.`,
     );
   }
 

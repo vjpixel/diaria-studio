@@ -813,11 +813,49 @@ export function parseUseMelhorReadingTimeItems(md: string): UseMelhorReadingTime
 }
 
 /**
+ * (#12537) Destaques cuja fonte principal baixou só como prévia de paywall
+ * (manifest `status: "ok"` + `completeness: "preview"`). Manifest ausente ou
+ * anterior ao #12537 (sem `completeness`) = conjunto vazio.
+ */
+export function previewDestaques(manifest: ManifestEntry[] | null | undefined): Set<number> {
+  const out = new Set<number>();
+  for (const e of manifest ?? []) {
+    if (e && typeof e.destaque === "number" && e.status === "ok" && e.completeness === "preview") {
+      out.add(e.destaque);
+    }
+  }
+  return out;
+}
+
+/**
+ * (#12537) Contrato do `fact-checker.md` garantido em TS: claim de destaque
+ * cuja fonte principal é só a prévia do paywall nunca sai
+ * `NOT_FOUND_IN_SOURCE` (o fato pode estar no trecho cortado, e o
+ * `--check-blocking` bloquearia o gate por um falso "não encontrado"). Sai
+ * `SOURCE_UNREACHABLE`, que o gate lista em "Claims NÃO verificados" junto do
+ * aviso de prévia. Mesmo padrão do `downgradeSummaryOnlyClaim` (#12540): o
+ * prompt pede, o normalizador garante.
+ */
+export function recastPreviewNotFound(c: FactClaim, previews: Set<number>): FactClaim {
+  if (c.verdict !== "NOT_FOUND_IN_SOURCE") return c;
+  if (typeof c.destaque !== "number" || !previews.has(c.destaque)) return c;
+  const prefix = "[rebaixado de NOT_FOUND_IN_SOURCE: fonte principal só em prévia de paywall (#12537)]";
+  return { ...c, verdict: "SOURCE_UNREACHABLE", note: c.note ? `${prefix} ${c.note}` : prefix };
+}
+
+/**
  * Valida e normaliza o output do subagente fact-checker.
  * Garante que o JSON tem o schema esperado antes de gravar.
  * Retorna o resultado normalizado ou lança erro se inválido.
+ * (#12537) `opts.manifest` (o `fact-check-sources/manifest.json`) liga o
+ * `recastPreviewNotFound`; sem ele, nada muda.
  */
-export function normalizeFactCheckResult(raw: unknown, edition: string): FactCheckResult {
+export function normalizeFactCheckResult(
+  raw: unknown,
+  edition: string,
+  opts: { manifest?: ManifestEntry[] | null } = {},
+): FactCheckResult {
+  const previews = previewDestaques(opts.manifest);
   if (!raw || typeof raw !== "object") {
     throw new Error("fact-checker output não é um objeto JSON");
   }
@@ -865,6 +903,8 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
         }))
         // #12540: claim conferido só contra o article.summary nunca sai verde.
         .map(downgradeSummaryOnlyClaim)
+        // #12537: fonte principal só em prévia de paywall nunca dá NOT_FOUND.
+        .map((c) => recastPreviewNotFound(c, previews))
     : [];
 
   const summary: FactCheckSummary = {
@@ -1201,7 +1241,8 @@ async function main(): Promise<number | void> {
       return 1;
     }
     const raw = JSON.parse(readFileSync(inputPath, "utf8")) as unknown;
-    const result = normalizeFactCheckResult(raw, edition);
+    const manifest = readExistingManifest(join(internalDir, "fact-check-sources"));
+    const result = normalizeFactCheckResult(raw, edition, { manifest });
     // #11671: carimbo do conteúdo checado. Preservado se já existe (re-rodar
     // --check-blocking depois de editar o texto NÃO recarimba — senão a
     // defasagem nunca apareceria); gravado na 1ª passada após o agente.
@@ -1221,7 +1262,7 @@ async function main(): Promise<number | void> {
     console.log(
       formatGateSummary(result, {
         primaryUrls,
-        manifest: readExistingManifest(join(internalDir, "fact-check-sources")),
+        manifest,
       }),
     );
     if (staleness.stale) console.log(formatStaleWarning(staleness));

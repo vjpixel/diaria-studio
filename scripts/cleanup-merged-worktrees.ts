@@ -796,11 +796,16 @@ export function getWorktreeMtimeMsSafe(path: string): number | null {
  * vez usa `listAllProcesses()`, `[]` em plataforma não suportada — mesmo
  * comportamento de antes do #8661 nesse caso, nunca bloqueia a remoção só
  * por não saber checar).
+ *
+ * **#12457**: `opts.run` (runner do `git`) e `opts.timeoutMs` são injetáveis
+ * só para teste; o default é `spawnSync` com `WORKTREE_REMOVE_TIMEOUT_MS`
+ * (30 s por worktree). O `error` devolvido vem de `describeGitRemoveFailure`.
  */
 export function removeWorktreeSafe(
   path: string,
   cwd: string,
   liveProcesses?: readonly ProcessInfo[],
+  opts: { run?: WorktreeRemoveRunner; timeoutMs?: number } = {},
 ): { ok: boolean; error?: string } {
   const livePids = findLiveProcessesInPath(path, liveProcesses);
   if (livePids.length > 0) {
@@ -811,18 +816,17 @@ export function removeWorktreeSafe(
     };
   }
 
+  // #12457: teto POR worktree, próprio (30 s), em vez do `GH_TIMEOUT_MS`
+  // (10 s) das consultas — e o motivo da falha sai legível (timeout, sinal,
+  // falha de spawn, exit N + stderr), nunca mais `exit null`.
+  const timeoutMs = opts.timeoutMs ?? WORKTREE_REMOVE_TIMEOUT_MS;
+  const run = opts.run ?? defaultWorktreeRemoveRunner;
   let gitError: string | undefined;
   try {
-    const result = spawnSync("git", ["worktree", "remove", "--force", path], {
-      cwd,
-      encoding: "utf8",
-      timeout: GH_TIMEOUT_MS,
-    });
-    if (result.status !== 0) {
-      gitError = (result.stderr || result.stdout || `exit ${result.status}`).trim();
-    }
+    const result = run(["worktree", "remove", "--force", path], { cwd, timeoutMs });
+    gitError = describeGitRemoveFailure(result, timeoutMs) ?? undefined;
   } catch (e) {
-    gitError = (e as Error).message;
+    gitError = `git worktree remove lançou: ${(e as Error).message}`;
   }
 
   // A lógica de fallback (limpeza segura só quando o git reportou sucesso
@@ -830,6 +834,73 @@ export function removeWorktreeSafe(
   // único compartilhado com branch-cleanup.ts e merge-train-live.ts (#8209
   // residual).
   return resolveWorktreeRemoval(gitError ? { ok: false, error: gitError } : { ok: true }, path);
+}
+
+/**
+ * #12457 — teto de tempo de UM `git worktree remove`. Antes a remoção usava
+ * `GH_TIMEOUT_MS` (10 s, pensado para consultas `gh`/`git` de leitura): no
+ * Windows, apagar um worktree com `node_modules/` real (dezenas de milhares
+ * de arquivos depois do `npm ci` do item 3 das regras de dispatch) passa
+ * disso com folga, o `spawnSync` mata o `git` e devolve `status: null`,
+ * `signal: "SIGTERM"`, `error.code: "ETIMEDOUT"` e stderr vazio — que o log
+ * antigo imprimia como `exit null`. 30 s por worktree dá margem à remoção
+ * legítima e ainda limita o pior caso (N worktrees travados = N × 30 s).
+ */
+export const WORKTREE_REMOVE_TIMEOUT_MS = 30_000;
+
+/** Subconjunto de `SpawnSyncReturns<string>` que o diagnóstico lê. */
+export interface WorktreeRemoveRunResult {
+  status: number | null;
+  signal?: NodeJS.Signals | string | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  error?: (Error & { code?: string }) | undefined;
+}
+
+export type WorktreeRemoveRunner = (
+  args: string[],
+  opts: { cwd: string; timeoutMs: number },
+) => WorktreeRemoveRunResult;
+
+const defaultWorktreeRemoveRunner: WorktreeRemoveRunner = (args, { cwd, timeoutMs }) =>
+  spawnSync("git", args, { cwd, encoding: "utf8", timeout: timeoutMs });
+
+function formatSeconds(ms: number): string {
+  const s = ms / 1000;
+  return Number.isInteger(s) ? `${s}s` : `${s.toFixed(1)}s`;
+}
+
+/**
+ * #12457 — motivo legível de um `git worktree remove` que falhou, ou `null`
+ * se ele terminou com `status 0`. Puro, para teste com resultado fabricado.
+ *
+ * `status: null` no `spawnSync` quer dizer que o processo não saiu por conta
+ * própria: ou o `timeout` estourou (o Node mata com `killSignal`, default
+ * SIGTERM, e põe `error.code = "ETIMEDOUT"`), ou outro agente o matou por
+ * sinal, ou o spawn nem começou (`error.code = "ENOENT"` etc.). Cada caso
+ * vira uma frase própria; stderr/stdout, quando houver, vão junto.
+ */
+export function describeGitRemoveFailure(result: WorktreeRemoveRunResult, timeoutMs: number): string | null {
+  if (result.status === 0 && !result.error) return null;
+  const output = (result.stderr || result.stdout || "").trim();
+  const withOutput = (reason: string) => (output ? `${reason} — stderr: ${output}` : `${reason} (sem stderr)`);
+  const code = result.error?.code;
+  if (code === "ETIMEDOUT") {
+    return withOutput(
+      `timeout: git worktree remove passou de ${formatSeconds(timeoutMs)} e foi morto` +
+        `${result.signal ? ` (${result.signal})` : ""}; o worktree pode ter ficado pela metade e volta na próxima varredura`,
+    );
+  }
+  if (result.status === null && result.signal) {
+    return withOutput(`git worktree remove morto pelo sinal ${result.signal}`);
+  }
+  if (result.error) {
+    return withOutput(`git worktree remove não rodou: ${code ? `${code}: ` : ""}${result.error.message}`);
+  }
+  if (result.status === null) {
+    return withOutput("git worktree remove terminou sem código de saída nem sinal");
+  }
+  return withOutput(`git worktree remove saiu com código ${result.status}`);
 }
 
 function listWorktreesSafe(cwd: string): WorktreeEntry[] {
@@ -1186,8 +1257,13 @@ export function runMainWithCheckers(
     isHeadOnRemote?: (path: string) => boolean;
     lastActivityMs?: (path: string) => number | null;
     nowMs?: number;
+    /** #12457 — relógio para medir o tempo de cada remoção e o total da
+     *  varredura. Injetável só para teste; default `Date.now`. */
+    clock?: () => number;
   },
 ): void {
+  const clock = checkers.clock ?? Date.now;
+  const startedAt = clock();
   const dryRun = args["dry-run"] === "true";
   const confirmShared = args["confirm-shared"] === "true";
   // #11446: `--reclaim-open-pr` inclui no seletor de worktree já enviado as
@@ -1338,6 +1414,7 @@ export function runMainWithCheckers(
     // snapshot — não um falso positivo, e a rede de segurança pra esse
     // residual é o sweep dedicado, `scripts/orphaned-test-process-sweep.ts`).
     const liveProcessSnapshot: ProcessInfo[] = dryRun ? [] : checkers.listProcesses();
+    const removeLoopStartedAt = clock();
     for (const entry of toRemove) {
       const reason = mergedRemovalEffective.includes(entry)
         ? "branch mergeada"
@@ -1350,18 +1427,30 @@ export function runMainWithCheckers(
         console.log(`[cleanup-merged-worktrees] (dry-run) removeria: ${entry.path} (branch ${entry.branch}, motivo: ${reason})`);
         continue;
       }
-      const result = checkers.removeWorktree(entry.path, liveProcessSnapshot);
+      const removeStartedAt = clock();
+      let result: { ok: boolean; error?: string };
+      try {
+        result = checkers.removeWorktree(entry.path, liveProcessSnapshot);
+      } catch (e) {
+        // #12457: uma remoção que lança não derruba as seguintes.
+        result = { ok: false, error: `removeWorktree lançou: ${(e as Error).message}` };
+      }
+      const took = formatSeconds(clock() - removeStartedAt);
       if (result.ok) {
         removed++;
-        console.log(`[cleanup-merged-worktrees] removido: ${entry.path} (branch ${entry.branch}, motivo: ${reason})`);
+        console.log(`[cleanup-merged-worktrees] removido: ${entry.path} (branch ${entry.branch}, motivo: ${reason}, ${took})`);
       } else {
         failed++;
-        console.warn(`[cleanup-merged-worktrees] falha ao remover ${entry.path}: ${result.error}`);
+        console.warn(
+          `[cleanup-merged-worktrees] falha ao remover ${entry.path} (${took}): ${result.error ?? "motivo não informado"}`,
+        );
       }
     }
 
     if (!dryRun) {
-      console.log(`[cleanup-merged-worktrees] fim: ${removed} removido(s), ${failed} falha(s).`);
+      console.log(
+        `[cleanup-merged-worktrees] fim: ${removed} removido(s), ${failed} falha(s) em ${formatSeconds(clock() - removeLoopStartedAt)}.`,
+      );
     }
 
     // #8209: varredura de CASCAS — diretórios sob `.claude/worktrees/` que
@@ -1396,6 +1485,9 @@ export function runMainWithCheckers(
     }
   } catch (e) {
     console.warn(`[cleanup-merged-worktrees] erro inesperado, pulando cleanup (fail-soft): ${(e as Error).message}`);
+  } finally {
+    // #12457: tempo total sempre visível, inclusive nas saídas antecipadas.
+    console.log(`[cleanup-merged-worktrees] tempo total: ${formatSeconds(clock() - startedAt)}.`);
   }
 }
 

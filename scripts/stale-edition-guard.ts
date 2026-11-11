@@ -7,7 +7,7 @@
  * `data/run-log.jsonl` (`level: warn`, `message: stale_edition_guard_forced`,
  * com os sinais em `details`, #11714). `--edition` default = nome do
  * diretório quando ele é um AAMMDD.
- * Exit 0 sem sinais · 4 outro host possivelmente à frente (halt: aguardar sync OneDrive).
+ * Exit 0 sem sinais · 4 outro host possivelmente à frente (halt: aguardar sync do Drive, #12837).
  * Qualquer outra saída (2 uso inválido, crash do tsx/exceção) NÃO é "sem sinais":
  * o caller trata exit ≠ 0 como halt (#11690).
  * Só lê a edição; nunca escreve nela. A única escrita é o evento de override
@@ -85,7 +85,7 @@ export function runStaleEditionGuard(argv: string[], opts: GuardCliOpts = {}): n
     // decidir entre "o sync não chegou" e "a outra sessão morreu".
     const evidence = formatNewestFileEvidence(findNewestFile(dir), opts.now ?? Date.now());
     console.error(
-      `[stale-edition-guard] data/ possivelmente defasado — outra máquina parece estar à frente (${describeSignals(verdict.signals)}). ${evidence} Aguardar o sync do OneDrive e tentar de novo; não re-rodar o stage. Se a outra sessão morreu (trava órfã), ou o tombstone de aprovação ficou para trás porque o sentinel/outputs foram removidos de propósito, o editor confirma e re-roda o guard com --force.`,
+      `[stale-edition-guard] data/ possivelmente defasado — outra máquina parece estar à frente (${describeSignals(verdict.signals)}). ${evidence} Aguardar o sync do Drive (bisync do 300 / Drive for desktop) e tentar de novo; não re-rodar o stage. Se a outra sessão morreu (trava órfã), ou o tombstone de aprovação ficou para trás porque o sentinel/outputs foram removidos de propósito, o editor confirma e re-roda o guard com --force.`,
     );
     return 4;
   }

@@ -22,7 +22,7 @@ import {
 } from "../scripts/lib/top-edition-video.ts";
 import { renderCircleStackPost, CIRCLE_STACK_VIDEO_LEAD, type CircleStackSelection } from "../scripts/lib/circle-stack-render.ts";
 import { circleStackVideoField, parseStoredCircleStackSelection } from "../scripts/publish-circle-stack.ts";
-import { renderLinkedinWeeklyHtml, LINKEDIN_WEEKLY_VIDEO_LEAD } from "../scripts/lib/weekly-linkedin-render.ts";
+import { renderLinkedinWeeklyHtml, LINKEDIN_WEEKLY_VIDEO_HEADING } from "../scripts/lib/weekly-linkedin-render.ts";
 import { ensureWeeklyVideo } from "../scripts/render-linkedin-weekly.ts";
 import { insertVideoDoMesLine, VIDEO_DO_MES_LEAD } from "../scripts/lib/mensal/monthly-video-do-mes.ts";
 import { runVideoDoMes } from "../scripts/monthly-video-do-mes.ts";
@@ -183,13 +183,13 @@ describe("#12081 — newsletter semanal do LinkedIn", () => {
     closing: "Fecho.",
   };
 
-  it("linha do vídeo antes do fecho, com UTM utm_content=video", () => {
+  it("seção do vídeo antes do fecho (#12777: logo depois da manchete), com UTM utm_content=video", () => {
     const { html } = renderLinkedinWeeklyHtml({ ...base, video: { title: "Vídeo da semana", url: `https://youtu.be/${B}` } });
-    const i = html.indexOf(LINKEDIN_WEEKLY_VIDEO_LEAD);
+    const i = html.indexOf(`<h2>${LINKEDIN_WEEKLY_VIDEO_HEADING}</h2>`);
     assert.ok(i > 0);
     assert.ok(i < html.indexOf("<p>Fecho.</p>"), "antes do fecho");
     assert.ok(html.includes(`https://youtu.be/${B}?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w45&amp;utm_content=video`));
-    assert.ok(!renderLinkedinWeeklyHtml(base).html.includes(LINKEDIN_WEEKLY_VIDEO_LEAD), "sem vídeo, sem linha");
+    assert.ok(!renderLinkedinWeeklyHtml(base).html.includes(LINKEDIN_WEEKLY_VIDEO_HEADING), "sem vídeo, sem seção");
   });
 
   it("ensureWeeklyVideo grava o vídeo na seleção uma vez e reusa depois", async () => {

@@ -1412,7 +1412,11 @@ export interface BlocksFile {
   vocabulary?: VocabRule[];
   /** Blocos que seguram `FECHO_HOLD_S` depois da última palavra. Default ["fecho"]. */
   holdBlocks?: BlockKey[];
-  /** Duração-alvo da vertical nesta edição, em segundos (#11757); ausente = `VERTICAL_TARGET_S` (85). */
+  /**
+   * Duração-alvo da vertical nesta edição, em segundos de fala (#11757); ausente
+   * = `VERTICAL_TARGET_S` (75, #12694). Só reduz o alvo: acima de 75 o valor é
+   * limitado a 75 com aviso (`effectiveVerticalTargetS`), sem falhar o parse.
+   */
   verticalTargetS?: number;
   /**
    * Título em texto na abertura das verticais (#11756): sobrepõe o título do D1
@@ -2250,6 +2254,8 @@ export interface SequencePlan {
   missingBlocks: BlockKey[];
   /** Itens que sumiram no corte (0 clipes) ou palavras que ficaram fora dos clipes. */
   dropped: string[];
+  /** #12089: as palavras fora dos clipes (as de `dropped`) como dado, com o rótulo do item e o tempo no bruto; ausente = nenhuma. */
+  lostWords?: Array<{ label: string; text: string; start: number; end: number }>;
   /** Emendas de clipes contíguos e, depois do refino por áudio, os ajustes de corte (#11500, #11503). */
   cutAdjustments?: CutAdjustment[];
   /** Avisos do plano que não barram o build (respiro da vinheta menor que o pedido, #12101). */
@@ -2420,12 +2426,16 @@ export function buildSequencePlan(
   // #12270: assembleClips arredonda as bordas ao quadro mais próximo. O núcleo
   // aparado pela pausa pode ser menor que meio quadro e cair logo fora dele.
   const frameTolS = 0.5 / fps + 1e-9;
+  const lostWords: Array<{ label: string; text: string; start: number; end: number }> = [];
   for (const { label, words } of wordChecks) {
-    const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start - frameTolS && (w.start + w.end) / 2 <= p.end + frameTolS) && !wordCoveredBySilence(w, kept, silences));
+    // #12089: a palavra esticada por cima da pausa do detector (agora sem proteção) tem o trecho fora dos clipes arredondado ao quadro, como o meio acima.
+    const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start - frameTolS && (w.start + w.end) / 2 <= p.end + frameTolS) && !wordCoveredBySilence(w, kept, silences, frameTolS));
     if (lost.length) dropped.push(`${label}: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
+    for (const w of lost) lostWords.push({ label, text: w.text.trim(), start: w.start, end: w.end });
   }
   return {
     spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges,
+    ...(lostWords.length ? { lostWords } : {}),
     ...(warnings.length ? { warnings } : {}),
     ...(titleSpeechEndS !== undefined ? { titleSpeechEndS } : {}),
   };
@@ -2820,18 +2830,18 @@ export function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
-/** `file://localhost/G:/Meu%20Drive/...` (o formato que o Premiere importou na 261027). */
+/** `file://localhost/I:/Meu%20Drive/...` (o formato que o Premiere importou na 261027). */
 export function pathUrl(path: string): string {
   const p = path.replace(/\\/g, "/").replace(/^\/+/, "");
   return "file://localhost/" + p.split("/").map((seg) => encodeURIComponent(seg).replace(/%3A/gi, ":")).join("/");
 }
 
 /**
- * #12707: a pasta YouTube como a máquina que abre o XML no Premiere a vê.
+ * #12707: a pasta de vídeo como a máquina que abre o XML no Premiere a vê.
  * `from` = a raiz no Neo (o prefixo de todo caminho do XML: bruto, áudio
  * tratado, PNG do título, vinheta em `_marca/`, card de CTA); `to` = a mesma
  * pasta no Mac (`/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu
- * Drive/…/YouTube`). Um mapa só para todos os `<file>`: o título e o card
+ * Drive/diaria-studio-video`, pelo symlink `/Users/Shared/diaria-studio-video`, #12578). Um mapa só para todos os `<file>`: o título e o card
  * chegavam offline no Mac porque o XML gravava `G:/` para todos e só o bruto
  * era revinculado à mão.
  */
@@ -2844,7 +2854,7 @@ function trimRoot(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
-/** O caminho como o Premiere o abre: sob `from` troca a raiz por `to` (comparação sem caixa, `G:` = `g:`); fora dela, igual. */
+/** O caminho como o Premiere o abre: sob `from` troca a raiz por `to` (comparação sem caixa, `I:` = `i:`); fora dela, igual. */
 export function premierePath(path: string, map: PremierePathMap | null | undefined): string {
   const p = path.replace(/\\/g, "/");
   if (!map) return p;
@@ -2866,7 +2876,7 @@ export function unmappedPremierePaths(paths: readonly string[], map: PremierePat
 
 /**
  * `--premiere-root` (vence) ou `publishing.video.premiere_root` do config:
- * a pasta YouTube na máquina do Premiere. `off` no flag = o caminho do Neo
+ * a pasta de vídeo na máquina do Premiere. `off` no flag = o caminho do Neo
  * mesmo com o config. Precisa ser absoluta (`/…` ou `X:/…`); vazia ou
  * ausente = sem tradução (o XML de sempre, com o caminho do Neo).
  */
@@ -3456,7 +3466,7 @@ export function buildXmeml(
     /**
      * #12707: a raiz do Neo trocada pela da máquina do Premiere em TODO
      * `pathurl` (bruto, áudio tratado, PNG do título, vinheta, card de CTA).
-     * Ausente = o caminho do Neo (`G:/…`), como sempre.
+     * Ausente = o caminho do Neo (`I:/…`), como sempre.
      */
     premierePaths?: PremierePathMap | null;
   } = {},

@@ -16,6 +16,14 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  *     Troca a capa do vídeo registrado, sem confirmação; default 04-youtube-thumb.jpg.
  *     Grava thumbnail.replacedAt após sucesso, preservando os demais campos.
  *   npx tsx scripts/publish-youtube.ts AAMMDD --upload --accept-period-match VIDEO_ID
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --captions-list [--video-id VIDEO_ID]
+ *     Só lê (`captions.list`, #12429): as faixas de legenda do vídeo registrado (ou do
+ *     --video-id) e se a pt-BR `standard` enviada está publicada (exit 0) ou não (exit 1).
+ *
+ * `--captions-only` recusa (exit 1) o SRT marcado como não revisado pelo
+ * `video-montagem.ts srt --from-final --no-plan` (#12429, a marca
+ * `youtubeCaptionNoPlanMarkerPath` ao lado dele): só envia com
+ * `--captions-reviewed`, dado depois de conferir nomes e números no SRT.
  *
  * `--upload` exige `--confirm-publish AAMMDD` (a mesma edição), dada só depois
  * do "pode publicar" explícito do editor; sem ela sai exit 2 sem enviar nada
@@ -88,7 +96,11 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  * Título (#11739): derivado do D1; `--title "..."` (dry-run e upload) troca pelo
  * título que o editor escolheu para o YouTube. O título efetivo vai para o
  * registro (`title`, com `title_source: "flag"` e o `d1_title` derivado), e a
- * detecção do vídeo já no canal casa por qualquer um dos dois. Trocar o título
+ * detecção do vídeo já no canal casa por qualquer um dos dois. Sem `--title`,
+ * o título do horizontal no roteiro do vídeo (`_internal/roteiro-falas.json`,
+ * `porVideo.horizontal.titulo`, #12751) vale no lugar do D1, com
+ * `title_source: "roteiro"`; o texto da capa do roteiro sai como premissa
+ * (gancho da capa). Trocar o título
  * DEPOIS do upload (`videos.update`) exige o escopo `youtube.force-ssl`, que o
  * `youtube-oauth-setup.ts` já pede desde #11384: token anterior a isso (403
  * `ACCESS_TOKEN_SCOPE_INSUFFICIENT`) se resolve rodando o setup de novo.
@@ -112,6 +124,9 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
+import { buildHorizontalManifest, planSha256, readVideoPlanSources, sha256File, sha256Hex, writeVideoPlanManifest, type VideoPlanManifest } from "./lib/diaria/video-publish-plan.ts";
+import { authorizationRefusalMessage, consumeBeforeExternalEffects } from "./lib/diaria/video-publish-authorization.ts";
+import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
@@ -153,10 +168,14 @@ import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
 import {
   YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT,
   YOUTUBE_CAPTION_LANGUAGE,
+  captionBackfillStatus,
   describeCaptionOutcome,
+  listCaptions,
   uploadCaptionSafely,
   uploadCaptionsOnly,
   youtubeCaptionFileName,
+  youtubeCaptionNoPlanMarkerPath,
+  type CaptionTrack,
   type CaptionUploadResult,
 } from "./lib/diaria/youtube-captions.ts";
 import {
@@ -197,6 +216,13 @@ export interface YouTubePublishPlanInput {
    * (markdown, `<`/`>`, 100 caracteres). Ausente = título do D1.
    */
   title?: string;
+  /**
+   * #12751: título e texto da capa do horizontal no roteiro do
+   * `/diaria-video-roteiro` (`_internal/roteiro-falas.json`, `porVideo.horizontal`).
+   * O título vale quando não há `--title` (precedência: `--title` > roteiro >
+   * D1); a capa entra no plano como sugestão de gancho para a capa (Passo A2).
+   */
+  roteiro?: { titulo?: string; capa?: string };
   video: { path: string; exists: boolean; sizeBytes: number | null };
   thumb: { path: string; exists: boolean };
   /** Legenda SRT do horizontal (#11384). Ausente = sem legenda no plano. */
@@ -216,8 +242,10 @@ export interface YouTubePublishPlan {
    * ele, segue valendo como 2º título na detecção do vídeo já no canal (#11080).
    */
   d1Title: string;
-  /** De onde veio `metadata.title`: o D1 ou o `--title` do editor (#11739). */
-  titleSource: "d1" | "flag";
+  /** De onde veio `metadata.title`: o D1, o `--title` do editor (#11739) ou o roteiro do vídeo (#12751). */
+  titleSource: "d1" | "flag" | "roteiro";
+  /** #12751: o texto da capa do horizontal no roteiro, ausente sem roteiro. */
+  roteiroCapa?: string;
   schedule: YouTubeScheduleDecision;
   /** O que o vídeo de fato fica — difere de `schedule` sem a auditoria do GCP. */
   effective: YouTubeEffectiveVisibility;
@@ -271,7 +299,23 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
     if (Array.from(input.title.trim()).length > Array.from(custom).length) {
       warnings.push(`--title passou de 100 caracteres e foi cortado para "${custom}"`);
     }
+    const doRoteiro = input.roteiro?.titulo ? buildYouTubeTitle(input.roteiro.titulo) : "";
+    if (doRoteiro && doRoteiro !== custom) premises.push(`--title sobrepõe o título do roteiro do vídeo ("${doRoteiro}", #12751)`);
+  } else if (input.roteiro?.titulo) {
+    // #12751: sem --title, o título do horizontal no roteiro do vídeo.
+    const doRoteiro = buildYouTubeTitle(input.roteiro.titulo);
+    if (!doRoteiro) warnings.push(`título do roteiro vazio depois do saneamento (${JSON.stringify(input.roteiro.titulo)}): usando o do D1`);
+    else if (doRoteiro !== derived.title) {
+      metadata = { ...derived, title: doRoteiro };
+      titleSource = "roteiro";
+      premises.push(`título do YouTube vindo do roteiro do vídeo (_internal/roteiro-falas.json): "${doRoteiro}" (o do D1 seria "${derived.title}"; --title sobrepõe, #12751)`);
+      if (Array.from(input.roteiro.titulo.trim()).length > Array.from(doRoteiro).length) {
+        warnings.push(`título do roteiro passou de 100 caracteres e foi cortado para "${doRoteiro}"`);
+      }
+    }
   }
+  const roteiroCapa = input.roteiro?.capa?.trim() || undefined;
+  if (roteiroCapa) premises.push(`texto da capa no roteiro do vídeo: "${roteiroCapa}" (o gancho da capa no Passo A2, #12751)`);
   const schedule = resolveYouTubeSchedule(input.aammdd, input.now, input.publishAt ?? null);
   premises.push(schedule.premise);
   const themes = youtubeD1Themes({ title: d1.title, body: d1.body, category: d1.category });
@@ -316,6 +360,7 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
     metadata,
     d1Title: derived.title,
     titleSource,
+    ...(roteiroCapa ? { roteiroCapa } : {}),
     schedule,
     effective,
     request,
@@ -348,10 +393,11 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
   /** O plano previa o rebaixamento pra private (projeto GCP sem auditoria). */
   audit_blocked: boolean;
   /**
-   * #11739: o `title` veio de `--title` (≠ D1). Ausente = título do D1. O
-   * título derivado do D1 fica em `d1_title` para conferência.
+   * #11739: o `title` veio de `--title` (≠ D1); `roteiro` (#12751): do roteiro
+   * do vídeo. Ausente = título do D1. O título derivado do D1 fica em
+   * `d1_title` para conferência.
    */
-  title_source?: "flag";
+  title_source?: "flag" | "roteiro";
   d1_title?: string;
   /** Registros substituídos por `--force` (mais antigo primeiro). */
   previous_uploads?: PreviousUploadEntry[];
@@ -536,9 +582,9 @@ export function readPublishedRecord(path: string, aammdd: string): PublishedReco
   return { kind: "done", record: rec as unknown as YouTubePublishedRecord };
 }
 
-/** Origem do título no registro (#11739): só aparece quando veio de `--title`. */
+/** Origem do título no registro (#11739): só aparece quando veio de `--title` ou do roteiro (#12751). */
 function titleProvenance(plan: YouTubePublishPlan): Pick<YouTubePublishedRecord, "title_source" | "d1_title"> {
-  return plan.titleSource === "flag" ? { title_source: "flag", d1_title: plan.d1Title } : {};
+  return plan.titleSource === "d1" ? {} : { title_source: plan.titleSource, d1_title: plan.d1Title };
 }
 
 /** Histórico a carregar no próximo registro, a partir do que está no disco. */
@@ -889,7 +935,7 @@ async function runYouTubeUploadCore(deps: YouTubeUploadDeps, input: RunUploadInp
               aammdd: plan.aammdd,
               title: plan.metadata.title,
               // #11739: com --title, o título do D1 também reconhece o vídeo (upload manual com o título padrão).
-              ...(plan.titleSource === "flag" ? { altTitles: [plan.d1Title] } : {}),
+              ...(plan.titleSource !== "d1" ? { altTitles: [plan.d1Title] } : {}),
               acceptedPeriodVideoId: typeof input.acceptPeriodMatch === "string" ? input.acceptPeriodMatch : undefined,
             },
           }),
@@ -1029,6 +1075,8 @@ export interface RunCaptionsOnlyInput {
   env: Record<string, string | undefined>;
   /** Envia mesmo com uma legenda já registrada (cria outra faixa). */
   force: boolean;
+  /** #12429: `--captions-reviewed`, o SRT sem plano (marcado como não revisado) foi conferido. */
+  captionsReviewed?: boolean;
   readFile: (p: string) => Buffer;
   log: (line: string) => void;
 }
@@ -1038,8 +1086,9 @@ export interface RunCaptionsOnlyInput {
  * `_internal/05-youtube-published.json` (pelo `videoId`), sem tocar no vídeo.
  * Exit 0 = legenda enviada, já registrada (sem `--force`) ou token sem o
  * escopo `youtube.force-ssl` (fail-soft: `[aviso]` com o comando de setup);
- * exit 1 = sem registro, sem `.srt`, sem credencial, canal/token errado ou
- * erro da API na legenda.
+ * exit 1 = sem registro, sem `.srt`, `.srt` sem plano não revisado (sem
+ * `--captions-reviewed`, #12429), sem credencial, canal/token errado ou erro
+ * da API na legenda.
  */
 export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaptionsOnlyInput): Promise<RunUploadOutcome> {
   const { log } = input;
@@ -1067,6 +1116,17 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
   if (!existsSync(input.captionsPath)) {
     log(`publish-youtube: legenda ausente em ${input.captionsPath} (passe --captions PATH). Nenhuma legenda enviada.`);
     return { exitCode: 1, record: null, skipped: false };
+  }
+  const noPlanMarker = youtubeCaptionNoPlanMarkerPath(input.captionsPath);
+  if (existsSync(noPlanMarker)) {
+    if (!input.captionsReviewed) {
+      log(
+        `publish-youtube: ${input.captionsPath} saiu do srt --from-final --no-plan (texto ouvido, sem roteiro) e não foi revisado ` +
+          `(marca ${noPlanMarker}). Confira nomes e números no SRT e rode de novo com --captions-reviewed (#12429). Nenhuma legenda enviada.`,
+      );
+      return { exitCode: 1, record: null, skipped: false };
+    }
+    log(`[premissa] legenda sem plano enviada como revisada (--captions-reviewed, #12429): ${input.captionsPath}`);
   }
   const missing = missingYouTubeCredentials(input.env);
   if (missing.length > 0) {
@@ -1109,6 +1169,76 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
   }
   const exitCode = captions.ok || captions.scopeMissing ? 0 : 1;
   return { exitCode, record, skipped: false };
+}
+
+export interface RunCaptionsListInput {
+  aammdd: string;
+  editionDir: string;
+  /** `--video-id`: confere este vídeo em vez do registrado (a edição sem registro). */
+  videoId?: string;
+  env: Record<string, string | undefined>;
+  log: (line: string) => void;
+}
+
+/**
+ * `--captions-list` (#12429): confere, só lendo, as faixas de legenda do vídeo
+ * da edição (`captions.list`, 50 unidades de quota) depois de um
+ * `--captions-only`. O vídeo é o do registro, ou o `--video-id`. Exit 0 = a
+ * faixa pt-BR enviada está publicada (`captionBackfillStatus`); 1 = não está,
+ * sem vídeo, sem credencial ou erro da API. Nunca escreve nada.
+ */
+export async function runCaptionsList(deps: YouTubeUploadDeps, input: RunCaptionsListInput): Promise<{ exitCode: number; tracks: CaptionTrack[] | null; videoId: string | null }> {
+  const { log } = input;
+  let videoId = input.videoId ?? null;
+  let recordedCaptionId: string | null = null;
+  const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
+  try {
+    const read = readPublishedRecord(recordPath, input.aammdd);
+    if (read.kind === "pending") {
+      const why = `o registro ${recordPath} está em estado incerto (${read.sentinel.status}): o upload pode não ter terminado`;
+      if (!videoId) {
+        log(`publish-youtube: ${why} — confira o canal e passe --video-id VIDEO_ID.`);
+        return { exitCode: 1, tracks: null, videoId: null };
+      }
+      log(`[aviso] ${why}; conferindo o --video-id ${videoId} sem o captionId do registro`);
+    }
+    if (read.kind === "done") {
+      if (videoId && videoId !== read.record.videoId) log(`[aviso] --video-id ${videoId} difere do vídeo registrado (${read.record.videoId}): conferindo o --video-id`);
+      else recordedCaptionId = read.record.captions?.ok ? read.record.captions.captionId : null;
+      videoId ??= read.record.videoId;
+    }
+  } catch (e) {
+    if (!videoId) {
+      log(`publish-youtube: ${(e as Error).message}`);
+      return { exitCode: 1, tracks: null, videoId: null };
+    }
+    log(`[aviso] ${(e as Error).message}: conferindo o --video-id ${videoId} sem o captionId do registro`);
+  }
+  if (!videoId) {
+    log(`publish-youtube: sem vídeo registrado em ${recordPath} — passe --video-id VIDEO_ID.`);
+    return { exitCode: 1, tracks: null, videoId: null };
+  }
+  const missing = missingYouTubeCredentials(input.env);
+  if (missing.length > 0) {
+    log(`publish-youtube: faltam ${missing.join(", ")} no ambiente — rode \`npx tsx scripts/youtube-oauth-setup.ts\`.`);
+    return { exitCode: 1, tracks: null, videoId };
+  }
+  let tracks: CaptionTrack[];
+  try {
+    const token = await refreshYouTubeAccessToken(deps, {
+      clientId: (input.env.GOOGLE_CLIENT_ID ?? "").trim(),
+      clientSecret: (input.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
+      refreshToken: (input.env.YOUTUBE_REFRESH_TOKEN ?? "").trim(),
+      channelId: (input.env.YOUTUBE_CHANNEL_ID ?? "").trim(),
+    });
+    tracks = await listCaptions(deps, token, videoId);
+  } catch (e) {
+    log(`publish-youtube: ${(e as Error).message}`);
+    return { exitCode: 1, tracks: null, videoId };
+  }
+  const status = captionBackfillStatus(tracks, recordedCaptionId);
+  log(status.line);
+  return { exitCode: status.ok ? 0 : 1, tracks, videoId };
 }
 
 /**
@@ -1171,15 +1301,42 @@ function loadD1SlotAt(aammdd: string): Date | null {
     const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")) as {
       publishing?: { social?: Record<string, unknown> };
     };
-    return d1SocialSlotAt(aammdd, cfg.publishing?.social ?? null);
+    return d1SocialSlotAt(aammdd, cfg.publishing?.social ?? null, cfg);
   } catch (e) {
     console.error(`[aviso] horário do D1 não derivado (${(e as Error).message}) — só vídeo público vira link no D1`);
     return null;
   }
 }
 
+/**
+ * #12654: manifesto canônico do plano do horizontal: hashes dos bytes de
+ * vídeo/capa/legenda, título/descrição/tags, horário e modo efetivo
+ * (`publishAt ?? "now"`), privacidade do upload (`private` agendado ou
+ * `public` na hora), o destino `youtube` com dono e comando, e os hashes das
+ * fontes editoriais (só no plano inteiro: o destino tem o texto no plano, então
+ * a projeção dele não se prende às fontes). O dry-run grava e imprime o
+ * `plan_sha256` que o editor aprova; o `--upload` recalcula e consome a
+ * autorização antes de qualquer efeito externo.
+ */
+export function buildYouTubePlanManifest(plan: YouTubePublishPlan, editionDir: string, generatedAt?: string): VideoPlanManifest {
+  return buildHorizontalManifest({
+    aammdd: plan.aammdd,
+    metadata: plan.metadata,
+    schedule: { mode: plan.schedule.mode, publishAt: plan.schedule.publishAt },
+    privacy: plan.request.body.status.privacyStatus,
+    media: {
+      video_sha256: plan.video.exists ? sha256File(plan.video.path) : null,
+      cover_sha256: plan.thumbnail ? sha256File(plan.thumbnail.path) : null,
+      captions_sha256: plan.captions ? sha256File(plan.captions.path) : null,
+    },
+    sources: readVideoPlanSources(editionDir),
+    command: `npx tsx scripts/publish-youtube.ts ${plan.aammdd} --upload --confirm-publish ${plan.aammdd}`,
+    ...(generatedAt ? { generatedAt } : {}),
+  });
+}
+
 const USAGE =
-  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--force] | --thumbnail-only [--thumbnail PATH]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO]";
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--force] [--captions-reviewed] | --captions-list [--video-id VIDEO_ID] | --thumbnail-only [--thumbnail PATH]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO]";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -1192,14 +1349,23 @@ async function main(): Promise<number> {
   const upload = flags.has("upload");
   const captionsOnly = flags.has("captions-only");
   const thumbnailOnly = flags.has("thumbnail-only");
-  const modes = [dryRun, upload, captionsOnly, thumbnailOnly].filter(Boolean).length;
+  const captionsList = flags.has("captions-list");
+  const modes = [dryRun, upload, captionsOnly, thumbnailOnly, captionsList].filter(Boolean).length;
   if (modes !== 1) {
     console.error(
       modes > 1
-        ? "publish-youtube: --dry-run, --upload, --captions-only e --thumbnail-only são exclusivos."
-        : "publish-youtube: escolha o modo — --dry-run (só o plano), --upload (envio real; sem a auditoria do YouTube API Services o vídeo sai private, #10659) ou --captions-only (só a legenda do vídeo registrado, #11384).",
+        ? "publish-youtube: --dry-run, --upload, --captions-only, --captions-list e --thumbnail-only são exclusivos."
+        : "publish-youtube: escolha o modo — --dry-run (só o plano), --upload (envio real; sem a auditoria do YouTube API Services o vídeo sai private, #10659), --captions-only (só a legenda do vídeo registrado, #11384), --captions-list (só confere as faixas de legenda, #12429) ou --thumbnail-only (só a capa, #12134).",
     );
     console.error(USAGE);
+    return 2;
+  }
+  if (!captionsList && (flags.has("video-id") || values["video-id"] !== undefined)) {
+    console.error("publish-youtube: --video-id só vale com --captions-list (#12429).");
+    return 2;
+  }
+  if (!captionsOnly && (flags.has("captions-reviewed") || values["captions-reviewed"] !== undefined)) {
+    console.error("publish-youtube: --captions-reviewed só vale com --captions-only (#12429).");
     return 2;
   }
   if (values["captions"] !== undefined && flags.has("no-captions")) {
@@ -1235,6 +1401,17 @@ async function main(): Promise<number> {
     console.error("publish-youtube: --thumbnail exige PATH e só vale com --thumbnail-only.");
     return 2;
   }
+  if (captionsList) {
+    // #12429: só leitura (captions.list), para conferir o backfill de legenda.
+    if (flags.has("video-id") || values["video-id"] === "") {
+      console.error("publish-youtube: --video-id exige o VIDEO_ID.");
+      return 2;
+    }
+    loadProjectEnv(ROOT);
+    const out = await runCaptionsList(defaultYouTubeUploadDeps, { aammdd, editionDir: dir, videoId: values["video-id"], env: process.env, log: console.error });
+    if (out.tracks) console.log(JSON.stringify({ captions_list: true, videoId: out.videoId, tracks: out.tracks }, null, 2));
+    return out.exitCode;
+  }
   if (thumbnailOnly) {
     loadProjectEnv(ROOT);
     const outcome = await runThumbnailOnly(defaultYouTubeUploadDeps, {
@@ -1258,6 +1435,7 @@ async function main(): Promise<number> {
       captionsPath,
       env: process.env,
       force: flags.has("force"),
+      captionsReviewed: flags.has("captions-reviewed"),
       readFile: (p) => readFileSync(p),
       log: (line) => console.error(line),
     });
@@ -1272,6 +1450,8 @@ async function main(): Promise<number> {
   const videoPath = resolve(values["video"] ?? join(dir, youtubeVideoFileName(aammdd)));
   const videoExists = existsSync(videoPath);
   const thumbPath = join(dir, YOUTUBE_THUMB_FILE);
+  // #12751: título e capa do horizontal no roteiro do vídeo, quando a /diaria-video-roteiro gravou o JSON.
+  const roteiro = readRoteiroHorizontal(dir, (w) => console.error(`[aviso] ${w}`));
 
   const plan = planYouTubePublish({
     aammdd,
@@ -1281,6 +1461,7 @@ async function main(): Promise<number> {
     editionUrl: values["edition-url"],
     publishAt: values["publish-at"],
     title: values["title"],
+    ...(roteiro ? { roteiro } : {}),
     video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
     thumb: { path: thumbPath, exists: existsSync(thumbPath) },
     ...(flags.has("no-captions") ? {} : { captions: { path: captionsPath, exists: existsSync(captionsPath) } }),
@@ -1303,9 +1484,59 @@ async function main(): Promise<number> {
     const themeCfg = loadThemePlaylistsFromConfig();
     for (const w of themeCfg.warnings) console.error(w);
     const themePlaylists = planThemePlaylists(plan.themes, themeCfg);
-    console.log(JSON.stringify({ dry_run: true, ...plan, theme_playlists: themePlaylists, ...(coverPrereqs ? { cover_prerequisites: coverPrereqs } : {}) }, null, 2));
+    // #12654: o plano que o editor aprova é este manifesto; o hash vai no JSON e no comando do grant.
+    const manifest = buildYouTubePlanManifest(plan, dir, new Date().toISOString());
+    const planHash = planSha256(manifest);
+    try {
+      const manifestPath = writeVideoPlanManifest(dir, manifest);
+      console.error(`[premissa] plano do horizontal: plan_sha256 ${planHash} (${manifestPath}). Depois do "pode publicar" explícito do editor sobre ESTE plano: npx tsx scripts/video-publish-authorize.ts grant ${aammdd} --part horizontal --plan-sha256 ${planHash} --confirmation "{resposta do editor}" (#12654)`);
+    } catch (e) {
+      console.error(`[aviso] manifesto do plano não gravado (${(e as Error).message}): sem ele o grant recusa e o --upload não sai (#12654)`);
+    }
+    if (!manifest.media.video_sha256) console.error(`[aviso] vídeo ausente: o plano sem o vídeo não é aprovável (#12654) — baixe o vídeo e refaça o dry-run antes de pedir o "pode publicar"`);
+    console.log(JSON.stringify({ dry_run: true, ...plan, theme_playlists: themePlaylists, ...(coverPrereqs ? { cover_prerequisites: coverPrereqs } : {}), plan_sha256: planHash, plan_manifest: manifest }, null, 2));
     markPendingApprovalAfterDryRun(dir, aammdd, new Date(), (line) => console.error(line));
     return 0;
+  }
+
+  // #12654: o --upload que pode criar vídeo só sai com a autorização de uso único do plano aprovado,
+  // consumida (projeção do destino recalculada agora, gravada como usada) ANTES de credencial, rede ou
+  // qualquer gravação. O --accept-period-match não envia nada e fica de fora, como na confirmação do #11741.
+  let approvedMedia: VideoPlanManifest["media"] | null = null;
+  if (values["accept-period-match"] === undefined) {
+    // O registro decide se este --upload pode criar vídeo (videos.insert). Ilegível recusa antes de consumir.
+    let record: ReturnType<typeof readPublishedRecord>;
+    try {
+      record = readPublishedRecord(join(dir, YOUTUBE_PUBLISHED_FILE), aammdd);
+    } catch (e) {
+      console.error(`publish-youtube: registro do upload ilegível (${(e as Error).message}): nenhuma autorização consumida e nada enviado — conferir o canal e o arquivo antes de qualquer nova chamada (#12654)`);
+      return 1;
+    }
+    // Sem --force, registro "done" (retomada do podcast/playlists) ou "pending" (recusa no miolo) não chega ao
+    // videos.insert: não exige nem gasta autorização. Só a chamada que pode criar vídeo passa pela trava.
+    const canInsert = flags.has("force") || record.kind === "none";
+    if (canInsert) {
+      if (!plan.video.exists) {
+        console.error(`publish-youtube: vídeo ausente em ${plan.video.path} — nada foi enviado (passe --video PATH)`);
+        return 1;
+      }
+      const manifest = buildYouTubePlanManifest(plan, dir);
+      const auth = consumeBeforeExternalEffects({
+        editionDir: dir, edition: aammdd, manifest, destinations: ["youtube"],
+        now: new Date(), pid: process.pid, by: "publish-youtube --upload",
+      });
+      if (!auth.ok) {
+        console.error(authorizationRefusalMessage("publish-youtube", "horizontal", aammdd, auth.error));
+        return 2;
+      }
+      approvedMedia = manifest.media;
+      console.error(`[ok] autorização do plano consumida (uso único): youtube, plan_sha256 ${auth.consumed[0].plan_sha256} (#12654)`);
+      // A legenda é lida depois do vídeo no miolo (e ilegível vira aviso): confere-se aqui, logo antes do upload.
+      if (plan.captions && sha256File(plan.captions.path) !== manifest.media.captions_sha256) {
+        console.error(`publish-youtube: a legenda ${plan.captions.path} mudou desde a conferência da autorização: nada enviado (autorização consumida; refaça o dry-run e peça o "pode publicar" de novo) (#12654)`);
+        return 2;
+      }
+    }
   }
 
   loadProjectEnv(ROOT);
@@ -1316,7 +1547,18 @@ async function main(): Promise<number> {
     env: process.env,
     force: flags.has("force"),
     acceptPeriodMatch: values["accept-period-match"],
-    readFile: (p) => readFileSync(p),
+    // #12654: o vídeo e a capa que sobem são os bytes aprovados; o hash é do mesmo buffer enviado.
+    readFile: (p) => {
+      const bytes = readFileSync(p);
+      if (approvedMedia) {
+        const expected =
+          p === plan.video.path ? approvedMedia.video_sha256 : plan.thumbnail && p === plan.thumbnail.path ? approvedMedia.cover_sha256 : undefined;
+        if (expected !== undefined && sha256Hex(bytes) !== expected) {
+          throw new Error(`${p} mudou desde a conferência da autorização (#12654): refaça o dry-run e peça o "pode publicar" de novo`);
+        }
+      }
+      return bytes;
+    },
     log: (line) => console.error(line),
     d1SlotAt: loadD1SlotAt(aammdd),
     podcastPlaylistId: podcastCfg.id,

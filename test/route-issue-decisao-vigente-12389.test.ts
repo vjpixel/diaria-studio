@@ -145,7 +145,7 @@ describe("#12389 — routeIssue não ignora decisao-editor vigente (caso #12104)
   });
 
   it("bloqueada depois da decisão (bloqueio de execução, #5373 item 5) não é afetada", () => {
-    const { result } = run({ track: "bloqueada", reason: "remoção exige conta de terceiro" });
+    const { result } = run({ track: "bloqueada", reason: "roteada para overnight em 08/11 após a decisão; a remoção exige conta de terceiro" });
     assert.equal(result.ok, true, result.error);
   });
 

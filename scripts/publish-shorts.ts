@@ -202,12 +202,15 @@ loadProjectEnv();
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { publishConfirmSuffix, publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
+import { buildVerticalManifest, PAGE_REPOST_DESTINATION, planSha256, readVideoPlanSources, sha256Hex, VERTICAL_RUN_ACTIONS, writeVideoPlanManifest, type VideoPlanManifest } from "./lib/diaria/video-publish-plan.ts";
+import { authorizationRefusalMessage, consumeBeforeExternalEffects } from "./lib/diaria/video-publish-authorization.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
@@ -369,6 +372,11 @@ import {
   type ShortCoverRecord,
 } from "./lib/diaria/short-cover.ts"; // #11547, #12100
 import {
+  FIRST_FRAME_FFMPEG_TIMEOUT_MS,
+  prepareYouTubeFirstFrameCover,
+  type FirstFrameCoverDeps,
+} from "./lib/diaria/short-first-frame-cover.ts"; // #12100 opção 2
+import {
   THREADS_PROFILE_DESTINATION,
   ThreadsTimerGateError,
   publishThreadsProfileVideo,
@@ -486,7 +494,8 @@ export const MARKABLE_DESTINATIONS = new Set([...GUIDED_DESTINATIONS, "instagram
 export type ShortsPlanItem =
   /** `title`: título da mídia (vídeo do LinkedIn pessoal, #10772). */
   | { destination: string; mode: "api"; action: "publish"; caption: string; scheduledAt: string | null; title?: string }
-  | { destination: string; mode: "api"; action: "pending_schedule"; caption: string; scheduledAt: string; detail: string }
+  /** `title` (#12654): o mesmo título de mídia que o `publish` levaria, para o plano aprovado já trazê-lo. */
+  | { destination: string; mode: "api"; action: "pending_schedule"; caption: string; scheduledAt: string; detail: string; title?: string }
   /** #10823: Reels do Instagram com horário futuro, entregue à fila do Worker. */
   /** `idempotencyKey` (#10906): o POST /queue repetido cai na mesma entry do Worker. */
   | { destination: string; mode: "api"; action: "enqueue"; caption: string; scheduledAt: string; igAccount: WorkerInstagramAccount; idempotencyKey: string }
@@ -601,6 +610,48 @@ export function planShortHorizontalLinks(destinations: readonly string[], horizo
     }
   }
   return out;
+}
+
+/**
+ * Pure (#12786): a rodada `--publish` grava o `diar.ia.br/video` no KV? Só a
+ * rodada principal da edição (a do `/diaria-publica`). O corte avulso não tem
+ * horizontal, e as rodadas dos timers do 300 (`--linkedin-timer`,
+ * `--instagram-timer`, `--threads-timer`) publicam um destino só, várias vezes
+ * por dia: ler o KV em cada uma era trabalho repetido sem efeito, e um 05
+ * trocado à mão entre duas execuções faria um timer, e não a rodada da edição,
+ * mudar o link da bio.
+ */
+export function shouldUpdateLatestVideoOnPublish(input: { corte: boolean; writer: ShortsRegistryWriter }): boolean {
+  return !input.corte && input.writer === "main";
+}
+
+/**
+ * Pure (#12786): aviso quando um destino que leva o link do horizontal na
+ * legenda vai sair (ou ser agendado) sem ele, porque o `05-video-url.txt`
+ * ainda não existe. `null` = nada a avisar (todos com link, edição sem vídeo,
+ * ou nenhum desses destinos sai nesta rodada). O texto diz como corrigir os
+ * agendados depois do horizontal: o `--update-scheduled` reescreve a legenda
+ * do Facebook e do X com o link (`planScheduledUpdates`).
+ */
+export function missingHorizontalLinkWarning(
+  aammdd: string,
+  horizontalLinks: Record<string, ShortHorizontalLinkPlan> | undefined,
+  items: readonly ShortsPlanItem[],
+  noVideo: boolean,
+): string | null {
+  if (!horizontalLinks || noVideo) return null;
+  const outgoing = new Set(["publish", "pending_schedule", "enqueue", "buffer"]);
+  const missing = items
+    .filter((i) => outgoing.has(i.action))
+    .map((i) => i.destination)
+    .filter((d) => horizontalLinks[d]?.route === "caption" && !horizontalLinks[d]?.link);
+  if (!missing.length) return null;
+  return (
+    `${missing.join(", ")} sai(em) sem o link do horizontal na legenda: ${D1_VIDEO_URL_FILE} ainda não existe (#12786). ` +
+    `O caminho normal é publicar o horizontal antes. Se já agendou, depois do horizontal rode ` +
+    `publish-shorts.ts ${aammdd} --update-scheduled --publish --confirm-publish ${aammdd} (troca a legenda do Facebook e do X agendados); ` +
+    `o que já foi ao ar fica sem o link.`
+  );
 }
 
 /**
@@ -1368,6 +1419,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
           caption: text,
           scheduledAt: schedule.at,
           detail: `a Posts API do LinkedIn não agenda — ${pendingRunner(slot.hhmm)}`,
+          title, // #12654: a task one-shot publica com este título; o plano aprovado já o mostra
         };
       }
       return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null, title };
@@ -1628,7 +1680,12 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   }
 
   // #11547: o que cada destino faz com a capa (Still) — ver scripts/lib/diaria/short-cover.ts.
-  const coverCtx = { coverPath: input.coverPath ?? null, coverUploadReady: input.coverUploadReady === true, bufferOffsetMs: input.coverBufferOffsetMs ?? null };
+  const coverCtx = {
+    coverPath: input.coverPath ?? null,
+    coverUploadReady: input.coverUploadReady === true,
+    bufferOffsetMs: input.coverBufferOffsetMs ?? null,
+    youtubeFirstFrameMs: cfg.youtubeFirstFrameCoverMs, // #12100 opção 2
+  };
   const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination, planCoverDestination(i, coverCtx)])) };
   // #11986: delegar a um timer parado deixa os destinos sem sair por até 3 h, sem alarme do timer.
   if (corteTimer && input.corteTimerHeartbeat && corteTimerHeartbeatStale(input.corteTimerHeartbeat, input.now)) {
@@ -1658,6 +1715,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     // Prefixo próprio: premissas que começam com `{destino}:` são as de horário (testes do #10772/#10907 as distinguem assim).
     for (const [id, h] of Object.entries(horizontalLinks)) premises.push(`caminho até o horizontal (${id}): ${h.route}${h.link ? ` ${h.link}` : ""} — ${h.note} (#12735)`);
   }
+  // #12786: destino com link na legenda saindo antes do horizontal fica sem o link.
+  const noHorizontalLink = missingHorizontalLinkWarning(input.aammdd, horizontalLinks, items, input.horizontalVideo?.noVideo ?? false);
+  if (noHorizontalLink) warnings.push(noHorizontalLink);
   return {
     aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, destinationTimes, slots, items, owners,
     ...(horizontalLinks ? { horizontalLinks } : {}),
@@ -3457,6 +3517,81 @@ export async function publishLinkedInProfileVideo(
   throw new Error(r.reason);
 }
 
+/** #12100 opção 2: I/O real da capa no 1º frame (ffprobe/ffmpeg do PATH, diretório em `os.tmpdir()`). */
+export const defaultFirstFrameCoverDeps: FirstFrameCoverDeps = {
+  runFfprobe: (args) => {
+    const r = spawnSync("ffprobe", args, { encoding: "utf8", timeout: 60_000 });
+    if (r.error) return { ok: false, error: r.error.message };
+    if (r.status !== 0) return { ok: false, error: (r.stderr ?? "").trim().slice(-500) || `exit ${r.status}` };
+    return { ok: true, stdout: r.stdout };
+  },
+  runFfmpeg: (args) => {
+    const r = spawnSync("ffmpeg", args, { encoding: "utf8", timeout: FIRST_FRAME_FFMPEG_TIMEOUT_MS });
+    if (r.error) return { ok: false, error: `${r.error.message}${r.signal ? ` (sinal ${r.signal})` : ""}` };
+    if (r.signal) return { ok: false, error: `ffmpeg encerrado por ${r.signal}` };
+    if (r.status !== 0) return { ok: false, error: (r.stderr ?? "").trim().slice(-500) || `exit ${r.status}` };
+    return { ok: true };
+  },
+  makeTempDir: () => mkdtempSync(join(tmpdir(), "diaria-short-first-frame-")),
+  writeFile: (p, b) => writeFileSync(p, b),
+  readFile: (p) => readFileSync(p),
+  removeDir: (d) => rmSync(d, { recursive: true, force: true }),
+};
+
+/**
+ * #12100 opção 2: o arquivo que sobe para o YouTube Shorts. Com a opção ligada
+ * e a capa no disco, o vertical ganha a capa nos primeiros `leadMs`; desligada,
+ * sem capa (ou capa ilegível, `coverUnreadable`) ou com falha do ffmpeg, sobe o
+ * vertical original (com `[aviso]` na falha). Loga o que foi feito — "arquivo
+ * preparado", nunca "enviado": roda antes do upload. Nunca lança.
+ */
+export function youtubeShortUploadFile(input: {
+  file: Buffer;
+  videoPath: string;
+  cover: Buffer | null;
+  /** #12100: motivo da leitura falha da capa (`readShortCover().unreadable`): a capa existe, mas não deu para ler. */
+  coverUnreadable?: string;
+  leadMs: number | null;
+  log: (line: string) => void;
+  deps?: FirstFrameCoverDeps;
+}): { file: Buffer; firstFrame: { ms: number } | null } {
+  if (input.leadMs === null) {
+    input.log("[premissa] youtube_shorts: capa no 1º frame desligada (publishing.shorts.youtube_first_frame_cover = false) — sobe o vertical original");
+    return { file: input.file, firstFrame: null };
+  }
+  if (!input.cover) {
+    input.log(
+      input.coverUnreadable
+        ? `[aviso] youtube_shorts: capa local ilegível (${input.coverUnreadable}), o vertical sobe sem a capa no 1º frame (#12100)`
+        : "[aviso] youtube_shorts: sem capa local, o vertical sobe sem a capa no 1º frame (#12100)",
+    );
+    return { file: input.file, firstFrame: null };
+  }
+  const deps = { ...(input.deps ?? defaultFirstFrameCoverDeps), log: input.log };
+  const r = prepareYouTubeFirstFrameCover(deps, { videoPath: input.videoPath, cover: input.cover, leadMs: input.leadMs });
+  if (!r.ok) {
+    input.log(`[aviso] youtube_shorts: capa no 1º frame não aplicada (${r.error}) — sobe o vertical original (#12100)`);
+    return { file: input.file, firstFrame: null };
+  }
+  input.log(
+    `[ok] youtube_shorts: arquivo preparado com a capa nos primeiros ${r.leadMs} ms (${r.frames} frames a ${r.probe.fpsExpr} fps, ${r.probe.width}x${r.probe.height}); ` +
+      `${(r.bytes.length / 1e6).toFixed(1)} MB em memória, o vertical da edição não muda (#12100, não confirmado: medir o oar2.jpg)`,
+  );
+  return { file: r.bytes, firstFrame: { ms: r.leadMs } };
+}
+
+/**
+ * #12100 opção 2 (review da PR #12844): o `youtube_shorts` desta rodada prepara
+ * o arquivo com a capa no 1º frame? Só no `publish` e com a credencial do
+ * canal no ambiente. Pure; o CLI chama ANTES de `markShortSending`.
+ */
+export function youtubeShortsPrepareBeforeMarker(
+  item: { destination: string; action?: string },
+  env: Record<string, string | undefined>,
+): boolean {
+  return item.destination === "youtube_shorts" && item.action === "publish" && missingYouTubeCredentials(env).length === 0;
+}
+
 /** URL pública do Short (#11070) — o `youtu.be/{id}` também abre, mas o registro guarda a de Shorts. */
 export function youtubeShortUrl(videoId: string): string {
   return `https://youtube.com/shorts/${videoId}`;
@@ -3487,6 +3622,12 @@ export async function publishYouTubeShort(input: {
   onBeforeBytes?: (entry: ShortPublishedEntry) => void;
   /** #11547: capa (JPEG) — `thumbnails.set` depois do insert; falha não desfaz o Short. */
   cover?: Buffer | null;
+  /**
+   * #12100 opção 2: `file` já leva a capa nos primeiros `ms` (gerado por
+   * `prepareYouTubeFirstFrameCover`). Só muda o registro: `vertical_feed:
+   * "first_frame_cover"` + `first_frame_ms`, sem afirmar que o feed mostra a capa.
+   */
+  firstFrame?: { ms: number } | null;
   /**
    * #11795: corte avulso — só o título conta como "já está no canal". A marca
    * da edição e o dia acusariam o Short da EDIÇÃO do mesmo dia.
@@ -3552,7 +3693,7 @@ export async function publishYouTubeShort(input: {
   const failed = failedUploadStatus(result.rereadStatus);
   // #11547: `thumbnails.set` vale para Short (medido em 28/10/2026); falha só vira registro.
   // #12100: o sucesso troca só a miniatura 16:9; a capa do feed de Shorts vira aviso de passo manual.
-  const cover = youtubeShortsCoverRecord(result.thumbnail);
+  const cover = youtubeShortsCoverRecord(result.thumbnail, input.firstFrame ?? null);
   if (cover && !cover.ok) warnings.push(`capa não aplicada (${cover.error}) — troque no YouTube Studio (Miniatura → Enviar arquivo)`);
   const verticalWarning = youtubeShortsVerticalCoverWarning(result.videoId, cover);
   if (verticalWarning) warnings.push(verticalWarning);
@@ -4603,6 +4744,62 @@ async function runUpdateScheduled(input: {
   return results.some((r) => !r.ok) ? 1 : 0;
 }
 
+/**
+ * #12654: manifesto canônico do plano do vertical da edição (hashes dos bytes
+ * do vídeo e da capa, título/descrição do Short, horário e modo/instante
+ * efetivo por destino, texto de cada destino, dono/comando, fontes
+ * editoriais). O dry-run grava e imprime o `plan_sha256` que o editor aprova;
+ * o `--publish` (rodada principal e task one-shot) recalcula e confere a
+ * projeção de cada destino que vai agir antes de qualquer escrita externa
+ * (leituras com credencial, como a Graph e a fila do Worker para a grade,
+ * acontecem antes, no plano). Só no modo edição: o corte tem a autorização
+ * própria (#11912) e os timers do 300 a da config que os ligou (#11741).
+ */
+export function buildShortsPlanManifest(
+  plan: ShortsPlan,
+  input: { editionDir: string; videoBytes: Buffer | null; coverBytes: Buffer | null; generatedAt?: string },
+): VideoPlanManifest {
+  return buildVerticalManifest({
+    aammdd: plan.aammdd,
+    items: plan.items,
+    owners: plan.owners,
+    destinationAt: (id) => plan.destinationTimes[id]?.at ?? plan.shortTime.at,
+    horizontalLink: (id) => plan.horizontalLinks?.[id]?.link ?? null,
+    metadata: { title: plan.youtube.title, description: plan.youtube.description },
+    media: {
+      video_sha256: input.videoBytes ? sha256Hex(input.videoBytes) : null,
+      cover_sha256: input.coverBytes ? sha256Hex(input.coverBytes) : null,
+      captions_sha256: null, // o vertical não sobe legenda em arquivo: o texto de cada destino está em `content`
+    },
+    sources: readVideoPlanSources(input.editionDir),
+    publishCommand: shortsMainPublishCommand(plan.aammdd),
+    ...(input.generatedAt ? { generatedAt: input.generatedAt } : {}),
+  });
+}
+
+/** #12654: o comando da rodada principal do vertical (dono dos destinos que saem nela). */
+export function shortsMainPublishCommand(aammdd: string): string {
+  return `npx tsx scripts/publish-shorts.ts ${aammdd} --publish ${publishConfirmSuffix(aammdd)}`;
+}
+
+/**
+ * #12654: destinos que esta rodada `--publish` executa (escrita externa pelo
+ * publisher): publish/enqueue/buffer e o repost da página quando ele vai à
+ * fila do Worker (guiado, Worker configurado e o vídeo do perfil conhecido no
+ * registro ou saindo nesta rodada). Cada um consome a sua autorização antes do
+ * 1º efeito; com a lista vazia a rodada não faz escrita externa nenhuma.
+ */
+export function shortsRunDestinations(
+  items: readonly ShortsPlanItem[],
+  opts: { repostViaWorker?: boolean; profileUrnKnown?: boolean } = {},
+): string[] {
+  const run = items.filter((i) => VERTICAL_RUN_ACTIONS.has(i.action)).map((i) => i.destination);
+  const repost = items.some((i) => i.destination === PAGE_REPOST_DESTINATION && i.action === "guided");
+  const profileThisRun = run.includes("linkedin_profile");
+  if (repost && opts.repostViaWorker === true && (opts.profileUrnKnown === true || profileThisRun)) run.push(PAGE_REPOST_DESTINATION);
+  return run;
+}
+
 async function main(): Promise<number> {
   const parsed = parseShortsCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
@@ -4929,17 +5126,65 @@ async function main(): Promise<number> {
   for (const p of plan.premises) console.error(`[premissa] ${p}`);
   for (const w of plan.warnings) console.error(`[aviso] ${w}`);
 
+  // #12654: o plano da edição (fora do corte e dos timers do 300) passa pela autorização por hash.
+  const planGated = !corte && writer === "main";
   if (!flags.has("publish")) {
-    console.log(JSON.stringify({ dry_run: true, ...plan, ...revokedOut() }, null, 2));
+    let planOut: { plan_sha256: string; plan_manifest: VideoPlanManifest } | Record<string, never> = {};
+    if (planGated) {
+      const manifest = buildShortsPlanManifest(plan, { editionDir: dir, videoBytes: file, coverBytes: shortCover.bytes, generatedAt: new Date().toISOString() });
+      const planHash = planSha256(manifest);
+      planOut = { plan_sha256: planHash, plan_manifest: manifest };
+      // Só a rodada de plano inteiro grava o manifesto que o grant lê (um --only parcial não substitui o plano da parte).
+      if (!onlyList) {
+        try {
+          const manifestPath = writeVideoPlanManifest(dir, manifest);
+          console.error(`[premissa] plano do vertical: plan_sha256 ${planHash} (${manifestPath}). Depois do "pode publicar" explícito do editor sobre ESTE plano: npx tsx scripts/video-publish-authorize.ts grant ${aammdd} --part vertical --plan-sha256 ${planHash} --confirmation "{resposta do editor}" (#12654)`);
+        } catch (e) {
+          console.error(`[aviso] manifesto do plano não gravado (${(e as Error).message}): sem ele o grant recusa e o --publish não sai (#12654)`);
+        }
+      } else {
+        console.error(`[premissa] plano parcial (--only): plan_sha256 ${planHash} só confere; o manifesto da parte não é regravado (#12654)`);
+      }
+    }
+    console.log(JSON.stringify({ dry_run: true, ...plan, ...revokedOut(), ...planOut }, null, 2));
     return 0;
   }
   if (!file) {
     console.error(`publish-shorts: vídeo curto ausente em ${videoPath}`);
     return 1;
   }
-  if (!corte) {
+  // #12654: destinos com escrita externa nesta rodada. Fora do plano com autorização (corte, timers) vale tudo como antes.
+  let gatedActing: string[] | null = null;
+  if (planGated) {
+    // Confere e consome (uso único) a autorização de cada destino que esta rodada executa, com o
+    // manifesto recalculado agora, ANTES da 1ª escrita externa (KV do link da bio, R2, APIs, fila do Worker).
+    const acting = shortsRunDestinations(plan.items, {
+      repostViaWorker: Boolean(workerUrl && workerToken),
+      profileUrnKnown: linkedInPostUrnFrom(published.entries.find((e) => e.destination === "linkedin_profile")) !== null,
+    });
+    gatedActing = acting;
+    if (acting.length) {
+      const auth = consumeBeforeExternalEffects({
+        editionDir: dir, edition: aammdd,
+        manifest: buildShortsPlanManifest(plan, { editionDir: dir, videoBytes: file, coverBytes: shortCover.bytes }),
+        destinations: acting, now: new Date(), pid: process.pid, by: "publish-shorts --publish",
+        command: `npx tsx scripts/publish-shorts.ts ${process.argv.slice(2).join(" ")}`,
+        fallbackCommand: shortsMainPublishCommand(aammdd),
+        forceNow: flags.has("now"),
+      });
+      if (!auth.ok) {
+        console.error(authorizationRefusalMessage("publish-shorts", "vertical", aammdd, auth.error));
+        return 2;
+      }
+      console.error(`[ok] autorização do plano consumida (uso único): ${auth.consumed.map((a) => a.destination).join(", ")} (#12654)`);
+    } else {
+      console.error("[premissa] nenhum destino sai por esta rodada: nenhuma autorização consumida e nenhuma escrita externa (KV do diar.ia.br/video, fila do Worker); os adiados saem pelos donos do owners[], cada um com a sua (#12654)");
+    }
+  }
+  if (shouldUpdateLatestVideoOnPublish({ corte: !!corte, writer }) && (gatedActing === null || gatedActing.length > 0)) {
     // #12735: o link fixo da bio (diar.ia.br/video) passa a apontar para o horizontal desta edição.
     // Fail-soft: o vertical sai mesmo sem o KV; a gravação só avança (edição anterior não sobrescreve).
+    // #12786: só a rodada principal; as dos timers do 300 não leem nem gravam o KV.
     try {
       const kvEnv = pollKvFromEnv();
       if (!kvEnv.kv) console.error(`[aviso] diar.ia.br/video não atualizado: ${kvEnv.reason} — rode set-latest-video-redirect.ts ${aammdd} --apply (#12735)`);
@@ -5084,6 +5329,20 @@ async function main(): Promise<number> {
       continue;
     }
     if (item.action !== "publish" && item.action !== "enqueue") continue;
+    // #12100 opção 2 (review da PR #12844): o encode da capa no 1º frame roda ANTES do
+    // marcador de envio — um processo morto no ffmpeg (até minutos) não deixa o marcador
+    // "pode ter saído" preso — e só com a credencial do canal presente (sem ela,
+    // `publishYouTubeShort` recusa e o encode seria jogado fora).
+    const ytUpload = youtubeShortsPrepareBeforeMarker(item, process.env)
+      ? youtubeShortUploadFile({
+          file,
+          videoPath,
+          cover: shortCover.bytes,
+          coverUnreadable: shortCover.unreadable,
+          leadMs: shortsCfg.youtubeFirstFrameCoverMs,
+          log: (l) => console.error(l),
+        })
+      : null;
     // #11741 (finding P2 da PR #11827): marca "envio em curso" ANTES de publicar.
     // O registro só recebe o destino depois do aceite; sem a marca, a releitura
     // logo após uma interrupção (processo ainda vivo) sairia `nothing-since`.
@@ -5128,6 +5387,8 @@ async function main(): Promise<number> {
           shortCover.bytes,
         );
       } else if (item.destination === "youtube_shorts") {
+        // #12100 opção 2: o arquivo foi preparado antes do marcador (acima); sem credencial, sobe o original (e a função recusa).
+        const yt = ytUpload ?? { file, firstFrame: null };
         outcome = await publishYouTubeShort({
           deps: defaultYouTubeUploadDeps,
           env: process.env,
@@ -5135,7 +5396,8 @@ async function main(): Promise<number> {
           title: item.title ?? plan.youtube.title,
           description: item.caption,
           scheduledAt: item.scheduledAt,
-          file,
+          file: yt.file,
+          firstFrame: yt.firstFrame,
           cover: shortCover.bytes,
           force: flags.has("force-youtube"),
           matchTitleOnly: corte !== null,
@@ -5359,7 +5621,9 @@ async function main(): Promise<number> {
   }
   // #11121: repost da página pela fila do Worker (como página, API direta).
   // Sem os segredos da página no Worker (#8816), o passo guiado fica.
-  if (plan.items.some((i) => i.destination === "linkedin_page_repost" && i.action === "guided")) {
+  // #12654: na rodada com autorização, o repost só vai à fila do Worker se consumiu a autorização dele no início.
+  const repostAuthorized = gatedActing === null || gatedActing.includes(PAGE_REPOST_DESTINATION);
+  if (repostAuthorized && plan.items.some((i) => i.destination === "linkedin_page_repost" && i.action === "guided")) {
     const profileThisRun = results.find((r) => r.destination === "linkedin_profile" && r.ok && r.entry)?.entry as ShortPublishedEntry | undefined;
     const repost = await enqueuePageRepostViaWorker(
       workerUrl && workerToken ? (p) => postToWorkerQueue(workerUrl, workerToken, p, 2, "publish-shorts") : null,

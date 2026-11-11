@@ -41,7 +41,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   if (!existsSync(dataRoot)) {
     console.error(`❌ data/ não existe: ${dataRoot}`);
     console.error(
-      "   (data/ mora no OneDrive como junction — ver CLAUDE.md setup, passo 2b)",
+      "   (data/ é um link para o Google Drive da diaria.editor — ver docs/setup.md, passo 2b)",
     );
     process.exit(1);
   }

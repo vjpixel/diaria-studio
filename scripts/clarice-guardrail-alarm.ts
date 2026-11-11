@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { brevoGet, assertCampaignQuotaHeadroom, BrevoCampaignQuotaLowError } from "./lib/brevo-client.ts";
+import { brevoGet, assertCampaignQuotaHeadroom, BrevoCampaignQuotaLowError, refreshCampaignQuotaStateFromKv, exitAfterCampaignQuotaKvFlush } from "./lib/brevo-client.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { isExitCodeArmedForUnit } from "./lib/systemd-unit-exit-guard.ts";
 import {
@@ -322,6 +322,7 @@ async function main(): Promise<void> {
   // #6034: recua ANTES de gastar cota se a família /emailCampaigns* já
   // está baixa (reserva do #5697) — evita crashar (exit 1) no meio do
   // sweep por 429 esgotado; próxima execução do timer (4h) tenta de novo.
+  await refreshCampaignQuotaStateFromKv(); // #12841: última observação de qualquer máquina
   const skipReason = shouldSkipForLowQuota();
   if (skipReason) {
     // #6695: só emite EX_TEMPFAIL (75) se a unit systemd ARMADA neste
@@ -474,6 +475,7 @@ async function main(): Promise<void> {
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error("[clarice-guardrail-alarm] erro:", e);
-    process.exit(1);
+    // #12862: espera o PUT da cota ao KV (o sweep pode ter gravado) antes de sair.
+    return exitAfterCampaignQuotaKvFlush(1);
   });
 }

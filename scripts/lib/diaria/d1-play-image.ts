@@ -51,15 +51,45 @@ function readStamp(stampPath: string): { md5: string | null; overlay: string | n
  *
  * Mede cada linha do convite (#12747, duas linhas) e devolve a largura da mais
  * larga, o quanto a 1ª sobe da linha de base e o quanto a última desce.
+ *
+ * As linhas são medidas uma de cada vez, e toda medição do processo passa pela
+ * mesma fila (`serializeTextRender`, #12833): nunca há dois rasters de texto do
+ * librsvg (pango + fontconfig) rodando ao mesmo tempo em threads do libuv.
  */
 export async function measureInviteText(width: number, fontFamily: string = D1_INVITE_FONT_FAMILY): Promise<InviteTextMetrics> {
   const fontSize = inviteFontSize(width);
-  const lines = await Promise.all(D1_INVITE_LINES.map((line) => measureLine(line, fontSize, fontFamily)));
+  const lines: Array<{ width: number; ascent: number; descent: number }> = [];
+  for (const line of D1_INVITE_LINES) lines.push(await serializeTextRender(() => measureLine(line, fontSize, fontFamily)));
   return {
     textW: Math.max(...lines.map((l) => l.width)),
     ascent: lines[0].ascent,
     descent: lines[lines.length - 1].descent,
   };
+}
+
+let textRenderTail: Promise<unknown> = Promise.resolve();
+
+/**
+ * Fila de um lugar só para o raster de texto do librsvg no processo (#12833).
+ *
+ * No CI (run 42945012091, PR #12795) o processo do
+ * `test/d1-invite-mobile-size-12747.test.ts` morreu calado no meio do 1º teste
+ * que mede texto: os dois testes síncronos passaram, os seguintes nunca
+ * reportaram, e o node:test só disse `'test failed'` em 1:1, sem erro de JS nem
+ * stack nativo, que é exatamente o que ele imprime quando o filho morre por
+ * sinal (SIGSEGV/SIGKILL). O único código nativo daquele teste é este raster,
+ * e até aqui ele rodava as duas linhas em paralelo (`Promise.all`): duas
+ * threads do libuv inicializando pango + fontconfig ao mesmo tempo, no 1º uso
+ * do processo, o ponto historicamente frágil dessas bibliotecas. Medir em fila
+ * tira essa concorrência; custa ~2 rasters pequenos em sequência.
+ *
+ * Erro de uma medição não trava a fila: a próxima espera só o término, não o
+ * sucesso, da anterior.
+ */
+export function serializeTextRender<T>(render: () => Promise<T>): Promise<T> {
+  const run = textRenderTail.then(render, render);
+  textRenderTail = run.catch(() => undefined);
+  return run;
 }
 
 async function measureLine(text: string, fontSize: number, fontFamily: string): Promise<{ width: number; ascent: number; descent: number }> {

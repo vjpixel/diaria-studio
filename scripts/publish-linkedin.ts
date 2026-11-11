@@ -112,6 +112,7 @@ import {
 import {
   postToWorkerQueue as sharedPostToWorkerQueue,
   findWorkerQueueEntryByIdempotencyKey,
+  idempotentConflictKey,
   type IdempotencyLookupOptions,
 } from "./lib/worker-queue-client.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
@@ -132,6 +133,7 @@ import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #125
 import {
   enqueueLinkedInDocumentOrCarousel,
   linkedInDailyIdempotencyKey,
+  linkedInIdempotencyNamespaceForDir,
   isAlarmingDocumentFallback,
   linkedInDailyDocumentFallbackFingerprint,
   prepareDailyLinkedInDocument,
@@ -560,6 +562,14 @@ export interface DispatchInput {
    * 4º post, artigo especial): imagem única, sem `format` no store — mesmo
    * comportamento de antes do #12584. */
   linkedInDocument?: LinkedInDocumentPlan;
+  /** #12584 item 5 — chave idempotente do post na fila do Worker. Ausente,
+   * com plano de documento: a da diária (`linkedInDailyIdempotencyKey`, com
+   * `ctx.idempotencyNamespace`). String: esta chave (Retrospectiva mensal, uma
+   * por história). `null`: sem chave, como antes do #12661 — só com plano
+   * `skip` (artigo especial, que só registra o formato no store); um plano
+   * `ready` sem chave vira `failed`, porque o documento depende dela pra não
+   * duplicar o post entre os degraus. */
+  idempotencyKey?: string | null;
 }
 
 /** #12584 — plano do documento PDF de um post (ver `DispatchInput.linkedInDocument`). */
@@ -605,6 +615,11 @@ export interface DispatchContext {
   /** #12664 — leituras da fila (`GET /list`) antes do fallback Make do post
    *  com `idempotency_key`. Só testes passam (backoff 0). */
   queueLookup?: IdempotencyLookupOptions;
+  /** #12584 item 5 — namespace da chave idempotente derivada (default
+   * `linkedin-daily`). O lote da anual passa o seu
+   * (`linkedInIdempotencyNamespaceForDir`) pra não colidir com a diária do
+   * mesmo dia. */
+  idempotencyNamespace?: string;
 }
 
 /**
@@ -666,12 +681,19 @@ export async function dispatchEntry(
   // #12661 — mesma chave nos três degraus (documento → carrossel → imagem
   // única na fila do Worker): retry depois de resposta perdida e degrau por
   // cima de entry gravada sem resposta caem na MESMA entry, um post só.
-  const dailyIdempotencyKey = docPlan
-    ? linkedInDailyIdempotencyKey(ctx.editionDate, d, { isTest: ctx.isTest === true })
-    : undefined;
+  const dailyIdempotencyKey =
+    input.idempotencyKey === null
+      ? undefined
+      : (input.idempotencyKey ??
+        (docPlan
+          ? linkedInDailyIdempotencyKey(ctx.editionDate, d, { isTest: ctx.isTest === true, namespace: ctx.idempotencyNamespace })
+          : undefined));
 
   try {
     let entry: PostEntry | null = null;
+    if (docPlan?.status === "ready" && dailyIdempotencyKey === undefined) {
+      throw new Error("plano de documento PDF sem idempotency_key (idempotencyKey: null só vale com plano skip, #12584)");
+    }
     if (route === "worker_queue" && docPlan?.status === "ready") {
       // #12584 — degraus 1 e 2 (documento → carrossel). Erro ambíguo
       // (5xx/timeout) propaga para o catch externo e vira `failed`, SEM o
@@ -750,19 +772,43 @@ export async function dispatchEntry(
         // SÓ tem URL no Worker (Diar.ia webhookUrl não é Pixel) — fallback
         // não-aplicável pra webhook_target=pixel; falha entry com reason claro.
         const wmsg = workerError instanceof Error ? workerError.message : String(workerError);
+        // #12802 — 409 `already_fired`/`fire_in_progress` da chave idempotente:
+        // o post desta chave já saiu ou está saindo. É sucesso, como nos degraus
+        // documento/carrossel (`linkedin-daily-document.ts`) e no semanal —
+        // antes o `isClientError` abaixo lia o 409 como 4xx de validação e a
+        // entry virava `failed`, empurrando o editor a repostar à mão.
+        const firedKey = dailyIdempotencyKey ? idempotentConflictKey(workerError) : null;
+        if (firedKey !== null) {
+          console.warn(
+            `WARN ${tag} — a fila do Worker já tem este post disparado ou disparando (${dailyIdempotencyKey}); nada novo enfileirado (#12802).`,
+          );
+          entry = {
+            platform: "linkedin",
+            destaque: d,
+            subtype,
+            url: null,
+            status: "scheduled",
+            scheduled_at: scheduledAt,
+            route,
+            worker_queue_key: firedKey,
+            webhook_target: input.webhookTarget,
+            action: input.action,
+            ...formatTag("single_image", singleImageReasons),
+          };
+        }
         // #6015: 4xx do Worker (validação do payload) NÃO deve cair no fallback
         // que publica imediatamente — isso trocaria "não publicou" por
         // "publicou na hora errada, publicamente" (bug real #6015, 23/08).
         // Só faz fallback (post imediato via Make) para 5xx / timeout / rede.
         // Quando `allowImmediateFallback` é explicitamente false (ex: artigo
         // especial agendado), propaga como falha dura (entry failed).
-        if (input.webhookTarget === "pixel") {
+        if (!entry && input.webhookTarget === "pixel") {
           throw new Error(
             `${wmsg} (fallback worker→make não disponível pra webhook_target=pixel — Make scenario Pixel não tem URL local)`,
           );
         }
         const is4xx = isClientError(wmsg);
-        const shouldPropagateAsFailure = is4xx || input.allowImmediateFallback === false;
+        const shouldPropagateAsFailure = !entry && (is4xx || input.allowImmediateFallback === false);
         if (shouldPropagateAsFailure) {
           const reasonSuffix = is4xx ? " (Worker 4xx — validação do payload; fallback imediato não é aceitável)" : " (fallback desativado: allowImmediateFallback=false)";
           throw new Error(`${wmsg}${reasonSuffix}`);
@@ -771,7 +817,7 @@ export async function dispatchEntry(
         // vindo DEPOIS de o Worker gravar a entry. Antes do Make (que publica na
         // hora), procurar a chave na fila: achou = o post já está agendado;
         // fila ilegível = ausência não provada, `failed` sem Make por cima.
-        if (dailyIdempotencyKey) {
+        if (!entry && dailyIdempotencyKey) {
           const lookup = await findWorkerQueueEntryByIdempotencyKey(
             ctx.workerUrl,
             ctx.workerToken,
@@ -928,6 +974,8 @@ export async function alarmLinkedInDocumentFallbacks(
   results: readonly PostEntry[],
   editionDate: string,
   notify: typeof notifyEditor | null = isNodeTestContext() ? null : notifyEditor,
+  /** #12584 item 5 — superfície no assunto/corpo e onde fica o store. */
+  surface: { label: string; store: string } = { label: "diária", store: "_internal/06-social-published.json" },
 ): Promise<number> {
   if (!notify) return 0;
   const byFingerprint = new Map<string, PostEntry[]>();
@@ -948,11 +996,11 @@ export async function alarmLinkedInDocumentFallbacks(
           check: LINKEDIN_DAILY_DOCUMENT_FALLBACK_CHECK,
           fingerprint,
           severity: "acao",
-          subject: `LinkedIn da diária ${editionDate} saiu sem o documento PDF (${fingerprint.slice(LINKEDIN_DAILY_DOCUMENT_FALLBACK_CHECK.length + 1)})`,
+          subject: `LinkedIn da ${surface.label} ${editionDate} saiu sem o documento PDF (${fingerprint.slice(LINKEDIN_DAILY_DOCUMENT_FALLBACK_CHECK.length + 1)})`,
           body:
-            `Posts da edição ${editionDate} que tentaram o documento PDF (#12584) e caíram no fallback:\n\n${lines.join("\n")}\n\n` +
+            `Posts da ${surface.label} ${editionDate} que tentaram o documento PDF (#12584) e caíram no fallback:\n\n${lines.join("\n")}\n\n` +
             `Os posts não se perderam (seguem na fila no formato do fallback). O registro fica em ` +
-            `\`_internal/06-social-published.json\` (\`format\`, \`document_fallback_reason\`).`,
+            `\`${surface.store}\` (\`format\`, \`document_fallback_reason\`).`,
         },
         { cwd: ROOT },
       );
@@ -1309,6 +1357,9 @@ async function main(): Promise<number | void> {
     editionDate,
     isTest,
     rootDir: logRootDir,
+    // #12584 item 5 — lote da anual (`data/annual/{slug}/social/{AAMMDD}`):
+    // chave própria, senão colide com a diária do mesmo dia.
+    idempotencyNamespace: linkedInIdempotencyNamespaceForDir(resolve(editionDir)),
   };
 
   // #595 — pre-carregar imageUrl por destaque (mesmo source pra todos os

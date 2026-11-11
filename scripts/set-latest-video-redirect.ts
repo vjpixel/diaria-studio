@@ -16,7 +16,12 @@
  * serve para conferir ou regravar à mão.
  *
  * A gravação só avança: edição anterior à que está no KV não sobrescreve
- * (`shouldReplaceLatestVideo`). Credenciais: `CLOUDFLARE_ACCOUNT_ID` +
+ * (`shouldReplaceLatestVideo`). Horizontal agendado (#12801): o registro leva
+ * o `public_at` do upload e o horizontal anterior em `previous`; o Worker só
+ * passa a servir o novo depois do `public_at` — gravar na noite de D-1 nunca
+ * manda o link da bio para um vídeo ainda privado. Sem o registro do upload
+ * (caminho de reserva: subido pelo YouTube Studio, link colado), o `public_at`
+ * presumido é 06:00 BRT do dia da edição (`resolveEditionHorizontalPublicAt`). Credenciais: `CLOUDFLARE_ACCOUNT_ID` +
  * `CLOUDFLARE_WORKERS_TOKEN` (as mesmas do upload de imagens no KV `POLL`).
  *
  * Exit: 0 gravado/sem mudança/plano; 1 falha (credencial, KV, link ausente
@@ -31,10 +36,16 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { createKvRestOps } from "./lib/cloudflare-kv-rest.ts";
 import { D1_VIDEO_URL_FILE, parseD1VideoUrlFile } from "./lib/diaria/d1-video-link.ts";
+import { extractYouTubeVideoId } from "./lib/diaria/d1-video-link.ts";
+import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
+import { DEFAULT_EDITION_SCHEDULE_HHMM, resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import {
   LATEST_VIDEO_KV_KEY,
+  isLatestVideoPublic,
   parseLatestVideoRecord,
   shouldReplaceLatestVideo,
+  type LatestVideoPrevious,
+  type LatestVideoPublicAtSource,
   type LatestVideoRecord,
 } from "./lib/shared/latest-video-redirect.ts";
 
@@ -62,6 +73,95 @@ export function readEditionHorizontalUrl(editionDir: string): string | null {
 }
 
 /**
+ * #12801: quando o horizontal `url` fica público, lido do registro do upload
+ * (`_internal/05-youtube-published.json`: `rereadStatus.publishAt`, senão
+ * `requested.publishAt`). `null` = sem agendamento no registro (upload na
+ * hora, link colado à mão, registro de outro vídeo ou ilegível). Quem grava o
+ * KV usa `resolveEditionHorizontalPublicAt`, que separa o upload na hora do
+ * caminho de reserva.
+ */
+export function readEditionHorizontalPublicAt(editionDir: string, url: string): string | null {
+  return readUploadRecordForVideo(editionDir, url).publishAt;
+}
+
+/**
+ * #12801: o registro do upload (`05-youtube-published.json`) é DESTE vídeo?
+ * `matched: false` = sem registro, ilegível ou de outro vídeo — o link veio
+ * do caminho de reserva (upload pelo YouTube Studio + link colado,
+ * `link-video-d1.ts --save`), e o estado do vídeo é desconhecido.
+ */
+function readUploadRecordForVideo(editionDir: string, url: string): { matched: boolean; publishAt: string | null } {
+  const none = { matched: false, publishAt: null };
+  const path = join(editionDir, YOUTUBE_PUBLISHED_FILE);
+  if (!existsSync(path)) return none;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return none;
+  }
+  if (!raw || typeof raw !== "object") return none;
+  const r = raw as Record<string, unknown>;
+  const id = extractYouTubeVideoId(url);
+  if (!id || r.videoId !== id) return none;
+  const pick = (o: unknown): string | null => {
+    const v = o && typeof o === "object" ? (o as Record<string, unknown>).publishAt : null;
+    return typeof v === "string" && !Number.isNaN(Date.parse(v)) ? v : null;
+  };
+  return { matched: true, publishAt: pick(r.rereadStatus) ?? pick(r.requested) };
+}
+
+/** #12869: o tipo mora no miolo compartilhado, que guarda a fonte no registro do KV. */
+export type HorizontalPublicAtSource = LatestVideoPublicAtSource;
+
+/**
+ * #12801 (resíduo): o `public_at` do registro do KV.
+ *   - registro do upload deste vídeo com `publishAt` → ele (`upload`);
+ *   - registro deste vídeo sem `publishAt` (upload na hora) → `null`, vale já
+ *     (`upload_immediate`);
+ *   - sem registro deste vídeo (caminho de reserva: o editor subiu pelo
+ *     YouTube Studio e colou o link) → 06:00 BRT do dia da edição
+ *     (`edition_default`), o horário em que o horizontal é agendado. Premissa
+ *     conservadora: se o editor publicou na hora, o link da bio só segue no
+ *     horizontal anterior (público) até as 06:00; sem ela, ia para um vídeo
+ *     possivelmente privado até lá. Depois das 06:00 o default já passou e o
+ *     registro vale na hora, como antes.
+ */
+export function resolveEditionHorizontalPublicAt(
+  editionDir: string,
+  url: string,
+  aammdd: string,
+): { publicAt: string | null; source: HorizontalPublicAtSource } {
+  const upload = readUploadRecordForVideo(editionDir, url);
+  if (upload.matched) return { publicAt: upload.publishAt, source: upload.publishAt ? "upload" : "upload_immediate" };
+  let publicAt: string | null = null;
+  try {
+    publicAt = resolveEditionScheduledAt(aammdd, DEFAULT_EDITION_SCHEDULE_HHMM);
+  } catch {
+    publicAt = null; // AAMMDD fora do calendário: sem horário a presumir
+  }
+  return { publicAt, source: "edition_default" };
+}
+
+/** #12801: o registro sem o `previous` aninhado (o KV guarda um nível só). */
+function withoutPrevious(r: LatestVideoRecord): LatestVideoPrevious {
+  const { previous: _previous, ...rest } = r;
+  return rest;
+}
+
+/**
+ * #12801: o `previous` do registro novo — o horizontal que o link da bio
+ * serve até o novo ficar público. Edição nova: o atual, se já público em
+ * `now`, senão o `previous` dele. Mesma edição (link trocado): mantém o
+ * `previous` do atual.
+ */
+export function previousForNewRecord(current: LatestVideoRecord | null, aammdd: string, now: Date): LatestVideoPrevious | null {
+  if (!current) return null;
+  if (current.aammdd === aammdd) return current.previous ?? null;
+  return isLatestVideoPublic(current, now) ? withoutPrevious(current) : current.previous ?? null;
+}
+
+/**
  * Grava (ou, com `apply: false`, só planeja) o registro do horizontal da
  * edição. `kv` só é lido/escrito quando há link. Lança em falha de KV: quem
  * chama decide se é fatal (este CLI) ou aviso (`publish-shorts.ts`).
@@ -76,8 +176,19 @@ export async function updateLatestVideoRedirect(input: {
   const url = readEditionHorizontalUrl(input.editionDir);
   if (!url) return { status: "no_link", detail: `${D1_VIDEO_URL_FILE} ausente ou vazio — o horizontal da edição ${input.aammdd} ainda não tem link` };
   const record: LatestVideoRecord = { url, aammdd: input.aammdd, updated_at: input.now.toISOString() };
+  // #12801: o horizontal agendado (private até 06:00 BRT de D) leva o `public_at`, e o
+  // registro guarda o anterior para o Worker servir até lá (`effectiveLatestVideoRecord`).
+  // Resíduo: no caminho de reserva (sem registro do upload) presume as 06:00 BRT da edição.
+  // #12869: a fonte vai no registro; um `edition_default` posterior nunca troca o `public_at` do upload.
+  const { publicAt, source } = resolveEditionHorizontalPublicAt(input.editionDir, url, input.aammdd);
+  if (publicAt) record.public_at = publicAt;
+  record.public_at_source = source;
   const current = parseLatestVideoRecord(await input.kv.get(LATEST_VIDEO_KV_KEY));
-  if (current && current.aammdd === record.aammdd && current.url === record.url) return { status: "unchanged", record: current };
+  const previous = previousForNewRecord(current, input.aammdd, input.now);
+  if (previous) record.previous = previous;
+  // #12869: mesma edição e link sem nada a melhorar (mesmo instante por `Date.parse`, ou fonte
+  // pior que a gravada) = `unchanged`: o registro do KV fica como está.
+  if (current && current.aammdd === record.aammdd && current.url === record.url && !shouldReplaceLatestVideo(current, record)) return { status: "unchanged", record: current };
   if (!shouldReplaceLatestVideo(current, record)) return { status: "older", record, current: current! };
   if (!input.apply) return { status: "would_write", record, current };
   await input.kv.put(LATEST_VIDEO_KV_KEY, JSON.stringify(record));
@@ -101,11 +212,17 @@ export function describeLatestVideoOutcome(o: LatestVideoUpdateOutcome): string 
     case "unchanged":
       return `diar.ia.br/video já aponta para ${o.record.url} (edição ${o.record.aammdd})`;
     case "older":
-      return `diar.ia.br/video mantido em ${o.current.url} (edição ${o.current.aammdd}, mais nova que ${o.record.aammdd})`;
+      // #12863: `older` só sai com a edição gravada estritamente mais nova; o texto
+      // não presume isso, pra não voltar a dizer "mais nova que" ela mesma.
+      return o.current.aammdd === o.record.aammdd
+        ? `diar.ia.br/video mantido em ${o.current.url} (edição ${o.current.aammdd}, o registro novo não muda nada)`
+        : `diar.ia.br/video mantido em ${o.current.url} (edição ${o.current.aammdd}, mais nova que ${o.record.aammdd})`;
     case "would_write":
       return `diar.ia.br/video passaria a ${o.record.url} (edição ${o.record.aammdd}; hoje ${o.current ? `${o.current.url}, ${o.current.aammdd}` : "sem registro"}) — rode com --apply`;
     case "written":
-      return `diar.ia.br/video agora aponta para ${o.record.url} (edição ${o.record.aammdd})`;
+      return o.record.public_at
+        ? `diar.ia.br/video aponta para ${o.record.url} (edição ${o.record.aammdd}) a partir de ${o.record.public_at}; até lá ${o.record.previous ? `segue em ${o.record.previous.url} (edição ${o.record.previous.aammdd})` : "cai na lista do canal"} (#12801)`
+        : `diar.ia.br/video agora aponta para ${o.record.url} (edição ${o.record.aammdd})`;
   }
 }
 

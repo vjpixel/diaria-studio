@@ -287,7 +287,13 @@ rodada 261104b implementadores de sessões diferentes escreveram `f1.md`/
 e o post, sem nenhum sinal de erro. Para comentário de review, o caminho
 preferido dispensa o arquivo: `gh-pr-review-api.ts comment|reply --body
 'texto'` ou `--body-file -` com heredoc. O helper recusa `--body-file` cujo
-nome não tenha um número de 4+ dígitos (exit 2, nada postado).
+nome não tenha um número de 4+ dígitos (exit 2, nada postado). Desde o
+#12746 o hook `.claude/hooks/block-gh-comment-secrets.mjs` aplica a mesma
+regra a `gh issue|pr create|comment|edit --body-file`/`-F` (nega o nome
+genérico; a #12547 nasceu com o corpo da #12348 assim) e avisa, sem negar,
+quando o arquivo tem mais de 10 min: corpo recém-escrito nunca é velho, e um
+arquivo velho é o sinal de que a escrita do corpo novo falhou. Nome com
+expansão (`"$F"`) e `-`/stdin passam.
 
 **`--body-file` grava; `--verify-body` só confere (#11930).** Para EDITAR o
 corpo (acrescentar `removal-declaration:`, trocar um `Closes`), reescrever o
@@ -1422,6 +1428,17 @@ classifica `develop`, com a mesma precedência de `windows`.
   `find -exec`/`xargs` e código de interpretador (`python -c`, heredoc,
   `node -e`, script em `/tmp`) que tenham caminho protegido como alvo;
   leitura segue livre. Lista e detecção: `scripts/lib/protected-path-bash-write.mjs`.
+  Desde o #12812 também `curl -o`, `wget -O`, `tar -x -C`, `unzip -d`, `git
+  apply`/`patch` (pelo alvo do patch), `git rm`/`git mv`, formatadores no
+  lugar (`prettier --write`, `eslint --fix`), editores (`vim -es`, `sponge`),
+  `sh script.sh <alvo>` e flag de saída (`--out`, `--outfile`; `-o` fora de `grep`/`find`/`ssh`/shells) em
+  qualquer comando; `git checkout/restore -- .claude/...` fica livre (traz
+  conteúdo já versionado). O guard lê o código inteiro de `node -e`/`python -c`
+  e não separa alvo de texto: um caminho protegido citado só dentro do dado
+  (a `nota` de um `plan.json`) também bloqueia, e assim fica por decisão do
+  editor (#12780). Contorno: script num arquivo do scratchpad que lê esse
+  texto de um arquivo de dados à parte (o caminho não pode estar no código do
+  script, que o guard também lê), ou o Write/Edit direto no arquivo-alvo.
 - **Coordenador no modo agendado:** issue que voltou assim (ou que, pelo
   corpo, só mexe em `.claude/`) é roteada com `npx tsx scripts/route-issue.ts
   --issue N --track develop --motivo claude-dir --reason "<arquivos de
@@ -1524,6 +1541,11 @@ o procedimento #11616 do `.claude/skills/diaria-overnight/SKILL.md` (Fase 1,
 Gate 2): `npx tsx scripts/run-agent-eval-for-pr.ts --pr N --live` no
 worktree da PR, que aplica a label ao registrar o resultado. Decisão do
 editor de 10/11/2026 (#12678): é o coordenador quem roda, na própria rodada.
+Desde o #12830 o script também reexecuta o check do gate depois da label
+(rerun pela API; recusado, tira e repõe a label) e só sai `0` com ele verde
+no head da PR: sem `gh run rerun` à mão. Saída `1` depois de "Label e
+comentário já estão na PR" é o check que não ficou verde no prazo
+(`--check-timeout-sec`, default 600).
 
 **Relatório:** `scripts/reconcile-overnight-report.ts` marca a PR aberta
 retida no gate como `aberta, aguarda agent-eval` e lista as retidas numa

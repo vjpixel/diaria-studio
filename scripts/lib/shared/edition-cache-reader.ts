@@ -637,7 +637,7 @@ export function filterPublicEditionsWithWarning<T extends WarnablePost>(
 export function loadBeehiivCache(dir: string = DEFAULT_BEEHIIV_POSTS_DIR): UnifiedCachedPost[] {
   if (!existsSync(dir)) {
     throw new Error(
-      `[edition-cache-reader] ${dir} ausente — precisa do junction data/ (OneDrive) populado por ` +
+      `[edition-cache-reader] ${dir} ausente — precisa do link data/ (Google Drive) populado por ` +
         `beehiiv-sync.ts. Ver CLAUDE.md sobre a junction data/.`,
     );
   }

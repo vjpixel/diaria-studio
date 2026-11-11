@@ -91,6 +91,7 @@ import {
   assertCampaignQuotaHeadroom,
   BrevoCampaignQuotaLowError,
   recordCampaignQuotaRemaining,
+  refreshCampaignQuotaStateFromKv, // #12841
 } from "../lib/brevo-rate-state.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles, calcCumulativeSentInBillingWindow } from "../../workers/brevo-dashboard/src/sections-core.ts"; // #6394: calcCumulativeSentInBillingWindow
 import { billingCycleWindow } from "../../workers/brevo-dashboard/src/billing-cycle.ts"; // #6394: pareia credits+cumulativeSent no caminho AO VIVO
@@ -461,6 +462,7 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
   // scripts de automação e pendurava até o 502 do incidente 260824. Sem
   // headroom ≥ reserva (#5697: 30), cai DIRETO no fallback last-good+banner
   // (~1s, zero GET de campanha) em vez de descobrir o 429 no meio do sweep.
+  await refreshCampaignQuotaStateFromKv(); // #12841: última observação de qualquer máquina
   try {
     assertCampaignQuotaHeadroom(CAMPAIGNS_FETCH_RESERVE);
   } catch (e) {

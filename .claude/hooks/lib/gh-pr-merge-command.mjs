@@ -1626,6 +1626,10 @@ const CAT_HEAD_RES = [
 ];
 /** O prefixo de um cabeçalho `cat` tem atribuição (`NOME=valor`)? */
 const PREFIX_HAS_ASSIGN_RE = new RegExp(`(?:^|; | && )${SAFE_ASSIGN_NAME}=`);
+/** #12776: linha própria antes do 1º cabeçalho — as peças de `CAT_PREFIX_ITEM`, sem separador no fim. */
+const LEAD_PREFIX_LINE_RE = new RegExp(
+  `^(?:${CAT_PREFIX_ITEM})*(?:cd ${SIMPLE_ARG}|${SAFE_ASSIGN_NAME}=${SIMPLE_ARG});?$`,
+);
 
 /**
  * Fecho aceito depois de um `cat <<'D' > ARQ` (#11325), contado a partir da
@@ -1637,10 +1641,14 @@ const PREFIX_HAS_ASSIGN_RE = new RegExp(`(?:^|; | && )${SAFE_ASSIGN_NAME}=`);
  * (comment|create|edit) … --body-file …` (review da #11510).
  */
 function catTail(afterAssign) {
+  // #12776: `echo` com argumentos literais (SIMPLE_ARG: sem `$`, crase, `\`,
+  // redirect nem separador) é builtin que só imprime — vale nas duas formas.
+  // O caso real terminava a cadeia com `echo ok`.
+  const echo = `echo${ARGS}`;
   const consumer = afterAssign
-    ? `gh (?:pr|issue) (?:comment|create|edit)${GH_ARGS} --body-file${GH_ARGS}`
+    ? `gh (?:pr|issue) (?:comment|create|edit)${GH_ARGS} --body-file${GH_ARGS}|${echo}`
     : `(?:npx tsx scripts/gh-pr-review-api\\.ts|npx tsx scripts/lib/gh-pr-safe-edit\\.ts)${VAR_ARGS}|` +
-      `gh (?:pr|issue) (?:comment|create|edit)${GH_ARGS}|git commit${VAR_ARGS}${GIT_PUSH}`;
+      `gh (?:pr|issue) (?:comment|create|edit)${GH_ARGS}|git commit${VAR_ARGS}${GIT_PUSH}|${echo}`;
   return new RegExp(`^\\s*(?:${CD_PREFIX}(?:${consumer})\\s*)?$`);
 }
 
@@ -1695,10 +1703,18 @@ function isCatToFileChain(lines) {
     }
     return null;
   };
-  const first = header(lines[0]);
+  // #12776: o prefixo do 1º cabeçalho também pode vir em LINHAS próprias
+  // (`C=/scratch` numa linha, `cat > $C/x.md <<'EOF'` na seguinte): a quebra
+  // de linha separa comandos como o `; `. Só as mesmas peças inócuas de
+  // `CAT_PREFIX_ITEM` (`cd X`, atribuição de nome seguro com valor literal) e
+  // só ANTES do 1º cabeçalho; contam como atribuição para o `catTail`.
+  let lead = 0;
+  while (lead < lines.length && LEAD_PREFIX_LINE_RE.test(lines[lead])) lead++;
+  const leadHasAssign = lines.slice(0, lead).some((l) => PREFIX_HAS_ASSIGN_RE.test(l));
+  const first = header(lines[lead] ?? "");
   if (first === null) return false;
   const blocks = [];
-  let k = 0;
+  let k = lead;
   let h = first;
   while (h !== null) {
     const close = heredocCloseLine(lines, k + 1, h.delim);
@@ -1717,7 +1733,7 @@ function isCatToFileChain(lines) {
     }
     blocks[blocks.length - 1].rest = rest;
   }
-  const afterAssign = blocks.some((b) => PREFIX_HAS_ASSIGN_RE.test(b.prefix));
+  const afterAssign = leadHasAssign || blocks.some((b) => PREFIX_HAS_ASSIGN_RE.test(b.prefix));
   const consumer = catTail(afterAssign);
   return blocks.every((b) => b.rest.every((line) => consumer.test(line)));
 }

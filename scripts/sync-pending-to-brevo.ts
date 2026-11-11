@@ -766,7 +766,7 @@ export function assertStoreFileGuard(
   if (storeExists) return;
   if (hasFlag(argv, "allow-missing-store")) return;
   throw new Error(
-    `store ausente (${storePath}) — provável junction data/ (OneDrive) não montada, ou sincronização ` +
+    `store ausente (${storePath}) — provável link data/ (Google Drive) não montado, ou sincronização ` +
       "pendente. Abortando ANTES de qualquer I/O externo pra não reingerir o pool Pending inteiro " +
       "(contatos já suprimidos/descadastrados/promovidos incluídos — dedup depende inteiramente deste " +
       "arquivo). Se esta é genuinamente a 1ª execução (arquivo nunca existiu), rode de novo com " +

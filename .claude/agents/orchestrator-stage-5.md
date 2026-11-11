@@ -43,7 +43,7 @@ npx tsx scripts/pipeline-sentinel.ts assert \
   --outputs "02-reviewed.md,03-social.md" --sync-hint
 ```
 
-`--sync-hint` (#11729): com sentinel ausente, o comando imprime no stderr uma linha `[aviso]` com "possível defasagem de sync do OneDrive" e a idade do arquivo mais recente da edição nesta máquina. A mensagem do exit `1` abaixo repassa essa linha ao editor.
+`--sync-hint` (#11729): com sentinel ausente, o comando imprime no stderr uma linha `[aviso]` com "possível defasagem de sync do Drive" (bisync do 300 / Drive for desktop, #12837) e a idade do arquivo mais recente da edição nesta máquina. A mensagem do exit `1` abaixo repassa essa linha ao editor.
 
 Exit code handling:
 - `0` → continuar.
@@ -190,7 +190,7 @@ npx tsx scripts/stage5-youtube.ts {AAMMDD} --edition-dir {EDITION_DIR}
 - `consent-off` → `--skip youtube`/`none` sem link gravado.
 - `missing-link` (exit 3) → nem link nem marcador nem `--skip youtube`. O `detail` traz as saidas e, com `_internal/05-youtube-pending-approval.json` presente, cita o plano do horizontal a espera do "pode publicar" (#12122, informativo desde o #12588).
 
-Com `.step-5-done.json` ja presente (retry de canal depois da Etapa 5 concluida), `needs-editor`/`missing-link`/`no-video-stale` nao bloqueiam (`blocking: false`, exit 0): a 1a rodada ja decidiu o video.
+Com `.step-5-done.json` ja presente (retry de canal depois da Etapa 5 concluida), `needs-editor`/`missing-link` nao bloqueiam (`blocking: false`, exit 0): a 1a rodada ja decidiu o video. `no-video-stale` bloqueia mesmo assim (exit 3, #12805): o marcador sem video foi aplicado depois da Etapa 5, sem re-render, e o convite do video segue na edicao; rodar o que o `detail` traz antes do retry.
 
 **Resumo** (autoridade sobre o link do D1): uma linha "YouTube:" com o `outcome` e "link no D1: sim" ou "nao" (`d1_link`) com o `detail`. O `log-event` do passo ja sai do `stage5-youtube.ts` (nao logar de novo). O upload, a legenda, o podcast e a tela final sao do `/diaria-publica` Parte A, que os relata; o vertical segue na Parte B dela, depois das Etapas 5 e 6 (#12591).
 

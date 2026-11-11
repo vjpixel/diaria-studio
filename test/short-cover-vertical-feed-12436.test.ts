@@ -35,7 +35,8 @@ describe("#12436 vertical_feed aceita studio_web", () => {
     const rec: ShortCoverRecord = { method: "thumbnails_set", ok: true, vertical_feed: "studio_web" };
     const v: ShortVerticalFeedCover = "studio_web";
     assert.equal(rec.vertical_feed, v);
-    assert.deepEqual([...SHORT_VERTICAL_FEED_COVER_VALUES], ["manual", "studio_web"]);
+    // #12100 opção 2: `first_frame_cover` = capa no 1º frame do vertical enviado, não confirmada.
+    assert.deepEqual([...SHORT_VERTICAL_FEED_COVER_VALUES], ["manual", "studio_web", "first_frame_cover"]);
   });
 
   it("com studio_web o aviso do passo manual não sai; com manual sai", () => {

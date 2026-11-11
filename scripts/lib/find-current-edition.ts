@@ -32,7 +32,7 @@
  *   npx tsx scripts/lib/find-current-edition.ts --stage 2
  *   → {"stage":2,"candidates":["260505","260506"]}
  * Com zero candidatos, o stderr ganha uma linha `[aviso]` com "possível
- * defasagem de sync do OneDrive" e a idade do arquivo mais recente da edição
+ * defasagem de sync do Drive" (`SYNC_LAG_PHRASE`) e a idade do arquivo mais recente da edição
  * (#11729, `describeNoCandidates`).
  */
 
@@ -244,9 +244,9 @@ export function findEditionsInProgress(
 /**
  * Zero candidatos para o stage (#11729): no `300`, o motivo mais comum é o
  * prereq (ex.: `.step-4-done.json` aprovado no Neo) ainda não ter chegado pelo
- * OneDrive, e não a etapa anterior não ter rodado. Devolve a dica de
- * "possível defasagem de sync do OneDrive" com a idade do arquivo mais
- * recente da edição mais nova ainda não concluída para este stage, ou `null`
+ * sync do Drive (#12837; era o OneDrive até a #12359), e não a etapa anterior
+ * não ter rodado. Devolve a dica de "possível defasagem de sync do Drive"
+ * com a idade do arquivo mais recente da edição mais nova ainda não concluída para este stage, ou `null`
  * se nenhuma edição desta máquina tem prereq faltando. Só lê o disco; nunca
  * lança. Sai no stderr do CLI — o stdout continua sendo só o JSON.
  */

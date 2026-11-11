@@ -50,7 +50,9 @@ import { resolveClariceHistoryListIdForGuard } from "./clarice-list-history-conf
 export {
   assertCampaignQuotaHeadroom,
   BrevoCampaignQuotaLowError,
+  exitAfterCampaignQuotaKvFlush, // #12862
   readCampaignQuotaState,
+  refreshCampaignQuotaStateFromKv, // #12841
   warnIfCampaignQuotaLow, // #6458
   type BrevoCampaignQuotaState,
 } from "./brevo-rate-state.ts";

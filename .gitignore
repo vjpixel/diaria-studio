@@ -109,3 +109,5 @@ com[1-9]
 COM[1-9]
 lpt[1-9]
 LPT[1-9]
+# link antigo do data/ (rollback da virada do OneDrive para o Google Drive, #12359)
+/data.onedrive-link
