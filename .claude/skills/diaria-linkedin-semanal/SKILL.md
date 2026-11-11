@@ -774,10 +774,16 @@ texto do post de feed é redação nova a cada ciclo. Antes de entregá-lo:
 
 1. `Skill("humanizador", ...)` no processo completo de 9 passos (mesma
    chamada do Passo 5);
-2. `mcp__clarice__correct_text` sobre o resultado, aplicando **todas** as
+2. tirar todos os travessões do resultado (nem `—` nem `–`): o texto final
+   tem de ter **zero travessões**, e a troca vem ANTES da Clarice porque
+   qualquer edição depois dela exige nova passada;
+3. gravar esse texto (Write) em
+   `data/weekly/{cycle}/_internal/ln-feed-post-clarice-input.txt` e rodar
+   `mcp__clarice__correct_text` sobre ele, aplicando **todas** as
    sugestões legítimas (filtradas por `clarice-filter.ts`, #11798; mesma regra do Passo 5, #4514; exceção só pra marca ou
-   identificador técnico, sinalizada ao editor);
-3. conferir que o texto final tem **zero travessões** (nem `—` nem `–`).
+   identificador técnico, sinalizada ao editor). O filtro roda com
+   `--source-text`, que amarra o filtrado a esse texto:
+   `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json --source-text data/weekly/{cycle}/_internal/ln-feed-post-clarice-input.txt`.
 
 **Guard mecânico (#12794, a prosa acima falhou em `26w42` e `26w45`).**
 Grave o texto final em `data/weekly/{cycle}/_internal/ln-feed-post.txt`
@@ -789,7 +795,11 @@ npx tsx scripts/weekly-feed-post-review.ts --cycle {cycle} --mark --humanizador 
 
 O script grava `_internal/ln-feed-post-review.json` com o hash do texto e
 recusa (exit 2) texto com travessão, sem o arquivo da Clarice ou com
-sugestão mantida que não aparece aplicada. Sugestão recusada de propósito
+sugestão mantida que não aparece aplicada. Também recusa o filtrado que
+não é do texto enviado à Clarice (sem o sidecar `{S}-filtrado.json.source.json`,
+ou com o hash de outra versão, inclusive um `[]` velho) e o texto final
+que não é o texto enviado com as sugestões aplicadas (edição depois da
+Clarice): nos dois casos, passe a Clarice de novo na versão atual. Sugestão recusada de propósito
 (marca, identificador técnico) passa com `--allow-unapplied "<motivo>"`,
 que fica no marcador e vai pro editor no Passo 9. `--humanizador` é o seu
 atestado de que a skill rodou sobre ESTE texto: nunca passe a flag sem a

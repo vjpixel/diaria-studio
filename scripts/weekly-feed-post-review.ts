@@ -7,8 +7,11 @@
  *
  * --mark: grava `data/weekly/{cycle}/_internal/ln-feed-post-review.json` com
  *   o hash do texto atual de `_internal/ln-feed-post.txt`. Rodar DEPOIS do
- *   humanizador e da Clarice (sugestões filtradas por `clarice-filter.ts`)
- *   terem sido aplicados e o resultado gravado no arquivo. Não roda nenhuma
+ *   humanizador e da Clarice (sugestões filtradas por `clarice-filter.ts
+ *   --source-text _internal/ln-feed-post-clarice-input.txt`, #12794) terem
+ *   sido aplicados e o resultado gravado no arquivo. O filtrado tem de ser
+ *   do texto enviado à Clarice (sidecar `.source.json`) e o texto final tem
+ *   de ser esse texto com as sugestões aplicadas. Não roda nenhuma
  *   das duas passadas: só registra e confere.
  * --check: confere o texto contra o marcador e, se passar, imprime o texto
  *   no stdout. É esse texto, e só ele, que vai pro editor no Passo 9.
@@ -18,7 +21,8 @@
  *   npx tsx scripts/weekly-feed-post-review.ts --cycle 26w45 --check
  *
  * Exit: 0 ok · 1 argumento inválido · 2 guard recusou (texto sem revisão,
- * revisão velha, travessão, sugestão da Clarice não aplicada).
+ * revisão velha, travessão, sugestão da Clarice não aplicada, filtrado de
+ * outro texto ou edição depois da Clarice).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -27,11 +31,14 @@ import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseClariceSuggestions, type ClariceSuggestion } from "./lib/schemas/clarice-suggestions.ts";
 import { isValidWeeklyCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
+import { clariceSourceSidecarPath } from "./lib/clarice-source-binding.ts";
 import {
   buildFeedPostReviewMarker,
   checkFeedPostReview,
+  feedPostClariceInputPath,
   feedPostPath,
   feedPostReviewPath,
+  type ClariceBinding,
 } from "./lib/weekly-feed-post-review.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -79,12 +86,19 @@ export function runFeedPostReview(options: RunOptions): string {
 
   if (text === null) throw new FeedPostGuardError(`${textPath} ausente — grave o texto final do post antes de marcar.`);
   let clariceFiltered: ClariceSuggestion[] | null = null;
+  let clariceBinding: ClariceBinding | undefined;
   if (options.clariceFilteredPath) {
     if (!existsSync(options.clariceFilteredPath)) {
       throw new FeedPostGuardError(`--clarice-filtered ${options.clariceFilteredPath} não existe.`);
     }
+    const filteredRaw = readFileSync(options.clariceFilteredPath, "utf8");
+    clariceBinding = {
+      inputText: readOptional(feedPostClariceInputPath(cycleDir)),
+      filteredRaw,
+      sidecar: readMarker(clariceSourceSidecarPath(options.clariceFilteredPath)),
+    };
     try {
-      clariceFiltered = parseClariceSuggestions(JSON.parse(readFileSync(options.clariceFilteredPath, "utf8")));
+      clariceFiltered = parseClariceSuggestions(JSON.parse(filteredRaw));
     } catch (e) {
       throw new FeedPostGuardError(
         `--clarice-filtered não é um array de sugestões {from,to} válido: ${(e as Error).message.split("\n")[0]}`,
@@ -95,6 +109,7 @@ export function runFeedPostReview(options: RunOptions): string {
     text,
     humanizador: options.humanizador,
     clariceFiltered,
+    clariceBinding,
     allowUnapplied: options.allowUnapplied,
     now,
   });

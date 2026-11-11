@@ -22,7 +22,12 @@
  * A Clarice deixa evidência no disco: o `{S}-filtrado.json` que o Passo 5 já
  * manda gravar com `clarice-filter.ts`. O marcador exige esse arquivo e
  * confere que cada sugestão mantida foi de fato aplicada no texto (o `from`
- * não sobra sem o `to`). Sugestão recusada de propósito (marca, identificador
+ * não sobra sem o `to`). O filtrado fica amarrado ao texto enviado à Clarice
+ * (`_internal/ln-feed-post-clarice-input.txt`): `clarice-filter.ts
+ * --source-text` grava o sha256 desse texto num sidecar, e o texto final tem
+ * de ser esse texto com as sugestões aplicadas, então um `[]` velho ou o
+ * filtrado de uma versão anterior não passa para a versão nova (finding do
+ * self-review da PR #12823). Sugestão recusada de propósito (marca, identificador
  * técnico) passa só com motivo declarado, gravado no marcador. O humanizador
  * não deixa arquivo; a flag `--humanizador` é atestado explícito, como no
  * #11199.
@@ -33,12 +38,15 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { ClariceSuggestion } from "./schemas/clarice-suggestions.ts";
+import { clariceSourceHash, isClariceSourceSidecar, rawSha256 } from "./clarice-source-binding.ts";
 import { isRevisaoMarker, type RevisaoMarker } from "./voto-tema-revisao.ts";
 
 /** Arquivo com o texto final do post de feed, relativo a `data/weekly/{cycle}/`. */
 export const FEED_POST_REL = "_internal/ln-feed-post.txt";
 /** Marcador da revisão, relativo a `data/weekly/{cycle}/`. */
 export const FEED_POST_REVIEW_REL = "_internal/ln-feed-post-review.json";
+/** Texto exato enviado à Clarice (pós-humanizador, sem travessão), relativo a `data/weekly/{cycle}/`. */
+export const FEED_POST_CLARICE_INPUT_REL = "_internal/ln-feed-post-clarice-input.txt";
 
 /** Comando que grava o marcador, citado nas mensagens de recusa. */
 export const MARK_COMMAND =
@@ -52,6 +60,10 @@ export function feedPostReviewPath(cycleDir: string): string {
   return join(cycleDir, FEED_POST_REVIEW_REL);
 }
 
+export function feedPostClariceInputPath(cycleDir: string): string {
+  return join(cycleDir, FEED_POST_CLARICE_INPUT_REL);
+}
+
 export interface FeedPostReviewMarker extends RevisaoMarker {
   /** Sugestões mantidas pelo `clarice-filter.ts` nesta passada. */
   clarice_sugestoes: number;
@@ -59,6 +71,8 @@ export interface FeedPostReviewMarker extends RevisaoMarker {
   clarice_nao_aplicadas?: Array<{ from: string; to: string }>;
   /** Motivo declarado para as não aplicadas. */
   clarice_motivo?: string;
+  /** sha256 do texto enviado à Clarice, conferido contra o sidecar do filtrado. */
+  clarice_input_hash?: string;
 }
 
 export type FeedPostReviewCheck =
@@ -98,11 +112,40 @@ export function findUnappliedSuggestions(text: string, suggestions: ClariceSugge
   });
 }
 
+/**
+ * Prova de que o filtrado veio do texto enviado à Clarice (#12794): o texto de
+ * entrada, o conteúdo bruto do `{S}-filtrado.json` e o sidecar
+ * `{S}-filtrado.json.source.json` gravado por `clarice-filter.ts --source-text`.
+ */
+export interface ClariceBinding {
+  /** Conteúdo de `_internal/ln-feed-post-clarice-input.txt`; `null` = ausente. */
+  inputText: string | null;
+  /** Conteúdo bruto do filtrado, como está no disco. */
+  filteredRaw: string;
+  /** JSON do sidecar; `null` = ausente. */
+  sidecar: unknown;
+}
+
+/**
+ * Aplica as sugestões ao texto de entrada, uma a uma, na 1ª ocorrência
+ * (`all=false`) ou em todas (`all=true`). @pure
+ */
+export function applyClariceSuggestions(text: string, suggestions: ClariceSuggestion[], all: boolean): string {
+  let t = normalizeFeedPost(text);
+  for (const s of suggestions) {
+    if (!s.from || s.from === s.to) continue;
+    t = all ? t.split(s.from).join(s.to) : t.replace(s.from, () => s.to);
+  }
+  return normalizeFeedPost(t);
+}
+
 export interface BuildMarkerInput {
   text: string;
   humanizador: boolean;
   /** Sugestões já filtradas por `clarice-filter.ts`; `null` = arquivo não informado. */
   clariceFiltered: ClariceSuggestion[] | null;
+  /** Amarração do filtrado ao texto enviado à Clarice; ausente = recusa. */
+  clariceBinding?: ClariceBinding;
   /** Motivo para aceitar sugestões não aplicadas de propósito. */
   allowUnapplied?: string;
   now: Date;
@@ -145,18 +188,71 @@ export function buildFeedPostReviewMarker(input: BuildMarkerInput): BuildMarkerR
         `exceção (marca, identificador técnico) com --allow-unapplied "<motivo>" e avise o editor.`,
     };
   }
+  const binding = checkClariceBinding(text, clariceFiltered, unapplied, input.clariceBinding);
+  if (!binding.ok) return binding;
   const marker: FeedPostReviewMarker = {
     humanizador: true,
     clarice: true,
     em: now.toISOString(),
     hash: feedPostHash(text),
     clarice_sugestoes: clariceFiltered.length,
+    clarice_input_hash: binding.inputHash,
   };
   if (unapplied.length > 0) {
     marker.clarice_nao_aplicadas = unapplied.map((s) => ({ from: s.from, to: s.to }));
     marker.clarice_motivo = motivo;
   }
   return { ok: true, marker };
+}
+
+/**
+ * Confere que o filtrado é do texto enviado à Clarice e que o texto final é
+ * esse texto com as sugestões aplicadas (menos as não aplicadas de propósito).
+ * Um `[]` velho, ou o filtrado de outra versão, não passa: o sidecar guarda o
+ * hash do texto de entrada, e o texto final tem de sair dele. @pure
+ */
+export function checkClariceBinding(
+  text: string,
+  filtered: ClariceSuggestion[],
+  unapplied: ClariceSuggestion[],
+  binding: ClariceBinding | undefined,
+): { ok: true; inputHash: string } | { ok: false; reason: string } {
+  const rerun =
+    `grave o texto enviado à Clarice em ${FEED_POST_CLARICE_INPUT_REL} e rode ` +
+    `'npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json --source-text ${FEED_POST_CLARICE_INPUT_REL}'`;
+  if (!binding || binding.inputText === null || !normalizeFeedPost(binding.inputText)) {
+    return { ok: false, reason: `texto enviado à Clarice ausente (${FEED_POST_CLARICE_INPUT_REL}) — ${rerun}.` };
+  }
+  if (!isClariceSourceSidecar(binding.sidecar)) {
+    return {
+      ok: false,
+      reason: `filtrado sem sidecar .source.json válido: não dá para saber de que texto ele veio — ${rerun}.`,
+    };
+  }
+  if (binding.sidecar.filtered_sha256 !== rawSha256(binding.filteredRaw)) {
+    return { ok: false, reason: `o filtrado foi trocado ou editado depois do clarice-filter.ts — ${rerun}.` };
+  }
+  const inputHash = clariceSourceHash(binding.inputText);
+  if (binding.sidecar.source_sha256 !== inputHash) {
+    return {
+      ok: false,
+      reason: `o filtrado é de outro texto, não de ${FEED_POST_CLARICE_INPUT_REL} (versão anterior?) — passe a Clarice de novo: ${rerun}.`,
+    };
+  }
+  const toApply = filtered.filter((s) => !unapplied.includes(s));
+  const final = normalizeFeedPost(text);
+  if (
+    final !== applyClariceSuggestions(binding.inputText, toApply, false) &&
+    final !== applyClariceSuggestions(binding.inputText, toApply, true)
+  ) {
+    return {
+      ok: false,
+      reason:
+        `o texto final não é o texto enviado à Clarice com as sugestões aplicadas: houve edição depois da ` +
+        `Clarice (ou o texto enviado é de outra versão). Passe a Clarice na versão atual — ${rerun}.`,
+    };
+  }
+  return { ok: true, inputHash };
 }
 
 function isFeedPostMarker(v: unknown): v is FeedPostReviewMarker {
