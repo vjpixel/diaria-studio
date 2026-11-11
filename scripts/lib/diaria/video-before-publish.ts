@@ -32,6 +32,7 @@
  *   6. Nada → `no-video`.
  *
  * Bloqueiam: `invalid-link`, `video-without-link`, `no-video`, `no-video-stale` — exceto
+ * (menos `no-video-stale`, que surge depois da Etapa 5, #12805)
  * depois da Etapa 5 concluída (`.step-5-done.json`): retry de canal
  * (`/diaria-5-publicacao newsletter|social`) não volta a exigir um vídeo que
  * a primeira rodada já dispensou (o Passo 0 reescreve o consent a cada
