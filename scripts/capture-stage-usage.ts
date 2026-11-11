@@ -128,7 +128,7 @@ export interface CaptureResult {
    * `_internal/publica-phases.jsonl`) e ficou fora de `tokens_in`/`tokens_out`.
    * Ausente = nenhum intervalo de outra parte na janela.
    */
-  excluded_other_parts?: { entries: number; tokens_in: number; tokens_out: number; labels: string[] };
+  excluded_other_parts?: { entries: number; tokens_in: number; tokens_out: number; labels: string[]; parse_problems?: string[] };
 }
 
 /**
@@ -299,31 +299,38 @@ export function hasCapturedUsage(row: Pick<StageRow, "cost_usd" | "tokens_in">):
 /**
  * #12655: intervalos em que o thread principal da `/diaria-publica` trabalhou
  * na parte de VÍDEO (telemetria `publica-phases`), para tirar da janela das
- * Etapas 5/6. Arquivo ausente = nada a tirar; ilegível = aviso e nada a tirar
- * (o agregado sai como antes, com o aviso no stderr).
+ * Etapas 5/6. Arquivo ausente = nada a tirar. Arquivo ilegível ou linha fora
+ * do schema vira `problems` (vai para `excluded_other_parts.parse_problems`
+ * no resultado, além do aviso no stderr): a separação pode estar incompleta.
+ * Tarefa sem fim gravado sai rotulada `(aberta)` e vai só até o próximo
+ * `start` do thread principal (`videoPartMainThreadIntervals`).
  */
 export function publicaVideoIntervals(
   editionDir: string,
   sessionId: string | null,
   windowEnd: string | undefined,
-): Array<{ start: number; end: number; label: string }> | undefined {
+): { intervals: Array<{ start: number; end: number; label: string }>; problems: string[] } | undefined {
   const path = resolve(editionDir, PUBLICA_PHASES_FILE);
   if (!existsSync(path)) return undefined;
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
   } catch (e) {
-    console.error(`[aviso] ${path} ilegível (${(e as Error).message}): uso do vídeo não separado do stage`);
-    return undefined;
+    const msg = `${path} ilegível (${(e as Error).message}): uso do vídeo não separado do stage`;
+    console.error(`[aviso] ${msg}`);
+    return { intervals: [], problems: [msg] };
   }
   const { events, problems } = parsePhaseEvents(raw);
   for (const p of problems) console.error(`[aviso] ${path}: ${p}`);
   const openUntil = windowEnd ? Date.parse(windowEnd) : Date.now();
-  return videoPartMainThreadIntervals(events, sessionId, openUntil).map((i) => ({
-    start: i.start,
-    end: i.end,
-    label: `${i.phase}/${i.part}`,
-  }));
+  return {
+    intervals: videoPartMainThreadIntervals(events, sessionId, openUntil).map((i) => ({
+      start: i.start,
+      end: i.end,
+      label: `${i.phase}/${i.part}${i.open ? " (aberta)" : ""}`,
+    })),
+    problems,
+  };
 }
 
 async function main(): Promise<void> {
@@ -378,12 +385,19 @@ async function main(): Promise<void> {
     ? null
     : (values["session-id"] ?? currentSessionId());
 
+  const videoParts = stage === 5 || stage === 6 ? publicaVideoIntervals(editionDir, sessionId, end) : undefined;
   const result = captureUsageForWindow(transcriptsDir, start, end, editionId, {
     sessionId,
     explicitAllSessions: flags.has("all-sessions"),
-    excludeIntervals: stage === 5 || stage === 6 ? publicaVideoIntervals(editionDir, sessionId, end) : undefined,
+    excludeIntervals: videoParts?.intervals,
   });
   result.stage = stage;
+  if (videoParts?.problems.length) {
+    result.excluded_other_parts = {
+      ...(result.excluded_other_parts ?? { entries: 0, tokens_in: 0, tokens_out: 0, labels: [] }),
+      parse_problems: videoParts.problems,
+    };
+  }
 
   if (result.source === "unavailable") {
     console.log(JSON.stringify(result));

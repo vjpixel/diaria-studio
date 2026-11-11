@@ -19,14 +19,18 @@
  *   estava e o gate decide pelo estado antigo, com o fallback humano de
  *   sempre (pergunta + `--assume-public`, que nunca é automático);
  * - `failed`/`rejected`/`deleted` na releitura é terminal: o link não entra,
- *   nem com `--assume-public`.
+ *   nem com `--assume-public`. O registro grava o marcador
+ *   `terminal_upload_status`, que o `gateVideoLink` recusa SEMPRE, também
+ *   numa execução seguinte inconclusiva ou com `--no-refresh-status`; se a
+ *   gravação falhar, o resultado continua `terminal` (a recusa desta
+ *   execução não depende do disco).
  *
  * O estado relido é normalizado por `resolveYouTubeState` (#573); a decisão
  * de horário (D1, envio da newsletter, auditoria) continua no
  * `gateVideoLink`, que recebe o registro atualizado.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveYouTubeState, type PublishState } from "../publish-state.ts";
 import { extractYouTubeVideoId } from "./d1-video-link.ts";
@@ -56,8 +60,11 @@ export type VideoStatusFetch =
 export type RefreshOutcome =
   /** Releitura conferida (id e canal): o registro foi atualizado com `state`. */
   | { kind: "refreshed"; state: PublishState; status: RefreshedVideoStatus; at: string }
-  /** O YouTube diz que o vídeo falhou, foi rejeitado ou apagado: o link nunca entra. */
-  | { kind: "terminal"; uploadStatus: string; at: string; reason: string }
+  /**
+   * O YouTube diz que o vídeo falhou, foi rejeitado ou apagado: o link nunca
+   * entra. `persisted: false` = o marcador não foi gravado no registro.
+   */
+  | { kind: "terminal"; uploadStatus: string; at: string; reason: string; persisted?: boolean; persistError?: string }
   /** Nada conferido: o registro fica como estava (nunca vira público). */
   | { kind: "inconclusive"; reason: string }
   /** Não se aplica: sem registro deste vídeo, ou pulado. */
@@ -148,9 +155,11 @@ export async function fetchVideoStatusWithChannel(
 
 /**
  * Grava a releitura no registro do upload (`_internal/05-youtube-published.json`):
- * `state`, `rereadStatus`, `rereadAt` e uma entrada em `status_refreshes`.
- * Só chamado com o id e o canal conferidos. O `status` do registro (sentinela
- * de upload) não é tocado.
+ * `state`, `rereadStatus`, `rereadAt` e uma entrada em `status_refreshes`; no
+ * terminal, também `terminal_upload_status`/`terminal_at` (marcador que o
+ * `gateVideoLink` recusa sempre). Só chamado com o id e o canal conferidos. O
+ * `status` do registro (sentinela de upload) não é tocado. Escrita atômica
+ * (tmp + rename): o registro nunca fica pela metade.
  */
 export function writeRefreshToRecord(editionDir: string, outcome: Extract<RefreshOutcome, { kind: "refreshed" | "terminal" }>): void {
   const path = join(editionDir, YOUTUBE_PUBLISHED_FILE);
@@ -165,10 +174,14 @@ export function writeRefreshToRecord(editionDir: string, outcome: Extract<Refres
     raw.state = "unknown";
     raw.rereadStatus = { ...((raw.rereadStatus as object | null) ?? {}), uploadStatus: outcome.uploadStatus };
     raw.rereadAt = outcome.at;
+    raw.terminal_upload_status = outcome.uploadStatus;
+    raw.terminal_at = outcome.at;
     refreshes.push({ at: outcome.at, source: YOUTUBE_STATUS_REFRESH_SOURCE, state: "unknown", uploadStatus: outcome.uploadStatus });
   }
   raw.status_refreshes = refreshes;
-  writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", "utf8");
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(raw, null, 2) + "\n", "utf8");
+  renameSync(tmp, path);
 }
 
 /**
@@ -206,8 +219,11 @@ export async function refreshYouTubeRecordState(input: {
     try {
       writeRefreshToRecord(input.editionDir, outcome);
     } catch (e) {
+      // Terminal continua terminal: a recusa não pode depender de o disco aceitar a escrita.
+      if (outcome.kind === "terminal") return { ...outcome, persisted: false, persistError: (e as Error).message };
       return { kind: "inconclusive", reason: `releitura feita, mas o registro não foi gravado (${(e as Error).message})` };
     }
+    if (outcome.kind === "terminal") return { ...outcome, persisted: true };
   }
   return outcome;
 }

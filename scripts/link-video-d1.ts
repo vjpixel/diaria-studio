@@ -214,8 +214,13 @@ async function refreshStatusForLink(dir: string, videoUrl: string, skip: boolean
   return refreshYouTubeRecordState({ editionDir: dir, videoUrl, env: process.env, deps: defaultYouTubeUploadDeps });
 }
 
-async function main(): Promise<number> {
-  const { flags, values, positional } = parseArgs(process.argv.slice(2));
+export interface LinkVideoD1Deps {
+  /** Releitura do estado na API (A4). Default: `refreshStatusForLink`; o teste injeta a API simulada. */
+  refreshStatus?: (dir: string, videoUrl: string, skip: boolean) => Promise<RefreshOutcome>;
+}
+
+export async function main(argv: string[] = process.argv.slice(2), deps: LinkVideoD1Deps = {}): Promise<number> {
+  const { flags, values, positional } = parseArgs(argv);
   const aammdd = positional[0];
   if (!aammdd || !/^\d{6}$/.test(aammdd)) {
     console.error(
@@ -243,11 +248,15 @@ async function main(): Promise<number> {
   }
   const videoUrl = normalizeYouTubeVideoUrl(rawUrl);
   // #12655 (A4): estado relido na API oficial, no lugar do estado do momento do upload.
-  const statusRefresh = await refreshStatusForLink(dir, videoUrl, flags.has("no-refresh-status"));
+  const statusRefresh = await (deps.refreshStatus ?? refreshStatusForLink)(dir, videoUrl, flags.has("no-refresh-status"));
   if (statusRefresh.kind === "terminal") {
+    const marker =
+      statusRefresh.persisted === false
+        ? ` O marcador terminal NÃO foi gravado no registro (${statusRefresh.persistError ?? "erro de escrita"}): não rode de novo com --no-refresh-status.`
+        : " O registro do upload guarda o marcador terminal.";
     console.error(
-      `link-video-d1: recusado — ${statusRefresh.reason} (releitura ${statusRefresh.at}). Nada gravado, nem com --assume-public: ` +
-        "confira no YouTube Studio e suba de novo ou passe outro link (#12655).",
+      `link-video-d1: recusado — ${statusRefresh.reason} (releitura ${statusRefresh.at}). Link não gravado, nem com --assume-public: ` +
+        `confira no YouTube Studio e suba de novo ou passe outro link (#12655).${marker}`,
     );
     return 1;
   }
@@ -266,13 +275,17 @@ async function main(): Promise<number> {
     newsletterSendAt: send.at,
   });
   if (gate.warning) console.error(`[aviso] ${gate.warning} (envio do D1: ${send.source})`);
+  if (!gate.ok && gate.terminal) {
+    console.error(`link-video-d1: recusado — ${gate.reason}. Link não gravado, nem com --assume-public (#12655).`);
+    return 1;
+  }
   if (!gate.ok) {
     if (!flags.has("assume-public")) {
       // #10881 item 2: a mesma premissa de auditoria que o gate usou (o
       // `audit_blocked` do registro, senão a constante).
       const projectAudited = record?.auditBlocked == null ? YOUTUBE_API_PROJECT_AUDITED : !record.auditBlocked;
       console.error(
-        `link-video-d1: recusado — ${gate.reason}. Nada gravado. ${videoLinkRemedy(projectAudited)} ` +
+        `link-video-d1: recusado — ${gate.reason}. Link não gravado${statusRefresh.kind === "refreshed" ? " (o registro do upload guardou a releitura)" : ""}. ${videoLinkRemedy(projectAudited)} ` +
           "e rode de novo com --assume-public (#10858).",
       );
       return 1;

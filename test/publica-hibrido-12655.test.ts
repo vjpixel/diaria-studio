@@ -15,7 +15,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -35,6 +35,7 @@ import {
 import { checkExternalEffect } from "../scripts/lib/diaria/publica-effect-gate.ts";
 import {
   buildHorizontalManifest,
+  buildVerticalManifest,
   planSha256,
   sha256Hex,
   writeVideoPlanManifest,
@@ -50,7 +51,10 @@ import {
   recordRegistryCheck,
   type VideoPublishAuthorizationStore,
 } from "../scripts/lib/diaria/video-publish-authorization.ts";
-import { main as phaseMain, type PhaseCliDeps } from "../scripts/publica-phase.ts";
+import { main as phaseMain, RUN_TELEMETRY_LOST_EXIT, type PhaseCliDeps } from "../scripts/publica-phase.ts";
+import { main as linkMain } from "../scripts/link-video-d1.ts";
+import { D1_VIDEO_URL_FILE } from "../scripts/lib/diaria/d1-video-link.ts";
+import type { RefreshOutcome } from "../scripts/lib/diaria/youtube-link-refresh.ts";
 import { captureUsageForWindow, publicaVideoIntervals } from "../scripts/capture-stage-usage.ts";
 import { decideRefresh, refreshYouTubeRecordState } from "../scripts/lib/diaria/youtube-link-refresh.ts";
 import { gateVideoLink, readYouTubeRecordSummary } from "../scripts/lib/diaria/youtube-video-link-gate.ts";
@@ -411,7 +415,9 @@ describe("#12655 custo: o vídeo não cai na janela das Etapas 5/6", () => {
     ];
     writeFileSync(join(editionDir, PUBLICA_PHASES_FILE), events.map((e) => JSON.stringify(e)).join("\n") + "\n");
 
-    const intervals = publicaVideoIntervals(editionDir, "S1", at(10).toISOString());
+    const parsed = publicaVideoIntervals(editionDir, "S1", at(10).toISOString());
+    assert.deepEqual(parsed?.problems, []);
+    const intervals = parsed?.intervals;
     assert.deepEqual(intervals?.map((i) => i.label), ["vertical-guiado/vertical"], "o vertical em background não tem transcript: não vira intervalo");
     const r = captureUsageForWindow(transcripts, at(0).toISOString(), at(10).toISOString(), ED, { sessionId: "S1", excludeIntervals: intervals });
     assert.equal(r.tokens_in, 110);
@@ -497,8 +503,12 @@ describe("#12655 A4: estado do YouTube relido na API (simulada)", () => {
     it(`${terminal} na releitura é terminal: estado unknown, link recusado`, async () => {
       const r = await refreshYouTubeRecordState({ editionDir: dir, videoUrl: URL, env, deps: api(item({ uploadStatus: terminal, privacyStatus: "public" })).deps });
       assert.equal(r.kind, "terminal");
+      assert.equal((r as { persisted?: boolean }).persisted, true);
       assert.equal(record().state, "unknown");
-      assert.equal(gate("2026-11-12T09:00:00.000Z").ok, false);
+      assert.equal(record().terminal_upload_status, terminal);
+      const g = gate("2026-11-12T09:00:00.000Z");
+      assert.equal(g.ok, false);
+      assert.equal(g.terminal, true, "o marcador persiste: a próxima execução (inconclusiva, --no-refresh-status) também recusa");
     });
   }
 
@@ -543,5 +553,302 @@ describe("#12655 A4: estado do YouTube relido na API (simulada)", () => {
     assert.equal(decideRefresh({ ...base, fetched: { kind: "ok", channelId: CH, status: { privacyStatus: "public" } } }).kind, "refreshed");
     assert.equal(decideRefresh({ ...base, fetched: { kind: "ok", channelId: null, status: { privacyStatus: "public" } } }).kind, "inconclusive");
     assert.equal(decideRefresh({ ...base, recordVideoId: null, fetched: { kind: "not-found" } }).kind, "skipped");
+  });
+});
+
+function vertical(title = "Título do Short"): VideoPlanManifest {
+  return buildVerticalManifest({
+    aammdd: ED,
+    items: [
+      { destination: "youtube_shorts", action: "publish", caption: "descrição", title, scheduledAt: null },
+      { destination: "facebook", action: "publish", caption: "legenda", scheduledAt: null },
+    ],
+    owners: [],
+    destinationAt: () => "2026-11-12T15:00:00.000Z",
+    horizontalLink: (id) => (id === "facebook" ? "https://youtu.be/abcdefghijk" : null),
+    metadata: { title, description: "descrição" },
+    media: { video_sha256: sha256Hex("vertical"), cover_sha256: null, captions_sha256: null },
+    sources: { reviewed: sha256Hex("rev") },
+    publishCommand: `npx tsx scripts/publish-shorts.ts ${ED} --publish --confirm-publish ${ED}`,
+    generatedAt: T0.toISOString(),
+  });
+}
+
+describe("#12655 fix: JSONL endurecido e fail-closed", () => {
+  it("parte, evento, instante, tentativa, resources e background inválidos viram problems", () => {
+    const good = ev("fetch", "horizontal", "start", 0);
+    const bad = [
+      { ...good, part: "inventada" },
+      { ...good, event: "quase-fim" },
+      { ...good, at: "ontem" },
+      { ...good, attempt: 0 },
+      { ...good, resources: "chrome" },
+      { ...good, background: "sim" },
+    ];
+    const { events, problems } = parsePhaseEvents([good, ...bad].map((o) => JSON.stringify(o)).join("\n"));
+    assert.equal(events.length, 1);
+    assert.equal(problems.length, bad.length);
+    assert.match(problems.join("\n"), /parte.*evento.*instante.*tentativa.*resources.*background/s);
+  });
+});
+
+describe("#12655 fix: travas novas (pure)", () => {
+  it("Etapa 5 não começa com fase do vídeo aberta no thread principal; vertical em background não segura", () => {
+    const open = [ev("aprovacao", "vertical", "start", 0)];
+    const p = checkPhaseStart({ events: open, candidate: ev("stage5", "sessao", "start", 1) });
+    assert.match(p.join(), /isolamento de custo: Etapa 5/);
+    assert.match(p.join(), /publica-phase\.ts interrupted 261112 --phase aprovacao --part vertical/);
+    const closed = [...open, ev("aprovacao", "vertical", "end", 1)];
+    assert.deepEqual(checkPhaseStart({ events: closed, candidate: ev("stage5", "sessao", "start", 2) }), []);
+    const bg = [ev("vertical-api", "vertical", "start", 0, { background: true, taskId: "bg" })];
+    assert.deepEqual(checkPhaseStart({ events: bg, candidate: ev("stage5", "sessao", "start", 1) }), []);
+  });
+
+  it("recurso ocupado diz como fechar a fase que morreu sem fim", () => {
+    const p = checkPhaseStart({ events: [ev("vertical-guiado", "vertical", "start", 0)], candidate: ev("stage6-teste", "sessao", "start", 1, { extraResources: ["chrome"] }) });
+    assert.match(p.join(), /publica-phase\.ts interrupted 261112 --phase vertical-guiado --part vertical --attempt 1/);
+  });
+
+  it("órfã só quando wrapper E filho morreram", () => {
+    const events = [
+      ev("vertical-api", "vertical", "start", 0, { background: true, taskId: "pid-9", pid: 9, host: "h" }),
+      ev("vertical-api", "vertical", "spawned", 0, { background: true, taskId: "pid-9", childPid: 10, host: "h" }),
+    ];
+    const alive = (set: number[]) => (p: number) => set.includes(p);
+    assert.equal(deriveTasks(events, { isPidAlive: alive([10]), host: "h" })[0].status, "running", "o publisher sobreviveu ao wrapper");
+    assert.equal(deriveTasks(events, { isPidAlive: alive([]), host: "h" })[0].status, "orphaned");
+    assert.equal(deriveTasks(events)[0].child_pid, 10);
+  });
+
+  it("join: órfã com tentativa posterior concluída não trava; sem ela trava e traz o comando de fechamento", () => {
+    const orphan = ev("vertical-api", "vertical", "start", 0, { background: true, taskId: "pid-9", pid: 9, host: "h" });
+    const opts = { isPidAlive: () => false, host: "h" };
+    const r = joinCheck([orphan], { step5: false, step6: false }, opts);
+    assert.equal(r.ok, false);
+    assert.match(r.problems.join(), /órfã.*publica-phase\.ts interrupted/);
+    const retried = [
+      orphan,
+      ev("vertical-api", "vertical", "start", 5, { background: true, taskId: "pid-11", attempt: 2 }),
+      ev("vertical-api", "vertical", "end", 8, { background: true, taskId: "pid-11", attempt: 2 }),
+    ];
+    assert.equal(joinCheck(retried, { step5: false, step6: false }, opts).ok, true);
+  });
+
+  it("tarefa aberta conta só até o próximo start do thread principal da mesma sessão", () => {
+    const events = [
+      ev("aprovacao", "vertical", "start", 1),
+      ev("vertical-api", "vertical", "start", 2, { background: true, taskId: "bg" }),
+      ev("stage5", "sessao", "start", 4),
+    ];
+    const iv = videoPartMainThreadIntervals(events, "S1", at(30).getTime());
+    assert.equal(iv.length, 1);
+    assert.equal(iv[0].end, at(4).getTime(), "corta no start da Etapa 5, não no fim da janela");
+    assert.equal(iv[0].open, true);
+  });
+});
+
+describe("#12655 fix: gate do vertical e incompatibilidade de parte", () => {
+  const v = vertical();
+  const baseV = { phase: "vertical-api" as const, part: "vertical" as const, currentPlanSha256: planSha256(v), host: HOST };
+
+  it("vertical-api: sem grant recusa; grant do plano atual passa; plano alterado recusa", () => {
+    assert.match(String((checkExternalEffect({ ...baseV, store: emptyAuthorizationStore(ED) }) as { reason: string }).reason), /sem autorização ativa da parte vertical/);
+    const store = granted(v);
+    assert.equal(checkExternalEffect({ ...baseV, store }).ok, true);
+    const r = checkExternalEffect({ ...baseV, store, currentPlanSha256: planSha256(vertical("Outro título")) });
+    assert.equal(r.ok, false);
+    assert.match((r as { reason: string }).reason, /plano da parte vertical mudou/);
+  });
+
+  it("vertical-guiado: aprovação consumida do plano atual passa; invalidada ou de plano velho recusa", () => {
+    const store = granted(v);
+    const used = consumeVideoPublishAuthorization(store, { edition: ED, manifest: v, destinations: ["youtube_shorts", "facebook"], now: at(5), pid: 4242, by: "t" });
+    assert.ok(used.ok);
+    const consumed = (used as { store: VideoPublishAuthorizationStore }).store;
+    const g = { phase: "vertical-guiado" as const, part: "vertical" as const, host: HOST };
+    assert.equal(checkExternalEffect({ ...g, store: consumed, currentPlanSha256: planSha256(v) }).ok, true);
+    assert.equal(checkExternalEffect({ ...g, store: consumed, currentPlanSha256: planSha256(vertical("Novo")) }).ok, false);
+    const inv = invalidateVideoPublishAuthorization(store, { part: "vertical", reason: "não", now: at(6) });
+    assert.equal(checkExternalEffect({ ...g, store: inv.store, currentPlanSha256: planSha256(v) }).ok, false);
+    assert.equal(checkExternalEffect({ ...g, store: emptyAuthorizationStore(ED), currentPlanSha256: planSha256(v) }).ok, false);
+  });
+
+  it("parte errada recusa: upload com vertical/sessao, vertical-api com horizontal", () => {
+    const store = granted(horizontal());
+    for (const part of ["vertical", "sessao"] as const) {
+      const r = checkExternalEffect({ phase: "upload", part, store, currentPlanSha256: planSha256(horizontal()), host: HOST });
+      assert.match(String((r as { reason: string }).reason), /é da parte horizontal/);
+    }
+    const r = checkExternalEffect({ phase: "vertical-api", part: "horizontal", store: granted(v), currentPlanSha256: planSha256(v), host: HOST });
+    assert.match(String((r as { reason: string }).reason), /é da parte vertical/);
+  });
+
+  it("link passa o gate (quem trava é o link-video-d1) e declara o registro do upload", () => {
+    assert.equal(checkExternalEffect({ phase: "link", part: "horizontal", store: null, currentPlanSha256: null, host: HOST }).ok, true);
+    assert.ok(ev("link", "horizontal", "start", 0).resources.includes("registry:05-youtube-published"));
+  });
+});
+
+describe("#12655 fix: CLI", () => {
+  let dir: string;
+  let errs: string[];
+  let spawned: string[][];
+  let clock: Date;
+  let gateBlocking: boolean;
+  const deps = (over: Partial<PhaseCliDeps> = {}): PhaseCliDeps => ({
+    log: () => {},
+    err: (l) => errs.push(l),
+    now: () => clock,
+    env: { CLAUDE_CODE_SESSION_ID: "S1" },
+    host: HOST,
+    pid: 4242,
+    isPidAlive: () => true,
+    runLog: () => {},
+    videoGate: () => (gateBlocking ? { status: "video-without-link", blocking: true, warning: "sem link" } : { status: "link-ready", blocking: false, warning: null }),
+    spawnCommand: async (argv) => {
+      spawned.push(argv);
+      return { code: 0, signal: null };
+    },
+    ...over,
+  });
+  const file = () => join(dir, PUBLICA_PHASES_FILE);
+  const phases = () => (existsSync(file()) ? parsePhaseEvents(readFileSync(file(), "utf8")).events : []);
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "publica-fix-12655-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    errs = [];
+    spawned = [];
+    clock = T0;
+    gateBlocking = false;
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("linha corrompida: retry de upload recusado (a linha perdida podia ser o start interrompido); fase reversível segue; join não fecha", async () => {
+    const m = horizontal();
+    writeVideoPlanManifest(dir, m);
+    writeFileSync(authorizationStorePath(dir), JSON.stringify(granted(m), null, 2));
+    appendFileSync(file(), "{\"schema\":\"diaria-publica-phases/v1\",\"phase\":\"upload\",\"part\":\"horizontal\",\"event\":\"start\"\n");
+    const code = await phaseMain(["run", ED, "--phase", "upload", "--part", "horizontal", "--edition-dir", dir, "--", "x"], deps());
+    assert.equal(code, 1);
+    assert.deepEqual(spawned, []);
+    assert.match(errs.join("\n"), /linha\(s\) ilegível\(is\)/);
+    assert.equal(await phaseMain(["start", ED, "--phase", "fetch", "--part", "horizontal", "--background", "--edition-dir", dir], deps()), 0);
+    assert.equal(await phaseMain(["end", ED, "--phase", "fetch", "--part", "horizontal", "--edition-dir", dir], deps()), 0);
+    assert.equal(await phaseMain(["join", ED, "--edition-dir", dir], deps()), 1);
+  });
+
+  it("Etapa 5 e Schedule com o vídeo liberado começam; sem link, recusam", async () => {
+    for (const phase of ["stage5", "stage6-schedule"]) {
+      gateBlocking = true;
+      assert.equal(await phaseMain(["start", ED, "--phase", phase, "--part", "sessao", "--edition-dir", dir], deps()), 1);
+      gateBlocking = false;
+      assert.equal(await phaseMain(["start", ED, "--phase", phase, "--part", "sessao", "--edition-dir", dir], deps()), 0);
+      assert.equal(await phaseMain(["end", ED, "--phase", phase, "--part", "sessao", "--edition-dir", dir], deps()), 0);
+    }
+    assert.deepEqual(phases().map((e) => `${e.phase}:${e.event}`), ["stage5:start", "stage5:end", "stage6-schedule:start", "stage6-schedule:end"]);
+  });
+
+  it("link começa sem autorização (o link-video-d1 decide); vertical-api sem grant não", async () => {
+    assert.equal(await phaseMain(["start", ED, "--phase", "link", "--part", "horizontal", "--edition-dir", dir], deps()), 0);
+    writeVideoPlanManifest(dir, vertical());
+    assert.equal(await phaseMain(["run", ED, "--phase", "vertical-api", "--part", "vertical", "--background", "--edition-dir", dir, "--", "x"], deps()), 1);
+    assert.deepEqual(spawned, []);
+  });
+
+  it("run grava o PID do filho (spawned) além do wrapper", async () => {
+    const d = deps({
+      spawnCommand: async (_argv, onStart) => {
+        onStart(31337);
+        return { code: 0, signal: null };
+      },
+    });
+    assert.equal(await phaseMain(["run", ED, "--phase", "fetch", "--part", "vertical", "--background", "--edition-dir", dir, "--", "y"], d), 0);
+    const evs = phases();
+    assert.deepEqual(evs.map((e) => e.event), ["start", "spawned", "end"]);
+    assert.equal(evs[0].pid, 4242);
+    assert.equal(evs[1].child_pid, 31337);
+    assert.equal(deriveTasks(evs)[0].status, "done");
+  });
+
+  it("comando OK com o fim não gravado sai 4 e manda não repetir", async () => {
+    const d = deps({
+      spawnCommand: async () => {
+        unlinkSync(file());
+        return { code: 0, signal: null };
+      },
+    });
+    assert.equal(await phaseMain(["run", ED, "--phase", "fetch", "--part", "vertical", "--background", "--edition-dir", dir, "--", "z"], d), RUN_TELEMETRY_LOST_EXIT);
+    assert.match(errs.join("\n"), /comando OK, telemetria não gravada — NÃO repita/);
+  });
+});
+
+describe("#12655 fix: link-video-d1 com a releitura injetada (A4)", () => {
+  let dir: string;
+  const VID = "abcdefghijk";
+  const URL = `https://youtu.be/${VID}`;
+  const NOW = "2026-11-12T02:00:00.000Z";
+  const urlFile = () => join(dir, D1_VIDEO_URL_FILE);
+  const args = (...extra: string[]) => [ED, "--edition-dir", dir, "--video-url", URL, "--save", "--no-podcast", "--no-linkedin-comment", "--now", NOW, ...extra];
+  const writeRecord = (over: Record<string, unknown> = {}) =>
+    writeFileSync(join(dir, YOUTUBE_PUBLISHED_FILE), JSON.stringify({ videoId: VID, url: URL, state: "draft", status: "done", rereadStatus: { privacyStatus: "private" }, ...over }));
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "link-12655-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeRecord();
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const terminal: RefreshOutcome = { kind: "terminal", uploadStatus: "rejected", at: NOW, reason: "o YouTube marcou o vídeo como rejected", persisted: true };
+
+  it("terminal recusa com e sem --assume-public; nada gravado", async () => {
+    for (const extra of [[], ["--assume-public"]]) {
+      assert.equal(await linkMain(args(...extra), { refreshStatus: async () => terminal }), 1);
+      assert.equal(existsSync(urlFile()), false);
+    }
+  });
+
+  it("refreshed público passa sem --assume-public, pelo registro RELIDO (o de antes era rascunho)", async () => {
+    const refreshStatus = async (): Promise<RefreshOutcome> => {
+      writeRecord({ state: "published", rereadStatus: { privacyStatus: "public" } });
+      return { kind: "refreshed", state: "published", status: { privacyStatus: "public" }, at: NOW };
+    };
+    assert.equal(await linkMain(args(), { refreshStatus }), 0);
+    assert.equal(readFileSync(urlFile(), "utf8").trim(), URL);
+  });
+
+  it("inconclusivo mantém a recusa do rascunho; --assume-public libera", async () => {
+    const refreshStatus = async (): Promise<RefreshOutcome> => ({ kind: "inconclusive", reason: "timeout" });
+    assert.equal(await linkMain(args(), { refreshStatus }), 1);
+    assert.equal(existsSync(urlFile()), false);
+    assert.equal(await linkMain(args("--assume-public"), { refreshStatus }), 0);
+  });
+
+  it("marcador terminal de uma execução anterior recusa mesmo pulando a releitura e com --assume-public", async () => {
+    writeRecord({ state: "unknown", terminal_upload_status: "deleted" });
+    const skipped = async (): Promise<RefreshOutcome> => ({ kind: "skipped", reason: "--no-refresh-status" });
+    assert.equal(await linkMain(args("--no-refresh-status", "--assume-public"), { refreshStatus: skipped }), 1);
+    assert.equal(await linkMain(args("--assume-public"), { refreshStatus: async () => ({ kind: "inconclusive", reason: "timeout" }) }), 1);
+    assert.equal(existsSync(urlFile()), false);
+  });
+
+  it("terminal com a escrita do registro falhando continua terminal (não vira inconclusivo)", { skip: process.getuid?.() === 0 }, async () => {
+    const env = { GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s", YOUTUBE_REFRESH_TOKEN: "r", YOUTUBE_CHANNEL_ID: "UCdiaria" };
+    const fetchDeps = {
+      now: () => new Date(NOW),
+      fetch: async (u: string) =>
+        u.includes("oauth2")
+          ? new Response(JSON.stringify({ access_token: "tok" }), { status: 200 })
+          : new Response(JSON.stringify({ items: [{ id: VID, snippet: { channelId: "UCdiaria" }, status: { uploadStatus: "failed" } }] }), { status: 200 }),
+    };
+    chmodSync(join(dir, "_internal"), 0o555);
+    try {
+      const r = await refreshYouTubeRecordState({ editionDir: dir, videoUrl: URL, env, deps: fetchDeps as never });
+      assert.equal(r.kind, "terminal");
+      assert.equal((r as { persisted?: boolean }).persisted, false);
+    } finally {
+      chmodSync(join(dir, "_internal"), 0o755);
+    }
   });
 });

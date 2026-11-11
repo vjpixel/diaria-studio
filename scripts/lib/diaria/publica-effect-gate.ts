@@ -15,16 +15,21 @@
  *   vertical) invalida: refazer o dry-run e perguntar de novo. É a mesma
  *   trava que os publishers aplicam por destino antes do 1º efeito
  *   (`consumeBeforeExternalEffects`); aqui ela vale antes de o processo
- *   sequer começar, e para a fase inteira. `vertical-guiado` (Chrome, Buffer,
- *   depois do `--publish` que já consumiu as autorizações) exige a aprovação
- *   do plano atual, ativa ou consumida, nunca invalidada.
+ *   sequer começar, e para a fase inteira. `vertical-guiado` (os passos no
+ *   Chrome e na Buffer) só confere que existe uma autorização do vertical
+ *   NÃO invalidada (ativa ou consumida, de qualquer máquina) para o hash do
+ *   manifesto em disco agora. Não confere se o `--publish` rodou nem qual
+ *   destino cada passo guiado toca: isso segue com quem conduz os passos.
  * - `link`: grava o link do D1 (e enfileira o comentário do LinkedIn). Quem
  *   decide se o link entra é o próprio `link-video-d1.ts` (registro do
  *   upload, releitura na API, `gateVideoLink`); este gate deixa passar.
  * - `stage5` e `stage6-schedule`: o pré-requisito do #12588 em TODOS os
  *   escopos (newsletter, social, all): sem link do vídeo, sem edição marcada
  *   sem vídeo e sem `--skip youtube`, nada sai — inclusive o social, que lê o
- *   link do D1 (X, Threads, Facebook).
+ *   link do D1 (X, Threads, Facebook). Vale até o sentinel da Etapa 5
+ *   (`.step-5-done.json`): depois dele o `assessVideoBeforePublish` trata a
+ *   falta de link como retry de canal e não bloqueia (#12805), então o
+ *   Schedule da Etapa 6 passa.
  *
  * Nunca autoriza nada sozinho: só confere o que a conversa já gravou.
  */
@@ -76,9 +81,9 @@ export function checkExternalEffect(input: EffectGateInput): EffectGateResult {
       return { ok: false, reason: `sem manifesto do plano da parte ${videoPart} em disco: rode o dry-run e peça o "pode publicar"` };
     }
     if (input.phase === "vertical-guiado") {
-      // Os passos guiados (Chrome, Buffer) vêm depois do `--publish`, que já
-      // consumiu as autorizações: vale a aprovação do plano ATUAL, ativa ou
-      // consumida. Invalidada não vale (interrupção ou "não" do editor).
+      // Os passos guiados (Chrome, Buffer) vêm depois do `--publish`, que
+      // consome as autorizações: vale qualquer aprovação do plano ATUAL, ativa
+      // ou consumida. Invalidada não vale (interrupção ou "não" do editor).
       const approved = input.store.authorizations.filter(
         (a) => a.part === videoPart && a.status !== "invalidated" && a.plan_sha256 === input.currentPlanSha256,
       );

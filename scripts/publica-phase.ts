@@ -21,20 +21,33 @@
  *
  * - `start` recusa (exit 1, nada gravado) quando: o recurso (Chrome, um
  *   registro) está com outra fase; é fase do vídeo no thread principal com a
- *   Etapa 5/6 rodando (isolamento de custo); é retry de fase externa sem a
- *   releitura do registro depois da interrupção; é a 1ª pergunta bloqueante
- *   sem preparo em background (ou `--serial-reason`); ou a fase tem efeito
- *   externo e o estado não autoriza (aprovação do plano atual para upload e
- *   vertical, link do vídeo para as Etapas 5/6, #12588). Check e gravação sob
- *   lock: duas fases não pegam o Chrome ao mesmo tempo.
- * - `run` faz `start`, roda o comando (stdio herdado) e grava `end` (exit 0),
- *   `error` (outro exit) ou `interrupted` (SIGINT/SIGTERM, repassado ao
- *   filho) com o exit code; sai com o exit do comando (1 se recusado antes).
- *   É o jeito de lançar trabalho em background (`run_in_background`) com o
- *   fim registrado pelo próprio processo, sem o thread principal precisar
- *   responder à notificação.
- * - `join` sai 1 com tarefa pendente (inclusive em background), órfã ou
- *   sentinel antecipado: nenhuma fase é dada por concluída assim.
+ *   Etapa 5/6 rodando, ou fase da Etapa 5/6 com fase do vídeo aberta no
+ *   thread principal (isolamento de custo); é retry de upload/vertical
+ *   (`vertical-api`, `vertical-guiado`) depois de erro, interrupção ou órfã
+ *   sem uma releitura do registro gravada depois do fim da tentativa e
+ *   cobrindo o início dela; é a 1ª pergunta bloqueante sem preparo em
+ *   background (ou `--serial-reason`); o `publica-phases.jsonl` tem linha
+ *   ilegível e a fase tem efeito externo ou segura recurso (a linha perdida
+ *   pode ser o `start` de uma tentativa interrompida); ou o estado não
+ *   autoriza o efeito externo (aprovação do plano atual para upload e
+ *   vertical; link do vídeo para a Etapa 5 e o Schedule até o sentinel da
+ *   Etapa 5, #12588 — depois dele o `check-video-before-publish` não bloqueia
+ *   mais). O `link` passa por este gate: quem decide se o link entra é o
+ *   próprio `link-video-d1.ts`. Check e gravação sob lock: duas fases não
+ *   pegam o Chrome ao mesmo tempo. Erro de uso sai 2.
+ * - `run` faz `start`, roda o comando (stdio herdado), grava o PID do filho
+ *   (`spawned`) e grava `end` (exit 0), `error` (outro exit) ou `interrupted`
+ *   (SIGINT/SIGTERM, repassado ao filho) com o exit code; sai com o exit do
+ *   comando (1 se recusado antes, 2 em erro de uso). Comando OK com o fim não
+ *   gravado sai 4: não repetir o comando (o upload já saiu), gravar o fim à
+ *   mão. É o jeito de lançar trabalho em background (`run_in_background`)
+ *   com o fim registrado pelo próprio processo, sem o thread principal
+ *   precisar responder à notificação. A tarefa vira órfã quando o wrapper e
+ *   o filho morreram sem gravar o fim; tarefa aberta por `start` manual não
+ *   tem PID e nunca vira órfã (gravar `interrupted` à mão).
+ * - `join` sai 1 com tarefa pendente (inclusive em background), órfã sem
+ *   tentativa posterior concluída, linha ilegível no JSONL ou sentinel
+ *   antecipado: nenhuma fase é dada por concluída assim.
  * - `report` imprime as durações por fase (`null` = indisponível, nunca
  *   zero), o caminho crítico pela união dos intervalos, execução × espera.
  *
@@ -81,6 +94,8 @@ import { assessVideoBeforePublish, STAGE5_DONE_FILE } from "./lib/diaria/video-b
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STAGE6_DONE_FILE = "_internal/.step-6-done.json";
+/** `run`: o comando saiu 0, mas o fim não foi gravado. Não repetir o comando. */
+export const RUN_TELEMETRY_LOST_EXIT = 4;
 
 const USAGE =
   "uso: publica-phase.ts start|end|error|interrupted AAMMDD --phase P --part horizontal|vertical|sessao [--background] [--task-id ID] [--attempt N] [--plan-sha256 H] [--resources a,b] [--serial-reason TEXTO] [--exit-code N] [--detail TEXTO] [--edition-dir DIR]\n" +
@@ -153,12 +168,12 @@ export const defaultPhaseCliDeps: PhaseCliDeps = {
   spawnCommand: defaultSpawn,
 };
 
-function readEvents(dir: string, err: (l: string) => void): PhaseEvent[] {
+function readEvents(dir: string, err: (l: string) => void): { events: PhaseEvent[]; problems: string[] } {
   const path = join(dir, PUBLICA_PHASES_FILE);
-  if (!existsSync(path)) return [];
+  if (!existsSync(path)) return { events: [], problems: [] };
   const { events, problems } = parsePhaseEvents(readFileSync(path, "utf8"));
   for (const p of problems) err(`[aviso] ${path}: ${p}`);
-  return events;
+  return { events, problems: problems.map((p) => `${path}: ${p}`) };
 }
 
 function appendEvent(dir: string, ev: PhaseEvent): void {
@@ -223,7 +238,7 @@ function doStart(a: CommonArgs, deps: PhaseCliDeps, extra: { pid?: number; taskI
   const lockPath = join(a.dir, `${PUBLICA_PHASES_FILE}.lock`);
   mkdirSync(dirname(lockPath), { recursive: true });
   return withFileLock(lockPath, () => {
-    const events = readEvents(a.dir, deps.err);
+    const { events, problems: parseProblems } = readEvents(a.dir, deps.err);
     const attemptRaw = parseIntOpt(a.values["attempt"]);
     if (attemptRaw !== undefined && Number.isNaN(attemptRaw)) {
       deps.err("publica-phase: --attempt inválido");
@@ -270,6 +285,12 @@ function doStart(a: CommonArgs, deps: PhaseCliDeps, extra: { pid?: number; taskI
       registryChecks: registryChecksOf(store),
       serialReason: a.values["serial-reason"] ?? null,
     });
+    if (parseProblems.length && (PHASE_META[a.phase].effect === "external" || ev.resources.length > 0)) {
+      problems.push(
+        `${parseProblems.length} linha(s) ilegível(is) em ${PUBLICA_PHASES_FILE}: a linha perdida pode ser o start de uma tentativa interrompida ` +
+          `(sem ela, o retry pularia a releitura do registro, #11741). Confira o registro, corrija ou remova a linha e rode de novo`,
+      );
+    }
     if (PHASE_META[a.phase].effect === "external") {
       const gate = checkExternalEffect({
         phase: a.phase,
@@ -294,8 +315,13 @@ function doStart(a: CommonArgs, deps: PhaseCliDeps, extra: { pid?: number; taskI
   });
 }
 
-function doFinish(a: CommonArgs, kind: Exclude<PhaseEventKind, "start">, deps: PhaseCliDeps, extra: { taskId?: string | null; exitCode?: number; detail?: string; attempt?: number } = {}): number {
-  const events = readEvents(a.dir, deps.err);
+function doFinish(
+  a: CommonArgs,
+  kind: Exclude<PhaseEventKind, "start" | "spawned">,
+  deps: PhaseCliDeps,
+  extra: { taskId?: string | null; exitCode?: number; detail?: string; attempt?: number } = {},
+): number {
+  const { events } = readEvents(a.dir, deps.err);
   const taskId = extra.taskId ?? a.values["task-id"] ?? null;
   const openTasks = deriveTasks(events).filter((t) => t.status === "running" && t.phase === a.phase && t.part === a.part && t.task_id === taskId);
   const attemptOpt = extra.attempt ?? parseIntOpt(a.values["attempt"]);
@@ -352,6 +378,29 @@ export async function main(argv: string[] = process.argv.slice(2), deps: PhaseCl
     const taskId = a.values["task-id"] ?? `pid-${deps.pid}`;
     const started = doStart(a, deps, { pid: deps.pid, taskId });
     if (typeof started === "number") return started === 2 ? 2 : 1;
+    // O PID do filho (o publisher) também conta: ele pode sobreviver ao wrapper.
+    const onChildStart = (childPid: number | undefined) => {
+      if (childPid === undefined) return;
+      try {
+        const sp = buildPhaseEvent({
+          edition: a.aammdd,
+          phase: a.phase,
+          part: a.part,
+          event: "spawned",
+          at: deps.now(),
+          attempt: started.attempt,
+          sessionId: currentSessionId(deps.env),
+          taskId,
+          background: started.background,
+          planSha256: started.plan_sha256,
+          childPid,
+          host: deps.host,
+        });
+        appendEvent(a.dir, sp);
+      } catch (e) {
+        deps.err(`[aviso] PID do filho (${childPid}) não gravado: ${(e as Error).message}`);
+      }
+    };
     let interrupted: NodeJS.Signals | null = null;
     const onSignal = (sig: NodeJS.Signals) => {
       interrupted = sig;
@@ -360,37 +409,54 @@ export async function main(argv: string[] = process.argv.slice(2), deps: PhaseCl
     process.on("SIGTERM", onSignal);
     let result: { code: number; signal: NodeJS.Signals | null };
     try {
-      result = await deps.spawnCommand(command, () => {});
+      result = await deps.spawnCommand(command, onChildStart);
     } finally {
       process.off("SIGINT", onSignal);
       process.off("SIGTERM", onSignal);
     }
-    const kind: Exclude<PhaseEventKind, "start"> = interrupted || result.signal ? "interrupted" : result.code === 0 ? "end" : "error";
-    doFinish(a, kind, deps, {
-      taskId,
-      attempt: started.attempt,
-      exitCode: result.code,
-      detail: interrupted || result.signal ? `sinal ${interrupted ?? result.signal}` : `exit ${result.code}`,
-    });
+    const kind: Exclude<PhaseEventKind, "start" | "spawned"> = interrupted || result.signal ? "interrupted" : result.code === 0 ? "end" : "error";
+    let finished: number;
+    try {
+      finished = doFinish(a, kind, deps, {
+        taskId,
+        attempt: started.attempt,
+        exitCode: result.code,
+        detail: interrupted || result.signal ? `sinal ${interrupted ?? result.signal}` : `exit ${result.code}`,
+      });
+    } catch (e) {
+      deps.err(`publica-phase: falha ao gravar o fim: ${(e as Error).message}`);
+      finished = 1;
+    }
+    if (finished !== 0) {
+      const close = `npx tsx scripts/publica-phase.ts ${kind} ${a.aammdd} --phase ${a.phase} --part ${a.part} --attempt ${started.attempt} --task-id ${taskId} --exit-code ${result.code}`;
+      if (kind === "end") {
+        deps.err(`publica-phase: comando OK, telemetria não gravada — NÃO repita o comando (o efeito já saiu). Grave o fim à mão: ${close}`);
+        return RUN_TELEMETRY_LOST_EXIT;
+      }
+      deps.err(`publica-phase: o fim (${kind}) não foi gravado; grave à mão: ${close}`);
+    }
     return result.code;
   }
   if (cmd === "join") {
     const a = parseCommon(rest, deps, false);
     if (typeof a === "number") return a;
-    const events = readEvents(a.dir, deps.err);
+    const { events, problems: parseProblems } = readEvents(a.dir, deps.err);
     const r = joinCheck(
       events,
       { step5: existsSync(join(a.dir, STAGE5_DONE_FILE)), step6: existsSync(join(a.dir, STAGE6_DONE_FILE)) },
       { isPidAlive: deps.isPidAlive, host: deps.host },
     );
-    for (const p of r.problems) deps.err(`publica-phase join: ${p}`);
-    deps.log(JSON.stringify({ ok: r.ok, parts_pending: r.partsPending, problems: r.problems }, null, 2));
-    return r.ok ? 0 : 1;
+    // Linha ilegível pode esconder uma tarefa pendente: o join não fecha às cegas.
+    const problems = [...r.problems, ...parseProblems.map((p) => `linha ilegível: ${p}`)];
+    for (const p of problems) deps.err(`publica-phase join: ${p}`);
+    const ok = problems.length === 0;
+    deps.log(JSON.stringify({ ok, parts_pending: r.partsPending, problems }, null, 2));
+    return ok ? 0 : 1;
   }
   if (cmd === "report") {
     const a = parseCommon(rest, deps, false);
     if (typeof a === "number") return a;
-    const events = readEvents(a.dir, deps.err);
+    const { events } = readEvents(a.dir, deps.err);
     deps.log(JSON.stringify(phaseReport(a.aammdd, events, { isPidAlive: deps.isPidAlive, host: deps.host }), null, 2));
     return 0;
   }

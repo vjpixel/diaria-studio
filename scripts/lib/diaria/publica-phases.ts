@@ -46,7 +46,12 @@ export type PublicaPhase = (typeof PUBLICA_PHASES)[number];
 export const PUBLICA_PARTS = ["horizontal", "vertical", "sessao"] as const;
 export type PublicaPart = (typeof PUBLICA_PARTS)[number];
 
-export type PhaseEventKind = "start" | "end" | "error" | "interrupted";
+/**
+ * `spawned` anota a tarefa aberta com o PID do FILHO do `run` (o comando de
+ * verdade); não abre nem fecha tarefa.
+ */
+export type PhaseEventKind = "start" | "end" | "error" | "interrupted" | "spawned";
+export const PHASE_EVENT_KINDS: readonly PhaseEventKind[] = ["start", "end", "error", "interrupted", "spawned"];
 
 /** `wait` = o tempo é do editor (pergunta aberta), não de execução. */
 export type PhaseClock = "active" | "wait";
@@ -83,8 +88,9 @@ export const PHASE_META: Readonly<Record<PublicaPhase, PhaseMeta>> = {
     stage: null,
     resources: ["registry:05-youtube-published", "registry:video-publish-authorizations"],
   },
-  // `link-video-d1.ts --save` põe o 1º comentário do LinkedIn na fila do Worker e o vídeo no podcast.
-  link: { clock: "active", effect: "external", stage: null, resources: ["registry:05-video-url"] },
+  // `link-video-d1.ts --save` põe o 1º comentário do LinkedIn na fila do Worker e o vídeo no podcast;
+  // a releitura do A4 grava no registro do upload.
+  link: { clock: "active", effect: "external", stage: null, resources: ["registry:05-video-url", "registry:05-youtube-published"] },
   stage5: { clock: "active", effect: "external", stage: 5, resources: ["registry:06-social-published", "registry:05-published"] },
   "stage6-teste": { clock: "active", effect: "reversible", stage: 6, resources: [] },
   "stage6-gate": { clock: "wait", effect: "reversible", stage: 6, resources: [] },
@@ -124,6 +130,8 @@ export interface PhaseEvent {
   resources: string[];
   /** PID e máquina do processo (`run`), para saber se uma tarefa sem fim ainda vive. */
   pid?: number;
+  /** PID do filho do `run` (evento `spawned`): o publisher pode sobreviver ao wrapper. */
+  child_pid?: number;
   host?: string;
   exit_code?: number;
   detail?: string;
@@ -142,6 +150,7 @@ export interface BuildPhaseEventInput {
   planSha256?: string | null;
   extraResources?: readonly string[];
   pid?: number;
+  childPid?: number;
   host?: string;
   exitCode?: number;
   detail?: string;
@@ -182,28 +191,51 @@ export function buildPhaseEvent(input: BuildPhaseEventInput): PhaseEvent {
     plan_sha256: input.planSha256 ?? null,
     resources,
     ...(input.pid !== undefined ? { pid: input.pid } : {}),
+    ...(input.childPid !== undefined ? { child_pid: input.childPid } : {}),
     ...(input.host !== undefined ? { host: input.host } : {}),
     ...(input.exitCode !== undefined ? { exit_code: input.exitCode } : {}),
     ...(input.detail !== undefined ? { detail: input.detail } : {}),
   };
 }
 
-/** Pure: parseia o JSONL; linha ilegível vira `problems` (nunca some em silêncio). */
+/** Pure: o que está errado num objeto lido do JSONL (`null` = evento válido). */
+function phaseEventDefect(obj: unknown): string | null {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return "não é objeto";
+  const o = obj as Record<string, unknown>;
+  if (o.schema !== PUBLICA_PHASES_SCHEMA) return `schema ${JSON.stringify(o.schema)} (esperado ${PUBLICA_PHASES_SCHEMA})`;
+  if (typeof o.phase !== "string" || !isPublicaPhase(o.phase)) return `fase ${JSON.stringify(o.phase)}`;
+  if (typeof o.part !== "string" || !isPublicaPart(o.part)) return `parte ${JSON.stringify(o.part)}`;
+  if (typeof o.event !== "string" || !(PHASE_EVENT_KINDS as readonly string[]).includes(o.event)) return `evento ${JSON.stringify(o.event)}`;
+  if (typeof o.at !== "string" || !Number.isFinite(Date.parse(o.at))) return `instante ${JSON.stringify(o.at)}`;
+  if (typeof o.attempt !== "number" || !Number.isInteger(o.attempt) || o.attempt < 1) return `tentativa ${JSON.stringify(o.attempt)}`;
+  if (!Array.isArray(o.resources) || !o.resources.every((r) => typeof r === "string")) return "resources não é lista de texto";
+  if (o.task_id !== null && o.task_id !== undefined && typeof o.task_id !== "string") return "task_id inválido";
+  if (o.session_id !== null && o.session_id !== undefined && typeof o.session_id !== "string") return "session_id inválido";
+  if (typeof o.background !== "boolean") return "background não é booleano";
+  if (o.stage !== null && o.stage !== 5 && o.stage !== 6) return `stage ${JSON.stringify(o.stage)}`;
+  return null;
+}
+
+/** Pure: parseia o JSONL; linha ilegível ou fora do schema vira `problems` (nunca some em silêncio). */
 export function parsePhaseEvents(raw: string): { events: PhaseEvent[]; problems: string[] } {
   const events: PhaseEvent[] = [];
   const problems: string[] = [];
   raw.split("\n").forEach((line, i) => {
     if (!line.trim()) return;
+    let obj: unknown;
     try {
-      const obj = JSON.parse(line) as Partial<PhaseEvent>;
-      if (obj.schema !== PUBLICA_PHASES_SCHEMA || !obj.phase || !isPublicaPhase(obj.phase) || !obj.part || !obj.event || !obj.at) {
-        problems.push(`linha ${i + 1}: evento fora do schema ${PUBLICA_PHASES_SCHEMA}`);
-        return;
-      }
-      events.push(obj as PhaseEvent);
+      obj = JSON.parse(line);
     } catch (e) {
       problems.push(`linha ${i + 1}: JSON inválido (${(e as Error).message})`);
+      return;
     }
+    const defect = phaseEventDefect(obj);
+    if (defect) {
+      problems.push(`linha ${i + 1}: evento fora do schema ${PUBLICA_PHASES_SCHEMA} (${defect})`);
+      return;
+    }
+    const e = obj as PhaseEvent;
+    events.push({ ...e, task_id: e.task_id ?? null, session_id: e.session_id ?? null });
   });
   return { events, problems };
 }
@@ -225,6 +257,7 @@ export interface PhaseTask {
   end: string | null;
   status: TaskStatus;
   pid?: number;
+  child_pid?: number;
   host?: string;
   exit_code?: number;
   detail?: string;
@@ -242,10 +275,13 @@ export interface DeriveOptions {
 
 /**
  * Pure: eventos → tarefas. Um `start` abre a tarefa; `end`/`error`/
- * `interrupted` com a mesma chave fecha. Fim sem início é ignorado (não dá
- * para inventar o início). Tarefa sem fim cujo PID nesta máquina já morreu
- * vira `orphaned`: a interrupção não deixou rastro, e o retry exige a
- * releitura do registro como qualquer outra interrupção.
+ * `interrupted` com a mesma chave fecha; `spawned` só anota o PID do filho.
+ * Fim sem início é ignorado (não dá para inventar o início). Tarefa sem fim
+ * cujo PID nesta máquina já morreu (o do wrapper E, quando gravado, o do
+ * filho) vira `orphaned`: a interrupção não deixou rastro, e o retry exige a
+ * releitura do registro como qualquer outra interrupção. Tarefa aberta por
+ * `start` manual (sem PID) nunca vira órfã: o fim é gravado à mão
+ * (`publica-phase.ts interrupted`).
  */
 export function deriveTasks(events: readonly PhaseEvent[], opts: DeriveOptions = {}): PhaseTask[] {
   const sorted = [...events].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
@@ -277,6 +313,10 @@ export function deriveTasks(events: readonly PhaseEvent[], opts: DeriveOptions =
     }
     const t = open.get(key);
     if (!t) continue;
+    if (e.event === "spawned") {
+      if (e.child_pid !== undefined) t.child_pid = e.child_pid;
+      continue;
+    }
     t.end = e.at;
     t.status = e.event === "end" ? "done" : e.event === "error" ? "error" : "interrupted";
     if (e.exit_code !== undefined) t.exit_code = e.exit_code;
@@ -288,7 +328,8 @@ export function deriveTasks(events: readonly PhaseEvent[], opts: DeriveOptions =
     for (const t of tasks) {
       if (t.status !== "running" || t.pid === undefined) continue;
       if (t.host !== undefined && opts.host !== undefined && t.host !== opts.host) continue;
-      if (!opts.isPidAlive(t.pid)) t.status = "orphaned";
+      const childAlive = t.child_pid !== undefined && opts.isPidAlive(t.child_pid);
+      if (!opts.isPidAlive(t.pid) && !childAlive) t.status = "orphaned";
     }
   }
   return tasks;
@@ -316,6 +357,11 @@ export interface StartCheckInput {
   serialReason?: string | null;
 }
 
+/** Comando que fecha à mão uma tarefa aberta que perdeu o processo (`start` manual nunca vira órfã). */
+export function closeTaskCommand(t: Pick<PhaseTask, "phase" | "part" | "attempt" | "task_id">, edition = "{AAMMDD}"): string {
+  return `npx tsx scripts/publica-phase.ts interrupted ${edition} --phase ${t.phase} --part ${t.part} --attempt ${t.attempt}${t.task_id ? ` --task-id ${t.task_id}` : ""}`;
+}
+
 /** Fases externas cujo retry exige a releitura do registro (o publisher pode ter enviado sem registro). */
 export const REGISTRY_RETRY_PHASES: ReadonlySet<PublicaPhase> = new Set<PublicaPhase>(["upload", "vertical-api", "vertical-guiado"]);
 
@@ -324,10 +370,12 @@ export const REGISTRY_RETRY_PHASES: ReadonlySet<PublicaPhase> = new Set<PublicaP
  *
  * 1. Dono único: nenhuma tarefa `running` segura um recurso que ela também
  *    segura (Chrome; um escritor por registro).
- * 2. Isolamento de custo: fase da parte de vídeo no THREAD PRINCIPAL
- *    (`background: false`) não começa enquanto a Etapa 5 ou 6 roda — os
- *    tokens dela cairiam na janela do stage (`capture-stage-usage.ts`). A
- *    parte de vídeo roda nesse intervalo só como processo em background.
+ * 2. Isolamento de custo, nos dois sentidos: fase da parte de vídeo no
+ *    THREAD PRINCIPAL (`background: false`) não começa enquanto a Etapa 5 ou
+ *    6 roda, e fase da Etapa 5/6 não começa enquanto uma fase do vídeo do
+ *    thread principal está aberta — os tokens do vídeo cairiam na janela do
+ *    stage (`capture-stage-usage.ts`). A parte de vídeo roda nesse intervalo
+ *    só como processo em background.
  * 3. Retry de fase externa (upload, vertical) depois de erro, interrupção ou
  *    tarefa órfã exige uma releitura do registro POSTERIOR ao fim da
  *    tentativa anterior (#11741), com veredito legível.
@@ -345,7 +393,8 @@ export function checkPhaseStart(input: StartCheckInput): string[] {
     const shared = t.resources.filter((r) => candidate.resources.includes(r));
     if (shared.length) {
       problems.push(
-        `recurso ocupado: ${shared.join(", ")} está com ${t.phase}/${t.part} (tentativa ${t.attempt}, desde ${t.start}${t.task_id ? `, task ${t.task_id}` : ""}) — um dono por vez`,
+        `recurso ocupado: ${shared.join(", ")} está com ${t.phase}/${t.part} (tentativa ${t.attempt}, desde ${t.start}${t.task_id ? `, task ${t.task_id}` : ""}) — um dono por vez. ` +
+          `Se essa fase morreu sem gravar o fim, confira o registro e feche-a: ${closeTaskCommand(t, candidate.edition)}`,
       );
     }
   }
@@ -355,6 +404,16 @@ export function checkPhaseStart(input: StartCheckInput): string[] {
     if (stageRunning) {
       problems.push(
         `isolamento de custo: ${candidate.phase}/${candidate.part} no thread principal com a Etapa ${stageRunning.stage} rodando (${stageRunning.phase} desde ${stageRunning.start}) — rode em background ou depois do fim da etapa`,
+      );
+    }
+  }
+
+  if (candidate.stage !== null) {
+    const videoMain = running.find((t) => t.stage === null && t.part !== "sessao" && !t.background);
+    if (videoMain) {
+      problems.push(
+        `isolamento de custo: Etapa ${candidate.stage} (${candidate.phase}) com ${videoMain.phase}/${videoMain.part} aberta no thread principal (desde ${videoMain.start}) — ` +
+          `grave o fim dela antes (end, ou ${closeTaskCommand(videoMain, candidate.edition)})`,
       );
     }
   }
@@ -409,6 +468,8 @@ export interface JoinResult {
 /**
  * Pure: o join do fim da sessão. Nenhuma fase é dada por concluída com
  * tarefa pendente: `running` (inclusive em background) segura o join.
+ * Órfã segura também, salvo quando uma tentativa POSTERIOR da mesma
+ * fase/parte terminou `done` (o retry já passou pela releitura do registro).
  * Sentinel da Etapa 5/6 presente com a fase da etapa ainda rodando é sentinel
  * antecipado.
  */
@@ -420,10 +481,17 @@ export function joinCheck(
   const tasks = deriveTasks(events, opts);
   const pending = tasks.filter((t) => t.status === "running");
   const problems: string[] = pending.map(
-    (t) => `pendente: ${t.phase}/${t.part} (tentativa ${t.attempt}${t.task_id ? `, task ${t.task_id}` : ""}, desde ${t.start})`,
+    (t) =>
+      `pendente: ${t.phase}/${t.part} (tentativa ${t.attempt}${t.task_id ? `, task ${t.task_id}` : ""}, desde ${t.start}) — ` +
+      `espere o fim ou, se o processo morreu, feche: ${closeTaskCommand(t)}`,
   );
-  for (const t of tasks.filter((x) => x.status === "orphaned")) {
-    problems.push(`órfã: ${t.phase}/${t.part} (PID ${t.pid} não vive mais, sem evento de fim) — releia o registro antes de qualquer retry`);
+  const supersededByDone = (t: PhaseTask) =>
+    tasks.some((x) => x.phase === t.phase && x.part === t.part && x.status === "done" && Date.parse(x.start) > Date.parse(t.start));
+  for (const t of tasks.filter((x) => x.status === "orphaned" && !supersededByDone(x))) {
+    problems.push(
+      `órfã: ${t.phase}/${t.part} (PID ${t.pid}${t.child_pid !== undefined ? ` e filho ${t.child_pid}` : ""} não vivem mais, sem evento de fim) — ` +
+        `releia o registro antes de qualquer retry; para fechar: ${closeTaskCommand(t)}`,
+    );
   }
   const stageRunning = (stage: 5 | 6) => pending.some((t) => t.stage === stage);
   if (sentinels.step5 && stageRunning(5)) problems.push("sentinel .step-5-done.json presente com a Etapa 5 ainda rodando (sentinel antecipado)");
@@ -529,20 +597,30 @@ export function phaseReport(edition: string, events: readonly PhaseEvent[], opts
  * Pure: intervalos do THREAD PRINCIPAL da sessão `sessionId` gastos com a
  * parte de vídeo (fase sem stage, `background: false`). `capture-stage-usage`
  * tira esses intervalos da janela das Etapas 5/6, para o custo do vídeo não
- * cair no stage. Tarefa ainda aberta vai até `openUntil` (fim da janela).
+ * cair no stage. Tarefa ainda aberta (o fim nunca foi gravado) vai só até o
+ * próximo `start` do thread principal da mesma sessão (o thread passou a
+ * outra fase, por exemplo a própria Etapa 5); sem nenhum depois dela, até
+ * `openUntil` (fim da janela). `open: true` marca o intervalo estimado.
  */
 export function videoPartMainThreadIntervals(
   events: readonly PhaseEvent[],
   sessionId: string | null,
   openUntil: number,
-): Array<Interval & { phase: PublicaPhase; part: PublicaPart }> {
-  return deriveTasks(events)
+): Array<Interval & { phase: PublicaPhase; part: PublicaPart; open: boolean }> {
+  const tasks = deriveTasks(events);
+  const mainStarts = events
+    .filter((e) => e.event === "start" && !e.background)
+    .map((e) => ({ at: Date.parse(e.at), session: e.session_id, key: taskKey(e) }))
+    .filter((s) => Number.isFinite(s.at));
+  return tasks
     .filter((t) => t.stage === null && t.part !== "sessao" && !t.background && (sessionId === null || t.session_id === sessionId))
-    .map((t) => ({
-      phase: t.phase,
-      part: t.part,
-      start: Date.parse(t.start),
-      end: t.end ? Date.parse(t.end) : openUntil,
-    }))
-    .filter((i) => Number.isFinite(i.start) && Number.isFinite(i.end));
+    .map((t) => {
+      const start = Date.parse(t.start);
+      if (t.end) return { phase: t.phase, part: t.part, start, end: Date.parse(t.end), open: false };
+      const next = mainStarts
+        .filter((s) => s.session === t.session_id && s.at > start && s.key !== t.key)
+        .reduce((min, s) => Math.min(min, s.at), Infinity);
+      return { phase: t.phase, part: t.part, start, end: Math.min(openUntil, next), open: true };
+    })
+    .filter((i) => Number.isFinite(i.start) && Number.isFinite(i.end) && i.end >= i.start);
 }
