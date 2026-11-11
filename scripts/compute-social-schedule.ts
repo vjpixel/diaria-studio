@@ -363,7 +363,13 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
       if (Date.parse(result) !== Date.parse(calculatedIso) && process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
         console.error(`[compute-schedule] #12748 ${platform}/${destaque}: ${calculatedIso} deslocado para ${result}; vertical fixo, mínimo 2 h. Descartar célula deslocada da medição da rotação.`);
       }
-      return result;
+      // O planner usa UTC internamente; o contrato público mantém o offset
+      // explícito do timezone, inclusive quando o horário foi deslocado.
+      const resultDate = new Date(result);
+      const resultOffset = timezoneOffsetIso(resultDate, tz);
+      const offsetMinutes = (Number(resultOffset.slice(1, 3)) * 60 + Number(resultOffset.slice(4, 6))) *
+        (resultOffset.startsWith("-") ? -1 : 1);
+      return new Date(resultDate.getTime() + offsetMinutes * 60_000).toISOString().slice(0, 19) + resultOffset;
     }
   }
 

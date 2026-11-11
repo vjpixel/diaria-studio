@@ -27,6 +27,13 @@ function check(c: typeof config, platform: "linkedin" | "facebook" | "instagram"
 }
 
 describe("vertical fixo e social desvia (#12748)", () => {
+  it("mantém offset explícito e hora local também nos slots deslocados", () => {
+    const dates = check(fixture(), "facebook");
+    assert.equal(dates[1], "2026-11-11T10:00:00-03:00");
+    for (const at of dates) assert.match(at, /T\d{2}:\d{2}:00-03:00$/);
+    const linkedin = check(fixture(), "linkedin");
+    assert.equal(linkedin[1], "2026-11-11T10:30:00-03:00");
+  });
   it("11h × 12h: evita colisão antes de existir store, em todas as contas compartilhadas", () => {
     const c = fixture();
     for (const platform of ["linkedin", "facebook", "instagram", "twitter"] as const) {

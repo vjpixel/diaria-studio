@@ -651,13 +651,15 @@ describe("#4103: prepTwitterPosts.dueAt usa o schedule compartilhado (não addTo
     }
   });
 
-  it("dueAt bate com o horário editorial usado por Facebook/LinkedIn/Instagram/Threads pro MESMO destaque", () => {
+  it("dueAt mantém paridade entre contas com a mesma reserva de vertical (#12748)", () => {
     const dir = makeEditionDir("diaria-twitter-prep-parity-", MD_CURTO);
     try {
       const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
       const config = JSON.parse(readFileSync(resolve(__ROOT, "platform.config.json"), "utf8"));
 
-      for (const platform of ["facebook", "linkedin", "instagram"] as const) {
+      // LinkedIn reserva o repost às 12:30; X/Facebook/Instagram reservam
+      // 12:00. O social desvia por conta, preservando o vertical fixo.
+      for (const platform of ["facebook", "instagram"] as const) {
         for (const post of result.posts) {
           const otherChannelDueAt = computeScheduledAt({
             config,
