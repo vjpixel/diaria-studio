@@ -63,19 +63,14 @@ describe("#12578: pasta de vídeo da diaria.editor", () => {
 
   /*
    * Menção histórica fica, desde que a mesma linha cite a #12578 ("até a
-   * virada da #12578 era …"). Fora do guard:
-   *   - archive-video-brutos.ts / video-bruto-archive.ts: o arquivamento de
-   *     sábado continua na pasta antiga até a #12789;
+   * virada da #12578 era …") ou a #12789 (o arquivamento, que saiu da pasta
+   * antiga nela e só a guarda para uma rodada manual). Fora do guard:
    *   - gdrive-quota.ts: fala da cota da vjpixel, onde a pasta antiga fica.
    */
   it("scripts, skills e setup não apontam mais para a pasta antiga", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     const OLD = /Mentoria Fluxo.{0,6}VTSD.{0,3}YouTube|pasta YouTube|G:[/\\]Meu Drive[/\\]Work/;
-    const SKIP = new Set([
-      "scripts/archive-video-brutos.ts",
-      "scripts/lib/diaria/video-bruto-archive.ts",
-      "scripts/lib/gdrive-quota.ts",
-    ]);
+    const SKIP = new Set(["scripts/lib/gdrive-quota.ts"]);
     const files: string[] = [join(root, "docs", "setup.md")];
     const walk = (dir: string, ext: string) => {
       for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -91,7 +86,7 @@ describe("#12578: pasta de vídeo da diaria.editor", () => {
       const rel = relative(root, f).split("\\").join("/");
       if (SKIP.has(rel)) continue;
       readFileSync(f, "utf8").split("\n").forEach((line, i) => {
-        if (OLD.test(line) && !line.includes("#12578")) hits.push(`${rel}:${i + 1}: ${line.trim().slice(0, 120)}`);
+        if (OLD.test(line) && !line.includes("#12578") && !line.includes("#12789")) hits.push(`${rel}:${i + 1}: ${line.trim().slice(0, 120)}`);
       });
     }
     assert.deepEqual(hits, [], `referências à pasta antiga:\n${hits.join("\n")}`);
