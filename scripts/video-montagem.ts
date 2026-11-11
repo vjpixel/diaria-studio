@@ -94,6 +94,11 @@
  *       relato e em `plan.json` (`cutAdjustments`, `cutRefine`). A banda alta (>3 kHz, -51 dBFS ou mais com o piso do bruto, #11968) protege fonemas com 30 ms de ar e 80 ms de silêncio (#11940). Sem `audio.wav` nesta máquina,
  *       ou com --no-audio-refine, os cortes ficam como os tempos do Whisper, com [aviso].
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
+ *       (#12711) item com fala demais para o texto (ritmo da gravação) ou frase repetida no
+ *       intervalo = [aviso] de tomada repetida (o Whisper colapsa a repetição); o roteiro confere
+ *       também a retranscrição da janela de cada item (palavra esticada, fala divergente).
+ *       (#12712) sequência de corte sem "hook" nem resumo_curto = [aviso] com a 1ª fala como
+ *       sugestão (o mesmo erro do video-extra-verticals.ts); com gancho, [premissa] com ele.
  *       Vertical montada acima de 3:00 (Shorts) sai como [aviso] com quanto passa (#11377); o
  *       corte só na vertical é um item com "skip"/"targets" no blocks.json.
  *       Ganho de áudio (#11755): Audio Levels em cada clipe de áudio, para -14 LUFS com teto
@@ -131,7 +136,11 @@
  *       ou palavras do roteiro interpoladas + ouvidas descartadas acima de 10% do roteiro (export
  *       reeditado depois do build). `--heard-text` faz a legenda pela fala do export (grafia e
  *       pontuação do roteiro onde casa); aí só a legenda vazia recusa.
- *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--no-subs]   (default a vertical da edição; sempre refaz)
+ *   preview AAMMDD [--seq youtube|instagram|outras-redes|{corte}] [--no-subs] [--over-target]   (default a vertical da edição; sempre refaz)
+ *       (#12694) vertical (da edição ou corte/Short) com mais de 75 s de fala (card de CTA fora
+ *       da conta; `verticalTargetS` da edição só reduz) = exit 1 com `[aviso] GATE BLOQUEADO`,
+ *       antes de baixar o bruto: o corte é proposto no `roteiro` e aplicado no blocks.json.
+ *       `--over-target` força a prévia (só com o editor pedindo); o review aceita a mesma flag.
  *       (#12579) sem SRT, ou com SRT mais velho que o build da sequência, sai sem legenda com
  *       [aviso] (não recusa): as legendas vêm depois da aprovação das prévias; --no-subs tira a
  *       legenda mesmo com SRT em dia. (#12571) o card de CTA do XML entra no fim da prévia.
@@ -142,6 +151,8 @@
  *       `--seq` (#11900): o slug do corte escolhe aquela vertical extra (várias por
  *       plano); o destino escolhe a sequência sem corte dele, ou o único corte dele.
  *       Arquivos de trabalho por sequência: seq-{corte|destino}.wav, previa-…, review-….
+ *       (#12711) palavra esticada sobre fala na transcrição da prévia = achado tomada-colapsada
+ *       (também no verify-xml e no review-final). (#12712) corte sem gancho = [aviso].
  *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes|{corte}] [--no-text] [--retranscribe]
  *       revisão do EXPORT do Premiere (#11557): formato contra o destino (proporção,
  *       faixa preta, fps, teto do vertical), loudness/true peak, estalos e fragmentos
@@ -156,9 +167,14 @@
  * plano; review recusa uma prévia mais velha que o plano.
  *
  * Opções comuns:
- *   --drive-root DIR   pasta YouTube local do Drive (default: env DIARIA_VIDEO_DRIVE_ROOT ou
- *                      "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube"); a edição é {DIR}/{AAMMDD}/
- *   --state-dir DIR    onde ficam os JSON (default: data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem)
+ *   --drive-root DIR   pasta de vídeo local do Drive (default: env DIARIA_VIDEO_DRIVE_ROOT ou
+ *                      "I:/Meu Drive/diaria-studio-video", #12578); a edição é {DIR}/{AAMMDD}/
+ *   --premiere-root DIR  (build) a mesma pasta de vídeo como o Mac que abre o XML a vê
+ *                      (/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu Drive/diaria-studio-video):
+ *                      todo pathurl (bruto, áudio tratado, PNG do título, vinheta, card de CTA)
+ *                      troca a raiz do Neo por ela (#12707). Default: publishing.video.premiere_root
+ *                      do config; sem ele, a raiz do Neo (I:). "off" ignora o config (XML para o Premiere do Windows).
+ *   --state-dir DIR   onde ficam os JSON (default: data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem)
  *   --work-dir DIR     áudio e clipes temporários (default: {tmp}/diaria-video-montagem/{AAMMDD};
  *                      no modo API, {cache}/work, em disco)
  *   --out-dir DIR      onde saem XML, SRT e prévia (default: a pasta da edição no Drive; no modo
@@ -167,9 +183,9 @@
  *                      ~/.venv-video-montagem quando existe, ou "python"; #11642)
  *
  * Modo API do Drive (#11639, #11640, #11641), o 300 sem o Drive for desktop:
- * sem a RAIZ {drive-root} no disco (a pasta YouTube; e sem --drive-root/DIARIA_VIDEO_DRIVE_ROOT
+ * sem a RAIZ {drive-root} no disco (a pasta de vídeo; e sem --drive-root/DIARIA_VIDEO_DRIVE_ROOT
  * explícito), ou com --from-drive, a pasta da edição é lida pela API (OAuth do projeto;
- * pasta YouTube em publishing.youtube.drive_folder_id, --folder-id sobrepõe). --no-drive-api
+ * pasta de vídeo em publishing.youtube.drive_folder_id, --folder-id sobrepõe). --no-drive-api
  * desliga. O bruto vai para um cache em disco (--cache-dir, DIARIA_VIDEO_CACHE_DIR ou
  * ~/.cache/diaria-video-montagem/{AAMMDD}: bruto/, out/, work/, final/), registrado em
  * bruto.drive.json; build/srt/preview sobem o que gravaram no out dir para a pasta da edição
@@ -204,6 +220,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
+import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
 import {
   AUDIO_GAIN_TARGET_LUFS,
   AUDIO_GAIN_TP_CEILING_DBTP,
@@ -259,6 +276,8 @@ import {
   mirroredPremise,
   parseSilenceDetect,
   pickRawSource,
+  premiereRootFrom,
+  unmappedPremierePaths,
   previewClipArgs,
   previewCropFor,
   clipFraming,
@@ -295,6 +314,7 @@ import {
   fitWarnings,
   framingOfFile,
   joinWordTexts,
+  type BlockKey,
   type ResolvedItem,
   type ReviewFinding,
   type BlocksFile,
@@ -303,6 +323,7 @@ import {
   type Framing,
   type Interval,
   type PlannedClip,
+  type PremierePathMap,
   type RawClip,
   type ScreenTitleXml,
   type Segment,
@@ -314,6 +335,7 @@ import {
   type Transcript,
   type VocabAlias,
   type VocabRule,
+  type TokenMatcher,
   type Word,
 } from "./lib/diaria/video-montage.ts";
 import {
@@ -349,7 +371,9 @@ import {
   SHORTS_MAX_S,
   shortsWarning,
   suggestedDurations,
+  verticalPreviewGate,
   verticalTargetCheck,
+  verticalTargetOverrideWarning,
   verticalTargetWarning,
   type DecupagemPlan,
 } from "./lib/diaria/video-montage-docs.ts";
@@ -432,6 +456,8 @@ import { buildYouTubeTitle, stripInlineMarkdown } from "./lib/diaria/youtube-vid
 import { youtubeCaptionFileName } from "./lib/diaria/youtube-captions.ts";
 import { factCheckItems, factCheckItemsSha256, factCheckSection, parseVideoFactCheck, type FactCheckItem } from "./lib/diaria/video-fact-check.ts";
 import { SHORT_WORD_WINDOW_PAD_S, shortWordDivergences, shortWordSection, type ShortWordItemCheck } from "./lib/diaria/video-short-words.ts";
+import { stretchedWordFindings, takeRepeatItems, takeRepeatLine, takeRepeatWarnings, windowHeardSuspects, type TakeRepeatSuspect } from "./lib/diaria/video-montage-repeat.ts";
+import { corteHookLine } from "./lib/diaria/extra-verticals.ts";
 import sharp from "sharp";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -458,6 +484,8 @@ interface Ctx {
   xmlMediaRoot?: string;
   /** #11653: raiz do Drive no Neo pedida por `--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT` (só no modo local); vai para o XML. */
   driveRoot?: string;
+  /** #12707: a raiz do Neo trocada pela do Mac em todo `pathurl` (`--premiere-root`/`publishing.video.premiere_root`); ausente = caminho do Neo. */
+  premierePaths?: PremierePathMap;
 }
 
 const f = (ctx: Pick<Ctx, "stateDir">, name: string) => join(ctx.stateDir, name);
@@ -517,6 +545,16 @@ function nonEmptyWords(path: string, what: string): Word[] {
   const words = transcriptWords(readJson<Transcript>(path, what));
   if (words.length === 0) throw new Error(`${what} sem nenhuma palavra (${path}): áudio mudo ou transcrição falhou; refazer com --force`);
   return words;
+}
+
+/** O platform.config.json, ou `null` ilegível (com aviso): o `premiere_root` some e o XML sai com a raiz do Neo (#12707). */
+function readPlatformConfigSafe(): unknown {
+  try {
+    return JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  } catch (e) {
+    console.error(`[aviso] platform.config.json ilegível (${(e as Error).message}): sem publishing.video.premiere_root, XML com a raiz do Neo (#12707)`);
+    return null;
+  }
 }
 
 /** `publishing.video.mirrored_default` do config (#11959); config ilegível = `null` (vale o default do código, com aviso). */
@@ -758,7 +796,7 @@ export function gainLoudnessSource(input: {
  * `transcribe` no modo API (o 300) não garante no cache: com a transcrição
  * pronta ele não baixa nada, e o cache pode ter sido limpo. Sem o bruto, o
  * ffmpeg falha e o XML cai para o áudio cru. No modo API o build garante o
- * bruto antes (`ensureBrutoLocal`); no local (G:) o bruto é o do Drive montado.
+ * bruto antes (`ensureBrutoLocal`); no local (I:) o bruto é o do Drive montado.
  */
 export function buildNeedsLocalBruto(o: { apiMode: boolean; audioClean: boolean }): boolean {
   return o.apiMode && o.audioClean;
@@ -968,6 +1006,8 @@ export interface XmlBuildOptions {
   screenTitleByCorte?: Readonly<Record<string, ScreenTitleXml | null>>;
   /** #12571: o card de CTA de cada sequência (chave = `sequenceKey`), como o `buildXmeml` recebe; só entra no hash o card que a sequência leva. */
   ctaCard?: Readonly<Record<string, CtaCardAsset>> | null;
+  /** #12707: a tradução de raiz dos `pathurl` para o Premiere do Mac; ausente/null = fora do hash (o de antes). */
+  premierePaths?: PremierePathMap | null;
 }
 
 /** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
@@ -1012,6 +1052,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(typeof opts.gainDb === "number" ? { gainDb: opts.gainDb } : {}),
         ...(title ? { screenTitle: title } : {}),
         ...(opts.ctaCard?.[sequenceKey(plan.spec)] ? { ctaCard: ctaCardHashPart(opts.ctaCard[sequenceKey(plan.spec)]) } : {}),
+        ...(opts.premierePaths ? { premierePaths: opts.premierePaths } : {}),
       }),
     )
     .update("\0plan\0")
@@ -1063,6 +1104,15 @@ function silences(ctx: Ctx): Interval[] {
  */
 /** #12263: `energy` = os quadros do detector, para a checagem de entrada que corta som. */
 type SpeechCut = { silences: Interval[]; islands: Interval[]; energy?: FrameEnergy };
+
+/**
+ * Tomada repetida que o Whisper colapsou (#12711), no `build` e no `roteiro`:
+ * item com muito mais fala que o texto pede, ou com a mesma frase mais vezes
+ * no intervalo que no texto. Só avisa (o editor confere no áudio).
+ */
+function printTakeRepeatWarnings(ctx: Ctx, resolved: Partial<Record<BlockKey, ResolvedItem[]>>): void {
+  for (const w of takeRepeatWarnings(takeRepeatItems(resolved), silences(ctx), makeMatcher(loadVocab().aliases))) console.error(`[aviso] ${w}`);
+}
 
 function plans(ctx: Ctx, speech?: SpeechCut | null) {
   const { file, text } = loadBlocks(ctx);
@@ -1567,7 +1617,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   let src = multiPaths ? multiPaths[0] : sourceArg ? resolve(sourceArg) : undefined;
   if (!src) {
     if (!existsSync(ctx.driveDir)) {
-      throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir} (Drive for desktop montado? a pasta ${ctx.edition}/ ainda não sincronizou? espere, ou passe --from-drive para baixar pela API, ou --drive-root)`);
+      throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir} (Drive for desktop montado? a pasta ${ctx.edition}/ ainda não sincronizou? espere, ou passe --from-drive para baixar pela API, ou --drive-root; desde a #12578 a pasta é a diaria-studio-video da diaria.editor: o bruto pode ter subido para a pasta antiga da vjpixel ou por outra conta)`);
     }
     const files = readdirSync(ctx.driveDir, { withFileTypes: true })
       .filter((d) => d.isFile())
@@ -2070,8 +2120,13 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
       const tj = join(dir, "xml.transcript.json");
       transcribeWithPython(ctx, wav, tj, { vad: false, noCondition: true });
       const heard = reviewTranscriptWords(readJson<Transcript>(tj, "transcrição do áudio do XML"));
-      findings = reviewPreview({ words: heard, script: plan.script, cuts: sequenceCutsS(parsed.clips, parsed.rate), durationS: durS, aliases: loadVocab().aliases })
-        .filter((x) => x.kind === "fala-faltando" || x.kind === "fala-extra");
+      // #12711: a palavra esticada sobre fala no áudio montado (a 261111 tinha "fazer" por 4,5 s), que o casamento com o roteiro não vê.
+      const xmlSilences = parseSilenceDetect(run("ffmpeg", ["-hide_banner", "-nostats", "-i", wav, "-vn", "-af", REVIEW_SILENCE_FILTER, "-f", "null", "-"]).stderr, durS);
+      findings = [
+        ...reviewPreview({ words: heard, script: plan.script, cuts: sequenceCutsS(parsed.clips, parsed.rate), durationS: durS, aliases: loadVocab().aliases })
+          .filter((x) => x.kind === "fala-faltando" || x.kind === "fala-extra"),
+        ...stretchedWordFindings(heard, xmlSilences),
+      ];
       console.log("transcrição do áudio montado pelo XML x roteiro:");
       if (!findings.length) console.log("  sem diferenças");
       for (const x of findings) console.log(`  ${clockTime(x.at)}  ${x.kind}: ${x.detail}`);
@@ -2081,7 +2136,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   }
   writeJson(f(ctx, "verify-xml.json"), report);
   if (bad) {
-    console.error(`[erro] verify-xml: ${bad} problema(s) no XML (borda com SOM CORTADO, estrutura ou fala divergente): corrigir o blocks.json/build antes da prévia (#12561)`);
+    console.error(`[erro] verify-xml: ${bad} problema(s) no XML (borda com SOM CORTADO, estrutura, fala divergente ou tomada colapsada, #12711): corrigir o blocks.json/build antes da prévia (#12561)`);
     return 1;
   }
   console.error(`[video-montagem] verify-xml: zero bordas cortadas${transcribe ? " e áudio do XML batendo com o roteiro" : "; fala NÃO conferida (--no-transcribe)"} (#12561)`);
@@ -2189,11 +2244,14 @@ function cmdGaze(ctx: Ctx, target: string | undefined): number {
 
 function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   const { file, source, plans: ps, resolved } = plans(ctx);
+  printTakeRepeatWarnings(ctx, resolved);
   // As linhas "alternativa" da decupagem viram as opções B, C… do roteiro (#11361).
   const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
   const dplan = loadDecupagemPlan(ctx, tr.segments);
   const alternatives = dplan ? alternativesFromDecupagem(buildDecupagemDoc(dplan, tr.segments, loadVocab().rules)) : undefined;
   const sil = silences(ctx);
+  const targetOverride = verticalTargetOverrideWarning(file.verticalTargetS);
+  if (targetOverride) console.error(`[aviso] ${targetOverride}`);
   for (const p of ps) {
     const t = verticalTargetCheck(p, resolved, source.fps, { targetS: file.verticalTargetS, silences: sil });
     if (t) console.error(`[aviso] ${verticalTargetWarning(p.spec.name, t)}`);
@@ -2201,7 +2259,11 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   // #12571: cada versão fecha com o card de CTA (salvo ctaCard: false), com a linha de compartilhar dela.
   const ctaCardShare = file.ctaCard === false ? undefined : Object.fromEntries(ps.map((p) => [sequenceKey(p.spec), ctaShareLine(p.spec.ctaShare ?? file.ctaShare)]));
   // #12585: o título de cada vídeo, das mesmas funções do build e dos publicadores.
-  const videoTitles = videoTitlesFor(ps.map((p) => p.spec), { blocksTitle: file.screenTitle, d1Title: readD1Title(ctx.edition) });
+  const videoTitles = videoTitlesFor(ps.map((p) => p.spec), {
+    blocksTitle: file.screenTitle,
+    d1Title: readD1Title(ctx.edition),
+    roteiroTitle: readRoteiroHorizontal(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`))?.titulo ?? null,
+  });
   const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare, videoTitles });
   // #11956: os achados do fact-check da fala entram no Doc do Gate 2.
   const fcPath = f(ctx, VIDEO_FACT_CHECK_FILE);
@@ -2224,10 +2286,24 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
     const n = short.checks!.reduce((k, c) => k + c.divergences.length, 0);
     if (n) console.error(`[aviso] ${n} palavra(s) curta(s) do roteiro diferente(s) da retranscrição da janela: seção "Palavras curtas" do roteiro, para o editor decidir no Gate 2 (#12093)`);
   }
-  const md = `${base.trimEnd()}\n\n${section.lines.join("\n")}\n\n${shortWordSection(short.checks, short.skipped).join("\n")}\n`;
+  // #12711: a retranscrição da janela de cada item (sem o roteiro no prompt) contra a tomada repetida que o Whisper colapsa.
+  const repeat = short.heard ? windowRepeatSuspects(factCheckItems(ps, resolved), short.heard, sil, makeMatcher(loadVocab().aliases)) : [];
+  for (const x of repeat) console.error(`[aviso] ${takeRepeatLine(x)}`);
+  const md = `${base.trimEnd()}\n\n${section.lines.join("\n")}\n\n${shortWordSection(short.checks, short.skipped).join("\n")}\n${takeRepeatSection(repeat)}`;
   writeFileAtomic(f(ctx, "roteiro.md"), md);
   process.stdout.write(md);
   return 0;
+}
+
+/** Suspeitas de tomada repetida nas janelas retranscritas do roteiro (#12711): uma lista por item, na ordem de `items`. */
+export function windowRepeatSuspects(items: ReadonlyArray<Pick<FactCheckItem, "id" | "text" | "start" | "end">>, heard: ReadonlyArray<readonly Word[]>, sil: Interval[], match: TokenMatcher): TakeRepeatSuspect[] {
+  return items.flatMap((it, i) => windowHeardSuspects(it, heard[i] ?? [], sil, match));
+}
+
+/** Seção do roteiro com as suspeitas de tomada repetida (#12711); vazia sem suspeita. */
+export function takeRepeatSection(repeat: readonly TakeRepeatSuspect[]): string {
+  if (!repeat.length) return "";
+  return `\n## Tomada repetida? (#12711)\n\nConferir no áudio antes do Gate 2: o Whisper junta a tomada repetida numa só e o casamento com o roteiro não vê.\n\n${repeat.map((x) => `- ${mdCell(takeRepeatLine(x))}`).join("\n")}\n`;
 }
 
 /** Cache da retranscrição das janelas dos itens do roteiro (#12093). */
@@ -2239,7 +2315,7 @@ export const SHORT_WORD_CACHE_FILE = "roteiro-retranscribe.json";
  * com a retranscrição falhando, devolve o motivo em `skipped` (o roteiro sai
  * assim mesmo, com o aviso no Doc).
  */
-function shortWordChecks(ctx: Ctx, items: FactCheckItem[], enabled: boolean): { checks: ShortWordItemCheck[] | null; skipped?: string } {
+function shortWordChecks(ctx: Ctx, items: FactCheckItem[], enabled: boolean): { checks: ShortWordItemCheck[] | null; skipped?: string; heard?: Word[][] } {
   if (!enabled) return { checks: null, skipped: "--no-short-word-check" };
   const audio = join(ctx.workDir, "audio.wav");
   if (!existsSync(audio)) return { checks: null, skipped: `áudio do bruto ausente (${audio})` };
@@ -2257,6 +2333,8 @@ function shortWordChecks(ctx: Ctx, items: FactCheckItem[], enabled: boolean): { 
   const aliases = loadVocab().aliases;
   return {
     checks: items.map((it, i) => ({ id: it.id, text: it.text, start: it.start, end: it.end, divergences: shortWordDivergences(heard.get(windows[i].key) ?? [], it.text, aliases) })),
+    // #12711: as mesmas janelas servem à conferência de tomada repetida (palavra esticada, fala divergente).
+    heard: windows.map((w) => heard.get(w.key) ?? []),
   };
 }
 
@@ -2591,7 +2669,7 @@ export function resolveScreenTitle(input: { blocksTitle?: string; d1Title?: stri
  */
 export function videoTitlesFor(
   specs: ReadonlyArray<Pick<SequenceSpec, "target" | "corte" | "screenTitle">>,
-  input: { blocksTitle?: string; d1Title?: string | null },
+  input: { blocksTitle?: string; d1Title?: string | null; roteiroTitle?: string | null },
 ): Record<string, string> {
   const out: Record<string, string> = {};
   const vertical = resolveScreenTitle(input);
@@ -2607,6 +2685,12 @@ export function videoTitlesFor(
       out[key] = !t ? `${verticalText}, o da vertical da edição: o corte não tem screenTitle na sequência`
         : t.text ? `${t.text} (screenTitle da sequência do corte)` : "(sem título na tela: screenTitle vazio na sequência do corte)";
     } else if (s.target === "youtube") {
+      // #12751: o título do horizontal no roteiro do vídeo vence o do D1, como no publish-youtube.ts.
+      const doRoteiro = input.roteiroTitle ? buildYouTubeTitle(input.roteiroTitle) : "";
+      if (doRoteiro) {
+        out[key] = `${doRoteiro} (título do roteiro do vídeo, o do publish-youtube.ts sem --title)`;
+        continue;
+      }
       const yt = input.d1Title ? buildYouTubeTitle(input.d1Title) : "";
       out[key] = yt ? `${yt} (título do D1, o do publish-youtube.ts sem --title)` : "(sem D1 em 02-reviewed.md: o publish-youtube.ts não acha o título)";
     } else {
@@ -2687,6 +2771,15 @@ function readD1Title(edition: string): string | null {
   return parseDestaques(readFileSync(path, "utf8")).find((d) => d.n === 1)?.title ?? null;
 }
 
+/** Relato da raiz dos `pathurl` do XML (#12707): Neo ou Mac, e o que ficou fora da tradução. */
+export function premierePathsLine(map: PremierePathMap | undefined, unmapped: readonly string[]): string {
+  if (!map) {
+    return "[premissa] pathurl do XML com a raiz do Neo (I:): abre vinculado no Premiere do Windows; para o Mac, publishing.video.premiere_root no config ou --premiere-root /Users/…/diaria-studio-video (#12707)";
+  }
+  const base = `[premissa] pathurl do XML com a raiz ${map.to} no lugar de ${map.from} (bruto, áudio, título, vinheta e card de CTA); conferir no 1º import no Mac (#12707)`;
+  return unmapped.length ? `${base}\n[aviso] fora de ${map.from}, com o caminho de origem no XML (devem chegar offline no Mac): ${unmapped.join(", ")} (#12707)` : base;
+}
+
 /** Relato do ganho de áudio do XML (#11755). */
 export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: number, measuredOn: "bruto" | "faixa tratada" = "bruto"): string {
   if (!g) return `[aviso] sem ganho de áudio no XML: loudness ${measuredOn === "bruto" ? "do bruto" : "da faixa tratada"} não medido (ou sem true peak para um ganho positivo); nível à mão no Premiere`;
@@ -2705,6 +2798,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   if (speech.cut) console.error(`[premissa] corte de pausas pelo detector de fala (#12089): ${speech.cut.islands.length} ilhas de fala, pausa de ${SPEECH_DETECT.minGapS} s ou mais sai com ${SPEECH_DETECT.padBeforeS * 1000} ms antes da fala e ${SPEECH_DETECT.padAfterS * 1000} ms depois; o começo da fala recua até ${SPEECH_DETECT.attackMaxS * 1000} ms no ataque acima do piso do bruto + ${SPEECH_DETECT.attackAboveFloorDb} dB (#12263); --no-speech-detect volta ao silences.json`);
   else console.error(`[aviso] corte de pausas pelo silences.json (${speech.reason}): respiração e ruído de sala contam como fala num bruto quente (#12089)`);
   const { file, source, plans: ps0, hash, resolved } = plans(ctx, speech.cut);
+  printTakeRepeatWarnings(ctx, resolved);
   const refined = refineCuts(ctx, ps0, source, audioRefine, speech.cut !== null);
   refined.info.speechDetect = speech.cut ? { applied: true, islands: speech.cut.islands.length } : { applied: false, reason: speech.reason ?? "desligado" };
   const ps = refined.plans;
@@ -2734,11 +2828,16 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   for (const w of framingWarn.mug) console.error(`[aviso] ${w}`);
   // #12093: o rosto centrado nos dois zooms; escala pequena demais bate na borda do bruto.
   for (const w of framingWarn.face) console.error(`[aviso] ${w}`);
+  const targetOverride = verticalTargetOverrideWarning(file.verticalTargetS);
+  if (targetOverride) console.error(`[aviso] ${targetOverride}`);
   for (const p of picked) {
     const d = p.durationFrames / source.fps;
-    console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${CTA_CARD.durationS} s (#12571)`}`);
+    console.error(`== ${p.spec.name}: ${p.clips.length} clipes,${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}${file.ctaCard === false ? "" : ` + card de CTA de ${CTA_CARD.durationS} s (#12571)`}`);
     const g = ganchoWarning(p);
     if (g) console.error(`[aviso] ${g}`);
+    // #12712: o corte sem gancho de publicação avisa já na montagem, com o mesmo erro do video-extra-verticals.ts.
+    const hook = corteHookLine(file, p.spec);
+    if (hook) console.error(`[${hook.level}] ${p.spec.name}: ${hook.text}`);
     for (const w of p.warnings ?? []) console.error(`[aviso] ${w}`);
     // #12101: o refino dos cortes pode encolher o respiro depois do título; conferir no plano final.
     // #12586: o respiro vem depois do bloco de abertura (o título, ou o gancho falado sem título).
@@ -2879,6 +2978,16 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   for (const p of picked) {
     if (!ctaCard[sequenceKey(p.spec)] && !sequenceHasSpokenCta(p)) console.error(`[aviso] ${p.spec.name} sai sem CTA nenhum (sem card e sem cta_* falado) (#12571)`);
   }
+  // #12707: todo `pathurl` com a mesma raiz; o que ficar fora dela sai com o caminho do Neo, e isso é dito.
+  const xmlFilePaths = [
+    ...(mediaPaths ?? [mediaPath]),
+    ...(treated ? [treated.xmlPath] : []),
+    ...(screenTitle ? [screenTitle.pngPath] : []),
+    ...Object.values(screenTitleByCorte).flatMap((t) => (t ? [t.pngPath] : [])),
+    ...(vinheta ? [vinheta.path] : []),
+    ...Object.values(ctaCard).map((c) => c.xmlPath),
+  ];
+  console.error(premierePathsLine(ctx.premierePaths, unmappedPremierePaths(xmlFilePaths, ctx.premierePaths)));
   // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
   // #12160: a versão também muda com as opções do build e com o plano final (detector de fala, refino).
   // #12163: e com o título, o caminho do bruto e o ganho calculado — por isso só aqui, depois de resolvê-los.
@@ -2894,6 +3003,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     screenTitle,
     screenTitleByCorte,
     ctaCard,
+    premierePaths: ctx.premierePaths ?? null,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
@@ -2913,7 +3023,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -3461,10 +3571,58 @@ export function previewSubtitleDecision(input: { srtPath: string; exists: boolea
   return { use: true, message: null };
 }
 
-async function cmdPreview(ctx: Ctx, target: string | undefined, drive: DriveSession | null = null, noSubs = false): Promise<number> {
+/**
+ * O gancho de publicação do corte na prévia e na revisão (#12712), lido do
+ * blocks.json atual (o gancho não entra no plan.json). blocks.json ilegível
+ * só avisa: a prévia segue.
+ */
+function printCorteHook(ctx: Ctx, spec: SequenceSpec): void {
+  if (spec.corte === undefined) return;
+  try {
+    const hook = corteHookLine(loadBlocks(ctx).file, spec);
+    if (hook) console.error(`[${hook.level}] ${spec.name}: ${hook.text}`);
+  } catch (e) {
+    console.error(`[aviso] ${spec.name}: gancho do corte não conferido (${(e as Error).message}) (#12712)`);
+  }
+}
+
+/**
+ * O gate de duração da prévia (#12694): vertical (da edição ou corte/Short
+ * avulso) acima do alvo não ganha prévia nem review. Imprime o `[aviso] GATE
+ * BLOQUEADO` e devolve true para o comando sair com 1, ANTES de baixar o bruto
+ * ou renderizar. `overTarget` (`--over-target`) força, com o aviso mesmo assim.
+ */
+export function verticalDurationGateBlocks(
+  plan: Pick<SequencePlan, "spec" | "durationFrames">,
+  fps: number,
+  targetS: number | undefined,
+  overTarget: boolean,
+  log: (line: string) => void = (l) => console.error(l),
+): boolean {
+  const gate = verticalPreviewGate(plan, fps, targetS);
+  if (!gate) return false;
+  if (overTarget) {
+    log(`${gate.replace("GATE BLOQUEADO", "acima do alvo, forçado por --over-target")}`);
+    return false;
+  }
+  log(gate);
+  return true;
+}
+
+async function cmdPreview(
+  ctx: Ctx,
+  target: string | undefined,
+  drive: DriveSession | null = null,
+  noSubs = false,
+  opts: { overTarget?: boolean; needLocalBruto?: () => Promise<unknown> } = {},
+): Promise<number> {
   const pf = loadPlan(ctx);
   // #12096: `--seq youtube` também (o horizontal, 960x540); sem --seq, a vertical da edição.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
+  // #12694: acima de 75 s de fala, a prévia não sai (nem o bruto é baixado).
+  if (verticalDurationGateBlocks(plan, pf.source.fps, loadBlocks(ctx).file.verticalTargetS, opts.overTarget === true)) return 1;
+  await opts.needLocalBruto?.();
+  printCorteHook(ctx, plan.spec);
   if (pf.framingAssumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (o mesmo do build)");
   for (const w of framingWarningsByFile([plan], pf.source, pf.framing, pf.fileOverrides).mug) console.error(`[aviso] ${w}`);
   const fps = pf.source.fps;
@@ -3602,10 +3760,13 @@ export function reviewCardScope(input: {
   };
 }
 
-function cmdReview(ctx: Ctx, target: string | undefined): number {
+function cmdReview(ctx: Ctx, target: string | undefined, overTarget = false): number {
   const pf = loadPlan(ctx);
   // #12096: o horizontal também (`--seq youtube`), com a mesma recusa de prévia mais velha que o build.
   const [plan] = pickPlans(pf.plans, target ?? "outras-redes", false, true);
+  // #12694: o mesmo gate da prévia (uma prévia velha, de antes do gate, não é revisada).
+  if (verticalDurationGateBlocks(plan, pf.source.fps, loadBlocks(ctx).file.verticalTargetS, overTarget)) return 1;
+  printCorteHook(ctx, plan.spec);
   const preview = join(ctx.outDir, previewFileName(ctx.edition, sequenceKey(plan.spec)));
   if (!existsSync(preview)) throw new Error(`prévia ausente: ${preview} (rode preview)`);
   if (mtime(preview) < sequenceBuiltAt(pf, sequenceKey(plan.spec), mtime(f(ctx, "plan.json")))) throw new Error(`${preview} é mais velha que o build de ${plan.spec.name} no plan.json: rode preview de novo`);
@@ -3632,7 +3793,9 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   const pauses = longPauses(previewSilences, cutPoints(plan, pf.source.fps), speechS);
   console.error(`[video-montagem] ritmo de ${plan.spec.name}: ${pauses.length ? pauses.map((x) => `${clockTime(x.at)} (${x.durationS.toFixed(2)} s, ${x.atCut ? "no corte" : "dentro da fala"})`).join("; ") : "nenhuma pausa acima de 0,3 s"} (#12561)`);
   // Cada achado leva também o tempo no BRUTO (#11500): é lá que o corte se corrige.
-  const findings = reviewPreview({ words, audioEndS, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS: speechS, aliases: loadVocab().aliases }).map((x) => ({
+  // #12711: palavra esticada sobre fala (tomada repetida que o Whisper colapsou), sem depender do roteiro.
+  const reviewed = [...reviewPreview({ words, audioEndS, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS: speechS, aliases: loadVocab().aliases }), ...stretchedWordFindings(words, previewSilences)];
+  const findings = reviewed.map((x) => ({
     ...x,
     srcAt: exportTimeToRaw(x.at, plan, pf.source.fps),
   }));
@@ -3744,7 +3907,7 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   findings.push(...dedupeAudioFindings(clicks, detectFragments(sil)));
 
   if (withText && plan) {
-    findings.push(...checkText({ audioEndS: audioEndFromSilences(sil, probe.durationS), words: transcribeExport(ctx, path, key, true), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
+    findings.push(...checkText({ audioEndS: audioEndFromSilences(sil, probe.durationS), words: transcribeExport(ctx, path, key, true), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases, silences: sil }));
   }
 
   const table = finalReviewTable(findings);
@@ -3793,7 +3956,7 @@ function configRootFolderId(flag: string | undefined): () => string {
   return () => {
     if (flag?.trim()) return flag.trim();
     const id = youtubeFolderIdFrom(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
-    if (!id) throw new Error("modo API do Drive sem pasta YouTube: preencha publishing.youtube.drive_folder_id no platform.config.json ou passe --folder-id");
+    if (!id) throw new Error("modo API do Drive sem pasta de vídeo: preencha publishing.youtube.drive_folder_id no platform.config.json ou passe --folder-id");
     return id;
   };
 }
@@ -3917,12 +4080,12 @@ export function localBrutoMissing(ctx: Pick<Ctx, "stateDir" | "edition">): strin
   // #12559: bruto em vários arquivos: todos precisam estar nesta máquina (o modo API baixa um bruto só).
   if (source.files?.length) {
     const gone = source.files.filter((x) => !existsSync(x.path)).map((x) => x.path);
-    return gone.length ? `arquivo(s) do bruto em vários arquivos ausente(s) nesta máquina: ${gone.join(", ")} (#12559: rode no Neo, com o Drive em G:)` : null;
+    return gone.length ? `arquivo(s) do bruto em vários arquivos ausente(s) nesta máquina: ${gone.join(", ")} (#12559: rode no Neo, com a pasta de vídeo em I:)` : null;
   }
   if (existsSync(source.path)) return null;
   const info = readBrutoDrive(ctx);
   const origin = info && toPosix(info.localPath) === toPosix(source.path) ? ` (o cache do modo API de outra máquina; o bruto no Drive é ${info.name})` : "";
-  return `bruto do source.json não existe nesta máquina: ${source.path}${origin}. Rode transcribe --force aqui (com o bruto em G:, ou --from-drive para baixá-lo pela API)`;
+  return `bruto do source.json não existe nesta máquina: ${source.path}${origin}. Rode transcribe --force aqui (com o bruto em I:, ou --from-drive para baixá-lo pela API)`;
 }
 
 /** Um arquivo pelo nome na pasta da edição (`--from-audio`) ou em `Final/` (`review-final --file`), baixado para o cache. */
@@ -3990,7 +4153,7 @@ export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition">, d: Drive
 
 async function cmdUpload(ctx: Ctx, d: DriveSession | null, file: string | undefined): Promise<number> {
   if (!file) throw new Error("upload exige --file PATH (ex.: o decupagem.md quando o conector do Docs falhar)");
-  if (!d) throw new Error("upload é do modo API do Drive (o 300); no Neo, copie o arquivo para a pasta da edição em G:");
+  if (!d) throw new Error("upload é do modo API do Drive (o 300); no Neo, copie o arquivo para a pasta da edição em I:/Meu Drive/diaria-studio-video (nunca na pasta antiga da vjpixel, #12578)");
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`arquivo não encontrado: ${path}`);
   const r = await uploadAll(ctx, d, [path]);
@@ -4018,6 +4181,14 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
   }
   const explicitRoot = values["drive-root"] ?? process.env.DIARIA_VIDEO_DRIVE_ROOT;
   const driveRoot = explicitRoot ?? DEFAULT_DRIVE_ROOT;
+  // #12707: a raiz do Premiere (Mac) no lugar da do Neo em todo pathurl do XML.
+  let premiere: ReturnType<typeof premiereRootFrom>;
+  try {
+    premiere = premiereRootFrom(values["premiere-root"], readPlatformConfigSafe());
+  } catch (e) {
+    console.error(`video-montagem: ${(e as Error).message}`);
+    return 2;
+  }
   const driveDir = join(driveRoot, edition);
   const mode = driveModeFor({
     driveRootExists: existsSync(driveRoot),
@@ -4043,6 +4214,8 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     xmlMediaRoot: values["xml-media-root"],
     // A raiz explícita é a do Neo só no modo local; no modo API ela não existe aqui (#11653).
     driveRoot: mode === "local" ? explicitRoot : undefined,
+    // A raiz de origem é a do Neo que o XML grava: a explícita do modo local, senão a padrão (a vinheta mora nela).
+    ...(premiere.root ? { premierePaths: { from: mode === "local" && explicitRoot ? explicitRoot : DEFAULT_DRIVE_ROOT, to: premiere.root } } : {}),
   };
   const seq = values["seq"];
   if ((VIDEO_ONLY_COMMANDS as readonly string[]).includes(cmd)) {
@@ -4085,7 +4258,7 @@ async function runCommand(
   };
   switch (cmd) {
     case "transcribe": {
-      if (flags.has("from-audio")) throw new Error('--from-audio exige o caminho do áudio separado (ex.: --from-audio "G:/…/Diaria comentada_Youtube.wav")');
+      if (flags.has("from-audio")) throw new Error('--from-audio exige o caminho do áudio separado (ex.: --from-audio "I:/…/Diaria comentada_Youtube.wav")');
       let audio = values["from-audio"];
       // #11639: no modo API, um --from-audio que não existe no disco é o nome do arquivo na pasta da edição.
       if (d && audio !== undefined && !existsSync(audio)) audio = await fetchNamed(d, audio, "edition");
@@ -4133,7 +4306,7 @@ async function runCommand(
         return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), titleMode, seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d);
       }
     case "srt": {
-      if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "G:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
+      if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "I:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
       let final = values["from-final"];
       if (final === undefined) {
         if (flags.has("heard-text")) throw new Error("--heard-text só vale com --from-final (a legenda pela fala do export, #12198)");
@@ -4147,10 +4320,10 @@ async function runCommand(
       return cmdSrtFromFinal(ctx, final, plan, flags.has("heard-text") ? "ouvido" : "roteiro");
     }
     case "preview":
-      await needLocalBruto();
-      return cmdPreview(ctx, seq, d, flags.has("no-subs"));
+      // #12694: o gate de duração roda antes de baixar o bruto.
+      return cmdPreview(ctx, seq, d, flags.has("no-subs"), { overTarget: flags.has("over-target"), needLocalBruto });
     case "review":
-      return cmdReview(ctx, seq);
+      return cmdReview(ctx, seq, flags.has("over-target"));
     case "review-final": {
       let file = values["file"];
       // #11639: no modo API, o export é procurado pelo nome em Final/ da edição no Drive.

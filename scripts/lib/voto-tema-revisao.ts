@@ -70,7 +70,9 @@ export function buildRevisaoMarker(cedula: CedulaTexto, now: Date): RevisaoMarke
   return { humanizador: true, clarice: true, em: now.toISOString(), hash: cedulaTextoHash(cedula) };
 }
 
-function isMarker(v: unknown): v is RevisaoMarker {
+/** Valida a forma do marcador `{humanizador, clarice, em, hash}`. Reusado pelo
+ *  guard do post de feed do LinkedIn semanal (#12794). @pure */
+export function isRevisaoMarker(v: unknown): v is RevisaoMarker {
   if (!v || typeof v !== "object") return false;
   const m = v as Record<string, unknown>;
   return (
@@ -101,7 +103,7 @@ export function checkRevisao(
       reason: `ballot.json sem marcador "revisado" — passe Humanizador e Clarice no texto da cédula e rode '${MARCAR_REVISADO_COMMAND}'.`,
     };
   }
-  if (!isMarker(raw)) {
+  if (!isRevisaoMarker(raw)) {
     return {
       ok: false,
       reason:

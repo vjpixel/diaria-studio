@@ -1412,7 +1412,11 @@ export interface BlocksFile {
   vocabulary?: VocabRule[];
   /** Blocos que seguram `FECHO_HOLD_S` depois da última palavra. Default ["fecho"]. */
   holdBlocks?: BlockKey[];
-  /** Duração-alvo da vertical nesta edição, em segundos (#11757); ausente = `VERTICAL_TARGET_S` (85). */
+  /**
+   * Duração-alvo da vertical nesta edição, em segundos de fala (#11757); ausente
+   * = `VERTICAL_TARGET_S` (75, #12694). Só reduz o alvo: acima de 75 o valor é
+   * limitado a 75 com aviso (`effectiveVerticalTargetS`), sem falhar o parse.
+   */
   verticalTargetS?: number;
   /**
    * Título em texto na abertura das verticais (#11756): sobrepõe o título do D1
@@ -2820,10 +2824,71 @@ export function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
-/** `file://localhost/G:/Meu%20Drive/...` (o formato que o Premiere importou na 261027). */
+/** `file://localhost/I:/Meu%20Drive/...` (o formato que o Premiere importou na 261027). */
 export function pathUrl(path: string): string {
   const p = path.replace(/\\/g, "/").replace(/^\/+/, "");
   return "file://localhost/" + p.split("/").map((seg) => encodeURIComponent(seg).replace(/%3A/gi, ":")).join("/");
+}
+
+/**
+ * #12707: a pasta de vídeo como a máquina que abre o XML no Premiere a vê.
+ * `from` = a raiz no Neo (o prefixo de todo caminho do XML: bruto, áudio
+ * tratado, PNG do título, vinheta em `_marca/`, card de CTA); `to` = a mesma
+ * pasta no Mac (`/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu
+ * Drive/diaria-studio-video`, pelo symlink `/Users/Shared/diaria-studio-video`, #12578). Um mapa só para todos os `<file>`: o título e o card
+ * chegavam offline no Mac porque o XML gravava `G:/` para todos e só o bruto
+ * era revinculado à mão.
+ */
+export interface PremierePathMap {
+  from: string;
+  to: string;
+}
+
+function trimRoot(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/** O caminho como o Premiere o abre: sob `from` troca a raiz por `to` (comparação sem caixa, `I:` = `i:`); fora dela, igual. */
+export function premierePath(path: string, map: PremierePathMap | null | undefined): string {
+  const p = path.replace(/\\/g, "/");
+  if (!map) return p;
+  const from = trimRoot(map.from);
+  const to = trimRoot(map.to);
+  if (!from) return p;
+  const lp = p.toLowerCase();
+  const lf = from.toLowerCase();
+  if (lp === lf) return to;
+  if (lp.startsWith(`${lf}/`)) return `${to}${p.slice(from.length)}`;
+  return p;
+}
+
+/** Os caminhos do XML fora de `map.from` (o `premierePath` não os traduz): o build avisa, para nenhum sair com o caminho do Neo em silêncio. */
+export function unmappedPremierePaths(paths: readonly string[], map: PremierePathMap | null | undefined): string[] {
+  if (!map) return [];
+  return [...new Set(paths.filter((p) => premierePath(p, map) === p.replace(/\\/g, "/")))];
+}
+
+/**
+ * `--premiere-root` (vence) ou `publishing.video.premiere_root` do config:
+ * a pasta de vídeo na máquina do Premiere. `off` no flag = o caminho do Neo
+ * mesmo com o config. Precisa ser absoluta (`/…` ou `X:/…`); vazia ou
+ * ausente = sem tradução (o XML de sempre, com o caminho do Neo).
+ */
+export function premiereRootFrom(flag: string | undefined, config: unknown): { root: string | null; how: "flag" | "config" | "off" | "none" } {
+  if (flag !== undefined) {
+    const v = flag.trim();
+    if (v === "off") return { root: null, how: "off" };
+    if (!isAbsoluteRoot(v)) throw new Error(`--premiere-root precisa ser um caminho absoluto (/Users/… no Mac) ou "off" (veio "${flag}") (#12707)`);
+    return { root: trimRoot(v), how: "flag" };
+  }
+  const c = (config as { publishing?: { video?: { premiere_root?: unknown } } })?.publishing?.video?.premiere_root;
+  if (typeof c !== "string" || !c.trim()) return { root: null, how: "none" };
+  if (!isAbsoluteRoot(c.trim())) throw new Error(`publishing.video.premiere_root precisa ser um caminho absoluto (veio "${c}") (#12707)`);
+  return { root: trimRoot(c.trim()), how: "config" };
+}
+
+function isAbsoluteRoot(p: string): boolean {
+  return /^\//.test(p) || /^[A-Za-z]:[\\/]/.test(p);
 }
 
 function baseName(path: string): string {
@@ -3392,10 +3457,18 @@ export function buildXmeml(
      * Ausente (ou sem a chave) = sequência sem card.
      */
     ctaCard?: Readonly<Record<string, CtaCardAsset>> | null;
+    /**
+     * #12707: a raiz do Neo trocada pela da máquina do Premiere em TODO
+     * `pathurl` (bruto, áudio tratado, PNG do título, vinheta, card de CTA).
+     * Ausente = o caminho do Neo (`I:/…`), como sempre.
+     */
+    premierePaths?: PremierePathMap | null;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
   const mediaPath = opts.mediaPath ?? source.path;
+  // #12707: um tradutor só para todo `<pathurl>`, para nenhum `<file>` ficar com a raiz do Neo.
+  const url = (p: string): string => pathUrl(premierePath(p, opts.premierePaths));
   const fps = source.fps;
   const total = Math.round(source.durationS * fps);
   const rate = `<rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>`;
@@ -3415,7 +3488,7 @@ export function buildXmeml(
     const w = multi ? f.width : source.width;
     const h = multi ? f.height : source.height;
     return (
-      `<file id="${id}"><name>${escapeXml(baseName(path))}</name><pathurl>${escapeXml(pathUrl(path))}</pathurl>\n` +
+      `<file id="${id}"><name>${escapeXml(baseName(path))}</name><pathurl>${escapeXml(url(path))}</pathurl>\n` +
       `${rate}<duration>${dur}</duration>\n` +
       `<media><video><samplecharacteristics><width>${w}</width><height>${h}</height></samplecharacteristics></video>\n` +
       `<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio></media></file>`
@@ -3430,7 +3503,7 @@ export function buildXmeml(
     if (audioDefined) return '<file id="file-audio"/>';
     audioDefined = true;
     return (
-      `<file id="file-audio"><name>${escapeXml(baseName(opts.audioPath))}</name><pathurl>${escapeXml(pathUrl(opts.audioPath))}</pathurl>\n` +
+      `<file id="file-audio"><name>${escapeXml(baseName(opts.audioPath))}</name><pathurl>${escapeXml(url(opts.audioPath))}</pathurl>\n` +
       `${rate}<duration>${total}</duration>\n` +
       `<media><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>1</channelcount></audio></media></file>`
     );
@@ -3454,7 +3527,7 @@ export function buildXmeml(
     const fileId = known ?? (pngFileIds.size === 0 ? "file-titulo" : `file-titulo-${pngFileIds.size + 1}`);
     const fileRef = known
       ? `<file id="${fileId}"/>`
-      : `<file id="${fileId}"><name>${escapeXml(baseName(title.pngPath))}</name><pathurl>${escapeXml(pathUrl(title.pngPath))}</pathurl>\n${rate}<duration>${total}</duration>\n` +
+      : `<file id="${fileId}"><name>${escapeXml(baseName(title.pngPath))}</name><pathurl>${escapeXml(url(title.pngPath))}</pathurl>\n${rate}<duration>${total}</duration>\n` +
         `<media><video><samplecharacteristics><width>${plan.spec.width}</width><height>${plan.spec.height}</height></samplecharacteristics></video></media></file>`;
     pngFileIds.set(title.pngPath, fileId);
     return (
@@ -3479,7 +3552,7 @@ export function buildXmeml(
     const fileLen = Math.round(vin.durationS * (vin.fps ?? fps));
     const fileRef = vinhetaDefined
       ? '<file id="file-vinheta"/>'
-      : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(pathUrl(vin.path))}</pathurl>\n${fileRate}<duration>${fileLen}</duration>\n` +
+      : `<file id="file-vinheta"><name>${escapeXml(baseName(vin.path))}</name><pathurl>${escapeXml(url(vin.path))}</pathurl>\n${fileRate}<duration>${fileLen}</duration>\n` +
         `<media><video><samplecharacteristics><width>${vin.width}</width><height>${vin.height}</height></samplecharacteristics></video>` +
         (vin.hasAudio
           ? `\n<audio><samplecharacteristics><depth>16</depth><samplerate>${vin.audioSampleRate ?? 48000}</samplerate></samplecharacteristics><channelcount>${vin.audioChannels ?? 2}</channelcount></audio>`
@@ -3540,7 +3613,7 @@ export function buildXmeml(
       const known = cardFileIds.get(card.xmlPath);
       const fileId = known ?? (cardFileIds.size === 0 ? "file-cta-card" : `file-cta-card-${cardFileIds.size + 1}`);
       cardFileIds.set(card.xmlPath, fileId);
-      v.push(ctaCardClipItem({ asset: card, startFrame: plan.durationFrames, rate, id: `cta-card-${si + 1}`, fileId, fileDefined: known !== undefined, pathurl: pathUrl(card.xmlPath) }));
+      v.push(ctaCardClipItem({ asset: card, startFrame: plan.durationFrames, rate, id: `cta-card-${si + 1}`, fileId, fileDefined: known !== undefined, pathurl: url(card.xmlPath) }));
     }
     const bgTrack = bg.length ? `<track>${bg.join("\n")}</track>` : "";
     const titleTrack = screenTitleTrack(plan, si);
@@ -3942,7 +4015,8 @@ export function cutPoints(plan: SequencePlan, fps: number): number[] {
 
 // ── Autorrevisão da prévia ────────────────────────────────────────────────
 
-export type ReviewKind = "tomada-duplicada" | "silaba-vazada" | "fala-extra" | "fala-faltando" | "final-seco";
+/** `tomada-colapsada` (#12711): palavra esticada sobre som na transcrição do áudio montado (`stretchedWordFindings`). */
+export type ReviewKind = "tomada-duplicada" | "tomada-colapsada" | "silaba-vazada" | "fala-extra" | "fala-faltando" | "final-seco";
 
 export interface ReviewFinding {
   kind: ReviewKind;

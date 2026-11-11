@@ -87,7 +87,9 @@
  * `--track develop`/`fora-de-rodada` que ignora um `decisao-editor` vigente
  * (`detectIgnoredDecision`, seção no fim do arquivo). Desde o #12545, também
  * a razão de `--track bloqueada` que ignora um destravamento de menos de 24 h
- * (`detectIgnoredRecentUnblock`, última seção).
+ * (`detectIgnoredRecentUnblock`). Desde o #12744, a razão de `--track
+ * bloqueada` que contraria o roteamento mais recente, sem janela de tempo
+ * (`detectIgnoredLatestRoute`, última seção).
  *
  * @see scripts/route-issue.ts (routeIssue — chama isto pra `--track agendada`)
  * @see scripts/lib/issue-depends-on.ts (mecanismo certo pra dependência)
@@ -272,19 +274,31 @@ export interface DecisionGuardInput {
   reason: string;
   /** A decisão mais recente da thread (`latestDecisionFor`), ou `null`. */
   decision: { decided_at: string; resposta: string } | null;
+  /** `--motivo` do roteamento. `trade-off` (label `trade-off-real`) devolve a
+   * issue ao briefing sem sair do track `overnight`: é a mesma pergunta ao
+   * editor por outra porta (#12744, caso #12737). */
+  motivo?: string;
 }
+
+/** Motivos que, em qualquer track, põem a issue de volta na fila de perguntas
+ * ao editor. */
+export const DECISION_GUARDED_MOTIVOS: readonly string[] = ["trade-off"];
 
 /**
  * `null` = pode rotear. String = motivo da recusa: há decisão do editor na
  * thread, o track pedido espera o editor e a razão não cita a decisão.
  */
 export function detectIgnoredDecision(input: DecisionGuardInput): string | null {
-  const { track, reason, decision } = input;
-  if (!decision || !DECISION_GUARDED_TRACKS.includes(track)) return null;
+  const { track, reason, decision, motivo } = input;
+  const byMotivo = motivo !== undefined && DECISION_GUARDED_MOTIVOS.includes(motivo);
+  if (!decision || (!DECISION_GUARDED_TRACKS.includes(track) && !byMotivo)) return null;
   if (reasonAcknowledgesDecision(reason)) return null;
+  const what = byMotivo && !DECISION_GUARDED_TRACKS.includes(track)
+    ? `--track ${track} --motivo ${motivo}`
+    : `--track ${track}`;
   return (
     `a issue tem decisão do editor registrada em ${decision.decided_at.slice(0, 10)} ` +
-    `(resposta: "${decision.resposta}") e --track ${track} devolve a issue ao editor sem citá-la. ` +
+    `(resposta: "${decision.resposta}") e ${what} devolve a issue ao editor sem citá-la. ` +
     `Releia a decisão: se ela resolve o que a razão pede, roteie para overnight; se ainda falta algo ` +
     `depois dela, diga isso na razão ("decisão do editor de DD/MM já registrada; ainda exige ...") ` +
     `ou use --override-decision "motivo" (#12389, #5373).`
@@ -385,5 +399,59 @@ export function detectIgnoredRecentUnblock(input: RecentUnblockInput): string | 
     `--track bloqueada a devolve ao editor sem citar isso. Releia a thread inteira, não só o corpo: ` +
     `se o bloqueio caiu, siga no track ${latestTrack}; se ele voltou, diga na razão ("destravada em DD/MM, ` +
     `mas ainda ...") ou use --override-unblock "motivo" (#12545).`
+  );
+}
+
+// ─── Roteamento mais recente contrariado (#12744) ──────────────────────────
+//
+// O #12545 só segura o `bloqueada` dentro de 24 h de um destravamento. A
+// #12348 foi roteada para `overnight` pelo /diaria-desbloqueia em 09/11
+// 14:42Z (probe 200) e devolvida a `bloqueada` em 10/11 18:46Z, 28 h depois,
+// pela rodada 261110d, com a razão do CORPO ("token Meta sem permissao
+// instagram_manage_insights") — fora da janela, o guard deixou passar. Na
+// mesma rodada #12120, #12477 e #12578 foram devolvidas do mesmo jeito.
+//
+// Regra: `--track bloqueada` é recusado sempre que o roteamento confiável
+// mais recente da thread é de OUTRO track (sem janela de tempo), a menos que
+// a razão cite esse roteamento ("roteada para overnight em 09/11, mas o probe
+// de hoje dá 403") ou o destravamento (`reasonAcknowledgesUnblock`).
+// `--override-reroute "motivo"` sobrepõe. Mesma limitação de regex das
+// seções acima: a razão que cita o roteamento não prova que a sessão leu a
+// thread, mas a que o ignora por completo — o caso medido — não passa mais.
+
+/** A razão cita o roteamento anterior: "roteada/roteado/roteamento" seguido,
+ * em até 4 palavras, do track dele, de uma data ou de "anterior/mais
+ * recente"; ou o nome do marcador (`route-issue`). */
+export function reasonAcknowledgesRoute(reason: string, previousTrack: string): boolean {
+  if (reasonAcknowledgesUnblock(reason) || /route-issue/i.test(reason)) return true;
+  const escaped = previousTrack.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(
+    String.raw`rote(?:ad[ao]s?|amento)(?:\s+\S+){0,4}?\s+(?:${escaped}(?![\p{L}\p{N}-])|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2}|anterior|mais\s+recente)`,
+    "iu",
+  );
+  return re.test(reason);
+}
+
+/**
+ * `null` = pode rotear. String = motivo da recusa: o roteamento confiável mais
+ * recente é de outro track e a razão do `bloqueada` não o cita. Comentário
+ * sem `createdAt` legível fica de fora, como no #12545 (o #11301 cobre).
+ */
+export function detectIgnoredLatestRoute(input: Omit<RecentUnblockInput, "now">): string | null {
+  const { track, reason, comments, parseTrack } = input;
+  if (track !== "bloqueada") return null;
+  const routes = comments
+    .map((c) => ({ ...c, ms: Date.parse(c.createdAt ?? ""), routed: parseTrack(c.body) }))
+    .filter((c) => Number.isFinite(c.ms) && c.routed !== null)
+    .sort((a, b) => a.ms - b.ms);
+  const latest = routes[routes.length - 1];
+  if (!latest || latest.routed === "bloqueada") return null;
+  const previousTrack = latest.routed as string;
+  if (reasonAcknowledgesRoute(reason, previousTrack)) return null;
+  return (
+    `o roteamento mais recente da thread é para ${previousTrack} (${latest.createdAt}) e --track bloqueada ` +
+    `o contraria sem citá-lo. Releia o corpo E todos os comentários: se o que esse roteamento registrou ainda ` +
+    `vale, siga no track ${previousTrack}; se não vale mais, diga na razão qual roteamento e por quê ` +
+    `("roteada para ${previousTrack} em DD/MM, mas ...") ou use --override-reroute "motivo" (#12744).`
   );
 }

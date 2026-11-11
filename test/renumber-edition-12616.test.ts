@@ -229,6 +229,8 @@ describe("#12662 borda alfanumérica e edição já agendada", () => {
 
   it("REGRESSÃO: post social agendado na fila do Worker entra no aviso, com a key pro reagendamento", () => {
     put("_internal/newsletter-kit-published.json", '{"broadcast_id":10,"status":"draft"}');
+    // #12720 — semanal agendada também entra no aviso; aqui ela está fora da agenda.
+    put("_internal/kit-semanal-frio-published.json", '{"broadcast_id":11,"status":"created_unverified"}');
     put(
       "_internal/06-social-published.json",
       JSON.stringify({
@@ -257,6 +259,7 @@ describe("#12662 borda alfanumérica e edição já agendada", () => {
 
   it("sem nada agendado, --run-remote segue sem aviso", () => {
     put("_internal/newsletter-kit-published.json", '{"broadcast_id":10,"status":"draft"}');
+    put("_internal/kit-semanal-frio-published.json", '{"broadcast_id":11,"status":"created_unverified"}');
     const d = cliDeps();
     assert.equal(runRenumberEdition({ from: FROM, to: TO, apply: true, runRemote: true }, d), 0);
     assert.doesNotMatch(d.logs.join("\n"), /ATENÇÃO/);

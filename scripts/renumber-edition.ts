@@ -53,17 +53,58 @@
  * fila do Worker os posts `scheduled` com `worker_queue_key` (Instagram,
  * Threads, LinkedIn) e tira o `send_at` do broadcast do Kit (relido). O
  * estado local passa a `deleted`/`draft`, e a Etapa 5/6 na pasta nova
- * reagenda com o dia e o texto novos (a semanal de frio acompanha o
- * principal desagendado no passo `kit-semanal-frio`). Buffer (X) e Brevo
- * seguem manuais e continuam no aviso acima. Item que falhou ⇒ exit 1, nada
- * renumerado; 404 no Worker (post pode ter disparado) mantém o aviso e a
- * exigência de `--ack-scheduled`.
+ * reagenda com o dia e o texto novos. A semanal de frio agendada é
+ * desagendada antes do principal (#12720), e volta junto com ele na Etapa 6
+ * da pasta nova, mesmo que a edição tenha deixado de ser de segunda (#12725).
+ * Buffer (X) e Brevo seguem manuais e continuam no aviso acima. Item que
+ * falhou ⇒ exit 1, nada renumerado; 404 no Worker (post pode ter disparado)
+ * mantém o aviso e a exigência de `--ack-scheduled`. As recusas de
+ * `--video-dir` inválido e de `--run-remote` sem `--ack-scheduled` com item
+ * manual agendado vêm ANTES de qualquer desagendamento (#12721).
+ *
+ * Stores globais depois do `mv` (#12719): falha ao mover a pasta deixa os
+ * stores intactos (rodar de novo é execução nova); falha num store depois do
+ * `mv` fica em `global_stores_pending` no relatório e a retomada termina. A
+ * retomada recusa (exit 2, nada escrito no store) se o store pendente ganhou
+ * entrada do ID novo ou se as entradas do ID antigo mudaram desde a tentativa
+ * anterior (impressão digital no relatório, #12726).
+ *
+ * Falha no principal depois de a semanal de frio sair da agenda (#12727): o
+ * `failed` do principal diz que a semanal ficou `created_unverified` e dá o
+ * comando que a reagenda se a troca for abandonada.
+ *
+ * #12803: semanal `created_unverified` herdada (pode estar agendada no Kit)
+ * passa pelo mesmo desagendamento confirmado que a `scheduled`. Forense já
+ * existente, colisão de nome e `edition-lock` vivo recusam o `--unschedule`
+ * antes de qualquer efeito (exit 2). Na retomada, só o que está agendado no
+ * dia antigo (BRT) é desagendado ou avisado: o agendado para outro dia é a
+ * agenda da pasta nova e fica (`kept`); horário ilegível falha sem tocar.
+ *
+ * ## Vídeo (#12713)
+ *
+ * Origem só com o vídeo (`_internal/video-montagem/` e `diaria-comentada-{de}*`
+ * na raiz) e destino já existente — o caso de quando a montagem rodou com o
+ * AAMMDD errado: em vez de recusar, move só o vídeo pra edição de destino,
+ * com a mesma troca de ID no conteúdo (o `"edition"` do `blocks.json`, que o
+ * `build` confere, e os caminhos `YouTube/{de}/{de}_…` em `source.json`,
+ * `plan.json`, `audio-tratado.meta.json`) e nos nomes. Recusa se a origem tem
+ * qualquer outra coisa ou se o destino já tem vídeo. Sem passo remoto (a
+ * edição de destino é outra); relatório em
+ * `{destino}/_internal/video-montagem/renumber-video.json`.
+ *
+ * `--video-dir PASTA` (nos dois modos): a pasta `YouTube/{de}` pelo caminho
+ * local (Drive montado). Troca o ID nos nomes (`{de}_audio_tratado-*.wav`,
+ * `{de}_titulo_vertical*.png`, `{de} - previa *.mp4`) e no conteúdo dos XMLs
+ * (`pathurl`), SRT e JSON, com a mesma borda (o bruto `20261112_*.mp4` fica).
+ * A pasta em si não é renomeada — continua na lista "fica fora", junto com o
+ * Doc do roteiro e o cache local do vídeo.
  *
  * Exit: 0 ok; 1 passo remoto falhou, desagendamento falhou ou erro na parte
  * local; 2 argumento ou precondição (destino existe, origem ausente, agendado
  * sem `--ack-scheduled`).
  */
 import { spawnSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -74,21 +115,32 @@ import { updateBroadcast } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
 import {
   buildRemoteSteps,
+  completePendingGlobalStores,
   detectScheduledSends,
+  GlobalStoreRefusalError,
+  pendingGlobalStoresRefusal,
   globalStoresRefusal,
   leftOutItems,
   liveEditionLock,
+  localRenumberRefusal,
+  scheduledOnOldDate,
   mergeStepStates,
   scanGlobalStores,
   planRenumber,
   readRenumberReport,
   renumberLocal,
   scanLocal,
+  scanVideoMerge,
+  scanVideoOutDir,
+  applyVideoOutDir,
+  planVideoMerge,
+  renumberVideoMerge,
   writeRenumberReport,
   unscheduleSends,
   type RemoteStep,
   type RemoteStepState,
   type UnscheduleDeps,
+  type VideoMergePlan,
 } from "./lib/renumber-edition.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -108,6 +160,8 @@ export interface RenumberCliOptions {
   runRemote: boolean;
   /** #12662 — quem chama já reagendou (ou vai reagendar) o que estava agendado. */
   ackScheduled?: boolean;
+  /** #12713 — pasta local `YouTube/{AAMMDD}` do vídeo (Drive montado): troca nomes e XMLs dentro dela. */
+  videoDir?: string;
 }
 
 export function formatStep(s: RemoteStep): string {
@@ -120,35 +174,193 @@ export function formatStep(s: RemoteStep): string {
  * renumerado); o código do `planRenumber` se a precondição falhar.
  */
 export async function runUnschedule(
-  opts: { from: string; to: string },
+  opts: { from: string; to: string; runRemote?: boolean; ackScheduled?: boolean; videoDir?: string },
   deps: { root: string; log: (msg: string) => void; unschedule: UnscheduleDeps },
 ): Promise<number> {
+  // #12721 — as recusas que o `runRenumberEdition` faria DEPOIS vêm antes de
+  // qualquer efeito externo: senão o Kit vira rascunho e os posts saem da fila
+  // do Worker, e a troca em seguida recusa com exit 2 (nada renumerado).
+  const videoDirError = videoDirRefusal(deps.root, opts.videoDir);
+  if (videoDirError) {
+    deps.log(`ERRO: ${videoDirError}`);
+    return 2;
+  }
   const plan = planRenumber(deps.root, opts.from, opts.to);
   if (!plan.ok) {
+    // #12713 — origem só de vídeo: nada agendado nela, segue pra mescla.
+    if (planVideoMerge(deps.root, opts.from, opts.to).ok) {
+      deps.log("--unschedule: origem só tem vídeo, nada a desagendar.");
+      return 0;
+    }
     deps.log(`ERRO: ${plan.reason}`);
     return plan.code;
   }
-  // #12691 — a troca seria recusada depois: não desagendar nada à toa.
-  const refusal = plan.resume ? null : globalStoresRefusal(scanGlobalStores(deps.root, opts.from, opts.to), opts.to);
+  // #12691 — a troca seria recusada depois: não desagendar nada à toa. Na
+  // retomada, a recusa dos stores pendentes (#12726).
+  const priorReport = plan.resume ? readRenumberReport(plan.toDir) : null;
+  const refusal = plan.resume
+    ? priorReport
+      ? pendingGlobalStoresRefusal(deps.root, priorReport)
+      : null
+    : globalStoresRefusal(scanGlobalStores(deps.root, opts.from, opts.to), opts.to);
   if (refusal) {
     deps.log(`ERRO: ${refusal}`);
     return 2;
   }
-  const outcomes = await unscheduleSends(plan.resume ? plan.toDir : plan.fromDir, deps.unschedule);
+  // #12803 — demais recusas da parte local (forense já existente, colisão de
+  // nome), conferidas antes de qualquer efeito externo, como as de cima.
+  if (!plan.resume) {
+    const localRefusal = localRenumberRefusal(deps.root, plan.fromDir, opts.from, opts.to);
+    if (localRefusal) {
+      deps.log(`ERRO: ${localRefusal} Nada desagendado.`);
+      return 2;
+    }
+  }
+  const stateDir = plan.resume ? plan.toDir : plan.fromDir;
+  // #12803 — trava viva de outra sessão (Stage 5/6 rodando nesta edição):
+  // desagendar debaixo dela tira a agenda que ela está montando. Recusa; sem
+  // o `--unschedule` a troca segue só com o aviso de sempre.
+  const lock = liveEditionLock(stateDir, Date.parse(deps.unschedule.nowIso()));
+  if (lock) {
+    deps.log(
+      `ERRO: edition-lock vivo em ${relative(deps.root, stateDir)} (sessão ${lock.session_id}, host ${lock.host || "?"}, Stage ${lock.stage}, ` +
+        `heartbeat ${lock.heartbeat_at}): --unschedule recusado, nada desagendado. Encerrar a outra sessão (ou esperar a trava expirar) e repetir.`,
+    );
+    return 2;
+  }
+  // #12803 — na retomada, a pasta nova pode já ter a agenda da edição NOVA
+  // (Etapa 6 rodada depois da falha): só o que está no dia antigo é desagendado.
+  const onlyOld = (s: { scheduled_at: string | null }) => !plan.resume || scheduledOnOldDate(s.scheduled_at, opts.from);
+  // #12721 — o que o `--unschedule` não tira da agenda (Brevo, Buffer/X)
+  // continua no aviso, e o `--run-remote` seria recusado sem --ack-scheduled.
+  if (opts.runRemote && !opts.ackScheduled) {
+    const manual = detectScheduledSends(stateDir, editionDir(opts.to)).filter((s) => !s.auto_unschedule && onlyOld(s));
+    if (manual.length > 0) {
+      for (const s of manual) deps.log(`  ${s.what} @ ${s.scheduled_at ?? "?"} → ${s.reschedule}`);
+      deps.log(
+        `ERRO: ${manual.length} item(ns) agendado(s) acima ficam agendados depois do --unschedule (sem caminho automático): ` +
+          "--run-remote seria recusado. Nada desagendado. Reagende-os e repita com --ack-scheduled (ou rode sem --run-remote).",
+      );
+      return 2;
+    }
+  }
+  const outcomes = await unscheduleSends(stateDir, deps.unschedule, plan.resume ? { onlyScheduledOn: opts.from } : {});
   if (outcomes.length === 0) deps.log("--unschedule: nada agendado.");
   for (const o of outcomes) deps.log(`--unschedule [${o.result}] ${o.what}: ${o.detail}`);
   if (outcomes.some((o) => o.result === "failed")) {
-    deps.log("ERRO: desagendamento incompleto — nada renumerado. Corrigir e repetir o mesmo comando (o que já saiu não é refeito).");
+    deps.log(
+      plan.resume
+        ? "ERRO: desagendamento incompleto — retomada parada antes dos passos remotos. Corrigir e repetir o mesmo comando (o que já saiu não é refeito)."
+        : "ERRO: desagendamento incompleto — nada renumerado. Corrigir e repetir o mesmo comando (o que já saiu não é refeito).",
+    );
     return 1;
   }
   return 0;
 }
 
+/**
+ * #12713 — `--video-dir`: a pasta `YouTube/{AAMMDD}` do vídeo, pelo caminho
+ * local (Drive montado). Dry-run lista; `apply` troca. Devolve `null` se ok,
+ * senão o exit code. `done` diz se os arquivos de dentro ficaram resolvidos.
+ */
+function handleVideoDir(opts: RenumberCliOptions, deps: RenumberCliDeps, apply: boolean): { code: number | null; done: boolean } {
+  if (!opts.videoDir) return { code: null, done: false };
+  const dir = resolve(deps.root, opts.videoDir);
+  const tag = apply ? "" : "[dry-run] ";
+  try {
+    const scan = apply ? applyVideoOutDir(dir, opts.from, opts.to) : scanVideoOutDir(dir, opts.from, opts.to);
+    const trocas = scan.rewritten.reduce((n, f) => n + f.count, 0);
+    deps.log(
+      apply
+        ? `--video-dir ${dir}: ${scan.rewritten.length} arquivo(s) reescrito(s) (${trocas} troca(s)), ${scan.renames.length} renomeado(s).`
+        : `${tag}--video-dir ${dir}: reescreveria ${scan.rewritten.length} arquivo(s) (${trocas} troca(s)).`,
+    );
+    for (const r of scan.renames) deps.log(`${tag}--video-dir ${apply ? "renomeado" : "renomearia"} ${r.from} → ${r.to}`);
+    return { code: null, done: apply };
+  } catch (e) {
+    deps.log(`ERRO no --video-dir: ${(e as Error).message}`);
+    return { code: 1, done: false };
+  }
+}
+
+/** #12713 — a origem só tem o vídeo e o destino já existe: mescla só o vídeo. */
+function runVideoMerge(
+  opts: RenumberCliOptions,
+  deps: RenumberCliDeps,
+  vm: Extract<VideoMergePlan, { ok: true }>,
+): number {
+  const printLeftOut = (prefix: string, videoDirDone: boolean) => {
+    deps.log(`${prefix}fica fora (à mão, depois da troca):`);
+    for (const item of leftOutItems(opts.from, opts.to, { videoDirDone })) deps.log(`  - ${item}`);
+  };
+  const toRel = relative(deps.root, vm.toDir);
+  if (vm.done) {
+    deps.log(`mescla do vídeo ${opts.from} → ${opts.to} já feita (${toRel}/_internal/video-montagem/renumber-video.json).`);
+    if (!opts.apply) {
+      const v = handleVideoDir(opts, deps, false);
+      printLeftOut("[dry-run] ", false);
+      return v.code ?? 0;
+    }
+    const v = handleVideoDir(opts, deps, true);
+    printLeftOut("", v.done);
+    return v.code ?? 0;
+  }
+  const lock = liveEditionLock(vm.fromDir, Date.parse(deps.nowIso()));
+  if (lock) {
+    deps.log(
+      `ATENÇÃO: edition-lock vivo em ${relative(deps.root, vm.fromDir)} (sessão ${lock.session_id}, host ${lock.host || "?"}, Stage ${lock.stage}). ` +
+        "Se uma montagem está rodando nessa pasta, encerrá-la antes.",
+    );
+  }
+  const note = `origem ${relative(deps.root, vm.fromDir)} só tem vídeo e ${toRel} já existe: mescla só o vídeo (#12713), sem passo remoto (a edição ${opts.to} é outra).`;
+  if (!opts.apply) {
+    const scan = scanVideoMerge(vm, opts.from, opts.to);
+    deps.log(`[dry-run] ${note}`);
+    for (const m of scan.moved) deps.log(`[dry-run] moveria ${m.from} → ${toRel}/${m.to}`);
+    deps.log(`[dry-run] reescreveria ${scan.rewritten.length} arquivo(s) (${scan.rewritten.reduce((n, f) => n + f.count, 0)} troca(s)).`);
+    for (const r of scan.renames) deps.log(`[dry-run] renomearia ${r.from} → ${r.to}`);
+    const v = handleVideoDir(opts, deps, false);
+    printLeftOut("[dry-run] ", false);
+    return v.code ?? 0;
+  }
+  let report;
+  try {
+    report = renumberVideoMerge(deps.root, opts.from, opts.to, deps.nowIso());
+  } catch (e) {
+    deps.log(`ERRO na mescla do vídeo: ${(e as Error).message}`);
+    return 1;
+  }
+  deps.log(note);
+  deps.log(
+    `${report.from_dir} → ${report.to_dir}: ${report.moved.length} item(ns) movido(s), ${report.rewritten_files.length} arquivo(s) reescrito(s), ` +
+      `${report.renamed_paths.length} renomeado(s)${report.removed_from_dir ? `; ${report.from_dir} removida (vazia)` : ""}.`,
+  );
+  const v = handleVideoDir(opts, deps, true);
+  printLeftOut("", v.done);
+  return v.code ?? 0;
+}
+
+/** `--video-dir` inexistente ou que não é pasta ⇒ motivo da recusa (exit 2); `null` = ok ou ausente. */
+export function videoDirRefusal(root: string, videoDir: string | undefined): string | null {
+  if (!videoDir) return null;
+  const dir = resolve(root, videoDir);
+  return existsSync(dir) && statSync(dir).isDirectory() ? null : `--video-dir ${dir} não existe ou não é pasta.`;
+}
+
 export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDeps): number {
   const { root, log } = deps;
+  const videoDirError = videoDirRefusal(root, opts.videoDir);
+  if (videoDirError) {
+    log(`ERRO: ${videoDirError}`);
+    return 2;
+  }
   const plan = planRenumber(root, opts.from, opts.to);
   if (!plan.ok) {
+    // #12713 — destino existente com origem só de vídeo: mescla só o vídeo.
+    const vm = planVideoMerge(root, opts.from, opts.to);
+    if (vm.ok) return runVideoMerge(opts, deps, vm);
     log(`ERRO: ${plan.reason}`);
+    if (vm.reason) log(`ERRO (mescla do vídeo, #12713): ${vm.reason}`);
     return plan.code;
   }
   const newDirRel = editionDir(opts.to);
@@ -169,13 +381,17 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
     log(`ERRO: ${globalRefusal}`);
     return 2;
   }
-  const printLeftOut = (prefix: string) => {
+  const printLeftOut = (prefix: string, videoDirDone = false) => {
     log(`${prefix}fica fora (à mão, depois da troca):`);
-    for (const item of leftOutItems(opts.from, opts.to)) log(`  - ${item}`);
+    for (const item of leftOutItems(opts.from, opts.to, { videoDirDone })) log(`  - ${item}`);
   };
 
   // #12662 — envio/post já agendado sai no dia antigo: nenhum passo o move.
-  const scheduled = detectScheduledSends(plan.resume ? plan.toDir : plan.fromDir, newDirRel);
+  // #12803 — na retomada, o que já está agendado para outro dia é a agenda
+  // nova (Etapa 6 na pasta nova), não o envio antigo: fica fora do aviso.
+  const scheduled = detectScheduledSends(plan.resume ? plan.toDir : plan.fromDir, newDirRel).filter(
+    (s) => !plan.resume || scheduledOnOldDate(s.scheduled_at, opts.from),
+  );
   if (scheduled.length > 0) {
     log(`ATENÇÃO: ${scheduled.length} envio(s)/post(s) já AGENDADO(S) com o horário de ${opts.from} — a renumeração não move o horário:`);
     for (const s of scheduled) log(`  ${s.what} @ ${s.scheduled_at ?? "?"} → reagendar: ${s.reschedule}`);
@@ -188,6 +404,13 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
   if (!opts.apply) {
     if (plan.resume) {
       log(`[dry-run] parte local já feita (${relative(root, plan.toDir)} tem o relatório de ${opts.from} → ${opts.to}).`);
+      const prior = readRenumberReport(plan.toDir);
+      for (const p of prior?.global_stores_pending ?? []) {
+        log(`[dry-run] store global pendente da tentativa anterior: ${p} (o --apply termina).`);
+      }
+      // #12726 — o --apply recusaria a retomada (exit 2): avisar já no dry-run.
+      const pendingRefusal = prior ? pendingGlobalStoresRefusal(root, prior) : null;
+      if (pendingRefusal) log(`[dry-run] ERRO: o --apply recusaria: ${pendingRefusal}`);
     } else {
       const scan = scanLocal(plan.fromDir, opts.from, opts.to);
       log(`[dry-run] moveria ${relative(root, plan.fromDir)} → ${newDirRel}.`);
@@ -204,8 +427,9 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
     }));
     log("[dry-run] passos remotos depois do --apply:");
     for (const s of steps) log(`  ${formatStep(s)}   # ${s.why}`);
+    const v = handleVideoDir(opts, deps, false);
     printLeftOut("[dry-run] ");
-    return 0;
+    return v.code ?? 0;
   }
 
   let report = plan.resume ? readRenumberReport(plan.toDir) : null;
@@ -221,10 +445,28 @@ export function runRenumberEdition(opts: RenumberCliOptions, deps: RenumberCliDe
         `${report.renamed_paths.length} renomeado(s), ${report.preserved_img_refs} img-${opts.from}-… preservado(s).`,
     );
     for (const g of report.global_stores ?? []) log(`${g.path}: ${g.count} entrada(s) de ${opts.from} → ${opts.to}.`);
-    printLeftOut("");
   } else {
     log(`retomando: parte local já feita em ${newDirRel}.`);
+    // #12719 — store global que ficou pendente na tentativa anterior.
+    if (report && (report.global_stores_pending ?? []).length > 0) {
+      try {
+        const before = new Set((report.global_stores ?? []).map((g) => g.path));
+        report = completePendingGlobalStores(root, plan.toDir, report);
+        for (const g of report.global_stores ?? []) {
+          if (!before.has(g.path)) log(`${g.path}: ${g.count} entrada(s) de ${opts.from} → ${opts.to} (pendente da tentativa anterior).`);
+        }
+      } catch (e) {
+        log(`ERRO nos stores globais pendentes: ${(e as Error).message}`);
+        // #12726 — store mudado desde a tentativa anterior: precondição, não falha transitória.
+        return e instanceof GlobalStoreRefusalError ? 2 : 1;
+      }
+    }
   }
+  // #12713 — a pasta do vídeo no Drive montado, depois da parte local (falha
+  // aqui não desfaz a troca; rodar de novo retoma e repete só o --video-dir).
+  const videoDir = handleVideoDir(opts, deps, true);
+  if (!plan.resume) printLeftOut("", videoDir.done);
+  if (videoDir.code !== null) return videoDir.code;
   if (!report) {
     log("ERRO: relatório da renumeração ilegível.");
     return 1;
@@ -293,16 +535,18 @@ async function main(): Promise<void> {
   const log = (msg: string) => process.stderr.write(`[renumber-edition] ${msg}\n`);
   let from: string | undefined;
   let to: string | undefined;
+  let videoDir: string | undefined;
   try {
     from = getStringArg(argv, "from");
     to = getStringArg(argv, "to");
+    videoDir = getStringArg(argv, "video-dir");
   } catch (e) {
     log(`ERRO: ${(e as Error).message}`);
     process.exitCode = 2;
     return;
   }
   if (!from || !to) {
-    log("uso: npx tsx scripts/renumber-edition.ts --from AAMMDD --to AAMMDD [--apply] [--unschedule] [--run-remote] [--ack-scheduled]");
+    log("uso: npx tsx scripts/renumber-edition.ts --from AAMMDD --to AAMMDD [--apply] [--unschedule] [--run-remote] [--ack-scheduled] [--video-dir PASTA]");
     process.exitCode = 2;
     return;
   }
@@ -318,14 +562,17 @@ async function main(): Promise<void> {
       return;
     }
     loadProjectEnv(ROOT);
-    const code = await runUnschedule({ from, to }, { root: ROOT, log, unschedule: productionUnscheduleDeps() });
+    const code = await runUnschedule(
+      { from, to, runRemote: hasFlag(argv, "run-remote"), ackScheduled: hasFlag(argv, "ack-scheduled"), videoDir },
+      { root: ROOT, log, unschedule: productionUnscheduleDeps() },
+    );
     if (code !== 0) {
       process.exitCode = code;
       return;
     }
   }
   process.exitCode = runRenumberEdition(
-    { from, to, apply: hasFlag(argv, "apply"), runRemote: hasFlag(argv, "run-remote"), ackScheduled: hasFlag(argv, "ack-scheduled") },
+    { from, to, apply: hasFlag(argv, "apply"), runRemote: hasFlag(argv, "run-remote"), ackScheduled: hasFlag(argv, "ack-scheduled"), videoDir },
     {
       root: ROOT,
       log,

@@ -14,12 +14,16 @@
  * depois (delta entre dias), nunca um "ganho bruto" do dia. Só exige os
  * escopos que o token atual já tem (`instagram_basic`, `pages_read_engagement`).
  *
- * Fase 2 (fora de escopo aqui): métrica `follower_count` do IG Insights
- * (bruto, 30 dias retroativos) e `page_daily_follows_unique` do FB exigem
- * `instagram_manage_insights`/`read_insights`, que o token atual NÃO tem —
- * confirmado ao vivo na issue (`(#10) Application does not have permission
- * for this action`). Gerar um token novo com esses escopos é ação manual do
- * editor (System User no Business Manager) — não implementado aqui.
+ * Fase 2, só Instagram (#12348): `collectInstagramGrossFollows` lê a métrica
+ * `follower_count` do IG Insights (novos seguidores BRUTOS por dia, 30 dias
+ * para trás) e anexa os dias completos em `data/metrics/instagram-follows-daily.jsonl`
+ * (núcleo puro em `lib/instagram-follower-insights.ts`). Exige
+ * `instagram_manage_insights`/`read_insights` no `INSTAGRAM_ACCESS_TOKEN`
+ * (instalado em 07/11/2026, probe 200 em 10/11). Sem o escopo, a API volta
+ * `(#10)` e o script imprime o diagnóstico; a coleta de `followers_count`
+ * (o saldo líquido, fallback) roda igual, independente dela. O Facebook
+ * (`page_daily_follows_unique`) segue fora: as métricas voltaram `data: []`
+ * na v25.0 (#8260).
  *
  * ## Guard de publicação/plataforma (#8260, dispatch overnight)
  *
@@ -51,6 +55,16 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
 import { DEFAULT_FACEBOOK_PAGE_SLUG, loadFacebookPagesConfig, resolveFacebookPages } from "./lib/facebook-pages.ts"; // #10458
+import {
+  daysToAppend,
+  diagnoseInsightsError,
+  IG_FOLLOWS_DAILY_PATH,
+  pacificDate,
+  parseFollowerCountInsights,
+  parseInstagramFollowsJsonl,
+  serializeInstagramFollowsDay,
+  type InsightsError,
+} from "./lib/instagram-follower-insights.ts"; // #12348
 import {
   followerSamplePage,
   parseSocialFollowersJsonl,
@@ -210,12 +224,95 @@ export async function collectSocialFollowers(opts: CollectOptions = {}): Promise
   return results;
 }
 
+export interface GrossFollowsResult {
+  /** Dias anexados nesta execução (novos ou revisados pela Meta). */
+  appended: number;
+  /** Dias completos que a API devolveu. */
+  fetchedDays: number;
+  error: InsightsError | null;
+}
+
+export interface GrossFollowsOptions {
+  now?: () => Date;
+  outputPath?: string;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+}
+
+/** Janela pedida à API: a Meta só guarda `follower_count` dos últimos 30 dias. */
+const INSIGHTS_WINDOW_DAYS = 29;
+
+/**
+ * #12348 — série bruta de novos seguidores do IG via Insights
+ * (`metric=follower_count&period=day`). Uma chamada por execução cobre os
+ * últimos ~30 dias: a 1ª execução faz o backfill e as seguintes anexam só os
+ * dias novos ou revisados. Nunca lança; falha volta em `error` com o
+ * diagnóstico (`kind: "permission"` para o `(#10)` de escopo faltando).
+ */
+export async function collectInstagramGrossFollows(opts: GrossFollowsOptions = {}): Promise<GrossFollowsResult> {
+  const now = (opts.now ?? (() => new Date()))();
+  const env = opts.env ?? (process.env as Record<string, string | undefined>);
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const outputPath = resolve(process.cwd(), opts.outputPath ?? IG_FOLLOWS_DAILY_PATH);
+  const igId = env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
+  const token = env.INSTAGRAM_ACCESS_TOKEN;
+  if (!igId || !token) {
+    return {
+      appended: 0,
+      fetchedDays: 0,
+      error: { kind: "missing", message: "credencial ausente (INSTAGRAM_BUSINESS_ACCOUNT_ID, INSTAGRAM_ACCESS_TOKEN)" },
+    };
+  }
+  const until = Math.floor(now.getTime() / 1000);
+  const since = until - INSIGHTS_WINDOW_DAYS * 86400;
+  // Token no header, nunca na query string (#7779).
+  const url = `${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${igId}/insights?metric=follower_count&period=day&since=${since}&until=${until}`;
+  let body: unknown;
+  try {
+    const res = await fetchImpl(url, { headers: { Authorization: `Bearer ${token}` } });
+    body = await res.json().catch(() => null);
+    if (!res.ok) return { appended: 0, fetchedDays: 0, error: diagnoseInsightsError(res.status, body) };
+  } catch (e) {
+    return { appended: 0, fetchedDays: 0, error: { kind: "http", message: `falha de rede: ${(e as Error).message}` } };
+  }
+  const parsed = parseFollowerCountInsights(body, pacificDate(now));
+  if ("error" in parsed) return { appended: 0, fetchedDays: 0, error: parsed.error };
+
+  let existing: ReturnType<typeof parseInstagramFollowsJsonl>["days"] = [];
+  if (existsSync(outputPath)) {
+    try {
+      existing = parseInstagramFollowsJsonl(readFileSync(outputPath, "utf8")).days;
+    } catch (e) {
+      return { appended: 0, fetchedDays: parsed.days.length, error: { kind: "shape", message: `falha ao ler a série: ${(e as Error).message}` } };
+    }
+  }
+  const toAppend = daysToAppend(existing, parsed.days);
+  if (toAppend.length > 0) {
+    try {
+      ensureDir(outputPath);
+      const collectedAt = now.toISOString();
+      appendFileSync(outputPath, toAppend.map((d) => serializeInstagramFollowsDay(d, collectedAt) + "\n").join(""), "utf8");
+    } catch (e) {
+      return { appended: 0, fetchedDays: parsed.days.length, error: { kind: "shape", message: `falha ao gravar: ${(e as Error).message}` } };
+    }
+  }
+  return { appended: toAppend.length, fetchedDays: parsed.days.length, error: null };
+}
+
 const label = (r: CollectResult): string =>
   r.page && r.page !== DEFAULT_FACEBOOK_PAGE_SLUG ? `${r.platform}[${r.page}]` : r.platform;
 
 async function main(): Promise<void> {
   const results = await collectSocialFollowers();
   let hadError = false;
+  // #12348: bruto do IG, independente do saldo líquido acima (que é o fallback).
+  const gross = await collectInstagramGrossFollows();
+  if (gross.error) {
+    hadError = true;
+    console.error(`ERRO instagram[insights ${gross.error.kind}]: ${gross.error.message}`);
+  } else {
+    console.log(`OK instagram[insights]: ${gross.fetchedDays} dias completos lidos, ${gross.appended} anexados em ${IG_FOLLOWS_DAILY_PATH}`);
+  }
   for (const r of results) {
     if (r.error) {
       hadError = true;

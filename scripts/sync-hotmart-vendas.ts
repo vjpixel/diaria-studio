@@ -232,7 +232,7 @@ async function main(): Promise<number> {
   // não prova nada (o runner a cria para o log): checa o sentinela.
   if (!outArg && !dataMontado(ROOT)) {
     console.error(
-      `sync-hotmart-vendas: data/${SENTINELA_DATA_REL_PATH} não existe (junction do OneDrive não montada?); ` +
+      `sync-hotmart-vendas: data/${SENTINELA_DATA_REL_PATH} não existe (link data/ não montado?); ` +
         "abortando sem gravar. Use --out para outro destino.",
     );
     return EXIT_CONFIG;

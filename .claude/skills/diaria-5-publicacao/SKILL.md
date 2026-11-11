@@ -136,7 +136,7 @@ threads, twitter, brevo, youtube).
 
 ## Passo 0b — Pré-requisito: link do vídeo no D1 (#10943, gate desde #12588)
 
-Ordem obrigatória (decisão do editor, 10/11/2026): `/diaria-edicao` → `/diaria-video-montagem` → `/diaria-publica` (que segue para esta Etapa 5 depois do horizontal, #12591), porque o link do YouTube entra na edição. Antes de qualquer dispatch, conferir:
+Ordem obrigatória (decisão do editor, 10/11/2026): `/diaria-edicao` → `/diaria-video-roteiro` (roteiro de fala, antes da gravação, #12750) → `/diaria-video-montagem` → `/diaria-publica` (que segue para esta Etapa 5 depois do horizontal, #12591), porque o link do YouTube entra na edição. Antes de qualquer dispatch, conferir:
 
 ```bash
 npx tsx scripts/check-video-before-publish.ts {AAMMDD} --edition-dir {EDITION_DIR}

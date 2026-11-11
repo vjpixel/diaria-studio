@@ -165,12 +165,30 @@ export function findingSeverityHeader(text: string): { tag: string; header: stri
 /** #12677 — rótulo de nota informativa no prefixo: "Confiança alta, P3, nota:", "Nota, P3:". */
 const NOTE_LABEL = new RegExp(`${NB}(?:nota|informativ[oa])${NA}`, "iu");
 /**
- * #12677 — frase de fecho "Não bloqueia o merge." numa linha própria ou como
- * última frase de uma linha: tem de começar a frase (início de linha ou depois
- * de `.`/`!`/`?`) e terminar logo depois de "merge". "o gate não bloqueia o
- * merge quando o CI falha" (descrição de defeito) não casa.
+ * #12677 — frase de fecho "Não bloqueia o merge." como última frase da linha:
+ * tem de começar a frase (início da linha ou depois de `.`/`!`/`?`) e terminar
+ * logo depois de "merge". "o gate não bloqueia o merge quando o CI falha"
+ * (descrição de defeito) não casa.
+ *
+ * #12722 — sem flag `m`: a regex só roda contra a ÚLTIMA linha não vazia do
+ * corpo (`lastBodyLine`). Com `m`, a frase fechando uma linha do MEIO
+ * ("Confiança alta, P2: o check sai 0 com o CI vermelho. Não bloqueia o
+ * merge.\n\nO alarme também não dispara.") rebaixava um P2 real para `low`.
  */
-const DOES_NOT_BLOCK_SENTENCE = /(?:^|[.!?]\s+)n[ãa]o\s+bloqueia\s+(?:o\s+)?merge\s*[.!]?\s*$/imu;
+const DOES_NOT_BLOCK_SENTENCE = /(?:^|[.!?]\s+)n[ãa]o\s+bloqueia\s+(?:o\s+)?merge\s*[.!]?\s*$/iu;
+
+/**
+ * #12722 — última linha não vazia do corpo, sem comentários HTML (o marcador
+ * `<!-- diaria-auto-review -->` que o helper acrescenta no fim não conta como
+ * linha do finding).
+ */
+function lastBodyLine(text: string): string {
+  const lines = text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .split(/\r?\n/)
+    .filter((l) => l.trim().length > 0);
+  return lines.length > 0 ? lines[lines.length - 1].trim() : "";
+}
 
 /**
  * #12677 — o finding P2/P3 se declara nota sem defeito (deploy pendente
@@ -179,13 +197,14 @@ const DOES_NOT_BLOCK_SENTENCE = /(?:^|[.!?]\s+)n[ãa]o\s+bloqueia\s+(?:o\s+)?mer
  *
  * - rótulo `nota`/`informativo` no prefixo estruturado (a forma que o item 7
  *   de `context/overnight-dispatch-rules.md` pede);
- * - a frase "Não bloqueia o merge." fechando uma linha (forma dos comentários
- *   da rodada 261110c, anteriores ao rótulo).
+ * - a frase "Não bloqueia o merge." fechando a ÚLTIMA linha do corpo (forma
+ *   dos comentários da rodada 261110c, anteriores ao rótulo). No meio do
+ *   corpo ela não vale (#12722): o que vem depois pode descrever um defeito.
  *
  * Chamada só depois do corte de P0/P1: nota nunca rebaixa P0/P1.
  */
 function isInformativeNote(header: string, text: string): boolean {
-  return NOTE_LABEL.test(header) || DOES_NOT_BLOCK_SENTENCE.test(text);
+  return NOTE_LABEL.test(header) || DOES_NOT_BLOCK_SENTENCE.test(lastBodyLine(text));
 }
 
 export function classifyFindingSeverity(body: string | undefined): FindingSeverity {

@@ -150,7 +150,7 @@ function main(): void {
   }
   if (!existsSync(root)) {
     console.error(
-      `--root não existe: ${root} — os snapshots vivem em data/ (junction OneDrive, ausente em worktree/clone fresco); ` +
+      `--root não existe: ${root} — os snapshots vivem em data/ (link para o Google Drive, ausente em worktree/clone fresco); ` +
         `rode no checkout com data/ ou passe --root`,
     );
     process.exitCode = 2;

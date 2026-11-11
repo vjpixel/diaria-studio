@@ -50,6 +50,27 @@ describe("classifyFindingSeverity: nota informativa (#12677)", () => {
     assert.equal(classifyFindingSeverity("Confiança alta, P3: isso não bloqueia o merge."), "high");
   });
 
+  it("REGRESSÃO #12722: a frase fechando uma linha do MEIO do corpo não rebaixa P2 de confiança alta", () => {
+    const body =
+      "Confiança alta, P2: o check sai 0 com o CI vermelho. Não bloqueia o merge.\n\nMas o alarme de produção também não dispara e o editor não fica sabendo.";
+    assert.equal(classifyFindingSeverity(body), "high");
+    assert.equal(classifyFindingSeverity(withMarker(body)), "high");
+    // Frase numa linha própria no meio, defeito descrito depois.
+    assert.equal(
+      classifyFindingSeverity(
+        withMarker("Confiança alta, P3: limite aceito.\nNão bloqueia o merge.\nO script grava em data/ real no teste."),
+      ),
+      "high",
+    );
+  });
+
+  it("#12722: a frase na última linha segue valendo com o marcador e linhas em branco depois", () => {
+    assert.equal(
+      classifyFindingSeverity("Confiança alta, P2: o deploy fica pendente.\n\nNão bloqueia o merge.\n\n\n<!-- diaria-auto-review -->\n"),
+      "low",
+    );
+  });
+
   it("`nota` só vale no prefixo: no corpo é texto do finding", () => {
     assert.equal(classifyFindingSeverity("Confiança alta, P3: a nota fiscal sai sem CNPJ"), "high");
   });

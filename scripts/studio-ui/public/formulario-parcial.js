@@ -32,6 +32,8 @@ export function formSummaryHtml(data) {
     tile(ORIGEM_LABEL.onboarding, data.por_origem.onboarding),
     tile(ORIGEM_LABEL.sem_convite, data.por_origem.sem_convite),
     tile("Toparam conversar", data.conversa.toparam),
+    // #12715: persona 2, "Quem já paga para aprender", sobre o total.
+    tile("Persona 2 (já paga para aprender)", `${data.persona2} de ${data.total}`),
   ];
   const notas = [];
   if (data.primeira) notas.push(`de ${data.primeira} a ${data.ultima}`);
@@ -73,13 +75,29 @@ export function formOpenAnswersHtml(abertas) {
     .join("");
 }
 
-/** Quem topou a conversa (único bloco com e-mail). */
+/**
+ * Quem topou a conversa (único bloco com e-mail). A ordem vem pronta do
+ * servidor (#12715: persona 2 primeiro, depois as faixas de gasto); a página
+ * só mostra a marcação e as duas faixas, que explicam a posição.
+ */
 export function conversaHtml(conversa) {
   if (conversa.pessoas.length === 0) return `<p class="hint">Ninguém marcou a conversa ainda.</p>`;
+  const faixa = (v) => (v ? escapeHtml(v) : "—");
   const rows = conversa.pessoas
-    .map((p) => `<tr><td>${escapeHtml(p.email)}</td><td class="mono">${escapeHtml(p.data)}</td><td>${escapeHtml(ORIGEM_LABEL[p.origem] ?? p.origem)}</td></tr>`)
+    .map(
+      (p) =>
+        `<tr><td>${escapeHtml(p.email)}${p.persona2 ? ` <span class="assinantes-platform-badge">persona 2</span>` : ""}</td>` +
+        `<td>${faixa(p.maior_gasto)}</td><td>${faixa(p.gasto_mensal)}</td>` +
+        `<td class="mono">${escapeHtml(p.data)}</td><td>${escapeHtml(ORIGEM_LABEL[p.origem] ?? p.origem)}</td></tr>`,
+    )
     .join("");
-  return `<div class="table-scroll"><table class="triage-table"><thead><tr><th>E-mail</th><th>Data</th><th>Origem</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const hint =
+    `<p class="hint">Ordem por potencial de compra: persona 2 ("Quem já paga para aprender") primeiro; ` +
+    `dentro de cada grupo, pela faixa do maior gasto com curso ou material e, no empate, pela do gasto mensal com ferramentas.</p>`;
+  return (
+    hint +
+    `<div class="table-scroll"><table class="triage-table"><thead><tr><th>E-mail</th><th>Maior gasto (curso/material)</th><th>Gasto mensal (ferramentas)</th><th>Data</th><th>Origem</th></tr></thead><tbody>${rows}</tbody></table></div>`
+  );
 }
 
 /** Texto de estado quando a leitura não deu certo. */

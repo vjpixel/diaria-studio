@@ -29,6 +29,10 @@
  *   vídeo, outras sessões/máquinas e histórico — `leftOutItems`, impresso
  *   pelo CLI.
  *
+ * - **Vídeo com destino existente** (#12713): origem só com o vídeo vira
+ *   mescla só do vídeo (`planVideoMerge`/`renumberVideoMerge`), e
+ *   `applyVideoOutDir` troca nomes e XMLs na pasta `YouTube/{AAMMDD}` local.
+ *
  * Idempotente: a pasta nova guarda `_internal/renumber-edition.json`; rodar de
  * novo com a origem já movida e esse relatório no destino retoma (pula a parte
  * local, segue nos passos remotos ainda não concluídos).
@@ -42,12 +46,15 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { editionDir } from "./edition-paths.ts";
 import { EDITION_LOCK_TTL_MS, readEditionLock, type EditionLockRecord } from "./edition-lock.ts";
+import { isoToBrtAammdd } from "./edition-scheduled-at.ts";
 
 export const RENUMBER_REPORT_FILENAME = "renumber-edition.json";
 const FORENSIC_DIR = join("_internal", "_forensic");
@@ -70,9 +77,11 @@ export function isValidEditionId(id: string): boolean {
 /**
  * Regex do ID com borda alfanumérica (#12662): nem letra nem dígito colado de
  * nenhum lado. Separador (`-`, `_`, `/`, `.`, `=`, espaço, aspas) é borda.
+ * Exceção (#12803): `.` entre dígitos não é borda — `12.261112` e `261112.5`
+ * são números (o `"start"` de um JSON de vídeo), não o ID.
  */
 function idRegex(id: string): RegExp {
-  return new RegExp(`(?<![\\p{L}\\p{N}])${id}(?![\\p{L}\\p{N}])`, "gu");
+  return new RegExp(`(?<![\\p{L}\\p{N}])(?<!\\p{N}\\.)${id}(?![\\p{L}\\p{N}])(?!\\.\\p{N})`, "gu");
 }
 
 /**
@@ -131,6 +140,21 @@ export interface RenumberReport {
   public_images_moved_to: string | null;
   /** #12691 — stores globais de `data/` reescritos (opcional: relatório antigo não tem). */
   global_stores?: Array<{ path: string; count: number }>;
+  /**
+   * #12719 — stores globais ainda por reescrever. Gravado logo depois do
+   * `renameSync` e esvaziado store a store: falha no meio deixa a lista no
+   * relatório da pasta nova, e a retomada (`completePendingGlobalStores`)
+   * termina o que faltou.
+   */
+  global_stores_pending?: string[];
+  /**
+   * #12726 — impressão digital (sha256) das entradas de `from` de cada store
+   * pendente, tirada na mesma leitura que conferiu o conflito. A retomada
+   * recusa se ela mudou: outra sessão escreveu sob o ID antigo (ex.
+   * `/diaria-edicao {de}` de uma edição nova) e a troca levaria isso junto.
+   * Ausente em relatório anterior ao #12726: só a checagem de conflito vale.
+   */
+  global_stores_fingerprints?: Record<string, string>;
   remote_steps: RemoteStepState[];
 }
 
@@ -234,20 +258,279 @@ export function scanLocal(fromDir: string, from: string, to: string): LocalScan 
   return { rewritten, renames, preserved, publicImages: existsSync(join(fromDir, PUBLIC_IMAGES_FILENAME)) };
 }
 
+/** Recusa (lança) se algum nome novo do `scan` já existe em `dir`. Não escreve nada. */
+function assertNoRenameCollision(dir: string, scan: LocalScan, where: string): void {
+  for (const r of scan.renames) {
+    if (existsSync(join(dir, r.to))) throw new Error(`${r.to} já existe ${where} — recusado (renomear sobrescreveria).`);
+  }
+}
+
+/**
+ * Aplica um `LocalScan` em `dir`: reescreve o conteúdo e renomeia. `walk`
+ * lista filhos antes dos pais, então renomear nessa ordem mantém válidos os
+ * caminhos ainda não renomeados.
+ */
+function applyLocalScan(dir: string, scan: LocalScan, from: string, to: string): void {
+  for (const f of scan.rewritten) {
+    const abs = join(dir, f.path);
+    writeFileSync(abs, replaceEditionId(readFileSync(abs, "utf8"), from, to).text);
+  }
+  for (const r of scan.renames) renameSync(join(dir, r.from), join(dir, r.to));
+}
+
+// ---------------------------------------------------------------------------
+// #12713 — vídeo fora do caminho da renumeração da edição inteira.
+//
+// Caso de 10/11/2026 (Nubank, 261112 → 261111): a pasta de origem só tinha o
+// vídeo (`_internal/video-montagem/` + `diaria-comentada-{AAMMDD}.srt`) e a
+// edição de destino já existia. `planRenumber` recusa destino existente (nunca
+// mescla duas edições); aqui a mescla é permitida SÓ quando tudo na origem é
+// artefato de vídeo e o destino não tem vídeo nenhum. O conteúdo passa pela
+// mesma troca com borda (o `"edition"` do `blocks.json`, que o `build` confere,
+// e os caminhos `YouTube/{AAMMDD}/{AAMMDD}_…` de `source.json`, `plan.json`,
+// `audio-tratado.meta.json`), e os nomes com o ID são renomeados.
+// ---------------------------------------------------------------------------
+
+export const VIDEO_STATE_REL = join("_internal", "video-montagem");
+export const VIDEO_MERGE_REPORT_FILENAME = "renumber-video.json";
+
+/** `diaria-comentada-{id}…` na raiz da edição (srt, mp4, short), com borda depois do ID. */
+function isRootVideoFile(name: string, id: string): boolean {
+  const prefix = `diaria-comentada-${id}`;
+  return name.startsWith(prefix) && !/^[\p{L}\p{N}]/u.test(name.slice(prefix.length));
+}
+
+function isUnder(rel: string, dirRel: string): boolean {
+  return rel === dirRel || rel.startsWith(dirRel + sep);
+}
+
+export interface VideoMergeReport {
+  from: string;
+  to: string;
+  from_dir: string;
+  to_dir: string;
+  merged_at: string;
+  /** Arquivos/pastas movidos da origem pro destino (relativos à pasta da edição, nome novo). */
+  moved: Array<{ from: string; to: string }>;
+  rewritten_files: Array<{ path: string; count: number }>;
+  renamed_paths: Array<{ from: string; to: string }>;
+  /** A pasta de origem ficou vazia e foi removida. */
+  removed_from_dir: boolean;
+}
+
+export type VideoMergePlan =
+  | { ok: true; done: false; fromDir: string; toDir: string; rootFiles: string[]; hasState: boolean }
+  | { ok: true; done: true; fromDir: string; toDir: string }
+  | { ok: false; reason: string | null };
+
+/**
+ * #12713 — decide se a troca pode ser a mescla só do vídeo. `reason: null` =
+ * não se aplica (a recusa do `planRenumber` é a que vale); com texto = se
+ * aplicaria, mas é recusada por isto. Não escreve nada.
+ */
+export function planVideoMerge(root: string, from: string, to: string): VideoMergePlan {
+  if (!isValidEditionId(from) || !isValidEditionId(to) || from === to) return { ok: false, reason: null };
+  const fromDir = resolve(root, editionDir(from));
+  const toDir = resolve(root, editionDir(to));
+  const fromExists = existsSync(fromDir);
+  const toExists = existsSync(toDir);
+  if (!toExists) return { ok: false, reason: null };
+  if (!fromExists) {
+    const p = join(toDir, VIDEO_STATE_REL, VIDEO_MERGE_REPORT_FILENAME);
+    const report = existsSync(p) ? (readJson(p) as Partial<VideoMergeReport> | null) : null;
+    if (report && report.from === from && report.to === to) return { ok: true, done: true, fromDir, toDir };
+    return { ok: false, reason: null };
+  }
+  const others: string[] = [];
+  const rootFiles: string[] = [];
+  let hasState = false;
+  for (const e of walk(fromDir)) {
+    if (e.isDir) continue;
+    if (isUnder(e.rel, VIDEO_STATE_REL)) {
+      hasState = true;
+      continue;
+    }
+    if (!e.rel.includes(sep) && isRootVideoFile(e.rel, from)) {
+      rootFiles.push(e.rel);
+      continue;
+    }
+    others.push(e.rel.split(sep).join("/"));
+  }
+  // `walk` pula `_internal/_forensic/`: forense na origem também não é "só vídeo".
+  if (existsSync(join(fromDir, FORENSIC_DIR))) others.push(FORENSIC_DIR.split(sep).join("/") + "/");
+  const toRel = relative(root, toDir).split(sep).join("/");
+  if (others.length > 0) {
+    const sample = others.slice(0, 5).join(", ") + (others.length > 5 ? `, … (+${others.length - 5})` : "");
+    return {
+      ok: false,
+      reason: `a origem não é só vídeo (${sample}) — a mescla no destino existente só vale pra origem com _internal/video-montagem/ e diaria-comentada-${from}*.`,
+    };
+  }
+  if (!hasState && rootFiles.length === 0) return { ok: false, reason: null };
+  if (hasState && existsSync(join(toDir, VIDEO_STATE_REL))) {
+    return { ok: false, reason: `${toRel}/_internal/video-montagem/ já existe — recusado (nunca mescla dois vídeos).` };
+  }
+  for (const name of rootFiles) {
+    const next = renamedSegment(name, from, to) ?? name;
+    if (existsSync(join(toDir, next))) return { ok: false, reason: `${toRel}/${next} já existe — recusado (mover sobrescreveria).` };
+  }
+  return { ok: true, done: false, fromDir, toDir, rootFiles: rootFiles.sort(), hasState };
+}
+
+export interface VideoMergeScan {
+  moved: Array<{ from: string; to: string }>;
+  rewritten: Array<{ path: string; count: number }>;
+  renames: Array<{ from: string; to: string }>;
+}
+
+/** O que a mescla do vídeo faria (dry-run). Caminhos relativos à pasta da edição. */
+export function scanVideoMerge(plan: Extract<VideoMergePlan, { ok: true; done: false }>, from: string, to: string): VideoMergeScan {
+  const stateRel = VIDEO_STATE_REL.split(sep).join("/");
+  const moved: Array<{ from: string; to: string }> = [];
+  const rewritten: Array<{ path: string; count: number }> = [];
+  const renames: Array<{ from: string; to: string }> = [];
+  if (plan.hasState) {
+    const s = scanLocal(join(plan.fromDir, VIDEO_STATE_REL), from, to);
+    moved.push({ from: stateRel + "/", to: stateRel + "/" });
+    for (const f of s.rewritten) rewritten.push({ path: `${stateRel}/${f.path}`, count: f.count });
+    for (const r of s.renames) renames.push({ from: `${stateRel}/${r.from}`, to: `${stateRel}/${r.to}` });
+  }
+  for (const name of plan.rootFiles) {
+    moved.push({ from: name, to: renamedSegment(name, from, to) ?? name });
+    const abs = join(plan.fromDir, name);
+    const ext = name.includes(".") ? name.slice(name.lastIndexOf(".")).toLowerCase() : "";
+    if (BINARY_EXTENSIONS.has(ext) || statSync(abs).size > MAX_TEXT_BYTES) continue;
+    const buf = readFileSync(abs);
+    if (looksBinary(buf)) continue;
+    const r = replaceEditionId(buf.toString("utf8"), from, to);
+    if (r.count > 0) rewritten.push({ path: name, count: r.count });
+  }
+  return { moved, rewritten, renames };
+}
+
+/**
+ * #12713 — move o vídeo da origem pra edição de destino já existente: troca o
+ * ID no conteúdo e nos nomes (na origem, antes de mover), move
+ * `_internal/video-montagem/` e os `diaria-comentada-{de}*` da raiz, apaga as
+ * pastas da origem que ficaram vazias (`rmdir`, nunca recursivo) e grava
+ * `_internal/video-montagem/renumber-video.json` no destino. Não toca no resto
+ * do destino nem roda passo remoto nenhum (a edição de destino é outra).
+ */
+export function renumberVideoMerge(root: string, from: string, to: string, nowIso: string): VideoMergeReport {
+  const plan = planVideoMerge(root, from, to);
+  if (!plan.ok) throw new Error(plan.reason ?? `mescla do vídeo ${from} → ${to} não se aplica.`);
+  if (plan.done) throw new Error("renumberVideoMerge chamado com a mescla já feita.");
+  const scan = scanVideoMerge(plan, from, to);
+  const stateFrom = join(plan.fromDir, VIDEO_STATE_REL);
+  const stateScan = plan.hasState ? scanLocal(stateFrom, from, to) : null;
+  if (stateScan) assertNoRenameCollision(stateFrom, stateScan, "no vídeo da origem");
+
+  if (stateScan) applyLocalScan(stateFrom, stateScan, from, to);
+  for (const name of plan.rootFiles) {
+    if (!scan.rewritten.some((f) => f.path === name)) continue;
+    const abs = join(plan.fromDir, name);
+    writeFileSync(abs, replaceEditionId(readFileSync(abs, "utf8"), from, to).text);
+  }
+  if (plan.hasState) {
+    mkdirSync(join(plan.toDir, "_internal"), { recursive: true });
+    renameSync(stateFrom, join(plan.toDir, VIDEO_STATE_REL));
+  }
+  for (const m of scan.moved) {
+    if (m.from.endsWith("/")) continue;
+    renameSync(join(plan.fromDir, m.from), join(plan.toDir, m.to));
+  }
+  const removedFromDir = removeEmptyDirs(plan.fromDir);
+
+  const report: VideoMergeReport = {
+    from,
+    to,
+    from_dir: relative(root, plan.fromDir).split(sep).join("/"),
+    to_dir: relative(root, plan.toDir).split(sep).join("/"),
+    merged_at: nowIso,
+    moved: scan.moved,
+    rewritten_files: scan.rewritten,
+    renamed_paths: scan.renames,
+    removed_from_dir: removedFromDir,
+  };
+  // Sem vídeo de estado (só o .srt na raiz) o relatório vai pra uma pasta nova
+  // do vídeo no destino: é ali que a retomada procura.
+  const reportPath = join(plan.toDir, VIDEO_STATE_REL, VIDEO_MERGE_REPORT_FILENAME);
+  mkdirSync(dirname(reportPath), { recursive: true });
+  writeFileSync(reportPath, JSON.stringify(report, null, 2) + "\n");
+  return report;
+}
+
+/** Remove `dir` e subpastas se estiverem vazios (`rmdirSync`, nunca recursivo). Devolve se `dir` sumiu. */
+function removeEmptyDirs(dir: string): boolean {
+  for (const name of readdirSync(dir)) {
+    const abs = join(dir, name);
+    if (statSync(abs).isDirectory()) removeEmptyDirs(abs);
+  }
+  if (readdirSync(dir).length > 0) return false;
+  rmdirSync(dir);
+  return true;
+}
+
+/**
+ * #12713 — pasta de saída do vídeo (`--video-dir`, a pasta `YouTube/{AAMMDD}`
+ * da edição pelo Drive montado, ex.: `I:/Meu Drive/diaria-studio-video/261112`): troca o
+ * ID no conteúdo dos XMLs/SRT/JSON (os `pathurl` do Premiere) e nos nomes com o
+ * ID (`{AAMMDD}_audio_tratado-*.wav`, `{AAMMDD}_titulo_vertical-*.png`,
+ * `{AAMMDD} - previa *.mp4`), com a mesma borda: o bruto `20261112_*.mp4`
+ * fica como está. A pasta em si NÃO é renomeada (fica na lista "fica fora").
+ * Só o caminho local que quem chama passou; nada de API do Drive.
+ */
+export function scanVideoOutDir(dir: string, from: string, to: string): LocalScan {
+  return scanLocal(dir, from, to);
+}
+
+export function applyVideoOutDir(dir: string, from: string, to: string): LocalScan {
+  const scan = scanVideoOutDir(dir, from, to);
+  assertNoRenameCollision(dir, scan, "na pasta do vídeo");
+  applyLocalScan(dir, scan, from, to);
+  return scan;
+}
+
 /**
  * Parte local, na pasta de ORIGEM (antes do `mv`, pra uma falha no meio deixar
  * tudo debaixo de um único caminho): tira o `06-public-images.json` do
  * caminho, reescreve o conteúdo dos arquivos de texto, renomeia arquivos e
- * pastas com o ID (filhos antes dos pais) e por fim move a pasta pra
- * `editionDir(to)`. Colisão de nome em qualquer ponto ⇒ lança ANTES de
- * escrever (a varredura confere todas primeiro).
+ * pastas com o ID (filhos antes dos pais), move a pasta pra `editionDir(to)`
+ * e só então reescreve os stores globais (#12719). Colisão de nome ou
+ * conflito nos stores em qualquer ponto ⇒ lança ANTES de escrever (a
+ * varredura confere todas primeiro).
  */
+/**
+ * #12803 — recusas da parte local que não dependem de nada remoto (forense
+ * `06-public-images.{de}.json` já existente, colisão de nome), conferidas sem
+ * escrever. O `--unschedule` chama ANTES de desagendar; `renumberLocal` lança
+ * com o mesmo texto. `null` = a parte local não seria recusada por isto.
+ */
+export function localRenumberRefusal(root: string, fromDir: string, from: string, to: string): string | null {
+  const scan = scanLocal(fromDir, from, to);
+  return localScanRefusal(root, fromDir, scan, from);
+}
+
+function localScanRefusal(root: string, fromDir: string, scan: LocalScan, from: string): string | null {
+  const forensicTarget = join(fromDir, FORENSIC_DIR, `06-public-images.${from}.json`);
+  if (scan.publicImages && existsSync(forensicTarget)) {
+    return `${relative(root, forensicTarget)} já existe — recusado (não sobrescreve forense).`;
+  }
+  try {
+    assertNoRenameCollision(fromDir, scan, "na edição");
+  } catch (e) {
+    return (e as Error).message;
+  }
+  return null;
+}
+
 export function renumberLocal(
   root: string,
   from: string,
   to: string,
   nowIso: string,
   remoteSteps: RemoteStep[] = [],
+  io: RenumberIo = DEFAULT_RENUMBER_IO,
 ): RenumberReport {
   const plan = planRenumber(root, from, to);
   if (!plan.ok) throw new Error(plan.reason);
@@ -256,12 +539,8 @@ export function renumberLocal(
   const scan = scanLocal(fromDir, from, to);
 
   const forensicTarget = join(fromDir, FORENSIC_DIR, `06-public-images.${from}.json`);
-  if (scan.publicImages && existsSync(forensicTarget)) {
-    throw new Error(`${relative(root, forensicTarget)} já existe — recusado (não sobrescreve forense).`);
-  }
-  for (const r of scan.renames) {
-    if (existsSync(join(fromDir, r.to))) throw new Error(`${r.to} já existe na edição — recusado (renomear sobrescreveria).`);
-  }
+  const localRefusal = localScanRefusal(root, fromDir, scan, from);
+  if (localRefusal) throw new Error(localRefusal);
   // #12691 — stores globais conferidos ANTES de qualquer escrita.
   const globalChanges = scanGlobalStores(root, from, to);
   const globalRefusal = globalStoresRefusal(globalChanges, to);
@@ -273,29 +552,17 @@ export function renumberLocal(
     renameSync(join(fromDir, PUBLIC_IMAGES_FILENAME), forensicTarget);
     publicImagesMovedTo = relative(fromDir, forensicTarget).split(sep).join("/");
   }
-  for (const f of scan.rewritten) {
-    const abs = join(fromDir, f.path);
-    writeFileSync(abs, replaceEditionId(readFileSync(abs, "utf8"), from, to).text);
-  }
-  // `walk` lista filhos antes dos pais: renomear nessa ordem mantém válidos os
-  // caminhos ainda não renomeados.
-  for (const r of scan.renames) renameSync(join(fromDir, r.from), join(fromDir, r.to));
+  applyLocalScan(fromDir, scan, from, to);
 
-  // #12691 — só na execução nova, nunca na retomada: depois da troca outra
-  // edição pode ter assumido o ID antigo (261110 → 261111 seguido de
-  // 261109 → 261110 no mesmo dia), e regravar mudaria as entradas dela.
-  const globalStores: Array<{ path: string; count: number }> = [];
-  for (const store of GLOBAL_EDITION_STORES) {
-    const abs = resolve(root, store.path);
-    if (!existsSync(abs)) continue;
-    const r = rewriteGlobalStore(store, readFileSync(abs, "utf8"), from, to);
-    if (r.count === 0) continue;
-    writeFileSync(abs, r.text, "utf8");
-    globalStores.push({ path: store.path, count: r.count });
-  }
-
-  mkdirSync(dirname(toDir), { recursive: true });
-  renameSync(fromDir, toDir);
+  // #12719 — a pasta é movida ANTES de tocar nos stores globais. Antes, os
+  // stores eram gravados primeiro: um `renameSync` que falhasse (EPERM/EBUSY
+  // do sync do Drive/OneDrive, arquivo aberto) deixava `edition: to` nos
+  // stores com a pasta ainda em `from/`, e toda nova tentativa caía no
+  // conflito do `globalStoresRefusal` (exit 2). Agora uma falha aqui deixa os
+  // stores intactos, e a retomada é a execução nova de sempre (o conteúdo já
+  // trocado na origem não tem mais o ID antigo: a nova varredura não refaz).
+  io.mkdirp(dirname(toDir));
+  io.renameDir(fromDir, toDir);
 
   const report: RenumberReport = {
     from,
@@ -307,10 +574,116 @@ export function renumberLocal(
     renamed_paths: scan.renames,
     preserved_img_refs: scan.preserved,
     public_images_moved_to: publicImagesMovedTo,
-    global_stores: globalStores,
+    global_stores: [],
+    // Só os stores com entrada de `from`, conferidos acima (sem conflito).
+    global_stores_pending: globalChanges.filter((c) => c.count > 0).map((c) => c.path),
+    global_stores_fingerprints: Object.fromEntries(
+      globalChanges.filter((c) => c.count > 0 && c.fingerprint !== null).map((c) => [c.path, c.fingerprint!]),
+    ),
     remote_steps: remoteSteps.map((s) => ({ id: s.id, status: "pending" })),
   };
   writeRenumberReport(toDir, report);
+  return completePendingGlobalStores(root, toDir, report, io);
+}
+
+/** Escrita de disco que os testes trocam pra simular falha (#12719). */
+export interface RenumberIo {
+  mkdirp: (dir: string) => void;
+  renameDir: (from: string, to: string) => void;
+  writeStore: (abs: string, text: string) => void;
+}
+
+export const DEFAULT_RENUMBER_IO: RenumberIo = {
+  mkdirp: (dir) => void mkdirSync(dir, { recursive: true }),
+  renameDir: (a, b) => renameSync(a, b),
+  writeStore: (abs, text) => writeFileSync(abs, text, "utf8"),
+};
+
+/**
+ * #12726 — recusa da retomada de um store global pendente: o store mudou
+ * desde a tentativa que o deixou pendente, e reescrevê-lo agora mesclaria (ou
+ * levaria pro ID novo) o que outra sessão gravou. Quem chama sai com exit 2
+ * e nada é escrito naquele store; a lista de pendentes fica como estava.
+ */
+export class GlobalStoreRefusalError extends Error {
+  override name = "GlobalStoreRefusalError";
+}
+
+/**
+ * #12726 — motivo de recusa da retomada de UM store pendente, ou `null`.
+ * Sem entrada de `from` (`count === 0`) não há o que recusar: a tentativa
+ * anterior já gravou o store e só o relatório ficou pra trás. Com entrada de
+ * `from`, recusa se já existe entrada de `to` (`conflict`) ou se as entradas
+ * de `from` não são mais as da impressão digital gravada.
+ */
+export function pendingStoreRefusal(path: string, r: GlobalStoreRewrite, from: string, to: string, recorded: string | undefined, current: string | null): string | null {
+  if (r.count === 0) return null;
+  if (r.conflict > 0) {
+    return `${path} já tem ${r.conflict} entrada(s) de ${to} além das de ${from} pendentes — recusado (nunca mescla duas edições); resolver à mão.`;
+  }
+  if (recorded !== undefined && recorded !== current) {
+    return (
+      `${path}: as entradas de ${from} mudaram desde a tentativa anterior (outra sessão escreveu sob ${from}, ex. uma edição nova com o ID antigo) — ` +
+      `recusado, nada reescrito; conferir à mão quais são da edição renumerada.`
+    );
+  }
+  return null;
+}
+
+/** #12726 — o que a retomada recusaria nos stores pendentes do relatório (sem escrever), ou `null`. */
+export function pendingGlobalStoresRefusal(root: string, report: RenumberReport): string | null {
+  const reasons: string[] = [];
+  for (const path of report.global_stores_pending ?? []) {
+    const store = GLOBAL_EDITION_STORES.find((s) => s.path === path);
+    const abs = resolve(root, path);
+    if (!store || !existsSync(abs)) continue;
+    const text = readFileSync(abs, "utf8");
+    const r = rewriteGlobalStore(store, text, report.from, report.to);
+    if (r.unreadable) continue; // ilegível é transitório: a retomada lança (exit 1) e a próxima tenta.
+    const why = pendingStoreRefusal(path, r, report.from, report.to, report.global_stores_fingerprints?.[path], globalStoreFromFingerprint(store, text, report.from));
+    if (why) reasons.push(why);
+  }
+  return reasons.length > 0 ? reasons.join(" ") : null;
+}
+
+/**
+ * #12719 — reescreve os stores globais listados em `global_stores_pending`,
+ * um por vez, gravando o relatório depois de cada um (falha no meio não perde
+ * o que já foi). Roda no fim do `renumberLocal` e na retomada.
+ *
+ * #12726 — na retomada o store pode ter mudado desde a tentativa anterior
+ * (EBUSY do sync, e alguém roda `/diaria-edicao {de}` antes de retomar):
+ * entrada de `to` já existente ou entradas de `from` diferentes da impressão
+ * digital gravada ⇒ `GlobalStoreRefusalError` (exit 2), nada escrito naquele
+ * store. Store sem entrada de `from` sai da lista sem escrita (a tentativa
+ * anterior gravou e só o relatório ficou pra trás). Store ilegível lança, e a
+ * lista fica como estava pra próxima tentativa.
+ */
+export function completePendingGlobalStores(
+  root: string,
+  toDir: string,
+  reportIn: RenumberReport,
+  io: RenumberIo = DEFAULT_RENUMBER_IO,
+): RenumberReport {
+  let report = reportIn;
+  const pending = [...(report.global_stores_pending ?? [])];
+  for (const path of pending) {
+    const store = GLOBAL_EDITION_STORES.find((s) => s.path === path);
+    const abs = resolve(root, path);
+    if (store && existsSync(abs)) {
+      const text = readFileSync(abs, "utf8");
+      const r = rewriteGlobalStore(store, text, report.from, report.to);
+      if (r.unreadable) throw new Error(`${path} ilegível (sync em trânsito?) — store global pendente; rodar de novo o mesmo comando termina.`);
+      const refusal = pendingStoreRefusal(path, r, report.from, report.to, report.global_stores_fingerprints?.[path], globalStoreFromFingerprint(store, text, report.from));
+      if (refusal) throw new GlobalStoreRefusalError(refusal);
+      if (r.count > 0) {
+        io.writeStore(abs, r.text);
+        report = { ...report, global_stores: [...(report.global_stores ?? []), { path, count: r.count }] };
+      }
+    }
+    report = { ...report, global_stores_pending: (report.global_stores_pending ?? []).filter((p) => p !== path) };
+    writeRenumberReport(toDir, report);
+  }
   return report;
 }
 
@@ -366,7 +739,13 @@ export function buildRemoteSteps(root: string, dir: string, to: string): RemoteS
       why: "página da edição republicada (datePublished, UTMs, jogar?edition=).",
     });
   }
-  if (existsSync(join(abs, "_internal", "kit-semanal-frio-published.json"))) {
+  // #12720 — só a semanal AGENDADA acompanha o principal. Desagendada pelo
+  // `--unschedule` (`created_unverified`), ela volta junto com o principal na
+  // Etapa 6 da pasta nova: `schedule-newsletter-kit.ts` chama o publisher da
+  // semanal, que retoma o rascunho mesmo fora de segunda (#12725). Rodar o
+  // passo aqui, com o principal em rascunho, recusaria (exit 2: principal não
+  // agendado).
+  if (readJson(join(abs, "_internal", SEMANAL_FRIO_STATE))?.status === "scheduled") {
     steps.push({
       id: "kit-semanal-frio",
       argv: ["scripts/publish-kit-semanal-frio.ts", "--edition-dir", dir, "--push"],
@@ -376,13 +755,23 @@ export function buildRemoteSteps(root: string, dir: string, to: string): RemoteS
   return steps;
 }
 
+/** Estado da semanal de frio do Kit (`publish-kit-semanal-frio.ts`). */
+const SEMANAL_FRIO_STATE = "kit-semanal-frio-published.json";
+
 /** Envio ou post já agendado com o horário do dia antigo (#12662). */
 export interface ScheduledSend {
-  /** `kit-newsletter` ou `social:{plataforma}/{destaque}[/{subtipo}]`. */
+  /** `kit-newsletter`, `kit-semanal-frio`, `brevo-diaria` ou `social:{plataforma}/{destaque}[/{subtipo}]`. */
   what: string;
   scheduled_at: string | null;
   /** Como reagendar, pronto pra copiar (com a pasta NOVA). */
   reschedule: string;
+  /**
+   * #12721 — o `--unschedule` tem caminho automático pra este item (Kit com
+   * `broadcast_id`, post com `worker_queue_key`). `false` = segue agendado
+   * depois do `--unschedule` (Brevo, Buffer/X), e o `--run-remote` continua
+   * exigindo `--ack-scheduled`.
+   */
+  auto_unschedule: boolean;
 }
 
 /**
@@ -404,6 +793,19 @@ export function detectScheduledSends(stateDir: string, newDirRel: string): Sched
       what: "kit-newsletter",
       scheduled_at: at,
       reschedule: `npx tsx scripts/schedule-newsletter-kit.ts --edition-dir ${newDirRel} --scheduled-at <novo horário ISO>`,
+      auto_unschedule: typeof kit.broadcast_id === "number",
+    });
+  }
+  // #12720 — a semanal de frio é um broadcast à parte, agendado no mesmo
+  // horário do principal: sem isto ela sumia do aviso quando o principal
+  // virava rascunho, e disparava sozinha no dia antigo.
+  const semanal = readJson(join(stateDir, "_internal", SEMANAL_FRIO_STATE));
+  if (semanal && semanal.status === "scheduled") {
+    out.push({
+      what: "kit-semanal-frio",
+      scheduled_at: typeof semanal.scheduled_at === "string" ? semanal.scheduled_at : null,
+      reschedule: `acompanha o principal: depois de reagendá-lo, npx tsx scripts/publish-kit-semanal-frio.ts --edition-dir ${newDirRel} --push`,
+      auto_unschedule: typeof semanal.broadcast_id === "number",
     });
   }
   const socialPath = [join(stateDir, "_internal", "06-social-published.json"), join(stateDir, "06-social-published.json")].find(
@@ -423,6 +825,7 @@ export function detectScheduledSends(stateDir: string, newDirRel: string): Sched
       reschedule: key
         ? `npx tsx scripts/reschedule-worker-queue-post.ts --key ${JSON.stringify(key)} --scheduled-at <novo horário ISO> … (texto novo da pasta ${newDirRel})`
         : "reagendar na própria plataforma (sem worker_queue_key no registro)",
+      auto_unschedule: key !== null,
     });
   }
   // #12688 — a campanha da Brevo diária agendada também sai no dia antigo.
@@ -432,6 +835,7 @@ export function detectScheduledSends(stateDir: string, newDirRel: string): Sched
       what: "brevo-diaria",
       scheduled_at: typeof brevo.scheduled_at === "string" ? brevo.scheduled_at : null,
       reschedule: "desagendar/reagendar à mão no painel da Brevo (campanha agendada não é editável pela API)",
+      auto_unschedule: false,
     });
   }
   return out;
@@ -449,9 +853,46 @@ export interface UnscheduleDeps {
 export interface UnscheduleOutcome {
   /** Mesmo rótulo de `ScheduledSend.what`. */
   what: string;
-  /** `manual` = sem caminho automático (Buffer/X, Brevo, post sem key). */
-  result: "unscheduled" | "already_gone" | "failed" | "manual";
+  /**
+   * `manual` = sem caminho automático (Buffer/X, Brevo, post sem key).
+   * `kept` = retomada (#12803): agendado para outro dia que não o antigo — é a
+   * agenda da edição NOVA (Etapa 6 na pasta nova), e não é tocado.
+   */
+  result: "unscheduled" | "already_gone" | "failed" | "manual" | "kept";
   detail: string;
+}
+
+export interface UnscheduleOptions {
+  /**
+   * #12803 — retomada: só desagenda o que está agendado para este AAMMDD (o
+   * dia antigo, em BRT). Agendado para outro dia ⇒ `kept`; `scheduled_at`
+   * ilegível ⇒ `failed` (não dá pra saber de qual edição é; nada tocado).
+   */
+  onlyScheduledOn?: string;
+}
+
+/**
+ * #12803 — o item agendado é do dia antigo? `true` também quando o horário é
+ * ilegível (na dúvida, conta como do dia antigo: avisa e exige confirmação).
+ */
+export function scheduledOnOldDate(scheduledAt: unknown, from: string): boolean {
+  if (typeof scheduledAt !== "string" || !Number.isFinite(Date.parse(scheduledAt))) return true;
+  return isoToBrtAammdd(scheduledAt) === from;
+}
+
+/** Filtro da retomada: `null` = desagendar; senão o desfecho sem tocar no item. */
+function resumeGuard(rec: Record<string, unknown>, opts: UnscheduleOptions): Pick<UnscheduleOutcome, "result" | "detail"> | null {
+  if (!opts.onlyScheduledOn) return null;
+  const at = rec.scheduled_at;
+  if (typeof at !== "string" || !Number.isFinite(Date.parse(at))) {
+    return {
+      result: "failed",
+      detail: `retomada: scheduled_at ilegível (${JSON.stringify(at ?? null)}) — não dá pra saber se é a agenda antiga ou a nova; nada tocado, conferir à mão.`,
+    };
+  }
+  const day = isoToBrtAammdd(at);
+  if (day === opts.onlyScheduledOn) return null;
+  return { result: "kept", detail: `retomada: agendado para ${day} (${at}), não para ${opts.onlyScheduledOn} — agenda nova, mantida.` };
 }
 
 /**
@@ -459,7 +900,12 @@ export interface UnscheduleOutcome {
  * apaga da fila do Worker os posts `scheduled` com `worker_queue_key` (estado
  * vira `deleted`, e a Etapa 5 da pasta nova reenfileira com o texto e o dia
  * novos) e tira o `send_at` do broadcast do Kit (estado volta pra `draft`,
- * sem `scheduled_at`, e a Etapa 6 reagenda). Substitui os dois scripts
+ * sem `scheduled_at`, e a Etapa 6 reagenda). A semanal de frio agendada sai
+ * primeiro, pelo mesmo `unscheduleKit` (estado `created_unverified`, #12720),
+ * e a Etapa 6 da pasta nova a retoma junto com o principal, mesmo numa edição
+ * que deixou de ser de segunda (#12725). Se o principal falhar depois de a
+ * semanal ter saído da agenda, o `failed` do principal diz isso e como
+ * reagendá-la (#12727). Substitui os dois scripts
  * avulsos da troca 261109 → 261110.
  *
  * Só grava o estado local do que foi confirmado. 404 no Worker
@@ -467,14 +913,98 @@ export interface UnscheduleOutcome {
  * chama confere antes de seguir. Falha de um item não interrompe os outros.
  * Buffer (X), Brevo e post sem key saem `manual`, com o mesmo texto do aviso.
  */
-export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): Promise<UnscheduleOutcome[]> {
+export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps, opts: UnscheduleOptions = {}): Promise<UnscheduleOutcome[]> {
   const out: UnscheduleOutcome[] = [];
+
+  // #12720 — a semanal de frio ANTES do principal: com o principal em
+  // rascunho e a semanal agendada, ela dispara sozinha no horário antigo, com
+  // os links do ID antigo, pra base fria. Se ela não sair da agenda, o
+  // principal também fica (o par segue coerente e os dois voltam `failed`).
+  let semanalBlocked = false;
+  const semanalPath = join(stateDir, "_internal", SEMANAL_FRIO_STATE);
+  const semanal = readJson(semanalPath);
+  // #12727 — semanal desagendada nesta execução. Se o principal falha, ele
+  // segue agendado no dia antigo e a semanal não: uma troca abandonada
+  // deixaria a base fria sem envio. O `failed` do principal diz isso, com o
+  // caminho de reagendá-la: o comando do publisher, ou reagendar à mão no Kit
+  // quando o principal não tem `broadcast_id` (#12729).
+  let semanalUnscheduledId: number | null = null;
+  // #12729 — `mainHasId: false` = registro do principal sem `broadcast_id`: o
+  // `publish-kit-semanal-frio.ts --push` exige o id numérico do principal e
+  // recusa (exit 2), então o aviso manda reagendar à mão no Kit.
+  const semanalLeftNote = (mainHasId: boolean): string => {
+    if (semanalUnscheduledId === null) return "";
+    const reschedule = mainHasId
+      ? `reagendar a semanal junto do principal: npx tsx scripts/publish-kit-semanal-frio.ts --edition-dir ${stateDir} --push`
+      : "reagendar a semanal à mão no Kit, junto do principal (o registro do principal não tem broadcast_id, e o publish-kit-semanal-frio.ts recusa sem ele)";
+    // Sem `broadcast_id` no principal, repetir o comando cai de novo no mesmo
+    // ramo e falha: só termina a troca depois de desagendar o principal à mão.
+    const retry = mainHasId
+      ? "Repetir o mesmo comando termina a troca"
+      : "Desagendar o principal à mão no Kit e repetir o mesmo comando termina a troca";
+    return (
+      ` ATENÇÃO: a semanal de frio (broadcast ${semanalUnscheduledId}) está FORA da agenda (desagendada nesta execução) e o principal segue agendado ` +
+      `no horário antigo. ${retry} (a Etapa 6 da pasta nova reagenda os dois); se a troca for abandonada, ` +
+      reschedule
+    );
+  };
+  // #12803 — `created_unverified` (#12730) não prova que a semanal está fora
+  // da agenda: é também o estado de uma confirmação de agendamento que falhou,
+  // em que o Kit pode ter agendado o broadcast. Antes ela só entrava no aviso
+  // do principal que falhava; com o principal desagendado com sucesso, ficava
+  // agendada no Kit e saía sozinha no horário antigo. Agora passa pelo mesmo
+  // `unscheduleKit` (idempotente: `send_at: null` + releitura) que a `scheduled`.
+  const semanalMaybeScheduled =
+    semanal !== null && (semanal.status === "scheduled" || (semanal.status === "created_unverified" && typeof semanal.broadcast_id === "number"));
+  if (semanal && semanalMaybeScheduled) {
+    const inherited = semanal.status === "created_unverified";
+    const id = typeof semanal.broadcast_id === "number" ? semanal.broadcast_id : null;
+    const guard = resumeGuard(semanal, opts);
+    let failure: string | null = null;
+    if (guard) {
+      if (guard.result === "failed") failure = guard.detail;
+      else out.push({ what: "kit-semanal-frio", ...guard });
+    } else if (id === null) {
+      failure = "registro sem broadcast_id — desagendar à mão no Kit.";
+    } else {
+      try {
+        const r = await deps.unscheduleKit(id);
+        if (r.ok) {
+          // Mesmo estado que `followMainSchedule` grava ao desagendar junto
+          // com o principal: o próximo agendamento do principal a retoma.
+          const next = { ...semanal, status: "created_unverified", reason: "principal desagendado (renumber-edition, #12720)" };
+          writeFileSync(semanalPath, JSON.stringify(next, null, 2) + "\n", "utf8");
+          semanalUnscheduledId = id;
+          const how = inherited ? " (estava created_unverified: podia estar agendada, #12803)" : "";
+          out.push({ what: "kit-semanal-frio", result: "unscheduled", detail: `broadcast ${id}: ${r.message}${how}` });
+        } else {
+          failure = `broadcast ${id}: ${r.message}`;
+        }
+      } catch (e) {
+        failure = `broadcast ${id}: ${(e as Error).message}`;
+      }
+    }
+    if (failure !== null) {
+      semanalBlocked = true;
+      out.push({ what: "kit-semanal-frio", result: "failed", detail: failure });
+    }
+  }
+
   const kitPath = join(stateDir, "_internal", "newsletter-kit-published.json");
   const kit = readJson(kitPath);
   if (kit && kit.status === "scheduled") {
     const id = typeof kit.broadcast_id === "number" ? kit.broadcast_id : null;
-    if (id === null) {
-      out.push({ what: "kit-newsletter", result: "failed", detail: "registro sem broadcast_id — desagendar à mão no Kit." });
+    const guard = resumeGuard(kit, opts);
+    if (guard) {
+      out.push({ what: "kit-newsletter", ...guard });
+    } else if (semanalBlocked) {
+      out.push({
+        what: "kit-newsletter",
+        result: "failed",
+        detail: "não desagendado: a semanal de frio segue agendada e sairia sozinha — desagendá-la primeiro.",
+      });
+    } else if (id === null) {
+      out.push({ what: "kit-newsletter", result: "failed", detail: `registro sem broadcast_id — desagendar à mão no Kit.${semanalLeftNote(false)}` });
     } else {
       try {
         const r = await deps.unscheduleKit(id);
@@ -483,10 +1013,10 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
           writeFileSync(kitPath, JSON.stringify({ ...rest, status: "draft" }, null, 2) + "\n", "utf8");
           out.push({ what: "kit-newsletter", result: "unscheduled", detail: `broadcast ${id}: ${r.message}` });
         } else {
-          out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${r.message}` });
+          out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${r.message}${semanalLeftNote(true)}` });
         }
       } catch (e) {
-        out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${(e as Error).message}` });
+        out.push({ what: "kit-newsletter", result: "failed", detail: `broadcast ${id}: ${(e as Error).message}${semanalLeftNote(true)}` });
       }
     }
   }
@@ -503,6 +1033,11 @@ export async function unscheduleSends(stateDir: string, deps: UnscheduleDeps): P
     );
     const what = `social:${parts.join("/")}`;
     const key = typeof p.worker_queue_key === "string" ? p.worker_queue_key : null;
+    const guard = resumeGuard(p, opts);
+    if (guard) {
+      out.push({ what, ...guard });
+      continue;
+    }
     if (!key) {
       out.push({ what, result: "manual", detail: "sem worker_queue_key (Buffer/X ou API direta): desagendar na própria plataforma." });
       continue;
@@ -622,11 +1157,50 @@ export function rewriteGlobalStore(store: GlobalEditionStore, text: string, from
   };
 }
 
+/**
+ * #12726 — pura: sha256 das entradas de `from` no store (linhas JSONL com o
+ * campo, elementos do array, valor da chave), na ordem em que aparecem.
+ * `null` sem entrada de `from` ou com store ilegível.
+ */
+export function globalStoreFromFingerprint(store: GlobalEditionStore, text: string, from: string): string | null {
+  const parts: string[] = [];
+  if (store.kind === "jsonl-field") {
+    for (const line of text.split("\n")) {
+      if (line.trim() === "") continue;
+      try {
+        const obj: unknown = JSON.parse(line);
+        if (isPlainObject(obj) && obj[store.field] === from) parts.push(line.trim());
+      } catch {
+        // linha pela metade: fora da impressão, como fica fora da troca.
+      }
+    }
+  } else {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    if (store.kind === "array-field") {
+      if (!Array.isArray(parsed)) return null;
+      for (const e of parsed) if (isPlainObject(e) && e[store.field] === from) parts.push(JSON.stringify(e));
+    } else {
+      if (!isPlainObject(parsed) || !isPlainObject(parsed[store.container])) return null;
+      const inner = parsed[store.container] as Record<string, unknown>;
+      if (Object.hasOwn(inner, from)) parts.push(JSON.stringify(inner[from]));
+    }
+  }
+  if (parts.length === 0) return null;
+  return createHash("sha256").update(JSON.stringify(parts), "utf8").digest("hex");
+}
+
 export interface GlobalStoreChange {
   path: string;
   count: number;
   conflict: number;
   unreadable: boolean;
+  /** #12726 — `globalStoreFromFingerprint` da mesma leitura. */
+  fingerprint: string | null;
 }
 
 /** O que cada store global existente mudaria. Só lista os que têm algo a dizer. */
@@ -635,9 +1209,10 @@ export function scanGlobalStores(root: string, from: string, to: string): Global
   for (const store of GLOBAL_EDITION_STORES) {
     const abs = resolve(root, store.path);
     if (!existsSync(abs)) continue;
-    const r = rewriteGlobalStore(store, readFileSync(abs, "utf8"), from, to);
+    const text = readFileSync(abs, "utf8");
+    const r = rewriteGlobalStore(store, text, from, to);
     if (r.count > 0 || r.conflict > 0 || r.unreadable) {
-      out.push({ path: store.path, count: r.count, conflict: r.conflict, unreadable: r.unreadable });
+      out.push({ path: store.path, count: r.count, conflict: r.conflict, unreadable: r.unreadable, fingerprint: globalStoreFromFingerprint(store, text, from) });
     }
   }
   return out;
@@ -661,9 +1236,13 @@ export function globalStoresRefusal(changes: GlobalStoreChange[], to: string): s
  * `--apply` pra a troca não depender de memória. Tudo aqui exige rede, outra
  * máquina ou decisão humana.
  */
-export function leftOutItems(from: string, to: string): string[] {
+export function leftOutItems(from: string, to: string, opts: { videoDirDone?: boolean } = {}): string[] {
+  const inside = opts.videoDirDone
+    ? "os arquivos dentro dela já foram renomeados e os XMLs reescritos (--video-dir)"
+    : `os arquivos dentro dela (${from}_audio_tratado-*.wav, ${from}_titulo_vertical*.png, "${from} - previa *.mp4") e os pathurl dos XMLs seguem com ${from}: repetir com --video-dir {pasta montada} ou trocar à mão`;
   return [
-    `Drive: renomear a pasta ${from}/ da pasta YouTube (G:/Meu Drive/…/YouTube/${from}/) pra ${to}/ — os caminhos em _internal/video-montagem/ já apontam pro nome novo, e a montagem e o /diaria-publica procuram a pasta pelo AAMMDD.`,
+    `Drive: renomear a pasta ${from}/ da pasta de vídeo (I:/Meu Drive/diaria-studio-video/${from}/) pra ${to}/ — os caminhos em _internal/video-montagem/ já apontam pro nome novo, e a montagem e o /diaria-publica procuram a pasta pelo AAMMDD; ${inside}.`,
+    `Vídeo fora do disco: o título do Doc do roteiro no Drive e o projeto do Premiere (.prproj, aponta pro caminho antigo) seguem com ${from} — renomear o Doc e reimportar o XML (ou religar a mídia).`,
     `Cache local do vídeo: ~/.cache/diaria-video-montagem/${from}/ (ou DIARIA_VIDEO_CACHE_DIR) e {tmp}/diaria-video-montagem/${from}/ ficam com o nome antigo — renomear pra ${to}/ ou deixar a próxima montagem baixar de novo.`,
     `Outras máquinas e sessões: a pasta nova chega pelo sync de data/; sessão aberta (aqui ou em outra máquina) que trabalhava em ${from} precisa recomeçar com ${to}.`,
     `Histórico não reescrito: data/run-log.jsonl, data/type-hint-divergence.jsonl, data/sources/ e _internal/_forensic/ seguem com ${from} (registro do que aconteceu).`,

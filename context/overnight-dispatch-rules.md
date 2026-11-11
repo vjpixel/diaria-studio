@@ -164,7 +164,8 @@ não é a severidade do finding, e 1ª linha sem tag fica retida.
 escopo parcial já declarado como `REFS` no corpo, limite aceito de propósito:
 nada a corrigir antes do merge, mesmo com confiança alta de que o fato é
 verdade. P2/P3 com `nota` no prefixo (ou com a frase "Não bloqueia o merge."
-fechando uma linha) sai resolvida pelo `--low-severity-only`; sem o rótulo,
+fechando a ÚLTIMA linha do corpo; no meio do corpo ela não conta, #12722) sai
+resolvida pelo `--low-severity-only`; sem o rótulo,
 "Confiança alta, P3" segue retida e trava o trem em rodada desassistida
 (rodada 261110c). Finding com cenário de falha real nunca leva `nota`, e
 `nota` nunca rebaixa P0/P1.
@@ -235,6 +236,15 @@ headAfter }`. `already-up-to-date` sai `0` (também quando o GitHub devolve
 fix/draft. Depois do `updated`, o worktree local está atrás do remoto:
 `git pull --ff-only` dentro do próprio worktree antes de testar ou de
 qualquer novo commit.
+
+**Log de job de CI que falhou (#12733).** O `gh` 2.46 do `300` devolve zero
+linhas em `gh run view --log-failed` e em `gh run view --job J --log`, para
+qualquer job, com o log disponível no GitHub (run 42874610549, PR #12717: o
+vermelho parecia "sem log recuperável" e o log existia). Quando o `gh run
+view` vier vazio, ler pelo REST com `npx tsx scripts/gh-failed-job-logs.ts
+--run R [--attempt A] [--repo owner/name] [--tail 100]`: imprime o fim do log
+de cada job `failure`/`timed_out` da run, sem a limpeza pós-job do runner.
+Vermelho que um rerun apagou é da tentativa anterior: passe `--attempt`.
 
 **Diff grande (>500 adições) exige também `removal-declaration:` no corpo — ver
 item 29.** Incluir já na criação evita uma volta de CI; esquecer é recuperável

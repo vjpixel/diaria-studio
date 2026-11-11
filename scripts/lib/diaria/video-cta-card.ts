@@ -6,8 +6,20 @@
  * `modelos-chatgpt-261108`: fundo #111111, "Gostou?" em Georgia negrito com
  * fio teal (#00A0A0), três itens com ícone teal (Curta o vídeo / Compartilhe
  * com quem … / Siga a diar.ia.br), fade-in de ~0,5 s a partir do preto, ~4 s,
- * sem áudio. Até aqui o card entrava à mão no Premiere (um PNG feito por um
- * script avulso fora do repo, `_marca/mkcard.cjs`).
+ * sem áudio.
+ *
+ * Desenho (#12701): o card aprovado é o PNG de `YouTube/_marca/`
+ * (`cta-card-vertical.png`, `cta-card-horizontal.png`), feito pelo script
+ * avulso `_marca/mkcard.cjs`. A 1ª versão deste módulo desenhava outro card
+ * (Georgia 58 px, ícone de "share" de 3 nós, bloco compacto); agora as medidas
+ * são as do `mkcard.cjs`, num quadro de desenho 1080x1920: "Gostou?" 124 px
+ * negrito com baseline em 560, fio 200x10 em (440, 610), itens em Georgia
+ * 66 px com o texto em x = 300 e os ícones centrados em x = 200 (coração,
+ * seta de envio, "+" no círculo), baselines 822 / 1030 (+80 por linha a mais
+ * do compartilhar) / 1322. O horizontal é o mesmo desenho (y 430..1360)
+ * escalado a 0,85 e centrado, como no `mkcard.cjs`. A linha de compartilhar
+ * vira "Compartilhe com" + o complemento, quebrado pela largura estimada da
+ * Georgia (tabela de avanços abaixo).
  *
  * Este módulo é puro (só monta texto: SVG, argumentos de ffmpeg, o clipitem do
  * xmeml). Quem renderiza (sharp + ffmpeg) é o `build` de `video-montagem.ts`,
@@ -29,6 +41,39 @@ export const CTA_CARD = {
   title: "Gostou?",
   like: "Curta o vídeo",
   follow: "Siga a diar.ia.br",
+} as const;
+
+/**
+ * Medidas do card aprovado (#12701), no quadro de desenho 1080x1920 do
+ * `YouTube/_marca/mkcard.cjs`. Tudo em px desse quadro.
+ */
+export const CTA_CARD_DESIGN = {
+  width: 1080,
+  height: 1920,
+  titlePx: 124,
+  titleBaseline: 560,
+  rule: { x: 440, y: 610, w: 200, h: 10 },
+  itemPx: 66,
+  /** x do início do texto dos itens. */
+  textX: 300,
+  /** x do centro dos ícones. */
+  iconCx: 200,
+  /** Distância entre as linhas do item de compartilhar. */
+  lineStep: 80,
+  like: { iconCy: 800, baseline: 822 },
+  /** Com 2 linhas; cada linha a mais desce o ícone 40 e o item seguinte 80. */
+  share: { iconCy: 1010, baseline: 1030 },
+  follow: { iconCy: 1300, baseline: 1322 },
+  /** Âncora do encolhimento do bloco de itens (borda esquerda dos ícones, centro vertical). */
+  itemsAnchor: { x: 155, y: 1060 },
+  /**
+   * Borda direita máxima do texto dos itens. Premissa (#12701): o PNG aprovado
+   * do `_marca/` tem "quem se interessa por IA" chegando a x ≈ 1022, sem
+   * encolher; o limite fica um pouco além disso (40 px de margem no quadro).
+   */
+  textRight: 1040,
+  /** Horizontal: o trecho y 430..1360 do desenho, escalado a 0,85 num quadro 1920x1080. */
+  horizontal: { scale: 0.85, top: 430, span: 930, refWidth: 1920, refHeight: 1080 },
 } as const;
 
 /** Linha de compartilhar quando o `blocks.json` não traz `ctaShare` (a da 261109, genérica). */
@@ -57,14 +102,36 @@ export function ctaCardFrames(fps: number, durationS: number = CTA_CARD.duration
   return Math.max(1, Math.round(durationS * fps));
 }
 
-/** Quebra gulosa por palavra em linhas de até `maxChars` (palavra maior que o limite fica sozinha na linha). */
-export function wrapCardText(text: string, maxChars: number): string[] {
+/**
+ * Avanço de cada caractere da Georgia regular, em milésimos do corpo (medido
+ * em 10/11/2026 renderizando a georgia.ttf pelo sharp/librsvg, #12701).
+ * Acento sai pela letra base; caractere fora da tabela conta 560.
+ */
+const GEORGIA_ADVANCE: Readonly<Record<string, number>> = {
+  " ": 242, a: 504, b: 560, c: 455, d: 575, e: 483, f: 325, g: 509, h: 582, i: 293, j: 292, k: 536, l: 287, m: 881,
+  n: 591, o: 539, p: 571, q: 560, r: 410, s: 433, t: 346, u: 576, v: 497, w: 737, x: 505, y: 493, z: 444,
+  A: 671, B: 654, C: 643, D: 749, E: 653, F: 600, G: 725, H: 815, I: 390, J: 518, K: 694, L: 604, M: 927, N: 768,
+  O: 745, P: 610, Q: 745, R: 702, S: 561, T: 619, U: 756, V: 667, W: 975, X: 711, Y: 615, Z: 602,
+  "0": 614, "1": 430, "2": 559, "3": 552, "4": 565, "5": 528, "6": 566, "7": 502, "8": 597, "9": 566,
+  ".": 270, ",": 270, ":": 313, ";": 313, "!": 331, "?": 479, "-": 374, "'": 215, '"': 412, "(": 375, ")": 375,
+  "/": 469, "&": 711, "@": 929, "#": 643, "%": 817, "+": 643, "*": 473,
+};
+
+/** Largura estimada de `text` em Georgia regular de `px` (soma dos avanços). */
+export function georgiaTextWidth(text: string, px: number): number {
+  let w = 0;
+  for (const ch of text.normalize("NFD").replace(/[̀-ͯ]/g, "")) w += GEORGIA_ADVANCE[ch] ?? 560;
+  return (w * px) / 1000;
+}
+
+/** Quebra gulosa por palavra em linhas de até `maxWidth` px em Georgia de `px` (palavra maior que o limite fica sozinha na linha). */
+export function wrapCardTextByWidth(text: string, px: number, maxWidth: number): string[] {
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let cur = "";
   for (const w of words) {
     if (!cur) cur = w;
-    else if (cur.length + 1 + w.length <= maxChars) cur += ` ${w}`;
+    else if (georgiaTextWidth(`${cur} ${w}`, px) <= maxWidth) cur += ` ${w}`;
     else {
       lines.push(cur);
       cur = w;
@@ -74,117 +141,107 @@ export function wrapCardText(text: string, maxChars: number): string[] {
   return lines;
 }
 
+/**
+ * As linhas do item de compartilhar: "Compartilhe com" sozinho na 1ª linha
+ * (como no card aprovado) e o complemento quebrado pela largura que sobra até
+ * `CTA_CARD_DESIGN.textRight`. Frase que não começa com "Compartilhe com"
+ * quebra inteira.
+ */
+export function ctaCardShareLines(share: string): string[] {
+  const D = CTA_CARD_DESIGN;
+  const maxW = D.textRight - D.textX;
+  const m = /^(compartilhe com)\s+(\S.*)$/i.exec(share.trim());
+  if (!m) return wrapCardTextByWidth(share, D.itemPx, maxW);
+  return [m[1], ...wrapCardTextByWidth(m[2], D.itemPx, maxW)];
+}
+
 const escapeXml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 
-type IconKind = "like" | "share" | "follow";
+/** Ícones do card aprovado (#12701), desenhados em torno de (0, 0), ~90 px. */
+export const CTA_CARD_ICONS = {
+  /** Coração. */
+  like: (c: string) => `<path d="M0,-28 C-10,-48 -42,-46 -42,-18 C-42,4 -18,22 0,40 C18,22 42,4 42,-18 C42,-46 10,-48 0,-28 Z" fill="${c}"/>`,
+  /** Seta de envio (avião de papel), não o "share" de 3 nós. */
+  share: (c: string) => `<path d="M-42,-38 L46,0 L-42,38 L-26,0 Z" fill="${c}"/>`,
+  /** "+" num círculo. */
+  follow: (c: string) =>
+    `<circle r="45" fill="none" stroke="${c}" stroke-width="9"/><rect x="-25" y="-5" width="50" height="10" fill="${c}"/><rect x="-5" y="-25" width="10" height="50" fill="${c}"/>`,
+} as const;
 
-/** Ícone teal num quadrado de lado `s` com canto em (x, y). */
-function iconSvg(kind: IconKind, x: number, y: number, s: number, color: string): string {
-  const r = (v: number) => Math.round(v * 100) / 100;
-  if (kind === "like") {
-    // Coração.
-    const cx = x + s / 2;
-    return (
-      `<path d="M ${r(cx)} ${r(y + s * 0.9)} C ${r(x - s * 0.15)} ${r(y + s * 0.45)}, ${r(x + s * 0.15)} ${r(y + s * 0.02)}, ${r(cx)} ${r(y + s * 0.28)} ` +
-      `C ${r(x + s * 0.85)} ${r(y + s * 0.02)}, ${r(x + s * 1.15)} ${r(y + s * 0.45)}, ${r(cx)} ${r(y + s * 0.9)} Z" fill="${color}"/>`
-    );
-  }
-  if (kind === "share") {
-    // Três nós ligados (o ícone de compartilhar).
-    const a = { x: x + s * 0.78, y: y + s * 0.2 };
-    const b = { x: x + s * 0.22, y: y + s * 0.5 };
-    const c = { x: x + s * 0.78, y: y + s * 0.8 };
-    const nr = s * 0.15;
-    const sw = s * 0.08;
-    return (
-      `<line x1="${r(a.x)}" y1="${r(a.y)}" x2="${r(b.x)}" y2="${r(b.y)}" stroke="${color}" stroke-width="${r(sw)}"/>` +
-      `<line x1="${r(c.x)}" y1="${r(c.y)}" x2="${r(b.x)}" y2="${r(b.y)}" stroke="${color}" stroke-width="${r(sw)}"/>` +
-      [a, b, c].map((p) => `<circle cx="${r(p.x)}" cy="${r(p.y)}" r="${r(nr)}" fill="${color}"/>`).join("")
-    );
-  }
-  // Seguir: "+" num círculo.
-  const cx = x + s / 2;
-  const cy = y + s / 2;
-  const arm = s * 0.24;
-  const sw = s * 0.11;
-  return (
-    `<circle cx="${r(cx)}" cy="${r(cy)}" r="${r(s * 0.46)}" fill="none" stroke="${color}" stroke-width="${r(s * 0.08)}"/>` +
-    `<line x1="${r(cx - arm)}" y1="${r(cy)}" x2="${r(cx + arm)}" y2="${r(cy)}" stroke="${color}" stroke-width="${r(sw)}" stroke-linecap="round"/>` +
-    `<line x1="${r(cx)}" y1="${r(cy - arm)}" x2="${r(cx)}" y2="${r(cy + arm)}" stroke="${color}" stroke-width="${r(sw)}" stroke-linecap="round"/>`
-  );
-}
-
-/** Geometria do card (exportada para teste): tamanhos relativos ao lado menor do quadro (1080 = 1). */
+/** Geometria do card (exportada para teste). */
 export interface CtaCardLayout {
-  unit: number;
-  titlePx: number;
-  rowPx: number;
-  iconPx: number;
-  /** Máximo de caracteres por linha num item (largura útil / largura média de um caractere). */
-  maxChars: number;
-  rows: Array<{ kind: IconKind; lines: string[] }>;
+  /** Escala do quadro de desenho 1080x1920 para o quadro da sequência. */
+  scale: number;
+  /** Translação do desenho no quadro (px do quadro). */
+  tx: number;
+  ty: number;
+  /** Encolhimento do bloco de itens (1 = sem encolher), só quando uma palavra não cabe mesmo quebrando. */
+  itemScale: number;
+  /** Linhas do item de compartilhar. */
+  shareLines: string[];
+  /** Borda direita estimada do texto dos itens no desenho, antes do encolhimento. */
+  itemsRight: number;
 }
 
 export function ctaCardLayout(width: number, height: number, share: string): CtaCardLayout {
-  const unit = Math.min(width, height) / 1080;
-  const titlePx = 120 * unit;
-  const rowPx = 58 * unit;
-  const iconPx = 64 * unit;
-  const gap = 36 * unit;
-  // Largura útil: 84% do quadro (vertical) ou 72% (horizontal), menos o ícone; Georgia ~0,5 em por caractere.
-  const usable = width * (height > width ? 0.84 : 0.72) - iconPx - gap;
-  const maxChars = Math.max(12, Math.floor(usable / (rowPx * 0.5)));
-  const rows: CtaCardLayout["rows"] = [
-    { kind: "like", lines: wrapCardText(CTA_CARD.like, maxChars) },
-    { kind: "share", lines: wrapCardText(share, maxChars) },
-    { kind: "follow", lines: wrapCardText(CTA_CARD.follow, maxChars) },
-  ];
-  return { unit, titlePx, rowPx, iconPx, maxChars, rows };
+  const D = CTA_CARD_DESIGN;
+  const shareLines = ctaCardShareLines(share);
+  const texts = [CTA_CARD.like, ...shareLines, CTA_CARD.follow];
+  const itemsRight = D.textX + Math.max(...texts.map((t) => georgiaTextWidth(t, D.itemPx)));
+  const itemScale = Math.min(1, (D.textRight - D.itemsAnchor.x) / (itemsRight - D.itemsAnchor.x));
+  let scale: number;
+  let tx: number;
+  let ty: number;
+  if (ctaCardOrientation(width, height) === "vertical") {
+    scale = Math.min(width / D.width, height / D.height);
+    tx = (width - D.width * scale) / 2;
+    ty = (height - D.height * scale) / 2;
+  } else {
+    // O trecho centrado cresce com as linhas a mais do compartilhar (o item de seguir desce junto).
+    const H = D.horizontal;
+    const span = H.span + (shareLines.length - 2) * D.lineStep;
+    scale = H.scale * Math.min(width / H.refWidth, height / H.refHeight);
+    tx = (width - D.width * scale) / 2;
+    ty = (height - span * scale) / 2 - H.top * scale;
+  }
+  return { scale, tx, ty, itemScale, shareLines, itemsRight };
 }
 
 /**
- * SVG do card no tamanho da sequência (#12571): fundo #111111, "Gostou?"
- * centrado em Georgia negrito com o fio teal embaixo, e os três itens
- * alinhados à esquerda num bloco centrado, ícone teal + texto branco. A fonte
- * tem fallback serif onde a Georgia não existe (o raster é por máquina).
+ * SVG do card no tamanho da sequência (#12571, desenho #12701): o card
+ * aprovado do `_marca/` (fundo #111111, "Gostou?" centrado em Georgia
+ * negrito com o fio teal embaixo, e os três itens com ícone teal + texto
+ * branco a partir de x = 300). A fonte tem fallback serif onde a Georgia não
+ * existe (o raster é por máquina).
  */
 export function ctaCardSvg(input: { width: number; height: number; share?: string | null }): string {
   const { width, height } = input;
-  const share = ctaShareLine(input.share);
-  const L = ctaCardLayout(width, height, share);
-  const lineH = L.rowPx * 1.25;
-  const rowGap = 34 * L.unit;
-  const titleGap = 90 * L.unit;
-  const ruleW = 160 * L.unit;
-  const ruleH = 8 * L.unit;
-  const rowsH = L.rows.reduce((acc, row) => acc + row.lines.length * lineH, 0) + rowGap * (L.rows.length - 1);
-  const blockH = L.titlePx + titleGap + rowsH;
-  let y = (height - blockH) / 2;
-  const titleBaseline = y + L.titlePx * 0.8;
-  const ruleY = titleBaseline + 28 * L.unit;
-  y += L.titlePx + titleGap;
-  const longest = Math.max(...L.rows.flatMap((row) => row.lines.map((l) => l.length)));
-  const textW = longest * L.rowPx * 0.5;
-  const gap = 36 * L.unit;
-  const left = Math.max(width * 0.06, (width - (L.iconPx + gap + textW)) / 2);
-  const r = (v: number) => Math.round(v * 100) / 100;
-  const parts: string[] = [];
-  for (const row of L.rows) {
-    const h = row.lines.length * lineH;
-    parts.push(iconSvg(row.kind, left, y + (Math.min(h, lineH) - L.iconPx) / 2, L.iconPx, CTA_CARD.accent));
-    row.lines.forEach((line, i) => {
-      parts.push(`<text x="${r(left + L.iconPx + gap)}" y="${r(y + i * lineH + lineH * 0.5 + L.rowPx * 0.35)}">${escapeXml(line)}</text>`);
-    });
-    y += h + rowGap;
-  }
+  const D = CTA_CARD_DESIGN;
+  const L = ctaCardLayout(width, height, ctaShareLine(input.share));
+  const r = (v: number) => Math.round(v * 1000) / 1000;
   const fontFamily = `${CTA_CARD.font}, 'DejaVu Serif', serif`;
+  const accent = CTA_CARD.accent;
+  const extra = (L.shareLines.length - 2) * D.lineStep;
+  const text = (y: number, s: string) => `<text x="${D.textX}" y="${r(y)}">${escapeXml(s)}</text>`;
+  const icon = (cy: number, svg: string) => `<g transform="translate(${D.iconCx},${r(cy)})">${svg}</g>`;
+  const items = [
+    icon(D.like.iconCy, CTA_CARD_ICONS.like(accent)),
+    text(D.like.baseline, CTA_CARD.like),
+    icon(D.share.iconCy + extra / 2, CTA_CARD_ICONS.share(accent)),
+    ...L.shareLines.map((l, i) => text(D.share.baseline + i * D.lineStep, l)),
+    icon(D.follow.iconCy + extra, CTA_CARD_ICONS.follow(accent)),
+    text(D.follow.baseline + extra, CTA_CARD.follow),
+  ];
+  const A = D.itemsAnchor;
+  const itemsTransform = L.itemScale < 1 ? ` transform="translate(${A.x},${A.y}) scale(${r(L.itemScale)}) translate(${-A.x},${-A.y})"` : "";
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
     `<rect x="0" y="0" width="${width}" height="${height}" fill="${CTA_CARD.background}"/>\n` +
-    `<text x="${r(width / 2)}" y="${r(titleBaseline)}" font-family="${fontFamily}" font-size="${Math.round(L.titlePx)}" font-weight="700" fill="${CTA_CARD.text}" text-anchor="middle">${escapeXml(CTA_CARD.title)}</text>\n` +
-    `<rect x="${r((width - ruleW) / 2)}" y="${r(ruleY)}" width="${r(ruleW)}" height="${r(ruleH)}" fill="${CTA_CARD.accent}"/>\n` +
-    `<g font-family="${fontFamily}" font-size="${Math.round(L.rowPx)}" fill="${CTA_CARD.text}">\n  ${parts.join("\n  ")}\n</g>\n</svg>\n`
+    `<g transform="translate(${r(L.tx)},${r(L.ty)}) scale(${r(L.scale)})">\n` +
+    `<text x="${D.width / 2}" y="${D.titleBaseline}" font-family="${fontFamily}" font-size="${D.titlePx}" font-weight="700" fill="${CTA_CARD.text}" text-anchor="middle">${escapeXml(CTA_CARD.title)}</text>\n` +
+    `<rect x="${D.rule.x}" y="${D.rule.y}" width="${D.rule.w}" height="${D.rule.h}" fill="${accent}"/>\n` +
+    `<g font-family="${fontFamily}" font-size="${D.itemPx}" fill="${CTA_CARD.text}"${itemsTransform}>\n  ${items.join("\n  ")}\n</g>\n</g>\n</svg>\n`
   );
 }
 

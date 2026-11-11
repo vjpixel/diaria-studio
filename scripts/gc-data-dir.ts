@@ -464,7 +464,7 @@ export function main(
   }
 
   if (!existsSync(dataRoot)) {
-    console.error(`[gc-data-dir] ${dataRoot} não existe — nada a fazer (ver CLAUDE.md setup, passo 2b).`);
+    console.error(`[gc-data-dir] ${dataRoot} não existe — nada a fazer (ver docs/setup.md, passo 2b).`);
     return;
   }
 

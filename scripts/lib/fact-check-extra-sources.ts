@@ -38,6 +38,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { fetchSourceText } from "../fetch-source-text.ts";
 import { parseDestaques } from "../extract-destaques.ts";
+import type { SourceCompleteness } from "./diaria/paywall-preview.ts";
 
 export type ExtraSourceOrigin = "cluster" | "aprofunde" | "editor";
 
@@ -53,6 +54,16 @@ export interface ExtraSourceEntry {
   erro: string | null;
   bytes: number;
   fetched_at: string;
+  /**
+   * (#12537) Só em `status: "ok"`, mesmo contrato do `ManifestEntry` da fonte
+   * principal: `preview` = a extra é a prévia do paywall, não o artigo inteiro.
+   * Ausente em `extras.json` anterior a este campo (lido como desconhecido).
+   */
+  completeness?: SourceCompleteness;
+  /** (#12537) Sinais de paywall achados na página (vazio = página aberta). */
+  paywall_signals?: string[];
+  /** (#12537) Palavras do texto extraído. */
+  words?: number;
 }
 
 export interface ExtraSourceCandidate {
@@ -170,7 +181,15 @@ async function fetchInto(
   const base = { destaque: cand.destaque, k, url: cand.url, origin: cand.origin, primary_url: primaryUrl, fetched_at };
   if (r.ok) {
     writeFileSync(join(sourcesDir, extraSourceFileName(cand.destaque, k)), r.text, "utf8");
-    return { ...base, status: "ok", erro: null, bytes: r.bytes };
+    return {
+      ...base,
+      status: "ok",
+      erro: null,
+      bytes: r.bytes,
+      completeness: r.paywall.completeness,
+      paywall_signals: r.paywall.signals,
+      words: r.paywall.words,
+    };
   }
   return { ...base, status: r.kind === "blocked" ? "blocked" : "error", erro: r.message, bytes: 0 };
 }

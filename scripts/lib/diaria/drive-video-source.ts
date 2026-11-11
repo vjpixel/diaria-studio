@@ -24,7 +24,7 @@
  *   `/diaria-youtube`).
  *
  * Escopo (premissa, medida na pasta real em 25/10/2026): a pasta
- * `Mentoria Fluxo/VTSD/YouTube` tem uma subpasta por edição (`261021/`,
+ * de vídeo (`Mentoria Fluxo/VTSD/YouTube` até a #12578, hoje `diaria-studio-video`) tem uma subpasta por edição (`261021/`,
  * `261022/`, `261023/`), com os brutos e as versões.
  * - **Subpasta `{AAMMDD}/` existe** → só ela conta, sem janela de tempo (o
  *   nome da pasta já diz o dia). Sem candidato da orientação pedida lá dentro

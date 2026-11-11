@@ -107,7 +107,8 @@ export function canonicalize(url: string): string {
  * #12592: domínios que servem a MESMA página sob prefixo de idioma no caminho
  * (`openai.com/pt-BR/index/x` = `openai.com/index/x`). Neles, até o prefixo
  * curto de 2 letras (`/pt/`, `/en/`) é idioma. Fora desta lista só o formato
- * com região (`/pt-BR/`, `/en-us/`, `/zh-Hans/`) é tratado como idioma: um
+ * com região (`/pt-BR/`, `/en-us/`, `/zh-Hans/`, com língua e região das listas
+ * `LOCALE_*` abaixo, #12800) é tratado como idioma: um
  * segmento de 2 letras solto pode ser seção real (`/it/`, `/ai/`). O domínio
  * casa o hostname exato ou qualquer subdomínio.
  */
@@ -123,8 +124,42 @@ export const LOCALE_PATH_DOMAINS: ReadonlyArray<string> = [
   "meta.com",
 ];
 
-const LOCALE_WITH_REGION = /^[a-z]{2}[-_](?:[a-z]{2}|[a-z]{4})$/i;
+const LOCALE_WITH_REGION = /^([a-z]{2})[-_]([a-z]{2}|[a-z]{4})$/i;
 const LOCALE_BARE = /^[a-z]{2}$/i;
+
+/**
+ * #12800: o formato `xx-yy` sozinho casava slug comum (`ai-news`, `my-blog`,
+ * `go-live`, `lg-ai`) em qualquer domínio e o tirava da chave de dedup, que
+ * fundia URLs distintas. Agora o prefixo com região só é idioma quando a
+ * língua E a região (ou script) estão nestas listas, curadas com os locales
+ * que sites de notícia e de empresas de IA usam de fato. Lista fechada de
+ * propósito: um locale raro fora dela só deixa de ser deduplicado (o
+ * comportamento anterior ao #12592), enquanto um código amplo demais volta a
+ * descartar candidato legítimo em silêncio. `my` (birmanês) e `lg` (ganda)
+ * ficam de fora porque colidem com slugs (`my-blog`, `lg-ai`).
+ */
+const LOCALE_LANGS: ReadonlySet<string> = new Set([
+  "pt", "en", "es", "fr", "de", "it", "nl", "ja", "zh", "ko", "ru", "ar",
+  "pl", "tr", "sv", "da", "fi", "nb", "cs", "he", "hi", "id", "th", "vi",
+  "uk", "el", "hu", "ro", "ms", "bg", "hr", "sk", "sl", "ca", "fa", "bn",
+]);
+const LOCALE_REGIONS: ReadonlySet<string> = new Set([
+  "br", "pt", "us", "gb", "uk", "au", "ca", "in", "ie", "nz", "za", "sg",
+  "ph", "mx", "es", "ar", "co", "cl", "pe", "fr", "be", "ch", "lu", "de",
+  "at", "it", "nl", "jp", "cn", "tw", "hk", "kr", "ru", "pl", "tr", "se",
+  "dk", "fi", "no", "cz", "il", "id", "th", "vn", "ua", "gr", "hu", "ro",
+  "my", "ae", "sa", "eg",
+]);
+const LOCALE_SCRIPTS: ReadonlySet<string> = new Set(["hans", "hant", "latn", "cyrl"]);
+
+function isLocaleWithRegion(segment: string): boolean {
+  const m = LOCALE_WITH_REGION.exec(segment);
+  if (!m) return false;
+  const lang = m[1].toLowerCase();
+  const tail = m[2].toLowerCase();
+  if (!LOCALE_LANGS.has(lang)) return false;
+  return tail.length === 2 ? LOCALE_REGIONS.has(tail) : LOCALE_SCRIPTS.has(tail);
+}
 
 function isLocalePathDomain(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^www\./, "");
@@ -144,8 +179,20 @@ export function dedupUrlKey(url: string): string {
     const segments = u.pathname.split("/");
     // pathname começa com "/", então segments[0] === "" e o 1º segmento é [1].
     const first = segments[1] ?? "";
-    const isLocale =
-      LOCALE_WITH_REGION.test(first) || (LOCALE_BARE.test(first) && isLocalePathDomain(u.hostname));
+    const localeDomain = isLocalePathDomain(u.hostname);
+    // #12800: o blog.google põe o idioma no 2º segmento (`/intl/pt-br/...`).
+    // Só nos domínios com idioma no caminho, `intl` + idioma sai junto.
+    const second = segments[2] ?? "";
+    if (
+      localeDomain &&
+      first.toLowerCase() === "intl" &&
+      (isLocaleWithRegion(second) || LOCALE_BARE.test(second))
+    ) {
+      segments.splice(1, 2);
+      u.pathname = segments.join("/") || "/";
+      return u.toString();
+    }
+    const isLocale = isLocaleWithRegion(first) || (LOCALE_BARE.test(first) && localeDomain);
     if (!isLocale) return canon;
     segments.splice(1, 1);
     u.pathname = segments.join("/") || "/";

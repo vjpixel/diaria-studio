@@ -429,7 +429,9 @@ Passos 4-7** (todos levam até ela): parar e reportar.
 ## Passo 4 — e-mail (canal `email`, Kit)
 
 Pulado se `--skip email` ou já `done` sem `--force`. O publisher não mudou no
-#9474 — só passou a ser um canal do loop.
+#9474 — só passou a ser um canal do loop. **`email: pending` com broadcast Kit
+já registrado (rascunho, #12739) não volta ao 4b** (o guard de idempotência
+recusaria): é o 4c que falta, depois de o editor enviar/agendar pela UI.
 
 ### 4a — Reservar o ciclo (opcional, recomendado)
 
@@ -497,6 +499,12 @@ edição diária pesada (decisão 1 do #4482) → Send/Schedule pela UI → 4c.
 npx tsx scripts/send-monthly-apoiadores.ts --cycle $CYCLE --mark-sent
 npx tsx scripts/mark-retrospectiva-channel.ts --cycle $CYCLE --sync-email
 ```
+
+Desde o #12739 o `--mark-sent` RELÊ o broadcast no Kit e só grava `sent` com
+status `scheduled` (com `send_at`), `sending` ou `completed`; rascunho, releitura
+que falha ou `KIT_API_KEY` ausente saem `exit 1` sem tocar o state (o 2609-10
+ficou `sent` com o broadcast 26211180 em rascunho). No state por canal, rascunho
+é `email: pending`, nunca `done`.
 
 Grava `status: "sent"` + `sentAt`. Sem isso nada registra que o ciclo saiu, e
 o 4a continuaria "permitido" indefinidamente; depois de marcado, um novo 4a/4b

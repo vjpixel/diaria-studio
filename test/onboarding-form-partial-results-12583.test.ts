@@ -115,8 +115,8 @@ describe("#12583 buildFormPartialResults", () => {
     assert.ok(!r.perguntas.some((q) => q.id === "conversa"));
     assert.equal(r.conversa.toparam, 2);
     assert.deepEqual(r.conversa.pessoas, [
-      { email: "base@x.com", data: "2026-11-10", origem: "base" },
-      { email: "antigo@x.com", data: "2026-11-09", origem: "base" },
+      { email: "base@x.com", data: "2026-11-10", origem: "base", persona2: false, maior_gasto: null, gasto_mensal: null },
+      { email: "antigo@x.com", data: "2026-11-09", origem: "base", persona2: false, maior_gasto: null, gasto_mensal: null },
     ]);
   });
 

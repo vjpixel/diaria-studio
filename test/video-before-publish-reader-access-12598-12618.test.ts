@@ -221,11 +221,12 @@ describe("#12618: edição marcada sem vídeo, com o convite do vídeo ainda na 
     });
   });
 
-  it("retry de canal com a Etapa 5 concluída não bloqueia", () => {
+  it("retry de canal com a Etapa 5 concluída continua BLOQUEANDO no-video-stale (#12805)", () => {
     withDir({ ...marker, "06-public-images.json": cacheWithPlay, [STAGE5_DONE_FILE]: "{}" }, (dir) => {
       const r = assessVideoBeforePublish(dir, "261111");
       assert.equal(r.status, "no-video-stale");
-      assert.equal(r.blocking, false);
+      assert.equal(r.blocking, true);
+      assert.doesNotMatch(r.warning ?? "", /retry de canal/);
     });
   });
 

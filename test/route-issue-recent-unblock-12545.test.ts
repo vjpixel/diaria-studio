@@ -105,21 +105,26 @@ describe("#12545 — routeIssue não devolve a bloqueada uma issue recém-destra
     assert.match(run({ overrideNewer: "relido" }).result.error ?? "", /#12545/);
   });
 
-  it("depois de 24 h o destravamento deixa de segurar o roteamento", () => {
+  it("depois de 24 h o destravamento deixa de segurar o roteamento (quem recusa passa a ser o #12744)", () => {
     const { result } = run({ now: new Date("2026-11-09T15:00:00Z"), triagedAt: "2026-11-09T14:50:00Z" });
-    assert.equal(result.ok, true, result.error);
+    assert.doesNotMatch(result.error ?? "", /#12545/);
+    assert.match(result.error ?? "", /#12744/);
   });
 
   it("comentário explicativo de conta externa não conta como destravamento", () => {
     const thread = THREAD_12348.map((c) => (c.body === EXPLICA_14_44 ? { ...c, authorAssociation: "NONE" } : c));
-    assert.equal(run({}, thread).result.ok, true);
+    const { result } = run({}, thread);
+    assert.doesNotMatch(result.error ?? "", /#12545/);
+    assert.match(result.error ?? "", /#12744/);
   });
 
-  it("issue roteada para overnight sem destravamento (decisão → bloqueio de execução, #5373 item 5) segue livre", () => {
+  it("issue roteada para overnight sem destravamento (decisão → bloqueio de execução, #5373 item 5) fica livre do #12545", () => {
     const thread: Comment[] = [
       { body: "<!-- route-issue: track=overnight -->\n\nRoteado para **overnight** — decidido no briefing 261108", createdAt: "2026-11-08T22:00:00Z", authorAssociation: "OWNER" },
     ];
-    const { result } = run({ reason: "a execução exige conta de terceiro" }, thread);
+    // Livre do #12545; desde o #12744 a razão precisa citar o roteamento.
+    assert.match(run({ reason: "a execução exige conta de terceiro" }, thread).result.error ?? "", /#12744/);
+    const { result } = run({ reason: "roteada para overnight no briefing 261108, mas a execução exige conta de terceiro" }, thread);
     assert.equal(result.ok, true, result.error);
   });
 
