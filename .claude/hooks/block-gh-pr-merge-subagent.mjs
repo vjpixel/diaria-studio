@@ -134,6 +134,7 @@ import {
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 import {
   combineWithD1LockHolders,
+  d1HookFailureNotice,
   d1LocksClientForHook,
   d1ReadLockHolder,
   mergeGrantConsumedD1Name,
@@ -1448,6 +1449,21 @@ export function combineMergeLockHolders(holders, callerSessionId) {
 }
 
 /**
+ * #12842: holder efetivo do merge lock com o D1, para N repos. Combina o
+ * arquivo e o D1 de CADA repo (`combineWithD1LockHolders`, mesma posição em
+ * `localHolders` e `d1HoldersByRepo`) e só então colapsa os repos
+ * (`combineMergeLockHolders`). Colapsar antes e somar o D1 depois deixava o
+ * lock do 1º repo cobrir o 2º: arquivo [eu, livre] + D1 [eu, livre] virava
+ * "eu" e o merge multi-repo passava sem o lock do 2º (#10776, review P1-b).
+ */
+export function combineMergeLockHoldersWithD1(localHolders, d1HoldersByRepo, callerSessionId) {
+  return combineMergeLockHolders(
+    localHolders.map((h, i) => combineWithD1LockHolders(h, d1HoldersByRepo[i] ?? [], callerSessionId)),
+    callerSessionId,
+  );
+}
+
+/**
  * Dica de saída para a coordenadora que deu `cd` num worktree de agente e
  * teve o `gh pr merge` vetado por `callerInLinkedWorktree` (#11449, rodada
  * 261027e). O `cd` tem de ser um comando PRÓPRIO: `payload.cwd` é o cwd da
@@ -1742,28 +1758,48 @@ if (
       // #12842: o merge lock e a marca de consumo da concessão também vivem
       // no D1, que exclui ENTRE máquinas (o arquivo de data/sessions/ não,
       // #6182). Os dois lados entram: o holder do D1 soma ao do arquivo
-      // (`combineWithD1LockHolders`, regras no docblock dela). D1 que não
-      // respondeu fica de fora com rastro no run-log e vale só o arquivo:
-      // falha transitória nunca bloqueia merge (nem libera um que o arquivo
-      // bloquearia).
+      // (`combineWithD1LockHolders`, POR REPO, antes de colapsar os repos —
+      // regras no docblock dela). D1 que não respondeu fica de fora daquele
+      // repo, com rastro no run-log e aviso visível (`systemMessage`): falha
+      // do D1 nunca bloqueia merge (nem libera um que o arquivo bloquearia),
+      // mas também não passa em silêncio.
       const d1 = d1LocksClientForHook(repoRoot);
-      if (d1.reason) appendHookRunLog(repoRoot, "merge-guard", "warn", "d1_locks_unavailable", { reason: d1.reason });
-      const d1LockHolders = [];
+      const d1Notices = [];
+      if (d1.reason) {
+        appendHookRunLog(repoRoot, "merge-guard", "warn", "d1_locks_unavailable", { reason: d1.reason });
+        d1Notices.push(`d1-locks (#12842): D1 configurado mas indisponível (${d1.reason}) — valeu só o lock LOCAL.`);
+      }
+      // Uma posição por repo, sempre: leitura que falhou vira `[]` (sem
+      // resposta) naquela posição, nunca some da lista.
+      const d1HoldersByRepo = targetRepos.map(() => []);
       let d1GrantConsumed = false;
       if (d1.client) {
         const [lockReads, markerRead] = await Promise.all([
           Promise.all(targetRepos.map((r) => d1ReadLockHolder(d1.client, mergeLockD1Name(r)))),
           grant !== null ? d1ReadLockHolder(d1.client, mergeGrantConsumedD1Name(grant)) : Promise.resolve(null),
         ]);
-        for (const r of lockReads) {
-          if (r.ok) d1LockHolders.push(r.value);
-          else appendHookRunLog(repoRoot, "merge-guard", "warn", "d1_lock_read_failed", { error: r.error });
-        }
+        lockReads.forEach((r, i) => {
+          if (r.ok) {
+            d1HoldersByRepo[i] = [r.value];
+            return;
+          }
+          appendHookRunLog(repoRoot, "merge-guard", r.permanent ? "error" : "warn", "d1_lock_read_failed", {
+            repo: targetRepos[i],
+            error: r.error,
+            permanent: r.permanent,
+          });
+          d1Notices.push(d1HookFailureNotice(`merge lock de ${targetRepos[i]}`, r.error, r.permanent));
+        });
         if (markerRead !== null && markerRead.ok) d1GrantConsumed = typeof markerRead.value === "string";
         else if (markerRead !== null) {
-          appendHookRunLog(repoRoot, "merge-guard", "warn", "d1_grant_marker_read_failed", { error: markerRead.error });
+          appendHookRunLog(repoRoot, "merge-guard", markerRead.permanent ? "error" : "warn", "d1_grant_marker_read_failed", {
+            error: markerRead.error,
+            permanent: markerRead.permanent,
+          });
+          d1Notices.push(d1HookFailureNotice("marca de consumo da concessão", markerRead.error, markerRead.permanent));
         }
       }
+      if (d1Notices.length > 0) process.stderr.write(`${d1Notices.join("\n")}\n`);
       // Concessão já consumida segundo o D1 (consumo gravado por outra
       // máquina cujo registro ainda não sincronizou): não vale mais.
       const liveGrant = d1GrantConsumed ? null : grant;
@@ -1780,13 +1816,11 @@ if (
         selfAuthPr: selfAuthStillValid ? selfAuth?.pr : undefined,
         targetPr,
         // #10618: o lock de CADA repo envolvido; o mais restritivo decide.
-        // #12842: o D1 entra por cima do arquivo (`combineWithD1LockHolders`).
-        mergeLockHolder: combineWithD1LockHolders(
-          combineMergeLockHolders(
-            targetRepos.map((r) => readMergeLockHolder(repoRoot, Date.now(), r)),
-            payload.session_id,
-          ),
-          d1LockHolders,
+        // #12842: o D1 entra por cima do arquivo, repo a repo
+        // (`combineWithD1LockHolders`), e só então os repos colapsam.
+        mergeLockHolder: combineMergeLockHoldersWithD1(
+          targetRepos.map((r) => readMergeLockHolder(repoRoot, Date.now(), r)),
+          d1HoldersByRepo,
           payload.session_id,
         ),
         // #6303 Finding B: varredura degradada não pode alimentar a
@@ -1821,9 +1855,12 @@ if (
         scanDegraded: scan.degraded,
         mergeLockHolder: ctx.mergeLockHolder,
       });
+      // #12842: falha do D1 aparece ao usuário, permita ou bloqueie.
+      const d1SystemMessage = d1Notices.length > 0 ? { systemMessage: d1Notices.join("\n") } : {};
       if (blockCause !== null) {
         process.stdout.write(
           JSON.stringify({
+            ...d1SystemMessage,
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               permissionDecision: "deny",
@@ -1837,7 +1874,9 @@ if (
           }),
         );
       }
-      // Sem bloqueio: não emitir nada — cai no fluxo normal de permissão.
+      // Sem bloqueio: não emitir decisão — cai no fluxo normal de permissão.
+      // Só o aviso do D1, quando houver (`systemMessage` não decide nada).
+      else if (d1Notices.length > 0) process.stdout.write(JSON.stringify(d1SystemMessage));
     } catch {
       // Fail-open, sempre: um hook quebrado não pode travar `gh pr merge`
       // legítimo de uma sessão coordenadora ou interativa comum.

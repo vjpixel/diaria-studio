@@ -6,8 +6,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  D1HttpError,
   createD1RestClient,
   d1AcquireLock,
+  d1FallbackWarning,
+  isPermanentD1Error,
   d1ReadLock,
   d1ReleaseLock,
   d1RenewLock,
@@ -159,6 +162,81 @@ describe("D1 indisponível", () => {
     const replica: D1Client = { query: async () => ({ results: [{ holder: "A", acquired_at: 1, expires_at: 9e15 }], servedByPrimary: false }) };
     const r = await d1AcquireLock(replica, "n", "A", TTL);
     assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.permanent, true, "réplica é erro permanente, não queda passageira");
+  });
+
+  it("P1-a: INSERT respondido sem linha + leitura do holder falhando = derrota (ok:true, acquired:false), nunca fallback", async () => {
+    const real = createFakeD1();
+    await d1AcquireLock(real, "n", "outra-maquina", TTL, { now: T0 });
+    // Mesmo banco, mas toda leitura (SELECT) falha depois do INSERT.
+    const flaky: D1Client = {
+      async query(sql, params) {
+        if (sql.startsWith("SELECT")) throw new Error("fetch failed (timeout na leitura)");
+        return real.query(sql, params);
+      },
+    };
+    const r = await d1AcquireLock(flaky, "n", "eu", TTL, { now: T0 + 1 });
+    assert.equal(r.ok, true, "derrota no D1 não pode virar ok:false (o chamador cairia no lock local e ganharia)");
+    assert.ok(r.ok);
+    assert.equal(r.value.acquired, false);
+    assert.equal(r.value.current, null);
+  });
+
+  it("P1-a: só o INSERT sem resposta devolve ok:false", async () => {
+    const r = await d1AcquireLock(failingD1(), "n", "eu", TTL);
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.permanent, false);
+  });
+});
+
+describe("classificação de erro do D1", () => {
+  it("rede/timeout/5xx/429 = transitório; 4xx, tabela ausente, envelope = permanente", () => {
+    assert.equal(isPermanentD1Error(new Error("fetch failed")), false);
+    assert.equal(isPermanentD1Error(Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" })), false);
+    assert.equal(isPermanentD1Error(new D1HttpError("HTTP 500", 500)), false);
+    assert.equal(isPermanentD1Error(new D1HttpError("HTTP 429", 429)), false);
+    assert.equal(isPermanentD1Error(new D1HttpError("HTTP 401", 401)), true);
+    assert.equal(isPermanentD1Error(new D1HttpError("HTTP 403", 403)), true);
+    assert.equal(isPermanentD1Error(new Error("D1 query: HTTP 400 — 7500: no such table: locks")), true);
+    assert.equal(isPermanentD1Error(new Error("D1 query: envelope inválido: {}")), true);
+  });
+
+  it("cliente REST: HTTP 403 vira D1HttpError permanente; 503 transitório", async () => {
+    const mk = (status: number) =>
+      createD1RestClient({
+        accountId: "a",
+        token: "t",
+        databaseId: "d",
+        fetchFn: async () => new Response(JSON.stringify({ success: false, errors: [{ code: 1, message: "x" }] }), { status }),
+      });
+    const forbidden = await d1ReadLock(mk(403), "n");
+    assert.ok(!forbidden.ok && forbidden.permanent);
+    const unavailable = await d1ReadLock(mk(503), "n");
+    assert.ok(!unavailable.ok && !unavailable.permanent);
+  });
+
+  it("aviso: permanente diz ERRO PERMANENTE; transitório diz indisponível", () => {
+    assert.match(d1FallbackWarning("x", "e", true), /ERRO PERMANENTE/);
+    assert.match(d1FallbackWarning("x", "e"), /D1 indisponível em x/);
+  });
+});
+
+describe("timeout do cliente REST", () => {
+  it("fetch pendurado que honra o signal: falha transitória dentro do timeout", async () => {
+    const client = createD1RestClient({
+      accountId: "a",
+      token: "t",
+      databaseId: "d",
+      timeoutMs: 50,
+      fetchFn: (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+        }),
+    });
+    const t0 = Date.now();
+    const r = await d1ReadLock(client, "n");
+    assert.ok(Date.now() - t0 < 2000);
+    assert.ok(!r.ok && !r.permanent);
   });
 });
 

@@ -35,14 +35,19 @@
  * ## Falha
  *
  * Toda operação devolve `D1LockResult`: `{ ok: false }` = o D1 não respondeu
- * (rede, timeout, HTTP, credencial, banco não configurado). O chamador cai no
- * lock LOCAL e avisa — nunca bloqueia merge legítimo por falha transitória.
+ * ou respondeu com erro. O chamador cai no lock LOCAL e avisa — nunca bloqueia
+ * merge legítimo por falha do D1. `permanent` separa as duas classes:
+ * transitória (rede, timeout, HTTP 5xx/429) → aviso de fallback; permanente
+ * (HTTP 4xx como 401/403/404, `no such table`, resposta de réplica, envelope
+ * inesperado) → aviso de ERRO de configuração, que não se resolve sozinho
+ * (`d1FallbackWarning(..., permanent)`), e o chamador registra no run-log.
  * Parâmetros vão como string porque a REST documenta `params: string[]`; o
  * SQL faz `CAST`.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseDotenv } from "dotenv";
+import { logEvent } from "./run-log.ts";
 
 /** Tabela única de locks. `name` é o recurso; `holder` quem segura. */
 export const D1_LOCKS_SCHEMA_SQL =
@@ -73,12 +78,36 @@ export interface D1Client {
   query: (sql: string, params: string[]) => Promise<D1QueryResult>;
 }
 
-export type D1LockResult<T> = { ok: true; value: T } | { ok: false; error: string };
+export type D1LockResult<T> = { ok: true; value: T } | { ok: false; error: string; permanent: boolean };
+
+/** Erro HTTP do D1 com o status, para classificar transitório × permanente. */
+export class D1HttpError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "D1HttpError";
+    this.status = status;
+  }
+}
+
+/**
+ * `true` = erro que não se resolve sozinho (credencial, banco/tabela
+ * inexistente, réplica, formato inesperado). `false` = transitório (rede,
+ * timeout, 5xx, 429): o fallback com aviso é o comportamento certo.
+ */
+export function isPermanentD1Error(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/no such table|served_by_primary|envelope inválido/i.test(msg)) return true;
+  if (e instanceof D1HttpError) return e.status !== 429 && e.status >= 400 && e.status < 500;
+  return false;
+}
 
 export const D1_REST_TIMEOUT_MS = 4_000;
 const API_BASE = "https://api.cloudflare.com/client/v4";
 
 export interface D1RestConfig {
+  /** Base da API (fora do default, só loopback — ver `loopbackApiBase`). */
+  apiBase?: string;
   accountId: string;
   token: string;
   databaseId: string;
@@ -100,7 +129,7 @@ export function createD1RestClient(cfg: D1RestConfig): D1Client {
   const rawFetch = cfg.fetchFn ?? ((url: string, init?: RequestInit) => fetch(url, init));
   const timeoutMs = cfg.timeoutMs ?? D1_REST_TIMEOUT_MS;
   const url =
-    `${API_BASE}/accounts/${encodeURIComponent(cfg.accountId)}` +
+    `${cfg.apiBase ? `${cfg.apiBase}/client/v4` : API_BASE}/accounts/${encodeURIComponent(cfg.accountId)}` +
     `/d1/database/${encodeURIComponent(cfg.databaseId)}/query`;
   return {
     async query(sql, params) {
@@ -115,11 +144,11 @@ export function createD1RestClient(cfg: D1RestConfig): D1Client {
       try {
         json = JSON.parse(text) as D1Envelope;
       } catch {
-        throw new Error(`D1 query: HTTP ${res.status} com corpo não-JSON: ${text.slice(0, 200)}`);
+        throw new D1HttpError(`D1 query: HTTP ${res.status} com corpo não-JSON: ${text.slice(0, 200)}`, res.status);
       }
       if (!res.ok || json?.success === false) {
         const msgs = (json?.errors ?? []).map((e) => `${e.code ?? "?"}: ${e.message ?? ""}`).join("; ");
-        throw new Error(`D1 query: HTTP ${res.status} — ${msgs || text.slice(0, 200)}`);
+        throw new D1HttpError(`D1 query: HTTP ${res.status} — ${msgs || text.slice(0, 200)}`, res.status);
       }
       const first = Array.isArray(json.result) ? json.result[0] : undefined;
       if (!first || first.success === false || !Array.isArray(first.results)) {
@@ -182,21 +211,37 @@ export function resolveD1LocksSettings(
 }
 
 /**
+ * Base da API sobrescrita SÓ para loopback (`DIARIA_D1_API_BASE`, teste e2e
+ * do CLI com um D1 falso em 127.0.0.1). Qualquer outro host é ignorado: a
+ * variável nunca desvia o token para fora da Cloudflare. Mesma regra do
+ * `loopbackApiBase` do lado hook (`lib/d1-locks.mjs`).
+ */
+export function loopbackApiBase(env: Record<string, string | undefined> = process.env): string | null {
+  const v = String(env.DIARIA_D1_API_BASE ?? "").trim();
+  return /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(v) ? v : null;
+}
+
+/**
  * Cliente D1 do processo, a partir do checkout `repoRoot`. `null` = sem D1
  * (o motivo vai em `onUnavailable` quando não é o silencioso `unconfigured`).
- * Sob `node --test` nunca fala com a Cloudflare real.
+ * Sob `node --test` nunca fala com a Cloudflare real: só com a base loopback
+ * de `DIARIA_D1_API_BASE` (o D1 falso do teste).
  */
 export function d1LocksClientFromRepo(
   repoRoot: string,
   env: Record<string, string | undefined> = process.env,
   onUnavailable: (reason: string) => void = () => {},
 ): D1Client | null {
-  if (env.NODE_TEST_CONTEXT) return null;
+  const apiBase = loopbackApiBase(env);
+  if (env.NODE_TEST_CONTEXT && apiBase === null) return null;
   let cfg: unknown = null;
+  const p = join(repoRoot, "platform.config.json");
   try {
-    const p = join(repoRoot, "platform.config.json");
     if (existsSync(p)) cfg = JSON.parse(readFileSync(p, "utf8"));
-  } catch {
+  } catch (e) {
+    // Config ilegível desliga o D1 — nunca em silêncio: o banco pode estar
+    // provisionado e esta máquina voltar ao lock só-local sem ninguém saber.
+    onUnavailable(`platform.config.json ilegível (${errMsg(e)})`);
     cfg = null;
   }
   // `.env` do checkout completa o que o ambiente não tem (o CLI do
@@ -214,7 +259,7 @@ export function d1LocksClientFromRepo(
     onUnavailable(r.reason);
     return null;
   }
-  return createD1RestClient(r.settings);
+  return createD1RestClient({ ...r.settings, ...(apiBase ? { apiBase } : {}) });
 }
 
 // ─── operações ─────────────────────────────────────────────────────────────
@@ -237,10 +282,16 @@ export interface AcquireOptions {
 
 export interface AcquireOutcome {
   acquired: boolean;
-  /** Quem segura depois da tentativa (o próprio chamador quando `acquired`). */
+  /**
+   * Quem segura depois da tentativa (o próprio chamador quando `acquired`).
+   * Na recusa pode vir `null` com o lock tomado por outro: a leitura do
+   * holder falhou depois de o INSERT ter respondido sem a nossa linha.
+   */
   current: D1LockHolder | null;
   /** O lock já era deste `holder` antes (só com `reentrant`). */
   refreshed?: boolean;
+  /** Relógio do D1 na leitura do holder (recusa), quando disponível. */
+  serverNowMs?: number;
 }
 
 function toHolder(row: Record<string, unknown> | undefined): D1LockHolder | null {
@@ -253,6 +304,10 @@ function toHolder(row: Record<string, unknown> | undefined): D1LockHolder | null
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+function failure(e: unknown): { ok: false; error: string; permanent: boolean } {
+  return { ok: false, error: errMsg(e), permanent: isPermanentD1Error(e) };
 }
 
 async function run(client: D1Client, sql: string, params: string[]): Promise<Record<string, unknown>[]> {
@@ -283,6 +338,12 @@ export const READ_SQL = `SELECT holder, acquired_at, expires_at, ${nowParam(2)} 
  * venceu (`expires_at <= agora`), ou nos casos de `reentrant`/`force`. Em
  * corrida, o primário serializa os dois statements e só um recebe a linha no
  * RETURNING.
+ *
+ * `{ ok: false }` (fallback local no chamador) só quando o próprio INSERT não
+ * respondeu (#12842 review P1-a). INSERT respondido sem a nossa linha é
+ * derrota definitiva: se a leitura seguinte do holder falhar, volta
+ * `acquired: false, current: null` — nunca `ok: false`, que faria o
+ * chamador cair no lock local e GANHAR o que acabou de perder no D1.
  */
 export async function d1AcquireLock(
   client: D1Client,
@@ -292,9 +353,11 @@ export async function d1AcquireLock(
   opts: AcquireOptions = {},
 ): Promise<D1LockResult<AcquireOutcome>> {
   const now = opts.now === undefined ? "" : String(opts.now);
+  let before: Awaited<ReturnType<typeof d1ReadLockRaw>> = null;
+  let rows: Record<string, unknown>[];
   try {
-    const before = opts.reentrant ? await d1ReadLockRaw(client, name, now) : null;
-    const rows = await run(client, ACQUIRE_SQL, [
+    before = opts.reentrant ? await d1ReadLockRaw(client, name, now) : null;
+    rows = await run(client, ACQUIRE_SQL, [
       name,
       holder,
       now,
@@ -303,15 +366,28 @@ export async function d1AcquireLock(
       opts.reentrant ? "1" : "0",
       opts.force ? "1" : "0",
     ]);
-    const won = toHolder(rows[0]);
-    if (won && won.holder === holder) {
-      const refreshed = Boolean(before && before.live && before.row.holder === holder);
-      return { ok: true, value: { acquired: true, current: won, ...(opts.reentrant ? { refreshed } : {}) } };
-    }
-    const current = await d1ReadLockRaw(client, name, now);
-    return { ok: true, value: { acquired: false, current: current?.live ? current.row : null } };
   } catch (e) {
-    return { ok: false, error: errMsg(e) };
+    return failure(e);
+  }
+  const won = toHolder(rows[0]);
+  if (won && won.holder === holder) {
+    const refreshed = Boolean(before && before.live && before.row.holder === holder);
+    return { ok: true, value: { acquired: true, current: won, ...(opts.reentrant ? { refreshed } : {}) } };
+  }
+  // O D1 respondeu e a linha não é nossa: perdemos. A leitura abaixo só diz
+  // QUEM ganhou; se ela falhar, a derrota continua derrota.
+  try {
+    const current = await d1ReadLockRaw(client, name, now);
+    return {
+      ok: true,
+      value: {
+        acquired: false,
+        current: current?.live ? current.row : null,
+        ...(current?.nowMs !== undefined ? { serverNowMs: current.nowMs } : {}),
+      },
+    };
+  } catch {
+    return { ok: true, value: { acquired: false, current: null } };
   }
 }
 
@@ -319,12 +395,13 @@ async function d1ReadLockRaw(
   client: D1Client,
   name: string,
   now: string,
-): Promise<{ row: D1LockHolder; live: boolean } | null> {
+): Promise<{ row: D1LockHolder; live: boolean; nowMs?: number } | null> {
   const rows = await run(client, READ_SQL, [name, now]);
   const row = toHolder(rows[0]);
   if (!row) return null;
   const nowMs = Number(rows[0]?.now_ms);
-  return { row, live: Number.isFinite(nowMs) ? row.expiresAt > nowMs : true };
+  if (!Number.isFinite(nowMs)) return { row, live: true };
+  return { row, live: row.expiresAt > nowMs, nowMs };
 }
 
 /** Quem segura `name` agora (`null` = livre ou vencido). */
@@ -337,7 +414,7 @@ export async function d1ReadLock(
     const r = await d1ReadLockRaw(client, name, opts.now === undefined ? "" : String(opts.now));
     return { ok: true, value: r?.live ? r.row : null };
   } catch (e) {
-    return { ok: false, error: errMsg(e) };
+    return failure(e);
   }
 }
 
@@ -358,7 +435,7 @@ export async function d1RenewLock(
     const rows = await run(client, RENEW_SQL, [name, holder, now, String(Math.max(0, Math.round(ttlMs)))]);
     return { ok: true, value: toHolder(rows[0])?.holder === holder };
   } catch (e) {
-    return { ok: false, error: errMsg(e) };
+    return failure(e);
   }
 }
 
@@ -383,7 +460,7 @@ export async function d1ReleaseLock(
     const current = await d1ReadLockRaw(client, name, opts.now === undefined ? "" : String(opts.now));
     return { ok: true, value: current?.live ? "held_by_other" : "not_held" };
   } catch (e) {
-    return { ok: false, error: errMsg(e) };
+    return failure(e);
   }
 }
 
@@ -407,10 +484,48 @@ export function mergeGrantConsumedD1Name(grant: { grantedBy: string; grantedTo: 
 /** Retenção da marca de consumo (igual à do registro local, `MERGE_GRANT_LEDGER_RETENTION_MS`). */
 export const MERGE_GRANT_CONSUMED_D1_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** Aviso padronizado de fallback para o lock local (stderr). */
-export function d1FallbackWarning(what: string, error: string): string {
+/**
+ * Aviso padronizado de fallback para o lock local (stderr). `permanent`
+ * (credencial, tabela, réplica) troca o texto para ERRO: não é queda
+ * passageira, e o lock só-local continua até alguém corrigir a config.
+ */
+export function d1FallbackWarning(what: string, error: string, permanent = false): string {
+  if (permanent) {
+    return (
+      `❌ d1-locks (#12842): ERRO PERMANENTE do D1 em ${what} (${error}) — credencial, banco ou tabela ` +
+      "com problema; não se resolve sozinho. Seguindo com o lock LOCAL de data/, que NÃO exclui entre máquinas " +
+      "(#6182). Corrija a configuração (npx tsx scripts/d1-locks-setup.ts --check).\n"
+    );
+  }
   return (
     `⚠️  d1-locks (#12842): D1 indisponível em ${what} (${error}) — seguindo com o lock LOCAL de data/, ` +
     "que NÃO exclui entre máquinas (#6182). Confira se outra máquina está no mesmo recurso antes de prosseguir.\n"
   );
+}
+
+/**
+ * Relata uma falha do D1 (`r.ok === false`): aviso em stderr (`warn`) e, se
+ * o erro for permanente, um evento `error` no run-log (`d1_locks_permanent_error`)
+ * — alarme que não depende de alguém ler o terminal. Transitório só avisa.
+ */
+export function reportD1Failure(
+  repoRoot: string | null,
+  what: string,
+  r: { error: string; permanent: boolean },
+  warn: (msg: string) => void,
+): void {
+  warn(d1FallbackWarning(what, r.error, r.permanent));
+  if (r.permanent && repoRoot) {
+    logEvent(
+      {
+        edition: null,
+        stage: null,
+        agent: "d1-locks",
+        level: "error",
+        message: "d1_locks_permanent_error",
+        details: { what, error: r.error },
+      },
+      repoRoot,
+    );
+  }
 }

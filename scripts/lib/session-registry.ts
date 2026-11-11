@@ -200,6 +200,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { logEvent } from "./run-log.ts";
 import { tryStealOrphan, withFileLock } from "./file-lock.ts";
 import { conflictCopyBelongsToStem, isSyncConflictCopyName, rcloneConflictOriginalName } from "./sync-conflict-copy.ts";
 // #7836 — mesma constante que `.claude/hooks/inject-session-id.mjs` importa
@@ -211,14 +212,15 @@ import { SESSION_ID_REQUIRED_SUBCOMMANDS, resolveEnvInjectedSessionId } from "./
 import {
   MERGE_GRANT_CONSUMED_D1_TTL_MS,
   type D1Client,
+  type D1LockResult,
   d1AcquireLock,
-  d1FallbackWarning,
   d1LocksClientFromRepo,
   d1ReadLock,
   d1ReleaseLock,
   d1RenewLock,
   mergeGrantConsumedD1Name,
   mergeLockD1Name,
+  reportD1Failure,
 } from "./d1-locks.ts";
 import {
   DEFAULT_ISSUE_REPO,
@@ -4609,12 +4611,13 @@ export function releaseMergeLock(repoRoot: string, sessionId: string, repo: stri
 // O arquivo `.merge-lock*.json` só exclui na MESMA máquina (#6182). As versões
 // `*Shared` abaixo põem o D1 na frente (exclusão real entre máquinas, ver
 // `scripts/lib/d1-locks.ts`) e mantêm o arquivo como espelho e fallback:
-//   - D1 ok: a decisão é do D1, e o arquivo local também precisa estar livre
-//     (sessão desta máquina que pegou o lock no fallback, ou máquina ainda no
-//     código antigo, continua contando). Se o arquivo recusar, o lock do D1
-//     recém-tomado é devolvido.
+//   - D1 respondeu: a decisão é do D1. O arquivo é espelho e não veta: se
+//     ele diz outra sessão (sync defasado, hold de fallback), é regravado com
+//     aviso que nomeia o holder antigo. Exceção #6334: hold fresco da PRÓPRIA
+//     sessão no arquivo segue recusando a 2ª aquisição (o D1 o adota).
 //   - D1 sem resposta: só o arquivo, com aviso explícito em stderr
-//     (`d1FallbackWarning`). Falha transitória nunca bloqueia merge legítimo.
+//     (`d1FallbackWarning`; erro permanente vira ERRO + run-log, ver
+//     `reportD1Failure`). Falha do D1 nunca bloqueia merge legítimo.
 //   - D1 não provisionado (`d1_locks.database_id` vazio): só o arquivo, em
 //     silêncio — é o comportamento de antes desta issue.
 // Os hooks de merge leem o mesmo nome no D1 (`.claude/hooks/lib/d1-locks.mjs`).
@@ -4655,6 +4658,27 @@ function d1LockMeta(): string {
   return JSON.stringify({ machine: machineTag() });
 }
 
+/**
+ * Devolve um lock que acabamos de tomar no D1 (rollback). Falha ao devolver
+ * nunca passa em silêncio: o lock ficaria órfão até vencer o TTL, segurando
+ * o recurso para toda máquina — o aviso nomeia o lock.
+ */
+async function rollbackD1Lock(
+  d1: D1Client,
+  name: string,
+  sessionId: string,
+  d1Opts: { now?: number },
+  warn: (msg: string) => void,
+  what: string,
+): Promise<void> {
+  const r = await d1ReleaseLock(d1, name, sessionId, d1Opts);
+  if (r.ok && r.value !== "held_by_other") return;
+  warn(
+    `⚠️  d1-locks (#12842): ${what}: não consegui devolver o lock "${name}" no D1 ` +
+      `(${r.ok ? r.value : r.error}) — ele fica órfão até vencer o TTL.\n`,
+  );
+}
+
 export async function acquireMergeLockShared(
   repoRoot: string,
   sessionId: string,
@@ -4664,6 +4688,7 @@ export async function acquireMergeLockShared(
   const now = opts.now ?? Date.now();
   const ttlMs = opts.ttlMs ?? MERGE_LOCK_TTL_MS;
   const io = opts.io ?? REAL_MERGE_LOCK_IO;
+  const warn = opts.warn ?? stderrWarn;
   const local = () => acquireMergeLock(repoRoot, sessionId, now, ttlMs, io, repo);
   const d1 = resolveD1ForRepo(repoRoot, opts);
   if (!d1) return { ok: local(), backend: "local" };
@@ -4673,15 +4698,27 @@ export async function acquireMergeLockShared(
     ...(opts.d1Now !== undefined ? { now: opts.d1Now } : {}),
   });
   if (!r.ok) {
-    (opts.warn ?? stderrWarn)(d1FallbackWarning("merge-lock-acquire", r.error));
+    reportD1Failure(repoRoot, "merge-lock-acquire", r, warn);
     return { ok: local(), backend: "local-fallback" };
   }
   if (!r.value.acquired) return { ok: false, backend: "d1", d1Holder: r.value.current?.holder ?? null };
   if (local()) return { ok: true, backend: "d1" };
-  // O D1 deu o lock, mas o arquivo desta máquina diz que outra sessão o segura
-  // (fallback dela, ou código antigo): devolve o do D1 e recusa.
-  await d1ReleaseLock(d1, name, sessionId, opts.d1Now !== undefined ? { now: opts.d1Now } : {});
-  return { ok: false, backend: "d1", d1Holder: null };
+  // O D1 respondeu e concedeu: ele é a autoridade, o arquivo é espelho e não
+  // veta (#12842 review). Um arquivo que diz outra sessão é sync defasado ou
+  // hold tomado no fallback, com o D1 fora do ar.
+  const path = mergeLockPath(repoRoot, repo);
+  const fileHolder = io.readCurrent(path)?.heldBy;
+  if (fileHolder === sessionId) {
+    // #6334: hold fresco da PRÓPRIA sessão no arquivo (tomado no fallback). O
+    // D1 o adota (a linha fica), e a 2ª aquisição segue recusada.
+    return { ok: false, backend: "d1", d1Holder: sessionId };
+  }
+  io.overwrite(path, JSON.stringify({ heldBy: sessionId, acquiredAt: new Date(now).toISOString() } satisfies MergeLockRecord));
+  warn(
+    `⚠️  d1-locks (#12842): merge-lock-acquire: o D1 concedeu o lock, mas o arquivo local dizia ` +
+      `${fileHolder ?? "(ilegível)"} (sync defasado ou hold de fallback) — vale o D1; espelho local regravado.\n`,
+  );
+  return { ok: true, backend: "d1" };
 }
 
 export async function releaseMergeLockShared(
@@ -4698,13 +4735,16 @@ export async function releaseMergeLockShared(
   // O arquivo só é apagado se for desta sessão — sempre seguro tentar.
   const local = releaseMergeLock(repoRoot, sessionId, repo);
   if (!r.ok) {
-    (opts.warn ?? stderrWarn)(d1FallbackWarning("merge-lock-release", r.error));
+    reportD1Failure(repoRoot, "merge-lock-release", r, opts.warn ?? stderrWarn);
     return { ok: local, backend: "local-fallback" };
   }
   if (r.value === "held_by_other") {
     const cur = await d1ReadLock(d1, name, d1Opts);
     return { ok: false, backend: "d1", d1Holder: cur.ok ? (cur.value?.holder ?? null) : null };
   }
+  // Soltou no D1: é a autoridade, o espelho local é secundário.
+  if (r.value === "released") return { ok: true, backend: "d1" };
+  // `not_held`: o hold pode ter sido tomado no fallback, só no arquivo.
   return { ok: local, backend: "d1" };
 }
 
@@ -4717,6 +4757,7 @@ export async function renewMergeLockShared(
   const now = opts.now ?? Date.now();
   const ttlMs = opts.ttlMs ?? MERGE_LOCK_TTL_MS;
   const io = opts.io ?? REAL_MERGE_LOCK_IO;
+  const warn = opts.warn ?? stderrWarn;
   const local = () => renewMergeLock(repoRoot, sessionId, now, io, repo);
   const d1 = resolveD1ForRepo(repoRoot, opts);
   if (!d1) return { ok: local(), backend: "local" };
@@ -4724,14 +4765,12 @@ export async function renewMergeLockShared(
   const d1Opts = opts.d1Now !== undefined ? { now: opts.d1Now } : {};
   const r = await d1RenewLock(d1, name, sessionId, ttlMs, d1Opts);
   if (!r.ok) {
-    (opts.warn ?? stderrWarn)(d1FallbackWarning("merge-lock-renew", r.error));
+    reportD1Failure(repoRoot, "merge-lock-renew", r, warn);
     return { ok: local(), backend: "local-fallback" };
   }
   if (r.value) {
     if (!local()) {
-      (opts.warn ?? stderrWarn)(
-        "⚠️  d1-locks (#12842): merge-lock-renew renovou no D1, mas o arquivo local não era desta sessão (sync?).\n",
-      );
+      warn("⚠️  d1-locks (#12842): merge-lock-renew renovou no D1, mas o arquivo local não era desta sessão (sync?).\n");
     }
     return { ok: true, backend: "d1" };
   }
@@ -4741,7 +4780,7 @@ export async function renewMergeLockShared(
   if (current?.heldBy !== sessionId) return { ok: false, backend: "d1" };
   const a = await d1AcquireLock(d1, name, sessionId, ttlMs, { meta: d1LockMeta(), ...d1Opts });
   if (!a.ok) {
-    (opts.warn ?? stderrWarn)(d1FallbackWarning("merge-lock-renew", a.error));
+    reportD1Failure(repoRoot, "merge-lock-renew", a, warn);
     return { ok: local(), backend: "local-fallback" };
   }
   if (!a.value.acquired) return { ok: false, backend: "d1", d1Holder: a.value.current?.holder ?? null };
@@ -4749,32 +4788,53 @@ export async function renewMergeLockShared(
 }
 
 /**
- * Marca no D1 o consumo único de `grant` (#12842). `"claimed"` = esta chamada
- * marcou; `"already"` = já estava marcada (consumida antes, talvez em outra
- * máquina); `null` = sem D1 ou D1 sem resposta (vale só o registro local).
+ * Marca no D1 o consumo único de `grant` (#12842). `null` = sem D1 (vale só
+ * o registro local). `{ ok: true, value: "claimed" }` = esta chamada marcou;
+ * `"already"` = já estava marcada, ou seja CONSUMO DUPLO (consumida antes,
+ * talvez em outra máquina) — o chamador alarma. `{ ok: false }` = o D1 não
+ * gravou (`error`/`permanent` para o aviso).
  */
 export async function markMergeGrantConsumedInD1(
   d1: D1Client | null,
   grant: MergeGrant,
   sessionId: string,
   opts: { now?: number } = {},
-): Promise<"claimed" | "already" | null> {
+): Promise<D1LockResult<"claimed" | "already"> | null> {
   if (!d1) return null;
   const r = await d1AcquireLock(d1, mergeGrantConsumedD1Name(grant), sessionId, MERGE_GRANT_CONSUMED_D1_TTL_MS, opts);
-  if (!r.ok) return null;
-  return r.value.acquired ? "claimed" : "already";
+  if (!r.ok) return r;
+  return { ok: true, value: r.value.acquired ? "claimed" : "already" };
 }
 
-/** `true` = o D1 registra o consumo de `grant`; `false` = não; `null` = sem resposta. */
+/** `null` = sem D1. `{ ok: true, value }` = o D1 registra (ou não) o consumo; `{ ok: false }` = sem resposta. */
 export async function isMergeGrantConsumedInD1(
   d1: D1Client | null,
   grant: MergeGrant,
   opts: { now?: number } = {},
-): Promise<boolean | null> {
+): Promise<D1LockResult<boolean> | null> {
   if (!d1) return null;
   const r = await d1ReadLock(d1, mergeGrantConsumedD1Name(grant), opts);
-  if (!r.ok) return null;
-  return r.value !== null;
+  if (!r.ok) return r;
+  return { ok: true, value: r.value !== null };
+}
+
+/** Alarme de consumo duplo de uma concessão (#12842 review): stderr + run-log `error`. */
+function reportMergeGrantDoubleConsumed(repoRoot: string, grant: MergeGrant, sessionId: string): void {
+  process.stderr.write(
+    "❌ session-registry: a concessão já constava como CONSUMIDA no D1 (#12842) — consumo duplo " +
+      `(concedida por ${grant.grantedBy} a ${grant.grantedTo} em ${grant.grantedAt}).\n`,
+  );
+  logEvent(
+    {
+      edition: null,
+      stage: null,
+      agent: "session-registry",
+      level: "error",
+      message: "merge_grant_double_consumed",
+      details: { grantedBy: grant.grantedBy, grantedTo: grant.grantedTo, grantedAt: grant.grantedAt, sessionId },
+    },
+    repoRoot,
+  );
 }
 
 // ─── GC de registros encerrados (#6130) ────────────────────────────────────
@@ -8065,13 +8125,18 @@ async function main(): Promise<void> {
         const sessionId = requireSessionId(values);
         const foundLocal = findLiveMergeGrant(repoRoot, sessionId);
         // #12842: consumo marcado no D1 (talvez por outra máquina, antes de o
-        // registro sincronizar) derruba a janela — o guard faz o mesmo.
-        // `null` (sem D1 ou sem resposta) mantém só a leitura local.
-        const consumedInD1 = foundLocal
+        // registro sincronizar) derruba a janela — o guard faz o mesmo. Sem
+        // D1 vale só a leitura local; D1 configurado e sem resposta também,
+        // mas com aviso (a janela pode já ter sido usada em outra máquina).
+        const consumedRead = foundLocal
           ? await isMergeGrantConsumedInD1(resolveD1ForRepo(repoRoot, {}), foundLocal.grant)
           : null;
-        const found = consumedInD1 === true ? null : foundLocal;
-        if (consumedInD1 === true) {
+        if (consumedRead && !consumedRead.ok) {
+          reportD1Failure(repoRoot, "check-merge-grant (consumo da concessão não conferido)", consumedRead, stderrWarn);
+        }
+        const consumedInD1 = consumedRead?.ok === true && consumedRead.value;
+        const found = consumedInD1 ? null : foundLocal;
+        if (consumedInD1) {
           process.stderr.write(
             "session-registry: a janela local existe, mas o D1 registra o consumo dela (#12842) — tratada como consumida.\n",
           );
@@ -8140,8 +8205,10 @@ async function main(): Promise<void> {
         if (ok && toConsume) {
           const d1 = resolveD1ForRepo(repoRoot, {});
           const mark = await markMergeGrantConsumedInD1(d1, toConsume, sessionId);
-          if (mark === null && d1) {
-            process.stderr.write(d1FallbackWarning("consume-merge-grant", "marca de consumo não gravada"));
+          if (mark && !mark.ok) {
+            reportD1Failure(repoRoot, "consume-merge-grant (marca de consumo não gravada)", mark, stderrWarn);
+          } else if (mark?.ok && mark.value === "already") {
+            reportMergeGrantDoubleConsumed(repoRoot, toConsume, sessionId);
           }
         }
         // #7223 review — o aviso vai pro STDERR, nunca stdout: stdout é lido

@@ -184,8 +184,11 @@ orçamento.
      `RETURNING`), integrado em `session-registry.ts merge-lock-*`,
      `consume-merge-grant`/`check-merge-grant`, `scripts/edition-lock.ts` e
      nos hooks `block-gh-pr-merge-subagent.mjs`/`consume-merge-grant-on-merge.mjs`
-     (`.claude/hooks/lib/d1-locks.mjs`). O arquivo segue como espelho e
-     fallback, com aviso, quando o D1 não responde. Liga quando
+     (`.claude/hooks/lib/d1-locks.mjs`). Quando o D1 responde, ele decide
+     (o arquivo é espelho e não veta); quando não responde, o arquivo é o
+     fallback, com aviso. Erro permanente (HTTP 4xx, tabela ausente,
+     réplica) vira ERRO no stderr e `d1_locks_permanent_error` no run-log,
+     em vez do aviso de queda passageira. Liga quando
      `platform.config.json` → `d1_locks.database_id` é preenchido
      (`scripts/d1-locks-setup.ts`). A autorização de uso único do vídeo
      (`video-publish-authorization.ts`) ficou fora: já recusa consumo de

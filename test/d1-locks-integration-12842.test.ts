@@ -22,7 +22,7 @@ import {
   sessionsDir,
 } from "../scripts/lib/session-registry.ts";
 import { acquireEditionLockShared, editionLockPath, releaseEditionLockShared } from "../scripts/lib/edition-lock.ts";
-import { d1ReadLock, mergeLockD1Name } from "../scripts/lib/d1-locks.ts";
+import { D1HttpError, d1ReadLock, mergeLockD1Name } from "../scripts/lib/d1-locks.ts";
 import { createFakeD1, failingD1 } from "./_helpers/fake-d1.ts";
 
 const roots: string[] = [];
@@ -112,15 +112,61 @@ describe("merge lock compartilhado (session-registry)", () => {
     assert.deepEqual(warnings, []);
   });
 
-  it("arquivo local de outra sessão (tomado no fallback) vale mesmo com o D1 livre — e o D1 é devolvido", async () => {
+  it("D1 concede e o arquivo diz outra sessão: vale o D1, espelho regravado e aviso nomeia o holder antigo", async () => {
     const d1 = createFakeD1();
     const neo = machine();
     assert.equal(acquireMergeLock(neo, "fallback-holder", T0), true);
-    const r = await acquireMergeLockShared(neo, "B", REPO, { d1, now: T0 + 1000, d1Now: T0 + 1000 });
-    assert.equal(r.ok, false);
+    const warnings: string[] = [];
+    const r = await acquireMergeLockShared(neo, "B", REPO, {
+      d1,
+      now: T0 + 1000,
+      d1Now: T0 + 1000,
+      warn: (m) => warnings.push(m),
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.backend, "d1");
     const row = await d1ReadLock(d1, mergeLockD1Name(REPO), { now: T0 + 1001 });
     assert.ok(row.ok);
-    assert.equal(row.value, null, "o lock do D1 recém-tomado foi devolvido");
+    assert.equal(row.value?.holder, "B");
+    assert.equal(JSON.parse(readFileSync(mergeLockPath(neo), "utf8")).heldBy, "B", "espelho local regravado");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /fallback-holder/);
+  });
+
+  it("#6334: hold fresco da PRÓPRIA sessão no arquivo segue recusando — e o D1 o adota", async () => {
+    const d1 = createFakeD1();
+    const neo = machine();
+    assert.equal(acquireMergeLock(neo, "A", T0), true);
+    const r = await acquireMergeLockShared(neo, "A", REPO, { d1, now: T0 + 1000, d1Now: T0 + 1000 });
+    assert.equal(r.ok, false);
+    assert.equal(r.d1Holder, "A");
+    const row = await d1ReadLock(d1, mergeLockD1Name(REPO), { now: T0 + 1001 });
+    assert.ok(row.ok);
+    assert.equal(row.value?.holder, "A");
+  });
+
+  it("erro permanente do D1 (403): fallback local com aviso de ERRO e evento no run-log", async () => {
+    const neo = machine();
+    const warnings: string[] = [];
+    const forbidden = {
+      async query(): Promise<never> {
+        throw new D1HttpError("D1 query: HTTP 403 — 10000: Authentication error", 403);
+      },
+    };
+    const r = await acquireMergeLockShared(neo, "A", REPO, { d1: forbidden, now: T0, warn: (m) => warnings.push(m) });
+    assert.equal(r.ok, true);
+    assert.equal(r.backend, "local-fallback");
+    assert.match(warnings[0]!, /ERRO PERMANENTE/);
+    const log = readFileSync(join(neo, "data", "run-log.jsonl"), "utf8");
+    assert.match(log, /d1_locks_permanent_error/);
+  });
+
+  it("erro transitório do D1: só aviso, sem evento de erro no run-log", async () => {
+    const neo = machine();
+    const warnings: string[] = [];
+    await acquireMergeLockShared(neo, "A", REPO, { d1: failingD1(), now: T0, warn: (m) => warnings.push(m) });
+    assert.doesNotMatch(warnings[0]!, /ERRO PERMANENTE/);
+    assert.equal(existsSync(join(neo, "data", "run-log.jsonl")), false);
   });
 
   it("renew: hold tomado no fallback é adotado pelo D1 quando ele volta", async () => {
@@ -150,18 +196,23 @@ describe("consumo de concessão no D1", () => {
   it("uso único entre máquinas: a 2ª marca vê 'already'", async () => {
     const d1 = createFakeD1();
     const grant = { grantedBy: "coord", grantedTo: "sess", grantedAt: "2026-11-11T12:00:00.000Z" };
-    assert.equal(await isMergeGrantConsumedInD1(d1, grant), false);
-    assert.equal(await markMergeGrantConsumedInD1(d1, grant, "sess"), "claimed");
-    assert.equal(await markMergeGrantConsumedInD1(d1, grant, "sess"), "already");
-    assert.equal(await isMergeGrantConsumedInD1(d1, grant), true);
+    assert.deepEqual(await isMergeGrantConsumedInD1(d1, grant), { ok: true, value: false });
+    assert.deepEqual(await markMergeGrantConsumedInD1(d1, grant, "sess"), { ok: true, value: "claimed" });
+    assert.deepEqual(await markMergeGrantConsumedInD1(d1, grant, "sess"), { ok: true, value: "already" });
+    assert.deepEqual(await isMergeGrantConsumedInD1(d1, grant), { ok: true, value: true });
     const regrant = { ...grant, grantedAt: "2026-11-11T12:05:00.000Z" };
-    assert.equal(await isMergeGrantConsumedInD1(d1, regrant), false, "nova concessão = nova identidade");
+    assert.deepEqual(await isMergeGrantConsumedInD1(d1, regrant), { ok: true, value: false }, "nova concessão = nova identidade");
   });
 
-  it("D1 fora/ausente: null (vale o registro local)", async () => {
+  it("D1 ausente: null; D1 sem resposta: ok:false com o erro (o chamador avisa)", async () => {
     const grant = { grantedBy: "c", grantedTo: "s", grantedAt: "2026-11-11T12:00:00.000Z" };
-    assert.equal(await markMergeGrantConsumedInD1(failingD1(), grant, "s"), null);
+    const mark = await markMergeGrantConsumedInD1(failingD1("offline"), grant, "s");
+    assert.equal(mark?.ok, false);
+    assert.match(mark && !mark.ok ? mark.error : "", /offline/);
+    assert.equal(await markMergeGrantConsumedInD1(null, grant, "s"), null);
     assert.equal(await isMergeGrantConsumedInD1(null, grant), null);
+    const read = await isMergeGrantConsumedInD1(failingD1(), grant);
+    assert.equal(read?.ok, false);
   });
 });
 
@@ -225,6 +276,36 @@ describe("edition-lock compartilhado", () => {
     const row = await d1ReadLock(d1, "edition:261112", { now: T0 + 1 });
     assert.ok(row.ok);
     assert.equal(row.value, null);
+  });
+
+  it("renovação (refreshed) com o arquivo de outra sessão: o D1 também é devolvido (sem bloqueio mútuo de 45 min)", async () => {
+    const d1 = createFakeD1();
+    const neo = editionIn(machine());
+    await acquireEditionLockShared(neo, { sessionId: "A", stage: 4, now: T0, host: "neo" }, d1, T0);
+    // O arquivo desta máquina passou a dizer B (sync trouxe o lock de outra sessão).
+    const fresh = new Date(T0 + 500).toISOString();
+    writeFileSync(
+      editionLockPath(neo),
+      JSON.stringify({ session_id: "B", host: "neo", stage: 4, acquired_at: fresh, heartbeat_at: fresh }),
+    );
+    const again = await acquireEditionLockShared(neo, { sessionId: "A", stage: 4, now: T0 + 1000, host: "neo" }, d1, T0 + 1000);
+    assert.equal(again.action, "held_by_other");
+    const row = await d1ReadLock(d1, "edition:261112", { now: T0 + 1001 });
+    assert.ok(row.ok);
+    assert.equal(row.value, null, "o lock renovado no D1 foi devolvido");
+  });
+
+  it("held_by_other pelo D1: idade pelo relógio do D1; meta sem stage não vira NaN no JSON", async () => {
+    const d1 = createFakeD1();
+    const neo = editionIn(machine());
+    const s300 = editionIn(machine());
+    await acquireEditionLockShared(neo, { sessionId: "A", stage: 4, now: T0, host: "neo" }, d1, T0);
+    d1.db.prepare("UPDATE locks SET meta = NULL").run();
+    // Relógio local muito à frente: a idade vem do D1 (d1Now = T0 + 2000), não dele.
+    const b = await acquireEditionLockShared(s300, { sessionId: "B", stage: 4, now: T0 + 9_999_999, host: "300" }, d1, T0 + 2000);
+    assert.equal(b.action, "held_by_other");
+    assert.equal(b.previous_age_ms, 2000);
+    assert.ok(Number.isNaN(b.previous?.stage));
   });
 
   it("D1 indisponível → trava local com aviso", async () => {

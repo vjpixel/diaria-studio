@@ -17,7 +17,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { d1LocksClientFromRepo } from "./lib/d1-locks.ts";
+import { d1LocksClientFromRepo, reportD1Failure } from "./lib/d1-locks.ts";
 import {
   EDITION_LOCK_TTL_MS,
   acquireEditionLockShared,
@@ -27,6 +27,17 @@ import {
 } from "./lib/edition-lock.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Avisos do D1 no stderr; erro permanente também vai ao run-log (`reportD1Failure`). */
+function reportD1(info: { d1Failure?: { what: string; error: string; permanent: boolean }; d1RollbackWarning?: string }): void {
+  if (info.d1Failure) reportD1Failure(ROOT, info.d1Failure.what, info.d1Failure, (m) => process.stderr.write(m));
+  if (info.d1RollbackWarning) process.stderr.write(info.d1RollbackWarning);
+}
+
+/** `, Stage N` quando o stage é conhecido (o D1 sem meta devolve `NaN`). */
+function stagePart(stage: number): string {
+  return Number.isFinite(stage) ? `, Stage ${stage}` : "";
+}
 
 /** #12842: lock `edition:{AAMMDD}` no D1 (entre máquinas); `null` = só o arquivo. */
 function d1Client() {
@@ -72,20 +83,20 @@ async function main(): Promise<void> {
     const stage = Number(values.stage);
     if (!values.stage || !Number.isInteger(stage)) fail(`--stage inválido: ${values.stage ?? "(ausente)"}\n${USAGE}`, 2);
     const d = await acquireEditionLockShared(editionDir, { sessionId, stage, force }, d1Client());
-    if (d.d1Warning) process.stderr.write(d.d1Warning);
-    const { d1Warning: _w, ...out } = d;
+    reportD1(d);
+    const { d1Warning: _w, d1Failure: _f, d1RollbackWarning: _r, ...out } = d;
     console.log(JSON.stringify(out));
     if (d.action === "held_by_other") {
       const prev = d.previous!;
       console.error(
-        `[edition-lock] edição em uso por outra sessão (${prev.session_id} em ${prev.host}, Stage ${prev.stage}, heartbeat ${formatLockAge(d.previous_age_ms)}).`,
+        `[edition-lock] edição em uso por outra sessão (${prev.session_id} em ${prev.host}${stagePart(prev.stage)}, heartbeat ${formatLockAge(d.previous_age_ms)}).`,
       );
       process.exit(3);
     }
     if (d.action === "stale_other_host") {
       const prev = d.previous!;
       console.error(
-        `[edition-lock] trava vencida de OUTRO host (${prev.host}, Stage ${prev.stage}, heartbeat ${formatLockAge(d.previous_age_ms)}): data/ possivelmente defasado (sync do Drive: bisync do 300 / Drive for desktop) — aguardar sync antes de re-rodar o stage. --force só se o editor confirmar.`,
+        `[edition-lock] trava vencida de OUTRO host (${prev.host}${stagePart(prev.stage)}, heartbeat ${formatLockAge(d.previous_age_ms)}): data/ possivelmente defasado (sync do Drive: bisync do 300 / Drive for desktop) — aguardar sync antes de re-rodar o stage. --force só se o editor confirmar.`,
       );
       process.exit(4);
     }
@@ -100,7 +111,7 @@ async function main(): Promise<void> {
       { sessionId, force, completedStage: cs === undefined ? undefined : Number(cs) },
       d1Client(),
     );
-    if (shared.d1Warning) process.stderr.write(shared.d1Warning);
+    reportD1(shared);
     const result = shared.result;
     console.log(JSON.stringify({ result, backend: shared.backend }));
     if (result === "held_by_other") process.exit(3);

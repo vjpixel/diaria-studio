@@ -270,8 +270,11 @@ export function formatLockAge(ms: number | undefined): string {
 // lock `edition:{AAMMDD}` primeiro: holder vivo de outra sessão no D1 recusa
 // já ali (`held_by_other`, sem tocar o arquivo). Se o D1 concede, a decisão do
 // arquivo continua valendo (stale_other_host, tombstones, máquina no código
-// antigo) e, se ela recusar, o lock recém-tomado no D1 é devolvido. D1 sem
-// resposta: só o arquivo, com aviso (`d1Warning`), nunca bloqueia.
+// antigo) e, se ela recusar, o lock do D1 é devolvido — inclusive na
+// renovação (`refreshed`): segurar o D1 com o arquivo recusando deixaria as
+// duas sessões bloqueadas uma pela outra até o TTL de 45 min. D1 sem
+// resposta: só o arquivo, com aviso (`d1Warning`; `d1Failure` traz a classe
+// do erro para o run-log), nunca bloqueia.
 
 export interface EditionLockD1Info {
   /** `"d1"` = o D1 respondeu; `"local-fallback"` = não respondeu; `"local"` = sem D1. */
@@ -279,6 +282,17 @@ export interface EditionLockD1Info {
   /** Holder vivo no D1 quando a recusa veio de lá. */
   d1Holder?: string;
   d1Warning?: string;
+  /** Falha do D1 que levou ao fallback (o CLI relata com `reportD1Failure`). */
+  d1Failure?: { what: string; error: string; permanent: boolean };
+  /** Avisos de rollback (lock do D1 que não pôde ser devolvido). */
+  d1RollbackWarning?: string;
+}
+
+function fallbackInfo(what: string, r: { error: string; permanent: boolean }): Pick<EditionLockD1Info, "d1Warning" | "d1Failure"> {
+  return {
+    d1Warning: d1FallbackWarning(what, r.error, r.permanent),
+    d1Failure: { what, error: r.error, permanent: r.permanent },
+  };
 }
 
 export function editionNameFromDir(editionDir: string): string {
@@ -302,16 +316,17 @@ export async function acquireEditionLockShared(
     ...d1Opts,
   });
   if (!r.ok) {
-    return { ...acquireEditionLock(editionDir, opts), backend: "local-fallback", d1Warning: d1FallbackWarning("edition-lock acquire", r.error) };
+    return { ...acquireEditionLock(editionDir, opts), backend: "local-fallback", ...fallbackInfo("edition-lock acquire", r) };
   }
   if (!r.value.acquired) {
     const cur = r.value.current;
-    const nowMs = opts.now ?? Date.now();
+    const nowMs = r.value.serverNowMs ?? opts.now ?? Date.now();
     const meta = await readD1Meta(d1, name);
     const previous: EditionLockRecord = {
       session_id: cur?.holder ?? "(desconhecida)",
       host: typeof meta.host === "string" ? meta.host : "(D1)",
-      stage: typeof meta.stage === "number" ? meta.stage : Number.NaN,
+      // Mesma convenção do arquivo (`NaN` = desconhecido); o CLI omite.
+      stage: typeof meta.stage === "number" && Number.isFinite(meta.stage) ? meta.stage : Number.NaN,
       acquired_at: cur ? new Date(cur.acquiredAt).toISOString() : "",
       heartbeat_at: cur ? new Date(cur.expiresAt - ttl).toISOString() : "",
     };
@@ -324,9 +339,18 @@ export async function acquireEditionLockShared(
     };
   }
   const decision = acquireEditionLock(editionDir, opts);
-  if (!decision.record && !r.value.refreshed) {
-    // O arquivo recusou: devolve o lock que acabamos de tomar no D1.
-    await d1ReleaseLock(d1, name, opts.sessionId, d1Opts);
+  if (!decision.record) {
+    // O arquivo recusou: devolve o lock do D1 (tomado agora ou renovado).
+    const rel = await d1ReleaseLock(d1, name, opts.sessionId, d1Opts);
+    if (!rel.ok || rel.value === "held_by_other") {
+      return {
+        ...decision,
+        backend: "d1",
+        d1RollbackWarning:
+          `⚠️  d1-locks (#12842): edition-lock acquire: não consegui devolver o lock "${name}" no D1 ` +
+          `(${rel.ok ? rel.value : rel.error}) — ele fica órfão até vencer o TTL.\n`,
+      };
+    }
   }
   return { ...decision, backend: "d1" };
 }
@@ -358,7 +382,7 @@ export async function releaseEditionLockShared(
     return {
       result: releaseEditionLock(editionDir, opts),
       backend: "local-fallback",
-      d1Warning: d1FallbackWarning("edition-lock release", r.error),
+      ...fallbackInfo("edition-lock release", r),
     };
   }
   // Outra sessão viva segura a edição no D1: não mexe no arquivo.

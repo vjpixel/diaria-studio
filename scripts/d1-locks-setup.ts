@@ -3,7 +3,7 @@
  * e roda o teste real mínimo contra ele.
  *
  *   npx tsx scripts/d1-locks-setup.ts            # cria (se faltar) + schema + teste
- *   npx tsx scripts/d1-locks-setup.ts --check    # só o teste, no banco do config
+ *   npx tsx scripts/d1-locks-setup.ts --check    # só o teste, no banco do config (sem CREATE TABLE)
  *
  * Passos: acha o banco `d1_locks.database_name` (default `diaria-locks`) pela
  * API ou cria; aplica `D1_LOCKS_SCHEMA_SQL` (idempotente); roda o teste
@@ -72,8 +72,13 @@ export async function runSmokeTest(d1: D1Client, name = `smoke:${randomUUID()}`)
     const after = await d1ReadLock(d1, name);
     if (!after.ok || after.value !== null) fails.push(`linha ainda presente após release: ${JSON.stringify(after)}`);
   } finally {
-    // Nunca deixa a linha de teste para trás, passe ou falhe.
-    await d1.query("DELETE FROM locks WHERE name = ?1", [name]).catch(() => {});
+    // Nunca deixa a linha de teste para trás, passe ou falhe — e, se a
+    // limpeza falhar, diz qual linha ficou (ela vence sozinha em 60 s).
+    await d1.query("DELETE FROM locks WHERE name = ?1", [name]).catch((e: unknown) => {
+      console.error(
+        `[d1-locks-setup] aviso: não apaguei a linha de teste "${name}" (${(e as Error)?.message ?? String(e)}); ela vence em 60 s.`,
+      );
+    });
   }
   return fails;
 }
@@ -112,8 +117,12 @@ async function main(): Promise<void> {
     }
   }
   const d1 = createD1RestClient({ accountId, token, databaseId, timeoutMs: 15_000 });
-  await d1.query(D1_LOCKS_SCHEMA_SQL, []);
-  console.log("[d1-locks-setup] schema ok (tabela locks)");
+  if (flags.has("check")) {
+    console.log("[d1-locks-setup] --check: schema não aplicado (só o teste; tabela ausente falha como `no such table`)");
+  } else {
+    await d1.query(D1_LOCKS_SCHEMA_SQL, []);
+    console.log("[d1-locks-setup] schema ok (tabela locks)");
+  }
   const fails = await runSmokeTest(d1);
   if (fails.length > 0) {
     console.error(`[d1-locks-setup] teste FALHOU:\n  - ${fails.join("\n  - ")}`);

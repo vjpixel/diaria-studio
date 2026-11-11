@@ -8,7 +8,9 @@ export interface HookD1Client {
   query(sql: string, params: string[]): Promise<{ results: Record<string, unknown>[] }>;
 }
 
-export type HookD1Result<T> = { ok: true; value: T } | { ok: false; error: string };
+export type HookD1Result<T> = { ok: true; value: T } | { ok: false; error: string; permanent: boolean };
+export function isPermanentD1Error(e: unknown): boolean;
+export function d1HookFailureNotice(what: string, error: string, permanent: boolean): string;
 
 export function mergeLockD1Name(repo: string): string;
 export function mergeGrantConsumedD1Name(grant: { grantedBy: string; grantedTo: string; grantedAt: string }): string;
