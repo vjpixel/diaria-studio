@@ -1303,6 +1303,10 @@ async function main(): Promise<number> {
     console.error(USAGE);
     return 2;
   }
+  if (!captionsList && (flags.has("video-id") || values["video-id"] !== undefined)) {
+    console.error("publish-youtube: --video-id só vale com --captions-list (#12429).");
+    return 2;
+  }
   if (values["captions"] !== undefined && flags.has("no-captions")) {
     console.error("publish-youtube: --captions e --no-captions são exclusivos.");
     return 2;
