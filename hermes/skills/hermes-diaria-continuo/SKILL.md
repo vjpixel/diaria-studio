@@ -252,10 +252,10 @@ ordem:
    um `git log` batendo. Não remover o label ao fechar/consertar (idempotente,
    sem custo deixar) — ele só existe pra tornar a PR rejeitada BUSCÁVEL
    (`gh pr list --label continuo-rejeitado`), nunca precisa ser limpo.
-2. **Guard de caminho sensível** (fail-closed, #6277): `npx tsx
-   scripts/lib/sensitive-path-guard.ts --base origin/master --json`.
-   `"sensitive": true`, exit ≠ 0, stdout vazio ou JSON inválido → NÃO mergear;
-   comentar no PR e encaminhar.
+2. **Guard de caminho sensível** (fail-closed, #12884): `npx tsx
+   scripts/lib/sensitive-path-guard.ts --files "$(gh pr diff N --name-only | paste -sd, -)" --json`.
+   PR `N`: lista vazia, `"sensitive": true` ou erro/saída inválida
+   (gh) → NÃO mergear; comentar e encaminhar.
 3. **Review independente pré-merge** (pipeline `requesting-code-review`,
    inalterado): scan estático → baseline de testes → reviewer independente
    fail-closed → auto-fix loop (máx. 2).
