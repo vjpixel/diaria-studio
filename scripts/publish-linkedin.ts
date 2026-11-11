@@ -112,6 +112,7 @@ import {
 import {
   postToWorkerQueue as sharedPostToWorkerQueue,
   findWorkerQueueEntryByIdempotencyKey,
+  idempotentConflictKey,
   type IdempotencyLookupOptions,
 } from "./lib/worker-queue-client.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
@@ -771,19 +772,43 @@ export async function dispatchEntry(
         // SÓ tem URL no Worker (Diar.ia webhookUrl não é Pixel) — fallback
         // não-aplicável pra webhook_target=pixel; falha entry com reason claro.
         const wmsg = workerError instanceof Error ? workerError.message : String(workerError);
+        // #12802 — 409 `already_fired`/`fire_in_progress` da chave idempotente:
+        // o post desta chave já saiu ou está saindo. É sucesso, como nos degraus
+        // documento/carrossel (`linkedin-daily-document.ts`) e no semanal —
+        // antes o `isClientError` abaixo lia o 409 como 4xx de validação e a
+        // entry virava `failed`, empurrando o editor a repostar à mão.
+        const firedKey = dailyIdempotencyKey ? idempotentConflictKey(workerError) : null;
+        if (firedKey !== null) {
+          console.warn(
+            `WARN ${tag} — a fila do Worker já tem este post disparado ou disparando (${dailyIdempotencyKey}); nada novo enfileirado (#12802).`,
+          );
+          entry = {
+            platform: "linkedin",
+            destaque: d,
+            subtype,
+            url: null,
+            status: "scheduled",
+            scheduled_at: scheduledAt,
+            route,
+            worker_queue_key: firedKey,
+            webhook_target: input.webhookTarget,
+            action: input.action,
+            ...formatTag("single_image", singleImageReasons),
+          };
+        }
         // #6015: 4xx do Worker (validação do payload) NÃO deve cair no fallback
         // que publica imediatamente — isso trocaria "não publicou" por
         // "publicou na hora errada, publicamente" (bug real #6015, 23/08).
         // Só faz fallback (post imediato via Make) para 5xx / timeout / rede.
         // Quando `allowImmediateFallback` é explicitamente false (ex: artigo
         // especial agendado), propaga como falha dura (entry failed).
-        if (input.webhookTarget === "pixel") {
+        if (!entry && input.webhookTarget === "pixel") {
           throw new Error(
             `${wmsg} (fallback worker→make não disponível pra webhook_target=pixel — Make scenario Pixel não tem URL local)`,
           );
         }
         const is4xx = isClientError(wmsg);
-        const shouldPropagateAsFailure = is4xx || input.allowImmediateFallback === false;
+        const shouldPropagateAsFailure = !entry && (is4xx || input.allowImmediateFallback === false);
         if (shouldPropagateAsFailure) {
           const reasonSuffix = is4xx ? " (Worker 4xx — validação do payload; fallback imediato não é aceitável)" : " (fallback desativado: allowImmediateFallback=false)";
           throw new Error(`${wmsg}${reasonSuffix}`);
@@ -792,7 +817,7 @@ export async function dispatchEntry(
         // vindo DEPOIS de o Worker gravar a entry. Antes do Make (que publica na
         // hora), procurar a chave na fila: achou = o post já está agendado;
         // fila ilegível = ausência não provada, `failed` sem Make por cima.
-        if (dailyIdempotencyKey) {
+        if (!entry && dailyIdempotencyKey) {
           const lookup = await findWorkerQueueEntryByIdempotencyKey(
             ctx.workerUrl,
             ctx.workerToken,
