@@ -173,8 +173,10 @@ describe("deriveEmailChannelState — projeção do state do publisher Kit", () 
     assert.equal(deriveEmailChannelState(null), null);
     assert.equal(deriveEmailChannelState(apoiadores({})), null);
   });
-  it("broadcast com audiência confirmada → done", () => {
-    assert.equal(deriveEmailChannelState(apoiadores({ kitBroadcastId: 1, kitAudienceVerified: true }))?.status, "done");
+  it("#12739: RASCUNHO com audiência confirmada → pending (nunca done sem envio)", () => {
+    const r = deriveEmailChannelState(apoiadores({ kitBroadcastId: 1, kitAudienceVerified: true }));
+    assert.equal(r?.status, "pending");
+    assert.match(r!.reason!, /RASCUNHO/);
   });
   it("sent (agendado / --mark-sent) → done", () => {
     assert.equal(deriveEmailChannelState(apoiadores({ status: "sent", sentAt: "2026-10-03T09:00:00Z", kitBroadcastId: 1, kitAudienceVerified: true }))?.status, "done");
@@ -262,7 +264,9 @@ describe("mark-retrospectiva-channel", () => {
     assert.deepEqual(runSyncEmailChannel("2609-10", tmp), { action: "nothing" });
     mkdirSync(join(tmp, "_internal"), { recursive: true });
     const apPath = join(tmp, "_internal", "beehiiv-apoiadores-state.json");
-    const raw = JSON.stringify(apoiadores({ kitBroadcastId: 99, kitAudienceVerified: true }));
+    const raw = JSON.stringify(
+      apoiadores({ status: "sent", sentAt: "2026-10-03T09:00:00Z", kitBroadcastId: 99, kitAudienceVerified: true }),
+    );
     writeFileSync(apPath, raw);
     const r = runSyncEmailChannel("2609-10", tmp);
     assert.equal(r.action, "written");

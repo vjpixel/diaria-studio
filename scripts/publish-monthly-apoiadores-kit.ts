@@ -31,7 +31,8 @@
  *      a menos de 24h (#8205) ou já tiver passado, cai pra **rascunho** com
  *      aviso (nunca agenda em cima da hora). `--draft` força rascunho
  *      (`send_at: null`); `--schedule ISO` (#7867 item 1) força um horário
- *      explícito. Agendado (pela regra ou por `--schedule`), grava
+ *      explícito. Agendado (pela regra ou por `--schedule`) E confirmado na
+ *      releitura (status `scheduled` com `send_at`, #12739), grava
  *      `status: "sent"` direto no state,
  *      dispensando `--mark-sent` (`send-monthly-apoiadores.ts`) no caminho
  *      automatizado — que continua existindo pro caminho manual. Sem guard
@@ -120,6 +121,7 @@ import {
   type KitSubscriberFilter,
 } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
+import { confirmKitBroadcastSent, type KitSentConfirmation } from "./lib/mensal/apoiadores-kit-sent-confirmation.ts";
 import {
   renderMonthlyApoiadoresKitEmail,
   type RenderedMonthlyApoiadoresKitEmail,
@@ -1006,11 +1008,18 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   // Fail-soft na REDE (a releitura é camada adicional; o broadcast já existe
   // de qualquer jeito), fail-loud na DIVERGÊNCIA.
   let verification: AudienceVerification;
+  // #12739: a mesma releitura decide se o agendamento PEGOU no Kit. Sem ela
+  // (rede), "não confirmável" — o state nunca vira `sent` pelo 2xx da criação.
+  let sendConfirmation: KitSentConfirmation | null = null;
   try {
     const reread = await deps.getBroadcast(created.id, kitConfig);
     verification = verifyAudienceFilter(reread.subscriber_filter, buildTagFilter(tagId));
+    if (scheduleAt) sendConfirmation = confirmKitBroadcastSent(reread, created.id);
   } catch (e) {
     verification = { verified: null, reason: `a releitura do broadcast falhou (${(e as Error).message}).` };
+    if (scheduleAt) {
+      sendConfirmation = { ok: false, reason: `a releitura do broadcast falhou (${(e as Error).message}).` };
+    }
   }
   if (verification.verified !== true) log(`AVISO: ${verification.reason}`);
 
@@ -1119,6 +1128,15 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
         "'send-monthly-apoiadores.ts --mark-sent' manualmente depois de confirmar.",
     );
   }
+  const scheduleConfirmed = sendConfirmation?.ok === true;
+  if (scheduleAt && verification.verified === true && !scheduleConfirmed) {
+    log(
+      `AVISO: broadcast criado com send_at=${scheduleAt}, mas a releitura NÃO confirma o agendamento no Kit ` +
+        `(${sendConfirmation && !sendConfirmation.ok ? sendConfirmation.reason : "sem releitura"}) — o state fica em ` +
+        "draft_prepared (não 'sent', #12739). Confira no painel e rode 'send-monthly-apoiadores.ts --mark-sent' " +
+        "depois de agendar.",
+    );
+  }
 
   try {
     // markSent = true só quando há horário agendado (regra #9473 ou
@@ -1129,7 +1147,9 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
     // "sent" nesse caso removeria o único checkpoint humano restante
     // (--mark-sent) sobre um broadcast cuja audiência ninguém verificou de
     // fato — achado do review da #7867 (PR #7882).
-    persistState(verification.verified, scheduleAt !== null && verification.verified === true);
+    // #12739: e o agendamento confirmado NA RELEITURA (status scheduled com
+    // send_at), não só o `send_at` que este script mandou no POST.
+    persistState(verification.verified, scheduleAt !== null && verification.verified === true && scheduleConfirmed);
   } catch (e) {
     log(
       `ERRO CRÍTICO: o broadcast Kit id=${created.id} FOI CRIADO, mas o registro de idempotência NÃO foi ` +
