@@ -59,6 +59,9 @@
  *   contam. O pedido que cai perto de outro ESPERA, nunca é pulado: a etapa
  *   adiada ganha `ask_deferred` e deixa de vencer pela janela. Se apoio e
  *   formulário vencem juntos, sai o de apoio e o de formulário espera.
+ *   Exceção única (#12699, decisão do editor de 11/11/2026): o 1º lembrete
+ *   do convite da base (D+9 de `form_reminder_days_base`) não espera o
+ *   mínimo (`isAskGapExempt`).
  * - **Envio TRAVADO até os textos serem aprovados.** Os 4 textos de apoio
  *   (`data/snippets/apoio-{30,90,180,360}.md`) destravam a sequência de apoio
  *   JUNTOS; os 4 do formulário (`onboarding-formulario.md`,
@@ -1013,6 +1016,26 @@ export function baseReminderDueSec(person: FollowupPerson | undefined, n: number
 }
 
 /**
+ * @pure — #12699 (decisão do editor de 11/11/2026): o 1º lembrete do convite
+ * da BASE (`form_lembrete`, no cronograma `formReminderDaysBase[0]`, o D+9) é
+ * ISENTO de `askMinGapDays`. O D+9 fica a 9 dias do próprio convite, abaixo
+ * do mínimo de 11, e o editor quer que ele saia no dia (18/11 para o envio de
+ * 09/11), não no 11º. Só ele: os lembretes 2 e 3 da base, o lembrete do
+ * onboarding e todos os outros pedidos seguem com a regra. Sem o cronograma
+ * da base configurado (regra antiga, +30) ou sem o convite da base registrado
+ * não há isenção.
+ */
+export function isAskGapExempt(
+  kind: FollowupStepKind,
+  person: FollowupPerson | undefined,
+  cfg: Partial<Pick<FollowupConfig, "formReminderDaysBase">>,
+): boolean {
+  if (kind !== FORM_REMINDER_STEPS[0].kind) return false;
+  if (!cfg.formReminderDaysBase || cfg.formReminderDaysBase.length === 0) return false;
+  return formInviteOf(person) === "form_base" && baseInviteSec(person) != null;
+}
+
+/**
  * @pure — qual e-mail de formulário está devido agora.
  *
  * Lembretes (decisão do editor de 09/11/2026): o N-ésimo lembrete usa o
@@ -1024,9 +1047,9 @@ export function baseReminderDueSec(person: FollowupPerson | undefined, n: number
  * `baseReminderDueSec`); sem esse cronograma configurado (ou sem âncora
  * conhecida), `formReminderDays` depois do envio anterior. Teto:
  * `formReminderMax` (e nunca mais lembretes que textos). O espaçamento entre
- * pedidos é do `planFollowup`, não daqui: ele ainda pode adiar um lembrete
- * do cronograma da base (o D+9 fica a 9 dias do convite, abaixo de
- * `askMinGapDays`).
+ * pedidos é do `planFollowup`, não daqui: ele ainda pode adiar os lembretes
+ * 2 e 3 do cronograma da base; o 1º (D+9, a 9 dias do convite, abaixo de
+ * `askMinGapDays`) é isento (`isAskGapExempt`, #12699).
  */
 export function formStepDue(
   anchorSec: number | null,
@@ -1448,8 +1471,9 @@ export function planFollowup(opts: {
     if (askGapBlocks(nowSec, anchors, last, cfg.askMinGapDays)) {
       if (v.apoio) defer(id, v.email, v.apoio);
       // Pedido do formulário (convite, lembrete, reenvio anual) espera. O
-      // e-mail dos resultados não é pedido (`isAsk`): a regra não o segura.
-      if (v.form && isAsk(v.form)) defer(id, v.email, v.form);
+      // e-mail dos resultados não é pedido (`isAsk`): a regra não o segura,
+      // nem o 1º lembrete da base (#12699, `isAskGapExempt`).
+      if (v.form && isAsk(v.form) && !isAskGapExempt(v.form, person, cfg)) defer(id, v.email, v.form);
       else if (v.form) due.push({ kit_subscriber_id: id, email: v.email, kind: v.form });
       continue;
     }

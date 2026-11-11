@@ -18,6 +18,7 @@ import {
   brtDayStartSec,
   formAnnualStepDue,
   formStepDue,
+  isAskGapExempt,
   planFollowup,
   resolveFollowupConfig,
   type FollowupPerson,
@@ -146,24 +147,70 @@ describe("#12699: o que NÃO muda", () => {
     assert.equal(formStepDue(anchor, anchor + 19 * DAY - 1, p, cfg).due, null);
     assert.deepEqual(formStepDue(anchor, anchor + 19 * DAY, p, cfg), { due: "form_lembrete" });
   });
+});
 
-  it("ask_min_gap_days (11) só adia: em 18/11 o lembrete 1 espera o 11º dia do convite e sai em 21/11", () => {
+describe("#12699: 1º lembrete da base isento de ask_min_gap_days (decisão do editor de 11/11/2026)", () => {
+  const plan = (p: FollowupPerson, day: string, c = cfg) =>
+    planFollowup({
+      apoioCandidates: [],
+      formCandidates: [{ kit_subscriber_id: 1, email: "a@x.com", anchorSec: null }],
+      people: { "1": p },
+      nowSec: round(day),
+      cfg: c,
+      apoioBlocked: null,
+      formBlocked: null,
+    });
+
+  it("REGRESSÃO: convite 09/11 19:39 UTC, pedido anterior a 9 dias (< 11): o lembrete 1 sai em 18/11, não em 21/11", () => {
+    const d18 = plan(basePerson(), "2026-11-18");
+    assert.deepEqual(d18.due.map((d) => d.kind), ["form_lembrete"]);
+    assert.deepEqual(d18.askDeferred, []);
+    assert.equal(d18.counts.form_lembrete?.espacamento, undefined);
+    // Antes do D+9 continua não vencido.
+    assert.deepEqual(plan(basePerson(), "2026-11-17").due, []);
+  });
+
+  it("isento mesmo com outro pedido (apoio) a 2 dias: só a regra de 11 dias é dispensada", () => {
     const p = basePerson();
-    const plan = (day: string) =>
-      planFollowup({
-        apoioCandidates: [],
-        formCandidates: [{ kit_subscriber_id: 1, email: "a@x.com", anchorSec: null }],
-        people: { "1": p },
-        nowSec: round(day),
-        cfg,
-        apoioBlocked: null,
-        formBlocked: null,
-      });
-    const d18 = plan("2026-11-18");
-    assert.deepEqual(d18.due, []);
-    assert.deepEqual(d18.askDeferred.map((d) => d.kind), ["form_lembrete"]);
-    // 09/11 19:39 UTC + 11 dias = 20/11 19:39 UTC; a rodada seguinte é a de 21/11.
-    assert.deepEqual(plan("2026-11-20").due, []);
-    assert.deepEqual(plan("2026-11-21").due.map((d) => d.kind), ["form_lembrete"]);
+    p.sends.push({ step: "apoio90", at: "2026-11-16T12:10:00.000Z", lot_id: "ap" });
+    assert.deepEqual(plan(p, "2026-11-18").due.map((d) => d.kind), ["form_lembrete"]);
+  });
+
+  it("o 2º lembrete ainda respeita o mínimo: apoio em 30/11 adia o D+24 (03/12) até a rodada de 12/12", () => {
+    const p = basePerson();
+    p.sends.push({ step: "form_lembrete", at: iso(round("2026-11-18") + 600), lot_id: "l1" });
+    p.sends.push({ step: "apoio90", at: "2026-11-30T12:10:00.000Z", lot_id: "ap" });
+    const d03 = plan(p, "2026-12-03");
+    assert.deepEqual(d03.due, []);
+    assert.deepEqual(d03.askDeferred.map((d) => d.kind), ["form_lembrete2"]);
+    assert.deepEqual(plan(p, "2026-12-10").due, []);
+    // 30/11 12:10 UTC + 11 dias = 11/12 12:10 UTC: a rodada de 11/12 (12:05) ainda segura; sai em 12/12.
+    assert.deepEqual(plan(p, "2026-12-11").due, []);
+    assert.deepEqual(plan(p, "2026-12-12").due.map((d) => d.kind), ["form_lembrete2"]);
+  });
+
+  it("sem o cronograma da base (regra antiga) não há isenção: o lembrete segue a regra de 11 dias", () => {
+    const legacy = resolveFollowupConfig(raw);
+    const p = basePerson();
+    // Regra antiga: lembrete em 10/12 (+30); um apoio em 05/12 adia.
+    p.sends.push({ step: "apoio90", at: "2026-12-05T12:10:00.000Z", lot_id: "ap" });
+    const r = plan(p, "2026-12-10", legacy);
+    assert.deepEqual(r.due, []);
+    assert.deepEqual(r.askDeferred.map((d) => d.kind), ["form_lembrete"]);
+  });
+
+  it("isAskGapExempt: só form_lembrete, só convite da base registrado, só com a lista configurada", () => {
+    assert.equal(isAskGapExempt("form_lembrete", basePerson(), cfg), true);
+    assert.equal(isAskGapExempt("form_lembrete2", basePerson(), cfg), false);
+    assert.equal(isAskGapExempt("form_lembrete3", basePerson(), cfg), false);
+    assert.equal(isAskGapExempt("apoio90", basePerson(), cfg), false);
+    assert.equal(isAskGapExempt("form_lembrete", basePerson(), resolveFollowupConfig(raw)), false);
+    const onboarding: FollowupPerson = { kit_subscriber_id: 3, email: "c@x.com", cadastro_at: null, sends: [{ step: "form", at: INVITE, lot_id: "f" }] };
+    assert.equal(isAskGapExempt("form_lembrete", onboarding, cfg), false);
+  });
+
+  it("o mínimo global não muda: platform.config.json mantém ask_min_gap_days 11", () => {
+    const pc = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8"));
+    assert.equal(resolveFollowupConfig(pc.onboarding.followup).askMinGapDays, 11);
   });
 });
