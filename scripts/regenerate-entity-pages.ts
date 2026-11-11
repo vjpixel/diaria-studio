@@ -234,7 +234,7 @@ async function main(): Promise<void> {
   // Parte 2: detecção de defasagem de conteúdo — precisa do junction data/.
   if (!existsSync(POSTS_DIR)) {
     console.warn(
-      `${LOG_PREFIX} ⚠ ${POSTS_DIR} ausente — precisa do junction data/ (OneDrive) populado por beehiiv-sync.ts. Pulando detecção de defasagem (fail-soft, ver CLAUDE.md label "local").`,
+      `${LOG_PREFIX} ⚠ ${POSTS_DIR} ausente — precisa do link data/ (Google Drive) populado por beehiiv-sync.ts. Pulando detecção de defasagem (fail-soft, ver CLAUDE.md label "local").`,
     );
     return;
   }

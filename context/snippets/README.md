@@ -1,7 +1,7 @@
 # context/snippets/ — biblioteca de blocos reutilizáveis (spec do formato)
 
 **#5227 (14/08/2026): o CONTEÚDO desses blocos migrou pra `data/snippets/`**
-(junction OneDrive, gitignored, sincroniza sozinha entre as máquinas do
+(link para o Google Drive da diaria.editor desde a #12359, gitignored, sincroniza sozinha entre as máquinas do
 projeto). Este README — a spec do formato, não conteúdo editorial — continua
 aqui, em `context/snippets/`, git-tracked. Os arquivos que este README
 cataloga (todos exceto ele mesmo) vivem agora em `data/snippets/`; todo path

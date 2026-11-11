@@ -6,10 +6,10 @@
  * fresco sem junction `data/` nem ComfyUI nem credenciais locais).
  *
  * Sinal canônico: presença + resolução do junction `data/` como diretório
- * acessível. A junction aponta para
- * `~/OneDrive/Documentos/diaria-studio-data` e só existe localmente — num
- * clone fresco de cloud o path `data/` simplesmente não existe. Depois do
- * cutover pro Google Drive (#12359) o alvo passa a ser a pasta do Drive
+ * acessível. O link aponta para a pasta `diaria-studio-data` do Google Drive
+ * da diaria.editor (até a virada de 11/11/2026, #12359, era
+ * `~/OneDrive/Documentos/diaria-studio-data`) e só existe localmente — num
+ * clone fresco de cloud o path `data/` simplesmente não existe. O alvo é a pasta do Drive
  * (`/mnt/hd-sata/GoogleDrive-diaria/diaria-studio-data` no `300`, mantida
  * pelo bisync dedicado `diaria-gdrive-data-bisync`, #12478); o sinal não
  * olha o caminho, só se ele resolve, e vale igual pros dois backends. Qual
@@ -102,8 +102,8 @@ export function detectExecMode(opts: ExecModeOptions = {}): ExecMode {
  * - `gdrive`: `/mnt/hd-sata/GoogleDrive/...` (rclone bisync do `300`,
  *   #12356) ou qualquer segmento `GoogleDrive`/`Google Drive`/
  *   `GoogleDrive-{conta}` (`~/GoogleDrive`, macOS
- *   `~/Library/CloudStorage/GoogleDrive-{email}/...`), ou a unidade `G:` do
- *   Drive for desktop no Windows (`G:\Meu Drive\...`; também `My Drive`/
+ *   `~/Library/CloudStorage/GoogleDrive-{email}/...`), ou a unidade do
+ *   Drive for desktop no Windows (no Neo, `I:\Meu Drive\...`; também `My Drive`/
  *   `Mi unidad` em qualquer letra de unidade).
  * - `gdrive-unreachable`: `data/` é um symlink/junction cujo ALVO LITERAL é
  *   do Google Drive, mas o alvo não resolve (o HD `/mnt/hd-sata` desmontado

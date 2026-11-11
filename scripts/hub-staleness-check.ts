@@ -223,7 +223,7 @@ async function main(): Promise<void> {
 
   if (!existsSync(POSTS_DIR)) {
     process.stderr.write(
-      `${LOG_PREFIX} ${POSTS_DIR} ausente — precisa do junction data/ (OneDrive) populado por beehiiv-sync.ts. Pulando checagem (fail-soft, ver CLAUDE.md label "local").\n`,
+      `${LOG_PREFIX} ${POSTS_DIR} ausente — precisa do link data/ (Google Drive) populado por beehiiv-sync.ts. Pulando checagem (fail-soft, ver CLAUDE.md label "local").\n`,
     );
     process.exitCode = 0;
     return;

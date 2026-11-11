@@ -926,7 +926,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   if (!db) {
     console.error(
       `[leitor-store] store não encontrado/ilegível em ${dbPath} — rode as ingestões (#6586/#6587) antes, ` +
-        `ou passe --db explícito. "data/" mora no OneDrive (ver CLAUDE.md setup, passo 2b).`,
+        `ou passe --db explícito. "data/" é um link para o Google Drive da diaria.editor (ver docs/setup.md, passo 2b).`,
     );
     process.exitCode = 1;
     return;

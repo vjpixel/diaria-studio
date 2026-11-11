@@ -502,7 +502,7 @@ export async function refreshPollEiaSummaryLocal(
   if (!existsSync(editionsDir)) {
     return {
       ok: false,
-      error: "data/editions/ não encontrado — verifique se a junction OneDrive está montada (ver CLAUDE.md, passo 2b).",
+      error: "data/editions/ não encontrado — verifique se o link data/ (Google Drive) está montado (ver docs/setup.md, passo 2b).",
     };
   }
 
@@ -574,7 +574,7 @@ async function main(): Promise<number | void> {
   const editions = discoverEditions(editionsDir);
 
   if (editions.length === 0) {
-    console.error("[poll-eia] Erro: nenhuma edição encontrada em data/editions/ — verifique se a junction OneDrive está montada");
+    console.error("[poll-eia] Erro: nenhuma edição encontrada em data/editions/ — verifique se o link data/ (Google Drive) está montado");
     return 1;
   }
 
