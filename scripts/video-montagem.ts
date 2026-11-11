@@ -167,13 +167,13 @@
  * plano; review recusa uma prévia mais velha que o plano.
  *
  * Opções comuns:
- *   --drive-root DIR   pasta YouTube local do Drive (default: env DIARIA_VIDEO_DRIVE_ROOT ou
- *                      "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube"); a edição é {DIR}/{AAMMDD}/
- *   --premiere-root DIR  (build) a mesma pasta YouTube como o Mac que abre o XML a vê
- *                      (/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu Drive/…/YouTube):
+ *   --drive-root DIR   pasta de vídeo local do Drive (default: env DIARIA_VIDEO_DRIVE_ROOT ou
+ *                      "I:/Meu Drive/diaria-studio-video", #12578); a edição é {DIR}/{AAMMDD}/
+ *   --premiere-root DIR  (build) a mesma pasta de vídeo como o Mac que abre o XML a vê
+ *                      (/Users/{user}/Library/CloudStorage/GoogleDrive-{conta}/Meu Drive/diaria-studio-video):
  *                      todo pathurl (bruto, áudio tratado, PNG do título, vinheta, card de CTA)
  *                      troca a raiz do Neo por ela (#12707). Default: publishing.video.premiere_root
- *                      do config; sem ele, a raiz do Neo (G:). "off" ignora o config.
+ *                      do config; sem ele, a raiz do Neo (I:). "off" ignora o config (XML para o Premiere do Windows).
  *   --state-dir DIR   onde ficam os JSON (default: data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem)
  *   --work-dir DIR     áudio e clipes temporários (default: {tmp}/diaria-video-montagem/{AAMMDD};
  *                      no modo API, {cache}/work, em disco)
@@ -183,9 +183,9 @@
  *                      ~/.venv-video-montagem quando existe, ou "python"; #11642)
  *
  * Modo API do Drive (#11639, #11640, #11641), o 300 sem o Drive for desktop:
- * sem a RAIZ {drive-root} no disco (a pasta YouTube; e sem --drive-root/DIARIA_VIDEO_DRIVE_ROOT
+ * sem a RAIZ {drive-root} no disco (a pasta de vídeo; e sem --drive-root/DIARIA_VIDEO_DRIVE_ROOT
  * explícito), ou com --from-drive, a pasta da edição é lida pela API (OAuth do projeto;
- * pasta YouTube em publishing.youtube.drive_folder_id, --folder-id sobrepõe). --no-drive-api
+ * pasta de vídeo em publishing.youtube.drive_folder_id, --folder-id sobrepõe). --no-drive-api
  * desliga. O bruto vai para um cache em disco (--cache-dir, DIARIA_VIDEO_CACHE_DIR ou
  * ~/.cache/diaria-video-montagem/{AAMMDD}: bruto/, out/, work/, final/), registrado em
  * bruto.drive.json; build/srt/preview sobem o que gravaram no out dir para a pasta da edição
@@ -796,7 +796,7 @@ export function gainLoudnessSource(input: {
  * `transcribe` no modo API (o 300) não garante no cache: com a transcrição
  * pronta ele não baixa nada, e o cache pode ter sido limpo. Sem o bruto, o
  * ffmpeg falha e o XML cai para o áudio cru. No modo API o build garante o
- * bruto antes (`ensureBrutoLocal`); no local (G:) o bruto é o do Drive montado.
+ * bruto antes (`ensureBrutoLocal`); no local (I:) o bruto é o do Drive montado.
  */
 export function buildNeedsLocalBruto(o: { apiMode: boolean; audioClean: boolean }): boolean {
   return o.apiMode && o.audioClean;
@@ -1617,7 +1617,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   let src = multiPaths ? multiPaths[0] : sourceArg ? resolve(sourceArg) : undefined;
   if (!src) {
     if (!existsSync(ctx.driveDir)) {
-      throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir} (Drive for desktop montado? a pasta ${ctx.edition}/ ainda não sincronizou? espere, ou passe --from-drive para baixar pela API, ou --drive-root)`);
+      throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir} (Drive for desktop montado? a pasta ${ctx.edition}/ ainda não sincronizou? espere, ou passe --from-drive para baixar pela API, ou --drive-root; desde a #12578 a pasta é a diaria-studio-video da diaria.editor: o bruto pode ter subido para a pasta antiga da vjpixel ou por outra conta)`);
     }
     const files = readdirSync(ctx.driveDir, { withFileTypes: true })
       .filter((d) => d.isFile())
@@ -2774,7 +2774,7 @@ function readD1Title(edition: string): string | null {
 /** Relato da raiz dos `pathurl` do XML (#12707): Neo ou Mac, e o que ficou fora da tradução. */
 export function premierePathsLine(map: PremierePathMap | undefined, unmapped: readonly string[]): string {
   if (!map) {
-    return "[premissa] pathurl do XML com a raiz do Neo (G:): abre vinculado no Premiere do Windows; para o Mac, publishing.video.premiere_root no config ou --premiere-root /Users/…/YouTube (#12707)";
+    return "[premissa] pathurl do XML com a raiz do Neo (I:): abre vinculado no Premiere do Windows; para o Mac, publishing.video.premiere_root no config ou --premiere-root /Users/…/diaria-studio-video (#12707)";
   }
   const base = `[premissa] pathurl do XML com a raiz ${map.to} no lugar de ${map.from} (bruto, áudio, título, vinheta e card de CTA); conferir no 1º import no Mac (#12707)`;
   return unmapped.length ? `${base}\n[aviso] fora de ${map.from}, com o caminho de origem no XML (devem chegar offline no Mac): ${unmapped.join(", ")} (#12707)` : base;
@@ -3956,7 +3956,7 @@ function configRootFolderId(flag: string | undefined): () => string {
   return () => {
     if (flag?.trim()) return flag.trim();
     const id = youtubeFolderIdFrom(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")));
-    if (!id) throw new Error("modo API do Drive sem pasta YouTube: preencha publishing.youtube.drive_folder_id no platform.config.json ou passe --folder-id");
+    if (!id) throw new Error("modo API do Drive sem pasta de vídeo: preencha publishing.youtube.drive_folder_id no platform.config.json ou passe --folder-id");
     return id;
   };
 }
@@ -4080,12 +4080,12 @@ export function localBrutoMissing(ctx: Pick<Ctx, "stateDir" | "edition">): strin
   // #12559: bruto em vários arquivos: todos precisam estar nesta máquina (o modo API baixa um bruto só).
   if (source.files?.length) {
     const gone = source.files.filter((x) => !existsSync(x.path)).map((x) => x.path);
-    return gone.length ? `arquivo(s) do bruto em vários arquivos ausente(s) nesta máquina: ${gone.join(", ")} (#12559: rode no Neo, com o Drive em G:)` : null;
+    return gone.length ? `arquivo(s) do bruto em vários arquivos ausente(s) nesta máquina: ${gone.join(", ")} (#12559: rode no Neo, com a pasta de vídeo em I:)` : null;
   }
   if (existsSync(source.path)) return null;
   const info = readBrutoDrive(ctx);
   const origin = info && toPosix(info.localPath) === toPosix(source.path) ? ` (o cache do modo API de outra máquina; o bruto no Drive é ${info.name})` : "";
-  return `bruto do source.json não existe nesta máquina: ${source.path}${origin}. Rode transcribe --force aqui (com o bruto em G:, ou --from-drive para baixá-lo pela API)`;
+  return `bruto do source.json não existe nesta máquina: ${source.path}${origin}. Rode transcribe --force aqui (com o bruto em I:, ou --from-drive para baixá-lo pela API)`;
 }
 
 /** Um arquivo pelo nome na pasta da edição (`--from-audio`) ou em `Final/` (`review-final --file`), baixado para o cache. */
@@ -4153,7 +4153,7 @@ export async function uploadAll(ctx: Pick<Ctx, "stateDir" | "edition">, d: Drive
 
 async function cmdUpload(ctx: Ctx, d: DriveSession | null, file: string | undefined): Promise<number> {
   if (!file) throw new Error("upload exige --file PATH (ex.: o decupagem.md quando o conector do Docs falhar)");
-  if (!d) throw new Error("upload é do modo API do Drive (o 300); no Neo, copie o arquivo para a pasta da edição em G:");
+  if (!d) throw new Error("upload é do modo API do Drive (o 300); no Neo, copie o arquivo para a pasta da edição em I:/Meu Drive/diaria-studio-video (nunca na pasta antiga da vjpixel, #12578)");
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`arquivo não encontrado: ${path}`);
   const r = await uploadAll(ctx, d, [path]);
@@ -4258,7 +4258,7 @@ async function runCommand(
   };
   switch (cmd) {
     case "transcribe": {
-      if (flags.has("from-audio")) throw new Error('--from-audio exige o caminho do áudio separado (ex.: --from-audio "G:/…/Diaria comentada_Youtube.wav")');
+      if (flags.has("from-audio")) throw new Error('--from-audio exige o caminho do áudio separado (ex.: --from-audio "I:/…/Diaria comentada_Youtube.wav")');
       let audio = values["from-audio"];
       // #11639: no modo API, um --from-audio que não existe no disco é o nome do arquivo na pasta da edição.
       if (d && audio !== undefined && !existsSync(audio)) audio = await fetchNamed(d, audio, "edition");
@@ -4306,7 +4306,7 @@ async function runCommand(
         return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), titleMode, seq, !flags.has("no-speech-detect"), !flags.has("no-audio-clean"), d);
       }
     case "srt": {
-      if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "G:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
+      if (flags.has("from-final")) throw new Error('--from-final exige o caminho do export (ex.: --from-final "I:/…/261103/Final/Diaria comentada_Youtube_261103.mp4")');
       let final = values["from-final"];
       if (final === undefined) {
         if (flags.has("heard-text")) throw new Error("--heard-text só vale com --from-final (a legenda pela fala do export, #12198)");

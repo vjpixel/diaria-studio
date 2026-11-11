@@ -473,7 +473,7 @@ function removeEmptyDirs(dir: string): boolean {
 
 /**
  * #12713 — pasta de saída do vídeo (`--video-dir`, a pasta `YouTube/{AAMMDD}`
- * da edição pelo Drive montado, ex.: `G:/Meu Drive/…/YouTube/261112`): troca o
+ * da edição pelo Drive montado, ex.: `I:/Meu Drive/diaria-studio-video/261112`): troca o
  * ID no conteúdo dos XMLs/SRT/JSON (os `pathurl` do Premiere) e nos nomes com o
  * ID (`{AAMMDD}_audio_tratado-*.wav`, `{AAMMDD}_titulo_vertical-*.png`,
  * `{AAMMDD} - previa *.mp4`), com a mesma borda: o bruto `20261112_*.mp4`
@@ -1241,7 +1241,7 @@ export function leftOutItems(from: string, to: string, opts: { videoDirDone?: bo
     ? "os arquivos dentro dela já foram renomeados e os XMLs reescritos (--video-dir)"
     : `os arquivos dentro dela (${from}_audio_tratado-*.wav, ${from}_titulo_vertical*.png, "${from} - previa *.mp4") e os pathurl dos XMLs seguem com ${from}: repetir com --video-dir {pasta montada} ou trocar à mão`;
   return [
-    `Drive: renomear a pasta ${from}/ da pasta YouTube (G:/Meu Drive/…/YouTube/${from}/) pra ${to}/ — os caminhos em _internal/video-montagem/ já apontam pro nome novo, e a montagem e o /diaria-publica procuram a pasta pelo AAMMDD; ${inside}.`,
+    `Drive: renomear a pasta ${from}/ da pasta de vídeo (I:/Meu Drive/diaria-studio-video/${from}/) pra ${to}/ — os caminhos em _internal/video-montagem/ já apontam pro nome novo, e a montagem e o /diaria-publica procuram a pasta pelo AAMMDD; ${inside}.`,
     `Vídeo fora do disco: o título do Doc do roteiro no Drive e o projeto do Premiere (.prproj, aponta pro caminho antigo) seguem com ${from} — renomear o Doc e reimportar o XML (ou religar a mídia).`,
     `Cache local do vídeo: ~/.cache/diaria-video-montagem/${from}/ (ou DIARIA_VIDEO_CACHE_DIR) e {tmp}/diaria-video-montagem/${from}/ ficam com o nome antigo — renomear pra ${to}/ ou deixar a próxima montagem baixar de novo.`,
     `Outras máquinas e sessões: a pasta nova chega pelo sync de data/; sessão aberta (aqui ou em outra máquina) que trabalhava em ${from} precisa recomeçar com ${to}.`,
