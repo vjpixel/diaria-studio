@@ -55,7 +55,8 @@
  *   1 = pelo menos 1 terminou `solo-failed`, `lock-blocked`,
  *       `threads-bloqueantes` (#12734 — revalidação do Gate 2 barrou um PR
  *       por thread de review aberta; o detalhe lista o PR e os IDs das
- *       threads retidas), `threads-ilegiveis` (#12734 — a leitura das
+ *       threads retidas; num lote, só esse PR sai e o resto volta à fila,
+ *       #12784), `threads-ilegiveis` (#12734 — a leitura das
  *       threads falhou na revalidação, sem lista confiável),
  *       `retido-ilegivel` (#10299 — sinal de retenção
  *       ilegível no instante do merge) OU `indeterminate` (falha real de
