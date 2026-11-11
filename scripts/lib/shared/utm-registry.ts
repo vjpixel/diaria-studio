@@ -523,6 +523,23 @@ export const SOCIAL_SIGNUP_TEST_UTM = {
   campaign: "post-cta-12038",
 } as const;
 
+/**
+ * #12735/#12786: link fixo da bio `diar.ia.br/video` (TikTok, Instagram,
+ * Threads), que redireciona ao horizontal mais recente no YouTube. Montado por
+ * `latestVideoBioLink` (`scripts/lib/shared/latest-video-redirect.ts`), um
+ * `utm_source` por rede. `medium` igual ao `EXTERNAL_SURFACE_MEDIUM` (link
+ * parado no perfil), escrito como literal porque este bloco é avaliado antes
+ * daquela constante; `campaign` próprio, fora do `perfil-{source}` das bios
+ * que apontam para a home, para as duas não colapsarem na mesma linha.
+ */
+export const LATEST_VIDEO_BIO_UTM = {
+  medium: "bio",
+  campaign: "video-horizontal",
+} as const;
+
+/** Redes cujo link da bio é o `diar.ia.br/video` (o `utm_source` de cada uma). */
+export const LATEST_VIDEO_BIO_UTM_SOURCES = ["tiktok", "instagram", "threads"] as const;
+
 /** `utm_campaign` compartilhado por X e Threads no CTA de `{edition_url}` da
  * seção `# Curto` (#4295) — mesmo texto/link, só `utm_source` difere por canal. */
 const EDICAO_DIARIA_UTM_CAMPAIGN = "edicao-diaria";
@@ -996,6 +1013,17 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: SOCIAL_SIGNUP_TEST_UTM.campaign,
     originFile: "scripts/lib/social-signup-preparation.ts",
     description: "Preparação local do teste de quatro semanas (#12038); Instagram: comentário e bio. Não publica.",
+    status: "ativo" as const,
+  })),
+  ...LATEST_VIDEO_BIO_UTM_SOURCES.map((source) => ({
+    id: `${source}-bio-video-horizontal-12735`,
+    label: `${source} — link da bio para o vídeo horizontal`,
+    source,
+    medium: LATEST_VIDEO_BIO_UTM.medium,
+    campaignPattern: LATEST_VIDEO_BIO_UTM.campaign,
+    originFile: "scripts/lib/shared/latest-video-redirect.ts",
+    description:
+      "Link fixo da bio (diar.ia.br/video, #12735): redireciona ao horizontal mais recente no YouTube; o editor cola o link na bio da rede. Leva ao YouTube, não ao cadastro.",
     status: "ativo" as const,
   })),
   {
