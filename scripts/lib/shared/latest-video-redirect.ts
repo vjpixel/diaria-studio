@@ -144,13 +144,15 @@ export function effectiveLatestVideoRecord(record: LatestVideoRecord | null, now
 
 /**
  * Pure: o registro novo substitui o atual? Só quando a edição é igual ou mais
- * nova (AAMMDD compara como texto) e algo mudou. Registro atual ilegível
- * (`null`) é substituído.
+ * nova (AAMMDD compara como texto) e algo mudou: a edição, o link ou, na
+ * mesma edição e link, o `public_at` (#12863 — o `publishAt` real que chega
+ * depois das 06:00 presumidas do caminho de reserva, ou registro anterior ao
+ * #12801 sem `public_at`). Registro atual ilegível (`null`) é substituído.
  */
 export function shouldReplaceLatestVideo(current: LatestVideoRecord | null, next: LatestVideoRecord): boolean {
   if (!current) return true;
   if (next.aammdd < current.aammdd) return false;
-  return next.aammdd !== current.aammdd || next.url !== current.url;
+  return next.aammdd !== current.aammdd || next.url !== current.url || next.public_at !== current.public_at;
 }
 
 /**
