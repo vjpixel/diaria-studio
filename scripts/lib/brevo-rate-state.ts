@@ -263,6 +263,17 @@ function scheduleCampaignQuotaKvPush(state: BrevoCampaignQuotaState): void {
   if (!getCampaignQuotaKvOps()) return;
   kvPending = state;
   if (kvInFlight) return;
+  startCampaignQuotaKvPump();
+}
+
+/**
+ * Laço que esvazia `kvPending`. #12862: entre o `while` sair e o `.finally`
+ * zerar `kvInFlight` passam microtasks; uma `recordCampaignQuotaRemaining`
+ * nesse intervalo vê `kvInFlight` preenchido, deixa a observação em
+ * `kvPending` e volta. Por isso o `.finally` reinicia o laço quando sobrou
+ * observação, em vez de só zerar o ponteiro.
+ */
+function startCampaignQuotaKvPump(): void {
   kvInFlight = (async () => {
     while (kvPending) {
       const next = kvPending;
@@ -279,12 +290,30 @@ function scheduleCampaignQuotaKvPush(state: BrevoCampaignQuotaState): void {
     .catch((e) => warnKvOnce("escrita", e))
     .finally(() => {
       kvInFlight = null;
+      if (kvPending && getCampaignQuotaKvOps()) startCampaignQuotaKvPump();
     });
 }
 
 /** Espera os PUTs pendentes deste processo. Nunca lança. */
 export async function flushCampaignQuotaKvWrites(): Promise<void> {
   while (kvInFlight) await kvInFlight;
+}
+
+/**
+ * #12862: `process.exit` mata o processo sem esperar o PUT ao KV que saiu em
+ * segundo plano — o arquivo local fica certo e o KV não, e outra máquina lê
+ * contador velho. CLI que grava cota e sai por `process.exit` usa isto no
+ * lugar (`return exitAfterCampaignQuotaKvFlush(1)`). O PUT tem timeout próprio
+ * (`BREVO_RATE_KV_TIMEOUT_MS`) e falha vira aviso: a espera é curta e nunca
+ * troca o código de saída.
+ */
+export async function exitAfterCampaignQuotaKvFlush(code: number): Promise<never> {
+  try {
+    await flushCampaignQuotaKvWrites();
+  } catch {
+    // flush já é fail-soft; defesa extra para nunca trocar o código de saída.
+  }
+  return process.exit(code);
 }
 
 /**
