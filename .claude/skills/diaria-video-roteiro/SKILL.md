@@ -1,6 +1,8 @@
 ---
 name: diaria-video-roteiro
 description: Escreve o roteiro de fala do vídeo "diar.ia.br comentada" do dia, antes da gravação — um vídeo horizontal e dois verticais que saem da mesma gravação, a partir do D1 da edição. Entrega um artefato (página) com título, texto da capa e falas numeradas por vídeo, e itera com o editor até ele gravar; depois da gravação, confere a transcrição ditada contra o roteiro e diz o que regravar. Roda depois do gate da Etapa 4 e antes da gravação; standalone, sem encadear. Uso — `/diaria-video-roteiro [AAMMDD]`.
+model: claude-opus-5-5
+effort: medium
 ---
 
 # /diaria-video-roteiro AAMMDD
@@ -9,9 +11,13 @@ Escreve o roteiro que o editor lê para gravar o vídeo do dia. Nasceu do proces
 
 **Fora de escopo:** gravar, decupar, checar os fatos da fala gravada no bruto e montar (tudo do `/diaria-video-montagem`), publicar (`/diaria-publica`). Esta skill não altera `02-reviewed.md` nem `03-social.md`.
 
-**Argumento:** `AAMMDD`, opcional. Sem ele, assumir D+1, imprimir o banner `Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.` e seguir.
+## Argumentos
 
-**Fluxo do dia:** `/diaria-edicao` → `/diaria-video-roteiro` → (o editor grava) → `/diaria-video-montagem` → `/diaria-publica`. Sessão própria, sem encadear (#5578): ao terminar, sugerir o próximo passo sem rodá-lo.
+- `AAMMDD` — opcional. Sem ele, assumir D+1, imprimir o banner `Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.` e seguir.
+
+## Fluxo do dia
+
+`/diaria-edicao` → `/diaria-video-roteiro` → (o editor grava) → `/diaria-video-montagem` → `/diaria-publica`. Sessão própria, sem encadear (#5578): ao terminar, sugerir o próximo passo sem rodá-lo.
 
 ## Passo 1 — Ler antes de escrever
 
