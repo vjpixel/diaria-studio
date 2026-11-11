@@ -64,6 +64,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // gera o 2:1 e o 4:5 nativo em chamadas separadas (`stage-3-run.ts`, `--ratio
 // 4x5`) e o 9:16 não é gerado. Estilo, superfícies calmas, headroom, faixa do
 // título e anti-texto ficam compartilhados; só o trecho de composição muda.
+// #12799: o sufixo nunca leva resolução em pixels (regra invariável de
+// `context/editorial-rules.md`): número no prompt puxa o modelo a desenhar
+// dígitos na arte. A proporção basta; a resolução sai dos parâmetros da chamada.
 // Exportados para teste de regressão em test/image-generate-safe-area.test.ts.
 const STYLE_SUFFIX_HEAD =
   ", post-impressionist oil painting with thick impasto brushstrokes, directional rhythmic brushwork, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast. " +
@@ -79,19 +82,19 @@ const STYLE_SUFFIX_HEAD =
 // faltam o nativo e o master), por isso mantém a metade central (#2657, #12309).
 const STYLE_SUFFIX_FORMAT: Record<ImageRatio, string> = {
   "2x1":
-    "This artwork is a wide 2:1 landscape image (1600×800). " +
+    "This artwork is a wide 2:1 landscape image. " +
     "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible if the image is reframed as the portrait 4:5 feed card; do not place key subjects near the left or right edges. " +
     "Every essential element must sit well inside the frame and never touch any edge. ",
   "4x5":
-    "This artwork is a portrait 4:5 image (1080×1350) composed for the vertical frame at its final proportion. " +
+    "This artwork is a portrait 4:5 image composed for the vertical frame at its final proportion. " +
     "Group all principal subjects together near the horizontal center of the frame, each one fully visible with clear margin on every side; do not place key subjects near the left or right edges. " +
     "Every essential element must sit well inside the frame and never touch any edge. ",
   "1x1":
-    "This artwork is a 1:1 image (1024×1024). " +
+    "This artwork is a 1:1 image. " +
     "Group all principal subjects together in the center of the frame, each one fully visible; do not place key subjects near the left or right edges. " +
     "Every essential element must sit well inside the frame and never touch any edge. ",
   master:
-    "This artwork is a 6:5 image (1600×1350). " +
+    "This artwork is a 6:5 image. " +
     "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible if the image is reframed as the portrait 4:5 feed card; do not place key subjects near the left or right edges. " +
     "Every essential element must sit well inside the frame and never touch any edge. ",
 };
