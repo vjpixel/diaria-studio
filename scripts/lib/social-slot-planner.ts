@@ -484,3 +484,40 @@ export function mergeGrids(...grids: ReadonlyArray<readonly ScheduledSlot[]>): S
   }
   return [...byKey.values()];
 }
+
+/** #12748: planeja o lote inteiro antes do dispatch; nunca aceita gap menor.
+ * Backtracking evita que deslocar D1 ocupe o único slot possível de D2.
+ * Prefere o horário original e depois o candidato mais próximo (empate cedo).
+ */
+export function planStrictDailySlots(
+  grid: readonly ScheduledSlot[], requests: readonly SlotRequest[],
+): string[] {
+  const chosen: ScheduledSlot[] = [];
+  const candidates = requests.map((req) => {
+    const lo = Math.max(ms(req.window.start, "start"), req.notBefore ? ms(req.notBefore, "notBefore") : -Infinity);
+    const hi = ms(req.window.end, "end");
+    const preferred = req.preferredAt ? ms(req.preferredAt, "preferredAt") : lo;
+    const step = (req.stepMinutes ?? DEFAULT_STEP_MINUTES) * MIN;
+    if (step <= 0) throw new Error("stepMinutes deve ser > 0");
+    const times = new Set<number>();
+    if (preferred >= lo && preferred <= hi) times.add(preferred);
+    for (let t = Math.ceil(lo / step) * step; t <= hi; t += step) times.add(t);
+    return [...times].sort((a, b) => Math.abs(a - preferred) - Math.abs(b - preferred) || a - b);
+  });
+  function search(i: number): boolean {
+    if (i === requests.length) return true;
+    const req = requests[i];
+    const accounts = new Set(slotAccounts(req));
+    const neighbors = [...grid, ...chosen].filter((s) => slotAccounts(s).some((a) => accounts.has(a)));
+    const gap = (req.minGapMinutes ?? DEFAULT_MIN_GAP_MINUTES) * MIN;
+    for (const t of candidates[i]) {
+      if (neighbors.some((s) => Math.abs(t - ms(s.at, "at")) < gap)) continue;
+      chosen.push({ account: req.account, alsoAccounts: req.alsoAccounts, at: new Date(t).toISOString() });
+      if (search(i + 1)) return true;
+      chosen.pop();
+    }
+    return false;
+  }
+  if (!search(0)) throw new Error("#12748: sem grade social com espaçamento mínimo de 2 h; ampliar janela ou revisar horários antes de agendar.");
+  return chosen.map((s) => s.at);
+}

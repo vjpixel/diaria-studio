@@ -1336,7 +1336,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       ...(input.grid ?? []),
       ...slots.map((s) => ({ account: s.account, at: s.at, label: `shorts ${s.destination}`, ...(s.alsoAccounts ? { alsoAccounts: s.alsoAccounts } : {}) })),
     ];
-    const s = planLinkedInRepostSlot({ aammdd: input.aammdd, profileAt: Number.isNaN(Date.parse(profileAt)) ? shortTime.at : profileAt, grid: plannedGrid });
+    const s = planLinkedInRepostSlot({ aammdd: input.aammdd, profileAt: Number.isNaN(Date.parse(profileAt)) ? shortTime.at : profileAt, grid: plannedGrid, ...(!corte && (input.config as { publishing?: { social?: unknown } })?.publishing?.social ? { fixedAt: timeFor("linkedin_page_repost").at } : {}) });
     premises.push(`linkedin_page_repost: ${s.hhmm} BRT (grade da página #10819: ${s.premise})`);
     if (s.warning) warnings.push(s.warning);
     return s;

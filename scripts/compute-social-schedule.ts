@@ -31,7 +31,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
-import { readSocialRotation, weekdayRotationSlot } from "./lib/social-schedule-rotation.ts";
+import { ROTATION_POST_TYPES, readSocialRotation, weekdayRotationSlot } from "./lib/social-schedule-rotation.ts";
+
+import { configuredVerticalGrid } from "./lib/diaria/vertical-schedule-grid.ts";
+import { brtDayWindow, planStrictDailySlots, slotAccounts, socialAccountKey } from "./lib/social-slot-planner.ts";
 
 interface ScheduleConfig {
   d1_time?: string;
@@ -54,6 +57,7 @@ interface SocialConfig {
 interface PlatformConfig {
   publishing?: {
     social?: SocialConfig;
+    shorts?: unknown;
   };
 }
 
@@ -112,6 +116,8 @@ export interface ComputeScheduleInput {
    * 5 publicadores da diária giram juntos sem precisar de flag.
    */
   applyRotation?: boolean;
+  /** #12748: false apenas para obter os candidatos originais do lote. */
+  applyVerticalSpacing?: boolean;
 }
 
 /**
@@ -337,6 +343,29 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
   const [h, m] = time.split(":");
   const offsetStr = timezoneOffsetIso(target, tz);
   const calculatedIso = `${dateStr}T${h.padStart(2, "0")}:${m}:00${offsetStr}`;
+
+  // #12748: o vertical é fixo. Todos os callers reconstruem o MESMO lote,
+  // inclusive antes de existir 06-shorts-published.json. Overrides de outras
+  // campanhas continuam fora da grade diária.
+  if (!slot && input.applyRotation !== false && input.applyVerticalSpacing !== false) {
+    const grid = configuredVerticalGrid(config, editionDate);
+    const account = socialAccountKey(platform);
+    if (grid.some((s) => slotAccounts(s).includes(account))) {
+      const types = ROTATION_POST_TYPES.filter((t) => t !== "um" || !!social.use_melhor_time);
+      const canonical = types.map((t) => computeScheduledAt({ ...input, destaque: t, applyVerticalSpacing: false, disablePastSlotShift: true }));
+      const shift = !disablePastSlotShift && process.env.DIARIA_DISABLE_PASTSLOT_SHIFT !== "1";
+      const notBefore = shift ? new Date((nowOverride ?? Date.now()) + Math.max(minFutureMs, pastSlotShiftMs)).toISOString() : undefined;
+      const day = dateStr.slice(2).replaceAll("-", "");
+      const planned = planStrictDailySlots(grid, canonical.map((at) => ({
+        account, preferredAt: at, window: brtDayWindow(day), notBefore,
+      })));
+      const result = planned[types.indexOf(destaque)];
+      if (Date.parse(result) !== Date.parse(calculatedIso) && process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
+        console.error(`[compute-schedule] #12748 ${platform}/${destaque}: ${calculatedIso} deslocado para ${result}; vertical fixo, mínimo 2 h. Descartar célula deslocada da medição da rotação.`);
+      }
+      return result;
+    }
+  }
 
   // (#2552) Past-slot guard: se o slot calculado está no passado ou abaixo do
   // piso mínimo de plataforma (10min — Facebook Graph API), shiftar para

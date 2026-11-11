@@ -977,7 +977,7 @@ export interface ShortSlot {
   /** `fixed-time` (#12250): horário fixo do destino (`by_destination`/`default_time`) mantido; a grade só avisa. */
   /** `timer-300` (#11265): Instagram pelo timer do 300, sempre no horário do vertical, fora da grade. */
   /** `explicit` (#11795): horário do corte avulso (`--at`), mantido em todos os destinos como o do teste. */
-  /** `SlotRule`: só o repost da página do LinkedIn (`planLinkedInRepostSlot`) ainda passa pelo planner. */
+  /** `SlotRule`: repost fora da diária (corte) ainda passa pelo planner. */
   rule: "test-schedule" | "fixed-time" | "timer-300" | "explicit" | SlotRule;
   premise: string;
   warning?: string;
@@ -1028,9 +1028,21 @@ export const LINKEDIN_REPOST_MIN_DELAY_MINUTES = 30;
  * vídeo do perfil (não existe repost de post que ainda não saiu). Vale também
  * durante o teste de horário do #10831: o repost não é o vertical, é o
  * compartilhamento dele. Sem horário na janela, cai na folga mínima com aviso.
+ * #12748: com `fixedAt` (diária), preserva a reserva do Stage 5 e a folga
+ * mínima após o perfil; só cortes continuam escolhendo pela grade.
  */
-export function planLinkedInRepostSlot(input: { aammdd: string; profileAt: string; grid: readonly ScheduledSlot[] }): ShortSlot {
+export function planLinkedInRepostSlot(input: { aammdd: string; profileAt: string; grid: readonly ScheduledSlot[]; fixedAt?: string }): ShortSlot {
   const notBefore = new Date(Date.parse(input.profileAt) + LINKEDIN_REPOST_MIN_DELAY_MINUTES * 60_000).toISOString();
+  // #12748: na diária o social já reservou este horário. Preserva a
+  // precedência real do perfil (repost não existe antes de o perfil sair).
+  if (input.fixedAt) {
+    const at = new Date(Math.max(Date.parse(input.fixedAt), Date.parse(notBefore))).toISOString();
+    const conflict = input.grid.some((s) => slotAccounts(s).includes(LINKEDIN_PAGE_ACCOUNT) &&
+      Math.abs(Date.parse(s.at) - Date.parse(at)) < DEFAULT_MIN_GAP_MINUTES * 60_000);
+    if (conflict) throw new Error("#12748: repost fixo colide com social já agendado; revisar a grade antes de publicar.");
+    return { destination: "linkedin_page_repost", account: LINKEDIN_PAGE_ACCOUNT,
+      at, hhmm: brtHHMM(at), rule: "fixed-time", premise: "#12748: repost reservado antes do Stage 5, após o perfil" };
+  }
   const d = planSlot(input.grid, {
     account: LINKEDIN_PAGE_ACCOUNT,
     window: brtDayWindow(input.aammdd),
