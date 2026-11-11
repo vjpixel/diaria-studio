@@ -231,6 +231,8 @@ describe("findProtectedPathWrite — escritores de ferramenta (#12812)", () => {
     blocks(`cat /tmp/p.patch | git apply`, { readFile });
     blocks(`git apply <<'EOF'\n${PATCH}EOF`);
     blocks(`patch -p1 -i /tmp/p.patch`, { readFile });
+    blocks(`patch -p1 < /tmp/p.patch`, { readFile });
+    blocks(`git apply < /tmp/p.patch`, { readFile });
     blocks(`patch .claude/settings.json /tmp/s.diff`);
     blocks(`patch -d .claude/hooks -p1 < /tmp/x.diff`);
     blocks(`git rm .claude/hooks/block-gh-pr-merge-subagent.mjs`);
@@ -259,6 +261,7 @@ describe("findProtectedPathWrite — escritores de ferramenta (#12812)", () => {
     const readFile = (p: string) => files[p] ?? null;
     blocks(`python3 /tmp/fix.py .claude/skills/a/SKILL.md`, { readFile });
     blocks(`python3 /tmp/sumiu.py .claude/skills/a/SKILL.md`, { readFile });
+    blocks(`python3 "$S/fix.py" .claude/skills/a/SKILL.md`, { readFile });
     passes(`node /tmp/count.mjs .claude/skills/a/SKILL.md`, { readFile });
     passes(`npx tsx scripts/check-x.ts .claude/hooks/x.mjs`, { readFile, projectDirs: ["/home/u/diaria-studio"] });
   });

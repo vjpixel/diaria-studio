@@ -1084,6 +1084,8 @@ export function findProtectedPathWrite(command, opts = {}, depth = 0) {
       // do projeto ou `cat x.patch |` no mesmo pipeline).
       const texts = [...cmd.stdin];
       const files = [...s.patchFiles];
+      // `patch -p1 < /tmp/x.diff`: o patch chega por redirecionamento de entrada.
+      if (!files.length) files.push(...cmd.redirects.filter((r) => r.op === "<").map((r) => r.target));
       if (!files.length) {
         for (const c of cmds) {
           if (c === cmd || c.pipeline !== cmd.pipeline) continue;
@@ -1197,7 +1199,9 @@ function protectedRefIn(sources) {
 /** `file` (relativo a `cwd`) mora dentro de uma raiz do projeto ou do cwd? */
 function insideProject(file, cwd, projectDirs) {
   const p = toPosix(file);
-  if (p.startsWith("$")) return true; // opaco: não dá para dizer onde mora
+  // `$S/fix.py`: onde mora só se sabe ao rodar; não prova que é do projeto
+  // (0 usos com argumento protegido nos transcripts, #12812).
+  if (p.startsWith("$")) return false;
   const abs = isAnchored(p) ? p : `${toPosix(cwd)}/${p}`;
   return [...projectDirs, cwd].filter(Boolean).some((r) => isInside(r, abs));
 }
