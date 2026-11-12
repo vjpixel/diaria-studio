@@ -67,7 +67,7 @@
  * a capturar.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
@@ -82,6 +82,7 @@ import {
   type UsageWindowResult,
 } from "./lib/session-transcript.ts";
 import { editionDateMs, estimateCallCostUsd, shortModelName } from "./lib/pricing.ts";
+import { PUBLICA_PHASES_FILE, parsePhaseEvents, videoPartMainThreadIntervals } from "./lib/diaria/publica-phases.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -121,6 +122,13 @@ export interface CaptureResult {
    * `0` é o caso normal.
    */
   parse_errors?: number;
+  /**
+   * #12655: uso da sessão dentro da janela do stage que pertence a OUTRA
+   * parte (o vídeo da `/diaria-publica` no thread principal, pela telemetria
+   * `_internal/publica-phases.jsonl`) e ficou fora de `tokens_in`/`tokens_out`.
+   * Ausente = nenhum intervalo de outra parte na janela.
+   */
+  excluded_other_parts?: { entries: number; tokens_in: number; tokens_out: number; labels: string[]; parse_problems?: string[] };
 }
 
 /**
@@ -139,6 +147,7 @@ function describeWindowFilter(
   | "subagent_tokens_in"
   | "subagent_tokens_out"
   | "parse_errors"
+  | "excluded_other_parts"
 > {
   return {
     session_filter: window.sessionFilter,
@@ -149,6 +158,16 @@ function describeWindowFilter(
     subagent_tokens_in: window.subagentTokensIn,
     subagent_tokens_out: window.subagentTokensOut,
     parse_errors: window.parseErrors,
+    ...(window.excludedByInterval && window.excludedByInterval.labels.length + window.excludedByInterval.entries > 0
+      ? {
+          excluded_other_parts: {
+            entries: window.excludedByInterval.entries,
+            tokens_in: window.excludedByInterval.tokensIn,
+            tokens_out: window.excludedByInterval.tokensOut,
+            labels: window.excludedByInterval.labels,
+          },
+        }
+      : {}),
   };
 }
 
@@ -277,6 +296,43 @@ export function hasCapturedUsage(row: Pick<StageRow, "cost_usd" | "tokens_in">):
   return row.cost_usd !== undefined || row.tokens_in !== undefined;
 }
 
+/**
+ * #12655: intervalos em que o thread principal da `/diaria-publica` trabalhou
+ * na parte de VÍDEO (telemetria `publica-phases`), para tirar da janela das
+ * Etapas 5/6. Arquivo ausente = nada a tirar. Arquivo ilegível ou linha fora
+ * do schema vira `problems` (vai para `excluded_other_parts.parse_problems`
+ * no resultado, além do aviso no stderr): a separação pode estar incompleta.
+ * Tarefa sem fim gravado sai rotulada `(aberta)` e vai só até o próximo
+ * `start` do thread principal (`videoPartMainThreadIntervals`).
+ */
+export function publicaVideoIntervals(
+  editionDir: string,
+  sessionId: string | null,
+  windowEnd: string | undefined,
+): { intervals: Array<{ start: number; end: number; label: string }>; problems: string[] } | undefined {
+  const path = resolve(editionDir, PUBLICA_PHASES_FILE);
+  if (!existsSync(path)) return undefined;
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    const msg = `${path} ilegível (${(e as Error).message}): uso do vídeo não separado do stage`;
+    console.error(`[aviso] ${msg}`);
+    return { intervals: [], problems: [msg] };
+  }
+  const { events, problems } = parsePhaseEvents(raw);
+  for (const p of problems) console.error(`[aviso] ${path}: ${p}`);
+  const openUntil = windowEnd ? Date.parse(windowEnd) : Date.now();
+  return {
+    intervals: videoPartMainThreadIntervals(events, sessionId, openUntil).map((i) => ({
+      start: i.start,
+      end: i.end,
+      label: `${i.phase}/${i.part}${i.open ? " (aberta)" : ""}`,
+    })),
+    problems,
+  };
+}
+
 async function main(): Promise<void> {
   const { values, flags } = parseArgsLib(process.argv.slice(2));
   const editionDirRaw = values["edition-dir"];
@@ -329,11 +385,19 @@ async function main(): Promise<void> {
     ? null
     : (values["session-id"] ?? currentSessionId());
 
+  const videoParts = stage === 5 || stage === 6 ? publicaVideoIntervals(editionDir, sessionId, end) : undefined;
   const result = captureUsageForWindow(transcriptsDir, start, end, editionId, {
     sessionId,
     explicitAllSessions: flags.has("all-sessions"),
+    excludeIntervals: videoParts?.intervals,
   });
   result.stage = stage;
+  if (videoParts?.problems.length) {
+    result.excluded_other_parts = {
+      ...(result.excluded_other_parts ?? { entries: 0, tokens_in: 0, tokens_out: 0, labels: [] }),
+      parse_problems: videoParts.problems,
+    };
+  }
 
   if (result.source === "unavailable") {
     console.log(JSON.stringify(result));

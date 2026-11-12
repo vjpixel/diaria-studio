@@ -381,6 +381,13 @@ interface UsageWindowBase {
    * (ver `looksLikeTruncatedTranscriptEvent`), nunca de "transcript vazio".
    */
   parseErrors: number;
+  /**
+   * #12655: entradas da sessão-alvo que caíram num intervalo de
+   * `opts.excludeIntervals` (trabalho de OUTRA parte no mesmo transcript, ex.:
+   * o vertical do `/diaria-publica` dentro da janela da Etapa 5) e ficaram
+   * FORA de `entries`/`tokensIn`/`tokensOut`. `null` = nenhum intervalo pedido.
+   */
+  excludedByInterval: { entries: number; tokensIn: number; tokensOut: number; labels: string[] } | null;
 }
 
 /**
@@ -401,6 +408,14 @@ export interface CollectUsageOptions {
    * não lê env, pra continuar testável.
    */
   sessionId?: string | null;
+  /**
+   * #12655: intervalos (ms epoch, inclusivos) cujo uso NÃO é deste stage —
+   * trabalho de outra parte no mesmo transcript (o thread principal da
+   * `/diaria-publica` cuidando do vídeo dentro da janela da Etapa 5/6, pela
+   * telemetria `publica-phases`). As entradas neles saem do agregado e são
+   * contadas em `excludedByInterval`.
+   */
+  excludeIntervals?: ReadonlyArray<{ start: number; end: number; label?: string }>;
 }
 
 /**
@@ -466,6 +481,11 @@ export function collectUsageInWindow(
   // `[startMs, endMs]` (que SIM depende de janela válida) fica atrás do
   // guard `Number.isFinite`.
   const windowValid = Number.isFinite(startMs) && Number.isFinite(endMs);
+  const intervals = (opts.excludeIntervals ?? []).filter((i) => Number.isFinite(i.start) && Number.isFinite(i.end));
+  const excludedLabels = new Set<string>();
+  let exEntries = 0;
+  let exIn = 0;
+  let exOut = 0;
   for (const file of files) {
     const keep = outcome.sessionFilter === "all_sessions" || file === wanted;
     // #7084: os transcripts de subagente da SESSÃO DONA de `file` (mesmo
@@ -488,8 +508,19 @@ export function collectUsageInWindow(
         const ts = new Date(entry.timestamp).getTime();
         if (!Number.isFinite(ts)) continue;
         if (ts < startMs || ts > endMs) continue;
-        if (keep) entries.push(entry);
-        else excluded.add(file);
+        if (!keep) {
+          excluded.add(file);
+          continue;
+        }
+        const hit = intervals.find((i) => ts >= i.start && ts <= i.end);
+        if (hit) {
+          exEntries++;
+          exIn += entry.inputTokens + entry.cacheCreationInputTokens + entry.cacheReadInputTokens;
+          exOut += entry.outputTokens;
+          if (hit.label) excludedLabels.add(hit.label);
+          continue;
+        }
+        entries.push(entry);
       }
     }
   }
@@ -523,5 +554,8 @@ export function collectUsageInWindow(
     subagentTokensIn: sawSidechain ? subIn : null,
     subagentTokensOut: sawSidechain ? subOut : null,
     parseErrors,
+    excludedByInterval: opts.excludeIntervals
+      ? { entries: exEntries, tokensIn: exIn, tokensOut: exOut, labels: [...excludedLabels].sort() }
+      : null,
   };
 }
