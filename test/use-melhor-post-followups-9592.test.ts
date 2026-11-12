@@ -167,7 +167,7 @@ describe("#9592 — a escolha gravada vale enquanto o item estiver na edição",
     assert.ok(st.lines.some((l) => l.startsWith("   ℹ️") && l.includes(MODS.title) && l.includes("segue com o")));
   });
 
-  it("invariante Stage 4: item fora da edição → 1 warning; dentro → nada; desligado → nada", () => {
+  it("invariante Stage 4: item fora da edição → erro bloqueante; dentro → nada; desligado → nada", () => {
     const dir = tmpEdition();
     writeUseMelhorPostState(dir, EDITOR_STATE);
     writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_261005);
@@ -177,10 +177,25 @@ describe("#9592 — a escolha gravada vale enquanto o item estiver na edição",
     const v = checkUseMelhorPostItemRendered(dir, ON);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "use-melhor-post-item-rendered");
-    assert.equal(v[0].severity, "warning");
-    assert.match(v[0].message, /PULADO nos 5 canais/);
+    assert.equal(v[0].severity, "error");
+    assert.match(v[0].message, /bloqueia o gate/);
     assert.match(v[0].message, /select-use-melhor-post\.ts --edition-dir .* --reviewed/);
     assert.deepEqual(checkUseMelhorPostItemRendered(dir, OFF), []);
+  });
+
+  it("#12898: re-selecionar sem terminar a reescrita não libera o gate", () => {
+    const dir = tmpEdition();
+    writeUseMelhorPostState(dir, EDITOR_STATE);
+    writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_261005);
+    const pending = join(dir, "_internal/use-melhor-refresh-pending.json");
+    writeFileSync(pending, JSON.stringify({ url: EDITOR_ITEM.url }));
+    const v = checkUseMelhorPostItemRendered(dir, ON);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "error");
+    assert.match(v[0].message, /reescrita pendente/);
+    assert.deepEqual(checkUseMelhorPostItemRendered(dir, OFF), []);
+    rmSync(pending);
+    assert.deepEqual(checkUseMelhorPostItemRendered(dir, ON), []);
   });
 
   it("invariante registrada no Stage 4", () => {
