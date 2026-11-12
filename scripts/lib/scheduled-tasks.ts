@@ -2258,7 +2258,15 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `Diaria-Worker-Drift-Check`). O incidente de referência (serviço morto
     // 17h sem ninguém perceber) pede detecção em horas, não em dias.
     schedule: { kind: "interval", hours: 4 },
-    issue: "#5548",
+    // `enabled: false` (#12923): desde a virada de 11/11/2026 (#12359) o
+    // `data/` está no Google Drive e o OneDrive do `300` foi desligado
+    // (`onedrive.service` mascarado, timer deste alarme desabilitado). O
+    // canário que ele mede passou a morar no Drive, então religado ele
+    // mediria o backend errado. O runner pula a execução e o rearme de
+    // tasks paradas não o religa. Remoção definitiva do alarme e do código
+    // do OneDrive: #12360 (item 5).
+    enabled: false,
+    issue: "#5548, #12923",
   },
   {
     name: "Diaria-GDrive-Sync-Alarm",
