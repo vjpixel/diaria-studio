@@ -11,11 +11,13 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildVerticalManifest, planSha256, sha256Hex, type VideoPlanManifest } from "../scripts/lib/diaria/video-publish-plan.ts";
 import {
+  AUTHORIZATION_STORE_FILE,
+  type AuthorizationRefusal,
   consumeBeforeExternalEffects,
   consumeVideoPublishAuthorization,
   emptyAuthorizationStore,
@@ -221,5 +223,70 @@ describe("#12859 entrega do alarme", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("#12892 falha do registro inteiro ainda alarma a task", () => {
+  it("registro ilegível (escrita parcial do sync): recusa unavailable por destino, com o dono do plano, e a task alarma", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "auth-alarm-12892-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, AUTHORIZATION_STORE_FILE), '{"schema": "video-publish-auth');
+      const out = consumeBeforeExternalEffects({ editionDir: dir, edition: ED, manifest: vertical(), destinations: ["threads_profile"], now: AFTER_THREADS, by: "teste", command: TASK_CMD });
+      assert.equal(out.ok, false);
+      const refusals = out.ok ? [] : out.refusals ?? [];
+      assert.deepEqual(refusals.map((r) => [r.destination, r.kind, r.approved_owner?.by]), [["threads_profile", "unavailable", "agent-scheduled-task"]]);
+      const gh = fakeGh();
+      const alarm = await alarmTaskAuthorizationRefusal({ editionDir: dir, aammdd: ED, part: "vertical", command: TASK_CMD, refusals, notifyDeps: gh.deps, log: () => {} });
+      assert.equal(alarm, "delivered");
+      assert.equal(gh.issues.length, 1);
+      assert.equal(gh.emails.length, 1);
+      const { body } = buildAuthorizationRefusalAlarm({ aammdd: ED, part: "vertical", command: TASK_CMD, refusals });
+      assert.match(body, /`threads_profile`: registro de autorização indisponível/);
+      assert.match(body, /video-publish-authorizations\.json/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("registro ilegível na rodada interativa (comando principal): não alarma", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "auth-alarm-12892-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, AUTHORIZATION_STORE_FILE), "{");
+      const out = consumeBeforeExternalEffects({ editionDir: dir, edition: ED, manifest: vertical(), destinations: ["youtube_shorts", "threads_profile"], now: AFTER_THREADS, by: "teste", command: MAIN_CMD });
+      assert.equal(out.ok, false);
+      assert.equal(out.ok ? 0 : out.refusals?.length, 2);
+      const gh = fakeGh();
+      const alarm = await alarmTaskAuthorizationRefusal({ editionDir: dir, aammdd: ED, part: "vertical", command: MAIN_CMD, refusals: out.ok ? [] : out.refusals ?? [], notifyDeps: gh.deps, log: () => {} });
+      assert.equal(alarm, "not-task");
+      assert.equal(gh.calls.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("edição errada: recusa wrong-edition por destino, com o dono do plano", () => {
+    const r = consumeVideoPublishAuthorization(emptyAuthorizationStore("261111"), { edition: ED, manifest: vertical(), destinations: ["threads_profile"], now: AFTER_THREADS, by: "teste", command: TASK_CMD });
+    assert.equal(r.ok, false);
+    const refusals = r.ok ? [] : r.refusals ?? [];
+    assert.deepEqual(refusals.map((x) => [x.destination, x.kind, x.approved_owner?.by]), [["threads_profile", "wrong-edition", "agent-scheduled-task"]]);
+    assert.equal(oneShotTaskRefusals(refusals, TASK_CMD).length, 1);
+  });
+});
+
+describe("#12892 dono guiado (comando que não é de publisher) não vira task", () => {
+  it("passo guiado diferido do linkedin_page_repost: a recusa do --publish interativo não alarma", () => {
+    const refusals: AuthorizationRefusal[] = [
+      {
+        destination: "linkedin_page_repost",
+        kind: "plan-changed",
+        message: "o plano mudou",
+        changed: [],
+        approved_owner: { by: "agent-scheduled-task", command: `/diaria-publica-video ${ED} --so vertical` },
+      },
+    ];
+    assert.equal(oneShotTaskRefusals(refusals, MAIN_CMD).length, 0);
+    assert.equal(oneShotTaskRefusals(refusals, TASK_CMD).length, 0);
   });
 });
