@@ -130,6 +130,18 @@ export function d1SocialSlotAt(
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * #12893: fonte única do horário do D1 a partir do `platform.config.json`
+ * inteiro, sempre com o desvio do vertical (`clearedDailyPostTimes`, #12748).
+ * Os consumidores (upload do `publish-youtube`, `link-video-d1`, trava
+ * "vídeo antes do D1") passam por aqui para não divergirem no mesmo dia:
+ * chamar `d1SocialSlotAt` só com o bloco `social` esquece o desvio.
+ */
+export function d1SocialSlotAtFromConfig(aammdd: string, config: unknown): Date | null {
+  const social = (config as { publishing?: { social?: Record<string, unknown> } } | null)?.publishing?.social ?? null;
+  return d1SocialSlotAt(aammdd, social, config ?? null);
+}
+
 /** Registro do Stage 5 da newsletter (`scheduled_at` do broadcast, #11548). */
 export const NEWSLETTER_PUBLISHED_FILE = join("_internal", "05-published.json");
 

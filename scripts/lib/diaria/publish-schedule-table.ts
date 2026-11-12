@@ -8,8 +8,9 @@
  * `publish-shorts.ts`.
  *
  * Fontes: `_internal/06-social-published.json` (horário real de cada post
- * social) e `_internal/06-shorts-published.json` (horário real de cada destino
- * do vertical). Destino do vertical ainda sem registro (a Parte B roda depois
+ * social) e o registro do vertical (`_internal/06-shorts-published*.json`,
+ * principal + timers do 300, unidos por `readShortsRegistry`, #12893: horário
+ * real de cada destino). Destino do vertical ainda sem registro (a Parte B roda depois
  * do Stage 5, #12591) entra com o horário CONFIGURADO (`publishing.shorts.schedule`,
  * #12250), marcado `previsto`; o repost da página do LinkedIn, planejado só na
  * Parte B, sai `Parte B`. Rede sem post daquele tipo: `—`.
@@ -128,7 +129,7 @@ export function buildScheduleTable(input: {
   config: unknown;
   /** Conteúdo de `_internal/06-social-published.json` (ou `null`). */
   social: unknown;
-  /** Conteúdo de `_internal/06-shorts-published.json` (ou `null`). */
+  /** Registro do vertical: a visão unida de `readShortsRegistry` (principal + timers, #12893), o `06-shorts-published.json` legado, ou `null`. */
   shorts: unknown;
   /** Conteúdo de `_internal/06-linkedin-personal.json` (ou `null`/ausente). */
   linkedinPersonal?: unknown;
