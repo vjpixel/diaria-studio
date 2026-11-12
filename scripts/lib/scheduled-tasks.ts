@@ -2260,11 +2260,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "interval", hours: 4 },
     // `enabled: false` (#12923): desde a virada de 11/11/2026 (#12359) o
     // `data/` está no Google Drive e o OneDrive do `300` foi desligado
-    // (`onedrive.service` mascarado, timer deste alarme desabilitado). O
-    // canário que ele mede passou a morar no Drive, então religado ele
-    // mediria o backend errado. O runner pula a execução e o rearme de
-    // tasks paradas não o religa. Remoção definitiva do alarme e do código
-    // do OneDrive: #12360 (item 5).
+    // (`onedrive.service` mascarado de propósito, timer deste alarme
+    // desabilitado). Religado, ele acusaria o serviço mascarado como morto.
+    // O runner pula a execução e o rearme automático
+    // (`Diaria-Remediate-Never-Armed-Tasks`) não o religa; o
+    // `arm-systemd-timers.ts --rearm-stopped` manual sem `--task` ainda
+    // religa o timer (#12930), e aí o runner só registra o SKIP. Remoção
+    // definitiva do alarme e do código do OneDrive: #12360 (item 5).
     enabled: false,
     issue: "#5548, #12923",
   },

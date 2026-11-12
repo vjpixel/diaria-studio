@@ -3,8 +3,9 @@
  * o timer do `Diaria-OneDrive-Sync-Alarm` foi parado de propósito no `300`, e o
  * `Diaria-Task-Never-Armed-Alarm` abriu issue de "task parada deliberadamente".
  * A task sai do registro ativo com `enabled: false`: o alarme de nunca-armada
- * deixa de acusá-la, e o rearme de tasks paradas não a religa (o canário que
- * ela mede agora mora no Drive, então religada ela mediria o backend errado).
+ * deixa de acusá-la, e o rearme automático não a religa (religada, ela
+ * acusaria o `onedrive.service`, mascarado de propósito, como serviço morto).
+ * Quando a #12360 remover a task do registro, este teste sai junto.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

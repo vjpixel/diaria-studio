@@ -4,8 +4,8 @@
  *
  * Task `Diaria-GDrive-Sync-Alarm` (de hora em hora): alarme do `rclone
  * bisync` do Google Drive no `300` (#12356) — o equivalente, pro backend
- * novo, do `scripts/onedrive-sync-alarm.ts` (#5548), que segue rodando
- * igual enquanto `data/` estiver no OneDrive (cutover na #12359). Cinco
+ * novo, do `scripts/onedrive-sync-alarm.ts` (#5548), desativado desde a
+ * virada do `data/` para o Drive (#12359, 11/11/2026; #12923). Cinco
  * sinais, cada um com achado próprio:
  *
  *   1. Sync (`check: "gdrive-sync"`): lê os carimbos que o
