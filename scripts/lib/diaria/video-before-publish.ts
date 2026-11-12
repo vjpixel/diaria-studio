@@ -52,7 +52,7 @@ import { D1_INVITE_TEXT, D1_PLAY_HERO_FILE, D1_PLAY_IMAGE_KEY } from "./d1-video
 import { YOUTUBE_PUBLISHED_FILE } from "./youtube-upload.ts";
 import { YOUTUBE_API_PROJECT_AUDITED } from "./youtube-video.ts";
 import {
-  d1SocialSlotAt,
+  d1SocialSlotAtFromConfig,
   gateVideoLink,
   newsletterSendAt,
   readYouTubeRecordSummary,
@@ -184,10 +184,9 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."
 /** Horário do post do D1 pelo `platform.config.json` do repo; `null` se não der (nunca lança). */
 export function loadD1SlotAtFromConfig(aammdd: string, rootDir: string = REPO_ROOT): Date | null {
   try {
-    const cfg = JSON.parse(readFileSync(join(rootDir, "platform.config.json"), "utf8")) as {
-      publishing?: { social?: Record<string, unknown> };
-    };
-    return d1SocialSlotAt(aammdd, cfg.publishing?.social ?? null);
+    const cfg: unknown = JSON.parse(readFileSync(join(rootDir, "platform.config.json"), "utf8"));
+    // #12893: com o config inteiro, para o desvio do vertical (#12748) valer aqui também.
+    return d1SocialSlotAtFromConfig(aammdd, cfg);
   } catch {
     return null;
   }
