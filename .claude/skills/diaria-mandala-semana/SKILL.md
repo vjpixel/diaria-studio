@@ -20,14 +20,25 @@ descobrir datas: elas vêm do HTML.
 - Perfil do desafio: @diar.ia.br. Rede: **Ambos** (Instagram e YouTube).
 - Link de cada dia = **1º conteúdo publicado no dia no Instagram**, dia em BRT.
   Inclui os reels em collab do @vjpixel que aparecem no grid do @diar.ia.br.
+- Dia sem post com pergunta obrigatória: usar o vídeo/reel do dia seguinte,
+  conforme decisão de 12/11/2026 (#12919). O script propõe o candidato em
+  `missing[]`, sem preencher sozinho: no resumo, confirmar o candidato e
+  tirá-lo dos extras ao aplicá-lo. Não substituir o 1º post do dia seguinte.
 - Extras = todos os demais posts do período, um link por linha.
 - Novos seguidores = bruto (sem descontar quem deixou de seguir).
 - Print da aba Insights do Instagram no período é obrigatório.
 - E-mail e telefone do grupo ficam FORA do repo, em
   `~/.config/diaria/mandala-contato.json` (`{"email": "...", "telefone": "..."}`).
+  O arquivo nasce na primeira execução, só naquela máquina; não presumir que
+  exista em outra máquina nem copiar o contato para o repo.
 - A coleta usa só API oficial e dados locais. Nada de raspar o grid do
   Instagram, decodificar shortcode nem ler o Business Suite por automação
-  (regra de ToS do `CLAUDE.md`; comentário de 06/11 na issue).
+  (restrição específica do [comentário de 06/11 na #12347](https://github.com/vjpixel/diaria-studio/issues/12347#issuecomment-6694747791),
+  não uma proibição geral do `CLAUDE.md`). Exceção autorizada em 12/11/2026,
+  [#12919](https://github.com/vjpixel/diaria-studio/issues/12919#issuecomment-6826970979):
+  print pontual pelo Claude in Chrome na sessão logada do editor, baixo
+  volume e interação humana natural. Respeitar ToS antes de agir; a exceção
+  não autoriza scraping, extração em escala ou endpoints não oficiais.
 
 ## Passo 1 — dados que só o editor tem
 
@@ -36,9 +47,14 @@ pergunta), só com o que falta:
 
 1. **Collabs do @vjpixel na semana.** A Graph API do @diar.ia.br não devolve
    reels em collab publicados pelo @vjpixel (medido em 11/11/2026). Perguntar
-   se houve algum e, para cada um, o link e o horário de publicação (BRT).
+   só o que continuar faltando após cruzar `_internal/06-social-published.json`
+   e `_internal/06-shorts-published*.json` das edições do período. Usar URL e
+   horário explícitos dos registros; não inferir collab apenas por ser reel,
+   nem tratar ausência no histórico como prova de que não houve. Mostrar os
+   achados e perguntar apenas por collabs/horários ainda desconhecidos.
    Opção sugerida: "não houve collab nesta semana".
-2. **Print de Insights.** Pedir o(s) arquivo(s) do print da aba Insights
+2. **Print de Insights.** Capturar pelo Chrome conforme a exceção acima ou,
+   se indisponível, pedir o(s) arquivo(s) do print da aba Insights
    (Resultados e Público → Tendências no período). Se o editor colar o
    caminho, usar; se preferir, ele salva em
    `data/desafio-mandala/semana{N}-prints/` e o script acha sozinho. Lembrar
@@ -48,6 +64,15 @@ pergunta), só com o que falta:
 3. **Contato, só na 1ª vez:** se `~/.config/diaria/mandala-contato.json` não
    existir ou estiver incompleto, perguntar e-mail do Fluxer e telefone do
    grupo e gravar o arquivo com `Write` (fora do repo, nunca em `data/`).
+
+No Business Suite, usar a URL da aba Insights com `platform=Instagram` e
+`time_range=%7B%22start%22%3A%22AAAA-MM-DD%22%2C%22end%22%3A%22AAAA-MM-DD%22%7D`,
+substituindo as datas pelo período do formulário. Isso evita o calendário,
+cujo layout muda após o primeiro clique. Capturar Resultados e Público →
+Tendências com o MESMO `time_range`; conferir intervalo visível em cada aba.
+Se resetar, o total de Público (368 na execução de 12/11) é fora do período:
+restaurar o intervalo antes do print, nunca usar esse total como novos
+seguidores. Salvar em `data/desafio-mandala/semana{N}-prints/`.
 
 Antes da bateria, dizer quantas perguntas são.
 
@@ -66,6 +91,10 @@ O script:
   e o "período de DD/MM até DD/MM";
 - lista os posts do @diar.ia.br pela Graph API (`/media`) e escolhe o 1º de
   cada dia em BRT; os outros viram extras;
+- se faltarem dias do YouTube, `missing[]` informa o comando
+  `npx tsx scripts/youtube-analytics-snapshot.ts --since AAAA-MM-DD` (início
+  do período); rodar e remontar o plano antes de somar. A API pode ter atraso:
+  persistindo lacunas, manter total parcial e a confirmação do Passo 3;
 - soma os novos seguidores do Instagram (série bruta
   `data/metrics/instagram-follows-daily.jsonl`, #12348) e os inscritos do
   YouTube (`data/youtube-analytics/channel-daily.jsonl`);
@@ -120,26 +149,28 @@ Uso humano e de baixo volume, na sessão do editor, permitido pela regra de
 ToS do `CLAUDE.md`. Se o MCP do Chrome não responder, halt banner (#738) e
 parar.
 
-1. `tabs_context_mcp`, abrir a URL numa aba do grupo MCP.
+1. `tabs_context_mcp`, abrir a URL numa aba do grupo MCP; na tela inicial, clicar em "Responder".
 2. O Tally mostra uma pergunta por tela e o campo já vem com foco. **Ler o
    texto de cada pergunta e casar pelo conteúdo, nunca pela posição** (a
    numeração pode mudar):
    - "e-mail do FLUXER" → `email` lido de `contato.file` nesta hora (o plano
      em `data/` só diz `email_ok`, nunca guarda o valor);
    - "telefone de contato no grupo" → `telefone` lido do mesmo arquivo;
-   - "Para qual rede" → clicar no label "Ambos";
+   - "Para qual rede" → clicar no label "Ambos" e depois em "OK"; não avança sozinho;
    - "Link do conteúdo do dia N (DD/MM)" → o `url` do dia N em `daily[]`
      (casar pelo N e pela data; se o dia estiver sem link, parar e perguntar;
      com `dailyVerified: false`, só o link que o editor confirmou para aquele
      dia, nunca o `candidate` sem confirmação);
    - "conteúdos extras" → `extras[]`, um por linha (no textarea, Shift+Enter
-     entre linhas; Enter avança);
+     entre linhas; Enter vira quebra de linha). Clicar em "Avançar";
    - "seguidores ou inscritos novos" → `newFollowers.total` se
      `totalComplete`; senão, o valor que o editor confirmou no Passo 3;
    - "print da aba de Insights" → upload dos arquivos de `prints[]` com o
-     `file_upload` do Chrome. Se o upload for bloqueado, pedir ao editor que
+     `file_upload` do Chrome: localizar com `find` o `file-input` oculto e
+     usar seu `ref` (funcionou em 12/11/2026). Se houver falha real, pedir ao editor que
      anexe à mão e esperar o "pronto".
-3. Digitar e avançar com Enter em todas as perguntas **menos na última**: na
+3. Digitar e avançar com Enter nos campos simples; para Ambos e extras,
+   usar os botões acima. **Na última pergunta**, na
    tela final, nunca apertar Enter (na semana 2 o formulário saiu enviado antes
    do "sim").
 4. Na tela com o botão "Enviar respostas": tirar um screenshot, mostrar ao
