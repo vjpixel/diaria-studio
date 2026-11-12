@@ -3577,8 +3577,8 @@ function checkUseMelhorCarouselStaleAtGate(
  * renderizado no USE MELHOR do `02-reviewed.md` final. Edição 261005: os 5
  * canais pularam o 4º post no Stage 5 sem que nada no gate deixasse claro que
  * ele não ia sair. Este check acusa ANTES do gate quando o item saiu da edição
- * (editor tirou/trocou no painel), com o comando que realinha. Warning, nunca
- * error: o 4º post é fail-soft (#9568) e a edição não bloqueia por ele.
+ * (editor tirou/trocou no painel), com o comando que realinha. Desde #12898,
+ * bloqueia o gate: um warning permitia perder o post nos cinco canais.
  * Item de score maior na edição final NÃO é violação — a escolha gravada vale.
  */
 function checkUseMelhorPostItemRendered(
@@ -3593,17 +3593,21 @@ function checkUseMelhorPostItemRendered(
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   if (!existsSync(reviewedPath)) return [];
   const final = checkUseMelhorItemInFinal(state.item, readFileSync(reviewedPath, "utf8"));
-  if (final.ok) return [];
+  const pendingPath = resolve(editionDir, "_internal/use-melhor-refresh-pending.json");
+  const pending = existsSync(pendingPath);
+  if (final.ok && !pending) return [];
   return [
     {
       rule: "use-melhor-post-item-rendered",
       message:
-        `4º post (USE MELHOR) vai ser PULADO nos 5 canais: ${final.reason}. Para manter o 4º post: ` +
+        `4º post (USE MELHOR) bloqueia o gate: ${final.ok ? "re-seleção com reescrita pendente do ## um" : final.reason}. Para manter o 4º post: ` +
         `"npx tsx scripts/select-use-melhor-post.ts --edition-dir ${editionDir} --reviewed" e re-rodar ` +
         `social-writer/social-curto só pro '## ${USE_MELHOR_POST_ID}' (ou gravar à mão em ` +
-        `_internal/use-melhor-post.json o item que ficou na edição, junto com o texto de '## ${USE_MELHOR_POST_ID}').`,
-      source_issue: "#9592",
-      severity: "warning",
+        `_internal/use-melhor-post.json o item que ficou na edição, junto com o texto de '## ${USE_MELHOR_POST_ID}'). ` +
+        `Refazer humanização, carrossel e preview; só após concluir, limpar a pendência com ` +
+        `"npx tsx scripts/refresh-use-melhor-post.ts --edition-dir ${editionDir} --done".`,
+      source_issue: "#12898",
+      severity: "error",
       file: useMelhorPostStatePath(editionDir),
     },
   ];
@@ -4706,7 +4710,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "use-melhor-post-item-rendered",
-    description: "item do 4º post (USE MELHOR) gravado em _internal/use-melhor-post.json saiu do USE MELHOR final — o 4º post seria pulado no Stage 5 (#9592, warning-only)",
+    description: "item do 4º post (USE MELHOR) gravado em _internal/use-melhor-post.json saiu do USE MELHOR final — bloqueia o gate até realinhar seleção e ## um (#12898)",
     source_issue: "#9592",
     stage: 4,
     run: (editionDir) => checkUseMelhorPostItemRendered(editionDir),
