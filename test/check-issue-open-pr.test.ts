@@ -84,6 +84,33 @@ describe("check-issue-open-pr main() (#7788)", () => {
     assert.equal(parsed.matches[0].number, 7783);
   });
 
+  it("runs cancelados e supersedidos com substitutos verdes → CI green (#12885)", () => {
+    const statusCheckRollup = ["CI", "Unused code check", "PR checks"].flatMap((name) => [
+      { name, status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-11-11T21:02:00Z" },
+      { name, status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-11-11T21:01:00Z" },
+    ]);
+    statusCheckRollup.push(
+      { name: "Tests", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-11-11T21:00:00Z" },
+      { name: "Tests", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-11-11T21:01:00Z" },
+    );
+    const fixture = [{ number: 12791, body: "Closes #12785", statusCheckRollup }];
+    const { result: code, logs } = withCapturedLogs(() =>
+      main(["--issue", "12785"], "/tmp", fakeRunnerReturning(JSON.stringify(fixture))));
+    const parsed = JSON.parse(logs.join("\n"));
+    assert.equal(code, 1);
+    assert.equal(parsed.matches[0].ciState, "green");
+    assert.match(parsed.recommendation, /CI green/);
+  });
+
+  it("cancelamento sem substituto continua CI failing (#12885)", () => {
+    const fixture = [{ number: 12791, body: "Closes #12785", statusCheckRollup: [
+      { name: "CI", status: "COMPLETED", conclusion: "CANCELLED" },
+    ] }];
+    const { logs } = withCapturedLogs(() =>
+      main(["--issue", "12785"], "/tmp", fakeRunnerReturning(JSON.stringify(fixture))));
+    assert.equal(JSON.parse(logs.join("\n")).matches[0].ciState, "failing");
+  });
+
   it("nenhuma PR aberta cobrindo a issue → exit 0, no-open-pr", () => {
     const runner = fakeRunnerReturning("[]");
     const { result: code, logs } = withCapturedLogs(() => main(["--issue", "7788"], "/tmp", runner));
