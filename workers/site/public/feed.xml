@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Wed, 11 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Thu, 12 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Claude Code pode ter vazado suas senhas no GitHub</title>
+      <link>https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github</guid>
+      <pubDate>Thu, 12 Nov 2026 09:00:00 GMT</pubDate>
+      <description>Gemini 4 Carbon mira tarefas longas de agentes | Denúncia acusa multinacional de barrar engenheiras</description>
+    </item>
     <item>
       <title>Nubank demite time antifraude e põe IA no lugar</title>
       <link>https://diar.ia.br/p/nubank-demite-time-antifraude-e-poe-ia-no-lugar</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono</guid>
       <pubDate>Mon, 31 Aug 2026 09:00:00 GMT</pubDate>
       <description>Extensão do Claude chega a todo plano pago | Nvidia pode comprar a Hugging Face por US$ 12,9 bi</description>
-    </item>
-    <item>
-      <title>Tem 22 a 25 anos? A IA já pode afetar seu emprego</title>
-      <link>https://diar.ia.br/p/tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego</guid>
-      <pubDate>Fri, 28 Aug 2026 09:00:00 GMT</pubDate>
-      <description>OpenAI amplia presença oficial no Brasil | GLM-5.3-Flash: modelo aberto chega perto do Opus</description>
     </item>
   </channel>
 </rss>
