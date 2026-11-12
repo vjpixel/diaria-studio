@@ -95,6 +95,7 @@
  *       corte (piso + 45% da faixa) vira [aviso]; a passada B do refino só tira som na entrada
  *       separado da 1ª palavra por silêncio.
  *       (#11935) grava um XML por sequência ({nome da sequência}.xml); `--seq` grava só uma, e só ela muda no plan.json (#11969)
+ *       (#12902) se as entradas mudaram desde o plano anterior, `--seq` recusa antes de gravar; rode build sem --seq
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Clipes contíguos no bruto viram um só e o zoom alterna só nos cortes (#11503). Os cortes
  *       são refinados pelo áudio do bruto (#11500, `lib/diaria/video-cut-refine.ts`): vale de
@@ -2929,6 +2930,16 @@ export function speechThresholdsPremise(th: SpeechThresholds, voice: SpeechVoice
 }
 
 async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}): Promise<number> {
+  // #12902: recusar antes do detector/refino, assets e XMLs: o merge de um
+  // build parcial com hash novo descartaria as outras sequências do plano.
+  if (seq && existsSync(f(ctx, "plan.json"))) {
+    let previous: PlanFile;
+    try { previous = readJson<PlanFile>(f(ctx, "plan.json"), "plan.json"); }
+    catch { throw new Error("build --seq recusado: plan.json anterior ilegível; rode build sem --seq para reconstruir todas as sequências (#12902)"); }
+    if (previous.hash !== planHash(ctx, loadBlocks(ctx).text)) {
+      throw new Error("build --seq recusado: as entradas mudaram desde o build anterior; rode build sem --seq para preservar todas as sequências no plan.json (#12902)");
+    }
+  }
   // #12089: o corte de pausas pelo detector de fala (energia + banda alta), não pelo silencedetect.
   let speech: ReturnType<typeof speechDetection> = { cut: null, reason: "--no-speech-detect" };
   if (speechDetect) {
