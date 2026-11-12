@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import {
   D1_LOCKS_SCHEMA_SQL,
@@ -83,14 +84,14 @@ export async function runSmokeTest(d1: D1Client, name = `smoke:${randomUUID()}`)
   return fails;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   loadProjectEnv(ROOT);
   const { flags } = parseArgs(process.argv.slice(2));
   const accountId = (process.env.CLOUDFLARE_ACCOUNT_ID ?? "").trim();
   const token = (process.env.CLOUDFLARE_D1_TOKEN ?? "").trim() || (process.env.CLOUDFLARE_API_TOKEN ?? "").trim();
   if (!accountId || !token) {
     console.error("[d1-locks-setup] CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_D1_TOKEN (ou CLOUDFLARE_API_TOKEN) são obrigatórios.");
-    process.exit(2);
+    return 2;
   }
   const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
     d1_locks?: { database_id?: string | null; database_name?: string };
@@ -102,7 +103,7 @@ async function main(): Promise<void> {
   if (flags.has("check")) {
     if (!databaseId) {
       console.error("[d1-locks-setup] --check sem d1_locks.database_id no platform.config.json.");
-      process.exit(2);
+      return 2;
     }
   } else if (!databaseId) {
     const list = await cf<Array<{ uuid: string; name: string }>>(token, "GET", `${acct}/d1/database?name=${encodeURIComponent(dbName)}`);
@@ -126,7 +127,7 @@ async function main(): Promise<void> {
   const fails = await runSmokeTest(d1);
   if (fails.length > 0) {
     console.error(`[d1-locks-setup] teste FALHOU:\n  - ${fails.join("\n  - ")}`);
-    process.exit(1);
+    return 1;
   }
   console.log("[d1-locks-setup] teste ok: A adquiriu, B recusado, B não soltou o lock de A, A soltou, linha apagada.");
   console.log(JSON.stringify({ database_name: dbName, database_id: databaseId }));
@@ -136,8 +137,7 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`[d1-locks-setup] erro: ${(e as Error).message}`);
-    process.exit(1);
+  void runCli(main, {
+    onError: (e) => console.error(`[d1-locks-setup] erro: ${(e as Error).message}`),
   });
 }
