@@ -268,6 +268,26 @@ describe("ensureAgentEvalCheckGreen: run cancelado pela concurrency (#12861)", (
     assert.match(!res.ok ? res.error : "", /run 10, tentativa 2\) e terminou failure/);
   });
 
+  it("regressão #12871: run anterior com attempt 2 não decide quando o rerun do alvo mais novo é cancelado", async () => {
+    const previous: Run = { id: 99, status: "completed", conclusion: "failure", run_attempt: 2 };
+    const gh = scriptedGithub([
+      [previous, { id: 100, status: "completed", conclusion: "failure", run_attempt: 1 }],
+      [
+        previous,
+        { id: 100, status: "completed", conclusion: "cancelled", run_attempt: 2 },
+        { id: 101, status: "completed", conclusion: "cancelled", run_attempt: 1 },
+      ],
+    ]);
+    const c = clock();
+    const started = c.now();
+    const res = await ensureAgentEvalCheckGreen({ prNumber: "42", headSha: SHA, label: LABEL, runner: gh.runner, ...c, timeoutMs: 60_000, pollMs: 15_000, log: quiet });
+    assert.equal(res.ok, false);
+    assert.match(!res.ok ? res.error : "", /não ficou verde em 60s \(run 99 completed\/failure\)/);
+    assert.equal(c.now() - started, 60_000, "espera até o prazo apesar do attempt maior do run anterior");
+    assert.equal(reruns(gh.calls).length, 1);
+    assert.match(reruns(gh.calls)[0], /\/100\/rerun/);
+  });
+
   it("só cancelados depois da ação: espera até o prazo (nunca devolve failure por cancelamento)", async () => {
     const gh = scriptedGithub([
       [{ id: 10, status: "completed", conclusion: "failure", run_attempt: 1 }],
