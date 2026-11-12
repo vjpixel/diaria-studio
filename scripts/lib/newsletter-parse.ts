@@ -2472,16 +2472,23 @@ function siblingEditionDir(editionDir: string, aammdd: string): string | null {
   return resolve(parent, "..", aammdd.slice(0, 4), aammdd);
 }
 
+/** Marcador por edição que tira o box do vídeo do slot 0 (#12899). */
+export const VIDEO_BOX0_OPTOUT_FILE = "no-video-box0.json";
+export function isVideoBox0OptOut(editionDir: string): boolean {
+  return existsSync(resolve(editionDir, "_internal", VIDEO_BOX0_OPTOUT_FILE));
+}
+
 /** Estado de uma edição para a cota do box do vídeo (#12073). Slot 0 ocupado =
  * box0 escrito no `.md` ou callout de intro (sorteio/CTA), os avisos do topo. */
 function videoBox0DayState(editionDir: string): { hasVideo: boolean; slot0Busy: boolean } {
   const hasVideo = readEditionVideoMeta(editionDir) !== null;
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
-  let slot0Busy = false;
+  // Opt-out do editor (#12899): sem box nesta edição, a vaga passa para a próxima.
+  let slot0Busy = isVideoBox0OptOut(editionDir);
   if (existsSync(reviewedPath)) {
     try {
       const text = joinMultilineLinks(readFileSync(reviewedPath, "utf8"));
-      slot0Busy = extractBoxDivulgacao0(text) !== null || extractIntroCallout(text) !== null;
+      slot0Busy = slot0Busy || extractBoxDivulgacao0(text) !== null || extractIntroCallout(text) !== null;
     } catch {
       slot0Busy = false;
     }
@@ -2501,6 +2508,9 @@ export function resolveVideoBox0(editionDir: string, slot0Busy: boolean): string
   if (!aammdd) return null;
   const video = readEditionVideoMeta(editionDir);
   if (!video) return null;
+  // Pedido do editor (261112): `_internal/no-video-box0.json` tira só o box do slot 0
+  // desta edição; o link do vídeo na imagem do D1 continua.
+  if (isVideoBox0OptOut(editionDir)) return null;
   let weekday: number;
   let prior: string[];
   try {
