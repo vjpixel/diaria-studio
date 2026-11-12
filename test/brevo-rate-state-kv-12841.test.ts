@@ -13,9 +13,9 @@
 
 import { describe, it, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { KvOps } from "../scripts/lib/cloudflare-kv-rest.ts";
 import {
@@ -31,6 +31,7 @@ import {
   refreshCampaignQuotaStateFromKv,
   resolveCampaignQuotaKvOps,
   setCampaignQuotaKvOpsForTest,
+  shouldPushCampaignQuotaState,
   writeCampaignQuotaState,
 } from "../scripts/lib/brevo-rate-state.ts";
 
@@ -338,15 +339,95 @@ describe("#12862 — PUT ao KV não se perde no intervalo do finally nem no proc
 
   // Os CLIs que gravam cota e saem por `process.exit` esperam o PUT: depois da
   // 1ª chamada à Brevo (o refresh da cota), nenhum `process.exit(` cru.
-  for (const rel of ["scripts/clarice-build-segment.ts", "scripts/clarice-guardrail-alarm.ts"]) {
+  // #12870: a lista sai de uma varredura de `scripts/` (todo arquivo fora de
+  // `scripts/lib/` que chama o refresh), não de uma lista à mão — a lista à
+  // mão do #12862 cobria 2 CLIs e deixou 3 de fora.
+  const REFRESH_CALL = "await refreshCampaignQuotaStateFromKv(";
+  const refreshCallers = (readdirSync(join(ROOT, "scripts"), { recursive: true }) as string[])
+    .map((p) => `scripts/${p.split(sep).join("/")}`)
+    .filter((rel) => rel.endsWith(".ts") && !rel.startsWith("scripts/lib/"))
+    .filter((rel) => readFileSync(join(ROOT, rel), "utf8").includes(REFRESH_CALL))
+    .sort();
+
+  it("#12870: a varredura acha os CLIs conhecidos (não passa vazia)", () => {
+    for (const rel of [
+      "scripts/clarice-build-segment.ts",
+      "scripts/clarice-guardrail-alarm.ts",
+      "scripts/audit-wave-no-duplicate-sends.ts",
+      "scripts/clarice-audit-overlap.ts",
+      "scripts/clarice-consolidate-lists.ts",
+    ]) {
+      assert.ok(refreshCallers.includes(rel), `${rel} sumiu da varredura (vieram: ${refreshCallers.join(", ")})`);
+    }
+  });
+
+  for (const rel of refreshCallers) {
     it(`${rel}: nenhum process.exit cru depois do refresh da cota`, () => {
       const src = readFileSync(join(ROOT, rel), "utf8");
-      const refresh = src.indexOf("await refreshCampaignQuotaStateFromKv(");
-      assert.ok(refresh >= 0);
-      const tail = src.slice(refresh);
+      const tail = src.slice(src.indexOf(REFRESH_CALL));
       assert.ok(!/^\s*process\.exit\(/m.test(tail), `${rel} ainda tem process.exit( depois do refresh`);
-      assert.match(tail, /main\(\)\.catch\([^]*?exitAfterCampaignQuotaKvFlush\(1\)/, "o catch do main espera o PUT");
+      const mainCatch = /main\(\)\.catch\(([^]*?)\n\s*\}\);/.exec(tail);
+      // `process.exitCode = N` deixa o event loop drenar (o PUT termina): só o
+      // catch que SAI na hora precisa do flush.
+      if (mainCatch && /process\.exit\(|exitAfterCampaignQuotaKvFlush/.test(mainCatch[1])) {
+        assert.match(mainCatch[1], /exitAfterCampaignQuotaKvFlush\(1\)/, `${rel}: o catch do main espera o PUT`);
+      }
     });
   }
+});
+
+describe("#12895 — PUT ao KV não apaga observação mais nova de outra máquina", () => {
+  it("regressão: PUT atrasado de A não sobrescreve o remaining menor que B gravou depois", async () => {
+    const kv = fakeKv();
+    setCampaignQuotaKvOpsForTest(kv);
+    // B (outra máquina) já gravou às 10:20 com remaining=40.
+    const fromB = JSON.stringify({ remaining: 40, limit: 100, updatedAt: "2026-11-11T10:20:00.000Z" });
+    kv.store.set(BREVO_RATE_KV_KEY, fromB);
+    // A observou remaining=50 às 10:10, mas o push dela só sai agora.
+    mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-11T10:10:00.000Z") });
+    recordCampaignQuotaRemaining(50, 100, undefined, pathA);
+    await flushCampaignQuotaKvWrites();
+    assert.equal(kv.store.get(BREVO_RATE_KV_KEY), fromB, "o KV segue com a observação mais nova (B)");
+    assert.equal(kv.puts.length, 0, "nenhum PUT da observação velha");
+    assert.equal(readCampaignQuotaState(pathA)?.remaining, 50, "o arquivo local de A não muda por isso");
+  });
+
+  it("observação local mais nova que a do KV é gravada", async () => {
+    const kv = fakeKv();
+    setCampaignQuotaKvOpsForTest(kv);
+    kv.store.set(BREVO_RATE_KV_KEY, JSON.stringify({ remaining: 40, updatedAt: "2026-11-11T10:20:00.000Z" }));
+    mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-11T10:30:00.000Z") });
+    recordCampaignQuotaRemaining(30, 100, undefined, pathA);
+    await flushCampaignQuotaKvWrites();
+    assert.equal(parseCampaignQuotaState(kv.store.get(BREVO_RATE_KV_KEY) ?? null)?.remaining, 30);
+  });
+
+  it("valor ilegível no KV não segura o PUT", async () => {
+    const kv = fakeKv();
+    setCampaignQuotaKvOpsForTest(kv);
+    kv.store.set(BREVO_RATE_KV_KEY, "{não é json");
+    recordCampaignQuotaRemaining(25, 100, undefined, pathA);
+    await flushCampaignQuotaKvWrites();
+    assert.equal(parseCampaignQuotaState(kv.store.get(BREVO_RATE_KV_KEY) ?? null)?.remaining, 25);
+  });
+
+  it("leitura do KV falhou: grava às cegas (fail-soft, como antes)", async () => {
+    const kv = fakeKv();
+    kv.failGet = true;
+    setCampaignQuotaKvOpsForTest(kv);
+    recordCampaignQuotaRemaining(22, 100, undefined, pathA);
+    await flushCampaignQuotaKvWrites();
+    assert.equal(parseCampaignQuotaState(kv.store.get(BREVO_RATE_KV_KEY) ?? null)?.remaining, 22);
+  });
+
+  it("shouldPushCampaignQuotaState: só não grava quando o KV é estritamente mais novo", () => {
+    const old = { remaining: 50, updatedAt: "2026-11-11T10:10:00.000Z" };
+    const newer = { remaining: 40, updatedAt: "2026-11-11T10:20:00.000Z" };
+    assert.equal(shouldPushCampaignQuotaState(old, newer), false);
+    assert.equal(shouldPushCampaignQuotaState(newer, old), true);
+    assert.equal(shouldPushCampaignQuotaState(old, null), true);
+    assert.equal(shouldPushCampaignQuotaState(old, { remaining: 1, updatedAt: old.updatedAt }), true, "empate grava");
+    assert.equal(shouldPushCampaignQuotaState(old, { remaining: 1, updatedAt: "lixo" }), true);
+  });
 });
 

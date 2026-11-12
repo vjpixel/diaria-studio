@@ -61,6 +61,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
   assertCampaignQuotaHeadroom,
   refreshCampaignQuotaStateFromKv, // #12841
+  exitAfterCampaignQuotaKvFlush, // #12870
   brevoGet,
   brevoGetList,
   brevoListContacts,
@@ -354,6 +355,6 @@ async function main(): Promise<void> {
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`❌ ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(1);
+    return exitAfterCampaignQuotaKvFlush(1); // #12870: não perde o PUT da cota ao KV
   });
 }
