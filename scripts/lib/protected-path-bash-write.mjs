@@ -70,8 +70,10 @@
 // review), `git checkout/restore -- .claude/...` (traz conteúdo já versionado,
 // como merge/rebase; 24 usos legítimos medidos no #12812), formatador sobre
 // diretório ancestral (`prettier --write .` na raiz), patch ilegível cujo
-// comando não cita caminho protegido (`gh pr diff N | git apply`), e
-// interpretador que monta o caminho em partes não reconhecidas.
+// comando não cita caminho protegido (`gh pr diff N | git apply`),
+// interpretador que monta o caminho em partes não reconhecidas, e `case ... in
+// a)` dentro de substituição entre aspas duplas (o `)` do padrão fecha a
+// substituição antes da hora; #12894).
 
 /**
  * Entradas protegidas logo abaixo de um segmento `.claude/`. É a lista única
@@ -178,14 +180,39 @@ function newCmd(pipeline) {
  * `words` já vem sem aspas; `redirects` são `{ op, target }`; `stdin` são os
  * corpos de heredoc/here-string entregues ao comando; `pipeline` agrupa os
  * comandos ligados por `|`. Substituição de comando (`$(...)`, crase) e
- * subshell viram comandos próprios.
+ * subshell viram comandos próprios, também dentro de aspas duplas (#12894).
  */
 export function tokenizeShell(src) {
   const cmds = [];
   if (typeof src !== "string") return cmds;
-  let pipeline = 0;
-  let cur = newCmd(pipeline);
+  scanShell(src, 0, null, cmds, { pipeline: 0 }, 0);
+  return cmds;
+}
+
+/**
+ * Profundidade máxima de substituição aninhada DENTRO de aspas duplas
+ * (`"$(... "$(...)" ...)"`). Acima dela o trecho volta a ser texto literal da
+ * palavra (comportamento anterior ao #12894), em vez de estourar a pilha do
+ * hook, o que o faria falhar aberto para o comando inteiro.
+ */
+const MAX_QUOTED_SUBST_DEPTH = 16;
+
+/**
+ * Corpo do tokenizer. Com `closer` (`")"` ou crase), lê a substituição de
+ * comando aberta em `start` até o fechamento balanceado e devolve o índice
+ * logo depois dele; os comandos de dentro entram em `cmds` ANTES do comando
+ * que os contém (a substituição roda primeiro). Sem `closer`, lê até o fim.
+ * `ctx.pipeline` é o contador compartilhado de pipelines, para que um
+ * sub-comando nunca caia no mesmo pipeline do comando de fora.
+ *
+ * #12894: substituição dentro de aspas duplas (`x="$(sed -i ... <protegido>)"`,
+ * `echo "$(cp ...)"`, e a forma com crase) roda no bash como fora das aspas;
+ * antes ela virava texto literal da palavra e os checks de escrita não a viam.
+ */
+function scanShell(src, start, closer, cmds, ctx, depth) {
+  let cur = newCmd(closer === null ? ctx.pipeline : ++ctx.pipeline);
   let word = null;
+  let parenDepth = 0;
   let pendingRedirect = null;
   let pendingHeredoc = null;
   const heredocQueue = [];
@@ -214,15 +241,23 @@ export function tokenizeShell(src) {
     flushWord();
     pendingRedirect = null;
     if (cur.words.length || cur.redirects.length || cur.stdin.length) cmds.push(cur);
-    if (!isPipe) pipeline++;
     // Comando de heredoc ainda pendente segura a referência: o corpo é
-    // anexado depois, no fim da linha.
-    cur = newCmd(pipeline);
+    // anexado depois, no fim da linha. O pipeline do `|` é o do comando
+    // corrente (uma substituição lida no meio dele já avançou o contador).
+    cur = newCmd(isPipe ? cur.pipeline : ++ctx.pipeline);
   };
 
-  let i = 0;
+  let i = start;
   while (i < n) {
     const ch = src[i];
+    if (closer === "`" && ch === "`") {
+      endCmd(false);
+      return i + 1;
+    }
+    if (closer === ")" && ch === ")" && parenDepth === 0) {
+      endCmd(false);
+      return i + 1;
+    }
     if (ch === "\\") {
       if (src[i + 1] === "\n") {
         i += 2;
@@ -263,6 +298,15 @@ export function tokenizeShell(src) {
         if (src[j] === "\\" && j + 1 < n && '"\\$`\n'.includes(src[j + 1])) {
           if (src[j + 1] !== "\n") text += src[j + 1];
           j += 2;
+          continue;
+        }
+        // #12894: `$(...)` e crase dentro das aspas rodam como comando
+        // próprio. A palavra guarda o texto cru, como antes.
+        const subst = src[j] === "$" && src[j + 1] === "(" ? 2 : src[j] === "`" ? 1 : 0;
+        if (subst && depth < MAX_QUOTED_SUBST_DEPTH) {
+          const end = scanShell(src, j + subst, subst === 2 ? ")" : "`", cmds, ctx, depth + 1);
+          text += src.slice(j, end);
+          j = end;
           continue;
         }
         text += src[j];
@@ -309,10 +353,19 @@ export function tokenizeShell(src) {
     }
     if (ch === "$" && src[i + 1] === "(") {
       endCmd(false);
+      parenDepth++;
       i += 2;
       continue;
     }
-    if (ch === "`" || ch === "(" || ch === ")" || ch === ";") {
+    if (ch === "(" || ch === ")") {
+      // Dentro de uma substituição, quem a fecha é o `)` de profundidade 0.
+      if (ch === "(") parenDepth++;
+      else if (parenDepth > 0) parenDepth--;
+      endCmd(false);
+      i++;
+      continue;
+    }
+    if (ch === "`" || ch === ";") {
       endCmd(false);
       i++;
       continue;
@@ -363,7 +416,7 @@ export function tokenizeShell(src) {
   }
   endCmd(false);
   // Heredoc sem quebra de linha depois do operador: sem corpo.
-  return cmds;
+  return n;
 }
 
 // ---------------------------------------------------------------------------

@@ -388,6 +388,45 @@ describe("review de fleet da PR #12846 (#12812)", () => {
   });
 });
 
+describe("substituição de comando dentro de aspas duplas (#12894)", () => {
+  // Fora das aspas `$(...)` já virava comando próprio; dentro delas era texto
+  // literal da palavra, e o bash executa a substituição do mesmo jeito.
+  it("os cenários da issue bloqueiam", () => {
+    blocks(`x="$(sed -i 's/a/b/' ${SKILL})"`);
+    blocks(`echo "$(cp /tmp/x ${SKILL})"`);
+    blocks('x="`sed -i s/a/b/ ' + SKILL + '`"');
+    blocks('echo "`cp /tmp/x ' + SKILL + '`"');
+  });
+  it("redirect, tee e interpretador dentro da substituição citada também bloqueiam", () => {
+    blocks(`echo "$(echo x > .claude/settings.json)"`);
+    blocks(`git commit -m "msg $(printf x | tee .claude/hooks/x.mjs)"`);
+    blocks(`echo "$(python3 -c "open('.claude/agents/w.md','w').write('a')")"`);
+    blocks(`echo "a $(true) b $(rm .claude/skills/x/SKILL.md) c"`);
+  });
+  it("substituição aninhada e parênteses internos", () => {
+    blocks(`echo "$(echo "$(cp /tmp/x ${SKILL})")"`);
+    blocks(`echo "$( (cd /tmp) ; cp /tmp/x ${SKILL})"`);
+    blocks(`echo "$(echo $((1+2)); cp /tmp/x ${SKILL})"`);
+  });
+  it("o que vem depois da substituição citada continua analisado", () => {
+    blocks(`echo "$(date)" > .claude/settings.json`);
+    blocks(`echo "$(date)" | tee .claude/settings.json`);
+    blocks(`x="$(date)"; cp /tmp/x ${SKILL}`);
+  });
+  it("leitura e texto citado dentro da substituição seguem livres", () => {
+    passes(`echo "$(cat ${SKILL})"`);
+    passes(`x="$(grep -n foo .claude/hooks/x.mjs)"`);
+    passes(`gh pr create --title t --body "$(cat /tmp/corpo-12894.md)"`);
+    passes(`git commit -m "$(cat <<'EOF'\nfix: sed -i em .claude/skills (item 1) > .claude/settings.json\nEOF\n)"`);
+    passes(`echo "custa \\$(cp /tmp/x ${SKILL}) escapado"`);
+    passes(`echo '$(cp /tmp/x ${SKILL})'`);
+  });
+  it("aninhamento muito profundo não estoura a pilha", () => {
+    const deep = `${'"$('.repeat(500)}date${')"'.repeat(500)}`;
+    assert.doesNotThrow(() => find(`echo ${deep}`));
+  });
+});
+
 describe("mensagem de bloqueio: contorno para texto citado no código (#12780)", () => {
   // Decisão do editor (11/11/2026): o guard não afrouxa; só a mensagem muda.
   const PLAN = "/r/data/overnight/261110/plan.json";
