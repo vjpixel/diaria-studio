@@ -1277,7 +1277,7 @@ describe("#10560 — --session-id por env em session-registry.ts", () => {
 
   it("session-registry.ts aplica a injeção antes do switch de subcomandos", () => {
     const src = readFileSync(join(ROOT, "scripts/lib/session-registry.ts"), "utf8");
-    const mainIdx = src.indexOf("function main(): void");
+    const mainIdx = src.search(/function main\(\): (?:void|Promise<void>)/); // #12842: main() async
     const injectIdx = src.indexOf("resolveEnvInjectedSessionId(command, values, process.env)", mainIdx);
     const switchIdx = src.indexOf("switch (command)", mainIdx);
     assert.ok(mainIdx > 0 && injectIdx > mainIdx && injectIdx < switchIdx, "injeção por env fora de main() ou depois do switch");

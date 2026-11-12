@@ -118,6 +118,13 @@ import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { breakStaleLock, isDeletePendingExhausted, tryAcquireOwnedLock } from "./lib/registry-lock.mjs";
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
+import {
+  MERGE_GRANT_CONSUMED_D1_TTL_MS,
+  d1ClaimOnce,
+  d1HookFailureNotice,
+  d1LocksClientForHook,
+  mergeGrantConsumedD1Name,
+} from "./lib/d1-locks.mjs";
 import { execFileSync } from "node:child_process";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 import { extractGhPrMergeTargetPr, isGhPrMergeCommand } from "./lib/gh-pr-merge-command.mjs";
@@ -548,10 +555,52 @@ export function consumeGrantUnderLock(
         return consumedAny;
       }
       consumedAny = true;
+      opts.onConsumed?.(initial.grant);
       continue;
     }
     if (!consumeOneUnderLock(initial, nowIso, attempts, lockTimeoutMs, repoRoot, opts)) return consumedAny;
     consumedAny = true;
+    // #12842: cada concessão consumida no laço, não só a 1ª, ganha a marca no D1.
+    opts.onConsumed?.(initial.grant);
+  }
+}
+
+/**
+ * #12842: marca no D1 o consumo de cada concessão em `grants` — visível a
+ * toda máquina sem esperar o sync de data/sessions/. O guard
+ * (`block-gh-pr-merge-subagent.mjs`) trata a concessão marcada como
+ * consumida. Best-effort: D1 fora do ar deixa rastro (run-log + stderr) e o
+ * consumo local continua valendo. `"already"` = a marca já existia, ou seja
+ * CONSUMO DUPLO da mesma concessão: alarme `error` no run-log e stderr.
+ * `env`/`fetchFn` são seams de teste (mesma resolução de `d1LocksClientForHook`).
+ */
+export async function markConsumedGrantsInD1(repoRoot, sessionId, grants, env = process.env, fetchFn = undefined) {
+  if (grants.length === 0) return;
+  const d1 = d1LocksClientForHook(repoRoot, env, fetchFn);
+  if (!d1.client) {
+    if (d1.reason) {
+      appendHookRunLog(repoRoot, "consume-merge-grant", "warn", "d1_locks_unavailable", { reason: d1.reason });
+      process.stderr.write(`d1-locks (#12842): marca de consumo não gravada no D1 (${d1.reason}).\n`);
+    }
+    return;
+  }
+  for (const g of grants) {
+    const r = await d1ClaimOnce(d1.client, mergeGrantConsumedD1Name(g), sessionId, MERGE_GRANT_CONSUMED_D1_TTL_MS);
+    const identity = { grantedBy: g.grantedBy, grantedTo: g.grantedTo, grantedAt: g.grantedAt };
+    if (!r.ok) {
+      appendHookRunLog(repoRoot, "consume-merge-grant", r.permanent ? "error" : "warn", "d1_grant_marker_write_failed", {
+        ...identity,
+        error: r.error,
+        permanent: r.permanent,
+      });
+      process.stderr.write(`${d1HookFailureNotice("marca de consumo da concessão", r.error, r.permanent)}\n`);
+    } else if (r.value === "already") {
+      appendHookRunLog(repoRoot, "consume-merge-grant", "error", "merge_grant_double_consumed", { ...identity, sessionId });
+      process.stderr.write(
+        `d1-locks (#12842): concessão de ${g.grantedBy} a ${g.grantedTo} (${g.grantedAt}) já constava como ` +
+          "CONSUMIDA no D1 — consumo duplo.\n",
+      );
+    }
   }
 }
 
@@ -653,7 +702,7 @@ if (
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => {
+  process.stdin.on("end", async () => {
     try {
       const payload = JSON.parse(data || "{}");
       const sessionId = payload.session_id;
@@ -698,9 +747,14 @@ if (
       const targetPr = decision.targetPr;
       // #6952: sob o lock compartilhado, relendo fresco lá dentro — nunca o
       // read-modify-write solto que apagava a escrita concorrente do beacon.
+      // #12842: `onConsumed` recolhe CADA concessão consumida no laço, para a
+      // marca de uso único no D1 (abaixo).
+      const consumedGrants = [];
       consumeGrantUnderLock(repoRoot, sessionId, new Date().toISOString(), CAS_ATTEMPTS, LOCK_TIMEOUT_MS, targetPr, {
         repo: targetRepo,
+        onConsumed: (g) => consumedGrants.push(g),
       });
+      await markConsumedGrantsInD1(repoRoot, sessionId, consumedGrants);
       // Nunca emitir saída — PostToolUse aqui é side-effect puro, nunca decisão.
     } catch {
       // Fail-open total — ver "FAIL-OPEN TOTAL" no topo do arquivo.

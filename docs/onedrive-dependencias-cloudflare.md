@@ -75,9 +75,13 @@ Medido no `300` em 10/11/2026, com o `data/` ainda no OneDrive
      DO UPDATE ... WHERE`). O projeto ainda não tem banco D1. O endpoint foi
      conferido em 10/11/2026 em
      https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/;
-     o modelo de consistência (primário único, e o efeito da replicação de
-     leitura se ela for ligada) fica a verificar nos docs da Cloudflare pela
-     issue do G2a, antes de desenhar a tabela de locks.
+     o modelo de consistência foi conferido em 11/11/2026 pela #12842 em
+     https://developers.cloudflare.com/d1/best-practices/read-replication/:
+     um primário; escritas sempre vão a ele; sem a Sessions API (que só
+     existe no binding de Worker, não na REST) toda query roda no primário,
+     mesmo com a replicação de leitura ligada. Por REST, então, leitura e
+     escrita são consistentes e o upsert condicional decide a corrida.
+     Implementado em `scripts/lib/d1-locks.ts` (G2a, abaixo).
    - **Durable Object**: consistência forte por objeto, mas exige Worker
      próprio. Só compensa se o D1 não der conta, o que nada aqui indica.
    - **R2**: objetos grandes. O bucket `diaria-shorts` já é usado
@@ -175,6 +179,20 @@ orçamento.
      `INSERT ... ON CONFLICT(name) DO UPDATE ... WHERE expires_at < :agora`
      e conferidos pelo número de linhas alteradas. É o que dá exclusão real
      entre máquinas. KV não serve aqui (sem CAS, consistência eventual).
+     **Feito na #12842:** `scripts/lib/d1-locks.ts` (tabela `locks` com
+     `acquired_at`/`expires_at` no relógio do D1, conferência pelo
+     `RETURNING`), integrado em `session-registry.ts merge-lock-*`,
+     `consume-merge-grant`/`check-merge-grant`, `scripts/edition-lock.ts` e
+     nos hooks `block-gh-pr-merge-subagent.mjs`/`consume-merge-grant-on-merge.mjs`
+     (`.claude/hooks/lib/d1-locks.mjs`). Quando o D1 responde, ele decide
+     (o arquivo é espelho e não veta); quando não responde, o arquivo é o
+     fallback, com aviso. Erro permanente (HTTP 4xx, tabela ausente,
+     réplica) vira ERRO no stderr e `d1_locks_permanent_error` no run-log,
+     em vez do aviso de queda passageira. Liga quando
+     `platform.config.json` → `d1_locks.database_id` é preenchido
+     (`scripts/d1-locks-setup.ts`). A autorização de uso único do vídeo
+     (`video-publish-authorization.ts`) ficou fora: já recusa consumo de
+     outro host.
   2. Registro de sessões: o beacon continua gravando o arquivo local (é hook
      síncrono de toda chamada de ferramenta; uma ida à rede ali põe latência
      em cada `Bash`), e um espelho empurra o estado para o D1 de tempos em

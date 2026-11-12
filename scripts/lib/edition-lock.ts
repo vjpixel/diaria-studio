@@ -36,7 +36,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { type D1Client, d1AcquireLock, d1FallbackWarning, d1ReleaseLock, editionLockD1Name } from "./d1-locks.ts";
 
 export const EDITION_LOCK_TTL_MS = 45 * 60 * 1000;
 export const EDITION_LOCK_FILE = "edition-lock.json";
@@ -259,4 +260,132 @@ export function formatLockAge(ms: number | undefined): string {
   if (ms < 60_000) return "há menos de 1 min";
   if (ms < 2 * 3_600_000) return `há ${Math.floor(ms / 60_000)} min`;
   return `há ${Math.floor(ms / 3_600_000)} h`;
+}
+
+// ─── #12842: a mesma trava no D1, que exclui ENTRE máquinas ─────────────────
+//
+// O arquivo `{EDITION_DIR}/_internal/edition-lock.json` viaja pelo sync de
+// `data/`: duas máquinas podem ver "livre" ao mesmo tempo. Com o D1
+// provisionado (`scripts/lib/d1-locks.ts`), `acquire`/`release` consultam o
+// lock `edition:{AAMMDD}` primeiro: holder vivo de outra sessão no D1 recusa
+// já ali (`held_by_other`, sem tocar o arquivo). Se o D1 concede, a decisão do
+// arquivo continua valendo (stale_other_host, tombstones, máquina no código
+// antigo) e, se ela recusar, o lock do D1 é devolvido — inclusive na
+// renovação (`refreshed`): segurar o D1 com o arquivo recusando deixaria as
+// duas sessões bloqueadas uma pela outra até o TTL de 45 min. D1 sem
+// resposta: só o arquivo, com aviso (`d1Warning`; `d1Failure` traz a classe
+// do erro para o run-log), nunca bloqueia.
+
+export interface EditionLockD1Info {
+  /** `"d1"` = o D1 respondeu; `"local-fallback"` = não respondeu; `"local"` = sem D1. */
+  backend: "d1" | "local" | "local-fallback";
+  /** Holder vivo no D1 quando a recusa veio de lá. */
+  d1Holder?: string;
+  d1Warning?: string;
+  /** Falha do D1 que levou ao fallback (o CLI relata com `reportD1Failure`). */
+  d1Failure?: { what: string; error: string; permanent: boolean };
+  /** Avisos de rollback (lock do D1 que não pôde ser devolvido). */
+  d1RollbackWarning?: string;
+}
+
+function fallbackInfo(what: string, r: { error: string; permanent: boolean }): Pick<EditionLockD1Info, "d1Warning" | "d1Failure"> {
+  return {
+    d1Warning: d1FallbackWarning(what, r.error, r.permanent),
+    d1Failure: { what, error: r.error, permanent: r.permanent },
+  };
+}
+
+export function editionNameFromDir(editionDir: string): string {
+  return basename(resolve(editionDir));
+}
+
+export async function acquireEditionLockShared(
+  editionDir: string,
+  opts: { sessionId: string; stage: number; now?: number; force?: boolean; ttlMs?: number; host?: string },
+  d1: D1Client | null,
+  d1Now?: number,
+): Promise<EditionLockDecision & EditionLockD1Info> {
+  const ttl = opts.ttlMs ?? EDITION_LOCK_TTL_MS;
+  if (!d1) return { ...acquireEditionLock(editionDir, opts), backend: "local" };
+  const name = editionLockD1Name(editionNameFromDir(editionDir));
+  const d1Opts = d1Now !== undefined ? { now: d1Now } : {};
+  const r = await d1AcquireLock(d1, name, opts.sessionId, ttl, {
+    reentrant: true,
+    force: Boolean(opts.force),
+    meta: JSON.stringify({ host: opts.host ?? hostname(), stage: opts.stage }),
+    ...d1Opts,
+  });
+  if (!r.ok) {
+    return { ...acquireEditionLock(editionDir, opts), backend: "local-fallback", ...fallbackInfo("edition-lock acquire", r) };
+  }
+  if (!r.value.acquired) {
+    const cur = r.value.current;
+    const nowMs = r.value.serverNowMs ?? opts.now ?? Date.now();
+    const meta = await readD1Meta(d1, name);
+    const previous: EditionLockRecord = {
+      session_id: cur?.holder ?? "(desconhecida)",
+      host: typeof meta.host === "string" ? meta.host : "(D1)",
+      // Mesma convenção do arquivo (`NaN` = desconhecido); o CLI omite.
+      stage: typeof meta.stage === "number" && Number.isFinite(meta.stage) ? meta.stage : Number.NaN,
+      acquired_at: cur ? new Date(cur.acquiredAt).toISOString() : "",
+      heartbeat_at: cur ? new Date(cur.expiresAt - ttl).toISOString() : "",
+    };
+    return {
+      action: "held_by_other",
+      previous,
+      previous_age_ms: cur ? nowMs - (cur.expiresAt - ttl) : undefined,
+      backend: "d1",
+      ...(cur ? { d1Holder: cur.holder } : {}),
+    };
+  }
+  const decision = acquireEditionLock(editionDir, opts);
+  if (!decision.record) {
+    // O arquivo recusou: devolve o lock do D1 (tomado agora ou renovado).
+    const rel = await d1ReleaseLock(d1, name, opts.sessionId, d1Opts);
+    if (!rel.ok || rel.value === "held_by_other") {
+      return {
+        ...decision,
+        backend: "d1",
+        d1RollbackWarning:
+          `⚠️  d1-locks (#12842): edition-lock acquire: não consegui devolver o lock "${name}" no D1 ` +
+          `(${rel.ok ? rel.value : rel.error}) — ele fica órfão até vencer o TTL.\n`,
+      };
+    }
+  }
+  return { ...decision, backend: "d1" };
+}
+
+async function readD1Meta(d1: D1Client, name: string): Promise<Record<string, unknown>> {
+  try {
+    const { results } = await d1.query("SELECT meta FROM locks WHERE name = ?1", [name]);
+    const raw = results[0]?.meta;
+    const parsed: unknown = typeof raw === "string" ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function releaseEditionLockShared(
+  editionDir: string,
+  opts: { sessionId: string; force?: boolean; completedStage?: number; now?: number; host?: string },
+  d1: D1Client | null,
+  d1Now?: number,
+): Promise<{ result: EditionLockReleaseResult } & EditionLockD1Info> {
+  if (!d1) return { result: releaseEditionLock(editionDir, opts), backend: "local" };
+  const name = editionLockD1Name(editionNameFromDir(editionDir));
+  const r = await d1ReleaseLock(d1, name, opts.sessionId, {
+    force: Boolean(opts.force),
+    ...(d1Now !== undefined ? { now: d1Now } : {}),
+  });
+  if (!r.ok) {
+    return {
+      result: releaseEditionLock(editionDir, opts),
+      backend: "local-fallback",
+      ...fallbackInfo("edition-lock release", r),
+    };
+  }
+  // Outra sessão viva segura a edição no D1: não mexe no arquivo.
+  if (r.value === "held_by_other") return { result: "held_by_other", backend: "d1" };
+  return { result: releaseEditionLock(editionDir, opts), backend: "d1" };
 }
