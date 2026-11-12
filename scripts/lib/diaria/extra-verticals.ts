@@ -85,12 +85,12 @@ const itemText = (it: BlockItem): string => (typeof it.text === "string" ? it.te
 
 /**
  * Gancho da publicação: o `hook` da sequência; sem ele, o texto do
- * `resumo_curto` que entra nesta vertical (ou do `resumo`, se ela não tem
- * `resumo_curto`). `null` = nada para usar.
+ * `gancho` que entra nesta vertical, depois `resumo_curto` e `resumo`.
+ * `null` = nada para usar.
  */
-export function extraVerticalHook(file: Pick<BlocksFile, "blocks">, spec: SequenceSpec): { text: string; how: "hook" | "resumo_curto" | "resumo" } | null {
+export function extraVerticalHook(file: Pick<BlocksFile, "blocks">, spec: SequenceSpec): { text: string; how: "hook" | "gancho" | "resumo_curto" | "resumo" } | null {
   if (typeof spec.hook === "string" && spec.hook.trim()) return { text: spec.hook.replace(/\s+/g, " ").trim(), how: "hook" };
-  for (const key of ["resumo_curto", "resumo"] as const) {
+  for (const key of ["gancho", "resumo_curto", "resumo"] as const) {
     if (!spec.order.includes(key)) continue;
     const text = (file.blocks[key] ?? [])
       .filter((it) => itemInTarget(it, spec))
@@ -104,7 +104,7 @@ export function extraVerticalHook(file: Pick<BlocksFile, "blocks">, spec: Sequen
 
 /** O erro da publicação para o corte sem gancho (#11900); o `build`, a prévia e a revisão avisam com o mesmo texto (#12712). */
 export function missingHookProblem(corte: string): string {
-  return `corte "${corte}" sem gancho: informe "hook" na sequência ou um resumo_curto com texto nesta vertical`;
+  return `corte "${corte}" sem gancho: informe "hook" na sequência ou um gancho/resumo_curto com texto nesta vertical`;
 }
 
 /** A 1ª fala do corte na ordem da sequência (texto do 1º item com texto que entra nela): a sugestão de gancho (#12712). */
