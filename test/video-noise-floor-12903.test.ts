@@ -33,6 +33,7 @@ describe("#12903 piso de ruído contínuo", () => {
     // ffmpeg escreve os intervalos em stderr, mesmo quando termina com sucesso.
     const stderrDetect = (db: number) => {
       const result = spawnSync("ffmpeg", ["-hide_banner", "-nostats", "-f", "s16le", "-ar", String(rate), "-ac", "1", "-i", "pipe:0", "-af", `silencedetect=noise=${db}dB:d=0.35`, "-f", "null", "-"], { input: Buffer.from(samples.buffer) });
+      assert.ifError(result.error);
       assert.equal(result.status, 0, result.stderr.toString());
       return parseSilenceDetect(result.stderr.toString(), 10);
     };

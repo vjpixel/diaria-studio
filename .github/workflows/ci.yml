@@ -106,6 +106,11 @@ jobs:
       # test/ci-puppeteer-skip-download.test.ts, WORKFLOWS_NEEDING_BROWSER)
       # — os outros 17 workflows + a reusable deploy-worker.yml continuam
       # com o skip, confirmado que não usam o browser.
+      # #12903: a regressão de silencedetect exercita o ffmpeg real.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
       - run: npm ci
       - run: npm run typecheck
       - name: Typecheck brevo-dashboard worker (#3164)
