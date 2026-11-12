@@ -30,6 +30,7 @@ import {
   type LeitorDestino,
 } from "../scripts/lib/diaria/agendamentos-verificar.ts";
 import { runVerificarCli, runAgendamentosCli } from "../scripts/agendamentos.ts";
+import { verificarBancoDoTick } from "../scripts/agendamentos-tick.ts";
 import { GOOGLE_TOKEN_ENDPOINT } from "../scripts/lib/diaria/youtube-upload.ts";
 
 const T0 = new Date("2026-11-11T15:00:00Z");
@@ -262,5 +263,63 @@ describe("CLI verificar", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe("verificação automática do tick (#12774)", () => {
+  it("persiste confirmação e entrega o banco atualizado ao alarme; segundo tick é idempotente", async () => {
+    const root = rootComCorte([ytEntry]);
+    try {
+      saveAgendamentos(agendamentosPath(root), bancoAgendado(["youtube_shorts"]));
+      let chamadas = 0;
+      const leitores = { youtube_shorts: async (ctx: Parameters<LeitorDestino>[0]) => {
+        chamadas++;
+        return leitorPublicado(ctx);
+      } };
+      const primeiro = await verificarBancoDoTick(io(root).io, false, leitores);
+      assert.equal(primeiro.code, 0);
+      assert.equal(primeiro.banco.itens[0].estado, "publicado");
+      assert.match(primeiro.banco.itens[0].verificacao!.fonte, /youtube_shorts=fake/);
+      assert.deepEqual(primeiro.banco, lerBanco(root));
+      const segundo = await verificarBancoDoTick(io(root).io, false, leitores);
+      assert.deepEqual(segundo.banco, primeiro.banco);
+      assert.equal(chamadas, 1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("dry-run confirma sem alterar um byte do banco", async () => {
+    const root = rootComCorte([ytEntry]);
+    try {
+      saveAgendamentos(agendamentosPath(root), bancoAgendado(["youtube_shorts"]));
+      const antes = readFileSync(agendamentosPath(root), "utf8");
+      const resultado = await verificarBancoDoTick(io(root).io, true, { youtube_shorts: leitorPublicado });
+      assert.equal(resultado.banco.itens[0].estado, "agendado");
+      assert.equal(readFileSync(agendamentosPath(root), "utf8"), antes);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  for (const caso of ["sem-leitor", "nao-publicado", "erro"] as const) {
+    it(`preserva agendado com destino ${caso}, mesmo com envio local published`, async () => {
+      const root = rootComCorte([igEntry]);
+      try {
+        saveAgendamentos(agendamentosPath(root), bancoAgendado(["instagram"]));
+        const leitores: Record<string, LeitorDestino> = caso === "sem-leitor" ? {} : {
+          instagram: async ({ destino }) => ({ destino, status: caso, motivo: "não confirmado" }),
+        };
+        const resultado = await verificarBancoDoTick(io(root).io, false, leitores);
+        assert.equal(resultado.code, caso === "erro" ? 2 : 0);
+        assert.equal(resultado.banco.itens[0].estado, "agendado");
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+
+  it("banco ilegível interrompe a avaliação", async () => {
+    const root = rootComCorte([]);
+    try {
+      saveAgendamentos(agendamentosPath(root), bancoAgendado(["youtube_shorts"]));
+      writeFileSync(agendamentosPath(root), "{quebrado");
+      await assert.rejects(verificarBancoDoTick(io(root).io, false, {}), /avaliação interrompida/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
