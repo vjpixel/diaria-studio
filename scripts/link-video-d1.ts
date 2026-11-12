@@ -9,7 +9,8 @@
  *
  * Uso:
  *   npx tsx scripts/link-video-d1.ts AAMMDD [--video-url URL] [--save]
- *     [--assume-public] [--no-podcast] [--no-linkedin-comment] [--edition-dir DIR] [--now ISO]
+ *     [--assume-public] [--no-podcast] [--no-linkedin-comment] [--no-refresh-status]
+ *     [--edition-dir DIR] [--now ISO]
  *
  * O que faz:
  *   - valida e normaliza a URL (`https://youtu.be/{id}`). Sem `--video-url`,
@@ -23,6 +24,15 @@
  *     `[aviso]`, sem `--assume-public` (#11548); depois do envio, recusa. O
  *     estado do registro é o da releitura no upload — se o editor publicou à
  *     mão no Studio depois, `--assume-public` libera;
+ *   - #12655 (A4): com registro do upload DESTE vídeo, relê antes o estado na
+ *     API oficial autenticada (`videos.list?part=snippet,status`,
+ *     `lib/diaria/youtube-link-refresh.ts`) e atualiza o registro só com id e
+ *     canal conferidos; o gate decide pelo estado relido. Sem credencial,
+ *     timeout ou resposta inconclusiva, o registro fica como estava (nunca
+ *     vira público) e vale o fallback humano (`--assume-public` só depois de o
+ *     editor conferir agora). `failed`/`rejected`/`deleted` relido recusa
+ *     mesmo com `--assume-public`. `--no-refresh-status` pula a releitura;
+ *     sob o test runner ela também é pulada (o `.env` do 300 tem o token real);
  *   - `--save` grava `_internal/05-video-url.txt`. Com o arquivo presente
  *     ANTES do Stage 5, `prep-twitter-posts.ts`, `publish-threads.ts` e
  *     `publish-facebook.ts` já põem o link no texto do D1 (X e Threads só se
@@ -85,6 +95,7 @@ import { addPastedVideoToPodcast, type PastedPodcastInput, type PastedPodcastOut
 import { YOUTUBE_PENDING_APPROVAL_FILE, clearPendingApproval } from "./lib/diaria/youtube-pending-approval.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { isNodeTestContext } from "./lib/test-context-guard.ts";
+import { refreshYouTubeRecordState, type RefreshOutcome } from "./lib/diaria/youtube-link-refresh.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -191,12 +202,29 @@ async function linkedInCommentForSave(
   );
 }
 
-async function main(): Promise<number> {
-  const { flags, values, positional } = parseArgs(process.argv.slice(2));
+/**
+ * #12655 (A4): relê o estado do vídeo do registro na API antes do gate.
+ * Pulado com `--no-refresh-status` e sob o test runner (o `.env` do 300 tem a
+ * credencial real); os testes cobrem a lógica com a API simulada.
+ */
+async function refreshStatusForLink(dir: string, videoUrl: string, skip: boolean): Promise<RefreshOutcome> {
+  if (skip) return { kind: "skipped", reason: "--no-refresh-status" };
+  if (isNodeTestContext()) return { kind: "skipped", reason: "test runner (NODE_TEST_CONTEXT)" };
+  loadProjectEnv(ROOT);
+  return refreshYouTubeRecordState({ editionDir: dir, videoUrl, env: process.env, deps: defaultYouTubeUploadDeps });
+}
+
+export interface LinkVideoD1Deps {
+  /** Releitura do estado na API (A4). Default: `refreshStatusForLink`; o teste injeta a API simulada. */
+  refreshStatus?: (dir: string, videoUrl: string, skip: boolean) => Promise<RefreshOutcome>;
+}
+
+export async function main(argv: string[] = process.argv.slice(2), deps: LinkVideoD1Deps = {}): Promise<number> {
+  const { flags, values, positional } = parseArgs(argv);
   const aammdd = positional[0];
   if (!aammdd || !/^\d{6}$/.test(aammdd)) {
     console.error(
-      "uso: link-video-d1.ts AAMMDD [--video-url URL] [--save] [--assume-public] [--no-podcast] [--no-linkedin-comment] [--edition-dir DIR] [--now ISO]",
+      "uso: link-video-d1.ts AAMMDD [--video-url URL] [--save] [--assume-public] [--no-podcast] [--no-linkedin-comment] [--no-refresh-status] [--edition-dir DIR] [--now ISO]",
     );
     return 2;
   }
@@ -210,15 +238,31 @@ async function main(): Promise<number> {
   }
 
   // #10858: o registro do upload diz se o vídeo abre para o leitor.
-  const record = readYouTubeRecordSummary(dir);
-  const rawUrl = values["video-url"] ?? record?.url ?? null;
+  const recordBefore = readYouTubeRecordSummary(dir);
+  const rawUrl = values["video-url"] ?? recordBefore?.url ?? null;
   if (!rawUrl) {
     console.error(
-      `link-video-d1: sem --video-url e sem url no registro do upload (${record?.path ?? "_internal/05-youtube-published.json ausente"})`,
+      `link-video-d1: sem --video-url e sem url no registro do upload (${recordBefore?.path ?? "_internal/05-youtube-published.json ausente"})`,
     );
     return 2;
   }
   const videoUrl = normalizeYouTubeVideoUrl(rawUrl);
+  // #12655 (A4): estado relido na API oficial, no lugar do estado do momento do upload.
+  const statusRefresh = await (deps.refreshStatus ?? refreshStatusForLink)(dir, videoUrl, flags.has("no-refresh-status"));
+  if (statusRefresh.kind === "terminal") {
+    const marker =
+      statusRefresh.persisted === false
+        ? ` O marcador terminal NÃO foi gravado no registro (${statusRefresh.persistError ?? "erro de escrita"}): não rode de novo com --no-refresh-status.`
+        : " O registro do upload guarda o marcador terminal.";
+    console.error(
+      `link-video-d1: recusado — ${statusRefresh.reason} (releitura ${statusRefresh.at}). Link não gravado, nem com --assume-public: ` +
+        `confira no YouTube Studio e suba de novo ou passe outro link (#12655).${marker}`,
+    );
+    return 1;
+  }
+  if (statusRefresh.kind === "refreshed") console.error(`[ok] estado relido na API: ${statusRefresh.state} (registro atualizado, #12655)`);
+  else if (statusRefresh.kind === "inconclusive") console.error(`[aviso] releitura do estado inconclusiva: ${statusRefresh.reason} — o gate usa o estado gravado no upload`);
+  const record = statusRefresh.kind === "refreshed" ? readYouTubeRecordSummary(dir) : recordBefore;
   // #11548: sem a auditoria, o vídeo agendado até o envio da newsletter do D1 passa com aviso.
   const send = newsletterSendAt(dir, aammdd);
   const gate = gateVideoLink({
@@ -231,13 +275,17 @@ async function main(): Promise<number> {
     newsletterSendAt: send.at,
   });
   if (gate.warning) console.error(`[aviso] ${gate.warning} (envio do D1: ${send.source})`);
+  if (!gate.ok && gate.terminal) {
+    console.error(`link-video-d1: recusado — ${gate.reason}. Link não gravado, nem com --assume-public (#12655).`);
+    return 1;
+  }
   if (!gate.ok) {
     if (!flags.has("assume-public")) {
       // #10881 item 2: a mesma premissa de auditoria que o gate usou (o
       // `audit_blocked` do registro, senão a constante).
       const projectAudited = record?.auditBlocked == null ? YOUTUBE_API_PROJECT_AUDITED : !record.auditBlocked;
       console.error(
-        `link-video-d1: recusado — ${gate.reason}. Nada gravado. ${videoLinkRemedy(projectAudited)} ` +
+        `link-video-d1: recusado — ${gate.reason}. Link não gravado${statusRefresh.kind === "refreshed" ? " (o registro do upload guardou a releitura)" : ""}. ${videoLinkRemedy(projectAudited)} ` +
           "e rode de novo com --assume-public (#10858).",
       );
       return 1;
@@ -286,6 +334,7 @@ async function main(): Promise<number> {
         edition: aammdd,
         video_url: videoUrl,
         video_link_gate: gate,
+        status_refresh: statusRefresh,
         video_url_file: flags.has("save") ? urlFile : existsSync(urlFile) ? urlFile : null,
         social_published: source,
         ...(podcast ? { podcast } : {}),
