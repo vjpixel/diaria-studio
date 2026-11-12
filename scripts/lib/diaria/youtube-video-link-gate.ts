@@ -187,6 +187,12 @@ export interface YouTubeRecordSummary {
    * campo (o gate cai na constante `YOUTUBE_API_PROJECT_AUDITED`).
    */
   auditBlocked: boolean | null;
+  /**
+   * #12655: `terminal_upload_status` gravado pela releitura do A4 (`failed`/
+   * `rejected`/`deleted`). Presente = o link deste vídeo nunca entra, nem com
+   * `--assume-public`.
+   */
+  terminalUploadStatus?: string | null;
   path: string;
 }
 
@@ -214,6 +220,7 @@ export function readYouTubeRecordSummary(editionDir: string): YouTubeRecordSumma
     publishAt: str(reread?.publishAt) ?? str(requested?.publishAt),
     sentinel: status === "in_progress" || status === "upload_indeterminado" ? status : null,
     auditBlocked: typeof raw.audit_blocked === "boolean" ? raw.audit_blocked : null,
+    terminalUploadStatus: str(raw.terminal_upload_status),
     path,
   };
 }
@@ -225,6 +232,8 @@ export interface VideoLinkGate {
   record_matched: boolean;
   /** #11548: passou com premissa (agendado sem auditoria até o envio do D1). */
   warning?: string;
+  /** #12655: o YouTube marcou o vídeo como falho/rejeitado/apagado — recusa sem saída (`--assume-public` não libera). */
+  terminal?: true;
 }
 
 /**
@@ -254,6 +263,14 @@ export function gateVideoLink(input: {
       reason: rec?.sentinel
         ? `registro do upload em estado incerto (${rec.sentinel}) e sem este vídeo — confira no Studio que o vídeo é público`
         : "sem registro de upload deste vídeo — confira no Studio que ele é público",
+    };
+  }
+  if (rec.terminalUploadStatus) {
+    return {
+      ok: false,
+      record_matched: true,
+      terminal: true,
+      reason: `o YouTube marcou o vídeo ${id} como ${rec.terminalUploadStatus} (releitura gravada no registro do upload) — suba de novo ou passe outro link`,
     };
   }
   const v = videoLinkEligibility({
