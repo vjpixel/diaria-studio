@@ -1947,6 +1947,7 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   const template: BlocksFile = {
     edition: ctx.edition,
     mirrored: source.mirrored,
+    ...(plan.vocabulary !== undefined ? { vocabulary: plan.vocabulary } : {}),
     ...(format === "entrevista" ? { format } : {}),
     blocks,
     sequences,
