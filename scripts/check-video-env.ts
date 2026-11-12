@@ -27,7 +27,7 @@
  * edição e permissão de escrita nela); e, só no modo API, o espaço no disco do
  * cache (3x o bruto da edição, descontado o bruto já baixado; 25 GB sem bruto
  * conhecido). Só lê: não cria pasta nem baixa nada. Exit 0 = a montagem roda
- * aqui; 1 = falta algo.
+ * aqui; 1 = falta algo obrigatório. OpenCV (face/gaze) é aviso: há fallback manual.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -134,6 +134,11 @@ function probePython(python: string, code: string, timeoutMs: number): MontagePr
   if (r.error) return { ok: false, detail: `${python} não roda: ${r.error.message}` };
   if (r.status !== 0) return { ok: false, detail: firstLine((r.stderr ?? "").split(/\r?\n/).filter(Boolean).slice(-1)[0]) ?? `exit ${r.status}` };
   return { ok: true, detail: firstLine(r.stdout) };
+}
+
+/** Import real: também detecta bibliotecas nativas/ABI ausentes, sem instalar. */
+export function probeOpenCv(python: string): MontageProbe {
+  return probePython(python, "import cv2; print('OpenCV', cv2.__version__)", 20_000);
 }
 
 /**
@@ -260,7 +265,7 @@ export async function runMontageEnvCheck(edition?: string, pythonFlag?: string, 
       ? { ok: false, detail: `espaço livre ilegível em ${cacheRoot}` }
       : { ok: free >= need, detail: `${(free / 1e9).toFixed(1)} GB livres no disco de ${cacheRoot}, precisa ${(need / 1e9).toFixed(1)} GB` };
   }
-  return assessMontageEnv({ ffmpeg: probeCommand("ffmpeg", ["-version"]), python, model, drive: drive.probe, disk }, process.platform, py);
+  return assessMontageEnv({ ffmpeg: probeCommand("ffmpeg", ["-version"]), python, model, opencv: probeOpenCv(py.python), drive: drive.probe, disk }, process.platform, py);
 }
 
 async function main(): Promise<void> {
