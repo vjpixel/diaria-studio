@@ -18,11 +18,11 @@
  * O que NÃO faz (premissa da #12774): publicar. Nenhum publicador está ligado
  * ao banco ainda, e um publicador só entra aqui quando grava o resultado
  * RELIDO da plataforma (#573), nunca o 2xx da mutação. Até lá o item vencido
- * vira alarme e o dono indicado no item publica. O tick também nunca grava no
- * banco: o arquivo vem pelo OneDrive, e uma escrita daqui disputaria a das
- * sessões que registram os itens. A releitura que marca `publicado` é o
- * `npx tsx scripts/agendamentos.ts verificar`, rodado pela sessão do dono
- * (`scripts/lib/diaria/agendamentos-verificar.ts`; só o YouTube tem leitor).
+ * vira alarme e o dono indicado no item publica. Antes da avaliação, o tick
+ * executa `agendamentos.ts verificar`: grava `publicado` somente após todos
+ * os destinos confirmarem na plataforma, usando a revisão otimista do banco.
+ * `--dry-run` também verifica, mas não grava. Destinos sem leitor continuam
+ * `agendado`; falhas de leitura preservam o alarme e saem com código 2.
  *
  * Item `agendado` vencido com o envio registrado no corte em todos os
  * destinos sem leitor (`published`/`scheduled`) e relido no ar nos destinos
@@ -37,8 +37,8 @@
  *   npx tsx scripts/agendamentos-tick.ts --dry-run  # avalia e imprime, sem issue/e-mail
  *   npx tsx scripts/agendamentos-tick.ts --to email@x
  *
- * Exit 0 = avaliação (e alarme, se houver) ok; 1 = banco ilegível ou alarme
- * não registrado.
+ * Exit 0 = avaliação (e alarme, se houver) ok; 1 = falha no banco ou alarme
+ * não registrado; 2 = alguma releitura da plataforma falhou.
  */
 
 import { dirname, resolve } from "node:path";
@@ -54,7 +54,9 @@ import {
   buildAgendamentosAlarm,
   loadAgendamentos,
 } from "./lib/diaria/agendamentos.ts";
-import { avaliarAgendamentosComEnvio, leitoresPadrao, leituraSemAlarme } from "./lib/diaria/agendamentos-verificar.ts";
+import { avaliarAgendamentosComEnvio, leitoresPadrao, leituraSemAlarme, type EnvioRegistradoItem } from "./lib/diaria/agendamentos-verificar.ts";
+import { runVerificarCli, type CliIo } from "./agendamentos.ts";
+import type { LeitorDestino } from "./lib/diaria/agendamentos-verificar.ts";
 import { defaultYouTubeUploadDeps } from "./lib/diaria/youtube-upload.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -77,6 +79,34 @@ function closeSuperseded(fingerprint: string | null): void {
   for (const n of res.failed) console.error(`${LOG_PREFIX} falha ao fechar #${n} — retry na próxima execução.`);
 }
 
+/** #12875: um aviso por execução, incluindo o motivo que impediu a dispensa. */
+export function avisarLeituraIndisponivel(envios: readonly EnvioRegistradoItem[], warn: (message: string) => void = console.warn): void {
+  const motivos = new Set<string>();
+  for (const envio of envios) {
+    if (envio.semAlarme) continue;
+    for (const leitura of envio.leituras) {
+      if (leitura.status === "erro" || leitura.status === "sem-registro" ||
+          (leitura.destino === "youtube_shorts" && leitura.status === "sem-leitor")) {
+        motivos.add(`${envio.item.id}: ${leitura.motivo}`);
+      }
+    }
+  }
+  if (motivos.size) {
+    warn(`${LOG_PREFIX} leitor do YouTube ou registro do corte indisponível, dispensa não aplicada — alarme preservado. ${[...motivos].join("; ")}`);
+  }
+}
+
+/** Verifica sem publicar/agendar e relê o banco persistido antes do alarme. */
+export async function verificarBancoDoTick(
+  io: CliIo,
+  dryRun: boolean,
+  leitores: Readonly<Record<string, LeitorDestino>>,
+) {
+  const code = await runVerificarCli(dryRun ? ["--dry-run"] : [], io, leitores);
+  if (code === 1) throw new Error("verificação do banco falhou; avaliação interrompida");
+  return { banco: loadAgendamentos(agendamentosPath(io.root)), code };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const cliExit = applyCliAction(argv, CLI_SPEC);
@@ -89,9 +119,14 @@ async function main(): Promise<void> {
   const toOverride = getArg(argv, "to");
   const now = new Date();
 
+  const leitores = leitoresPadrao({ deps: defaultYouTubeUploadDeps, env: process.env });
   let banco;
   try {
-    banco = loadAgendamentos(agendamentosPath(ROOT));
+    const verificado = await verificarBancoDoTick(
+      { root: ROOT, now, out: console.log, err: console.error }, dryRun, leitores,
+    );
+    banco = verificado.banco;
+    if (verificado.code !== 0) process.exitCode = verificado.code;
   } catch (e) {
     // Banco ilegível não é "nada agendado": sair 1 deixa a unit `failed`,
     // que o `systemd-failed-units-alarm` já transforma em achado.
@@ -105,8 +140,9 @@ async function main(): Promise<void> {
   const { avaliacao: ev, envios } = await avaliarAgendamentosComEnvio(banco, {
     root: ROOT,
     now,
-    leitores: leitoresPadrao({ deps: defaultYouTubeUploadDeps, env: process.env }),
+    leitores,
   });
+  avisarLeituraIndisponivel(envios);
   console.log(
     `${LOG_PREFIX} itens=${banco.itens.length} futuros=${ev.futuros.length} no-horário(pronto)=${ev.aPublicar.length} achados=${ev.achados.length} agendado-com-envio-registrado=${ev.semAlarme.length}`,
   );

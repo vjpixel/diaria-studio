@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { avisarLeituraIndisponivel } from "../scripts/agendamentos-tick.ts";
 import {
   addAgendamento,
   avaliarAgendamentos,
@@ -25,8 +26,10 @@ import {
   avaliarAgendamentosComEnvio,
   envioRegistradoSemAlarme,
   lerDestinosDoItem,
+  leitoresPadrao,
   type LeitorDestino,
 } from "../scripts/lib/diaria/agendamentos-verificar.ts";
+import { defaultYouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 
 const T0 = new Date("2026-11-11T15:00:00Z");
 const ALVO = "2026-11-18T15:00:00.000Z";
@@ -79,6 +82,9 @@ describe("avaliarAgendamentosComEnvio (#12825)", () => {
     assert.deepEqual(avaliacao.semAlarme.map((it) => it.id), ["261111-vertical-2"]);
     assert.equal(envios.length, 1);
     assert.equal(envios[0].semAlarme, true);
+    const avisos: string[] = [];
+    avisarLeituraIndisponivel(envios, (s) => avisos.push(s));
+    assert.deepEqual(avisos, []);
   });
 
   it("falta registro de envio de um destino: alarme preservado", async () => {
@@ -94,8 +100,37 @@ describe("avaliarAgendamentosComEnvio (#12825)", () => {
 
   it("corte sem registro nenhum nesta máquina: alarme preservado", async () => {
     const root = mkdtempSync(join(tmpdir(), "agendamentos-tick-12825-vazio-"));
-    const { avaliacao } = await avaliarAgendamentosComEnvio(banco(), { root, now: VENCIDO, leitores: { youtube_shorts: ytNoAr } });
+    const { avaliacao, envios } = await avaliarAgendamentosComEnvio(banco(), { root, now: VENCIDO, leitores: { youtube_shorts: ytNoAr } });
     assert.equal(avaliacao.achados.length, 1);
+    const avisos: string[] = [];
+    avisarLeituraIndisponivel(envios, (s) => avisos.push(s));
+    assert.equal(avisos.length, 1, "#12875: um aviso apesar do erro em todos os destinos");
+    assert.match(avisos[0], /registro do corte indisponível, dispensa não aplicada/);
+    assert.match(avisos[0], /data\/cortes\/guia-261111\/corte.json ausente/);
+  });
+
+  it("#12875: credenciais ausentes avisam uma vez na execução e preservam o alarme", async () => {
+    const { avaliacao, envios } = await avaliarAgendamentosComEnvio(banco(), {
+      root: rootComCorte([yt, ig, tk]), now: VENCIDO,
+      leitores: leitoresPadrao({ deps: defaultYouTubeUploadDeps, env: {} }),
+    });
+    const avisos: string[] = [];
+    avisarLeituraIndisponivel([...envios, ...envios], (s) => avisos.push(s));
+    assert.equal(avaliacao.achados.length, 1);
+    assert.equal(avisos.length, 1);
+    assert.match(avisos[0], /leitor do YouTube/);
+    assert.match(avisos[0], /dispensa não aplicada/);
+    assert.match(avisos[0], /faltam GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN, YOUTUBE_CHANNEL_ID/);
+  });
+
+  it("#12875: vídeo relido privado e execução sem candidatos não avisam indisponibilidade", async () => {
+    const { envios } = await avaliarAgendamentosComEnvio(banco(), {
+      root: rootComCorte([yt, ig, tk]), now: VENCIDO, leitores: { youtube_shorts: ytPrivado },
+    });
+    const avisos: string[] = [];
+    avisarLeituraIndisponivel(envios, (s) => avisos.push(s));
+    avisarLeituraIndisponivel([], (s) => avisos.push(s));
+    assert.deepEqual(avisos, []);
   });
 
   it("send_unknown num destino sem leitor: alarme preservado (o envio pode não ter saído)", async () => {

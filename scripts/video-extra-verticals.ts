@@ -7,7 +7,7 @@
  * #11898). Para cada uma, o dia (k-ésimo dia útil depois da edição), o
  * horário (o seguinte ao da vertical principal daquele dia em
  * `publishing.shorts.schedule.rotation_times`), título (`screenTitle` da
- * sequência), gancho (`hook`, ou o `resumo_curto` dela) e o comando do modo
+ * sequência), gancho (`hook`, `gancho`, `resumo_curto` ou `resumo` dela) e o comando do modo
  * corte do `publish-shorts.ts`. Regras e premissas:
  * `scripts/lib/diaria/extra-verticals.ts`.
  *

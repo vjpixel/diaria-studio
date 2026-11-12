@@ -10,7 +10,7 @@
  * falharia). Daqui o venv próprio `~/.venv-video-montagem` e o check.
  */
 
-export type MontageEnvItemId = "ffmpeg" | "python" | "model" | "drive" | "disk";
+export type MontageEnvItemId = "ffmpeg" | "python" | "model" | "opencv" | "drive" | "disk";
 
 export interface MontageProbe {
   ok: boolean;
@@ -35,6 +35,7 @@ export interface MontageEnvReport {
   items: MontageEnvItem[];
   ready: boolean;
   missing: MontageEnvItemId[];
+  warnings: MontageEnvItemId[];
 }
 
 /** O modelo da transcrição (o mesmo default de `scripts/video/transcribe_words.py`). */
@@ -82,7 +83,7 @@ export function montageSetupCommand(platform: NodeJS.Platform | string): string 
     : "uv venv --python 3.12 ~/.venv-video-montagem && VIRTUAL_ENV=~/.venv-video-montagem uv pip install -r scripts/video/montagem-requirements.txt";
 }
 
-const ORDER = ["ffmpeg", "python", "model", "drive", "disk"] as const satisfies readonly MontageEnvItemId[];
+const ORDER = ["ffmpeg", "python", "model", "opencv", "drive", "disk"] as const satisfies readonly MontageEnvItemId[];
 
 function fixFor(id: MontageEnvItemId, platform: string, python: string): string {
   switch (id) {
@@ -92,6 +93,8 @@ function fixFor(id: MontageEnvItemId, platform: string, python: string): string 
       return `${montageSetupCommand(platform)} (docs/setup.md, seção "Vídeo: montagem")`;
     case "model":
       return `baixar o modelo uma vez, com rede: ${python} -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')"`;
+    case "opencv":
+      return `uv pip install --python "${python}" -r scripts/video/montagem-requirements.txt (face/gaze indisponíveis; usar enquadramento manual)`;
     case "drive":
       return "Drive for desktop com a diaria.editor montada (I:/Meu Drive/diaria-studio-video) ou OAuth do projeto válido (data/.credentials.json; renovar com scripts/oauth-setup.ts)";
     case "disk":
@@ -107,15 +110,17 @@ export function assessMontageEnv(probes: MontageEnvProbes, platform: NodeJS.Plat
     fix: probes[id].ok ? null : (probes[id].fix ?? fixFor(id, platform, python.python)),
     detail: probes[id].detail ?? null,
   }));
-  const missing = items.filter((i) => !i.ok).map((i) => i.id);
-  return { platform, python, items, ready: missing.length === 0, missing };
+  // OpenCV só atende face/gaze; o enquadramento manual mantém a montagem viável (P3).
+  const missing = items.filter((i) => !i.ok && i.id !== "opencv").map((i) => i.id);
+  const warnings = items.filter((i) => !i.ok && i.id === "opencv").map((i) => i.id);
+  return { platform, python, items, ready: missing.length === 0, missing, warnings };
 }
 
 export function formatMontageEnvReport(r: MontageEnvReport): string {
   const lines = [`Ambiente da montagem do vídeo (${r.platform}, python: ${r.python.python} (${r.python.from})):`];
   for (const i of r.items) {
     const d = i.detail ? ` (${i.detail})` : "";
-    lines.push(i.ok ? `  [ok] ${i.id}${d}` : `  [falta] ${i.id}${d}. Resolver: ${i.fix}`);
+    lines.push(i.ok ? `  [ok] ${i.id}${d}` : `  [${i.id === "opencv" ? "aviso" : "falta"}] ${i.id}${d}. Resolver: ${i.fix}`);
   }
   lines.push(r.ready ? "A montagem roda nesta máquina." : `A montagem NÃO roda nesta máquina (falta: ${r.missing.join(", ")}).`);
   return lines.join("\n");

@@ -1264,14 +1264,6 @@
   <url>
     <loc>https://diar.ia.br/p/nvidia-ceo-admite-caso-com-suposta-espia</loc>
     <lastmod>2026-11-09</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-11-09T00:00:00.000Z</news:publication_date>
-      <news:title>Nvidia: CEO admite caso com suposta espiã</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/nubank-demite-time-antifraude-e-poe-ia-no-lugar</loc>
@@ -1283,6 +1275,18 @@
       </news:publication>
       <news:publication_date>2026-11-11T00:00:00.000Z</news:publication_date>
       <news:title>Nubank demite time antifraude e põe IA no lugar</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github</loc>
+    <lastmod>2026-11-12</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-11-12T00:00:00.000Z</news:publication_date>
+      <news:title>Claude Code pode ter vazado suas senhas no GitHub</news:title>
     </news:news>
   </url>
 </urlset>

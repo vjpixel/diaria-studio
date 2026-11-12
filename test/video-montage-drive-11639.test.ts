@@ -432,7 +432,7 @@ describe("#11642 Python e ambiente da montagem", () => {
 
   it("modelo fora do cache (o 300 em 29/10/2026) = não roda, com o comando que baixa", () => {
     const ok = { ok: true };
-    const probes: MontageEnvProbes = { ffmpeg: ok, python: ok, model: { ok: false, detail: "LocalEntryNotFoundError" }, drive: ok, disk: ok };
+    const probes: MontageEnvProbes = { ffmpeg: ok, python: ok, opencv: ok, model: { ok: false, detail: "LocalEntryNotFoundError" }, drive: ok, disk: ok };
     const r = assessMontageEnv(probes, "linux", { python: "/home/u/.venv-video-montagem/bin/python", from: "venv" });
     assert.equal(r.ready, false);
     assert.deepEqual(r.missing, ["model"]);
@@ -445,7 +445,7 @@ describe("#11642 Python e ambiente da montagem", () => {
 
   it("correção específica da sonda vence a genérica do item (pasta da edição ausente não é problema de OAuth)", () => {
     const ok = { ok: true };
-    const r = assessMontageEnv({ ffmpeg: ok, python: ok, model: ok, drive: { ok: false, fix: "subir o bruto" }, disk: ok }, "linux", { python: "py", from: "path" });
+    const r = assessMontageEnv({ ffmpeg: ok, python: ok, opencv: ok, model: ok, drive: { ok: false, fix: "subir o bruto" }, disk: ok }, "linux", { python: "py", from: "path" });
     assert.equal(r.items.find((i) => i.id === "drive")!.fix, "subir o bruto");
   });
 
