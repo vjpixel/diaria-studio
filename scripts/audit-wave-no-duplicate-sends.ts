@@ -48,7 +48,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireCycleArg, clariceSegmentsDir, cycleSendMonthStartIso, CLARICE_BASE } from "./lib/clarice-paths.ts";
 import { archivedListsInWindow } from "./lib/clarice-list-consolidation.ts"; // #9532
-import { assertCampaignQuotaHeadroom, fetchCampaignsByStatus, refreshCampaignQuotaStateFromKv } from "./lib/brevo-client.ts";
+import { assertCampaignQuotaHeadroom, exitAfterCampaignQuotaKvFlush, fetchCampaignsByStatus, refreshCampaignQuotaStateFromKv } from "./lib/brevo-client.ts"; // #12870
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { loadStoreRows } from "./lib/clarice-segment.ts";
 import { extractCsvEmails } from "./clarice-import-waves.ts";
@@ -169,6 +169,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error(`❌ ${err instanceof Error ? err.message : err}`);
-    process.exit(1);
+    return exitAfterCampaignQuotaKvFlush(1); // #12870: não perde o PUT da cota ao KV
   });
 }
