@@ -2501,6 +2501,9 @@ export function resolveVideoBox0(editionDir: string, slot0Busy: boolean): string
   if (!aammdd) return null;
   const video = readEditionVideoMeta(editionDir);
   if (!video) return null;
+  // Pedido do editor (261112): `_internal/no-video-box0.json` tira só o box do slot 0
+  // desta edição; o link do vídeo na imagem do D1 continua.
+  if (existsSync(resolve(editionDir, "_internal", "no-video-box0.json"))) return null;
   let weekday: number;
   let prior: string[];
   try {

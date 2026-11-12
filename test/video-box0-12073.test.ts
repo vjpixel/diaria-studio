@@ -188,6 +188,15 @@ describe("#12073 — box do vídeo no render", () => {
     );
   });
 
+  it("marcador _internal/no-video-box0.json tira o box só desta edição", () => {
+    withWeek({ "261103": { video: true }, "261105": { video: true } }, (dirOf) => {
+      assert.ok(resolveVideoBox0(dirOf("261103"), false), "sem marcador a terça leva o box");
+      writeFileSync(join(dirOf("261103"), "_internal", "no-video-box0.json"), "{}");
+      assert.equal(resolveVideoBox0(dirOf("261103"), false), null);
+      assert.ok(resolveVideoBox0(dirOf("261105"), false), "outra edição segue com a cota");
+    });
+  });
+
   it("callout de sorteio no topo também ocupa o slot: a terça cede", () => {
     const callout = "**🎥 Hoje às 19h tem sorteio ao vivo: [participe](https://example.com/live).**";
     withWeek({ "261103": { video: true, callout }, "261104": { video: true } }, (dirOf) => {
