@@ -838,6 +838,26 @@ function percentileDb(db: Float64Array, p: number): number | null {
   return vals[Math.min(vals.length - 1, Math.max(0, Math.floor(p * vals.length)))];
 }
 
+/** #12903: piso RMS (p10, como o detector de fala) + 6 dB.
+ * Só adapta com contraste de fala >=10 dB; o teto -25 e o ponto médio
+ * impedem o ruído de elevar o limiar até a fala. Override explícito vence.
+ */
+export function noiseFloorThreshold(env: Envelope, baselineDb: number, override = false): { thresholdDb: number; floorDb: number | null; how: "floor" | "baseline" } {
+  const floorDb = percentileDb(env.db, SPEECH_DETECT.floorPercentile);
+  const topDb = percentileDb(env.db, SPEECH_DETECT.topPercentile);
+  const relative = floorDb !== null && topDb !== null && topDb - floorDb >= 10
+    ? Math.min(-25, floorDb + 6, (floorDb + topDb) / 2) : baselineDb;
+  return !override && relative > baselineDb
+    ? { thresholdDb: Math.round(relative * 10) / 10, floorDb, how: "floor" }
+    : { thresholdDb: baselineDb, floorDb, how: "baseline" };
+}
+
+/** Um bruto de vários minutos sem pausas deixa os avisos de tomada sem referência. */
+export function noPausesWarning(durationS: number, pauses: number): string | null {
+  return durationS >= 120 && pauses === 0
+    ? "0 pausas detectadas num bruto de vários minutos: conferir o piso de ruído e --silence-db; os avisos de tomada colapsada podem incluir ruído contínuo (#12903)" : null;
+}
+
 /** Piso de ruído do bruto (#12263): percentil baixo do sinal cheio e da 1ª diferença. */
 export function speechNoiseFloors(e: FrameEnergy, p: number = SPEECH_DETECT.floorPercentile): { fullDb: number; diffDb: number } | null {
   const full = percentileDb(e.fullDb, p);

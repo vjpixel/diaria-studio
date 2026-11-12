@@ -462,7 +462,7 @@ export async function ensureAgentEvalCheckGreen(params: EnsureCheckGreenParams):
           retriggerViaLabelToggle(params.prNumber, params.label, params.runner);
           action = { kind: "label-toggle", runId: 0, attempt: 0 };
         }
-      } else if (latest && (latest.id > action.runId || latest.runAttempt > action.attempt)) {
+      } else if (latest && (latest.id > action.runId || (latest.id === action.runId && latest.runAttempt > action.attempt))) {
         return {
           ok: false,
           error: `[#12830] o check "Check agent-eval gate" rodou de novo depois da label (run ${latest.id}, tentativa ${latest.runAttempt}) e terminou ${latest.conclusion} — ler o log do run.`,

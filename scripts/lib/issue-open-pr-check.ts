@@ -65,6 +65,7 @@
  * @see context/overnight-dispatch-rules.md item 21 (preflight de duplicidade do coordenador)
  */
 
+import { keepLatestPerName, type PrCheckNode } from "./pr-checks-gate.ts";
 import { citesIssueInRepo } from "./issue-duplicate-preflight.ts";
 
 /** Estado agregado de CI da PR — `"unknown"` cobre tanto "sem
@@ -72,16 +73,8 @@ import { citesIssueInRepo } from "./issue-duplicate-preflight.ts";
  * confundido com `"pending"` (que significa "há checks, ainda rodando"). */
 export type OpenPrCiState = "green" | "pending" | "failing" | "unknown";
 
-/** Um nó de `statusCheckRollup` (`gh pr list --json statusCheckRollup`) —
- * shape mínimo usado para derivar `OpenPrCiState`. Mesmo shape de
- * `PrCheckNode` em `scripts/lib/pr-checks-gate.ts`, duplicado aqui de
- * propósito (módulo aditivo isolado, #7788 — ver nota de colisão de
- * arquivo no PR) em vez de importar daquele módulo, que este PR não toca. */
-export interface OpenPrCheckRunLike {
-  status?: string | null;
-  conclusion?: string | null;
-  state?: string | null;
-}
+/** Nó de CI compartilhado com o gate, incluindo nome e timestamp para supersessão. */
+export type OpenPrCheckRunLike = PrCheckNode;
 
 /** Uma PR aberta, no shape mínimo que `gh pr list --json
  * number,title,body,headRefName,author,updatedAt,statusCheckRollup`
@@ -178,8 +171,7 @@ function branchDeclaredIssueNumbers(headRefName: string): number[] {
 
 /** Deriva `OpenPrCiState` de `statusCheckRollup` — versão minimalista do
  * mesmo raciocínio de `evaluatePrChecksGate`
- * (`scripts/lib/pr-checks-gate.ts`, não importado aqui de propósito, ver
- * nota de colisão de arquivo): payload ausente/malformado é `"unknown"`,
+ * (`scripts/lib/pr-checks-gate.ts`): payload ausente/malformado é `"unknown"`,
  * nunca lido como "0 checks reprovados" nem como "pending". Usado só pra
  * dar contexto ao coordenador (checklist item 16 #2 — "CI verde/rodando?")
  * — não decide o veredito de duplicidade em si. */
@@ -189,7 +181,7 @@ export function deriveOpenPrCiState(rollup: OpenPrCheckRunLike[] | null | undefi
   const FAIL_STATES = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"]);
   const PASS_STATES = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
   let sawPending = false;
-  for (const node of rollup) {
+  for (const node of keepLatestPerName(rollup)) {
     const conclusion = (node.conclusion ?? node.state ?? "").toUpperCase();
     const status = (node.status ?? "").toUpperCase();
     if (conclusion && FAIL_STATES.has(conclusion)) return "failing";

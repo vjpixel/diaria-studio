@@ -152,7 +152,37 @@ export interface VideoPublishAuthorizationStore {
   approved_manifests: Record<string, VideoPlanManifest>;
 }
 
-export type AuthResult<T> = { ok: true; value: T; store: VideoPublishAuthorizationStore } | { ok: false; error: string };
+/**
+ * #12859: por que um destino foi recusado no consumo, em forma estruturada
+ * (o alarme da task one-shot diz o destino e o campo que mudou sem reparsear
+ * a mensagem). `timing` = instante fora do aprovado (task antes de X, `--now`
+ * num destino agendado).
+ */
+export type AuthorizationRefusalKind =
+  | "missing"
+  | "consumed"
+  | "invalidated"
+  | "unknown-status"
+  | "other-host"
+  | "owner-mismatch"
+  | "outside-plan"
+  | "plan-changed"
+  | "timing";
+
+export interface AuthorizationRefusal {
+  destination: string;
+  kind: AuthorizationRefusalKind;
+  /** A linha da recusa, sem o prefixo do destino. */
+  message: string;
+  /** `plan-changed`: os campos do plano que mudaram desde a aprovação (vazio = projeção diferente sem campo apontável). */
+  changed?: string[];
+  /** Dono aprovado na autorização mais recente do destino (ausente = nunca autorizado). */
+  approved_owner?: VideoPlanOwner;
+}
+
+export type AuthResult<T> =
+  | { ok: true; value: T; store: VideoPublishAuthorizationStore }
+  | { ok: false; error: string; refusals?: AuthorizationRefusal[] };
 
 export function emptyAuthorizationStore(edition: string): VideoPublishAuthorizationStore {
   return { schema: AUTHORIZATION_STORE_SCHEMA, edition, authorizations: [], events: [], approved_manifests: {} };
@@ -408,41 +438,46 @@ export function consumeVideoPublishAuthorization(storeIn: VideoPublishAuthorizat
   }
   if (!input.destinations.length) return { ok: false, error: "nenhum destino nesta rodada: nada a consumir" };
   const host = input.host ?? currentHost();
-  const problems: string[] = [];
+  const refusals: AuthorizationRefusal[] = [];
+  const latestOf = (dest: string) => [...storeIn.authorizations].reverse().find((a) => a.part === m.part && a.destination === dest);
+  const refuse = (destination: string, kind: AuthorizationRefusalKind, message: string, changed?: string[]) => {
+    const owner = latestOf(destination)?.owner;
+    refusals.push({ destination, kind, message, ...(changed ? { changed } : {}), ...(owner ? { approved_owner: owner } : {}) });
+  };
   const toConsume: ActiveVideoPublishAuthorization[] = [];
   for (const dest of input.destinations) {
-    const latest = [...storeIn.authorizations].reverse().find((a) => a.part === m.part && a.destination === dest);
+    const latest = latestOf(dest);
     if (!latest) {
-      problems.push(`${dest}: sem autorização (o "pode publicar" do editor não foi registrado com video-publish-authorize.ts grant)`);
+      refuse(dest, "missing", `sem autorização (o "pode publicar" do editor não foi registrado com video-publish-authorize.ts grant)`);
       continue;
     }
     if (latest.status === "consumed") {
-      problems.push(`${dest}: a autorização de ${latest.confirmed_at} já foi consumida em ${latest.consumed_at} (uso único): releia o registro (--record) e peça nova aprovação`);
+      refuse(dest, "consumed", `a autorização de ${latest.confirmed_at} já foi consumida em ${latest.consumed_at} (uso único): releia o registro (--record) e peça nova aprovação`);
       continue;
     }
     if (latest.status === "invalidated") {
-      problems.push(`${dest}: a autorização de ${latest.confirmed_at} foi invalidada em ${latest.invalidated_at} (${latest.invalidated_reason})`);
+      refuse(dest, "invalidated", `a autorização de ${latest.confirmed_at} foi invalidada em ${latest.invalidated_at} (${latest.invalidated_reason})`);
       continue;
     }
     if (latest.status !== "active") {
       // Falha fechada: estado fora da união (registro editado à mão ou de outra versão) nunca autoriza.
-      problems.push(`${dest}: autorização em estado desconhecido (${JSON.stringify((latest as { status: unknown }).status)}): nada consumido`);
+      refuse(dest, "unknown-status", `autorização em estado desconhecido (${JSON.stringify((latest as { status: unknown }).status)}): nada consumido`);
       continue;
     }
     if (latest.granted_host !== host) {
-      problems.push(`${dest}: a autorização foi gravada na máquina ${latest.granted_host} e esta execução roda em ${host}: o lock do registro é por máquina, publique de lá ou peça nova aprovação aqui`);
+      refuse(dest, "other-host", `a autorização foi gravada na máquina ${latest.granted_host} e esta execução roda em ${host}: o lock do registro é por máquina, publique de lá ou peça nova aprovação aqui`);
       continue;
     }
     if (input.command !== undefined) {
       const ownerErr = commandMatchesOwner(input.command, latest.owner, dest, input.fallbackCommand);
       if (ownerErr) {
-        problems.push(`${dest}: ${ownerErr}`);
+        refuse(dest, "owner-mismatch", ownerErr);
         continue;
       }
     }
     const { binding, hint } = executionBinding(m, dest, latest, { now: input.now, forceNow: input.forceNow === true });
     if (binding === null) {
-      problems.push(`${dest}: fora do plano recalculado desta rodada`);
+      refuse(dest, "outside-plan", "fora do plano recalculado desta rodada");
       continue;
     }
     if (binding !== latest.binding_sha256 || hint) {
@@ -456,14 +491,17 @@ export function consumeVideoPublishAuthorization(storeIn: VideoPublishAuthorizat
           )
         : [];
       const fields = changed.filter((p) => !/\.(action|owner)(\.|$)/.test(p));
-      problems.push(
-        `${dest}: ${hint ?? `o plano mudou desde a aprovação (${(fields.length ? fields : changed).join(", ") || "projeção do destino diferente"})`}: refaça o dry-run e peça o "pode publicar" de novo`,
-      );
+      const shown = fields.length ? fields : changed;
+      const message = `${hint ?? `o plano mudou desde a aprovação (${shown.join(", ") || "projeção do destino diferente"})`}: refaça o dry-run e peça o "pode publicar" de novo`;
+      if (hint) refuse(dest, "timing", message);
+      else refuse(dest, "plan-changed", message, shown);
       continue;
     }
     toConsume.push(latest);
   }
-  if (problems.length) return { ok: false, error: problems.join("; ") };
+  if (refusals.length) {
+    return { ok: false, error: refusals.map((r) => `${r.destination}: ${r.message}`).join("; "), refusals };
+  }
   const store = clone(storeIn);
   const nowIso = input.now.toISOString();
   const consumed: ConsumedVideoPublishAuthorization[] = [];
@@ -633,14 +671,14 @@ export function consumeBeforeExternalEffects(input: {
   command?: string;
   fallbackCommand?: string;
   forceNow?: boolean;
-}): { ok: true; consumed: ConsumedVideoPublishAuthorization[] } | { ok: false; error: string } {
+}): { ok: true; consumed: ConsumedVideoPublishAuthorization[] } | { ok: false; error: string; refusals?: AuthorizationRefusal[] } {
   try {
-    type Out = { ok: true; consumed: ConsumedVideoPublishAuthorization[] } | { ok: false; error: string };
+    type Out = { ok: true; consumed: ConsumedVideoPublishAuthorization[] } | { ok: false; error: string; refusals?: AuthorizationRefusal[] };
     return updateAuthorizationStore<Out>(input.editionDir, input.edition, (store) => {
       const r = consumeVideoPublishAuthorization(store, input);
       return r.ok
         ? { store: r.store, result: { ok: true, consumed: r.value as ConsumedVideoPublishAuthorization[] } }
-        : { store: null, result: { ok: false, error: r.error } };
+        : { store: null, result: { ok: false, error: r.error, ...(r.refusals ? { refusals: r.refusals } : {}) } };
     });
   } catch (e) {
     return { ok: false, error: `registro de autorização indisponível (${(e as Error).message})` };

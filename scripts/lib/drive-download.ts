@@ -7,7 +7,8 @@
  *   - teto do download inteiro (`downloadMs`, 20 min) e watchdog de ociosidade
  *     (`idleMs`, 60 s sem bytes → aborta);
  *   - conferência de tamanho contra o `size` do metadado do Drive, e corpo vazio
- *     recusado;
+ *     recusado; divergência de tamanho permite até 3 tentativas do início, dentro
+ *     do mesmo teto total de tempo (#12900);
  *   - `content-type` conferido (`isAcceptableDownloadContentType`: `video/mp4`,
  *     ou `application/octet-stream` com nome `.mp4`).
  *
@@ -163,6 +164,9 @@ export function claimPartFile(tmp: string, staleMs: number, now: number = Date.n
   return retry;
 }
 
+/** Apenas divergência de tamanho autoriza repetir o download (#12900). */
+class DriveDownloadSizeMismatchError extends Error {}
+
 /**
  * Baixa `alt=media` em `{dest}.part` (streaming) e renomeia no fim. Devolve os
  * bytes gravados. `acceptsContentType` permite ao fetch de capas validar imagens
@@ -177,6 +181,31 @@ export async function downloadDriveFile(
   timeouts: Pick<DriveDownloadTimeouts, "downloadMs" | "idleMs"> = DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS,
   log: (line: string) => void = () => {},
   acceptsContentType = isAcceptableDownloadContentType,
+): Promise<number> {
+  // Um único orçamento de tempo cobre as três tentativas completas. Cada
+  // tentativa limpa seu próprio .part; a próxima precisa reivindicá-lo de
+  // novo com O_EXCL, preservando downloads concorrentes e o destino anterior.
+  const deadline = Date.now() + timeouts.downloadMs;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await downloadDriveFileAttempt(deps, file, dest, {
+        ...timeouts,
+        downloadMs: Math.max(1, deadline - Date.now()),
+      }, log, acceptsContentType);
+    } catch (e) {
+      if (!(e instanceof DriveDownloadSizeMismatchError) || attempt >= 3 || Date.now() >= deadline) throw e;
+      log(`[aviso] ${(e as Error).message}; repetindo download do início (tentativa ${attempt + 1}/3)`);
+    }
+  }
+}
+
+async function downloadDriveFileAttempt(
+  deps: DriveDownloadDeps,
+  file: DriveDownloadFile,
+  dest: string,
+  timeouts: Pick<DriveDownloadTimeouts, "downloadMs" | "idleMs">,
+  log: (line: string) => void,
+  acceptsContentType: typeof isAcceptableDownloadContentType,
 ): Promise<number> {
   const idle = new AbortController();
   const signal = AbortSignal.any([AbortSignal.timeout(timeouts.downloadMs), idle.signal]);
@@ -228,7 +257,7 @@ export async function downloadDriveFile(
     const expected = file.size !== undefined ? Number(file.size) : null;
     if (bytes === 0) throw new Error(`download do Drive veio vazio (${file.id}) — nada gravado`);
     if (expected !== null && Number.isFinite(expected) && expected !== bytes) {
-      throw new Error(`download incompleto (${bytes} de ${expected} bytes, ${file.id}) — nada gravado`);
+      throw new DriveDownloadSizeMismatchError(`download incompleto (${bytes} de ${expected} bytes, ${file.id}) — nada gravado`);
     }
     renameSync(tmp, dest);
     return bytes;

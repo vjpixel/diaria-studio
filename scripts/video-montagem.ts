@@ -95,6 +95,7 @@
  *       corte (piso + 45% da faixa) vira [aviso]; a passada B do refino só tira som na entrada
  *       separado da 1ª palavra por silêncio.
  *       (#11935) grava um XML por sequência ({nome da sequência}.xml); `--seq` grava só uma, e só ela muda no plan.json (#11969)
+ *       (#12902) se as entradas mudaram desde o plano anterior, `--seq` recusa antes de gravar; rode build sem --seq
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Clipes contíguos no bruto viram um só e o zoom alterna só nos cortes (#11503). Os cortes
  *       são refinados pelo áudio do bruto (#11500, `lib/diaria/video-cut-refine.ts`): vale de
@@ -426,6 +427,8 @@ import {
   highBandCutWarnings,
   edgeWindowsFor,
   energyEnvelope,
+  noiseFloorThreshold,
+  noPausesWarning,
   maxDbIn,
   parseWavPcm16,
   snapClipEdges,
@@ -1785,13 +1788,16 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   }
   const loud = readJson<ReturnType<typeof parseLoudnormJson>>(loudPath, "loudness.json");
 
-  // Limiar relativo ao loudness do bruto (#11351); --silence-db sobrepõe.
-  const threshold = silenceNoiseDb(loud, silenceDb);
+  // #12903: o piso do bruto também conta; --silence-db continua soberano.
+  const baseline = silenceNoiseDb(loud, silenceDb);
+  const pcm = parseWavPcm16(readFileSync(audio));
+  const measured = noiseFloorThreshold(energyEnvelope(pcm.samples, pcm.sampleRate), baseline.noiseDb, baseline.how === "override");
+  const threshold = { noiseDb: measured.thresholdDb, how: measured.how === "floor" ? "floor" : baseline.how };
   const silPath = f(ctx, "silences.json");
   const silMetaPath = f(ctx, "silences.meta.json");
-  const silMeta = existsSync(silMetaPath) ? readJson<{ noiseDb?: number; minDurationS?: number; highBandVersion?: number }>(silMetaPath, "silences.meta.json") : null;
+  const silMeta = existsSync(silMetaPath) ? readJson<{ noiseDb?: number; minDurationS?: number; how?: string; highBandVersion?: number }>(silMetaPath, "silences.meta.json") : null;
   // silences.json sem meta (anterior ao #11351) ou com outro limiar é refeito.
-  const silStale = !existsSync(join(ctx.workDir, "audio-high-48k.wav")) || !existsSync(join(ctx.workDir, "audio-high-48k.meta.json")) || !silMeta || silMeta.highBandVersion !== 11968 || silMeta.noiseDb !== threshold.noiseDb || silMeta.minDurationS !== SILENCE_DETECT.minDurationS;
+  const silStale = !existsSync(join(ctx.workDir, "audio-high-48k.wav")) || !existsSync(join(ctx.workDir, "audio-high-48k.meta.json")) || !silMeta || silMeta.highBandVersion !== 11968 || silMeta.noiseDb !== threshold.noiseDb || silMeta.how !== threshold.how || silMeta.minDurationS !== SILENCE_DETECT.minDurationS;
   if (redo || !existsSync(silPath) || silStale) {
     const { stderr } = run("ffmpeg", [
       "-hide_banner", "-nostats", "-i", audio,
@@ -1804,12 +1810,15 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     const kept = intersectSilences(low, highBandSilences(highEnv, highThreshold.thresholdDb))
       .filter((q) => q.end - q.start >= SILENCE_DETECT.minDurationS);
     writeJson(silPath, kept);
-    writeJson(silMetaPath, { noiseDb: threshold.noiseDb, minDurationS: SILENCE_DETECT.minDurationS, how: threshold.how, highBandVersion: 11968, highBand: highThreshold });
+    writeJson(silMetaPath, { noiseDb: threshold.noiseDb, minDurationS: SILENCE_DETECT.minDurationS, how: threshold.how, floorDb: measured.floorDb, highBandVersion: 11968, highBand: highThreshold });
     console.error(`[video-montagem] banda alta a ${highThreshold.thresholdDb} dBFS (${highThreshold.how === "relative" ? "relativo ao piso do bruto" : "piso do #11940"}): ${kept.length} pausa(s) no silences.json`);
     const loss = intersectionLossWarning(low, kept, SILENCE_DETECT.minDurationS, highThreshold);
     if (loss) console.error(`[aviso] ${loss}`);
   }
-  console.error(`[video-montagem] silencedetect a ${threshold.noiseDb} dB (${threshold.how === "relative" ? "relativo ao loudness do bruto" : threshold.how === "override" ? "--silence-db" : "padrão, loudness não medido"})`);
+  console.error(`[video-montagem] silencedetect a ${threshold.noiseDb} dB (${threshold.how === "floor" ? "relativo ao piso de ruído do bruto" : threshold.how === "relative" ? "relativo ao loudness do bruto" : threshold.how === "override" ? "--silence-db" : "padrão, loudness não medido"})`);
+
+  const pauseWarning = noPausesWarning(source.durationS, silences(ctx).length);
+  if (pauseWarning) console.error(`[aviso] ${pauseWarning}`);
 
   if (audioPath && audioTr) {
     if (source.audioOnly) throw new Error("--from-audio precisa de um bruto de VÍDEO (o bruto achado é só de áudio): passe --source VIDEO");
@@ -1947,6 +1956,7 @@ function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   const template: BlocksFile = {
     edition: ctx.edition,
     mirrored: source.mirrored,
+    ...(plan.vocabulary !== undefined ? { vocabulary: plan.vocabulary } : {}),
     ...(format === "entrevista" ? { format } : {}),
     blocks,
     sequences,
@@ -2169,7 +2179,11 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   if (!existsSync(audio)) throw new Error(`verify-xml: ${audio} ausente (rode transcribe nesta máquina)`);
   const { samples, sampleRate } = parseWavPcm16(readFileSync(audio));
   const env = energyEnvelope(samples, sampleRate);
-  const thr = silenceThresholdDb(ctx);
+  const silenceMeta = f(ctx, "silences.meta.json");
+  const explicit = existsSync(silenceMeta) && readJson<{ how?: string }>(silenceMeta, "silences.meta.json").how === "override";
+  const edgeThreshold = noiseFloorThreshold(env, silenceThresholdDb(ctx), explicit);
+  const thr = edgeThreshold.thresholdDb;
+  console.error(`[video-montagem] verify-xml: limiar ${thr} dBFS; piso do bruto ${edgeThreshold.floorDb?.toFixed(1) ?? "indisponível"} dBFS (#12903)`);
   const offsets = sourceFiles(pf.source).map((x) => x.offsetFrames);
   let bad = 0;
   const report: Record<string, unknown> = {};
@@ -2209,7 +2223,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
       transcribeWithPython(ctx, wav, tj, { vad: false, noCondition: true });
       const heard = reviewTranscriptWords(readJson<Transcript>(tj, "transcrição do áudio do XML"));
       // #12711: a palavra esticada sobre fala no áudio montado (a 261111 tinha "fazer" por 4,5 s), que o casamento com o roteiro não vê.
-      const xmlSilences = parseSilenceDetect(run("ffmpeg", ["-hide_banner", "-nostats", "-i", wav, "-vn", "-af", REVIEW_SILENCE_FILTER, "-f", "null", "-"]).stderr, durS);
+      const xmlSilences = parseSilenceDetect(run("ffmpeg", ["-hide_banner", "-nostats", "-i", wav, "-vn", "-af", `silencedetect=noise=${thr}dB:d=0.08`, "-f", "null", "-"]).stderr, durS);
       findings = [
         ...reviewPreview({ words: heard, script: plan.script, cuts: sequenceCutsS(parsed.clips, parsed.rate), durationS: durS, aliases: loadVocab().aliases })
           .filter((x) => x.kind === "fala-faltando" || x.kind === "fala-extra"),
@@ -2928,6 +2942,16 @@ export function speechThresholdsPremise(th: SpeechThresholds, voice: SpeechVoice
 }
 
 async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}): Promise<number> {
+  // #12902: recusar antes do detector/refino, assets e XMLs: o merge de um
+  // build parcial com hash novo descartaria as outras sequências do plano.
+  if (seq && existsSync(f(ctx, "plan.json"))) {
+    let previous: PlanFile;
+    try { previous = readJson<PlanFile>(f(ctx, "plan.json"), "plan.json"); }
+    catch { throw new Error("build --seq recusado: plan.json anterior ilegível; rode build sem --seq para reconstruir todas as sequências (#12902)"); }
+    if (previous.hash !== planHash(ctx, loadBlocks(ctx).text)) {
+      throw new Error("build --seq recusado: as entradas mudaram desde o build anterior; rode build sem --seq para preservar todas as sequências no plan.json (#12902)");
+    }
+  }
   // #12089: o corte de pausas pelo detector de fala (energia + banda alta), não pelo silencedetect.
   let speech: ReturnType<typeof speechDetection> = { cut: null, reason: "--no-speech-detect" };
   if (speechDetect) {

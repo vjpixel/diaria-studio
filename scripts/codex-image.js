@@ -51,6 +51,7 @@ export function targetAspectText(w, h) {
 
 export function buildCodexPrompt(sd) {
   let p = `Use the built-in image generation tool to create ONE image and save it as ${OUT_NAME} in the current working directory.\n`;
+  p += `Use only the image generated in THIS session. Never select the newest image from a shared directory or copy an image from another session.\n`;
   p += `Format: ${targetAspectText(sd.final_width, sd.final_height)}. The image must fill the entire canvas edge to edge, with no frame, border or visible canvas.\n\n`;
   const refs = Array.isArray(sd.reference_images) ? sd.reference_images : [];
   if (refs.length && sd.reference_mode === 'identity') {
@@ -84,7 +85,7 @@ export function buildCodexArgs(cfg, referenceImages = []) {
   const images = referenceImages.flatMap((img) => ['-i', path.resolve(img)]);
   const endOfOptions = images.length ? ['--'] : [];
   return [
-    'exec', '--skip-git-repo-check', '--sandbox', 'workspace-write',
+    'exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write',
     '-c', 'forced_login_method="chatgpt"', // recusa API key guardada em ~/.codex/auth.json (pay-per-token)
     '-m', cfg.model, '-c', `model_reasoning_effort=${cfg.reasoning_effort}`, ...images, ...endOfOptions, '-',
   ];
@@ -215,8 +216,28 @@ async function defaultRun(args, prompt, cwd, timeoutMs) {
   return r;
 }
 
+// #12877: o arquivo copiado pelo agente só é confiável se seus bytes vierem
+// do diretório da sessão retornada pelo CLI, nunca de "o PNG mais recente".
+export function verifySessionImage(png, stdout, generatedImagesDir = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'generated_images')) {
+  const sessions = [];
+  for (const line of String(stdout || '').split('\n')) {
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event?.type === 'thread.started') sessions.push(event.thread_id);
+  }
+  if (sessions.length !== 1 || typeof sessions[0] !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessions[0])) {
+    throw new Error('CODEX_IMAGE_PROVENANCE: ID de sessão ausente ou inválido');
+  }
+  const dir = path.join(generatedImagesDir, sessions[0]);
+  const bytes = fs.readFileSync(png);
+  const matches = fs.existsSync(dir) && fs.readdirSync(dir, { withFileTypes: true }).some((entry) =>
+    entry.isFile() && entry.name.endsWith('.png') && fs.readFileSync(path.join(dir, entry.name)).equals(bytes));
+  if (!matches) throw new Error(`CODEX_IMAGE_PROVENANCE: ${OUT_NAME} não corresponde à sessão ${sessions[0]}`);
+}
+
 /** Gera a imagem; lança Error em qualquer falha. `run` injetável para teste. */
-export async function generateWithCodex(sd, outPath, userCfg = {}, run = defaultRun) {
+export async function generateWithCodex(sd, outPath, userCfg = {}, run = defaultRun, generatedImagesDir) {
   const cfg = { ...DEFAULTS, ...userCfg };
   const refs = Array.isArray(sd.reference_images) ? sd.reference_images : [];
   for (const ref of refs) {
@@ -230,6 +251,7 @@ export async function generateWithCodex(sd, outPath, userCfg = {}, run = default
     if (r.status !== 0) throw new Error(`CODEX_FAILED exit=${r.status}: ${String(r.stderr || r.stdout).slice(-500)}`);
     const png = path.join(tmp, OUT_NAME);
     if (!fs.existsSync(png)) throw new Error(`NO_IMAGE_FILE: Codex terminou sem gravar ${OUT_NAME}`);
+    verifySessionImage(png, r.stdout, generatedImagesDir);
     const meta = await sharp(png).metadata();
     const bad = checkAspect(meta.width, meta.height, sd.final_width, sd.final_height);
     if (bad) throw new Error(bad);

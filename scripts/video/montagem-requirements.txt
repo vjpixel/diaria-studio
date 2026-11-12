@@ -5,5 +5,6 @@
 faster-whisper==1.2.1
 av==18.0.0
 # Rosto automático por tomada (#12560, `face`/`gaze`): Haar cascade do OpenCV.
-# headless (sem GUI) e < 5, como no edicao-video; só o face/gaze dependem dele.
-opencv-python-headless<5
+# Headless (sem GUI); 4.11 aceita NumPy 1.x e 2.x (Python 3.12 do setup).
+# Evita impor NumPy >=2 como o OpenCV 4.12; só face/gaze dependem dele.
+opencv-python-headless==4.11.0.86

@@ -12,6 +12,7 @@ import { buildXmeml, defaultSequences, parseBlocksFile, type PlannedClip, type S
 import { targetLabel, versionLabel, versionsDiffParagraph } from "../scripts/lib/diaria/video-montage-docs.ts";
 import { titlePngFileName, titlePngXmlPath } from "../scripts/video-montagem.ts";
 import {
+  corteHookLine,
   extraVerticalHook,
   extraVerticalTime,
   matchCorteExports,
@@ -146,6 +147,35 @@ describe("#11900: plano de publicação das verticais extras", () => {
     assert.deepEqual(extraVerticalHook({ blocks }, { ...SOBERANA, order: ["titulo", "resumo_curto", "comentario"] }), { text: "Países querem a própria IA. E o Brasil?", how: "resumo_curto" });
     assert.equal(extraVerticalHook({ blocks }, { ...SOBERANA, hook: "Gancho." })?.how, "hook");
     assert.equal(extraVerticalHook({ blocks: {} }, SOBERANA), null);
+  });
+
+  it("#12905: gancho falado do corte precede o resumo e chega à montagem e à publicação", () => {
+    const spec: SequenceSpec = { ...SOBERANA, corte: "guia", order: ["gancho", "resumo_curto", "resumo"] };
+    const file = { blocks: {
+      gancho: [
+        { text: "Gancho da principal.", targets: ["outras-redes"] },
+        { text: "Outro corte.", targets: ["outro"] },
+        { text: "Ignorado.", skip: ["guia"] },
+        { text: "  Sua IA pode publicar\n a sua senha? ", targets: ["guia"] },
+        { text: "Veja como evitar.", targets: ["guia"] },
+      ],
+      resumo_curto: [{ text: "Resumo inteiro.", targets: ["guia"] }],
+      resumo: [{ text: "Resumo longo.", targets: ["guia"] }],
+    } };
+    const text = "Sua IA pode publicar a sua senha? Veja como evitar.";
+    assert.deepEqual(extraVerticalHook(file, spec), { text, how: "gancho" });
+    assert.deepEqual(extraVerticalHook(file, { ...spec, hook: "  Manual. " }), { text: "Manual.", how: "hook" });
+    const line = corteHookLine(file, spec);
+    assert.equal(line?.level, "premissa");
+    assert.ok(line?.text.includes(`(gancho desta vertical;`));
+    assert.ok(line?.text.includes(text));
+    const [plan] = planExtraVerticals({ edition: "261112", file: { ...file, sequences: [spec] }, sched: SCHED, driveIds: { guia: "abc" } });
+    assert.equal(plan.hook, text);
+    assert.ok(plan.command?.includes(`--hook '${text}'`));
+    // Ausente da ordem, vazio ou destinado a outro corte: mantém os fallbacks.
+    assert.equal(extraVerticalHook(file, { ...spec, order: ["resumo_curto"] })?.how, "resumo_curto");
+    assert.equal(extraVerticalHook({ blocks: { ...file.blocks, gancho: [{ text: "  ", targets: ["guia"] }, file.blocks.gancho[1]] } }, spec)?.how, "resumo_curto");
+    assert.equal(extraVerticalHook(file, { ...spec, order: ["resumo"] })?.how, "resumo");
   });
 
   it("plano completo: slug com a edição, dia útil seguinte, comando do modo corte com aspas", () => {

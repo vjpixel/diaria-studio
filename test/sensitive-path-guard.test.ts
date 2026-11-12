@@ -10,6 +10,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   SENSITIVE_RULES,
@@ -297,4 +299,67 @@ describe("higiene das regras", () => {
       assert.equal(isSensitivePath(p), false, `${p} não deveria ser barrado`);
     }
   });
+});
+
+// Execute a receita publicada, não uma cópia que possa divergir da skill.
+// O cwd vazio garante que nem o checkout nem seus arquivos influenciem o PR.
+describe("receitas de PR usam os arquivos remotos (#12884)", { skip: process.platform === "win32" }, () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  for (const skill of [
+    ".claude/skills/diaria-overnight/SKILL.md",
+    "hermes/skills/hermes-diaria-continuo/SKILL.md",
+  ]) {
+    function runRecipe(files: string, ghStatus = 0) {
+      const source = readFileSync(resolve(root, skill), "utf8");
+      const recipe = source.match(/`(npx tsx\s+scripts\/lib\/sensitive-path-guard\.ts[^`]+)`/);
+      assert.ok(recipe, `receita ausente em ${skill}`);
+      assert.doesNotMatch(recipe[1], /--base/);
+      const cwd = mkdtempSync(resolve(tmpdir(), "sensitive-pr-12884-"));
+      try {
+        // Só o transporte gh é simulado; o guard e paste são reais.
+        const command = recipe[1].replace(/npx tsx\s+scripts\/lib\/sensitive-path-guard\.ts/,
+          `${quote(process.execPath)} --import ${quote(import.meta.resolve("tsx"))} ${quote(resolve(root, "scripts/lib/sensitive-path-guard.ts"))}`);
+        const result = spawnSync("bash", ["-c", `
+          gh() {
+            [ "$*" = "pr diff 12731 --name-only" ] || return 99
+            printf '%s' "$PR_FILES"
+            return "$GH_STATUS"
+          }
+          ${command.replace("gh pr diff N ", "gh pr diff 12731 ")}
+        `], { cwd, encoding: "utf8", env: { ...process.env, PR_FILES: files, GH_STATUS: String(ghStatus) } });
+        assert.equal(result.error, undefined);
+        return result;
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    }
+
+    it(`${skill}: detecta publish-shorts e preserva exatamente a lista do PR`, () => {
+      const result = runRecipe("scripts/publish-shorts.ts\nREADME.md\n");
+      assert.equal(result.status, 0, result.stderr);
+      const verdict = JSON.parse(result.stdout);
+      assert.equal(verdict.sensitive, true);
+      assert.deepEqual(verdict.hits.map((hit: { path: string }) => hit.path), ["scripts/publish-shorts.ts"]);
+      assert.equal(verdict.hits[0].matches[0].ruleId, "publicadores");
+      assert.deepEqual(verdict.clean, ["README.md"]);
+    });
+
+    it(`${skill}: PR não sensível conserva todos os arquivos`, () => {
+      const result = runRecipe("README.md\ntest/example.test.ts\n");
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        sensitive: false, hits: [], clean: ["README.md", "test/example.test.ts"],
+      });
+    });
+
+    for (const status of [0, 1]) {
+      it(`${skill}: lista vazia (gh exit ${status}) falha sem veredito`, () => {
+        const result = runRecipe("", status);
+        assert.equal(result.status, 1);
+        assert.equal(result.stdout, "");
+        assert.match(result.stderr, /vazio/);
+      });
+    }
+  }
 });
