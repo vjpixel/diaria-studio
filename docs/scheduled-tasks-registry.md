@@ -15,6 +15,9 @@ cada parágrafo.
 
 ---
 
+**Contingência do 300 no Neo: exceção TEMPORÁRIA ao #5074 (#12982, 13/11/2026).** A política "nenhuma tarefa `Diaria-*` roda no Windows" continua valendo no regime normal. Só enquanto o `300` estiver fora do ar, o editor arma no Neo, com `npx tsx scripts/failover/neo-takeover.ts --arm`, as tasks do registro com `failover: "critical"` (Shorts e catchups, Shorts-Cortes, Clarice-Novos/-Tarde, Clarice-Envio/-Guard, Circle-Stack-Weekly-Publish, Onboarding-Welcome-Run/-Watch-Returning, Video-D1-Link-Watch), como tarefas `Diaria-Failover-*` do Task Scheduler, e desarma (`--disarm`) quando o `300` volta. Todo item do registro declara `failover` (`critical`/`catchup`/`skip`, travado por `test/scheduled-tasks-failover-tier-12982.test.ts`; task nova entra como `skip` salvo decisão contrária). As tasks `critical` passam, nas duas máquinas, pelo lease anti-duplicação `infra:scheduler-owner` (KV `diaria-ops-state`) no `scripts/run-task.ts`: com o lease do Neo, as do `300` cedem. Runbook completo (confirmar a queda, armar, conferir, desarmar, o que fica parado e o que revisar depois): `docs/failover-neo.md`.
+
+
 **Watchdog de stall overnight (#2688):** task `Diaria-Overnight-Watchdog`, a cada 10 min, 24h por dia (#10565; era janela 18:00→09:00 BRT) — fora do registry declarativo (invocação direta do script, #4857). Armado e validado ao vivo em `300` (260810). **Nenhuma tarefa `Diaria-*` roda no Windows** (política confirmada 260811, decisão do editor) — o par Windows deste watchdog foi desligado de propósito por redundância; auditoria de fechamento em #5074/#5091. Arme e detalhes: `docs/overnight-watchdog-setup.md`.
 
 **Sync incremental diário do store Clarice (#2932):** task `Diaria-Clarice-Sync`, diária às 08:30. Confirmado ativo em `300` (260812). Arme e detalhes (dois passos store+KV, catch-up de opens #4688): `docs/clarice-sync-daily-setup.md`.

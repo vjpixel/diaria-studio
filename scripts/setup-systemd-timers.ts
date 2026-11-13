@@ -122,7 +122,7 @@ ${SETUP_USAGE}`);
     return 1;
   }
 
-  let tasks = SCHEDULED_TASKS;
+  let tasks: ScheduledTaskDefinition[] = SCHEDULED_TASKS;
   if (taskName) {
     const found = getScheduledTaskByName(taskName);
     if (!found) {

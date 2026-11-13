@@ -18,21 +18,75 @@
  * (`RETIRED_TASK_NAMES`, ver `scripts/lib/scheduled-tasks.ts`) sai 0 — é o
  * caso de um unit systemd instalado que ainda invoca um nome removido do
  * registro (#5733), diferente de um nome que nunca existiu (typo).
+ *
+ * **Gate de failover (#12982).** Antes de rodar, `runFailoverGate`
+ * (`scripts/lib/failover/task-gate.ts`) decide se esta máquina pode agir: task
+ * `critical` adquire o lease anti-duplicação entre o `300` e o Neo; cedendo, a
+ * run sai 0 sem rodar nada. `--failover-standby` (só as tasks
+ * `Diaria-Failover-*` do Neo passam) marca a run como do Neo, que é
+ * fail-closed. Ver `docs/failover-neo.md`.
  */
-import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
+import { parse as parseDotenv } from "dotenv";
+import { createKvRestOps } from "./lib/cloudflare-kv-rest.ts";
+import { runFailoverGate, type FailoverGateDeps } from "./lib/failover/task-gate.ts";
 import { getScheduledTaskByName, isRetiredTaskName, listScheduledTaskNames } from "./lib/scheduled-tasks.ts";
-import { runScheduledTask } from "./lib/task-runner.ts";
+import { runScheduledTask, type RunScheduledTaskOptions } from "./lib/task-runner.ts";
+import type { GitSyncResult } from "./lib/git-sync.ts";
 
 function usage(): string {
   const names = listScheduledTaskNames()
     .map((n) => `  - ${n}`)
     .join("\n");
-  return `Uso: run-task.ts --task <nome>\n\nTasks conhecidas:\n${names}`;
+  return `Uso: run-task.ts --task <nome> [--failover-standby]\n\nTasks conhecidas:\n${names}`;
 }
 
-export function main(argv: string[], repoRootAbs: string): number {
+function readPlatformConfig(repoRootAbs: string): unknown {
+  try {
+    return JSON.parse(readFileSync(join(repoRootAbs, "platform.config.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** Dependências injetáveis (testes). Default: env real, KV REST real, runner real. */
+export interface RunTaskDeps {
+  gate?: Partial<FailoverGateDeps>;
+  runner?: RunScheduledTaskOptions;
+  /** Lê o `.env` do repo para o env do gate (default: `readDotenv`). */
+  readDotenv?: (repoRootAbs: string) => Record<string, string>;
+}
+
+/** Resultado de sync "pulado" para a run do Neo. Não há outcome próprio no
+ * `GitSyncOutcome`; `already_up_to_date` evita o retry do runner, e
+ * `up_to_date=false` + o WARN deixam no log que nada foi conferido. */
+export function standbySkippedSync(): GitSyncResult {
+  return {
+    outcome: "already_up_to_date",
+    message: "sync de código pulado no Neo (#12982)",
+    branch_before: "",
+    warnings: ["sync de código pulado no Neo (#12982): o checkout do editor roda como está; conferir no runbook (docs/failover-neo.md)"],
+    proceed: true,
+    up_to_date: false,
+    commits_behind: -1,
+    preserved_stash: null,
+    stale_autostash_count: 0,
+  };
+}
+
+/** `.env` do repo parseado, sem tocar `process.env`; `{}` se ausente/ilegível. */
+function readDotenv(repoRootAbs: string): Record<string, string> {
+  try {
+    return parseDotenv(readFileSync(join(repoRootAbs, ".env"), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+export async function main(argv: string[], repoRootAbs: string, deps: RunTaskDeps = {}): Promise<number> {
   let taskName: string | undefined;
   try {
     taskName = getStringArg(argv, "task", { example: "Diaria-Apoios-Diff-Alarm" });
@@ -60,11 +114,41 @@ export function main(argv: string[], repoRootAbs: string): number {
     return 1;
   }
 
-  const result = runScheduledTask(def, { rootDir: repoRootAbs });
+  // #12982 — o gate só lê .env/KV para task `critical` ou run do Neo; as
+  // demais seguem exatamente como antes. O .env entra só no env DO GATE (o
+  // ambiente vence o arquivo, como em `loadProjectEnv`), sem mutar
+  // `process.env`: os passos da task continuam herdando o ambiente de sempre.
+  const needsEnv = def.failover === "critical" || argv.includes("--failover-standby");
+  const gate = await runFailoverGate(def, argv, {
+    env: deps.gate?.env ?? (needsEnv ? { ...(deps.readDotenv ?? readDotenv)(repoRootAbs), ...process.env } : process.env),
+    platformConfig: deps.gate?.platformConfig !== undefined ? deps.gate.platformConfig : readPlatformConfig(repoRootAbs),
+    makeKv: deps.gate?.makeKv ?? createKvRestOps,
+    now: deps.gate?.now,
+  });
+  if (!gate.proceed) {
+    (gate.code === 0 ? console.log : console.error)(gate.message);
+    return gate.code;
+  }
+  if (gate.message) console.log(gate.message);
+
+  // #12982 — no Neo o checkout é o de trabalho do editor, compartilhado com as
+  // sessões interativas: o sync de código do runner (checkout master, stash,
+  // ff) a cada hora atropelaria quem estiver trabalhando nele. A run do Neo
+  // usa o código como está; manter o checkout em dia é passo do runbook.
+  const standbyNoSync: Pick<RunScheduledTaskOptions, "syncCode"> = argv.includes("--failover-standby")
+    ? { syncCode: () => standbySkippedSync() }
+    : {};
+  const result = runScheduledTask(def, { rootDir: repoRootAbs, ...standbyNoSync, ...deps.runner });
   return result.code;
 }
 
 if (isMainModule(import.meta.url)) {
   const repoRootAbs = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  process.exit(main(process.argv.slice(2), repoRootAbs));
+  main(process.argv.slice(2), repoRootAbs).then(
+    (code) => process.exit(code),
+    (e) => {
+      console.error(e instanceof Error ? e.stack ?? e.message : e);
+      process.exit(1);
+    },
+  );
 }

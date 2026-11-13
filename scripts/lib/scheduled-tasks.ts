@@ -173,6 +173,41 @@ export interface ScheduledTaskDefinition {
    *  Quando `false`, o runner pula a execução (exit 0, loga "SKIP: task disabled")
    *  e o gerador de units systemd NÃO cria `.service`/`.timer` para ela. */
   enabled?: boolean;
+  /** #12982 — tier de contingência quando o `300` cai (ver `FailoverTier`).
+   * Opcional no tipo base só para fixtures de teste; no registro
+   * (`SCHEDULED_TASKS`, tipado como `RegisteredScheduledTaskDefinition`) é
+   * obrigatório, e `test/scheduled-tasks-failover-tier-12982.test.ts` trava
+   * isso também em runtime. Ausente = `skip` (`resolveFailoverTier`). */
+  failover?: FailoverTier;
+}
+
+/**
+ * #12982 — o que acontece com a task enquanto o `300` está fora do ar.
+ *
+ * Exceção TEMPORÁRIA e explícita à política do #5074 (nenhuma task
+ * `Diaria-*` roda no Windows): durante a queda, o Neo assume só o tier
+ * `critical`, por `scripts/failover/neo-takeover.ts --arm`, e devolve no
+ * `--disarm`. Runbook: `docs/failover-neo.md`.
+ *
+ *   - `critical`: horário público ou envio a terceiros, perda visível ao
+ *     leitor e irreversível (publicação de Short, envio Clarice/Stack/boas-vindas).
+ *     Roda no Neo durante a queda, sob o lease anti-duplicação
+ *     (`scripts/lib/failover/scheduler-lease.ts`).
+ *   - `catchup`: sync, snapshot, ingest ou upload que recupera o atraso
+ *     sozinho quando o `300` volta. Não roda no Neo.
+ *   - `skip`: alarme, drift, staleness, higiene. Fica parado durante a queda;
+ *     nada a recuperar. Default de task nova.
+ */
+export type FailoverTier = "critical" | "catchup" | "skip";
+
+export const FAILOVER_TIERS: readonly FailoverTier[] = ["critical", "catchup", "skip"];
+
+/** Task como ela entra no registro: `failover` obrigatório (#12982). */
+export type RegisteredScheduledTaskDefinition = ScheduledTaskDefinition & { failover: FailoverTier };
+
+/** Tier efetivo de uma definição (`skip` quando ausente — só fixtures). */
+export function resolveFailoverTier(def: Pick<ScheduledTaskDefinition, "failover">): FailoverTier {
+  return def.failover ?? "skip";
 }
 
 /** Cota diária da URL Inspection API do Google, POR PROPRIEDADE GSC
@@ -215,9 +250,10 @@ export const GOOGLE_ADS_CONFIRMATION_ACTION_ID = "7762768203";
  */
 export const GOOGLE_ADS_CONFIRMATION_CUSTOMER_ID = "2369219639";
 
-export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
+export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
   {
     name: "Diaria-Apoios-Diff-Alarm",
+    failover: "skip",
     description: "alarme diario de diff pendente do sync apoio_nivel",
     steps: [{ key: "alarm", script: "scripts/apoios-diff-alarm.ts" }],
     logPath: "apoia-se/.diff-alarm.log",
@@ -226,6 +262,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Artigos-Apoio-Kv-Sync",
+    failover: "catchup",
     description: "sync diario do KV ARTIGOS_APOIO_NIVEL (gate dos Artigos Especiais) a partir do CRM apoia.se",
     steps: [{ key: "sync", script: "scripts/sync-artigos-apoio-kv.ts" }],
     logPath: "apoia-se/.artigos-kv-sync.log",
@@ -248,6 +285,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Kv-Image-Binding-Smoke",
+    failover: "skip",
     description:
       "smoke test do binding KV POLL de workers/site (/img/{key}) — distingue key-ausente de binding morto (#7663)",
     steps: [{ key: "check", script: "scripts/check-kv-image-binding.ts" }],
@@ -277,6 +315,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Regen-Home-Watchdog",
+    failover: "skip",
     description:
       "garante a edição do dia na home: dispara regen-home.yml se o schedule do GitHub atrasou e alarma às 07:00 BRT (#9974)",
     steps: [{ key: "check", script: "scripts/check-regen-home.ts" }],
@@ -300,6 +339,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Video-D1-Link-Watch",
+    failover: "critical",
     description:
       "relê o estado do vídeo horizontal no YouTube até 10:00 BRT e, público, grava o link do D1, aplica o plano nos posts do D1 (#10941) e republica a página do site que saiu sem o vídeo (#12080)",
     steps: [{ key: "watch", script: "scripts/video-d1-link-watch.ts" }],
@@ -347,6 +387,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-YouTube-Analytics-Snapshot",
+    failover: "catchup",
     description:
       "snapshot diario do YouTube Analytics do @diariabr (inscritos ganhos por video, fonte de trafego, retencao, total de inscritos) em data/youtube-analytics/ (#12075)",
     steps: [{ key: "snapshot", script: "scripts/youtube-analytics-snapshot.ts" }],
@@ -370,6 +411,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Short-Related-Missed-Alarm",
+    failover: "skip",
     description:
       "alarma quando a task do vídeo relacionado do Short (#10811, no Neo) não deixou registro na edição do dia depois do prazo (#11353)",
     steps: [{ key: "alarm", script: "scripts/short-related-missed-alarm.ts" }],
@@ -391,6 +433,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Agendamentos-Tick",
+    failover: "catchup",
     description:
       "consumidor do banco de agendamentos (data/agendamentos/banco.json): item vencido sem publicação ou falho vira issue de alarme; não publica (#12774)",
     steps: [{ key: "tick", script: "scripts/agendamentos-tick.ts" }],
@@ -412,6 +455,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Continuo-Ratelimit-Watchdog",
+    failover: "skip",
     description:
       "roda hermes/scripts/pause-cron-on-ratelimit.py de hora em hora: pausa o contínuo em 403 Key limit exceeded e o retoma logo depois da virada UTC, sem esperar o watch diário (#10070)",
     steps: [{ key: "watchdog", script: "scripts/run-continuo-ratelimit-watchdog.ts" }],
@@ -433,6 +477,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Home-Meta-Check",
+    failover: "skip",
     description: "smoke-test dos eixos de drift da home diar.ia.br (og:title, self-links http, rotulos EN, host legado, porta na URL)",
     steps: [{ key: "check", script: "scripts/home-meta-check.ts" }],
     logPath: "home-meta-check/.meta-check.log",
@@ -462,6 +507,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Brevo-Diaria-Guardrail",
+    failover: "skip",
     description: "circuit breaker de campanha do canal brevo_diaria",
     steps: [{ key: "check", script: "scripts/check-brevo-diaria-guardrail.ts" }],
     logPath: "brevo-diaria/.guardrail-check.log",
@@ -470,6 +516,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Cohorts-Crawl",
+    failover: "catchup",
     // #4451 (decisão do editor, 260811): a task Windows legada
     // `DiariaCohortsCrawl` (crawl per-contato via `clarice-engagement-cohorts.ts` (v1, removido no #9330),
     // v1 — ver docs/cohorts-schedule.md) NUNCA existiu neste registro nem tem
@@ -516,6 +563,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Dashboard-Precompute",
+    failover: "catchup",
     // #5217: reabastece dash:lastgood:campaigns (fallback de rate-limit do
     // dashboard clarice-dashboard) — nada mais o mantinha quente desde que o
     // Cron Trigger interno do Worker foi removido (#3553/#3639). Bate
@@ -536,6 +584,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Backfill-Campaigns",
+    failover: "catchup",
     // #8857: o #8115 entregou o script (`clarice-backfill-campaigns.ts`) e o
     // consumo no render (`loadMonthlyTotalsArchive`), mas nunca o agendou —
     // "Totais por mês" ficou preso na janela ao vivo de 100 campanhas
@@ -560,6 +609,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Coupon-Clarice-Class",
+    failover: "catchup",
     // #9617: o #9571 entregou `coupon-clarice-class.ts` (classificação Clarice
     // novo/antigo de quem resgatou cupom → KV `coupons:clarice-class`) e o
     // consumo no painel, mas nada o agendava — e o worker descarta o payload
@@ -586,6 +636,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Guardrail-Alarm",
+    failover: "skip",
     description: "alarme de guardrail furado do ramp Clarice",
     steps: [{ key: "alarm", script: "scripts/clarice-guardrail-alarm.ts" }],
     logPath: "clarice-subscribers/.guardrail-alarm.log",
@@ -609,6 +660,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Subscriber-State-Snapshot",
+    failover: "catchup",
     description: "snapshot diario (id, state, created_at, confirmou_via, origem) do roster Kit em data/subscriber-state-snapshots/kit/ -- insumo de doi-confirmacao-dia e do relatorio de confirmacao (#8552)",
     steps: [{ key: "snapshot", script: "scripts/subscriber-state-snapshot.ts" }],
     logPath: "subscriber-state-snapshots/.snapshot.log",
@@ -627,6 +679,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Subscriber-State-Snapshot-Recent",
+    failover: "catchup",
     description: "observacao HORARIA dos cadastros Kit das ultimas 48h (id, state, created_at; sem doi_form, o modo --recent nao le o form DOI) em data/subscriber-state-snapshots/kit-recent/ -- unico jeito de medir a taxa de confirmacao DOI em 1h/6h/24h, ja que o Kit nao expoe o instante da confirmacao (#8552 b)",
     steps: [{ key: "recent", script: "scripts/subscriber-state-snapshot.ts", args: ["--recent"] }],
     logPath: "subscriber-state-snapshots/.recent.log",
@@ -645,6 +698,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Nightly-Chain",
+    failover: "skip",
     description: "cadeia noturna: review Opus do diff do dia (opus-daily-diff-review.sh) e, sempre em seguida, /diaria-overnight --agendado headless (#10552)",
     steps: [{ key: "chain", script: "scripts/overnight/run-nightly-chain.ts" }],
     logPath: "overnight/.nightly-chain.log",
@@ -662,6 +716,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Audience-Profile-Staleness-Alarm",
+    failover: "skip",
     description: "escala o guard de arquivamento duplicado do #4366 (context/audience-profile.md regenerando idêntico ao anterior) de linha muda em run-log.jsonl pra issue GitHub por ocorrência (#8148)",
     steps: [{ key: "alarm", script: "scripts/audience-profile-staleness-alarm.ts" }],
     logPath: "audience-profile-staleness-alarm/.alarm-check.log",
@@ -674,6 +729,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Opens-Catchup-Alarm",
+    failover: "skip",
     description: "alarme de falha sustentada do catch-up de opens da Clarice",
     steps: [{ key: "alarm", script: "scripts/clarice-opens-catchup-alarm.ts" }],
     logPath: "clarice-subscribers/.opens-catchup-alarm.log",
@@ -682,6 +738,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Unblock-Suspended",
+    failover: "catchup",
     description: "desbloqueia contatos presos em sent-or-queued.json por campanha suspensa na Brevo (#8117)",
     // #8117: achado ao vivo (#8113, 260914) — o editor suspendeu 3 campanhas
     // (d3-qui03-A/B/C, 11 dias antes) sem deixar rastro local, e os 85
@@ -704,6 +761,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Sync",
+    failover: "catchup",
     description: "sync incremental diario do store Clarice",
     steps: [
       { key: "sync", script: "scripts/clarice-sync-brevo.ts", args: ["--incremental"] },
@@ -721,6 +779,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Cursos-Kv-Sync",
+    failover: "catchup",
     description: "sync diario do KV CURSOS_SUBSCRIBERS",
     steps: [{ key: "sync", script: "scripts/sync-cursos-subscribers-kv.ts" }],
     logPath: "cursos-subscribers/.kv-sync.log",
@@ -746,6 +805,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // alarme pegar. Sábado 04:30 BRT, slot livre (a única outra semanal de
     // sábado é 03:40; dailies vizinhas em 04:25 e 04:40).
     name: "Diaria-Hotmart-Vendas-Sync",
+    failover: "catchup",
     description: "sync semanal das vendas Hotmart do KV para data/hotmart/vendas.jsonl",
     steps: [{ key: "sync", script: "scripts/sync-hotmart-vendas.ts" }],
     logPath: "hotmart/.vendas-sync.log",
@@ -760,6 +820,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Brevo-Diaria-Evaluate",
+    failover: "catchup",
     description: "evaluate diario do canal brevo_diaria (--push)",
     steps: [{ key: "evaluate", script: "scripts/evaluate-brevo-diaria.ts", args: ["--push"] }],
     logPath: "brevo-diaria/.evaluate.log",
@@ -775,6 +836,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Sunset-Weekly",
+    failover: "catchup",
     description: "rodada semanal do sunset de assinantes mortos (fresh snapshot + push pro funil brevo_diaria)",
     // `--push` sozinho já É a rodada completa (#5807 reescopo, ver docstring
     // de `sunset-dead-subscribers.ts`): garante snapshot fresco, avalia
@@ -817,6 +879,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Geo-Citation-Monitor",
+    failover: "catchup",
     description: "monitor semanal de citacao por assistente de IA",
     // Três painéis, três passos independentes (#4900 item a; `acervo`,
     // #8334). O passo `hubs` foi ativado em 10/08/2026: ele estava pronto e
@@ -887,6 +950,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Geo-Citation-Staleness-Alarm",
+    failover: "skip",
     description: "alarme de staleness do monitor de citacao GEO",
     steps: [{ key: "alarm", script: "scripts/geo-citation-staleness-alarm.ts" }],
     logPath: "geo-citations/.staleness-alarm.log",
@@ -898,6 +962,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Ai-Fetch-Report",
+    failover: "catchup",
     description: "le do KV os contadores diarios de fetch/referrer por bot de IA e anexa em data/ai-fetch/history.jsonl",
     // `--days 2` (não `--days 1`): overlap de 1 dia cobre virada de fuso
     // (o script lê datas em UTC, esta task roda em BRT) e uma execução
@@ -919,6 +984,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Ai-Fetch-Staleness-Alarm",
+    failover: "skip",
     description: "alarme de staleness da serie ai-fetch (data/ai-fetch/history.jsonl parado de crescer)",
     // #8340 item "guard construído tem que ser armado" (#7137 item 27): a
     // própria issue de origem é "task mergeada, nunca agendada, série nunca
@@ -938,6 +1004,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-LinkedIn-Weekly-Staleness-Alarm",
+    failover: "skip",
     description: "alarme de staleness da newsletter semanal do LinkedIn (ln-{cycle}.json ausente)",
     steps: [{ key: "alarm", script: "scripts/linkedin-weekly-staleness-alarm.ts" }],
     logPath: "weekly/.linkedin-staleness-alarm.log",
@@ -958,6 +1025,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Retro-Semanal-Staleness-Alarm",
+    failover: "skip",
     description: "alarme de staleness da retro semanal (carrossel highlights do sabado nao agendado)",
     // #11069, irmão do Diaria-LinkedIn-Weekly-Staleness-Alarm acima: checa
     // `data/weekly/{sábado}/06-weekly-published.json` e, se ele não provar,
@@ -981,6 +1049,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Circle-Stack-Weekly-Preview",
+    failover: "skip",
     description:
       "prévia semanal do Radar de Notícias Stack (Circle da Stack) em DRY-RUN + aviso ao editor; nunca publica (#10904, #11778)",
     // `--notify --next-monday` (#11778): mira a PRÓXIMA segunda de publicação
@@ -1011,6 +1080,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Circle-Stack-Weekly-Publish",
+    failover: "critical",
     description:
       "envio semanal do Radar de Notícias Stack às segundas 06:00 BRT, só de ciclo aprovado pelo editor, com e-mail do resultado (#11778)",
     // `publish-circle-stack-scheduled.ts` sem args: ciclo = segunda de hoje;
@@ -1037,6 +1107,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Hub-Drift-Check",
+    failover: "skip",
     description: "smoke-test de drift entre HUB_META e o Worker arquivo publicado",
     steps: [{ key: "check", script: "scripts/hub-drift-check.ts" }],
     logPath: "hub-drift-check/.drift-check.log",
@@ -1052,6 +1123,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Acervo-Staleness",
+    failover: "skip",
     description: "compara a edição mais recente PRODUZIDA com a que o leitor vê em arquivo.diar.ia.br",
     steps: [{ key: "check", script: "scripts/acervo-staleness-alarm.ts" }],
     logPath: "acervo-staleness/.alarm.log",
@@ -1075,6 +1147,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Robots-Txt-Drift-Check",
+    failover: "skip",
     description: "smoke-test do robots.txt SERVIDO pelos Workers de curadoria (bloco gerenciado da Cloudflare + bots fora do esperado)",
     steps: [{ key: "check", script: "scripts/robots-txt-drift-check.ts" }],
     logPath: "robots-txt-drift-check/.drift-check.log",
@@ -1087,6 +1160,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Plugin-Review-Drift-Check",
+    failover: "skip",
     description:
       "drift-check do system prompt dos 5 agentes do plugin pr-review-toolkit que DEFAULT_EFFORT=max dispara — alarma se a linguagem de filtro de confiança/severidade mudar (arquivo per-máquina, fora deste repo)",
     steps: [{ key: "check", script: "scripts/plugin-review-drift-check.ts" }],
@@ -1101,6 +1175,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Subscribe-Redirect-Drift-Check",
+    failover: "skip",
     description:
       "smoke-test do destino do redirect /subscribe (perfil hospedado Kit) + / e /p/{slug} do Worker diaria-site — 200 sozinho não basta, exige os marcadores esperados no corpo (página de erro pode vir 200)",
     steps: [{ key: "check", script: "scripts/subscribe-redirect-drift-check.ts" }],
@@ -1118,6 +1193,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Kit-Doi-Orphan-Guard",
+    failover: "skip",
     description:
       "detecta assinantes Kit criados inactive (double opt-in do worker poll) que nunca foram vinculados ao form de confirmação — presos para sempre sem o guard, incidente de 28/08/2026",
     steps: [{ key: "check", script: "scripts/kit-doi-orphan-guard.ts" }],
@@ -1134,6 +1210,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Kit-Subscriber-Limit-Alarm",
+    failover: "skip",
     description:
       "alarma quando a contagem de assinantes ATIVOS do Kit cruza 900 (subscriber_limit do plano hoje: 1000) — teto do plano era invisível pra toda a maquinaria de guard/alarme até esta task (#7362)",
     steps: [{ key: "check", script: "scripts/kit-subscriber-limit-alarm.ts" }],
@@ -1151,6 +1228,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Kit-Subscriber-State-Transition-Alarm",
+    failover: "skip",
     description:
       "alarma quando um assinante Kit sai de active (complained/bounced/cancelled/inactive) ou SOME da conta — o caso de origem foi um apoiador com 84,68% de abertura que ficou 11 dias sem edição, descoberto só porque ele reclamou por WhatsApp (#7660)",
     steps: [{ key: "check", script: "scripts/kit-subscriber-state-transition-alarm.ts", args: ["--fetch"] }],
@@ -1167,6 +1245,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Codex-Credential-Alarm",
+    failover: "skip",
     description:
       "avisa quando resta UMA conta OpenAI Codex viva no pool do Hermes — contas são OAuth (não há endpoint de saldo), então o único sinal é o resultado da última tentativa de uso, que o Hermes persiste em ~/.hermes/auth.json",
     steps: [{ key: "check", script: "scripts/codex-credential-alarm.ts" }],
@@ -1211,6 +1290,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Doppler-Token-Expiry-Alarm",
+    failover: "skip",
     description:
       "alarma (issue P1/P2) quando um *_EXPIRES_AT do Doppler diaria-studio/dev está a <=14 dias de vencer, vencido ou ilegível — lê o vault, não o .env local (#11415, script #11077)",
     steps: [{ key: "alarm", script: "scripts/doppler-token-expiry-alarm.ts" }],
@@ -1242,6 +1322,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-LinkedIn-Personal",
+    failover: "skip",
     description:
       "alarma o token do app LinkedIn PESSOAL (expiração 60d, revogação) — o post diário no perfil pessoal foi aposentado (#11398)",
     // #11398 (27/10/2026, pedido do editor): o 4º post (USE MELHOR) não sai
@@ -1259,6 +1340,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-LinkedIn-Personal-Catchup",
+    failover: "skip",
     description:
       "APOSENTADA (#11398) — repescagem de hora em hora do post do LinkedIn PESSOAL (4º post USE MELHOR)",
     steps: [{ key: "post", script: "scripts/publish-linkedin-personal.ts", args: ["--fire-due"] }],
@@ -1274,6 +1356,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Shorts-LinkedIn-Profile",
+    failover: "critical",
     description:
       "publica o vertical da edição do dia no LinkedIn PESSOAL do editor, baixando do Drive quando ainda não está no 300 (#10982)",
     steps: [{ key: "post", script: "scripts/shorts-linkedin-profile-timer.ts" }],
@@ -1298,6 +1381,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Shorts-LinkedIn-Profile-Catchup",
+    failover: "critical",
     description:
       "de hora em hora: publica o vertical no LinkedIn PESSOAL quando o horário do dia é hora cheia (08:00/12:00) e baixa o vertical do Drive assim que ele aparece (#10982)",
     steps: [{ key: "post", script: "scripts/shorts-linkedin-profile-timer.ts" }],
@@ -1307,6 +1391,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Shorts-Instagram",
+    failover: "critical",
     description:
       "publica o Reels do vertical no Instagram no horário do vertical, com o vídeo no R2 e o container por video_url, com o corte _Instagram_ do Drive (#11265, #11355)",
     steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
@@ -1337,6 +1422,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Shorts-Instagram-Catchup",
+    failover: "critical",
     description:
       "de hora em hora: publica o Reels do vertical no Instagram quando o horário do dia é hora cheia (08:00/12:00), consulta e baixa o corte do Instagram do Drive dentro da janela [horário do vertical, +3 h] e avisa o editor quando o Reels não saiu (#11265)",
     steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
@@ -1351,6 +1437,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Shorts-Threads-Profile",
+    failover: "critical",
     description:
       "publica o vertical da edição do dia no Threads PESSOAL do editor no horário do vertical (a Threads API não agenda), com o vídeo por URL pública do R2, e avisa o editor quando o post não sai (#11410)",
     steps: [{ key: "post", script: "scripts/shorts-threads-profile-timer.ts" }],
@@ -1385,6 +1472,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Shorts-Threads-Profile-Catchup",
+    failover: "critical",
     description:
       "de hora em hora: publica o vertical no Threads PESSOAL quando o horário do dia é hora cheia (08:00/12:00), baixa o vertical do Drive se ele ainda não está no 300 e avisa o editor quando o post não saiu (#11410)",
     steps: [{ key: "post", script: "scripts/shorts-threads-profile-timer.ts" }],
@@ -1400,6 +1488,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Shorts-Cortes",
+    failover: "critical",
     description:
       "de hora em hora: publica os destinos do corte avulso (publish-shorts --corte, data/cortes/) que a API não agenda — LinkedIn e Threads pessoais e Instagram — depois do horário do corte, até 3 h, só os destinos e o conteúdo (sha256 do vídeo e da capa) que o “pode publicar” do editor gravou no corte.json, e avisa o editor quando um destino falha ou perde a autorização (#11795, #11912)",
     steps: [{ key: "post", script: "scripts/shorts-corte-timer.ts" }],
@@ -1420,6 +1509,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Threads-Personal-Token",
+    failover: "catchup",
     description:
       "renova o token de 60 dias do Threads PESSOAL do editor (vertical da edição, #10772) e grava o novo no Doppler + .env",
     steps: [{ key: "refresh", script: "scripts/threads-personal-token-refresh.ts" }],
@@ -1439,6 +1529,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Hub-Staleness-Check",
+    failover: "skip",
     description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot + alarma se >= 1 dia)",
     steps: [{ key: "check", script: "scripts/hub-staleness-check.ts", args: ["--threshold-days", "1"] }],
     logPath: "hubs/.staleness-check.log",
@@ -1462,6 +1553,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Entity-Pages-Regen",
+    failover: "catchup",
     description:
       "regenera o HTML das páginas de entidade (workers/artigos/public/entidades/) a partir do EntityContent commitado — SÓ a mecânica, sem alarme (ver Diaria-Entity-Pages-Staleness-Alarm pro alarme)",
     steps: [{ key: "regen", script: "scripts/regenerate-entity-pages.ts", args: ["--skip-alarm"] }],
@@ -1485,6 +1577,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Entity-Pages-Staleness-Alarm",
+    failover: "skip",
     description:
       "alarma quando uma edição nova casa o padrão de uma entidade publicada mas ainda não está no mentions dela (mesmo mecanismo de aging de Diaria-Hub-Staleness-Check, agora sem a regen — essa segue diária em Diaria-Entity-Pages-Regen)",
     steps: [{ key: "alarm", script: "scripts/regenerate-entity-pages.ts", args: ["--alarm-only", "--threshold-days", "1"] }],
@@ -1508,6 +1601,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Novos",
+    failover: "critical",
     description: "envio diario aos cadastros novos da Clarice (Stripe -> MV -> campanha)",
     // Kill switch dedicado (#4941 E3): ANTES de qualquer chamada externa,
     // clarice-novos-run.ts checa data/clarice-novos-enabled.json (default
@@ -1551,6 +1645,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Novos-Tarde",
+    failover: "critical",
     description: "2a captura diaria dos cadastros novos da Clarice (mesmo fluxo do Diaria-Clarice-Novos, 18:00 BRT)",
     // #5185: a issue original propunha `clarice-envio-run.ts` chamar
     // `runNovos()` internamente e alimentar o pool `ramp-warm` direto
@@ -1637,6 +1732,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Envio",
+    failover: "critical",
     description: "planeja e agenda a onda Clarice do dia seguinte (06:00 BRT) - freio por risco de ISP + escalada adaptativa",
     // Kill switch dedicado: ANTES de qualquer chamada Brevo,
     // clarice-envio-run.ts checa data/clarice-envio-enabled.json. **O
@@ -1693,6 +1789,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Envio-Guard",
+    failover: "critical",
     description: "guard matinal da onda Clarice ja agendada - reavalia o freio de risco de ISP antes do disparo das 06:00",
     // Segunda metade do par: a onda é agendada às 19:00 do dia anterior, e a
     // Brevo congela destinatários no AGENDAMENTO, não no envio (memória do
@@ -1729,6 +1826,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Envio-Guard-Alarm",
+    failover: "skip",
     description: "alarme proprio do guard das 05:00 - le a familia envio-{aammdd}-guard-* e alarma se o guard falhou ou nao rodou",
     // #5220 (Gap 2 achado na mesma issue do retry): `Diaria-Clarice-Envio-Alarm`
     // (abaixo, 20:30) escolhe o relatorio MAIS RECENTE entre TODOS os
@@ -1758,6 +1856,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Clarice-Envio-Alarm",
+    failover: "skip",
     description: "alarme de rodada falha do Diaria-Clarice-Envio - le o relatorio do dia e alarma se a onda nao foi agendada",
     steps: [{ key: "alarm", script: "scripts/clarice-envio-alarm.ts" }],
     logPath: "clarice-subscribers/.envio-alarm.log",
@@ -1799,6 +1898,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   // `scripts/lib/clarice-envio-engajados-{policy,enabled,alarm,state}.ts`.
   {
     name: "Diaria-Postmaster-Spam-Sync",
+    failover: "catchup",
     description: "sync automatico do spamRate do Google Postmaster Tools",
     steps: [{ key: "sync", script: "scripts/postmaster-spam-sync.ts" }],
     logPath: "clarice-subscribers/.postmaster-spam-sync.log",
@@ -1811,6 +1911,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Postmaster-Spam-Alarm",
+    failover: "skip",
     description: "alarme de sinal de spam do Postmaster cego (staleness geral) + campaignSpam ausente prolongado",
     steps: [{ key: "alarm", script: "scripts/clarice-postmaster-alarm.ts" }],
     logPath: "clarice-subscribers/.postmaster-alarm.log",
@@ -1826,6 +1927,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-SEO-Weekly",
+    failover: "catchup",
     description: "loop de SEO semanal (cobertura de indexacao + Search Analytics)",
     steps: [
       // --limit 2000 (subiu de 250 no #5118 item 1a): a cota real da URL
@@ -1958,6 +2060,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Beehiiv-Backup",
+    failover: "catchup",
     description: "snapshot semanal da publicacao Beehiiv (assinantes com origem + engajamento, posts, segmentos)",
     // #11413: 2º passo envia a cópia off-site (tar.gz + AES-256-GCM) do
     // snapshot do dia e o dump dos votos do É IA? (KV POLL) pro bucket R2
@@ -2016,6 +2119,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Acquisition-Health-Alarm",
+    failover: "skip",
     description: "alarme semanal de saude de aquisicao por canal (sobrevivencia, CTR, canal novo/parado)",
     steps: [{ key: "check", script: "scripts/check-acquisition-health.ts" }],
     logPath: "acquisition-health/.check.log",
@@ -2028,6 +2132,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Beehiiv-Backup-Staleness-Alarm",
+    failover: "skip",
     description: "alarme de staleness do snapshot semanal do Diaria-Beehiiv-Backup (ausente/vencido/inutilizavel)",
     steps: [{ key: "alarm", script: "scripts/beehiiv-backup-staleness-alarm.ts" }],
     logPath: "beehiiv-backup/.staleness-alarm.log",
@@ -2041,6 +2146,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Meta-Capi-Batch-Send",
+    failover: "catchup",
     description:
       "batch semanal de CompleteRegistration (Meta CAPI) para cadastros feitos direto na home Beehiiv (fora dos " +
       "3 workers de formulario), a partir do snapshot do Diaria-Beehiiv-Backup -- fecha a lacuna operacional " +
@@ -2068,6 +2174,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Kit-Roster-Ingest",
+    failover: "catchup",
     description:
       "captura diaria do roster completo do Kit (status=all) no store unificado do #6464 -- popula a dimensao " +
       "subscription (fatia F2 do epico #7172), que nenhuma ingestao tocava ate aqui",
@@ -2110,6 +2217,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Metrics-Health-Alarm",
+    failover: "skip",
     description:
       "UM alarme, N sinais sobre o registry de metricas de negocio (F3/F5, #7172) -- frescor (principal), queda, " +
       "meta nao-atingida, indeterminado alto e registry mudo, #7180",
@@ -2134,6 +2242,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Reconcile-Send-Audiences",
+    failover: "skip",
     description:
       "guard 'quem recebe x quem recebe' nas 3 plataformas de envio da diaria (Kit tag rampa-kit, Beehiiv " +
       "ativos, Brevo lista da campanha) -- orfaos e sobreposicao de audiencia de envio, nao base de ativos, #7385",
@@ -2159,6 +2268,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Worker-Drift-Check",
+    failover: "skip",
     description: "alarme de drift entre o codigo publicado e o master de cada Worker",
     steps: [{ key: "check", script: "scripts/worker-drift-check.ts" }],
     logPath: "worker-drift-check/.drift-check.log",
@@ -2167,6 +2277,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Bing-Seo-Monthly-Pull",
+    failover: "catchup",
     description: "pull mensal de demanda (Bing Keyword Research) + autoridade (Bing backlinks)",
     // Um passo por issue-mãe (#5128 demanda, #5130 autoridade) — mesmo
     // módulo (`scripts/bing-pull.ts`, "mesmo módulo, provavelmente mesmo
@@ -2195,6 +2306,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Google-Keyword-Monthly-Pull",
+    failover: "catchup",
     description: "pull mensal de demanda de busca do Google (Ads Keyword Planner, volume BR)",
     steps: [{ key: "keywords", script: "scripts/google-keyword-pull.ts" }],
     logPath: "seo/.google-keyword-monthly-pull.log",
@@ -2206,6 +2318,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Editorial-Concentration-Monthly-Measure",
+    failover: "catchup",
     description:
       "invariante mensal de concentração editorial (% big-tech/lab, % Brasil, % exploração, CTR " +
       "exploração-vs-resto) a partir do acervo público (workers/site/public/p/ + sitemap.xml, ambos " +
@@ -2234,6 +2347,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-On-Hold-Vencimento-Alarm",
+    failover: "skip",
     description: "alarme semanal de vencimento das issues on-hold (Vencimento: AAAA-MM-DD no corpo)",
     steps: [{ key: "alarm", script: "scripts/on-hold-vencimento-alarm.ts" }],
     logPath: "on-hold-vencimento-alarm/.alarm.log",
@@ -2251,6 +2365,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-OneDrive-Sync-Alarm",
+    failover: "skip",
     description: "alarme de sync do OneDrive parado (servico morto ou canario de frescor stale)",
     steps: [{ key: "alarm", script: "scripts/onedrive-sync-alarm.ts" }],
     logPath: "onedrive-sync-alarm/.alarm.log",
@@ -2273,6 +2388,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-GDrive-Sync-Alarm",
+    failover: "skip",
     description:
       "alarme do rclone bisync do Google Drive (trava persistente, falha persistente, sem sucesso ha 6h) + cota da conta + bisync dedicado de data/ (#12478: sem sucesso ha 30 min, configuracao invalida, cota da conta; sem carimbo e mudo so enquanto o data/ da maquina nao depende dele)",
     steps: [{ key: "alarm", script: "scripts/gdrive-sync-alarm.ts" }],
@@ -2294,6 +2410,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Systemd-Failed-Units-Alarm",
+    failover: "skip",
     description:
       "sweep generico de units systemd --user diaria-*.service em estado failed (cobre as ~34 tasks do registro de graca, #5563)",
     steps: [{ key: "alarm", script: "scripts/systemd-failed-units-alarm.ts" }],
@@ -2309,6 +2426,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Studio-Liveness-Alarm",
+    failover: "skip",
     description:
       "GET http://127.0.0.1:4174/ do Studio server — alarma apos 2 falhas consecutivas (ponto cego do sweep --state=failed pra unit zumbi, #5759)",
     steps: [{ key: "alarm", script: "scripts/studio-liveness-alarm.ts" }],
@@ -2333,6 +2451,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Edicao-Diaria-Staleness-Alarm",
+    failover: "skip",
     description:
       "alarme de staleness especifico do diaria-edicao-diaria.timer (nunca disparou vs disparou-e-falhou; #5563)",
     steps: [{ key: "alarm", script: "scripts/edicao-diaria-staleness-alarm.ts" }],
@@ -2352,6 +2471,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Remediate-Never-Armed-Tasks",
+    failover: "skip",
     description:
       "auto-arma sozinho toda task 'nunca armada' do registro (task-never-setup), fechando o loop que Diaria-Task-Never-Armed-Alarm deixava sempre pra um humano rodar a mão, #8153",
     steps: [{ key: "remediate", script: "scripts/remediate-never-armed-tasks.ts" }],
@@ -2386,6 +2506,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Task-Never-Armed-Alarm",
+    failover: "skip",
     description:
       "detector de drift entre o registro declarativo e o systemd real: task no registro sem timer armado (e o inverso, mais fraco), #5607",
     steps: [{ key: "alarm", script: "scripts/task-never-armed-alarm.ts" }],
@@ -2409,6 +2530,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Google-Ads-Spend-Ingest",
+    failover: "catchup",
     description: "ingestao diaria de gasto do Google Ads (GAQL) para data/aquisicao/spend.csv",
     steps: [{ key: "ingest", script: "scripts/google-ads-ingest-spend.ts" }],
     logPath: "aquisicao/.google-ads-ingest.log",
@@ -2482,6 +2604,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `scripts/setup-systemd-timers.ts` na checkout compartilhada (300),
     // depois do `sync-env` acima.
     name: "Diaria-Meta-Ads-Spend-Ingest",
+    failover: "catchup",
     description: "ingestao diaria de gasto do Meta Ads (Graph API insights) para data/aquisicao/spend.csv",
     steps: [{ key: "ingest", script: "scripts/meta-ads-ingest-spend.ts" }],
     logPath: "aquisicao/.meta-ads-ingest.log",
@@ -2555,6 +2678,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // só `GOOGLE_ADS_DEVELOPER_TOKEN`/`GOOGLE_ADS_LOGIN_CUSTOMER_ID`
     // deixaram de ser exigidos pelo caminho de envio.
     name: "Diaria-Google-Ads-Confirmations-Upload",
+    failover: "catchup",
     description: "lote diario que sobe confirmacoes DOI do Kit pro Google Ads como Enhanced Conversion for Leads (--send)",
     steps: [
       {
@@ -2590,6 +2714,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // na checkout compartilhada (300) e acao POSTERIOR do editor. Sem
     // META_CAPI_ACCESS_TOKEN o --send vira dry-run efetivo (nada enviado).
     name: "Diaria-Meta-Capi-Confirmations-Send",
+    failover: "catchup",
     description:
       "lote horario que sobe confirmacoes DOI do Kit pra Meta Conversions API como evento secundario SubscriptionConfirmed (--send)",
     steps: [{ key: "send", script: "scripts/meta-capi-confirmations-send.ts", args: ["--send"] }],
@@ -2599,6 +2724,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Hub-Pages-Build",
+    failover: "catchup",
     description: "build semanal de todos os hubs tematicos (--all --check-facts)",
     // `--check-facts` (#5060/#5102) roda o gate de fact-check antes de
     // escrever cada `.generated.ts` — `--all` sozinho NÃO aciona esse gate
@@ -2684,6 +2810,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `--check-facts` nunca entra no caminho semanal (decisão c) — sempre
     // `--skip-fact-check`, porque o job nunca toca prosa.
     name: "Diaria-Hub-Weekly-Regen",
+    failover: "catchup",
     description: "regen semanal automático dos hubs (só dados) + PR + merge síncrono (#8923); deploy do Worker arquivo é automático no push a master",
     // `--session-id` estável (#8934-bug, achado ao armar o timer, 28/09/2026):
     // `hubs-weekly-regen.ts` exige `--session-id` fora de `--dry-run` quando
@@ -2725,6 +2852,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Ads-Test-Watch",
+    failover: "skip",
     description:
       "cobra os marcos do ciclo de vida do teste de 3 canais pagos (D0, reconciliacao diaria, condicoes de " +
       "morte, religamento D+21, apuracao congelada) sem depender da memoria do editor",
@@ -2750,6 +2878,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Onboarding-Watch-Returning",
+    failover: "critical",
     description:
       "watcher de recadastro: quem ja foi assinante e volta nao pode receber o e-mail 1 de boas-vindas de novo",
     steps: [{ key: "watch", script: "scripts/onboarding-watch-returning.ts", args: ["--send"] }],
@@ -2779,6 +2908,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Onboarding-Welcome-Run",
+    failover: "critical",
     description:
       "sequencia diaria do onboarding: deteccao + escadas da Brevo (passo run) e, em seguida, o executor " +
       "do transporte Kit (passo kit: lotes de e-mail 1/2/3 das entradas do Kit) e as sequencias de apoio " +
@@ -2843,6 +2973,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Onboarding-Continuity-Alarm",
+    failover: "skip",
     description:
       "alarma (issue + e-mail) quando a deteccao diaria de assinante novo do onboarding fica " +
       ">= 3 rodadas seguidas com 0 detectados -- o streak ja existia (#7599), mas so virava nota de " +
@@ -2889,6 +3020,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Top-YouTube-Video-Measure",
+    failover: "catchup",
     description:
       "mede o horizontal mais assistido do canal desde o inicio (YouTube Data API, so leitura) e grava " +
       "data/youtube/top-video.json -- resolve o {{VIDEO_MAIS_ASSISTIDO}} do e-mail 2 do onboarding",
@@ -2909,6 +3041,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Session-Registry-Gc",
+    failover: "skip",
     description:
       "GC de registros ENCERRADOS de data/sessions/ (arquivo real + backups de conflito do OneDrive) — " +
       "nunca por staleness de heartbeat sozinha, ver decideSessionGc",
@@ -2931,6 +3064,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Backlog-Reconcile",
+    failover: "catchup",
     description:
       "reconciliação diária do backlog aberto — corrige mecanicamente marcador aguardando-ate: em conflito com " +
       "label de deferimento (padrões 1/2), e alarma (sem corrigir) label de bloqueio herdada de mãe pra filha " +
@@ -2952,6 +3086,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Dmarc-Drain",
+    failover: "catchup",
     description: "drena e agrega os relatorios DMARC de news.diar.ia.br, alarma se aparecer volume nao-autenticado",
     steps: [{ key: "drain", script: "scripts/dmarc-drain.ts" }],
     logPath: "dmarc-reports/.drain.log",
@@ -2972,6 +3107,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Claude-Session-Version-Drift-Alarm",
+    failover: "skip",
     description:
       "alarme sem politica: sessao Claude Code de vida longa (--remote-control) com binario em memoria defasado do disco (#6875/#6891)",
     steps: [{ key: "check", script: "scripts/claude-session-version-drift-alarm.ts" }],
@@ -2986,6 +3122,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Npm-Version-Drift-Alarm",
+    failover: "skip",
     description:
       "contrapeso ao updater desligado: defasagem entre a versao do Claude Code em disco e a publicada no npm, ha quantos dias (#6960)",
     steps: [{ key: "check", script: "scripts/npm-version-drift-alarm.ts" }],
@@ -3007,6 +3144,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Stale-Red-Pr-Alarm",
+    failover: "skip",
     description:
       "alarme de PR aberta com CI vermelho ha mais de N horas sem commit novo, sem dono ativo (#8530)",
     steps: [{ key: "check", script: "scripts/stale-red-pr-alarm.ts" }],
@@ -3025,6 +3163,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Openrouter-Billing-Leak-Alarm",
+    failover: "skip",
     description: "alarme diario de modelo pago nao pedido faturado no gateway OpenRouter (#6716 escopo 3)",
     steps: [{ key: "check", script: "scripts/openrouter-billing-leak-check.ts" }],
     logPath: "openrouter-billing-leak/.alarm.log",
@@ -3057,6 +3196,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Branch-Cleanup",
+    failover: "skip",
     description: "GC diario de branches locais + worktrees encerrados (--push)",
     steps: [{ key: "cleanup", script: "scripts/branch-cleanup.ts", args: ["--push"] }],
     logPath: "branch-cleanup/.cleanup.log",
@@ -3089,6 +3229,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-GA4-Sync",
+    failover: "catchup",
     description: "ingestao diaria GA4 (overview, top pages, canal, source/medium/campanha/host)",
     steps: [{ key: "sync", script: "scripts/ga4-sync.ts", args: ["--days", "30"] }],
     logPath: "ga4-cache/.sync.log",
@@ -3116,6 +3257,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Route-Marker-Staleness-Alarm",
+    failover: "skip",
     description:
       "alarme semanal de marcador de roteamento desatualizado -- bloqueada sem marcador bloqueio-execucao, " +
       "depends_on ja fechada, condicao externa sem atualizacao ha 30+ dias, agendada cuja razao cita issue " +
@@ -3139,6 +3281,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Ads-Spend-Ingest-Alarm",
+    failover: "skip",
     description:
       "interpreta o CONTEUDO (nao so exit code) do log acumulado de google-ads-ingest-spend.ts/" +
       "meta-ads-ingest-spend.ts -- classifica a falha (defeito x gasto zero) " +
@@ -3177,6 +3320,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // de Diaria-Aquisicao-Reconcile-Daily (10:07), que precisa do arquivo
     // ja gravado quando processar o dia.
     name: "Diaria-Aquisicao-Conversions-Ingest",
+    failover: "catchup",
     description:
       "busca conversoes diarias de cadastro (Google Ads acao 7418673798, Meta complete_registration) e " +
       "grava data/aquisicao/painel/{dia}.json para Diaria-Aquisicao-Reconcile-Daily consumir, #8591",
@@ -3194,6 +3338,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Aquisicao-Reconcile-Daily",
+    failover: "catchup",
     description:
       "drena a coorte real diaria (Kit) para data/aquisicao/reconcile-baseline-{dia}.json e, se existir " +
       "painel do dia (automatico desde #8591 item 2, ou manual), loga o fator painel/coorte-real " +
@@ -3229,6 +3374,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Ads-Daily-Digest",
+    failover: "skip",
     description:
       "relatorio diario do Studio (/relatorios, kind ads-digest) SEMPRE gerado com o gasto em ads do dia " +
       "anterior por canal, o acumulado do teste 2608 (se em andamento) e leitores adquiridos por canal -- " +
@@ -3261,6 +3407,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Alarm-Retirement-Candidates",
+    failover: "skip",
     description:
       "relatorio semanal de candidatos a aposentadoria de alarme (disparou sem gerar acao, limiar " +
       "ALARM_RETIREMENT_THRESHOLD) -- e RELATORIO, nunca aposenta nada sozinho, decisao e do editor, #6798",
@@ -3280,6 +3427,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Corrupted-Names-Weekly-Check",
+    failover: "skip",
     description:
       "visibilidade semanal de contatos com name corrompido (U+FFFD) no store clarice_users inteiro -- " +
       "so reporta, nao corrige (correcao e acao manual do editor, #5214 item 2)",
@@ -3299,6 +3447,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Task-Registry-Prose-Drift-Alarm",
+    failover: "skip",
     description:
       "drift-check entre a PROSA de docs/scheduled-tasks-registry.md e o estado real do systemd --user -- " +
       "quem mentiu no achado do #6105 foi a prosa do .md, nao o registro tipado (esse ja e coberto por " +
@@ -3341,6 +3490,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Guard-Never-Invoked-Weekly-Check",
+    failover: "skip",
     description:
       "relatorio semanal de check-*/*-alarm/*-gate/*-drift-check sem ponto de invocacao nas superficies " +
       "verificaveis localmente -- nao-bloqueante por design ate acumular historico, #7137 item 1",
@@ -3360,6 +3510,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Issue-File-Collisions-Weekly-Check",
+    failover: "skip",
     description:
       "versao de tempo-de-plano de session-registry.ts conflicts --paths -- deriva colisao de arquivo " +
       "entre issues ABERTAS do backlog a partir dos paths que a propria issue ja lista no corpo, #7137 item 3",
@@ -3381,6 +3532,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Dmarc-Enforcement-Alarm",
+    failover: "skip",
     description:
       "roda o motor read-only de decisao DMARC (news.diar.ia.br, sinal proprio Kit bounce/complaint) " +
       "e abre/atualiza 1 issue quando recomenda escalar p=none->quarantine->reject ou considerar rollback -- " +
@@ -3405,6 +3557,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Meta-Capi-Staleness-Alarm",
+    failover: "skip",
     description:
       "compara server_last_fired_time do dataset Meta contra now -- a Conversions API do #5504 e " +
       "fail-soft por design (token ausente = no-op silencioso), entao sem este alarme nada no projeto " +
@@ -3427,6 +3580,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Gtm-Drift-Check",
+    failover: "skip",
     description:
       "compara o container GTM PUBLICADO (GTM-TC8C65ZN) contra a proposta de import versionada + " +
       "META_CAPI_COMPLETE_REGISTRATION_VALUE/_CURRENCY -- test/meta-capi-8388.test.ts so audita a proposta, " +
@@ -3456,6 +3610,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Revert-Calibration-Orphan-Check",
+    failover: "skip",
     description:
       "varre PRs abertas em branches revert/calibration-* (scripts/revert-calibration.ts) e alarma " +
       "as orfas -- abertas ha mais de 2h sem merge/fechamento, sem garantia de que o hook de review " +
@@ -3483,6 +3638,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Social-Followers-Collect",
+    failover: "catchup",
     description: "grava followers_count diario do Instagram e do Facebook (data/metrics/social-followers.jsonl, #8260 Fase 1)",
     steps: [{ key: "collect", script: "scripts/social-followers-collect.ts" }],
     logPath: "metrics/.social-followers-collect.log",
@@ -3535,6 +3691,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // tudo) a arma sozinha no dia seguinte ao merge -- aceitavel: somente
     // leitura. Pra impedir, enabled: false.
     name: "Diaria-Calibration-Allowlist-Audit-Quarterly",
+    failover: "catchup",
     description: "auditoria trimestral do crescimento cumulativo das allowlists de dominio/calibracao (relatorio para re-ratificacao)",
     steps: [
       // #7982: produtor de decisionAt/estimatedReviewMinutes em data/reports/index.jsonl
@@ -3554,6 +3711,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // sem entradas em data/calibration/ o script sai 0 sem reportar. DECLARADA,
     // NAO ARMADA por esta unidade (auto-armada depois pelo remediate #8153, ver task trimestral acima).
     name: "Diaria-Calibration-Touch-Minutes-Monthly",
+    failover: "catchup",
     description: "relatorio mensal de minutos de toque editorial antes/depois de cada fase de calibracao",
     steps: [
       // #7982: deriva os minutos de toque do run-log (append-only, sem duplicar edicao) antes de reportar.
@@ -3577,6 +3735,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // de escolher (#5408); só weeklies de Sunday 03:00/03:30 usam esse
     // horário (linhas acima), sem colisão com nenhuma daily.
     name: "Diaria-Tmp-Cleanup",
+    failover: "skip",
     description: "GC diario dos diretorios de sessao do Claude Code em /tmp (e .output de tasks em background) que sobraram alem do guard de idade e nao constam mais ativos no session-registry",
     steps: [{ key: "cleanup", script: "scripts/cleanup-tmp-300.ts" }],
     logPath: "tmp-cleanup/.cleanup.log",
@@ -3600,6 +3759,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // (unit `failed`, o alarme de units pega).
     // Sem `enabled: false`: o Diaria-Remediate-Never-Armed-Tasks arma no 300.
     name: "Diaria-Video-Montage-Cache-Prune",
+    failover: "skip",
     description:
       "retencao diaria do cache do /diaria-video-montagem (modo API): apaga {AAMMDD}/ com mais de 3 dias e video publicado, ou com mais de 14 sem publicacao (#12365)",
     steps: [{ key: "prune", script: "scripts/prune-video-montage-cache.ts", args: ["--apply"] }],
@@ -3630,6 +3790,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // GB) e o oneshot gerado não tem TimeoutStartSec.
     // Sem `enabled: false`: o Diaria-Remediate-Never-Armed-Tasks arma no 300.
     name: "Diaria-Video-Bruto-Archive",
+    failover: "catchup",
     description:
       "arquivamento semanal dos brutos do video: guarda no HD do 300 (/mnt/hd-sata/arquivo-video), confere MD5 e apaga do Drive sem lixeira (#12548)",
     steps: [{ key: "archive", script: "scripts/archive-video-brutos.ts", args: ["--apply"] }],
@@ -3650,6 +3811,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // racional de Diaria-Clarice-Guardrail-Alarm/Diaria-Brevo-Diaria-Guardrail
     // (interval 4h, linhas acima).
     name: "Diaria-Tmp-Disk-Alarm",
+    failover: "skip",
     description: "alarma quando a ocupacao de /tmp cruza 80% (statfsSync) -- rede de seguranca contra o EDQUOT que derrubou toda sessao de Claude Code na maquina 300 em 25/09/2026",
     steps: [{ key: "check", script: "scripts/tmp-disk-alarm.ts" }],
     logPath: "tmp-disk-alarm/.alarm-check.log",
@@ -3668,6 +3830,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // só esconderia o caso data/ não montada atrás de um AVISO — esse caso o
     // próprio script trata: `data/editions/` ausente sai 1 (unit failed).
     name: "Diaria-Site-Page-Merge-Check",
+    failover: "skip",
     description: "check pre-envio (05:15 BRT): alerta urgente se o PR da pagina do site da edicao do dia nao estiver MERGED (/p/{slug} daria 404 no envio)",
     steps: [{ key: "check", script: "scripts/check-site-page-merge.ts" }],
     logPath: "site-page-merge-check/.check.log",
@@ -3691,6 +3854,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `interval` e longe do bloco de domingo (Diaria-Beehiiv-Backup 03:00).
     // Edicao em andamento nunca e tocada (so edicao com .step-6-done.json).
     name: "Diaria-Gc-Data-Dir-Weekly",
+    failover: "skip",
     description:
       "GC semanal de cache/intermediario/backup redundante sob data/ (gc-data-dir.ts --apply) -- " +
       "mv-cache e backup-sibling (opt-in) ficam de fora, beehiiv-backup nunca e tocado, #9725/#9732",

@@ -76,7 +76,7 @@ describe("#10755 — código do canal Microsoft Ads removido", () => {
     assert.equal(existsSync(join(ROOT, "docs/microsoft-ads-encerramento.md")), true);
   });
 
-  it("run-task.ts com o nome retirado -> exit 0, no-op (o timer ainda armado na 300 não vira unit failed)", () => {
+  it("run-task.ts com o nome retirado -> exit 0, no-op (o timer ainda armado na 300 não vira unit failed)", async () => {
     const originalLog = console.log;
     const originalError = console.error;
     const logLines: string[] = [];
@@ -84,7 +84,7 @@ describe("#10755 — código do canal Microsoft Ads removido", () => {
     console.log = (msg: string) => logLines.push(msg);
     console.error = (msg: string) => errorLines.push(msg);
     try {
-      const code = runTaskMain(["--task", TASK], ROOT);
+      const code = await runTaskMain(["--task", TASK], ROOT);
       assert.equal(code, 0);
       assert.match(logLines.join("\n"), /retirada do registro/);
       assert.doesNotMatch(errorLines.join("\n"), /Task desconhecida/);

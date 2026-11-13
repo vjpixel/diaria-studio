@@ -20,12 +20,12 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(ROOT, "scripts", "run-task.ts");
 
 describe("run-task.ts main() — em processo (unit)", () => {
-  it("sem --task -> retorna 1, imprime uso com a lista de tasks conhecidas", () => {
+  it("sem --task -> retorna 1, imprime uso com a lista de tasks conhecidas", async () => {
     const originalError = console.error;
     const lines: string[] = [];
     console.error = (msg: string) => lines.push(msg);
     try {
-      const code = runTaskMain([], ROOT);
+      const code = await runTaskMain([], ROOT);
       assert.equal(code, 1);
       const output = lines.join("\n");
       for (const name of listScheduledTaskNames()) {
@@ -36,12 +36,12 @@ describe("run-task.ts main() — em processo (unit)", () => {
     }
   });
 
-  it("--task com nome desconhecido -> retorna 1, imprime a task desconhecida", () => {
+  it("--task com nome desconhecido -> retorna 1, imprime a task desconhecida", async () => {
     const originalError = console.error;
     const lines: string[] = [];
     console.error = (msg: string) => lines.push(msg);
     try {
-      const code = runTaskMain(["--task", "Diaria-Nao-Existe-4805"], ROOT);
+      const code = await runTaskMain(["--task", "Diaria-Nao-Existe-4805"], ROOT);
       assert.equal(code, 1);
       assert.match(lines.join("\n"), /Task desconhecida: "Diaria-Nao-Existe-4805"/);
     } finally {
@@ -53,7 +53,7 @@ describe("run-task.ts main() — em processo (unit)", () => {
   // removida do registro no #5660. Isto deve virar no-op (exit 0), não "task
   // desconhecida" (exit 1) — diferente de um nome que nunca existiu (typo real,
   // caso coberto pelo teste acima).
-  it("--task com nome RETIRADO conhecido -> retorna 0, no-op (nunca 'task desconhecida')", () => {
+  it("--task com nome RETIRADO conhecido -> retorna 0, no-op (nunca 'task desconhecida')", async () => {
     const originalLog = console.log;
     const originalError = console.error;
     const logLines: string[] = [];
@@ -61,7 +61,7 @@ describe("run-task.ts main() — em processo (unit)", () => {
     console.log = (msg: string) => logLines.push(msg);
     console.error = (msg: string) => errorLines.push(msg);
     try {
-      const code = runTaskMain(["--task", "Diaria-Clarice-Novos-Abort-Alarm"], ROOT);
+      const code = await runTaskMain(["--task", "Diaria-Clarice-Novos-Abort-Alarm"], ROOT);
       assert.equal(code, 0);
       assert.match(logLines.join("\n"), /retirada do registro/);
       assert.doesNotMatch(errorLines.join("\n"), /Task desconhecida/);
@@ -71,12 +71,12 @@ describe("run-task.ts main() — em processo (unit)", () => {
     }
   });
 
-  it("--task sem valor (flag solta) -> retorna 1 (getStringArg lança, main captura)", () => {
+  it("--task sem valor (flag solta) -> retorna 1 (getStringArg lança, main captura)", async () => {
     const originalError = console.error;
     const lines: string[] = [];
     console.error = (msg: string) => lines.push(msg);
     try {
-      const code = runTaskMain(["--task"], ROOT);
+      const code = await runTaskMain(["--task"], ROOT);
       assert.equal(code, 1);
     } finally {
       console.error = originalError;
