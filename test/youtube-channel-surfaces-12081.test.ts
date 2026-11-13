@@ -2,7 +2,8 @@
  * test/youtube-channel-surfaces-12081.test.ts (#12081)
  *
  * Canal do YouTube nas superfícies próprias (decisão do editor, 03/11/2026):
- * vídeo mais visto da semana no post da Stack e na newsletter semanal do
+ * vídeo da semana (o mais visto, apresentado como "principal vídeo da semana"
+ * desde o #13023) no post da Stack e na newsletter semanal do
  * LinkedIn, vídeo do mês no encerramento da mensal. O "mais visto" vem das
  * views da YouTube Data API (`top-edition-video.ts`), fail-soft sem
  * credencial. Onboarding D+3 e e-mail de confirmação não têm código aqui

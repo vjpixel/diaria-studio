@@ -157,7 +157,7 @@ export function renderCircleStackPreviewHtml(input: CircleStackPreviewHtmlInput)
 
   if (sel.video && sel.video.url.trim() && sel.video.title.trim()) {
     parts.push(
-      `<section class="box"><h2>Vídeo mais assistido da semana</h2><h3>${a(buildCircleStackUrl(sel.video.url, sel.cycle, "video"), sel.video.title)}</h3>` +
+      `<section class="box"><h2>Principal vídeo da semana</h2><h3>${a(buildCircleStackUrl(sel.video.url, sel.cycle, "video"), sel.video.title)}</h3>` +
         `<div class="small">Edição de ${esc(ddmm(sel.video.editionDate))}${typeof sel.video.views === "number" ? ` · ${sel.video.views} views` : ""}</div>` +
         (sel.video.description?.trim() ? stackBlock(sel.video.description, "Descrição do vídeo") : "") +
         `</section>`,

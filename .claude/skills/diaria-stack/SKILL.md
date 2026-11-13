@@ -115,8 +115,8 @@ O agente grava `data/weekly/{cycle}/_internal/circle-stack-copy.json` com
 `{cycle, opening, notes: [{url, stackNote}], videoDescription}`. Os itens com `tool` no manifest
 vêm das fontes oficiais das ferramentas dos cursos (#10952) e ganham o ângulo
 de uso daquela ferramenta. `videoDescription` (#12549 item 6, decisão do editor
-de 10/11/2026) só existe quando o manifest traz `video`: a descrição do vídeo
-mais assistido da semana, escrita só com os fatos do destaque que ele comenta
+de 10/11/2026) só existe quando o manifest traz `video`: a descrição do principal
+vídeo da semana (#13023; a seleção segue sendo o mais visto), escrita só com os fatos do destaque que ele comenta
 (o D1 da edição do vídeo, lido da seleção ou do `02-reviewed.md`). O `--apply`
 grava em `video.description`.
 

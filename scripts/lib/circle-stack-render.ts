@@ -7,7 +7,7 @@
  * `data/weekly/{cycle}/_internal/circle-stack-selection.json`).
  *
  * Estrutura (#11186): título = título do D1 · abertura (resumo da semana com
- * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · vídeo mais assistido
+ * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · principal vídeo
  * da semana, se medido (#12081), com descrição opcional · Destaques da semana (título com link da fonte, corpo e
  * "Por que isso importa:" iguais aos da edição diária) · Lançamentos · Use melhor · Radar ·
  * Outros destaques da semana (só o que não apareceu acima; o e-mail omite, #12550) · última linha ("Assine a diar.ia.br. Chega de segunda a
@@ -40,9 +40,9 @@ export const CIRCLE_STACK_SUBSCRIBE_BASE_URL = "https://diar.ia.br";
 
 export type CircleStackUtmContent = "edicao" | "cta-fim" | "video";
 
-/** #12081: começo da linha do vídeo mais visto da semana (link no título do vídeo). */
+/** #12081: título da seção do vídeo da semana (link no título do vídeo). #13023: apresentado como "principal vídeo da semana"; a seleção continua sendo o mais visto (`top-edition-video.ts`). */
 /** Título da seção do vídeo: segue o formato das demais (## seção, ### título com link, parágrafo). */
-export const CIRCLE_STACK_VIDEO_LEAD = "## Vídeo mais assistido da semana";
+export const CIRCLE_STACK_VIDEO_LEAD = "## Principal vídeo da semana";
 
 /**
  * Abertura de reserva: só entra quando nenhum destaque rende uma frase de
@@ -388,7 +388,7 @@ export function renderCircleStackPost(input: CircleStackSelection, opts: CircleS
   // #11186: --opening-file > `opening` da seleção > resumo dos destaques > reserva fixa.
   blocks.push(...paragraphs(resolveCircleStackOpening(sel, opts.opening).text));
 
-  // #12081: o vídeo mais assistido da semana, como seção (## / ### com link / descrição), logo depois da abertura e antes dos destaques
+  // #12081: o principal vídeo da semana (#13023; o mais visto, medido), como seção (## / ### com link / descrição), logo depois da abertura e antes dos destaques
   // (pedido do editor, 09/11/2026; antes ficava antes do CTA final).
   if (sel.video && sel.video.url.trim() && sel.video.title.trim()) {
     blocks.push(

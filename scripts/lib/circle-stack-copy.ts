@@ -239,6 +239,17 @@ export function hasReaderAdvice(text: string): boolean {
   return READER_ADVICE_PATTERNS.some((re) => re.test(text));
 }
 
+/**
+ * Pure (#13023): trecho que apresenta o vídeo pela audiência ("mais assistido",
+ * "mais visto", "mais vista"), ou `null`. O post chama o vídeo de "principal
+ * vídeo da semana"; a seleção continua sendo o mais visto, mas isso não vai
+ * para o leitor.
+ */
+export function videoAudienceClaim(text: string): string | null {
+  const m = /\bmais\s+(assistid[oa]s?|vist[oa]s?)\b/i.exec(text);
+  return m ? m[0] : null;
+}
+
 const NUMBER_TOKEN_RE = /\d+(?:[.,]\d+)*/g;
 /** "1,5" e "1.5" viram a mesma chave; o resto do número fica como escrito. */
 const normalizeNumberToken = (tok: string): string => tok.replace(/,/g, ".");
@@ -335,6 +346,8 @@ export function parseStackCopy(
       const d = input.video.destaque;
       const extra = unsourcedNumbers(rec.videoDescription, [d.title, d.body, d.why, input.video.title]);
       if (extra.length > 0) problems.push(`videoDescription: número(s) fora do destaque comentado (${extra.join(", ")})`);
+      const audiencia = videoAudienceClaim(rec.videoDescription);
+      if (audiencia) problems.push(`videoDescription: chama o vídeo de "${audiencia}" — o post o apresenta como o principal vídeo da semana (#13023)`);
       videoDescription = rec.videoDescription.trim();
     }
   } else if (rec.videoDescription !== undefined) {

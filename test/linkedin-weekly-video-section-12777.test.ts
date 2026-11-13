@@ -1,7 +1,7 @@
 /**
  * test/linkedin-weekly-video-section-12777.test.ts (#12777)
  *
- * Newsletter semanal do LinkedIn: o vídeo mais assistido da semana ganha seção
+ * Newsletter semanal do LinkedIn: o principal vídeo da semana (#13023) ganha seção
  * própria ("Vídeo da semana") logo depois da manchete que ele comenta, com o
  * link no TEXTO (o LinkedIn não linka imagem) e sem `<img>` no HTML colado. A
  * linha única antes do fecho (#12081) saiu. A CLI copia a imagem sem overlay

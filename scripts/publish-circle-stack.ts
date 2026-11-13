@@ -503,7 +503,7 @@ export function parseStoredCircleStackSelection(
   if (!Array.isArray(sel.contentWindow)) return fail("campo contentWindow ausente");
   if (!Array.isArray(sel.weeklyEditions)) return fail("campo weeklyEditions ausente");
   if (sel.opening !== undefined && typeof sel.opening !== "string") return fail("campo opening não é texto");
-  // #12081: vídeo mais assistido da semana (opcional, editável à mão).
+  // #12081: principal vídeo da semana (o mais visto; opcional, editável à mão).
   if (sel.video !== undefined) {
     const v = sel.video as Record<string, unknown> | null;
     if (!v || typeof v !== "object" || typeof v.title !== "string" || typeof v.url !== "string" || typeof v.editionDate !== "string") {
@@ -1027,7 +1027,7 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
           `${carried.map((e) => e.title ?? e.url).join("; ")} — apague o campo na seleção para trazê-los de volta.`,
       );
     }
-    // #12081: vídeo mais assistido da semana, medido agora (o editor revisa na prévia).
+    // #12081: principal vídeo da semana (o mais visto), medido agora (o editor revisa na prévia).
     const topVideoFn =
       deps.topVideo ??
       ((days: readonly string[], root: string) =>
