@@ -1339,6 +1339,22 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     issue: "#9568, #11398",
   },
   {
+    name: "Diaria-Neo-Readiness-Alarm",
+    failover: "skip",
+    description:
+      "alarma quando o último check de prontidão do Neo para a contingência do 300 tem mais de 7 dias ou está vermelho (#12983)",
+    // #12983 (decisão do editor, 13/11/2026): o check roda no Passo 0 de
+    // `/diaria-edicao` quando a sessão é no Neo e grava em KV
+    // (`infra:neo-readiness`); aqui o `300` só lê e abre/fecha a issue. Sem
+    // task no Windows, então nenhuma 2ª exceção ao #5074. `skip` no failover:
+    // com o `300` fora, o alarme sobre o Neo não tem quem o rode, e o editor
+    // está olhando o Neo de qualquer jeito.
+    steps: [{ key: "alarm", script: "scripts/neo-readiness-alarm.ts" }],
+    logPath: "failover/.neo-readiness-alarm.log",
+    schedule: { kind: "daily", hour: 11, minute: 42 },
+    issue: "#12983",
+  },
+  {
     name: "Diaria-LinkedIn-Personal-Catchup",
     failover: "skip",
     description:

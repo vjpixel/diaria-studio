@@ -57,6 +57,20 @@ export function getMachineId(): string {
   }
 }
 
+/** Hostname do Neo (máquina Windows do editor), comparado sem caixa. */
+export const NEO_MACHINE_ID = "neo";
+
+/**
+ * #12983 — "esta sessão roda no Neo?", para o que só faz sentido lá (check de
+ * prontidão da contingência no Passo 0 de `/diaria-edicao`). Mesmo sinal do
+ * resto do arquivo: hostname, sem autenticação. Não decide papel no failover:
+ * o gate do lease usa a flag explícita `--failover-standby`, nunca o hostname
+ * (`scripts/lib/failover/task-gate.ts`).
+ */
+export function isNeoMachine(id: string = getMachineId()): boolean {
+  return id.trim().toLowerCase() === NEO_MACHINE_ID;
+}
+
 // CLI guard: só executa como main module, importável sem efeito colateral.
 if (isMainModule(import.meta.url)) {
   process.stdout.write(getMachineId() + "\n");
