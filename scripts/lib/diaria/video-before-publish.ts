@@ -25,14 +25,17 @@
  *      (`gateVideoLink`, #10858): privado, estado não confirmado ou agendado
  *      depois do D1 → `link-may-not-open` (#12598), que só AVISA (default
  *      sugerido na issue; bloquear é decisão do editor), no resumo da Etapa 5
- *      e no gate da Etapa 6.
+ *      e no gate da Etapa 6. Se o registro traz `terminal_upload_status` (o
+ *      YouTube marcou o vídeo como failed/rejected/deleted, #12655) →
+ *      `video-terminal`, que BLOQUEIA sempre, inclusive em retry de canal
+ *      (#12965): o link no D1 seria de um vídeo que nunca abre.
  *   3. `05-video-url.txt` presente mas inválido → `invalid-link`.
  *   4. `--skip youtube`/`none` no consent → `skipped-by-consent`.
  *   5. `05-youtube-published.json` sem link → `video-without-link`.
  *   6. Nada → `no-video`.
  *
- * Bloqueiam: `invalid-link`, `video-without-link`, `no-video`, `no-video-stale` — exceto
- * (menos `no-video-stale`, que surge depois da Etapa 5, #12805)
+ * Bloqueiam: `invalid-link`, `video-without-link`, `no-video`, `no-video-stale`, `video-terminal` — exceto
+ * (menos `no-video-stale`, que surge depois da Etapa 5, #12805, e `video-terminal`, #12965)
  * depois da Etapa 5 concluída (`.step-5-done.json`): retry de canal
  * (`/diaria-5-publicacao newsletter|social`) não volta a exigir um vídeo que
  * a primeira rodada já dispensou (o Passo 0 reescreve o consent a cada
@@ -72,6 +75,8 @@ export type VideoBeforePublishStatus =
   | "no-video-marked"
   /** #12618: edição marcada sem vídeo, mas o convite do vídeo ainda está no cache de imagens ou no HTML final. */
   | "no-video-stale"
+  /** #12965: link gravado, mas o YouTube marcou ESTE vídeo como failed/rejected/deleted (`terminal_upload_status`). Bloqueia sempre. */
+  | "video-terminal"
   | "skipped-by-consent"
   | "invalid-link"
   | "video-without-link"
@@ -83,7 +88,16 @@ export const BLOCKING_STATUSES: ReadonlySet<VideoBeforePublishStatus> = new Set(
   "video-without-link",
   "no-video",
   "no-video-stale",
+  "video-terminal",
 ]);
+
+/**
+ * Status bloqueantes que o retry de canal (Etapa 5 já concluída) NÃO dispensa:
+ * `no-video-stale` surge depois da Etapa 5 (#12805) e `video-terminal` é um
+ * vídeo que o leitor nunca vai abrir (#12965) — publicar o link num retry é
+ * tão irreversível quanto na 1ª rodada.
+ */
+export const NON_DISPENSABLE_STATUSES: ReadonlySet<VideoBeforePublishStatus> = new Set(["no-video-stale", "video-terminal"]);
 
 /** Cache das imagens públicas da edição (`upload-images-public.ts`). */
 export const PUBLIC_IMAGES_FILE = "06-public-images.json";
@@ -216,20 +230,22 @@ export interface AssessVideoOptions {
  * o que conferir. `null` = nada a avisar. Registro ilegível vira aviso (não dá
  * para conferir). O agendado sem auditoria até o envio do D1 passa sem aviso
  * aqui, como no `gateVideoLink` (o upload já avisou, #11548).
+ * `terminal: true` (#12965): o YouTube marcou este vídeo como
+ * failed/rejected/deleted — não é aviso, é recusa (`video-terminal`, bloqueia).
  */
-export function videoReaderAccessWarning(
+export function videoReaderAccess(
   editionDir: string,
   aammdd: string,
   videoUrl: string,
   opts: AssessVideoOptions = {},
-): string | null {
+): { warning: string; terminal: boolean } | null {
   if (!existsSync(join(editionDir, YOUTUBE_PUBLISHED_FILE))) return null;
   const now = opts.now ?? new Date();
   let record;
   try {
     record = readYouTubeRecordSummary(editionDir);
   } catch (e) {
-    return `Link do vídeo pronto, mas não deu para conferir se ele abre para o leitor: ${(e as Error).message}.`;
+    return { warning: `Link do vídeo pronto, mas não deu para conferir se ele abre para o leitor: ${(e as Error).message}.`, terminal: false };
   }
   if (!record) return null;
   const state = rereadStateNow(editionDir, now) ?? record.state;
@@ -241,19 +257,31 @@ export function videoReaderAccessWarning(
     newsletterSendAt: newsletterSendAt(editionDir, aammdd).at,
   });
   if (gate.ok || !gate.record_matched) return null;
+  if (gate.terminal) {
+    return {
+      terminal: true,
+      warning:
+        `O link gravado em ${D1_VIDEO_URL_FILE} (${videoUrl}) é de um vídeo que o leitor não vai abrir: ${gate.reason}. ` +
+        `A Etapa 5 não publica esse link no D1 (#12965), nem em retry de canal, nem com --skip youtube. ` +
+        `Saídas: suba o vídeo de novo pelo /diaria-publica ${aammdd}, ou grave outro link com npx tsx scripts/link-video-d1.ts ${aammdd} --save --video-url URL, ` +
+        `ou marque a edição sem vídeo (npx tsx scripts/set-d1-no-video.ts ${aammdd}).`,
+    };
+  }
   const projectAudited = record.auditBlocked == null ? YOUTUBE_API_PROJECT_AUDITED : !record.auditBlocked;
-  return (
-    `Link do vídeo pronto (${videoUrl}), mas o vídeo pode não abrir para o leitor no horário do D1: ${gate.reason}. ` +
-    `${videoLinkRemedy(projectAudited)} antes do D1. ` +
-    `Se ele já está público (ou o link foi gravado com link-video-d1.ts --assume-public depois de conferir no Studio), ignore este aviso.`
-  );
+  return {
+    terminal: false,
+    warning:
+      `Link do vídeo pronto (${videoUrl}), mas o vídeo pode não abrir para o leitor no horário do D1: ${gate.reason}. ` +
+      `${videoLinkRemedy(projectAudited)} antes do D1. ` +
+      `Se ele já está público (ou o link foi gravado com link-video-d1.ts --assume-public depois de conferir no Studio), ignore este aviso.`,
+  };
 }
 
 export function assessVideoBeforePublish(editionDir: string, aammdd: string, opts: AssessVideoOptions = {}): VideoBeforePublishResult {
   const result = (status: VideoBeforePublishStatus, videoUrl: string | null, warning: string | null): VideoBeforePublishResult => {
     const stage5Done = existsSync(join(editionDir, STAGE5_DONE_FILE));
-    // no-video-stale surge DEPOIS da Etapa 5 (marcador aplicado sem re-render): retry de canal não dispensa (#12805).
-    const dispensable = BLOCKING_STATUSES.has(status) && status !== "no-video-stale" && stage5Done;
+    // no-video-stale (#12805) e video-terminal (#12965): retry de canal não dispensa.
+    const dispensable = BLOCKING_STATUSES.has(status) && !NON_DISPENSABLE_STATUSES.has(status) && stage5Done;
     const blocking = BLOCKING_STATUSES.has(status) && !dispensable;
     const retryNote = dispensable ? " Etapa 5 já concluída (retry de canal): não bloqueia." : "";
     return { status, videoUrl, blocking, warning: warning === null ? null : warning + retryNote };
@@ -273,8 +301,9 @@ export function assessVideoBeforePublish(editionDir: string, aammdd: string, opt
   }
   const read = readD1VideoUrl(editionDir);
   if (read.url) {
-    const access = videoReaderAccessWarning(editionDir, aammdd, read.url, opts);
-    return access ? result("link-may-not-open", read.url, access) : result("link-ready", read.url, null);
+    const access = videoReaderAccess(editionDir, aammdd, read.url, opts);
+    if (access?.terminal) return result("video-terminal", null, access.warning);
+    return access ? result("link-may-not-open", read.url, access.warning) : result("link-ready", read.url, null);
   }
   if (read.warning) {
     return result(
