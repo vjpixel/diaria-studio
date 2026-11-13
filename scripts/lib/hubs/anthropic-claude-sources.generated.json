@@ -1088,5 +1088,17 @@
       "https://mistral.ai/news/mistral-large-4-oss/"
     ],
     "editionTitle": "Só o Claude Opus 5.5 supera a IA aberta da Mistral no teste às cegas"
+  },
+  {
+    "date": "2026-11-12",
+    "editionSlug": "claude-code-pode-ter-vazado-suas-senhas-no-github",
+    "url": "https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github",
+    "matchedHeadlines": [
+      "Claude Code pode ter vazado suas senhas no GitHub"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/seguranca/alerta-para-devs-claude-code-vaza-senhas-e-chaves-de-api-em-massa-no-github/"
+    ],
+    "editionTitle": "Claude Code pode ter vazado suas senhas no GitHub"
   }
 ]
