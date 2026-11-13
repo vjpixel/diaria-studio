@@ -148,9 +148,13 @@ function makeFakeGh(): { binDir: string; env: (state: string, callsFile: string)
     script,
     [
       'import { appendFileSync } from "node:fs";',
-      'import { basename } from "node:path";',
+      'import { basename, relative } from "node:path";',
       'if (/^gh(\\.exe)?$/i.test(basename(process.execPath)) || process.env.FAKE_GH_DIRECT === "1") {',
       '  const args = process.argv.slice(process.env.FAKE_GH_DIRECT === "1" ? 2 : 1);',
+      // #12544: no Windows o `gh.exe` é um node.exe, que lê o 1º argumento como
+      // o script e põe em `process.argv[1]` o caminho ABSOLUTO dele (`C:\\cwd\\pr`).
+      // Sem desfazer isso a sonda nunca casava e os 3 casos E2E abortavam.
+      '  if (process.env.FAKE_GH_DIRECT !== "1" && args.length > 0) args[0] = relative(process.cwd(), args[0]);',
       `  if (args[0] === ${JSON.stringify(FAKE_GH_PROBE_ARG)}) { process.stdout.write(${JSON.stringify(FAKE_GH_PROBE_REPLY)}); process.exit(0); }`,
       '  appendFileSync(process.env.FAKE_GH_CALLS, JSON.stringify(args) + "\\n");',
       '  process.stdout.write(JSON.stringify({ state: process.env.FAKE_GH_STATE, autoMergeRequest: null, mergeQueueEntry: null }));',

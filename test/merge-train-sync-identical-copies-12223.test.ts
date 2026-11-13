@@ -35,13 +35,16 @@ function setup(): { base: string; origin: string; local: string } {
   const local = join(base, "local");
   mkdirSync(origin);
   git(origin, "init", "-q", "-b", "master");
+  // #12544: sem isso o `core.autocrlf=true` global do Git for Windows grava
+  // `\r\n` no checkout do clone e o conteúdo lido deixa de ser o commitado.
+  git(origin, "config", "core.autocrlf", "false");
   git(origin, "config", "user.email", "t@example.com");
   git(origin, "config", "user.name", "t");
   write(origin, "context/audience-profile.md", "profile v1\n");
   write(origin, "docs/audience-history/2026-10-21.md", "snap 21\n");
   git(origin, "add", "-A");
   git(origin, "commit", "-q", "-m", "init");
-  git(base, "clone", "-q", origin, "local");
+  git(base, "clone", "-q", "-c", "core.autocrlf=false", origin, "local");
   git(local, "config", "user.email", "t@example.com");
   git(local, "config", "user.name", "t");
   return { base, origin, local };

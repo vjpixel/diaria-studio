@@ -48,5 +48,9 @@
   // linha de comando de um PID antes de sinalizá-lo -- no Linux lê
   // /proc/{pid}/cmdline e no Windows usa PowerShell; `ps` é utilitário do
   // SO, só o fallback das demais plataformas, não uma dependência npm.
+  // #12544: testes do gdrive-bisync rodam `spawnSync("/bin/sh", ...)`. No Linux
+  // o knip resolve o caminho absoluto como arquivo; no Windows `/bin/sh` não
+  // existe e vira "Unresolved import", e o knip-clean falhava só no Neo.
+  "ignoreUnresolved": ["/bin/sh"],
   "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "jq", "codex", "codex.cmd", "ps", "ffmpeg", "ffprobe", "mkfifo"]
 }

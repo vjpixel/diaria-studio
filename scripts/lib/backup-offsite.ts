@@ -285,9 +285,20 @@ export const systemTar: TarRunner = (args, input) => {
   return { status: r.status, stdout: r.stdout ?? Buffer.alloc(0), stderr: r.stderr?.toString() ?? "" };
 };
 
+/**
+ * #12544: o `tar` que o Node acha no Windows é o GNU tar do Git (MSYS). Ele
+ * cria com `-C C:\x\y`, mas na EXTRAÇÃO recusa o mesmo caminho (`Cannot
+ * open: No such file or directory`, medido em 12/11/2026 no Neo); com barra
+ * normal (`C:/x/y`) as duas pontas funcionam. Fora do win32 o caminho vai
+ * intacto (barra invertida é caractere válido em nome de arquivo no Linux).
+ */
+export function tarDirArg(dir: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? dir.replaceAll("\\", "/") : dir;
+}
+
 /** tar.gz do CONTEÚDO de `dir` (caminhos relativos, `./...`). */
 export function tarGzDirectory(dir: string, run: TarRunner = systemTar): Buffer {
-  const r = run(["-czf", "-", "-C", dir, "."]);
+  const r = run(["-czf", "-", "-C", tarDirArg(dir), "."]);
   if (r.status !== 0) throw new Error(`tar -czf falhou (exit ${r.status}): ${r.stderr.slice(0, 300)}`);
   if (r.stdout.length === 0) throw new Error("tar -czf devolveu arquivo vazio");
   return r.stdout;
@@ -295,7 +306,7 @@ export function tarGzDirectory(dir: string, run: TarRunner = systemTar): Buffer 
 
 /** Extrai um tar.gz em `outDir` (que já precisa existir). */
 export function extractTarGz(archive: Buffer, outDir: string, run: TarRunner = systemTar): void {
-  const r = run(["-xzf", "-", "-C", outDir], archive);
+  const r = run(["-xzf", "-", "-C", tarDirArg(outDir)], archive);
   if (r.status !== 0) throw new Error(`tar -xzf falhou (exit ${r.status}): ${r.stderr.slice(0, 300)}`);
 }
 

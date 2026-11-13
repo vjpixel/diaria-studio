@@ -14,7 +14,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   EXIT_WORKSPACE_UNTRUSTED,
   checkWorkspaceTrust,
@@ -117,10 +117,14 @@ describe("checkWorkspaceTrust (#11383)", () => {
   });
 
   it("chave com barra normal (formato do Windows) casa com o caminho resolvido", () => {
-    const r = checkWorkspaceTrust("/repo/x", {
+    // #12544: `/repo/x` cru só é absoluto no POSIX; no Windows `resolve` vira
+    // `C:\repo\x` e a chave gravada pelo CLI é `C:/repo/x`.
+    const repo = resolve("/repo/x");
+    const key = repo.replaceAll("\\", "/");
+    const r = checkWorkspaceTrust(repo, {
       env: { HOME: "/h" },
       realpath: (p) => p,
-      readFile: () => JSON.stringify({ projects: { "/repo/x": { hasTrustDialogAccepted: true } } }),
+      readFile: () => JSON.stringify({ projects: { [key]: { hasTrustDialogAccepted: true } } }),
     });
     assert.equal(r.status, "trusted");
   });

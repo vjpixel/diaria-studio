@@ -15,6 +15,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  AUTH_ENV_VAR_NAMES,
   EXIT_AUTH_NOT_SUBSCRIPTION,
   authBlocksRun,
   authBlocksScheduledEdicao,
@@ -177,6 +178,9 @@ describe("checkClaudeAuthMethod (#11887)", () => {
   });
 });
 
+/** #12544: caminho do host em grafia POSIX, para comparar com a fixture. */
+const posix = (p: string) => p.replaceAll("\\", "/");
+
 describe("collectClaudeAuthEvidence (#11887)", () => {
   it("acusa primaryApiKey, keys aprovadas e var de auth em settings — sem vazar valor", () => {
     const SECRET = "sk-ant-api03-NAO-PODE-APARECER";
@@ -191,13 +195,15 @@ describe("collectClaudeAuthEvidence (#11887)", () => {
       env: { ANTHROPIC_BASE_URL: "https://gateway.example", PATH: "/usr/bin" },
       repoRootAbs: "/repo",
       home: "/h",
-      exists: (p) => p in files,
-      readFile: (p) => files[p],
+      // #12544: o módulo monta os caminhos com `path.join` (barra invertida no
+      // Windows); a tabela da fixture fica em POSIX e a busca normaliza.
+      exists: (p) => posix(p) in files,
+      readFile: (p) => files[posix(p)],
     });
     assert.deepEqual(e.envVars, ["ANTHROPIC_BASE_URL"]);
     assert.equal(e.globalConfigPrimaryApiKey, true);
     assert.equal(e.globalConfigApprovedEnvKeys, 1);
-    assert.deepEqual(e.settings, [
+    assert.deepEqual(e.settings.map((x) => ({ ...x, path: posix(x.path) })), [
       { path: "/h/.claude/settings.json", apiKeyHelper: false, envVars: ["ANTHROPIC_API_KEY"] },
       { path: "/repo/.claude/settings.local.json", apiKeyHelper: true, envVars: [] },
     ]);
@@ -213,7 +219,7 @@ describe("collectClaudeAuthEvidence (#11887)", () => {
       env: { CLAUDE_CONFIG_DIR: "/cfg" },
       repoRootAbs: "/repo",
       home: "/h",
-      exists: (p) => p === "/cfg/.claude.json",
+      exists: (p) => posix(p) === "/cfg/.claude.json",
       readFile: () => "{ quebrado",
     });
     assert.equal(e.globalConfigPrimaryApiKey, null);
@@ -318,6 +324,15 @@ describe("run-scheduled-edicao: preflight de auth (#11887)", () => {
   const trusted = () => ({ status: "trusted" as const, configPath: "/x", message: "ok" });
   const prevKey = process.env.ANTHROPIC_API_KEY;
   const prevCfg = process.env.CLAUDE_CONFIG_DIR;
+  // #12544: as outras vars de auth da máquina (o app desktop do Claude injeta
+  // `ANTHROPIC_BASE_URL` no Neo) entravam na evidência e quebravam o
+  // `env=[ANTHROPIC_API_KEY]` esperado. O teste controla o ambiente inteiro.
+  const prevOthers = new Map<string, string | undefined>();
+  for (const k of AUTH_ENV_VAR_NAMES) {
+    if (k === "ANTHROPIC_API_KEY") continue;
+    prevOthers.set(k, process.env[k]);
+    delete process.env[k];
+  }
   process.env.ANTHROPIC_API_KEY = "sk-ant-do-env-11887";
   // Evidência lê o `.claude.json` daqui, nunca o da máquina.
   process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), "auth-11887-cfg-"));
@@ -326,6 +341,10 @@ describe("run-scheduled-edicao: preflight de auth (#11887)", () => {
     else process.env.ANTHROPIC_API_KEY = prevKey;
     if (prevCfg === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = prevCfg;
+    for (const [k, v] of prevOthers) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   });
 
   function edicaoRepo(): string {
