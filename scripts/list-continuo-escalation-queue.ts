@@ -31,6 +31,11 @@
  *                             editor (#10278) ou reivindicada por sessão viva:
  *                             decisão do editor.
  *
+ * Exceção às janelas (#12950): escalada com causa MECÂNICA (conflito ou CI
+ * `fail`, fora draft com `bloqueio-execucao`) e sem `continuo-ci-fix-tentado`
+ * entra na fila já com destino `fixer`, sem esperar 24h/48h
+ * (`isMechanicalEscalation`). As janelas ficam para o que pede o editor.
+ *
  * Sem `--apply` o script não escreve no GitHub; o `git fetch` da checagem de
  * redundância grava só em `refs/escalation-check/*` (`--refmap=` desliga a
  * atualização oportunista de `refs/remotes/origin/*`).
@@ -137,10 +142,31 @@ export interface DestinationInput {
  * `briefing` (#12684). PR retida para o editor (#10278, ou retenção ilegível)
  * ou reivindicada por sessão viva nunca recebe destino automático.
  */
+/**
+ * Pure (#12950): a escalada tem causa MECÂNICA que um fixer resolve sem
+ * decisão do editor — conflito com o master ou CI vermelho. `pending` e
+ * `error` não contam (o CI pode estar só na fila; checks ilegíveis são
+ * fail-closed, #12804), e draft com `bloqueio-execucao` também não: o
+ * bloqueio é real e espera o editor.
+ */
+export function isMechanicalEscalation(input: DestinationInput): boolean {
+  if (input.isDraft && input.labels.includes("bloqueio-execucao")) return false;
+  const conflict = input.mergeStateStatus === "DIRTY" || input.mergeable === "CONFLICTING";
+  return conflict || input.checksVerdict === "fail" || input.checksVerdict === "blocked_by_conflict";
+}
+
 export function escalationDestination(input: DestinationInput): EscalationDestination {
-  if (!Number.isFinite(input.ageMs) || input.ageMs <= ESCALATION_EXPIRY_MS) return "briefing";
   if (input.retido !== false || input.claimed) return "briefing";
-  if (input.redundant) return "fechar-redundante";
+  // `redundant` só é calculado depois de 48h; antes disso é sempre `false`.
+  const expired = Number.isFinite(input.ageMs) && input.ageMs > ESCALATION_EXPIRY_MS;
+  if (expired && input.redundant) return "fechar-redundante";
+  // #12950: causa mecânica sem tentativa de fixer vai ao fixer já, sem
+  // esperar as 24h/48h (que ficam para o que exige decisão do editor). A
+  // #12880 (CI vermelho no próprio teste) ficou 30h+ sem fixer nenhum.
+  if (Number.isFinite(input.ageMs) && isMechanicalEscalation(input) && !input.labels.includes(FIX_TRIED_LABEL)) {
+    return "fixer";
+  }
+  if (!expired) return "briefing";
   if (input.isDraft && input.labels.includes("bloqueio-execucao")) return "fechar-para-issue";
   const fixTried = input.labels.includes(FIX_TRIED_LABEL);
   const conflict = input.mergeStateStatus === "DIRTY" || input.mergeable === "CONFLICTING";
@@ -276,8 +302,9 @@ export function runEscalationQueue(deps: QueueDeps, apply: boolean): QueueResult
     let step = "events";
     try {
       const events = deps.events(pr.number);
-      const since = overdueEscalation(events, now);
+      const since = escalationSince(events);
       if (!since) continue;
+      const overdue = overdueEscalation(events, now) !== null;
       step = "gate";
       const gate = deps.gate(pr.number);
       const labels = pr.labels.map((l) => l.name);
@@ -296,6 +323,9 @@ export function runEscalationQueue(deps: QueueDeps, apply: boolean): QueueResult
         claimed: gate.details?.sessionClaims?.ok === false,
         redundant: redundant === true, issue, fixTriedAgeMs,
       });
+      // #12950: antes de 24h só entra o que tem causa mecânica (fixer já);
+      // o resto segue esperando a janela do briefing.
+      if (!overdue && destination !== "fixer") continue;
       result.queue.push({
         number: pr.number, url: pr.url, since, ...destinationOwner(destination),
         action: gate.action, reason: gate.reason, expired, destination, issue,
