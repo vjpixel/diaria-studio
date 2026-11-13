@@ -44,14 +44,17 @@ describe("classifyConditionalCancel (#12961)", () => {
     assert.deepEqual(r, { outcome: "refused", key: "k", reason: "already_fired" });
     assert.equal(classifyConditionalCancel("k", 502, "boom").outcome, "error");
   });
-  it("cliente usa ?if_not_claiming=1 e nunca lança em erro de rede", async () => {
+  it("cliente usa POST /queue-cancel/ (nunca o DELETE, que um Worker antigo faria incondicional) e não lança em erro de rede", async () => {
     let seen = "";
-    const r = await cancelWorkerQueueEntryConditional("https://w.test/", "t", "queue:a:b", (async (u: string) => {
+    let method = "";
+    const r = await cancelWorkerQueueEntryConditional("https://w.test/", "t", "queue:a:b", (async (u: string, init?: RequestInit) => {
       seen = u;
+      method = init?.method ?? "";
       return new Response(JSON.stringify({ deleted: true, conditional: true, do_alarm_cancelled: true, kv_deleted: true }), { status: 200 });
     }) as unknown as typeof fetch);
     assert.equal(r.outcome, "cancelled");
-    assert.equal(seen, "https://w.test/queue/queue:a:b?if_not_claiming=1");
+    assert.equal(seen, "https://w.test/queue-cancel/queue:a:b");
+    assert.equal(method, "POST");
     const e = await cancelWorkerQueueEntryConditional("https://w.test", "t", "k", (async () => {
       throw new Error("ECONNRESET");
     }) as unknown as typeof fetch);

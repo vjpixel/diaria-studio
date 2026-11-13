@@ -173,10 +173,11 @@ export async function deleteFromWorkerQueue(
  * limpar o registro local e re-despachar o post:
  *  - `cancelled`: o DO aceitou o cancel e o KV foi apagado (ou virou tombstone);
  *  - `refused`: o post já saiu, terminou ambíguo ou está saindo — nada mudou;
- *  - `not_found`: 404, ambíguo (já disparou OU já removido) — NÃO re-despachar;
- *  - `unconfirmed`: 2xx sem a confirmação do modo condicional (Worker
- *    publicado sem o #12961: o DELETE pode ter sido o incondicional) — NÃO
- *    re-despachar sem conferir à mão;
+ *  - `not_found`: 404, ambíguo (já disparou OU já removido; num Worker
+ *    publicado antes do #12961, também "rota inexistente", sem efeito
+ *    nenhum) — NÃO re-despachar;
+ *  - `unconfirmed`: 2xx sem a confirmação completa — NÃO re-despachar sem
+ *    conferir à mão;
  *  - `error`: 5xx/rede — nada confirmado.
  */
 export type ConditionalCancelResult =
@@ -186,7 +187,7 @@ export type ConditionalCancelResult =
   | { outcome: "unconfirmed"; key: string; body: string }
   | { outcome: "error"; key: string; error: string };
 
-/** Pure: classifica a resposta do `DELETE /queue/:key?if_not_claiming=1`. */
+/** Pure: classifica a resposta do `POST /queue-cancel/:key`. */
 export function classifyConditionalCancel(key: string, status: number, bodyText: string): ConditionalCancelResult {
   let body: Record<string, unknown> = {};
   try {
@@ -209,8 +210,10 @@ export function classifyConditionalCancel(key: string, status: number, bodyText:
 }
 
 /**
- * #12961 — `DELETE /queue/:key?if_not_claiming=1`: cancela só se o post ainda
- * não saiu nem está saindo. Nunca lança — erro de rede vira `error`.
+ * #12961 — `POST /queue-cancel/:key`: cancela só se o post ainda não saiu nem
+ * está saindo. Rota própria, nunca um parâmetro do `DELETE /queue/:key`: um
+ * Worker sem o #12961 ignoraria o parâmetro e faria o DELETE incondicional.
+ * Nunca lança — erro de rede vira `error`.
  */
 export async function cancelWorkerQueueEntryConditional(
   workerUrl: string,
@@ -218,11 +221,10 @@ export async function cancelWorkerQueueEntryConditional(
   key: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ConditionalCancelResult> {
-  const url =
-    workerUrl.replace(/\/+$/, "") + "/queue/" + encodeURIComponent(key).replace(/%3A/g, ":") + "?if_not_claiming=1";
+  const url = workerUrl.replace(/\/+$/, "") + "/queue-cancel/" + encodeURIComponent(key).replace(/%3A/g, ":");
   try {
     const res = await fetchImpl(url, {
-      method: "DELETE",
+      method: "POST",
       headers: { "X-Diaria-Token": token },
       signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
     });

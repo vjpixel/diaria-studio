@@ -10,12 +10,11 @@
  *
  * Contrato de segurança (o que tornava o script avulso perigoso):
  *   - Worker (LinkedIn/Instagram/Threads): usa SÓ o cancelamento condicional
- *     `DELETE /queue/:key?if_not_claiming=1` (#12961, worker linkedin-cron).
+ *     `POST /queue-cancel/:key` (#12961, worker linkedin-cron).
  *     O DO recusa (409) post que já saiu, terminou ambíguo ou está saindo; só
  *     a resposta 200 com `conditional: true` confirmada libera a linha do
- *     registro. 404 (já disparou OU já removido) nunca libera. Worker antigo
- *     (sem o modo condicional, 2xx sem a confirmação) = `unconfirmed`, nunca
- *     libera — conferir à mão.
+ *     registro. 404 (já disparou OU já removido; num Worker sem o #12961, a
+ *     rota não existe e nada acontece) nunca libera.
  *   - Facebook: relê o post na Graph API (`is_published`,
  *     `scheduled_publish_time`) e só apaga se ainda está agendado e falta mais
  *     de `FB_MIN_LEAD_SEC` para sair. Post já no ar não é apagado aqui.
@@ -189,7 +188,7 @@ export async function executeRetraction(targets: readonly RetractTarget[], confi
     if (t.action === "worker") {
       const r = await deps.cancelWorker(t.identifier as string);
       const detail =
-        r.outcome === "refused" ? r.reason : r.outcome === "error" ? r.error : r.outcome === "unconfirmed" ? `resposta sem confirmação condicional (Worker sem o #12961?): ${r.body}` : undefined;
+        r.outcome === "refused" ? r.reason : r.outcome === "error" ? r.error : r.outcome === "unconfirmed" ? `2xx sem a confirmação completa do cancelamento: ${r.body}` : undefined;
       results.push({ ...base, status: r.outcome, ...(detail ? { detail } : {}) });
       continue;
     }
@@ -285,14 +284,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (confirm) {
     const cancelled = targets.filter((t, i) => results[i].status === "cancelled");
     if (cancelled.length > 0) {
+      const log = resolve(editionDir, "_internal", "06-social-retracted.jsonl");
       rewriteSocialPosts(publishedPath, (posts) => {
         const r = removeCancelledEntries(posts, cancelled);
         removed = r.removed;
+        // Log ANTES da reescrita (ainda sob o lock): se ele falhar, o transform
+        // lança e o registro fica intacto — a linha nunca some sem evidência.
+        if (removed.length > 0) {
+          const at = new Date().toISOString();
+          appendFileSync(log, removed.map((e) => JSON.stringify({ retracted_at: at, destaque, entry: e })).join("\n") + "\n", "utf8");
+        }
         return r.posts;
       });
-      const at = new Date().toISOString();
-      const log = resolve(editionDir, "_internal", "06-social-retracted.jsonl");
-      appendFileSync(log, removed.map((e) => JSON.stringify({ retracted_at: at, destaque, entry: e })).join("\n") + "\n", "utf8");
     }
   }
 

@@ -3743,9 +3743,9 @@ describe("#2293 handleRearm: skippedTombstone++ só incrementa quando KV.delete 
   });
 });
 
-// ── #12961 — DELETE /queue/:key?if_not_claiming=1 (cancelamento condicional) ──
+// ── #12961 — POST /queue-cancel/:key (cancelamento condicional) ─────────────
 
-describe("#12961 DELETE /queue/:key?if_not_claiming=1", () => {
+describe("#12961 POST /queue-cancel/:key", () => {
   async function armed(marks: { fired?: boolean; send_unknown?: string; claiming?: boolean } = {}) {
     const { env, kv, doNamespace } = mkEnvWithDO();
     const future = new Date(Date.now() + 3600_000).toISOString();
@@ -3773,7 +3773,7 @@ describe("#12961 DELETE /queue/:key?if_not_claiming=1", () => {
     return { env, kv, doState, queueKey };
   }
   const del = (key: string) =>
-    authedRequest(`https://w.test/queue/${encodeURIComponent(key)}?if_not_claiming=1`, { method: "DELETE" });
+    authedRequest(`https://w.test/queue-cancel/${encodeURIComponent(key)}`, { method: "POST" });
 
   it("agendado e parado: 200 com confirmação, KV apagado, alarm cancelado, reserva liberada", async () => {
     const { env, kv, doState, queueKey } = await armed();

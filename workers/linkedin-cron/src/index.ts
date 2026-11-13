@@ -1458,7 +1458,16 @@ async function handleDlq(request: Request, env: Env): Promise<Response> {
   return json({ count: items.length, items });
 }
 
-// ── DELETE /queue/:key?if_not_claiming=1 — cancelamento condicional (#12961) ──
+// ── POST /queue-cancel/:key — cancelamento condicional (#12961) ─────────────
+
+async function handleQueueCancel(request: Request, env: Env, key: string): Promise<Response> {
+  if (!isAuthorized(request, env)) return json({ error: "unauthorized" }, 401);
+  if (!key.startsWith("queue:")) return json({ error: "key must start with 'queue:'" }, 400);
+  const existing = await env.LINKEDIN_QUEUE.get(key);
+  // Ausente = já disparou OU já removida: ambíguo, nunca autoriza re-despacho.
+  if (existing === null) return json({ error: "key not found", key }, 404);
+  return conditionalQueueDelete(env, key, existing);
+}
 
 /**
  * Cancela um post agendado só quando é seguro re-despachá-lo depois. O DELETE
@@ -1567,12 +1576,6 @@ async function handleQueueDelete(request: Request, env: Env, key: string): Promi
   const existing = await env.LINKEDIN_QUEUE.get(key);
   if (existing === null) {
     return json({ error: "key not found", key }, 404);
-  }
-
-  // #12961 — modo condicional (`?if_not_claiming=1`), usado por
-  // `retract-social-destaque.ts` para cancelar um post e re-despachar só ele.
-  if (new URL(request.url).searchParams.get("if_not_claiming") === "1") {
-    return conditionalQueueDelete(env, key, existing);
   }
 
   // (#2219 bug 3 fix) Cancelar o alarm do DO PRIMEIRO, antes de deletar o KV.
@@ -1815,6 +1818,13 @@ export default {
     if (path.startsWith("/queue/") && request.method === "DELETE") {
       const key = decodeURIComponent(path.slice("/queue/".length));
       return handleQueueDelete(request, env, key);
+    }
+    // #12961 — POST /queue-cancel/:key: cancelamento condicional. Rota própria
+    // (não um parâmetro do DELETE): um Worker publicado antes dela devolve
+    // "rota inexistente" em vez de executar o DELETE incondicional.
+    if (path.startsWith("/queue-cancel/") && request.method === "POST") {
+      const key = decodeURIComponent(path.slice("/queue-cancel/".length));
+      return handleQueueCancel(request, env, key);
     }
     // #1140 — POST /fire-now força fireDueItems imediatamente (debug/recovery).
     // Mesma lógica do cron handler; útil quando cron está com lag ou queue
