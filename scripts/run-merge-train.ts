@@ -36,9 +36,11 @@
  * Caminho relativo resolve contra a raiz do checkout PRINCIPAL, não contra o
  * cwd (#12458): rodar o trem de dentro de um worktree de agente grava a
  * timeline no `plan.json` certo (`resolveReportPathAgainstMainCheckout`).
- * Com `--report`, o fim do trem também preenche no `plan.json` vizinho os
- * `timeline.pr_opened`/`ci_green`/`merged` que faltam, pelo estado real das
- * PRs (`backfill-overnight-timeline.ts`, #12874), fail-soft.
+ * Com `--report`, quando o trem chega ao fim (`finish`), também preenche no
+ * `plan.json` vizinho os `timeline.pr_opened`/`ci_green`/`merged` que
+ * faltam, pelo estado real das PRs (`backfill-overnight-timeline.ts`,
+ * #12874), fail-soft. Backfill exit 3 = parcial (seguir para o render e
+ * citar as PRs não lidas); exit 2 = plano ilegível (citar no relatório).
  *
  * Escrita pendente em `data/` (#12026): no fim, para cada PR mergeado (no
  * PR-trem ou solo) cuja seção `Escrita pendente em data/` (item 35 de

@@ -3,7 +3,8 @@
  *
  * Rodada 261111b: todas as unidades mergeadas pelo trem saíram "em andamento"
  * no `render-overnight-timeline.ts` porque nada gravava `timeline.merged`
- * (nem `pr_opened`/`ci_green`) no `plan.json`. O backfill lê o estado real
+ * no `plan.json`. O trem nunca grava `pr_opened`/`ci_green`: só o
+ * coordenador, via `log-event.ts`, e na 261111b ele não gravou. O backfill lê o estado real
  * das PRs e preenche o que falta, seguindo o PR-trem quando a original foi
  * fechada por ele.
  */
@@ -171,9 +172,91 @@ describe("backfill-overnight-timeline sobre plano de fixture (#12874)", () => {
     const r = backfillPlanTimeline({ planPath: join(tmpdir(), "nao-existe-12874", "plan.json"), gh: fakeGh({}), warn: () => {} });
     assert.equal(r.exitCode, 2);
   });
+
+  it("sem lost update: escrita no plano durante as chamadas ao gh é preservada", () => {
+    const dir = mkdtempSync(join(tmpdir(), "backfill-12874-race-"));
+    const path = join(dir, "plan.json");
+    try {
+      writeFileSync(path, JSON.stringify(fixturePlan()));
+      const inner = fakeGh(VIEWS);
+      let wrote = false;
+      const gh = ((args: string[]) => {
+        if (!wrote) {
+          // O coordenador grava no plano enquanto o backfill espera o gh.
+          wrote = true;
+          const p = JSON.parse(readFileSync(path, "utf8"));
+          p.coordenador_gravou = true;
+          p.issues[4].status = "mergeada";
+          writeFileSync(path, JSON.stringify(p));
+        }
+        return inner(args);
+      }) as GhJson;
+      const r = backfillPlanTimeline({ planPath: path, gh, warn: () => {} });
+      assert.equal(r.exitCode, 0, r.messages.join("\n"));
+      const plan = JSON.parse(readFileSync(path, "utf8"));
+      assert.equal(plan.coordenador_gravou, true);
+      assert.equal(plan.issues[4].status, "mergeada");
+      assert.equal(plan.issues[0].timeline.merged, T("15:30"), "e o backfill entrou também");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("unidade sem verde próprio não herda o rollup do PR-trem", () => {
+    const facts = fetchPrTimelineFacts(1, fakeGh({
+      1: { state: "CLOSED", createdAt: T("10:00"), mergedAt: null, comments: [trainComment(2)], statusCheckRollup: [] },
+      2: { state: "MERGED", createdAt: T("10:10"), mergedAt: T("11:00"), comments: [], statusCheckRollup: [green(T("10:50"))] },
+    }));
+    assert.equal(facts.mergedAt, T("11:00"));
+    assert.equal(facts.ciGreenAt, null);
+  });
+
+  it("falha ao ler o PR-trem fica no cache: uma chamada só para o lote inteiro", () => {
+    const dir = mkdtempSync(join(tmpdir(), "backfill-12874-train-"));
+    const path = join(dir, "plan.json");
+    try {
+      writeFileSync(path, JSON.stringify({ issues: [
+        { number: 1, pr: 11, timeline: {} },
+        { number: 2, pr: 12, timeline: {} },
+      ] }));
+      const gh = fakeGh({
+        11: { state: "CLOSED", createdAt: T("10:00"), mergedAt: null, comments: [trainComment(99)], statusCheckRollup: [] },
+        12: { state: "CLOSED", createdAt: T("10:05"), mergedAt: null, comments: [trainComment(99)], statusCheckRollup: [] },
+      });
+      const r = backfillPlanTimeline({ planPath: path, gh, warn: () => {} });
+      assert.equal(gh.calls.filter((n) => n === 99).length, 1);
+      assert.equal(r.exitCode, 3);
+      assert.match(r.messages.join("\n"), /PR #11 não lida.*PR-trem #99/);
+      assert.match(r.messages.join("\n"), /PR #12 não lida.*PR-trem #99/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("entrada com pr ilegível vira mensagem e exit 3, não some", () => {
+    const dir = mkdtempSync(join(tmpdir(), "backfill-12874-badpr-"));
+    const path = join(dir, "plan.json");
+    try {
+      writeFileSync(path, JSON.stringify({ issues: [
+        { number: 1, pr: "abc", timeline: {} },
+        { number: 2, pr: 0 },
+        { number: 3 },
+      ] }));
+      const r = backfillPlanTimeline({ planPath: path, gh: fakeGh({}), warn: () => {} });
+      assert.equal(r.exitCode, 3);
+      assert.match(r.messages.join("\n"), /pr ilegível.*pr="abc"/);
+      assert.match(r.messages.join("\n"), /pr=0/);
+      assert.doesNotMatch(r.messages.join("\n"), /\b3: pr=/, "entrada sem pr não é erro");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
 
 describe("run-merge-train: backfill no fim do trem (#12874)", () => {
+  it("guard estrutural: finish() chama backfillTimelineAtTrainEnd", () => {
+    const src = readFileSync(new URL("../scripts/run-merge-train.ts", import.meta.url), "utf8");
+    const start = src.indexOf("const finish = (code: number): void => {");
+    assert.ok(start >= 0, "finish() não encontrado em run-merge-train.ts");
+    const end = src.indexOf("process.exit(code);", start);
+    assert.ok(end > start, "finish() sem process.exit(code)");
+    assert.match(src.slice(start, end), /backfillTimelineAtTrainEnd\(reportPath\)/);
+  });
+
   it("usa o plan.json ao lado do report e nunca lança", () => {
     let seen = "";
     const ok = backfillTimelineAtTrainEnd("/x/data/overnight/261111b/report.md", {

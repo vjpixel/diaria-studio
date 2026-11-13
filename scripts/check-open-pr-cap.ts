@@ -12,14 +12,10 @@
  */
 import { spawnSync } from "node:child_process";
 import { isMainModule } from "./lib/cli-args.ts";
-import { computeOpenPrSlots, OPEN_PR_CAP, type OpenPrLike, type OpenPrSlots } from "./lib/open-pr-cap.ts";
+import { computeOpenPrSlots, OPEN_PR_CAP, type OpenPrCapResult, type OpenPrLike } from "./lib/open-pr-cap.ts";
 
 export const OPEN_PR_LIST_LIMIT = 200;
 const REPO = "vjpixel/diaria-studio";
-
-export type OpenPrCapResult =
-  | (OpenPrSlots & { verified: true; truncated: boolean })
-  | { verified: false; open: null; cap: number; slots: number; counted: null; reason: string };
 
 export function readOpenPrCap(run: typeof spawnSync = spawnSync, cap: number = OPEN_PR_CAP): OpenPrCapResult {
   const unverified = (reason: string): OpenPrCapResult =>

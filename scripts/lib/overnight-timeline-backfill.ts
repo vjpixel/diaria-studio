@@ -7,8 +7,9 @@
  * Origem: na rodada 261111b todas as unidades mergeadas pelo trem saíram
  * "em andamento" no `render-overnight-timeline.ts`, sem fim nem duração. O
  * trem só grava `merged` (`recordTrainMergedTimeline`) quando recebe
- * `--report` E a entrada do plano já tem `pr` no instante do merge; nada
- * gravava `pr_opened`/`ci_green`. Este passo lê o que o GitHub já sabe
+ * `--report` E a entrada do plano já tem `pr` no instante do merge. O trem
+ * nunca grava `pr_opened`/`ci_green`: só o coordenador, via `log-event.ts`,
+ * e na 261111b ele não gravou. Este passo lê o que o GitHub já sabe
  * (`createdAt`, `mergedAt`, checks do head) e preenche o que falta, depois
  * do fato. Nunca sobrescreve timestamp já gravado (`recordUnitTimeline`
  * preserva a 1ª observação, inclusive a do coordenador).
@@ -72,6 +73,22 @@ export function studioPrsFromPlan(plan: Record<string, unknown>): number[] {
     if (pr !== null) out.add(pr);
   }
   return [...out].sort((a, b) => a - b);
+}
+
+/**
+ * Entradas do studio com `pr` PRESENTE mas ilegível (ex. `"abc"`, `0`): não
+ * podem sumir em silêncio do backfill, viram mensagem (`chave: pr=<valor>`).
+ */
+export function unparseablePrEntries(plan: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  for (const entry of normalizeIssues<Record<string, unknown>>(plan as IssuesBearing<Record<string, unknown>>)) {
+    const key = issueKeyOfPlanEntry(entry);
+    if (!key || !isStudioIssueKey(key)) continue;
+    const raw = entry.pr;
+    if (raw === undefined || raw === null || raw === "") continue;
+    if (planEntryPr(entry) === null) out.push(`${key}: pr=${JSON.stringify(raw)}`);
+  }
+  return out;
 }
 
 export interface BackfillResult {

@@ -12,7 +12,7 @@ import {
   resolveWaveOpenPrSlots,
   waveOpenPrCapError,
 } from "../scripts/lib/open-pr-cap.ts";
-import { FAKE_GH_SKIP_WIN32, fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
+import { FAKE_GH_SKIP_WIN32, fakeGhEnv, withoutGhCredentials, writeFakeGh } from "./_helpers/fake-gh.ts";
 import { OPEN_PR_LIST_LIMIT, readOpenPrCap } from "../scripts/check-open-pr-cap.ts";
 import {
   closingComment,
@@ -145,13 +145,6 @@ describe("record-overnight-wave --open-pr-slots (#12765)", { skip: FAKE_GH_SKIP_
     assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves.length, 1);
   });
 
-  it("valor inválido sai 2, inclusive na forma --flag= e sem valor", () => {
-    const { run } = setup();
-    assert.equal(run("--open-pr-slots", "x").status, 2);
-    assert.equal(run("--open-pr-slots=").status, 2);
-    assert.equal(run("--open-pr-slots").status, 2);
-  });
-
   it("re-registrar a mesma onda com menos vagas segue no-op exit 0 (#8496)", () => {
     const { plan, run } = setup();
     assert.equal(run("--open-pr-slots=2").status, 0);
@@ -183,12 +176,13 @@ describe("record-overnight-wave mede o teto sozinho (#12873)", { skip: FAKE_GH_S
     assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves, undefined);
   });
 
-  it("informado abaixo do medido: vale o medido, com aviso, e a onda entra", () => {
+  it("informado abaixo do medido: vale o informado (o medido só aperta), com aviso", () => {
     const { plan, run } = setup(0);
     const r = run("--open-pr-slots", "1");
-    assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stderr, /diverge do teto medido/);
-    assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves.length, 1);
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /diverge do teto medido.*vale o informado/);
+    assert.match(r.stderr, /estoura as 1 vaga/);
+    assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves, undefined);
   });
 
   it("informado igual ao medido: sem aviso", () => {
@@ -205,13 +199,38 @@ describe("record-overnight-wave mede o teto sozinho (#12873)", { skip: FAKE_GH_S
     assert.match(r.stderr, /não medido .*sem conferência/);
     assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves.length, 1);
   });
+});
 
-  it("resolveWaveOpenPrSlots (puro)", () => {
+// Fora do skip de win32: nenhum dos dois chega a chamar o gh.
+describe("--open-pr-slots sem gh (#12765, #12873)", () => {
+  it("resolveWaveOpenPrSlots (puro): o medido só aperta", () => {
     assert.deepEqual(resolveWaveOpenPrSlots(3, { verified: true, slots: 3, open: 7 }), { slots: 3, warning: null });
-    assert.equal(resolveWaveOpenPrSlots(5, { verified: true, slots: 1, open: 9 }).slots, 1);
+    const above = resolveWaveOpenPrSlots(5, { verified: true, slots: 1, open: 9 });
+    assert.equal(above.slots, 1);
+    assert.match(above.warning ?? "", /vale o medido/);
+    const below = resolveWaveOpenPrSlots(1, { verified: true, slots: 10, open: 0 });
+    assert.equal(below.slots, 1);
+    assert.match(below.warning ?? "", /vale o informado/);
     const off = resolveWaveOpenPrSlots(4, { verified: false, reason: "x" });
     assert.equal(off.slots, 4);
     assert.match(off.warning ?? "", /não medido/);
+  });
+
+  it("valor inválido sai 2 antes de medir, inclusive na forma --flag= e sem valor", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wave-12765-inv-"));
+    const plan = join(dir, "plan.json");
+    writeFileSync(plan, "{}\n");
+    // Credencial neutralizada: se a validação regredir e o gh real rodar, leva 401.
+    const env = withoutGhCredentials(process.env);
+    const run = (...extra: string[]) => spawnSync(process.execPath, [
+      "--import", "tsx", "scripts/record-overnight-wave.ts", "--plan", plan, "--units", "1;2", ...extra,
+    ], { encoding: "utf8", env });
+    for (const args of [["--open-pr-slots", "x"], ["--open-pr-slots="], ["--open-pr-slots"]]) {
+      const r = run(...args);
+      assert.equal(r.status, 2, `${args.join(" ")}: ${r.stderr}`);
+      assert.match(r.stderr, /exige inteiro não-negativo/);
+    }
+    assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves, undefined);
   });
 });
 

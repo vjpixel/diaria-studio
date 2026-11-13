@@ -39,6 +39,11 @@ export interface OpenPrSlots {
   counted: number[];
 }
 
+/** Resultado da medição do teto (`readOpenPrCap`, `check-open-pr-cap.ts`). */
+export type OpenPrCapResult =
+  | (OpenPrSlots & { verified: true; truncated: boolean })
+  | { verified: false; open: null; cap: number; slots: number; counted: null; reason: string };
+
 /** Pure: PR de bot de dependência (Dependabot/Renovate) não conta no teto. */
 export function isDependencyBotPr(pr: OpenPrLike): boolean {
   const login = (pr.author?.login ?? "").toLowerCase();
@@ -75,15 +80,19 @@ export function waveOpenPrCapError(unitCount: number, slots: number): string | n
  * Pure (#12873): vagas que valem para a onda, dado o `--open-pr-slots`
  * informado pelo coordenador e a medição do teto feita pelo próprio script.
  *
- * - Medição verificada: vale o MEDIDO. Informado diferente gera aviso; é
- *   o caso da rodada 261111b (informou 5 com 1 vaga medida e a onda de 2
- *   unidades entrou com `cap_hit=false`).
+ * - Medição verificada: o medido só APERTA — vale `min(informado, medido)`.
+ *   Informado diferente gera aviso; é o caso da rodada 261111b (informou 5
+ *   com 1 vaga medida e a onda de 2 unidades entrou com `cap_hit=false`).
+ *   Informado abaixo do medido segue valendo (o coordenador pode reservar
+ *   vagas por motivo que a medição não vê).
  * - Medição não verificada (`gh` caído, fail-soft do #7746): vale o
  *   informado, com aviso de que nada foi conferido.
  */
 export function resolveWaveOpenPrSlots(
   informed: number,
-  measured: { verified: true; slots: number; open: number } | { verified: false; reason: string },
+  measured:
+    | Pick<Extract<OpenPrCapResult, { verified: true }>, "verified" | "slots" | "open">
+    | Pick<Extract<OpenPrCapResult, { verified: false }>, "verified" | "reason">,
 ): { slots: number; warning: string | null } {
   if (!measured.verified) {
     return {
@@ -92,9 +101,10 @@ export function resolveWaveOpenPrSlots(
     };
   }
   if (measured.slots === informed) return { slots: informed, warning: null };
+  const slots = Math.min(informed, measured.slots);
   return {
-    slots: measured.slots,
-    warning: `--open-pr-slots ${informed} diverge do teto medido agora (${measured.open} PR(s) aberta(s), ${measured.slots} vaga(s)); vale o medido`,
+    slots,
+    warning: `--open-pr-slots ${informed} diverge do teto medido agora (${measured.open} PR(s) aberta(s), ${measured.slots} vaga(s)); vale ${slots === informed ? "o informado (menor)" : "o medido"}`,
   };
 }
 

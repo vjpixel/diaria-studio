@@ -131,13 +131,9 @@ if (isMainModule(import.meta.url)) {
   // (compaction) já com as PRs dela abertas segue sendo no-op exit 0 (#8496).
   // #12873: o valor informado não é confiável sozinho (261111b passou 5 com 1
   // vaga medida). O script mede o teto pela mesma função do
-  // `check-open-pr-cap.ts`; com medição, vale o medido; sem, o informado.
+  // `check-open-pr-cap.ts`; com medição, o medido só aperta (min); sem, o informado.
   if (slotsGiven) {
-    const measured = readOpenPrCap();
-    const { slots, warning } = resolveWaveOpenPrSlots(
-      Number(values["open-pr-slots"]),
-      measured.verified ? measured : { verified: false, reason: measured.reason },
-    );
+    const { slots, warning } = resolveWaveOpenPrSlots(Number(values["open-pr-slots"]), readOpenPrCap());
     if (warning) console.error(`[record-overnight-wave] AVISO: ${warning}`);
     const capErr = waveOpenPrCapError(record.unit_count, slots);
     if (capErr) {
