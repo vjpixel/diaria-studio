@@ -23,7 +23,7 @@
  *
  * Uso:
  *   npx tsx scripts/onboarding-form-demo-link.ts
- *   npx tsx scripts/onboarding-form-demo-link.ts --email outra+demo@gmail.com
+ *   npx tsx scripts/onboarding-form-demo-link.ts --email {endereço}
  *
  * Saída: o link no stdout (uma linha); avisos no stderr. Exit 1 com segredo
  * ausente/curto ou `form_url` não configurado; exit 2 com argumento inválido.
