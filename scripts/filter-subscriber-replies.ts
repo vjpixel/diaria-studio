@@ -89,7 +89,7 @@
  *   possibleStaleAutomatedSubjects, droppedByToCount, droppedByToSenders, clariceReplies } (cada reply com `trivial`).
  *
  * #12947: resposta à Clarice News (assunto "Notícias do mês sobre IA", reply-to
- * `pixel@diar.ia.br`) sai em `clariceReplies` (classificada pelas regras de
+ * `CAMPAIGN_REPLY_TO_ADDRESSES`) sai em `clariceReplies` (classificada pelas regras de
  * `lib/clarice-replies-classify.ts`), fora de `replies[]` e de `droppedByTo*`;
  * o stderr aponta `clarice-replies-triage.ts` e nomeia os pedidos de saída.
  * Exit: 0 (sempre — é filtro, não gate; o draft+gate é no playbook).
@@ -242,7 +242,7 @@ function isDroppedByTo(msg: { to?: string; subject?: string }, campaignSubjects:
 
 /**
  * #12947: resposta à Clarice News (envio mensal da parceria, reply-to
- * `pixel@diar.ia.br`), reconhecida pelo trecho fixo do assunto
+ * `CAMPAIGN_REPLY_TO_ADDRESSES`), reconhecida pelo trecho fixo do assunto
  * (`CLARICE_NEWS_SUBJECT`). Não é resposta à diária: não entra em `replies[]`
  * (nem rascunho da diária, nem crédito do concurso "ache o erro"), e também
  * não pode cair no balde de descartadas por `to`, onde um pedido de
@@ -699,7 +699,7 @@ export function formatClariceRepliesReport(clariceReplies: ClariceNewsReply[]): 
   for (const r of clariceReplies) byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + 1);
   const summary = [...byKind.entries()].map(([k, n]) => `${n} ${k}`).join(", ");
   const lines = [
-    `  📮 ${clariceReplies.length} resposta(s) à Clarice News (pixel@diar.ia.br, não é a diária — sem rascunho aqui): ${summary}. ` +
+    `  📮 ${clariceReplies.length} resposta(s) à Clarice News (reply-to de campanha, não é a diária — sem rascunho aqui): ${summary}. ` +
       "Triagem: npx tsx scripts/clarice-replies-triage.ts (lista o plano; aplicar com --apply --confirm {lote}).",
   ];
   for (const r of clariceReplies.filter((x) => x.kind === "saida")) {
