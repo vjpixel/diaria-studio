@@ -71,6 +71,7 @@ export interface SocialPostLike {
   status?: string;
   scheduled_at?: string | null;
   url?: string | null;
+  failure_reason?: string | null;
 }
 
 export interface PrevSocialFinding {
@@ -78,7 +79,7 @@ export interface PrevSocialFinding {
   destaque: string;
   status: string;
   scheduled_at: string | null;
-  reason: "failed" | "overdue-pollable" | "send-unknown";
+  reason: "failed" | "overdue-pollable" | "send-unknown" | "absent-from-feed";
 }
 
 export interface PrevSocialReport {
@@ -110,7 +111,11 @@ export function analyzePrevSocial(posts: SocialPostLike[], now: Date): PrevSocia
     // `failed` é acionável em qualquer canal — é o script local dizendo que o
     // dispatch não saiu, não uma inferência sobre estado remoto.
     if (status === "failed") {
-      findings.push({ platform, destaque, status, scheduled_at: scheduledAt, reason: "failed" });
+      // #13008: a reconciliação pelo feed (`reconcile-social-permalinks.ts`)
+      // rebaixa para `failed` o post agendado que não está no feed da conta —
+      // rótulo próprio, porque o registro local dizia "agendado/publicado".
+      const absent = typeof post.failure_reason === "string" && post.failure_reason.startsWith("absent_from_feed:");
+      findings.push({ platform, destaque, status, scheduled_at: scheduledAt, reason: absent ? "absent-from-feed" : "failed" });
       continue;
     }
 
@@ -145,6 +150,7 @@ const REASON_LABEL: Record<PrevSocialFinding["reason"], string> = {
   failed: "dispatch falhou",
   "overdue-pollable": "agendado e não publicado",
   "send-unknown": "envio ambíguo, conferir o perfil antes de refazer",
+  "absent-from-feed": "agendado e ausente do feed da conta",
 };
 
 /** Resumo de uma linha para o log/terminal. `null` quando não há o que dizer. */
