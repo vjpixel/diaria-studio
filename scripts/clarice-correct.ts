@@ -120,12 +120,26 @@ import {
   withClariceRetry,
   backoffDelayMs,
   isFatalHttpError,
+  isFatalClariceError,
+  classifyClariceError,
+  ClariceTimeoutError,
+  ClariceNetworkError,
   DEFAULT_RETRY_POLICY,
+  type ClariceFailureReason,
   type CorrectOptions,
   type AttemptLogEntry,
   type RetryPolicy,
   type RetryResult,
 } from "./lib/clarice-correct-engine.ts";
+
+/**
+ * #12693 — linha JSON de falha no stdout (`{"failure": {...}}`). Mesmo canal
+ * do resumo de sucesso: o `resume` de clarice-pending.ts lê a última linha
+ * JSON do stdout do filho.
+ */
+export function failureSummaryLine(reason: ClariceFailureReason): string {
+  return JSON.stringify({ failure: reason });
+}
 
 export {
   ClariceHttpError,
@@ -134,6 +148,10 @@ export {
   withClariceRetry,
   backoffDelayMs,
   isFatalHttpError,
+  isFatalClariceError,
+  classifyClariceError,
+  ClariceTimeoutError,
+  ClariceNetworkError,
   DEFAULT_RETRY_POLICY,
   type CorrectOptions,
   type AttemptLogEntry,
@@ -613,7 +631,7 @@ export async function correctTextChunked(
       const applyResult = applyChunkSuggestions(chunk, suggestions);
       return { correctedText: applyResult.text, rawSuggestions: suggestions, extra: undefined };
     } catch (chunkError) {
-      if (!fallbackEnabled || isFatalHttpError(chunkError)) throw chunkError;
+      if (!fallbackEnabled || isFatalClariceError(chunkError)) throw chunkError;
 
       const fallbackResult = await correctChunkViaParagraphs(chunk, {
         apiKey: opts.apiKey,
@@ -711,7 +729,7 @@ export async function withClariceRetryChunked(
         extra,
       };
     } catch (chunkError) {
-      if (!fallbackEnabled || isFatalHttpError(chunkError)) throw chunkError;
+      if (!fallbackEnabled || isFatalClariceError(chunkError)) throw chunkError;
 
       const fallbackResult = await correctChunkViaParagraphs(chunk, {
         apiKey: opts.apiKey,
@@ -1137,9 +1155,22 @@ export async function main(): Promise<void> {
         details: { deadlineMs, elapsedMs: Date.now() - callStartMs, inPath: args.inPath },
       });
       console.error(`${e.message}. Nada foi gravado em --out/--corrected-out.`);
+      console.log(failureSummaryLine({ kind: "deadline", message: e.message }));
       process.exit(CLARICE_UNAVAILABLE_EXIT_CODE);
     }
-    console.error(`erro chamando Clarice REST: ${(e as Error).message}`);
+    // #12693 — o motivo vai para o run-log e para o stdout (JSON), onde o
+    // `resume` de clarice-pending.ts o lê e grava no marcador que o gate mostra.
+    const reason = classifyClariceError(e);
+    logEvent({
+      edition: args.edition ?? null,
+      stage: args.stage ?? 2,
+      agent: args.agent ?? "clarice-correct-rest",
+      level: "error",
+      message: "clarice_rest_failed",
+      details: { ...reason, elapsedMs: Date.now() - callStartMs, inPath: args.inPath },
+    });
+    console.error(`erro chamando Clarice REST: ${reason.message}`);
+    console.log(failureSummaryLine(reason));
     process.exit(3);
   }
 

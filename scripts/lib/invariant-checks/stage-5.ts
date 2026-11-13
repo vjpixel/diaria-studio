@@ -17,7 +17,7 @@ import { checkPublicImagesMd5MatchesLocal } from "../public-images-md5-check.ts"
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
 import { loadDoc } from "../../update-stage-status.ts";
 import { isKitReviewStatus, KIT_REVIEW_FILENAME } from "../kit-review-record.ts"; // #9594
-import { CLARICE_PENDING_REL, readClaricePending } from "../clarice-pending.ts"; // #12257
+import { CLARICE_PENDING_REL, lastResumeAttemptNote, readClaricePending } from "../clarice-pending.ts"; // #12257, #12693
 import {
   loadFacebookPagesConfig,
   readFacebookCredentialsFile,
@@ -1063,12 +1063,14 @@ export function checkYouTubeStepRan(editionDir: string): InvariantViolation[] {
 function checkClaricePendingAtPublish(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, CLARICE_PENDING_REL);
   if (!existsSync(path)) return [];
-  const reason = readClaricePending(editionDir)?.reason ?? "motivo ilegível no marcador";
+  const marker = readClaricePending(editionDir);
+  const reason = marker?.reason ?? "motivo ilegível no marcador";
   return [
     {
       rule: "clarice-pending-at-publish",
       message:
         `newsletter sai SEM a revisão da Clarice (${reason}): o marcador ${CLARICE_PENDING_REL} continua. ` +
+        lastResumeAttemptNote(marker) +
         "Se o gate 4 foi auto-aprovado (--no-gates), ninguém decidiu isso ao vivo — avisar o editor no resumo.",
       source_issue: "#12257",
       severity: "warning",
