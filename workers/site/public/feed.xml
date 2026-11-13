@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Thu, 12 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Fri, 13 Nov 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Jensen Huang deixa a NVIDIA após 33 anos</title>
+      <link>https://diar.ia.br/p/jensen-huang-deixa-a-nvidia-apos-33-anos</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/jensen-huang-deixa-a-nvidia-apos-33-anos</guid>
+      <pubDate>Fri, 13 Nov 2026 09:00:00 GMT</pubDate>
+      <description>ChatGPT e Gemini indicam lojas falsas para você | Claude agora monta planilhas e lousas com seu time</description>
+    </item>
     <item>
       <title>Claude Code pode ter vazado suas senhas no GitHub</title>
       <link>https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/gates-propoe-empregos-so-para-humanos</guid>
       <pubDate>Tue, 01 Sep 2026 09:00:00 GMT</pubDate>
       <description>Seu suporte de TI pode sumir como o da Cielo | Grok foi treinado com abuso infantil, diz processo</description>
-    </item>
-    <item>
-      <title>Claude e Codex instalaram código sem dono</title>
-      <link>https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono</guid>
-      <pubDate>Mon, 31 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Extensão do Claude chega a todo plano pago | Nvidia pode comprar a Hugging Face por US$ 12,9 bi</description>
     </item>
   </channel>
 </rss>

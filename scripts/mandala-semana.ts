@@ -340,13 +340,19 @@ export function buildPlan(input: PlanInput): MandalaPlan {
           (d.candidate ? `; candidato ${d.candidate}` : "; nenhum candidato"),
       );
     } else if (!d.url) {
-      missing.push(`link do dia ${d.dayNum} (${d.ddmm}): nenhum post do Instagram nesse dia`);
+      const nextDate = new Date(Date.parse(`${d.date}T00:00:00Z`) + 86400_000).toISOString().slice(0, 10);
+      const reel = input.selection.rows.find((r) => r.date === nextDate && r.format === "reel");
+      missing.push(`link do dia ${d.dayNum} (${d.ddmm}): nenhum post do Instagram nesse dia` +
+        (reel ? `; candidato = reel do dia seguinte ${reel.url}; usar no dia ${d.dayNum} e tirar dos extras ao confirmar` : "; nenhum reel candidato no dia seguinte"));
     }
   }
   const email_ok = input.contato.email !== null;
   const telefone_ok = input.contato.telefone !== null;
   if (!email_ok) missing.push(`e-mail do Fluxer (gravar em ${input.contatoFile})`);
   if (!telefone_ok) missing.push(`telefone do grupo (gravar em ${input.contatoFile})`);
+  if (!input.youtube.complete) {
+    missing.push(`YouTube: faltam ${input.youtube.missingDays.join(", ")}; atualizar com npx tsx scripts/youtube-analytics-snapshot.ts --since ${input.period.from} e rodar mandala-semana.ts novamente (a API pode ter atraso)`);
+  }
   const totals = combineNewFollowers(input.instagram, input.youtube);
   if (!totals.totalComplete) {
     missing.push(

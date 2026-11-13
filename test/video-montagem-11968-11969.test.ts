@@ -128,8 +128,11 @@ describe("#11969: build --seq só muda no plan.json a sequência reconstruída",
     const prev = { ...base, hash: "OLD", plans: [plan("youtube", "v1"), plan("outras-redes", "v1", 1920, 1080)], builtAt: { youtube: 100, "outras-redes": 100 } };
     const next = { ...base, hash: "NEW", plans: [plan("youtube", "v2"), plan("outras-redes", "v2", 1920, 1080)] };
     const r = mergeBuildPlan({ next, pickedKeys: new Set(["youtube"]), prev, now: 500 });
-    assert.deepEqual(r.plan.plans.map((p) => p.spec.name), ["youtube-v2"], "a vertical sem XML novo não entra (srt/preview dela recusam)");
-    assert.deepEqual(r.dropped, ["outras-redes"]);
+    // #12968: a vertical fica com o plano antigo (o do XML dela), marcada como defasada; srt/preview dela recusam pelo loadPlan.
+    assert.deepEqual(r.plan.plans.map((p) => p.spec.name), ["youtube-v2", "outras-redes-v1"], "a vertical sem XML novo não entra com o plano novo");
+    assert.deepEqual(r.stale, ["outras-redes"]);
+    assert.deepEqual(r.plan.stale, { "outras-redes": { hash: "OLD" } });
+    assert.deepEqual(r.dropped, []);
     assert.equal(r.plan.hash, "NEW");
   });
 

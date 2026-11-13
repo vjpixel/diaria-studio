@@ -132,7 +132,7 @@ const PUBLISHED_DATE = "2026-08-12";
 //    e reservar ocupação é o mesmo registro, não um tema novo.
 // Nenhum número derivado muda: nenhuma das 2 bate `DEMISSOES_PATTERN` nem
 // `CONTRATACAO_PATTERN`.
-const UPDATED_DATE = "2026-09-02";
+const UPDATED_DATE = "2026-11-13";
 
 /** `matchedHeadlines` vem em NFD — ver a nota completa em `countMatching`,
  * em `scripts/lib/shared/hub-page.ts` (motor único reusado pelos 6 hubs). */
