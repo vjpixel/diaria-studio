@@ -72,6 +72,7 @@ import { extractIndependentReviewVerdict, extractIndependentReviewHeadSha } from
 import { extractClosingIssueNumbers, computeSupersededVerdict } from "./lib/continuo-superseded-check.ts";
 import { evaluateContinuoMergeGate, type ContinuoMergeGateResult } from "./lib/continuo-merge-gate.ts";
 import { evaluatePrRetido } from "./lib/pr-retido-para-editor.ts";
+import { normalizeMergeable, rereadMergeableWhileUnknown, sleepSync } from "./lib/mergeable-reread.ts";
 
 /**
  * #6926: reusa o MESMO valor do limiar de tamanho de diff que já decide
@@ -162,6 +163,13 @@ function fetchIssueStates(numbers: readonly number[], cwd: string): Map<number, 
   return states;
 }
 
+/** Releitura de `mergeable` (#12950). Lança em falha: o helper trata como ilegível. */
+function fetchMergeable(prNumber: number, cwd: string): unknown {
+  const result = ghJson<{ mergeable?: unknown }>(["pr", "view", String(prNumber), "--json", "mergeable"], cwd);
+  if (!result.ok) throw new Error(result.reason);
+  return result.data.mergeable;
+}
+
 const EXIT_CODES: Record<ContinuoMergeGateResult["action"], number> = {
   merge: 0,
   escalate: 1,
@@ -192,13 +200,20 @@ function run(): number {
 
   const payload = prView.data;
   const currentHeadSha = typeof payload.headRefOid === "string" ? payload.headRefOid : null;
-  const mergeable =
-    payload.mergeable === "MERGEABLE" || payload.mergeable === "CONFLICTING" || payload.mergeable === "UNKNOWN"
-      ? payload.mergeable
-      : null;
-  const checksResult = evaluatePrChecksGate(payload.statusCheckRollup, {
+  const initialChecks = evaluatePrChecksGate(payload.statusCheckRollup, {
     mergeable: typeof payload.mergeable === "string" ? payload.mergeable : undefined,
   });
+  // #12950: `UNKNOWN` é transitório (o GitHub recalcula a cada push na base).
+  // Com CI verde, relê com espera curta antes de decidir; só `UNKNOWN`
+  // persistente (ou `CONFLICTING`) escala. Com CI não verde a releitura não
+  // muda o veredito (o portão de CI escala antes), então não gasta a espera.
+  const reread = initialChecks.verdict === "pass"
+    ? rereadMergeableWhileUnknown(payload.mergeable, () => fetchMergeable(prNumber, cwd), sleepSync)
+    : { mergeable: normalizeMergeable(payload.mergeable), rereads: 0 };
+  const mergeable = reread.mergeable;
+  const checksResult = reread.rereads > 0
+    ? evaluatePrChecksGate(payload.statusCheckRollup, { mergeable: mergeable ?? undefined })
+    : initialChecks;
   const verdict = extractIndependentReviewVerdict(payload.comments);
   const reviewedHeadSha = extractIndependentReviewHeadSha(payload.comments);
 
@@ -257,6 +272,7 @@ function run(): number {
       sensitive,
       checksVerdict: checksResult.verdict,
       mergeable,
+      mergeableRereads: reread.rereads,
       diffLineCount,
       diffLineThreshold: diffThreshold,
     },
