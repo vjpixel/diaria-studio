@@ -122,3 +122,65 @@ draft e sem `bloqueio-execucao`. O `update-branch` vai com `expected_head_sha`
 do HEAD aprovado. O HEAD novo dispara re-review e CI antes do merge, e a
 idade da PR zera, então a próxima atualização só cabe 6h depois. PR que já
 conflita continua sendo fechada por `close_conflict`.
+
+## 07 a 09/11 sem entrega: o teto de 3 PRs ficou preso (#12908)
+
+Investigação em 13/11/2026. A janela de 07/11 00:31Z a 10/11 09:49Z não teve
+nenhuma PR nova do contínuo, com 22 a 23 ticks por dia. A fila não estava
+vazia. O que travou foi o teto de 3 PRs `continuo/*` abertas
+(`scripts/check-continuo-pr-cap.ts`, #7746): três PRs escaladas ocuparam as
+três vagas durante a janela inteira, e o tick com `mayClaim=false` não
+reivindica issue nova, só trabalha a própria fila (§3c do SKILL.md do
+contínuo).
+
+| PR | Aberta | Escalada (marcador) | Saída |
+| --- | --- | --- | --- |
+| [#12300](https://github.com/vjpixel/diaria-studio/pull/12300) | 05/11 04:59 | 05/11 06:07; head novo 07/11 03:36 | fechada por conflito, 10/11 15:28 |
+| [#12346](https://github.com/vjpixel/diaria-studio/pull/12346) | 06/11 19:23 | 06/11 19:26 | mergeada 10/11 09:21 |
+| [#12351](https://github.com/vjpixel/diaria-studio/pull/12351) | 07/11 00:31 | 08/11 14:10 (draft com `bloqueio-execucao`) | mergeada 11/11 14:38 |
+
+Horários em UTC, do `gh pr list --search 'head:continuo/'` e dos comentários
+das PRs. As três tinham review `approve`. A primeira PR do contínuo depois da
+janela, [#12656](https://github.com/vjpixel/diaria-studio/pull/12656), abriu
+às 09:49 de 10/11, 28 minutos depois do merge da #12346 liberar uma vaga.
+A [#12445](https://github.com/vjpixel/diaria-studio/pull/12445) (08/11 14:34),
+única PR `continuo/*` aberta dentro da janela, saiu de uma sessão interativa
+(link de sessão claude.ai no corpo, sem marcador `continuo-owner-session`),
+não de um tick.
+
+O teto conta toda PR aberta exceto `continuo/rescue-*`, inclusive escalada e
+draft com `bloqueio-execucao`. Enquanto uma PR escalada esperava o editor ou
+o pickup do overnight, nada a tirava da contagem. O pickup do overnight só
+mergeava PR limpa, então as rodadas de 07, 08 e 09/11 também não drenaram as
+três. Os relatórios do cron de 09/11 (`~/.hermes/cron/output/5d791ef6fc2c/`)
+registravam "cap 3/3" e nomeavam as mesmas PRs, segundo a leitura de 12/11
+registrada na #12908. O diretório guarda só os últimos ~50 relatórios: em
+13/11 ele já começava em 11/11, sem nenhum de 07 a 09/11.
+
+O que já fecha essa trajetória, todos mergeados depois da janela:
+
+- #12765 (PR #12778, 11/11 00:58Z): prazo de 48h para PR escalada do
+  contínuo. Passado o prazo sem destino, a PR é fechada e a vaga volta. Esse
+  prazo fechou a #12351 às 00:59 de 11/11; ela foi reaberta e mergeada às
+  14:38.
+- #12684 (PR #12689, 10/11 17:37Z): escalada ganha motivo e dono, e a
+  consulta de escaladas há mais de 24h entra no briefing do overnight e do
+  develop.
+- #12950 (PR #12986 e commit 944b0f5b7, 13/11): o overnight assume PR das lanes autônomas pelo
+  `orphanAction` (`merge-via-gate2` para PR verde e sem retenção), e há
+  alarme de PR aprovada e verde parada.
+
+Com o prazo de 48h, o pior caso de vaga presa por escalada cai de "sem
+limite" para 48h por PR. Não muda a regra de contagem do teto: PR escalada
+continua contando enquanto está aberta. Tirá-la da contagem deixaria o
+contínuo abrir PRs mais rápido do que o editor consegue triar, e essa é uma
+decisão de política que esta investigação não toma.
+
+Para diagnosticar o próximo "ticks sem entrega", a ordem que resolveu este
+caso: (1) PRs `continuo/*` criadas por dia, com `gh pr list --state all
+--search 'head:continuo/ created:A..B'`, separa "não abriu" de "não
+mergeou"; (2) se não abriu, as PRs abertas no período e o `counted` de
+`check-continuo-pr-cap.ts` dizem se o teto estava cheio; (3) o marcador
+`continuo-escalate` e o comentário de review de cada uma dizem por que não
+saíram. Os sidecars de `data/continuo/tick-sidecars` contam ticks, não
+entregas, e não respondem a nenhuma das três perguntas.
