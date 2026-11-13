@@ -24,10 +24,13 @@
  *
  * - **Instagram/Threads**: o disparo do Worker (`dispatch.ts::fireInstagram`/
  *   `fireThreads`) só retorna `{status:"fired"}` depois que o passo
- *   `media_publish`/`threads_publish` da Graph API respondeu com um `id` —
- *   isto é confirmação REAL de publicação, não só enfileiramento. Uma entry
- *   que não está na fila (`/list`) nem no DLQ (`/dlq`) foi genuinamente
- *   publicada — promovida a `status: "published"` com alta confiança.
+ *   `media_publish`/`threads_publish` da Graph API respondeu com um `id`.
+ *   Mas este script não vê o fire, só a AUSÊNCIA da entry na fila (`/list`)
+ *   e no DLQ (`/dlq`) — e ausência não prova disparo (#13008: o `um` do IG
+ *   de 261023 saiu daqui "confirmado com alta confiança" e não existe no
+ *   feed). A entry vira `published` com `verification_note`
+ *   `worker_drained_feed_unverified`, e quem confirma é o feed da conta
+ *   (`reconcile-social-permalinks.ts`, #13009).
  * - **LinkedIn**: o disparo (`fireLinkedIn`) só confirma que o webhook Make.com
  *   aceitou a requisição (HTTP 2xx) — Make é fire-and-forget a partir daí, sem
  *   callback pro Worker. Uma entry que saiu da fila sem cair em DLQ é
@@ -297,9 +300,13 @@ export function reconcileWorkerEntry(
     return { updated: entry, changed: false };
   }
 
-  // Nem na fila nem no DLQ: o Worker considerou o item disparado com sucesso
-  // (KV entry deletada só após `outcome.status === "fired"`, ver fire.ts e
-  // durable-object.ts).
+  // Nem na fila nem no DLQ: provavelmente disparado (a KV entry só é deletada
+  // após `outcome.status === "fired"`, ver fire.ts e durable-object.ts), mas
+  // "sumiu da fila" NÃO prova disparo (#13008): em 261023 o `um` do Instagram
+  // saiu daqui como "alta confiança" e nunca apareceu no feed. O Worker
+  // descarta o id do `media_publish`, então quem confirma de verdade é o
+  // feed da conta (`reconcile-social-permalinks.ts`, check 0k logo depois),
+  // que grava o permalink ou marca `send_unknown` (absent_from_feed).
   const nowIso = now.toISOString();
   if (REAL_DELIVERY_CONFIRMATION_PLATFORMS.has(entry.platform)) {
     return {
@@ -309,9 +316,10 @@ export function reconcileWorkerEntry(
         published_at: nowIso,
         failure_reason: undefined,
         verification_note:
-          "confirmed_by_worker_high_confidence: Graph API media_publish/threads_publish " +
-          "retornou sucesso antes do Worker reportar fired (entrega real confirmada, " +
-          "não apenas enfileiramento) — ausente da fila e do DLQ.",
+          "worker_drained_feed_unverified: saiu da fila do Worker sem cair na DLQ. O fire do " +
+          "Worker exige o id do media_publish/threads_publish, mas sumir da fila não prova que " +
+          "o fire aconteceu e o Worker não guarda esse id — conferir no feed " +
+          "(reconcile-social-permalinks.ts, #13008).",
       },
       changed: true,
     };
