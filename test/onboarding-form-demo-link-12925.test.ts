@@ -9,13 +9,14 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildDemoFormLink, DEMO_FORM_EMAIL } from "../scripts/onboarding-form-demo-link.ts";
+import { buildDemoFormLink, demoFormEmail } from "../scripts/onboarding-form-demo-link.ts";
 import { checkFormEmailSig } from "../scripts/lib/onboarding-form-link-sig.ts";
 import { prefillEmailFromQuery, type FormDraft, type FormResponse } from "../scripts/lib/onboarding-form-contract.ts";
 import { isFormTestEmail } from "../scripts/lib/onboarding-form-partial-results.ts";
 import { loadOnboardingFormSurveyResponses } from "../scripts/audience-run.ts";
 
 const SECRET = "s".repeat(40);
+const DEMO_FORM_EMAIL = demoFormEmail(new Date("2026-11-13T22:05:09Z"));
 const FORM_URL = "https://formulario.diar.ia.br/";
 
 /** Reproduz o GET do Worker (`workers/onboarding-form/src/index.ts`). */
@@ -26,15 +27,18 @@ async function workerAccepts(url: string): Promise<boolean> {
 }
 
 describe("onboarding-form-demo-link (#12925)", () => {
-  it("o endereço padrão é de teste do editor (fica fora dos resultados)", () => {
-    assert.ok(DEMO_FORM_EMAIL.includes("+"));
+  it("o endereço padrão é de teste do editor (fica fora dos resultados) e muda a cada execução", () => {
+    assert.ok(DEMO_FORM_EMAIL.includes("+formulario-demo-20261113220509@"));
     assert.ok(isFormTestEmail(DEMO_FORM_EMAIL));
+    // Sufixo fixo faria a 2ª pessoa ver o rascunho da 1ª (o Worker retoma o rascunho, #12504).
+    assert.notEqual(demoFormEmail(new Date("2026-11-13T22:05:10Z")), DEMO_FORM_EMAIL);
   });
 
   it("o link padrão passa na verificação do Worker, com o + preservado", async () => {
     const r = await buildDemoFormLink(FORM_URL, SECRET);
     assert.ok(r.ok);
-    assert.equal(r.email, DEMO_FORM_EMAIL);
+    assert.ok(isFormTestEmail(r.email));
+    assert.match(r.email, /\+formulario-demo-\d{14}@/);
     assert.ok(r.url.startsWith(`${FORM_URL}?email=`));
     assert.ok(r.url.includes("%2B"), "o + vai codificado, não vira espaço");
     assert.ok(await workerAccepts(r.url));
@@ -42,8 +46,9 @@ describe("onboarding-form-demo-link (#12925)", () => {
   });
 
   it("e-mail cru com + também passa (o Worker troca espaço por +)", async () => {
-    const r = await buildDemoFormLink(FORM_URL, SECRET);
+    const r = await buildDemoFormLink(FORM_URL, SECRET, DEMO_FORM_EMAIL);
     assert.ok(r.ok);
+    assert.equal(r.email, DEMO_FORM_EMAIL);
     const raw = r.url.replace("%2B", "+");
     assert.ok(await workerAccepts(raw));
   });

@@ -9,7 +9,7 @@
  * `ONBOARDING_FORM_LINK_SECRET`.
  *
  * O e-mail padrão é um endereço de TESTE do editor com `+sufixo`
- * (`DEMO_FORM_EMAIL`), não o endereço dele: o que a pessoa de fora digitar
+ * (`demoFormEmail`, um por execução), não o endereço dele: o que a pessoa de fora digitar
  * (rascunho) ou enviar fica numa chave do KV separada da resposta real do
  * editor, e `isFormTestEmail` deixa esse endereço fora do resultado parcial do
  * Studio (#12583) e do perfil de audiência (`audience-run.ts`). O link NÃO é
@@ -45,8 +45,16 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** Mesmo formato que o Worker aceita (`EMAIL_RE` de `onboarding-form-contract.ts`). */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/** Endereço de demonstração: o Gmail do editor com `+formulario-demo`. */
-export const DEMO_FORM_EMAIL = EDITOR_COPY_EMAIL.replace("@", "+formulario-demo@");
+/**
+ * Endereço de demonstração: o Gmail do editor com `+formulario-demo-{UTC
+ * AAAAMMDDhhmmss}`. Um endereço por execução porque o Worker retoma o
+ * rascunho do endereço (#12504): com um sufixo fixo, a 2ª pessoa a abrir o
+ * link veria as respostas que a 1ª digitou.
+ */
+export function demoFormEmail(now: Date = new Date()): string {
+  const stamp = now.toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  return EDITOR_COPY_EMAIL.replace("@", `+formulario-demo-${stamp}@`);
+}
 
 export type DemoLinkResult =
   | { ok: true; url: string; email: string; avisos: string[] }
@@ -60,7 +68,7 @@ export type DemoLinkResult =
 export async function buildDemoFormLink(
   formUrl: string | null,
   rawSecret: string | null | undefined,
-  email: string = DEMO_FORM_EMAIL,
+  email: string = demoFormEmail(),
 ): Promise<DemoLinkResult> {
   if (!formUrl) return { ok: false, erro: "onboarding.followup.form_url não configurado no platform.config.json" };
   const secret = checkLinkSecret(rawSecret);
@@ -93,7 +101,7 @@ async function main(argv: string[]): Promise<number> {
   }
   let email: string | undefined;
   try {
-    email = getStringArg(argv, "email", { example: DEMO_FORM_EMAIL });
+    email = getStringArg(argv, "email", { example: "endereço" });
   } catch (e) {
     console.error(`[onboarding-form-demo-link] ${(e as Error).message}`);
     return 2;
