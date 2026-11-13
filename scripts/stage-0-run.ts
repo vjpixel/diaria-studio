@@ -1167,7 +1167,17 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     // verificação em silêncio. Sem credencial nenhuma, o pulo vira nota.
     const fbGate = facebookVerifyGate(deps);
     if (fbGate.run) {
-      softStep(deps, report, "verify-facebook-posts (0k)", "scripts/verify-facebook-posts.ts", ["--edition-dir", `${prevDir}/`]);
+      // #13009: lookback 3 + registros extras (semanal, divulgação mensal,
+      // anual) — os posts das 15:00/19:00 da edição anterior ainda estão
+      // agendados quando o Stage 0 roda, e sem olhar para trás ficavam
+      // `scheduled` para sempre.
+      softStep(deps, report, "verify-facebook-posts (0k)", "scripts/verify-facebook-posts.ts", [
+        "--edition-dir",
+        `${prevDir}/`,
+        "--lookback-days",
+        "3",
+        "--extra-stores",
+      ]);
     } else {
       report.note(`⚠️  0k — verify-facebook-posts pulado: ${fbGate.reason}`);
     }
@@ -1176,7 +1186,14 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     // permalink, ou marca `send_unknown` (absent_from_feed) o post vencido
     // que não está lá. Depois do worker-dispatch, que só sabe dizer "saiu da
     // fila"; antes do 0l, que então lista o ausente como "dispatch falhou".
-    softStep(deps, report, "reconcile-social-permalinks (0k)", "scripts/reconcile-social-permalinks.ts", ["--edition-dir", `${prevDir}/`, "--lookback-days", "3"]);
+    // `--extra-stores` (#13009): também o semanal, a divulgação mensal e a anual.
+    softStep(deps, report, "reconcile-social-permalinks (0k)", "scripts/reconcile-social-permalinks.ts", [
+      "--edition-dir",
+      `${prevDir}/`,
+      "--lookback-days",
+      "3",
+      "--extra-stores",
+    ]);
     // #5766/#6152 — Twitter via API GraphQL do Buffer, token vem de env (não
     // de arquivo, diferente do fb-credentials.json acima). Sem gate por
     // hasEnv: verify-twitter-posts.ts agora carrega o próprio `.env`

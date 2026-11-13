@@ -2,7 +2,9 @@
  * verify-facebook-posts.ts
  *
  * Verifica posts agendados do Facebook contra a Graph API e atualiza
- * `06-social-published.json` com o status real (published / failed).
+ * `06-social-published.json` com o status real (published; vencido sem
+ * confirmação vira `send_unknown`, e erro de leitura nunca muda o status —
+ * #13042).
  *
  * Rationale (#47): `publish-facebook.ts` agenda via `scheduled_publish_time`
  * e grava `status: "scheduled"`. Sem verificação, esse status fica para
@@ -11,7 +13,14 @@
  *
  * Uso:
  *   npx tsx scripts/verify-facebook-posts.ts --edition-dir data/editions/260423/
+ *     [--lookback-days N] [--file a.json,b.json] [--extra-stores [--extra-window-days N]]
  *   npm run verify-facebook-posts -- --edition-dir data/editions/260423/
+ *
+ * #13009: `--lookback-days` confere também as edições anteriores (o Stage 0
+ * usa 3: os posts das 15:00/19:00 da edição anterior ainda estão agendados
+ * quando ele roda), e `--file`/`--extra-stores` os registros com o mesmo
+ * formato fora das edições (semanal, divulgação mensal, anual —
+ * `lib/social-reconcile-targets.ts`).
  *
  * Requer: credencial da página de cada entry (#10458) — a `diaria` usa
  * `FACEBOOK_PAGE_ID`/`FACEBOOK_PAGE_ACCESS_TOKEN` (fallback
@@ -29,16 +38,19 @@
 // ficam invisíveis e a reconciliação é pulada em silêncio.
 import "dotenv/config";
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { basename, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // #650 Tier C: PostEntry/SocialPublished agora vêm de scripts/lib/social-published-store.ts
 // Re-exports mantidos pra compat com callers (#650 backward compat).
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
-import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { rewriteSocialPosts } from "./lib/social-published-store.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadResolvedFacebookPages, resolveFacebookPageForEntry } from "./lib/facebook-pages.ts"; // #10458
+import { editionDir as editionDirPath } from "./lib/edition-paths.ts";
+import { discoverExtraSocialStores, lookbackEditions } from "./lib/social-reconcile-targets.ts"; // #13009
 export type { PostEntry, SocialPublished };
 
 /**
@@ -217,13 +229,22 @@ export function reconcilePost(
     // uma leitura conclusiva) e anota a inconclusividade via
     // `verification_note`, pro #573 audit trail e pra um verify seguinte
     // (rodando já com o fix (a)) não achar "nenhuma mudança" e desistir.
-    const isReadError = graph.error.code === 100;
+    //
+    // #13042 (review P2): vale para QUALQUER erro da Graph, não só o #100. Com
+    // o lookback de 3 edições e os registros extras (semanal, divulgação
+    // mensal, anual), um erro temporário (rate limit, 5xx, token expirado)
+    // que virasse `failed` faria a retomada do publicador repostar um post
+    // que pode estar no ar — `failed` fica fora do skip de retomada. Mesmo
+    // princípio do #13016: erro de leitura nunca muda o status. O alarme
+    // continua: a entry segue `scheduled` vencida (0l "agendado e não
+    // publicado") e o main avisa a leitura inconclusiva no stderr.
     const hasConfirmedCreation =
       typeof entry.fb_post_id === "string" && entry.fb_post_id.length > 0;
-    if (isReadError && hasConfirmedCreation) {
+    if (hasConfirmedCreation) {
+      const code = graph.error.code ?? "unknown";
       return {
         ...entry,
-        verification_note: `read_error_inconclusive_code_100: ${graph.error.message}`,
+        verification_note: `read_error_inconclusive_code_${code}: ${graph.error.message}`,
       };
     }
     return {
@@ -247,7 +268,7 @@ export function reconcilePost(
     // genuinamente agendado — corrige de volta pra "scheduled" em vez de
     // deixar presa em "failed" pra sempre. Único outro status que chega aqui
     // ("scheduled") passa intocado.
-    if (entry.status === "failed") {
+    if (entry.status === "failed" || entry.status === "send_unknown") {
       return { ...entry, status: "scheduled", failure_reason: undefined, verification_note: undefined };
     }
     return entry;
@@ -275,21 +296,31 @@ export function reconcilePost(
     };
   }
 
-  // scheduled_publish_time passou e is_published !== true → falha silenciosa
+  // scheduled_publish_time passou e is_published !== true → publicação não
+  // confirmada. #13042 (review P2): `send_unknown`, nunca `failed` — a Graph
+  // não provou que o post não saiu, e `failed` uma retomada do publicador
+  // (diário, semanal, divulgação mensal) repostaria. Mesmo precedente do
+  // `absent_from_feed:` do #13016; o 0l alarma `send_unknown` ("envio
+  // ambíguo, conferir o perfil antes de refazer").
   return {
     ...entry,
-    status: "failed",
-    failure_reason: `scheduled_publish_time passou mas is_published=${graph.is_published ?? "null"}`,
+    status: "send_unknown",
+    failure_reason: `${FB_NOT_CONFIRMED_PREFIX} scheduled_publish_time passou mas is_published=${graph.is_published ?? "null"}`,
     verification_note: undefined,
   };
 }
+
+/** #13042 — prefixo do `failure_reason` de post vencido que a Graph não confirmou. */
+export const FB_NOT_CONFIRMED_PREFIX = "not_confirmed_by_graph:";
 
 // #3816 fix (c): entries "failed" com fb_post_id são reconciliáveis — só
 // entries criadas com sucesso têm fb_post_id (falhas reais de
 // publish-facebook.ts, ex: imagem ausente, scheduled_time_invalid, nunca
 // geram um), então "failed" sem fb_post_id continua pulado corretamente logo
 // abaixo pelo guard de fbPostId.
-const RECONCILABLE_STATUSES = new Set(["scheduled", "failed"]);
+// #13042: `send_unknown` também — uma leitura conclusiva posterior promove a
+// `published` (ou devolve a `scheduled`); inconclusiva, preserva.
+const RECONCILABLE_STATUSES = new Set(["scheduled", "failed", "send_unknown"]);
 
 export async function verifyPublished(
   published: SocialPublished,
@@ -334,36 +365,110 @@ export async function verifyPublished(
       }
       updatedPosts.push(next);
     } catch (e: unknown) {
+      // #13042 (review P2): erro de rede/Graph ilegível não muda o status
+      // (antes virava `failed`, que a retomada do publicador repostaria) —
+      // só anota a inconclusividade; o main avisa no stderr.
       const message = e instanceof Error ? e.message : String(e);
-      updatedPosts.push({ ...entry, status: "failed", failure_reason: `graph_api_error: ${message}` });
-      changes++;
+      const note = `graph_api_error: ${message}`;
+      if (note !== entry.verification_note) changes++;
+      updatedPosts.push({ ...entry, verification_note: note });
     }
   }
 
   return { updated: { ...published, posts: updatedPosts }, changes };
 }
 
+/**
+ * #13042 — avisos por entry do Facebook que a rodada não conseguiu confirmar:
+ * leitura inconclusiva (status preservado) ou vencida sem confirmação
+ * (`send_unknown`). Mantém o alarme que o antigo `failed` dava, sem o risco
+ * de repost na retomada. @pure
+ */
+export function facebookVerifyWarnings(posts: PostEntry[]): string[] {
+  const out: string[] = [];
+  for (const p of posts) {
+    if (p.platform !== "facebook") continue;
+    const id = `${p.destaque ?? "?"} (fb_post_id ${String(p.fb_post_id ?? "?")})`;
+    const note = typeof p.verification_note === "string" ? p.verification_note : "";
+    if (note.startsWith("read_error_inconclusive_") || note.startsWith("graph_api_error:")) {
+      out.push(`${id}: leitura da Graph inconclusiva, status "${p.status}" preservado — ${note}`);
+    } else if (p.status === "send_unknown" && typeof p.failure_reason === "string" && p.failure_reason.startsWith(FB_NOT_CONFIRMED_PREFIX)) {
+      out.push(`${id}: publicação não confirmada pela Graph (send_unknown) — conferir a página antes de refazer.`);
+    }
+  }
+  return out;
+}
+
+/**
+ * #13009 — entrada do Facebook ainda `scheduled` com post id: o que a
+ * descoberta de registros extras (`--extra-stores`) procura. @pure
+ */
+export function isFacebookPendingEntry(entry: PostEntry): boolean {
+  return entry.platform === "facebook" && entry.status === "scheduled" && typeof entry.fb_post_id === "string" && !!entry.fb_post_id;
+}
+
+/**
+ * #13009 — diretórios de edição a verificar: a pedida e as `lookback - 1`
+ * anteriores. O Stage 0 roda no dia da edição anterior, quando os posts das
+ * 15:00/19:00 dela ainda estão agendados; sem olhar para trás eles ficavam
+ * `scheduled` para sempre (286 de 609 no levantamento de 13/11/2026). @pure
+ */
+export function facebookVerifyEditionDirs(editionDir: string, lookback: number): string[] {
+  const aammdd = basename(editionDir.replace(/[\\/]+$/, ""));
+  if (lookback <= 1 || !/^\d{6}$/.test(aammdd)) return [editionDir];
+  return [editionDir, ...lookbackEditions(aammdd, lookback).slice(1).map((d) => editionDirPath(d))];
+}
+
+const USAGE =
+  "Uso: verify-facebook-posts.ts [--edition-dir <path> [--lookback-days N]] [--file a.json,b.json] [--extra-stores [--extra-window-days N]]";
+
 async function main(): Promise<number | void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const args = parseArgs(process.argv.slice(2));
-  const editionDir = args["edition-dir"];
-  if (!editionDir) {
-    console.error("Uso: verify-facebook-posts.ts --edition-dir <path>");
+  const { values, flags } = parseArgs(process.argv.slice(2));
+  const editionDir = values["edition-dir"];
+  const files = (values["file"] ?? "").split(",").map((f) => f.trim()).filter(Boolean);
+  const extraStores = flags.has("extra-stores");
+  if (!editionDir && files.length === 0 && !extraStores) {
+    console.error(USAGE);
     return 1;
   }
 
-  // #920: prefer _internal/ (canonical, written by publish-facebook.ts), fall
-  // back to root (legacy editions). Hardcoding root caused verify to fail when
-  // publish-facebook.ts wrote to _internal/ — `Arquivo não encontrado`.
-  const publishedPath = resolveSocialPublishedPath(ROOT, editionDir);
-  if (!publishedPath) {
-    const internal = resolve(ROOT, editionDir, "_internal", "06-social-published.json");
-    const root = resolve(ROOT, editionDir, "06-social-published.json");
-    console.error(`Arquivo não encontrado em nenhum dos paths esperados:\n  - ${internal}\n  - ${root}`);
-    return 1;
+  const paths: string[] = [];
+  if (editionDir) {
+    const lookbackRaw = Number(values["lookback-days"]);
+    const lookback = Number.isInteger(lookbackRaw) && lookbackRaw > 1 ? lookbackRaw : 1;
+    const dirs = facebookVerifyEditionDirs(editionDir, lookback);
+    for (const [i, dir] of dirs.entries()) {
+      // #920: prefer _internal/ (canonical, written by publish-facebook.ts), fall
+      // back to root (legacy editions). Hardcoding root caused verify to fail when
+      // publish-facebook.ts wrote to _internal/ — `Arquivo não encontrado`.
+      const publishedPath = resolveSocialPublishedPath(ROOT, dir);
+      if (publishedPath) {
+        paths.push(publishedPath);
+        continue;
+      }
+      if (i > 0) continue; // edição anterior sem registro (feriado, sem social): nada a verificar.
+      const internal = resolve(ROOT, dir, "_internal", "06-social-published.json");
+      const root = resolve(ROOT, dir, "06-social-published.json");
+      console.error(`Arquivo não encontrado em nenhum dos paths esperados:\n  - ${internal}\n  - ${root}`);
+      return 1;
+    }
   }
-
-  const published = JSON.parse(readFileSync(publishedPath, "utf8")) as SocialPublished;
+  for (const f of files) {
+    const p = resolve(ROOT, f);
+    if (!existsSync(p)) {
+      console.error(`Arquivo não encontrado: ${p}`);
+      return 1;
+    }
+    paths.push(p);
+  }
+  if (extraStores) {
+    const windowRaw = Number(values["extra-window-days"]);
+    const windowDays = Number.isFinite(windowRaw) && windowRaw > 0 ? windowRaw : 4;
+    const found = discoverExtraSocialStores(resolve(ROOT, "data"), isFacebookPendingEntry, new Date(), windowDays);
+    console.log(`registros extras com post do Facebook agendado nos últimos ${windowDays} dia(s): ${found.length}.`);
+    for (const f of found) if (!paths.includes(resolve(f))) paths.push(resolve(f));
+  }
 
   // #10458: credencial por página (helper único). A `diaria` mantém a
   // precedência de sempre — env var > data/.fb-credentials.json (#3816 fix a).
@@ -390,21 +495,31 @@ async function main(): Promise<number | void> {
     return null;
   };
 
-  const { updated, changes } = await verifyPublished(
-    published,
-    "",
-    apiVersion,
-    defaultFetchPost,
-    new Date(),
-    undefined,
-    credentialsFor,
-  );
+  for (const publishedPath of paths) {
+    const published = JSON.parse(readFileSync(publishedPath, "utf8")) as SocialPublished;
+    const { updated, changes } = await verifyPublished(
+      published,
+      "",
+      apiVersion,
+      defaultFetchPost,
+      new Date(),
+      undefined,
+      credentialsFor,
+    );
+    for (const w of facebookVerifyWarnings(updated.posts)) console.warn(`⚠️  ${publishedPath}: ${w}`);
 
-  if (changes > 0) {
-    writeFileSync(publishedPath, JSON.stringify(updated, null, 2) + "\n", "utf8");
-    console.log(`✓ ${changes} post(s) atualizados em ${publishedPath}`);
-  } else {
-    console.log("Nenhuma mudança de status detectada.");
+    if (changes > 0) {
+      // #13009: sob o lock do store, trocando só as entradas do Facebook pelo
+      // post id — um publisher concorrente (semanal, mensal) não perde a escrita dele.
+      const byId = new Map<string, PostEntry>();
+      for (const e of updated.posts) if (e.platform === "facebook" && typeof e.fb_post_id === "string") byId.set(e.fb_post_id, e);
+      rewriteSocialPosts(publishedPath, (posts) =>
+        posts.map((p) => (p.platform === "facebook" && typeof p.fb_post_id === "string" ? byId.get(p.fb_post_id) ?? p : p)),
+      );
+      console.log(`✓ ${changes} post(s) atualizados em ${publishedPath}`);
+    } else {
+      console.log(`Nenhuma mudança de status detectada em ${publishedPath}.`);
+    }
   }
   // Sem credencial pra alguma página com post a verificar → exit 1 (antes do
   // #10458 o arquivo de credencial ausente já saía 1; não virar sucesso mudo).
