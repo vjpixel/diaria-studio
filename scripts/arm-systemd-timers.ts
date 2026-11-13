@@ -61,9 +61,18 @@
  * só `ActiveState=inactive`) — `--verify` não o trata como drift, mesma
  * decisão do guard `--rearm-stopped` acima.
  *
+ * **Tasks desativadas (`enabled: false`, #12930):** sem `--task`, o arme
+ * ignora as tasks desativadas do registro — mesmo filtro do gerador
+ * (`setup-systemd-timers.ts`, #5639) e do rearme automático
+ * (`remediate-never-armed-tasks.ts`, #8153). O gerador não APAGA a unit de
+ * uma task que foi desativada depois de gerada, então sem esse filtro um
+ * `--rearm-stopped` manual religava o timer dela junto com o que se queria
+ * reviver. Com `--task` apontando uma task desativada, o script recusa
+ * (`exit 1`); `--force-disabled` arma mesmo assim, de propósito.
+ *
  * Uso:
  *   npx tsx scripts/arm-systemd-timers.ts [--task <Nome>] [--rearm-stopped]
- *     [--units-dir <dir>] [--target-dir <dir>]
+ *     [--force-disabled] [--units-dir <dir>] [--target-dir <dir>]
  *   npx tsx scripts/arm-systemd-timers.ts --verify
  *
  * **`--verify` é sempre GLOBAL e recusa combinar com as flags do fluxo de
@@ -75,7 +84,10 @@
  * `--task`), então aceitar e ignorar a flag silenciosamente seria pior que
  * recusar alto.
  *
- * --task:        arma só a task nomeada (default: todas as SCHEDULED_TASKS).
+ * --task:        arma só a task nomeada (default: todas as SCHEDULED_TASKS
+ *                habilitadas — `enabled: false` fica de fora, #12930).
+ * --force-disabled: só com --task — arma a task nomeada mesmo com
+ *                `enabled: false` (sem a flag, recusa com exit 1).
  * --rearm-stopped: religa mesmo os timers já existentes e `inactive`
  *                 (comportamento antigo, restaurado explicitamente).
  * --units-dir:   onde ler os `.service`/`.timer` já gerados, relativo à raiz
@@ -102,7 +114,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findUnknownFlags, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
-  getScheduledTaskByName,
   listDisabledScheduledTaskNames,
   listScheduledTaskNames,
   SCHEDULED_TASKS,
@@ -189,6 +200,61 @@ export function decideArmAction(state: SystemdUnitState | null, rearmStopped: bo
 }
 
 // ---------------------------------------------------------------------------
+// Seleção das tasks a armar (#12930) — pura, nunca I/O
+// ---------------------------------------------------------------------------
+
+export type SelectTasksResult =
+  | { ok: true; tasks: ScheduledTaskDefinition[] }
+  | { ok: false; reason: "unknown-task" | "task-disabled" | "force-without-task"; message: string };
+
+/**
+ * Decide quais tasks do registro o fluxo de armar recebe (#12930).
+ *
+ * - Sem `taskName`: todas as tasks com `enabled !== false` — mesmo filtro de
+ *   `setup-systemd-timers.ts` (#5639) e `remediate-never-armed-tasks.ts`
+ *   (#8153). A unit de uma task desativada pode continuar em
+ *   `.systemd-units/` (o gerador não apaga), e era ela que um
+ *   `--rearm-stopped` sem `--task` religava.
+ * - Com `taskName` de task desativada: recusa (`task-disabled`), a menos que
+ *   `forceDisabled` — armar uma task desativada tem que ser decisão explícita.
+ * - `forceDisabled` sem `taskName`: recusa (`force-without-task`) — a flag
+ *   nunca reabre o arme em massa das desativadas.
+ * @pure
+ */
+export function selectTasksToArm(
+  registry: readonly ScheduledTaskDefinition[],
+  taskName: string | undefined,
+  forceDisabled: boolean,
+): SelectTasksResult {
+  if (!taskName) {
+    if (forceDisabled) {
+      return {
+        ok: false,
+        reason: "force-without-task",
+        message: "--force-disabled só vale com --task <Nome> — nunca arma em massa as tasks desativadas.",
+      };
+    }
+    return { ok: true, tasks: registry.filter((t) => t.enabled !== false) };
+  }
+  const found = registry.find((t) => t.name === taskName);
+  if (!found) {
+    return { ok: false, reason: "unknown-task", message: `Task desconhecida: "${taskName}".` };
+  }
+  if (found.enabled === false && !forceDisabled) {
+    return {
+      ok: false,
+      reason: "task-disabled",
+      message:
+        `Task "${taskName}" está desativada no registro (enabled: false, ${found.issue}) — ` +
+        "não armada. Para armar mesmo assim, de propósito, repita com --force-disabled — " +
+        "só serve se a unit já foi gerada em .systemd-units/ (o setup-systemd-timers.ts pula " +
+        "tasks desativadas, então ele não gera a unit dela).",
+    };
+  }
+  return { ok: true, tasks: [found] };
+}
+
+// ---------------------------------------------------------------------------
 // Orquestração — copia units + daemon-reload (1×) + enable --now por task
 // ---------------------------------------------------------------------------
 
@@ -254,8 +320,15 @@ export function armSystemdTimers(
       copyOutcome.set(p.timerUnit, {
         copied: false,
         error:
-          `units não encontrados em ${opts.unitsDirAbs} — rode ` +
-          `"npx tsx scripts/setup-systemd-timers.ts --task ${p.task.name}" primeiro.`,
+          p.task.enabled === false
+            ? // #12930: o gerador filtra `enabled: false` — mandar rodar o
+              // setup com --task geraria 0 arquivos.
+              `units não encontrados em ${opts.unitsDirAbs} — a task está desativada ` +
+              `(enabled: false), e o setup-systemd-timers.ts não gera unit de task desativada. ` +
+              `Mude para enabled: true no registro (scripts/lib/scheduled-tasks.ts) e rode ` +
+              `"npx tsx scripts/setup-systemd-timers.ts --task ${p.task.name}", ou gere a unit à mão.`
+            : `units não encontrados em ${opts.unitsDirAbs} — rode ` +
+              `"npx tsx scripts/setup-systemd-timers.ts --task ${p.task.name}" primeiro.`,
       });
       continue;
     }
@@ -420,26 +493,25 @@ export function reportVerifyOutcome(outcome: VerifyOutcome): number {
  * global rodaria do mesmo jeito. Recusar alto é mais honesto que aceitar
  * e ignorar — mesma disciplina do resto do arquivo (nunca engolir flag
  * incompatível em silêncio). */
-const VERIFY_INCOMPATIBLE_FLAGS = ["task", "rearm-stopped", "units-dir", "target-dir"] as const;
+const VERIFY_INCOMPATIBLE_FLAGS = ["task", "rearm-stopped", "force-disabled", "units-dir", "target-dir"] as const;
 
 /** Flags aceitas por `main` (sem hífens) — qualquer outra é recusada (#11058). */
-const KNOWN_FLAGS = ["task", "rearm-stopped", "units-dir", "target-dir", "verify", "help", "h"] as const;
+const KNOWN_FLAGS = ["task", "rearm-stopped", "force-disabled", "units-dir", "target-dir", "verify", "help", "h"] as const;
 
 const USAGE =
-  "Uso: npx tsx scripts/arm-systemd-timers.ts [--task <Nome>] [--rearm-stopped] [--units-dir <dir>] [--target-dir <dir>]\n" +
+  "Uso: npx tsx scripts/arm-systemd-timers.ts [--task <Nome>] [--rearm-stopped] [--force-disabled] [--units-dir <dir>] [--target-dir <dir>]\n" +
   "     npx tsx scripts/arm-systemd-timers.ts --verify\n" +
   "     npx tsx scripts/arm-systemd-timers.ts --help";
 
 export function main(
   argv: string[],
   repoRootAbs: string,
-  /** Injetável só pro caminho `--verify` (repassado direto a `runVerify`) —
-   * mesmo padrão de `readArmedTimerUnitBaseNames(exec = execFileSync)`. O
-   * fluxo de ARMAR abaixo não usa este parâmetro; `armSystemdTimers` chama
-   * `systemctl` por conta própria. Existe pra permitir testar `main`
-   * ponta-a-ponta com um `exec` fake, sem depender de `systemctl`
-   * existir/não existir na máquina que roda o teste (#7032, achado do CI
-   * Linux vs. Windows no #7037). */
+  /** Injetável — repassado a `runVerify` (`--verify`) e a `armSystemdTimers`
+   * (fluxo de armar, #12930). Mesmo padrão de
+   * `readArmedTimerUnitBaseNames(exec = execFileSync)`. Existe pra permitir
+   * testar `main` ponta-a-ponta com um `exec` fake, sem depender de
+   * `systemctl` existir/não existir na máquina que roda o teste (#7032,
+   * achado do CI Linux vs. Windows no #7037). */
   exec: typeof execFileSync = execFileSync,
 ): number {
   // #11058: --help/-h imprime uso e sai 0 sem tocar em systemd; flag desconhecida
@@ -481,20 +553,20 @@ ${USAGE}`);
   }
   const rearmStopped = hasFlag(argv, "rearm-stopped");
 
-  let tasks = SCHEDULED_TASKS;
-  if (taskName) {
-    const found = getScheduledTaskByName(taskName);
-    if (!found) {
-      console.error(`Task desconhecida: "${taskName}".`);
-      return 1;
-    }
-    tasks = [found];
+  const forceDisabled = hasFlag(argv, "force-disabled");
+
+  const selection = selectTasksToArm(SCHEDULED_TASKS, taskName, forceDisabled);
+  if (!selection.ok) {
+    console.error(selection.message);
+    return selection.reason === "force-without-task" ? 2 : 1;
   }
+  const tasks = selection.tasks;
+  const disabledNames = new Set(tasks.filter((t) => t.enabled === false).map((t) => t.name));
 
   const unitsDirAbs = resolve(repoRootAbs, unitsDirArg ?? DEFAULT_UNITS_DIR);
   const targetDirAbs = targetDirArg ? resolve(targetDirArg) : defaultSystemdUserDir();
 
-  const results = armSystemdTimers(tasks, { unitsDirAbs, targetDirAbs, rearmStopped });
+  const results = armSystemdTimers(tasks, { unitsDirAbs, targetDirAbs, rearmStopped, exec });
 
   let exitCode = 0;
   for (const r of results) {
@@ -514,6 +586,11 @@ ${USAGE}`);
     }
     if (r.armed) {
       console.log(`[armado] ${r.unit} (${r.decision.reason})`);
+      // #12930: o aviso só sai quando a task desativada foi de fato armada —
+      // não quando o guard a pulou (parada deliberadamente) nem quando falhou.
+      if (disabledNames.has(r.taskName)) {
+        console.warn(`[aviso] --force-disabled: "${r.taskName}" armada apesar de enabled: false no registro.`);
+      }
     } else {
       console.error(`[erro] ${r.unit}: ${r.error ?? "falha desconhecida ao armar"}`);
       exitCode = 1;
