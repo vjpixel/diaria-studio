@@ -493,6 +493,53 @@ export async function updateScheduledVideo(
   return { thumbnail, publishAt };
 }
 
+/**
+ * #12936: troca título e descrição de um vídeo JÁ NO AR (public/unlisted).
+ * Relê `snippet,status` antes: vídeo ainda agendado (private com `publishAt`)
+ * é do `--update-scheduled` e vídeo private sem agendamento (cancelado) não é
+ * tocado. Reenvia os campos graváveis do snippet e relê depois para conferir
+ * o texto gravado. A capa não muda.
+ */
+export async function updatePublishedVideoText(
+  deps: YouTubeUploadDeps,
+  creds: YouTubeCredentials,
+  videoId: string,
+  input: { title: string; description: string },
+): Promise<void> {
+  const token = await refreshYouTubeAccessToken(deps, creds);
+  await assertExpectedChannel(deps, token, creds.channelId);
+  const read = async () => {
+    const res = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=snippet,status&id=${encodeURIComponent(videoId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(explainYouTubeUploadError(res.status, await errorSnippet(res), "reread"));
+    const json = (await readJson(res)) as { items?: Array<{ id?: string; snippet?: Record<string, unknown>; status?: UploadedVideoResource["status"] }> } | null | undefined;
+    if (json === undefined) throw new Error(`videos.list devolveu corpo não-JSON (HTTP ${res.status})`);
+    const item = json?.items?.find((i) => i.id === videoId);
+    if (!item?.snippet) throw new Error(`o vídeo ${videoId} não está no canal (videos.list sem o item)`);
+    return item as { snippet: Record<string, unknown>; status?: UploadedVideoResource["status"] };
+  };
+  const item = await read();
+  const privacy = item.status?.privacyStatus;
+  if (privacy !== "public" && privacy !== "unlisted") {
+    throw new Error(
+      `o vídeo ${videoId} não está no ar (privacy ${privacy ?? "?"}, publishAt ${item.status?.publishAt ?? "nenhum"}) — nada alterado; ainda agendado é com --update-scheduled`,
+    );
+  }
+  const snippet: Record<string, unknown> = { title: input.title, description: input.description };
+  for (const k of YOUTUBE_WRITABLE_SNIPPET_FIELDS) if (item.snippet[k] !== undefined) snippet[k] = item.snippet[k];
+  const put = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=snippet`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ id: videoId, snippet }),
+  });
+  if (!put.ok) throw new Error(explainYouTubeUploadError(put.status, await errorSnippet(put), "update"));
+  const after = await read();
+  if (after.snippet.title !== input.title || after.snippet.description !== input.description) {
+    throw new Error(`videos.update aceitou, mas a releitura do vídeo ${videoId} mostra outro título/descrição — confira no YouTube Studio`);
+  }
+}
+
 /** #13000: campos graváveis do `status` que o `videos.update` preserva (o resto volta ao default se omitido). */
 export const YOUTUBE_WRITABLE_STATUS_FIELDS = ["embeddable", "license", "publicStatsViewable", "selfDeclaredMadeForKids", "containsSyntheticMedia"] as const;
 
