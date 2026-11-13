@@ -679,6 +679,7 @@ Task fora do systemd: `diaria-short-video-relacionado` (Neo, `5 6 * * 1-5`,
 | Diaria-Calibration-Touch-Minutes-Monthly | monthly day 3 09:45 | armada | `scripts/derive-touch-minutes.ts` | `calibration-audit/.touch-minutes.log` |  | G10 |
 | Diaria-Tmp-Cleanup | daily 03:20 | armada | `scripts/cleanup-tmp-300.ts` | `tmp-cleanup/.cleanup.log` |  | G10 |
 | Diaria-Video-Montage-Cache-Prune | daily 03:50 | armada | `scripts/prune-video-montage-cache.ts` | `video-montage-cache-prune/.prune.log` |  | G1, G10 |
+| Diaria-Video-Montage-Disk-Alarm | daily 13:40 | armada | `scripts/video-montage-disk-alarm.ts` | `video-montage-disk-alarm/.alarm-check.log` |  | G10 |
 | Diaria-Video-Bruto-Archive | weekly Saturday 03:00 | armada | `scripts/archive-video-brutos.ts` | `video-bruto-archive/.archive.log` |  | G1, G10 |
 | Diaria-Tmp-Disk-Alarm | interval 6h | armada | `scripts/tmp-disk-alarm.ts` | `tmp-disk-alarm/.alarm-check.log` |  | G10 |
 | Diaria-Site-Page-Merge-Check | daily 05:15 | armada | `scripts/check-site-page-merge.ts` | `site-page-merge-check/.check.log` |  | G10 |

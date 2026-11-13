@@ -3801,6 +3801,25 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     issue: "#12365",
   },
   {
+    // #12931 — em 12/11/2026 o 300 tinha 15 GB livres no disco do cache da
+    // montagem (o check-video-env --montagem exige 25 GB sem bruto
+    // conhecido) e isso só apareceu na hora de montar o vídeo. Mede o mesmo
+    // disco com o mesmo piso e abre issue com o que liberar. 13:40 BRT: de
+    // tarde, horas antes da montagem (depois do gate 4, fim de tarde/noite),
+    // tempo para limpar; minuto fora das batidas :00/:30. Só lê (statfs).
+    // Cache dir inválido (HD desmontado) ou leitura impossível sai 1 (unit
+    // `failed`). Sem `enabled: false`: o Diaria-Remediate-Never-Armed-Tasks
+    // arma no 300.
+    name: "Diaria-Video-Montage-Disk-Alarm",
+    failover: "skip",
+    description:
+      "alarma quando o disco do cache do /diaria-video-montagem fica abaixo dos 25 GB que a montagem exige (#12931)",
+    steps: [{ key: "check", script: "scripts/video-montage-disk-alarm.ts" }],
+    logPath: "video-montage-disk-alarm/.alarm-check.log",
+    schedule: { kind: "daily", hour: 13, minute: 40 },
+    issue: "#12931",
+  },
+  {
     // #12548 (resolve #12472) — a pasta de vídeo da diária no Drive cresce
     // ~10 GB por edição, quase tudo bruto do celular, e a cota da conta
     // Google (Gmail junto) acabava em ~2 semanas. Toda semana guarda os

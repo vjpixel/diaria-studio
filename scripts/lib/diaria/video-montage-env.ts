@@ -98,9 +98,23 @@ function fixFor(id: MontageEnvItemId, platform: string, python: string): string 
     case "drive":
       return "Drive for desktop com a diaria.editor montada (I:/Meu Drive/diaria-studio-video) ou OAuth do projeto válido (data/.credentials.json; renovar com scripts/oauth-setup.ts)";
     case "disk":
-      return "liberar espaço no disco do cache (~/.cache/diaria-video-montagem; DIARIA_VIDEO_CACHE_DIR aponta para outro disco)";
+      return MONTAGE_DISK_FIX;
   }
 }
+
+/**
+ * O que liberar quando falta disco para a montagem (#12931), na ordem do que
+ * se recupera sem perda. No 300 de 12/11/2026 o disco do home tinha 15 GB
+ * livres: 18 GB em worktrees, 8 GB no cache do npm, o próprio cache da
+ * montagem. Cada comando sem `--apply`/`--dry-run` explícito mostra antes o
+ * que sairia; nenhum apaga dado de edição ainda em uso.
+ */
+export const MONTAGE_DISK_FIX =
+  "liberar espaço no disco do cache, nesta ordem (#12931): " +
+  "(1) worktrees com PR mergeada: npx tsx scripts/cleanup-merged-worktrees.ts --dry-run, depois sem --dry-run; " +
+  "(2) cache de edições antigas da montagem: npx tsx scripts/prune-video-montage-cache.ts (dry-run), depois com --apply; " +
+  "(3) cache do npm: npm cache clean --force; " +
+  "ou apontar DIARIA_VIDEO_CACHE_DIR para um subdiretório do HD (#12352)";
 
 /** Puro: relatório a partir das sondas. */
 export function assessMontageEnv(probes: MontageEnvProbes, platform: NodeJS.Platform | string, python: { python: string; from: string }): MontageEnvReport {

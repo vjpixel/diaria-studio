@@ -352,8 +352,10 @@ export function describeGdriveSyncVerdict(ev: GdriveSyncEvaluation, target: Bisy
       }
       return (
         `O \`rclone bisync\` ${t.subject} está FALHANDO ${ctx}. Causas comuns: "too many deletes" (a trava do ` +
-        `\`--max-delete\`: confirmar que a deleção foi intencional e rodar \`${t.scriptCmd} --force\` ` +
-        "uma vez), bisync pedindo `--resync` (filtros mudaram ou estado perdido), lock preso, token do remote " +
+        `\`--max-delete\`: conferir as exclusões com \`${t.scriptCmd} --dry-run --force\`, confirmar que a ` +
+        `deleção foi intencional e rodar \`${t.scriptCmd} --force\` uma vez; o \`--force\` recusa apagar do Drive ` +
+        "arquivo de outro dono, #12979), bisync pedindo `--resync` (filtros mudaram ou estado perdido; resync " +
+        "automático que falhou é retomado sozinho até 3 vezes, #12590), lock preso, token do remote " +
         "expirado, sentinela ausente do lado do Drive (o `--check-access` recusa; recriar com " +
         `\`${t.remoteSentinelTouch}\`). Log: \`journalctl --user -u ${t.unit} -n 50\`. ` +
         "Este alarme nunca roda o sync."
