@@ -167,7 +167,11 @@ export type AuthorizationRefusalKind =
   | "owner-mismatch"
   | "outside-plan"
   | "plan-changed"
-  | "timing";
+  | "timing"
+  /** #12892: registro de autorização ilegível, com formato inesperado ou lock indisponível. */
+  | "unavailable"
+  /** #12892: edição do comando, do plano e do registro não batem. */
+  | "wrong-edition";
 
 export interface AuthorizationRefusal {
   destination: string;
@@ -176,8 +180,29 @@ export interface AuthorizationRefusal {
   message: string;
   /** `plan-changed`: os campos do plano que mudaram desde a aprovação (vazio = projeção diferente sem campo apontável). */
   changed?: string[];
-  /** Dono aprovado na autorização mais recente do destino (ausente = nunca autorizado). */
+  /**
+   * Dono aprovado na autorização mais recente do destino (ausente = nunca
+   * autorizado). Em `unavailable`/`wrong-edition` o registro não pôde ser
+   * lido: vem do dono do destino no plano recalculado (#12892).
+   */
   approved_owner?: VideoPlanOwner;
+}
+
+/**
+ * Pure (#12892): uma recusa por destino quando o registro inteiro falha (não
+ * dá para ler a autorização de cada um). O dono vem do plano recalculado, para
+ * o alarme da task one-shot (#12859) reconhecer a rodada da task.
+ */
+export function wholeStoreRefusals(
+  manifest: VideoPlanManifest,
+  destinations: readonly string[],
+  kind: "unavailable" | "wrong-edition",
+  message: string,
+): AuthorizationRefusal[] {
+  return destinations.map((destination) => {
+    const owner = manifest.destinations.find((d) => d.id === destination)?.owner;
+    return { destination, kind, message, ...(owner ? { approved_owner: owner } : {}) };
+  });
 }
 
 export type AuthResult<T> =
@@ -434,7 +459,8 @@ function executionBinding(
 export function consumeVideoPublishAuthorization(storeIn: VideoPublishAuthorizationStore, input: ConsumeInput): AuthResult<VideoPublishAuthorization[]> {
   const m = input.manifest;
   if (input.edition !== storeIn.edition || m.edition !== input.edition) {
-    return { ok: false, error: `edição errada: comando ${input.edition}, plano ${m.edition}, registro de autorização ${storeIn.edition}` };
+    const error = `edição errada: comando ${input.edition}, plano ${m.edition}, registro de autorização ${storeIn.edition}`;
+    return { ok: false, error, refusals: wholeStoreRefusals(m, input.destinations, "wrong-edition", error) };
   }
   if (!input.destinations.length) return { ok: false, error: "nenhum destino nesta rodada: nada a consumir" };
   const host = input.host ?? currentHost();
@@ -681,7 +707,9 @@ export function consumeBeforeExternalEffects(input: {
         : { store: null, result: { ok: false, error: r.error, ...(r.refusals ? { refusals: r.refusals } : {}) } };
     });
   } catch (e) {
-    return { ok: false, error: `registro de autorização indisponível (${(e as Error).message})` };
+    // #12892: sem as recusas, o alarme da task one-shot (#12859) não reconhecia a rodada e calava.
+    const error = `registro de autorização indisponível (${(e as Error).message})`;
+    return { ok: false, error, refusals: wholeStoreRefusals(input.manifest, input.destinations, "unavailable", error) };
   }
 }
 

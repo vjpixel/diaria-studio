@@ -29,7 +29,7 @@ import { writeFileAtomic } from "../atomic-write.ts";
 import { notifyEditor, type NotifyEditorDeps } from "../editor-notify.ts";
 import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState } from "./shorts-timer-alarm-state.ts";
 import type { AuthorizationRefusal, AuthorizationRefusalKind } from "./video-publish-authorization.ts";
-import { commandMatchesOwner, type VideoPlanPart } from "./video-publish-plan.ts";
+import { commandMatchesOwner, commandShape, type VideoPlanPart } from "./video-publish-plan.ts";
 
 export const AUTHORIZATION_ALARM_STATE_FILE = "_internal/.video-publish-authorization-alarm.json";
 export const AUTHORIZATION_ALARM_CHECK = "video-publish-authorization-task";
@@ -42,6 +42,9 @@ export function oneShotTaskRefusals(refusals: readonly AuthorizationRefusal[], c
   return refusals.filter((r) => {
     const owner = r.approved_owner;
     if (!owner || owner.by !== "agent-scheduled-task" || !owner.command?.trim()) return false;
+    // #12892: dono cujo comando não é de publisher (o passo guiado diferido, `/diaria-publica-video ... --so vertical`)
+    // não identifica rodada nenhuma: o `commandMatchesOwner` sem `fallbackCommand` daria "casa" para qualquer comando.
+    if (commandShape(owner.command).script === null) return false;
     return commandMatchesOwner(command, owner, r.destination) === null;
   });
 }
@@ -56,6 +59,8 @@ const KIND_LABEL: Record<AuthorizationRefusalKind, string> = {
   "outside-plan": "destino fora do plano recalculado",
   "plan-changed": "o plano mudou depois da aprovação",
   timing: "instante fora do aprovado",
+  unavailable: "registro de autorização indisponível (ilegível, formato inesperado ou lock)",
+  "wrong-edition": "edição do comando, do plano e do registro não batem",
 };
 
 /** Puro: chave estável do alarme (uma por edição, parte, destinos e motivos). */
@@ -83,6 +88,9 @@ export function buildAuthorizationRefusalAlarm(input: {
   for (const r of refusals) {
     const changed = r.kind === "plan-changed" ? ` Campo(s) que mudaram: ${r.changed?.length ? r.changed.map((c) => `\`${c}\``).join(", ") : "projeção do destino diferente (sem campo apontável)"}.` : "";
     lines.push(`- \`${r.destination}\`: ${KIND_LABEL[r.kind]}.${changed} Detalhe: ${r.message}`);
+  }
+  if (refusals.some((r) => r.kind === "unavailable")) {
+    lines.push("", "O registro de autorização não pôde ser lido: conferir `_internal/video-publish-authorizations.json` da edição (escrita parcial do sync do Drive, lock preso) antes de reaprovar (#12892).");
   }
   lines.push(
     "",
