@@ -118,6 +118,14 @@ function tokenizeSegmentPreservingQuotes(segment) {
       i++;
       inToken = true;
       while (i < n && segment[i] !== quote) {
+        // #12942: entre aspas duplas a `\` só escapa $, crase, `"`, `\` e
+        // newline (regra do bash); antes de outro caractere ela fica, então
+        // `"C:\Users\x\wt"` segue intacto. Sem isto `\"` fechava a aspa cedo.
+        if (quote === '"' && segment[i] === "\\" && i + 1 < n && '$`"\\\n'.includes(segment[i + 1])) {
+          if (segment[i + 1] !== "\n") current += segment[i + 1];
+          i += 2;
+          continue;
+        }
         current += segment[i];
         i++;
       }

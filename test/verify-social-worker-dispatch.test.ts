@@ -91,22 +91,24 @@ describe("reconcileWorkerEntry — DLQ (falha real, qualquer canal)", () => {
 });
 
 describe("reconcileWorkerEntry — nem fila nem DLQ (fired)", () => {
-  it("instagram: vira published com verification_note de ALTA confiança (entrega real)", () => {
+  it("instagram: vira published, mas a nota diz que o feed NÃO foi conferido (#13008)", () => {
     const e = entry({ platform: "instagram" });
     const r = reconcileWorkerEntry(e, new Set(), new Set(), NOW);
     assert.equal(r.changed, true);
     assert.equal(r.updated.status, "published");
     assert.equal(r.updated.published_at, NOW.toISOString());
-    assert.match(r.updated.verification_note as string, /confirmed_by_worker_high_confidence/);
+    assert.match(r.updated.verification_note as string, /^worker_drained_feed_unverified:/);
+    // #13008: sumir da fila não prova disparo — a nota nunca mais afirma alta confiança.
+    assert.doesNotMatch(r.updated.verification_note as string, /high_confidence|confirmed_by_worker/);
     assert.equal(r.updated.failure_reason, undefined);
   });
 
-  it("threads: mesmo caminho de alta confiança do instagram", () => {
+  it("threads: mesmo caminho do instagram (feed não conferido)", () => {
     const e = entry({ platform: "threads" });
     const r = reconcileWorkerEntry(e, new Set(), new Set(), NOW);
     assert.equal(r.changed, true);
     assert.equal(r.updated.status, "published");
-    assert.match(r.updated.verification_note as string, /confirmed_by_worker_high_confidence/);
+    assert.match(r.updated.verification_note as string, /^worker_drained_feed_unverified:/);
   });
 
   it("linkedin: vira published mas com verification_note de confiança MAIS FRACA (sem confirmação da plataforma)", () => {
@@ -118,8 +120,8 @@ describe("reconcileWorkerEntry — nem fila nem DLQ (fired)", () => {
       r.updated.verification_note as string,
       /make_webhook_accepted_no_platform_delivery_confirmation/,
     );
-    // Nunca a mesma nota de alta confiança do Instagram/Threads.
-    assert.doesNotMatch(r.updated.verification_note as string, /confirmed_by_worker_high_confidence/);
+    // Nota própria do LinkedIn, nunca a do Instagram/Threads.
+    assert.doesNotMatch(r.updated.verification_note as string, /worker_drained_feed_unverified/);
   });
 });
 

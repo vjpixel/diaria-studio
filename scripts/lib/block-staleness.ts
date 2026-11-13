@@ -20,6 +20,10 @@
  * 1. **`pr-em-voo`** — o PR citado (campo `pr`, ou extraído do texto livre
  *    de `nota` via `/PR\s*#(\d+)/i`, porque a prática observada no
  *    `plan.json` real grava o número só em prosa) já está `MERGED`/`CLOSED`.
+ *    **#13003:** entrada com `orphan_action: "aguardar-ci"` (#12950) também
+ *    caduca quando o PR segue `OPEN` mas o CI dele TERMINOU (verde ou
+ *    vermelho) — a espera acabou e a ação vira `merge-via-gate2`/
+ *    `despachar-fixer` na mesma rodada, sem esperar o teto de 6h do `editor`.
  * 2. **`claimed-por-outra-sessao`** — nenhuma sessão ativa (não-stale)
  *    segura mais a issue em `claimed_issues` (`session-registry.ts`).
  * 3. **`bloqueio-execucao`** — NENHUMA label de bloqueio real
@@ -120,6 +124,7 @@ export type IssueState = "OPEN" | "CLOSED" | "UNKNOWN";
  * já reconhece. */
 import { BLOCKED_LABELS_SET } from "./issue-exec-track.ts";
 import { DEFAULT_ISSUE_REPO, normalizeRepoSlug, parseIssueRef } from "./issue-repos.ts";
+import type { OpenPrCiState } from "./issue-open-pr-check.ts";
 import {
   compareIssueKeys,
   issueKeyOfPlanEntry,
@@ -165,7 +170,17 @@ export interface BlockStalenessConsultor {
    * já `CLOSED` (ex: auto-fechada por alarme que se auto-normalizou) não tem
    * "dispatch a reavaliar" — reportá-la como "bloqueio caducado" é ruído. */
   getIssueState(issueNumber: number, repo?: string): IssueState;
+  /**
+   * #13003: estado do CI de um PR aberto, pela mesma derivação que gerou o
+   * `orphan_action` (`deriveOpenPrCiState`): `green`/`failing` = CI
+   * terminou; `pending`/`unknown` = ainda esperando (ou não deu pra ler).
+   * Opcional: consultor sem o método nunca reavalia `aguardar-ci`.
+   */
+  getPrCiState?(prNumber: number, repo?: string): OpenPrCiState;
 }
+
+/** `orphan_action` gravado na entrada pelo pickup de PR órfã (#12950). */
+export const AGUARDAR_CI_ORPHAN_ACTION = "aguardar-ci";
 
 /** Pure: extrai o número do PR citado numa entrada — prioriza o campo
  * estruturado `pr`; cai pro texto livre de `nota` (`/PR\s*#(\d+)/i`) porque
@@ -307,17 +322,35 @@ export function findStaleBlocks(
       // Rótulo de sempre (`estado do PR #N`) quando o PR mora no repo da
       // issue; o repo só aparece quando a citação aponta OUTRO repo.
       if (state === "UNKNOWN") onUnverifiable?.(key, `estado do ${cited.repo && prRepoFull !== (repo ?? DEFAULT_ISSUE_REPO) ? `${prRepoFull} ` : ""}PR #${pr}`);
+      // #10618 (fatia 3/4): rótulo com o repo onde o PR mora (o citado,
+      // ou o da issue) quando não é o studio — mesmo formato do `prLabel`
+      // do check-pr-terminal-state.
+      const prLabel = prRepo ? `${prRepo} PR #${pr}` : `PR #${pr}`;
       if (state === "MERGED" || state === "CLOSED") {
         findings.push({
           number: issueNumber,
           key,
           category,
           motivo,
-          // #10618 (fatia 3/4): rótulo com o repo onde o PR mora (o citado,
-          // ou o da issue) quando não é o studio — mesmo formato do
-          // `prLabel` do check-pr-terminal-state.
-          reason: `${prRepo ? `${prRepo} PR #${pr}` : `PR #${pr}`} já está ${state === "MERGED" ? "mergeado" : "fechado"} — bloqueio caducou`,
+          reason: `${prLabel} já está ${state === "MERGED" ? "mergeado" : "fechado"} — bloqueio caducou`,
         });
+        continue;
+      }
+      // #13003: `aguardar-ci` espera o CI, não o merge. PR ainda aberto com
+      // CI terminado = a espera caducou e a rodada retoma a PR agora.
+      if (state === "OPEN" && entry.orphan_action === AGUARDAR_CI_ORPHAN_ACTION && consultor.getPrCiState) {
+        const ci = consultor.getPrCiState(pr, prRepo);
+        if (ci === "green" || ci === "failing") {
+          findings.push({
+            number: issueNumber,
+            key,
+            category,
+            motivo,
+            reason: `CI do ${prLabel} terminou (${ci === "green" ? "verde → merge-via-gate2" : "vermelho → despachar-fixer"}) — a espera de aguardar-ci caducou, reavaliar o orphanAction`,
+          });
+        } else if (ci === "unknown") {
+          onUnverifiable?.(key, `CI do ${prLabel}`);
+        }
       }
       continue;
     }

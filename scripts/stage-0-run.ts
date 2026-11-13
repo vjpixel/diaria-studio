@@ -48,8 +48,10 @@
  *       humana (s/n/d) — vira `pendingHumanDecision`.
  *   0k. Verificação FB + LinkedIn/Instagram/Threads da edição anterior
  *       (find-last-edition-with-fb.ts + verify-facebook-posts.ts +
- *       verify-social-worker-dispatch.ts) — 100% script, sem MCP.
- *   0l. check-prev-social-status.ts (`--json`) — 100% script.
+ *       verify-social-worker-dispatch.ts + reconcile-social-permalinks.ts,
+ *       que confere no feed da conta, #13009) — 100% script, sem MCP.
+ *   0l. check-prev-social-status.ts (`--json`) — 100% script; vira nota só
+ *       com findings (#13008).
  *   0o. Entrega por provedor (#7021, reduzido em #7402) —
  *       find-last-edition-with-kit.ts resolve a edição anterior com canal Kit
  *       despachado; kit-provider-split.ts --edition mede entrega/abertura por
@@ -147,6 +149,7 @@ import { CAPTURE_EMPTY_MESSAGE, evaluateCaptureYield } from "./lib/newsletter-ca
 import { type CaptureFailureSentinel, captureFailedSentinelPath } from "./lib/newsletter-capture-failure.ts";
 import { approvedSenders, classifySender, resolveSenderRegistry, type SenderRegistry } from "./lib/newsletter-senders.ts";
 import { EXIT_HISTORY_MANIFEST_REL_PATH, exitHistoryDrainStatus } from "./lib/beehiiv-exit-history.ts";
+import { formatPrevSocialSummary, type PrevSocialReport } from "./lib/prev-social-status.ts";
 
 // Mesma disciplina do #4983 (clarice-novos-run.ts) — carregar .env ANTES de
 // qualquer outro código, em module scope.
@@ -483,6 +486,23 @@ export function writePartialCaptureFailedSentinel(
   } catch (err) {
     console.error(`⚠️  0b-bis: não consegui regravar o sentinel de falha (#12452): ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/**
+ * Nota do 0l (#13008). Antes contava `total` (TODOS os posts examinados), então
+ * toda edição com posts sociais gerava "N finding(s)" — alarme que sempre
+ * dispara, e o post que de fato não saiu ficava no meio do ruído. Agora só os
+ * `findings` (failed / send_unknown / agendado vencido) viram nota, nomeados.
+ * `null` quando nada exige atenção.
+ */
+export function prevSocialStatusNote(json: Partial<PrevSocialReport> | undefined, prevEdition: string): string | null {
+  const findings = Array.isArray(json?.findings) ? json.findings : [];
+  if (findings.length === 0) return null;
+  const summary = formatPrevSocialSummary(
+    { findings, terminalByDesign: json?.terminalByDesign ?? 0, total: json?.total ?? findings.length },
+    prevEdition || "?",
+  );
+  return summary ? `⚠️  0l — ${summary}` : null;
 }
 
 /**
@@ -1152,6 +1172,11 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
       report.note(`⚠️  0k — verify-facebook-posts pulado: ${fbGate.reason}`);
     }
     softStep(deps, report, "verify-social-worker-dispatch (0k)", "scripts/verify-social-worker-dispatch.ts", ["--edition-dir", `${prevDir}/`]);
+    // #13009/#13008: confere IG/Threads/LinkedIn no FEED da conta — grava o
+    // permalink, ou marca `send_unknown` (absent_from_feed) o post vencido
+    // que não está lá. Depois do worker-dispatch, que só sabe dizer "saiu da
+    // fila"; antes do 0l, que então lista o ausente como "dispatch falhou".
+    softStep(deps, report, "reconcile-social-permalinks (0k)", "scripts/reconcile-social-permalinks.ts", ["--edition-dir", `${prevDir}/`, "--lookback-days", "3"]);
     // #5766/#6152 — Twitter via API GraphQL do Buffer, token vem de env (não
     // de arquivo, diferente do fb-credentials.json acima). Sem gate por
     // hasEnv: verify-twitter-posts.ts agora carrega o próprio `.env`
@@ -1173,10 +1198,11 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     });
     report.note(`⚠️  0l — check-prev-social-status.ts falhou (exit ${prevStatusResult.code}): status social da edição anterior não verificado, sem alerta possível.`);
   }
-  const prevStatusJson = parseStepJson<{ findings?: Array<{ line?: string }>; total?: number }>(prevStatusResult.stdout);
-  if (prevStatusJson?.total && prevStatusJson.total > 0) {
+  const prevStatusJson = parseStepJson<Partial<PrevSocialReport>>(prevStatusResult.stdout);
+  const prevStatusNote = prevSocialStatusNote(prevStatusJson, prevSocialArgs[3] ?? "");
+  if (prevStatusNote) {
     logEvent(deps, opts.edition, "warn", "edição anterior tem posts sociais que exigem atenção", { details: prevStatusJson, informational: true });
-    report.note(`⚠️  edição anterior: ${prevStatusJson.total} finding(s) de status social — ver detalhes no run-log.`);
+    report.note(prevStatusNote);
   }
 
   // --- 0o: entrega por provedor da edição anterior (#7021, reduzido em #7402) ---

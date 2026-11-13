@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import {
   runStage0,
   facebookVerifyGate,
+  prevSocialStatusNote,
   parseStage0RunArgs,
   editionIsoFromAammdd,
   isoDateOnly,
@@ -712,6 +713,61 @@ describe("runStage0 --phase continue — caminho feliz", () => {
   });
 
   const CONTINUE_ARGV = ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"];
+
+  it("0k — reconcile-social-permalinks roda depois do worker-dispatch e antes do 0l (#13009)", async () => {
+    const { exec, calls } = makeFakeExec(happyExecHandlers());
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      baseDeps({ exec, execAsync }),
+    );
+    const idx = (name: string) => calls.findIndex((c) => c.script.includes(name));
+    const reconcile = idx("reconcile-social-permalinks");
+    assert.ok(reconcile >= 0, "o passo é chamado");
+    assert.ok(calls[reconcile].args.includes("--edition-dir"));
+    // Posts das 15:00/19:00 da edição anterior ainda não venceram quando o Stage 0 roda.
+    assert.equal(calls[reconcile].args[calls[reconcile].args.indexOf("--lookback-days") + 1], "3");
+    assert.ok(idx("verify-social-worker-dispatch") < reconcile);
+    assert.ok(reconcile < idx("check-prev-social-status"));
+  });
+
+  it("0l — sem findings não há nota, mesmo com posts examinados (#13008: antes contava `total`)", async () => {
+    const { exec } = makeFakeExec(
+      happyExecHandlers({
+        "check-prev-social-status.ts": () => ok(JSON.stringify({ findings: [], terminalByDesign: 0, total: 19 })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      baseDeps({ exec, execAsync }),
+    );
+    assert.ok(!result.notes.some((n) => /0l|finding\(s\) de status social/.test(n)), JSON.stringify(result.notes));
+  });
+
+  it("0l — finding vira nota nomeando canal/destaque e motivo (#13008)", async () => {
+    const findings = [{ platform: "instagram", destaque: "um", status: "send_unknown", scheduled_at: "2026-04-22T13:00:00-03:00", reason: "absent-from-feed" }];
+    const { exec } = makeFakeExec(
+      happyExecHandlers({
+        "check-prev-social-status.ts": () => ok(JSON.stringify({ findings, terminalByDesign: 0, total: 19 })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      baseDeps({ exec, execAsync }),
+    );
+    const note = result.notes.find((n) => n.startsWith("⚠️  0l"));
+    assert.ok(note, JSON.stringify(result.notes));
+    assert.match(note!, /1 post\(s\).*instagram\/um \(agendado e ausente do feed da conta\)/);
+    assert.match(note!, /260422/);
+  });
+
+  it("prevSocialStatusNote: JSON ausente ou sem findings = null", () => {
+    assert.equal(prevSocialStatusNote(undefined, "x"), null);
+    assert.equal(prevSocialStatusNote({ total: 12 }, "x"), null);
+  });
+
 
   it("0k — verify-facebook-posts roda com credencial só no env, sem data/.fb-credentials.json (#10505)", async () => {
     const { exec, calls } = makeFakeExec(happyExecHandlers());
