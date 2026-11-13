@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.20
+version: 0.5.21
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -283,10 +283,9 @@ ordem:
    normalmente. "Há PR aguardando review externo" descreve o estado
    DAQUELA PR, não uma condição de parada do tick — não existe regra que
    limite o contínuo a uma PR por vez. Se há issue `track=overnight`
-   elegível e não reivindicada, o tick trabalha. Achado ao vivo (#6917):
-   um tick com 36 issues `track=overnight` elegíveis na fila terminou sem
-   reivindicar nenhuma, justificando com "conforme a regra de prioridade
-   da fila" — **essa regra nunca existiu neste arquivo.**
+   elegível e não reivindicada, o tick trabalha. Achado (#6917): um tick com
+   36 issues elegíveis parou citando "a regra de prioridade da fila", **que
+   nunca existiu** (changelog, 0.5.12).
 
    **Pickup existe desde o #6823 (cadeia completa na referência acima):**
    só no `/diaria-overnight` (Fase 0, 2b); `continuo-pr-review.sh` mergeia
@@ -430,7 +429,7 @@ printf '%s' "Implemente a issue #N do repo atual (leia fresca: gh api repos/{own
 Siga o CLAUDE.md. NUNCA commite em master: git switch -c continuo/fix-<issue>-<slug> ANTES do 1º commit (o hook recusa). O prefixo continuo/ (continuo/fix-N-slug) é o que faz o PR aparecer como CONTINUO na Triagem
 do Studio, #6446. Implemente com edições cirúrgicas, adicione
 teste de regressão se for bugfix (#633), rode os testes afetados + `npx tsx scripts/which-set-guards.ts` (rode TODOS os testFiles que ele listar, não só o do arquivo tocado — #8879), abra PR
-com gh pr create referenciando a issue (draft: --draft --label bloqueio-execucao, #12460). Inclua no corpo da PR, em linha própria, o marcador <!-- continuo-owner-session: $SESSION_ID --> com o ID deste tick já expandido (preserve-o nos re-pushes; nunca use o ID do review). NÃO mergeie — desde o #6864, nem
+com gh pr create referenciando a issue, sem --draft; draft (--draft --label bloqueio-execucao) só com bloqueio de execução real descrito no corpo (#12460, #12950). Inclua no corpo da PR, em linha própria, o marcador <!-- continuo-owner-session: $SESSION_ID --> com o ID deste tick já expandido (preserve-o nos re-pushes; nunca use o ID do review). NÃO mergeie — desde o #6864, nem
 o coordenador deste tick mergeia mais: o merge acontece exclusivamente no
 pickup (#6823) ou no review consolidado. Se a issue for inviável/ambígua
 além do trivial, comente nela o bloqueio via gh issue comment e pare." | \
