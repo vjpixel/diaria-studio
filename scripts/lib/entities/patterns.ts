@@ -29,6 +29,13 @@ export const ENTITY_KEYWORD_PATTERNS: Record<string, RegExp> = {
   deepseek: /\bdeepseek\b/i,
   oracle: /\boracle\b/i,
   alibaba: /\balibaba\b/i,
+  // #8350 (1º lote brasileiro). Sem acento de propósito: `collectHubSources`
+  // compara contra o texto sem acento (`stripAccents`). `sabia` sozinho
+  // casaria o verbo ("não sabia que..."), por isso só com versão/diminutivo.
+  tse: /\btse\b|tribunal superior eleitoral/i,
+  "pl-2338": /\bpl\s*2\.?338\b|marco legal da (ia|inteligencia artificial)\b/i,
+  nubank: /\bnubank\b/i,
+  "maritaca-ai": /\bmaritaca\b|\bsabia[- ]?\d|\bsabiazinho\b/i,
 };
 
 /**
@@ -88,5 +95,13 @@ export const ENTITY_EXCLUDED_EDITIONS: Record<string, readonly string[]> = {
     // versão e outra — manter as duas duplicaria a mesma notícia na
     // timeline sem agregar leitura.
     "claude-cowork-chega-ao-celular-e-a-web",
+  ],
+  "pl-2338": [
+    // 2026-05-22, "Senado aprova marco legal da IA no Brasil" — a edição
+    // tratou como notícia do mês uma aprovação que, pela tramitação oficial
+    // (senado.leg.br, matéria 157233), ocorreu em 10/12/2024. Mesma correção
+    // já documentada no hub `brasil-regulacao` (#5060); a metodologia de
+    // `pl-2338.ts` explica a ausência ao leitor (#8350).
+    "soberania-ia-pu-blica-nacional",
   ],
 };

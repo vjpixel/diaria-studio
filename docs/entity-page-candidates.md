@@ -217,3 +217,34 @@ pro leitor" já documentado).
 Item 4 da issue #5125 original (decisão de escala pros 247 posts) segue
 dependendo da janela de medição de 3 semanas da PoC de Perplexity
 (checkpoint 03/09/2026, ver comentário do editor de 14/08/2026 na issue).
+
+## Lote brasileiro (#8350, 12/11/2026)
+
+Decisão do editor no #8350 (Opção A, comentários de 18/09 e 19/09/2026):
+rodar a mesma metodologia com semente brasileira e publicar um 1º lote de 5
+páginas, as 3 candidatas com mais menções entre {PL 2338, TSE, Nubank, STF,
+SUS} mais Maritaca AI e ReGLab, que têm impressão medida no GSC. Critério de
+leitura pré-registrado na issue: posicional (top-10 ou não), ~6 semanas
+depois da indexação.
+
+Diferença de método em relação às rodadas anteriores: a contagem saiu do
+**texto completo** de `workers/site/public/p/*/index.html` (306 edições),
+não de título+subtítulo do cache Beehiiv. Entidade brasileira raramente vira
+manchete; o volume está no corpo e no Radar. Toda contagem bruta passou por
+leitura manual, que descartou links internos do rodapé ("Mais sobre...",
+"Anterior/Próxima") e erratas do concurso de erros.
+
+| Candidata | Bruta | Real (leitura manual) | Status |
+|---|---|---|---|
+| TSE | 14 | 10 | **publicada** (`tse.ts`) |
+| PL 2338 / Marco Legal da IA | 10 (regex estreita), 15 (ampla) | 12 | **publicada** (`pl-2338.ts`); 22/05/2026 excluída, cronologia errada (#5060) |
+| Nubank | 9 | 7 | **publicada** (`nubank.ts`) |
+| STF | 6 | 2-3 | fora: 2 acertos são o TSE (Gilmar Mendes como ministro do STF; errata STF/TSE), 1 é o Dossiê Master |
+| SUS | 5 | 2-3 | fora: 1 falso positivo ("A SUS lança soluções", empresa), 1 manchete solta em lista |
+| Maritaca AI | 4 | 4 | **publicada** (`maritaca-ai.ts`) com `mentionFloorException` (piso 3) |
+| ReGLab | 4 | **1** | **não publicada**: só a edição de 17/08/2026 cobre o ReGLab; as outras 3 são links de rodapé para essa mesma edição. Uma linha do tempo de 1 item repetiria a edição de origem |
+
+Sobreposição com hubs: TSE e PL 2338 também entram nos hubs
+`brasil-regulacao` e `deepfake`. As páginas ficam no formato de entidade
+(linha do tempo de um órgão ou projeto nomeado) e linkam os hubs na
+metodologia e no FAQ.

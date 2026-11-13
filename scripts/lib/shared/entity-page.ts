@@ -142,6 +142,16 @@ import { FONTS } from "./design-tokens.ts";
  * entidade candidata ficar bem abaixo/acima deste piso. */
 export const MIN_ENTITY_MENTIONS = 5;
 
+/** Piso ABSOLUTO quando a entidade declara `mentionFloorException` (#8350).
+ * A exceção ao `MIN_ENTITY_MENTIONS` existe para o teste de entidade nichada
+ * brasileira aprovado pelo editor em 18/09/2026: Maritaca AI e ReGLab
+ * foram indicadas para o lote por terem impressão medida no GSC, com 3-4
+ * menções brutas no acervo, abaixo do piso de 5. A exceção é registrada no próprio conteúdo
+ * (o motivo vai no campo), nunca um rebaixamento silencioso do piso geral,
+ * e não desce de 3: com 1-2 menções a página repete a própria edição de
+ * origem, que é o padrão de "doorway page" que o piso existe para barrar. */
+export const MIN_ENTITY_MENTIONS_WITH_EXCEPTION = 3;
+
 /** Uma menção da entidade numa edição da diar.ia.br — a unidade do índice
  * cronológico (issue #5125: "índice cronológico de menções... com
  * recorte/resumo curto PRÓPRIO"). */
@@ -204,6 +214,10 @@ export interface EntityContent {
    * #4939/#4930) — de onde vem o levantamento e o que ele NÃO é. */
   methodologyNote: string;
   footerNavUtm: { readonly source: string; readonly medium: string };
+  /** Motivo, em prosa, para a página existir com menos de
+   * `MIN_ENTITY_MENTIONS` menções (#8350). Só vale com pelo menos
+   * `MIN_ENTITY_MENTIONS_WITH_EXCEPTION`; vazio ou ausente = piso normal. */
+  mentionFloorException?: string;
 }
 
 function pageUrl(slug: string): string {
@@ -243,9 +257,13 @@ export function mentionHeadingLabel(m: EntityMention): string {
  */
 export function validateEntityContent(entity: EntityContent): string[] {
   const errors: string[] = [];
-  if (entity.mentions.length < MIN_ENTITY_MENTIONS) {
+  const hasFloorException = (entity.mentionFloorException ?? "").trim().length > 0;
+  const floor = hasFloorException ? MIN_ENTITY_MENTIONS_WITH_EXCEPTION : MIN_ENTITY_MENTIONS;
+  if (entity.mentions.length < floor) {
     errors.push(
-      `mentions tem ${entity.mentions.length} entrada(s) — mínimo ${MIN_ENTITY_MENTIONS} pra justificar página própria (ver MIN_ENTITY_MENTIONS)`,
+      hasFloorException
+        ? `mentions tem ${entity.mentions.length} entrada(s) — mesmo com mentionFloorException o mínimo é ${MIN_ENTITY_MENTIONS_WITH_EXCEPTION} (ver MIN_ENTITY_MENTIONS_WITH_EXCEPTION)`
+        : `mentions tem ${entity.mentions.length} entrada(s) — mínimo ${MIN_ENTITY_MENTIONS} pra justificar página própria (ver MIN_ENTITY_MENTIONS)`,
     );
   }
   for (let i = 1; i < entity.mentions.length; i++) {

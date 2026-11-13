@@ -15,6 +15,7 @@ import {
   renderEntityPage,
   mentionHeadingLabel,
   MIN_ENTITY_MENTIONS,
+  MIN_ENTITY_MENTIONS_WITH_EXCEPTION,
   type EntityContent,
   type EntityMention,
 } from "../scripts/lib/shared/entity-page.ts";
@@ -26,6 +27,10 @@ import { getAppleEntity } from "../scripts/lib/entities/apple.ts";
 import { getDeepseekEntity } from "../scripts/lib/entities/deepseek.ts";
 import { getOracleEntity } from "../scripts/lib/entities/oracle.ts";
 import { getAlibabaEntity } from "../scripts/lib/entities/alibaba.ts";
+import { getTseEntity } from "../scripts/lib/entities/tse.ts";
+import { getPl2338Entity } from "../scripts/lib/entities/pl-2338.ts";
+import { getNubankEntity } from "../scripts/lib/entities/nubank.ts";
+import { getMaritacaAiEntity } from "../scripts/lib/entities/maritaca-ai.ts";
 import { entityFooterNavUtm, type EntitySlug } from "../scripts/lib/shared/utm-registry.ts";
 
 const ENTITY_PERPLEXITY_FOOTER_NAV_UTM = entityFooterNavUtm("perplexity");
@@ -45,6 +50,10 @@ const ENTITY_GETTERS: Record<EntitySlug, () => { footerNavUtm: { source: string 
   deepseek: getDeepseekEntity,
   oracle: getOracleEntity,
   alibaba: getAlibabaEntity,
+  tse: getTseEntity,
+  "pl-2338": getPl2338Entity,
+  nubank: getNubankEntity,
+  "maritaca-ai": getMaritacaAiEntity,
 };
 
 /** Menção sintética válida — cada teste sobrescreve só o campo sob teste. */
@@ -105,6 +114,74 @@ describe(`validateEntityContent — piso de menções (MIN_ENTITY_MENTIONS = ${M
   it(`aceita exatamente ${MIN_ENTITY_MENTIONS} menções`, () => {
     const entity = baseEntity({ mentions: validMentions(MIN_ENTITY_MENTIONS) });
     assert.deepEqual(validateEntityContent(entity), []);
+  });
+});
+
+describe(`validateEntityContent — exceção ao piso (#8350, MIN_ENTITY_MENTIONS_WITH_EXCEPTION = ${MIN_ENTITY_MENTIONS_WITH_EXCEPTION})`, () => {
+  const reason = "Teste de entidade nichada aprovado pelo editor no #8350.";
+
+  it("aceita menos que o piso normal quando mentionFloorException traz o motivo", () => {
+    const entity = baseEntity({
+      mentions: validMentions(MIN_ENTITY_MENTIONS_WITH_EXCEPTION),
+      mentionFloorException: reason,
+    });
+    assert.deepEqual(validateEntityContent(entity), []);
+  });
+
+  it("rejeita abaixo do piso absoluto mesmo com a exceção declarada (1 menção = doorway)", () => {
+    const entity = baseEntity({
+      mentions: validMentions(MIN_ENTITY_MENTIONS_WITH_EXCEPTION - 1),
+      mentionFloorException: reason,
+    });
+    const errors = validateEntityContent(entity);
+    assert.ok(errors.some((e) => /mesmo com mentionFloorException/.test(e)), errors.join("; "));
+  });
+
+  it("exceção vazia ou só espaços não conta: vale o piso normal", () => {
+    for (const blank of ["", "   "]) {
+      const entity = baseEntity({
+        mentions: validMentions(MIN_ENTITY_MENTIONS - 1),
+        mentionFloorException: blank,
+      });
+      const errors = validateEntityContent(entity);
+      assert.ok(errors.some((e) => /mínimo \d+ pra justificar página própria/.test(e)), errors.join("; "));
+    }
+  });
+});
+
+describe("lote brasileiro de entidades (#8350)", () => {
+  const BR = { tse: getTseEntity, "pl-2338": getPl2338Entity, nubank: getNubankEntity, "maritaca-ai": getMaritacaAiEntity };
+
+  for (const [slug, get] of Object.entries(BR)) {
+    it(`${slug}: valida, slug bate com o registro e só a Maritaca usa a exceção ao piso`, () => {
+      const entity = get();
+      assert.equal(entity.slug, slug);
+      assert.deepEqual(validateEntityContent(entity), []);
+      if (slug === "maritaca-ai") {
+        assert.ok(entity.mentions.length < MIN_ENTITY_MENTIONS, "Maritaca entrou abaixo do piso; se passou dele, remover a exceção");
+        assert.ok((entity.mentionFloorException ?? "").includes("#8350"));
+      } else {
+        assert.equal(entity.mentionFloorException, undefined);
+      }
+    });
+
+    it(`${slug}: texto ao leitor sem seta e com a marca em minúsculas`, () => {
+      const entity = get();
+      const prose = [
+        entity.introParagraph,
+        entity.metaDescription,
+        entity.methodologyNote,
+        ...entity.mentions.map((m) => m.summary),
+        ...entity.faq.flatMap((f) => [f.question, f.answer]),
+      ].join("\n");
+      assert.doesNotMatch(prose, /[→←]/);
+      assert.doesNotMatch(prose, /Diar\.ia/);
+    });
+  }
+
+  it("pl-2338 não carrega a edição de 22/05/2026 (cronologia errada, #5060)", () => {
+    const urls = getPl2338Entity().mentions.map((m) => m.editionUrl);
+    assert.ok(!urls.some((u) => u.endsWith("/soberania-ia-pu-blica-nacional")));
   });
 });
 
