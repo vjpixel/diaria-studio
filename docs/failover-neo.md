@@ -49,12 +49,56 @@ O resto fica parado:
   `CLOUDFLARE_ACCOUNT_ID` e `CLOUDFLARE_WORKERS_TOKEN` (KV `diaria-ops-state`),
   além das credenciais de cada canal. As tarefas do Neo passam o `.env` aos
   passos (no Task Scheduler não há `EnvironmentFile`). Prontidão completa:
-  #12983.
+  ver § Prontidão abaixo (#12983).
 - Fuso: o registro está em horário de Brasília. Se o Neo estiver em outro fuso,
   o `--arm` converte pelo offset do momento e avisa; mudou o fuso, arme de novo.
 - O Neo precisa ficar ligado e **com o editor logado**: as tarefas rodam como
   o usuário logado (sem sessão aberta, nada roda). Com `StartWhenAvailable`,
   uma execução perdida durante a suspensão roda ao acordar.
+
+## Prontidão (#12983)
+
+`scripts/failover/neo-readiness.ts` diz, para cada task `critical`, se ela
+rodaria no Neo agora: uma linha `pronto` / `falta X`. Sem `--record` não
+escreve nada.
+
+```
+npx tsx scripts/failover/neo-readiness.ts            # tabela; exit 1 se falta algo
+npx tsx scripts/failover/neo-readiness.ts --json     # relatório completo
+npx tsx scripts/failover/neo-readiness.ts --record   # também grava no KV
+```
+
+O que confere (cada checagem isolada; a que falha não derruba as outras):
+
+- os scripts dos passos existem e o arquivo do `guard` da task existe em `data/`;
+- os segredos de cada script estão no `.env` (ou ambiente) e no Doppler. Só
+  presença: o Doppler é consultado com `--only-names`, nenhum valor é lido do
+  vault nem impresso. Presente só no Doppler conta como falta (`.env`
+  atrasado: `npm run sync-env`). A lista por script fica em
+  `CRITICAL_SCRIPT_REQUIREMENTS` (`scripts/lib/failover/neo-readiness.ts`),
+  feita à mão a partir do que cada script lê, mais as credenciais do KV do
+  lease para todas;
+- `data/` acessível e com escrita nas últimas 72 h (Drive sincronizando);
+- Node contra o `.nvmrc` e `node_modules` contra o `package-lock.json`;
+- `gh auth status`;
+- checkout principal em `master` e não atrás do `origin/master` (do último
+  fetch; o script não busca);
+- tokens em modo leitura: LinkedIn pessoal (`GET /v2/userinfo`) e Threads
+  pessoal (lista os posts da última hora). O Instagram sai "não verificado":
+  não há helper de leitura exportado para ele, e o check não inventa chamada.
+  "Não verificado" não impede `pronto`.
+
+**Quando roda:** no Passo 0 de `/diaria-edicao`, se a sessão é no Neo
+(hostname, `isNeoMachine`), com `--if-neo --record`: grava no KV
+`diaria-ops-state`, chave `infra:neo-readiness`, imprime uma linha de resumo e
+sai sempre 0. Sem task no Windows: nenhuma 2ª exceção ao #5074. Rode também à
+mão antes do `--arm`.
+
+**Alarme:** `Diaria-Neo-Readiness-Alarm` (diária, 11:42, no `300`,
+`scripts/neo-readiness-alarm.ts`) lê a chave e abre issue se o último check
+tiver mais de 7 dias, nunca tiver sido gravado ou estiver vermelho (P2, família
+`estado`: fecha sozinha no próximo check verde e recente). KV ilegível sai 1
+sem abrir nem fechar nada.
 
 ## 1. Confirmar a queda
 
