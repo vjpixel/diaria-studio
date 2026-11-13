@@ -11,7 +11,7 @@
  * Uso (no Neo, PowerShell ou Git Bash, na raiz do repo):
  *   npx tsx scripts/failover/neo-takeover.ts --status
  *   npx tsx scripts/failover/neo-takeover.ts --arm [--force] [--dry-run]
- *   npx tsx scripts/failover/neo-takeover.ts --disarm [--dry-run]
+ *   npx tsx scripts/failover/neo-takeover.ts --disarm [--force] [--dry-run]
  *
  * `--arm`: exige o sinal `infra:300:down-since` (#12981) no KV ou `--force`.
  *   1. registra as `Diaria-Failover-*` (parando e removendo as antigas antes);
@@ -20,9 +20,13 @@
  *   mas lease sem tarefa pararia o `300` à toa. Se o lease não confirmar, as
  *   tarefas recém-registradas são removidas e o lease é apagado quando a
  *   releitura mostra o Neo ou é inconclusiva (rollback).
- * `--disarm`: para e remove as `Diaria-Failover-*` e depois libera o lease,
- *   só se ele for do Neo. O `300` retoma na próxima execução das tasks dele.
- *   Remoção que falha não libera o lease; lease ilegível sai 1.
+ * `--disarm`: desabilita as `Diaria-Failover-*`, espera a execução em curso
+ *   terminar (até 10 min; `Stop-ScheduledTask` só como último recurso, com
+ *   AVISO, #12993), remove as tarefas e depois libera o lease, só se ele for
+ *   do Neo. O `300` retoma na próxima execução das tasks dele. Remoção que
+ *   falha não libera o lease; lease ilegível sai 1. Fora do Windows não há
+ *   tarefa a remover: liberar o lease ali deixaria as do Neo armadas agindo
+ *   ao lado do `300`, então exige `--force` (#12993).
  * `--status`: tarefas armadas, dono do lease e sinal de queda.
  * `--dry-run`: imprime o plano (inclusive o script PowerShell) e só LÊ o KV;
  *   não registra nada nem grava. No `--arm` mostra o plano mesmo sem o sinal
@@ -47,8 +51,10 @@ import {
   isAgentWorktreePath,
   parseStatusOutput,
   planLeaseRelease,
+  POWERSHELL_TIMEOUT_MS,
 } from "../lib/failover/neo-takeover-plan.ts";
 import {
+  ARM_LEASE_BY,
   LEASE_TTL_MS,
   makeLease,
   readDownSignal,
@@ -73,7 +79,7 @@ export function parseMode(argv: string[]): { ok: true; mode: Mode; force: boolea
   const modes = (["arm", "disarm", "status"] as const).filter((m) => hasFlag(argv, m));
   if (modes.length !== 1) return { ok: false, error: "passe exatamente um de --arm, --disarm, --status" };
   const force = hasFlag(argv, "force");
-  if (force && modes[0] !== "arm") return { ok: false, error: "--force só vale com --arm" };
+  if (force && modes[0] === "status") return { ok: false, error: "--force só vale com --arm ou --disarm" };
   return { ok: true, mode: modes[0], force, dryRun: hasFlag(argv, "dry-run") };
 }
 
@@ -98,7 +104,8 @@ function runPowerShell(script: string): PsResult {
   const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"], {
     input: script,
     encoding: "utf8",
-    timeout: 180_000,
+    // Cobre a espera do disarm (#12993): até DRAIN_WAIT_SECONDS + STOP_WAIT_SECONDS.
+    timeout: POWERSHELL_TIMEOUT_MS,
   });
   if (r.error) return { ok: false, stdout: "", stderr: r.error.message };
   return { ok: r.status === 0, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -167,6 +174,7 @@ async function status(d: TakeoverDeps): Promise<number> {
  * mostrou o Neo ou foi inconclusiva, apaga o lease. Tudo logado. */
 async function rollbackArm(d: TakeoverDeps, kv: TakeoverKv | null, deleteLease: boolean): Promise<void> {
   const r = d.runPowerShell(buildDisarmScript());
+  relayStderr(d, r);
   if (r.ok) d.err(`${P} rollback: tarefas Diaria-Failover-* removidas.`);
   else d.err(`${P} rollback: remoção das tarefas FALHOU (${r.stderr.trim()}); rode --disarm à mão.`);
   if (deleteLease && kv) {
@@ -218,7 +226,7 @@ async function arm(d: TakeoverDeps, force: boolean, dryRun: boolean): Promise<nu
     return 1;
   }
 
-  const lease = makeLease(STANDBY_HOST, d.now(), "neo-takeover --arm");
+  const lease = makeLease(STANDBY_HOST, d.now(), ARM_LEASE_BY);
   try {
     await kv.kv.put(SCHEDULER_LEASE_KEY, serializeLease(lease));
   } catch (e) {
@@ -254,7 +262,12 @@ function expiryHint(d: TakeoverDeps): string {
   return `sem liberação, um lease do Neo expira em até ${LEASE_TTL_MS / 3_600_000} h após a última renovação`;
 }
 
-async function disarm(d: TakeoverDeps, dryRun: boolean): Promise<number> {
+/** Repassa o stderr de um script que deu certo (o AVISO do Stop-ScheduledTask, #12993). */
+function relayStderr(d: TakeoverDeps, r: PsResult): void {
+  if (r.ok && r.stderr.trim()) d.err(`${P} ${r.stderr.trim()}`);
+}
+
+async function disarm(d: TakeoverDeps, dryRun: boolean, force: boolean): Promise<number> {
   const kv = d.openKv();
   const read = kv.ok ? await readLease(kv.kv) : ({ kind: "error", error: kv.reason } as const);
   const release = planLeaseRelease(read);
@@ -264,13 +277,22 @@ async function disarm(d: TakeoverDeps, dryRun: boolean): Promise<number> {
   }
   if (d.platform === "win32") {
     const r = d.runPowerShell(buildDisarmScript());
+    relayStderr(d, r);
     if (!r.ok) {
       d.err(`${P} remoção das tarefas falhou: ${r.stderr.trim()}. O lease NÃO foi liberado.`);
       return 1;
     }
     d.log(`${P} tarefas Diaria-Failover-* paradas e removidas.`);
+  } else if (!force) {
+    // #12993: aqui não há Task Scheduler para desarmar. Liberar o lease com as
+    // tarefas do Neo ainda armadas deixaria o 300 e o Neo agindo juntos.
+    d.err(
+      `${P} --disarm fora do Windows (${d.platform}) não remove as tarefas do Neo; liberar o lease com elas armadas duplicaria o 300. ` +
+        `Rode --disarm no Neo, ou use --force se as tarefas já foram removidas lá.`,
+    );
+    return 1;
   } else {
-    d.log(`${P} não é Windows: nenhuma tarefa local a remover; seguindo só com o lease.`);
+    d.log(`${P} não é Windows: nenhuma tarefa local a remover; seguindo só com o lease (--force).`);
   }
   if (read.kind === "error" || read.kind === "invalid") {
     d.err(`${P} lease não lido (${read.error}); não foi liberado. ${expiryHint(d)}. Rode --disarm de novo quando o KV responder.`);
@@ -292,12 +314,12 @@ export async function main(argv: string[], deps: Partial<TakeoverDeps> = {}): Pr
   const d: TakeoverDeps = { ...defaultDeps(), ...deps };
   const parsed = parseMode(argv);
   if (!parsed.ok) {
-    d.err(`${P} ${parsed.error}\nUso: neo-takeover.ts --arm [--force] [--dry-run] | --disarm [--dry-run] | --status`);
+    d.err(`${P} ${parsed.error}\nUso: neo-takeover.ts --arm [--force] [--dry-run] | --disarm [--force] [--dry-run] | --status`);
     return 2;
   }
   if (parsed.mode === "status") return status(d);
   if (parsed.mode === "arm") return arm(d, parsed.force, parsed.dryRun);
-  return disarm(d, parsed.dryRun);
+  return disarm(d, parsed.dryRun, parsed.force);
 }
 
 if (isMainModule(import.meta.url)) {

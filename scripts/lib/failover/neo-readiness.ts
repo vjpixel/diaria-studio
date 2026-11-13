@@ -33,6 +33,7 @@
  * (`--record`), que o alarme do `300` lê (`neo-readiness-alarm.ts`).
  */
 
+import { missingYouTubeCredentials } from "../diaria/youtube-upload.ts";
 import { resolveFailoverTier, type ScheduledTaskDefinition } from "../scheduled-tasks.ts";
 
 /** Chave do registro no KV `diaria-ops-state` (mesmo namespace do lease). */
@@ -120,9 +121,14 @@ export const CRITICAL_SCRIPT_REQUIREMENTS: Readonly<Record<string, { secrets: re
     ],
     tokens: ["instagram", "linkedin", "threads"],
   },
-  // YouTube (estado do horizontal) + Worker do LinkedIn (plano nos posts do D1).
+  // YouTube (estado do horizontal) + página do Facebook (edita o post do D1)
+  // + Worker do LinkedIn (plano nos posts do D1). A lista do YouTube sai de
+  // `missingYouTubeCredentials`, a mesma que o script confere (#12993): sem
+  // derivar, o `YOUTUBE_CHANNEL_ID` ficou de fora. As da página são as do
+  // slug `diaria` em `publishing.social.facebook.pages` (sem elas o Facebook
+  // cai para manual).
   "scripts/video-d1-link-watch.ts": {
-    secrets: [["GOOGLE_CLIENT_ID"], ["GOOGLE_CLIENT_SECRET"], ["YOUTUBE_REFRESH_TOKEN"], ["DIARIA_LINKEDIN_CRON_URL"], ["DIARIA_LINKEDIN_CRON_TOKEN"]],
+    secrets: [...youtube(), ["FACEBOOK_PAGE_ACCESS_TOKEN"], ["FACEBOOK_PAGE_ID"], ["DIARIA_LINKEDIN_CRON_URL"], ["DIARIA_LINKEDIN_CRON_TOKEN"]],
     tokens: [],
   },
   // Post no Circle pelo webhook n8n da Stack + e-mail pelo Kit (#12538).
@@ -142,6 +148,11 @@ export const CRITICAL_SCRIPT_REQUIREMENTS: Readonly<Record<string, { secrets: re
   "scripts/onboarding-kit-transport-run.ts": { secrets: [["KIT_API_KEY"]], tokens: [] },
   "scripts/onboarding-followup-run.ts": { secrets: [["KIT_API_KEY"]], tokens: [] },
 };
+
+function youtube(): (readonly string[])[] {
+  // Com env vazio, `missingYouTubeCredentials` devolve a lista inteira que o script exige.
+  return missingYouTubeCredentials({}).map((n) => [n]);
+}
 
 function r2(): (readonly string[])[] {
   // Mesma lista de `R2_ENV_VARS` (`scripts/lib/r2-object-upload.ts`), sem importar
@@ -309,7 +320,7 @@ export function evaluateToken(token: TokenId, probe: TokenProbe): CheckResult {
       // Rede, 5xx: transitório, entra no streak do alarme.
       return { id, status: "unverified", detail: `token ${token} não verificado: ${probe.reason}` };
     default:
-      // `no-helper` (Instagram) e `skipped` (`--offline`, credencial ausente, que
+      // `no-helper` (token sem helper de leitura) e `skipped` (`--offline`, credencial ausente, que
       // já sai como falta no segredo): não mudam sozinhos, fora do streak.
       return { id, status: "unverified", detail: `token ${token} não verificado: ${probe.reason}`, structural: true };
   }
