@@ -193,7 +193,8 @@ function matchSectionHeader(line: string): (typeof SECTION_HEADER_RES)[number]["
   return null;
 }
 
-function findSections(lines: string[]): SectionRange[] {
+/** Seções do pool em `lines` (exportado pro add-pool-item.ts, #12945). */
+export function findSections(lines: string[]): SectionRange[] {
   const out: SectionRange[] = [];
   for (let i = 0; i < lines.length; i++) {
     const def = matchSectionHeader(lines[i]);

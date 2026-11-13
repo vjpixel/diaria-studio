@@ -133,6 +133,7 @@ import { hashFromApprovedFile, writeSocialSourceHash } from "./lib/social-source
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
 import { publicImageKeysForPosition, uploadImagesNextSteps } from "./lib/public-images-invalidate.ts"; // #11252, #12692
+import { d1NoVideoSwapStep } from "./lib/diaria/d1-video-invite-status.ts"; // #12946
 import { EXTRAS_MANIFEST, extraSourceFileName } from "./lib/fact-check-extra-sources.ts"; // #11531
 import { describeCarouselKeepArtRemap, remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import { invalidateStage4D1Capture } from "./lib/stage4-capture-state.ts"; // #12589
@@ -1997,6 +1998,10 @@ function main(): void {
   // modos — sem `--mode`, o upload roda só o social e não gera cover/d{N}_2x1.
   const imagesMoved = modified.renamed.some((r) => /^04-d[123]-/i.test(basename(r.from)));
   if (modified.rewritten.includes(publicImagesPath) || imagesMoved || modified.removed.length > 0) {
+    // #12946: D1 trocou de arte em edição sem vídeo — marcar antes do upload, senão o convite volta.
+    const d1Moved = modified.renamed.some((r) => /^04-d1-/i.test(basename(r.from)) || /^04-d1-/i.test(basename(r.to)));
+    const noVideoStep = d1NoVideoSwapStep(editionDir, d1Moved);
+    if (noVideoStep) nextSteps.push(noVideoStep);
     nextSteps.push(...uploadImagesNextSteps(editionDir));
   }
 

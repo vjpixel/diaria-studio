@@ -3742,3 +3742,105 @@ describe("#2293 handleRearm: skippedTombstone++ só incrementa quando KV.delete 
     assert.equal(kv.store.has(queueKey), false, "tombstone deve ter sido deletado do KV");
   });
 });
+
+// ── #12961 — DELETE /queue/:key?if_not_claiming=1 (cancelamento condicional) ──
+
+describe("#12961 DELETE /queue/:key?if_not_claiming=1", () => {
+  async function armed(marks: { fired?: boolean; send_unknown?: string; claiming?: boolean } = {}) {
+    const { env, kv, doNamespace } = mkEnvWithDO();
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const queueKey = buildQueueKey(future, "uuid-cond-12961");
+    const entry: QueueEntry = {
+      text: "post com texto errado",
+      image_url: null,
+      scheduled_at: future,
+      destaque: "d3",
+      created_at: new Date().toISOString(),
+      retry_count: 0,
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+    const doState = new MockDOState();
+    const doScheduler = new LinkedInScheduler(doState as unknown as DurableObjectState);
+    doNamespace.stubs.set(queueKey, { scheduler: doScheduler, state: doState });
+    doState.storage.alarmMs = Date.now() + 3600_000;
+    await doState.storage.put("payload", { key: queueKey, entry, webhookUrl: "https://make.test/webhook" } satisfies DoStoredPayload);
+    if (marks.fired) await doState.storage.put("fired", true);
+    if (marks.send_unknown) await doState.storage.put("send_unknown", marks.send_unknown);
+    if (marks.claiming) {
+      await doState.storage.put("claiming", true);
+      await doState.storage.put("claimed_at", Date.now());
+    }
+    return { env, kv, doState, queueKey };
+  }
+  const del = (key: string) =>
+    authedRequest(`https://w.test/queue/${encodeURIComponent(key)}?if_not_claiming=1`, { method: "DELETE" });
+
+  it("agendado e parado: 200 com confirmação, KV apagado, alarm cancelado, reserva liberada", async () => {
+    const { env, kv, doState, queueKey } = await armed();
+    const res = await workerDefault.fetch(del(queueKey), env);
+    assert.equal(res.status, 200);
+    const data = (await res.json()) as Record<string, unknown>;
+    assert.equal(data.deleted, true);
+    assert.equal(data.conditional, true);
+    assert.equal(data.do_alarm_cancelled, true);
+    assert.equal(data.kv_deleted, true);
+    assert.equal(kv.store.has(queueKey), false);
+    assert.equal(doState.storage.alarmMs, null);
+    assert.equal(doState.storage.store.has("payload"), false);
+    assert.equal(doState.storage.store.has("claiming"), false, "reserva liberada depois do KV apagado");
+  });
+
+  it("já disparou: 409 refused, KV e marcador fired preservados (evidência do envio)", async () => {
+    const { env, kv, doState, queueKey } = await armed({ fired: true });
+    const res = await workerDefault.fetch(del(queueKey), env);
+    assert.equal(res.status, 409);
+    const data = (await res.json()) as Record<string, unknown>;
+    assert.equal(data.deleted, false);
+    assert.equal(data.refused, true);
+    assert.equal(data.reason, "already_fired");
+    assert.ok(kv.store.has(queueKey), "KV intocado");
+    assert.equal(await doState.storage.get("fired"), true, "fired preservado");
+  });
+
+  it("envio ambíguo (send_unknown): 409, nada apagado", async () => {
+    const { env, kv, queueKey } = await armed({ send_unknown: "timeout" });
+    const res = await workerDefault.fetch(del(queueKey), env);
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as Record<string, unknown>).reason, "send_unknown");
+    assert.ok(kv.store.has(queueKey));
+  });
+
+  it("disparo em andamento (claiming): 409, KV intocado", async () => {
+    const { env, kv, doState, queueKey } = await armed({ claiming: true });
+    const res = await workerDefault.fetch(del(queueKey), env);
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as Record<string, unknown>).reason, "fire_in_progress");
+    assert.ok(kv.store.has(queueKey));
+    assert.equal(await doState.storage.get("claiming"), true);
+  });
+
+  it("DO indisponível: 502 e KV intocado (o incondicional apagaria o KV)", async () => {
+    const kv = new MockKV();
+    const env: Env = {
+      LINKEDIN_QUEUE: kv as unknown as KVNamespace,
+      DIARIA_TOKEN: "secret-token",
+      MAKE_WEBHOOK_URL: "https://make.test/webhook",
+      LINKEDIN_SCHEDULER: {
+        idFromName: () => { throw new Error("binding unavailable"); },
+        get: () => { throw new Error("binding unavailable"); },
+      } as unknown as DurableObjectNamespace,
+    };
+    const key = "queue:2026-12-01T17:00:00.000Z:uuid-cond-no-do";
+    kv.store.set(key, JSON.stringify({ text: "t", image_url: null, scheduled_at: "2026-12-01T17:00:00.000Z", destaque: "d3", created_at: new Date().toISOString() } satisfies QueueEntry));
+    const res = await workerDefault.fetch(del(key), env);
+    assert.equal(res.status, 502);
+    assert.equal(((await res.json()) as Record<string, unknown>).deleted, false);
+    assert.ok(kv.store.has(key));
+  });
+
+  it("key ausente: 404 (ambíguo, nunca autoriza re-despacho)", async () => {
+    const { env } = mkEnvWithDO();
+    const res = await workerDefault.fetch(del("queue:2026-12-01T17:00:00.000Z:nao-existe"), env);
+    assert.equal(res.status, 404);
+  });
+});

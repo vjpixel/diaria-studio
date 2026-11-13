@@ -168,6 +168,70 @@ export async function deleteFromWorkerQueue(
   return { deleted: true, alreadyGone: false, key };
 }
 
+/**
+ * #12961 — resultado do cancelamento CONDICIONAL. Só `cancelled` autoriza
+ * limpar o registro local e re-despachar o post:
+ *  - `cancelled`: o DO aceitou o cancel e o KV foi apagado (ou virou tombstone);
+ *  - `refused`: o post já saiu, terminou ambíguo ou está saindo — nada mudou;
+ *  - `not_found`: 404, ambíguo (já disparou OU já removido) — NÃO re-despachar;
+ *  - `unconfirmed`: 2xx sem a confirmação do modo condicional (Worker
+ *    publicado sem o #12961: o DELETE pode ter sido o incondicional) — NÃO
+ *    re-despachar sem conferir à mão;
+ *  - `error`: 5xx/rede — nada confirmado.
+ */
+export type ConditionalCancelResult =
+  | { outcome: "cancelled"; key: string; kvDeleted: boolean; tombstoned: boolean }
+  | { outcome: "refused"; key: string; reason: string }
+  | { outcome: "not_found"; key: string }
+  | { outcome: "unconfirmed"; key: string; body: string }
+  | { outcome: "error"; key: string; error: string };
+
+/** Pure: classifica a resposta do `DELETE /queue/:key?if_not_claiming=1`. */
+export function classifyConditionalCancel(key: string, status: number, bodyText: string): ConditionalCancelResult {
+  let body: Record<string, unknown> = {};
+  try {
+    body = JSON.parse(bodyText) as Record<string, unknown>;
+  } catch {
+    /* corpo não-JSON */
+  }
+  if (status === 404) return { outcome: "not_found", key };
+  if (status === 409) return { outcome: "refused", key, reason: typeof body.reason === "string" ? body.reason : "conflict" };
+  if (status >= 200 && status < 300) {
+    const confirmed =
+      body.deleted === true &&
+      body.conditional === true &&
+      body.do_alarm_cancelled === true &&
+      (body.kv_deleted === true || body.tombstoned === true);
+    if (!confirmed) return { outcome: "unconfirmed", key, body: bodyText.slice(0, 300) };
+    return { outcome: "cancelled", key, kvDeleted: body.kv_deleted === true, tombstoned: body.tombstoned === true };
+  }
+  return { outcome: "error", key, error: `HTTP ${status}: ${bodyText.slice(0, 300)}` };
+}
+
+/**
+ * #12961 — `DELETE /queue/:key?if_not_claiming=1`: cancela só se o post ainda
+ * não saiu nem está saindo. Nunca lança — erro de rede vira `error`.
+ */
+export async function cancelWorkerQueueEntryConditional(
+  workerUrl: string,
+  token: string,
+  key: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ConditionalCancelResult> {
+  const url =
+    workerUrl.replace(/\/+$/, "") + "/queue/" + encodeURIComponent(key).replace(/%3A/g, ":") + "?if_not_claiming=1";
+  try {
+    const res = await fetchImpl(url, {
+      method: "DELETE",
+      headers: { "X-Diaria-Token": token },
+      signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
+    });
+    return classifyConditionalCancel(key, res.status, await res.text());
+  } catch (e) {
+    return { outcome: "error", key, error: (e as Error).message ?? String(e) };
+  }
+}
+
 /** Resultado de `findWorkerQueueEntryByIdempotencyKey` (#12664). */
 export type IdempotencyLookupResult =
   | { status: "found"; key: string }

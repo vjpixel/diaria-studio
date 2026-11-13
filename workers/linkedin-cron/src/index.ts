@@ -1458,6 +1458,92 @@ async function handleDlq(request: Request, env: Env): Promise<Response> {
   return json({ count: items.length, items });
 }
 
+// ── DELETE /queue/:key?if_not_claiming=1 — cancelamento condicional (#12961) ──
+
+/**
+ * Cancela um post agendado só quando é seguro re-despachá-lo depois. O DELETE
+ * incondicional (#1058) chama `/cancel` sem condição, segue removendo o KV se o
+ * cancel falhar e responde `deleted: true` mesmo sem confirmar nada — usá-lo
+ * para corrigir um texto e re-agendar podia apagar a evidência de um envio e
+ * sair em duplicata.
+ *
+ * Contrato (nada aqui é ambíguo para o cliente):
+ *   200 { deleted: true, conditional: true, do_alarm_cancelled: true, kv_deleted, tombstoned }
+ *       → o DO aceitou o cancel condicional e o KV foi apagado (ou, se o
+ *         delete falhou 3x, virou tombstone `cancelled:true`, que o cron pula e
+ *         o enqueue idempotente regrava). Único caso que autoriza limpar o
+ *         registro local e re-despachar.
+ *   409 { deleted: false, refused: true, reason, fired?, claiming?, send_unknown? }
+ *       → o DO já disparou, terminou ambíguo ou está disparando. KV e DO
+ *         intocados: a evidência do envio fica.
+ *   502 { deleted: false, error } → o DO não respondeu/recusou por outro motivo.
+ *       KV intocado.
+ *   (404 sai antes, no handler: key ausente — já disparou OU já removida; nunca
+ *   autoriza re-despacho.)
+ *
+ * Fecha a janela entre o cancel e o delete do KV: o cancel leva uma reserva
+ * (`replacement_token`, #11133) que mantém `claiming` no DO, então um cron que
+ * leu o KV antes perde o `/claim`; a reserva é liberada só depois do KV apagado
+ * (o cron relê o KV depois do claim e não dispara entry ausente/tombstone).
+ */
+async function conditionalQueueDelete(env: Env, key: string, existing: string): Promise<Response> {
+  let tombstone: string;
+  try {
+    tombstone = JSON.stringify({ ...(JSON.parse(existing) as QueueEntry), cancelled: true });
+  } catch {
+    return json({ deleted: false, key, error: "entry ilegível no KV — nada alterado" }, 502);
+  }
+  const token = crypto.randomUUID();
+  let cancelRes: Response;
+  try {
+    cancelRes = await doStub(env, key).fetch("https://do/cancel", {
+      ...CANCEL_IF_NOT_CLAIMING,
+      body: JSON.stringify({ if_not_claiming: true, replacement_token: token, replacement_entry: JSON.parse(tombstone) }),
+    });
+  } catch (e) {
+    return json({ deleted: false, key, error: `DO indisponível: ${(e as Error).message} — nada alterado` }, 502);
+  }
+  if (cancelRes.status === 409) {
+    let body: Record<string, unknown> = {};
+    try { body = (await cancelRes.clone().json()) as Record<string, unknown>; } catch { /* corpo opcional */ }
+    const reason = await doConflictReason(cancelRes);
+    return json({ ...body, deleted: false, refused: true, reason, key }, 409);
+  }
+  if (!cancelRes.ok) {
+    return json({ deleted: false, key, error: `DO cancel respondeu ${cancelRes.status} — nada alterado` }, 502);
+  }
+
+  let kvDeleted = false;
+  for (let attempt = 0; attempt < 3 && !kvDeleted; attempt++) {
+    try {
+      await env.LINKEDIN_QUEUE.delete(key);
+      kvDeleted = true;
+    } catch (kvErr) {
+      console.warn(`[queue-delete-cond] KV.delete attempt ${attempt + 1} failed for key=${key}: ${(kvErr as Error).message}`);
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+    }
+  }
+  let tombstoned = false;
+  if (!kvDeleted) {
+    try {
+      await env.LINKEDIN_QUEUE.put(key, tombstone);
+      tombstoned = true;
+    } catch (e) {
+      // Reserva NÃO é liberada: segura o `/claim` até o TTL, e o cliente não
+      // recebe autorização para re-despachar.
+      console.error(`[queue-delete-cond] CRITICAL: KV.delete e tombstone falharam para key=${key}: ${(e as Error).message}`);
+      return json({ deleted: false, key, do_alarm_cancelled: true, kv_deleted: false, tombstoned: false, error: "KV não removido — não re-despachar" }, 502);
+    }
+  }
+  try {
+    await doStub(env, key).fetch("https://do/release-replacement", {
+      method: "POST",
+      body: JSON.stringify({ replacement_token: token }),
+    });
+  } catch { /* TTL libera a reserva; o KV já não tem entry disparável */ }
+  return json({ deleted: true, conditional: true, key, do_alarm_cancelled: true, kv_deleted: kvDeleted, tombstoned });
+}
+
 // ── DELETE /queue/:key — cleanup manual de queue (#1058) ──────────────────
 
 /**
@@ -1481,6 +1567,12 @@ async function handleQueueDelete(request: Request, env: Env, key: string): Promi
   const existing = await env.LINKEDIN_QUEUE.get(key);
   if (existing === null) {
     return json({ error: "key not found", key }, 404);
+  }
+
+  // #12961 — modo condicional (`?if_not_claiming=1`), usado por
+  // `retract-social-destaque.ts` para cancelar um post e re-despachar só ele.
+  if (new URL(request.url).searchParams.get("if_not_claiming") === "1") {
+    return conditionalQueueDelete(env, key, existing);
   }
 
   // (#2219 bug 3 fix) Cancelar o alarm do DO PRIMEIRO, antes de deletar o KV.
