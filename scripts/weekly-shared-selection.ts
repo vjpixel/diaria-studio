@@ -149,13 +149,11 @@ export function main(rootDirOverride?: string, argv: string[] = process.argv.sli
   const overrides: SharedOverrides = {
     picks: { ...base.picks },
     swaps: [...base.swaps],
-    confirmedSuggestions: [...base.confirmedSuggestions],
   };
   if (pickProduct) {
     overrides.picks[pickProduct] = values["urls"].split(",").map((s) => s.trim()).filter(Boolean);
   }
   if (values["swap"]) overrides.swaps.push({ out: values["swap"].trim(), in: values["with"].trim() });
-  if (flags.has("confirm-suggestions")) overrides.confirmedSuggestions = [...SHARED_PRODUCTS];
 
   // Leitura das edições e do cache de clique (mesmo caminho do select-linkedin-weekly.ts).
   const editionsRootDir = join(rootDir, "data/editions");
@@ -179,6 +177,21 @@ export function main(rootDirOverride?: string, argv: string[] = process.argv.sli
   let core: ReturnType<typeof buildSharedSelection>;
   try {
     core = buildSharedSelection({ candidates, editionsFound: found.length, overrides });
+    // --confirm-suggestions: o editor aprovou o gate vendo as sugestões; elas
+    // viram `picks` exatos (revalidados contra o grupo a cada re-rodada), nunca
+    // um "aceite qualquer sugestão futura" que confirmaria um empate novo que
+    // ele não viu.
+    if (flags.has("confirm-suggestions")) {
+      let changed = false;
+      for (const p of SHARED_PRODUCTS) {
+        const pending = core[p].pending;
+        if (pending && pending.resolution === "suggestion") {
+          overrides.picks[p] = [...pending.suggested];
+          changed = true;
+        }
+      }
+      if (changed) core = buildSharedSelection({ candidates, editionsFound: found.length, overrides });
+    }
   } catch (e) {
     if (e instanceof SharedSelectionError) fail(2, `Seleção compartilhada não gravada: ${e.message}`);
     throw e;

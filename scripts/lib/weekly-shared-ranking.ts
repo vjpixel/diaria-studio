@@ -118,7 +118,7 @@ export interface PendingTie {
   slots: number;
   /** Sugestão pré-marcada (desempate editorial; no `clicked` com a preferência do #10378). */
   suggested: string[];
-  /** `editor` = escolha confirmada (`--pick` ou `--confirm-suggestions`); `suggestion` = ainda só sugestão. */
+  /** `editor` = escolha gravada em `picks` (`--pick` ou `--confirm-suggestions`); `suggestion` = ainda só sugestão. */
   resolution: "editor" | "suggestion";
 }
 
@@ -171,15 +171,16 @@ export function suggestTieFill(
  * Pure: recorte de um produto sobre o ranking compartilhado.
  *
  * `picks` resolve o empate pendente com a escolha do editor (mesma exatidão
- * do `--picks` do LinkedIn, `applyPendingPicks`); `confirmSuggestion` marca a
- * sugestão como aceita no gate. Sem nenhum dos dois, o empate fica
+ * do `--picks` do LinkedIn, `applyPendingPicks`). Aceitar a sugestão no gate
+ * é gravá-la como `picks` (`--confirm-suggestions` do CLI), então ela é
+ * revalidada contra o grupo a cada re-rodada. Sem `picks`, o empate fica
  * `resolution: "suggestion"` e `urls` traz a sugestão para a prévia.
  */
 export function selectForProduct(
   ranking: SharedRanking,
   product: SharedProduct,
   slots: number,
-  opts: { picks?: string[]; confirmSuggestion?: boolean; highlightUrls?: Set<string> } = {},
+  opts: { picks?: string[]; highlightUrls?: Set<string> } = {},
 ): ProductSelection {
   const pool = ranking.ranked.filter((c) => isEligibleFor(product, c));
   const { selected, pendingGroup, warnings } = fillSlotsWithNoiseRule(pool, slots);
@@ -203,7 +204,7 @@ export function selectForProduct(
   const suggested = suggestTieFill(pendingGroup, pendingSlots, selected, isInHighlights);
 
   let fill: WeeklyRankedCandidate[] = suggested;
-  let resolution: PendingTie["resolution"] = opts.confirmSuggestion ? "editor" : "suggestion";
+  let resolution: PendingTie["resolution"] = "suggestion";
   if (opts.picks && opts.picks.length > 0) {
     const applied = applyPendingPicks(selected, pendingGroup, pendingSlots, opts.picks);
     if (applied.error) throw new SharedSelectionError(`[${product}] escolha do empate inválida: ${applied.error}`);
@@ -291,11 +292,9 @@ export function applySharedSwap(
 export interface SharedOverrides {
   picks: Partial<Record<SharedProduct, string[]>>;
   swaps: SharedSwap[];
-  /** Sugestões dos empates aceitas pelo editor no gate (aprovação do pacote). */
-  confirmedSuggestions: SharedProduct[];
 }
 
-export const EMPTY_OVERRIDES: SharedOverrides = { picks: {}, swaps: [], confirmedSuggestions: [] };
+export const EMPTY_OVERRIDES: SharedOverrides = { picks: {}, swaps: [] };
 
 export interface SharedSelectionCore {
   ranking: SharedRanking;
@@ -306,7 +305,7 @@ export interface SharedSelectionCore {
 
 /**
  * Pure: monta a seleção dos dois produtos e reaplica as decisões do editor
- * (escolhas de empate, sugestões aceitas e trocas, nesta ordem). `editionsFound`
+ * (escolhas de empate e trocas, nesta ordem). `editionsFound`
  * define o teto de manchetes do LinkedIn (`computeHeadlineCap`, semana curta).
  */
 export function buildSharedSelection(input: {
@@ -319,12 +318,10 @@ export function buildSharedSelection(input: {
   const highlightUrls = highlightD1Urls(input.candidates);
   const clicked = selectForProduct(ranking, "clicked", CLICKED_SLOTS, {
     picks: overrides.picks.clicked,
-    confirmSuggestion: overrides.confirmedSuggestions.includes("clicked"),
     highlightUrls,
   });
   const linkedin = selectForProduct(ranking, "linkedin", computeHeadlineCap(input.editionsFound), {
     picks: overrides.picks.linkedin,
-    confirmSuggestion: overrides.confirmedSuggestions.includes("linkedin"),
   });
   const selections = { clicked, linkedin };
   const swapLog = overrides.swaps.map((swap) => ({ swap, outcome: applySharedSwap(selections, ranking, swap) }));

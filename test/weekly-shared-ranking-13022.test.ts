@@ -169,8 +169,6 @@ describe("#13022 — regra de empate única (#8817 e #5109 preservados)", () => 
     assert.deepEqual(picked.urls, [U("p4"), U("p1"), U("p2")]);
     assert.equal(picked.pending!.resolution, "editor");
     assert.throws(() => selectForProduct(ranking, "linkedin", 3, { picks: [U("p1"), U("zz"), U("p2")] }), SharedSelectionError);
-    const confirmed = selectForProduct(ranking, "linkedin", 3, { confirmSuggestion: true });
-    assert.equal(confirmed.pending!.resolution, "editor");
   });
 
   it("clicked: a sugestão do empate preserva a preferência do #10378 (quem ficou fora do highlights)", () => {
@@ -192,7 +190,7 @@ describe("#13022 — troca do gate propaga quando elegível nos dois", () => {
     const core = buildSharedSelection({
       candidates: baseWeek(),
       editionsFound: 3,
-      overrides: { picks: {}, swaps: [{ out: U("c"), in: U("b2") }], confirmedSuggestions: [] },
+      overrides: { picks: {}, swaps: [{ out: U("c"), in: U("b2") }] },
     });
     assert.deepEqual(core.clicked.urls, [U("a"), U("b"), U("b2"), U("r"), U("a2")]);
     assert.deepEqual(core.linkedin.urls, [U("a"), U("b"), U("b2")]);
@@ -484,6 +482,68 @@ describe("#13022 — LinkedIn: empate ainda só sugerido volta como pendingGroup
       assert.match(bad.error ?? "", /não são destaque elegível/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#13022 — --confirm-suggestions grava a sugestão vista como escolha exata", () => {
+  it("empate #5109 no LinkedIn: sugestão → picks; empate novo depois NÃO é confirmado sozinho", () => {
+    const root = mkdtempSync(join(tmpdir(), "shared-confirm-13022-"));
+    const now = new Date("2026-08-01T12:00:00-03:00");
+    try {
+      mkdirSync(join(root, "data/editions/260727"), { recursive: true });
+      writeFileSync(
+        join(root, "data/editions/260727/02-reviewed.md"),
+        editionMd(
+          [
+            { n: 1, title: "Matéria E1", url: U("e1") },
+            { n: 2, title: "Matéria E2", url: U("e2") },
+            { n: 3, title: "Matéria E3", url: U("e3") },
+          ],
+          [],
+        ),
+        "utf8",
+      );
+      const writePost = (clicks: Record<string, number>) => {
+        mkdirSync(join(root, "data/beehiiv-cache/posts"), { recursive: true });
+        writeFileSync(
+          join(root, "data/beehiiv-cache/posts/post_260727.json"),
+          JSON.stringify({
+            id: "post_260727",
+            slug: "post_260727",
+            status: "confirmed",
+            publish_date: epochFor("260727"),
+            stats: {
+              email: { clicks: 1, unique_opens: 400 },
+              clicks: Object.entries(clicks).map(([u, n]) => ({ url: U(u), base_url: U(u), email: { unique_verified_clicks: n } })),
+            },
+          }),
+          "utf8",
+        );
+      };
+      writePost({ e1: 10, e2: 10, e3: 10 });
+      const file = sharedSelectionPath(root, "26w31");
+      const run = (extra: string[] = []) => withMockedExit(() => quiet(() => sharedMain(root, ["--saturday", "260801", ...extra], now))).code;
+
+      assert.equal(run(), null);
+      let s = JSON.parse(readFileSync(file, "utf8"));
+      assert.equal(s.linkedin.slots, 1);
+      assert.equal(s.linkedin.pending.resolution, "suggestion");
+      const suggested = s.linkedin.pending.suggested;
+
+      assert.equal(run(["--confirm-suggestions"]), null);
+      s = JSON.parse(readFileSync(file, "utf8"));
+      assert.equal(s.linkedin.pending.resolution, "editor");
+      assert.deepEqual(s.overrides.picks.linkedin, suggested);
+
+      // Ranking muda (kit-sync novo) e o empate some: a escolha gravada não vale
+      // mais → exit 2, nada gravado (nunca "confirma" uma situação que o editor não viu).
+      const before = readFileSync(file, "utf8");
+      writePost({ e1: 30, e2: 1, e3: 1 });
+      assert.equal(run(), 2);
+      assert.equal(readFileSync(file, "utf8"), before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

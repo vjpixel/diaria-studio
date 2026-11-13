@@ -237,8 +237,10 @@ Com o "aprovar":
 
 1. Se havia empate pendente, gravar a escolha do editor (a aprovação aceita
    as sugestões que ele viu marcadas):
-   `npx tsx scripts/weekly-shared-selection.ts --saturday {S} --confirm-suggestions`,
-   e re-rodar `select-linkedin-weekly.ts --shared-selection` + render, para o
+   `npx tsx scripts/weekly-shared-selection.ts --saturday {S} --confirm-suggestions`
+   (grava a sugestão vista como escolha exata; se um `kit-sync` depois mudar o
+   empate, a re-rodada sai com exit 2 em vez de confirmar um empate que o
+   editor não viu), e re-rodar `select-linkedin-weekly.ts --shared-selection` + render, para o
    `ln-selection.json` sair sem `pendingGroup`.
 2. Em paralelo:
    - retro: `publish-weekly-social.ts --saturday {S} --mode both --shared-selection {arquivo} --schedule`
