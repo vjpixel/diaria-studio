@@ -64,7 +64,7 @@ export type YouTubeStepOutcome =
   | "no-video-stale"
   /** `--skip youtube`/`none` sem link gravado: o D1 sai sem o vídeo. */
   | "consent-off"
-  /** `05-video-url.txt` presente mas sem link do YouTube. */
+  /** `05-video-url.txt` presente mas sem link do YouTube, ou link de vídeo que o YouTube marcou failed/rejected/deleted (#12965). */
   | "needs-editor"
   /** Nem link nem marcador nem `--skip youtube`. */
   | "missing-link";
@@ -95,6 +95,7 @@ const OUTCOME_BY_STATUS: Record<VideoBeforePublishStatus, YouTubeStepOutcome> = 
   "no-video-stale": "no-video-stale",
   "skipped-by-consent": "consent-off",
   "invalid-link": "needs-editor",
+  "video-terminal": "needs-editor",
   "video-without-link": "missing-link",
   "no-video": "missing-link",
 };
