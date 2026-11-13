@@ -183,7 +183,7 @@ if (
       const logRoot = studioLogRoot(hookDir);
       // #12951: checkout de OUTRO repo com `origin` que não diz o repo (clone
       // local, remote ilegível) — a regra do studio não se aplica lá.
-      if (isStudioCheckout(cwd, hookDir) === false) {
+      if (isStudioCheckout(cwd, hookDir, { command }) === false) {
         logSnapshotGuardEvent("orchestrator_snapshot_pr_guard_skipped_foreign_checkout", { cwd }, { repoRoot: logRoot });
         return;
       }

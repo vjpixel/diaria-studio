@@ -219,7 +219,7 @@ if (
       // #12951: log sempre no `data/` do studio, nunca no cwd do comando.
       const logRoot = studioLogRoot(hookDir);
       // #12951: checkout de outro repo com `origin` indeterminado.
-      if (isStudioCheckout(cwd, hookDir) === false) {
+      if (isStudioCheckout(cwd, hookDir, { command }) === false) {
         logTscGuardEvent("tsc_pr_guard_skipped_foreign_checkout", { cwd }, { repoRoot: logRoot });
         return;
       }

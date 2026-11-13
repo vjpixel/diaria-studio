@@ -25,6 +25,13 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import {
+  ANY_NON_STUDIO_REPO,
+  DIARIA_STUDIO_REPO,
+  commandWithoutMessageText,
+  repoFromCwdOrigin,
+  reposMentioned,
+} from "./gh-target-repo.mjs";
 
 /** Arquivo que só um checkout do diaria-studio tem (a lib de alvo dos hooks). */
 export const STUDIO_SIGNATURE_FILE = join(".claude", "hooks", "lib", "gh-target-repo.mjs");
@@ -63,8 +70,20 @@ export function studioLogRoot(hookDir, execFn = execFileSync) {
  * `true` = `cwd` é checkout do studio; `false` = é checkout de OUTRO repo (o
  * `.git` comum difere do do hook e a assinatura do studio não está lá);
  * `null` = não deu pra saber (git falhou em algum dos dois).
+ *
+ * Sinal POSITIVO do studio vence a checagem pelo `.git`/assinatura: o
+ * `origin` do `cwd` aponta para o diaria-studio, ou o `command` (quando
+ * passado) cita o diaria-studio fora do texto de `--body`/`--title` (ex:
+ * `gh pr create -R vjpixel/diaria-studio` a partir de outro checkout). Só a
+ * ausência de qualquer sinal do repo (o caso do #12951) cai na checagem
+ * pelo checkout — clone novo do studio com `origin` correto num tmpdir não
+ * pode virar "repo de fora".
  */
-export function isStudioCheckout(cwd, hookDir, { execFn = execFileSync, exists = existsSync } = {}) {
+export function isStudioCheckout(cwd, hookDir, { execFn = execFileSync, exists = existsSync, command } = {}) {
+  if (typeof command === "string" && reposMentioned(commandWithoutMessageText(command), ANY_NON_STUDIO_REPO).has(DIARIA_STUDIO_REPO)) {
+    return true;
+  }
+  if (repoFromCwdOrigin(cwd, execFn) === DIARIA_STUDIO_REPO) return true;
   const target = gitCommonDir(cwd, execFn);
   const own = gitCommonDir(hookDir, execFn);
   if (!target || !own) return null;

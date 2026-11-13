@@ -4,5 +4,5 @@ export function studioLogRoot(hookDir: string, execFn?: (...args: never[]) => un
 export function isStudioCheckout(
   cwd: string,
   hookDir: string,
-  deps?: { execFn?: (...args: never[]) => unknown; exists?: (path: string) => boolean },
+  deps?: { execFn?: (...args: never[]) => unknown; exists?: (path: string) => boolean; command?: string },
 ): boolean | null;

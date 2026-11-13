@@ -130,7 +130,7 @@ if (
       if (isForeignRepoGhCommand(command, cwd)) return;
       // #12951: checkout de outro repo com `origin` indeterminado — a regra
       // (test runner do studio) não se aplica lá.
-      if (isStudioCheckout(cwd, hookDir) === false) return;
+      if (isStudioCheckout(cwd, hookDir, { command }) === false) return;
 
       const result = await runTestRunnerImportCheck(cwd);
       if (result === null) return; // fail-open: test/ não existe

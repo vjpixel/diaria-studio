@@ -80,6 +80,19 @@ describe("#12951: hooks do studio reconhecem checkout de outro repo", () => {
     assert.equal(isStudioCheckout(join(tmp, "nao-existe"), hookDir), null, "indeterminado mantém a regra");
   });
 
+  it("isStudioCheckout: sinal positivo do studio (origin ou -R) vence a checagem pelo checkout", () => {
+    // Clone fresco do studio (sem a assinatura, .git próprio) com origin do studio — o caso do CI.
+    const fresh = join(tmp, "studio-fresh");
+    mkdirSync(fresh, { recursive: true });
+    git(fresh, "init", "-q");
+    git(fresh, "remote", "add", "origin", "https://github.com/vjpixel/diaria-studio.git");
+    assert.equal(isStudioCheckout(fresh, hookDir), true, "origin do studio é studio");
+    // Checkout de fora mirando o studio por -R explícito: a regra vale.
+    assert.equal(isStudioCheckout(foreign, hookDir, { command: "gh pr create -R vjpixel/diaria-studio --title t --body b" }), true);
+    // Studio citado só no corpo da PR não é alvo.
+    assert.equal(isStudioCheckout(foreign, hookDir, { command: "gh pr create --title t --body 'ver vjpixel/diaria-studio#1'" }), false);
+  });
+
   it("hook do snapshot: PR saindo do dossiemaster passa e o log vai para o data/ do studio", { timeout: 60_000 }, () => {
     const payload = {
       tool_name: "Bash",
@@ -101,11 +114,12 @@ describe("#12951: hooks do studio reconhecem checkout de outro repo", () => {
 
   it("os guards de typecheck e de test runner usam a mesma checagem", () => {
     const tsc = readFileSync(join(ROOT, ".claude/hooks/block-pr-create-tsc-failure.mjs"), "utf8");
-    assert.match(tsc, /isStudioCheckout\(cwd, hookDir\) === false/);
+    assert.match(tsc, /isStudioCheckout\(cwd, hookDir, \{ command \}\) === false/);
     assert.doesNotMatch(tsc, /repoRoot: cwd/, "log do tsc guard nunca no cwd");
     const runner = readFileSync(join(ROOT, ".claude/hooks/block-pr-create-test-runner-import.mjs"), "utf8");
-    assert.match(runner, /isStudioCheckout\(cwd, hookDir\) === false/);
+    assert.match(runner, /isStudioCheckout\(cwd, hookDir, \{ command \}\) === false/);
     const snap = readFileSync(join(ROOT, ".claude/hooks/block-pr-create-orchestrator-snapshot-stale.mjs"), "utf8");
+    assert.match(snap, /isStudioCheckout\(cwd, hookDir, \{ command \}\) === false/);
     assert.doesNotMatch(snap, /repoRoot: cwd/, "log do snapshot guard nunca no cwd");
   });
 });
