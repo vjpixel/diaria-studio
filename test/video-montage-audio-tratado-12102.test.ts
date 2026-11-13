@@ -271,10 +271,11 @@ describe("#12101/#12102: o que entrou no XML fica por sequência no plan.json", 
     assert.deepEqual(r.plan.xmlAssets, { youtube: { treatedAudio: newAudio }, "outras-redes": { treatedAudio: oldAudio } });
   });
 
-  it("entradas mudaram: a sequência que sai do plano leva junto o que entrou no XML dela", () => {
+  it("entradas mudaram: a sequência defasada guarda o que entrou no XML dela (#12968)", () => {
     const prev = { ...base, hash: "OLD", plans: [plan("youtube", "v1"), plan("outras-redes", "v1", 1920, 1080)], xmlAssets: { "outras-redes": { treatedAudio: oldAudio } } };
     const next = { ...base, hash: "H", plans: [plan("youtube", "v2"), plan("outras-redes", "v2", 1920, 1080)], xmlAssets: { youtube: { treatedAudio: newAudio } } };
     const r = mergeBuildPlan({ next, pickedKeys: new Set(["youtube"]), prev, now: 9 });
-    assert.deepEqual(r.plan.xmlAssets, { youtube: { treatedAudio: newAudio } });
+    assert.deepEqual(r.plan.xmlAssets, { youtube: { treatedAudio: newAudio }, "outras-redes": { treatedAudio: oldAudio } });
+    assert.deepEqual(r.stale, ["outras-redes"]);
   });
 });
