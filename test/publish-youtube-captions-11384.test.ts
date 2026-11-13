@@ -277,8 +277,18 @@ describe("--captions-only (#11384)", () => {
     assert.equal(outcome.exitCode, 0);
     assert.equal(outcome.skipped, true);
     assert.equal(calls.length, 0);
-    const forced = await captionsOnly(mockDeps(routes(captionOk)).deps, { force: true });
-    assert.equal(forced.outcome.record?.captions?.captionId, CAPTION_ID);
+    // #13004: com --force a faixa registrada é ATUALIZADA (captions.update), nunca uma 2ª faixa.
+    const listOld: Route = (c) =>
+      c.url.startsWith("https://www.googleapis.com/youtube/v3/captions?") && c.method === "GET"
+        ? json(200, { items: [{ id: "old", snippet: { language: "pt-BR", trackKind: "standard", isDraft: false } }] })
+        : undefined;
+    const updated: Route = (c) => (c.method === "PUT" ? json(200, { id: "old", snippet: { language: "pt-BR" } }) : json(500, { error: "insert não devia ser chamado" }));
+    const f = mockDeps([listOld, ...routes(updated)]);
+    const forced = await captionsOnly(f.deps, { force: true });
+    assert.equal(forced.outcome.exitCode, 0, forced.logs.join("\n"));
+    assert.equal(forced.outcome.record?.captions?.captionId, "old");
+    assert.equal(forced.outcome.record?.captions?.updated, true);
+    assert.deepEqual(captionCalls(f.calls).map((c) => c.method), ["PUT"]);
   });
 
   it("token sem o escopo: exit 0 (fail-soft) com o comando de setup", async () => {
