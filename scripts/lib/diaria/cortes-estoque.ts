@@ -104,8 +104,10 @@ export function registrarExtras(
     const id = `${novo.edicao}-${novo.peca}`;
     const existing = cur.itens.find((it) => it.id === id);
     if (existing) {
-      const r = addAgendamentoSafe(cur, novo, now);
-      if (r && !r.created) {
+      // #12971: valida o item novo como se o existente não estivesse lá: alvo/dono/destinos
+      // inválidos sobem (como no item novo), nunca viram "mantido". Só a divergência de dados é mantida.
+      const { item } = addAgendamento({ ...cur, itens: cur.itens.filter((it) => it.id !== id) }, novo, now);
+      if (mesmosDadosDeAgendamento(existing, item)) {
         resultados.push({ id, status: "ja-registrado", item: existing });
       } else {
         resultados.push({
@@ -124,12 +126,11 @@ export function registrarExtras(
   return { banco: cur, resultados };
 }
 
-function addAgendamentoSafe(banco: AgendamentosBanco, novo: NovoAgendamento, now: Date) {
-  try {
-    return addAgendamento(banco, novo, now);
-  } catch {
-    return null;
-  }
+/** O mesmo critério de "já registrado" do `addAgendamento`: alvo, dono e conjunto de destinos. */
+function mesmosDadosDeAgendamento(a: AgendamentoItem, b: AgendamentoItem): boolean {
+  const da = new Set(a.destinos);
+  const db = new Set(b.destinos);
+  return a.alvo === b.alvo && a.dono === b.dono && da.size === db.size && [...da].every((d) => db.has(d));
 }
 
 // ─── Estoque ─────────────────────────────────────────────────────────────────

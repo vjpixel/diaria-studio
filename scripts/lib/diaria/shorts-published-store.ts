@@ -50,6 +50,7 @@ import {
   type ShortPublishedEntry,
   type ShortsPublishedFile,
 } from "./short-video.ts";
+import { isCorteDir } from "./short-corte.ts";
 
 /** Registro escrito SÓ pela rodada do timer do LinkedIn no 300 (`--linkedin-timer`). */
 export const SHORTS_TIMER_LEDGER_FILE = "_internal/06-shorts-published.linkedin-timer.json";
@@ -258,8 +259,9 @@ export function mergeShortsRegistries(aammdd: string, files: readonly ShortsPubl
   return { aammdd, entries: [...byDest.values()] };
 }
 
-function readOne(path: string, aammdd: string): ShortsPublishedFile {
-  return parseShortsPublishedFile(readFileSync(path, "utf8"), aammdd, path);
+/** #12998/#12999: no corte avulso o `aammdd` do arquivo não é comparado (a data do corte muda num reagendamento). */
+function readOne(path: string, aammdd: string, corte: boolean): ShortsPublishedFile {
+  return parseShortsPublishedFile(readFileSync(path, "utf8"), aammdd, path, { corte });
 }
 
 /**
@@ -267,7 +269,8 @@ function readOne(path: string, aammdd: string): ShortsPublishedFile {
  * conflito). Qualquer arquivo ilegível lança, como o registro único lançava.
  */
 export function readShortsRegistry(editionDir: string, aammdd: string): ShortsPublishedFile {
-  return mergeShortsRegistries(aammdd, listShortsRegistryFiles(editionDir).map((p) => readOne(p, aammdd)));
+  const corte = isCorteDir(editionDir);
+  return mergeShortsRegistries(aammdd, listShortsRegistryFiles(editionDir).map((p) => readOne(p, aammdd, corte)));
 }
 
 /** Conteúdo bruto de cada arquivo do registro (pro `decideTimerRun`). */
@@ -301,7 +304,8 @@ export function persistShortEntry(
   withFileLock(
     `${path}.lock`,
     () => {
-      const current = existsSync(path) ? readOne(path, aammdd) : { aammdd, entries: [] };
+      // #12998: no corte, o arquivo gravado na data anterior é regravado com a data atual.
+      const current = existsSync(path) ? readOne(path, aammdd, isCorteDir(editionDir)) : { aammdd, entries: [] };
       writeFileAtomic(path, JSON.stringify(upsertShortEntry(current, entry), null, 2) + "\n");
     },
     lockTimeoutMs,

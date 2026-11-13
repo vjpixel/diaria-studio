@@ -91,7 +91,7 @@ export function findCortesWithoutOwner(input: { config: unknown; destination: st
     if (!(corteAuthorizedDestinations(c.spec) ?? []).includes(input.destination)) continue;
     const deltaMs = input.now.getTime() - Date.parse(resolveEditionScheduledAt(c.spec.date, c.spec.hhmm));
     if (!(deltaMs > MAX_FIRE_LATENESS_MS) || deltaMs > CORTE_WATCH_HORIZON_MS) continue;
-    const done = c.registryRaws.some(({ path, raw }) => parseShortsPublishedFile(raw, c.spec.date, path).entries.some((e) => e.destination === input.destination));
+    const done = c.registryRaws.some(({ path, raw }) => parseShortsPublishedFile(raw, c.spec.date, path, { corte: true }).entries.some((e) => e.destination === input.destination));
     if (done) continue;
     out.push({
       dir: c.dir,
@@ -121,7 +121,7 @@ export function findCortesWithStaleTimer(input: { config: unknown; destination: 
     if (!(corteAuthorizedDestinations(c.spec) ?? []).includes(input.destination)) continue;
     const deltaMs = input.now.getTime() - Date.parse(resolveEditionScheduledAt(c.spec.date, c.spec.hhmm));
     if (deltaMs < 0 || deltaMs > CORTE_WATCH_HORIZON_MS) continue;
-    const done = c.registryRaws.some(({ path, raw }) => parseShortsPublishedFile(raw, c.spec.date, path).entries.some((e) => e.destination === input.destination));
+    const done = c.registryRaws.some(({ path, raw }) => parseShortsPublishedFile(raw, c.spec.date, path, { corte: true }).entries.some((e) => e.destination === input.destination));
     if (done) continue;
     out.push({
       dir: c.dir,
