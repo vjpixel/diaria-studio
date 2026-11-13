@@ -3026,7 +3026,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Stuck-Approved-Pr-Alarm",
     description:
-      "alarme de PR com review approve e CI verde aberta ha mais de 4h sem merge, independente de escalada (#12950 item 5)",
+      "alarme de PR com review approve e CI verde aberta ha >= 4h (desde createdAt) sem merge, independente de escalada (#12950 item 5)",
     steps: [{ key: "check", script: "scripts/stuck-approved-pr-alarm.ts" }],
     logPath: "stuck-approved-pr-alarm/.alarm.log",
     // A cada 2h, mesma cadencia do Diaria-Stale-Red-Pr-Alarm (irmao, CI

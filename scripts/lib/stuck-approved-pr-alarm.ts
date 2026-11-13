@@ -10,7 +10,8 @@
  * (`list-continuo-escalation-queue.ts`) só mostra a PR depois de 24h.
  *
  * Este alarme independe de escalada: basta a PR estar aprovada, verde e
- * aberta há mais de `thresholdHours` (default 4h). PR aprovada e verde que
+ * aberta há >= `thresholdHours` (default 4h), contadas desde a ABERTURA
+ * (`createdAt`), não desde a aprovação. PR aprovada e verde que
  * ninguém mergeia é trabalho pronto parado, e ainda ocupa o teto global de
  * PRs abertas (#12765).
  *
@@ -20,7 +21,8 @@
  * Se o marcador traz `head=<sha>` e ele não bate com o HEAD atual, a
  * aprovação cobre um commit antigo e não conta (mesma regra do #6926).
  *
- * Fora do alarme: PR com `retido-para-editor` (retenção deliberada, #10278)
+ * Fora do alarme: PR retida (label `retido-para-editor` ou marcador no
+ * corpo, via `evaluatePrRetido`, #10278)
  * e draft com `bloqueio-execucao` (bloqueio de execução declarado, #12460).
  * Draft sem essa label entra, marcado como draft: foi o caso da #12920.
  *
@@ -29,19 +31,19 @@
  */
 import { evaluatePrChecksGate } from "./pr-checks-gate.ts";
 import { extractIndependentReviewHeadSha, extractIndependentReviewVerdict } from "./pr-review-authenticity.ts";
+import { evaluatePrRetido } from "./pr-retido-para-editor.ts";
+import { EXECUTION_BLOCK_LABEL } from "./continuo-stuck-pr.ts";
 
 const MS_PER_HOUR = 60 * 60 * 1000;
 
 export const DEFAULT_STUCK_APPROVED_THRESHOLD_HOURS = 4;
 
-/** Labels que tiram a PR do alarme (decisão deliberada de segurar). */
-export const RETIDO_LABEL = "retido-para-editor";
-export const EXECUTION_BLOCK_LABEL = "bloqueio-execucao";
-
-/** O que `gh pr list --json number,title,isDraft,labels,createdAt,mergeable,statusCheckRollup,reviewDecision,headRefOid` devolve. */
+/** O que `gh pr list --json number,title,body,isDraft,labels,createdAt,mergeable,statusCheckRollup,reviewDecision,headRefOid` devolve. */
 export interface StuckApprovedPrBasicEntry {
   number: number;
   title: string;
+  /** Corpo da PR: o marcador `<!-- retido-para-editor -->` também retém (#10278). */
+  body?: string | null;
   isDraft: boolean;
   labels: readonly string[];
   /** ISO 8601. */
@@ -68,7 +70,10 @@ export interface StuckApprovedPrFinding {
 }
 
 function isExcluded(pr: StuckApprovedPrBasicEntry): boolean {
-  if (pr.labels.includes(RETIDO_LABEL)) return true;
+  // Mesma fonte de verdade dos gates de merge: label OU marcador no corpo.
+  // `retido: null` só ocorre com labels ilegíveis (não com o array já
+  // normalizado daqui); conta como retida, fail-closed.
+  if (evaluatePrRetido({ labels: [...pr.labels], body: pr.body ?? undefined }).retido !== false) return true;
   return pr.isDraft && pr.labels.includes(EXECUTION_BLOCK_LABEL);
 }
 
@@ -137,6 +142,26 @@ export function evaluateStuckApprovedPrs(
   return findings.sort((a, b) => b.hoursOpen - a.hoursOpen);
 }
 
+/**
+ * O que a run faz com o resultado (#12950, review). `skippedCandidates` =
+ * candidatas cujo `gh pr view --json comments` falhou: não deu pra checar
+ * a aprovação delas.
+ *
+ * - `close`: nenhum achado E nada pulado. Só aqui a issue única é fechada.
+ * - `notify`: há achados e nada pulado: alarma e comenta o conjunto novo.
+ * - `notify-partial`: há achados mas algo foi pulado: alarma (os achados são
+ *   reais), mas NÃO comenta o conjunto (seria um conjunto incompleto, que
+ *   viraria marcador "visto" errado) e a run sai 1.
+ * - `hold`: nenhum achado mas algo foi pulado: não fecha (a PR pulada pode
+ *   estar parada), não comenta, sai 1.
+ */
+export type StuckApprovedRunOutcome = "close" | "notify" | "notify-partial" | "hold";
+
+export function decideStuckApprovedRunOutcome(findingsCount: number, skippedCandidates: number): StuckApprovedRunOutcome {
+  if (skippedCandidates > 0) return findingsCount > 0 ? "notify-partial" : "hold";
+  return findingsCount > 0 ? "notify" : "close";
+}
+
 /** Fingerprint FIXO: 1 issue enquanto houver PR parada (lição do #8767). */
 export const STUCK_APPROVED_PR_ALARM_FINGERPRINT = "approved-green-prs";
 
@@ -162,7 +187,7 @@ export function buildStuckApprovedPrAlarmEmail(
   thresholdHours: number,
   now: Date,
 ): { subject: string; body: string } {
-  const subject = `${findings.length} PR(s) aprovada(s) e verde(s) sem merge há mais de ${thresholdHours}h`;
+  const subject = `${findings.length} PR(s) aprovada(s) e verde(s) abertas há >= ${thresholdHours}h (desde a abertura) sem merge`;
   const lines = findings.map((f) => {
     const flags = [
       f.isDraft ? "draft" : null,
@@ -176,7 +201,7 @@ export function buildStuckApprovedPrAlarmEmail(
     "",
     ...lines,
     "",
-    "Estas PRs têm review approve e CI verde e seguem abertas. Fora da lista: retido-para-editor e draft com bloqueio-execucao.",
+    "Estas PRs têm review approve e CI verde e seguem abertas. Fora da lista: retidas (label ou marcador retido-para-editor) e draft com bloqueio-execucao.",
     "Ação: passar pelo Gate 2 e mergear (`check-continuo-merge-gate.ts --pr N` mostra o motivo da retenção); draft sem bloqueio real sai de draft antes.",
   ].join("\n");
   return { subject, body };

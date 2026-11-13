@@ -23,7 +23,10 @@
  * `stale-red-pr-alarm.ts` desde o #8767.
  *
  * `gh pr list` falho sai 1 sem alarmar (nunca lido como "0 PRs"). Falha no
- * `gh pr view` de uma candidata pula só ela, com aviso em stderr.
+ * `gh pr view` de uma candidata pula só ela, com aviso em stderr, e conta:
+ * com alguma pulada a run NUNCA fecha a issue nem comenta conjunto novo, e
+ * sai 1 (`decideStuckApprovedRunOutcome`, #12950 review). Falha de
+ * `gh issue comment`/`gh issue close` é logada e também sai 1.
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +37,7 @@ import { findExistingAlarmIssue } from "./lib/alarm-issues.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import {
   buildStuckApprovedPrAlarmEmail,
+  decideStuckApprovedRunOutcome,
   DEFAULT_STUCK_APPROVED_THRESHOLD_HOURS,
   evaluateStuckApprovedPrs,
   needsStuckApprovedSetComment,
@@ -52,6 +56,7 @@ const ALARM_CHECK = "stuck-approved-pr-alarm";
 interface GhPrListEntry {
   number: number;
   title: string;
+  body?: string | null;
   isDraft: boolean;
   labels?: { name?: string }[] | null;
   createdAt: string;
@@ -66,7 +71,7 @@ export function listOpenPrsBasic(cwd: string = ROOT): StuckApprovedPrBasicEntry[
   const res = spawnGhSync(
     [
       "pr", "list", "--state", "open",
-      "--json", "number,title,isDraft,labels,createdAt,mergeable,statusCheckRollup,reviewDecision,headRefOid",
+      "--json", "number,title,body,isDraft,labels,createdAt,mergeable,statusCheckRollup,reviewDecision,headRefOid",
       "--limit", "100",
     ],
     cwd,
@@ -78,6 +83,7 @@ export function listOpenPrsBasic(cwd: string = ROOT): StuckApprovedPrBasicEntry[
     return entries.map((e) => ({
       number: e.number,
       title: e.title,
+      body: typeof e.body === "string" ? e.body : null,
       isDraft: e.isDraft === true,
       labels: (e.labels ?? []).map((l) => (typeof l?.name === "string" ? l.name : "")).filter((n) => n !== ""),
       createdAt: e.createdAt,
@@ -135,6 +141,7 @@ async function main(): Promise<void> {
   const now = new Date();
   const candidates = selectStuckApprovedCandidates(basicPrs, now, thresholdHours);
   const withComments: StuckApprovedPrEntry[] = [];
+  let skipped = 0;
   for (const candidate of candidates) {
     if (candidate.reviewDecision === "APPROVED") {
       withComments.push({ ...candidate, comments: [] });
@@ -143,6 +150,7 @@ async function main(): Promise<void> {
     const comments = fetchPrComments(candidate.number);
     if (comments === null) {
       console.error(`${LOG_PREFIX} 'gh pr view ${candidate.number} --json comments' falhou: pulando esta PR nesta run.`);
+      skipped++;
       continue;
     }
     withComments.push({ ...candidate, comments });
@@ -150,12 +158,20 @@ async function main(): Promise<void> {
 
   const findings = evaluateStuckApprovedPrs(withComments, now, thresholdHours);
   console.log(
-    `${LOG_PREFIX} PRs abertas: ${basicPrs.length}, candidatas (verdes, abertas há >= ${thresholdHours}h): ${candidates.length}, aprovadas e paradas: ${findings.length}`,
+    `${LOG_PREFIX} PRs abertas: ${basicPrs.length}, candidatas (verdes, abertas há >= ${thresholdHours}h): ${candidates.length}, aprovadas e paradas: ${findings.length}, puladas por falha do gh: ${skipped}`,
   );
 
-  if (findings.length === 0) {
+  const outcome = decideStuckApprovedRunOutcome(findings.length, skipped);
+  if (outcome === "hold") {
+    console.error(
+      `${LOG_PREFIX} nenhum achado, mas ${skipped} candidata(s) não puderam ser checadas: não fecha a issue, não comenta. Sai 1.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (outcome === "close") {
     console.log(`${LOG_PREFIX} nenhum achado: nenhuma PR aprovada e verde está parada além do limiar.`);
-    if (!isDryRun) closeResolvedAlarmIssue();
+    if (!isDryRun && !closeResolvedAlarmIssue()) process.exitCode = 1;
     return;
   }
 
@@ -175,35 +191,57 @@ async function main(): Promise<void> {
     throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
   }
   const issueNumber = result.issue?.issueNumber;
-  if (issueNumber && (result.issue?.action === "reused" || result.issue?.action === "reopened")) {
-    commentIfSetChanged(issueNumber, setKey, body);
+  if (outcome === "notify-partial") {
+    console.error(
+      `${LOG_PREFIX} ${skipped} candidata(s) não puderam ser checadas: conjunto incompleto, não comenta. Sai 1.`,
+    );
+    process.exitCode = 1;
+  } else if (issueNumber && (result.issue?.action === "reused" || result.issue?.action === "reopened")) {
+    if (!commentIfSetChanged(issueNumber, setKey, body)) process.exitCode = 1;
   }
   console.log(`${LOG_PREFIX} alarme registrado (issue #${issueNumber ?? "?"}, ${findings.length} achado(s)).`);
 }
 
-/** Comenta o conjunto atual na issue reusada só se ele ainda não foi reportado lá. */
-function commentIfSetChanged(issueNumber: number, setKey: string, body: string): void {
+/** Comenta o conjunto atual na issue reusada só se ele ainda não foi reportado lá. `false` = falha do gh (logada). */
+function commentIfSetChanged(issueNumber: number, setKey: string, body: string): boolean {
   const res = spawnGhSync(["issue", "view", String(issueNumber), "--json", "body,comments"], ROOT);
-  if (res.status !== 0) return;
+  if (res.status !== 0) {
+    console.error(`${LOG_PREFIX} gh issue view ${issueNumber} falhou (status ${res.status}): conjunto não comparado.`);
+    return false;
+  }
   let texts: string[];
   try {
     const parsed = JSON.parse(res.stdout) as { body?: string; comments?: { body: string }[] };
     texts = [parsed.body ?? "", ...(parsed.comments ?? []).map((c) => c.body)];
   } catch {
-    return;
+    console.error(`${LOG_PREFIX} gh issue view ${issueNumber}: JSON malformado, conjunto não comparado.`);
+    return false;
   }
-  if (!needsStuckApprovedSetComment(texts, setKey)) return;
-  spawnGhSync(["issue", "comment", String(issueNumber), "--body", `Conjunto de PRs aprovadas paradas mudou:\n\n${body}`], ROOT);
+  if (!needsStuckApprovedSetComment(texts, setKey)) return true;
+  const commented = spawnGhSync(
+    ["issue", "comment", String(issueNumber), "--body", `Conjunto de PRs aprovadas paradas mudou:\n\n${body}`],
+    ROOT,
+  );
+  if (commented.status !== 0) {
+    console.error(`${LOG_PREFIX} gh issue comment ${issueNumber} falhou (status ${commented.status}).`);
+    return false;
+  }
+  return true;
 }
 
-/** Lista vazia: fecha a issue única aberta, se houver. */
-function closeResolvedAlarmIssue(): void {
+/** Lista vazia: fecha a issue única aberta, se houver. `false` = falha do gh (logada). */
+function closeResolvedAlarmIssue(): boolean {
   const existing = findExistingAlarmIssue(ALARM_CHECK, STUCK_APPROVED_PR_ALARM_FINGERPRINT, ROOT);
-  if (!existing || existing.state !== "OPEN") return;
-  spawnGhSync(
+  if (!existing || existing.state !== "OPEN") return true;
+  const closed = spawnGhSync(
     ["issue", "close", String(existing.issueNumber), "--comment", "Nenhuma PR aprovada e verde está parada: alarme resolvido.", "--reason", "completed"],
     ROOT,
   );
+  if (closed.status !== 0) {
+    console.error(`${LOG_PREFIX} gh issue close ${existing.issueNumber} falhou (status ${closed.status}).`);
+    return false;
+  }
+  return true;
 }
 
 if (isMainModule(import.meta.url)) {

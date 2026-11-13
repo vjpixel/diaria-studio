@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import {
   approvalSource,
   buildStuckApprovedPrAlarmEmail,
+  decideStuckApprovedRunOutcome,
   evaluateStuckApprovedPrs,
   needsStuckApprovedSetComment,
   selectStuckApprovedCandidates,
@@ -118,6 +119,28 @@ describe("evaluateStuckApprovedPrs (#12950 item 5)", () => {
     assert.equal(key, "12896,12897");
     assert.equal(needsStuckApprovedSetComment([`x ${stuckApprovedPrSetMarker(key)}`], key), false);
     assert.equal(needsStuckApprovedSetComment(["outro"], key), true);
+  });
+});
+
+describe("revisão do PR (#12950)", () => {
+  it("retenção pelo marcador no corpo, sem label, tira a PR do alarme", () => {
+    const retida = pr({ body: "Resumo.\n\n<!-- Retido-Para-Editor -->" });
+    assert.deepEqual(selectStuckApprovedCandidates([retida], NOW, 4), []);
+    assert.equal(selectStuckApprovedCandidates([pr({ body: "sem marcador" })], NOW, 4).length, 1);
+  });
+
+  it("candidata pulada por falha do gh nunca fecha a issue nem comenta conjunto", () => {
+    assert.equal(decideStuckApprovedRunOutcome(0, 0), "close");
+    assert.equal(decideStuckApprovedRunOutcome(2, 0), "notify");
+    assert.equal(decideStuckApprovedRunOutcome(0, 1), "hold");
+    assert.equal(decideStuckApprovedRunOutcome(2, 1), "notify-partial");
+  });
+
+  it("o script pede body no gh pr list e sai 1 em hold/notify-partial", () => {
+    const src = readFileSync(resolve(ROOT, "scripts/stuck-approved-pr-alarm.ts"), "utf8");
+    assert.match(src, /"number,title,body,/);
+    assert.match(src, /outcome === "hold"[\s\S]*?process\.exitCode = 1/);
+    assert.match(src, /outcome === "notify-partial"[\s\S]*?process\.exitCode = 1/);
   });
 });
 
