@@ -51,6 +51,12 @@
  *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --picks url1,url2
  *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --use-melhor-url URL
  *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --use-melhor-auto
+ *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --shared-selection PATH
+ *
+ * **`--shared-selection PATH`** (#13022): manchetes do ranking compartilhado
+ * do `/diaria-pacote-semanal` (`weekly-shared-selection.ts`) no lugar da
+ * seleção própria — ver `applySharedLinkedinSelection`. Sem a flag, nada
+ * muda (a skill isolada segue com `selectHeadlines`).
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -206,10 +212,15 @@ export function main(rootDirOverride?: string) {
 
   const useMelhorUrlArg = getArg(argv, "use-melhor-url").trim();
   const useMelhorAuto = hasFlag(argv, "use-melhor-auto");
+  const sharedSelectionArg = getArg(argv, "shared-selection").trim();
+  if (hasFlag(argv, "shared-selection")) {
+    console.error("--shared-selection precisa do caminho do shared-selection.json (weekly-shared-selection.ts, #13022).");
+    process.exit(2);
+  }
 
   if (!publishMonday) {
     console.error(
-      "Uso: select-linkedin-weekly.ts --publish-monday AAMMDD [--manifest-only] [--picks url1,url2] [--use-melhor-url URL | --use-melhor-auto]",
+      "Uso: select-linkedin-weekly.ts --publish-monday AAMMDD [--manifest-only] [--picks url1,url2 | --shared-selection PATH] [--use-melhor-url URL | --use-melhor-auto]",
     );
     process.exit(2);
   }
@@ -289,7 +300,25 @@ export function main(rootDirOverride?: string) {
   // docstring de `applyPendingPicks`).
   let finalHeadlines: WeeklyRankedCandidate[] = headlineResult.selected;
   let pendingGroupForOutput = headlineResult.pendingGroup;
-  if (picks !== null) {
+  let pendingSlotsForOutput = headlineResult.pendingSlots;
+  let selectionWarnings = headlineResult.warnings;
+  // #13022: `--shared-selection` troca a seleção própria pelas manchetes do
+  // ranking compartilhado do `/diaria-pacote-semanal`.
+  if (sharedSelectionArg) {
+    if (picks !== null) {
+      console.error("--shared-selection e --picks são excludentes: o empate do pacote se resolve em weekly-shared-selection.ts --pick linkedin.");
+      process.exit(2);
+    }
+    const shared = applySharedLinkedinSelection(sharedSelectionArg, resolution.publishMonday, headlineResult.headlineEligible);
+    if (shared.error) {
+      console.error(`--shared-selection inválido: ${shared.error}`);
+      process.exit(2);
+    }
+    finalHeadlines = shared.headlines;
+    pendingGroupForOutput = shared.pendingGroup;
+    pendingSlotsForOutput = shared.pendingSlots;
+    selectionWarnings = shared.warnings;
+  } else if (picks !== null) {
     if (headlineResult.pendingGroup === null) {
       console.error(
         `--picks foi passado mas não há empate pendente nesta seleção (${headlineResult.selected.length}/${headlineCap} manchete(s) já resolvida(s) sem ambiguidade) — rode sem --picks.`,
@@ -401,7 +430,7 @@ export function main(rootDirOverride?: string) {
   }
 
   // --picks já resolveu o empate; preservar só os avisos ainda aplicáveis.
-  warnings.push(...headlineResult.warnings.filter(
+  warnings.push(...selectionWarnings.filter(
     (warning) => pendingGroupForOutput !== null || !warning.includes("escolha manual necessária no gate"),
   ));
 
@@ -500,7 +529,9 @@ export function main(rootDirOverride?: string) {
     // manual do editor (Passo 3 da skill) — `editorialTiebreakHint` é
     // DICA, não decisor (ver docstring de `selectHeadlines`).
     pendingGroup: pendingGroupWithHint,
-    pendingSlots: pendingGroupForOutput ? headlineResult.pendingSlots : 0,
+    pendingSlots: pendingGroupForOutput ? pendingSlotsForOutput : 0,
+    // #13022: caminho da seleção compartilhada do pacote semanal, quando veio de lá.
+    sharedSelection: sharedSelectionArg || null,
     headlineCandidatesRanked: headlineResult.headlineEligible,
     excludedCandidates: headlineResult.excluded,
     useMelhor: useMelhor ?? null,
@@ -535,7 +566,7 @@ export function main(rootDirOverride?: string) {
   }
   if (pendingGroupWithHint) {
     console.log(
-      `\nEmpate pendente — ${headlineResult.pendingSlots} vaga(s) restante(s), ${pendingGroupWithHint.length} candidato(s) disputando (escolha manual no gate, re-rode com --picks url1,url2,...):`,
+      `\nEmpate pendente — ${pendingSlotsForOutput} vaga(s) restante(s), ${pendingGroupWithHint.length} candidato(s) disputando (escolha manual no gate, re-rode com --picks url1,url2,...):`,
     );
     for (const c of pendingGroupWithHint) {
       console.log(`  ${fmtCandidate(c)} (dica de desempate editorial: ${c.editorialTiebreakHint})`);
@@ -552,6 +583,77 @@ export function main(rootDirOverride?: string) {
     manifestCount: manifest.length,
     postCutoverBeehiiv,
   });
+}
+
+/**
+ * #13022: manchetes vindas da seleção compartilhada do `/diaria-pacote-semanal`
+ * (`weekly-shared-selection.ts`). Cada URL de `linkedin.urls` precisa ser
+ * destaque elegível desta janela (o mesmo `headlineEligible` da seleção
+ * própria). Empate do #5109 ainda só com a SUGESTÃO do pacote volta como
+ * `pendingGroup` (com as manchetes já preenchidas pela sugestão, para a
+ * prévia): o gate consolidado confirma ou troca antes do paste. Exportada
+ * para teste.
+ */
+export function applySharedLinkedinSelection(
+  path: string,
+  publishMonday: string,
+  headlineEligible: WeeklyRankedCandidate[],
+): {
+  headlines: WeeklyRankedCandidate[];
+  pendingGroup: WeeklyRankedCandidate[] | null;
+  pendingSlots: number;
+  warnings: string[];
+  error: string | null;
+} {
+  const empty = { headlines: [], pendingGroup: null, pendingSlots: 0, warnings: [] };
+  if (!existsSync(path)) return { ...empty, error: `${path} não existe — rode weekly-shared-selection.ts antes.` };
+  let shared: {
+    version?: number;
+    publishMonday?: string;
+    linkedin?: { urls?: string[]; pending?: { group: string[]; slots: number; resolution: string } | null; warnings?: string[] };
+  };
+  try {
+    shared = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    return { ...empty, error: `${path} ilegível: ${(e as Error).message}` };
+  }
+  if (shared.version !== 1 || !Array.isArray(shared.linkedin?.urls)) {
+    return { ...empty, error: `${path} não é uma seleção compartilhada válida (version 1, com linkedin.urls).` };
+  }
+  if (shared.publishMonday !== publishMonday) {
+    return { ...empty, error: `${path} é da segunda ${shared.publishMonday}, não de ${publishMonday}.` };
+  }
+  const byUrl = new Map(headlineEligible.map((c) => [normalizeUrl(c.url), c]));
+  const resolveUrls = (urls: string[]): { list: WeeklyRankedCandidate[]; missing: string[] } => {
+    const list: WeeklyRankedCandidate[] = [];
+    const missing: string[] = [];
+    for (const u of urls) {
+      const c = byUrl.get(normalizeUrl(u));
+      if (c) list.push(c);
+      else missing.push(u);
+    }
+    return { list, missing };
+  };
+  const headlines = resolveUrls(shared.linkedin!.urls!);
+  if (headlines.missing.length > 0) {
+    return { ...empty, error: `URL(s) que não são destaque elegível desta janela: ${headlines.missing.join(", ")}` };
+  }
+  const warnings = [
+    `Manchetes da seleção compartilhada do pacote semanal (#13022): ${path}.`,
+    ...(shared.linkedin!.warnings ?? []),
+  ];
+  const pending = shared.linkedin!.pending;
+  if (pending && pending.resolution !== "editor") {
+    const group = resolveUrls(pending.group);
+    if (group.missing.length > 0) {
+      return { ...empty, error: `empate pendente com URL fora dos destaques elegíveis: ${group.missing.join(", ")}` };
+    }
+    warnings.push(
+      `Empate (#5109) ainda com a SUGESTÃO do pacote — confirme no gate consolidado (weekly-shared-selection.ts --confirm-suggestions ou --pick linkedin) e re-rode antes do paste.`,
+    );
+    return { headlines: headlines.list, pendingGroup: group.list, pendingSlots: pending.slots, warnings, error: null };
+  }
+  return { headlines: headlines.list, pendingGroup: null, pendingSlots: 0, warnings, error: null };
 }
 
 /**
