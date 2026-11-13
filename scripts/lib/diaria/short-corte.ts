@@ -86,6 +86,15 @@ export interface CorteSpec {
   publish_revoked_reason_kind?: CorteRevocationKind;
   /** #11912: a impressão digital aprovada antes da queda `plan` (o restore confere contra ela). */
   publish_revoked_content?: CorteContentFingerprint;
+  /**
+   * #13000: quando o `--cancel --confirm SLUG` rodou. O cancelamento tira o
+   * "pode publicar" (o timer do 300 e o vigia de cortes sem dono não agem
+   * sem ele) e nunca convive com `publish_confirmed_at`: um novo `--publish
+   * --confirm-publish` do corte apaga estes dois campos.
+   */
+  cancelled_at?: string;
+  /** #13000: destinos que o cancelamento de fato tirou do ar/da fila (pode ser parcial). */
+  cancelled_destinations?: string[];
 }
 
 /** #11912: motivo da queda do "pode publicar" (ver `publish_revoked_reason_kind`). */
@@ -382,6 +391,15 @@ function corteSpecProblems(data: unknown): string[] {
   if (revokedKind !== undefined && revokedKind !== "plan" && revokedKind !== "content") problems.push('publish_revoked_reason_kind precisa ser "plan" ou "content"');
   if (revokedKind === "plan" && !fingerprint(revokedContent)) problems.push('publish_revoked_content obrigatório com publish_revoked_reason_kind "plan"');
   if (revokedContent !== undefined && revokedKind !== "plan") problems.push('publish_revoked_content só com publish_revoked_reason_kind "plan"');
+  // #13000: cancelamento.
+  const cancelledAt = d["cancelled_at"];
+  const cancelledDests = d["cancelled_destinations"];
+  if (cancelledAt !== undefined && !iso(cancelledAt)) problems.push("cancelled_at precisa ser data ISO");
+  if (cancelledDests !== undefined && !(Array.isArray(cancelledDests) && cancelledDests.every((x) => typeof x === "string" && x.trim() !== ""))) {
+    problems.push("cancelled_destinations precisa ser lista de destinos");
+  }
+  if (cancelledDests !== undefined && cancelledAt === undefined) problems.push("cancelled_destinations sem cancelled_at");
+  if (cancelledAt !== undefined && at !== undefined) problems.push("cancelled_at e publish_confirmed_at não convivem (o cancelamento tira o \"pode publicar\")");
   // Autorizado e derrubado convivem (destinos diferentes), nunca o mesmo destino nos dois.
   if (destList(dests) && destList(revokedDests)) {
     const both = dests.filter((x) => revokedDests.includes(x));
@@ -456,6 +474,23 @@ function withoutRevocation(spec: CorteSpec): CorteSpec {
   return rest;
 }
 
+/** #13000: tira o registro de cancelamento (um novo "pode publicar" reativa o corte). */
+function withoutCancellation(spec: CorteSpec): CorteSpec {
+  const { cancelled_at: _a, cancelled_destinations: _d, ...rest } = spec;
+  return rest;
+}
+
+/**
+ * Pure (#13000): o corte cancelado pelo `--cancel --confirm SLUG`. Tira o
+ * "pode publicar" e o registro de derrubada (sem eles o timer do 300 não
+ * publica nem alarma `revoked`, e o vigia de cortes sem dono não alarma) e
+ * grava quando e o que foi cancelado.
+ */
+export function withCorteCancellation(spec: CorteSpec, nowIso: string, destinations: readonly string[]): CorteSpec {
+  const { publish_confirmed_at: _a, publish_confirmed_destinations: _d, publish_confirmed_content: _c, ...rest } = withoutRevocation(spec);
+  return { ...rest, cancelled_at: nowIso, cancelled_destinations: [...destinations] };
+}
+
 /**
  * Pure (#11912): grava a autorização do `--publish --confirm-publish` do
  * corte. `only` é a lista CONCRETA de destinos da rodada (o `--only`, ou os
@@ -499,7 +534,7 @@ export function withCortePublishAuthorization(
   }
   return {
     spec: {
-      ...withoutRevocation(spec),
+      ...withoutCancellation(withoutRevocation(spec)),
       publish_confirmed_at: nowIso,
       publish_confirmed_destinations: next,
       publish_confirmed_content: { video_sha256: content.video_sha256, cover_sha256: content.cover_sha256 },

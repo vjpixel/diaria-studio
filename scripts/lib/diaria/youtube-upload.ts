@@ -493,6 +493,61 @@ export async function updateScheduledVideo(
   return { thumbnail, publishAt };
 }
 
+/** #13000: campos graváveis do `status` que o `videos.update` preserva (o resto volta ao default se omitido). */
+export const YOUTUBE_WRITABLE_STATUS_FIELDS = ["embeddable", "license", "publicStatsViewable", "selfDeclaredMadeForKids", "containsSyntheticMedia"] as const;
+
+/**
+ * #13000: reagenda (`publishAt` novo) ou cancela (`publishAt: null`, o vídeo
+ * fica private sem agendamento: nada é apagado e o editor pode reagendar no
+ * Studio) um Short AINDA agendado. Relê `status` antes: só mexe em vídeo
+ * private com `publishAt` a mais de `minLeadMs` do agora; vídeo no ar, sem
+ * agendamento ou perto demais do horário não é tocado. Depois do
+ * `videos.update` relê de novo e confere o estado gravado.
+ */
+export async function rescheduleScheduledVideo(
+  deps: YouTubeUploadDeps,
+  creds: YouTubeCredentials,
+  videoId: string,
+  publishAt: string | null,
+  minLeadMs: number,
+): Promise<{ previousPublishAt: string; publishAt: string | null }> {
+  const token = await refreshYouTubeAccessToken(deps, creds);
+  await assertExpectedChannel(deps, token, creds.channelId);
+  const read = async (): Promise<Record<string, unknown>> => {
+    const res = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=status&id=${encodeURIComponent(videoId)}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(explainYouTubeUploadError(res.status, await errorSnippet(res), "reread"));
+    const json = (await readJson(res)) as { items?: Array<{ id?: string; status?: Record<string, unknown> }> } | null | undefined;
+    if (json === undefined) throw new Error(`videos.list devolveu corpo não-JSON (HTTP ${res.status})`);
+    const item = json?.items?.find((i) => i.id === videoId);
+    if (!item?.status) throw new Error(`o vídeo ${videoId} não está no canal (videos.list sem o item)`);
+    return item.status;
+  };
+  const status = await read();
+  const previous = typeof status.publishAt === "string" ? status.publishAt : null;
+  const nowMs = deps.now().getTime();
+  if (status.privacyStatus !== "private" || !previous || Date.parse(previous) - nowMs <= minLeadMs) {
+    throw new Error(
+      `o vídeo ${videoId} não está agendado com folga (privacy ${String(status.privacyStatus ?? "?")}, publishAt ${previous ?? "nenhum"}, folga mínima ${Math.round(minLeadMs / 60_000)} min) — nada alterado; confira no YouTube Studio`,
+    );
+  }
+  const next: Record<string, unknown> = { privacyStatus: "private" };
+  for (const k of YOUTUBE_WRITABLE_STATUS_FIELDS) if (status[k] !== undefined) next[k] = status[k];
+  if (publishAt !== null) next.publishAt = publishAt;
+  const put = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=status`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ id: videoId, status: next }),
+  });
+  if (!put.ok) throw new Error(explainYouTubeUploadError(put.status, await errorSnippet(put), "update"));
+  const after = await read();
+  const afterAt = typeof after.publishAt === "string" ? after.publishAt : null;
+  const sameInstant = publishAt === null ? afterAt === null : afterAt !== null && Date.parse(afterAt) === Date.parse(publishAt);
+  if (after.privacyStatus !== "private" || !sameInstant) {
+    throw new Error(`videos.update aceitou, mas a releitura do vídeo ${videoId} mostra privacy ${String(after.privacyStatus ?? "?")} e publishAt ${afterAt ?? "nenhum"} — confira no YouTube Studio`);
+  }
+  return { previousPublishAt: previous, publishAt: afterAt };
+}
+
 /** Relê `status` do vídeo. `null` se a API não devolver o item. */
 export async function fetchVideoStatus(
   deps: YouTubeUploadDeps,
