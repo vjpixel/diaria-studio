@@ -95,7 +95,9 @@
  *       corte (piso + 45% da faixa) vira [aviso]; a passada B do refino só tira som na entrada
  *       separado da 1ª palavra por silêncio.
  *       (#11935) grava um XML por sequência ({nome da sequência}.xml); `--seq` grava só uma, e só ela muda no plan.json (#11969)
- *       (#12902) se as entradas mudaram desde o plano anterior, `--seq` recusa antes de gravar; rode build sem --seq
+ *       (#12902) plan.json anterior ilegível: `--seq` recusa antes de gravar; rode build sem --seq
+ *       (#12968) entradas mudadas desde o plano anterior: `--seq` grava, e as outras sequências ficam no plan.json
+ *       como defasadas (XML e versão intactos), fora de srt/preview/review/verify-xml até um build delas
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Clipes contíguos no bruto viram um só e o zoom alterna só nos cortes (#11503). Os cortes
  *       são refinados pelo áudio do bruto (#11500, `lib/diaria/video-cut-refine.ts`): vale de
@@ -1271,6 +1273,18 @@ interface PlanFile {
    * contra o `builtAt`, que avança em todo build.
    */
   xmlVersions?: Record<string, SequenceXmlVersion>;
+  /**
+   * #12968: sequências (`sequenceKey`) mantidas por um `build --seq` de OUTRA
+   * sequência depois de as entradas mudarem: o plano e o XML delas são de um
+   * build com o hash de entradas `hash` (diferente do `hash` do plan.json).
+   * srt/preview/review/verify-xml as deixam de fora até um build delas.
+   */
+  stale?: Record<string, PlanStaleMark>;
+}
+
+export interface PlanStaleMark {
+  /** O `planHashOf` das entradas do build que gravou o XML desta sequência. */
+  hash: string;
 }
 
 export interface SequenceXmlVersion {
@@ -1289,10 +1303,12 @@ export interface SequenceXmlAssets {
  * O `plan.json` de um build (#11969). Sem `--seq` (`pickedKeys` = todas), é o
  * plano novo inteiro. Com `--seq`, só as sequências reconstruídas entram do
  * plano novo; as outras ficam como o build anterior as gravou (o XML delas no
- * disco é o daquele build), e só se o plano anterior tiver o MESMO hash: com
- * blocks.json/source.json/silences.json/transcript.json mudados, o XML antigo
- * delas não corresponde mais às entradas, então elas SAEM do plan.json (srt e
- * prévia recusam até um build delas) em vez de entrar sem conferência.
+ * disco é o daquele build). Com blocks.json/source.json/silences.json/
+ * transcript.json mudados, o XML antigo delas não corresponde mais às
+ * entradas: elas ficam no plan.json marcadas em `stale` (#12968; antes saíam
+ * do plano, e o #12902 passou a recusar o `--seq`), com o plano, a versão e o
+ * instante do build delas, e srt/prévia as deixam de fora até um build delas.
+ * Só sai do plano (`dropped`) a sequência que o plano anterior não tinha.
  */
 export function mergeBuildPlan(input: {
   next: Omit<PlanFile, "builtAt" | "xmlVersions">;
@@ -1308,13 +1324,14 @@ export function mergeBuildPlan(input: {
    * `builtAt` do build anterior em vez de nascer `now`.
    */
   prevXmlIds?: Readonly<Record<string, string>>;
-}): { plan: PlanFile; kept: string[]; dropped: string[] } {
+}): { plan: PlanFile; kept: string[]; stale: string[]; dropped: string[] } {
   const { next, pickedKeys, prev, now } = input;
   const xmlVersions: Record<string, SequenceXmlVersion> = {};
   const keyOf = (p: SequencePlan) => sequenceKey(p.spec);
-  const sameInputs = prev !== null && prev.hash === next.hash;
-  const prevByKey = new Map((sameInputs ? prev.plans : []).map((p) => [keyOf(p), p]));
+  const prevByKey = new Map((prev && Array.isArray(prev.plans) ? prev.plans : []).map((p) => [keyOf(p), p]));
   const kept: string[] = [];
+  const stale: string[] = [];
+  const staleMarks: Record<string, PlanStaleMark> = {};
   const dropped: string[] = [];
   const plans: SequencePlan[] = [];
   const builtAt: Record<string, number> = {};
@@ -1347,13 +1364,19 @@ export function mergeBuildPlan(input: {
       continue;
     }
     const old = prevByKey.get(k);
-    if (!old) {
+    if (!old || !prev) {
       dropped.push(k);
       continue;
     }
     plans.push(old);
-    kept.push(k);
-    builtAt[k] = prev?.builtAt?.[k] ?? 0;
+    // #12968: as entradas do XML desta sequência são as do build dela: o hash do plano anterior, ou a marca que ela já levava.
+    const builtFrom = staleMarkOf(prev, k)?.hash ?? prev.hash;
+    if (builtFrom === next.hash) kept.push(k);
+    else {
+      stale.push(k);
+      staleMarks[k] = { hash: builtFrom };
+    }
+    builtAt[k] = prev.builtAt?.[k] ?? 0;
     const w = prev?.cutRefine?.highBandWarnings?.[k];
     if (w) highBandWarnings[k] = w;
     const a = prev?.xmlAssets?.[k];
@@ -1371,10 +1394,33 @@ export function mergeBuildPlan(input: {
       builtAt,
       ...(Object.keys(xmlAssets).length ? { xmlAssets } : {}),
       ...(Object.keys(xmlVersions).length ? { xmlVersions } : {}),
+      ...(stale.length ? { stale: staleMarks } : {}),
     },
     kept,
+    stale,
     dropped,
   };
+}
+
+/** #12968: a marca de defasada da sequência no plano, ou null (ausente, malformada ou com o mesmo hash do plano). */
+export function staleMarkOf(pf: Pick<PlanFile, "hash" | "stale">, key: string): PlanStaleMark | null {
+  const m = pf.stale?.[key];
+  return m && typeof m.hash === "string" && m.hash && m.hash !== pf.hash ? m : null;
+}
+
+/**
+ * #12968: as sequências do plano que conferem com as entradas dele (`fresh`)
+ * e as defasadas (`stale`, chaves), que srt/preview/review/verify-xml não usam.
+ */
+export function splitStalePlans(pf: Pick<PlanFile, "hash" | "stale" | "plans">): { fresh: SequencePlan[]; stale: string[] } {
+  const fresh: SequencePlan[] = [];
+  const stale: string[] = [];
+  for (const p of pf.plans) {
+    const k = sequenceKey(p.spec);
+    if (staleMarkOf(pf, k)) stale.push(k);
+    else fresh.push(p);
+  }
+  return { fresh, stale };
 }
 
 /**
@@ -1393,12 +1439,26 @@ export function sequenceBuiltAt(pf: Pick<PlanFile, "builtAt">, key: string, plan
   return typeof t === "number" && t > 0 ? t : planMtimeMs;
 }
 
-/** O plano do último build, recusado se o blocks.json ou o source.json mudaram depois dele. */
+/**
+ * O plano do último build, recusado se o blocks.json ou o source.json mudaram
+ * depois dele. As sequências defasadas (#12968) saem da lista, com aviso: o
+ * XML delas é de entradas anteriores.
+ */
 function loadPlan(ctx: Ctx): PlanFile {
   const pf = readJson<PlanFile>(f(ctx, "plan.json"), "plan.json (rode build)");
   const { text } = loadBlocks(ctx);
   if (pf.hash !== planHash(ctx, text)) throw new Error("plan.json defasado: blocks.json, source.json, silences.json ou transcript.json mudaram depois do build; rode build de novo");
-  return pf;
+  const { fresh, stale } = splitStalePlans(pf);
+  if (stale.length) console.error(staleSequencesWarning(stale));
+  return { ...pf, plans: fresh };
+}
+
+/** #12968: o aviso das sequências defasadas no plan.json (o que rodar para usá-las). */
+export function staleSequencesWarning(stale: readonly string[]): string {
+  return (
+    `[aviso] ${stale.join(", ")}: defasada(s) no plan.json, o XML é de um build com outras entradas (blocks.json, source.json, silences.json ou transcript.json mudaram depois); ` +
+    `fora de srt/preview/review/verify-xml até build --seq de cada uma (ou build sem --seq) (#12968)`
+  );
 }
 
 /**
@@ -2180,10 +2240,10 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
   const { samples, sampleRate } = parseWavPcm16(readFileSync(audio));
   const env = energyEnvelope(samples, sampleRate);
   const silenceMeta = f(ctx, "silences.meta.json");
-  const explicit = existsSync(silenceMeta) && readJson<{ how?: string }>(silenceMeta, "silences.meta.json").how === "override";
-  const edgeThreshold = noiseFloorThreshold(env, silenceThresholdDb(ctx), explicit);
+  const edgeThreshold = verifyXmlEdgeThreshold(existsSync(silenceMeta) ? readJson<SilencesMeta>(silenceMeta, "silences.meta.json") : null);
   const thr = edgeThreshold.thresholdDb;
-  console.error(`[video-montagem] verify-xml: limiar ${thr} dBFS; piso do bruto ${edgeThreshold.floorDb?.toFixed(1) ?? "indisponível"} dBFS (#12903)`);
+  console.error(`[video-montagem] verify-xml: bordas a ${thr} dBFS (${edgeThreshold.from}, o limiar do refino do build); piso do bruto ${edgeThreshold.floorDb?.toFixed(1) ?? "não medido"} dBFS (#12903, #12969)`);
+  if (edgeThreshold.warning) console.error(`[aviso] ${edgeThreshold.warning}`);
   const offsets = sourceFiles(pf.source).map((x) => x.offsetFrames);
   let bad = 0;
   const report: Record<string, unknown> = {};
@@ -2223,7 +2283,8 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
       transcribeWithPython(ctx, wav, tj, { vad: false, noCondition: true });
       const heard = reviewTranscriptWords(readJson<Transcript>(tj, "transcrição do áudio do XML"));
       // #12711: a palavra esticada sobre fala no áudio montado (a 261111 tinha "fazer" por 4,5 s), que o casamento com o roteiro não vê.
-      const xmlSilences = parseSilenceDetect(run("ffmpeg", ["-hide_banner", "-nostats", "-i", wav, "-vn", "-af", `silencedetect=noise=${thr}dB:d=0.08`, "-f", "null", "-"]).stderr, durS);
+      // #12969: o mesmo limiar fixo do review/preview, não o das bordas (adaptativo, #12903).
+      const xmlSilences = parseSilenceDetect(run("ffmpeg", ["-hide_banner", "-nostats", "-i", wav, "-vn", "-af", REVIEW_SILENCE_FILTER, "-f", "null", "-"]).stderr, durS);
       findings = [
         ...reviewPreview({ words: heard, script: plan.script, cuts: sequenceCutsS(parsed.clips, parsed.rate), durationS: durS, aliases: loadVocab().aliases })
           .filter((x) => x.kind === "fala-faltando" || x.kind === "fala-extra"),
@@ -2551,11 +2612,47 @@ function highBandEnvelope(ctx: Ctx, source: SourceInfo) {
   return energyEnvelope(samples, sampleRate);
 }
 
+/** O que o `transcribe` grava em `silences.meta.json` (#11351; `floorDb` desde o #12903). */
+export interface SilencesMeta {
+  noiseDb?: number;
+  minDurationS?: number;
+  how?: string;
+  floorDb?: number | null;
+  highBandVersion?: number;
+}
+
+/**
+ * #12969: o limiar do bruto que o build usa no refino dos cortes e o
+ * `verify-xml` usa nas bordas: o `noiseDb` do silences.meta.json (o do último
+ * silencedetect, #11351, já com o piso de ruído do #12903), nunca remedido à
+ * parte. Remedir no `verify-xml` conferia as bordas num limiar e o build
+ * refinava em outro quando o `transcribe` não tinha sido refeito. Sem meta, o
+ * padrão (o mesmo do build).
+ */
+export function verifyXmlEdgeThreshold(meta: SilencesMeta | null): { thresholdDb: number; floorDb: number | null; from: string; warning: string | null } {
+  if (typeof meta?.noiseDb !== "number" || !Number.isFinite(meta.noiseDb)) {
+    return {
+      thresholdDb: SILENCE_DETECT.noiseDb,
+      floorDb: null,
+      from: "padrão, sem silences.meta.json",
+      warning: "sem silences.meta.json: build e verify-xml no limiar padrão; rode transcribe nesta máquina para medir o piso do bruto (#12903)",
+    };
+  }
+  const beforeFloor = meta.how !== "override" && meta.floorDb === undefined;
+  return {
+    thresholdDb: meta.noiseDb,
+    floorDb: typeof meta.floorDb === "number" ? meta.floorDb : null,
+    from: "silences.meta.json",
+    warning: beforeFloor
+      ? "silences.meta.json anterior ao #12903 (sem o piso de ruído medido): build e verify-xml seguem no limiar antigo; rode transcribe e build de novo para o limiar pelo piso do bruto"
+      : null,
+  };
+}
+
 /** Limiar do silêncio do bruto (o do último silencedetect, #11351); sem meta, o padrão. */
 function silenceThresholdDb(ctx: Ctx): number {
   const p = f(ctx, "silences.meta.json");
-  const meta = existsSync(p) ? readJson<{ noiseDb?: number }>(p, "silences.meta.json") : null;
-  return typeof meta?.noiseDb === "number" ? meta.noiseDb : SILENCE_DETECT.noiseDb;
+  return verifyXmlEdgeThreshold(existsSync(p) ? readJson<SilencesMeta>(p, "silences.meta.json") : null).thresholdDb;
 }
 
 /**
@@ -2942,15 +3039,13 @@ export function speechThresholdsPremise(th: SpeechThresholds, voice: SpeechVoice
 }
 
 async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "png", seq?: string, speechDetect = true, audioClean = true, drive: DriveSession | null = null, speechOpts: SpeechDetectOptions = {}): Promise<number> {
-  // #12902: recusar antes do detector/refino, assets e XMLs: o merge de um
-  // build parcial com hash novo descartaria as outras sequências do plano.
+  // #12902: recusar antes do detector/refino, assets e XMLs: sem o plano
+  // anterior legível, o merge de um build parcial descartaria as outras
+  // sequências. Entradas mudadas não recusam mais (#12968): as outras ficam no
+  // plano marcadas como defasadas (`mergeBuildPlan`).
   if (seq && existsSync(f(ctx, "plan.json"))) {
-    let previous: PlanFile;
-    try { previous = readJson<PlanFile>(f(ctx, "plan.json"), "plan.json"); }
+    try { readJson<PlanFile>(f(ctx, "plan.json"), "plan.json"); }
     catch { throw new Error("build --seq recusado: plan.json anterior ilegível; rode build sem --seq para reconstruir todas as sequências (#12902)"); }
-    if (previous.hash !== planHash(ctx, loadBlocks(ctx).text)) {
-      throw new Error("build --seq recusado: as entradas mudaram desde o build anterior; rode build sem --seq para preservar todas as sequências no plan.json (#12902)");
-    }
   }
   // #12089: o corte de pausas pelo detector de fala (energia + banda alta), não pelo silencedetect.
   let speech: ReturnType<typeof speechDetection> = { cut: null, reason: "--no-speech-detect" };
@@ -3206,7 +3301,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     xmlIds,
     prevXmlIds,
   });
-  if (merged.dropped.length) console.error(`[aviso] --seq ${seq}: ${merged.dropped.join(", ")} fora do plan.json (entradas mudaram desde o build delas, e o XML delas é o antigo); rode build sem --seq, ou com --seq de cada uma, antes de srt/preview delas (#11969)`);
+  if (merged.dropped.length) console.error(`[aviso] --seq ${seq}: ${merged.dropped.join(", ")} fora do plan.json (o plano anterior não as tinha, sem XML deste build); rode build sem --seq, ou build --seq de cada uma, antes de srt/preview delas (#11969)`);
+  if (merged.stale.length) console.error(`[aviso] --seq ${seq}: ${merged.stale.join(", ")} mantida(s) no plan.json como DEFASADA(S): as entradas mudaram desde o build delas, o XML (e a versão) é o anterior e não foi tocado; srt/preview/review/verify-xml as deixam de fora até build --seq de cada uma, ou build sem --seq (#12968)`);
   if (merged.kept.length) console.error(`[video-montagem] --seq ${seq}: ${merged.kept.join(", ")} mantida(s) no plan.json como o build anterior gravou (#11969)`);
   writeJson(planPath, merged.plan);
   if (source.files?.length) {
@@ -3649,6 +3745,7 @@ function loadFromFinalPlan(ctx: Ctx, seq: string | undefined): { plan: SequenceP
   if (typeof plan.script !== "string") throw new Error(`plan.json malformado (o horizontal sem script): rode build --seq youtube (${f(ctx, "plan.json")})`);
   try {
     if (pf.hash !== planHash(ctx, loadBlocks(ctx).text)) console.error("[aviso] plan.json defasado (entradas mudaram depois do build): usando o roteiro do horizontal gravado nele, o do XML de onde o export saiu (#12078)");
+    else if (typeof pf.hash === "string" && staleMarkOf(pf, sequenceKey(plan.spec))) console.error("[aviso] o horizontal está defasado no plan.json (um build --seq de outra sequência depois de as entradas mudarem): usando o roteiro gravado nele, o do XML de onde o export saiu (#12968)");
   } catch (e) {
     console.error(`[aviso] não deu para conferir o plan.json contra as entradas (${(e as Error).message}): usando o roteiro gravado nele`);
   }
@@ -4046,7 +4143,13 @@ async function cmdPreview(
   return 0;
 }
 
-const REVIEW_SILENCE_FILTER = "silencedetect=noise=-40dB:d=0.08";
+/**
+ * O silencedetect da palavra esticada e da autorrevisão: `review`, `preview`,
+ * `review-final` e o `verify-xml` (#12711) leem o áudio montado com o MESMO
+ * limiar fixo, para as checagens darem o mesmo veredito (#12969). O limiar
+ * adaptativo do #12903 vale para as pausas do bruto e as bordas, não para este.
+ */
+export const REVIEW_SILENCE_FILTER = "silencedetect=noise=-40dB:d=0.08";
 
 /**
  * #12571: o trecho da prévia que a autorrevisão mede. Com o card de CTA no fim
