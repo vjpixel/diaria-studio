@@ -30,12 +30,15 @@
  * `.env` parseado aos passos. Tasks não-`critical` no `300` seguem exatamente
  * como antes. Ver `docs/failover-neo.md`.
  */
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { parse as parseDotenv } from "dotenv";
 import { createKvRestOps } from "./lib/cloudflare-kv-rest.ts";
+import { evaluateGit } from "./lib/failover/neo-readiness.ts";
+import { isAgentWorktreePath } from "./lib/failover/neo-takeover-plan.ts";
 import { defaultLeaseMemoryPath, fileLeaseMemory } from "./lib/failover/lease-memory.ts";
 import { STANDBY_HOST } from "./lib/failover/scheduler-lease.ts";
 import {
@@ -66,6 +69,36 @@ export interface RunTaskDeps {
   processEnv?: Record<string, string | undefined>;
   /** Executor real de passo, usado na run do Neo com o env mesclado (default `execTsxStep`). */
   execTsxStep?: typeof execTsxStep;
+  /** Branch do checkout (`git rev-parse --abbrev-ref HEAD`); `null` = não lida. Só a run do Neo consulta. */
+  readGitBranch?: (repoRootAbs: string) => string | null;
+}
+
+/**
+ * Teto por chamada ao KV no caminho do gate (#12993). O default do cliente é
+ * 30 s, e o gate faz até 3 chamadas antes de a task agir: com o KV lento, uma
+ * task `critical` do `300` atrasaria ~90 s. 10 s ainda folga contra a latência
+ * normal da API (poucas centenas de ms).
+ */
+export const GATE_KV_TIMEOUT_MS = 10_000;
+
+function readGitBranch(repoRootAbs: string): string | null {
+  const r = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repoRootAbs, encoding: "utf8", timeout: 15_000, windowsHide: true });
+  if (r.error || r.status !== 0) return null;
+  const b = (r.stdout ?? "").trim();
+  return b || null;
+}
+
+/**
+ * #12993: a run do Neo pula o sync e roda o checkout como está. Se uma sessão
+ * interativa deixou o checkout principal numa feature branch (o merge com
+ * `--delete-branch` troca de branch), uma task `critical` rodaria código de
+ * branch. Mesma regra de `evaluateGit` do check de prontidão: master, fora de
+ * worktree de agente. Branch não lida também recusa (fail-closed, como o Neo).
+ */
+export function standbyCheckoutRefusal(branch: string | null, repoRootAbs: string): string | null {
+  if (branch === null) return "branch do checkout não lida (git rev-parse falhou); a run do Neo não roda código que não conferiu";
+  const g = evaluateGit({ branch, behind: null, dirtyTracked: null, isAgentWorktree: isAgentWorktreePath(repoRootAbs) });
+  return g.status === "fail" ? g.detail : null;
 }
 
 /** Resultado de sync "pulado" para a run do Neo (`outcome: "skipped"`, nada conferido). */
@@ -83,13 +116,22 @@ export function standbySkippedSync(): GitSyncResult {
   };
 }
 
-/** `.env` do repo parseado, sem tocar `process.env`; `{}` se ausente/ilegível. */
+/**
+ * `.env` do repo parseado, sem tocar `process.env`. Ausente = `{}`; qualquer
+ * outro erro de leitura LANÇA (#12993): no Neo, um `.env` ilegível virava
+ * `{}` e o gate dizia "configuração do KV ausente", mandando procurar a causa
+ * no lugar errado.
+ */
 function readDotenv(repoRootAbs: string): Record<string, string> {
+  const path = join(repoRootAbs, ".env");
+  let raw: string;
   try {
-    return parseDotenv(readFileSync(join(repoRootAbs, ".env"), "utf8"));
-  } catch {
-    return {};
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw new Error(`.env ilegível em ${path}: ${(e as Error).message}`);
   }
+  return parseDotenv(raw);
 }
 
 export async function main(argv: string[], repoRootAbs: string, deps: RunTaskDeps = {}): Promise<number> {
@@ -128,13 +170,37 @@ export async function main(argv: string[], repoRootAbs: string, deps: RunTaskDep
   // ambiente não apaga o do arquivo), sem mutar `process.env`.
   const needsEnv = resolveFailoverTier(def) === "critical" || standby;
   const processEnv = deps.processEnv ?? process.env;
-  const mergedEnv = needsEnv ? mergeDotenvUnderEnv((deps.readDotenv ?? readDotenv)(repoRootAbs), processEnv) : null;
+  let mergedEnv: Record<string, string | undefined> | null = null;
+  if (needsEnv) {
+    let dotenv: Record<string, string>;
+    try {
+      dotenv = (deps.readDotenv ?? readDotenv)(repoRootAbs);
+    } catch (e) {
+      // #12993: no Neo é fail-closed com a causa real; no 300 o .env é
+      // complemento do EnvironmentFile do systemd, então segue com aviso.
+      if (standby) {
+        console.error(`[failover ${role}] ${def.name}: ${(e as Error).message}; fail-closed no Neo, nada roda`);
+        return 1;
+      }
+      console.error(`[failover ${role}] ${def.name}: WARN ${(e as Error).message}; seguindo só com o ambiente do processo`);
+      dotenv = {};
+    }
+    mergedEnv = mergeDotenvUnderEnv(dotenv, processEnv);
+  }
+
+  if (standby) {
+    const refusal = standbyCheckoutRefusal((deps.readGitBranch ?? readGitBranch)(repoRootAbs), repoRootAbs);
+    if (refusal) {
+      console.error(`[failover ${role}] ${def.name}: ${refusal}; a run do Neo não roda (volte o checkout para master)`);
+      return 1;
+    }
+  }
 
   if (needsEnv) {
     const gate = await runFailoverGate(def, role, {
       env: deps.gate?.env ?? mergedEnv ?? processEnv,
       platformConfig: deps.gate?.platformConfig ?? readPlatformConfigFile(repoRootAbs),
-      makeKv: deps.gate?.makeKv ?? createKvRestOps,
+      makeKv: deps.gate?.makeKv ?? ((cfg) => createKvRestOps({ ...cfg, timeoutMs: GATE_KV_TIMEOUT_MS })),
       now: deps.gate?.now,
       memory: deps.gate?.memory ?? fileLeaseMemory(defaultLeaseMemoryPath(processEnv)),
       platform: deps.gate?.platform,

@@ -5,16 +5,19 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   acquireSchedulerLease,
+  ARM_LEASE_BY,
   decideLease,
   DOWN_SIGNAL_KEY,
   LEASE_TTL_MS,
   makeLease,
   parseLease,
+  RECLAIM_JITTER_MS,
+  RECLAIM_SETTLE_MS,
   SCHEDULER_LEASE_KEY,
   serializeLease,
   type LastKnownLease,
@@ -114,10 +117,13 @@ describe("decideLease (pura)", () => {
     assert.equal(d.outcome === "act" && d.write?.host, "300");
   });
 
-  it("F1: lease expirado do PRÓPRIO Neo é retomado pelo Neo, sem sinal de queda", () => {
+  it("F1: lease expirado do PRÓPRIO Neo é retomado pelo Neo, sem sinal de queda, marcado como retomada", () => {
     const d = decideLease({ ...base, self: "neo", read: parseLease(leaseOf("neo", at(-7 * H))), downSignal: { kind: "absent" } });
     assert.equal(d.outcome, "act");
     assert.equal(d.outcome === "act" && d.write?.host, "neo");
+    assert.equal(d.outcome === "act" && d.reclaim, true, "#12993: a retomada passa pela espera + releitura");
+    const p = decideLease({ ...base, self: "300", read: parseLease(leaseOf("neo", at(-H))) });
+    assert.equal(p.outcome === "act" && p.reclaim, undefined, "o 300 (dono padrão) nunca espera");
   });
 
   it("lease ausente: 300 assume; Neo só com sinal de queda", () => {
@@ -294,6 +300,144 @@ describe("acquireSchedulerLease — concorrência com KV fingido", () => {
     assert.equal((await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0 })).outcome, "act");
     const back = parseLease(kv.store.get(SCHEDULER_LEASE_KEY)!);
     assert.equal(back.kind === "ok" && back.lease.host, "300");
+  });
+});
+
+/**
+ * KV com consistência eventual por região: cada host lê a própria escrita na
+ * hora; a do outro só depois de `lagMs` no relógio virtual. É o cenário real
+ * do #12993 (KV da Cloudflare, ~60 s entre regiões).
+ */
+function regionalKv(initial: Record<string, string>, lagMs = 60_000) {
+  let clock = 0;
+  const writes: { key: string; value: string; at: number; host: string }[] = [];
+  const view = (host: "300" | "neo"): LeaseKv => ({
+    async get(k) {
+      const visible = writes.filter((w) => w.key === k && (w.host === host || clock - w.at >= lagMs));
+      if (visible.length) return visible[visible.length - 1].value;
+      return k in initial ? initial[k] : null;
+    },
+    async put(k, v) {
+      writes.push({ key: k, value: v, at: clock, host });
+    },
+  });
+  return { view, advance: (ms: number) => void (clock += ms) };
+}
+
+describe("#12993: retomada do lease expirado do Neo com o 300 voltando no mesmo minuto", () => {
+  it("só o 300 age: o Neo espera, relê, vê o lease do 300 e cede", async () => {
+    const kv = regionalKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(-H)) });
+    const waits: number[] = [];
+    const p300 = acquireSchedulerLease(kv.view("300"), { self: "300", by: "Diaria-Shorts-Instagram", now: () => T0 });
+    const pNeo = acquireSchedulerLease(kv.view("neo"), {
+      self: "neo",
+      by: "Diaria-Shorts-Instagram",
+      now: () => T0,
+      random: () => 0.5,
+      sleep: async (ms) => {
+        waits.push(ms);
+        await p300; // o 300 dispara no mesmo minuto e não espera
+        kv.advance(ms);
+      },
+    });
+    const [p, s] = await Promise.all([p300, pNeo]);
+    assert.equal(p.outcome, "act");
+    assert.equal(s.outcome, "yield", s.reason);
+    assert.equal(s.outcome === "yield" && s.cause, "other-host-active");
+    assert.deepEqual(waits, [RECLAIM_SETTLE_MS + RECLAIM_JITTER_MS / 2]);
+    assert.ok(RECLAIM_SETTLE_MS > 60_000, "a espera passa da janela de consistência do KV");
+  });
+
+  it("sem o 300: o Neo retoma depois da espera, gravando o lease a partir do relógio de depois", async () => {
+    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(-H)) });
+    let t = T0;
+    const s = await acquireSchedulerLease(kv, {
+      self: "neo",
+      by: "x",
+      now: () => t,
+      random: () => 0,
+      sleep: async (ms) => {
+        t = at(ms);
+      },
+    });
+    assert.equal(s.outcome, "act", s.reason);
+    const back = parseLease(kv.store.get(SCHEDULER_LEASE_KEY)!);
+    assert.equal(back.kind === "ok" && back.lease.host, "neo");
+    assert.equal(back.kind === "ok" && Date.parse(back.lease.until), T0.getTime() + RECLAIM_SETTLE_MS + LEASE_TTL_MS);
+  });
+
+  it("lease mudou durante a espera (sumiu): o Neo não age nesta run", async () => {
+    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(-H)) });
+    const s = await acquireSchedulerLease(kv, {
+      self: "neo",
+      by: "x",
+      now: () => T0,
+      sleep: async () => {
+        kv.store.delete(SCHEDULER_LEASE_KEY);
+      },
+    });
+    assert.equal(s.outcome, "fail-closed");
+    assert.equal(kv.puts, 0);
+  });
+
+  it("renovação de lease próprio ATIVO não espera", async () => {
+    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("neo", at(H)) });
+    let slept = 0;
+    const s = await acquireSchedulerLease(kv, { self: "neo", by: "x", now: () => T0, sleep: async () => void slept++ });
+    assert.equal(s.outcome, "act");
+    assert.equal(slept, 0);
+  });
+});
+
+describe("#12993: alarme other-host-renewing não dispara com memória de outro episódio", () => {
+  it("memória com lease do Neo já expirado + lease novo do --arm: só cede, sem anomalia", async () => {
+    const memory = memMemory({ kind: "ok", lease: leaseObj("neo", at(-2 * H)), seenAt: at(-8 * H).toISOString() });
+    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: serializeLease(makeLease("neo", T0, ARM_LEASE_BY)) });
+    const r = await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => at(60_000), memory });
+    assert.equal(r.outcome === "yield" && r.cause, "other-host-active", r.reason);
+  });
+
+  it("memória com lease do Neo ainda ativo + lease atual gravado pelo --arm: armação nova, sem anomalia", async () => {
+    const memory = memMemory({ kind: "ok", lease: leaseObj("neo", at(2 * H)), seenAt: at(-H).toISOString() });
+    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: serializeLease(makeLease("neo", T0, ARM_LEASE_BY)) });
+    const r = await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0, memory });
+    assert.equal(r.outcome === "yield" && r.cause, "other-host-active", r.reason);
+  });
+
+  it("renovação de verdade (lease lembrado ainda ativo, renovado por task) segue alarmando", async () => {
+    const memory = memMemory({ kind: "ok", lease: leaseObj("neo", at(2 * H)), seenAt: at(-H).toISOString() });
+    const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: serializeLease(makeLease("neo", T0, "Diaria-Shorts-Instagram")) });
+    const r = await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0, memory });
+    assert.equal(r.outcome === "yield" && r.cause, "other-host-renewing", r.reason);
+  });
+});
+
+describe("#12993: memória local do lease que falha avisa com caminho e erro", () => {
+  it("gravação impossível (pai é arquivo): WARN com o caminho; a decisão não muda", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lease-mem-warn-12993-"));
+    try {
+      writeFileSync(join(dir, "arquivo"), "x");
+      const path = join(dir, "arquivo", "sub", "last.json");
+      const warns: string[] = [];
+      const kv = fakeKv({ [SCHEDULER_LEASE_KEY]: leaseOf("300", at(5 * H)) });
+      const r = await acquireSchedulerLease(kv, { self: "300", by: "x", now: () => T0, memory: fileLeaseMemory(path), warn: (m) => void warns.push(m) });
+      assert.equal(r.outcome, "act");
+      assert.ok(warns.some((w) => w.includes(path) && /WARN/.test(w)), warns.join("\n"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("leitura com erro que não é ENOENT (caminho é diretório) lança com o caminho; ausente segue null", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lease-mem-read-12993-"));
+    try {
+      const asDir = join(dir, "last.json");
+      mkdirSync(asDir);
+      assert.throws(() => fileLeaseMemory(asDir).load(), (e: Error) => e.message.includes(asDir));
+      assert.equal(fileLeaseMemory(join(dir, "nao-existe.json")).load(), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
