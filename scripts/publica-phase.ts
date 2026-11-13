@@ -47,7 +47,9 @@
  *   tem PID e nunca vira órfã (gravar `interrupted` à mão). Tarefa do `run`
  *   de OUTRA máquina (o PID não se confere daqui) vira órfã quando o último
  *   evento dela passa de 3 h (`CROSS_HOST_STALE_MS`, #12883); antes disso
- *   segura recurso e join, e a recusa diz quando expira.
+ *   segura recurso e join, e a recusa diz quando expira. Exceção: `upload`
+ *   não expira pelo relógio (`NO_CROSS_HOST_EXPIRY_PHASES`, #12966) — sem
+ *   timeout nem heartbeat, 3 h não provam que o upload morreu.
  * - `--resume-existing` (só `upload/horizontal`, #12883): retomada do upload
  *   com o vídeo JÁ registrado em `05-youtube-published.json` (o
  *   `publish-youtube.ts --upload` sem `--force` só refaz podcast, legenda e
