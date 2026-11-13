@@ -115,6 +115,9 @@ describe("merge lock compartilhado (session-registry)", () => {
   it("D1 concede e o arquivo diz outra sessão: vale o D1, espelho regravado e aviso nomeia o holder antigo", async () => {
     const d1 = createFakeD1();
     const neo = machine();
+    // #12967: o holder antigo é uma sessão REGISTRADA (hold de fallback); holder
+    // não registrado e fresco recusa — ver d1-locks-review-13007-12967.test.ts.
+    writeFileSync(join(sessionsDir(neo), "overnight-261111-fallback-holder.json"), "{}");
     assert.equal(acquireMergeLock(neo, "fallback-holder", T0), true);
     const warnings: string[] = [];
     const r = await acquireMergeLockShared(neo, "B", REPO, {

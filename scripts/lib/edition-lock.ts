@@ -37,7 +37,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { type D1Client, d1AcquireLock, d1FallbackWarning, d1ReleaseLock, editionLockD1Name } from "./d1-locks.ts";
+import { type D1Client, d1AcquireLock, d1FallbackWarning, d1ReadLock, d1ReleaseLock, editionLockD1Name } from "./d1-locks.ts";
 
 export const EDITION_LOCK_TTL_MS = 45 * 60 * 1000;
 export const EDITION_LOCK_FILE = "edition-lock.json";
@@ -353,6 +353,47 @@ export async function acquireEditionLockShared(
     }
   }
   return { ...decision, backend: "d1" };
+}
+
+/** Holder vivo da trava no D1, como o `status` o mostra. */
+export interface EditionLockD1Status {
+  holder: string;
+  host: string | null;
+  stage: number | null;
+  acquired_at: string;
+  expires_at: string;
+}
+
+/**
+ * #13007: `status` com o D1 ligado. O arquivo sozinho pode dizer "livre"
+ * enquanto o `acquire` recusa por um holder de OUTRA máquina no D1 — o
+ * `status` lê os dois. `d1: null` = sem holder vivo no D1; `d1Warning` =
+ * o D1 não respondeu (só o arquivo vale, como no `acquire`).
+ */
+export async function readEditionLockShared(
+  editionDir: string,
+  d1: D1Client | null,
+  d1Now?: number,
+): Promise<{ lock: EditionLockRecord | null; d1: EditionLockD1Status | null } & EditionLockD1Info> {
+  const lock = readEditionLock(editionDir);
+  if (!d1) return { lock, d1: null, backend: "local" };
+  const name = editionLockD1Name(editionNameFromDir(editionDir));
+  const r = await d1ReadLock(d1, name, d1Now !== undefined ? { now: d1Now } : {});
+  if (!r.ok) return { lock, d1: null, backend: "local-fallback", ...fallbackInfo("edition-lock status", r) };
+  if (!r.value) return { lock, d1: null, backend: "d1" };
+  const meta = await readD1Meta(d1, name);
+  return {
+    lock,
+    d1: {
+      holder: r.value.holder,
+      host: typeof meta.host === "string" ? meta.host : null,
+      stage: typeof meta.stage === "number" && Number.isFinite(meta.stage) ? meta.stage : null,
+      acquired_at: new Date(r.value.acquiredAt).toISOString(),
+      expires_at: new Date(r.value.expiresAt).toISOString(),
+    },
+    backend: "d1",
+    d1Holder: r.value.holder,
+  };
 }
 
 async function readD1Meta(d1: D1Client, name: string): Promise<Record<string, unknown>> {

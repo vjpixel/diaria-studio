@@ -22,7 +22,7 @@ import {
   EDITION_LOCK_TTL_MS,
   acquireEditionLockShared,
   formatLockAge,
-  readEditionLock,
+  readEditionLockShared,
   releaseEditionLockShared,
 } from "./lib/edition-lock.ts";
 
@@ -75,7 +75,11 @@ async function main(): Promise<void> {
   const force = flags.has("force");
 
   if (sub === "status") {
-    console.log(JSON.stringify({ lock: readEditionLock(editionDir), ttl_ms: EDITION_LOCK_TTL_MS }));
+    // #13007: com o D1 ligado, o holder de outra máquina mora lá — o arquivo
+    // sozinho podia responder "livre" enquanto o `acquire` recusa.
+    const s = await readEditionLockShared(editionDir, d1Client());
+    reportD1(s);
+    console.log(JSON.stringify({ lock: s.lock, d1: s.d1, backend: s.backend, ttl_ms: EDITION_LOCK_TTL_MS }));
     return;
   }
   if (sub === "acquire") {
