@@ -611,6 +611,12 @@ não existisse e avaliar implementação independente na mesma respiração:
 3. **Atualizado nas últimas ~24-48h?** (`gh pr view N --json updatedAt` —
    PR parado há dias é sinal de abandono, falha este ponto.)
 
+**Exceção: PR das lanes autônomas (`overnight/`, `develop/`, `continuo/`) segue
+o `orphanAction` ANTES das perguntas 2 e 3 (#12950).** CI vermelho ou PR parada
+1-2 dias não viram reimplementação: viram `despachar-fixer`, `merge-via-gate2`
+ou `editor` (item 28). Este checklist segue valendo inteiro para PR de terceiro
+ou manual.
+
 Incidente de referência (#5484, rodada 260816e): #5427 tinha o PR #5428
 aberto por um fork de autor desconhecido (`emre155`), sem CI rodado e sem
 review — nenhuma das 3 perguntas foi checada antes de concluir "deixo pro
@@ -1132,10 +1138,28 @@ Três vereditos exclusivos:
   é prova de que a PR resolve a issue).
 - **`open-pr-covers-scope`** (exit 1) — marcador de fechamento explícito
   (`closes`/`fixes`/`resolves #N`) ou branch na convenção `fix-N`/`feat-N`.
-  Antes de esperar por ela, aplicar o checklist de 3 perguntas do item 16
+  PR de terceiro/manual: aplicar o checklist de 3 perguntas do item 16
   acima (autor conhecido? CI verde/rodando? atualizada nas últimas
   ~24-48h?) — as 3 juntas justificam esperar; falhando qualquer uma, tratar
-  como se a PR não existisse e avaliar implementação independente.
+  como se a PR não existisse e avaliar implementação independente. **PR de
+  lane autônoma (`overnight/`, `develop/`, `continuo/`): o `orphanAction`
+  vale ANTES das perguntas 2 e 3** (#12950) — CI vermelho ou PR parada não
+  vira reimplementação duplicada. A issue sai `pulada` motivo `pr-em-voo` e
+  a rodada executa o `orphanAction` do JSON (passo 4 da Fase 0 do
+  `/diaria-overnight`; passo 4 do `/diaria-develop`): `merge-via-gate2`
+  (CI verde, sem draft, sem retenção por label ou marcador no corpo,
+  `evaluatePrRetido`) → gates do pickup 2b e merge com
+  `gh pr merge --match-head-commit <sha avaliado>`, nunca o HEAD de um
+  push posterior; `despachar-fixer` (CI vermelho) → `dev-fixer` no branch;
+  `aguardar-ci` (CI pendente, PR atualizada há até 6h) → reavaliar no
+  próximo re-scan; `editor` → não tocar. Vira `editor`: draft,
+  `bloqueio-execucao`, retenção (inclusive labels ilegíveis), branch fora
+  das lanes, issue reivindicada por sessão ativa no `session-registry`
+  (dono vivo; o CLI consulta a mesma lógica do `is-claimed`, aceita
+  `--session-id` para excluir a própria sessão, e falha de consulta conta
+  como reivindicada), CI pendente há mais de 6h (`updatedAt`), e
+  `check-pr-review-authenticity.ts` `exit 3` no caminho do merge (estado
+  ambíguo, como no pickup 2b).
 - **`cannot-verify`** (exit 2) — `gh` indisponível, sem auth, JSON
   malformado ou rate limit. **Regra inegociável desta issue:** isto NUNCA
   vira `no-open-pr` — transformaria uma falha de consulta em sinal verde e

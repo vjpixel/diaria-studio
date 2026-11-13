@@ -59,7 +59,8 @@ Medido no `300` em 10/11/2026, com o `data/` ainda no OneDrive
    do OneDrive e para os filtros do rclone. Parte das recomendações abaixo é
    só acrescentar padrões a essa lista.
 5. **O que a Cloudflare oferece, e para quê serve cada peça.** A conta é
-   Workers Paid.
+   Workers Paid (fatura conferida pelo editor em 09/11/2026, #12533;
+   reconferir com `npx tsx scripts/cloudflare-plan.ts`).
    - **KV**: chave-valor com consistência eventual e sem compare-and-swap. A
      Cloudflare documenta "up to 60 seconds or more" para uma escrita
      aparecer em outros pontos (conferido em 10/11/2026 em
@@ -654,6 +655,7 @@ Task fora do systemd: `diaria-short-video-relacionado` (Neo, `5 6 * * 1-5`,
 | Diaria-Claude-Session-Version-Drift-Alarm | interval 6h | armada | `scripts/claude-session-version-drift-alarm.ts` | `claude-session-version-drift-alarm/.alarm.log` |  | G10 |
 | Diaria-Npm-Version-Drift-Alarm | daily 10:40 | armada | `scripts/npm-version-drift-alarm.ts` | `npm-version-drift-alarm/.alarm.log` |  | G10 |
 | Diaria-Stale-Red-Pr-Alarm | interval 2h | armada | `scripts/stale-red-pr-alarm.ts` | `stale-red-pr-alarm/.alarm.log` |  | G10 |
+| Diaria-Stuck-Approved-Pr-Alarm | interval 2h | declarada | `scripts/stuck-approved-pr-alarm.ts` | `stuck-approved-pr-alarm/.alarm.log` |  | G10 |
 | Diaria-Openrouter-Billing-Leak-Alarm | daily 21:45 | armada | `scripts/openrouter-billing-leak-check.ts` | `openrouter-billing-leak/.alarm.log` |  | G10 |
 | Diaria-Branch-Cleanup | daily 10:45 | armada | `scripts/branch-cleanup.ts` | `branch-cleanup/.cleanup.log` |  | G2, G10 |
 | Diaria-GA4-Sync | daily 10:50 | armada | `scripts/ga4-sync.ts` | `ga4-cache/.sync.log` |  | G10 |

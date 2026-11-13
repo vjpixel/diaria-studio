@@ -493,7 +493,9 @@ describe("#12429 CLI publish-youtube: flags de --captions-list e --captions-revi
     const dir = mkdtempSync(join(tmpdir(), "yt-cli-12429-"));
     try {
       for (const [args, message] of [
-        [["--captions-only", "--video-id", "X"], /--video-id só vale com --captions-list/],
+        [["--dry-run", "--video-id", "X"], /--video-id só vale com --captions-list ou --captions-only/],
+        [["--captions-only", "--video-id"], /--video-id exige o VIDEO_ID/],
+        [["--captions-only", "--dry-run", "--upload"], /exclusivos/],
         [["--captions-list", "--video-id"], /--video-id exige o VIDEO_ID/],
         [["--captions-list", "--dry-run"], /exclusivos/],
         [["--dry-run", "--captions-reviewed"], /--captions-reviewed só vale com --captions-only/],

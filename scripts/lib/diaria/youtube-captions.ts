@@ -195,11 +195,15 @@ export async function uploadCaptionsOnly(
   return uploadCaptionSafely(deps, token, input.videoId, input.srt, input.path);
 }
 
-/** Linha de log da legenda (o `[aviso]` de escopo traz o comando de setup). */
-export function describeCaptionOutcome(c: CaptionUploadResult, aammdd: string): string | null {
+/**
+ * Linha de log da legenda (o `[aviso]` de escopo traz o comando de setup).
+ * `videoId` (#12429): o vídeo veio do `--video-id`, sem registro, e o comando
+ * de nova tentativa precisa levá-lo.
+ */
+export function describeCaptionOutcome(c: CaptionUploadResult, aammdd: string, videoId?: string): string | null {
   if (!c.attempted) return null;
   if (c.ok) return `[ok] legenda ${c.language} enviada (captionId ${c.captionId})`;
-  const retry = `npx tsx scripts/publish-youtube.ts ${aammdd} --captions-only`;
+  const retry = `npx tsx scripts/publish-youtube.ts ${aammdd} --captions-only${videoId ? ` --video-id ${videoId}` : ""}`;
   if (c.scopeMissing) {
     return `[aviso] legenda NÃO enviada: ${c.error}. Depois do setup, \`${retry}\` envia só a legenda. O vídeo segue sem ela.`;
   }
@@ -268,6 +272,83 @@ export async function listCaptions(deps: YouTubeUploadDeps, token: string, video
 /** A faixa é a pt-BR enviada (`standard`), e não a automática nem outra língua? */
 function isSentPtBr(t: CaptionTrack): boolean {
   return t.language.toLowerCase() === YOUTUBE_CAPTION_LANGUAGE.toLowerCase() && t.trackKind === "standard";
+}
+
+/**
+ * Faixa `standard` de qualquer variante de português (`pt`, `pt-BR`, `pt-PT`)?
+ * #12429: a faixa enviada à mão pelo Studio pode vir como `pt`; para decidir
+ * se o `--captions-only --video-id` envia, ela também conta como já enviada.
+ */
+function isSentPt(t: CaptionTrack): boolean {
+  return t.trackKind === "standard" && t.language.toLowerCase().startsWith("pt");
+}
+
+/** ID de vídeo do YouTube: 11 caracteres de `[A-Za-z0-9_-]` (#12429, barra erro de digitação no `--video-id`). */
+export function isYouTubeVideoId(id: string): boolean {
+  return /^[A-Za-z0-9_-]{11}$/.test(id);
+}
+
+/**
+ * `--captions-only --video-id` (#12429): o vídeo não tem registro, então o
+ * "já enviada" sai das faixas do próprio vídeo. Qualquer faixa `standard`
+ * de idioma `pt*` (pt-BR do script, ou `pt` enviada pelo Studio; publicada ou
+ * rascunho) = não envia sem `--force` (que cria outra faixa; o
+ * `captions.insert` não substitui). A `asr` automática nunca conta. Puro.
+ */
+export function decideCaptionsOnlyByTracks(tracks: CaptionTrack[], force: boolean): { send: boolean; line: string } {
+  const sent = tracks.filter(isSentPt);
+  const ids = sent.map((t) => `${t.id}${t.isDraft ? " (rascunho)" : ""}`).join(", ");
+  if (sent.length === 0) return { send: true, line: "[info] o vídeo não tem faixa pt `standard` enviada: envia" };
+  if (!force) return { send: false, line: `[ok] o vídeo já tem faixa pt enviada (${ids}) — nada feito. Use --force para enviar outra faixa.` };
+  return { send: true, line: `[premissa] --force: envia outra faixa pt-BR além de ${ids}` };
+}
+
+export interface UnregisteredCaptionOutcome {
+  /** Nada enviado porque o vídeo já tinha faixa pt-BR (sem `--force`). */
+  skipped: boolean;
+  /** Linha da decisão pelas faixas (`decideCaptionsOnlyByTracks`); `null` se o `captions.list` falhou. */
+  decisionLine: string | null;
+  /** Resultado do envio; `null` quando pulado. */
+  result: CaptionUploadResult | null;
+}
+
+/**
+ * `--captions-only --video-id` (#12429): legenda para um vídeo do canal SEM
+ * registro na edição (os horizontais antigos, fora dos 25 uploads que o
+ * `--accept-period-match` varre). Só legenda: token → canal → `captions.list`
+ * → `captions.insert`. Nenhuma chamada de playlist, `videos.update` ou
+ * thumbnail. Falha de token/canal lança `YouTubeUploadError`; a do
+ * `captions.list`/legenda vem no resultado (403 de escopo = `scopeMissing`).
+ */
+export async function uploadCaptionsForUnregisteredVideo(
+  deps: YouTubeUploadDeps,
+  input: { creds: YouTubeCredentials; videoId: string; srt: Buffer; path: string; force: boolean },
+): Promise<UnregisteredCaptionOutcome> {
+  const token = await refreshYouTubeAccessToken(deps, input.creds);
+  await assertExpectedChannel(deps, token, input.creds.channelId);
+  let tracks: CaptionTrack[];
+  try {
+    tracks = await listCaptions(deps, token, input.videoId);
+  } catch (e) {
+    return {
+      skipped: false,
+      decisionLine: null,
+      result: {
+        attempted: true,
+        ok: false,
+        captionId: null,
+        language: YOUTUBE_CAPTION_LANGUAGE,
+        path: input.path,
+        error: (e as Error).message,
+        scopeMissing: e instanceof CaptionScopeError,
+        at: deps.now().toISOString(),
+      },
+    };
+  }
+  const decision = decideCaptionsOnlyByTracks(tracks, input.force);
+  if (!decision.send) return { skipped: true, decisionLine: decision.line, result: null };
+  const result = await uploadCaptionSafely(deps, token, input.videoId, input.srt, input.path);
+  return { skipped: false, decisionLine: decision.line, result };
 }
 
 /**

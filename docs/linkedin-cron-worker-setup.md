@@ -168,12 +168,12 @@ Resume-aware: posts já com `worker_queue_key` em `06-social-published.json` sã
 
 ## Custos
 
-Cloudflare Workers (free tier):
-- 100k requests/dia (cron `*/5` = 288 fires/dia, sobra)
-- Cron triggers ilimitados no free tier (Workers Paid só pesa em CPU time)
-- 1GB KV storage (mais que suficiente)
+Cloudflare Workers: a conta está no Workers Paid (fatura conferida pelo editor em 09/11/2026, #12533). Plano e uso de KV do mês contra a cota: `npx tsx scripts/cloudflare-plan.ts` (token sem Account › Billing › Read OU inválido/expirado: sai com exit 3 e não afirma plano; ação: conferir se o token é válido e dar a permissão a ele). As contas abaixo foram feitas na época contra os tetos do plano gratuito, que são os mais apertados; no Paid sobram com mais folga ainda:
+- 100k requests/dia no Free (cron `*/5` = 288 fires/dia, sobra)
+- Disparos de Cron Trigger não são cobrados por unidade, mas há limite de quantos triggers a conta pode configurar (conferir o número em developers.cloudflare.com/workers/platform/limits antes de citar)
+- 1GB KV storage no Free (mais que suficiente)
 
-Cron `*/5` consome ~8.640 fires/mês. Cada fire é 1 KV `list` (queue lookup) + 0–1 KV `delete` por item maduro = **288 `list`/dia**. O alarme de DLQ (#9569) lista `dlq:` só no disparo do topo da hora ou quando o próprio disparo moveu item pra DLQ (#9618) — **~24 `list`/dia a mais**, total ~312/dia (~31% do teto de 1.000 `list`/dia do KV free tier, que é por CONTA e soma `/health`, `/list` e os outros Workers). Não voltar a varrer a DLQ em todo disparo: somaria 288 `list`/dia (≥576 no total), a margem que a decisão de 2026-05-12 (`*/3` → `*/5`, ver `wrangler.toml`) exigiu preservar.
+Cron `*/5` consome ~8.640 fires/mês. Cada fire é 1 KV `list` (queue lookup) + 0–1 KV `delete` por item maduro = **288 `list`/dia**. O alarme de DLQ (#9569) lista `dlq:` só no disparo do topo da hora ou quando o próprio disparo moveu item pra DLQ (#9618) — **~24 `list`/dia a mais**, total ~312/dia (~31% do teto de 1.000 `list`/dia do KV no plano gratuito, que é por CONTA e soma `/health`, `/list` e os outros Workers; no Workers Paid da conta a cota é de 1M `list`/mês, e a margem segue valendo como economia). Não voltar a varrer a DLQ em todo disparo: somaria 288 `list`/dia (≥576 no total), a margem que a decisão de 2026-05-12 (`*/3` → `*/5`, ver `wrangler.toml`) exigiu preservar.
 
 `ALERT_WEBHOOK_URL` (opcional) recebe três alertas: entries novas na DLQ, (#9618) refresh do token Threads falhando com o token sem renovar há mais de 45 dias (vence aos 60; re-alerta no máximo 1x/dia) e (#12372) post de documento PDF do LinkedIn que falhou e saiu como carrossel de imagens (`[document-fallback]`, com o motivo; um por disparo). Sem a var, os três só vão pro `wrangler tail`.
 
