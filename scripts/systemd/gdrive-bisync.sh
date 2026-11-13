@@ -31,6 +31,12 @@
 # Exit 7 por 401/authError (token OAuth vencendo no meio de uma listagem
 # longa) ganha um resync automático (#12412), que pode ressuscitar arquivo
 # apagado durante a rodada (#12444) — ver o bloco antes da chamada do rclone.
+# Resync automático que falha fica pendente e a próxima rodada do timer o
+# retoma, com teto (#12590).
+#
+# `--force` (o destrave do "too many deletes") roda antes uma pré-checagem
+# `--dry-run` e recusa (exit 75, sem carimbo) se for apagar do Drive arquivo
+# de outro dono; `--allow-foreign-deletes` libera (#12979).
 #
 # O bisync DEDICADO de data/ (#12478) roda este mesmo script pelo wrapper
 # `gdrive-data-bisync.sh`, que troca remote, pasta local, filtro, state dir e
@@ -68,11 +74,19 @@ WORKDIR="${GDRIVE_WORKDIR:-}"
 
 DRY_RUN=0
 RESYNC=0
+FORCE=0
+ALLOW_FOREIGN=0
+# `--allow-foreign-deletes` é deste script (#12979), nunca do rclone: sai da
+# lista de argumentos antes de qualquer chamada. O resto segue igual.
 for a in "$@"; do
+  shift
   case "$a" in
+    --allow-foreign-deletes) ALLOW_FOREIGN=1; continue ;;
     --dry-run|-n) DRY_RUN=1 ;;
     --resync|-1|--resync-mode|--resync-mode=*) RESYNC=1 ;;
+    --force|--force=true) FORCE=1 ;;
   esac
+  set -- "$@" "$a"
 done
 
 # Grava um carimbo de forma atômica (tmp + mv). Falha de escrita só avisa:
@@ -175,18 +189,22 @@ RCLONE_RC="$STATE_DIR/last-rclone.rc"
 # Roda o bisync com as travas fixas + "$@", espelhando a saída no journal e
 # em $RCLONE_LOG (lido pelo detector de 401). O exit do rclone volta em
 # $RC; sem arquivo de exit legível, RC=1 (nunca 0 por falha de leitura).
+bisync_cmd() {
+  "$RCLONE_BIN" bisync "$REMOTE" "$LOCAL" \
+    --check-access --check-filename "$SENTINEL" \
+    --max-delete "$MAX_DELETE" \
+    --filters-file "$FILTERS" --ignore-case \
+    --drive-skip-gdocs --drive-skip-dangling-shortcuts \
+    --create-empty-src-dirs \
+    --resilient --recover --max-lock 15m \
+    --conflict-resolve newer --conflict-loser num \
+    --log-level NOTICE "$@"
+}
+
 run_bisync() {
   rm -f "$RCLONE_RC"
   {
-    "$RCLONE_BIN" bisync "$REMOTE" "$LOCAL" \
-      --check-access --check-filename "$SENTINEL" \
-      --max-delete "$MAX_DELETE" \
-      --filters-file "$FILTERS" --ignore-case \
-      --drive-skip-gdocs --drive-skip-dangling-shortcuts \
-      --create-empty-src-dirs \
-      --resilient --recover --max-lock 15m \
-      --conflict-resolve newer --conflict-loser num \
-      --log-level NOTICE "$@" 2>&1
+    bisync_cmd "$@" 2>&1
     echo $? > "$RCLONE_RC"
   } | tee "$RCLONE_LOG"
   RC=$(cat "$RCLONE_RC" 2>/dev/null)
@@ -205,7 +223,139 @@ if [ -n "$WORKDIR" ]; then
   set -- --workdir "$WORKDIR" "$@"
 fi
 
-run_bisync "$@"
+# Guard do --force (#12979). O "too many deletes" do `--max-delete` é a
+# única barreira contra uma pasta sumida do espelho virar exclusão em massa
+# no Drive, e o `--force` é justamente o que a desliga. Na sessão de
+# 12/11/2026 a pasta `Work/Mentoria Fluxo／VTSD/YouTube` saiu inteira do
+# espelho, e um `--force` teria apagado do Drive 57 arquivos (29 GiB) de
+# OUTRA conta, compartilhados com a vjpixel. Por isso, `--force` sem
+# `--dry-run` roda antes a mesma rodada com `--dry-run`, lê as exclusões
+# planejadas do lado do Drive (Path1: o remote é sempre o 1º argumento do
+# bisync) e confere o dono de cada uma (`owner` do `lsjson -M`). A conta do
+# remote é a dona da sentinela do Drive (criada por ela com `rclone touch`),
+# ou `GDRIVE_ACCOUNT_OWNER` se vier no ambiente. Exclusão de arquivo de
+# outro dono, ou de dono que não se lê, recusa a rodada (exit 75, sem
+# carimbo: nada rodou) e lista os arquivos; só passa com
+# `--allow-foreign-deletes`. Mais de GDRIVE_FORCE_OWNER_CHECK_MAX exclusões
+# (default 200) no Drive recusa sem consultar dono por dono. Pré-checagem que
+# falha também recusa: sem a lista, nada garante o que o --force apagaria.
+ESC=$(printf '\033')
+PRECHECK_LOG="$STATE_DIR/force-precheck.log"
+DRIVE_DELETES="$STATE_DIR/force-precheck-drive-deletes.txt"
+FOREIGN_DELETES="$STATE_DIR/force-precheck-foreign-deletes.txt"
+OWNER_CHECK_MAX="${GDRIVE_FORCE_OWNER_CHECK_MAX:-200}"
+case "$OWNER_CHECK_MAX" in ''|*[!0-9]*) OWNER_CHECK_MAX=200 ;; esac
+
+# Dono (e-mail, minúsculo) de um caminho do remote; vazio se não se lê.
+owner_of() {
+  "$RCLONE_BIN" lsjson -M --stat "$1" 2>/dev/null |
+    sed -n 's/.*"owner" *: *"\([^"]*\)".*/\1/p' | head -n 1 | tr 'A-Z' 'a-z'
+}
+
+refuse_force() {
+  echo "gdrive-bisync: --force RECUSADO, nada foi aplicado (#12979): $1" >&2
+  echo "gdrive-bisync: confira com --dry-run --force; se a pasta sumiu do espelho por engano, devolva os arquivos ao espelho (rclone copy) antes do --force; se apagar do Drive arquivos de outro dono for intencional, rode de novo com --allow-foreign-deletes" >&2
+  exit 75
+}
+
+force_guard() {
+  rm -f "$PRECHECK_LOG" "$DRIVE_DELETES" "$FOREIGN_DELETES"
+  bisync_cmd "$@" --dry-run > "$PRECHECK_LOG" 2>&1
+  prc=$?
+  if [ "$prc" -ne 0 ]; then
+    refuse_force "a pre-checagem (a mesma rodada com --dry-run) saiu $prc. Log: $PRECHECK_LOG"
+  fi
+  sed "s/${ESC}\[[0-9;]*m//g" "$PRECHECK_LOG" |
+    grep -E 'Path1 +Queue delete +- ' |
+    sed 's/.*Queue delete *- //' > "$DRIVE_DELETES"
+  ndel=$(grep -c . "$DRIVE_DELETES")
+  # Formato do log que mudou numa versão nova do rclone não pode virar "zero
+  # exclusões" e liberar o --force: o dry-run diz quantas exclusões pulou, e
+  # se houve alguma sem nenhuma linha "Queue delete" reconhecida, recusa.
+  nskip=$(grep -c 'Skipped delete as --dry-run is set' "$PRECHECK_LOG")
+  nqueue=$(sed "s/${ESC}\[[0-9;]*m//g" "$PRECHECK_LOG" | grep -c -E 'Path[12] +Queue delete +- ')
+  if [ "$nskip" -gt 0 ] && [ "$nqueue" -eq 0 ]; then
+    refuse_force "o dry-run pulou $nskip exclusao(oes), mas nenhuma linha 'Queue delete' foi reconhecida no log (formato do rclone mudou?). Log: $PRECHECK_LOG"
+  fi
+  if [ "$ndel" -eq 0 ]; then
+    echo "gdrive-bisync: pre-checagem do --force: nenhuma exclusao no Drive (#12979)" >&2
+    return 0
+  fi
+  echo "gdrive-bisync: pre-checagem do --force: $ndel exclusao(oes) no Drive planejada(s), lista em $DRIVE_DELETES (#12979)" >&2
+  if [ "$ALLOW_FOREIGN" -eq 1 ]; then
+    echo "gdrive-bisync: --allow-foreign-deletes: seguindo sem conferir o dono (#12979)" >&2
+    return 0
+  fi
+  if [ "$ndel" -gt "$OWNER_CHECK_MAX" ]; then
+    refuse_force "$ndel exclusoes no Drive, acima do teto de $OWNER_CHECK_MAX para conferir o dono uma a uma (GDRIVE_FORCE_OWNER_CHECK_MAX). Lista: $DRIVE_DELETES"
+  fi
+  account="${GDRIVE_ACCOUNT_OWNER:-}"
+  if [ -z "$account" ]; then
+    case "$REMOTE" in
+      *:|*/) account=$(owner_of "$REMOTE$SENTINEL") ;;
+      *) account=$(owner_of "$REMOTE/$SENTINEL") ;;
+    esac
+  fi
+  account=$(printf '%s' "$account" | tr 'A-Z' 'a-z')
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    o=$(owner_of "$p")
+    if [ -z "$account" ] || [ "$o" != "$account" ]; then
+      printf '%s\t%s\n' "${o:-dono-ilegivel}" "$p" >> "$FOREIGN_DELETES"
+    fi
+  done < "$DRIVE_DELETES"
+  if [ -s "$FOREIGN_DELETES" ]; then
+    nfor=$(grep -c . "$FOREIGN_DELETES")
+    echo "gdrive-bisync: exclusoes no Drive de arquivo de outro dono (dono, caminho), conta do remote: ${account:-ilegivel}:" >&2
+    head -n 20 "$FOREIGN_DELETES" >&2
+    [ "$nfor" -le 20 ] || echo "gdrive-bisync: ... e mais $((nfor - 20)); lista completa em $FOREIGN_DELETES" >&2
+    refuse_force "$nfor de $ndel exclusoes no Drive sao de arquivo de outro dono ou de dono ilegivel"
+  fi
+  echo "gdrive-bisync: as $ndel exclusoes no Drive sao de arquivos da conta do remote ($account); seguindo (#12979)" >&2
+}
+
+if [ "$FORCE" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
+  force_guard "$@"
+fi
+
+# Resync automático pendente (#12590). O resync automático do 401 (#12412)
+# pode falhar ele mesmo (na rodada de 13/11/2026 a rede caiu no meio dele:
+# 1.324 listagens com `dial tcp`). O rclone já descartou as listagens, e
+# toda rodada seguinte do timer só reverte ao backup antigo, falha o check
+# de sincronia e sai 7, sem nunca se recuperar: ficou ~5h travado até um
+# resync manual. Por isso o resync automático que não sai 0 deixa o marcador
+# `$STATE_DIR/resync-pending`, e a próxima rodada do timer (sem `--dry-run`,
+# `--resync` ou `--force` na linha) roda ela mesma o resync, com as mesmas
+# travas do #12412 (`--check-access`, filtro instalado, `--resync-mode
+# newer`), até GDRIVE_PENDING_RESYNC_MAX tentativas (default 3; `0` desliga).
+# Esgotadas, o marcador fica, a rodada segue normal (e falha) e o alarme
+# continua aceso até o resync manual. Qualquer rodada que sai 0 apaga o
+# marcador. O mesmo trade-off do #12444 vale aqui: resync une os dois lados
+# e pode trazer de volta arquivo apagado.
+PENDING_RESYNC="$STATE_DIR/resync-pending"
+PENDING_MAX="${GDRIVE_PENDING_RESYNC_MAX:-3}"
+case "$PENDING_MAX" in ''|*[!0-9]*) PENDING_MAX=3 ;; esac
+PENDING_RUN=0
+if [ -f "$PENDING_RESYNC" ] && [ "$DRY_RUN" -eq 0 ] && [ "$RESYNC" -eq 0 ] && [ "$FORCE" -eq 0 ]; then
+  pending_n=$(sed -n 's/^attempts=\([0-9][0-9]*\)$/\1/p' "$PENDING_RESYNC" | head -n 1)
+  [ -n "$pending_n" ] || pending_n=0
+  if [ "$pending_n" -lt "$PENDING_MAX" ]; then
+    pending_n=$((pending_n + 1))
+    printf 'attempts=%s\n' "$pending_n" > "$PENDING_RESYNC"
+    echo "gdrive-bisync: resync automatico pendente de rodada anterior que falhou — tentativa $pending_n/$PENDING_MAX (#12590)" >&2
+    PENDING_RUN=1
+  else
+    echo "gdrive-bisync: resync automatico pendente esgotou $PENDING_MAX tentativas — rode --resync a mao, timer parado (#12590)" >&2
+  fi
+fi
+
+if [ "$PENDING_RUN" -eq 1 ]; then
+  run_bisync "$@" --resync --resync-mode newer
+  echo "gdrive-bisync: resync automatico pendente terminou com exit $RC (#12590)" >&2
+  echo "gdrive-bisync: aviso — o resync automatico une os dois lados e nao apaga nada: arquivo apagado em um lado durante a rodada pode ter voltado do outro (#12444)" >&2
+else
+  run_bisync "$@"
+fi
 attempt=0
 while [ "$RC" -eq 7 ] && [ "$DRY_RUN" -eq 0 ] && auth_error_in_log; do
   if [ "$attempt" -ge "$AUTH_RETRY_MAX" ]; then
@@ -223,4 +373,17 @@ while [ "$RC" -eq 7 ] && [ "$DRY_RUN" -eq 0 ] && auth_error_in_log; do
   echo "gdrive-bisync: resync automatico $attempt/$AUTH_RETRY_MAX terminou com exit $RC (#12412)" >&2
   echo "gdrive-bisync: aviso — o resync automatico une os dois lados e nao apaga nada: arquivo apagado em um lado durante a rodada pode ter voltado do outro (#12444)" >&2
 done
+# Marcador do resync pendente (#12590): some com qualquer rodada que sai 0;
+# nasce quando o resync automático do 401 não terminou bem.
+if [ "$DRY_RUN" -eq 0 ]; then
+  if [ "$RC" -eq 0 ]; then
+    rm -f "$PENDING_RESYNC"
+  elif [ "$attempt" -gt 0 ] && [ ! -f "$PENDING_RESYNC" ]; then
+    if printf 'attempts=0\n' > "$PENDING_RESYNC"; then
+      echo "gdrive-bisync: resync automatico nao terminou bem; a proxima rodada do timer tenta de novo (#12590)" >&2
+    else
+      echo "gdrive-bisync: aviso — nao consegui gravar $PENDING_RESYNC; rode --resync a mao (#12590)" >&2
+    fi
+  fi
+fi
 finish "$RC"

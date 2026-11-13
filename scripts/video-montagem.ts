@@ -186,6 +186,14 @@
  *       (`_Youtube_`/`_Instagram_`/`_Outras redes_`) ou `--seq`. Saída: tabela
  *       (#, tempo no export, tempo no bruto, o que está, correção) no stdout e em
  *       `review-final-{destino ou corte}.md`/`.json` no state dir. Só lê o export.
+ *   legendar AAMMDD --video ARQ [--no-burn] [--out-dir DIR]
+ *       (#12935) legenda um vídeo AVULSO, que não passou pela montagem: transcreve sem VAD,
+ *       aplica o vocabulário e a grafia dos nomes do 02-reviewed.md da edição, grava
+ *       `{base}.srt` e queima a legenda (estilo da prévia, vertical ou horizontal pela
+ *       orientação) em `{base} - legendado.mp4`, ao lado do vídeo (ou no --out-dir).
+ *       Autorrevisão pelo áudio: legenda longa demais e fala sem legenda = [aviso].
+ *       Só local (o --video precisa existir nesta máquina). O `transcribe` do bruto
+ *       também avisa fala sem palavra no transcript (VAD) com o retranscribe da janela.
  * srt, preview e review recusam um `plan.json` defasado (blocks.json ou
  * source.json mudaram depois do build); preview recusa um SRT mais velho que o
  * plano; review recusa uma prévia mais velha que o plano.
@@ -294,6 +302,7 @@ import {
   subWindows,
   parseBlocksFile,
   retranscribeWindow,
+  RETRANSCRIBE_MAX_S,
   parseLoudnormJson,
   parseFrameRate,
   parseProbe,
@@ -491,6 +500,7 @@ import { factCheckItems, factCheckItemsSha256, factCheckSection, parseVideoFactC
 import { SHORT_WORD_WINDOW_PAD_S, shortWordDivergences, shortWordSection, type ShortWordItemCheck } from "./lib/diaria/video-short-words.ts";
 import { stretchedWordFindings, takeRepeatItems, takeRepeatLine, takeRepeatWarnings, windowHeardSuspects, type TakeRepeatSuspect } from "./lib/diaria/video-montage-repeat.ts";
 import { corteHookLine } from "./lib/diaria/extra-verticals.ts";
+import { captionCoverageFindings, speechWithoutWords, speechWithoutWordsWarnings } from "./lib/diaria/video-caption-coverage.ts";
 import sharp from "sharp";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -498,7 +508,7 @@ const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
 const VOCAB_FILE = join(ROOT, "context", "video-montagem", "vocabulario.json");
 export { DEFAULT_DRIVE_ROOT };
 
-const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|inventory|decupagem|retranscribe|frame|face|gaze|roteiro|fact-check-input|build|verify-xml|srt|preview|review|review-final|upload> AAMMDD [opções]
+const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|inventory|decupagem|retranscribe|frame|face|gaze|roteiro|fact-check-input|build|verify-xml|srt|preview|review|review-final|upload|legendar> AAMMDD [opções]
   ver o cabeçalho de scripts/video-montagem.ts e .claude/skills/diaria-video-montagem/SKILL.md`;
 
 interface Ctx {
@@ -1909,6 +1919,10 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     );
   }
   const words = nonEmptyWords(trPath, "transcript.json");
+  // #12935 item 2: fala (fora das pausas) sem nenhuma palavra = o VAD pode ter descartado; aponta o retranscribe sem VAD.
+  for (const line of speechWithoutWordsWarnings(speechWithoutWords({ words, silences: silences(ctx), durationS: source.durationS }), ctx.edition, RETRANSCRIBE_MAX_S, source.durationS)) {
+    console.error(`[aviso] ${line}`);
+  }
   const warn = loudnessWarning(loud);
   if (warn) console.error(`[aviso] ${warn}`);
   console.log(
@@ -4337,6 +4351,98 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   return 0;
 }
 
+// ── Vídeo avulso, fora da montagem (#12935) ──────────────────────────────
+
+/**
+ * Onde o `legendar` grava (#12935): ao lado do vídeo, ou no `--out-dir`
+ * explícito. `{base}.srt` e `{base} - legendado.mp4`; nunca sobrescreve o
+ * próprio vídeo. Puro.
+ */
+export function legendarOutputPaths(videoPath: string, outDir?: string): { srt: string; burned: string } {
+  const dir = outDir ? resolve(outDir) : dirname(resolve(videoPath));
+  const base = basename(videoPath).replace(/\.[^.]+$/, "");
+  return { srt: join(dir, `${base}.srt`), burned: join(dir, `${base} - legendado.mp4`) };
+}
+
+/**
+ * Orientação do vídeo pelo ffprobe, com a rotação do celular (`rotate` 90/270
+ * troca largura e altura): decide o estilo da legenda queimada. Puro.
+ */
+export function legendarIsVertical(stream: { width?: number; height?: number; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number }> }): boolean {
+  const w = stream.width ?? 0;
+  const h = stream.height ?? 0;
+  const rot = Number(stream.side_data_list?.find((x) => typeof x.rotation === "number")?.rotation ?? stream.tags?.rotate ?? 0);
+  const quarter = Math.abs(Math.round(rot)) % 180 === 90;
+  return quarter ? w > h : h > w;
+}
+
+/**
+ * `legendar AAMMDD --video ARQ [--no-burn] [--out-dir DIR]` (#12935): legenda
+ * um vídeo avulso, que não passou pela montagem (sem `plan.json`, sem
+ * roteiro). Transcreve SEM VAD (o VAD da 261112 descartou 6 s de fala real),
+ * aplica o vocabulário do projeto e a grafia dos nomes do `02-reviewed.md` da
+ * edição (`properNounLexicon`, quando existe), grava o SRT e queima a legenda
+ * com o estilo da prévia (vertical ou horizontal pela orientação). Fecha com a
+ * autorrevisão pelo áudio (`captionCoverageFindings`): legenda longa demais e
+ * fala sem legenda saem como `[aviso]`, para conferir antes de entregar.
+ */
+function cmdLegendar(ctx: Ctx, video: string, opts: { burn: boolean; outDir?: string }): number {
+  const path = resolve(video);
+  if (!existsSync(path)) throw new Error(`vídeo não encontrado: ${path}`);
+  const probe = JSON.parse(run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", path]).stdout) as {
+    streams?: Array<{ codec_type?: string; width?: number; height?: number; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number }> }>;
+    format?: { duration?: string };
+  };
+  const v = probe.streams?.find((x) => x.codec_type === "video");
+  if (!v) throw new Error(`ffprobe sem stream de vídeo em ${path}`);
+  const durationS = Number(probe.format?.duration);
+  if (!Number.isFinite(durationS) || durationS <= 0) throw new Error(`duração ilegível no ffprobe (${path})`);
+  const out = legendarOutputPaths(path, opts.outDir);
+  mkdirSync(ctx.workDir, { recursive: true });
+  mkdirSync(dirname(out.srt), { recursive: true });
+  const tag = basename(path).replace(/[^\w.-]+/g, "_");
+  const wav = join(ctx.workDir, `legendar-${tag}.wav`);
+  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", wav]);
+  const trPath = join(ctx.workDir, `legendar-${tag}.transcript.json`);
+  transcribeWithPython(ctx, wav, trPath, { vad: false });
+  const heard = nonEmptyWords(trPath, "transcrição do vídeo");
+  const vocab = loadVocab();
+  const vocabWords = applyVocabularyToWords(heard, vocab.rules, undefined, (w) => console.error(`[aviso] ${w}`));
+  const reviewedPath = join(editionDirFor(ctx.edition), "02-reviewed.md");
+  const reference = existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : null;
+  if (!reference) console.error(`[aviso] sem ${reviewedPath}: os nomes próprios ficam com a grafia que o Whisper ouviu`);
+  const { words, changes } = applyProperNounLexicon(vocabWords, reference ? properNounLexicon(reference) : new Map<string, string>(), vocab.aliases);
+  const summary = summarizeLexiconChanges(changes);
+  if (summary.length) console.error(`[premissa] grafia corrigida: ${summary.join("; ")}`);
+  const cues = segmentCues(words);
+  const srt = cuesToSrt(cues);
+  writeFileAtomic(out.srt, srt);
+  console.error(`[video-montagem] legenda (texto ouvido, sem VAD, #12935): ${out.srt}`);
+
+  let burned: string | null = null;
+  if (opts.burn) {
+    const vertical = legendarIsVertical(v);
+    copyFileSync(out.srt, join(ctx.workDir, "legendar-leg.srt"));
+    const tmp = join(ctx.workDir, `legendar-${tag}.burned.mp4`);
+    run("ffmpeg", [
+      "-y", "-v", "error", "-i", path,
+      "-vf", `subtitles=legendar-leg.srt:force_style='${vertical ? PREVIEW_SUBTITLE_STYLE : PREVIEW_SUBTITLE_STYLE_HORIZONTAL}'`,
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", tmp,
+    ], { cwd: ctx.workDir });
+    copyFileSync(tmp, out.burned);
+    burned = out.burned;
+    console.error(`[video-montagem] legenda queimada (estilo ${vertical ? "vertical" : "horizontal"}): ${burned}`);
+  }
+
+  // Autorrevisão pelo áudio: legenda longa demais e fala sem legenda.
+  const silencesFound = parseSilenceDetect(run("ffmpeg", ["-hide_banner", "-nostats", "-i", wav, "-af", REVIEW_SILENCE_FILTER, "-f", "null", "-"]).stderr, durationS);
+  const findings = captionCoverageFindings({ cues: cueTimings(cues), silences: silencesFound, durationS });
+  for (const fnd of findings) console.error(`[aviso] ${fnd.line}: conferir no vídeo (#12935)`);
+  if (!findings.length) console.error("[ok] autorrevisão: nenhuma legenda longa demais nem fala sem legenda");
+  console.log(JSON.stringify({ video: path, srt: out.srt, burned, cues: cues.length, lexicon: summary, findings: findings.map((x) => x.line) }, null, 2));
+  return 0;
+}
+
 // ── Drive pela API, fora do Neo (#11639, #11640, #11641) ─────────────────
 
 /** Registro do bruto baixado pela API (no state dir): id, nome no Drive e o caminho do cache. */
@@ -4346,7 +4452,7 @@ export const DRIVE_UPLOADS_FILE = "drive-uploads.json";
 /** Saída quando o comando deu certo e só o upload para o Drive falhou (as saídas estão no out dir). */
 export const EXIT_UPLOAD_FAILED = 4;
 
-export const SUBCOMMANDS = ["transcribe", "inventory", "decupagem", "retranscribe", "frame", "face", "gaze", "roteiro", "fact-check-input", "build", "verify-xml", "srt", "preview", "review", "review-final", "upload"] as const;
+export const SUBCOMMANDS = ["transcribe", "inventory", "decupagem", "retranscribe", "frame", "face", "gaze", "roteiro", "fact-check-input", "build", "verify-xml", "srt", "preview", "review", "review-final", "upload", "legendar"] as const;
 export type Subcommand = (typeof SUBCOMMANDS)[number];
 /** Subcomandos cujas saídas sobem para a pasta da edição no modo API. */
 export const DRIVE_UPLOAD_COMMANDS: readonly Subcommand[] = ["build", "srt", "preview"];
@@ -4764,6 +4870,12 @@ async function runCommand(
     }
     case "upload":
       return cmdUpload(ctx, d, values["file"]);
+    case "legendar": {
+      if (flags.has("video")) throw new Error('legendar exige o caminho do vídeo (ex.: --video "I:/…/261112/20261112_200050.mp4")');
+      const video = values["video"];
+      if (video === undefined) throw new Error("legendar exige --video ARQUIVO (o vídeo avulso a legendar, #12935)");
+      return cmdLegendar(ctx, video, { burn: !flags.has("no-burn"), outDir: values["out-dir"] });
+    }
   }
 }
 

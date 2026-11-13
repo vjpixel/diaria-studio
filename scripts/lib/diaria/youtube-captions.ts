@@ -115,6 +115,8 @@ export interface CaptionUploadResult {
   /** O token não tem `youtube.force-ssl` (#11384): rodar o setup de novo. */
   scopeMissing: boolean;
   at: string | null;
+  /** #13004: a faixa existente foi atualizada (`captions.update`) em vez de criada. */
+  updated?: boolean;
 }
 
 /** `captions.insert`. Lança `CaptionScopeError` em 403 de escopo; outro erro, `Error`. */
@@ -145,6 +147,78 @@ export async function insertCaption(deps: YouTubeUploadDeps, token: string, vide
   return json.id;
 }
 
+export interface CaptionUpdateRequest {
+  url: string;
+  method: "PUT";
+  headers: Record<string, string>;
+  /** Corpo multipart/related: o recurso (`id` + `snippet.isDraft`) + o SRT novo. */
+  body: Buffer;
+  resource: { id: string; snippet: { isDraft: boolean } };
+}
+
+/**
+ * #13004: monta o `captions.update` (puro, sem rede): troca o arquivo da faixa
+ * `captionId` que já existe, em vez de criar outra (o `captions.insert`).
+ * O `snippet` aceito no update é só o `isDraft`; língua e nome ficam os da faixa.
+ */
+export function buildCaptionUpdateRequest(
+  token: string,
+  captionId: string,
+  srt: Buffer,
+  boundary = `diaria-caption-update-${captionId}`,
+): CaptionUpdateRequest {
+  const resource = { id: captionId, snippet: { isDraft: false } };
+  const body = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
+        JSON.stringify(resource) +
+        `\r\n--${boundary}\r\nContent-Type: application/octet-stream\r\n\r\n`,
+      "utf8",
+    ),
+    srt,
+    Buffer.from(`\r\n--${boundary}--\r\n`, "utf8"),
+  ]);
+  return {
+    url: `${YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT}?uploadType=multipart&part=snippet`,
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": `multipart/related; boundary=${boundary}`,
+      "Content-Length": String(body.length),
+    },
+    body,
+    resource,
+  };
+}
+
+/** `captions.update` (#13004). Lança `CaptionScopeError` em 403 de escopo; outro erro, `Error`. Devolve o id da faixa. */
+export async function updateCaption(deps: YouTubeUploadDeps, token: string, captionId: string, srt: Buffer): Promise<string> {
+  const req = buildCaptionUpdateRequest(token, captionId, srt);
+  const res = await deps.fetch(req.url, {
+    method: req.method,
+    headers: req.headers,
+    body: new Uint8Array(req.body.buffer as ArrayBuffer, req.body.byteOffset, req.body.length),
+  });
+  if (!res.ok) {
+    let text = "";
+    try {
+      text = (await res.text()).slice(0, 300);
+    } catch {
+      // corpo ilegível: segue só com o status
+    }
+    if (isCaptionScopeError(res.status, text)) throw new CaptionScopeError();
+    throw new Error(`captions.update respondeu ${res.status}: ${text}`);
+  }
+  let json: { id?: unknown } | null = null;
+  try {
+    json = (await res.json()) as { id?: unknown } | null;
+  } catch {
+    json = null;
+  }
+  // O update responde com o recurso da faixa; sem id no corpo, vale o id pedido.
+  return json && typeof json.id === "string" && json.id ? json.id : captionId;
+}
+
 /**
  * Envia a legenda e NUNCA lança: o vídeo já está no canal, falha aqui vira
  * campo no resultado (fail-soft). `srt: null` = sem arquivo, nada tentado.
@@ -155,6 +229,8 @@ export async function uploadCaptionSafely(
   videoId: string,
   srt: Buffer | null,
   path: string | null,
+  /** #13004: id da faixa a atualizar (`captions.update`); ausente = `captions.insert`. */
+  updateId?: string,
 ): Promise<CaptionUploadResult> {
   const base: CaptionUploadResult = {
     attempted: false,
@@ -168,12 +244,17 @@ export async function uploadCaptionSafely(
   };
   if (!srt) return base;
   try {
+    if (updateId) {
+      const captionId = await updateCaption(deps, token, updateId, srt);
+      return { ...base, attempted: true, ok: true, captionId, at: deps.now().toISOString(), updated: true };
+    }
     const captionId = await insertCaption(deps, token, videoId, srt);
     return { ...base, attempted: true, ok: true, captionId, at: deps.now().toISOString() };
   } catch (e) {
     return {
       ...base,
       attempted: true,
+      ...(updateId ? { updated: false } : {}),
       error: (e as Error).message,
       scopeMissing: e instanceof CaptionScopeError,
       at: deps.now().toISOString(),
@@ -202,7 +283,7 @@ export async function uploadCaptionsOnly(
  */
 export function describeCaptionOutcome(c: CaptionUploadResult, aammdd: string, videoId?: string): string | null {
   if (!c.attempted) return null;
-  if (c.ok) return `[ok] legenda ${c.language} enviada (captionId ${c.captionId})`;
+  if (c.ok) return c.updated ? `[ok] faixa ${c.captionId} atualizada com a legenda nova (captions.update, #13004)` : `[ok] legenda ${c.language} enviada (captionId ${c.captionId})`;
   const retry = `npx tsx scripts/publish-youtube.ts ${aammdd} --captions-only${videoId ? ` --video-id ${videoId}` : ""}`;
   if (c.scopeMissing) {
     return `[aviso] legenda NÃO enviada: ${c.error}. Depois do setup, \`${retry}\` envia só a legenda. O vídeo segue sem ela.`;
@@ -288,24 +369,48 @@ export function isYouTubeVideoId(id: string): boolean {
   return /^[A-Za-z0-9_-]{11}$/.test(id);
 }
 
+/** Decisão do `--captions-only` pelas faixas do vídeo (#12429, #13004). */
+export interface CaptionsTrackDecision {
+  /** Enviar (insert, ou update quando `updateId` vem). */
+  send: boolean;
+  line: string;
+  /** #13004: a faixa pt `standard` que o `--force` atualiza (`captions.update`). */
+  updateId?: string;
+  /** #13004: `--force` sem saber qual faixa atualizar (2+ faixas pt): nada enviado, exit 1. */
+  refused?: boolean;
+}
+
 /**
- * `--captions-only --video-id` (#12429): o vídeo não tem registro, então o
- * "já enviada" sai das faixas do próprio vídeo. Qualquer faixa `standard`
+ * `--captions-only` pelas faixas do vídeo (#12429). Qualquer faixa `standard`
  * de idioma `pt*` (pt-BR do script, ou `pt` enviada pelo Studio; publicada ou
- * rascunho) = não envia sem `--force` (que cria outra faixa; o
- * `captions.insert` não substitui). A `asr` automática nunca conta. Puro.
+ * rascunho) = já enviada: sem `--force`, não envia. A `asr` automática nunca
+ * conta.
+ *
+ * `--force` (#13004) ATUALIZA a faixa existente (`captions.update`) em vez de
+ * criar uma 2ª faixa em português: a do `preferId` (o `captionId` do registro)
+ * quando ela está entre as faixas pt, senão a única faixa pt. Com 2+ faixas pt
+ * e nenhuma delas a do registro, não há como escolher: recusa (`refused`),
+ * nada enviado. Puro.
  */
-export function decideCaptionsOnlyByTracks(tracks: CaptionTrack[], force: boolean): { send: boolean; line: string } {
+export function decideCaptionsOnlyByTracks(tracks: CaptionTrack[], force: boolean, preferId?: string | null): CaptionsTrackDecision {
   const sent = tracks.filter(isSentPt);
   const ids = sent.map((t) => `${t.id}${t.isDraft ? " (rascunho)" : ""}`).join(", ");
   if (sent.length === 0) return { send: true, line: "[info] o vídeo não tem faixa pt `standard` enviada: envia" };
-  if (!force) return { send: false, line: `[ok] o vídeo já tem faixa pt enviada (${ids}) — nada feito. Use --force para enviar outra faixa.` };
-  return { send: true, line: `[premissa] --force: envia outra faixa pt-BR além de ${ids}` };
+  if (!force) return { send: false, line: `[ok] o vídeo já tem faixa pt enviada (${ids}) — nada feito. Use --force para atualizar a faixa.` };
+  const target = (preferId ? sent.find((t) => t.id === preferId) : undefined) ?? (sent.length === 1 ? sent[0] : undefined);
+  if (target) return { send: true, updateId: target.id, line: `[premissa] --force: atualiza a faixa ${target.id} (${target.language}) com a legenda nova, sem criar outra (#13004)` };
+  return {
+    send: false,
+    refused: true,
+    line: `[erro] --force: o vídeo tem ${sent.length} faixas pt standard (${ids}) e não dá para saber qual atualizar. Apague as extras no YouTube Studio (Legendas) e rode de novo. Nada enviado (#13004).`,
+  };
 }
 
 export interface UnregisteredCaptionOutcome {
   /** Nada enviado porque o vídeo já tinha faixa pt-BR (sem `--force`). */
   skipped: boolean;
+  /** #13004: `--force` com 2+ faixas pt e nenhuma escolhível: nada enviado, o chamador sai exit 1. */
+  refused?: boolean;
   /** Linha da decisão pelas faixas (`decideCaptionsOnlyByTracks`); `null` se o `captions.list` falhou. */
   decisionLine: string | null;
   /** Resultado do envio; `null` quando pulado. */
@@ -319,10 +424,22 @@ export interface UnregisteredCaptionOutcome {
  * → `captions.insert`. Nenhuma chamada de playlist, `videos.update` ou
  * thumbnail. Falha de token/canal lança `YouTubeUploadError`; a do
  * `captions.list`/legenda vem no resultado (403 de escopo = `scopeMissing`).
+ *
+ * #13004: também o caminho do `--force` com registro que já tem faixa: o
+ * `captions.list` decide entre atualizar a faixa existente (`captions.update`,
+ * a do `preferId` ou a única pt) e recusar (2+ faixas pt).
  */
 export async function uploadCaptionsForUnregisteredVideo(
   deps: YouTubeUploadDeps,
-  input: { creds: YouTubeCredentials; videoId: string; srt: Buffer; path: string; force: boolean },
+  input: {
+    creds: YouTubeCredentials;
+    videoId: string;
+    srt: Buffer;
+    path: string;
+    force: boolean;
+    /** #13004: o `captionId` do registro, a faixa que o `--force` atualiza quando está no vídeo. */
+    preferId?: string | null;
+  },
 ): Promise<UnregisteredCaptionOutcome> {
   const token = await refreshYouTubeAccessToken(deps, input.creds);
   await assertExpectedChannel(deps, token, input.creds.channelId);
@@ -345,9 +462,10 @@ export async function uploadCaptionsForUnregisteredVideo(
       },
     };
   }
-  const decision = decideCaptionsOnlyByTracks(tracks, input.force);
+  const decision = decideCaptionsOnlyByTracks(tracks, input.force, input.preferId);
+  if (decision.refused) return { skipped: false, refused: true, decisionLine: decision.line, result: null };
   if (!decision.send) return { skipped: true, decisionLine: decision.line, result: null };
-  const result = await uploadCaptionSafely(deps, token, input.videoId, input.srt, input.path);
+  const result = await uploadCaptionSafely(deps, token, input.videoId, input.srt, input.path, decision.updateId);
   return { skipped: false, decisionLine: decision.line, result };
 }
 

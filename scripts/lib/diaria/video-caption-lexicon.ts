@@ -29,6 +29,18 @@ import { PIPELINE_OWNED_SECTIONS, sectionHeaderName } from "../manual-edit-diff.
 import { normalizeToken, type VocabAlias, type Word } from "./video-montage.ts";
 
 /**
+ * #12955: pronomes e palavras comuns curtas que nunca são nome próprio na fala.
+ * O texto da edição pode trazê-las com maiúscula (início de citação depois de
+ * dois-pontos, nome de programa com sigla dentro, "Negócio em dIA"), e uma
+ * entrada dessas no léxico reescreve a palavra comum em todo o vídeo.
+ */
+const COMMON_WORDS_12955 = [
+  "eu", "tu", "ele", "ela", "eles", "elas", "nos", "voce", "voces", "gente",
+  "dia", "dias", "via", "vias", "media", "midia", "mes", "ano", "anos", "hoje", "agora",
+  "aqui", "isso", "isto", "esse", "essa", "este", "esta", "mas", "mais", "sim", "nao",
+] as const;
+
+/**
  * Palavras comuns em português que também são nome próprio de empresa, produto,
  * veículo ou instituição: o léxico nunca as aplica (a "meta" do ano não vira a
  * "Meta", "eu ia" não vira "IA", "aí" não vira "AI", o "pro" de "vai pro
@@ -38,6 +50,10 @@ export const LEXICON_AMBIGUOUS: ReadonlySet<string> = new Set([
   "meta", "sol", "claro", "vivo", "oi", "nu", "gol", "azul", "uber", "ia", "ai", "rio",
   "pro", "geral", "ajustes", "vale", "caixa", "folha", "estado", "uniao", "camara", "globo",
   "senado", "governo", "congresso", "mercado",
+  // #12955: palavra comum que a edição escreveu com maiúscula num nome ("Negócio em dIA") ou
+  // numa citação ("disse: \"Eu quero…\""): "notícia do dia" virava "notícia do dIA" e
+  // "nesse canal eu comento", "nesse canal Eu comento".
+  ...COMMON_WORDS_12955,
 ]);
 
 /**
@@ -139,7 +155,8 @@ export function properNounLexicon(markdown: string): Map<string, string> {
     const toks = [...line.matchAll(TOKEN_RE)];
     const atStart = toks.map((m) => {
       const before = line.slice(0, m.index).trimEnd();
-      return before === "" || /[.!?:]["'”»)\]]*$/.test(before) || /^[-–—•\d.)\s]*$/.test(before);
+      // #12955: a abertura de citação também é início de frase (`disse: "Eu quero`, `"Eu sou`).
+      return before === "" || /[.!?:]["'”»)\]]*\s*["'“«(\[]*$/.test(before) || /^[-–—•\d.)\s"'“«(\[]*$/.test(before);
     });
     // Vizinho com maiúscula fora do início de frase (pulando conectivos, sem atravessar pontuação) = nome de várias palavras.
     const capNeighbor = (i: number, step: 1 | -1): boolean => {
@@ -186,7 +203,8 @@ export interface LexiconChange {
   heard: string;
   written: string;
   start: number;
-  via: "lexicon" | "alias";
+  /** `pronoun` (#12955): "Eu" ouvido no meio da frase volta a "eu". */
+  via: "lexicon" | "alias" | "pronoun";
 }
 
 /** Sem acento e em minúscula, com a pontuação interna mantida ("GPT-5.5" → "gpt-5.5"). */
@@ -241,6 +259,12 @@ export function applyProperNounLexicon(
       changes.push({ heard: core, written: alias, start: w.start, via: "alias" });
       return { ...w, text: pre + alias + post };
     }
+    // #12955: "eu" só começa com maiúscula no início de frase (o Whisper às vezes a põe no meio);
+    // depois de dois-pontos ou com aspas abrindo é citação, e fica.
+    if (key === "eu" && core === "Eu" && !sentenceStart && !/:["'”»)]*$/.test(prev) && !/["'“«]/.test(pre)) {
+      changes.push({ heard: core, written: "eu", start: w.start, via: "pronoun" });
+      return { ...w, text: pre + "eu" + post };
+    }
     const spelled = lexicon.get(key);
     if (spelled !== undefined && spelled !== core && isCaseOrAccentOnly(core, spelled)) {
       changes.push({ heard: core, written: spelled, start: w.start, via: "lexicon" });
@@ -260,5 +284,5 @@ export function summarizeLexiconChanges(changes: LexiconChange[]): string[] {
     if (cur) cur.n++;
     else byPair.set(k, { c, n: 1 });
   }
-  return [...byPair.values()].map(({ c, n }) => `"${c.heard}" → "${c.written}" (${c.via === "alias" ? "alias do vocabulário" : "grafia da edição"}${n > 1 ? `, ${n}x` : ""})`);
+  return [...byPair.values()].map(({ c, n }) => `"${c.heard}" → "${c.written}" (${c.via === "alias" ? "alias do vocabulário" : c.via === "pronoun" ? "pronome no meio da frase" : "grafia da edição"}${n > 1 ? `, ${n}x` : ""})`);
 }

@@ -53,6 +53,8 @@ interface MockOpts {
   listErrorBody?: unknown;
   /** Status do `captions.insert` (default 200). */
   insertStatus?: number;
+  /** Status do `captions.update` (#13004, default 200). */
+  updateStatus?: number;
   /** Canal que o token vê (default o esperado). */
   channelId?: string;
 }
@@ -70,6 +72,11 @@ function mockDeps(listItems: unknown[], listStatus = 200, opts: MockOpts = {}): 
         if (url.includes("/youtube/v3/channels")) return json(200, { items: [{ id: opts.channelId ?? SECRETS.YOUTUBE_CHANNEL_ID }] });
         if (url.startsWith(YOUTUBE_CAPTIONS_LIST_ENDPOINT) && method === "GET") {
           return listStatus === 200 ? json(200, { items: listItems }) : json(listStatus, opts.listErrorBody ?? { error: { message: "boom" } });
+        }
+        if (url.startsWith(YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT) && method === "PUT") {
+          const st = opts.updateStatus ?? 200;
+          const id = JSON.parse(String(Buffer.from(init?.body as Uint8Array)).split("\r\n")[3]).id as string;
+          return st === 200 ? json(200, { id }) : json(st, { error: { message: `update falhou ${st}` } });
         }
         if (url.startsWith(YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT) && method === "POST") {
           const st = opts.insertStatus ?? 200;
@@ -191,7 +198,7 @@ describe("runCaptionsOnly --video-id (#12429)", () => {
     assert.match(logs, /--captions-list --video-id QRbXMprk9o0/);
   });
 
-  it("faixa pt-BR já enviada: nada enviado sem --force; com --force, envia outra", async () => {
+  it("faixa pt-BR já enviada: nada enviado sem --force; com --force, atualiza a mesma faixa (#13004)", async () => {
     writeFileSync(captionsPath(), SRT);
     const a = mockDeps([asr, sentPt]);
     const skipped = await run(a.deps);
@@ -201,6 +208,9 @@ describe("runCaptionsOnly --video-id (#12429)", () => {
     const b = mockDeps([asr, sentPt]);
     const forced = await run(b.deps, { force: true });
     assert.equal(forced.outcome.captions?.ok, true);
+    assert.equal(forced.outcome.captions?.updated, true);
+    assert.equal(forced.outcome.captions?.captionId, "std1");
+    assert.ok(!b.calls.some((c) => c.method === "POST" && c.url.startsWith(YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT)), "nada de captions.insert");
   });
 
   it("captions.list falha: exit 1, nada enviado, o retry leva o --video-id", async () => {
