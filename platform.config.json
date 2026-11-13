@@ -132,7 +132,7 @@
     "_comment": "#12541 item 2 (11/11/2026): namespace KV `diaria-ops-state`, criado por API para sinais operacionais entre máquinas fora do arquivo replicado em data/. 1º uso: `short-related:{AAMMDD}` (registro do vínculo do vídeo relacionado do Short; o Neo grava por scripts/short-related-kv-publish.ts, o alarme do 300 lê). Sem binding em Worker: só a API REST com CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_WORKERS_TOKEN. Lógica em scripts/lib/diaria/short-related-kv.ts. 2º uso (#12841): `brevo-rate:email-campaigns`, o contador da cota horária da Brevo (G5), escrito por scripts/lib/brevo-rate-state.ts em qualquer máquina, com data/brevo-rate-state.json como cache local."
   },
   "d1_locks": {
-    "database_id": null,
+    "database_id": "f935c033-6fa4-422b-9c3b-b24186b3afba",
     "database_name": "diaria-locks",
     "enabled": true,
     "_comment": "#12842 (G2a): locks entre máquinas no D1 — merge lock por repo, marca de consumo da concessão de merge e edition-lock — numa tabela `locks` com TTL e escrita condicional, via REST sem Worker (scripts/lib/d1-locks.ts; hooks em .claude/hooks/lib/d1-locks.mjs). database_id null = não provisionado: tudo segue no lock local de data/, como antes. Provisionar com `npx tsx scripts/d1-locks-setup.ts` (cria o banco e a tabela e roda o teste mínimo) e gravar o id aqui. Token: CLOUDFLARE_D1_TOKEN (permissão D1 Edit) ou, na falta, CLOUDFLARE_API_TOKEN. Opt-out de emergência: DIARIA_D1_LOCKS=off."
