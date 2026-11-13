@@ -65,6 +65,27 @@ import {
 /** Peça do banco → corte do `publish-shorts.ts` que a publica. */
 export const PECA_CORTE: Readonly<Record<string, string>> = { "vertical-2": VERTICAL2_CORTE_SLUG };
 
+/**
+ * Prefixo da peça dos cortes extras da montagem (#12934): o corte `nvidia`
+ * vira a peça `corte-nvidia`, publicada pelo corte `nvidia-{edição}`.
+ */
+export const PECA_CORTE_EXTRA_PREFIX = "corte-";
+
+/** Puro: peça do banco de um corte da montagem (`guia` = `vertical-2`, os outros `corte-{corte}`). */
+export function pecaDoCorte(corte: string): string {
+  for (const [peca, c] of Object.entries(PECA_CORTE)) if (c === corte) return peca;
+  return `${PECA_CORTE_EXTRA_PREFIX}${corte}`;
+}
+
+/** Puro: corte que publica a peça; null se a peça não sai pelo modo corte. */
+export function corteDaPeca(peca: string): string | null {
+  if (peca in PECA_CORTE) return PECA_CORTE[peca];
+  if (peca.startsWith(PECA_CORTE_EXTRA_PREFIX) && peca.length > PECA_CORTE_EXTRA_PREFIX.length) {
+    return peca.slice(PECA_CORTE_EXTRA_PREFIX.length);
+  }
+  return null;
+}
+
 export type LeituraDestino =
   /** Relido na plataforma e no ar. */
   | { destino: string; status: "publicado"; fonte: string; url?: string }
@@ -100,12 +121,12 @@ export interface VerificacaoItem {
 
 /** Puro: itens que o `verificar` relê (estado `agendado` e peça com corte conhecido). */
 export function itensVerificaveis(banco: AgendamentosBanco, id?: string): AgendamentoItem[] {
-  return banco.itens.filter((it) => it.estado === "agendado" && it.peca in PECA_CORTE && (id === undefined || it.id === id));
+  return banco.itens.filter((it) => it.estado === "agendado" && corteDaPeca(it.peca) !== null && (id === undefined || it.id === id));
 }
 
 /** Puro: pasta do corte que publica o item (`data/cortes/{corte}-{edição}`), relativa à raiz. */
 export function corteDirDoItem(item: Pick<AgendamentoItem, "peca" | "edicao">): string {
-  const corte = PECA_CORTE[item.peca];
+  const corte = corteDaPeca(item.peca);
   if (!corte) throw new Error(`peça sem corte conhecido: ${item.peca}`);
   return corteRelDir(extraVerticalSlug(corte, item.edicao));
 }

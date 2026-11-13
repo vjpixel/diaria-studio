@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { isAggregator } from "./lib/aggregators";
 import { isEditoriallyBlocked } from "./lib/editorial-blocklist.ts";
 import { isUrlBlocked } from "./lib/url-blocklist.ts";
+import { isMinorRelease } from "./lib/minor-release-blocklist.ts";
 import { extractVersionedProducts } from "./lib/same-fact-check.ts";
 import { matchProductVersionStory, hasStorySecondSignal } from "./lib/product-version-story.ts"; // #11576
 import { CONFIG } from "./lib/config.ts";
@@ -229,6 +230,7 @@ export function dedup(
   let pass0Rejected = 0;
   let pass0Editorial = 0;
   let pass0Url = 0;
+  let pass0MinorRelease = 0;
   for (const art of articles) {
     if (isAggregator(art.url)) {
       pushRemoved(removed, art, "agregador/roundup bloqueado (use fonte primária)");
@@ -241,6 +243,11 @@ export function dedup(
       // #4340: artigo específico que o editor decidiu não incluir (fonte continua válida).
       pushRemoved(removed, art, "artigo em blacklist por URL (#4340)");
       pass0Url++;
+    } else if (art.flag !== "editor_submitted" && isMinorRelease(art.url)) {
+      // #12933: release menor (patch/pré-release) de repo de ritmo diário
+      // (ex: anthropics/claude-code v2.1.323). Submissão do editor fica.
+      pushRemoved(removed, art, "release menor em blacklist editorial (#12933)");
+      pass0MinorRelease++;
     } else {
       afterPass0.push(art);
     }
@@ -253,6 +260,9 @@ export function dedup(
   }
   if (pass0Url > 0) {
     console.error(`dedup Pass-0: ${pass0Url} URL(s) em blacklist por artigo rejeitadas (#4340)`);
+  }
+  if (pass0MinorRelease > 0) {
+    console.error(`dedup Pass-0: ${pass0MinorRelease} release(s) menor(es) em blacklist editorial rejeitadas (#12933)`);
   }
 
   // ---- Pass 1: dedup against past editions (URL only) --------------------
