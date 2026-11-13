@@ -3024,6 +3024,22 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#8530",
   },
   {
+    name: "Diaria-Stuck-Approved-Pr-Alarm",
+    description:
+      "alarme de PR com review approve e CI verde aberta ha mais de 4h sem merge, independente de escalada (#12950 item 5)",
+    steps: [{ key: "check", script: "scripts/stuck-approved-pr-alarm.ts" }],
+    logPath: "stuck-approved-pr-alarm/.alarm.log",
+    // A cada 2h, mesma cadencia do Diaria-Stale-Red-Pr-Alarm (irmao, CI
+    // vermelho): com limiar de 4h, a PR parada aparece entre 4h e 6h.
+    // Sem estado local (reavalia o conjunto de PRs abertas a cada run).
+    schedule: { kind: "interval", hours: 2 },
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina das entradas acima) -- armar via
+    // `scripts/setup-systemd-timers.ts --task Diaria-Stuck-Approved-Pr-Alarm`
+    // na checkout compartilhada (`300`) e acao POSTERIOR.
+    issue: "#12950",
+  },
+  {
     name: "Diaria-Openrouter-Billing-Leak-Alarm",
     description: "alarme diario de modelo pago nao pedido faturado no gateway OpenRouter (#6716 escopo 3)",
     steps: [{ key: "check", script: "scripts/openrouter-billing-leak-check.ts" }],

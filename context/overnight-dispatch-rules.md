@@ -1135,7 +1135,11 @@ Três vereditos exclusivos:
   Antes de esperar por ela, aplicar o checklist de 3 perguntas do item 16
   acima (autor conhecido? CI verde/rodando? atualizada nas últimas
   ~24-48h?) — as 3 juntas justificam esperar; falhando qualquer uma, tratar
-  como se a PR não existisse e avaliar implementação independente.
+  como se a PR não existisse e avaliar implementação independente. Esperar
+  não deixa a PR órfã (#12950 item 3): o JSON traz `orphanAction`
+  (`merge-via-gate2`, `despachar-fixer`, `aguardar-ci`, `editor`) e a rodada
+  que pula a issue como `pr-em-voo` executa essa ação (passo 4 da Fase 0 do
+  `/diaria-overnight`).
 - **`cannot-verify`** (exit 2) — `gh` indisponível, sem auth, JSON
   malformado ou rate limit. **Regra inegociável desta issue:** isto NUNCA
   vira `no-open-pr` — transformaria uma falha de consulta em sinal verde e

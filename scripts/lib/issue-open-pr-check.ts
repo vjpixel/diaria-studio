@@ -77,7 +77,7 @@ export type OpenPrCiState = "green" | "pending" | "failing" | "unknown";
 export type OpenPrCheckRunLike = PrCheckNode;
 
 /** Uma PR aberta, no shape mínimo que `gh pr list --json
- * number,title,body,headRefName,author,updatedAt,statusCheckRollup`
+ * number,title,body,headRefName,author,updatedAt,statusCheckRollup,isDraft,labels`
  * produz. */
 export interface OpenPrInfo {
   number: number;
@@ -88,6 +88,9 @@ export interface OpenPrInfo {
   /** ISO 8601. */
   updatedAt: string;
   statusCheckRollup?: OpenPrCheckRunLike[] | null;
+  /** #12950 item 3: opcionais para o payload antigo seguir válido. */
+  isDraft?: boolean;
+  labels?: { name: string }[] | null;
 }
 
 /** `unknown` (sinal fraco, só citação em prosa) < `branch-pattern` <
@@ -102,6 +105,41 @@ export interface OpenPrMatch {
   updatedAt: string;
   ciState: OpenPrCiState;
   matchKind: OpenPrMatchKind;
+  isDraft: boolean;
+  labels: string[];
+}
+
+/**
+ * #12950 item 3: o que a rodada que PULA a issue (`pr-em-voo`) faz com a PR
+ * que a cobre, para ela não ficar órfã. Antes, overnight/develop pulavam a
+ * issue e ninguém assumia a PR: #12896/#12897 (aprovadas, CI verde) e
+ * #12880 (CI vermelho) ficaram 1-2 dias paradas enquanto a rodada seguinte
+ * as citava como `pr-em-voo`.
+ *
+ * - `merge-via-gate2`: CI verde, sem draft nem retenção. A rodada passa a PR
+ *   pelos gates de merge (review independente, CI, retenção, caminho
+ *   sensível) e mergeia se passar. "Aprovada" é decidido por esses gates,
+ *   não aqui: o payload de `gh pr list` não traz o veredito do review.
+ * - `despachar-fixer`: CI vermelho. A rodada despacha o fixer no branch da PR.
+ * - `aguardar-ci`: CI pendente ou ilegível. Reavaliar no próximo re-scan;
+ *   nunca vira bloqueio definitivo.
+ * - `editor`: draft, `bloqueio-execucao`, `retido-para-editor`, ou branch
+ *   fora das lanes autônomas (`overnight/`, `develop/`, `continuo/`): PR
+ *   manual do editor ou bloqueio deliberado. A rodada não a toca.
+ */
+export type OrphanPrAction = "merge-via-gate2" | "despachar-fixer" | "aguardar-ci" | "editor";
+
+const EDITOR_HOLD_LABELS = new Set(["bloqueio-execucao", "retido-para-editor"]);
+const AUTONOMOUS_LANE_RE = /^(?:overnight|develop|continuo)\//;
+
+export function orphanPrAction(
+  match: Pick<OpenPrMatch, "ciState" | "isDraft" | "labels" | "headRefName">,
+): OrphanPrAction {
+  if (!AUTONOMOUS_LANE_RE.test(match.headRefName)) return "editor";
+  if (match.isDraft || match.labels.some((l) => EDITOR_HOLD_LABELS.has(l))) return "editor";
+  if (match.ciState === "failing") return "despachar-fixer";
+  if (match.ciState === "green") return "merge-via-gate2";
+  return "aguardar-ci";
 }
 
 export type OpenPrCheckVerdict = "no-open-pr" | "open-pr-covers-scope" | "cannot-verify";
@@ -116,6 +154,8 @@ export interface OpenPrCheckResult {
   matches: OpenPrMatch[];
   /** Só presente quando `verdict === "cannot-verify"`. */
   error?: string;
+  /** #12950 item 3: só com `open-pr-covers-scope`; ação para a PR do topo. */
+  orphanAction?: OrphanPrAction;
   recommendation: string;
 }
 
@@ -233,6 +273,10 @@ export function assessOpenPrCoverage(
       updatedAt: pr.updatedAt ?? "",
       ciState: deriveOpenPrCiState(pr.statusCheckRollup),
       matchKind,
+      isDraft: pr.isDraft === true,
+      labels: Array.isArray(pr.labels)
+        ? pr.labels.map((l) => (l && typeof l.name === "string" ? l.name : "")).filter((n) => n !== "")
+        : [],
     });
   }
 
@@ -246,16 +290,19 @@ export function assessOpenPrCoverage(
 
   if (coveringMatches.length > 0) {
     const top = coveringMatches[0];
+    const orphanAction = orphanPrAction(top);
     return {
       verdict: "open-pr-covers-scope",
       issueNumber,
       matches,
+      orphanAction,
       recommendation:
         `PR #${top.number} (branch ${top.headRefName}, autor ${top.author ?? "desconhecido"}, ` +
         `CI ${top.ciState}, atualizada ${top.updatedAt || "data desconhecida"}) parece cobrir #${issueNumber} ` +
         `(match: ${top.matchKind}). Antes de dispatchar, aplicar o checklist de 3 perguntas do item 16 de ` +
         `context/overnight-dispatch-rules.md (autor conhecido? CI verde/rodando? atualizada nas últimas ` +
-        `~24-48h?) — as 3 juntas justificam esperar; falhando qualquer uma, tratar como se a PR não existisse.`,
+        `~24-48h?) — as 3 juntas justificam esperar; falhando qualquer uma, tratar como se a PR não existisse. ` +
+        `Se a issue for pulada como pr-em-voo, a PR não fica órfã (#12950): ação ${orphanAction}.`,
     };
   }
 

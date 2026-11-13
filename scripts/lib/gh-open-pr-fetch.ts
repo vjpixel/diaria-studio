@@ -51,7 +51,8 @@ const defaultRunner: CommandRunner = (cmd, args, opts) => {
   return { status: r.status, stdout: r.stdout ?? "", stderr: (r.stderr ?? "").toString(), error: r.error };
 };
 
-const JSON_FIELDS = "number,title,body,headRefName,author,updatedAt,statusCheckRollup";
+// #12950 item 3: `isDraft`/`labels` alimentam `orphanPrAction`.
+const JSON_FIELDS = "number,title,body,headRefName,author,updatedAt,statusCheckRollup,isDraft,labels";
 
 /**
  * Busca todas as PRs abertas do repo (limite alto — 300 — porque este
