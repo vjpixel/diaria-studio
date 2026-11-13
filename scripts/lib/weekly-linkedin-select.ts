@@ -213,6 +213,61 @@ export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadli
   const excluded = deduped.filter((c) => c.excluded);
   const eligible = deduped.filter((c) => !c.excluded && c.kind === "destaque").sort(byRateDescThenTitle);
 
+  const { selected, pendingGroup, warnings } = fillSlotsWithNoiseRule(eligible, maxHeadlines);
+
+  if (maxHeadlines < 3) {
+    warnings.push(`Semana com ${maxHeadlines} edição(ões) disponível(is) — reduzindo pra ${maxHeadlines} manchete(s) em vez de 3.`);
+  }
+  // Shortfall REAL (candidatos elegíveis esgotados) é distinto de
+  // pendingGroup (decisão pendente, não falta de candidato) — só emite este
+  // warning quando a razão de `selected.length < maxHeadlines` não é uma
+  // escolha aguardando o editor.
+  if (pendingGroup === null && selected.length < maxHeadlines) {
+    const useMelhorSkipped = deduped.filter((c) => !c.excluded && c.section === "use_melhor").length;
+    const commercialSkipped = excluded.length;
+    // #8029: itens de seção que não são use_melhor (RADAR/LANÇAMENTOS/VÍDEOS)
+    // também nunca competem por manchete — contados à parte pra não sumir do
+    // shortfall como se não existissem candidatos nenhum pra essas seções.
+    const nonHeadlineSectionSkipped = deduped.filter((c) => !c.excluded && c.kind === "section" && c.section !== "use_melhor").length;
+    warnings.push(
+      `Só ${selected.length}/${maxHeadlines} candidatos elegíveis encontrados ` +
+        `(${commercialSkipped} excluído(s) por comercial/própria, ${useMelhorSkipped} reservado(s) pro bloco Use Melhor` +
+        (nonHeadlineSectionSkipped > 0
+          ? `, ${nonHeadlineSectionSkipped} de seção (RADAR/LANÇAMENTOS/VÍDEOS) não competem mais por manchete, #8029`
+          : "") +
+        `).`,
+    );
+  }
+
+  return {
+    selected,
+    pendingGroup,
+    pendingSlots: pendingGroup ? maxHeadlines - selected.length : 0,
+    headlineEligible: eligible,
+    excluded,
+    warnings,
+  };
+}
+
+/**
+ * Regra de preenchimento de vagas por clique (#5109 + #8817), extraída de
+ * `selectHeadlines` no #13022 pra servir de regra ÚNICA do ranking
+ * compartilhado do pacote semanal (`weekly-shared-ranking.ts`): o recorte do
+ * LinkedIn e o do carrossel `clicked` chamam esta mesma função, cada um sobre
+ * o seu pool. Pure. `eligible` já vem filtrado e ordenado por
+ * `byRateDescThenTitle`.
+ *
+ *   - Fora da banda de ruído de 1 clique, a taxa decide sozinha.
+ *   - Banda que cabe inteira nas vagas restantes: todos entram.
+ *   - Banda maior que as vagas: se os candidatos de dia ainda sem item cabem
+ *     EXATAMENTE nas vagas, entram (#8817); senão a banda inteira vira
+ *     `pendingGroup` e a escolha é do editor (#5109).
+ */
+export function fillSlotsWithNoiseRule(
+  eligible: WeeklyRankedCandidate[],
+  maxSlots: number,
+): { selected: WeeklyRankedCandidate[]; pendingGroup: WeeklyRankedCandidate[] | null; warnings: string[] } {
+  const maxHeadlines = maxSlots;
   const selected: WeeklyRankedCandidate[] = [];
   const warnings: string[] = [];
   let remaining = eligible;
@@ -283,38 +338,7 @@ export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadli
     remaining = remaining.filter((c) => !tiedGroupSet.has(c));
   }
 
-  if (maxHeadlines < 3) {
-    warnings.push(`Semana com ${maxHeadlines} edição(ões) disponível(is) — reduzindo pra ${maxHeadlines} manchete(s) em vez de 3.`);
-  }
-  // Shortfall REAL (candidatos elegíveis esgotados) é distinto de
-  // pendingGroup (decisão pendente, não falta de candidato) — só emite este
-  // warning quando a razão de `selected.length < maxHeadlines` não é uma
-  // escolha aguardando o editor.
-  if (pendingGroup === null && selected.length < maxHeadlines) {
-    const useMelhorSkipped = deduped.filter((c) => !c.excluded && c.section === "use_melhor").length;
-    const commercialSkipped = excluded.length;
-    // #8029: itens de seção que não são use_melhor (RADAR/LANÇAMENTOS/VÍDEOS)
-    // também nunca competem por manchete — contados à parte pra não sumir do
-    // shortfall como se não existissem candidatos nenhum pra essas seções.
-    const nonHeadlineSectionSkipped = deduped.filter((c) => !c.excluded && c.kind === "section" && c.section !== "use_melhor").length;
-    warnings.push(
-      `Só ${selected.length}/${maxHeadlines} candidatos elegíveis encontrados ` +
-        `(${commercialSkipped} excluído(s) por comercial/própria, ${useMelhorSkipped} reservado(s) pro bloco Use Melhor` +
-        (nonHeadlineSectionSkipped > 0
-          ? `, ${nonHeadlineSectionSkipped} de seção (RADAR/LANÇAMENTOS/VÍDEOS) não competem mais por manchete, #8029`
-          : "") +
-        `).`,
-    );
-  }
-
-  return {
-    selected,
-    pendingGroup,
-    pendingSlots: pendingGroup ? maxHeadlines - selected.length : 0,
-    headlineEligible: eligible,
-    excluded,
-    warnings,
-  };
+  return { selected, pendingGroup, warnings };
 }
 
 /**

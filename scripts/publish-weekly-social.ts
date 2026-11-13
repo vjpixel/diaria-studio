@@ -64,7 +64,7 @@
  *     [--no-skip-existing] [--force-incomplete-week]
  *     [--force-incomplete-click-data] [--manifest-only]
  *     [--force-urls url1,url2,...] [--force-font-size N]
- *     [--show-ranking] [--check-slot] [--reschedule]
+ *     [--show-ranking] [--check-slot] [--reschedule] [--shared-selection PATH]
  *
  * `--reschedule` (#12375, exige `--schedule` e um modo só): muda o horário de
  * um carrossel JÁ agendado. Cancela as entradas `scheduled` do modo (fila do
@@ -139,6 +139,19 @@
  * e discorda do desempate por ruído (`withinClickNoise`/
  * `editorialTiebreakScore`) da seleção automática pra esta rodada.
  *
+ * `--shared-selection PATH` (#13022, `/diaria-pacote-semanal`): o modo
+ * `clicked` usa o recorte `clicked` de `shared-selection.json`
+ * (`weekly-shared-selection.ts`, ranking único com o LinkedIn semanal) no
+ * lugar de `selectInstagramWeekly`; `highlights` ignora a flag (compõe com
+ * `--mode both`). Mesma validação de pool do `--force-urls`, com o qual é
+ * excludente. A intro "mais lidas" só vira a neutra quando houve troca no
+ * gate. Sem a flag, nada muda. Com `--schedule`, sai com exit 2 se o
+ * replay da seleção (cache de agora + decisões gravadas) der outra seleção
+ * (kit-sync depois do gate que mexeu nos itens; taxa que mudou sem mexer na
+ * seleção é só aviso), se as URLs não baterem com o hash da aprovação, ou se o empate do clicked
+ * ainda for só sugestão — esta última só passa com `--allow-suggested-ties`,
+ * que o pacote usa apenas no caminho `--no-gates`.
+ *
  * `--force-incomplete-week`: se menos de `WEEKLY_MIN_ITEMS` itens forem
  * selecionados (pool insuficiente de candidatos elegíveis — poucas edições
  * na semana e/ou muita exclusão comercial), o script imprime um aviso
@@ -202,6 +215,7 @@ import {
   type InstagramRankedCandidate,
 } from "./lib/weekly-instagram-select.ts";
 import { checkWeeklySlot, formatSlotAdvice } from "./lib/weekly-slot-check.ts";
+import { buildSharedCandidates, checkSharedFileForProduct, validateOverrides } from "./lib/weekly-shared-ranking.ts";
 import {
   filterPublicEditionsWithWarning,
   loadBeehiivCache as loadUnifiedBeehiivCache,
@@ -935,6 +949,13 @@ export async function main(
     }
   }
 
+  // #13022: duas seleções explícitas ao mesmo tempo não têm leitura única.
+  if ((values["force-urls"] != null || flags.has("force-urls")) && (values["shared-selection"] != null || flags.has("shared-selection"))) {
+    console.error("ERRO: --force-urls e --shared-selection são excludentes (no pacote semanal, troque o item no gate: weekly-shared-selection.ts --swap).");
+    process.exit(1);
+    return;
+  }
+
   if (modeArg === "both") {
     if (values["day-offset"] != null) {
       console.error(
@@ -1119,6 +1140,83 @@ function runCheckSlot(modeArg: string, saturday: string, values: Record<string, 
  * saíam com código 0 antes do #5349 (preview sem `--schedule`, nenhum
  * candidato na semana, `--manifest-only`, skip-existing).
  */
+/**
+ * Casa URLs (ordem preservada) contra os candidatos ELEGÍVEIS da semana —
+ * `--force-urls` (#5903) e `--shared-selection` (#13022). Casar contra
+ * `ranked` cru deixaria passar URL comercial/afiliada/própria (#5905 fleet
+ * review ALTO): ela é recusada pela mesma exclusão da seleção automática.
+ * `null` = erro já impresso no stderr.
+ */
+export function resolveUrlsAgainstEligiblePool(
+  ranked: InstagramRankedCandidate[],
+  wantedUrls: string[],
+  label: string,
+): InstagramRankedCandidate[] | null {
+  const eligible = ranked.filter((c) => !c.excluded);
+  const byNormUrl = new Map(eligible.map((c) => [normalizeUrl(c.url), c] as const));
+  const excludedByNormUrl = new Map(ranked.filter((c) => c.excluded).map((c) => [normalizeUrl(c.url), c] as const));
+  const forced: InstagramRankedCandidate[] = [];
+  const notFound: string[] = [];
+  const commercial: string[] = [];
+  for (const u of wantedUrls) {
+    const c = byNormUrl.get(normalizeUrl(u));
+    if (c) {
+      forced.push(c);
+    } else if (excludedByNormUrl.has(normalizeUrl(u))) {
+      commercial.push(u);
+    } else {
+      notFound.push(u);
+    }
+  }
+  if (commercial.length > 0) {
+    console.error(
+      `ERRO: ${label} contém URL(s) comercial/afiliada/própria (bloqueada pela mesma exclusão da seleção automática): ${commercial.join(", ")}`,
+    );
+    return null;
+  }
+  if (notFound.length > 0) {
+    console.error(`ERRO: ${label} contém URL(s) fora do pool de candidatos elegíveis da semana: ${notFound.join(", ")}`);
+    return null;
+  }
+  return forced;
+}
+
+/**
+ * #13022: lê o recorte `clicked` de `shared-selection.json`
+ * (`weekly-shared-selection.ts`). Recusa arquivo de outro sábado, ilegível ou
+ * sem `clicked.urls`.
+ */
+export function readSharedClickedSelection(
+  path: string,
+  saturday: string,
+):
+  | { urls: string[]; manual: boolean; warnings: string[]; file: Parameters<typeof checkSharedFileForProduct>[1] }
+  | { error: string } {
+  if (!existsSync(path)) return { error: `${path} não existe — rode weekly-shared-selection.ts antes.` };
+  let shared: any;
+  try {
+    shared = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e: any) {
+    return { error: `${path} ilegível: ${e.message}` };
+  }
+  if (shared?.version !== 1 || !Array.isArray(shared.clicked?.urls) || !Array.isArray(shared.linkedin?.urls) || !Array.isArray(shared.ranking)) {
+    return { error: `${path} não é uma seleção compartilhada válida (version 1, com clicked, linkedin e ranking).` };
+  }
+  if (shared.saturday !== saturday) return { error: `${path} é do sábado ${shared.saturday}, não de ${saturday}.` };
+  const badOverrides = validateOverrides(shared.overrides);
+  if (badOverrides) return { error: `${path}: ${badOverrides} — re-rode weekly-shared-selection.ts (--reset-overrides).` };
+  const resolved = shared.clicked.pending?.resolution === "editor";
+  // Empate já escolhido pelo editor: o aviso de "escolha manual necessária"
+  // não vale mais (mesmo filtro do select-linkedin-weekly.ts).
+  const warnings: string[] = (shared.clicked.warnings ?? []).filter(
+    (w: string) => !resolved || !w.includes("escolha manual necessária no gate"),
+  );
+  if (shared.clicked.pending && !resolved) {
+    warnings.push("Empate (#5109) do clicked ainda com a SUGESTÃO do pacote (desempate editorial) — confirme ou troque no gate consolidado.");
+  }
+  return { urls: shared.clicked.urls, manual: Boolean(shared.clicked.manual), warnings, file: shared };
+}
+
 async function runOneMode(
   mode: WeeklyInstagramMode,
   saturday: string,
@@ -1300,42 +1398,67 @@ async function runOneMode(
   const forceUrlsArg = values["force-urls"];
   if (forceUrlsArg) {
     const wantedUrls = [...new Set(forceUrlsArg.split(",").map((u) => u.trim()).filter(Boolean))];
-    // #5905 fleet review ALTO: casar contra `ranked` (não-filtrado) deixava
-    // uma URL comercial/afiliada/própria passar direto — `ranked` inclui
-    // candidatos com `excluded: true`, que `selectInstagramWeekly` descarta
-    // ANTES de competir. Casar só contra os elegíveis reusa a mesma exclusão.
-    const eligible = ranked.filter((c) => !c.excluded);
-    const byNormUrl = new Map(eligible.map((c) => [normalizeUrl(c.url), c] as const));
-    const excludedByNormUrl = new Map(ranked.filter((c) => c.excluded).map((c) => [normalizeUrl(c.url), c] as const));
-    const forced: InstagramRankedCandidate[] = [];
-    const notFound: string[] = [];
-    const commercial: string[] = [];
-    for (const u of wantedUrls) {
-      const c = byNormUrl.get(normalizeUrl(u));
-      if (c) {
-        forced.push(c);
-      } else if (excludedByNormUrl.has(normalizeUrl(u))) {
-        commercial.push(u);
-      } else {
-        notFound.push(u);
-      }
-    }
-    if (commercial.length > 0) {
-      console.error(
-        `ERRO: --force-urls contém URL(s) comercial/afiliada/própria (bloqueada pela mesma exclusão da seleção automática): ${commercial.join(", ")}`,
-      );
-      return false;
-    }
-    if (notFound.length > 0) {
-      console.error(
-        `ERRO: --force-urls contém URL(s) fora do pool de candidatos elegíveis da semana: ${notFound.join(", ")}`,
-      );
-      return false;
-    }
+    const forced = resolveUrlsAgainstEligiblePool(ranked, wantedUrls, "--force-urls");
+    if (!forced) return false;
     items = forced;
     manualOverride = true;
     selectionWarnings = [
       `SELEÇÃO MANUAL (--force-urls): ${forced.length} item(ns) escolhidos explicitamente pelo editor, substituindo a seleção algorítmica.`,
+    ];
+  }
+
+  // #13022: `--shared-selection` (pacote semanal) — o carrossel clicked usa
+  // o recorte `clicked` do ranking compartilhado com o LinkedIn
+  // (`weekly-shared-selection.ts`). Mesma validação de pool do --force-urls;
+  // a intro "mais lidas" só troca pela neutra quando houve troca no gate
+  // (`clicked.manual`), porque sem ela a ordem ainda é a do clique.
+  let sharedOverride = false;
+  if (flags.has("shared-selection")) {
+    console.error("ERRO: --shared-selection foi passado sem valor (caminho do shared-selection.json).");
+    return false;
+  }
+  const sharedSelectionArg = values["shared-selection"];
+  if (sharedSelectionArg && mode === "highlights") {
+    console.log("[publish-weekly-social] --shared-selection ignorado no modo highlights (os D1 da semana não vêm do ranking).");
+  } else if (sharedSelectionArg) {
+    const shared = readSharedClickedSelection(sharedSelectionArg, saturday);
+    if ("error" in shared) {
+      console.error(`ERRO: --shared-selection inválido: ${shared.error}`);
+      return false;
+    }
+    // Revisão da PR #13026: refaz a seleção com o cache de agora e as decisões
+    // gravadas. Se ela mudou (ou o hash da aprovação não bate), ou se o empate
+    // do clicked não foi decidido, agendar publicaria o que o editor não viu:
+    // exit 2. Taxa que mudou sem mudar a seleção é só aviso. Na prévia, tudo avisa.
+    const sharedCandidates = buildSharedCandidates(
+      existingCandidates.map((c) => ({ date: c.date, md: readFileSync(resolve(c.dir, "02-reviewed.md"), "utf8") })),
+      windowPostsUnified,
+    );
+    const check = checkSharedFileForProduct("clicked", shared.file, {
+      editionsFound: existingCandidates.map((c) => c.date),
+      candidates: sharedCandidates,
+    });
+    const blockers = [
+      ...check.blocking.map((d) => `seleção compartilhada desatualizada: ${d}`),
+      ...(check.pendingUnresolved && !flags.has("allow-suggested-ties")
+        ? ["empate (#5109) do clicked ainda só com a sugestão — confirme no gate (weekly-shared-selection.ts --confirm-suggestions) ou, só no caminho --no-gates, passe --allow-suggested-ties"]
+        : []),
+    ];
+    if (blockers.length > 0 && doSchedule) {
+      console.error(`ERRO: --shared-selection recusado no --schedule:\n  - ${blockers.join("\n  - ")}`);
+      process.exit(2);
+      return false;
+    }
+    const resolved = resolveUrlsAgainstEligiblePool(ranked, shared.urls, "--shared-selection");
+    if (!resolved) return false;
+    items = resolved;
+    sharedOverride = true;
+    manualOverride = shared.manual;
+    selectionWarnings = [
+      `SELEÇÃO COMPARTILHADA (#13022, ${sharedSelectionArg}): ${resolved.length} item(ns) do ranking único do pacote semanal${shared.manual ? ", com troca feita no gate" : ""}.`,
+      ...shared.warnings,
+      ...check.warnings,
+      ...blockers.map((b) => `Antes do --schedule: ${b}.`),
     ];
   }
 
@@ -1462,13 +1585,13 @@ async function runOneMode(
   // #10388: grupo de cada empate (vencedor + quem perdeu a vaga) sempre no
   // `clicked` algorítmico; ranking completo sob `--show-ranking`. Com
   // `--force-urls` a seleção não vem do ranking, então nada disso se aplica.
-  if (mode === "clicked" && !manualOverride) {
+  if (mode === "clicked" && !manualOverride && !sharedOverride) {
     const tieLines = formatTieGroupsForPreview(selection.ties);
     if (tieLines.length > 0) console.log(`\n${tieLines.join("\n")}`);
     if (flags.has("show-ranking")) console.log(`\n${formatRankingForPreview(selection).join("\n")}`);
   } else if (flags.has("show-ranking")) {
     console.log(
-      `\n[publish-weekly-social] --show-ranking ignorado no modo ${mode}${manualOverride ? " com --force-urls" : ""} (só vale na seleção por clique).`,
+      `\n[publish-weekly-social] --show-ranking ignorado no modo ${mode}${sharedOverride ? " com --shared-selection" : manualOverride ? " com --force-urls" : ""} (só vale na seleção por clique própria).`,
     );
   }
 
