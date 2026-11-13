@@ -36,7 +36,9 @@
  *   - escrita: grava o arquivo (síncrono, como antes) e manda o mesmo estado
  *     ao KV em segundo plano (`recordCampaignQuotaRemaining` nunca espera a
  *     rede; falha vira um aviso único em stderr). "Último valor vence": o
- *     valor vem do header da própria Brevo.
+ *     valor vem do header da própria Brevo, e antes do PUT o valor do KV é
+ *     relido para que uma observação mais velha não apague a mais nova de
+ *     outra máquina (#12895, `shouldPushCampaignQuotaState`).
  *   - leitura: quem vai decidir por cota chama antes
  *     `await refreshCampaignQuotaStateFromKv()`, que traz a observação do KV
  *     para o arquivo quando ela é mais nova que a local (o leitor de cada
@@ -192,6 +194,26 @@ export function pickNewerCampaignQuotaState(
   return r > l ? remote : local;
 }
 
+/**
+ * #12895: decide se a observação local vai ao KV. Só não vai quando o KV já
+ * guarda uma observação estritamente mais nova (de outra máquina, ou de um PUT
+ * que chegou antes): sem isto, o PUT atrasado de uma máquina apagava o
+ * `remaining` menor que outra gravou depois e a cota ficava subcontada.
+ * Empate, KV vazio ou ilegível → grava.
+ *
+ * Premissa: o KV da Cloudflare é eventualmente consistente e não tem
+ * compare-and-swap no REST, então a leitura antes do PUT REDUZ a janela da
+ * corrida, não a elimina (duas máquinas que leem antes de qualquer uma gravar
+ * ainda podem se sobrepor). O pior caso continua sendo um 429 numa varredura
+ * read-only, nunca um bloqueio de envio.
+ */
+export function shouldPushCampaignQuotaState(
+  local: BrevoCampaignQuotaState,
+  remote: BrevoCampaignQuotaState | null,
+): boolean {
+  return pickNewerCampaignQuotaState(local, remote) === local;
+}
+
 /** Resolve o backend KV a partir de `platform.config.json` + ambiente. `null` = só arquivo. */
 export function resolveCampaignQuotaKvOps(
   platformConfig: unknown,
@@ -280,6 +302,16 @@ function startCampaignQuotaKvPump(): void {
       kvPending = null;
       const ops = getCampaignQuotaKvOps();
       if (!ops) return;
+      // #12895: compara com o que já está no KV antes de gravar.
+      let remote: BrevoCampaignQuotaState | null = null;
+      try {
+        remote = parseCampaignQuotaState(await ops.get(BREVO_RATE_KV_KEY));
+      } catch {
+        // Leitura falhou: grava às cegas, como antes do #12895. Se o KV está
+        // fora do ar o PUT também falha e é ele quem avisa (aviso único).
+        remote = null;
+      }
+      if (!shouldPushCampaignQuotaState(next, remote)) continue;
       try {
         await ops.put(BREVO_RATE_KV_KEY, JSON.stringify(next));
       } catch (e) {

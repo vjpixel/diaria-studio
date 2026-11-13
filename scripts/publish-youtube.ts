@@ -188,7 +188,7 @@ import {
   type PodcastPlaylistResult,
 } from "./lib/diaria/youtube-podcast-playlist.ts";
 import { logEvent, type RunLogEvent } from "./lib/run-log.ts";
-import { d1SocialSlotAt, videoLinkEligibility } from "./lib/diaria/youtube-video-link-gate.ts";
+import { d1SocialSlotAtFromConfig, videoLinkEligibility } from "./lib/diaria/youtube-video-link-gate.ts";
 import { coverPrerequisites } from "./lib/diaria/video-env-check.ts";
 import { clearPendingApproval, writePendingApproval } from "./lib/diaria/youtube-pending-approval.ts";
 import {
@@ -1301,7 +1301,7 @@ function loadD1SlotAt(aammdd: string): Date | null {
     const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")) as {
       publishing?: { social?: Record<string, unknown> };
     };
-    return d1SocialSlotAt(aammdd, cfg.publishing?.social ?? null, cfg);
+    return d1SocialSlotAtFromConfig(aammdd, cfg);
   } catch (e) {
     console.error(`[aviso] horário do D1 não derivado (${(e as Error).message}) — só vídeo público vira link no D1`);
     return null;

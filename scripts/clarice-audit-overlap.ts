@@ -42,7 +42,7 @@
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { assertCampaignQuotaHeadroom, fetchCampaignsByStatus, refreshCampaignQuotaStateFromKv } from "./lib/brevo-client.ts";
+import { assertCampaignQuotaHeadroom, exitAfterCampaignQuotaKvFlush, fetchCampaignsByStatus, refreshCampaignQuotaStateFromKv } from "./lib/brevo-client.ts"; // #12870
 import { findOverlappingListCampaigns, type ListOverlap } from "./lib/clarice-overlap.ts";
 
 loadProjectEnv();
@@ -92,6 +92,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error(`❌ ${err instanceof Error ? err.message : err}`);
-    process.exit(1);
+    return exitAfterCampaignQuotaKvFlush(1); // #12870: não perde o PUT da cota ao KV
   });
 }

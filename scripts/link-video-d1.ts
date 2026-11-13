@@ -83,7 +83,7 @@ import {
 } from "./lib/diaria/linkedin-page-actions.ts";
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import {
-  d1SocialSlotAt,
+  d1SocialSlotAtFromConfig,
   gateVideoLink,
   newsletterSendAt,
   readYouTubeRecordSummary,
@@ -99,7 +99,7 @@ import { refreshYouTubeRecordState, type RefreshOutcome } from "./lib/diaria/you
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** #12748: o config inteiro, para o horário do D1 já desviado do vertical (`d1SocialSlotAt`). */
+/** #12748: o config inteiro, para o horário do D1 já desviado do vertical (`d1SocialSlotAtFromConfig`, #12893). */
 function loadPlatformConfig(): { publishing?: { social?: Record<string, unknown> } } {
   return JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")) as {
     publishing?: { social?: Record<string, unknown> };
@@ -270,7 +270,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: LinkVid
     record,
     d1SlotAt: (() => {
       const cfg = loadPlatformConfig();
-      return d1SocialSlotAt(aammdd, cfg.publishing?.social ?? null, cfg);
+      return d1SocialSlotAtFromConfig(aammdd, cfg);
     })(),
     newsletterSendAt: send.at,
   });
