@@ -1848,6 +1848,7 @@ export default {
         endpoints: [
           "POST /queue (auth: X-Diaria-Token)",
           "DELETE /queue/:key (auth: X-Diaria-Token)",
+          "POST /queue-cancel/:key (auth: X-Diaria-Token) — cancelamento condicional (#12961)",
           "POST /rearm (auth: X-Diaria-Token) — re-arm DO alarms para items KV legacy",
           "POST /fire-now (auth: X-Diaria-Token)",
           "GET /health",
