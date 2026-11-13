@@ -7,7 +7,8 @@
  * Cenário central da issue: o token do projeto responde `10000
  * Authentication error` a `/subscriptions` (sem Account › Billing › Read).
  * O helper tem que sair com o aviso "token sem Billing:Read — não
- * verificado", exit != 0, e NUNCA afirmar plano.
+ * verificado", exit != 0, e NUNCA afirmar plano. Mesma regra para
+ * assinatura de Workers fora do padrão conhecido: nunca "Free por exclusão".
  */
 
 import { test } from "node:test";
@@ -15,8 +16,11 @@ import assert from "node:assert/strict";
 import {
   EXIT_ERROR,
   EXIT_NO_BILLING_PERMISSION,
+  EXIT_USAGE_UNVERIFIED,
   EXIT_VERIFIED,
+  EXIT_WORKERS_UNRECOGNIZED,
   KV_QUOTAS,
+  KV_USAGE_NO_DATA_DETAIL,
   NO_BILLING_PERMISSION_MESSAGE,
   buildPlanReport,
   classifyWorkersPlan,
@@ -27,6 +31,7 @@ import {
   renderPlanReport,
   summarizeKvUsage,
   type CfSubscription,
+  type PlanReport,
 } from "../scripts/lib/cloudflare-plan.ts";
 import { main } from "../scripts/cloudflare-plan.ts";
 
@@ -37,6 +42,12 @@ const AUTH_ERROR_BODY = {
   result: null,
 };
 
+/**
+ * Fixture SINTÉTICA: o formato e os nomes do rate plan foram escritos sem
+ * nenhuma resposta real de /subscriptions capturada (o token do projeto não
+ * tinha Billing:Read em 13/11/2026). Reconferir contra a saída real na 1ª
+ * execução com Billing:Read.
+ */
 const PAID_SUB: CfSubscription = {
   id: "sub1",
   state: "Paid",
@@ -47,6 +58,12 @@ const PAID_SUB: CfSubscription = {
 };
 
 const WINDOW = monthWindow(new Date("2026-11-13T12:00:00Z"));
+
+function asVerified(r: PlanReport): Extract<PlanReport, { status: "verified" }> {
+  assert.equal(r.status, "verified");
+  if (r.status !== "verified") throw new Error("esperado verified");
+  return r;
+}
 
 // ── interpretSubscriptionsResponse ──────────────────────────────────────────
 
@@ -70,6 +87,12 @@ test("200 com result array → ok", () => {
   if (v.kind === "ok") assert.equal(v.subscriptions.length, 1);
 });
 
+test("200 com result contendo não-objetos → descarta os não-objetos", () => {
+  const v = interpretSubscriptionsResponse(200, { success: true, result: [null, "x", 3, [], PAID_SUB] });
+  assert.equal(v.kind, "ok");
+  if (v.kind === "ok") assert.deepEqual(v.subscriptions, [PAID_SUB]);
+});
+
 test("500 ou 200 sem result → error (nunca ok)", () => {
   assert.equal(interpretSubscriptionsResponse(500, { errors: [{ code: 1, message: "x" }] }).kind, "error");
   assert.equal(interpretSubscriptionsResponse(200, { success: true }).kind, "error");
@@ -81,7 +104,7 @@ test("500 ou 200 sem result → error (nunca ok)", () => {
 test("assinatura Workers Paid ativa → workers-paid", () => {
   const c = classifyWorkersPlan([PAID_SUB]);
   assert.equal(c.plan, "workers-paid");
-  assert.equal(c.subscription?.id, "sub1");
+  if (c.plan === "workers-paid") assert.equal(c.subscription.id, "sub1");
 });
 
 test("reconhece o plano pelo public_name ou pelo nome do produto", () => {
@@ -89,14 +112,41 @@ test("reconhece o plano pelo public_name ou pelo nome do produto", () => {
   assert.equal(classifyWorkersPlan([{ state: "Paid", product: { name: "Workers Bundled" } }]).plan, "workers-paid");
 });
 
-test("assinatura Workers cancelada não conta → workers-free", () => {
-  assert.equal(classifyWorkersPlan([{ ...PAID_SUB, state: "Cancelled" }]).plan, "workers-free");
+test("estados ativos da lista de inclusão → workers-paid", () => {
+  for (const state of ["Paid", "Provisioned", "Trial", "AwaitingPayment"]) {
+    assert.equal(classifyWorkersPlan([{ ...PAID_SUB, state }]).plan, "workers-paid", `estado ${state}`);
+  }
+});
+
+test("estado fora da lista de ativos (ausente, cancelado, expirado, desconhecido) → workers-unrecognized, nunca free", () => {
+  for (const state of [undefined, "Canceled", "Cancelled", "Expired", "Failed", "SomethingNew"]) {
+    const c = classifyWorkersPlan([{ ...PAID_SUB, state }]);
+    assert.equal(c.plan, "workers-unrecognized", `estado ${state}`);
+    if (c.plan === "workers-unrecognized") {
+      assert.equal(c.unrecognized.length, 1);
+      assert.match(c.unrecognized[0], /workers_paid/);
+      assert.match(c.unrecognized[0], /id: sub1/);
+    }
+  }
+});
+
+test("rótulo com Workers que não casa com o padrão pago → workers-unrecognized", () => {
+  for (const name of ["Workers Plan", "Workers & Pages", "Worker"]) {
+    const c = classifyWorkersPlan([{ id: "x", state: "Paid", rate_plan: { public_name: name } }]);
+    assert.equal(c.plan, "workers-unrecognized", name);
+    if (c.plan === "workers-unrecognized") assert.ok(c.reason.includes(name));
+  }
+});
+
+test("Workers Paid ativa vence assinatura Workers antiga cancelada", () => {
+  const c = classifyWorkersPlan([{ ...PAID_SUB, id: "old", state: "Cancelled" }, PAID_SUB]);
+  assert.equal(c.plan, "workers-paid");
 });
 
 test("só assinaturas de outros produtos → workers-free, com a contagem no motivo", () => {
   const c = classifyWorkersPlan([{ state: "Paid", rate_plan: { id: "pro", public_name: "Pro Plan" } }]);
   assert.equal(c.plan, "workers-free");
-  assert.match(c.reason, /1 assinatura/);
+  assert.match(c.reason, /nenhuma assinatura ligada a Workers entre 1 assinatura/);
 });
 
 // ── monthWindow ─────────────────────────────────────────────────────────────
@@ -150,6 +200,17 @@ test("interpretKvUsageResponse: ok, erro GraphQL e conta ausente", () => {
   assert.equal(interpretKvUsageResponse(403, {}).kind, "error");
 });
 
+test("lista vazia de kvOperationsAdaptiveGroups = sem dados, nunca uso zero", () => {
+  const v = interpretKvUsageResponse(200, { data: { viewer: { accounts: [{ kvOperationsAdaptiveGroups: [] }] } } });
+  assert.deepEqual(v, { kind: "error", detail: KV_USAGE_NO_DATA_DETAIL });
+  const report = buildPlanReport({ window: WINDOW, subscriptions: { kind: "ok", subscriptions: [PAID_SUB] }, usage: v });
+  assert.equal(exitCodeFor(report), EXIT_USAGE_UNVERIFIED);
+  assert.equal(asVerified(report).quotaComparison, undefined);
+  const text = renderPlanReport(report);
+  assert.match(text, /sem dados/);
+  assert.doesNotMatch(text, /0%|cota mensal/);
+});
+
 // ── buildPlanReport / render / exit ─────────────────────────────────────────
 
 test("sem Billing:Read: unverified, exit 3, aviso explícito e NENHUM plano no relatório", () => {
@@ -159,13 +220,37 @@ test("sem Billing:Read: unverified, exit 3, aviso explícito e NENHUM plano no r
     usage: { kind: "ok", summary: summarizeKvUsage(GROUPS) },
   });
   assert.equal(report.status, "unverified");
-  assert.equal(report.plan, undefined);
-  assert.equal(report.quotaComparison, undefined);
+  assert.ok(!("plan" in report));
+  assert.ok(!("quotaComparison" in report));
   assert.equal(exitCodeFor(report), EXIT_NO_BILLING_PERMISSION);
   assert.notEqual(EXIT_NO_BILLING_PERMISSION, 0);
   const text = renderPlanReport(report);
   assert.ok(text.includes(NO_BILLING_PERMISSION_MESSAGE));
   assert.doesNotMatch(text, /Plano Workers verificado|Workers Free|Workers Paid/);
+  assert.match(text, /não é comparado com cota/);
+  assert.match(text, /inválido\/expirado/);
+  assert.match(text, /conferir se o token é válido/);
+});
+
+test("assinatura Workers não reconhecida: status unrecognized, exit 5, rótulos listados, sem plano", () => {
+  const report = buildPlanReport({
+    window: WINDOW,
+    subscriptions: {
+      kind: "ok",
+      subscriptions: [{ id: "s9", state: "Paid", rate_plan: { id: "workers_plan", public_name: "Workers Plan" } }],
+    },
+    usage: { kind: "ok", summary: summarizeKvUsage(GROUPS) },
+  });
+  assert.equal(report.status, "unrecognized");
+  assert.ok(!("plan" in report));
+  assert.ok(!("quotaComparison" in report));
+  assert.equal(exitCodeFor(report), EXIT_WORKERS_UNRECOGNIZED);
+  assert.notEqual(EXIT_WORKERS_UNRECOGNIZED, 0);
+  const text = renderPlanReport(report);
+  assert.match(text, /NÃO verificado/);
+  assert.match(text, /Workers Plan/);
+  assert.match(text, /id: s9/);
+  assert.doesNotMatch(text, /Workers Free|Plano Workers verificado/);
   assert.match(text, /não é comparado com cota/);
 });
 
@@ -175,11 +260,12 @@ test("Workers Paid + uso: compara totais do mês com a cota mensal", () => {
     subscriptions: { kind: "ok", subscriptions: [PAID_SUB] },
     usage: { kind: "ok", summary: summarizeKvUsage(GROUPS) },
   });
-  assert.equal(report.status, "verified");
   assert.equal(exitCodeFor(report), EXIT_VERIFIED);
-  const write = report.quotaComparison?.rows.find((r) => r.action === "write");
+  const write = asVerified(report).quotaComparison?.rows.find((r) => r.action === "write");
   assert.deepEqual(write, { action: "write", used: 1300, limit: KV_QUOTAS["workers-paid"].limits.write, pct: 0.1 });
-  assert.match(renderPlanReport(report), /cota mensal incluída/);
+  const text = renderPlanReport(report);
+  assert.match(text, /cota mensal incluída/);
+  assert.match(text, /amostrado/);
 });
 
 test("Workers Free + uso: compara o PICO diário com o teto diário", () => {
@@ -188,19 +274,21 @@ test("Workers Free + uso: compara o PICO diário com o teto diário", () => {
     subscriptions: { kind: "ok", subscriptions: [] },
     usage: { kind: "ok", summary: summarizeKvUsage(GROUPS) },
   });
-  const write = report.quotaComparison?.rows.find((r) => r.action === "write");
+  const write = asVerified(report).quotaComparison?.rows.find((r) => r.action === "write");
   assert.deepEqual(write, { action: "write", used: 900, limit: 1000, pct: 90, peakDate: "2026-11-02" });
   assert.match(renderPlanReport(report), /teto DIÁRIO/);
 });
 
-test("plano verificado com uso falho: exit 0, uso declarado como não verificado", () => {
+test("plano verificado com uso falho: exit 4, uso declarado como não verificado", () => {
   const report = buildPlanReport({
     window: WINDOW,
     subscriptions: { kind: "ok", subscriptions: [PAID_SUB] },
     usage: { kind: "error", detail: "not authorized" },
   });
-  assert.equal(exitCodeFor(report), EXIT_VERIFIED);
-  assert.equal(report.quotaComparison, undefined);
+  assert.equal(exitCodeFor(report), EXIT_USAGE_UNVERIFIED);
+  assert.notEqual(EXIT_USAGE_UNVERIFIED, EXIT_VERIFIED);
+  assert.equal(asVerified(report).quotaComparison, undefined);
+  assert.ok(!("usage" in report));
   assert.match(renderPlanReport(report), /Uso de KV não verificado: not authorized/);
 });
 
@@ -210,7 +298,7 @@ test("erro na consulta de assinaturas: status error, exit 1", () => {
     subscriptions: { kind: "error", httpStatus: 500, detail: "boom" },
     usage: null,
   });
-  assert.equal(report.plan, undefined);
+  assert.ok(!("plan" in report));
   assert.equal(exitCodeFor(report), EXIT_ERROR);
 });
 
@@ -258,20 +346,47 @@ test("CLI: token sem Billing:Read → exit 3 com o aviso, só GET/consulta (nada
   assert.ok(calls.every((c) => c.method === "GET" || c.url.endsWith("/graphql")));
 });
 
-test("CLI: prefere CLOUDFLARE_BILLING_TOKEN ao CLOUDFLARE_API_TOKEN", async () => {
-  const seen: string[] = [];
+function authRecorder() {
+  const seen: { url: string; auth: string }[] = [];
   const fn = async (url: string, init?: RequestInit) => {
-    seen.push(String((init?.headers as Record<string, string>)?.Authorization));
-    return new Response(JSON.stringify(url.endsWith("/graphql") ? {} : { success: true, result: [PAID_SUB] }), {
-      status: 200,
-    });
+    seen.push({ url, auth: String((init?.headers as Record<string, string>)?.Authorization) });
+    const body = url.endsWith("/graphql")
+      ? { data: { viewer: { accounts: [{ kvOperationsAdaptiveGroups: GROUPS }] } } }
+      : { success: true, result: [PAID_SUB] };
+    return new Response(JSON.stringify(body), { status: 200 });
   };
+  const authFor = (suffix: string) => seen.find((c) => c.url.endsWith(suffix))?.auth;
+  return { fn, authFor };
+}
+
+test("CLI: CLOUDFLARE_BILLING_TOKEN só em /subscriptions; GraphQL usa CLOUDFLARE_API_TOKEN", async () => {
+  const { fn, authFor } = authRecorder();
   const r = await captureConsole(() =>
     main(["--json"], { ...ENV, CLOUDFLARE_BILLING_TOKEN: "billing" } as NodeJS.ProcessEnv, fn, NOW),
   );
   assert.equal(r.code, EXIT_VERIFIED);
-  assert.ok(seen.every((h) => h === "Bearer billing"));
+  assert.equal(authFor("/subscriptions"), "Bearer billing");
+  assert.equal(authFor("/graphql"), "Bearer tok");
   assert.equal(JSON.parse(r.out).plan, "workers-paid");
+});
+
+test("CLI: cada token cai no outro na falta", async () => {
+  const onlyBilling = authRecorder();
+  await captureConsole(() =>
+    main(
+      [],
+      { CLOUDFLARE_BILLING_TOKEN: "billing", CLOUDFLARE_ACCOUNT_ID: "acc123" } as NodeJS.ProcessEnv,
+      onlyBilling.fn,
+      NOW,
+    ),
+  );
+  assert.equal(onlyBilling.authFor("/subscriptions"), "Bearer billing");
+  assert.equal(onlyBilling.authFor("/graphql"), "Bearer billing");
+
+  const onlyApi = authRecorder();
+  await captureConsole(() => main([], ENV, onlyApi.fn, NOW));
+  assert.equal(onlyApi.authFor("/subscriptions"), "Bearer tok");
+  assert.equal(onlyApi.authFor("/graphql"), "Bearer tok");
 });
 
 test("CLI: sem CLOUDFLARE_ACCOUNT_ID → exit 1 sem chamar a rede", async () => {
@@ -286,6 +401,16 @@ test("CLI: --month inválido → exit 1", async () => {
   const { fn } = fakeFetch({ subs: [200, {}], graphql: [200, {}] });
   const r = await captureConsole(() => main(["--month", "2027-01"], ENV, fn, NOW));
   assert.equal(r.code, EXIT_ERROR);
+});
+
+test("CLI: --month sem valor (fim da linha, outra flag ou vazio) → exit 1 sem chamar a rede", async () => {
+  for (const argv of [["--month"], ["--month", "--json"], ["--month="]]) {
+    const { fn, calls } = fakeFetch({ subs: [200, {}], graphql: [200, {}] });
+    const r = await captureConsole(() => main(argv, ENV, fn, NOW));
+    assert.equal(r.code, EXIT_ERROR, argv.join(" "));
+    assert.match(r.err, /--month sem valor/);
+    assert.equal(calls.length, 0);
+  }
 });
 
 test("CLI: fetch que lança vira erro, nunca plano", async () => {

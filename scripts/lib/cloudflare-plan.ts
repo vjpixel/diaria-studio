@@ -14,8 +14,13 @@
  * Regra central: **sem a permissão Account › Billing › Read o helper nunca
  * afirma plano.** A Cloudflare responde `10000 Authentication error` (HTTP
  * 403) a `/subscriptions` quando o token não tem essa permissão — o mesmo
- * código de um token inválido, então o veredito é "não verificado", com a
- * ação que destrava, e nunca um palpite de plano.
+ * código de um token inválido ou expirado, então o veredito é "não
+ * verificado", com a ação que destrava, e nunca um palpite de plano.
+ *
+ * Segunda regra: **plano gratuito nunca é afirmado por exclusão de um padrão
+ * não confirmado.** Assinatura que mencione Workers e não case com o padrão
+ * pago (ou esteja num estado fora da lista de estados ativos) vira
+ * `workers-unrecognized`, exit != 0, listando o que veio.
  *
  * Tudo aqui é puro (sem rede, sem `process.env`): o CLI injeta `fetch` e as
  * variáveis. Os testes ficam em `test/cloudflare-plan.test.ts`.
@@ -54,7 +59,7 @@ export interface CfEnvelope<T> {
 
 export type SubscriptionsVerdict =
   | { kind: "ok"; subscriptions: CfSubscription[] }
-  /** Token sem Billing:Read (ou inválido: a API devolve o mesmo 10000). */
+  /** Token sem Billing:Read, ou inválido/expirado: a API devolve o mesmo 10000. */
   | { kind: "no-billing-permission"; httpStatus: number; detail: string }
   | { kind: "error"; httpStatus: number; detail: string };
 
@@ -62,19 +67,24 @@ export type SubscriptionsVerdict =
 export const CF_AUTH_ERROR_CODE = 10000;
 
 export const NO_BILLING_PERMISSION_MESSAGE =
-  "token sem Billing:Read — não verificado";
+  "token sem Billing:Read OU inválido/expirado — não verificado";
 
 function errorsText(errors: CfApiError[] | undefined): string {
   if (!errors || errors.length === 0) return "";
   return errors
-    .map((e) => `${e.code ?? "?"} ${e.message ?? ""}`.trim())
+    .map((e) => `${e?.code ?? "?"} ${e?.message ?? ""}`.trim())
     .join("; ");
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 /**
  * Interpreta a resposta de `GET /accounts/{id}/subscriptions`.
  *
- * - 2xx com `success !== false` e `result` array → `ok`;
+ * - 2xx com `success !== false` e `result` array → `ok` (elementos que não
+ *   são objeto são descartados);
  * - 401/403, ou qualquer erro com código 10000 → `no-billing-permission`;
  * - o resto (5xx, JSON sem `result`, outro código) → `error`.
  */
@@ -82,7 +92,7 @@ export function interpretSubscriptionsResponse(
   httpStatus: number,
   body: unknown,
 ): SubscriptionsVerdict {
-  const env = (body && typeof body === "object" ? body : {}) as CfEnvelope<unknown>;
+  const env = (isPlainObject(body) ? body : {}) as CfEnvelope<unknown>;
   const errs = Array.isArray(env.errors) ? env.errors : [];
   const detail = errorsText(errs) || `HTTP ${httpStatus}`;
   const hasAuthCode = errs.some((e) => e?.code === CF_AUTH_ERROR_CODE);
@@ -91,7 +101,8 @@ export function interpretSubscriptionsResponse(
     return { kind: "no-billing-permission", httpStatus, detail };
   }
   if (httpStatus >= 200 && httpStatus < 300 && env.success !== false && Array.isArray(env.result)) {
-    return { kind: "ok", subscriptions: env.result as CfSubscription[] };
+    const subscriptions = (env.result as unknown[]).filter(isPlainObject) as CfSubscription[];
+    return { kind: "ok", subscriptions };
   }
   return { kind: "error", httpStatus, detail };
 }
@@ -100,17 +111,29 @@ export function interpretSubscriptionsResponse(
 
 export type WorkersPlan = "workers-paid" | "workers-free";
 
-export interface PlanClassification {
-  plan: WorkersPlan;
-  /** Assinatura Workers que decidiu o veredito (ausente no free). */
-  subscription?: CfSubscription;
-  /** Explicação curta do veredito, para o relatório. */
-  reason: string;
-}
+export type PlanClassification =
+  | { plan: "workers-paid"; subscription: CfSubscription; reason: string }
+  | { plan: "workers-free"; reason: string }
+  /** Há assinatura ligada a Workers que o padrão não reconhece: plano NÃO verificado. */
+  | { plan: "workers-unrecognized"; reason: string; unrecognized: string[] };
 
-/** Estados em que a assinatura não conta mais como ativa. */
-const INACTIVE_STATES = /^(cancel+ed|expired|failed|deleted)$/i;
+/**
+ * Estados de assinatura que contam como ativos (lista de INCLUSÃO). Estado
+ * ausente ou fora desta lista nunca é tratado como ativo nem como inativo:
+ * numa assinatura de Workers, deixa o plano não reconhecido.
+ */
+const ACTIVE_STATES: ReadonlySet<string> = new Set(["paid", "provisioned", "trial", "awaitingpayment"]);
 
+/** Qualquer menção a Workers no rótulo da assinatura. */
+const WORKERS_RELATED_PATTERN = /\bworkers?\b/i;
+
+/**
+ * Padrão do rate plan pago. **Escrito sem nenhuma resposta real de
+ * `/subscriptions` capturada** (o token do projeto não tinha Billing:Read em
+ * 13/11/2026): reconferir contra a saída real na 1ª execução com
+ * Billing:Read e ajustar aqui e no teste. O que não casar cai em
+ * `workers-unrecognized`, nunca em `workers-free`.
+ */
 const WORKERS_PAID_PATTERN = /workers.*(paid|bundled|unbound|standard)|(paid|bundled|unbound|standard).*workers/i;
 
 function subscriptionLabel(s: CfSubscription): string {
@@ -119,29 +142,49 @@ function subscriptionLabel(s: CfSubscription): string {
     .join(" | ");
 }
 
+function isActiveState(state: string | undefined): boolean {
+  return typeof state === "string" && ACTIVE_STATES.has(state.toLowerCase());
+}
+
 /**
  * Decide o plano Workers a partir da lista de assinaturas da conta.
  *
  * Só é chamada com a lista já obtida (veredito `ok`) — sem Billing:Read não
- * existe classificação. Uma assinatura ativa cujo plano case com "Workers
- * Paid/Bundled/Unbound/Standard" → `workers-paid`; nenhuma → `workers-free`
- * (a conta não paga Workers: é o plano gratuito por exclusão, com a lista
- * de assinaturas efetivamente lida).
+ * existe classificação.
+ * - Uma assinatura que case com o padrão pago E esteja em estado ativo →
+ *   `workers-paid` (evidência positiva; vence assinaturas antigas da lista).
+ * - Senão, qualquer assinatura que mencione Workers (padrão pago em estado
+ *   não ativo/ausente/desconhecido, ou rótulo que não casa com o padrão, como
+ *   "Workers Plan" ou "Workers & Pages") → `workers-unrecognized`.
+ * - Só quando nenhuma assinatura tem relação com Workers → `workers-free`.
  */
 export function classifyWorkersPlan(subscriptions: CfSubscription[]): PlanClassification {
   const paid = subscriptions.find(
-    (s) => WORKERS_PAID_PATTERN.test(subscriptionLabel(s)) && !INACTIVE_STATES.test(s.state ?? ""),
+    (s) => WORKERS_PAID_PATTERN.test(subscriptionLabel(s)) && isActiveState(s.state),
   );
   if (paid) {
     return {
       plan: "workers-paid",
       subscription: paid,
-      reason: `assinatura ativa "${subscriptionLabel(paid)}" (estado: ${paid.state ?? "?"})`,
+      reason: `assinatura ativa "${subscriptionLabel(paid)}" (estado: ${paid.state})`,
+    };
+  }
+  const related = subscriptions.filter((s) => WORKERS_RELATED_PATTERN.test(subscriptionLabel(s)));
+  if (related.length > 0) {
+    const unrecognized = related.map(
+      (s) => `${subscriptionLabel(s)} (id: ${s.id ?? "?"}, estado: ${s.state ?? "ausente"})`,
+    );
+    return {
+      plan: "workers-unrecognized",
+      unrecognized,
+      reason:
+        `${related.length} assinatura(s) ligada(s) a Workers sem plano pago ativo reconhecido: ` +
+        unrecognized.join("; "),
     };
   }
   return {
     plan: "workers-free",
-    reason: `nenhuma assinatura Workers paga ativa entre ${subscriptions.length} assinatura(s) da conta`,
+    reason: `nenhuma assinatura ligada a Workers entre ${subscriptions.length} assinatura(s) da conta`,
   };
 }
 
@@ -152,10 +195,10 @@ export const KV_ACTIONS: readonly KvAction[] = ["read", "write", "delete", "list
 
 export interface KvQuota {
   /** "month" no Workers Paid (cota mensal incluída), "day" no Free (teto diário). */
-  period: "month" | "day";
-  limits: Record<KvAction, number>;
+  readonly period: "month" | "day";
+  readonly limits: Readonly<Record<KvAction, number>>;
   /** Onde o número foi conferido, para quem precisar reconferir. */
-  source: string;
+  readonly source: string;
 }
 
 /**
@@ -166,18 +209,18 @@ export interface KvQuota {
  * No Paid o que passa da cota é cobrado (não bloqueia); no Free o teto é
  * diário, por conta, e bloqueia até a virada (00:00 UTC).
  */
-export const KV_QUOTAS: Record<WorkersPlan, KvQuota> = {
-  "workers-paid": {
+export const KV_QUOTAS: Readonly<Record<WorkersPlan, KvQuota>> = Object.freeze({
+  "workers-paid": Object.freeze({
     period: "month",
-    limits: { read: 10_000_000, write: 1_000_000, delete: 1_000_000, list: 1_000_000 },
+    limits: Object.freeze({ read: 10_000_000, write: 1_000_000, delete: 1_000_000, list: 1_000_000 }),
     source: "developers.cloudflare.com/kv/platform/pricing (conferido 13/11/2026)",
-  },
-  "workers-free": {
+  }),
+  "workers-free": Object.freeze({
     period: "day",
-    limits: { read: 100_000, write: 1_000, delete: 1_000, list: 1_000 },
+    limits: Object.freeze({ read: 100_000, write: 1_000, delete: 1_000, list: 1_000 }),
     source: "developers.cloudflare.com/kv/platform/pricing (conferido 13/11/2026)",
-  },
-};
+  }),
+});
 
 // ── Uso de KV (GraphQL kvOperationsAdaptiveGroups) ───────────────────────────
 
@@ -262,6 +305,14 @@ export type KvUsageVerdict =
   | { kind: "ok"; summary: KvUsageSummary }
   | { kind: "error"; detail: string };
 
+/**
+ * Detalhe quando `kvOperationsAdaptiveGroups` vem vazio: "sem dados", nunca
+ * "uso zero" — a lista vazia não distingue conta sem uso de dataset sem
+ * amostras na janela.
+ */
+export const KV_USAGE_NO_DATA_DETAIL =
+  "sem dados: kvOperationsAdaptiveGroups veio vazio na janela (não é uso zero)";
+
 function emptyRecord(): Record<KvAction, number> {
   return { read: 0, write: 0, delete: 0, list: 0 };
 }
@@ -281,7 +332,7 @@ export function summarizeKvUsage(groups: KvUsageGroup[]): KvUsageSummary {
   };
   const otherActions: Record<string, number> = {};
   for (const g of groups) {
-    const n = Number(g.sum?.requests ?? 0);
+    const n = Number(g?.sum?.requests ?? 0);
     if (!Number.isFinite(n) || n <= 0) continue;
     const action = String(g.dimensions?.actionType ?? "").toLowerCase();
     const date = String(g.dimensions?.date ?? "");
@@ -328,40 +379,71 @@ export function interpretKvUsageResponse(httpStatus: number, body: unknown): KvU
   if (!Array.isArray(groups)) {
     return { kind: "error", detail: "resposta sem kvOperationsAdaptiveGroups" };
   }
+  if (groups.length === 0) {
+    return { kind: "error", detail: KV_USAGE_NO_DATA_DETAIL };
+  }
   return { kind: "ok", summary: summarizeKvUsage(groups) };
 }
 
 // ── Relatório ────────────────────────────────────────────────────────────────
 
-export type PlanReportStatus = "verified" | "unverified" | "error";
+/** `usage` e `usageError` são mutuamente exclusivos; os dois ausentes = uso não consultado. */
+export type UsageFields =
+  | { usage: KvUsageSummary; usageError?: never }
+  | { usage?: never; usageError: string }
+  | { usage?: never; usageError?: never };
 
-export interface PlanReport {
-  status: PlanReportStatus;
-  /** Ausente quando o plano não foi verificado: nunca há palpite. */
-  plan?: WorkersPlan;
-  planReason?: string;
+export interface QuotaComparison {
+  period: "month" | "day";
+  source: string;
+  rows: { action: KvAction; used: number; limit: number; pct: number; peakDate?: string }[];
+}
+
+interface ReportBase {
   /** Mensagem principal para o terminal. */
   message: string;
   window: MonthWindow;
-  usage?: KvUsageSummary;
-  usageError?: string;
-  /** Uso contra a cota, só quando plano E uso foram verificados. */
-  quotaComparison?: {
-    period: "month" | "day";
-    source: string;
-    rows: { action: KvAction; used: number; limit: number; pct: number; peakDate?: string }[];
-  };
 }
+
+export type PlanReport = ReportBase &
+  UsageFields &
+  (
+    | {
+        status: "verified";
+        plan: WorkersPlan;
+        planReason: string;
+        /** Uso contra a cota, só quando o uso também foi verificado. */
+        quotaComparison?: QuotaComparison;
+      }
+    /** Sem Billing:Read (ou token inválido/expirado): nunca há palpite de plano. */
+    | { status: "unverified" }
+    /** Assinatura de Workers fora do padrão conhecido: plano não verificado. */
+    | { status: "unrecognized"; unrecognized: string[] }
+    | { status: "error" }
+  );
+
+export type PlanReportStatus = PlanReport["status"];
 
 /** Exit codes do CLI. */
 export const EXIT_VERIFIED = 0;
 export const EXIT_ERROR = 1;
 export const EXIT_NO_BILLING_PERMISSION = 3;
+/** Plano verificado, mas o uso de KV não (erro na GraphQL ou sem dados). */
+export const EXIT_USAGE_UNVERIFIED = 4;
+/** Assinatura de Workers não reconhecida pelo padrão: plano não verificado. */
+export const EXIT_WORKERS_UNRECOGNIZED = 5;
 
 export function exitCodeFor(report: PlanReport): number {
-  if (report.status === "verified") return EXIT_VERIFIED;
-  if (report.status === "unverified") return EXIT_NO_BILLING_PERMISSION;
-  return EXIT_ERROR;
+  switch (report.status) {
+    case "verified":
+      return report.usage ? EXIT_VERIFIED : EXIT_USAGE_UNVERIFIED;
+    case "unverified":
+      return EXIT_NO_BILLING_PERMISSION;
+    case "unrecognized":
+      return EXIT_WORKERS_UNRECOGNIZED;
+    case "error":
+      return EXIT_ERROR;
+  }
 }
 
 /** Junta os vereditos das duas consultas num relatório. */
@@ -371,7 +453,7 @@ export function buildPlanReport(input: {
   usage: KvUsageVerdict | null;
 }): PlanReport {
   const { window, subscriptions, usage } = input;
-  const usageFields: Pick<PlanReport, "usage" | "usageError"> =
+  const usageFields: UsageFields =
     usage === null
       ? {}
       : usage.kind === "ok"
@@ -384,7 +466,8 @@ export function buildPlanReport(input: {
       message:
         `Plano da conta NÃO verificado: ${NO_BILLING_PERMISSION_MESSAGE} ` +
         `(HTTP ${subscriptions.httpStatus}, ${subscriptions.detail}). ` +
-        "Ação: dar Account › Billing › Read ao token (ou definir CLOUDFLARE_BILLING_TOKEN com um token só de leitura). " +
+        "Ação: conferir se o token é válido e dar Account › Billing › Read a ele " +
+        "(ou definir CLOUDFLARE_BILLING_TOKEN com um token só de leitura). " +
         "Não assuma plano gratuito nem pago a partir desta saída.",
       window,
       ...usageFields,
@@ -400,17 +483,24 @@ export function buildPlanReport(input: {
   }
 
   const cls = classifyWorkersPlan(subscriptions.subscriptions);
-  const report: PlanReport = {
-    status: "verified",
-    plan: cls.plan,
-    planReason: cls.reason,
-    message: `Plano Workers verificado: ${cls.plan === "workers-paid" ? "Workers Paid" : "Workers Free"} (${cls.reason}).`,
-    window,
-    ...usageFields,
-  };
+  if (cls.plan === "workers-unrecognized") {
+    return {
+      status: "unrecognized",
+      unrecognized: cls.unrecognized,
+      message:
+        `Plano Workers NÃO verificado: ${cls.reason}. ` +
+        "O padrão de rate plan de scripts/lib/cloudflare-plan.ts não reconhece essa(s) assinatura(s); " +
+        "conferir os rótulos acima e ajustar o padrão. Não assuma plano gratuito nem pago a partir desta saída.",
+      window,
+      ...usageFields,
+    };
+  }
+
+  const plan: WorkersPlan = cls.plan;
+  let quotaComparison: QuotaComparison | undefined;
   if (usage?.kind === "ok") {
-    const quota = KV_QUOTAS[cls.plan];
-    report.quotaComparison = {
+    const quota = KV_QUOTAS[plan];
+    quotaComparison = {
       period: quota.period,
       source: quota.source,
       rows: KV_ACTIONS.map((action) => {
@@ -427,7 +517,15 @@ export function buildPlanReport(input: {
       }),
     };
   }
-  return report;
+  return {
+    status: "verified",
+    plan,
+    planReason: cls.reason,
+    message: `Plano Workers verificado: ${plan === "workers-paid" ? "Workers Paid" : "Workers Free"} (${cls.reason}).`,
+    window,
+    ...usageFields,
+    ...(quotaComparison ? { quotaComparison } : {}),
+  };
 }
 
 function fmt(n: number): string {
@@ -448,10 +546,14 @@ export function renderPlanReport(report: PlanReport): string {
     if (other.length > 0) {
       lines.push(`  outras ações: ${other.map(([k, v]) => `${k} ${fmt(v)}`).join(" · ")}`);
     }
+    lines.push(
+      "  (analytics amostrado do kvOperationsAdaptiveGroups; no mês corrente o último dia está parcial: " +
+        "ordem de grandeza contra a cota, não conferência de fatura)",
+    );
   } else if (report.usageError) {
     lines.push(`Uso de KV não verificado: ${report.usageError}`);
   }
-  if (report.quotaComparison) {
+  if (report.status === "verified" && report.quotaComparison) {
     const q = report.quotaComparison;
     lines.push(
       q.period === "month"

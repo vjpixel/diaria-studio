@@ -9,13 +9,20 @@
  *   npx tsx scripts/cloudflare-plan.ts [--month YYYY-MM] [--json]
  *
  * Credenciais (do .env / Doppler):
- *   CLOUDFLARE_BILLING_TOKEN  token só de leitura com Account › Billing › Read
- *                             (preferido, #12533); sem ele, CLOUDFLARE_API_TOKEN
+ *   CLOUDFLARE_BILLING_TOKEN  token só de leitura com Account › Billing › Read,
+ *                             usado só em /subscriptions (#12533); na falta,
+ *                             cai no CLOUDFLARE_API_TOKEN
+ *   CLOUDFLARE_API_TOKEN      usado na GraphQL de analytics (Account Analytics:
+ *                             Read); na falta, cai no CLOUDFLARE_BILLING_TOKEN
  *   CLOUDFLARE_ACCOUNT_ID     id da conta
  *
  * Exit codes:
- *   0 = plano verificado (o uso pode ter ficado sem verificar; o texto diz)
- *   3 = token sem Billing:Read: plano NÃO verificado, aviso explícito, sem palpite
+ *   0 = plano E uso de KV verificados
+ *   4 = plano verificado, uso de KV NÃO verificado (erro na GraphQL ou sem dados)
+ *   3 = token sem Billing:Read OU inválido/expirado: plano NÃO verificado, sem
+ *       palpite (ação: conferir se o token é válido e dar Billing:Read a ele)
+ *   5 = assinatura ligada a Workers que o padrão não reconhece: plano NÃO
+ *       verificado, rótulos listados (ajustar o padrão em lib/cloudflare-plan.ts)
  *   1 = erro (variável ausente, rede, resposta inesperada, argumento inválido)
  *
  * Lógica pura e testes: scripts/lib/cloudflare-plan.ts,
@@ -97,8 +104,14 @@ function parseArgs(argv: string[]): { month?: string; json: boolean } {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--json") json = true;
-    else if (a === "--month") month = argv[++i];
-    else if (a.startsWith("--month=")) month = a.slice("--month=".length);
+    else if (a === "--month") {
+      const v = argv[++i];
+      if (v === undefined || v.startsWith("--")) throw new Error("--month sem valor (esperado YYYY-MM)");
+      month = v;
+    } else if (a.startsWith("--month=")) {
+      month = a.slice("--month=".length);
+      if (!month) throw new Error("--month sem valor (esperado YYYY-MM)");
+    }
     else throw new Error(`argumento desconhecido: ${a}`);
   }
   return { month, json };
@@ -120,12 +133,14 @@ export async function main(
     return EXIT_ERROR;
   }
 
-  const token = env.CLOUDFLARE_BILLING_TOKEN || env.CLOUDFLARE_API_TOKEN || "";
+  // Billing token só em /subscriptions; a GraphQL usa o token geral (#12533).
+  const billingToken = env.CLOUDFLARE_BILLING_TOKEN || env.CLOUDFLARE_API_TOKEN || "";
+  const analyticsToken = env.CLOUDFLARE_API_TOKEN || env.CLOUDFLARE_BILLING_TOKEN || "";
   const accountId = env.CLOUDFLARE_ACCOUNT_ID || "";
-  if (!token || !accountId) {
+  if (!billingToken || !accountId) {
     console.error(
       "[cloudflare-plan] falta " +
-        [!token ? "CLOUDFLARE_BILLING_TOKEN/CLOUDFLARE_API_TOKEN" : "", !accountId ? "CLOUDFLARE_ACCOUNT_ID" : ""]
+        [!billingToken ? "CLOUDFLARE_BILLING_TOKEN/CLOUDFLARE_API_TOKEN" : "", !accountId ? "CLOUDFLARE_ACCOUNT_ID" : ""]
           .filter(Boolean)
           .join(" e ") +
         " no ambiente. Plano não verificado.",
@@ -134,8 +149,8 @@ export async function main(
   }
 
   const [subscriptions, usage] = await Promise.all([
-    fetchSubscriptions(accountId, token, fetchFn),
-    fetchKvUsage(accountId, token, window, fetchFn),
+    fetchSubscriptions(accountId, billingToken, fetchFn),
+    fetchKvUsage(accountId, analyticsToken, window, fetchFn),
   ]);
   const report = buildPlanReport({ window, subscriptions, usage });
   if (args.json) console.log(JSON.stringify(report, null, 2));
