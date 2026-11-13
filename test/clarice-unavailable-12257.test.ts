@@ -301,7 +301,11 @@ describe("#12257 — Stage 2 segue sem a Clarice (skip retomável)", () => {
 
       let seenArgs: string[] = [];
       const failed = resumeClarice(dir, (args) => { seenArgs = args; return 6; }, { edition: "261105" });
-      assert.deepEqual(failed, { status: "failed", exitCode: 6 });
+      assert.deepEqual(failed, {
+        status: "failed",
+        exitCode: 6,
+        reason: "a API da Clarice não respondeu dentro do teto total do clarice-correct.ts",
+      });
       assert.equal(existsSync(claricePendingPath(dir)), true);
       assert.equal(readClaricePending(dir)?.last_outcome, "failed:6");
       assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), "texto humanizado com edição do gate\n");
@@ -611,7 +615,7 @@ describe("#12257 — review da PR #12440 (fail-closed do resume e do skip)", () 
 
   it("resumeExitCode: faixa própria para cada desfecho que não aplica nada", () => {
     assert.equal(resumeExitCode({ status: "nothing-pending" }), 0);
-    assert.equal(resumeExitCode({ status: "failed", exitCode: 3 }), 3);
+    assert.equal(resumeExitCode({ status: "failed", exitCode: 3, reason: "x" }), 3);
     assert.equal(resumeExitCode({ status: "reviewed-changed" }), 7);
     assert.equal(resumeExitCode({ status: "reveal-changed" }), 8);
     assert.equal(resumeExitCode({ status: "intentional-error-corrected", wrongValue: "x" }), 8);
@@ -742,7 +746,7 @@ describe("#12257 — review da PR #12440 (fail-closed do resume e do skip)", () 
       assert.equal(resumeClarice(dir, () => 2, { now: () => t0 }).status, "failed");
       let called = false;
       const out = resumeClarice(dir, () => { called = true; return 2; }, { now: soon });
-      assert.deepEqual(out, { status: "failed", exitCode: 2 });
+      assert.deepEqual(out, { status: "failed", exitCode: 2, reason: "CLARICE_API_KEY ausente no ambiente" });
       assert.equal(called, true);
       assert.equal(readClaricePending(dir)?.reason, "clarice_unavailable");
     } finally {

@@ -27,7 +27,7 @@ import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repea
 import { readMarker } from "../pipeline-state.ts";
 import { computeIntakeFingerprint } from "../newsletter-intake-fingerprint.ts"; // #12188
 import { linkScoreBlocks, linkTitleBlocks } from "../newsletter-intake-link-rules.ts"; // #12593
-import { CLARICE_PENDING_REL, readClaricePending, resumeCommandFor } from "../clarice-pending.ts"; // #12257
+import { CLARICE_PENDING_REL, lastResumeAttemptNote, readClaricePending, resumeCommandFor } from "../clarice-pending.ts"; // #12257, #12693
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock, extractCarouselCardsBlock } from "../extract-section.ts"; // #6064, #12094
 import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
@@ -4332,6 +4332,7 @@ function checkClaricePending(editionDir: string): InvariantViolation[] {
       rule: "clarice-pending",
       message:
         `clarice não rodou (${reason}): 02-reviewed.md saiu do texto humanizado, sem a revisão da Clarice. ` +
+        lastResumeAttemptNote(marker) +
         `Retomar antes de aprovar: ${resume}`,
       source_issue: "#12257",
       severity: "warning",

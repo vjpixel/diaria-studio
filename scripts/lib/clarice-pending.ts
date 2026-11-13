@@ -29,7 +29,8 @@
  * Diferenças do resume em relação ao fluxo normal do Stage 2, tratadas aqui
  * (reviews das PRs #12291 e #12440). Na dúvida, o marcador fica (fail-closed);
  * o `reason` original nunca é sobrescrito, o desfecho de cada tentativa vai
- * em `last_outcome`:
+ * em `last_outcome` e o porquê legível dela em `last_reason` (#12693, lido do
+ * `{"failure"}` do clarice-correct.ts e levado ao gate pelos Stages 4 e 5):
  * - Correção parcial não conta: o resume chama a Clarice sem o fallback por
  *   parágrafo e exige o resumo do filho com `suggestions_count` numérico e
  *   `chunks_used_paragraph_fallback`/`paragraphs_failed` presentes e zerados.
@@ -108,6 +109,12 @@ export interface ClaricePendingMarker {
   last_attempt_at?: string;
   /** Desfecho dessa tentativa (`failed:6`, `partial`, `crashed`, ...). */
   last_outcome?: string;
+  /**
+   * #12693 — POR QUE essa tentativa não aplicou nada, em texto ("a Clarice não
+   * respondeu em 60s...", "certificado TLS recusado (SELF_SIGNED_CERT_IN_CHAIN)").
+   * Os invariantes dos Stages 4 e 5 levam ao gate.
+   */
+  last_reason?: string;
 }
 
 export function claricePendingPath(editionDir: string): string {
@@ -139,6 +146,18 @@ export function readClaricePending(editionDir: string): ClaricePendingMarker | n
   } catch {
     return null;
   }
+}
+
+/**
+ * #12693 — frase com a última tentativa de retomar e o motivo, para os
+ * invariantes levarem ao gate. "" quando nenhum resume foi tentado. Termina em
+ * espaço, para concatenar antes da frase seguinte.
+ */
+export function lastResumeAttemptNote(marker: ClaricePendingMarker | null): string {
+  if (!marker?.last_attempt_at) return "";
+  const outcome = marker.last_outcome ? `, ${marker.last_outcome}` : "";
+  const why = marker.last_reason ? `: ${marker.last_reason}` : "";
+  return `Última tentativa de retomar em ${marker.last_attempt_at}${outcome}${why}. `;
 }
 
 /** Há revisão da Clarice pendente? (o arquivo existe, legível ou não) */
@@ -236,12 +255,18 @@ export type ResumeOutcome =
       applyMode: "corrected" | "filtered-chunks";
       protectedSuggestions: ProtectedSuggestion[];
     }
-  | { status: "failed"; exitCode: number }
+  | { status: "failed"; exitCode: number; reason: string }
   | { status: "crashed"; message: string }
   | { status: "partial"; detail: string }
   | { status: "reviewed-missing" }
   | { status: "protection-unreadable"; message: string }
-  | { status: "recently-attempted"; lastAttemptAt: string; lastOutcome: string; exitCode: number }
+  | {
+      status: "recently-attempted";
+      lastAttemptAt: string;
+      lastOutcome: string;
+      exitCode: number;
+      lastReason?: string;
+    }
   | { status: "reviewed-changed" }
   | { status: "reveal-changed" }
   | { status: "intentional-error-corrected"; wrongValue: string };
@@ -321,6 +346,31 @@ function parseRunnerSummary(stdout: string): Record<string, unknown> | null {
     }
   }
   return null;
+}
+
+/**
+ * #12693 — motivo de um exit ≠ 0 do `clarice-correct.ts`. Lê o `{"failure":
+ * {...}}` que ele imprime no stdout (exits 3 e 6); sem ele, cai no significado
+ * do exit. Antes o resume devolvia só o número, e o gate mostrava "Clarice
+ * falhou de novo" sem dizer que a API não respondia em 60s.
+ */
+export function failureReasonFromRun(exitCode: number, stdout: string): string {
+  const failure = parseRunnerSummary(stdout)?.failure as { message?: unknown } | undefined;
+  if (failure && typeof failure.message === "string" && failure.message.trim()) return failure.message.trim();
+  switch (exitCode) {
+    case 2:
+      return "CLARICE_API_KEY ausente no ambiente";
+    case 3:
+      return "erro chamando a API REST da Clarice (motivo não informado pelo clarice-correct.ts)";
+    case 4:
+      return "erro de leitura/escrita de arquivo no clarice-correct.ts";
+    case 5:
+      return "saída do clarice-correct.ts com mtime anterior à chamada (no-op suspeito, #5755)";
+    case 6:
+      return "a API da Clarice não respondeu dentro do teto total do clarice-correct.ts";
+    default:
+      return `clarice-correct.ts saiu com exit ${exitCode}`;
+  }
 }
 
 /** Resumo completo = campos presentes e zerados; campo ausente conta como incompleto. */
@@ -423,6 +473,7 @@ export function resumeClarice(
         lastAttemptAt: marker.last_attempt_at,
         lastOutcome: marker.last_outcome,
         exitCode: lastExit,
+        ...(marker.last_reason ? { lastReason: marker.last_reason } : {}),
       };
     }
   }
@@ -439,7 +490,7 @@ export function resumeClarice(
   const declared = readDeclaredWrongValue(editionDir);
   if (!declared.ok) return { status: "protection-unreadable", message: declared.message };
 
-  const recordAttempt = (outcome: string): void => {
+  const recordAttempt = (outcome: string, why: string): void => {
     const base: ClaricePendingMarker = marker ?? {
       reason: "motivo ilegível no marcador",
       skipped_at: now().toISOString(),
@@ -450,10 +501,11 @@ export function resumeClarice(
       edition: base.edition ?? opts.edition ?? null,
       last_attempt_at: now().toISOString(),
       last_outcome: outcome,
+      last_reason: why,
     });
   };
   const partial = (detail: string): ResumeOutcome => {
-    recordAttempt("partial");
+    recordAttempt("partial", `correção parcial ou não verificável: ${detail}`);
     return { status: "partial", detail };
   };
 
@@ -473,17 +525,21 @@ export function resumeClarice(
     "--retry",
     // Sem o fallback por parágrafo: ele sai 0 com parágrafos sem correção.
     "--no-paragraph-fallback",
+    // #12693: as tentativas do resume vão ao run-log como Stage 4 (antes saíam
+    // com o default, Stage 2, e pareciam do Stage 2).
+    "--stage", "4",
     ...(opts.edition ? ["--edition", opts.edition] : []),
   ];
   const raw = runner(args);
   const run: ClariceRunResult = typeof raw === "number" ? { exitCode: raw, stdout: "" } : raw;
   if (run.crashed) {
-    recordAttempt("crashed");
+    recordAttempt("crashed", `clarice-correct.ts não terminou (${run.crashed})`);
     return { status: "crashed", message: run.crashed };
   }
   if (run.exitCode !== 0) {
-    recordAttempt(`failed:${run.exitCode}`);
-    return { status: "failed", exitCode: run.exitCode };
+    const reason = failureReasonFromRun(run.exitCode, run.stdout);
+    recordAttempt(`failed:${run.exitCode}`, reason);
+    return { status: "failed", exitCode: run.exitCode, reason };
   }
   if (!isCompleteSummary(parseRunnerSummary(run.stdout))) {
     return partial("resumo do clarice-correct ausente, ilegível ou com fallback/parágrafo falho");
@@ -497,7 +553,15 @@ export function resumeClarice(
     return partial(`sugestões do resume ilegíveis (${(e as Error).message})`);
   }
   if (!existsSync(corrected)) return partial("texto corrigido ausente");
-  if (!existsSync(reviewed) || sha256(reviewed) !== hashBefore) return { status: "reviewed-changed" };
+  // #12693 — os três desfechos abaixo falaram com a Clarice: gravar a tentativa,
+  // senão o gate segue mostrando o `last_reason` de uma falha de API anterior.
+  if (!existsSync(reviewed) || sha256(reviewed) !== hashBefore) {
+    recordAttempt(
+      "reviewed-changed",
+      `a Clarice respondeu, mas o ${REVIEWED_REL} mudou durante a chamada; nada aplicado`,
+    );
+    return { status: "reviewed-changed" };
+  }
 
   const preText = readFileSync(preResume, "utf8");
   let finalText = readFileSync(corrected, "utf8");
@@ -522,7 +586,13 @@ export function resumeClarice(
   }
 
   const restored = restoreReveal(preText, finalText);
-  if (restored === null) return { status: "reveal-changed" };
+  if (restored === null) {
+    recordAttempt(
+      "reveal-changed",
+      "a Clarice respondeu, mas mexeu no reveal da edição anterior a ponto de não dar para restaurá-lo; nada aplicado",
+    );
+    return { status: "reveal-changed" };
+  }
   finalText = restored;
 
   const wrongValue = declared.value;
@@ -531,6 +601,10 @@ export function resumeClarice(
     if (before === 0) {
       warn(`o erro intencional declarado ("${wrongValue}") não aparece no ${REVIEWED_REL}: nada a proteger`);
     } else if (!opts.acceptIntentionalErrorChange && countOccurrences(finalText, wrongValue) < before) {
+      recordAttempt(
+        "intentional-error-corrected",
+        `a Clarice respondeu, mas corrigiu o erro intencional declarado ("${wrongValue}"); nada aplicado`,
+      );
       return { status: "intentional-error-corrected", wrongValue };
     }
   }

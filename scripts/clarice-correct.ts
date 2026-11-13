@@ -78,7 +78,10 @@
  *   0 — sucesso
  *   1 — args inválidos
  *   2 — env CLARICE_API_KEY ausente
- *   3 — HTTP non-2xx da API Clarice (todas as tentativas esgotadas)
+ *   3 — falha da chamada REST à Clarice depois das tentativas: HTTP non-2xx,
+ *       timeout do cliente, rede ou certificado TLS recusado (4xx falha sem
+ *       retry). Imprime `{"failure": {kind, code?, status?, message}}` como
+ *       última linha JSON do stdout (#12693).
  *   4 — I/O (read --in ou write --out/--corrected-out)
  *   5 — guard de staleness do --corrected-out (#5755): o arquivo escrito
  *       tem mtime ANTERIOR ao início desta chamada — sinal de que o write
@@ -89,7 +92,8 @@
  *       estourou antes de a Clarice responder. Nada é gravado em --out nem em
  *       --corrected-out. O Stage 2 não para: grava `02-reviewed.md` sem a
  *       Clarice via `scripts/clarice-pending.ts skip` e deixa a revisão como
- *       passo retomável (`clarice-pending.ts resume`).
+ *       passo retomável (`clarice-pending.ts resume`). Também imprime
+ *       `{"failure": {kind: "deadline", message}}` no stdout (#12693).
  */
 
 import "dotenv/config";
@@ -120,12 +124,26 @@ import {
   withClariceRetry,
   backoffDelayMs,
   isFatalHttpError,
+  isFatalClariceError,
+  classifyClariceError,
+  ClariceTimeoutError,
+  ClariceNetworkError,
   DEFAULT_RETRY_POLICY,
+  type ClariceFailureReason,
   type CorrectOptions,
   type AttemptLogEntry,
   type RetryPolicy,
   type RetryResult,
 } from "./lib/clarice-correct-engine.ts";
+
+/**
+ * #12693 — linha JSON de falha no stdout (`{"failure": {...}}`). Mesmo canal
+ * do resumo de sucesso: o `resume` de clarice-pending.ts lê a última linha
+ * JSON do stdout do filho.
+ */
+export function failureSummaryLine(reason: ClariceFailureReason): string {
+  return JSON.stringify({ failure: reason });
+}
 
 export {
   ClariceHttpError,
@@ -134,6 +152,10 @@ export {
   withClariceRetry,
   backoffDelayMs,
   isFatalHttpError,
+  isFatalClariceError,
+  classifyClariceError,
+  ClariceTimeoutError,
+  ClariceNetworkError,
   DEFAULT_RETRY_POLICY,
   type CorrectOptions,
   type AttemptLogEntry,
@@ -587,8 +609,8 @@ async function runChunked<Extra>(
  * há checkpoint por chunk (custo de re-enviar 2-3 chunks é baixo).
  *
  * **Exceção controlada a esse fail-clean (#5082):** se `paragraphFallback.enabled`
- * (default `true`) e o chunk falhar por um motivo NÃO-fatal (não 4xx — ver
- * `isFatalHttpError`), a falha aciona o fallback por-parágrafo (`correctChunkViaParagraphs`)
+ * (default `true`) e o chunk falhar por um motivo NÃO-fatal (não 4xx nem certificado
+ * TLS recusado — ver `isFatalClariceError`, #12693), a falha aciona o fallback por-parágrafo (`correctChunkViaParagraphs`)
  * antes de desistir do chunk. Só se o fallback também recuperar zero parágrafos
  * substantivos é que o erro original propaga (fail-clean preservado nesse caso-limite).
  * Ver JSDoc de `correctChunkViaParagraphs` pra por que essa exceção é segura.
@@ -613,7 +635,7 @@ export async function correctTextChunked(
       const applyResult = applyChunkSuggestions(chunk, suggestions);
       return { correctedText: applyResult.text, rawSuggestions: suggestions, extra: undefined };
     } catch (chunkError) {
-      if (!fallbackEnabled || isFatalHttpError(chunkError)) throw chunkError;
+      if (!fallbackEnabled || isFatalClariceError(chunkError)) throw chunkError;
 
       const fallbackResult = await correctChunkViaParagraphs(chunk, {
         apiKey: opts.apiKey,
@@ -656,7 +678,8 @@ export async function correctTextChunked(
  * o chunk cai em `correctChunkViaParagraphs` ANTES de propagar o erro — subdivide em
  * parágrafos, 1 request isolado por parágrafo substantivo, SEM retry, timeout mais curto
  * (`paragraphFallback.timeoutMs`, default `PARAGRAPH_FALLBACK_TIMEOUT_MS`). Erros fatais
- * (4xx — auth/bad request) NÃO acionam o fallback (`isFatalHttpError`): repetiriam o
+ * (4xx — auth/bad request — e certificado TLS recusado, #12693) NÃO acionam o fallback
+ * (`isFatalClariceError`; o TLS recusado ainda ganha o retry do chunk): repetiriam o
  * mesmo erro em cada parágrafo sem chance de recuperação, então propagam direto. Se o
  * fallback recuperar ao menos 1 parágrafo substantivo, o chunk é considerado "resgatado"
  * (parte ou toda a correção aplicada) — só falha 100% dos parágrafos substantivos é que
@@ -711,7 +734,7 @@ export async function withClariceRetryChunked(
         extra,
       };
     } catch (chunkError) {
-      if (!fallbackEnabled || isFatalHttpError(chunkError)) throw chunkError;
+      if (!fallbackEnabled || isFatalClariceError(chunkError)) throw chunkError;
 
       const fallbackResult = await correctChunkViaParagraphs(chunk, {
         apiKey: opts.apiKey,
@@ -1137,9 +1160,22 @@ export async function main(): Promise<void> {
         details: { deadlineMs, elapsedMs: Date.now() - callStartMs, inPath: args.inPath },
       });
       console.error(`${e.message}. Nada foi gravado em --out/--corrected-out.`);
+      console.log(failureSummaryLine({ kind: "deadline", message: e.message }));
       process.exit(CLARICE_UNAVAILABLE_EXIT_CODE);
     }
-    console.error(`erro chamando Clarice REST: ${(e as Error).message}`);
+    // #12693 — o motivo vai para o run-log e para o stdout (JSON), onde o
+    // `resume` de clarice-pending.ts o lê e grava no marcador que o gate mostra.
+    const reason = classifyClariceError(e);
+    logEvent({
+      edition: args.edition ?? null,
+      stage: args.stage ?? 2,
+      agent: args.agent ?? "clarice-correct-rest",
+      level: "error",
+      message: "clarice_rest_failed",
+      details: { ...reason, elapsedMs: Date.now() - callStartMs, inPath: args.inPath },
+    });
+    console.error(`erro chamando Clarice REST: ${reason.message}`);
+    console.log(failureSummaryLine(reason));
     process.exit(3);
   }
 

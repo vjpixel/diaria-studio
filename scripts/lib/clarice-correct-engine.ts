@@ -34,6 +34,108 @@ export class ClariceHttpError extends Error {
   }
 }
 
+/**
+ * #12693 — o próprio timeout do cliente estourou (o `AbortController` de
+ * `correctTextViaREST`). Antes o erro chegava como o `AbortError` cru do
+ * fetch, "This operation was aborted", sem dizer que foi timeout nem de quanto:
+ * no log e no gate parecia um cancelamento sem causa.
+ */
+export class ClariceTimeoutError extends Error {
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number, payloadBytes: number) {
+    super(
+      `a Clarice não respondeu em ${Math.round(timeoutMs / 1000)}s ` +
+        `(timeout do cliente, payload ${payloadBytes} bytes)`,
+    );
+    this.name = "ClariceTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * Códigos de erro de certificado do OpenSSL/Node. Com eles a conexão chegou a
+ * um servidor, mas o certificado apresentado foi recusado: a cadeia não fecha
+ * numa raiz confiável (`SELF_SIGNED_*`, `UNABLE_TO_*`, `CERT_UNTRUSTED`,
+ * `CERT_SIGNATURE_FAILURE`), está fora da validade (`CERT_HAS_EXPIRED`,
+ * `CERT_NOT_YET_VALID` — relógio da máquina errado também cai aqui) ou não
+ * cobre o hostname (`ERR_TLS_CERT_ALTNAME_INVALID`). O caso típico é a rede
+ * interceptando o HTTPS (Wi-Fi reconectando, portal cativo, antivírus/proxy com
+ * inspeção TLS).
+ */
+const TLS_CERT_ERROR_CODES = new Set([
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "CERT_UNTRUSTED",
+  "CERT_SIGNATURE_FAILURE",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+/**
+ * #12693 — falha de rede/TLS antes de qualquer resposta HTTP. O fetch do Node
+ * lança `TypeError: fetch failed` e esconde o motivo em `cause` (`ENOTFOUND`,
+ * `ECONNRESET`, `SELF_SIGNED_CERT_IN_CHAIN`...); aqui o código sobe para a
+ * mensagem e para `.code`.
+ */
+export class ClariceNetworkError extends Error {
+  readonly code: string | undefined;
+  readonly tls: boolean;
+  constructor(code: string | undefined, detail: string) {
+    const tls = !!code && TLS_CERT_ERROR_CODES.has(code);
+    super(
+      `${tls ? "certificado TLS recusado" : "falha de rede"} chamando a Clarice` +
+        `${code ? ` (${code})` : ""}: ${detail}`,
+    );
+    this.name = "ClariceNetworkError";
+    this.code = code;
+    this.tls = tls;
+  }
+}
+
+/** Motivo de uma falha da chamada à Clarice, para log, marcador e gate (#12693). */
+export interface ClariceFailureReason {
+  /** `deadline` = o teto total do clarice-correct.ts (exit 6), não uma tentativa. */
+  kind: "timeout" | "tls" | "network" | "http" | "deadline" | "other";
+  code?: string;
+  status?: number;
+  message: string;
+}
+
+export function classifyClariceError(e: unknown): ClariceFailureReason {
+  const message = e instanceof Error ? e.message : String(e);
+  if (e instanceof ClariceTimeoutError) return { kind: "timeout", message };
+  if (e instanceof ClariceNetworkError) {
+    return { kind: e.tls ? "tls" : "network", ...(e.code ? { code: e.code } : {}), message };
+  }
+  if (e instanceof ClariceHttpError) return { kind: "http", status: e.status, message };
+  return { kind: "other", message };
+}
+
+/**
+ * Lê o `code` de `cause` (em profundidade, o undici aninha) de um erro do fetch.
+ * Percorre também `AggregateError.errors[0]` (o undici agrega as tentativas de
+ * conexão IPv4/IPv6). Sem `code` em nível nenhum, devolve ao menos a mensagem
+ * mais interna achada em `cause`, para o motivo não ficar só em "fetch failed".
+ */
+export function causeCode(e: unknown): { code?: string; detail?: string } {
+  let cur: unknown = (e as { cause?: unknown })?.cause;
+  let detail: string | undefined;
+  for (let depth = 0; cur && depth < 6; depth++) {
+    const c = cur as { code?: unknown; message?: unknown; cause?: unknown; errors?: unknown };
+    const msg = typeof c.message === "string" && c.message.trim() ? c.message : undefined;
+    if (typeof c.code === "string") return { code: c.code, detail: msg ?? detail };
+    if (msg) detail = msg;
+    if (c.cause) cur = c.cause;
+    else if (Array.isArray(c.errors) && c.errors.length > 0) cur = c.errors[0];
+    else break;
+  }
+  return detail ? { detail } : {};
+}
+
 export interface CorrectOptions {
   apiKey: string;
   text: string;
@@ -146,6 +248,19 @@ export function isFatalHttpError(e: unknown): boolean {
 }
 
 /**
+ * Erro que não adianta sub-dividir por parágrafo: HTTP 4xx (`isFatalHttpError`)
+ * ou certificado TLS recusado (#12693). Usado SÓ nos dois guards de fallback
+ * por parágrafo de `scripts/clarice-correct.ts` (`correctTextChunked` e
+ * `withClariceRetryChunked`): com o TLS recusado, cada parágrafo repetiria o
+ * mesmo erro, N chamadas para nada. O retry de `withClariceRetry` NÃO usa este
+ * helper — lá o TLS recusado segue retentável (usa só `isFatalHttpError`),
+ * porque a janela de reconexão da rede pode fechar dentro do backoff.
+ */
+export function isFatalClariceError(e: unknown): boolean {
+  return isFatalHttpError(e) || (e instanceof ClariceNetworkError && e.tls);
+}
+
+/**
  * Calcula o delay de backoff para tentativa `attempt` (0-indexed).
  * Tentativa 0 = 0ms (sem espera). Tentativa 1+ = baseBackoffMs × 2^(attempt-1).
  */
@@ -163,10 +278,12 @@ export interface RetryResult {
 /**
  * Chama `correctTextViaREST` com retry + backoff exponencial.
  *
- * Em erros de rede/timeout (AbortError, TypeError de network) OU em HTTP 5xx
- * (server-side lento), tenta novamente até `policy.maxAttempts` vezes com delay
- * crescente entre tentativas. Em HTTP 4xx (auth, bad request), falha imediatamente
- * sem retry (retryable=false).
+ * Em `ClariceTimeoutError` (timeout do cliente), `ClariceNetworkError` (rede,
+ * inclusive certificado TLS recusado, #12693) OU em HTTP 5xx (server-side
+ * lento), tenta novamente até `policy.maxAttempts` vezes com delay crescente
+ * entre tentativas. Em HTTP 4xx (auth, bad request), falha imediatamente sem
+ * retry (retryable=false). O TLS recusado só deixa de acionar o fallback por
+ * parágrafo de `clarice-correct.ts` (`isFatalClariceError`), não o retry.
  *
  * O orchestrator ainda pode decidir fazer um skip consciente após este helper
  * retornar erro — este helper apenas aumenta a resiliência da tentativa REST.
@@ -210,12 +327,15 @@ export async function withClariceRetry(
       lastError = e as Error;
       const elapsedMs = Date.now() - attemptStart;
       // HTTP 4xx = não é problema de disponibilidade — não há sentido em retry.
-      const is4xx = isFatalHttpError(e);
+      // Certificado TLS recusado (#12693) CONTINUA retentável aqui: a janela de
+      // reconexão da rede pode fechar dentro do backoff. Só o fallback por
+      // parágrafo o trata como fatal (`isFatalClariceError`).
+      const isFatal = isFatalHttpError(e);
       // #2798 — observabilidade por tentativa: registra timeout/5xx/4xx antes de
       // decidir retry vs. fast-fail, pra permitir diagnosticar padrões (ex: timeout
       // consistente em payloads >5k chars) sem depender só do resultado final.
       // #2852: guard contra callback que lança — sem isso, a exceção do callback
-      // ESCAPARIA no lugar do erro REAL (lastError), e pularia o `if (is4xx) break`
+      // ESCAPARIA no lugar do erro REAL (lastError), e pularia o `if (isFatal) break`
       // abaixo (o throw interromperia o loop antes de chegar lá).
       try {
         opts.onAttempt?.({
@@ -223,7 +343,7 @@ export async function withClariceRetry(
           maxAttempts: policy.maxAttempts,
           elapsedMs,
           payloadBytes,
-          outcome: is4xx ? "fatal_failure" : "retryable_failure",
+          outcome: isFatal ? "fatal_failure" : "retryable_failure",
           status: e instanceof ClariceHttpError ? e.status : undefined,
           errorMessage: lastError.message,
         });
@@ -232,9 +352,9 @@ export async function withClariceRetry(
           `[withClariceRetry] onAttempt (failure) lançou: ${(callbackError as Error).message}\n`,
         );
       }
-      if (is4xx) break;
-      // Timeout (AbortError) e erros de rede (TypeError: fetch failed) → retry.
-      // HTTP 5xx → retry.
+      if (isFatal) break;
+      // ClariceTimeoutError (timeout do cliente), ClariceNetworkError (rede e
+      // certificado TLS recusado, #12693) e HTTP 5xx → retry.
     }
   }
   throw lastError ?? new Error("clarice REST: todas as tentativas falharam");
@@ -269,6 +389,20 @@ export async function correctTextViaREST(
       }),
       signal: controller.signal,
     });
+  } catch (e) {
+    // #12693 — o AbortError do nosso próprio timeout vira erro com o motivo;
+    // o `TypeError: fetch failed` ganha o código de `cause` (rede/TLS).
+    if (controller.signal.aborted) {
+      throw new ClariceTimeoutError(timeoutMs, Buffer.byteLength(opts.text, "utf8"));
+    }
+    const { code, detail } = causeCode(e);
+    // Sem `.code` em nível nenhum, ainda embrulha com a mensagem de `cause`,
+    // para o motivo não ficar só em "fetch failed". Erro sem `cause` nenhum
+    // (bug, não rede) sobe como veio.
+    if (code || detail) {
+      throw new ClariceNetworkError(code, detail ?? (e as Error).message);
+    }
+    throw e;
   } finally {
     clearTimeout(timeout);
   }
