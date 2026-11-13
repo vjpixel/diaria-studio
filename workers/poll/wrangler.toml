@@ -76,8 +76,10 @@ class_name = "ScoreCounter"
 # ("No such binding" para DurableObjectNamespace) ao tentar usar o namespace.
 [[migrations]]
 tag = "v1-vote-dedup"
-# Free plan do Cloudflare exige DO com storage SQLite (new_sqlite_classes),
-# não new_classes (KV-backed, só plano pago) — erro 10097 no deploy. O
+# Free plan do Cloudflare (o plano da conta em #2236; hoje Workers Paid, #12533)
+# exige DO com storage SQLite (new_sqlite_classes), não new_classes (KV-backed,
+# só plano pago) — erro 10097 no deploy. A classe já nasceu SQLite e não se
+# converte de volta, então new_sqlite_classes segue obrigatório. O
 # state.storage API é idêntico; nenhuma mudança de código no DO (#2236).
 new_sqlite_classes = ["VoteDedup"]
 

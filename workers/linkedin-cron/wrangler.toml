@@ -30,8 +30,10 @@ class_name = "LinkedInScheduler"
 # ("No such binding" para DurableObjectNamespace).
 [[migrations]]
 tag = "v1-linkedin-scheduler"
-# Free plan do Cloudflare exige DO com storage SQLite (new_sqlite_classes),
-# não new_classes (KV-backed, só plano pago) — erro 10097 (#2236). state.storage
+# Free plan do Cloudflare (o plano da conta em #2236; hoje Workers Paid, #12533)
+# exige DO com storage SQLite (new_sqlite_classes), não new_classes (KV-backed,
+# só plano pago) — erro 10097 (#2236). A classe já nasceu SQLite e não se
+# converte de volta, então new_sqlite_classes segue obrigatório. state.storage
 # API idêntico. NOTA: o DEPLOY-HOLD (#2235) foi resolvido pelo fix daquela mesma
 # issue (commit b202dac9) e a issue está fechada — o worker já foi deployado
 # várias vezes desde então (#2236, #1168 rearm, #3817/#3818 Instagram, #3903,
@@ -70,6 +72,9 @@ THREADS_API_VERSION = "v1.0"
 # (Cloudflare cron tem SLA "~5min" mas lagou 10-15min em 2026-05-12). Decisão
 # 2026-05-12 (Pixel): voltar pra */5 pra preservar margem do KV list free-tier
 # (1k/day): */3 = 480/day = ~50% do limite, próximo demais. */5 = 288/day = ~30%.
+# Conta hoje: Workers Paid (#12533, fatura de 09/11/2026) — a cota de KV é
+# mensal e o excedente é cobrado, não bloqueia; a conta acima é do free tier
+# da época. Reconferir com `npx tsx scripts/cloudflare-plan.ts`.
 # Com #1168 (DO alarms), cron é apenas safety net — não o path primário.
 # Workaround pra lag em edições críticas: POST /fire-now (auth).
 # Ao disparar, lê itens com scheduled_at <= now e fira o webhook Make.

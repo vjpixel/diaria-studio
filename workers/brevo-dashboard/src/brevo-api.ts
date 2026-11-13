@@ -341,6 +341,12 @@ export function resolveRecentStatsTtl(sentDate: string | null, nowMs = Date.now(
  * chaves × (86400/4200) ≈ ~89 writes/dia — MENOS que os ~208 estimados a
  * 1800s (TTL maior = menos ciclos de expiração), então a margem do #2282
  * pro free-tier compartilhado com o poll worker só aumenta.
+ *
+ * #13001: as contas do #2282/#7007 acima são do tempo do free tier (teto
+ * DIÁRIO de 1.000 writes por conta). A conta hoje é Workers Paid (#12533):
+ * cota MENSAL incluída de KV, excedente cobrado, nada bloqueia no dia.
+ * Reconferir plano e uso com `npx tsx scripts/cloudflare-plan.ts` antes de
+ * decidir TTL por cota.
  */
 
 
@@ -685,8 +691,10 @@ export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
 // campaigns-lastgood) — reintroduzido aqui porque o write atual
 // (`buildDashboardResponse`) grava INCONDICIONALMENTE a cada fetch bem
 // sucedido não-`fresh`, sem TTL de escrita nem hash: no free tier da
-// Cloudflare (~1.000 escritas de KV/dia POR CONTA, compartilhado com o
-// Worker `poll`) isso já quase estourou uma vez (#2282).
+// Cloudflare, em que a conta estava na época (~1.000 escritas de KV/dia POR
+// CONTA, compartilhado com o Worker `poll`), isso já quase estourou uma vez
+// (#2282). Hoje a conta é Workers Paid (#12533; cota mensal incluída,
+// excedente cobrado — `npx tsx scripts/cloudflare-plan.ts`).
 export const LASTGOOD_CAMPAIGNS_HASH_KEY = "dash:lastgood:campaigns:hash";
 
 /**

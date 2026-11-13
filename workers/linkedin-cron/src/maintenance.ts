@@ -11,8 +11,11 @@
  *     enquanto ainda dá pra agir — em vez de esperar os posts caírem na DLQ.
  *  2. Alarme de DLQ: avisa por `ALERT_WEBHOOK_URL` (opcional) quando entram
  *     entries novas no DLQ, de qualquer canal. Sem a var, só loga. A varredura
- *     custa KV `list` (free tier 1k/dia por CONTA) e por isso NÃO roda em todo
- *     cron `*\/5` (#9618, ver `shouldSweepDlq`).
+ *     custa KV `list` e por isso NÃO roda em todo cron `*\/5` (#9618, ver
+ *     `shouldSweepDlq`). O gate nasceu no free tier (teto de 1k `list`/dia
+ *     por CONTA); hoje a conta é Workers Paid (#12533, cota mensal incluída,
+ *     excedente cobrado — `npx tsx scripts/cloudflare-plan.ts`), e o gate
+ *     segue como economia, não como guarda de teto.
  */
 import type { Env, QueueEntry } from "./index";
 
@@ -225,9 +228,11 @@ async function persistRefreshed(env: Env, token: string, now: number, seed: stri
 /**
  * #9618 — gate da varredura de DLQ. O cron roda a cada 5 min e `fireDueItems`
  * já gasta 1 KV `list` por disparo (288/dia); varrer `dlq:` em todo disparo
- * somaria ≥288 `list`/dia, comendo a margem do free tier (1k/dia por conta) que
- * o editor exigiu ao voltar de `*\/3` pra `*\/5` (decisão 2026-05-12,
- * wrangler.toml). Varre só:
+ * somaria ≥288 `list`/dia, comendo a margem do free tier (1k/dia por conta, o
+ * plano da época) que o editor exigiu ao voltar de `*\/3` pra `*\/5` (decisão
+ * 2026-05-12, wrangler.toml). A conta hoje é Workers Paid (#12533: cota
+ * mensal, excedente cobrado, nada bloqueia no dia); a economia segue valendo.
+ * Varre só:
  *  - quando ESTE disparo moveu item pra DLQ (`firedDlq > 0`) — aviso imediato; e
  *  - no disparo do topo da hora (minuto UTC < 5 de `scheduledTime`) — pega as
  *    entries que entram por outros caminhos (alarm() do Durable Object, o path

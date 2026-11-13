@@ -735,7 +735,9 @@ describe("Constantes exportadas", () => {
 // - #1146 observou lag de 10-15min em 2026-05-12 (Cloudflare cron SLA "~5min")
 // - PR #1167 mudou pra */3 como mitigação parcial
 // - Decisão 2026-05-12 (revert): voltar pra */5 pra preservar margem KV list
-//   (free tier 1k/day; */3 = 480/day = ~50%, */5 = 288/day = ~30%).
+//   (free tier 1k/day; */3 = 480/day = ~50%, */5 = 288/day = ~30%). Conta
+//   hoje é Workers Paid (#12533, cota mensal, excedente cobrado); a conta
+//   acima é do plano da época.
 // Real fix = #1168 (Durable Object alarms — item-specific, zero polling).
 describe("Cron config", () => {
   it("wrangler.toml usa */5 (cron a cada 5min)", async () => {
