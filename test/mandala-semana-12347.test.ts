@@ -444,3 +444,26 @@ describe("validações de entrada (#12347, review P2d/P2e/P3)", () => {
     assert.throws(() => checkFormConsistency({ ...f, semana: null }, null), /--semana/);
   });
 });
+
+describe("semana 3 (#12919)", () => {
+  it("propõe reel do dia seguinte sem inventar resposta e orienta retirar dos extras", () => {
+    const posts = postsFromGraphMedia(GRAPH).posts.filter((p) => brtDate(p.timestamp) !== "2026-11-01");
+    const plan = buildPlan(planInput({ selection: selectWeek(posts, weekDays()) }));
+    assert.equal(plan.daily.find((d) => d.date === "2026-11-01")!.url, null);
+    assert.ok(plan.missing.some((m) => m.includes("dia 12") && m.includes("DfPpQ7ajJs6") && m.includes("tirar dos extras ao confirmar")));
+    assert.ok(plan.extras.some((url) => url.includes("DfPpQ7ajJs6")), "até a confirmação, plano preserva os extras");
+  });
+
+  it("não propõe post comum nem reel de dois dias depois", () => {
+    const posts = postsFromGraphMedia(GRAPH).posts.filter((p) => brtDate(p.timestamp) !== "2026-11-01" && !(brtDate(p.timestamp) === "2026-11-02" && p.format === "reel"));
+    const plan = buildPlan(planInput({ selection: selectWeek(posts, weekDays()) }));
+    assert.ok(plan.missing.some((m) => m.includes("dia 12") && m.includes("nenhum reel candidato no dia seguinte")));
+  });
+
+  it("série YouTube ausente informa comando com início do período e mantém total incompleto", () => {
+    const plan = buildPlan(planInput({ youtube: youtubeSubsUnavailable("2026-10-29", "2026-11-04") }));
+    assert.ok(plan.missing.some((m) => m.includes("youtube-analytics-snapshot.ts --since 2026-10-29") && m.includes("2026-11-04")));
+    assert.equal(plan.newFollowers.totalComplete, false);
+    assert.equal(plan.newFollowers.total, null);
+  });
+});
