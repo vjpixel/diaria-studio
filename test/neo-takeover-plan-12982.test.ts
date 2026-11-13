@@ -11,15 +11,18 @@ import {
   buildDisarmScript,
   buildTriggerPs,
   decideArmPrecondition,
+  DRAIN_WAIT_SECONDS,
   failoverTaskName,
   isAgentWorktreePath,
   parseStatusOutput,
   planLeaseRelease,
+  POWERSHELL_TIMEOUT_MS,
   psQuote,
+  STOP_WAIT_SECONDS,
   toLocalSchedule,
 } from "../scripts/lib/failover/neo-takeover-plan.ts";
 import { main as takeoverMain, parseMode } from "../scripts/failover/neo-takeover.ts";
-import { SCHEDULER_LEASE_KEY } from "../scripts/lib/failover/scheduler-lease.ts";
+import { ARM_LEASE_BY, SCHEDULER_LEASE_KEY } from "../scripts/lib/failover/scheduler-lease.ts";
 import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import { assessCodeFreshness } from "../scripts/lib/sync-code-freshness.ts";
 import { standbySkippedSync } from "../scripts/run-task.ts";
@@ -162,10 +165,12 @@ describe("run-task.ts: run do Neo não sincroniza o checkout", () => {
 });
 
 describe("parseMode", () => {
-  it("exige exatamente um modo; --force só com --arm; flag desconhecida recusa", () => {
+  it("exige exatamente um modo; --force só com --arm/--disarm; flag desconhecida recusa", () => {
     assert.equal(parseMode([]).ok, false);
     assert.equal(parseMode(["--arm", "--disarm"]).ok, false);
-    assert.equal(parseMode(["--disarm", "--force"]).ok, false);
+    assert.equal(parseMode(["--status", "--force"]).ok, false);
+    const dis = parseMode(["--disarm", "--force"]);
+    assert.ok(dis.ok && dis.mode === "disarm" && dis.force, "#12993: --disarm --force libera o lease fora do Windows");
     assert.equal(parseMode(["--arm", "--forca"]).ok, false);
     const ok = parseMode(["--arm", "--force", "--dry-run"]);
     assert.ok(ok.ok && ok.mode === "arm" && ok.force && ok.dryRun);
@@ -179,14 +184,22 @@ describe("standbySkippedSync tem outcome próprio (#12982)", () => {
 });
 
 describe("F6: parar antes de remover", () => {
-  it("disarm e arm param as Running e esperam antes do Unregister", () => {
+  it("#12993: disarm e arm DESABILITAM, esperam a run terminar, e só então usam Stop (último recurso) e removem", () => {
     for (const script of [buildDisarmScript(), buildArmPlan({ tasks: SCHEDULED_TASKS, nodePath: NODE, repoRoot: REPO, localOffsetMin: -180 }).script]) {
       const lines = script.split("\n");
-      const stop = lines.findIndex((l) => l.includes("Stop-ScheduledTask"));
-      const wait = lines.findIndex((l) => l.startsWith("while ("));
+      const disable = lines.findIndex((l) => l.includes("| Disable-ScheduledTask"));
+      const drain = lines.findIndex((l) => l.startsWith("while (") && l.includes("$drain"));
+      const stop = lines.findIndex((l) => l.includes("| Stop-ScheduledTask"));
+      const warn = lines.findIndex((l) => l.includes("[Console]::Error.WriteLine"));
+      const stopWait = lines.findIndex((l, i) => i > stop && l.includes("while (") && l.includes("throw"));
       const unreg = lines.findIndex((l) => l.includes("Unregister-ScheduledTask"));
-      assert.ok(stop >= 0 && wait > stop && unreg > wait, script);
+      assert.ok(disable >= 0 && drain > disable && warn > drain && stop > warn && stopWait > stop && unreg > stopWait, script);
+      assert.match(script, new RegExp(`AddSeconds\\(${DRAIN_WAIT_SECONDS}\\)`));
+      assert.ok(DRAIN_WAIT_SECONDS > 60, "a espera pela run em curso passa de 60 s");
+      assert.match(lines[warn], /AVISO #12993/, "o Stop sai com aviso de registro parcial em stderr");
+      assert.ok(lines[stop].startsWith("  "), "o Stop fica dentro do if: só roda se a run não terminou");
     }
+    assert.ok(POWERSHELL_TIMEOUT_MS >= (DRAIN_WAIT_SECONDS + STOP_WAIT_SECONDS) * 1000, "o processo PowerShell não morre antes das esperas");
   });
 
   it("lease corrompido não é liberado pelo --disarm", () => {
@@ -291,6 +304,33 @@ describe("neo-takeover main — orquestração com runPowerShell/openKv fingidos
     const h = harness({ kv: { [SCHEDULER_LEASE_KEY]: JSON.stringify({ host: "neo", until: "2026-11-13T15:00:00Z" }) } });
     assert.equal(await takeoverMain(["--disarm"], h.deps), 0);
     assert.deepEqual(h.deleted, [SCHEDULER_LEASE_KEY]);
+  });
+
+  it("#12993: --disarm fora do Windows sem --force recusa e NÃO apaga o lease; com --force apaga", async () => {
+    const kv = { [SCHEDULER_LEASE_KEY]: JSON.stringify({ host: "neo", until: "2026-11-13T15:00:00Z" }) };
+    const a = harness({ kv });
+    assert.equal(await takeoverMain(["--disarm"], { ...a.deps, platform: "linux" }), 1);
+    assert.equal(a.deleted.length, 0, "lease do Neo mantido: as tarefas dele seguem armadas no Windows");
+    assert.equal(a.scripts.length, 0);
+    assert.match(a.out.join("\n"), /fora do Windows/);
+    const b = harness({ kv });
+    assert.equal(await takeoverMain(["--disarm", "--force"], { ...b.deps, platform: "linux" }), 0);
+    assert.deepEqual(b.deleted, [SCHEDULER_LEASE_KEY]);
+  });
+
+  it("#12993: o AVISO do Stop-ScheduledTask (stderr de script que deu certo) chega ao editor", async () => {
+    const h = harness({
+      kv: { [SCHEDULER_LEASE_KEY]: JSON.stringify({ host: "neo", until: "2026-11-13T15:00:00Z" }) },
+      ps: () => ({ ok: true, stdout: "", stderr: "AVISO #12993: ainda em execução" }),
+    });
+    assert.equal(await takeoverMain(["--disarm"], h.deps), 0);
+    assert.match(h.out.join("\n"), /AVISO #12993/);
+  });
+
+  it("#12993: o --arm grava o lease com o rótulo de armação (ARM_LEASE_BY)", async () => {
+    const h = harness();
+    assert.equal(await takeoverMain(["--arm", "--force"], h.deps), 0);
+    assert.equal(JSON.parse(h.store.get(SCHEDULER_LEASE_KEY)!).by, ARM_LEASE_BY);
   });
 
   it("F5: --disarm com KV inacessível sai 1 com o horário de expiração", async () => {

@@ -775,6 +775,12 @@ export interface ShortPublishedEntry {
   cover?: ShortCoverRecord;
   /** #11795: última troca de texto/capa do post já agendado (`--update-scheduled`). */
   updated_at?: string;
+  /**
+   * #13000: o agendamento deste destino foi cancelado pelo `--cancel` do corte
+   * (YouTube private sem `publishAt`, vídeo do Facebook apagado). A entrada
+   * fica no registro para o destino nunca ser republicado por engano.
+   */
+  cancelled_at?: string;
 }
 
 export interface ShortsPublishedFile {

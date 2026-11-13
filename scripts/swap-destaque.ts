@@ -118,6 +118,7 @@ import { useMelhorPostReselectStep } from "./lib/use-melhor-post.ts"; // #9755
 import { lintNewsletter, type ApprovedJson } from "./lib/lint-checks/url-bucket.ts"; // #9961
 import { urlsMatch } from "./lib/url-utils.ts"; // #11497
 import { promotedSourceUnreadWarning } from "./lib/diaria/source-readability.ts"; // #12258
+import { d1NoVideoSwapStep } from "./lib/diaria/d1-video-invite-status.ts"; // #12946
 import {
   backupDemotedDestaque,
   findSwapBackupForUrl,
@@ -526,6 +527,8 @@ export function buildSwapDestaqueSteps(
     `social-writer + social-curto em escopo reduzido (d${position}), splice em 03-social.md (## d${position} e ## d${position}-cards em # Social, #12094)`,
     `Só DEPOIS do splice: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9169)`,
     `Escrever _internal/02-d${position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${dir}/_internal/02-d${position}-prompt.md --out-dir ${dir}/ --destaque d${position}`,
+    // #12946: D1 trocado em edição sem vídeo — marcar antes do upload, senão o convite volta.
+    ...[d1NoVideoSwapStep(dir, position === 1)].filter((x): x is string => x !== null),
     `gen-carousel-cards.ts + upload-images-public.ts (após gerar imagem nova)`,
     `fact-checker completo antes do gate (destaque novo, sem checagem prévia)`,
     `npx tsx scripts/check-invariants.ts --edition-dir ${dir} --stage 4`,

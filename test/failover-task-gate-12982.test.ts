@@ -20,7 +20,7 @@ import {
 } from "../scripts/lib/failover/task-gate.ts";
 import { SCHEDULER_LEASE_KEY, serializeLease, type LastKnownLease } from "../scripts/lib/failover/scheduler-lease.ts";
 import { execTsxStep } from "../scripts/lib/task-runner.ts";
-import { main as runTaskMain } from "../scripts/run-task.ts";
+import { GATE_KV_TIMEOUT_MS, main as runTaskMain, standbyCheckoutRefusal } from "../scripts/run-task.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** Raiz fingida com data/editions (guard das tasks dos Shorts) para os testes que rodam passos. */
@@ -224,9 +224,10 @@ describe("run-task.ts main — gate integrado", () => {
 
   it("task não-critical rodada com --failover-standby: exit 1 sem rodar", async () => {
     const { value: code } = await quiet(() =>
-      runTaskMain(["--task", "Diaria-GA4-Sync", "--failover-standby"], ROOT, {
+      runTaskMain(["--task", "Diaria-GA4-Sync", "--failover-standby"], fakeRoot(), {
         gate: { env: ENV, platformConfig: PLATFORM, makeKv: kvWith({}).makeKv, platform: "linux", memory: memMemory() },
         readDotenv: () => ({}),
+        readGitBranch: () => "master",
         runner: {
           syncCode: () => {
             throw new Error("não devia sincronizar");
@@ -246,6 +247,7 @@ describe("run-task.ts main — gate integrado", () => {
         // Sem gate.env: o env do gate sai do .env + processEnv.
         gate: { platformConfig: PLATFORM, makeKv: kv.makeKv, now: () => T0, platform: "linux", memory: memMemory() },
         readDotenv: () => ({ ...ENV, SO_NO_DOTENV_12982: "do-arquivo", CLOUDFLARE_ACCOUNT_ID: "acc-do-arquivo" }),
+        readGitBranch: () => "master",
         processEnv: { CLOUDFLARE_ACCOUNT_ID: "acc-do-ambiente", CLOUDFLARE_WORKERS_TOKEN: "" },
         execTsxStep: (_s, _a, _c, _m, env) => {
           stepEnvs.push(env);
@@ -290,6 +292,100 @@ describe("run-task.ts main — gate integrado", () => {
     assert.equal(usedReal, 0, "o wrapper com env só existe na run do Neo");
     rmSync(join(tmpdir(), `run-task-12982b-${process.pid}.log`), { force: true });
     rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("#12993: run do Neo — checkout, .env e KV", () => {
+  const standbyDeps = (over: Record<string, unknown> = {}) => ({
+    gate: { platformConfig: PLATFORM, makeKv: kvWith({ [SCHEDULER_LEASE_KEY]: neoLease }).makeKv, now: () => T0, platform: "linux" as const, memory: memMemory() },
+    readDotenv: () => ({ ...ENV }),
+    readGitBranch: () => "master",
+    execTsxStep: () => {
+      throw new Error("não devia rodar passo");
+    },
+    runner: {
+      syncCode: () => {
+        throw new Error("não devia sincronizar");
+      },
+    },
+    ...over,
+  });
+
+  it("checkout do Neo fora de master: exit 1 sem tocar o lease nem rodar passo", async () => {
+    const root = fakeRoot();
+    try {
+      const kv = kvWith({ [SCHEDULER_LEASE_KEY]: neoLease });
+      const { value: code, err } = await quiet(() =>
+        runTaskMain(["--task", "Diaria-Shorts-Instagram", "--failover-standby"], root, {
+          ...standbyDeps({ readGitBranch: () => "overnight/fix-123-x" }),
+          gate: { platformConfig: PLATFORM, makeKv: kv.makeKv, now: () => T0, platform: "linux", memory: memMemory() },
+        }),
+      );
+      assert.equal(code, 1);
+      assert.equal(kv.seen.length, 0, "recusa antes do gate: o lease nem é lido");
+      assert.ok(err.some((l) => /checkout em overnight\/fix-123-x, não em master/.test(l)), err.join("\n"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("branch não lida no Neo: exit 1 (fail-closed)", async () => {
+    const root = fakeRoot();
+    try {
+      const { value: code } = await quiet(() => runTaskMain(["--task", "Diaria-Shorts-Instagram", "--failover-standby"], root, standbyDeps({ readGitBranch: () => null })));
+      assert.equal(code, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("standbyCheckoutRefusal: master passa; feature branch, null e worktree de agente recusam", () => {
+    assert.equal(standbyCheckoutRefusal("master", "C:\\repo"), null);
+    assert.match(standbyCheckoutRefusal("feat/x", "C:\\repo") ?? "", /não em master/);
+    assert.match(standbyCheckoutRefusal(null, "C:\\repo") ?? "", /não lida/);
+    assert.match(standbyCheckoutRefusal("master", "C:\\repo\\.claude\\worktrees\\a") ?? "", /worktree de agente/);
+  });
+
+  it(".env ilegível (não ENOENT) no Neo: exit 1 com a causa real, não 'configuração do KV ausente'", async () => {
+    const root = fakeRoot();
+    try {
+      const { value: code, err } = await quiet(() =>
+        runTaskMain(["--task", "Diaria-Shorts-Instagram", "--failover-standby"], root, standbyDeps({
+          readDotenv: () => {
+            throw new Error(".env ilegível em X: EACCES: permission denied");
+          },
+        })),
+      );
+      assert.equal(code, 1);
+      const all = err.join("\n");
+      assert.match(all, /EACCES/);
+      assert.doesNotMatch(all, /configuração do KV ausente/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it(".env ilegível no 300: segue com WARN (o .env é complemento do EnvironmentFile)", async () => {
+    const root = fakeRoot();
+    try {
+      const kv = kvWith({ [SCHEDULER_LEASE_KEY]: neoLease });
+      const { value: code, err } = await quiet(() =>
+        runTaskMain(["--task", "Diaria-Shorts-Instagram"], root, {
+          gate: { env: ENV, platformConfig: PLATFORM, makeKv: kv.makeKv, now: () => T0, platform: "linux", memory: memMemory() },
+          readDotenv: () => {
+            throw new Error(".env ilegível em X: EACCES");
+          },
+        }),
+      );
+      assert.equal(code, 0, "cede ao lease do Neo como antes, sem quebrar pelo .env");
+      assert.ok(err.some((l) => /WARN \.env ilegível/.test(l)), err.join("\n"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("teto do KV no caminho do gate é menor que o default de 30 s do cliente", () => {
+    assert.ok(GATE_KV_TIMEOUT_MS <= 10_000);
   });
 });
 

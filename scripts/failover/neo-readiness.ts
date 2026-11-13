@@ -22,9 +22,9 @@
  *   - checkout principal em `master` e não atrás do `origin/master` do
  *     último fetch (sem fetch: o Passo 0 de `/diaria-edicao` acabou de buscar);
  *   - tokens das redes em modo leitura: LinkedIn pessoal (`GET /v2/userinfo`,
- *     `checkTokenRemote`) e Threads pessoal (lista os posts da última hora,
- *     `listThreadsProfilePosts`). Instagram: sem helper de leitura exportado,
- *     sai "não verificado" em vez de inventar chamada.
+ *     `checkTokenRemote`), Threads pessoal (lista os posts da última hora,
+ *     `listThreadsProfilePosts`) e Instagram (lê o perfil da conta,
+ *     `GET /{ig-user-id}?fields=id,username`, `probeInstagramToken`, #13002).
  *
  * Uso:
  *   npx tsx scripts/failover/neo-readiness.ts             # tabela; exit 0 pronto, 1 falta algo
@@ -83,6 +83,7 @@ import {
 } from "../lib/failover/neo-readiness.ts";
 import { mergeDotenvUnderEnv, readPlatformConfigFile } from "../lib/failover/task-gate.ts";
 import { checkTokenRemote, parseExpiresAt, readPersonalCreds } from "../lib/linkedin-personal.ts";
+import { probeInstagramToken } from "../lib/instagram-token-probe.ts";
 import { getMachineId, isNeoMachine } from "../lib/machine-id.ts";
 import { resolveFailoverTier, SCHEDULED_TASKS, type ScheduledTaskDefinition } from "../lib/scheduled-tasks.ts";
 import { DOPPLER_SCOPE_ARGS } from "../lib/secret-persist.ts";
@@ -249,6 +250,16 @@ export async function probeThreads(env: Record<string, string | undefined>, now:
   }
 }
 
+/**
+ * Token do Instagram, lido do `.env` (o que a task recebe), pela leitura do
+ * perfil da conta (#13002). Mesmo tratamento do Threads: recusado = falta;
+ * rede, 5xx e limite = não verificado.
+ */
+export async function probeInstagram(env: Record<string, string | undefined>, fetchFn: typeof fetch): Promise<TokenProbe> {
+  const r = await probeInstagramToken({ env, fetch: fetchFn });
+  return r.state === "valid" ? { state: "valid" } : r;
+}
+
 export interface CollectOptions {
   offline: boolean;
   limits?: CollectLimits;
@@ -361,6 +372,7 @@ export async function collectReadiness(d: ReadinessDeps, opts: CollectOptions): 
         if (opts.offline) return evaluateToken(t, { state: "skipped", reason: "--offline" });
         if (t === "linkedin") return evaluateToken(t, await probeLinkedIn(dotenv, now, fetchFn));
         if (t === "threads") return evaluateToken(t, await probeThreads(dotenv, now, fetchFn));
+        if (t === "instagram") return evaluateToken(t, await probeInstagram(dotenv, fetchFn));
         return evaluateToken(t, { state: "no-helper", reason: "sem helper de leitura seguro no repo" });
       }),
     );

@@ -41,20 +41,34 @@ export function parseLastKnown(raw: string): LastKnownLease | null {
   return lease.kind === "ok" ? { kind: "ok", lease: lease.lease, seenAt: r.seenAt } : null;
 }
 
+/**
+ * Memória em arquivo. Arquivo AUSENTE é "sem memória" (`null`, primeira run);
+ * qualquer outro erro de leitura ou de gravação lança com o caminho no texto
+ * (#12993), para o chamador avisar: diretório sem permissão no `300` deixaria
+ * a proteção F3 desligada para sempre sem log. Conteúdo corrompido segue
+ * `null` (a próxima gravação o substitui).
+ */
 export function fileLeaseMemory(path: string): LeaseMemory {
   return {
     load() {
+      let raw: string;
       try {
-        return parseLastKnown(readFileSync(path, "utf8"));
-      } catch {
-        return null;
+        raw = readFileSync(path, "utf8");
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw new Error(`${path}: ${(e as Error).message}`);
       }
+      return parseLastKnown(raw);
     },
     save(value) {
-      mkdirSync(dirname(path), { recursive: true });
-      const tmp = `${path}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify(value), "utf8");
-      renameSync(tmp, path);
+      try {
+        mkdirSync(dirname(path), { recursive: true });
+        const tmp = `${path}.${process.pid}.tmp`;
+        writeFileSync(tmp, JSON.stringify(value), "utf8");
+        renameSync(tmp, path);
+      } catch (e) {
+        throw new Error(`${path}: ${(e as Error).message}`);
+      }
     },
   };
 }

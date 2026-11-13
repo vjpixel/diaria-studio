@@ -7,7 +7,7 @@
  */
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,7 +43,9 @@ import {
   UNVERIFIED_STREAK_THRESHOLD,
   updateUnverifiedStreak,
 } from "../scripts/lib/failover/neo-readiness-alarm.ts";
-import { main as readinessMain, parseDopplerNames, probeLinkedIn, probeThreads, withTimeout, type ReadinessDeps } from "../scripts/failover/neo-readiness.ts";
+import { main as readinessMain, parseDopplerNames, probeInstagram, probeLinkedIn, probeThreads, withTimeout, type ReadinessDeps } from "../scripts/failover/neo-readiness.ts";
+import { classifyInstagramProfileResponse, probeInstagramToken } from "../scripts/lib/instagram-token-probe.ts";
+import { missingYouTubeCredentials } from "../scripts/lib/diaria/youtube-upload.ts";
 import { main as alarmMain, type AlarmDeps } from "../scripts/neo-readiness-alarm.ts";
 import { isNeoMachine } from "../scripts/lib/machine-id.ts";
 import { R2_ENV_VARS } from "../scripts/lib/r2-object-upload.ts";
@@ -224,6 +226,17 @@ describe("mapa de segredos por script", () => {
   });
   it("todo script mapeado existe", () => {
     for (const s of Object.keys(CRITICAL_SCRIPT_REQUIREMENTS)) assert.ok(existsSync(join(REPO_ROOT, s)), `${s} não existe`);
+  });
+  it("#12993: video-d1-link-watch exige a lista inteira de missingYouTubeCredentials e a página do Facebook", () => {
+    const names = CRITICAL_SCRIPT_REQUIREMENTS["scripts/video-d1-link-watch.ts"].secrets.map((n) => n[0]);
+    for (const n of missingYouTubeCredentials({})) assert.ok(names.includes(n), `${n} fora do mapa`);
+    assert.ok(names.includes("YOUTUBE_CHANNEL_ID"));
+    const cfg = JSON.parse(readFileSync(join(REPO_ROOT, "platform.config.json"), "utf8")) as {
+      publishing: { social: { facebook: { pages: Array<{ slug: string; page_id_env: string; token_env: string }> } } };
+    };
+    const diaria = cfg.publishing.social.facebook.pages.find((p) => p.slug === "diaria");
+    assert.ok(diaria);
+    assert.ok(names.includes(diaria.page_id_env) && names.includes(diaria.token_env), "envs da página diaria no mapa");
   });
   it("a lista do R2 bate com R2_ENV_VARS", () => {
     const r2 = CRITICAL_SCRIPT_REQUIREMENTS["scripts/shorts-instagram-timer.ts"].secrets.filter((n) => n[0].startsWith("R2_"));
@@ -701,5 +714,98 @@ describe("CLI neo-readiness-alarm (deps falsas)", () => {
     const b = deps();
     assert.equal(await alarmMain(["--dry-run"], b.d), 0);
     assert.deepEqual(b.calls, { saveIssues: 0, saveStreak: 0, apply: 0 });
+  });
+});
+
+describe("#13002: token do Instagram pela leitura do perfil", () => {
+  const ENV_IG = { INSTAGRAM_ACCESS_TOKEN: "tok-ig-secreto-77", INSTAGRAM_BUSINESS_ACCOUNT_ID: "1784" };
+  const resp = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+
+  it("classifica: 200 com id válido; 190/401/403/400 inválido; limite, 5xx e sem id desconhecido", () => {
+    assert.equal(classifyInstagramProfileResponse(200, { id: "1784", username: "diar.ia.br" }).state, "valid");
+    assert.equal(classifyInstagramProfileResponse(400, { error: { code: 190, message: "Error validating access token: Session has expired" } }).state, "invalid");
+    assert.equal(classifyInstagramProfileResponse(401, {}).state, "invalid");
+    assert.equal(classifyInstagramProfileResponse(403, null).state, "invalid");
+    assert.equal(classifyInstagramProfileResponse(400, { error: { code: 100, message: "Unsupported get request" } }).state, "invalid");
+    assert.equal(classifyInstagramProfileResponse(400, { error: { code: 4, message: "Application request limit reached" } }).state, "unknown");
+    assert.equal(classifyInstagramProfileResponse(500, null).state, "unknown");
+    assert.equal(classifyInstagramProfileResponse(200, {}).state, "unknown");
+  });
+
+  it("GET só de leitura no perfil da conta, token no header e nunca na URL", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const f = (async (u: string, i?: RequestInit) => {
+      calls.push({ url: String(u), init: i });
+      return new Response(JSON.stringify({ id: "1784" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const r = await probeInstagramToken({ env: { ...ENV_IG, FACEBOOK_API_VERSION: "v99.0" }, fetch: f });
+    assert.equal(r.state, "valid");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].init?.method, "GET");
+    assert.equal(calls[0].url, "https://graph.facebook.com/v99.0/1784?fields=id,username");
+    assert.doesNotMatch(calls[0].url, /tok-ig-secreto-77/);
+    assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, "Bearer tok-ig-secreto-77");
+  });
+
+  it("credencial ausente: skipped (o segredo já sai como falta); rede caída: unknown", async () => {
+    assert.equal((await probeInstagramToken({ env: {}, fetch: resp(200, { id: "x" }) })).state, "skipped");
+    const down = (async () => {
+      throw new Error("ECONNRESET");
+    }) as unknown as typeof fetch;
+    assert.equal((await probeInstagramToken({ env: ENV_IG, fetch: down })).state, "unknown");
+  });
+
+  it("probeInstagram + evaluateToken: token vencido vira FALTA (não mais 'não verificado' estrutural)", async () => {
+    const expired = await probeInstagram(ENV_IG, resp(400, { error: { code: 190, message: "Session has expired" } }));
+    const c = evaluateToken("instagram", expired);
+    assert.equal(c.status, "fail");
+    assert.notEqual(c.structural, true);
+    assert.equal(evaluateToken("instagram", await probeInstagram(ENV_IG, resp(200, { id: "1784" }))).status, "ok");
+  });
+
+  it("coletor: task com token instagram vencido não fica pronta", async () => {
+    const root = mkdtempSync(join(tmpdir(), "neo-readiness-ig-13002-"));
+    try {
+      mkdirSync(join(root, "scripts"), { recursive: true });
+      writeFileSync(join(root, "scripts", "shorts-instagram-timer.ts"), "");
+      mkdirSync(join(root, "node_modules"), { recursive: true });
+      writeFileSync(join(root, ".nvmrc"), `${process.version.slice(1).split(".")[0]}\n`);
+      const LOCK = JSON.stringify({ packages: {} });
+      writeFileSync(join(root, "package-lock.json"), LOCK);
+      writeFileSync(join(root, "node_modules", ".package-lock.json"), LOCK);
+      mkdirSync(join(root, "data"), { recursive: true });
+      const req = CRITICAL_SCRIPT_REQUIREMENTS["scripts/shorts-instagram-timer.ts"];
+      const dotenv: Record<string, string> = { CLOUDFLARE_ACCOUNT_ID: "x", CLOUDFLARE_WORKERS_TOKEN: "x", ...ENV_IG };
+      for (const names of req.secrets) dotenv[names[0]] ??= "x";
+      const task: ScheduledTaskDefinition = {
+        name: "Diaria-Shorts-Instagram",
+        description: "",
+        steps: [{ key: "s", script: "scripts/shorts-instagram-timer.ts" }],
+        logPath: "x.log",
+        schedule: { kind: "daily", hour: 1, minute: 0 },
+        issue: "#1",
+        failover: "critical",
+      };
+      const out: string[] = [];
+      const code = await readinessMain([], {
+        root,
+        now: () => new Date(),
+        machineId: () => "Neo",
+        env: {},
+        readDotenv: () => dotenv,
+        dopplerNames: () => ({ error: "sem login" }),
+        run: (cmd, args) => (cmd === "git" && args[0] === "rev-parse" ? { code: 0, stdout: "master\n" } : { code: 0, stdout: cmd === "git" && args[0] === "rev-list" ? "0\n" : "" }),
+        fetch: resp(400, { error: { code: 190, message: "Session has expired" } }),
+        putKv: async () => {},
+        tasks: [task],
+        log: (m) => out.push(m),
+        err: (m) => out.push(m),
+      });
+      assert.equal(code, 1);
+      assert.ok(out.some((l) => /^Diaria-Shorts-Instagram: falta .*token instagram inválido/.test(l)), out.join("\n"));
+      assert.doesNotMatch(out.join("\n"), /tok-ig-secreto-77/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -44,7 +44,8 @@ O resto fica parado:
   trabalho do editor); atualize à mão (`git pull --ff-only`) antes de armar.
 - **Enquanto armado, o checkout principal fica em `master`.** As tarefas rodam
   o código que estiver nele: trabalho em branch vai para um worktree, nunca
-  para um `git checkout` no principal.
+  para um `git checkout` no principal. A run do Neo confere: checkout fora de
+  `master` (ou branch ilegível) sai 1 sem rodar nada (#12993).
 - `npm ci` feito, `data/` acessível (Drive da diaria.editor) e o `.env` com
   `CLOUDFLARE_ACCOUNT_ID` e `CLOUDFLARE_WORKERS_TOKEN` (KV `diaria-ops-state`),
   além das credenciais de cada canal. As tarefas do Neo passam o `.env` aos
@@ -92,9 +93,10 @@ que lança vira falta, nunca "não verificado"):
 - `gh auth status`;
 - checkout principal em `master` e não atrás do `origin/master` (do último
   fetch; o script não busca);
-- tokens em modo leitura: LinkedIn pessoal (`GET /v2/userinfo`) e Threads
-  pessoal (lista os posts da última hora). O Instagram sai "não verificado":
-  não há helper de leitura exportado para ele, e o check não inventa chamada.
+- tokens em modo leitura: LinkedIn pessoal (`GET /v2/userinfo`), Threads
+  pessoal (lista os posts da última hora) e Instagram (lê o perfil da conta,
+  `GET /{ig-user-id}?fields=id,username`, #13002). Token recusado é falta;
+  rede, 5xx ou limite de taxa saem "não verificado".
   "Não verificado" só sai por desenho (sem helper, `--offline`, Doppler
   fora, `data/` sem sinal de sync, prazo do Passo 0) e não impede `pronto`.
   Falha do próprio coletor (checagem esperada que não veio, script sem mapa
@@ -115,7 +117,7 @@ de 7 dias, nunca tiver sido gravado, não vier do Neo, estiver vermelho (falhas
 comuns listadas uma vez; comenta só quando muda o conjunto de task + checagem
 em falta) ou trouxer o mesmo item "não verificado" transitório em 4 checks
 seguidos (Doppler deslogado, token sem resposta por rede/5xx, prazo, `data/`
-sem sync). Limite permanente do check (Instagram sem helper, `--offline`) não
+sem sync). Limite permanente do check (token sem helper, `--offline`) não
 conta: abriria uma issue que nunca fecha. Falha ao ler o KV
 sai 1 sem mexer em nada; registro corrompido conta como ausente e abre a
 issue.
@@ -161,7 +163,9 @@ node --import tsx scripts\run-task.ts --task Diaria-Shorts-Instagram --failover-
 ```
 
 Neo suspenso por mais de 6 h: o lease do Neo expira, e a primeira tarefa ao
-acordar retoma o próprio lease expirado. Se o `--status` mostrar o lease
+acordar retoma o próprio lease expirado, depois de esperar 75 a 105 s e reler
+o lease (#12993): se o `300` voltou e gravou o dele nesse meio-tempo, o Neo
+cede. Se o `--status` mostrar o lease
 ausente ou do `300` com o `300` ainda fora, rode `--arm --force` de novo.
 
 ## 4. Antes de desarmar
@@ -177,12 +181,18 @@ o `data/` replicado pode chegar atrasado, e o `300` age pelo que vê no
 npx tsx scripts/failover/neo-takeover.ts --disarm
 ```
 
-Para as `Diaria-Failover-*` em execução (espera até 60 s), remove as tarefas
-e libera o lease (só se for do Neo). As tasks do `300` retomam na próxima
+Desabilita as `Diaria-Failover-*`, espera a execução em curso terminar
+sozinha (até 10 min) e só então remove as tarefas e libera o lease (só se for
+do Neo). Se alguma ainda estiver rodando depois da espera, usa
+`Stop-ScheduledTask` como último recurso e imprime um AVISO: o passo
+interrompido pode ter publicado sem registrar no store, ou seguir vivo como
+processo filho. Nesse caso, conferir o canal antes de o `300` retomar
+(#12993). As tasks do `300` retomam na próxima
 execução. Remoção que falha não libera o lease; KV ilegível sai 1 e diz até
 quando o lease vale. Se o Neo morreu armado e não dá para rodar o `--disarm`
-nele, o mesmo comando em outra máquina com o `.env` libera só o lease; sem
-isso, o `300` retoma quando o lease expira (até 6 h).
+nele, `--disarm --force` em outra máquina com o `.env` libera só o lease (sem
+`--force`, fora do Windows ele recusa: as tarefas do Neo seguiriam armadas);
+sem isso, o `300` retoma quando o lease expira (até 6 h).
 
 O `300` de pé cedendo ao lease do Neo aparece no journal como WARN. Se o lease
 do Neo for renovado com o `300` no ar (o Neo seguiu armado), as tasks
@@ -204,12 +214,15 @@ comum (`scripts/run-task.ts`), não em cada script:
 - Lease ativo de outra máquina: a task cede (exit 0, nada roda; no `300`, WARN
   no stderr).
 - Lease ausente ou expirado: o `300` assume. O Neo retoma o próprio lease
-  expirado; lease ausente ou do `300` expirado, só com o sinal de queda
+  expirado depois da espera e da releitura (#12993); lease ausente ou do
+  `300` expirado, só com o sinal de queda
   presente (sem ele, sai 1: o Neo está armado sem posse).
 - Falha do KV: o `300` age (fail-open, ele é o dono padrão e o regime normal
   não pode depender do KV), salvo se o último lease que ele leu (memória
   local, `~/.diaria/failover-last-lease.json`) era do Neo: aí fica parado até
-  ler o KV. O Neo não age (fail-closed, exit 1). Falha só na renovação de um
+  ler o KV. Memória local que não grava ou não lê sai como WARN no stderr,
+  com o caminho e o erro. O Neo não age (fail-closed, exit 1); `.env`
+  ilegível no Neo também é exit 1, com a causa real (#12993). Falha só na renovação de um
   lease próprio ativo é aviso: a task roda.
 - Task `critical` no Windows sem `--failover-standby` é recusada.
 - Kill switch, só no `300`: `DIARIA_FAILOVER_LEASE=off`.

@@ -48,6 +48,15 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *                                                           # #11795: troca texto e capa de post JÁ AGENDADO (YouTube
  *                                                           # videos.update + thumbnails.set; Facebook POST /{video-id}
  *                                                           # + /thumbnails); X/TikTok voltam como edit_post da Buffer.
+ *   npx tsx scripts/publish-shorts.ts --corte SLUG --cancel [--confirm SLUG]
+ *   npx tsx scripts/publish-shorts.ts --corte SLUG --reschedule --date AAMMDD --at HH:MM [--confirm SLUG]
+ *                                                           # #13000: cancela/reagenda o corte JÁ agendado. Sem --confirm,
+ *                                                           # só o plano. YouTube (publishAt / private sem agendamento),
+ *                                                           # Facebook (scheduled_publish_time / DELETE do agendado, depois
+ *                                                           # de reler published=false com 15 min de folga), corte.json
+ *                                                           # (date/hhmm, ou o "pode publicar" retirado: o timer do 300 para)
+ *                                                           # e registro; X/TikTok voltam como delete_post/edit_post da Buffer.
+ *                                                           # Já publicado, envio ambíguo ou perto demais do horário: recusado.
  *
  * Destinos (config `publishing.shorts`, default = decisão do editor):
  *   - `facebook:{slug}` (API) — cada slug de `publishing.shorts.facebook_pages`,
@@ -245,6 +254,7 @@ import {
   corteAuthorizedDestinations,
   corteContentCheck,
   planCorteAuthorizationRestore,
+  withCorteCancellation,
   withCortePublishAuthorization,
   withoutCortePublishAuthorization,
   type CorteContentFingerprint,
@@ -252,6 +262,7 @@ import {
 } from "./lib/diaria/short-corte.ts";
 import { corteContentFingerprint, corteContentFingerprintFromBytes } from "./lib/diaria/corte-content.ts";
 import { planScheduledUpdates, type ScheduledUpdateItem } from "./lib/diaria/short-scheduled-update.ts";
+import { CORTE_LIFECYCLE_MIN_LEAD_MS, executeCorteLifecycle, planCorteLifecycle, type CorteLifecycleOp } from "./lib/diaria/short-corte-lifecycle.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/facebook-pages.ts";
 import {
@@ -315,7 +326,7 @@ import {
   shortsRegistryWriterFor,
   type ShortsRegistryWriter,
 } from "./lib/diaria/shorts-published-store.ts";
-import { clearShortSending, markShortSending } from "./lib/diaria/shorts-sending-marker.ts";
+import { clearShortSending, markShortSending, openSendingMarks, readShortsSending } from "./lib/diaria/shorts-sending-marker.ts";
 import { acquireTimerLock, TIMER_LOCK_HEARTBEAT_MS } from "./lib/diaria/timer-lock.ts";
 import { corteTimerHeartbeatStale, describeCorteTimerHeartbeat, readCorteTimerHeartbeat, type CorteTimerHeartbeat } from "./lib/diaria/corte-timer-heartbeat.ts";
 import {
@@ -333,6 +344,7 @@ import {
   failedUploadStatus,
   isIndeterminateUploadFailure,
   missingYouTubeCredentials,
+  rescheduleScheduledVideo,
   updateScheduledVideo,
   uploadYouTubeVideo,
   type YouTubeUploadDeps,
@@ -2122,6 +2134,65 @@ export async function updateFacebookScheduledVideo(
   if (cur?.published === true) throw new Error(`o vídeo ${videoId} já está publicado na página — nada alterado; troque no Meta Business Suite`);
   await graphPost(deps, videoId, { description, access_token: page.token }, apiVersion);
   return { cover: cover ? await setFacebookVideoThumbnail(deps, videoId, page.token, apiVersion, cover) : null };
+}
+
+/**
+ * #13000: `scheduled_publish_time` da Graph em ms (a API devolve segundos
+ * unix, às vezes como string; aceita também ISO). `null` = sem horário.
+ */
+export function facebookScheduledMs(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v * 1000;
+  if (typeof v === "string" && v.trim()) {
+    if (/^\d+$/.test(v.trim())) return Number(v.trim()) * 1000;
+    const ms = Date.parse(v);
+    return Number.isNaN(ms) ? null : ms;
+  }
+  return null;
+}
+
+/**
+ * #13000: relê o vídeo da Página e recusa (lança) se ele não está agendado com
+ * folga: `published: true`, sem `scheduled_publish_time`, ou horário a menos de
+ * `minLeadMs`. É a trava que impede o cancelamento de apagar um Reels no ar.
+ */
+async function assertFacebookStillScheduled(deps: GraphDeps, page: ResolvedFacebookPage, apiVersion: string, videoId: string, minLeadMs: number): Promise<void> {
+  const cur = await graphGet(deps, videoId, { fields: "published,scheduled_publish_time", access_token: page.token }, apiVersion);
+  const ms = facebookScheduledMs(cur?.scheduled_publish_time);
+  if (cur?.published !== false || ms === null || ms - deps.now().getTime() <= minLeadMs) {
+    throw new Error(
+      `o vídeo ${videoId} não está agendado com folga na página (published ${String(cur?.published)}, scheduled_publish_time ${String(cur?.scheduled_publish_time ?? "nenhum")}, folga mínima ${Math.round(minLeadMs / 60_000)} min) — nada alterado; confira no Meta Business Suite`,
+    );
+  }
+}
+
+/**
+ * #13000: cancela um Reels AGENDADO numa Página (`DELETE /{video-id}`), só
+ * depois de reler `published: false` e o horário com folga. A Graph não tem
+ * "desagendar": o vídeo agendado é apagado. A folga mínima cobre a janela
+ * entre a releitura e o DELETE (a Meta só publica no horário agendado).
+ */
+export async function cancelFacebookScheduledVideo(deps: GraphDeps, page: ResolvedFacebookPage, apiVersion: string, videoId: string, minLeadMs = CORTE_LIFECYCLE_MIN_LEAD_MS): Promise<void> {
+  await assertFacebookStillScheduled(deps, page, apiVersion, videoId, minLeadMs);
+  const path = videoId;
+  const res = await deps.fetch(`${GRAPH}/${apiVersion}/${path}?${new URLSearchParams({ access_token: page.token })}`, { method: "DELETE", signal: AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS) });
+  const json = await readJson(res);
+  if (!res.ok || json.error || json.success !== true) throw graphError("DELETE", path, res, json);
+}
+
+/**
+ * #13000: reagenda um Reels AGENDADO numa Página (`POST /{video-id}` com
+ * `scheduled_publish_time`), depois de reler `published: false` com folga, e
+ * relê de novo para conferir o horário gravado.
+ */
+export async function rescheduleFacebookScheduledVideo(deps: GraphDeps, page: ResolvedFacebookPage, apiVersion: string, videoId: string, at: string, minLeadMs = CORTE_LIFECYCLE_MIN_LEAD_MS): Promise<void> {
+  await assertFacebookStillScheduled(deps, page, apiVersion, videoId, minLeadMs);
+  const unix = Math.floor(Date.parse(at) / 1000);
+  await graphPost(deps, videoId, { scheduled_publish_time: String(unix), access_token: page.token }, apiVersion);
+  const after = await graphGet(deps, videoId, { fields: "published,scheduled_publish_time", access_token: page.token }, apiVersion);
+  const ms = facebookScheduledMs(after?.scheduled_publish_time);
+  if (after?.published !== false || ms === null || Math.floor(ms / 1000) !== unix) {
+    throw new Error(`POST ${videoId} aceitou, mas a releitura mostra published ${String(after?.published)} e scheduled_publish_time ${String(after?.scheduled_publish_time ?? "nenhum")} — confira no Meta Business Suite`);
+  }
 }
 
 /**
@@ -4237,6 +4308,8 @@ const USAGE =
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID | tiktok=buffer:ID [--scheduled-at ISO] [--thumbnail-offset MS]\n" +
   "     publish-shorts.ts (AAMMDD | --corte SLUG) --update-scheduled [--only ...] [--publish --confirm-publish AAMMDD]\n" +
   "                                                                                 # troca texto e capa dos posts JÁ AGENDADOS (YouTube, Facebook; Buffer via skill), #11795\n" +
+  "     publish-shorts.ts --corte SLUG (--cancel | --reschedule --date AAMMDD --at HH:MM) [--confirm SLUG]\n" +
+  "                                                                                 # cancela/reagenda o corte já agendado (#13000): plano sem --confirm; nunca toca o que já está no ar\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API: conta da diar.ia.br, #11794)\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel, sem conferir na API (#11390)\n" +
   "     publish-shorts.ts --corte SLUG --date AAMMDD --at HH:MM --title T --hook H (--video PATH | --from-drive ID) [--cover JPG] [--publish] [--only ...] [--now]\n" +
@@ -4247,7 +4320,7 @@ const USAGE =
   "                                                                                 # --allow-unwatched-dir roda mesmo assim, sem alarme de destino faltante (#11911)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
-export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video", "update-scheduled", "require-corte-authorization", ALLOW_UNWATCHED_DIR_FLAG] as const;
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video", "update-scheduled", "require-corte-authorization", "cancel", "reschedule", ALLOW_UNWATCHED_DIR_FLAG] as const;
 
 /**
  * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
@@ -4745,6 +4818,144 @@ async function runUpdateScheduled(input: {
   return results.some((r) => !r.ok) ? 1 : 0;
 }
 
+/** #13000: flags que não combinam com `--cancel`/`--reschedule` (eles só mexem no horário do corte). */
+export const CORTE_LIFECYCLE_FORBIDDEN_VALUES = ["title", "hook", "video", "from-drive", "cover", "mark", "only", "confirm-publish", "edition"] as const;
+export const CORTE_LIFECYCLE_FORBIDDEN_FLAGS = ["publish", "now", "update-scheduled", "require-corte-authorization", "force-youtube"] as const;
+
+/**
+ * Puro (#13000): confere a combinação de flags do `--cancel`/`--reschedule`.
+ * `null` = ok, senão a mensagem de uso.
+ */
+export function corteLifecycleArgsError(flags: ReadonlySet<string>, values: Record<string, string | undefined>): string | null {
+  const cancel = flags.has("cancel");
+  const reschedule = flags.has("reschedule");
+  if (!cancel && !reschedule) return null;
+  if (cancel && reschedule) return "--cancel e --reschedule não combinam";
+  const name = cancel ? "--cancel" : "--reschedule";
+  if (values["corte"] === undefined) return `${name} só vale com --corte SLUG (o vertical da edição não tem este caminho, #13000)`;
+  const bad = [
+    ...CORTE_LIFECYCLE_FORBIDDEN_VALUES.filter((k) => values[k] !== undefined),
+    ...CORTE_LIFECYCLE_FORBIDDEN_FLAGS.filter((f) => flags.has(f)),
+  ];
+  if (bad.length) return `${name} não combina com ${bad.map((k) => `--${k}`).join(", ")} (só mexe no horário do corte; aplique com --confirm SLUG)`;
+  if (cancel && (values["date"] !== undefined || values["at"] !== undefined)) return "--cancel não leva --date/--at";
+  if (reschedule && (values["date"] === undefined || values["at"] === undefined)) return "--reschedule precisa de --date AAMMDD e --at HH:MM";
+  if (values["confirm"] !== undefined && values["confirm"] !== values["corte"]) {
+    return `--confirm precisa repetir o slug do corte (${values["corte"]}), recebeu ${JSON.stringify(values["confirm"])}`;
+  }
+  return null;
+}
+
+/**
+ * #13000: `--corte SLUG --cancel` / `--reschedule --date AAMMDD --at HH:MM`.
+ * Sem `--confirm SLUG`, só o plano (nada é tocado). Com ele:
+ *   - cancelar: primeiro tira o "pode publicar" do corte.json (o timer do 300
+ *     para de agir mesmo que a rodada caia no meio), depois YouTube (private
+ *     sem agendamento) e Facebook (DELETE do agendado), e regrava o corte.json
+ *     com os destinos de fato cancelados;
+ *   - reagendar: YouTube e Facebook para o horário novo e, só se nenhum
+ *     falhar, `date`/`hhmm` no corte.json (o timer do 300 segue o novo) e
+ *     `scheduled_at` no registro (com o `aammdd` realinhado, #12998). O "pode
+ *     publicar" fica: o `--confirm` é a decisão do editor sobre o horário.
+ * Buffer (X/TikTok) volta como instrução para a skill. Já publicado nunca é
+ * tocado.
+ */
+async function runCorteLifecycle(input: { dir: string; slug: string; flags: ReadonlySet<string>; values: Record<string, string> }): Promise<number> {
+  const { dir, slug, values } = input;
+  const specPath = join(dir, CORTE_SPEC_FILE);
+  if (!existsSync(specPath)) {
+    console.error(`publish-shorts: ${specPath} não existe: não há corte "${slug}" para cancelar/reagendar`);
+    return 2;
+  }
+  let spec: CorteSpec;
+  let entries: ShortPublishedEntry[];
+  let openMarks: ReturnType<typeof openSendingMarks>;
+  try {
+    spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
+    entries = readShortsRegistry(dir, spec.date).entries;
+    openMarks = openSendingMarks(readShortsSending(dir, spec.date), entries);
+  } catch (e) {
+    console.error(`publish-shorts: ${(e as Error).message}`);
+    return 2;
+  }
+  const op: CorteLifecycleOp = input.flags.has("cancel") ? { kind: "cancel" } : { kind: "reschedule", date: values["date"], hhmm: values["at"] };
+  const label = op.kind === "cancel" ? "cancel" : "reschedule";
+  const plan = planCorteLifecycle({ op, spec, entries, openMarks, now: new Date() });
+  for (const i of plan.items) if (i.action === "refuse") console.error(`[aviso] ${i.destination}: ${i.reason}`);
+  const apply = values["confirm"] === slug;
+  if (plan.blockers.length) {
+    for (const b of plan.blockers) console.error(`[erro] ${b}`);
+    console.log(JSON.stringify({ dry_run: !apply, [label]: true, corte: slug, plan, applied: false }, null, 2));
+    return 1;
+  }
+  if (!apply) {
+    console.error(`[premissa] plano apenas (nada foi tocado): para aplicar, repita com --confirm ${slug}`);
+    console.log(JSON.stringify({ dry_run: true, [label]: true, corte: slug, plan }, null, 2));
+    return 0;
+  }
+  const rereadSpec = () => parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
+  const timerDests = plan.items.filter((i) => i.action === "corte_timer").map((i) => i.destination);
+  if (op.kind === "cancel") {
+    // Antes de qualquer API: o timer do 300 deixa de publicar mesmo que esta rodada caia no meio.
+    writeFileAtomic(specPath, JSON.stringify(withCorteCancellation(rereadSpec(), new Date().toISOString(), timerDests), null, 2) + "\n");
+    console.error(`[ok] corte "${slug}": "pode publicar" retirado (o timer do 300 não publica ${timerDests.length ? timerDests.join(", ") : "nada"})`);
+  }
+  const persistDate = op.kind === "reschedule" ? op.date : spec.date;
+  let pagesCache: ReturnType<typeof loadResolvedFacebookPages> | null = null;
+  const pages = () => (pagesCache ??= loadResolvedFacebookPages(ROOT, JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))));
+  const page = (pageSlug: string): ResolvedFacebookPage => {
+    const p = pages().pages.find((x) => x.slug === pageSlug);
+    if (!p || p.missing.length) throw new Error(`página ${pageSlug} sem credencial (${p ? p.missing.join(", ") : "fora de publishing.social.facebook.pages"})`);
+    return p;
+  };
+  const results = await executeCorteLifecycle(plan, entries, {
+    youtube: async (videoId, publishAt) => {
+      const missing = missingYouTubeCredentials(process.env);
+      if (missing.length) throw new Error(`faltam ${missing.join(", ")} no ambiente (rode scripts/youtube-oauth-setup.ts)`);
+      await rescheduleScheduledVideo(defaultYouTubeUploadDeps, {
+        clientId: (process.env.GOOGLE_CLIENT_ID ?? "").trim(),
+        clientSecret: (process.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
+        refreshToken: (process.env.YOUTUBE_REFRESH_TOKEN ?? "").trim(),
+        channelId: (process.env.YOUTUBE_CHANNEL_ID ?? "").trim(),
+      }, videoId, publishAt, CORTE_LIFECYCLE_MIN_LEAD_MS);
+    },
+    facebookCancel: (pageSlug, videoId) => cancelFacebookScheduledVideo(defaultGraphDeps, page(pageSlug), pages().apiVersion, videoId),
+    facebookReschedule: (pageSlug, videoId, at) => rescheduleFacebookScheduledVideo(defaultGraphDeps, page(pageSlug), pages().apiVersion, videoId, at),
+    persist: (entry) => {
+      persistShortEntry(dir, persistDate, "main", entry);
+    },
+    now: () => new Date(),
+  });
+  for (const r of results) {
+    if (r.outcome === "failed") console.error(`[erro] ${r.destination}: ${r.error}`);
+    else if (r.outcome === "skill") console.error(`[ok] ${r.destination}: falta o ${r.buffer!.tool} na Buffer (skill), post ${r.buffer!.bufferId}`);
+    else if (r.outcome === "done") console.error(`[ok] ${r.destination}: ${op.kind === "cancel" ? "agendamento cancelado" : `reagendado para ${plan.newAt}`}`);
+    if (r.warning) console.error(`[aviso] ${r.destination}: ${r.warning}`);
+  }
+  const failed = results.filter((r) => !r.ok).map((r) => r.destination);
+  const stillLive = results.filter((r) => r.outcome === "refused").map((r) => r.destination);
+  let corteJson: string;
+  if (op.kind === "cancel") {
+    const cancelled = [...timerDests, ...results.filter((r) => r.outcome === "done").map((r) => r.destination)];
+    const cur = rereadSpec();
+    writeFileAtomic(specPath, JSON.stringify({ ...cur, cancelled_destinations: [...new Set([...(cur.cancelled_destinations ?? []), ...cancelled])] }, null, 2) + "\n");
+    corteJson = `cancelado (destinos: ${cancelled.join(", ") || "nenhum"})`;
+    if (stillLive.length || failed.length) {
+      console.error(`[aviso] corte "${slug}": cancelamento PARCIAL — ${[...stillLive.map((d) => `${d} (recusado)`), ...failed.map((d) => `${d} (falhou)`)].join(", ")} segue(m) como estava(m)`);
+    }
+  } else if (failed.length) {
+    corteJson = `NÃO alterado: ${failed.join(", ")} falhou; o timer do 300 segue no horário antigo (${spec.hhmm} BRT de ${spec.date}). Corrija e rode de novo (o que já mudou vira noop)`;
+    console.error(`[erro] corte "${slug}": ${corteJson}`);
+  } else {
+    const cur = rereadSpec();
+    writeFileAtomic(specPath, JSON.stringify({ ...cur, date: op.date, hhmm: op.hhmm }, null, 2) + "\n");
+    corteJson = `reagendado para ${op.hhmm} BRT de ${op.date}`;
+    console.error(`[ok] corte "${slug}": corte.json ${corteJson} (o timer do 300 segue o horário novo)`);
+  }
+  console.log(JSON.stringify({ dry_run: false, [label]: true, corte: slug, plan, results, corte_json: corteJson, ...(stillLive.length ? { still_live: stillLive } : {}) }, null, 2));
+  return failed.length ? 1 : 0;
+}
+
 /**
  * #12654: manifesto canônico do plano do vertical da edição (hashes dos bytes
  * do vídeo e da capa, título/descrição do Short, horário e modo/instante
@@ -4825,6 +5036,12 @@ async function main(): Promise<number> {
     console.error(`publish-shorts: ${requireAuthArgsErr}`);
     return 2;
   }
+  // #13000: --cancel/--reschedule do corte — conferido antes de qualquer leitura ou gravação.
+  const lifecycleErr = corteLifecycleArgsError(flags, values);
+  if (lifecycleErr) {
+    console.error(`publish-shorts: ${lifecycleErr}`);
+    return 2;
+  }
   if (corteSlug !== undefined) {
     const forbidden = CORTE_FORBIDDEN_FLAGS.filter((f) => flags.has(f));
     if (forbidden.length) {
@@ -4847,6 +5064,8 @@ async function main(): Promise<number> {
       corteOutside = { dir: dirCheck.dir, warning: dirCheck.warning };
       console.error(`[aviso] ${dirCheck.warning}`);
     }
+    // #13000: antes do prepareCorteRun, que gravaria o --date/--at novos e derrubaria o "pode publicar".
+    if (flags.has("cancel") || flags.has("reschedule")) return runCorteLifecycle({ dir: corteDir, slug: corteSlug, flags, values });
     try {
       corte = prepareCorteRun({ slug: corteSlug, dir: corteDir, values, positionalDate: aammdd, log: (l) => console.error(l), onRevoked: (r) => corteRevocations.push(r), unwatchedDirWarning: corteOutside?.warning, readOnly: requireCorteAuth });
     } catch (e) {
