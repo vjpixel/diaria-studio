@@ -19,10 +19,14 @@
  * ao banco ainda, e um publicador só entra aqui quando grava o resultado
  * RELIDO da plataforma (#573), nunca o 2xx da mutação. Até lá o item vencido
  * vira alarme e o dono indicado no item publica. Antes da avaliação, o tick
- * executa `agendamentos.ts verificar`: grava `publicado` somente após todos
- * os destinos confirmarem na plataforma, usando a revisão otimista do banco.
- * `--dry-run` também verifica, mas não grava. Destinos sem leitor continuam
- * `agendado`; falhas de leitura preservam o alarme e saem com código 2.
+ * executa a verificação de `agendamentos.ts verificar`: grava `publicado`
+ * somente após todos os destinos confirmarem na plataforma, usando a revisão
+ * otimista do banco (o servidor é escritor do banco desde o #12774; corrida
+ * com uma sessão relê e repete, e a gravação recusada não pula o alarme,
+ * #12970). `--dry-run` também verifica, não grava, e avalia o mesmo banco que
+ * a execução real (com os confirmados em memória). Destinos sem leitor
+ * continuam `agendado`; falhas de leitura preservam o alarme e saem com
+ * código 2 (sucesso para o systemd, `successExitCodes: [2]`).
  *
  * Item `agendado` vencido com o envio registrado no corte em todos os
  * destinos sem leitor (`published`/`scheduled`) e relido no ar nos destinos
@@ -37,8 +41,9 @@
  *   npx tsx scripts/agendamentos-tick.ts --dry-run  # avalia e imprime, sem issue/e-mail
  *   npx tsx scripts/agendamentos-tick.ts --to email@x
  *
- * Exit 0 = avaliação (e alarme, se houver) ok; 1 = falha no banco ou alarme
- * não registrado; 2 = alguma releitura da plataforma falhou.
+ * Exit 0 = avaliação (e alarme, se houver) ok; 1 = banco ilegível, gravação
+ * recusada depois da nova tentativa (o alarme já foi avaliado) ou alarme não
+ * registrado; 2 = alguma releitura da plataforma falhou.
  */
 
 import { dirname, resolve } from "node:path";
@@ -52,10 +57,10 @@ import {
   agendamentosAlarmFingerprint,
   agendamentosPath,
   buildAgendamentosAlarm,
-  loadAgendamentos,
+  type AgendamentosBanco,
 } from "./lib/diaria/agendamentos.ts";
 import { avaliarAgendamentosComEnvio, leitoresPadrao, leituraSemAlarme, type EnvioRegistradoItem } from "./lib/diaria/agendamentos-verificar.ts";
-import { runVerificarCli, type CliIo } from "./agendamentos.ts";
+import { linhasVerificacao, verificarEMarcarBanco, type CliIo } from "./agendamentos.ts";
 import type { LeitorDestino } from "./lib/diaria/agendamentos-verificar.ts";
 import { defaultYouTubeUploadDeps } from "./lib/diaria/youtube-upload.ts";
 
@@ -96,15 +101,39 @@ export function avisarLeituraIndisponivel(envios: readonly EnvioRegistradoItem[]
   }
 }
 
-/** Verifica sem publicar/agendar e relê o banco persistido antes do alarme. */
+/**
+ * Verifica sem publicar/agendar e devolve o banco que o alarme avalia: o
+ * gravado, ou (dry-run, gravação recusada) o mesmo banco em memória, com os
+ * confirmados em `publicado`. Assim o dry-run alarma o mesmo que a execução
+ * real (#12970). Banco ilegível lança (`avaliação interrompida`).
+ *
+ * #12970: a corrida com uma sessão que grava o banco no meio do tick (revisão
+ * mudou) nunca pula o alarme. `verificarEMarcarBanco` relê e repete a
+ * gravação; se ainda assim não grava, o alarme é avaliado com o banco em
+ * memória e o código sai 1 (a unit fica `failed`: gravação que nunca sai
+ * precisa aparecer).
+ *
+ * Código: 0 ok; 1 gravação recusada (avaliou mesmo assim); 2 alguma releitura
+ * da plataforma falhou (alarme preservado; `successExitCodes: [2]` na task).
+ */
 export async function verificarBancoDoTick(
   io: CliIo,
   dryRun: boolean,
   leitores: Readonly<Record<string, LeitorDestino>>,
-) {
-  const code = await runVerificarCli(dryRun ? ["--dry-run"] : [], io, leitores);
-  if (code === 1) throw new Error("verificação do banco falhou; avaliação interrompida");
-  return { banco: loadAgendamentos(agendamentosPath(io.root)), code };
+  deps: { save?: (path: string, banco: AgendamentosBanco) => AgendamentosBanco } = {},
+): Promise<{ banco: AgendamentosBanco; code: 0 | 1 | 2 }> {
+  let r;
+  try {
+    r = await verificarEMarcarBanco(agendamentosPath(io.root), { root: io.root, now: io.now, leitores }, { dryRun, err: io.err, save: deps.save });
+  } catch (e) {
+    throw new Error(`verificação do banco falhou; avaliação interrompida: ${(e as Error).message}`);
+  }
+  for (const line of linhasVerificacao(r, dryRun)) io.out(line);
+  if (r.erroGravacao) {
+    io.err(`${LOG_PREFIX} gravação do banco recusada depois de reler e repetir (${r.erroGravacao}); o alarme avalia o banco em memória (#12970)`);
+    return { banco: r.banco, code: 1 };
+  }
+  return { banco: r.banco, code: r.comErro ? 2 : 0 };
 }
 
 async function main(): Promise<void> {

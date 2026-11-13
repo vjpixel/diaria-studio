@@ -440,9 +440,15 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     logPath: "agendamentos/.tick.log",
     // De hora em hora (minuto 0): o alvo dos itens é hora cheia BRT (vertical 2
     // às 12:00, D+7) e o achado sai depois de `alvo + 60 min`, então o alarme
-    // chega na 2ª execução depois do horário. Só LÊ o banco — nunca grava
-    // (o arquivo vem pelo OneDrive; quem grava são as sessões, pelo CLI
-    // `scripts/agendamentos.ts`). Banco ausente = nada agendado, sem achado.
+    // chega na 2ª execução depois do horário. GRAVA o banco desde o #12774:
+    // só a transição `agendado` → `publicado` relida na plataforma (#573),
+    // com a revisão otimista do banco. O arquivo é sincronizado pelo Google
+    // Drive (#12359) e as sessões também gravam pelo CLI
+    // `scripts/agendamentos.ts`: a corrida dentro da janela de leitura relê e
+    // repete, e gravação que não sai não pula o alarme (#12970); entre
+    // máquinas, uma cópia de conflito do Drive ainda é possível e segue como
+    // risco aceito (só esta transição, idempotente na próxima hora). Banco
+    // ausente = nada agendado, sem achado.
     // Sem `enabled: false`: o `Diaria-Remediate-Never-Armed-Tasks` (#8153)
     // arma no 300 depois do merge.
     schedule: { kind: "interval", hours: 1 },
@@ -451,7 +457,14 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
       abortMessage:
         "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem avaliar (banco ausente nao e prova de nada agendado).",
     },
-    issue: "#12774",
+    // #12970: exit 2 = alguma releitura da plataforma falhou (ex.: item com
+    // `youtube_shorts` numa máquina sem as variáveis do YouTube). O alarme já
+    // foi avaliado e preservado; sem isto a unit ficava `failed` de hora em
+    // hora e o `systemd-failed-units-alarm` duplicava o alarme do próprio tick.
+    // Vira `SuccessExitStatus=2` na unit depois de regenerar o `.service`
+    // (`scripts/setup-systemd-timers.ts --task Diaria-Agendamentos-Tick`).
+    successExitCodes: [2],
+    issue: "#12774, #12970",
   },
   {
     name: "Diaria-Continuo-Ratelimit-Watchdog",
@@ -2395,9 +2408,10 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // (`onedrive.service` mascarado de propósito, timer deste alarme
     // desabilitado). Religado, ele acusaria o serviço mascarado como morto.
     // O runner pula a execução e o rearme automático
-    // (`Diaria-Remediate-Never-Armed-Tasks`) não o religa; o
-    // `arm-systemd-timers.ts --rearm-stopped` manual sem `--task` ainda
-    // religa o timer (#12930), e aí o runner só registra o SKIP. Remoção
+    // (`Diaria-Remediate-Never-Armed-Tasks`) não o religa, nem o
+    // `arm-systemd-timers.ts --rearm-stopped` manual sem `--task`
+    // (`selectTasksToArm` pula `enabled: false`; só `--task` com
+    // `--force-disabled` arma, e aí o runner só registra o SKIP). Remoção
     // definitiva do alarme e do código do OneDrive: #12360 (item 5).
     enabled: false,
     issue: "#5548, #12923",

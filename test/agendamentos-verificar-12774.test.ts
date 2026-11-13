@@ -288,14 +288,56 @@ describe("verificação automática do tick (#12774)", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("dry-run confirma sem alterar um byte do banco", async () => {
+  it("dry-run confirma sem alterar um byte do banco e avalia o mesmo banco da execução real (#12970)", async () => {
     const root = rootComCorte([ytEntry]);
     try {
       saveAgendamentos(agendamentosPath(root), bancoAgendado(["youtube_shorts"]));
       const antes = readFileSync(agendamentosPath(root), "utf8");
       const resultado = await verificarBancoDoTick(io(root).io, true, { youtube_shorts: leitorPublicado });
-      assert.equal(resultado.banco.itens[0].estado, "agendado");
+      // Antes do #12970 o dry-run relia o disco (ainda `agendado`) e alarmava o que a execução real não alarma.
+      assert.equal(resultado.banco.itens[0].estado, "publicado");
       assert.equal(readFileSync(agendamentosPath(root), "utf8"), antes);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("corrida: outra sessão grava no meio (revisão mudou) → relê e grava na 2ª tentativa (#12970)", async () => {
+    const root = rootComCorte([ytEntry]);
+    try {
+      saveAgendamentos(agendamentosPath(root), bancoAgendado(["youtube_shorts"]));
+      let chamadas = 0;
+      const save = (path: string, banco: AgendamentosBanco) => {
+        chamadas++;
+        if (chamadas === 1) {
+          // A sessão do Neo grava entre a releitura do tick e a gravação dele.
+          const outro = JSON.parse(readFileSync(path, "utf8")) as AgendamentosBanco;
+          saveAgendamentos(path, outro);
+          return saveAgendamentos(path, banco);
+        }
+        return saveAgendamentos(path, banco);
+      };
+      const t = io(root);
+      const resultado = await verificarBancoDoTick(t.io, false, { youtube_shorts: leitorPublicado }, { save });
+      assert.equal(chamadas, 2);
+      assert.equal(resultado.code, 0);
+      assert.equal(resultado.banco.itens[0].estado, "publicado");
+      assert.equal(lerBanco(root).itens[0].estado, "publicado");
+      assert.ok(t.err.some((l) => /gravação 1\/2 recusada/.test(l)), t.err.join("\n"));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("corrida que não passa: avalia com o banco em memória (alarme não é pulado) e sai 1 (#12970)", async () => {
+    const root = rootComCorte([ytEntry]);
+    try {
+      saveAgendamentos(agendamentosPath(root), bancoAgendado(["youtube_shorts"]));
+      const save = (): AgendamentosBanco => {
+        throw new Error("banco mudou desde a leitura (revisão em disco 9, lida 1) — releia e repita");
+      };
+      const t = io(root);
+      const resultado = await verificarBancoDoTick(t.io, false, { youtube_shorts: leitorPublicado }, { save });
+      assert.equal(resultado.code, 1);
+      assert.equal(resultado.banco.itens[0].estado, "publicado");
+      assert.equal(lerBanco(root).itens[0].estado, "agendado");
+      assert.ok(t.err.some((l) => /avalia o banco em memória/.test(l)), t.err.join("\n"));
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

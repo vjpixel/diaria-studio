@@ -39,6 +39,7 @@ import { writeFileAtomic } from "../atomic-write.ts";
 import { withFileLock } from "../file-lock.ts";
 import type { ShortPublishedEntry } from "./short-video.ts";
 import type { ShortsRegistryWriter } from "./shorts-published-store.ts";
+import { isCorteDir } from "./short-corte.ts";
 
 const SENDING_DIR = "_internal";
 const SENDING_STEM = "06-shorts-sending";
@@ -66,8 +67,12 @@ export function isShortsSendingFileName(name: string): boolean {
   return name.startsWith(SENDING_STEM) && name.endsWith(".json");
 }
 
-/** Leitura ESTRITA: marca ilegível nunca vira "nada em curso". */
-export function parseShortsSendingFile(raw: string, aammdd: string, where: string): ShortsSendingFile {
+/**
+ * Leitura ESTRITA: marca ilegível nunca vira "nada em curso". #12998: `corte:
+ * true` não compara o `aammdd` do arquivo (a data do corte avulso muda num
+ * reagendamento; a pasta é a identidade), mesmo critério do registro.
+ */
+export function parseShortsSendingFile(raw: string, aammdd: string, where: string, opts: { corte?: boolean } = {}): ShortsSendingFile {
   let parsed: any;
   try {
     parsed = JSON.parse(raw);
@@ -75,7 +80,11 @@ export function parseShortsSendingFile(raw: string, aammdd: string, where: strin
     throw new Error(`${where}: JSON inválido (${(e as Error).message})`);
   }
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.marks)) throw new Error(`${where}: sem lista "marks"`);
-  if (parsed.aammdd !== aammdd) throw new Error(`${where}: é da edição ${parsed.aammdd}, não de ${aammdd}`);
+  if (opts.corte) {
+    if (typeof parsed.aammdd !== "string" || !/^\d{6}$/.test(parsed.aammdd)) throw new Error(`${where}: sem "aammdd" válido (${String(parsed.aammdd)})`);
+  } else if (parsed.aammdd !== aammdd) {
+    throw new Error(`${where}: é da edição ${parsed.aammdd}, não de ${aammdd}`);
+  }
   for (const [i, m] of parsed.marks.entries()) {
     if (!m || typeof m.destination !== "string" || !m.destination || typeof m.started_at !== "string") {
       throw new Error(`${where}: marca ${i} sem destination/started_at`);
@@ -88,12 +97,13 @@ export function parseShortsSendingFile(raw: string, aammdd: string, where: strin
 export function readShortsSending(editionDir: string, aammdd: string): ShortSendingMark[] {
   const dir = join(editionDir, SENDING_DIR);
   if (!existsSync(dir)) return [];
+  const corte = isCorteDir(editionDir);
   return readdirSync(dir)
     .filter(isShortsSendingFileName)
     .sort()
     .flatMap((n) => {
       const path = join(dir, n);
-      return parseShortsSendingFile(readFileSync(path, "utf8"), aammdd, path).marks;
+      return parseShortsSendingFile(readFileSync(path, "utf8"), aammdd, path, { corte }).marks;
     });
 }
 
@@ -104,15 +114,15 @@ function updateMarks(
   change: (marks: ShortSendingMark[]) => ShortSendingMark[],
   lockTimeoutMs: number,
 ): void {
-  updateMarksAt(shortsSendingPath(editionDir, writer), aammdd, change, lockTimeoutMs);
+  updateMarksAt(shortsSendingPath(editionDir, writer), aammdd, change, lockTimeoutMs, isCorteDir(editionDir));
 }
 
-function updateMarksAt(path: string, aammdd: string, change: (marks: ShortSendingMark[]) => ShortSendingMark[], lockTimeoutMs: number): void {
+function updateMarksAt(path: string, aammdd: string, change: (marks: ShortSendingMark[]) => ShortSendingMark[], lockTimeoutMs: number, corte: boolean): void {
   mkdirSync(dirname(path), { recursive: true });
   withFileLock(
     `${path}.lock`,
     () => {
-      const current = existsSync(path) ? parseShortsSendingFile(readFileSync(path, "utf8"), aammdd, path).marks : [];
+      const current = existsSync(path) ? parseShortsSendingFile(readFileSync(path, "utf8"), aammdd, path, { corte }).marks : [];
       const next = change(current);
       if (next.length === 0) {
         rmSync(path, { force: true });
@@ -157,6 +167,7 @@ export function clearShortSendingAll(editionDir: string, aammdd: string, destina
   const dir = join(editionDir, SENDING_DIR);
   if (!existsSync(dir)) return 0;
   let removed = 0;
+  const corte = isCorteDir(editionDir);
   for (const name of readdirSync(dir).filter(isShortsSendingFileName).sort()) {
     updateMarksAt(
       join(dir, name),
@@ -167,6 +178,7 @@ export function clearShortSendingAll(editionDir: string, aammdd: string, destina
         return next;
       },
       lockTimeoutMs,
+      corte,
     );
   }
   return removed;

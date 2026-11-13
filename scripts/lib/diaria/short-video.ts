@@ -797,8 +797,16 @@ export function isDestinationDone(file: ShortsPublishedFile, destination: string
  * Lê o registro de forma ESTRITA. Um registro quebrado nunca vira "nada
  * publicado": isso republicaria Reels públicos em duplicata. Arquivo de outra
  * edição também é recusado.
+ *
+ * #12998/#12999: `corte: true` (registro de um corte avulso,
+ * `data/cortes/{slug}/`) não compara o `aammdd` do arquivo com a data pedida.
+ * No corte a identidade é a pasta (o slug); a data é um campo do plano que muda
+ * (`publish-shorts --corte SLUG --date`, reagendamento), e o registro gravado
+ * na data anterior continua sendo deste corte. Comparar travava o timer do corte
+ * com `crash` a cada hora depois de um reagendamento. O `aammdd` devolvido é o
+ * pedido, então a próxima gravação realinha o arquivo à data atual do corte.
  */
-export function parseShortsPublishedFile(raw: string, aammdd: string, where = SHORTS_PUBLISHED_FILE): ShortsPublishedFile {
+export function parseShortsPublishedFile(raw: string, aammdd: string, where = SHORTS_PUBLISHED_FILE, opts: { corte?: boolean } = {}): ShortsPublishedFile {
   let parsed: any;
   try {
     parsed = JSON.parse(raw);
@@ -808,7 +816,11 @@ export function parseShortsPublishedFile(raw: string, aammdd: string, where = SH
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.entries)) {
     throw new Error(`${where}: sem lista "entries" — corrija à mão antes de publicar (risco de duplicar Reels)`);
   }
-  if (parsed.aammdd !== aammdd) throw new Error(`${where}: é da edição ${parsed.aammdd}, não de ${aammdd}`);
+  if (opts.corte) {
+    if (typeof parsed.aammdd !== "string" || !/^\d{6}$/.test(parsed.aammdd)) throw new Error(`${where}: sem "aammdd" válido (${String(parsed.aammdd)})`);
+  } else if (parsed.aammdd !== aammdd) {
+    throw new Error(`${where}: é da edição ${parsed.aammdd}, não de ${aammdd}`);
+  }
   for (const [i, e] of parsed.entries.entries()) {
     if (!e || typeof e.destination !== "string" || !e.destination || typeof e.id !== "string" || !e.id) {
       throw new Error(`${where}: entrada ${i} sem destination/id`);

@@ -216,8 +216,9 @@ export function decideCorteTimerRun(input: {
   const done = new Set<string>();
   const entries: ShortPublishedEntry[] = [];
   for (const { path, raw } of input.registryRaws) {
-    // Registro ilegível lança: nunca vira "nada publicado" (duplicaria o post).
-    for (const e of parseShortsPublishedFile(raw, spec.date, path).entries) {
+    // Registro ilegível lança: nunca vira "nada publicado" (duplicaria o post). #12998/#12999: o
+    // `aammdd` do arquivo não é comparado com spec.date (o corte reagendado mantém o registro da data anterior).
+    for (const e of parseShortsPublishedFile(raw, spec.date, path, { corte: true }).entries) {
       done.add(e.destination);
       entries.push(e);
     }

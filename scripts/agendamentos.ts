@@ -73,6 +73,7 @@ import {
   transicionarAgendamento,
   type AgendamentoEstado,
   type AgendamentoItem,
+  type AgendamentosBanco,
 } from "./lib/diaria/agendamentos.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -379,11 +380,111 @@ function formatVerificacao(v: VerificacaoItem): string[] {
   ];
 }
 
+/** #12970: resultado da verificação com as confirmações aplicadas ao banco. */
+export interface VerificacaoBancoResultado {
+  resultados: VerificacaoItem[];
+  /**
+   * Banco com os confirmados em `publicado`: o gravado em disco; em `dryRun` ou
+   * com a gravação recusada (`erroGravacao`), só em memória. Quem avalia o
+   * alarme usa este, nunca uma releitura do disco (que no dry-run ainda traz o
+   * item `agendado` e alarmaria o que a execução real não alarma).
+   */
+  banco: AgendamentosBanco;
+  confirmados: number;
+  comErro: boolean;
+  /** #12970: a gravação falhou mesmo relendo e repetindo (ex.: o banco mudou de novo no meio). */
+  erroGravacao?: string;
+}
+
+/** #12970: uma releitura + nova tentativa quando a revisão do banco mudou entre a leitura e a gravação. */
+export const VERIFICAR_TENTATIVAS_GRAVACAO = 2;
+
+/**
+ * Testável (#12774, #573, #12970): relê os itens `agendado` com os `leitores`
+ * e põe em `publicado` só os itens com todos os destinos confirmados. A
+ * gravação relê o banco e aplica as transições sobre a versão em disco
+ * (revisão otimista); se outra sessão gravou no meio (revisão mudou), relê e
+ * tenta de novo, até `VERIFICAR_TENTATIVAS_GRAVACAO` vezes. Esgotadas, devolve
+ * o banco em memória com `erroGravacao` em vez de lançar: quem chama decide
+ * (o CLI sai 1; o tick avalia o alarme assim mesmo e sai 1 no fim). Banco
+ * ilegível lança.
+ */
+export async function verificarEMarcarBanco(
+  path: string,
+  ctx: { root: string; now: Date; leitores: Readonly<Record<string, LeitorDestino>> },
+  opts: {
+    dryRun: boolean;
+    id?: string;
+    err: (line: string) => void;
+    /** Testes: substitui a gravação (para simular a corrida com outra sessão). */
+    save?: (path: string, banco: AgendamentosBanco) => AgendamentosBanco;
+  },
+): Promise<VerificacaoBancoResultado> {
+  const save = opts.save ?? saveAgendamentos;
+  const banco = loadAgendamentos(path);
+  if (opts.id && !banco.itens.some((it) => it.id === opts.id)) throw new Error(`item ${opts.id} não existe`);
+  const resultados = await verificarAgendamentos(banco, { root: ctx.root, now: ctx.now, leitores: ctx.leitores }, opts.id);
+  const confirmadosItens = resultados.filter((r) => r.publicado);
+  const comErro = resultados.some((r) => r.leituras.some((l) => l.status === "erro"));
+  const base = { resultados, confirmados: confirmadosItens.length, comErro };
+  if (!confirmadosItens.length) return { ...base, banco };
+  const aplicar = (atual: AgendamentosBanco): { next: AgendamentosBanco; changed: boolean; mudaram: string[] } => {
+    let next = atual;
+    const mudaram: string[] = [];
+    for (const r of confirmadosItens) {
+      // Entre a leitura e agora alguém pode ter marcado o item à mão.
+      if (next.itens.find((it) => it.id === r.item.id)?.estado !== "agendado") {
+        mudaram.push(r.item.id);
+        continue;
+      }
+      next = transicionarAgendamento(next, { id: r.item.id, para: "publicado", verificacao: r.verificacao, nota: "relido na plataforma (agendamentos.ts verificar)" }, ctx.now);
+    }
+    return { next, changed: next !== atual, mudaram };
+  };
+  if (opts.dryRun) return { ...base, banco: aplicar(banco).next };
+  let ultimo: AgendamentosBanco = banco;
+  let erro = "";
+  for (let tentativa = 1; tentativa <= VERIFICAR_TENTATIVAS_GRAVACAO; tentativa++) {
+    const r = aplicar(loadAgendamentos(path));
+    ultimo = r.next;
+    if (!r.changed) {
+      for (const id of r.mudaram) opts.err(`[${SCRIPT}] ${id} mudou de estado durante a releitura: não marcado`);
+      return { ...base, banco: r.next };
+    }
+    try {
+      const gravado = save(path, r.next);
+      for (const id of r.mudaram) opts.err(`[${SCRIPT}] ${id} mudou de estado durante a releitura: não marcado`);
+      return { ...base, banco: gravado };
+    } catch (e) {
+      erro = (e as Error).message;
+      opts.err(`[${SCRIPT}] gravação ${tentativa}/${VERIFICAR_TENTATIVAS_GRAVACAO} recusada: ${erro}`);
+    }
+  }
+  return { ...base, banco: ultimo, erroGravacao: erro };
+}
+
+/** As linhas de saída da verificação (CLI e tick). */
+export function linhasVerificacao(r: VerificacaoBancoResultado, dryRun: boolean): string[] {
+  if (r.resultados.length === 0) return ["(nenhum item agendado para verificar)"];
+  const linhas = r.resultados.flatMap(formatVerificacao);
+  if (r.confirmados) {
+    linhas.push(
+      dryRun
+        ? `--dry-run: ${r.confirmados} item(ns) seriam marcados publicado`
+        : r.erroGravacao
+          ? `${r.confirmados} item(ns) confirmados, mas NÃO gravados (${r.erroGravacao})`
+          : `${r.confirmados} item(ns) marcados publicado`,
+    );
+  }
+  return linhas;
+}
+
 /**
  * Testável: `verificar` (#12774, #573). Relê os itens `agendado` com os
  * `leitores` (default: `leitoresPadrao` com o ambiente do projeto) e grava
- * `publicado` só nos itens com todos os destinos confirmados. A gravação relê
- * o banco e aplica as transições sobre a versão em disco (revisão otimista).
+ * `publicado` só nos itens com todos os destinos confirmados
+ * (`verificarEMarcarBanco`). Exit 0 ok; 1 banco ilegível, item inexistente ou
+ * gravação recusada depois da nova tentativa; 2 alguma leitura falhou.
  */
 export async function runVerificarCli(
   argv: readonly string[],
@@ -394,40 +495,23 @@ export async function runVerificarCli(
   const cliExit = applyCliAction([...argv], spec, { out: io.out, err: io.err });
   if (cliExit !== null) return cliExit;
   const { values, flags } = parseArgs([...argv]);
-  const path = agendamentosPath(io.root);
+  const dryRun = flags.has("dry-run");
   try {
-    const banco = loadAgendamentos(path);
-    if (values.id && !banco.itens.some((it) => it.id === values.id)) throw new Error(`item ${values.id} não existe`);
-    const resultados = await verificarAgendamentos(
-      banco,
+    const r = await verificarEMarcarBanco(
+      agendamentosPath(io.root),
       { root: io.root, now: io.now, leitores: leitores ?? leitoresPadrao({ deps: defaultYouTubeUploadDeps, env: process.env }) },
-      values.id,
+      { dryRun, id: values.id, err: io.err },
     );
-    const confirmados = resultados.filter((r) => r.publicado);
-    const comErro = resultados.some((r) => r.leituras.some((l) => l.status === "erro"));
-    if (confirmados.length && !flags.has("dry-run")) {
-      // Relê o banco: entre a leitura e agora alguém pode ter marcado o item à mão.
-      let next = loadAgendamentos(path);
-      let changed = false;
-      for (const r of confirmados) {
-        if (next.itens.find((it) => it.id === r.item.id)?.estado !== "agendado") {
-          io.err(`[${SCRIPT}] ${r.item.id} mudou de estado durante a releitura: não marcado`);
-          continue;
-        }
-        next = transicionarAgendamento(next, { id: r.item.id, para: "publicado", verificacao: r.verificacao, nota: "relido na plataforma (agendamentos.ts verificar)" }, io.now);
-        changed = true;
-      }
-      if (changed) saveAgendamentos(path, next);
-    }
     if (flags.has("json")) {
-      io.out(JSON.stringify({ dryRun: flags.has("dry-run"), resultados: resultados.map((r) => ({ id: r.item.id, publicado: r.publicado, verificacao: r.verificacao ?? null, leituras: r.leituras })) }, null, 2));
-    } else if (resultados.length === 0) {
-      io.out("(nenhum item agendado para verificar)");
+      io.out(JSON.stringify({ dryRun, resultados: r.resultados.map((v) => ({ id: v.item.id, publicado: v.publicado, verificacao: v.verificacao ?? null, leituras: v.leituras })) }, null, 2));
     } else {
-      for (const r of resultados) for (const line of formatVerificacao(r)) io.out(line);
-      if (confirmados.length) io.out(flags.has("dry-run") ? `--dry-run: ${confirmados.length} item(ns) seriam marcados publicado` : `${confirmados.length} item(ns) marcados publicado`);
+      for (const line of linhasVerificacao(r, dryRun)) io.out(line);
     }
-    return comErro ? 2 : 0;
+    if (r.erroGravacao) {
+      io.err(`[${SCRIPT}] ${r.erroGravacao}`);
+      return 1;
+    }
+    return r.comErro ? 2 : 0;
   } catch (e) {
     io.err(`[${SCRIPT}] ${(e as Error).message}`);
     return 1;
