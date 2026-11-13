@@ -12,7 +12,7 @@
  * Uso:
  *   npx tsx scripts/publica-phase.ts start AAMMDD --phase P --part horizontal|vertical|sessao
  *       [--background] [--task-id ID] [--attempt N] [--plan-sha256 H] [--resources a,b]
- *       [--serial-reason TEXTO] [--edition-dir DIR]
+ *       [--serial-reason TEXTO] [--resume-existing] [--edition-dir DIR]
  *   npx tsx scripts/publica-phase.ts end|error|interrupted AAMMDD --phase P --part X
  *       [--task-id ID] [--attempt N] [--exit-code N] [--detail TEXTO] [--edition-dir DIR]
  *   npx tsx scripts/publica-phase.ts run AAMMDD --phase P --part X [--background] [...] -- comando args...
@@ -44,7 +44,17 @@
  *   com o fim registrado pelo próprio processo, sem o thread principal
  *   precisar responder à notificação. A tarefa vira órfã quando o wrapper e
  *   o filho morreram sem gravar o fim; tarefa aberta por `start` manual não
- *   tem PID e nunca vira órfã (gravar `interrupted` à mão).
+ *   tem PID e nunca vira órfã (gravar `interrupted` à mão). Tarefa do `run`
+ *   de OUTRA máquina (o PID não se confere daqui) vira órfã quando o último
+ *   evento dela passa de 3 h (`CROSS_HOST_STALE_MS`, #12883); antes disso
+ *   segura recurso e join, e a recusa diz quando expira.
+ * - `--resume-existing` (só `upload/horizontal`, #12883): retomada do upload
+ *   com o vídeo JÁ registrado em `05-youtube-published.json` (o
+ *   `publish-youtube.ts --upload` sem `--force` só refaz podcast, legenda e
+ *   playlists, sem `videos.insert`). Dispensa a autorização ativa e a regra
+ *   de retry do #11741; recusa sem registro `done` (ausente, ilegível, de
+ *   outra edição ou marcador de estado incerto) e, no `run`, com `--force`
+ *   no comando.
  * - `join` sai 1 com tarefa pendente (inclusive em background), órfã sem
  *   tentativa posterior concluída, linha ilegível no JSONL ou sentinel
  *   antecipado: nenhuma fase é dada por concluída assim.
@@ -68,6 +78,7 @@ import {
   PHASE_META,
   PUBLICA_PHASES_FILE,
   buildPhaseEvent,
+  canResumeExisting,
   checkPhaseStart,
   deriveTasks,
   isPublicaPart,
@@ -76,6 +87,7 @@ import {
   nextAttempt,
   parsePhaseEvents,
   phaseReport,
+  type DeriveOptions,
   type PhaseEvent,
   type PhaseEventKind,
   type PublicaPart,
@@ -91,6 +103,8 @@ import {
 } from "./lib/diaria/video-publish-authorization.ts";
 import { planSha256, readVideoPlanManifest } from "./lib/diaria/video-publish-plan.ts";
 import { assessVideoBeforePublish, STAGE5_DONE_FILE } from "./lib/diaria/video-before-publish.ts";
+import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
+import { readPublishedRecord } from "./publish-youtube.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STAGE6_DONE_FILE = "_internal/.step-6-done.json";
@@ -98,7 +112,7 @@ const STAGE6_DONE_FILE = "_internal/.step-6-done.json";
 export const RUN_TELEMETRY_LOST_EXIT = 4;
 
 const USAGE =
-  "uso: publica-phase.ts start|end|error|interrupted AAMMDD --phase P --part horizontal|vertical|sessao [--background] [--task-id ID] [--attempt N] [--plan-sha256 H] [--resources a,b] [--serial-reason TEXTO] [--exit-code N] [--detail TEXTO] [--edition-dir DIR]\n" +
+  "uso: publica-phase.ts start|end|error|interrupted AAMMDD --phase P --part horizontal|vertical|sessao [--background] [--task-id ID] [--attempt N] [--plan-sha256 H] [--resources a,b] [--serial-reason TEXTO] [--resume-existing] [--exit-code N] [--detail TEXTO] [--edition-dir DIR]\n" +
   "     publica-phase.ts run AAMMDD --phase P --part X [--background] [...] -- comando args...\n" +
   "     publica-phase.ts join|report AAMMDD [--edition-dir DIR]";
 
@@ -190,6 +204,11 @@ function readStore(dir: string, aammdd: string): { store: VideoPublishAuthorizat
   }
 }
 
+/** Opções de derivação do CLI: PID conferido nesta máquina; tarefa de outra máquina expira pelo relógio (#12883). */
+function deriveOptionsOf(deps: PhaseCliDeps): DeriveOptions {
+  return { isPidAlive: deps.isPidAlive, host: deps.host, now: deps.now().getTime() };
+}
+
 function registryChecksOf(store: VideoPublishAuthorizationStore | null): RegistryCheckLike[] {
   if (!store) return [];
   return store.events.filter((e) => e.kind === "registry-check").map((e) => ({ at: e.at, since: (e as { since: string }).since, verdict: (e as { verdict: string }).verdict }));
@@ -233,11 +252,36 @@ function parseIntOpt(raw: string | undefined): number | undefined {
   return Number.isInteger(n) ? n : NaN;
 }
 
+/**
+ * `--resume-existing` (#12883): o vídeo desta edição precisa estar registrado
+ * (`05-youtube-published.json` legível, desta edição, com `videoId`). Marcador
+ * de estado incerto, registro ausente ou ilegível recusam: aí o vídeo PODE não
+ * existir (ou existir sem registro) e a regra de retry do #11741 vale inteira.
+ */
+function resumableUpload(dir: string, aammdd: string): { videoId: string } | { problem: string } {
+  const path = join(dir, YOUTUBE_PUBLISHED_FILE);
+  try {
+    const read = readPublishedRecord(path, aammdd);
+    if (read.kind === "done") return { videoId: read.record.videoId };
+    if (read.kind === "none") return { problem: `retomada sem vídeo registrado: ${path} não existe (upload novo exige o "pode publicar" e a regra de retry, #11741)` };
+    return { problem: `retomada recusada: ${path} é um marcador de estado incerto (${read.sentinel.status}) — o vídeo PODE ter sido criado; confira o canal e releia o registro (#11741)` };
+  } catch (e) {
+    return { problem: `retomada recusada: ${(e as Error).message}` };
+  }
+}
+
 /** `start` com check e gravação sob lock. Devolve o evento gravado, ou o exit de recusa/uso. */
 function doStart(a: CommonArgs, deps: PhaseCliDeps, extra: { pid?: number; taskId?: string | null } = {}): PhaseEvent | number {
+  const resume = a.flags.has("resume-existing");
+  if (resume && !canResumeExisting(a.phase, a.part)) {
+    deps.err(`publica-phase: --resume-existing só vale com --phase upload --part horizontal (#12883)`);
+    return 2;
+  }
   const lockPath = join(a.dir, `${PUBLICA_PHASES_FILE}.lock`);
   mkdirSync(dirname(lockPath), { recursive: true });
   return withFileLock(lockPath, () => {
+    const resumed = resume ? resumableUpload(a.dir, a.aammdd) : null;
+    const resumeExisting = resumed && "videoId" in resumed ? resumed : null;
     const { events, problems: parseProblems } = readEvents(a.dir, deps.err);
     const attemptRaw = parseIntOpt(a.values["attempt"]);
     if (attemptRaw !== undefined && Number.isNaN(attemptRaw)) {
@@ -272,6 +316,7 @@ function doStart(a: CommonArgs, deps: PhaseCliDeps, extra: { pid?: number; taskI
         extraResources: a.values["resources"] ? a.values["resources"].split(",").map((s) => s.trim()).filter(Boolean) : [],
         pid: extra.pid,
         host: extra.pid !== undefined ? deps.host : undefined,
+        detail: resumeExisting ? `retomada do vídeo registrado ${resumeExisting.videoId} (#12883)` : undefined,
       });
     } catch (e) {
       deps.err(`publica-phase: ${(e as Error).message}`);
@@ -281,10 +326,12 @@ function doStart(a: CommonArgs, deps: PhaseCliDeps, extra: { pid?: number; taskI
     const problems = checkPhaseStart({
       events,
       candidate: ev,
-      deriveOptions: { isPidAlive: deps.isPidAlive, host: deps.host },
+      deriveOptions: deriveOptionsOf(deps),
       registryChecks: registryChecksOf(store),
       serialReason: a.values["serial-reason"] ?? null,
+      resumeExisting: resumeExisting !== null,
     });
+    if (resumed && "problem" in resumed) problems.push(resumed.problem);
     if (parseProblems.length && (PHASE_META[a.phase].effect === "external" || ev.resources.length > 0)) {
       problems.push(
         `${parseProblems.length} linha(s) ilegível(is) em ${PUBLICA_PHASES_FILE}: a linha perdida pode ser o start de uma tentativa interrompida ` +
@@ -300,6 +347,7 @@ function doStart(a: CommonArgs, deps: PhaseCliDeps, extra: { pid?: number; taskI
         currentPlanSha256: currentPlanSha,
         videoGate: a.phase === "stage5" || a.phase === "stage6-schedule" ? deps.videoGate(a.dir, a.aammdd) : null,
         host: deps.host,
+        resumeExisting,
       });
       if (!gate.ok) problems.push(`efeito externo: ${gate.reason}`);
       else deps.err(`[ok] ${a.phase}/${a.part}: ${gate.note}`);
@@ -375,6 +423,10 @@ export async function main(argv: string[] = process.argv.slice(2), deps: PhaseCl
     const a = parseCommon(rest.slice(0, sep), deps, true);
     if (typeof a === "number") return a;
     const command = rest.slice(sep + 1);
+    if (a.flags.has("resume-existing") && command.some((c) => c === "--force" || c.startsWith("--force="))) {
+      deps.err("publica-phase: recusado — --resume-existing com --force no comando: o --force cria OUTRO vídeo, e isso é upload novo (\"pode publicar\" e regra de retry, #11741, #12883)");
+      return 1;
+    }
     const taskId = a.values["task-id"] ?? `pid-${deps.pid}`;
     const started = doStart(a, deps, { pid: deps.pid, taskId });
     if (typeof started === "number") return started === 2 ? 2 : 1;
@@ -444,7 +496,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: PhaseCl
     const r = joinCheck(
       events,
       { step5: existsSync(join(a.dir, STAGE5_DONE_FILE)), step6: existsSync(join(a.dir, STAGE6_DONE_FILE)) },
-      { isPidAlive: deps.isPidAlive, host: deps.host },
+      deriveOptionsOf(deps),
     );
     // Linha ilegível pode esconder uma tarefa pendente: o join não fecha às cegas.
     const problems = [...r.problems, ...parseProblems.map((p) => `linha ilegível: ${p}`)];
@@ -457,7 +509,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: PhaseCl
     const a = parseCommon(rest, deps, false);
     if (typeof a === "number") return a;
     const { events } = readEvents(a.dir, deps.err);
-    deps.log(JSON.stringify(phaseReport(a.aammdd, events, { isPidAlive: deps.isPidAlive, host: deps.host }), null, 2));
+    deps.log(JSON.stringify(phaseReport(a.aammdd, events, deriveOptionsOf(deps)), null, 2));
     return 0;
   }
   deps.err(USAGE);
