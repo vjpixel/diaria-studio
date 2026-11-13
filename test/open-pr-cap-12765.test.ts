@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   combineContinuoCaps,
@@ -12,6 +12,7 @@ import {
   resolveWaveOpenPrSlots,
   waveOpenPrCapError,
 } from "../scripts/lib/open-pr-cap.ts";
+import { FAKE_GH_SKIP_WIN32, fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 import { OPEN_PR_LIST_LIMIT, readOpenPrCap } from "../scripts/check-open-pr-cap.ts";
 import {
   closingComment,
@@ -107,8 +108,9 @@ describe("teto global de PRs abertos (#12765)", () => {
  * `gh` falso no PATH (#12873): o script mede o teto sozinho, e o teste não
  * pode depender do `gh` real (autenticado na máquina do dev, ausente no CI).
  * `openPrs` = lista devolvida por `gh pr list`; `null` = gh falha (exit 1).
+ * Via `test/_helpers/fake-gh.ts` (#11487): sonda + credencial neutralizada.
  */
-function fakeGhPath(openPrs: number | null): string {
+function fakeGhRunEnv(openPrs: number | null): NodeJS.ProcessEnv {
   const bin = mkdtempSync(join(tmpdir(), "fake-gh-12873-"));
   const payload = openPrs === null ? "" : JSON.stringify(
     Array.from({ length: openPrs }, (_, i) => ({ number: 9000 + i, headRefName: `overnight/fix-${i}`, author: { login: "vjpixel" } })),
@@ -116,16 +118,16 @@ function fakeGhPath(openPrs: number | null): string {
   const body = openPrs === null
     ? "#!/bin/sh\necho 'gh: offline' >&2\nexit 1\n"
     : `#!/bin/sh\ncat <<'JSON'\n${payload}\nJSON\n`;
-  writeFileSync(join(bin, "gh"), body, { mode: 0o755 });
-  return `${bin}${delimiter}${process.env.PATH ?? ""}`;
+  writeFakeGh(bin, body);
+  return fakeGhEnv(bin);
 }
 
-describe("record-overnight-wave --open-pr-slots (#12765)", () => {
+describe("record-overnight-wave --open-pr-slots (#12765)", { skip: FAKE_GH_SKIP_WIN32 }, () => {
   const setup = (openPrs: number | null = null) => {
     const dir = mkdtempSync(join(tmpdir(), "wave-12765-"));
     const plan = join(dir, "plan.json");
     writeFileSync(plan, "{}\n");
-    const env = { ...process.env, PATH: fakeGhPath(openPrs) };
+    const env = fakeGhRunEnv(openPrs);
     const run = (...extra: string[]) => spawnSync(process.execPath, [
       "--import", "tsx", "scripts/record-overnight-wave.ts", "--plan", plan, "--units", "1;2", ...extra,
     ], { encoding: "utf8", env });
@@ -160,12 +162,12 @@ describe("record-overnight-wave --open-pr-slots (#12765)", () => {
   });
 });
 
-describe("record-overnight-wave mede o teto sozinho (#12873)", () => {
+describe("record-overnight-wave mede o teto sozinho (#12873)", { skip: FAKE_GH_SKIP_WIN32 }, () => {
   const setup = (openPrs: number | null) => {
     const dir = mkdtempSync(join(tmpdir(), "wave-12873-"));
     const plan = join(dir, "plan.json");
     writeFileSync(plan, "{}\n");
-    const env = { ...process.env, PATH: fakeGhPath(openPrs) };
+    const env = fakeGhRunEnv(openPrs);
     const run = (...extra: string[]) => spawnSync(process.execPath, [
       "--import", "tsx", "scripts/record-overnight-wave.ts", "--plan", plan, "--units", "1;2", ...extra,
     ], { encoding: "utf8", env });
