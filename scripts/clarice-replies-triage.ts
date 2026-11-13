@@ -85,6 +85,7 @@ import {
 } from "./lib/clarice-db.ts";
 import {
   buildTriagePlan,
+  CLARICE_NEWS_SUBJECT,
   diffEffectiveActions,
   gmailMessageToReply,
   validatePlanIntegrity,
@@ -98,7 +99,7 @@ import { isTestAccount } from "./lib/cohorts.ts";
 const ROOT = resolve(import.meta.dirname, "..");
 export const DEFAULT_PLAN_DIR = resolve(ROOT, "data", "clarice-replies");
 export const DEFAULT_REPLY_TO = "pixel@diar.ia.br";
-export const DEFAULT_SUBJECT = "Notícias do mês sobre IA";
+export const DEFAULT_SUBJECT = CLARICE_NEWS_SUBJECT;
 export const DEFAULT_DAYS = 30;
 export const DEFAULT_MAX = 500;
 

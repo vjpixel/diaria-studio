@@ -86,7 +86,12 @@
  *
  * Input: JSON array de { thread_id, from, subject, date?, body? }.
  * Output JSON: { total, replies: CapturedReply[], automatedSubjectCount,
- *   possibleStaleAutomatedSubjects, droppedByToCount, droppedByToSenders } (cada reply com `trivial`).
+ *   possibleStaleAutomatedSubjects, droppedByToCount, droppedByToSenders, clariceReplies } (cada reply com `trivial`).
+ *
+ * #12947: resposta à Clarice News (assunto "Notícias do mês sobre IA", reply-to
+ * `CAMPAIGN_REPLY_TO_ADDRESSES`) sai em `clariceReplies` (classificada pelas regras de
+ * `lib/clarice-replies-classify.ts`), fora de `replies[]` e de `droppedByTo*`;
+ * o stderr aponta `clarice-replies-triage.ts` e nomeia os pedidos de saída.
  * Exit: 0 (sempre — é filtro, não gate; o draft+gate é no playbook).
  */
 
@@ -104,6 +109,11 @@ import {
   collectBrevoDiariaSubjects,
   collectOnboardingSubjects,
 } from "./lib/campaign-reply-subjects.ts";
+import {
+  CLARICE_NEWS_SUBJECT,
+  classifyReply,
+  type ReplyKind,
+} from "./lib/clarice-replies-classify.ts";
 
 export interface CapturedReply {
   thread_id?: string;
@@ -183,7 +193,11 @@ export function looksLikeSubscriberReply(
   },
   opts: { campaignSubjects?: Iterable<string> } = {},
 ): boolean {
-  return passesSenderAndSubjectChecks(msg) && !isDroppedByTo(msg, normalizeSubjectSet(opts.campaignSubjects));
+  return (
+    passesSenderAndSubjectChecks(msg) &&
+    !isClariceNewsReply(msg) && // #12947: é da Clarice News, não da diária
+    !isDroppedByTo(msg, normalizeSubjectSet(opts.campaignSubjects))
+  );
 }
 
 /** #9313: assuntos de campanha normalizados (mesma `normalizeSubject` do assunto da reply). Vazios ignorados. */
@@ -224,6 +238,62 @@ function isDroppedByTo(msg: { to?: string; subject?: string }, campaignSubjects:
     return false;
   }
   return true;
+}
+
+/**
+ * #12947: resposta à Clarice News (envio mensal da parceria, reply-to
+ * `CAMPAIGN_REPLY_TO_ADDRESSES`), reconhecida pelo trecho fixo do assunto
+ * (`CLARICE_NEWS_SUBJECT`). Não é resposta à diária: não entra em `replies[]`
+ * (nem rascunho da diária, nem crédito do concurso "ache o erro"), e também
+ * não pode cair no balde de descartadas por `to`, onde um pedido de
+ * descadastro sumia (achado 261113). Vai para `clariceReplies`, apontando a
+ * triagem própria (`scripts/clarice-replies-triage.ts`, #12227).
+ *
+ * `to` num domínio DEDICADO da diária fica fora (é resposta à diária que
+ * por acaso cita o assunto); `to` ausente (callers pré-#8997) entra pelo
+ * assunto, que é específico o bastante.
+ */
+export function isClariceNewsReply(msg: { to?: string; subject?: string }): boolean {
+  // Normalizado na chamada, não no topo do módulo: `normalizeSubject` usa
+  // `SUBJECT_PREFIX_STRIP_RE`, declarado mais abaixo (TDZ no carregamento).
+  if (!normalizeSubject(msg.subject).includes(normalizeSubject(CLARICE_NEWS_SUBJECT))) return false;
+  if (msg.to && matchesKnownReplyAddress(msg.to, DEDICATED_SUBSCRIBER_REPLY_ADDRESSES)) return false;
+  return true;
+}
+
+/** #12947: resumo de uma resposta à Clarice News, já classificada pelas regras de `clarice-replies-classify.ts`. */
+export interface ClariceNewsReply {
+  thread_id?: string;
+  from: string;
+  subject: string;
+  date?: string;
+  kind: ReplyKind;
+  reason: string;
+  data_deletion: boolean;
+}
+
+function toClariceNewsReply(t: CapturedReply): ClariceNewsReply {
+  const from = extractEmail(t.from ?? "");
+  // Sem corpo capturado, o classificador diria `ruido` ("resposta vazia") e um
+  // pedido de saída sumiria na contagem — fica `ambiguo`, para conferir.
+  const base = { thread_id: t.thread_id, from, subject: t.subject ?? "", date: t.date };
+  if (!(t.body ?? "").trim()) {
+    return { ...base, kind: "ambiguo", reason: "corpo não capturado — conferir no Gmail", data_deletion: false };
+  }
+  const c = classifyReply({
+    message_id: t.thread_id ?? "",
+    thread_id: t.thread_id ?? "",
+    from,
+    subject: t.subject ?? "",
+    date: t.date ?? "",
+    body: t.body ?? "",
+  });
+  return {
+    ...base,
+    kind: c.kind,
+    reason: c.reason,
+    data_deletion: c.data_deletion,
+  };
 }
 
 /** #9158: teto da amostra de remetentes descartados pelo check de `to`. */
@@ -499,6 +569,13 @@ export interface FilterResult {
    * `previouslyCaptured`.
    */
   alreadyProcessedCount: number;
+  /**
+   * #12947: respostas à Clarice News (`isClariceNewsReply`), já classificadas
+   * (quero/saída/suporte/ruído/ambíguo). Fora de `replies[]` e de
+   * `droppedByToCount`: são encaminhadas à triagem da Clarice
+   * (`clarice-replies-triage.ts`), e `main()` destaca os pedidos de saída.
+   */
+  clariceReplies: ClariceNewsReply[];
 }
 
 /**
@@ -571,7 +648,11 @@ export function filterSubscriberReplies(
     return k !== null && seenKeys.has(k);
   };
   const alreadyProcessedCount = threads.filter(isAlreadyProcessed).length;
-  const baseCandidates = threads.filter((t) => !isAlreadyProcessed(t) && passesSenderAndSubjectChecks(t));
+  const humanReplies = threads.filter((t) => !isAlreadyProcessed(t) && passesSenderAndSubjectChecks(t));
+  // #12947: resposta à Clarice News sai antes do check de `to` — senão o
+  // `pixel@` sem assunto de campanha da diária a jogava em droppedByTo.
+  const clariceReplies = humanReplies.filter(isClariceNewsReply).map(toClariceNewsReply);
+  const baseCandidates = humanReplies.filter((t) => !isClariceNewsReply(t));
   const droppedByTo = baseCandidates.filter((t) => isDroppedByTo(t, campaignSubjects));
   const droppedByToSenders = [...new Set(droppedByTo.map((t) => extractEmail(t.from ?? "")))].slice(
     0,
@@ -603,7 +684,31 @@ export function filterSubscriberReplies(
     droppedByToCount: droppedByTo.length,
     droppedByToSenders,
     alreadyProcessedCount,
+    clariceReplies,
   };
+}
+
+/**
+ * #12947: linhas de stderr do bloco Clarice News — vazio quando não há
+ * resposta. Pedido de saída (descadastro/LGPD) vem nomeado, um por linha:
+ * é o caso que não pode depender de alguém abrir o Gmail.
+ */
+export function formatClariceRepliesReport(clariceReplies: ClariceNewsReply[]): string[] {
+  if (clariceReplies.length === 0) return [];
+  const byKind = new Map<ReplyKind, number>();
+  for (const r of clariceReplies) byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + 1);
+  const summary = [...byKind.entries()].map(([k, n]) => `${n} ${k}`).join(", ");
+  const lines = [
+    `  📮 ${clariceReplies.length} resposta(s) à Clarice News (reply-to de campanha, não é a diária — sem rascunho aqui): ${summary}. ` +
+      "Triagem: npx tsx scripts/clarice-replies-triage.ts (lista o plano; aplicar com --apply --confirm {lote}).",
+  ];
+  for (const r of clariceReplies.filter((x) => x.kind === "saida")) {
+    lines.push(
+      `  ⚠️  PEDIDO DE SAÍDA da Clarice News: ${r.from} — "${r.subject.slice(0, 60)}"` +
+        (r.data_deletion ? " (pede exclusão de DADOS, tratar à mão)" : ""),
+    );
+  }
+  return lines;
 }
 
 function main(): void {
@@ -773,6 +878,8 @@ function main(): void {
         `${result.droppedByToSenders.join(", ")}${extra}`,
     );
   }
+  // #12947: respostas à Clarice News — encaminhadas, nunca descartadas em silêncio.
+  for (const line of formatClariceRepliesReport(result.clariceReplies)) console.error(line);
   // #4509: near-miss — assunto "parece" boas-vindas mas não bateu a
   // blacklist EXATA. Sinal indireto (não dependente de histórico) de que o
   // rename do workspace/automação Beehiiv (#4424) pode ter tornado

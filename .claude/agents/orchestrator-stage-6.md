@@ -118,7 +118,7 @@ Seguir os passos 1-5 de `.claude/agents/orchestrator-stage-0-preflight.md` § "0
    ```
    `{THREAD_IDS_TRATADOS}` = os `thread_id` cujo passo 4 terminou de fato (draft criado), separados por vírgula — **sempre**, nunca omitido (#9813): sem `--thread-ids` o script grava a passada inteira, e uma reply cujo `create_draft` falhou entraria no ledger e seria pulada em silêncio na retomada. Nenhuma reply tratada → não rodar o comando (lista vazia é erro de uso). A que ficou de fora volta na retomada. Reprocessar gera no máximo um rascunho duplicado (desfazível; a alocação de número é idempotente por ciclo+email+edição), perder a reply não tem desfazer.
 
-Os rascunhos criados (com número do sorteio quando alocado) entram como contexto informativo no gate único de §6c, junto com as linhas agregadas do passo 5 de §0-replies e `result.alreadyProcessedCount` (`{N} thread(s) já processada(s) no Passo 1b`). Nunca um gate próprio.
+Os rascunhos criados (com número do sorteio quando alocado) entram como contexto informativo no gate único de §6c, junto com as linhas agregadas do passo 5 de §0-replies (inclusive a de `result.clariceReplies` e os pedidos de saída nomeados, #12947) e `result.alreadyProcessedCount` (`{N} thread(s) já processada(s) no Passo 1b`). Nunca um gate próprio.
 
 ### 6b-site. Checar o PR da página do site aberto no Stage 5 — roda ANTES do gate (#6202 → #8221 → #10160)
 
