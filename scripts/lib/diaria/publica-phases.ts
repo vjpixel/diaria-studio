@@ -242,6 +242,26 @@ export function parsePhaseEvents(raw: string): { events: PhaseEvent[]; problems:
 
 export type TaskStatus = "running" | "done" | "error" | "interrupted" | "orphaned";
 
+/**
+ * Por que uma tarefa virou `orphaned` (#12883): `pid-dead` = nesta máquina, o
+ * wrapper e o filho morreram; `cross-host-stale` = o `run` é de OUTRA máquina
+ * (o PID não pode ser conferido daqui) e nenhum evento dele chegou há mais de
+ * `CROSS_HOST_STALE_MS`.
+ */
+export type OrphanReason = "pid-dead" | "cross-host-stale";
+
+/**
+ * Prazo para uma tarefa do `run` aberta em outra máquina deixar de segurar
+ * recurso e join (#12883). Daqui não dá para conferir o PID de lá (nem há
+ * canal entre as máquinas além do `data/` sincronizado), então o critério é a
+ * idade do último evento da tarefa (`start` ou `spawned`). 3 h é o dobro do
+ * teto mais longo que um publisher filho tem hoje (75 min no timer de cortes,
+ * #11985) somado à folga de sincronização do Drive: uma tarefa viva em outra
+ * máquina não expira no meio do trabalho. Expirada, ela vira `orphaned` e o
+ * retry segue exigindo a releitura do registro (#11741), como qualquer órfã.
+ */
+export const CROSS_HOST_STALE_MS = 3 * 60 * 60 * 1000;
+
 export interface PhaseTask {
   key: string;
   phase: PublicaPhase;
@@ -261,6 +281,10 @@ export interface PhaseTask {
   host?: string;
   exit_code?: number;
   detail?: string;
+  /** Instante do último evento da tarefa (`start` ou `spawned`; o fim, quando houver). */
+  last_event_at: string;
+  /** Só em `orphaned`: por que a tarefa foi dada por perdida. */
+  orphan_reason?: OrphanReason;
 }
 
 export function taskKey(e: Pick<PhaseEvent, "phase" | "part" | "attempt" | "task_id">): string {
@@ -271,6 +295,14 @@ export interface DeriveOptions {
   /** Confere se o PID de uma tarefa sem fim ainda vive nesta máquina. Ausente = tarefa sem fim conta como `running`. */
   isPidAlive?: (pid: number) => boolean;
   host?: string;
+  /**
+   * Agora (ms). Com ele e `host`, tarefa do `run` de outra máquina sem evento
+   * há mais de `crossHostStaleMs` vira `orphaned` (`cross-host-stale`, #12883).
+   * Ausente = tarefa de outra máquina nunca expira (conta como `running`).
+   */
+  now?: number;
+  /** Prazo da expiração entre máquinas; default `CROSS_HOST_STALE_MS`. */
+  crossHostStaleMs?: number;
 }
 
 /**
@@ -279,9 +311,11 @@ export interface DeriveOptions {
  * Fim sem início é ignorado (não dá para inventar o início). Tarefa sem fim
  * cujo PID nesta máquina já morreu (o do wrapper E, quando gravado, o do
  * filho) vira `orphaned`: a interrupção não deixou rastro, e o retry exige a
- * releitura do registro como qualquer outra interrupção. Tarefa aberta por
- * `start` manual (sem PID) nunca vira órfã: o fim é gravado à mão
- * (`publica-phase.ts interrupted`).
+ * releitura do registro como qualquer outra interrupção. Tarefa do `run` de
+ * OUTRA máquina (o PID de lá não se confere daqui) vira órfã quando o último
+ * evento dela passou de `crossHostStaleMs` (#12883); antes disso segue
+ * `running`. Tarefa aberta por `start` manual (sem PID) nunca vira órfã: o
+ * fim é gravado à mão (`publica-phase.ts interrupted`).
  */
 export function deriveTasks(events: readonly PhaseEvent[], opts: DeriveOptions = {}): PhaseTask[] {
   const sorted = [...events].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
@@ -304,6 +338,7 @@ export function deriveTasks(events: readonly PhaseEvent[], opts: DeriveOptions =
         start: e.at,
         end: null,
         status: "running",
+        last_event_at: e.at,
         ...(e.pid !== undefined ? { pid: e.pid } : {}),
         ...(e.host !== undefined ? { host: e.host } : {}),
       };
@@ -313,6 +348,7 @@ export function deriveTasks(events: readonly PhaseEvent[], opts: DeriveOptions =
     }
     const t = open.get(key);
     if (!t) continue;
+    t.last_event_at = e.at;
     if (e.event === "spawned") {
       if (e.child_pid !== undefined) t.child_pid = e.child_pid;
       continue;
@@ -324,15 +360,40 @@ export function deriveTasks(events: readonly PhaseEvent[], opts: DeriveOptions =
     if (e.plan_sha256 && !t.plan_sha256) t.plan_sha256 = e.plan_sha256;
     open.delete(key);
   }
-  if (opts.isPidAlive) {
-    for (const t of tasks) {
-      if (t.status !== "running" || t.pid === undefined) continue;
-      if (t.host !== undefined && opts.host !== undefined && t.host !== opts.host) continue;
-      const childAlive = t.child_pid !== undefined && opts.isPidAlive(t.child_pid);
-      if (!opts.isPidAlive(t.pid) && !childAlive) t.status = "orphaned";
+  const staleMs = opts.crossHostStaleMs ?? CROSS_HOST_STALE_MS;
+  for (const t of tasks) {
+    if (t.status !== "running" || t.pid === undefined) continue;
+    if (t.host !== undefined && opts.host !== undefined && t.host !== opts.host) {
+      if (opts.now !== undefined && isCrossHostStale(t, opts.now, staleMs)) {
+        t.status = "orphaned";
+        t.orphan_reason = "cross-host-stale";
+      }
+      continue;
+    }
+    if (!opts.isPidAlive) continue;
+    const childAlive = t.child_pid !== undefined && opts.isPidAlive(t.child_pid);
+    if (!opts.isPidAlive(t.pid) && !childAlive) {
+      t.status = "orphaned";
+      t.orphan_reason = "pid-dead";
     }
   }
   return tasks;
+}
+
+/** Pure: a tarefa de outra máquina está sem evento há mais de `staleMs`? Instante ilegível conta como velho. */
+function isCrossHostStale(t: Pick<PhaseTask, "last_event_at">, now: number, staleMs: number): boolean {
+  const last = Date.parse(t.last_event_at);
+  if (!Number.isFinite(last)) return true;
+  return now - last > staleMs;
+}
+
+/** Pure: texto curto de como a tarefa de outra máquina está (para as mensagens de recusa). */
+export function crossHostNote(t: Pick<PhaseTask, "host" | "last_event_at">, opts: DeriveOptions): string {
+  if (t.host === undefined || opts.host === undefined || t.host === opts.host) return "";
+  const staleMs = opts.crossHostStaleMs ?? CROSS_HOST_STALE_MS;
+  const last = Date.parse(t.last_event_at);
+  const expires = Number.isFinite(last) ? new Date(last + staleMs).toISOString() : "já";
+  return ` Iniciada em outra máquina (${t.host}): o PID não se confere daqui; expira sozinha em ${expires} (sem evento por ${Math.round(staleMs / 60_000)} min), ou feche antes se a sessão de lá caiu.`;
 }
 
 /** Próxima tentativa de uma fase/parte (1 + quantas já começaram). */
@@ -355,6 +416,20 @@ export interface StartCheckInput {
   registryChecks?: readonly RegistryCheckLike[];
   /** Declaração de limitação: preparo serial sem worker (a 1ª pergunta não exige background). */
   serialReason?: string | null;
+  /**
+   * Retomada de um upload JÁ registrado (#12883): o `05-youtube-published.json`
+   * tem o vídeo desta edição e o comando não cria outro (sem `--force`), então
+   * só refaz podcast/legenda/playlists. O CLI confere o registro antes de
+   * passar `true`; aqui ela dispensa só a regra 3 (retry com releitura do
+   * registro), porque o vídeo registrado já é o resultado da releitura. Só vale
+   * para `upload/horizontal`.
+   */
+  resumeExisting?: boolean;
+}
+
+/** Fase/parte em que a retomada de upload registrado (`--resume-existing`) vale (#12883). */
+export function canResumeExisting(phase: PublicaPhase, part: PublicaPart): boolean {
+  return phase === "upload" && part === "horizontal";
 }
 
 /** Comando que fecha à mão uma tarefa aberta que perdeu o processo (`start` manual nunca vira órfã). */
@@ -378,7 +453,9 @@ export const REGISTRY_RETRY_PHASES: ReadonlySet<PublicaPhase> = new Set<PublicaP
  *    só como processo em background.
  * 3. Retry de fase externa (upload, vertical) depois de erro, interrupção ou
  *    tarefa órfã exige uma releitura do registro POSTERIOR ao fim da
- *    tentativa anterior (#11741), com veredito legível.
+ *    tentativa anterior (#11741), com veredito legível. A retomada de um
+ *    upload já registrado (`resumeExisting`, #12883) não passa por esta
+ *    regra: ela não cria vídeo.
  * 4. A 1ª pergunta bloqueante da sessão só começa depois de alguma fase de
  *    preparo em background ter começado, ou com a limitação declarada.
  */
@@ -394,7 +471,8 @@ export function checkPhaseStart(input: StartCheckInput): string[] {
     if (shared.length) {
       problems.push(
         `recurso ocupado: ${shared.join(", ")} está com ${t.phase}/${t.part} (tentativa ${t.attempt}, desde ${t.start}${t.task_id ? `, task ${t.task_id}` : ""}) — um dono por vez. ` +
-          `Se essa fase morreu sem gravar o fim, confira o registro e feche-a: ${closeTaskCommand(t, candidate.edition)}`,
+          `Se essa fase morreu sem gravar o fim, confira o registro e feche-a: ${closeTaskCommand(t, candidate.edition)}` +
+          crossHostNote(t, input.deriveOptions ?? {}),
       );
     }
   }
@@ -418,7 +496,11 @@ export function checkPhaseStart(input: StartCheckInput): string[] {
     }
   }
 
-  if (REGISTRY_RETRY_PHASES.has(candidate.phase)) {
+  if (input.resumeExisting && !canResumeExisting(candidate.phase, candidate.part)) {
+    problems.push(`retomada de upload registrado só vale para upload/horizontal, não para ${candidate.phase}/${candidate.part}`);
+  }
+
+  if (REGISTRY_RETRY_PHASES.has(candidate.phase) && !(input.resumeExisting && canResumeExisting(candidate.phase, candidate.part))) {
     const previous = tasks
       .filter((t) => t.phase === candidate.phase && t.part === candidate.part && (t.status === "error" || t.status === "interrupted" || t.status === "orphaned"))
       .sort((a, b) => Date.parse(a.end ?? a.start) - Date.parse(b.end ?? b.start));
@@ -483,15 +565,17 @@ export function joinCheck(
   const problems: string[] = pending.map(
     (t) =>
       `pendente: ${t.phase}/${t.part} (tentativa ${t.attempt}${t.task_id ? `, task ${t.task_id}` : ""}, desde ${t.start}) — ` +
-      `espere o fim ou, se o processo morreu, feche: ${closeTaskCommand(t)}`,
+      `espere o fim ou, se o processo morreu, feche: ${closeTaskCommand(t)}` +
+      crossHostNote(t, opts),
   );
   const supersededByDone = (t: PhaseTask) =>
     tasks.some((x) => x.phase === t.phase && x.part === t.part && x.status === "done" && Date.parse(x.start) > Date.parse(t.start));
   for (const t of tasks.filter((x) => x.status === "orphaned" && !supersededByDone(x))) {
-    problems.push(
-      `órfã: ${t.phase}/${t.part} (PID ${t.pid}${t.child_pid !== undefined ? ` e filho ${t.child_pid}` : ""} não vivem mais, sem evento de fim) — ` +
-        `releia o registro antes de qualquer retry; para fechar: ${closeTaskCommand(t)}`,
-    );
+    const why =
+      t.orphan_reason === "cross-host-stale"
+        ? `iniciada em outra máquina (${t.host}), sem evento desde ${t.last_event_at} e sem evento de fim`
+        : `PID ${t.pid}${t.child_pid !== undefined ? ` e filho ${t.child_pid}` : ""} não vivem mais, sem evento de fim`;
+    problems.push(`órfã: ${t.phase}/${t.part} (${why}) — releia o registro antes de qualquer retry; para fechar: ${closeTaskCommand(t)}`);
   }
   const stageRunning = (stage: 5 | 6) => pending.some((t) => t.stage === stage);
   if (sentinels.step5 && stageRunning(5)) problems.push("sentinel .step-5-done.json presente com a Etapa 5 ainda rodando (sentinel antecipado)");

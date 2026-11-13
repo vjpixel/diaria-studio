@@ -20,6 +20,9 @@
  *   NÃO invalidada (ativa ou consumida, de qualquer máquina) para o hash do
  *   manifesto em disco agora. Não confere se o `--publish` rodou nem qual
  *   destino cada passo guiado toca: isso segue com quem conduz os passos.
+ *   A retomada do `upload` com o vídeo já registrado (`resumeExisting`,
+ *   #12883, só refaz podcast/legenda/playlists) passa sem autorização: o
+ *   publisher, nesse caminho, não cria vídeo nem consome autorização.
  * - `link`: grava o link do D1 (e enfileira o comentário do LinkedIn). Quem
  *   decide se o link entra é o próprio `link-video-d1.ts` (registro do
  *   upload, releitura na API, `gateVideoLink`); este gate deixa passar.
@@ -56,6 +59,14 @@ export interface EffectGateInput {
   /** Veredito do `assessVideoBeforePublish` (Etapa 5/6). */
   videoGate?: VideoGateLike | null;
   host: string;
+  /**
+   * Retomada do upload já registrado (#12883): o vídeo desta edição está em
+   * `05-youtube-published.json` (`videoId`) e o comando não pode criar outro
+   * (o CLI recusa `--force`). Sem `videos.insert` não há autorização a exigir
+   * nem a consumir (o `publish-youtube.ts --upload` também não exige). Só
+   * vale para `upload`.
+   */
+  resumeExisting?: { videoId: string } | null;
 }
 
 export type EffectGateResult = { ok: true; note: string } | { ok: false; reason: string };
@@ -74,6 +85,13 @@ export function checkExternalEffect(input: EffectGateInput): EffectGateResult {
   const videoPart = VIDEO_PHASES[input.phase];
   if (videoPart) {
     if (input.part !== videoPart) return { ok: false, reason: `${input.phase} é da parte ${videoPart}, não da ${input.part}` };
+    if (input.resumeExisting) {
+      if (input.phase !== "upload") return { ok: false, reason: `retomada de upload registrado só vale para upload, não para ${input.phase}` };
+      return {
+        ok: true,
+        note: `retomada do vídeo já registrado (${input.resumeExisting.videoId}): sem videos.insert, sem autorização a consumir (#12883)`,
+      };
+    }
     if (!input.store) {
       return { ok: false, reason: `registro de autorizações indisponível (${input.storeError ?? "não lido"}): nenhuma publicação sem conferir a aprovação` };
     }
