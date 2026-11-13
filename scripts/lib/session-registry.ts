@@ -968,7 +968,7 @@ function warnIoError(path: string, error: unknown): void {
     const code = (error as NodeJS.ErrnoException)?.code ?? (error as Error)?.message ?? String(error);
     process.stderr.write(
       `session-registry: falha de I/O lendo "${path}" (${code}) — tratando como ausente por segurança (fail-soft), ` +
-        "mas isto pode ser TRANSITÓRIO (ex: OneDrive sincronizando o arquivo agora), não uma ausência real. " +
+        "mas isto pode ser TRANSITÓRIO (ex: sync do Drive gravando o arquivo agora), não uma ausência real. " +
         "Se isto se repetir para o mesmo path, investigar antes de confiar na leitura.\n",
     );
   } catch {
@@ -1670,7 +1670,7 @@ function warnUnreadablePromotionSource(sessionId: string, otherPath: string): vo
     process.stderr.write(
       `session-registry: aviso — encontrado um registro de OUTRO kind pra sessionId="${sessionId}" em ` +
         `"${otherPath}", mas nem o arquivo real nem nenhum backup dele foi legível (JSON corrompido/ ` +
-        "parcialmente sincronizado pelo OneDrive) — a promoção NÃO pôde ler o conteúdo antigo. Um registro NOVO " +
+        "parcialmente sincronizado pelo Drive) — a promoção NÃO pôde ler o conteúdo antigo. Um registro NOVO " +
         `foi criado do zero; "${otherPath}" continua em disco (outcome: "promotion-failed-unreadable").\n`,
     );
   } catch {
@@ -3913,7 +3913,7 @@ function warnUnclaimUnreadable(sessionId: string, path: string): void {
   try {
     process.stderr.write(
       `session-registry: aviso — unclaim-issue achou o registro de sessionId="${sessionId}" em "${path}" mas ` +
-        "não conseguiu ler o conteúdo (JSON corrompido/parcialmente sincronizado pelo OneDrive). A claim pode " +
+        "não conseguiu ler o conteúdo (JSON corrompido/parcialmente sincronizado pelo Drive). A claim pode " +
         'estar ATIVA no disco — isto NÃO é "sessão inexistente" (reason: "no-op-unreadable"); investigar antes de ' +
         "assumir que não há nada pra soltar.\n",
     );
@@ -7844,7 +7844,7 @@ async function main(): Promise<void> {
           case "no-op-unreadable":
             process.stdout.write(
               "session-registry: unclaim-issue no-op — registro EXISTE mas está ILEGÍVEL agora (JSON corrompido/" +
-                "parcialmente sincronizado pelo OneDrive). A claim pode estar ATIVA — isto NÃO é 'sessão " +
+                "parcialmente sincronizado pelo Drive). A claim pode estar ATIVA — isto NÃO é 'sessão " +
                 "inexistente'; investigar antes de assumir que não há nada pra soltar (aviso já emitido em " +
                 "stderr).\n",
             );
@@ -7933,7 +7933,7 @@ async function main(): Promise<void> {
             `session-registry: ATENÇÃO (#7169) — registro de coordenadora de OUTRA máquina parece DESATUALIZADO ` +
               `(mais de ${Math.round(CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS / 60000)}min sem heartbeat, mas ainda dentro ` +
               `do limiar de 90min que a marcaria stale): ${names}. Isto pode significar sync cross-máquina ` +
-              `degradado (data/sessions/ mora em junction OneDrive) — o resultado acima (${ok ? "ok" : "denied"}) ` +
+              `degradado (data/sessions/ mora na pasta sincronizada pelo Drive) — o resultado acima (${ok ? "ok" : "denied"}) ` +
               "pode não refletir o estado real daquela máquina agora. Mitigação: `git fetch origin master` e " +
               "conferir se o head mudou antes de confiar no merge lock/grant cross-máquina.\n",
           );

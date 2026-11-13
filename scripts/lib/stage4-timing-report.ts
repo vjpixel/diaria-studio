@@ -196,7 +196,7 @@ export function renderStage4TimingReport(report: Stage4TimingReport): string {
     );
     lines.push(
       "2. **A escrita do log falhou em silêncio.** `logPreviewReloadCycle` e `logEvent` engolem toda exceção de propósito " +
-        "(medir não pode derrubar o que se mede), então disco cheio, permissão ou lock do OneDrive produzem exatamente " +
+        "(medir não pode derrubar o que se mede), então disco cheio, permissão ou lock do sync do Drive produzem exatamente " +
         "esta mesma saída. Antes de concluir \"não usou --watch\", conferir se `data/run-log.jsonl` está sendo escrito " +
         "por outros produtores no mesmo período.",
     );

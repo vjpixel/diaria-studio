@@ -73,11 +73,11 @@ const URL_REWRITTEN = "03-social.md";
 
 /** O que fazer em cada tipo de problema (halt banner do Stage 5). */
 export const STAGE5_PROBLEM_ACTIONS: Record<Stage5ProblemKind, string> = {
-  sentinel_missing: "sync em trânsito: aguardar o OneDrive e re-rodar a Etapa 5",
-  sentinel_unreadable: "sync em trânsito: aguardar o OneDrive e re-rodar a Etapa 5",
+  sentinel_missing: "sync em trânsito: aguardar o sync do Drive (bisync do 300 / Drive for desktop) e re-rodar a Etapa 5",
+  sentinel_unreadable: "sync em trânsito: aguardar o sync do Drive (bisync do 300 / Drive for desktop) e re-rodar a Etapa 5",
   sentinel_malformed: "sentinel do Stage 4 inválido: re-rodar a Etapa 4 (regrava o sentinel)",
-  absent: "sync em trânsito: aguardar o OneDrive e re-rodar a Etapa 5",
-  empty: "sync em trânsito: aguardar o OneDrive e re-rodar a Etapa 5",
+  absent: "sync em trânsito: aguardar o sync do Drive (bisync do 300 / Drive for desktop) e re-rodar a Etapa 5",
+  empty: "sync em trânsito: aguardar o sync do Drive (bisync do 300 / Drive for desktop) e re-rodar a Etapa 5",
   no_hash:
     "sentinel do Stage 4 sem hash (código defasado no host que aprovou): atualizar o código lá e re-rodar a Etapa 4 para regravar o sentinel",
   diverged:

@@ -209,10 +209,10 @@ export function renameSyncVerified(
   if (!deps.existsSync(to)) {
     throw new Error(
       `reorder-destaques: rename ${from} → ${to} retornou sem erro mas o arquivo de destino ` +
-        `não existe no disco logo depois. Provável conflito de sync (OneDrive) descartando uma ` +
+        `não existe no disco logo depois. Provável conflito de sync do Drive (bisync do 300 / Drive for desktop) descartando uma ` +
         `versão "perdedora" durante a sequência de renames. Abortando para evitar publicação ` +
         `com imagem ausente/errada — reexecute reorder-destaques.ts depois de confirmar que o ` +
-        `sync terminou (ou restaure os arquivos a partir do OneDrive antes de retentar).`,
+        `sync terminou (ou restaure os arquivos a partir do Drive antes de retentar).`,
     );
   }
 }
@@ -342,7 +342,7 @@ function stageAndWriteVerified(
         if (!deps.existsSync(finalPath)) {
           throw new Error(
             `reorder-destaques: escrita de ${s.finalName} retornou sem erro mas o arquivo não ` +
-              `existe no disco logo depois. Provável conflito de sync (OneDrive) descartando a ` +
+              `existe no disco logo depois. Provável conflito de sync do Drive (bisync do 300 / Drive for desktop) descartando a ` +
               `escrita. Abortando (#5564).`,
           );
         }
@@ -362,7 +362,7 @@ function stageAndWriteVerified(
               `final pós-reorder (#5564 — "reversão pós-hoc": o arquivo foi revertido pelo ` +
               `provedor de sync depois de a escrita individual ter reportado sucesso). Abortando ` +
               `para evitar publicação com imagem/prompt errado — reexecute reorder-destaques.ts ` +
-              `depois de confirmar que o sync do OneDrive terminou.`,
+              `depois de confirmar que o sync do Drive terminou.`,
           );
         }
       }

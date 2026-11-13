@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeOutputHashes, readSentinel, sentinelExists, sha256Hex, writeSentinel } from "../scripts/lib/pipeline-state.ts";
-import { OUTPUT_HASHES_REQUIRED_SINCE, checkStage5Freshness } from "../scripts/lib/stage5-freshness.ts";
+import { OUTPUT_HASHES_REQUIRED_SINCE, STAGE5_PROBLEM_ACTIONS, checkStage5Freshness } from "../scripts/lib/stage5-freshness.ts";
 import { runStage5Freshness } from "../scripts/stage5-freshness.ts";
 import { acquireEditionLock, readEditionLock, releaseEditionLock } from "../scripts/lib/edition-lock.ts";
 import { assessStaleEdition } from "../scripts/lib/stale-edition-guard.ts";
@@ -29,7 +29,7 @@ function put(dir: string, rel: string, content: string): void {
   writeFileSync(join(dir, rel), content, "utf8");
 }
 
-/** "Sync do OneDrive": copia um arquivo de um host para o outro. */
+/** "Sync do Drive": copia um arquivo de um host para o outro. */
 function sync(from: string, to: string, rel: string): void {
   mkdirSync(join(to, "_internal"), { recursive: true });
   copyFileSync(join(from, rel), join(to, rel));
@@ -323,5 +323,14 @@ describe("#11698 — playbook do Stage 5 chama guard, frescor, trava e release",
   it("release simples documentado para os halts depois do acquire, e fail-closed explícito", () => {
     at("edition-lock.ts release --edition-dir {EDITION_DIR}` (exit != 0 e log-only)");
     at("Fail-closed: qualquer exit != 0 dos tres e halt");
+  });
+});
+
+describe("#12837 — ação de sync em trânsito cita o Drive, não o OneDrive", () => {
+  it("nenhuma ação do halt banner manda aguardar o OneDrive", () => {
+    for (const [kind, action] of Object.entries(STAGE5_PROBLEM_ACTIONS)) {
+      assert.doesNotMatch(action, /OneDrive/, `ação de ${kind} ainda cita o OneDrive`);
+    }
+    assert.match(STAGE5_PROBLEM_ACTIONS.sentinel_missing, /sync do Drive \(bisync do 300 \/ Drive for desktop\)/);
   });
 });

@@ -137,23 +137,25 @@ describe("#12554 — erro de leitura com o caminho do arquivo", () => {
     throw e;
   };
 
-  it("UNKNOWN sai com caminho, código e a dica do OneDrive", () => {
+  it("UNKNOWN sai com caminho, código e a dica do sync do Drive (#12837)", () => {
     assert.throws(
       () => readUtf8WithContext("/x/data/editions/2611/261109/02-reviewed.md", unknown),
       (err: unknown) => {
         assert.ok(err instanceof FileReadError);
         assert.equal(err.code, "UNKNOWN");
         assert.match(err.message, /261109\/02-reviewed\.md/);
-        assert.match(err.message, /OneDrive/);
+        assert.match(err.message, /Drive for desktop/);
+        // #12837: o data/ saiu do OneDrive na virada da #12359.
+        assert.doesNotMatch(err.message, /OneDrive/);
         return true;
       },
     );
   });
 
-  it("ENOENT sai com caminho, sem a dica do OneDrive", () => {
+  it("ENOENT sai com caminho, sem a dica do sync do Drive", () => {
     assert.throws(
       () => readUtf8WithContext("/nao/existe.md"),
-      (err: unknown) => err instanceof FileReadError && err.code === "ENOENT" && /\/nao\/existe\.md/.test(err.message) && !/OneDrive/.test(err.message),
+      (err: unknown) => err instanceof FileReadError && err.code === "ENOENT" && /\/nao\/existe\.md/.test(err.message) && !/Drive for desktop/.test(err.message),
     );
   });
 
