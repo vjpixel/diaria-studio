@@ -101,6 +101,7 @@ import { ENTITY_LOADERS } from "./build-entity-page.ts";
 import { loadPosts } from "./generate-hub-sources.ts";
 import {
   findStaleEntityMentions,
+  mergeStaleEntityEditions,
   computeEntityAlarmCoverage,
   formatEntityAlarmCoverage,
   computeFirstSeenMap,
@@ -114,9 +115,13 @@ import {
   type EntityStalenessAlarmState,
   type StaleFirstSeenMap,
 } from "./lib/entity-staleness-check.ts";
+import { computeFullTextCoverage, findFullTextStaleMentions, loadSiteEditions } from "./lib/entity-fulltext-scan.ts";
+import { ENTITY_EXCLUDED_EDITIONS, ENTITY_FULLTEXT_SCAN_SINCE, ENTITY_KEYWORD_PATTERNS } from "./lib/entities/patterns.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
+/** #12958: HTML das edições no site, commitado a cada publicação (texto completo). */
+const SITE_EDITIONS_DIR = resolve(ROOT, "workers/site/public/p");
 const ENTITIES_DATA_DIR = resolve(ROOT, "data/entities");
 const STATE_PATH = join(ENTITIES_DATA_DIR, "staleness-state.json");
 const LOG_PREFIX = "[regenerate-entity-pages]";
@@ -248,10 +253,29 @@ async function main(): Promise<void> {
       loader().mentions.map((m) => m.editionUrl.replace(/^https:\/\/diar\.ia\.br\/p\//, "")),
     );
   }
-  const { stale, warnings } = findStaleEntityMentions(posts, mentionEditionSlugsBySlug);
+  const { stale: titleStale, warnings } = findStaleEntityMentions(posts, mentionEditionSlugsBySlug);
   for (const w of warnings) console.warn(`${LOG_PREFIX} ⚠ ${w}`);
+  // #12958: o título/subtítulo não vê a menção só no corpo (entidades
+  // brasileiras do #8350) — o scanner de texto completo lê o HTML do site.
+  const siteEditions = loadSiteEditions(SITE_EDITIONS_DIR, (m) => console.warn(`${LOG_PREFIX} ⚠ ${m}`));
+  if (siteEditions.length === 0) {
+    console.warn(`${LOG_PREFIX} ⚠ ${SITE_EDITIONS_DIR} sem edições — scanner de texto completo (#12958) não rodou.`);
+  }
+  const fullText = findFullTextStaleMentions(
+    siteEditions,
+    ENTITY_KEYWORD_PATTERNS,
+    ENTITY_FULLTEXT_SCAN_SINCE,
+    mentionEditionSlugsBySlug,
+    ENTITY_EXCLUDED_EDITIONS,
+  );
+  for (const w of fullText.warnings) console.warn(`${LOG_PREFIX} ⚠ ${w}`);
+  const stale = mergeStaleEntityEditions(titleStale, fullText.stale);
+  const fullTextCoverage = siteEditions.length
+    ? computeFullTextCoverage(siteEditions, ENTITY_KEYWORD_PATTERNS, Object.keys(ENTITY_FULLTEXT_SCAN_SINCE), mentionEditionSlugsBySlug)
+    : {};
   for (const c of computeEntityAlarmCoverage(posts, mentionEditionSlugsBySlug)) {
-    console.log(`${LOG_PREFIX} cobertura do alarme — ${formatEntityAlarmCoverage(c)}`);
+    const withFull = c.entitySlug in fullTextCoverage ? { ...c, fullTextVisible: fullTextCoverage[c.entitySlug] } : c;
+    console.log(`${LOG_PREFIX} cobertura do alarme — ${formatEntityAlarmCoverage(withFull)}`);
   }
 
   const now = new Date();

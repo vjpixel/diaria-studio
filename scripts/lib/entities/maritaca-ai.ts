@@ -24,8 +24,9 @@
  * `patterns.ts`) NÃO reproduz a regex de contagem acima: acrescenta
  * `sabiazinho`, porque o "Sabiazinho-4" não casa `sabia[- ]?\d` (há letras
  * entre "sabia" e o número) e é justamente o nome de produto que uma manchete
- * nova traria sem citar "Maritaca". E o alarme só vê título+subtítulo do
- * cache, enquanto a contagem foi feita no texto completo — limitação #12958.
+ * nova traria sem citar "Maritaca". O alarme por título+subtítulo do cache vê
+ * menos que a contagem (feita no texto completo); a menção nova só no corpo é
+ * coberta pelo scanner de texto completo do #12958 (`entity-fulltext-scan.ts`).
  */
 import { MIN_ENTITY_MENTIONS, type EntityContent } from "../shared/entity-page.ts";
 import { entityFooterNavUtm } from "../shared/utm-registry.ts";

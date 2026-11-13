@@ -52,7 +52,7 @@
 import { collectHubSources } from "../generate-hub-sources.ts";
 import type { RawCachedPost } from "../generate-arquivo-titles.ts";
 import type { PublishDateOverridesResult } from "./beehiiv-publish-date.ts";
-import { ENTITY_KEYWORD_PATTERNS, ENTITY_EXCLUDED_EDITIONS } from "./entities/patterns.ts";
+import { ENTITY_KEYWORD_PATTERNS, ENTITY_EXCLUDED_EDITIONS, ENTITY_FULLTEXT_SCAN_SINCE } from "./entities/patterns.ts";
 
 /** Uma edição confirmada que casa `ENTITY_KEYWORD_PATTERNS[slug]` mas não
  * está no `mentions` commitado daquela entidade, e não consta como exclusão
@@ -122,10 +122,11 @@ export function findStaleEntityMentions(
   return { stale, warnings };
 }
 
-/** Slugs cujo alarme só vê parte das menções publicadas (#8350, limitação
- * #12958): a contagem do docstring foi no texto completo, o alarme casa
- * título+subtítulo. Ver o bloco #8350 em `patterns.ts`. */
-export const BODY_ONLY_COVERAGE_SLUGS: readonly string[] = ["tse", "pl-2338", "nubank", "maritaca-ai"];
+/** Slugs cujo alarme por título+subtítulo só vê parte das menções publicadas
+ * (#8350): a contagem do docstring foi no texto completo. Desde o #12958 são
+ * os mesmos slugs que o scanner de texto completo cobre
+ * (`ENTITY_FULLTEXT_SCAN_SINCE` em `patterns.ts`). */
+export const BODY_ONLY_COVERAGE_SLUGS: readonly string[] = Object.keys(ENTITY_FULLTEXT_SCAN_SINCE);
 
 export interface EntityAlarmCoverage {
   entitySlug: string;
@@ -133,6 +134,9 @@ export interface EntityAlarmCoverage {
    * título/subtítulo do cache). */
   visible: number;
   total: number;
+  /** #12958: menções da página que o scanner de texto completo vê no HTML do
+   * site (`computeFullTextCoverage`). Ausente = scanner não rodou. */
+  fullTextVisible?: number;
 }
 
 /**
@@ -163,9 +167,27 @@ export function computeEntityAlarmCoverage(
   return out;
 }
 
-/** Linha de log de `computeEntityAlarmCoverage`. @pure */
+/** Linha de log de `computeEntityAlarmCoverage` (+ `fullTextVisible`, #12958). @pure */
 export function formatEntityAlarmCoverage(c: EntityAlarmCoverage): string {
-  return `${c.entitySlug}: alarme vê ${c.visible}/${c.total} menções — limitação #12958 (menção nova só no corpo não alarma)`;
+  const head = `${c.entitySlug}: título/subtítulo vê ${c.visible}/${c.total} menções`;
+  return c.fullTextVisible === undefined
+    ? `${head}; scanner de texto completo não rodou (sem HTML do site) — menção nova só no corpo não alarma (#12958)`
+    : `${head}; texto completo vê ${c.fullTextVisible}/${c.total} (#12958)`;
+}
+
+/**
+ * #12958: une as pendências do alarme por título (`findStaleEntityMentions`)
+ * com as do scanner de texto completo (`findFullTextStaleMentions`), sem
+ * duplicar a mesma `staleEntryKey` — fica a 1ª ocorrência (a do título, que
+ * traz a manchete). Mesma ordenação de `findStaleEntityMentions`.
+ * @pure
+ */
+export function mergeStaleEntityEditions(
+  ...lists: ReadonlyArray<readonly StaleEntityEdition[]>
+): StaleEntityEdition[] {
+  const byKey = new Map<string, StaleEntityEdition>();
+  for (const list of lists) for (const e of list) if (!byKey.has(staleEntryKey(e))) byKey.set(staleEntryKey(e), e);
+  return [...byKey.values()].sort((a, b) => a.date.localeCompare(b.date) || a.entitySlug.localeCompare(b.entitySlug));
 }
 
 // ─── Aging (memória de 1ª-detecção) — mesmo molde de hub-staleness-check.ts

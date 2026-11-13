@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 import { editionDir } from "./lib/edition-paths.ts";
+import { listShortsRegistryFiles } from "./lib/diaria/shorts-published-store.ts";
 import { loadWorkerQueueForGrid } from "./publish-shorts.ts";
 import { enabledFacebookPages, loadResolvedFacebookPages } from "./lib/facebook-pages.ts";
 import {
@@ -140,6 +141,31 @@ export async function loadBufferQueueForGrid(
   }
 }
 
+/**
+ * #12959: une os arquivos do registro do vertical por destino, ficando com a
+ * entrada de `at` mais recente (mesma regra de `mergeShortsRegistries`), sem
+ * lançar: arquivo ausente ou ilegível chega como `undefined` e é ignorado.
+ * Sem isso, o destino que o timer do Instagram ou do Threads agendou no 300
+ * (gravado só no registro do timer) deixava o slot livre na grade.
+ */
+export function unionShortsRegistryRaw(files: readonly unknown[]): { entries: Array<Record<string, unknown>> } {
+  const time = (e: Record<string, unknown>) => {
+    const ms = typeof e.at === "string" ? Date.parse(e.at) : Number.NaN;
+    return Number.isNaN(ms) ? Number.NEGATIVE_INFINITY : ms;
+  };
+  const byDest = new Map<string, Record<string, unknown>>();
+  for (const f of files) {
+    const entries = (f as { entries?: unknown } | undefined)?.entries;
+    if (!Array.isArray(entries)) continue;
+    for (const e of entries as Array<Record<string, unknown>>) {
+      if (!e || typeof e.destination !== "string") continue;
+      const prev = byDest.get(e.destination);
+      if (!prev || time(e) > time(prev)) byDest.set(e.destination, e);
+    }
+  }
+  return { entries: [...byDest.values()] };
+}
+
 /** Só leituras: GET /list, Graph `scheduled_posts`, Buffer `posts` e os stores das datas pedidas. */
 interface GridConfig {
   publishing?: {
@@ -183,12 +209,14 @@ export async function loadDivulgacaoGrid(rawConfig: unknown, dates: readonly str
   };
   const shorts = config.publishing?.shorts;
   const grids = days.map((day) => {
-    const dir = join((deps.editionDir ?? editionDir)(day.replaceAll("-", "").slice(2)), "_internal");
+    const edDir = (deps.editionDir ?? editionDir)(day.replaceAll("-", "").slice(2));
+    const dir = join(edDir, "_internal");
     return mergeGrids(
       gridFromSocialPublished(read(join(dir, "06-social-published.json"))),
-      gridFromShortsPublished(read(join(dir, "06-shorts-published.json")), shorts?.instagram_author_page ?? "diaria", shorts?.instagram_collaborators ?? []),
-      // #11157: o vídeo do perfil que o timer do 300 publica fica no registro próprio dele.
-      gridFromShortsPublished(read(join(dir, "06-shorts-published.linkedin-timer.json")), shorts?.instagram_author_page ?? "diaria", shorts?.instagram_collaborators ?? []),
+      // #11157/#12959: o vertical é a visão unida do registro (principal + timers
+      // do LinkedIn, Instagram e Threads do 300 + cópias de conflito), como na
+      // tabela de horários (#12893). Cada arquivo é lido fail-soft.
+      gridFromShortsPublished(unionShortsRegistryRaw(listShortsRegistryFiles(edDir).map(read)), shorts?.instagram_author_page ?? "diaria", shorts?.instagram_collaborators ?? []),
       gridFromLinkedInPersonalIntent(read(join(dir, "06-linkedin-personal.json"))),
     );
   });
