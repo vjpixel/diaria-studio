@@ -122,7 +122,7 @@ function summarize(results: BackfillResult[]): void {
   const writeErrors = results.filter((r) => r.status === "error-write");
   if (writeErrors.length > 0) {
     console.error(
-      `  ${writeErrors.length} falha(s) de ESCRITA (provável causa única de infraestrutura — disco/permissão/OneDrive — checar 1x, não edição por edição):`,
+      `  ${writeErrors.length} falha(s) de ESCRITA (provável causa única de infraestrutura — disco/permissão/sync do Drive — checar 1x, não edição por edição):`,
     );
   }
   for (const r of results) {

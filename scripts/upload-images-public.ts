@@ -656,7 +656,7 @@ export async function uploadPublicImages(
             `${spec.key} (${spec.filename}): arquivo local ausente, mas 06-public-images.json ` +
               `tem uma entry cacheada de upload anterior — mantendo essa URL antiga SEM revalidar ` +
               `hash/existência. Confirme que o arquivo não sumiu por engano (ex: reorder-destaques.ts ` +
-              `sob sync do OneDrive, #5085) antes de publicar.`,
+              `sob sync do Drive, #5085) antes de publicar.`,
           );
         }
         continue;

@@ -132,7 +132,7 @@ export function safeRenameInData(
   if (!deps.existsSync(to)) {
     throw new Error(
       `safeRenameInData: cópia de ${from} → ${to} retornou sem erro mas o destino não existe ` +
-        `no disco logo depois. Provável conflito de sync (OneDrive) descartando a escrita. ` +
+        `no disco logo depois. Provável conflito de sync do Drive (bisync do 300 / Drive for desktop) descartando a escrita. ` +
         `Original preservado — abortando sem apagar ${from}.`,
     );
   }

@@ -82,7 +82,7 @@ export function writeFilesVerified(
       if (!deps.existsSync(e.path)) {
         throw new Error(
           `${label}: escrita de ${basename(e.path)} retornou sem erro mas o arquivo não existe ` +
-            `no disco logo depois. Provável conflito de sync (OneDrive) descartando a escrita (#9173).`,
+            `no disco logo depois. Provável conflito de sync do Drive (bisync do 300 / Drive for desktop) descartando a escrita (#9173).`,
         );
       }
     }
@@ -93,7 +93,7 @@ export function writeFilesVerified(
         throw new Error(
           `${label}: ${basename(e.path)} não bate com o conteúdo esperado na verificação final ` +
             `(reversão pós-hoc do sync, #5564/#9173). Reexecute depois de confirmar que o ` +
-            `sync do OneDrive terminou.`,
+            `sync do Drive terminou.`,
         );
       }
     }

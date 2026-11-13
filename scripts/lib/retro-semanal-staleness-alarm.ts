@@ -214,7 +214,7 @@ export function describeRetroSemanalEvaluation(e: RetroSemanalStalenessEvaluatio
   const workerLine = e.workerConsulted
     ? "Fila do Worker (`GET /list`): consultada."
     : e.workerError
-      ? `Fila do Worker: NÃO consultada (${e.workerError}) — o veredito usou só o store local, que pode estar atrasado pela replicação do OneDrive.`
+      ? `Fila do Worker: NÃO consultada (${e.workerError}) — o veredito usou só o store local, que pode estar atrasado pelo sync do Drive (bisync do 300 / Drive for desktop).`
       : "Fila do Worker: não consultada (store local já bastou).";
   return [
     `- highlights (sábado ${aammddToIsoDate(e.saturday)}): ${describeSource(e.highlightsSource)}`,

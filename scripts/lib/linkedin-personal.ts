@@ -692,7 +692,7 @@ export function evaluatePersonalIntents(
       }
     } else if (it.status === "armed") {
       if (!Number.isNaN(at) && now.getTime() - at > MAX_FIRE_LATENESS_MS) {
-        out.push(mk("armed-overdue", "P1", "post armado e não disparado", `Agendado para ${it.scheduled_at} e ainda \`armed\` mais de 3h depois: nenhuma task \`${PERSONAL_TASK_NAME}\`/\`${PERSONAL_CATCHUP_TASK_NAME}\` disparou (timer desarmado? OneDrive atrasado?). O post não sai mais; postar à mão.`));
+        out.push(mk("armed-overdue", "P1", "post armado e não disparado", `Agendado para ${it.scheduled_at} e ainda \`armed\` mais de 3h depois: nenhuma task \`${PERSONAL_TASK_NAME}\`/\`${PERSONAL_CATCHUP_TASK_NAME}\` disparou (timer desarmado? sync do Drive atrasado?). O post não sai mais; postar à mão.`));
       } else if (!hasToken) {
         out.push(mk("armed-no-token", "P1", "armado mas sem token nesta máquina", "A intenção está armada, mas o `.env` desta máquina não tem `LINKEDIN_PERSONAL_ACCESS_TOKEN`: o disparo vai falhar. Rodar `npm run sync-env` no `300`."));
       }

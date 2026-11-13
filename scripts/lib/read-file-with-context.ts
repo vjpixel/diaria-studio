@@ -18,8 +18,8 @@ import { readFileSync } from "node:fs";
 export const CLOUD_PROVIDER_ERROR_CODES: ReadonlySet<string> = new Set(["UNKNOWN", "EPERM", "EBUSY", "ETIMEDOUT", "EIO"]);
 
 export const CLOUD_PROVIDER_HINT =
-  "o arquivo pode estar offline no OneDrive (provedor de arquivos de nuvem fechado ou sem baixar o arquivo): " +
-  "confira se o OneDrive está rodando e se o arquivo abre no Explorer, e rode de novo";
+  "o arquivo pode estar só na nuvem (Drive for desktop fechado ou sem baixar o arquivo, ou bisync do 300 atrasado): " +
+  "confira se o cliente de sync do Drive está rodando e se o arquivo abre no gerenciador de arquivos, e rode de novo";
 
 /** Erro de leitura com o caminho do arquivo; `code` repete o do erro original. */
 export class FileReadError extends Error {

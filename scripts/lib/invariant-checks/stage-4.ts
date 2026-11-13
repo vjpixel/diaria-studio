@@ -3928,7 +3928,7 @@ function checkCarouselUploadStale(editionDir: string): InvariantViolation[] {
         rule: "carousel-upload-stale",
         message:
           `não foi possível LER o arquivo local de ${ilegiveis.join(", ")} (${d}) pra comparar o md5 ` +
-          `— arquivo travado/removido entre a checagem e a leitura (sync do OneDrive, processo ` +
+          `— arquivo travado/removido entre a checagem e a leitura (sync do Drive, processo ` +
           `concorrente). Re-rodar "npx tsx scripts/check-invariants.ts --stage 4 --edition-dir ${editionDir}" ` +
           `depois que o sync assentar; persistindo, conferir o arquivo à mão.`,
         source_issue: "#6068",

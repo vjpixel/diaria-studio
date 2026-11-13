@@ -116,7 +116,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
         } catch (err) {
           console.error(
             `❌ ${rafflePath} existe mas não é JSON válido (${(err as Error).message}) — abortando em vez de ` +
-              `tratar como "0 entradas" (conflito de sync do OneDrive é a causa mais provável; ver ` +
+              `tratar como "0 entradas" (conflito de sync do Drive é a causa mais provável; ver ` +
               `docs/claude-md-historical-incidents.md ou o registro em memory/onedrive-conflict-backup-durante-edit.md).`,
           );
           process.exitCode = 1;
