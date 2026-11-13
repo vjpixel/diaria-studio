@@ -21,12 +21,14 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  *     --video-id) e se a pt-BR `standard` enviada está publicada (exit 0) ou não (exit 1).
  *   npx tsx scripts/publish-youtube.ts AAMMDD --captions-only [--dry-run] [--captions-reviewed] [--force]
  *     Só a legenda para o vídeo registrado em _internal/05-youtube-published.json
- *     (#11384); o captionId vai para o registro.
+ *     (#11384); o captionId vai para o registro. Com --force e faixa já registrada,
+ *     ATUALIZA essa faixa (`captions.update`, #13004), sem criar outra.
  *   npx tsx scripts/publish-youtube.ts AAMMDD --captions-only --video-id VIDEO_ID [--dry-run] [--captions-reviewed] [--force]
  *     Só a legenda para um vídeo do canal SEM registro na edição (#12429: os
  *     horizontais antigos, fora dos 25 uploads que o --accept-period-match varre).
  *     Confere as faixas (`captions.list`): já havendo pt `standard` enviada, não envia
- *     sem --force (que cria outra faixa). Qualquer falha, inclusive token sem
+ *     sem --force (que atualiza a única faixa pt, #13004; com 2+ faixas pt, recusa
+ *     e nada envia). Qualquer falha, inclusive token sem
  *     youtube.force-ssl, sai exit 1. Nada gravado no registro; nenhuma playlist,
  *     título ou metadado tocado. Com registro, um --video-id diferente é recusado.
  *     `--dry-run` (também sem --video-id): as mesmas recusas e o plano, sem rede.
@@ -1087,7 +1089,7 @@ export interface RunCaptionsOnlyInput {
   /** Caminho do `.srt` (default: `youtubeCaptionFileName` na pasta da edição). */
   captionsPath: string;
   env: Record<string, string | undefined>;
-  /** Envia mesmo com uma legenda já registrada (cria outra faixa). */
+  /** Envia mesmo com uma legenda já registrada: atualiza a faixa existente (`captions.update`, #13004). */
   force: boolean;
   /** #12429: `--captions-reviewed`, o SRT sem plano (marcado como não revisado) foi conferido. */
   captionsReviewed?: boolean;
@@ -1165,7 +1167,8 @@ export function countSrtCues(srt: string): number {
  *
  * `--video-id` (#12429): vídeo sem registro. Antes do envio, o
  * `captions.list` do vídeo; já havendo faixa pt `standard` enviada, não envia
- * sem `--force`. Nada é gravado no registro da edição (que segue sem vídeo) e
+ * sem `--force`; com ele, a única faixa pt é atualizada (`captions.update`,
+ * #13004) e 2+ faixas pt = exit 1, nada enviado. Nada é gravado no registro da edição (que segue sem vídeo) e
  * nenhuma playlist, título ou metadado é tocado. Aqui a legenda é o único
  * objetivo: qualquer falha sai exit 1, inclusive o token sem
  * `youtube.force-ssl` (sem o fail-soft do caminho com registro).
@@ -1191,7 +1194,7 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
   const videoId = target.videoId;
   const rec = target.kind === "record" ? target.record : null;
   if (rec?.captions?.ok && !input.force) {
-    log(`[ok] legenda já enviada (captionId ${rec.captions.captionId}) — nada feito. Use --force para enviar outra faixa.`);
+    log(`[ok] legenda já enviada (captionId ${rec.captions.captionId}) — nada feito. Use --force para atualizar a faixa (#13004).`);
     return { exitCode: 0, record: rec, skipped: true, videoId, captions: null };
   }
   if (!existsSync(input.captionsPath)) {
@@ -1253,7 +1256,8 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
       return { ...refused, videoId };
     }
     if (out.decisionLine) log(out.decisionLine);
-    if (!out.result) return { exitCode: 0, record: null, skipped: true, videoId, captions: null };
+    // #13004: --force com 2+ faixas pt sem saber qual atualizar = nada enviado, exit 1.
+    if (!out.result) return { exitCode: out.refused ? 1 : 0, record: null, skipped: !out.refused, videoId, captions: null };
     const unregLine = describeCaptionOutcome(out.result, input.aammdd, videoId);
     if (unregLine) log(unregLine);
     if (out.result.ok) {
@@ -1265,15 +1269,28 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
     return { exitCode: out.result.ok ? 0 : 1, record: null, skipped: false, videoId, captions: out.result };
   }
 
+  // #13004: `--force` com faixa já registrada ATUALIZA a faixa (captions.update), nunca cria uma 2ª faixa pt.
+  const replacing = input.force && rec.captions?.ok === true;
   let captions: CaptionUploadResult;
   try {
-    captions = await uploadCaptionsOnly(deps, { creds, videoId, srt, path: input.captionsPath });
+    if (replacing) {
+      const out = await uploadCaptionsForUnregisteredVideo(deps, { creds, videoId, srt, path: input.captionsPath, force: true, preferId: rec.captions?.captionId ?? null });
+      if (out.decisionLine) log(out.decisionLine);
+      if (!out.result) return { exitCode: out.refused ? 1 : 0, record: rec, skipped: !out.refused, videoId, captions: null };
+      captions = out.result;
+    } else {
+      captions = await uploadCaptionsOnly(deps, { creds, videoId, srt, path: input.captionsPath });
+    }
   } catch (e) {
     log(`publish-youtube: ${(e as Error).message}. Nenhuma legenda enviada.`);
     return { ...refused, videoId };
   }
   const line = describeCaptionOutcome(captions, input.aammdd);
   if (line) log(line);
+  if (replacing && !captions.ok) {
+    // A faixa registrada segue no vídeo: o registro fica com ela, não com a tentativa falha.
+    return { exitCode: 1, record: rec, skipped: false, videoId, captions };
+  }
 
   const record: YouTubePublishedRecord = { ...rec, captions };
   try {
