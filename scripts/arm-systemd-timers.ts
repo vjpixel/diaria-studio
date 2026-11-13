@@ -246,7 +246,9 @@ export function selectTasksToArm(
       reason: "task-disabled",
       message:
         `Task "${taskName}" está desativada no registro (enabled: false, ${found.issue}) — ` +
-        "não armada. Para armar mesmo assim, de propósito, repita com --force-disabled.",
+        "não armada. Para armar mesmo assim, de propósito, repita com --force-disabled — " +
+        "só serve se a unit já foi gerada em .systemd-units/ (o setup-systemd-timers.ts pula " +
+        "tasks desativadas, então ele não gera a unit dela).",
     };
   }
   return { ok: true, tasks: [found] };
@@ -318,8 +320,15 @@ export function armSystemdTimers(
       copyOutcome.set(p.timerUnit, {
         copied: false,
         error:
-          `units não encontrados em ${opts.unitsDirAbs} — rode ` +
-          `"npx tsx scripts/setup-systemd-timers.ts --task ${p.task.name}" primeiro.`,
+          p.task.enabled === false
+            ? // #12930: o gerador filtra `enabled: false` — mandar rodar o
+              // setup com --task geraria 0 arquivos.
+              `units não encontrados em ${opts.unitsDirAbs} — a task está desativada ` +
+              `(enabled: false), e o setup-systemd-timers.ts não gera unit de task desativada. ` +
+              `Mude para enabled: true no registro (scripts/lib/scheduled-tasks.ts) e rode ` +
+              `"npx tsx scripts/setup-systemd-timers.ts --task ${p.task.name}", ou gere a unit à mão.`
+            : `units não encontrados em ${opts.unitsDirAbs} — rode ` +
+              `"npx tsx scripts/setup-systemd-timers.ts --task ${p.task.name}" primeiro.`,
       });
       continue;
     }
@@ -497,13 +506,12 @@ const USAGE =
 export function main(
   argv: string[],
   repoRootAbs: string,
-  /** Injetável só pro caminho `--verify` (repassado direto a `runVerify`) —
-   * mesmo padrão de `readArmedTimerUnitBaseNames(exec = execFileSync)`. O
-   * fluxo de ARMAR abaixo não usa este parâmetro; `armSystemdTimers` chama
-   * `systemctl` por conta própria. Existe pra permitir testar `main`
-   * ponta-a-ponta com um `exec` fake, sem depender de `systemctl`
-   * existir/não existir na máquina que roda o teste (#7032, achado do CI
-   * Linux vs. Windows no #7037). */
+  /** Injetável — repassado a `runVerify` (`--verify`) e a `armSystemdTimers`
+   * (fluxo de armar, #12930). Mesmo padrão de
+   * `readArmedTimerUnitBaseNames(exec = execFileSync)`. Existe pra permitir
+   * testar `main` ponta-a-ponta com um `exec` fake, sem depender de
+   * `systemctl` existir/não existir na máquina que roda o teste (#7032,
+   * achado do CI Linux vs. Windows no #7037). */
   exec: typeof execFileSync = execFileSync,
 ): number {
   // #11058: --help/-h imprime uso e sai 0 sem tocar em systemd; flag desconhecida
@@ -553,14 +561,12 @@ ${USAGE}`);
     return selection.reason === "force-without-task" ? 2 : 1;
   }
   const tasks = selection.tasks;
-  if (forceDisabled && tasks.some((t) => t.enabled === false)) {
-    console.warn(`[aviso] --force-disabled: armando "${taskName}" apesar de enabled: false no registro.`);
-  }
+  const disabledNames = new Set(tasks.filter((t) => t.enabled === false).map((t) => t.name));
 
   const unitsDirAbs = resolve(repoRootAbs, unitsDirArg ?? DEFAULT_UNITS_DIR);
   const targetDirAbs = targetDirArg ? resolve(targetDirArg) : defaultSystemdUserDir();
 
-  const results = armSystemdTimers(tasks, { unitsDirAbs, targetDirAbs, rearmStopped });
+  const results = armSystemdTimers(tasks, { unitsDirAbs, targetDirAbs, rearmStopped, exec });
 
   let exitCode = 0;
   for (const r of results) {
@@ -580,6 +586,11 @@ ${USAGE}`);
     }
     if (r.armed) {
       console.log(`[armado] ${r.unit} (${r.decision.reason})`);
+      // #12930: o aviso só sai quando a task desativada foi de fato armada —
+      // não quando o guard a pulou (parada deliberadamente) nem quando falhou.
+      if (disabledNames.has(r.taskName)) {
+        console.warn(`[aviso] --force-disabled: "${r.taskName}" armada apesar de enabled: false no registro.`);
+      }
     } else {
       console.error(`[erro] ${r.unit}: ${r.error ?? "falha desconhecida ao armar"}`);
       exitCode = 1;
