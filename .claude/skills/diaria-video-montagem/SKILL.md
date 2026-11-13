@@ -169,6 +169,14 @@ npx tsx scripts/agendamentos.ts registrar --edicao {AAMMDD} --peca vertical-2 --
 
 `--destinos vertical` pega os destinos da vertical da edição na config (`publishing.shorts`, os mesmos do plano do `publish-shorts.ts`); `--dias 7` conta a partir da edição e `--hora` é BRT (12:00, o horário fixo dos destinos sem horário próprio, #12250). Registrar de novo com os mesmos dados é no-op (retomada); exit 1 com "mesmo id com outros dados" quer dizer que o item já existe com outro alvo ou destinos: conferir com `npx tsx scripts/agendamentos.ts listar` e, se o registro antigo estiver errado, `remover --id {AAMMDD}-vertical-2` e registrar de novo. Sem o `guia` em `sequences` (edição sem roteiro, ou o editor tirou o vertical 2), não registrar nada. O banco só registra: quem publica é o dono no dia (o `/diaria-publica` da edição de D+7 lista o item), e o tick do 300 (`Diaria-Agendamentos-Tick`) abre alarme se ele passar do horário sem publicação (item `agendado` com o envio registrado em todos os destinos não alarma, #12825).
 
+**Cortes extras no banco (#12934).** Aprovado o Gate 2, registrar também os outros cortes de `sequences` (todo `corte` que não é o `guia`), sem perguntar, mesmo sem o `guia`:
+
+```bash
+npx tsx scripts/agendamentos.ts registrar-extras --edicao {AAMMDD}
+```
+
+Cada corte vira um item `pendente`, peça `corte-{corte}` (id `{AAMMDD}-corte-{corte}`), com os destinos da vertical e o alvo do plano do `video-extra-verticals.ts` (k-ésimo dia útil depois da edição, horário seguinte ao da principal). Edição sem corte extra imprime "nada a registrar"; item que já existe fica como está (retomada, ou o editor já mudou o alvo), com `[aviso]` quando os dados diferem. Quando o corte sair pelo modo corte, marcar o item `agendado` (`marcar --id {id} --estado agendado`). Para ver os vídeos prontos que ninguém mandou sair, inclusive os de antes deste registro: `npx tsx scripts/agendamentos.ts estoque` (`--todos` mostra também os já usados). Incluir as linhas do `registrar-extras` na mensagem final.
+
 Legado: `cta_ig`/`cta_out` continuam válidos com `sequences` explícitas. Sem elas, migrar o CTA escolhido para `cta_vertical` e remover o outro. O target técnico da vertical segue `outras-redes` para preservar escopos e caches antigos.
 
 ## Passo 4 — XML para o Premiere
