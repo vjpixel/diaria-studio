@@ -145,7 +145,11 @@
  * lugar de `selectInstagramWeekly`; `highlights` ignora a flag (compõe com
  * `--mode both`). Mesma validação de pool do `--force-urls`, com o qual é
  * excludente. A intro "mais lidas" só vira a neutra quando houve troca no
- * gate. Sem a flag, nada muda.
+ * gate. Sem a flag, nada muda. Com `--schedule`, sai com exit 2 se o
+ * ranking recalculado agora divergir do gravado (kit-sync depois do gate),
+ * se as URLs não baterem com o hash da aprovação, ou se o empate do clicked
+ * ainda for só sugestão — esta última só passa com `--allow-suggested-ties`,
+ * que o pacote usa apenas no caminho `--no-gates`.
  *
  * `--force-incomplete-week`: se menos de `WEEKLY_MIN_ITEMS` itens forem
  * selecionados (pool insuficiente de candidatos elegíveis — poucas edições
@@ -210,6 +214,7 @@ import {
   type InstagramRankedCandidate,
 } from "./lib/weekly-instagram-select.ts";
 import { checkWeeklySlot, formatSlotAdvice } from "./lib/weekly-slot-check.ts";
+import { checkSharedFileForProduct } from "./lib/weekly-shared-ranking.ts";
 import {
   filterPublicEditionsWithWarning,
   loadBeehiivCache as loadUnifiedBeehiivCache,
@@ -1183,27 +1188,30 @@ export function resolveUrlsAgainstEligiblePool(
 export function readSharedClickedSelection(
   path: string,
   saturday: string,
-): { urls: string[]; manual: boolean; warnings: string[] } | { error: string } {
+):
+  | { urls: string[]; manual: boolean; warnings: string[]; file: Parameters<typeof checkSharedFileForProduct>[1] }
+  | { error: string } {
   if (!existsSync(path)) return { error: `${path} não existe — rode weekly-shared-selection.ts antes.` };
-  let shared: {
-    version?: number;
-    saturday?: string;
-    clicked?: { urls?: string[]; manual?: boolean; warnings?: string[]; pending?: { resolution?: string } | null };
-  };
+  let shared: any;
   try {
     shared = JSON.parse(readFileSync(path, "utf8"));
   } catch (e: any) {
     return { error: `${path} ilegível: ${e.message}` };
   }
-  if (shared.version !== 1 || !Array.isArray(shared.clicked?.urls)) {
-    return { error: `${path} não é uma seleção compartilhada válida (version 1, com clicked.urls).` };
+  if (shared?.version !== 1 || !Array.isArray(shared.clicked?.urls) || !Array.isArray(shared.linkedin?.urls) || !Array.isArray(shared.ranking)) {
+    return { error: `${path} não é uma seleção compartilhada válida (version 1, com clicked, linkedin e ranking).` };
   }
   if (shared.saturday !== saturday) return { error: `${path} é do sábado ${shared.saturday}, não de ${saturday}.` };
-  const warnings = [...(shared.clicked!.warnings ?? [])];
-  if (shared.clicked!.pending && shared.clicked!.pending.resolution !== "editor") {
+  const resolved = shared.clicked.pending?.resolution === "editor";
+  // Empate já escolhido pelo editor: o aviso de "escolha manual necessária"
+  // não vale mais (mesmo filtro do select-linkedin-weekly.ts).
+  const warnings: string[] = (shared.clicked.warnings ?? []).filter(
+    (w: string) => !resolved || !w.includes("escolha manual necessária no gate"),
+  );
+  if (shared.clicked.pending && !resolved) {
     warnings.push("Empate (#5109) do clicked ainda com a SUGESTÃO do pacote (desempate editorial) — confirme ou troque no gate consolidado.");
   }
-  return { urls: shared.clicked!.urls!, manual: Boolean(shared.clicked!.manual), warnings };
+  return { urls: shared.clicked.urls, manual: Boolean(shared.clicked.manual), warnings, file: shared };
 }
 
 async function runOneMode(
@@ -1415,6 +1423,24 @@ async function runOneMode(
       console.error(`ERRO: --shared-selection inválido: ${shared.error}`);
       return false;
     }
+    // Revisão da PR #13026: o ranking de agora ainda é o do gate? E o empate
+    // do clicked foi decidido? Agendar com qualquer um dos dois em aberto
+    // publicaria o que o editor não viu: exit 2. Na prévia, só avisa.
+    const check = checkSharedFileForProduct("clicked", shared.file, {
+      editionsFound: existingCandidates.map((c) => c.date),
+      ranked: ranked.filter((c) => !c.excluded),
+    });
+    const blockers = [
+      ...check.divergence.map((d) => `ranking mudou desde a seleção compartilhada: ${d}`),
+      ...(check.pendingUnresolved && !flags.has("allow-suggested-ties")
+        ? ["empate (#5109) do clicked ainda só com a sugestão — confirme no gate (weekly-shared-selection.ts --confirm-suggestions) ou, só no caminho --no-gates, passe --allow-suggested-ties"]
+        : []),
+    ];
+    if (blockers.length > 0 && doSchedule) {
+      console.error(`ERRO: --shared-selection recusado no --schedule:\n  - ${blockers.join("\n  - ")}`);
+      process.exit(2);
+      return false;
+    }
     const resolved = resolveUrlsAgainstEligiblePool(ranked, shared.urls, "--shared-selection");
     if (!resolved) return false;
     items = resolved;
@@ -1423,6 +1449,7 @@ async function runOneMode(
     selectionWarnings = [
       `SELEÇÃO COMPARTILHADA (#13022, ${sharedSelectionArg}): ${resolved.length} item(ns) do ranking único do pacote semanal${shared.manual ? ", com troca feita no gate" : ""}.`,
       ...shared.warnings,
+      ...blockers.map((b) => `Antes do --schedule: ${b}.`),
     ];
   }
 

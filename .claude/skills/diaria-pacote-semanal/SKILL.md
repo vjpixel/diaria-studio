@@ -35,7 +35,9 @@ casos de borda) vive lá e não é repetido aqui.
   assumindo {S} (próximo sábado). Passe explicitamente para outra data.`
   Nunca parar para confirmar a data.
 - `--no-gates` — pula o gate consolidado. Agenda a retro (com a sugestão nos
-  empates do clicked, que é o comportamento automático de hoje) e para:
+  empates do clicked, via `--allow-suggested-ties`; não é idêntico ao
+  automático da retro isolada, porque a diversidade de dia do #8817 agora
+  decide antes do desempate editorial) e para:
   **não aprova a Stack e não cola o LinkedIn** (#13022). O resumo final
   lista os dois como pendentes.
 
@@ -148,7 +150,9 @@ continua opcional e nunca inventado (#5970): só entra se o editor oferecer.
 
 ## Passo 4 — Humanizador + Clarice numa leva
 
-Todos os textos novos de uma vez, na ordem da diária:
+Todos os textos novos de uma vez, na ordem da diária. `{P}` = o arquivo de
+resumos de cada modo, `data/weekly/{S}-{modo}/_internal/06-summaries.json`
+(`{modo}` = `clicked` ou `highlights`).
 
 1. Snapshot dos resumos (cada modo):
    `npx tsx scripts/weekly-summaries-passes.ts snapshot --path {P}`.
@@ -157,7 +161,7 @@ Todos os textos novos de uma vez, na ordem da diária:
    teto 200 caracteres e 2 frases), `opening`/`notes[].stackNote`/
    `videoDescription` do `circle-stack-copy.json` (tetos do Passo 3 de
    `/diaria-stack`) e o texto do post de feed. Mesmas instruções de campo
-   das skills isoladas: não tocar `url`, `title`, `summary_raw`, `cycle`.
+   das skills isoladas: não tocar `url`, `title`, `summary_raw`, `carouselKey`, `cycle`.
    Depois: `weekly-summaries-passes.ts humanized --path {P}` (cada modo) e
    tirar todo travessão do post de feed antes da Clarice.
 3. **Clarice, uma chamada por texto, em série (#4952)**, cada lista de
@@ -199,7 +203,8 @@ Na mesma leva:
 1. **Bloco de avisos no topo**, juntando os de todos os scripts: avisos do
    `shared-selection.json` (empates pendentes com a sugestão, trocas que não
    se aplicaram a um produto, edição sem dado de clique), a **tabela de
-   idade do dado de clique por edição** com a sexta marcada como imatura
+   idade do dado de clique por edição** com as edições de menos de 48 h
+   (tipicamente a sexta) marcadas como imaturas
    (premissa abaixo), avisos da retro (empate, semana curta, resumo faltando,
    linguagem comercial, item sem imagem), do `ln-{cycle}.json` (capa
    ausente, trocas #5538, Use Melhor sem comentário) e os `⚠` da Stack.
@@ -221,7 +226,10 @@ mesmo endereço:
 - trocar item do clicked ou do LinkedIn:
   `npx tsx scripts/weekly-shared-selection.ts --saturday {S} --swap {url que sai} --with {url que entra}`.
   A troca vale nos dois produtos quando o item novo é elegível nos dois
-  (destaque) e só no clicked quando ele é RADAR; o script diz onde aplicou.
+  (destaque) e só no clicked quando ele é RADAR; o script avisa onde não
+  aplicou e marca os produtos com troca do gate (`manual: true`). Troca que
+  mexe num item do empate pendente é recusada: resolva o empate antes com
+  `--pick`.
   Depois, refazer só o que mudou: seleção + render do LinkedIn, resumo do
   item novo no clicked (`weekly-summary-writer` via SendMessage ou de novo,
   e os passes só nesse item), post de feed se a manchete mudou;
@@ -235,17 +243,23 @@ mesmo endereço:
 
 Com o "aprovar":
 
-1. Se havia empate pendente, gravar a escolha do editor (a aprovação aceita
-   as sugestões que ele viu marcadas):
-   `npx tsx scripts/weekly-shared-selection.ts --saturday {S} --confirm-suggestions`
-   (grava a sugestão vista como escolha exata; se um `kit-sync` depois mudar o
-   empate, a re-rodada sai com exit 2 em vez de confirmar um empate que o
-   editor não viu), e re-rodar `select-linkedin-weekly.ts --shared-selection` + render, para o
+1. **Gravar a aprovação, sempre (com ou sem empate):**
+   `npx tsx scripts/weekly-shared-selection.ts --saturday {S} --confirm-suggestions`.
+   Ele confere que o ranking recalculado agora é o mesmo que o gate mostrou,
+   grava as sugestões aceitas como escolha exata e o hash da seleção
+   aprovada. **Exit ≠ 0 aqui para tudo**: nada de agendar, aprovar ou colar.
+   Exit 2 = o ranking mudou depois do gate (kit-sync, edição nova): re-rodar
+   o Passo 1 e levar a seleção nova ao gate. Com exit 0, re-rodar
+   `select-linkedin-weekly.ts --shared-selection` + render, para o
    `ln-selection.json` sair sem `pendingGroup`.
-2. Em paralelo:
+2. Só depois do item 1 ok, em paralelo:
    - retro: `publish-weekly-social.ts --saturday {S} --mode both --shared-selection {arquivo} --schedule`
-     e os `social-schedule-rotation.ts --record` de `{S}` e `{D}` (Passo 4 de
-     `/diaria-retro-semanal`);
+     (Passo 4 de `/diaria-retro-semanal`; recusa com exit 2 se o ranking
+     divergir do aprovado ou se o empate do clicked ainda for só sugestão) e
+     o registro do horário de cada dia, como no cabeçalho "Horário durante o
+     teste rotativo" de `/diaria-retro-semanal`:
+     `social-schedule-rotation.ts --record --date {S} --kind weekend` e o
+     mesmo com `--date {D}`;
    - Stack: `npx tsx scripts/publish-circle-stack-scheduled.ts --approve --publish-monday {M}`
      (Passo 6 de `/diaria-stack`; com `scheduledRunPast: true`, não aprovar e
      dizer que o ciclo só sai com `/diaria-stack {M} --publish`).
@@ -255,8 +269,9 @@ Com o "aprovar":
    tentativas de correção). Antes de entregar o post de feed:
    `weekly-feed-post-review.ts --cycle {cycle} --check`.
 
-Com `--no-gates`: só o item 2 da retro. Stack não é aprovada e o LinkedIn
-não é colado.
+Com `--no-gates`: sem o item 1 (ninguém aprovou nada); só a retro do item
+2, com `--allow-suggested-ties` no `--schedule` (o único lugar onde essa
+flag é usada). Stack não é aprovada e o LinkedIn não é colado.
 
 ## Passo 8 — Lista única ao editor (Passo 9 do LinkedIn)
 
@@ -302,8 +317,9 @@ A skill termina aqui, com uma lista só:
 O pacote roda entre sexta e sábado, e a edição de sexta tem poucas horas de
 clique. **Default adotado: aceitar e avisar no gate.** O ranking não
 normaliza por idade nem exclui a sexta; o `shared-selection.json` traz a
-idade do dado de clique por edição (`clickAge`), e a edição com menos de 48
-horas aparece marcada como imatura no topo do gate. O editor pode mudar essa
+idade do dado de clique por edição (`clickAge`), e as edições com menos de
+48 horas (tipicamente a sexta) aparecem marcadas como imaturas no topo do
+gate. O editor pode mudar essa
 premissa depois (normalizar por idade ou tirar a sexta do ranking por
 clique); a mudança mora em `weekly-shared-ranking.ts`.
 

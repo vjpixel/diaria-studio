@@ -97,6 +97,7 @@ import {
 import { normalizeUrl } from "./lib/weekly-linkedin-clicks.ts";
 import { hasSuspiciousCommercialLanguage } from "./lib/weekly-linkedin-filter.ts";
 import { parseDestaques } from "./extract-destaques.ts";
+import { checkSharedFileForProduct } from "./lib/weekly-shared-ranking.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -309,7 +310,12 @@ export function main(rootDirOverride?: string) {
       console.error("--shared-selection e --picks são excludentes: o empate do pacote se resolve em weekly-shared-selection.ts --pick linkedin.");
       process.exit(2);
     }
-    const shared = applySharedLinkedinSelection(sharedSelectionArg, resolution.publishMonday, headlineResult.headlineEligible);
+    const shared = applySharedLinkedinSelection(
+      sharedSelectionArg,
+      resolution.publishMonday,
+      headlineResult.headlineEligible,
+      editionsFound.map((e) => e.date),
+    );
     if (shared.error) {
       console.error(`--shared-selection inválido: ${shared.error}`);
       process.exit(2);
@@ -317,7 +323,12 @@ export function main(rootDirOverride?: string) {
     finalHeadlines = shared.headlines;
     pendingGroupForOutput = shared.pendingGroup;
     pendingSlotsForOutput = shared.pendingSlots;
-    selectionWarnings = shared.warnings;
+    // Semana curta / falta de candidato vêm da seleção própria e continuam
+    // valendo ao lado dos avisos do pacote (revisão da PR #13026).
+    selectionWarnings = [
+      ...shared.warnings,
+      ...headlineResult.warnings.filter((w) => w.startsWith("Semana com ") || w.startsWith("Só ")),
+    ];
   } else if (picks !== null) {
     if (headlineResult.pendingGroup === null) {
       console.error(
@@ -598,6 +609,7 @@ export function applySharedLinkedinSelection(
   path: string,
   publishMonday: string,
   headlineEligible: WeeklyRankedCandidate[],
+  editionsFoundNow?: string[],
 ): {
   headlines: WeeklyRankedCandidate[];
   pendingGroup: WeeklyRankedCandidate[] | null;
@@ -610,6 +622,7 @@ export function applySharedLinkedinSelection(
   let shared: {
     version?: number;
     publishMonday?: string;
+    clicked?: { urls?: string[] };
     linkedin?: { urls?: string[]; pending?: { group: string[]; slots: number; resolution: string } | null; warnings?: string[] };
   };
   try {
@@ -622,6 +635,23 @@ export function applySharedLinkedinSelection(
   }
   if (shared.publishMonday !== publishMonday) {
     return { ...empty, error: `${path} é da segunda ${shared.publishMonday}, não de ${publishMonday}.` };
+  }
+  // Revisão da PR #13026: o ranking recalculado agora tem que ser o gravado
+  // (e mostrado no gate). Divergiu = kit-sync/edição nova depois do gate.
+  if (editionsFoundNow) {
+    if (!Array.isArray((shared as { ranking?: unknown }).ranking) || !Array.isArray(shared.clicked?.urls)) {
+      return { ...empty, error: `${path} sem ranking/clicked gravados — re-rode weekly-shared-selection.ts.` };
+    }
+    const check = checkSharedFileForProduct("linkedin", shared as Parameters<typeof checkSharedFileForProduct>[1], {
+      editionsFound: editionsFoundNow,
+      ranked: headlineEligible,
+    });
+    if (check.divergence.length > 0) {
+      return {
+        ...empty,
+        error: `o ranking mudou desde a seleção compartilhada (${check.divergence.join("; ")}) — re-rode weekly-shared-selection.ts e leve a seleção nova ao gate.`,
+      };
+    }
   }
   const byUrl = new Map(headlineEligible.map((c) => [normalizeUrl(c.url), c]));
   const resolveUrls = (urls: string[]): { list: WeeklyRankedCandidate[]; missing: string[] } => {

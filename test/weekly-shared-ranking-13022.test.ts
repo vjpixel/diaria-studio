@@ -30,6 +30,7 @@ import {
   clickAgeReport,
   isEligibleFor,
   selectForProduct,
+  validateOverrides,
 } from "../scripts/lib/weekly-shared-ranking.ts";
 import { selectHeadlines, type WeeklyRankedCandidate } from "../scripts/lib/weekly-linkedin-select.ts";
 import { WEEKLY_EXPECTED_ITEMS } from "../scripts/publish-weekly-social.ts";
@@ -535,6 +536,20 @@ describe("#13022 — --confirm-suggestions grava a sugestão vista como escolha 
       s = JSON.parse(readFileSync(file, "utf8"));
       assert.equal(s.linkedin.pending.resolution, "editor");
       assert.deepEqual(s.overrides.picks.linkedin, suggested);
+      assert.ok(s.approved?.hash, "aprovação grava o hash da seleção");
+
+      // Revisão PR #13026, item 4: com --shared-selection, o aviso de semana curta
+      // da seleção própria continua no ln-selection.json.
+      const orig = process.argv;
+      process.argv = ["node", "s", "--publish-monday", "260803", "--shared-selection", file];
+      try {
+        assert.equal(withMockedExit(() => quiet(() => selectLinkedinMain(root))).code, null);
+      } finally {
+        process.argv = orig;
+      }
+      const ln = JSON.parse(readFileSync(join(root, "data/weekly/26w31/_internal/ln-selection.json"), "utf8"));
+      assert.ok(ln.warnings.some((w: string) => w.startsWith("Semana com 1")), JSON.stringify(ln.warnings));
+      assert.equal(ln.pendingGroup, null);
 
       // Ranking muda (kit-sync novo) e o empate some: a escolha gravada não vale
       // mais → exit 2, nada gravado (nunca "confirma" uma situação que o editor não viu).
@@ -544,6 +559,263 @@ describe("#13022 — --confirm-suggestions grava a sugestão vista como escolha 
       assert.equal(readFileSync(file, "utf8"), before);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── Revisão da PR #13026 ──────────────────────────────────────────────────
+
+/** Raiz nova com as 3 edições da integração (260727-29) e cliques ajustáveis. */
+function makeRoot(prefix: string) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  const ed = (date: string, md: string) => {
+    mkdirSync(join(root, "data/editions", date), { recursive: true });
+    writeFileSync(join(root, "data/editions", date, "02-reviewed.md"), md, "utf8");
+  };
+  ed("260727", editionMd([{ n: 1, title: "Matéria A", url: U("a") }, { n: 2, title: "Matéria A2", url: U("a2") }], [{ title: "Radar R", url: U("r") }]));
+  ed("260728", editionMd([{ n: 1, title: "Matéria B", url: U("b") }, { n: 2, title: "Matéria B2", url: U("b2") }], []));
+  ed("260729", editionMd([{ n: 1, title: "Matéria C", url: U("c") }], []));
+  const post = (date: string, clicks: Record<string, number>) => {
+    mkdirSync(join(root, "data/beehiiv-cache/posts"), { recursive: true });
+    writeFileSync(
+      join(root, "data/beehiiv-cache/posts", `post_${date}.json`),
+      JSON.stringify({
+        id: `post_${date}`,
+        slug: `post_${date}`,
+        status: "confirmed",
+        publish_date: epochFor(date),
+        stats: {
+          email: { clicks: 1, unique_opens: 400 },
+          clicks: Object.entries(clicks).map(([u, n]) => ({ url: U(u), base_url: U(u), email: { unique_verified_clicks: n } })),
+        },
+      }),
+      "utf8",
+    );
+  };
+  const setClicks = (c: { a?: number; a2?: number; r?: number; b?: number; b2?: number; c?: number }) => {
+    post("260727", { a: c.a ?? 20, a2: c.a2 ?? 8, r: c.r ?? 12 });
+    post("260728", { b: c.b ?? 16, b2: c.b2 ?? 4 });
+    post("260729", { c: c.c ?? 14 });
+  };
+  setClicks({});
+  const now = new Date("2026-08-01T12:00:00-03:00");
+  const file = sharedSelectionPath(root, "26w31");
+  const run = (extra: string[] = []) => withMockedExit(() => quiet(() => sharedMain(root, ["--saturday", "260801", ...extra], now))).code;
+  const publish = async (argv: string[]): Promise<{ codes: number[]; out: string }> => {
+    const codes: number[] = [];
+    const out: string[] = [];
+    const orig = process.exit;
+    process.exit = ((c?: number) => {
+      codes.push(c ?? 0);
+      throw new Error("__exit__");
+    }) as typeof process.exit;
+    const ol = console.log;
+    const oe = console.error;
+    console.log = (...a: unknown[]) => void out.push(a.map(String).join(" "));
+    console.error = (...a: unknown[]) => void out.push(a.map(String).join(" "));
+    try {
+      await publishWeeklyMain(
+        ["--saturday", "260801", "--mode", "clicked", "--editions-root", join(root, "data/editions"), "--shared-selection", file, ...argv],
+        { dataRoot: join(root, "data"), now },
+      ).catch((e: Error) => {
+        if (e.message !== "__exit__") throw e;
+      });
+    } finally {
+      process.exit = orig;
+      console.log = ol;
+      console.error = oe;
+    }
+    return { codes, out: out.join("\n") };
+  };
+  return { root, file, now, run, setClicks, publish, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+describe("#13022 revisão — kit-sync entre o gate e a aprovação nunca agenda o que o editor não viu", () => {
+  it("cache muda entre gate e --confirm-suggestions → exit 2, arquivo intacto", () => {
+    const r = makeRoot("shared-rev-confirm-");
+    try {
+      assert.equal(r.run(), null);
+      const before = readFileSync(r.file, "utf8");
+      r.setClicks({ c: 2 }); // C cai do 3º lugar: o prefixo fora da banda muda
+      assert.equal(r.run(["--confirm-suggestions"]), 2);
+      assert.equal(readFileSync(r.file, "utf8"), before);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("--confirm-suggestions sem seleção gravada → exit 2", () => {
+    const r = makeRoot("shared-rev-noprev-");
+    try {
+      assert.equal(r.run(["--confirm-suggestions"]), 2);
+      assert.ok(!existsSync(r.file));
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("replay de --swap gravado: prefixo fora da banda mudou em silêncio → exit 2", () => {
+    const r = makeRoot("shared-rev-swap-");
+    try {
+      assert.equal(r.run(["--swap", U("c"), "--with", U("b2")]), null);
+      r.setClicks({ a: 1 }); // A despenca: a ordem dos decididos muda
+      assert.equal(r.run(), 2);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("aprovado e depois kit-sync: publish --schedule e select-linkedin recusam o arquivo (exit 2)", async () => {
+    const r = makeRoot("shared-rev-consumers-");
+    try {
+      assert.equal(r.run(), null);
+      assert.equal(r.run(["--confirm-suggestions"]), null);
+      r.setClicks({ b2: 30 }); // ranking muda depois da aprovação, sem re-rodar a seleção
+      const res = await r.publish(["--schedule", "--allow-why-fallback"]);
+      assert.deepEqual(res.codes, [2]);
+      assert.match(res.out, /ranking mudou desde a seleção compartilhada/);
+      const orig = process.argv;
+      process.argv = ["node", "s", "--publish-monday", "260803", "--shared-selection", r.file];
+      try {
+        assert.equal(withMockedExit(() => quiet(() => selectLinkedinMain(r.root))).code, 2);
+      } finally {
+        process.argv = orig;
+      }
+      // Na prévia (sem --schedule) só avisa.
+      const preview = await r.publish([]);
+      assert.deepEqual(preview.codes, []);
+      assert.match(preview.out, /Antes do --schedule: ranking mudou/);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("URLs editadas à mão depois da aprovação não batem com o hash → recusado", async () => {
+    const r = makeRoot("shared-rev-hash-");
+    try {
+      assert.equal(r.run(), null);
+      assert.equal(r.run(["--confirm-suggestions"]), null);
+      const s = JSON.parse(readFileSync(r.file, "utf8"));
+      s.clicked.urls = [...s.clicked.urls].reverse();
+      writeFileSync(r.file, JSON.stringify(s));
+      const res = await r.publish(["--schedule", "--allow-why-fallback"]);
+      assert.deepEqual(res.codes, [2]);
+      assert.match(res.out, /hash da aprovação/);
+    } finally {
+      r.cleanup();
+    }
+  });
+});
+
+describe("#13022 revisão — empate do clicked só sugerido não agenda", () => {
+  it("--schedule com pending 'suggestion' → exit 2; a mensagem aponta --allow-suggested-ties só pro --no-gates", async () => {
+    const r = makeRoot("shared-rev-tie-");
+    try {
+      // A2, B2 e R empatados (8 cliques) disputando as 2 últimas vagas do clicked,
+      // sem saída por dia (2 dias novos não existem: 260727 e 260728 já entraram).
+      r.setClicks({ a2: 8, b2: 8, r: 8 });
+      assert.equal(r.run(), null);
+      const s = JSON.parse(readFileSync(r.file, "utf8"));
+      assert.equal(s.clicked.pending?.resolution, "suggestion", JSON.stringify(s.clicked));
+      const res = await r.publish(["--schedule", "--allow-why-fallback"]);
+      assert.deepEqual(res.codes, [2]);
+      assert.match(res.out, /--allow-suggested-ties/);
+    } finally {
+      r.cleanup();
+    }
+  });
+});
+
+describe("#13022 revisão — intro e avisos do clicked com --shared-selection", () => {
+  it("intro 'mais lidas' sem troca; neutra só depois de uma troca no gate (manual)", async () => {
+    const r = makeRoot("shared-rev-intro-");
+    try {
+      assert.equal(r.run(), null);
+      const plain = await r.publish([]);
+      assert.deepEqual(plain.codes, []);
+      assert.match(plain.out, /mais lidas da semana/);
+      assert.doesNotMatch(plain.out, /Os destaques da semana na diar\.ia\.br:/);
+      assert.equal(r.run(["--swap", U("c"), "--with", U("b2")]), null);
+      const swapped = await r.publish([]);
+      assert.match(swapped.out, /Os destaques da semana na diar\.ia\.br:/);
+      assert.doesNotMatch(swapped.out, /mais lidas da semana/);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("empate já escolhido pelo editor: some o aviso de 'escolha manual necessária'", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shared-rev-warn-"));
+    try {
+      const p = join(dir, "s.json");
+      const base = {
+        version: 1,
+        saturday: "260801",
+        editionsFound: [],
+        ranking: [],
+        linkedin: { urls: [] },
+        clicked: {
+          urls: [U("a")],
+          warnings: ["[clicked] 3 candidatos empatados ... escolha manual necessária no gate consolidado, CTOR não decide (#5109).", "[clicked] outro aviso"],
+          pending: { group: [U("a"), U("b")], slots: 1, suggested: [U("a")], resolution: "editor" },
+        },
+      };
+      writeFileSync(p, JSON.stringify(base));
+      const ok = readSharedClickedSelection(p, "260801");
+      assert.ok(!("error" in ok));
+      assert.deepEqual((ok as { warnings: string[] }).warnings, ["[clicked] outro aviso"]);
+      base.clicked.pending.resolution = "suggestion";
+      writeFileSync(p, JSON.stringify(base));
+      const sug = readSharedClickedSelection(p, "260801") as { warnings: string[] };
+      assert.ok(sug.warnings.some((w) => /escolha manual necessária/.test(w)));
+      assert.ok(sug.warnings.some((w) => /SUGESTÃO/.test(w)));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#13022 revisão — troca não mexe no empate pendente; overrides corrompidos", () => {
+  it("swap com out ou in no grupo do empate é recusado, pedindo --pick antes", () => {
+    const week = [
+      cand({ url: U("p1"), clicks: 40, destaqueN: 1 }),
+      cand({ url: U("p2"), clicks: 40, editionDate: "260728", destaqueN: 1 }),
+      cand({ url: U("p3"), clicks: 40, editionDate: "260729", destaqueN: 1 }),
+      cand({ url: U("p4"), clicks: 40, editionDate: "260730", destaqueN: 1 }),
+      cand({ url: U("q"), clicks: 2, editionDate: "260730", destaqueN: 2 }),
+    ];
+    const sel = buildSharedSelection({ candidates: week, editionsFound: 4 });
+    assert.ok(sel.linkedin.pending);
+    const sels = { clicked: sel.clicked, linkedin: sel.linkedin };
+    const inSuggestion = sel.linkedin.pending!.suggested[0];
+    assert.throws(() => applySharedSwap(sels, sel.ranking, { out: inSuggestion, in: U("q") }), /empate pendente.*--pick/);
+    const loser = sel.linkedin.pending!.group.find((u) => !sel.linkedin.pending!.suggested.includes(u))!;
+    assert.throws(() => applySharedSwap(sels, sel.ranking, { out: U("q"), in: loser }), /empate pendente/);
+  });
+
+  it("validateOverrides recusa shape inválido; o CLI sai com exit 2 e a dica de --reset-overrides", () => {
+    assert.equal(validateOverrides({ picks: {}, swaps: [] }), null);
+    assert.match(validateOverrides({ picks: [], swaps: [] }) ?? "", /picks/);
+    assert.match(validateOverrides({ picks: { x: [] }, swaps: [] }) ?? "", /produto/);
+    assert.match(validateOverrides({ picks: {}, swaps: [{ out: 1 }] }) ?? "", /out\/in/);
+    const r = makeRoot("shared-rev-corrupt-");
+    try {
+      assert.equal(r.run(), null);
+      const s = JSON.parse(readFileSync(r.file, "utf8"));
+      s.overrides = { picks: { clicked: "nao-e-lista" }, swaps: [] };
+      writeFileSync(r.file, JSON.stringify(s));
+      const errs: string[] = [];
+      const oe = console.error;
+      console.error = (...a: unknown[]) => void errs.push(a.map(String).join(" "));
+      try {
+        assert.equal(withMockedExit(() => sharedMain(r.root, ["--saturday", "260801"], r.now)).code, 2);
+      } finally {
+        console.error = oe;
+      }
+      assert.match(errs.join("\n"), /--reset-overrides/);
+      assert.equal(r.run(["--reset-overrides"]), null);
+    } finally {
+      r.cleanup();
     }
   });
 });

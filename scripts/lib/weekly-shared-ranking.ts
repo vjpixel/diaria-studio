@@ -35,8 +35,9 @@
  * uma parada a mais. O desempate editorial da retro continua existindo como
  * SUGESTÃO pré-marcada (`suggested`) para cada empate pendente, inclusive a
  * preferência do #10378 no `clicked`; o editor confirma ou troca no gate.
- * Com `--no-gates` o `clicked` sai com a sugestão (equivale ao comportamento
- * automático de hoje) e o LinkedIn não é colado.
+ * Com `--no-gates` o `clicked` sai com a sugestão (depois do #8817, que agora
+ * vem antes do desempate editorial; não é idêntico ao automático da retro
+ * isolada) e o LinkedIn não é colado.
  *
  * O que muda em cada produto, comparado às skills isoladas:
  *   - `clicked`: empate maior que as vagas deixa de ser resolvido sozinho
@@ -58,6 +59,7 @@
  * O editor pode mudar essa premissa depois (normalizar ou excluir a sexta).
  */
 
+import { createHash } from "node:crypto";
 import { byRateDescThenTitle, editorialTiebreakScore } from "./weekly-social-click-rank.ts";
 import {
   applyPendingPicks,
@@ -260,6 +262,18 @@ export function applySharedSwap(
         : `troca inválida: "${swap.in}" não é candidato elegível desta semana.`,
     );
   }
+  // Troca que mexe num item do grupo de empate deixaria `pending` incoerente
+  // (sugestão/escolha apontando pra item que saiu). Resolver o empate antes.
+  for (const product of SHARED_PRODUCTS) {
+    const pending = selections[product].pending;
+    if (!pending) continue;
+    const inGroup = pending.group.map(normalizeUrl);
+    if (inGroup.includes(outKey) || inGroup.includes(inKey)) {
+      throw new SharedSelectionError(
+        `troca inválida: "${inGroup.includes(outKey) ? swap.out : swap.in}" está no empate pendente do ${product} (#5109) — resolva o empate antes com --pick ${product} --urls ..., depois troque.`,
+      );
+    }
+  }
   const outcome: SwapOutcome = { applied: [], skipped: [] };
   for (const product of SHARED_PRODUCTS) {
     const sel = selections[product];
@@ -360,4 +374,98 @@ export function clickAgeReport(
         `Edição ${r.editionDate} tem só ${r.hours}h de clique (enviada ${r.sentAt}) — o ranking não normaliza por idade (premissa #13022), então os itens dela tendem a perder posição no clicked e no LinkedIn.`,
     );
   return { rows, warnings };
+}
+
+/** Linha mínima do ranking gravado que a checagem de divergência precisa. */
+export interface RankingSnapshotRow {
+  url: string;
+  ratePct: number;
+  eligible: Record<SharedProduct, boolean>;
+}
+
+/**
+ * Pure (#13022, revisão da PR #13026): o ranking que o consumidor recalcula
+ * agora ainda é o que foi gravado (e mostrado no gate)? Diverge quando a
+ * janela tem outro conjunto de edições, ou quando algum item elegível do
+ * produto no arquivo sumiu ou mudou de taxa (um `kit-sync` entre o gate e o
+ * agendamento). Compara a taxa arredondada a 2 casas, como é gravada.
+ * Devolve a lista de diferenças (vazia = igual).
+ */
+export function rankingDivergence(
+  product: SharedProduct,
+  file: { editionsFound: string[]; ranking: RankingSnapshotRow[] },
+  now: { editionsFound: string[]; ranked: { url: string; ratePct: number }[] },
+): string[] {
+  const diffs: string[] = [];
+  const a = [...file.editionsFound].sort().join(",");
+  const b = [...now.editionsFound].sort().join(",");
+  if (a !== b) diffs.push(`edições da janela mudaram (${a || "nenhuma"} → ${b || "nenhuma"})`);
+  const rateNow = new Map(now.ranked.map((c) => [normalizeUrl(c.url), Math.round(c.ratePct * 100) / 100]));
+  for (const row of file.ranking) {
+    if (!row.eligible?.[product]) continue;
+    const r = rateNow.get(normalizeUrl(row.url));
+    if (r == null) diffs.push(`${row.url} não é mais candidato`);
+    else if (r !== row.ratePct) diffs.push(`${row.url}: taxa ${row.ratePct}% → ${r}%`);
+  }
+  return diffs;
+}
+
+/**
+ * Pure: o que um consumidor (`publish-weekly-social.ts`,
+ * `select-linkedin-weekly.ts`) precisa saber antes de usar o arquivo —
+ * divergência do ranking recalculado agora (`rankingDivergence`), aprovação
+ * cujo hash não bate mais com as URLs gravadas, e empate do produto ainda só
+ * sugerido. Quem decide se recusa é o consumidor (agendar recusa; prévia avisa).
+ */
+export function checkSharedFileForProduct(
+  product: SharedProduct,
+  file: {
+    editionsFound: string[];
+    ranking: RankingSnapshotRow[];
+    approved?: { hash: string } | null;
+    clicked: { urls: string[]; pending?: PendingTie | null };
+    linkedin: { urls: string[]; pending?: PendingTie | null };
+  },
+  now: { editionsFound: string[]; ranked: { url: string; ratePct: number }[] },
+): { divergence: string[]; pendingUnresolved: boolean } {
+  const divergence = rankingDivergence(product, file, now);
+  if (file.approved && file.approved.hash !== selectionHash(file)) {
+    divergence.push("as URLs do arquivo não batem com o hash da aprovação do gate (arquivo editado depois de aprovado)");
+  }
+  const pending = file[product].pending;
+  return { divergence, pendingUnresolved: Boolean(pending && pending.resolution !== "editor") };
+}
+
+/** Pure: impressão digital da seleção aprovada (URLs dos dois produtos, na ordem). */
+export function selectionHash(sel: { clicked: { urls: string[] }; linkedin: { urls: string[] } }): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ clicked: sel.clicked.urls, linkedin: sel.linkedin.urls }))
+    .digest("hex");
+}
+
+/** Pure: os recortes recalculados são os mesmos gravados (urls, grupo e sugestão de empate)? */
+export function sameSelection(
+  a: { clicked: ProductSelection; linkedin: ProductSelection },
+  b: { clicked: ProductSelection; linkedin: ProductSelection },
+): boolean {
+  const key = (p: ProductSelection) =>
+    JSON.stringify({ urls: p.urls, suggested: p.pending?.suggested ?? null, group: p.pending?.group ?? null });
+  return SHARED_PRODUCTS.every((p) => key(a[p]) === key(b[p]));
+}
+
+/** Pure: valida o shape de `overrides` lido do disco. `null` = ok; string = o problema. */
+export function validateOverrides(o: unknown): string | null {
+  if (!o || typeof o !== "object") return "overrides ausente ou não é objeto";
+  const { picks, swaps } = o as { picks?: unknown; swaps?: unknown };
+  if (!picks || typeof picks !== "object" || Array.isArray(picks)) return "overrides.picks não é objeto";
+  for (const [k, v] of Object.entries(picks)) {
+    if (!SHARED_PRODUCTS.includes(k as SharedProduct)) return `overrides.picks.${k} não é produto (clicked/linkedin)`;
+    if (!Array.isArray(v) || v.some((u) => typeof u !== "string")) return `overrides.picks.${k} não é lista de URLs`;
+  }
+  if (!Array.isArray(swaps)) return "overrides.swaps não é lista";
+  for (const sw of swaps as unknown[]) {
+    const x = sw as { out?: unknown; in?: unknown } | null;
+    if (!x || typeof x.out !== "string" || typeof x.in !== "string") return "overrides.swaps tem entrada sem out/in";
+  }
+  return null;
 }

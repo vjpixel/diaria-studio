@@ -50,6 +50,9 @@ import {
   buildSharedSelection,
   clickAgeReport,
   isEligibleFor,
+  sameSelection,
+  selectionHash,
+  validateOverrides,
   type ProductSelection,
   type SharedOverrides,
   type SharedProduct,
@@ -75,6 +78,13 @@ export interface SharedSelectionFile {
   editionsMissing: string[];
   generatedAt: string;
   overrides: SharedOverrides;
+  /**
+   * Aprovação do gate consolidado (`--confirm-suggestions`): hash das URLs
+   * dos dois produtos naquele momento (`selectionHash`). Os consumidores
+   * recusam agendar/colar se as URLs do arquivo não batem mais com ele.
+   * `null` = ainda não aprovado (ou nova troca/escolha depois da aprovação).
+   */
+  approved: { hash: string; at: string } | null;
   clicked: ProductSelection;
   linkedin: ProductSelection;
   ranking: Array<{
@@ -104,6 +114,8 @@ export function readSharedSelection(path: string): SharedSelectionFile | null {
   if (parsed?.version !== 1 || !parsed.clicked || !parsed.linkedin) {
     throw new Error(`${path} não é uma seleção compartilhada válida (version 1, com clicked e linkedin).`);
   }
+  const bad = validateOverrides(parsed.overrides);
+  if (bad) throw new Error(`${path}: ${bad}.`);
   return parsed;
 }
 
@@ -174,14 +186,37 @@ export function main(rootDirOverride?: string, argv: string[] = process.argv.sli
       return toRankedCandidate(c, clickCountsForUrl(c.url, post?.stats?.clicks), uniqueOpensOf(post), windowPosts.has(c.editionDate));
     });
 
+  const confirm = flags.has("confirm-suggestions");
+  if (confirm && (pickProduct || values["swap"])) fail(2, "--confirm-suggestions roda sozinho (sem --pick/--swap): ele só grava o que o gate mostrou.");
+  if (confirm && (!previous || flags.has("reset-overrides"))) {
+    fail(2, `--confirm-suggestions exige a seleção mostrada no gate em ${outPath} (sem --reset-overrides).`);
+  }
+
   let core: ReturnType<typeof buildSharedSelection>;
   try {
+    // Replay (revisão da PR #13026): se já há decisão do editor gravada (ou é a
+    // confirmação do gate), o ranking recalculado com essas MESMAS decisões tem
+    // que dar a seleção gravada. Divergiu = o cache mudou depois do gate (um
+    // kit-sync), e aplicar a decisão por cima mudaria em silêncio o que o
+    // editor viu. Exit 2, nada gravado.
+    const hasDecisions = Object.keys(base.picks).length > 0 || base.swaps.length > 0;
+    if (previous && !flags.has("reset-overrides") && (hasDecisions || confirm || previous.approved)) {
+      const replay = buildSharedSelection({ candidates, editionsFound: found.length, overrides: base });
+      if (!sameSelection(replay, previous)) {
+        fail(
+          2,
+          `Seleção compartilhada não gravada: o ranking mudou desde a seleção gravada em ${outPath} (cache de clique ou edições novas), ` +
+            `então ${confirm ? "a aprovação do gate" : "as decisões gravadas"} não valem mais para o que o editor viu. ` +
+            `Re-rode sem flags para ver a seleção nova e leve-a de novo ao gate, ou recomece com --reset-overrides.`,
+        );
+      }
+    }
     core = buildSharedSelection({ candidates, editionsFound: found.length, overrides });
     // --confirm-suggestions: o editor aprovou o gate vendo as sugestões; elas
     // viram `picks` exatos (revalidados contra o grupo a cada re-rodada), nunca
     // um "aceite qualquer sugestão futura" que confirmaria um empate novo que
-    // ele não viu.
-    if (flags.has("confirm-suggestions")) {
+    // ele não viu. Igualdade com o gravado já conferida no replay acima.
+    if (confirm) {
       let changed = false;
       for (const p of SHARED_PRODUCTS) {
         const pending = core[p].pending;
@@ -235,6 +270,11 @@ export function main(rootDirOverride?: string, argv: string[] = process.argv.sli
     editionsMissing: editions.filter((e) => !e.found).map((e) => e.date),
     generatedAt: now.toISOString(),
     overrides,
+    approved: confirm
+      ? { hash: selectionHash(core), at: now.toISOString() }
+      : pickProduct || values["swap"] || flags.has("reset-overrides")
+        ? null
+        : (previous?.approved ?? null),
     clicked: core.clicked,
     linkedin: core.linkedin,
     ranking: core.ranking.ranked.map((c) => ({
