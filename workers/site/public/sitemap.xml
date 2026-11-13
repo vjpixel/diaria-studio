@@ -1268,14 +1268,6 @@
   <url>
     <loc>https://diar.ia.br/p/nubank-demite-time-antifraude-e-poe-ia-no-lugar</loc>
     <lastmod>2026-11-11</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-11-11T00:00:00.000Z</news:publication_date>
-      <news:title>Nubank demite time antifraude e põe IA no lugar</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github</loc>
@@ -1287,6 +1279,18 @@
       </news:publication>
       <news:publication_date>2026-11-12T00:00:00.000Z</news:publication_date>
       <news:title>Claude Code pode ter vazado suas senhas no GitHub</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/jensen-huang-deixa-a-nvidia-apos-33-anos</loc>
+    <lastmod>2026-11-13</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-11-13T00:00:00.000Z</news:publication_date>
+      <news:title>Jensen Huang deixa a NVIDIA após 33 anos</news:title>
     </news:news>
   </url>
 </urlset>
