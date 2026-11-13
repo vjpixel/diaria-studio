@@ -422,8 +422,6 @@ export type PlanReport = ReportBase &
     | { status: "error" }
   );
 
-export type PlanReportStatus = PlanReport["status"];
-
 /** Exit codes do CLI. */
 export const EXIT_VERIFIED = 0;
 export const EXIT_ERROR = 1;
