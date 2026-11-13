@@ -48,7 +48,16 @@ const json = (status: number, body: unknown) =>
 const asr = { id: "asr1", snippet: { language: "pt-BR", name: "", trackKind: "asr", isDraft: false } };
 const sentPt = { id: "std1", snippet: { language: "pt-BR", name: "Português (Brasil)", trackKind: "standard", isDraft: false } };
 
-function mockDeps(listItems: unknown[], listStatus = 200): { deps: YouTubeUploadDeps; calls: Call[] } {
+interface MockOpts {
+  /** Corpo do erro do `captions.list` quando `listStatus` != 200. */
+  listErrorBody?: unknown;
+  /** Status do `captions.insert` (default 200). */
+  insertStatus?: number;
+  /** Canal que o token vê (default o esperado). */
+  channelId?: string;
+}
+
+function mockDeps(listItems: unknown[], listStatus = 200, opts: MockOpts = {}): { deps: YouTubeUploadDeps; calls: Call[] } {
   const calls: Call[] = [];
   return {
     calls,
@@ -58,11 +67,14 @@ function mockDeps(listItems: unknown[], listStatus = 200): { deps: YouTubeUpload
         const method = init?.method ?? "GET";
         calls.push({ url, method });
         if (url === "https://oauth2.googleapis.com/token") return json(200, { access_token: "access" });
-        if (url.includes("/youtube/v3/channels")) return json(200, { items: [{ id: SECRETS.YOUTUBE_CHANNEL_ID }] });
+        if (url.includes("/youtube/v3/channels")) return json(200, { items: [{ id: opts.channelId ?? SECRETS.YOUTUBE_CHANNEL_ID }] });
         if (url.startsWith(YOUTUBE_CAPTIONS_LIST_ENDPOINT) && method === "GET") {
-          return listStatus === 200 ? json(200, { items: listItems }) : json(listStatus, { error: { message: "boom" } });
+          return listStatus === 200 ? json(200, { items: listItems }) : json(listStatus, opts.listErrorBody ?? { error: { message: "boom" } });
         }
-        if (url.startsWith(YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT) && method === "POST") return json(200, { id: CAPTION_ID });
+        if (url.startsWith(YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT) && method === "POST") {
+          const st = opts.insertStatus ?? 200;
+          return st === 200 ? json(200, { id: CAPTION_ID }) : json(st, { error: { message: `insert falhou ${st}` } });
+        }
         throw new Error(`rota não mockada: ${method} ${url}`);
       },
     },
@@ -149,6 +161,17 @@ describe("decideCaptionsOnlyByTracks (#12429, puro)", () => {
     assert.equal(forced.send, true);
     assert.match(forced.line, /\[premissa\] --force/);
   });
+
+  it("faixa standard `pt` (enviada pelo Studio) ou `pt-PT` conta como já enviada; só `asr` pt não", () => {
+    const studio = decideCaptionsOnlyByTracks([t({ id: "s", language: "pt" })], false);
+    assert.equal(studio.send, false);
+    assert.match(studio.line, /já tem faixa pt enviada \(s\)/);
+    assert.equal(decideCaptionsOnlyByTracks([t({ id: "p", language: "pt-PT" })], false).send, false);
+    assert.equal(decideCaptionsOnlyByTracks([t({ id: "s", language: "pt" })], true).send, true);
+    const none = decideCaptionsOnlyByTracks([t({ language: "pt", trackKind: "asr" }), t({ language: "en" })], false);
+    assert.equal(none.send, true);
+    assert.equal(none.line, "[info] o vídeo não tem faixa pt `standard` enviada: envia");
+  });
 });
 
 describe("runCaptionsOnly --video-id (#12429)", () => {
@@ -187,6 +210,40 @@ describe("runCaptionsOnly --video-id (#12429)", () => {
     assert.equal(outcome.exitCode, 1);
     assert.ok(!calls.some((c) => c.method === "POST" && c.url.startsWith(YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT)));
     assert.match(logs, /--captions-only --video-id QRbXMprk9o0/);
+  });
+
+  it("token sem youtube.force-ssl (403 de escopo no captions.list): exit 1, sem POST, linha com --captions-only --video-id", async () => {
+    writeFileSync(captionsPath(), SRT);
+    const scopeBody = { error: { code: 403, message: "Request had insufficient authentication scopes.", errors: [{ reason: "insufficientPermissions" }] } };
+    const { deps, calls } = mockDeps([], 403, { listErrorBody: scopeBody });
+    const { outcome, logs } = await run(deps);
+    assert.equal(outcome.captions?.scopeMissing, true, logs);
+    assert.equal(outcome.exitCode, 1, "sem registro, a legenda é o único objetivo: escopo faltando não é sucesso");
+    assert.ok(!calls.some((c) => c.method === "POST" && c.url.startsWith(YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT)));
+    assert.match(logs, /--captions-only --video-id QRbXMprk9o0/);
+    assert.equal(existsSync(recordPath()), false);
+  });
+
+  for (const status of [400, 500]) {
+    it(`captions.insert falha (HTTP ${status}): exit 1, nada gravado`, async () => {
+      writeFileSync(captionsPath(), SRT);
+      const { deps, calls } = mockDeps([asr], 200, { insertStatus: status });
+      const { outcome, logs } = await run(deps);
+      assert.equal(outcome.exitCode, 1, logs);
+      assert.equal(outcome.captions?.ok, false);
+      assert.ok(calls.some((c) => c.method === "POST" && c.url.startsWith(YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT)));
+      assert.match(logs, /--captions-only --video-id QRbXMprk9o0/);
+      assert.equal(existsSync(recordPath()), false);
+    });
+  }
+
+  it("token de outro canal: exit 1, para no GET /channels", async () => {
+    writeFileSync(captionsPath(), SRT);
+    const { deps, calls } = mockDeps([asr], 200, { channelId: "UCoutroCanalQualquer00000" });
+    const { outcome, logs } = await run(deps);
+    assert.equal(outcome.exitCode, 1, logs);
+    assert.deepEqual(pathsOf(calls), ["POST /token", "GET /youtube/v3/channels"]);
+    assert.match(logs, /não é do canal esperado/);
   });
 
   it("registro de outro vídeo: recusa sem chamar a API e sem mexer no registro", async () => {
@@ -248,6 +305,24 @@ describe("CLI --captions-only --video-id --dry-run (#12429, spawnSync)", () => {
     assert.equal(out.dry_run, true);
     assert.equal(out.videoId, VIDEO_ID);
     assert.equal(out.registered, false);
+    assert.equal(out.captions, null);
     assert.equal(existsSync(recordPath()), false);
+  });
+
+  it("vídeo registrado com faixa antiga falha: o JSON do dry-run sai com captions null, não a faixa antiga", () => {
+    writeFileSync(captionsPath(), SRT);
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    const old = { attempted: true, ok: false, captionId: null, language: "pt-BR", path: captionsPath(), error: "antigo", scopeMissing: true, at: "2026-10-21T10:00:00Z" };
+    writeFileSync(recordPath(), JSON.stringify({ aammdd: "261021", videoId: VIDEO_ID, url: `https://youtu.be/${VIDEO_ID}`, captions: old }));
+    const r = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/publish-youtube.ts", "261021", "--edition-dir", dir, "--captions-only", "--dry-run"],
+      { encoding: "utf8", env: { PATH: process.env.PATH ?? "" } },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.dry_run, true);
+    assert.equal(out.registered, true);
+    assert.equal(out.captions, null);
   });
 });

@@ -19,11 +19,15 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  *   npx tsx scripts/publish-youtube.ts AAMMDD --captions-list [--video-id VIDEO_ID]
  *     Só lê (`captions.list`, #12429): as faixas de legenda do vídeo registrado (ou do
  *     --video-id) e se a pt-BR `standard` enviada está publicada (exit 0) ou não (exit 1).
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --captions-only [--dry-run] [--captions-reviewed] [--force]
+ *     Só a legenda para o vídeo registrado em _internal/05-youtube-published.json
+ *     (#11384); o captionId vai para o registro.
  *   npx tsx scripts/publish-youtube.ts AAMMDD --captions-only --video-id VIDEO_ID [--dry-run] [--captions-reviewed] [--force]
  *     Só a legenda para um vídeo do canal SEM registro na edição (#12429: os
  *     horizontais antigos, fora dos 25 uploads que o --accept-period-match varre).
- *     Confere as faixas (`captions.list`): já havendo pt-BR enviada, não envia sem
- *     --force (que cria outra faixa). Nada gravado no registro; nenhuma playlist,
+ *     Confere as faixas (`captions.list`): já havendo pt `standard` enviada, não envia
+ *     sem --force (que cria outra faixa). Qualquer falha, inclusive token sem
+ *     youtube.force-ssl, sai exit 1. Nada gravado no registro; nenhuma playlist,
  *     título ou metadado tocado. Com registro, um --video-id diferente é recusado.
  *     `--dry-run` (também sem --video-id): as mesmas recusas e o plano, sem rede.
  *
@@ -1160,10 +1164,14 @@ export function countSrtCues(srt: string): number {
  * da API na legenda.
  *
  * `--video-id` (#12429): vídeo sem registro. Antes do envio, o
- * `captions.list` do vídeo; já havendo faixa pt-BR enviada, não envia sem
- * `--force`. Nada é gravado no registro da edição (que segue sem vídeo) e
- * nenhuma playlist, título ou metadado é tocado. `--dry-run`: as mesmas
- * recusas, depois só o plano, sem credencial nem rede.
+ * `captions.list` do vídeo; já havendo faixa pt `standard` enviada, não envia
+ * sem `--force`. Nada é gravado no registro da edição (que segue sem vídeo) e
+ * nenhuma playlist, título ou metadado é tocado. Aqui a legenda é o único
+ * objetivo: qualquer falha sai exit 1, inclusive o token sem
+ * `youtube.force-ssl` (sem o fail-soft do caminho com registro).
+ *
+ * `--dry-run` (com ou sem `--video-id`, #12429): as mesmas recusas, depois só
+ * o plano, sem credencial nem rede; o JSON sai com `captions: null`.
  */
 export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaptionsOnlyInput): Promise<RunCaptionsOnlyOutcome> {
   const { log } = input;
@@ -1216,7 +1224,7 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
     if (rec) {
       log(`[dry-run] depois, o captionId iria para ${recordPath}`);
     } else {
-      log(`[dry-run] antes, o captions.list do vídeo: já havendo faixa ${YOUTUBE_CAPTION_LANGUAGE} enviada, nada é enviado sem --force`);
+      log(`[dry-run] antes, o captions.list do vídeo: já havendo faixa pt standard enviada, nada é enviado sem --force`);
       log(`[dry-run] nada gravado em ${recordPath}; nenhuma playlist, título ou metadado tocado`);
     }
     if (missing.length > 0) log(`[aviso] faltam ${missing.join(", ")} no ambiente: o envio real recusaria. Rode \`npx tsx scripts/youtube-oauth-setup.ts\`.`);
@@ -1251,7 +1259,10 @@ export async function runCaptionsOnly(deps: YouTubeUploadDeps, input: RunCaption
     if (out.result.ok) {
       log(`[info] nada gravado em ${recordPath} (vídeo sem registro). Confira: npx tsx scripts/publish-youtube.ts ${input.aammdd} --captions-list --video-id ${videoId}`);
     }
-    return { exitCode: out.result.ok || out.result.scopeMissing ? 0 : 1, record: null, skipped: false, videoId, captions: out.result };
+    // Sem registro, a legenda é o único objetivo e nada é gravado: qualquer
+    // falha, inclusive o 403 de escopo, sai exit 1 (o caminho com registro
+    // segue fail-soft no escopo).
+    return { exitCode: out.result.ok ? 0 : 1, record: null, skipped: false, videoId, captions: out.result };
   }
 
   let captions: CaptionUploadResult;
@@ -1460,7 +1471,7 @@ async function main(): Promise<number> {
     console.error(
       modes > 1
         ? "publish-youtube: --dry-run, --upload, --captions-only, --captions-list e --thumbnail-only são exclusivos."
-        : "publish-youtube: escolha o modo — --dry-run (só o plano), --upload (envio real; sem a auditoria do YouTube API Services o vídeo sai private, #10659), --captions-only (só a legenda do vídeo registrado, #11384), --captions-list (só confere as faixas de legenda, #12429) ou --thumbnail-only (só a capa, #12134).",
+        : "publish-youtube: escolha o modo — --dry-run (só o plano), --upload (envio real; sem a auditoria do YouTube API Services o vídeo sai private, #10659), --captions-only (só a legenda do vídeo registrado, #11384, ou do --video-id sem registro, #12429; com --dry-run, só o plano), --captions-list (só confere as faixas de legenda, #12429) ou --thumbnail-only (só a capa, #12134).",
     );
     console.error(USAGE);
     return 2;
@@ -1546,7 +1557,8 @@ async function main(): Promise<number> {
       readFile: (p) => readFileSync(p),
       log: (line) => console.error(line),
     });
-    const captions = outcome.captions ?? outcome.record?.captions ?? null;
+    // #12429: no dry-run nada foi enviado; a faixa antiga do registro não é o plano.
+    const captions = dryRun ? null : (outcome.captions ?? outcome.record?.captions ?? null);
     if (captions || dryRun) {
       console.log(JSON.stringify({ captions_only: true, dry_run: dryRun, skipped: outcome.skipped, videoId: outcome.videoId, registered: outcome.record !== null, captions }, null, 2));
     }

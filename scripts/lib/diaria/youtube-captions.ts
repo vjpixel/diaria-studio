@@ -274,6 +274,15 @@ function isSentPtBr(t: CaptionTrack): boolean {
   return t.language.toLowerCase() === YOUTUBE_CAPTION_LANGUAGE.toLowerCase() && t.trackKind === "standard";
 }
 
+/**
+ * Faixa `standard` de qualquer variante de português (`pt`, `pt-BR`, `pt-PT`)?
+ * #12429: a faixa enviada à mão pelo Studio pode vir como `pt`; para decidir
+ * se o `--captions-only --video-id` envia, ela também conta como já enviada.
+ */
+function isSentPt(t: CaptionTrack): boolean {
+  return t.trackKind === "standard" && t.language.toLowerCase().startsWith("pt");
+}
+
 /** ID de vídeo do YouTube: 11 caracteres de `[A-Za-z0-9_-]` (#12429, barra erro de digitação no `--video-id`). */
 export function isYouTubeVideoId(id: string): boolean {
   return /^[A-Za-z0-9_-]{11}$/.test(id);
@@ -281,16 +290,16 @@ export function isYouTubeVideoId(id: string): boolean {
 
 /**
  * `--captions-only --video-id` (#12429): o vídeo não tem registro, então o
- * "já enviada" sai das faixas do próprio vídeo. Qualquer faixa pt-BR
- * `standard` (publicada ou rascunho) já enviada = não envia sem `--force`
- * (que cria outra faixa; o `captions.insert` não substitui). A `asr`
- * automática nunca conta. Puro.
+ * "já enviada" sai das faixas do próprio vídeo. Qualquer faixa `standard`
+ * de idioma `pt*` (pt-BR do script, ou `pt` enviada pelo Studio; publicada ou
+ * rascunho) = não envia sem `--force` (que cria outra faixa; o
+ * `captions.insert` não substitui). A `asr` automática nunca conta. Puro.
  */
 export function decideCaptionsOnlyByTracks(tracks: CaptionTrack[], force: boolean): { send: boolean; line: string } {
-  const sent = tracks.filter(isSentPtBr);
+  const sent = tracks.filter(isSentPt);
   const ids = sent.map((t) => `${t.id}${t.isDraft ? " (rascunho)" : ""}`).join(", ");
-  if (sent.length === 0) return { send: true, line: "[info] o vídeo não tem faixa pt-BR enviada (só a automática, ou nenhuma): envia" };
-  if (!force) return { send: false, line: `[ok] o vídeo já tem faixa pt-BR enviada (${ids}) — nada feito. Use --force para enviar outra faixa.` };
+  if (sent.length === 0) return { send: true, line: "[info] o vídeo não tem faixa pt `standard` enviada: envia" };
+  if (!force) return { send: false, line: `[ok] o vídeo já tem faixa pt enviada (${ids}) — nada feito. Use --force para enviar outra faixa.` };
   return { send: true, line: `[premissa] --force: envia outra faixa pt-BR além de ${ids}` };
 }
 
