@@ -269,6 +269,14 @@ force_guard() {
     grep -E 'Path1 +Queue delete +- ' |
     sed 's/.*Queue delete *- //' > "$DRIVE_DELETES"
   ndel=$(grep -c . "$DRIVE_DELETES")
+  # Formato do log que mudou numa versão nova do rclone não pode virar "zero
+  # exclusões" e liberar o --force: o dry-run diz quantas exclusões pulou, e
+  # se houve alguma sem nenhuma linha "Queue delete" reconhecida, recusa.
+  nskip=$(grep -c 'Skipped delete as --dry-run is set' "$PRECHECK_LOG")
+  nqueue=$(sed "s/${ESC}\[[0-9;]*m//g" "$PRECHECK_LOG" | grep -c -E 'Path[12] +Queue delete +- ')
+  if [ "$nskip" -gt 0 ] && [ "$nqueue" -eq 0 ]; then
+    refuse_force "o dry-run pulou $nskip exclusao(oes), mas nenhuma linha 'Queue delete' foi reconhecida no log (formato do rclone mudou?). Log: $PRECHECK_LOG"
+  fi
   if [ "$ndel" -eq 0 ]; then
     echo "gdrive-bisync: pre-checagem do --force: nenhuma exclusao no Drive (#12979)" >&2
     return 0

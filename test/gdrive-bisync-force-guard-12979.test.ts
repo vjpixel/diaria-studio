@@ -189,6 +189,17 @@ describe("gdrive-bisync.sh --force: guard contra apagar arquivo de outro dono (#
     assert.match(r.stderr, /nenhuma exclusao no Drive/);
   });
 
+  it("log com exclusões puladas mas sem 'Queue delete' reconhecível (formato novo) → recusa, nunca 'zero exclusões'", () => {
+    const r = runForce({
+      dryRunOut: "2026/11/13 20:16:58 NOTICE: Work/x.mp4: Skipped delete as --dry-run is set (size 2)\n",
+      owners: {},
+      args: ["--force"],
+    });
+    assert.equal(r.status, 75, r.stderr);
+    assert.equal(r.realRun, false);
+    assert.match(r.stderr, /formato do rclone mudou/);
+  });
+
   it("pré-checagem que falha → recusa, sem rodada real", () => {
     const r = runForce({ dryRunOut: "ERROR : boom\n", dryRunExit: 7, owners: {}, args: ["--force"] });
     assert.equal(r.status, 75);
