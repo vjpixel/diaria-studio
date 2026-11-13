@@ -110,11 +110,14 @@ export function analyzePrevSocial(posts: SocialPostLike[], now: Date): PrevSocia
 
     // `failed` é acionável em qualquer canal — é o script local dizendo que o
     // dispatch não saiu, não uma inferência sobre estado remoto.
+    // #13008: a reconciliação pelo feed (`reconcile-social-permalinks.ts`)
+    // marca como `send_unknown` (nunca `failed`, que uma retomada repostaria)
+    // o post agendado que não está no feed da conta — rótulo próprio, porque o
+    // registro local dizia "agendado/publicado". Aceita também `failed` com o
+    // mesmo prefixo, por registro gravado antes dessa troca.
+    const absent = typeof post.failure_reason === "string" && post.failure_reason.startsWith("absent_from_feed:");
+
     if (status === "failed") {
-      // #13008: a reconciliação pelo feed (`reconcile-social-permalinks.ts`)
-      // rebaixa para `failed` o post agendado que não está no feed da conta —
-      // rótulo próprio, porque o registro local dizia "agendado/publicado".
-      const absent = typeof post.failure_reason === "string" && post.failure_reason.startsWith("absent_from_feed:");
       findings.push({ platform, destaque, status, scheduled_at: scheduledAt, reason: absent ? "absent-from-feed" : "failed" });
       continue;
     }
@@ -122,7 +125,7 @@ export function analyzePrevSocial(posts: SocialPostLike[], now: Date): PrevSocia
     // #11129: envio ambíguo (local, #11105, ou reconciliado da DLQ do Worker
     // pelo check 0k) — o post pode ter saído; o editor confere o perfil.
     if (status === "send_unknown") {
-      findings.push({ platform, destaque, status, scheduled_at: scheduledAt, reason: "send-unknown" });
+      findings.push({ platform, destaque, status, scheduled_at: scheduledAt, reason: absent ? "absent-from-feed" : "send-unknown" });
       continue;
     }
 

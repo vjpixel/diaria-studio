@@ -2,7 +2,7 @@
  * test/social-feed-reconcile-13009.test.ts (#13009, #13008)
  *
  * Reconciliação pós-disparo contra o feed da conta: permalink gravado quando
- * o post está no feed; `failed` (absent_from_feed) quando o horário venceu e
+ * o post está no feed; `send_unknown` (absent_from_feed) quando o horário venceu e
  * o feed cobre a janela sem o post — o caso do `um` do Instagram de 261023,
  * que o reconciliador do Worker marcou "confirmado com alta confiança".
  */
@@ -72,9 +72,12 @@ describe("caso real 261023 (#13008): IG `um` dado como publicado e ausente do fe
     item({ id: "eve", timestamp: "2026-10-23T20:00:03+0000", text: D1_TEXT }),
   ]);
 
-  it("vira failed com absent_from_feed, preservando o status anterior", () => {
+  it("vira send_unknown (nunca failed) com absent_from_feed, preservando o status anterior", () => {
     const { posts, summary } = reconcilePostsAgainstFeeds([published], { instagram: realFeed }, () => UM_TEXT, LATE);
-    assert.equal(posts[0].status, "failed");
+    // send_unknown, não failed: a retomada da Etapa 5 pula send_unknown e
+    // repostaria um failed (duplicata se o casamento errou — review PR #13016).
+    assert.equal(posts[0].status, "send_unknown");
+    assert.notEqual(posts[0].status, "failed");
     assert.match(posts[0].failure_reason as string, /^absent_from_feed:/);
     assert.equal(posts[0].previous_status, "published");
     assert.match(posts[0].verification_note as string, /confirmed_by_worker_high_confidence/);
@@ -88,6 +91,15 @@ describe("caso real 261023 (#13008): IG `um` dado como publicado e ausente do fe
     assert.equal(report.findings.length, 1);
     assert.equal(report.findings[0].reason, "absent-from-feed");
     assert.match(formatPrevSocialSummary(report, "261023") ?? "", /ausente do feed da conta/);
+  });
+
+  it("a entrada ausente não volta a ser reconciliada e um registro antigo `failed` mantém o rótulo", () => {
+    const { posts } = reconcilePostsAgainstFeeds([published], { instagram: realFeed }, () => UM_TEXT, LATE);
+    assert.equal(needsFeedReconcile(posts[0]), false);
+    const legacy = { ...posts[0], status: "failed" as const };
+    assert.equal(analyzePrevSocial([legacy], LATE).findings[0].reason, "absent-from-feed");
+    const plainUnknown = { ...posts[0], failure_reason: "worker_send_unknown: timeout" };
+    assert.equal(analyzePrevSocial([plainUnknown], LATE).findings[0].reason, "send-unknown");
   });
 });
 

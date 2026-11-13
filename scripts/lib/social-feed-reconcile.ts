@@ -17,9 +17,13 @@
  *   - `matched`: achou. Grava `url` (permalink), `published_at` (o horário do
  *     feed, não o da reconciliação) e `status: "published"`.
  *   - `absent`: o horário passou há mais de `graceHours`, o feed lido cobre a
- *     janela e nada nele corresponde. Vira `status: "failed"` com
+ *     janela e nada nele corresponde. Vira `status: "send_unknown"` com
  *     `failure_reason` começando por `absent_from_feed:` — o check 0l do
- *     Stage 0 (`prev-social-status.ts`) passa a listar o post.
+ *     Stage 0 (`prev-social-status.ts`) passa a listar o post. Nunca
+ *     `failed`: `failed` fica fora do skip de retomada dos publicadores, e uma
+ *     retomada da Etapa 5 repostaria sozinha — duplicata se o casamento errou
+ *     (review da PR #13016). `send_unknown` é pulado na retomada e só sai com
+ *     `--retry` explícito, depois de o editor conferir o perfil.
  *   - `none`: sem conclusão (ainda cedo, feed não cobre a janela, leitura
  *     falhou, ou mais de um candidato sem texto para desempatar). Nada muda.
  *
@@ -261,9 +265,11 @@ export function applyFeedDecision(entry: PostEntry, decision: FeedDecision, now:
         `reconcile-social-permalinks.ts (#13009).`,
     };
   }
+  // `send_unknown`, nunca `failed`: nenhum publicador reposta sozinho numa
+  // retomada (o `failed` sairia do skip e duplicaria se o casamento errou).
   return {
     ...entry,
-    status: "failed",
+    status: "send_unknown",
     previous_status: entry.status,
     failure_reason: `absent_from_feed: ${decision.reason}`,
     feed_verified_at: now.toISOString(),

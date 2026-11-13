@@ -10,7 +10,7 @@
  *   - achou no feed → grava `url` (permalink), `published_at` real e
  *     `status: "published"`;
  *   - horário passou há mais de 6h, feed cobre a janela e nada corresponde →
- *     `status: "failed"` com `failure_reason: "absent_from_feed: ..."` e uma
+ *     `status: "send_unknown"` (nunca `failed`, que uma retomada repostaria) com `failure_reason: "absent_from_feed: ..."` e uma
  *     linha `ALARME (#13008)` no stderr. O check 0l (`check-prev-social-status.ts`)
  *     passa a listar o post na nota do Stage 0.
  *

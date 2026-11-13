@@ -1173,7 +1173,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     }
     softStep(deps, report, "verify-social-worker-dispatch (0k)", "scripts/verify-social-worker-dispatch.ts", ["--edition-dir", `${prevDir}/`]);
     // #13009/#13008: confere IG/Threads/LinkedIn no FEED da conta — grava o
-    // permalink, ou rebaixa para `failed` (absent_from_feed) o post vencido
+    // permalink, ou marca `send_unknown` (absent_from_feed) o post vencido
     // que não está lá. Depois do worker-dispatch, que só sabe dizer "saiu da
     // fila"; antes do 0l, que então lista o ausente como "dispatch falhou".
     softStep(deps, report, "reconcile-social-permalinks (0k)", "scripts/reconcile-social-permalinks.ts", ["--edition-dir", `${prevDir}/`, "--lookback-days", "3"]);

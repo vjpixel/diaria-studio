@@ -306,7 +306,7 @@ export function reconcileWorkerEntry(
   // saiu daqui como "alta confiança" e nunca apareceu no feed. O Worker
   // descarta o id do `media_publish`, então quem confirma de verdade é o
   // feed da conta (`reconcile-social-permalinks.ts`, check 0k logo depois),
-  // que grava o permalink ou rebaixa para `failed` (absent_from_feed).
+  // que grava o permalink ou marca `send_unknown` (absent_from_feed).
   const nowIso = now.toISOString();
   if (REAL_DELIVERY_CONFIRMATION_PLATFORMS.has(entry.platform)) {
     return {

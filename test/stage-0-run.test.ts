@@ -746,7 +746,7 @@ describe("runStage0 --phase continue — caminho feliz", () => {
   });
 
   it("0l — finding vira nota nomeando canal/destaque e motivo (#13008)", async () => {
-    const findings = [{ platform: "instagram", destaque: "um", status: "failed", scheduled_at: "2026-04-22T13:00:00-03:00", reason: "absent-from-feed" }];
+    const findings = [{ platform: "instagram", destaque: "um", status: "send_unknown", scheduled_at: "2026-04-22T13:00:00-03:00", reason: "absent-from-feed" }];
     const { exec } = makeFakeExec(
       happyExecHandlers({
         "check-prev-social-status.ts": () => ok(JSON.stringify({ findings, terminalByDesign: 0, total: 19 })),
