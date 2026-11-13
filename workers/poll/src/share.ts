@@ -32,7 +32,8 @@
  *     `workers/poll` não tem NENHUMA dependência de bundling hoje (só
  *     wrangler/typescript em devDependencies) — rasterizar PNG exigiria uma
  *     lib WASM nova (satori + resvg, ex: `workers-og`, sugerida no esboço da
- *     issue) cujo impacto no bundle size do Workers free tier não dá pra
+ *     issue) cujo impacto no bundle size do Workers free tier (o plano da
+ *     conta na época; hoje Workers Paid, #12533) não dá pra
  *     validar sem um `wrangler deploy` real (fora do escopo desta sessão —
  *     guard explícito de não fazer deploy). SVG puro é: (a) pure function
  *     testável sem infra nova, (b) zero risco de bundle-size, (c) renderiza

@@ -862,7 +862,8 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
 
   // #1348: invalida snapshot do mês UMA vez após o loop — todos os votos acima
   // pertencem à mesma edição (mesmo monthSlug). N× invalidações dentro do loop
-  // são no-op deletes; uma única após o loop economiza subrequests free-tier.
+  // são no-op deletes; uma única após o loop economiza subrequests (escrito no
+  // free tier; a conta hoje é Workers Paid, #12533).
   // (adjustScoreByMonthCorrectOnly não chama mais invalidateSnapshot internamente.)
   const monthSlugForEdition = editionToMonthSlug(edition);
   if (monthSlugForEdition !== null && updated > 0) {
@@ -1498,7 +1499,8 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
   // Dedup via índice `nickname:{normalizado}` → email (1 get), NÃO mais um
   // scan de score:* (era O(N) sobre todo votante all-time — já ~60+ hoje,
   // na zona de estouro do teto de 50 subrequests/request do Workers free
-  // plan; ver #3117). O índice precisa ser populado 1x via
+  // plan, o plano da conta na época; ver #3117 — hoje Workers Paid, #12533).
+  // O índice precisa ser populado 1x via
   // scripts/migrate-nickname-index.ts antes deste código ir ao ar — sem
   // isso o dedup fica cego pros nicknames já existentes (índice vazio).
   const targetNorm = normalizeNickname(cleanName);
