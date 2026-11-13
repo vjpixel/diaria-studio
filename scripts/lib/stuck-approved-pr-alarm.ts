@@ -33,6 +33,7 @@ import { evaluatePrChecksGate } from "./pr-checks-gate.ts";
 import { extractIndependentReviewHeadSha, extractIndependentReviewVerdict } from "./pr-review-authenticity.ts";
 import { evaluatePrRetido } from "./pr-retido-para-editor.ts";
 import { EXECUTION_BLOCK_LABEL } from "./continuo-stuck-pr.ts";
+import { isDefaultIssueRepo, normalizeRepoSlug } from "./issue-repos.ts";
 
 const MS_PER_HOUR = 60 * 60 * 1000;
 
@@ -41,6 +42,12 @@ export const DEFAULT_STUCK_APPROVED_THRESHOLD_HOURS = 4;
 /** O que `gh pr list --json number,title,body,isDraft,labels,createdAt,mergeable,statusCheckRollup,reviewDecision,headRefOid` devolve. */
 export interface StuckApprovedPrBasicEntry {
   number: number;
+  /**
+   * Repo da PR (`owner/name`). Ausente = repo default (diaria-studio). O
+   * alarme varre todos os repos de `issue_repos` (#13003): o número colide
+   * entre repos, então a identidade da PR é repo + número.
+   */
+  repo?: string;
   title: string;
   /** Corpo da PR: o marcador `<!-- retido-para-editor -->` também retém (#10278). */
   body?: string | null;
@@ -61,6 +68,8 @@ export interface StuckApprovedPrEntry extends StuckApprovedPrBasicEntry {
 
 export interface StuckApprovedPrFinding {
   number: number;
+  /** Repo da PR; ausente = repo default (#13003). */
+  repo?: string;
   title: string;
   isDraft: boolean;
   hoursOpen: number;
@@ -132,6 +141,7 @@ export function evaluateStuckApprovedPrs(
     if (approvedBy === null) continue;
     findings.push({
       number: pr.number,
+      ...(pr.repo !== undefined ? { repo: pr.repo } : {}),
       title: pr.title,
       isDraft: pr.isDraft,
       hoursOpen: hoursOpen(pr, now) ?? 0,
@@ -140,6 +150,16 @@ export function evaluateStuckApprovedPrs(
     });
   }
   return findings.sort((a, b) => b.hoursOpen - a.hoursOpen);
+}
+
+/**
+ * Referência legível da PR (#13003): `#N` no repo default (forma de sempre,
+ * mantém a chave de conjunto e o texto das issues já abertas), `owner/name#N`
+ * em outro repo — o `#21` do diaria-design não é o `#21` do studio.
+ */
+export function stuckApprovedPrRef(f: Pick<StuckApprovedPrFinding, "number" | "repo">): string {
+  if (f.repo === undefined || isDefaultIssueRepo(f.repo)) return `#${f.number}`;
+  return `${normalizeRepoSlug(f.repo) ?? f.repo}#${f.number}`;
 }
 
 /**
@@ -167,10 +187,14 @@ export const STUCK_APPROVED_PR_ALARM_FINGERPRINT = "approved-green-prs";
 
 /** Chave do conjunto (decide se vale comentar a atualização na issue). */
 export function stuckApprovedPrSetKey(findings: readonly StuckApprovedPrFinding[]): string {
-  return findings
-    .map((f) => f.number)
-    .sort((a, b) => a - b)
-    .join(",");
+  // Repo default primeiro, por número (a chave de sempre quando só há PR do
+  // studio); depois os outros repos, qualificados (#13003).
+  const defaults = findings.filter((f) => stuckApprovedPrRef(f).startsWith("#"));
+  const others = findings.filter((f) => !stuckApprovedPrRef(f).startsWith("#"));
+  return [
+    ...defaults.map((f) => f.number).sort((a, b) => a - b).map(String),
+    ...others.map((f) => stuckApprovedPrRef(f)).sort(),
+  ].join(",");
 }
 
 export function stuckApprovedPrSetMarker(setKey: string): string {
@@ -194,7 +218,7 @@ export function buildStuckApprovedPrAlarmEmail(
       f.mergeable && f.mergeable !== "MERGEABLE" ? `mergeable=${f.mergeable}` : null,
       f.approvedBy === "github-review" ? "approve no GitHub" : "approve do review independente",
     ].filter((x): x is string => x !== null);
-    return `- PR #${f.number} "${f.title}": aberta há ${f.hoursOpen.toFixed(1)}h (${flags.join(", ")}).`;
+    return `- PR ${stuckApprovedPrRef(f)} "${f.title}": aberta há ${f.hoursOpen.toFixed(1)}h (${flags.join(", ")}).`;
   });
   const body = [
     `Varredura de ${now.toISOString()}, limiar ${thresholdHours}h.`,
@@ -202,7 +226,7 @@ export function buildStuckApprovedPrAlarmEmail(
     ...lines,
     "",
     "Estas PRs têm review approve e CI verde e seguem abertas. Fora da lista: retidas (label ou marcador retido-para-editor) e draft com bloqueio-execucao.",
-    "Ação: passar pelo Gate 2 e mergear (`check-continuo-merge-gate.ts --pr N` mostra o motivo da retenção); draft sem bloqueio real sai de draft antes.",
+    "Ação: passar pelo Gate 2 e mergear (`check-continuo-merge-gate.ts --pr N` mostra o motivo da retenção; PR de outro repo leva `--repo owner/name`); draft sem bloqueio real sai de draft antes.",
   ].join("\n");
   return { subject, body };
 }

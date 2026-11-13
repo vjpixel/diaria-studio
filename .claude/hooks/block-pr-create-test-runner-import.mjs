@@ -55,6 +55,7 @@ import {
   resolveGitRoot,
 } from "./block-pr-create-pii-runtime-artifacts.mjs";
 import { isForeignRepoGhCommand } from "./lib/gh-target-repo.mjs";
+import { isStudioCheckout } from "./lib/studio-checkout.mjs";
 
 /**
  * Roda a checagem estática contra `{repoRoot}/test`. Devolve `null` quando
@@ -127,6 +128,9 @@ if (
       // checkout dele) — esta é uma regra do diaria-studio, não se aplica lá.
       // Repo indeterminado segue aplicando a regra (comportamento anterior).
       if (isForeignRepoGhCommand(command, cwd)) return;
+      // #12951: checkout de outro repo com `origin` indeterminado — a regra
+      // (test runner do studio) não se aplica lá.
+      if (isStudioCheckout(cwd, hookDir, { command }) === false) return;
 
       const result = await runTestRunnerImportCheck(cwd);
       if (result === null) return; // fail-open: test/ não existe

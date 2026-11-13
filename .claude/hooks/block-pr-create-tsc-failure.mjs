@@ -56,6 +56,7 @@ import {
   resolveGitRoot,
 } from "./block-pr-create-pii-runtime-artifacts.mjs";
 import { isForeignRepoGhCommand } from "./lib/gh-target-repo.mjs";
+import { isStudioCheckout, studioLogRoot } from "./lib/studio-checkout.mjs";
 
 /** Var de ambiente do escape hatch — nome único pra não colidir com nenhum
  * outro guard/flag do repo. */
@@ -215,12 +216,19 @@ if (
       // checkout dele) — esta é uma regra do diaria-studio, não se aplica lá.
       // Repo indeterminado segue aplicando a regra (comportamento anterior).
       if (isForeignRepoGhCommand(command, cwd)) return;
+      // #12951: log sempre no `data/` do studio, nunca no cwd do comando.
+      const logRoot = studioLogRoot(hookDir);
+      // #12951: checkout de outro repo com `origin` indeterminado.
+      if (isStudioCheckout(cwd, hookDir, { command }) === false) {
+        logTscGuardEvent("tsc_pr_guard_skipped_foreign_checkout", { cwd }, { repoRoot: logRoot });
+        return;
+      }
 
       if (process.env[TSC_PR_GUARD_BYPASS_ENV] === "1") {
         logTscGuardEvent(
           "tsc_pr_guard_bypassed",
           { command: typeof command === "string" ? command.slice(0, 500) : null },
-          { repoRoot: cwd },
+          { repoRoot: logRoot },
         );
         return;
       }
@@ -241,7 +249,7 @@ if (
       const result = runTypecheck(cwd);
 
       if (result.infra) {
-        logTscGuardEvent("tsc_pr_guard_infra_error", { output: result.output?.slice?.(0, 500) ?? null }, { repoRoot: cwd });
+        logTscGuardEvent("tsc_pr_guard_infra_error", { output: result.output?.slice?.(0, 500) ?? null }, { repoRoot: logRoot });
         return; // fail-open: tsc não rodou por motivo de ambiente, não bloqueia
       }
 
@@ -249,7 +257,7 @@ if (
         logTscGuardEvent(
           "tsc_pr_guard_blocked",
           { command: typeof command === "string" ? command.slice(0, 500) : null },
-          { repoRoot: cwd },
+          { repoRoot: logRoot },
         );
         process.stdout.write(
           JSON.stringify({

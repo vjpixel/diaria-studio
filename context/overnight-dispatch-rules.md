@@ -1152,7 +1152,9 @@ Três vereditos exclusivos:
   `gh pr merge --match-head-commit <sha avaliado>`, nunca o HEAD de um
   push posterior; `despachar-fixer` (CI vermelho) → `dev-fixer` no branch;
   `aguardar-ci` (CI pendente, PR atualizada há até 6h) → reavaliar no
-  próximo re-scan; `editor` → não tocar. Vira `editor`: draft,
+  próximo re-scan (`check-block-staleness.ts` acusa a entrada com
+  `orphan_action: "aguardar-ci"` assim que o CI da PR termina, verde ou
+  vermelho, #13003); `editor` → não tocar. Vira `editor`: draft,
   `bloqueio-execucao`, retenção (inclusive labels ilegíveis), branch fora
   das lanes, issue reivindicada por sessão ativa no `session-registry`
   (dono vivo; o CLI consulta a mesma lógica do `is-claimed`, aceita
