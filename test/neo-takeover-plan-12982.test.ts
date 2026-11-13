@@ -18,8 +18,10 @@ import {
   psQuote,
   toLocalSchedule,
 } from "../scripts/lib/failover/neo-takeover-plan.ts";
-import { parseMode } from "../scripts/failover/neo-takeover.ts";
+import { main as takeoverMain, parseMode } from "../scripts/failover/neo-takeover.ts";
+import { SCHEDULER_LEASE_KEY } from "../scripts/lib/failover/scheduler-lease.ts";
 import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
+import { assessCodeFreshness } from "../scripts/lib/sync-code-freshness.ts";
 import { standbySkippedSync } from "../scripts/run-task.ts";
 
 const REPO = "C:\\Users\\editor\\Projects\\diaria-studio";
@@ -167,5 +169,143 @@ describe("parseMode", () => {
     assert.equal(parseMode(["--arm", "--forca"]).ok, false);
     const ok = parseMode(["--arm", "--force", "--dry-run"]);
     assert.ok(ok.ok && ok.mode === "arm" && ok.force && ok.dryRun);
+  });
+});
+
+describe("standbySkippedSync tem outcome próprio (#12982)", () => {
+  it("outcome 'skipped', nunca 'already_up_to_date' falso", () => {
+    assert.equal(standbySkippedSync().outcome, "skipped");
+  });
+});
+
+describe("F6: parar antes de remover", () => {
+  it("disarm e arm param as Running e esperam antes do Unregister", () => {
+    for (const script of [buildDisarmScript(), buildArmPlan({ tasks: SCHEDULED_TASKS, nodePath: NODE, repoRoot: REPO, localOffsetMin: -180 }).script]) {
+      const lines = script.split("\n");
+      const stop = lines.findIndex((l) => l.includes("Stop-ScheduledTask"));
+      const wait = lines.findIndex((l) => l.startsWith("while ("));
+      const unreg = lines.findIndex((l) => l.includes("Unregister-ScheduledTask"));
+      assert.ok(stop >= 0 && wait > stop && unreg > wait, script);
+    }
+  });
+
+  it("lease corrompido não é liberado pelo --disarm", () => {
+    assert.equal(planLeaseRelease({ kind: "invalid", error: "x" }).action, "keep");
+  });
+});
+
+describe("neo-takeover main — orquestração com runPowerShell/openKv fingidos", () => {
+  type Ps = { ok: boolean; stdout: string; stderr: string };
+  function harness(opts: { ps?: (script: string, n: number) => Ps; kv?: Record<string, string>; kvOk?: boolean; put?: (k: string, v: string, store: Map<string, string>) => Promise<void> } = {}) {
+    const store = new Map(Object.entries(opts.kv ?? {}));
+    const scripts: string[] = [];
+    const out: string[] = [];
+    const deleted: string[] = [];
+    const kv = {
+      get: async (k: string) => (store.has(k) ? store.get(k)! : null),
+      put: async (k: string, v: string) => (opts.put ? opts.put(k, v, store) : void store.set(k, v)),
+      delete: async (k: string) => {
+        deleted.push(k);
+        store.delete(k);
+      },
+    };
+    const deps = {
+      runPowerShell: (s: string) => {
+        scripts.push(s);
+        return opts.ps ? opts.ps(s, scripts.length) : { ok: true, stdout: "", stderr: "" };
+      },
+      openKv: () => (opts.kvOk === false ? ({ ok: false, reason: "sem token" } as const) : ({ ok: true, kv } as const)),
+      platform: "win32" as const,
+      root: REPO,
+      now: () => new Date("2026-11-13T12:00:00Z"),
+      lastKnownLease: () => null,
+      log: (m: string) => void out.push(m),
+      err: (m: string) => void out.push(m),
+    };
+    return { store, scripts, out, deleted, deps };
+  }
+
+  it("--arm --dry-run mostra o plano sem sinal e sem --force, avisando", async () => {
+    const h = harness();
+    assert.equal(await takeoverMain(["--arm", "--dry-run"], h.deps), 0);
+    assert.equal(h.scripts.length, 0);
+    assert.match(h.out.join("\n"), /exigiria --force/);
+  });
+
+  it("--arm sem sinal e sem --force recusa", async () => {
+    const h = harness();
+    assert.equal(await takeoverMain(["--arm"], h.deps), 1);
+    assert.equal(h.scripts.length, 0);
+  });
+
+  it("--arm --force: registra e grava o lease do Neo", async () => {
+    const h = harness();
+    assert.equal(await takeoverMain(["--arm", "--force"], h.deps), 0);
+    assert.equal(JSON.parse(h.store.get(SCHEDULER_LEASE_KEY)!).host, "neo");
+  });
+
+  it("F4: releitura mostra outro dono -> remove tarefas e NÃO apaga o lease alheio", async () => {
+    const h = harness({
+      put: async (k, _v, store) => void store.set(k, JSON.stringify({ host: "300", until: "2026-11-13T15:00:00Z" })),
+    });
+    assert.equal(await takeoverMain(["--arm", "--force"], h.deps), 1);
+    assert.equal(h.deleted.length, 0);
+    assert.match(h.scripts.at(-1)!, /Unregister-ScheduledTask/);
+  });
+
+  it("F4: releitura inconclusiva -> rollback apaga o lease", async () => {
+    const h = harness({ put: async () => {} });
+    assert.equal(await takeoverMain(["--arm", "--force"], h.deps), 1);
+    assert.deepEqual(h.deleted, [SCHEDULER_LEASE_KEY]);
+  });
+
+  it("F4: gravação do lease lança -> rollback apaga o lease (a escrita pode ter chegado)", async () => {
+    const h = harness({
+      put: async () => {
+        throw new Error("timeout");
+      },
+    });
+    assert.equal(await takeoverMain(["--arm", "--force"], h.deps), 1);
+    assert.deepEqual(h.deleted, [SCHEDULER_LEASE_KEY]);
+  });
+
+  it("F4: rollback do PowerShell que falha é logado", async () => {
+    const h = harness({
+      put: async () => {},
+      ps: (_s, n) => (n === 1 ? { ok: true, stdout: "", stderr: "" } : { ok: false, stdout: "", stderr: "acesso negado" }),
+    });
+    assert.equal(await takeoverMain(["--arm", "--force"], h.deps), 1);
+    assert.match(h.out.join("\n"), /remoção das tarefas FALHOU \(acesso negado\)/);
+  });
+
+  it("--disarm: não libera o lease se o Unregister falhou", async () => {
+    const h = harness({
+      kv: { [SCHEDULER_LEASE_KEY]: JSON.stringify({ host: "neo", until: "2026-11-13T15:00:00Z" }) },
+      ps: () => ({ ok: false, stdout: "", stderr: "ainda em execução" }),
+    });
+    assert.equal(await takeoverMain(["--disarm"], h.deps), 1);
+    assert.equal(h.deleted.length, 0);
+  });
+
+  it("--disarm: remove e libera o lease do Neo", async () => {
+    const h = harness({ kv: { [SCHEDULER_LEASE_KEY]: JSON.stringify({ host: "neo", until: "2026-11-13T15:00:00Z" }) } });
+    assert.equal(await takeoverMain(["--disarm"], h.deps), 0);
+    assert.deepEqual(h.deleted, [SCHEDULER_LEASE_KEY]);
+  });
+
+  it("F5: --disarm com KV inacessível sai 1 com o horário de expiração", async () => {
+    const h = harness({ kvOk: false });
+    const d = {
+      ...h.deps,
+      lastKnownLease: () => ({ kind: "ok" as const, lease: { host: "neo" as const, until: "2026-11-13T18:00:00Z" }, seenAt: "x" }),
+    };
+    assert.equal(await takeoverMain(["--disarm"], d), 1);
+    assert.match(h.out.join("\n"), /2026-11-13T18:00:00Z/);
+  });
+});
+
+describe("sync pulado no Neo conta como sucesso no runner e como não verificado na frescura", () => {
+  it("assessCodeFreshness(skipped) é unknown", () => {
+    assert.equal(assessCodeFreshness({ outcome: "skipped", commits_behind: 0, up_to_date: true }).status, "unknown");
   });
 });

@@ -47,6 +47,8 @@ const UNVERIFIED_OUTCOMES: ReadonlySet<GitSyncOutcome> = new Set<GitSyncOutcome>
   "sync_in_progress",
   "worktree_refused",
   "checkout_failed",
+  // #12982: sync pulado de propósito (run do Neo) — nada foi conferido.
+  "skipped",
   // #9988: com branch != master este outcome volta ANTES do fetch (e do
   // checkout) — `measureSyncState` mede o HEAD de OUTRA branch contra um
   // `origin/master` local velho, e uma branch à frente desse ref saía

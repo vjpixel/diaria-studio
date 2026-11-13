@@ -78,7 +78,11 @@ export function buildTriggerPs(schedule: ScheduledTaskSchedule): string {
     case "weekly":
       return `New-ScheduledTaskTrigger -Weekly -DaysOfWeek ${schedule.dayOfWeek} -At ${psQuote(hhmm(schedule.hour, schedule.minute))}`;
     case "interval":
-      // Alinhado à meia-noite local, como o `0/N:00` do systemd.
+      // Alinhado à meia-noite LOCAL do Neo, como o `0/N:00` do systemd (que é
+      // em horário de Brasília). Com hours=1 o resultado é o mesmo em qualquer
+      // fuso inteiro; com N>1 e o Neo fora de Brasília, as janelas ficam
+      // deslocadas pelo offset (nenhuma task critical usa N>1 hoje).
+      // Sem -RepetitionDuration: no Windows 10/11 a repetição é indefinida.
       return `New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) -RepetitionInterval (New-TimeSpan -Hours ${schedule.hours})`;
     case "monthly":
       throw new Error("schedule monthly não é suportado no failover do Neo (nenhuma task critical deveria ser mensal)");
@@ -143,7 +147,7 @@ export function buildArmPlan(input: ArmPlanInput): ArmPlan {
 
   const lines: string[] = [
     "$ErrorActionPreference = 'Stop'",
-    `Get-ScheduledTask -TaskName ${psQuote(FAILOVER_TASK_PREFIX + "*")} -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false`,
+    ...stopAndUnregisterLines(),
     // StartWhenAvailable: notebook acordando depois do horário ainda dispara
     // (os timers dos Shorts têm a própria janela de validade).
     // IgnoreNew: hourly que ainda está rodando não empilha outra instância.
@@ -159,11 +163,29 @@ export function buildArmPlan(input: ArmPlanInput): ArmPlan {
   return { entries, script: lines.join("\n"), warnings };
 }
 
-export function buildDisarmScript(): string {
+/** Segundos que o `--disarm`/`--arm` espera uma execução em curso parar. */
+export const STOP_WAIT_SECONDS = 60;
+
+/**
+ * Para as `Diaria-Failover-*` em execução (`Stop-ScheduledTask`), espera
+ * nenhuma ficar `Running` e só então remove. Sem isso, uma execução em curso
+ * seguiria publicando depois de o `--disarm` liberar o lease, com o `300` já
+ * agindo. Se alguma continuar `Running` após a espera, lança: o script sai
+ * ≠0 e o lease não é liberado.
+ */
+export function stopAndUnregisterLines(): string[] {
+  const sel = `Get-ScheduledTask -TaskName ${psQuote(FAILOVER_TASK_PREFIX + "*")} -ErrorAction SilentlyContinue`;
+  const running = `@(${sel} | Where-Object { $_.State -eq 'Running' })`;
   return [
-    "$ErrorActionPreference = 'Stop'",
-    `Get-ScheduledTask -TaskName ${psQuote(FAILOVER_TASK_PREFIX + "*")} -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false`,
-  ].join("\n");
+    `${running} | Stop-ScheduledTask`,
+    `$deadline = (Get-Date).AddSeconds(${STOP_WAIT_SECONDS})`,
+    `while (${running}.Count -gt 0) { if ((Get-Date) -gt $deadline) { throw 'Diaria-Failover-* ainda em execução após ${STOP_WAIT_SECONDS}s' }; Start-Sleep -Seconds 2 }`,
+    `${sel} | Unregister-ScheduledTask -Confirm:$false`,
+  ];
+}
+
+export function buildDisarmScript(): string {
+  return ["$ErrorActionPreference = 'Stop'", ...stopAndUnregisterLines()].join("\n");
 }
 
 export function buildStatusScript(): string {
@@ -215,7 +237,7 @@ export type LeaseRelease = { action: "delete"; reason: string } | { action: "kee
 /** `--disarm`: só libera o lease se ele for do Neo; nunca apaga o lease do 300. */
 export function planLeaseRelease(read: LeaseRead): LeaseRelease {
   if (read.kind === "absent") return { action: "keep", reason: "nenhum lease gravado" };
-  if (read.kind === "error") return { action: "keep", reason: `lease ilegível (${read.error}); conferir à mão` };
+  if (read.kind === "error" || read.kind === "invalid") return { action: "keep", reason: `lease ilegível (${read.error}); conferir à mão` };
   if (read.lease.host !== STANDBY_HOST) return { action: "keep", reason: `lease é do ${read.lease.host}, não do Neo` };
   return { action: "delete", reason: `lease do Neo (até ${read.lease.until}) liberado; o 300 retoma na próxima execução` };
 }

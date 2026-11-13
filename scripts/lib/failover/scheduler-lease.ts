@@ -22,22 +22,31 @@
  * Regras de posse (`decideLease`, pura):
  *   - Lease ATIVO de outro host: cede. É assim que o `300`, ao voltar, fica
  *     parado enquanto o Neo está armado, até o `--disarm` liberar o lease ou o
- *     lease do Neo expirar sem renovação.
- *   - Lease ativo próprio: age (e renova se passou da metade).
+ *     lease do Neo expirar sem renovação. O `300` de pé cedendo a um lease do
+ *     Neo que foi RENOVADO desde a execução anterior é anomalia (o Neo segue
+ *     armado com o `300` no ar): o gate sai ≠0 para o alarme de units `failed`.
+ *   - Lease ativo próprio: age (e renova se passou da metade). Falha na
+ *     RENOVAÇÃO é aviso, não bloqueio: a posse já estava confirmada.
  *   - Lease ausente ou expirado:
  *       - `300`: age e grava o lease para si (dono padrão; retoma lease
  *         expirado do Neo).
- *       - Neo: só age se o sinal de queda `infra:300:down-since` (#12981)
- *         estiver presente. Sem o sinal, quem dá posse ao Neo é o
+ *       - Neo: retoma o PRÓPRIO lease expirado (se o `300` tivesse voltado, já
+ *         o teria sobrescrito). Lease ausente ou expirado do `300`: só age com
+ *         o sinal de queda `infra:300:down-since` (#12981) presente; erro ao
+ *         ler o sinal é fail-closed. Sem o sinal, quem dá posse ao Neo é o
  *         `neo-takeover.ts --arm`, que grava o lease explicitamente.
+ *   - Lease corrompido (não parseia): o `300` sobrescreve com o próprio; o Neo
+ *     não age.
  *
  * ## Falha de leitura do KV: assimétrica de propósito
  *
  *   - `300` (dono padrão) → fail-OPEN: age. O regime normal não pode passar
  *     a depender do KV estar de pé; o KV fora do ar com o Neo desarmado (o
- *     caso comum, de longe) pararia a publicação do dia inteira. O custo é a
- *     janela "KV fora + Neo armado ao mesmo tempo", coberta pela segunda
- *     camada (idempotência por canal).
+ *     caso comum, de longe) pararia a publicação do dia inteira. Exceção: se o
+ *     último lease lido com sucesso NESTA máquina (`LeaseMemory`, arquivo
+ *     local fora do `data/` sincronizado) era do Neo, o `300` fica
+ *     fail-closed até voltar a ler o KV. É o caso "Neo armado e KV fora", em
+ *     que agir duplicaria o que o Neo publica.
  *   - Neo (contingência) → fail-CLOSED: não age sem lease confirmado. O Neo
  *     só existe para cobrir a queda; publicar "no escuro" é exatamente o
  *     cenário de duplicação que o lease existe para impedir.
@@ -49,9 +58,10 @@
  * `acquireSchedulerLease` relê e só age se o lease relido é o próprio
  * (read-back). Dois donos disputando o MESMO lease expirado no mesmo minuto
  * podem ainda, no pior caso, ler cada um a própria escrita em regiões
- * diferentes; a regra acima reduz isso a um caso estreito (só acontece com o
- * sinal de queda presente e o `300` de pé ao mesmo tempo, ou seja, sinal
- * defasado) e a idempotência por canal é a rede abaixo. Um lock com CAS de
+ * diferentes; a regra acima reduz isso a casos estreitos: o sinal de queda
+ * presente com o `300` de pé ao mesmo tempo (sinal defasado), ou um
+ * `--arm --force` rodado com o `300` de pé e o lease dele expirado no mesmo
+ * minuto. A idempotência por canal é a rede abaixo. Um lock com CAS de
  * verdade existe no repo (D1, `scripts/lib/d1-locks.ts`, #12842); trocar o
  * backend fica para quando ele estiver provisionado.
  *
@@ -61,20 +71,21 @@
 
 /** Hosts que disputam o lease. `300` é o dono padrão (regime normal). */
 export type FailoverHost = "300" | "neo";
-export const PRIMARY_HOST: FailoverHost = "300";
-export const STANDBY_HOST: FailoverHost = "neo";
+export const PRIMARY_HOST = "300" satisfies FailoverHost;
+export const STANDBY_HOST = "neo" satisfies FailoverHost;
 
 /** Chave do lease no KV `diaria-ops-state`. */
 export const SCHEDULER_LEASE_KEY = "infra:scheduler-owner";
-/** Sinal de queda do `300`, gravado pelo vigia da #12981 (Worker cron). */
+/** Sinal de queda do `300`. Será gravado pelo vigia da #12981 (Worker cron);
+ * até lá a chave fica ausente e o Neo só assume pelo `--arm`. */
 export const DOWN_SIGNAL_KEY = "infra:300:down-since";
 
 /**
  * TTL do lease. 6 h: as tasks `critical` de hora em hora (catchups dos
  * Shorts, Shorts-Cortes, Onboarding-Watch-Returning) renovam bem antes, e o
- * Neo aguenta uma suspensão curta sem perder a posse. O custo é o outro lado:
- * se o Neo morrer armado (sem `--disarm`), o `300` só retoma quando o lease
- * expirar, em até 6 h.
+ * Neo aguenta uma suspensão curta sem perder a posse (e, se perder, retoma o
+ * próprio lease expirado). O custo é o outro lado: se o Neo morrer armado
+ * (sem `--disarm`), o `300` só retoma quando o lease expirar, em até 6 h.
  */
 export const LEASE_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -92,11 +103,13 @@ export interface SchedulerLease {
 export type LeaseRead =
   | { kind: "absent" }
   | { kind: "ok"; lease: SchedulerLease }
-  /** Valor ilegível ou falha de rede/HTTP/config: não dá para saber o dono. */
+  /** O KV respondeu, mas o valor não é um lease (JSON inválido ou formato errado). */
+  | { kind: "invalid"; error: string }
+  /** Falha de rede/HTTP/config: não dá para saber o dono. */
   | { kind: "error"; error: string };
 
 function isHost(v: unknown): v is FailoverHost {
-  return v === "300" || v === "neo";
+  return v === PRIMARY_HOST || v === STANDBY_HOST;
 }
 
 /** Parse do valor cru do KV. `null` = chave inexistente. */
@@ -106,11 +119,11 @@ export function parseLease(raw: string | null): LeaseRead {
   try {
     json = JSON.parse(raw);
   } catch {
-    return { kind: "error", error: `lease ilegível (não é JSON): ${raw.slice(0, 120)}` };
+    return { kind: "invalid", error: `lease ilegível (não é JSON): ${raw.slice(0, 120)}` };
   }
   const o = json as Record<string, unknown> | null;
   if (!o || typeof o !== "object" || !isHost(o.host) || typeof o.until !== "string" || Number.isNaN(Date.parse(o.until))) {
-    return { kind: "error", error: `lease com formato inválido: ${raw.slice(0, 120)}` };
+    return { kind: "invalid", error: `lease com formato inválido: ${raw.slice(0, 120)}` };
   }
   const lease: SchedulerLease = { host: o.host, until: o.until };
   if (typeof o.writtenAt === "string") lease.writtenAt = o.writtenAt;
@@ -130,25 +143,48 @@ export function makeLease(host: FailoverHost, now: Date, by: string, ttlMs: numb
   return { host, until: new Date(now.getTime() + ttlMs).toISOString(), writtenAt: now.toISOString(), by };
 }
 
-/** `yield` = ceder é o comportamento correto (lease de outro host, ou Neo sem
- * sinal de queda); `fail-closed` = o Neo não conseguiu confirmar a posse
- * (falha de KV) e por isso não age; o gate trata como erro visível. */
-export type LeaseOutcome = "act" | "yield" | "fail-closed";
+/**
+ * Último lease lido COM SUCESSO nesta máquina (`absent` também é leitura bem
+ * sucedida). Guardado fora do `data/` sincronizado: é memória da máquina, não
+ * estado compartilhado. Ver `scripts/lib/failover/lease-memory.ts`.
+ */
+export type LastKnownLease = { kind: "absent"; seenAt: string } | { kind: "ok"; lease: SchedulerLease; seenAt: string };
 
-export interface LeaseDecision {
-  /** A task pode rodar nesta máquina agora. */
-  act: boolean;
-  outcome: LeaseOutcome;
-  /** Lease a gravar antes de agir (aquisição ou renovação); `null` = nada a gravar. */
-  write: SchedulerLease | null;
-  reason: string;
+export interface LeaseMemory {
+  load: () => LastKnownLease | null;
+  save: (value: LastKnownLease) => void;
 }
+
+/** Por que a task cedeu. */
+export type YieldCause =
+  /** Lease ativo da outra máquina. */
+  | "other-host-active"
+  /** Só no `300`: lease ativo do Neo que foi renovado desde a última leitura
+   * desta máquina, ou seja, o Neo segue armado com o `300` de pé. */
+  | "other-host-renewing"
+  /** Só no Neo: lease ausente ou do `300` expirado, sem sinal de queda. */
+  | "no-down-signal";
+
+export type LeaseDecision =
+  | {
+      outcome: "act";
+      /** Lease a gravar antes de agir (aquisição ou renovação); `null` = nada a gravar. */
+      write: SchedulerLease | null;
+      /** A escrita é a renovação de um lease próprio ainda ativo (falha não bloqueia). */
+      renewal: boolean;
+      reason: string;
+    }
+  | { outcome: "yield"; cause: YieldCause; holder: SchedulerLease | null; reason: string }
+  /** O host não conseguiu confirmar a posse; o gate trata como erro visível. */
+  | { outcome: "fail-closed"; reason: string };
 
 export interface DecideLeaseInput {
   self: FailoverHost;
   read: LeaseRead;
-  /** O sinal `infra:300:down-since` existe (leitura bem-sucedida e não vazia). */
-  downSignal: boolean;
+  /** Leitura de `infra:300:down-since`. Só o Neo consulta; `undefined` = não lida. */
+  downSignal?: DownSignalRead;
+  /** Último lease lido com sucesso nesta máquina (só o `300` usa, no fail-open). */
+  lastKnown?: LastKnownLease | null;
   now: Date;
   /** Rótulo de quem pede (nome da task), gravado em `by`. */
   by: string;
@@ -162,35 +198,63 @@ export function decideLease(input: DecideLeaseInput): LeaseDecision {
   const fresh = () => makeLease(self, now, by, ttlMs);
 
   if (read.kind === "error") {
+    if (self !== PRIMARY_HOST) {
+      return { outcome: "fail-closed", reason: `fail-closed no ${self}: lease não lido (${read.error}); o Neo não age sem lease confirmado` };
+    }
+    const last = input.lastKnown;
+    if (last?.kind === "ok" && last.lease.host === STANDBY_HOST) {
+      return {
+        outcome: "fail-closed",
+        reason:
+          `fail-closed no 300: lease não lido (${read.error}) e o último lease lido nesta máquina ` +
+          `(em ${last.seenAt}) era do Neo até ${last.lease.until}; o 300 só volta a agir quando ler o KV`,
+      };
+    }
+    return { outcome: "act", write: null, renewal: false, reason: `fail-open no 300: lease não lido (${read.error}); o 300 é o dono padrão` };
+  }
+
+  if (read.kind === "invalid") {
     return self === PRIMARY_HOST
-      ? { act: true, outcome: "act", write: null, reason: `fail-open no ${self}: lease ilegível (${read.error}); o 300 é o dono padrão` }
-      : { act: false, outcome: "fail-closed", write: null, reason: `fail-closed no ${self}: lease ilegível (${read.error}); o Neo não age sem lease confirmado` };
+      ? { outcome: "act", write: fresh(), renewal: false, reason: `${read.error}; o 300 (dono padrão) sobrescreve com o próprio lease` }
+      : { outcome: "fail-closed", reason: `fail-closed no ${self}: ${read.error}; o Neo não age sem lease confirmado` };
   }
 
   if (read.kind === "ok" && isLeaseActive(read.lease, now)) {
     const lease = read.lease;
     if (lease.host !== self) {
-      return { act: false, outcome: "yield", write: null, reason: `lease ativo do ${lease.host} até ${lease.until}; ${self} cede` };
+      return { outcome: "yield", cause: "other-host-active", holder: lease, reason: `lease ativo do ${lease.host} até ${lease.until}; ${self} cede` };
     }
     const remaining = Date.parse(lease.until) - now.getTime();
     if (remaining < ttlMs / 2) {
-      return { act: true, outcome: "act", write: fresh(), reason: `lease próprio do ${self} renovado (faltavam ${Math.round(remaining / 60000)} min)` };
+      return { outcome: "act", write: fresh(), renewal: true, reason: `lease próprio do ${self} renovado (faltavam ${Math.round(remaining / 60000)} min)` };
     }
-    return { act: true, outcome: "act", write: null, reason: `lease próprio do ${self} ativo até ${lease.until}` };
+    return { outcome: "act", write: null, renewal: false, reason: `lease próprio do ${self} ativo até ${lease.until}` };
   }
 
   // Ausente ou expirado.
   const what = read.kind === "absent" ? "lease ausente" : `lease do ${read.lease.host} expirado em ${read.lease.until}`;
   if (self === PRIMARY_HOST) {
-    return { act: true, outcome: "act", write: fresh(), reason: `${what}; o 300 (dono padrão) assume` };
+    return { outcome: "act", write: fresh(), renewal: false, reason: `${what}; o 300 (dono padrão) assume` };
   }
-  if (downSignal) {
-    return { act: true, outcome: "act", write: fresh(), reason: `${what} e sinal de queda do 300 presente; o Neo assume` };
+  if (read.kind === "ok" && read.lease.host === self) {
+    return {
+      outcome: "act",
+      write: fresh(),
+      renewal: false,
+      reason: `${what}; o Neo retoma o próprio lease (o 300, se tivesse voltado, já o teria sobrescrito)`,
+    };
+  }
+  if (!downSignal || downSignal.kind === "error") {
+    const why = downSignal ? `sinal de queda ilegível (${downSignal.error})` : "sinal de queda não consultado";
+    return { outcome: "fail-closed", reason: `${what} e ${why}; fail-closed no Neo` };
+  }
+  if (downSignal.kind === "present") {
+    return { outcome: "act", write: fresh(), renewal: false, reason: `${what} e sinal de queda do 300 presente (desde ${downSignal.since}); o Neo assume` };
   }
   return {
-    act: false,
     outcome: "yield",
-    write: null,
+    cause: "no-down-signal",
+    holder: null,
     reason: `${what} e sem sinal de queda do 300; o Neo só assume pelo neo-takeover --arm`,
   };
 }
@@ -228,12 +292,32 @@ export interface AcquireOptions {
   by: string;
   now?: () => Date;
   ttlMs?: number;
+  /** Memória local do último lease lido (F3/F2). Sem ela, o `300` é fail-open puro. */
+  memory?: LeaseMemory;
 }
 
-export interface AcquireResult {
-  act: boolean;
-  outcome: LeaseOutcome;
-  reason: string;
+export type AcquireResult =
+  | { outcome: "act"; reason: string; /** Algo deu errado sem tirar a posse (renovação falhou, fail-open). */ warning: boolean }
+  | { outcome: "yield"; cause: YieldCause; holder: SchedulerLease | null; reason: string }
+  | { outcome: "fail-closed"; reason: string };
+
+function remember(memory: LeaseMemory | undefined, read: LeaseRead, now: Date): void {
+  if (!memory) return;
+  try {
+    if (read.kind === "absent") memory.save({ kind: "absent", seenAt: now.toISOString() });
+    else if (read.kind === "ok") memory.save({ kind: "ok", lease: read.lease, seenAt: now.toISOString() });
+  } catch {
+    // Memória é rede de segurança; falha ao gravar não muda a decisão.
+  }
+}
+
+function recall(memory: LeaseMemory | undefined): LastKnownLease | null {
+  if (!memory) return null;
+  try {
+    return memory.load();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -242,39 +326,75 @@ export interface AcquireResult {
  */
 export async function acquireSchedulerLease(kv: LeaseKv, opts: AcquireOptions): Promise<AcquireResult> {
   const now = (opts.now ?? (() => new Date()))();
+  const lastKnown = recall(opts.memory);
   const read = await readLease(kv);
+  remember(opts.memory, read, now);
+
   // O sinal de queda só importa para o Neo; o 300 não gasta a leitura.
-  let downSignal = false;
-  if (opts.self === STANDBY_HOST && read.kind !== "error") {
-    const sig = await readDownSignal(kv);
-    downSignal = sig.kind === "present";
+  let downSignal: DownSignalRead | undefined;
+  if (opts.self === STANDBY_HOST && (read.kind === "ok" || read.kind === "absent")) {
+    downSignal = await readDownSignal(kv);
   }
-  const decision = decideLease({ self: opts.self, read, downSignal, now, by: opts.by, ttlMs: opts.ttlMs });
-  if (!decision.act || !decision.write) return { act: decision.act, outcome: decision.outcome, reason: decision.reason };
+  const decision = decideLease({ self: opts.self, read, downSignal, lastKnown, now, by: opts.by, ttlMs: opts.ttlMs });
+
+  if (decision.outcome === "yield") {
+    const holder = decision.holder;
+    if (
+      opts.self === PRIMARY_HOST &&
+      decision.cause === "other-host-active" &&
+      holder?.host === STANDBY_HOST &&
+      lastKnown?.kind === "ok" &&
+      lastKnown.lease.host === STANDBY_HOST &&
+      lastKnown.lease.until !== holder.until
+    ) {
+      return {
+        outcome: "yield",
+        cause: "other-host-renewing",
+        holder,
+        reason:
+          `${decision.reason}. O lease do Neo foi renovado desde a leitura anterior (${lastKnown.lease.until} -> ${holder.until}) ` +
+          `com o 300 de pé: 300 de pé cedendo para o Neo: rode \`npx tsx scripts/failover/neo-takeover.ts --disarm\` no Neo`,
+      };
+    }
+    return decision;
+  }
+  if (decision.outcome === "fail-closed") return decision;
+  if (!decision.write) return { outcome: "act", reason: decision.reason, warning: read.kind === "error" };
+
+  const write = decision.write;
+  const failed = (why: string): AcquireResult => {
+    if (decision.renewal) {
+      return { outcome: "act", reason: `${decision.reason}; AVISO: renovação falhou (${why}), age com a posse já confirmada`, warning: true };
+    }
+    return opts.self === PRIMARY_HOST
+      ? { outcome: "act", reason: `${decision.reason}; ${why}, fail-open no 300`, warning: true }
+      : { outcome: "fail-closed", reason: `${decision.reason}; ${why}, fail-closed no Neo` };
+  };
 
   try {
-    await kv.put(SCHEDULER_LEASE_KEY, serializeLease(decision.write));
+    await kv.put(SCHEDULER_LEASE_KEY, serializeLease(write));
   } catch (e) {
-    const msg = (e as Error).message;
-    return opts.self === PRIMARY_HOST
-      ? { act: true, outcome: "act", reason: `${decision.reason}; gravação do lease falhou (${msg}), fail-open no 300` }
-      : { act: false, outcome: "fail-closed", reason: `${decision.reason}; gravação do lease falhou (${msg}), fail-closed no Neo` };
+    return failed(`gravação do lease falhou (${(e as Error).message})`);
   }
 
   // Read-back: sem CAS no KV, só age quem relê o próprio lease.
   const back = await readLease(kv);
-  if (back.kind === "ok" && back.lease.host === opts.self && back.lease.until === decision.write.until) {
-    return { act: true, outcome: "act", reason: decision.reason };
+  remember(opts.memory, back, now);
+  if (back.kind === "ok" && back.lease.host === opts.self && back.lease.until === write.until) {
+    return { outcome: "act", reason: decision.reason, warning: false };
   }
   if (back.kind === "ok" && back.lease.host !== opts.self && isLeaseActive(back.lease, now)) {
-    return { act: false, outcome: "yield", reason: `${decision.reason}; mas a releitura mostra lease do ${back.lease.host} (outra máquina gravou por cima); ${opts.self} cede` };
+    return {
+      outcome: "yield",
+      cause: "other-host-active",
+      holder: back.lease,
+      reason: `${decision.reason}; mas a releitura mostra lease do ${back.lease.host} (outra máquina gravou por cima); ${opts.self} cede`,
+    };
   }
   if (back.kind === "ok" && back.lease.host === opts.self) {
     // Mesmo host, `until` diferente: outra task desta máquina renovou junto. Posse confirmada.
-    return { act: true, outcome: "act", reason: `${decision.reason} (releitura com renovação concorrente da mesma máquina)` };
+    return { outcome: "act", reason: `${decision.reason} (releitura com renovação concorrente da mesma máquina)`, warning: false };
   }
-  const why = back.kind === "error" ? back.error : "lease sumiu depois da gravação";
-  return opts.self === PRIMARY_HOST
-    ? { act: true, outcome: "act", reason: `${decision.reason}; releitura inconclusiva (${why}), fail-open no 300` }
-    : { act: false, outcome: "fail-closed", reason: `${decision.reason}; releitura inconclusiva (${why}), fail-closed no Neo` };
+  const why = back.kind === "error" || back.kind === "invalid" ? back.error : back.kind === "absent" ? "lease sumiu depois da gravação" : `lease do ${back.lease.host} expirado`;
+  return failed(`releitura inconclusiva (${why})`);
 }
