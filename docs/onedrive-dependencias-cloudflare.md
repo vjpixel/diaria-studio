@@ -598,6 +598,7 @@ Task fora do systemd: `diaria-short-video-relacionado` (Neo, `5 6 * * 1-5`,
 | Diaria-Codex-Credential-Alarm | daily 10:50 | armada | `scripts/codex-credential-alarm.ts` | `codex-credential-alarm/.alarm.log` |  | G10 |
 | Diaria-Doppler-Token-Expiry-Alarm | daily 11:00 | armada | `scripts/doppler-token-expiry-alarm.ts` | `doppler-token-expiry-alarm/.alarm.log` |  | G10 |
 | Diaria-LinkedIn-Personal | daily 07:46 | armada | `scripts/linkedin-personal-token-alarm.ts` | `linkedin-personal/.task.log` |  | G10 |
+| Diaria-Neo-Readiness-Alarm | daily 11:42 | declarada | `scripts/neo-readiness-alarm.ts` | `failover/.neo-readiness-alarm.log` |  | G10 |
 | Diaria-LinkedIn-Personal-Catchup | interval 1h | desarmada | `scripts/publish-linkedin-personal.ts` | `linkedin-personal/.catchup.log` |  | G10 |
 | Diaria-Shorts-LinkedIn-Profile | daily 06:31 | armada | `scripts/shorts-linkedin-profile-timer.ts` | `shorts/.linkedin-profile-timer.log` |  | G4, G10 |
 | Diaria-Shorts-LinkedIn-Profile-Catchup | interval 1h | armada | `scripts/shorts-linkedin-profile-timer.ts` | `shorts/.linkedin-profile-timer-catchup.log` |  | G4, G10 |

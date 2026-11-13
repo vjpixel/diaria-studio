@@ -69,13 +69,13 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator \
 
 ### Passo 0b — Prontidão do Neo para a contingência do 300 (#12983)
 
-Logo depois do sync, rodar (fora do Neo o script só imprime que pulou):
+Logo depois do sync, rodar com `timeout` de 90000 ms na chamada do Bash (fora do Neo o script só imprime que pulou; no Neo a coleta tem prazo global de 30 s, spawn de 12 s e fetch de 8 s, e o que sobra sai "não verificado"):
 
 ```bash
 npx tsx scripts/failover/neo-readiness.ts --if-neo --record
 ```
 
-No Neo, confere se cada task `critical` do registro rodaria lá numa queda do `300` (scripts, segredos no `.env` e no Doppler, `data/`, Node e `node_modules`, `gh`, checkout em master, tokens do LinkedIn e do Threads) e grava o resultado no KV, de onde o `300` alarma se o check tiver mais de 7 dias ou estiver vermelho (`Diaria-Neo-Readiness-Alarm`). Repassar ao editor a linha de resumo que ele imprime. **Fail-soft:** sai sempre 0 e nunca bloqueia a edição, mesmo com falta ou KV fora; o detalhe por task sai rodando o script sem flags (`docs/failover-neo.md`, § Prontidão).
+No Neo, confere se cada task `critical` do registro rodaria lá numa queda do `300` (scripts, segredos no `.env` e no Doppler, `data/` recebendo o sync do `300`, Node e `node_modules`, `gh`, checkout em master, tokens do LinkedIn e do Threads) e grava o resultado no KV, de onde o `300` alarma se o check tiver mais de 7 dias, estiver vermelho ou repetir o mesmo item não verificado (`Diaria-Neo-Readiness-Alarm`). Repassar ao editor a linha de resumo que ele imprime. **Fail-soft:** sai sempre 0 e nunca bloqueia a edição, mesmo com falta ou KV fora; o detalhe por task sai rodando o script sem flags (`docs/failover-neo.md`, § Prontidão).
 
 ## Passo 1 — Confirmar janela de publicação aceita
 

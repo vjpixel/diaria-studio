@@ -9,12 +9,22 @@
  * `pronto` / `falta X`. Uma task fica pronta quando:
  *   - os scripts dos passos existem no checkout;
  *   - o arquivo do `guard` (quando a task tem) existe em `data/`;
- *   - os segredos que ela usa estão presentes no ambiente local (`.env` +
- *     ambiente) e, quando o Doppler respondeu, também no vault;
- *   - os tokens das redes que ela usa responderam válidos (ou não puderam ser
- *     verificados, o que vira aviso e não falta);
+ *   - os segredos que ela usa estão no `.env` do checkout. Só o `.env` conta:
+ *     as tarefas do Neo recebem o `.env` e nada do ambiente da sessão (no Task
+ *     Scheduler não há `EnvironmentFile`, e a sessão do app injeta variáveis
+ *     que a task nunca vê). Regra do Doppler, quando ele respondeu: presente
+ *     só no Doppler = falta (`.env` atrasado, `npm run sync-env`); presente só
+ *     no `.env` = ok com aviso (o vault não tem; o próximo `sync-env` aborta
+ *     por chave só-local, #5155). Presente só no ambiente da sessão = falta;
+ *   - os tokens das redes que ela usa responderam válidos;
  *   - as checagens comuns a todas (Node, `node_modules`, `gh`, checkout,
  *     `data/`, credenciais do KV do lease) passaram.
+ *
+ * `unverified` só sai por DESENHO (sem helper de leitura, `--offline`,
+ * Doppler fora, sync de `data/` sem sinal, prazo do Passo 0 estourado) e não
+ * impede `pronto`. Falha do PRÓPRIO coletor (checagem esperada que não veio,
+ * script sem mapa de segredos, exceção numa checagem) é `fail`: o check não
+ * pode dizer pronto sobre o que não conseguiu olhar.
  *
  * Nunca guarda nem devolve VALOR de segredo: os resultados carregam só nomes
  * de variáveis e estados.
@@ -23,14 +33,17 @@
  * (`--record`), que o alarme do `300` lê (`neo-readiness-alarm.ts`).
  */
 
-import type { ScheduledTaskDefinition } from "../scheduled-tasks.ts";
+import { resolveFailoverTier, type ScheduledTaskDefinition } from "../scheduled-tasks.ts";
 
 /** Chave do registro no KV `diaria-ops-state` (mesmo namespace do lease). */
 export const NEO_READINESS_KV_KEY = "infra:neo-readiness";
 export const NEO_READINESS_SCHEMA = 1;
 
-/** `data/` sem nenhuma escrita há mais que isto: o Drive provavelmente parou. */
+/** Log de task do `300` sem escrita há mais que isto: sync de `data/` parado (ou o `300` fora). */
 export const DATA_FRESHNESS_MAX_MS = 72 * 60 * 60 * 1000;
+
+/** `checkedAt` adiante do relógio do leitor além disto: registro inválido. */
+export const CHECKED_AT_FUTURE_TOLERANCE_MS = 10 * 60 * 1000;
 
 export type CheckStatus = "ok" | "fail" | "unverified";
 
@@ -45,6 +58,20 @@ export interface CheckResult {
 export type TokenId = "threads" | "linkedin" | "instagram";
 
 /**
+ * Ids de checagem: fonte única para o coletor (`scripts/failover/neo-readiness.ts`),
+ * `taskCheckIds` e o alarme. Id montado à mão em outro lugar quebra o
+ * cruzamento em silêncio (a checagem vira "não checado").
+ */
+export const CHECK_ID = {
+  script: (script: string) => `script:${script}`,
+  /** Pelo nome preferido (o primeiro da lista de alternativos). */
+  secret: (names: readonly string[]) => `secret:${names[0]}`,
+  token: (t: TokenId) => `token:${t}`,
+  guard: (requiredFile: string) => `guard:${requiredFile}`,
+  unmapped: (script: string) => `secrets:sem-mapa:${script}`,
+} as const;
+
+/**
  * Segredos e tokens que cada script de task `critical` usa. Não há no repo um
  * mapa de variáveis por script; este foi derivado à mão do que cada script (e
  * as libs que ele chama para o canal) lê, em 13/11/2026. A varredura
@@ -54,7 +81,7 @@ export type TokenId = "threads" | "linkedin" | "instagram";
  * Cada item de `secrets` é uma lista de nomes alternativos (o primeiro é o
  * preferido): basta um deles presente.
  *
- * Script novo numa task `critical` sem entrada aqui sai como `unverified`
+ * Script novo numa task `critical` sem entrada aqui sai como falta
  * (`secrets:sem-mapa`), nunca como pronto calado; o teste trava que toda task
  * `critical` atual tem entrada.
  */
@@ -120,24 +147,31 @@ export const LEASE_SECRETS: readonly (readonly string[])[] = [["CLOUDFLARE_ACCOU
 
 // ── Checagens individuais (puras) ─────────────────────────────────────────
 
+const present = (env: Record<string, string | undefined>, n: string) => (env[n] ?? "").trim() !== "";
+
 /**
- * Presença de um segredo (com nomes alternativos). `dopplerNames = null`:
- * Doppler não consultado, decide só pelo local. Presente só no Doppler = falta
- * (o `.env` do Neo atrasou: `npm run sync-env`). Presente só no local = ok, com
- * aviso no detalhe (o vault não tem; o próximo `sync-env` aborta por chave
- * só-local, #5155).
+ * Presença de um segredo (com nomes alternativos), decidida pelo `.env`
+ * (`dotenv`): é só ele que as tasks do Neo recebem. `sessionEnv` serve só ao
+ * aviso de "presente só no ambiente da sessão". `dopplerNames = null`: Doppler
+ * não consultado (CLI ausente, sem login, erro), decide só pelo `.env`.
  */
-export function evaluateSecret(names: readonly string[], localEnv: Record<string, string | undefined>, dopplerNames: ReadonlySet<string> | null): CheckResult {
-  const id = `secret:${names[0]}`;
+export function evaluateSecret(
+  names: readonly string[],
+  dotenv: Record<string, string | undefined>,
+  sessionEnv: Record<string, string | undefined>,
+  dopplerNames: ReadonlySet<string> | null,
+): CheckResult {
+  const id = CHECK_ID.secret(names);
   const label = names.length > 1 ? `${names[0]} (ou ${names.slice(1).join(", ")})` : names[0];
-  const local = names.find((n) => (localEnv[n] ?? "").trim() !== "");
+  const inDotenv = names.find((n) => present(dotenv, n));
   const inVault = dopplerNames ? names.find((n) => dopplerNames.has(n)) : undefined;
-  if (local) {
+  if (inDotenv) {
     if (dopplerNames && !inVault) return { id, status: "ok", detail: `${label}: no .env, mas ausente do Doppler` };
     return { id, status: "ok", detail: `${label}: presente` };
   }
-  if (inVault) return { id, status: "fail", detail: `${label}: só no Doppler, .env atrasado (npm run sync-env)` };
-  return { id, status: "fail", detail: `${label}: ausente${dopplerNames ? " (nem no Doppler)" : ""}` };
+  const onlySession = names.some((n) => present(sessionEnv, n)) ? "; existe só no ambiente da sessão, que as tasks não recebem" : "";
+  if (inVault) return { id, status: "fail", detail: `${label}: só no Doppler, .env atrasado (npm run sync-env)${onlySession}` };
+  return { id, status: "fail", detail: `${label}: ausente do .env${dopplerNames ? " (e do Doppler)" : ""}${onlySession}` };
 }
 
 /** Versão do Node contra o `.nvmrc` (major) e o mínimo do projeto. */
@@ -162,6 +196,8 @@ interface LockEntry {
  * `node_modules` contra o `package-lock.json`: compara as versões do lockfile
  * com o lockfile oculto que o npm grava ao instalar (`node_modules/.package-lock.json`).
  * Pacote `optional` ausente não conta (dependência de outra plataforma).
+ * `hidden`: `null` = arquivo ausente; objeto sem `packages` (inclusive o que o
+ * coletor passa quando o JSON está corrompido) = ilegível, falta.
  */
 export function evaluateNodeModules(lock: unknown, hidden: unknown | null): CheckResult {
   const lockPkgs = (lock as { packages?: Record<string, LockEntry> } | null)?.packages;
@@ -211,21 +247,38 @@ export function evaluateGit(s: GitState): CheckResult {
   return { id: "git", status: "ok", detail: `master em dia com o origin/master (último fetch)${dirty}` };
 }
 
+/**
+ * Logs que SÓ o `300` escreve em `data/`: os das tasks `failover: "skip"`
+ * habilitadas (nunca rodam no Neo, #5074). Chegam ao Neo só pelo sync do
+ * Drive, então o mtime deles mede o sync, ao contrário do mtime de `data/`
+ * inteiro (que a própria sessão do Neo atualiza, ex.: `run-log.jsonl` no
+ * Passo 0). Paths relativos a `data/`, POSIX.
+ */
+export function syncSignalLogPaths(tasks: readonly Pick<ScheduledTaskDefinition, "failover" | "enabled" | "logPath">[]): string[] {
+  return [...new Set(tasks.filter((t) => resolveFailoverTier(t) === "skip" && t.enabled !== false).map((t) => t.logPath))].sort();
+}
+
 export interface DataDirState {
   accessible: boolean;
   error?: string;
-  /** mtime mais recente da varredura rasa de `data/`; `null` = nada lido. */
-  newestMtimeMs: number | null;
+  /** mtime mais recente entre os logs de `syncSignalLogPaths`; `null` = nenhum achado. */
+  syncSignalMtimeMs: number | null;
 }
 
-/** `data/` acessível e com escrita recente (o Drive está sincronizando). */
+/**
+ * `data/` acessível (falta, se não) e recebendo o que o `300` grava. Sem sinal
+ * de sync, ou com o sinal velho, sai `unverified`: com o `300` fora do ar o
+ * sinal envelhece por definição, e isso não pode virar falta em todas as
+ * tasks justo quando o Neo precisa assumir. O alarme do `300` pega o sinal
+ * velho persistente (achado de `unverified` repetido).
+ */
 export function evaluateDataDir(s: DataDirState, now: Date, maxAgeMs: number = DATA_FRESHNESS_MAX_MS): CheckResult {
   if (!s.accessible) return { id: "data", status: "fail", detail: `data/ inacessível${s.error ? ` (${s.error})` : ""}: Drive montado?` };
-  if (s.newestMtimeMs === null) return { id: "data", status: "fail", detail: "data/ vazio ou ilegível" };
-  const ageMs = now.getTime() - s.newestMtimeMs;
+  if (s.syncSignalMtimeMs === null) return { id: "data", status: "unverified", detail: "data/ acessível; nenhum log de task do 300 achado para medir o sync" };
+  const ageMs = now.getTime() - s.syncSignalMtimeMs;
   const ageH = Math.round(ageMs / 3_600_000);
-  if (ageMs > maxAgeMs) return { id: "data", status: "fail", detail: `data/ sem escrita há ${ageH} h: Drive parado?` };
-  return { id: "data", status: "ok", detail: `data/ acessível, última escrita há ${ageH} h` };
+  if (ageMs > maxAgeMs) return { id: "data", status: "unverified", detail: `data/ acessível, mas sem log novo do 300 há ${ageH} h: Drive do Neo parado ou o 300 fora do ar` };
+  return { id: "data", status: "ok", detail: `data/ acessível, log do 300 sincronizado há ${ageH} h` };
 }
 
 /** `gh auth status`: só o exit code; a saída (que cita o token mascarado) nunca é repassada. */
@@ -239,7 +292,7 @@ export function evaluateGhAuth(exitCode: number | null, spawnError?: string): Ch
 export type TokenProbe = { state: "valid" } | { state: "invalid"; reason: string } | { state: "unknown"; reason: string } | { state: "no-helper"; reason: string } | { state: "skipped"; reason: string };
 
 export function evaluateToken(token: TokenId, probe: TokenProbe): CheckResult {
-  const id = `token:${token}`;
+  const id = CHECK_ID.token(token);
   switch (probe.state) {
     case "valid":
       return { id, status: "ok", detail: `token ${token} válido` };
@@ -265,6 +318,8 @@ export interface TaskReadiness {
   ready: boolean;
   /** O que falta (detalhes das checagens `fail`). */
   missing: string[];
+  /** Ids das checagens `fail`, na mesma ordem de `missing`. */
+  missingIds: string[];
   /** O que não deu para verificar (não impede `ready`). */
   unverified: string[];
 }
@@ -279,61 +334,66 @@ export interface ReadinessReport {
   tasks: TaskReadiness[];
   /** Checagens comuns e por recurso, com estado e detalhe (sem valores). */
   checks: CheckResult[];
+  /** Ids das checagens que valem para toda task (o alarme lista as falhas delas uma vez só). */
+  commonIds: string[];
 }
 
 export interface AggregateInput {
   tasks: readonly Pick<ScheduledTaskDefinition, "name" | "steps" | "guard" | "enabled">[];
   /** Checagens que valem para toda task (node, node_modules, gh, git, data, segredos do lease). */
   common: readonly CheckResult[];
-  /** Checagem por id (`script:...`, `guard:...`, `secret:...`, `token:...`). */
+  /** Checagem por id (`CHECK_ID`). */
   byId: ReadonlyMap<string, CheckResult>;
   now: Date;
   machineId: string;
 }
 
-/** Ids das checagens específicas de uma task. */
+/** Ids das checagens específicas de uma task (`CHECK_ID`). */
 export function taskCheckIds(task: Pick<ScheduledTaskDefinition, "steps" | "guard">): string[] {
   const ids: string[] = [];
   const add = (id: string) => {
     if (!ids.includes(id)) ids.push(id);
   };
   for (const step of task.steps) {
-    add(`script:${step.script}`);
+    add(CHECK_ID.script(step.script));
     const req = CRITICAL_SCRIPT_REQUIREMENTS[step.script];
     if (!req) {
-      add(`secrets:sem-mapa:${step.script}`);
+      add(CHECK_ID.unmapped(step.script));
       continue;
     }
-    for (const names of req.secrets) add(`secret:${names[0]}`);
-    for (const t of req.tokens) add(`token:${t}`);
+    for (const names of req.secrets) add(CHECK_ID.secret(names));
+    for (const t of req.tokens) add(CHECK_ID.token(t));
   }
-  if (task.guard) add(`guard:${task.guard.requiredFile}`);
+  if (task.guard) add(CHECK_ID.guard(task.guard.requiredFile));
   return ids;
 }
 
+const UNMAPPED_PREFIX = CHECK_ID.unmapped("");
+
 /**
  * Junta tudo numa linha por task. Checagem esperada que não veio em `byId`
- * (o coletor não rodou, ou caiu) entra como não verificada, nunca como ok.
+ * (o coletor não rodou, ou caiu) e script sem mapa de segredos são falta:
+ * falha do coletor nunca deixa a task pronta calada.
  * Task `enabled: false` sai pronta sem checagem (não roda nem no `300`).
  */
 export function aggregateReadiness(input: AggregateInput): ReadinessReport {
   const tasks: TaskReadiness[] = [];
   for (const task of input.tasks) {
     if (task.enabled === false) {
-      tasks.push({ name: task.name, ready: true, missing: [], unverified: ["task desabilitada no registro"] });
+      tasks.push({ name: task.name, ready: true, missing: [], missingIds: [], unverified: ["task desabilitada no registro"] });
       continue;
     }
     const results: CheckResult[] = [...input.common];
     for (const id of taskCheckIds(task)) {
-      if (id.startsWith("secrets:sem-mapa:")) {
-        results.push({ id, status: "unverified", detail: `segredos de ${id.slice("secrets:sem-mapa:".length)} sem mapa em CRITICAL_SCRIPT_REQUIREMENTS` });
+      if (id.startsWith(UNMAPPED_PREFIX)) {
+        results.push({ id, status: "fail", detail: `segredos de ${id.slice(UNMAPPED_PREFIX.length)} sem mapa em CRITICAL_SCRIPT_REQUIREMENTS` });
         continue;
       }
-      results.push(input.byId.get(id) ?? { id, status: "unverified", detail: `${id}: não checado` });
+      results.push(input.byId.get(id) ?? { id, status: "fail", detail: `${id}: não checado (falha do coletor)` });
     }
-    const missing = results.filter((r) => r.status === "fail").map((r) => r.detail);
+    const failed = results.filter((r) => r.status === "fail");
     const unverified = results.filter((r) => r.status === "unverified").map((r) => r.detail);
-    tasks.push({ name: task.name, ready: missing.length === 0, missing, unverified });
+    tasks.push({ name: task.name, ready: failed.length === 0, missing: failed.map((r) => r.detail), missingIds: failed.map((r) => r.id), unverified });
   }
   const seen = new Set<string>();
   const checks: CheckResult[] = [];
@@ -349,6 +409,7 @@ export function aggregateReadiness(input: AggregateInput): ReadinessReport {
     ok: tasks.every((t) => t.ready),
     tasks,
     checks,
+    commonIds: input.common.map((c) => c.id),
   };
 }
 
@@ -383,13 +444,20 @@ export function serializeReadinessRecord(report: ReadinessReport): string {
 export type ReadinessRecordRead =
   | { kind: "absent" }
   | { kind: "ok"; report: ReadinessReport }
-  /** O KV respondeu, mas o valor não é um registro (JSON inválido ou formato errado). */
+  /** O KV respondeu, mas o valor não é um registro (JSON inválido, formato errado, data no futuro). */
   | { kind: "invalid"; error: string }
   /** Falha de rede/HTTP/config: não dá para saber. */
   | { kind: "error"; error: string };
 
-/** Parse do valor cru do KV. `null` = chave inexistente. */
-export function parseReadinessRecord(raw: string | null): ReadinessRecordRead {
+const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v is string => typeof v === "string") : []);
+
+/**
+ * Parse do valor cru do KV. `null` = chave inexistente. `ready`/`ok` são
+ * recalculados a partir de `missing`: um registro que diga `ok: true` com
+ * falta listada não passa por verde. `checkedAt` mais de 10 min adiante de
+ * `now` é inválido (um relógio errado no Neo não pode adiar o alarme de idade).
+ */
+export function parseReadinessRecord(raw: string | null, now: Date = new Date()): ReadinessRecordRead {
   if (raw === null) return { kind: "absent" };
   let json: unknown;
   try {
@@ -401,23 +469,36 @@ export function parseReadinessRecord(raw: string | null): ReadinessRecordRead {
   if (!o || typeof o !== "object" || typeof o.checkedAt !== "string" || Number.isNaN(Date.parse(o.checkedAt)) || typeof o.ok !== "boolean" || !Array.isArray(o.tasks)) {
     return { kind: "invalid", error: "registro com formato inválido" };
   }
+  if (Date.parse(o.checkedAt) - now.getTime() > CHECKED_AT_FUTURE_TOLERANCE_MS) {
+    return { kind: "invalid", error: `checkedAt no futuro (${o.checkedAt})` };
+  }
   const tasks: TaskReadiness[] = o.tasks
     .filter((t): t is TaskReadiness => !!t && typeof (t as TaskReadiness).name === "string")
-    .map((t) => ({
-      name: t.name,
-      ready: t.ready === true,
-      missing: Array.isArray(t.missing) ? t.missing.filter((x) => typeof x === "string") : [],
-      unverified: Array.isArray(t.unverified) ? t.unverified.filter((x) => typeof x === "string") : [],
-    }));
+    .map((t) => {
+      const missing = strings(t.missing);
+      const ids = strings(t.missingIds);
+      return {
+        name: t.name,
+        ready: missing.length === 0,
+        missing,
+        // Registro sem ids (ou com contagem divergente): o detalhe serve de id.
+        missingIds: ids.length === missing.length ? ids : missing,
+        unverified: strings(t.unverified),
+      };
+    });
+  const checks = Array.isArray(o.checks)
+    ? (o.checks as unknown[]).filter((c): c is CheckResult => !!c && typeof (c as CheckResult).id === "string" && ["ok", "fail", "unverified"].includes((c as CheckResult).status) && typeof (c as CheckResult).detail === "string")
+    : [];
   return {
     kind: "ok",
     report: {
       schema: typeof o.schema === "number" ? o.schema : NEO_READINESS_SCHEMA,
       checkedAt: o.checkedAt,
       machineId: typeof o.machineId === "string" ? o.machineId : "",
-      ok: o.ok,
+      ok: tasks.every((t) => t.ready),
       tasks,
-      checks: Array.isArray(o.checks) ? (o.checks as CheckResult[]) : [],
+      checks,
+      commonIds: strings(o.commonIds),
     },
   };
 }

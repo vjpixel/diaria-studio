@@ -60,7 +60,8 @@ O resto fica parado:
 
 `scripts/failover/neo-readiness.ts` diz, para cada task `critical`, se ela
 rodaria no Neo agora: uma linha `pronto` / `falta X`. Sem `--record` não
-escreve nada.
+escreve nada. `--record` só grava rodando no Neo (fora dele sai 2, salvo
+`--force`): o alarme lê o registro como o estado do Neo.
 
 ```
 npx tsx scripts/failover/neo-readiness.ts            # tabela; exit 1 se falta algo
@@ -68,17 +69,25 @@ npx tsx scripts/failover/neo-readiness.ts --json     # relatório completo
 npx tsx scripts/failover/neo-readiness.ts --record   # também grava no KV
 ```
 
-O que confere (cada checagem isolada; a que falha não derruba as outras):
+O que confere (cada checagem isolada; a que falha não derruba as outras, e a
+que lança vira falta, nunca "não verificado"):
 
 - os scripts dos passos existem e o arquivo do `guard` da task existe em `data/`;
-- os segredos de cada script estão no `.env` (ou ambiente) e no Doppler. Só
-  presença: o Doppler é consultado com `--only-names`, nenhum valor é lido do
-  vault nem impresso. Presente só no Doppler conta como falta (`.env`
-  atrasado: `npm run sync-env`). A lista por script fica em
+- os segredos de cada script estão no `.env` do checkout. Só o `.env` conta:
+  é o que as tarefas do Neo recebem (o ambiente da sessão, onde o app injeta
+  variáveis como `GOOGLE_*`, não chega a elas); presente só no ambiente é
+  falta, com aviso. Contra o Doppler, só presença: ele é consultado com
+  `--only-names`, nenhum valor é lido do vault nem impresso. Presente só no
+  Doppler é falta (`.env` atrasado: `npm run sync-env`); presente só no `.env`
+  é ok, com aviso (o próximo `sync-env` aborta por chave só-local, #5155). A lista por script fica em
   `CRITICAL_SCRIPT_REQUIREMENTS` (`scripts/lib/failover/neo-readiness.ts`),
   feita à mão a partir do que cada script lê, mais as credenciais do KV do
   lease para todas;
-- `data/` acessível e com escrita nas últimas 72 h (Drive sincronizando);
+- `data/` acessível (senão, falta) e recebendo o sync: mtime dos logs das
+  tasks `failover: "skip"`, que só o `300` escreve. O mtime de `data/`
+  inteiro não serve, porque a própria sessão do Neo escreve ali (o
+  `run-log.jsonl` do Passo 0). Sem log achado, ou sem log novo há 72 h, sai
+  "não verificado": com o `300` fora o sinal envelhece por definição;
 - Node contra o `.nvmrc` e `node_modules` contra o `package-lock.json`;
 - `gh auth status`;
 - checkout principal em `master` e não atrás do `origin/master` (do último
@@ -86,19 +95,28 @@ O que confere (cada checagem isolada; a que falha não derruba as outras):
 - tokens em modo leitura: LinkedIn pessoal (`GET /v2/userinfo`) e Threads
   pessoal (lista os posts da última hora). O Instagram sai "não verificado":
   não há helper de leitura exportado para ele, e o check não inventa chamada.
-  "Não verificado" não impede `pronto`.
+  "Não verificado" só sai por desenho (sem helper, `--offline`, Doppler
+  fora, `data/` sem sinal de sync, prazo do Passo 0) e não impede `pronto`.
+  Falha do próprio coletor (checagem esperada que não veio, script sem mapa
+  de segredos, exceção) é falta.
 
 **Quando roda:** no Passo 0 de `/diaria-edicao`, se a sessão é no Neo
 (hostname, `isNeoMachine`), com `--if-neo --record`: grava no KV
 `diaria-ops-state`, chave `infra:neo-readiness`, imprime uma linha de resumo e
-sai sempre 0. Sem task no Windows: nenhuma 2ª exceção ao #5074. Rode também à
+sai sempre 0. Nesse modo os tetos são curtos (spawn 12 s, fetch 8 s) e há um
+prazo global de 30 s: as checagens que sobrarem saem "não verificado"
+("pulada por prazo"). Sem task no Windows: nenhuma 2ª exceção ao #5074. Rode também à
 mão antes do `--arm`.
 
 **Alarme:** `Diaria-Neo-Readiness-Alarm` (diária, 11:42, no `300`,
-`scripts/neo-readiness-alarm.ts`) lê a chave e abre issue se o último check
-tiver mais de 7 dias, nunca tiver sido gravado ou estiver vermelho (P2, família
-`estado`: fecha sozinha no próximo check verde e recente). KV ilegível sai 1
-sem abrir nem fechar nada.
+`scripts/neo-readiness-alarm.ts`) lê a chave e abre issue (P2, família
+`estado`: fecha sozinha quando a condição some) se o último check tiver mais
+de 7 dias, nunca tiver sido gravado, não vier do Neo, estiver vermelho (falhas
+comuns listadas uma vez; comenta só quando muda o conjunto de task + checagem
+em falta) ou trouxer o mesmo item "não verificado" em 4 checks seguidos
+(Doppler deslogado, Instagram sem helper, `data/` sem sync). Falha ao ler o KV
+sai 1 sem mexer em nada; registro corrompido conta como ausente e abre a
+issue.
 
 ## 1. Confirmar a queda
 
