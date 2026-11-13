@@ -78,7 +78,10 @@
  *   0 — sucesso
  *   1 — args inválidos
  *   2 — env CLARICE_API_KEY ausente
- *   3 — HTTP non-2xx da API Clarice (todas as tentativas esgotadas)
+ *   3 — falha da chamada REST à Clarice depois das tentativas: HTTP non-2xx,
+ *       timeout do cliente, rede ou certificado TLS recusado (4xx falha sem
+ *       retry). Imprime `{"failure": {kind, code?, status?, message}}` como
+ *       última linha JSON do stdout (#12693).
  *   4 — I/O (read --in ou write --out/--corrected-out)
  *   5 — guard de staleness do --corrected-out (#5755): o arquivo escrito
  *       tem mtime ANTERIOR ao início desta chamada — sinal de que o write
@@ -89,7 +92,8 @@
  *       estourou antes de a Clarice responder. Nada é gravado em --out nem em
  *       --corrected-out. O Stage 2 não para: grava `02-reviewed.md` sem a
  *       Clarice via `scripts/clarice-pending.ts skip` e deixa a revisão como
- *       passo retomável (`clarice-pending.ts resume`).
+ *       passo retomável (`clarice-pending.ts resume`). Também imprime
+ *       `{"failure": {kind: "deadline", message}}` no stdout (#12693).
  */
 
 import "dotenv/config";
@@ -605,8 +609,8 @@ async function runChunked<Extra>(
  * há checkpoint por chunk (custo de re-enviar 2-3 chunks é baixo).
  *
  * **Exceção controlada a esse fail-clean (#5082):** se `paragraphFallback.enabled`
- * (default `true`) e o chunk falhar por um motivo NÃO-fatal (não 4xx — ver
- * `isFatalHttpError`), a falha aciona o fallback por-parágrafo (`correctChunkViaParagraphs`)
+ * (default `true`) e o chunk falhar por um motivo NÃO-fatal (não 4xx nem certificado
+ * TLS recusado — ver `isFatalClariceError`, #12693), a falha aciona o fallback por-parágrafo (`correctChunkViaParagraphs`)
  * antes de desistir do chunk. Só se o fallback também recuperar zero parágrafos
  * substantivos é que o erro original propaga (fail-clean preservado nesse caso-limite).
  * Ver JSDoc de `correctChunkViaParagraphs` pra por que essa exceção é segura.
@@ -674,7 +678,8 @@ export async function correctTextChunked(
  * o chunk cai em `correctChunkViaParagraphs` ANTES de propagar o erro — subdivide em
  * parágrafos, 1 request isolado por parágrafo substantivo, SEM retry, timeout mais curto
  * (`paragraphFallback.timeoutMs`, default `PARAGRAPH_FALLBACK_TIMEOUT_MS`). Erros fatais
- * (4xx — auth/bad request) NÃO acionam o fallback (`isFatalHttpError`): repetiriam o
+ * (4xx — auth/bad request — e certificado TLS recusado, #12693) NÃO acionam o fallback
+ * (`isFatalClariceError`; o TLS recusado ainda ganha o retry do chunk): repetiriam o
  * mesmo erro em cada parágrafo sem chance de recuperação, então propagam direto. Se o
  * fallback recuperar ao menos 1 parágrafo substantivo, o chunk é considerado "resgatado"
  * (parte ou toda a correção aplicada) — só falha 100% dos parágrafos substantivos é que

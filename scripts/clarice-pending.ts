@@ -24,7 +24,8 @@
  *   0 — sucesso (skip gravado; clear feito; resume concluído ou nada pendente; status lido)
  *   1 — args inválidos
  *   2-6 — resume: exit do clarice-correct.ts, repassado (2 sem CLARICE_API_KEY,
- *         3 HTTP/timeout/rede/TLS, 4 I/O, 5 staleness, 6 clarice_unavailable; o motivo
+ *         3 HTTP/timeout/rede/TLS recusado depois das tentativas, 4 I/O, 5 staleness,
+ *         6 clarice_unavailable; o motivo sai do `{"failure"}` do stdout do filho e
  *         vai em `reason` no JSON e em `last_reason` no marcador, #12693). Também 3/6
  *         quando a última tentativa falhou por API (3 ou 6) há menos de 20 min
  *         (`recently-attempted`, mesmo exit da tentativa; `--retry-now` tenta

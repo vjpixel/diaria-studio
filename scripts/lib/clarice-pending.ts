@@ -29,7 +29,8 @@
  * Diferenças do resume em relação ao fluxo normal do Stage 2, tratadas aqui
  * (reviews das PRs #12291 e #12440). Na dúvida, o marcador fica (fail-closed);
  * o `reason` original nunca é sobrescrito, o desfecho de cada tentativa vai
- * em `last_outcome`:
+ * em `last_outcome` e o porquê legível dela em `last_reason` (#12693, lido do
+ * `{"failure"}` do clarice-correct.ts e levado ao gate pelos Stages 4 e 5):
  * - Correção parcial não conta: o resume chama a Clarice sem o fallback por
  *   parágrafo e exige o resumo do filho com `suggestions_count` numérico e
  *   `chunks_used_paragraph_fallback`/`paragraphs_failed` presentes e zerados.
@@ -552,7 +553,15 @@ export function resumeClarice(
     return partial(`sugestões do resume ilegíveis (${(e as Error).message})`);
   }
   if (!existsSync(corrected)) return partial("texto corrigido ausente");
-  if (!existsSync(reviewed) || sha256(reviewed) !== hashBefore) return { status: "reviewed-changed" };
+  // #12693 — os três desfechos abaixo falaram com a Clarice: gravar a tentativa,
+  // senão o gate segue mostrando o `last_reason` de uma falha de API anterior.
+  if (!existsSync(reviewed) || sha256(reviewed) !== hashBefore) {
+    recordAttempt(
+      "reviewed-changed",
+      `a Clarice respondeu, mas o ${REVIEWED_REL} mudou durante a chamada; nada aplicado`,
+    );
+    return { status: "reviewed-changed" };
+  }
 
   const preText = readFileSync(preResume, "utf8");
   let finalText = readFileSync(corrected, "utf8");
@@ -577,7 +586,13 @@ export function resumeClarice(
   }
 
   const restored = restoreReveal(preText, finalText);
-  if (restored === null) return { status: "reveal-changed" };
+  if (restored === null) {
+    recordAttempt(
+      "reveal-changed",
+      "a Clarice respondeu, mas mexeu no reveal da edição anterior a ponto de não dar para restaurá-lo; nada aplicado",
+    );
+    return { status: "reveal-changed" };
+  }
   finalText = restored;
 
   const wrongValue = declared.value;
@@ -586,6 +601,10 @@ export function resumeClarice(
     if (before === 0) {
       warn(`o erro intencional declarado ("${wrongValue}") não aparece no ${REVIEWED_REL}: nada a proteger`);
     } else if (!opts.acceptIntentionalErrorChange && countOccurrences(finalText, wrongValue) < before) {
+      recordAttempt(
+        "intentional-error-corrected",
+        `a Clarice respondeu, mas corrigiu o erro intencional declarado ("${wrongValue}"); nada aplicado`,
+      );
       return { status: "intentional-error-corrected", wrongValue };
     }
   }

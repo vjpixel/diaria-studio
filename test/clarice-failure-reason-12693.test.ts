@@ -9,8 +9,8 @@
  * SELF_SIGNED_CERT_IN_CHAIN na janela de reconexão do Wi-Fi.
  *
  * Cobre: o timeout do cliente vira `ClariceTimeoutError` com a duração; o
- * `fetch failed` ganha o código de `cause`; certificado TLS recusado não é
- * repetido; o `clarice-correct.ts` imprime `{"failure": ...}` e loga
+ * `fetch failed` ganha o código de `cause`; certificado TLS recusado segue
+ * retentável no retry mas não aciona o fallback por parágrafo; o `clarice-correct.ts` imprime `{"failure": ...}` e loga
  * `clarice_rest_failed`; o resume grava `last_reason` e os invariantes dos
  * Stages 4 e 5 levam o motivo ao gate.
  */
@@ -31,7 +31,10 @@ import {
   main,
   withClariceRetry,
   ClariceHttpError,
+  correctTextChunked,
+  withClariceRetryChunked,
 } from "../scripts/clarice-correct.ts";
+import { causeCode } from "../scripts/lib/clarice-correct-engine.ts";
 import {
   failureReasonFromRun,
   lastResumeAttemptNote,
@@ -92,7 +95,7 @@ describe("#12693 — motivo da falha no REST da Clarice", () => {
     assert.deepEqual(attempts, ["retryable_failure", "retryable_failure", "retryable_failure"]);
   });
 
-  it("SELF_SIGNED_CERT_IN_CHAIN: código na mensagem, kind tls, e sem retry", async () => {
+  it("SELF_SIGNED_CERT_IN_CHAIN: código na mensagem, kind tls, e retentável no retry (3 tentativas)", async () => {
     const calls = { n: 0 };
     const attempts: Array<{ outcome: string; errorMessage?: string }> = [];
     await assert.rejects(
@@ -118,9 +121,105 @@ describe("#12693 — motivo da falha no REST da Clarice", () => {
         return true;
       },
     );
-    assert.equal(calls.n, 1, "cert recusado não é repetido");
-    assert.equal(attempts[0].outcome, "fatal_failure");
+    // A janela de reconexão da rede pode fechar dentro do backoff: o retry tenta.
+    assert.equal(calls.n, 3, "cert recusado ganha as 3 tentativas do retry");
+    assert.deepEqual(attempts.map((a) => a.outcome), ["retryable_failure", "retryable_failure", "retryable_failure"]);
     assert.match(attempts[0].errorMessage ?? "", /SELF_SIGNED_CERT_IN_CHAIN/);
+  });
+
+  const threeParagraphs = [
+    "A primeira frase do parágrafo de teste tem palavras suficientes para contar como substantiva.",
+    "A segunda frase do parágrafo de teste também tem palavras suficientes para contar como substantiva.",
+    "A terceira frase do parágrafo de teste tem ainda mais palavras suficientes para contar como substantiva.",
+  ].join("\n\n");
+
+  it("TLS recusado NÃO aciona o fallback por parágrafo (correctTextChunked e withClariceRetryChunked)", async () => {
+    // 3 parágrafos substantivos num chunk só: com o fallback, seriam +3 chamadas.
+    const calls = { n: 0 };
+    await assert.rejects(
+      correctTextChunked(
+        {
+          apiKey: "k",
+          text: threeParagraphs,
+          fetchImpl: failingFetch("SELF_SIGNED_CERT_IN_CHAIN", "self signed certificate in certificate chain", calls),
+          timeoutMs: 1_000,
+        },
+        100_000,
+        1,
+        { enabled: true, timeoutMs: 1_000 },
+      ),
+      (e: unknown) => e instanceof ClariceNetworkError && e.tls,
+    );
+    assert.equal(calls.n, 1, "só a chamada do chunk, nenhuma por parágrafo");
+
+    const callsRetry = { n: 0 };
+    await assert.rejects(
+      withClariceRetryChunked(
+        {
+          apiKey: "k",
+          text: threeParagraphs,
+          fetchImpl: failingFetch("SELF_SIGNED_CERT_IN_CHAIN", "self signed certificate in certificate chain", callsRetry),
+        },
+        { maxAttempts: 3, timeoutMs: 1_000, baseBackoffMs: 0 },
+        async () => {},
+        100_000,
+        1,
+        { enabled: true, timeoutMs: 1_000 },
+      ),
+      (e: unknown) => e instanceof ClariceNetworkError && e.tls,
+    );
+    assert.equal(callsRetry.n, 3, "só as 3 tentativas do retry do chunk, nenhuma por parágrafo");
+  });
+
+  it("controle: falha de rede NÃO-TLS aciona o fallback por parágrafo (o teste acima discrimina)", async () => {
+    const calls = { n: 0 };
+    await assert.rejects(
+      correctTextChunked(
+        { apiKey: "k", text: threeParagraphs, fetchImpl: failingFetch("ECONNRESET", "socket hang up", calls), timeoutMs: 1_000 },
+        100_000,
+        1,
+        { enabled: true, timeoutMs: 1_000 },
+      ),
+    );
+    assert.ok(calls.n > 1, `fallback por parágrafo rodou (${calls.n} chamadas)`);
+  });
+
+  it("fetch failed sem .code: embrulha com a mensagem de cause (2 níveis) e percorre AggregateError", async () => {
+    const nested: typeof fetch = async () => {
+      throw new TypeError("fetch failed", {
+        cause: new Error("nível 1", { cause: new Error("other side closed") }),
+      });
+    };
+    await assert.rejects(
+      correctTextViaREST({ apiKey: "k", text: "abc", fetchImpl: nested, timeoutMs: 1_000 }),
+      (e: unknown) => {
+        assert.ok(e instanceof ClariceNetworkError);
+        assert.equal((e as ClariceNetworkError).code, undefined);
+        assert.match((e as Error).message, /falha de rede chamando a Clarice: other side closed/);
+        assert.equal(classifyClariceError(e).kind, "network");
+        return true;
+      },
+    );
+
+    const aggregate: typeof fetch = async () => {
+      throw new TypeError("fetch failed", {
+        cause: new AggregateError(
+          [Object.assign(new Error("connect ECONNREFUSED 10.0.0.1:443"), { code: "ECONNREFUSED" })],
+          "",
+        ),
+      });
+    };
+    await assert.rejects(
+      correctTextViaREST({ apiKey: "k", text: "abc", fetchImpl: aggregate, timeoutMs: 1_000 }),
+      (e: unknown) => {
+        assert.ok(e instanceof ClariceNetworkError);
+        assert.equal((e as ClariceNetworkError).code, "ECONNREFUSED");
+        assert.match((e as Error).message, /\(ECONNREFUSED\): connect ECONNREFUSED/);
+        return true;
+      },
+    );
+
+    assert.deepEqual(causeCode(new Error("sem cause")), {});
   });
 
   it("ENOTFOUND: kind network, retentável", async () => {
@@ -175,7 +274,7 @@ describe("#12693 — motivo da falha no REST da Clarice", () => {
     try {
       await main().catch((e: { __mockExit?: boolean }) => { if (!e.__mockExit) throw e; });
       assert.equal(code, 3);
-      assert.equal(calls.n, 1);
+      assert.equal(calls.n, 3, "TLS recusado ganha as 3 tentativas do --retry");
       const failure = JSON.parse(stdout[stdout.length - 1]) as { failure: { kind: string; code: string } };
       assert.equal(failure.failure.kind, "tls");
       assert.equal(failure.failure.code, "SELF_SIGNED_CERT_IN_CHAIN");
@@ -256,6 +355,49 @@ describe("#12693 — resume registra POR QUE a Clarice não rodou", () => {
       assert.match(readClaricePending(dir)?.last_reason ?? "", /SIGTERM/);
       resumeClarice(dir, () => ({ exitCode: 0, stdout: "" }));
       assert.match(readClaricePending(dir)?.last_reason ?? "", /correção parcial/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("desfecho que falou com a Clarice substitui o motivo velho no gate (intentional-error-corrected)", () => {
+    const dir = makeEditionDir();
+    try {
+      skipClarice(dir, "clarice_unavailable", { edition: "261111" });
+      const old = "a Clarice não respondeu em 60s (timeout do cliente, payload 3830 bytes)";
+      const t0 = new Date("2026-11-10T01:17:15Z");
+      resumeClarice(dir, () => ({ exitCode: 6, stdout: `${failureSummaryLine({ kind: "deadline", message: old })}\n` }), {
+        now: () => t0,
+      });
+      assert.equal(readClaricePending(dir)?.last_reason, old);
+
+      writeFileSync(join(dir, "02-reviewed.md"), "A Anthropik lançou um modelo.\n");
+      writeFileSync(
+        join(dir, "_internal", "intentional-error.json"),
+        JSON.stringify({ wrong_value: "Anthropik", correct_value: "Anthropic" }),
+      );
+      const t1 = new Date("2026-11-10T02:00:00Z");
+      const fix = (args: string[]): { exitCode: number; stdout: string } => {
+        writeFileSync(args[args.indexOf("--corrected-out") + 1], "A Anthropic lançou um modelo.\n");
+        writeFileSync(args[args.indexOf("--out") + 1], "[]");
+        const input = readFileSync(args[args.indexOf("--in") + 1], "utf8");
+        writeFileSync(
+          args[args.indexOf("--chunks-out") + 1],
+          JSON.stringify([{ startOffset: 0, length: input.length, suggestions: [] }]),
+        );
+        const summary = { suggestions_count: 0, chunks: 1, chunks_used_paragraph_fallback: 0, paragraphs_failed: 0 };
+        return { exitCode: 0, stdout: `${JSON.stringify(summary)}\n` };
+      };
+      const out = resumeClarice(dir, fix, { retryNow: true, now: () => t1 });
+      assert.deepEqual(out, { status: "intentional-error-corrected", wrongValue: "Anthropik" });
+
+      const marker = readClaricePending(dir);
+      assert.equal(marker?.reason, "clarice_unavailable", "motivo original preservado");
+      assert.equal(marker?.last_outcome, "intentional-error-corrected");
+      assert.match(marker?.last_reason ?? "", /corrigiu o erro intencional/);
+      const gate = checkClaricePending(dir)[0].message;
+      assert.ok(gate.includes("2026-11-10T02:00:00.000Z, intentional-error-corrected"), gate);
+      assert.ok(!gate.includes(old), `motivo velho não pode aparecer no gate: ${gate}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
