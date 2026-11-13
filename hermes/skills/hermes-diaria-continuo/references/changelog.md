@@ -13,6 +13,18 @@ corrente no frontmatter (`version:`) e o comportamento ATUAL/operacional;
 este arquivo é o "porquê" de cada mudança — para quem investiga uma decisão
 passada, não para quem está rodando um tick.
 
+- 0.5.21 (13/11/2026): #12950 — a frase do 0.5.20 virou instrução
+  incondicional: toda PR do contínuo nascia draft + `bloqueio-execucao`, e a
+  #12920, sem bloqueio nenhum no corpo, ficou retida esperando liberação. O
+  prompt do implementador agora manda abrir a PR pronta para review e só usar
+  draft (com a label) quando houver bloqueio de execução real descrito no
+  corpo. No mesmo PR, o gate de merge relê `mergeable=UNKNOWN` antes de
+  escalar e a fila de escaladas manda conflito/CI vermelho ao fixer sem
+  esperar 24h/48h. Para caber no teto de tamanho (#6712), o achado do #6917
+  no §3 foi encurtado; o texto integral era: "um tick com 36 issues
+  `track=overnight` elegíveis na fila terminou sem reivindicar nenhuma,
+  justificando com 'conforme a regra de prioridade da fila' — essa regra
+  nunca existiu neste arquivo."
 - 0.5.20 (08/11/2026): #12460 — o prompt do implementador manda abrir a PR
   draft já com `--label bloqueio-execucao` (mesmo contrato do resgate,
   #7484). A PR #12351 nasceu draft "por bloqueio de execução" sem a label e
