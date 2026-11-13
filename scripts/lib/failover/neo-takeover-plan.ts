@@ -163,23 +163,51 @@ export function buildArmPlan(input: ArmPlanInput): ArmPlan {
   return { entries, script: lines.join("\n"), warnings };
 }
 
-/** Segundos que o `--disarm`/`--arm` espera uma execução em curso parar. */
+/**
+ * Segundos que o `--disarm`/`--arm` espera uma execução em curso TERMINAR
+ * sozinha, depois de desabilitar as tarefas (#12993). Maior que um passo de
+ * publicação típico (upload de vídeo incluso), bem menor que o
+ * `ExecutionTimeLimit` de 2 h.
+ */
+export const DRAIN_WAIT_SECONDS = 600;
+/** Segundos que se espera o `Stop-ScheduledTask` (último recurso) fazer efeito. */
 export const STOP_WAIT_SECONDS = 60;
+/** Teto do processo PowerShell que roda o script de remoção: as duas esperas e folga. */
+export const POWERSHELL_TIMEOUT_MS = (DRAIN_WAIT_SECONDS + STOP_WAIT_SECONDS + 120) * 1000;
 
 /**
- * Para as `Diaria-Failover-*` em execução (`Stop-ScheduledTask`), espera
- * nenhuma ficar `Running` e só então remove. Sem isso, uma execução em curso
- * seguiria publicando depois de o `--disarm` liberar o lease, com o `300` já
- * agindo. Se alguma continuar `Running` após a espera, lança: o script sai
- * ≠0 e o lease não é liberado.
+ * Remove as `Diaria-Failover-*` sem cortar um passo de publicação no meio
+ * (#12993). Ordem:
+ *   1. `Disable-ScheduledTask` em todas: nenhuma execução NOVA começa;
+ *   2. espera a execução em curso terminar sozinha, até `DRAIN_WAIT_SECONDS`;
+ *   3. só se alguma ainda estiver `Running`: `Stop-ScheduledTask`, como
+ *      último recurso, com AVISO em stderr. O Task Scheduler nem sempre mata a
+ *      árvore do processo (o passo roda num filho do `spawnSync`): o filho
+ *      pode sobreviver e publicar depois de o lease ser liberado, ou morrer
+ *      entre o upload e o registro no store e o `300` republicar. O aviso
+ *      manda conferir o canal antes de o `300` retomar;
+ *   4. se alguma continuar `Running` depois do `Stop`, lança: o script sai
+ *      ≠0 e o lease não é liberado;
+ *   5. remove as tarefas.
  */
 export function stopAndUnregisterLines(): string[] {
   const sel = `Get-ScheduledTask -TaskName ${psQuote(FAILOVER_TASK_PREFIX + "*")} -ErrorAction SilentlyContinue`;
   const running = `@(${sel} | Where-Object { $_.State -eq 'Running' })`;
+  const warn =
+    `AVISO #12993: Diaria-Failover-* ainda em execução após ${DRAIN_WAIT_SECONDS}s; usando Stop-ScheduledTask como último recurso. ` +
+    `O passo interrompido pode ter publicado sem registrar no store (o 300 republicaria) ou seguir vivo como processo filho: ` +
+    `confira o canal da task antes de o 300 retomar.`;
   return [
-    `${running} | Stop-ScheduledTask`,
-    `$deadline = (Get-Date).AddSeconds(${STOP_WAIT_SECONDS})`,
-    `while (${running}.Count -gt 0) { if ((Get-Date) -gt $deadline) { throw 'Diaria-Failover-* ainda em execução após ${STOP_WAIT_SECONDS}s' }; Start-Sleep -Seconds 2 }`,
+    `@(${sel}) | Disable-ScheduledTask | Out-Null`,
+    `$drain = (Get-Date).AddSeconds(${DRAIN_WAIT_SECONDS})`,
+    `while (${running}.Count -gt 0 -and (Get-Date) -le $drain) { Start-Sleep -Seconds 5 }`,
+    `$still = ${running}`,
+    `if ($still.Count -gt 0) {`,
+    `  [Console]::Error.WriteLine(${psQuote(warn)})`,
+    `  $still | Stop-ScheduledTask`,
+    `  $deadline = (Get-Date).AddSeconds(${STOP_WAIT_SECONDS})`,
+    `  while (${running}.Count -gt 0) { if ((Get-Date) -gt $deadline) { throw 'Diaria-Failover-* ainda em execução após Stop-ScheduledTask (${STOP_WAIT_SECONDS}s)' }; Start-Sleep -Seconds 2 }`,
+    `}`,
     `${sel} | Unregister-ScheduledTask -Confirm:$false`,
   ];
 }

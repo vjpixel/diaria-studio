@@ -30,8 +30,17 @@
  *   - Lease ausente ou expirado:
  *       - `300`: age e grava o lease para si (dono padrão; retoma lease
  *         expirado do Neo).
- *       - Neo: retoma o PRÓPRIO lease expirado (se o `300` tivesse voltado, já
- *         o teria sobrescrito). Lease ausente ou expirado do `300`: só age com
+ *       - Neo: retoma o PRÓPRIO lease expirado, mas só depois de ESPERAR
+ *         (`RECLAIM_SETTLE_MS` + recuo aleatório) e reler o lease (#12993).
+ *         O caso que a espera fecha: o notebook ficou suspenso mais que o
+ *         TTL, o lease do Neo expirou e o `300` voltou. As tasks de hora em
+ *         hora dos dois disparam no mesmo minuto; sem a espera, cada um
+ *         gravaria e releria a PRÓPRIA escrita dentro da janela de
+ *         consistência do KV (~60 s) e os dois publicariam. Com a espera, o
+ *         `300` (dono padrão, que não espera) grava primeiro e o Neo, ao
+ *         reler, vê o lease ativo do `300` e cede. Lease que mudou de
+ *         qualquer outro jeito durante a espera: o Neo não age nesta run.
+ *         Lease ausente ou expirado do `300`: só age com
  *         o sinal de queda `infra:300:down-since` (#12981) presente; erro ao
  *         ler o sinal é fail-closed. Sem o sinal, quem dá posse ao Neo é o
  *         `neo-takeover.ts --arm`, que grava o lease explicitamente.
@@ -59,9 +68,11 @@
  * (read-back). Dois donos disputando o MESMO lease expirado no mesmo minuto
  * podem ainda, no pior caso, ler cada um a própria escrita em regiões
  * diferentes; a regra acima reduz isso a casos estreitos: o sinal de queda
- * presente com o `300` de pé ao mesmo tempo (sinal defasado), ou um
+ * presente com o `300` de pé ao mesmo tempo (sinal defasado), um
  * `--arm --force` rodado com o `300` de pé e o lease dele expirado no mesmo
- * minuto. A idempotência por canal é a rede abaixo. Um lock com CAS de
+ * minuto, ou a retomada do lease expirado do Neo com a run do `300` atrasada
+ * mais que a espera de retomada (`RECLAIM_SETTLE_MS`, #12993). A
+ * idempotência por canal é a rede abaixo. Um lock com CAS de
  * verdade existe no repo (D1, `scripts/lib/d1-locks.ts`, #12842); trocar o
  * backend fica para quando ele estiver provisionado.
  *
@@ -88,6 +99,18 @@ export const DOWN_SIGNAL_KEY = "infra:300:down-since";
  * (sem `--disarm`), o `300` só retoma quando o lease expirar, em até 6 h.
  */
 export const LEASE_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Espera mínima do Neo antes de retomar o PRÓPRIO lease expirado (#12993):
+ * maior que a janela de consistência do KV (~60 s), para que a escrita do
+ * `300` (que age sem esperar) já seja visível na releitura.
+ */
+export const RECLAIM_SETTLE_MS = 75_000;
+/** Recuo aleatório somado à espera (0 a este valor), para o Neo não reler no mesmo instante de outra escrita. */
+export const RECLAIM_JITTER_MS = 30_000;
+
+/** Rótulo `by` que o `neo-takeover.ts --arm` grava: lease de armação, nunca renovação. */
+export const ARM_LEASE_BY = "neo-takeover --arm";
 
 export interface SchedulerLease {
   host: FailoverHost;
@@ -172,6 +195,11 @@ export type LeaseDecision =
       write: SchedulerLease | null;
       /** A escrita é a renovação de um lease próprio ainda ativo (falha não bloqueia). */
       renewal: boolean;
+      /**
+       * Só no Neo: retomada do PRÓPRIO lease expirado. `acquireSchedulerLease`
+       * espera `RECLAIM_SETTLE_MS` + recuo e relê antes de gravar (#12993).
+       */
+      reclaim?: boolean;
       reason: string;
     }
   | { outcome: "yield"; cause: YieldCause; holder: SchedulerLease | null; reason: string }
@@ -241,7 +269,8 @@ export function decideLease(input: DecideLeaseInput): LeaseDecision {
       outcome: "act",
       write: fresh(),
       renewal: false,
-      reason: `${what}; o Neo retoma o próprio lease (o 300, se tivesse voltado, já o teria sobrescrito)`,
+      reclaim: true,
+      reason: `${what}; o Neo retoma o próprio lease depois da espera e da releitura (o 300, se voltou, grava primeiro e o Neo cede)`,
     };
   }
   if (!downSignal || downSignal.kind === "error") {
@@ -294,30 +323,61 @@ export interface AcquireOptions {
   ttlMs?: number;
   /** Memória local do último lease lido (F3/F2). Sem ela, o `300` é fail-open puro. */
   memory?: LeaseMemory;
+  /** Espera da retomada do lease expirado do Neo (#12993). Default `setTimeout`; injetável em teste. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Fonte do recuo aleatório (0..1). Default `Math.random`. */
+  random?: () => number;
+  /** Espera mínima da retomada. Default `RECLAIM_SETTLE_MS`. */
+  reclaimSettleMs?: number;
+  /**
+   * Aviso que não muda a decisão (memória local ilegível ou não gravada, #12993).
+   * Default `console.error`: a proteção F3 depende da memória, e falha calada
+   * a deixaria desligada sem ninguém saber.
+   */
+  warn?: (msg: string) => void;
 }
+
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export type AcquireResult =
   | { outcome: "act"; reason: string; /** Algo deu errado sem tirar a posse (renovação falhou, fail-open). */ warning: boolean }
   | { outcome: "yield"; cause: YieldCause; holder: SchedulerLease | null; reason: string }
   | { outcome: "fail-closed"; reason: string };
 
-function remember(memory: LeaseMemory | undefined, read: LeaseRead, now: Date): void {
+const WARN_PREFIX = "[failover] WARN";
+
+function remember(memory: LeaseMemory | undefined, read: LeaseRead, now: Date, warn: (msg: string) => void): void {
   if (!memory) return;
   try {
     if (read.kind === "absent") memory.save({ kind: "absent", seenAt: now.toISOString() });
     else if (read.kind === "ok") memory.save({ kind: "ok", lease: read.lease, seenAt: now.toISOString() });
-  } catch {
-    // Memória é rede de segurança; falha ao gravar não muda a decisão.
+  } catch (e) {
+    // Falha ao gravar não muda a decisão desta run, mas desliga a proteção F3
+    // das próximas: avisar com o caminho e o erro (#12993).
+    warn(`${WARN_PREFIX} memória local do lease não gravada (${(e as Error).message}); a proteção do 300 com o KV fora (F3) fica sem memória`);
   }
 }
 
-function recall(memory: LeaseMemory | undefined): LastKnownLease | null {
+function recall(memory: LeaseMemory | undefined, warn: (msg: string) => void): LastKnownLease | null {
   if (!memory) return null;
   try {
     return memory.load();
-  } catch {
+  } catch (e) {
+    warn(`${WARN_PREFIX} memória local do lease ilegível (${(e as Error).message}); decide sem ela`);
     return null;
   }
+}
+
+/**
+ * Lease de outro episódio de failover não conta como renovação (#12993): a
+ * memória do `300` pode guardar o lease do Neo de uma armação ANTERIOR (o `300`
+ * caiu de novo antes de ver o `--disarm`). Só é renovação se o lease lembrado
+ * ainda valia agora (posse contínua) e o lease atual não é o da armação nova.
+ */
+function isRenewalOfRemembered(remembered: SchedulerLease, holder: SchedulerLease, now: Date): boolean {
+  if (remembered.until === holder.until) return false;
+  if (holder.by === ARM_LEASE_BY) return false;
+  return isLeaseActive(remembered, now);
 }
 
 /**
@@ -325,10 +385,12 @@ function recall(memory: LeaseMemory | undefined): LastKnownLease | null {
  * Nunca lança: toda falha vira decisão, com o fail-open/fail-closed por host.
  */
 export async function acquireSchedulerLease(kv: LeaseKv, opts: AcquireOptions): Promise<AcquireResult> {
-  const now = (opts.now ?? (() => new Date()))();
-  const lastKnown = recall(opts.memory);
+  const clock = opts.now ?? (() => new Date());
+  const now = clock();
+  const warn = opts.warn ?? ((m: string) => console.error(m));
+  const lastKnown = recall(opts.memory, warn);
   const read = await readLease(kv);
-  remember(opts.memory, read, now);
+  remember(opts.memory, read, now, warn);
 
   // O sinal de queda só importa para o Neo; o 300 não gasta a leitura.
   let downSignal: DownSignalRead | undefined;
@@ -345,7 +407,7 @@ export async function acquireSchedulerLease(kv: LeaseKv, opts: AcquireOptions): 
       holder?.host === STANDBY_HOST &&
       lastKnown?.kind === "ok" &&
       lastKnown.lease.host === STANDBY_HOST &&
-      lastKnown.lease.until !== holder.until
+      isRenewalOfRemembered(lastKnown.lease, holder, now)
     ) {
       return {
         outcome: "yield",
@@ -361,7 +423,33 @@ export async function acquireSchedulerLease(kv: LeaseKv, opts: AcquireOptions): 
   if (decision.outcome === "fail-closed") return decision;
   if (!decision.write) return { outcome: "act", reason: decision.reason, warning: read.kind === "error" };
 
-  const write = decision.write;
+  let write = decision.write;
+  if (decision.reclaim) {
+    // #12993: o 300, se voltou, age sem esperar e grava primeiro. A espera
+    // passa da janela de consistência do KV; a releitura mostra a escrita dele.
+    const waitMs = (opts.reclaimSettleMs ?? RECLAIM_SETTLE_MS) + Math.floor((opts.random ?? Math.random)() * RECLAIM_JITTER_MS);
+    await (opts.sleep ?? defaultSleep)(waitMs);
+    const settled = await readLease(kv);
+    const later = clock();
+    remember(opts.memory, settled, later, warn);
+    const unchanged = read.kind === "ok" && settled.kind === "ok" && settled.lease.host === read.lease.host && settled.lease.until === read.lease.until;
+    if (!unchanged) {
+      if (settled.kind === "ok" && settled.lease.host !== opts.self && isLeaseActive(settled.lease, later)) {
+        return {
+          outcome: "yield",
+          cause: "other-host-active",
+          holder: settled.lease,
+          reason: `${decision.reason}; mas, depois de ${Math.round(waitMs / 1000)} s, a releitura mostra lease ativo do ${settled.lease.host} até ${settled.lease.until}; ${opts.self} cede`,
+        };
+      }
+      const seen = settled.kind === "ok" ? `lease do ${settled.lease.host} até ${settled.lease.until}` : settled.kind === "absent" ? "lease ausente" : settled.error;
+      return {
+        outcome: "fail-closed",
+        reason: `${decision.reason}; mas o lease mudou durante a espera de ${Math.round(waitMs / 1000)} s (${seen}); o Neo não age nesta run`,
+      };
+    }
+    write = makeLease(opts.self, later, opts.by, opts.ttlMs ?? LEASE_TTL_MS);
+  }
   const failed = (why: string): AcquireResult => {
     if (decision.renewal) {
       return { outcome: "act", reason: `${decision.reason}; AVISO: renovação falhou (${why}), age com a posse já confirmada`, warning: true };
@@ -379,7 +467,7 @@ export async function acquireSchedulerLease(kv: LeaseKv, opts: AcquireOptions): 
 
   // Read-back: sem CAS no KV, só age quem relê o próprio lease.
   const back = await readLease(kv);
-  remember(opts.memory, back, now);
+  remember(opts.memory, back, now, warn);
   if (back.kind === "ok" && back.lease.host === opts.self && back.lease.until === write.until) {
     return { outcome: "act", reason: decision.reason, warning: false };
   }

@@ -96,6 +96,10 @@ export interface FailoverGateDeps {
   memory?: LeaseMemory;
   /** Default `process.platform`. */
   platform?: NodeJS.Platform;
+  /** Espera da retomada do lease expirado do Neo (#12993); injetável em teste. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Aviso que não muda a decisão (memória local ilegível, #12993). Default `console.error`. */
+  warn?: (msg: string) => void;
 }
 
 export type GateLevel = "info" | "warn" | "error";
@@ -149,7 +153,8 @@ export async function runFailoverGate(
     let last = null;
     try {
       last = deps.memory?.load() ?? null;
-    } catch {
+    } catch (e) {
+      (deps.warn ?? ((m: string) => console.error(m)))(`${tag}: WARN memória local do lease ilegível (${(e as Error).message}); decide sem ela`);
       last = null;
     }
     if (last?.kind === "ok" && last.lease.host === STANDBY_HOST) {
@@ -177,7 +182,7 @@ export async function runFailoverGate(
     return cannotRead(`cliente KV não montou (${(e as Error).message})`);
   }
 
-  const res = await acquireSchedulerLease(kv, { self, by: def.name, now: deps.now, memory: deps.memory });
+  const res = await acquireSchedulerLease(kv, { self, by: def.name, now: deps.now, memory: deps.memory, sleep: deps.sleep, warn: deps.warn });
   const msg = `${tag}: ${res.reason}`;
   switch (res.outcome) {
     case "act":
