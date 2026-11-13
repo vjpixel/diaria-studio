@@ -10,7 +10,11 @@
  * resolvida?"): merged vs. em voo.
  *
  * Uso:
- *   npx tsx scripts/check-issue-open-pr.ts --issue 7746
+ *   npx tsx scripts/check-issue-open-pr.ts --issue 7746 [--session-id ID]
+ *
+ * `--session-id` (opcional) exclui a própria sessão da checagem de claim
+ * (#12950): issue reivindicada por OUTRA sessão ativa no `session-registry`
+ * faz o `orphanAction` sair `editor` (dono vivo, não assumir a PR).
  *
  * Saída (stdout): JSON `OpenPrCheckResult` (ver módulo pra shape).
  * Exit codes:
@@ -29,14 +33,40 @@
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { assessOpenPrCoverage } from "./lib/issue-open-pr-check.ts";
 import { fetchOpenPrs, type CommandRunner } from "./lib/gh-open-pr-fetch.ts";
-import { formatIssueRef, ISSUE_REPOS_CONFIG_ROOT, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
+import {
+  formatIssueRef,
+  ISSUE_REPOS_CONFIG_ROOT,
+  legacyIssueNumber,
+  loadIssueRepos,
+  parseIssueRef,
+  type IssueRef,
+} from "./lib/issue-repos.ts";
+import { isIssueClaimedByOther } from "./lib/session-registry.ts";
+
+/**
+ * #12950: a issue está reivindicada por OUTRA sessão ativa (a mesma consulta
+ * de `session-registry.ts is-claimed`)? `null` = a consulta falhou
+ * (fail-closed: `orphanAction` vira `editor`, nunca assume a PR de um dono
+ * possivelmente vivo).
+ */
+export type ClaimLookup = (issue: number | IssueRef, excludeSessionId: string) => boolean | null;
+
+export function defaultClaimLookup(cwd: string): ClaimLookup {
+  return (issue, excludeSessionId) => {
+    try {
+      return isIssueClaimedByOther(cwd, issue, excludeSessionId) !== null;
+    } catch {
+      return null;
+    }
+  };
+}
 
 /**
  * `runner` é injetável (default: `gh` real via `fetchOpenPrs`) — permite
  * testar `main()` sem bater na API do GitHub (#7788: "nos testes, injete
  * o executor de gh").
  */
-export function main(argv: string[], cwd: string, runner?: CommandRunner): number {
+export function main(argv: string[], cwd: string, runner?: CommandRunner, claimLookup?: ClaimLookup): number {
   const { values } = parseArgs(argv);
   const issueRaw = values.issue;
   if (!issueRaw) {
@@ -76,7 +106,13 @@ export function main(argv: string[], cwd: string, runner?: CommandRunner): numbe
     return 2;
   }
 
-  const result = assessOpenPrCoverage(issueNumber, fetched.prs, repoArg);
+  // #12950: claim por sessão ativa (dono vivo) tira a PR do `orphanAction`.
+  const lookup = claimLookup ?? defaultClaimLookup(cwd);
+  const sessionIdRaw = values["session-id"];
+  const excludeSessionId = typeof sessionIdRaw === "string" ? sessionIdRaw : "";
+  const result = assessOpenPrCoverage(issueNumber, fetched.prs, repoArg, {
+    claimedByActiveSession: lookup(foreignRef === null ? issueNumber : ref, excludeSessionId),
+  });
   console.log(JSON.stringify(foreignRef === null ? result : { ...result, ref: foreignRef }, null, 2));
   return result.verdict === "open-pr-covers-scope" ? 1 : 0;
 }

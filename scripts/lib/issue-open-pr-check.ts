@@ -67,6 +67,8 @@
 
 import { keepLatestPerName, type PrCheckNode } from "./pr-checks-gate.ts";
 import { citesIssueInRepo } from "./issue-duplicate-preflight.ts";
+import { evaluatePrRetido, RETIDO_PARA_EDITOR_LABEL } from "./pr-retido-para-editor.ts";
+import { EXECUTION_BLOCK_LABEL } from "./continuo-stuck-pr.ts";
 
 /** Estado agregado de CI da PR — `"unknown"` cobre tanto "sem
  * `statusCheckRollup` no payload" quanto "payload malformado"; nunca
@@ -77,7 +79,7 @@ export type OpenPrCiState = "green" | "pending" | "failing" | "unknown";
 export type OpenPrCheckRunLike = PrCheckNode;
 
 /** Uma PR aberta, no shape mínimo que `gh pr list --json
- * number,title,body,headRefName,author,updatedAt,statusCheckRollup`
+ * number,title,body,headRefName,author,updatedAt,statusCheckRollup,isDraft,labels`
  * produz. */
 export interface OpenPrInfo {
   number: number;
@@ -88,6 +90,9 @@ export interface OpenPrInfo {
   /** ISO 8601. */
   updatedAt: string;
   statusCheckRollup?: OpenPrCheckRunLike[] | null;
+  /** #12950 item 3: opcionais para o payload antigo seguir válido. */
+  isDraft?: boolean;
+  labels?: { name: string }[] | null;
 }
 
 /** `unknown` (sinal fraco, só citação em prosa) < `branch-pattern` <
@@ -102,6 +107,68 @@ export interface OpenPrMatch {
   updatedAt: string;
   ciState: OpenPrCiState;
   matchKind: OpenPrMatchKind;
+  isDraft: boolean;
+  labels: string[];
+  /** #12950 item 3: `evaluatePrRetido` (label OU marcador no corpo, #10278).
+   * `null` = labels ilegíveis, fail-closed (tratado como retida). */
+  retido: boolean | null;
+}
+
+/**
+ * #12950 item 3: o que a rodada que PULA a issue (`pr-em-voo`) faz com a PR
+ * que a cobre, para ela não ficar órfã. Antes, overnight/develop pulavam a
+ * issue e ninguém assumia a PR: #12896/#12897 (aprovadas, CI verde) e
+ * #12880 (CI vermelho) ficaram 1-2 dias paradas enquanto a rodada seguinte
+ * as citava como `pr-em-voo`.
+ *
+ * - `merge-via-gate2`: CI verde, sem draft nem retenção. A rodada passa a PR
+ *   pelos gates de merge (review independente, CI, retenção, caminho
+ *   sensível) e mergeia se passar. "Aprovada" é decidido por esses gates,
+ *   não aqui: o payload de `gh pr list` não traz o veredito do review.
+ * - `despachar-fixer`: CI vermelho. A rodada despacha o fixer no branch da PR.
+ * - `aguardar-ci`: CI pendente ou ilegível, PR atualizada há até
+ *   `AGUARDAR_CI_MAX_HOURS`. Reavaliar no próximo re-scan; nunca vira
+ *   bloqueio definitivo.
+ * - `editor`: draft, `bloqueio-execucao`, retida (label ou marcador no
+ *   corpo, `evaluatePrRetido`; ilegível conta como retida), branch fora das
+ *   lanes autônomas (`overnight/`, `develop/`, `continuo/`), issue
+ *   reivindicada por sessão ativa (dono vivo; `null` = não deu pra checar,
+ *   fail-closed), ou CI pendente/ilegível parado há mais de
+ *   `AGUARDAR_CI_MAX_HOURS` (`updatedAt`; ilegível também). A rodada não a
+ *   toca.
+ */
+export type OrphanPrAction = "merge-via-gate2" | "despachar-fixer" | "aguardar-ci" | "editor";
+
+const AUTONOMOUS_LANE_RE = /^(?:overnight|develop|continuo)\//;
+
+/** #12950 item 6: CI pendente/ilegível há mais que isto deixa de ser espera. */
+export const AGUARDAR_CI_MAX_HOURS = 6;
+
+export interface OrphanPrActionContext {
+  /** Issue (ou branch) reivindicada por OUTRA sessão ativa no
+   * `session-registry` (`is-claimed`). `null` = consulta falhou. Ausente =
+   * não consultado (só em testes de unidade da regra de CI). */
+  claimedByActiveSession?: boolean | null;
+  /** Relógio injetável; default `new Date()`. */
+  now?: Date;
+}
+
+export function orphanPrAction(
+  match: Pick<OpenPrMatch, "ciState" | "isDraft" | "labels" | "headRefName" | "retido" | "updatedAt">,
+  ctx: OrphanPrActionContext = {},
+): OrphanPrAction {
+  if (!AUTONOMOUS_LANE_RE.test(match.headRefName)) return "editor";
+  if (match.isDraft || match.labels.includes(EXECUTION_BLOCK_LABEL)) return "editor";
+  // Fail-closed: `retido: null` (labels ilegíveis) conta como retida.
+  if (match.retido !== false || match.labels.includes(RETIDO_PARA_EDITOR_LABEL)) return "editor";
+  // Dono vivo: não assumir a PR de outra sessão (#12950 item 6, review).
+  if (ctx.claimedByActiveSession === true || ctx.claimedByActiveSession === null) return "editor";
+  if (match.ciState === "failing") return "despachar-fixer";
+  if (match.ciState === "green") return "merge-via-gate2";
+  const updatedMs = Date.parse(match.updatedAt);
+  if (Number.isNaN(updatedMs)) return "editor";
+  const ageHours = ((ctx.now ?? new Date()).getTime() - updatedMs) / (60 * 60 * 1000);
+  return ageHours > AGUARDAR_CI_MAX_HOURS ? "editor" : "aguardar-ci";
 }
 
 export type OpenPrCheckVerdict = "no-open-pr" | "open-pr-covers-scope" | "cannot-verify";
@@ -116,6 +183,8 @@ export interface OpenPrCheckResult {
   matches: OpenPrMatch[];
   /** Só presente quando `verdict === "cannot-verify"`. */
   error?: string;
+  /** #12950 item 3: só com `open-pr-covers-scope`; ação para a PR do topo. */
+  orphanAction?: OrphanPrAction;
   recommendation: string;
 }
 
@@ -206,6 +275,8 @@ export function assessOpenPrCoverage(
   prs: readonly OpenPrInfo[],
   /** Repo das PRs/da issue (#10618); ausente = o diaria-studio. */
   repo?: string,
+  /** #12950: claim da issue e relógio para `orphanPrAction`. */
+  orphanCtx: OrphanPrActionContext = {},
 ): OpenPrCheckResult {
   const matches: OpenPrMatch[] = [];
 
@@ -233,6 +304,11 @@ export function assessOpenPrCoverage(
       updatedAt: pr.updatedAt ?? "",
       ciState: deriveOpenPrCiState(pr.statusCheckRollup),
       matchKind,
+      isDraft: pr.isDraft === true,
+      labels: Array.isArray(pr.labels)
+        ? pr.labels.map((l) => (l && typeof l.name === "string" ? l.name : "")).filter((n) => n !== "")
+        : [],
+      retido: evaluatePrRetido({ labels: pr.labels, body: pr.body }).retido,
     });
   }
 
@@ -246,15 +322,19 @@ export function assessOpenPrCoverage(
 
   if (coveringMatches.length > 0) {
     const top = coveringMatches[0];
+    const orphanAction = orphanPrAction(top, orphanCtx);
     return {
       verdict: "open-pr-covers-scope",
       issueNumber,
       matches,
+      orphanAction,
       recommendation:
         `PR #${top.number} (branch ${top.headRefName}, autor ${top.author ?? "desconhecido"}, ` +
         `CI ${top.ciState}, atualizada ${top.updatedAt || "data desconhecida"}) parece cobrir #${issueNumber} ` +
-        `(match: ${top.matchKind}). Antes de dispatchar, aplicar o checklist de 3 perguntas do item 16 de ` +
-        `context/overnight-dispatch-rules.md (autor conhecido? CI verde/rodando? atualizada nas últimas ` +
+        `(match: ${top.matchKind}). PR de lane autônoma (overnight/, develop/, continuo/): seguir o ` +
+        `orphanAction (${orphanAction}) ANTES das perguntas 2 e 3 do checklist do item 16 de ` +
+        `context/overnight-dispatch-rules.md, pulando a issue como pr-em-voo (#12950). PR de terceiro/manual: ` +
+        `aplicar o checklist de 3 perguntas (autor conhecido? CI verde/rodando? atualizada nas últimas ` +
         `~24-48h?) — as 3 juntas justificam esperar; falhando qualquer uma, tratar como se a PR não existisse.`,
     };
   }
