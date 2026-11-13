@@ -811,7 +811,11 @@ export type EntitySlug =
   | "apple"
   | "deepseek"
   | "oracle"
-  | "alibaba";
+  | "alibaba"
+  | "tse"
+  | "pl-2338"
+  | "nubank"
+  | "maritaca-ai";
 
 export function entityFooterNavUtm(slug: EntitySlug) {
   return {
@@ -2003,6 +2007,58 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Alibaba (#5125 item 4, ' +
       "8ª entidade publicada). Cadastrado desde já pra não repetir o achado #5205 " +
+      "(drift `nao_catalogado` no 1º clique real).",
+    status: "ativo",
+  },
+  {
+    id: "entity-tse-footer-nav",
+    label: "Página de entidade TSE — link de rodapé pra diar.ia.br",
+    source: entityFooterNavUtm("tse").source,
+    medium: entityFooterNavUtm("tse").medium,
+    campaignPattern: "entity-tse-footer-nav",
+    originFile: "scripts/lib/entities/tse.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade TSE (#8350, 1º lote de ' +
+      "entidades brasileiras). Cadastrado desde já pra não repetir o achado #5205 " +
+      "(drift `nao_catalogado` no 1º clique real).",
+    status: "ativo",
+  },
+  {
+    id: "entity-pl-2338-footer-nav",
+    label: "Página de entidade Marco Legal da IA (PL 2338) — link de rodapé pra diar.ia.br",
+    source: entityFooterNavUtm("pl-2338").source,
+    medium: entityFooterNavUtm("pl-2338").medium,
+    campaignPattern: "entity-pl-2338-footer-nav",
+    originFile: "scripts/lib/entities/pl-2338.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Marco Legal da IA (PL 2338) (#8350, 1º lote de ' +
+      "entidades brasileiras). Cadastrado desde já pra não repetir o achado #5205 " +
+      "(drift `nao_catalogado` no 1º clique real).",
+    status: "ativo",
+  },
+  {
+    id: "entity-nubank-footer-nav",
+    label: "Página de entidade Nubank — link de rodapé pra diar.ia.br",
+    source: entityFooterNavUtm("nubank").source,
+    medium: entityFooterNavUtm("nubank").medium,
+    campaignPattern: "entity-nubank-footer-nav",
+    originFile: "scripts/lib/entities/nubank.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Nubank (#8350, 1º lote de ' +
+      "entidades brasileiras). Cadastrado desde já pra não repetir o achado #5205 " +
+      "(drift `nao_catalogado` no 1º clique real).",
+    status: "ativo",
+  },
+  {
+    id: "entity-maritaca-ai-footer-nav",
+    label: "Página de entidade Maritaca AI — link de rodapé pra diar.ia.br",
+    source: entityFooterNavUtm("maritaca-ai").source,
+    medium: entityFooterNavUtm("maritaca-ai").medium,
+    campaignPattern: "entity-maritaca-ai-footer-nav",
+    originFile: "scripts/lib/entities/maritaca-ai.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Maritaca AI (#8350, 1º lote de ' +
+      "entidades brasileiras). Cadastrado desde já pra não repetir o achado #5205 " +
       "(drift `nao_catalogado` no 1º clique real).",
     status: "ativo",
   },

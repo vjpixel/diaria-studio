@@ -35,6 +35,10 @@ import { getAppleEntity } from "./lib/entities/apple.ts";
 import { getDeepseekEntity } from "./lib/entities/deepseek.ts";
 import { getOracleEntity } from "./lib/entities/oracle.ts";
 import { getAlibabaEntity } from "./lib/entities/alibaba.ts";
+import { getTseEntity } from "./lib/entities/tse.ts";
+import { getPl2338Entity } from "./lib/entities/pl-2338.ts";
+import { getNubankEntity } from "./lib/entities/nubank.ts";
+import { getMaritacaAiEntity } from "./lib/entities/maritaca-ai.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -51,6 +55,11 @@ export const ENTITY_LOADERS: Record<string, () => EntityContent> = {
   deepseek: getDeepseekEntity,
   oracle: getOracleEntity,
   alibaba: getAlibabaEntity,
+  // #8350: 1º lote de entidades brasileiras (Opção A do editor).
+  tse: getTseEntity,
+  "pl-2338": getPl2338Entity,
+  nubank: getNubankEntity,
+  "maritaca-ai": getMaritacaAiEntity,
 };
 
 function outPathFor(slug: string): string {

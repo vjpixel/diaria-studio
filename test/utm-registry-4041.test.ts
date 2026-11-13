@@ -17,6 +17,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import * as shared from "../scripts/lib/shared/utm-registry.ts";
+import { ENTITY_LOADERS } from "../scripts/build-entity-page.ts";
+
+/** Derivado do registro real (#8350): slug novo em ENTITY_LOADERS sem UTM registrado quebra o teste. */
+const ENTITY_SLUGS_FROM_LOADERS = Object.keys(ENTITY_LOADERS) as shared.EntitySlug[];
 import * as mirror from "../workers/poll/src/utm-registry.ts";
 
 import {
@@ -543,8 +547,8 @@ describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constant
     }
   });
 
-  it("entityFooterNavUtm(slug) emite {source: 'entity-{slug}', medium: 'footer-nav'} — mesmos valores das 8 constantes removidas", () => {
-    const slugs: shared.EntitySlug[] = ["perplexity", "xai", "amazon", "samsung", "apple", "deepseek", "oracle", "alibaba"];
+  it("entityFooterNavUtm(slug) emite {source: 'entity-{slug}', medium: 'footer-nav'} — para todo slug de ENTITY_LOADERS", () => {
+    const slugs = ENTITY_SLUGS_FROM_LOADERS;
     for (const slug of slugs) {
       assert.deepEqual(shared.entityFooterNavUtm(slug), {
         source: `entity-${slug}`,
@@ -583,8 +587,8 @@ describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constant
     }
   });
 
-  it("UTM_EMITTERS ainda registra as 8 entries entity-*-footer-nav com os valores emitidos pela factory", () => {
-    const entitySlugs: shared.EntitySlug[] = ["perplexity", "xai", "amazon", "samsung", "apple", "deepseek", "oracle", "alibaba"];
+  it("UTM_EMITTERS registra uma entry entity-*-footer-nav por slug de ENTITY_LOADERS com os valores emitidos pela factory", () => {
+    const entitySlugs = ENTITY_SLUGS_FROM_LOADERS;
     for (const slug of entitySlugs) {
       const entry = shared.findUtmEmitter(`entity-${slug}-footer-nav`);
       assert.ok(entry, `entry entity-${slug}-footer-nav deveria existir`);

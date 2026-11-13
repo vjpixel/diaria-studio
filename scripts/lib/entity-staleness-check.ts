@@ -122,6 +122,52 @@ export function findStaleEntityMentions(
   return { stale, warnings };
 }
 
+/** Slugs cujo alarme só vê parte das menções publicadas (#8350, limitação
+ * #12958): a contagem do docstring foi no texto completo, o alarme casa
+ * título+subtítulo. Ver o bloco #8350 em `patterns.ts`. */
+export const BODY_ONLY_COVERAGE_SLUGS: readonly string[] = ["tse", "pl-2338", "nubank", "maritaca-ai"];
+
+export interface EntityAlarmCoverage {
+  entitySlug: string;
+  /** Menções da página cuja edição o alarme consegue ver (casa o padrão por
+   * título/subtítulo do cache). */
+  visible: number;
+  total: number;
+}
+
+/**
+ * Pura: para cada slug de `slugs`, quantas das menções já publicadas na
+ * página o alarme consegue ver (#8350 item 8, limitação #12958). Usa o mesmo
+ * `collectHubSources` de `findStaleEntityMentions` — sem rede, sobre o cache
+ * já carregado.
+ *
+ * @pure
+ */
+export function computeEntityAlarmCoverage(
+  posts: RawCachedPost[],
+  mentionEditionSlugsBySlug: Readonly<Record<string, ReadonlySet<string>>>,
+  slugs: readonly string[] = BODY_ONLY_COVERAGE_SLUGS,
+  overridesResult?: PublishDateOverridesResult,
+): EntityAlarmCoverage[] {
+  const out: EntityAlarmCoverage[] = [];
+  for (const entitySlug of slugs) {
+    const pattern = ENTITY_KEYWORD_PATTERNS[entitySlug];
+    const known = mentionEditionSlugsBySlug[entitySlug];
+    if (!pattern || !known) continue;
+    const { rows } = overridesResult !== undefined ? collectHubSources(posts, pattern, overridesResult) : collectHubSources(posts, pattern);
+    const matched = new Set(rows.map((r) => r.editionSlug));
+    let visible = 0;
+    for (const s of known) if (matched.has(s)) visible++;
+    out.push({ entitySlug, visible, total: known.size });
+  }
+  return out;
+}
+
+/** Linha de log de `computeEntityAlarmCoverage`. @pure */
+export function formatEntityAlarmCoverage(c: EntityAlarmCoverage): string {
+  return `${c.entitySlug}: alarme vê ${c.visible}/${c.total} menções — limitação #12958 (menção nova só no corpo não alarma)`;
+}
+
 // ─── Aging (memória de 1ª-detecção) — mesmo molde de hub-staleness-check.ts
 
 /** Chave estável de uma entrada stale — usada tanto no mapa de 1ª-detecção

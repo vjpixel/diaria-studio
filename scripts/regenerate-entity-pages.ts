@@ -101,6 +101,8 @@ import { ENTITY_LOADERS } from "./build-entity-page.ts";
 import { loadPosts } from "./generate-hub-sources.ts";
 import {
   findStaleEntityMentions,
+  computeEntityAlarmCoverage,
+  formatEntityAlarmCoverage,
   computeFirstSeenMap,
   computeAgedStale,
   filterOverdue,
@@ -248,6 +250,9 @@ async function main(): Promise<void> {
   }
   const { stale, warnings } = findStaleEntityMentions(posts, mentionEditionSlugsBySlug);
   for (const w of warnings) console.warn(`${LOG_PREFIX} ⚠ ${w}`);
+  for (const c of computeEntityAlarmCoverage(posts, mentionEditionSlugsBySlug)) {
+    console.log(`${LOG_PREFIX} cobertura do alarme — ${formatEntityAlarmCoverage(c)}`);
+  }
 
   const now = new Date();
   const today = todayISO(now);

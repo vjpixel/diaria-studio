@@ -108,8 +108,8 @@ export const GEO_QUESTIONS: readonly string[] = [
  * perguntas frequentes que as páginas `arquivo.diar.ia.br/temas/{slug}` já
  * respondem (`scripts/lib/hubs/*.ts`); `"acervo"` (#8334) é o painel de
  * cauda longa sobre o conteúdo real das edições publicadas em `/p/{slug}`
- * — ver `GEO_ACERVO_QUESTIONS`; `"entidades"` (#8344) cobre as 8 páginas
- * `especial.diar.ia.br/entidades/{slug}/` — ver `GEO_ENTITY_QUESTIONS`. Um
+ * — ver `GEO_ACERVO_QUESTIONS`; `"entidades"` (#8344) cobre as 8 páginas internacionais (o lote brasileiro do #8350 fica fora do painel de propósito, reset de baseline)
+ * em `especial.diar.ia.br/entidades/{slug}/` — ver `GEO_ENTITY_QUESTIONS`. Um
  * registro sem `panel` (escrito antes de `"hubs"` existir) é lido como
  * `"geral"` por default — ver `panel` em `GeoCitationRecord` e
  * `summarizeGeoCitationRecords`. */
@@ -279,7 +279,8 @@ export const GEO_ACERVO_QUESTIONS: readonly string[] = [
  * conteúdo GEO do projeto depois dos hubs, e até esta issue a única sem
  * medição de citação nenhuma (conferido contra as 30 questões de `GEO_QUESTIONS`
  * (8) + `GEO_HUB_QUESTIONS` (16) + `GEO_ACERVO_QUESTIONS` (6), nenhuma delas
- * cobria essas 8 páginas).
+ * cobria essas 8 páginas internacionais; o lote brasileiro do #8350 fica fora
+ * do painel de propósito, reset de baseline).
  *
  * **Forma da pergunta é mais perto de `GEO_HUB_QUESTIONS` que de
  * `GEO_ACERVO_QUESTIONS`** (decisão de desenho da issue, não uma escolha
@@ -303,7 +304,7 @@ export const GEO_ACERVO_QUESTIONS: readonly string[] = [
  *
  * **Ordem de ativação (nota da issue #8344, não decisão desta PR): esperar
  * a #8335 (checagem de indexação estendida a `especial`) antes de LIGAR
- * este painel no cron** — sem saber se as 8 páginas estão indexadas, um
+ * este painel no cron** — sem saber se as 8 páginas internacionais estão indexadas, um
  * zero aqui teria a mesma ambiguidade que o 0/177 dos hubs teve até 06/09
  * (`docs/geo-hub-experiment.md`, que documenta o mesmo precedente sendo
  * ativado a 2/8 indexado, com a ambiguidade registrada e não bloqueante —

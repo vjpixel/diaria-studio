@@ -72,7 +72,7 @@
  * (`GEO_ACERVO_QUESTIONS`, cobre `/p/{slug}`) — a superfície que mais
  * recebe fetch de bot (73-122/dia vs 11-17 dos hubs, medição que motivou a
  * issue) e que nenhum dos 2 painéis anteriores testava; `entidades` (#8344)
- * cobre as 8 páginas `especial.diar.ia.br/entidades/{slug}/`
+ * cobre as 8 páginas internacionais (o lote brasileiro do #8350 fica fora do painel de propósito, reset de baseline) em `especial.diar.ia.br/entidades/{slug}/`
  * (`GEO_ENTITY_QUESTIONS`), a 2ª maior aposta de conteúdo GEO do projeto
  * depois dos hubs e que nenhum dos 3 painéis anteriores testava. **Desde
  * 10/08/2026 os painéis `geral`+`hubs` rodam no cron** da task
