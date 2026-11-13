@@ -59,7 +59,8 @@ Medido no `300` em 10/11/2026, com o `data/` ainda no OneDrive
    do OneDrive e para os filtros do rclone. Parte das recomendações abaixo é
    só acrescentar padrões a essa lista.
 5. **O que a Cloudflare oferece, e para quê serve cada peça.** A conta é
-   Workers Paid.
+   Workers Paid (fatura conferida pelo editor em 09/11/2026, #12533;
+   reconferir com `npx tsx scripts/cloudflare-plan.ts`).
    - **KV**: chave-valor com consistência eventual e sem compare-and-swap. A
      Cloudflare documenta "up to 60 seconds or more" para uma escrita
      aparecer em outros pontos (conferido em 10/11/2026 em
