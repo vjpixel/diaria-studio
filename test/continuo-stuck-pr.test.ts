@@ -17,7 +17,13 @@ import {
   extractLinkedIssues,
   needsDraftBlockLabel,
   buildCloseComment,
+  buildRefreshComment,
+  countRefreshes,
+  hasApprovalForHead,
+  REFRESH_BRANCH_MARKER,
+  REFRESH_CAP,
   REJECT_CAP,
+  UPDATE_BRANCH_MARKER,
   STALE_HOURS_BEFORE_ACTION,
   type StuckPrInput,
 } from "../scripts/lib/continuo-stuck-pr.ts";
@@ -219,5 +225,150 @@ describe("#12460 — draft do contínuo sem bloqueio-execucao ganha a label", ()
   it("o prompt do implementador do contínuo manda abrir draft já com a label", () => {
     const skill = readFileSync(resolve(ROOT, "hermes/skills/hermes-diaria-continuo/SKILL.md"), "utf8");
     assert.match(skill, /--draft --label bloqueio-execucao/);
+  });
+});
+
+describe("#12907 — PR aprovada e verde parada recebe o master antes de conflitar", () => {
+  // Cenário das 11 PRs da auditoria (docs/continuo-pr-audit-12907.md):
+  // `verdict=approve`, CI verde, sem commit há 6h+, master andando. Antes,
+  // nada acontecia até o `CONFLICTING`, e aí vinha o `close_conflict`.
+  const ready = (over: Partial<StuckPrInput> = {}) =>
+    pr({ ciVerdict: "pass", approved: true, retido: false, sensitive: false, refreshCount: 0, behindBy: 7, ...over });
+
+  it("aprovada + verde + parada + atrás do master → refresh_branch", () => {
+    assert.deepEqual(decideStuckPrAction(ready()), { kind: "refresh_branch", behindBy: 7 });
+  });
+
+  it("parada exatamente no limiar de 6h já atualiza; abaixo dele, não", () => {
+    assert.equal(decideStuckPrAction(ready({ hoursSinceLastCommit: STALE_HOURS_BEFORE_ACTION })).kind, "refresh_branch");
+    assert.equal(decideStuckPrAction(ready({ hoursSinceLastCommit: STALE_HOURS_BEFORE_ACTION - 0.1 })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ hoursSinceLastCommit: null })).kind, "skip");
+  });
+
+  it("em dia com o master (ou behind desconhecido) → nada a fazer", () => {
+    assert.equal(decideStuckPrAction(ready({ behindBy: 0 })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ behindBy: null })).kind, "skip");
+  });
+
+  it("retenções da decisão do editor seguem intocadas: sensível, retido-para-editor, draft, bloqueio-execucao", () => {
+    assert.equal(decideStuckPrAction(ready({ sensitive: true })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ retido: true })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ isDraft: true })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ labels: [EXECUTION_BLOCK_LABEL] })).kind, "skip");
+  });
+
+  it("sinal desconhecido é fail-closed: approved/retido/sensitive ausentes ou null não atualizam", () => {
+    for (const k of ["approved", "retido", "sensitive"] as const) {
+      assert.equal(decideStuckPrAction(ready({ [k]: null })).kind, "skip", `${k}: null`);
+      assert.equal(decideStuckPrAction(ready({ [k]: undefined })).kind, "skip", `${k}: undefined`);
+    }
+  });
+
+  it("sem aprovação ou CI não-verde → não atualiza", () => {
+    assert.equal(decideStuckPrAction(ready({ approved: false })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ ciVerdict: "pending" })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ ciVerdict: "error" })).kind, "skip");
+  });
+
+  it("já conflitando, o fechamento por conflito continua como era", () => {
+    assert.equal(decideStuckPrAction(ready({ mergeable: "CONFLICTING" })).kind, "close_conflict");
+  });
+
+  it("UNKNOWN transitório (#12950) não impede o refresh", () => {
+    assert.equal(decideStuckPrAction(ready({ mergeable: "UNKNOWN" })).kind, "refresh_branch");
+  });
+
+  it("superseded e teto de rejects mantêm a precedência", () => {
+    assert.equal(decideStuckPrAction(ready({ linkedIssues: [{ number: 100, state: "CLOSED" }] })).kind, "close_superseded");
+    assert.equal(decideStuckPrAction(ready({ rejectCount: REJECT_CAP })).kind, "close_reject_cap");
+  });
+
+  it("o comentário do refresh leva marcador próprio, que não gasta o update-branch 1x do CI vermelho", () => {
+    const c = buildRefreshComment(3);
+    assert.ok(c.includes(REFRESH_BRANCH_MARKER));
+    assert.ok(!c.includes(UPDATE_BRANCH_MARKER));
+    assert.match(c, /3 commit/);
+  });
+});
+
+describe("#13010 — teto de refreshes por PR", () => {
+  const ready = (over: Partial<StuckPrInput> = {}) =>
+    pr({ ciVerdict: "pass", approved: true, retido: false, sensitive: false, refreshCount: 0, behindBy: 7, ...over });
+  const mergeCommit = { messageHeadline: "Merge branch 'master' into continuo/fix-1" };
+
+  it(`até ${REFRESH_CAP - 1} refresh anterior ainda atualiza; no teto, não`, () => {
+    assert.equal(REFRESH_CAP, 2);
+    assert.equal(decideStuckPrAction(ready({ refreshCount: 1 })).kind, "refresh_branch");
+    assert.equal(decideStuckPrAction(ready({ refreshCount: REFRESH_CAP })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ refreshCount: REFRESH_CAP + 3 })).kind, "skip");
+  });
+
+  it("contagem ilegível (null/ausente) não atualiza", () => {
+    assert.equal(decideStuckPrAction(ready({ refreshCount: null })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ refreshCount: undefined })).kind, "skip");
+  });
+
+  it("countRefreshes conta marcadores, ou commits de merge da base, o que for maior", () => {
+    const marker = buildRefreshComment(3);
+    assert.equal(countRefreshes([]), 0);
+    assert.equal(countRefreshes([marker, "outro", marker]), 2);
+    assert.equal(countRefreshes(["x"], [mergeCommit, { messageHeadline: "fix: algo" }, mergeCommit]), 2);
+    assert.equal(countRefreshes([marker], [mergeCommit, mergeCommit, mergeCommit]), 3);
+    assert.equal(countRefreshes([marker, marker], [{ messageHeadline: null }]), 2);
+  });
+
+  it("comentários ilegíveis → null (sem sinal legível)", () => {
+    assert.equal(countRefreshes(null, [mergeCommit]), null);
+  });
+
+  it("o resolvedor passa a contagem para a decisão", () => {
+    const cli = readFileSync(resolve(ROOT, "scripts/continuo-resolve-stuck-prs.ts"), "utf8");
+    assert.match(cli, /refreshCount: countRefreshes\(comments, view\?\.commits \?\? null\)/);
+  });
+});
+
+describe("#12907 — hasApprovalForHead", () => {
+  const review = (verdict: string, head?: string, assoc = "OWNER") => ({
+    authorAssociation: assoc,
+    body: `<!-- continuo-review: run=1 at=2026-11-13T10:00:00Z verdict=${verdict}${head ? ` head=${head}` : ""} -->`,
+  });
+
+  it("approve cobrindo o HEAD atual (SHA completo ou abreviado) conta", () => {
+    assert.equal(hasApprovalForHead([review("approve", "abc1234")], "abc1234def"), true);
+    assert.equal(hasApprovalForHead([review("approve", "abc1234def")], "abc1234def"), true);
+  });
+
+  it("approve de HEAD antigo, sem head= ou HEAD desconhecido não conta", () => {
+    assert.equal(hasApprovalForHead([review("approve", "0000000")], "abc1234def"), false);
+    assert.equal(hasApprovalForHead([review("approve")], "abc1234def"), false);
+    assert.equal(hasApprovalForHead([review("approve", "abc1234")], null), false);
+  });
+
+  it("o review mais recente manda: reject depois do approve não conta", () => {
+    assert.equal(hasApprovalForHead([review("approve", "abc1234"), review("reject", "abc1234")], "abc1234"), false);
+  });
+
+  it("marcador de autor sem vínculo com o repo (#9632) é ignorado", () => {
+    assert.equal(hasApprovalForHead([review("approve", "abc1234", "NONE")], "abc1234"), false);
+  });
+
+  it("payload ilegível não conta", () => {
+    assert.equal(hasApprovalForHead(undefined, "abc1234"), false);
+  });
+});
+
+describe("#12907 — wiring do refresh no resolvedor", () => {
+  const cli = readFileSync(resolve(ROOT, "scripts/continuo-resolve-stuck-prs.ts"), "utf8");
+  it("atualiza pelo endpoint update-branch (merge da base) preso ao HEAD aprovado (expected_head_sha)", () => {
+    assert.match(cli, /updateBranchApiArgs\(pr\.number, undefined, pr\.headSha\)/);
+    assert.doesNotMatch(cli, /"--force"|"rebase"/);
+  });
+  it("lê retenção e caminho sensível pelas mesmas fontes dos gates de merge", () => {
+    assert.match(cli, /evaluatePrRetido\(/);
+    assert.match(cli, /classifyChangedPaths\(/);
+  });
+  it("o resumo do tick conta o refresh junto do update-branch", () => {
+    const review = readFileSync(resolve(ROOT, "hermes/scripts/continuo-pr-review.sh"), "utf8");
+    assert.match(review, /\.kind == "refresh_branch"/);
   });
 });

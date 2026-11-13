@@ -256,6 +256,8 @@ MERGE_LOCK_RETRY_DELAY_S=20
 # #8767: antes de revisar, dá estado terminal às PRs `continuo/*` travadas
 # (issue já fechada pelo master, teto de rejects, conflito parado, CI
 # vermelho depois do CI-fix) — sem isto elas ficavam escaladas pra ninguém.
+# #12907: PR aprovada e verde parada há 6h+ e atrás do master recebe o
+# master (`refresh_branch`) antes de conflitar.
 # Lógica em `scripts/lib/continuo-stuck-pr.ts`. Fail-soft: falha do
 # resolvedor nunca impede o review.
 set +e
@@ -266,7 +268,7 @@ STUCK_CLOSED=0
 STUCK_UPDATED=0
 if [ "$STUCK_RC" -eq 0 ]; then
   STUCK_CLOSED=$(printf '%s' "$STUCK_JSON" | jq '[.actions[]? | select(.ok and (.kind | startswith("close_")))] | length' 2>/dev/null || echo 0)
-  STUCK_UPDATED=$(printf '%s' "$STUCK_JSON" | jq '[.actions[]? | select(.ok and .kind == "update_branch")] | length' 2>/dev/null || echo 0)
+  STUCK_UPDATED=$(printf '%s' "$STUCK_JSON" | jq '[.actions[]? | select(.ok and (.kind == "update_branch" or .kind == "refresh_branch"))] | length' 2>/dev/null || echo 0)
   echo "[continuo-pr-review] resolvedor de PRs travadas: $STUCK_JSON" >&2
 else
   echo "[continuo-pr-review] resolvedor de PRs travadas falhou (rc=$STUCK_RC) — seguindo pro review (fail-soft)" >&2

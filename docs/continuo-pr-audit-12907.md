@@ -104,3 +104,21 @@ incidente. Para atribuir a espera a um portão específico, preservar a razão
 do gate no momento da escalada. Não é necessário mudar cadência de cron
 para reunir essa evidência. Nenhum novo mecanismo ou política é proposto
 como correção comprovada por esta auditoria.
+
+## Decisão do editor (13/11/2026) e o que mudou
+
+No briefing do overnight 261113b o editor decidiu: o contínuo atualiza (merge
+da base, nunca rebase nem force-push) a branch da PR aprovada e verde parada
+há mais de 6h, antes de ela conflitar. Retenção por caminho sensível, draft e
+`retido-para-editor` seguem como estão.
+
+Implementado como a ação `refresh_branch` de `decideStuckPrAction`
+(`scripts/lib/continuo-stuck-pr.ts`), aplicada por
+`scripts/continuo-resolve-stuck-prs.ts` no início de cada tick do
+`continuo-pr-review.sh`. Condições, todas obrigatórias e fail-closed: review
+independente `verdict=approve` cobrindo o HEAD atual, CI `pass`, sem commit há
+6h+, atrás do master, fora de `retido-para-editor`, sem caminho sensível, não
+draft e sem `bloqueio-execucao`. O `update-branch` vai com `expected_head_sha`
+do HEAD aprovado. O HEAD novo dispara re-review e CI antes do merge, e a
+idade da PR zera, então a próxima atualização só cabe 6h depois. PR que já
+conflita continua sendo fechada por `close_conflict`.
