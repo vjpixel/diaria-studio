@@ -60,6 +60,19 @@ Nesta rodada: 13 issues fechadas.
 `;
 
 describe("parseUnitsTable (#5521)", () => {
+  for (const header of ["| PR | Issue(s) | O quê |", "| Unidade | PR | O quê |", "| Issue(s) | O quê | PR |", "|---|---|---|"]) {
+    it(`REGRESSÃO #12980: rejeita cabeçalho incompatível ${header}`, () => {
+      const md = `<!-- unidades-mergeadas -->\n${header}\n|---|---|---|\n| #5473 | #5471 + #5472 | #9999 |\n`;
+      const table = parseUnitsTable(md);
+      assert.equal(table.found, true);
+      assert.deepEqual(table.rows, []);
+      const check = compareTitleWithReport("1 unidade, 1 issue", md);
+      assert.equal(check.kind, "unreadable");
+      assert.equal(isTitleOk(check), false);
+      if (check.kind === "unreadable") assert.match(check.problems[0], /cabeçalho inválido.*Issue\(s\).*PR/);
+    });
+  }
+
   it("extrai as 13 linhas da tabela do 260816e", () => {
     const { found, rows } = parseUnitsTable(REPORT_260816E);
     assert.equal(found, true);
@@ -330,6 +343,16 @@ describe("register-report.ts: guard de contagem (#5521)", () => {
   it("mensagem de erro diz que nada foi registrado e nenhum e-mail saiu", () => {
     const r = run("overnight — 10 unidades");
     assert.match(r.stderr, /nada foi registrado, nenhum e-mail saiu/);
+  });
+
+  it("REGRESSÃO #12980: PR antes das issues bloqueia o registro com orientação clara", () => {
+    writeFileSync(join(reportDir, "report.md"), "<!-- unidades-mergeadas -->\n| PR | Issue(s) | O quê |\n|---|---|---|\n| #5473 | #5471 + #5472 | lote |\n");
+    const r = run("1 unidade, 1 issue");
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /cabeçalho inválido.*Issue\(s\).*PR/);
+    assert.match(r.stderr, /nada foi registrado/);
+    assert.equal(r.stdout.trim(), "");
+    assert.deepEqual(registeredLines(), []);
   });
 
   it("relatório ausente: avisa que NÃO conferiu em vez de pular calado", () => {

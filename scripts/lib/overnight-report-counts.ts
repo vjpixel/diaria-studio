@@ -74,6 +74,8 @@ export interface UnitsTable {
    */
   found: boolean;
   rows: UnitRow[];
+  /** Cabeçalho incompatível: impede contar referências nas colunas erradas. */
+  error?: string;
 }
 
 /**
@@ -108,7 +110,9 @@ export const UNITS_TABLE_MARKER = "<!-- unidades-mergeadas -->";
  * Localiza a tabela canônica de unidades e extrai suas linhas.
  *
  * Formato esperado — o marcador, depois a tabela (a 1ª coluna traz as issues
- * da unidade, a 2ª o PR):
+ * da unidade, a 2ª o PR). O cabeçalho é validado antes de ler referências:
+ * `Issue`, `Issues` ou `Issue(s)`, seguido de `PR` (sem distinguir caixa).
+ * Ordem ou nomes incompatíveis reprovam a conferência com mensagem clara.
  *
  * ```
  * <!-- unidades-mergeadas -->
@@ -138,7 +142,18 @@ export function parseUnitsTable(markdown: string): UnitsTable {
       break; // qualquer outra coisa: o marcador não precede uma tabela
     }
 
-    seenTable = true;
+    if (!seenTable) {
+      const header = splitRow(line);
+      if (!/^issue(?:\(s\)|s)?$/i.test(header[0] ?? "") || !/^pr$/i.test(header[1] ?? "")) {
+        return {
+          found: true,
+          rows: [],
+          error: 'cabeçalho inválido na tabela de unidades — esperado: | Issue(s) | PR | ... | (issues na primeira coluna, PR na segunda)',
+        };
+      }
+      seenTable = true;
+      continue;
+    }
     if (/^\|[\s:|-]+\|$/.test(line)) continue; // separador
 
     const cells = splitRow(line);
@@ -265,12 +280,12 @@ export function compareTitleWithReport(title: string, markdown: string): TitleCh
 
   if (!table.found) return { kind: "skipped", found };
 
-  if (table.rows.length === 0) {
+  if (table.error || table.rows.length === 0) {
     return {
       kind: "unreadable",
       found,
       problems: [
-        'tabela de unidades encontrada, mas nenhuma linha reconhecida — o formato do relatório mudou e a conferência de contagem deixou de funcionar (esperado: coluna de issue com "#NNNN" e coluna de PR)',
+        table.error ?? 'tabela de unidades encontrada, mas nenhuma linha reconhecida — o formato do relatório mudou e a conferência de contagem deixou de funcionar (esperado: coluna de issue com "#NNNN" e coluna de PR)',
       ],
     };
   }
