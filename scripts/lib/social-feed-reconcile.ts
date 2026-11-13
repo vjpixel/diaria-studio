@@ -282,6 +282,37 @@ export function applyFeedDecision(entry: PostEntry, decision: FeedDecision, now:
   };
 }
 
+/** Chave de casamento de um permalink: sem barra final, minúsculas. @pure */
+export function feedKey(s: string): string {
+  return s.trim().replace(/\/+$/, "").toLowerCase();
+}
+
+/**
+ * Ids e permalinks do feed já atribuídos a alguma entrada (`url` /
+ * `platform_post_id`) — #13009. Um item do feed que já é o link de outro post
+ * nunca pode "confirmar" uma segunda entrada: sem isso, o post semanal sem
+ * texto (casado só por horário) podia herdar o permalink do destaque diário do
+ * mesmo horário, já reconciliado numa rodada anterior. @pure
+ */
+export function claimedFeedKeys(posts: PostEntry[]): Set<string> {
+  const out = new Set<string>();
+  for (const p of posts) {
+    if (!p || !isFeedPlatform(p.platform)) continue;
+    if (typeof p.url === "string" && p.url.trim()) out.add(feedKey(p.url));
+    if (typeof p.platform_post_id === "string" && p.platform_post_id.trim()) out.add(feedKey(p.platform_post_id));
+  }
+  return out;
+}
+
+/** Feed sem os itens já atribuídos. `coveredSince`/`error` intactos. @pure */
+export function withoutClaimedItems(feed: FeedRead, claimed: ReadonlySet<string>): FeedRead {
+  if (claimed.size === 0) return feed;
+  return {
+    ...feed,
+    items: feed.items.filter((it) => !claimed.has(feedKey(it.id)) && !claimed.has(feedKey(it.permalink))),
+  };
+}
+
 export interface FeedReconcileSummary {
   matched: number;
   absent: Array<{ platform: string; destaque: string; scheduled_at: string | null; previous_status: string }>;
@@ -291,6 +322,10 @@ export interface FeedReconcileSummary {
 /**
  * Reconcilia a lista inteira de posts de uma edição. `feeds` por canal;
  * canal sem feed lido fica intocado. `textFor` devolve o texto do post (ou `null`).
+ *
+ * `claimed` (#13009): chaves de itens do feed já atribuídos em OUTROS arquivos
+ * de registro (`claimedFeedKeys`). Os links já gravados nesta própria lista
+ * entram sozinhos.
  */
 export function reconcilePostsAgainstFeeds(
   posts: PostEntry[],
@@ -298,12 +333,15 @@ export function reconcilePostsAgainstFeeds(
   textFor: (entry: PostEntry) => string | null,
   now: Date,
   opts: FeedReconcileOptions = DEFAULT_FEED_RECONCILE_OPTIONS,
+  claimed: ReadonlySet<string> = new Set(),
 ): { posts: PostEntry[]; summary: FeedReconcileSummary } {
   const out = [...posts];
   const summary: FeedReconcileSummary = { matched: 0, absent: [], undecided: 0 };
+  const taken = new Set([...claimed, ...claimedFeedKeys(posts)]);
   for (const platform of FEED_RECONCILABLE_PLATFORMS) {
-    const feed = feeds[platform];
-    if (!feed) continue;
+    const rawFeed = feeds[platform];
+    if (!rawFeed) continue;
+    const feed = withoutClaimedItems(rawFeed, taken);
     const idxs = posts.map((p, i) => (p.platform === platform && needsFeedReconcile(p) ? i : -1)).filter((i) => i >= 0);
     if (idxs.length === 0) continue;
     const entries = idxs.map((i) => posts[i]);
