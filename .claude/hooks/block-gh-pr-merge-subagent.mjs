@@ -123,6 +123,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
+import { probeSessionsDir } from "../../scripts/lib/sessions-dir-probe.mjs";
 import { findGhPrMergeInvocations, isGhPrMergeCommand, extractGhPrMergeTargetPr } from "./lib/gh-pr-merge-command.mjs";
 import {
   DIARIA_STUDIO_REPO,
@@ -656,6 +657,13 @@ export function sessionsDir(repoRoot) {
  * CONHECIDO — "nenhuma sessão registrada ainda", não incerteza) ou quando a
  * varredura inteira completou sem nenhuma falha individual.
  *
+ * #12547: "ausente" exige que o diretório nunca tenha existido. Se `data` (ou
+ * `data/sessions`) é link/junction cujo alvo sumiu (Drive for desktop fechado
+ * no Neo), a varredura volta `degraded: true` com `degradedReason` nomeando a
+ * causa e a ação (`probeSessionsDir`, `scripts/lib/sessions-dir-probe.mjs`).
+ * `degradedReason` só existe quando a causa é conhecida; a falha de leitura
+ * de um arquivo individual segue sem ele.
+ *
  * `opts.crossMachine` (#6621, default `false` — preserva o comportamento
  * histórico para quem não passa a opção): quando `true`, a filtragem por
  * `machineTag` (#5787 Defeito 2) é DESLIGADA e a varredura devolve
@@ -694,10 +702,20 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
   const attended = new Map();
   let entries;
   try {
-    if (!existsSync(dir)) return { ids, kinds, attended, degraded: false };
+    if (!existsSync(dir)) {
+      // #12547: "ausente" só é estado conhecido quando o diretório nunca
+      // existiu. Com `data` (junction pro Drive for desktop) apontando para
+      // um alvo que sumiu, `existsSync` também dá `false`, e ler isso como
+      // "nenhuma rodada ativa" liberava o merge em silêncio.
+      const probe = probeSessionsDir(repoRoot);
+      if (probe.degraded) return { ids, kinds, attended, degraded: true, degradedReason: probe.message };
+      return { ids, kinds, attended, degraded: false };
+    }
     entries = readdirSync(dir);
-  } catch {
-    return { ids, kinds, attended, degraded: true }; // não deu nem pra listar — contagem não confiável
+  } catch (e) {
+    // não deu nem pra listar — contagem não confiável
+    const code = String(e?.code ?? e?.message ?? e);
+    return { ids, kinds, attended, degraded: true, degradedReason: `listagem de "${dir}" falhou (${code}).` };
   }
   const myTag = machineTag();
   let degraded = false;
@@ -1561,6 +1579,12 @@ export function buildBlockReason(ctx = {}) {
     }
   }
   if (ctx.blockCause === "scan-degraded") {
+    // #12547: com causa conhecida (junction de `data/` pendente), a mensagem
+    // diz qual é e o que fazer, em vez do texto genérico de I/O.
+    if (typeof ctx.scanDegradedReason === "string" && ctx.scanDegradedReason !== "") {
+      return "gh pr merge bloqueado (#5716): varredura de sessões degradada. " + ctx.scanDegradedReason +
+        " Não foi possível confirmar a coordenação e a serialização. Não altere a identidade da sessão.";
+    }
     return "gh pr merge bloqueado (#5716): varredura de sessões degradada/ilegível. " +
       "Não foi possível confirmar a coordenação e a serialização; confira os erros de I/O em data/sessions/ " +
       "e renove o merge lock da coordenadora antes de tentar novamente. Não altere a identidade da sessão.";
@@ -1826,6 +1850,9 @@ if (
         // #6303 Finding B: varredura degradada não pode alimentar a
         // leniência "sou a única coordenadora, posso sem lock".
         scanDegraded: scan.degraded,
+        // #12547: causa conhecida da degradação (ex.: junction de `data/`
+        // pendente), pra mensagem de bloqueio nomear causa e ação.
+        scanDegradedReason: scan.degradedReason,
         // #7702: as duas metades da leniência "rodada sem autoridade de
         // merge não bloqueia sessão interativa". Calculadas aqui (I/O) e
         // consumidas por `classifyMergeBlockCause`, que segue pura.
@@ -1853,6 +1880,7 @@ if (
         isCoordinator: scan.ids.has(payload.session_id) && ctx.callerInLinkedWorktree !== true,
         callerInLinkedWorktree: ctx.callerInLinkedWorktree,
         scanDegraded: scan.degraded,
+        ...(scan.degradedReason ? { scanDegradedReason: scan.degradedReason } : {}),
         mergeLockHolder: ctx.mergeLockHolder,
       });
       // #12842: falha do D1 aparece ao usuário, permita ou bloqueie.
