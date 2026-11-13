@@ -32,13 +32,13 @@ class_name = "LinkedInScheduler"
 tag = "v1-linkedin-scheduler"
 # Free plan do Cloudflare (o plano da conta em #2236; hoje Workers Paid, #12533)
 # exige DO com storage SQLite (new_sqlite_classes), não new_classes (KV-backed,
-# só plano pago) — erro 10097 (#2236). A classe já nasceu SQLite e não se
-# converte de volta, então new_sqlite_classes segue obrigatório. state.storage
+# só plano pago) — erro 10097 (#2236). Por isso a classe foi criada como
+# SQLite, e é assim que esta migration está aplicada. state.storage
 # API idêntico. NOTA: o DEPLOY-HOLD (#2235) foi resolvido pelo fix daquela mesma
 # issue (commit b202dac9) e a issue está fechada — o worker já foi deployado
 # várias vezes desde então (#2236, #1168 rearm, #3817/#3818 Instagram, #3903,
 # confirmado de novo em #3944 Parte A, 260723). Comentário mantido só como
-# histórico do porquê new_sqlite_classes (não new_classes) é obrigatório aqui.
+# histórico do porquê new_sqlite_classes (não new_classes) foi usado aqui.
 new_sqlite_classes = ["LinkedInScheduler"]
 
 # #3817 — canal Instagram (Graph API direta, sem Make). Secrets via
