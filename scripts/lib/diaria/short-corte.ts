@@ -99,6 +99,16 @@ export interface CorteContentFingerprint {
 
 export const CORTE_SPEC_FILE = "corte.json";
 
+/**
+ * #12998/#12999: a pasta é de um corte avulso (tem `corte.json`)? A pasta de
+ * uma edição nunca tem. Os leitores do registro do vertical e das marcas de
+ * envio usam isto para não comparar o `aammdd` do arquivo com a data atual do
+ * corte, que muda num reagendamento.
+ */
+export function isCorteDir(dir: string): boolean {
+  return existsSync(join(dir, CORTE_SPEC_FILE));
+}
+
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
 const DATE_RE = /^\d{6}$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;

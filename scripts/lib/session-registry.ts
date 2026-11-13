@@ -4701,6 +4701,22 @@ function d1LockMeta(): string {
 }
 
 /**
+ * #12967: `id` é o `session_id` de uma sessão registrada em `data/sessions/`
+ * (arquivo `{kind}-{tag}-{id}.json`)? Holder sintético de quem não é sessão
+ * (o waiter de merge da página do site) devolve `false`. Diretório ilegível
+ * também devolve `false`: na dúvida o hold fresco não é sobrescrito.
+ */
+export function isRegisteredSessionId(repoRoot: string, id: string): boolean {
+  if (!id) return false;
+  try {
+    const suffix = `-${id}.json`;
+    return readdirSync(sessionsDir(repoRoot)).some((f) => f.endsWith(suffix));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Devolve um lock que acabamos de tomar no D1 (rollback). Falha ao devolver
  * nunca passa em silêncio: o lock ficaria órfão até vencer o TTL, segurando
  * o recurso para toda máquina — o aviso nomeia o lock.
@@ -4755,6 +4771,15 @@ export async function acquireMergeLockShared(
     // D1 o adota (a linha fica), e a 2ª aquisição segue recusada.
     return { ok: false, backend: "d1", d1Holder: sessionId };
   }
+  if (fileHolder !== undefined && !isRegisteredSessionId(repoRoot, fileHolder)) {
+    // #12967: holder que não é sessão registrada (o waiter de merge da página
+    // do site, `site-page-merge-waiter:pr-N:pid-X`) só usa o arquivo e nunca
+    // escreve no D1. O hold dele é fresco (o `local()` acabou de recusar), então
+    // é um merge em curso nesta máquina: sobrescrever daria dois merges
+    // simultâneos no mesmo repo. Devolve o D1 e recusa, como o O_EXCL fazia.
+    await rollbackD1Lock(d1, name, sessionId, opts.d1Now !== undefined ? { now: opts.d1Now } : {}, warn, "merge-lock-acquire");
+    return { ok: false, backend: "local", d1Holder: null };
+  }
   io.overwrite(path, JSON.stringify({ heldBy: sessionId, acquiredAt: new Date(now).toISOString() } satisfies MergeLockRecord));
   warn(
     `⚠️  d1-locks (#12842): merge-lock-acquire: o D1 concedeu o lock, mas o arquivo local dizia ` +
@@ -4773,11 +4798,20 @@ export async function releaseMergeLockShared(
   if (!d1) return { ok: releaseMergeLock(repoRoot, sessionId, repo), backend: "local" };
   const name = mergeLockD1Name(repo);
   const d1Opts = opts.d1Now !== undefined ? { now: opts.d1Now } : {};
-  const r = await d1ReleaseLock(d1, name, sessionId, d1Opts);
+  const warn = opts.warn ?? stderrWarn;
+  let r = await d1ReleaseLock(d1, name, sessionId, d1Opts);
+  // #13007: falha transitória ganha uma 2ª tentativa — a linha que fica no D1
+  // recusa todo mundo (o próprio dono incluído) até vencer o TTL.
+  if (!r.ok && !r.permanent) r = await d1ReleaseLock(d1, name, sessionId, d1Opts);
   // O arquivo só é apagado se for desta sessão — sempre seguro tentar.
   const local = releaseMergeLock(repoRoot, sessionId, repo);
   if (!r.ok) {
-    reportD1Failure(repoRoot, "merge-lock-release", r, opts.warn ?? stderrWarn);
+    reportD1Failure(repoRoot, "merge-lock-release", r, warn);
+    warn(
+      `⚠️  d1-locks (#13007): merge-lock-release: o arquivo local foi solto, mas a linha "${name}" pode ter ficado no D1 ` +
+        `até vencer o TTL (${Math.round(MERGE_LOCK_TTL_MS / 60_000)} min) — até lá o merge-lock-acquire de qualquer sessão, ` +
+        "esta incluída, é recusado. Espere o TTL ou rode merge-lock-release de novo.\n",
+    );
     return { ok: local, backend: "local-fallback" };
   }
   if (r.value === "held_by_other") {

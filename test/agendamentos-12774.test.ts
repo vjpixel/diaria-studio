@@ -318,4 +318,9 @@ describe("task Diaria-Agendamentos-Tick", () => {
     assert.equal(t.guard?.requiredFile, "editions");
     assert.notEqual(t.enabled, false);
   });
+
+  it("#12970: exit 2 (releitura falhou, alarme preservado) é sucesso para o systemd; 1 continua falha", () => {
+    const t = getScheduledTaskByName("Diaria-Agendamentos-Tick");
+    assert.deepEqual(t?.successExitCodes, [2]);
+  });
 });

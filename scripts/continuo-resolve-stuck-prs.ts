@@ -15,6 +15,9 @@
  * `checked: -1` = `gh pr list` falhou (fail-soft: nada feito). Logs em stderr.
  * `kind: "label_draft_block"` (#12460) = draft `continuo/*` que ganhou a
  * label `bloqueio-execucao` (`needsDraftBlockLabel`).
+ * `kind: "refresh_branch"` (#12907) = PR aprovada e verde, parada e atrás do
+ * master, que recebeu o master antes de conflitar (`update-branch` com
+ * `expected_head_sha`: se a branch mudou depois da leitura, o GitHub recusa).
  *
  * Toda leitura que falha vira "desconhecido" (`null`), e a lógica pura trata
  * desconhecido como "não age" — nunca fecha PR por falha de rede.
@@ -29,10 +32,13 @@ import { latestCommitDate, type PrCommitEntry } from "./lib/stale-red-pr-alarm.t
 import {
   buildCloseComment,
   buildIssueRequeueComment,
+  buildRefreshComment,
+  countRefreshes,
   countRejectReviews,
   decideStuckPrAction,
   EXECUTION_BLOCK_LABEL,
   extractLinkedIssues,
+  hasApprovalForHead,
   needsDraftBlockLabel,
   UPDATE_BRANCH_MARKER,
   type StuckPrAction,
@@ -40,6 +46,9 @@ import {
 } from "./lib/continuo-stuck-pr.ts";
 import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
 import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
+import { evaluatePrRetido } from "./lib/pr-retido-para-editor.ts";
+import { classifyChangedPaths } from "./lib/sensitive-path-guard.ts";
+import { classifyUpdateBranchResponse, updateBranchApiArgs } from "./gh-pr-update-branch.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG = "[continuo-resolve-stuck-prs]";
@@ -96,7 +105,9 @@ function fetchIssueState(n: number): "OPEN" | "CLOSED" | null {
   return r.state === "CLOSED" ? "CLOSED" : "OPEN";
 }
 
-function gatherInput(pr: PrListRaw): StuckPrInput | null {
+type GatheredInput = StuckPrInput & { headSha: string | null };
+
+function gatherInput(pr: PrListRaw): GatheredInput | null {
   const linked: { number: number; state: "OPEN" | "CLOSED" }[] = [];
   for (const n of extractLinkedIssues(pr.title, pr.body ?? "")) {
     const state = fetchIssueState(n);
@@ -104,7 +115,10 @@ function gatherInput(pr: PrListRaw): StuckPrInput | null {
     linked.push({ number: n, state });
   }
 
-  const view = ghJson<{ comments?: unknown; commits?: PrCommitEntry[] }>([
+  const view = ghJson<{
+    comments?: unknown;
+    commits?: (PrCommitEntry & { oid?: string; messageHeadline?: string })[];
+  }>([
     "pr",
     "view",
     String(pr.number),
@@ -122,6 +136,20 @@ function gatherInput(pr: PrListRaw): StuckPrInput | null {
   // do 300 (#6923).
   const behind = gh(["api", `repos/{owner}/{repo}/compare/master...${pr.headRefName}`, "--jq", ".behind_by"]);
   const behindParsed = behind.ok ? Number(behind.stdout.trim()) : NaN;
+  const behindBy = Number.isFinite(behindParsed) ? behindParsed : null;
+  const ciVerdict = fetchCiVerdict(pr.number);
+
+  // #12907: HEAD atual = oid do último commit (`headRefOid` não existe no
+  // `gh` 2.46 do 300, #6923). Desconhecido → `approved: false`.
+  const lastOid = view?.commits?.at(-1)?.oid;
+  const headSha = typeof lastOid === "string" && lastOid !== "" ? lastOid : null;
+  const approved = view ? hasApprovalForHead(view.comments, headSha) : null;
+  const retido = evaluatePrRetido({ labels: pr.labels, body: pr.body }).retido;
+  // Lista de arquivos só para quem pode receber o refresh: poupa 1 chamada
+  // paginada por PR que já não passaria pelas outras condições.
+  const refreshCandidate =
+    ciVerdict === "pass" && approved === true && retido === false && pr.mergeable !== "CONFLICTING" && (behindBy ?? 0) > 0;
+  const sensitive = refreshCandidate ? fetchSensitive(pr.number) : null;
 
   return {
     number: pr.number,
@@ -131,19 +159,52 @@ function gatherInput(pr: PrListRaw): StuckPrInput | null {
     isDraft: pr.isDraft,
     labels: pr.labels.map((l) => l.name),
     mergeable: pr.mergeable,
-    ciVerdict: fetchCiVerdict(pr.number),
+    ciVerdict,
     linkedIssues: linked,
     // comentários desconhecidos → 0 rejects/sem marcador: os dois caem no
     // lado conservador (não fecha por reject-cap; update-branch é 1x e
     // reversível).
     rejectCount: comments ? countRejectReviews(comments) : 0,
     updateBranchDone: comments ? comments.some((b) => b.includes(UPDATE_BRANCH_MARKER)) : true,
-    behindBy: Number.isFinite(behindParsed) ? behindParsed : null,
+    behindBy,
     hoursSinceLastCommit,
+    approved,
+    retido,
+    sensitive,
+    // #13010: teto de refreshes por PR (marcador ou commit de merge da base).
+    refreshCount: countRefreshes(comments, view?.commits ?? null),
+    headSha,
   };
 }
 
-function apply(pr: StuckPrInput, action: StuckPrAction): boolean {
+/** #12907: a PR toca caminho sensível? REST paginado, mesmo motivo de
+ * `check-continuo-merge-gate.ts` (`gh pr view --json files` pode truncar).
+ * Falha → `null` (tratado como sensível: não atualiza). */
+function fetchSensitive(prNumber: number): boolean | null {
+  const r = gh(["api", `repos/{owner}/{repo}/pulls/${prNumber}/files`, "--paginate", "--jq", ".[].filename"]);
+  if (!r.ok) return null;
+  const files = r.stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (files.length === 0) return null;
+  return classifyChangedPaths(files).sensitive;
+}
+
+function apply(pr: GatheredInput, action: StuckPrAction): boolean {
+  if (action.kind === "refresh_branch") {
+    // #12907: merge da base (nunca rebase/force-push), preso ao HEAD que foi
+    // aprovado: se alguém empurrou depois da leitura, o GitHub recusa.
+    if (!pr.headSha) return false;
+    const r = spawnGhSync(updateBranchApiArgs(pr.number, undefined, pr.headSha), ROOT, GH_TIMEOUT_MS);
+    const { outcome, detail } = classifyUpdateBranchResponse(r.status, r.stdout, r.stderr);
+    if (outcome !== "accepted") {
+      console.error(`${LOG} PR #${pr.number}: refresh-branch não aplicado (${outcome}): ${detail}`);
+      return false;
+    }
+    gh(["pr", "comment", String(pr.number), "--body", buildRefreshComment(action.behindBy)]);
+    return true;
+  }
   if (action.kind === "update_branch") {
     const r = gh(["api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${pr.number}/update-branch`]);
     if (!r.ok) {

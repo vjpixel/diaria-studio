@@ -262,6 +262,17 @@ export type OrphanReason = "pid-dead" | "cross-host-stale";
  */
 export const CROSS_HOST_STALE_MS = 3 * 60 * 60 * 1000;
 
+/**
+ * Fases cujo `run` de outra máquina NUNCA expira pelo relógio (#12966). O
+ * upload do YouTube não tem timeout (`youtube-upload.ts`) e o `run` não grava
+ * heartbeat, então o prazo de 3 h acima não prova que ele morreu: um upload
+ * longo (rede lenta, vídeo grande, Drive da outra máquina sem sincronizar o
+ * `end`) virava órfão, liberava `registry:05-youtube-published` e abria a porta
+ * para um 2º vídeo. Uma tarefa dessas só sai com o fim gravado por lá, ou
+ * fechada à mão (`closeTaskCommand`) por quem confirmou que a sessão caiu.
+ */
+export const NO_CROSS_HOST_EXPIRY_PHASES: ReadonlySet<PublicaPhase> = new Set<PublicaPhase>(["upload"]);
+
 export interface PhaseTask {
   key: string;
   phase: PublicaPhase;
@@ -364,7 +375,7 @@ export function deriveTasks(events: readonly PhaseEvent[], opts: DeriveOptions =
   for (const t of tasks) {
     if (t.status !== "running" || t.pid === undefined) continue;
     if (t.host !== undefined && opts.host !== undefined && t.host !== opts.host) {
-      if (opts.now !== undefined && isCrossHostStale(t, opts.now, staleMs)) {
+      if (opts.now !== undefined && !NO_CROSS_HOST_EXPIRY_PHASES.has(t.phase) && isCrossHostStale(t, opts.now, staleMs)) {
         t.status = "orphaned";
         t.orphan_reason = "cross-host-stale";
       }
@@ -388,8 +399,11 @@ function isCrossHostStale(t: Pick<PhaseTask, "last_event_at">, now: number, stal
 }
 
 /** Pure: texto curto de como a tarefa de outra máquina está (para as mensagens de recusa). */
-export function crossHostNote(t: Pick<PhaseTask, "host" | "last_event_at">, opts: DeriveOptions): string {
+export function crossHostNote(t: Pick<PhaseTask, "host" | "last_event_at" | "phase">, opts: DeriveOptions): string {
   if (t.host === undefined || opts.host === undefined || t.host === opts.host) return "";
+  if (NO_CROSS_HOST_EXPIRY_PHASES.has(t.phase)) {
+    return ` Iniciada em outra máquina (${t.host}): o PID não se confere daqui e ${t.phase} não expira pelo relógio (#12966) — só sai com o fim gravado lá, ou feche à mão depois de confirmar que a sessão de lá caiu e nada subiu.`;
+  }
   const staleMs = opts.crossHostStaleMs ?? CROSS_HOST_STALE_MS;
   const last = Date.parse(t.last_event_at);
   const expires = Number.isFinite(last) ? new Date(last + staleMs).toISOString() : "já";
@@ -435,6 +449,23 @@ export function canResumeExisting(phase: PublicaPhase, part: PublicaPart): boole
 /** Comando que fecha à mão uma tarefa aberta que perdeu o processo (`start` manual nunca vira órfã). */
 export function closeTaskCommand(t: Pick<PhaseTask, "phase" | "part" | "attempt" | "task_id">, edition = "{AAMMDD}"): string {
   return `npx tsx scripts/publica-phase.ts interrupted ${edition} --phase ${t.phase} --part ${t.part} --attempt ${t.attempt}${t.task_id ? ` --task-id ${t.task_id}` : ""}`;
+}
+
+/**
+ * Instante a partir do qual uma releitura do registro cobre a tentativa
+ * anterior (regra 3 de `checkPhaseStart`). Com fim gravado, é o fim. Órfã não
+ * tem fim (#12966): o `start` deixava valer uma releitura feita ENQUANTO a
+ * tentativa ainda rodava, que não vê o que ela subiu depois. A de outra
+ * máquina conta a partir da expiração (último evento + prazo); a desta
+ * máquina, do último evento dela (o `spawned`, quando houver).
+ */
+export function retryCutoffMs(t: Pick<PhaseTask, "start" | "end" | "status" | "orphan_reason" | "last_event_at">, opts: DeriveOptions = {}): number {
+  if (t.end) return Date.parse(t.end);
+  if (t.status !== "orphaned") return Date.parse(t.start);
+  const last = Date.parse(t.last_event_at);
+  const base = Number.isFinite(last) ? Math.max(last, Date.parse(t.start)) : Date.parse(t.start);
+  if (t.orphan_reason === "cross-host-stale") return base + (opts.crossHostStaleMs ?? CROSS_HOST_STALE_MS);
+  return base;
 }
 
 /** Fases externas cujo retry exige a releitura do registro (o publisher pode ter enviado sem registro). */
@@ -503,10 +534,10 @@ export function checkPhaseStart(input: StartCheckInput): string[] {
   if (REGISTRY_RETRY_PHASES.has(candidate.phase) && !(input.resumeExisting && canResumeExisting(candidate.phase, candidate.part))) {
     const previous = tasks
       .filter((t) => t.phase === candidate.phase && t.part === candidate.part && (t.status === "error" || t.status === "interrupted" || t.status === "orphaned"))
-      .sort((a, b) => Date.parse(a.end ?? a.start) - Date.parse(b.end ?? b.start));
+      .sort((a, b) => retryCutoffMs(a, input.deriveOptions) - retryCutoffMs(b, input.deriveOptions));
     const last = previous[previous.length - 1];
     if (last) {
-      const cutoff = Date.parse(last.end ?? last.start);
+      const cutoff = retryCutoffMs(last, input.deriveOptions);
       const covering = (input.registryChecks ?? []).filter((c) => {
         const at = Date.parse(c.at);
         const since = Date.parse(c.since);
