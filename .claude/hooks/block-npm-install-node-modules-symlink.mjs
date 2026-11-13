@@ -181,8 +181,11 @@ function readQuotedString(text, start) {
   let i = start + 1;
   while (i < text.length) {
     const ch = text[i];
-    if (quote === '"' && ch === "\\" && i + 1 < text.length) {
-      value += text[i + 1];
+    // #12942: como no bash, entre aspas duplas a `\` só escapa $, crase, `"`,
+    // `\` e newline; antes de outro caractere ela fica (`"cd C:\wt"` mantém
+    // a barra). `\<newline>` é continuação e some.
+    if (quote === '"' && ch === "\\" && i + 1 < text.length && '$`"\\\n'.includes(text[i + 1])) {
+      if (text[i + 1] !== "\n") value += text[i + 1];
       i += 2;
       continue;
     }

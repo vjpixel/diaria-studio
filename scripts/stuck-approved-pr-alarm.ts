@@ -22,7 +22,13 @@
  * conjunto novo vira comentário, lista vazia fecha a issue), igual ao
  * `stale-red-pr-alarm.ts` desde o #8767.
  *
- * `gh pr list` falho sai 1 sem alarmar (nunca lido como "0 PRs"). Falha no
+ * Repos (#13003): todos de `platform.config.json → issue_repos` (o studio
+ * sempre primeiro), com `-R owner/name` fora do repo default. PR do
+ * diaria-design parada também é trabalho pronto parado.
+ *
+ * `gh pr list` falho no repo default sai 1 sem alarmar (nunca lido como "0
+ * PRs"). Falho num repo extra conta como pulado (o repo não foi checado: não
+ * fecha a issue, sai 1), sem descartar os achados do studio. Falha no
  * `gh pr view` de uma candidata pula só ela, com aviso em stderr, e conta:
  * com alguma pulada a run NUNCA fecha a issue nem comenta conjunto novo, e
  * sai 1 (`decideStuckApprovedRunOutcome`, #12950 review). Falha de
@@ -35,6 +41,7 @@ import { applyCliAction, type CliSpec, hasFlag, getArg, isMainModule } from "./l
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { findExistingAlarmIssue } from "./lib/alarm-issues.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
+import { isDefaultIssueRepo, loadIssueRepos } from "./lib/issue-repos.ts";
 import {
   buildStuckApprovedPrAlarmEmail,
   decideStuckApprovedRunOutcome,
@@ -66,11 +73,17 @@ interface GhPrListEntry {
   headRefOid?: string | null;
 }
 
+/** `-R owner/name` só fora do repo default (#13003). */
+export function ghRepoArgs(repo: string | undefined): string[] {
+  return repo === undefined || isDefaultIssueRepo(repo) ? [] : ["-R", repo];
+}
+
 /** `null` em falha do `gh` ou JSON malformado; nunca "0 PRs abertas". */
-export function listOpenPrsBasic(cwd: string = ROOT): StuckApprovedPrBasicEntry[] | null {
+export function listOpenPrsBasic(cwd: string = ROOT, repo?: string): StuckApprovedPrBasicEntry[] | null {
+  const repoArgs = ghRepoArgs(repo);
   const res = spawnGhSync(
     [
-      "pr", "list", "--state", "open",
+      "pr", "list", ...repoArgs, "--state", "open",
       "--json", "number,title,body,isDraft,labels,createdAt,mergeable,statusCheckRollup,reviewDecision,headRefOid",
       "--limit", "100",
     ],
@@ -82,6 +95,7 @@ export function listOpenPrsBasic(cwd: string = ROOT): StuckApprovedPrBasicEntry[
     if (!Array.isArray(entries)) return null;
     return entries.map((e) => ({
       number: e.number,
+      ...(repoArgs.length > 0 ? { repo } : {}),
       title: e.title,
       body: typeof e.body === "string" ? e.body : null,
       isDraft: e.isDraft === true,
@@ -98,8 +112,8 @@ export function listOpenPrsBasic(cwd: string = ROOT): StuckApprovedPrBasicEntry[
 }
 
 /** `comments` de UMA PR; `null` em falha (a candidata é pulada, nunca vira "sem review"). */
-export function fetchPrComments(prNumber: number, cwd: string = ROOT): unknown[] | null {
-  const res = spawnGhSync(["pr", "view", String(prNumber), "--json", "comments"], cwd);
+export function fetchPrComments(prNumber: number, cwd: string = ROOT, repo?: string): unknown[] | null {
+  const res = spawnGhSync(["pr", "view", String(prNumber), ...ghRepoArgs(repo), "--json", "comments"], cwd);
   if (res.status !== 0) return null;
   try {
     const parsed = JSON.parse(res.stdout) as { comments?: unknown };
@@ -131,25 +145,35 @@ async function main(): Promise<void> {
     throw new Error(`--threshold-hours deve ser um número positivo, recebido "${thresholdArg}"`);
   }
 
-  const basicPrs = listOpenPrsBasic();
-  if (basicPrs === null) {
-    console.error(`${LOG_PREFIX} 'gh pr list' falhou: não avalia, não alarma. Checar 'gh auth status'.`);
-    process.exitCode = 1;
-    return;
+  const repos = loadIssueRepos(ROOT);
+  const basicPrs: StuckApprovedPrBasicEntry[] = [];
+  let skipped = 0;
+  for (const repo of repos) {
+    const listed = listOpenPrsBasic(ROOT, repo);
+    if (listed === null) {
+      if (isDefaultIssueRepo(repo)) {
+        console.error(`${LOG_PREFIX} 'gh pr list' falhou: não avalia, não alarma. Checar 'gh auth status'.`);
+        process.exitCode = 1;
+        return;
+      }
+      console.error(`${LOG_PREFIX} 'gh pr list -R ${repo}' falhou: repo não checado nesta run (conta como pulado).`);
+      skipped++;
+      continue;
+    }
+    basicPrs.push(...listed);
   }
 
   const now = new Date();
   const candidates = selectStuckApprovedCandidates(basicPrs, now, thresholdHours);
   const withComments: StuckApprovedPrEntry[] = [];
-  let skipped = 0;
   for (const candidate of candidates) {
     if (candidate.reviewDecision === "APPROVED") {
       withComments.push({ ...candidate, comments: [] });
       continue;
     }
-    const comments = fetchPrComments(candidate.number);
+    const comments = fetchPrComments(candidate.number, ROOT, candidate.repo);
     if (comments === null) {
-      console.error(`${LOG_PREFIX} 'gh pr view ${candidate.number} --json comments' falhou: pulando esta PR nesta run.`);
+      console.error(`${LOG_PREFIX} 'gh pr view ${candidate.number}${candidate.repo ? ` -R ${candidate.repo}` : ""} --json comments' falhou: pulando esta PR nesta run.`);
       skipped++;
       continue;
     }
@@ -158,7 +182,7 @@ async function main(): Promise<void> {
 
   const findings = evaluateStuckApprovedPrs(withComments, now, thresholdHours);
   console.log(
-    `${LOG_PREFIX} PRs abertas: ${basicPrs.length}, candidatas (verdes, abertas há >= ${thresholdHours}h): ${candidates.length}, aprovadas e paradas: ${findings.length}, puladas por falha do gh: ${skipped}`,
+    `${LOG_PREFIX} repos: ${repos.join(", ")}; PRs abertas: ${basicPrs.length}, candidatas (verdes, abertas há >= ${thresholdHours}h): ${candidates.length}, aprovadas e paradas: ${findings.length}, puladas por falha do gh: ${skipped}`,
   );
 
   const outcome = decideStuckApprovedRunOutcome(findings.length, skipped);

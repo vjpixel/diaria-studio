@@ -104,6 +104,7 @@ import {
   type IssueKey,
 } from "./lib/issue-key.ts";
 import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
+import { deriveOpenPrCiState, type OpenPrCheckRunLike, type OpenPrCiState } from "./lib/issue-open-pr-check.ts";
 
 /** `-R owner/repo` para um repo que não é o diaria-studio; `[]` para o
  * studio (a chamada de sempre, que resolve pelo cwd). */
@@ -223,6 +224,24 @@ function buildRealConsultor(repoRoot: string, allowlist: readonly string[]): Blo
     },
     getIssueState(issueNumber: number, repo?: string): IssueState {
       return fetchIssueData(issueNumber, repo).state;
+    },
+    // #13003: reavalia `aguardar-ci` quando o CI termina. Mesma derivação
+    // (`deriveOpenPrCiState`) que gerou o `orphan_action`; falha do `gh` vira
+    // `unknown` (não verificável, nunca "terminou").
+    getPrCiState(prNumber: number, repo?: string): OpenPrCiState {
+      if (!repoAllowed(repo)) return "unknown";
+      const result = spawnSync("gh", ["pr", "view", String(prNumber), ...repoArgs(repo), "--json", "statusCheckRollup"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      if (result.error || result.status !== 0 || !result.stdout) return "unknown";
+      try {
+        const parsed = JSON.parse(result.stdout) as { statusCheckRollup?: OpenPrCheckRunLike[] | null };
+        return deriveOpenPrCiState(parsed.statusCheckRollup);
+      } catch {
+        return "unknown";
+      }
     },
   };
 }

@@ -77,7 +77,11 @@ export function tokenize(command) {
         j++;
       }
       if (j >= n) return null;
-      tok += command.slice(i + 1, j);
+      const body = command.slice(i + 1, j);
+      // #12942: entre aspas duplas a `\` só escapa $, crase, `"`, `\` e
+      // newline (regra do bash); antes de outro caractere ela fica
+      // (`"C:\Users\x\wt"` intacto). Aspas simples: tudo literal.
+      tok += ch === '"' ? body.replace(/\\([$`"\\\n])/g, (_m, c) => (c === "\n" ? "" : c)) : body;
       has = true;
       i = j;
     } else if (ch === "&" || ch === ";" || ch === "|" || ch === "\n") {

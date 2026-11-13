@@ -47,6 +47,7 @@ import {
   resolveGitRoot,
 } from "./block-pr-create-pii-runtime-artifacts.mjs";
 import { isForeignRepoGhCommand } from "./lib/gh-target-repo.mjs";
+import { isStudioCheckout, studioLogRoot } from "./lib/studio-checkout.mjs";
 
 /** Var de ambiente do escape hatch — nome único pra não colidir com nenhum
  * outro guard/flag do repo. */
@@ -176,12 +177,22 @@ if (
       // checkout dele) — esta é uma regra do diaria-studio, não se aplica lá.
       // Repo indeterminado segue aplicando a regra (comportamento anterior).
       if (isForeignRepoGhCommand(command, cwd)) return;
+      // #12951: o log vai sempre para o `data/` do studio (checkout principal),
+      // nunca para o cwd — num worktree de outro repo a linha virava arquivo
+      // não rastreado e travava o `git worktree remove`.
+      const logRoot = studioLogRoot(hookDir);
+      // #12951: checkout de OUTRO repo com `origin` que não diz o repo (clone
+      // local, remote ilegível) — a regra do studio não se aplica lá.
+      if (isStudioCheckout(cwd, hookDir) === false) {
+        logSnapshotGuardEvent("orchestrator_snapshot_pr_guard_skipped_foreign_checkout", { cwd }, { repoRoot: logRoot });
+        return;
+      }
 
       if (process.env[SNAPSHOT_PR_GUARD_BYPASS_ENV] === "1") {
         logSnapshotGuardEvent(
           "orchestrator_snapshot_pr_guard_bypassed",
           { command: typeof command === "string" ? command.slice(0, 500) : null },
-          { repoRoot: cwd },
+          { repoRoot: logRoot },
         );
         return;
       }
@@ -189,7 +200,7 @@ if (
       const result = runOrchestratorSnapshotCheck(cwd);
 
       if (result.infra) {
-        logSnapshotGuardEvent("orchestrator_snapshot_pr_guard_infra_error", { output: result.output?.slice?.(0, 500) ?? null }, { repoRoot: cwd });
+        logSnapshotGuardEvent("orchestrator_snapshot_pr_guard_infra_error", { output: result.output?.slice?.(0, 500) ?? null }, { repoRoot: logRoot });
         return; // fail-open: teste não rodou por motivo de ambiente, não bloqueia
       }
 
@@ -197,7 +208,7 @@ if (
         logSnapshotGuardEvent(
           "orchestrator_snapshot_pr_guard_blocked",
           { command: typeof command === "string" ? command.slice(0, 500) : null },
-          { repoRoot: cwd },
+          { repoRoot: logRoot },
         );
         process.stdout.write(
           JSON.stringify({
