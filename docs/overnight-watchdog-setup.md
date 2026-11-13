@@ -62,7 +62,9 @@ estado.
 `~/.config/systemd/user/`, roda `daemon-reload` e `enable --now`, com um
 guard: um `.timer` que já existe e está `ActiveState=inactive` (parado
 deliberadamente via `systemctl --user stop`) é **preservado por padrão** —
-o script avisa e pula, só religando com `--rearm-stopped` explícito. O
+o script avisa e pula, só religando com `--rearm-stopped` explícito. Tasks
+com `enabled: false` no registro ficam fora do arme sem `--task` (#12930);
+com `--task` numa delas o script recusa, salvo `--force-disabled`. O
 watchdog em si continua fora desse script (fora do registry, ver acima) —
 o arme dele segue manual, passo 2 abaixo.
 

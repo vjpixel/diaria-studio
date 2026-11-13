@@ -28,11 +28,13 @@ import {
   queryUnitState,
   reportVerifyOutcome,
   runVerify,
+  selectTasksToArm,
   type SystemdUnitState,
 } from "../scripts/arm-systemd-timers.ts";
 import {
   listDisabledScheduledTaskNames,
   listScheduledTaskNames,
+  SCHEDULED_TASKS,
   type ScheduledTaskDefinition,
 } from "../scripts/lib/scheduled-tasks.ts";
 import { unitBaseName } from "../scripts/lib/systemd-units.ts";
@@ -437,6 +439,111 @@ describe("armSystemdTimers", () => {
 });
 
 // ---------------------------------------------------------------------------
+// selectTasksToArm (#12930) — tasks com `enabled: false` ficam fora do arme
+// ---------------------------------------------------------------------------
+
+describe("selectTasksToArm (#12930)", () => {
+  const enabledA = fakeTask("Diaria-Fake-Enabled-A");
+  const disabled: ScheduledTaskDefinition = { ...fakeTask("Diaria-Fake-Disabled"), enabled: false };
+  const enabledExplicit: ScheduledTaskDefinition = { ...fakeTask("Diaria-Fake-Enabled-B"), enabled: true };
+  const registry = [enabledA, disabled, enabledExplicit];
+
+  it("sem --task -> só as habilitadas (enabled ausente ou true); a desativada fica de fora", () => {
+    const r = selectTasksToArm(registry, undefined, false);
+    assert.equal(r.ok, true);
+    if (r.ok) assert.deepEqual(r.tasks.map((t) => t.name), ["Diaria-Fake-Enabled-A", "Diaria-Fake-Enabled-B"]);
+  });
+
+  it("cenário da issue: --rearm-stopped sem --task, unit da desativada existe e está inactive -> nunca religada", () => {
+    const unitsDirAbs = mkdtempSync(join(tmpdir(), "arm-systemd-units-12930-"));
+    const targetDirAbs = mkdtempSync(join(tmpdir(), "arm-systemd-target-12930-"));
+    try {
+      // As duas units existem em .systemd-units/ (o gerador não apaga a da
+      // task desativada) e as duas estão paradas.
+      writeFakeUnitFiles(unitsDirAbs, unitBaseName(enabledA.name));
+      writeFakeUnitFiles(unitsDirAbs, unitBaseName(disabled.name));
+      const calls: string[][] = [];
+      const exec = makeMockExec({ show: () => "LoadState=loaded\nActiveState=inactive\n" }, calls);
+
+      const selection = selectTasksToArm(registry.slice(0, 2), undefined, false);
+      assert.equal(selection.ok, true);
+      if (!selection.ok) return;
+      const results = armSystemdTimers(selection.tasks, { unitsDirAbs, targetDirAbs, rearmStopped: true, exec });
+
+      const disabledTimer = `${unitBaseName(disabled.name)}.timer`;
+      assert.deepEqual(results.map((r) => r.taskName), [enabledA.name]);
+      assert.ok(!calls.some((c) => c.includes(disabledTimer)), "a unit da task desativada não pode nem ser consultada");
+      assert.ok(calls.some((c) => c[2] === "enable" && c[4] === `${unitBaseName(enabledA.name)}.timer`));
+    } finally {
+      rmSync(unitsDirAbs, { recursive: true, force: true });
+      rmSync(targetDirAbs, { recursive: true, force: true });
+    }
+  });
+
+  it("--task numa task desativada -> recusa (task-disabled), mensagem cita --force-disabled", () => {
+    const r = selectTasksToArm(registry, "Diaria-Fake-Disabled", false);
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.equal(r.reason, "task-disabled");
+      assert.match(r.message, /enabled: false/);
+      assert.match(r.message, /--force-disabled/);
+    }
+  });
+
+  it("--task numa desativada COM --force-disabled -> arma só ela", () => {
+    const r = selectTasksToArm(registry, "Diaria-Fake-Disabled", true);
+    assert.equal(r.ok, true);
+    if (r.ok) assert.deepEqual(r.tasks.map((t) => t.name), ["Diaria-Fake-Disabled"]);
+  });
+
+  it("--task numa habilitada -> só ela, com ou sem --force-disabled", () => {
+    for (const force of [false, true]) {
+      const r = selectTasksToArm(registry, "Diaria-Fake-Enabled-A", force);
+      assert.equal(r.ok, true);
+      if (r.ok) assert.deepEqual(r.tasks.map((t) => t.name), ["Diaria-Fake-Enabled-A"]);
+    }
+  });
+
+  it("--task desconhecida -> unknown-task", () => {
+    const r = selectTasksToArm(registry, "Diaria-Nao-Existe-12930", false);
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.reason, "unknown-task");
+  });
+
+  it("--force-disabled sem --task -> recusa (force-without-task), nunca arma as desativadas em massa", () => {
+    const r = selectTasksToArm(registry, undefined, true);
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.reason, "force-without-task");
+  });
+
+  it("registro real: sem --task nenhuma task desativada entra (inclui Diaria-OneDrive-Sync-Alarm, #12923)", () => {
+    const disabledNames = listDisabledScheduledTaskNames();
+    assert.ok(disabledNames.includes("Diaria-OneDrive-Sync-Alarm"), "fixture real da issue sumiu do registro");
+    const r = selectTasksToArm(SCHEDULED_TASKS, undefined, false);
+    assert.equal(r.ok, true);
+    if (!r.ok) return;
+    const selected = new Set(r.tasks.map((t) => t.name));
+    for (const name of disabledNames) assert.ok(!selected.has(name), `${name} não deveria ser armada`);
+    assert.equal(r.tasks.length, SCHEDULED_TASKS.length - disabledNames.length);
+  });
+
+  it("main(['--task', <desativada real>]) -> exit 1 antes de tocar systemctl; --force-disabled sem --task -> exit 2", () => {
+    const disabledName = "Diaria-OneDrive-Sync-Alarm";
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(" ")); };
+    try {
+      assert.equal(armSystemdTimersMain(["--task", disabledName], "/repo/abs"), 1);
+      assert.ok(errors.some((l) => l.includes(disabledName) && l.includes("--force-disabled")));
+      assert.equal(armSystemdTimersMain(["--force-disabled"], "/repo/abs"), 2);
+      assert.equal(armSystemdTimersMain(["--rearm-stopped", "--force-disabled"], "/repo/abs"), 2);
+    } finally {
+      console.error = originalError;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CLI main() — só os caminhos que retornam ANTES de tocar systemctl real
 // ---------------------------------------------------------------------------
 
@@ -640,6 +747,7 @@ describe("runVerify / reportVerifyOutcome (#7032)", () => {
   for (const combo of [
     ["--verify", "--task", "Diaria-Apoios-Diff-Alarm"],
     ["--verify", "--rearm-stopped"],
+    ["--verify", "--force-disabled"],
     ["--verify", "--units-dir", "/tmp/units"],
     ["--verify", "--target-dir", "/tmp/target"],
     ["--task", "Diaria-Apoios-Diff-Alarm", "--verify"],
