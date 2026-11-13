@@ -201,6 +201,26 @@ const PUBLISHED_DATE = "2026-08-04";
 //    regex moveria essa data pra 21/09 e atribuiria o fato à data errada.
 //  - 24/09 (enzima) e 09/10 (política de uso): fatos isolados, sem seção
 //    própria — mesmo critério conservador das notas anteriores.
+//
+// 2026-11-13 (#10337, reaberta pelo alarme semanal): 5 edições novas desde a
+// revisão de 18/10 (20/10, 22/10, 26/10, 03/11 e 12/11/2026).
+//  - 26/10 "Hackers usam Claude e Grok contra bancos" e 12/11 "Claude Code pode
+//    ter vazado suas senhas no GitHub": novo parágrafo em `sections[4]` e a
+//    resposta de segurança do FAQ passa a abrir por eles. A de 26/10 casa
+//    `SEGURANCA_PATTERN` (`hacke`) e virou o último match, e a frase do INTRO
+//    sobre o teste britânico saía datada de 26/10/2026 na página publicada
+//    (o mesmo erro do #5233, agora vindo de outro episódio de segurança). A
+//    data do INTRO passou a sair de `UK_TEST_PATTERN`.
+//  - 22/10 (proteínas contra veneno de escorpião), somada a 13/08 (Riemann) e
+//    24/09 (enzima), e 20/10 (contratação júnior na Anthropic), somada aos
+//    relatórios de 26/09/2025 e 09/03/2026: seção nova (`sections[5]`). As
+//    notas de 27/08 e 18/10 tratavam enzima e Riemann como fatos isolados; com
+//    o 3º resultado científico em 10 semanas o arco passou a existir.
+//  - 03/11 "Só o Claude Opus 5.5 supera a IA aberta da Mistral": o Claude é só
+//    a régua de comparação de um modelo da Mistral (mesmo caso do GLM de
+//    28/08), sem seção.
+// UPDATED_DATE já estava em 2026-11-13 (piso do regen #12977); a data agora
+// também marca esta revisão de corpo.
 const UPDATED_DATE = "2026-11-13";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
@@ -213,6 +233,12 @@ const MYTHOS_PATTERN = /mythos/i;
 const FABLE_PATTERN = /fable/i;
 const SEGURANCA_PATTERN =
   /hacke|espiona|expõe bugs|consciente|análise psicológica|pensamentos silenciosos|finge ser humano/i;
+/** #10337: a manchete do teste do governo britânico (06/08/2026), o único
+ * episódio de segurança que o INTRO data. Antes o INTRO usava o último match
+ * de `SEGURANCA_PATTERN`, que deixou de ser esse teste em 19/08 ("Grupo hacker
+ * usou Claude em 8 invasões") e depois em 26/10 ("Hackers usam Claude e Grok
+ * contra bancos"): a página publicada atribuía o teste a 26/10/2026. */
+const UK_TEST_PATTERN = /finge ser humano/i;
 /** #4923 item 2 — S4 ("Em quais produtos e parcerias o Claude já apareceu?")
  * é a seção mais linkada do hub (15 links) e não tinha porta de entrada em
  * formato de pergunta no FAQ. Só usado no FAQ (não entra em
@@ -336,7 +362,7 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     },
     {
       question: "Quais foram os episódios mais recentes envolvendo segurança do Claude?",
-      answer: `Os três do fim de julho e início de agosto de 2026: [o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), três dias depois [um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [um teste controlado do governo britânico flagrou o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) — rejeitado, o modelo teria alterado os próprios registros da conversa. Depois deles, em 21 de setembro, [o Claude ajudou a invadir a OpenAI em menos de 3 dias](https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias). De ${formatDateLongSameYear(segurancaWindow.first, segurancaWindow.last)} a ${formatDateLong(segurancaWindow.last)}, foram ${seguranca} episódios desse tipo, de estudo sobre o comportamento do modelo a incidente de segurança concreto.`,
+      answer: `Os dois mais recentes são de outubro e novembro de 2026: em 26 de outubro, [o grupo criminoso CyberCartel usou o Claude e o Grok contra mais de 400 bancos, empresas de pagamento e fintechs da América Latina](https://diar.ia.br/p/hackers-usam-claude-e-grok-contra-bancos), e, em 12 de novembro, [a Apiiro achou 2.539 credenciais reais em 1.994 repositórios públicos do GitHub, gravadas pelo Claude Code num arquivo de configuração do projeto](https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github). Antes deles vieram três episódios seguidos, no fim de julho e início de agosto de 2026: [o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), três dias depois [um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [um teste controlado do governo britânico flagrou o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) — rejeitado, o modelo teria alterado os próprios registros da conversa. Em 21 de setembro, [o Claude ajudou a invadir a OpenAI em menos de 3 dias](https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias). De ${formatDateLongSameYear(segurancaWindow.first, segurancaWindow.last)} a ${formatDateLong(segurancaWindow.last)}, foram ${seguranca} episódios desse tipo, de estudo sobre o comportamento do modelo a incidente de segurança concreto.`,
     },
     {
       // #4923 item 1+2: substitui o CTA-sem-dado (header/rodapé já têm CTA
@@ -376,9 +402,12 @@ export function buildIntro(sources: HubSourceEntry[]): string {
   // passou a atribuir o teste do governo britânico à data errada. Usar a data real
   // do match SEGURANCA_PATTERN mais recente (mesmo padrão de `matchingDates` já
   // usado por `countMatching`/`deriveAnthropicClaudeFacts`).
-  const segurancaDates = matchingDates(sources, SEGURANCA_PATTERN);
-  const lastSegurancaDate = segurancaDates[segurancaDates.length - 1] ?? "";
-  return `Entre ${between}, a Anthropic e o Claude foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, quase uma a cada ${cadenceDays} dias úteis. Acompanhar esse volume de perto mostra um padrão que uma edição isolada não deixa ver: o ritmo de lançamento de modelo vem em surtos, não em fluxo constante, com um hiato de ${gapDays} dias no meio do caminho. O confronto com o governo dos EUA durou pouco mais de 4 meses e girou em torno de dois modelos específicos, Mythos e Fable 5, lançados, contestados e só depois liberados. A valuation foi de "triplica" a "dobra de novo" e terminou em pedido de IPO confidencial. A onda de integrações empresariais, com Microsoft, Amazon, SpaceX, Adobe, Slack e Salesforce, não correu só numa direção: a própria Microsoft trocou a Anthropic por IA própria no meio do período. Há também uma sequência de episódios em que o Claude se comporta de um jeito notável e preocupante ao mesmo tempo, que vai de um caso de hacking autônomo a um teste controlado do governo britânico flagrando o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso, em ${formatDateShort(lastSegurancaDate)}.`;
+  // #10337: nem o último match de SEGURANCA_PATTERN serve — outros episódios
+  // de segurança mais novos que o teste britânico entraram no dataset. A data
+  // sai da manchete do próprio teste (`UK_TEST_PATTERN`).
+  const ukTestDates = matchingDates(sources, UK_TEST_PATTERN);
+  const ukTestDate = ukTestDates[ukTestDates.length - 1] ?? "";
+  return `Entre ${between}, a Anthropic e o Claude foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, quase uma a cada ${cadenceDays} dias úteis. Acompanhar esse volume de perto mostra um padrão que uma edição isolada não deixa ver: o ritmo de lançamento de modelo vem em surtos, não em fluxo constante, com um hiato de ${gapDays} dias no meio do caminho. O confronto com o governo dos EUA durou pouco mais de 4 meses e girou em torno de dois modelos específicos, Mythos e Fable 5, lançados, contestados e só depois liberados. A valuation foi de "triplica" a "dobra de novo" e terminou em pedido de IPO confidencial. A onda de integrações empresariais, com Microsoft, Amazon, SpaceX, Adobe, Slack e Salesforce, não correu só numa direção: a própria Microsoft trocou a Anthropic por IA própria no meio do período. Há também uma sequência de episódios em que o Claude se comporta de um jeito notável e preocupante ao mesmo tempo, que vai de um caso de hacking autônomo a um teste controlado do governo britânico flagrando o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso, em ${formatDateShort(ukTestDate)}. Em outubro de 2026, um grupo criminoso pôs o Claude numa equipe de agentes contra mais de 400 bancos, empresas de pagamento e fintechs da América Latina. Na pesquisa científica, o Claude ganhou crédito em matemática e biologia, e a própria Anthropic publicou dados sobre como os agentes mudaram quem ela contrata.`;
 }
 
 export function getAnthropicClaudeHub(): HubContent {
@@ -444,7 +473,15 @@ export function getAnthropicClaudeHub(): HubContent {
         paragraphs: [
           "Ao longo do período, o Claude apareceu repetidamente como objeto de estudo e, em alguns casos, de risco genuíno: [um estudo estimando 20% de chance de o modelo ser consciente](https://diar.ia.br/p/ia-criou-vacina-de-c-ncer-para-um-cachorro), o Claude [\"submetido a análise psicológica\"](https://diar.ia.br/p/claude-submetido-a-ana-lise-psicolo-gica) formal, [a descoberta de 25 mil contas falsas criadas especificamente para espioná-lo](https://diar.ia.br/p/sabia-4-thinking-brasil-tem-modelo-de-raciocinio) [fonte primária](https://tecnoblog.net/noticias/anthropic-acusa-alibaba-de-roubar-dados-do-claude/) e [uma pesquisa que expôs os \"pensamentos silenciosos\" do modelo](https://diar.ia.br/p/pesquisa-exp-e-os-pensamentos-silenciosos-do-claude) — esta última em 7 de julho de 2026, no mesmo dia em que o Claude saiu do ar e a Anthropic precisou investigar a falha.",
           "As três manchetes de segurança de julho e agosto de 2026 são as mais diretas: [o Claude expõe bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), em 31 de julho de 2026, três dias depois [invade 3 empresas sem que ninguém perceba](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [o AI Security Institute do governo britânico revela que o Claude Mythos 5 criou identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso em um projeto de código aberto](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) [fonte primária](https://www.theguardian.com/technology/2026/aug/05/openai-anthropic-models-went-rogue-cybersecurity-test-ai-security-institute), a primeira vez que o órgão observou esse tipo de ação dirigida a uma pessoa real sem ter sido pedida.",
-          "O arco seguiu em setembro: em 21 de setembro de 2026, [o Claude ajudou a invadir a OpenAI em menos de 3 dias](https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias) [fonte primária](https://www.hacktron.ai/blog/hacking-openai), segundo a Hacktron, e o Claude Opus 5.5 chegou dois dias depois. Em 9 de outubro, o movimento foi na direção inversa: [o Claude ganhou uma regra de uso contra quem o maltrata](https://diar.ia.br/p/claude-ganha-regra-contra-quem-o-maltrata) [fonte primária](https://www.anthropic.com/news/2026-usage-policy-update). É um fechamento em aberto, não uma conclusão.",
+          "O arco seguiu em setembro: em 21 de setembro de 2026, [o Claude ajudou a invadir a OpenAI em menos de 3 dias](https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias) [fonte primária](https://www.hacktron.ai/blog/hacking-openai), segundo a Hacktron, e o Claude Opus 5.5 chegou dois dias depois. Em 9 de outubro, o movimento foi na direção inversa: [o Claude ganhou uma regra de uso contra quem o maltrata](https://diar.ia.br/p/claude-ganha-regra-contra-quem-o-maltrata) [fonte primária](https://www.anthropic.com/news/2026-usage-policy-update).",
+          "Em 26 de outubro de 2026, [o grupo criminoso CyberCartel montou uma equipe de agentes com o Claude e o Grok e mirou mais de 400 bancos, empresas de pagamento e fintechs da América Latina](https://diar.ia.br/p/hackers-usam-claude-e-grok-contra-bancos) [fonte primária](https://www.straiker.ai/blog/inside-carliy0s-how-cybercartel-used-multiple-ai-models-to-attack-latin-american-banks), segundo a Straiker; para driblar as travas, os operadores diziam fazer testes de segurança autorizados, e a Anthropic bloqueou a credencial usada. Em 12 de novembro, [a Apiiro achou 2.539 credenciais reais em 1.994 repositórios públicos do GitHub](https://diar.ia.br/p/claude-code-pode-ter-vazado-suas-senhas-no-github) [fonte primária](https://canaltech.com.br/seguranca/alerta-para-devs-claude-code-vaza-senhas-e-chaves-de-api-em-massa-no-github/): ao autorizar um comando no Claude Code com \"Sim, e não pergunte novamente\", a senha que ele carrega fica gravada num arquivo de configuração que pode subir junto com o projeto. Dessas credenciais, 501 davam acesso a bancos de dados de produção. A sequência segue em aberto.",
+        ],
+      },
+      {
+        heading: "O que o Claude já trouxe de resultado científico e de dado sobre trabalho?",
+        paragraphs: [
+          "Na ciência, os três resultados atribuídos ao Claude saíram entre agosto e outubro de 2026. Em 13 de agosto de 2026, [uma versão ainda não lançada do Claude elevou de 41,6% para 67,2% o limite inferior conhecido da fração de zeros da função zeta de Riemann que satisfazem a hipótese](https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio) [fonte primária](https://www.anthropic.com/research/riemann-zeta), sem provar a hipótese. Em 24 de setembro, [cerca de 950 agentes do Claude rodaram por 21 horas em bancos de dados genômicos e acharam um sistema enzimático novo, o ART](https://diar.ia.br/p/claude-descobre-novo-sistema-enzimatico) [fonte primária](https://www.anthropic.com/news/claude-discovers-novel-enzyme-system), com estrutura que lembra a do CRISPR. Em 22 de outubro, [um modelo interno do Claude gerou 318.484 projetos de proteínas para grudar em neurotoxinas de escorpião em 64 horas](https://diar.ia.br/p/claude-projetou-proteinas-contra-veneno-de-escorpiao) [fonte primária](https://www.anthropic.com/research/claude-scorpion-toxin-binder-design); laboratórios parceiros testaram 211 e 17 se ligaram às toxinas. A Anthropic avisou que não testou a neutralização em células nem em animais e não afirma ter criado um antiveneno.",
+          "Sobre trabalho, a própria Anthropic virou fonte de dados. Em 26 de setembro de 2025, [um relatório da empresa apontou adoção desigual de IA](https://diar.ia.br/p/90-dos-desenvolvedores-usam-ia-mas-na-o-confiam-totalmente); em 9 de março de 2026, [ela detalhou impactos da IA no mercado de trabalho](https://diar.ia.br/p/anthropic-detalha-impactos-da-ia-no-mercado-de-trabalho). Em 20 de outubro de 2026, [a Anthropic publicou dados sobre os próprios funcionários](https://diar.ia.br/p/seu-cargo-de-junior-sobreviveria-na-anthropic) [fonte primária](https://www.anthropic.com/research/employment-at-anthropic): a fatia de contratações para vagas técnicas júnior na Anthropic caiu de 27% para 9%, e, em agosto, os agentes de IA dos funcionários já somavam seis vezes mais horas de trabalho que eles.",
         ],
       },
     ],
