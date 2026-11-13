@@ -53,7 +53,7 @@ describe("#10148 — Diaria-Microsoft-Ads-Editorial-Reasons removida do registro
     assert.deepEqual([...RETIRED_TASK_NAMES].filter((n) => active.has(n)), []);
   });
 
-  it("run-task.ts --task com o nome retirado -> exit 0, no-op (nunca 'Task desconhecida')", () => {
+  it("run-task.ts --task com o nome retirado -> exit 0, no-op (nunca 'Task desconhecida')", async () => {
     const originalLog = console.log;
     const originalError = console.error;
     const logLines: string[] = [];
@@ -61,7 +61,7 @@ describe("#10148 — Diaria-Microsoft-Ads-Editorial-Reasons removida do registro
     console.log = (msg: string) => logLines.push(msg);
     console.error = (msg: string) => errorLines.push(msg);
     try {
-      const code = runTaskMain(["--task", TASK], ROOT);
+      const code = await runTaskMain(["--task", TASK], ROOT);
       assert.equal(code, 0);
       assert.match(logLines.join("\n"), /retirada do registro/);
       assert.doesNotMatch(errorLines.join("\n"), /Task desconhecida/);

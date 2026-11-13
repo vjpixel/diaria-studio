@@ -208,6 +208,8 @@ export type GitSyncOutcome =
                            // volta à mão (`preserved_stash` no resultado) — o que não colidia segue
                            // no working tree (#9925/#9988)
   | "already_up_to_date"  // já na versão mais recente (tree limpa ou suja)
+  | "skipped"             // #12982: sync pulado de propósito pelo chamador (run do Neo, checkout de
+                           // trabalho do editor). Nunca produzido por syncCode(); nada foi conferido
   | "fetch_failed"        // git fetch falhou com erro real (offline / auth / status !== 0 e != null) — warn, segue
   | "fetch_timeout"       // #5302: git fetch origin foi morto pelo timeout do spawnSync (status === null) —
                            // diferente de erro real; refs remotos podem já ter sido atualizados localmente

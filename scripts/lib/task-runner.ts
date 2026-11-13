@@ -95,11 +95,14 @@ export function execTsxStep(
   args: string[],
   cwd: string,
   maxBuffer: number = STEP_MAX_BUFFER_BYTES,
+  /** Env do passo (#12982: a run do Neo passa o `.env` parseado). Default: herda `process.env`. */
+  env?: NodeJS.ProcessEnv,
 ): StepExecResult {
   const result = spawnSync(process.execPath, ["--import", "tsx", scriptAbsPath, ...args], {
     cwd,
     encoding: "utf8",
     maxBuffer,
+    ...(env ? { env } : {}),
   });
   const output = (result.stdout ?? "") + (result.stderr ?? "");
 
@@ -419,7 +422,8 @@ export function runScheduledTask(
     // preservado sem pop automático, decisão do editor 24/09/2026). Ainda
     // conta como SUCESSO de sync aqui: o código FOI atualizado; o stash
     // preservado é assunto de recuperação manual, não motivo pra retentar.
-    const SYNC_SUCCESS_OUTCOMES = new Set<GitSyncOutcome>(["synced", "synced_stash_preserved", "already_up_to_date"]);
+    // #12982: "skipped" é o sync pulado de propósito (run do Neo): não é falha, não retenta.
+    const SYNC_SUCCESS_OUTCOMES = new Set<GitSyncOutcome>(["synced", "synced_stash_preserved", "already_up_to_date", "skipped"]);
     let syncResult: GitSyncResult | null = null;
     let syncAttempt = 0;
     const SYNC_MAX_ATTEMPTS = 3;
