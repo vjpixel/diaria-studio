@@ -95,8 +95,8 @@
  * Exit: 0 (sempre — é filtro, não gate; o draft+gate é no playbook).
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { canonicalizeGmail } from "./lib/canonicalize-gmail.ts";
@@ -113,6 +113,7 @@ import {
   CLARICE_NEWS_SUBJECT,
   classifyReply,
   type ReplyKind,
+  type TriagePlan,
 } from "./lib/clarice-replies-classify.ts";
 
 export interface CapturedReply {
@@ -270,6 +271,94 @@ export interface ClariceNewsReply {
   kind: ReplyKind;
   reason: string;
   data_deletion: boolean;
+  /**
+   * #12984: lote da triagem da Clarice (`clarice-replies-triage.ts --apply`)
+   * que já tratou esta resposta. Ausente = ainda não triada. Marcada por
+   * `markClariceRepliesTriaged`; o gate agrega as triadas numa linha só em vez
+   * de repetir o "PEDIDO DE SAÍDA" por toda a janela de 14 dias.
+   */
+  triaged_in?: string;
+}
+
+/**
+ * #12984: a resposta já foi tratada por um plano APLICADO da triagem da
+ * Clarice (`data/clarice-replies/triage-{lote}.json`)? Devolve o id do lote,
+ * ou `null`.
+ *
+ * - `saida`: só conta se o e-mail está em `applied.saida_store_done` de algum
+ *   plano (a supressão no store aconteceu). Vale por e-mail, não por thread:
+ *   a captura do §0-replies e o Gmail REST da triagem podem divergir no id.
+ * - Outras classes: a mesma `thread_id` aparece num plano já aplicado
+ *   (`last_applied_at`), com a ação daquela classe concluída (`quero` precisa
+ *   do e-mail em `optin_done`; `suporte`/`ruido` só listam), e a mensagem
+ *   capturada não é posterior à aplicação (mensagem nova na thread volta).
+ * - `ambiguo` no plano nunca conta: a triagem deixa pendente, sem ação.
+ *
+ * Pedido de exclusão de DADOS só sai como triado quando a resposta é `saida`
+ * suprimida; a exclusão em si é manual e o gate continua lembrando disso.
+ */
+export function clariceReplyTriagedIn(reply: ClariceNewsReply, plans: readonly TriagePlan[]): string | null {
+  const email = reply.from.trim().toLowerCase();
+  const replyMs = reply.date ? Date.parse(reply.date) : Number.NaN;
+  for (const plan of plans) {
+    const applied = plan.applied;
+    if (!applied) continue;
+    const lower = (xs: readonly string[] | undefined) => (xs ?? []).map((x) => x.toLowerCase());
+    if (reply.kind === "saida") {
+      if (email && lower(applied.saida_store_done).includes(email)) return plan.batch_id;
+      continue;
+    }
+    if (!applied.last_applied_at || !reply.thread_id) continue;
+    const appliedMs = Date.parse(applied.last_applied_at);
+    if (!Number.isNaN(replyMs) && !Number.isNaN(appliedMs) && replyMs > appliedMs) continue;
+    const item = (plan.items ?? []).find((i) => i.thread_id === reply.thread_id);
+    if (!item || item.kind === "ambiguo") continue;
+    if (item.kind === "saida" && !lower(applied.saida_store_done).includes(item.email.toLowerCase())) continue;
+    if (item.kind === "quero" && !lower(applied.optin_done).includes(item.email.toLowerCase())) continue;
+    return plan.batch_id;
+  }
+  return null;
+}
+
+/** #12984: marca `triaged_in` em cada resposta já tratada pela triagem. Puro (devolve cópias). */
+export function markClariceRepliesTriaged(
+  replies: readonly ClariceNewsReply[],
+  plans: readonly TriagePlan[],
+): ClariceNewsReply[] {
+  return replies.map((r) => {
+    const batch = clariceReplyTriagedIn(r, plans);
+    return batch ? { ...r, triaged_in: batch } : { ...r };
+  });
+}
+
+/**
+ * #12984: lê os planos da triagem da Clarice (`triage-*.json`). Fail-soft:
+ * diretório ausente (clone sem `data/`) devolve `[]`; plano ilegível vira
+ * aviso e fica de fora (a resposta segue como não triada, o lado seguro).
+ */
+export function loadClariceTriagePlans(dir: string, warn: (m: string) => void = console.error): TriagePlan[] {
+  if (!existsSync(dir)) return [];
+  const out: TriagePlan[] = [];
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => /^triage-[0-9a-f]{12}\.json$/.test(n)).sort();
+  } catch (err) {
+    warn(`⚠️  triagem da Clarice: não deu pra listar ${dir} (${(err as Error).message}) — respostas seguem como não triadas`);
+    return [];
+  }
+  for (const name of names) {
+    const path = join(dir, name);
+    try {
+      const plan = JSON.parse(readFileSync(path, "utf8")) as TriagePlan;
+      if (!plan || typeof plan.batch_id !== "string" || !plan.applied || !Array.isArray(plan.items)) {
+        throw new Error("plano em formato inesperado");
+      }
+      out.push(plan);
+    } catch (err) {
+      warn(`⚠️  triagem da Clarice: ${path} ilegível (${(err as Error).message}) — ignorado`);
+    }
+  }
+  return out;
 }
 
 function toClariceNewsReply(t: CapturedReply): ClariceNewsReply {
@@ -637,7 +726,12 @@ function readCapturedFile(path: string): CapturedReply[] {
 
 export function filterSubscriberReplies(
   threads: CapturedReply[],
-  opts: { campaignSubjects?: Iterable<string>; previouslyCaptured?: CapturedReply[] } = {},
+  opts: {
+    campaignSubjects?: Iterable<string>;
+    previouslyCaptured?: CapturedReply[];
+    /** #12984: planos da triagem da Clarice (`loadClariceTriagePlans`), para marcar as já triadas. */
+    clariceTriagePlans?: readonly TriagePlan[];
+  } = {},
 ): FilterResult {
   const campaignSubjects = normalizeSubjectSet(opts.campaignSubjects);
   const seenKeys = new Set(
@@ -651,7 +745,10 @@ export function filterSubscriberReplies(
   const humanReplies = threads.filter((t) => !isAlreadyProcessed(t) && passesSenderAndSubjectChecks(t));
   // #12947: resposta à Clarice News sai antes do check de `to` — senão o
   // `pixel@` sem assunto de campanha da diária a jogava em droppedByTo.
-  const clariceReplies = humanReplies.filter(isClariceNewsReply).map(toClariceNewsReply);
+  const clariceReplies = markClariceRepliesTriaged(
+    humanReplies.filter(isClariceNewsReply).map(toClariceNewsReply),
+    opts.clariceTriagePlans ?? [],
+  );
   const baseCandidates = humanReplies.filter((t) => !isClariceNewsReply(t));
   const droppedByTo = baseCandidates.filter((t) => isDroppedByTo(t, campaignSubjects));
   const droppedByToSenders = [...new Set(droppedByTo.map((t) => extractEmail(t.from ?? "")))].slice(
@@ -689,9 +786,14 @@ export function filterSubscriberReplies(
 }
 
 /**
- * #12947: linhas de stderr do bloco Clarice News — vazio quando não há
- * resposta. Pedido de saída (descadastro/LGPD) vem nomeado, um por linha:
- * é o caso que não pode depender de alguém abrir o Gmail.
+ * #12947/#12984: linhas de stderr do bloco Clarice News — vazio quando não há
+ * resposta. O que não pode depender de alguém abrir o Gmail vem nomeado, um
+ * por linha: pedido de saída e TODO pedido de exclusão de dados, de qualquer
+ * `kind` (o classificador devolve `ambiguo` com `data_deletion` quando a
+ * exclusão vem junto com suporte ou "quero"). Os `ambiguo` restantes saem
+ * nomeados pelo remetente. Resposta já tratada por um plano aplicado da
+ * triagem (`triaged_in`) sai agregada numa linha só, sem o alarme, para a
+ * mesma linha não reaparecer por toda a janela de 14 dias.
  */
 export function formatClariceRepliesReport(clariceReplies: ClariceNewsReply[]): string[] {
   if (clariceReplies.length === 0) return [];
@@ -702,10 +804,31 @@ export function formatClariceRepliesReport(clariceReplies: ClariceNewsReply[]): 
     `  📮 ${clariceReplies.length} resposta(s) à Clarice News (reply-to de campanha, não é a diária — sem rascunho aqui): ${summary}. ` +
       "Triagem: npx tsx scripts/clarice-replies-triage.ts (lista o plano; aplicar com --apply --confirm {lote}).",
   ];
-  for (const r of clariceReplies.filter((x) => x.kind === "saida")) {
+  const pending = clariceReplies.filter((r) => !r.triaged_in);
+  const triaged = clariceReplies.filter((r) => r.triaged_in);
+  const subj = (r: ClariceNewsReply) => `"${r.subject.slice(0, 60)}"`;
+  for (const r of pending) {
+    if (r.kind === "saida") {
+      lines.push(
+        `  ⚠️  PEDIDO DE SAÍDA da Clarice News: ${r.from} — ${subj(r)}` +
+          (r.data_deletion ? " (pede exclusão de DADOS, tratar à mão)" : ""),
+      );
+    } else if (r.data_deletion) {
+      lines.push(
+        `  ⚠️  PEDIDO DE EXCLUSÃO DE DADOS da Clarice News (classificado ${r.kind}: ${r.reason}): ${r.from} — ${subj(r)} — tratar à mão`,
+      );
+    }
+  }
+  const ambiguous = pending.filter((r) => r.kind === "ambiguo" && !r.data_deletion);
+  if (ambiguous.length > 0) {
+    lines.push(`  ❓ ${ambiguous.length} ambígua(s) da Clarice News, conferir no Gmail: ${ambiguous.map((r) => `${r.from} (${r.reason})`).join("; ")}`);
+  }
+  if (triaged.length > 0) {
+    const batches = [...new Set(triaged.map((r) => r.triaged_in))].join(", ");
+    const dd = triaged.filter((r) => r.data_deletion).length;
     lines.push(
-      `  ⚠️  PEDIDO DE SAÍDA da Clarice News: ${r.from} — "${r.subject.slice(0, 60)}"` +
-        (r.data_deletion ? " (pede exclusão de DADOS, tratar à mão)" : ""),
+      `  ✅ ${triaged.length} já triada(s) na triagem da Clarice (lote ${batches}), sem ação nova: ${triaged.map((r) => r.from).join(", ")}` +
+        (dd > 0 ? ` — inclui ${dd} pedido(s) de exclusão de DADOS: confirmar que foram tratados à mão` : ""),
     );
   }
   return lines;
@@ -717,7 +840,7 @@ function main(): void {
   const inArg = values["in"];
   if (!inArg) {
     console.error(
-      "Uso: filter-subscriber-replies.ts --in <captured-replies.json> [--campaign-subjects <extra.json>] [--exclude-captured <a.json>[,<b.json>...]]\n" +
+      "Uso: filter-subscriber-replies.ts --in <captured-replies.json> [--campaign-subjects <extra.json>] [--exclude-captured <a.json>[,<b.json>...]] [--clarice-triage-dir <dir>]\n" +
         "     filter-subscriber-replies.ts --in <pass.json> --record-processed <ledger.json> [--thread-ids <a,b>]",
     );
     process.exit(2);
@@ -827,7 +950,12 @@ function main(): void {
       }
     }
   }
-  const result = filterSubscriberReplies(threads, { campaignSubjects, previouslyCaptured });
+  // #12984: planos já aplicados da triagem da Clarice marcam as respostas triadas.
+  const triageDirArg = values["clarice-triage-dir"];
+  const triageDir =
+    typeof triageDirArg === "string" && triageDirArg ? resolve(ROOT, triageDirArg) : resolve(ROOT, "data", "clarice-replies");
+  const clariceTriagePlans = loadClariceTriagePlans(triageDir);
+  const result = filterSubscriberReplies(threads, { campaignSubjects, previouslyCaptured, clariceTriagePlans });
   console.log(JSON.stringify(result, null, 2));
   if (result.replies.length > 0) {
     // #8997: as duas contagens são mutuamente exclusivas (trivial tem

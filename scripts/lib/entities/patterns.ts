@@ -39,10 +39,11 @@ export const ENTITY_KEYWORD_PATTERNS: Record<string, RegExp> = {
   // EXCEÇÃO ao "reproduz exatamente" do topo do arquivo, nas 4 entradas:
   //   - a contagem dos docstrings (`tse.ts`, `pl-2338.ts`, `nubank.ts`,
   //     `maritaca-ai.ts`) foi feita no TEXTO COMPLETO das edições; este
-  //     alarme só vê título+subtítulo do cache, então a contagem dele é menor
-  //     (10 das 33 menções publicadas casam por título) e menção nova só no
-  //     corpo não alarma — limitação #12958, impressa por slug no
-  //     `regenerate-entity-pages.ts` (`entityAlarmCoverage`);
+  //     alarme por título+subtítulo do cache vê menos (10 das 33 menções
+  //     publicadas casam por título); a menção nova só no corpo é coberta
+  //     pelo scanner de texto completo do #12958 (`entity-fulltext-scan.ts`,
+  //     slugs e data de corte em `ENTITY_FULLTEXT_SCAN_SINCE` abaixo), e o
+  //     `regenerate-entity-pages.ts` imprime a cobertura das duas leituras;
   //   - Maritaca acrescenta `sabiazinho`, que a regex de contagem não tinha
   //     (ver docstring de `maritaca-ai.ts`);
   //   - PL 2338 monitora só a família ESTREITA (número do PL e "marco legal
@@ -55,6 +56,27 @@ export const ENTITY_KEYWORD_PATTERNS: Record<string, RegExp> = {
     /\bpl\s*(n[o.º°]?\.?\s*)?2\.?338\b|\bprojeto de lei\s*(n[o.º°]?\.?\s*)?2\.?338\b|marco legal da (ia|inteligencia artificial)\b/i,
   nubank: /\bnubank\b/i,
   "maritaca-ai": /\bmaritaca\b|\bsabia[- ]?\d|\bsabiazinho\b/i,
+};
+
+/**
+ * #12958: entidades cujo alarme também lê o TEXTO COMPLETO das edições do
+ * site (`scripts/lib/entity-fulltext-scan.ts`), e a data (`YYYY-MM-DD`, pela
+ * `article:published_time` da página) a partir da qual o scanner vale.
+ *
+ * O corte existe porque o histórico anterior foi lido à mão na contagem do
+ * #8350 (306 edições, até 11/11/2026): acertos que a leitura descartou de
+ * propósito (Nubank como cliente numa lista, 29/09/2025; "Marco Legal da IA
+ * tramitando" de passagem, 14/05/2026) virariam alarme falso permanente.
+ * Medido em 13/11/2026 sobre as 307 páginas do site: sem corte, o scanner
+ * devolve só essas 2 edições fora do `mentions`, então o corte não esconde
+ * nenhuma menção posterior a 14/05/2026. Entidade nova que entrar aqui leva a
+ * data em que a contagem dela foi feita.
+ */
+export const ENTITY_FULLTEXT_SCAN_SINCE: Readonly<Record<string, string>> = {
+  tse: "2026-11-12",
+  "pl-2338": "2026-11-12",
+  nubank: "2026-11-12",
+  "maritaca-ai": "2026-11-12",
 };
 
 /**

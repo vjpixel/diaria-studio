@@ -83,7 +83,14 @@ describe("computeEntityAlarmCoverage (#8350 item 8, limitação #12958)", () => 
     const known = { "maritaca-ai": new Set(["sabiazinho-chega", "outra-noticia", "nao-esta-no-cache"]) };
     const [c] = computeEntityAlarmCoverage(posts, known, ["maritaca-ai"], NO_OVERRIDES);
     assert.deepEqual(c, { entitySlug: "maritaca-ai", visible: 1, total: 3 });
-    assert.equal(formatEntityAlarmCoverage(c), "maritaca-ai: alarme vê 1/3 menções — limitação #12958 (menção nova só no corpo não alarma)");
+    assert.equal(
+      formatEntityAlarmCoverage(c),
+      "maritaca-ai: título/subtítulo vê 1/3 menções; scanner de texto completo não rodou (sem HTML do site) — menção nova só no corpo não alarma (#12958)",
+    );
+    assert.equal(
+      formatEntityAlarmCoverage({ ...c, fullTextVisible: 3 }),
+      "maritaca-ai: título/subtítulo vê 1/3 menções; texto completo vê 3/3 (#12958)",
+    );
   });
 
   it("slug sem menções conhecidas é pulado, sem lançar", () => {
