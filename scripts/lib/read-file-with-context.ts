@@ -14,11 +14,11 @@
  */
 import { readFileSync } from "node:fs";
 
-/** Códigos de erro que, em `data/` (sincronizado pelo OneDrive), costumam ser o provedor de nuvem. */
+/** Códigos de erro que, em `data/` (sincronizado pelo Drive; no Neo, o Drive for desktop), costumam ser o provedor de nuvem. */
 export const CLOUD_PROVIDER_ERROR_CODES: ReadonlySet<string> = new Set(["UNKNOWN", "EPERM", "EBUSY", "ETIMEDOUT", "EIO"]);
 
 export const CLOUD_PROVIDER_HINT =
-  "o arquivo pode estar só na nuvem (Drive for desktop fechado ou sem baixar o arquivo, ou bisync do 300 atrasado): " +
+  "o arquivo pode estar só na nuvem (Drive for desktop fechado ou sem baixar o arquivo): " +
   "confira se o cliente de sync do Drive está rodando e se o arquivo abre no gerenciador de arquivos, e rode de novo";
 
 /** Erro de leitura com o caminho do arquivo; `code` repete o do erro original. */
@@ -38,7 +38,7 @@ export class FileReadError extends Error {
 
 /**
  * Lê `path` como UTF-8; qualquer erro sai como `FileReadError`, com o caminho
- * e, para os códigos de `CLOUD_PROVIDER_ERROR_CODES`, a dica do OneDrive.
+ * e, para os códigos de `CLOUD_PROVIDER_ERROR_CODES`, a dica do sync do Drive.
  * `read` é injetável para teste.
  */
 export function readUtf8WithContext(path: string, read: (p: string, enc: "utf8") => string = readFileSync): string {

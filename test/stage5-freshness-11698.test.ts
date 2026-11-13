@@ -29,7 +29,7 @@ function put(dir: string, rel: string, content: string): void {
   writeFileSync(join(dir, rel), content, "utf8");
 }
 
-/** "Sync do OneDrive": copia um arquivo de um host para o outro. */
+/** "Sync do Drive": copia um arquivo de um host para o outro. */
 function sync(from: string, to: string, rel: string): void {
   mkdirSync(join(to, "_internal"), { recursive: true });
   copyFileSync(join(from, rel), join(to, rel));
