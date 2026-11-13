@@ -17,7 +17,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import type { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -33,6 +33,7 @@ import {
 import {
   listDisabledScheduledTaskNames,
   listScheduledTaskNames,
+  SCHEDULED_TASKS,
   type ScheduledTaskDefinition,
 } from "../scripts/lib/scheduled-tasks.ts";
 import { unitBaseName } from "../scripts/lib/systemd-units.ts";
@@ -201,6 +202,41 @@ describe("decideArmAction", () => {
 // ---------------------------------------------------------------------------
 // armSystemdTimers — orquestração completa (fs real em tmpdir, systemctl mockado)
 // ---------------------------------------------------------------------------
+
+describe("main — seleção de tasks (#12930)", () => {
+  for (const explicitTask of [false, true]) {
+    it(explicitTask ? "--task recusa uma task desabilitada explicitamente" : "--rearm-stopped global ignora tasks desabilitadas mesmo com units existentes", () => {
+      const disabled = SCHEDULED_TASKS.find((task) => task.enabled === false);
+      assert.ok(disabled, "fixture exige uma task desabilitada no registro");
+      const unitsDir = mkdtempSync(join(tmpdir(), "arm-selection-units-"));
+      const targetDir = mkdtempSync(join(tmpdir(), "arm-selection-target-"));
+      const calls: string[][] = [];
+      const exec = makeMockExec({ show: () => "LoadState=loaded\nActiveState=inactive\n" }, calls);
+      const originalLog = console.log;
+      console.log = () => {};
+      try {
+        // Inclui os arquivos antigos das tasks desabilitadas: sua ausência
+        // mascararia o bug impedindo a cópia/enable por outro motivo.
+        for (const task of SCHEDULED_TASKS) writeFakeUnitFiles(unitsDir, unitBaseName(task.name));
+        const args = ["--rearm-stopped", "--units-dir", unitsDir, "--target-dir", targetDir];
+        if (explicitTask) args.push("--task", disabled.name);
+        assert.equal(armSystemdTimersMain(args, "/repo/abs", exec), explicitTask ? 1 : 0);
+        const expected = explicitTask ? [] : SCHEDULED_TASKS.filter((task) => task.enabled !== false);
+        assert.deepEqual(calls.filter((c) => c[2] === "enable").map((c) => c[4]), expected.map((task) => `${unitBaseName(task.name)}.timer`));
+        for (const task of SCHEDULED_TASKS.filter((task) => task.enabled === false)) {
+          const timer = `${unitBaseName(task.name)}.timer`;
+          assert.equal(calls.some((c) => c[2] === "show" && c[3] === timer), false);
+          assert.equal(existsSync(join(targetDir, timer)), false);
+          assert.equal(existsSync(join(targetDir, `${unitBaseName(task.name)}.service`)), false);
+        }
+      } finally {
+        console.log = originalLog;
+        rmSync(unitsDir, { recursive: true, force: true });
+        rmSync(targetDir, { recursive: true, force: true });
+      }
+    });
+  }
+});
 
 describe("armSystemdTimers", () => {
   let unitsDirAbs: string;

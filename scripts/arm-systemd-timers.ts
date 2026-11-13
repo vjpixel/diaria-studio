@@ -75,7 +75,7 @@
  * `--task`), então aceitar e ignorar a flag silenciosamente seria pior que
  * recusar alto.
  *
- * --task:        arma só a task nomeada (default: todas as SCHEDULED_TASKS).
+ * --task:        arma só a task nomeada, mesmo desabilitada (default: só habilitadas).
  * --rearm-stopped: religa mesmo os timers já existentes e `inactive`
  *                 (comportamento antigo, restaurado explicitamente).
  * --units-dir:   onde ler os `.service`/`.timer` já gerados, relativo à raiz
@@ -433,10 +433,7 @@ const USAGE =
 export function main(
   argv: string[],
   repoRootAbs: string,
-  /** Injetável só pro caminho `--verify` (repassado direto a `runVerify`) —
-   * mesmo padrão de `readArmedTimerUnitBaseNames(exec = execFileSync)`. O
-   * fluxo de ARMAR abaixo não usa este parâmetro; `armSystemdTimers` chama
-   * `systemctl` por conta própria. Existe pra permitir testar `main`
+  /** Injetável nos caminhos de verify e arme. Existe pra permitir testar `main`
    * ponta-a-ponta com um `exec` fake, sem depender de `systemctl`
    * existir/não existir na máquina que roda o teste (#7032, achado do CI
    * Linux vs. Windows no #7037). */
@@ -481,11 +478,16 @@ ${USAGE}`);
   }
   const rearmStopped = hasFlag(argv, "rearm-stopped");
 
-  let tasks = SCHEDULED_TASKS;
+  // --rearm-stopped só sobrepõe o estado do timer, não enabled: false.
+  let tasks = SCHEDULED_TASKS.filter((task) => task.enabled !== false);
   if (taskName) {
     const found = getScheduledTaskByName(taskName);
     if (!found) {
       console.error(`Task desconhecida: "${taskName}".`);
+      return 1;
+    }
+    if (found.enabled === false) {
+      console.error(`Task desabilitada: "${taskName}". O arme explícito de tasks desabilitadas não é permitido.`);
       return 1;
     }
     tasks = [found];
@@ -494,7 +496,7 @@ ${USAGE}`);
   const unitsDirAbs = resolve(repoRootAbs, unitsDirArg ?? DEFAULT_UNITS_DIR);
   const targetDirAbs = targetDirArg ? resolve(targetDirArg) : defaultSystemdUserDir();
 
-  const results = armSystemdTimers(tasks, { unitsDirAbs, targetDirAbs, rearmStopped });
+  const results = armSystemdTimers(tasks, { unitsDirAbs, targetDirAbs, rearmStopped, exec });
 
   let exitCode = 0;
   for (const r of results) {
