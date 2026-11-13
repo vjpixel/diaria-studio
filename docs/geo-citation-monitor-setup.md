@@ -384,7 +384,7 @@ Três mudanças, todas em `scripts/lib/geo-citation-monitor.ts`/
 
 **Painel `entidades` (#8344, 4º passo de `Diaria-Geo-Citation-Monitor`,
 `--panel entidades`)**: 16 perguntas fixas (`GEO_ENTITY_QUESTIONS`, 2 por
-entidade) cobrindo as 8 páginas `especial.diar.ia.br/entidades/{slug}/`
+entidade) cobrindo as 8 páginas internacionais (o lote brasileiro do #8350 fica fora do painel de propósito, reset de baseline) em `especial.diar.ia.br/entidades/{slug}/`
 (alibaba, amazon, apple, deepseek, oracle, perplexity, samsung, xai) — a 2ª
 maior aposta de conteúdo GEO do projeto depois dos hubs, sem medição de
 citação nenhuma até esta issue. Mesmo `--max-monthly-usd 8` dos outros 3

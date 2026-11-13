@@ -145,12 +145,21 @@ export const MIN_ENTITY_MENTIONS = 5;
 /** Piso ABSOLUTO quando a entidade declara `mentionFloorException` (#8350).
  * A exceção ao `MIN_ENTITY_MENTIONS` existe para o teste de entidade nichada
  * brasileira aprovado pelo editor em 18/09/2026: Maritaca AI e ReGLab
- * foram indicadas para o lote por terem impressão medida no GSC, com 3-4
- * menções brutas no acervo, abaixo do piso de 5. A exceção é registrada no próprio conteúdo
- * (o motivo vai no campo), nunca um rebaixamento silencioso do piso geral,
- * e não desce de 3: com 1-2 menções a página repete a própria edição de
- * origem, que é o padrão de "doorway page" que o piso existe para barrar. */
+ * foram indicadas para o lote por terem impressão medida no GSC, abaixo do
+ * piso de 5. A Maritaca entrou com a exceção; o ReGLab caiu para 1 menção
+ * real na leitura manual (os outros acertos eram links de rodapé para a
+ * mesma edição) e não foi publicado. A exceção é registrada no próprio
+ * conteúdo (o motivo vai no campo), nunca um rebaixamento silencioso do piso
+ * geral, e não desce de 3: com 1-2 menções a página repete a própria edição
+ * de origem, que é o padrão de "doorway page" que o piso existe para barrar. */
 export const MIN_ENTITY_MENTIONS_WITH_EXCEPTION = 3;
+
+/** Allowlist de slugs autorizados a declarar `mentionFloorException`, com a
+ * issue que registrou a decisão do editor. Exceção fora desta lista é erro de
+ * validação: nenhuma página nova rebaixa o piso sem passar por aqui. */
+export const ENTITY_MENTION_FLOOR_EXCEPTIONS: Readonly<Record<string, string>> = {
+  "maritaca-ai": "#8350",
+};
 
 /** Uma menção da entidade numa edição da diar.ia.br — a unidade do índice
  * cronológico (issue #5125: "índice cronológico de menções... com
@@ -257,8 +266,27 @@ export function mentionHeadingLabel(m: EntityMention): string {
  */
 export function validateEntityContent(entity: EntityContent): string[] {
   const errors: string[] = [];
-  const hasFloorException = (entity.mentionFloorException ?? "").trim().length > 0;
+  const floorExceptionText = (entity.mentionFloorException ?? "").trim();
+  const hasFloorException = floorExceptionText.length > 0;
   const floor = hasFloorException ? MIN_ENTITY_MENTIONS_WITH_EXCEPTION : MIN_ENTITY_MENTIONS;
+  if (hasFloorException) {
+    if (entity.mentions.length >= MIN_ENTITY_MENTIONS) {
+      errors.push(
+        `mentionFloorException declarada com ${entity.mentions.length} menções (>= ${MIN_ENTITY_MENTIONS}) — desnecessária, remova o campo`,
+      );
+    }
+    if (!/#\d+/.test(floorExceptionText)) {
+      errors.push("mentionFloorException precisa citar a issue da decisão (#N)");
+    }
+    const authorizedIssue = ENTITY_MENTION_FLOOR_EXCEPTIONS[entity.slug];
+    if (authorizedIssue === undefined) {
+      errors.push(
+        `mentionFloorException declarada em "${entity.slug}", fora de ENTITY_MENTION_FLOOR_EXCEPTIONS — exceção ao piso só com decisão registrada`,
+      );
+    } else if (!floorExceptionText.includes(authorizedIssue)) {
+      errors.push(`mentionFloorException de "${entity.slug}" precisa citar ${authorizedIssue} (ENTITY_MENTION_FLOOR_EXCEPTIONS)`);
+    }
+  }
   if (entity.mentions.length < floor) {
     errors.push(
       hasFloorException

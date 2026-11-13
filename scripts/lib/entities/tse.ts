@@ -14,7 +14,7 @@
  *
  * Sobreposição conhecida com os hubs `brasil-regulacao` e `deepfake` (4
  * manchetes de TSE entram nos dois): o hub é a leitura temática; esta página
- * é a linha do tempo de UM órgão nomeado, no molde das 8 entidades
+ * é a linha do tempo de UM órgão nomeado, no molde das entidades
  * internacionais. A metodologia linka os dois hubs.
  *
  * A edição de 29/04/2026 chamou o tribunal de STF por engano (erro
@@ -128,12 +128,12 @@ export function getTseEntity(): EntityContent {
       "O TSE na cobertura da diar.ia.br: as resoluções sobre IA e deepfakes na eleição de 2026, o rótulo obrigatório e os casos que chegaram ao tribunal.",
     introHeading: "O que o TSE decidiu sobre IA e deepfakes na eleição de 2026?",
     introParagraph:
-      "O Tribunal Superior Eleitoral foi quem mais decidiu sobre IA na política brasileira durante a preparação para a eleição de 2026. A diar.ia.br acompanhou o tribunal desde a proposta de uma força-tarefa contra deepfakes, em fevereiro. Vieram depois duas resoluções: a de abril proibiu conteúdo sintético nas 72 horas antes da votação e vetou a recomendação de candidatos por algoritmo, e a de agosto obrigou as campanhas a avisar quando usam IA. Os casos concretos começaram com Dona Maria, uma personagem fabricada do zero, e passaram pelo avatar de Jair Bolsonaro e pela queixa contra a Meta AI. O limite da regra volta em várias menções: ela alcança a propaganda das campanhas, e quase metade das peças com IA do primeiro turno veio de eleitores e militantes. Esta página reúne, em ordem cronológica, cada vez que o TSE apareceu nas edições da diária.",
+      "O Tribunal Superior Eleitoral concentrou as decisões sobre IA na eleição de 2026. A diar.ia.br acompanha o tribunal desde janeiro, quando uma diretora do InternetLab apontou que as regras de rotulagem e de remoção de conteúdo falso já em vigor não alcançavam as redes informais de apoio. Em fevereiro surgiu a proposta de uma força-tarefa contra deepfakes. Vieram depois duas resoluções: a de abril proibiu conteúdo sintético nas 72 horas antes da votação e vetou a recomendação de candidatos por algoritmo, e a de agosto obrigou as campanhas a avisar quando usam IA. Os casos concretos começaram com Dona Maria, uma personagem fabricada do zero, e passaram pelo avatar de Jair Bolsonaro e pela queixa contra a Meta AI. O limite da regra volta em várias menções: ela alcança a propaganda das campanhas, e quase metade das peças com IA do primeiro turno veio de eleitores e militantes. Esta página reúne, em ordem cronológica, cada vez que o TSE apareceu nas edições da diária.",
     mentions: MENTIONS,
     faq: [
       {
         question: "Quantas vezes o TSE apareceu na diar.ia.br?",
-        answer: `${MENTIONS.length} vezes, entre ${formatMonthYear(MENTIONS[0].date)} e ${formatMonthYear(MENTIONS[MENTIONS.length - 1].date)}, da proposta de força-tarefa contra deepfakes à disputa sobre a Meta AI na campanha.`,
+        answer: `${MENTIONS.length} vezes, entre ${formatMonthYear(MENTIONS[0].date)} e ${formatMonthYear(MENTIONS[MENTIONS.length - 1].date)}, das regras de rotulagem que já existiam em janeiro à disputa sobre a Meta AI na campanha.`,
       },
       {
         question: "O que a resolução do TSE de abril de 2026 proíbe?",

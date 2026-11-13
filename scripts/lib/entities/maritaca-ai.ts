@@ -19,8 +19,15 @@
  *
  * Cada `summary` foi escrito depois de ler o corpo da edição e a errata da
  * edição seguinte. Datas ESTÁTICAS.
+ *
+ * Alarme de staleness (`ENTITY_KEYWORD_PATTERNS["maritaca-ai"]` em
+ * `patterns.ts`) NÃO reproduz a regex de contagem acima: acrescenta
+ * `sabiazinho`, porque o "Sabiazinho-4" não casa `sabia[- ]?\d` (há letras
+ * entre "sabia" e o número) e é justamente o nome de produto que uma manchete
+ * nova traria sem citar "Maritaca". E o alarme só vê título+subtítulo do
+ * cache, enquanto a contagem foi feita no texto completo — limitação #12958.
  */
-import type { EntityContent } from "../shared/entity-page.ts";
+import { MIN_ENTITY_MENTIONS, type EntityContent } from "../shared/entity-page.ts";
 import { entityFooterNavUtm } from "../shared/utm-registry.ts";
 import { formatMonthYear } from "../shared/geo-faq.ts";
 
@@ -76,7 +83,7 @@ export function getMaritacaAiEntity(): EntityContent {
       "A Maritaca AI na cobertura da diar.ia.br: o Sabiá 4 Thinking, modelo de raciocínio em português, e o Sabiazinho-4, treinado em legislação brasileira.",
     introHeading: "O que a Maritaca AI lançou?",
     introParagraph:
-      "A Maritaca AI é uma startup brasileira que desenvolve modelos de linguagem próprios, treinados para o português. Na diar.ia.br ela aparece quase sempre como exemplo de modelo desenvolvido no Brasil. O Sabiá 4 Thinking, lançado em junho de 2026, trouxe para o português o raciocínio em etapas e serviu, na retrospectiva do mês, de contraponto ao modelo da Prefeitura do Rio desmascarado como fusão de dois modelos chineses. Em setembro veio o Sabiazinho-4, menor e especializado em legislação brasileira, que acertou 85% em testes baseados no exame da OAB. Esta página reúne, em ordem cronológica, cada vez que a Maritaca apareceu nas edições da diária.",
+      "A Maritaca AI é uma startup brasileira que desenvolve modelos de linguagem próprios, treinados para o português. Na diar.ia.br ela aparece quase sempre como exemplo de modelo desenvolvido no Brasil. O Sabiá 4 Thinking, lançado em junho de 2026, levou o raciocínio em etapas a um modelo otimizado para o português e serviu, na retrospectiva do mês, de contraponto ao modelo da Prefeitura do Rio desmascarado como fusão de dois modelos chineses. Em setembro veio o Sabiazinho-4, menor e especializado em legislação brasileira, que acertou 85% em testes baseados no exame da OAB. Esta página reúne, em ordem cronológica, cada vez que a Maritaca apareceu nas edições da diária.",
     mentions: MENTIONS,
     faq: [
       {
@@ -103,7 +110,6 @@ export function getMaritacaAiEntity(): EntityContent {
     updatedDate: "2026-11-12",
     methodologyNote: buildMethodologyNote(MENTIONS),
     footerNavUtm: entityFooterNavUtm("maritaca-ai"),
-    mentionFloorException:
-      "Teste de entidade nichada brasileira aprovado no #8350 (18/09/2026): a Maritaca AI tem impressão medida no GSC e entra com 4 menções, abaixo do piso de 5.",
+    mentionFloorException: `Teste de entidade nichada brasileira aprovado no #8350 (18/09/2026): a Maritaca AI tem impressão medida no GSC e entra com ${MENTIONS.length} menções, abaixo do piso de ${MIN_ENTITY_MENTIONS}.`,
   };
 }

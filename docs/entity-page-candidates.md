@@ -222,7 +222,7 @@ dependendo da janela de medição de 3 semanas da PoC de Perplexity
 
 Decisão do editor no #8350 (Opção A, comentários de 18/09 e 19/09/2026):
 rodar a mesma metodologia com semente brasileira e publicar um 1º lote de 5
-páginas, as 3 candidatas com mais menções entre {PL 2338, TSE, Nubank, STF,
+páginas (4 publicadas; ReGLab ficou fora, ver tabela), as 3 candidatas com mais menções entre {PL 2338, TSE, Nubank, STF,
 SUS} mais Maritaca AI e ReGLab, que têm impressão medida no GSC. Critério de
 leitura pré-registrado na issue: posicional (top-10 ou não), ~6 semanas
 depois da indexação.
@@ -248,3 +248,5 @@ Sobreposição com hubs: TSE e PL 2338 também entram nos hubs
 `brasil-regulacao` e `deepfake`. As páginas ficam no formato de entidade
 (linha do tempo de um órgão ou projeto nomeado) e linkam os hubs na
 metodologia e no FAQ.
+
+Total publicado após #8350: 12.

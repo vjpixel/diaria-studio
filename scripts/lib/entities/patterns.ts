@@ -10,10 +10,13 @@
  * bate o padrão e ainda não foi incorporada — ver docstring daquele módulo
  * para o mecanismo completo.
  *
- * Cada regex reproduz EXATAMENTE o padrão já documentado em prosa no
- * docstring da entidade correspondente (verificado ao vivo em 15/08/2026,
- * contagem de matches contra o corpus real batendo com o número de edições
- * citado em cada arquivo — ver `test/entity-staleness-check.test.ts`).
+ * Para as 8 entidades internacionais, cada regex reproduz EXATAMENTE o padrão
+ * já documentado em prosa no docstring da entidade correspondente
+ * (verificado ao vivo em 15/08/2026, contagem de matches contra o corpus real
+ * batendo com o número de edições citado em cada arquivo — ver
+ * `test/entity-staleness-check.test.ts`). O lote brasileiro do #8350 é
+ * EXCEÇÃO, documentada no bloco dele abaixo: a contagem do docstring foi
+ * feita no texto completo das edições, e o alarme não bate com ela.
  * Nunca duplicar a lógica de match aqui — só o padrão; a leitura do corpus
  * (`collectHubSources`/`loadPosts`) é reusada de `generate-hub-sources.ts`.
  */
@@ -32,8 +35,24 @@ export const ENTITY_KEYWORD_PATTERNS: Record<string, RegExp> = {
   // #8350 (1º lote brasileiro). Sem acento de propósito: `collectHubSources`
   // compara contra o texto sem acento (`stripAccents`). `sabia` sozinho
   // casaria o verbo ("não sabia que..."), por isso só com versão/diminutivo.
+  //
+  // EXCEÇÃO ao "reproduz exatamente" do topo do arquivo, nas 4 entradas:
+  //   - a contagem dos docstrings (`tse.ts`, `pl-2338.ts`, `nubank.ts`,
+  //     `maritaca-ai.ts`) foi feita no TEXTO COMPLETO das edições; este
+  //     alarme só vê título+subtítulo do cache, então a contagem dele é menor
+  //     (10 das 33 menções publicadas casam por título) e menção nova só no
+  //     corpo não alarma — limitação #12958, impressa por slug no
+  //     `regenerate-entity-pages.ts` (`entityAlarmCoverage`);
+  //   - Maritaca acrescenta `sabiazinho`, que a regex de contagem não tinha
+  //     (ver docstring de `maritaca-ai.ts`);
+  //   - PL 2338 monitora só a família ESTREITA (número do PL e "marco legal
+  //     da IA"), não a regex ampla do docstring (`2\.?338|Aguinaldo
+  //     Ribeiro|PL da IA`), que casaria notícia de outro assunto. Aceita as
+  //     grafias "PL 2338", "PL 2.338", "PL nº 2338", "PL n. 2.338" e
+  //     "Projeto de Lei 2338" (já sem acento, "nº" vira "no"/"n"+"º").
   tse: /\btse\b|tribunal superior eleitoral/i,
-  "pl-2338": /\bpl\s*2\.?338\b|marco legal da (ia|inteligencia artificial)\b/i,
+  "pl-2338":
+    /\bpl\s*(n[o.º°]?\.?\s*)?2\.?338\b|\bprojeto de lei\s*(n[o.º°]?\.?\s*)?2\.?338\b|marco legal da (ia|inteligencia artificial)\b/i,
   nubank: /\bnubank\b/i,
   "maritaca-ai": /\bmaritaca\b|\bsabia[- ]?\d|\bsabiazinho\b/i,
 };

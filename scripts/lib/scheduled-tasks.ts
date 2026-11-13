@@ -860,7 +860,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         script: "scripts/geo-citation-monitor.ts",
         args: ["--panel", "acervo", "--strict", "--max-monthly-usd", "8"],
       },
-      // #8344: painel novo, cobre as 8 páginas
+      // #8344: painel novo, cobre as 8 páginas internacionais (o lote
+      // brasileiro do #8350 fica fora do painel de propósito, reset de baseline)
       // `especial.diar.ia.br/entidades/{slug}/` (alibaba, amazon, apple,
       // deepseek, oracle, perplexity, samsung, xai) — a 2ª maior aposta de
       // conteúdo GEO do projeto depois dos hubs, e que nenhum dos 3 painéis

@@ -16,9 +16,11 @@ import {
   mentionHeadingLabel,
   MIN_ENTITY_MENTIONS,
   MIN_ENTITY_MENTIONS_WITH_EXCEPTION,
+  ENTITY_MENTION_FLOOR_EXCEPTIONS,
   type EntityContent,
   type EntityMention,
 } from "../scripts/lib/shared/entity-page.ts";
+import { ENTITY_LOADERS } from "../scripts/build-entity-page.ts";
 import { getPerplexityEntity } from "../scripts/lib/entities/perplexity.ts";
 import { getXaiEntity } from "../scripts/lib/entities/xai.ts";
 import { getAmazonEntity } from "../scripts/lib/entities/amazon.ts";
@@ -35,9 +37,9 @@ import { entityFooterNavUtm, type EntitySlug } from "../scripts/lib/shared/utm-r
 
 const ENTITY_PERPLEXITY_FOOTER_NAV_UTM = entityFooterNavUtm("perplexity");
 
-/** Getters das 8 páginas de entidade reais, chaveados pelo `EntitySlug`
+/** Getters das páginas de entidade reais, chaveados pelo `EntitySlug`
  * esperado — usado só pela cobertura genérica abaixo (#8005 achado
- * pr-test-analyzer): os 7 getters além de perplexity não tinham NENHUM
+ * pr-test-analyzer): os getters além de perplexity não tinham NENHUM
  * teste comparando `footerNavUtm.source` contra o slug esperado daquele
  * arquivo específico — um copy-paste de `entityFooterNavUtm("oracle")`
  * colado dentro de `alibaba.ts` por engano passaria em silêncio. */
@@ -119,9 +121,12 @@ describe(`validateEntityContent — piso de menções (MIN_ENTITY_MENTIONS = ${M
 
 describe(`validateEntityContent — exceção ao piso (#8350, MIN_ENTITY_MENTIONS_WITH_EXCEPTION = ${MIN_ENTITY_MENTIONS_WITH_EXCEPTION})`, () => {
   const reason = "Teste de entidade nichada aprovado pelo editor no #8350.";
+  /** Slug da allowlist ENTITY_MENTION_FLOOR_EXCEPTIONS: a exceção só vale para slug autorizado. */
+  const exc = (o: Partial<EntityContent> = {}) =>
+    baseEntity({ slug: "maritaca-ai", footerNavUtm: { source: "entity-maritaca-ai", medium: "footer-nav" }, ...o });
 
   it("aceita menos que o piso normal quando mentionFloorException traz o motivo", () => {
-    const entity = baseEntity({
+    const entity = exc({
       mentions: validMentions(MIN_ENTITY_MENTIONS_WITH_EXCEPTION),
       mentionFloorException: reason,
     });
@@ -129,7 +134,7 @@ describe(`validateEntityContent — exceção ao piso (#8350, MIN_ENTITY_MENTION
   });
 
   it("rejeita abaixo do piso absoluto mesmo com a exceção declarada (1 menção = doorway)", () => {
-    const entity = baseEntity({
+    const entity = exc({
       mentions: validMentions(MIN_ENTITY_MENTIONS_WITH_EXCEPTION - 1),
       mentionFloorException: reason,
     });
@@ -139,12 +144,52 @@ describe(`validateEntityContent — exceção ao piso (#8350, MIN_ENTITY_MENTION
 
   it("exceção vazia ou só espaços não conta: vale o piso normal", () => {
     for (const blank of ["", "   "]) {
-      const entity = baseEntity({
+      const entity = exc({
         mentions: validMentions(MIN_ENTITY_MENTIONS - 1),
         mentionFloorException: blank,
       });
       const errors = validateEntityContent(entity);
       assert.ok(errors.some((e) => /mínimo \d+ pra justificar página própria/.test(e)), errors.join("; "));
+    }
+  });
+
+  it("rejeita exceção desnecessária (menções já no piso normal)", () => {
+    const errors = validateEntityContent(exc({ mentions: validMentions(MIN_ENTITY_MENTIONS), mentionFloorException: reason }));
+    assert.ok(errors.some((e) => /desnecessária/.test(e)), errors.join("; "));
+  });
+
+  it("rejeita exceção sem referência a issue (#N)", () => {
+    const errors = validateEntityContent(
+      exc({ mentions: validMentions(MIN_ENTITY_MENTIONS_WITH_EXCEPTION), mentionFloorException: "decisão do editor" }),
+    );
+    assert.ok(errors.some((e) => /precisa citar a issue da decisão/.test(e)), errors.join("; "));
+  });
+
+  it("rejeita exceção em slug fora da allowlist ENTITY_MENTION_FLOOR_EXCEPTIONS", () => {
+    const errors = validateEntityContent(
+      baseEntity({ mentions: validMentions(MIN_ENTITY_MENTIONS_WITH_EXCEPTION), mentionFloorException: reason }),
+    );
+    assert.ok(errors.some((e) => /fora de ENTITY_MENTION_FLOOR_EXCEPTIONS/.test(e)), errors.join("; "));
+  });
+
+  it("rejeita exceção de slug autorizado que cita outra issue", () => {
+    const errors = validateEntityContent(
+      exc({ mentions: validMentions(MIN_ENTITY_MENTIONS_WITH_EXCEPTION), mentionFloorException: "aprovado no #9999" }),
+    );
+    assert.ok(errors.some((e) => /precisa citar #8350/.test(e)), errors.join("; "));
+  });
+
+  it("allowlist só tem slugs reais de ENTITY_LOADERS, e toda entidade real com exceção está nela", () => {
+    const loaders = Object.keys(ENTITY_LOADERS);
+    for (const slug of Object.keys(ENTITY_MENTION_FLOOR_EXCEPTIONS)) {
+      assert.ok(loaders.includes(slug), `${slug} na allowlist sem loader`);
+    }
+    for (const [slug, load] of Object.entries(ENTITY_LOADERS)) {
+      const entity = load();
+      if ((entity.mentionFloorException ?? "").trim().length > 0) {
+        assert.ok(slug in ENTITY_MENTION_FLOOR_EXCEPTIONS, `${slug} declara exceção sem estar na allowlist`);
+      }
+      assert.deepEqual(validateEntityContent(entity), [], slug);
     }
   });
 });
@@ -421,7 +466,7 @@ describe("getPerplexityEntity (#5125 item 3 — PoC real)", () => {
   });
 });
 
-describe("cobertura mínima das 8 páginas de entidade reais — footerNavUtm.source por slug (#8005 achado pr-test-analyzer)", () => {
+describe("cobertura mínima das páginas de entidade reais — footerNavUtm.source por slug (#8005 achado pr-test-analyzer)", () => {
   for (const slug of Object.keys(ENTITY_GETTERS) as EntitySlug[]) {
     it(`footerNavUtm.source de get${slug}Entity() é exatamente "entity-${slug}" — pega copy-paste de outro slug entre factory calls válidas`, () => {
       const entity = ENTITY_GETTERS[slug]();

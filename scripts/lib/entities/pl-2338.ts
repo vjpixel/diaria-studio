@@ -139,7 +139,7 @@ function buildMethodologyNote(mentions: EntityContent["mentions"]): string {
   const since = formatMonthYear(mentions[0].date);
   const until = formatMonthYear(mentions[mentions.length - 1].date);
   const between = since === until ? since : `${since} e ${until}`;
-  return `O levantamento vem de ${mentions.length} edições publicadas entre ${between}; os fatos saem do arquivo da diar.ia.br. A edição de 22/05/2026 tratou como notícia daquele mês a aprovação do texto pelo Senado, que segundo a tramitação oficial ([senado.leg.br](https://www25.senado.leg.br/web/atividade/materias/-/materia/157233)) ocorreu em 10/12/2024, e por isso ficou fora desta linha do tempo. A leitura temática da regulação de IA no Brasil está no [hub de regulação](https://arquivo.diar.ia.br/temas/brasil-regulacao).`;
+  return `O levantamento vem de ${mentions.length} edições publicadas entre ${between}; os fatos saem do arquivo da diar.ia.br, salvo a data de aprovação no Senado, que vem da tramitação oficial ([senado.leg.br](https://www25.senado.leg.br/web/atividade/materias/-/materia/157233)). A edição de 22/05/2026 tratou como notícia daquele mês essa aprovação, que ocorreu em 10/12/2024, e por isso ficou fora desta linha do tempo. A leitura temática da regulação de IA no Brasil está no [hub de regulação](https://arquivo.diar.ia.br/temas/brasil-regulacao).`;
 }
 
 export function getPl2338Entity(): EntityContent {
@@ -150,7 +150,7 @@ export function getPl2338Entity(): EntityContent {
       "O PL 2338/2023, o Marco Legal da IA, na cobertura da diar.ia.br: direitos autorais, votações adiadas na Câmara e o que o texto prevê.",
     introHeading: "Em que pé está o Marco Legal da IA, o PL 2338?",
     introParagraph:
-      "O PL 2338/2023, conhecido como Marco Legal da IA, é o projeto que define regras para sistemas de inteligência artificial no Brasil. O Senado o aprovou em dezembro de 2024, e desde então o texto está na Câmara dos Deputados. A diar.ia.br acompanhou essa etapa a partir da audiência sobre direitos autorais de setembro de 2025. A votação foi marcada para fevereiro de 2026, remarcada para 27 de maio e depois para junho, sem acontecer. Em maio, mais de 50 entidades culturais protestaram contra a retirada do capítulo de direitos autorais, e o relator passou a negociar o texto com os senadores. A versão em discussão classifica sistemas por risco e prevê multas de até 2% do faturamento. Em agosto de 2026 o projeto seguia parado, e a ANPD e os reguladores setoriais começaram a criar regras por conta própria. Esta página reúne, em ordem cronológica, cada vez que o projeto apareceu nas edições da diária.",
+      "O PL 2338/2023, conhecido como Marco Legal da IA, é o projeto que define regras para sistemas de inteligência artificial no Brasil. Pela tramitação oficial do Senado, a Casa aprovou o texto em 10 de dezembro de 2024, e desde então ele está na Câmara dos Deputados. A diar.ia.br acompanhou essa etapa a partir da audiência sobre direitos autorais de setembro de 2025. A votação foi marcada para fevereiro de 2026 e depois para 27 de maio, sem acontecer. Em maio, mais de 50 entidades culturais protestaram contra a retirada do capítulo de direitos autorais. Em junho, Hugo Motta, presidente da Câmara, quis levar o texto a voto, e o relator passou a negociar a redação com os senadores. A versão em discussão classifica sistemas por risco e prevê multas de até 2% do faturamento. Em agosto de 2026 o projeto seguia parado, e a ANPD e os reguladores setoriais começaram a criar regras por conta própria. Esta página reúne, em ordem cronológica, cada vez que o projeto apareceu nas edições da diária.",
     mentions: MENTIONS,
     faq: [
       {
@@ -161,7 +161,7 @@ export function getPl2338Entity(): EntityContent {
       {
         question: "Em que fase está o Marco Legal da IA?",
         answer:
-          "O Senado aprovou o texto em dezembro de 2024 e o enviou à Câmara dos Deputados. Lá, a votação foi marcada para fevereiro de 2026, depois para 27 de maio e então para junho, sem se concretizar. Na menção mais recente desta página, em agosto de 2026, o projeto seguia sem aprovação.",
+          "O Senado aprovou o texto em 10 de dezembro de 2024, segundo a [tramitação oficial](https://www25.senado.leg.br/web/atividade/materias/-/materia/157233), e o enviou à Câmara dos Deputados. Lá, a votação foi marcada para fevereiro de 2026 e depois para 27 de maio, sem se concretizar, e em junho Hugo Motta, presidente da Câmara, quis levar o texto a voto. Na menção mais recente desta página, em agosto de 2026, o projeto seguia sem aprovação.",
       },
       {
         question: "O que o projeto diz sobre direitos autorais no treino de IA?",
