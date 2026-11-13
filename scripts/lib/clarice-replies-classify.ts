@@ -27,6 +27,14 @@ import { createHash } from "node:crypto";
 
 export type ReplyKind = "quero" | "saida" | "suporte" | "ruido" | "ambiguo";
 
+/**
+ * Trecho fixo do assunto da Clarice News — toda variante do teste A/B começa
+ * com ele (`clarice-schedule-sends.ts`, "Notícias do mês sobre IA: …"). Fonte
+ * única para a query default da triagem e para o §0-replies da diária
+ * (`filter-subscriber-replies.ts`, #12947) reconhecer a resposta à Clarice.
+ */
+export const CLARICE_NEWS_SUBJECT = "Notícias do mês sobre IA";
+
 /** Uma resposta já extraída da caixa (forma independente do Gmail). */
 export interface ReplyMessage {
   message_id: string;
