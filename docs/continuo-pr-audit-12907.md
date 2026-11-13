@@ -153,8 +153,9 @@ draft com `bloqueio-execucao`. Enquanto uma PR escalada esperava o editor ou
 o pickup do overnight, nada a tirava da contagem. O pickup do overnight só
 mergeava PR limpa, então as rodadas de 07, 08 e 09/11 também não drenaram as
 três. Os relatórios do cron de 09/11 (`~/.hermes/cron/output/5d791ef6fc2c/`)
-registram "cap 3/3" e nomeiam as mesmas PRs. Os de 07 e 08/11 não estão mais
-no diretório.
+registravam "cap 3/3" e nomeavam as mesmas PRs, segundo a leitura de 12/11
+registrada na #12908. O diretório guarda só os últimos ~50 relatórios: em
+13/11 ele já começava em 11/11, sem nenhum de 07 a 09/11.
 
 O que já fecha essa trajetória, todos mergeados depois da janela:
 
