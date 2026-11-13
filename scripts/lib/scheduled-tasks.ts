@@ -3163,6 +3163,7 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Stuck-Approved-Pr-Alarm",
+    failover: "skip",
     description:
       "alarme de PR com review approve e CI verde aberta ha >= 4h (desde createdAt) sem merge, independente de escalada (#12950 item 5)",
     steps: [{ key: "check", script: "scripts/stuck-approved-pr-alarm.ts" }],
