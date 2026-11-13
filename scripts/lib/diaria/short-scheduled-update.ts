@@ -69,6 +69,10 @@ export function planScheduledUpdates(input: {
   const out: ScheduledUpdateItem[] = [];
   for (const e of input.entries) {
     if (only && !only.has(e.destination)) continue;
+    if (e.cancelled_at) {
+      out.push({ destination: e.destination, action: "skip", reason: `agendamento cancelado em ${e.cancelled_at} (--cancel do corte, #13000)` });
+      continue;
+    }
     const state = resolveShortEntryState(e, input.now);
     if (state !== "scheduled") {
       const why =
