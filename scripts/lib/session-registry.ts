@@ -203,6 +203,9 @@ import { writeFileAtomic } from "./atomic-write.ts";
 import { logEvent } from "./run-log.ts";
 import { tryStealOrphan, withFileLock } from "./file-lock.ts";
 import { conflictCopyBelongsToStem, isSyncConflictCopyName, rcloneConflictOriginalName } from "./sync-conflict-copy.ts";
+// #12547: mesma sonda que o guard de merge usa pra separar "data/sessions
+// nunca existiu" de "data/ é junction cujo alvo sumiu".
+import { probeSessionsDir, type SessionsDirProbe } from "./sessions-dir-probe.mjs";
 // #7836 — mesma constante que `.claude/hooks/inject-session-id.mjs` importa
 // pra montar `INJECTABLE_SUBCOMMANDS`. Usada aqui só em `requireSessionId`,
 // pra enriquecer a mensagem de erro com a fonte única sem duplicar a lista
@@ -971,6 +974,31 @@ function warnIoError(path: string, error: unknown): void {
   } catch {
     // Nunca deixar um log de warning quebrar o caminho fail-soft.
   }
+}
+
+/** Paths de `data/` indisponível já avisados neste processo (#12547): uma
+ * linha por causa, não uma por leitura — `listSessionJsonFiles` roda dezenas
+ * de vezes num único comando. */
+const warnedUnavailableSessionsDirs = new Set<string>();
+
+/**
+ * #12547: chamado quando `data/sessions` não existe. Separa "nunca existiu"
+ * (clone fresco, sessão cloud: silencioso) de "`data/` é link/junction cujo
+ * alvo sumiu" (Drive for desktop fechado no Neo): no segundo caso escreve em
+ * stderr a mensagem que nomeia causa e ação. Devolve a sonda para quem
+ * precisa decidir (`checkSessionsScanHealth`). Nunca lança.
+ */
+function probeSessionsDirWithWarning(repoRoot: string): SessionsDirProbe {
+  const probe = probeSessionsDir(repoRoot);
+  if (probe.degraded && !warnedUnavailableSessionsDirs.has(probe.path)) {
+    warnedUnavailableSessionsDirs.add(probe.path);
+    try {
+      process.stderr.write(`session-registry: ATENÇÃO — ${probe.message} Tratando como nenhuma sessão registrada (fail-soft).\n`);
+    } catch {
+      // log nunca derruba o caminho fail-soft
+    }
+  }
+  return probe;
 }
 
 function readJsonSafe<T>(path: string): T | null {
@@ -2510,7 +2538,12 @@ export function evaluateEndGuard(
  * Quem separa real de cópia é `isSyncConflictCopyName`. */
 function listSessionJsonFiles(repoRoot: string): string[] {
   const dir = sessionsDir(repoRoot);
-  if (!existsSync(dir)) return [];
+  if (!existsSync(dir)) {
+    // #12547: segue fail-soft (lista vazia), mas a junction pendente de
+    // `data/` deixa de se passar por "nenhuma sessão" em silêncio.
+    probeSessionsDirWithWarning(repoRoot);
+    return [];
+  }
   try {
     return readdirSync(dir).filter(
       (n) => !n.startsWith(".") && (n.endsWith(".json") || rcloneConflictOriginalName(n)?.endsWith(".json") === true),
@@ -2537,7 +2570,8 @@ function listSessionJsonFiles(repoRoot: string): string[] {
  * uma decisão de EXCLUSÃO mútua essa ambiguidade é fail-open (#6277).
  */
 export interface SessionsScanHealth {
-  /** `false` só quando o diretório EXISTE mas não pôde ser lido. */
+  /** `false` quando o diretório EXISTE mas não pôde ser lido, ou quando `data/`
+   * é link/junction cujo alvo sumiu (#12547). */
   ok: boolean;
   /** Código/mensagem do erro de I/O — presente só quando `ok: false`. */
   error?: string;
@@ -2546,8 +2580,10 @@ export interface SessionsScanHealth {
 /**
  * Responde se `data/sessions/` está legível AGORA. Diretório ausente conta
  * como `ok: true` (é o estado normal de um clone fresco/sessão cloud — "não
- * há sessão" é resposta honesta, não degradação). Só um erro de leitura sobre
- * diretório existente devolve `ok: false`.
+ * há sessão" é resposta honesta, não degradação). Devolvem `ok: false` um
+ * erro de leitura sobre diretório existente e, desde o #12547, `data/` (ou
+ * `data/sessions`) como link/junction cujo alvo não resolve — com `existsSync`
+ * isso parecia "ausente" e virava `ok: true` em silêncio.
  *
  * O consumidor é o CLI `active-of-kind`, que expõe isso como `uncertain` no
  * JSON para o chamador poder fail-CLOSED: com `uncertain: true`, tratar como
@@ -2555,7 +2591,13 @@ export interface SessionsScanHealth {
  */
 export function checkSessionsScanHealth(repoRoot: string): SessionsScanHealth {
   const dir = sessionsDir(repoRoot);
-  if (!existsSync(dir)) return { ok: true };
+  if (!existsSync(dir)) {
+    // #12547: ausente só é `ok` quando nunca existiu. Junction de `data/`
+    // com o alvo fora do ar (Drive for desktop fechado) é `ok: false`, com a
+    // mensagem que nomeia a causa e a ação.
+    const probe = probeSessionsDirWithWarning(repoRoot);
+    return probe.degraded ? { ok: false, error: probe.message } : { ok: true };
+  }
   try {
     readdirSync(dir);
     return { ok: true };
@@ -6984,7 +7026,10 @@ export function readMergeGrantConsumptions(repoRoot: string): Map<string, string
   const dir = sessionsDir(repoRoot);
   let names: string[];
   try {
-    if (!existsSync(dir)) return out;
+    if (!existsSync(dir)) {
+      probeSessionsDirWithWarning(repoRoot); // #12547: avisa junction pendente
+      return out;
+    }
     names = readdirSync(dir);
   } catch {
     return out;
