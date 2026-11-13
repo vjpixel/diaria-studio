@@ -89,6 +89,7 @@ import {
 } from "./lib/public-images-invalidate.ts"; // #11252
 import { clearCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import { invalidateStage4D1Capture } from "./lib/stage4-capture-state.ts"; // #12589
+import { d1NoVideoSwapStep } from "./lib/diaria/d1-video-invite-status.ts"; // #12946
 import {
   extractUrl,
   extractTitle,
@@ -287,6 +288,8 @@ export function buildSwapNextSteps(editionDir: string, slots: SlotSwap[]): strin
         `Escrever _internal/02-d${s.position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${dir}/_internal/02-d${s.position}-prompt.md --out-dir ${dir}/ --destaque d${s.position}`,
     ),
     `Gerar os cards do carrossel das posições novas: npx tsx scripts/gen-carousel-cards.ts --edition-dir ${dir}`,
+    // #12946: D1 trocado em edição sem vídeo — marcar antes do upload, senão o convite volta.
+    ...[d1NoVideoSwapStep(dir, slots.some((s) => s.position === 1))].filter((x): x is string => x !== null),
     ...uploadImagesNextSteps(dir), // #12692: --mode newsletter e --mode social, nessa ordem
     `fact-checker completo antes do gate (destaques novos, sem checagem prévia)`,
     `npx tsx scripts/check-invariants.ts --edition-dir ${dir} --stage 4`,
