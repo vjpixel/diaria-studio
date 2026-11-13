@@ -19,10 +19,22 @@
  * issue. `update_branch` é a única ação não-terminal e acontece no máximo 1x
  * por PR (marcador), então o laço sempre termina.
  *
+ * `refresh_branch` (#12907, decisão do editor no briefing 261113b) é a outra
+ * ação não-terminal: PR aprovada (review independente cobrindo o HEAD atual),
+ * verde, parada há `STALE_HOURS_BEFORE_ACTION`h+ e atrás do master recebe o
+ * master (merge da base pelo `update-branch`, nunca rebase nem force-push)
+ * ANTES de conflitar. A auditoria da #12907 mostrou 11 de 20 descartes do
+ * contínuo por `close_conflict` em PRs que já tinham `verdict=approve`. O
+ * laço termina igual: o commit de merge zera a idade da PR, então a próxima
+ * atualização só cabe 6h depois, e só se a aprovação cobrir o HEAD novo.
+ * Fora do refresh, como a decisão manda: retenção por caminho sensível,
+ * draft, `bloqueio-execucao` e `retido-para-editor`.
+ *
  * @see scripts/continuo-resolve-stuck-prs.ts (I/O: `gh`)
  * @see hermes/scripts/continuo-pr-review.sh (chama o resolvedor antes do laço de review)
  */
 import { CI_FIX_ATTEMPTED_LABEL, type CiVerdict } from "./continuo-ci-fixer-eligibility.ts";
+import { extractIndependentReviewHeadSha, extractIndependentReviewVerdict } from "./pr-review-authenticity.ts";
 
 /** Label de PR que aguarda triagem humana por construção (rescue, #7484) —
  * nunca tocada aqui. */
@@ -55,6 +67,25 @@ export const STALE_HOURS_BEFORE_ACTION = 6;
 /** Marcador do comentário que registra o `update-branch` já feito. */
 export const UPDATE_BRANCH_MARKER = "<!-- continuo-stuck: update-branch -->";
 
+/** Marcador do comentário do `refresh_branch` (#12907). Diferente do
+ * `UPDATE_BRANCH_MARKER` de propósito: aquele limita a 1x o update-branch de
+ * PR com CI VERMELHO; um refresh de PR verde não pode gastar essa chance. */
+export const REFRESH_BRANCH_MARKER = "<!-- continuo-stuck: refresh-branch -->";
+
+/**
+ * #12907: a PR tem aprovação vigente? Review independente mais recente com
+ * `verdict=approve` cujo `head=` cobre o HEAD atual (mesma regra do #6926 que
+ * `stuck-approved-pr-alarm.ts` usa). Marcador sem `head=` ou HEAD atual
+ * desconhecido não contam: a atualização dispara um re-review pago (o HEAD
+ * muda), e sem saber o que foi aprovado não há o que preservar. Pura.
+ */
+export function hasApprovalForHead(comments: unknown, currentHeadSha: string | null): boolean {
+  if (extractIndependentReviewVerdict(comments) !== "approve") return false;
+  const reviewed = extractIndependentReviewHeadSha(comments);
+  if (!reviewed || !currentHeadSha) return false;
+  return currentHeadSha.startsWith(reviewed) || reviewed.startsWith(currentHeadSha);
+}
+
 export interface StuckPrInput {
   number: number;
   title: string;
@@ -76,6 +107,15 @@ export interface StuckPrInput {
   behindBy: number | null;
   /** Horas desde o último commit da PR; `null` = desconhecido. */
   hoursSinceLastCommit: number | null;
+  /** #12907: review independente aprova o HEAD atual (`hasApprovalForHead`).
+   * Ausente/`null` = desconhecido → nunca atualiza. */
+  approved?: boolean | null;
+  /** #12907: label/marcador `retido-para-editor` (`evaluatePrRetido`).
+   * Ausente/`null` = ilegível → tratado como retida (fail-closed). */
+  retido?: boolean | null;
+  /** #12907: a PR toca caminho sensível (`classifyChangedPaths`). Ausente/`null`
+   * = lista de arquivos ilegível → tratado como sensível (fail-closed). */
+  sensitive?: boolean | null;
 }
 
 export type StuckPrAction =
@@ -84,6 +124,7 @@ export type StuckPrAction =
   | { kind: "close_reject_cap"; rejectCount: number }
   | { kind: "close_conflict" }
   | { kind: "update_branch"; behindBy: number }
+  | { kind: "refresh_branch"; behindBy: number }
   | { kind: "close_ci_red" };
 
 const CLOSING_KEYWORD_RE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|fecha)\s*:?\s+#(\d+)/gi;
@@ -131,6 +172,9 @@ function isStale(pr: StuckPrInput): boolean {
  * 3. `rejectCount >= REJECT_CAP` + parada → `close_reject_cap`.
  * 4. `CONFLICTING` + parada → `close_conflict` (nenhum ramo do contínuo
  *    resolve conflito: o ci-fixer pula `blocked_by_conflict`).
+ * 4b. (#12907) CI `pass` + aprovada no HEAD atual + atrás do master + não
+ *    retida + sem caminho sensível + parada → `refresh_branch` (traz o master
+ *    antes de conflitar; sem limite de vezes, a idade zera a cada merge).
  * 5. CI `fail` + atrás do master + sem `update-branch` anterior + parada →
  *    `update_branch` (falha pode ser do base; não gasta o cap de CI-fix).
  * 6. CI `fail` + cap de CI-fix gasto + (`update-branch` já feito OU em dia
@@ -152,6 +196,8 @@ export function decideStuckPrAction(pr: StuckPrInput): StuckPrAction {
 
   if (pr.mergeable === "CONFLICTING") return { kind: "close_conflict" };
 
+  if (shouldRefreshBranch(pr)) return { kind: "refresh_branch", behindBy: pr.behindBy as number };
+
   if (pr.ciVerdict !== "fail") return { kind: "skip", reason: `CI ${pr.ciVerdict}` };
 
   if (!pr.updateBranchDone && pr.behindBy !== null && pr.behindBy > 0) {
@@ -163,6 +209,24 @@ export function decideStuckPrAction(pr: StuckPrInput): StuckPrAction {
   if (ciFixSpent && baseRuledOut) return { kind: "close_ci_red" };
 
   return { kind: "skip", reason: ciFixSpent ? "atrás do master desconhecido" : "CI-fix ainda não tentado (ci-fixer §3b)" };
+}
+
+/**
+ * #12907: condições do `refresh_branch`, todas obrigatórias e todas
+ * fail-closed (desconhecido = não atualiza). Chamada depois do skip por
+ * staleness e do `close_conflict` em `decideStuckPrAction`.
+ */
+function shouldRefreshBranch(pr: StuckPrInput): boolean {
+  if (pr.ciVerdict !== "pass") return false;
+  if (pr.approved !== true) return false;
+  if (pr.retido !== false) return false;
+  if (pr.sensitive !== false) return false;
+  return pr.behindBy !== null && pr.behindBy > 0;
+}
+
+/** Comentário do `refresh_branch` (#12907). */
+export function buildRefreshComment(behindBy: number): string {
+  return `Resolvedor de PRs travadas (#12907): PR aprovada e verde, parada há ${STALE_HOURS_BEFORE_ACTION}h+ e ${behindBy} commit(s) atrás do master — master trazido pra branch (update-branch, merge da base) antes de conflitar. O HEAD mudou, então o review e o CI rodam de novo antes do merge.\n\n${REFRESH_BRANCH_MARKER}`;
 }
 
 /** Comentário de fechamento da PR — explica o motivo e que a issue volta à fila. */
