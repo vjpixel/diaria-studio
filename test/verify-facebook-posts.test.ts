@@ -10,6 +10,8 @@ import {
   defaultFetchPost,
   resolveSocialPublishedPath,
   resolveGraphPostId,
+  facebookVerifyWarnings,
+  FB_NOT_CONFIRMED_PREFIX,
   type PostEntry,
   type GraphPostResponse,
   type SocialPublished,
@@ -68,25 +70,47 @@ describe("reconcilePost", () => {
     assert.equal(result.published_at, "2026-04-24T11:00:00+0000");
   });
 
-  it("scheduled_publish_time passou + is_published=false: vira failed", () => {
+  // #13042 (review P2): vencido sem confirmação vira `send_unknown`, nunca
+  // `failed` — a retomada do publicador (diário, semanal, mensal) repostaria.
+  it("scheduled_publish_time passou + is_published=false: vira send_unknown (not_confirmed_by_graph), nunca failed", () => {
     const entry = scheduledEntry();
     const graph: GraphPostResponse = {
       is_published: false,
       scheduled_publish_time: nowUnix - 3600,
     };
     const result = reconcilePost(entry, graph, now);
-    assert.equal(result.status, "failed");
-    assert.ok(result.failure_reason?.includes("is_published=false"));
+    assert.equal(result.status, "send_unknown");
+    assert.ok(String(result.failure_reason).startsWith(FB_NOT_CONFIRMED_PREFIX));
+    assert.ok(String(result.failure_reason).includes("is_published=false"));
   });
 
-  it("Graph API retorna erro: vira failed com mensagem", () => {
+  it("#13042: Graph API retorna erro não-100 (190) com fb_post_id: status preservado + nota, nunca failed", () => {
     const entry = scheduledEntry();
     const graph: GraphPostResponse = {
       error: { message: "Invalid OAuth access token.", code: 190 },
     };
     const result = reconcilePost(entry, graph, now);
-    assert.equal(result.status, "failed");
-    assert.equal(result.failure_reason, "Invalid OAuth access token.");
+    assert.equal(result.status, "scheduled");
+    assert.equal(result.failure_reason, undefined);
+    assert.equal(result.verification_note, "read_error_inconclusive_code_190: Invalid OAuth access token.");
+  });
+
+  it("#13042: erro transitório (rate limit, code 4) sobre entry send_unknown preserva send_unknown", () => {
+    const entry = scheduledEntry({ status: "send_unknown", failure_reason: `${FB_NOT_CONFIRMED_PREFIX} x` });
+    const result = reconcilePost(entry, { error: { message: "Application request limit reached", code: 4 } }, now);
+    assert.equal(result.status, "send_unknown");
+    assert.equal(result.failure_reason, `${FB_NOT_CONFIRMED_PREFIX} x`);
+  });
+
+  it("#13042: entry send_unknown vira published quando a leitura conclusiva confirma", () => {
+    const entry = scheduledEntry({ status: "send_unknown", failure_reason: `${FB_NOT_CONFIRMED_PREFIX} x` });
+    const result = reconcilePost(
+      entry,
+      { is_published: true, created_time: "2026-04-24T10:00:01+0000", scheduled_publish_time: nowUnix - 3600 },
+      now,
+    );
+    assert.equal(result.status, "published");
+    assert.equal(result.failure_reason, undefined);
   });
 
   it("sem scheduled_publish_time + is_published=true: vira published", () => {
@@ -152,8 +176,8 @@ describe("reconcilePost", () => {
     assert.equal(result.failure_reason, "(#100) Tried accessing nonexisting field (scheduled_publish_time)");
   });
 
-  it("#3816: erro não-100 (ex: 190 invalid token) com fb_post_id existente CONTINUA virando failed — só erros de LEITURA (100) são protegidos", () => {
-    const entry = scheduledEntry();
+  it("#13042: erro não-100 SEM fb_post_id confirmado ainda vira failed (não há criação confirmada pra proteger)", () => {
+    const entry = scheduledEntry({ fb_post_id: undefined });
     const graph: GraphPostResponse = {
       error: { message: "Invalid OAuth access token.", code: 190 },
     };
@@ -244,7 +268,7 @@ describe("verifyPublished", () => {
     assert.equal(d3.status, "scheduled");
   });
 
-  it("captura exceção do fetch e marca como failed", async () => {
+  it("#13042: exceção do fetch NÃO muda o status (antes virava failed, que a retomada repostaria) — só anota", async () => {
     const published: SocialPublished = {
       posts: [scheduledEntry({ destaque: "d1" })],
     };
@@ -254,8 +278,27 @@ describe("verifyPublished", () => {
 
     const { updated, changes } = await verifyPublished(published, "TOKEN", "v18.0", fetchPost, now);
     assert.equal(changes, 1);
-    assert.equal(updated.posts[0].status, "failed");
-    assert.ok(updated.posts[0].failure_reason?.includes("Network timeout"));
+    assert.equal(updated.posts[0].status, "scheduled");
+    assert.equal(updated.posts[0].failure_reason, undefined);
+    assert.equal(updated.posts[0].verification_note, "graph_api_error: Network timeout");
+    // alarme mantido: o aviso nomeia a leitura inconclusiva.
+    const warnings = facebookVerifyWarnings(updated.posts);
+    assert.equal(warnings.length, 1);
+    assert.ok(warnings[0].includes("inconclusiva"));
+
+    // segunda rodada com o mesmo erro: nota idêntica, sem mudança.
+    const again = await verifyPublished(updated, "TOKEN", "v18.0", fetchPost, now);
+    assert.equal(again.changes, 0);
+  });
+
+  it("#13042: vencido sem confirmação gera aviso de send_unknown", async () => {
+    const published: SocialPublished = { posts: [scheduledEntry({ destaque: "d2" })] };
+    const fetchPost = async (): Promise<GraphPostResponse> => ({ is_published: false, scheduled_publish_time: nowUnix - 60 });
+    const { updated } = await verifyPublished(published, "TOKEN", "v18.0", fetchPost, now);
+    assert.equal(updated.posts[0].status, "send_unknown");
+    const warnings = facebookVerifyWarnings(updated.posts);
+    assert.equal(warnings.length, 1);
+    assert.ok(warnings[0].includes("send_unknown"));
   });
 
   it("0 mudanças quando tudo ainda está scheduled", async () => {

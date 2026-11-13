@@ -22,9 +22,19 @@
  * Fail-soft: credencial ausente ou API fora do ar deixa o canal sem conclusão
  * (nunca "ausente") e o script sai 0. Nunca publica nada.
  *
+ * Registros extras (#13009, resíduo da PR #13016), mesmo formato `{ posts }`:
+ * carrossel semanal (`data/weekly/{AAMMDD}/06-weekly-published.json`), divulgação da
+ * Retrospectiva (`data/monthly/{ciclo}/_internal/divulgacao-social-d*-published.json`)
+ * e posts da anual. `--file` aponta um ou mais à mão; `--extra-stores` acha os
+ * que têm post pendente agendado nos últimos `--extra-window-days` dias
+ * (default 4, `lib/social-reconcile-targets.ts`). Sem `03-social.md`, casam só
+ * por horário, e um item do feed já gravado como link de outro post (em
+ * qualquer arquivo da rodada) nunca casa de novo.
+ *
  * Uso:
  *   npx tsx scripts/reconcile-social-permalinks.ts --edition-dir data/editions/2611/261111/ \
- *     [--lookback-days N] [--dry-run] [--json] [--grace-hours N]
+ *     [--lookback-days N] [--file a.json,b.json] [--extra-stores [--extra-window-days N]] \
+ *     [--dry-run] [--json] [--grace-hours N]
  *
  * `--lookback-days 3` confere também as 2 edições anteriores (o Stage 0 usa 3:
  * os posts das 15:00/19:00 da edição anterior ainda não venceram quando ele roda).
@@ -43,14 +53,17 @@ import { editionDir as editionDirPath } from "./lib/edition-paths.ts";
 import {
   DEFAULT_FEED_RECONCILE_OPTIONS,
   FEED_RECONCILABLE_PLATFORMS,
+  claimedFeedKeys,
   earliestPendingSchedule,
   formatAbsentAlarm,
+  needsFeedReconcile,
   reconcilePostsAgainstFeeds,
   type FeedPlatform,
   type FeedRead,
   type FeedReconcileSummary,
 } from "./lib/social-feed-reconcile.ts";
 import { fetchInstagramFeed, fetchLinkedInPageFeed, fetchThreadsFeed } from "./lib/social-feed-fetch.ts";
+import { discoverExtraSocialStores, lookbackEditions } from "./lib/social-reconcile-targets.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -104,21 +117,13 @@ export async function readPendingFeeds(
 }
 
 /**
- * AAMMDD da edição e das `n - 1` anteriores, do mais recente ao mais antigo.
- * O Stage 0 roda no dia da edição anterior, quando os posts das 15:00/19:00
- * dela ainda não venceram; olhar para trás garante que esses posts sejam
- * conferidos nas rodadas seguintes. @pure
+ * AAMMDD da edição e das `n - 1` anteriores (movida para
+ * `lib/social-reconcile-targets.ts`, #13009; reexportada por compat). O Stage 0
+ * roda no dia da edição anterior, quando os posts das 15:00/19:00 dela ainda
+ * não venceram; olhar para trás garante que esses posts sejam conferidos nas
+ * rodadas seguintes.
  */
-export function lookbackEditions(aammdd: string, n: number): string[] {
-  if (!/^\d{6}$/.test(aammdd)) return [];
-  const base = Date.UTC(2000 + Number(aammdd.slice(0, 2)), Number(aammdd.slice(2, 4)) - 1, Number(aammdd.slice(4, 6)));
-  const out: string[] = [];
-  for (let i = 0; i < Math.max(1, n); i++) {
-    const d = new Date(base - i * 86_400_000);
-    out.push(`${String(d.getUTCFullYear() % 100).padStart(2, "0")}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCDate()).padStart(2, "0")}`);
-  }
-  return out;
-}
+export { lookbackEditions };
 
 interface RunOptions {
   dryRun: boolean;
@@ -126,53 +131,107 @@ interface RunOptions {
   opts: typeof DEFAULT_FEED_RECONCILE_OPTIONS;
 }
 
-async function reconcileEdition(editionDir: string, run: RunOptions): Promise<void> {
+/** Um arquivo de registro a reconciliar (#13009: edição diária ou registro extra). */
+export interface ReconcileTarget {
+  /** Rótulo dos logs (diretório da edição ou caminho do arquivo). */
+  label: string;
+  path: string;
+  textFor: (entry: PostEntry) => string | null;
+}
+
+/** Janela default dos registros extras no Stage 0: 4 rodadas diárias depois do horário. */
+export const DEFAULT_EXTRA_WINDOW_DAYS = 4;
+
+function editionTarget(editionDir: string): ReconcileTarget | null {
   const publishedPath = resolvePublishedPath(editionDir);
   if (!publishedPath) {
     console.log(`[reconcile-social-permalinks] nenhum 06-social-published.json em ${editionDir} — skip.`);
-    return;
+    return null;
   }
   const socialMdPath = join(resolve(ROOT, editionDir), "03-social.md");
-  const textFor = makeTextResolver(existsSync(socialMdPath) ? readFileSync(socialMdPath, "utf8") : null);
+  return {
+    label: editionDir,
+    path: publishedPath,
+    textFor: makeTextResolver(existsSync(socialMdPath) ? readFileSync(socialMdPath, "utf8") : null),
+  };
+}
 
+/**
+ * Registro extra (semanal, divulgação mensal, anual): não há `03-social.md`,
+ * então o casamento é só por horário, na janela curta e com a recusa de
+ * ambiguidade de `decideFeedReconcile`.
+ */
+function fileTarget(path: string): ReconcileTarget {
+  return { label: path, path: resolve(ROOT, path), textFor: () => null };
+}
+
+/**
+ * Reconcilia um arquivo. `claimed` acumula, entre os arquivos da rodada, os
+ * itens do feed já atribuídos (#13009): o post semanal casado só por horário
+ * nunca herda o link do destaque diário do mesmo horário.
+ */
+async function reconcileTarget(target: ReconcileTarget, run: RunOptions, claimed: Set<string>): Promise<void> {
+  const { label, path: publishedPath, textFor } = target;
+  if (!existsSync(publishedPath)) {
+    console.log(`[reconcile-social-permalinks] ${label}: arquivo ausente — skip.`);
+    return;
+  }
   const feeds = await readPendingFeeds(readSocialPublished(publishedPath).posts);
   for (const [platform, feed] of Object.entries(feeds)) {
-    if (feed?.error) console.warn(`[reconcile-social-permalinks] ${editionDir} ${platform}: feed não lido (${feed.error}) — canal fica sem conclusão.`);
+    if (feed?.error) console.warn(`[reconcile-social-permalinks] ${label} ${platform}: feed não lido (${feed.error}) — canal fica sem conclusão.`);
   }
 
   const now = new Date();
-  let summary: FeedReconcileSummary = { matched: 0, absent: [], undecided: 0 };
-  summary = reconcilePostsAgainstFeeds(readSocialPublished(publishedPath).posts, feeds, textFor, now, run.opts).summary;
+  let r = reconcilePostsAgainstFeeds(readSocialPublished(publishedPath).posts, feeds, textFor, now, run.opts, claimed);
+  let summary: FeedReconcileSummary = r.summary;
   // Sem mudança, não reescreve: o arquivo vive no `data/` sincronizado.
   if (!run.dryRun && summary.matched + summary.absent.length > 0) {
     // Reaplica sob o lock do store: um publisher concorrente não perde a escrita dele.
     rewriteSocialPosts(publishedPath, (posts) => {
-      const r = reconcilePostsAgainstFeeds(posts, feeds, textFor, now, run.opts);
+      r = reconcilePostsAgainstFeeds(posts, feeds, textFor, now, run.opts, claimed);
       summary = r.summary;
       return r.posts;
     });
   }
+  for (const k of claimedFeedKeys(r.posts)) claimed.add(k);
 
   const alarm = formatAbsentAlarm(summary);
-  if (alarm) console.error(`[reconcile-social-permalinks] ${editionDir}: ${alarm}`);
+  if (alarm) console.error(`[reconcile-social-permalinks] ${label}: ${alarm}`);
   if (run.json) {
     console.log(JSON.stringify({ file: publishedPath, dry_run: run.dryRun, ...summary }));
   } else {
     console.log(
-      `[reconcile-social-permalinks] ${editionDir}: ${summary.matched} com link do feed, ${summary.absent.length} ausente(s) do feed, ` +
+      `[reconcile-social-permalinks] ${label}: ${summary.matched} com link do feed, ${summary.absent.length} ausente(s) do feed, ` +
         `${summary.undecided} sem conclusão${run.dryRun ? " (dry-run, nada gravado)" : ""}.`,
     );
   }
 }
 
+/** Links já gravados em todos os arquivos da rodada, antes de qualquer casamento. */
+function seedClaimed(targets: ReconcileTarget[]): Set<string> {
+  const out = new Set<string>();
+  for (const t of targets) {
+    try {
+      for (const k of claimedFeedKeys(readSocialPublished(t.path).posts ?? [])) out.add(k);
+    } catch {
+      // arquivo ilegível: o reconcileTarget dele vai acusar; aqui só não semeia.
+    }
+  }
+  return out;
+}
+
+const USAGE =
+  "Uso: reconcile-social-permalinks.ts [--edition-dir <dir> [--lookback-days N]] [--file a.json,b.json] " +
+  "[--extra-stores [--extra-window-days N]] [--dry-run] [--json] [--grace-hours N]";
+
 async function main(): Promise<number> {
   loadProjectEnv();
   const { values, flags } = parseArgsLib(process.argv.slice(2));
   const editionDir = values["edition-dir"];
-  if (!editionDir) {
-    console.error(
-      "Uso: reconcile-social-permalinks.ts --edition-dir <dir> [--lookback-days N] [--dry-run] [--json] [--grace-hours N]",
-    );
+  const files = (values["file"] ?? "").split(",").map((f) => f.trim()).filter(Boolean);
+  const extraStores = flags.has("extra-stores");
+  if (!editionDir && files.length === 0 && !extraStores) {
+    console.error(USAGE);
     return 2;
   }
   const graceRaw = Number(values["grace-hours"]);
@@ -184,14 +243,34 @@ async function main(): Promise<number> {
       ...(Number.isFinite(graceRaw) && graceRaw > 0 ? { graceHours: graceRaw } : {}),
     },
   };
-  const lookbackRaw = Number(values["lookback-days"]);
-  const lookback = Number.isInteger(lookbackRaw) && lookbackRaw > 1 ? lookbackRaw : 1;
-  const aammdd = basename(editionDir.replace(/[\\/]+$/, ""));
-  const dirs =
-    lookback > 1 && /^\d{6}$/.test(aammdd)
-      ? [editionDir, ...lookbackEditions(aammdd, lookback).slice(1).map((d) => editionDirPath(d))]
-      : [editionDir];
-  for (const dir of dirs) await reconcileEdition(dir, run);
+
+  const targets: ReconcileTarget[] = [];
+  if (editionDir) {
+    const lookbackRaw = Number(values["lookback-days"]);
+    const lookback = Number.isInteger(lookbackRaw) && lookbackRaw > 1 ? lookbackRaw : 1;
+    const aammdd = basename(editionDir.replace(/[\\/]+$/, ""));
+    const dirs =
+      lookback > 1 && /^\d{6}$/.test(aammdd)
+        ? [editionDir, ...lookbackEditions(aammdd, lookback).slice(1).map((d) => editionDirPath(d))]
+        : [editionDir];
+    for (const dir of dirs) {
+      const t = editionTarget(dir);
+      if (t) targets.push(t);
+    }
+  }
+  // Edições primeiro: elas têm o texto do post e casam com confiança antes
+  // que um registro só-horário tente o mesmo item do feed.
+  for (const f of files) targets.push(fileTarget(f));
+  if (extraStores) {
+    const windowRaw = Number(values["extra-window-days"]);
+    const windowDays = Number.isFinite(windowRaw) && windowRaw > 0 ? windowRaw : DEFAULT_EXTRA_WINDOW_DAYS;
+    const found = discoverExtraSocialStores(resolve(ROOT, "data"), needsFeedReconcile, new Date(), windowDays);
+    console.log(`[reconcile-social-permalinks] registros extras com post pendente nos últimos ${windowDays} dia(s): ${found.length}.`);
+    for (const f of found) if (!targets.some((t) => resolve(t.path) === resolve(f))) targets.push(fileTarget(f));
+  }
+
+  const claimed = seedClaimed(targets);
+  for (const t of targets) await reconcileTarget(t, run, claimed);
   return 0;
 }
 

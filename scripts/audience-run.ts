@@ -51,6 +51,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { fetchAllFormDrafts, fetchAllFormResponses, type FormDraft, type FormResponse } from "./lib/onboarding-form-contract.ts";
 import { resolveFollowupConfig, type FollowupConfigRaw } from "./lib/onboarding-followup.ts";
 import { onboardingFormToSurveyResponses, type SurveyResponseRecord } from "./lib/audience-survey-questions.ts";
+import { isFormTestEmail } from "./lib/onboarding-form-partial-results.ts";
 
 // O token do formulário vem do .env/Doppler — precisa estar no PRÓPRIO
 // process.env deste processo (mesma lição do clarice-novos-run.ts, #4983).
@@ -129,6 +130,17 @@ export async function loadOnboardingFormSurveyResponses(
     } catch (e) {
       console.error(`[audience-run] ⚠ rascunhos do formulário não lidos (${(e as Error).message}) — o perfil sai só com as respostas enviadas.`);
     }
+  }
+  // #12925: respostas e rascunhos dos endereços de teste do editor (inclusive
+  // com `+sufixo`, como o link de demonstração de
+  // `scripts/onboarding-form-demo-link.ts`) ficam fora do perfil, com o mesmo
+  // critério do resultado parcial do Studio (`isFormTestEmail`, #12583).
+  const testes =
+    responses.filter((r) => isFormTestEmail(r.email)).length + drafts.filter((d) => isFormTestEmail(d.email)).length;
+  if (testes > 0) {
+    console.error(`[audience-run] ${testes} resposta(s)/rascunho(s) de endereço de teste do editor deixado(s) de fora do perfil.`);
+    responses = responses.filter((r) => !isFormTestEmail(r.email));
+    drafts = drafts.filter((d) => !isFormTestEmail(d.email));
   }
   const converted = onboardingFormToSurveyResponses(responses, undefined, drafts);
   const fromDrafts = converted.responses.filter((r) => r.draft === true).length;

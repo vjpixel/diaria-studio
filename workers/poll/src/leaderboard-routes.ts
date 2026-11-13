@@ -305,7 +305,8 @@ export async function invalidateSnapshot(env: Env, slug: string): Promise<void> 
  *
  * Rationale do skip-on-missing vs. computeSnapshotEntries no voto (#F3):
  *   handleVote já consumiu ~12 subrequests. computeSnapshotEntries adiciona
- *   1 list + N gets — para N≥35 votantes estoura o free-tier (50/req).
+ *   1 list + N gets — para N≥35 votantes estouraria o free-tier (50/req), o
+ *   plano da conta na época (hoje Workers Paid, #12533, teto bem maior).
  *   Skip-on-missing resolve #2152 (nunca grava snapshot de 1 que esconde os
  *   outros N) e #F1/#F2 (corrompido não persiste como 1-entry por 24h) sem
  *   risco de estourar o orçamento de subrequests no caminho quente do voto.

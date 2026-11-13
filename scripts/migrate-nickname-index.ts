@@ -10,7 +10,10 @@
  * `score:*` (1 list + N gets sequenciais, N = nº de votantes distintos
  * all-time, já ~60+ e crescendo monotonicamente) — O(N) a cada tentativa de
  * salvar apelido, na zona de estouro do teto de 50 subrequests/request do
- * Workers free plan. `workers/poll/src/index.ts` (`handleSetName`) foi
+ * Workers free plan, o plano da conta na época (hoje Workers Paid, #12533,
+ * com teto de subrequests bem maior; conferir o plano com `npx tsx
+ * scripts/cloudflare-plan.ts`). O(N) por request segue ruim de qualquer
+ * jeito. `workers/poll/src/index.ts` (`handleSetName`) foi
  * reescrito pra checar unicidade via 1 `get` no índice `nickname:{normalizado}`
  * em vez do scan.
  *

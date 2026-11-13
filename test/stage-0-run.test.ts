@@ -727,6 +727,8 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.ok(calls[reconcile].args.includes("--edition-dir"));
     // Posts das 15:00/19:00 da edição anterior ainda não venceram quando o Stage 0 roda.
     assert.equal(calls[reconcile].args[calls[reconcile].args.indexOf("--lookback-days") + 1], "3");
+    // Resíduo do #13009: semanal, divulgação mensal e anual também.
+    assert.ok(calls[reconcile].args.includes("--extra-stores"));
     assert.ok(idx("verify-social-worker-dispatch") < reconcile);
     assert.ok(reconcile < idx("check-prev-social-status"));
   });
@@ -778,6 +780,10 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     const fbCall = calls.find((c) => c.script.includes("verify-facebook-posts"));
     assert.ok(fbCall, "antes do fix o passo era pulado em silêncio sem o arquivo legado");
     assert.ok(fbCall!.args.includes("--edition-dir"));
+    // #13009: os posts das 15:00/19:00 da edição anterior ainda estão
+    // agendados quando o Stage 0 roda — sem lookback ficavam `scheduled`.
+    assert.equal(fbCall!.args[fbCall!.args.indexOf("--lookback-days") + 1], "3");
+    assert.ok(fbCall!.args.includes("--extra-stores"));
   });
 
   it("0k — sem credencial nenhuma, verify-facebook-posts é pulado com NOTA, nunca em silêncio (#10505)", async () => {

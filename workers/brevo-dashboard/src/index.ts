@@ -517,9 +517,12 @@ async function buildDashboardResponse(
     // scheduled + campaignsLimit) mudou desde o último write bem-sucedido.
     // O `#3553` original acima escrevia INCONDICIONALMENTE a cada request
     // não-`fresh` (sem TTL de escrita, sem hash, sem intervalo mínimo) — no
-    // free tier da Cloudflare (~1.000 escritas de KV/dia POR CONTA,
-    // compartilhado com o Worker `poll`) isso já quase estourou uma vez
-    // (#2282). O hash é calculado só sobre o conteúdo ESTÁVEL — nunca sobre
+    // free tier da Cloudflare, em que a conta estava na época (~1.000
+    // escritas de KV/dia POR CONTA, compartilhado com o Worker `poll`), isso
+    // já quase estourou uma vez (#2282). Hoje a conta é Workers Paid (#12533:
+    // cota MENSAL incluída, o excedente é cobrado e não bloqueia; conferir
+    // com `npx tsx scripts/cloudflare-plan.ts`) — o write condicional segue
+    // valendo como economia. O hash é calculado só sobre o conteúdo ESTÁVEL — nunca sobre
     // `generatedAt` (que é `new Date().toISOString()` a cada tick e tornaria
     // o gate inútil, já que o payload inteiro nunca seria idêntico de uma
     // request pra outra).

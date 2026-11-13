@@ -53,8 +53,10 @@ export const ABANDONO_FIELD_MAX = 100;
 export const ABANDONO_METADATA_MAX_BYTES = 1000;
 
 /** Maior período aceito pela rota de leitura. Cada dia custa pelo menos uma
- * operação `list` no KV (o plano gratuito tem 1.000 por dia na conta); o
- * relatório diário pede um dia por vez. */
+ * operação `list` no KV (a conta é Workers Paid, #12533: cota mensal de
+ * `list` incluída e o excedente é cobrado; o teto de 1.000 por dia é do plano
+ * gratuito, que a conta não usa mais — `npx tsx scripts/cloudflare-plan.ts`);
+ * o relatório diário pede um dia por vez. */
 export const ABANDONOS_MAX_DIAS = 93;
 
 /** Brasília está em UTC-3 fixo desde o fim do horário de verão (2019). */
