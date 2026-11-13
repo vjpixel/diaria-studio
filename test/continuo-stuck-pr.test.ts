@@ -18,8 +18,10 @@ import {
   needsDraftBlockLabel,
   buildCloseComment,
   buildRefreshComment,
+  countRefreshes,
   hasApprovalForHead,
   REFRESH_BRANCH_MARKER,
+  REFRESH_CAP,
   REJECT_CAP,
   UPDATE_BRANCH_MARKER,
   STALE_HOURS_BEFORE_ACTION,
@@ -231,7 +233,7 @@ describe("#12907 — PR aprovada e verde parada recebe o master antes de conflit
   // `verdict=approve`, CI verde, sem commit há 6h+, master andando. Antes,
   // nada acontecia até o `CONFLICTING`, e aí vinha o `close_conflict`.
   const ready = (over: Partial<StuckPrInput> = {}) =>
-    pr({ ciVerdict: "pass", approved: true, retido: false, sensitive: false, behindBy: 7, ...over });
+    pr({ ciVerdict: "pass", approved: true, retido: false, sensitive: false, refreshCount: 0, behindBy: 7, ...over });
 
   it("aprovada + verde + parada + atrás do master → refresh_branch", () => {
     assert.deepEqual(decideStuckPrAction(ready()), { kind: "refresh_branch", behindBy: 7 });
@@ -286,6 +288,42 @@ describe("#12907 — PR aprovada e verde parada recebe o master antes de conflit
     assert.ok(c.includes(REFRESH_BRANCH_MARKER));
     assert.ok(!c.includes(UPDATE_BRANCH_MARKER));
     assert.match(c, /3 commit/);
+  });
+});
+
+describe("#13010 — teto de refreshes por PR", () => {
+  const ready = (over: Partial<StuckPrInput> = {}) =>
+    pr({ ciVerdict: "pass", approved: true, retido: false, sensitive: false, refreshCount: 0, behindBy: 7, ...over });
+  const mergeCommit = { messageHeadline: "Merge branch 'master' into continuo/fix-1" };
+
+  it(`até ${REFRESH_CAP - 1} refresh anterior ainda atualiza; no teto, não`, () => {
+    assert.equal(REFRESH_CAP, 2);
+    assert.equal(decideStuckPrAction(ready({ refreshCount: 1 })).kind, "refresh_branch");
+    assert.equal(decideStuckPrAction(ready({ refreshCount: REFRESH_CAP })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ refreshCount: REFRESH_CAP + 3 })).kind, "skip");
+  });
+
+  it("contagem ilegível (null/ausente) não atualiza", () => {
+    assert.equal(decideStuckPrAction(ready({ refreshCount: null })).kind, "skip");
+    assert.equal(decideStuckPrAction(ready({ refreshCount: undefined })).kind, "skip");
+  });
+
+  it("countRefreshes conta marcadores, ou commits de merge da base, o que for maior", () => {
+    const marker = buildRefreshComment(3);
+    assert.equal(countRefreshes([]), 0);
+    assert.equal(countRefreshes([marker, "outro", marker]), 2);
+    assert.equal(countRefreshes(["x"], [mergeCommit, { messageHeadline: "fix: algo" }, mergeCommit]), 2);
+    assert.equal(countRefreshes([marker], [mergeCommit, mergeCommit, mergeCommit]), 3);
+    assert.equal(countRefreshes([marker, marker], [{ messageHeadline: null }]), 2);
+  });
+
+  it("comentários ilegíveis → null (sem sinal legível)", () => {
+    assert.equal(countRefreshes(null, [mergeCommit]), null);
+  });
+
+  it("o resolvedor passa a contagem para a decisão", () => {
+    const cli = readFileSync(resolve(ROOT, "scripts/continuo-resolve-stuck-prs.ts"), "utf8");
+    assert.match(cli, /refreshCount: countRefreshes\(comments, view\?\.commits \?\? null\)/);
   });
 });
 

@@ -26,7 +26,8 @@
  * ANTES de conflitar. A auditoria da #12907 mostrou 11 de 20 descartes do
  * contínuo por `close_conflict` em PRs que já tinham `verdict=approve`. O
  * laço termina igual: o commit de merge zera a idade da PR, então a próxima
- * atualização só cabe 6h depois, e só se a aprovação cobrir o HEAD novo.
+ * atualização só cabe 6h depois, só se a aprovação cobrir o HEAD novo, e no
+ * máximo `REFRESH_CAP` vezes por PR (#13010).
  * Fora do refresh, como a decisão manda: retenção por caminho sensível,
  * draft, `bloqueio-execucao` e `retido-para-editor`.
  *
@@ -72,6 +73,32 @@ export const UPDATE_BRANCH_MARKER = "<!-- continuo-stuck: update-branch -->";
  * PR com CI VERMELHO; um refresh de PR verde não pode gastar essa chance. */
 export const REFRESH_BRANCH_MARKER = "<!-- continuo-stuck: refresh-branch -->";
 
+/** #13010 (review): teto de `refresh_branch` por PR. Cada refresh muda o HEAD
+ * e dispara um re-review pago (#8445); sem teto, uma PR aprovada que fica
+ * parada por outro motivo recebia refresh + re-review a cada ~6h por dias. */
+export const REFRESH_CAP = 2;
+
+/** Commit de merge da base que o `update-branch` do GitHub cria. */
+const BASE_MERGE_COMMIT_RE = /^Merge branch '(?:master|main)' into /;
+
+/**
+ * #13010: quantos refreshes a PR já recebeu — o maior entre os comentários
+ * com `REFRESH_BRANCH_MARKER` e os commits de merge da base já na branch
+ * (cobre refresh cujo comentário não foi postado). Comentários ilegíveis →
+ * `null` (sem sinal legível = não atualiza). Pura.
+ */
+export function countRefreshes(
+  comments: readonly string[] | null,
+  commits?: readonly { messageHeadline?: string | null }[] | null,
+): number | null {
+  if (comments === null) return null;
+  const byMarker = comments.filter((b) => b.includes(REFRESH_BRANCH_MARKER)).length;
+  const byCommit = (commits ?? []).filter(
+    (c) => typeof c.messageHeadline === "string" && BASE_MERGE_COMMIT_RE.test(c.messageHeadline),
+  ).length;
+  return Math.max(byMarker, byCommit);
+}
+
 /**
  * #12907: a PR tem aprovação vigente? Review independente mais recente com
  * `verdict=approve` cujo `head=` cobre o HEAD atual (mesma regra do #6926 que
@@ -116,6 +143,9 @@ export interface StuckPrInput {
   /** #12907: a PR toca caminho sensível (`classifyChangedPaths`). Ausente/`null`
    * = lista de arquivos ilegível → tratado como sensível (fail-closed). */
   sensitive?: boolean | null;
+  /** #13010: refreshes já feitos nesta PR (`countRefreshes`). Ausente/`null`
+   * = ilegível → não atualiza (fail-closed). */
+  refreshCount?: number | null;
 }
 
 export type StuckPrAction =
@@ -173,8 +203,8 @@ function isStale(pr: StuckPrInput): boolean {
  * 4. `CONFLICTING` + parada → `close_conflict` (nenhum ramo do contínuo
  *    resolve conflito: o ci-fixer pula `blocked_by_conflict`).
  * 4b. (#12907) CI `pass` + aprovada no HEAD atual + atrás do master + não
- *    retida + sem caminho sensível + parada → `refresh_branch` (traz o master
- *    antes de conflitar; sem limite de vezes, a idade zera a cada merge).
+ *    retida + sem caminho sensível + parada + menos de `REFRESH_CAP` refreshes
+ *    anteriores → `refresh_branch` (traz o master antes de conflitar).
  * 5. CI `fail` + atrás do master + sem `update-branch` anterior + parada →
  *    `update_branch` (falha pode ser do base; não gasta o cap de CI-fix).
  * 6. CI `fail` + cap de CI-fix gasto + (`update-branch` já feito OU em dia
@@ -221,6 +251,7 @@ function shouldRefreshBranch(pr: StuckPrInput): boolean {
   if (pr.approved !== true) return false;
   if (pr.retido !== false) return false;
   if (pr.sensitive !== false) return false;
+  if (typeof pr.refreshCount !== "number" || pr.refreshCount >= REFRESH_CAP) return false;
   return pr.behindBy !== null && pr.behindBy > 0;
 }
 

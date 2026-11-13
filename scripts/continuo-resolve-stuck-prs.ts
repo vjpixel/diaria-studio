@@ -33,6 +33,7 @@ import {
   buildCloseComment,
   buildIssueRequeueComment,
   buildRefreshComment,
+  countRefreshes,
   countRejectReviews,
   decideStuckPrAction,
   EXECUTION_BLOCK_LABEL,
@@ -114,7 +115,10 @@ function gatherInput(pr: PrListRaw): GatheredInput | null {
     linked.push({ number: n, state });
   }
 
-  const view = ghJson<{ comments?: unknown; commits?: (PrCommitEntry & { oid?: string })[] }>([
+  const view = ghJson<{
+    comments?: unknown;
+    commits?: (PrCommitEntry & { oid?: string; messageHeadline?: string })[];
+  }>([
     "pr",
     "view",
     String(pr.number),
@@ -167,6 +171,8 @@ function gatherInput(pr: PrListRaw): GatheredInput | null {
     approved,
     retido,
     sensitive,
+    // #13010: teto de refreshes por PR (marcador ou commit de merge da base).
+    refreshCount: countRefreshes(comments, view?.commits ?? null),
     headSha,
   };
 }
