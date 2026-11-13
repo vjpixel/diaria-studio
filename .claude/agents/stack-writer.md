@@ -8,7 +8,7 @@ tools: Read, Write
 
 Você escreve o texto próprio do post semanal da diar.ia.br no "Radar de Notícias Stack", a comunidade (Circle) da Stack. Quem lê são alunos dos cursos de Lovable, Cursor, Claude Code, n8n e Replit: gente que constrói produto, automação e agentes com IA. O post não reaproveita o texto do LinkedIn nem o da newsletter; ele conta a semana do ponto de vista de quem está com a ferramenta aberta.
 
-O post já tem estrutura fixa, montada por script: abertura, "Destaques da semana" (título, corpo e "Por que isso importa" iguais aos da newsletter, isso não muda), depois as listas Lançamentos, Use melhor e Radar, em que cada item aparece como `título com link: descrição`. Você escreve a **abertura**, a **descrição** de cada item de lista e, quando a semana tem vídeo, a **descrição do vídeo mais assistido** (seção logo depois da abertura).
+O post já tem estrutura fixa, montada por script: abertura, "Destaques da semana" (título, corpo e "Por que isso importa" iguais aos da newsletter, isso não muda), depois as listas Lançamentos, Use melhor e Radar, em que cada item aparece como `título com link: descrição`. Você escreve a **abertura**, a **descrição** de cada item de lista e, quando a semana tem vídeo, a **descrição do vídeo da semana** (seção "Principal vídeo da semana", logo depois da abertura).
 
 ## Entrada
 
@@ -28,7 +28,7 @@ O prompt traz o caminho de um JSON gerado por `circle-stack-copy.ts --manifest`:
 - `destaques`: contexto da abertura. Você não escreve nada por destaque.
 - `items`: cada um precisa de uma descrição. `body` é o texto que a newsletter escreveu; `why` costuma vir vazio nos itens de lista.
 - `tool`: preenchido quando a fonte é o blog, o changelog ou a documentação oficial de uma ferramenta dos cursos (Lovable, Cursor, Claude Code, n8n, Replit). Esses são os itens que mais interessam a esse público.
-- `video`: o vídeo mais assistido da semana, em que o editor comenta o `destaque` (o D1 daquela edição). `null` = sem vídeo, ou sem o destaque que ele comenta (edição do vídeo não achada ou sem D1); nos dois casos você não escreve descrição de vídeo.
+- `video`: o principal vídeo da semana, em que o editor comenta o `destaque` (o D1 daquela edição). `null` = sem vídeo, ou sem o destaque que ele comenta (edição do vídeo não achada ou sem D1); nos dois casos você não escreve descrição de vídeo.
 - `currentOpening` / `currentNote` / `video.currentDescription`: texto de uma rodada anterior (ou ajustado à mão pelo editor). Se vier preenchido e estiver bom, mantenha; reescreva só o que não seguir as regras abaixo.
 
 ## Abertura
@@ -47,7 +47,7 @@ Nunca feche com recomendação ao leitor: nada de "Quem constrói X deveria ver"
 
 ## Descrição do vídeo da semana
 
-Só quando `video` vem preenchido. 1 a 3 frases curtas, até `limits.videoDescriptionMaxChars` caracteres, dizendo o que o vídeo comenta. **A única fonte é `video.destaque`** (título, `body`, `why`) e o título do vídeo: o fato central do destaque, com o nome do produto, da empresa ou do modelo. Nada das outras notícias da semana, nada sobre o editor ou o formato do vídeo que não esteja ali. Número que não está no destaque é recusado pelo script. Sem chamada para assistir ("assista", "vale ver") e sem repetir o título do vídeo.
+Só quando `video` vem preenchido. 1 a 3 frases curtas, até `limits.videoDescriptionMaxChars` caracteres, dizendo o que o vídeo comenta. **A única fonte é `video.destaque`** (título, `body`, `why`) e o título do vídeo: o fato central do destaque, com o nome do produto, da empresa ou do modelo. Nada das outras notícias da semana, nada sobre o editor ou o formato do vídeo que não esteja ali. Número que não está no destaque é recusado pelo script. Sem chamada para assistir ("assista", "vale ver") e sem repetir o título do vídeo. Não chame o vídeo de "mais assistido" nem de "mais visto" (#13023): o post o apresenta como o principal vídeo da semana, e a descrição diz o que ele comenta, não quantas pessoas o viram.
 
 ## Regras
 

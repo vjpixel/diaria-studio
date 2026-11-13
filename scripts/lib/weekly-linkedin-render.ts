@@ -51,8 +51,9 @@ export function linkedinWeeklyCampaign(cycle: string): string {
 export type LinkedinWeeklyUtmContent = "mencao-abertura" | "cta-abertura" | "lista" | "cta-fim" | "video";
 
 /**
- * #12777 (10/11/2026, decisão do editor, ciclo 26w45): o vídeo mais assistido
- * da semana ganha seção própria, logo depois da manchete que ele comenta, no
+ * #12777 (10/11/2026, decisão do editor, ciclo 26w45): o principal vídeo
+ * da semana (o mais visto, #12081; apresentado como "principal" desde o
+ * #13023) ganha seção própria, logo depois da manchete que ele comenta, no
  * lugar da linha única antes do fecho (#12081). O link do vídeo vai no TEXTO
  * (`LINKEDIN_WEEKLY_VIDEO_LINK_TEXT`): o LinkedIn não permite link em imagem,
  * então o HTML colado não leva `<img>` e o editor sobe a imagem à mão (a sem
@@ -60,7 +61,7 @@ export type LinkedinWeeklyUtmContent = "mencao-abertura" | "cta-abertura" | "lis
  */
 export const LINKEDIN_WEEKLY_VIDEO_HEADING = "Vídeo da semana";
 /** #12777: trecho linkado ao vídeo (utm_content=video). */
-export const LINKEDIN_WEEKLY_VIDEO_LINK_TEXT = "No vídeo mais assistido da semana";
+export const LINKEDIN_WEEKLY_VIDEO_LINK_TEXT = "No principal vídeo da semana";
 /** #12777: resto da frase, texto puro depois do link. */
 export const LINKEDIN_WEEKLY_VIDEO_TAIL = " no canal da diar.ia.br eu comento o destaque acima.";
 

@@ -152,11 +152,11 @@ interface SelectionJson {
   headlines: Array<{ title: string; body: string; why: string; editionDate: string }>;
   useMelhor: { title: string; url: string; body: string } | null;
   weeklyEditions: Array<{ editionDate: string; url: string; destaques: string[] }>;
-  /** #12081: vídeo mais assistido da semana; `null` = medido e sem vídeo. */
+  /** #12081: principal vídeo da semana (o mais visto, #13023); `null` = medido e sem vídeo. */
   video?: WeeklyVideoField | null;
 }
 
-/** #12081: vídeo mais assistido da semana, gravado em `ln-selection.json`. */
+/** #12081: principal vídeo da semana (o mais visto), gravado em `ln-selection.json`. */
 export interface WeeklyVideoField {
   title: string;
   url: string;
