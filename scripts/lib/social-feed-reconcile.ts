@@ -163,6 +163,7 @@ export function decideFeedReconcile(
   const candidates: Candidate[] = [];
   const ambiguous = new Set<number>();
   const invalidSchedule = new Set<number>();
+  const textMismatchInWindow = new Set<number>();
 
   entries.forEach((entry, ei) => {
     const sched = Date.parse(entry.scheduled_at ?? "");
@@ -186,6 +187,9 @@ export function decideFeedReconcile(
       if (entryTokens.size > 0 && tokens.size > 0) {
         const ov = tokenOverlap(entryTokens, tokens);
         if (ov >= opts.minTokenOverlap) candidates.push({ entryIdx: ei, itemIdx: ii, by: "text", rank: [0, -ov, delta] });
+        // Item no horário com texto diferente: pode ser o post com a legenda
+        // reescrita depois do disparo. Não casa, mas também não prova ausência.
+        else if (ms <= tightHi) textMismatchInWindow.add(ei);
         return;
       }
       if (ms <= tightHi) timeOnly.push({ entryIdx: ei, itemIdx: ii, by: "time", rank: [1, 0, delta] });
@@ -212,6 +216,10 @@ export function decideFeedReconcile(
     if (invalidSchedule.has(ei)) return;
     if (ambiguous.has(ei)) {
       decisions[ei] = { action: "none", reason: "mais de um item do feed no horário e sem texto para desempatar" };
+      return;
+    }
+    if (textMismatchInWindow.has(ei)) {
+      decisions[ei] = { action: "none", reason: "há post no feed no horário, mas o texto não corresponde: conferir à mão" };
       return;
     }
     const sched = Date.parse(entry.scheduled_at ?? "");

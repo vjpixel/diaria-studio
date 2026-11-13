@@ -142,9 +142,9 @@ async function reconcileEdition(editionDir: string, run: RunOptions): Promise<vo
 
   const now = new Date();
   let summary: FeedReconcileSummary = { matched: 0, absent: [], undecided: 0 };
-  if (run.dryRun) {
-    summary = reconcilePostsAgainstFeeds(readSocialPublished(publishedPath).posts, feeds, textFor, now, run.opts).summary;
-  } else {
+  summary = reconcilePostsAgainstFeeds(readSocialPublished(publishedPath).posts, feeds, textFor, now, run.opts).summary;
+  // Sem mudança, não reescreve: o arquivo vive no `data/` sincronizado.
+  if (!run.dryRun && summary.matched + summary.absent.length > 0) {
     // Reaplica sob o lock do store: um publisher concorrente não perde a escrita dele.
     rewriteSocialPosts(publishedPath, (posts) => {
       const r = reconcilePostsAgainstFeeds(posts, feeds, textFor, now, run.opts);

@@ -103,8 +103,13 @@ describe("decideFeedReconcile — casamento", () => {
     assert.match(posts[0].verification_note as string, /^confirmed_in_feed:/);
   });
 
-  it("texto que não bate não casa, mesmo no horário exato", () => {
+  it("texto que não bate não casa, mesmo no horário exato — e não vira ausência (legenda pode ter sido reescrita)", () => {
     const d = decideFeedReconcile([entry()], [UM_TEXT], feed([item({ text: D1_TEXT })]), LATE);
+    assert.equal(d[0].action, "none");
+  });
+
+  it("texto diferente FORA da janela curta não segura a ausência", () => {
+    const d = decideFeedReconcile([entry()], [UM_TEXT], feed([item({ timestamp: "2026-10-23T19:00:00+0000", text: D1_TEXT })]), LATE);
     assert.equal(d[0].action, "absent");
   });
 
