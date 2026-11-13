@@ -80,6 +80,7 @@ import { listThreadsProfilePosts, readThreadsPersonalCreds, THREADS_PERSONAL_ENV
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const P = "[neo-readiness]";
 const KNOWN_FLAGS = ["json", "record", "if-neo", "offline"] as const;
+const FETCH_TIMEOUT_MS = 20_000;
 
 export interface ReadinessDeps {
   root: string;
@@ -154,7 +155,9 @@ function defaultDeps(): ReadinessDeps {
     readDotenv: readDotenvFile,
     dopplerNames: defaultDopplerNames,
     run: runCmd,
-    fetch: (u, i) => fetch(u, i),
+    // Teto por chamada: `listThreadsProfilePosts` não põe timeout, e o Passo 0
+    // de `/diaria-edicao` não pode ficar pendurado numa API de rede social.
+    fetch: (u, i) => fetch(u, { ...i, signal: i?.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) }),
     putKv: defaultPutKv,
     tasks: SCHEDULED_TASKS,
     log: (m) => console.log(m),
