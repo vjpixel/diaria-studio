@@ -420,6 +420,45 @@ export async function postToPersonalProfile(args: {
   return { ok: false, phase, reason: `POST /rest/posts falhou (HTTP ${res.status}): ${body}` };
 }
 
+/**
+ * #12936: troca o `commentary` de um post JÁ publicado no perfil pessoal
+ * (`POST /rest/posts/{urn}` com `X-RestLi-Method: PARTIAL_UPDATE`). A
+ * LinkedIn responde 204 sem corpo, e o token pessoal (`w_member_social`) não
+ * lê o post de volta (`GET` dá 403): o chamador declara o resultado como não
+ * relido. O título do vídeo não está entre os campos que a Posts API edita.
+ * Lança na falha (rede, 4xx/5xx) com a causa.
+ */
+export async function updatePersonalPostCommentary(args: {
+  fetchFn: FetchFn;
+  accessToken: string;
+  apiVersion: string;
+  postUrn: string;
+  text: string;
+}): Promise<void> {
+  let res: Response;
+  try {
+    res = await args.fetchFn(
+      `${LINKEDIN_POSTS_URL}/${encodeURIComponent(args.postUrn)}`,
+      withTimeout({
+        method: "POST",
+        headers: { ...restHeaders(args.accessToken, args.apiVersion), "X-RestLi-Method": "PARTIAL_UPDATE" },
+        body: JSON.stringify({ patch: { $set: { commentary: toLittleText(args.text) } } }),
+      }),
+    );
+  } catch (e) {
+    throw new Error(`PARTIAL_UPDATE ${args.postUrn}: erro de rede/timeout (o texto pode ter mudado; confira na página): ${(e as Error).message}`);
+  }
+  if (res.status === 204 || res.ok) return;
+  if (res.status === 401 || res.status === 403) throw new Error(`PARTIAL_UPDATE ${args.postUrn}: ${REVOKED_REASON}`);
+  let body = "";
+  try {
+    body = (await res.text()).slice(0, 300);
+  } catch {
+    /* corpo ilegível não muda a falha */
+  }
+  throw new Error(`PARTIAL_UPDATE ${args.postUrn} falhou (HTTP ${res.status}): ${body}`);
+}
+
 /** URL pública do post a partir da URN devolvida em `x-restli-id`. */
 export function postUrlFromUrn(urn: string | null): string | null {
   return urn ? `https://www.linkedin.com/feed/update/${urn}/` : null;
