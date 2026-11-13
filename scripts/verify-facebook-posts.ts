@@ -2,7 +2,9 @@
  * verify-facebook-posts.ts
  *
  * Verifica posts agendados do Facebook contra a Graph API e atualiza
- * `06-social-published.json` com o status real (published / failed).
+ * `06-social-published.json` com o status real (published; vencido sem
+ * confirmação vira `send_unknown`, e erro de leitura nunca muda o status —
+ * #13042).
  *
  * Rationale (#47): `publish-facebook.ts` agenda via `scheduled_publish_time`
  * e grava `status: "scheduled"`. Sem verificação, esse status fica para
@@ -227,13 +229,22 @@ export function reconcilePost(
     // uma leitura conclusiva) e anota a inconclusividade via
     // `verification_note`, pro #573 audit trail e pra um verify seguinte
     // (rodando já com o fix (a)) não achar "nenhuma mudança" e desistir.
-    const isReadError = graph.error.code === 100;
+    //
+    // #13042 (review P2): vale para QUALQUER erro da Graph, não só o #100. Com
+    // o lookback de 3 edições e os registros extras (semanal, divulgação
+    // mensal, anual), um erro temporário (rate limit, 5xx, token expirado)
+    // que virasse `failed` faria a retomada do publicador repostar um post
+    // que pode estar no ar — `failed` fica fora do skip de retomada. Mesmo
+    // princípio do #13016: erro de leitura nunca muda o status. O alarme
+    // continua: a entry segue `scheduled` vencida (0l "agendado e não
+    // publicado") e o main avisa a leitura inconclusiva no stderr.
     const hasConfirmedCreation =
       typeof entry.fb_post_id === "string" && entry.fb_post_id.length > 0;
-    if (isReadError && hasConfirmedCreation) {
+    if (hasConfirmedCreation) {
+      const code = graph.error.code ?? "unknown";
       return {
         ...entry,
-        verification_note: `read_error_inconclusive_code_100: ${graph.error.message}`,
+        verification_note: `read_error_inconclusive_code_${code}: ${graph.error.message}`,
       };
     }
     return {
@@ -257,7 +268,7 @@ export function reconcilePost(
     // genuinamente agendado — corrige de volta pra "scheduled" em vez de
     // deixar presa em "failed" pra sempre. Único outro status que chega aqui
     // ("scheduled") passa intocado.
-    if (entry.status === "failed") {
+    if (entry.status === "failed" || entry.status === "send_unknown") {
       return { ...entry, status: "scheduled", failure_reason: undefined, verification_note: undefined };
     }
     return entry;
@@ -285,21 +296,31 @@ export function reconcilePost(
     };
   }
 
-  // scheduled_publish_time passou e is_published !== true → falha silenciosa
+  // scheduled_publish_time passou e is_published !== true → publicação não
+  // confirmada. #13042 (review P2): `send_unknown`, nunca `failed` — a Graph
+  // não provou que o post não saiu, e `failed` uma retomada do publicador
+  // (diário, semanal, divulgação mensal) repostaria. Mesmo precedente do
+  // `absent_from_feed:` do #13016; o 0l alarma `send_unknown` ("envio
+  // ambíguo, conferir o perfil antes de refazer").
   return {
     ...entry,
-    status: "failed",
-    failure_reason: `scheduled_publish_time passou mas is_published=${graph.is_published ?? "null"}`,
+    status: "send_unknown",
+    failure_reason: `${FB_NOT_CONFIRMED_PREFIX} scheduled_publish_time passou mas is_published=${graph.is_published ?? "null"}`,
     verification_note: undefined,
   };
 }
+
+/** #13042 — prefixo do `failure_reason` de post vencido que a Graph não confirmou. */
+export const FB_NOT_CONFIRMED_PREFIX = "not_confirmed_by_graph:";
 
 // #3816 fix (c): entries "failed" com fb_post_id são reconciliáveis — só
 // entries criadas com sucesso têm fb_post_id (falhas reais de
 // publish-facebook.ts, ex: imagem ausente, scheduled_time_invalid, nunca
 // geram um), então "failed" sem fb_post_id continua pulado corretamente logo
 // abaixo pelo guard de fbPostId.
-const RECONCILABLE_STATUSES = new Set(["scheduled", "failed"]);
+// #13042: `send_unknown` também — uma leitura conclusiva posterior promove a
+// `published` (ou devolve a `scheduled`); inconclusiva, preserva.
+const RECONCILABLE_STATUSES = new Set(["scheduled", "failed", "send_unknown"]);
 
 export async function verifyPublished(
   published: SocialPublished,
@@ -344,13 +365,38 @@ export async function verifyPublished(
       }
       updatedPosts.push(next);
     } catch (e: unknown) {
+      // #13042 (review P2): erro de rede/Graph ilegível não muda o status
+      // (antes virava `failed`, que a retomada do publicador repostaria) —
+      // só anota a inconclusividade; o main avisa no stderr.
       const message = e instanceof Error ? e.message : String(e);
-      updatedPosts.push({ ...entry, status: "failed", failure_reason: `graph_api_error: ${message}` });
-      changes++;
+      const note = `graph_api_error: ${message}`;
+      if (note !== entry.verification_note) changes++;
+      updatedPosts.push({ ...entry, verification_note: note });
     }
   }
 
   return { updated: { ...published, posts: updatedPosts }, changes };
+}
+
+/**
+ * #13042 — avisos por entry do Facebook que a rodada não conseguiu confirmar:
+ * leitura inconclusiva (status preservado) ou vencida sem confirmação
+ * (`send_unknown`). Mantém o alarme que o antigo `failed` dava, sem o risco
+ * de repost na retomada. @pure
+ */
+export function facebookVerifyWarnings(posts: PostEntry[]): string[] {
+  const out: string[] = [];
+  for (const p of posts) {
+    if (p.platform !== "facebook") continue;
+    const id = `${p.destaque ?? "?"} (fb_post_id ${String(p.fb_post_id ?? "?")})`;
+    const note = typeof p.verification_note === "string" ? p.verification_note : "";
+    if (note.startsWith("read_error_inconclusive_") || note.startsWith("graph_api_error:")) {
+      out.push(`${id}: leitura da Graph inconclusiva, status "${p.status}" preservado — ${note}`);
+    } else if (p.status === "send_unknown" && typeof p.failure_reason === "string" && p.failure_reason.startsWith(FB_NOT_CONFIRMED_PREFIX)) {
+      out.push(`${id}: publicação não confirmada pela Graph (send_unknown) — conferir a página antes de refazer.`);
+    }
+  }
+  return out;
 }
 
 /**
@@ -460,6 +506,7 @@ async function main(): Promise<number | void> {
       undefined,
       credentialsFor,
     );
+    for (const w of facebookVerifyWarnings(updated.posts)) console.warn(`⚠️  ${publishedPath}: ${w}`);
 
     if (changes > 0) {
       // #13009: sob o lock do store, trocando só as entradas do Facebook pelo
