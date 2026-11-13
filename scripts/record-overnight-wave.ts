@@ -12,6 +12,10 @@
  * `cap_hit` falso-negativo silencioso). `--open-pr-slots N` — vagas do teto
  * global de PRs abertos (`scripts/check-open-pr-cap.ts`, #12765): onda com
  * mais unidades que N é recusada (exit 1), já que cada unidade vira uma PR.
+ * Desde o #12873 o script mede o teto sozinho (`readOpenPrCap`, a mesma
+ * função do `check-open-pr-cap.ts`) quando `--open-pr-slots` vem: medição
+ * verificada prevalece sobre o informado (divergência = aviso em stderr);
+ * `gh` indisponível = vale o informado, com aviso. Sem a flag, nada é medido.
  *
  * Exit: 0 = gravado (ou onda duplicada detectada — no-op idempotente, #8496
  * item 3: mesmo conjunto de issues já registrado em `plan.waves` dentro de
@@ -34,7 +38,8 @@ import {
 } from "./lib/overnight-waves.ts";
 import { formatIssueRef, legacyIssueNumber, parseIssueRef } from "./lib/issue-repos.ts";
 import { recordUnitTimeline } from "./lib/overnight-unit-timeline.ts";
-import { waveOpenPrCapError } from "./lib/open-pr-cap.ts";
+import { resolveWaveOpenPrSlots, waveOpenPrCapError } from "./lib/open-pr-cap.ts";
+import { readOpenPrCap } from "./check-open-pr-cap.ts";
 
 const INT = /^\d+$/;
 
@@ -124,8 +129,13 @@ if (isMainModule(import.meta.url)) {
 
   // Teto de PRs abertos (#12765) DEPOIS do dedup: re-registrar a mesma onda
   // (compaction) já com as PRs dela abertas segue sendo no-op exit 0 (#8496).
+  // #12873: o valor informado não é confiável sozinho (261111b passou 5 com 1
+  // vaga medida). O script mede o teto pela mesma função do
+  // `check-open-pr-cap.ts`; com medição, o medido só aperta (min); sem, o informado.
   if (slotsGiven) {
-    const capErr = waveOpenPrCapError(record.unit_count, Number(values["open-pr-slots"]));
+    const { slots, warning } = resolveWaveOpenPrSlots(Number(values["open-pr-slots"]), readOpenPrCap());
+    if (warning) console.error(`[record-overnight-wave] AVISO: ${warning}`);
+    const capErr = waveOpenPrCapError(record.unit_count, slots);
     if (capErr) {
       console.error(`[record-overnight-wave] ${capErr}`);
       process.exit(1);

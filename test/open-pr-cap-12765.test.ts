@@ -9,8 +9,10 @@ import {
   computeOpenPrSlots,
   isDependencyBotPr,
   OPEN_PR_CAP,
+  resolveWaveOpenPrSlots,
   waveOpenPrCapError,
 } from "../scripts/lib/open-pr-cap.ts";
+import { FAKE_GH_SKIP_WIN32, fakeGhEnv, withoutGhCredentials, writeFakeGh } from "./_helpers/fake-gh.ts";
 import { OPEN_PR_LIST_LIMIT, readOpenPrCap } from "../scripts/check-open-pr-cap.ts";
 import {
   closingComment,
@@ -102,14 +104,33 @@ describe("teto global de PRs abertos (#12765)", () => {
   });
 });
 
-describe("record-overnight-wave --open-pr-slots (#12765)", () => {
-  const setup = () => {
+/**
+ * `gh` falso no PATH (#12873): o script mede o teto sozinho, e o teste não
+ * pode depender do `gh` real (autenticado na máquina do dev, ausente no CI).
+ * `openPrs` = lista devolvida por `gh pr list`; `null` = gh falha (exit 1).
+ * Via `test/_helpers/fake-gh.ts` (#11487): sonda + credencial neutralizada.
+ */
+function fakeGhRunEnv(openPrs: number | null): NodeJS.ProcessEnv {
+  const bin = mkdtempSync(join(tmpdir(), "fake-gh-12873-"));
+  const payload = openPrs === null ? "" : JSON.stringify(
+    Array.from({ length: openPrs }, (_, i) => ({ number: 9000 + i, headRefName: `overnight/fix-${i}`, author: { login: "vjpixel" } })),
+  );
+  const body = openPrs === null
+    ? "#!/bin/sh\necho 'gh: offline' >&2\nexit 1\n"
+    : `#!/bin/sh\ncat <<'JSON'\n${payload}\nJSON\n`;
+  writeFakeGh(bin, body);
+  return fakeGhEnv(bin);
+}
+
+describe("record-overnight-wave --open-pr-slots (#12765)", { skip: FAKE_GH_SKIP_WIN32 }, () => {
+  const setup = (openPrs: number | null = null) => {
     const dir = mkdtempSync(join(tmpdir(), "wave-12765-"));
     const plan = join(dir, "plan.json");
     writeFileSync(plan, "{}\n");
+    const env = fakeGhRunEnv(openPrs);
     const run = (...extra: string[]) => spawnSync(process.execPath, [
       "--import", "tsx", "scripts/record-overnight-wave.ts", "--plan", plan, "--units", "1;2", ...extra,
-    ], { encoding: "utf8" });
+    ], { encoding: "utf8", env });
     return { plan, run };
   };
 
@@ -124,13 +145,6 @@ describe("record-overnight-wave --open-pr-slots (#12765)", () => {
     assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves.length, 1);
   });
 
-  it("valor inválido sai 2, inclusive na forma --flag= e sem valor", () => {
-    const { run } = setup();
-    assert.equal(run("--open-pr-slots", "x").status, 2);
-    assert.equal(run("--open-pr-slots=").status, 2);
-    assert.equal(run("--open-pr-slots").status, 2);
-  });
-
   it("re-registrar a mesma onda com menos vagas segue no-op exit 0 (#8496)", () => {
     const { plan, run } = setup();
     assert.equal(run("--open-pr-slots=2").status, 0);
@@ -138,6 +152,85 @@ describe("record-overnight-wave --open-pr-slots (#12765)", () => {
     assert.equal(again.status, 0, again.stderr);
     assert.match(again.stdout, /no-op idempotente/);
     assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves.length, 1);
+  });
+});
+
+describe("record-overnight-wave mede o teto sozinho (#12873)", { skip: FAKE_GH_SKIP_WIN32 }, () => {
+  const setup = (openPrs: number | null) => {
+    const dir = mkdtempSync(join(tmpdir(), "wave-12873-"));
+    const plan = join(dir, "plan.json");
+    writeFileSync(plan, "{}\n");
+    const env = fakeGhRunEnv(openPrs);
+    const run = (...extra: string[]) => spawnSync(process.execPath, [
+      "--import", "tsx", "scripts/record-overnight-wave.ts", "--plan", plan, "--units", "1;2", ...extra,
+    ], { encoding: "utf8", env });
+    return { plan, run };
+  };
+
+  it("caso real da 261111b: informado 5 com 1 vaga medida recusa onda de 2, sem gravar", () => {
+    const { plan, run } = setup(OPEN_PR_CAP - 1);
+    const r = run("--open-pr-slots", "5");
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /diverge do teto medido agora \(9 PR\(s\) aberta\(s\), 1 vaga\(s\)\)/);
+    assert.match(r.stderr, /estoura as 1 vaga/);
+    assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves, undefined);
+  });
+
+  it("informado abaixo do medido: vale o informado (o medido só aperta), com aviso", () => {
+    const { plan, run } = setup(0);
+    const r = run("--open-pr-slots", "1");
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /diverge do teto medido.*vale o informado/);
+    assert.match(r.stderr, /estoura as 1 vaga/);
+    assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves, undefined);
+  });
+
+  it("informado igual ao medido: sem aviso", () => {
+    const { run } = setup(OPEN_PR_CAP - 2);
+    const r = run("--open-pr-slots", "2");
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stderr, /AVISO/);
+  });
+
+  it("gh indisponível: aceita o informado com aviso", () => {
+    const { plan, run } = setup(null);
+    const r = run("--open-pr-slots", "2");
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /não medido .*sem conferência/);
+    assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves.length, 1);
+  });
+});
+
+// Fora do skip de win32: nenhum dos dois chega a chamar o gh.
+describe("--open-pr-slots sem gh (#12765, #12873)", () => {
+  it("resolveWaveOpenPrSlots (puro): o medido só aperta", () => {
+    assert.deepEqual(resolveWaveOpenPrSlots(3, { verified: true, slots: 3, open: 7 }), { slots: 3, warning: null });
+    const above = resolveWaveOpenPrSlots(5, { verified: true, slots: 1, open: 9 });
+    assert.equal(above.slots, 1);
+    assert.match(above.warning ?? "", /vale o medido/);
+    const below = resolveWaveOpenPrSlots(1, { verified: true, slots: 10, open: 0 });
+    assert.equal(below.slots, 1);
+    assert.match(below.warning ?? "", /vale o informado/);
+    const off = resolveWaveOpenPrSlots(4, { verified: false, reason: "x" });
+    assert.equal(off.slots, 4);
+    assert.match(off.warning ?? "", /não medido/);
+  });
+
+  it("valor inválido sai 2 antes de medir, inclusive na forma --flag= e sem valor", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wave-12765-inv-"));
+    const plan = join(dir, "plan.json");
+    writeFileSync(plan, "{}\n");
+    // Credencial neutralizada: se a validação regredir e o gh real rodar, leva 401.
+    const env = withoutGhCredentials(process.env);
+    const run = (...extra: string[]) => spawnSync(process.execPath, [
+      "--import", "tsx", "scripts/record-overnight-wave.ts", "--plan", plan, "--units", "1;2", ...extra,
+    ], { encoding: "utf8", env });
+    for (const args of [["--open-pr-slots", "x"], ["--open-pr-slots="], ["--open-pr-slots"]]) {
+      const r = run(...args);
+      assert.equal(r.status, 2, `${args.join(" ")}: ${r.stderr}`);
+      assert.match(r.stderr, /exige inteiro não-negativo/);
+    }
+    assert.equal(JSON.parse(readFileSync(plan, "utf8")).waves, undefined);
   });
 });
 
