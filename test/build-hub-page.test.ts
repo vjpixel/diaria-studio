@@ -184,9 +184,37 @@ describe("buildAnthropicClaudeFaq (#4558 Parte A) — regression do bug NFD/NFC"
         matchedHeadlines: ["Claude avança em problema de matemática"],
       },
     ];
+    synthetic[0].matchedHeadlines = ["Modelo da Anthropic finge ser humano em teste"];
     const intro = buildIntro(synthetic);
     assert.match(intro, /malicioso, em 06\/08\/2026/);
     assert.doesNotMatch(intro, /malicioso, em 13\/08\/2026/);
+  });
+
+  it("buildIntro: episódio de segurança MAIS NOVO que o teste britânico não muda a data do teste (regression #10337 — a página publicada dizia 26/10/2026)", () => {
+    // 19/08 ("Grupo hacker usou Claude em 8 invasões") e 26/10 ("Hackers usam
+    // Claude e Grok contra bancos") casam SEGURANCA_PATTERN e são posteriores
+    // ao teste de 06/08. Com a data saindo do último match desse padrão, a
+    // frase do teste britânico citava 26/10/2026.
+    const mk = (date: string, headline: string) => ({
+      date,
+      editionSlug: `e-${date}`,
+      url: `https://diar.ia.br/p/e-${date}`,
+      matchedHeadlines: [headline],
+    });
+    const synthetic = [
+      mk("2026-08-03", "Claude hackeou 3 empresas sem ninguém notar"),
+      mk("2026-08-06", "Modelo da Anthropic finge ser humano em teste"),
+      mk("2026-08-19", "Grupo hacker usou Claude em 8 invasões"),
+      mk("2026-10-26", "Hackers usam Claude e Grok contra bancos"),
+      mk("2026-11-12", "Claude Code pode ter vazado suas senhas no GitHub"),
+    ];
+    const intro = buildIntro(synthetic);
+    assert.match(intro, /malicioso, em 06\/08\/2026\./);
+    assert.doesNotMatch(intro, /malicioso, em (19\/08|26\/10|12\/11)\/2026/);
+  });
+
+  it("buildIntro com o dataset real: o teste britânico sai datado de 06/08/2026 (#10337)", () => {
+    assert.match(buildIntro(sourcesRaw as never), /malicioso, em 06\/08\/2026\./);
   });
 });
 
