@@ -97,7 +97,7 @@ import {
 import { normalizeUrl } from "./lib/weekly-linkedin-clicks.ts";
 import { hasSuspiciousCommercialLanguage } from "./lib/weekly-linkedin-filter.ts";
 import { parseDestaques } from "./extract-destaques.ts";
-import { checkSharedFileForProduct } from "./lib/weekly-shared-ranking.ts";
+import { checkSharedFileForProduct, validateOverrides } from "./lib/weekly-shared-ranking.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -314,7 +314,7 @@ export function main(rootDirOverride?: string) {
       sharedSelectionArg,
       resolution.publishMonday,
       headlineResult.headlineEligible,
-      editionsFound.map((e) => e.date),
+      { editionsFound: editionsFound.map((e) => e.date), candidates: ranked },
     );
     if (shared.error) {
       console.error(`--shared-selection inválido: ${shared.error}`);
@@ -609,7 +609,7 @@ export function applySharedLinkedinSelection(
   path: string,
   publishMonday: string,
   headlineEligible: WeeklyRankedCandidate[],
-  editionsFoundNow?: string[],
+  now?: { editionsFound: string[]; candidates: WeeklyRankedCandidate[] },
 ): {
   headlines: WeeklyRankedCandidate[];
   pendingGroup: WeeklyRankedCandidate[] | null;
@@ -636,22 +636,26 @@ export function applySharedLinkedinSelection(
   if (shared.publishMonday !== publishMonday) {
     return { ...empty, error: `${path} é da segunda ${shared.publishMonday}, não de ${publishMonday}.` };
   }
-  // Revisão da PR #13026: o ranking recalculado agora tem que ser o gravado
-  // (e mostrado no gate). Divergiu = kit-sync/edição nova depois do gate.
-  if (editionsFoundNow) {
-    if (!Array.isArray((shared as { ranking?: unknown }).ranking) || !Array.isArray(shared.clicked?.urls)) {
+  // Revisão da PR #13026: refaz a seleção com os candidatos de agora e as
+  // decisões gravadas. Seleção mudou (kit-sync/edição nova que mexe nas
+  // manchetes ou no clicked) ou hash da aprovação não bate = recusa. Taxa que
+  // mudou sem mudar a seleção vira só aviso.
+  const dataWarnings: string[] = [];
+  if (now) {
+    const sh = shared as { ranking?: unknown; overrides?: unknown };
+    if (!Array.isArray(sh.ranking) || !Array.isArray(shared.clicked?.urls)) {
       return { ...empty, error: `${path} sem ranking/clicked gravados — re-rode weekly-shared-selection.ts.` };
     }
-    const check = checkSharedFileForProduct("linkedin", shared as Parameters<typeof checkSharedFileForProduct>[1], {
-      editionsFound: editionsFoundNow,
-      ranked: headlineEligible,
-    });
-    if (check.divergence.length > 0) {
+    const badOverrides = validateOverrides(sh.overrides);
+    if (badOverrides) return { ...empty, error: `${path}: ${badOverrides} — re-rode weekly-shared-selection.ts (--reset-overrides).` };
+    const check = checkSharedFileForProduct("linkedin", shared as unknown as Parameters<typeof checkSharedFileForProduct>[1], now);
+    if (check.blocking.length > 0) {
       return {
         ...empty,
-        error: `o ranking mudou desde a seleção compartilhada (${check.divergence.join("; ")}) — re-rode weekly-shared-selection.ts e leve a seleção nova ao gate.`,
+        error: `seleção compartilhada desatualizada (${check.blocking.join("; ")}) — re-rode weekly-shared-selection.ts e leve a seleção nova ao gate.`,
       };
     }
+    dataWarnings.push(...check.warnings);
   }
   const byUrl = new Map(headlineEligible.map((c) => [normalizeUrl(c.url), c]));
   const resolveUrls = (urls: string[]): { list: WeeklyRankedCandidate[]; missing: string[] } => {
@@ -671,6 +675,7 @@ export function applySharedLinkedinSelection(
   const warnings = [
     `Manchetes da seleção compartilhada do pacote semanal (#13022): ${path}.`,
     ...(shared.linkedin!.warnings ?? []),
+    ...dataWarnings,
   ];
   const pending = shared.linkedin!.pending;
   if (pending && pending.resolution !== "editor") {

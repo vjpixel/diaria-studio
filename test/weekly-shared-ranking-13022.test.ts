@@ -29,6 +29,8 @@ import {
   buildSharedSelection,
   clickAgeReport,
   isEligibleFor,
+  rankingDivergence,
+  sameSelection,
   selectForProduct,
   validateOverrides,
 } from "../scripts/lib/weekly-shared-ranking.ts";
@@ -673,7 +675,7 @@ describe("#13022 revisão — kit-sync entre o gate e a aprovação nunca agenda
       r.setClicks({ b2: 30 }); // ranking muda depois da aprovação, sem re-rodar a seleção
       const res = await r.publish(["--schedule", "--allow-why-fallback"]);
       assert.deepEqual(res.codes, [2]);
-      assert.match(res.out, /ranking mudou desde a seleção compartilhada/);
+      assert.match(res.out, /seleção compartilhada desatualizada: a seleção recalculada agora não é a gravada/);
       const orig = process.argv;
       process.argv = ["node", "s", "--publish-monday", "260803", "--shared-selection", r.file];
       try {
@@ -684,7 +686,7 @@ describe("#13022 revisão — kit-sync entre o gate e a aprovação nunca agenda
       // Na prévia (sem --schedule) só avisa.
       const preview = await r.publish([]);
       assert.deepEqual(preview.codes, []);
-      assert.match(preview.out, /Antes do --schedule: ranking mudou/);
+      assert.match(preview.out, /Antes do --schedule: seleção compartilhada desatualizada/);
     } finally {
       r.cleanup();
     }
@@ -701,6 +703,70 @@ describe("#13022 revisão — kit-sync entre o gate e a aprovação nunca agenda
       const res = await r.publish(["--schedule", "--allow-why-fallback"]);
       assert.deepEqual(res.codes, [2]);
       assert.match(res.out, /hash da aprovação/);
+    } finally {
+      r.cleanup();
+    }
+  });
+});
+
+describe("#13022 re-revisão — consumidores recusam só quando o REPLAY muda a seleção", () => {
+  /** `--schedule` sem `--allow-why-fallback` e sem resumos: passando o guard da seleção compartilhada, o script para no guard dos resumos (exit 1), antes de qualquer rede. */
+  const scheduleProbe = (r: ReturnType<typeof makeRoot>) => r.publish(["--schedule"]);
+  const linkedin = (r: ReturnType<typeof makeRoot>) => {
+    const orig = process.argv;
+    process.argv = ["node", "s", "--publish-monday", "260803", "--shared-selection", r.file];
+    try {
+      return withMockedExit(() => quiet(() => selectLinkedinMain(r.root))).code;
+    } finally {
+      process.argv = orig;
+    }
+  };
+
+  it("aprovar → schedule sem mudança passa pelo guard", async () => {
+    const r = makeRoot("shared-rr-same-");
+    try {
+      assert.equal(r.run(), null);
+      assert.equal(r.run(["--confirm-suggestions"]), null);
+      const res = await scheduleProbe(r);
+      assert.doesNotMatch(res.out, /recusado no --schedule/);
+      assert.match(res.out, /resumo ausente/);
+      assert.deepEqual(res.codes, [1]);
+      assert.equal(linkedin(r), null);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("aprovar → taxa muda FORA da seleção (B2) → schedule passa, com aviso; LinkedIn também", async () => {
+    const r = makeRoot("shared-rr-outside-");
+    try {
+      assert.equal(r.run(), null);
+      assert.equal(r.run(["--confirm-suggestions"]), null);
+      r.setClicks({ b2: 5 }); // 1,00% → 1,25%: B2 segue fora do clicked e do LinkedIn
+      const res = await scheduleProbe(r);
+      assert.doesNotMatch(res.out, /recusado no --schedule/);
+      assert.match(res.out, /sem mudar a seleção: .*b2: taxa 1% → 1\.25%/);
+      assert.deepEqual(res.codes, [1]);
+      assert.equal(linkedin(r), null);
+      const ln = JSON.parse(readFileSync(join(r.root, "data/weekly/26w31/_internal/ln-selection.json"), "utf8"));
+      // B2 é destaque (elegível ao LinkedIn): a mudança de taxa aparece como aviso, não recusa.
+      assert.ok(ln.warnings.some((w: string) => /sem mudar a seleção: .*b2/.test(w)), JSON.stringify(ln.warnings));
+      assert.deepEqual(ln.headlines.map((h: { url: string }) => h.url), [U("a"), U("b"), U("c")]);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("aprovar → mudança que altera a seleção → schedule e LinkedIn exit 2", async () => {
+    const r = makeRoot("shared-rr-changed-");
+    try {
+      assert.equal(r.run(), null);
+      assert.equal(r.run(["--confirm-suggestions"]), null);
+      r.setClicks({ c: 2 }); // C sai do 3º lugar
+      const res = await scheduleProbe(r);
+      assert.deepEqual(res.codes, [2]);
+      assert.match(res.out, /a seleção recalculada agora não é a gravada/);
+      assert.equal(linkedin(r), 2);
     } finally {
       r.cleanup();
     }
@@ -753,6 +819,7 @@ describe("#13022 revisão — intro e avisos do clicked com --shared-selection",
         saturday: "260801",
         editionsFound: [],
         ranking: [],
+        overrides: { picks: {}, swaps: [] },
         linkedin: { urls: [] },
         clicked: {
           urls: [U("a")],
@@ -791,6 +858,42 @@ describe("#13022 revisão — troca não mexe no empate pendente; overrides corr
     assert.throws(() => applySharedSwap(sels, sel.ranking, { out: inSuggestion, in: U("q") }), /empate pendente.*--pick/);
     const loser = sel.linkedin.pending!.group.find((u) => !sel.linkedin.pending!.suggested.includes(u))!;
     assert.throws(() => applySharedSwap(sels, sel.ranking, { out: U("q"), in: loser }), /empate pendente/);
+  });
+
+  it("empate já decidido pelo editor (--pick): troca de item empatado por outro de fora do grupo é aplicada e o pending zera; replay coerente", () => {
+    const week = [
+      cand({ url: U("p1"), clicks: 40, destaqueN: 1 }),
+      cand({ url: U("p2"), clicks: 40, editionDate: "260728", destaqueN: 1 }),
+      cand({ url: U("p3"), clicks: 40, editionDate: "260729", destaqueN: 1 }),
+      cand({ url: U("p4"), clicks: 40, editionDate: "260730", destaqueN: 1 }),
+      cand({ url: U("q"), clicks: 2, editionDate: "260730", destaqueN: 2 }),
+    ];
+    const overrides = { picks: { linkedin: [U("p1"), U("p2"), U("p3")] }, swaps: [{ out: U("p1"), in: U("q") }] };
+    const sel = buildSharedSelection({ candidates: week, editionsFound: 4, overrides });
+    assert.deepEqual(sel.linkedin.urls, [U("q"), U("p2"), U("p3")]);
+    assert.equal(sel.linkedin.pending, null);
+    assert.equal(sel.linkedin.manual, true);
+    assert.deepEqual(sel.swapLog[0].outcome.applied, ["linkedin"], "no clicked o q já estava (5 vagas)");
+    const again = buildSharedSelection({ candidates: week, editionsFound: 4, overrides });
+    assert.ok(sameSelection(again, sel));
+  });
+
+  it("rankingDivergence deduplica como o arquivo: URL repetida entre edições não vira diferença permanente", () => {
+    const file = {
+      editionsFound: ["260727", "260728"],
+      ranking: [{ url: U("x"), ratePct: 5, eligible: { clicked: true, linkedin: true } }],
+    };
+    const now = {
+      editionsFound: ["260728", "260727"],
+      ranked: [
+        { url: U("x"), ratePct: 5, kind: "destaque" },
+        { url: `${U("x")}?utm=1`, ratePct: 1, kind: "section" }, // mesma URL normalizada, edição seguinte
+      ],
+    };
+    assert.deepEqual(rankingDivergence("clicked", file, now), []);
+    // destaque vence seção mesmo vindo depois
+    const now2 = { editionsFound: file.editionsFound, ranked: [{ url: U("x"), ratePct: 1, kind: "section" }, { url: U("x"), ratePct: 5, kind: "destaque" }] };
+    assert.deepEqual(rankingDivergence("clicked", file, now2), []);
   });
 
   it("validateOverrides recusa shape inválido; o CLI sai com exit 2 e a dica de --reset-overrides", () => {

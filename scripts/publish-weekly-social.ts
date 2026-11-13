@@ -146,8 +146,9 @@
  * `--mode both`). Mesma validação de pool do `--force-urls`, com o qual é
  * excludente. A intro "mais lidas" só vira a neutra quando houve troca no
  * gate. Sem a flag, nada muda. Com `--schedule`, sai com exit 2 se o
- * ranking recalculado agora divergir do gravado (kit-sync depois do gate),
- * se as URLs não baterem com o hash da aprovação, ou se o empate do clicked
+ * replay da seleção (cache de agora + decisões gravadas) der outra seleção
+ * (kit-sync depois do gate que mexeu nos itens; taxa que mudou sem mexer na
+ * seleção é só aviso), se as URLs não baterem com o hash da aprovação, ou se o empate do clicked
  * ainda for só sugestão — esta última só passa com `--allow-suggested-ties`,
  * que o pacote usa apenas no caminho `--no-gates`.
  *
@@ -214,7 +215,7 @@ import {
   type InstagramRankedCandidate,
 } from "./lib/weekly-instagram-select.ts";
 import { checkWeeklySlot, formatSlotAdvice } from "./lib/weekly-slot-check.ts";
-import { checkSharedFileForProduct } from "./lib/weekly-shared-ranking.ts";
+import { buildSharedCandidates, checkSharedFileForProduct, validateOverrides } from "./lib/weekly-shared-ranking.ts";
 import {
   filterPublicEditionsWithWarning,
   loadBeehiivCache as loadUnifiedBeehiivCache,
@@ -1202,6 +1203,8 @@ export function readSharedClickedSelection(
     return { error: `${path} não é uma seleção compartilhada válida (version 1, com clicked, linkedin e ranking).` };
   }
   if (shared.saturday !== saturday) return { error: `${path} é do sábado ${shared.saturday}, não de ${saturday}.` };
+  const badOverrides = validateOverrides(shared.overrides);
+  if (badOverrides) return { error: `${path}: ${badOverrides} — re-rode weekly-shared-selection.ts (--reset-overrides).` };
   const resolved = shared.clicked.pending?.resolution === "editor";
   // Empate já escolhido pelo editor: o aviso de "escolha manual necessária"
   // não vale mais (mesmo filtro do select-linkedin-weekly.ts).
@@ -1423,15 +1426,20 @@ async function runOneMode(
       console.error(`ERRO: --shared-selection inválido: ${shared.error}`);
       return false;
     }
-    // Revisão da PR #13026: o ranking de agora ainda é o do gate? E o empate
-    // do clicked foi decidido? Agendar com qualquer um dos dois em aberto
-    // publicaria o que o editor não viu: exit 2. Na prévia, só avisa.
+    // Revisão da PR #13026: refaz a seleção com o cache de agora e as decisões
+    // gravadas. Se ela mudou (ou o hash da aprovação não bate), ou se o empate
+    // do clicked não foi decidido, agendar publicaria o que o editor não viu:
+    // exit 2. Taxa que mudou sem mudar a seleção é só aviso. Na prévia, tudo avisa.
+    const sharedCandidates = buildSharedCandidates(
+      existingCandidates.map((c) => ({ date: c.date, md: readFileSync(resolve(c.dir, "02-reviewed.md"), "utf8") })),
+      windowPostsUnified,
+    );
     const check = checkSharedFileForProduct("clicked", shared.file, {
       editionsFound: existingCandidates.map((c) => c.date),
-      ranked: ranked.filter((c) => !c.excluded),
+      candidates: sharedCandidates,
     });
     const blockers = [
-      ...check.divergence.map((d) => `ranking mudou desde a seleção compartilhada: ${d}`),
+      ...check.blocking.map((d) => `seleção compartilhada desatualizada: ${d}`),
       ...(check.pendingUnresolved && !flags.has("allow-suggested-ties")
         ? ["empate (#5109) do clicked ainda só com a sugestão — confirme no gate (weekly-shared-selection.ts --confirm-suggestions) ou, só no caminho --no-gates, passe --allow-suggested-ties"]
         : []),
@@ -1449,6 +1457,7 @@ async function runOneMode(
     selectionWarnings = [
       `SELEÇÃO COMPARTILHADA (#13022, ${sharedSelectionArg}): ${resolved.length} item(ns) do ranking único do pacote semanal${shared.manual ? ", com troca feita no gate" : ""}.`,
       ...shared.warnings,
+      ...check.warnings,
       ...blockers.map((b) => `Antes do --schedule: ${b}.`),
     ];
   }

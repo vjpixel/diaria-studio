@@ -245,17 +245,21 @@ Com o "aprovar":
 
 1. **Gravar a aprovação, sempre (com ou sem empate):**
    `npx tsx scripts/weekly-shared-selection.ts --saturday {S} --confirm-suggestions`.
-   Ele confere que o ranking recalculado agora é o mesmo que o gate mostrou,
-   grava as sugestões aceitas como escolha exata e o hash da seleção
-   aprovada. **Exit ≠ 0 aqui para tudo**: nada de agendar, aprovar ou colar.
-   Exit 2 = o ranking mudou depois do gate (kit-sync, edição nova): re-rodar
-   o Passo 1 e levar a seleção nova ao gate. Com exit 0, re-rodar
+   Ele refaz a seleção com o cache de agora e as decisões gravadas e confere
+   que ela é a mesma que o gate mostrou; grava as sugestões aceitas como
+   escolha exata e o hash da seleção aprovada. **Exit ≠ 0 aqui para tudo**:
+   nada de agendar, aprovar ou colar. Exit 2 = a seleção mudou depois do gate
+   (kit-sync ou edição nova que mexeu nos itens): re-rodar o Passo 1 e levar
+   a seleção nova ao gate. Com exit 0, re-rodar
    `select-linkedin-weekly.ts --shared-selection` + render, para o
    `ln-selection.json` sair sem `pendingGroup`.
 2. Só depois do item 1 ok, em paralelo:
    - retro: `publish-weekly-social.ts --saturday {S} --mode both --shared-selection {arquivo} --schedule`
-     (Passo 4 de `/diaria-retro-semanal`; recusa com exit 2 se o ranking
-     divergir do aprovado ou se o empate do clicked ainda for só sugestão) e
+     (Passo 4 de `/diaria-retro-semanal`; recusa com exit 2 se o replay da
+     seleção com o cache de agora der outra seleção, se as URLs não baterem
+     com o hash da aprovação, ou se o empate do clicked ainda for só
+     sugestão; taxa que mudou sem mexer na seleção, como a sexta ainda
+     acumulando clique, é só aviso) e
      o registro do horário de cada dia, como no cabeçalho "Horário durante o
      teste rotativo" de `/diaria-retro-semanal`:
      `social-schedule-rotation.ts --record --date {S} --kind weekend` e o
@@ -327,9 +331,16 @@ clique); a mudança mora em `weekly-shared-ranking.ts`.
 
 - **Um produto falhou e os outros não:** siga com os outros e liste a falha
   no Passo 8; o retry é a skill isolada daquele produto.
-- **`kit-sync` rodou depois e o ranking mudou:** re-rodar o Passo 1. Troca
-  ou escolha gravada que deixou de valer faz o script sair com exit 2 (nada
-  gravado); `--reset-overrides` recomeça do automático.
+- **`kit-sync` rodou depois:** se a seleção não mudou, os scripts seguem e
+  só avisam a taxa nova. Se mudou, o script da seleção, o `--schedule` da
+  retro e o `select-linkedin-weekly.ts --shared-selection` saem com exit 2:
+  re-rodar o Passo 1 e voltar ao gate. Troca ou escolha gravada que deixou
+  de valer também dá exit 2 (nada gravado); `--reset-overrides` recomeça do
+  automático.
+- **Troca de item empatado:** com o empate ainda só sugerido, a troca é
+  recusada (resolva com `--pick` ou `--confirm-suggestions` antes); com o
+  empate já decidido, a troca vale e o empate daquele produto sai do
+  arquivo (a lista final é escolha do editor).
 - **Semana curta:** o LinkedIn reduz as manchetes sozinho
   (`computeHeadlineCap`); a retro aborta abaixo de 4 itens e só segue com
   `--force-incomplete-week` confirmado pelo editor.

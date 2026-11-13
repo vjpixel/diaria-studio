@@ -66,9 +66,11 @@ import {
   computeHeadlineCap,
   dedupeCandidatesByUrl,
   fillSlotsWithNoiseRule,
+  toRankedCandidate,
   type WeeklyRankedCandidate,
 } from "./weekly-linkedin-select.ts";
-import { normalizeUrl } from "./weekly-linkedin-clicks.ts";
+import { clickCountsForUrl, normalizeUrl, uniqueOpensOf, type ClickWindowPost } from "./weekly-linkedin-clicks.ts";
+import { extractWeeklyCandidates } from "./weekly-linkedin-parse.ts";
 
 export type SharedProduct = "clicked" | "linkedin";
 export const SHARED_PRODUCTS: readonly SharedProduct[] = ["clicked", "linkedin"];
@@ -262,13 +264,21 @@ export function applySharedSwap(
         : `troca inválida: "${swap.in}" não é candidato elegível desta semana.`,
     );
   }
-  // Troca que mexe num item do grupo de empate deixaria `pending` incoerente
-  // (sugestão/escolha apontando pra item que saiu). Resolver o empate antes.
+  // Empate ainda só SUGERIDO: trocar um item do grupo deixaria a sugestão
+  // apontando pra item que saiu sem o editor ter decidido o empate. Resolver
+  // antes (`--pick` ou `--confirm-suggestions`). Com o empate já decidido
+  // (`resolution: "editor"`), a troca é aplicada e o `pending` do produto em
+  // que ela entrou é zerado abaixo: a lista final passou a ser escolha do
+  // editor, não mais do empate (o replay reproduz isso: picks e depois swaps).
+  const touchesGroup = (pending: PendingTie) => {
+    const inGroup = pending.group.map(normalizeUrl);
+    return inGroup.includes(outKey) || inGroup.includes(inKey);
+  };
   for (const product of SHARED_PRODUCTS) {
     const pending = selections[product].pending;
-    if (!pending) continue;
+    if (!pending || pending.resolution !== "suggestion") continue;
     const inGroup = pending.group.map(normalizeUrl);
-    if (inGroup.includes(outKey) || inGroup.includes(inKey)) {
+    if (touchesGroup(pending)) {
       throw new SharedSelectionError(
         `troca inválida: "${inGroup.includes(outKey) ? swap.out : swap.in}" está no empate pendente do ${product} (#5109) — resolva o empate antes com --pick ${product} --urls ..., depois troque.`,
       );
@@ -292,6 +302,7 @@ export function applySharedSwap(
     }
     sel.urls[idx] = incoming.url;
     sel.manual = true;
+    if (sel.pending && touchesGroup(sel.pending)) sel.pending = null; // só chega aqui com resolution "editor"
     outcome.applied.push(product);
   }
   if (outcome.applied.length === 0) {
@@ -376,7 +387,7 @@ export function clickAgeReport(
   return { rows, warnings };
 }
 
-/** Linha mínima do ranking gravado que a checagem de divergência precisa. */
+/** Linha mínima do ranking gravado que o aviso de taxa precisa. */
 export interface RankingSnapshotRow {
   url: string;
   ratePct: number;
@@ -384,56 +395,118 @@ export interface RankingSnapshotRow {
 }
 
 /**
- * Pure (#13022, revisão da PR #13026): o ranking que o consumidor recalcula
- * agora ainda é o que foi gravado (e mostrado no gate)? Diverge quando a
- * janela tem outro conjunto de edições, ou quando algum item elegível do
- * produto no arquivo sumiu ou mudou de taxa (um `kit-sync` entre o gate e o
- * agendamento). Compara a taxa arredondada a 2 casas, como é gravada.
- * Devolve a lista de diferenças (vazia = igual).
+ * Pure (#13022, revisão da PR #13026): diferenças de DADO entre o ranking
+ * gravado e o de agora — outro conjunto de edições, item elegível do produto
+ * que sumiu ou mudou de taxa. Só AVISO: mudança de taxa fora da seleção é
+ * normal (a sexta ainda acumulando clique) e não altera o que vai sair; quem
+ * recusa é o replay (`replayDivergence`). `now.ranked` é deduplicado como o
+ * arquivo (`dedupeCandidatesByUrl`: 1ª ocorrência, destaque vence seção),
+ * senão uma URL repetida entre edições daria diferença permanente.
+ * Compara a taxa arredondada a 2 casas, como é gravada.
  */
 export function rankingDivergence(
   product: SharedProduct,
   file: { editionsFound: string[]; ranking: RankingSnapshotRow[] },
-  now: { editionsFound: string[]; ranked: { url: string; ratePct: number }[] },
+  now: { editionsFound: string[]; ranked: { url: string; ratePct: number; kind?: string }[] },
 ): string[] {
   const diffs: string[] = [];
   const a = [...file.editionsFound].sort().join(",");
   const b = [...now.editionsFound].sort().join(",");
   if (a !== b) diffs.push(`edições da janela mudaram (${a || "nenhuma"} → ${b || "nenhuma"})`);
-  const rateNow = new Map(now.ranked.map((c) => [normalizeUrl(c.url), Math.round(c.ratePct * 100) / 100]));
+  const byUrl = new Map<string, { ratePct: number; kind?: string }>();
+  for (const c of now.ranked) {
+    const key = normalizeUrl(c.url);
+    const existing = byUrl.get(key);
+    if (!existing || (existing.kind === "section" && c.kind === "destaque")) byUrl.set(key, c);
+  }
   for (const row of file.ranking) {
     if (!row.eligible?.[product]) continue;
-    const r = rateNow.get(normalizeUrl(row.url));
-    if (r == null) diffs.push(`${row.url} não é mais candidato`);
-    else if (r !== row.ratePct) diffs.push(`${row.url}: taxa ${row.ratePct}% → ${r}%`);
+    const hit = byUrl.get(normalizeUrl(row.url));
+    if (!hit) {
+      diffs.push(`${row.url} não é mais candidato`);
+      continue;
+    }
+    const r = Math.round(hit.ratePct * 100) / 100;
+    if (r !== row.ratePct) diffs.push(`${row.url}: taxa ${row.ratePct}% → ${r}%`);
   }
   return diffs;
 }
 
 /**
+ * Pure (revisão da PR #13026): refaz a seleção com os candidatos de AGORA e as
+ * decisões gravadas no arquivo (`overrides`), e compara com a gravada
+ * (`sameSelection`, mesma lógica do `--confirm-suggestions`). Devolve o motivo
+ * quando a seleção mudou (ou quando uma decisão gravada deixou de valer), ou
+ * `null` quando o replay dá a mesma seleção.
+ */
+export function replayDivergence(
+  file: { overrides: SharedOverrides; clicked: ProductSelection; linkedin: ProductSelection },
+  now: { candidates: WeeklyRankedCandidate[]; editionsFound: number },
+): string | null {
+  let replay: SharedSelectionCore;
+  try {
+    replay = buildSharedSelection({ candidates: now.candidates, editionsFound: now.editionsFound, overrides: file.overrides });
+  } catch (e) {
+    if (e instanceof SharedSelectionError) return `uma decisão gravada não vale mais: ${e.message}`;
+    throw e;
+  }
+  if (sameSelection(replay, file)) return null;
+  const changed = SHARED_PRODUCTS.filter(
+    (p) => JSON.stringify(replay[p].urls) !== JSON.stringify(file[p].urls) || JSON.stringify(replay[p].pending) !== JSON.stringify(file[p].pending ?? null),
+  ).map((p) => `${p}: gravada [${file[p].urls.join(", ")}], agora [${replay[p].urls.join(", ")}]`);
+  return `a seleção recalculada agora não é a gravada (${changed.join("; ")})`;
+}
+
+/**
  * Pure: o que um consumidor (`publish-weekly-social.ts`,
- * `select-linkedin-weekly.ts`) precisa saber antes de usar o arquivo —
- * divergência do ranking recalculado agora (`rankingDivergence`), aprovação
- * cujo hash não bate mais com as URLs gravadas, e empate do produto ainda só
- * sugerido. Quem decide se recusa é o consumidor (agendar recusa; prévia avisa).
+ * `select-linkedin-weekly.ts`) precisa saber antes de usar o arquivo.
+ *   - `blocking`: o replay mudou a seleção, ou as URLs não batem com o hash
+ *     da aprovação — usar o arquivo publicaria o que o editor não viu.
+ *   - `warnings`: o dado mudou sem mudar a seleção (`rankingDivergence`).
+ *   - `pendingUnresolved`: empate do produto ainda só sugerido.
+ * Quem decide se recusa é o consumidor (agendar recusa; prévia avisa).
  */
 export function checkSharedFileForProduct(
   product: SharedProduct,
   file: {
     editionsFound: string[];
     ranking: RankingSnapshotRow[];
+    overrides: SharedOverrides;
     approved?: { hash: string } | null;
-    clicked: { urls: string[]; pending?: PendingTie | null };
-    linkedin: { urls: string[]; pending?: PendingTie | null };
+    clicked: ProductSelection;
+    linkedin: ProductSelection;
   },
-  now: { editionsFound: string[]; ranked: { url: string; ratePct: number }[] },
-): { divergence: string[]; pendingUnresolved: boolean } {
-  const divergence = rankingDivergence(product, file, now);
+  now: { editionsFound: string[]; candidates: WeeklyRankedCandidate[] },
+): { blocking: string[]; warnings: string[]; pendingUnresolved: boolean } {
+  const blocking: string[] = [];
+  const replay = replayDivergence(file, { candidates: now.candidates, editionsFound: now.editionsFound.length });
+  if (replay) blocking.push(replay);
   if (file.approved && file.approved.hash !== selectionHash(file)) {
-    divergence.push("as URLs do arquivo não batem com o hash da aprovação do gate (arquivo editado depois de aprovado)");
+    blocking.push("as URLs do arquivo não batem com o hash da aprovação do gate (arquivo editado depois de aprovado)");
   }
+  const warnings = rankingDivergence(product, file, {
+    editionsFound: now.editionsFound,
+    ranked: now.candidates.filter((c) => isEligibleFor(product, c)),
+  }).map((d) => `dado de clique mudou desde a seleção compartilhada, sem mudar a seleção: ${d}`);
   const pending = file[product].pending;
-  return { divergence, pendingUnresolved: Boolean(pending && pending.resolution !== "editor") };
+  return { blocking, warnings, pendingUnresolved: Boolean(pending && pending.resolution !== "editor") };
+}
+
+/**
+ * Pure: candidatos da semana no formato do ranking compartilhado, a partir do
+ * `02-reviewed.md` de cada edição e do post que venceu a data no cache
+ * (`matchPostsToWindow`) — o mesmo cálculo do CLI e dos consumidores.
+ */
+export function buildSharedCandidates<P extends ClickWindowPost>(
+  editions: { date: string; md: string }[],
+  windowPosts: Map<string, P>,
+): WeeklyRankedCandidate[] {
+  return editions.flatMap((e) =>
+    extractWeeklyCandidates(e.md, e.date).map((c) => {
+      const post = windowPosts.get(c.editionDate);
+      return toRankedCandidate(c, clickCountsForUrl(c.url, post?.stats?.clicks), uniqueOpensOf(post), windowPosts.has(c.editionDate));
+    }),
+  );
 }
 
 /** Pure: impressão digital da seleção aprovada (URLs dos dois produtos, na ordem). */

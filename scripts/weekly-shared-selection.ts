@@ -39,14 +39,14 @@ import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { formatAAMMDD, parseAAMMDD, resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
-import { extractWeeklyCandidates, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
-import { clickCountsForUrl, matchPostsToWindow, uniqueOpensOf } from "./lib/weekly-linkedin-clicks.ts";
-import { toRankedCandidate, type WeeklyRankedCandidate } from "./lib/weekly-linkedin-select.ts";
+import { matchPostsToWindow } from "./lib/weekly-linkedin-clicks.ts";
+import type { WeeklyRankedCandidate } from "./lib/weekly-linkedin-select.ts";
 import { loadUnifiedPostsForRanking } from "./select-linkedin-weekly.ts";
 import {
   EMPTY_OVERRIDES,
   SHARED_PRODUCTS,
   SharedSelectionError,
+  buildSharedCandidates,
   buildSharedSelection,
   clickAgeReport,
   isEligibleFor,
@@ -171,20 +171,16 @@ export function main(rootDirOverride?: string, argv: string[] = process.argv.sli
   const editionsRootDir = join(rootDir, "data/editions");
   const editions = contentWindow.map((date) => {
     const mdPath = join(resolveEditionDir(editionsRootDir, date), "02-reviewed.md");
-    if (!existsSync(mdPath)) return { date, found: false, candidates: [] as WeeklyRawCandidate[] };
-    return { date, found: true, candidates: extractWeeklyCandidates(readFileSync(mdPath, "utf8"), date) };
+    if (!existsSync(mdPath)) return { date, found: false, md: "" };
+    return { date, found: true, md: readFileSync(mdPath, "utf8") };
   });
   const found = editions.filter((e) => e.found);
   if (found.length === 0) fail(1, `Nenhuma edição com 02-reviewed.md na janela ${contentWindow.join(", ")} — nada pra selecionar.`);
 
   const posts = loadUnifiedPostsForRanking(join(rootDir, "data/beehiiv-cache/posts"), join(rootDir, "data/kit-cache/broadcasts"));
   const windowPosts = matchPostsToWindow(posts, contentWindow);
-  const candidates: WeeklyRankedCandidate[] = found
-    .flatMap((e) => e.candidates)
-    .map((c) => {
-      const post = windowPosts.get(c.editionDate);
-      return toRankedCandidate(c, clickCountsForUrl(c.url, post?.stats?.clicks), uniqueOpensOf(post), windowPosts.has(c.editionDate));
-    });
+  // Mesmo cálculo que os consumidores refazem no replay (buildSharedCandidates).
+  const candidates: WeeklyRankedCandidate[] = buildSharedCandidates(found, windowPosts);
 
   const confirm = flags.has("confirm-suggestions");
   if (confirm && (pickProduct || values["swap"])) fail(2, "--confirm-suggestions roda sozinho (sem --pick/--swap): ele só grava o que o gate mostrou.");
