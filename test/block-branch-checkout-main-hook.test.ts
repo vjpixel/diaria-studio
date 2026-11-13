@@ -1,7 +1,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   isBranchCreateCheckoutCommand,
@@ -17,6 +17,7 @@ import {
   mainRootsHitByTargets,
   mainCheckoutRootOf,
   tokenizeShellSegments,
+  msysDrivePathToNative,
 } from "../.claude/hooks/block-branch-checkout-main.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -407,6 +408,12 @@ describe("BLOCK_REASON (#6509)", () => {
 
 const HOOK_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", ".claude", "hooks", "block-branch-checkout-main.mjs");
 
+/** #12544: caminho da fixture como ele aparece num comando de bash. Fora de
+ * aspas o bash come a `\` (`C:\Users\x` vira `C:Usersx`), então no Windows o
+ * comando leva `C:/Users/x`, que o Git Bash e o Node leem igual. No Linux é
+ * a identidade. */
+const sh = (p: string) => p.replaceAll("\\", "/");
+
 function makeFixture() {
   const base = join(tmpdir(), `branch-guard-12165-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const main = join(base, "main");
@@ -449,11 +456,11 @@ describe("resolveBranchCreateTargets (#12165) — alvo derivado do comando", () 
   });
 
   it("`cd <abs> && git switch -c`: o alvo é o diretório do cd", () => {
-    assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.wt} && git switch -q -c fix/x`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`cd ${sh(fx.wt)} && git switch -q -c fix/x`, fx.main, HOME), [fx.wt]);
   });
 
   it("`git -C <abs> switch -c`: o alvo é o -C (o -C antes era ignorado na detecção)", () => {
-    assert.deepEqual(resolveBranchCreateTargets(`git -C ${fx.main} switch -c x`, fx.wt, HOME), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets(`git -C ${sh(fx.main)} switch -c x`, fx.wt, HOME), [fx.main]);
   });
 
   it("cd relativo e -C relativo compõem como no shell/git", () => {
@@ -463,23 +470,23 @@ describe("resolveBranchCreateTargets (#12165) — alvo derivado do comando", () 
 
   it("vale o ÚLTIMO cd antes do git", () => {
     assert.deepEqual(
-      resolveBranchCreateTargets(`cd ${fx.wt} && cd ${fx.main} && git checkout -b x`, fx.wt, HOME),
+      resolveBranchCreateTargets(`cd ${sh(fx.wt)} && cd ${sh(fx.main)} && git checkout -b x`, fx.wt, HOME),
       [fx.main],
     );
   });
 
   it("cd dentro de subshell não vaza para fora dele", () => {
-    assert.deepEqual(resolveBranchCreateTargets(`(cd ${fx.wt}) && git checkout -b x`, fx.main, HOME), [fx.main]);
-    assert.deepEqual(resolveBranchCreateTargets(`(cd ${fx.wt} && git checkout -b x)`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`(cd ${sh(fx.wt)}) && git checkout -b x`, fx.main, HOME), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets(`(cd ${sh(fx.wt)} && git checkout -b x)`, fx.main, HOME), [fx.wt]);
   });
 
   it("path entre aspas (com espaço) é lido inteiro", () => {
-    assert.deepEqual(resolveBranchCreateTargets(`cd "/tmp/a b" && git switch -c x`, fx.main, HOME), ["/tmp/a b"]);
+    assert.deepEqual(resolveBranchCreateTargets(`cd "/tmp/a b" && git switch -c x`, fx.main, HOME), [resolve("/tmp/a b")]);
   });
 
   it("`~` e `$HOME` expandem para o home", () => {
-    assert.deepEqual(resolveBranchCreateTargets("cd ~/repo && git switch -c x", fx.main, HOME), ["/home/fake/repo"]);
-    assert.deepEqual(resolveBranchCreateTargets("git -C $HOME/repo switch -c x", fx.main, HOME), ["/home/fake/repo"]);
+    assert.deepEqual(resolveBranchCreateTargets("cd ~/repo && git switch -c x", fx.main, HOME), [resolve("/home/fake/repo")]);
+    assert.deepEqual(resolveBranchCreateTargets("git -C $HOME/repo switch -c x", fx.main, HOME), [resolve("/home/fake/repo")]);
   });
 
   it("fail-closed: variável, substituição, `cd -`, popd, --git-dir/--work-tree → não resolvido (null)", () => {
@@ -487,20 +494,20 @@ describe("resolveBranchCreateTargets (#12165) — alvo derivado do comando", () 
     assert.deepEqual(resolveBranchCreateTargets('git -C "$(pwd)" switch -c x', fx.wt, HOME), [null]);
     assert.deepEqual(resolveBranchCreateTargets("cd - && git checkout -b x", fx.wt, HOME), [null]);
     assert.deepEqual(resolveBranchCreateTargets("popd && git checkout -b x", fx.wt, HOME), [null]);
-    assert.deepEqual(resolveBranchCreateTargets(`git --work-tree=${fx.main} checkout -b x`, fx.wt, HOME), [null]);
-    assert.deepEqual(resolveBranchCreateTargets(`git --git-dir ${fx.main}/.git checkout -b x`, fx.wt, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets(`git --work-tree=${sh(fx.main)} checkout -b x`, fx.wt, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets(`git --git-dir ${sh(fx.main)}/.git checkout -b x`, fx.wt, HOME), [null]);
     assert.deepEqual(resolveBranchCreateTargets("git $OPTS switch -c x", fx.wt, HOME), [null]);
   });
 
   it("variável atribuída com valor literal antes no MESMO comando é expandida (forma do caso real, `W=...; cd $W`)", () => {
-    assert.deepEqual(resolveBranchCreateTargets(`W=${fx.wt}; cd $W && git switch -q -c x`, fx.main, HOME), [fx.wt]);
-    assert.deepEqual(resolveBranchCreateTargets(`export W=${fx.wt} && cd "\${W}" && git switch -c x`, fx.main, HOME), [fx.wt]);
-    assert.deepEqual(resolveBranchCreateTargets(`W=${fx.wt}\ngit -C "$W/scripts" switch -c x`, fx.main, HOME), [join(fx.wt, "scripts")]);
+    assert.deepEqual(resolveBranchCreateTargets(`W=${sh(fx.wt)}; cd $W && git switch -q -c x`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`export W=${sh(fx.wt)} && cd "\${W}" && git switch -c x`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`W=${sh(fx.wt)}\ngit -C "$W/scripts" switch -c x`, fx.main, HOME), [join(fx.wt, "scripts")]);
     // valor dinâmico na atribuição, ou atribuição só dentro de subshell → segue não resolvido
     assert.deepEqual(resolveBranchCreateTargets("W=$(pwd); cd $W && git switch -c x", fx.main, HOME), [null]);
-    assert.deepEqual(resolveBranchCreateTargets(`(W=${fx.wt}); cd $W && git switch -c x`, fx.main, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets(`(W=${sh(fx.wt)}); cd $W && git switch -c x`, fx.main, HOME), [null]);
     // `W=x git ...` é env do comando, não variável do shell para `$W` na mesma linha
-    assert.deepEqual(resolveBranchCreateTargets(`W=${fx.wt} git -C $W switch -c x`, fx.main, HOME), [null]);
+    assert.deepEqual(resolveBranchCreateTargets(`W=${sh(fx.wt)} git -C $W switch -c x`, fx.main, HOME), [null]);
   });
 
   it("#12214: `git -C $(...) switch -c` SEM aspas → não resolvido (null), não lista vazia", () => {
@@ -514,9 +521,9 @@ describe("resolveBranchCreateTargets (#12165) — alvo derivado do comando", () 
     // `git switch -c` DENTRO da substituição segue detectado, com o cwd de fora
     assert.deepEqual(resolveBranchCreateTargets("echo $(git switch -c x)", fx.main, HOME), [fx.main]);
     // `cd` dentro da substituição não vaza
-    assert.deepEqual(resolveBranchCreateTargets(`X=$(cd ${fx.wt}) && git checkout -b x`, fx.main, HOME), [fx.main]);
+    assert.deepEqual(resolveBranchCreateTargets(`X=$(cd ${sh(fx.wt)}) && git checkout -b x`, fx.main, HOME), [fx.main]);
     // subshell comum segue igual
-    assert.deepEqual(resolveBranchCreateTargets(`(cd ${fx.wt} && git checkout -b x)`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`(cd ${sh(fx.wt)} && git checkout -b x)`, fx.main, HOME), [fx.wt]);
   });
 
   it("#12214: tokenizeShellSegments mantém `$(...)` sem aspas no token corrente (dinâmico)", () => {
@@ -531,11 +538,35 @@ describe("resolveBranchCreateTargets (#12165) — alvo derivado do comando", () 
   });
 
   it("variável em aspas simples é literal (não dinâmica)", () => {
-    assert.deepEqual(resolveBranchCreateTargets("cd '/tmp/$x' && git switch -c y", fx.main, HOME), ["/tmp/$x"]);
+    assert.deepEqual(resolveBranchCreateTargets("cd '/tmp/$x' && git switch -c y", fx.main, HOME), [resolve("/tmp/$x")]);
+  });
+
+  it("#12544: entre aspas duplas a `\\` só escapa $, crase, aspa, `\\` e newline (caminho Windows fica inteiro)", () => {
+    const segs = tokenizeShellSegments('cd "C:\\Users\\x\\wt" && echo "a\\$b \\"q\\" \\\\ c\\d"', HOME).map(
+      (s: Array<{ value: string }>) => s.map((t) => t.value),
+    );
+    assert.deepEqual(segs, [["cd", "C:\\Users\\x\\wt"], ["echo", 'a$b "q" \\ c\\d']]);
+    // o caminho nativo entre aspas resolve para o próprio diretório (antes: `C:Users...`)
+    assert.deepEqual(resolveBranchCreateTargets(`cd "${fx.wt}" && git switch -c x`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`git -C "${fx.main}" switch -c x`, fx.wt, HOME), [fx.main]);
+  });
+
+  it("#12544: msysDrivePathToNative converte `/c/...` do Git Bash só no win32", () => {
+    assert.equal(msysDrivePathToNative("/c/Users/x/wt", "win32"), "C:/Users/x/wt");
+    assert.equal(msysDrivePathToNative("/d", "win32"), "D:/");
+    assert.equal(msysDrivePathToNative("/tmp/x", "win32"), "/tmp/x");
+    assert.equal(msysDrivePathToNative("/cc/x", "win32"), "/cc/x");
+    assert.equal(msysDrivePathToNative("/c/Users/x", "linux"), "/c/Users/x");
+  });
+
+  it("#12544: no Windows, `cd /c/...` (forma do Git Bash) resolve para o worktree, não para `C:\\c\\...`", { skip: process.platform !== "win32" && "só faz sentido no win32" }, () => {
+    const msys = (p: string) => sh(p).replace(/^([A-Za-z]):/, (_m, d: string) => `/${d.toLowerCase()}`);
+    assert.deepEqual(resolveBranchCreateTargets(`cd ${msys(fx.wt)} && git switch -c x`, fx.main, HOME), [fx.wt]);
+    assert.deepEqual(resolveBranchCreateTargets(`git -C ${msys(fx.main)} switch -c x`, fx.wt, HOME), [fx.main]);
   });
 
   it("não cria branch → lista vazia (nada a decidir)", () => {
-    assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.main} && git switch master`, fx.wt, HOME), []);
+    assert.deepEqual(resolveBranchCreateTargets(`cd ${sh(fx.main)} && git switch master`, fx.wt, HOME), []);
     assert.deepEqual(resolveBranchCreateTargets('gh pr create --body "rode git checkout -b x"', fx.main, HOME), []);
     assert.deepEqual(resolveBranchCreateTargets("git -C /x log -b", fx.main, HOME), []);
   });
@@ -587,22 +618,22 @@ describe("hook end-to-end (#12165) — os dois casos da issue", () => {
     runHook({ tool_name: "Bash", session_id: sessionId, cwd, tool_input: { command } });
 
   it("regressão (falso positivo): sessão no principal, `cd <worktree linkado> && git switch -c` → LIBERA", () => {
-    const out = hook(fx.main, `cd ${fx.outsideWt} && git switch -q -c fix/12092-x`);
+    const out = hook(fx.main, `cd ${sh(fx.outsideWt)} && git switch -q -c fix/12092-x`);
     assert.equal(denied(out), false, out);
   });
 
   it("regressão (falso positivo, forma literal da issue): `W=<worktree>; cd $W && git switch -q -c` → LIBERA", () => {
-    const out = hook(fx.main, `W=${fx.outsideWt}\ncd $W && git switch -q -c fix/12092-x`);
+    const out = hook(fx.main, `W=${sh(fx.outsideWt)}\ncd $W && git switch -q -c fix/12092-x`);
     assert.equal(denied(out), false, out);
   });
 
   it("regressão (furo): sessão num worktree, `git -C <principal> switch -c` → BLOQUEIA", () => {
-    const out = hook(fx.wt, `git -C ${fx.main} switch -c outra-branch`);
+    const out = hook(fx.wt, `git -C ${sh(fx.main)} switch -c outra-branch`);
     assert.equal(denied(out), true, out);
   });
 
   it("sessão num worktree, `cd <principal> && git checkout -b` → BLOQUEIA", () => {
-    assert.equal(denied(hook(fx.wt, `cd ${fx.main} && git checkout -b x`)), true);
+    assert.equal(denied(hook(fx.wt, `cd ${sh(fx.main)} && git checkout -b x`)), true);
   });
 
   it("comando comum de subagente: `git checkout -b X` com cwd no próprio worktree → LIBERA", () => {
@@ -629,8 +660,8 @@ describe("hook end-to-end (#12165) — os dois casos da issue", () => {
   });
 
   it("regressão #12165 (residual): de um worktree, `git -C <principal> switch <branch existente>` → BLOQUEIA", () => {
-    assert.equal(denied(hook(fx.wt, `git -C ${fx.main} switch outra-branch`)), true);
-    assert.equal(denied(hook(fx.wt, `cd ${fx.main} && git checkout overnight/fix-1-x`)), true);
+    assert.equal(denied(hook(fx.wt, `git -C ${sh(fx.main)} switch outra-branch`)), true);
+    assert.equal(denied(hook(fx.wt, `cd ${sh(fx.main)} && git checkout overnight/fix-1-x`)), true);
   });
 
   it("#12165: no próprio principal, `git checkout <branch existente>` → BLOQUEIA", () => {
@@ -638,9 +669,9 @@ describe("hook end-to-end (#12165) — os dois casos da issue", () => {
   });
 
   it("#12165: voltar o principal para master segue livre, de onde vier", () => {
-    assert.equal(denied(hook(fx.wt, `git -C ${fx.main} switch master`)), false);
+    assert.equal(denied(hook(fx.wt, `git -C ${sh(fx.main)} switch master`)), false);
     assert.equal(denied(hook(fx.main, "git checkout master")), false);
-    assert.equal(denied(hook(fx.wt, `cd ${fx.main} && git checkout main`)), false);
+    assert.equal(denied(hook(fx.wt, `cd ${sh(fx.main)} && git checkout main`)), false);
   });
 
   it("#12165: trocar de branch dentro do próprio worktree linkado segue livre", () => {
@@ -664,14 +695,14 @@ describe("gh pr checkout (#12308)", () => {
   for (const command of variants) {
     it(`resolve cwd/cd e protege apenas o principal: ${command}`, () => {
       assert.deepEqual(resolveBranchCreateTargets(command, fx.main), [fx.main]);
-      assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.wt} && ${command}`, fx.main), [fx.wt]);
-      assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.main} && ${command}`, fx.wt), [fx.main]);
+      assert.deepEqual(resolveBranchCreateTargets(`cd ${sh(fx.wt)} && ${command}`, fx.main), [fx.wt]);
+      assert.deepEqual(resolveBranchCreateTargets(`cd ${sh(fx.main)} && ${command}`, fx.wt), [fx.main]);
       const hook = (cwd: string, cmd: string, session = "outra-sessao") =>
         runHook({ tool_name: "Bash", session_id: session, cwd, tool_input: { command: cmd } });
       assert.match(hook(fx.main, command), /"permissionDecision":"deny"/);
-      assert.match(hook(fx.wt, `cd ${fx.main} && ${command}`), /"permissionDecision":"deny"/);
+      assert.match(hook(fx.wt, `cd ${sh(fx.main)} && ${command}`), /"permissionDecision":"deny"/);
       assert.equal(hook(fx.wt, command), "");
-      assert.equal(hook(fx.main, `cd ${fx.wt} && ${command}`), "");
+      assert.equal(hook(fx.main, `cd ${sh(fx.wt)} && ${command}`), "");
       assert.equal(hook(fx.main, command, "coord-12308"), "");
     });
   }
@@ -770,8 +801,8 @@ describe("#12286 — `git checkout <path existente>` é restauração", () => {
   it("o disco é consultado no ALVO do comando (cd/-C), não no cwd da sessão", () => {
     // Makefile só existe no principal: de um worktree sem ele, é branch.
     assert.deepEqual(resolveBranchCreateTargets("git checkout Makefile", fx.wt), [fx.wt]);
-    assert.deepEqual(resolveBranchCreateTargets(`git -C ${fx.main} checkout Makefile`, fx.wt), []);
-    assert.deepEqual(resolveBranchCreateTargets(`cd ${fx.main} && git checkout Makefile`, fx.wt), []);
+    assert.deepEqual(resolveBranchCreateTargets(`git -C ${sh(fx.main)} checkout Makefile`, fx.wt), []);
+    assert.deepEqual(resolveBranchCreateTargets(`cd ${sh(fx.main)} && git checkout Makefile`, fx.wt), []);
   });
 
   it("alvo não resolvido não consulta o disco (fail-closed)", () => {

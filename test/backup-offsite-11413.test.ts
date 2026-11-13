@@ -28,6 +28,8 @@ import {
   offsiteObjectKey,
   remoteOffsiteFingerprint,
   tarGzDirectory,
+  tarDirArg,
+  extractTarGz,
   type KvDumpSource,
   type OffsiteAccessResult,
   type OffsiteConfigResult,
@@ -481,6 +483,24 @@ describe("#11413 alarme da cópia remota (ListObjectsV2)", () => {
 // ---------------------------------------------------------------------------
 
 const hasTar = spawnSync("tar", ["--version"]).status === 0;
+
+describe("#12544 tarDirArg: GNU tar do Git no Windows só extrai com barra normal", () => {
+  it("win32 troca `\\` por `/`; fora do win32 o caminho vai intacto", () => {
+    assert.equal(tarDirArg("C:\\Users\\x\\out", "win32"), "C:/Users/x/out");
+    assert.equal(tarDirArg("/home/x/a\\b", "linux"), "/home/x/a\\b");
+  });
+  it("tarGzDirectory/extractTarGz passam o -C já convertido ao tar", () => {
+    const calls: string[][] = [];
+    const run: TarRunner = (args) => {
+      calls.push(args);
+      return { status: 0, stdout: Buffer.from("x"), stderr: "" };
+    };
+    const dir = join(tmpdir(), "a", "b");
+    tarGzDirectory(dir, run);
+    extractTarGz(Buffer.from("x"), dir, run);
+    assert.deepEqual(calls.map((a) => a[a.indexOf("-C") + 1]), [tarDirArg(dir), tarDirArg(dir)]);
+  });
+});
 
 describe("#11413 restauração (tar real do sistema)", { skip: !hasTar && "tar ausente" }, () => {
   it("tar.gz → cifra → restoreBlob devolve os mesmos arquivos byte a byte", () => {

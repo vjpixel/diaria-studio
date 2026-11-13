@@ -419,8 +419,13 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
       inToken = true;
       let j = i + 1;
       while (j < n && command[j] !== '"') {
-        if (command[j] === "\\" && j + 1 < n) {
-          value += command[j + 1];
+        // #12544: entre aspas duplas o bash só trata `\` como escape antes de
+        // `$`, crase, `"`, `\` e newline; nos outros casos a barra fica. Antes
+        // ela sumia sempre, e `cd "C:\Users\x\wt"` (forma comum no Git Bash
+        // do Windows) virava `C:Usersxwt`, um caminho relativo ao drive: o
+        // guard decidia sobre outro diretório.
+        if (command[j] === "\\" && j + 1 < n && DQUOTE_ESCAPABLE.has(command[j + 1])) {
+          if (command[j + 1] !== "\n") value += command[j + 1];
           j += 2;
           continue;
         }
@@ -438,6 +443,9 @@ export function tokenizeShellSegments(command, home = safeHomedir()) {
   pushSegment();
   return segments;
 }
+
+/** Caracteres que `\` escapa dentro de aspas duplas no bash (#12544). */
+const DQUOTE_ESCAPABLE = new Set(["$", "`", '"', "\\", "\n"]);
 
 /** Caracteres que encerram a palavra do delimitador fora de aspas. */
 const HEREDOC_WORD_END = new Set([" ", "\t", "\n", ";", "&", "|", "<", ">", "(", ")"]);
@@ -593,11 +601,24 @@ function safeHomedir() {
   }
 }
 
+/**
+ * #12544: no Windows, o Git Bash monta cada drive em `/<letra>` (`/c/Users/x`
+ * = `C:\Users\x`). O `path` do Node lê `/c/Users/x` como `C:\c\Users\x`, um
+ * diretório que não existe, e o guard caía no fallback (o checkout principal
+ * da sessão) mesmo quando o `cd` ia para um worktree linkado. Converte só
+ * `/<uma letra>` seguido de `/` ou fim; fora do win32 devolve o valor intacto.
+ */
+export function msysDrivePathToNative(v, platform = process.platform) {
+  if (platform !== "win32" || typeof v !== "string") return v;
+  const m = /^\/([A-Za-z])(\/.*)?$/.exec(v);
+  return m ? `${m[1].toUpperCase()}:${m[2] ?? "/"}` : v;
+}
+
 /** Resolve `arg` contra `cwd`; `UNRESOLVED` se qualquer um dos dois for. */
 function resolveDir(cwd, rawToken, vars) {
   const token = expandKnownVars(rawToken, vars);
   if (!token || token.dynamic) return UNRESOLVED;
-  const v = token.value;
+  const v = msysDrivePathToNative(token.value);
   if (v === "" || v === "-") return UNRESOLVED;
   if (isAbsolute(v)) return resolvePath(v);
   if (cwd === UNRESOLVED) return UNRESOLVED;

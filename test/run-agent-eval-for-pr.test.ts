@@ -600,7 +600,8 @@ describe("resolveReportsRoot (#11462)", () => {
       git(main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
       const wt = join(main, ".claude", "worktrees", "agent-x");
       git(main, "worktree", "add", "-q", "-b", "wt-x", wt);
-      assert.equal(resolveReportsRoot({ worktreeRoot: wt }).root, main);
+      // #12544: o git devolve `C:/...` no Windows; o que importa é o diretório.
+      assert.equal(resolve(resolveReportsRoot({ worktreeRoot: wt }).root), main);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

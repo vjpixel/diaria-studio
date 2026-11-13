@@ -193,7 +193,9 @@ export function runWithTreeKill(cmd, args, { cwd, input, timeoutMs, env, shell =
  */
 export function codexFallbackPaths(platform = process.platform, home = os.homedir()) {
   if (platform === 'win32' || !home) return [];
-  return [path.join(home, '.npm-global', 'bin', 'codex'), path.join(home, '.local', 'bin', 'codex')];
+  // #12544: o caminho é do alvo POSIX (`platform` já não é win32), não do host:
+  // `path.join` saía com barra invertida quando o teste roda no Windows.
+  return [path.posix.join(home, '.npm-global', 'bin', 'codex'), path.posix.join(home, '.local', 'bin', 'codex')];
 }
 
 async function defaultRun(args, prompt, cwd, timeoutMs) {
