@@ -53,6 +53,13 @@ export interface CheckResult {
   status: CheckStatus;
   /** Texto curto para humano. Nunca contém valor de segredo. */
   detail: string;
+  /**
+   * `unverified` por limite PERMANENTE do check (sem helper de leitura, pulado
+   * de propósito), que não muda sozinho de um check para o outro. O alarme não
+   * conta estes no streak de não verificados: contaria para sempre e abriria
+   * uma issue que nunca fecha. Ausente = transitório (Doppler fora, rede, prazo).
+   */
+  structural?: boolean;
 }
 
 export type TokenId = "threads" | "linkedin" | "instagram";
@@ -298,8 +305,13 @@ export function evaluateToken(token: TokenId, probe: TokenProbe): CheckResult {
       return { id, status: "ok", detail: `token ${token} válido` };
     case "invalid":
       return { id, status: "fail", detail: `token ${token} inválido: ${probe.reason}` };
-    default:
+    case "unknown":
+      // Rede, 5xx: transitório, entra no streak do alarme.
       return { id, status: "unverified", detail: `token ${token} não verificado: ${probe.reason}` };
+    default:
+      // `no-helper` (Instagram) e `skipped` (`--offline`, credencial ausente, que
+      // já sai como falta no segredo): não mudam sozinhos, fora do streak.
+      return { id, status: "unverified", detail: `token ${token} não verificado: ${probe.reason}`, structural: true };
   }
 }
 

@@ -113,8 +113,10 @@ mão antes do `--arm`.
 `estado`: fecha sozinha quando a condição some) se o último check tiver mais
 de 7 dias, nunca tiver sido gravado, não vier do Neo, estiver vermelho (falhas
 comuns listadas uma vez; comenta só quando muda o conjunto de task + checagem
-em falta) ou trouxer o mesmo item "não verificado" em 4 checks seguidos
-(Doppler deslogado, Instagram sem helper, `data/` sem sync). Falha ao ler o KV
+em falta) ou trouxer o mesmo item "não verificado" transitório em 4 checks
+seguidos (Doppler deslogado, token sem resposta por rede/5xx, prazo, `data/`
+sem sync). Limite permanente do check (Instagram sem helper, `--offline`) não
+conta: abriria uma issue que nunca fecha. Falha ao ler o KV
 sai 1 sem mexer em nada; registro corrompido conta como ausente e abre a
 issue.
 

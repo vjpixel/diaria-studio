@@ -12,9 +12,11 @@
  *     falhas comuns listadas uma vez e o resto por task. `contentSignature` é
  *     `task + id de checagem` (nunca o detalhe, que muda a cada rodada, ex.
  *     "há 5 h"), então só comenta quando o CONJUNTO de faltas muda;
- *   - o mesmo item `unverified` em `UNVERIFIED_STREAK_THRESHOLD` checks
- *     seguidos (Doppler deslogado, Instagram sem helper, sync de `data/` sem
- *     sinal): `unverified`. A contagem vive no estado do script
+ *   - o mesmo item `unverified` TRANSITÓRIO em `UNVERIFIED_STREAK_THRESHOLD`
+ *     checks seguidos (Doppler deslogado, token sem resposta por rede/5xx,
+ *     prazo, sync de `data/` sem sinal): `unverified`. Item com
+ *     `structural: true` (Instagram sem helper, `--offline`) não conta: é
+ *     limite permanente do check e abriria uma issue que nunca fecha. A contagem vive no estado do script
  *     (`updateUnverifiedStreak`), porque o KV guarda só o último check.
  *
  * Os achados são família `estado`: somem sozinhos quando a condição some, e a
@@ -54,7 +56,8 @@ export function updateUnverifiedStreak(prev: UnverifiedStreakState, report: Read
   if (prev.lastCheckedAt === report.checkedAt) return prev;
   const streaks: UnverifiedStreakState["streaks"] = {};
   for (const c of report.checks) {
-    if (c.status !== "unverified") continue;
+    // Só os transitórios: um limite permanente (Instagram sem helper) abriria issue que nunca fecha.
+    if (c.status !== "unverified" || c.structural === true) continue;
     streaks[c.id] = { count: (prev.streaks[c.id]?.count ?? 0) + 1, detail: c.detail };
   }
   return { lastCheckedAt: report.checkedAt, streaks };

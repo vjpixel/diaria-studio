@@ -396,19 +396,37 @@ describe("evaluateNeoReadinessAlarm", () => {
     const v = evaluateNeoReadinessAlarm({ kind: "ok", report: redReport("KIT_API_KEY: ausente", { checkedAt: old }) }, NOW);
     assert.deepEqual(fps(v), [NEO_READINESS_RED_FINGERPRINT, NEO_READINESS_STALE_FINGERPRINT].sort());
   });
-  it("mesmo item não verificado em N checks seguidos: achado unverified", () => {
+  const at = (i: number) => new Date(NOW.getTime() - (20 - i) * 3_600_000).toISOString();
+  it("Doppler indisponível (transitório) em N checks seguidos: achado unverified", () => {
     let streak = EMPTY_UNVERIFIED_STREAK;
-    const unv = (i: number) => report({ checkedAt: new Date(NOW.getTime() - (10 - i) * 86_400_000 / 10).toISOString(), checks: [{ id: "token:instagram", status: "unverified", detail: "sem helper" }] });
+    const unv = (i: number) => report({ checkedAt: at(i), checks: [{ id: "doppler", status: "unverified", detail: "Doppler não consultado: sem login" }] });
     for (let i = 0; i < UNVERIFIED_STREAK_THRESHOLD - 1; i++) streak = updateUnverifiedStreak(streak, unv(i));
     // o mesmo check lido de novo não conta
     assert.equal(updateUnverifiedStreak(streak, unv(UNVERIFIED_STREAK_THRESHOLD - 2)), streak);
     assert.deepEqual(fps(evaluateNeoReadinessAlarm({ kind: "ok", report: unv(0) }, NOW, undefined, streak)), []);
     streak = updateUnverifiedStreak(streak, unv(UNVERIFIED_STREAK_THRESHOLD - 1));
+    assert.equal(UNVERIFIED_STREAK_THRESHOLD, 4);
     const v = evaluateNeoReadinessAlarm({ kind: "ok", report: unv(0) }, NOW, undefined, streak);
     assert.deepEqual(fps(v), [NEO_READINESS_UNVERIFIED_FINGERPRINT]);
     // um check verificado zera
-    streak = updateUnverifiedStreak(streak, report({ checkedAt: NOW.toISOString(), checks: [{ id: "token:instagram", status: "ok", detail: "ok" }] }));
+    streak = updateUnverifiedStreak(streak, report({ checkedAt: NOW.toISOString(), checks: [{ id: "doppler", status: "ok", detail: "ok" }] }));
     assert.deepEqual(streak.streaks, {});
+  });
+  it("Instagram sem helper (estrutural) por 10 checks não abre achado; token unknown por rede conta", () => {
+    let streak = EMPTY_UNVERIFIED_STREAK;
+    const ig = evaluateToken("instagram", { state: "no-helper", reason: "sem helper de leitura seguro no repo" });
+    assert.equal(ig.structural, true);
+    assert.equal(evaluateToken("threads", { state: "skipped", reason: "--offline" }).structural, true);
+    const net = evaluateToken("threads", { state: "unknown", reason: "HTTP 503" });
+    assert.notEqual(net.structural, true);
+    for (let i = 0; i < 10; i++) streak = updateUnverifiedStreak(streak, report({ checkedAt: at(i), checks: [ig] }));
+    assert.deepEqual(streak.streaks, {});
+    assert.deepEqual(fps(evaluateNeoReadinessAlarm({ kind: "ok", report: report() }, NOW, undefined, streak)), []);
+    // o registro no KV preserva a marca (o alarme lê do KV)
+    const back = parseReadinessRecord(serializeReadinessRecord(report({ checks: [ig, net] })), NOW);
+    assert.equal(back.kind === "ok" ? back.report.checks[0].structural : null, true);
+    for (let i = 10; i < 14; i++) streak = updateUnverifiedStreak(streak, report({ checkedAt: at(i), checks: [ig, net] }));
+    assert.deepEqual(Object.keys(streak.streaks), ["token:threads"]);
   });
 });
 
