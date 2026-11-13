@@ -186,7 +186,20 @@ describe("#11157 publish-shorts usa o store (trava contra a gravação do arquiv
     assert.match(loop.slice(0, 1500), /recheckBeforePublish\(dir, aammdd, item\.destination\)/);
   });
   it("o planner de divulgação lê também o registro do timer", () => {
+    // #12959: o planner deixou de citar o arquivo do timer pelo nome e passou a
+    // ler a visão unida via `listShortsRegistryFiles` (principal + 3 timers +
+    // cópias de conflito). A trava continua: o planner lê por essa função, e
+    // ela devolve o registro do timer do LinkedIn.
     const planner = readFileSync(new URL("../scripts/divulgacao-slot-planner.ts", import.meta.url), "utf8");
-    assert.ok(planner.includes(SHORTS_TIMER_LEDGER_FILE.split("/").pop()!));
+    assert.match(planner, /listShortsRegistryFiles\(edDir\)/);
+    const root = mkdtempSync(join(tmpdir(), "planner-timer-11157-"));
+    try {
+      mkdirSync(join(root, "_internal"), { recursive: true });
+      writeFileSync(join(root, SHORTS_TIMER_LEDGER_FILE), JSON.stringify({ entries: [] }));
+      const files = listShortsRegistryFiles(root).map((p) => p.replaceAll("\\", "/"));
+      assert.ok(files.some((p) => p.endsWith(SHORTS_TIMER_LEDGER_FILE)), `timer ausente em ${files.join(", ")}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
