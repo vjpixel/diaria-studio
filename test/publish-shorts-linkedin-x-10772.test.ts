@@ -147,9 +147,10 @@ describe("#10772 plano", () => {
     assert.equal(p.linkedin_profile.action, "publish");
     assert.equal(p.linkedin_profile.title, D1.title);
     assert.doesNotMatch(p.linkedin_profile.caption, /https?:\/\//, "#11617: sem link no texto do LinkedIn");
-    // #12465: perfil da diar.ia.br no perfil pessoal; o X (@diariabr) não leva. Sem
-    // `mention_verified`, cai na URL da página (review do PR #12489).
-    assert.match(p.linkedin_profile.caption, /Siga a diar\.ia\.br: linkedin\.com\/company\/diar\.ia\.br/);
+    // #12465/#13033: sem `mention_verified` (review do PR #12489) o perfil pessoal sai
+    // sem a linha de seguir: nada de URL da página (o LinkedIn a encurta em lnkd.in e
+    // autolinka `diar.ia.br` para o site). O X (@diariabr) nunca leva a linha.
+    assert.doesNotMatch(p.linkedin_profile.caption, /Siga|linkedin\.com\/company|lnkd\.in/);
     assert.doesNotMatch(p.linkedin_profile.caption, /urn:li:organization/);
     assert.doesNotMatch(p.x.caption, /Siga/);
     assert.equal(p.x.scheduledAt, null);
