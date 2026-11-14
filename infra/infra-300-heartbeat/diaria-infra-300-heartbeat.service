@@ -1,0 +1,10 @@
+[Unit]
+Description=Diaria 300 external heartbeat (#12981)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/diaria-studio
+ExecStart=/usr/bin/env npx tsx scripts/infra-300-heartbeat.ts
+TimeoutStartSec=60
