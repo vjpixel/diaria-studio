@@ -1,0 +1,23 @@
+name: Deploy infra-watchdog Worker
+
+# #12981: deployment remains opt-in until provisioning and Gmail custody
+# are authorized. See docs/infra-300-watchdog.md. Cron stays disabled separately.
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/infra-watchdog/**'
+      - '.github/workflows/deploy-infra-watchdog.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-infra-watchdog
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ vars.INFRA_300_WATCHDOG_DEPLOY_ENABLED == 'true' }}
+    uses: ./.github/workflows/deploy-worker.yml
+    with:
+      worker: infra-watchdog
+    secrets: inherit

@@ -1,0 +1,10 @@
+[Unit]
+Description=Diaria 300 heartbeat every 5 minutes (disabled template)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
