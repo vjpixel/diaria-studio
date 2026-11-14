@@ -279,10 +279,10 @@ describe("#10769 plano do publish-shorts", () => {
     assert.doesNotMatch(by.facebook_profile.caption, /https?:\/\/|utm_/);
   });
 
-  it("#12465: no plano, o perfil pessoal cita o perfil da diar.ia.br; a página diar.ia.br não", () => {
+  it("#12465/#13034: no plano, nenhum Reels do Facebook leva linha de seguir com URL (menção pela Graph API não medida)", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z") });
     const by = Object.fromEntries(plan.items.map((i) => [i.destination, i])) as any;
-    assert.match(by.facebook_profile.caption, /\n\nSiga a diar\.ia\.br: facebook\.com\/diar\.ia\.br\n\n#IA/);
+    assert.doesNotMatch(by.facebook_profile.caption, /Siga|facebook\.com\/diar\.ia\.br/);
     assert.doesNotMatch(by["facebook:diaria"].caption, /Siga/);
   });
 

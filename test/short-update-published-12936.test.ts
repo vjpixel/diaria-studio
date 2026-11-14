@@ -54,7 +54,8 @@ describe("#12936 planPublishedTextUpdates", () => {
     const yt = items.find((i) => i.action === "api_youtube");
     assert.ok(yt && yt.action === "api_youtube" && yt.title.includes("Jensen Huang"));
     const fb = items.find((i) => i.destination === "facebook:vjpixel");
-    assert.ok(fb && fb.action === "api_facebook" && fb.description.includes("Siga a diar.ia.br"), "a página VJ Pixel cita a diar.ia.br como no publish (#12465)");
+    // #13034: o update segue o publish; sem menção medida no Facebook, a página VJ Pixel sai sem a linha de seguir.
+    assert.ok(fb && fb.action === "api_facebook" && !fb.description.includes("Siga") && !fb.description.includes("facebook.com/diar.ia.br"), "a página VJ Pixel segue o publish (#12465, #13034)");
   });
 
   it("ainda agendado, envio ambíguo e cancelado ficam fora com o motivo", () => {

@@ -96,7 +96,7 @@ describe("#11122 plano", () => {
     assert.equal(it0.action, "publish");
     assert.doesNotMatch(it0.caption, /https?:\/\/|utm_/, it0.caption);
     assert.ok(!it0.caption.includes(YT));
-    assert.ok(it0.caption.endsWith("\n\nSiga @diar.ia.br"), it0.caption); // #12465
+    assert.ok(it0.caption.endsWith("\n\nSiga a @diar.ia.br para receber dicas e notícias de IA todos os dias"), it0.caption); // #12465, #13034
   });
 
   it("muito depois do horário: skip_late apontando o --mark threads_profile", () => {

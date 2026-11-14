@@ -44,6 +44,7 @@ utm_source={plataforma nua}   utm_medium=bio   utm_campaign=perfil-{source}[-{va
 | YouTube — podcast "diar.ia.br comentada" | Studio → Conteúdo → Podcasts → descrição (ou `playlists.update` pela API) | `perfil-youtube-podcast` | 261103 |
 | GitHub `diaria-studio` | `gh repo edit --homepage` | `perfil-github-studio` | 260803 |
 | GitHub `diaria-design` | `gh repo edit --homepage` | `perfil-github-design` | 260803 |
+| Linktree pessoal (`linktr.ee/vjpixel`) | linktr.ee/admin → Links → URL de cada botão | `perfil-linktree-pixel` (2 botões: `/assinar` e `/produto/conteudo-autentico`) | 261113 (editor) |
 | LinkedIn | Editar página → Botão + Site | `company_page_cta` (exceção) | 260731 |
 
 ## Armadilhas por plataforma — leia antes de mexer
