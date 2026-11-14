@@ -21,16 +21,18 @@
  *     descrição/comentário, sem convite pra assinar embutido.
  *   - Texto de link NUNCA termina em domínio nu (auto-linkagem do LinkedIn
  *     parte o link em dois e a parte clicável fica sem UTM) — usa sempre
- *     rótulo de ação.
+ *     rótulo de ação. Exceção escolhida pelo editor (#13045): o link do vídeo,
+ *     "YouTube da diar.ia.br", com a correção no Passo 8c da skill (#13049).
  *   - UTM: `utm_source=linkedin&utm_medium=newsletter&utm_campaign=ln-{cycle}
  *     &utm_content=mencao-abertura|cta-abertura|lista|cta-fim` (item-01/02/03
  *     SAÍRAM; `cta-abertura` e `mencao-abertura` ENTRARAM em 260803;
  *     `cta-usemelhor` SAIU em #8025). São 2 CTAs de assinatura (abertura e
  *     fim), cada um com `utm_content` próprio: sem isso não dá pra saber
  *     qual posição converte e a decisão de manter/cortar vira palpite.
- *     `mencao-abertura` é o 3º ponto, e não é CTA: é o clique no nome da
- *     marca em prosa (ver `linkifyWordmark`), separado de propósito pra não
- *     inflar o CTA com curiosidade.
+ *     `mencao-abertura` era o 3º ponto, e não era CTA: o clique no nome da
+ *     marca em prosa (ver `linkifyWordmark`). SAIU no #13049 (13/11/2026): a
+ *     marca passou a apontar para a página da diar.ia.br no LinkedIn, sem UTM.
+ *     `video` (#12081) marca o link do vídeo da semana.
  *   - Abertura e fecho têm TEXTO PADRÃO fixo desde #8025 (12/09/2026,
  *     decisão do editor) — mesmo parágrafo usado em 4 edições consecutivas
  *     (26w34-26w37) sem variação. `--opening`/`--closing` (CLI) continuam
@@ -40,6 +42,8 @@
  *     não conhece o default, só recebe o texto já resolvido.
  */
 
+import { DIARIA_LINKEDIN_PAGE_URL } from "./canonical-urls.ts";
+
 export const LINKEDIN_WEEKLY_UTM_SOURCE = "linkedin";
 export const LINKEDIN_WEEKLY_UTM_MEDIUM = "newsletter";
 
@@ -48,7 +52,8 @@ export function linkedinWeeklyCampaign(cycle: string): string {
   return `ln-${cycle}`;
 }
 
-export type LinkedinWeeklyUtmContent = "mencao-abertura" | "cta-abertura" | "lista" | "cta-fim" | "video";
+/** `mencao-abertura` saiu da união no #13049 (a menção aponta para a página do LinkedIn, sem UTM). */
+export type LinkedinWeeklyUtmContent = "cta-abertura" | "lista" | "cta-fim" | "video";
 
 /**
  * #12777 (10/11/2026, decisão do editor, ciclo 26w45): o principal vídeo
@@ -60,10 +65,27 @@ export type LinkedinWeeklyUtmContent = "mencao-abertura" | "cta-abertura" | "lis
  * overlay de play, `04-d1-2x1.jpg`, copiada pela CLI como `video-04-d1-2x1.jpg`).
  */
 export const LINKEDIN_WEEKLY_VIDEO_HEADING = "Vídeo da semana";
-/** #12777: trecho linkado ao vídeo (utm_content=video). */
-export const LINKEDIN_WEEKLY_VIDEO_LINK_TEXT = "No principal vídeo da semana";
-/** #12777: resto da frase, texto puro depois do link. */
-export const LINKEDIN_WEEKLY_VIDEO_TAIL = " no canal da diar.ia.br eu comento o destaque acima.";
+/**
+ * #13045 (13/11/2026, decisão do editor, ciclo 26w46): a frase de abertura da
+ * seção é fixa, "Eu comento o destaque acima no YouTube da diar.ia.br.", com o
+ * link em "YouTube da diar.ia.br". Substitui o trecho fixo da #13023 ("No
+ * principal vídeo da semana no canal da diar.ia.br eu comento o destaque
+ * acima."): o rótulo "principal vídeo da semana" fica só no título da seção da
+ * Stack. Depois dela vem, quando o ciclo tem, a frase da semana sobre o que o
+ * vídeo traz que o texto não traz (`video.pitch`, ver `WeeklyLinkedinRenderInput`).
+ *
+ * O rótulo termina no domínio nu (caso (c) de `context/publishers/linkedin.md`):
+ * no paste real do 26w46 o LinkedIn partiu a âncora em "YouTube da" (href do
+ * vídeo) + "diar.ia.br" (home sem UTM). O texto é escolha explícita do editor;
+ * a auditoria do paste acusa a divisão com `TRAILING_WORDMARK_SPLIT_HINT`
+ * (`linkedin-paste-audit.ts`) e o Passo 8c da skill traz a correção (#13049
+ * item 3).
+ */
+export const LINKEDIN_WEEKLY_VIDEO_LEAD = "Eu comento o destaque acima no ";
+/** #13045: trecho linkado ao vídeo (utm_content=video). */
+export const LINKEDIN_WEEKLY_VIDEO_LINK_TEXT = "YouTube da diar.ia.br";
+/** #13045: pontuação que fecha a frase fixa, texto puro depois do link. */
+export const LINKEDIN_WEEKLY_VIDEO_TAIL = ".";
 
 /** Pure: monta uma URL com o triplo UTM completo (+ `utm_content`) do contrato do #4456. */
 export function buildLinkedinWeeklyUrl(baseUrl: string, cycle: string, content: LinkedinWeeklyUtmContent): string {
@@ -188,8 +210,12 @@ export interface WeeklyLinkedinRenderInput {
    * em `ln-selection.json` pelo `render-linkedin-weekly.ts`). Ausente = sem a
    * seção do vídeo. `editionDate` (#12777) é a edição do vídeo: decide depois
    * de qual manchete a seção entra (ver `videoSectionHeadlineIndex`).
+   * `pitch` (#13045) é a frase da semana sobre o que o vídeo traz que o texto
+   * não traz, escrita pela skill a partir da legenda do vídeo e já passada por
+   * humanizador e Clarice (validada em `render-linkedin-weekly.ts`). Ausente ou
+   * vazia, a seção sai só com a frase fixa.
    */
-  video?: { title: string; url: string; editionDate?: string } | null;
+  video?: { title: string; url: string; editionDate?: string; pitch?: string } | null;
 }
 
 /**
@@ -262,8 +288,19 @@ export interface LinkifyWordmarkResult {
 }
 
 /**
+ * #13049 item 2 (13/11/2026, regra do editor no ciclo 26w46): nos posts e no
+ * artigo semanal, a marca "diar.ia.br" aponta para a página da diar.ia.br no
+ * LinkedIn, nunca para o site. É o href da menção da abertura desde então; até
+ * aqui era `https://diar.ia.br` com `utm_content=mencao-abertura` (o valor fica
+ * no histórico dos ciclos até o 26w46, o render não o emite mais).
+ */
+export const LINKEDIN_WEEKLY_WORDMARK_URL = DIARIA_LINKEDIN_PAGE_URL;
+
+/**
  * Pure: transforma a primeira menção em prosa a `diar.ia.br` DA ABERTURA num
- * link com UTM. Escopo deliberado: só `input.opening` passa por aqui — fecho,
+ * link para a página da diar.ia.br no LinkedIn (#13049; até o 26w46 era a home
+ * do site com `utm_content=mencao-abertura`, e o resto desta docstring descreve
+ * a história da âncora desse período). Escopo deliberado: só `input.opening` passa por aqui — fecho,
  * corpo das manchetes e descrição do Use Melhor não. Menção ao wordmark neles
  * segue virando auto-link do LinkedIn pra home, sem atribuição.
  *
@@ -295,11 +332,12 @@ export interface LinkifyWordmarkResult {
  * Melhor, destaques da lista), o 2º ainda localiza a menção isolada em
  * prosa (ver docstring acima) — só a extensão saiu.
  */
-export function linkifyWordmark(paragraphsHtmlOut: string, cycle: string): LinkifyWordmarkResult {
+export function linkifyWordmark(paragraphsHtmlOut: string, _cycle: string): LinkifyWordmarkResult {
   const m = WORDMARK_STANDALONE.exec(paragraphsHtmlOut);
   if (!m) return { html: paragraphsHtmlOut, skipped: false };
   const idx = m.index + m[1].length;
-  const url = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, cycle, "mencao-abertura");
+  // #13049 item 2: a marca aponta para a página da diar.ia.br no LinkedIn, sem UTM.
+  const url = LINKEDIN_WEEKLY_WORDMARK_URL;
   return {
     html:
       paragraphsHtmlOut.slice(0, idx) +
@@ -434,9 +472,13 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
   }
   function pushVideoSection(): void {
     const videoUrl = buildLinkedinWeeklyUrl(input.video!.url, input.cycle, "video");
+    // #13045: frase fixa + frase da semana (`pitch`), um parágrafo só; sem
+    // `pitch`, só a frase fixa.
+    const pitch = (input.video!.pitch ?? "").replace(/\s+/g, " ").trim();
     parts.push(`<h2>${escapeHtml(LINKEDIN_WEEKLY_VIDEO_HEADING)}</h2>`);
     parts.push(
-      `<p><a href="${escapeHtml(videoUrl)}">${escapeHtml(LINKEDIN_WEEKLY_VIDEO_LINK_TEXT)}</a>${escapeHtml(LINKEDIN_WEEKLY_VIDEO_TAIL)}</p>`,
+      `<p>${escapeHtml(LINKEDIN_WEEKLY_VIDEO_LEAD)}<a href="${escapeHtml(videoUrl)}">${escapeHtml(LINKEDIN_WEEKLY_VIDEO_LINK_TEXT)}</a>` +
+        `${escapeHtml(LINKEDIN_WEEKLY_VIDEO_TAIL)}${pitch ? ` ${escapeHtml(pitch)}` : ""}</p>`,
     );
     parts.push("<hr/>");
   }

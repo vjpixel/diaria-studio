@@ -62,6 +62,10 @@
  * Uso:
  *   npx tsx scripts/render-linkedin-weekly.ts --cycle 26w31 \
  *     [--opening "..." --closing "..."] [--use-melhor-comment "..."]
+ *     [--video-pitch "..." | --video-pitch-file arquivo]
+ *   (`--video-pitch`, #13045: grava em `ln-selection.json` a frase da semana
+ *   sobre o vídeo, depois de validar contra a legenda da edição do vídeo;
+ *   recusa com exit 1 e não grava nada se a frase quebrar uma regra.)
  *   (`--opening`/`--closing` são OPCIONAIS desde #8025 — omitidos, caem no
  *   texto padrão `DEFAULT_OPENING`/`DEFAULT_CLOSING` com banner explícito;
  *   aceitam também --opening-file/--closing-file/--use-melhor-comment-file
@@ -77,6 +81,8 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { renderLinkedinWeeklyHtml, type WeeklyLinkedinRenderInput } from "./lib/weekly-linkedin-render.ts";
 import { resolveTopEditionVideo, type TopEditionVideo } from "./lib/top-edition-video.ts"; // #12081
 import { loadProjectEnv } from "./lib/env-loader.ts"; // #12081: credenciais do YouTube
+import { srtSpokenText, weeklyVideoPitchProblems } from "./lib/weekly-video-pitch.ts"; // #13045
+import { youtubeCaptionFileName } from "./lib/diaria/youtube-captions.ts"; // #13045: legenda do vídeo
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -108,7 +114,8 @@ export function resolveCoverImageSourcePath(editionsRootDir: string, headlineOne
  * parágrafo usado (idêntico, confirmado byte-a-byte) em 4 edições
  * consecutivas — 26w34, 26w35, 26w36, 26w37 (`data/weekly/26w3{4,5,6,7}/
  * ln-*.html`). A menção "diar.ia.br" segue sendo pré-linkada pela 1ª
- * ocorrência em `linkifyWordmark` (`weekly-linkedin-render.ts`) — desde o
+ * ocorrência em `linkifyWordmark` (`weekly-linkedin-render.ts`; desde o #13049
+ * o link vai para a página da diar.ia.br no LinkedIn) — desde o
  * #8819 a âncora ancora só o wordmark (", newsletter de IA" que segue vira
  * texto puro fora do `<a>`), não há mais extensão pra reconferir aqui.
  *
@@ -162,6 +169,60 @@ export interface WeeklyVideoField {
   url: string;
   editionDate: string;
   views?: number;
+  /**
+   * #13045: frase da semana sobre o que o vídeo traz que o texto não traz, depois
+   * da frase fixa da seção. Gravada por `--video-pitch`/`--video-pitch-file`
+   * (validada contra a legenda da edição do vídeo, `weeklyVideoPitchProblems`).
+   * Ausente, a seção sai só com a frase fixa.
+   */
+  pitch?: string;
+}
+
+/**
+ * Legenda (fala, sem a marcação do SRT) da edição do vídeo, ou `null` se o
+ * arquivo não existir. É contra ela que os números da frase da semana são
+ * conferidos (#13045).
+ */
+export function readVideoTranscript(rootDir: string, editionDate: string): string | null {
+  const editionDir = resolveEditionDir(join(rootDir, "data/editions"), editionDate);
+  const srtPath = join(editionDir, youtubeCaptionFileName(editionDate));
+  return existsSync(srtPath) ? srtSpokenText(readFileSync(srtPath, "utf8")) : null;
+}
+
+export interface ApplyVideoPitchResult {
+  ok: boolean;
+  /** Motivos da recusa (`ok: false`). Nada é gravado nesse caso. */
+  problems: string[];
+  /** Avisos que não recusam (legenda ausente, números não conferidos). */
+  warnings: string[];
+}
+
+/**
+ * #13045: grava `video.pitch` em `ln-selection.json` depois de validar a frase.
+ * Recusa (nada gravado) quando a seleção não tem vídeo ou a frase quebra uma
+ * regra de `weeklyVideoPitchProblems`. Sem legenda da edição do vídeo, grava
+ * com aviso: os números não foram conferidos.
+ */
+export function applyVideoPitch(rootDir: string, cycle: string, pitch: string): ApplyVideoPitchResult {
+  const selectionPath = join(rootDir, weeklyLinkedinRelDir(cycle), "_internal", "ln-selection.json");
+  if (!existsSync(selectionPath)) return { ok: false, problems: [`${selectionPath} não existe`], warnings: [] };
+  const selection = JSON.parse(readFileSync(selectionPath, "utf8")) as SelectionJson & Record<string, unknown>;
+  if (!selection.video) {
+    return { ok: false, problems: ["a seleção não tem vídeo da semana (`video` ausente ou null): a frase do vídeo não tem onde entrar"], warnings: [] };
+  }
+  const warnings: string[] = [];
+  const transcript = readVideoTranscript(rootDir, selection.video.editionDate);
+  if (transcript === null) {
+    warnings.push(
+      `Frase do vídeo (#13045): legenda ${youtubeCaptionFileName(selection.video.editionDate)} não encontrada na edição ` +
+        `${selection.video.editionDate}: os números da frase não foram conferidos contra a fala.`,
+    );
+  }
+  const problems = weeklyVideoPitchProblems(pitch, transcript);
+  if (problems.length > 0) return { ok: false, problems, warnings };
+  const video: WeeklyVideoField = { ...selection.video, pitch: pitch.replace(/\s+/g, " ").trim() };
+  writeFileSync(selectionPath, JSON.stringify({ ...selection, video }, null, 2), "utf8");
+  return { ok: true, problems: [], warnings };
 }
 
 /**
@@ -212,7 +273,29 @@ export function main(rootDirOverride?: string) {
     console.error(`${selectionPath} não existe — rode select-linkedin-weekly.ts --publish-monday AAMMDD primeiro.`);
     process.exit(1);
   }
+  // #13045: `--video-pitch`/`--video-pitch-file` grava a frase da semana em
+  // `ln-selection.json` (validada) antes do render; omitida, vale a já gravada.
+  const pitchWarnings: string[] = [];
+  const pitchArg = resolveTextArg(argv, "video-pitch");
+  if (pitchArg.trim()) {
+    const applied = applyVideoPitch(rootDir, cycle, pitchArg);
+    if (!applied.ok) {
+      console.error(`--video-pitch recusada (#13045), nada gravado:\n${applied.problems.map((p) => `  - ${p}`).join("\n")}`);
+      for (const w of applied.warnings) console.error(`  (aviso) ${w}`);
+      process.exit(1);
+    }
+    pitchWarnings.push(...applied.warnings);
+    console.log("Frase do vídeo gravada em ln-selection.json (video.pitch).");
+  }
+
   const selection = JSON.parse(readFileSync(selectionPath, "utf8")) as SelectionJson;
+  // Frase editada à mão no JSON: a mesma validação, só como aviso.
+  if (!pitchArg.trim() && selection.video?.pitch?.trim()) {
+    const transcript = readVideoTranscript(rootDir, selection.video.editionDate);
+    for (const p of weeklyVideoPitchProblems(selection.video.pitch, transcript)) {
+      pitchWarnings.push(`Frase do vídeo (video.pitch, #13045): ${p} — revise antes de publicar.`);
+    }
+  }
 
   const opening = resolveTextArg(argv, "opening", DEFAULT_OPENING);
   const closing = resolveTextArg(argv, "closing", DEFAULT_CLOSING);
@@ -279,7 +362,7 @@ export function main(rootDirOverride?: string) {
     }
   }
 
-  const allWarnings = [...result.warnings, ...coverWarnings];
+  const allWarnings = [...result.warnings, ...pitchWarnings, ...coverWarnings];
   writeFileSync(
     jsonPath,
     JSON.stringify(

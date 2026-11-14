@@ -118,7 +118,8 @@ describe("#4041 — emissores derivam do registry (sem literal solto no call sit
     // mantém em sincronia. `mencao-abertura` já nasceu faltando nessa lista uma vez.
     const emitter = shared.findUtmEmitter("linkedin-weekly-newsletter");
     assert.ok(emitter, "emissor precisa existir no inventário");
-    const contents: LinkedinWeeklyUtmContent[] = ["mencao-abertura", "cta-abertura", "lista", "cta-fim"];
+    // #13049: `mencao-abertura` saiu da união (a menção aponta para a página do LinkedIn).
+    const contents: LinkedinWeeklyUtmContent[] = ["cta-abertura", "lista", "cta-fim", "video"];
     for (const c of contents) {
       assert.ok(emitter.description.includes(c), `description do inventário não cita utm_content=${c}`);
     }

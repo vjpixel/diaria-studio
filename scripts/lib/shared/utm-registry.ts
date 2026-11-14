@@ -1737,9 +1737,11 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Lista de Edições da semana + os 2 CTAs de assinatura (abertura/fim) da " +
       "newsletter semanal do LinkedIn (`/diaria-linkedin-semanal`, #4456) — artigo " +
       "colável manualmente, sem API de publicação. `utm_content` = " +
-      "mencao-abertura/cta-abertura/lista/cta-fim, um por posição, para " +
-      "dar pra medir qual posição converte. `mencao-abertura` não é CTA: é o " +
-      "clique no nome da marca em prosa, separado pra não inflar o CTA da abertura. " +
+      "cta-abertura/lista/cta-fim/video, um por posição, para " +
+      "dar pra medir qual posição converte (`video` = link do vídeo da semana, #12081). " +
+      "`mencao-abertura` (clique no nome da marca em prosa) saiu no #13049: até o " +
+      "ciclo 26w46 ia para a home com UTM; desde então a marca aponta para a página " +
+      "da diar.ia.br no LinkedIn, sem UTM. " +
       "O bloco Use Melhor não leva mais CTA de assinatura desde #8025 (decisão do editor).",
     status: "ativo",
   },

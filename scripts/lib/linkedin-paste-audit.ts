@@ -251,8 +251,9 @@ const WORDMARK_IN_PROSE_RE = new RegExp(`(^|[^\\w./-])${WORDMARK.replace(/\./g, 
 /**
  * Pure (#12777): quantas menções ao wordmark ficam em TEXTO PURO na fonte
  * (fora de `<a>`). O editor do LinkedIn auto-linka cada uma pra home, então o
- * colado traz uma âncora a mais por menção. A seção "Vídeo da semana" tem uma
- * ("no canal da diar.ia.br"), e corpo de manchete pode ter outras.
+ * colado traz uma âncora a mais por menção. Corpo de manchete pode ter
+ * menções assim. (A seção "Vídeo da semana" teve uma até o #13045, "no canal
+ * da diar.ia.br"; desde então o wordmark fica dentro do link do vídeo.)
  */
 export function countUnlinkedWordmarkMentions(sourceHtml: string): number {
   const text = stripHtmlToText(sourceHtml.replace(ANCHOR_RE, " "));
@@ -279,13 +280,40 @@ export function isExpectedWordmarkAutoLink(a: LinkedinPasteAuditPastedAnchor): b
  * Hint anexado (#10385) a toda âncora de wordmark cuja UTM não sobreviveu ao
  * paste, ou que sumiu do colado sem continuação a dividir. Exportado pra
  * teste e pra quem montar mensagem ao editor a partir de `result.issues`.
+ * Desde o #13049 a menção da abertura aponta para a página da diar.ia.br no
+ * LinkedIn, sem UTM: o mesmo hint acompanha o href divergente dessa âncora
+ * (o LinkedIn a reescreve pra `http://diar.ia.br` do mesmo jeito).
  */
 export const WORDMARK_HREF_REWRITE_HINT =
-  ` Âncora do wordmark "${WORDMARK}" sem a UTM esperada — padrão conhecido (#10385, caso (c) de ` +
+  ` Âncora do wordmark "${WORDMARK}" sem o link esperado — padrão conhecido (#10385, caso (c) de ` +
   `context/publishers/linkedin.md §"Newsletter LinkedIn"): o editor do LinkedIn reescreve o href da âncora ` +
   `cujo texto termina no domínio nu pra http://${WORDMARK}, mesmo sem continuação (a premissa do #8819 não ` +
   `se sustentou). Corrigir na UI via seleção por teclado + popup "Edit link", NUNCA clicando direto sobre o ` +
   `link colado.`;
+
+/**
+ * Pure (#13049 item 3): texto de âncora que TERMINA no wordmark depois de
+ * outra palavra ("YouTube da diar.ia.br", o link do vídeo da semana desde o
+ * #13045). É o padrão inverso do `looksLikeBareDomainAnchorText`: no paste
+ * real do 26w46 o LinkedIn partiu essa âncora em "YouTube da" (href do vídeo,
+ * com UTM) + "diar.ia.br" (home, sem UTM).
+ */
+const TRAILING_WORDMARK_RE = new RegExp(`\\S\\s+${WORDMARK.replace(/\./g, "\\.")}$`, "i");
+export function endsWithWordmarkAnchorText(text: string): boolean {
+  return TRAILING_WORDMARK_RE.test(normalizeText(text));
+}
+
+/**
+ * Hint (#13049 item 3) da âncora que termina no wordmark e foi dividida no
+ * paste. A correção do 26w46: selecionar o texto inteiro da âncora por um
+ * `Range` (via `javascript_tool`, sem clicar no link) e reaplicar o link pelo
+ * botão de link da toolbar, colando o href da fonte. Vira 1 âncora com a UTM.
+ */
+export const TRAILING_WORDMARK_SPLIT_HINT =
+  ` O texto termina em "${WORDMARK}" — padrão conhecido (#13049, ciclo 26w46): o LinkedIn divide a âncora ` +
+  `em duas, o começo com o href da fonte e "${WORDMARK}" apontando pra home sem UTM, e a contagem de âncoras ` +
+  `sobe 1. Corrigir selecionando o texto inteiro da âncora por Range (sem clicar no link) e reaplicando o link ` +
+  `pelo botão de link da toolbar com o href da fonte (Passo 8c de /diaria-linkedin-semanal).`;
 
 /**
  * Audita o resultado do paste do corpo do artigo semanal do LinkedIn contra
@@ -366,7 +394,9 @@ export function auditLinkedinPaste(input: LinkedinPasteAuditInput): LinkedinPast
           `apagar outro parágrafo em silêncio).`
         : isWordmarkAnchorText(sa.text)
           ? WORDMARK_HREF_REWRITE_HINT
-          : "";
+          : endsWithWordmarkAnchorText(sa.text)
+            ? TRAILING_WORDMARK_SPLIT_HINT
+            : "";
       issues.push(`Âncora "${sa.text}" (${sa.href}) não foi encontrada no colado com o texto completo — UTM perdida ou âncora dividida.${bugHint}`);
       continue;
     }
@@ -403,7 +433,9 @@ export function auditLinkedinPaste(input: LinkedinPasteAuditInput): LinkedinPast
       if (!hrefsEquivalent(sa.href, pasted[matchIdx].href)) {
         issues.push(
           `Âncora "${sa.text}": href colado diverge do esperado — esperado "${sa.href}", colado ` +
-            `"${pasted[matchIdx].href}" (esta âncora não carrega UTM, o href bruto é o único sinal disponível).`,
+            `"${pasted[matchIdx].href}" (esta âncora não carrega UTM, o href bruto é o único sinal disponível).` +
+            // #13049: a menção da abertura (página do LinkedIn, sem UTM) cai aqui quando o LinkedIn a reescreve.
+            (isWordmarkAnchorText(sa.text) ? WORDMARK_HREF_REWRITE_HINT : ""),
         );
       }
     }
