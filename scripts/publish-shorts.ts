@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { agendamentosPath, loadAgendamentos, saveAgendamentos, transicionarAgendamento } from "./lib/diaria/agendamentos.ts";
+import { parseCorteSlug } from "./lib/diaria/cortes-estoque.ts";
+import { pecaDoCorte } from "./lib/diaria/agendamentos-verificar.ts";
 import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } from "./lib/diaria/published-video-cleanup.ts";
 /**
  * scripts/publish-shorts.ts (#10769)
@@ -4577,6 +4580,25 @@ export function syncCorteAuthorizationWithContent(
   return next;
 }
 
+/** #12960: só agenda o item existente quando cada destino tem envio ou timer autorizado. */
+export function syncCorteAgendamento(root: string, spec: CorteSpec, entries: readonly ShortPublishedEntry[], timerDestinations: readonly string[], now: Date): void {
+  const origem = parseCorteSlug(spec.slug);
+  if (!origem) return;
+  const path = agendamentosPath(root);
+  const banco = loadAgendamentos(path);
+  const item = banco.itens.find(it => it.id === `${origem.edicao}-${pecaDoCorte(origem.corte)}`);
+  if (!item || item.estado === "agendado" || item.estado === "publicado") return;
+  const authorized = corteAuthorizedDestinations(spec) ?? [];
+  const covered = item.destinos.every(dest =>
+    entries.some(e => e.destination === dest && (e.status === "scheduled" || e.status === "published")) ||
+    (timerDestinations.includes(dest) && authorized.includes(dest)),
+  );
+  if (!covered) return;
+  saveAgendamentos(path, transicionarAgendamento(banco, {
+    id: item.id, para: "agendado", nota: `modo corte ${spec.slug}: destinos com envio registrado ou timer autorizado (#12960)`,
+  }, now));
+}
+
 /**
  * #11912: grava no `corte.json` a autorização do `--publish --confirm-publish`.
  * `main` chama só depois de TODAS as validações que podem abortar a rodada
@@ -5384,6 +5406,7 @@ async function main(): Promise<number> {
     }
     // #11547: a confirmação (`x=URL`) mantém o registro da capa do agendamento.
     published = persist(carryOverCover(built.entry, published.entries.find((e) => e.destination === mark.destination)));
+    if (corte) syncCorteAgendamento(ROOT, parseCorteSpec(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), dir), published.entries, [], new Date());
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
     cleanup();
     return 0;
@@ -6133,6 +6156,12 @@ async function main(): Promise<number> {
       }),
     ),
   };
+  if (corte) {
+    syncCorteAgendamento(
+      ROOT, parseCorteSpec(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), dir), published.entries,
+      plan.owners.filter(o => o.by === "timer-300").map(o => o.destination), new Date(),
+    );
+  }
   const summary = {
     published: results.filter((r) => r.ok && r.entry?.status === "published").length,
     scheduled: results.filter((r) => r.ok && r.entry?.status === "scheduled").length,
