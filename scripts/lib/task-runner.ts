@@ -59,6 +59,12 @@
  *      sai com exit 1 — evita que `--push` sobrescreva um store real com um
  *      resultado vazio.
  *
+ *   6. **Falha só de rede reagenda a unit (#13017).** Task com
+ *      `retryOnTransientNetwork: true` cuja rodada falhou apenas por rede
+ *      (todo passo obrigatório que falhou traz assinatura de DNS/conexão na
+ *      saída) sai com `TRANSIENT_NETWORK_EXIT_CODE`, que o `.service`
+ *      gerado reagenda. Ver `scripts/lib/transient-network-failure.ts`.
+ *
  * @see scripts/lib/scheduled-tasks.ts (registro declarativo consumido aqui)
  * @see scripts/run-task.ts (entrypoint CLI)
  */
@@ -70,6 +76,7 @@ import { dirname, join, resolve } from "node:path";
 import type { ScheduledTaskDefinition } from "./scheduled-tasks.ts";
 import { unitBaseName } from "./systemd-units.ts";
 import { syncCode as syncCodeFn, type GitSyncResult, type GitSyncOutcome } from "./git-sync.ts";
+import { resolveTransientNetworkExitCode, TRANSIENT_NETWORK_EXIT_CODE, type ClassifiableStep } from "./transient-network-failure.ts";
 
 /** Resultado de rodar um único passo (`execStep`). */
 export interface StepExecResult {
@@ -374,6 +381,8 @@ export function runScheduledTask(
   appendTemp(`===== ${now().toISOString()} - ${def.description} =====`);
 
   const steps: StepRunResult[] = [];
+  // #13017: saída de cada passo, para classificar falha só de rede no fim.
+  const classifiable: ClassifiableStep[] = [];
   let guardAborted = false;
   let failingCode = 0;
 
@@ -503,6 +512,7 @@ export function runScheduledTask(
 
       appendTemp(result.output);
       steps.push({ key: step.key, code: result.code, bestEffort: !!step.bestEffort });
+      classifiable.push({ code: result.code, bestEffort: !!step.bestEffort, output: result.output });
 
       if (!step.bestEffort && result.code !== 0 && failingCode === 0) {
         failingCode = result.code;
@@ -515,6 +525,24 @@ export function runScheduledTask(
         } catch {
           // stderr indisponível não muda o resultado da run.
         }
+      }
+    }
+  }
+
+  // #13017: falha só de rede vira o código que a unit reagenda
+  // (`RestartForceExitStatus=`, ver scripts/lib/transient-network-failure.ts).
+  // Guard abortado não é rede (é `data/` sem montar): fica como está.
+  if (def.retryOnTransientNetwork && !guardAborted && failingCode !== 0) {
+    failingCode = resolveTransientNetworkExitCode(failingCode, classifiable, def.successExitCodes ?? []);
+    if (failingCode === TRANSIENT_NETWORK_EXIT_CODE) {
+      const msg =
+        `[task-runner] ${def.name}: falha só de rede nesta rodada; saindo com ${TRANSIENT_NETWORK_EXIT_CODE} ` +
+        `para a unit tentar de novo (#13017)`;
+      appendTemp(msg);
+      try {
+        (opts.reportFailure ?? ((m: string) => console.error(m)))(msg);
+      } catch {
+        // stderr indisponível não muda o resultado da run.
       }
     }
   }

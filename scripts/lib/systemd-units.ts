@@ -18,6 +18,7 @@
 import { assertSupportedNodeVersion } from "./check-node-version.ts";
 import { BRT_TIMEZONE } from "./next-edition-date.ts";
 import type { ScheduledTaskDefinition, ScheduledTaskSchedule, WeekDay } from "./scheduled-tasks.ts";
+import { TRANSIENT_NETWORK_EXIT_CODE, transientNetworkRetryUnitLines } from "./transient-network-failure.ts";
 
 const WEEKDAY_ABBR: Record<WeekDay, string> = {
   Monday: "Mon",
@@ -139,6 +140,23 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
 
   const unitName = unitBaseName(task.name);
   const onCalendar = scheduleToOnCalendar(task.schedule);
+
+  // #13017: retry de rede no nível da unit. Recusa alto as combinações que
+  // gerariam unit errada: task `interval` (já tenta de novo na própria
+  // cadência, e o teto de partidas em janela de 12h atravessaria vários
+  // disparos do timer) e código dedicado declarado como sucesso
+  // (`RestartForceExitStatus=` venceria e a unit reiniciaria a cada êxito).
+  const retry = task.retryOnTransientNetwork ? transientNetworkRetryUnitLines() : null;
+  if (retry && task.schedule.kind === "interval") {
+    throw new Error(
+      `${task.name}: retryOnTransientNetwork não vale para schedule "interval" (a própria cadência já tenta de novo, #13017)`,
+    );
+  }
+  if (retry && (task.successExitCodes ?? []).includes(TRANSIENT_NETWORK_EXIT_CODE)) {
+    throw new Error(
+      `${task.name}: successExitCodes inclui ${TRANSIENT_NETWORK_EXIT_CODE}, o código de retry de rede (#13017)`,
+    );
+  }
   // Mesmo padrão de invocação de scripts/lib/task-runner.ts (execTsxStep):
   // node --import tsx, nunca `npx` bare resolvido via PATH (#4343) — mas
   // aqui o comando roda run-task.ts (que resolve e roda o próprio passo),
@@ -159,6 +177,8 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
     // gerados por este template, que antes não tinham nenhum `After=`.
     "After=network-online.target",
     "Wants=network-online.target",
+    // #13017: teto de partidas do retry de rede (ver transient-network-failure.ts).
+    ...(retry ? retry.unit : []),
     "",
     "[Service]",
     "Type=oneshot",
@@ -185,6 +205,9 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
     ...(task.successExitCodes && task.successExitCodes.length > 0
       ? [`SuccessExitStatus=${task.successExitCodes.join(" ")}`]
       : []),
+    // #13017: só o código dedicado de "falha só de rede" reagenda; qualquer
+    // outro exit != 0 segue falha comum (Restart= fica no default `no`).
+    ...(retry ? retry.service : []),
     "",
   ].join("\n");
 
