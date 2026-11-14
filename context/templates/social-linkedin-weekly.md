@@ -130,13 +130,17 @@ Toda URL de CTA/link carrega o triplo completo + `utm_content` (contrato do
 utm_source=linkedin
 utm_medium=newsletter
 utm_campaign=ln-{cycle}          # {cycle} = {YY}w{WW} da semana de CONTEÚDO
-utm_content=mencao-abertura | cta-abertura | lista | cta-fim
+utm_content=cta-abertura | lista | cta-fim | video
 ```
 
-- `mencao-abertura`: a primeira menção em prosa a `diar.ia.br` DENTRO da
-  abertura vira link com este UTM automaticamente (`linkifyWordmark`) — só
-  a abertura, não o fecho nem o corpo das manchetes (essas menções, se
-  houver, viram auto-link do LinkedIn sem UTM).
+- Menção da marca: a primeira menção em prosa a `diar.ia.br` DENTRO da
+  abertura vira link automaticamente (`linkifyWordmark`) — só a abertura,
+  não o fecho nem o corpo das manchetes (essas menções, se houver, viram
+  auto-link do LinkedIn sem UTM). Desde o #13049 o link vai para a página
+  da diar.ia.br no LinkedIn, sem UTM (até o 26w46 era a home com
+  `utm_content=mencao-abertura`).
+- `video`: o link "YouTube da diar.ia.br" da seção "Vídeo da semana"
+  (#12081, frase do #13045).
 - `cta-abertura`, `cta-fim`: os 2 convites de assinatura restantes (o bloco
   Use Melhor perdeu o seu em #8025) — existem separados de propósito, pra
   saber qual posição converte.

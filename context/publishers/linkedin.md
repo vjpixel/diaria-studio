@@ -439,6 +439,23 @@ escrito para o agente e hoje não validado de ponta a ponta.
 âncora de wordmark com a UTM divergente (ou sumida do colado) recebe o
 hint `WORDMARK_HREF_REWRITE_HINT`, sem depender de conferência manual.
 
+**g) Desde o #13049 (13/11/2026, regra do editor no ciclo `26w46`) a marca
+"diar.ia.br" aponta para a página da diar.ia.br no LinkedIn
+(`https://www.linkedin.com/company/diar.ia.br/`), nunca para o site.** A
+menção da abertura sai do render com esse href, sem UTM (a UTM
+`mencao-abertura` saiu). O LinkedIn continua reescrevendo a âncora para
+`http://diar.ia.br` no paste (caso (f)); a auditoria acusa o href divergente
+com `WORDMARK_HREF_REWRITE_HINT` e o editor corrige pelo **Edit link** no
+Passo 9, como no 26w46. A âncora do vídeo, "YouTube da diar.ia.br" (texto
+do editor, #13045), termina no domínio nu: no paste real do 26w46 o
+LinkedIn a dividiu em "YouTube da" (href do vídeo com UTM) + "diar.ia.br"
+(`http://diar.ia.br/`, sem UTM), e a auditoria acusou "âncora não
+encontrada" e contagem 10 vs 9. A correção que funcionou: selecionar o
+texto inteiro da âncora por `Range` via `javascript_tool` (sem clicar no
+link) e aplicar o link pelo botão de link da toolbar, colando o href da
+fonte; virou 1 âncora com a UTM. A auditoria acusa esse padrão com
+`TRAILING_WORDMARK_SPLIT_HINT`.
+
 **Correção aplicada manualmente na 1ª publicação real (26w34, 260823):**
 selecionar a frase inteira ("diar.ia.br, newsletter de IA") via teclado
 (clicar antes de "Desde", `Home`, `Right` × N até o início da menção,

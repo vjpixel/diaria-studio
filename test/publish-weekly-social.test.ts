@@ -2727,7 +2727,7 @@ describe("main(): dispatch mockado", () => {
       // Facebook não passa pelo Worker queue (Graph API direta), então
       // comparamos contra o texto ESPERADO de `formatFacebookWeekly`, não
       // contra uma entry "facebook" no /queue (que nunca existe).
-      assert.match(capturedByChannel.linkedin.text, /^As notícias de IA mais lidas da semana na diar\.ia\.br:/);
+      assert.match(capturedByChannel.linkedin.text, /^As notícias de IA mais lidas da semana:/);
       assert.match(capturedByChannel.linkedin.text, /1\. Único/);
       // fbCaption inclui link CLICÁVEL no corpo (diferente da convenção do
       // publisher diário do LinkedIn, que nunca coloca URL no corpo) —
