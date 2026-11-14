@@ -3262,6 +3262,52 @@ describe("main(): dispatch mockado", () => {
       assert.equal(liEntries.length, 1, "a entry LinkedIn pré-existente não deveria ser duplicada nem re-tentada");
       assert.equal(liEntries[0].worker_queue_key, "queue:linkedin:pre-existing");
     });
+
+    it("#13074: entradas send_unknown (ausente do feed) e published sem url NÃO são redespachadas no retry", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const at = "2027-12-26T11:00:00-03:00";
+      writeFileSync(
+        resolve(publishedDir, "06-weekly-published.json"),
+        JSON.stringify({
+          posts: [
+            // O que a reconciliação de feed (#13009) grava quando o post não casa.
+            { platform: "instagram", destaque: "weekly-clicked", url: null, status: "send_unknown", previous_status: "published", failure_reason: "absent_from_feed: x", scheduled_at: at, worker_queue_key: "queue:ig:old" },
+            // O que o verify-social-worker-dispatch grava (sem url — o Worker não devolve permalink).
+            { platform: "threads", destaque: "weekly-clicked", url: null, status: "published", scheduled_at: at, worker_queue_key: "queue:th:old" },
+            { platform: "linkedin", destaque: "weekly-clicked", url: null, status: "send_unknown", failure_reason: "absent_from_feed: x", scheduled_at: at, worker_queue_key: "queue:li:old" },
+          ],
+        }),
+      );
+
+      const queueCalls: string[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          queueCalls.push(JSON.parse(opts.body as string).channel);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: "queue:dup", scheduled_at: at }) };
+        })
+        .times(3);
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      assert.deepEqual(queueCalls, [], "nenhum canal deveria ter batido /queue — o post pode estar no ar");
+      const out = JSON.parse(readFileSync(resolve(publishedDir, "06-weekly-published.json"), "utf8"));
+      const byPlatform = (pl: string) => out.posts.filter((p: any) => p.platform === pl && p.destaque === "weekly-clicked");
+      assert.equal(byPlatform("instagram")[0].status, "send_unknown");
+      assert.equal(byPlatform("threads")[0].status, "published");
+      assert.equal(byPlatform("linkedin")[0].status, "send_unknown");
+      assert.equal(byPlatform("instagram")[0].worker_queue_key, "queue:ig:old");
+    });
   });
 
   describe("#11062: resumo por item escrito pelo weekly-summary-writer", () => {

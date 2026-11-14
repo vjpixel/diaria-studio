@@ -242,7 +242,7 @@ import {
   weeklySummariesPath,
   weeklySummaryPassWarnings,
 } from "./lib/weekly-summaries.ts";
-import { appendSocialPosts, readSocialPublished, rewriteSocialPosts, PostEntry } from "./lib/social-published-store.ts";
+import { appendSocialPosts, readSocialPublished, rewriteSocialPosts, PostEntry, RESUME_SKIP_STATUSES } from "./lib/social-published-store.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { isNodeTestContext } from "./lib/test-context-guard.ts";
 import { deleteFromWorkerQueue, idempotentConflictKey, postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
@@ -1755,7 +1755,10 @@ async function runOneMode(
     // (horário inválido, título que estoura o card, imagem) não grava `failed`
     // por cima da entrada, o que apagaria a chave e o `fb_post_id` dela pelo
     // upsert e tiraria da próxima rodada a retomada do cancelamento.
-    const isExisting = (p: PostEntry): boolean => p.status === "draft" || p.status === "scheduled" || p.status === "cancelling";
+    // #13074: `published` (sem url, o Worker não devolve o permalink) e
+    // `send_unknown` (envio ambíguo ou ausente do feed, #13009) também contam:
+    // redespachar o carrossel sem conferir o perfil o duplica.
+    const isExisting = (p: PostEntry): boolean => RESUME_SKIP_STATUSES.has(p.status) || p.status === "cancelling";
     const existingIg = published.posts.find((p) => p.platform === "instagram" && p.destaque === destaqueKey && isExisting(p));
     const existingFbFor = (slug: string) =>
       published.posts.find((p) => p.platform === "facebook" && p.destaque === destaqueKey && resolvePostPage(p) === slug && isExisting(p));
