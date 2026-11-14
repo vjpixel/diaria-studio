@@ -503,10 +503,11 @@ describe("Resume-aware skip posts já publicados", () => {
 
   it("script verifica status 'published' como válido para skip", () => {
     // No Facebook apenas draft/scheduled são skipped; no Instagram, published também é skip
+    // #13074: o skip usa o conjunto compartilhado (inclui published e send_unknown).
     assert.match(
       SRC,
-      /status === "published"/,
-      "deve incluir 'published' na verificação de skip",
+      /RESUME_SKIP_STATUSES\.has\(p\.status\)/,
+      "deve usar RESUME_SKIP_STATUSES na verificação de skip",
     );
   });
 });

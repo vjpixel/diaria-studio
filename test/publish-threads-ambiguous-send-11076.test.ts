@@ -9,6 +9,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { publishTextWithRetry, ThreadsAmbiguousSendError } from "../scripts/publish-threads.ts";
 import { ThreadsApiError, publishThreadsContainer } from "../scripts/lib/threads-api.ts";
+import { RESUME_SKIP_STATUSES } from "../scripts/lib/social-published-store.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const noSleep = async () => {};
@@ -80,6 +81,8 @@ describe("fiação em publish-threads.ts (#11076)", () => {
     assert.match(SRC, /"send_unknown" : "failed"/);
     // #11105: o resume virou `decideThreadsDispatch` (testado por comportamento
     // em publish-threads-retry-send-unknown-11105.test.ts).
-    assert.match(SRC, /RESUME_SKIP_STATUSES = new Set<PostEntry\["status"\]>\(\[[^\]]*"send_unknown"/);
+    // #13074: o conjunto virou fonte única em social-published-store.ts.
+    assert.match(SRC, /import \{[^}]*\bRESUME_SKIP_STATUSES\b[^}]*\} from "\.\/lib\/social-published-store\.ts"/);
+    assert.ok(RESUME_SKIP_STATUSES.has("send_unknown"));
   });
 });

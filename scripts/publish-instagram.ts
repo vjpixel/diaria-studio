@@ -60,7 +60,7 @@ loadProjectEnv(); // carrega .env antes de process.env access
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+import { appendSocialPosts, PostEntry, RESUME_SKIP_STATUSES, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { selectSocialCardImageFile, missingSocialCardReason } from "./lib/select-social-card-image.ts"; // #4090 item 5, #12226
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6005 Parte B
@@ -858,7 +858,9 @@ async function main(): Promise<number | void> {
         (p) =>
           p.platform === "instagram" &&
           p.destaque === d &&
-          (p.status === "draft" || p.status === "scheduled" || p.status === "published"),
+          // #13074: inclui `send_unknown` (envio ambíguo ou ausente do feed,
+          // #13009) — repostar sem conferir o perfil duplica o post.
+          RESUME_SKIP_STATUSES.has(p.status),
       );
       if (existing) {
         console.log(`SKIP instagram/${d} — already ${existing.status}`);

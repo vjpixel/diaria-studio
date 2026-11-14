@@ -48,7 +48,9 @@ export interface PostEntry {
   // (retry não ajudaria).
   // #11076 — "send_unknown": o envio (threads_publish) foi AMBÍGUO (rede/5xx/2xx
   // sem id) — a Meta pode ter publicado. Terminal: nunca re-tentar sem conferir
-  // o perfil. Hoje só o publish-threads grava.
+  // o perfil. Gravam: publish-threads, verify-social-worker-dispatch (DLQ
+  // `send_unknown:`) e a reconciliação de feed (`absent_from_feed:`, #13009).
+  // Pulado na retomada de todos os publicadores (RESUME_SKIP_STATUSES, #13074).
   // #12417 — "cancelling": o `--reschedule` do carrossel semanal
   // (publish-weekly-social.ts) vai cancelar este agendamento e gravou a
   // intenção ANTES do 1º DELETE. Estado desconhecido (o DELETE pode ou não ter
@@ -61,6 +63,23 @@ export interface PostEntry {
    *  failure_reason, etc.) entram via escape hatch. */
   [key: string]: unknown;
 }
+
+/**
+ * #13074 — status que a retomada (`skip-existing`, o default dos publicadores)
+ * nunca refaz: o post existe ou pode existir na rede. `send_unknown` entra
+ * porque o envio foi ambíguo (#11076) ou a reconciliação de feed não achou o
+ * post (`absent_from_feed:`, #13009) — repostar sem conferir o perfil duplica
+ * o post. `published` sem `url` idem. Refazer um desses é escolha explícita do
+ * editor (`--retry` no Threads, `--no-skip-existing`/`--force` nos demais).
+ * Fonte única para publish-threads, publish-instagram, publish-linkedin,
+ * publish-weekly-social e publish-retrospectiva-social.
+ */
+export const RESUME_SKIP_STATUSES: ReadonlySet<PostEntry["status"]> = new Set<PostEntry["status"]>([
+  "draft",
+  "scheduled",
+  "published",
+  "send_unknown",
+]);
 
 /**
  * Resolve subtype com default "main" (#595 backward-compat). Entries gravadas

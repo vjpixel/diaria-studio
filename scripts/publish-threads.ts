@@ -77,7 +77,7 @@ loadProjectEnv(); // carrega .env antes de process.env access
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendSocialPosts, PostEntry, SocialPublished, resolveSubtype } from "./lib/social-published-store.ts";
+import { appendSocialPosts, PostEntry, RESUME_SKIP_STATUSES, SocialPublished, resolveSubtype } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
 import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — Threads não renderiza markdown; #10441 ponto único do texto de post
@@ -494,8 +494,7 @@ export function parseRetryIds(
   return { ok: true, ids: new Set(ids) };
 }
 
-/** Status que o resume trata como "já tentado, não refazer" (#11076). */
-const RESUME_SKIP_STATUSES = new Set<PostEntry["status"]>(["draft", "scheduled", "published", "send_unknown"]);
+// Status que o resume trata como "já tentado, não refazer" (#11076): RESUME_SKIP_STATUSES, compartilhado (#13074).
 /** #11105 — o que `--retry` aceita refazer: nada saiu (`failed`) ou o editor conferiu que não saiu (`send_unknown`). */
 const RETRYABLE_STATUSES = new Set<PostEntry["status"]>(["failed", "send_unknown"]);
 
