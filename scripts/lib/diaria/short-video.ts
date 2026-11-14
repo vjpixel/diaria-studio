@@ -218,17 +218,18 @@ export type ReelsPlatform = "facebook" | "instagram";
  * encerramento pede "Siga a diar.ia.br". Revisa o #11617 (nenhum texto do
  * vertical mostra link) só para o perfil da diar.ia.br: menção nativa onde a
  * API aceita (LinkedIn, `@[Nome](urn:li:organization:ID)`, mantida pelo
- * `toLittleText`; Threads, `@handle`) e URL do perfil onde não há menção
- * confirmada pela API (Facebook: a tag de página na descrição de vídeo da
- * Graph API não foi medida). Fonte única dos perfis: `publishing.shorts.
- * diaria_profiles` no `platform.config.json`.
+ * `toLittleText`; Threads, `@handle`). Desde o #13033/#13034 não há mais
+ * linha com URL do perfil: onde não há menção confirmada (Facebook, ou
+ * LinkedIn sem `mention_verified`), a linha sai. Fonte única dos perfis:
+ * `publishing.shorts.diaria_profiles` no `platform.config.json` (as `url`
+ * seguem lá como cadastro do perfil, mas nenhum texto do vertical as usa).
  *
  * LinkedIn: a menção só vira link quando o texto entre colchetes é o nome
  * EXATO da página, e o efeito de um nome divergente na Posts API (4xx, que
  * derrubaria o vídeo do perfil pessoal, ou texto puro) não foi medido (review
  * do PR #12489). Por isso a menção só sai com `urn` configurado E
- * `mention_verified: true` (o editor conferiu o nome atual da página); fora
- * disso a linha cai na URL do perfil, que publica em qualquer caso.
+ * `mention_verified: true` (o editor conferiu o nome atual da página num post
+ * de teste, passo 2 do #13033); fora disso o post sai sem a linha.
  */
 export interface DiariaProfiles {
   linkedin: { name: string; urn: string | null; url: string; mentionVerified: boolean };
@@ -242,32 +243,57 @@ export const DEFAULT_DIARIA_PROFILES: Readonly<DiariaProfiles> = Object.freeze({
   facebook: { url: "https://www.facebook.com/diar.ia.br" },
 });
 
-/** Slug da página diar.ia.br em `publishing.social.facebook.pages` (as outras são de terceiros/pessoais). */
-export const DIARIA_FACEBOOK_PAGE_SLUG = "diaria";
-
-/** URL sem `https://` e sem `www.` nem barra final, como entra no texto. */
-function shortProfileUrl(url: string): string {
-  return url.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
-}
+/** #13033/#13034 (decisão do editor, 13/11/2026): o fim da frase de seguir, igual em toda rede. */
+export const DIARIA_FOLLOW_PURPOSE = "para receber dicas e notícias de IA todos os dias";
 
 /**
- * Pure (#12465): a linha "Siga a diar.ia.br" do post do vídeo no destino, ou
- * `null` nos destinos que já publicam pela conta da diar.ia.br (YouTube,
- * página diar.ia.br, Instagram @diar.ia.br, X @diariabr, TikTok @diar.ia.br).
+ * Pure (#12465, frase única desde #13033/#13034): a linha de seguir a
+ * diar.ia.br no post do vídeo no destino, ou `null`.
+ *
+ * Formato: `Siga a {menção} para receber dicas e notícias de IA todos os
+ * dias`, com a menção NATIVA do perfil da diar.ia.br naquela rede. O LinkedIn
+ * (e provavelmente o Facebook) lê `diar.ia.br` solto como domínio e o
+ * transforma em link para o SITE, e encurta a URL do perfil para `lnkd.in/…`
+ * (#13033: a linha antiga `Siga a diar.ia.br: linkedin.com/company/diar.ia.br`
+ * saía com dois links, nenhum para seguir a página). Por isso não há mais
+ * fallback com URL: sem menção confirmada, a linha sai (`null`). O repost da
+ * página (`linkedin_page_repost`) e o card final do vídeo já pedem para seguir.
+ *
+ * - LinkedIn pessoal: `@[Nome](urn:li:organization:ID)`, só com
+ *   `mention_verified: true` (nome da página medido num post real, #12465).
+ * - Threads pessoal: `@handle`.
+ * - Página VJ Pixel e perfil pessoal do Facebook: `null` (a tag de página da
+ *   Graph API não foi medida, e `diar.ia.br` solto viraria link para o site).
+ * - Destinos que já publicam pela conta da diar.ia.br (YouTube, página
+ *   diar.ia.br, Instagram @diar.ia.br, X @diariabr, TikTok @diar.ia.br): `null`.
+ *
+ * `hasBareDiariaDomain` trava que nenhuma linha devolvida aqui cite
+ * `diar.ia.br` fora de uma menção.
  */
 export function diariaFollowLine(destination: string, profiles: DiariaProfiles = DEFAULT_DIARIA_PROFILES): string | null {
   if (destination === "linkedin_profile") {
     const p = profiles.linkedin;
-    return p.urn && p.mentionVerified === true ? `Siga @[${p.name}](${p.urn})` : `Siga a diar.ia.br: ${shortProfileUrl(p.url)}`;
+    return p.urn && p.mentionVerified === true ? `Siga a @[${p.name}](${p.urn}) ${DIARIA_FOLLOW_PURPOSE}` : null;
   }
   if (destination === "threads_profile") {
     const p = profiles.threads;
-    return p.handle ? `Siga @${p.handle}` : `Siga a diar.ia.br: ${shortProfileUrl(p.url)}`;
-  }
-  if (destination === "facebook_profile" || (destination.startsWith("facebook:") && destination !== `facebook:${DIARIA_FACEBOOK_PAGE_SLUG}`)) {
-    return `Siga a diar.ia.br: ${shortProfileUrl(profiles.facebook.url)}`;
+    return p.handle ? `Siga a @${p.handle} ${DIARIA_FOLLOW_PURPOSE}` : null;
   }
   return null;
+}
+
+/**
+ * Pure (#13034): `true` quando o texto cita `diar.ia.br` FORA de uma menção
+ * (`@diar.ia.br`, `@[diar.ia.br](urn:…)`) e fora de uma URL de perfil. Nas
+ * redes que autolinkam domínio (LinkedIn, Facebook) esse `diar.ia.br` solto
+ * vira link para o site. Guard da linha de seguir (`diariaFollowLine`).
+ */
+export function hasBareDiariaDomain(text: string): boolean {
+  const withoutMentions = text
+    .replace(/@\[[^\]\n]*\]\([^)\s]*\)/g, " ")
+    .replace(/@[A-Za-z0-9._]+/g, " ")
+    .replace(/\S*\/\S*/g, " ");
+  return /(^|[^A-Za-z0-9._-])diar\.ia\.br(?![A-Za-z0-9-])/i.test(withoutMentions);
 }
 
 /** Lê `publishing.shorts.diaria_profiles` (ausente = `DEFAULT_DIARIA_PROFILES`); campo inválido lança. */
@@ -456,7 +482,7 @@ export function threadsTextLength(text: string): number {
  * gancho; ainda não cabe → corta o título. Lança se nem o título mínimo couber.
  */
 function fitShortText(title: string, hook: string, measure: (t: string) => number, max: number, label: string, tail = ""): string {
-  // #12465: `tail` (a linha "Siga @diar.ia.br") fica sempre no fim; sai o gancho, depois encurta o título.
+  // #12465: `tail` (a linha de seguir, `diariaFollowLine`) fica sempre no fim; sai o gancho, depois encurta o título.
   const withTail = (body: string) => (tail ? `${body}\n\n${tail}` : body);
   if (hook) {
     const withHook = withTail(`${title}\n\n${hook}`);

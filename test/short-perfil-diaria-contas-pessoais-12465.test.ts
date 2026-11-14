@@ -24,25 +24,28 @@ const VERIFIED = { ...DEFAULT_DIARIA_PROFILES, linkedin: { ...DEFAULT_DIARIA_PRO
 
 const D1 = { title: "Você já viu IA mentir. Já viu roubar?", body: "Um modelo da OpenAI gastou o saldo de uma carteira de terceiros. Depois mais." };
 
-describe("#12465 diariaFollowLine por destino", () => {
-  it("LinkedIn pessoal: menção nativa à página só com o nome conferido (mention_verified)", () => {
-    assert.equal(diariaFollowLine("linkedin_profile", VERIFIED), "Siga @[diar.ia.br](urn:li:organization:110742958)");
+describe("#12465 diariaFollowLine por destino (frase única desde #13033/#13034)", () => {
+  it("LinkedIn pessoal: menção nativa à página numa frase, só com o nome conferido (mention_verified)", () => {
+    assert.equal(
+      diariaFollowLine("linkedin_profile", VERIFIED),
+      "Siga a @[diar.ia.br](urn:li:organization:110742958) para receber dicas e notícias de IA todos os dias",
+    );
   });
 
-  it("LinkedIn pessoal sem mention_verified (default): cai na URL, nunca na menção (review do PR #12489)", () => {
+  it("LinkedIn pessoal sem mention_verified (default) ou sem URN: sem linha, nunca a URL (review do PR #12489, #13033)", () => {
     assert.equal(DEFAULT_DIARIA_PROFILES.linkedin.mentionVerified, false);
-    assert.equal(diariaFollowLine("linkedin_profile"), "Siga a diar.ia.br: linkedin.com/company/diar.ia.br");
+    assert.equal(diariaFollowLine("linkedin_profile"), null);
     const semUrn = { ...VERIFIED, linkedin: { ...VERIFIED.linkedin, urn: null } };
-    assert.equal(diariaFollowLine("linkedin_profile", semUrn), "Siga a diar.ia.br: linkedin.com/company/diar.ia.br");
+    assert.equal(diariaFollowLine("linkedin_profile", semUrn), null);
   });
 
-  it("Threads pessoal: @diar.ia.br", () => {
-    assert.equal(diariaFollowLine("threads_profile"), "Siga @diar.ia.br");
+  it("Threads pessoal: @diar.ia.br numa frase", () => {
+    assert.equal(diariaFollowLine("threads_profile"), "Siga a @diar.ia.br para receber dicas e notícias de IA todos os dias");
   });
 
-  it("página VJ Pixel e perfil pessoal do Facebook: URL do perfil (menção pela Graph API não medida)", () => {
-    assert.equal(diariaFollowLine("facebook:vjpixel"), "Siga a diar.ia.br: facebook.com/diar.ia.br");
-    assert.equal(diariaFollowLine("facebook_profile"), "Siga a diar.ia.br: facebook.com/diar.ia.br");
+  it("página VJ Pixel e perfil pessoal do Facebook: sem linha (menção pela Graph API não medida, #13034)", () => {
+    assert.equal(diariaFollowLine("facebook:vjpixel"), null);
+    assert.equal(diariaFollowLine("facebook_profile"), null);
   });
 
   it("destinos da conta da diar.ia.br não ganham nada", () => {
@@ -51,17 +54,16 @@ describe("#12465 diariaFollowLine por destino", () => {
     }
   });
 
-  it("sem URN/handle cai na URL do perfil, nunca em nada", () => {
-    const p = { ...DEFAULT_DIARIA_PROFILES, linkedin: { ...DEFAULT_DIARIA_PROFILES.linkedin, urn: null }, threads: { ...DEFAULT_DIARIA_PROFILES.threads, handle: null } };
-    assert.equal(diariaFollowLine("linkedin_profile", p), "Siga a diar.ia.br: linkedin.com/company/diar.ia.br");
-    assert.equal(diariaFollowLine("threads_profile", p), "Siga a diar.ia.br: threads.com/@diar.ia.br");
+  it("sem handle do Threads: sem linha, nunca a URL do perfil", () => {
+    const p = { ...DEFAULT_DIARIA_PROFILES, threads: { ...DEFAULT_DIARIA_PROFILES.threads, handle: null } };
+    assert.equal(diariaFollowLine("threads_profile", p), null);
   });
 });
 
 describe("#12465 texto de cada destino pessoal", () => {
   it("LinkedIn: a menção entra antes das hashtags e sobrevive ao little text", () => {
     const text = buildShortSocialText({ platform: "linkedin", d1: D1, follow: diariaFollowLine("linkedin_profile", VERIFIED) });
-    assert.match(text, /\n\nSiga @\[diar\.ia\.br\]\(urn:li:organization:110742958\)\n\n#IA/);
+    assert.match(text, /\n\nSiga a @\[diar\.ia\.br\]\(urn:li:organization:110742958\) para receber dicas e notícias de IA todos os dias\n\n#IA/);
     const little = toLittleText(text);
     assert.ok(little.includes("@[diar.ia.br](urn:li:organization:110742958)"), little);
     // O resto continua escapado (o "?" não é reservado; o "." do título também não).
@@ -74,10 +76,11 @@ describe("#12465 texto de cada destino pessoal", () => {
 
   it("Threads: a linha fica no fim e cabe no teto, mesmo com gancho longo", () => {
     const text = buildShortSocialText({ platform: "threads", d1: D1, follow: diariaFollowLine("threads_profile") });
-    assert.ok(text.endsWith("\n\nSiga @diar.ia.br"));
+    assert.ok(text.endsWith("\n\nSiga a @diar.ia.br para receber dicas e notícias de IA todos os dias"));
     const long = { title: D1.title, body: `${"palavra ".repeat(70)}fim.` };
-    const fitted = buildShortSocialText({ platform: "threads", d1: long, follow: "Siga @diar.ia.br" });
-    assert.ok(fitted.endsWith("Siga @diar.ia.br"));
+    const follow = diariaFollowLine("threads_profile")!;
+    const fitted = buildShortSocialText({ platform: "threads", d1: long, follow });
+    assert.ok(fitted.endsWith(follow));
     assert.ok(threadsTextLength(fitted) <= THREADS_TEXT_MAX_CHARS);
   });
 
@@ -85,21 +88,21 @@ describe("#12465 texto de cada destino pessoal", () => {
     assert.doesNotMatch(buildShortSocialText({ platform: "x", d1: D1, follow: diariaFollowLine("x") }), /Siga/);
   });
 
-  it("Reels da página VJ Pixel com o perfil; o da página diar.ia.br sem", () => {
+  it("Reels da página VJ Pixel e da página diar.ia.br sem linha de seguir (#13034)", () => {
     const vj = buildReelsCaption({ platform: "facebook", d1: D1, follow: diariaFollowLine("facebook:vjpixel") });
-    assert.match(vj, /\n\nSiga a diar\.ia\.br: facebook\.com\/diar\.ia\.br\n\n#IA/);
+    assert.doesNotMatch(vj, /Siga|facebook\.com\/diar\.ia\.br/);
     const diaria = buildReelsCaption({ platform: "facebook", d1: D1, follow: diariaFollowLine("facebook:diaria") });
     assert.doesNotMatch(diaria, /Siga/);
   });
 
-  it("--update-scheduled da página VJ Pixel mantém o perfil na descrição", () => {
+  it("--update-scheduled da página VJ Pixel segue o publish: sem linha de seguir (#13034)", () => {
     const entries = [
       { destination: "facebook:vjpixel", status: "scheduled" as const, id: "fb2", scheduled_at: "2026-11-09T15:00:00.000Z", at: "t" },
       { destination: "facebook:diaria", status: "scheduled" as const, id: "fb1", scheduled_at: "2026-11-09T15:00:00.000Z", at: "t" },
     ];
     const items = planScheduledUpdates({ entries, d1: D1, now: new Date("2026-11-09T03:00:00Z"), coverPresent: false });
     const by = Object.fromEntries(items.map((i) => [i.destination, i])) as Record<string, { description?: string }>;
-    assert.match(by["facebook:vjpixel"].description!, /Siga a diar\.ia\.br/);
+    assert.doesNotMatch(by["facebook:vjpixel"].description!, /Siga/);
     assert.doesNotMatch(by["facebook:diaria"].description!, /Siga/);
   });
 });
