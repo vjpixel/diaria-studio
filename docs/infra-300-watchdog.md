@@ -37,6 +37,11 @@ exactly-once distribuído. O sinal operacional independe do sucesso do e-mail.
    `WATCHDOG`, e autorizar o binding `OPS_STATE` ao namespace existente.
    A configuração versionada descreve isso; existência/permissões remotas
    não foram presumidas nem alteradas nesta implementação.
+   O workflow `deploy-infra-watchdog.yml` usa o deploy reutilizável padrão,
+   mas só executa quando a variável de repositório
+   `INFRA_300_WATCHDOG_DEPLOY_ENABLED` é exatamente `true` (inclusive no
+   dispatch manual). Deixá-la ausente/desabilitada até autorização; depois,
+   habilitá-la e disparar o workflow para provisionar. Isso não arma o cron.
 2. Provisionar secrets `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
    `GOOGLE_REFRESH_TOKEN` com escopo `gmail.send` e `EDITOR_EMAIL`, usando
    a conta editorial autorizada dos alarmes. Confirmar que o token é válido
