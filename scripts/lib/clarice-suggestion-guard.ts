@@ -263,13 +263,121 @@ export function classifyClariceNoise(from: string, to: string, text?: string): C
   return null;
 }
 
+/**
+ * Mudança de SENTIDO que a Clarice às vezes sugere como "correção" (#13052,
+ * pacote semanal 26w46): troca de identificador de produto/modelo ("Gemini 4
+ * Carbon" → "1.5 Flash-8B", alucinação que adultera um fato) e comparativo
+ * virando superlativo ("foi pior" → "foi o pior", claim de ineditismo).
+ */
+export type ClariceMeaningReason = "identifier_swap" | "degree_change";
+
 export interface FilteredClariceSuggestions<T> {
   kept: T[];
-  dropped: Array<{ suggestion: T; reason: ClariceNoiseReason | "invalid_shape" | "fact_check_protected" }>;
+  dropped: Array<{
+    suggestion: T;
+    reason: ClariceNoiseReason | ClariceMeaningReason | "invalid_shape" | "fact_check_protected";
+  }>;
 }
 
 const WORD_CHAR = /[\p{L}\p{N}]/u;
 const TOKEN = /[\p{L}\p{N}][\p{L}\p{N}%.,'’-]*/gu;
+
+/**
+ * Qualificadores de versão de modelo/produto (#13052). Só contam com
+ * maiúscula inicial: `pro` minúsculo é "para o", `max`/`mini` aparecem em
+ * texto corrido.
+ */
+const MODEL_QUALIFIERS = new Set([
+  "flash", "pro", "ultra", "mini", "nano", "turbo", "max", "plus", "lite", "omni",
+  "opus", "sonnet", "haiku", "carbon", "preview", "experimental", "instant", "thinking",
+]);
+
+function stripAccents(s: string): string {
+  return s.normalize("NFD").replace(/\p{M}/gu, "");
+}
+
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = tmp;
+    }
+  }
+  return prev[b.length];
+}
+
+/** Tokens de palavra, sem a pontuação final (`Carbon,` → `Carbon`). */
+function wordTokens(s: string): string[] {
+  return [...s.matchAll(TOKEN)].map((m) => m[0].replace(/[.,'’-]+$/u, "")).filter(Boolean);
+}
+
+/** Dígitos do token, sem separador (`1.000` e `1000` têm o mesmo conteúdo numérico). */
+function digitsOf(tok: string): string {
+  return tok.replace(/\D/g, "");
+}
+
+/** Token que identifica produto/modelo ou carrega número: `4`, `1.5`, `Flash-8B`, `GPT`, `Pro`. */
+function isIdentifierToken(tok: string): boolean {
+  if (/\p{N}/u.test(tok)) return true;
+  if (hasInnerCapital(tok)) return true;
+  return /^\p{Lu}/u.test(tok) && MODEL_QUALIFIERS.has(tok.toLowerCase());
+}
+
+/**
+ * `added` é só correção de grafia de algum token que saiu (`Antropic` →
+ * `Anthropic`, `GPT4` → `GPT-4`, `1000` → `1.000`)? Número tem de manter os
+ * mesmos dígitos: `30%` → `40%` está a 1 de distância e é fato trocado.
+ */
+function isSpellingVariant(added: string, removed: string[]): boolean {
+  const a = stripAccents(added).toLowerCase();
+  return removed.some((r) => {
+    if (digitsOf(r) !== digitsOf(added)) return false;
+    const b = stripAccents(r).toLowerCase();
+    return editDistance(a, b) <= Math.max(1, Math.floor(Math.max(a.length, b.length) / 4));
+  });
+}
+
+/**
+ * Artigo (ou contração) + pior/melhor/maior/menor/mais/menos: a forma do
+ * superlativo relativo. Conta ocorrências; o filtro só recusa quando `to` tem
+ * MAIS que `from` (comparativo → superlativo).
+ */
+const SUPERLATIVE =
+  /(?<![\p{L}\p{N}])(?:o|a|os|as|à|às|do|da|dos|das|no|na|nos|nas|ao|aos|pelo|pela|pelos|pelas)\s+(?:pior|piores|melhor|melhores|maior|maiores|menor|menores|mais|menos)(?![\p{L}\p{N}])/giu;
+
+function countSuperlatives(s: string): number {
+  return [...s.matchAll(SUPERLATIVE)].length;
+}
+
+/**
+ * Classifica a sugestão como mudança de sentido (#13052) ou `null`.
+ *
+ *   - `identifier_swap`: `to` traz um token de identificador (número, sigla,
+ *     maiúscula interna, qualificador de modelo como `Flash`/`Pro`) que não
+ *     existia em `from` e que não é só a grafia corrigida de um token que saiu.
+ *     Pega troca ("Gemini 4 Carbon" → "1.5 Flash-8B") e número inventado.
+ *     Escrever número por extenso (`3` → `três`) passa: não entra token novo.
+ *   - `degree_change`: `to` tem mais superlativos relativos (artigo + pior/
+ *     melhor/maior/menor/mais/menos) que `from` ("foi pior" → "foi o pior").
+ *     Concordância (`o pior` → `a pior`) e crase (`a maior` → `à maior`)
+ *     mantêm a contagem e passam.
+ */
+export function classifyClariceMeaningChange(from: string, to: string): ClariceMeaningReason | null {
+  if (from === to) return null;
+  const fromTokens = wordTokens(from);
+  const toTokens = wordTokens(to);
+  const fromSet = new Set(fromTokens);
+  const toSet = new Set(toTokens);
+  const removed = fromTokens.filter((t) => !toSet.has(t));
+  const addedIds = toTokens.filter((t) => !fromSet.has(t) && isIdentifierToken(t));
+  if (addedIds.some((t) => !isSpellingVariant(t, removed))) return "identifier_swap";
+  if (countSuperlatives(to) > countSuperlatives(from)) return "degree_change";
+  return null;
+}
 
 /** Início de frase: nada antes, ou pontuação final de frase antes do espaço. */
 function atSentenceStart(text: string, pos: number): boolean {
@@ -364,7 +472,10 @@ function touchesCorrectedFact(from: string, to: string, corrected: string): bool
  * `scripts/clarice-filter.ts` usa isto pra que eles recusem o mesmo ruído.
  * `protection` no Stage 4 retém mudanças factuais para revisão humana:
  * sugestão sobre o fato corrigido (número, nome próprio ou boa parte do trecho,
- * `touchesCorrectedFact`, #12362) e remoções de verbos condicionais.
+ * `touchesCorrectedFact`, #12362) e remoções de verbos condicionais. Em todo
+ * fluxo, recusa também a mudança de sentido (`classifyClariceMeaningChange`,
+ * #13052): identificador de produto/modelo trocado e comparativo virando
+ * superlativo.
  */
 export function filterClariceSuggestions<T>(
   suggestions: T[],
@@ -388,7 +499,9 @@ export function filterClariceSuggestions<T>(
       protection.correctedTexts.some((text) => touchesCorrectedFact(o.from as string, o.to as string, text)) ||
       (protection.protectConditional && removedConditional)
     );
-    const reason = protectedChange ? "fact_check_protected" : classifyClariceNoise(o.from, o.to);
+    const reason = protectedChange
+      ? "fact_check_protected"
+      : classifyClariceNoise(o.from, o.to) ?? classifyClariceMeaningChange(o.from, o.to);
     if (reason) dropped.push({ suggestion: s, reason });
     else kept.push(s);
   }
