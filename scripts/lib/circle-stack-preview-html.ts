@@ -15,8 +15,10 @@
  *
  * Estrutura das seções e "Outros destaques" vêm das funções do render do post
  * (`resolveCircleStackOpening`, `circleStackOtherHighlights`), para a prévia não
- * divergir do que o webhook recebe. Página sem script; o Artifact embrulha o
- * documento (título, viewport), então aqui vai só `<title>`, `<style>` e o corpo.
+ * divergir do que o webhook recebe. Página sem script, documento completo
+ * (doctype, charset, viewport: #13055 — sem doctype o Artifact renderizava em
+ * quirks mode). O número de views do vídeo não aparece (decisão do editor,
+ * #13050): `video.views` segue só como critério de escolha.
  */
 import {
   buildCircleStackUrl,
@@ -27,6 +29,7 @@ import {
   type CircleStackItem,
   type CircleStackSelection,
 } from "./circle-stack-render.ts";
+import { buildHtmlDocument } from "./shared/html-document.ts";
 
 export interface CircleStackPreviewHtmlInput {
   /** Seleção com as exclusões já aplicadas (a mesma que o render recebe). */
@@ -114,7 +117,7 @@ const STATE_LABEL: Record<string, string> = {
   unknown: "ambíguo (conferir no Radar)",
 };
 
-/** Pure: a página inteira (sem `<!doctype>`, que o Artifact acrescenta). */
+/** Pure: a página inteira, documento completo (#13055). */
 export function renderCircleStackPreviewHtml(input: CircleStackPreviewHtmlInput): string {
   const sel = input.selection;
   const opening = resolveCircleStackOpening(sel, input.openingOverride);
@@ -124,8 +127,6 @@ export function renderCircleStackPreviewHtml(input: CircleStackPreviewHtmlInput)
   const editions = sel.weeklyEditions.map((e) => ddmm(e.editionDate)).join(", ");
 
   const parts: string[] = [];
-  parts.push(`<title>Stack ${esc(sel.cycle)}</title>`);
-  parts.push(`<style>${CSS}</style>`);
   parts.push("<main>");
   parts.push(
     `<header><h1>${esc(input.previewTitle)}</h1>` +
@@ -158,7 +159,7 @@ export function renderCircleStackPreviewHtml(input: CircleStackPreviewHtmlInput)
   if (sel.video && sel.video.url.trim() && sel.video.title.trim()) {
     parts.push(
       `<section class="box"><h2>Principal vídeo da semana</h2><h3>${a(buildCircleStackUrl(sel.video.url, sel.cycle, "video"), sel.video.title)}</h3>` +
-        `<div class="small">Edição de ${esc(ddmm(sel.video.editionDate))}${typeof sel.video.views === "number" ? ` · ${sel.video.views} views` : ""}</div>` +
+        `<div class="small">Edição de ${esc(ddmm(sel.video.editionDate))}</div>` +
         (sel.video.description?.trim() ? stackBlock(sel.video.description, "Descrição do vídeo") : "") +
         `</section>`,
     );
@@ -205,7 +206,7 @@ export function renderCircleStackPreviewHtml(input: CircleStackPreviewHtmlInput)
       `</section>`,
   );
   parts.push("</main>");
-  return parts.join("\n") + "\n";
+  return buildHtmlDocument({ head: `<title>Stack ${esc(sel.cycle)}</title>\n<style>${CSS}</style>`, body: parts.join("\n") });
 }
 
 const CSS = [
