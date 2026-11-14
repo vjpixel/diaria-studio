@@ -402,7 +402,7 @@ export interface RankingSnapshotRow {
  * gravado e o de agora — outro conjunto de edições, item elegível do produto
  * que sumiu ou mudou de taxa. Só AVISO: mudança de taxa fora da seleção é
  * normal (a sexta ainda acumulando clique) e não altera o que vai sair; quem
- * recusa é o replay (`replayDivergence`). `now.ranked` é deduplicado como o
+ * recusa é o replay (`replaySharedFile`). `now.ranked` é deduplicado como o
  * arquivo (`dedupeCandidatesByUrl`: 1ª ocorrência, destaque vence seção),
  * senão uma URL repetida entre edições daria diferença permanente.
  * Compara a taxa arredondada a 2 casas, como é gravada.
@@ -438,20 +438,10 @@ export function rankingDivergence(
 /**
  * Pure (revisão da PR #13026): refaz a seleção com os candidatos de AGORA e as
  * decisões gravadas no arquivo (`overrides`), e compara com a gravada
- * (`sameSelection`, mesma lógica do `--confirm-suggestions`). Devolve o motivo
- * quando a seleção mudou (ou quando uma decisão gravada deixou de valer), ou
- * `null` quando o replay dá a mesma seleção.
- */
-export function replayDivergence(
-  file: { overrides: SharedOverrides; clicked: ProductSelection; linkedin: ProductSelection },
-  now: { candidates: WeeklyRankedCandidate[]; editionsFound: number },
-): string | null {
-  return replaySharedFile(file, now).divergence;
-}
-
-/**
- * Pure: o replay de `replayDivergence`, devolvendo também a seleção
- * recalculada (`null` quando uma decisão gravada deixou de valer). Os
+ * (`sameSelection`, mesma lógica do `--confirm-suggestions`). `divergence` é o
+ * motivo quando a seleção mudou (ou quando uma decisão gravada deixou de
+ * valer), ou `null` quando o replay dá a mesma seleção. Devolve também a
+ * seleção recalculada (`null` quando uma decisão gravada deixou de valer). Os
  * consumidores leem o estado do empate DAQUI, nunca do arquivo (#13035): um
  * `resolution` editado à mão não decide nada.
  */
