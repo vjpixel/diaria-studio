@@ -61,6 +61,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveWeeklyEditionDirs } from "./lib/select-weekly-d1.ts";
+import { readReviewedMdScrubbed } from "./lib/intentional-error-scrub.ts";
 import {
   extractInstagramCandidates,
   matchPostsToWindow,
@@ -187,7 +188,8 @@ export async function runOneMode(
 
   const rawCandidates = existingCandidates.flatMap((c) => {
     try {
-      return extractInstagramCandidates(readFileSync(resolve(c.dir, "02-reviewed.md"), "utf8"), c.date);
+      // #13051: o erro intencional da edição nunca sai dela.
+      return extractInstagramCandidates(readReviewedMdScrubbed(c.dir, c.date), c.date);
     } catch (e: any) {
       console.warn(`[prep-weekly-twitter] SKIP ${c.dir} — falha ao ler/parsear 02-reviewed.md: ${e.message}`);
       return [];

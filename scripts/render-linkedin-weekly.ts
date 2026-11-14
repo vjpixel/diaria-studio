@@ -74,6 +74,11 @@ import { fileURLToPath } from "node:url";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { isValidWeeklyCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
+import {
+  findIntentionalErrorLeaks,
+  formatIntentionalErrorLeaks,
+  loadWindowIntentionalErrors,
+} from "./lib/intentional-error-scrub.ts";
 import { renderLinkedinWeeklyHtml, type WeeklyLinkedinRenderInput } from "./lib/weekly-linkedin-render.ts";
 import { resolveTopEditionVideo, type TopEditionVideo } from "./lib/top-edition-video.ts"; // #12081
 import { loadProjectEnv } from "./lib/env-loader.ts"; // #12081: credenciais do YouTube
@@ -237,6 +242,26 @@ export function main(rootDirOverride?: string) {
   };
 
   const result = renderLinkedinWeeklyHtml(input);
+
+  // #13051: guard — o erro intencional de qualquer edição da semana não sai no
+  // artigo (seleção montada antes do scrub, texto do editor, título do vídeo).
+  // Falha o render: corrigir ln-selection.json (ou --reselect) e renderizar de novo.
+  const guardEditionsRoot = join(rootDir, "data/editions");
+  if (existsSync(guardEditionsRoot)) {
+    const days = [
+      ...new Set([
+        ...(Array.isArray(selection.contentWindow) ? selection.contentWindow : []),
+        ...selection.weeklyEditions.map((e) => e.editionDate),
+        ...selection.headlines.map((h) => h.editionDate),
+        ...(selection.video?.editionDate ? [selection.video.editionDate] : []),
+      ]),
+    ];
+    const leaks = findIntentionalErrorLeaks(result.html, loadWindowIntentionalErrors(guardEditionsRoot, days));
+    if (leaks.length > 0) {
+      console.error(`ERRO: ${formatIntentionalErrorLeaks(leaks, `Artigo LinkedIn semanal ${cycle} (${selectionPath})`)}`);
+      process.exit(1);
+    }
+  }
 
   const outDir = join(rootDir, weeklyLinkedinRelDir(cycle));
   mkdirSync(outDir, { recursive: true });

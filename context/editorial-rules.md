@@ -158,6 +158,8 @@ Caso real (edição 260820, #5742): o editor rejeitou 3 propostas na mesma revis
 
 Quem propõe candidatos de erro intencional (orchestrator, no chat com o editor) deve aplicar este filtro por padrão — ver `.claude/agents/orchestrator-stage-2.md` §"Filtro de segurança ao PROPOR candidatos".
 
+**Regra 4 — O erro nunca sai da edição em que foi plantado (#13051, decisão do editor 13/11/2026).** Ele existe só para o concurso daquela edição. Todo produto que reaproveita o texto de uma edição passada (Stack, retro semanal, LinkedIn semanal, seleção compartilhada do pacote, mensal, mensal-apoiadores, anual, título/descrição do vídeo) usa a grafia correta. Mecanismo: `scripts/lib/intentional-error-scrub.ts` troca `wrong_value` por `correct_value` (de `_internal/intentional-error.json`, com fallback em `data/intentional-errors.jsonl`) ao ler o `02-reviewed.md`, e um guard reprova o post da Stack, o e-mail da Stack, o carrossel semanal e o artigo LinkedIn semanal quando o `wrong_value` de alguma edição da janela aparece no texto final. Caso real: "Appel" (261111) ia sair publicado na Stack de 16/11. Consumidor novo que leia `02-reviewed.md` de edição passada deve usar `readReviewedMdScrubbed`.
+
 ---
 
 ## Seção "Vídeos" (#359)
