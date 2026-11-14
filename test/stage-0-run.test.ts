@@ -731,6 +731,9 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.ok(calls[reconcile].args.includes("--extra-stores"));
     assert.ok(idx("verify-social-worker-dispatch") < reconcile);
     assert.ok(reconcile < idx("check-prev-social-status"));
+    const videos = idx("reconcile-published-videos");
+    assert.ok(videos >= 0 && videos < idx("check-prev-social-status"));
+    assert.equal(calls[videos].args[calls[videos].args.indexOf("--lookback-days") + 1], "3");
   });
 
   it("0l — sem findings não há nota, mesmo com posts examinados (#13008: antes contava `total`)", async () => {
