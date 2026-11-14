@@ -1888,16 +1888,40 @@ export function waitAndMergeSitePagePr(
  * página, do sitemap e da home acontecer dentro do worktree e o checkout
  * compartilhado nunca ser escrito; `commitAndPushSitePage` só o chama quando
  * recebe um worktree ainda não criado.
+ * #12962: com slug, consulta PR mergeado da mesma branch; nesse caso exige
+ * fetch fresco com refspec explícito, sem fallback para origin/master velho.
  */
 export function prepareSitePublishWorktree(
   rootDir: string,
   worktreeDir: string,
   git: GitRunner = defaultGitRunner,
+  slug?: string,
+  gh: GhRunner = defaultGhRunner,
 ): { fetchStale: boolean } {
+  // #12962: o PR antigo pode ter sido squash-mergeado e a branch ainda
+  // existir. Consulte o GitHub, não a ancestralidade dessa branch nem só o
+  // state local da edição. A geração precisa começar DEPOIS do fetch.
+  const merged = slug
+    ? JSON.parse(gh(
+        ["pr", "list", "--head", sitePublishBranch(slug), "--base", "master",
+          "--state", "merged", "--limit", "1", "--json", "number"],
+        rootDir,
+      )) as unknown
+    : [];
+  if (!Array.isArray(merged)) throw new Error("resposta inválida ao consultar PR mergeado da página");
+  const republishingMerged = merged.length > 0;
   let fetchStale = false;
   try {
-    git(["fetch", "origin", "master"], rootDir);
+    // Refspec explícito: fetch nominal pode atualizar só FETCH_HEAD quando
+    // remote.origin.fetch não inclui master (clone restrito a uma branch).
+    git(["fetch", "origin", republishingMerged ? "+refs/heads/master:refs/remotes/origin/master" : "master"], rootDir);
   } catch (e) {
+    if (republishingMerged) {
+      throw new Error(
+        `republicação de /p/${slug}: PR anterior mergeado (MERGED), mas não foi possível atualizar ` +
+          `origin/master (${(e as Error).message}) — tente novamente antes de abrir outro PR (#12962)`,
+      );
+    }
     fetchStale = true;
     process.stderr.write(
       `[site-page] aviso: 'git fetch origin master' falhou (${(e as Error).message}) — seguindo com o ` +
@@ -2099,7 +2123,7 @@ export function commitAndPushSitePage(
     // cacheado), nunca pior — mesma disciplina fail-soft do resto do
     // módulo (#6202, ver docstring).
     if (worktreeDir && !worktreePrepared) {
-      fetchStale = prepareSitePublishWorktree(rootDir, worktreeDir, git).fetchStale;
+      fetchStale = prepareSitePublishWorktree(rootDir, worktreeDir, git, slug, gh).fetchStale;
     }
 
     // -B (não -b): sempre recria a branch a partir do master atual, mesmo se
@@ -2478,10 +2502,10 @@ export function productionDeps(
   // caminho legado), tudo segue em `rootDir`, como sempre.
   let writeRootReady = !worktreeDir;
   let preparedFetchStale = false;
-  const writeRoot = (): string => {
+  const writeRoot = (slug?: string): string => {
     if (!worktreeDir) return rootDir;
     if (!writeRootReady) {
-      preparedFetchStale = prepareSitePublishWorktree(rootDir, worktreeDir, git).fetchStale;
+      preparedFetchStale = prepareSitePublishWorktree(rootDir, worktreeDir, git, slug, gh).fetchStale;
       writeRootReady = true;
     }
     return worktreeDir;
@@ -2489,12 +2513,12 @@ export function productionDeps(
   return {
     readEditionInputs,
     writePage: (slug, html) => {
-      const dir = join(resolve(writeRoot(), "workers", "site", "public", "p"), slug);
+      const dir = join(resolve(writeRoot(slug), "workers", "site", "public", "p"), slug);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "index.html"), html, "utf8");
     },
     updateSitemapAndHome: (post, sitemapRelPath) => {
-      const base = writeRoot();
+      const base = writeRoot(post.slug);
       const sitemapAbsPath = resolve(base, sitemapRelPath);
       const homeAbsPath = resolve(base, homePageRelPathFromSitemap(sitemapRelPath));
       const pagesDir = resolve(base, "workers", "site", "public", "p");
@@ -2544,7 +2568,7 @@ export function productionDeps(
     // entrada desta edição) e ANTES do commit único — ver docstring do
     // campo em `PublishPageDeps` pros 2 gaps que isto fecha.
     backfillAndReindexArchive: (slug, sitemapRelPath) => {
-      const base = writeRoot();
+      const base = writeRoot(slug);
       const sitemapAbsPath = resolve(base, sitemapRelPath);
       const pagesDirAbs = resolve(base, "workers", "site", "public", "p");
 
@@ -2568,10 +2592,10 @@ export function productionDeps(
 
       return { seoImageAdded, archiveIndexRegenerated, archiveIndexDeferred: !!worktreeDir };
     },
-    supersedePrevious: (args) => supersedePreviousSitePage(rootDir, gh, args, git, writeRoot()),
+    supersedePrevious: (args) => supersedePreviousSitePage(rootDir, gh, args, git, writeRoot(args.newSlug)),
     publish: (slug, sitemapPath?: string, editionDir?: string, removedPaths?: string[], redirect?: { oldSlug: string; newSlug: string }) => {
       // #11673: garante o worktree mesmo se nenhuma escrita o criou (deps de teste).
-      writeRoot();
+      writeRoot(slug);
       const committedResult = commitAndPushSitePage(
         rootDir,
         slug,
