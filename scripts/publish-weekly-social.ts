@@ -148,8 +148,10 @@
  * gate. Sem a flag, nada muda. Com `--schedule`, sai com exit 2 se o
  * replay da seleção (cache de agora + decisões gravadas) der outra seleção
  * (kit-sync depois do gate que mexeu nos itens; taxa que mudou sem mexer na
- * seleção é só aviso), se as URLs não baterem com o hash da aprovação, ou se o empate do clicked
- * ainda for só sugestão — esta última só passa com `--allow-suggested-ties`,
+ * seleção é só aviso), se as URLs não baterem com o hash da aprovação, se o
+ * arquivo não tiver aprovação gravada (#13035: `--pick`/`--swap` depois do
+ * `--confirm-suggestions` a zeram), ou se o empate do clicked ainda for só
+ * sugestão — estas duas últimas só passam com `--allow-suggested-ties`,
  * que o pacote usa apenas no caminho `--no-gates`.
  *
  * `--force-incomplete-week`: se menos de `WEEKLY_MIN_ITEMS` itens forem
@@ -1205,13 +1207,14 @@ export function readSharedClickedSelection(
   if (shared.saturday !== saturday) return { error: `${path} é do sábado ${shared.saturday}, não de ${saturday}.` };
   const badOverrides = validateOverrides(shared.overrides);
   if (badOverrides) return { error: `${path}: ${badOverrides} — re-rode weekly-shared-selection.ts (--reset-overrides).` };
-  const resolved = shared.clicked.pending?.resolution === "editor";
-  // Empate já escolhido pelo editor: o aviso de "escolha manual necessária"
-  // não vale mais (mesmo filtro do select-linkedin-weekly.ts).
+  // Empate já escolhido pelo editor, ou zerado por uma troca depois da escolha
+  // (#13035: `pending: null`): o aviso de "escolha manual necessária" não vale
+  // mais (mesmo filtro do select-linkedin-weekly.ts).
+  const unresolved = Boolean(shared.clicked.pending) && shared.clicked.pending.resolution !== "editor";
   const warnings: string[] = (shared.clicked.warnings ?? []).filter(
-    (w: string) => !resolved || !w.includes("escolha manual necessária no gate"),
+    (w: string) => unresolved || !w.includes("escolha manual necessária no gate"),
   );
-  if (shared.clicked.pending && !resolved) {
+  if (unresolved) {
     warnings.push("Empate (#5109) do clicked ainda com a SUGESTÃO do pacote (desempate editorial) — confirme ou troque no gate consolidado.");
   }
   return { urls: shared.clicked.urls, manual: Boolean(shared.clicked.manual), warnings, file: shared };
@@ -1438,10 +1441,18 @@ async function runOneMode(
       editionsFound: existingCandidates.map((c) => c.date),
       candidates: sharedCandidates,
     });
+    // #13035: sem aprovação gravada (nunca aprovado, ou --pick/--swap depois
+    // da aprovação, que zeram o campo) o hash não tem com que comparar, então
+    // agendar exige `approved`. Só o caminho --no-gates (--allow-suggested-ties)
+    // agenda sem aprovação, por definição.
+    const allowUnapproved = flags.has("allow-suggested-ties");
     const blockers = [
       ...check.blocking.map((d) => `seleção compartilhada desatualizada: ${d}`),
-      ...(check.pendingUnresolved && !flags.has("allow-suggested-ties")
+      ...(check.pendingUnresolved && !allowUnapproved
         ? ["empate (#5109) do clicked ainda só com a sugestão — confirme no gate (weekly-shared-selection.ts --confirm-suggestions) ou, só no caminho --no-gates, passe --allow-suggested-ties"]
+        : []),
+      ...(!check.approved && !allowUnapproved
+        ? ["seleção compartilhada sem aprovação do gate (nunca aprovada, ou --pick/--swap depois da aprovação) — grave a aprovação com weekly-shared-selection.ts --confirm-suggestions ou, só no caminho --no-gates, passe --allow-suggested-ties"]
         : []),
     ];
     if (blockers.length > 0 && doSchedule) {

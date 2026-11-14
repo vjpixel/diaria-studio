@@ -32,6 +32,7 @@ import {
   rankingDivergence,
   sameSelection,
   selectForProduct,
+  selectionHash,
   validateOverrides,
 } from "../scripts/lib/weekly-shared-ranking.ts";
 import { selectHeadlines, type WeeklyRankedCandidate } from "../scripts/lib/weekly-linkedin-select.ts";
@@ -952,6 +953,130 @@ describe("#13022 revisão — troca não mexe no empate pendente; overrides corr
       }
       assert.match(errs.join("\n"), /--reset-overrides/);
       assert.equal(r.run(["--reset-overrides"]), null);
+    } finally {
+      r.cleanup();
+    }
+  });
+});
+
+// ─── #13035: brechas da seleção compartilhada ──────────────────────────────
+
+describe("#13035 — brechas da seleção compartilhada (resolution à mão, aviso obsoleto, --schedule sem aprovação)", () => {
+  const linkedin = (r: ReturnType<typeof makeRoot>, extra: string[] = []) => {
+    const orig = process.argv;
+    process.argv = ["node", "s", "--publish-monday", "260803", "--shared-selection", r.file, ...extra];
+    try {
+      return withMockedExit(() => quiet(() => selectLinkedinMain(r.root))).code;
+    } finally {
+      process.argv = orig;
+    }
+  };
+  const lnSelection = (r: ReturnType<typeof makeRoot>) =>
+    JSON.parse(readFileSync(join(r.root, "data/weekly/26w31/_internal/ln-selection.json"), "utf8"));
+
+  it("1. `resolution: \"editor\"` escrito à mão (sem picks), mesmo com hash recalculado, não agenda nem cola", async () => {
+    const r = makeRoot("shared-13035-forged-");
+    try {
+      r.setClicks({ a: 10, a2: 10, r: 10, b: 10, b2: 10, c: 10 }); // empate nos dois produtos
+      assert.equal(r.run(), null);
+      const s = JSON.parse(readFileSync(r.file, "utf8"));
+      assert.equal(s.clicked.pending?.resolution, "suggestion");
+      assert.equal(s.linkedin.pending?.resolution, "suggestion");
+      s.clicked.pending.resolution = "editor";
+      s.linkedin.pending.resolution = "editor";
+      s.approved = { hash: selectionHash(s), at: r.now.toISOString() }; // falsificação completa
+      writeFileSync(r.file, JSON.stringify(s));
+      const res = await r.publish(["--schedule", "--allow-why-fallback"]);
+      assert.deepEqual(res.codes, [2]);
+      assert.match(res.out, /a seleção recalculada agora não é a gravada/);
+      assert.match(res.out, /empate \(#5109\) do clicked ainda só com a sugestão/);
+      assert.equal(linkedin(r), 2);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("1. sameSelection compara a resolução do empate", () => {
+    const week = [
+      cand({ url: U("p1"), clicks: 40, destaqueN: 1 }),
+      cand({ url: U("p2"), clicks: 40, editionDate: "260728", destaqueN: 1 }),
+      cand({ url: U("p3"), clicks: 40, editionDate: "260729", destaqueN: 1 }),
+      cand({ url: U("p4"), clicks: 40, editionDate: "260730", destaqueN: 1 }),
+    ];
+    const sel = buildSharedSelection({ candidates: week, editionsFound: 4 });
+    assert.equal(sel.linkedin.pending?.resolution, "suggestion");
+    const forged = { clicked: sel.clicked, linkedin: { ...sel.linkedin, pending: { ...sel.linkedin.pending!, resolution: "editor" as const } } };
+    assert.equal(sameSelection(sel, forged), false);
+  });
+
+  it("2. troca depois da escolha zera o pending: o aviso de 'escolha manual necessária' some da retro", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shared-13035-warn-"));
+    try {
+      const p = join(dir, "s.json");
+      writeFileSync(
+        p,
+        JSON.stringify({
+          version: 1,
+          saturday: "260801",
+          editionsFound: [],
+          ranking: [],
+          overrides: { picks: {}, swaps: [] },
+          linkedin: { urls: [] },
+          clicked: {
+            urls: [U("a")],
+            manual: true,
+            warnings: ["[clicked] 3 candidatos empatados ... escolha manual necessária no gate consolidado (#5109).", "[clicked] outro aviso"],
+            pending: null,
+          },
+        }),
+      );
+      const ok = readSharedClickedSelection(p, "260801") as { warnings: string[] };
+      assert.deepEqual(ok.warnings, ["[clicked] outro aviso"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("3. --swap depois da aprovação: --schedule recusa sem nova aprovação; --confirm-suggestions reaprova", async () => {
+    const r = makeRoot("shared-13035-swap-after-");
+    try {
+      assert.equal(r.run(), null);
+      assert.equal(r.run(["--confirm-suggestions"]), null);
+      assert.equal(r.run(["--swap", U("c"), "--with", U("b2")]), null);
+      assert.equal(JSON.parse(readFileSync(r.file, "utf8")).approved, null);
+      const res = await r.publish(["--schedule"]);
+      assert.deepEqual(res.codes, [2]);
+      assert.match(res.out, /sem aprovação do gate/);
+      // LinkedIn: sem a flag só avisa; com --require-approved recusa.
+      assert.equal(linkedin(r), null);
+      assert.ok(lnSelection(r).warnings.some((w: string) => /sem aprovação do gate/.test(w)));
+      assert.equal(linkedin(r, ["--require-approved"]), 2);
+      // Reaprovado: passa pelo guard (para no dos resumos, exit 1) e o LinkedIn sai sem o aviso.
+      assert.equal(r.run(["--confirm-suggestions"]), null);
+      const again = await r.publish(["--schedule"]);
+      assert.doesNotMatch(again.out, /recusado no --schedule/);
+      assert.deepEqual(again.codes, [1]);
+      assert.equal(linkedin(r, ["--require-approved"]), null);
+      assert.ok(!lnSelection(r).warnings.some((w: string) => /sem aprovação do gate/.test(w)));
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("3. nunca aprovado: --schedule recusa, exceto no caminho --no-gates (--allow-suggested-ties)", async () => {
+    const r = makeRoot("shared-13035-never-");
+    try {
+      assert.equal(r.run(), null);
+      const res = await r.publish(["--schedule"]);
+      assert.deepEqual(res.codes, [2]);
+      assert.match(res.out, /sem aprovação do gate/);
+      const noGates = await r.publish(["--schedule", "--allow-suggested-ties"]);
+      assert.doesNotMatch(noGates.out, /recusado no --schedule/);
+      assert.deepEqual(noGates.codes, [1]);
+      // Prévia (sem --schedule): só avisa.
+      const preview = await r.publish([]);
+      assert.deepEqual(preview.codes, []);
+      assert.match(preview.out, /Antes do --schedule: seleção compartilhada sem aprovação do gate/);
     } finally {
       r.cleanup();
     }
