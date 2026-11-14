@@ -490,6 +490,41 @@ describe("#13022 — LinkedIn: empate ainda só sugerido volta como pendingGroup
 });
 
 describe("#13022 — --confirm-suggestions grava a sugestão vista como escolha exata", () => {
+  it("#13054 — saída só pede escolha manual enquanto o empate não foi confirmado", () => {
+    const r = makeRoot("shared-confirm-warning-13054-");
+    const output = (extra: string[] = []) => {
+      const lines: string[] = [];
+      const original = console.log;
+      console.log = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+      try {
+        assert.equal(withMockedExit(() => sharedMain(r.root, ["--saturday", "260801", ...extra], r.now)).code, null);
+      } finally {
+        console.log = original;
+      }
+      return lines.join("\n");
+    };
+    try {
+      r.setClicks({ a: 10, a2: 10, r: 10, b: 10, b2: 10, c: 10 });
+      const preview = output();
+      for (const product of ["clicked", "linkedin"]) {
+        assert.match(preview, new RegExp(`\\[${product}\\].*escolha manual necessária`));
+      }
+      for (const result of [output(["--confirm-suggestions"]), output()]) {
+        assert.doesNotMatch(result, /escolha manual necessária|confirmar ou trocar no gate/);
+        const saved = JSON.parse(readFileSync(r.file, "utf8"));
+        assert.ok(saved.approved.hash);
+        for (const product of ["clicked", "linkedin"]) {
+          assert.equal(saved[product].pending.resolution, "editor");
+          assert.match(result, new RegExp(`\\[${product}\\].*empate decidido pelo editor no gate consolidado`));
+        }
+        assert.match(result, /Edição 260730 sem 02-reviewed.md/);
+        assert.ok(saved.warnings.some((w: string) => w.includes("Edição 260730")), "preserva outros avisos");
+      }
+    } finally {
+      r.cleanup();
+    }
+  });
+
   it("empate #5109 no LinkedIn: sugestão → picks; empate novo depois NÃO é confirmado sozinho", () => {
     const root = mkdtempSync(join(tmpdir(), "shared-confirm-13022-"));
     const now = new Date("2026-08-01T12:00:00-03:00");
