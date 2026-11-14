@@ -1042,7 +1042,8 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
     );
     if (videoField) {
       built = { ...built, video: videoField };
-      console.log(`Vídeo da semana: ${videoField.title} (${videoField.views ?? "?"} views, edição ${videoField.editionDate})`);
+      // #13050: o número de views não é exibido (decisão do editor); segue só como critério de escolha.
+      console.log(`Vídeo da semana: ${videoField.title} (edição ${videoField.editionDate})`);
     }
     // Títulos sem sinal de português montados agora ainda não passaram pela revisão
     // do editor — traduzidos ou não (tradução falha, --no-translate).

@@ -188,7 +188,8 @@ export async function ensureWeeklyVideo(
   const video: WeeklyVideoField | null =
     top && title ? { title, url: top.videoUrl, editionDate: top.aammdd, views: top.views } : null;
   writeFileSync(selectionPath, JSON.stringify({ ...selection, video }, null, 2), "utf8");
-  if (video) console.log(`Vídeo da semana: ${video.title} (${video.views ?? "?"} views, edição ${video.editionDate})`);
+  // #13050: o número de views não é exibido (decisão do editor); segue só como critério de escolha.
+  if (video) console.log(`Vídeo da semana: ${video.title} (edição ${video.editionDate})`);
   return video;
 }
 
