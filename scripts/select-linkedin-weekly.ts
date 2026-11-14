@@ -51,12 +51,14 @@
  *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --picks url1,url2
  *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --use-melhor-url URL
  *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --use-melhor-auto
- *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --shared-selection PATH
+ *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --shared-selection PATH [--require-approved]
  *
  * **`--shared-selection PATH`** (#13022): manchetes do ranking compartilhado
  * do `/diaria-pacote-semanal` (`weekly-shared-selection.ts`) no lugar da
  * seleção própria — ver `applySharedLinkedinSelection`. Sem a flag, nada
- * muda (a skill isolada segue com `selectHeadlines`).
+ * muda (a skill isolada segue com `selectHeadlines`). Com
+ * `--require-approved` (#13035, re-rodada pós-gate), arquivo sem aprovação
+ * do gate sai com exit 2; sem ela, só avisa (a prévia pré-gate é legítima).
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -218,6 +220,12 @@ export function main(rootDirOverride?: string) {
     console.error("--shared-selection precisa do caminho do shared-selection.json (weekly-shared-selection.ts, #13022).");
     process.exit(2);
   }
+  // #13035: re-rodada pós-gate do pacote semanal — recusa arquivo sem aprovação.
+  const requireApproved = hasFlag(argv, "require-approved");
+  if (requireApproved && !sharedSelectionArg) {
+    console.error("--require-approved só vale com --shared-selection PATH.");
+    process.exit(2);
+  }
 
   if (!publishMonday) {
     console.error(
@@ -315,6 +323,7 @@ export function main(rootDirOverride?: string) {
       resolution.publishMonday,
       headlineResult.headlineEligible,
       { editionsFound: editionsFound.map((e) => e.date), candidates: ranked },
+      { requireApproved },
     );
     if (shared.error) {
       console.error(`--shared-selection inválido: ${shared.error}`);
@@ -602,14 +611,18 @@ export function main(rootDirOverride?: string) {
  * destaque elegível desta janela (o mesmo `headlineEligible` da seleção
  * própria). Empate do #5109 ainda só com a SUGESTÃO do pacote volta como
  * `pendingGroup` (com as manchetes já preenchidas pela sugestão, para a
- * prévia): o gate consolidado confirma ou troca antes do paste. Exportada
- * para teste.
+ * prévia): o gate consolidado confirma ou troca antes do paste. Com `now`, o
+ * estado do empate vem da seleção RECALCULADA, não do `resolution` gravado
+ * (#13035). Arquivo sem aprovação do gate (`approved`) sai com aviso; com
+ * `requireApproved` (`--require-approved`, re-rodada pós-gate) é recusado.
+ * Exportada para teste.
  */
 export function applySharedLinkedinSelection(
   path: string,
   publishMonday: string,
   headlineEligible: WeeklyRankedCandidate[],
   now?: { editionsFound: string[]; candidates: WeeklyRankedCandidate[] },
+  opts: { requireApproved?: boolean } = {},
 ): {
   headlines: WeeklyRankedCandidate[];
   pendingGroup: WeeklyRankedCandidate[] | null;
@@ -641,6 +654,11 @@ export function applySharedLinkedinSelection(
   // manchetes ou no clicked) ou hash da aprovação não bate = recusa. Taxa que
   // mudou sem mudar a seleção vira só aviso.
   const dataWarnings: string[] = [];
+  let replayPendingUnresolved: boolean | null = null;
+  const approved = Boolean((shared as { approved?: { hash?: string } | null }).approved?.hash);
+  const unapprovedMsg =
+    "seleção compartilhada sem aprovação do gate (nunca aprovada, ou --pick/--swap depois da aprovação) — grave a aprovação com weekly-shared-selection.ts --confirm-suggestions e re-rode antes do paste";
+  if (opts.requireApproved && !approved) return { ...empty, error: `${unapprovedMsg}.` };
   if (now) {
     const sh = shared as { ranking?: unknown; overrides?: unknown };
     if (!Array.isArray(sh.ranking) || !Array.isArray(shared.clicked?.urls)) {
@@ -656,7 +674,9 @@ export function applySharedLinkedinSelection(
       };
     }
     dataWarnings.push(...check.warnings);
+    replayPendingUnresolved = check.pendingUnresolved;
   }
+  if (!approved) dataWarnings.push(`Antes do paste: ${unapprovedMsg}.`);
   const byUrl = new Map(headlineEligible.map((c) => [normalizeUrl(c.url), c]));
   const resolveUrls = (urls: string[]): { list: WeeklyRankedCandidate[]; missing: string[] } => {
     const list: WeeklyRankedCandidate[] = [];
@@ -678,7 +698,10 @@ export function applySharedLinkedinSelection(
     ...dataWarnings,
   ];
   const pending = shared.linkedin!.pending;
-  if (pending && pending.resolution !== "editor") {
+  // #13035: com replay, o `resolution` do arquivo não decide (editado à mão
+  // ele divergiria do replay e já teria recusado acima; isto é a 2ª trava).
+  const unresolved = replayPendingUnresolved ?? Boolean(pending && pending.resolution !== "editor");
+  if (pending && unresolved) {
     const group = resolveUrls(pending.group);
     if (group.missing.length > 0) {
       return { ...empty, error: `empate pendente com URL fora dos destaques elegíveis: ${group.missing.join(", ")}` };
