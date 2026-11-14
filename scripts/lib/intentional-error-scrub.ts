@@ -233,13 +233,3 @@ export function formatIntentionalErrorLeaks(leaks: readonly IntentionalErrorLeak
     "O erro só existe na edição em que foi plantado (#13051): corrija o texto (ou refaça a seleção) antes de publicar."
   );
 }
-
-/** Lança `Error` com a mensagem do guard quando há vazamento. */
-export function assertNoIntentionalErrorLeak(
-  text: string,
-  pairs: readonly IntentionalErrorPair[],
-  where: string,
-): void {
-  const leaks = findIntentionalErrorLeaks(text, pairs);
-  if (leaks.length > 0) throw new Error(formatIntentionalErrorLeaks(leaks, where));
-}
