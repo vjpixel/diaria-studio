@@ -98,7 +98,10 @@ async function main(): Promise<number> {
       const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=status,snippet&id=${encodeURIComponent(id)}`, {
         headers: { Authorization: `Bearer ${await token}` }, signal: AbortSignal.timeout(30_000),
       });
-      if (!res.ok) throw new Error("YouTube read failed");
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => {});
+        throw new Error("YouTube read failed");
+      }
       const data = await res.json() as RecordData;
       if (!Array.isArray(data.items)) throw new Error("YouTube response without items");
       const item = data.items.find((v: RecordData) => v.id === id);
@@ -114,7 +117,10 @@ async function main(): Promise<number> {
     const res = await fetch(`https://graph.facebook.com/${fb.apiVersion}/${encodeURIComponent(id)}?fields=published,scheduled_publish_time,permalink_url`, {
       headers: { Authorization: `OAuth ${page.token}` }, signal: AbortSignal.timeout(30_000),
     });
-    if (!res.ok) throw new Error("Facebook read failed");
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error("Facebook read failed");
+    }
     const data = await res.json() as RecordData;
     if (data.error || typeof data.published !== "boolean") return null;
     return { published: data.published, url: data.permalink_url,
