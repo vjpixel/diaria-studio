@@ -61,6 +61,13 @@ import { loadUnifiedEditionCache, type UnifiedCachedPost } from "./lib/shared/ed
 import { convertBeehiivHtmlToMarkdown } from "./lib/shared/edition-html-convert.ts";
 import { parseLegacyEditionHtml } from "./lib/shared/legacy-edition-parse.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
+import type { IntentionalError } from "./lib/intentional-errors.ts";
+import {
+  loadIntentionalErrorPair,
+  loadJsonlForEditionsRoot,
+  pairFromRecord,
+  scrubIntentionalError,
+} from "./lib/intentional-error-scrub.ts"; // #13051
 import {
   resolveAnnualWindow,
   type AnnualWindow,
@@ -115,8 +122,44 @@ export interface CollectAnnualResult {
   warnings: string[];
 }
 
-/** Extrai os destaques de UMA edição, com a precedência documentada acima. */
+/**
+ * Extrai os destaques de UMA edição, com a precedência documentada acima, já
+ * sem o erro intencional da edição (#13051): título, corpo, "por que importa"
+ * e categoria saem com a grafia correta, qualquer que seja a fonte (markdown
+ * local ou HTML do cache). `intentionalJsonl` = fallback do JSONL para edições
+ * sem `_internal/intentional-error.json`.
+ */
 export function destaquesForPost(
+  post: UnifiedCachedPost,
+  edition: string,
+  localEditionDirs: Map<string, string>,
+  warnings: string[],
+  intentionalJsonl: readonly IntentionalError[] = [],
+): { destaques: AnnualDestaque[]; source: AnnualMonthSource } {
+  const res = destaquesForPostRaw(post, edition, localEditionDirs, warnings);
+  const localDir = localEditionDirs.get(edition);
+  const pair = localDir
+    ? loadIntentionalErrorPair(localDir, edition, { jsonlEntries: intentionalJsonl })
+    : (intentionalJsonl
+        .filter((e) => e.edition === edition)
+        .map((e) => pairFromRecord(edition, e))
+        .filter((p) => p !== null)
+        .pop() ?? null);
+  if (!pair) return res;
+  const s = (v: string) => scrubIntentionalError(v, pair);
+  return {
+    source: res.source,
+    destaques: res.destaques.map((d) => ({
+      ...d,
+      title: s(d.title),
+      body: s(d.body),
+      why: s(d.why),
+      category: s(d.category),
+    })),
+  };
+}
+
+function destaquesForPostRaw(
   post: UnifiedCachedPost,
   edition: string,
   localEditionDirs: Map<string, string>,
@@ -223,6 +266,8 @@ export function collectAnnual(opts: {
   window: AnnualWindow;
   posts: readonly UnifiedCachedPost[];
   localEditionDirs: Map<string, string>;
+  /** #13051: entradas de `data/intentional-errors.jsonl` (fallback do gabarito). */
+  intentionalJsonl?: readonly IntentionalError[];
 }): { destaques: AnnualDestaque[]; months: AnnualMonthReport[]; warnings: string[] } {
   const warnings: string[] = [];
   const byMonth = groupPostsByMonth(opts.posts, opts.window.months);
@@ -243,7 +288,13 @@ export function collectAnnual(opts: {
       // pode derrubar a coleta dos outros 12 meses. Perder uma edição é um
       // aviso; perder a janela inteira é recomeçar do zero.
       try {
-        const { destaques, source } = destaquesForPost(post, edition, opts.localEditionDirs, monthWarnings);
+        const { destaques, source } = destaquesForPost(
+          post,
+          edition,
+          opts.localEditionDirs,
+          monthWarnings,
+          opts.intentionalJsonl ?? [],
+        );
         sources.push(source);
         found += destaques.length;
         all.push(...destaques);
@@ -392,7 +443,8 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
   // resolvê-la.
   const posts = loadUnifiedEditionCache();
   const localEditionDirs = enumerateEditionDirs(resolve(rootDir, "data/editions"));
-  const { destaques, months, warnings } = collectAnnual({ window, posts, localEditionDirs });
+  const intentionalJsonl = loadJsonlForEditionsRoot(resolve(rootDir, "data/editions"));
+  const { destaques, months, warnings } = collectAnnual({ window, posts, localEditionDirs, intentionalJsonl });
 
   mkdirSync(paths.internal, { recursive: true });
 

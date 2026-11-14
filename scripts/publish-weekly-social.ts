@@ -196,6 +196,12 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveWeeklyEditionDirs } from "./lib/select-weekly-d1.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import {
+  findIntentionalErrorLeaks,
+  formatIntentionalErrorLeaks,
+  loadWindowIntentionalErrors,
+  readReviewedMdScrubbed,
+} from "./lib/intentional-error-scrub.ts";
+import {
   extractInstagramCandidates,
   matchPostsToWindow,
   identifyInstagramPostsNeedingClicks,
@@ -1318,7 +1324,8 @@ async function runOneMode(
 
   const rawCandidates = existingCandidates.flatMap((c) => {
     try {
-      return extractInstagramCandidates(readFileSync(resolve(c.dir, "02-reviewed.md"), "utf8"), c.date);
+      // #13051: o erro intencional da edição nunca sai dela (títulos/corpo dos cards, manifest de resumos).
+      return extractInstagramCandidates(readReviewedMdScrubbed(c.dir, c.date), c.date);
     } catch (e: any) {
       console.warn(`[publish-weekly-social] SKIP ${c.dir} — falha ao ler/parsear 02-reviewed.md: ${e.message}`);
       return [];
@@ -1431,7 +1438,7 @@ async function runOneMode(
     // do clicked não foi decidido, agendar publicaria o que o editor não viu:
     // exit 2. Taxa que mudou sem mudar a seleção é só aviso. Na prévia, tudo avisa.
     const sharedCandidates = buildSharedCandidates(
-      existingCandidates.map((c) => ({ date: c.date, md: readFileSync(resolve(c.dir, "02-reviewed.md"), "utf8") })),
+      existingCandidates.map((c) => ({ date: c.date, md: readReviewedMdScrubbed(c.dir, c.date) })),
       windowPostsUnified,
     );
     const check = checkSharedFileForProduct("clicked", shared.file, {
@@ -1687,6 +1694,22 @@ async function runOneMode(
   // (orçamento de 500 chars da Threads API, ver format-weekly-social.ts) —
   // mesmo `scheduledAt`/`carouselImageUrls` dos outros 2 canais.
   const threadsCaption = formatThreadsWeekly(captionItems, mode, introOverride);
+  // #13051: guard — o erro intencional de qualquer edição da semana não sai na
+  // legenda nem nos cards (títulos dos itens). Pega texto que não veio do scrub
+  // (resumo do agente, seleção compartilhada antiga). Prévia avisa; agendar aborta.
+  const intentionalErrorLeaks = findIntentionalErrorLeaks(
+    [caption, fbCaption, threadsCaption, ...items.map((it) => it.title)].join("\n"),
+    loadWindowIntentionalErrors(editionsRoot, existingCandidates.map((c) => c.date)),
+  );
+  if (intentionalErrorLeaks.length > 0) {
+    const leakMsg = formatIntentionalErrorLeaks(intentionalErrorLeaks, `Carrossel semanal ${saturday} (${mode})`);
+    if (!doSchedule && !imagesOnly) {
+      console.error(`[publish-weekly-social] AVISO: ${leakMsg}`);
+    } else {
+      console.error(`ERRO ${mode}: ${leakMsg}`);
+      return false;
+    }
+  }
   // Chave do carrossel (#5330) — "highlights" e "clicked" do MESMO sábado
   // nunca colidem em cache de card sem foto, persisted store, nem
   // skip-existing (destaqueKey abaixo).

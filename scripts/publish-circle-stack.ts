@@ -117,6 +117,13 @@ import {
   type GhRunFn,
 } from "./lib/alarm-issues.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
+import {
+  findIntentionalErrorLeaks,
+  formatIntentionalErrorLeaks,
+  loadIntentionalErrorPair,
+  loadWindowIntentionalErrors,
+  scrubIntentionalError,
+} from "./lib/intentional-error-scrub.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
 import { extractWeeklyCandidates, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
 import { parseDestaques } from "./extract-destaques.ts";
@@ -385,7 +392,9 @@ export function readEdition(editionsRootDir: string, date: string, read?: (p: st
   if (!existsSync(dir)) return "sem-edicao";
   const mdPath = join(dir, "02-reviewed.md");
   if (!existsSync(mdPath)) return null;
-  const md = readUtf8WithContext(mdPath, read);
+  // #13051: o erro intencional da edição nunca sai dela — título, corpo e
+  // descrição da Stack usam a grafia correta.
+  const md = scrubIntentionalError(readUtf8WithContext(mdPath, read), loadIntentionalErrorPair(dir, date));
   const destaques = parseDestaques(md)
     .filter((d) => d.n >= 1 && d.n <= 3)
     .sort((a, b) => a.n - b.n);
@@ -1085,6 +1094,25 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
     closing: readTextArg(argv, "closing-file"),
     subscribeUrl: cfg.subscribeUrl ?? undefined,
   });
+
+  // #13051: guard sobre o texto que vai SAIR — o erro intencional de qualquer
+  // edição da janela (seleção gravada antes do scrub, título reescrito à mão,
+  // título do vídeo). Dry-run avisa (prévia e aviso ao editor); --publish
+  // recusa, como as demais violações. `titleOriginal`/`excluded` não entram:
+  // não são renderizados.
+  const editionsRootForGuard = join(dataRoot, "data", "editions");
+  if (existsSync(editionsRootForGuard)) {
+    const leaks = findIntentionalErrorLeaks(
+      `${rendered.title}\n${rendered.markdown}`,
+      loadWindowIntentionalErrors(editionsRootForGuard, resolution.contentWindow),
+    );
+    if (leaks.length > 0) {
+      const leakMsg = formatIntentionalErrorLeaks(leaks, `Post da Stack ${cycle} (seleção ${selectionPath})`);
+      violations.push(leakMsg);
+      warnings = [...warnings, leakMsg];
+      console.warn(`⚠ ${leakMsg}`);
+    }
+  }
 
   const payload = buildStackPostPayload(rendered.title, rendered.markdown);
   // #11237 item 2: a prévia mostra o título que de fato vai ao webhook

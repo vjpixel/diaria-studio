@@ -19,9 +19,10 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { readReviewedMdScrubbed } from "./lib/intentional-error-scrub.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { cycleToYymm, isValidMonthlyCycle, monthlyDir } from "./lib/mensal/monthly-paths.ts";
@@ -47,7 +48,8 @@ export function videoDoMesRecord(top: TopEditionVideo | null, d1TitleFor: (aammd
 function d1TitleFromReviewed(editionDir: string): string | null {
   const p = join(editionDir, "02-reviewed.md");
   if (!existsSync(p)) return null;
-  const m = readFileSync(p, "utf8").match(/^\*\*\[([^\]]+)\]\(/m);
+  // #13051: o título do D1 sai sem o erro intencional da edição.
+  const m = readReviewedMdScrubbed(editionDir, basename(editionDir)).match(/^\*\*\[([^\]]+)\]\(/m);
   return m ? m[1].trim() : null;
 }
 

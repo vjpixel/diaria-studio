@@ -65,6 +65,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
+import { readReviewedMdScrubbed } from "./lib/intentional-error-scrub.ts";
 import { resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir, parseAAMMDD } from "./lib/weekly-linkedin-cycle.ts";
 import { extractWeeklyCandidates, detectDeadSectionHeaders, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
@@ -118,7 +119,8 @@ function readEdition(date: string, editionsRootDir: string): EditionRead {
   const dir = resolveEditionDir(editionsRootDir, date);
   const mdPath = join(dir, "02-reviewed.md");
   if (!existsSync(mdPath)) return { date, found: false, destaqueTitles: [], candidates: [], deadSections: [] };
-  const raw = readFileSync(mdPath, "utf8");
+  // #13051: o erro intencional da edição nunca sai dela.
+  const raw = readReviewedMdScrubbed(dir, date);
   const destaques = parseDestaques(raw)
     .filter((d) => d.n >= 1 && d.n <= 3)
     .sort((a, b) => a.n - b.n);

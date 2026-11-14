@@ -78,6 +78,11 @@ import { getBroadcast, KitApiError } from "./lib/kit-client.ts";
 import { resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
 import { resolveVerifiedAudience, type ResolvedAudience } from "./lib/shared/kit-apoio-tag.ts";
 import { circleStackSelectionViolations, circleStackUnreviewedTitles } from "./lib/circle-stack-select.ts";
+import {
+  findIntentionalErrorLeaks,
+  formatIntentionalErrorLeaks,
+  loadWindowIntentionalErrors,
+} from "./lib/intentional-error-scrub.ts";
 import { readUtf8WithContext } from "./lib/read-file-with-context.ts"; // #12554
 import {
   STACK_EMAIL_NIVEIS,
@@ -371,6 +376,16 @@ export async function runCircleStackEmail(options: StackEmailRunOptions): Promis
 
   const problems = stackEmailContentProblems(selection, platformConfig as Record<string, unknown>);
   const email = renderStackEmail(selection);
+  // #13051: o erro intencional de qualquer edição da semana não sai no e-mail.
+  const editionsRoot = join(dataRoot, "data", "editions");
+  const contentWindow = resolveWeeklyLinkedinCycle(publishMonday)?.contentWindow ?? [];
+  if (existsSync(editionsRoot) && contentWindow.length > 0) {
+    const leaks = findIntentionalErrorLeaks(
+      `${email.subject}\n${email.html}`,
+      loadWindowIntentionalErrors(editionsRoot, contentWindow),
+    );
+    if (leaks.length > 0) problems.push(formatIntentionalErrorLeaks(leaks, `E-mail da Stack ${paths.cycle}`));
+  }
 
   if (mode.kind === "dry-run") {
     deps.writeFile(paths.previewPath, email.html);
