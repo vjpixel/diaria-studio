@@ -214,6 +214,9 @@ export function selectForProduct(
     if (applied.error) throw new SharedSelectionError(`[${product}] escolha do empate inválida: ${applied.error}`);
     fill = applied.selected.slice(selected.length);
     resolution = "editor";
+    for (let i = 0; i < tagged.length; i++) {
+      tagged[i] = tagged[i].replace("escolha manual necessária no gate consolidado", "empate decidido pelo editor no gate consolidado");
+    }
   }
 
   return {
