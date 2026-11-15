@@ -64,6 +64,18 @@ Critérios de título, capa e gancho (#13116, decididos com o editor em 15/11/20
 
 Pergunta ou afirmação na capa: escolher pela clareza, não pelo formato (a diretriz não tem evidência para preferir uma ou outra). Título do horizontal: com o nome do produto no começo, em cerca de 40 caracteres, porque é também o do vertical 1 (esse limite refina os cerca de 60 caracteres anotados antes). Os `[aviso]` do `video-roteiro-blocos.ts` apontam gancho longo no vertical, título igual ao gancho e capa de vertical sem sujeito.
 
+**Pesquisa no YouTube antes de fechar os títulos (#13156), sempre, sem o editor pedir.** Os critérios acima não dizem o que o YouTube mostra para o assunto. Na 261117 o roteiro saiu com "Deepfake de médico vende cura falsa", que passava em todos eles; a pesquisa à mão mostrou que os vídeos com mais views tinham "Drauzio" no título, e o título virou "Drauzio falso: o golpe do remédio com IA". Antes de entregar a primeira versão (e de novo quando um título mudar de assunto):
+
+```bash
+npx tsx scripts/youtube-title-research.ts --edition-dir data/editions/{AAMM}/{AAMMDD}/ --title "{título candidato do horizontal}" --queries "{q1}|{q2}|{q3}"
+```
+
+- As até 3 queries saem do assunto do vídeo e do nome de quem aparece nele (a pessoa, a empresa, o produto), não só do título do D1. Sem `--queries`, o script as deriva do `--title`. Para o vertical 2, cujo título é próprio, uma query do guia (o "como" do assunto) cabe entre as 3.
+- Janela padrão de 30 dias (`--days` muda). Grava em `_internal/youtube-title-research-roteiro.json`, sem tocar na pesquisa do D1 do Stage 2 nem exigir o `01-approved.json` (a edição pode ainda não existir). A saída traz `top_terms` e `top_videos`.
+- Fail-soft: sem credencial, sem cota ou sem rede o arquivo sai com `status` `skipped`/`error` e o script sai 0. Dizer na entrega que a pesquisa não rodou, e o motivo, e seguir com os critérios acima.
+- Na entrega, mostrar o topo da pesquisa (título, views, canal) e dizer quais termos entraram nos títulos dos três vídeos e por quê. A justificativa vai também em `notas` no JSON.
+- A pesquisa mostra as palavras e a audiência de títulos parecidos; não prevê o clique no nosso. Ela informa os critérios acima, não os substitui: termo de topo que a fonte não sustenta fica fora do título (#4000, #9383), e o título continua diferente do gancho.
+
 ## Passo 3 — Regras da fala
 
 Vêm de decisões do editor. Não reabrir.
@@ -188,6 +200,7 @@ Quando o editor pedir, ou quando o roteiro parar de mudar:
    - cada vertical faz sentido sozinho e cumpre o que o gancho promete?
    - o vertical 2 chega nas dicas em até uns 30 s? Se passar disso, encurtar o que vem antes.
    - os critérios de título, capa e gancho do Passo 2 (#13116): título e gancho de cada vídeo dizem a mesma coisa com palavras diferentes? O título do vertical 1 é o do horizontal, e ele cabe em uns 40 caracteres? A capa do horizontal não repete o assunto do título? A capa de cada vertical tem sujeito reconhecível? A primeira frase do gancho chega ao ponto (umas 8 palavras no vertical, até 5 a 10 s no horizontal)? Os `[aviso]` do `video-roteiro-blocos.ts` apontam gancho longo no vertical, título que repete o gancho e capa de vertical sem sujeito.
+   - a pesquisa do YouTube (Passo 2, #13156) rodou para os títulos atuais? Se algum título mudou de assunto depois dela, rodar de novo. As `notas` dizem quais termos da pesquisa entraram nos títulos e por quê, ou que ela não rodou e o motivo?
    - os verticais cabem em 60 s? A duração vem do `video-roteiro-blocos.ts`, já com os cortes; acima do alvo, usar primeiro os cortes de reserva declarados.
    - toda fala com texto, número, nome ou comparação para mostrar tem `tela`? Toda fala com fato de fora do D1 tem `fontes`?
    - as notas livres (`notas`, `gravacao`) descrevem a versão atual? O resto da caixa do topo e das notas sai do JSON.

@@ -23,6 +23,13 @@
 import { parseIsoDuration } from "./youtube-analytics.ts";
 
 export const YOUTUBE_TITLE_RESEARCH_FILE = "_internal/youtube-title-research.json";
+/**
+ * Pesquisa do roteiro de vídeo (#13156): arquivo próprio, para não sobrescrever
+ * a do D1 que o Stage 2 gravou e o gate do Stage 4 compara pela URL.
+ */
+export const YOUTUBE_TITLE_RESEARCH_ROTEIRO_FILE = "_internal/youtube-title-research-roteiro.json";
+/** Janela padrão do roteiro (#13156): na 261117 a pesquisa à mão usou 30 dias. */
+export const DEFAULT_ROTEIRO_RESEARCH_DAYS = 30;
 export const YOUTUBE_TITLE_RESEARCH_SCHEMA_VERSION = 1;
 
 /** Janela padrão da busca: vídeos dos últimos 4 dias (#12552). */
