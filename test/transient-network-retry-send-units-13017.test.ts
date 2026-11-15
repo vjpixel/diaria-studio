@@ -1,48 +1,63 @@
 /**
- * test/transient-network-retry-send-units-13017.test.ts (#13017)
+ * test/transient-network-retry-send-units-13017.test.ts (#13017, #13098)
  *
  * Decisão do editor (15/11/2026): unit que ENVIA a terceiros só ganha o retry
- * de rede (`retryOnTransientNetwork`) se a rerrodada depois de uma queda no
- * meio não reenviar nem duplicar. `Diaria-Clarice-Novos`/`-Tarde` entraram;
- * este arquivo trava o contrato que sustenta essa entrada:
+ * de rede se a rerrodada depois de uma queda no meio não reenviar nem
+ * esconder falha. `Diaria-Clarice-Novos`/`-Tarde` entraram no modo
+ * `"step-declares"`; este arquivo trava o contrato que sustenta isso:
  *
- *   1. Queda de rede ANTES do POST `sendNow` sai 1 com assinatura de rede, o
- *      runner converte em 105 (a unit reagenda) e o `--send-now` não roda.
- *   2. Queda no POST `sendNow` (resposta perdida, possível aceite, #9699) sai
- *      3, que é `successExitCodes` da task: nunca 105, nunca reagenda.
- *   3. A rerrodada não reseleciona quem a rodada caída já tinha pegado: o
- *      `sent-or-queued.json` é gravado na SELEÇÃO, e o orquestrador para sem
- *      importar/criar/enviar quando a seleção volta vazia.
- *
- * Se uma mudança em `clarice-novos-run.ts` quebrar qualquer um dos três, a
- * flag no registro deixa de ser segura e este teste falha.
+ *   1. Queda de rede ANTES da seleção ser gravada: o script sai 105 e a unit
+ *      reagenda. Nada foi selecionado nem enviado.
+ *   2. Queda DEPOIS da seleção gravada (import, `--create`, `--send-test`,
+ *      guard antes do POST): sai 4, nunca 105. Os contatos estão presos no
+ *      `sent-or-queued.json`; reagendar daria uma rerrodada vazia, verde e
+ *      sem alarme (review da PR #13098, P2-1).
+ *   3. Rodada vazia no mesmo dia não apaga o `other-error` com presos.
+ *   4. O runner não reclassifica a saída inteira: um `gh` sem rede ecoado por
+ *      um sub-passo que deu certo não transforma um abort determinístico em
+ *      retry (P3).
+ *   5. POST `sendNow` ambíguo sai 3, sucesso declarado: nunca reagenda.
+ *   6. Duas invocações de `clarice-schedule-group.ts` no mesmo ciclo (a Tarde
+ *      reagendada cruzando o `Diaria-Clarice-Envio` das 19:10) não apagam a
+ *      entrada uma da outra no `group-campaigns.json` (P2-2).
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  keepsStrandedStatus,
   runNovos,
   NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE,
+  NOVOS_STRANDED_SELECTION_EXIT_CODE,
   type ExecFn,
   type NovosRunDeps,
   type StepResult,
 } from "../scripts/clarice-novos-run.ts";
 import {
-  appendSentOrQueuedEmails,
-  excludeSentOrQueued,
-  loadSentOrQueuedEmails,
-} from "../scripts/clarice-build-segment.ts";
-import { resolveTransientNetworkExitCode, TRANSIENT_NETWORK_EXIT_CODE } from "../scripts/lib/transient-network-failure.ts";
-import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
+  mergeGroupCampaigns,
+  readGroupCampaigns,
+  writeGroupCampaignsMerged,
+  type CampaignEntry,
+} from "../scripts/clarice-schedule-group.ts";
+import { readNovosRunStatus } from "../scripts/lib/clarice-novos-run-status.ts";
+import {
+  resolveStepDeclaredExitCode,
+  TRANSIENT_NETWORK_EXIT_CODE,
+} from "../scripts/lib/transient-network-failure.ts";
+import { runScheduledTask, type ExecStepFn } from "../scripts/lib/task-runner.ts";
+import { buildSystemdUnitFiles } from "../scripts/lib/systemd-units.ts";
+import { getScheduledTaskByName, type ScheduledTaskDefinition } from "../scripts/lib/scheduled-tasks.ts";
+import type { GitSyncResult } from "../scripts/lib/git-sync.ts";
 
 const SEND_UNITS = ["Diaria-Clarice-Novos", "Diaria-Clarice-Novos-Tarde"] as const;
 
-// Saída real do undici numa queda de DNS (mesmo formato do achado de 13/11).
+// Saídas reais: undici numa queda de DNS e o gh CLI sem rede.
 const UNDICI_EAI_AGAIN =
   "TypeError: fetch failed\n    at node:internal/deps/undici/undici:13510:13\n" +
   "  [cause]: Error: getaddrinfo EAI_AGAIN api.brevo.com\n      errno: -3001,\n      code: 'EAI_AGAIN',";
+const GH_OFFLINE = "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com";
 
 function json(obj: unknown, code = 0): StepResult {
   return { code, stdout: JSON.stringify(obj), stderr: "" };
@@ -72,7 +87,7 @@ function preSendHandlers(selected: number): Record<string, StepResult | StepResu
     "scripts/clarice-stripe-delta.ts": json({ mode: "execute", since: "2026-11-13", rows: 5 }),
     "scripts/verify-emails-mv.ts": json({ mode: "since", total_verified: 5 }),
     "scripts/clarice-build-segment.ts": json({ selected, cycle: "2611-12", group: "novos" }),
-    "scripts/clarice-novos-resolve-key.ts": json({ key: "novos-261114-2" }),
+    "scripts/clarice-novos-resolve-key.ts": json({ key: "novos-261114" }),
     "scripts/clarice-resolve-folder.ts": json({ folderId: 7, resolved: true }),
     "scripts/clarice-import-waves.ts": json({ mode: "execute", results: [{ listId: 99, wave: "novos" }] }),
     "scripts/clarice-novos-resolve-cycle.ts": json({ cycle: "2611-12", subject: "Assunto", fallback: false, checked: [] }),
@@ -80,10 +95,10 @@ function preSendHandlers(selected: number): Record<string, StepResult | StepResu
   };
 }
 
-function deps(rootDir: string, exec: ExecFn): NovosRunDeps {
+function deps(rootDir: string, exec: ExecFn, iso = "2026-11-14T12:00:00.000Z"): NovosRunDeps {
   return {
     rootDir,
-    now: () => new Date("2026-11-14T12:00:00.000Z"), // 09:00 BRT
+    now: () => new Date(iso),
     exec,
     isEnabled: () => true,
     resolveEnvioCycle: () => "2611-12",
@@ -91,18 +106,23 @@ function deps(rootDir: string, exec: ExecFn): NovosRunDeps {
   };
 }
 
+const statusDir = (root: string) => join(root, "data", "clarice-subscribers");
 const ENV_KEYS = ["STRIPE_API_KEY", "BREVO_CLARICE_API_KEY", "MILLION_VERIFIER_API_KEY"] as const;
 
-describe("Clarice-Novos com retry de rede: a rerrodada não reenvia (#13017)", () => {
+describe("Clarice-Novos com retry de rede (#13017, #13098)", () => {
   const saved: Record<string, string | undefined> = {};
-  let root: string;
+  const roots: string[] = [];
+  const freshRoot = () => {
+    const r = mkdtempSync(join(tmpdir(), "novos-retry-13098-"));
+    roots.push(r);
+    return r;
+  };
 
   before(() => {
     for (const k of ENV_KEYS) {
       saved[k] = process.env[k];
       process.env[k] = "test-key";
     }
-    root = mkdtempSync(join(tmpdir(), "novos-retry-13017-"));
   });
 
   after(() => {
@@ -110,65 +130,225 @@ describe("Clarice-Novos com retry de rede: a rerrodada não reenvia (#13017)", (
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
-    rmSync(root, { recursive: true, force: true });
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
   });
 
-  it("as duas units estão com a flag e com o exit do disparo incerto em successExitCodes", () => {
+  it("as duas units declaram o modo step-declares e só o 3 como sucesso extra", () => {
     for (const name of SEND_UNITS) {
       const t = getScheduledTaskByName(name);
       assert.ok(t, `${name} existe no registro`);
-      assert.equal(t.retryOnTransientNetwork, true, name);
-      assert.ok((t.successExitCodes ?? []).includes(NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE), name);
+      assert.equal(t.retryOnTransientNetwork, "step-declares", name);
+      assert.deepEqual(t.successExitCodes, [NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE], name);
+      assert.match(buildSystemdUnitFiles(t, "/repo").serviceContent, /RestartForceExitStatus=105/, name);
     }
   });
 
-  it("rede cai depois da campanha criada e antes do --send-now: sai 1, vira 105 no runner, --send-now não roda", async () => {
+  it("queda de rede antes da seleção: sai 105, nem chega ao build-segment", async () => {
+    const root = freshRoot();
+    const handlers = preSendHandlers(42);
+    handlers["scripts/clarice-stripe-delta.ts"] = { code: 1, stdout: "", stderr: UNDICI_EAI_AGAIN };
+    const { exec, calls } = fakeExec(handlers);
+    const r = await runNovos([], deps(root, exec));
+    assert.equal(r.code, TRANSIENT_NETWORK_EXIT_CODE);
+    assert.ok(!calls.some((c) => c.script === "scripts/clarice-build-segment.ts"));
+    assert.equal(readNovosRunStatus(statusDir(root))?.stranded, undefined);
+  });
+
+  it("queda de rede depois da seleção gravada: sai 4 (presos), nunca 105, e o --send-now não roda", async () => {
+    const root = freshRoot();
     const handlers = preSendHandlers(42);
     handlers["scripts/clarice-schedule-group.ts"] = [
-      json({ key: "novos-261114-2", listId: 99, campaignId: 555, phase: "create", status: "draft" }),
+      json({ key: "novos-261114", listId: 99, campaignId: 555, phase: "create", status: "draft" }),
       { code: 1, stdout: "", stderr: UNDICI_EAI_AGAIN }, // --send-test
     ];
     const { exec, calls } = fakeExec(handlers);
     const r = await runNovos([], deps(root, exec));
-    assert.equal(r.code, 1);
-    assert.ok(
-      !calls.some((c) => c.script === "scripts/clarice-schedule-group.ts" && c.args.includes("--send-now")),
-      "nenhum --send-now depois da queda",
-    );
-    // O runner classifica pela saída do processo, que leva o stderr do passo.
-    const success = getScheduledTaskByName("Diaria-Clarice-Novos")?.successExitCodes ?? [];
-    assert.equal(
-      resolveTransientNetworkExitCode(r.code, [{ code: r.code, bestEffort: false, output: `${UNDICI_EAI_AGAIN}\n${r.reportMarkdown}` }], success),
-      TRANSIENT_NETWORK_EXIT_CODE,
-    );
+    assert.equal(r.code, NOVOS_STRANDED_SELECTION_EXIT_CODE);
+    assert.ok(!calls.some((c) => c.args.includes("--send-now")));
+    assert.match(r.reportMarkdown, /PRESOS/);
+    assert.match(r.reportMarkdown, /--key novos-261114 --send-now/);
+    const status = readNovosRunStatus(statusDir(root));
+    assert.equal(status?.status, "other-error");
+    assert.equal(status?.stranded, true);
   });
 
-  it("rede cai no POST sendNow (possível aceite, #9699): código 3, que nunca reagenda", () => {
-    for (const name of SEND_UNITS) {
-      const success = getScheduledTaskByName(name)?.successExitCodes ?? [];
-      const code = NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE;
-      assert.equal(resolveTransientNetworkExitCode(code, [{ code, bestEffort: false, output: UNDICI_EAI_AGAIN }], success), code, name);
-    }
-  });
-
-  it("a seleção da rodada caída fica gravada e a rerrodada exclui esses contatos", () => {
-    const segmentsDir = join(root, "segments");
-    const rodadaCaida = ["a@x.com", "B@x.com"];
-    appendSentOrQueuedEmails(segmentsDir, "2611-12", "novos", rodadaCaida);
-    const universo = [{ email: "a@x.com" }, { email: "b@x.com" }, { email: "novo@x.com" }];
-    const restante = excludeSentOrQueued(universo, loadSentOrQueuedEmails(segmentsDir));
-    assert.deepEqual(
-      restante.map((r) => r.email),
-      ["novo@x.com"],
-    );
-  });
-
-  it("rerrodada com seleção vazia para antes de importar, criar campanha ou enviar", async () => {
-    const { exec, calls } = fakeExec(preSendHandlers(0));
+  it("rede cai ao resolver a key (logo depois da seleção): também é presos, mesmo sem key", async () => {
+    const root = freshRoot();
+    const handlers = preSendHandlers(42);
+    handlers["scripts/clarice-novos-resolve-key.ts"] = { code: 1, stdout: "", stderr: GH_OFFLINE };
+    const { exec } = fakeExec(handlers);
     const r = await runNovos([], deps(root, exec));
-    assert.equal(r.code, 0);
-    for (const script of ["scripts/clarice-import-waves.ts", "scripts/clarice-schedule-group.ts"]) {
-      assert.ok(!calls.some((c) => c.script === script), `${script} não roda com seleção vazia`);
-    }
+    assert.equal(r.code, NOVOS_STRANDED_SELECTION_EXIT_CODE);
+  });
+
+  it("rodada vazia no mesmo dia não sobrescreve o other-error com presos; em outro dia, sobrescreve", async () => {
+    const root = freshRoot();
+    const failing = preSendHandlers(42);
+    failing["scripts/clarice-schedule-group.ts"] = [
+      json({ key: "novos-261114", listId: 99, campaignId: 555, phase: "create", status: "draft" }),
+      { code: 1, stdout: "", stderr: UNDICI_EAI_AGAIN },
+    ];
+    await runNovos([], deps(root, fakeExec(failing).exec, "2026-11-14T12:00:00.000Z")); // 09:00 BRT
+    // Tarde do mesmo dia: a seleção presa sai do universo, rodada vazia.
+    const empty = await runNovos([], deps(root, fakeExec(preSendHandlers(0)).exec, "2026-11-14T21:00:00.000Z"));
+    assert.equal(empty.code, 0);
+    assert.equal(readNovosRunStatus(statusDir(root))?.status, "other-error");
+    // Dia seguinte: a vazia volta a registrar normalmente.
+    await runNovos([], deps(root, fakeExec(preSendHandlers(0)).exec, "2026-11-15T12:00:00.000Z"));
+    assert.equal(readNovosRunStatus(statusDir(root))?.status, "empty");
+  });
+
+  it("keepsStrandedStatus: só other-error com presos e do mesmo dia BRT", () => {
+    const now = new Date("2026-11-15T02:00:00.000Z"); // 23:00 BRT do dia 14
+    assert.equal(keepsStrandedStatus({ status: "other-error", checkedAt: "2026-11-14T12:00:00.000Z", stranded: true }, now), true);
+    assert.equal(keepsStrandedStatus({ status: "other-error", checkedAt: "2026-11-13T12:00:00.000Z", stranded: true }, now), false);
+    assert.equal(keepsStrandedStatus({ status: "other-error", checkedAt: "2026-11-14T12:00:00.000Z" }, now), false);
+    assert.equal(keepsStrandedStatus({ status: "sent", checkedAt: "2026-11-14T12:00:00.000Z", stranded: true }, now), false);
+    assert.equal(keepsStrandedStatus(null, now), false);
+  });
+
+  it("abort determinístico com 'gh' sem rede ecoado por sub-passo que deu certo: sai 1, não 105", async () => {
+    const root = freshRoot();
+    const handlers = preSendHandlers(42);
+    handlers["scripts/clarice-check-derived-stale.ts"] = { code: 0, stdout: "fresh", stderr: GH_OFFLINE };
+    handlers["scripts/verify-emails-mv.ts"] = { code: 1, stdout: "", stderr: "❌ guard de custo D8: 900 créditos acima do teto" };
+    const { exec } = fakeExec(handlers);
+    const r = await runNovos([], deps(root, exec));
+    assert.equal(r.code, 1);
+  });
+});
+
+describe("runner no modo step-declares (#13098)", () => {
+  const NOOP_SYNC = (): GitSyncResult => ({
+    outcome: "already_up_to_date",
+    message: "no-op de teste",
+    branch_before: "master",
+    warnings: [],
+    proceed: true,
+    up_to_date: true,
+    commits_behind: 0,
+    preserved_stash: null,
+    stale_autostash_count: -1,
+  });
+  let workDir: string;
+  before(() => {
+    workDir = mkdtempSync(join(tmpdir(), "task-runner-13098-"));
+  });
+  after(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  function def(): ScheduledTaskDefinition {
+    return {
+      name: "Diaria-Teste-13098",
+      description: "task de teste do modo step-declares",
+      steps: [{ key: "run", script: "scripts/nao-roda.ts" }],
+      logPath: "task-runner-test/.13098.log",
+      schedule: { kind: "daily", hour: 9, minute: 0 },
+      issue: "#13098 (teste)",
+      retryOnTransientNetwork: "step-declares",
+      successExitCodes: [3],
+    };
+  }
+
+  function run(code: number, output: string, tag: string): number {
+    const exec: ExecStepFn = () => ({ code, output });
+    return runScheduledTask(def(), {
+      rootDir: workDir,
+      logPathOverride: join(workDir, `${tag}-final.log`),
+      tempLogPathOverride: join(workDir, `${tag}-temp.log`),
+      execStep: exec,
+      syncCode: NOOP_SYNC,
+      reportFailure: () => {},
+    }).code;
+  }
+
+  it("o 105 que o script declarou passa; saída com assinatura de rede e outro código não vira 105", () => {
+    assert.equal(run(TRANSIENT_NETWORK_EXIT_CODE, "queda antes da seleção", "declarado"), TRANSIENT_NETWORK_EXIT_CODE);
+    assert.equal(run(1, `${GH_OFFLINE}\n❌ guard de custo D8`, "determ"), 1);
+    assert.equal(run(NOVOS_STRANDED_SELECTION_EXIT_CODE, UNDICI_EAI_AGAIN, "presos"), NOVOS_STRANDED_SELECTION_EXIT_CODE);
+    assert.equal(run(NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE, UNDICI_EAI_AGAIN, "incerto"), NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE);
+  });
+
+  it("resolveStepDeclaredExitCode: 105 misturado com outra falha vira 1", () => {
+    const steps = [
+      { code: TRANSIENT_NETWORK_EXIT_CODE, bestEffort: false, output: "" },
+      { code: 2, bestEffort: false, output: "" },
+    ];
+    assert.equal(resolveStepDeclaredExitCode(TRANSIENT_NETWORK_EXIT_CODE, steps), 1);
+    assert.equal(resolveStepDeclaredExitCode(0, steps), 0);
+  });
+});
+
+describe("group-campaigns.json: escrita mesclada sob trava (#13098, P2-2)", () => {
+  let dir: string;
+  before(() => {
+    dir = mkdtempSync(join(tmpdir(), "group-campaigns-13098-"));
+  });
+  after(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const entry = (key: string, campaignId: number, extra: Partial<CampaignEntry> = {}): CampaignEntry => ({
+    key,
+    campaignId,
+    listId: campaignId + 1000,
+    subject: `Assunto ${key}`,
+    status: "draft",
+    ...extra,
+  });
+
+  it("a Tarde lê, o Envio grava a onda de amanhã no meio, a Tarde grava: as duas entradas ficam", () => {
+    const path = join(dir, "group-campaigns.json");
+    writeFileSync(path, JSON.stringify([entry("ramp-warm-261114", 1)], null, 2));
+    // Tarde (`novos`) lê no início da invocação.
+    const tarde = readGroupCampaigns(path);
+    // Envio das 19:10 grava a onda de amanhã enquanto a Tarde está no poll.
+    const onDisk = JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
+    onDisk[0] = { ...onDisk[0], status: "sent" };
+    onDisk.push(entry("daily-261115", 2, { status: "scheduled", scheduledAt: "2026-11-15T09:00:00.000Z" }));
+    writeFileSync(path, JSON.stringify(onDisk, null, 2));
+    // Tarde termina e grava o próprio array (com a entrada antiga intacta).
+    tarde.push(entry("novos-261114-2", 3, { status: "sent" }));
+    writeGroupCampaignsMerged(path, JSON.stringify(tarde, null, 2));
+
+    const final = JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
+    assert.deepEqual(
+      final.map((e) => [e.key, e.status]),
+      [
+        ["ramp-warm-261114", "sent"], // não volta para o draft lido pela Tarde
+        ["daily-261115", "scheduled"], // a onda de amanhã do Envio fica
+        ["novos-261114-2", "sent"],
+      ],
+    );
+  });
+
+  it("segunda escrita da mesma invocação aplica a mudança nova sem reverter a do outro processo", () => {
+    const path = join(dir, "gc-2.json");
+    writeFileSync(path, JSON.stringify([entry("a", 1), entry("b", 2)], null, 2));
+    const mine = readGroupCampaigns(path);
+    mine[0] = { ...mine[0], sendNowAttemptedAt: "2026-11-14T21:00:00.000Z" };
+    writeGroupCampaignsMerged(path, JSON.stringify(mine));
+    // Outro processo atualiza "b".
+    const disk = JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
+    disk[1] = { ...disk[1], status: "scheduled" };
+    writeFileSync(path, JSON.stringify(disk));
+    mine[0] = { ...mine[0], status: "sent" };
+    writeGroupCampaignsMerged(path, JSON.stringify(mine));
+    const final = JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
+    assert.equal(final[0].status, "sent");
+    assert.equal(final[0].sendNowAttemptedAt, "2026-11-14T21:00:00.000Z");
+    assert.equal(final[1].status, "scheduled");
+  });
+
+  it("mergeGroupCampaigns: entrada sem mudança não sobrescreve o disco; nova vai para o fim", () => {
+    const base = [entry("a", 1)];
+    const disk = [entry("a", 1, { status: "sent" }), entry("x", 9)];
+    assert.deepEqual(mergeGroupCampaigns(base, [entry("a", 1)], disk), disk);
+    const merged = mergeGroupCampaigns(base, [entry("a", 1), entry("n", 5)], disk);
+    assert.deepEqual(
+      merged.map((e) => e.key),
+      ["a", "x", "n"],
+    );
   });
 });

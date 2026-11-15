@@ -46,6 +46,9 @@ export interface NovosRunStatus {
   checkedAt: string;
   /** Trecho da mensagem de abort (só presente em `other-error`), auditoria. */
   detail?: string;
+  /** #13098: `other-error` depois de a seleção ser gravada (contatos presos
+   * na campanha da key). Uma rodada vazia do mesmo dia não o sobrescreve. */
+  stranded?: boolean;
 }
 
 export function novosRunStatusPath(baseDir: string = CLARICE_BASE): string {
@@ -66,6 +69,7 @@ export function readNovosRunStatus(baseDir: string = CLARICE_BASE): NovosRunStat
       status: parsed.status as NovosRunStatusValue,
       checkedAt: parsed.checkedAt,
       detail: typeof parsed.detail === "string" ? parsed.detail : undefined,
+      ...(parsed.stranded === true ? { stranded: true } : {}),
     };
   } catch {
     return null;

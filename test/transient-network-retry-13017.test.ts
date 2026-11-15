@@ -235,10 +235,11 @@ describe("registro: quem tem retry de rede (#13017)", () => {
     "Diaria-Ai-Fetch-Report",
     "Diaria-Dmarc-Drain",
     "Diaria-Backlog-Reconcile",
-    // Enviam, com idempotência conferida (decisão do editor 15/11/2026):
-    // a rerrodada resolve key nova e o grupo `novos` exclui quem a rodada
-    // caída selecionou; POST `sendNow` ambíguo sai 3 (sucesso), nunca 105.
-    // Contrato travado em test/transient-network-retry-send-units-13017.test.ts.
+    // Enviam, com idempotência conferida (decisão do editor 15/11/2026), no
+    // modo "step-declares": o script só sai 105 com queda de rede ANTES de
+    // gravar a seleção; depois disso sai 4 (contatos presos, sem retry), e o
+    // POST `sendNow` ambíguo sai 3 (sucesso). Contrato travado em
+    // test/transient-network-retry-send-units-13017.test.ts.
     "Diaria-Clarice-Novos",
     "Diaria-Clarice-Novos-Tarde",
   ];
@@ -257,7 +258,7 @@ describe("registro: quem tem retry de rede (#13017)", () => {
 
   it("as units de leitura/sync de 13/11 têm a flag", () => {
     for (const name of COM_RETRY) {
-      assert.equal(getScheduledTaskByName(name)?.retryOnTransientNetwork, true, name);
+      assert.ok(getScheduledTaskByName(name)?.retryOnTransientNetwork, name);
     }
   });
 
@@ -271,7 +272,7 @@ describe("registro: quem tem retry de rede (#13017)", () => {
   it("as units que enviam sem idempotência comprovada não têm a flag", () => {
     for (const name of SEM_RETRY_ENVIO) {
       assert.ok(getScheduledTaskByName(name), `${name} existe no registro`);
-      assert.notEqual(getScheduledTaskByName(name)?.retryOnTransientNetwork, true, name);
+      assert.ok(!getScheduledTaskByName(name)?.retryOnTransientNetwork, name);
     }
   });
 

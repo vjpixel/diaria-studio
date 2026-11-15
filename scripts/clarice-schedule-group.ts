@@ -205,6 +205,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { withFileLock } from "./lib/file-lock.ts";
 import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, BrevoHttpError, isTerminalSendStatus, describeUncertainSendStatus, pollTerminalSendStatus, SEND_NOW_GUARD_WINDOW_MS } from "./lib/brevo-client.ts";
 import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
@@ -505,12 +506,68 @@ export function resolveListIndexArg(argv: string[]): { listIndex: number | undef
  * dele, então nunca cai num `[]` silencioso).
  */
 export function readGroupCampaigns(path: string): CampaignEntry[] {
+  const parsed = readGroupCampaignsRaw(path);
+  // #13098: retrato do que ESTA invocação leu, base da escrita mesclada.
+  groupCampaignsBaseline.set(resolve(path), structuredClone(parsed));
+  return parsed;
+}
+
+function readGroupCampaignsRaw(path: string): CampaignEntry[] {
   if (!existsSync(path)) return [];
   try {
     return JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
   } catch (e) {
     throw new Error(`group-campaigns.json corrompido (JSON inválido): ${path}\n${String(e)}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// #13098: escrita mesclada do group-campaigns.json
+//
+// A invocação lê o registro no início e regrava o array INTEIRO depois do
+// poll do `--send-now` (até ~15 min). Duas invocações no mesmo ciclo (a rodada
+// `novos` da tarde, que agora reagenda por rede, e `Diaria-Clarice-Envio` às
+// 19:10) apagariam uma a entrada da outra; o guard das 05:00 depende da
+// entrada da onda de amanhã. Cada escrita relê o disco sob trava e só aplica
+// as entradas que ESTA invocação mudou desde a leitura (ou criou). O registro
+// nunca remove entradas, então o que está no disco e não mudou aqui fica.
+// ---------------------------------------------------------------------------
+
+const groupCampaignsBaseline = new Map<string, CampaignEntry[]>();
+
+const sameCampaign = (a: CampaignEntry, b: CampaignEntry): boolean => a.key === b.key && a.campaignId === b.campaignId;
+
+/**
+ * Pura: `onDisk` mais as entradas de `current` que diferem de `baseline`
+ * (mesma `key` + `campaignId`) ou que não existiam nele. A entrada mudada
+ * substitui a do disco na mesma posição; a nova vai para o fim.
+ */
+export function mergeGroupCampaigns(
+  baseline: readonly CampaignEntry[],
+  current: readonly CampaignEntry[],
+  onDisk: readonly CampaignEntry[],
+): CampaignEntry[] {
+  const merged = onDisk.map((e) => ({ ...e }));
+  for (const cur of current) {
+    const base = baseline.find((b) => sameCampaign(b, cur));
+    if (base && JSON.stringify(base) === JSON.stringify(cur)) continue;
+    const i = merged.findIndex((d) => sameCampaign(d, cur));
+    if (i >= 0) merged[i] = { ...cur };
+    else merged.push({ ...cur });
+  }
+  return merged;
+}
+
+/** Escreve `content` (o array desta invocação) no registro, mesclado com o
+ * disco sob trava. Writer padrão das funções deste script. */
+export function writeGroupCampaignsMerged(path: string, content: string): void {
+  const abs = resolve(path);
+  const current = JSON.parse(content) as CampaignEntry[];
+  withFileLock(`${abs}.lock`, () => {
+    const merged = mergeGroupCampaigns(groupCampaignsBaseline.get(abs) ?? [], current, readGroupCampaignsRaw(abs));
+    writeFileAtomic(abs, JSON.stringify(merged, null, 2));
+  });
+  groupCampaignsBaseline.set(abs, structuredClone(current));
 }
 
 export function resolveContentCycle(argv: string[], segmentsCycle: string): string {
@@ -821,7 +878,7 @@ export function applySendNowVerifyResults(
   toVerify: CampaignEntry[],
   campaigns: CampaignEntry[],
   campaignsPath: string,
-  writeFn: (path: string, content: string) => void = (p, c) => writeFileAtomic(p, c),
+  writeFn: (path: string, content: string) => void = writeGroupCampaignsMerged,
   logFn: (msg: string) => void = (m) => console.error(m),
 ): void {
   if (settled.length !== toVerify.length) {
@@ -1060,7 +1117,7 @@ export function applyRescheduleVerifyResults(
   newScheduledAts: string[],
   campaigns: CampaignEntry[],
   campaignsPath: string,
-  writeFn: (path: string, content: string) => void = (p, c) => writeFileAtomic(p, c),
+  writeFn: (path: string, content: string) => void = writeGroupCampaignsMerged,
   logFn: (msg: string) => void = (m) => console.error(m),
 ): void {
   if (settled.length !== toVerify.length || toVerify.length !== newScheduledAts.length) {
@@ -1172,7 +1229,7 @@ export async function runSendNowLive(
   const getCampaignFn = deps.getCampaignFn ?? ((k, id) => brevoGetCampaign(k, id));
   const sendNowFn = deps.sendNowFn ?? ((k, id) => brevoSendNow(k, id));
   const pollFn = deps.pollFn ?? ((k, id) => pollTerminalSendStatus(k, id));
-  const writeFn = deps.writeFn ?? ((p, content) => writeFileAtomic(p, content));
+  const writeFn = deps.writeFn ?? writeGroupCampaignsMerged;
   const readFn = deps.readFn ?? ((p) => readFileSync(p, "utf8"));
   const logFn = deps.logFn ?? ((m) => console.error(m));
   const nowFn = deps.nowFn ?? (() => new Date());
@@ -1361,7 +1418,7 @@ export async function runUpdateHtml(
     nowFn?: () => Date;
   },
 ): Promise<"updated" | "skipped"> {
-  const writeFn = deps.writeFn ?? ((p, content) => writeFileAtomic(p, content));
+  const writeFn = deps.writeFn ?? writeGroupCampaignsMerged;
   const logFn = deps.logFn ?? ((m) => console.error(m));
   const hasSendNowMark = isNonEmptyMark(c.sendNowAcceptedAt) || isNonEmptyMark(c.sendNowAttemptedAt);
   if (c.status === "draft" && !isNonEmptyMark(c.scheduleAcceptedAt) && hasSendNowMark) {
@@ -1439,7 +1496,7 @@ export async function runScheduleLive(
     now?: () => Date;
   },
 ): Promise<void> {
-  const writeFn = deps.writeFn ?? ((p, content) => writeFileAtomic(p, content));
+  const writeFn = deps.writeFn ?? writeGroupCampaignsMerged;
   const logFn = deps.logFn ?? ((m) => console.error(m));
   await deps.putScheduleFn(c.campaignId, c.scheduledAt);
   markScheduleAccepted(c, campaigns, campaignsPath, writeFn, deps.now); // #10211 — antes do GET-verify
@@ -1719,7 +1776,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // não cria diretórios faltantes (documentado em lib/atomic-write.ts) —
       // sem ensureDir aqui, --create com --list-id puro falharia com ENOENT.
       ensureDir(segmentsDir);
-      writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
+      writeGroupCampaignsMerged(campaignsPath, JSON.stringify(campaigns, null, 2));
     }
   }
 
