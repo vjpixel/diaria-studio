@@ -42,7 +42,14 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import {
+  editionsFromRawDestaques,
+  findDraftIntentionalErrorLeaks,
+  formatIntentionalErrorAdvisory,
+  formatIntentionalErrorLeaks,
+  loadWindowIntentionalErrors,
+} from "./lib/intentional-error-scrub.ts"; // #13105 item 3
 import {
   parseMonthlyCycleArg,
   monthlyDir as resolveMonthlyDir,
@@ -326,6 +333,30 @@ function extractBody(section: string): string {
   return body.slice(0, end).join("\n");
 }
 
+/**
+ * #13105 item 3: gabaritos das edições do mês (lidas de
+ * `_internal/raw-destaques.json`) e os vazamentos no texto final. `note` quando
+ * não há gabarito para conferir (sem raw-destaques, ou nenhuma edição com erro
+ * declarado) — o lint segue, só registra que o guard ficou sem insumo.
+ * Exportado para o render da mensal-apoiadores, que lê o mesmo `draft.md`.
+ */
+export function monthlyDraftIntentionalErrors(
+  draft: string,
+  monthDir: string,
+): { leaks: ReturnType<typeof findDraftIntentionalErrorLeaks>; note: string | null } {
+  const editions = editionsFromRawDestaques(join(monthDir, "_internal", "raw-destaques.json"));
+  if (editions.length === 0) {
+    return {
+      leaks: { blocking: [], advisory: [] },
+      note: "guard do erro intencional sem insumo: _internal/raw-destaques.json ausente ou sem edições (#13105).",
+    };
+  }
+  // data/monthly/{ciclo} → data/editions
+  const editionsRoot = join(dirname(dirname(monthDir)), "editions");
+  const pairs = loadWindowIntentionalErrors(editionsRoot, editions);
+  return { leaks: findDraftIntentionalErrorLeaks(draft, pairs), note: null };
+}
+
 function main(): void {
   // Aceita --cycle 2605-06 (novo) ou argumento posicional 2604 (legado compat).
   const cycle = parseMonthlyCycleArg(process.argv.slice(2));
@@ -337,7 +368,8 @@ function main(): void {
     process.exit(2);
   }
 
-  const path = join(resolveMonthlyDir(cycle), "draft.md");
+  const monthDir = resolveMonthlyDir(cycle);
+  const path = join(monthDir, "draft.md");
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -396,6 +428,19 @@ function main(): void {
       `Trocar o crédito de envio por "${CREDITO_BREVO_MENSAL}" (sem link de afiliado). Trecho(s): ` +
       `${sendingCreditCheck.offending.map((l) => JSON.stringify(l.slice(0, 160))).join(" | ")}. Ver #9307.`,
     );
+  }
+  // #13105 item 3: o erro intencional de cada edição do mês nunca sai dela
+  // (#13051). O insumo já vem limpo do collect-monthly; aqui o guard olha o
+  // texto FINAL que o writer-monthly escreveu (o mesmo draft.md serve a
+  // mensal-apoiadores).
+  const intentional = monthlyDraftIntentionalErrors(text, monthDir);
+  if (intentional.note) console.log(`[lint-monthly] ${intentional.note}`);
+  if (intentional.leaks.blocking.length > 0) {
+    hasFatal = true;
+    console.error(`[lint-monthly] FATAL: ${formatIntentionalErrorLeaks(intentional.leaks.blocking, "draft.md")}`);
+  }
+  if (intentional.leaks.advisory.length > 0) {
+    console.log(`[lint-monthly] ⚠  ${formatIntentionalErrorAdvisory(intentional.leaks.advisory, "draft.md")}`);
   }
   if (hasFatal) {
     console.error("[lint-monthly] ══════════════════════════════════════════════════════════════");

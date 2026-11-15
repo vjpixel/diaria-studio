@@ -62,6 +62,8 @@ import { relinkMonthlyEditionHtml } from "./monthly-relink-to-diaria.ts"; // #40
 import { isMainModule } from "./lib/cli-args.ts";
 import { parseMonthlyCycleArg, cycleToYymm, monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { readPublicImages, missingImageKeys } from "./render-monthly-apoiadores-brevo.ts";
+import { monthlyDraftIntentionalErrors } from "./lint-monthly-draft.ts"; // #13105 item 3
+import { formatIntentionalErrorAdvisory, formatIntentionalErrorLeaks } from "./lib/intentional-error-scrub.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -126,6 +128,21 @@ export function renderMonthlyApoiadoresKitEmail(cycle: string): RenderedMonthlyA
     process.exit(1);
   }
   const draft = readFileSync(draftPath, "utf8");
+
+  // #13105 item 3: o erro intencional de uma edição do mês nunca sai dela
+  // (#13051) — recusa o render se a grafia errada de um nome reapareceu no
+  // texto final; valor ambíguo (número, palavra curta) só avisa.
+  const intentional = monthlyDraftIntentionalErrors(draft, monthlyDir);
+  if (intentional.note) console.error(`[render-monthly-apoiadores-kit] aviso: ${intentional.note}`);
+  if (intentional.leaks.advisory.length > 0) {
+    console.error(
+      `[render-monthly-apoiadores-kit] aviso: ${formatIntentionalErrorAdvisory(intentional.leaks.advisory, "draft.md")}`,
+    );
+  }
+  if (intentional.leaks.blocking.length > 0) {
+    console.error(`[render-monthly-apoiadores-kit] ${formatIntentionalErrorLeaks(intentional.leaks.blocking, "draft.md")}`);
+    process.exit(1);
+  }
 
   const images = readPublicImages(monthlyDir);
   const missingImages = missingImageKeys(images);
