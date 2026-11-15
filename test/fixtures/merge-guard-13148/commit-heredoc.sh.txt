@@ -1,0 +1,44 @@
+cd /home/vjpixel/diaria-studio/.claude/worktrees/agent-ada1eb1370a945166 && git add scripts/video-roteiro-blocos.ts scripts/render-roteiro-video.ts scripts/lib/diaria/roteiro-videos.ts test/video-roteiro-blocos.test.ts && git commit -q -F - <<'EOF'
+feat(video-roteiro): esquema com tela, cortes, ordem e fontes; duração; página gerada do JSON; revisão por 2º modelo (#13120, #13128, #13129, #13130, #13131, #13132)
+
+Esquema do roteiro-falas.json, campos opcionais e retrocompatíveis:
+- por fala: `tela` (#13120, sem seta #9721), `cortes` com `reserva` (#13129),
+  `fontes` (#13132);
+- por vídeo: `porVideo.{vertical1,vertical2}.ordem` (#13128) e `cta`;
+  `porVideo.vertical1.titulo` ausente herda o do horizontal (#13116);
+- na raiz: `gravacao` e `notas` para a página.
+
+Validador (video-roteiro-blocos.ts): erro em `ordem` com fala faltando,
+sobrando ou repetida, corte com trecho fora da fala e `tela` com seta;
+duração estimada por vídeo, com alvos em publishing.video.roteiro e aviso
+de vertical acima de 60 s (#13130); aviso de capa de vertical sem sujeito
+(#13116). A proposta de blocos segue a `ordem`, aplica o corte e lista os
+cortes de reserva e as fontes; fact-check-input leva `roteiro_fontes`.
+
+Gerador: scripts/render-roteiro-video.ts gera o roteiro-d1.html do JSON
+no layout da 261116 (box "Na tela", caixa Gravação, notas no fim).
+
+Skill: rascunho do editor como entrada com checagem na web (#13132),
+revisão por um segundo modelo por vídeo com filtro do coordenador (#13131),
+critérios de título/capa/gancho no Passo 2 e no Passo 7 (#13116).
+
+Validador também recusa `cortes.horizontal` (o horizontal fica com a fala
+inteira), trecho que corta no meio de palavra e fala de abertura num
+vertical; `readRoteiroHorizontal` usa título e capa do horizontal mesmo
+com o roteiro inválido em outro campo; `readRoteiroFontes` devolve as
+fontes válidas com `status` e o agent `revisor-roteiro-video`
+(claude-opus-5-5/medium, só leitura) fica no mix aprovado (#9003).
+
+Fixture: o roteiro-falas.json real da 261116. Fora: #13117, #13123;
+resto da montagem em #13140.
+
+Closes #13120
+Closes #13128
+Closes #13129
+Closes #13130
+Closes #13131
+Closes #13132
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+EOF
+git push -q -u origin overnight/batch-roteiro-video 2>&1 | tail -2
