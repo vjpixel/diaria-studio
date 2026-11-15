@@ -42,14 +42,30 @@ export const REPLACE_UPLOAD_MIN_LEAD_MS = 10 * 60_000;
 
 export type ShortReplacementKind = "api" | "buffer";
 
-export interface ShortReplacementTarget {
+/** ID de post da Buffer no registro (`buffer:{id}`): a mesma regra em todo o fluxo da troca. */
+export const BUFFER_ID_RE = /^buffer:[A-Za-z0-9_-]+$/;
+
+interface ShortReplacementTargetBase {
   destination: string;
-  kind: ShortReplacementKind;
-  /** ID do post antigo no registro (Buffer: `buffer:ID`). */
-  old_id: string;
   /** Horário do post antigo: o envio novo sai nele. */
   at: string;
 }
+
+/** Alvo de API (YouTube Shorts, Facebook): o publisher cancela e sobe de novo. */
+export interface ApiReplacementTarget extends ShortReplacementTargetBase {
+  kind: "api";
+  /** ID do vídeo antigo na plataforma. */
+  old_id: string;
+}
+
+/** Alvo da Buffer (X, TikTok): a skill apaga e cria pela MCP. */
+export interface BufferReplacementTarget extends ShortReplacementTargetBase {
+  kind: "buffer";
+  /** `buffer:{id}` do post antigo. */
+  old_id: string;
+}
+
+export type ShortReplacementTarget = ApiReplacementTarget | BufferReplacementTarget;
 
 export interface ShortReplacementSkip {
   destination: string;
@@ -68,7 +84,7 @@ export function isApiReplaceableDestination(destination: string): boolean {
 
 /** Destino da Buffer (a skill apaga e cria pela MCP). */
 export function isBufferReplaceableDestination(destination: string, id: string): boolean {
-  return (destination === "x" || destination === "tiktok") && /^buffer:.+/.test(id);
+  return (destination === "x" || destination === "tiktok") && BUFFER_ID_RE.test(id);
 }
 
 /**
@@ -123,7 +139,8 @@ export function planScheduledReplacements(
       skip("o post agendado já tem estes bytes (mesmo video_sha256): nada a trocar");
       continue;
     }
-    targets.push({ destination: e.destination, kind: api ? "api" : "buffer", old_id: e.id, at: new Date(atMs).toISOString() });
+    const atIso = new Date(atMs).toISOString();
+    targets.push(api ? { destination: e.destination, kind: "api", old_id: e.id, at: atIso } : { destination: e.destination, kind: "buffer", old_id: e.id, at: atIso });
   }
   return { targets, skipped };
 }
@@ -197,34 +214,51 @@ export function replacementGrantRefusal(
   return problems.length ? `substituição recusada (#12279): ${problems.join("; ")}` : null;
 }
 
-/** Desfecho por alvo da fase destrutiva. */
-export interface ReplacementCancelResult {
-  target: ShortReplacementTarget;
-  /** `cancelled`: post antigo fora e histórico gravado (segue para o envio novo); `buffer`: fica com a skill; `failed`: nada a enviar. */
-  outcome: "cancelled" | "buffer" | "failed";
-  error?: string;
-}
+/**
+ * Desfecho por alvo da fase destrutiva. `cancelled`: post antigo fora e
+ * histórico gravado (segue para o envio novo); `buffer`: fica com a skill;
+ * `failed`: nada cancelado (ou cancelado sem histórico, `phase: "record"`),
+ * sem envio novo; `uncertain`: a escrita na plataforma saiu e a resposta não
+ * confirmou: o post antigo PODE ter sido cancelado, a marca "cancelando" fica
+ * e nada é enviado até o editor conferir a conta.
+ */
+export type ReplacementCancelResult =
+  | { outcome: "cancelled"; target: ApiReplacementTarget }
+  | { outcome: "buffer"; target: BufferReplacementTarget }
+  | { outcome: "failed"; target: ApiReplacementTarget; phase: "cancel" | "record"; error: string }
+  | { outcome: "uncertain"; target: ApiReplacementTarget; phase: "cancel"; error: string };
 
 export interface ReplacementPhaseDeps {
   /** Consome (uso único) a autorização de substituição de todos os alvos. Chamado ANTES de qualquer exclusão. */
   consume: () => { ok: true } | { ok: false; error: string };
-  /** Relê a plataforma e cancela o post antigo (lança se ele não está agendado com folga: nada apagado). */
-  cancel: (target: ShortReplacementTarget) => Promise<void>;
+  /**
+   * Relê a plataforma e cancela o post antigo. `onBeforeWrite` é chamado logo
+   * antes da escrita (o `videos.update`/`DELETE`): exceção antes dele = nada
+   * alterado; depois dele = desfecho incerto.
+   */
+  cancel: (target: ApiReplacementTarget, onBeforeWrite: () => void) => Promise<void>;
+  /** Grava a marca "cancelando" do destino ANTES de chamar a plataforma (a releitura e o dry-run a acusam). */
+  markCancelling: (target: ApiReplacementTarget) => void;
+  /** Tira a marca "cancelando" quando a plataforma recusou antes de qualquer escrita. */
+  clearCancelling: (destination: string) => void;
   /** Grava o histórico da substituição (só depois do cancelamento confirmado). */
-  record: (target: ShortReplacementTarget) => void;
+  record: (target: ApiReplacementTarget) => void;
   /** Limpa as marcas de envio do destino (o post antigo saiu). */
   clearMarks: (destination: string) => void;
   /** Relê o registro: o alvo ainda é o mesmo post? (outra sessão pode ter mexido). */
   stillRegistered: (target: ShortReplacementTarget) => boolean;
+  /** Aviso não fatal (marca não apagada). */
+  warn: (message: string) => void;
 }
 
 /**
  * #12279: a fase destrutiva da substituição. Ordem fixa: (1) consumo da
  * autorização de TODOS os alvos (recusa = nada apagado, `refused`); (2) por
- * alvo de API, releitura do registro, cancelamento na plataforma, histórico e
- * limpeza das marcas. Falha num alvo não desfaz os outros (a troca não é
- * atômica entre plataformas) e o alvo que falhou não recebe envio novo. Os
- * alvos da Buffer não são tocados aqui: a skill apaga depois desta rodada.
+ * alvo de API, releitura do registro, marca "cancelando", cancelamento na
+ * plataforma, histórico e limpeza das marcas. Falha num alvo não desfaz os
+ * outros (a troca não é atômica entre plataformas) e o alvo que falhou ou
+ * ficou incerto não recebe envio novo. Os alvos da Buffer não são tocados
+ * aqui: a skill apaga depois desta rodada.
  */
 export async function runScheduledReplacement(
   targets: readonly ShortReplacementTarget[],
@@ -239,33 +273,81 @@ export async function runScheduledReplacement(
       results.push({ target, outcome: "buffer" });
       continue;
     }
+    const fail = (error: string, phase: "cancel" | "record" = "cancel") => results.push({ target, outcome: "failed", phase, error });
     try {
-      if (!deps.stillRegistered(target)) throw new Error(`o registro de ${target.destination} mudou desde o plano (não é mais o post ${target.old_id} agendado): nada apagado`);
-      await deps.cancel(target);
+      if (!deps.stillRegistered(target)) {
+        fail(`o registro de ${target.destination} mudou desde o plano (não é mais o post ${target.old_id} agendado): nada cancelado`);
+        continue;
+      }
+      deps.markCancelling(target);
     } catch (e) {
-      results.push({ target, outcome: "failed", error: `post antigo ${target.old_id} NÃO cancelado: ${(e as Error).message}` });
+      fail(`post antigo ${target.old_id} NÃO cancelado: marca de cancelamento não gravada (${(e as Error).message})`);
+      continue;
+    }
+    let sent = false;
+    try {
+      await deps.cancel(target, () => {
+        sent = true;
+      });
+    } catch (e) {
+      if (sent) {
+        results.push({
+          target,
+          outcome: "uncertain",
+          phase: "cancel",
+          error: `o cancelamento do post antigo ${target.old_id} saiu e a resposta não confirmou (${(e as Error).message}): ele PODE ter sido cancelado. Confira a conta antes de qualquer coisa; nada enviado, a marca "cancelando" fica`,
+        });
+        continue;
+      }
+      try {
+        deps.clearCancelling(target.destination);
+      } catch (ce) {
+        deps.warn(`${target.destination}: marca "cancelando" não apagada (${(ce as Error).message}): a releitura vai acusá-la`);
+      }
+      fail(`post antigo ${target.old_id} NÃO cancelado: ${(e as Error).message}`);
       continue;
     }
     try {
       deps.record(target);
     } catch (e) {
-      // O post antigo já saiu: sem o histórico, o registro ainda o aponta. O envio novo não sai.
-      results.push({ target, outcome: "failed", error: `post antigo ${target.old_id} CANCELADO na plataforma, mas o histórico da substituição não foi gravado (${(e as Error).message}): nada enviado; confira e registre à mão` });
+      // O post antigo já saiu: sem o histórico, o registro ainda o aponta. O envio novo não sai, a marca fica.
+      fail(`post antigo ${target.old_id} CANCELADO na plataforma, mas o histórico da substituição não foi gravado (${(e as Error).message}): nada enviado; confira e registre à mão`, "record");
       continue;
     }
     try {
       deps.clearMarks(target.destination);
-    } catch {
-      // Marca velha só faz a releitura acusar "pode ter saído": não impede o envio novo.
+    } catch (e) {
+      deps.warn(`${target.destination}: marcas de envio não apagadas (${(e as Error).message}): a releitura vai acusá-las como "pode ter saído"`);
     }
     results.push({ target, outcome: "cancelled" });
   }
   return { refused: null, results };
 }
 
+/** Pure: os destinos que recebem envio novo (cancelado na API, ou Buffer com a skill). */
+export function replacementSurvivors(results: readonly ReplacementCancelResult[]): Set<string> {
+  return new Set(results.filter((r) => r.outcome === "cancelled" || r.outcome === "buffer").map((r) => r.target.destination));
+}
+
+/** Pure: o envio novo sai agendado no horário preservado, com folga (`null` = ok), para qualquer destino. */
+export function replacementUploadRefusal(scheduledAt: string | null | undefined, now: Date): string | null {
+  const atMs = scheduledAt ? Date.parse(scheduledAt) : Number.NaN;
+  if (!Number.isNaN(atMs) && atMs - now.getTime() > REPLACE_UPLOAD_MIN_LEAD_MS) return null;
+  return `horário preservado (${scheduledAt ?? "nenhum"}) a ${Math.round(REPLACE_UPLOAD_MIN_LEAD_MS / 60_000)} min ou menos: a substituição não publica na hora, nada enviado`;
+}
+
+/** Pure: a mensagem de uma falha de envio novo DEPOIS de o post antigo ter sido cancelado. */
+export function afterCancelMessage(target: ShortReplacementTarget | undefined, msg: string): string {
+  if (!target || target.kind !== "api") return msg;
+  return (
+    `post antigo ${target.old_id} já cancelado (histórico em _internal/06-shorts-replaced.json), envio novo FALHOU: ${msg}. ` +
+    "Confira a conta antes de qualquer coisa (envio ambíguo fica send_unknown no registro). Recuperação: docs/shorts-replace-scheduled.md (#12279)"
+  );
+}
+
 /** Pure: o comando da rodada de substituição (dono dos destinos no manifesto). */
-export function replacementPublishCommand(aammdd: string, source: { video?: string; fromDrive?: string } = {}): string {
-  const src = source.video ? ` --video ${source.video}` : source.fromDrive ? ` --from-drive ${source.fromDrive}` : "";
+export function replacementPublishCommand(aammdd: string, source: { video?: string } = {}): string {
+  const src = source.video ? ` --video ${source.video}` : "";
   return `npx tsx scripts/publish-shorts.ts ${aammdd} --replace-scheduled${src} --publish --confirm-publish ${aammdd}`;
 }
 

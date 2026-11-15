@@ -59,7 +59,6 @@ import {
   type VideoPublishAuthorization,
 } from "./lib/diaria/video-publish-authorization.ts";
 import { readVideoPlanManifest, VIDEO_PLAN_PARTS, type VideoPlanPart } from "./lib/diaria/video-publish-plan.ts";
-import { replacementGrantRefusal } from "./lib/diaria/short-scheduled-replace.ts";
 import { readShortsRegistry } from "./lib/diaria/shorts-published-store.ts";
 import { openSendingMarks, readShortsSending } from "./lib/diaria/shorts-sending-marker.ts";
 
@@ -121,21 +120,19 @@ export function main(argv: string[] = process.argv.slice(2), io: AuthorizeCliIo 
         );
         return 1;
       }
-      if (replacement) {
-        // #12279: o post antigo de cada destino ainda é o registrado, agendado, no mesmo horário, com folga.
-        const entries = readShortsRegistry(dir, aammdd).entries;
-        const refusal = replacementGrantRefusal(manifest, entries, io.now(), openSendingMarks(readShortsSending(dir, aammdd), entries));
-        if (refusal) {
-          io.err(`video-publish-authorize: grant recusado: ${refusal}`);
-          return 1;
-        }
-      }
       const only = values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null;
       const r = updateAuthorizationStore<AuthResult<VideoPublishAuthorization[]>>(dir, aammdd, (store) => {
         const g = grantVideoPublishAuthorization(store, {
           manifest, planSha256: values["plan-sha256"], confirmation: values["confirmation"], now: io.now(), only,
           overrideUncertain: values["override-uncertain"] ?? null,
           replacement,
+          // #12279: o registro do vertical é lido aqui, sob o lock do registro de autorização.
+          ...(replacement
+            ? (() => {
+                const entries = readShortsRegistry(dir, aammdd).entries;
+                return { replacementRegistry: { entries, openMarks: openSendingMarks(readShortsSending(dir, aammdd), entries) } };
+              })()
+            : {}),
         });
         return g.ok ? { store: g.store, result: g } : { store: null, result: g };
       });

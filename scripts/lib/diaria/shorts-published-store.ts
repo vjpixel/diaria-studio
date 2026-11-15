@@ -271,9 +271,10 @@ function readOne(path: string, aammdd: string, corte: boolean): ShortsPublishedF
 export function readShortsRegistry(editionDir: string, aammdd: string): ShortsPublishedFile {
   const corte = isCorteDir(editionDir);
   // #12279: o post trocado pelo --replace-scheduled não conta mais como feito, em nenhum
-  // arquivo (cópias de conflito do OneDrive incluídas): o par destino/ID antigo some da visão.
+  // arquivo (cópias de conflito incluídas): some a entrada AGENDADA do par destino/ID antigo.
+  // Outra entrada com o mesmo ID (send_unknown, published) fica visível: nunca é escondida.
   const replaced = readShortReplacements(editionDir);
-  const gone = (e: ShortPublishedEntry) => replaced.some((r) => r.destination === e.destination && r.id === e.id);
+  const gone = (e: ShortPublishedEntry) => e.status === "scheduled" && replaced.some((r) => r.destination === e.destination && r.id === e.id);
   const files = listShortsRegistryFiles(editionDir).map((p) => readOne(p, aammdd, corte));
   return mergeShortsRegistries(aammdd, replaced.length ? files.map((f) => ({ ...f, entries: f.entries.filter((e) => !gone(e)) })) : files);
 }
@@ -281,8 +282,9 @@ export function readShortsRegistry(editionDir: string, aammdd: string): ShortsPu
 /**
  * #12279: histórico das substituições de post agendado (`--replace-scheduled`).
  * Cada linha é um par destino/ID que a plataforma confirmou cancelado (ou que
- * a skill confirmou apagado na Buffer, `--mark ... --replaces`): o registro
- * deixa de contar esse ID como feito, mesmo numa cópia de conflito antiga.
+ * a skill confirmou apagado na Buffer, `--mark-replaced`/`--mark ... --replaces`):
+ * o registro deixa de contar a entrada AGENDADA desse ID, mesmo numa cópia de
+ * conflito antiga.
  * Nome fora do padrão `06-shorts-published*`: não é lido como registro.
  */
 export const SHORTS_REPLACED_FILE = "_internal/06-shorts-replaced.json";

@@ -557,6 +557,13 @@ export async function rescheduleScheduledVideo(
   videoId: string,
   publishAt: string | null,
   minLeadMs: number,
+  /**
+   * #12279: `expectedAt` = o horário que o chamador acredita estar agendado (o
+   * vídeo relido em outro horário não é tocado); `onBeforeWrite` roda logo
+   * antes do `videos.update`: falha depois dele é desfecho incerto, não "nada
+   * alterado".
+   */
+  opts: { expectedAt?: string; onBeforeWrite?: () => void } = {},
 ): Promise<{ previousPublishAt: string; publishAt: string | null }> {
   const token = await refreshYouTubeAccessToken(deps, creds);
   await assertExpectedChannel(deps, token, creds.channelId);
@@ -577,9 +584,13 @@ export async function rescheduleScheduledVideo(
       `o vídeo ${videoId} não está agendado com folga (privacy ${String(status.privacyStatus ?? "?")}, publishAt ${previous ?? "nenhum"}, folga mínima ${Math.round(minLeadMs / 60_000)} min) — nada alterado; confira no YouTube Studio`,
     );
   }
+  if (opts.expectedAt !== undefined && Date.parse(previous) !== Date.parse(opts.expectedAt)) {
+    throw new Error(`o vídeo ${videoId} está agendado para ${previous}, não para ${opts.expectedAt} — nada alterado; confira no YouTube Studio`);
+  }
   const next: Record<string, unknown> = { privacyStatus: "private" };
   for (const k of YOUTUBE_WRITABLE_STATUS_FIELDS) if (status[k] !== undefined) next[k] = status[k];
   if (publishAt !== null) next.publishAt = publishAt;
+  opts.onBeforeWrite?.();
   const put = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=status`, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -636,6 +647,12 @@ export interface EditionVideoCriteria {
    * publicado no mesmo dia.
    */
   titleOnly?: boolean;
+  /**
+   * #12279: IDs que nunca contam como "o vídeo da edição já no canal": o
+   * Short antigo que a troca (--replace-scheduled) deixou private sem
+   * agendamento. Sem isso, o envio de recuperação gravaria o V1 de novo.
+   */
+  ignoreVideoIds?: readonly string[];
 }
 
 /** Como o vídeo existente foi reconhecido (do sinal mais forte ao mais fraco). */
@@ -721,6 +738,7 @@ export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVide
   const found: ExistingEditionVideo[] = [];
   for (const v of videos) {
     if (!v.id) continue;
+    if (criteria.ignoreVideoIds?.includes(v.id)) continue;
     if (failedUploadStatus(v.status ?? null)) continue;
     const title = v.snippet?.title ?? "";
     const description = v.snippet?.description ?? "";

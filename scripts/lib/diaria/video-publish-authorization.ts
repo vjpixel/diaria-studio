@@ -83,6 +83,9 @@ import {
   type VideoPlanPart,
   type VideoPlanReplacement,
 } from "./video-publish-plan.ts";
+import { replacementGrantRefusal } from "./short-scheduled-replace.ts";
+import type { ShortPublishedEntry } from "./short-video.ts";
+import type { ShortSendingMark } from "./shorts-sending-marker.ts";
 
 export const AUTHORIZATION_STORE_SCHEMA = "diaria-video-publish-authorizations/v1";
 export const AUTHORIZATION_STORE_FILE = "_internal/video-publish-authorizations.json";
@@ -303,6 +306,12 @@ export interface GrantInput {
    * que o plano aprovado troca (ID e horário no plano).
    */
   replacement?: boolean;
+  /**
+   * #12279: o registro do vertical lido SOB o lock do registro de autorização
+   * (obrigatório com `replacement`): cada post antigo do plano precisa ser o
+   * registrado, agendado, no mesmo horário, com folga e sem envio em aberto.
+   */
+  replacementRegistry?: { entries: readonly ShortPublishedEntry[]; openMarks: readonly ShortSendingMark[] };
 }
 
 /** Pure: confere a barreira de retry de um destino. `null` = pode autorizar; senão, o motivo. */
@@ -387,6 +396,11 @@ export function grantVideoPublishAuthorization(storeIn: VideoPublishAuthorizatio
   }
   if (!replacement && hasReplacementDestination(m)) {
     return { ok: false, error: "este é o manifesto de uma substituição de post agendado: o grant dele exige --replace-scheduled (#12279)" };
+  }
+  if (replacement) {
+    if (!input.replacementRegistry) return { ok: false, error: "grant de substituição sem o registro do vertical para conferir os posts antigos: nada autorizado (#12279)" };
+    const refusal = replacementGrantRefusal(m, input.replacementRegistry.entries, input.now, input.replacementRegistry.openMarks);
+    if (refusal) return { ok: false, error: refusal };
   }
   const authorizable = authorizableDestinations(m);
   let targets = authorizable;
