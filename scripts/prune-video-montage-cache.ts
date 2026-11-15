@@ -31,12 +31,19 @@
  * seguido, nem apagado), e o `rmSync` de uma edição remove os links de
  * dentro dela sem tocar o alvo. A própria raiz pode ser um link (é resolvida
  * por `realpath` antes da varredura).
+ *
+ * Experimentos (#13137): cópia do bruto para teste vai em
+ * `{raiz}/_experimentos/{nome}/`, e sai sem modificação há mais de
+ * `--experiment-max-idle-days` (30). Diretório direto do `~/.cache` (fora da
+ * raiz) com 1 GB ou mais de mídia é avisado em stderr, nunca apagado: foi o
+ * `~/.cache/m12089` (7,9 GB no 300), que nenhuma retenção via.
  * Task agendada: `Diaria-Video-Montage-Cache-Prune` (diária, `--apply`).
  *
  * Uso:
  *   npx tsx scripts/prune-video-montage-cache.ts                       # dry-run
  *   npx tsx scripts/prune-video-montage-cache.ts --apply               # apaga de verdade
  *   npx tsx scripts/prune-video-montage-cache.ts --keep-days 5 --unpublished-max-days 21
+ *   npx tsx scripts/prune-video-montage-cache.ts --experiment-max-idle-days 60
  *   npx tsx scripts/prune-video-montage-cache.ts --cache-dir DIR --data-root DIR   # outra raiz (testes)
  *   npx tsx scripts/prune-video-montage-cache.ts --json
  */
@@ -53,9 +60,17 @@ import { defaultVideoCacheRoot, videoCacheRoot, type CacheRootCheck } from "./li
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
 import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
 import {
+  CACHE_EXPERIMENTS_DIR,
   DEFAULT_CACHE_KEEP_DAYS,
   DEFAULT_CACHE_UNPUBLISHED_MAX_DAYS,
+  DEFAULT_EXPERIMENT_MAX_IDLE_DAYS,
+  ORPHAN_MEDIA_MIN_BYTES,
+  isMediaFileName,
   planCacheRetention,
+  planExperimentRetention,
+  type ExperimentEntry,
+  type ExperimentRetentionPlan,
+  type ExperimentSkipReason,
   type CacheEntry,
   type CacheKeepReason,
   type CacheRemoveReason,
@@ -161,6 +176,8 @@ export function readCacheEntries(cacheRoot: string, dataRoot: string, warnings: 
   const haveEditions = existsSync(join(dataRoot, "editions"));
   const out: CacheEntry[] = [];
   for (const ent of readdirSync(cacheRoot, { withFileTypes: true })) {
+    // Os experimentos têm política própria (`readExperimentEntries`, #13137).
+    if (ent.name === CACHE_EXPERIMENTS_DIR && ent.isDirectory()) continue;
     const kind: CacheEntry["kind"] = ent.isSymbolicLink() ? "symlink" : ent.isDirectory() ? "dir" : "other";
     if (kind !== "dir") {
       out.push({ name: ent.name, kind, sizeBytes: 0, published: null });
@@ -182,11 +199,107 @@ export function readCacheEntries(cacheRoot: string, dataRoot: string, warnings: 
   return out;
 }
 
+/**
+ * Itens diretos de `{cacheRoot}/_experimentos/` (#13137). Pasta ausente, ou a
+ * própria pasta sendo symlink, = lista vazia (link nunca é seguido).
+ */
+export function readExperimentEntries(cacheRoot: string): ExperimentEntry[] {
+  const dir = join(cacheRoot, CACHE_EXPERIMENTS_DIR);
+  let st;
+  try {
+    st = lstatSync(dir);
+  } catch {
+    return [];
+  }
+  if (!st.isDirectory()) return [];
+  return readdirSync(dir, { withFileTypes: true }).map((ent): ExperimentEntry => {
+    const kind: ExperimentEntry["kind"] = ent.isSymbolicLink() ? "symlink" : ent.isDirectory() ? "dir" : "other";
+    if (kind !== "dir") return { name: ent.name, kind, sizeBytes: 0, lastModifiedMs: null };
+    const { sizeBytes, lastModifiedMs } = treeStats(join(dir, ent.name));
+    return { name: ent.name, kind, sizeBytes, lastModifiedMs };
+  });
+}
+
+export interface OrphanMediaDir {
+  path: string;
+  mediaBytes: number;
+  lastModifiedMs: number;
+}
+
+/**
+ * Cópias de mídia órfãs fora da raiz do cache (#13137): diretórios diretos de
+ * `parent` (o `~/.cache`) com pelo menos `minBytes` em arquivos de mídia até
+ * `maxDepth` níveis. Só lê, nunca apaga: fora da raiz não há como saber de
+ * quem é a pasta, e o caso real (`~/.cache/m12089`, experimento da #12089
+ * ainda aberta) pede decisão do editor. `exclude` = pastas a pular (as raízes
+ * do cache), comparadas por realpath. Symlink nunca é seguido.
+ */
+export function findOrphanMediaDirs(
+  parent: string,
+  exclude: readonly string[],
+  opts: { minBytes?: number; maxDepth?: number } = {},
+): OrphanMediaDir[] {
+  const minBytes = opts.minBytes ?? ORPHAN_MEDIA_MIN_BYTES;
+  const maxDepth = opts.maxDepth ?? 2;
+  if (!existsSync(parent)) return [];
+  const skip = new Set(exclude.filter((p) => existsSync(p)).map((p) => realpathSync(p)));
+  const out: OrphanMediaDir[] = [];
+  let top;
+  try {
+    top = readdirSync(parent, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const ent of top) {
+    if (!ent.isDirectory()) continue; // symlink e arquivo ficam de fora
+    const root = join(parent, ent.name);
+    let real;
+    try {
+      real = realpathSync(root);
+    } catch {
+      continue;
+    }
+    if (skip.has(real)) continue;
+    let mediaBytes = 0;
+    let last = 0;
+    const stack: { dir: string; depth: number }[] = [{ dir: root, depth: 1 }];
+    while (stack.length > 0) {
+      const { dir, depth } = stack.pop()!;
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const e of entries) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) {
+          if (depth < maxDepth) stack.push({ dir: p, depth: depth + 1 });
+        } else if (e.isFile() && isMediaFileName(e.name)) {
+          try {
+            const st = lstatSync(p);
+            mediaBytes += st.size;
+            last = Math.max(last, st.mtimeMs);
+          } catch {
+            // sumiu entre o readdir e o lstat
+          }
+        }
+      }
+    }
+    if (mediaBytes >= minBytes) out.push({ path: root, mediaBytes, lastModifiedMs: last });
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
 export interface PruneCacheResult {
   cacheRoot: string;
   plan: CacheRetentionPlan;
+  /** Experimentos em `{cacheRoot}/_experimentos/` (#13137). */
+  experiments: ExperimentRetentionPlan;
   applied: boolean;
   deleted: string[];
+  /** Nomes dos experimentos apagados (relativos a `_experimentos/`). */
+  deletedExperiments: string[];
   failed: { edition: string; error: string }[];
   warnings: string[];
 }
@@ -199,17 +312,22 @@ export function pruneVideoMontageCache(opts: {
   nowMs?: number;
   keepDays: number;
   unpublishedMaxDays: number;
+  /** Dias sem modificação para um experimento sair (#13137). */
+  experimentMaxIdleDays?: number;
   apply: boolean;
 }): PruneCacheResult {
   // A raiz pode ser um link (ex.: ~/.cache/... → HD); o que se apaga fica dentro do alvo dela.
   const cacheRoot = realpathSync(opts.cacheRoot);
   const warnings: string[] = [];
+  const nowMs = opts.nowMs ?? Date.now();
   const plan = planCacheRetention(readCacheEntries(cacheRoot, opts.dataRoot, warnings), opts.today, {
     keepDays: opts.keepDays,
     unpublishedMaxDays: opts.unpublishedMaxDays,
-    nowMs: opts.nowMs ?? Date.now(),
+    nowMs,
   });
+  const experiments = planExperimentRetention(readExperimentEntries(cacheRoot), nowMs, { maxIdleDays: opts.experimentMaxIdleDays });
   const deleted: string[] = [];
+  const deletedExperiments: string[] = [];
   const failed: { edition: string; error: string }[] = [];
   if (opts.apply) {
     for (const c of plan.remove) {
@@ -223,8 +341,22 @@ export function pruneVideoMontageCache(opts: {
         failed.push({ edition: c.edition, error: (e as Error).message });
       }
     }
+    const expRoot = join(cacheRoot, CACHE_EXPERIMENTS_DIR);
+    for (const x of experiments.remove) {
+      const target = join(expRoot, x.name);
+      try {
+        // Mesma reconferência: `_experimentos` de verdade (não link) e o alvo, diretório direto dele.
+        if (!lstatSync(expRoot).isDirectory() || dirname(target) !== expRoot || !lstatSync(target).isDirectory()) {
+          throw new Error("não é mais um diretório direto de _experimentos");
+        }
+        rmSync(target, { recursive: true });
+        deletedExperiments.push(x.name);
+      } catch (e) {
+        failed.push({ edition: `${CACHE_EXPERIMENTS_DIR}/${x.name}`, error: (e as Error).message });
+      }
+    }
   }
-  return { cacheRoot, plan, applied: opts.apply, deleted, failed, warnings };
+  return { cacheRoot, plan, experiments, applied: opts.apply, deleted, deletedExperiments, failed, warnings };
 }
 
 export interface CacheRootToPrune {
@@ -259,7 +391,8 @@ export function cacheRootsToPrune(
   return out;
 }
 
-const REASON_TEXT: Record<CacheRemoveReason | CacheKeepReason | CacheSkipReason, string> = {
+const REASON_TEXT: Record<CacheRemoveReason | CacheKeepReason | CacheSkipReason | ExperimentSkipReason, string> = {
+  "sem-mtime": "sem data de modificação medida",
   publicado: "vídeo publicado (ou já enviado ao YouTube)",
   "teto-sem-publicacao": "sem vídeo publicado, passou do teto",
   "na-janela": "dentro da janela",
@@ -281,17 +414,37 @@ function main(): void {
   const apply = hasFlag(argv, "apply");
   const keepDays = getIntArg(argv, "keep-days", { min: 1 }) ?? DEFAULT_CACHE_KEEP_DAYS;
   const unpublishedMaxDays = getIntArg(argv, "unpublished-max-days", { min: 1 }) ?? Math.max(DEFAULT_CACHE_UNPUBLISHED_MAX_DAYS, keepDays);
+  const experimentMaxIdleDays = getIntArg(argv, "experiment-max-idle-days", { min: 1 }) ?? DEFAULT_EXPERIMENT_MAX_IDLE_DAYS;
   const dataRoot = getStringArg(argv, "data-root", { example: "/caminho/data" }) ?? resolve(ROOT, "data");
   const flag = getStringArg(argv, "cache-dir", { example: "/caminho/cache" });
   const env = process.env.DIARIA_VIDEO_CACHE_DIR;
   const home = homedir();
   const roots = cacheRootsToPrune(flag, env, home);
+  // #13137: cópia de mídia deixada direto no ~/.cache (fora da raiz) nunca é
+  // limpa; avisar toda rodada, sem apagar, inclusive sem raiz nenhuma.
+  const defaultRoot = defaultVideoCacheRoot(home);
+  const orphans = findOrphanMediaDirs(dirname(defaultRoot), [defaultRoot, ...roots.map((r) => r.root)]);
+  const warnOrphans = () => {
+    const nowMs = Date.now();
+    for (const o of orphans) {
+      const idle = Math.max(0, Math.floor((nowMs - o.lastModifiedMs) / 86_400_000));
+      console.warn(
+        `${LOG_PREFIX} [aviso] cópia de mídia fora da raiz do cache: ${o.path} (${formatBytes(o.mediaBytes)}, sem modificação há ${idle}d). ` +
+          `A retenção não a cobre e ela nunca é apagada daqui; experimento da montagem vai em ` +
+          `${join(roots[0]?.root ?? defaultRoot, CACHE_EXPERIMENTS_DIR)}/{nome}/ (#13137).`,
+      );
+    }
+  };
   if (roots.length === 0) {
-    console.log(`${LOG_PREFIX} nenhuma raiz de cache nesta máquina (${flag ?? defaultVideoCacheRoot(home)}) — nada a fazer.`);
+    console.log(`${LOG_PREFIX} nenhuma raiz de cache nesta máquina (${flag ?? defaultRoot}) — nada a fazer.`);
+    warnOrphans();
     return;
   }
   const today = todayBrt();
-  const results = roots.map((r) => ({ ...r, result: pruneVideoMontageCache({ cacheRoot: r.root, dataRoot, today, keepDays, unpublishedMaxDays, apply }) }));
+  const results = roots.map((r) => ({
+    ...r,
+    result: pruneVideoMontageCache({ cacheRoot: r.root, dataRoot, today, keepDays, unpublishedMaxDays, experimentMaxIdleDays, apply }),
+  }));
   if (env?.trim() && !flag) {
     const legacy = results.find((r) => r.source === "padrao");
     const left = legacy ? [...legacy.result.plan.keep, ...legacy.result.plan.remove].length : 0;
@@ -316,6 +469,19 @@ function main(): void {
       }
       for (const c of plan.keep) console.log(`  fica    ${c.edition}  ${formatBytes(c.sizeBytes)}  (${c.ageDays}d, ${REASON_TEXT[c.reason]})`);
       for (const s of plan.skipped) console.log(`  ignora  ${s.name}  (${REASON_TEXT[s.reason]})`);
+      const ex = result.experiments;
+      const exPrefix = `${CACHE_EXPERIMENTS_DIR}/`;
+      for (const x of ex.remove) {
+        console.log(`  ${apply ? "apagar" : "sairia"}  ${exPrefix}${x.name}  ${formatBytes(x.sizeBytes)}  (${x.idleDays}d sem uso, experimento)`);
+      }
+      for (const x of ex.keep) console.log(`  fica    ${exPrefix}${x.name}  ${formatBytes(x.sizeBytes)}  (${x.idleDays}d sem uso, experimento)`);
+      for (const s of ex.skipped) console.log(`  ignora  ${exPrefix}${s.name}  (${REASON_TEXT[s.reason]})`);
+      if (ex.remove.length + ex.keep.length + ex.skipped.length > 0) {
+        console.log(
+          `${LOG_PREFIX} experimentos: ${ex.remove.length} ${apply ? "a apagar" : "liberáveis"} (${formatBytes(ex.removeBytes)}), ` +
+            `sem uso há mais de ${experimentMaxIdleDays} dia(s); ${ex.keep.length} mantido(s).`,
+        );
+      }
       console.log(
         `${LOG_PREFIX} ${plan.remove.length} edição(ões), ${formatBytes(plan.removeBytes)} ${apply ? "a apagar" : "liberáveis"}; ` +
           `${plan.keep.length} mantida(s); ${plan.skipped.length} item(ns) ignorado(s).`,
@@ -324,8 +490,9 @@ function main(): void {
     if (!apply) console.log(`${LOG_PREFIX} dry-run (default): nada apagado. Rode com --apply para apagar.`);
   }
   for (const { result } of results) for (const w of result.warnings) console.warn(`${LOG_PREFIX} [aviso] ${w}`);
+  warnOrphans();
   if (apply) {
-    const deleted = results.reduce((n, r) => n + r.result.deleted.length, 0);
+    const deleted = results.reduce((n, r) => n + r.result.deleted.length + r.result.deletedExperiments.length, 0);
     const failed = results.flatMap((r) => r.result.failed);
     console.log(`${LOG_PREFIX} apagadas: ${deleted}; falhas: ${failed.length}.`);
     for (const f of failed) console.error(`${LOG_PREFIX} falha ao apagar ${f.edition}: ${f.error}`);

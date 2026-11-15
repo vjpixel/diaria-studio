@@ -36,6 +36,11 @@
  *     edição ausente nele) nunca sai: sem o sinal não há como distinguir
  *     "abandonado" de "ainda vai sair".
  *
+ * Experimentos (#13137): `{raiz}/_experimentos/{nome}/` é o lugar de cópia
+ * do bruto para teste (corte de pausas, voz). Saem sem modificação há mais de
+ * 30 dias (`planExperimentRetention`). Cópia deixada fora da raiz (em
+ * `~/.cache/{nome}`) só é avisada pelo prune, nunca apagada.
+ *
  * Só decide. Quem apaga é `scripts/prune-video-montage-cache.ts`, e só com
  * `--apply`.
  */
@@ -144,4 +149,88 @@ export function planCacheRetention(entries: readonly CacheEntry[], today: Date, 
   plan.keep.sort((a, b) => a.edition.localeCompare(b.edition));
   plan.skipped.sort((a, b) => a.name.localeCompare(b.name));
   return plan;
+}
+
+/**
+ * Local padrão de experimento com cópias do bruto (#13137): `{raiz do
+ * cache}/_experimentos/{nome}/`. Antes não havia local nenhum, e a cópia da
+ * 261104 do experimento da #12089 ficou em `~/.cache/m12089` (7,9 GB no 300),
+ * fora de toda retenção. Aqui dentro o prune cobre: o nome não é AAMMDD, então
+ * a idade é a do último uso (mtime mais recente da árvore), não a da edição.
+ */
+export const CACHE_EXPERIMENTS_DIR = "_experimentos";
+
+/** Experimento sem nenhuma modificação há mais destes dias sai (#13137). */
+export const DEFAULT_EXPERIMENT_MAX_IDLE_DAYS = 30;
+
+export interface ExperimentEntry {
+  name: string;
+  kind: "dir" | "symlink" | "other";
+  sizeBytes: number;
+  /** mtime mais recente dentro do diretório (ms); `null` = não medido (nunca sai). */
+  lastModifiedMs: number | null;
+}
+
+export type ExperimentSkipReason = "symlink" | "nao-diretorio" | "sem-mtime";
+
+export interface ExperimentDecision {
+  name: string;
+  sizeBytes: number;
+  idleDays: number;
+}
+
+export interface ExperimentRetentionPlan {
+  remove: ExperimentDecision[];
+  keep: ExperimentDecision[];
+  skipped: { name: string; reason: ExperimentSkipReason }[];
+  removeBytes: number;
+}
+
+/**
+ * Política dos experimentos: só diretório de verdade entra; sai o que está
+ * sem modificação há mais de `maxIdleDays` dias inteiros. Symlink, arquivo
+ * solto e diretório sem mtime medido ficam de fora (`skipped`), nunca saem.
+ */
+export function planExperimentRetention(
+  entries: readonly ExperimentEntry[],
+  nowMs: number,
+  opts: { maxIdleDays?: number } = {},
+): ExperimentRetentionPlan {
+  const maxIdleDays = opts.maxIdleDays ?? DEFAULT_EXPERIMENT_MAX_IDLE_DAYS;
+  if (!Number.isInteger(maxIdleDays) || maxIdleDays < 1) throw new Error(`maxIdleDays deve ser inteiro ≥ 1, recebido ${maxIdleDays}`);
+  const plan: ExperimentRetentionPlan = { remove: [], keep: [], skipped: [], removeBytes: 0 };
+  for (const e of entries) {
+    if (e.kind === "symlink") {
+      plan.skipped.push({ name: e.name, reason: "symlink" });
+      continue;
+    }
+    if (e.kind !== "dir") {
+      plan.skipped.push({ name: e.name, reason: "nao-diretorio" });
+      continue;
+    }
+    if (e.lastModifiedMs == null || !Number.isFinite(e.lastModifiedMs)) {
+      plan.skipped.push({ name: e.name, reason: "sem-mtime" });
+      continue;
+    }
+    const idleDays = Math.max(0, Math.floor((nowMs - e.lastModifiedMs) / 86_400_000));
+    const d: ExperimentDecision = { name: e.name, sizeBytes: e.sizeBytes, idleDays };
+    if (idleDays > maxIdleDays) plan.remove.push(d);
+    else plan.keep.push(d);
+  }
+  for (const r of plan.remove) plan.removeBytes += r.sizeBytes;
+  for (const list of [plan.remove, plan.keep]) list.sort((a, b) => a.name.localeCompare(b.name));
+  plan.skipped.sort((a, b) => a.name.localeCompare(b.name));
+  return plan;
+}
+
+/** Extensões de mídia que contam para achar cópia órfã do bruto fora da raiz (#13137). */
+export const ORPHAN_MEDIA_EXTENSIONS: readonly string[] = [".mp4", ".mov", ".mkv", ".mxf", ".wav", ".m4a", ".aac", ".flac"];
+
+/** Diretório fora da raiz com pelo menos isto em mídia é avisado como cópia órfã (#13137). */
+export const ORPHAN_MEDIA_MIN_BYTES = 1024 ** 3;
+
+/** `name` é arquivo de mídia (extensão, sem diferenciar maiúsculas)? */
+export function isMediaFileName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return ORPHAN_MEDIA_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
