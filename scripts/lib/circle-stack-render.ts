@@ -182,6 +182,22 @@ export function circleStackCampaign(cycle: string): string {
   return `stack-${cycle}`;
 }
 
+/**
+ * Pure (#13105): textos da seleção que vêm de uma edição, com a edição — base
+ * do guard escopado do erro intencional (`segmentTextByEdition`). Abertura e
+ * fecho ficam de fora: não têm edição de origem.
+ */
+export function circleStackSelectionAttributedTexts(
+  sel: CircleStackSelection,
+): Array<{ edition: string; texts: string[] }> {
+  const items = [...sel.destaques, ...sel.lancamentos, ...sel.useMelhor, ...sel.radar];
+  return [
+    ...items.map((it) => ({ edition: it.editionDate, texts: [it.title, it.body, it.why, it.stackNote ?? ""] })),
+    ...sel.weeklyEditions.map((e) => ({ edition: e.editionDate, texts: e.destaques })),
+    ...(sel.video ? [{ edition: sel.video.editionDate, texts: [sel.video.title, sel.video.description ?? ""] }] : []),
+  ];
+}
+
 /** Pure: adiciona o triplo UTM do canal + `utm_content`. `channel` troca source/medium (#12538). */
 export function buildCircleStackUrl(
   baseUrl: string,

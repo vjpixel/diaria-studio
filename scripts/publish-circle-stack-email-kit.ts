@@ -79,9 +79,11 @@ import { resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir } from "./lib/weekly-l
 import { resolveVerifiedAudience, type ResolvedAudience } from "./lib/shared/kit-apoio-tag.ts";
 import { circleStackSelectionViolations, circleStackUnreviewedTitles } from "./lib/circle-stack-select.ts";
 import {
-  findIntentionalErrorLeaks,
+  findScopedIntentionalErrorLeaks,
+  formatIntentionalErrorAdvisory,
   formatIntentionalErrorLeaks,
   loadWindowIntentionalErrors,
+  segmentTextByEdition,
 } from "./lib/intentional-error-scrub.ts";
 import { readUtf8WithContext } from "./lib/read-file-with-context.ts"; // #12554
 import {
@@ -100,7 +102,7 @@ import {
   type PersistedAudienceVerification,
 } from "./publish-artigo-especial-kit.ts";
 import { parseStoredCircleStackSelection, resolveCircleStackConfig } from "./publish-circle-stack.ts";
-import type { CircleStackSelection } from "./lib/circle-stack-render.ts";
+import { circleStackSelectionAttributedTexts, type CircleStackSelection } from "./lib/circle-stack-render.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[publish-circle-stack-email-kit]";
@@ -377,14 +379,16 @@ export async function runCircleStackEmail(options: StackEmailRunOptions): Promis
   const problems = stackEmailContentProblems(selection, platformConfig as Record<string, unknown>);
   const email = renderStackEmail(selection);
   // #13051: o erro intencional de qualquer edição da semana não sai no e-mail.
+  // #13105: escopado ao item da mesma edição; número/palavra curta só avisa.
   const editionsRoot = join(dataRoot, "data", "editions");
   const contentWindow = resolveWeeklyLinkedinCycle(publishMonday)?.contentWindow ?? [];
   if (existsSync(editionsRoot) && contentWindow.length > 0) {
-    const leaks = findIntentionalErrorLeaks(
-      `${email.subject}\n${email.html}`,
+    const { blocking, advisory } = findScopedIntentionalErrorLeaks(
+      segmentTextByEdition(`${email.subject}\n${email.html}`, circleStackSelectionAttributedTexts(selection)),
       loadWindowIntentionalErrors(editionsRoot, contentWindow),
     );
-    if (leaks.length > 0) problems.push(formatIntentionalErrorLeaks(leaks, `E-mail da Stack ${paths.cycle}`));
+    if (blocking.length > 0) problems.push(formatIntentionalErrorLeaks(blocking, `E-mail da Stack ${paths.cycle}`));
+    if (advisory.length > 0) log(`⚠ ${formatIntentionalErrorAdvisory(advisory, `E-mail da Stack ${paths.cycle}`)}`);
   }
 
   if (mode.kind === "dry-run") {
