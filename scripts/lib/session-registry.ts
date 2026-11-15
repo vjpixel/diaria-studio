@@ -560,9 +560,11 @@ export interface SessionRecord {
    * fica em disco, mas marcado. `dedupeBySessionId` exclui registros com
    * `endedAt` da consideração de "sessão viva" antes de escolher a base do
    * grupo, então um órfão carimbado nunca volta a contar como coordenador
-   * ativo pro guard de merge do #5716. Nenhum outro escritor deste módulo
-   * seta este campo — não confundir com a remoção normal via `endSession`
-   * (que APAGA o arquivo, não carimba nada).
+   * ativo pro guard de merge do #5716. O outro escritor é `endSession`
+   * (#7002), que APAGA o arquivo real e carimba este campo nas cópias de
+   * conflito do grupo. Se o sync depois ressuscitar o real com um heartbeat
+   * ANTERIOR ao carimbo, o carimbo da cópia vence (#13114, ver
+   * `endedAfterLastHeartbeat`).
    */
   endedAt?: string;
   [key: string]: unknown;
@@ -1530,6 +1532,47 @@ function readOrphanBackupGroups(repoRoot: string): OrphanBackupGroup[] {
  * Heartbeat no futuro além da tolerância de skew nunca conta como vivo —
  * mesma disciplina de `listActiveSessions`/`isMergeGrantLive`.
  */
+/**
+ * #13114 — o grupo (arquivo real + cópias de conflito) pertence a uma sessão
+ * que já chamou `end`, mesmo com o arquivo real de volta no disco. Devolve o
+ * `endedAt` que prova isso, ou `null`.
+ *
+ * Caso medido em 15/11/2026: o tick do contínuo
+ * `hermes-cron-5d791ef6fc2c-20261115T145542Z` chamou `end` às 15:10:24Z
+ * (evento `ended` em `data/session-lifecycle.jsonl`). Havia uma `.conflict1`
+ * do rclone no disco, e `endSession` a carimbou com `endedAt` antes de apagar
+ * o real. Depois disso o bisync trouxe o real de volta, numa versão com
+ * heartbeat de 15:06:51Z e sem `endedAt`. O read-path tratava o real como
+ * sessão viva (a cópia carimbada só saía da união), e a claim #13093 ficou
+ * presa até a janela de 24h: o watchdog do contínuo leu isso como "higiene de
+ * fim de tick falhou".
+ *
+ * Regra: algum registro do grupo traz `endedAt` e nenhum registro SEM
+ * `endedAt` tem heartbeat posterior a ele. Uma sessão viva sempre escreve
+ * depois do próprio `end` (um `register` novo com o mesmo id grava heartbeat
+ * fresco), então heartbeat mais novo que o carimbo continua contando como
+ * vida. Puro.
+ */
+export function endedAfterLastHeartbeat(records: readonly SessionRecord[]): string | null {
+  let endedIso: string | null = null;
+  let endedMs = -Infinity;
+  let liveHeartbeatMs = -Infinity;
+  for (const r of records) {
+    if (r.endedAt) {
+      const ms = Date.parse(r.endedAt);
+      if (Number.isFinite(ms) && ms > endedMs) {
+        endedMs = ms;
+        endedIso = r.endedAt;
+      }
+      continue;
+    }
+    const hb = Date.parse(r.lastHeartbeat ?? r.startedAt ?? "");
+    if (Number.isFinite(hb) && hb > liveHeartbeatMs) liveHeartbeatMs = hb;
+  }
+  if (endedIso === null) return null;
+  return endedMs >= liveHeartbeatMs ? endedIso : null;
+}
+
 function isOrphanBackupGroupLive(group: OrphanBackupGroup, now: number): boolean {
   if (group.anyEnded) return false;
   const record = group.record;
@@ -2912,6 +2955,10 @@ function readMergedSessionGroups(repoRoot: string, now: number = Date.now()): Se
       merged.push(mergeSessionRecords(backupRecords, -1));
       continue;
     }
+    // #13114: real ressuscitado pelo sync depois de um `end` que carimbou as
+    // cópias. Sem isto, a cópia carimbada só saía da união (`dedupeBySessionId`
+    // filtra `endedAt` registro a registro) e o real velho seguia "vivo".
+    if (endedAfterLastHeartbeat([realRecord, ...backupRecords]) !== null) continue;
     merged.push(mergeSessionRecords([realRecord, ...backupRecords]));
   }
 
@@ -5091,6 +5138,10 @@ export interface SessionGcResult {
   /** Explicação legível da decisão — sempre populada, inclusive pra `"kept"`
    * (auditabilidade: por que este registro NÃO foi removido). */
   reason: string;
+  /** #13114 — presente quando o grupo foi removido porque a sessão já chamou
+   * `end` (carimbo numa cópia de conflito). `garbageCollectSessions` não
+   * registra `gc-removed-without-end` nesse caso: o `ended` já está no log. */
+  endedAt?: string;
 }
 
 /**
@@ -5367,12 +5418,25 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
       });
       continue;
     }
+    const identity = `${records[0]!.kind}-${records[0]!.machineTag}-${records[0]!.sessionId}`;
+    // #13114: sessão que já chamou `end` e teve o real ressuscitado pelo sync.
+    // O read-path já a ignora; o GC recolhe os arquivos sem esperar a janela
+    // conservadora, porque o próprio carimbo é o sinal positivo de fim.
+    const endedAt = endedAfterLastHeartbeat(records);
+    if (endedAt !== null) {
+      results.push({
+        identity,
+        files: groupPaths,
+        action: "removed",
+        reason:
+          `#13114: a sessão chamou \`end\` (endedAt=${endedAt} numa cópia de conflito) e nenhum registro do grupo tem ` +
+          "heartbeat posterior — o arquivo real é ressurreição do sync, não sessão viva",
+        endedAt,
+      });
+      continue;
+    }
     const decision = decideSessionGc(records, now, conservativeMaxAgeMs, isPidAlive, localTag);
-    results.push({
-      identity: `${records[0]!.kind}-${records[0]!.machineTag}-${records[0]!.sessionId}`,
-      files: groupPaths,
-      ...decision,
-    });
+    results.push({ identity, files: groupPaths, ...decision });
   }
 
   for (const backup of orphanBackups) {
@@ -5417,7 +5481,8 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
     // nunca afeta a decisão de remoção em si.
     const isOrphanGroup = entry.identity.startsWith("orphan-backup:");
     let lifecycleRecord: SessionRecord | null = null;
-    if (!isOrphanGroup) {
+    // #13114: grupo de sessão que já chamou `end` não é "removido sem end".
+    if (!isOrphanGroup && entry.endedAt === undefined) {
       const realFile = entry.files.find((f) => !isSyncConflictCopyName(f));
       lifecycleRecord = realFile ? readJsonSafe<SessionRecord>(realFile) : null;
     }
