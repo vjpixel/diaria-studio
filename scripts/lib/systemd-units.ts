@@ -117,7 +117,15 @@ export interface SystemdUnitFiles {
  * `WorkingDirectory=`/`ExecStart=` do systemd não resolve paths relativos ao
  * arquivo de unit.
  */
-export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs: string): SystemdUnitFiles {
+export function buildSystemdUnitFiles(
+  task: ScheduledTaskDefinition,
+  repoRootAbs: string,
+  // #13136: o CLI (`setup-systemd-timers.ts`) passa o node resolvido por
+  // `resolveSystemdNodeBinary` (nvm do `.nvmrc`), para o `ExecStart=` não
+  // depender do PATH do shell que gerou. Default `process.execPath` só para
+  // chamadas de biblioteca/teste.
+  nodeBin: string = process.execPath,
+): SystemdUnitFiles {
   // #7522: `ExecStart=` abaixo assa `process.execPath` — o node que GEROU o
   // unit, não o node do `.nvmrc`/CI. Rodar este gerador com o node do
   // sistema (ex: `/usr/bin/node`, tipicamente < piso do projeto — achado
@@ -130,10 +138,10 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
   // Falhar ALTO aqui, na geração, é preferível a gerar um unit quebrado em
   // silêncio: NUNCA emitir um `ExecStart=` com node abaixo do piso do
   // projeto. `assertSupportedNodeVersion()` (sem args) checa `process.version`
-  // — o node que está rodando ESTE processo agora é exatamente o mesmo que
-  // seria embutido em `execStart` via `process.execPath` logo abaixo, então
-  // checar a versão corrente é suficiente (não precisa resolver o binário
-  // separadamente). Ver `scripts/lib/systemd-node-floor-guard.ts` pro guard
+  // — com o `nodeBin` default (`process.execPath`) é o mesmo node embutido em
+  // `execStart`. Quando o chamador passa outro `nodeBin` (#13136), quem
+  // confere a versão DESSE binário é o CLI (`setup-systemd-timers.ts`, via
+  // `resolveNodeVersionForPath`) antes de chamar aqui. Ver `scripts/lib/systemd-node-floor-guard.ts` pro guard
   // complementar, que detecta units JÁ ARMADOS em `~/.config/systemd/user/`
   // nascidos antes deste fix.
   assertSupportedNodeVersion();
@@ -161,7 +169,7 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
   // node --import tsx, nunca `npx` bare resolvido via PATH (#4343) — mas
   // aqui o comando roda run-task.ts (que resolve e roda o próprio passo),
   // não o script do passo diretamente.
-  const execStart = `${process.execPath} --import tsx ${repoRootAbs}/scripts/run-task.ts --task ${task.name}`;
+  const execStart = `${nodeBin} --import tsx ${repoRootAbs}/scripts/run-task.ts --task ${task.name}`;
 
   const serviceContent = [
     "[Unit]",
