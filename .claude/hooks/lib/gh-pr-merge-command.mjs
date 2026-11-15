@@ -66,8 +66,10 @@
 //     considerado quando a palavra COMEÇA pela expansão;
 //   - expansão de variável na posição de comando (`$GH pr merge 5`,
 //     `"${cmd[@]}"`) — o valor só existe em tempo de execução;
-//   - corpo de heredoc: FAIL-CLOSED, lido como comandos E como string entre
-//     aspas duplas (`$(...)`/crase) — conta merge se qualquer leitura achar.
+//   - corpo de heredoc: FAIL-CLOSED, lido como comandos E, quando o
+//     delimitador não tem aspas, como string entre aspas duplas (`$(...)`/
+//     crase; com `<<'D'` o bash não expande o corpo, #13148) — conta merge
+//     se qualquer leitura achar.
 //     Quem alimenta um shell com o corpo é inenumerável (`| sh`, `bash -c
 //     "$(cat <<…)"`, `while … eval`, `$SHELL <<…`, `ssh host <<…`), então
 //     não há lista de "runners": o corpo só é pulado quando o comando INTEIRO
@@ -76,7 +78,9 @@
 //     `cd <caminho simples> && ` opcional antes — #10777; desde o #11325
 //     também `cat <<'D' > arq` / `cat > arq <<'D'` seguido no máximo de um
 //     consumidor de texto, e `gh pr|issue comment … --body-file - <<'D'`;
-//     desde o #12619 vários blocos `cat` na mesma chamada). À parte, o corpo
+//     desde o #12619 vários blocos `cat` na mesma chamada; desde o #13148
+//     `cd X`/`git add <args simples>` antes do `git commit` e uma linha de
+//     `git push` depois do delimitador). À parte, o corpo
 //     de `python3|node - <<'D'` sem `gh`/`merge` no texto não é lido como
 //     shell (`stripInterpreterHeredocBody`, #12619).
 //     Falso positivo fora dela (ex.: `cat <<'EOF' | tee nota.md` citando o
@@ -375,7 +379,12 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
       if (!ctx.skipHeredocData && depth < MAX_DEPTH) {
         const body = src.slice(bodyStart, Math.min(bodyEnd, n));
         scan(body, 0, null, commands, depth + 1, ctx);
-        scanSubstitutionsOnly(body, commands, depth + 1, ctx);
+        // #13148: com o delimitador aspado (`<<'D'`, `<<"D"`, `<<\D`) o bash
+        // não expande nada no corpo — a leitura como string entre aspas
+        // duplas só vale para o delimitador sem aspas. A leitura como
+        // comandos (acima) continua para os dois: quem alimenta um shell com
+        // o corpo executa o `$(...)` dele de qualquer jeito.
+        if (!h.quoted) scanSubstitutionsOnly(body, commands, depth + 1, ctx);
       } else if (!ctx.skipHeredocData) {
         commands.push([DEPTH_EXCEEDED]);
       }
@@ -1543,7 +1552,14 @@ function collect(command, depth, out, ctx, env) {
 const SIMPLE_ARG = String.raw`(?:[A-Za-z0-9_./:@=+,%-]+|"[^"$\x60\\\n]*"|'[^'\n]*')`;
 const ARGS = `(?: ${SIMPLE_ARG})*`;
 const DELIM = "'([A-Za-z_]+)'";
-const GIT_PUSH = `(?: && git push${ARGS})?`;
+// #13148: `git push --receive-pack=CMD`/`--exec=CMD` executa CMD (localmente,
+// num remoto de caminho) — `"--receive-pack=git log -1 --format=%B | sh" .`
+// rodaria a mensagem recém-commitada, que é o corpo do heredoc pulado. Por
+// isso os argumentos do push são só palavras SEM aspas (sem espaço nem
+// metacaractere, um CMD de uma palavra só não lê a mensagem) e nunca
+// `--receive-pack`/`--exec`; fora disso o comando sai da whitelist.
+const PUSH_ARGS = String.raw`(?: (?!--(?:receive-pack|exec)\b)[A-Za-z0-9_./:@=+,%-]+)*`;
+const GIT_PUSH = `(?: && git push${PUSH_ARGS})?`;
 // #10777: `cd <worktree> && ` antes do comando — a forma padrão dos
 // subagentes (o cwd é resetado a cada chamada). O caminho é um SIMPLE_ARG
 // (sem `$`, crase, `\` nem aspas abertas): o `cd` não executa nada além de
@@ -1585,11 +1601,27 @@ const VAR_ARGS = `(?: ${VAR_ARG})*`;
 // `$EDITOR`), inclusive em cluster de flags curtas (`-we`) ou entre aspas.
 const GH_ARG = String.raw`(?!["']?(?:--web\b|--editor\b|-[A-Za-z]*[we]))${VAR_ARG}`;
 const GH_ARGS = `(?: ${GH_ARG})*`;
+// #13148: antes do `git commit`, uma sequência de `cd X` e `git add <args
+// simples>` ligados por ` && ` ou `; ` (a forma padrão dos implementadores:
+// `cd WT && git add a.ts b.ts && git commit -F - <<'EOF'`). O `git add` com
+// argumentos simples só põe arquivos no índice — não executa o corpo nem
+// muda o que o `git commit` executa (hooks/config ficam como estavam; `git
+// -c …`, `git config` e atribuições seguem fora e o corpo volta a ser lido).
+const GIT_COMMIT_PREFIX = `(?:(?:cd ${SIMPLE_ARG}|git add${ARGS})(?: && |; ))*`;
+// #13148: depois do D da forma `-F -`, no máximo UMA linha com o push (saída
+// opcionalmente só lida por `tail`/`head`, que não executam nada).
+const GIT_PUSH_LINE = `(?:${CD_PREFIX}git push${PUSH_ARGS}(?: 2>&1)?(?: \\| (?:tail|head)${ARGS})?)`;
 const HEAD_FORMS = [
-  // git commit [flags] -F - <<'D' [&& git push ...]  →  depois do D, nada.
-  { re: new RegExp(`^${CD_PREFIX}git commit${ARGS} -F - <<${DELIM}${GIT_PUSH}$`), tail: /^\s*$/ },
-  // git commit [flags] -m "$(cat <<'D'  …  D  )" [flags] [&& git push ...]
-  { re: new RegExp(`^${CD_PREFIX}git commit${ARGS} -m "\\$\\(cat <<${DELIM}$`), tail: new RegExp(`^\\)"${ARGS}${GIT_PUSH}\\s*$`) },
+  // [cd X && ][git add … && ]git commit [flags] -F - <<'D' [&& git push ...]  →  depois do D, nada ou `git push …`.
+  {
+    re: new RegExp(`^${GIT_COMMIT_PREFIX}git commit${ARGS} -F - <<${DELIM}${GIT_PUSH}$`),
+    tail: new RegExp(`^\\s*(?:${GIT_PUSH_LINE}\\s*)?$`),
+  },
+  // [cd X && ][git add … && ]git commit [flags] -m "$(cat <<'D'  …  D  )" [flags] [&& git push ...]
+  {
+    re: new RegExp(`^${GIT_COMMIT_PREFIX}git commit${ARGS} -m "\\$\\(cat <<${DELIM}$`),
+    tail: new RegExp(`^\\)"${ARGS}${GIT_PUSH}\\s*$`),
+  },
   // gh pr create|pr comment|issue comment|issue create … --body "$(cat <<'D'  …  D  )" …
   {
     re: new RegExp(`^${CD_PREFIX}gh (?:pr create|pr comment|issue comment|issue create)${ARGS} --body "\\$\\(cat <<${DELIM}$`),
