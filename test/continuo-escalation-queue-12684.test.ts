@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { overdueEscalation } from "../scripts/list-continuo-escalation-queue.ts";
 const now = Date.parse("2026-11-10T15:00:00Z");
 const labeled = (created_at: string, event = "labeled") => ({ event, label: { name: "continuo-escalado" }, created_at });
-it("only escalations older than 24h enter the briefing queue", () => {
-  assert.equal(overdueEscalation([labeled("2026-11-09T14:59:59Z")], now), "2026-11-09T14:59:59Z");
-  assert.equal(overdueEscalation([labeled("2026-11-09T15:00:00Z")], now), null);
+it("only escalations older than 6h enter the briefing queue (#13094; was 24h)", () => {
+  assert.equal(overdueEscalation([labeled("2026-11-10T08:59:59Z")], now), "2026-11-10T08:59:59Z");
+  assert.equal(overdueEscalation([labeled("2026-11-10T09:00:00Z")], now), null);
   assert.equal(overdueEscalation([], now), null);
 });
 it("removal clears the clock; reapplication starts a new clock", () => {

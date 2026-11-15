@@ -3,7 +3,7 @@
  *
  * 1. `mergeable=UNKNOWN` é transitório: o gate relê antes de escalar.
  * 2. Escalada com causa mecânica (conflito, CI vermelho) vai ao fixer sem
- *    esperar 24h/48h.
+ *    esperar 6h/24h (janelas do #13094; eram 24h/48h).
  * 4. O prompt do implementador do contínuo não manda mais abrir toda PR como
  *    draft + `bloqueio-execucao`.
  */
@@ -73,7 +73,7 @@ function input(over: Partial<DestinationInput>): DestinationInput {
   };
 }
 
-describe("#12950 item 2 — causa mecânica vai ao fixer sem esperar 24h/48h", () => {
+describe("#12950 item 2 — causa mecânica vai ao fixer sem esperar 6h/24h", () => {
   it("caso #12880: CI vermelho escalado há 2h → fixer", () => {
     assert.equal(escalationDestination(input({ checksVerdict: "fail" })), "fixer");
   });
@@ -128,11 +128,12 @@ describe("#12950 item 2 — causa mecânica vai ao fixer sem esperar 24h/48h", (
     };
   }
 
-  it("fila: CI vermelho há 2h entra como fixer; pending há 2h fica de fora; pending há 30h entra no briefing", () => {
+  // Janelas de 6h/24h desde o #13094 (eram 24h/48h): pending há 12h já entra no briefing.
+  it("fila: CI vermelho há 2h entra como fixer; pending há 2h fica de fora; pending há 12h entra no briefing", () => {
     const r = runEscalationQueue(deps([
       { number: 12880, checksVerdict: "fail", hoursAgo: 2 },
       { number: 12900, checksVerdict: "pending", hoursAgo: 2 },
-      { number: 12901, checksVerdict: "pending", hoursAgo: 30 },
+      { number: 12901, checksVerdict: "pending", hoursAgo: 12 },
     ]), true);
     assert.deepEqual(r.queue.map((q) => [q.number, q.destination, q.owner]), [
       [12880, "fixer", "coordenador"],
