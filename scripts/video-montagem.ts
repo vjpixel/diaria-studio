@@ -255,7 +255,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
-import { readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
+import { readRoteiroCortesReserva, readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, readRoteiroTelas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
 import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
 import {
@@ -274,6 +274,8 @@ import {
   audioGainFor,
   buildSequencePlan,
   buildXmeml,
+  telaMarkersFor,
+  type TelaMarker,
   clockTime,
   collapsedTakeSuspects,
   cueTimings,
@@ -1058,6 +1060,8 @@ export interface XmlBuildOptions {
   premierePaths?: PremierePathMap | null;
   /** #13123: a capa no começo de cada vertical (chave = `sequenceKey`); só entra no hash a capa que a sequência leva (sem ela, o hash de antes). */
   capaInicio?: Readonly<Record<string, CapaInicioAsset>> | null;
+  /** #13140: os marcadores de tela de cada sequência (chave = `sequenceKey`); só entram no hash os da sequência (sem eles, o hash de antes). */
+  telaMarkers?: Readonly<Record<string, readonly TelaMarker[]>> | null;
 }
 
 /** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
@@ -1104,6 +1108,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(opts.ctaCard?.[sequenceKey(plan.spec)] ? { ctaCard: ctaCardHashPart(opts.ctaCard[sequenceKey(plan.spec)]) } : {}),
         ...(opts.premierePaths ? { premierePaths: opts.premierePaths } : {}),
         ...(opts.capaInicio?.[sequenceKey(plan.spec)] ? { capaInicio: capaInicioHashPart(opts.capaInicio[sequenceKey(plan.spec)]) } : {}),
+        ...(opts.telaMarkers?.[sequenceKey(plan.spec)]?.length ? { telaMarkers: opts.telaMarkers[sequenceKey(plan.spec)] } : {}),
       }),
     )
     .update("\0plan\0")
@@ -2457,7 +2462,9 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
     d1Title: readD1Title(ctx.edition),
     roteiroTitle: readRoteiroHorizontal(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`))?.titulo ?? null,
   });
-  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare, videoTitles });
+  // #13140: os cortes de reserva do roteiro abrem a sugestão da vertical acima do alvo.
+  const cortesReserva = readRoteiroCortesReserva(editionDirFor(ctx.edition), (w) => console.error(`[aviso] ${w}`), { corteSlug: VERTICAL2_CORTE_SLUG });
+  const base = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives, verticalTargetS: file.verticalTargetS, silences: sil, ctaCardShare, videoTitles, cortesReserva });
   // #11956: os achados do fact-check da fala entram no Doc do Gate 2.
   const fcPath = f(ctx, VIDEO_FACT_CHECK_FILE);
   let fc: ReturnType<typeof parseVideoFactCheck> | null = null;
@@ -3349,6 +3356,15 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   }
   // #13123 (em teste): a capa nos primeiros quadros das verticais; falha = sequência sem a capa, com aviso.
   const capaInicio = await renderCapaInicioAssets(ctx, file, picked, source.fps, mediaPath);
+  // #13140: o texto de tela de cada fala do roteiro vira marcador da sequência, no tempo da fala.
+  const telas = readRoteiroTelas(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
+  const telaMarkers: Record<string, TelaMarker[]> = {};
+  for (const p of picked) {
+    const ms = telaMarkersFor(p, resolved, source.fps, telas);
+    if (ms.length) telaMarkers[sequenceKey(p.spec)] = ms;
+    const fora = telas.filter((t) => !ms.some((m) => m.id === t.id)).map((t) => t.id);
+    if (ms.length) console.error(`[premissa] ${p.spec.name}: ${ms.length} texto(s) de tela do roteiro como marcador da sequência no tempo da fala (${ms.map((m) => m.id).join(", ")}); a faixa de texto é do editor no Premiere (#13140)${fora.length ? `; fora desta versão: ${fora.join(", ")}` : ""}`);
+  }
   // #12707: todo `pathurl` com a mesma raiz; o que ficar fora dela sai com o caminho do Neo, e isso é dito.
   const xmlFilePaths = [
     ...(mediaPaths ?? [mediaPath]),
@@ -3377,6 +3393,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     ctaCard,
     premierePaths: ctx.premierePaths ?? null,
     capaInicio,
+    telaMarkers,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
@@ -3396,7 +3413,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio, telaMarkers }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }

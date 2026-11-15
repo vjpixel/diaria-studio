@@ -129,13 +129,33 @@ const CAPA_SUBJECT_PRONOUNS = ["você", "voce", "sua", "seu", "suas", "seus", "t
  * próprio em maiúscula fora da 1ª palavra (a 1ª palavra é sempre maiúscula).
  * Heurística de propósito frouxa: só acusa o caso claro, de verbo ou número
  * sem ninguém fazendo a ação ("Inventa cinco vezes menos?").
+ *
+ * `contexto` (#13155): texto de onde a capa saiu (as falas do roteiro, o D1).
+ * A 1ª palavra conta como nome próprio quando aparece em maiúscula no meio de
+ * uma frase desse texto ("o Drauzio Varella disse"): "Drauzio nunca vendeu
+ * essa cura" deixa de gerar o aviso. Um verbo ("Inventa") não aparece assim,
+ * então o caso claro continua acusado. Sem `contexto`, a 1ª palavra não conta.
  */
-export function hasRecognizableSubject(hook: string): boolean {
+export function hasRecognizableSubject(hook: string, contexto?: string): boolean {
   const flat = flatHook(hook);
   const lw = lowerWords(flat);
   if (lw.some((w) => CAPA_KNOWN_NAMES.includes(w) || w === "ia" || CAPA_SUBJECT_PRONOUNS.includes(w))) return true;
   const tokens = flat.split(/\s+/).filter(Boolean);
-  return tokens.slice(1).some((t) => /^[A-ZÀ-ÖØ-Þ]\p{L}/u.test(t));
+  if (tokens.slice(1).some((t) => /^[A-ZÀ-ÖØ-Þ]\p{L}/u.test(t))) return true;
+  const primeira = tokens[0]?.match(/^[A-ZÀ-ÖØ-Þ]\p{L}+/u)?.[0];
+  return Boolean(primeira && contexto && maiusculaNoMeioDaFrase(primeira, contexto));
+}
+
+/** A palavra aparece com a mesma grafia (maiúscula inicial) depois de outra palavra da mesma frase? */
+function maiusculaNoMeioDaFrase(palavra: string, texto: string): boolean {
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${palavra.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "gu");
+  for (const m of texto.matchAll(re)) {
+    const antes = texto.slice(0, m.index).trimEnd();
+    // Início do texto, de linha ou de frase: a maiúscula não diz nada.
+    if (!antes || /[.!?…:"“«(\-–—]$/u.test(antes) || /\n\s*$/.test(texto.slice(0, m.index))) continue;
+    return true;
+  }
+  return false;
 }
 
 const LINE_BREAK_RE = /\r?\n|\\n|\|/;
@@ -350,7 +370,7 @@ export function scoreCapaHook(rawHook: string, d1: CapaD1, origin: CapaHookOrigi
     short_hook: s.hook,
     short_reason: s.reason,
     short_warning:
-      s.hook && !hasRecognizableSubject(hook)
+      s.hook && !hasRecognizableSubject(hook, [d1.title, d1.body ?? "", ...(opts.titles ?? [])].join("\n"))
         ? 'sem sujeito reconhecível: na grade do perfil a capa do Short aparece sem o título; diga quem ("Google", "Sua busca")'
         : null,
   };

@@ -34,7 +34,7 @@ import {
 } from "./video-montage.ts";
 import { contentWords } from "./youtube-title-research.ts";
 import { hasRecognizableSubject } from "./youtube-capa-hooks.ts";
-import { corteDaFala, segmentosSemTrecho, validarRoteiroFalas, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type PecaVideo, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
+import { corteDaFala, segmentosSemTrecho, SETA, validarRoteiroFalas, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type PecaVideo, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
 
 /** Caminho do JSON do roteiro, relativo à pasta da edição. */
 export const ROTEIRO_FALAS_FILE = "_internal/roteiro-falas.json";
@@ -95,6 +95,8 @@ export interface CorteReserva {
   video: VideoRoteiro;
   chave: string;
   id: string;
+  /** A fala inteira, como está no roteiro: o item do `blocks.json` que o corte troca (#13140). */
+  texto: string;
   trecho: string;
   /** Os itens que substituem a fala inteira quando o corte entra. */
   segmentos: string[];
@@ -181,7 +183,7 @@ export function propostaBlocosDoRoteiro(roteiro: RoteiroFalas, opts: { corteSlug
       const segmentos = corte ? segmentosSemTrecho(f.texto, corte.trecho) : null;
       if (corte && segmentos?.length && corte.reserva) {
         const economia = palavrasDe(f.texto).length - palavrasDe(segmentos.join(" ")).length;
-        cortesReserva.push({ video: v, chave: chaveDe[v], id: f.id, trecho: corte.trecho, segmentos, economiaS: Math.round((economia / ppm) * 60) });
+        cortesReserva.push({ video: v, chave: chaveDe[v], id: f.id, texto: f.texto, trecho: corte.trecho, segmentos, economiaS: Math.round((economia / ppm) * 60) });
       }
       if (corte && segmentos?.length && !corte.reserva) falas.push({ id: f.id, bloco, texto: segmentos.join(" "), segmentos, cortado: corte.trecho });
       else falas.push({ id: f.id, bloco, texto: f.texto });
@@ -334,11 +336,29 @@ export function readRoteiroHorizontal(editionDir: string, warn: (msg: string) =>
   // Um problema em outro campo (um corte que deixou de bater depois de a fala
   // mudar) não pode trocar o título do YouTube pelo do D1: título e capa do
   // horizontal valem se forem texto, com aviso do resto (#13132, review).
-  const h = (lido.raw as { porVideo?: { horizontal?: Record<string, unknown> } })?.porVideo?.horizontal;
-  const titulo = typeof h?.titulo === "string" && h.titulo.trim() ? h.titulo.trim() : undefined;
-  const capa = typeof h?.capa === "string" && h.capa.trim() ? h.capa.trim() : undefined;
-  warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): ${titulo || capa ? "uso o título e a capa do horizontal mesmo assim" : "título e capa do roteiro ignorados, usando o D1"} (#12751)`);
-  return titulo || capa ? { ...(titulo ? { titulo } : {}), ...(capa ? { capa } : {}) } : null;
+  const h = roteiroPecas(porVideoTolerante(lido.raw)).horizontal;
+  warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): ${h ? "uso o título e a capa do horizontal mesmo assim" : "título e capa do roteiro ignorados, usando o D1"} (#12751)`);
+  return h ?? null;
+}
+
+/**
+ * Só o `titulo` e a `capa` de cada vídeo que são texto, de um roteiro que não
+ * passou na validação (#13149): a leitura tolerante de `readRoteiroHorizontal`
+ * e `readRoteiroPecas`. Campo de outro tipo fica fora, nunca lança.
+ */
+function porVideoTolerante(raw: unknown): Pick<RoteiroFalas, "porVideo"> {
+  const pv = (raw as { porVideo?: unknown } | null)?.porVideo;
+  if (!pv || typeof pv !== "object") return {};
+  const porVideo: NonNullable<RoteiroFalas["porVideo"]> = {};
+  for (const v of VIDEOS_ROTEIRO) {
+    const p = (pv as Record<string, unknown>)[v] as Record<string, unknown> | null | undefined;
+    if (!p || typeof p !== "object") continue;
+    const peca: Pick<PecaVideo, "titulo" | "capa"> = {};
+    if (typeof p.titulo === "string") peca.titulo = p.titulo;
+    if (typeof p.capa === "string") peca.capa = p.capa;
+    porVideo[v] = peca as PecaVideo;
+  }
+  return { porVideo };
 }
 
 type RoteiroBruto = { estado: "ausente" } | { estado: "ilegivel"; path: string; erro: string } | { estado: "lido"; path: string; raw: unknown };
@@ -397,24 +417,80 @@ export function readRoteiroFontes(editionDir: string, warn: (msg: string) => voi
 /**
  * Título e capa de todos os vídeos do roteiro (#13123: a montagem lê a capa
  * dos verticais). Mesmas regras do `readRoteiroHorizontal`: sem o arquivo =
- * null em silêncio; ilegível ou inválido = null com aviso.
+ * null em silêncio; ilegível = null com aviso; inválido em outro campo = o
+ * título e a capa que são texto, com aviso do resto (#13149: um corte
+ * desatualizado não derruba a capa dos verticais).
  */
-export function readRoteiroPecas(editionDir: string, warn: (msg: string) => void): Partial<Record<VideoRoteiro, PecaVideo>> | null {
-  const path = join(editionDir, ROTEIRO_FALAS_FILE);
-  if (!existsSync(path)) return null;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
-  } catch (e) {
-    warn(`${path} ilegível (${(e as Error).message}): capa dos verticais do roteiro ignorada (#13123)`);
+export function readRoteiroPecas(editionDir: string, warn: (msg: string) => void): Partial<Record<VideoRoteiro, Pick<PecaVideo, "titulo" | "capa">>> | null {
+  const lido = readRoteiroBruto(editionDir);
+  if (lido.estado === "ausente") return null;
+  if (lido.estado === "ilegivel") {
+    warn(`${lido.path} ilegível (${lido.erro}): capa dos verticais do roteiro ignorada (#13123)`);
     return null;
   }
-  const lido = parseRoteiroFalas(raw);
-  if (!lido.ok) {
-    warn(`${path} inválido (${lido.problemas.join("; ")}): capa dos verticais do roteiro ignorada (#13123)`);
-    return null;
+  const parsed = parseRoteiroFalas(lido.raw);
+  if (parsed.ok) return roteiroPecas(parsed.roteiro);
+  const pecas = roteiroPecas(porVideoTolerante(lido.raw));
+  const algum = Object.keys(pecas).length > 0;
+  warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): ${algum ? "uso título e capa de cada vídeo mesmo assim; corrija o resto do roteiro" : "capa dos verticais do roteiro ignorada"} (#13149)`);
+  return algum ? pecas : null;
+}
+
+/**
+ * Os cortes de reserva do roteiro (#13140), para o `roteiro` da montagem pôr
+ * no topo da sugestão quando a vertical passa do alvo. Precisa do roteiro
+ * válido (o corte só se aplica a uma fala que bate com o trecho): sem o
+ * arquivo = [] em silêncio; ilegível ou inválido = [] com aviso.
+ */
+export function readRoteiroCortesReserva(editionDir: string, warn: (msg: string) => void, opts: { corteSlug?: string; palavrasPorMinuto?: number } = {}): CorteReserva[] {
+  const lido = readRoteiroBruto(editionDir);
+  if (lido.estado === "ausente") return [];
+  if (lido.estado === "ilegivel") {
+    warn(`${lido.path} ilegível (${lido.erro}): cortes de reserva do roteiro fora da sugestão de corte (#13140)`);
+    return [];
   }
-  return roteiroPecas(lido.roteiro);
+  const parsed = parseRoteiroFalas(lido.raw);
+  if (!parsed.ok) {
+    warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): cortes de reserva do roteiro fora da sugestão de corte; corrija o roteiro (#13140)`);
+    return [];
+  }
+  return propostaBlocosDoRoteiro(parsed.roteiro, opts).cortesReserva;
+}
+
+/** Uma fala com texto de tela (#13140), como a montagem casa com os itens do `blocks.json`. */
+export interface TelaDoRoteiro {
+  id: string;
+  texto: string;
+  tela: string;
+}
+
+/**
+ * As falas com `tela` no roteiro (#13140: o `build` põe um marcador com o
+ * texto no tempo da fala). Leitura tolerante, como a das fontes: um problema
+ * em outro campo não tira o texto de tela, só avisa. Sem o arquivo = [] em
+ * silêncio; ilegível = [] com aviso.
+ */
+export function readRoteiroTelas(editionDir: string, warn: (msg: string) => void): TelaDoRoteiro[] {
+  const lido = readRoteiroBruto(editionDir);
+  if (lido.estado === "ausente") return [];
+  if (lido.estado === "ilegivel") {
+    warn(`${lido.path} ilegível (${lido.erro}): textos de tela do roteiro fora do XML (#13140)`);
+    return [];
+  }
+  const falas = (lido.raw as { falas?: unknown })?.falas;
+  const out: TelaDoRoteiro[] = [];
+  let comTela = 0;
+  if (Array.isArray(falas)) {
+    for (const f of falas as Array<Record<string, unknown> | null>) {
+      if (f && f.tela !== undefined) comTela++;
+      // Seta nunca chega ao leitor (#9721): a tela com seta fica fora, e o aviso do inválido diz por quê.
+      if (!f || typeof f.id !== "string" || typeof f.texto !== "string" || typeof f.tela !== "string" || !f.tela.trim() || SETA.test(f.tela)) continue;
+      out.push({ id: f.id, texto: f.texto, tela: f.tela.trim() });
+    }
+  }
+  const problemas = validarRoteiroFalas(lido.raw);
+  if (problemas.length && comTela) warn(`${lido.path} inválido (${problemas.join("; ")}): ${out.length} texto(s) de tela válidos seguem para o XML; corrija o roteiro (#13140)`);
+  return out;
 }
 
 // ─── Gancho e título (#13116) ────────────────────────────────────────────────
@@ -488,9 +564,11 @@ export function avisosGanchoETitulo(roteiro: Pick<RoteiroFalas, "falas" | "porVi
     }
   }
   // Critério 3: na grade do perfil a capa do vertical aparece sem o título.
+  // O texto das falas e os títulos dizem se a 1ª palavra da capa é nome (#13155).
+  const contexto = [...roteiro.falas.map((f) => f.texto), ...VIDEOS_ROTEIRO.map((v) => pecas[v]?.titulo ?? "")].join("\n");
   for (const v of ["vertical1", "vertical2"] as const) {
     const capa = pecas[v]?.capa;
-    if (capa && !hasRecognizableSubject(capa)) {
+    if (capa && !hasRecognizableSubject(capa, contexto)) {
       avisos.push(`${VIDEO_LABEL[v]}: a capa "${capa}" não tem sujeito reconhecível; na grade do perfil ela aparece sem o título, diga quem ("Sua Busca", "Google") (#13116)`);
     }
   }
