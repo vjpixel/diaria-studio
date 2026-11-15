@@ -3308,6 +3308,64 @@ describe("main(): dispatch mockado", () => {
       assert.equal(byPlatform("linkedin")[0].status, "send_unknown");
       assert.equal(byPlatform("instagram")[0].worker_queue_key, "queue:ig:old");
     });
+
+    // #13076: o editor conferiu que o carrossel do Instagram não saiu. Antes a
+    // única saída era --no-skip-existing, que redespachava Threads e LinkedIn
+    // também (duplicando o Threads já publicado).
+    async function runRetry13076(retry: string): Promise<{ queueCalls: string[]; posts: any[] }> {
+      const saturdayStr = aammddOf(new Date(2027, 11, 25));
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const at = "2027-12-26T11:00:00-03:00";
+      writeFileSync(
+        resolve(publishedDir, "06-weekly-published.json"),
+        JSON.stringify({
+          posts: [
+            { platform: "instagram", destaque: "weekly-clicked", url: null, status: "send_unknown", failure_reason: "absent_from_feed: x", scheduled_at: at, worker_queue_key: "queue:ig:old" },
+            { platform: "threads", destaque: "weekly-clicked", url: null, status: "published", scheduled_at: at, worker_queue_key: "queue:th:old" },
+            { platform: "linkedin", destaque: "weekly-clicked", url: null, status: "send_unknown", failure_reason: "absent_from_feed: x", scheduled_at: at, worker_queue_key: "queue:li:old" },
+          ],
+        }),
+      );
+      const queueCalls: string[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          queueCalls.push(body.channel);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        })
+        .times(3);
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--retry", retry, "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+      const posts = JSON.parse(readFileSync(resolve(publishedDir, "06-weekly-published.json"), "utf8")).posts.filter((p: any) => p.destaque === "weekly-clicked");
+      return { queueCalls, posts };
+    }
+
+    it("#13076: --retry instagram refaz só o Instagram send_unknown; Threads publicado e LinkedIn send_unknown ficam intactos", async () => {
+      const { queueCalls, posts } = await runRetry13076("instagram");
+      assert.deepEqual(queueCalls, ["instagram"]);
+      const by = (pl: string) => posts.filter((p: any) => p.platform === pl);
+      assert.equal(by("instagram").length, 1);
+      assert.equal(by("instagram")[0].status, "scheduled");
+      assert.equal(by("instagram")[0].worker_queue_key, "queue:instagram:new");
+      assert.equal(by("threads")[0].status, "published");
+      assert.equal(by("threads")[0].worker_queue_key, "queue:th:old");
+      assert.equal(by("linkedin")[0].status, "send_unknown");
+      assert.equal(by("linkedin")[0].worker_queue_key, "queue:li:old");
+    });
+
+    it("#13076: --retry threads é recusado (já publicado) e nada é despachado", async () => {
+      const { queueCalls, posts } = await runRetry13076("threads");
+      assert.deepEqual(queueCalls, []);
+      assert.equal(posts.find((p: any) => p.platform === "threads").worker_queue_key, "queue:th:old");
+      assert.equal(posts.find((p: any) => p.platform === "instagram").status, "send_unknown");
+    });
   });
 
   describe("#11062: resumo por item escrito pelo weekly-summary-writer", () => {

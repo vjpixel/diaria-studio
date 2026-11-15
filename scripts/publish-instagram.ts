@@ -42,6 +42,7 @@
  *     --edition-dir data/editions/260422/ \
  *     [--schedule]          # enfileira no Worker em vez de publicar imediato (#3817)
  *     [--skip-existing]     # pula posts já em 06-social-published.json
+ *     [--retry d2[,um]]     # re-tenta SÓ esses posts (failed/send_unknown; recusa os já publicados/agendados) — #13076
  *
  * `--schedule` requer o MESMO Worker já usado pelo LinkedIn:
  *   DIARIA_LINKEDIN_CRON_URL / DIARIA_LINKEDIN_CRON_TOKEN no env, OU
@@ -60,7 +61,8 @@ loadProjectEnv(); // carrega .env antes de process.env access
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendSocialPosts, PostEntry, RESUME_SKIP_STATUSES, SocialPublished } from "./lib/social-published-store.ts";
+import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+import { decideResumeOrRetry, parseRetryIdList } from "./lib/social-retry.ts"; // #13076 — `--retry dN`, mesma regra do Threads (#11105)
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { selectSocialCardImageFile, missingSocialCardReason } from "./lib/select-social-card-image.ts"; // #4090 item 5, #12226
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6005 Parte B
@@ -118,6 +120,38 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const INSTAGRAM_API_BASE = "https://graph.facebook.com"; // mesma base da Graph API
 const INSTAGRAM_API_VERSION = "v25.0";
+
+/** #13076 — ids aceitos por `--retry` (destaques + 4º post USE MELHOR). */
+export const INSTAGRAM_RETRY_IDS = ["d1", "d2", "d3", "um"] as const;
+
+/**
+ * #13076 — `--retry d2[,um]`: re-tenta SÓ esses posts. Antes a única saída de
+ * um `send_unknown` era `--no-skip-existing`, global, que republicava os
+ * destaques já `published`. `null` = flag ausente.
+ */
+export function parseInstagramRetryIds(
+  raw: string | undefined,
+  flagWithoutValue: boolean,
+): { ok: true; ids: Set<string> | null } | { ok: false; error: string } {
+  return parseRetryIdList(raw, flagWithoutValue, INSTAGRAM_RETRY_IDS, { noun: "os posts", example: "--retry d2 ou --retry d2,um" });
+}
+
+/** #13076 — instrução de recuperação de um `send_unknown`: re-tenta só aquele post. */
+export function sendUnknownInstagramHint(d: string): string {
+  return `AVISO instagram/${d}: envio não confirmado (send_unknown). Conferir o perfil do Instagram; se o post não saiu, rodar com --retry ${d} (re-tenta só este post).`;
+}
+
+/** #13076 — resumo do JSON de saída; `send_unknown` tem contador próprio (antes caía só no `skipped`). */
+export function summarizeInstagramResults(results: PostEntry[], skippedCount: number) {
+  return {
+    total: results.length,
+    published: results.filter((r) => r.status === "published").length,
+    scheduled: results.filter((r) => r.status === "scheduled").length, // #3817 — modo --schedule
+    failed: results.filter((r) => r.status === "failed").length,
+    send_unknown: results.filter((r) => r.status === "send_unknown").length,
+    skipped: skippedCount,
+  };
+}
 
 function loadPublished(path: string): SocialPublished {
   if (existsSync(path)) {
@@ -647,6 +681,13 @@ async function main(): Promise<number | void> {
   }
   const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: ROOT }); // #9427
   const skipExisting = !flags.has("no-skip-existing");
+  // #13076 — `--retry d2[,um]`: re-tenta só esses posts (recuperação de send_unknown).
+  const retryParsed = parseInstagramRetryIds(values["retry"], flags.has("retry"));
+  if (!retryParsed.ok) {
+    console.error(`ERRO: ${retryParsed.error}`);
+    return 1;
+  }
+  const retryIds = retryParsed.ids;
   const isTest = flags.has("test-mode");
   // #3817 — --schedule enfileira no Worker em vez de publicar imediato.
   // Default (sem a flag) preserva o comportamento original: publica na hora.
@@ -853,21 +894,27 @@ async function main(): Promise<number | void> {
     // Releitura a cada iteração para detectar entradas concorrentes
     const published = loadPublished(publishedPath);
 
-    if (skipExisting) {
-      const existing = published.posts.find(
-        (p) =>
-          p.platform === "instagram" &&
-          p.destaque === d &&
-          // #13074: inclui `send_unknown` (envio ambíguo ou ausente do feed,
-          // #13009) — repostar sem conferir o perfil duplica o post.
-          RESUME_SKIP_STATUSES.has(p.status),
+    // #13074: a retomada pula `send_unknown` (envio ambíguo ou ausente do
+    // feed, #13009) — repostar sem conferir o perfil duplica o post.
+    // #13076: `--retry dN` refaz só esse post (failed/send_unknown).
+    const entries = published.posts.filter((p) => p.platform === "instagram" && p.destaque === d);
+    const decision = decideResumeOrRetry(d, entries, { skipExisting, retryIds });
+    if (decision.action === "not-selected") continue;
+    if (decision.action === "skip-existing") {
+      console.log(`SKIP instagram/${d} — already ${decision.existing.status}`);
+      if (decision.existing.status === "send_unknown") console.warn(sendUnknownInstagramHint(d));
+      results.push(decision.existing);
+      skippedCount += 1;
+      continue;
+    }
+    if (decision.action === "retry-refused") {
+      console.error(
+        `SKIP instagram/${d}: --retry recusado — o post já está ${decision.existing.status}; refazer duplicaria. ` +
+          `--retry só refaz posts failed/send_unknown.`,
       );
-      if (existing) {
-        console.log(`SKIP instagram/${d} — already ${existing.status}`);
-        results.push(existing);
-        skippedCount += 1;
-        continue;
-      }
+      results.push(decision.existing);
+      skippedCount += 1;
+      continue;
     }
 
     // Extrair caption
@@ -1119,13 +1166,7 @@ async function main(): Promise<number | void> {
   // (já publicadas em rodada anterior) — rastreado por skippedCount, não derivado
   // de status (published cobre both new + skipped, então não dá pra distinguir
   // pós-fato).
-  const summary = {
-    total: results.length,
-    published: results.filter((r) => r.status === "published").length,
-    scheduled: results.filter((r) => r.status === "scheduled").length, // #3817 — modo --schedule
-    failed: results.filter((r) => r.status === "failed").length,
-    skipped: skippedCount,
-  };
+  const summary = summarizeInstagramResults(results, skippedCount);
 
   // #10305 (self-review #10417 finding 3): registro do teste rotativo gravado pelo próprio
   // agendamento, não só pelo passo 5c-3d do playbook. Idempotente entre os 4 publicadores; nunca lança.

@@ -69,10 +69,10 @@ describe("#13074: o que a reconciliação grava é pulado na retomada", () => {
 });
 
 describe("#13074: os publicadores usam o skip compartilhado", () => {
+  // #13076: Instagram e semanal decidem por `decideResumeOrRetry`
+  // (scripts/lib/social-retry.ts), que lê o mesmo conjunto (ver o bloco abaixo).
   const cases: Array<[string, RegExp]> = [
-    ["scripts/publish-instagram.ts", /p\.platform === "instagram" &&\s*p\.destaque === d &&[\s\S]{0,200}?RESUME_SKIP_STATUSES\.has\(p\.status\)/],
     ["scripts/publish-linkedin.ts", /const alreadyDone = [\s\S]{0,400}?RESUME_SKIP_STATUSES\.has\(p\.status\)/],
-    ["scripts/publish-weekly-social.ts", /const isExisting = \(p: PostEntry\): boolean => RESUME_SKIP_STATUSES\.has\(p\.status\)/],
     ["scripts/publish-retrospectiva-social.ts", /export function findLiveSocialDispatch[\s\S]{0,600}?RESUME_SKIP_STATUSES\.has\(p\.status\)/],
     ["scripts/publish-threads.ts", /RESUME_SKIP_STATUSES\.has\(existing\.status\)/],
   ];
@@ -82,6 +82,25 @@ describe("#13074: os publicadores usam o skip compartilhado", () => {
       assert.match(src, /\bRESUME_SKIP_STATUSES\b[^\n]*\} from "\.\/lib\/social-published-store\.ts"|import \{[^}]*\bRESUME_SKIP_STATUSES\b[^}]*\} from "\.\/lib\/social-published-store\.ts"/);
       assert.match(src, re);
       // Nenhuma cópia local do conjunto (a fonte é uma só).
+      assert.doesNotMatch(src, /const RESUME_SKIP_STATUSES\s*=/);
+    });
+  }
+});
+
+describe("#13076: Instagram e semanal pulam via social-retry.ts, que usa o skip compartilhado", () => {
+  it("scripts/lib/social-retry.ts importa RESUME_SKIP_STATUSES e não tem cópia local", () => {
+    const src = readFileSync(resolve(ROOT, "scripts/lib/social-retry.ts"), "utf8");
+    assert.match(src, /import \{[^}]*\bRESUME_SKIP_STATUSES\b[^}]*\} from "\.\/social-published-store\.ts"/);
+    assert.match(src, /RESUME_SKIP_STATUSES\.has\(p\.status\)/);
+    assert.doesNotMatch(src, /const RESUME_SKIP_STATUSES\s*=/);
+  });
+  for (const [file, re] of [
+    ["scripts/publish-instagram.ts", /decideResumeOrRetry\(d, entries, \{ skipExisting, retryIds \}\)/],
+    ["scripts/publish-weekly-social.ts", /decideResumeOrRetry\(channel, entries, \{ skipExisting: opts\.skipExisting, retryIds: opts\.retryChannels \}\)/],
+  ] as const) {
+    it(file, () => {
+      const src = readFileSync(resolve(ROOT, file), "utf8");
+      assert.match(src, re);
       assert.doesNotMatch(src, /const RESUME_SKIP_STATUSES\s*=/);
     });
   }

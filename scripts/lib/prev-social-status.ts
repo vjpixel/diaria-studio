@@ -72,6 +72,9 @@ export interface SocialPostLike {
   scheduled_at?: string | null;
   url?: string | null;
   failure_reason?: string | null;
+  /** #13076 — `published` com prova de disparo que a reconciliação não achou no feed (#13074). */
+  feed_absent_at?: string | null;
+  feed_absent_reason?: string | null;
 }
 
 export interface PrevSocialFinding {
@@ -79,7 +82,7 @@ export interface PrevSocialFinding {
   destaque: string;
   status: string;
   scheduled_at: string | null;
-  reason: "failed" | "overdue-pollable" | "send-unknown" | "absent-from-feed";
+  reason: "failed" | "overdue-pollable" | "send-unknown" | "absent-from-feed" | "published-absent-from-feed";
 }
 
 export interface PrevSocialReport {
@@ -129,6 +132,17 @@ export function analyzePrevSocial(posts: SocialPostLike[], now: Date): PrevSocia
       continue;
     }
 
+    // #13076: `published` com prova de disparo (`ig_media_id`/`threads_media_id`)
+    // fica `published` mesmo ausente do feed (#13074) e ganha só
+    // `feed_absent_at`. Sem este aviso, um post removido pela Meta sumia do
+    // Stage 0 em silêncio. É aviso: o post saiu, não se refaz sem conferir.
+    if (status === "published") {
+      if (typeof post.feed_absent_at === "string" && post.feed_absent_at) {
+        findings.push({ platform, destaque, status, scheduled_at: scheduledAt, reason: "published-absent-from-feed" });
+      }
+      continue;
+    }
+
     if (status !== "scheduled") continue;
 
     if (FIRE_AND_FORGET_PLATFORMS.has(platform)) {
@@ -154,6 +168,7 @@ const REASON_LABEL: Record<PrevSocialFinding["reason"], string> = {
   "overdue-pollable": "agendado e não publicado",
   "send-unknown": "envio ambíguo, conferir o perfil antes de refazer",
   "absent-from-feed": "agendado e ausente do feed da conta",
+  "published-absent-from-feed": "publicado, mas não está mais no feed da conta (removido?), conferir o perfil",
 };
 
 /** Resumo de uma linha para o log/terminal. `null` quando não há o que dizer. */
