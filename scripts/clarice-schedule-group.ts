@@ -558,14 +558,41 @@ export function mergeGroupCampaigns(
   return merged;
 }
 
+/** Pura: entradas do `baseline` que não estão mais no disco (o registro
+ * nunca remove; sumir é edição à mão ou arquivo trocado). */
+export function baselineEntriesMissingFromDisk(
+  baseline: readonly CampaignEntry[],
+  onDisk: readonly CampaignEntry[],
+): CampaignEntry[] {
+  return baseline.filter((b) => !onDisk.some((d) => sameCampaign(d, b)));
+}
+
+/** Trava da escrita do registro (`file-lock.ts`, seção crítica curta). */
+export function withGroupCampaignsLock<T>(path: string, fn: (abs: string) => T): T {
+  const abs = resolve(path);
+  return withFileLock(`${abs}.lock`, () => fn(abs));
+}
+
 /** Escreve `content` (o array desta invocação) no registro, mesclado com o
  * disco sob trava. Writer padrão das funções deste script. */
-export function writeGroupCampaignsMerged(path: string, content: string): void {
-  const abs = resolve(path);
+export function writeGroupCampaignsMerged(
+  path: string,
+  content: string,
+  logFn: (msg: string) => void = (m) => console.error(m),
+): void {
   const current = JSON.parse(content) as CampaignEntry[];
-  withFileLock(`${abs}.lock`, () => {
-    const merged = mergeGroupCampaigns(groupCampaignsBaseline.get(abs) ?? [], current, readGroupCampaignsRaw(abs));
-    writeFileAtomic(abs, JSON.stringify(merged, null, 2));
+  const abs = withGroupCampaignsLock(path, (absPath) => {
+    const baseline = groupCampaignsBaseline.get(absPath) ?? [];
+    const onDisk = readGroupCampaignsRaw(absPath);
+    for (const gone of baselineEntriesMissingFromDisk(baseline, onDisk)) {
+      logFn(
+        `⚠ group-campaigns.json: a entrada ${gone.key} (campanha #${gone.campaignId}) lida no início sumiu do disco ` +
+          `(edição à mão ou arquivo trocado?) — ` +
+          (current.some((c) => sameCampaign(c, gone)) ? "regravada a partir desta invocação." : "mantida fora."),
+      );
+    }
+    writeFileAtomic(absPath, JSON.stringify(mergeGroupCampaigns(baseline, current, onDisk), null, 2));
+    return absPath;
   });
   groupCampaignsBaseline.set(abs, structuredClone(current));
 }
@@ -1296,13 +1323,29 @@ export async function runSendNowLive(
       // gravado) deixa o disco intacto — lado seguro (guard segura o reenvio).
       const ownMark = c.sendNowAttemptedAt;
       try {
-        const onDisk = JSON.parse(readFn(campaignsPath)) as CampaignEntry[];
-        const entry = onDisk.find((e) => e.key === key && e.campaignId === c.campaignId);
-        if (entry && entry.sendNowAttemptedAt === ownMark && entry.sendNowAcceptedAt === undefined) {
+        // #13098: em produção (leitor e escritor padrão) a releitura e a
+        // restauração rodam sob UMA trava, sem janela entre as duas.
+        const restoreOnDisk = (onDisk: CampaignEntry[]): boolean => {
+          const entry = onDisk.find((e) => e.key === key && e.campaignId === c.campaignId);
+          if (!(entry && entry.sendNowAttemptedAt === ownMark && entry.sendNowAcceptedAt === undefined)) return false;
           if (previousAttemptedAt === undefined) delete entry.sendNowAttemptedAt;
           else entry.sendNowAttemptedAt = previousAttemptedAt;
-          writeAfterPost(campaignsPath, JSON.stringify(onDisk, null, 2));
+          return true;
+        };
+        let restored: boolean;
+        if (!deps.readFn && !deps.writeFn) {
+          restored = withGroupCampaignsLock(campaignsPath, (abs) => {
+            const onDisk = readGroupCampaignsRaw(abs);
+            if (!restoreOnDisk(onDisk)) return false;
+            writeFileAtomic(abs, JSON.stringify(onDisk, null, 2));
+            return true;
+          });
         } else {
+          const onDisk = JSON.parse(readFn(campaignsPath)) as CampaignEntry[];
+          restored = restoreOnDisk(onDisk);
+          if (restored) writeAfterPost(campaignsPath, JSON.stringify(onDisk, null, 2));
+        }
+        if (!restored) {
           logFn(
             `⚠ ${key}: a marca de tentativa no disco não é mais a deste processo (execução concorrente?) — ` +
               `registro local mantido como está; confira a Brevo antes de re-rodar --send-now (#9714).`,

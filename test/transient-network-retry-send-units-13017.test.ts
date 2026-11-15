@@ -12,7 +12,9 @@
  *      guard antes do POST): sai 4, nunca 105. Os contatos estão presos no
  *      `sent-or-queued.json`; reagendar daria uma rerrodada vazia, verde e
  *      sem alarme (review da PR #13098, P2-1).
- *   3. Rodada vazia no mesmo dia não apaga o `other-error` com presos.
+ *   3. O aviso de presos (`stranded`, campo à parte do status) atravessa as
+ *      rodadas seguintes (105, vazia, envio de outra key) até a key presa
+ *      sair ou o editor limpar com `--clear-stranded`.
  *   4. O runner não reclassifica a saída inteira: um `gh` sem rede ecoado por
  *      um sub-passo que deu certo não transforma um abort determinístico em
  *      retry (P3).
@@ -23,12 +25,12 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  keepsStrandedStatus,
   runNovos,
+  subStepFailedByNetwork,
   NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE,
   NOVOS_STRANDED_SELECTION_EXIT_CODE,
   type ExecFn,
@@ -36,12 +38,20 @@ import {
   type StepResult,
 } from "../scripts/clarice-novos-run.ts";
 import {
+  applySendNowVerifyResults,
+  baselineEntriesMissingFromDisk,
   mergeGroupCampaigns,
   readGroupCampaigns,
   writeGroupCampaignsMerged,
   type CampaignEntry,
 } from "../scripts/clarice-schedule-group.ts";
-import { readNovosRunStatus } from "../scripts/lib/clarice-novos-run-status.ts";
+import {
+  clearNovosStranded,
+  readNovosRunStatus,
+  resolveStrandedCarry,
+  writeNovosRunStatus,
+} from "../scripts/lib/clarice-novos-run-status.ts";
+import { clariceSegmentsDir } from "../scripts/lib/clarice-paths.ts";
 import {
   resolveStepDeclaredExitCode,
   TRANSIENT_NETWORK_EXIT_CODE,
@@ -107,6 +117,22 @@ function deps(rootDir: string, exec: ExecFn, iso = "2026-11-14T12:00:00.000Z"): 
 }
 
 const statusDir = (root: string) => join(root, "data", "clarice-subscribers");
+
+/** Rodada completa que envia (confirmado) a key de OUTRO dia. */
+function runSentOtherKey(root: string, iso: string) {
+  const handlers = preSendHandlers(5);
+  handlers["scripts/clarice-novos-resolve-key.ts"] = json({ key: "novos-261115" });
+  handlers["scripts/clarice-schedule-group.ts"] = [
+    json({ key: "novos-261115", listId: 98, campaignId: 556, phase: "create", status: "draft" }),
+    json({ key: "novos-261115", listId: 98, campaignId: 556, phase: "send-test" }),
+    json({ key: "novos-261115", listId: 98, campaignId: 556, phase: "send-now", status: "sent" }),
+  ];
+  handlers["scripts/clarice-novos-html-state.ts"] = [
+    json({ htmlSha256: "abc", shouldSendTest: true, previousState: null }),
+    json({ lastRunAt: iso, sentCount: 5, lastCycle: "2611-12" }),
+  ];
+  return runNovos([], deps(root, fakeExec(handlers).exec, iso));
+}
 const ENV_KEYS = ["STRIPE_API_KEY", "BREVO_CLARICE_API_KEY", "MILLION_VERIFIER_API_KEY"] as const;
 
 describe("Clarice-Novos com retry de rede (#13017, #13098)", () => {
@@ -169,7 +195,34 @@ describe("Clarice-Novos com retry de rede (#13017, #13098)", () => {
     assert.match(r.reportMarkdown, /--key novos-261114 --send-now/);
     const status = readNovosRunStatus(statusDir(root));
     assert.equal(status?.status, "other-error");
-    assert.equal(status?.stranded, true);
+    assert.equal(status?.stranded?.key, "novos-261114");
+    assert.equal(status?.stranded?.cycle, "2611-12");
+  });
+
+  it("build-segment sai 0 sem resumo legível: presos (4), nunca rodada vazia", async () => {
+    const root = freshRoot();
+    const handlers = preSendHandlers(42);
+    handlers["scripts/clarice-build-segment.ts"] = { code: 0, stdout: "✅ 42 contato(s)", stderr: "" };
+    const { exec, calls } = fakeExec(handlers);
+    const r = await runNovos([], deps(root, exec));
+    assert.equal(r.code, NOVOS_STRANDED_SELECTION_EXIT_CODE);
+    assert.ok(!calls.some((c) => c.script === "scripts/clarice-import-waves.ts"));
+    assert.ok(readNovosRunStatus(statusDir(root))?.stranded);
+  });
+
+  it("aviso do brevo-rate-state com 'fetch failed' não faz um abort comum virar 105", async () => {
+    const root = freshRoot();
+    const handlers = preSendHandlers(42);
+    handlers["scripts/clarice-stripe-delta.ts"] = {
+      code: 1,
+      stdout: "",
+      stderr:
+        "⚠️  brevo-rate-state: KV da Cloudflare indisponível (leitura: fetch failed) — seguindo com o arquivo local (#12841).\n" +
+        "❌ Stripe respondeu 401 (key inválida)",
+    };
+    const { exec } = fakeExec(handlers);
+    assert.equal((await runNovos([], deps(root, exec))).code, 1);
+    assert.equal(subStepFailedByNetwork(UNDICI_EAI_AGAIN), true);
   });
 
   it("rede cai ao resolver a key (logo depois da seleção): também é presos, mesmo sem key", async () => {
@@ -181,30 +234,53 @@ describe("Clarice-Novos com retry de rede (#13017, #13098)", () => {
     assert.equal(r.code, NOVOS_STRANDED_SELECTION_EXIT_CODE);
   });
 
-  it("rodada vazia no mesmo dia não sobrescreve o other-error com presos; em outro dia, sobrescreve", async () => {
+  it("3 rodadas no dia (4 → 105 → vazia) e o envio de outra key não apagam o aviso; a key presa disparada limpa", async () => {
     const root = freshRoot();
     const failing = preSendHandlers(42);
     failing["scripts/clarice-schedule-group.ts"] = [
       json({ key: "novos-261114", listId: 99, campaignId: 555, phase: "create", status: "draft" }),
       { code: 1, stdout: "", stderr: UNDICI_EAI_AGAIN },
     ];
-    await runNovos([], deps(root, fakeExec(failing).exec, "2026-11-14T12:00:00.000Z")); // 09:00 BRT
-    // Tarde do mesmo dia: a seleção presa sai do universo, rodada vazia.
-    const empty = await runNovos([], deps(root, fakeExec(preSendHandlers(0)).exec, "2026-11-14T21:00:00.000Z"));
-    assert.equal(empty.code, 0);
+    // 09:00 BRT: cai depois da seleção.
+    assert.equal((await runNovos([], deps(root, fakeExec(failing).exec, "2026-11-14T12:00:00.000Z"))).code, 4);
+    // 18:00 BRT: cai por rede antes da seleção (other-error transitório).
+    const net = preSendHandlers(0);
+    net["scripts/clarice-stripe-delta.ts"] = { code: 1, stdout: "", stderr: UNDICI_EAI_AGAIN };
+    assert.equal((await runNovos([], deps(root, fakeExec(net).exec, "2026-11-14T21:00:00.000Z"))).code, 105);
     assert.equal(readNovosRunStatus(statusDir(root))?.status, "other-error");
-    // Dia seguinte: a vazia volta a registrar normalmente.
-    await runNovos([], deps(root, fakeExec(preSendHandlers(0)).exec, "2026-11-15T12:00:00.000Z"));
+    assert.equal(readNovosRunStatus(statusDir(root))?.stranded?.key, "novos-261114");
+    // 18:15 BRT: a rerrodada sai vazia (os presos saíram do universo).
+    const empty = await runNovos([], deps(root, fakeExec(preSendHandlers(0)).exec, "2026-11-14T21:15:00.000Z"));
+    assert.equal(empty.code, 0);
+    assert.match(empty.reportMarkdown, /PRESOS desde/);
     assert.equal(readNovosRunStatus(statusDir(root))?.status, "empty");
+    assert.equal(readNovosRunStatus(statusDir(root))?.stranded?.key, "novos-261114");
+    // Dia seguinte, envio confirmado de OUTRA key: o aviso fica.
+    const segDir = clariceSegmentsDir("2611-12", statusDir(root));
+    mkdirSync(segDir, { recursive: true });
+    const registry = join(segDir, "group-campaigns.json");
+    writeFileSync(registry, JSON.stringify([{ key: "novos-261114", campaignId: 555, listId: 99, subject: "x", status: "draft" }]));
+    assert.equal((await runSentOtherKey(root, "2026-11-15T12:00:00.000Z")).code, 0);
+    assert.equal(readNovosRunStatus(statusDir(root))?.stranded?.key, "novos-261114");
+    // Editor dispara a key presa: a próxima gravação limpa o aviso.
+    writeFileSync(registry, JSON.stringify([{ key: "novos-261114", campaignId: 555, listId: 99, subject: "x", status: "sent" }]));
+    assert.equal((await runSentOtherKey(root, "2026-11-15T21:00:00.000Z")).code, 0);
+    assert.equal(readNovosRunStatus(statusDir(root))?.stranded, undefined);
   });
 
-  it("keepsStrandedStatus: só other-error com presos e do mesmo dia BRT", () => {
-    const now = new Date("2026-11-15T02:00:00.000Z"); // 23:00 BRT do dia 14
-    assert.equal(keepsStrandedStatus({ status: "other-error", checkedAt: "2026-11-14T12:00:00.000Z", stranded: true }, now), true);
-    assert.equal(keepsStrandedStatus({ status: "other-error", checkedAt: "2026-11-13T12:00:00.000Z", stranded: true }, now), false);
-    assert.equal(keepsStrandedStatus({ status: "other-error", checkedAt: "2026-11-14T12:00:00.000Z" }, now), false);
-    assert.equal(keepsStrandedStatus({ status: "sent", checkedAt: "2026-11-14T12:00:00.000Z", stranded: true }, now), false);
-    assert.equal(keepsStrandedStatus(null, now), false);
+  it("resolveStrandedCarry e --clear-stranded", () => {
+    const root = freshRoot();
+    const base = statusDir(root);
+    const prev = { at: "2026-11-14T12:00:00.000Z", key: "novos-261114", cycle: "2611-12" };
+    assert.deepEqual(resolveStrandedCarry(prev, undefined, base), prev, "registro ausente conserva o aviso");
+    assert.equal(resolveStrandedCarry({ at: prev.at }, undefined, base)?.at, prev.at, "sem key, só a limpeza manual tira");
+    const next = { at: "2026-11-15T12:00:00.000Z", key: "novos-261115", cycle: "2611-12" };
+    assert.deepEqual(resolveStrandedCarry(prev, next, base), next);
+    writeNovosRunStatus({ status: "empty", checkedAt: prev.at, stranded: prev }, base);
+    assert.equal(clearNovosStranded(base), true);
+    assert.equal(readNovosRunStatus(base)?.stranded, undefined);
+    assert.equal(readNovosRunStatus(base)?.status, "empty");
+    assert.equal(clearNovosStranded(base), false);
   });
 
   it("abort determinístico com 'gh' sem rede ecoado por sub-passo que deu certo: sai 1, não 105", async () => {
@@ -339,6 +415,37 @@ describe("group-campaigns.json: escrita mesclada sob trava (#13098, P2-2)", () =
     assert.equal(final[0].status, "sent");
     assert.equal(final[0].sendNowAttemptedAt, "2026-11-14T21:00:00.000Z");
     assert.equal(final[1].status, "scheduled");
+  });
+
+  it("writer de produção sem writeFn injetado (applySendNowVerifyResults) mescla com escrita intercalada", () => {
+    const path = join(dir, "gc-prod.json");
+    writeFileSync(path, JSON.stringify([entry("novos-261114-2", 3)], null, 2));
+    const mine = readGroupCampaigns(path);
+    // Envio das 19:10 registra a onda de amanhã durante o poll do --send-now.
+    const disk = JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
+    disk.push(entry("daily-261115", 4, { status: "scheduled" }));
+    writeFileSync(path, JSON.stringify(disk, null, 2));
+    applySendNowVerifyResults([{ status: "fulfilled", value: { status: "sent" } }], [mine[0]], mine, path, undefined, () => {});
+    const final = JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
+    assert.deepEqual(
+      final.map((e) => [e.key, e.status]),
+      [
+        ["novos-261114-2", "sent"],
+        ["daily-261115", "scheduled"],
+      ],
+    );
+  });
+
+  it("entrada lida no início que sumiu do disco é avisada no log", () => {
+    const path = join(dir, "gc-gone.json");
+    writeFileSync(path, JSON.stringify([entry("a", 1), entry("b", 2)], null, 2));
+    const mine = readGroupCampaigns(path);
+    writeFileSync(path, JSON.stringify([entry("b", 2)], null, 2));
+    const logs: string[] = [];
+    mine.push(entry("c", 3));
+    writeGroupCampaignsMerged(path, JSON.stringify(mine), (m) => logs.push(m));
+    assert.ok(logs.some((l) => /entrada a .*sumiu do disco/.test(l)), logs.join(" | "));
+    assert.deepEqual(baselineEntriesMissingFromDisk([entry("a", 1)], [entry("b", 2)]).map((e) => e.key), ["a"]);
   });
 
   it("mergeGroupCampaigns: entrada sem mudança não sobrescreve o disco; nova vai para o fim", () => {

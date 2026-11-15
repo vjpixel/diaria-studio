@@ -26,7 +26,8 @@
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
-import { CLARICE_BASE } from "./clarice-paths.ts";
+import { CLARICE_BASE, clariceSegmentsDir } from "./clarice-paths.ts";
+import { hasFlag, isMainModule } from "./cli-args.ts";
 
 /**
  * `other-error` — abortou por qualquer motivo (guard de custo MV, teto D13,
@@ -46,9 +47,57 @@ export interface NovosRunStatus {
   checkedAt: string;
   /** Trecho da mensagem de abort (só presente em `other-error`), auditoria. */
   detail?: string;
-  /** #13098: `other-error` depois de a seleção ser gravada (contatos presos
-   * na campanha da key). Uma rodada vazia do mesmo dia não o sobrescreve. */
-  stranded?: boolean;
+  /** #13098: contatos PRESOS por uma rodada que caiu depois de gravar a
+   * seleção. Campo À PARTE do `status`: atravessa as rodadas seguintes
+   * (vazia, 105, `sent`/`uncertain` de outra key) até a key presa ser
+   * disparada (`resolveStrandedCarry`) ou o editor limpar à mão
+   * (`--clear-stranded`, depois de liberar a seleção). */
+  stranded?: NovosStranded;
+}
+
+export interface NovosStranded {
+  /** ISO da rodada que deixou os contatos presos. */
+  at: string;
+  /** Key da campanha presa (ausente quando a rodada caiu antes de resolvê-la). */
+  key?: string;
+  /** Ciclo de ENVIO (`{ciclo}/segments/group-campaigns.json`). */
+  cycle?: string;
+  detail?: string;
+}
+
+function parseStranded(raw: unknown): NovosStranded | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.at !== "string") return undefined;
+  return {
+    at: r.at,
+    ...(typeof r.key === "string" ? { key: r.key } : {}),
+    ...(typeof r.cycle === "string" ? { cycle: r.cycle } : {}),
+    ...(typeof r.detail === "string" ? { detail: r.detail } : {}),
+  };
+}
+
+/**
+ * #13098: `stranded` que a próxima gravação carrega. `next` (presos desta
+ * rodada) vence; sem ele, herda o anterior, salvo quando a key presa já saiu
+ * (`group-campaigns.json` do ciclo com `status: "sent"` ou
+ * `sendNowAcceptedAt` gravado). Registro ilegível conserva o aviso.
+ */
+export function resolveStrandedCarry(
+  prev: NovosStranded | undefined,
+  next: NovosStranded | undefined,
+  baseDir: string = CLARICE_BASE,
+): NovosStranded | undefined {
+  if (next) return next;
+  if (!prev?.key || !prev.cycle) return prev;
+  const path = resolve(clariceSegmentsDir(prev.cycle, baseDir), "group-campaigns.json");
+  try {
+    const entries = JSON.parse(readFileSync(path, "utf8")) as Array<{ key?: string; status?: string; sendNowAcceptedAt?: string }>;
+    const fired = entries.some((e) => e.key === prev.key && (e.status === "sent" || typeof e.sendNowAcceptedAt === "string"));
+    return fired ? undefined : prev;
+  } catch {
+    return prev;
+  }
 }
 
 export function novosRunStatusPath(baseDir: string = CLARICE_BASE): string {
@@ -69,7 +118,7 @@ export function readNovosRunStatus(baseDir: string = CLARICE_BASE): NovosRunStat
       status: parsed.status as NovosRunStatusValue,
       checkedAt: parsed.checkedAt,
       detail: typeof parsed.detail === "string" ? parsed.detail : undefined,
-      ...(parsed.stranded === true ? { stranded: true } : {}),
+      ...(parseStranded(parsed.stranded) ? { stranded: parseStranded(parsed.stranded) } : {}),
     };
   } catch {
     return null;
@@ -82,3 +131,21 @@ export function writeNovosRunStatus(status: NovosRunStatus, baseDir: string = CL
   writeFileAtomic(novosRunStatusPath(baseDir), JSON.stringify(status, null, 2) + "\n");
 }
 
+/** #13098: limpa o aviso de presos (o editor liberou a seleção ou disparou a
+ * key por fora). Mantém o resto do status. Devolve se havia o que limpar. */
+export function clearNovosStranded(baseDir: string = CLARICE_BASE): boolean {
+  const prev = readNovosRunStatus(baseDir);
+  if (!prev?.stranded) return false;
+  const { stranded: _drop, ...rest } = prev;
+  writeNovosRunStatus(rest, baseDir);
+  return true;
+}
+
+// CLI: `npx tsx scripts/lib/clarice-novos-run-status.ts [--clear-stranded]`
+if (isMainModule(import.meta.url)) {
+  if (hasFlag(process.argv.slice(2), "clear-stranded")) {
+    console.log(clearNovosStranded() ? "aviso de presos limpo" : "nenhum aviso de presos gravado");
+  } else {
+    console.log(JSON.stringify(readNovosRunStatus(), null, 2));
+  }
+}
