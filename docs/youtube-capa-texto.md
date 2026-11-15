@@ -126,16 +126,29 @@ título do vídeo (o do roteiro), que pode não ser o do D1.
 3. **A capa do vertical também se explica sozinha.** Na grade do perfil ela
    aparece sem título, então precisa de sujeito reconhecível ("Sua Busca",
    "Google").
+4. **O título do vertical 1 é sempre o do horizontal** (decisão do editor no
+   mesmo dia). O vertical 1 termina chamando para o "vídeo completo no
+   YouTube": com o mesmo título a pessoa reconhece o vídeo, e no Short o vídeo
+   relacionado aparece com o título do horizontal. As capas dos dois continuam
+   diferentes, para não repetir a miniatura na grade, e o título continua
+   diferente do gancho. O vertical 2 (o guia) tem título próprio. No
+   `roteiro-falas.json`, `porVideo.vertical1.titulo` ausente herda o do
+   horizontal.
 
 Pergunta ou afirmação na capa: a diretriz não tem evidência para preferir uma
-ou outra. Escolher pela clareza, não pelo formato. Título do horizontal: mirar
-cerca de 60 caracteres, com o nome do produto no começo.
+ou outra. Escolher pela clareza, não pelo formato. Título do horizontal: com
+o nome do produto no começo; como o vertical 1 usa o mesmo título, ele precisa
+caber em cerca de 40 caracteres (o corte do feed de Shorts) e continuar
+funcionando na busca (esse limite veio com o critério 4 e refina os cerca de
+60 caracteres anotados antes dele).
 
 O script cobre parte disso: compara a capa também com o título do vídeo
 (`--title`, ou os títulos de `_internal/roteiro-falas.json` quando a flag não
-vem) e avisa a capa do Short sem sujeito reconhecível. O gancho falado é
-conferido por `scripts/video-roteiro-blocos.ts` (gancho do vertical longo,
-título que repete o gancho).
+vem) e avisa a capa do Short sem sujeito reconhecível. O gancho falado e a
+capa dos verticais são conferidos por `scripts/video-roteiro-blocos.ts`
+(gancho do vertical longo, título que repete o gancho, capa de vertical sem
+sujeito) e repetidos pelo `scripts/render-roteiro-video.ts`, que gera a
+página do roteiro (#13120).
 
 ## Ferramenta
 

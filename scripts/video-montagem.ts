@@ -255,7 +255,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
-import { readRoteiroHorizontal, readRoteiroPecas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
+import { readRoteiroFontes, readRoteiroHorizontal, readRoteiroPecas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
 import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
 import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
 import {
@@ -2465,7 +2465,9 @@ function cmdRoteiro(ctx: Ctx, shortWordCheck = true): number {
   if (existsSync(fcPath)) {
     try { fc = parseVideoFactCheck(readJson<unknown>(fcPath, VIDEO_FACT_CHECK_FILE)); } catch (e) { fcError = (e as Error).message; }
   }
-  const section = factCheckSection(fc, factCheckItems(ps, resolved));
+  // #13132: as fontes do roteiro entram no hash; trocar uma depois do fact-check o torna velho.
+  const fontesRoteiro = readRoteiroFontes(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`)).fontes;
+  const section = factCheckSection(fc, factCheckItems(ps, resolved), fontesRoteiro);
   if (fcError) {
     // Ilegível não é "não rodou": o Doc diz o motivo, e o roteiro sai assim mesmo.
     section.lines.splice(2, 1, `**[aviso] fact-check ilegível (${mdCell(fcError)}):** rodar o agent de novo antes de aprovar o Gate 2.`);
@@ -2539,20 +2541,28 @@ export const VIDEO_FACT_CHECK_INPUT_FILE = "fact-check-input.json";
 /**
  * `fact-check-input` (#11956): os itens que vão ao ar (a união das versões,
  * com a fala ouvida quando difere do pedido), o hash deles e onde estão as
- * fontes do D1 baixadas no Stage 4 (`_internal/fact-check-sources/`).
+ * fontes do D1 baixadas no Stage 4 (`_internal/fact-check-sources/`), mais
+ * as fontes por fala do roteiro (`roteiro_fontes`, #13132).
  */
 function cmdFactCheckInput(ctx: Ctx): number {
   const { plans: ps, resolved } = plans(ctx);
   const items = factCheckItems(ps, resolved);
   const sourcesDir = join(editionDirFor(ctx.edition), "_internal", "fact-check-sources");
   const manifest = join(sourcesDir, "manifest.json");
+  const roteiro = readRoteiroFontes(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   if (!existsSync(manifest)) console.error(`[aviso] sem ${manifest}: as fontes do D1 não foram baixadas (Stage 4, run-fact-checker.ts); o agent cai no WebFetch da URL do D1 (#11956)`);
   const input = {
     mode: "video" as const,
     edition: ctx.edition,
-    items_sha256: factCheckItemsSha256(items),
+    items_sha256: factCheckItemsSha256(items, roteiro.fontes),
     items,
     sources_dir: sourcesDir,
+    // #13132: fontes de fora do D1 declaradas por fala no roteiro-falas.json
+    // (fatos do rascunho do editor checados na web); o agent as usa além do D1.
+    // O status separa "sem fonte declarada" de "roteiro com problema".
+    roteiro_fontes: roteiro.fontes,
+    roteiro_fontes_status: roteiro.status,
+    ...(roteiro.problemas.length ? { roteiro_fontes_problemas: roteiro.problemas } : {}),
     approved_json_path: join(editionDirFor(ctx.edition), "_internal", "01-approved.json"),
     out_path: f(ctx, VIDEO_FACT_CHECK_FILE),
   };

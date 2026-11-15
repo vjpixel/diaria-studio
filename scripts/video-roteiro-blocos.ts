@@ -10,8 +10,14 @@
  * do roteiro). Lógica: `scripts/lib/diaria/roteiro-videos.ts`.
  *
  * Também avisa (stderr, `[aviso]`, sem mudar o exit) gancho do vertical com
- * mais de ~8 palavras antes do primeiro ponto e título que repete o gancho
- * (`avisosGanchoETitulo`, #13116).
+ * mais de ~8 palavras antes do primeiro ponto, título que repete o gancho e
+ * capa de vertical sem sujeito (`avisosGanchoETitulo`, #13116), e vertical
+ * acima do alvo de duração ou horizontal fora da faixa (`avisosDuracao`,
+ * #13130; alvos em `publishing.video.roteiro` do `platform.config.json`).
+ * A saída traz a duração estimada de cada vídeo (`duracoes` no `--json`).
+ * A validação (`validarRoteiroFalas`, roteiro-gravacao.ts) cobre os campos
+ * novos: `tela` (#13120), `cortes` (#13129), `fontes` (#13132),
+ * `porVideo.{vertical}.ordem` (#13128), `porVideo.{v}.cta`, `gravacao` e `notas`.
  *
  * Só propõe: não grava `blocks.json` nem decupagem. Os tempos no bruto saem da
  * decupagem e o editor decide no Gate 1/Gate 2 da montagem.
@@ -20,21 +26,52 @@
  *   AAMMDD:   edição (lê `data/editions/{AAMM}/{AAMMDD}/_internal/roteiro-falas.json`)
  *   --falas:  outro caminho para o JSON do roteiro
  *   --corte:  slug do corte do vertical 2 (default `guia`)
- *   --json:   saída JSON (`PropostaBlocos`) em vez do Markdown
+ *   --json:   saída JSON (`PropostaBlocos` mais `duracoes`) em vez do Markdown
  *
  * Exit: 0 = proposta impressa; 3 = sem roteiro-falas.json (edição sem roteiro
  * pela skill: seguir a montagem como antes); 2 = uso ou arquivo inválido.
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
-import { avisosGanchoETitulo, parseRoteiroFalas, propostaBlocosDoRoteiro, renderPropostaBlocos, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
+import {
+  avisosDuracao,
+  avisosGanchoETitulo,
+  duracaoPorVideo,
+  parseRoteiroFalas,
+  propostaBlocosDoRoteiro,
+  renderDuracoes,
+  renderPropostaBlocos,
+  ROTEIRO_DURACAO_DEFAULT,
+  ROTEIRO_FALAS_FILE,
+  roteiroDuracaoConfigFrom,
+  type RoteiroDuracaoConfig,
+} from "./lib/diaria/roteiro-videos.ts";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Os alvos de duração da config (#13130); config ilegível = defaults, com aviso. */
+export function lerDuracaoConfig(root: string, err: (s: string) => void): RoteiroDuracaoConfig {
+  const path = join(root, "platform.config.json");
+  if (!existsSync(path)) return ROTEIRO_DURACAO_DEFAULT;
+  try {
+    return roteiroDuracaoConfigFrom(JSON.parse(readFileSync(path, "utf8")), (m) => err(`[aviso] ${m}`));
+  } catch (e) {
+    err(`[aviso] ${path} ilegível (${(e as Error).message}): alvos de duração default (#13130)`);
+    return ROTEIRO_DURACAO_DEFAULT;
+  }
+}
 
 export const EXIT_SEM_ROTEIRO = 3;
 
-export function main(argv: string[] = process.argv.slice(2), io: { out: (s: string) => void; err: (s: string) => void } = { out: (s) => console.log(s), err: (s) => console.error(s) }): number {
+export function main(
+  argv: string[] = process.argv.slice(2),
+  io: { out: (s: string) => void; err: (s: string) => void } = { out: (s) => console.log(s), err: (s) => console.error(s) },
+  root: string = ROOT,
+): number {
   const { values, flags, positional } = parseArgs(argv);
   const edition = positional[0];
   if (!edition || !/^\d{6}$/.test(edition)) {
@@ -63,9 +100,15 @@ export function main(argv: string[] = process.argv.slice(2), io: { out: (s: stri
     io.err("[video-roteiro-blocos] --corte precisa ser um slug (minúsculas, dígitos e hífen)");
     return 2;
   }
-  const proposta = propostaBlocosDoRoteiro(lido.roteiro, corte ? { corteSlug: corte } : {});
-  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro)]) io.err(`[aviso] ${a}`);
-  io.out(flags.has("json") ? JSON.stringify(proposta, null, 2) : renderPropostaBlocos(proposta));
+  const cfg = lerDuracaoConfig(root, io.err);
+  const proposta = propostaBlocosDoRoteiro(lido.roteiro, { ...(corte ? { corteSlug: corte } : {}), palavrasPorMinuto: cfg.palavrasPorMinuto });
+  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro), ...avisosDuracao(lido.roteiro, cfg)]) io.err(`[aviso] ${a}`);
+  io.out(
+    flags.has("json")
+      ? JSON.stringify({ ...proposta, duracoes: duracaoPorVideo(lido.roteiro, cfg) }, null, 2)
+      : `${renderPropostaBlocos(proposta)}
+${renderDuracoes(lido.roteiro, cfg)}`,
+  );
   return 0;
 }
 

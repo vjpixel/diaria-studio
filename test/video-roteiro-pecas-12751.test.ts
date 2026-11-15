@@ -71,8 +71,9 @@ describe("#12751: o JSON do roteiro carrega bloco, título e capa", () => {
   });
 
   it("roteiroPecas devolve só o preenchido", () => {
-    const p = roteiroPecas({ porVideo: { horizontal: { titulo: "  T  " }, vertical1: {} } });
-    assert.deepEqual(p, { horizontal: { titulo: "T" } });
+    // Desde #13116 o vertical 1 sem título herda o do horizontal (decisão do editor de 15/11/2026).
+    const p = roteiroPecas({ porVideo: { horizontal: { titulo: "  T  " }, vertical1: {}, vertical2: {} } });
+    assert.deepEqual(p, { horizontal: { titulo: "T" }, vertical1: { titulo: "T" } });
   });
 });
 

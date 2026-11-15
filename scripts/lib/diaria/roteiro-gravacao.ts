@@ -46,12 +46,109 @@ export interface FalaRoteiro {
    * A proposta de blocos (`scripts/lib/diaria/roteiro-videos.ts`) lê daqui.
    */
   bloco?: BlockKey;
+  /**
+   * Texto curto que vai escrito na tela durante a fala (#13120): o nome exato
+   * de um arquivo ou modelo que a fala descreve sem citar, os números, uma
+   * comparação. A página mostra num box "Na tela" ao lado da fala; levar o
+   * texto ao XML da montagem é a #13140. Sem seta (#9721).
+   */
+  tela?: string;
+  /**
+   * Corte parcial da fala por vertical (#13129): o trecho exato a tirar só
+   * naquele vídeo (o horizontal fica intacto: o validador recusa `horizontal`). `reserva: true` = só entra se o
+   * vídeo passar do alvo de duração.
+   */
+  cortes?: Partial<Record<VideoRoteiro, string | CorteFala>>;
+  /** Fontes do que a fala afirma, quando o fato não está na fonte do D1 (#13132). */
+  fontes?: FonteFala[];
 }
 
-/** Título e texto da capa de um vídeo do roteiro (#12751). */
+/** Um corte parcial (#13129): o trecho exato da fala e se é só de reserva. */
+export interface CorteFala {
+  trecho: string;
+  reserva?: boolean;
+}
+
+/** Fonte de uma fala (#13132): a URL e o que ela sustenta. */
+export interface FonteFala {
+  url: string;
+  sustenta: string;
+}
+
+/** Título, texto da capa, card de CTA e (só nos verticais) ordem de um vídeo do roteiro (#12751, #13128). */
 export interface PecaVideo {
   titulo?: string;
   capa?: string;
+  /**
+   * Só nos verticais (#13128): a sequência das falas daquele corte, por id.
+   * Sem o campo, vale a ordem do horizontal (a das falas no JSON).
+   */
+  ordem?: string[];
+  /** Texto do card de CTA do vídeo na página (#13120); ausente = o card padrão. */
+  cta?: string;
+}
+
+/** O corte de uma fala num vídeo, normalizado (string vira `{ trecho }`). */
+export function corteDaFala(f: Pick<FalaRoteiro, "cortes">, v: VideoRoteiro): CorteFala | null {
+  const c = f.cortes?.[v];
+  if (c === undefined) return null;
+  return typeof c === "string" ? { trecho: c } : c;
+}
+
+/**
+ * Os trechos que sobram da fala depois de tirar `trecho` (#13129): um, se o
+ * corte está no começo ou no fim (no fim, o que sobra ganha a pontuação final);
+ * dois, se está no meio, sem pontuação nem maiúscula forçadas. Espaço antes de
+ * pontuação e vírgula solta na emenda saem. Trecho vazio ou ausente no texto =
+ * `null`; trecho que é a fala inteira = `[]`. Corta a primeira ocorrência: o
+ * validador recusa trecho que aparece mais de uma vez (`ocorrenciasDoTrecho`).
+ */
+export function segmentosSemTrecho(texto: string, trecho: string): string[] | null {
+  const t = trecho.trim();
+  if (!t) return null;
+  const i = posicoesDoTrecho(texto, t)[0] ?? -1;
+  if (i < 0) return null;
+  const limpa = (s: string) => s.replace(/\s+([.,;:!?…])/g, "$1").replace(/\s+/g, " ").trim();
+  const antes = limpa(texto.slice(0, i)).replace(/[\s,;:]+$/, "");
+  const depois = texto.slice(i + t.length);
+  // Corte no fim: o que sobra antes ganha a pontuação final do texto original.
+  if (!/[\p{L}\p{N}]/u.test(depois)) {
+    if (!antes) return [];
+    // A pontuação final vem do que sobrou depois do trecho, ou do próprio trecho; sem nenhuma, ponto.
+    const fim = depois.match(/[.!?…]/u)?.[0] ?? t.match(/[.!?…]$/u)?.[0] ?? ".";
+    return [/[.!?…]$/u.test(antes) ? antes : antes + fim];
+  }
+  // Corte no meio: os dois lados ficam como estavam (sem ponto nem maiúscula forçados),
+  // porque a fala gravada é contínua; cada um vira um item que casa sozinho na decupagem.
+  const resto = limpa(depois).replace(/^[\s,;:]+/, "");
+  return [antes, resto].filter(Boolean);
+}
+
+/** Seta proibida no texto que chega ao leitor (#9721). */
+export const SETA = /[→←]/;
+
+/**
+ * As posições em que o trecho aparece no texto como palavras inteiras (#13129):
+ * uma ocorrência no meio de uma palavra ("Hydro" de "Hydrogen") não conta.
+ * Validador, corte e página usam esta mesma busca, para nunca discordarem.
+ */
+export function posicoesDoTrecho(texto: string, trecho: string): number[] {
+  const t = trecho.trim();
+  if (!t) return [];
+  const letra = /[\p{L}\p{N}]/u;
+  const out: number[] = [];
+  for (let i = texto.indexOf(t); i >= 0; i = texto.indexOf(t, i + 1)) {
+    const antes = i > 0 ? texto[i - 1] : "";
+    const depois = texto[i + t.length] ?? "";
+    if ((antes && letra.test(antes) && letra.test(t[0])) || (depois && letra.test(depois) && letra.test(t[t.length - 1]))) continue;
+    out.push(i);
+  }
+  return out;
+}
+
+/** Quantas vezes o trecho aparece no texto como palavras inteiras (#13129). */
+export function ocorrenciasDoTrecho(texto: string, trecho: string): number {
+  return posicoesDoTrecho(texto, trecho).length;
 }
 
 export interface RoteiroFalas {
@@ -65,6 +162,10 @@ export interface RoteiroFalas {
    * `/diaria-publica` usa o título do horizontal no YouTube e os textos da capa.
    */
   porVideo?: Partial<Record<VideoRoteiro, PecaVideo>>;
+  /** Itens a mais da caixa "Gravação" no topo da página (#13120), ex.: o que conferir antes de gravar. */
+  gravacao?: string[];
+  /** "Notas para a edição" livres, no fim da página (#13120); cortes, ordem e fontes saem dos campos próprios. */
+  notas?: string[];
 }
 
 /**
@@ -472,9 +573,64 @@ export function validarRoteiroFalas(x: unknown): string[] {
     if (o.bloco !== undefined && !(typeof o.bloco === "string" && isBlockKey(o.bloco))) {
       problemas.push(`falas[${i}].bloco deve ser um bloco da montagem (gancho, titulo, abertura, resumo, resumo_curto, comentario, cta_yt, cta_vertical, cta_ig, cta_out, fecho)`);
     }
+    const rotulo = typeof o.id === "string" && o.id.trim() ? o.id : `falas[${i}]`;
+    // A abertura não existe nos verticais: a fala ficaria fora da montagem, mas na página e na duração.
+    if (o.bloco === "abertura" && Array.isArray(o.videos) && o.videos.some((v) => v === "vertical1" || v === "vertical2")) {
+      problemas.push(`${rotulo}: bloco abertura não existe nos verticais; tire os verticais de \`videos\` ou troque o bloco`);
+    }
+    // #13120: texto de tela curto, sem seta (#9721).
+    if (o.tela !== undefined) {
+      if (typeof o.tela !== "string" || !o.tela.trim()) problemas.push(`${rotulo}.tela deve ser texto não vazio`);
+      else if (SETA.test(o.tela)) problemas.push(`${rotulo}.tela usa seta (→/←), proibida no que chega ao leitor (#9721)`);
+    }
+    // #13129: corte parcial por vídeo, com o trecho exato do texto.
+    if (o.cortes !== undefined) {
+      if (!o.cortes || typeof o.cortes !== "object" || Array.isArray(o.cortes)) problemas.push(`${rotulo}.cortes deve ser objeto por vídeo`);
+      else {
+        for (const [v, c] of Object.entries(o.cortes as Record<string, unknown>)) {
+          if (v === "horizontal") {
+            problemas.push(`${rotulo}.cortes.horizontal: o horizontal fica com a fala inteira; corte só nos verticais (vertical1|vertical2)`);
+            continue;
+          }
+          if (!(VIDEOS_ROTEIRO as readonly string[]).includes(v)) {
+            problemas.push(`${rotulo}.cortes.${v}: vídeo desconhecido (vertical1|vertical2)`);
+            continue;
+          }
+          if (Array.isArray(o.videos) && !o.videos.includes(v)) problemas.push(`${rotulo}.cortes.${v}: a fala não está no ${VIDEO_LABEL[v as VideoRoteiro]}`);
+          const co = (typeof c === "string" ? { trecho: c } : c) as Record<string, unknown> | null;
+          if (!co || typeof co !== "object" || typeof co.trecho !== "string" || !co.trecho.trim()) {
+            problemas.push(`${rotulo}.cortes.${v} deve ser o trecho (texto) ou { trecho, reserva }`);
+            continue;
+          }
+          if (co.reserva !== undefined && typeof co.reserva !== "boolean") problemas.push(`${rotulo}.cortes.${v}.reserva deve ser true/false`);
+          if (typeof o.texto === "string") {
+            const seg = segmentosSemTrecho(o.texto, co.trecho);
+            const n = ocorrenciasDoTrecho(o.texto, co.trecho);
+            if (seg === null || n === 0) problemas.push(`${rotulo}.cortes.${v}: trecho não aparece no texto da fala como palavras inteiras ("${co.trecho}")`);
+            else if (n > 1) problemas.push(`${rotulo}.cortes.${v}: o trecho aparece ${n} vezes na fala; use um trecho que só apareça uma vez ("${co.trecho}")`);
+            else if (seg.length === 0) problemas.push(`${rotulo}.cortes.${v}: o trecho é a fala inteira (tire a fala do vídeo em \`videos\`)`);
+          }
+        }
+      }
+    }
+    // #13132: fontes do que a fala afirma.
+    if (o.fontes !== undefined) {
+      if (!Array.isArray(o.fontes)) problemas.push(`${rotulo}.fontes deve ser lista de { url, sustenta }`);
+      else
+        o.fontes.forEach((fo, k) => {
+          const x = (fo ?? {}) as Record<string, unknown>;
+          if (typeof x.url !== "string" || !/^https?:\/\/\S+$/.test(x.url)) problemas.push(`${rotulo}.fontes[${k}].url deve ser URL http(s)`);
+          if (typeof x.sustenta !== "string" || !x.sustenta.trim()) problemas.push(`${rotulo}.fontes[${k}].sustenta deve dizer o que a fonte sustenta`);
+        });
+    }
   });
   if (r.veiculos !== undefined && (!Array.isArray(r.veiculos) || !r.veiculos.every((v) => typeof v === "string"))) {
     problemas.push("`veiculos` deve ser lista de strings");
+  }
+  for (const campo of ["gravacao", "notas"] as const) {
+    if (r[campo] !== undefined && (!Array.isArray(r[campo]) || !(r[campo] as unknown[]).every((v) => typeof v === "string" && v.trim()))) {
+      problemas.push(`\`${campo}\` deve ser lista de textos`);
+    }
   }
   if (r.porVideo !== undefined) {
     if (!r.porVideo || typeof r.porVideo !== "object" || Array.isArray(r.porVideo)) problemas.push("`porVideo` deve ser objeto por vídeo");
@@ -482,13 +638,47 @@ export function validarRoteiroFalas(x: unknown): string[] {
       for (const [k, v] of Object.entries(r.porVideo as Record<string, unknown>)) {
         if (!(VIDEOS_ROTEIRO as readonly string[]).includes(k)) problemas.push(`porVideo.${k}: vídeo desconhecido (horizontal|vertical1|vertical2)`);
         const p = (v ?? {}) as Record<string, unknown>;
-        if (!v || typeof v !== "object") problemas.push(`porVideo.${k} deve ser objeto { titulo, capa }`);
-        for (const campo of ["titulo", "capa"] as const) {
+        if (!v || typeof v !== "object") problemas.push(`porVideo.${k} deve ser objeto { titulo, capa, cta, ordem }`);
+        for (const campo of ["titulo", "capa", "cta"] as const) {
           if (p[campo] !== undefined && (typeof p[campo] !== "string" || !(p[campo] as string).trim())) problemas.push(`porVideo.${k}.${campo} deve ser texto não vazio`);
+        }
+        // #13128: ordem própria do corte vertical = exatamente as falas daquele vídeo.
+        if (p.ordem !== undefined) {
+          if (k === "horizontal") problemas.push("porVideo.horizontal.ordem: a ordem do horizontal é a das falas no JSON; `ordem` só vale nos verticais");
+          else if (!Array.isArray(p.ordem) || !p.ordem.every((x) => typeof x === "string")) problemas.push(`porVideo.${k}.ordem deve ser lista de ids de fala`);
+          else if ((VIDEOS_ROTEIRO as readonly string[]).includes(k)) {
+            const ordem = p.ordem as string[];
+            const doVideo = (r.falas as Array<Record<string, unknown>>)
+              .filter((f) => Array.isArray(f?.videos) && f.videos.includes(k) && typeof f.id === "string")
+              .map((f) => f.id as string);
+            const repetidos = [...new Set(ordem.filter((id, j) => ordem.indexOf(id) !== j))];
+            const faltando = doVideo.filter((id) => !ordem.includes(id));
+            const sobrando = ordem.filter((id) => !doVideo.includes(id));
+            if (repetidos.length) problemas.push(`porVideo.${k}.ordem repete: ${repetidos.join(", ")}`);
+            if (faltando.length) problemas.push(`porVideo.${k}.ordem não traz falas do ${VIDEO_LABEL[k as VideoRoteiro]}: ${faltando.join(", ")}`);
+            if (sobrando.length) problemas.push(`porVideo.${k}.ordem traz falas que não estão no ${VIDEO_LABEL[k as VideoRoteiro]}: ${sobrando.join(", ")}`);
+          }
         }
       }
     }
   }
+  // #9721: nenhuma seta no que chega ao leitor (fala, tela, título, capa, card, página).
+  const comSeta: string[] = [];
+  const confere = (rotulo: string, s: unknown) => {
+    if (typeof s === "string" && SETA.test(s)) comSeta.push(rotulo);
+  };
+  (r.falas as Array<Record<string, unknown>>).forEach((f, i) => {
+    const rotulo = typeof f?.id === "string" && f.id.trim() ? f.id : `falas[${i}]`;
+    confere(`${rotulo}.texto`, f?.texto);
+    if (Array.isArray(f?.fontes)) f.fontes.forEach((fo, k) => confere(`${rotulo}.fontes[${k}].sustenta`, (fo as Record<string, unknown> | null)?.sustenta));
+  });
+  if (r.porVideo && typeof r.porVideo === "object") {
+    for (const [k, v] of Object.entries(r.porVideo as Record<string, unknown>)) {
+      for (const campo of ["titulo", "capa", "cta"]) confere(`porVideo.${k}.${campo}`, (v as Record<string, unknown> | null)?.[campo]);
+    }
+  }
+  for (const campo of ["gravacao", "notas"] as const) if (Array.isArray(r[campo])) (r[campo] as unknown[]).forEach((s, j) => confere(`${campo}[${j}]`, s));
+  if (comSeta.length) problemas.push(`seta (→/←) proibida no que chega ao leitor (#9721): ${comSeta.join(", ")}`);
   return problemas;
 }
 
