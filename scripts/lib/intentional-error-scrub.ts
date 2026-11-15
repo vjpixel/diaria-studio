@@ -27,6 +27,11 @@
  * Casamento: palavra inteira (não troca "Large 3" dentro de "Large 30"),
  * sensível a maiúsculas (o erro plantado é uma grafia exata), e NUNCA dentro
  * de URL — um `wrong_value` numérico ("2025") não pode quebrar um link.
+ *
+ * Valor AMBÍGUO (#13105): número ou palavra curta (`isAmbiguousWrongValue`)
+ * pode aparecer de forma legítima em outro item ("2025" numa data). Para ele o
+ * scrub só troca a ocorrência que dá pra atribuir ao erro (única no texto, ou
+ * única na seção de `location`), e o guard escopado só AVISA, nunca recusa.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -39,12 +44,19 @@ import {
   type IntentionalError,
 } from "./intentional-errors.ts";
 import { resolveEditionDir } from "./find-current-edition.ts";
+import { sectionKeyFromLocation, sectionKeyPerLine } from "./intentional-error-sections.ts";
 
 /** Gabarito do erro intencional de UMA edição, já validado (não vazio, não placeholder). */
 export interface IntentionalErrorPair {
   edition: string;
   wrong: string;
   correct: string;
+  /**
+   * #13105: onde o erro foi plantado, em texto livre ("RADAR, item …",
+   * "DESTAQUE 2"). Vem de `location` (JSON da edição), do `destaque` numérico
+   * ou do `detail`/`description`. Escopa o scrub de valor ambíguo à seção.
+   */
+  location?: string;
 }
 
 /** Valor utilizável: string, não vazia, não placeholder `{PREENCHER...}`. */
@@ -62,13 +74,39 @@ function usable(v: unknown): string | null {
  */
 export function pairFromRecord(
   edition: string,
-  rec: { wrong_value?: unknown; correct_value?: unknown; no_error?: unknown } | null | undefined,
+  rec:
+    | {
+        wrong_value?: unknown;
+        correct_value?: unknown;
+        no_error?: unknown;
+        location?: unknown;
+        destaque?: unknown;
+        detail?: unknown;
+        description?: unknown;
+      }
+    | null
+    | undefined,
 ): IntentionalErrorPair | null {
   if (!rec || rec.no_error === true) return null;
   const wrong = usable(rec.wrong_value);
   const correct = usable(rec.correct_value);
   if (!wrong || !correct || wrong === correct) return null;
-  return { edition, wrong, correct };
+  const location =
+    usable(rec.location) ??
+    (typeof rec.destaque === "number" ? `DESTAQUE ${rec.destaque}` : null) ??
+    usable(rec.detail) ??
+    usable(rec.description);
+  return { edition, wrong, correct, ...(location ? { location } : {}) };
+}
+
+/**
+ * Pure (#13105): o `wrong_value` pode aparecer de forma legítima em outro
+ * trecho? Número (tem dígito: ano, cifra, versão) ou palavra curta (até 3
+ * caracteres). Grafia errada de nome ("Appel", "Gemeni", "MTER") não é.
+ */
+export function isAmbiguousWrongValue(wrong: string): boolean {
+  const w = wrong.trim();
+  return /\p{N}/u.test(w) || [...w].length <= 3;
 }
 
 /**
@@ -141,11 +179,43 @@ function mapOutsideUrls(text: string, fn: (chunk: string) => string): string {
   return out + fn(text.slice(last));
 }
 
-/** Pure: troca o `wrong` do par pelo `correct` (palavra inteira, fora de URL). */
+/** Nº de ocorrências de `wrong` em `text` (palavra inteira, fora de URL). */
+function countOutsideUrls(text: string, wrong: string): number {
+  let count = 0;
+  mapOutsideUrls(text, (chunk) => {
+    count += [...chunk.matchAll(wholeWordRe(wrong))].length;
+    return chunk;
+  });
+  return count;
+}
+
+/**
+ * Pure: troca o `wrong` do par pelo `correct` (palavra inteira, fora de URL).
+ *
+ * #13105: o erro foi plantado UMA vez, mas o mesmo valor pode existir de forma
+ * legítima em outro item. Regra:
+ *   - 1 ocorrência no texto → troca (é o erro);
+ *   - várias, valor não ambíguo ("Appel") → troca todas (grafia errada não
+ *     aparece de forma legítima);
+ *   - várias, valor ambíguo ("2025") → troca só se a seção de `location`
+ *     (`sectionKeyFromLocation`) tem exatamente 1 ocorrência; senão deixa o
+ *     texto como está — melhor o guard avisar do que corromper a data certa
+ *     de outro item.
+ */
 export function scrubIntentionalError(text: string, pair: IntentionalErrorPair | null | undefined): string {
   if (!pair || !text) return text;
   const re = wholeWordRe(pair.wrong);
-  return mapOutsideUrls(text, (chunk) => chunk.replace(re, () => pair.correct));
+  const replaceAll = (t: string) => mapOutsideUrls(t, (chunk) => chunk.replace(re, () => pair.correct));
+  const total = countOutsideUrls(text, pair.wrong);
+  if (total === 0) return text;
+  if (total === 1 || !isAmbiguousWrongValue(pair.wrong)) return replaceAll(text);
+  const key = sectionKeyFromLocation(pair.location);
+  if (!key) return text;
+  const lines = text.split("\n");
+  const keys = sectionKeyPerLine(text);
+  const inSection = lines.reduce((n, line, i) => (keys[i] === key ? n + countOutsideUrls(line, pair.wrong) : n), 0);
+  if (inSection !== 1) return text;
+  return lines.map((line, i) => (keys[i] === key ? replaceAll(line) : line)).join("\n");
 }
 
 /**
@@ -215,14 +285,106 @@ export function findIntentionalErrorLeaks(
     const key = `${p.edition}\u0000${p.wrong}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    let count = 0;
-    mapOutsideUrls(text, (chunk) => {
-      count += [...chunk.matchAll(wholeWordRe(p.wrong))].length;
-      return chunk;
-    });
+    const count = countOutsideUrls(text, p.wrong);
     if (count > 0) leaks.push({ ...p, count });
   }
   return leaks;
+}
+
+/** Trecho do texto final de um produto, com a edição de origem (`null` = sem origem: abertura, fecho, copy). */
+export interface EditionTextSegment {
+  edition: string | null;
+  text: string;
+}
+
+/** Textos de um item do produto que vieram de uma edição (`edition` ausente = sem origem conhecida). */
+export interface AttributedTexts {
+  edition: string | null | undefined;
+  texts: ReadonlyArray<string | null | undefined>;
+}
+
+function htmlEscaped(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * Pure (#13105): parte o texto final de um produto em trechos por edição. Cada
+ * texto de item vira um trecho da edição dele; o resto do texto final (com os
+ * textos de item tirados, crus ou com escape HTML) vira o trecho sem origem.
+ * Texto de item que o render reescreveu e não dá para tirar fica no resto —
+ * aí o guard o trata como sem origem (mais rígido, nunca mais frouxo).
+ */
+export function segmentTextByEdition(fullText: string, items: readonly AttributedTexts[]): EditionTextSegment[] {
+  const segments: EditionTextSegment[] = [];
+  let rest = fullText;
+  const attributed = items.flatMap((it) =>
+    it.texts
+      .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+      .map((text) => ({ edition: it.edition ? it.edition : null, text })),
+  );
+  // O render costuma partir o corpo em parágrafos ou juntar as linhas: tira
+  // também cada linha e a versão com espaços colapsados.
+  const variants = new Set<string>();
+  for (const a of attributed) {
+    segments.push({ edition: a.edition, text: a.text });
+    // Linha curta solta ("2025") não sai do resto: tiraria o mesmo valor do
+    // texto sem origem (a abertura), onde ele é vazamento de verdade.
+    const parts = [a.text.replace(/\s+/g, " ").trim(), ...a.text.split("\n").map((l) => l.trim())].filter((f) => f.length >= 12);
+    for (const f of [a.text, ...parts]) {
+      if (!f) continue;
+      variants.add(f);
+      variants.add(htmlEscaped(f));
+    }
+  }
+  // Mais longos primeiro: um título contido no corpo de outro item não pode
+  // quebrar a remoção do corpo.
+  for (const v of [...variants].sort((x, y) => y.length - x.length)) rest = rest.split(v).join("\n");
+  segments.push({ edition: null, text: rest });
+  return segments;
+}
+
+/** Resultado do guard escopado: `blocking` recusa o envio; `advisory` só avisa. */
+export interface ScopedIntentionalErrorLeaks {
+  blocking: IntentionalErrorLeak[];
+  advisory: IntentionalErrorLeak[];
+}
+
+/**
+ * Pure (#13105): o guard escopado. O `wrong` de cada edição só é procurado nos
+ * trechos DAQUELA edição e nos sem origem — nunca no item de outra edição, onde
+ * o mesmo valor pode ser legítimo ("2025" no título de outro dia). Valor
+ * ambíguo (`isAmbiguousWrongValue`) vai para `advisory`: a Stack de segunda
+ * 06:00 roda sem ninguém olhando e não pode travar por um falso positivo.
+ */
+export function findScopedIntentionalErrorLeaks(
+  segments: readonly EditionTextSegment[],
+  pairs: readonly IntentionalErrorPair[],
+): ScopedIntentionalErrorLeaks {
+  const out: ScopedIntentionalErrorLeaks = { blocking: [], advisory: [] };
+  const seen = new Set<string>();
+  for (const p of pairs) {
+    const key = `${p.edition}\u0000${p.wrong}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const count = segments
+      .filter((s) => s.edition === null || s.edition === p.edition)
+      .reduce((n, s) => n + (s.text ? countOutsideUrls(s.text, p.wrong) : 0), 0);
+    if (count === 0) continue;
+    (isAmbiguousWrongValue(p.wrong) ? out.advisory : out.blocking).push({ ...p, count });
+  }
+  return out;
+}
+
+/**
+ * Pure (#13105): aviso do guard escopado para valor ambíguo — não recusa,
+ * só pede conferência (o número/palavra pode ser legítimo no texto).
+ */
+export function formatIntentionalErrorAdvisory(leaks: readonly IntentionalErrorLeak[], where: string): string {
+  const parts = leaks.map((l) => `"${l.wrong}" (erro intencional da ${l.edition}; o correto é "${l.correct}", ${l.count}x)`);
+  return (
+    `${where}: o valor do erro intencional aparece no texto — ${parts.join("; ")}. ` +
+    "É número ou palavra curta e pode ser legítimo, então não recusa o envio (#13105): confira se não é o erro da edição."
+  );
 }
 
 /** Pure: mensagem única para avisos/recusas do guard. */

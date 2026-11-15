@@ -63,11 +63,14 @@ import { parseLegacyEditionHtml } from "./lib/shared/legacy-edition-parse.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import type { IntentionalError } from "./lib/intentional-errors.ts";
 import {
+  isAmbiguousWrongValue,
   loadIntentionalErrorPair,
   loadJsonlForEditionsRoot,
   pairFromRecord,
   scrubIntentionalError,
+  type IntentionalErrorPair,
 } from "./lib/intentional-error-scrub.ts"; // #13051
+import { sectionKeyFromLocation } from "./lib/intentional-error-sections.ts"; // #13105
 import {
   resolveAnnualWindow,
   type AnnualWindow,
@@ -147,16 +150,39 @@ export function destaquesForPost(
         .pop() ?? null);
   if (!pair) return res;
   const s = (v: string) => scrubIntentionalError(v, pair);
+  // #13105: o scrub roda campo a campo, então "1 ocorrência" num campo não
+  // prova que é o erro. Valor ambíguo ("2025") só é trocado no destaque de
+  // `location`; plantado fora dos destaques (RADAR…), nenhum destaque é tocado.
+  const scope = annualScrubScope(pair);
+  if (scope === "none") return res;
   return {
     source: res.source,
-    destaques: res.destaques.map((d) => ({
-      ...d,
-      title: s(d.title),
-      body: s(d.body),
-      why: s(d.why),
-      category: s(d.category),
-    })),
+    destaques: res.destaques.map((d) =>
+      typeof scope === "number" && d.position !== scope
+        ? d
+        : {
+            ...d,
+            title: s(d.title),
+            body: s(d.body),
+            why: s(d.why),
+            category: s(d.category),
+          },
+    ),
   };
+}
+
+/**
+ * Pure (#13105): quais destaques da anual o scrub campo a campo pode tocar.
+ * `"all"` = todos (valor não ambíguo, ou `location` sem seção resolvível);
+ * número = só o destaque N de `location`; `"none"` = valor ambíguo plantado
+ * fora dos destaques.
+ */
+export function annualScrubScope(pair: IntentionalErrorPair): "all" | "none" | number {
+  if (!isAmbiguousWrongValue(pair.wrong)) return "all";
+  const key = sectionKeyFromLocation(pair.location);
+  if (!key) return "all";
+  const m = /^DESTAQUE (\d)$/.exec(key);
+  return m ? Number(m[1]) : "none";
 }
 
 function destaquesForPostRaw(

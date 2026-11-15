@@ -75,9 +75,11 @@ import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { isValidWeeklyCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import {
-  findIntentionalErrorLeaks,
+  findScopedIntentionalErrorLeaks,
+  formatIntentionalErrorAdvisory,
   formatIntentionalErrorLeaks,
   loadWindowIntentionalErrors,
+  segmentTextByEdition,
 } from "./lib/intentional-error-scrub.ts";
 import { renderLinkedinWeeklyHtml, type WeeklyLinkedinRenderInput } from "./lib/weekly-linkedin-render.ts";
 import { resolveTopEditionVideo, type TopEditionVideo } from "./lib/top-edition-video.ts"; // #12081
@@ -159,6 +161,21 @@ interface SelectionJson {
   weeklyEditions: Array<{ editionDate: string; url: string; destaques: string[] }>;
   /** #12081: principal vídeo da semana (o mais visto, #13023); `null` = medido e sem vídeo. */
   video?: WeeklyVideoField | null;
+}
+
+/**
+ * Pure (#13105): textos da seleção que vêm de uma edição, com a edição — base
+ * do guard escopado do erro intencional. Use Melhor, abertura e fecho ficam de
+ * fora (a seleção não grava a edição do Use Melhor): contam como sem origem.
+ */
+export function linkedinSelectionAttributedTexts(
+  selection: Pick<SelectionJson, "headlines" | "weeklyEditions" | "video">,
+): Array<{ edition: string; texts: string[] }> {
+  return [
+    ...selection.headlines.map((h) => ({ edition: h.editionDate, texts: [h.title, h.body, h.why] })),
+    ...selection.weeklyEditions.map((e) => ({ edition: e.editionDate, texts: e.destaques })),
+    ...(selection.video?.editionDate ? [{ edition: selection.video.editionDate, texts: [selection.video.title] }] : []),
+  ];
 }
 
 /** #12081: principal vídeo da semana (o mais visto), gravado em `ln-selection.json`. */
@@ -257,9 +274,16 @@ export function main(rootDirOverride?: string) {
         ...(selection.video?.editionDate ? [selection.video.editionDate] : []),
       ]),
     ];
-    const leaks = findIntentionalErrorLeaks(result.html, loadWindowIntentionalErrors(guardEditionsRoot, days));
-    if (leaks.length > 0) {
-      console.error(`ERRO: ${formatIntentionalErrorLeaks(leaks, `Artigo LinkedIn semanal ${cycle} (${selectionPath})`)}`);
+    // #13105: escopado — o erro de cada edição só conta no item DAQUELA edição
+    // (e no texto sem origem: abertura, fecho, Use Melhor); número/palavra curta só avisa.
+    const { blocking, advisory } = findScopedIntentionalErrorLeaks(
+      segmentTextByEdition(result.html, linkedinSelectionAttributedTexts(selection)),
+      loadWindowIntentionalErrors(guardEditionsRoot, days),
+    );
+    const where = `Artigo LinkedIn semanal ${cycle} (${selectionPath})`;
+    if (advisory.length > 0) console.warn(`AVISO: ${formatIntentionalErrorAdvisory(advisory, where)}`);
+    if (blocking.length > 0) {
+      console.error(`ERRO: ${formatIntentionalErrorLeaks(blocking, where)}`);
       process.exit(1);
     }
   }

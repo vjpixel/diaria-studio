@@ -312,6 +312,10 @@ export interface CircleStackPublishedState {
   published_at?: string;
   /** #12556: só quando o webhook devolve o link do post. */
   post_url?: string;
+  /** #13104: `post.id` do Circle, quando a resposta o traz. */
+  post_id?: number;
+  /** #13104: `post.slug` do Circle — monta o link se a URL não vier. */
+  post_slug?: string;
 }
 
 /**
