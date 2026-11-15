@@ -600,7 +600,11 @@ export async function fetchVerifiedDispatch(workerUrl: string, workerToken: stri
     url.searchParams.set("key", key);
     url.searchParams.set("verify", "true");
     const res = await fetch(url, { headers: { "X-Diaria-Token": workerToken }, signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // #9991: corpo não lido segura o socket e atrasa a saída do processo.
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
     const fired = await res.json() as { verification?: { verified: boolean }; items?: unknown[] };
     return fired.verification?.verified === true && Array.isArray(fired.items) && fired.items.length === 1
       ? { items: fired.items } : null;
