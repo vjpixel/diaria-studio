@@ -36,6 +36,7 @@ import {
 import {
   afterCancelMessage,
   applyReplacementTimes,
+  bufferReplaceNextSteps,
   planScheduledReplacements,
   replacementSurvivors,
   replacementUploadRefusal,
@@ -55,6 +56,7 @@ import {
   applyBufferReplacementMark,
   bufferDeletedRefusal,
   bufferReplacementMarkRefusal,
+  cancelFacebookScheduledVideo,
   replacedYouTubeIds,
   prepareBufferItem,
   publishFacebookReel,
@@ -497,12 +499,12 @@ describe("#12279 CLI e lock", () => {
   it("lock vivo da troca segura o --publish (sem flag que o contorne); lock velho é reaproveitado", () => {
     const dir = mkdtempSync(join(tmpdir(), "shorts-replace-lock-12279-"));
     try {
-      assert.equal(replaceLockBusy(dir), false);
+      assert.equal(replaceLockBusy(dir), "free");
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(join(dir, "_internal", "shorts-replace.lock"), "{}");
-      assert.equal(replaceLockBusy(dir, () => null), true);
+      assert.equal(replaceLockBusy(dir, () => null), "busy");
       let released = false;
-      assert.equal(replaceLockBusy(dir, () => () => { released = true; }), false);
+      assert.equal(replaceLockBusy(dir, () => () => { released = true; }), "free");
       assert.equal(released, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -600,7 +602,9 @@ describe("#12279 review da PR #13107: grant sob o lock, folga do YouTube, histó
     try {
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(join(dir, "_internal", "shorts-replace.lock"), "{}");
-      assert.equal(replaceLockBusy(dir, () => { throw new Error("EACCES"); }), true);
+      const st = replaceLockBusy(dir, () => { throw new Error("EACCES"); });
+      assert.ok(typeof st === "object", "ilegível segue fechando");
+      assert.match(typeof st === "object" ? st.unreadable : "", /shorts-replace\.lock ilegível \(EACCES\).*remova-o/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -695,5 +699,67 @@ describe("#12279 --replace-scheduled por processo real (sem rede)", () => {
     assert.match(r.stderr, /media\.video_sha256/);
     untouched();
     assert.equal(readAuthorizationStore(dir, SED).authorizations.at(-1)?.status, "active", "recusa não consome");
+  });
+});
+
+describe("#12279 re-review: P3 do delta", () => {
+  it("next_steps da Buffer inclui o --mark-replaced logo depois do delete_post", () => {
+    const t = bufferReplaceNextSteps("x", "buffer:xOLD", FB_AT, V2);
+    assert.match(t, /delete_post, logo em seguida --mark-replaced x=buffer:xOLD, create_post/);
+    assert.match(t, new RegExp(`--mark x=buffer:NOVO --replaces buffer:xOLD --scheduled-at ${FB_AT} --video-sha256 ${V2}$`));
+    const src = readFileSync(join(import.meta.dirname, "..", "scripts", "publish-shorts.ts"), "utf8");
+    assert.match(src, /next_steps: bufferReplaceNextSteps\(item\.destination, bufferReplace\.old_id, bufferReplace\.at, videoHash\)/);
+  });
+
+  it("registro ilegível na releitura não vira 'marca não gravada' e nada é marcado", async () => {
+    const calls: string[] = [];
+    const r = await runScheduledReplacement([{ destination: "youtube_shorts", kind: "api", old_id: "ytOLD", at: YT_AT }], {
+      consume: () => ({ ok: true }),
+      stillRegistered: () => { throw new Error("JSON inválido"); },
+      markCancelling: () => { calls.push("mark"); },
+      clearCancelling: () => {},
+      cancel: async () => { calls.push("cancel"); },
+      record: () => {},
+      clearMarks: () => {},
+      warn: () => {},
+    });
+    const res = r.refused === null ? r.results[0] : null;
+    assert.equal(res?.outcome, "failed");
+    assert.match(res?.outcome === "failed" ? res.error : "", /registro ilegível na releitura \(JSON inválido\)/);
+    assert.doesNotMatch(res?.outcome === "failed" ? res.error : "", /marca de cancelamento/);
+    assert.deepEqual(calls, []);
+  });
+
+  it("histórico que não grava: a mensagem diz que a marca fica, trava as rodadas e como limpá-la", async () => {
+    const r = await runScheduledReplacement([{ destination: "youtube_shorts", kind: "api", old_id: "ytOLD", at: YT_AT }], {
+      consume: () => ({ ok: true }),
+      stillRegistered: () => true,
+      markCancelling: () => {},
+      clearCancelling: () => {},
+      cancel: async (_t, w) => { w(); },
+      record: () => { throw new Error("EBUSY"); },
+      clearMarks: () => {},
+      warn: () => {},
+    });
+    const err = r.refused === null && r.results[0].outcome === "failed" ? r.results[0].error : "";
+    assert.match(err, /marca "cancelando" de youtube_shorts FICA e trava as próximas rodadas/);
+    assert.match(err, /Registre o histórico à mão .*id ytOLD.*e só então tire a marca/);
+  });
+
+  it("Facebook relido em outro horário: recusa própria citando o esperado e o lido, sem DELETE", async () => {
+    const readAt = Math.floor(Date.parse("2026-11-15T19:00:00.000Z") / 1000);
+    let deletes = 0;
+    const deps = {
+      fetch: async (_u: string, init?: { method?: string }) => {
+        if (init?.method === "DELETE") { deletes++; return new Response(JSON.stringify({ success: true }), { status: 200 }); }
+        return new Response(JSON.stringify({ published: false, scheduled_publish_time: readAt }), { status: 200 });
+      },
+      sleep: async () => {}, now: () => T0, log: () => {},
+    };
+    await assert.rejects(
+      cancelFacebookScheduledVideo(deps as never, { slug: "diaria", token: "t", missing: [] } as never, "v21.0", "fbOLD", 30 * 60_000, { expectedAt: FB_AT }),
+      new RegExp(`agendado na página para 2026-11-15T19:00:00\\.000Z, não para o horário esperado ${FB_AT.replace(/\./g, "\\.")}`),
+    );
+    assert.equal(deletes, 0);
   });
 });

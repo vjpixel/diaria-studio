@@ -272,11 +272,18 @@ export async function runScheduledReplacement(
       continue;
     }
     const fail = (error: string, phase: "cancel" | "record" = "cancel") => results.push({ target, outcome: "failed", phase, error });
+    let same: boolean;
     try {
-      if (!deps.stillRegistered(target)) {
-        fail(`o registro de ${target.destination} mudou desde o plano (não é mais o post ${target.old_id} agendado): nada cancelado`);
-        continue;
-      }
+      same = deps.stillRegistered(target);
+    } catch (e) {
+      fail(`post antigo ${target.old_id} NÃO cancelado: registro ilegível na releitura (${(e as Error).message})`);
+      continue;
+    }
+    if (!same) {
+      fail(`o registro de ${target.destination} mudou desde o plano (não é mais o post ${target.old_id} agendado): nada cancelado`);
+      continue;
+    }
+    try {
       deps.markCancelling(target);
     } catch (e) {
       fail(`post antigo ${target.old_id} NÃO cancelado: marca de cancelamento não gravada (${(e as Error).message})`);
@@ -309,7 +316,13 @@ export async function runScheduledReplacement(
       deps.record(target);
     } catch (e) {
       // O post antigo já saiu: sem o histórico, o registro ainda o aponta. O envio novo não sai, a marca fica.
-      fail(`post antigo ${target.old_id} CANCELADO na plataforma, mas o histórico da substituição não foi gravado (${(e as Error).message}): nada enviado; confira e registre à mão`, "record");
+      fail(
+        `post antigo ${target.old_id} CANCELADO na plataforma, mas o histórico da substituição não foi gravado (${(e as Error).message}): nada enviado. ` +
+          `A marca "cancelando" de ${target.destination} FICA e trava as próximas rodadas (a releitura a acusa e a troca pula o destino). ` +
+          `Registre o histórico à mão (_internal/06-shorts-replaced.json: destination ${target.destination}, id ${target.old_id}, scheduled_at ${target.at}) ` +
+          `e só então tire a marca de _internal/06-shorts-sending*.json`,
+        "record",
+      );
       continue;
     }
     try {
@@ -340,6 +353,19 @@ export function afterCancelMessage(target: ShortReplacementTarget | undefined, m
   return (
     `post antigo ${target.old_id} já cancelado (histórico em _internal/06-shorts-replaced.json), envio novo FALHOU: ${msg}. ` +
     "Confira a conta antes de qualquer coisa (envio ambíguo fica send_unknown no registro). Recuperação: docs/shorts-replace-scheduled.md (#12279)"
+  );
+}
+
+/**
+ * Pure (#12279): os passos da skill para um alvo da Buffer, na ordem: conferir
+ * e apagar o antigo, `--mark-replaced` logo depois do `delete_post`, criar o
+ * novo e registrá-lo com `--replaces`.
+ */
+export function bufferReplaceNextSteps(destination: string, oldId: string, at: string, videoSha256: string): string {
+  return (
+    `get_post ${oldId.slice("buffer:".length)} (na fila, não enviado, dueAt ${at}), delete_post, ` +
+    `logo em seguida --mark-replaced ${destination}=${oldId}, create_post com este buffer, ` +
+    `e então --mark ${destination}=buffer:NOVO --replaces ${oldId} --scheduled-at ${at} --video-sha256 ${videoSha256}`
   );
 }
 

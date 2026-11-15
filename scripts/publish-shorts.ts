@@ -242,6 +242,7 @@ import {
   replacementPublishCommand,
   afterCancelMessage,
   BUFFER_ID_RE,
+  bufferReplaceNextSteps,
   replacementSurvivors,
   replacementUploadRefusal,
   runScheduledReplacement,
@@ -2216,7 +2217,12 @@ async function assertFacebookStillScheduled(deps: GraphDeps, page: ResolvedFaceb
   const cur = await graphGet(deps, videoId, { fields: "published,scheduled_publish_time", access_token: page.token }, apiVersion);
   const ms = facebookScheduledMs(cur?.scheduled_publish_time);
   // #12279: com `expectedAt`, o vídeo relido em outro horário também não é tocado.
-  if (cur?.published !== false || ms === null || ms - deps.now().getTime() <= minLeadMs || (expectedAt !== undefined && ms !== Date.parse(expectedAt))) {
+  if (cur?.published === false && ms !== null && expectedAt !== undefined && ms !== Date.parse(expectedAt)) {
+    throw new Error(
+      `o vídeo ${videoId} está agendado na página para ${new Date(ms).toISOString()}, não para o horário esperado ${new Date(Date.parse(expectedAt)).toISOString()} — nada alterado; confira no Meta Business Suite (#12279)`,
+    );
+  }
+  if (cur?.published !== false || ms === null || ms - deps.now().getTime() <= minLeadMs) {
     throw new Error(
       `o vídeo ${videoId} não está agendado com folga na página (published ${String(cur?.published)}, scheduled_publish_time ${String(cur?.scheduled_publish_time ?? "nenhum")}, folga mínima ${Math.round(minLeadMs / 60_000)} min) — nada alterado; confira no Meta Business Suite`,
     );
@@ -5485,18 +5491,19 @@ async function main(): Promise<number> {
  * curso nesta máquina). Lock velho (processo morto há mais que o teto) é
  * reaproveitado e solto na hora, como nos timers.
  */
-export function replaceLockBusy(dir: string, acquire: typeof acquireTimerLock = acquireTimerLock): boolean {
+export function replaceLockBusy(dir: string, acquire: typeof acquireTimerLock = acquireTimerLock): "free" | "busy" | { unreadable: string } {
   const path = join(dir, SHORTS_REPLACE_LOCK_FILE);
-  if (!existsSync(path)) return false;
+  if (!existsSync(path)) return "free";
   let rel: (() => void) | null;
   try {
     rel = acquire(path, Date.now());
-  } catch {
-    return true; // lock ilegível: falha fechada (trata como troca em curso)
+  } catch (e) {
+    // Falha fechada: lock ilegível segura o --publish, com a mensagem própria.
+    return { unreadable: `${path} ilegível (${(e as Error).message}): confira o arquivo e remova-o à mão se nenhuma troca estiver em curso` };
   }
-  if (!rel) return true;
+  if (!rel) return "busy";
   rel();
-  return false;
+  return "free";
 }
 
 /**
@@ -5663,9 +5670,16 @@ async function mainUnlocked(): Promise<number> {
       releaseReplaceLock = rel;
       // Relido sob o lock: a leitura do início pode estar velha.
       published = readShortsRegistry(dir, aammdd);
-    } else if (replaceLockBusy(dir)) {
-      console.error("publish-shorts: substituição do vertical agendado (--replace-scheduled) em curso nesta edição: aguarde o desfecho dela antes de publicar (#12279)");
-      return 2;
+    } else {
+      const lock = replaceLockBusy(dir);
+      if (lock === "busy") {
+        console.error("publish-shorts: substituição do vertical agendado (--replace-scheduled) em curso nesta edição: aguarde o desfecho dela antes de publicar (#12279)");
+        return 2;
+      }
+      if (lock !== "free") {
+        console.error(`publish-shorts: lock da substituição ${lock.unreadable}: nada publicado (#12279)`);
+        return 2;
+      }
     }
   }
 
@@ -6378,7 +6392,7 @@ async function mainUnlocked(): Promise<number> {
             ...(bufferReplace
               ? {
                   replaces: { id: bufferReplace.old_id, at: bufferReplace.at },
-                  next_steps: `get_post ${bufferReplace.old_id.slice("buffer:".length)} (na fila, não enviado, dueAt ${bufferReplace.at}), delete_post, create_post com este buffer, e então --mark ${item.destination}=buffer:NOVO --replaces ${bufferReplace.old_id} --scheduled-at ${bufferReplace.at} --video-sha256 ${videoHash}`,
+                  next_steps: bufferReplaceNextSteps(item.destination, bufferReplace.old_id, bufferReplace.at, videoHash),
                 }
               : {}),
           }
