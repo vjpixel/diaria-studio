@@ -349,8 +349,28 @@ function isSpellingVariant(added: string, removed: string[]): boolean {
 const SUPERLATIVE =
   /(?<![\p{L}\p{N}])(?:o|a|os|as|à|às|do|da|dos|das|no|na|nos|nas|ao|aos|pelo|pela|pelos|pelas)\s+(?:pior|piores|melhor|melhores|maior|maiores|menor|menores|mais|menos)(?![\p{L}\p{N}])/giu;
 
+/**
+ * Locuções fixas com a forma "artigo/contração + menos/maior/mais" que não são
+ * superlativo (#13079): `pelo menos`, `ao menos`, `a menos que`, `a maior
+ * parte`, e `a mais`/`no mais` no fim de oração ("uma hora a mais", "no mais,
+ * ..."). Saem do texto antes da contagem; "a mais rápida" segue contando.
+ */
+const FIXED_LOCUTIONS =
+  /(?<![\p{L}\p{N}])(?:pelo\s+menos|ao\s+menos|a\s+menos\s+que|a\s+maior\s+parte|(?:a|no)\s+mais(?=\s*(?:[.,;:!?)]|$)))(?![\p{L}\p{N}])/giu;
+
 function countSuperlatives(s: string): number {
-  return [...s.matchAll(SUPERLATIVE)].length;
+  return [...s.replace(FIXED_LOCUTIONS, " ").matchAll(SUPERLATIVE)].length;
+}
+
+/**
+ * `N mil` → dígitos (`3 mil` → `3000`, `1,5 mil` → `1500`), para `3 mil` →
+ * `3.000` contar como o mesmo número (#13079). Só casa decimal de 1-2 casas,
+ * a forma de quantidade aproximada; `milhão`/`milhões` não casam.
+ */
+function expandThousands(s: string): string {
+  return s.replace(/(?<![\p{L}\p{N}.,])(\d+)(?:[.,](\d{1,2}))?\s+mil(?![\p{L}\p{N}])/gu, (_m, int: string, frac?: string) =>
+    String(Number(int) * 1000 + Number((frac ?? "").padEnd(3, "0"))),
+  );
 }
 
 /**
@@ -364,12 +384,14 @@ function countSuperlatives(s: string): number {
  *   - `degree_change`: `to` tem mais superlativos relativos (artigo + pior/
  *     melhor/maior/menor/mais/menos) que `from` ("foi pior" → "foi o pior").
  *     Concordância (`o pior` → `a pior`) e crase (`a maior` → `à maior`)
- *     mantêm a contagem e passam.
+ *     mantêm a contagem e passam. Locuções fixas (`pelo menos`, `a menos
+ *     que`, `a maior parte`, #13079) não contam como superlativo, e `N mil`
+ *     vale o mesmo que `N.000`.
  */
 export function classifyClariceMeaningChange(from: string, to: string): ClariceMeaningReason | null {
   if (from === to) return null;
-  const fromTokens = wordTokens(from);
-  const toTokens = wordTokens(to);
+  const fromTokens = wordTokens(expandThousands(from));
+  const toTokens = wordTokens(expandThousands(to));
   const fromSet = new Set(fromTokens);
   const toSet = new Set(toTokens);
   const removed = fromTokens.filter((t) => !toSet.has(t));
