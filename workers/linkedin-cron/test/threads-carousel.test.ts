@@ -107,7 +107,7 @@ describe("#5348 Threads carrossel: 3 containers filhos + 1 pai + 1 publish, com 
 
     try {
       const outcome = await fireQueueEntry(entry, BASE_CONFIG);
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
 
       const childCalls = calls.filter(
         (c) => c.url.endsWith("/threads") && c.body.includes("is_carousel_item=true"),
@@ -160,7 +160,7 @@ describe("#5348 Threads carrossel: 3 containers filhos + 1 pai + 1 publish, com 
 
     try {
       const outcome = await fireQueueEntry(entry, BASE_CONFIG);
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       const mediaCalls = calls.filter((c) => c.url.endsWith("/threads"));
       assert.equal(mediaCalls.length, 1, "só 1 container (imagem única) — nunca 2 como no carrossel");
       assert.ok(!mediaCalls[0].body.includes("is_carousel_item"));
@@ -193,7 +193,7 @@ describe("#5348 Threads carrossel: 3 containers filhos + 1 pai + 1 publish, com 
     const entry = baseEntry({ text: "Post só texto" });
     try {
       const outcome = await fireQueueEntry(entry, BASE_CONFIG);
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       assert.ok(!calls.some((u) => u.includes("?fields=status")), "TEXT-only nunca faz poll de status");
       assert.equal(calls.filter((u) => u.endsWith("/threads")).length, 1);
       assert.equal(calls.filter((u) => u.endsWith("/threads_publish")).length, 1);
@@ -305,7 +305,7 @@ describe("#5348 Threads carrossel: poll fail-closed — NUNCA publica um contain
     const entry = baseEntry({ image_urls: ["https://x.test/1.jpg"] });
     try {
       const outcome = await fireQueueEntry(entry, BASE_CONFIG);
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       assert.ok(pollAttempt >= 3, `deveria ter tentado pelo menos 3x (2 transitórias + 1 FINISHED), tentou ${pollAttempt}`);
       assert.equal(publishCalled, true, "erro transitório no poll não deveria impedir o publish depois de confirmar FINISHED");
     } finally {
@@ -330,7 +330,7 @@ describe("#5348 Threads carrossel: poll fail-closed — NUNCA publica um contain
     const entry = baseEntry({ image_urls: ["https://x.test/1.jpg"] });
     try {
       const outcome = await fireQueueEntry(entry, BASE_CONFIG);
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       assert.equal(pollAttempt, 2, "1ª tentativa (HTTP 500) é transitória, 2ª confirma FINISHED");
     } finally {
       restore();

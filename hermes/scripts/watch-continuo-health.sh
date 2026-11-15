@@ -233,7 +233,7 @@ if [ -n "$LEAK" ]; then
 $LEAK
 \`\`\`
 
-Mesma classe do incidente 28/08 (7 issues presas invisíveis pro develop). Workaround: \`session-registry.ts end --kind continuo --session-id <id>\`. Fix estrutural pendente: #6443 (TTL mecânico de claim)."
+Mesma classe do incidente 28/08 (7 issues presas invisíveis pro develop). Antes de culpar a higiene do tick, procurar a sessão em \`data/session-lifecycle.jsonl\`: com evento \`ended\` lá, o tick encerrou e o registro voltou pelo sync (#13114, que o read-path passou a ignorar quando a cópia de conflito traz \`endedAt\`). Workaround: \`session-registry.ts end --kind continuo --session-id <id>\`. Teto de idade de claim sem PR: #6443."
 else
   note "[watch] claims ok"
 fi

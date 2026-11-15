@@ -103,12 +103,48 @@ Fontes:
    em caixa normal, com o `?` em teal.
 10. **O gancho decide a expressão do retrato** (Passo A2, item 3).
 
+## Título, capa e gancho falado (#13116)
+
+Critérios decididos com o editor em 15/11/2026, no roteiro da 261116, que saiu
+com o título do vertical quase igual ao gancho e a capa "Inventa cinco vezes
+menos?" sem sujeito. Valem junto com a diretriz acima; "título" aqui é o
+título do vídeo (o do roteiro), que pode não ser o do D1.
+
+1. **Título e gancho fazem a mesma promessa com palavras diferentes, nunca
+   iguais.**
+   - YouTube (horizontal): a pessoa já leu o título antes do clique. O gancho
+     confirma a promessa por outro ângulo: o título traz o assunto e o nome,
+     para a busca; o gancho traz a consequência para quem assiste.
+   - Verticais (Shorts e Instagram): o título aparece escrito na tela e a fala
+     sai como legenda queimada. Título igual ao gancho mostra a mesma frase
+     duas vezes na tela. O título diz o assunto, o gancho traz a tensão. No
+     Instagram, a primeira linha da legenda do post (corte em cerca de 125
+     caracteres) também não copia o título.
+2. **A capa se explica junto com o título.** No horizontal a miniatura sempre
+   aparece com o título, então a capa traz a consequência e não repete o
+   assunto.
+3. **A capa do vertical também se explica sozinha.** Na grade do perfil ela
+   aparece sem título, então precisa de sujeito reconhecível ("Sua Busca",
+   "Google").
+
+Pergunta ou afirmação na capa: a diretriz não tem evidência para preferir uma
+ou outra. Escolher pela clareza, não pelo formato. Título do horizontal: mirar
+cerca de 60 caracteres, com o nome do produto no começo.
+
+O script cobre parte disso: compara a capa também com o título do vídeo
+(`--title`, ou os títulos de `_internal/roteiro-falas.json` quando a flag não
+vem) e avisa a capa do Short sem sujeito reconhecível. O gancho falado é
+conferido por `scripts/video-roteiro-blocos.ts` (gancho do vertical longo,
+título que repete o gancho).
+
 ## Ferramenta
 
 ```bash
 # 1. o agente escreve 8 a 10 candidatos pela diretriz, um por linha
 #    (pelo menos 3 perguntas e 3 afirmações; linha com # é comentário)
 npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --candidates-file /tmp/capa-{AAMMDD}-$RANDOM.txt
+#    com o título do vídeo diferente do D1 e sem roteiro-falas.json:
+#    --title "título do vídeo" (repetível)
 # 2. depois de o editor escolher
 npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --record "Ensinaram a IA|e foram demitidos" --format horizontal
 npx tsx scripts/suggest-capa-hooks.ts {AAMMDD} --record "Treinou o|próprio substituto?" --format short

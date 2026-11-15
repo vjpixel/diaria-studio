@@ -224,7 +224,7 @@ describe("#4153 regressão: 1 imagem só continua no caminho single-image antigo
         webhookUrl: "https://make.test/diaria",
         instagram: { igUserId: "acc", accessToken: "tok", apiVersion: "v25.0" },
       });
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       // Só 1 /media (container único) + 1 /media_publish — nunca is_carousel_item/children.
       const mediaCalls = calls.filter((c) => c.url.endsWith("/media"));
       assert.equal(mediaCalls.length, 1);
@@ -268,7 +268,7 @@ describe("#4153 regressão: 1 imagem só continua no caminho single-image antigo
         webhookUrl: "https://make.test/diaria",
         instagram: { igUserId: "acc", accessToken: "tok", apiVersion: "v25.0" },
       });
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       assert.equal(calls.filter((u) => u.endsWith("/media")).length, 1);
       assert.equal(calls.filter((u) => u.endsWith("/media_publish")).length, 1);
     } finally {
@@ -501,7 +501,7 @@ describe("#7630 Instagram carrossel: poll de status_code elimina a race conditio
         webhookUrl: "https://make.test/diaria",
         instagram: { igUserId: "acc", accessToken: "tok", apiVersion: "v25.0" },
       });
-      assert.deepEqual(outcome, { status: "fired" }, "IN_PROGRESS transitório não deve mais matar o carrossel");
+      assert.equal(outcome.status, "fired", "IN_PROGRESS transitório não deve mais matar o carrossel");
       // Todo container (3 filhos + 1 pai) foi checado ≥2× — provando que o
       // poll de fato esperou o IN_PROGRESS virar FINISHED, não ignorou.
       assert.equal(pollCountByContainer.size, 4, "deve ter feito poll dos 3 filhos + 1 pai");

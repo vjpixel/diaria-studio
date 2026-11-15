@@ -147,7 +147,7 @@ describe("#3903 fireQueueEntry: header x-make-apikey no POST ao webhook Make", (
         webhookUrl: "https://make.test/diaria",
         apiKey: "wk-secret-1",
       });
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       const headers = capturedHeaders as Record<string, string>;
       assert.equal(headers["x-make-apikey"], "wk-secret-1");
     } finally {
@@ -183,7 +183,7 @@ describe("#3903 fireQueueEntry: header x-make-apikey no POST ao webhook Make", (
           apiKey: "wk-secret-pixel",
         },
       );
-      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(outcome.status, "fired");
       const headers = capturedHeaders as Record<string, string>;
       assert.equal(headers["x-make-apikey"], "wk-secret-pixel");
     } finally {

@@ -80,3 +80,8 @@ THREADS_API_VERSION = "v1.0"
 # Ao disparar, lê itens com scheduled_at <= now e fira o webhook Make.
 [triggers]
 crons = ["*/5 * * * *"]
+
+# #13099 — retain dispatch events for incident diagnosis.
+[observability]
+enabled = true
+head_sampling_rate = 1

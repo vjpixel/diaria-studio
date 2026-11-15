@@ -198,3 +198,24 @@ Free tier deve cobrir.
 - Setup Make: `docs/make-linkedin-setup.md`
 - Memory: `project_linkedin_scheduling_pivot.md`
 - Memory: `reference_make_diaria_ids.md`
+
+### Histórico de dispatch (#13099)
+
+Após deploy, Workers Observability registra os eventos `dispatch` dos caminhos
+cron e DO alarm. O KV guarda o último resultado por chave por 30 dias, inclusive
+falhas e envios ambíguos. Os registros contêm canal, destaque, horários, estado,
+ID de post/container e status HTTP quando disponíveis; não contêm texto,
+credenciais, URLs de webhook nem corpos de erro da plataforma.
+
+Consulta com o mesmo header `X-Diaria-Token` das rotas de fila:
+
+- `GET /fired?edition=AAMMDD`: data agendada em Brasília; itens legados não têm histórico retroativo.
+- `GET /fired?key=<worker_queue_key>`: resultado de uma entrada específica.
+- `GET /fired?key=<worker_queue_key>&verify=true`: consulta o ID na API oficial usando as credenciais do Worker; devolve `verification.verified` e status HTTP da consulta.
+
+`verify-stage-4-dispatch.ts` usa essa última consulta quando a entrada LinkedIn,
+Instagram ou Threads já saiu da fila. Ausência de ID (ex.: webhook Make que
+não retorna ID), resultado ambíguo ou falha de consulta nunca confirma publicação.
+Um container de Reels marcado PUBLISHED pode ter `container_id` sem `post_id`;
+nesse caso a confirmação pelo ID também permanece falsa. Falha ao gravar o
+histórico gera `dispatch_record_failed` nos logs e não provoca republicação.

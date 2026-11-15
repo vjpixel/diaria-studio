@@ -9,6 +9,10 @@
  * `outras-redes`) e vertical 2 (corte `guia`, com o título na tela e o gancho
  * do roteiro). Lógica: `scripts/lib/diaria/roteiro-videos.ts`.
  *
+ * Também avisa (stderr, `[aviso]`, sem mudar o exit) gancho do vertical com
+ * mais de ~8 palavras antes do primeiro ponto e título que repete o gancho
+ * (`avisosGanchoETitulo`, #13116).
+ *
  * Só propõe: não grava `blocks.json` nem decupagem. Os tempos no bruto saem da
  * decupagem e o editor decide no Gate 1/Gate 2 da montagem.
  *
@@ -26,7 +30,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
-import { parseRoteiroFalas, propostaBlocosDoRoteiro, renderPropostaBlocos, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
+import { avisosGanchoETitulo, parseRoteiroFalas, propostaBlocosDoRoteiro, renderPropostaBlocos, ROTEIRO_FALAS_FILE } from "./lib/diaria/roteiro-videos.ts";
 
 export const EXIT_SEM_ROTEIRO = 3;
 
@@ -60,7 +64,7 @@ export function main(argv: string[] = process.argv.slice(2), io: { out: (s: stri
     return 2;
   }
   const proposta = propostaBlocosDoRoteiro(lido.roteiro, corte ? { corteSlug: corte } : {});
-  for (const a of proposta.avisos) io.err(`[aviso] ${a}`);
+  for (const a of [...proposta.avisos, ...avisosGanchoETitulo(lido.roteiro)]) io.err(`[aviso] ${a}`);
   io.out(flags.has("json") ? JSON.stringify(proposta, null, 2) : renderPropostaBlocos(proposta));
   return 0;
 }

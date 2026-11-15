@@ -14,7 +14,9 @@
  *   - `roteiroPecas`: título e capa de cada vídeo, para o `/diaria-publica`
  *     (o `publish-youtube.ts` usa o título do horizontal quando não há `--title`);
  *   - `propostaBlocosDoRoteiro`: a proposta de `blocks.json` para a montagem,
- *     com os `targets` de cada fala e a sequência de corte do vertical 2.
+ *     com os `targets` de cada fala e a sequência de corte do vertical 2;
+ *   - `avisosGanchoETitulo`: gancho longo no vertical e título que repete o
+ *     gancho (#13116).
  *
  * A proposta é ponto de partida do Gate 1/Gate 2 da montagem, nunca o
  * `blocks.json` final: os tempos no bruto saem da decupagem, e quem decide é o
@@ -30,6 +32,7 @@ import {
   type BlockKey,
   type SequenceSpec,
 } from "./video-montage.ts";
+import { contentWords } from "./youtube-title-research.ts";
 import { validarRoteiroFalas, VIDEO_LABEL, VIDEOS_ROTEIRO, type FalaRoteiro, type PecaVideo, type RoteiroFalas, type VideoRoteiro } from "./roteiro-gravacao.ts";
 
 /** Caminho do JSON do roteiro, relativo à pasta da edição. */
@@ -238,4 +241,75 @@ export function readRoteiroHorizontal(editionDir: string, warn: (msg: string) =>
     return null;
   }
   return roteiroPecas(lido.roteiro).horizontal ?? null;
+}
+
+// ─── Gancho e título (#13116) ────────────────────────────────────────────────
+
+/**
+ * No vertical o gancho chega ao ponto em ~3 s (critério 4 da #13116, decidido
+ * com o editor em 15/11/2026). A ~150 palavras por minuto, 3 s são umas 7 a 8
+ * palavras: acima disto antes do primeiro ponto, o que importa para quem
+ * assiste chega tarde.
+ */
+export const GANCHO_VERTICAL_MAX_PALAVRAS = 8;
+/** Ritmo de fala usado para estimar a duração do gancho. */
+export const PALAVRAS_POR_MINUTO = 150;
+/** Fração das palavras de conteúdo do título que já estão no gancho a partir da qual é repetição. */
+export const TITULO_GANCHO_OVERLAP_LIMITE = 0.6;
+
+/** A primeira frase do texto, até o primeiro `.`, `!`, `?` ou `…` seguido de espaço ou do fim. */
+export function primeiraFrase(texto: string): string {
+  const m = texto.trim().match(/^.*?[.!?…](?=\s|$)/su);
+  return (m ? m[0] : texto).trim();
+}
+
+function palavrasDe(texto: string): string[] {
+  return texto.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w));
+}
+
+function normFrase(texto: string): string {
+  return texto.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Pure (#13116): avisos sobre o gancho e o título de cada vídeo do roteiro.
+ *   - no vertical, gancho com mais de `GANCHO_VERTICAL_MAX_PALAVRAS` palavras
+ *     antes do primeiro ponto (critério 4);
+ *   - título que repete o gancho (critério 1): um contido no outro, ou a
+ *     maior parte das palavras de conteúdo do título já no gancho. Nos
+ *     verticais o título aparece escrito na tela e a fala sai como legenda:
+ *     título igual ao gancho mostra a mesma frase duas vezes.
+ * O gancho de um vídeo é a 1ª fala com `bloco: "gancho"` que ele usa.
+ */
+export function avisosGanchoETitulo(roteiro: Pick<RoteiroFalas, "falas" | "porVideo">): string[] {
+  const avisos: string[] = [];
+  const pecas = roteiroPecas(roteiro);
+  for (const v of VIDEOS_ROTEIRO) {
+    const gancho = roteiro.falas.find((f) => f.bloco === "gancho" && f.videos.includes(v));
+    if (!gancho) continue;
+    const frase = primeiraFrase(gancho.texto);
+    if (v !== "horizontal") {
+      const n = palavrasDe(frase).length;
+      if (n > GANCHO_VERTICAL_MAX_PALAVRAS) {
+        const seg = Math.round((n / PALAVRAS_POR_MINUTO) * 60);
+        avisos.push(
+          `${gancho.id}: o gancho do ${VIDEO_LABEL[v]} leva ${n} palavras até o primeiro ponto (~${seg} s a ${PALAVRAS_POR_MINUTO} palavras/min); no vertical ele chega ao ponto em ~3 s, até ~${GANCHO_VERTICAL_MAX_PALAVRAS} palavras (#13116)`,
+        );
+      }
+    }
+    const titulo = pecas[v]?.titulo;
+    if (!titulo) continue;
+    const t = normFrase(titulo);
+    const f = normFrase(frase);
+    const tituloContent = contentWords(titulo);
+    const ganchoContent = new Set(contentWords(gancho.texto));
+    const overlap = tituloContent.length ? tituloContent.filter((w) => ganchoContent.has(w)).length / tituloContent.length : 0;
+    const contido = t.length > 0 && f.length > 0 && (normFrase(gancho.texto).includes(t) || t.includes(f));
+    if (contido || overlap >= TITULO_GANCHO_OVERLAP_LIMITE) {
+      avisos.push(
+        `${VIDEO_LABEL[v]}: o título repete o gancho ${gancho.id} (${Math.round(overlap * 100)}% das palavras de conteúdo do título estão na fala); mesma promessa com outras palavras: o título diz o assunto, o gancho traz a tensão (#13116)`,
+      );
+    }
+  }
+  return avisos;
 }

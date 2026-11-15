@@ -109,7 +109,7 @@ describe("#8055 fireLinkedInDocument — caminho feliz", () => {
   it("PDF → initializeUpload (owner) → PUT → POST /rest/posts com content.media", async () => {
     const calls = installFetch(linkedInRoutes());
     const outcome = await fireQueueEntry(docEntry(), { webhookUrl: "https://make.test/diaria", linkedin: CREDS });
-    assert.deepEqual(outcome, { status: "fired" });
+    assert.equal(outcome.status, "fired");
 
     assert.deepEqual(
       calls.map((c) => `${c.method} ${c.url.split("?")[0]}`),
@@ -146,7 +146,7 @@ describe("#8055 fireLinkedInDocument — caminho feliz", () => {
       webhookUrl: "https://make.test/diaria",
       linkedin: CREDS,
     });
-    assert.deepEqual(outcome, { status: "fired" });
+    assert.equal(outcome.status, "fired");
     assert.equal(calls.filter((c) => c.url.includes("/rest/images")).length, 0);
     assert.ok(JSON.parse(postsCalls(calls)[0].body).content.media);
   });
