@@ -40,6 +40,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { parseArgsSimple as parseArgs, isMainModule } from "./cli-args.ts";
 import { describeSentinelAbsence } from "./sentinel-absence-hint.ts";
+import { explainDataPathUnavailable } from "./data-dir-probe.mjs";
 
 export type Stage = 2 | 3 | 4 | 5 | 6;
 
@@ -299,6 +300,21 @@ export function resolveEditionDir(
   return join(editionsRootDir, aamm, aammdd);
 }
 
+/**
+ * #13179: `path` (dentro de `{rootDir}/data/`) não existe porque `data/` não
+ * resolve (link/junction pendente: Google Drive para desktop desmontado,
+ * OneDrive fechado)? Devolve a mensagem que nomeia causa e ação; `null`
+ * quando o caminho existe ou de fato não existe com `data/` saudável. Sem
+ * isso o `--resolve` devolvia um path que o Stage 0 tentava criar (ENOENT
+ * genérico) e o `--stage N` devolvia zero candidatos como se não houvesse
+ * edição em curso.
+ */
+export function describeDataUnavailable(rootDir: string, path: string): string | null {
+  const abs = resolve(rootDir, path);
+  if (existsSync(abs)) return null;
+  return explainDataPathUnavailable(rootDir, abs);
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -313,6 +329,11 @@ function main(): void {
       process.exit(1);
     }
     const editionsRootDir = resolve(process.cwd(), EDITIONS_DIR);
+    const unavailable = describeDataUnavailable(process.cwd(), editionsRootDir);
+    if (unavailable) {
+      console.error(`[erro] ${unavailable}`);
+      process.exit(1);
+    }
     const dir = resolveEditionDir(editionsRootDir, aammdd);
     process.stdout.write(relative(process.cwd(), dir).replaceAll("\\", "/") + "\n");
     return;
@@ -327,6 +348,14 @@ function main(): void {
   const candidates = findEditionsInProgress(stageNum as Stage);
   process.stdout.write(JSON.stringify({ stage: stageNum, candidates }) + "\n");
   if (candidates.length === 0) {
+    // #13179: zero candidatos com `data/` desmontado não é "nenhuma edição em
+    // curso" — sai com erro e a causa, em vez do aviso de defasagem de sync.
+    const unavailable = describeDataUnavailable(process.cwd(), EDITIONS_DIR);
+    if (unavailable) {
+      console.error(`[erro] ${unavailable}`);
+      process.exitCode = 1;
+      return;
+    }
     const hint = describeNoCandidates(stageNum as Stage);
     if (hint) console.error(`[aviso] ${hint}`);
   }

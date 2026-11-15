@@ -17,31 +17,31 @@
 // `scripts/lib/session-registry.ts` usar a mesma regra. O `fs` é injetável
 // para o teste simular o junction pendente em qualquer plataforma.
 
-import { lstatSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readlinkSync, statSync } from "node:fs";
+// #13179: a sonda virou genérica (`probeDataPath`, qualquer caminho em
+// `data/`); este módulo mantém a API e o texto do #12547 para o registro de
+// sessões e o guard de merge.
+import { detectSyncProvider, probeDataPath } from "./data-dir-probe.mjs";
 
-const defaultFs = { lstatSync, statSync };
+const defaultFs = { lstatSync, statSync, readlinkSync };
 
 /**
  * Mensagem que nomeia a causa e a ação. Um único texto para hook e registry,
- * para o editor reconhecer o caso venha de onde vier.
+ * para o editor reconhecer o caso venha de onde vier. Com o alvo do link
+ * nomeando o OneDrive (máquina que ainda não migrou, #12359), a ação aponta
+ * para o OneDrive; senão, para o Google Drive (#13179).
  */
-export function brokenSessionsLinkMessage(linkPath, code) {
+export function brokenSessionsLinkMessage(linkPath, code, target) {
+  if (detectSyncProvider(target) === "onedrive") {
+    return (
+      `data/ aponta para um alvo indisponível: "${linkPath}" é um link/junction cujo destino não responde (${code}). ` +
+      "OneDrive fechado? Abra o OneDrive e espere a pasta sincronizar antes de confiar no registro de sessões."
+    );
+  }
   return (
     `data/ aponta para um alvo indisponível: "${linkPath}" é um link/junction cujo destino não responde (${code}). ` +
     "Drive for desktop fechado? Abra o Google Drive e espere a unidade montar antes de confiar no registro de sessões."
   );
-}
-
-function unreadableSessionsDirMessage(path, code) {
-  return (
-    `"${path}" existe mas não pôde ser lido (${code}). ` +
-    "O registro de sessões não é confiável até a leitura voltar a funcionar."
-  );
-}
-
-function errCode(e) {
-  return String(e?.code ?? e?.message ?? e);
 }
 
 /**
@@ -59,44 +59,5 @@ function errCode(e) {
  * saber", nunca como "não há sessão". Nunca lança.
  */
 export function probeSessionsDir(repoRoot, fs = defaultFs) {
-  const dataDir = join(repoRoot, "data");
-  const sessions = join(dataDir, "sessions");
-  let firstErr;
-  try {
-    fs.statSync(sessions);
-    return { state: "present", degraded: false };
-  } catch (e) {
-    firstErr = e;
-  }
-  // Do mais fundo para a raiz: `data/sessions` pode ser ele mesmo o link.
-  for (const candidate of [sessions, dataDir]) {
-    let lst;
-    try {
-      lst = fs.lstatSync(candidate);
-    } catch (e) {
-      const code = e?.code;
-      if (code === "ENOENT" || code === "ENOTDIR") continue;
-      const c = errCode(e);
-      return { state: "unreadable", degraded: true, path: candidate, code: c, message: unreadableSessionsDirMessage(candidate, c) };
-    }
-    if (lst.isSymbolicLink()) {
-      try {
-        fs.statSync(candidate);
-      } catch (e) {
-        const c = errCode(e);
-        return { state: "broken-link", degraded: true, path: candidate, code: c, message: brokenSessionsLinkMessage(candidate, c) };
-      }
-      // Link que resolve: o alvo existe, só não tem `sessions/`. Ausência real.
-      return { state: "absent", degraded: false };
-    }
-    // Componente real. `data/sessions` real com `stat` falhando por motivo
-    // que não é ENOENT: existe e está ilegível. `data` real (ou
-    // `data/sessions` real que sumiu entre as duas chamadas): ausente.
-    if (candidate === sessions && firstErr?.code !== "ENOENT") {
-      const c = errCode(firstErr);
-      return { state: "unreadable", degraded: true, path: candidate, code: c, message: unreadableSessionsDirMessage(candidate, c) };
-    }
-    return { state: "absent", degraded: false };
-  }
-  return { state: "absent", degraded: false };
+  return probeDataPath(repoRoot, ["sessions"], fs, { linkMessage: brokenSessionsLinkMessage });
 }
