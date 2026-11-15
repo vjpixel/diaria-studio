@@ -235,14 +235,25 @@ describe("registro: quem tem retry de rede (#13017)", () => {
     "Diaria-Ai-Fetch-Report",
     "Diaria-Dmarc-Drain",
     "Diaria-Backlog-Reconcile",
-  ];
-  // As que ENVIAM: fora até a idempotência de cada uma ser conferida.
-  const SEM_RETRY_ENVIO = [
+    // Enviam, com idempotência conferida (decisão do editor 15/11/2026):
+    // a rerrodada resolve key nova e o grupo `novos` exclui quem a rodada
+    // caída selecionou; POST `sendNow` ambíguo sai 3 (sucesso), nunca 105.
+    // Contrato travado em test/transient-network-retry-send-units-13017.test.ts.
     "Diaria-Clarice-Novos",
     "Diaria-Clarice-Novos-Tarde",
-    "Diaria-Onboarding-Welcome-Run",
-    "Diaria-Google-Ads-Confirmations-Upload",
   ];
+  // Enviam e NÃO são idempotentes sob rerrodada (15/11/2026):
+  // - Onboarding-Welcome-Run: o e-mail 1/2 só é marcado depois da resposta do
+  //   POST /smtp/email (`applySendResult`), sem marcador de tentativa antes;
+  //   o e-mail 3 só vira `campaign_created` depois do POST /emailCampaigns,
+  //   e a lista D+10 leva o segundo da rodada no nome (`d10ListNameFor`).
+  //   Resposta perdida num POST que saiu = reenvio na rerrodada.
+  // - Google-Ads-Confirmations-Upload: exceção de rede no `events:ingest` é
+  //   ambígua (o lote pode ter sido processado) e o dedup do Google por
+  //   `transactionId` é best-effort; 16 rerrodadas em ~4h gastariam o teto
+  //   `MAX_UNCOUNTED_POST_ATTEMPTS` (5, pensado para dias) e descartariam a
+  //   linha como `skipped-failed-permanent`.
+  const SEM_RETRY_ENVIO = ["Diaria-Onboarding-Welcome-Run", "Diaria-Google-Ads-Confirmations-Upload"];
 
   it("as units de leitura/sync de 13/11 têm a flag", () => {
     for (const name of COM_RETRY) {
@@ -250,7 +261,14 @@ describe("registro: quem tem retry de rede (#13017)", () => {
     }
   });
 
-  it("as units que enviam não têm a flag", () => {
+  it("o conjunto com a flag é exatamente o conferido (task nova com retry exige decisão explícita aqui)", () => {
+    const comFlag = SCHEDULED_TASKS.filter((t) => t.retryOnTransientNetwork)
+      .map((t) => t.name)
+      .sort();
+    assert.deepEqual(comFlag, [...COM_RETRY].sort());
+  });
+
+  it("as units que enviam sem idempotência comprovada não têm a flag", () => {
     for (const name of SEM_RETRY_ENVIO) {
       assert.ok(getScheduledTaskByName(name), `${name} existe no registro`);
       assert.notEqual(getScheduledTaskByName(name)?.retryOnTransientNetwork, true, name);

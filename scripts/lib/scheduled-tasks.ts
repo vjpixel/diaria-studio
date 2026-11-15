@@ -174,8 +174,14 @@ export interface ScheduledTaskDefinition {
    * outra falha segue sem retry. Só para task diária/semanal/mensal cujos
    * passos possam rodar de novo sem efeito duplicado (leitura, sync, alarme):
    * task `interval` já tenta de novo na própria cadência, e o gerador
-   * recusa a combinação. Task que ENVIA (e-mail, conversão) fica fora até a
-   * idempotência dela ser conferida. Default (ausente): sem retry. */
+   * recusa a combinação. Task que ENVIA (e-mail, conversão) só entra com a
+   * idempotência comprovada no próprio script, registrada num comentário na
+   * entrada (decisão do editor 15/11/2026): hoje só `Diaria-Clarice-Novos`
+   * e `-Tarde`. `Diaria-Onboarding-Welcome-Run` e
+   * `Diaria-Google-Ads-Confirmations-Upload` ficam fora: resposta perdida
+   * num POST que saiu pode reenviar (motivo em
+   * `test/transient-network-retry-13017.test.ts`). Default (ausente): sem
+   * retry. */
   retryOnTransientNetwork?: boolean;
   /** Issue(s) de origem, só pra rastreabilidade em docs/erros. */
   issue: string;
@@ -1686,7 +1692,17 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // docstring de `successExitCodes` e de `NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE`
     // em `clarice-novos-run.ts`.
     successExitCodes: [3],
-    issue: "#4347, #4941, #5140, #5445, #5447, #5660, #5743",
+    // #13017 (decisão do editor 15/11/2026: unit que envia só entra com
+    // idempotência comprovada). Conferido em `clarice-novos-run.ts`: todo
+    // exit 1 sai ANTES do POST `sendNow` (ou com ele recusado); POST com rede
+    // caindo depois de um possível aceite, e GET-verify sem resposta, saem 3
+    // (#9699), que é sucesso aqui e nunca reagenda. A rerrodada resolve uma
+    // key nova (`-2`, `-3`) e o grupo `novos` exclui quem a rodada caída já
+    // tinha selecionado (`sent-or-queued.json`, gravado na seleção) e quem já
+    // está em lista com campanha `queued`∪`sent` na Brevo (`guardScope:
+    // "committed"`). Pior caso: a rerrodada sai vazia, sem reenviar.
+    retryOnTransientNetwork: true,
+    issue: "#4347, #4941, #5140, #5445, #5447, #5660, #5743, #13017",
   },
   {
     name: "Diaria-Clarice-Novos-Tarde",
@@ -1773,7 +1789,12 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // disparo INCERTO (POST sendNow aceito, GET-verify não confirmou status
     // terminal), não conta como unit `failed`.
     successExitCodes: [3],
-    issue: "#4347, #4941, #5185, #5410, #5445, #5447, #5660, #5743",
+    // #13017: mesma conferência de idempotência do par das 09:00. As
+    // re-execuções (até ~4h) podem cruzar `Diaria-Clarice-Envio` (19:10):
+    // a partição `isNovos`×`isRampWarm` pelo cutoff (#5410) mantém os dois
+    // grupos disjuntos, como já acontece com uma rodada da tarde lenta.
+    retryOnTransientNetwork: true,
+    issue: "#4347, #4941, #5185, #5410, #5445, #5447, #5660, #5743, #13017",
   },
   {
     name: "Diaria-Clarice-Envio",
