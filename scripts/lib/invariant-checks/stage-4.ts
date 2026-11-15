@@ -4,6 +4,7 @@ import { recentEditionDirs } from "../past-editions-extract.ts"; // #11496
 import { findStudySourceRecurrences, formatStudySourceWarning, STUDY_RECURRENCE_WINDOW_DAYS } from "../study-source-recurrence.ts"; // #11763
 import { findStoryContinuations, formatStoryContinuationWarning, STORY_CONTINUATION_WINDOW_DAYS } from "../story-continuation.ts"; // #11897
 import { contentJaccard, REPEAT_THEME_WARN_THRESHOLD } from "../repeat-theme-check.ts"; // #11517
+import { readPossibleRepeatWarnings, formatPossibleRepeat } from "../secondary-theme-repeat.ts"; // #13143
 import { enumerateEditionDirs } from "../find-current-edition.ts"; // #11496
 /**
  * Invariants de Stage 4 — Publicação (#1007 Fase 1).
@@ -2368,6 +2369,49 @@ export function checkThemeCrossSourceRepeat(editionDir: string): InvariantViolat
 }
 
 /**
+ * #13143: item do pool (RADAR, LANÇAMENTOS, USE MELHOR...) que o passe
+ * secundário do Stage 1 marcou `possible_repeat` (entidade + termo de conteúdo
+ * em comum com item publicado nas últimas edições) e que segue no
+ * `02-reviewed.md` final. Caso 261116: RADAR "Claude transformou planilha em
+ * uma conversa" (StartSe) × destaque de 261113 "Claude agora monta planilhas e
+ * lousas com seu time". O Stage 1 roda em `--no-gates` e este aviso não subia a
+ * lugar nenhum. Severity "warning": desdobramento com fato novo é legítimo, o
+ * editor decide no gate. Item que já tem `same_fact_warnings` fica de fora (um
+ * aviso por item).
+ */
+export function checkSecondaryThemePossibleRepeat(editionDir: string): InvariantViolation[] {
+  const reviewed = resolve(editionDir, "02-reviewed.md");
+  const themeFile = resolve(editionDir, "_internal", "01-highlight-theme-check.json");
+  if (!existsSync(reviewed) || !existsSync(themeFile)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(themeFile, "utf8"));
+  } catch {
+    return [];
+  }
+  const sameFact = (parsed as { same_fact_warnings?: unknown } | null)?.same_fact_warnings;
+  const sameFactUrls = new Set(
+    (Array.isArray(sameFact) ? sameFact : [])
+      .map((w) => (w && typeof w === "object" ? (w as { item_url?: unknown }).item_url : undefined))
+      .filter((u): u is string => typeof u === "string")
+      .map((u) => canonicalize(u)),
+  );
+  const inEdition = new Set(extractUrlsWithLines(readFileSync(reviewed, "utf8")).map(({ url }) => canonicalize(url)));
+  const seen = new Set<string>();
+  const out: InvariantViolation[] = [];
+  for (const w of readPossibleRepeatWarnings(parsed)) {
+    const url = canonicalize(w.item_url);
+    if (!inEdition.has(url) || sameFactUrls.has(url) || seen.has(url)) continue;
+    seen.add(url);
+    out.push({
+      rule: "secondary-theme-possible-repeat", source_issue: "#13143", severity: "warning", file: reviewed,
+      message: formatPossibleRepeat(w),
+    });
+  }
+  return out;
+}
+
+/**
  * #11763: item do `02-reviewed.md` final (destaque ou pool) que é cobertura
  * secundária (imprensa) de um estudo/relatório já publicado nos últimos
  * `STUDY_RECURRENCE_WINDOW_DAYS` dias, com URL e redação novas (caso 261103:
@@ -4589,6 +4633,11 @@ export const STAGE_4_RULES: InvariantRule[] = [
     id: "theme-cross-source-repeat",
     description: "Candidato a destaque com aviso cross-source do passe de tema do Stage 1 (repete tema de destaque recente) que segue no 02-reviewed.md final (warning-only)",
     source_issue: "#11496", stage: 4, run: checkThemeCrossSourceRepeat,
+  },
+  {
+    id: "secondary-theme-possible-repeat",
+    description: "Item do pool que o passe secundário do Stage 1 marcou como possível repetição de tema (entidade + termo de conteúdo em comum com item publicado nas últimas edições) e segue no 02-reviewed.md final (warning-only)",
+    source_issue: "#13143", stage: 4, run: checkSecondaryThemePossibleRepeat,
   },
   {
     id: "study-source-recurrence",

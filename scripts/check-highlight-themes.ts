@@ -125,6 +125,8 @@ import type { PastDestaqueTitle } from "./lib/past-editions-extract.ts";
 import { findSameFactMatches, findSameFactNumberMatches } from "./lib/same-fact-check.ts";
 import { findStudySourceRecurrences, formatStudySourceWarning, STUDY_RECURRENCE_WINDOW_DAYS } from "./lib/study-source-recurrence.ts"; // #11763
 import { readPastStoryItems } from "./lib/invariant-checks/stage-4.ts"; // #11763: itens publicados (02-reviewed.md)
+import type { PastStoryItem } from "./lib/story-twice-in-edition.ts"; // #13143
+import { sharedContentTerms, capitalizedTokens, isGenericTerm } from "./lib/secondary-theme-repeat.ts"; // #13143
 // #2716 item 1: importa a lista canônica de buckets secundários em vez de
 // hardcodar uma cópia local — SECONDARY_BUCKETS de check-secondary-themes.ts é a
 // fonte única (dedup-intra-edition.ts já a consome do mesmo lugar). Ver nota
@@ -947,6 +949,18 @@ export interface SecondaryThemeWarning {
   shared_entities: string[];
   theme_evidence: string;  // "jaccard:0.18" ou "prefix:contra (contratar/contratacoes)"
   jaccard: number;
+  /**
+   * #13143: termos de conteúdo em comum além das entidades compartilhadas
+   * (`sharedContentTerms`, ex.: "planilha/planilhas"). Vazio quando o par só
+   * divide a entidade.
+   */
+  content_terms: string[];
+  /**
+   * #13143: entidade E termo de conteúdo em comum. Sobe ao editor (nota do
+   * Stage 1 + invariante `secondary-theme-possible-repeat` do gate 4). Só
+   * avisa, nunca remove: desdobramento com fato novo continua legítimo.
+   */
+  possible_repeat: boolean;
 }
 
 export interface CheckSecondaryThemesResult {
@@ -1351,6 +1365,17 @@ export function checkFullBodyThemes(
 }
 
 /**
+ * #13143: itens PUBLICADOS das edições passadas (`readPastStoryItems`, lidos de
+ * `02-reviewed.md`) no shape do pool passado do check secundário. Destaque vira
+ * bucket `destaque`; item de seção leva o nome da seção (RADAR, LANÇAMENTOS...).
+ */
+export function publishedAsPastSecondary(items: readonly PastStoryItem[]): PastSecondaryItem[] {
+  return items
+    .filter((it) => it.title.trim())
+    .map((it) => ({ edition: it.aammdd, title: it.title.trim(), bucket: it.highlight ? "destaque" : it.label }));
+}
+
+/**
  * Verifica se itens dos buckets secundários (RADAR/LANÇAMENTOS) da edição corrente
  * repetem uma combinação empresa+sub-tema de itens das edições anteriores.
  *
@@ -1379,12 +1404,14 @@ export function checkSecondaryThemes(
     item: PastSecondaryItem;
     tokens: Set<string>;
     entities: Set<string>;
+    capTokens: Set<string>; // #13143
   }
   const pastIndex: PastSecondaryIndex[] = pastItems
     .map((item) => ({
       item,
       tokens: tokenizeForJaccard(item.title),
       entities: extractSecondaryEntities(item.title),
+      capTokens: capitalizedTokens(item.title),
     }))
     .filter((idx) => idx.tokens.size > 0);
 
@@ -1392,11 +1419,13 @@ export function checkSecondaryThemes(
     const currentTokens = tokenizeForJaccard(current.title);
     if (currentTokens.size === 0) continue;
     const currentEntities = extractSecondaryEntities(current.title);
+    const currentCapTokens = capitalizedTokens(current.title); // #13143
 
     let bestWarning: SecondaryThemeWarning | null = null;
     let bestJaccardRaw = -1; // raw (não-arredondado) p/ comparar best-match sem viés de rounding
+    let bestContentCount = -1;
 
-    for (const { item: past, tokens: pastTokens, entities: pastEntities } of pastIndex) {
+    for (const { item: past, tokens: pastTokens, entities: pastEntities, capTokens: pastCapTokens } of pastIndex) {
       // Sinal 1: entity overlap obrigatório
       const sharedEntities: string[] = [];
       for (const e of currentEntities) {
@@ -1404,23 +1433,39 @@ export function checkSecondaryThemes(
       }
       if (sharedEntities.length === 0) continue;
 
-      // Sinal 2: tema em comum via Jaccard OU prefix match
+      // Sinal 2: tema em comum via Jaccard OU prefix match OU termo de
+      // conteúdo em comum além da entidade (#13143).
       const jaccard = jaccardSimilarity(currentTokens, pastTokens);
+      // Nome próprio nos dois títulos é entidade, não assunto (#13143:
+      // "Claude-maker" × "falso Claude" não é termo de conteúdo).
+      const notContent = new Set(sharedEntities);
+      for (const t of currentCapTokens) if (pastCapTokens.has(t)) notContent.add(t);
+      const contentTerms = sharedContentTerms(currentTokens, pastTokens, notContent);
       const prefixOverlap = jaccard < SECONDARY_JACCARD_THRESHOLD
         ? findPrefixTokenOverlap(currentTokens, pastTokens, SECONDARY_PREFIX_MIN_LEN)
         : null;
 
-      if (jaccard < SECONDARY_JACCARD_THRESHOLD && prefixOverlap === null) continue;
+      if (jaccard < SECONDARY_JACCARD_THRESHOLD && prefixOverlap === null && contentTerms.length === 0) continue;
 
       const themeEvidence = jaccard >= SECONDARY_JACCARD_THRESHOLD
         ? `jaccard:${Math.round(jaccard * 100) / 100}`
-        : `prefix:${prefixOverlap!.prefix} (${prefixOverlap!.tokenA}/${prefixOverlap!.tokenB})`;
+        : prefixOverlap
+          ? `prefix:${prefixOverlap.prefix} (${prefixOverlap.tokenA}/${prefixOverlap.tokenB})`
+          : `content:${contentTerms.join(",")}`;
 
-      // Manter o melhor match (maior Jaccard) por item corrente. Compara o jaccard
-      // RAW (não o campo arredondado) p/ não descartar match marginalmente melhor
-      // quando o anterior arredondou pra cima (ex: 0.177 vs stored 0.18).
-      if (bestWarning === null || jaccard > bestJaccardRaw) {
+      // Melhor match por item corrente (#13143): mais termos de conteúdo em
+      // comum primeiro, jaccard desempata. Só pelo jaccard, o título curto que
+      // divide apenas a entidade vencia ("Introducing Claude Meetings", 0.17)
+      // o par que divide o assunto ("planilha/planilhas", 0.13). Compara o
+      // jaccard RAW (não o campo arredondado) p/ não descartar match
+      // marginalmente melhor quando o anterior arredondou pra cima.
+      if (
+        bestWarning === null ||
+        contentTerms.length > bestContentCount ||
+        (contentTerms.length === bestContentCount && jaccard > bestJaccardRaw)
+      ) {
         bestJaccardRaw = jaccard;
+        bestContentCount = contentTerms.length;
         bestWarning = {
           bucket: current.bucket,
           item_url: current.url,
@@ -1431,6 +1476,9 @@ export function checkSecondaryThemes(
           shared_entities: sharedEntities,
           theme_evidence: themeEvidence,
           jaccard: Math.round(jaccard * 100) / 100,
+          content_terms: contentTerms,
+          // Entidade específica (não "Introducing", "Agentic"...) + termo de conteúdo.
+          possible_repeat: contentTerms.length > 0 && sharedEntities.some((e) => !isGenericTerm(e)),
         };
       }
     }
@@ -1526,9 +1574,17 @@ async function main(): Promise<void> {
   // #10544: mesmo filtro do MESMO FATO abaixo (#10463) — item aprovado no
   // gate 1 mas cortado no cap do Stage 2 ou no gate 4 nunca chegou ao leitor
   // e não pode gerar "SECUNDÁRIO repete tema".
-  const pastSecondary = readPastApprovedSecondary(
-    editionsDir, secondaryWindow, currentEdition, DEFAULT_SECONDARY_BUCKETS, { publishedOnly: true },
-  );
+  const pastSecondary = [
+    ...readPastApprovedSecondary(
+      editionsDir, secondaryWindow, currentEdition, DEFAULT_SECONDARY_BUCKETS, { publishedOnly: true },
+    ),
+    // #13143: + o que saiu de fato (02-reviewed.md), destaques inclusive e com
+    // o título publicado em português — o destaque passado nunca entrava aqui
+    // (caso 261116: RADAR da StartSe sobre o Claude Sheets × D2 de 261113).
+    ...(currentEdition
+      ? publishedAsPastSecondary(readPastStoryItems(editionsDir, currentEdition, secondaryWindow))
+      : []),
+  ];
   const secondaryResult = checkSecondaryThemes(secondaryItems, pastSecondary, secondaryWindow);
 
   if (secondaryResult.secondary_warnings.length > 0) {
@@ -1538,7 +1594,7 @@ async function main(): Promise<void> {
       // suspeito quando o título sozinho é ambíguo (título curto/genérico
       // repetido em buckets diferentes).
       console.error(
-        `[check-highlight-themes] ⚠️  SECUNDÁRIO [${w.bucket}] "${w.item_title}" (${w.item_url}) repete tema de ${w.matched_edition} "${w.matched_title}" (${w.theme_evidence}, entities=[${w.shared_entities.join(",")}])`,
+        `[check-highlight-themes] ⚠️  SECUNDÁRIO [${w.bucket}] "${w.item_title}" (${w.item_url}) repete tema de ${w.matched_edition} "${w.matched_title}" (${w.theme_evidence}, entities=[${w.shared_entities.join(",")}])${w.possible_repeat ? ` 🚨 possível repetição (conteúdo: ${w.content_terms.join(",")})` : ""}`,
       );
     }
   } else {
