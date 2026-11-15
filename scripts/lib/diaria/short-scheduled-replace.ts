@@ -40,8 +40,6 @@ export const REPLACE_MIN_LEAD_MS = 30 * 60_000;
 /** Folga mínima para o envio novo sair AGENDADO (abaixo disso o publisher sairia "na hora": recusado). */
 export const REPLACE_UPLOAD_MIN_LEAD_MS = 10 * 60_000;
 
-export type ShortReplacementKind = "api" | "buffer";
-
 /** ID de post da Buffer no registro (`buffer:{id}`): a mesma regra em todo o fluxo da troca. */
 export const BUFFER_ID_RE = /^buffer:[A-Za-z0-9_-]+$/;
 
