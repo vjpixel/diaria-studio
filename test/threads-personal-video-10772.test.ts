@@ -597,3 +597,26 @@ describe("makeDopplerSet — resolução do binário (#10772, mesma do sync-env 
     assert.equal(s.calls[0].shell, true);
   });
 });
+
+
+it("#13117 resposta usa reply_to_id do vídeo; falha preserva registro e avisa sem reenviar", async () => {
+  for (const fail of [false, true]) {
+    const happy = happyApi({ inProgressPolls: 0 });
+    const f = fakeFetch(c => {
+      if (c.body?.get("media_type") === "TEXT") {
+        assert.equal(c.body.get("reply_to_id"), "m-1");
+        assert.equal(c.body.get("text"), "Vídeo completo: https://youtu.be/AbCdEfGhIjK");
+        return fail ? json({ error: { message: "erro" } }, 400) : json({ id: "reply" });
+      }
+      if (c.url.includes("/reply?fields=status")) return json({ status: "FINISHED" });
+      if (c.body?.get("creation_id") === "reply") return json({ id: "reply-post" });
+      return happy(c);
+    });
+    const out = await publishThreadsProfileVideo({ creds: CREDS, videoUrl: VIDEO, text: "corpo sem link", replyText: "Vídeo completo: https://youtu.be/AbCdEfGhIjK", deps: deps(f.fn) });
+    assert.equal(out.entry.status, "published");
+    assert.equal(out.entry.id, "m-1");
+    assert.equal(f.calls.filter(c => c.body?.get("media_type") === "VIDEO").length, 1);
+    if (fail) assert.match(out.warnings?.join(" ") ?? "", /resposta com horizontal não confirmada/);
+    else assert.equal(out.warnings, undefined);
+  }
+});

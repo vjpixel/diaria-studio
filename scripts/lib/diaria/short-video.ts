@@ -357,13 +357,13 @@ export const INSTAGRAM_REELS_CTA = `${REELS_NEWSLETTER_SENTENCE} Assine pelo lin
  * (páginas e perfil pessoal), `horizontalLink` acrescenta o horizontal da
  * edição depois do gancho; no Instagram é ignorado (o caminho é a bio).
  */
-export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1Input; follow?: string | null; horizontalLink?: string | null }): string {
+export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1Input; follow?: string | null; horizontalLink?: string | null; ctaVertical?: boolean }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
   const cta = input.platform === "instagram" ? INSTAGRAM_REELS_CTA : REELS_NEWSLETTER_SENTENCE;
   // #12735: o horizontal da edição só no Facebook (a legenda do Reels no Instagram não tem link clicável; lá o caminho é a bio).
-  const link = input.platform === "facebook" ? shortHorizontalLinkLine(input.horizontalLink) : "";
+  const link = input.platform === "facebook" ? shortHorizontalLinkLine(input.horizontalLink) : input.ctaVertical ? "Vídeo completo: link na bio" : "";
   // #12465: `follow` = `diariaFollowLine(destino)`, só nas contas pessoais (página VJ Pixel, perfil pessoal).
   const caption = [title, hook, link, cta, input.follow ?? "", SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (input.platform === "instagram" && Array.from(caption).length > INSTAGRAM_CAPTION_MAX_CHARS) {
@@ -383,11 +383,11 @@ export const TIKTOK_TITLE_MAX_CHARS = 90;
  * a legenda do TikTok não tem link clicável e o link da bio ainda não existe
  * (conta pessoal, sem o campo Site). Sem `#Shorts`, que é só do YouTube.
  */
-export function buildTikTokPost(input: { d1: ShortD1Input }): { caption: string; title: string } {
+export function buildTikTokPost(input: { d1: ShortD1Input; ctaVertical?: boolean }): { caption: string; title: string } {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
-  const caption = [title, hook, REELS_NEWSLETTER_SENTENCE, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+  const caption = [title, hook, input.ctaVertical ? "Vídeo completo: link na bio" : "", REELS_NEWSLETTER_SENTENCE, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (Array.from(caption).length > TIKTOK_CAPTION_MAX_CHARS) throw new Error(`legenda do TikTok passou de ${TIKTOK_CAPTION_MAX_CHARS} caracteres`);
   const chars = Array.from(title);
   const shortTitle = chars.length <= TIKTOK_TITLE_MAX_CHARS ? title : `${chars.slice(0, TIKTOK_TITLE_MAX_CHARS - 1).join("").trimEnd()}…`;
@@ -419,7 +419,7 @@ export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
  * do gancho; no X ele nunca é cortado (sai o gancho antes). O Threads ignora
  * o link: lá o caminho é a bio (`shortHorizontalRoute`).
  */
-export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: ShortD1Input; follow?: string | null; horizontalLink?: string | null }): string {
+export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: ShortD1Input; follow?: string | null; horizontalLink?: string | null; ctaVertical?: boolean }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
@@ -431,7 +431,7 @@ export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: S
     if (Array.from(text).length > LINKEDIN_COMMENTARY_MAX_CHARS) throw new Error(`texto do LinkedIn passou de ${LINKEDIN_COMMENTARY_MAX_CHARS} caracteres`);
     return text;
   }
-  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads", follow);
+  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads", [input.ctaVertical ? "Vídeo completo: link na bio" : "", follow].filter(Boolean).join("\n\n"));
   return fitShortText(title, hook, computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, "X", [link, follow].filter(Boolean).join("\n\n"));
 }
 

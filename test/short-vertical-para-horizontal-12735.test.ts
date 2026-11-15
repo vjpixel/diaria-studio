@@ -23,7 +23,7 @@ import {
   shortHorizontalRoute,
 } from "../scripts/lib/diaria/short-video.ts";
 import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-update.ts";
-import { planShortHorizontalLinks, planShortsPublish, readHorizontalVideoForShort } from "../scripts/publish-shorts.ts";
+import { readVerticalCta, planShortHorizontalLinks, planShortsPublish, readHorizontalVideoForShort } from "../scripts/publish-shorts.ts";
 import { computeTwitterWeightedLength, TWITTER_CHAR_LIMIT } from "../scripts/lib/twitter-weight.ts";
 import {
   LATEST_VIDEO_FALLBACK_URL,
@@ -323,4 +323,43 @@ describe("#12735 diar.ia.br/video: registro e redirect", () => {
     assert.equal(res.status, 302);
     assert.deepEqual(counters, {});
   });
+});
+
+
+describe("#13117 chamada falada até o horizontal", () => {
+  it("cta_vertical exige linha na bio e resposta Threads sem URL no corpo", () => {
+    const plan = planShortsPublish({ ...base, horizontalVideo: { recordTitle: "Horizontal", noVideo: false, url: URL_H, ctaVertical: true } });
+    const items = byDest(plan);
+    const ig = planShortsPublish({ ...base, only: ["instagram"], writer: "instagram-timer", horizontalVideo: { recordTitle: "Horizontal", noVideo: false, url: URL_H, ctaVertical: true } });
+    items.instagram = byDest(ig).instagram;
+    for (const id of ["instagram", "tiktok", "threads_profile"]) {
+      const text = items[id].caption ?? items[id].text;
+      assert.match(text, /Vídeo completo: link na bio/, JSON.stringify(items[id]));
+      assert.ok(!text.includes(URL_H));
+      assert.ok(plan.warnings.some(w => w.includes(`${id}: bio NÃO conferida`) && w.includes(`utm_source=${id === "threads_profile" ? "threads" : id}`)));
+    }
+    assert.equal(plan.horizontalLinks?.threads_profile.replyText, `Vídeo completo: ${URL_H}`);
+  });
+
+  it("sem CTA preserva legenda e não planeja resposta; CTA sem horizontal avisa por destino", () => {
+    const old = planShortsPublish({ ...base, horizontalVideo: { recordTitle: null, noVideo: false, url: URL_H } });
+    assert.equal(old.horizontalLinks?.threads_profile.replyText, undefined);
+    assert.doesNotMatch(byDest(old).threads_profile.caption, /Vídeo completo: link na bio/);
+    const missing = planShortsPublish({ ...base, horizontalVideo: { recordTitle: null, noVideo: true, ctaVertical: true } });
+    for (const id of Object.keys(missing.horizontalLinks!)) assert.ok(missing.warnings.some(w => w.startsWith(`${id}: roteiro com cta_vertical`)));
+  });
+});
+
+it("#13117 lê CTA do roteiro e avisa quando não pode conferir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cta-13117-"));
+  try {
+    assert.match(readVerticalCta(dir).roteiroWarning!, /ausente ou ilegível/);
+    mkdirSync(join(dir, "_internal"));
+    for (const [falas, expected] of [[[{ bloco: "comentario", texto: "x" }], false], [[{ bloco: "cta_vertical", texto: "YouTube da diar.ia.br" }], true], [[{ bloco: "cta_vertical", texto: " " }], false]] as const) {
+      writeFileSync(join(dir, "_internal/roteiro-falas.json"), JSON.stringify({ falas }));
+      assert.equal(readVerticalCta(dir).ctaVertical, expected);
+    }
+    writeFileSync(join(dir, "_internal/roteiro-falas.json"), "{inválido");
+    assert.match(readVerticalCta(dir).roteiroWarning!, /ilegível/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

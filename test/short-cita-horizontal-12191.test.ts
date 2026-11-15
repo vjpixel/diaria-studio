@@ -18,7 +18,7 @@ import {
   resolveShortHorizontalTitle,
 } from "../scripts/lib/diaria/short-video.ts";
 import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-update.ts";
-import { planShortsPublish, readHorizontalVideoForShort } from "../scripts/publish-shorts.ts";
+import { readVerticalCta, planShortsPublish, readHorizontalVideoForShort } from "../scripts/publish-shorts.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
 const D1 = {
@@ -122,12 +122,12 @@ describe("#12191 citação do horizontal na descrição do Short", () => {
     const dir = mkdtempSync(join(tmpdir(), "short-12191-"));
     try {
       // #12735: `url` = o 05-video-url.txt (ausente aqui).
-      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null });
+      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null, ...readVerticalCta(dir) });
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(join(dir, "_internal", "05-youtube-published.json"), JSON.stringify({ videoId: "v1", title: " Do registro " }));
-      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: "Do registro", noVideo: false, url: null });
+      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: "Do registro", noVideo: false, url: null, ...readVerticalCta(dir) });
       writeFileSync(join(dir, "_internal", "05-youtube-published.json"), "{nao-json");
-      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null });
+      assert.deepEqual(readHorizontalVideoForShort(dir), { recordTitle: null, noVideo: false, url: null, ...readVerticalCta(dir) });
       writeFileSync(join(dir, "_internal", "no-video.json"), "{}");
       assert.equal(readHorizontalVideoForShort(dir).noVideo, true);
     } finally {

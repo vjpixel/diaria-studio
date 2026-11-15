@@ -632,6 +632,8 @@ export interface ShortHorizontalLinkPlan {
   route: ShortHorizontalRoute;
   link: string | null;
   note: string;
+  /** #13117: resposta ao post do Threads, corpo continua sem URL. */
+  replyText?: string;
 }
 
 /**
@@ -945,7 +947,7 @@ interface ShortsPlanCommonInput {
    * título (`readHorizontalVideoForShort`). Ausente = sem registro e sem
    * marcador de "sem vídeo": cita o título derivado do D1. Ignorado no corte.
    */
-  horizontalVideo?: { recordTitle: string | null; noVideo: boolean; url?: string | null };
+  horizontalVideo?: { recordTitle: string | null; noVideo: boolean; url?: string | null; ctaVertical?: boolean; roteiroWarning?: string };
   editionUrl?: string;
   /** De onde veio o `editionUrl` (só pra premissa). */
   editionUrlSource?: string;
@@ -1074,24 +1076,36 @@ export function corteTimerStaleWarning(delegated: readonly string[], hb: CorteTi
   );
 }
 
+/** #13117: chamada falada do roteiro; leitura sem efeitos externos. */
+export function readVerticalCta(editionDir: string): { ctaVertical?: boolean; roteiroWarning?: string } {
+  try {
+    const raw = JSON.parse(readFileSync(join(editionDir, "_internal/roteiro-falas.json"), "utf8"));
+    if (!Array.isArray(raw.falas)) throw new Error("falas ausentes");
+    return { ctaVertical: raw.falas.some((f: { bloco?: string; texto?: string }) => f?.bloco === "cta_vertical" && typeof f.texto === "string" && f.texto.trim()) };
+  } catch {
+    return { roteiroWarning: "roteiro-falas.json ausente ou ilegível: não foi possível conferir cta_vertical; comportamento anterior preservado (#13117)" };
+  }
+}
+
 /**
  * #12191: o horizontal da edição para a citação na descrição do Short. Lê o
  * título do registro do upload (`_internal/05-youtube-published.json`) e o
  * marcador de edição sem vídeo. Fail-soft: registro ausente ou ilegível vira
  * `recordTitle: null` (a citação cai no título derivado do D1).
  */
-export function readHorizontalVideoForShort(editionDir: string): { recordTitle: string | null; noVideo: boolean; url: string | null } {
+export function readHorizontalVideoForShort(editionDir: string): { recordTitle: string | null; noVideo: boolean; url: string | null; ctaVertical?: boolean; roteiroWarning?: string } {
+  const roteiro = readVerticalCta(editionDir);
   const noVideo = isNoVideoEdition(editionDir);
   const url = noVideo ? null : readHorizontalUrlForShort(editionDir);
   const recordPath = join(editionDir, YOUTUBE_PUBLISHED_FILE);
-  if (!existsSync(recordPath)) return { recordTitle: null, noVideo, url };
+  if (!existsSync(recordPath)) return { recordTitle: null, noVideo, url, ...roteiro };
   try {
     const raw = JSON.parse(readFileSync(recordPath, "utf8")) as { title?: unknown } | null;
     const title = raw && typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : null;
-    return { recordTitle: title, noVideo, url };
+    return { recordTitle: title, noVideo, url, ...roteiro };
   } catch {
     console.error(`[aviso] ${recordPath} ilegível — o Short cita o título do horizontal derivado do D1 (#12191)`);
-    return { recordTitle: null, noVideo, url };
+    return { recordTitle: null, noVideo, url, ...roteiro };
   }
 }
 
@@ -1150,6 +1164,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   }
   const youtube = buildYouTubeShortMetadata({ d1: d1In, horizontalTitle });
   // #12735: o horizontal DA edição na legenda das redes que aceitam link (LinkedIn, X, Facebook). Nunca no corte.
+  const ctaVertical = !corte && input.horizontalVideo?.ctaVertical === true;
+  if (!corte && input.horizontalVideo?.roteiroWarning) warnings.push(input.horizontalVideo.roteiroWarning);
   const horizontalLink = corte || input.horizontalVideo?.noVideo ? null : (input.horizontalVideo?.url ?? null);
 
   // #10831: o vertical tem horário próprio (nunca as 06:00 do horizontal).
@@ -1321,7 +1337,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       platform,
       d1: d1In,
       follow: diariaFollowLine(platform === "linkedin" ? "linkedin_profile" : platform === "threads" ? "threads_profile" : "x", cfg.diariaProfiles),
-      horizontalLink, // #12735: ignorado no Threads
+      horizontalLink, ctaVertical, // #13117: Threads aponta para a bio
     });
 
   // #10772 F4: a Posts API do LinkedIn não agenda — o vídeo sai quando a rodada
@@ -1528,7 +1544,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       }
       let post: { caption: string; title: string };
       try {
-        post = buildTikTokPost({ d1: d1In });
+        post = buildTikTokPost({ d1: d1In, ctaVertical });
       } catch (e) {
         warnings.push(`tiktok: ${(e as Error).message}`);
         return { destination: dest.id, mode: "guided", action: "skip_invalid", detail: (e as Error).message };
@@ -1638,7 +1654,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       warnings.push(`instagram: ${detail}`);
       let caption: string | undefined;
       try {
-        caption = buildReelsCaption({ platform: "instagram", d1: d1In });
+        caption = buildReelsCaption({ platform: "instagram", d1: d1In, ctaVertical });
       } catch (e) {
         warnings.push(`instagram: ${(e as Error).message}`);
       }
@@ -1655,7 +1671,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }
     let caption: string;
     try {
-      caption = buildReelsCaption({ platform: "instagram", d1: d1In });
+      caption = buildReelsCaption({ platform: "instagram", d1: d1In, ctaVertical });
     } catch (e) {
       // Legenda grande demais só derruba o Instagram, não os outros destinos.
       warnings.push(`instagram: ${(e as Error).message}`);
@@ -1758,6 +1774,19 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const destinationTimes = Object.fromEntries(destinations.map((d) => [d.id, timeFor(d.id)]));
   // #12735: o dry-run mostra, por destino, o link do horizontal que o vertical usa.
   const horizontalLinks = corte ? undefined : planShortHorizontalLinks(destinations.map((d) => d.id), horizontalLink, input.horizontalVideo?.noVideo ?? false);
+  if (horizontalLinks && ctaVertical) {
+    for (const [id, h] of Object.entries(horizontalLinks)) {
+      if (h.route === "bio") {
+        h.note += "; legenda obrigatória: Vídeo completo: link na bio";
+        warnings.push(`${id}: bio NÃO conferida. Abra o perfil usado para publicar, confira o campo Site com ${h.link}, toque no link e confirme que abre o horizontal desta edição. Se o campo Site não existir (TikTok), habilite-o antes de confiar na chamada (#13117).`);
+      }
+      if (!horizontalLink) warnings.push(`${id}: roteiro com cta_vertical, mas falta horizontal desta edição (${D1_VIDEO_URL_FILE}); confira também o vídeo relacionado do Short (#13117)`);
+      if (id === "threads_profile") {
+        h.note += `; resposta ao próprio post: ${horizontalLink ?? "FALTA LINK DO HORIZONTAL"}`;
+        if (horizontalLink) h.replyText = `Vídeo completo: ${horizontalLink}`;
+      }
+    }
+  }
   if (horizontalLinks) {
     // Prefixo próprio: premissas que começam com `{destino}:` são as de horário (testes do #10772/#10907 as distinguem assim).
     for (const [id, h] of Object.entries(horizontalLinks)) premises.push(`caminho até o horizontal (${id}): ${h.route}${h.link ? ` ${h.link}` : ""} — ${h.note} (#12735)`);
@@ -6516,6 +6545,7 @@ async function mainUnlocked(): Promise<number> {
             clearSending();
             results.push({ destination: item.destination, ok: true, entry: pre.entry, alreadyRegistered: true });
             console.error(`[aviso] threads_profile: o vídeo da edição já está no perfil (${pre.entry.url ?? pre.entry.id}) — registrado, não publica de novo`);
+            if (plan.horizontalLinks?.threads_profile?.replyText) console.error(`[aviso] Threads: confira se o post existente tem a resposta "${plan.horizontalLinks.threads_profile.replyText}"; complete à mão se faltar (#13117).`);
             continue;
           }
         }
@@ -6523,6 +6553,7 @@ async function mainUnlocked(): Promise<number> {
           creds: threadsCreds.creds,
           videoUrl: await uploadVideo(),
           text: item.caption,
+          replyText: plan.horizontalLinks?.threads_profile?.replyText,
           deps: { now: () => new Date() },
         });
       } else if (item.destination === "instagram") {
