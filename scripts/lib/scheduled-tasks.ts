@@ -2386,7 +2386,24 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     name: "Diaria-Google-Keyword-Monthly-Pull",
     failover: "catchup",
     description: "pull mensal de demanda de busca do Google (Ads Keyword Planner, volume BR)",
-    steps: [{ key: "keywords", script: "scripts/google-keyword-pull.ts" }],
+    // #13090 item 1: depois do pull geral, o das sementes de vídeo e o
+    // relatório de pauta perene de vídeo. Os dois são best-effort: falha
+    // neles não reprova o pull de `seed/keywords.csv`, que alimenta o
+    // discovery do Stage 1 (#8370).
+    steps: [
+      { key: "keywords", script: "scripts/google-keyword-pull.ts" },
+      {
+        key: "video-keywords",
+        script: "scripts/google-keyword-pull.ts",
+        args: [
+          "--seeds-file", "seed/video-keywords.csv",
+          "--out", "data/seo/video-keywords-{date}.json",
+          "--report-out", "data/seo/video-keywords-{date}.md",
+        ],
+        bestEffort: true,
+      },
+      { key: "pauta-video", script: "scripts/video-pauta-report.ts", bestEffort: true },
+    ],
     logPath: "seo/.google-keyword-monthly-pull.log",
     // Dia 1, 09:30 BRT -- meia hora depois do Bing-Seo-Monthly-Pull (09:00),
     // mesma janela mensal sem disputar processo com ele. Volume de busca e
