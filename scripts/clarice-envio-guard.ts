@@ -127,7 +127,6 @@
  * @see scripts/clarice-reapply-scheduled-html.ts (setCampaignStatus, reusado aqui)
  * @see scripts/lib/clarice-envio-last-brake.ts (sidecar do último freio conhecido)
  */
-import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
@@ -138,6 +137,7 @@ import { acquireEnvioLock, releaseEnvioLock, LockHeldError } from "./lib/clarice
 import { computeExpectedEnvioCycle } from "./lib/clarice-envio-cycle.ts";
 import { clariceSegmentsDir } from "./lib/clarice-paths.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { readGroupCampaignsTracked, writeGroupCampaignsMerged } from "./lib/clarice-group-campaigns-store.ts"; // #13135
 import { setCampaignStatus } from "./clarice-reapply-scheduled-html.ts";
 import type { CampaignEntry } from "./clarice-schedule-group.ts";
 import { clearScheduleAcceptance } from "./lib/clarice-quero-phrase.ts"; // #10211
@@ -321,9 +321,9 @@ export function findPendingWavesToday(
  */
 function readCampaignEntries(rootDir: string, cycle: string, onInvalid: (msg: string) => void): CampaignEntry[] {
   const p = resolve(clariceSegmentsDir(cycle, resolve(rootDir, "data", "clarice-subscribers")), "group-campaigns.json");
-  if (!existsSync(p)) return [];
   try {
-    return JSON.parse(readFileSync(p, "utf8")) as CampaignEntry[];
+    // #13135: leitura rastreada — guarda o retrato que a escrita mesclada usa.
+    return readGroupCampaignsTracked<CampaignEntry>(p);
   } catch (e) {
     onInvalid(
       `⚠️  ${p} existe mas não deu pra ler/parsear (${(e as Error).message}) — tratando como SEM entradas, ` +
@@ -334,9 +334,20 @@ function readCampaignEntries(rootDir: string, cycle: string, onInvalid: (msg: st
   }
 }
 
-function writeCampaignEntries(rootDir: string, cycle: string, entries: CampaignEntry[]): void {
+/**
+ * #13135: mesmo writer mesclado do `clarice-schedule-group.ts` (#13098) —
+ * relê o disco sob trava e só aplica as entradas que o guard mudou, para não
+ * apagar uma entrada que outra invocação gravou enquanto os PUTs de
+ * suspensão estavam em curso.
+ */
+function writeCampaignEntries(
+  rootDir: string,
+  cycle: string,
+  entries: CampaignEntry[],
+  logFn: (msg: string) => void,
+): void {
   const p = resolve(clariceSegmentsDir(cycle, resolve(rootDir, "data", "clarice-subscribers")), "group-campaigns.json");
-  writeFileAtomic(p, JSON.stringify(entries, null, 2));
+  writeGroupCampaignsMerged(p, JSON.stringify(entries, null, 2), logFn);
 }
 
 /**
@@ -449,7 +460,20 @@ async function cancelPendingWaves(
       }
     }
   }
-  if (anySucceeded) writeCampaignEntries(deps.rootDir, cycle, entries);
+  if (anySucceeded) {
+    // #13135: a escrita mesclada relê o disco sob trava e pode lançar (trava
+    // presa além do timeout, arquivo corrompido entre a leitura e a escrita).
+    // As suspensões já aconteceram na Brevo — o resultado delas não depende do
+    // registro local, então a falha vira aviso no relatório, nunca exceção.
+    try {
+      writeCampaignEntries(deps.rootDir, cycle, entries, (msg) => report.note(msg));
+    } catch (e) {
+      report.note(
+        `⚠️  suspensões feitas na Brevo, mas o registro local (group-campaigns.json) não foi atualizado: ` +
+          `${(e as Error).message}. Conferir o status das ondas no painel antes da próxima rodada.`,
+      );
+    }
+  }
   return { allConfirmed, anyIpBlocked };
 }
 
