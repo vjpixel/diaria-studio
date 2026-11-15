@@ -722,6 +722,19 @@ standalone, uma escrita na âncora pelo mesmo motivo; uma linha por issue,
 `exit 1` se alguma não estava reivindicada por esta sessão (as outras saem
 liberadas mesmo assim). Nunca N `unclaim-issue --issue` seguidos.
 
+**Claim que atravessa máquina (#13154):** o registro vive em `data/sessions/`
+e só chega à outra máquina quando o sync replica. Na rodada 261115c o
+overnight do `300` viu `claimed: false` para issues que a sessão develop do
+Neo tinha reivindicado 17 min antes e despachou um lote duplicado (PR #13139).
+Por isso, logo depois do `claim-issue` e imediatamente antes do dispatch, o
+coordenador roda `npx tsx scripts/check-pre-dispatch-claim.ts --issues A,B,C
+--session-id {id} --kind {kind} --announce` (standalone): reconfere
+`is-claimed`, PR aberta (mesma lógica do item 28) e o marcador de claim
+gravado como comentário na issue (`scripts/lib/github-claim-marker.ts`), e
+grava o marcador desta sessão nas livres. `exit 1` = ocupada (`reasons`
+diz por quem), `exit 2` = não verificável (nunca tratar como livre). Ao soltar,
+`--release` junto do `unclaim-issue`.
+
 ## 19. Nunca montar corpo de issue/PR via `printf`/`echo -e` (#6004)
 
 `printf` do Bash trata `%` como format specifier no primeiro argumento — um
