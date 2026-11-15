@@ -36,7 +36,12 @@ import { fileURLToPath } from "node:url";
 import { findUnknownFlags, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { getScheduledTaskByName, SCHEDULED_TASKS, type ScheduledTaskDefinition } from "./lib/scheduled-tasks.ts";
 import { assertSupportedNodeVersion } from "./lib/check-node-version.ts";
-import { diffInstalledUnits, resolveSystemdNodeBinary, type SystemdNodeBinary } from "./lib/systemd-node-binary.ts";
+import {
+  diffInstalledUnits,
+  resolveSystemdNodeBinary,
+  type InstalledUnitDiff,
+  type SystemdNodeBinary,
+} from "./lib/systemd-node-binary.ts";
 import { resolveNodeVersionForPath } from "./lib/systemd-node-floor-guard.ts";
 import { systemdUserUnitDir } from "./lib/systemd-unit-exit-guard.ts";
 import { buildSystemdUnitFiles } from "./lib/systemd-units.ts";
@@ -202,6 +207,35 @@ ${SETUP_USAGE}`);
 }
 
 /**
+ * Gera em memória as units de `tasks` e compara cada uma com a instalada de
+ * mesmo nome em `installedDirAbs`. Lança se a pasta não é legível (nada
+ * verificado). Compartilhado por `runDiffInstalled` e pelo alarme agendado
+ * `scripts/systemd-units-drift-alarm.ts` (#13152).
+ */
+export function collectInstalledUnitDiffs(
+  tasks: ScheduledTaskDefinition[],
+  repoRootAbs: string,
+  nodeBin: string,
+  installedDirAbs: string,
+): InstalledUnitDiff[] {
+  readdirSync(installedDirAbs);
+  const generated = tasks.flatMap((task) => {
+    const f = buildSystemdUnitFiles(task, repoRootAbs, nodeBin);
+    return [
+      { fileName: f.serviceFileName, content: f.serviceContent },
+      { fileName: f.timerFileName, content: f.timerContent },
+    ];
+  });
+  return diffInstalledUnits(generated, (fileName) => {
+    try {
+      return readFileSync(join(installedDirAbs, fileName), "utf8");
+    } catch {
+      return null;
+    }
+  });
+}
+
+/**
  * `--diff-installed` (#13136 item 2): gera em memória e compara com as units
  * instaladas. Nunca escreve nem chama `systemctl`. Unit não instalada é
  * informativa (task pode não estar armada nesta máquina), não divergência.
@@ -212,26 +246,13 @@ export function runDiffInstalled(
   nodeBin: string,
   installedDirAbs: string,
 ): number {
+  let diffs: InstalledUnitDiff[];
   try {
-    readdirSync(installedDirAbs);
+    diffs = collectInstalledUnitDiffs(tasks, repoRootAbs, nodeBin, installedDirAbs);
   } catch (e) {
     console.error(`não foi possível ler "${installedDirAbs}": ${(e as Error).message} — nada verificado.`);
     return 2;
   }
-  const generated = tasks.flatMap((task) => {
-    const f = buildSystemdUnitFiles(task, repoRootAbs, nodeBin);
-    return [
-      { fileName: f.serviceFileName, content: f.serviceContent },
-      { fileName: f.timerFileName, content: f.timerContent },
-    ];
-  });
-  const diffs = diffInstalledUnits(generated, (fileName) => {
-    try {
-      return readFileSync(join(installedDirAbs, fileName), "utf8");
-    } catch {
-      return null;
-    }
-  });
   const differs = diffs.filter((d) => d.status === "differs");
   const notInstalled = diffs.filter((d) => d.status === "not-installed");
   const same = diffs.length - differs.length - notInstalled.length;

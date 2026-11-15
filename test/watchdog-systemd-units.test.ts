@@ -15,7 +15,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,8 @@ import {
   WATCHDOG_UNIT_NAME,
 } from "../scripts/lib/watchdog-systemd-units.ts";
 import { unitBaseName } from "../scripts/lib/systemd-units.ts";
+import { resolveSystemdNodeBinary } from "../scripts/lib/systemd-node-binary.ts";
+import type { CheckedNodeBinaryDeps } from "../scripts/lib/systemd-node-binary-checked.ts";
 import { WATCHDOG_TASK_NAME } from "../scripts/lib/check-watchdog-armed.ts";
 import {
   generateWatchdogSystemdUnits,
@@ -32,6 +34,24 @@ import {
 } from "../scripts/overnight/setup-watchdog-schedule-systemd.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+
+// #13151: resolução do node do ExecStart determinística nos testes do CLI —
+// nunca o nvm/node real da máquina que roda a suíte.
+const SSH_RESOLVE = {
+  env: {},
+  homeDir: "/home/x",
+  execPath: "/usr/bin/node",
+  processVersion: "v20.20.2",
+  readNvmrc: () => "24\n",
+  listNvmVersions: () => ["v22.11.0", "v24.19.0"],
+  fileExists: (p: string) => p === "/home/x/.nvm/versions/node/v24.19.0/bin/node",
+};
+const SSH_DEPS: CheckedNodeBinaryDeps = {
+  resolveNodeBinary: (o) => resolveSystemdNodeBinary({ ...SSH_RESOLVE, override: o }),
+  resolveVersion: () => "v24.19.0",
+};
+const NVM_DEPS = SSH_DEPS;
 
 describe("WATCHDOG_UNIT_NAME (#4857)", () => {
   it("bate com unitBaseName(WATCHDOG_TASK_NAME) — nunca diverge em silêncio do literal fixado", () => {
@@ -146,6 +166,14 @@ describe("buildWatchdogSystemdUnitFiles (#4857)", () => {
   it("nunca emite uma chave 'Timezone=' separada — não existe em systemd.timer", () => {
     assert.doesNotMatch(files.timerContent, /^Timezone=/m);
   });
+
+  it("nodeBin explícito vai literal no ExecStart= (#13151)", () => {
+    const custom = buildWatchdogSystemdUnitFiles(repoRootAbs, "/home/x/.nvm/versions/node/v24.19.0/bin/node");
+    assert.match(
+      custom.serviceContent,
+      /^ExecStart=\/home\/x\/\.nvm\/versions\/node\/v24\.19\.0\/bin\/node --import tsx \/home\/editor\/diaria-studio\/scripts\/overnight-watchdog\.ts$/m,
+    );
+  });
 });
 
 describe("generateWatchdogSystemdUnits — escreve arquivos em disco, nunca chama systemctl", () => {
@@ -181,7 +209,7 @@ describe("setup-watchdog-schedule-systemd.ts main() — CLI", () => {
     console.log = () => {};
     let code: number;
     try {
-      code = setupWatchdogSystemdMain([], outDir);
+      code = setupWatchdogSystemdMain([], outDir, NVM_DEPS);
     } finally {
       console.log = originalLog;
     }
@@ -197,7 +225,7 @@ describe("setup-watchdog-schedule-systemd.ts main() — CLI", () => {
     console.log = () => {};
     let code: number;
     try {
-      code = setupWatchdogSystemdMain(["--out-dir", "custom-units"], base);
+      code = setupWatchdogSystemdMain(["--out-dir", "custom-units"], base, NVM_DEPS);
     } finally {
       console.log = originalLog;
     }
@@ -206,49 +234,75 @@ describe("setup-watchdog-schedule-systemd.ts main() — CLI", () => {
     assert.deepEqual(entries, ["diaria-overnight-watchdog.service", "diaria-overnight-watchdog.timer"]);
   });
 
-  // #4857 reconciliação 260810: ExecStart= baka process.execPath — Node do
-  // shell que gerou o unit, não um valor descoberto/pinado. Achado ao vivo
-  // nesta máquina: um shell sem `~/.local/node/bin` no PATH gera com o Node
-  // 20.20.2 do sistema (mesmo binário do incidente #4823) em vez do Node 24
-  // do `.nvmrc` já armado manualmente. main() nunca BLOQUEIA nesse caso
-  // (fail-soft) — só avisa alto em stderr antes do editor copiar pra
-  // ~/.config/systemd/user/.
-  it("Node do shell abaixo do mínimo do projeto -> ainda retorna 0, mas avisa em console.warn", () => {
-    outDir = mkdtempSync(join(tmpdir(), "watchdog-systemd-cli-oldnode-"));
+  // #13151: o node do ExecStart vem do nvm do `.nvmrc`, nunca do processo
+  // que gerou. Antes, `process.execPath` ia direto pro unit e o CLI só avisava
+  // quando ele estava abaixo do piso (pelo ssh, `/usr/bin/node`).
+  it("cenário ssh (processo em /usr/bin/node v20, nvm com v24) -> ExecStart usa o node do nvm (#13151)", () => {
+    outDir = mkdtempSync(join(tmpdir(), "watchdog-systemd-cli-ssh-"));
     const originalLog = console.log;
-    const originalWarn = console.warn;
     console.log = () => {};
-    const warnCalls: string[] = [];
-    console.warn = (msg: string) => warnCalls.push(msg);
     let code: number;
     try {
-      code = setupWatchdogSystemdMain([], outDir, "v20.20.2");
+      code = setupWatchdogSystemdMain([], outDir, SSH_DEPS);
     } finally {
       console.log = originalLog;
-      console.warn = originalWarn;
     }
     assert.equal(code, 0);
-    assert.equal(warnCalls.length, 1);
-    assert.match(warnCalls[0], /Node.*20\.20\.2/);
-    assert.match(warnCalls[0], /EMBUTIDO/);
+    const service = readFileSync(join(outDir, ".systemd-units", "diaria-overnight-watchdog.service"), "utf8");
+    assert.match(service, /^ExecStart=\/home\/x\/\.nvm\/versions\/node\/v24\.19\.0\/bin\/node --import tsx /m);
+    assert.doesNotMatch(service, /\/usr\/bin\/node/);
   });
 
-  it("Node do shell no mínimo do projeto (ou acima) -> nenhum aviso emitido", () => {
-    outDir = mkdtempSync(join(tmpdir(), "watchdog-systemd-cli-okvernode-"));
+  it("--node-bin <path absoluto> vence o nvm (#13151)", () => {
+    outDir = mkdtempSync(join(tmpdir(), "watchdog-systemd-cli-override-"));
     const originalLog = console.log;
-    const originalWarn = console.warn;
     console.log = () => {};
-    const warnCalls: string[] = [];
-    console.warn = (msg: string) => warnCalls.push(msg);
     let code: number;
     try {
-      code = setupWatchdogSystemdMain([], outDir, "v24.19.0");
+      code = setupWatchdogSystemdMain(["--node-bin", "/opt/node24/bin/node"], outDir, {
+        resolveNodeBinary: (o) =>
+          resolveSystemdNodeBinary({ ...SSH_RESOLVE, override: o, fileExists: (p) => p === "/opt/node24/bin/node" }),
+        resolveVersion: () => "v24.19.0",
+      });
     } finally {
       console.log = originalLog;
-      console.warn = originalWarn;
     }
     assert.equal(code, 0);
-    assert.equal(warnCalls.length, 0);
+    const service = readFileSync(join(outDir, ".systemd-units", "diaria-overnight-watchdog.service"), "utf8");
+    assert.match(service, /^ExecStart=\/opt\/node24\/bin\/node --import tsx /m);
+  });
+
+  it("nenhum node casa com o .nvmrc -> exit 1 e nada gerado (#13151)", () => {
+    outDir = mkdtempSync(join(tmpdir(), "watchdog-systemd-cli-nonode-"));
+    const originalError = console.error;
+    const errors: string[] = [];
+    console.error = (msg: string) => errors.push(msg);
+    let code: number;
+    try {
+      code = setupWatchdogSystemdMain([], outDir, {
+        resolveNodeBinary: (o) => resolveSystemdNodeBinary({ ...SSH_RESOLVE, override: o, listNvmVersions: () => [] }),
+        resolveVersion: () => "v20.20.2",
+      });
+    } finally {
+      console.error = originalError;
+    }
+    assert.equal(code, 1);
+    assert.match(errors.join("\n"), /\.nvmrc/);
+    assert.equal(existsSync(join(outDir, ".systemd-units")), false);
+  });
+
+  it("node resolvido abaixo do piso do projeto -> exit 1 (antes: só aviso)", () => {
+    outDir = mkdtempSync(join(tmpdir(), "watchdog-systemd-cli-oldnode-"));
+    const originalError = console.error;
+    console.error = () => {};
+    let code: number;
+    try {
+      code = setupWatchdogSystemdMain([], outDir, { ...NVM_DEPS, resolveVersion: () => "v20.20.2" });
+    } finally {
+      console.error = originalError;
+    }
+    assert.equal(code, 1);
+    assert.equal(existsSync(join(outDir, ".systemd-units")), false);
   });
 });
 
