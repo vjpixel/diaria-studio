@@ -3441,6 +3441,63 @@ export function pickXmlVersion(existing: ReadonlyArray<{ version: number; hash: 
   return top.hash !== null && top.hash === planHash.slice(0, 8) ? top.version : top.version + 1;
 }
 
+/** Um texto de tela proposto (#13140): marcador da sequência, em quadros dela. */
+export interface TelaMarker {
+  /** Id da fala no roteiro. */
+  id: string;
+  tela: string;
+  in: number;
+  out: number;
+}
+
+/** Itens de até tantas palavras só casam com a fala inteira: um "Sim." não pode pegar o texto de tela de outra fala. */
+const TELA_MIN_TOKENS_TRECHO = 3;
+
+/**
+ * Pure (#13140): onde cada fala com `tela` no roteiro cai nesta sequência,
+ * para o `build` pôr o texto como marcador no XML (o editor ajusta a faixa de
+ * texto no Premiere). O item do `blocks.json` casa com a fala pelo texto (a
+ * fala inteira, ou um trecho dela com 3+ palavras: o corte parcial do #13129
+ * vira os trechos que sobram); o tempo sai dos clipes que cobrem o intervalo do
+ * item no bruto, já com os cortes de pausa. Fala sem item nesta versão fica fora.
+ */
+export function telaMarkersFor(
+  plan: Pick<SequencePlan, "spec" | "clips">,
+  resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
+  fps: number,
+  telas: ReadonlyArray<{ id: string; texto: string; tela: string }>,
+): TelaMarker[] {
+  const norm = (t: string) => tokenize(t).join(" ");
+  const items = plan.spec.order.flatMap((b) => (resolved[b] ?? []).filter((it) => itemInTarget(it, plan.spec)));
+  const out: TelaMarker[] = [];
+  for (const t of telas) {
+    const fala = norm(t.texto);
+    if (!fala) continue;
+    const meus = items.filter((it) => {
+      const x = norm(it.text);
+      if (!x) return false;
+      if (x === fala) return true;
+      return x.split(" ").length >= TELA_MIN_TOKENS_TRECHO && ` ${fala} `.includes(` ${x} `);
+    });
+    let inF = Infinity;
+    let outF = -Infinity;
+    for (const it of meus) {
+      for (const c of plan.clips) {
+        if (c.srcOut <= it.interval.start || c.srcIn >= it.interval.end) continue;
+        inF = Math.min(inF, c.seqStart + Math.round(Math.max(0, it.interval.start - c.srcIn) * fps));
+        outF = Math.max(outF, c.seqEnd - Math.round(Math.max(0, c.srcOut - it.interval.end) * fps));
+      }
+    }
+    if (Number.isFinite(inF) && outF > inF) out.push({ id: t.id, tela: t.tela, in: inF, out: outF });
+  }
+  return out.sort((a, b) => a.in - b.in);
+}
+
+/** Os marcadores de tela no `<sequence>` (#13140): nome "tela {id}", o texto proposto no comentário. */
+export function telaMarkersXml(markers: readonly TelaMarker[]): string {
+  return markers.map((m) => `<marker><name>${escapeXml(`tela ${m.id}`)}</name><comment>${escapeXml(m.tela)}</comment><in>${m.in}</in><out>${m.out}</out></marker>\n`).join("");
+}
+
 /**
  * XML FCP7 (xmeml v4) com uma sequência por plano, importável no Premiere
  * (estrutura da 261027, que importou). Um `<file>` só (o bruto), definido no
@@ -3498,6 +3555,12 @@ export function buildXmeml(
      * `frames`. Ausente (ou sem a chave) = sequência sem a capa.
      */
     capaInicio?: Readonly<Record<string, CapaInicioAsset>> | null;
+    /**
+     * #13140: os textos de tela do roteiro de cada sequência (chave =
+     * `sequenceKey`), como marcadores do `<sequence>` no tempo da fala, para o
+     * editor pôr a faixa de texto no Premiere. Ausente (ou sem a chave) = sem marcador.
+     */
+    telaMarkers?: Readonly<Record<string, readonly TelaMarker[]>> | null;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
@@ -3668,6 +3731,7 @@ export function buildXmeml(
     out.push(
       `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames + (card?.frames ?? 0)}</duration>\n` +
         `${rate}\n` +
+        telaMarkersXml(opts.telaMarkers?.[sequenceKey(spec)] ?? []) +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
         `${bgTrack}<track>${v.join("\n")}</track>${titleTrack}${vin.video}${capaTrack}</video>\n` +
         `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track>${vin.audio}</audio></media></sequence>`,
