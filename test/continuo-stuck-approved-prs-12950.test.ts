@@ -119,6 +119,8 @@ describe("#12950 item 2 — causa mecânica vai ao fixer sem esperar 6h/24h", ()
         action: "escalate", reason: "CI",
         details: { checksVerdict: prs.find((x) => x.number === n)!.checksVerdict, mergeable: "MERGEABLE", retidoParaEditor: { retido: false }, sessionClaims: { ok: true } },
       }),
+      lastCommitAt: () => null,
+      issueClaimed: () => ({ status: "free" }),
       redundant: () => false,
       issueState: () => ({ state: "OPEN" }),
       reopenIssue: () => { throw new Error("não deveria reabrir"); },

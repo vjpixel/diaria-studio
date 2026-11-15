@@ -300,7 +300,7 @@ describe("destino da escalada vencida (#12765)", () => {
     for (const v of ["fail", "pending", "blocked_by_conflict"]) assert.equal(d({ checksVerdict: v }), "fixer", v);
     // `error` = checks ilegíveis: briefing, nunca fixer (#12804).
     assert.equal(d({ checksVerdict: "error" }), "briefing");
-    assert.equal(d({ mergeStateStatus: "DIRTY", labels: ["continuo-ci-fix-tentado"] }), "fechar-reabrir-issue");
+    assert.equal(d({ mergeStateStatus: "DIRTY", labels: ["continuo-ci-fix-tentado"], fixTriedAgeMs: 7 * 3600_000 }), "fechar-reabrir-issue");
     assert.equal(d({ checksVerdict: "fail", labels: ["continuo-ci-fix-tentado"], issue: null }), "briefing");
   });
 
@@ -341,7 +341,12 @@ describe("runEscalationQueue --apply (#12765)", () => {
     const calls: string[] = [];
     const d: QueueDeps = {
       listPrs: () => prs,
-      events: () => [{ event: "labeled", label: { name: "continuo-escalado" }, created_at: since }],
+      events: () => [
+        { event: "labeled", label: { name: "continuo-escalado" }, created_at: since },
+        { event: "labeled", label: { name: "continuo-ci-fix-tentado" }, created_at: since },
+      ],
+      lastCommitAt: () => null,
+      issueClaimed: () => ({ status: "free" }),
       gate: () => ({ action: "escalate", reason: "x", details: { checksVerdict: "pass", mergeable: "MERGEABLE", retidoParaEditor: { retido: false }, sessionClaims: { ok: true } } }),
       redundant: () => false,
       issueState: () => ({ state: "CLOSED", stateReason: "COMPLETED" }),

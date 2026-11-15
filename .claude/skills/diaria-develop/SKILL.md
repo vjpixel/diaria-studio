@@ -54,7 +54,8 @@ nunca uma razão reescrita só para passar no regex.
 No briefing inicial, rodar `npx tsx scripts/list-continuo-escalation-queue.ts --all-open`
 (#13094): triagem de TODA PR aberta, não só das escaladas do contínuo. Cada
 item de `queue` é uma PR escalada (`kind: escalada`) ou só aberta
-(`kind: aberta`, relógio = idade da PR) há mais de 6h: apresentar URL, `lane`,
+(`kind: aberta`, relógio = última atividade: o maior entre a criação, o último
+commit e a label `continuo-ci-fix-tentado`) há mais de 6h: apresentar URL, `lane`,
 `since`, `destination` e `reason` como pendência explícita do editor, dono da fila
 `briefing overnight/develop`, e registrar destino e decisão no plano/relatório.
 Fila vazia dispensa esta seção; erro do comando é bloqueio de leitura da fila,
@@ -63,14 +64,19 @@ transitória resolvida: revalidar os gates normais antes de qualquer ação.
 Draft, `bloqueio-execucao` e retenção para editor continuam bloqueados até
 liberação explícita; o briefing nunca promove draft automaticamente.
 `lane: manual` (branch fora de `overnight/`, `develop/`, `continuo/`: do editor
-ou de autor desconhecido) só recebe `briefing` ou `fixer`, nunca fechamento
-automático. Item com `claimed: true` (reivindicado por sessão viva) é só
-informação: não despachar nada para ele. PRs de bot saem em `skipped`.
+ou de autor desconhecido) só recebe `briefing` ou `fixer` (este só passadas
+6h), nunca fechamento automático. Item com `claimed: true` (issue do corpo ou
+da branch reivindicada por sessão viva) é só informação: não despachar nada
+para ele. `claims_check: "failed"` = registro ou corpo ilegível, não claim:
+o item fica em `briefing` e o `claim_reason` diz o que falhou. PRs de bot
+saem em `skipped`.
 
 **Prazo de validade de 24h (#12765; era 48h até o #13094).** Cada item traz
 `expired` e `destination`. Passadas 24h, rodar
 `npx tsx scripts/list-continuo-escalation-queue.ts --all-open --apply`, que fecha as de
-destino `fechar-redundante`, `fechar-para-issue` e `fechar-reabrir-issue`
+destino `fechar-redundante`, `fechar-para-issue` (só `kind: escalada`: draft
+com `bloqueio-execucao` sem escalada nunca fecha pela idade) e
+`fechar-reabrir-issue` (só com a tentativa de fixer há mais de 6h)
 (comentário na PR e na issue de origem, branch preservada, `gh pr reopen`
 desfaz). Destino `fixer` = `dev-fixer` na branch existente (rebase + CI;
 draft verde vira ready) e `npx tsx scripts/mark-continuo-ci-fix-attempted.ts --pr {N}`;

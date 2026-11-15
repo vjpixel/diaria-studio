@@ -32,7 +32,7 @@ describe("destino com CI pending/error depois do fixer (#12804)", () => {
   });
 
   it("error com conflito real continua seguindo o conflito", () => {
-    assert.equal(d({ checksVerdict: "error", mergeStateStatus: "DIRTY" }), "fechar-reabrir-issue");
+    assert.equal(d({ checksVerdict: "error", mergeStateStatus: "DIRTY", fixTriedAgeMs: PENDING_AFTER_FIX_MS + 1 }), "fechar-reabrir-issue");
   });
 
   it("pending logo depois do fixer espera (briefing), não fecha", () => {
@@ -50,8 +50,10 @@ describe("destino com CI pending/error depois do fixer (#12804)", () => {
     assert.equal(d({ checksVerdict: "pending", fixTriedAgeMs: PENDING_AFTER_FIX_MS + 1 }), "fechar-reabrir-issue");
   });
 
-  it("fail depois do fixer segue fechando (sem janela)", () => {
-    assert.equal(d({ checksVerdict: "fail", fixTriedAgeMs: HOUR }), "fechar-reabrir-issue");
+  // #13181: a janela da tentativa vale para qualquer causa, não só `pending`.
+  it("fail logo depois do fixer espera a janela; passada, fecha", () => {
+    assert.equal(d({ checksVerdict: "fail", fixTriedAgeMs: HOUR }), "briefing");
+    assert.equal(d({ checksVerdict: "fail", fixTriedAgeMs: PENDING_AFTER_FIX_MS + 1 }), "fechar-reabrir-issue");
   });
 
   it("labelSince respeita unlabeled", () => {
@@ -80,6 +82,8 @@ describe("runEscalationQueue --apply com CI pending/error (#12804)", () => {
       listPrs: () => [pr],
       events: () => events,
       gate: () => ({ details: { checksVerdict: verdict, mergeable: "MERGEABLE", retidoParaEditor: { retido: false }, sessionClaims: { ok: true } } }),
+      lastCommitAt: () => null,
+      issueClaimed: () => ({ status: "free" }),
       redundant: () => false,
       issueState: () => ({ state: "OPEN" }),
       reopenIssue: (n) => calls.push(`reopen ${n}`),

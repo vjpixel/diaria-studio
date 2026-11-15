@@ -62,8 +62,8 @@ describe("PR manual nunca recebe fechar-* (#13094, regressão)", () => {
   const closingInputs: Partial<DestinationInput>[] = [
     { redundant: true },
     { isDraft: true, labels: ["bloqueio-execucao"] },
-    { mergeStateStatus: "DIRTY", labels: ["continuo-ci-fix-tentado"] },
-    { checksVerdict: "fail", labels: ["continuo-ci-fix-tentado"] },
+    { mergeStateStatus: "DIRTY", labels: ["continuo-ci-fix-tentado"], fixTriedAgeMs: 100 * HOUR },
+    { checksVerdict: "fail", labels: ["continuo-ci-fix-tentado"], fixTriedAgeMs: 100 * HOUR },
     { checksVerdict: "pending", labels: ["continuo-ci-fix-tentado"], fixTriedAgeMs: 100 * HOUR },
   ];
   const base: DestinationInput = {
@@ -91,11 +91,13 @@ describe("runEscalationQueue --all-open (#13094)", () => {
     mergeStateStatus: "CLEAN", labels: [], createdAt: iso(30 * HOUR), author: { login: "vjpixel", is_bot: false }, ...over,
   });
   const okGate: GateOutput = { action: "escalate", reason: "r", details: { checksVerdict: "pass", mergeable: "MERGEABLE", retidoParaEditor: { retido: false }, sessionClaims: { ok: true } } };
-  const run = (prs: OpenEscalatedPr[], opts: { allOpen?: boolean; apply?: boolean; gate?: (n: number) => GateOutput; events?: QueueDeps["events"] } = {}) => {
+  const run = (prs: OpenEscalatedPr[], opts: { allOpen?: boolean; apply?: boolean; gate?: (n: number) => GateOutput; events?: QueueDeps["events"]; lastCommitAt?: QueueDeps["lastCommitAt"]; issueClaimed?: QueueDeps["issueClaimed"] } = {}) => {
     const calls: string[] = [];
     const deps: QueueDeps = {
       listPrs: () => prs,
       events: opts.events ?? (() => []),
+      lastCommitAt: opts.lastCommitAt ?? (() => null),
+      issueClaimed: opts.issueClaimed ?? (() => ({ status: "free" })),
       gate: opts.gate ?? (() => okGate),
       redundant: () => true,
       issueState: () => ({ state: "OPEN" }),
@@ -148,7 +150,7 @@ describe("runEscalationQueue --all-open (#13094)", () => {
   });
 
   it("reivindicada por sessão viva entra só como informação (briefing, claimed)", () => {
-    const gate = () => ({ details: { checksVerdict: "fail", retidoParaEditor: { retido: false }, sessionClaims: { ok: false } } });
+    const gate = () => ({ details: { checksVerdict: "fail", retidoParaEditor: { retido: false }, sessionClaims: { ok: false, reason: "vjpixel/diaria-studio#7 reivindicada pela sessão abc (develop/neo)" } } });
     const { r, calls } = run([pr(7, { createdAt: iso(100 * HOUR) })], { gate });
     assert.deepEqual(calls, []);
     assert.equal(r.queue[0].destination, "briefing");
@@ -166,5 +168,167 @@ describe("runEscalationQueue --all-open (#13094)", () => {
     const src = readFileSync(new URL("../scripts/list-continuo-escalation-queue.ts", import.meta.url), "utf8");
     assert.match(src, /\.\.\.\(allOpen \? \[\] : \["--label", ESCALATION_LABEL\]\)/);
     assert.match(src, /labels,createdAt,author/);
+  });
+});
+
+describe("review da PR #13181 (#13094)", () => {
+  const NOW = Date.parse("2026-11-15T12:00:00Z");
+  const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+  const pr = (n: number, over: Partial<OpenEscalatedPr> = {}): OpenEscalatedPr => ({
+    number: n, url: `u/${n}`, title: `t${n}`, body: null, headRefName: `overnight/fix-${n}-x`, isDraft: false,
+    mergeStateStatus: "CLEAN", labels: [], createdAt: iso(30 * HOUR), author: { login: "vjpixel", is_bot: false }, ...over,
+  });
+  const gateWith = (over: Partial<NonNullable<GateOutput["details"]>> = {}): GateOutput => ({
+    action: "escalate", reason: "r",
+    details: { checksVerdict: "pass", mergeable: "MERGEABLE", retidoParaEditor: { retido: false }, sessionClaims: { ok: true }, ...over },
+  });
+  const run = (prs: OpenEscalatedPr[], over: Partial<QueueDeps> = {}, opts: { allOpen?: boolean; apply?: boolean } = {}) => {
+    const calls: string[] = [];
+    const deps: QueueDeps = {
+      listPrs: () => prs,
+      events: () => [],
+      lastCommitAt: () => null,
+      issueClaimed: () => ({ status: "free" }),
+      gate: () => gateWith(),
+      redundant: () => true,
+      issueState: () => ({ state: "CLOSED", stateReason: "COMPLETED" }),
+      reopenIssue: (n) => calls.push(`reopen ${n}`),
+      commentIssue: (n, body) => calls.push(`comment ${n}: ${body}`),
+      closePr: (n, body) => calls.push(`close ${n}: ${body}`),
+      now: () => NOW,
+      ...over,
+    };
+    return { r: runEscalationQueue(deps, opts.apply ?? true, { allOpen: opts.allOpen ?? true }), calls };
+  };
+  const fixTriedAt = (msAgo: number) => () => [{ event: "labeled", label: { name: "continuo-ci-fix-tentado" }, created_at: iso(msAgo) }];
+
+  it("1: PR aberta há 30h com commit de 10min, DIRTY e fix-tried nunca recebe fechar-*", () => {
+    const p = pr(1, { mergeStateStatus: "DIRTY", labels: [{ name: "continuo-ci-fix-tentado" }] });
+    const { r, calls } = run([p], { lastCommitAt: () => iso(10 * 60_000), events: fixTriedAt(29 * HOUR), redundant: () => false });
+    assert.deepEqual(calls, []);
+    assert.ok(r.queue.every((q) => !isClosingDestination(q.destination)));
+    assert.deepEqual(r.failures, []);
+  });
+
+  it("1: relógio da aberta é o maior entre createdAt, último commit e fix-tried", () => {
+    const { r } = run([pr(2)], { lastCommitAt: () => iso(8 * HOUR), events: fixTriedAt(7 * HOUR), redundant: () => false }, { apply: false });
+    assert.equal(r.queue[0].since, iso(7 * HOUR));
+    assert.equal(r.queue[0].expired, false);
+  });
+
+  it("1: commit recente segura também o fechar-redundante", () => {
+    const { r, calls } = run([pr(3)], { lastCommitAt: () => iso(HOUR) });
+    assert.deepEqual(calls, []);
+    assert.deepEqual(r.queue, []);
+  });
+
+  it("1: fechar-reabrir-issue exige a tentativa com mais de 6h, qualquer causa", () => {
+    const base: DestinationInput = {
+      ageMs: 30 * HOUR, isDraft: false, labels: ["continuo-ci-fix-tentado"], mergeStateStatus: "DIRTY",
+      mergeable: "CONFLICTING", checksVerdict: "fail", retido: false, claimed: false, redundant: false, issue: 4,
+    };
+    assert.equal(escalationDestination({ ...base, fixTriedAgeMs: HOUR }), "briefing");
+    assert.equal(escalationDestination({ ...base, fixTriedAgeMs: null }), "briefing");
+    assert.equal(escalationDestination({ ...base, fixTriedAgeMs: PENDING_AFTER_FIX_MS + 1 }), "fechar-reabrir-issue");
+  });
+
+  it("2: body `Refs #N` com claim viva em N (issue da branch) → claimed, sem fechar-*", () => {
+    const p = pr(5, { headRefName: "overnight/fix-500-x", body: "Refs #500", createdAt: iso(100 * HOUR) });
+    const seen: number[] = [];
+    const { r, calls } = run([p], {
+      issueClaimed: (n) => { seen.push(n); return { status: "claimed", reason: `#${n} reivindicada pela sessão s1 (develop/neo)` }; },
+    });
+    assert.deepEqual(seen, [500]);
+    assert.deepEqual(calls, []);
+    assert.equal(r.queue[0].destination, "briefing");
+    assert.equal(r.queue[0].claimed, true);
+    assert.match(r.queue[0].claim_reason ?? "", /reivindicada pela sessão s1/);
+  });
+
+  it("3: aberta com causa mecânica não vai ao fixer antes de 6h da última atividade", () => {
+    const { r } = run([pr(6, { mergeStateStatus: "DIRTY" })], { lastCommitAt: () => iso(HOUR) }, { apply: false });
+    assert.deepEqual(r.queue, []);
+    const late = run([pr(7, { mergeStateStatus: "DIRTY" })], { lastCommitAt: () => iso(7 * HOUR) }, { apply: false });
+    assert.equal(late.r.queue[0].destination, "fixer");
+  });
+
+  it("3: escalada mantém o atalho mecânico imediato (#12950)", () => {
+    const input: DestinationInput = {
+      ageMs: HOUR, isDraft: false, labels: ["continuo-escalado"], mergeStateStatus: "DIRTY",
+      mergeable: "CONFLICTING", checksVerdict: "fail", retido: false, claimed: false, redundant: false, issue: 8,
+    };
+    assert.equal(escalationDestination(input), "fixer");
+  });
+
+  it("4: manual com causa mecânica antes de 6h é briefing; depois, fixer", () => {
+    const input: DestinationInput = {
+      ageMs: HOUR, isDraft: false, labels: [], mergeStateStatus: "DIRTY",
+      mergeable: "CONFLICTING", checksVerdict: "fail", retido: false, claimed: false, redundant: false, issue: 9, manual: true,
+    };
+    assert.equal(escalationDestination(input), "briefing");
+    assert.equal(escalationDestination({ ...input, ageMs: 7 * HOUR }), "fixer");
+  });
+
+  it("5: draft com bloqueio-execucao sem escalada nunca fecha via --all-open", () => {
+    const p = pr(10, { isDraft: true, labels: [{ name: "bloqueio-execucao" }], createdAt: iso(100 * HOUR) });
+    const { r, calls } = run([p], { redundant: () => false });
+    assert.deepEqual(calls, []);
+    assert.equal(r.queue[0].destination, "briefing");
+    const esc: DestinationInput = {
+      ageMs: 30 * HOUR, isDraft: true, labels: ["continuo-escalado", "bloqueio-execucao"], mergeStateStatus: "CLEAN",
+      mergeable: "MERGEABLE", checksVerdict: "pass", retido: false, claimed: false, redundant: false, issue: 10,
+    };
+    assert.equal(escalationDestination(esc), "fechar-para-issue");
+    assert.equal(escalationDestination({ ...esc, aberta: true }), "briefing");
+  });
+
+  it("6: comentário na issue de aberta não diz 'seguiu escalada'", () => {
+    const p = pr(11, { mergeStateStatus: "DIRTY", labels: [{ name: "continuo-ci-fix-tentado" }], createdAt: iso(100 * HOUR) });
+    const { calls } = run([p], { events: fixTriedAt(30 * HOUR), redundant: () => false });
+    const comment = calls.find((c) => c.startsWith("comment 11"));
+    assert.ok(comment, JSON.stringify(calls));
+    assert.doesNotMatch(comment, /seguiu escalada/);
+    assert.match(comment, /aberta há mais de 24h/);
+    const close = calls.find((c) => c.startsWith("close 11"));
+    assert.match(close ?? "", /prazo de PR aberta/);
+  });
+
+  it("7: erro de parse nomeia o campo (label vs createdAt vs commit)", () => {
+    const badLabel = run([pr(12, { labels: [{ name: "continuo-escalado" }] })], {
+      events: () => [{ event: "labeled", label: { name: "continuo-escalado" }, created_at: "lixo" }],
+    }, { allOpen: false });
+    assert.match(badLabel.r.failures[0].error, /label continuo-escalado/);
+    const badCreated = run([pr(13, { createdAt: "lixo" })]);
+    assert.match(badCreated.r.failures[0].error, /createdAt/);
+    const badCommit = run([pr(14)], { lastCommitAt: () => "lixo" });
+    assert.match(badCommit.r.failures[0].error, /último commit/);
+    assert.equal(badCommit.r.failures[0].step, "last-commit");
+  });
+
+  it("8: claim ilegível sai como claims_check failed, não como claimed", () => {
+    const gate = () => gateWith({ checksVerdict: "fail", sessionClaims: { ok: false, reason: "registry ilegível: x" } });
+    const { r, calls } = run([pr(15, { createdAt: iso(100 * HOUR) })], { gate, redundant: () => false });
+    assert.deepEqual(calls, []);
+    assert.equal(r.queue[0].destination, "briefing");
+    assert.equal(r.queue[0].claimed, undefined);
+    assert.equal(r.queue[0].claims_check, "failed");
+    assert.match(r.queue[0].claim_reason ?? "", /registry ilegível/);
+    const origin = run([pr(16, { createdAt: iso(100 * HOUR) })], { issueClaimed: () => ({ status: "failed", reason: "erro ao consultar claims: y" }) });
+    assert.deepEqual(origin.calls, []);
+    assert.equal(origin.r.queue[0].claims_check, "failed");
+  });
+
+  it("8: saída do gate sem sessionClaims é failed (fail-closed)", () => {
+    const { r, calls } = run([pr(17, { createdAt: iso(100 * HOUR) })], { gate: () => ({ details: { checksVerdict: "pass", retidoParaEditor: { retido: false } } }) });
+    assert.deepEqual(calls, []);
+    assert.equal(r.queue[0].claims_check, "failed");
+  });
+
+  it("9: escalada de bot sem --all-open sai com lane bot e nunca fecha", () => {
+    const bot = pr(18, { headRefName: "dependabot/npm/x", labels: [{ name: "continuo-escalado" }] });
+    const { r, calls } = run([bot], { events: () => [{ event: "labeled", label: { name: "continuo-escalado" }, created_at: iso(100 * HOUR) }] }, { allOpen: false });
+    assert.deepEqual(calls, []);
+    assert.equal(r.queue[0].lane, "bot");
+    assert.equal(r.queue[0].destination, "briefing");
   });
 });
