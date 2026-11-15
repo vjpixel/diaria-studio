@@ -1675,6 +1675,7 @@ export function renderCouponTabPanel(
 
   return `
 ${generatedAtNote}
+<p class="section-note coupon-refresh-policy">Cupons usam dados salvos em cache. “Atualizar agora” não renova estes dados. O refresh diário está agendado para 06:00 BRT no GitHub Actions, mas pode atrasar; os dados mudam após a conclusão da coleta.</p>
 <section class="phase2-section" id="coupon-monthly">
   <h2 class="section-title">${escHtml(opts.monthlyTitle ?? "Total por mês")}</h2>
   ${monthlySectionBody}
