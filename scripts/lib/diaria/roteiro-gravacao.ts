@@ -194,6 +194,12 @@ export interface ConferenciaFala {
   motivos: string[];
   /** true = sugestão do passo determinístico; o modelo confirma lendo o trecho. */
   confirmar: boolean;
+  /**
+   * true = a fala só casou na segunda passada (#13178), com um trecho que
+   * nenhuma fala explicava, por radical comum e termos-chave. Sai
+   * `diferente-mas-cabe` (ou `regravar`, se o trecho citou o veículo), nunca `ok`.
+   */
+  resgatada?: boolean;
 }
 
 export interface ResultadoConferencia {
@@ -215,6 +221,16 @@ export const COBERTURA_OK = 0.85;
 export const COBERTURA_MINIMA = 0.5;
 /** Tamanho mínimo, em palavras de conteúdo, de um trecho sem fala que vale apontar. */
 export const TRECHO_SEM_FALA_MIN = 5;
+/**
+ * Segunda chance antes do `faltou` (#13178): cobertura mínima da fala num
+ * trecho que nenhuma fala explica, contando radical comum ("falsas"/"falsos",
+ * "cansada"/"cansaço") e número dito em dígito ou por extenso ("nove"/"9").
+ * Mais baixa que `COBERTURA_MINIMA` porque o trecho já é o resto da
+ * transcrição, sem dono, e a fala reformulada troca muitas palavras.
+ */
+export const COBERTURA_RESGATE = 0.35;
+/** Palavras de conteúdo (ou números) da fala que o trecho tem de trazer para o resgate valer. */
+export const RESGATE_MIN_TERMOS = 4;
 
 const STOPWORDS = new Set(
   (
@@ -443,6 +459,76 @@ function atribuirJanelas(falas: Tok[][], trans: Tok[]): Array<Janela | null> {
   return out;
 }
 
+/** Número por extenso de uma palavra só vira dígito ("nove" e "9" casam); o resto fica como está. */
+function canonResgate(norm: string): string {
+  return norm in VALOR_EXTENSO && !STOPWORDS.has(norm) ? String(VALOR_EXTENSO[norm]) : norm;
+}
+
+/**
+ * Duas palavras com o mesmo radical (#13178): iguais, ou com as primeiras 4
+ * letras em comum ("falsas"/"falsos", "cansada"/"cansaço", "golpe"/"golpes"),
+ * ou a curta (3 letras) como começo da longa ("pai"/"pais"). Número só casa igual.
+ */
+export function mesmoRadical(a: string, b: string): boolean {
+  const x = canonResgate(a);
+  const y = canonResgate(b);
+  if (x === y) return true;
+  if (/^\d+$/.test(x) || /^\d+$/.test(y)) return false;
+  const menor = Math.min(x.length, y.length);
+  if (menor < 3) return false;
+  let p = 0;
+  while (p < menor && x[p] === y[p]) p++;
+  return p >= Math.min(4, menor);
+}
+
+interface Resgate {
+  inicio: number;
+  fim: number; // exclusivo
+  cobertura: number;
+  usados: number[];
+  termos: string[];
+}
+
+/**
+ * Segunda passada antes do `faltou` (#13178): procura a fala só nas posições
+ * que nenhuma fala reclamou (`livre`), por radical e número, numa janela do
+ * tamanho da fala. Na 261117 as quatro falas que saíram `faltou` (H5, H10c,
+ * H13d, V2-G) estavam ditas com outras palavras, inteiras na lista de trechos
+ * sem fala correspondente.
+ */
+function resgatarFala(fala: Tok[], trans: Tok[], livre: readonly boolean[]): Resgate | null {
+  const alvo = fala.map((t) => t.norm).filter(isConteudo);
+  if (alvo.length === 0) return null;
+  const largura = Math.min(trans.length, Math.max(4, Math.ceil(fala.length * 1.5)));
+  let melhor: Resgate | null = null;
+  for (let i = 0; i < trans.length; i++) {
+    if (!livre[i]) continue;
+    // A janela não atravessa palavra que outra fala reclamou: o trecho fica num pedaço só, sem dono.
+    let ate = i;
+    while (ate < trans.length && ate < i + largura && livre[ate]) ate++;
+    const usados: number[] = [];
+    const termos: string[] = [];
+    const tomado = new Set<number>();
+    for (const w of alvo) {
+      for (let k = i; k < ate; k++) {
+        if (tomado.has(k) || !isConteudo(trans[k].norm) || !mesmoRadical(w, trans[k].norm)) continue;
+        tomado.add(k);
+        usados.push(k);
+        termos.push(w);
+        break;
+      }
+    }
+    if (usados.length === 0) continue;
+    const cobertura = usados.length / alvo.length;
+    const inicio = Math.min(...usados);
+    const fim = Math.max(...usados) + 1;
+    if (melhor && (cobertura < melhor.cobertura || (cobertura === melhor.cobertura && fim - inicio >= melhor.fim - melhor.inicio))) continue;
+    melhor = { inicio, fim, cobertura, usados, termos };
+  }
+  if (!melhor || melhor.cobertura < COBERTURA_RESGATE || melhor.usados.length < RESGATE_MIN_TERMOS) return null;
+  return melhor;
+}
+
 /** Confere a transcrição ditada contra as falas do roteiro. */
 export function conferirGravacao(roteiro: RoteiroFalas, transcricao: string): ResultadoConferencia {
   const trans = toks(transcricao);
@@ -455,6 +541,24 @@ export function conferirGravacao(roteiro: RoteiroFalas, transcricao: string): Re
   // veículo, citada de propósito) não é "citou o veículo" na fala que o traz.
   const citaNoRoteiro = (texto: string, v: string) => contemFrase(toks(texto).map((t) => t.norm), v);
   const veiculosDoRoteiro = veiculos.filter((v) => roteiro.falas.some((f) => citaNoRoteiro(f.texto, v)));
+  /** Números da fala que faltam no trecho [inicio, fim) e veículos ditos nele. */
+  const analisar = (texto: string, inicio: number, fim: number) => {
+    const janelaNorm = transNorm.slice(inicio, fim);
+    // A janela é aparada nas palavras da fala, então um número por extenso na
+    // ponta ("caiu trinta e sete por cento") fica de fora: estender a leitura de
+    // números pelas palavras de número/conectores vizinhas.
+    let ni = inicio;
+    let nf = fim;
+    while (ni > 0 && (ehPalavraDeNumero(transNorm[ni - 1]) || CONECTOR_NUMERO.has(transNorm[ni - 1]))) ni--;
+    while (nf < transNorm.length && (ehPalavraDeNumero(transNorm[nf]) || CONECTOR_NUMERO.has(transNorm[nf]))) nf++;
+    const numerosJanela = transNorm.slice(ni, nf);
+    const janelaNumSet = new Set(numerosJanela);
+    const compostos = new Set(numerosPorExtenso(numerosJanela));
+    return {
+      numerosAusentes: numerosDaFala(texto).filter((n) => !numeroPresente(n, janelaNumSet, compostos)),
+      veiculosCitados: veiculos.filter((v) => !citaNoRoteiro(texto, v) && contemFrase(janelaNorm, v)),
+    };
+  };
 
   const falas: ConferenciaFala[] = roteiro.falas.map((f, idx) => {
     const j = janelas[idx];
@@ -478,19 +582,7 @@ export function conferirGravacao(roteiro: RoteiroFalas, transcricao: string): Re
       };
     }
     for (let k = j.inicio; k < j.fim; k++) coberto[k] = true;
-    const janelaNorm = transNorm.slice(j.inicio, j.fim);
-    // A janela é aparada nas palavras da fala, então um número por extenso na
-    // ponta ("caiu trinta e sete por cento") fica de fora: estender a leitura de
-    // números pelas palavras de número/conectores vizinhas.
-    let ni = j.inicio;
-    let nf = j.fim;
-    while (ni > 0 && (ehPalavraDeNumero(transNorm[ni - 1]) || CONECTOR_NUMERO.has(transNorm[ni - 1]))) ni--;
-    while (nf < transNorm.length && (ehPalavraDeNumero(transNorm[nf]) || CONECTOR_NUMERO.has(transNorm[nf]))) nf++;
-    const numerosJanela = transNorm.slice(ni, nf);
-    const janelaNumSet = new Set(numerosJanela);
-    const compostos = new Set(numerosPorExtenso(numerosJanela));
-    const numerosAusentes = numerosDaFala(f.texto).filter((n) => !numeroPresente(n, janelaNumSet, compostos));
-    const veiculosCitados = veiculos.filter((v) => !citaNoRoteiro(f.texto, v) && contemFrase(janelaNorm, v));
+    const { numerosAusentes, veiculosCitados } = analisar(f.texto, j.inicio, j.fim);
     const motivos: string[] = [];
     let veredito: VereditoFala;
     if (numerosAusentes.length > 0) motivos.push(`número do roteiro ausente no trecho: ${numerosAusentes.join(", ")}`);
@@ -511,6 +603,43 @@ export function conferirGravacao(roteiro: RoteiroFalas, transcricao: string): Re
       confirmar: veredito !== "ok",
     };
   });
+
+  // Segunda passada antes do `faltou` (#13178): a fala reformulada pode estar
+  // num trecho que nenhuma fala explicou. A de maior cobertura escolhe primeiro;
+  // cada trecho resgatado deixa de estar livre para as próximas.
+  const pendentes = new Set(falas.flatMap((f, i) => (f.veredito === "faltou" ? [i] : [])));
+  while (pendentes.size > 0) {
+    let escolhido: { i: number; r: Resgate } | null = null;
+    for (const i of pendentes) {
+      const r = resgatarFala(falaToks[i], trans, coberto.map((c) => !c));
+      if (r && (!escolhido || r.cobertura > escolhido.r.cobertura)) escolhido = { i, r };
+    }
+    if (!escolhido) break;
+    const { i, r } = escolhido;
+    pendentes.delete(i);
+    for (let k = r.inicio; k < r.fim; k++) coberto[k] = true;
+    const f = roteiro.falas[i];
+    const { numerosAusentes, veiculosCitados } = analisar(f.texto, r.inicio, r.fim);
+    const pct = Math.round(r.cobertura * 100);
+    const motivos = [
+      `casou só na segunda passada, com um trecho sem fala correspondente (cobertura ${pct}% por radical e números; termos: ${[...new Set(r.termos)].join(", ")}): conferir se o sentido e o fato ficaram`,
+    ];
+    // Número que mudou aqui é ressalva para confirmar, não regravar automático: o
+    // casamento é frouxo, e precisão sem mudança de sentido cabe (Passo 8).
+    if (numerosAusentes.length > 0) motivos.push(`número do roteiro ausente no trecho: ${numerosAusentes.join(", ")} (conferir se muda o sentido)`);
+    if (veiculosCitados.length > 0) motivos.push(`citou o veículo: ${veiculosCitados.join(", ")}`);
+    falas[i] = {
+      ...falas[i],
+      veredito: veiculosCitados.length > 0 ? "regravar" : "diferente-mas-cabe",
+      cobertura: Math.round(r.cobertura * 100) / 100,
+      trecho: trans.slice(r.inicio, r.fim).map((t) => t.raw).join(" "),
+      numerosAusentes,
+      veiculosCitados,
+      motivos,
+      confirmar: true,
+      resgatada: true,
+    };
+  }
 
   // Trechos que nenhuma fala explica.
   const trechosSemFala: string[] = [];

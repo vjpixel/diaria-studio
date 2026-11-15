@@ -11,7 +11,8 @@
  * ajustado à mão naquela edição a pedido do editor:
  *   - caixa "Gravação" no topo: como gravar, a duração e as falas de cada vídeo;
  *   - uma seção por vídeo, com título, texto da capa, blocos e falas numeradas;
- *   - box "Na tela" ao lado de cada fala que tem `tela`, empilhado no celular;
+ *   - box "Na tela" ao lado de cada fala que tem `tela`, empilhado no celular,
+ *     só no horizontal (#13180: os verticais saem sem texto de tela);
  *   - os verticais na ordem de `porVideo.{vertical}.ordem` (#13128), com o
  *     corte parcial riscado (#13129);
  *   - "Notas para a edição" no fim: cortes, ordem, fontes (#13132) e as notas livres.
@@ -57,14 +58,6 @@ export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** Texto com quebra de linha (`\n`) vira `<br>`. */
-function escBr(s: string): string {
-  return s
-    .split("\n")
-    .map((l) => esc(l.trim()))
-    .join("<br>");
-}
-
 /** A fala com o corte do vídeo marcado: riscado (corte) ou sublinhado (reserva), #13129. */
 function textoComCorte(f: FalaRoteiro, v: VideoRoteiro): string {
   const c = corteDaFala(f, v);
@@ -77,9 +70,25 @@ function textoComCorte(f: FalaRoteiro, v: VideoRoteiro): string {
   return `${esc(f.texto.slice(0, i))}${marca}${esc(f.texto.slice(i + t.length))}`;
 }
 
+/**
+ * Texto de tela (#13180): `\n` quebra a linha, um item por linha; uma linha
+ * inteira entre `**` é o título do box, em negrito na linha própria.
+ */
+export function telaHtml(s: string): string {
+  return s
+    .split("\n")
+    .map((l) => {
+      const t = l.trim();
+      const titulo = /^\*\*(.+)\*\*$/.exec(t);
+      return titulo ? `<strong>${esc(titulo[1].trim())}</strong>` : esc(t);
+    })
+    .join("<br>");
+}
+
 function linhaFala(f: FalaRoteiro, v: VideoRoteiro): string {
   const tag = f.gravarAParte ? `<span class="novo">Gravar à parte</span>` : "";
-  const tela = f.tela ? `<aside class="tela"><b>Na tela</b>${escBr(f.tela)}</aside>` : "<span></span>";
+  // Os verticais saem sem texto de tela (#13180): o box só aparece no horizontal.
+  const tela = f.tela && v === "horizontal" ? `<aside class="tela"><b>Na tela</b>${telaHtml(f.tela)}</aside>` : "<span></span>";
   return `<div class="row"><p class="fala"><span class="id">${esc(f.id)}</span>${tag}${textoComCorte(f, v)}</p>${tela}</div>`;
 }
 
@@ -278,7 +287,7 @@ export function renderRoteiroPagina(roteiro: RoteiroFalas, opts: RenderOpts = {}
     `<main class="wrap">`,
     `  <section class="review" aria-label="Gravação">`,
     `    <h2>Gravação</h2>`,
-    `    <p>Grave uma vez, na ordem do horizontal, com uma pausa curta entre as falas. Os verticais são cortes do mesmo bruto: a etiqueta <span class="id">H1</span> diz de qual fala vem. O texto de tela fica no box ao lado da fala.</p>`,
+    `    <p>Grave uma vez, na ordem do horizontal, com uma pausa curta entre as falas. Os verticais são cortes do mesmo bruto: a etiqueta <span class="id">H1</span> diz de qual fala vem. O texto de tela fica no box ao lado da fala, só no horizontal.</p>`,
     `    <ul>\n${itensGravacao(roteiro, cfg).map((i) => `      <li>${i}</li>`).join("\n")}\n    </ul>`,
     `  </section>`,
     ``,
