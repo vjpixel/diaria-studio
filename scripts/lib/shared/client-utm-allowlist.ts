@@ -17,6 +17,10 @@
  * e afins continuam importando de lá).
  */
 
+// #13068: a lista de bio é derivada do inventário de superfícies externas.
+// `utm-registry.ts` é só literais, sem import (nenhum ciclo com este arquivo).
+import { EXTERNAL_SURFACE_MEDIUM, EXTERNAL_UTM_SURFACES } from "./utm-registry.ts";
+
 /**
  * Prefixos de `utm_source` que o CLIENTE tem permissão de repassar cru pro
  * servidor — a exceção estreita ao design "o servidor resolve o UTM, nunca
@@ -105,6 +109,35 @@ export function isAllowedClientInternalUtmSource(rawSource: unknown): boolean {
   const s = typeof rawSource === "string" ? rawSource.trim().toLowerCase() : "";
   if (!s) return false;
   return CLIENT_UTM_INTERNAL_ORGANIC_SOURCES.some((prefix) => s === prefix || s.startsWith(`${prefix}-`));
+}
+
+/**
+ * #13068: `utm_source` das superfícies EXTERNAS de bio (`medium === "bio"` em
+ * `EXTERNAL_UTM_SURFACES`): Linktree pessoal do editor, TikTok, Apoia.se,
+ * GitHub, Nexo, Outras Palavras, Manual do Usuário, workshop e as bios das
+ * redes (que já passam pela lista social). Todas apontam pra home do apex ou
+ * pra `/assinar`, cujos forms repassam o UTM da URL com `source: "apex"`;
+ * antes desta lista o servidor descartava `linktree` e afins e gravava
+ * `diaria-apex`.
+ *
+ * DERIVADA do registry, nunca literal: superfície de bio nova entra no apex
+ * sem lembrar de uma segunda lista. Mesma separação das outras listas
+ * orgânicas: NUNCA alimenta `origemPaga` (o ramo não-apex de
+ * `resolveSubscribeUtm` consulta só `CLIENT_UTM_SOURCE_ALLOWED_PREFIXES`).
+ * Inclui superfície `aposentado`: link de bio congelado (artigo publicado)
+ * continua convertendo depois de a superfície sair de uso.
+ */
+export const CLIENT_UTM_BIO_SOURCES: readonly string[] = [
+  ...new Set(
+    EXTERNAL_UTM_SURFACES.filter((s) => s.medium === EXTERNAL_SURFACE_MEDIUM).map((s) => s.source.trim().toLowerCase()),
+  ),
+];
+
+/** Pure (#13068): mesma regra de fronteira de traço das outras listas. */
+export function isAllowedClientBioUtmSource(rawSource: unknown): boolean {
+  const s = typeof rawSource === "string" ? rawSource.trim().toLowerCase() : "";
+  if (!s) return false;
+  return CLIENT_UTM_BIO_SOURCES.some((prefix) => utmSourceMatchesPrefix(s, prefix));
 }
 
 /**
