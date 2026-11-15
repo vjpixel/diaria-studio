@@ -30,6 +30,7 @@
 
 import { corteSuffixOf, videoTargetOf } from "./drive-video-source.ts";
 import { ctaCardClipItem, type CtaCardAsset } from "./video-cta-card.ts";
+import { capaInicioTrack, validateCapaInicio, type CapaInicioAsset } from "./video-capa-inicio.ts";
 import {
   coverScalePct,
   displaySize,
@@ -1308,6 +1309,12 @@ export interface SequenceSpec {
    */
   ctaShare?: string;
   /**
+   * #13123: o texto da capa no começo DESTA vertical (com `capaInicio` no
+   * arquivo); sobrepõe o `capa` do arquivo e o do roteiro. Mesmas regras do
+   * gancho da capa do Short (2 a 5 palavras).
+   */
+  capa?: string;
+  /**
    * Encaixe dos clipes desta sequência (#12559): `fill` recorta pelo rosto (o
    * de sempre), `fit` mostra o quadro inteiro com faixas, `blur-fill` põe o
    * quadro inteiro sobre o mesmo trecho desfocado. Ausente = `fill`, menos
@@ -1434,6 +1441,19 @@ export interface BlocksFile {
    * interessa por IA". A sequência pode sobrepor com o `ctaShare` dela.
    */
   ctaShare?: string;
+  /**
+   * #13123 (em teste): a capa sobreposta nos primeiros quadros das verticais,
+   * para a rede sem controle de capa escolher esse frame. `true` = os
+   * `CAPA_INICIO.defaultMs` (300 ms); número = ms. Ausente/false = sem capa
+   * (o build de sempre). Ver `video-capa-inicio.ts`.
+   */
+  capaInicio?: boolean | number;
+  /**
+   * #13123: o texto da capa da vertical da edição; ausente = o
+   * `porVideo.vertical1.capa` do `_internal/roteiro-falas.json`. A sequência
+   * sobrepõe com o `capa` dela.
+   */
+  capa?: string;
   /**
    * Bruto em vários arquivos (#12559): overrides por arquivo (chave = `id` do
    * `source.json`). `framing` vale para os clipes daquele arquivo (o item ainda
@@ -1568,6 +1588,8 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
   if (raw.screenTitle !== undefined && typeof raw.screenTitle !== "string") errors.push('screenTitle precisa ser texto ("" = sem título na vertical)');
   if (raw.ctaCard !== undefined && typeof raw.ctaCard !== "boolean") errors.push("ctaCard precisa ser true ou false (false = sem o card de CTA no fim, #12571)");
   if (raw.ctaShare !== undefined && typeof raw.ctaShare !== "string") errors.push("ctaShare precisa ser texto (a linha de compartilhar do card de CTA, #12571)");
+  errors.push(...validateCapaInicio(raw.capaInicio));
+  if (raw.capa !== undefined && typeof raw.capa !== "string") errors.push("capa precisa ser texto (o texto da capa no começo da vertical, #13123)");
   if (raw.holdBlocks !== undefined) {
     if (!Array.isArray(raw.holdBlocks) || raw.holdBlocks.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push("holdBlocks precisa listar blocos conhecidos");
   }
@@ -1603,6 +1625,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         }
         if (typeof s.hook === "string" && !s.hook.trim()) errors.push(`${label}: hook vazio (omita para usar o resumo_curto)`);
         if (s.ctaShare !== undefined && typeof s.ctaShare !== "string") errors.push(`${label}: ctaShare precisa ser texto (#12571)`);
+        if (s.capa !== undefined && typeof s.capa !== "string") errors.push(`${label}: capa precisa ser texto (#13123)`);
         if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${label}: sem name`);
         else if (typeof s.corte === "string") {
           if (corteSuffixOf(s.name) !== s.corte) errors.push(`${label}: o nome "${s.name}" de um corte precisa terminar em _V{n}-${s.corte}`);
@@ -3469,6 +3492,12 @@ export function buildXmeml(
      * Ausente = o caminho do Neo (`I:/…`), como sempre.
      */
     premierePaths?: PremierePathMap | null;
+    /**
+     * #13123 (em teste): a capa no começo de cada sequência vertical (chave =
+     * `sequenceKey`), numa faixa de vídeo acima de todas, do quadro 0 até
+     * `frames`. Ausente (ou sem a chave) = sequência sem a capa.
+     */
+    capaInicio?: Readonly<Record<string, CapaInicioAsset>> | null;
   } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
@@ -3582,6 +3611,17 @@ export function buildXmeml(
   // #12571: um `<file>` por MP4 do card (vertical e horizontal são arquivos diferentes), definido no 1º uso.
   const cardFileIds = new Map<string, string>();
   const ctaCardOf = (plan: SequencePlan): CtaCardAsset | null => opts.ctaCard?.[sequenceKey(plan.spec)] ?? null;
+  // #13123: um `<file>` por PNG da capa (a vertical da edição e cada corte têm o seu), definido no 1º uso.
+  const capaFileIds = new Map<string, string>();
+  const capaInicioOf = (plan: SequencePlan, si: number): string => {
+    const capa = opts.capaInicio?.[sequenceKey(plan.spec)];
+    if (!capa || !isVerticalSpec(plan.spec)) return "";
+    const known = capaFileIds.get(capa.xmlPath);
+    const fileId = known ?? (capaFileIds.size === 0 ? "file-capa-inicio" : `file-capa-inicio-${capaFileIds.size + 1}`);
+    capaFileIds.set(capa.xmlPath, fileId);
+    const frames = Math.min(capa.frames, plan.durationFrames);
+    return capaInicioTrack({ asset: { ...capa, frames }, rate, total, id: `capa-inicio-${si + 1}`, fileId, fileDefined: known !== undefined, pathurl: url(capa.xmlPath) });
+  };
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE xmeml>", '<xmeml version="4">'];
   plans.forEach((plan, si) => {
     const { spec } = plan;
@@ -3624,11 +3664,12 @@ export function buildXmeml(
     const bgTrack = bg.length ? `<track>${bg.join("\n")}</track>` : "";
     const titleTrack = screenTitleTrack(plan, si);
     const vin = vinhetaTracks(plan, si);
+    const capaTrack = capaInicioOf(plan, si);
     out.push(
       `<sequence id="${escapeXml(opts.sequenceIds?.[sequenceKey(spec)] ?? `seq-${si + 1}-${sequenceKey(spec)}`)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames + (card?.frames ?? 0)}</duration>\n` +
         `${rate}\n` +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
-        `${bgTrack}<track>${v.join("\n")}</track>${titleTrack}${vin.video}</video>\n` +
+        `${bgTrack}<track>${v.join("\n")}</track>${titleTrack}${vin.video}${capaTrack}</video>\n` +
         `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track>${vin.audio}</audio></media></sequence>`,
     );
   });

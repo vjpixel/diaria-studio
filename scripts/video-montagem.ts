@@ -255,7 +255,9 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
-import { readRoteiroHorizontal } from "./lib/diaria/roteiro-videos.ts";
+import { readRoteiroHorizontal, readRoteiroPecas, VERTICAL2_CORTE_SLUG } from "./lib/diaria/roteiro-videos.ts";
+import { CAPA_INICIO, capaInicioFileName, capaInicioFrames, capaInicioMsOf, capaInicioXmlIssues, previewCapaInicioArgs, resolveCapaInicioText, type CapaInicioAsset } from "./lib/diaria/video-capa-inicio.ts";
+import { composeShortCoverOverlay } from "./lib/diaria/youtube-thumb.ts";
 import {
   AUDIO_GAIN_TARGET_LUFS,
   AUDIO_GAIN_TP_CEILING_DBTP,
@@ -1054,6 +1056,8 @@ export interface XmlBuildOptions {
   ctaCard?: Readonly<Record<string, CtaCardAsset>> | null;
   /** #12707: a tradução de raiz dos `pathurl` para o Premiere do Mac; ausente/null = fora do hash (o de antes). */
   premierePaths?: PremierePathMap | null;
+  /** #13123: a capa no começo de cada vertical (chave = `sequenceKey`); só entra no hash a capa que a sequência leva (sem ela, o hash de antes). */
+  capaInicio?: Readonly<Record<string, CapaInicioAsset>> | null;
 }
 
 /** #12163: o título que `buildXmeml` põe nesta sequência (mesma regra do `titleOf` de lá), ou `null`. */
@@ -1099,6 +1103,7 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
         ...(title ? { screenTitle: title } : {}),
         ...(opts.ctaCard?.[sequenceKey(plan.spec)] ? { ctaCard: ctaCardHashPart(opts.ctaCard[sequenceKey(plan.spec)]) } : {}),
         ...(opts.premierePaths ? { premierePaths: opts.premierePaths } : {}),
+        ...(opts.capaInicio?.[sequenceKey(plan.spec)] ? { capaInicio: capaInicioHashPart(opts.capaInicio[sequenceKey(plan.spec)]) } : {}),
       }),
     )
     .update("\0plan\0")
@@ -1109,6 +1114,12 @@ export function xmlVersionHashOf(inputsHash: string, plan: Pick<SequencePlan, "s
 
 /** #12571: o que do card muda o XML (o caminho no XML, o tamanho e os quadros); o caminho local da prévia fica fora. */
 function ctaCardHashPart(c: CtaCardAsset): Omit<CtaCardAsset, "path"> {
+  const { path: _path, ...rest } = c;
+  return rest;
+}
+
+/** #13123: o que da capa muda o XML (o caminho no XML, o tamanho e os quadros); o caminho local da prévia fica fora. */
+function capaInicioHashPart(c: CapaInicioAsset): Omit<CapaInicioAsset, "path"> {
   const { path: _path, ...rest } = c;
   return rest;
 }
@@ -1310,6 +1321,8 @@ export interface SequenceXmlAssets {
   vinheta?: VinhetaAsset;
   /** #12571: o card de CTA que o XML desta sequência levou no fim da V1 (a prévia o acrescenta igual). */
   ctaCard?: CtaCardAsset;
+  /** #13123: a capa que o XML desta sequência levou nos primeiros quadros (a prévia a sobrepõe igual). */
+  capaInicio?: CapaInicioAsset;
 }
 
 /**
@@ -2273,7 +2286,7 @@ function cmdVerifyXml(ctx: Ctx, target: string | undefined, transcribe = true): 
     const { clips, errors } = toTimeline(parsed, offsets);
     // #12571: o card de CTA no fim da V1 (sem áudio): logo depois da fala, com a duração do plano.
     const cardFrames = pf.xmlAssets?.[key]?.ctaCard?.frames ?? null;
-    const issues = [...errors, ...xmlStructureIssues(parsed.clips), ...xmlPlanIssues(parsed, { clips: plan.clips.length, durationFrames: plan.durationFrames }), ...ctaCardXmlIssues(xmlText, { durationFrames: plan.durationFrames, cardFrames })];
+    const issues = [...errors, ...xmlStructureIssues(parsed.clips), ...xmlPlanIssues(parsed, { clips: plan.clips.length, durationFrames: plan.durationFrames }), ...ctaCardXmlIssues(xmlText, { durationFrames: plan.durationFrames, cardFrames }), ...capaInicioXmlIssues(xmlText, capaFramesOf(pf.xmlAssets?.[key]?.capaInicio, plan.durationFrames))];
     if (parsed.timebase !== pf.source.fps || parsed.ntsc) issues.push(`timebase ${parsed.timebase}${parsed.ntsc ? " NTSC" : ""} diferente dos ${pf.source.fps} fps do bruto`);
     const edges = edgeFindings(clips, parsed.rate, (a, b) => maxDbIn(env, a, b), thr, undefined, isMultiSource(pf.source) ? fileBounds(pf.source) : undefined);
     const cut = edges.filter((e) => e.cutIn || e.cutOut);
@@ -2947,6 +2960,76 @@ export async function renderVersionedTitlePng(input: {
   return { png, xmlPath };
 }
 
+/** #13123: quadros da capa no começo de uma sequência (cortados na duração dela); sem capa = null. */
+export function capaFramesOf(capa: Pick<CapaInicioAsset, "frames"> | undefined | null, durationFrames: number): number | null {
+  return capa ? Math.min(capa.frames, durationFrames) : null;
+}
+
+/** Caminho do PNG da capa no XML: a pasta do bruto no XML (a pasta da edição, para onde o out dir sobe). */
+export function capaInicioXmlPath(mediaPath: string, name: string): string {
+  const p = mediaPath.replace(/\\/g, "/");
+  return `${p.slice(0, p.lastIndexOf("/") + 1)}${name}`;
+}
+
+/**
+ * #13123 (em teste): o PNG da capa (painel + gancho do Short, transparente) de
+ * uma vertical, na pasta da edição (out dir). O nome leva o hash do PNG: um
+ * XML antigo segue achando o dele.
+ */
+export async function renderCapaInicio(input: {
+  outDir: string; mediaPath: string; edition: string; corte?: string;
+  text: string; width: number; height: number; fps: number; ms: number;
+  compose?: typeof composeShortCoverOverlay;
+}): Promise<{ asset: CapaInicioAsset; warnings: string[] }> {
+  const { png, warnings } = await (input.compose ?? composeShortCoverOverlay)({ hook: input.text, width: input.width, height: input.height });
+  const hash = createHash("sha256").update(png).digest("hex").slice(0, 16);
+  const name = capaInicioFileName(input.edition, input.corte, hash);
+  const out = join(input.outDir, name);
+  // Gravado em todo build, como o PNG do título: no modo API o snapshot do out dir vê o arquivo e o sobe.
+  writeFileSync(`${out}.part`, png);
+  renameSync(`${out}.part`, out);
+  return {
+    asset: { path: out, xmlPath: capaInicioXmlPath(input.mediaPath, name), width: input.width, height: input.height, frames: capaInicioFrames(input.fps, input.ms), ms: input.ms, text: input.text },
+    warnings,
+  };
+}
+
+/**
+ * #13123: as capas do começo das verticais deste build. Desligado
+ * (`capaInicio` ausente/false no blocks.json) = nenhuma, sem aviso. Ligado:
+ * texto pela ordem de `resolveCapaInicioText`; sem texto ou falha no desenho =
+ * a vertical sai sem a capa, com aviso.
+ */
+async function renderCapaInicioAssets(ctx: Ctx, file: BlocksFile, picked: SequencePlan[], fps: number, mediaPath: string): Promise<Record<string, CapaInicioAsset>> {
+  const out: Record<string, CapaInicioAsset> = {};
+  const ms = capaInicioMsOf(file.capaInicio);
+  if (ms === null) return out;
+  const verticals = picked.filter((p) => isVerticalSpec(p.spec));
+  if (!verticals.length) return out;
+  const pecas = readRoteiroPecas(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
+  const roteiro = { vertical1: pecas?.vertical1?.capa, vertical2: pecas?.vertical2?.capa };
+  for (const p of verticals) {
+    const t = resolveCapaInicioText({ spec: p.spec, fileCapa: file.capa, roteiro, corteVertical2: VERTICAL2_CORTE_SLUG });
+    if (t.text === null) {
+      console.error(`[aviso] ${p.spec.name}: capaInicio ligado, mas sem texto da capa (capa na sequência, capa no blocks.json ou porVideo.*.capa no roteiro-falas.json): sai sem a capa no começo (#13123)`);
+      continue;
+    }
+    try {
+      const { asset, warnings } = await renderCapaInicio({ outDir: ctx.outDir, mediaPath, edition: ctx.edition, corte: p.spec.corte, text: t.text, width: p.spec.width, height: p.spec.height, fps, ms });
+      for (const w of warnings) console.error(`[aviso] ${p.spec.name}: capa no começo: ${w}`);
+      out[sequenceKey(p.spec)] = asset;
+      console.error(
+        `[premissa] capa no começo de ${p.spec.name} (#13123, em teste): "${t.text}" (${t.how}), ${basename(asset.path)} na faixa de vídeo do topo nos primeiros ${asset.frames} quadros (${ms} ms), ` +
+          `sobre a fala de abertura, sem mexer no áudio; conferir no 1º import e, depois de publicar, qual frame cada rede mostrou como capa`,
+      );
+    } catch (e) {
+      console.error(`[aviso] capa no começo de ${p.spec.name} falhou (${(e as Error).message.split("\n")[0]}): XML sem a capa (#13123)`);
+    }
+  }
+  if (Object.keys(out).length && CAPA_INICIO.defaultMs !== ms) console.error(`[premissa] capaInicio de ${ms} ms no blocks.json (default ${CAPA_INICIO.defaultMs} ms) (#13123)`);
+  return out;
+}
+
 /**
  * #12571: o card de CTA de uma sequência, em MP4 com o fade-in embutido, na
  * pasta da edição (out dir), ao lado do bruto no XML. O nome leva o hash do
@@ -3254,6 +3337,8 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   for (const p of picked) {
     if (!ctaCard[sequenceKey(p.spec)] && !sequenceHasSpokenCta(p)) console.error(`[aviso] ${p.spec.name} sai sem CTA nenhum (sem card e sem cta_* falado) (#12571)`);
   }
+  // #13123 (em teste): a capa nos primeiros quadros das verticais; falha = sequência sem a capa, com aviso.
+  const capaInicio = await renderCapaInicioAssets(ctx, file, picked, source.fps, mediaPath);
   // #12707: todo `pathurl` com a mesma raiz; o que ficar fora dela sai com o caminho do Neo, e isso é dito.
   const xmlFilePaths = [
     ...(mediaPaths ?? [mediaPath]),
@@ -3262,6 +3347,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     ...Object.values(screenTitleByCorte).flatMap((t) => (t ? [t.pngPath] : [])),
     ...(vinheta ? [vinheta.path] : []),
     ...Object.values(ctaCard).map((c) => c.xmlPath),
+    ...Object.values(capaInicio).map((c) => c.xmlPath),
   ];
   console.error(premierePathsLine(ctx.premierePaths, unmappedPremierePaths(xmlFilePaths, ctx.premierePaths)));
   // #12111: cada build com plano novo abre a próxima versão (_V{n} no nome e no <sequence id>).
@@ -3280,6 +3366,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     screenTitleByCorte,
     ctaCard,
     premierePaths: ctx.premierePaths ?? null,
+    capaInicio,
   });
   // Um XML por sequência: cada um leva a definição completa do <file> (buildXmeml define na 1ª ocorrência).
   const xmlPaths: string[] = [];
@@ -3299,7 +3386,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
         console.error(`[aviso] XML anterior ilegível (${basename(xmlPath)}: ${(e as Error).message}): a versão dele conta como nova (#12285)`);
       }
     }
-    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null }));
+    writeFileAtomic(xmlPath, buildXmeml([p], source, framing, { mediaPath, mediaPaths, fileOverrides: file.files, audioGain: gain, screenTitle, screenTitleByCorte, sequenceIds, vinheta, audioPath: treated?.xmlPath ?? null, ctaCard, premierePaths: ctx.premierePaths ?? null, capaInicio }));
     xmlPaths.push(xmlPath);
     console.error(`[video-montagem] versão vigente de ${sequenceKey(p.spec)}: ${p.spec.name} (${basename(xmlPath)}, id ${sequenceIds?.[sequenceKey(p.spec)] ?? "sem versão"}; #12111)`);
   }
@@ -3311,7 +3398,7 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
     try { prevPlan = readJson<PlanFile>(planPath, "plan.json"); } catch (e) { console.error(`[aviso] plan.json anterior ilegível (${(e as Error).message}): ${seq ? "só a sequência do --seq entra no plano novo" : "a versão de cada XML conta como nova"}`); }
   }
   const merged = mergeBuildPlan({
-    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}) }])) },
+    next: { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, ...(file.files ? { fileOverrides: file.files } : {}), plans: ps, cutRefine: refined.info, xmlAssets: Object.fromEntries(picked.map((p) => [sequenceKey(p.spec), { ...(treated ? { treatedAudio: treated } : {}), ...(vinheta ? { vinheta } : {}), ...(ctaCard[sequenceKey(p.spec)] ? { ctaCard: ctaCard[sequenceKey(p.spec)] } : {}), ...(capaInicio[sequenceKey(p.spec)] ? { capaInicio: capaInicio[sequenceKey(p.spec)] } : {}) }])) },
     pickedKeys: new Set(picked.map((p) => sequenceKey(p.spec))),
     prev: prevPlan,
     now: Date.now(),
@@ -4117,6 +4204,18 @@ async function cmdPreview(
   } else if (card) console.error(`[aviso] card de CTA do XML não encontrado nesta máquina (${card.path}): prévia sem ele; rode build nesta máquina (#12571)`);
   writeFileSync(join(dir, "list.txt"), list.join("\n") + "\n");
   run("ffmpeg", ["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", "list.txt", "-c", "copy", "joined.mp4"], { cwd: dir });
+  // #13123: a capa que o XML desta sequência levou, por cima dos primeiros quadros (antes da legenda e da vinheta).
+  const capa = assets.capaInicio ?? null;
+  if (capa && existsSync(capa.path)) {
+    const frames = capaFramesOf(capa, plan.durationFrames) ?? 0;
+    try {
+      run("ffmpeg", previewCapaInicioArgs({ input: "joined.mp4", png: capa.path, out: "joined-capa.mp4", frames, ...size }), { cwd: dir });
+      renameSync(join(dir, "joined-capa.mp4"), join(dir, "joined.mp4"));
+      console.error(`[video-montagem] prévia com a capa nos primeiros ${frames} quadros (${(frames / fps).toFixed(2)} s): "${capa.text}" (#13123)`);
+    } catch (e) {
+      console.error(`[aviso] capa no começo na prévia falhou (${(e as Error).message.split("\n")[0]}): prévia sem a capa; o XML a tem (#13123)`);
+    }
+  } else if (capa) console.error(`[aviso] capa no começo do XML não encontrada nesta máquina (${capa.path}): prévia sem ela; rode build nesta máquina (#13123)`);
   let subtitles: string | undefined;
   if (subs.use) {
     copyFileSync(srt, join(dir, "leg.srt"));
