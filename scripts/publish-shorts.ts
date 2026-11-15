@@ -4600,6 +4600,28 @@ export function syncCorteAgendamento(root: string, spec: CorteSpec, entries: rea
 }
 
 /**
+ * #12960 (review): o post já saiu quando o banco é sincronizado, então erro do
+ * banco (arquivo ilegível, revisão concorrente, spec do corte ilegível) não
+ * pode derrubar a rodada antes do resumo e da limpeza. Vira aviso explícito
+ * em stderr, com o erro, e devolve `false` para quem quiser saber.
+ */
+export function syncCorteAgendamentoFailSoft(
+  sync: () => void,
+  warn: (msg: string) => void = (msg) => console.error(msg),
+): boolean {
+  try {
+    sync();
+    return true;
+  } catch (e) {
+    warn(
+      `[aviso] modo corte: o post saiu, mas o banco de agendamentos não foi atualizado (#12960) — ` +
+        `marque o item como agendado à mão. Erro: ${(e as Error)?.message ?? String(e)}`,
+    );
+    return false;
+  }
+}
+
+/**
  * #11912: grava no `corte.json` a autorização do `--publish --confirm-publish`.
  * `main` chama só depois de TODAS as validações que podem abortar a rodada
  * (confirmação, escopo dos timers, plano com o `--only`, vídeo presente) e
@@ -5406,7 +5428,11 @@ async function main(): Promise<number> {
     }
     // #11547: a confirmação (`x=URL`) mantém o registro da capa do agendamento.
     published = persist(carryOverCover(built.entry, published.entries.find((e) => e.destination === mark.destination)));
-    if (corte) syncCorteAgendamento(ROOT, parseCorteSpec(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), dir), published.entries, [], new Date());
+    if (corte) {
+      syncCorteAgendamentoFailSoft(() =>
+        syncCorteAgendamento(ROOT, parseCorteSpec(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), dir), published.entries, [], new Date()),
+      );
+    }
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
     cleanup();
     return 0;
@@ -6157,9 +6183,11 @@ async function main(): Promise<number> {
     ),
   };
   if (corte) {
-    syncCorteAgendamento(
-      ROOT, parseCorteSpec(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), dir), published.entries,
-      plan.owners.filter(o => o.by === "timer-300").map(o => o.destination), new Date(),
+    syncCorteAgendamentoFailSoft(() =>
+      syncCorteAgendamento(
+        ROOT, parseCorteSpec(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8"), dir), published.entries,
+        plan.owners.filter(o => o.by === "timer-300").map(o => o.destination), new Date(),
+      ),
     );
   }
   const summary = {
