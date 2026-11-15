@@ -13,18 +13,32 @@
  *
  * Uso:
  *   npx tsx scripts/setup-systemd-timers.ts [--task <Nome>] [--out-dir <dir>]
+ *     [--node-bin <path>] [--diff-installed [--installed-dir <dir>]]
  *
  * --task:    gera só a task nomeada (default: todas as SCHEDULED_TASKS).
  * --out-dir: relativo à raiz do repo (default: ".systemd-units/" — git-
  *            ignorado, ver .gitignore; nunca dentro de data/, que é o
  *            junction do OneDrive e não é lugar pra artefato de infra
  *            local).
+ * --node-bin: node absoluto do `ExecStart=` (#13136). Sem ele, o node vem do
+ *            nvm que casa com o `.nvmrc` (ou do processo, se ele casar), e
+ *            nunca do PATH do shell: por `ssh` não-interativo o PATH acha
+ *            `/usr/bin/node` e o gerado divergia de todas as units armadas.
+ *            Também por `DIARIA_SYSTEMD_NODE_BIN`.
+ * --diff-installed: não escreve nada; compara o gerado com as units em
+ *            `~/.config/systemd/user/` (ou `--installed-dir`) e lista as
+ *            divergentes. Exit 1 se alguma instalada diverge, 2 se o
+ *            diretório não é legível, 0 se todas batem (#13136).
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findUnknownFlags, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { getScheduledTaskByName, SCHEDULED_TASKS, type ScheduledTaskDefinition } from "./lib/scheduled-tasks.ts";
+import { assertSupportedNodeVersion } from "./lib/check-node-version.ts";
+import { diffInstalledUnits, resolveSystemdNodeBinary, type SystemdNodeBinary } from "./lib/systemd-node-binary.ts";
+import { resolveNodeVersionForPath } from "./lib/systemd-node-floor-guard.ts";
+import { systemdUserUnitDir } from "./lib/systemd-unit-exit-guard.ts";
 import { buildSystemdUnitFiles } from "./lib/systemd-units.ts";
 
 const DEFAULT_OUT_DIR = ".systemd-units";
@@ -40,6 +54,7 @@ export function generateSystemdUnits(
   tasks: ScheduledTaskDefinition[],
   repoRootAbs: string,
   outDirAbs: string,
+  nodeBin: string = process.execPath,
 ): string[] {
   mkdirSync(outDirAbs, { recursive: true });
   const written: string[] = [];
@@ -47,6 +62,7 @@ export function generateSystemdUnits(
     const { serviceFileName, timerFileName, serviceContent, timerContent } = buildSystemdUnitFiles(
       task,
       repoRootAbs,
+      nodeBin,
     );
     const servicePath = join(outDirAbs, serviceFileName);
     const timerPath = join(outDirAbs, timerFileName);
@@ -101,15 +117,31 @@ export function buildArmInstructions(): string {
   );
 }
 
-const SETUP_USAGE = "Uso: npx tsx scripts/setup-systemd-timers.ts [--task <Nome>] [--out-dir <dir>] [--help]";
+const SETUP_USAGE =
+  "Uso: npx tsx scripts/setup-systemd-timers.ts [--task <Nome>] [--out-dir <dir>] [--node-bin <path>] " +
+  "[--diff-installed [--installed-dir <dir>]] [--help]";
 
-export function main(argv: string[], repoRootAbs: string): number {
+/** Dependências injetáveis do `main` (teste). Produção usa os defaults. */
+export interface SetupMainDeps {
+  resolveNodeBinary?: (override: string | undefined) => SystemdNodeBinary;
+  resolveVersion?: (nodePath: string) => string | null;
+}
+
+export function main(argv: string[], repoRootAbs: string, deps: SetupMainDeps = {}): number {
   // #11058: --help sai 0; flag desconhecida é erro exit 2 (nunca default silencioso).
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(SETUP_USAGE);
     return 0;
   }
-  const unknownFlags = findUnknownFlags(argv, ["task", "out-dir", "help", "h"]);
+  const unknownFlags = findUnknownFlags(argv, [
+    "task",
+    "out-dir",
+    "node-bin",
+    "diff-installed",
+    "installed-dir",
+    "help",
+    "h",
+  ]);
   if (unknownFlags.length > 0) {
     console.error(`Flag(s) desconhecida(s): ${unknownFlags.join(", ")}.
 ${SETUP_USAGE}`);
@@ -117,9 +149,14 @@ ${SETUP_USAGE}`);
   }
   let taskName: string | undefined;
   let outDirArg: string | undefined;
+  let nodeBinArg: string | undefined;
+  let installedDirArg: string | undefined;
+  const diffInstalled = argv.includes("--diff-installed");
   try {
     taskName = getStringArg(argv, "task", { example: "Diaria-Apoios-Diff-Alarm" });
     outDirArg = getStringArg(argv, "out-dir", { example: DEFAULT_OUT_DIR });
+    nodeBinArg = getStringArg(argv, "node-bin", { example: "/home/vjpixel/.nvm/versions/node/v24.19.0/bin/node" });
+    installedDirArg = getStringArg(argv, "installed-dir", { example: "~/.config/systemd/user" });
   } catch (e) {
     console.error((e as Error).message);
     return 1;
@@ -138,12 +175,80 @@ ${SETUP_USAGE}`);
   // #5639 — filtrar tasks desabilitadas (enabled: false)
   tasks = tasks.filter((t) => t.enabled !== false);
 
+  // #13136: node do ExecStart determinístico (nvm do .nvmrc), nunca o PATH do shell.
+  let nodeBin: SystemdNodeBinary;
+  try {
+    nodeBin = (deps.resolveNodeBinary ?? ((o) => resolveSystemdNodeBinary({ override: o })))(nodeBinArg);
+    const version = (deps.resolveVersion ?? resolveNodeVersionForPath)(nodeBin.path);
+    if (!version) throw new Error(`"${nodeBin.path} --version" não respondeu — node do ExecStart inválido (#13136)`);
+    assertSupportedNodeVersion(version);
+    console.log(`node do ExecStart: ${nodeBin.path} (${version}, origem: ${nodeBin.source})`);
+  } catch (e) {
+    console.error((e as Error).message);
+    return 1;
+  }
+
+  if (diffInstalled) {
+    return runDiffInstalled(tasks, repoRootAbs, nodeBin.path, installedDirArg ?? systemdUserUnitDir());
+  }
+
   const outDirAbs = resolve(repoRootAbs, outDirArg ?? DEFAULT_OUT_DIR);
-  const written = generateSystemdUnits(tasks, repoRootAbs, outDirAbs);
+  const written = generateSystemdUnits(tasks, repoRootAbs, outDirAbs, nodeBin.path);
 
   console.log(`${tasks.length} task(s) -> ${written.length} arquivo(s) gerado(s) em ${outDirAbs}:\n`);
   for (const p of written) console.log(`  ${p}`);
   console.log(buildArmInstructions());
+  return 0;
+}
+
+/**
+ * `--diff-installed` (#13136 item 2): gera em memória e compara com as units
+ * instaladas. Nunca escreve nem chama `systemctl`. Unit não instalada é
+ * informativa (task pode não estar armada nesta máquina), não divergência.
+ */
+export function runDiffInstalled(
+  tasks: ScheduledTaskDefinition[],
+  repoRootAbs: string,
+  nodeBin: string,
+  installedDirAbs: string,
+): number {
+  try {
+    readdirSync(installedDirAbs);
+  } catch (e) {
+    console.error(`não foi possível ler "${installedDirAbs}": ${(e as Error).message} — nada verificado.`);
+    return 2;
+  }
+  const generated = tasks.flatMap((task) => {
+    const f = buildSystemdUnitFiles(task, repoRootAbs, nodeBin);
+    return [
+      { fileName: f.serviceFileName, content: f.serviceContent },
+      { fileName: f.timerFileName, content: f.timerContent },
+    ];
+  });
+  const diffs = diffInstalledUnits(generated, (fileName) => {
+    try {
+      return readFileSync(join(installedDirAbs, fileName), "utf8");
+    } catch {
+      return null;
+    }
+  });
+  const differs = diffs.filter((d) => d.status === "differs");
+  const notInstalled = diffs.filter((d) => d.status === "not-installed");
+  const same = diffs.length - differs.length - notInstalled.length;
+  console.log(
+    `${diffs.length} unit(s) geradas: ${same} igual(is), ${differs.length} divergente(s), ` +
+      `${notInstalled.length} não instalada(s) em ${installedDirAbs}.`,
+  );
+  for (const d of differs) {
+    console.log(`\n  DIVERGE ${d.fileName}`);
+    for (const l of d.onlyInstalled) console.log(`    - ${l}`);
+    for (const l of d.onlyGenerated) console.log(`    + ${l}`);
+    if (d.onlyInstalled.length === 0 && d.onlyGenerated.length === 0) console.log("    (mesmas linhas, ordem diferente)");
+  }
+  if (differs.length > 0) {
+    console.log("\n'-' = instalada, '+' = gerada do master. Rearme pela receita de buildArmInstructions().");
+    return 1;
+  }
   return 0;
 }
 
