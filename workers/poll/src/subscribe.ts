@@ -290,7 +290,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
  * imports existentes (`test/poll-subscribe-apex-utm-6427.test.ts` e afins).
  */
 export { CLIENT_UTM_SOURCE_ALLOWED_PREFIXES, isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
-import { isAllowedClientInternalUtmSource, isAllowedClientSocialUtmSource, isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
+import { isAllowedClientBioUtmSource, isAllowedClientInternalUtmSource, isAllowedClientSocialUtmSource, isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
 
 /** #4530 Parte B: `magic-link.ts` reusa o triplo UTM de `"jogar-identify"`
  * (mesmo funil de opt-in do form de identidade), mas é um CALL SITE distinto
@@ -353,7 +353,9 @@ export function resolveSubscribeUtm(raw: unknown, clientUtm?: ClientUtmOverride)
     (isAllowedClientUtmSource(clientUtm.source) ||
       isAllowedClientSocialUtmSource(clientUtm.source) ||
       // #9502/#10315: orgânico interno (retrospectiva-*, evento-email, dossiemaster) — também só no triplo.
-      isAllowedClientInternalUtmSource(clientUtm.source))
+      isAllowedClientInternalUtmSource(clientUtm.source) ||
+      // #13068: bio externa (linktree, tiktok, apoiase, github...) — derivada de EXTERNAL_UTM_SURFACES, só no triplo.
+      isAllowedClientBioUtmSource(clientUtm.source))
   ) {
     const source = String(clientUtm.source).trim();
     const medium =
