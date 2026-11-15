@@ -139,8 +139,13 @@ npx tsx scripts/failover/neo-takeover.ts --arm             # com o sinal da #129
 
 O `--arm` para e remove as `Diaria-Failover-*` antigas, registra as atuais e
 então grava o lease `infra:scheduler-owner` para o Neo (6 h, renovado pelas
-próprias tarefas). Lease que não confirma desfaz o registro das tarefas (e
-apaga o lease, salvo se a releitura mostrar o do `300`).
+próprias tarefas). Antes do lease, relê o Task Scheduler: se as
+`Diaria-Failover-*` registradas não batem com o plano (ou alguma está
+`Disabled`), desfaz o registro e sai 1 sem gravar o lease; plano sem nenhuma
+tarefa critical é recusado antes de registrar (#12993). Num re-arm com o Neo
+já armado, o rollback que confirma zero tarefas também apaga o lease ANTERIOR
+do Neo, que sem tarefas só pararia o `300`. Lease que não confirma desfaz o registro das
+tarefas (e apaga o lease, salvo se a releitura mostrar o do `300`).
 
 ## 3. Conferir
 
@@ -148,7 +153,9 @@ apaga o lease, salvo se a releitura mostrar o do `300`).
 npx tsx scripts/failover/neo-takeover.ts --status
 ```
 
-Mostra as tarefas armadas, o dono do lease e o sinal de queda. Execução que
+Mostra as tarefas armadas, o dono do lease e o sinal de queda; sai 1 se não
+conseguir listar as tarefas (acesso negado, Agendador fora), em vez de
+mostrar 0 armadas. Execução que
 roda loga no `data/` da task, como no `300`. A decisão do gate
 (`[failover neo] ...`) sai só no stdout/stderr do processo, antes do log da
 task, e **o Task Scheduler descarta stdout/stderr**: uma run que cedeu não
@@ -188,7 +195,11 @@ do Neo). Se alguma ainda estiver rodando depois da espera, usa
 interrompido pode ter publicado sem registrar no store, ou seguir vivo como
 processo filho. Nesse caso, conferir o canal antes de o `300` retomar
 (#12993). As tasks do `300` retomam na próxima
-execução. Remoção que falha não libera o lease; KV ilegível sai 1 e diz até
+execução. Se a releitura ainda mostra `Diaria-Failover-*` (ou falha), sai 1:
+sem o sinal `infra:300:down-since` libera o lease (as que sobraram cedem ao
+`300`); com o sinal presente ou ilegível retém o lease, porque com lease
+ausente e sinal presente as do Neo assumiriam. Remova as que sobraram no
+Agendador de Tarefas (e apague o sinal, se o `300` voltou) e rode de novo. Remoção que falha não libera o lease; KV ilegível sai 1 e diz até
 quando o lease vale. Se o Neo morreu armado e não dá para rodar o `--disarm`
 nele, `--disarm --force` em outra máquina com o `.env` libera só o lease (sem
 `--force`, fora do Windows ele recusa: as tarefas do Neo seguiriam armadas);
@@ -243,3 +254,12 @@ task `critical` horária no `300` (ex.: `Diaria-Shorts-Instagram-Catchup`,
 `journalctl --user -u diaria-shorts-instagram-catchup.service`) mostra
 `[failover 300] ... lease ativo do neo ...; 300 cede`, e a mesma tarefa no Neo
 roda. `--disarm` devolve: a próxima execução no `300` volta a agir.
+
+O 1º ensaio (15/11/2026) achou o `--arm` dizendo "armado: 15 tarefas" com o
+lease do Neo gravado e nenhuma `Diaria-Failover-*` no Agendador: o script ia
+para o `powershell.exe -Command -` pelo stdin, e o PowerShell 5.1 descarta em
+silêncio tudo depois do 1º bloco multi-linha e sai 0 (o `--disarm` também não
+removia nada). Desde então o script roda de um `.ps1` temporário com BOM
+(`-File`, `scripts/lib/failover/powershell-file.ts`) e o `--arm`/`--disarm`
+releem as tarefas antes de dar o resultado (#12993). No ensaio, confira o
+`--status` depois do `--arm`: o número de tarefas tem que bater com o plano.

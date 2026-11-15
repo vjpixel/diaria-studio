@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
   buildArmPlan,
   buildDisarmScript,
+  buildStatusScript,
   buildTriggerPs,
   decideArmPrecondition,
   DRAIN_WAIT_SECONDS,
@@ -207,6 +208,23 @@ describe("F6: parar antes de remover", () => {
   });
 });
 
+/** Task Scheduler fingido: entende o script de registro, o de remoção e o de status. */
+function fakeScheduler(opts: { registerOnly?: number } = {}) {
+  const tasks = new Set<string>();
+  return {
+    tasks,
+    run(script: string): { ok: boolean; stdout: string; stderr: string } {
+      if (script === buildStatusScript()) {
+        return { ok: true, stdout: JSON.stringify([...tasks].map((name) => ({ name, state: "Ready" }))), stderr: "" };
+      }
+      if (/Unregister-ScheduledTask/.test(script)) tasks.clear();
+      const names = [...script.matchAll(/Register-ScheduledTask -TaskName '([^']+)'/g)].map((m) => m[1]);
+      for (const n of names.slice(0, opts.registerOnly ?? names.length)) tasks.add(n);
+      return { ok: true, stdout: "", stderr: "" };
+    },
+  };
+}
+
 describe("neo-takeover main — orquestração com runPowerShell/openKv fingidos", () => {
   type Ps = { ok: boolean; stdout: string; stderr: string };
   function harness(opts: { ps?: (script: string, n: number) => Ps; kv?: Record<string, string>; kvOk?: boolean; put?: (k: string, v: string, store: Map<string, string>) => Promise<void> } = {}) {
@@ -222,10 +240,13 @@ describe("neo-takeover main — orquestração com runPowerShell/openKv fingidos
         store.delete(k);
       },
     };
+    // Agendador fingido (#12993): o `--arm` relê o Task Scheduler depois de
+    // registrar, então o default precisa registrar e listar de verdade.
+    const scheduler = fakeScheduler();
     const deps = {
       runPowerShell: (s: string) => {
         scripts.push(s);
-        return opts.ps ? opts.ps(s, scripts.length) : { ok: true, stdout: "", stderr: "" };
+        return opts.ps ? opts.ps(s, scripts.length) : scheduler.run(s);
       },
       openKv: () => (opts.kvOk === false ? ({ ok: false, reason: "sem token" } as const) : ({ ok: true, kv } as const)),
       platform: "win32" as const,
@@ -263,7 +284,9 @@ describe("neo-takeover main — orquestração com runPowerShell/openKv fingidos
     });
     assert.equal(await takeoverMain(["--arm", "--force"], h.deps), 1);
     assert.equal(h.deleted.length, 0);
-    assert.match(h.scripts.at(-1)!, /Unregister-ScheduledTask/);
+    // Rollback: o script de remoção e depois a releitura do status (#12993).
+    assert.equal(h.scripts.at(-2), buildDisarmScript());
+    assert.equal(h.scripts.at(-1), buildStatusScript());
   });
 
   it("F4: releitura inconclusiva -> rollback apaga o lease", async () => {
@@ -283,9 +306,11 @@ describe("neo-takeover main — orquestração com runPowerShell/openKv fingidos
   });
 
   it("F4: rollback do PowerShell que falha é logado", async () => {
+    const sch = fakeScheduler();
     const h = harness({
       put: async () => {},
-      ps: (_s, n) => (n === 1 ? { ok: true, stdout: "", stderr: "" } : { ok: false, stdout: "", stderr: "acesso negado" }),
+      // Registro e releitura funcionam; só a remoção do rollback falha.
+      ps: (s) => (s === buildDisarmScript() ? { ok: false, stdout: "", stderr: "acesso negado" } : sch.run(s)),
     });
     assert.equal(await takeoverMain(["--arm", "--force"], h.deps), 1);
     assert.match(h.out.join("\n"), /remoção das tarefas FALHOU \(acesso negado\)/);
