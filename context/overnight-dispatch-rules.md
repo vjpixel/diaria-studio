@@ -735,6 +735,26 @@ grava o marcador desta sessão nas livres. `exit 1` = ocupada (`reasons`
 diz por quem), `exit 2` = não verificável (nunca tratar como livre). Ao soltar,
 `--release` junto do `unclaim-issue`.
 
+**`--release` em todo caminho de saída, não só no merge (#13172).** A claim
+no GitHub vale 24h e só o `--release` a cancela na hora. Rodar
+`check-pre-dispatch-claim.ts --issues {...} --session-id {id} --release`
+(standalone) quando a unidade sai `pulada` depois do `--announce` (qualquer
+motivo), quando o implementador falha, quando a PR fecha sem merge e, no
+encerramento da rodada, ANTES do `session-registry.ts end`, com todas as
+issues reivindicadas na rodada (idempotente: só grava onde a claim desta
+sessão segue ativa). Sem isso o `/diaria-develop --issues N` da manhã recebe
+`github-claim` de uma sessão já encerrada e pula a issue até a claim expirar.
+Rede de segurança: o script ignora a claim cuja sessão
+`data/session-lifecycle.jsonl` mostra encerrada depois do `at` dela, mas o log
+só chega à outra máquina quando o sync replica.
+
+**Corrida entre dois `--announce` (#13172).** Depois de postar, o script relê
+os comentários. Se outra sessão postou uma claim mais antiga entre a
+conferência e o post, esta cede: grava o próprio release e sai `exit 1` com
+`github-claim-race` em `reasons` (tratar como `claimed-por-outra-sessao`,
+soltando a claim do registro com `unclaim-issue`). Releitura que falha sai
+`exit 2`, também com release da claim recém-postada.
+
 ## 19. Nunca montar corpo de issue/PR via `printf`/`echo -e` (#6004)
 
 `printf` do Bash trata `%` como format specifier no primeiro argumento — um

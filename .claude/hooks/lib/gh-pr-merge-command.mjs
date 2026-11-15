@@ -379,12 +379,14 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
       if (!ctx.skipHeredocData && depth < MAX_DEPTH) {
         const body = src.slice(bodyStart, Math.min(bodyEnd, n));
         scan(body, 0, null, commands, depth + 1, ctx);
-        // #13148: com o delimitador aspado (`<<'D'`, `<<"D"`, `<<\D`) o bash
-        // não expande nada no corpo — a leitura como string entre aspas
-        // duplas só vale para o delimitador sem aspas. A leitura como
-        // comandos (acima) continua para os dois: quem alimenta um shell com
-        // o corpo executa o `$(...)` dele de qualquer jeito.
-        if (!h.quoted) scanSubstitutionsOnly(body, commands, depth + 1, ctx);
+        // #13171: a leitura como string entre aspas duplas vale também para o
+        // delimitador aspado (`<<'D'`, `<<"D"`, `<<\D`). O bash não expande
+        // nada nesse corpo, mas um consumidor pode transformar o texto antes
+        // de um shell (`sed "s/'//g" <<'D' | sh`, com o merge entre aspas
+        // simples no corpo: a leitura como comandos vê só uma string). A
+        // única dispensa das duas leituras é a whitelist
+        // (`ctx.skipHeredocData`), que casa o comando inteiro.
+        scanSubstitutionsOnly(body, commands, depth + 1, ctx);
       } else if (!ctx.skipHeredocData) {
         commands.push([DEPTH_EXCEEDED]);
       }
@@ -1558,7 +1560,12 @@ const DELIM = "'([A-Za-z_]+)'";
 // isso os argumentos do push são só palavras SEM aspas (sem espaço nem
 // metacaractere, um CMD de uma palavra só não lê a mensagem) e nunca
 // `--receive-pack`/`--exec`; fora disso o comando sai da whitelist.
-const PUSH_ARGS = String.raw`(?: (?!--(?:receive-pack|exec)\b)[A-Za-z0-9_./:@=+,%-]+)*`;
+// #13171: o git aceita prefixo único de opção longa (`--rece=sh`, `--exe=sh`,
+// `--e=sh`), então a recusa vale para todo argumento que comece por `--e` (a
+// única opção do push com `e` é `--exec`) ou por `--rec` (`--receive-pack`;
+// `--recurse-submodules` também sai da whitelist, fail-closed). Vale com e sem
+// `=` (`--exe sh` passa o valor na palavra seguinte).
+const PUSH_ARGS = String.raw`(?: (?!--(?:e|rec))[A-Za-z0-9_./:@=+,%-]+)*`;
 const GIT_PUSH = `(?: && git push${PUSH_ARGS})?`;
 // #10777: `cd <worktree> && ` antes do comando — a forma padrão dos
 // subagentes (o cwd é resetado a cada chamada). O caminho é um SIMPLE_ARG

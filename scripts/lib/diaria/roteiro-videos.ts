@@ -352,29 +352,44 @@ export function readRoteiroHorizontal(editionDir: string, warn: (msg: string) =>
   // Um problema em outro campo (um corte que deixou de bater depois de a fala
   // mudar) não pode trocar o título do YouTube pelo do D1: título e capa do
   // horizontal valem se forem texto, com aviso do resto (#13132, review).
-  const h = roteiroPecas(porVideoTolerante(lido.raw)).horizontal;
-  warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): ${h ? "uso o título e a capa do horizontal mesmo assim" : "título e capa do roteiro ignorados, usando o D1"} (#12751)`);
+  const tol = porVideoTolerante(lido.raw);
+  const h = roteiroPecas(tol.roteiro).horizontal;
+  warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): ${h ? "uso o título e a capa do horizontal mesmo assim" : "título e capa do roteiro ignorados, usando o D1"}${avisoSeta(tol.comSeta)} (#12751)`);
   return h ?? null;
 }
 
 /**
  * Só o `titulo` e a `capa` de cada vídeo que são texto, de um roteiro que não
  * passou na validação (#13149): a leitura tolerante de `readRoteiroHorizontal`
- * e `readRoteiroPecas`. Campo de outro tipo fica fora, nunca lança.
+ * e `readRoteiroPecas`. Campo de outro tipo fica fora, nunca lança. Campo com
+ * seta também fica fora (#13173): a validação reprova seta no título e na
+ * capa (#9721), e a leitura tolerante não pode devolvê-la crua para a capa
+ * renderizada nem para o título publicado, como `readRoteiroTelas` faz com a
+ * tela. `comSeta` lista os campos descartados, para o aviso.
  */
-function porVideoTolerante(raw: unknown): Pick<RoteiroFalas, "porVideo"> {
+function porVideoTolerante(raw: unknown): { roteiro: Pick<RoteiroFalas, "porVideo">; comSeta: string[] } {
+  const comSeta: string[] = [];
   const pv = (raw as { porVideo?: unknown } | null)?.porVideo;
-  if (!pv || typeof pv !== "object") return {};
+  if (!pv || typeof pv !== "object") return { roteiro: {}, comSeta };
   const porVideo: NonNullable<RoteiroFalas["porVideo"]> = {};
   for (const v of VIDEOS_ROTEIRO) {
     const p = (pv as Record<string, unknown>)[v] as Record<string, unknown> | null | undefined;
     if (!p || typeof p !== "object") continue;
     const peca: Pick<PecaVideo, "titulo" | "capa"> = {};
-    if (typeof p.titulo === "string") peca.titulo = p.titulo;
-    if (typeof p.capa === "string") peca.capa = p.capa;
+    for (const campo of ["titulo", "capa"] as const) {
+      const s = p[campo];
+      if (typeof s !== "string") continue;
+      if (SETA.test(s)) comSeta.push(`porVideo.${v}.${campo}`);
+      else peca[campo] = s;
+    }
     porVideo[v] = peca as PecaVideo;
   }
-  return { porVideo };
+  return { roteiro: { porVideo }, comSeta };
+}
+
+/** Trecho do aviso da leitura tolerante para os campos com seta descartados (#13173). */
+function avisoSeta(comSeta: string[]): string {
+  return comSeta.length ? `; descartado(s) por seta (→/←, #9721): ${comSeta.join(", ")}` : "";
 }
 
 type RoteiroBruto = { estado: "ausente" } | { estado: "ilegivel"; path: string; erro: string } | { estado: "lido"; path: string; raw: unknown };
@@ -446,9 +461,10 @@ export function readRoteiroPecas(editionDir: string, warn: (msg: string) => void
   }
   const parsed = parseRoteiroFalas(lido.raw);
   if (parsed.ok) return roteiroPecas(parsed.roteiro);
-  const pecas = roteiroPecas(porVideoTolerante(lido.raw));
+  const tol = porVideoTolerante(lido.raw);
+  const pecas = roteiroPecas(tol.roteiro);
   const algum = Object.keys(pecas).length > 0;
-  warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): ${algum ? "uso título e capa de cada vídeo mesmo assim; corrija o resto do roteiro" : "capa dos verticais do roteiro ignorada"} (#13149)`);
+  warn(`${lido.path} inválido (${parsed.problemas.join("; ")}): ${algum ? "uso título e capa de cada vídeo mesmo assim; corrija o resto do roteiro" : "capa dos verticais do roteiro ignorada"}${avisoSeta(tol.comSeta)} (#13149)`);
   return algum ? pecas : null;
 }
 
