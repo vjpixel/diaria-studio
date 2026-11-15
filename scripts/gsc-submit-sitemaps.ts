@@ -1,8 +1,9 @@
 /**
  * gsc-submit-sitemaps.ts (#4546 passo 3)
  *
- * Submete os 3 sitemaps próprios dos Workers de curadoria (cursos, livros,
- * arquivo — #4546 passos 1/2) no Google Search Console via
+ * Submete os sitemaps próprios dos Workers de curadoria (cursos, livros,
+ * arquivo — #4546 passos 1/2; retrospectiva #7658; especial #8350) no Google
+ * Search Console via
  * `PUT /sites/{site}/sitemaps/{feedpath}`. Reusa a autenticação OAuth
  * compartilhada (`google-auth.ts`, `gFetch`) — mesmo credential file de
  * `seo-pull.ts`/`seo-index-check.ts`.
@@ -32,7 +33,7 @@ import { GSC_DEFAULT_SITE } from "./lib/gsc.ts";
 import { gFetch } from "./google-auth.ts";
 
 /**
- * Sitemaps próprios dos 3 Workers de curadoria (#4546 passo 1 — já servidos
+ * Sitemaps próprios dos Workers de curadoria (#4546 passo 1 — já servidos
  * em produção: `workers/cursos/public/sitemap.xml`,
  * `workers/livros/public/sitemap.xml`, rota dinâmica de
  * `workers/arquivo/src/index.ts`).
@@ -45,8 +46,16 @@ import { gFetch } from "./google-auth.ts";
  *
  * O motivo de estarem na lista continua o mesmo dos irmãos: são páginas
  * públicas com trecho indexável, não conteúdo fechado.
+ *
+ * `especial.diar.ia.br/sitemap.xml` ENTROU no #8350: é o sitemap estático do
+ * Worker `workers/artigos` (`workers/artigos/public/sitemap.xml`, o mesmo que o
+ * `robots.txt` do host declara), com os Artigos Especiais e as páginas de
+ * entidade (`/entidades/*`, lote 1 brasileiro no PR #12957). O host é
+ * subdomínio de diar.ia.br, então a propriedade é a mesma domain property
+ * `sc-domain:diar.ia.br` (`GSC_DEFAULT_SITE`) dos outros quatro.
  */
 export const CURADORIA_SITEMAPS = [
+  "https://especial.diar.ia.br/sitemap.xml",
   "https://retrospectiva.diar.ia.br/sitemap.xml",
   "https://cursos.diar.ia.br/sitemap.xml",
   "https://livros.diar.ia.br/sitemap.xml",
@@ -96,7 +105,7 @@ export async function submitSitemap(
   }
 }
 
-/** Submete todos os sitemaps em sequência (volume baixo — 3 chamadas — não precisa de paralelismo). */
+/** Submete todos os sitemaps em sequência (volume baixo — uma chamada por sitemap — não precisa de paralelismo). */
 export async function submitAll(
   site: string,
   sitemapUrls: readonly string[],
