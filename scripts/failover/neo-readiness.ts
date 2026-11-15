@@ -10,6 +10,8 @@
  * Checagens (cada uma isolada: a que falha ou lança nunca derruba as outras;
  * a que lança vira falta, nunca "não verificado"):
  *   - scripts dos passos existem; arquivo do `guard` existe em `data/`;
+ *   - `.env` do checkout lido (ausente e ilegível são falta com a causa,
+ *     #13126; antes um erro de leitura virava `{}` calado);
  *   - segredos de cada script presentes no `.env` do checkout (só ele: é o
  *     que as tasks do Neo recebem; o ambiente da sessão não conta) e no
  *     Doppler (`doppler secrets --only-names`, só NOMES; valor nunca é lido
@@ -63,6 +65,7 @@ import {
   classifyThreadsReadError,
   CRITICAL_SCRIPT_REQUIREMENTS,
   evaluateDataDir,
+  evaluateDotenv,
   evaluateGhAuth,
   evaluateGit,
   evaluateNodeModules,
@@ -77,6 +80,7 @@ import {
   syncSignalLogPaths,
   type CheckResult,
   type DataDirState,
+  type DotenvState,
   type ReadinessReport,
   type TokenId,
   type TokenProbe,
@@ -109,8 +113,11 @@ export interface ReadinessDeps {
   machineId: () => string;
   /** Ambiente da sessão: só serve ao aviso "presente só no ambiente" e ao KV do `--record`. */
   env: Record<string, string | undefined>;
-  /** `.env` do checkout: é o que as tasks do Neo recebem, e o que decide segredos e tokens. */
-  readDotenv: (root: string) => Record<string, string>;
+  /**
+   * `.env` do checkout: é o que as tasks do Neo recebem, e o que decide segredos e tokens.
+   * `null` = arquivo ausente; erro de leitura lança (#13126: antes virava `{}` calado).
+   */
+  readDotenv: (root: string) => Record<string, string> | null;
   /** Nomes do Doppler, ou o motivo de não ter consultado (CLI ausente, sem login, erro). */
   dopplerNames: (timeoutMs: number) => { names: Set<string> } | { error: string };
   /** Roda um comando e devolve só o exit code e stdout (stderr descartado). */
@@ -125,12 +132,15 @@ export interface ReadinessDeps {
   err: (msg: string) => void;
 }
 
-function readDotenvFile(root: string): Record<string, string> {
+export function readDotenvFile(root: string): Record<string, string> | null {
+  let raw: string;
   try {
-    return parseDotenv(readFileSync(join(root, ".env"), "utf8"));
-  } catch {
-    return {};
+    raw = readFileSync(join(root, ".env"), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
   }
+  return parseDotenv(raw);
 }
 
 function runCmd(cmd: string, args: string[], cwd: string, timeoutMs: number): { code: number | null; stdout: string; error?: string } {
@@ -299,7 +309,18 @@ export async function collectReadiness(d: ReadinessDeps, opts: CollectOptions): 
   }
 
   const tasks = d.tasks.filter((t) => resolveFailoverTier(t) === "critical");
-  const dotenv = d.readDotenv(d.root);
+  let dotenvState: DotenvState;
+  let dotenv: Record<string, string> = {};
+  try {
+    const read = d.readDotenv(d.root);
+    if (read === null) dotenvState = { kind: "absent" };
+    else {
+      dotenv = read;
+      dotenvState = { kind: "ok", count: Object.keys(read).length };
+    }
+  } catch (e) {
+    dotenvState = { kind: "unreadable", error: (e as Error).message };
+  }
   const fetchFn = withTimeout(d.fetch, limits.fetchTimeoutMs);
   const byId = new Map<string, CheckResult>();
   const put = (c: CheckResult) => byId.set(c.id, c);
@@ -313,7 +334,7 @@ export async function collectReadiness(d: ReadinessDeps, opts: CollectOptions): 
     return { id: "doppler", status: "ok", detail: `Doppler consultado (${r.names.size} nomes)` };
   });
 
-  const common: CheckResult[] = [dop];
+  const common: CheckResult[] = [dop, evaluateDotenv(dotenvState)];
   common.push(
     await check("node", () => {
       const nvmrcPath = join(d.root, ".nvmrc");
@@ -413,7 +434,7 @@ export async function main(argv: string[], deps: Partial<ReadinessDeps> = {}): P
   let recordFailed = false;
   if (record) {
     try {
-      const env = mergeDotenvUnderEnv(d.readDotenv(d.root), d.env);
+      const env = mergeDotenvUnderEnv(d.readDotenv(d.root) ?? {}, d.env);
       await d.putKv(env, NEO_READINESS_KV_KEY, serializeReadinessRecord(report));
     } catch (e) {
       recordFailed = true;

@@ -394,6 +394,29 @@ export function readRoteiroFontes(editionDir: string, warn: (msg: string) => voi
   return { status: problemas.length ? "invalido" : "ok", problemas, fontes };
 }
 
+/**
+ * Título e capa de todos os vídeos do roteiro (#13123: a montagem lê a capa
+ * dos verticais). Mesmas regras do `readRoteiroHorizontal`: sem o arquivo =
+ * null em silêncio; ilegível ou inválido = null com aviso.
+ */
+export function readRoteiroPecas(editionDir: string, warn: (msg: string) => void): Partial<Record<VideoRoteiro, PecaVideo>> | null {
+  const path = join(editionDir, ROTEIRO_FALAS_FILE);
+  if (!existsSync(path)) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    warn(`${path} ilegível (${(e as Error).message}): capa dos verticais do roteiro ignorada (#13123)`);
+    return null;
+  }
+  const lido = parseRoteiroFalas(raw);
+  if (!lido.ok) {
+    warn(`${path} inválido (${lido.problemas.join("; ")}): capa dos verticais do roteiro ignorada (#13123)`);
+    return null;
+  }
+  return roteiroPecas(lido.roteiro);
+}
+
 // ─── Gancho e título (#13116) ────────────────────────────────────────────────
 
 /**

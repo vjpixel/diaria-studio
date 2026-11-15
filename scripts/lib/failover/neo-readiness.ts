@@ -192,6 +192,21 @@ export function evaluateSecret(
   return { id, status: "fail", detail: `${label}: ausente do .env${dopplerNames ? " (e do Doppler)" : ""}${onlySession}` };
 }
 
+/** Leitura do `.env` do checkout, com ausente e ilegível separados (#13126). */
+export type DotenvState = { kind: "ok"; count: number } | { kind: "absent" } | { kind: "unreadable"; error: string };
+
+/**
+ * `.env` do checkout (#13126). As tasks do Neo recebem os segredos só dele (o
+ * Task Scheduler não tem EnvironmentFile). Antes, qualquer erro de leitura
+ * virava `{}` em silêncio e cada segredo saía "ausente do .env": com o arquivo
+ * ilegível (EACCES, lock do Drive), a causa real não aparecia em lugar nenhum.
+ */
+export function evaluateDotenv(state: DotenvState): CheckResult {
+  if (state.kind === "ok") return { id: "dotenv", status: "ok", detail: `.env lido (${state.count} variáveis)` };
+  if (state.kind === "absent") return { id: "dotenv", status: "fail", detail: ".env ausente no checkout: as tasks do Neo recebem os segredos só dele (npm run sync-env)" };
+  return { id: "dotenv", status: "fail", detail: `.env ilegível (${state.error.slice(0, 160)}): os segredos abaixo saem ausentes por isso` };
+}
+
 /** Versão do Node contra o `.nvmrc` (major) e o mínimo do projeto. */
 export function evaluateNodeVersion(version: string, nvmrc: string | null, minOk: boolean): CheckResult {
   const m = /^v?(\d+)\./.exec(version);

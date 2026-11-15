@@ -270,7 +270,70 @@ function readOne(path: string, aammdd: string, corte: boolean): ShortsPublishedF
  */
 export function readShortsRegistry(editionDir: string, aammdd: string): ShortsPublishedFile {
   const corte = isCorteDir(editionDir);
-  return mergeShortsRegistries(aammdd, listShortsRegistryFiles(editionDir).map((p) => readOne(p, aammdd, corte)));
+  // #12279: o post trocado pelo --replace-scheduled não conta mais como feito, em nenhum
+  // arquivo (cópias de conflito incluídas): some a entrada AGENDADA do par destino/ID antigo.
+  // Outra entrada com o mesmo ID (send_unknown, published) fica visível: nunca é escondida.
+  const replaced = readShortReplacements(editionDir);
+  const gone = (e: ShortPublishedEntry) => e.status === "scheduled" && replaced.some((r) => r.destination === e.destination && r.id === e.id);
+  const files = listShortsRegistryFiles(editionDir).map((p) => readOne(p, aammdd, corte));
+  return mergeShortsRegistries(aammdd, replaced.length ? files.map((f) => ({ ...f, entries: f.entries.filter((e) => !gone(e)) })) : files);
+}
+
+/**
+ * #12279: histórico das substituições de post agendado (`--replace-scheduled`).
+ * Cada linha é um par destino/ID que a plataforma confirmou cancelado (ou que
+ * a skill confirmou apagado na Buffer, `--mark-replaced`/`--mark ... --replaces`):
+ * o registro deixa de contar a entrada AGENDADA desse ID, mesmo numa cópia de
+ * conflito antiga.
+ * Nome fora do padrão `06-shorts-published*`: não é lido como registro.
+ */
+export const SHORTS_REPLACED_FILE = "_internal/06-shorts-replaced.json";
+
+export interface ShortReplacementRecord {
+  destination: string;
+  /** ID do post antigo na plataforma (o do registro). */
+  id: string;
+  /** Horário do post antigo, preservado no novo envio. */
+  scheduled_at: string | null;
+  replaced_at: string;
+  /** Hash dos bytes do vídeo novo (o do plano aprovado). */
+  new_video_sha256: string | null;
+}
+
+/** Lê o histórico de substituições; ausente = vazio. Ilegível lança (nunca ressuscita um ID apagado às cegas). */
+export function readShortReplacements(editionDir: string): ShortReplacementRecord[] {
+  const path = join(editionDir, SHORTS_REPLACED_FILE);
+  if (!existsSync(path)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    throw new Error(`${path}: JSON inválido (${(e as Error).message}) — confira à mão: ele lista os posts já substituídos (#12279)`);
+  }
+  const list = (parsed as { replaced?: unknown })?.replaced;
+  if (!Array.isArray(list) || list.some((r) => !r || typeof r.destination !== "string" || !r.destination || typeof r.id !== "string" || !r.id)) {
+    throw new Error(`${path}: formato inesperado (esperado {"replaced": [{destination, id, ...}]}) — confira à mão (#12279)`);
+  }
+  return list as ShortReplacementRecord[];
+}
+
+/**
+ * #12279: grava a substituição de um post, sob lock, SÓ depois de a plataforma
+ * confirmar o cancelamento (ou a skill confirmar a exclusão na Buffer).
+ * Idempotente pelo par destino/ID. Não toca o registro dos destinos.
+ */
+export function recordShortReplacement(editionDir: string, record: ShortReplacementRecord, lockTimeoutMs = 30_000): void {
+  const path = join(editionDir, SHORTS_REPLACED_FILE);
+  mkdirSync(dirname(path), { recursive: true });
+  withFileLock(
+    `${path}.lock`,
+    () => {
+      const cur = readShortReplacements(editionDir);
+      if (cur.some((r) => r.destination === record.destination && r.id === record.id)) return;
+      writeFileAtomic(path, JSON.stringify({ replaced: [...cur, record] }, null, 2) + "\n");
+    },
+    lockTimeoutMs,
+  );
 }
 
 /** Conteúdo bruto de cada arquivo do registro (pro `decideTimerRun`). */

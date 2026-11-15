@@ -173,3 +173,28 @@ pronto para `gen-youtube-thumb.ts` (horizontal e `--short-cover`) ou o motivo de
 não caber. A pontuação é heurística sobre esta diretriz, não previsão de
 clique: ela ordena a lista, e quem escolhe é o editor. `--json` devolve a lista
 estruturada.
+
+## Capa no começo dos verticais (#13123, em teste)
+
+Proposta do editor de 15/11/2026: nas redes sem controle de capa (TikTok,
+Facebook, LinkedIn, Threads, X), a rede escolhe um frame, em geral o primeiro.
+Com `"capaInicio": true` no `blocks.json` da edição, a montagem põe o painel e
+o gancho da capa do Short (o mesmo desenho do `04-youtube-short-capa.jpg`, num
+PNG transparente) nos primeiros 300 ms de cada vertical, por cima da fala de
+abertura e sem mexer no áudio (opção a da issue). O fundo é o próprio vídeo: a
+capa JPG só existe depois da montagem. O texto é o da capa do vertical no
+roteiro (`porVideo.vertical1.capa`; `porVideo.vertical2.capa` para o corte
+`guia`), ou `"capa"` no `blocks.json` ou na sequência.
+
+Fica como está: o horizontal (capa pela API), o Instagram (`cover_url`) e o
+YouTube Shorts (capa pelo Studio web e o 1º frame do #12100).
+
+O teste vale para 2 ou 3 edições, antes de virar regra. Em cada uma, conferir:
+
+1. qual frame cada rede (TikTok, Facebook, LinkedIn, Threads, X) mostrou como
+   capa;
+2. a retenção nos primeiros 3 s, comparada com as edições anteriores sem a
+   capa;
+3. se a capa fica legível com o título na tela e a legenda queimada.
+
+Sem o campo no `blocks.json`, o build sai como antes.
