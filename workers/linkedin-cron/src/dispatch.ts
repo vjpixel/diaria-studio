@@ -1962,7 +1962,7 @@ async function publishThreadsCreation(
     return ambiguous(`${label} fetch ${timeout ? "timeout" : "failed"}: ${err.message} ${idSuffix}`);
   }
   const serverError = res.status >= 500;
-  let data: { id?: string; error?: { message?: string } };
+  let data: { id?: string; error?: ThreadsGraphError };
   try {
     data = JSON.parse(text);
   } catch {
@@ -1970,7 +1970,7 @@ async function publishThreadsCreation(
     return res.ok || serverError ? ambiguous(reason) : { status: definiteFailure, reason };
   }
   if (!res.ok || data.error) {
-    const reason = `${label} HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} ${idSuffix}`;
+    const reason = `${label} HTTP ${res.status}: ${describeThreadsError(data.error, text)} ${idSuffix}`;
     return serverError ? ambiguous(reason) : { status: definiteFailure, reason };
   }
   if (!data.id) return ambiguous(`${label} sem id: ${text.slice(0, 200)} ${idSuffix}`);
@@ -1984,6 +1984,148 @@ const THREADS_POLL_MAX_ATTEMPTS = 10;
  * ~9 × 2s = 18s de espera + até 10 fetches de ~30s cada só se cada um
  * travar no timeout (limite superior raro, não o caminho comum). */
 const THREADS_POLL_INTERVAL_MS = 2000;
+
+/**
+ * #13100 — tentativas de criar o container PAI do carrossel Threads com os
+ * MESMOS filhos já `FINISHED`. Na retro semanal de 261114 (`weekly-clicked`,
+ * 7 filhos todos `FINISHED`) a criação do pai devolveu um único HTTP 400
+ * "Invalid parameter" e o post foi direto pra DLQ, sem 2ª tentativa — com o
+ * mesmo formato (7 filhos 1080x1350, legenda de ~430 chars, 1 link) saindo
+ * normalmente no post `weekly-highlights` 16h antes e nas 15 semanas
+ * anteriores. Criar o pai não publica nada (container não publicado expira
+ * em 24h), então repetir a criação reaproveitando os filhos é seguro e
+ * barato (1 POST por tentativa, nenhum filho recriado) — ao contrário de
+ * re-tentar o carrossel inteiro no próximo ciclo do cron, que a decisão do
+ * #5348 evita.
+ */
+export const THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS = 3;
+/** #13100 — espera entre tentativas de criação do pai (ms). */
+export const THREADS_CAROUSEL_PARENT_RETRY_MS = 5000;
+
+/** Corpo de `error` da Graph/Threads API com os campos de diagnóstico (#13100). */
+export interface ThreadsGraphError extends GraphErrorBody {
+  type?: string;
+  error_user_title?: string;
+  error_user_msg?: string;
+  fbtrace_id?: string;
+}
+
+/**
+ * #13100 — descreve o erro da Threads API com TUDO que a Meta manda, não só
+ * `message`. "Invalid parameter" (code 100) é genérico; o motivo concreto
+ * vem em `error_subcode`/`error_user_msg`, e o `fbtrace_id` é o que o
+ * suporte da Meta pede. Antes só `message` ia pro `last_error` da DLQ, e a
+ * falha da #13100 ficou sem como ser diagnosticada depois.
+ */
+export function describeThreadsError(error: ThreadsGraphError | undefined, rawText: string): string {
+  if (!error || typeof error !== "object") return rawText.slice(0, 200);
+  const head = error.message || rawText.slice(0, 200);
+  const parts: string[] = head ? [head] : [];
+  const meta: string[] = [];
+  if (error.type) meta.push(`type=${error.type}`);
+  if (typeof error.code === "number") meta.push(`code=${error.code}`);
+  if (typeof error.error_subcode === "number") meta.push(`subcode=${error.error_subcode}`);
+  if (error.is_transient === true) meta.push("is_transient=true");
+  if (meta.length) parts.push(`(${meta.join(", ")})`);
+  const user = [error.error_user_title, error.error_user_msg].filter((s) => typeof s === "string" && s.trim()).join(": ");
+  if (user) parts.push(`— ${user}`);
+  if (error.fbtrace_id) parts.push(`[fbtrace_id=${error.fbtrace_id}]`);
+  return parts.join(" ");
+}
+
+/**
+ * #13100 — códigos da Graph que não passam em 5 s: token inválido/expirado
+ * (190) e permissão (10, 200). Repetir só gasta subrequest antes da DLQ.
+ */
+export const THREADS_PARENT_NON_RETRYABLE_CODES: ReadonlySet<number> = new Set([190, 10, 200]);
+
+/**
+ * #13100 — a falha HTTP na criação do pai merece outra tentativa? Sim quando
+ * a Meta declara `is_transient: true`; não para auth/permissão
+ * (`THREADS_PARENT_NON_RETRYABLE_CODES`) nem limite de taxa
+ * (`GRAPH_RATE_LIMIT_CODES`, #10992 — não zera em segundos); sim para o resto
+ * (code 100 "Invalid parameter" do incidente, 5xx, corpo não-JSON, sem id).
+ */
+export function isThreadsParentRetryable(error: ThreadsGraphError | undefined | null): boolean {
+  if (!error || typeof error !== "object") return true;
+  if (error.is_transient === true) return true;
+  if (typeof error.code !== "number") return true;
+  return !THREADS_PARENT_NON_RETRYABLE_CODES.has(error.code) && !GRAPH_RATE_LIMIT_CODES.has(error.code);
+}
+
+/**
+ * #13100 — cria o container pai do carrossel (`media_type=CAROUSEL`), com até
+ * `THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS` tentativas sobre os mesmos filhos.
+ * Só repete resposta HTTP com cara de passageira (`isThreadsParentRetryable`);
+ * timeout/abort ou outra exceção do fetch para o laço na hora, para o pior
+ * caso ficar perto do de antes da #13100 frente ao TTL do claim
+ * (`CLAIM_TTL_MS`). O `reason` final lista o erro de CADA tentativa.
+ */
+async function createThreadsCarouselParent(
+  base: string,
+  creds: ThreadsCreds,
+  childIds: string[],
+  caption: string,
+): Promise<{ ok: true; id: string } | { ok: false; reason: string }> {
+  const errors: string[] = [];
+  for (let attempt = 1; attempt <= THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS; attempt++) {
+    let failure: string;
+    let retryable = true;
+    try {
+      const params = new URLSearchParams({
+        media_type: "CAROUSEL",
+        children: childIds.join(","),
+        text: caption,
+        access_token: creds.accessToken,
+      });
+      const res = await fetch(`${base}/${creds.userId}/threads`, {
+        method: "POST",
+        body: params,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      const text = await res.text();
+      let data: { id?: string; error?: ThreadsGraphError } | null = null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = null;
+      }
+      if (!data) {
+        failure = `resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}`;
+      } else if (!res.ok || data.error) {
+        failure = `HTTP ${res.status}: ${describeThreadsError(data.error, text)}`;
+        retryable = isThreadsParentRetryable(data.error);
+      } else if (!data.id) {
+        failure = `sem id: ${text.slice(0, 200)}`;
+      } else {
+        if (attempt > 1) {
+          console.warn(
+            `[threads-carousel] container pai criado na tentativa ${attempt}/${THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS} (antes: ${errors.join(" | ")})`,
+          );
+        }
+        return { ok: true, id: data.id };
+      }
+    } catch (e) {
+      const err = e as Error;
+      const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+      failure = `fetch ${timeout ? "timeout" : "failed"}: ${err.message}`;
+      retryable = false;
+    }
+    errors.push(`tentativa ${attempt}: ${failure}`);
+    console.warn(
+      `[threads-carousel] container pai falhou na tentativa ${attempt}/${THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS}: ${failure} (children=${childIds.join(",")})`,
+    );
+    if (!retryable) break;
+    if (attempt < THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS) {
+      await new Promise((r) => setTimeout(r, THREADS_CAROUSEL_PARENT_RETRY_MS));
+    }
+  }
+  const n = errors.length;
+  return {
+    ok: false,
+    reason: `Threads carrossel: container pai falhou após ${n} ${n === 1 ? "tentativa" : "tentativas"}: ${errors.join(" | ")} (children=${childIds.join(",")})`,
+  };
+}
 
 /**
  * Faz polling do status de UM container Threads (imagem ou carrossel pai)
@@ -2156,7 +2298,9 @@ async function fireThreadsSingleImage(imageUrl: string, caption: string, creds: 
  *      1 POST por imagem na ordem da lista — cada um seguido de poll
  *      obrigatório até `FINISHED` antes do próximo passo poder usá-lo.
  *   2. 1 container pai (`media_type: "CAROUSEL"`, `children=[ids]`, `text`
- *      = caption) — seguido do MESMO poll obrigatório.
+ *      = caption) — seguido do MESMO poll obrigatório. A criação do pai tem
+ *      até `THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS` tentativas sobre os mesmos
+ *      filhos (#13100) — é a única repetição dentro do carrossel.
  *   3. `threads_publish` do container pai.
  *
  * Falha parcial (mesma decisão de escopo do #4153/Instagram): se QUALQUER
@@ -2196,7 +2340,7 @@ async function fireThreadsCarousel(imageUrls: string[], caption: string, creds: 
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
       const text = await res.text();
-      let data: { id?: string; error?: { message?: string } };
+      let data: { id?: string; error?: ThreadsGraphError };
       try {
         data = JSON.parse(text);
       } catch {
@@ -2208,7 +2352,7 @@ async function fireThreadsCarousel(imageUrls: string[], caption: string, creds: 
       if (!res.ok || data.error) {
         return {
           status: "dlq",
-          reason: `Threads carrossel: child container ${i + 1}/${imageUrls.length} falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (containers já criados: ${childIds.length})`,
+          reason: `Threads carrossel: child container ${i + 1}/${imageUrls.length} falhou: HTTP ${res.status}: ${describeThreadsError(data.error, text)} (containers já criados: ${childIds.length})`,
         };
       }
       if (!data.id) {
@@ -2241,50 +2385,11 @@ async function fireThreadsCarousel(imageUrls: string[], caption: string, creds: 
 
   // Passo 2: container pai — media_type=CAROUSEL + children (ordem
   // preservada) + text (caption só entra no pai, mesmo padrão do Instagram).
-  let parentId: string;
-  try {
-    const params = new URLSearchParams({
-      media_type: "CAROUSEL",
-      children: childIds.join(","),
-      text: caption,
-      access_token: creds.accessToken,
-    });
-    const res = await fetch(`${base}/${creds.userId}/threads`, {
-      method: "POST",
-      body: params,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    const text = await res.text();
-    let data: { id?: string; error?: { message?: string } };
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return {
-        status: "dlq",
-        reason: `Threads carrossel: container pai resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (children=${childIds.join(",")})`,
-      };
-    }
-    if (!res.ok || data.error) {
-      return {
-        status: "dlq",
-        reason: `Threads carrossel: container pai falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (children=${childIds.join(",")})`,
-      };
-    }
-    if (!data.id) {
-      return {
-        status: "dlq",
-        reason: `Threads carrossel: container pai sem id: ${text.slice(0, 200)} (children=${childIds.join(",")})`,
-      };
-    }
-    parentId = data.id;
-  } catch (e) {
-    const err = e as Error;
-    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
-    return {
-      status: "dlq",
-      reason: `Threads carrossel: container pai fetch ${timeout ? "timeout" : "failed"}: ${err.message} (children=${childIds.join(",")})`,
-    };
-  }
+  // #13100: até THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS tentativas com os mesmos
+  // filhos, e o erro completo da Meta (code/subcode/user_msg/fbtrace_id).
+  const parent = await createThreadsCarouselParent(base, creds, childIds, caption);
+  if (!parent.ok) return { status: "dlq", reason: parent.reason };
+  const parentId = parent.id;
 
   // Poll OBRIGATÓRIO do container pai — mesmo racional dos filhos.
   const parentPoll = await pollThreadsContainerStatus(base, parentId, creds.accessToken);

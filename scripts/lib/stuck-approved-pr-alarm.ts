@@ -7,7 +7,7 @@
  * `mergeable=UNKNOWN` transitório, e #12920 (approve, verde) ficou retida
  * como draft. Nenhum alarme olhava esse estado: `stale-red-pr-alarm.ts`
  * (#8530) só pega CI vermelho, e a fila de escalada
- * (`list-continuo-escalation-queue.ts`) só mostra a PR depois de 24h.
+ * (`list-continuo-escalation-queue.ts`) só mostra a PR depois de 6h (24h até o #13094).
  *
  * Este alarme independe de escalada: basta a PR estar aprovada, verde e
  * aberta há >= `thresholdHours` (default 4h), contadas desde a ABERTURA

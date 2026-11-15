@@ -3,9 +3,31 @@
  * Fila do briefing com as escaladas do contínuo (#12684) + prazo de validade
  * da escalada (#12765). Falha é explícita, nunca uma fila vazia.
  *
- * Cada PR com `continuo-escalado` há mais de 24h entra em `queue`. Passadas
- * 48h, a escalada deixa de ser "pendência do editor" sem prazo e recebe um
- * DESTINO determinístico (`escalationDestination`):
+ * Cada PR com `continuo-escalado` há mais de 6h entra em `queue`. Passadas
+ * 24h, a escalada deixa de ser "pendência do editor" sem prazo e recebe um
+ * DESTINO determinístico (`escalationDestination`). Janelas encurtadas de
+ * 24h/48h no #13094: o contínuo drena a cada ~120min, então 24h ainda são
+ * ~12 ticks antes de qualquer fechamento, e fechar é reversível.
+ *
+ * `--all-open` (#13094, briefing do `/diaria-develop`): em vez de só as PRs
+ * com `continuo-escalado`, triagem de TODA PR aberta. Sem a label
+ * (`kind: aberta`), o relógio é a última atividade: o maior entre `createdAt`,
+ * o `committedDate` do último commit e a aplicação de `continuo-ci-fix-tentado`
+ * (#13181 — PR antiga que acabou de receber commit de fixer não nasce
+ * vencida). PR `aberta` nunca recebe `fechar-para-issue` (só a escalada), e
+ * o atalho mecânico do #12950 só vale nela passadas 6h. Lane pela branch (`prLane`):
+ *   - autônoma (`overnight/`, `develop/`, `continuo/`): mesmos destinos;
+ *   - manual (qualquer outra branch: do editor ou de autor desconhecido): só
+ *     `briefing` ou `fixer` (este só passadas 6h), NUNCA `fechar-*` (vale
+ *     também sem `--all-open`);
+ *   - bot (autor bot, `dependabot/`, `bot/`): fora da fila com `--all-open`,
+ *     listada em `skipped`; sem a flag, escalada de bot sai com `lane: bot`
+ *     e também nunca fecha.
+ * PR reivindicada por sessão viva — pelo corpo (gate) ou pela issue de origem
+ * da branch (`originIssue`) — entra só como informação (`claimed: true`,
+ * destino `briefing`), para não brigar com rodada em curso. Registro ou corpo
+ * ilegível sai como `claims_check: "failed"`, também `briefing`; o motivo
+ * vem em `claim_reason`.
  *
  *   - `fechar-redundante`   — tudo que a PR muda já está igual no master
  *                             (resgate órfão cujo conteúdo entrou por outro caminho);
@@ -21,9 +43,10 @@
  *                             já presente (a label também vem do loop do
  *                             contínuo): devolve a issue para a fila e fecha a
  *                             PR. Sem issue de origem identificável, `briefing`.
- *                             CI `pending` só fecha se a label de tentativa tem
- *                             mais de 6h (`PENDING_AFTER_FIX_MS`, #12804): antes
- *                             disso o CI do conserto ainda pode estar na fila;
+ *                             Só fecha se a label de tentativa tem mais de 6h
+ *                             (`PENDING_AFTER_FIX_MS`; #12804 para `pending`,
+ *                             #13181 para qualquer causa): antes disso o
+ *                             conserto ainda pode estar em curso;
  *                             `error` (checks ilegíveis) nunca fecha nem vai ao
  *                             fixer — é `briefing` (fail-closed, #12804);
  *   - `briefing`            — o resto (diff grande, caminho sensível, sem
@@ -33,7 +56,7 @@
  *
  * Exceção às janelas (#12950): escalada com causa MECÂNICA (conflito ou CI
  * `fail`, fora draft com `bloqueio-execucao`) e sem `continuo-ci-fix-tentado`
- * entra na fila já com destino `fixer`, sem esperar 24h/48h
+ * entra na fila já com destino `fixer`, sem esperar 6h/24h
  * (`isMechanicalEscalation`). As janelas ficam para o que pede o editor.
  *
  * Sem `--apply` o script não escreve no GitHub; o `git fetch` da checagem de
@@ -47,17 +70,20 @@
  * outras: vai para `failures[]` e o script sai 1 no fim. `fixer` e
  * `briefing` precisam de agente/editor e ficam com o coordenador.
  *
- * Uso: npx tsx scripts/list-continuo-escalation-queue.ts [--apply]
+ * Uso: npx tsx scripts/list-continuo-escalation-queue.ts [--all-open] [--apply]
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { isMainModule } from "./lib/cli-args.ts";
 import { extractClosingIssueNumbers } from "./lib/continuo-superseded-check.ts";
+import { checkSessionsScanHealth, isIssueClaimedByOther, resolveRepoRoot } from "./lib/session-registry.ts";
 
 const REPO = "vjpixel/diaria-studio";
 const ESCALATION_LABEL = "continuo-escalado";
 const HOUR_MS = 60 * 60 * 1000;
-export const ESCALATION_QUEUE_AFTER_MS = 24 * HOUR_MS;
-export const ESCALATION_EXPIRY_MS = 48 * HOUR_MS;
+/** Entrada no briefing (#13094; era 24h). Mesmo valor de `PENDING_AFTER_FIX_MS`. */
+export const ESCALATION_QUEUE_AFTER_MS = 6 * HOUR_MS;
+/** Destino automático (#13094; era 48h). */
+export const ESCALATION_EXPIRY_MS = 24 * HOUR_MS;
 /**
  * CI `pending` depois do fixer só conta como parado quando a tentativa
  * (`continuo-ci-fix-tentado`) tem mais que isto (#12804): a fila de runners
@@ -87,6 +113,23 @@ export function escalationSince(events: LabelEvent[]): string | null {
 export function overdueEscalation(events: LabelEvent[], now: number): string | null {
   const since = escalationSince(events);
   return since && now - Date.parse(since) > ESCALATION_QUEUE_AFTER_MS ? since : null;
+}
+
+export type PrLane = "autonomous" | "manual" | "bot";
+const AUTONOMOUS_PREFIXES = ["overnight/", "develop/", "continuo/"];
+const BOT_PREFIXES = ["dependabot/", "bot/"];
+
+/**
+ * Pure (#13094): de onde a PR veio. Só a branch das lanes autônomas conta
+ * como autônoma; qualquer outra (inclusive autor desconhecido) é `manual`,
+ * que nunca fecha sozinha (fail-closed).
+ */
+export function prLane(pr: { headRefName: string; author?: { login?: string; is_bot?: boolean } | null }): PrLane {
+  const login = pr.author?.login ?? "";
+  if (pr.author?.is_bot === true || /\[bot\]$/.test(login) || login.startsWith("app/")) return "bot";
+  if (BOT_PREFIXES.some((p) => pr.headRefName.startsWith(p))) return "bot";
+  if (AUTONOMOUS_PREFIXES.some((p) => pr.headRefName.startsWith(p))) return "autonomous";
+  return "manual";
 }
 
 /**
@@ -135,13 +178,15 @@ export interface DestinationInput {
    * Ausente/`null`/não finito = desconhecido: CI `pending` nunca fecha (#12804).
    */
   fixTriedAgeMs?: number | null;
+  /** PR manual/de autor desconhecido (#13094): nunca recebe `fechar-*`. */
+  manual?: boolean;
+  /**
+   * PR sem `continuo-escalado` (`kind: aberta`, #13094/#13181): nunca recebe
+   * `fechar-para-issue`, e o atalho mecânico só vale passadas 6h.
+   */
+  aberta?: boolean;
 }
 
-/**
- * Pure: destino da escalada. Antes de 48h (ou idade ilegível) é sempre
- * `briefing` (#12684). PR retida para o editor (#10278, ou retenção ilegível)
- * ou reivindicada por sessão viva nunca recebe destino automático.
- */
 /**
  * Pure (#12950): a escalada tem causa MECÂNICA que um fixer resolve sem
  * decisão do editor — conflito com o master ou CI vermelho. `pending` e
@@ -155,37 +200,55 @@ export function isMechanicalEscalation(input: DestinationInput): boolean {
   return conflict || input.checksVerdict === "fail" || input.checksVerdict === "blocked_by_conflict";
 }
 
+/**
+ * Pure: destino da escalada. Antes de 24h (ou idade ilegível) é sempre
+ * `briefing` (#12684), salvo causa mecânica (#12950). PR retida para o editor
+ * (#10278, ou retenção ilegível) ou reivindicada por sessão viva nunca recebe
+ * destino automático. PR manual (#13094) só recebe `briefing` ou `fixer`: um
+ * destino de fechamento vira `briefing`.
+ */
 export function escalationDestination(input: DestinationInput): EscalationDestination {
+  const dest = laneFreeDestination(input);
+  return input.manual === true && isClosingDestination(dest) ? "briefing" : dest;
+}
+
+function laneFreeDestination(input: DestinationInput): EscalationDestination {
   if (input.retido !== false || input.claimed) return "briefing";
-  // `redundant` só é calculado depois de 48h; antes disso é sempre `false`.
+  // `redundant` só é calculado depois de 24h; antes disso é sempre `false`.
   const expired = Number.isFinite(input.ageMs) && input.ageMs > ESCALATION_EXPIRY_MS;
   if (expired && input.redundant) return "fechar-redundante";
   // #12950: causa mecânica sem tentativa de fixer vai ao fixer já, sem
-  // esperar as 24h/48h (que ficam para o que exige decisão do editor). A
+  // esperar as 6h/24h (que ficam para o que exige decisão do editor). A
   // #12880 (CI vermelho no próprio teste) ficou 30h+ sem fixer nenhum.
-  if (Number.isFinite(input.ageMs) && isMechanicalEscalation(input) && !input.labels.includes(FIX_TRIED_LABEL)) {
+  // PR `aberta` ou manual (#13181) só passadas 6h da última atividade: antes
+  // disso o autor (editor ou rodada) ainda pode estar mexendo na branch.
+  const shortcutWindowOk = !(input.aberta === true || input.manual === true) || input.ageMs > ESCALATION_QUEUE_AFTER_MS;
+  if (Number.isFinite(input.ageMs) && shortcutWindowOk && isMechanicalEscalation(input) && !input.labels.includes(FIX_TRIED_LABEL)) {
     return "fixer";
   }
   if (!expired) return "briefing";
-  if (input.isDraft && input.labels.includes("bloqueio-execucao")) return "fechar-para-issue";
+  if (input.isDraft && input.labels.includes("bloqueio-execucao")) {
+    // Draft estacionado sem escalada (#13181) não fecha pela idade: só o
+    // `continuo-escalado` dá prazo de validade ao bloqueio.
+    return input.aberta === true ? "briefing" : "fechar-para-issue";
+  }
   const fixTried = input.labels.includes(FIX_TRIED_LABEL);
   const conflict = input.mergeStateStatus === "DIRTY" || input.mergeable === "CONFLICTING";
   // `error` = o gate não leu os checks: dado ausente nunca fecha nem despacha
   // fixer (#12804). Conflito real (lido de outra fonte) segue valendo.
   if (input.checksVerdict === "error" && !conflict) return "briefing";
-  const pending = input.checksVerdict === "pending";
-  // `pending` passadas 48h também é CI que não fecha sozinho;
+  // `pending` passadas 24h também é CI que não fecha sozinho;
   // `blocked_by_conflict` já é o conflito.
   const ciStuck = ["fail", "pending", "blocked_by_conflict"].includes(input.checksVerdict ?? "");
   // Só fecha pelo estado ATUAL: conflito ou CI parado depois de uma tentativa
   // de fixer. A label sozinha não fecha nada.
   if (conflict || ciStuck) {
     if (!fixTried) return "fixer";
-    // CI do conserto ainda na fila (#12804): espera a janela antes de fechar.
-    if (pending && !conflict) {
-      const age = input.fixTriedAgeMs;
-      if (typeof age !== "number" || !Number.isFinite(age) || age <= PENDING_AFTER_FIX_MS) return "briefing";
-    }
+    // Conserto ainda em curso (#12804 para `pending`; #13181 para qualquer
+    // causa): espera a janela da tentativa antes de fechar. Idade
+    // desconhecida nunca fecha.
+    const age = input.fixTriedAgeMs;
+    if (typeof age !== "number" || !Number.isFinite(age) || age <= PENDING_AFTER_FIX_MS) return "briefing";
     return input.issue ? "fechar-reabrir-issue" : "briefing";
   }
   // Draft sem bloqueio, CI verde, sem conflito: falta alguém dá-lo por pronto.
@@ -213,10 +276,16 @@ const CLOSING_WHY: Record<ClosingDestination, string> = {
   "fechar-reabrir-issue": "seguiu com conflito ou CI que não fecha depois de uma tentativa de fixer (`continuo-ci-fix-tentado`)",
 };
 
+export type QueueKind = "escalada" | "aberta";
+
 /** Pure: texto do comentário de fechamento. */
-export function closingComment(dest: ClosingDestination, pr: { headRefName: string }, since: string, issue: number | null): string {
+export function closingComment(
+  dest: ClosingDestination, pr: { headRefName: string }, since: string, issue: number | null, kind: QueueKind = "escalada",
+): string {
   return [
-    `Fechada pelo prazo de escalada do contínuo (#12765): escalada desde ${since}, mais de 48h sem destino.`,
+    kind === "aberta"
+      ? `Fechada pelo prazo de PR aberta (#13094): sem commit nem tentativa de fixer desde ${since}, mais de 24h.`
+      : `Fechada pelo prazo de escalada (#12765, #13094): pendente desde ${since}, mais de 24h sem destino.`,
     "",
     `Motivo: ${CLOSING_WHY[dest]}.`,
     `A branch \`${pr.headRefName}\` foi preservada; \`gh pr reopen\` desfaz.`,
@@ -240,6 +309,9 @@ export interface OpenEscalatedPr {
   isDraft: boolean;
   mergeStateStatus: string;
   labels: { name: string }[];
+  /** Relógio de PR sem `continuo-escalado` (`--all-open`, #13094). */
+  createdAt?: string;
+  author?: { login?: string; is_bot?: boolean } | null;
 }
 
 export interface GateOutput {
@@ -249,13 +321,30 @@ export interface GateOutput {
     checksVerdict?: string | null;
     mergeable?: string | null;
     retidoParaEditor?: { retido?: boolean | null } | null;
-    sessionClaims?: { ok?: boolean } | null;
+    sessionClaims?: { ok?: boolean; reason?: string } | null;
   };
 }
+
+/** Resultado da checagem de claim da issue de origem no session-registry (#13181). */
+export type ClaimCheck =
+  | { status: "free" }
+  | { status: "claimed"; reason: string }
+  | { status: "failed"; reason: string };
 
 export interface QueueDeps {
   listPrs(): OpenEscalatedPr[];
   events(pr: number): LabelEvent[];
+  /**
+   * `committedDate` do último commit da PR (`kind: aberta`, #13181); `null` =
+   * PR sem commits. Lança em falha de leitura.
+   */
+  lastCommitAt(pr: number): string | null;
+  /**
+   * Claim viva na issue de origem (`originIssue`, da branch), excluindo a
+   * sessão dona da PR (`continuo-owner-session` no corpo), como o gate faz
+   * para as issues do corpo (#13181). Nunca lança: erro é `failed`.
+   */
+  issueClaimed(issue: number, body: string | null): ClaimCheck;
   /** Saída JSON do `check-continuo-merge-gate.ts`. Lança em falha. */
   gate(pr: number): GateOutput;
   /** `true`/`false` = verificado; `null` = não deu para verificar (nunca fecha). */
@@ -279,12 +368,47 @@ export interface QueueItem {
   destination: EscalationDestination;
   issue: number | null;
   redundant_check?: "failed";
+  /** `escalada` = `continuo-escalado`; `aberta` = só pela idade (`--all-open`, #13094). */
+  kind: QueueKind;
+  /** `bot` só aparece sem `--all-open` (com a flag, bot vai para `skipped`). */
+  lane: PrLane;
+  /** Reivindicada por sessão viva: só informação, nunca ação (#13094). */
+  claimed?: true;
+  /** Registro ou corpo ilegível: não deu para saber se há claim (#13181). */
+  claims_check?: "failed";
+  /** Motivo da claim ou da falha de leitura (#13181). */
+  claim_reason?: string;
+}
+
+/**
+ * Pure (#13181): lê `details.sessionClaims` do gate. `ok: false` só conta
+ * como claim de sessão viva quando o motivo diz isso; o resto (registry ou
+ * corpo ilegível, saída sem o campo) é `failed` — fail-closed, nunca `free`.
+ */
+export function gateClaimCheck(gate: GateOutput): ClaimCheck {
+  const sc = gate.details?.sessionClaims;
+  if (sc?.ok === true) return { status: "free" };
+  const reason = typeof sc?.reason === "string" && sc.reason ? sc.reason : "sessionClaims ausente ou sem motivo na saída do gate";
+  if (sc?.ok === false && /reivindicada pela sessão/.test(reason)) return { status: "claimed", reason };
+  return { status: "failed", reason };
+}
+
+/** Pure: maior instante entre os ISO dados (já validados como parseáveis). */
+function latestIso(values: string[]): string {
+  return values.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
 }
 
 export interface QueueResult {
   queue: QueueItem[];
   applied: { number: number; destination: ClosingDestination; issue: number | null; reopened?: boolean }[];
   failures: { number: number; step: string; error: string }[];
+  /** PRs de bot deixadas fora da triagem (`--all-open`, #13094). */
+  skipped: { number: number; reason: "bot" }[];
+}
+
+export interface QueueOptions {
+  /** Triagem de TODA PR aberta, não só `continuo-escalado` (#13094). */
+  allOpen?: boolean;
 }
 
 /**
@@ -292,27 +416,66 @@ export interface QueueResult {
  * PR fica em `failures` e não interrompe as demais. Só a listagem inicial
  * lança (sem ela não há fila nenhuma para relatar).
  */
-export function runEscalationQueue(deps: QueueDeps, apply: boolean): QueueResult {
+export function runEscalationQueue(deps: QueueDeps, apply: boolean, opts: QueueOptions = {}): QueueResult {
   const prs = deps.listPrs();
   // Do not silently truncate a large queue.
   if (prs.length >= 1000) throw new Error("fila atingiu limite de paginação");
   const now = deps.now();
-  const result: QueueResult = { queue: [], applied: [], failures: [] };
+  const result: QueueResult = { queue: [], applied: [], failures: [], skipped: [] };
   for (const pr of prs) {
     let step = "events";
     try {
+      const lane = prLane(pr);
+      if (opts.allOpen && lane === "bot") {
+        result.skipped.push({ number: pr.number, reason: "bot" });
+        continue;
+      }
       const events = deps.events(pr.number);
-      const since = escalationSince(events);
-      if (!since) continue;
-      const overdue = overdueEscalation(events, now) !== null;
+      const escalatedSince = escalationSince(events);
+      if (!escalatedSince && !opts.allOpen) continue;
+      const kind: QueueKind = escalatedSince ? "escalada" : "aberta";
+      const fixTriedSince = labelSince(events, FIX_TRIED_LABEL);
+      step = "since";
+      // Idade ilegível é falha explícita, nunca uma PR que some da fila em
+      // silêncio. O erro nomeia o campo que falhou (#13181).
+      if (escalatedSince && !Number.isFinite(Date.parse(escalatedSince))) {
+        throw new Error(`timestamp da label ${ESCALATION_LABEL} ilegível: ${JSON.stringify(escalatedSince)}`);
+      }
+      let since: string;
+      if (escalatedSince) {
+        since = escalatedSince;
+      } else {
+        // Sem a label, o relógio é a ÚLTIMA atividade (#13181), não só a
+        // idade da PR: commit de fixer recente reinicia a contagem.
+        if (!Number.isFinite(Date.parse(pr.createdAt ?? ""))) {
+          throw new Error(`createdAt ilegível: ${JSON.stringify(pr.createdAt ?? null)}`);
+        }
+        if (fixTriedSince && !Number.isFinite(Date.parse(fixTriedSince))) {
+          throw new Error(`timestamp da label ${FIX_TRIED_LABEL} ilegível: ${JSON.stringify(fixTriedSince)}`);
+        }
+        step = "last-commit";
+        const lastCommit = deps.lastCommitAt(pr.number);
+        if (lastCommit !== null && !Number.isFinite(Date.parse(lastCommit))) {
+          throw new Error(`committedDate do último commit ilegível: ${JSON.stringify(lastCommit)}`);
+        }
+        since = latestIso([pr.createdAt!, ...(lastCommit ? [lastCommit] : []), ...(fixTriedSince ? [fixTriedSince] : [])]);
+      }
+      const ageMs = now - Date.parse(since);
+      const overdue = ageMs > ESCALATION_QUEUE_AFTER_MS;
       step = "gate";
       const gate = deps.gate(pr.number);
       const labels = pr.labels.map((l) => l.name);
-      const ageMs = now - Date.parse(since);
       const expired = Number.isFinite(ageMs) && ageMs > ESCALATION_EXPIRY_MS;
       const issue = originIssue(pr);
-      const fixTriedSince = labelSince(events, FIX_TRIED_LABEL);
       const fixTriedAgeMs = fixTriedSince ? now - Date.parse(fixTriedSince) : null;
+      // Claim: o gate cobre as issues do corpo; a issue de origem da branch
+      // (`Refs #N` no corpo não fecha nada) é checada à parte (#13181).
+      step = "claims";
+      let claim = gateClaimCheck(gate);
+      if (claim.status !== "claimed" && issue !== null) {
+        const origin = deps.issueClaimed(issue, pr.body);
+        if (origin.status === "claimed" || (origin.status === "failed" && claim.status === "free")) claim = origin;
+      }
       step = "redundant";
       const redundant = expired ? deps.redundant(pr.headRefName) : false;
       const destination = escalationDestination({
@@ -320,16 +483,23 @@ export function runEscalationQueue(deps: QueueDeps, apply: boolean): QueueResult
         mergeable: gate.details?.mergeable, checksVerdict: gate.details?.checksVerdict,
         // Sem o campo, trata como retida (fail-closed): nunca fecha por dado ausente.
         retido: typeof gate.details?.retidoParaEditor?.retido === "boolean" ? gate.details.retidoParaEditor.retido : null,
-        claimed: gate.details?.sessionClaims?.ok === false,
+        // Claim ilegível também segura (fail-closed): nunca fecha nem despacha.
+        claimed: claim.status !== "free",
         redundant: redundant === true, issue, fixTriedAgeMs,
+        manual: lane !== "autonomous",
+        aberta: kind === "aberta",
       });
-      // #12950: antes de 24h só entra o que tem causa mecânica (fixer já);
+      // #12950: antes de 6h só entra o que tem causa mecânica (fixer já);
       // o resto segue esperando a janela do briefing.
       if (!overdue && destination !== "fixer") continue;
       result.queue.push({
         number: pr.number, url: pr.url, since, ...destinationOwner(destination),
         action: gate.action, reason: gate.reason, expired, destination, issue,
         ...(redundant === null ? { redundant_check: "failed" as const } : {}),
+        kind, lane,
+        ...(claim.status === "claimed" ? { claimed: true as const } : {}),
+        ...(claim.status === "failed" ? { claims_check: "failed" as const } : {}),
+        ...(claim.status !== "free" ? { claim_reason: claim.reason } : {}),
       });
       if (!apply || !isClosingDestination(destination)) continue;
       // Issue primeiro, PR por último: falha no meio deixa a PR aberta e visível.
@@ -343,8 +513,11 @@ export function runEscalationQueue(deps: QueueDeps, apply: boolean): QueueResult
           reopened = true;
         }
         step = "issue-comment";
+        const why = kind === "aberta"
+          ? "PR aberta há mais de 24h sem atividade, com conflito ou CI parado depois de uma tentativa de fixer (#13094)"
+          : "prazo de escalada (#12765): seguiu escalada depois de uma tentativa de fixer";
         deps.commentIssue(issue,
-          `PR #${pr.number} fechada pelo prazo de escalada (#12765): seguiu escalada depois de uma tentativa de fixer. Branch preservada: \`${pr.headRefName}\`.${reopened ? " A issue volta para a fila." : ""}`);
+          `PR #${pr.number} fechada pelo ${why}. Branch preservada: \`${pr.headRefName}\`.${reopened ? " A issue volta para a fila." : ""}`);
       }
       if (destination === "fechar-para-issue" && issue) {
         step = "issue-comment";
@@ -352,7 +525,7 @@ export function runEscalationQueue(deps: QueueDeps, apply: boolean): QueueResult
           `PR #${pr.number} (draft com \`bloqueio-execucao\`) fechada pelo prazo de escalada (#12765). O trabalho segue na branch \`${pr.headRefName}\`; o bloqueio continua nesta issue.`);
       }
       step = "pr-close";
-      deps.closePr(pr.number, closingComment(destination, pr, since, issue));
+      deps.closePr(pr.number, closingComment(destination, pr, since, issue, kind));
       result.applied.push({ number: pr.number, destination, issue, ...(reopened ? { reopened } : {}) });
     } catch (error) {
       result.failures.push({ number: pr.number, step, error: String(error instanceof Error ? error.message : error) });
@@ -393,13 +566,37 @@ export function isRedundant(headRefName: string, cwd?: string): boolean | null {
   }
 }
 
+/**
+ * I/O (#13181): claim viva na issue de origem, com a mesma exclusão do gate
+ * (`continuo-owner-session` do corpo: a sessão dona da PR não a protege de
+ * si mesma). Nunca lança: qualquer erro vira `failed` (fail-closed).
+ */
+export function originIssueClaim(issue: number, body: string | null, now = Date.now()): ClaimCheck {
+  try {
+    const owners = typeof body === "string"
+      ? [...body.matchAll(/^<!-- continuo-owner-session: ([A-Za-z0-9_-]+) -->$/gm)].map((m) => m[1])
+      : [];
+    if (owners.length > 1) return { status: "failed", reason: "identidade da sessão dona da PR ambígua" };
+    const root = resolveRepoRoot();
+    const health = checkSessionsScanHealth(root);
+    if (!health.ok) return { status: "failed", reason: `registry ilegível: ${health.error}` };
+    const owner = isIssueClaimedByOther(root, { repo: REPO, number: issue }, owners[0] ?? "", now);
+    return owner
+      ? { status: "claimed", reason: `${REPO}#${issue} (issue de origem) reivindicada pela sessão ${owner.sessionId} (${owner.kind}/${owner.machineTag})` }
+      : { status: "free" };
+  } catch (e) {
+    return { status: "failed", reason: `erro ao consultar claims: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 if (isMainModule(import.meta.url)) {
   const apply = process.argv.includes("--apply");
+  const allOpen = process.argv.includes("--all-open");
   try {
     const result = runEscalationQueue({
       listPrs: () => gh([
-        "pr", "list", "--repo", REPO, "--state", "open", "--label", ESCALATION_LABEL, "--limit", "1000",
-        "--json", "number,url,title,body,headRefName,isDraft,mergeStateStatus,labels",
+        "pr", "list", "--repo", REPO, "--state", "open", ...(allOpen ? [] : ["--label", ESCALATION_LABEL]), "--limit", "1000",
+        "--json", "number,url,title,body,headRefName,isDraft,mergeStateStatus,labels,createdAt,author",
       ]) as OpenEscalatedPr[],
       events: (n) => fetchAllPages((page, perPage) =>
         gh(["api", `repos/${REPO}/issues/${n}/events?per_page=${perPage}&page=${page}`]) as LabelEvent[]),
@@ -412,14 +609,23 @@ if (isMainModule(import.meta.url)) {
           throw new Error(`gate #${n}: saída não é JSON`);
         }
       },
+      lastCommitAt: (n) => {
+        const view = gh(["pr", "view", String(n), "--repo", REPO, "--json", "commits"]) as { commits?: { committedDate?: string }[] };
+        if (!Array.isArray(view.commits)) throw new Error(`commits ausente na PR #${n}`);
+        const last = view.commits[view.commits.length - 1];
+        if (!last) return null;
+        if (typeof last.committedDate !== "string") throw new Error(`committedDate ausente no último commit da PR #${n}`);
+        return last.committedDate;
+      },
+      issueClaimed: (issue, body) => originIssueClaim(issue, body),
       redundant: (b) => isRedundant(b),
       issueState: (n) => gh(["issue", "view", String(n), "--repo", REPO, "--json", "state,stateReason"]) as { state: string; stateReason?: string },
       reopenIssue: (n) => ghRun(["issue", "reopen", String(n), "--repo", REPO]),
       commentIssue: (n, body) => ghRun(["issue", "comment", String(n), "--repo", REPO, "--body", body]),
       closePr: (n, comment) => ghRun(["pr", "close", String(n), "--repo", REPO, "--comment", comment]),
       now: () => Date.now(),
-    }, apply);
-    console.log(JSON.stringify(apply ? result : { queue: result.queue, failures: result.failures }));
+    }, apply, { allOpen });
+    console.log(JSON.stringify(apply ? result : { queue: result.queue, failures: result.failures, skipped: result.skipped }));
     if (result.failures.length > 0) {
       for (const f of result.failures) console.error(`[list-continuo-escalation-queue] #${f.number} falhou em ${f.step}: ${f.error}`);
       process.exitCode = 1;
