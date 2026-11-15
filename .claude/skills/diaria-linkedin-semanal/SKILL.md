@@ -392,7 +392,7 @@ vieram prontos (literais) do Passo 2/3. Se `sourceAccessibility.accessible
 que essa fonte específica ficou inacessível desde a edição de origem —
 puramente informativo, o corpo publicado não muda.
 
-## Passo 5 — Humanizador + Clarice (só texto NOVO — abertura/fecho com override, comentário do Use Melhor e texto do post de feed)
+## Passo 5 — Humanizador + Clarice (só texto NOVO — abertura/fecho com override, comentário do Use Melhor, texto do post de feed e frase do vídeo)
 
 **Manchetes NUNCA passam por humanizador/Clarice (#8818, reverte o #5108):
 corpo/why de toda manchete é sempre o texto já revisado/publicado na
@@ -669,9 +669,15 @@ JSON.stringify({
 ```
 
 Monte `pastedAnchors` a partir desse retorno: pra cada âncora colada, se
-existe âncora da fonte com o mesmo texto e o `utm_content` colado bate com
-o dela, use o `href` da FONTE; senão use só `base` (sem query, o que faz a
-auditoria acusar a UTM perdida). Limitação aceita: `utm_campaign` não é
+existe âncora da fonte com o mesmo texto, o `utm_content` colado bate com
+o dela E a `base` colada (origem + caminho) bate com a base do `href` da
+fonte, use o `href` da FONTE; senão use só a `base` colada (sem query, o
+que faz a auditoria acusar a UTM perdida ou o href trocado). A conferência
+da base é o que pega a menção (#13049): o `href` da fonte
+(`https://www.linkedin.com/company/diar.ia.br/`) não tem UTM, e quando o
+LinkedIn o reescreve para `http://diar.ia.br` os dois `utm_content` são
+`null` e batem; sem comparar a base, a auditoria não veria a troca e o
+`WORDMARK_HREF_REWRITE_HINT` nunca sairia. Limitação aceita: `utm_campaign` não é
 conferido à parte, supõe-se que sobrevive junto com `utm_content` (nos
 casos observados a UTM some inteira, nunca um parâmetro só).
 
@@ -684,7 +690,7 @@ acima antes de qualquer outra ação.
 Chamar `auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength })`
 de `scripts/lib/linkedin-paste-audit.ts` (`sourceHtml` = conteúdo de
 `ln-{cycle}.html`, SEM o parágrafo sentinela — módulo puro, sem I/O,
-import direto). Âncora de "diar.ia.br" sem a UTM esperada é acusada
+import direto). Âncora de "diar.ia.br" com href diferente do da fonte (UTM perdida ou destino trocado) é acusada
 explicitamente, com ou sem continuação após o wordmark (#10385; o caso
 `26w42` é a âncora só com o wordmark tendo o href reescrito pra
 `http://diar.ia.br`, ver `context/publishers/linkedin.md` item (f)).

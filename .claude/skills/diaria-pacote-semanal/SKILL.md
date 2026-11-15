@@ -383,8 +383,11 @@ Confira se já há corpo colado antes de qualquer paste, para não duplicar.
 8b: use o HTML final via ClipboardEvent com o sentinela <p>&nbsp;</p>.
 Espere estabilizar. Retorno [BLOCKED] não autoriza colar de novo.
 8c: extraia âncoras (texto, base e utm_content, sem href cru) e tamanho do
-texto; chame auditLinkedinPaste de scripts/lib/linkedin-paste-audit.ts
-contra o HTML fonte sem sentinela. Confira TODAS as âncoras e UTMs,
+texto; monte pastedAnchors com o href da FONTE só quando texto, utm_content
+E base (origem + caminho) baterem com a âncora da fonte; senão use a base
+colada (a menção não tem UTM: sem comparar a base, a troca para
+http://diar.ia.br passa despercebida). Chame auditLinkedinPaste de
+scripts/lib/linkedin-paste-audit.ts contra o HTML fonte sem sentinela. Confira TODAS as âncoras e UTMs,
 inclusive a menção diar.ia.br (#10385, #13049), sem presumir que o paste
 preservou os links. Só WORDMARK_HREF_REWRITE_HINT na menção diar.ia.br
 (href linkedin.com/company/diar.ia.br) pode seguir como ajuste manual
