@@ -807,6 +807,13 @@ export interface ShortPublishedEntry {
    * fica no registro para o destino nunca ser republicado por engano.
    */
   cancelled_at?: string;
+  /**
+   * #12279: SHA-256 dos bytes do vertical que este envio subiu. Permite ver,
+   * no dry-run, que o arquivo local (um V2 re-exportado, mesmo com o mesmo
+   * nome) não é o registrado. Ausente = registro anterior ao #12279 ou
+   * destino registrado à mão sem o hash.
+   */
+  video_sha256?: string;
 }
 
 export interface ShortsPublishedFile {

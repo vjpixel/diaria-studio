@@ -1,0 +1,281 @@
+/**
+ * scripts/lib/diaria/short-scheduled-replace.ts (#12279)
+ *
+ * Troca o vídeo de um vertical JÁ AGENDADO (V1 por V2) com
+ * `publish-shorts.ts AAMMDD --replace-scheduled`. Nenhuma plataforma troca a
+ * mídia de um post existente: o post antigo sai (YouTube: volta a private sem
+ * agendamento, nada apagado; Facebook: `DELETE` do agendado; X/TikTok: a skill
+ * apaga na Buffer) e um novo sobe NO MESMO HORÁRIO.
+ *
+ * ## Desenho (decisão do editor de 15/11/2026: exceção explícita no grant)
+ *
+ * 1. Dry-run `--replace-scheduled`: escolhe os alvos (`planScheduledReplacements`)
+ *    e grava o manifesto de SUBSTITUIÇÃO
+ *    (`_internal/video-publish-plan.vertical-replace.json`): por destino, o ID
+ *    do post antigo e o horário dele (`replaces`), o hash dos bytes novos
+ *    (`media.video_sha256`) e o texto. O `plan_sha256` vai ao editor.
+ * 2. `video-publish-authorize.ts grant AAMMDD --part vertical --replace-scheduled`:
+ *    a única exceção à recusa de nova autorização para destino já registrado
+ *    (`retryRefusal`, #12654). O grant confere o manifesto contra o registro
+ *    local (`replacementGrantRefusal`): o ID ainda é o registrado, agendado,
+ *    no mesmo horário, com folga.
+ * 3. `--replace-scheduled --publish`: sob o lock da substituição, consome a
+ *    autorização de TODOS os alvos ANTES da 1ª exclusão
+ *    (`runScheduledReplacement`); consumo recusado = nada apagado. Depois, por
+ *    destino de API: relê a plataforma, cancela o post antigo, grava o
+ *    histórico (`recordShortReplacement`) e só então o envio novo sai no
+ *    horário preservado (nunca "na hora"). X/TikTok: o publisher só sobe o
+ *    vídeo novo ao R2 e devolve `pending_buffer_create`; a skill apaga o post
+ *    antigo e cria o novo DEPOIS dessa rodada (o consumo já aconteceu).
+ *
+ * Sem I/O aqui: as dependências entram por parâmetro.
+ */
+import type { ShortPublishedEntry } from "./short-video.ts";
+import type { ShortSendingMark } from "./shorts-sending-marker.ts";
+import type { VideoPlanManifest } from "./video-publish-plan.ts";
+
+/** Folga mínima entre agora e o horário do post antigo para trocá-lo (plano, grant e antes de apagar). */
+export const REPLACE_MIN_LEAD_MS = 30 * 60_000;
+
+/** Folga mínima para o envio novo sair AGENDADO (abaixo disso o publisher sairia "na hora": recusado). */
+export const REPLACE_UPLOAD_MIN_LEAD_MS = 10 * 60_000;
+
+export type ShortReplacementKind = "api" | "buffer";
+
+export interface ShortReplacementTarget {
+  destination: string;
+  kind: ShortReplacementKind;
+  /** ID do post antigo no registro (Buffer: `buffer:ID`). */
+  old_id: string;
+  /** Horário do post antigo: o envio novo sai nele. */
+  at: string;
+}
+
+export interface ShortReplacementSkip {
+  destination: string;
+  reason: string;
+}
+
+export interface ShortReplacementSelection {
+  targets: ShortReplacementTarget[];
+  skipped: ShortReplacementSkip[];
+}
+
+/** Destino com API de cancelamento de agendado (o publisher apaga e sobe de novo). */
+export function isApiReplaceableDestination(destination: string): boolean {
+  return destination === "youtube_shorts" || destination.startsWith("facebook:");
+}
+
+/** Destino da Buffer (a skill apaga e cria pela MCP). */
+export function isBufferReplaceableDestination(destination: string, id: string): boolean {
+  return (destination === "x" || destination === "tiktok") && /^buffer:.+/.test(id);
+}
+
+/**
+ * Pure: os destinos que a substituição troca. Só post AGENDADO no registro,
+ * com horário a mais de `REPLACE_MIN_LEAD_MS`, sem envio em aberto, num
+ * destino com caminho de troca, e com bytes diferentes do vídeo novo (mesmo
+ * hash registrado = nada a trocar). Publicado, envio ambíguo (`send_unknown`),
+ * cancelado ou horário desconhecido nunca é trocado. `only` com destino sem
+ * registro lança (o pedido não bate com o registro).
+ */
+export function planScheduledReplacements(
+  entries: readonly ShortPublishedEntry[],
+  input: { now: Date; only: readonly string[] | null; videoSha256: string; openMarks?: readonly ShortSendingMark[] },
+): ShortReplacementSelection {
+  if (input.only) {
+    const missing = input.only.filter((d) => !entries.some((e) => e.destination === d));
+    if (missing.length) throw new Error(`--only com destino sem registro (nada agendado a trocar): ${missing.join(", ")}`);
+  }
+  const targets: ShortReplacementTarget[] = [];
+  const skipped: ShortReplacementSkip[] = [];
+  for (const e of entries) {
+    if (input.only && !input.only.includes(e.destination)) continue;
+    const skip = (reason: string) => skipped.push({ destination: e.destination, reason });
+    const api = isApiReplaceableDestination(e.destination);
+    const buffer = isBufferReplaceableDestination(e.destination, e.id);
+    if (!api && !buffer) {
+      skip("destino sem caminho de troca de post agendado (só YouTube Shorts, Facebook, X e TikTok)");
+      continue;
+    }
+    if (e.status !== "scheduled") {
+      skip(`registro ${e.status}: só post AGENDADO é trocado (publicado ou envio ambíguo fica como está)`);
+      continue;
+    }
+    if (e.cancelled_at) {
+      skip(`agendamento cancelado em ${e.cancelled_at}`);
+      continue;
+    }
+    const atMs = e.scheduled_at ? Date.parse(e.scheduled_at) : Number.NaN;
+    if (!e.scheduled_at || Number.isNaN(atMs)) {
+      skip("registro sem horário do agendamento: nada a preservar");
+      continue;
+    }
+    if (atMs - input.now.getTime() <= REPLACE_MIN_LEAD_MS) {
+      skip(`horário ${e.scheduled_at} a ${Math.round(REPLACE_MIN_LEAD_MS / 60_000)} min ou menos: não dá para trocar com segurança`);
+      continue;
+    }
+    if (input.openMarks?.some((m) => m.destination === e.destination)) {
+      skip("envio em curso ou sem desfecho (marca de envio aberta): confira a conta antes de trocar");
+      continue;
+    }
+    if (e.video_sha256 && e.video_sha256 === input.videoSha256) {
+      skip("o post agendado já tem estes bytes (mesmo video_sha256): nada a trocar");
+      continue;
+    }
+    targets.push({ destination: e.destination, kind: api ? "api" : "buffer", old_id: e.id, at: new Date(atMs).toISOString() });
+  }
+  return { targets, skipped };
+}
+
+/**
+ * Pure: o plano do vertical para os alvos, com o horário PRESERVADO de cada
+ * post antigo. Cada alvo precisa sair na rodada (`publish` para os de API,
+ * `buffer` para X/TikTok); qualquer outra ação recusa a substituição inteira
+ * (nada é apagado). Devolve só os itens dos alvos.
+ */
+export function applyReplacementTimes<T extends { destination: string; action: string }>(
+  items: readonly T[],
+  targets: readonly ShortReplacementTarget[],
+): { ok: true; items: T[] } | { ok: false; error: string } {
+  const out: T[] = [];
+  const errors: string[] = [];
+  for (const t of targets) {
+    const item = items.find((i) => i.destination === t.destination);
+    const want = t.kind === "api" ? "publish" : "buffer";
+    if (!item || item.action !== want) {
+      errors.push(`${t.destination}: o envio novo não sai nesta rodada (plano: ${item?.action ?? "ausente"}; esperado ${want})`);
+      continue;
+    }
+    out.push({ ...item, scheduledAt: t.at });
+  }
+  return errors.length ? { ok: false, error: `${errors.join("; ")}: nada apagado` } : { ok: true, items: out };
+}
+
+/**
+ * Pure: o grant de substituição confere o manifesto contra o registro local
+ * (a plataforma é relida pelo publisher antes de apagar). Cada destino trocado
+ * precisa estar no registro com o MESMO ID, agendado, no MESMO horário e com
+ * folga. `null` = confere; senão, o motivo.
+ */
+export function replacementGrantRefusal(
+  manifest: VideoPlanManifest,
+  entries: readonly ShortPublishedEntry[],
+  now: Date,
+  openMarks: readonly ShortSendingMark[] = [],
+): string | null {
+  const problems: string[] = [];
+  for (const d of manifest.destinations) {
+    if (!d.replaces) {
+      problems.push(`${d.id}: sem o post antigo no plano`);
+      continue;
+    }
+    const e = entries.find((x) => x.destination === d.id);
+    if (!e) {
+      problems.push(`${d.id}: sem registro (o post ${d.replaces.id} já foi trocado ou nunca foi registrado)`);
+      continue;
+    }
+    if (e.id !== d.replaces.id) {
+      problems.push(`${d.id}: o registro aponta ${e.id}, não o ${d.replaces.id} do plano`);
+      continue;
+    }
+    if (e.status !== "scheduled" || e.cancelled_at) {
+      problems.push(`${d.id}: o post ${e.id} não está agendado no registro (${e.cancelled_at ? `cancelado em ${e.cancelled_at}` : e.status})`);
+      continue;
+    }
+    const regMs = e.scheduled_at ? Date.parse(e.scheduled_at) : Number.NaN;
+    if (Number.isNaN(regMs) || regMs !== Date.parse(d.replaces.at) || d.effective_at === null || Date.parse(d.effective_at) !== regMs) {
+      problems.push(`${d.id}: o horário do plano (${d.effective_at ?? "nenhum"}) não é o do post agendado (${e.scheduled_at ?? "nenhum"})`);
+      continue;
+    }
+    if (regMs - now.getTime() <= REPLACE_MIN_LEAD_MS) {
+      problems.push(`${d.id}: o horário ${e.scheduled_at} está a ${Math.round(REPLACE_MIN_LEAD_MS / 60_000)} min ou menos`);
+      continue;
+    }
+    if (openMarks.some((m) => m.destination === d.id)) problems.push(`${d.id}: envio em curso ou sem desfecho (marca de envio aberta)`);
+  }
+  return problems.length ? `substituição recusada (#12279): ${problems.join("; ")}` : null;
+}
+
+/** Desfecho por alvo da fase destrutiva. */
+export interface ReplacementCancelResult {
+  target: ShortReplacementTarget;
+  /** `cancelled`: post antigo fora e histórico gravado (segue para o envio novo); `buffer`: fica com a skill; `failed`: nada a enviar. */
+  outcome: "cancelled" | "buffer" | "failed";
+  error?: string;
+}
+
+export interface ReplacementPhaseDeps {
+  /** Consome (uso único) a autorização de substituição de todos os alvos. Chamado ANTES de qualquer exclusão. */
+  consume: () => { ok: true } | { ok: false; error: string };
+  /** Relê a plataforma e cancela o post antigo (lança se ele não está agendado com folga: nada apagado). */
+  cancel: (target: ShortReplacementTarget) => Promise<void>;
+  /** Grava o histórico da substituição (só depois do cancelamento confirmado). */
+  record: (target: ShortReplacementTarget) => void;
+  /** Limpa as marcas de envio do destino (o post antigo saiu). */
+  clearMarks: (destination: string) => void;
+  /** Relê o registro: o alvo ainda é o mesmo post? (outra sessão pode ter mexido). */
+  stillRegistered: (target: ShortReplacementTarget) => boolean;
+}
+
+/**
+ * #12279: a fase destrutiva da substituição. Ordem fixa: (1) consumo da
+ * autorização de TODOS os alvos (recusa = nada apagado, `refused`); (2) por
+ * alvo de API, releitura do registro, cancelamento na plataforma, histórico e
+ * limpeza das marcas. Falha num alvo não desfaz os outros (a troca não é
+ * atômica entre plataformas) e o alvo que falhou não recebe envio novo. Os
+ * alvos da Buffer não são tocados aqui: a skill apaga depois desta rodada.
+ */
+export async function runScheduledReplacement(
+  targets: readonly ShortReplacementTarget[],
+  deps: ReplacementPhaseDeps,
+): Promise<{ refused: string } | { refused: null; results: ReplacementCancelResult[] }> {
+  if (!targets.length) return { refused: "nenhum post agendado a trocar" };
+  const auth = deps.consume();
+  if (!auth.ok) return { refused: auth.error };
+  const results: ReplacementCancelResult[] = [];
+  for (const target of targets) {
+    if (target.kind === "buffer") {
+      results.push({ target, outcome: "buffer" });
+      continue;
+    }
+    try {
+      if (!deps.stillRegistered(target)) throw new Error(`o registro de ${target.destination} mudou desde o plano (não é mais o post ${target.old_id} agendado): nada apagado`);
+      await deps.cancel(target);
+    } catch (e) {
+      results.push({ target, outcome: "failed", error: `post antigo ${target.old_id} NÃO cancelado: ${(e as Error).message}` });
+      continue;
+    }
+    try {
+      deps.record(target);
+    } catch (e) {
+      // O post antigo já saiu: sem o histórico, o registro ainda o aponta. O envio novo não sai.
+      results.push({ target, outcome: "failed", error: `post antigo ${target.old_id} CANCELADO na plataforma, mas o histórico da substituição não foi gravado (${(e as Error).message}): nada enviado; confira e registre à mão` });
+      continue;
+    }
+    try {
+      deps.clearMarks(target.destination);
+    } catch {
+      // Marca velha só faz a releitura acusar "pode ter saído": não impede o envio novo.
+    }
+    results.push({ target, outcome: "cancelled" });
+  }
+  return { refused: null, results };
+}
+
+/** Pure: o comando da rodada de substituição (dono dos destinos no manifesto). */
+export function replacementPublishCommand(aammdd: string, source: { video?: string; fromDrive?: string } = {}): string {
+  const src = source.video ? ` --video ${source.video}` : source.fromDrive ? ` --from-drive ${source.fromDrive}` : "";
+  return `npx tsx scripts/publish-shorts.ts ${aammdd} --replace-scheduled${src} --publish --confirm-publish ${aammdd}`;
+}
+
+/** Pure: aviso do dry-run quando o vídeo local não é o que um destino registrou (#12279). */
+export function shortVideoChangeWarnings(entries: readonly ShortPublishedEntry[], videoSha256: string): string[] {
+  return entries
+    .filter((e) => e.video_sha256 && e.video_sha256 !== videoSha256)
+    .map((e) =>
+      e.status === "scheduled"
+        ? `${e.destination}: o vídeo local não é o que este post agendado subiu (video_sha256 diferente): para trocar a mídia, publish-shorts.ts --replace-scheduled (#12279)`
+        : `${e.destination}: o vídeo local não é o que este destino subiu (video_sha256 diferente, registro ${e.status}): post já no ar não é trocado (#12279)`,
+    );
+}
