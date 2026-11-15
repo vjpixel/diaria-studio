@@ -27,6 +27,14 @@
  * hook `inject-session-id.mjs` não cobre este script, passar explicitamente).
  * `--announce` (exige `--kind`) grava o marcador de claim como comentário em
  * cada issue que saiu `livre` e que ainda não tem claim ativa desta sessão.
+ * Depois de postar, relê os comentários (#13172): duas sessões que conferem
+ * com 1-2 s de diferença recebem `livre` e postam as duas; na releitura, a que
+ * tem a claim mais nova vê a outra em `claimedByOther`, grava o próprio
+ * release e sai `ocupada` (motivo `github-claim-race`), exit 1. A de claim
+ * mais antiga segue `livre`. Releitura que falha sai `cannot-verify` (exit 2),
+ * também com release best-effort da claim recém-postada.
+ * Claim de sessão que `data/session-lifecycle.jsonl` mostra encerrada depois
+ * do `at` da claim é ignorada (#13172, `endedSessionsFromLifecycle`).
  * `--release` grava o marcador de release nas issues em que esta sessão tem
  * claim ativa no GitHub (nenhuma checagem; usar junto do `unclaim-issue`).
  *
@@ -51,9 +59,10 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { assessOpenPrCoverage, type OpenPrCheckResult } from "./lib/issue-open-pr-check.ts";
 import { fetchOpenPrs, type FetchOpenPrsResult } from "./lib/gh-open-pr-fetch.ts";
 import { formatIssueRef, legacyIssueNumber, parseIssueRef, type IssueRef } from "./lib/issue-repos.ts";
-import { isIssueClaimedByOther } from "./lib/session-registry.ts";
+import { isIssueClaimedByOther, readSessionLifecycleEvents } from "./lib/session-registry.ts";
 import {
   assessGithubClaims,
+  endedSessionsFromLifecycle,
   formatClaimComment,
   formatReleaseComment,
   type GithubClaimMarker,
@@ -102,6 +111,10 @@ export interface Deps {
   registryLookup?: RegistryLookup;
   now?: () => number;
   host?: string;
+  /** Fins de sessão do log de lifecycle (`sessionId` → `ts`). Default: lê
+   * `data/session-lifecycle.jsonl` (fail-soft: ausente = mapa vazio, a claim
+   * segue valendo). */
+  endedSessions?: () => ReadonlyMap<string, string>;
 }
 
 export type PreDispatchVerdict = "livre" | "ocupada" | "cannot-verify";
@@ -109,7 +122,7 @@ export type PreDispatchVerdict = "livre" | "ocupada" | "cannot-verify";
 export interface PreDispatchIssueResult {
   issue: string;
   verdict: PreDispatchVerdict;
-  /** `registry`, `github-claim`, `pr-aberta`. */
+  /** `registry`, `github-claim`, `pr-aberta`, `github-claim-race`. */
   reasons: string[];
   registryClaim?: { kind: string; sessionId: string } | null;
   githubClaim?: GithubClaimMarker | null;
@@ -207,27 +220,62 @@ export function main(argv: string[], cwd: string, deps: Deps = {}): number {
   const now = deps.now ?? Date.now;
   const host = (deps.host ?? hostname()).replace(/[^A-Za-z0-9._-]/g, "-") || "desconhecido";
   const registryLookup = deps.registryLookup ?? defaultRegistryLookup(cwd);
+  const endedSessions = (deps.endedSessions ?? (() => endedSessionsFromLifecycle(readSessionLifecycleEvents(cwd))))();
+  const assessOpts = () => ({ excludeSessionId: sessionId, now: now(), endedSessions });
   const results: PreDispatchIssueResult[] = [];
+
+  const postRelease = (ref: IssueRef): { posted: boolean; error?: string } => {
+    const err = postComment(runner, cwd, ref, formatReleaseComment({ sessionId, at: new Date(now()).toISOString() }));
+    return err ? { posted: false, error: err } : { posted: true };
+  };
 
   if (release) {
     for (const ref of refs) {
       const label = formatIssueRef(ref);
       const res: PreDispatchIssueResult = { issue: label, verdict: "livre", reasons: [], errors: [] };
       const fetched = fetchIssueComments(runner, cwd, ref);
-      const assessed = fetched.error ? null : assessGithubClaims(fetched.comments, { excludeSessionId: sessionId, now: now() });
+      const assessed = fetched.error ? null : assessGithubClaims(fetched.comments, assessOpts());
       if (!assessed) {
         res.release = { posted: false, error: fetched.error ?? "comentários ilegíveis" };
       } else if (!assessed.ownClaim) {
         res.release = { posted: false, skipped: "sem claim ativa desta sessão no GitHub" };
       } else {
-        const err = postComment(runner, cwd, ref, formatReleaseComment({ sessionId, at: new Date(now()).toISOString() }));
-        res.release = err ? { posted: false, error: err } : { posted: true };
+        res.release = postRelease(ref);
       }
       if (res.release.error) console.error(`[check-pre-dispatch-claim] ${label}: release não gravado: ${res.release.error}`);
       results.push(res);
     }
     console.log(JSON.stringify({ issues: results }, null, 2));
     return 0;
+  }
+
+  /**
+   * #13172: relê os comentários depois de postar a claim. Se outra sessão tem
+   * claim ativa mais antiga (postada entre a conferência e o post desta), esta
+   * cede: grava o release e o veredito vira `ocupada`. A claim recém-postada
+   * entra na leitura mesmo se a API ainda não a devolver, para a comparação
+   * usar o `at` dela e não cair no caso "sem claim própria".
+   */
+  function recheckAfterAnnounce(ref: IssueRef, label: string, claimBody: string, res: PreDispatchIssueResult): void {
+    const again = fetchIssueComments(runner, cwd, ref);
+    const assessed = again.error
+      ? null
+      : assessGithubClaims(
+          [...(again.comments as unknown[]), { body: claimBody, authorAssociation: "OWNER" }],
+          assessOpts(),
+        );
+    if (!assessed) {
+      res.verdict = "cannot-verify";
+      res.errors.push(`releitura após --announce falhou: ${again.error ?? "comentários ilegíveis"}`);
+    } else if (assessed.claimedByOther) {
+      res.verdict = "ocupada";
+      res.reasons.push("github-claim-race");
+      res.githubClaim = assessed.claimedByOther;
+    } else {
+      return;
+    }
+    res.release = postRelease(ref);
+    if (res.release.error) console.error(`[check-pre-dispatch-claim] ${label}: release não gravado: ${res.release.error}`);
   }
 
   const prCache = new Map<string, FetchOpenPrsResult>();
@@ -245,7 +293,7 @@ export function main(argv: string[], cwd: string, deps: Deps = {}): number {
     if (fetched.error) {
       errors.push(fetched.error);
     } else {
-      const assessed = assessGithubClaims(fetched.comments, { excludeSessionId: sessionId, now: now() });
+      const assessed = assessGithubClaims(fetched.comments, assessOpts());
       if (assessed) {
         github = assessed.claimedByOther;
         ownClaim = assessed.ownClaim;
@@ -284,14 +332,11 @@ export function main(argv: string[], cwd: string, deps: Deps = {}): number {
       } else if (ownClaim) {
         res.announce = { posted: false, skipped: "claim desta sessão já está no GitHub" };
       } else {
-        const err = postComment(
-          runner,
-          cwd,
-          ref,
-          formatClaimComment({ kind, sessionId, host, at: new Date(now()).toISOString() }),
-        );
+        const claimBody = formatClaimComment({ kind, sessionId, host, at: new Date(now()).toISOString() });
+        const err = postComment(runner, cwd, ref, claimBody);
         res.announce = err ? { posted: false, error: err } : { posted: true };
         if (err) console.error(`[check-pre-dispatch-claim] ${label}: claim não gravada no GitHub: ${err}`);
+        else recheckAfterAnnounce(ref, label, claimBody, res);
       }
     }
     results.push(res);

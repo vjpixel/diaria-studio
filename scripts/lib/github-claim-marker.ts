@@ -37,10 +37,16 @@
  * - Desempate entre duas sessões com claim ativa: vence a de `at` mais antigo
  *   (a outra cede). Assim, duas rodadas que anunciam quase ao mesmo tempo
  *   chegam à mesma resposta lendo o mesmo par de comentários.
+ * - Claim de sessão que o log de lifecycle do registro
+ *   (`data/session-lifecycle.jsonl`) mostra como encerrada DEPOIS do `at` da
+ *   claim não conta (#13172): a sessão dona acabou sem soltar (pulada, falha
+ *   do implementador, encerramento sem `--release`) e a issue não pode ficar
+ *   presa pelo resto das 24h. O log só chega à outra máquina quando o sync
+ *   replica; até lá a claim segue valendo (erra para o lado de segurar).
  */
 
 import { isTrustedCommentAuthor } from "./trusted-comment-author.ts";
-import { claimReleaseMsForKind } from "./session-registry.ts";
+import { claimReleaseMsForKind, type SessionLifecycleEvent } from "./session-registry.ts";
 
 export interface GithubClaimMarker {
   kind: string;
@@ -160,7 +166,14 @@ export interface GithubClaimAssessment {
  */
 export function assessGithubClaims(
   comments: unknown,
-  opts: { excludeSessionId: string; now?: number },
+  opts: {
+    excludeSessionId: string;
+    now?: number;
+    /** `sessionId` → `ts` ISO do fim mais recente da sessão no log de
+     * lifecycle (`endedSessionsFromLifecycle`). Claim com `at` até esse
+     * instante é ignorada (#13172). */
+    endedSessions?: ReadonlyMap<string, string>;
+  },
 ): GithubClaimAssessment | null {
   if (!Array.isArray(comments)) return null;
   const now = opts.now ?? Date.now();
@@ -188,6 +201,8 @@ export function assessGithubClaims(
     if (now - atMs > claimReleaseMsForKind(c.kind)) continue;
     const released = releases.some((r) => r.sessionId === c.sessionId && Date.parse(r.at) >= atMs);
     if (released) continue;
+    const endedAt = opts.endedSessions?.get(c.sessionId);
+    if (endedAt !== undefined && Date.parse(endedAt) >= atMs) continue;
     active.push(c);
   }
   active.sort(compareClaims);
@@ -199,4 +214,23 @@ export function assessGithubClaims(
     ) ?? null;
 
   return { claimedByOther, ownClaim, activeClaims: active };
+}
+
+/**
+ * Mapa `sessionId` → `ts` do fim mais recente, a partir dos eventos de
+ * `data/session-lifecycle.jsonl` (`readSessionLifecycleEvents`). Os três
+ * eventos contam como fim: `ended` (fim limpo), `gc-removed-without-end` e
+ * `swept-without-end` (sessão morta recolhida). Pura; evento com `ts`
+ * ilegível é ignorado (#13172).
+ */
+export function endedSessionsFromLifecycle(events: readonly SessionLifecycleEvent[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const ev of events) {
+    if (!ev || typeof ev.sessionId !== "string" || typeof ev.ts !== "string") continue;
+    const ms = Date.parse(ev.ts);
+    if (Number.isNaN(ms)) continue;
+    const prev = out.get(ev.sessionId);
+    if (prev === undefined || ms > Date.parse(prev)) out.set(ev.sessionId, ev.ts);
+  }
+  return out;
 }
