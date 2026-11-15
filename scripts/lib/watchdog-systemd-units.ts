@@ -91,8 +91,14 @@ export function buildWatchdogOnCalendar(intervalMinutes: number = 10): string {
  * de `overnight-watchdog.ts`), então rodar a cada 10 min mesmo fora de uma
  * rodada overnight é barato e seguro.
  */
-export function buildWatchdogSystemdUnitFiles(repoRootAbs: string): SystemdUnitFiles {
-  const execStart = `${process.execPath} --import tsx ${repoRootAbs}/scripts/overnight-watchdog.ts`;
+export function buildWatchdogSystemdUnitFiles(
+  repoRootAbs: string,
+  // #13151: node do `ExecStart=` — ver o parâmetro gêmeo em
+  // `buildEdicaoSystemdUnitFiles`. Default `process.execPath` só para
+  // biblioteca e testes; o CLI passa o node resolvido pelo `.nvmrc`.
+  nodeBin: string = process.execPath,
+): SystemdUnitFiles {
+  const execStart = `${nodeBin} --import tsx ${repoRootAbs}/scripts/overnight-watchdog.ts`;
   const onCalendar = buildWatchdogOnCalendar();
 
   const serviceContent = [

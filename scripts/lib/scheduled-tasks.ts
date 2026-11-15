@@ -3608,6 +3608,31 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     issue: "#6105, #7137, #7553",
   },
   {
+    name: "Diaria-Systemd-Units-Drift-Alarm",
+    failover: "skip",
+    description:
+      "units systemd instaladas divergentes do gerado pelo registro (setup-systemd-timers.ts --diff-installed " +
+      "agendado, so do checkout principal) -- abre/fecha issue de alarme (#13152)",
+    steps: [{ key: "check", script: "scripts/systemd-units-drift-alarm.ts" }],
+    logPath: "systemd-units-drift-alarm/.alarm.log",
+    // Diaria 18:40 BRT -- logo apos Diaria-Task-Registry-Prose-Drift-Alarm
+    // (18:35), mesma familia de drift-check (registro x systemd real), slot
+    // livre (conferido com `scheduled-tasks.ts --list`, #5408). Diaria basta:
+    // a defasagem nasce no merge e o rearme e manual, nada muda em horas.
+    // Sem guard -- nao le data/; so le ~/.config/systemd/user/ e chama `gh`
+    // para a issue. Sem successExitCodes: o achado vira a issue de alarme e o
+    // script sai 0; exit 1 (node do .nvmrc nao resolvido, pasta ilegivel, gh
+    // falhou) e falha real e deve aparecer para
+    // Diaria-Systemd-Failed-Units-Alarm. Exit 2 = rodado de um worktree, o
+    // que a unit gerada do checkout principal nunca faz.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts --task Diaria-Systemd-Units-Drift-Alarm`
+    // no checkout principal do `300` e acao POSTERIOR do editor.
+    schedule: { kind: "daily", hour: 18, minute: 40 },
+    issue: "#13152",
+  },
+  {
     name: "Diaria-Guard-Never-Invoked-Weekly-Check",
     failover: "skip",
     description:

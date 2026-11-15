@@ -668,6 +668,7 @@ Task fora do systemd: `diaria-short-video-relacionado` (Neo, `5 6 * * 1-5`,
 | Diaria-Alarm-Retirement-Candidates | weekly Sunday 11:30 | armada | `scripts/check-alarm-retirement-candidates.ts` | `alarm-retirement-candidates/.check.log` |  | G10 |
 | Diaria-Corrupted-Names-Weekly-Check | weekly Sunday 11:45 | armada | `scripts/check-corrupted-names.ts` | `clarice-subscribers/.corrupted-names-check.log` |  | G8, G10 |
 | Diaria-Task-Registry-Prose-Drift-Alarm | daily 18:35 | armada | `scripts/task-registry-prose-drift-check.ts` | `task-registry-prose-drift/.check.log` |  | G10 |
+| Diaria-Systemd-Units-Drift-Alarm | daily 18:40 | desarmada | `scripts/systemd-units-drift-alarm.ts` | `systemd-units-drift-alarm/.alarm.log` |  | G10 |
 | Diaria-Guard-Never-Invoked-Weekly-Check | weekly Sunday 12:00 | armada | `scripts/check-guard-never-invoked.ts` | `guard-never-invoked/.check.log` |  | G10 |
 | Diaria-Issue-File-Collisions-Weekly-Check | weekly Sunday 12:15 | armada | `scripts/check-issue-file-collisions.ts` | `issue-file-collisions/.check.log` |  | G2, G10 |
 | Diaria-Dmarc-Enforcement-Alarm | weekly Sunday 12:30 | armada | `scripts/dmarc-enforcement-alarm.ts` | `dmarc-enforcement/.alarm.log` |  | G10 |

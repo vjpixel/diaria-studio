@@ -791,6 +791,69 @@ export function repetitionLine(label: string, what: string, item: Interval, rep:
   );
 }
 
+/** Um corte de reserva do roteiro (#13129/#13140), como a montagem o recebe: a chave da sequência e a fala. */
+export interface ReservaDoRoteiro {
+  /** `sequenceKey` da versão que o corte encurta (`outras-redes`, o slug do corte). */
+  chave: string;
+  id: string;
+  /** A fala inteira, como está no roteiro. */
+  texto: string;
+  trecho: string;
+  /** Os trechos que sobram: cada um vira um item desta versão. */
+  segmentos: string[];
+  economiaS: number;
+}
+
+/** A fala igual ao item, sem pontuação nem caixa (a mesma tokenização do casamento com o transcript). */
+const mesmaFala = (a: string, b: string): boolean => {
+  const x = tokenize(a).join(" ");
+  return x.length > 0 && x === tokenize(b).join(" ");
+};
+
+/**
+ * As linhas dos cortes de reserva desta versão (#13140), para o topo da
+ * sugestão de corte da vertical acima do alvo: o item do `blocks.json` que o
+ * corte troca e o que muda nele, pronto para o editor aprovar. Nunca aplica:
+ * quem decide é o editor no Gate 2. Corte já aplicado (o item inteiro não
+ * está mais nesta versão e os trechos estão) não entra; item não achado sai
+ * com o aviso, para o editor procurar a fala.
+ */
+export function reservaCutLines(plan: Pick<SequencePlan, "spec">, resolved: Partial<Record<BlockKey, ResolvedItem[]>>, reservas: readonly ReservaDoRoteiro[]): { lines: string[]; economiaS: number } {
+  const key = sequenceKey(plan.spec);
+  const lines: string[] = [];
+  let economiaS = 0;
+  for (const r of reservas) {
+    if (r.chave !== key) continue;
+    let achado: { block: BlockKey; index: number; it: ResolvedItem } | null = null;
+    let aplicado = false;
+    for (const block of plan.spec.order) {
+      (resolved[block] ?? []).forEach((it, index) => {
+        if (!itemInTarget(it, plan.spec)) return;
+        if (!achado && mesmaFala(it.text, r.texto)) achado = { block, index, it };
+        if (r.segmentos.some((t) => mesmaFala(it.text, t))) aplicado = true;
+      });
+    }
+    const a = achado as { block: BlockKey; index: number; it: ResolvedItem } | null;
+    if (!a && aplicado) continue;
+    const novos = r.segmentos.map((t) => `{"text": ${JSON.stringify(t)}, "targets": ["${key}"]}`).join(", ");
+    if (!a) {
+      lines.push(`- **reserva do roteiro** ${r.id} (~${sec(r.economiaS)}): tirar "${mdCell(r.trecho)}"; a fala inteira não foi achada nesta versão do blocks.json: procurar "${mdCell(r.texto)}" e trocar pelos itens ${mdCell(novos)}`);
+      economiaS += r.economiaS;
+      continue;
+    }
+    // O escopo do item muda conforme ele já tem `targets` ou `skip` (os dois juntos são erro do blocks.json).
+    const it = a.it;
+    const escopo = it.targets
+      ? it.targets.length === 1 && sequenceInList(it.targets, plan.spec)
+        ? "o item é só desta versão: trocá-lo pelos itens"
+        : `tirar "${key}" de \`targets\` (fica ${JSON.stringify(it.targets.filter((t) => !sequenceInList([t], plan.spec)))}) e pôr logo depois dele`
+      : `\`"skip": ${JSON.stringify([...(it.skip ?? []), key])}\` nele e logo depois`;
+    lines.push(`- **reserva do roteiro** ${r.id}, ${BLOCK_LABELS[a.block]} [${a.index}] (~${sec(r.economiaS)}): tirar "${mdCell(r.trecho)}". No blocks.json: ${escopo} ${mdCell(novos)}`);
+    economiaS += r.economiaS;
+  }
+  return { lines, economiaS };
+}
+
 export function roteiroMarkdown(
   edition: string,
   plans: SequencePlan[],
@@ -814,6 +877,12 @@ export function roteiroMarkdown(
      * Ausente = sem a linha.
      */
     videoTitles?: Readonly<Record<string, string>>;
+    /**
+     * #13140: os cortes de reserva do roteiro (`roteiro-falas.json`); com a
+     * vertical acima do alvo, abrem a sugestão de corte, antes das frases
+     * que a montagem escolhe sozinha. Ausente = sem a seção.
+     */
+    cortesReserva?: readonly ReservaDoRoteiro[];
   } = {},
 ): string {
   const lines = [`# Roteiro final ${edition} (${plans.length} versões)`, ""];
@@ -835,6 +904,17 @@ export function roteiroMarkdown(
         `**[aviso] ${sec(target.totalS)}, ${sec(target.overS)} acima do alvo da vertical (${target.targetS} s, card de CTA fora da conta). A prévia fica bloqueada até caber (#12694).** Sugestão de corte (só nesta versão: \`"skip": ["${sequenceKey(p.spec)}"]\` no item do bloco indicado):`,
         "",
       );
+      // #13140: os cortes de reserva que o roteiro já declarou vêm primeiro.
+      const reserva = reservaCutLines(p, resolved, opts.cortesReserva ?? []);
+      if (reserva.lines.length) {
+        const basta = reserva.economiaS >= target.overS - 1e-9;
+        lines.push(
+          `Primeiro, os cortes de reserva do roteiro (#13140), ~${sec(reserva.economiaS)} pela taxa de fala do roteiro${basta ? ", o que cobre o excesso" : `, ainda ~${sec(target.overS - reserva.economiaS)} abaixo do excesso`}; aplicar só com o editor:`,
+          ...reserva.lines,
+          "",
+          `${basta ? "Se o editor recusar a reserva, a" : "Depois, a"} sugestão da montagem:`,
+        );
+      }
       for (const c of target.cuts) lines.push(`- ${BLOCK_LABELS[c.block]} [${c.index}] (${sec(c.seconds)}, ${c.reason}): "${mdCell(c.text)}"`);
       if (target.coveredS < target.overS - 1e-9) lines.push(`- As sugestões tiram ~${sec(target.coveredS)}; ainda faltam ~${sec(target.overS - target.coveredS)}: enxugar ou regravar com o editor; a prévia segue bloqueada.`);
       // #12694: o roteiro enxuto, para o editor ver o que fica antes da prévia.
