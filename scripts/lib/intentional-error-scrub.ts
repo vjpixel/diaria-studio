@@ -25,8 +25,10 @@
  * `/diaria-mes-erros`, `list-month-errors.ts`) para edições anteriores ao #3222.
  *
  * Casamento: palavra inteira (não troca "Large 3" dentro de "Large 30"),
- * sensível a maiúsculas (o erro plantado é uma grafia exata), e NUNCA dentro
- * de URL — um `wrong_value` numérico ("2025") não pode quebrar um link.
+ * sem distinguir maiúsculas para grafia errada de nome ("APPEL" num título em
+ * caixa alta também é o erro, #13105 item 4; o scrub devolve o correto na
+ * caixa da ocorrência), sensível a maiúsculas para valor ambíguo, e NUNCA
+ * dentro de URL — um `wrong_value` numérico ("2025") não pode quebrar um link.
  *
  * Valor AMBÍGUO (#13105): número ou palavra curta (`isAmbiguousWrongValue`)
  * pode aparecer de forma legítima em outro item ("2025" numa data). Para ele o
@@ -162,9 +164,38 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Palavra inteira (vizinhos não podem ser letra/dígito), sensível a maiúsculas. */
+/**
+ * Palavra inteira (vizinhos não podem ser letra/dígito).
+ *
+ * #13105 item 4: grafia errada de nome ("Appel") casa também em outra caixa
+ * ("APPEL" num título em caixa alta, "appel" num slug de texto) — senão a
+ * variante escapa do scrub e do guard. Valor AMBÍGUO (número, palavra curta)
+ * segue sensível a maiúsculas: "Mau" no começo de frase não é o "mau" plantado.
+ */
 function wholeWordRe(wrong: string): RegExp {
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(wrong)}(?![\\p{L}\\p{N}])`, "gu");
+  const flags = isAmbiguousWrongValue(wrong) ? "gu" : "giu";
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(wrong)}(?![\\p{L}\\p{N}])`, flags);
+}
+
+/**
+ * Pure (#13105 item 4): o `correct` na caixa da ocorrência casada. Igual ao
+ * `wrong` → `correct` como declarado; toda em maiúsculas → `correct` em
+ * maiúsculas; toda em minúsculas → em minúsculas; só a inicial maiúscula →
+ * inicial maiúscula. Caixa mista que não é nenhuma dessas → `correct` como
+ * declarado.
+ */
+export function correctInMatchCase(match: string, wrong: string, correct: string): string {
+  if (match === wrong) return correct;
+  const hasLetter = /\p{L}/u.test(match);
+  if (hasLetter && match === match.toUpperCase()) return correct.toUpperCase();
+  if (hasLetter && match === match.toLowerCase()) return correct.toLowerCase();
+  const [first = "", ...rest] = [...match];
+  const restStr = rest.join("");
+  if (first === first.toUpperCase() && restStr === restStr.toLowerCase()) {
+    const [cf = "", ...cr] = [...correct.toLowerCase()];
+    return cf.toUpperCase() + cr.join("");
+  }
+  return correct;
 }
 
 /** Aplica `fn` só aos trechos de `text` que não são URL. */
@@ -205,7 +236,8 @@ function countOutsideUrls(text: string, wrong: string): number {
 export function scrubIntentionalError(text: string, pair: IntentionalErrorPair | null | undefined): string {
   if (!pair || !text) return text;
   const re = wholeWordRe(pair.wrong);
-  const replaceAll = (t: string) => mapOutsideUrls(t, (chunk) => chunk.replace(re, () => pair.correct));
+  const replaceAll = (t: string) =>
+    mapOutsideUrls(t, (chunk) => chunk.replace(re, (m) => correctInMatchCase(m, pair.wrong, pair.correct)));
   const total = countOutsideUrls(text, pair.wrong);
   if (total === 0) return text;
   if (total === 1 || !isAmbiguousWrongValue(pair.wrong)) return replaceAll(text);
@@ -385,6 +417,39 @@ export function formatIntentionalErrorAdvisory(leaks: readonly IntentionalErrorL
     `${where}: o valor do erro intencional aparece no texto — ${parts.join("; ")}. ` +
     "É número ou palavra curta e pode ser legítimo, então não recusa o envio (#13105): confira se não é o erro da edição."
   );
+}
+
+/**
+ * Edições (AAMMDD) de um `raw-destaques.json` (mensal ou anual: `destaques[].edition`).
+ * Arquivo ausente ou ilegível = `[]` (o guard do texto final fica sem gabarito,
+ * e quem chama avisa). Nunca lança.
+ */
+export function editionsFromRawDestaques(path: string): string[] {
+  if (!existsSync(path)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { destaques?: Array<{ edition?: unknown }> };
+    const set = new Set<string>();
+    for (const d of parsed.destaques ?? []) {
+      if (typeof d?.edition === "string" && /^\d{6}$/.test(d.edition)) set.add(d.edition);
+    }
+    return [...set].sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Pure (#13105 item 3): guard do texto FINAL de um produto que reescreve as
+ * edições (mensal, mensal-apoiadores, anual). O writer funde vários itens num
+ * texto só, então não há como atribuir trecho a edição: o texto inteiro conta
+ * como sem origem. Grafia errada de nome (`blocking`) não aparece de forma
+ * legítima; valor ambíguo (`advisory`) só avisa, como no guard escopado.
+ */
+export function findDraftIntentionalErrorLeaks(
+  text: string,
+  pairs: readonly IntentionalErrorPair[],
+): ScopedIntentionalErrorLeaks {
+  return findScopedIntentionalErrorLeaks([{ edition: null, text }], pairs);
 }
 
 /** Pure: mensagem única para avisos/recusas do guard. */
