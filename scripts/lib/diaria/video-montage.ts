@@ -3072,6 +3072,9 @@ export function isVerticalSpec(spec: Pick<SequenceSpec, "width" | "height">): bo
   return spec.height > spec.width;
 }
 
+/** O horizontal: a única sequência cujo SRT vai para o upload do YouTube (#11957) e a única com texto de tela (#13186). */
+export const isYoutubeSpec = (s: Pick<SequenceSpec, "target" | "corte" | "width" | "height">) => s.target === "youtube" && s.corte === undefined && !isVerticalSpec(s);
+
 /**
  * Estilo do título: serifada, branca, negrito, centrada no topo (o lettering
  * das verticais 261028-261030), sobre um fundo preto a 70% (#11941).
@@ -3460,6 +3463,8 @@ const TELA_MIN_TOKENS_TRECHO = 3;
  * fala inteira, ou um trecho dela com 3+ palavras: o corte parcial do #13129
  * vira os trechos que sobram); o tempo sai dos clipes que cobrem o intervalo do
  * item no bruto, já com os cortes de pausa. Fala sem item nesta versão fica fora.
+ * Só o horizontal leva texto de tela (#13180/#13186): os verticais saem sem
+ * marcador, mesmo com a fala também neles (a página do roteiro esconde o box ali).
  */
 export function telaMarkersFor(
   plan: Pick<SequencePlan, "spec" | "clips">,
@@ -3467,6 +3472,7 @@ export function telaMarkersFor(
   fps: number,
   telas: ReadonlyArray<{ id: string; texto: string; tela: string }>,
 ): TelaMarker[] {
+  if (!isYoutubeSpec(plan.spec)) return [];
   const norm = (t: string) => tokenize(t).join(" ");
   const items = plan.spec.order.flatMap((b) => (resolved[b] ?? []).filter((it) => itemInTarget(it, plan.spec)));
   const out: TelaMarker[] = [];

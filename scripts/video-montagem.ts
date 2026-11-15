@@ -304,6 +304,7 @@ import {
   mapWordsToSequence,
   trimWordsToSilences,
   isVerticalSpec,
+  isYoutubeSpec,
   CTA_BLOCKS,
   offsetTranscript,
   subWindows,
@@ -3357,13 +3358,15 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
   // #13123 (em teste): a capa nos primeiros quadros das verticais; falha = sequência sem a capa, com aviso.
   const capaInicio = await renderCapaInicioAssets(ctx, file, picked, source.fps, mediaPath);
   // #13140: o texto de tela de cada fala do roteiro vira marcador da sequência, no tempo da fala.
+  // #13186: só no horizontal; os verticais saem sem texto de tela (regra do #13180).
   const telas = readRoteiroTelas(editionDirFor(ctx.edition), (m) => console.error(`[aviso] ${m}`));
   const telaMarkers: Record<string, TelaMarker[]> = {};
   for (const p of picked) {
+    if (!isYoutubeSpec(p.spec)) continue;
     const ms = telaMarkersFor(p, resolved, source.fps, telas);
     if (ms.length) telaMarkers[sequenceKey(p.spec)] = ms;
     const fora = telas.filter((t) => !ms.some((m) => m.id === t.id)).map((t) => t.id);
-    if (ms.length) console.error(`[premissa] ${p.spec.name}: ${ms.length} texto(s) de tela do roteiro como marcador da sequência no tempo da fala (${ms.map((m) => m.id).join(", ")}); a faixa de texto é do editor no Premiere (#13140)${fora.length ? `; fora desta versão: ${fora.join(", ")}` : ""}`);
+    if (ms.length) console.error(`[premissa] ${p.spec.name}: ${ms.length} texto(s) de tela do roteiro como marcador da sequência no tempo da fala (${ms.map((m) => m.id).join(", ")}); a faixa de texto é do editor no Premiere (#13140); os verticais saem sem texto de tela (#13186)${fora.length ? `; fora desta versão: ${fora.join(", ")}` : ""}`);
   }
   // #12707: todo `pathurl` com a mesma raiz; o que ficar fora dela sai com o caminho do Neo, e isso é dito.
   const xmlFilePaths = [
@@ -3612,8 +3615,8 @@ export function applyYoutubeSrtCopy(input: {
   return decision;
 }
 
-/** O horizontal: a única sequência cujo SRT vai para o upload do YouTube (#11957). */
-export const isYoutubeSpec = (s: Pick<SequenceSpec, "target" | "corte" | "width" | "height">) => s.target === "youtube" && s.corte === undefined && !isVerticalSpec(s);
+/** O horizontal (#11957): mora na lib desde o #13186, reexportado para quem já importava daqui. */
+export { isYoutubeSpec };
 
 /** As sequências do `srt` (#11957): sem `--seq`, todas, o horizontal também; com ele, a escolhida (`youtube` inclusive). */
 export function srtPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte" | "width" | "height"> }>(all: P[], seq: string | undefined): P[] {
