@@ -47,7 +47,7 @@ describe("#13164 roteiro e tempo no corte", () => {
   }));
   it("usa palavras da decupagem e posição final, com pausa cortada e início deslocado", () => {
     const spec = defaultSequences("V1", "monologo", "gancho")[0];
-    const p = { spec, clips: [{ block: "comentario", srcIn: 100, srcOut: 110, seqStart: 900, seqEnd: 1200 }], durationFrames: 1200, script: "", missingBlocks: [], dropped: [] } as SequencePlan;
+    const p: SequencePlan = { spec, clips: [{ block: "comentario", srcIn: 100, srcOut: 110, frameIn: 3000, frameOut: 3300, seqStart: 900, seqEnd: 1200, scale: 1 }], durationFrames: 1200, script: "", missingBlocks: [], dropped: [] };
     const item = { text: cue.texto, interval: { start: 100, end: 110 }, words: [{ start: 100.5, end: 101, text: "Antes" }] } as ResolvedItem;
     assert.equal(shareTimeInPlan(cue, p, { comentario: [item] }, 30), 30.5);
     assert.throws(() => shareTimeInPlan(cue, p, {}, 30), /ausente ou ambígua/);
