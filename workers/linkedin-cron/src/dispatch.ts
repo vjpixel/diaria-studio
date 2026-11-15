@@ -2019,7 +2019,8 @@ export interface ThreadsGraphError extends GraphErrorBody {
  */
 export function describeThreadsError(error: ThreadsGraphError | undefined, rawText: string): string {
   if (!error || typeof error !== "object") return rawText.slice(0, 200);
-  const parts: string[] = [error.message ?? rawText.slice(0, 200)];
+  const head = error.message || rawText.slice(0, 200);
+  const parts: string[] = head ? [head] : [];
   const meta: string[] = [];
   if (error.type) meta.push(`type=${error.type}`);
   if (typeof error.code === "number") meta.push(`code=${error.code}`);
@@ -2033,10 +2034,32 @@ export function describeThreadsError(error: ThreadsGraphError | undefined, rawTe
 }
 
 /**
+ * #13100 — códigos da Graph que não passam em 5 s: token inválido/expirado
+ * (190) e permissão (10, 200). Repetir só gasta subrequest antes da DLQ.
+ */
+export const THREADS_PARENT_NON_RETRYABLE_CODES: ReadonlySet<number> = new Set([190, 10, 200]);
+
+/**
+ * #13100 — a falha HTTP na criação do pai merece outra tentativa? Sim quando
+ * a Meta declara `is_transient: true`; não para auth/permissão
+ * (`THREADS_PARENT_NON_RETRYABLE_CODES`) nem limite de taxa
+ * (`GRAPH_RATE_LIMIT_CODES`, #10992 — não zera em segundos); sim para o resto
+ * (code 100 "Invalid parameter" do incidente, 5xx, corpo não-JSON, sem id).
+ */
+export function isThreadsParentRetryable(error: ThreadsGraphError | undefined | null): boolean {
+  if (!error || typeof error !== "object") return true;
+  if (error.is_transient === true) return true;
+  if (typeof error.code !== "number") return true;
+  return !THREADS_PARENT_NON_RETRYABLE_CODES.has(error.code) && !GRAPH_RATE_LIMIT_CODES.has(error.code);
+}
+
+/**
  * #13100 — cria o container pai do carrossel (`media_type=CAROUSEL`), com até
  * `THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS` tentativas sobre os mesmos filhos.
- * Qualquer falha (HTTP de erro, corpo não-JSON, sem id, timeout) conta como
- * tentativa; o `reason` final lista o erro de CADA tentativa.
+ * Só repete resposta HTTP com cara de passageira (`isThreadsParentRetryable`);
+ * timeout/abort ou outra exceção do fetch para o laço na hora, para o pior
+ * caso ficar perto do de antes da #13100 frente ao TTL do claim
+ * (`CLAIM_TTL_MS`). O `reason` final lista o erro de CADA tentativa.
  */
 async function createThreadsCarouselParent(
   base: string,
@@ -2047,6 +2070,7 @@ async function createThreadsCarouselParent(
   const errors: string[] = [];
   for (let attempt = 1; attempt <= THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS; attempt++) {
     let failure: string;
+    let retryable = true;
     try {
       const params = new URLSearchParams({
         media_type: "CAROUSEL",
@@ -2070,6 +2094,7 @@ async function createThreadsCarouselParent(
         failure = `resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}`;
       } else if (!res.ok || data.error) {
         failure = `HTTP ${res.status}: ${describeThreadsError(data.error, text)}`;
+        retryable = isThreadsParentRetryable(data.error);
       } else if (!data.id) {
         failure = `sem id: ${text.slice(0, 200)}`;
       } else {
@@ -2084,18 +2109,21 @@ async function createThreadsCarouselParent(
       const err = e as Error;
       const timeout = err.name === "AbortError" || err.name === "TimeoutError";
       failure = `fetch ${timeout ? "timeout" : "failed"}: ${err.message}`;
+      retryable = false;
     }
     errors.push(`tentativa ${attempt}: ${failure}`);
     console.warn(
       `[threads-carousel] container pai falhou na tentativa ${attempt}/${THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS}: ${failure} (children=${childIds.join(",")})`,
     );
+    if (!retryable) break;
     if (attempt < THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS) {
       await new Promise((r) => setTimeout(r, THREADS_CAROUSEL_PARENT_RETRY_MS));
     }
   }
+  const n = errors.length;
   return {
     ok: false,
-    reason: `Threads carrossel: container pai falhou após ${THREADS_CAROUSEL_PARENT_MAX_ATTEMPTS} tentativas: ${errors.join(" | ")} (children=${childIds.join(",")})`,
+    reason: `Threads carrossel: container pai falhou após ${n} ${n === 1 ? "tentativa" : "tentativas"}: ${errors.join(" | ")} (children=${childIds.join(",")})`,
   };
 }
 
