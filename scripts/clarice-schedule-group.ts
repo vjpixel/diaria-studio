@@ -205,7 +205,18 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { withFileLock } from "./lib/file-lock.ts";
+import {
+  readGroupCampaignsRaw as readGroupCampaignsRawStore,
+  readGroupCampaignsTracked,
+  withGroupCampaignsLock,
+  writeGroupCampaignsMerged,
+} from "./lib/clarice-group-campaigns-store.ts"; // #13098, #13135
+export {
+  baselineEntriesMissingFromDisk,
+  mergeGroupCampaigns,
+  withGroupCampaignsLock,
+  writeGroupCampaignsMerged,
+} from "./lib/clarice-group-campaigns-store.ts";
 import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, BrevoHttpError, isTerminalSendStatus, describeUncertainSendStatus, pollTerminalSendStatus, SEND_NOW_GUARD_WINDOW_MS } from "./lib/brevo-client.ts";
 import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
@@ -503,98 +514,17 @@ export function resolveListIndexArg(argv: string[]): { listIndex: number | undef
 /**
  * Lê um `group-campaigns.json` — ausente = `[]` (1º envio do ciclo);
  * JSON inválido lança (o índice da frase do "quero" e a idempotência dependem
- * dele, então nunca cai num `[]` silencioso).
+ * dele, então nunca cai num `[]` silencioso). Guarda o retrato da leitura,
+ * base da escrita mesclada (#13098; a mescla mora em
+ * `lib/clarice-group-campaigns-store.ts` desde o #13135, para o
+ * `clarice-envio-guard.ts` usar o mesmo writer).
  */
 export function readGroupCampaigns(path: string): CampaignEntry[] {
-  const parsed = readGroupCampaignsRaw(path);
-  // #13098: retrato do que ESTA invocação leu, base da escrita mesclada.
-  groupCampaignsBaseline.set(resolve(path), structuredClone(parsed));
-  return parsed;
+  return readGroupCampaignsTracked<CampaignEntry>(path);
 }
 
 function readGroupCampaignsRaw(path: string): CampaignEntry[] {
-  if (!existsSync(path)) return [];
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
-  } catch (e) {
-    throw new Error(`group-campaigns.json corrompido (JSON inválido): ${path}\n${String(e)}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// #13098: escrita mesclada do group-campaigns.json
-//
-// A invocação lê o registro no início e regrava o array INTEIRO depois do
-// poll do `--send-now` (até ~15 min). Duas invocações no mesmo ciclo (a rodada
-// `novos` da tarde, que agora reagenda por rede, e `Diaria-Clarice-Envio` às
-// 19:10) apagariam uma a entrada da outra; o guard das 05:00 depende da
-// entrada da onda de amanhã. Cada escrita relê o disco sob trava e só aplica
-// as entradas que ESTA invocação mudou desde a leitura (ou criou). O registro
-// nunca remove entradas, então o que está no disco e não mudou aqui fica.
-// ---------------------------------------------------------------------------
-
-const groupCampaignsBaseline = new Map<string, CampaignEntry[]>();
-
-const sameCampaign = (a: CampaignEntry, b: CampaignEntry): boolean => a.key === b.key && a.campaignId === b.campaignId;
-
-/**
- * Pura: `onDisk` mais as entradas de `current` que diferem de `baseline`
- * (mesma `key` + `campaignId`) ou que não existiam nele. A entrada mudada
- * substitui a do disco na mesma posição; a nova vai para o fim.
- */
-export function mergeGroupCampaigns(
-  baseline: readonly CampaignEntry[],
-  current: readonly CampaignEntry[],
-  onDisk: readonly CampaignEntry[],
-): CampaignEntry[] {
-  const merged = onDisk.map((e) => ({ ...e }));
-  for (const cur of current) {
-    const base = baseline.find((b) => sameCampaign(b, cur));
-    if (base && JSON.stringify(base) === JSON.stringify(cur)) continue;
-    const i = merged.findIndex((d) => sameCampaign(d, cur));
-    if (i >= 0) merged[i] = { ...cur };
-    else merged.push({ ...cur });
-  }
-  return merged;
-}
-
-/** Pura: entradas do `baseline` que não estão mais no disco (o registro
- * nunca remove; sumir é edição à mão ou arquivo trocado). */
-export function baselineEntriesMissingFromDisk(
-  baseline: readonly CampaignEntry[],
-  onDisk: readonly CampaignEntry[],
-): CampaignEntry[] {
-  return baseline.filter((b) => !onDisk.some((d) => sameCampaign(d, b)));
-}
-
-/** Trava da escrita do registro (`file-lock.ts`, seção crítica curta). */
-export function withGroupCampaignsLock<T>(path: string, fn: (abs: string) => T): T {
-  const abs = resolve(path);
-  return withFileLock(`${abs}.lock`, () => fn(abs));
-}
-
-/** Escreve `content` (o array desta invocação) no registro, mesclado com o
- * disco sob trava. Writer padrão das funções deste script. */
-export function writeGroupCampaignsMerged(
-  path: string,
-  content: string,
-  logFn: (msg: string) => void = (m) => console.error(m),
-): void {
-  const current = JSON.parse(content) as CampaignEntry[];
-  const abs = withGroupCampaignsLock(path, (absPath) => {
-    const baseline = groupCampaignsBaseline.get(absPath) ?? [];
-    const onDisk = readGroupCampaignsRaw(absPath);
-    for (const gone of baselineEntriesMissingFromDisk(baseline, onDisk)) {
-      logFn(
-        `⚠ group-campaigns.json: a entrada ${gone.key} (campanha #${gone.campaignId}) lida no início sumiu do disco ` +
-          `(edição à mão ou arquivo trocado?) — ` +
-          (current.some((c) => sameCampaign(c, gone)) ? "regravada a partir desta invocação." : "mantida fora."),
-      );
-    }
-    writeFileAtomic(absPath, JSON.stringify(mergeGroupCampaigns(baseline, current, onDisk), null, 2));
-    return absPath;
-  });
-  groupCampaignsBaseline.set(abs, structuredClone(current));
+  return readGroupCampaignsRawStore<CampaignEntry>(path);
 }
 
 export function resolveContentCycle(argv: string[], segmentsCycle: string): string {

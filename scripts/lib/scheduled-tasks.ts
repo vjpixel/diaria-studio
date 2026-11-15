@@ -1803,7 +1803,8 @@ export const SCHEDULED_TASKS: RegisteredScheduledTaskDefinition[] = [
     // grupos disjuntos, e o `clarice-schedule-group.ts` das duas grava o
     // `group-campaigns.json` relendo o disco sob trava e aplicando só as
     // entradas que ele mesmo mudou (`writeGroupCampaignsMerged`, #13098),
-    // então a Tarde não apaga a onda de amanhã que o Envio registrou.
+    // então a Tarde não apaga a onda de amanhã que o Envio registrou. O
+    // `clarice-envio-guard.ts` (05:00) grava pelo mesmo writer (#13135).
     retryOnTransientNetwork: "step-declares",
     issue: "#4347, #4941, #5185, #5410, #5445, #5447, #5660, #5743, #13017",
   },
