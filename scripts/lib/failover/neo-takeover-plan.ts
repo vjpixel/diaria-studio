@@ -216,10 +216,19 @@ export function buildDisarmScript(): string {
   return ["$ErrorActionPreference = 'Stop'", ...stopAndUnregisterLines()].join("\n");
 }
 
+/**
+ * Lista as `Diaria-Failover-*` como JSON. Sem `-ErrorAction SilentlyContinue`
+ * (#12993): ele escondia acesso negado e o serviço do Agendador fora do ar,
+ * devolvendo `[]` com exit 0, e o `--disarm` lia isso como "removidas". Só o
+ * "nada encontrado" (`ObjectNotFound`) vira lista vazia; qualquer outro erro
+ * relança e o script sai ≠ 0. (No 5.1 o curinga sem resultado nem chega a
+ * errar, medido em 15/11/2026; o `catch` cobre versões que erram.)
+ */
 export function buildStatusScript(): string {
   return [
     "$ErrorActionPreference = 'Stop'",
-    `$t = @(Get-ScheduledTask -TaskName ${psQuote(FAILOVER_TASK_PREFIX + "*")} -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ name = $_.TaskName; state = [string]$_.State } })`,
+    `$raw = try { @(Get-ScheduledTask -TaskName ${psQuote(FAILOVER_TASK_PREFIX + "*")}) } catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { @() } else { throw } }`,
+    `$t = @($raw | ForEach-Object { [pscustomobject]@{ name = $_.TaskName; state = [string]$_.State } })`,
     "ConvertTo-Json -InputObject $t -Compress",
   ].join("\n");
 }

@@ -142,7 +142,9 @@ então grava o lease `infra:scheduler-owner` para o Neo (6 h, renovado pelas
 próprias tarefas). Antes do lease, relê o Task Scheduler: se as
 `Diaria-Failover-*` registradas não batem com o plano (ou alguma está
 `Disabled`), desfaz o registro e sai 1 sem gravar o lease; plano sem nenhuma
-tarefa critical é recusado antes de registrar (#12993). Lease que não confirma desfaz o registro das
+tarefa critical é recusado antes de registrar (#12993). Num re-arm com o Neo
+já armado, o rollback que confirma zero tarefas também apaga o lease ANTERIOR
+do Neo, que sem tarefas só pararia o `300`. Lease que não confirma desfaz o registro das
 tarefas (e apaga o lease, salvo se a releitura mostrar o do `300`).
 
 ## 3. Conferir
@@ -151,7 +153,9 @@ tarefas (e apaga o lease, salvo se a releitura mostrar o do `300`).
 npx tsx scripts/failover/neo-takeover.ts --status
 ```
 
-Mostra as tarefas armadas, o dono do lease e o sinal de queda. Execução que
+Mostra as tarefas armadas, o dono do lease e o sinal de queda; sai 1 se não
+conseguir listar as tarefas (acesso negado, Agendador fora), em vez de
+mostrar 0 armadas. Execução que
 roda loga no `data/` da task, como no `300`. A decisão do gate
 (`[failover neo] ...`) sai só no stdout/stderr do processo, antes do log da
 task, e **o Task Scheduler descarta stdout/stderr**: uma run que cedeu não

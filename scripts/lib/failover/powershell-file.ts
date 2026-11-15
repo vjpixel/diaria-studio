@@ -81,8 +81,9 @@ export function runPowerShellFile(script: string, timeoutMs: number, deps: Parti
     if (dir) {
       try {
         d.removeDir(dir);
-      } catch {
-        // Sobra de arquivo temporário não muda o resultado do script.
+      } catch (e) {
+        // Sobra de arquivo temporário não muda o resultado do script, mas fica registrada.
+        console.warn(`[powershell-file] não consegui apagar o temporário ${dir}: ${(e as Error).message}`);
       }
     }
   }

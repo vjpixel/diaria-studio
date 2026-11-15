@@ -162,10 +162,14 @@ function listArmed(d: TakeoverDeps): ArmedList {
 
 async function status(d: TakeoverDeps): Promise<number> {
   const kv = d.openKv();
+  // A listagem que falha não pode passar por "0 armadas" (#12993): sai 1 no fim.
+  let listFailed = false;
   if (d.platform === "win32") {
     const l = listArmed(d);
-    if (!l.ok) d.err(`${P} não consegui listar as tarefas: ${l.error}`);
-    else {
+    if (!l.ok) {
+      listFailed = true;
+      d.err(`${P} não consegui listar as tarefas: ${l.error}`);
+    } else {
       d.log(`${P} tarefas Diaria-Failover-* armadas: ${l.armed.length}`);
       for (const t of l.armed) d.log(`  - ${t.name} (${t.state})`);
     }
@@ -187,21 +191,40 @@ async function status(d: TakeoverDeps): Promise<number> {
           : `ilegível: ${lease.error}`),
   );
   d.log(`${P} sinal de queda: ${sig.kind === "present" ? `presente desde ${sig.since}` : sig.kind === "absent" ? "ausente" : `ilegível: ${sig.error}`}`);
-  return 0;
+  return listFailed ? 1 : 0;
 }
 
 /** Desfaz um `--arm` que não confirmou: remove as tarefas e, se a releitura
- * mostrou o Neo ou foi inconclusiva, apaga o lease. Tudo logado. */
+ * mostrou o Neo ou foi inconclusiva, apaga o lease. Tudo logado.
+ *
+ * Com `deleteLease` falso (o lease novo não foi gravado), ainda pode haver um
+ * lease do Neo ANTERIOR no KV (re-arm com o Neo já armado). Se a remoção das
+ * tarefas foi confirmada (zero restantes), esse lease antigo pararia o 300
+ * sem ninguém para agir até expirar (#12993): é lido e apagado se for do Neo.
+ * Lease de outro host nunca se apaga. */
 async function rollbackArm(d: TakeoverDeps, kv: TakeoverKv | null, deleteLease: boolean): Promise<void> {
   const r = d.runPowerShell(buildDisarmScript());
   relayStderr(d, r);
+  let removedAll = false;
   if (!r.ok) d.err(`${P} rollback: remoção das tarefas FALHOU (${r.stderr.trim()}); rode --disarm à mão.`);
   else {
     // #12993: o status 0 do PowerShell não prova a remoção; só a releitura prova.
     const l = listArmed(d);
-    if (l.ok && l.armed.length === 0) d.err(`${P} rollback: tarefas Diaria-Failover-* removidas.`);
+    removedAll = l.ok && l.armed.length === 0;
+    if (removedAll) d.err(`${P} rollback: tarefas Diaria-Failover-* removidas.`);
     else if (l.ok) d.err(`${P} rollback: ainda há ${l.armed.length} Diaria-Failover-* registradas (${l.armed.map((t) => t.name).join(", ")}); rode --disarm à mão.`);
     else d.err(`${P} rollback: remoção não confirmada (${l.error}); confira com --status e rode --disarm à mão se sobrar tarefa.`);
+  }
+  if (!deleteLease && removedAll && kv) {
+    const old = await readLease(kv);
+    if (old.kind === "ok" && old.lease.host === STANDBY_HOST) {
+      try {
+        await kv.delete(SCHEDULER_LEASE_KEY);
+        d.err(`${P} rollback: lease ANTERIOR do Neo (até ${old.lease.until}) apagado; sem tarefas ele só pararia o 300.`);
+      } catch (e) {
+        d.err(`${P} rollback: apagar o lease anterior do Neo FALHOU (${(e as Error).message}); rode --disarm à mão (ou ele expira em até 6 h).`);
+      }
+    }
   }
   if (deleteLease && kv) {
     try {
@@ -270,7 +293,7 @@ async function arm(d: TakeoverDeps, force: boolean, dryRun: boolean): Promise<nu
           (check.extra.length ? `; sobrando: ${check.extra.join(", ")}` : "") +
           (check.disabled.length ? `; desabilitadas: ${check.disabled.join(", ")}` : "")
         : "conferência inconclusiva";
-    d.err(`${P} registro das tarefas não confirmado: ${why}. Lease NÃO gravado. Desfazendo (rollback).`);
+    d.err(`${P} registro das tarefas não confirmado: ${why}. Lease novo NÃO gravado. Desfazendo (rollback).`);
     await rollbackArm(d, kv.kv, false);
     return 1;
   }
@@ -319,8 +342,9 @@ function relayStderr(d: TakeoverDeps, r: PsResult): void {
 async function disarm(d: TakeoverDeps, dryRun: boolean, force: boolean): Promise<number> {
   let unverified: string | null = null;
   const kv = d.openKv();
-  const read = kv.ok ? await readLease(kv.kv) : ({ kind: "error", error: kv.reason } as const);
-  const release = planLeaseRelease(read);
+  const readNow = async () => (kv.ok ? await readLease(kv.kv) : ({ kind: "error", error: kv.reason } as const));
+  let read = await readNow();
+  let release = planLeaseRelease(read);
   if (dryRun) {
     d.log(`${P} --dry-run: removeria as Diaria-Failover-*; lease: ${release.action} (${release.reason}). Script:\n${buildDisarmScript()}`);
     return 0;
@@ -348,14 +372,25 @@ async function disarm(d: TakeoverDeps, dryRun: boolean, force: boolean): Promise
       const sig = kv.ok ? await readDownSignal(kv.kv) : ({ kind: "error", error: kv.reason } as const);
       if (sig.kind !== "absent") {
         const why = sig.kind === "present" ? `o sinal de queda do 300 está presente (desde ${sig.since})` : `o sinal de queda não foi lido (${sig.error})`;
+        // A mensagem depende de quem é o dono AGORA: só o lease do Neo se retém.
+        const now = await readNow();
+        const neoHolds = now.kind === "ok" && now.lease.host === STANDBY_HOST;
         d.err(
-          `${P} AVISO: ${unverified}, e ${why}: sem o lease do Neo as tarefas restantes RETOMARIAM ao lado do 300. ` +
-            `Lease NÃO liberado. Remova as que sobraram no Agendador de Tarefas (e apague infra:300:down-since se o 300 voltou) e rode --disarm de novo.`,
+          neoHolds
+            ? `${P} AVISO: ${unverified}, e ${why}: sem o lease do Neo as tarefas restantes RETOMARIAM ao lado do 300. ` +
+                `Lease do Neo NÃO liberado. Remova as que sobraram no Agendador de Tarefas (e apague infra:300:down-since se o 300 voltou) e rode --disarm de novo.`
+            : `${P} AVISO: ${unverified}, e ${why}: o lease não é do Neo (${now.kind === "ok" ? `dono ${now.lease.host}` : now.kind}), e quando ele faltar ou expirar as tarefas restantes ASSUMIRIAM. ` +
+                `Nada liberado. Remova as que sobraram no Agendador de Tarefas (e apague infra:300:down-since se o 300 voltou) e rode --disarm de novo.`,
         );
         return 1;
       }
       d.err(`${P} AVISO: ${unverified}. Sem o sinal de queda, o lease do Neo é liberado (as restantes cedem ao 300); remova-as no Agendador de Tarefas.`);
     }
+    // A remoção pode ter esperado até 10 min pela execução em curso, e uma
+    // tarefa do Neo pode ter renovado (ou o 300, regravado) o lease nesse
+    // meio-tempo: decide a liberação pelo que está no KV agora (#12993).
+    read = await readNow();
+    release = planLeaseRelease(read);
   } else if (!force) {
     // #12993: aqui não há Task Scheduler para desarmar. Liberar o lease com as
     // tarefas do Neo ainda armadas deixaria o 300 e o Neo agindo juntos.
