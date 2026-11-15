@@ -110,6 +110,33 @@ export function resolveTransientNetworkExitCode(
   return code === TRANSIENT_NETWORK_EXIT_CODE ? 1 : code;
 }
 
+/**
+ * Código final da rodada para task com `retryOnTransientNetwork:
+ * "step-declares"` (#13017, review da PR #13098): o PRÓPRIO script decide
+ * se a falha foi só de rede, saindo com `TRANSIENT_NETWORK_EXIT_CODE`, e o
+ * runner nunca reclassifica pela saída inteira. Serve a orquestrador que
+ * ecoa o stderr de vários sub-passos (`clarice-novos-run.ts`): um `fetch
+ * failed` resolvido por retry interno, ou um `gh` sem rede num sub-passo
+ * que deu certo, não pode transformar um abort determinístico (ou uma falha
+ * depois do envio começar) em retry.
+ *
+ * - Todo passo obrigatório que falhou saiu com o código dedicado → ele.
+ * - Código dedicado misturado com outra falha → 1 (sem retry).
+ * - O resto → o código que o runner já calculou.
+ */
+export function resolveStepDeclaredExitCode(
+  code: number,
+  steps: readonly ClassifiableStep[],
+  successExitCodes: readonly number[] = [],
+): number {
+  if (code === 0) return 0;
+  const ok = new Set([0, ...successExitCodes]);
+  const failed = steps.filter((s) => !s.bestEffort && !ok.has(s.code));
+  const allDeclared = failed.length > 0 && failed.every((s) => s.code === TRANSIENT_NETWORK_EXIT_CODE);
+  if (allDeclared) return TRANSIENT_NETWORK_EXIT_CODE;
+  return code === TRANSIENT_NETWORK_EXIT_CODE ? 1 : code;
+}
+
 /** Janela do limite de partidas (`StartLimitIntervalSec=`), em horas.
  *
  * O rate limit do systemd é de janela FIXA: começa na 1ª partida e zera

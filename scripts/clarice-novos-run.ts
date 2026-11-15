@@ -32,9 +32,11 @@
  *
  * Exit codes:
  *   0 — sucesso (disparado / rodada vazia / pausado pelo toggle / dry-run concluído)
- *   1 — erro duro (guard abortou POR MOTIVO GENUÍNO — sub-script falhou,
- *       exceção inesperada, teto D13, guard de custo D8 etc.) — inclui POST
- *       `sendNow` RECUSADO pela Brevo (`clarice-schedule-group.ts` exit != 0/2).
+ *   1 — erro duro ANTES de a seleção ser gravada (guard abortou POR MOTIVO
+ *       GENUÍNO: sub-script falhou, exceção inesperada, teto D13, guard de
+ *       custo D8 etc.). POST `sendNow` RECUSADO pela Brevo
+ *       (`clarice-schedule-group.ts` exit != 0/2) vem depois da seleção e sai
+ *       4, não 1 (#13098).
  *   3 — disparo INCERTO (POST sendNow ACEITO pela Brevo, mas o GET-verify
  *       pós-disparo — com retry — não confirmou status terminal; mesmo
  *       evento de origem do exit 2 de `clarice-schedule-group.ts --send-now`,
@@ -54,6 +56,16 @@
  *       precisa declarar `SuccessExitStatus=3` (`successExitCodes: [3]` no
  *       registro) pra não contar como `failed` — feito neste mesmo PR para
  *       `Diaria-Clarice-Novos`/`-Tarde`; nenhuma outra task chama este script.
+ *   4 — falha DEPOIS de a seleção ser gravada no `sent-or-queued.json`
+ *       (Passo 3 em diante: import, `--create`, `--send-test`, guard antes do
+ *       POST, POST recusado). Os contatos ficam presos na campanha da key e
+ *       nenhuma rodada seguinte os reseleciona; a unit fica `failed` e o
+ *       relatório diz como disparar a mesma key. Nunca reagenda (#13098).
+ * 105 — `TRANSIENT_NETWORK_EXIT_CODE` (#13017): o sub-passo que falhou caiu
+ *       por rede ANTES da seleção ser gravada; nada foi selecionado nem
+ *       enviado, a unit tenta de novo em 15 min. A task declara
+ *       `retryOnTransientNetwork: "step-declares"`: só este script decide o
+ *       105, o runner não reclassifica a saída.
  *
  * Uso:
  *   npx tsx scripts/clarice-novos-run.ts [--since YYYY-MM-DD] [--dry-run] \
@@ -89,7 +101,14 @@ import {
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { clariceActivityDepsFromDisk, mostRecentActiveClariceCycle } from "./lib/mensal/monthly-paths.ts";
 import { writeNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
-import { writeNovosRunStatus, type NovosRunStatusValue } from "./lib/clarice-novos-run-status.ts";
+import {
+  readNovosRunStatus,
+  resolveStrandedCarry,
+  writeNovosRunStatus,
+  type NovosRunStatusValue,
+  type NovosStranded,
+} from "./lib/clarice-novos-run-status.ts";
+import { hasTransientNetworkSignature, TRANSIENT_NETWORK_EXIT_CODE } from "./lib/transient-network-failure.ts";
 import { touchLastRunAt } from "./lib/clarice-novos-state.ts";
 import type { ResolveLatestMonthlyCycleResult } from "./lib/mensal/monthly-paths.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE, type DateParts } from "./lib/next-edition-date.ts";
@@ -178,10 +197,45 @@ export function parseStepJson<T = unknown>(stdout: string): T | undefined {
  * existe no controle de fluxo real — achado do review do #4949. */
 export class NovosAbort extends Error {
   readonly code = 1 as const;
-  constructor(reason: string) {
+  /** #13017: o sub-passo que derrubou a rodada caiu por rede (assinatura na
+   * saída DELE, não na do orquestrador inteiro). Só vira 105 se a seleção
+   * ainda não tiver sido gravada, ver `resolveNovosAbortExitCode`. */
+  readonly transientNetwork: boolean;
+  constructor(reason: string, opts: { transientNetwork?: boolean } = {}) {
     super(reason);
     this.name = "NovosAbort";
+    this.transientNetwork = opts.transientNetwork ?? false;
   }
+}
+
+/** #13098: linhas de aviso que trazem "fetch failed" sem que o passo tenha
+ * caído por rede (o KV da Cloudflare do `brevo-rate-state` é fail-soft: o
+ * passo segue com o arquivo local). */
+const NETWORK_NOISE_LINE = /brevo-rate-state:/;
+
+/** #13017/#13098: o sub-passo que falhou caiu por rede? Olha só a saída
+ * DELE, sem as linhas de aviso fail-soft. Pura. */
+export function subStepFailedByNetwork(stderr: string, stdout = ""): boolean {
+  const lines = `${stderr}\n${stdout}`.split("\n").filter((l) => !NETWORK_NOISE_LINE.test(l));
+  return hasTransientNetworkSignature(lines.join("\n"));
+}
+
+/** #13098: exit code de falha depois da seleção gravada (contatos presos).
+ * Fora de `successExitCodes`: a unit fica `failed` e o alarme pega. */
+export const NOVOS_STRANDED_SELECTION_EXIT_CODE = 4 as const;
+
+/**
+ * #13017/#13098: código de saída de um abort. Pura.
+ *
+ * - Seleção já gravada: `NOVOS_STRANDED_SELECTION_EXIT_CODE` (nunca 105,
+ *   a rerrodada sairia vazia e esconderia os contatos presos).
+ * - Antes disso, sub-passo caído por rede: `TRANSIENT_NETWORK_EXIT_CODE`.
+ * - O resto: 1.
+ */
+export function resolveNovosAbortExitCode(abort: NovosAbort, selectionPersisted: boolean): 1 | 4 | 105 {
+  if (selectionPersisted) return NOVOS_STRANDED_SELECTION_EXIT_CODE;
+  if (abort.transientNetwork) return 105;
+  return abort.code;
 }
 
 /** #5743 — exit code dedicado pra "disparo INCERTO" (POST sendNow aceito
@@ -278,7 +332,7 @@ export function productionDeps(rootDir: string = ROOT): NovosRunDeps {
 // ---------------------------------------------------------------------------
 
 export interface NovosRunResult {
-  code: 0 | 1 | 3;
+  code: 0 | 1 | 3 | 4 | 105;
   reportId: string;
   reportMarkdown: string;
 }
@@ -317,11 +371,25 @@ function writeAndRegisterReport(deps: NovosRunDeps, reportId: string, title: str
 /** #5405 — snapshot do desfecho desta invocação (consumido pelo alarme de
  * abort recorrente e pelo aviso do plan-wave). Nunca chamado em `--dry-run`
  * (mesma decisão de `writeNovosCutoff` acima — não é uma tentativa real). */
-function noteRunStatus(deps: NovosRunDeps, now: Date, status: NovosRunStatusValue, detail?: string): void {
+function noteRunStatus(
+  deps: NovosRunDeps,
+  now: Date,
+  status: NovosRunStatusValue,
+  detail?: string,
+  stranded?: NovosStranded,
+): void {
+  const baseDir = novosStatusDir(deps);
+  // #13098: o aviso de presos é campo à parte e atravessa as rodadas
+  // seguintes (vazia, 105, envio de outra key) até a key presa sair.
+  const carried = resolveStrandedCarry(readNovosRunStatus(baseDir)?.stranded, stranded, baseDir);
   writeNovosRunStatus(
-    { status, checkedAt: now.toISOString(), detail: detail?.slice(0, 300) },
-    resolve(deps.rootDir, "data", "clarice-subscribers"),
+    { status, checkedAt: now.toISOString(), detail: detail?.slice(0, 300), ...(carried ? { stranded: carried } : {}) },
+    baseDir,
   );
+}
+
+function novosStatusDir(deps: NovosRunDeps): string {
+  return resolve(deps.rootDir, "data", "clarice-subscribers");
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +410,9 @@ function step<T = unknown>(
   if (result.stderr.trim()) console.error(result.stderr.trim());
   if (!okCodes.includes(result.code)) {
     const detail = result.stderr.trim().split("\n").slice(-6).join(" | ") || "(sem stderr)";
-    throw new NovosAbort(`❌ ${label} falhou (exit ${result.code}): ${detail}`);
+    throw new NovosAbort(`❌ ${label} falhou (exit ${result.code}): ${detail}`, {
+      transientNetwork: subStepFailedByNetwork(result.stderr, result.stdout),
+    });
   }
   return { result, json: parseStepJson<T>(result.stdout) };
 }
@@ -357,6 +427,22 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
   const now = deps.now();
   const aammdd = todayAammdd(now);
   const report = new ReportBuilder(`diar.ia.br Clarice novos ${aammdd}`);
+  // #13098: a partir do momento em que `clarice-build-segment` grava a
+  // seleção no `sent-or-queued.json`, nenhuma rodada seguinte reseleciona
+  // esses contatos: falha daí em diante é "presos", nunca retry.
+  let selectionPersisted = false;
+  let strandedKey: string | undefined;
+  let strandedCycle: string | undefined;
+  // #13098: presos de uma rodada anterior seguem no relatório até a key sair.
+  const prevStranded = readNovosRunStatus(novosStatusDir(deps))?.stranded;
+  if (prevStranded) {
+    report.note(
+      `⚠️  contatos PRESOS desde ${prevStranded.at}` +
+        (prevStranded.key ? ` (key ${prevStranded.key}, ciclo ${prevStranded.cycle ?? "?"})` : "") +
+        ` — ainda não disparados. Ver o relatório daquela rodada; depois de liberar a seleção, rode ` +
+        `\`npx tsx scripts/lib/clarice-novos-run-status.ts --clear-stranded\`.`,
+    );
+  }
 
   // #10142 — alarme decisão×toggle ANTES do kill switch (só lê `gh` + os
   // arquivos de toggle; nenhuma chamada Stripe/MV/Brevo): uma decisão de
@@ -426,6 +512,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       );
     }
     report.note(`ciclo de envio resolvido: ${cicloEnvio}`);
+    strandedCycle = cicloEnvio;
 
     if (opts.dryRun) {
       report.note("ℹ️  --dry-run: MV pulado (custo real de crédito, nunca gasto sem intenção).");
@@ -465,6 +552,15 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       "scripts/clarice-build-segment.ts",
       segmentArgs,
     );
+    // #13098: exit 0 sem resumo legível pode ter gravado a seleção; tratar
+    // como vazia esconderia contatos presos. Aborta como presos.
+    if (!opts.dryRun && typeof segment.json?.selected !== "number") {
+      selectionPersisted = true;
+      throw new NovosAbort(
+        "❌ clarice-build-segment saiu 0 sem o resumo JSON com 'selected' — a seleção pode ter sido gravada no " +
+          "sent-or-queued.json; abortando em vez de tratar como rodada vazia.",
+      );
+    }
     const selected = segment.json?.selected ?? 0;
     report.note(`grupo 'novos': ${selected} contato(s) selecionado(s).`);
     // #5922 item 6 — auto-fatiamento do D13: o build-segment fatiou pro topo
@@ -478,6 +574,8 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
           `(MAX(created)-2d) sai da fila 'novos' sem envio — backlog grande pede intervenção manual.`,
       );
     }
+
+    if (!opts.dryRun && selected > 0) selectionPersisted = true;
 
     if (selected === 0) {
       report.note("ℹ️  0 contato(s) — rodada vazia, não é erro. Nada a importar/disparar.");
@@ -506,6 +604,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
     const key = keyStep.json?.key;
     if (!key) throw new NovosAbort("❌ clarice-novos-resolve-key não devolveu 'key' no resumo JSON.");
     report.note(`key resolvida: ${key}`);
+    strandedKey = key;
 
     const folderStep = step<ResolveFolderResult>(
       deps,
@@ -719,8 +818,27 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
     noteRunStatus(deps, now, "sent");
     return { code: 0, reportId: reportIdSent, reportMarkdown: report.build() };
   } catch (e) {
-    const abort = e instanceof NovosAbort ? e : new NovosAbort(`❌ erro inesperado: ${(e as Error).message}`);
+    const abort =
+      e instanceof NovosAbort
+        ? e
+        : new NovosAbort(`❌ erro inesperado: ${(e as Error).message}`, {
+            transientNetwork: subStepFailedByNetwork(String((e as Error)?.stack ?? e)),
+          });
     report.note(abort.message);
+    const code = resolveNovosAbortExitCode(abort, selectionPersisted);
+    if (code === NOVOS_STRANDED_SELECTION_EXIT_CODE) {
+      const how = strandedKey
+        ? `Confira a campanha da key ${strandedKey} na Brevo e dispare com clarice-schedule-group.ts ` +
+          `--group novos --key ${strandedKey} --send-now (o guard de envio recusa um 2º POST), ou libere a ` +
+          `seleção com clarice-unblock-orphaned-selections.ts.`
+        : `A key não chegou a ser resolvida: libere a seleção com clarice-unblock-orphaned-selections.ts.`;
+      report.note(
+        `🚨 contatos PRESOS (#13098): a seleção desta rodada já está no sent-or-queued.json e nenhuma rodada ` +
+          `seguinte vai reselecioná-los. ${how}`,
+      );
+    } else if (code === TRANSIENT_NETWORK_EXIT_CODE) {
+      report.note("↻ queda de rede antes da seleção: nada selecionado nem enviado; a unit tenta de novo (#13017).");
+    }
     const reportId = `novos-${aammdd}-abort`;
     writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice novos ${aammdd} — abortado`, report.build());
     // #5405: nunca gravado em --dry-run (não é uma tentativa de produção) —
@@ -728,9 +846,18 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
     // aqui (retorna antes do try). O status continua registrando erros reais;
     // o antigo status `semaphore-red` não é mais produzido desde #5660.
     if (!opts.dryRun) {
-      noteRunStatus(deps, now, "other-error", abort.message);
+      const stranded: NovosStranded | undefined =
+        code === NOVOS_STRANDED_SELECTION_EXIT_CODE
+          ? {
+              at: now.toISOString(),
+              ...(strandedKey ? { key: strandedKey } : {}),
+              ...(strandedCycle ? { cycle: strandedCycle } : {}),
+              detail: abort.message.slice(0, 300),
+            }
+          : undefined;
+      noteRunStatus(deps, now, "other-error", abort.message, stranded);
     }
-    return { code: abort.code, reportId, reportMarkdown: report.build() };
+    return { code, reportId, reportMarkdown: report.build() };
   }
 }
 
