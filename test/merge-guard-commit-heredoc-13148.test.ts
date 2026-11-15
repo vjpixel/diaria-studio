@@ -92,6 +92,16 @@ describe("#13148 — o que continua sendo merge", () => {
     ["merge depois do push", commit(`git add a.ts && git commit -F - <<'EOF'`, BODY, `git push && ${MERGE} 5`)],
     ["duas linhas depois do EOF", commit(`git add a.ts && git commit -F - <<'EOF'`, BODY, `git push\n${MERGE} 5`)],
     ["push com pipe para um shell", commit(`git add a.ts && git commit -F - <<'EOF'`, BODY, "git push 2>&1 | sh")],
+    // `--receive-pack`/`--exec` executam um comando: aqui, a própria mensagem (o corpo pulado).
+    [
+      "push --receive-pack que roda a mensagem (linha depois do EOF)",
+      commit(`git add a.ts && git commit -F - <<'EOF'`, `${MERGE} 5`, `git push "--receive-pack=git log -1 --format=%B | sh" .`),
+    ],
+    [
+      "push --exec que roda a mensagem (mesma linha)",
+      commit(`git commit -F - <<'EOF' && git push "--exec=git log -1 --format=%B | sh" .`, `${MERGE} 5`),
+    ],
+    ["push --receive-pack sem aspas", commit(`git commit -F - <<'EOF' && git push --receive-pack=x .`, `${MERGE} 5`)],
     ["substituição no git add", commit(`git add $(${MERGE} 5) && git commit -F - <<'EOF'`)],
     ["git -c antes do commit", commit(`git add a.ts && git -c core.hooksPath=h commit -F - <<'EOF'`, `${MERGE} 5`)],
     ["comando qualquer no prefixo", commit(`chmod +x x.sh && git add a.ts && git commit -F - <<'EOF'`, `${MERGE} 5`)],

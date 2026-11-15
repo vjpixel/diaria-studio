@@ -1552,7 +1552,14 @@ function collect(command, depth, out, ctx, env) {
 const SIMPLE_ARG = String.raw`(?:[A-Za-z0-9_./:@=+,%-]+|"[^"$\x60\\\n]*"|'[^'\n]*')`;
 const ARGS = `(?: ${SIMPLE_ARG})*`;
 const DELIM = "'([A-Za-z_]+)'";
-const GIT_PUSH = `(?: && git push${ARGS})?`;
+// #13148: `git push --receive-pack=CMD`/`--exec=CMD` executa CMD (localmente,
+// num remoto de caminho) — `"--receive-pack=git log -1 --format=%B | sh" .`
+// rodaria a mensagem recém-commitada, que é o corpo do heredoc pulado. Por
+// isso os argumentos do push são só palavras SEM aspas (sem espaço nem
+// metacaractere, um CMD de uma palavra só não lê a mensagem) e nunca
+// `--receive-pack`/`--exec`; fora disso o comando sai da whitelist.
+const PUSH_ARGS = String.raw`(?: (?!--(?:receive-pack|exec)\b)[A-Za-z0-9_./:@=+,%-]+)*`;
+const GIT_PUSH = `(?: && git push${PUSH_ARGS})?`;
 // #10777: `cd <worktree> && ` antes do comando — a forma padrão dos
 // subagentes (o cwd é resetado a cada chamada). O caminho é um SIMPLE_ARG
 // (sem `$`, crase, `\` nem aspas abertas): o `cd` não executa nada além de
@@ -1603,7 +1610,7 @@ const GH_ARGS = `(?: ${GH_ARG})*`;
 const GIT_COMMIT_PREFIX = `(?:(?:cd ${SIMPLE_ARG}|git add${ARGS})(?: && |; ))*`;
 // #13148: depois do D da forma `-F -`, no máximo UMA linha com o push (saída
 // opcionalmente só lida por `tail`/`head`, que não executam nada).
-const GIT_PUSH_LINE = `(?:${CD_PREFIX}git push${ARGS}(?: 2>&1)?(?: \\| (?:tail|head)${ARGS})?)`;
+const GIT_PUSH_LINE = `(?:${CD_PREFIX}git push${PUSH_ARGS}(?: 2>&1)?(?: \\| (?:tail|head)${ARGS})?)`;
 const HEAD_FORMS = [
   // [cd X && ][git add … && ]git commit [flags] -F - <<'D' [&& git push ...]  →  depois do D, nada ou `git push …`.
   {
