@@ -384,6 +384,40 @@ describe("#12993: run do Neo — checkout, .env e KV", () => {
     }
   });
 
+  it("#13126: .env AUSENTE no Neo (leitor real): WARN com o caminho antes do fail-closed do gate", async () => {
+    const root = fakeRoot(); // sem .env
+    try {
+      const { value: code, err } = await quiet(() =>
+        runTaskMain(["--task", "Diaria-Shorts-Instagram", "--failover-standby"], root, standbyDeps({ readDotenv: undefined, processEnv: {} })),
+      );
+      assert.equal(code, 1, "sem .env e sem credencial no ambiente o gate do Neo falha fechado");
+      const all = err.join("\n");
+      assert.match(all, new RegExp(`WARN \\.env ausente em ${join(root, ".env").replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}`));
+      const warnAt = err.findIndex((l) => /\.env ausente/.test(l));
+      const kvAt = err.findIndex((l) => /configuração do KV ausente/.test(l));
+      assert.ok(warnAt >= 0 && (kvAt === -1 || warnAt < kvAt), "a causa real sai antes da mensagem do gate");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#13126: .env ausente no 300: sem aviso (lá o EnvironmentFile do systemd é a fonte)", async () => {
+    const root = fakeRoot();
+    try {
+      const kv = kvWith({ [SCHEDULER_LEASE_KEY]: neoLease });
+      const { value: code, err } = await quiet(() =>
+        runTaskMain(["--task", "Diaria-Shorts-Instagram"], root, {
+          gate: { env: ENV, platformConfig: PLATFORM, makeKv: kv.makeKv, now: () => T0, platform: "linux", memory: memMemory() },
+          processEnv: {},
+        }),
+      );
+      assert.equal(code, 0);
+      assert.ok(!err.some((l) => /\.env ausente/.test(l)), err.join("\n"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("teto do KV no caminho do gate é menor que o default de 30 s do cliente", () => {
     assert.ok(GATE_KV_TIMEOUT_MS <= 10_000);
   });

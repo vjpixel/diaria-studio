@@ -367,6 +367,20 @@ describe("neo-takeover main — orquestração com runPowerShell/openKv fingidos
     assert.equal(await takeoverMain(["--disarm"], d), 1);
     assert.match(h.out.join("\n"), /2026-11-13T18:00:00Z/);
   });
+
+  it("#13126: --disarm com KV inacessível e memória local ilegível avisa (WARN com a causa) e usa a estimativa genérica", async () => {
+    const h = harness({ kvOk: false });
+    const d = {
+      ...h.deps,
+      lastKnownLease: () => {
+        throw new Error("/x/failover-last-lease.json: EACCES");
+      },
+    };
+    assert.equal(await takeoverMain(["--disarm"], d), 1);
+    const out = h.out.join("\n");
+    assert.match(out, /WARN memória local do lease ilegível \(\/x\/failover-last-lease\.json: EACCES\)/);
+    assert.match(out, /expira em até/);
+  });
 });
 
 describe("sync pulado no Neo conta como sucesso no runner e como não verificado na frescura", () => {
