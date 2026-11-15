@@ -15,7 +15,12 @@
  *
  * Uso:
  *   npx tsx scripts/lint-annual-draft.ts --slug 2026-aniversario
- *   npx tsx scripts/lint-annual-draft.ts --draft caminho/draft.md --tipo aniversario
+ *   npx tsx scripts/lint-annual-draft.ts --draft caminho/draft.md --tipo aniversario [--raw-destaques caminho/raw-destaques.json]
+ *
+ * #13105 item 3: também reprova o `wrong_value` do erro intencional de uma
+ * edição do período que reapareça no texto final (as edições saem do
+ * `raw-destaques.json`; com `--draft` sem `--raw-destaques` o guard fica sem
+ * insumo e só avisa).
  *
  * Exit codes: 0 íntegro · 1 falha crítica · 2 draft não encontrado.
  */
@@ -28,6 +33,14 @@ import { annualPaths } from "./lib/anual/annual-paths.ts";
 import { parseAnnualDraft, themeCharCount, textCharCount, FORBIDDEN_LABELS, type AnnualDraft } from "./lib/anual/annual-parse.ts";
 import { renderAnnualEmail } from "./lib/anual/annual-render.ts";
 import { tipoFromSlug, type AnnualTipo } from "./lib/anual/annual-window.ts";
+import {
+  editionsFromRawDestaques,
+  findDraftIntentionalErrorLeaks,
+  formatIntentionalErrorAdvisory,
+  formatIntentionalErrorLeaks,
+  loadWindowIntentionalErrors,
+  type IntentionalErrorPair,
+} from "./lib/intentional-error-scrub.ts"; // #13105 item 3
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -52,10 +65,23 @@ export interface LintAnnualResult {
   render: { imageCount: number; missingImages: number[] };
 }
 
-export function lintAnnualDraft(md: string, tipo: AnnualTipo): LintAnnualResult {
+export function lintAnnualDraft(
+  md: string,
+  tipo: AnnualTipo,
+  opts: { intentionalErrors?: readonly IntentionalErrorPair[] } = {},
+): LintAnnualResult {
   const draft: AnnualDraft = parseAnnualDraft(md);
   const errors: string[] = [];
   const warnings: string[] = [...draft.warnings];
+
+  // ── Crítico: erro intencional de edição do período (#13105 item 3) ──
+  // O insumo já vem limpo do collect-annual (#13051); isto confere o texto
+  // FINAL do writer-anual. Valor ambíguo (número, palavra curta) só avisa.
+  if (opts.intentionalErrors && opts.intentionalErrors.length > 0) {
+    const { blocking, advisory } = findDraftIntentionalErrorLeaks(md, opts.intentionalErrors);
+    if (blocking.length > 0) errors.push(formatIntentionalErrorLeaks(blocking, "draft.md"));
+    if (advisory.length > 0) warnings.push(formatIntentionalErrorAdvisory(advisory, "draft.md"));
+  }
 
   // ── Crítico: labels reconhecidos ────────────────────────────────────
   for (const w of draft.warnings) {
@@ -153,16 +179,21 @@ function main(argv: string[] = process.argv.slice(2)): void {
 
   let draftPath: string;
   let tipo: AnnualTipo;
+  // #13105 item 3: de onde vêm as edições do período para o guard do erro intencional.
+  let rawDestaquesPath: string | null = null;
 
   if (args.values.slug) {
     const slug = args.values.slug;
-    draftPath = annualPaths(slug, resolve(ROOT, "data/annual")).draft;
+    const paths = annualPaths(slug, resolve(ROOT, "data/annual"));
+    draftPath = paths.draft;
+    rawDestaquesPath = paths.rawDestaques;
     tipo = tipoFromSlug(slug);
   } else if (args.values.draft) {
     draftPath = resolve(args.values.draft);
     tipo = (args.values.tipo as AnnualTipo) ?? "janeiro";
+    rawDestaquesPath = args.values["raw-destaques"] ? resolve(args.values["raw-destaques"]) : null;
   } else {
-    log("uso: --slug 2026-aniversario | --draft <caminho> [--tipo aniversario|janeiro]");
+    log("uso: --slug 2026-aniversario | --draft <caminho> [--tipo aniversario|janeiro] [--raw-destaques <caminho>]");
     process.exitCode = 2;
     return;
   }
@@ -173,7 +204,13 @@ function main(argv: string[] = process.argv.slice(2)): void {
     return;
   }
 
-  const result = lintAnnualDraft(readFileSync(draftPath, "utf8"), tipo);
+  const editions = rawDestaquesPath ? editionsFromRawDestaques(rawDestaquesPath) : [];
+  if (editions.length === 0) {
+    log("aviso: guard do erro intencional sem insumo (raw-destaques.json ausente ou sem edições, #13105).");
+  }
+  const intentionalErrors =
+    editions.length > 0 ? loadWindowIntentionalErrors(resolve(ROOT, "data/editions"), editions) : [];
+  const result = lintAnnualDraft(readFileSync(draftPath, "utf8"), tipo, { intentionalErrors });
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
 
   for (const w of result.warnings) log(`aviso: ${w}`);

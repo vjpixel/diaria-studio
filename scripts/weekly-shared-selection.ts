@@ -38,7 +38,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
-import { readReviewedMdScrubbed } from "./lib/intentional-error-scrub.ts";
+import {
+  findScopedIntentionalErrorLeaks,
+  formatIntentionalErrorAdvisory,
+  formatIntentionalErrorLeaks,
+  loadWindowIntentionalErrors,
+  readReviewedMdScrubbed,
+} from "./lib/intentional-error-scrub.ts";
 import { formatAAMMDD, parseAAMMDD, resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
 import { matchPostsToWindow } from "./lib/weekly-linkedin-clicks.ts";
 import type { WeeklyRankedCandidate } from "./lib/weekly-linkedin-select.ts";
@@ -295,6 +301,17 @@ export function main(rootDirOverride?: string, argv: string[] = process.argv.sli
     swapLog: core.swapLog,
     warnings,
   };
+
+  // #13105 item 3: guard do texto que sai no arquivo (títulos do ranking e dos
+  // excluídos), escopado à edição de cada item. O insumo já vem limpo; isto
+  // pega o que o scrub não alcançou. Grafia errada de nome recusa a gravação;
+  // valor ambíguo vira aviso no próprio arquivo.
+  const { blocking, advisory } = findScopedIntentionalErrorLeaks(
+    [...output.ranking, ...output.excluded].map((r) => ({ edition: r.editionDate, text: r.title })),
+    loadWindowIntentionalErrors(editionsRootDir, found.map((e) => e.date)),
+  );
+  if (blocking.length > 0) fail(1, `Seleção compartilhada não gravada: ${formatIntentionalErrorLeaks(blocking, SHARED_SELECTION_FILE)}`);
+  if (advisory.length > 0) output.warnings.push(formatIntentionalErrorAdvisory(advisory, SHARED_SELECTION_FILE));
 
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, JSON.stringify(output, null, 2), "utf8");
